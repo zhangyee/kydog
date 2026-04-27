@@ -91,5 +91,6 @@ typings/
 # Electron-Forge
 out/
 
-# personal documents
-project-docs/
+# coding-agents draft documents
+docs/superpowers/
+docs/scratch/
