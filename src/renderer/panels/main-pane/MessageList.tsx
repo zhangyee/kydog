@@ -5,9 +5,8 @@ import { AssistantMessage } from './AssistantMessage';
 
 export function MessageList({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
-  const liveBuffers = useRunsStore((s) =>
-    Object.entries(s.bufferByMessage).filter(([, v]) => v.threadId === threadId)
-  );
+  const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
+  const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-4" data-testid="message-list">

@@ -1,17 +1,17 @@
-import { useState } from 'react';
+import { useRef } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 
 export function InputPill({ threadId }: { threadId: string }) {
-  const [value, setValue] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const isRunning = runState?.status === 'running';
   const appendUser = useThreadsStore((s) => s.appendUserMessage);
 
   const onSend = async () => {
-    if (!value.trim() || isRunning) return;
-    const content = value;
-    setValue('');
+    const content = textareaRef.current?.value.trim() ?? '';
+    if (!content || isRunning) return;
+    if (textareaRef.current) textareaRef.current.value = '';
     appendUser(threadId, {
       id: crypto.randomUUID(),
       role: 'user',
@@ -32,10 +32,10 @@ export function InputPill({ threadId }: { threadId: string }) {
   return (
     <div className="border-t border-[color:var(--color-paper-edge)] p-3 flex gap-2 items-end">
       <textarea
+        ref={textareaRef}
         data-testid="input-pill"
         disabled={isRunning}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
+        defaultValue=""
         onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void onSend(); } }}
         placeholder={isRunning ? '运行中…' : '输入消息（⌘/Ctrl+Enter 发送）'}
         rows={2}

@@ -11,6 +11,7 @@ type ThreadsState = {
   upsertThread: (thread: Thread) => void;
   removeThread: (threadId: string) => void;
   setHistory: (threadId: string, messages: Message[]) => void;
+  initHistory: (threadId: string, messages: Message[]) => void;
   appendUserMessage: (threadId: string, message: Message) => void;
 };
 
@@ -44,6 +45,8 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
   }),
   setHistory: (threadId, messages) =>
     set((s) => ({ historyByThread: { ...s.historyByThread, [threadId]: messages } })),
+  initHistory: (threadId, messages) =>
+    set((s) => s.historyByThread[threadId] !== undefined ? {} : { historyByThread: { ...s.historyByThread, [threadId]: messages } }),
   appendUserMessage: (threadId, message) =>
     set((s) => ({
       historyByThread: {

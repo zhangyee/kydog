@@ -6,15 +6,15 @@ import { NewThreadEmptyState } from './NewThreadEmptyState';
 
 export function ThreadView({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId]);
-  const setHistory = useThreadsStore((s) => s.setHistory);
+  const initHistory = useThreadsStore((s) => s.initHistory);
   const [prefill, setPrefill] = useState<string>('');
 
   useEffect(() => {
     if (messages !== undefined) return;
     void window.kydog.invoke('thread.loadHistory', { threadId }).then((msgs) => {
-      setHistory(threadId, msgs);
+      initHistory(threadId, msgs);
     });
-  }, [threadId, messages, setHistory]);
+  }, [threadId, messages, initHistory]);
 
   if (messages === undefined) return <div className="p-6 text-sm text-[color:var(--color-ink-soft)]">加载中…</div>;
 
