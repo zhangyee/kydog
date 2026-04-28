@@ -17,7 +17,7 @@ const config: ForgeConfig = {
         { entry: 'src/main/main.ts', config: 'vite.main.config.ts', target: 'main' },
         { entry: 'src/preload/index.ts', config: 'vite.preload.config.ts', target: 'preload' },
       ],
-      renderer: [{ name: 'main_window', config: 'vite.renderer.config.ts' }],
+      renderer: [{ name: 'main_window', config: 'vite.renderer.config.mts' }],
     }),
     new FusesPlugin({
       version: FuseVersion.V1,
@@ -30,6 +30,7 @@ const config: ForgeConfig = {
       [FuseV1Options.OnlyLoadAppFromAsar]: true,
       [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: false,
       [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
+      [FuseV1Options.WasmTrapHandlers]: false,
     }),
   ],
 };
