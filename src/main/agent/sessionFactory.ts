@@ -21,18 +21,36 @@ export async function createSession(opts: {
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
   if (fixturePath) return createFixtureSession(fixturePath);
 
-  // baseUrl + model overrides require a custom models.json via ModelRegistry.create(authStorage, modelsJsonPath).
-  // Wired before Phase 4 manual smoke when the provider settings UI persists pi-models.json.
   const pi = await import('@mariozechner/pi-coding-agent');
   const authStorage = pi.AuthStorage.create();
   authStorage.setRuntimeApiKey('openai-compat', opts.apiKey);
   const modelRegistry = pi.ModelRegistry.create(authStorage);
+  modelRegistry.registerProvider('openai-compat', {
+    baseUrl: opts.baseUrl,
+    apiKey: opts.apiKey,
+    api: 'openai-completions',
+    models: [{
+      id: opts.model,
+      name: opts.model,
+      api: 'openai-completions',
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 8_000,
+    }],
+  });
+  const model = modelRegistry.find('openai-compat', opts.model);
+  if (!model) {
+    throw new Error(`failed to register custom model ${opts.model} on provider openai-compat`);
+  }
   const sessionFile = `${opts.sessionsDir}/${opts.sessionId}.jsonl`;
   const { session } = await pi.createAgentSession({
     cwd: opts.cwd,
     sessionManager: pi.SessionManager.open(sessionFile),
     authStorage,
     modelRegistry,
+    model,
   });
   return session as AnySession;
 }
