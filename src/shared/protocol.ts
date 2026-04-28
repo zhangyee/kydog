@@ -4,11 +4,11 @@ import type {
 import type { SerializedError } from './errors';
 
 export type RpcCall =
-  | { method: 'app.bootstrap'; args: void; result: BootstrapState }
-  | { method: 'settings.get'; args: void; result: SettingsFile }
+  | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
+  | { method: 'settings.get'; args: undefined; result: SettingsFile }
   | { method: 'settings.update'; args: Partial<SettingsFile>; result: SettingsFile }
-  | { method: 'project.open'; args: void; result: Project }
-  | { method: 'project.list'; args: void; result: Project[] }
+  | { method: 'project.open'; args: undefined; result: Project }
+  | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }
   | { method: 'project.readDir'; args: { path: string }; result: FsNode[] }
   | { method: 'thread.create'; args: { projectPath: string; title?: string }; result: Thread }
