@@ -1,0 +1,24 @@
+[data-theme="sepia"] {
+  --paper: oklch(0.94 0.024 78);
+  --paper-deep: oklch(0.912 0.030 75);
+  --paper-edge: oklch(0.888 0.032 72);
+  --ink: oklch(0.26 0.035 50);
+  --ink-soft: oklch(0.42 0.025 50);
+  --ink-faint: oklch(0.58 0.018 55);
+  --ink-hair: oklch(0.78 0.024 60);
+  --ink-hair-soft: oklch(0.84 0.020 60);
+  --accent: oklch(0.52 0.12 60);
+  --accent-soft: oklch(0.52 0.12 60 / 0.14);
+  --marginalia: oklch(0.42 0.10 250);
+  --moss: oklch(0.48 0.08 150);
+  --amber: oklch(0.62 0.11 75);
+  --grain-color: rgba(140,100,60,0.07);
+  --grain-size: 3px;
+  --grain-opacity: 1;
+  --titlebar-bg-from: oklch(0.905 0.032 75);
+  --titlebar-bg-to: oklch(0.935 0.028 77);
+  --titlebar-text: oklch(0.38 0.030 55);
+  --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
