@@ -6,6 +6,7 @@ import {
 } from '../shared/protocol';
 
 const bridge = {
+  platform: process.platform,
   async invoke<M extends RpcMethod>(
     method: M,
     ...args: RpcArgs<M> extends undefined ? [] : [RpcArgs<M>]
