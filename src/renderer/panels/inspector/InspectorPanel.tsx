@@ -1,13 +1,23 @@
 import { useThreadsStore } from '../../stores/threadsStore';
+import { useUiStore } from '../../stores/uiStore';
 import { InspectorHeader } from './InspectorHeader';
 import { FileTree } from './FileTree';
+import { CollapseButton } from '../workspace/CollapseButton';
 
 export function InspectorPanel() {
+  const collapsed = useUiStore((s) => s.inspectorCollapsed);
   const currentThreadId = useThreadsStore((s) => s.currentThreadId);
   const projectPath = useThreadsStore((s) => {
     const t = Object.values(s.threadsByProject).flat().find((x) => x.id === currentThreadId);
     return t?.projectPath ?? null;
   });
+  if (collapsed) {
+    return (
+      <div className="h-full flex flex-col items-center pt-2">
+        <CollapseButton target="inspector" />
+      </div>
+    );
+  }
   return (
     <div className="h-full flex flex-col">
       <InspectorHeader />
