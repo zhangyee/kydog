@@ -89,11 +89,16 @@ class AgentService {
       const runId = state?.status === 'running' ? state.runId : 'unknown';
       switch (evt.type) {
         case 'agent_start':
+          // Synthesize one messageId per RUN (not per pi message_start) so that
+          // thinking + tool calls + final text from pi's multiple messages within
+          // one turn all attach to the same buffer. Tool calls fire AFTER pi's
+          // first message_end, so consuming the buffer at message_end loses them.
+          bound.activeMessageId = `${threadId}:${randomUUID()}`;
           broadcaster.emit('run.started', { threadId, runId });
           return;
         case 'message_start':
-          // Synthesize a stable messageId since pi provides no stable per-message id
-          bound.activeMessageId = `${threadId}:${randomUUID()}`;
+          // No-op: keep the run-level activeMessageId so the buffer stays alive
+          // across pi's multiple message_start/end pairs within one turn.
           return;
         case 'message_update': {
           const sub = (evt as unknown as { assistantMessageEvent?: { type: string; delta?: string } }).assistantMessageEvent;
@@ -131,12 +136,10 @@ class AgentService {
           });
           return;
         }
-        case 'message_end': {
-          const messageId = bound.activeMessageId;
-          if (messageId) broadcaster.emit('run.message_end', { threadId, runId, messageId });
-          bound.activeMessageId = null;
+        case 'message_end':
+          // No-op: defer flush to agent_end so the buffer survives pi's
+          // intra-turn message boundaries (assistant w/ toolcall → toolResult → assistant w/ text).
           return;
-        }
         case 'agent_end': {
           const e = evt as unknown as { messages: Array<{ role?: string; stopReason?: string; errorMessage?: string }> };
           const last = e.messages[e.messages.length - 1];
@@ -146,6 +149,10 @@ class AgentService {
             if (last.stopReason === 'aborted') reason = 'aborted';
             else if (last.stopReason === 'error') { reason = 'error'; errorMessage = last.errorMessage; }
           }
+          // Flush the run's accumulated buffer as one assistant message
+          const messageId = bound.activeMessageId;
+          if (messageId) broadcaster.emit('run.message_end', { threadId, runId, messageId });
+          bound.activeMessageId = null;
           const endEvt = reason === 'error'
             ? { kind: 'error' as const, message: errorMessage ?? 'unknown' }
             : { kind: reason };
