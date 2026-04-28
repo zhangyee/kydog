@@ -26,7 +26,7 @@ async function createWindow() {
     height: 800,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
+      preload: path.join(__dirname, 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
