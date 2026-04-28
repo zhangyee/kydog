@@ -15,6 +15,21 @@ export async function bootstrap(): Promise<void> {
     settingsModalOpen: state.settings.llm.provider === null,
     settingsModalCloseable: state.settings.llm.provider !== null,
   });
+
+  let prev = useUiStore.getState();
+  useUiStore.subscribe((s) => {
+    if (s.theme === prev.theme && s.workspaceCollapsed === prev.workspaceCollapsed && s.inspectorCollapsed === prev.inspectorCollapsed) return;
+    prev = s;
+    void window.kydog.invoke('settings.update', {
+      ui: {
+        theme: s.theme,
+        locale: 'zh',
+        workspaceCollapsed: s.workspaceCollapsed,
+        inspectorCollapsed: s.inspectorCollapsed,
+      },
+    }).catch((err) => console.error('persist ui failed', err));
+  });
+
   setupEventBridge();
 }
 
