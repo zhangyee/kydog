@@ -2,7 +2,6 @@ import { createRoot } from 'react-dom/client';
 import { StrictMode } from 'react';
 import { AppShell } from './app/AppShell';
 import { bootstrap } from './bootstrap';
-import './types/window';
 import './index.css';
 
 const root = document.getElementById('root');
