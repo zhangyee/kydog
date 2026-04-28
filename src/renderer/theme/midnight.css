@@ -1,11 +1,23 @@
 [data-theme="midnight"] {
   --paper: oklch(0.24 0.018 248);
-  --paper-edge: oklch(0.28 0.020 248);
-  --ink: oklch(0.94 0 0);
-  --ink-soft: oklch(0.72 0 0);
+  --paper-deep: oklch(0.20 0.018 250);
+  --paper-edge: oklch(0.28 0.016 248);
+  --ink: oklch(0.93 0.012 80);
+  --ink-soft: oklch(0.78 0.010 80);
+  --ink-faint: oklch(0.56 0.012 240);
+  --ink-hair: oklch(0.38 0.015 250);
+  --ink-hair-soft: oklch(0.34 0.014 250);
   --accent: oklch(0.65 0.12 210);
+  --accent-soft: oklch(0.65 0.12 210 / 0.18);
   --marginalia: oklch(0.62 0.10 280);
+  --moss: oklch(0.55 0.10 150);
+  --amber: oklch(0.70 0.12 75);
+  --grain-color: transparent;
+  --grain-size: 3px;
   --grain-opacity: 0;
+  --titlebar-bg-from: oklch(0.20 0.018 250);
+  --titlebar-bg-to: oklch(0.23 0.020 250);
+  --titlebar-text: oklch(0.70 0.012 80);
   --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
   --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
   --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
