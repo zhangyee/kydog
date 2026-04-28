@@ -6,12 +6,19 @@ import { WorkspacePanel } from '../panels/workspace/WorkspacePanel';
 import { MainPane } from '../panels/main-pane/MainPane';
 import { InspectorPanel } from '../panels/inspector/InspectorPanel';
 import { SettingsModal } from '../settings/SettingsModal';
+import { useThreadsStore } from '../stores/threadsStore';
 
 export function AppShell() {
+  const currentTitle = useThreadsStore((s) => {
+    if (!s.currentThreadId) return undefined;
+    const t = Object.values(s.threadsByProject).flat().find(x => x.id === s.currentThreadId);
+    if (!t) return undefined;
+    return `${t.title} · ${t.projectPath.split('/').pop() ?? ''}`;
+  });
   return (
     <div className="h-full flex flex-col">
       <ThemeApplier />
-      <TitleBar />
+      <TitleBar title={currentTitle} />
       <div className="flex-1 min-h-0">
         <ThreeColumnLayout
           left={<ErrorBoundary fallbackLabel="工作区出错"><WorkspacePanel /></ErrorBoundary>}
