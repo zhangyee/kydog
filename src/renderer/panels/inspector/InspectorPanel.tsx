@@ -17,9 +17,14 @@ export function InspectorPanel() {
         data-testid="collapse-inspector"
         aria-label="展开 inspector"
         onClick={useUiStore.getState().toggleInspector}
-        className="h-full w-full flex items-start justify-center pt-2 text-xs text-[color:var(--color-ink-soft)] hover:text-[color:var(--color-ink)] hover:bg-[color:var(--color-paper-edge)]/40 cursor-pointer"
+        className="h-full w-full flex items-start justify-center pt-4 cursor-pointer hover:bg-[color:var(--color-paper-edge)]/40"
       >
-        ⇤
+        <span
+          className="font-mono text-[10px] tracking-[0.3em] text-[color:var(--color-ink-soft)] hover:text-[color:var(--color-ink)]"
+          style={{ writingMode: 'vertical-rl' }}
+        >
+          INSPECTOR
+        </span>
       </button>
     );
   }
