@@ -1,10 +1,20 @@
 @theme {
   --color-paper: var(--paper);
+  --color-paper-deep: var(--paper-deep);
   --color-paper-edge: var(--paper-edge);
   --color-ink: var(--ink);
   --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-ink-hair: var(--ink-hair);
+  --color-ink-hair-soft: var(--ink-hair-soft);
   --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
   --color-marginalia: var(--marginalia);
+  --color-moss: var(--moss);
+  --color-amber: var(--amber);
+  --color-titlebar-bg-from: var(--titlebar-bg-from);
+  --color-titlebar-bg-to: var(--titlebar-bg-to);
+  --color-titlebar-text: var(--titlebar-text);
   --font-family-serif: var(--font-serif);
   --font-family-sans: var(--font-sans);
   --font-family-mono: var(--font-mono);
