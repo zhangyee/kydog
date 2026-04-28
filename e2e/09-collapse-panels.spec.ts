@@ -12,12 +12,10 @@ test('09-collapse: workspace and inspector each toggle independently', async () 
     expect(initialIns).toBeGreaterThan(100);
 
     await launched.page.locator('[data-testid="collapse-workspace"]').click();
-    const collapsedWs = await ws.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width);
-    expect(collapsedWs).toBeLessThan(40);
+    await expect.poll(() => ws.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width)).toBeLessThan(40);
 
     await launched.page.locator('[data-testid="collapse-inspector"]').click();
-    const collapsedIns = await ins.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width);
-    expect(collapsedIns).toBeLessThan(40);
+    await expect.poll(() => ins.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width)).toBeLessThan(40);
   } finally {
     await teardown(launched);
   }
