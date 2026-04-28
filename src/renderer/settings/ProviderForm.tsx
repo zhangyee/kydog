@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import type { ProviderConfig } from '../../shared/types';
 
 type Props = { initial: ProviderConfig | null; onSave: (cfg: ProviderConfig) => Promise<void> };
@@ -12,7 +12,7 @@ export function ProviderForm({ initial, onSave }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true); setError(null);
     try {
