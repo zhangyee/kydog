@@ -40,6 +40,11 @@ function setupEventBridge(): void {
   window.kydog.on('run.started', (p) => {
     useRunsStore.getState().setRun(p.threadId, { status: 'running', runId: p.runId });
   });
+  window.kydog.on('run.thinking_delta', (p) => {
+    const buf = useRunsStore.getState().bufferByMessage[p.messageId];
+    if (!buf) useRunsStore.getState().startMessageBuffer(p.threadId, p.messageId);
+    useRunsStore.getState().appendThinking(p.messageId, p.delta);
+  });
   window.kydog.on('run.message_delta', (p) => {
     const buf = useRunsStore.getState().bufferByMessage[p.messageId];
     if (!buf) useRunsStore.getState().startMessageBuffer(p.threadId, p.messageId);

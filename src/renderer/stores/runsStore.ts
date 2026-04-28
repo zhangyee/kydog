@@ -12,6 +12,7 @@ type RunsState = {
   setRun: (threadId: string, state: RunUiState) => void;
   startMessageBuffer: (threadId: string, messageId: string) => void;
   appendDelta: (messageId: string, delta: string) => void;
+  appendThinking: (messageId: string, delta: string) => void;
   addToolCall: (messageId: string, toolCallId: string, name: string, command?: string) => void;
   appendToolChunk: (messageId: string, toolCallId: string, stream: 'stdout' | 'stderr', chunk: string) => void;
   finalizeToolCall: (messageId: string, toolCallId: string, status: 'ok' | 'failed', exitCode?: number) => void;
@@ -33,6 +34,16 @@ export const useRunsStore = create<RunsState>((set, get) => ({
       const last = blocks[blocks.length - 1];
       if (last && last.kind === 'text') blocks[blocks.length - 1] = { kind: 'text', text: last.text + delta };
       else blocks.push({ kind: 'text', text: delta });
+      return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+    }),
+  appendThinking: (messageId, delta) =>
+    set((s) => {
+      const buf = s.bufferByMessage[messageId];
+      if (!buf) return {};
+      const blocks = [...buf.blocks];
+      const last = blocks[blocks.length - 1];
+      if (last && last.kind === 'thinking') blocks[blocks.length - 1] = { kind: 'thinking', text: last.text + delta };
+      else blocks.push({ kind: 'thinking', text: delta });
       return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
     }),
   addToolCall: (messageId, toolCallId, name, command) =>
