@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { atomicWrite } from './atomicWrite';
 import * as paths from './paths';
 import type { SettingsFile } from '../../shared/types';
+import { logger } from '../log';
 
 export function defaultSettings(): SettingsFile {
   return {
@@ -16,8 +17,10 @@ export async function loadSettings(): Promise<SettingsFile> {
     const raw = await fs.readFile(paths.SETTINGS_FILE, 'utf8');
     const parsed = JSON.parse(raw) as SettingsFile;
     if (parsed && parsed.schemaVersion === 1 && parsed.ui && parsed.llm) return parsed;
+    logger.warn('persist.settingsFile', 'load failed; returning defaults', { reason: 'shape mismatch' });
     return defaultSettings();
-  } catch {
+  } catch (err) {
+    logger.warn('persist.settingsFile', 'load failed; returning defaults', { err: String(err) });
     return defaultSettings();
   }
 }

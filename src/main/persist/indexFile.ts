@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { atomicWrite } from './atomicWrite';
 import * as paths from './paths';
 import type { IndexFile } from '../../shared/types';
+import { logger } from '../log';
 
 export function defaultIndex(): IndexFile {
   return { schemaVersion: 1, projects: [], threads: [] };
@@ -14,8 +15,10 @@ export async function loadIndex(): Promise<IndexFile> {
     if (parsed && parsed.schemaVersion === 1 && Array.isArray(parsed.projects) && Array.isArray(parsed.threads)) {
       return parsed;
     }
+    logger.warn('persist.indexFile', 'load failed; returning defaults', { reason: 'shape mismatch' });
     return defaultIndex();
-  } catch {
+  } catch (err) {
+    logger.warn('persist.indexFile', 'load failed; returning defaults', { err: String(err) });
     return defaultIndex();
   }
 }
