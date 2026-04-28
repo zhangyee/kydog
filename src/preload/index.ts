@@ -6,8 +6,11 @@ import {
 } from '../shared/protocol';
 
 const bridge = {
-  async invoke<M extends RpcMethod>(method: M, args: RpcArgs<M>): Promise<RpcResult<M>> {
-    const r = await ipcRenderer.invoke(RPC_CHANNEL, { method, args }) as RpcResponse<M>;
+  async invoke<M extends RpcMethod>(
+    method: M,
+    ...args: RpcArgs<M> extends undefined ? [] : [RpcArgs<M>]
+  ): Promise<RpcResult<M>> {
+    const r = await ipcRenderer.invoke(RPC_CHANNEL, { method, args: args[0] }) as RpcResponse<M>;
     if (!r.ok) {
       const e = new Error(r.error.message);
       (e as Error & { code?: string }).code = r.error.code;

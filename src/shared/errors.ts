@@ -9,6 +9,7 @@ export type KydogErrorCode =
   | 'agent.aborted'
   | 'fs.read_failed'
   | 'fs.write_failed'
+  | 'not_implemented'
   | 'unknown';
 
 export class KydogError extends Error {
@@ -28,4 +29,9 @@ export function serializeError(err: unknown): SerializedError {
   if (err instanceof KydogError) return { code: err.code, message: err.message };
   if (err instanceof Error) return { code: 'unknown', message: err.message };
   return { code: 'unknown', message: String(err) };
+}
+
+export interface RpcError extends Error { readonly code: KydogErrorCode }
+export function isRpcError(e: unknown): e is RpcError {
+  return e instanceof Error && typeof (e as { code?: unknown }).code === 'string';
 }

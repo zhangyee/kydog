@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -48,6 +48,7 @@ app.on('ready', async () => {
     logger.info('app', 'ready');
   } catch (err) {
     logger.error('app', 'startup failed', { err: String(err) });
+    dialog.showErrorBox('KyDog failed to start', String(err));
     app.quit();
   }
 });

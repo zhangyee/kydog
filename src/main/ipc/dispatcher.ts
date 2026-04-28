@@ -12,9 +12,17 @@ export function registerHandler<M extends RpcMethod>(method: M, handler: Handler
   handlers[method] = handler as HandlerMap[M];
 }
 
+export function _clearHandlersForTesting(): void {
+  for (const key of Object.keys(handlers) as RpcMethod[]) delete handlers[key];
+}
+
 export function installDispatcher(): void {
-  ipcMain.handle(RPC_CHANNEL, async (evt, payload: { method: RpcMethod; args: unknown }): Promise<RpcResponse<RpcMethod>> => {
-    const { method, args } = payload;
+  ipcMain.handle(RPC_CHANNEL, async (evt, raw): Promise<RpcResponse<RpcMethod>> => {
+    if (!raw || typeof raw !== 'object' || typeof (raw as { method?: unknown }).method !== 'string') {
+      logger.error('ipc', 'malformed payload', { raw: typeof raw });
+      return { ok: false, error: { code: 'unknown', message: 'malformed RPC payload' } };
+    }
+    const { method, args } = raw as { method: RpcMethod; args: unknown };
     const handler = handlers[method] as Handler<RpcMethod> | undefined;
     if (!handler) {
       logger.error('ipc', 'no handler', { method });
