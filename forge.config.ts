@@ -26,7 +26,9 @@ const config: ForgeConfig = {
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
-      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+      // EmbeddedAsarIntegrityValidation requires macOS code signing to work.
+      // A2 ships unsigned dev builds; re-enable when notarization lands (B').
+      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: false,
       [FuseV1Options.OnlyLoadAppFromAsar]: true,
       [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: false,
       [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,

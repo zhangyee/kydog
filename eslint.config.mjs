@@ -6,7 +6,7 @@ import globals from 'globals';
 /** @type {import('eslint').Linter.Config[]} */
 export default [
   {
-    ignores: ['node_modules/**', 'dist/**', 'out/**', '.vite/**', 'docs/**'],
+    ignores: ['node_modules/**', 'dist/**', 'out/**', '.vite/**', 'docs/**', 'main.js'],
   },
   js.configs.recommended,
   {
