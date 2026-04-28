@@ -11,7 +11,7 @@ export function TitleBar({ title = 'KyDog · 科研狗' }: Props) {
         WebkitAppRegion: 'drag',
         background: 'linear-gradient(to bottom, var(--color-titlebar-bg-from), var(--color-titlebar-bg-to))',
         borderBottom: '0.5px solid var(--color-ink-hair)',
-        paddingLeft: 80,
+        paddingLeft: window.kydog?.platform === 'darwin' ? 80 : 12,
         paddingRight: 12,
       } as CSSProperties}
     >
