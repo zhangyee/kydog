@@ -2,7 +2,6 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { InspectorHeader } from './InspectorHeader';
 import { FileTree } from './FileTree';
-import { CollapseButton } from '../workspace/CollapseButton';
 
 export function InspectorPanel() {
   const collapsed = useUiStore((s) => s.inspectorCollapsed);
@@ -13,9 +12,15 @@ export function InspectorPanel() {
   });
   if (collapsed) {
     return (
-      <div className="h-full flex flex-col items-center pt-2">
-        <CollapseButton target="inspector" />
-      </div>
+      <button
+        type="button"
+        data-testid="collapse-inspector"
+        aria-label="展开 inspector"
+        onClick={useUiStore.getState().toggleInspector}
+        className="h-full w-full flex items-start justify-center pt-2 text-xs text-[color:var(--color-ink-soft)] hover:text-[color:var(--color-ink)] hover:bg-[color:var(--color-paper-edge)]/40 cursor-pointer"
+      >
+        ⇤
+      </button>
     );
   }
   return (
