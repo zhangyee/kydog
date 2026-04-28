@@ -1,5 +1,6 @@
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { CollapsedRail } from '../../app/CollapsedRail';
 import { InspectorHeader } from './InspectorHeader';
 import { FileTree } from './FileTree';
 
@@ -11,22 +12,7 @@ export function InspectorPanel() {
     return t?.projectPath ?? null;
   });
   if (collapsed) {
-    return (
-      <button
-        type="button"
-        data-testid="collapse-inspector"
-        aria-label="展开 inspector"
-        onClick={useUiStore.getState().toggleInspector}
-        className="h-full w-full flex items-start justify-center pt-4 cursor-pointer hover:bg-[color:var(--color-paper-edge)]/40"
-      >
-        <span
-          className="font-mono text-[10px] tracking-[0.3em] text-[color:var(--color-ink-soft)] hover:text-[color:var(--color-ink)]"
-          style={{ writingMode: 'vertical-rl' }}
-        >
-          INSPECTOR
-        </span>
-      </button>
-    );
+    return <CollapsedRail side="right" label="Inspector" onOpen={useUiStore.getState().toggleInspector} testId="collapse-inspector" />;
   }
   return (
     <div className="h-full flex flex-col">
