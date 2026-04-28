@@ -1,6 +1,18 @@
 import { createRoot } from 'react-dom/client';
+import { StrictMode } from 'react';
+import { AppShell } from './app/AppShell';
+import { bootstrap } from './bootstrap';
+import './types/window';
 import './index.css';
 
 const root = document.getElementById('root');
-if (!root) throw new Error('Renderer mount point #root not found in index.html');
-createRoot(root).render(<h1>KyDog booting…</h1>);
+if (root) {
+  bootstrap().catch((err) => {
+    console.error('bootstrap failed', err);
+  });
+  createRoot(root).render(
+    <StrictMode>
+      <AppShell />
+    </StrictMode>,
+  );
+}
