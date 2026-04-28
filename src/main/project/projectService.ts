@@ -1,29 +1,56 @@
-import { loadIndex as defaultLoad, saveIndex as defaultSave } from '../persist/indexFile';
-import type { Project, FsNode, IndexFile } from '../../shared/types';
-import { logger } from '../log';
+import { dialog } from 'electron';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import { loadIndex, saveIndex } from '../persist/indexFile';
 import { KydogError } from '../../shared/errors';
+import type { Project, FsNode } from '../../shared/types';
 
 export class ProjectService {
-  constructor(
-    private readonly load: () => Promise<IndexFile> = defaultLoad,
-    private readonly save: (idx: IndexFile) => Promise<void> = defaultSave,
-  ) {}
   async list(): Promise<Project[]> {
-    const idx = await this.load();
+    const idx = await loadIndex();
     return idx.projects;
   }
+
   async open(): Promise<Project> {
-    throw new KydogError('not_implemented', 'project.open not implemented in G1; wired in Phase 3');
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'KyDog — 打开 Project 文件夹',
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      throw new KydogError('project.access_denied', '用户取消');
+    }
+    const absPath = path.resolve(result.filePaths[0]);
+    const idx = await loadIndex();
+    let project = idx.projects.find((p) => p.path === absPath);
+    if (!project) {
+      project = { path: absPath, addedAt: new Date().toISOString() };
+      idx.projects.push(project);
+      await saveIndex(idx);
+    }
+    return project;
   }
+
   async close({ projectPath }: { projectPath: string }): Promise<void> {
-    const idx = await this.load();
-    idx.projects = idx.projects.filter(p => p.path !== projectPath);
-    idx.threads = idx.threads.filter(t => t.projectPath !== projectPath);
-    await this.save(idx);
-    logger.info('project.close', 'closed', { projectPath });
+    const idx = await loadIndex();
+    idx.projects = idx.projects.filter((p) => p.path !== projectPath);
+    idx.threads = idx.threads.filter((t) => t.projectPath !== projectPath);
+    await saveIndex(idx);
   }
-  async readDir(_args: { path: string }): Promise<FsNode[]> {
-    throw new KydogError('not_implemented', 'project.readDir not implemented in G1; wired in Phase 3');
+
+  async readDir({ path: dirPath }: { path: string }): Promise<FsNode[]> {
+    try {
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      return entries
+        .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+        .map((e) => ({
+          name: e.name,
+          path: path.join(dirPath, e.name),
+          kind: e.isDirectory() ? 'dir' : 'file' as 'dir' | 'file',
+        }))
+        .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
+    } catch (err) {
+      throw new KydogError('fs.read_failed', `cannot read ${dirPath}`, err);
+    }
   }
 }
 
