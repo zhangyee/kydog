@@ -1,0 +1,11 @@
+@theme {
+  --color-paper: var(--paper);
+  --color-paper-edge: var(--paper-edge);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-accent: var(--accent);
+  --color-marginalia: var(--marginalia);
+  --font-family-serif: var(--font-serif);
+  --font-family-sans: var(--font-sans);
+  --font-family-mono: var(--font-mono);
+}

@@ -1,0 +1,12 @@
+[data-theme="vellum"] {
+  --paper: oklch(0.975 0.008 85);
+  --paper-edge: oklch(0.93 0.014 80);
+  --ink: oklch(0.22 0 0);
+  --ink-soft: oklch(0.45 0 0);
+  --accent: oklch(0.55 0.16 28);
+  --marginalia: oklch(0.42 0.10 250);
+  --grain-opacity: 0.03;
+  --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
