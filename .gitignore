@@ -94,3 +94,6 @@ out/
 # coding-agents draft documents
 docs/superpowers/
 docs/scratch/
+
+test-results/
+playwright-report/
