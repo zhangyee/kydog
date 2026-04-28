@@ -18,17 +18,19 @@ export function AppShell() {
   });
 
   // ⌘N / Ctrl+N → new thread (uses first project; mirrors NewThreadButton)
+  // 注意：聚焦在输入框/textarea/contenteditable 时不拦截，避免 InputPill (Phase 8) 起冲突
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n' && !e.shiftKey) {
-        e.preventDefault();
-        const { projects } = useThreadsStore.getState();
-        if (!projects.length) return;
-        void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
-          useThreadsStore.getState().upsertThread(thread);
-          useThreadsStore.getState().selectThread(thread.id);
-        });
-      }
+      if (!((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n' && !e.shiftKey)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      const { projects } = useThreadsStore.getState();
+      if (!projects.length) return;
+      void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
+        useThreadsStore.getState().upsertThread(thread);
+        useThreadsStore.getState().selectThread(thread.id);
+      });
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
