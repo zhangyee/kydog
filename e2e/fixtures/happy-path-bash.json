@@ -1,0 +1,13 @@
+{
+  "events": [
+    { "after_ms": 10, "type": "agent_start" },
+    { "after_ms": 5, "type": "message_start", "messageId": "m1" },
+    { "after_ms": 20, "type": "text_delta", "messageId": "m1", "delta": "我来 ls 看看。" },
+    { "after_ms": 30, "type": "tool_start", "toolCallId": "t1", "name": "bash", "command": "ls" },
+    { "after_ms": 40, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "README.md\nsrc\n" },
+    { "after_ms": 10, "type": "tool_end", "toolCallId": "t1", "status": "ok", "exitCode": 0 },
+    { "after_ms": 30, "type": "text_delta", "messageId": "m1", "delta": "目录里有 README 和 src。" },
+    { "after_ms": 10, "type": "message_end", "messageId": "m1" },
+    { "after_ms": 10, "type": "agent_end", "reason": "completed" }
+  ]
+}
