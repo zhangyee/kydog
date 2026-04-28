@@ -3,6 +3,7 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { MessageList } from './MessageList';
 import { InputPill } from './InputPill';
 import { NewThreadEmptyState } from './NewThreadEmptyState';
+import { ThreadBreadcrumb } from './ThreadBreadcrumb';
 
 export function ThreadView({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId]);
@@ -16,14 +17,19 @@ export function ThreadView({ threadId }: { threadId: string }) {
     });
   }, [threadId, messages, initHistory]);
 
-  if (messages === undefined) return <div className="p-6 text-sm text-[color:var(--color-ink-soft)]">加载中…</div>;
+  if (messages === undefined) {
+    return <div className="p-6 text-sm" style={{ color: 'var(--color-ink-soft)' }}>加载中…</div>;
+  }
 
   return (
     <div className="h-full flex flex-col">
-      {messages.length === 0
-        ? <NewThreadEmptyState onPickCard={setPrefill} />
-        : <MessageList threadId={threadId} />}
-      <InputPill threadId={threadId} key={prefill /* simplistic prefill: remount on pick */} />
+      <ThreadBreadcrumb threadId={threadId} />
+      <div className="flex-1 min-h-0 flex flex-col">
+        {messages.length === 0
+          ? <NewThreadEmptyState onPickCard={setPrefill} />
+          : <MessageList threadId={threadId} />}
+        <InputPill threadId={threadId} key={prefill /* simplistic prefill: remount on pick */} />
+      </div>
     </div>
   );
 }
