@@ -1,14 +1,17 @@
-import { loadIndex } from '../persist/indexFile';
-import type { Thread, Message } from '../../shared/types';
+import { loadIndex as defaultLoad } from '../persist/indexFile';
+import type { Thread, Message, IndexFile } from '../../shared/types';
 import { KydogError } from '../../shared/errors';
 
 export class ThreadService {
+  constructor(
+    private readonly load: () => Promise<IndexFile> = defaultLoad,
+  ) {}
   async list({ projectPath }: { projectPath: string }): Promise<Thread[]> {
-    const idx = await loadIndex();
+    const idx = await this.load();
     return idx.threads.filter(t => t.projectPath === projectPath);
   }
   async listAll(): Promise<Thread[]> {
-    const idx = await loadIndex();
+    const idx = await this.load();
     return idx.threads;
   }
   async create(_args: { projectPath: string; title?: string }): Promise<Thread> {
