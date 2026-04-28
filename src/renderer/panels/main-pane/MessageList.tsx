@@ -2,22 +2,35 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
+import { ThreadHeader } from './ThreadHeader';
 
 export function MessageList({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
 
+  // 用户头像名：MVP 先 "Yee"，H' 子项目接 settings
+  const userName = 'Yee';
+
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-4" data-testid="message-list">
-      {messages.map((m) =>
-        m.role === 'user'
-          ? <UserMessage key={m.id} name="Yee" content={m.content} />
-          : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} />,
-      )}
-      {liveBuffers.map(([messageId, buf]) => (
-        <AssistantMessage key={messageId} threadId={threadId} messageId={messageId} blocks={buf.blocks} live />
-      ))}
+    <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="message-list">
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '32px 48px 140px' }}>
+        <ThreadHeader threadId={threadId} />
+        {messages.map((m) =>
+          m.role === 'user'
+            ? <UserMessage key={m.id} name={userName} content={m.content} createdAt={m.createdAt} />
+            : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} createdAt={m.createdAt} />,
+        )}
+        {liveBuffers.map(([messageId, buf]) => (
+          <AssistantMessage
+            key={messageId}
+            threadId={threadId}
+            messageId={messageId}
+            blocks={buf.blocks}
+            live
+          />
+        ))}
+      </div>
     </div>
   );
 }
