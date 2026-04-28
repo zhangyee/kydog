@@ -30,6 +30,7 @@ export type RpcResponse<M extends RpcMethod> =
 export type RuntimeEvent =
   | { topic: 'run.started'; payload: { threadId: string; runId: string } }
   | { topic: 'run.message_delta'; payload: { threadId: string; runId: string; messageId: string; delta: string } }
+  | { topic: 'run.thinking_delta'; payload: { threadId: string; runId: string; messageId: string; delta: string } }
   | { topic: 'run.tool_call_start'; payload: { threadId: string; runId: string; toolCallId: string; name: string; command?: string } }
   | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }

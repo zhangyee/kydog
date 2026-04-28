@@ -92,47 +92,65 @@ class AgentService {
           broadcaster.emit('run.started', { threadId, runId });
           return;
         case 'message_start':
-          bound.activeMessageId = `${threadId}:${(evt as unknown as { messageId: string }).messageId}`;
+          // Synthesize a stable messageId since pi provides no stable per-message id
+          bound.activeMessageId = `${threadId}:${randomUUID()}`;
           return;
         case 'message_update': {
           const sub = (evt as unknown as { assistantMessageEvent?: { type: string; delta?: string } }).assistantMessageEvent;
-          const rawId = (evt as unknown as { messageId?: string }).messageId;
-          const messageId = rawId ? `${threadId}:${rawId}` : bound.activeMessageId;
-          if (sub?.type === 'text_delta' && messageId && sub.delta) {
+          const messageId = bound.activeMessageId;
+          if (!messageId || !sub) return;
+          if (sub.type === 'text_delta' && sub.delta) {
             broadcaster.emit('run.message_delta', { threadId, runId, messageId, delta: sub.delta });
+          } else if (sub.type === 'thinking_delta' && sub.delta) {
+            broadcaster.emit('run.thinking_delta', { threadId, runId, messageId, delta: sub.delta });
           }
           return;
         }
         case 'tool_execution_start': {
-          const e = evt as unknown as { toolCallId: string; toolName: string; input?: { command?: string } };
+          const e = evt as unknown as { toolCallId: string; toolName: string; args?: { command?: string } };
+          const command = typeof e.args?.command === 'string' ? e.args.command : JSON.stringify(e.args ?? {});
           broadcaster.emit('run.tool_call_start', {
-            threadId, runId, toolCallId: e.toolCallId, name: e.toolName, command: e.input?.command,
+            threadId, runId, toolCallId: e.toolCallId, name: e.toolName, command,
           });
           return;
         }
-        case 'tool_execution_update': {
-          const e = evt as unknown as { toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string };
-          broadcaster.emit('run.tool_call_chunk', { threadId, runId, toolCallId: e.toolCallId, stream: e.stream, chunk: e.chunk });
+        case 'tool_execution_update':
+          // Skip updates — full result text is emitted at tool_execution_end to avoid duplication
           return;
-        }
         case 'tool_execution_end': {
-          const e = evt as unknown as { toolCallId: string; isError: boolean; exitCode?: number };
+          const e = evt as unknown as { toolCallId: string; isError: boolean; result: unknown };
+          const chunk = extractToolResultText(e.result);
+          if (chunk) {
+            broadcaster.emit('run.tool_call_chunk', {
+              threadId, runId, toolCallId: e.toolCallId, stream: e.isError ? 'stderr' : 'stdout', chunk,
+            });
+          }
           broadcaster.emit('run.tool_call_end', {
             threadId, runId, toolCallId: e.toolCallId,
-            status: e.isError ? 'failed' : 'ok', exitCode: e.exitCode,
+            status: e.isError ? 'failed' : 'ok',
           });
           return;
         }
-        case 'message_end':
-          broadcaster.emit('run.message_end', { threadId, runId, messageId: `${threadId}:${(evt as unknown as { messageId: string }).messageId}` });
+        case 'message_end': {
+          const messageId = bound.activeMessageId;
+          if (messageId) broadcaster.emit('run.message_end', { threadId, runId, messageId });
+          bound.activeMessageId = null;
           return;
+        }
         case 'agent_end': {
-          const e = evt as unknown as { reason: 'completed' | 'aborted' | 'error'; errorMessage?: string };
-          const endEvt = e.reason === 'error'
-            ? { kind: 'error' as const, message: e.errorMessage ?? 'unknown error' }
-            : { kind: e.reason as 'completed' | 'aborted' };
+          const e = evt as unknown as { messages: Array<{ role?: string; stopReason?: string; errorMessage?: string }> };
+          const last = e.messages[e.messages.length - 1];
+          let reason: 'completed' | 'aborted' | 'error' = 'completed';
+          let errorMessage: string | undefined;
+          if (last?.role === 'assistant') {
+            if (last.stopReason === 'aborted') reason = 'aborted';
+            else if (last.stopReason === 'error') { reason = 'error'; errorMessage = last.errorMessage; }
+          }
+          const endEvt = reason === 'error'
+            ? { kind: 'error' as const, message: errorMessage ?? 'unknown' }
+            : { kind: reason };
           this.runs.set(threadId, transition(this.runs.get(threadId) ?? { status: 'idle' }, endEvt));
-          broadcaster.emit('run.ended', { threadId, runId, reason: e.reason, errorMessage: e.errorMessage });
+          broadcaster.emit('run.ended', { threadId, runId, reason, errorMessage });
           return;
         }
         default:
@@ -140,6 +158,22 @@ class AgentService {
       }
     });
   }
+}
+
+function extractToolResultText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (result && typeof result === 'object') {
+    const content = (result as { content?: unknown }).content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((c): c is { type: string; text?: string } => !!c && typeof c === 'object' && 'type' in c)
+        .filter(c => c.type === 'text')
+        .map(c => c.text ?? '')
+        .join('');
+    }
+    return JSON.stringify(result);
+  }
+  return String(result);
 }
 
 export const agentService = new AgentService();

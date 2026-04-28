@@ -10,6 +10,7 @@ export type Thread = {
 
 export type AssistantBlock =
   | { kind: 'text'; text: string }
+  | { kind: 'thinking'; text: string }
   | {
       kind: 'tool_call';
       id: string;
