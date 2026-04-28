@@ -2,14 +2,21 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const SECRET_KEYS = new Set(['apikey', 'authorization', 'password']);
+const SECRET_KEYS = new Set(['apikey', 'authorization', 'password', 'token', 'secret', 'cookie', 'set-cookie']);
 
-export function redactSecrets(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactSecrets);
+export function redactSecrets(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (value instanceof Uint8Array) return '[Bytes]';
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    return value.map(v => redactSecrets(v, seen));
+  }
   if (value && typeof value === 'object') {
+    if (seen.has(value as object)) return '[Circular]';
+    seen.add(value as object);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SECRET_KEYS.has(k.toLowerCase()) ? '[REDACTED]' : redactSecrets(v);
+      out[k] = SECRET_KEYS.has(k.toLowerCase()) ? '[REDACTED]' : redactSecrets(v, seen);
     }
     return out;
   }
@@ -43,7 +50,6 @@ function emit(level: Level, scope: string, msg: string, ctx?: unknown) {
     msg,
     ...(ctx === undefined ? {} : { ctx: redactSecrets(ctx) }),
   });
-  // eslint-disable-next-line no-console
   console[level === 'debug' ? 'log' : level](line);
   void ensureDir().then(() => fs.appendFile(logFile, line + '\n', 'utf8')).catch(() => {});
 }
