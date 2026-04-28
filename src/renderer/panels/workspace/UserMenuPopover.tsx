@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { ThemeName } from '../../../shared/types';
@@ -22,6 +22,16 @@ export function UserMenuPopover() {
   // 语言 / 字体 / 字号：本阶段仅本地 state；H' 子项目接持久化
   const [locale, setLocale] = useState<'zh' | 'en'>('zh');
   const [fontSize, setFontSize] = useState(15);
+
+  // Esc 关闭菜单（键盘可访问性）
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') useUiStore.setState({ userMenuOpen: false });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
 
   if (!open) return null;
   const themeMeta = SWATCHES.find(s => s.name === theme);
