@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { FsNode } from '../../shared/types';
+import type { FsNode, ThemeName } from '../../shared/types';
 
 type UiState = {
-  theme: 'vellum' | 'midnight';
+  theme: ThemeName;
   workspaceCollapsed: boolean;
   inspectorCollapsed: boolean;
   settingsModalOpen: boolean;
@@ -10,7 +10,7 @@ type UiState = {
   userMenuOpen: boolean;
   expandedDirs: Set<string>;
   dirCache: Record<string, FsNode[]>;
-  setTheme: (t: 'vellum' | 'midnight') => void;
+  setTheme: (t: ThemeName) => void;
   toggleWorkspace: () => void;
   toggleInspector: () => void;
   openSettings: (closeable?: boolean) => void;

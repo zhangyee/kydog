@@ -1,8 +1,9 @@
 @import "tailwindcss";
 @import "./theme/tokens.css";
 @import "./theme/vellum.css";
+@import "./theme/porcelain.css";
+@import "./theme/sepia.css";
 @import "./theme/midnight.css";
+@import "./theme/lilac.css";
 @import "./theme/globals.css";
-
-/* Google Fonts — A2 simplification; F' will switch to local. */
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@400;500&display=swap");

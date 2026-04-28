@@ -35,10 +35,12 @@ export type ProviderConfig = {
   model: string;
 };
 
+export type ThemeName = 'vellum' | 'porcelain' | 'sepia' | 'midnight' | 'lilac';
+
 export type SettingsFile = {
   schemaVersion: 1;
   ui: {
-    theme: 'vellum' | 'midnight';
+    theme: ThemeName;
     locale: 'zh';
     workspaceCollapsed: boolean;
     inspectorCollapsed: boolean;
