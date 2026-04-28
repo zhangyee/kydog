@@ -1,0 +1,24 @@
+[data-theme="porcelain"] {
+  --paper: #ffffff;
+  --paper-deep: oklch(0.975 0.002 260);
+  --paper-edge: oklch(0.955 0.003 260);
+  --ink: oklch(0.20 0.010 260);
+  --ink-soft: oklch(0.42 0.006 260);
+  --ink-faint: oklch(0.60 0.004 260);
+  --ink-hair: oklch(0.89 0.004 260);
+  --ink-hair-soft: oklch(0.94 0.003 260);
+  --accent: oklch(0.42 0.10 250);
+  --accent-soft: oklch(0.42 0.10 250 / 0.12);
+  --marginalia: oklch(0.42 0.10 250);
+  --moss: oklch(0.50 0.10 150);
+  --amber: oklch(0.65 0.10 75);
+  --grain-color: transparent;
+  --grain-size: 3px;
+  --grain-opacity: 0;
+  --titlebar-bg-from: oklch(0.97 0.002 260);
+  --titlebar-bg-to: oklch(0.99 0.001 260);
+  --titlebar-text: oklch(0.38 0.005 260);
+  --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
