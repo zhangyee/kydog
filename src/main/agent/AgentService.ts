@@ -1,7 +1,5 @@
-export type RunState =
-  | { status: 'idle' }
-  | { status: 'running'; runId: string; abortRequested: boolean }
-  | { status: 'error'; error: string };
+import type { RunState } from './runState';
+export type { RunState } from './runState';
 
 export class AgentService {
   private sessions = new Map<string, unknown>();  // typed as AgentSession in Phase 2 when pi SDK is wired
