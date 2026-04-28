@@ -26,12 +26,16 @@ const config: ForgeConfig = {
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
-      // EmbeddedAsarIntegrityValidation requires macOS code signing to work.
-      // A2 ships unsigned dev builds; re-enable when notarization lands (B').
+      // EmbeddedAsarIntegrityValidation + OnlyLoadAppFromAsar both require macOS
+      // code signing to function correctly. On unsigned dev builds they cause
+      // ERR_FILE_NOT_FOUND when loading any asar-internal resource. Re-enable
+      // both when notarization lands (B').
       [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: false,
-      [FuseV1Options.OnlyLoadAppFromAsar]: true,
+      [FuseV1Options.OnlyLoadAppFromAsar]: false,
       [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: false,
-      [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
+      // Packaged renderer is loaded via `mainWindow.loadFile(...)`, so keep
+      // the file protocol privileges that Electron expects for `file://`.
+      [FuseV1Options.GrantFileProtocolExtraPrivileges]: true,
       [FuseV1Options.WasmTrapHandlers]: false,
     }),
   ],
