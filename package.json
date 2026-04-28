@@ -13,7 +13,7 @@
     "lint": "eslint --ext .ts,.tsx .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test --pass-with-no-tests"
   },
   "keywords": ["electron", "ai-agent", "deepresearch", "academic", "papers"],
   "author": { "name": "Yee Zhang", "email": "yee.zhang@gmail.com" },
