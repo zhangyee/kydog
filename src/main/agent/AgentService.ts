@@ -92,11 +92,12 @@ class AgentService {
           broadcaster.emit('run.started', { threadId, runId });
           return;
         case 'message_start':
-          bound.activeMessageId = (evt as unknown as { messageId: string }).messageId;
+          bound.activeMessageId = `${threadId}:${(evt as unknown as { messageId: string }).messageId}`;
           return;
         case 'message_update': {
           const sub = (evt as unknown as { assistantMessageEvent?: { type: string; delta?: string } }).assistantMessageEvent;
-          const messageId = (evt as unknown as { messageId?: string }).messageId ?? bound.activeMessageId;
+          const rawId = (evt as unknown as { messageId?: string }).messageId;
+          const messageId = rawId ? `${threadId}:${rawId}` : bound.activeMessageId;
           if (sub?.type === 'text_delta' && messageId && sub.delta) {
             broadcaster.emit('run.message_delta', { threadId, runId, messageId, delta: sub.delta });
           }
@@ -123,7 +124,7 @@ class AgentService {
           return;
         }
         case 'message_end':
-          broadcaster.emit('run.message_end', { threadId, runId, messageId: (evt as unknown as { messageId: string }).messageId });
+          broadcaster.emit('run.message_end', { threadId, runId, messageId: `${threadId}:${(evt as unknown as { messageId: string }).messageId}` });
           return;
         case 'agent_end': {
           const e = evt as unknown as { reason: 'completed' | 'aborted' | 'error'; errorMessage?: string };
