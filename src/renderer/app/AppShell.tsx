@@ -13,7 +13,7 @@ export function AppShell() {
     if (!s.currentThreadId) return undefined;
     const t = Object.values(s.threadsByProject).flat().find(x => x.id === s.currentThreadId);
     if (!t) return undefined;
-    return `${t.title} · ${t.projectPath.split('/').pop() ?? ''}`;
+    return `${t.title} · ${t.projectPath.split(/[\\/]/).pop() ?? ''}`;
   });
   return (
     <div className="h-full flex flex-col">
