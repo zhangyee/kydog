@@ -1,0 +1,24 @@
+[data-theme="lilac"] {
+  --paper: #eeeaf6;
+  --paper-deep: #e2dcef;
+  --paper-edge: #d4cde5;
+  --ink: #574266;
+  --ink-soft: #4a4266;
+  --ink-faint: #8078a0;
+  --ink-hair: #c3b9da;
+  --ink-hair-soft: #d0c8e0;
+  --accent: #8b7ad0;
+  --accent-soft: rgba(176,164,227,0.35);
+  --marginalia: #425066;
+  --moss: oklch(0.50 0.08 150);
+  --amber: oklch(0.62 0.10 75);
+  --grain-color: rgba(87,66,102,0.035);
+  --grain-size: 3px;
+  --grain-opacity: 1;
+  --titlebar-bg-from: #d8d4ec;
+  --titlebar-bg-to: #e8e5f3;
+  --titlebar-text: #574266;
+  --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
