@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { NavPill } from './NavPill';
@@ -21,11 +21,14 @@ export function ProjectsTree() {
     if (t && !expanded.has(t.projectPath)) toggleProject(t.projectPath);
   }, [currentThreadId, threadsByProject, expanded, toggleProject]);
 
-  // 启动 / 新增 project 时默认展开（让 thread 列表立即可见；用户可手动折叠）
-  // 注意：依赖只放 projects，避免用户手动折叠后被 expanded 变化重新触发展开
+  // 启动 / 新增 project 时默认展开一次（让 thread 列表立即可见；之后用户拥有折叠状态）
+  // 用 ref 记录已经处理过的 project path，避免 projects 引用变化触发的 effect 重新展开用户手动折叠的项
+  const seenRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const cur = useUiStore.getState().expandedProjects;
     for (const p of projects) {
+      if (seenRef.current.has(p.path)) continue;
+      seenRef.current.add(p.path);
+      const cur = useUiStore.getState().expandedProjects;
       if (!cur.has(p.path)) toggleProject(p.path);
     }
   }, [projects, toggleProject]);
