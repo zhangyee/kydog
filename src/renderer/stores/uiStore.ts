@@ -9,6 +9,7 @@ type UiState = {
   settingsModalCloseable: boolean;
   userMenuOpen: boolean;
   expandedDirs: Set<string>;
+  expandedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
   setTheme: (t: ThemeName) => void;
   toggleWorkspace: () => void;
@@ -18,6 +19,7 @@ type UiState = {
   toggleUserMenu: () => void;
   setDir: (path: string, nodes: FsNode[]) => void;
   toggleDir: (path: string) => void;
+  toggleProject: (path: string) => void;
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -28,6 +30,7 @@ export const useUiStore = create<UiState>((set) => ({
   settingsModalCloseable: true,
   userMenuOpen: false,
   expandedDirs: new Set(),
+  expandedProjects: new Set<string>(),
   dirCache: {},
   setTheme: (t) => set({ theme: t }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
@@ -40,5 +43,10 @@ export const useUiStore = create<UiState>((set) => ({
     const next = new Set(s.expandedDirs);
     if (next.has(path)) next.delete(path); else next.add(path);
     return { expandedDirs: next };
+  }),
+  toggleProject: (path) => set((s) => {
+    const next = new Set(s.expandedProjects);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    return { expandedProjects: next };
   }),
 }));

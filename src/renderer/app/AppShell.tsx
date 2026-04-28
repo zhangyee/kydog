@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ThemeApplier } from './ThemeApplier';
 import { TitleBar } from './TitleBar';
 import { ThreeColumnLayout } from './ThreeColumnLayout';
@@ -15,6 +16,24 @@ export function AppShell() {
     if (!t) return undefined;
     return `${t.title} · ${t.projectPath.split(/[\\/]/).pop() ?? ''}`;
   });
+
+  // ⌘N / Ctrl+N → new thread (uses first project; mirrors NewThreadButton)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n' && !e.shiftKey) {
+        e.preventDefault();
+        const { projects } = useThreadsStore.getState();
+        if (!projects.length) return;
+        void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
+          useThreadsStore.getState().upsertThread(thread);
+          useThreadsStore.getState().selectThread(thread.id);
+        });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
     <div className="h-full flex flex-col">
       <ThemeApplier />

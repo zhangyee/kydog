@@ -10,13 +10,22 @@ export function OpenFolderButton() {
     }
   };
   return (
-    <button
-      type="button"
-      data-testid="open-folder"
-      className="m-3 text-sm font-sans px-2 py-1 border rounded hover:bg-[color:var(--color-paper-edge)]"
-      onClick={onOpen}
-    >
-      ＋ 打开 Project
-    </button>
+    <div style={{ padding: '8px 16px 0' }}>
+      <button
+        type="button"
+        data-testid="open-folder"
+        onClick={onOpen}
+        className="w-full flex items-center gap-2"
+        style={{
+          padding: '6px 10px',
+          background: 'transparent',
+          border: '0.5px dashed var(--color-ink-hair)',
+          borderRadius: 4, fontSize: 12, color: 'var(--color-ink-soft)',
+        }}
+      >
+        <span style={{ fontFamily: 'var(--font-serif)', fontSize: 14 }}>＋</span>
+        <span>打开 Project</span>
+      </button>
+    </div>
   );
 }
