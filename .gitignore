@@ -97,3 +97,6 @@ docs/scratch/
 
 test-results/
 playwright-report/
+
+# Stray bundled main.js sometimes dropped at repo root by electron-forge make
+/main.js
