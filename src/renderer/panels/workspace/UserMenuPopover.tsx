@@ -1,13 +1,7 @@
 import { useUiStore } from '../../stores/uiStore';
 import type { ThemeName } from '../../../shared/types';
 
-const SWATCHES: Array<{ name: ThemeName; bg: string }> = [
-  { name: 'vellum',    bg: 'oklch(0.975 0.008 85)' },
-  { name: 'porcelain', bg: '#ffffff' },
-  { name: 'sepia',     bg: 'oklch(0.94 0.024 78)' },
-  { name: 'midnight',  bg: 'oklch(0.24 0.018 248)' },
-  { name: 'lilac',     bg: '#eeeaf6' },
-];
+const SWATCH_NAMES: ThemeName[] = ['vellum', 'porcelain', 'sepia', 'midnight', 'lilac'];
 
 export function UserMenuPopover() {
   const open = useUiStore((s) => s.userMenuOpen);
@@ -32,14 +26,15 @@ export function UserMenuPopover() {
       </button>
       <div className="flex items-center gap-2 px-2 py-1.5">
         <span className="text-[color:var(--color-ink-soft)]">主题</span>
-        {SWATCHES.map(({ name, bg }) => (
+        {SWATCH_NAMES.map((name) => (
           <button
             key={name}
             data-testid={`theme-${name}`}
             aria-pressed={theme === name}
             onClick={() => setTheme(name)}
+            data-theme={name}
             className={`w-4 h-4 rounded-full border ${theme === name ? 'ring-2 ring-[color:var(--color-accent)]' : ''}`}
-            style={{ background: bg }}
+            style={{ background: 'var(--paper)' }}
           />
         ))}
       </div>
