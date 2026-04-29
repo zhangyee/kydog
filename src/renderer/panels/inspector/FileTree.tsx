@@ -2,11 +2,11 @@ import { useEffect } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import type { FsNode } from '../../../shared/types';
 
-type RowProps = { node: FsNode; depth: number; last?: boolean };
+type RowProps = { node: FsNode; depth: number; ancestorsLast: boolean[]; last?: boolean };
 
 const isReadme = (name: string) => /^readme(\..+)?$/i.test(name);
 
-function Row({ node, depth, last }: RowProps) {
+function Row({ node, depth, ancestorsLast, last }: RowProps) {
   const expanded = useUiStore((s) => s.expandedDirs.has(node.path));
   const cache = useUiStore((s) => s.dirCache[node.path]);
   const toggleDir = useUiStore((s) => s.toggleDir);
@@ -33,29 +33,31 @@ function Row({ node, depth, last }: RowProps) {
           fontFamily: 'var(--font-sans)', fontWeight: 400, fontSize: 12, position: 'relative',
         }}
       >
-        {Array.from({ length: depth }).map((_, i) => (
-          <span
-            key={i}
-            className="self-stretch shrink-0 relative"
-            style={{ width: 14 }}
-          >
-            <span
-              style={{
-                position: 'absolute', left: 6, top: 0,
-                bottom: i === depth - 1 && last ? '50%' : 0,
-                width: 1, background: 'var(--color-ink-hair)',
-              }}
-            />
-            {i === depth - 1 && (
-              <span
-                style={{
-                  position: 'absolute', left: 6, top: '50%',
-                  width: 7, height: 1, background: 'var(--color-ink-hair)',
-                }}
-              />
-            )}
-          </span>
-        ))}
+        {Array.from({ length: depth }).map((_, i) => {
+          const isLastCol = i === depth - 1;
+          const ancestorTerminated = ancestorsLast[i];
+          return (
+            <span key={i} className="self-stretch shrink-0 relative" style={{ width: 14 }}>
+              {!ancestorTerminated && (
+                <span
+                  style={{
+                    position: 'absolute', left: 6, top: 0,
+                    bottom: isLastCol && last ? '50%' : 0,
+                    width: 1, background: 'var(--color-ink-hair)',
+                  }}
+                />
+              )}
+              {isLastCol && (
+                <span
+                  style={{
+                    position: 'absolute', left: 6, top: '50%',
+                    width: 7, height: 1, background: 'var(--color-ink-hair)',
+                  }}
+                />
+              )}
+            </span>
+          );
+        })}
         <span
           className="font-mono shrink-0 text-center"
           style={{ width: 12, fontSize: 10, color: 'var(--color-ink-faint)' }}
@@ -78,7 +80,13 @@ function Row({ node, depth, last }: RowProps) {
       {isDir && expanded && cache && (
         <div>
           {cache.map((child, i) => (
-            <Row key={child.path} node={child} depth={depth + 1} last={i === cache.length - 1} />
+            <Row
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              ancestorsLast={[...ancestorsLast, !!last]}
+              last={i === cache.length - 1}
+            />
           ))}
         </div>
       )}
@@ -100,7 +108,15 @@ export function FileTree({ projectPath }: { projectPath: string }) {
   }
   return (
     <div className="ky-scroll overflow-auto h-full" data-testid="file-tree" style={{ padding: '0 8px' }}>
-      {cache.map((n, i) => <Row key={n.path} node={n} depth={0} last={i === cache.length - 1} />)}
+      {cache.map((n, i) => (
+        <Row
+          key={n.path}
+          node={n}
+          depth={0}
+          ancestorsLast={[]}
+          last={i === cache.length - 1}
+        />
+      ))}
     </div>
   );
 }
