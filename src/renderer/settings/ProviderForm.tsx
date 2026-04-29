@@ -4,11 +4,12 @@ import type { ProviderConfig } from '../../shared/types';
 type Props = { initial: ProviderConfig | null; onSave: (cfg: ProviderConfig) => Promise<void> };
 
 const inputStyle: CSSProperties = {
-  background: 'var(--color-paper-deep)',
-  border: '0.5px solid var(--color-ink-hair-soft)',
-  borderRadius: 3, padding: '6px 10px',
+  background: 'transparent',
+  border: 'none',
+  borderBottom: '0.5px solid var(--color-ink-hair-soft)',
+  padding: '7px 0',
   fontFamily: 'var(--font-mono)', fontSize: 11.5,
-  color: 'var(--color-ink-soft)',
+  color: 'var(--color-ink)',
   width: '100%',
 };
 
@@ -46,19 +47,19 @@ export function ProviderForm({ initial, onSave }: Props) {
     <form
       onSubmit={submit}
       className="grid"
-      style={{ rowGap: 14, padding: '4px 16px', background: 'var(--color-paper-deep)', border: '0.5px solid var(--color-ink-hair)', borderRadius: 4 }}
+      style={{ rowGap: 0 }}
     >
-      <div style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', gap: 24, padding: '16px 0', borderTop: '0.5px solid var(--color-ink-hair-soft)', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
         <div style={{ width: 180, flexShrink: 0 }}>
           <div style={labelStyle}>显示名</div>
-          <div style={hintStyle}>左栏 UserBar 与 InputPill 模型 badge 显示</div>
+          <div style={hintStyle}>设置页与 InputPill 模型 badge 显示</div>
         </div>
         <div className="flex-1">
           <input data-testid="provider-name" value={name} onChange={(e) => setName(e.target.value)} required style={inputStyle} />
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', gap: 24, padding: '16px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
         <div style={{ width: 180, flexShrink: 0 }}>
           <div style={labelStyle}>Base URL</div>
           <div style={hintStyle}>OpenAI-compatible 接口前缀</div>
@@ -68,7 +69,7 @@ export function ProviderForm({ initial, onSave }: Props) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', gap: 24, padding: '16px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
         <div style={{ width: 180, flexShrink: 0 }}>
           <div style={labelStyle}>API Key</div>
           <div style={hintStyle}>明文存于 ~/.kydog/kydog.json，不云同步、不入 Git</div>
@@ -87,16 +88,15 @@ export function ProviderForm({ initial, onSave }: Props) {
             onClick={() => setShowKey((v) => !v)}
             className="font-sans"
             style={{
-              padding: '4px 10px', fontSize: 11,
-              border: '0.5px solid var(--color-ink-hair)',
-              borderRadius: 3, color: 'var(--color-ink-soft)',
-              background: 'var(--color-paper)',
+              padding: '4px 0', fontSize: 11,
+              color: 'var(--color-ink-soft)',
+              background: 'transparent',
             }}
           >{showKey ? '隐藏' : '显示'}</button>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 24, padding: '14px 0', alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', gap: 24, padding: '16px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
         <div style={{ width: 180, flexShrink: 0 }}>
           <div style={labelStyle}>模型</div>
           <div style={hintStyle}>每次 thread.send 用该模型</div>
@@ -110,15 +110,20 @@ export function ProviderForm({ initial, onSave }: Props) {
         <div className="font-serif italic" style={{ color: 'var(--color-accent)', padding: '8px 0' }}>{error}</div>
       )}
 
-      <div className="flex justify-end" style={{ padding: '8px 0 14px' }}>
+      <div className="flex justify-end" style={{ padding: '16px 0 0' }}>
         <button
           type="submit"
           data-testid="settings-save"
           disabled={saving}
           className="font-sans disabled:opacity-50"
           style={{
-            padding: '6px 16px', borderRadius: 3, fontSize: 12, fontWeight: 500,
-            background: 'var(--color-accent)', color: 'var(--color-paper)',
+            padding: '6px 16px',
+            borderRadius: 999,
+            fontSize: 12,
+            fontWeight: 500,
+            background: 'var(--color-paper-deep)',
+            color: 'var(--color-ink)',
+            border: '0.5px solid var(--color-ink-hair)',
           }}
         >{saving ? '保存中…' : '保存'}</button>
       </div>

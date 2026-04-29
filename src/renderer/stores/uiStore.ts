@@ -1,15 +1,19 @@
 import { create } from 'zustand';
 import type { FsNode, ThemeName } from '../../shared/types';
 
+export type SettingsTabId = 'provider' | 'donate' | 'about';
+type CenterTabKind = 'thread' | 'settings';
+
 type UiState = {
   theme: ThemeName;
   workspaceCollapsed: boolean;
   inspectorCollapsed: boolean;
   workspaceWidth: number;
   inspectorWidth: number;
-  settingsModalOpen: boolean;
-  settingsModalCloseable: boolean;
   userMenuOpen: boolean;
+  settingsTabOpen: boolean;
+  settingsTab: SettingsTabId;
+  activeCenterTab: CenterTabKind;
   expandedDirs: Set<string>;
   expandedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
@@ -18,8 +22,9 @@ type UiState = {
   toggleInspector: () => void;
   setWorkspaceWidth: (w: number) => void;
   setInspectorWidth: (w: number) => void;
-  openSettings: (closeable?: boolean) => void;
+  openSettings: (tab?: SettingsTabId) => void;
   closeSettings: () => void;
+  showThreadTab: () => void;
   toggleUserMenu: () => void;
   setDir: (path: string, nodes: FsNode[]) => void;
   toggleDir: (path: string) => void;
@@ -32,9 +37,10 @@ export const useUiStore = create<UiState>((set) => ({
   inspectorCollapsed: false,
   workspaceWidth: 260,
   inspectorWidth: 280,
-  settingsModalOpen: false,
-  settingsModalCloseable: true,
   userMenuOpen: false,
+  settingsTabOpen: false,
+  settingsTab: 'provider',
+  activeCenterTab: 'thread',
   expandedDirs: new Set(),
   expandedProjects: new Set<string>(),
   dirCache: {},
@@ -43,8 +49,14 @@ export const useUiStore = create<UiState>((set) => ({
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
   setWorkspaceWidth: (w) => set({ workspaceWidth: Math.max(0, w) }),
   setInspectorWidth: (w) => set({ inspectorWidth: Math.max(0, w) }),
-  openSettings: (closeable = true) => set({ settingsModalOpen: true, settingsModalCloseable: closeable }),
-  closeSettings: () => set({ settingsModalOpen: false }),
+  openSettings: (tab = 'provider') => set({
+    settingsTabOpen: true,
+    settingsTab: tab,
+    activeCenterTab: 'settings',
+    userMenuOpen: false,
+  }),
+  closeSettings: () => set({ settingsTabOpen: false, activeCenterTab: 'thread' }),
+  showThreadTab: () => set({ activeCenterTab: 'thread' }),
   toggleUserMenu: () => set((s) => ({ userMenuOpen: !s.userMenuOpen })),
   setDir: (path, nodes) => set((s) => ({ dirCache: { ...s.dirCache, [path]: nodes } })),
   toggleDir: (path) => set((s) => {

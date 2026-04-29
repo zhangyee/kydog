@@ -1,7 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { APP_USER_NAME, APP_USER_EMAIL } from '../../shared';
 import type { ThemeName } from '../../../shared/types';
 
 const SWATCHES: Array<{ name: ThemeName; label: string }> = [
@@ -19,28 +18,43 @@ export function UserMenuPopover() {
   const theme = useUiStore((s) => s.theme);
   const openSettings = useUiStore((s) => s.openSettings);
   const provider = useSettingsStore((s) => s.settings?.llm.provider);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // 语言 / 字体 / 字号：本阶段仅本地 state；H' 子项目接持久化
   const [locale, setLocale] = useState<'zh' | 'en'>('zh');
   const [fontSize, setFontSize] = useState(15);
 
-  // Esc 关闭菜单（键盘可访问性）
+  // Esc / 外部点击关闭菜单（键盘与指针可访问性）
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') useUiStore.setState({ userMenuOpen: false });
+      if (e.key === 'Escape') close();
+    };
+    const onClick = (e: MouseEvent) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (panelRef.current?.contains(target)) return;
+      if (target.closest('[data-testid="user-menu-trigger"]')) return;
+      close();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('click', onClick);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('click', onClick);
+    };
   }, [open]);
 
   if (!open) return null;
   const themeMeta = SWATCHES.find(s => s.name === theme);
+  const providerSummary = provider
+    ? `${provider.name} · ${provider.model}`
+    : '配置模型、Base URL 与 API Key';
 
   return (
     <div
+      ref={panelRef}
       data-testid="user-menu"
-      onMouseLeave={close}
       className="absolute font-sans"
       style={{
         left: 8, bottom: 56, width: 248,
@@ -48,57 +62,16 @@ export function UserMenuPopover() {
         border: '0.5px solid var(--color-ink-hair)',
         borderRadius: 5,
         boxShadow: '0 12px 32px rgba(50,35,20,0.18), 0 2px 6px rgba(50,35,20,0.10)',
-        padding: '6px 0', zIndex: 50,
+        padding: '4px 0', zIndex: 50,
       }}
     >
-      {/* 身份卡 */}
-      <div style={{ padding: '8px 14px 10px', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
-        <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--color-ink)' }}>{APP_USER_NAME}</div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-ink-faint)', marginTop: 1 }}>{APP_USER_EMAIL}</div>
-      </div>
-
-      {/* 账户 CTA */}
-      <div style={{ padding: '6px 8px 4px' }}>
-        <button
-          type="button"
-          data-testid="open-settings"
-          onClick={() => { openSettings(true); close(); }}
-          className="flex items-center gap-2.5 w-full text-left cursor-pointer"
-          style={{
-            padding: '9px 10px', background: 'var(--color-paper-deep)',
-            border: '0.5px solid var(--color-ink-hair)', borderRadius: 4,
-            boxShadow: '0 1px 0 var(--color-card-shadow)',
-          }}
-        >
-          <span
-            className="inline-flex items-center justify-center font-serif"
-            style={{
-              width: 18, height: 18, background: 'var(--color-accent)',
-              color: 'var(--color-paper)', borderRadius: 3, fontSize: 11, fontWeight: 600,
-            }}
-          >⌥</span>
-          <span style={{ flex: 1, minWidth: 0 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--color-ink)' }}>账户与模型</span>
-            {provider && (
-              <span
-                className="font-mono"
-                style={{
-                  marginLeft: 6, padding: '1px 5px',
-                  background: 'var(--color-moss)', color: 'var(--color-paper)',
-                  borderRadius: 2, fontSize: 8.5, letterSpacing: 0.6, textTransform: 'uppercase',
-                }}
-              >已连接</span>
-            )}
-            <span
-              className="block font-serif italic"
-              style={{ fontSize: 10.5, color: 'var(--color-ink-soft)', marginTop: 1 }}
-            >
-              {provider ? `${provider.name} · ${provider.model}` : '尚未配置 provider'}
-            </span>
-          </span>
-          <span style={{ color: 'var(--color-accent)', fontFamily: 'var(--font-serif)', fontSize: 14, lineHeight: 1 }}>›</span>
-        </button>
-      </div>
+      <ActionRow
+        label="模型与提供商"
+        summary={providerSummary}
+        badge={provider ? '已配置' : undefined}
+        testId="open-settings"
+        onClick={() => { openSettings('provider'); close(); }}
+      />
 
       <div style={{ height: 1, background: 'var(--color-paper-edge)', margin: '6px 0' }} />
 
@@ -149,15 +122,21 @@ export function UserMenuPopover() {
 
       {/* 字体、字号（visual-only） */}
       <SectionLabel>字体、字号</SectionLabel>
-      <div className="flex items-center gap-2" style={{ padding: '2px 14px 4px' }}>
-        <div
-          className="flex items-center gap-2 flex-1 cursor-pointer"
-          style={{ padding: '4px 8px', background: 'var(--color-paper-deep)', border: '0.5px solid var(--color-ink-hair-soft)', borderRadius: 3, fontSize: 11.5, color: 'var(--color-ink)' }}
+      <div style={{ padding: '2px 14px 4px' }}>
+        <button
+          type="button"
+          className="flex items-center gap-2 w-full cursor-pointer"
+          style={{
+            padding: '6px 0 7px',
+            borderBottom: '0.5px solid var(--color-ink-hair-soft)',
+            fontSize: 12.5,
+            color: 'var(--color-ink)',
+          }}
         >
-          <span className="font-serif italic">Aa</span>
-          <span className="flex-1">思源宋体</span>
-          <span className="font-serif text-[10px]" style={{ color: 'var(--color-ink-faint)' }}>▾</span>
-        </div>
+          <span className="font-serif italic" style={{ color: 'var(--color-ink-soft)' }}>Aa</span>
+          <span className="flex-1 text-left">思源宋体</span>
+          <span className="font-mono text-[10px]" style={{ color: 'var(--color-ink-faint)' }}>▾</span>
+        </button>
       </div>
       <div className="flex items-center gap-2.5" style={{ padding: '2px 14px 8px' }}>
         <span className="font-serif text-[9px]" style={{ color: 'var(--color-ink-faint)' }}>A</span>
@@ -166,14 +145,15 @@ export function UserMenuPopover() {
           onChange={(e) => setFontSize(Number(e.target.value))}
           className="flex-1"
           aria-label="字号"
+          style={{ accentColor: 'var(--color-ink-soft)' }}
         />
         <span className="font-serif text-[14px]" style={{ color: 'var(--color-ink-faint)' }}>A</span>
         <span className="font-mono text-[10px] w-6 text-right" style={{ color: 'var(--color-ink-soft)' }}>{fontSize}</span>
       </div>
 
       <div style={{ height: 1, background: 'var(--color-paper-edge)', margin: '6px 0' }} />
-      <Row label="支持作者" hint="↗" testId="menu-donate" onClick={() => window.open('https://github.com/zhangyee', '_blank')} />
-      <Row label="关于"     hint="↗" testId="menu-about"  onClick={() => window.open('https://github.com/zhangyee/kydog', '_blank')} />
+      <ActionRow label="支持作者" testId="menu-donate" onClick={() => { openSettings('donate'); close(); }} />
+      <ActionRow label="关于" testId="menu-about" onClick={() => { openSettings('about'); close(); }} />
     </div>
   );
 }
@@ -187,17 +167,58 @@ function SectionLabel({ children }: { children: ReactNode }) {
   );
 }
 
-function Row({ label, hint, onClick, testId }: { label: string; hint?: string; onClick?: () => void; testId?: string }) {
+function ActionRow({
+  label,
+  summary,
+  badge,
+  onClick,
+  testId,
+}: {
+  label: string;
+  summary?: string;
+  badge?: string;
+  onClick?: () => void;
+  testId?: string;
+}) {
   return (
     <button
       type="button"
       data-testid={testId}
       onClick={onClick}
       className="flex items-center gap-2.5 w-full text-left cursor-pointer hover:bg-[color:var(--color-paper-edge)]"
-      style={{ padding: '7px 14px', fontSize: 12.5, color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}
+      style={{ padding: '9px 14px', fontSize: 12.5, color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}
     >
-      <span className="flex-1">{label}</span>
-      {hint && <span className="font-mono text-[10px]" style={{ color: 'var(--color-ink-faint)' }}>{hint}</span>}
+      <span className="flex-1 min-w-0">
+        <span style={{ display: 'block' }}>
+          {label}
+          {badge && (
+            <span
+              className="font-mono"
+              style={{
+                marginLeft: 8,
+                padding: '1px 5px',
+                background: 'var(--color-moss)',
+                color: 'var(--color-paper)',
+                borderRadius: 2,
+                fontSize: 8.5,
+                letterSpacing: 0.6,
+                textTransform: 'uppercase',
+              }}
+            >
+              {badge}
+            </span>
+          )}
+        </span>
+        {summary && (
+          <span
+            className="block font-serif italic truncate"
+            style={{ marginTop: 2, fontSize: 10.5, color: 'var(--color-ink-soft)' }}
+          >
+            {summary}
+          </span>
+        )}
+      </span>
+      <span className="font-serif text-[14px]" style={{ color: 'var(--color-ink-faint)' }}>›</span>
     </button>
   );
 }

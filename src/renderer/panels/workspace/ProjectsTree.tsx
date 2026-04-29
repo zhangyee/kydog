@@ -14,6 +14,7 @@ export function ProjectsTree() {
   const remove = useThreadsStore((s) => s.removeThread);
   const expanded = useUiStore((s) => s.expandedProjects);
   const toggleProject = useUiStore((s) => s.toggleProject);
+  const showThreadTab = useUiStore((s) => s.showThreadTab);
   const autoExpandedThreadRef = useRef<string | null>(null);
 
   // 自动展开当前 thread 所在 project
@@ -97,7 +98,10 @@ export function ProjectsTree() {
                       reserveIconSpace
                       label={t.title}
                       selected={currentThreadId === t.id}
-                      onClick={() => select(t.id)}
+                      onClick={() => {
+                        showThreadTab();
+                        select(t.id);
+                      }}
                     />
                     <button
                       type="button"

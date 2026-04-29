@@ -6,11 +6,16 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { WorkspacePanel } from '../panels/workspace/WorkspacePanel';
 import { MainPane } from '../panels/main-pane/MainPane';
 import { InspectorPanel } from '../panels/inspector/InspectorPanel';
-import { SettingsModal } from '../settings/SettingsModal';
 import { useThreadsStore } from '../stores/threadsStore';
+import { useUiStore } from '../stores/uiStore';
+import { SETTINGS_PAGE_LABELS } from '../settings/settingsPages';
 
 export function AppShell() {
+  const activeCenterTab = useUiStore((s) => s.activeCenterTab);
+  const settingsTabOpen = useUiStore((s) => s.settingsTabOpen);
+  const settingsTab = useUiStore((s) => s.settingsTab);
   const currentTitle = useThreadsStore((s) => {
+    if (activeCenterTab === 'settings' && settingsTabOpen) return SETTINGS_PAGE_LABELS[settingsTab];
     if (!s.currentThreadId) return undefined;
     const t = Object.values(s.threadsByProject).flat().find(x => x.id === s.currentThreadId);
     if (!t) return undefined;
@@ -29,6 +34,7 @@ export function AppShell() {
       if (!projects.length) return;
       void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
         useThreadsStore.getState().upsertThread(thread);
+        useUiStore.getState().showThreadTab();
         useThreadsStore.getState().selectThread(thread.id);
       });
     };
@@ -47,7 +53,6 @@ export function AppShell() {
           right={<ErrorBoundary fallbackLabel="检视区出错"><InspectorPanel /></ErrorBoundary>}
         />
       </div>
-      <SettingsModal />
     </div>
   );
 }

@@ -8,6 +8,7 @@ export type NavIconName =
   | 'square-pen'
   | 'sparkles'
   | 'brain'
+  | 'settings-2'
   | 'chevron-down'
   | 'chevron-right'
   | 'folder'
@@ -53,6 +54,16 @@ const ICONS: Record<NavIconName, IconSpec> = {
       'M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517',
       'M6 18a4 4 0 0 1-2-7.464',
       'M6.003 5.125a4 4 0 0 0-2.526 5.77',
+    ],
+  },
+  'settings-2': {
+    paths: [
+      'M20 7h-9',
+      'M14 17H5',
+    ],
+    circles: [
+      { cx: 17, cy: 17, r: 3 },
+      { cx: 7, cy: 7, r: 3 },
     ],
   },
   'chevron-down': { paths: ['m6 9 6 6 6-6'] },

@@ -12,8 +12,9 @@ export async function bootstrap(): Promise<void> {
     theme: state.settings.ui.theme,
     workspaceCollapsed: state.settings.ui.workspaceCollapsed,
     inspectorCollapsed: state.settings.ui.inspectorCollapsed,
-    settingsModalOpen: state.settings.llm.provider === null,
-    settingsModalCloseable: state.settings.llm.provider !== null,
+    settingsTabOpen: state.settings.llm.provider === null,
+    settingsTab: 'provider',
+    activeCenterTab: state.settings.llm.provider === null ? 'settings' : 'thread',
   });
 
   let prev = useUiStore.getState();

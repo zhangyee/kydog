@@ -1,9 +1,11 @@
 import { KyLogo } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
+import { useUiStore } from '../../stores/uiStore';
 import type { Project } from '../../../shared/types';
 
 export function Welcome() {
   const projects = useThreadsStore((s) => s.projects);
+  const showThreadTab = useUiStore((s) => s.showThreadTab);
 
   const onOpen = async (): Promise<Project | null> => {
     try {
@@ -30,6 +32,7 @@ export function Welcome() {
     try {
       const thread = await window.kydog.invoke('thread.create', { projectPath });
       useThreadsStore.getState().upsertThread(thread);
+      showThreadTab();
       useThreadsStore.getState().selectThread(thread.id);
     } catch (err) {
       console.error('create thread failed', err);
