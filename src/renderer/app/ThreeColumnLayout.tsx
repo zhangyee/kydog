@@ -8,8 +8,6 @@ export function ThreeColumnLayout({ left, center, right }: Props) {
   const insCol = useUiStore((s) => s.inspectorCollapsed);
   const wsWidth = useUiStore((s) => s.workspaceWidth);
   const insWidth = useUiStore((s) => s.inspectorWidth);
-  const setWs = useUiStore((s) => s.setWorkspaceWidth);
-  const setIns = useUiStore((s) => s.setInspectorWidth);
 
   const cols = [
     wsCol ? '24px' : `${wsWidth}px`,
@@ -22,26 +20,42 @@ export function ThreeColumnLayout({ left, center, right }: Props) {
   return (
     <div className="h-full grid" style={{ gridTemplateColumns: cols }}>
       <aside data-pane="workspace" className="overflow-hidden border-r border-[color:var(--color-ink-hair)]">{left}</aside>
-      <DragHandle hidden={wsCol} side="left" onDelta={(dx) => setWs(wsWidth + dx)} />
+      <DragHandle
+        hidden={wsCol}
+        side="left"
+        getStart={() => useUiStore.getState().workspaceWidth}
+        setWidth={(w) => useUiStore.getState().setWorkspaceWidth(w)}
+      />
       <main data-pane="main" className="overflow-hidden">{center}</main>
-      <DragHandle hidden={insCol} side="right" onDelta={(dx) => setIns(insWidth - dx)} />
+      <DragHandle
+        hidden={insCol}
+        side="right"
+        getStart={() => useUiStore.getState().inspectorWidth}
+        setWidth={(w) => useUiStore.getState().setInspectorWidth(w)}
+      />
       <aside data-pane="inspector" className="overflow-hidden border-l border-[color:var(--color-ink-hair)]">{right}</aside>
     </div>
   );
 }
 
-function DragHandle({ hidden, side, onDelta }: { hidden: boolean; side: 'left' | 'right'; onDelta: (dx: number) => void }) {
+type HandleProps = {
+  hidden: boolean;
+  side: 'left' | 'right';
+  getStart: () => number;
+  setWidth: (w: number) => void;
+};
+
+function DragHandle({ hidden, side, getStart, setWidth }: HandleProps) {
   if (hidden) return <div />;
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     const startX = e.clientX;
+    const startW = getStart();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
-    let lastX = startX;
     const onMove = (ev: PointerEvent) => {
-      const dx = ev.clientX - lastX;
-      lastX = ev.clientX;
-      onDelta(dx);
+      const dx = ev.clientX - startX;
+      setWidth(side === 'left' ? startW + dx : startW - dx);
     };
     const onUp = (ev: PointerEvent) => {
       target.releasePointerCapture(ev.pointerId);
