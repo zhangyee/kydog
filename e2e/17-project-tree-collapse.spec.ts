@@ -17,10 +17,9 @@ test('17-project-tree-collapse: selected thread project still toggles closed', a
 
   try {
     const threadRow = launched.page.locator(`[data-testid="thread-${threadId}"]`);
-    const threadButton = threadRow.getByRole('button', { name: 'kept' });
     const projectToggle = launched.page.locator(`[data-testid="project-toggle-${path.basename(projectPath)}"]`);
 
-    await threadButton.click();
+    await threadRow.click();
     await projectToggle.click();
     await expect(threadRow).toHaveCount(0);
 
