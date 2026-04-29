@@ -49,7 +49,7 @@ export function ProjectsTree() {
   return (
     <div data-testid="projects-tree">
     <NavSection
-      title="课题 · Projects"
+      title="课题 Projects"
       right={
         <button
           type="button"
