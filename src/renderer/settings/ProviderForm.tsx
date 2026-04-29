@@ -1,7 +1,25 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type CSSProperties, type FormEvent } from 'react';
 import type { ProviderConfig } from '../../shared/types';
 
 type Props = { initial: ProviderConfig | null; onSave: (cfg: ProviderConfig) => Promise<void> };
+
+const inputStyle: CSSProperties = {
+  background: 'var(--color-paper-deep)',
+  border: '0.5px solid var(--color-ink-hair-soft)',
+  borderRadius: 3, padding: '6px 10px',
+  fontFamily: 'var(--font-mono)', fontSize: 11.5,
+  color: 'var(--color-ink-soft)',
+  width: '100%',
+};
+
+const labelStyle: CSSProperties = {
+  fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--color-ink)', fontWeight: 500,
+};
+
+const hintStyle: CSSProperties = {
+  fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+  fontSize: 11, color: 'var(--color-ink-faint)', marginTop: 4, lineHeight: 1.55,
+};
 
 export function ProviderForm({ initial, onSave }: Props) {
   const [name, setName] = useState(initial?.name ?? 'DeepSeek');
@@ -25,33 +43,84 @@ export function ProviderForm({ initial, onSave }: Props) {
   };
 
   return (
-    <form onSubmit={submit} className="grid gap-3 font-sans text-sm">
-      <label className="grid gap-1">
-        <span className="text-[color:var(--color-ink-soft)]">名称</span>
-        <input data-testid="provider-name" value={name} onChange={(e) => setName(e.target.value)} className="border px-2 py-1 rounded bg-transparent" required />
-      </label>
-      <label className="grid gap-1">
-        <span className="text-[color:var(--color-ink-soft)]">Base URL</span>
-        <input data-testid="provider-baseurl" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="border px-2 py-1 rounded bg-transparent" required />
-      </label>
-      <label className="grid gap-1">
-        <span className="text-[color:var(--color-ink-soft)]">API Key（明文存于 ~/.kydog/kydog.json）</span>
-        <div className="flex gap-2">
-          <input data-testid="provider-apikey" type={showKey ? 'text' : 'password'} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="border px-2 py-1 rounded bg-transparent flex-1" required />
-          <button type="button" onClick={() => setShowKey((v) => !v)} className="text-xs text-[color:var(--color-ink-soft)]">
-            {showKey ? '隐藏' : '显示'}
-          </button>
+    <form
+      onSubmit={submit}
+      className="grid"
+      style={{ rowGap: 14, padding: '4px 16px', background: 'var(--color-paper-deep)', border: '0.5px solid var(--color-ink-hair)', borderRadius: 4 }}
+    >
+      <div style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
+        <div style={{ width: 180, flexShrink: 0 }}>
+          <div style={labelStyle}>显示名</div>
+          <div style={hintStyle}>左栏 UserBar 与 InputPill 模型 badge 显示</div>
         </div>
-      </label>
-      <label className="grid gap-1">
-        <span className="text-[color:var(--color-ink-soft)]">模型</span>
-        <input data-testid="provider-model" value={model} onChange={(e) => setModel(e.target.value)} className="border px-2 py-1 rounded bg-transparent" required />
-      </label>
-      {error && <div className="text-[color:var(--color-accent)]">{error}</div>}
-      <div className="flex justify-end">
-        <button data-testid="settings-save" type="submit" disabled={saving} className="px-3 py-1 rounded bg-[color:var(--color-accent)] text-white">
-          {saving ? '保存中…' : '保存'}
-        </button>
+        <div className="flex-1">
+          <input data-testid="provider-name" value={name} onChange={(e) => setName(e.target.value)} required style={inputStyle} />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
+        <div style={{ width: 180, flexShrink: 0 }}>
+          <div style={labelStyle}>Base URL</div>
+          <div style={hintStyle}>OpenAI-compatible 接口前缀</div>
+        </div>
+        <div className="flex-1">
+          <input data-testid="provider-baseurl" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} required style={inputStyle} />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
+        <div style={{ width: 180, flexShrink: 0 }}>
+          <div style={labelStyle}>API Key</div>
+          <div style={hintStyle}>明文存于 ~/.kydog/kydog.json，不云同步、不入 Git</div>
+        </div>
+        <div className="flex-1 flex gap-2">
+          <input
+            data-testid="provider-apikey"
+            type={showKey ? 'text' : 'password'}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            required
+            style={inputStyle}
+          />
+          <button
+            type="button"
+            onClick={() => setShowKey((v) => !v)}
+            className="font-sans"
+            style={{
+              padding: '4px 10px', fontSize: 11,
+              border: '0.5px solid var(--color-ink-hair)',
+              borderRadius: 3, color: 'var(--color-ink-soft)',
+              background: 'var(--color-paper)',
+            }}
+          >{showKey ? '隐藏' : '显示'}</button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 24, padding: '14px 0', alignItems: 'flex-start' }}>
+        <div style={{ width: 180, flexShrink: 0 }}>
+          <div style={labelStyle}>模型</div>
+          <div style={hintStyle}>每次 thread.send 用该模型</div>
+        </div>
+        <div className="flex-1">
+          <input data-testid="provider-model" value={model} onChange={(e) => setModel(e.target.value)} required style={inputStyle} />
+        </div>
+      </div>
+
+      {error && (
+        <div className="font-serif italic" style={{ color: 'var(--color-accent)', padding: '8px 0' }}>{error}</div>
+      )}
+
+      <div className="flex justify-end" style={{ padding: '8px 0 14px' }}>
+        <button
+          type="submit"
+          data-testid="settings-save"
+          disabled={saving}
+          className="font-sans disabled:opacity-50"
+          style={{
+            padding: '6px 16px', borderRadius: 3, fontSize: 12, fontWeight: 500,
+            background: 'var(--color-accent)', color: 'var(--color-paper)',
+          }}
+        >{saving ? '保存中…' : '保存'}</button>
       </div>
     </form>
   );
