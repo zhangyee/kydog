@@ -5,6 +5,8 @@ type UiState = {
   theme: ThemeName;
   workspaceCollapsed: boolean;
   inspectorCollapsed: boolean;
+  workspaceWidth: number;
+  inspectorWidth: number;
   settingsModalOpen: boolean;
   settingsModalCloseable: boolean;
   userMenuOpen: boolean;
@@ -14,6 +16,8 @@ type UiState = {
   setTheme: (t: ThemeName) => void;
   toggleWorkspace: () => void;
   toggleInspector: () => void;
+  setWorkspaceWidth: (w: number) => void;
+  setInspectorWidth: (w: number) => void;
   openSettings: (closeable?: boolean) => void;
   closeSettings: () => void;
   toggleUserMenu: () => void;
@@ -26,6 +30,8 @@ export const useUiStore = create<UiState>((set) => ({
   theme: 'vellum',
   workspaceCollapsed: false,
   inspectorCollapsed: false,
+  workspaceWidth: 260,
+  inspectorWidth: 280,
   settingsModalOpen: false,
   settingsModalCloseable: true,
   userMenuOpen: false,
@@ -35,6 +41,8 @@ export const useUiStore = create<UiState>((set) => ({
   setTheme: (t) => set({ theme: t }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
+  setWorkspaceWidth: (w) => set({ workspaceWidth: Math.max(200, Math.min(420, w)) }),
+  setInspectorWidth: (w) => set({ inspectorWidth: Math.max(220, Math.min(480, w)) }),
   openSettings: (closeable = true) => set({ settingsModalOpen: true, settingsModalCloseable: closeable }),
   closeSettings: () => set({ settingsModalOpen: false }),
   toggleUserMenu: () => set((s) => ({ userMenuOpen: !s.userMenuOpen })),
