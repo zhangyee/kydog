@@ -1,14 +1,9 @@
 import { useState } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
+import { TOOL_STATUS_COLOR } from './toolStatus';
 
 type ToolBlock = Extract<AssistantBlock, { kind: 'tool_call' }>;
 type Props = { tools: ToolBlock[] };
-
-const STATUS_COLOR = {
-  running: 'var(--color-amber)',
-  ok: 'var(--color-moss)',
-  failed: 'var(--color-accent)',
-} as const;
 
 function deriveSource(cmd?: string): string {
   if (!cmd) return 'bash';
@@ -76,7 +71,7 @@ export function ToolGroup({ tools }: Props) {
               }}
             >
               <div className="flex items-center gap-1.5">
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: STATUS_COLOR[t.status] }} />
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: TOOL_STATUS_COLOR[t.status] }} />
                 <span className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-soft)', fontWeight: 500 }}>{deriveSource(t.command)}</span>
                 <span style={{ flex: 1 }} />
                 <span className="font-mono" style={{ fontSize: 9.5, color: 'var(--color-ink-faint)' }}>{t.status}</span>

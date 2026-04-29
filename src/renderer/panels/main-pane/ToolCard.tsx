@@ -1,13 +1,8 @@
 import { useState } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
+import { TOOL_STATUS_COLOR } from './toolStatus';
 
 type Props = { tool: Extract<AssistantBlock, { kind: 'tool_call' }> };
-
-const STATUS_COLOR = {
-  running: 'var(--color-amber)',
-  ok: 'var(--color-moss)',
-  failed: 'var(--color-accent)',
-} as const;
 
 export function ToolCard({ tool }: Props) {
   const [open, setOpen] = useState(true);
@@ -38,7 +33,7 @@ export function ToolCard({ tool }: Props) {
           {hasOutput ? (open ? '▾' : '▸') : ''}
         </span>
         <span
-          style={{ width: 6, height: 6, borderRadius: '50%', background: STATUS_COLOR[tool.status] }}
+          style={{ width: 6, height: 6, borderRadius: '50%', background: TOOL_STATUS_COLOR[tool.status] }}
         />
         <span style={{ color: 'var(--color-ink-soft)', fontSize: 10 }}>{tool.name}</span>
         <span className="truncate flex-1" style={{ fontWeight: 500 }}>$ {tool.command ?? ''}</span>
