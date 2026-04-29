@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { NavIcon } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { NavPill } from './NavPill';
@@ -13,13 +14,21 @@ export function ProjectsTree() {
   const remove = useThreadsStore((s) => s.removeThread);
   const expanded = useUiStore((s) => s.expandedProjects);
   const toggleProject = useUiStore((s) => s.toggleProject);
+  const autoExpandedThreadRef = useRef<string | null>(null);
 
   // 自动展开当前 thread 所在 project
   useEffect(() => {
-    if (!currentThreadId) return;
+    if (!currentThreadId) {
+      autoExpandedThreadRef.current = null;
+      return;
+    }
+    if (autoExpandedThreadRef.current === currentThreadId) return;
+    autoExpandedThreadRef.current = currentThreadId;
     const t = Object.values(threadsByProject).flat().find(x => x.id === currentThreadId);
-    if (t && !expanded.has(t.projectPath)) toggleProject(t.projectPath);
-  }, [currentThreadId, threadsByProject, expanded, toggleProject]);
+    if (!t) return;
+    const cur = useUiStore.getState().expandedProjects;
+    if (!cur.has(t.projectPath)) toggleProject(t.projectPath);
+  }, [currentThreadId, threadsByProject, toggleProject]);
 
   // 启动 / 新增 project 时默认展开一次（让 thread 列表立即可见；之后用户拥有折叠状态）
   // 用 ref 记录已经处理过的 project path，避免 projects 引用变化触发的 effect 重新展开用户手动折叠的项
@@ -69,15 +78,13 @@ export function ProjectsTree() {
         const name = p.path.split('/').pop() ?? p.path;
         return (
           <div key={p.path} data-testid={`project-${p.path}`}>
-            <div style={{ padding: '2px 6px' }}>
-              <NavPill
-                icon={open ? 'chevron-down' : 'chevron-right'}
-                label={name}
-                muted
-                onClick={() => toggleProject(p.path)}
-                testId={`project-toggle-${name}`}
-              />
-            </div>
+            <NavPill
+              icon={<NavIcon name={open ? 'folder-open' : 'folder'} size={15} style={{ opacity: open ? 1 : 0.88 }} />}
+              label={name}
+              muted
+              onClick={() => toggleProject(p.path)}
+              testId={`project-toggle-${name}`}
+            />
             {open && (
               <TreeChildren>
                 {(threadsByProject[p.path] ?? []).map((t) => (
@@ -87,7 +94,7 @@ export function ProjectsTree() {
                     className="group relative flex items-center"
                   >
                     <NavPill
-                      icon="thread"
+                      reserveIconSpace
                       label={t.title}
                       selected={currentThreadId === t.id}
                       onClick={() => select(t.id)}
@@ -102,7 +109,12 @@ export function ProjectsTree() {
                   </div>
                 ))}
                 {(threadsByProject[p.path] ?? []).length === 0 && (
-                  <div className="text-xs italic px-2 py-1" style={{ color: 'var(--color-ink-soft)' }}>暂无对话</div>
+                  <div
+                    className="text-xs italic px-2.5 py-1"
+                    style={{ paddingLeft: 34, color: 'var(--color-ink-soft)' }}
+                  >
+                    暂无对话
+                  </div>
                 )}
               </TreeChildren>
             )}

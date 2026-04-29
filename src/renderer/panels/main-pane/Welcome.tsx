@@ -97,7 +97,7 @@ export function Welcome() {
             cursor: 'pointer',
           }}
         >
-          ✣ 新建对话
+          ✣ 新对话
         </button>
       </div>
     </div>

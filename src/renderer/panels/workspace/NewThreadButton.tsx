@@ -1,4 +1,5 @@
 import { useThreadsStore } from '../../stores/threadsStore';
+import { NavPill } from './NavPill';
 
 export function NewThreadButton() {
   const projects = useThreadsStore((s) => s.projects);
@@ -13,25 +14,15 @@ export function NewThreadButton() {
     select(thread.id);
   };
   return (
-    <div style={{ padding: '10px 16px 0' }}>
-      <button
-        type="button"
-        data-testid="new-thread"
-        disabled={!enabled}
+    <div style={{ padding: '10px 6px 0' }}>
+      <NavPill
+        icon="compose"
+        label="新对话"
+        shortcut="⌘N"
         onClick={onClick}
-        className="w-full flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        style={{
-          padding: '7px 10px',
-          background: 'var(--color-paper)',
-          border: '0.5px solid var(--color-ink-hair)',
-          borderRadius: 4, fontSize: 12, color: 'var(--color-ink)',
-          boxShadow: '0 1px 0 var(--color-card-shadow)',
-        }}
-      >
-        <span style={{ fontFamily: 'var(--font-serif)', color: 'var(--color-accent)', fontSize: 14, lineHeight: 1 }}>✣</span>
-        <span style={{ flex: 1, textAlign: 'left' }}>新建对话</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-ink-faint)' }}>⌘N</span>
-      </button>
+        disabled={!enabled}
+        testId="new-thread"
+      />
     </div>
   );
 }
