@@ -17,7 +17,7 @@ export function WorkspaceHeader() {
         data-testid="collapse-workspace"
         onClick={toggle}
         aria-label="收起左栏"
-        className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[color:var(--color-paper-edge)]"
+        className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[color:var(--color-hover-bg)]"
         style={{ color: 'var(--color-ink-soft)' }}
       >
         <PanelIcon side="left" filled size={13} />

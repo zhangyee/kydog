@@ -11,7 +11,7 @@ export function CollapsedRail({ side, label, onOpen, testId }: Props) {
       onClick={onOpen}
       title={side === 'left' ? '展开左栏' : '展开右栏'}
       aria-label={`展开 ${label}`}
-      className="ky-paper-deep h-full w-full flex flex-col items-center cursor-pointer hover:[--rail-bg:var(--color-paper-edge)]"
+      className="ky-paper-deep h-full w-full flex flex-col items-center cursor-pointer hover:[--rail-bg:var(--color-hover-bg)]"
       style={{
         gap: 14, padding: '12px 0',
         color: 'var(--color-ink-faint)',

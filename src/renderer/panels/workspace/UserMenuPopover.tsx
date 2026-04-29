@@ -185,7 +185,7 @@ function ActionRow({
       type="button"
       data-testid={testId}
       onClick={onClick}
-      className="flex items-center gap-2.5 w-full text-left cursor-pointer hover:bg-[color:var(--color-paper-edge)]"
+      className="flex items-center gap-2.5 w-full text-left cursor-pointer hover:bg-[color:var(--color-hover-bg)]"
       style={{ padding: '9px 14px', fontSize: 12.5, color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}
     >
       <span className="flex-1 min-w-0">

@@ -19,7 +19,7 @@ export function InspectorHeader() {
         data-testid="collapse-inspector"
         onClick={toggle}
         aria-label="收起右栏"
-        className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[color:var(--color-paper-edge)]"
+        className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[color:var(--color-hover-bg)]"
         style={{ color: 'var(--color-ink-soft)' }}
       >
         <PanelIcon side="right" filled size={13} />

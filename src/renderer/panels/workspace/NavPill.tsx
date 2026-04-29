@@ -27,7 +27,7 @@ export function NavPill({ icon, reserveIconSpace, label, count, shortcut, select
       onClick={disabled ? undefined : onClick}
       aria-disabled={disabled || undefined}
       title={disabled ? '即将开放' : undefined}
-      className="group flex items-center gap-2 px-2.5 py-1 rounded-xl text-left w-full font-sans transition-colors hover:bg-[color:var(--color-paper-edge)]"
+      className="group flex items-center gap-2 px-2.5 py-1 rounded-xl text-left w-full font-sans transition-colors hover:bg-[color:var(--color-hover-bg)]"
       style={{
         background: selected && !disabled ? 'var(--color-paper-edge)' : undefined,
         color: dim ? 'var(--color-ink-faint)' : 'var(--color-ink)',

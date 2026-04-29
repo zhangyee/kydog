@@ -46,7 +46,7 @@ function Row({ node }: RowProps) {
         data-testid={`fs-${node.path}`}
         onClick={() => isDir ? toggleDir(node.path) : null}
         onDoubleClick={() => !isDir && console.info('open file (D subsystem):', node.path)}
-        className="flex items-center cursor-pointer hover:bg-[color:var(--color-paper-edge)]"
+        className="flex items-center cursor-pointer hover:bg-[color:var(--color-hover-bg)]"
         style={{
           padding: '3px 8px 3px 0',
           borderRadius: 3,
