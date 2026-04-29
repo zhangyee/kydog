@@ -1,4 +1,4 @@
-import { KyLogo } from '../../shared';
+import { KyLogo, NavIcon } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import type { Project } from '../../../shared/types';
@@ -72,7 +72,7 @@ export function Welcome() {
           type="button"
           data-testid="welcome-open-folder"
           onClick={onOpen}
-          className="font-sans"
+          className="font-sans transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
             padding: '8px 18px',
             fontSize: 13,
@@ -90,17 +90,31 @@ export function Welcome() {
           type="button"
           data-testid="welcome-new-thread"
           onClick={onNewThread}
-          className="font-sans"
+          className="font-sans flex items-center gap-2 transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
-            padding: '8px 18px',
+            padding: '8px 14px',
             fontSize: 13,
-            color: 'var(--color-paper)',
-            background: 'var(--color-accent)',
+            color: 'var(--color-ink)',
+            background: 'var(--color-paper)',
+            border: '0.5px solid var(--color-ink-hair)',
             borderRadius: 4,
             cursor: 'pointer',
+            boxShadow: '0 1px 0 var(--color-card-shadow)',
           }}
         >
-          ✣ 新对话
+          <span
+            className="inline-flex items-center justify-center"
+            style={{ width: 16, height: 16, color: 'var(--color-accent)' }}
+          >
+            <NavIcon name="square-pen" size={15} />
+          </span>
+          <span>新对话</span>
+          <span
+            className="font-mono"
+            style={{ fontSize: 10, color: 'var(--color-ink-faint)', marginLeft: 4 }}
+          >
+            ⌘N
+          </span>
         </button>
       </div>
     </div>
