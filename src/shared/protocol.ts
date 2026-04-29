@@ -17,7 +17,10 @@ export type RpcCall =
   | { method: 'thread.rename'; args: { threadId: string; title: string }; result: void }
   | { method: 'thread.loadHistory'; args: { threadId: string }; result: Message[] }
   | { method: 'thread.send'; args: { threadId: string; content: string }; result: { runId: string } }
-  | { method: 'thread.abort'; args: { threadId: string }; result: void };
+  | { method: 'thread.abort'; args: { threadId: string }; result: void }
+  | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
+  | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
+  | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean }; result: Thread };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];
