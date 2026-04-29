@@ -1,29 +1,34 @@
 import { KyLogo } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
+import type { Project } from '../../../shared/types';
 
 export function Welcome() {
   const projects = useThreadsStore((s) => s.projects);
 
-  const onOpen = async () => {
+  const onOpen = async (): Promise<Project | null> => {
     try {
       const project = await window.kydog.invoke('project.open');
       useThreadsStore.setState((s) => ({
         projects: [...s.projects.filter((p) => p.path !== project.path), project],
       }));
+      return project;
     } catch (err) {
       console.error('open project failed', err);
+      return null;
     }
   };
 
   const onNewThread = async () => {
-    if (!projects.length) {
-      void onOpen();
-      return;
+    let projectPath: string | undefined;
+    if (projects.length === 0) {
+      const picked = await onOpen();
+      if (!picked) return;
+      projectPath = picked.path;
+    } else {
+      projectPath = projects[0].path;
     }
     try {
-      const thread = await window.kydog.invoke('thread.create', {
-        projectPath: projects[0].path,
-      });
+      const thread = await window.kydog.invoke('thread.create', { projectPath });
       useThreadsStore.getState().upsertThread(thread);
       useThreadsStore.getState().selectThread(thread.id);
     } catch (err) {
