@@ -10,3 +10,4 @@ export { fmtTime } from './fmtTime';
 export { APP_USER_NAME, APP_USER_EMAIL } from './userIdentity';
 export { Tooltip } from './Tooltip';
 export { IconButton } from './IconButton';
+export { DropdownMenu, DropdownSection, DropdownDivider, DropdownItem } from './DropdownMenu';
