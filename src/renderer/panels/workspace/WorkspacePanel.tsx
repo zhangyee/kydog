@@ -4,7 +4,6 @@ import { WorkspaceHeader } from './WorkspaceHeader';
 import { NewThreadButton } from './NewThreadButton';
 import { ActionPills } from './ActionPills';
 import { ProjectsTree } from './ProjectsTree';
-import { OpenFolderButton } from './OpenFolderButton';
 import { UserBar } from './UserBar';
 import { UserMenuPopover } from './UserMenuPopover';
 
@@ -21,7 +20,6 @@ export function WorkspacePanel() {
       <div className="flex-1 overflow-y-auto ky-scroll" style={{ paddingBottom: 8 }}>
         <ProjectsTree />
       </div>
-      <OpenFolderButton />
       <UserBar />
       <UserMenuPopover />
     </div>
