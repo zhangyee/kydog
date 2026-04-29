@@ -32,3 +32,8 @@ body::before {
 .ky-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 .ky-scroll::-webkit-scrollbar-thumb { background: var(--ink-hair); border-radius: 4px; }
 .ky-scroll::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes kydog-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}

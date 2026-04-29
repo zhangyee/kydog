@@ -1,12 +1,40 @@
+import { isValidElement, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+function annotateCitations(node: ReactNode): ReactNode {
+  if (typeof node === 'string') {
+    const parts = node.split(/(\[\d+\])/g);
+    return parts.map((s, i) =>
+      /^\[\d+\]$/.test(s)
+        ? (
+          <sup
+            key={i}
+            style={{
+              color: 'var(--color-accent)',
+              fontWeight: 600,
+              fontFamily: 'var(--font-serif)',
+              fontSize: 11,
+              padding: '0 1px',
+              cursor: 'pointer',
+            }}
+          >{s}</sup>
+        )
+        : s,
+    );
+  }
+  if (Array.isArray(node)) return node.map((n, i) => <span key={i}>{annotateCitations(n)}</span>);
+  if (isValidElement(node)) return node;
+  return node;
+}
+
 const COMPONENTS: Components = {
-  p:  ({ children }) => <p style={{ margin: '0 0 12px' }}>{children}</p>,
+  p:  ({ children }) => <p style={{ margin: '0 0 12px' }}>{annotateCitations(children)}</p>,
   h2: ({ children }) => <h2 style={{ fontSize: 22, fontWeight: 600, margin: '36px 0 10px', lineHeight: 1.3 }}>{children}</h2>,
   h3: ({ children }) => <h3 style={{ fontSize: 16, fontWeight: 600, margin: '20px 0 8px' }}>{children}</h3>,
   ul: ({ children }) => <ul style={{ margin: '0 0 12px', paddingLeft: 22, lineHeight: 1.8 }}>{children}</ul>,
   ol: ({ children }) => <ol style={{ margin: '0 0 14px', paddingLeft: 22, lineHeight: 1.75 }}>{children}</ol>,
+  li: ({ children }) => <li>{annotateCitations(children)}</li>,
   a:  ({ href, children }) => {
     const isExternal = !!href && /^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('file:');
     return (

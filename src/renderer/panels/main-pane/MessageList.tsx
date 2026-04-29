@@ -3,6 +3,7 @@ import { useRunsStore } from '../../stores/runsStore';
 import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
+import { StreamingIndicator } from './StreamingIndicator';
 
 export function MessageList({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
@@ -22,13 +23,15 @@ export function MessageList({ threadId }: { threadId: string }) {
             : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} createdAt={m.createdAt} />,
         )}
         {liveBuffers.map(([messageId, buf]) => (
-          <AssistantMessage
-            key={messageId}
-            threadId={threadId}
-            messageId={messageId}
-            blocks={buf.blocks}
-            live
-          />
+          <div key={messageId}>
+            <AssistantMessage
+              threadId={threadId}
+              messageId={messageId}
+              blocks={buf.blocks}
+              live
+            />
+            <StreamingIndicator />
+          </div>
         ))}
       </div>
     </div>
