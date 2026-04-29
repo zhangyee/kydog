@@ -149,7 +149,7 @@ export function InputPill({
               type="button"
               data-testid="stop-button"
               onClick={onStop}
-              className="font-serif"
+              className="font-serif transition-colors hover:bg-[color:var(--color-accent-hover)]"
               style={{
                 width: large ? 30 : 26,
                 height: large ? 30 : 26,
@@ -169,7 +169,7 @@ export function InputPill({
               data-testid="send-button"
               onClick={onSend}
               disabled={!text.trim()}
-              className="font-serif italic disabled:opacity-50"
+              className="font-serif italic disabled:opacity-50 transition-colors hover:bg-[color:var(--color-accent-hover)]"
               style={{
                 width: large ? 30 : 26,
                 height: large ? 30 : 26,
