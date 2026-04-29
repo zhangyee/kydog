@@ -19,7 +19,7 @@ export type NavIconName =
   | 'file-diff'
   | 'book-open-text'
   | 'dot'
-  | 'chevrons-down-up'
+  | 'minimize-2'
   | 'filter'
   | 'folder-plus'
   | 'more-horizontal'
@@ -131,8 +131,8 @@ const ICONS: Record<NavIconName, IconSpec> = {
       'M6 8h2',
     ],
   },
-  'chevrons-down-up': {
-    paths: ['m7 20 5-5 5 5', 'm7 4 5 5 5-5'],
+  'minimize-2': {
+    paths: ['M4 14h6v6', 'M20 10h-6V4', 'm14 10 7-7', 'm3 21 7-7'],
   },
   filter: {
     paths: ['M3 6h18', 'M7 12h10', 'M10 18h4'],

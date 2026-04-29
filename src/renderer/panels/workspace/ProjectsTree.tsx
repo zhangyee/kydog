@@ -50,7 +50,7 @@ export function ProjectsTree() {
 
   return (
     <div data-testid="projects-tree">
-      <NavSection title="项目 PROJECTS" right={<ProjectsHeaderActions />}>
+      <NavSection title="课题 Projects" right={<ProjectsHeaderActions />}>
         {view.kind === 'grouped' ? (
           view.groups.map(({ project, threads }) => {
             const open = expanded.has(project.path);

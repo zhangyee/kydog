@@ -30,7 +30,7 @@ export function ProjectsHeaderActions() {
         testId="projects-collapse-all"
         onClick={collapseAll}
       >
-        <NavIcon name="chevrons-down-up" size={14} />
+        <NavIcon name="minimize-2" size={14} />
       </IconButton>
 
       <DropdownMenu
