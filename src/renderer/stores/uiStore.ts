@@ -17,6 +17,11 @@ type UiState = {
   expandedDirs: Set<string>;
   expandedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
+  projectsGroupBy: 'project' | 'time';
+  projectsSortBy: 'created' | 'updated';
+  setProjectsGroupBy: (g: 'project' | 'time') => void;
+  setProjectsSortBy: (s: 'created' | 'updated') => void;
+  collapseAllProjects: () => void;
   setTheme: (t: ThemeName) => void;
   toggleWorkspace: () => void;
   toggleInspector: () => void;
@@ -44,6 +49,11 @@ export const useUiStore = create<UiState>((set) => ({
   expandedDirs: new Set(),
   expandedProjects: new Set<string>(),
   dirCache: {},
+  projectsGroupBy: 'project',
+  projectsSortBy: 'updated',
+  setProjectsGroupBy: (g) => set({ projectsGroupBy: g }),
+  setProjectsSortBy: (s) => set({ projectsSortBy: s }),
+  collapseAllProjects: () => set({ expandedProjects: new Set<string>() }),
   setTheme: (t) => set({ theme: t }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
