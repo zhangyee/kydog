@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useUiStore } from '../../stores/uiStore';
+import { NavIcon } from '../../shared';
 import type { FsNode } from '../../../shared/types';
 
 type RowProps = { node: FsNode; depth: number; ancestorsLast: boolean[]; last?: boolean };
@@ -18,7 +19,7 @@ function Row({ node, depth, ancestorsLast, last }: RowProps) {
   }, [expanded, cache, node, setDir]);
 
   const isDir = node.kind === 'dir';
-  const readme = isReadme(node.name);
+  const readme = !isDir && isReadme(node.name);
 
   return (
     <div>
@@ -47,35 +48,21 @@ function Row({ node, depth, ancestorsLast, last }: RowProps) {
                   }}
                 />
               )}
-              {isLastCol && (
-                <span
-                  style={{
-                    position: 'absolute', left: 6, top: '50%',
-                    width: 7, height: 1, background: 'var(--color-ink-hair)',
-                  }}
-                />
-              )}
             </span>
           );
         })}
         <span
-          className="font-mono shrink-0 text-center"
-          style={{ width: 12, fontSize: 10, color: 'var(--color-ink-faint)' }}
+          className="shrink-0 flex items-center justify-center"
+          style={{ width: 16, color: 'var(--color-ink-faint)' }}
         >
-          {isDir ? (expanded ? '▾' : '▸') : ''}
+          {isDir && <NavIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={11} />}
         </span>
         <span
-          className="font-serif italic shrink-0 text-center"
-          style={{
-            width: 12, fontSize: 11,
-            color: isDir ? 'var(--color-ink-faint)'
-                 : readme ? 'var(--color-accent)'
-                 : 'var(--color-marginalia)',
-          }}
+          className="flex-1 truncate"
+          style={readme ? { color: 'var(--color-accent)' } : undefined}
         >
-          {isDir ? '◿' : '·'}
+          {node.name}
         </span>
-        <span className="flex-1 truncate ml-1">{node.name}</span>
       </div>
       {isDir && expanded && cache && (
         <div>
