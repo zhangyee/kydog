@@ -17,7 +17,7 @@ export function WorkspacePanel() {
       <WorkspaceHeader />
       <NewThreadButton />
       <ActionPills />
-      <div className="flex-1 overflow-y-auto ky-scroll" style={{ paddingBottom: 8 }}>
+      <div className="flex-1 overflow-x-hidden overflow-y-auto ky-scroll" style={{ paddingBottom: 8 }}>
         <ProjectsTree />
       </div>
       <UserBar />
