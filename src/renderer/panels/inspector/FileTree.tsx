@@ -2,7 +2,11 @@ import { useEffect } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import type { FsNode } from '../../../shared/types';
 
-function Node({ node, depth }: { node: FsNode; depth: number }) {
+type RowProps = { node: FsNode; depth: number; last?: boolean };
+
+const isReadme = (name: string) => /^readme(\..+)?$/i.test(name);
+
+function Row({ node, depth, last }: RowProps) {
   const expanded = useUiStore((s) => s.expandedDirs.has(node.path));
   const cache = useUiStore((s) => s.dirCache[node.path]);
   const toggleDir = useUiStore((s) => s.toggleDir);
@@ -13,20 +17,69 @@ function Node({ node, depth }: { node: FsNode; depth: number }) {
     void window.kydog.invoke('project.readDir', { path: node.path }).then((nodes) => setDir(node.path, nodes));
   }, [expanded, cache, node, setDir]);
 
+  const isDir = node.kind === 'dir';
+  const readme = isReadme(node.name);
+
   return (
     <div>
       <div
         data-testid={`fs-${node.path}`}
-        className="cursor-pointer truncate hover:bg-[color:var(--color-paper-edge)]/30 px-1 text-sm font-sans"
-        style={{ paddingLeft: depth * 12 + 4 }}
-        onClick={() => node.kind === 'dir' && toggleDir(node.path)}
-        onDoubleClick={() => node.kind === 'file' && console.log('open file (Phase G):', node.path)}
+        onClick={() => isDir ? toggleDir(node.path) : null}
+        onDoubleClick={() => !isDir && console.info('open file (D subsystem):', node.path)}
+        className="flex items-center cursor-pointer hover:bg-[color:var(--color-paper-edge)]"
+        style={{
+          padding: '3px 8px 3px 0', borderRadius: 3, marginLeft: 4,
+          color: isDir ? 'var(--color-ink-soft)' : 'var(--color-ink)',
+          fontFamily: 'var(--font-sans)', fontWeight: 400, fontSize: 12, position: 'relative',
+        }}
       >
-        {node.kind === 'dir' ? (expanded ? '▾' : '▸') : ' '} {node.name}
+        {Array.from({ length: depth }).map((_, i) => (
+          <span
+            key={i}
+            className="self-stretch shrink-0 relative"
+            style={{ width: 14 }}
+          >
+            <span
+              style={{
+                position: 'absolute', left: 6, top: 0,
+                bottom: i === depth - 1 && last ? '50%' : 0,
+                width: 1, background: 'var(--color-ink-hair)',
+              }}
+            />
+            {i === depth - 1 && (
+              <span
+                style={{
+                  position: 'absolute', left: 6, top: '50%',
+                  width: 7, height: 1, background: 'var(--color-ink-hair)',
+                }}
+              />
+            )}
+          </span>
+        ))}
+        <span
+          className="font-mono shrink-0 text-center"
+          style={{ width: 12, fontSize: 10, color: 'var(--color-ink-faint)' }}
+        >
+          {isDir ? (expanded ? '▾' : '▸') : ''}
+        </span>
+        <span
+          className="font-serif italic shrink-0 text-center"
+          style={{
+            width: 12, fontSize: 11,
+            color: isDir ? 'var(--color-ink-faint)'
+                 : readme ? 'var(--color-accent)'
+                 : 'var(--color-marginalia)',
+          }}
+        >
+          {isDir ? '◿' : '·'}
+        </span>
+        <span className="flex-1 truncate ml-1">{node.name}</span>
       </div>
-      {node.kind === 'dir' && expanded && cache && (
-        <div className="border-l border-[color:var(--color-paper-edge)] ml-3">
-          {cache.map((child) => <Node key={child.path} node={child} depth={depth + 1} />)}
+      {isDir && expanded && cache && (
+        <div>
+          {cache.map((child, i) => (
+            <Row key={child.path} node={child} depth={depth + 1} last={i === cache.length - 1} />
+          ))}
         </div>
       )}
     </div>
@@ -42,10 +95,12 @@ export function FileTree({ projectPath }: { projectPath: string }) {
     void window.kydog.invoke('project.readDir', { path: projectPath }).then((nodes) => setDir(projectPath, nodes));
   }, [projectPath, cache, setDir]);
 
-  if (!cache) return <div className="px-3 py-2 text-xs font-mono text-[color:var(--color-ink-soft)]">加载中…</div>;
+  if (!cache) {
+    return <div className="px-3 py-2 font-mono text-xs" style={{ color: 'var(--color-ink-soft)' }}>加载中…</div>;
+  }
   return (
-    <div className="overflow-auto" data-testid="file-tree">
-      {cache.map((n) => <Node key={n.path} node={n} depth={0} />)}
+    <div className="ky-scroll overflow-auto" data-testid="file-tree" style={{ padding: '0 8px' }}>
+      {cache.map((n, i) => <Row key={n.path} node={n} depth={0} last={i === cache.length - 1} />)}
     </div>
   );
 }
