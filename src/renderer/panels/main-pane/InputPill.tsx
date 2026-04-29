@@ -38,12 +38,16 @@ export function InputPill({
     if (prefill !== undefined) setText(prefill);
   }, [prefill]);
 
-  // Auto-grow textarea as content changes.
+  // Auto-grow textarea as content changes (capped to keep send button visible).
   useEffect(() => {
     if (!textareaRef.current) return;
-    textareaRef.current.style.height = 'auto';
-    textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
-  }, [text]);
+    const el = textareaRef.current;
+    el.style.height = 'auto';
+    const max = large ? 240 : 160;
+    const next = Math.min(el.scrollHeight, max);
+    el.style.height = next + 'px';
+    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
+  }, [text, large]);
 
   const onSend = async () => {
     const content = text.trim();
