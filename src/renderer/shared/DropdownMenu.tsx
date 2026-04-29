@@ -118,7 +118,7 @@ export function DropdownItem({ icon, label, shortcut, checked, destructive, onCl
       type="button"
       role="menuitem"
       data-testid={testId}
-      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      onClick={() => { onClick?.(); }}
       className="w-full flex items-center text-left transition-colors hover:bg-[color:var(--color-hover-bg)]"
       style={{
         padding: '7px 12px',
