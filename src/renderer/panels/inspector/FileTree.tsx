@@ -3,11 +3,11 @@ import { useUiStore } from '../../stores/uiStore';
 import { NavIcon } from '../../shared';
 import type { FsNode } from '../../../shared/types';
 
-type RowProps = { node: FsNode; depth: number; ancestorsLast: boolean[]; last?: boolean };
+type RowProps = { node: FsNode };
 
 const isReadme = (name: string) => /^readme(\..+)?$/i.test(name);
 
-function Row({ node, depth, ancestorsLast, last }: RowProps) {
+function Row({ node }: RowProps) {
   const expanded = useUiStore((s) => s.expandedDirs.has(node.path));
   const cache = useUiStore((s) => s.dirCache[node.path]);
   const toggleDir = useUiStore((s) => s.toggleDir);
@@ -29,31 +29,19 @@ function Row({ node, depth, ancestorsLast, last }: RowProps) {
         onDoubleClick={() => !isDir && console.info('open file (D subsystem):', node.path)}
         className="flex items-center cursor-pointer hover:bg-[color:var(--color-paper-edge)]"
         style={{
-          padding: '3px 8px 3px 0', borderRadius: 3, marginLeft: 4,
+          padding: '3px 8px 3px 0',
+          borderRadius: 3,
           color: isDir ? 'var(--color-ink-soft)' : 'var(--color-ink)',
-          fontFamily: 'var(--font-sans)', fontWeight: 400, fontSize: 12, position: 'relative',
+          fontFamily: 'var(--font-sans)', fontWeight: 400, fontSize: 12,
         }}
       >
-        {Array.from({ length: depth }).map((_, i) => {
-          const ancestorTerminated = ancestorsLast[i];
-          return (
-            <span key={i} className="self-stretch shrink-0 relative" style={{ width: 14 }}>
-              {!ancestorTerminated && (
-                <span
-                  style={{
-                    position: 'absolute', left: 6, top: 0, bottom: 0,
-                    width: 1, background: 'var(--color-ink-hair)',
-                  }}
-                />
-              )}
-            </span>
-          );
-        })}
         <span
-          className="shrink-0 flex items-center justify-center"
+          className="inline-flex items-center justify-center shrink-0"
           style={{ width: 16, color: 'var(--color-ink-faint)' }}
         >
-          {isDir && <NavIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={11} />}
+          {isDir && (
+            <NavIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={11} />
+          )}
         </span>
         <span
           className="flex-1 truncate"
@@ -63,16 +51,14 @@ function Row({ node, depth, ancestorsLast, last }: RowProps) {
         </span>
       </div>
       {isDir && expanded && cache && (
-        <div>
-          {cache.map((child, i) => (
-            <Row
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              ancestorsLast={[...ancestorsLast, !!last]}
-              last={i === cache.length - 1}
-            />
-          ))}
+        <div style={{ position: 'relative', paddingLeft: 14 }}>
+          <div
+            style={{
+              position: 'absolute', left: 6, top: 0, bottom: 0,
+              width: 1, background: 'var(--color-ink-hair)',
+            }}
+          />
+          {cache.map((child) => <Row key={child.path} node={child} />)}
         </div>
       )}
     </div>
@@ -93,15 +79,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
   }
   return (
     <div className="ky-scroll overflow-auto h-full" data-testid="file-tree" style={{ padding: '0 8px' }}>
-      {cache.map((n, i) => (
-        <Row
-          key={n.path}
-          node={n}
-          depth={0}
-          ancestorsLast={[]}
-          last={i === cache.length - 1}
-        />
-      ))}
+      {cache.map((n) => <Row key={n.path} node={n} />)}
     </div>
   );
 }
