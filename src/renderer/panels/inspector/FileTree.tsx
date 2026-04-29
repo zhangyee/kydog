@@ -99,7 +99,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
     return <div className="px-3 py-2 font-mono text-xs" style={{ color: 'var(--color-ink-soft)' }}>加载中…</div>;
   }
   return (
-    <div className="ky-scroll overflow-auto" data-testid="file-tree" style={{ padding: '0 8px' }}>
+    <div className="ky-scroll overflow-auto h-full" data-testid="file-tree" style={{ padding: '0 8px' }}>
       {cache.map((n, i) => <Row key={n.path} node={n} depth={0} last={i === cache.length - 1} />)}
     </div>
   );
