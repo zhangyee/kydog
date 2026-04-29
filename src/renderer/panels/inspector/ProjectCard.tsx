@@ -1,7 +1,7 @@
 type Props = { projectPath: string };
 
 export function ProjectCard({ projectPath }: Props) {
-  const name = projectPath.split('/').pop() ?? projectPath;
+  const name = projectPath.split(/[\\/]/).pop() || projectPath;
   return (
     <div style={{ padding: '10px 14px 6px' }}>
       <div
