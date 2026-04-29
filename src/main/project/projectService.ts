@@ -1,4 +1,4 @@
-import { dialog } from 'electron';
+import { dialog, shell } from 'electron';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { loadIndex, saveIndex } from '../persist/indexFile';
@@ -51,6 +51,21 @@ export class ProjectService {
     } catch (err) {
       throw new KydogError('fs.read_failed', `cannot read ${dirPath}`, err);
     }
+  }
+
+  async openInOS({ projectPath }: { projectPath: string }): Promise<void> {
+    const err = await shell.openPath(projectPath);
+    if (err) throw new KydogError('fs.read_failed', err);
+  }
+
+  async update(args: { projectPath: string; label?: string; pinned?: boolean }): Promise<Project> {
+    const idx = await loadIndex();
+    const project = idx.projects.find((p) => p.path === args.projectPath);
+    if (!project) throw new KydogError('project.not_found', `no project: ${args.projectPath}`);
+    if (args.label !== undefined) project.label = args.label;
+    if (args.pinned !== undefined) project.pinned = args.pinned;
+    await saveIndex(idx);
+    return project;
   }
 }
 
