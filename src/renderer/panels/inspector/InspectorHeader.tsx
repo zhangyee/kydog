@@ -13,7 +13,7 @@ export function InspectorHeader() {
         color: 'var(--color-ink-faint)', letterSpacing: 1.2,
       }}
     >
-      <span className="flex-1">检视 · Inspector</span>
+      <span className="flex-1">检视 Inspector</span>
       <button
         type="button"
         data-testid="collapse-inspector"
