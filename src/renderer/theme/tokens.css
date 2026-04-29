@@ -9,6 +9,7 @@
   --color-ink-hair-soft: var(--ink-hair-soft);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-hover: var(--accent-hover);
   --color-marginalia: var(--marginalia);
   --color-moss: var(--moss);
   --color-amber: var(--amber);
@@ -17,6 +18,7 @@
   --color-titlebar-text: var(--titlebar-text);
   --color-card-shadow: var(--card-shadow);
   --color-card-shadow-strong: var(--card-shadow-strong);
+  --color-hover-bg: var(--hover-bg);
   --font-family-serif: var(--font-serif);
   --font-family-sans: var(--font-sans);
   --font-family-mono: var(--font-mono);
