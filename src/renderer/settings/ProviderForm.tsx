@@ -115,13 +115,12 @@ export function ProviderForm({ initial, onSave }: Props) {
           type="submit"
           data-testid="settings-save"
           disabled={saving}
-          className="font-sans disabled:opacity-50 transition-colors hover:bg-[color:var(--color-hover-bg)]"
+          className="font-sans bg-[color:var(--color-paper-deep)] disabled:opacity-50 transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
             padding: '6px 16px',
             borderRadius: 999,
             fontSize: 12,
             fontWeight: 500,
-            background: 'var(--color-paper-deep)',
             color: 'var(--color-ink)',
             border: '0.5px solid var(--color-ink-hair)',
           }}

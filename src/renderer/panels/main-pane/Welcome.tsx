@@ -72,12 +72,11 @@ export function Welcome() {
           type="button"
           data-testid="welcome-open-folder"
           onClick={onOpen}
-          className="font-sans transition-colors hover:bg-[color:var(--color-hover-bg)]"
+          className="font-sans bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
             padding: '8px 18px',
             fontSize: 13,
             color: 'var(--color-ink)',
-            background: 'var(--color-paper)',
             border: '0.5px solid var(--color-ink-hair)',
             borderRadius: 4,
             cursor: 'pointer',
@@ -90,12 +89,11 @@ export function Welcome() {
           type="button"
           data-testid="welcome-new-thread"
           onClick={onNewThread}
-          className="font-sans flex items-center gap-2 transition-colors hover:bg-[color:var(--color-hover-bg)]"
+          className="font-sans flex items-center gap-2 bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
             padding: '8px 14px',
             fontSize: 13,
             color: 'var(--color-ink)',
-            background: 'var(--color-paper)',
             border: '0.5px solid var(--color-ink-hair)',
             borderRadius: 4,
             cursor: 'pointer',

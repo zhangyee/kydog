@@ -149,12 +149,11 @@ export function InputPill({
               type="button"
               data-testid="stop-button"
               onClick={onStop}
-              className="font-serif transition-colors hover:bg-[color:var(--color-accent-hover)]"
+              className="font-serif bg-[color:var(--color-accent)] transition-colors hover:bg-[color:var(--color-accent-hover)]"
               style={{
                 width: large ? 30 : 26,
                 height: large ? 30 : 26,
                 padding: 0,
-                background: 'var(--color-accent)',
                 color: 'var(--color-paper)',
                 borderRadius: 2,
                 fontSize: large ? 13 : 12,
@@ -169,12 +168,11 @@ export function InputPill({
               data-testid="send-button"
               onClick={onSend}
               disabled={!text.trim()}
-              className="font-serif italic disabled:opacity-50 transition-colors hover:bg-[color:var(--color-accent-hover)]"
+              className="font-serif italic bg-[color:var(--color-accent)] disabled:opacity-50 transition-colors hover:bg-[color:var(--color-accent-hover)]"
               style={{
                 width: large ? 30 : 26,
                 height: large ? 30 : 26,
                 padding: 0,
-                background: 'var(--color-accent)',
                 color: 'var(--color-paper)',
                 borderRadius: 2,
                 fontSize: large ? 15 : 13,
