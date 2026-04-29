@@ -18,7 +18,7 @@ export function ChapterCard({ num, title, subtitle, tag, onClick, testId }: Prop
         padding: '16px 18px', background: 'var(--color-paper)',
         border: '0.5px solid var(--color-ink-hair)',
         borderRadius: 3, cursor: 'pointer',
-        boxShadow: '0 1px 0 rgba(70,55,40,0.04)',
+        boxShadow: '0 1px 0 var(--color-card-shadow)',
         display: 'flex', gap: 14, alignItems: 'flex-start',
         position: 'relative', font: 'inherit',
       }}

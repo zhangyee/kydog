@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { APP_USER_NAME, APP_USER_EMAIL } from '../../shared';
 import type { ThemeName } from '../../../shared/types';
 
 const SWATCHES: Array<{ name: ThemeName; label: string }> = [
@@ -52,8 +53,8 @@ export function UserMenuPopover() {
     >
       {/* 身份卡 */}
       <div style={{ padding: '8px 14px 10px', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
-        <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--color-ink)' }}>Yee Zhang</div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-ink-faint)', marginTop: 1 }}>zhangyee@gmail.com</div>
+        <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--color-ink)' }}>{APP_USER_NAME}</div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-ink-faint)', marginTop: 1 }}>{APP_USER_EMAIL}</div>
       </div>
 
       {/* 账户 CTA */}
@@ -66,7 +67,7 @@ export function UserMenuPopover() {
           style={{
             padding: '9px 10px', background: 'var(--color-paper-deep)',
             border: '0.5px solid var(--color-ink-hair)', borderRadius: 4,
-            boxShadow: '0 1px 0 rgba(70,55,40,0.04)',
+            boxShadow: '0 1px 0 var(--color-card-shadow)',
           }}
         >
           <span

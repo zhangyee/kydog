@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
-import { MessageMeta } from '../../shared';
+import { MessageMeta, fmtTime } from '../../shared';
 import { MarkdownBlock } from './MarkdownBlock';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCard } from './ToolCard';
@@ -10,12 +10,6 @@ import { useRunsStore } from '../../stores/runsStore';
 
 type Props = { threadId: string; messageId: string; blocks: AssistantBlock[]; createdAt?: string; live?: boolean };
 type ToolBlock = Extract<AssistantBlock, { kind: 'tool_call' }>;
-
-function fmtTime(iso?: string) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-}
 
 type Group =
   | { kind: 'text'; block: Extract<AssistantBlock, { kind: 'text' }> }

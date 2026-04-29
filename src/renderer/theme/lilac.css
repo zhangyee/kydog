@@ -18,6 +18,8 @@
   --titlebar-bg-from: #d8d4ec;
   --titlebar-bg-to: #e8e5f3;
   --titlebar-text: #574266;
+  --card-shadow: rgba(87,66,102,0.08);
+  --card-shadow-strong: rgba(87,66,102,0.12);
   --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
   --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
   --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;

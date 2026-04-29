@@ -1,11 +1,12 @@
 import { useUiStore } from '../../stores/uiStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { APP_USER_NAME } from '../../shared';
 
 export function UserBar() {
   const open = useUiStore((s) => s.userMenuOpen);
   const toggle = useUiStore((s) => s.toggleUserMenu);
   const provider = useSettingsStore((s) => s.settings?.llm.provider);
-  const userName = 'Yee Zhang';   // MVP：静态。OS userInfo 在 H' 子项目接
+  const userName = APP_USER_NAME;
 
   return (
     <button

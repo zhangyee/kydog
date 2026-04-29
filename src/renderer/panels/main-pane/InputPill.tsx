@@ -82,8 +82,8 @@ export function InputPill({
           borderRadius: 4,
           padding: large ? '14px 18px 12px' : '10px 14px',
           boxShadow:
-            '0 1px 0 rgba(70,55,40,0.06)' +
-            (large ? ', 0 8px 24px rgba(70,55,40,0.06)' : ''),
+            '0 1px 0 var(--color-card-shadow-strong)' +
+            (large ? ', 0 8px 24px var(--color-card-shadow-strong)' : ''),
         }}
       >
         <textarea

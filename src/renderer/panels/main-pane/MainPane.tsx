@@ -23,7 +23,7 @@ export function MainPane() {
   }
 
   return (
-    <div className="h-full flex flex-col" style={{ background: 'var(--color-paper)' }}>
+    <div className="h-full flex flex-col bg-[color:var(--color-paper)]">
       {tabs.length > 0 && (
         <TabStrip
           tabs={tabs}

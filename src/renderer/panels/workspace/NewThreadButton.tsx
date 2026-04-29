@@ -25,7 +25,7 @@ export function NewThreadButton() {
           background: 'var(--color-paper)',
           border: '0.5px solid var(--color-ink-hair)',
           borderRadius: 4, fontSize: 12, color: 'var(--color-ink)',
-          boxShadow: '0 1px 0 rgba(70,55,40,0.05)',
+          boxShadow: '0 1px 0 var(--color-card-shadow)',
         }}
       >
         <span style={{ fontFamily: 'var(--font-serif)', color: 'var(--color-accent)', fontSize: 14, lineHeight: 1 }}>✣</span>

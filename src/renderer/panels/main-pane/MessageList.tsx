@@ -1,5 +1,6 @@
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
+import { APP_USER_NAME } from '../../shared';
 import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
@@ -10,8 +11,7 @@ export function MessageList({ threadId }: { threadId: string }) {
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
 
-  // 用户头像名：MVP 先 "Yee"，H' 子项目接 settings
-  const userName = 'Yee';
+  const userName = APP_USER_NAME.split(' ')[0];
 
   return (
     <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="message-list">

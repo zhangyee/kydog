@@ -1,12 +1,6 @@
-import { MessageMeta } from '../../shared';
+import { MessageMeta, fmtTime } from '../../shared';
 
 type Props = { name: string; content: string; createdAt?: string };
-
-function fmtTime(iso?: string) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-}
 
 export function UserMessage({ name, content, createdAt }: Props) {
   return (

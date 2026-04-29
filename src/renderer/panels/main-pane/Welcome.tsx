@@ -78,7 +78,7 @@ export function Welcome() {
             border: '0.5px solid var(--color-ink-hair)',
             borderRadius: 4,
             cursor: 'pointer',
-            boxShadow: '0 1px 0 rgba(70,55,40,0.05)',
+            boxShadow: '0 1px 0 var(--color-card-shadow)',
           }}
         >
           ＋ 打开 Project
