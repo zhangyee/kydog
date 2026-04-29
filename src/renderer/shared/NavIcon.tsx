@@ -1,31 +1,138 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
+// Minimal Lucide-backed icon subset. Paths are adapted from the official
+// Lucide SVG set (ISC license) so we can ship the exact glyphs we use here
+// without blocking on a package install in the local workspace.
 export type NavIconName =
-  | 'plus' | 'search' | 'doc' | 'auto' | 'brain' | 'pin' | 'compose'
-  | 'chevron-down' | 'chevron-right' | 'folder' | 'folder-open' | 'thread' | 'gear' | 'dot';
+  | 'search'
+  | 'square-pen'
+  | 'sparkles'
+  | 'brain'
+  | 'chevron-down'
+  | 'chevron-right'
+  | 'folder'
+  | 'folder-open'
+  | 'folder-git-2'
+  | 'file-text'
+  | 'file-spreadsheet'
+  | 'file-diff'
+  | 'book-open-text'
+  | 'dot';
+
+type IconSpec = {
+  paths?: string[];
+  circles?: Array<{ cx: number; cy: number; r: number }>;
+};
+
+const ICONS: Record<NavIconName, IconSpec> = {
+  search: {
+    paths: ['m21 21-4.34-4.34'],
+    circles: [{ cx: 11, cy: 11, r: 8 }],
+  },
+  'square-pen': {
+    paths: [
+      'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7',
+      'M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z',
+    ],
+  },
+  sparkles: {
+    paths: [
+      'M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z',
+      'M20 2v4',
+      'M22 4h-4',
+    ],
+    circles: [{ cx: 4, cy: 20, r: 2 }],
+  },
+  brain: {
+    paths: [
+      'M12 18V5',
+      'M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4',
+      'M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5',
+      'M17.997 5.125a4 4 0 0 1 2.526 5.77',
+      'M18 18a4 4 0 0 0 2-7.464',
+      'M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517',
+      'M6 18a4 4 0 0 1-2-7.464',
+      'M6.003 5.125a4 4 0 0 0-2.526 5.77',
+    ],
+  },
+  'chevron-down': { paths: ['m6 9 6 6 6-6'] },
+  'chevron-right': { paths: ['m9 18 6-6-6-6'] },
+  folder: {
+    paths: ['M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'],
+  },
+  'folder-open': {
+    paths: ['m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2'],
+  },
+  'folder-git-2': {
+    paths: [
+      'M18 19a5 5 0 0 1-5-5v8',
+      'M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5',
+    ],
+    circles: [
+      { cx: 13, cy: 12, r: 2 },
+      { cx: 20, cy: 19, r: 2 },
+    ],
+  },
+  'file-text': {
+    paths: [
+      'M10 9H8',
+      'M14 2v5a1 1 0 0 0 1 1h5',
+      'M16 13H8',
+      'M16 17H8',
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z',
+    ],
+  },
+  'file-spreadsheet': {
+    paths: [
+      'M14 13h2',
+      'M14 17h2',
+      'M14 2v5a1 1 0 0 0 1 1h5',
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z',
+      'M8 13h2',
+      'M8 17h2',
+    ],
+  },
+  'file-diff': {
+    paths: [
+      'M12 13V7',
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z',
+      'M9 10h6',
+      'M9 17h6',
+    ],
+  },
+  'book-open-text': {
+    paths: [
+      'M12 7v14',
+      'M16 12h2',
+      'M16 8h2',
+      'M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z',
+      'M6 12h2',
+      'M6 8h2',
+    ],
+  },
+  dot: { circles: [{ cx: 12, cy: 12, r: 3 }] },
+};
 
 export function NavIcon({ name, size = 15, style }: { name: NavIconName; size?: number; style?: CSSProperties }) {
-  const common = {
-    width: size, height: size, viewBox: '0 0 16 16',
-    fill: 'none', stroke: 'currentColor', strokeWidth: 1.4,
-    strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
-    style: { display: 'block', flexShrink: 0, ...(style ?? {}) },
-  };
-  switch (name) {
-    case 'plus':          return <svg {...common}><path d="M3 13 L11 5 M9 4 L12 7 M2.5 13.5 L4.5 11.5"/><path d="M11 12 L13.5 12 M12.25 10.75 L12.25 13.25"/></svg>;
-    case 'search':        return <svg {...common}><circle cx="7" cy="7" r="4"/><path d="M10 10 L13 13"/></svg>;
-    case 'compose':       return <svg {...common}><path d="M4.3 11.7 L6.35 11.55 L11.25 6.65 C11.72 6.18 11.72 5.42 11.25 4.95 C10.78 4.48 10.02 4.48 9.55 4.95 L4.65 9.85 Z"/><path d="M8.9 3.75 H4.9 C3.57 3.75 2.5 4.82 2.5 6.15 V11.1 C2.5 12.43 3.57 13.5 4.9 13.5 H9.85 C11.18 13.5 12.25 12.43 12.25 11.1 V8.95"/></svg>;
-    case 'doc':           return <svg {...common}><path d="M4 2.5 H10 L12.5 5 V13.5 H4 Z"/><path d="M10 2.5 V5 H12.5"/><path d="M5.8 8 H10.5 M5.8 10 H10.5 M5.8 12 H8.5"/></svg>;
-    case 'auto':          return <svg {...common}><circle cx="8" cy="8" r="2"/><path d="M8 1.5 V3 M8 13 V14.5 M1.5 8 H3 M13 8 H14.5 M3.3 3.3 L4.3 4.3 M11.7 11.7 L12.7 12.7 M3.3 12.7 L4.3 11.7 M11.7 4.3 L12.7 3.3"/></svg>;
-    case 'brain':         return <svg {...common}><path d="M5.5 3.5 C3.5 3.5 2.5 5 2.5 6.5 C2.5 7.3 2.8 8 3.3 8.5 C2.8 9 2.5 9.7 2.5 10.5 C2.5 12 4 13 5.5 13 L8 13 V3.5 Z"/><path d="M10.5 3.5 C12.5 3.5 13.5 5 13.5 6.5 C13.5 7.3 13.2 8 12.7 8.5 C13.2 9 13.5 9.7 13.5 10.5 C13.5 12 12 13 10.5 13 L8 13 V3.5 Z"/></svg>;
-    case 'pin':           return <svg {...common}><path d="M5.5 2.5 L10.5 2.5"/><path d="M6 2.5 L6 6 L4 8.5 L12 8.5 L10 6 L10 2.5"/><path d="M8 8.5 L8 13.5"/></svg>;
-    case 'chevron-down':  return <svg {...common}><path d="M4 6 L8 10 L12 6"/></svg>;
-    case 'chevron-right': return <svg {...common}><path d="M6 4 L10 8 L6 12"/></svg>;
-    case 'folder':        return <svg {...common}><path d="M2.25 5.35 C2.25 4.41 3.01 3.65 3.95 3.65 H6.25 L7.7 5.3 H12.05 C12.99 5.3 13.75 6.06 13.75 7 V11.05 C13.75 11.99 12.99 12.75 12.05 12.75 H3.95 C3.01 12.75 2.25 11.99 2.25 11.05 Z"/></svg>;
-    case 'folder-open':   return <svg {...common}><path d="M2.25 5.1 C2.25 4.3 2.9 3.65 3.7 3.65 H6.15 L7.55 5.25 H9.6"/><path d="M2.05 6.55 H13.95 C14.49 6.55 14.89 7.05 14.77 7.58 L14.02 10.98 C13.85 11.76 13.16 12.32 12.36 12.32 H3.5 C2.56 12.32 1.85 11.46 2.03 10.53 Z"/></svg>;
-    case 'thread':        return <svg {...common}><path d="M2.5 5 C2.5 3.5 3.5 2.5 5 2.5 L11 2.5 C12.5 2.5 13.5 3.5 13.5 5 L13.5 9 C13.5 10.5 12.5 11.5 11 11.5 L7 11.5 L4 13.5 L4.5 11.5 C3.3 11.3 2.5 10.3 2.5 9 Z"/></svg>;
-    case 'gear':          return <svg {...common}><circle cx="8" cy="8" r="2"/><path d="M8 1.5 L8.6 3 L10 2.6 L10.3 4.2 L11.7 4.6 L11 6 L12.5 7 L11 8 L12.5 9 L11 10 L11.7 11.4 L10.3 11.8 L10 13.4 L8.6 13 L8 14.5 L7.4 13 L6 13.4 L5.7 11.8 L4.3 11.4 L5 10 L3.5 9 L5 8 L3.5 7 L5 6 L4.3 4.6 L5.7 4.2 L6 2.6 L7.4 3 Z"/></svg>;
-    case 'dot':
-    default:              return <svg {...common}><circle cx="8" cy="8" r="3"/></svg>;
-  }
+  const icon = ICONS[name];
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ display: 'block', flexShrink: 0, ...(style ?? {}) }}
+    >
+      {icon.paths?.map((d) => <path key={d} d={d} />)}
+      {icon.circles?.map(({ cx, cy, r }) => <circle key={`${cx}-${cy}-${r}`} cx={cx} cy={cy} r={r} />)}
+    </svg>
+  );
+}
+
+export function NavIconSlot({ children }: { children: ReactNode }) {
+  return <span className="w-4 h-4 inline-flex items-center justify-center shrink-0">{children}</span>;
 }

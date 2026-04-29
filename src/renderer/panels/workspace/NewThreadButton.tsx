@@ -16,7 +16,7 @@ export function NewThreadButton() {
   return (
     <div style={{ padding: '10px 6px 0' }}>
       <NavPill
-        icon="compose"
+        icon="square-pen"
         label="新对话"
         shortcut="⌘N"
         onClick={onClick}

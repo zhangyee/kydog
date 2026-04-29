@@ -1,11 +1,29 @@
 import { useEffect } from 'react';
 import { useUiStore } from '../../stores/uiStore';
-import { NavIcon } from '../../shared';
+import { NavIcon, type NavIconName } from '../../shared';
 import type { FsNode } from '../../../shared/types';
 
 type RowProps = { node: FsNode };
 
 const isReadme = (name: string) => /^readme(\..+)?$/i.test(name);
+const CODE_EXTENSIONS = new Set([
+  'c', 'cc', 'cpp', 'cs', 'css', 'go', 'h', 'hpp', 'html', 'ini', 'java', 'js', 'jsx', 'kt',
+  'mjs', 'py', 'rb', 'rs', 'scss', 'sh', 'sql', 'svg', 'svelte', 'toml', 'tsx', 'ts', 'vue',
+  'yaml', 'yml', 'zsh', 'json', 'jsonl', 'lock',
+]);
+const SHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xls', 'xlsx']);
+const TEXT_EXTENSIONS = new Set(['log', 'md', 'mdx', 'pdf', 'rtf', 'txt']);
+
+function iconForNode(node: FsNode, expanded: boolean): NavIconName {
+  if (node.kind === 'dir') return expanded ? 'folder-open' : 'folder';
+  if (isReadme(node.name)) return 'book-open-text';
+
+  const ext = node.name.includes('.') ? node.name.split('.').pop()?.toLowerCase() ?? '' : '';
+  if (SHEET_EXTENSIONS.has(ext)) return 'file-spreadsheet';
+  if (CODE_EXTENSIONS.has(ext)) return 'file-diff';
+  if (TEXT_EXTENSIONS.has(ext)) return 'file-text';
+  return 'file-text';
+}
 
 function Row({ node }: RowProps) {
   const expanded = useUiStore((s) => s.expandedDirs.has(node.path));
@@ -20,6 +38,7 @@ function Row({ node }: RowProps) {
 
   const isDir = node.kind === 'dir';
   const readme = !isDir && isReadme(node.name);
+  const iconName = iconForNode(node, expanded);
 
   return (
     <div>
@@ -42,6 +61,12 @@ function Row({ node }: RowProps) {
           {isDir && (
             <NavIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={11} />
           )}
+        </span>
+        <span
+          className="inline-flex items-center justify-center shrink-0"
+          style={{ width: 16, color: readme ? 'var(--color-accent)' : 'var(--color-ink-soft)' }}
+        >
+          <NavIcon name={iconName} size={14} />
         </span>
         <span
           className="flex-1 truncate"
