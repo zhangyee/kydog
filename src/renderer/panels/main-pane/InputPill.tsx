@@ -1,17 +1,54 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 
-export function InputPill({ threadId }: { threadId: string }) {
+type Props = {
+  threadId: string;
+  placeholder?: string;
+  large?: boolean;
+  /**
+   * External prefill value. When this changes (e.g. user clicks a ChapterCard),
+   * the textarea text is reset to this value.
+   * NOTE: Re-clicking the SAME card with the same string won't re-trigger the
+   * effect (React only runs effects when deps change). Acceptable MVP UX.
+   */
+  prefill?: string;
+};
+
+export function InputPill({
+  threadId,
+  placeholder = '继续追问，或 ⌘K 切换 Skill…',
+  large = false,
+  prefill,
+}: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [text, setText] = useState('');
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const isRunning = runState?.status === 'running';
+  const provider = useSettingsStore((s) => s.settings?.llm.provider);
   const appendUser = useThreadsStore((s) => s.appendUserMessage);
+  const thread = useThreadsStore((s) =>
+    Object.values(s.threadsByProject).flat().find((t) => t.id === threadId),
+  );
+  const projectName = thread ? (thread.projectPath.split('/').pop() ?? '') : '';
+
+  // Apply external prefill (e.g. ChapterCard click) to internal text.
+  useEffect(() => {
+    if (prefill !== undefined) setText(prefill);
+  }, [prefill]);
+
+  // Auto-grow textarea as content changes.
+  useEffect(() => {
+    if (!textareaRef.current) return;
+    textareaRef.current.style.height = 'auto';
+    textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+  }, [text]);
 
   const onSend = async () => {
-    const content = textareaRef.current?.value.trim() ?? '';
+    const content = text.trim();
     if (!content || isRunning) return;
-    if (textareaRef.current) textareaRef.current.value = '';
+    setText('');
     appendUser(threadId, {
       id: crypto.randomUUID(),
       role: 'user',
@@ -30,24 +67,121 @@ export function InputPill({ threadId }: { threadId: string }) {
   };
 
   return (
-    <div className="border-t border-[color:var(--color-paper-edge)] p-3 flex gap-2 items-end">
-      <textarea
-        ref={textareaRef}
-        data-testid="input-pill"
-        disabled={isRunning}
-        defaultValue=""
-        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void onSend(); } }}
-        placeholder={isRunning ? '运行中…' : '输入消息（⌘/Ctrl+Enter 发送）'}
-        rows={2}
-        className="flex-1 resize-none border rounded px-2 py-1 bg-transparent font-sans text-sm disabled:opacity-50"
-      />
-      {isRunning ? (
-        <button data-testid="stop-button" type="button" onClick={onStop}
-          className="px-3 py-1 rounded bg-[color:var(--color-accent)] text-white text-sm">Stop</button>
-      ) : (
-        <button data-testid="send-button" type="button" onClick={onSend}
-          className="px-3 py-1 rounded bg-[color:var(--color-accent)] text-white text-sm">发送</button>
-      )}
+    <div
+      className="ky-paper-deep shrink-0"
+      style={{ borderTop: '0.5px solid var(--color-ink-hair)', padding: '12px 22px 14px' }}
+    >
+      <div
+        style={{
+          background: 'var(--color-paper)',
+          border: '0.5px solid var(--color-ink-hair)',
+          borderRadius: 4,
+          padding: large ? '14px 18px 12px' : '10px 14px',
+          boxShadow:
+            '0 1px 0 rgba(70,55,40,0.06)' +
+            (large ? ', 0 8px 24px rgba(70,55,40,0.06)' : ''),
+        }}
+      >
+        <textarea
+          ref={textareaRef}
+          data-testid="input-pill"
+          value={text}
+          disabled={isRunning}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void onSend();
+            }
+          }}
+          placeholder={isRunning ? '运行中…' : placeholder}
+          rows={large ? 2 : 1}
+          className="font-serif italic w-full resize-none bg-transparent border-0 outline-none disabled:opacity-50"
+          style={{
+            fontSize: large ? 15 : 14,
+            lineHeight: 1.5,
+            color: 'var(--color-ink)',
+            minHeight: large ? 44 : 24,
+          }}
+        />
+        <div
+          className="flex items-center gap-2"
+          style={{
+            marginTop: large ? 10 : 8,
+            paddingTop: large ? 10 : 8,
+            borderTop: '0.5px solid var(--color-ink-hair-soft)',
+          }}
+        >
+          {[`＠ ${projectName || 'Project'}`, '§ Skills', '¶ 记忆'].map((s) => (
+            <span
+              key={s}
+              className="font-sans"
+              style={{
+                padding: large ? '3px 9px' : '2px 8px',
+                border: '0.5px solid var(--color-ink-hair)',
+                borderRadius: 2,
+                fontSize: large ? 11 : 10.5,
+                color: 'var(--color-ink-soft)',
+              }}
+            >
+              {s}
+            </span>
+          ))}
+          <span style={{ flex: 1 }} />
+          <span
+            className="font-mono"
+            style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
+          >
+            {provider ? `${provider.name} · ${provider.model}` : 'BYOK'}
+          </span>
+          <span
+            className="font-mono"
+            style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
+          >
+            ⌘↵
+          </span>
+          {isRunning ? (
+            <button
+              type="button"
+              data-testid="stop-button"
+              onClick={onStop}
+              className="font-serif"
+              style={{
+                width: large ? 30 : 26,
+                height: large ? 30 : 26,
+                padding: 0,
+                background: 'var(--color-accent)',
+                color: 'var(--color-paper)',
+                borderRadius: 2,
+                fontSize: large ? 13 : 12,
+              }}
+              aria-label="停止"
+            >
+              ■
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="send-button"
+              onClick={onSend}
+              disabled={!text.trim()}
+              className="font-serif italic disabled:opacity-50"
+              style={{
+                width: large ? 30 : 26,
+                height: large ? 30 : 26,
+                padding: 0,
+                background: 'var(--color-accent)',
+                color: 'var(--color-paper)',
+                borderRadius: 2,
+                fontSize: large ? 15 : 13,
+              }}
+              aria-label="发送"
+            >
+              ↵
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

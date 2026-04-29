@@ -1,9 +1,99 @@
+import { KyLogo } from '../../shared';
+import { useThreadsStore } from '../../stores/threadsStore';
+
 export function Welcome() {
+  const projects = useThreadsStore((s) => s.projects);
+
+  const onOpen = async () => {
+    try {
+      const project = await window.kydog.invoke('project.open');
+      useThreadsStore.setState((s) => ({
+        projects: [...s.projects.filter((p) => p.path !== project.path), project],
+      }));
+    } catch (err) {
+      console.error('open project failed', err);
+    }
+  };
+
+  const onNewThread = async () => {
+    if (!projects.length) {
+      void onOpen();
+      return;
+    }
+    try {
+      const thread = await window.kydog.invoke('thread.create', {
+        projectPath: projects[0].path,
+      });
+      useThreadsStore.getState().upsertThread(thread);
+      useThreadsStore.getState().selectThread(thread.id);
+    } catch (err) {
+      console.error('create thread failed', err);
+    }
+  };
+
   return (
-    <div className="h-full flex flex-col items-center justify-center font-serif text-[color:var(--color-ink)] gap-4 select-none">
-      <div className="text-3xl tracking-tight">KyDog 科研狗</div>
-      <div className="italic text-[color:var(--color-ink-soft)]">Building a better world.</div>
-      <div className="text-sm text-[color:var(--color-ink-soft)]">先打开一个 Project 文件夹，再新建对话。</div>
+    <div className="ky-paper-grain h-full flex flex-col items-center justify-center select-none">
+      <div className="flex items-baseline" style={{ gap: 18 }}>
+        <KyLogo size={68} peerSize />
+      </div>
+      <div
+        className="font-serif italic"
+        style={{
+          marginTop: 18,
+          fontSize: 20,
+          color: 'var(--color-ink)',
+          letterSpacing: 0.3,
+        }}
+      >
+        Building a better world.
+      </div>
+      <div
+        className="font-mono uppercase"
+        style={{
+          marginTop: 28,
+          fontSize: 10,
+          letterSpacing: 3,
+          color: 'var(--color-ink-faint)',
+        }}
+      >
+        — 选择一个 Project，或新建一个对话 —
+      </div>
+      <div className="flex gap-3" style={{ marginTop: 24 }}>
+        <button
+          type="button"
+          data-testid="welcome-open-folder"
+          onClick={onOpen}
+          className="font-sans"
+          style={{
+            padding: '8px 18px',
+            fontSize: 13,
+            color: 'var(--color-ink)',
+            background: 'var(--color-paper)',
+            border: '0.5px solid var(--color-ink-hair)',
+            borderRadius: 4,
+            cursor: 'pointer',
+            boxShadow: '0 1px 0 rgba(70,55,40,0.05)',
+          }}
+        >
+          ＋ 打开 Project
+        </button>
+        <button
+          type="button"
+          data-testid="welcome-new-thread"
+          onClick={onNewThread}
+          className="font-sans"
+          style={{
+            padding: '8px 18px',
+            fontSize: 13,
+            color: 'var(--color-paper)',
+            background: 'var(--color-accent)',
+            borderRadius: 4,
+            cursor: 'pointer',
+          }}
+        >
+          ✣ 新建对话
+        </button>
+      </div>
     </div>
   );
 }
