@@ -21,6 +21,8 @@ export function registerAllHandlers(): void {
   registerHandler('project.list', () => projectService.list());
   registerHandler('project.close', (args) => projectService.close(args));
   registerHandler('project.readDir', (args) => projectService.readDir(args));
+  registerHandler('project.openInOS', (args) => projectService.openInOS(args));
+  registerHandler('project.update', (args) => projectService.update(args));
 
   registerHandler('thread.create', (args) => threadService.create(args));
   registerHandler('thread.list', (args) => threadService.list(args));
@@ -29,4 +31,5 @@ export function registerAllHandlers(): void {
   registerHandler('thread.loadHistory', (args) => threadService.loadHistory(args));
   registerHandler('thread.send', (args) => threadService.send(args));
   registerHandler('thread.abort', (args) => threadService.abort(args));
+  registerHandler('thread.update', (args) => threadService.update(args));
 }
