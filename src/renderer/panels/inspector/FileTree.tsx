@@ -35,15 +35,13 @@ function Row({ node, depth, ancestorsLast, last }: RowProps) {
         }}
       >
         {Array.from({ length: depth }).map((_, i) => {
-          const isLastCol = i === depth - 1;
           const ancestorTerminated = ancestorsLast[i];
           return (
             <span key={i} className="self-stretch shrink-0 relative" style={{ width: 14 }}>
               {!ancestorTerminated && (
                 <span
                   style={{
-                    position: 'absolute', left: 6, top: 0,
-                    bottom: isLastCol && last ? '50%' : 0,
+                    position: 'absolute', left: 6, top: 0, bottom: 0,
                     width: 1, background: 'var(--color-ink-hair)',
                   }}
                 />
