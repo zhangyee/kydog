@@ -8,11 +8,12 @@ type Props = {
   selected?: boolean;
   muted?: boolean;
   dim?: boolean;
+  disabled?: boolean;
   onClick?: () => void;
   testId?: string;
 };
 
-export function NavPill({ icon, label, count, selected, muted, dim, onClick, testId }: Props) {
+export function NavPill({ icon, label, count, selected, muted, dim, disabled, onClick, testId }: Props) {
   const iconNode = typeof icon === 'string'
     ? <NavIcon name={icon as NavIconName} size={15} />
     : icon;
@@ -20,12 +21,17 @@ export function NavPill({ icon, label, count, selected, muted, dim, onClick, tes
     <button
       type="button"
       data-testid={testId}
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      aria-disabled={disabled || undefined}
+      title={disabled ? '即将开放' : undefined}
       className="flex items-center gap-2 px-2.5 py-1 rounded text-left w-full font-sans"
       style={{
-        background: selected ? 'var(--color-paper-edge)' : 'transparent',
+        background: selected && !disabled ? 'var(--color-paper-edge)' : 'transparent',
         color: dim ? 'var(--color-ink-faint)' : 'var(--color-ink)',
         fontSize: 13, fontWeight: selected ? 500 : 400,
+        opacity: disabled ? 0.5 : undefined,
+        cursor: disabled ? 'default' : undefined,
       }}
     >
       {iconNode && (
