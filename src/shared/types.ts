@@ -1,4 +1,4 @@
-export type Project = { path: string; label?: string; addedAt: string };
+export type Project = { path: string; label?: string; addedAt: string; pinned?: boolean };
 
 export type Thread = {
   id: string;
@@ -6,6 +6,7 @@ export type Thread = {
   title: string;
   createdAt: string;
   lastActiveAt: string;
+  pinned?: boolean;
 };
 
 export type AssistantBlock =
