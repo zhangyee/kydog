@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
 import { MessageMeta } from '../../shared';
 import { MarkdownBlock } from './MarkdownBlock';
@@ -47,7 +48,7 @@ function groupBlocks(blocks: AssistantBlock[]): Group[] {
 
 export function AssistantMessage({ threadId, blocks, createdAt }: Props) {
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
-  const groups = groupBlocks(blocks);
+  const groups = useMemo(() => groupBlocks(blocks), [blocks]);
 
   return (
     <div style={{ margin: '24px 0' }}>
