@@ -18,7 +18,17 @@ export type NavIconName =
   | 'file-spreadsheet'
   | 'file-diff'
   | 'book-open-text'
-  | 'dot';
+  | 'dot'
+  | 'chevrons-down-up'
+  | 'filter'
+  | 'folder-plus'
+  | 'more-horizontal'
+  | 'pin'
+  | 'pencil-line'
+  | 'x'
+  | 'clock'
+  | 'messages-square'
+  | 'circle-plus';
 
 type IconSpec = {
   paths?: string[];
@@ -120,6 +130,56 @@ const ICONS: Record<NavIconName, IconSpec> = {
       'M6 12h2',
       'M6 8h2',
     ],
+  },
+  'chevrons-down-up': {
+    paths: ['m7 20 5-5 5 5', 'm7 4 5 5 5-5'],
+  },
+  filter: {
+    paths: ['M3 6h18', 'M7 12h10', 'M10 18h4'],
+  },
+  'folder-plus': {
+    paths: [
+      'M12 10v6',
+      'M9 13h6',
+      'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
+    ],
+  },
+  'more-horizontal': {
+    circles: [
+      { cx: 12, cy: 12, r: 1 },
+      { cx: 19, cy: 12, r: 1 },
+      { cx: 5, cy: 12, r: 1 },
+    ],
+  },
+  pin: {
+    paths: [
+      'M12 17v5',
+      'M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z',
+    ],
+  },
+  'pencil-line': {
+    paths: [
+      'M12 20h9',
+      'M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.852z',
+      'm15 5 3 3',
+    ],
+  },
+  x: {
+    paths: ['M18 6 6 18', 'm6 6 12 12'],
+  },
+  clock: {
+    paths: ['M12 6v6l4 2'],
+    circles: [{ cx: 12, cy: 12, r: 10 }],
+  },
+  'messages-square': {
+    paths: [
+      'M14 9a2 2 0 0 1-2 2H6l-4 4V4c0-1.1.9-2 2-2h8a2 2 0 0 1 2 2z',
+      'M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1',
+    ],
+  },
+  'circle-plus': {
+    paths: ['M8 12h8', 'M12 8v8'],
+    circles: [{ cx: 12, cy: 12, r: 10 }],
   },
   dot: { circles: [{ cx: 12, cy: 12, r: 3 }] },
 };
