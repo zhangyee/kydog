@@ -42,6 +42,7 @@ export function Welcome() {
         <KyLogo size={68} peerSize />
       </div>
       <div
+        data-testid="welcome-slogan"
         className="font-serif italic"
         style={{
           marginTop: 18,

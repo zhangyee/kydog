@@ -28,7 +28,7 @@ test('13-tab-strip: thread tab renders, breadcrumb stats visible, close deselect
     // Close tab → main pane returns to Welcome.
     await page.locator(`[data-testid="tab-close-${threadId}"]`).click();
     await expect(page.locator(`[data-testid="tab-${threadId}"]`)).toHaveCount(0);
-    await expect(page.getByText('Building a better world.')).toBeVisible();
+    await expect(page.getByTestId('welcome-slogan')).toBeVisible();
   } finally {
     await teardown(launched);
   }
