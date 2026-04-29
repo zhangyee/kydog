@@ -76,6 +76,13 @@ function toPiShape(evt: FixtureEvent, aborted: boolean, toolChunks: Map<string, 
         assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: evt.delta, partial: stubAssistantMessage('toolUse') },
       };
 
+    case 'thinking_delta':
+      return {
+        type: 'message_update',
+        message: stubAssistantMessage('toolUse'),
+        assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: evt.delta, partial: stubAssistantMessage('toolUse') },
+      };
+
     case 'tool_start':
       return {
         type: 'tool_execution_start',

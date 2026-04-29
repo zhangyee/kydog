@@ -63,7 +63,7 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
         if (c.type === 'text') {
           blocks.push({ kind: 'text', text: c.text });
         } else if (c.type === 'thinking') {
-          blocks.push({ kind: 'thinking', text: c.thinking });
+          blocks.push({ kind: 'thinking', text: c.thinking, status: 'done' });
         } else if (c.type === 'toolCall') {
           const tr = toolResults.get(c.id);
           blocks.push({

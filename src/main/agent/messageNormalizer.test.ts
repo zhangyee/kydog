@@ -70,7 +70,7 @@ describe('normalizePiMessages', () => {
     expect(out[0].role).toBe('assistant');
     if (out[0].role === 'assistant') {
       expect(out[0].blocks).toEqual([
-        { kind: 'thinking', text: 'I should think about this...' },
+        { kind: 'thinking', text: 'I should think about this...', status: 'done' },
         { kind: 'text', text: 'Here is my answer.' },
       ]);
     }

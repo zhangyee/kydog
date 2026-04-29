@@ -10,7 +10,7 @@ export type Thread = {
 
 export type AssistantBlock =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  | { kind: 'thinking'; text: string; status?: 'running' | 'done'; durationMs?: number }
   | {
       kind: 'tool_call';
       id: string;

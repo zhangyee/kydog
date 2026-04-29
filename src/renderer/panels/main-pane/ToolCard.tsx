@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
 import { TOOL_STATUS_COLOR } from './toolStatus';
+import { toolLabel, toolStatusLabel } from './toolSummary';
 
 type Props = { tool: Extract<AssistantBlock, { kind: 'tool_call' }> };
 
 export function ToolCard({ tool }: Props) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const hasOutput = tool.chunks.length > 0;
-  const lines = tool.chunks.reduce((acc, c) => acc + (c.data.match(/\n/g)?.length ?? 0), 0);
+  const label = toolLabel(tool);
+  const status = toolStatusLabel(tool.status);
 
   return (
     <div
@@ -22,6 +24,7 @@ export function ToolCard({ tool }: Props) {
         type="button"
         onClick={() => hasOutput && setOpen(v => !v)}
         disabled={!hasOutput}
+        data-testid={`tool-toggle-${tool.id}`}
         className="w-full flex items-center gap-2 text-left disabled:cursor-default"
         style={{
           padding: '6px 10px',
@@ -35,31 +38,44 @@ export function ToolCard({ tool }: Props) {
         <span
           style={{ width: 6, height: 6, borderRadius: '50%', background: TOOL_STATUS_COLOR[tool.status] }}
         />
-        <span style={{ color: 'var(--color-ink-soft)', fontSize: 10 }}>{tool.name}</span>
-        <span className="truncate flex-1" style={{ fontWeight: 500 }}>$ {tool.command ?? ''}</span>
-        {hasOutput && (
-          <span style={{ color: 'var(--color-ink-faint)', fontSize: 10 }}>{lines} lines</span>
-        )}
-        {tool.exitCode !== undefined && (
-          <span style={{ color: 'var(--color-ink-faint)', fontSize: 10 }}>exit {tool.exitCode}</span>
-        )}
+        <span style={{ color: 'var(--color-ink-soft)', fontSize: 10 }}>{label}</span>
+        <span className="truncate flex-1" style={{ fontWeight: 500 }}>{status}</span>
+        <span className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}>
+          {hasOutput ? (open ? '收起' : '展开') : ''}
+        </span>
       </button>
       {open && hasOutput && (
-        <pre
-          className="font-mono"
-          style={{
-            margin: 0, padding: '8px 12px', background: '#1f1a15',
-            borderTop: '0.5px solid var(--color-ink-hair-soft)',
-            color: '#d9cfbf', fontSize: 10.5, lineHeight: 1.55,
-            whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto',
-          }}
-        >
-          {tool.chunks.map((c, i) => (
-            <span key={i} data-stream={c.stream} style={{ color: c.stream === 'stderr' ? '#e0a48a' : '#d9cfbf' }}>
-              {c.data}
-            </span>
-          ))}
-        </pre>
+        <div style={{ borderTop: '0.5px solid var(--color-ink-hair-soft)', background: '#1f1a15' }}>
+          {tool.command && (
+            <div
+              className="font-mono"
+              style={{
+                padding: '8px 12px 6px',
+                color: '#d9cfbf',
+                fontSize: 10.5,
+                lineHeight: 1.45,
+                borderBottom: '0.5px solid rgba(217, 207, 191, 0.12)',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              $ {tool.command}
+            </div>
+          )}
+          <pre
+            className="font-mono"
+            style={{
+              margin: 0, padding: '8px 12px', background: '#1f1a15',
+              color: '#d9cfbf', fontSize: 10.5, lineHeight: 1.55,
+              whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto',
+            }}
+          >
+            {tool.chunks.map((c, i) => (
+              <span key={i} data-stream={c.stream} style={{ color: c.stream === 'stderr' ? '#e0a48a' : '#d9cfbf' }}>
+                {c.data}
+              </span>
+            ))}
+          </pre>
+        </div>
       )}
     </div>
   );

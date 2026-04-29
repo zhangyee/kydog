@@ -9,6 +9,7 @@ export type RunUiState =
 type RunsState = {
   runStateByThread: Record<string, RunUiState>;
   bufferByMessage: Record<string, { threadId: string; blocks: AssistantBlock[] }>;
+  activeThinkingStartByMessage: Record<string, number | undefined>;
   setRun: (threadId: string, state: RunUiState) => void;
   startMessageBuffer: (threadId: string, messageId: string) => void;
   appendDelta: (messageId: string, delta: string) => void;
@@ -22,6 +23,7 @@ type RunsState = {
 export const useRunsStore = create<RunsState>((set, get) => ({
   runStateByThread: {},
   bufferByMessage: {},
+  activeThinkingStartByMessage: {},
   setRun: (threadId, state) =>
     set((s) => ({ runStateByThread: { ...s.runStateByThread, [threadId]: state } })),
   startMessageBuffer: (threadId, messageId) =>
@@ -30,32 +32,53 @@ export const useRunsStore = create<RunsState>((set, get) => ({
     set((s) => {
       const buf = s.bufferByMessage[messageId];
       if (!buf) return {};
-      const blocks = [...buf.blocks];
+      const now = Date.now();
+      const blocks = finalizeActiveThinking([...buf.blocks], s.activeThinkingStartByMessage[messageId], now);
       const last = blocks[blocks.length - 1];
       if (last && last.kind === 'text') blocks[blocks.length - 1] = { kind: 'text', text: last.text + delta };
       else blocks.push({ kind: 'text', text: delta });
-      return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+      return {
+        activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: undefined },
+        bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } },
+      };
     }),
   appendThinking: (messageId, delta) =>
     set((s) => {
       const buf = s.bufferByMessage[messageId];
       if (!buf) return {};
+      const now = Date.now();
       const blocks = [...buf.blocks];
       const last = blocks[blocks.length - 1];
-      if (last && last.kind === 'thinking') blocks[blocks.length - 1] = { kind: 'thinking', text: last.text + delta };
-      else blocks.push({ kind: 'thinking', text: delta });
-      return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+      const existingStart = s.activeThinkingStartByMessage[messageId];
+      const startedAt = existingStart ?? now;
+      if (last && last.kind === 'thinking') {
+        blocks[blocks.length - 1] = {
+          kind: 'thinking',
+          text: last.text + delta,
+          status: 'running',
+          durationMs: Math.max(0, now - startedAt),
+        };
+      } else {
+        blocks.push({ kind: 'thinking', text: delta, status: 'running', durationMs: 0 });
+      }
+      return {
+        activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: startedAt },
+        bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } },
+      };
     }),
   addToolCall: (messageId, toolCallId, name, command) =>
     set((s) => {
       const buf = s.bufferByMessage[messageId];
       if (!buf) return {};
+      const now = Date.now();
+      const blocks = finalizeActiveThinking([...buf.blocks], s.activeThinkingStartByMessage[messageId], now);
       return {
+        activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: undefined },
         bufferByMessage: {
           ...s.bufferByMessage,
           [messageId]: {
             ...buf,
-            blocks: [...buf.blocks, { kind: 'tool_call', id: toolCallId, name, command, chunks: [], status: 'running' }],
+            blocks: [...blocks, { kind: 'tool_call', id: toolCallId, name, command, chunks: [], status: 'running' }],
           },
         },
       };
@@ -83,10 +106,30 @@ export const useRunsStore = create<RunsState>((set, get) => ({
   takeBuffer: (messageId) => {
     const buf = get().bufferByMessage[messageId];
     if (!buf) return null;
+    const now = Date.now();
+    const blocks = finalizeActiveThinking(
+      [...buf.blocks],
+      get().activeThinkingStartByMessage[messageId],
+      now,
+    );
     set((s) => {
       const { [messageId]: _drop, ...rest } = s.bufferByMessage;
-      return { bufferByMessage: rest };
+      const { [messageId]: _dropThinking, ...restThinking } = s.activeThinkingStartByMessage;
+      return { bufferByMessage: rest, activeThinkingStartByMessage: restThinking };
     });
-    return buf.blocks;
+    return blocks;
   },
 }));
+
+function finalizeActiveThinking(blocks: AssistantBlock[], startedAt: number | undefined, now: number): AssistantBlock[] {
+  if (!startedAt || blocks.length === 0) return blocks;
+  const last = blocks[blocks.length - 1];
+  if (last.kind !== 'thinking') return blocks;
+  blocks[blocks.length - 1] = {
+    kind: 'thinking',
+    text: last.text,
+    status: 'done',
+    durationMs: Math.max(last.durationMs ?? 0, now - startedAt),
+  };
+  return blocks;
+}

@@ -46,7 +46,7 @@ export function AssistantMessage({ threadId, blocks, createdAt }: Props) {
 
   return (
     <div style={{ margin: '24px 0' }}>
-      <MessageMeta side="agent" label="— KyDog" time={fmtTime(createdAt)} />
+      <MessageMeta side="agent" label="KyDog" time={fmtTime(createdAt)} />
       <div
         className="font-serif"
         style={{ fontSize: 14.5, lineHeight: 1.75, color: 'var(--color-ink)' }}
@@ -57,7 +57,7 @@ export function AssistantMessage({ threadId, blocks, createdAt }: Props) {
               ? <ToolGroup key={`g-${i}`} tools={g.tools} />
               : <ToolCard key={g.tools[0].id} tool={g.tools[0]} />;
           }
-          if (g.kind === 'thinking') return <ThinkingBlock key={i} text={g.block.text} />;
+          if (g.kind === 'thinking') return <ThinkingBlock key={i} block={g.block} />;
           return <MarkdownBlock key={i} content={g.block.text} />;
         })}
         {runState?.status === 'error' && <ErrorMarginalia text={runState.error} />}
