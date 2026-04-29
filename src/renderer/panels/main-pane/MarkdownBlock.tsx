@@ -1,25 +1,22 @@
-import { isValidElement, type ReactNode } from 'react';
+import { isValidElement, type CSSProperties, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+
+const CITATION_STYLE: CSSProperties = {
+  color: 'var(--color-accent)',
+  fontWeight: 600,
+  fontFamily: 'var(--font-serif)',
+  fontSize: 11,
+  padding: '0 1px',
+  cursor: 'pointer',
+};
 
 function annotateCitations(node: ReactNode): ReactNode {
   if (typeof node === 'string') {
     const parts = node.split(/(\[\d+\])/g);
     return parts.map((s, i) =>
       /^\[\d+\]$/.test(s)
-        ? (
-          <sup
-            key={i}
-            style={{
-              color: 'var(--color-accent)',
-              fontWeight: 600,
-              fontFamily: 'var(--font-serif)',
-              fontSize: 11,
-              padding: '0 1px',
-              cursor: 'pointer',
-            }}
-          >{s}</sup>
-        )
+        ? <sup key={i} style={CITATION_STYLE}>{s}</sup>
         : s,
     );
   }
