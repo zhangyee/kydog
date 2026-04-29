@@ -39,7 +39,7 @@ export function NewThreadEmptyState({ threadId }: Props) {
     <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto">
       <div
         style={{
-          maxWidth: 680,
+          maxWidth: 840,
           margin: '0 auto',
           padding: '64px 80px',
           textAlign: 'center',
