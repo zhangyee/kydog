@@ -15,7 +15,7 @@ export function MessageList({ threadId }: { threadId: string }) {
 
   return (
     <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="message-list">
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '32px 48px 140px' }}>
+      <div style={{ maxWidth: 840, margin: '0 auto', padding: '32px 48px 140px' }}>
         <ThreadHeader threadId={threadId} />
         {messages.map((m) =>
           m.role === 'user'
