@@ -9,3 +9,4 @@ export { Hairline } from './Hairline';
 export { fmtTime } from './fmtTime';
 export { APP_USER_NAME, APP_USER_EMAIL } from './userIdentity';
 export { Tooltip } from './Tooltip';
+export { IconButton } from './IconButton';
