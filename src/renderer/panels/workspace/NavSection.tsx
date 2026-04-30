@@ -6,10 +6,10 @@ export function NavSection({ title, children, right }: Props) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div
-        className="flex items-center font-sans uppercase"
+        className="flex items-center font-sans"
         style={{
-          padding: '4px 12px', fontSize: 10, fontWeight: 600,
-          color: 'var(--color-ink-faint)', letterSpacing: 1.2,
+          padding: '4px 12px', fontSize: 13, fontWeight: 500,
+          color: 'var(--color-ink-soft)',
         }}
       >
         <span className="flex-1">{title}</span>

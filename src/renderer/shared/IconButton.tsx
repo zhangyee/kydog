@@ -9,11 +9,12 @@ type Props = {
   active?: boolean;
   disabled?: boolean;
   testId?: string;
+  tone?: 'default' | 'faint';
   children: ReactNode;
 };
 
 export const IconButton = forwardRef<HTMLButtonElement, Props>(function IconButton(
-  { size = 24, tooltip, ariaLabel, onClick, active, disabled, testId, children },
+  { size = 24, tooltip, ariaLabel, onClick, active, disabled, testId, tone = 'default', children },
   ref,
 ) {
   const button = (
@@ -29,7 +30,7 @@ export const IconButton = forwardRef<HTMLButtonElement, Props>(function IconButt
         width: size,
         height: size,
         background: active ? 'var(--color-hover-bg)' : 'transparent',
-        color: 'var(--color-ink-soft)',
+        color: tone === 'faint' ? 'var(--color-ink-faint)' : 'var(--color-ink-soft)',
         cursor: disabled ? 'default' : 'pointer',
       }}
     >

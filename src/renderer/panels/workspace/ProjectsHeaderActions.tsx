@@ -25,6 +25,7 @@ export function ProjectsHeaderActions() {
     <div className="flex items-center gap-0.5">
       <IconButton
         size={22}
+        tone="faint"
         tooltip="全部收起"
         ariaLabel="全部收起"
         testId="projects-collapse-all"
@@ -41,6 +42,7 @@ export function ProjectsHeaderActions() {
           <IconButton
             ref={ref as Ref<HTMLButtonElement>}
             size={22}
+            tone="faint"
             tooltip={open ? undefined : '筛选、排序和整理对话'}
             ariaLabel="筛选、排序和整理对话"
             active={open}
@@ -88,6 +90,7 @@ export function ProjectsHeaderActions() {
 
       <IconButton
         size={22}
+        tone="faint"
         tooltip="添加新项目"
         ariaLabel="添加新项目"
         testId="add-project-trigger"
