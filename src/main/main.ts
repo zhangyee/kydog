@@ -69,7 +69,11 @@ app.on('ready', async () => {
 
     await ensureKydogDirs();
 
-    await skillSyncStateHolder.runOnStartup();
+    try {
+      await skillSyncStateHolder.runOnStartup();
+    } catch (err) {
+      logger.warn('skill-sync', 'startup sync failed; continuing without builtin skills', { err: String(err) });
+    }
 
     installDispatcher();
     registerAllHandlers();

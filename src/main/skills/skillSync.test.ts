@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { classifySkill, applyOverrides } from './skillSync';
+import { classifySkill, applyOverrides, runSkillSync } from './skillSync';
+import { createHash } from 'node:crypto';
 
 function tmp() { return mkdtempSync(path.join(tmpdir(), 'sync-')); }
 
@@ -73,6 +74,53 @@ describe('classifySkill', () => {
     });
     expect(r.action).toBe('skip');
     expect(r.toWrite).toEqual([]);
+  });
+});
+
+describe('runSkillSync conflict + auto-write manifest', () => {
+  it('records auto-written missing files but preserves recordedSha for conflicts', async () => {
+    const root = tmp();
+    const built = path.join(root, 'src-skills');
+    const target = path.join(root, 'kydog-skills');
+    const manifest = path.join(target, '.manifest.json');
+
+    const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+
+    // Built-in skill ships SKILL.md (NEW) + r.md
+    mkdirSync(path.join(built, 'fastpaper'), { recursive: true });
+    writeFileSync(path.join(built, 'fastpaper', 'SKILL.md'), 'NEW_SKILL');
+    writeFileSync(path.join(built, 'fastpaper', 'r.md'), 'NEW_R');
+
+    // User has SKILL.md on disk with their own edit; r.md doesn't exist on disk
+    mkdirSync(path.join(target, 'fastpaper'), { recursive: true });
+    writeFileSync(path.join(target, 'fastpaper', 'SKILL.md'), 'USER_EDITED');
+
+    // Manifest already records OLD_SKILL for SKILL.md (so user-modified is detected)
+    mkdirSync(target, { recursive: true });
+    writeFileSync(manifest, JSON.stringify({
+      kydogVersion: '0.1.0',
+      writtenAt: '2026-04-29T00:00:00Z',
+      builtin: { fastpaper: { kydogVersion: '0.1.0', files: { 'SKILL.md': sha('OLD_SKILL') } } },
+    }));
+
+    const result = await runSkillSync({
+      builtinRoot: built,
+      kydogSkillsDir: target,
+      manifestPath: manifest,
+      kydogVersion: '0.2.0',
+    });
+
+    // Skill is in pendingConflicts (SKILL.md conflicts)
+    expect(result.pendingConflicts.map(c => c.skill)).toEqual(['fastpaper']);
+    expect(result.pendingConflicts[0].conflicts.map(c => c.relPath)).toEqual(['SKILL.md']);
+
+    // r.md got auto-written
+    expect(readFileSync(path.join(target, 'fastpaper', 'r.md'), 'utf-8')).toBe('NEW_R');
+
+    // Manifest's r.md sha is the NEW shipped sha; SKILL.md sha is unchanged (still OLD_SKILL's sha)
+    const reread = JSON.parse(readFileSync(manifest, 'utf-8'));
+    expect(reread.builtin.fastpaper.files['r.md']).toBe(sha('NEW_R'));
+    expect(reread.builtin.fastpaper.files['SKILL.md']).toBe(sha('OLD_SKILL'));
   });
 });
 

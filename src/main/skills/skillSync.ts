@@ -109,8 +109,15 @@ export async function runSkillSync(i: SyncInputs): Promise<SyncResult> {
         await writeFiles(i.builtinRoot, name, cls.toWrite, i.kydogSkillsDir);
       }
       pendingConflicts.push({ skill: name, conflicts: cls.conflicts });
-      // Don't advance manifest entry for files still in conflict; only updated written ones below.
-      // Keep recorded entry as-is (so next pass still classifies the same way).
+      // Record the auto-written files into the manifest so the next sync uses the right
+      // baseline for them. Leave the conflicting files' recordedSha untouched so the same
+      // conflict reappears on every boot until the user resolves it via the UI.
+      if (cls.toWrite.length > 0) {
+        const prev = manifest.builtin[name];
+        const newFiles: Record<string, string> = { ...(prev?.files ?? recorded) };
+        for (const rel of cls.toWrite) newFiles[rel] = shipped[rel];
+        manifest.builtin[name] = { kydogVersion: i.kydogVersion, files: newFiles };
+      }
       continue;
     }
     // install or auto-upgrade
