@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
@@ -6,8 +7,16 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+const fastpaperRel = process.platform === 'win32'
+  ? path.join('vendor', 'current', 'fastpaper.exe')
+  : path.join('vendor', 'current', 'fastpaper');
+
 const config: ForgeConfig = {
-  packagerConfig: { asar: true },
+  packagerConfig: {
+    asar: true,
+    extraResource: [fastpaperRel, 'src/skills'],
+    // 等加签名时：osxSign / osxNotarize / windowsSign
+  },
   rebuildConfig: {},
   makers: [new MakerSquirrel({}), new MakerZIP({}, ['darwin'])],
   plugins: [
