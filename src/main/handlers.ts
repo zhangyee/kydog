@@ -3,6 +3,7 @@ import { registerHandler } from './ipc/dispatcher';
 import { settingsService } from './settings/settingsService';
 import { projectService } from './project/projectService';
 import { threadService } from './thread/threadService';
+import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -33,9 +34,9 @@ export function registerAllHandlers(): void {
   registerHandler('thread.abort', (args) => threadService.abort(args));
   registerHandler('thread.update', (args) => threadService.update(args));
 
-  // registerHandler('skill.getPendingSync', () => skillSyncStateHolder.getStatus());
-  // registerHandler('skill.applyOverrides', async (args) => {
-  //   await skillSyncStateHolder.applyOverrides(args.operations);
-  //   return skillSyncStateHolder.getStatus();
-  // });
+  registerHandler('skill.getPendingSync', () => skillSyncStateHolder.getStatus());
+  registerHandler('skill.applyOverrides', async (args) => {
+    await skillSyncStateHolder.applyOverrides(args.operations);
+    return skillSyncStateHolder.getStatus();
+  });
 }
