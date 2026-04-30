@@ -10,6 +10,13 @@ export type KydogErrorCode =
   | 'fs.read_failed'
   | 'fs.write_failed'
   | 'not_implemented'
+  | 'skill.invalid'
+  | 'skill.name_conflict'
+  | 'skill.network'
+  | 'skill.too_large'
+  | 'skill.unsupported_archive'
+  | 'skill.extract_failed'
+  | 'skill.uninstall_forbidden'
   | 'unknown';
 
 export class KydogError extends Error {

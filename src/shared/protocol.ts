@@ -1,5 +1,6 @@
 import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SkillSyncStatus,
+  SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
 } from './types';
 import type { SerializedError } from './errors';
 
@@ -22,7 +23,16 @@ export type RpcCall =
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
   | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean }; result: Thread }
   | { method: 'skill.getPendingSync'; args: undefined; result: SkillSyncStatus }
-  | { method: 'skill.applyOverrides'; args: { operations: { skill: string; files: string[] }[] }; result: SkillSyncStatus };
+  | { method: 'skill.applyOverrides'; args: { operations: { skill: string; files: string[] }[] }; result: SkillSyncStatus }
+  | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
+  | { method: 'skill.setEnabled'; args: { name: string; enabled: boolean }; result: SkillEntry[] }
+  | { method: 'skill.pickFolder'; args: undefined; result: string | null }
+  | { method: 'skill.previewFromFolder'; args: { srcDir: string }; result: SkillPreview }
+  | { method: 'skill.previewFromUrl'; args: { url: string }; result: SkillPreview }
+  | { method: 'skill.commitFromPreview'; args: SkillCommitArgs; result: SkillCommitResult }
+  | { method: 'skill.uninstall'; args: { name: string }; result: SkillEntry[] }
+  | { method: 'skill.openInOS'; args: { name: string }; result: void }
+  | { method: 'tool.list'; args: { force?: boolean }; result: ToolEntry[] };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];

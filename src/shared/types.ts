@@ -1,3 +1,5 @@
+import type { SerializedError } from './errors';
+
 export type Project = { path: string; label?: string; addedAt: string; pinned?: boolean };
 
 export type Thread = {
@@ -80,3 +82,44 @@ export interface SkillSyncStatus {
   pendingConflicts: PendingSkillConflict[];
   userSkills: string[];
 }
+
+export type SkillEntry = {
+  name: string;
+  description: string;
+  origin: 'builtin' | 'user';
+  enabled: boolean;
+  dirPath: string;
+  kydogVersion?: string;
+};
+
+export type ToolEntry = {
+  name: string;
+  version: string | null;
+  path: string;
+};
+
+export type SkillCandidate = {
+  name: string;
+  description: string;
+  relPath: string;
+  alreadyInstalled: 'builtin' | 'user' | null;
+  nameInvalid?: string;
+};
+
+export type SkillPreview = {
+  srcKind: 'folder' | 'url';
+  srcPath: string;
+  candidates: SkillCandidate[];
+};
+
+export type SkillCommitArgs = {
+  srcKind: 'folder' | 'url';
+  srcPath: string;
+  picks: { name: string; relPath: string }[];
+};
+
+export type SkillCommitResult = {
+  installed: SkillEntry[];
+  skipped: { name: string; reason: SerializedError }[];
+  list: SkillEntry[];
+};
