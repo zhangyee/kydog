@@ -5,7 +5,7 @@
 // has the right binary by sha256.
 
 import { createHash } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, chmodSync, statSync, copyFileSync, renameSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, chmodSync, statSync, copyFileSync, renameSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -95,10 +95,14 @@ async function main() {
   }
   const expectedBin = process.platform === 'win32' ? 'fastpaper.exe' : 'fastpaper';
   const finalPath = path.join(VENDOR_DIR, expectedBin);
+  const markerPath = path.join(VENDOR_DIR, '.fetched-sha');
 
-  if (existsSync(finalPath) && sha256OfFile(finalPath) === expectedSha) {
-    console.log(`[fetch-bin] ${finalPath} already correct, skipping`);
-    return;
+  if (existsSync(finalPath) && existsSync(markerPath)) {
+    const recordedSha = readFileSync(markerPath, 'utf-8').trim();
+    if (recordedSha === expectedSha) {
+      console.log(`[fetch-bin] ${finalPath} already at sha ${expectedSha.slice(0, 12)}…, skipping`);
+      return;
+    }
   }
 
   mkdirSync(VENDOR_DIR, { recursive: true });
@@ -123,6 +127,7 @@ async function main() {
     // On Windows, rename over an existing file fails, so the explicit rm is needed.
     if (process.platform === 'win32' && existsSync(finalPath)) rmSync(finalPath);
     renameSync(stagePath, finalPath);
+    writeFileSync(markerPath, expectedSha + '\n');
     const finalSize = statSync(finalPath).size;
     console.log(`[fetch-bin] wrote ${finalPath} (${finalSize} bytes)`);
   } finally {
