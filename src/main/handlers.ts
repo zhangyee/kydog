@@ -32,4 +32,10 @@ export function registerAllHandlers(): void {
   registerHandler('thread.send', (args) => threadService.send(args));
   registerHandler('thread.abort', (args) => threadService.abort(args));
   registerHandler('thread.update', (args) => threadService.update(args));
+
+  // registerHandler('skill.getPendingSync', () => skillSyncStateHolder.getStatus());
+  // registerHandler('skill.applyOverrides', async (args) => {
+  //   await skillSyncStateHolder.applyOverrides(args.operations);
+  //   return skillSyncStateHolder.getStatus();
+  // });
 }

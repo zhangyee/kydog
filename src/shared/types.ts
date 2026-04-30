@@ -61,3 +61,21 @@ export type BootstrapState = {
   settings: SettingsFile;
   appVersion: string;
 };
+
+export interface SkillFileConflict {
+  relPath: string;
+  shippedSha: string;
+  diskSha: string;
+  recordedSha: string | null;
+}
+
+export interface PendingSkillConflict {
+  skill: string;
+  conflicts: SkillFileConflict[];
+}
+
+export interface SkillSyncStatus {
+  installedOrUpgraded: { skill: string; files: string[]; action: 'install' | 'auto-upgrade' }[];
+  pendingConflicts: PendingSkillConflict[];
+  userSkills: string[];
+}

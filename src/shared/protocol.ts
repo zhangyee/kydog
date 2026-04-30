@@ -1,5 +1,5 @@
 import type {
-  BootstrapState, Project, Thread, Message, FsNode, SettingsFile,
+  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SkillSyncStatus,
 } from './types';
 import type { SerializedError } from './errors';
 
@@ -20,7 +20,9 @@ export type RpcCall =
   | { method: 'thread.abort'; args: { threadId: string }; result: void }
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
-  | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean }; result: Thread };
+  | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean }; result: Thread }
+  | { method: 'skill.getPendingSync'; args: undefined; result: SkillSyncStatus }
+  | { method: 'skill.applyOverrides'; args: { operations: { skill: string; files: string[] }[] }; result: SkillSyncStatus };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];
