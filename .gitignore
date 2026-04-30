@@ -91,6 +91,9 @@ typings/
 # Electron-Forge
 out/
 
+# Bundled native CLI binaries (fetched by scripts/fetch-bin.mjs)
+vendor/
+
 # coding-agents draft documents
 docs/superpowers/
 docs/scratch/

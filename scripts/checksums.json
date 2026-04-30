@@ -1,0 +1,16 @@
+{
+  "fastpaper": {
+    "version": "0.1.0",
+    "release": "https://github.com/zhangyee/fastpaper-cli/releases/download/v{version}/{asset}",
+    "assets": {
+      "darwin-arm64": "fastpaper-cli-aarch64-apple-darwin.tar.xz",
+      "darwin-x64":   "fastpaper-cli-x86_64-apple-darwin.tar.xz",
+      "win32-x64":    "fastpaper-cli-x86_64-pc-windows-msvc.zip"
+    },
+    "sha256": {
+      "darwin-arm64": "TODO_FILL_AT_TASK_3",
+      "darwin-x64":   "TODO_FILL_AT_TASK_3",
+      "win32-x64":    "TODO_FILL_AT_TASK_3"
+    }
+  }
+}
