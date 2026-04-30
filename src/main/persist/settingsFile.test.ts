@@ -1,8 +1,8 @@
 // src/main/persist/settingsFile.test.ts
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { promises as fs, mkdtempSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import os, { tmpdir } from 'node:os';
 import * as paths from './paths';
 import { loadSettings, saveSettings, defaultSettings } from './settingsFile';
 
@@ -23,5 +23,20 @@ describe('settingsFile', () => {
     const v = { ...defaultSettings(), llm: { provider: { kind: 'openai-compat' as const, name: 'D', baseUrl: 'u', apiKey: 'k', model: 'm' } } };
     await saveSettings(v);
     expect(await loadSettings()).toEqual(v);
+  });
+  it('defaultSettings includes skills.disabledBuiltins=[]', () => {
+    expect(defaultSettings().skills).toEqual({ disabledBuiltins: [] });
+  });
+  it('loadSettings normalizes legacy file missing skills field', async () => {
+    const dir2 = mkdtempSync(path.join(tmpdir(), 'kydog-set-'));
+    const file = path.join(dir2, 'kydog.json');
+    writeFileSync(file, JSON.stringify({
+      schemaVersion: 1,
+      ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+      llm: { provider: null },
+    }));
+    vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(file);
+    const loaded = await loadSettings();
+    expect(loaded.skills).toEqual({ disabledBuiltins: [] });
   });
 });

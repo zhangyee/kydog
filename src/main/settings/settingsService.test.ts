@@ -49,6 +49,21 @@ describe('SettingsService', () => {
     expect(result.ui.inspectorCollapsed).toBe(false);
   });
 
+  it('update({skills: {disabledBuiltins:["x"]}}) does not affect ui or llm', async () => {
+    const fakeLoad = async (): Promise<SettingsFile> => ({
+      schemaVersion: 1,
+      ui: { theme: 'sepia', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+      llm: { provider: { kind: 'openai-compat', name: 'p', baseUrl: 'u', apiKey: 'k', model: 'm' } },
+      skills: { disabledBuiltins: [] },
+    });
+    const savedRef: { value: SettingsFile | null } = { value: null };
+    const svc = new SettingsService(fakeLoad, async (s) => { savedRef.value = s; });
+    await svc.update({ skills: { disabledBuiltins: ['x'] } });
+    expect(savedRef.value?.skills.disabledBuiltins).toEqual(['x']);
+    expect(savedRef.value?.ui.theme).toBe('sepia');
+    expect(savedRef.value?.llm.provider?.name).toBe('p');
+  });
+
   it('reset calls save with defaultSettings and clears cache', async () => {
     const { svc, save, load } = makeService();
     // Prime the cache

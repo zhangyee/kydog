@@ -36,6 +36,7 @@ export async function seedSettings(kydogHome: string, opts: { providerConfigured
       schemaVersion: 1,
       ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
       llm: { provider },
+      skills: { disabledBuiltins: [] },
     }, null, 2),
   );
 }

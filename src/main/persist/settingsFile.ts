@@ -9,16 +9,24 @@ export function defaultSettings(): SettingsFile {
     schemaVersion: 1,
     ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
     llm: { provider: null },
+    skills: { disabledBuiltins: [] },
   };
 }
 
 export async function loadSettings(): Promise<SettingsFile> {
   try {
     const raw = await fs.readFile(paths.SETTINGS_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as SettingsFile;
-    if (parsed && parsed.schemaVersion === 1 && parsed.ui && parsed.llm) return parsed;
-    logger.warn('persist.settingsFile', 'load failed; returning defaults', { reason: 'shape mismatch' });
-    return defaultSettings();
+    const parsed = JSON.parse(raw) as Partial<SettingsFile>;
+    if (!parsed || parsed.schemaVersion !== 1 || !parsed.ui || !parsed.llm) {
+      logger.warn('persist.settingsFile', 'load failed; returning defaults', { reason: 'shape mismatch' });
+      return defaultSettings();
+    }
+    return {
+      schemaVersion: 1,
+      ui: parsed.ui,
+      llm: parsed.llm,
+      skills: parsed.skills ?? defaultSettings().skills,
+    };
   } catch (err) {
     logger.warn('persist.settingsFile', 'load failed; returning defaults', { err: String(err) });
     return defaultSettings();

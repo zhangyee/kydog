@@ -19,6 +19,7 @@ export class SettingsService {
       schemaVersion: 1,
       ui: { ...current.ui, ...(patch.ui ?? {}) },
       llm: { ...current.llm, ...(patch.llm ?? {}) },
+      skills: { ...current.skills, ...(patch.skills ?? {}) },
     };
     await this.save(next);
     this.cache = next;

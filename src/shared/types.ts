@@ -47,6 +47,7 @@ export type SettingsFile = {
     inspectorCollapsed: boolean;
   };
   llm: { provider: ProviderConfig | null };
+  skills: { disabledBuiltins: string[] };
 };
 
 export type IndexFile = {
