@@ -1,0 +1,51 @@
+name: Release
+on:
+  push: { tags: ['v*'] }
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,       target: darwin-arm64 }
+          - { os: macos-13,       target: darwin-x64   }
+          - { os: windows-latest, target: win32-x64    }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci          # postinstall fetches host-platform fastpaper
+      - run: npm run lint
+      - run: npm test
+      - run: npm run make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kydog-${{ matrix.target }}
+          path: out/make/**/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Compute SHA256SUMS.txt
+        run: |
+          cd dist
+          find . -type f ! -name 'SHA256SUMS.txt' -exec shasum -a 256 {} + > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          draft: true
+          generate_release_notes: true
