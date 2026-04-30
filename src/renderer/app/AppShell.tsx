@@ -22,21 +22,30 @@ export function AppShell() {
     return `${t.title} · ${t.projectPath.split(/[\\/]/).pop() ?? ''}`;
   });
 
-  // ⌘N / Ctrl+N → new thread (uses first project; mirrors NewThreadButton)
-  // 注意：聚焦在输入框/textarea/contenteditable 时不拦截，避免 InputPill (Phase 8) 起冲突
+  // ⌘N → new thread, ⌘O → open project folder. 聚焦输入框时不拦截。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n' && !e.shiftKey)) return;
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      e.preventDefault();
-      const { projects } = useThreadsStore.getState();
-      if (!projects.length) return;
-      void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
-        useThreadsStore.getState().upsertThread(thread);
-        useUiStore.getState().showThreadTab();
-        useThreadsStore.getState().selectThread(thread.id);
-      });
+      const key = e.key.toLowerCase();
+      if (key === 'n') {
+        e.preventDefault();
+        const { projects } = useThreadsStore.getState();
+        if (!projects.length) return;
+        void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
+          useThreadsStore.getState().upsertThread(thread);
+          useUiStore.getState().showThreadTab();
+          useThreadsStore.getState().selectThread(thread.id);
+        });
+      } else if (key === 'o') {
+        e.preventDefault();
+        void window.kydog.invoke('project.open').then((p) => {
+          useThreadsStore.setState((s) => ({
+            projects: [...s.projects.filter((x) => x.path !== p.path), p],
+          }));
+        }).catch((err) => console.error('open project failed', err));
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

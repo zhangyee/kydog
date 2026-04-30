@@ -72,9 +72,9 @@ export function Welcome() {
           type="button"
           data-testid="welcome-open-folder"
           onClick={onOpen}
-          className="font-sans bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
+          className="group font-sans flex items-center gap-2 bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
-            padding: '8px 18px',
+            padding: '8px 14px',
             fontSize: 13,
             color: 'var(--color-ink)',
             border: '0.5px solid var(--color-ink-hair)',
@@ -83,13 +83,25 @@ export function Welcome() {
             boxShadow: '0 1px 0 var(--color-card-shadow)',
           }}
         >
-          ＋ 打开 Project
+          <span
+            className="inline-flex items-center justify-center font-sans"
+            style={{ width: 16, height: 16, fontSize: 18, lineHeight: 1, color: 'var(--color-accent)' }}
+          >
+            ＋
+          </span>
+          <span>打开项目文件夹</span>
+          <span
+            className="font-mono opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ fontSize: 12, color: 'var(--color-ink-faint)', marginLeft: 4 }}
+          >
+            ⌘O
+          </span>
         </button>
         <button
           type="button"
           data-testid="welcome-new-thread"
           onClick={onNewThread}
-          className="font-sans flex items-center gap-2 bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
+          className="group font-sans flex items-center gap-2 bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
             padding: '8px 14px',
             fontSize: 13,
@@ -108,8 +120,8 @@ export function Welcome() {
           </span>
           <span>新对话</span>
           <span
-            className="font-mono"
-            style={{ fontSize: 10, color: 'var(--color-ink-faint)', marginLeft: 4 }}
+            className="font-mono opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ fontSize: 12, color: 'var(--color-ink-faint)', marginLeft: 4 }}
           >
             ⌘N
           </span>

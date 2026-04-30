@@ -100,7 +100,7 @@ export function InputPill({
           }}
           placeholder={isRunning ? '运行中…' : placeholder}
           rows={large ? 2 : 1}
-          className="font-serif italic w-full resize-none bg-transparent border-0 outline-none disabled:opacity-50"
+          className="font-serif w-full resize-none bg-transparent border-0 outline-none disabled:opacity-50"
           style={{
             fontSize: large ? 15 : 14,
             lineHeight: 1.5,

@@ -130,6 +130,7 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
         >
           <IconButton
             size={20}
+            tone="faint"
             tooltip={`在「${baseName}」中开启新对话`}
             ariaLabel="新对话"
             testId={`project-new-thread-${baseName}`}
@@ -145,6 +146,7 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
               <IconButton
                 ref={ref as Ref<HTMLButtonElement>}
                 size={20}
+                tone="faint"
                 tooltip={open ? undefined : '更多操作'}
                 ariaLabel="更多操作"
                 active={open}
