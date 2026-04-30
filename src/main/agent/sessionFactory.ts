@@ -44,6 +44,9 @@ export async function createSession(opts: {
   if (!model) {
     throw new Error(`failed to register custom model ${opts.model} on provider openai-compat`);
   }
+  const { createKydogResourceLoader } = await import('../skills/skillResourceLoader');
+  const resourceLoader = await createKydogResourceLoader(opts.cwd);
+  await resourceLoader.reload();
   const sessionFile = `${opts.sessionsDir}/${opts.sessionId}.jsonl`;
   const { session } = await pi.createAgentSession({
     cwd: opts.cwd,
@@ -51,6 +54,7 @@ export async function createSession(opts: {
     authStorage,
     modelRegistry,
     model,
+    resourceLoader,
   });
   return session as AnySession;
 }
