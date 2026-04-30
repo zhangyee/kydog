@@ -27,4 +27,11 @@ describe('fetch-bin pure helpers', () => {
     });
     expect(url).toBe('https://example.com/v0.1.0/foo.zip');
   });
+  it('urlFor replaces every occurrence of placeholders', () => {
+    expect(urlFor({
+      template: 'https://x/{version}/build-{version}/{asset}',
+      version: '1.2.3',
+      asset: 'a.zip',
+    })).toBe('https://x/1.2.3/build-1.2.3/a.zip');
+  });
 });

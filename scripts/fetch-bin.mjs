@@ -5,7 +5,7 @@
 // has the right binary by sha256.
 
 import { createHash } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, chmodSync, statSync, copyFileSync, renameSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, chmodSync, statSync, copyFileSync, renameSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -33,7 +33,7 @@ export function assetForTarget(target) {
 }
 
 export function urlFor({ template, version, asset }) {
-  return template.replace('{version}', version).replace('{asset}', asset);
+  return template.replaceAll('{version}', version).replaceAll('{asset}', asset);
 }
 
 function sha256OfFile(file) {
@@ -41,9 +41,16 @@ function sha256OfFile(file) {
 }
 
 async function downloadTo(url, dest) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`download failed (${res.status}): ${url}`);
-  await pipeline(res.body, createWriteStream(dest));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 120_000);
+  try {
+    const res = await fetch(url, { redirect: 'follow', signal: ctrl.signal });
+    if (!res.ok) throw new Error(`download failed (${res.status} ${res.statusText}): ${url}`);
+    if (!res.body) throw new Error(`download returned empty body: ${url}`);
+    await pipeline(res.body, createWriteStream(dest));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function extractTarXz(archive, outDir) {
@@ -52,22 +59,26 @@ function extractTarXz(archive, outDir) {
 }
 
 function extractZip(archive, outDir) {
+  const tar = spawnSync('tar', ['-xf', archive, '-C', outDir], { stdio: 'inherit' });
+  if (tar.status === 0) return;
   const ps = spawnSync('powershell.exe', [
     '-NoProfile', '-Command',
-    `Expand-Archive -Path '${archive}' -DestinationPath '${outDir}' -Force`,
+    `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${outDir.replace(/'/g, "''")}' -Force`,
   ], { stdio: 'inherit' });
-  if (ps.status === 0) return;
-  const tar = spawnSync('tar', ['-xf', archive, '-C', outDir], { stdio: 'inherit' });
-  if (tar.status !== 0) throw new Error(`zip extract failed for ${archive}`);
+  if (ps.status !== 0) throw new Error(`zip extract failed for ${archive}`);
 }
 
 function locateBinary(dir, expectedName) {
-  const r = spawnSync(process.platform === 'win32' ? 'where' : 'find',
-    process.platform === 'win32' ? ['/r', dir, expectedName] : [dir, '-name', expectedName, '-type', 'f'],
-    { encoding: 'utf-8' });
-  const lines = (r.stdout || '').trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length === 0) throw new Error(`${expectedName} not found inside ${dir}`);
-  return lines[0];
+  const stack = [dir];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    for (const ent of readdirSync(cur, { withFileTypes: true })) {
+      const p = path.join(cur, ent.name);
+      if (ent.isDirectory()) stack.push(p);
+      else if (ent.isFile() && ent.name === expectedName) return p;
+    }
+  }
+  throw new Error(`${expectedName} not found inside ${dir}`);
 }
 
 async function main() {
@@ -108,7 +119,9 @@ async function main() {
     if (existsSync(stagePath)) rmSync(stagePath);
     copyFileSync(located, stagePath);
     if (process.platform !== 'win32') chmodSync(stagePath, 0o755);
-    if (existsSync(finalPath)) rmSync(finalPath);
+    // On POSIX, renameSync atomically replaces an existing finalPath in one syscall.
+    // On Windows, rename over an existing file fails, so the explicit rm is needed.
+    if (process.platform === 'win32' && existsSync(finalPath)) rmSync(finalPath);
     renameSync(stagePath, finalPath);
     const finalSize = statSync(finalPath).size;
     console.log(`[fetch-bin] wrote ${finalPath} (${finalSize} bytes)`);
@@ -118,5 +131,9 @@ async function main() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('fetch-bin.mjs')) {
-  main().catch((err) => { console.error('[fetch-bin] FAILED:', err.message); process.exit(1); });
+  main().catch((err) => {
+    console.error('[fetch-bin] FAILED:', err.message);
+    console.error('[fetch-bin] If this persists: check network/proxy, or set KYDOG_SKIP_FETCH_BIN=1 to bypass and place the binary in vendor/current/ manually.');
+    process.exit(1);
+  });
 }
