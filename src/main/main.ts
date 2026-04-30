@@ -35,6 +35,26 @@ async function createWindow() {
       nodeIntegration: false,
     },
   });
+  // Route all external links (target="_blank" + plain anchor navigations) through
+  // the OS default browser. Same-origin navigations (Vite HMR reload, in-app
+  // file:// loads) pass through. Non-http(s)/mailto schemes are silently denied
+  // to avoid handing arbitrary URIs to the OS.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (/^(https?|mailto):$/.test(parsed.protocol)) void shell.openExternal(url);
+    } catch { /* ignore malformed url */ }
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (e, targetUrl) => {
+    let target: URL;
+    try { target = new URL(targetUrl); } catch { e.preventDefault(); return; }
+    const current = new URL(mainWindow.webContents.getURL());
+    if (target.origin === current.origin) return;
+    e.preventDefault();
+    if (/^(https?|mailto):$/.test(target.protocol)) void shell.openExternal(targetUrl);
+  });
+
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
