@@ -21,11 +21,15 @@ describe('detectBashOnWindowsImpl', () => {
   });
   it('not found anywhere', () => {
     const r = detectBashOnWindowsImpl({
-      env: { ProgramFiles: 'C:\\Program Files' },
+      env: { ProgramFiles: 'C:\\Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
       existsSync: () => false,
       spawnSync: () => ({ status: 1, stdout: '', stderr: 'not found' }),
     });
     expect(r.found).toBe(false);
-    expect(r.searched.length).toBeGreaterThanOrEqual(3);
+    expect(r.searched).toEqual([
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+      'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+      'PATH (where bash.exe)',
+    ]);
   });
 });

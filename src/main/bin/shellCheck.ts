@@ -10,21 +10,12 @@ export interface DetectDeps {
     { status: number | null; stdout: string; stderr: string };
 }
 
-const FALLBACK_PATHS = [
-  'C:\\Program Files\\Git\\bin\\bash.exe',
-  'C:\\msys64\\usr\\bin\\bash.exe',
-  'C:\\msys32\\usr\\bin\\bash.exe',
-];
-
 export function detectBashOnWindowsImpl(d: DetectDeps): DetectResult {
   const searched: string[] = [];
   const tryPaths: string[] = [];
   if (d.env.ProgramFiles) tryPaths.push(`${d.env.ProgramFiles}\\Git\\bin\\bash.exe`);
   const pf86 = d.env['ProgramFiles(x86)'];
   if (pf86) tryPaths.push(`${pf86}\\Git\\bin\\bash.exe`);
-  for (const p of FALLBACK_PATHS) {
-    if (!tryPaths.includes(p)) tryPaths.push(p);
-  }
   for (const p of tryPaths) {
     searched.push(p);
     if (d.existsSync(p)) return { found: true, searched };
