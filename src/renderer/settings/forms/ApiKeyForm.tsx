@@ -53,20 +53,32 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
   const [testHint, setTestHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const hasKey = !!configured?.authStatus.configured;
+  // Prefill from on-disk settings on mount / providerId change. Both fields are
+  // populated so re-saving without edits is a no-op (instead of nuking the key).
+  // The key stays masked behind type=password unless user clicks 显示.
+  useEffect(() => {
+    let cancelled = false;
+    void window.kydog.invoke('settings.get').then((s) => {
+      if (cancelled) return;
+      const cred = s.llm.auth[providerId];
+      const stored = cred?.type === 'api_key' ? cred.key : '';
+      setApiKey(stored);
+      setBaseUrl(s.llm.providers[providerId]?.baseUrl ?? '');
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [providerId]);
 
   const submit = async () => {
     setSaving(true); setError(null); setTestHint(null);
     try {
-      if (!apiKey.trim() && !hasKey) {
+      if (!apiKey.trim()) {
         throw new Error('apiKey 不能为空');
       }
       const cfg = {
         kind: 'apiKey' as const,
-        apiKey: apiKey.trim() || '',
+        apiKey: apiKey.trim(),
         baseUrl: meta.baseUrlOverridable && baseUrl.trim() ? baseUrl.trim() : undefined,
       };
-      // Backend treats empty apiKey as "preserve existing key, update only baseUrl/headers".
       await window.kydog.invoke('llm.configure', { providerId, cfg });
       await refresh();
       window.kydog.invoke('llm.testConnection', { providerId }).then((r) => {
@@ -86,17 +98,13 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
     closeDetail();
   };
 
-  useEffect(() => {
-    if (configured) setBaseUrl('');
-  }, [configured]);
-
   return (
     <form onSubmit={(e) => { e.preventDefault(); void submit(); }} style={{ display: 'grid', rowGap: 0 }}>
       <FormRow label="API Key" hint={`明文存于 ~/.kydog/kydog.json::llm.auth${meta.envFallback?.length ? `；不填则自动 fallback 到环境变量 ${meta.envFallback.join(' / ')}` : ''}`}>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             type={showKey ? 'text' : 'password'}
-            placeholder={hasKey ? '已存（不回显；填入新值会覆盖）' : 'sk-…'}
+            placeholder="sk-…"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             style={{ ...inputStyle, flex: 1 }}

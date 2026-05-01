@@ -75,16 +75,13 @@ class LlmService {
     if (args.cfg.kind === 'apiKey') {
       const cfg = args.cfg;
       const settings = await settingsService.get();
-      // Empty apiKey means "update only baseUrl/headers; keep existing auth".
-      // Without this guard, re-saving the form with a blank input (we don't echo
-      // the stored key) would silently nuke the saved credential.
-      const auth = cfg.apiKey
-        ? { ...settings.llm.auth, [args.providerId]: { type: 'api_key' as const, key: cfg.apiKey } }
-        : settings.llm.auth;
       await settingsService.update({
         llm: {
           ...settings.llm,
-          auth,
+          auth: {
+            ...settings.llm.auth,
+            [args.providerId]: { type: 'api_key', key: cfg.apiKey },
+          },
           providers: {
             ...settings.llm.providers,
             [args.providerId]: {
