@@ -2,6 +2,7 @@
 import { useEffect } from 'react';
 import { useLlmStore } from '../stores/llmStore';
 import { useUiStore } from '../stores/uiStore';
+import { ProviderRowModelPicker } from './ProviderRowModelPicker';
 
 export function ProviderListSection({ onAdd }: { onAdd: () => void }) {
   const configured = useLlmStore((s) => s.configured);
@@ -55,6 +56,15 @@ export function ProviderListSection({ onAdd }: { onAdd: () => void }) {
                   {c.kind} · {c.authStatus.label ?? (c.authStatus.configured ? 'ok' : '未配置')} · {c.modelIds.length} 个模型
                 </div>
               </div>
+              <ProviderRowModelPicker
+                providerId={c.providerId}
+                value={c.defaultModel}
+                onChange={async (m) => {
+                  await window.kydog.invoke('llm.setDefault', { providerId: c.providerId, modelId: m });
+                  await useLlmStore.getState().refresh();
+                }}
+                disabled={!c.authStatus.configured}
+              />
               {defaultProvider === c.providerId ? (
                 <span className="font-mono uppercase" style={{ fontSize: 9, color: 'var(--color-ink-faint)', letterSpacing: 1 }}>默认</span>
               ) : null}
