@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useSkillsStore } from '../stores/skillsStore';
-import type { SkillEntry, ToolEntry } from '../../shared/types';
+import type { SkillEntry, SkillPreview, ToolEntry } from '../../shared/types';
 
 export function SkillsAndToolsSection() {
   const { skills, tools, loading, error, setSkills, setTools, setLoading } = useSkillsStore();
+  const [preview, setPreview] = useState<SkillPreview | null>(null);
+  const [picks, setPicks] = useState<Set<string>>(new Set());
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<Map<string, { code: string; message: string }>>(new Map());
 
   const refresh = async (opts?: { force?: boolean }) => {
     setLoading('loading');
@@ -18,6 +23,54 @@ export function SkillsAndToolsSection() {
     } catch (err) {
       setLoading('error', String((err as Error)?.message ?? err));
     }
+  };
+
+  const onPickFolder = async () => {
+    setInstallError(null); setSkipped(new Map());
+    const picked = await window.kydog.invoke('skill.pickFolder');
+    if (!picked) return;
+    try {
+      const p = await window.kydog.invoke('skill.previewFromFolder', { srcDir: picked });
+      setPreview(p);
+      setPicks(new Set(
+        p.candidates.filter((c) => !c.alreadyInstalled && !c.nameInvalid).map((c) => c.relPath),
+      ));
+    } catch (e) { setInstallError(String((e as Error).message)); }
+  };
+
+  const onCommit = async () => {
+    if (!preview) return;
+    setInstalling(true); setInstallError(null);
+    try {
+      const ps = preview.candidates
+        .filter((c) => picks.has(c.relPath))
+        .map((c) => ({ name: c.name, relPath: c.relPath }));
+      const r = await window.kydog.invoke('skill.commitFromPreview', {
+        srcKind: preview.srcKind,
+        srcPath: preview.srcPath,
+        picks: ps,
+      });
+      setSkills(r.list);
+      if (r.skipped.length === 0) {
+        setPreview(null); setPicks(new Set()); setSkipped(new Map());
+      } else {
+        const map = new Map<string, { code: string; message: string }>();
+        for (const s of r.skipped) {
+          const cand = preview.candidates.find((c) => c.name === s.name);
+          if (cand) map.set(cand.relPath, { code: s.reason.code, message: s.reason.message });
+        }
+        setSkipped(map);
+        const installedNames = new Set(r.installed.map((i) => i.name));
+        const nextPicks = new Set<string>();
+        for (const c of preview.candidates) {
+          if (picks.has(c.relPath) && !installedNames.has(c.name) && !map.has(c.relPath)) {
+            nextPicks.add(c.relPath);
+          }
+        }
+        setPicks(nextPicks);
+      }
+    } catch (e) { setInstallError(String((e as Error).message)); }
+    finally { setInstalling(false); }
   };
 
   useEffect(() => {
@@ -54,6 +107,24 @@ export function SkillsAndToolsSection() {
       <SectionHeader title="技能 · 已安装" />
       {user.length === 0 && <Empty />}
       {user.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button onClick={onPickFolder} className="font-mono" style={{ fontSize: 11 }}>+ 从文件夹安装</button>
+        {/* + 从 URL 安装 button is added in Task 21 */}
+      </div>
+      {preview && (
+        <PreviewBlock
+          preview={preview}
+          picks={picks}
+          setPicks={setPicks}
+          skipped={skipped}
+          installing={installing}
+          onCancel={() => { setPreview(null); setPicks(new Set()); setSkipped(new Map()); setInstallError(null); }}
+          onCommit={onCommit}
+        />
+      )}
+      {installError && (
+        <div style={{ color: 'var(--color-danger, #c0392b)', marginTop: 8, fontSize: 12 }}>{installError}</div>
+      )}
 
       <SectionHeader title="工具" subtitle="agent 可调用的捆绑 CLI" />
       {tools.length === 0 && <Empty />}
@@ -149,6 +220,64 @@ function ToolRow({ tool }: { tool: ToolEntry }) {
       <div style={{ width: 140, fontWeight: 500 }}>{tool.name}</div>
       <div className="font-mono" style={{ width: 80, fontSize: 11, color: 'var(--color-ink-soft)' }}>{tool.version ?? '—'}</div>
       <div className="font-mono truncate" style={{ flex: 1, fontSize: 11, color: 'var(--color-ink-faint)' }}>{tool.path}</div>
+    </div>
+  );
+}
+
+function PreviewBlock(props: {
+  preview: SkillPreview;
+  picks: Set<string>;
+  setPicks: (s: Set<string>) => void;
+  skipped: Map<string, { code: string; message: string }>;
+  installing: boolean;
+  onCancel: () => void;
+  onCommit: () => void;
+}) {
+  const { preview, picks, setPicks, skipped, installing, onCancel, onCommit } = props;
+  const togglePick = (relPath: string) => {
+    const next = new Set(picks);
+    if (next.has(relPath)) next.delete(relPath); else next.add(relPath);
+    setPicks(next);
+  };
+  return (
+    <div style={{ marginTop: 12, padding: 12, border: '0.5px solid var(--color-ink-hair-soft)', borderRadius: 6 }}>
+      <div className="font-mono uppercase" style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 8 }}>
+        来自 {preview.srcKind === 'folder' ? '文件夹' : 'URL'}
+      </div>
+      {preview.candidates.map((c) => {
+        const skip = skipped.get(c.relPath);
+        const blockReason = c.nameInvalid
+          ? c.nameInvalid
+          : c.alreadyInstalled
+            ? `已存在（${c.alreadyInstalled}）`
+            : skip
+              ? `${skip.code}：${skip.message}`
+              : null;
+        const blocked = blockReason !== null;
+        return (
+          <label key={c.relPath} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0' }}>
+            <input
+              type="checkbox"
+              disabled={blocked}
+              checked={picks.has(c.relPath)}
+              onChange={() => togglePick(c.relPath)}
+            />
+            <span style={{ fontWeight: 500 }}>{c.name}</span>
+            <span className="truncate" style={{ flex: 1, fontSize: 12, color: 'var(--color-ink-soft)' }}>{c.description}</span>
+            {blockReason && (
+              <span className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-faint)' }}>
+                {blockReason}
+              </span>
+            )}
+          </label>
+        );
+      })}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+        <button onClick={onCancel} disabled={installing}>取消</button>
+        <button onClick={onCommit} disabled={installing || picks.size === 0}>
+          {installing ? '安装中…' : `安装选中 (${picks.size})`}
+        </button>
+      </div>
     </div>
   );
 }
