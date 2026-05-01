@@ -144,7 +144,16 @@ export function SkillsAndToolsSection() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://github.com/owner/repo/tree/main/skills"
-              style={{ flex: 1, fontSize: 12, padding: '4px 8px' }}
+              style={{
+                flex: 1,
+                fontSize: 12,
+                padding: '4px 10px',
+                background: 'var(--color-paper)',
+                border: '0.5px solid var(--color-ink-hair)',
+                borderRadius: 6,
+                color: 'var(--color-ink)',
+                outline: 'none',
+              }}
             />
             <Btn variant="primary" onClick={onScan} disabled={scanning || !url.trim()}>
               {scanning ? '扫描中…' : '扫描'}
