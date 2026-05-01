@@ -77,4 +77,13 @@ export function registerAllHandlers(): void {
     const { llmService } = await import('./llm/llmService');
     return llmService.list();
   });
+
+  registerHandler('dialog.pickFile', async (args) => {
+    const r = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: args?.filters,
+    });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    return r.filePaths[0];
+  });
 }
