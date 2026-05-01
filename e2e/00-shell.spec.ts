@@ -12,7 +12,7 @@ test('00-shell: app boots; three panes render; theme applies; settings pane forc
     // First run (no kydog.json): bootstrap auto-opens the settings tab on the
     // provider page so the user can configure a provider before doing anything.
     await expect(page.locator('[data-testid="tab-__settings__"]')).toBeVisible();
-    await expect(page.locator('[data-testid="provider-name"]')).toBeVisible();
+    await expect(page.getByText('还未配置任何 provider')).toBeVisible();
   } finally {
     await teardown(launched);
   }

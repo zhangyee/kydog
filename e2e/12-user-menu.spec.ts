@@ -21,7 +21,9 @@ test('12-user-menu: opens with all sections; account CTA opens settings pane', a
     await page.locator('[data-testid="open-settings"]').click();
     await expect(page.locator('[data-testid="user-menu"]')).toBeHidden();
     await expect(page.locator('[data-testid="tab-__settings__"]')).toBeVisible();
-    await expect(page.locator('[data-testid="provider-name"]')).toBeVisible();
+    // The schema-v2 settings page replaces the legacy ProviderForm with a list view.
+    // After seedSettings configures Anthropic, that row should be visible.
+    await expect(page.getByText('Anthropic').first()).toBeVisible();
   } finally {
     await teardown(launched);
   }
