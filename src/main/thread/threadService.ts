@@ -53,12 +53,14 @@ export class ThreadService {
     await saveIndex(idx);
   }
 
-  async update(args: { threadId: string; title?: string; pinned?: boolean }): Promise<Thread> {
+  async update(args: { threadId: string; title?: string; pinned?: boolean; modelOverride?: { providerId: string; modelId: string } | null }): Promise<Thread> {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === args.threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${args.threadId} not found`);
     if (args.title !== undefined) thread.title = args.title;
     if (args.pinned !== undefined) thread.pinned = args.pinned;
+    if (args.modelOverride === null) thread.modelOverride = undefined;
+    else if (args.modelOverride) thread.modelOverride = args.modelOverride;
     thread.lastActiveAt = new Date().toISOString();
     await saveIndex(idx);
     return thread;
