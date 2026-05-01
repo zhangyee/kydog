@@ -81,3 +81,8 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
       },
     })),
 }));
+
+export function getCurrentThread(state: ReturnType<typeof useThreadsStore.getState>): Thread | null {
+  if (!state.currentThreadId) return null;
+  return Object.values(state.threadsByProject).flat().find((t) => t.id === state.currentThreadId) ?? null;
+}
