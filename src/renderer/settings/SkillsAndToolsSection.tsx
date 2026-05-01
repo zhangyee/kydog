@@ -9,6 +9,9 @@ export function SkillsAndToolsSection() {
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<Map<string, { code: string; message: string }>>(new Map());
+  const [urlInputOpen, setUrlInputOpen] = useState(false);
+  const [url, setUrl] = useState('');
+  const [scanning, setScanning] = useState(false);
 
   const refresh = async (opts?: { force?: boolean }) => {
     setLoading('loading');
@@ -36,6 +39,20 @@ export function SkillsAndToolsSection() {
         p.candidates.filter((c) => !c.alreadyInstalled && !c.nameInvalid).map((c) => c.relPath),
       ));
     } catch (e) { setInstallError(String((e as Error).message)); }
+  };
+
+  const onScan = async () => {
+    setScanning(true); setInstallError(null); setSkipped(new Map());
+    try {
+      const p = await window.kydog.invoke('skill.previewFromUrl', { url: url.trim() });
+      setPreview(p);
+      setPicks(new Set(
+        p.candidates.filter((c) => !c.alreadyInstalled && !c.nameInvalid).map((c) => c.relPath),
+      ));
+      setUrlInputOpen(false);
+      setUrl('');
+    } catch (e) { setInstallError(String((e as Error).message)); }
+    finally { setScanning(false); }
   };
 
   const onCommit = async () => {
@@ -109,8 +126,21 @@ export function SkillsAndToolsSection() {
       {user.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <button onClick={onPickFolder} className="font-mono" style={{ fontSize: 11 }}>+ 从文件夹安装</button>
-        {/* + 从 URL 安装 button is added in Task 21 */}
+        <button onClick={() => setUrlInputOpen(true)} className="font-mono" style={{ fontSize: 11 }}>+ 从 URL 安装</button>
       </div>
+      {urlInputOpen && !preview && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://github.com/owner/repo/tree/main/skills"
+            style={{ flex: 1, fontSize: 12, padding: '4px 8px' }}
+          />
+          <button onClick={onScan} disabled={scanning || !url.trim()}>{scanning ? '扫描中…' : '扫描'}</button>
+          <button onClick={() => { setUrlInputOpen(false); setUrl(''); }}>取消</button>
+        </div>
+      )}
       {preview && (
         <PreviewBlock
           preview={preview}
