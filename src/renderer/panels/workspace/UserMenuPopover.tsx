@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useUiStore } from '../../stores/uiStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import type { ThemeName } from '../../../shared/types';
 
 const SWATCHES: Array<{ name: ThemeName; label: string }> = [
@@ -17,7 +16,6 @@ export function UserMenuPopover() {
   const setTheme = useUiStore((s) => s.setTheme);
   const theme = useUiStore((s) => s.theme);
   const openSettings = useUiStore((s) => s.openSettings);
-  const provider = useSettingsStore((s) => s.settings?.llm.provider);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // 语言 / 字体 / 字号：本阶段仅本地 state；H' 子项目接持久化
@@ -47,9 +45,6 @@ export function UserMenuPopover() {
 
   if (!open) return null;
   const themeMeta = SWATCHES.find(s => s.name === theme);
-  const providerSummary = provider
-    ? `${provider.name} · ${provider.model}`
-    : '配置模型、Base URL 与 API Key';
 
   return (
     <div
@@ -67,8 +62,7 @@ export function UserMenuPopover() {
     >
       <ActionRow
         label="模型与提供商"
-        summary={providerSummary}
-        badge={provider ? '已配置' : undefined}
+        summary="登录订阅或填入 API Key"
         testId="open-settings"
         onClick={() => { openSettings('provider'); close(); }}
       />

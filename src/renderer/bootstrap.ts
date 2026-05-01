@@ -8,13 +8,14 @@ export async function bootstrap(): Promise<void> {
   useThreadsStore.getState().hydrate(state.projects, state.threads);
   useSettingsStore.getState().setSettings(state.settings);
   useSettingsStore.getState().setAppVersion(state.appVersion);
+  const noProvider = state.settings.llm.defaultProvider === null;
   useUiStore.setState({
     theme: state.settings.ui.theme,
     workspaceCollapsed: state.settings.ui.workspaceCollapsed,
     inspectorCollapsed: state.settings.ui.inspectorCollapsed,
-    settingsTabOpen: state.settings.llm.provider === null,
+    settingsTabOpen: noProvider,
     settingsTab: 'provider',
-    activeCenterTab: state.settings.llm.provider === null ? 'settings' : 'thread',
+    activeCenterTab: noProvider ? 'settings' : 'thread',
   });
 
   let prev = useUiStore.getState();

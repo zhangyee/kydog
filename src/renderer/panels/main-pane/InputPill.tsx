@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 
 type Props = {
   threadId: string;
@@ -26,7 +25,6 @@ export function InputPill({
   const [text, setText] = useState('');
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const isRunning = runState?.status === 'running';
-  const provider = useSettingsStore((s) => s.settings?.llm.provider);
   const appendUser = useThreadsStore((s) => s.appendUserMessage);
   const thread = useThreadsStore((s) =>
     Object.values(s.threadsByProject).flat().find((t) => t.id === threadId),
@@ -136,7 +134,7 @@ export function InputPill({
             className="font-mono"
             style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
           >
-            {provider ? `${provider.name} · ${provider.model}` : 'BYOK'}
+            BYOK
           </span>
           <span
             className="font-mono"

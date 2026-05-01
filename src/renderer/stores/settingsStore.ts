@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { SettingsFile, ProviderConfig } from '../../shared/types';
+import type { SettingsFile } from '../../shared/types';
 
 type SettingsState = {
   settings: SettingsFile | null;
@@ -14,5 +14,3 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setSettings: (s) => set({ settings: s }),
   setAppVersion: (v) => set({ appVersion: v }),
 }));
-
-export type { ProviderConfig };

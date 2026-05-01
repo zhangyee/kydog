@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { settingsService } from '../settings/settingsService';
 import { sessionsDirFor } from '../persist/paths';
 import { createSession, type AnySession } from './sessionFactory';
 import { transition, type RunState } from './runState';
@@ -22,16 +21,10 @@ class AgentService {
   async ensureSession(threadId: string, projectPath: string): Promise<Bound> {
     const existing = this.sessions.get(threadId);
     if (existing) return existing;
-    const settings = await settingsService.get();
-    const provider = settings.llm.provider;
-    if (!provider) throw new KydogError('settings.invalid', 'provider not configured');
     const session = await createSession({
       cwd: projectPath,
       sessionId: threadId,
       sessionsDir: sessionsDirFor(projectPath),
-      apiKey: provider.apiKey,
-      baseUrl: provider.baseUrl,
-      model: provider.model,
     });
     const bound: Bound = { session, cwd: projectPath, threadId, activeMessageId: null };
     this.sessions.set(threadId, bound);
