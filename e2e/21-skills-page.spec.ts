@@ -10,7 +10,7 @@ test('21-skills-page: toggle built-in fastpaper persists to settings file', asyn
   try {
     await launched.page.click('[data-testid=nav-skills]');
     await launched.page.locator('text=fastpaper').first().waitFor();
-    await launched.page.locator('button:has-text("禁用")').first().click();
+    await launched.page.locator('[role=switch][aria-checked=true]').first().click();
     await expect(launched.page.locator('text=已禁用').first()).toBeVisible();
 
     const settingsRaw = await fs.readFile(

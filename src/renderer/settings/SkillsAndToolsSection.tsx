@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useSkillsStore } from '../stores/skillsStore';
 import type { SkillEntry, SkillPreview, ToolEntry } from '../../shared/types';
 
@@ -104,87 +105,208 @@ export function SkillsAndToolsSection() {
   return (
     <div style={{ padding: '24px 28px 36px', maxWidth: 840 }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button
-          onClick={() => void refresh({ force: true })}
-          className="font-mono"
-          style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}
-        >
-          刷新
-        </button>
+        <Btn variant="secondary" onClick={() => void refresh({ force: true })}>刷新</Btn>
       </div>
 
       {error && (
         <div style={{ color: 'var(--color-danger, #c0392b)', marginBottom: 12 }}>{error}</div>
       )}
 
-      <SectionHeader title="技能 · 内置" subtitle="对已打开的对话不生效，下次新建对话起生效。" />
-      {builtin.length === 0 && <Empty />}
-      {builtin.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
+      <BlockHeader>技能</BlockHeader>
+      <Card>
+        <SubHeader title="内置" subtitle="对已打开的对话不生效，下次新建对话起生效。" />
+        {builtin.length === 0 && <Empty />}
+        {builtin.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
 
-      <SectionHeader title="技能 · 已安装" />
-      {user.length === 0 && <Empty />}
-      {user.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button onClick={onPickFolder} className="font-mono" style={{ fontSize: 11 }}>+ 从文件夹安装</button>
-        <button onClick={() => setUrlInputOpen(true)} className="font-mono" style={{ fontSize: 11 }}>+ 从 URL 安装</button>
-      </div>
-      {urlInputOpen && !preview && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <input
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://github.com/owner/repo/tree/main/skills"
-            style={{ flex: 1, fontSize: 12, padding: '4px 8px' }}
-          />
-          <button onClick={onScan} disabled={scanning || !url.trim()}>{scanning ? '扫描中…' : '扫描'}</button>
-          <button onClick={() => { setUrlInputOpen(false); setUrl(''); }}>取消</button>
+        <Divider />
+
+        <SubHeader title="已安装" />
+        {user.length === 0 && <Empty />}
+        {user.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <Btn onClick={onPickFolder}>+ 从文件夹安装</Btn>
+          <Btn onClick={() => setUrlInputOpen(true)}>+ 从 URL 安装</Btn>
         </div>
-      )}
-      {preview && (
-        <PreviewBlock
-          preview={preview}
-          picks={picks}
-          setPicks={setPicks}
-          skipped={skipped}
-          installing={installing}
-          onCancel={() => { setPreview(null); setPicks(new Set()); setSkipped(new Map()); setInstallError(null); }}
-          onCommit={onCommit}
-        />
-      )}
-      {installError && (
-        <div style={{ color: 'var(--color-danger, #c0392b)', marginTop: 8, fontSize: 12 }}>{installError}</div>
-      )}
+        {urlInputOpen && !preview && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input
+              type="text"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo/tree/main/skills"
+              style={{ flex: 1, fontSize: 12, padding: '4px 8px' }}
+            />
+            <Btn variant="primary" onClick={onScan} disabled={scanning || !url.trim()}>
+              {scanning ? '扫描中…' : '扫描'}
+            </Btn>
+            <Btn variant="secondary" onClick={() => { setUrlInputOpen(false); setUrl(''); }}>取消</Btn>
+          </div>
+        )}
+        {preview && (
+          <PreviewBlock
+            preview={preview}
+            picks={picks}
+            setPicks={setPicks}
+            skipped={skipped}
+            installing={installing}
+            onCancel={() => { setPreview(null); setPicks(new Set()); setSkipped(new Map()); setInstallError(null); }}
+            onCommit={onCommit}
+          />
+        )}
+        {installError && (
+          <div style={{ color: 'var(--color-danger, #c0392b)', marginTop: 8, fontSize: 12 }}>{installError}</div>
+        )}
+      </Card>
 
-      <SectionHeader title="工具" subtitle="agent 可调用的捆绑 CLI" />
-      {tools.length === 0 && <Empty />}
-      {tools.map((t) => <ToolRow key={t.name} tool={t} />)}
-      <div style={{ marginTop: 8 }}>
-        <button
-          disabled
-          title="即将开放"
-          className="font-mono"
-          style={{ fontSize: 11, opacity: 0.5, cursor: 'default' }}
-        >
-          + 添加外部工具
-        </button>
-      </div>
+      <div style={{ height: 28 }} />
+
+      <BlockHeader>工具</BlockHeader>
+      <Card>
+        <SubHeader subtitle="agent 可调用的捆绑 CLI" />
+        {tools.length === 0 && <Empty />}
+        {tools.map((t) => <ToolRow key={t.name} tool={t} />)}
+
+        <div style={{ marginTop: 12 }}>
+          <Btn variant="primary" disabled title="即将开放">+ 添加外部工具</Btn>
+        </div>
+      </Card>
     </div>
   );
 }
 
-function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+function Card({ children }: { children: ReactNode }) {
   return (
-    <div style={{ marginTop: 24, marginBottom: 8 }}>
-      <div className="font-mono uppercase" style={{ fontSize: 10, letterSpacing: 1.5, color: 'var(--color-ink-faint)' }}>
-        {title}
-      </div>
+    <div style={{
+      border: '0.5px solid var(--color-ink-hair)',
+      borderRadius: 6,
+      padding: '16px 18px',
+      background: 'var(--color-paper)',
+    }}>{children}</div>
+  );
+}
+
+function BlockHeader({ children }: { children: ReactNode }) {
+  return (
+    <div className="font-serif" style={{ fontSize: 18, color: 'var(--color-ink)', marginBottom: 10 }}>
+      {children}
+    </div>
+  );
+}
+
+function SubHeader({ title, subtitle }: { title?: string; subtitle?: string }) {
+  return (
+    <div style={{ marginBottom: 8 }}>
+      {title && (
+        <div className="font-mono uppercase" style={{ fontSize: 10, letterSpacing: 1.5, color: 'var(--color-ink-faint)' }}>
+          {title}
+        </div>
+      )}
       {subtitle && (
-        <div className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)', marginTop: 4 }}>
+        <div className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)', marginTop: title ? 4 : 0 }}>
           {subtitle}
         </div>
       )}
     </div>
+  );
+}
+
+function Divider() {
+  return <div style={{ borderTop: '0.5px solid var(--color-ink-hair-soft)', margin: '16px 0' }} />;
+}
+
+function Toggle({ checked, onChange, disabled }: {
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={disabled ? undefined : onChange}
+      disabled={disabled}
+      style={{
+        width: 32,
+        height: 18,
+        borderRadius: 999,
+        background: checked ? 'var(--color-accent, #6b8e7f)' : 'var(--color-ink-faint)',
+        position: 'relative',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        border: 'none',
+        padding: 0,
+        transition: 'background-color 120ms',
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: checked ? 16 : 2,
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          background: 'var(--color-paper)',
+          transition: 'left 120ms',
+        }}
+      />
+    </button>
+  );
+}
+
+type BtnVariant = 'primary' | 'secondary' | 'danger';
+
+function Btn({
+  variant = 'primary',
+  onClick,
+  disabled,
+  children,
+  title,
+}: {
+  variant?: BtnVariant;
+  onClick?: () => void;
+  disabled?: boolean;
+  children: ReactNode;
+  title?: string;
+}) {
+  const base: CSSProperties = {
+    fontFamily: 'var(--font-mono, ui-monospace)',
+    fontSize: 11,
+    padding: '4px 10px',
+    borderRadius: 6,
+    cursor: disabled ? 'default' : 'pointer',
+    opacity: disabled ? 0.5 : 1,
+    transition: 'background-color 120ms',
+  };
+  const variantStyle: Record<BtnVariant, CSSProperties> = {
+    primary: {
+      background: 'var(--color-paper-edge)',
+      color: 'var(--color-ink)',
+      border: '0.5px solid var(--color-ink-hair)',
+    },
+    secondary: {
+      background: 'transparent',
+      color: 'var(--color-ink-soft)',
+      border: '0.5px solid transparent',
+    },
+    danger: {
+      background: 'transparent',
+      color: 'var(--color-danger, #c0392b)',
+      border: '0.5px solid transparent',
+    },
+  };
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title}
+      style={{ ...base, ...variantStyle[variant] }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -229,15 +351,11 @@ function SkillRow({ skill, onChanged }: { skill: SkillEntry; onChanged: (next: S
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 12 }}>
         {skill.origin === 'builtin' && (
-          <button onClick={onToggle} disabled={busy} className="font-mono" style={{ fontSize: 11 }}>
-            {skill.enabled ? '禁用' : '启用'}
-          </button>
+          <Toggle checked={skill.enabled} onChange={onToggle} disabled={busy} />
         )}
-        <button onClick={onOpen} className="font-mono" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>打开目录↗</button>
+        <Btn variant="secondary" onClick={onOpen}>打开目录↗</Btn>
         {skill.origin === 'user' && (
-          <button onClick={onUninstall} disabled={busy} className="font-mono" style={{ fontSize: 11, color: 'var(--color-danger, #c0392b)' }}>
-            卸载
-          </button>
+          <Btn variant="danger" onClick={onUninstall} disabled={busy}>卸载</Btn>
         )}
       </div>
     </div>
@@ -303,10 +421,10 @@ function PreviewBlock(props: {
         );
       })}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
-        <button onClick={onCancel} disabled={installing}>取消</button>
-        <button onClick={onCommit} disabled={installing || picks.size === 0}>
+        <Btn variant="secondary" onClick={onCancel} disabled={installing}>取消</Btn>
+        <Btn variant="primary" onClick={onCommit} disabled={installing || picks.size === 0}>
           {installing ? '安装中…' : `安装选中 (${picks.size})`}
-        </button>
+        </Btn>
       </div>
     </div>
   );
