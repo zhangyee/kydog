@@ -9,19 +9,16 @@ export type Thread = {
   createdAt: string;
   lastActiveAt: string;
   pinned?: boolean;
+  modelOverride?: { providerId: ProviderId; modelId: string };
 };
 
 export type AssistantBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string; status?: 'running' | 'done'; durationMs?: number }
   | {
-      kind: 'tool_call';
-      id: string;
-      name: string;
-      command?: string;
+      kind: 'tool_call'; id: string; name: string; command?: string;
       chunks: Array<{ stream: 'stdout' | 'stderr'; data: string }>;
-      status: 'running' | 'ok' | 'failed';
-      exitCode?: number;
+      status: 'running' | 'ok' | 'failed'; exitCode?: number;
     };
 
 export type Message =
@@ -30,31 +27,91 @@ export type Message =
 
 export type FsNode = { name: string; path: string; kind: 'file' | 'dir' };
 
-export type ProviderConfig = {
-  kind: 'openai-compat';
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-};
-
 export type ThemeName = 'vellum' | 'porcelain' | 'sepia' | 'midnight' | 'lilac';
 
-export type ExternalBinEntry = {
-  name: string;
-  path: string;          // absolute path to the binary
-  addedAt: string;       // ISO timestamp
+export type ExternalBinEntry = { name: string; path: string; addedAt: string };
+
+// ── LLM schema v2 ──
+export type ProviderId = string;
+
+export type AuthBlob = Record<ProviderId,
+  | { type: 'api_key'; key: string }
+  | { type: 'oauth'; refresh: string; access: string; expires: number; [k: string]: unknown }
+>;
+
+export type AzureCfg = {
+  kind: 'azure';
+  resourceName?: string;
+  apiVersion?: string;
+  deploymentNameMap?: Record<string, string>;
+};
+export type BedrockCfg = {
+  kind: 'bedrock';
+  authMode: 'profile' | 'iamKeys' | 'bearer';
+  awsProfile?: string;
+  awsAccessKeyId?: string;
+  awsSecretAccessKey?: string;
+  awsBearerToken?: string;
+  region?: string;
+  forceCache?: boolean;
+};
+export type VertexCfg = {
+  kind: 'vertex';
+  project: string;
+  location: string;
+  serviceAccountKeyPath?: string;
+};
+
+export type ProviderOverride = {
+  baseUrl?: string;
+  headers?: Record<string, string>;
+  cloud?: AzureCfg | BedrockCfg | VertexCfg;
+  defaultModel?: string;
+};
+
+export type CompatFlags = Record<string, unknown>;
+export type ProviderApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages' | 'google-generative-ai';
+
+export type CustomModel = {
+  id: string;
+  name?: string;
+  api?: ProviderApi;
+  reasoning?: boolean;
+  input?: ('text' | 'image')[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  compat?: CompatFlags;
+};
+
+export type CustomProvider = {
+  id: string;
+  displayName: string;
+  baseUrl: string;
+  api: ProviderApi;
+  apiKey: string;
+  headers?: Record<string, string>;
+  authHeader?: boolean;
+  models: CustomModel[];
+  defaultModel?: string;
+  compat?: CompatFlags;
 };
 
 export type SettingsFile = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   ui: {
     theme: ThemeName;
     locale: 'zh';
     workspaceCollapsed: boolean;
     inspectorCollapsed: boolean;
   };
-  llm: { provider: ProviderConfig | null };
+  llm: {
+    auth: AuthBlob;
+    providers: Record<ProviderId, ProviderOverride>;
+    customProviders: CustomProvider[];
+    defaultProvider: ProviderId | null;
+    defaultModel: string | null;
+  };
   skills: { disabledBuiltins: string[] };
   tools: { externalBins: ExternalBinEntry[] };
 };
@@ -72,62 +129,31 @@ export type BootstrapState = {
   appVersion: string;
 };
 
+// ── Skills（保留旧定义不变）──
 export interface SkillFileConflict {
-  relPath: string;
-  shippedSha: string;
-  diskSha: string;
-  recordedSha: string | null;
+  relPath: string; shippedSha: string; diskSha: string; recordedSha: string | null;
 }
-
-export interface PendingSkillConflict {
-  skill: string;
-  conflicts: SkillFileConflict[];
-}
-
+export interface PendingSkillConflict { skill: string; conflicts: SkillFileConflict[]; }
 export interface SkillSyncStatus {
   installedOrUpgraded: { skill: string; files: string[]; action: 'install' | 'auto-upgrade' }[];
   pendingConflicts: PendingSkillConflict[];
   userSkills: string[];
 }
-
 export type SkillEntry = {
-  name: string;
-  description: string;
-  origin: 'builtin' | 'user';
-  enabled: boolean;
-  dirPath: string;
-  kydogVersion?: string;
+  name: string; description: string; origin: 'builtin' | 'user';
+  enabled: boolean; dirPath: string; kydogVersion?: string;
 };
-
 export type ToolEntry = {
-  name: string;
-  version: string | null;
-  path: string;
-  origin: 'builtin' | 'external';
+  name: string; version: string | null; path: string; origin: 'builtin' | 'external';
 };
-
 export type SkillCandidate = {
-  name: string;
-  description: string;
-  relPath: string;
-  alreadyInstalled: 'builtin' | 'user' | null;
-  nameInvalid?: string;
+  name: string; description: string; relPath: string;
+  alreadyInstalled: 'builtin' | 'user' | null; nameInvalid?: string;
 };
-
-export type SkillPreview = {
-  srcKind: 'folder' | 'url';
-  srcPath: string;
-  candidates: SkillCandidate[];
-};
-
+export type SkillPreview = { srcKind: 'folder' | 'url'; srcPath: string; candidates: SkillCandidate[]; };
 export type SkillCommitArgs = {
-  srcKind: 'folder' | 'url';
-  srcPath: string;
-  picks: { name: string; relPath: string }[];
+  srcKind: 'folder' | 'url'; srcPath: string; picks: { name: string; relPath: string }[];
 };
-
 export type SkillCommitResult = {
-  installed: SkillEntry[];
-  skipped: { name: string; reason: SerializedError }[];
-  list: SkillEntry[];
+  installed: SkillEntry[]; skipped: { name: string; reason: SerializedError }[]; list: SkillEntry[];
 };
