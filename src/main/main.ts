@@ -11,6 +11,7 @@ import { prependBinDirToPath } from './bin/pathEnv';
 import { detectBashOnWindows } from './bin/shellCheck';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { settingsService } from './settings/settingsService';
+import { ensureSettingsFile } from './persist/settingsFile';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -89,6 +90,7 @@ app.on('ready', async () => {
     prependBinDirToPath(binDir());
 
     await ensureKydogDirs();
+    ensureSettingsFile();
 
     try {
       const settings = await settingsService.get();
