@@ -1,17 +1,24 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, promises as fsp } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { app, shell } from 'electron';
-import type { SkillEntry } from '../../shared/types';
+import type { SkillEntry, SkillPreview } from '../../shared/types';
 import { KydogError } from '../../shared/errors';
 import { settingsService } from '../settings/settingsService';
 import { parseSkillFrontmatter } from './parseSkillFrontmatter';
 import { listBuiltinSkills, builtinSkillsRoot } from './builtinSkills';
 import { KYDOG_SKILLS_DIR } from './skillResourceLoader';
+import { enumerateSkills } from './enumerateSkills';
+import { downloadToFile } from './urlFetch';
+import { extractTarGz } from './urlExtract';
+import { parseGithubUrl } from './githubUrl';
 
 export interface SkillsServiceDeps {
   skillsDir: string;
   isBuiltin: (name: string) => boolean;
   builtinKydogVersion: () => string;
+  stagingDir?: string;
+  urlOverride?: { codeloadUrl: string; allowHttp?: boolean };
 }
 
 export class SkillsService {
@@ -72,6 +79,66 @@ export class SkillsService {
     if (!existsSync(dir)) throw new KydogError('skill.invalid', `未找到 skill ${name}`);
     await shell.openPath(dir);
   }
+
+  async previewFromFolder(args: { srcDir: string }): Promise<SkillPreview> {
+    if (!existsSync(args.srcDir)) {
+      throw new KydogError('skill.invalid', `路径不存在：${args.srcDir}`);
+    }
+    const result = enumerateSkills(args.srcDir);
+    const annotated = result.candidates.map((c) => ({
+      ...c,
+      alreadyInstalled: this.lookupExisting(c.name),
+    }));
+    return { srcKind: 'folder', srcPath: args.srcDir, candidates: annotated };
+  }
+
+  async previewFromUrl(args: { url: string }): Promise<SkillPreview> {
+    const parsed = this.deps.urlOverride
+      ? { codeloadUrl: this.deps.urlOverride.codeloadUrl, ref: '', subPath: '', owner: '', repo: '' }
+      : parseGithubUrl(args.url);
+    const stagingRoot = this.deps.stagingDir ?? path.join(this.deps.skillsDir, '..', '.cache', 'staging');
+    mkdirSync(stagingRoot, { recursive: true });
+    const rand = randomUUID();
+    const archive = path.join(stagingRoot, `${rand}.archive`);
+    const dir = path.join(stagingRoot, rand);
+    mkdirSync(dir, { recursive: true });
+    try {
+      await downloadToFile(parsed.codeloadUrl, archive, {
+        maxBytes: 50 * 1024 * 1024,
+        timeoutMs: 60_000,
+        allowHttp: this.deps.urlOverride?.allowHttp,
+      });
+      await extractTarGz(archive, dir);
+      await fsp.unlink(archive).catch(() => {});
+      const baseDir = computeBaseDir(dir, parsed.subPath);
+      const result = enumerateSkills(baseDir);
+      const annotated = result.candidates.map((c) => ({
+        ...c,
+        alreadyInstalled: this.lookupExisting(c.name),
+      }));
+      return { srcKind: 'url', srcPath: baseDir, candidates: annotated };
+    } catch (err) {
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+      await fsp.unlink(archive).catch(() => {});
+      throw err;
+    }
+  }
+
+  private lookupExisting(name: string): 'builtin' | 'user' | null {
+    const dir = path.join(this.deps.skillsDir, name);
+    if (!existsSync(dir)) return null;
+    return this.deps.isBuiltin(name) ? 'builtin' : 'user';
+  }
+}
+
+function computeBaseDir(stagingChild: string, subPath: string): string {
+  const entries = readdirSync(stagingChild, { withFileTypes: true })
+    .filter((e) => e.isDirectory());
+  if (entries.length === 1) {
+    const wrap = path.join(stagingChild, entries[0].name);
+    return subPath ? path.join(wrap, subPath) : wrap;
+  }
+  return subPath ? path.join(stagingChild, subPath) : stagingChild;
 }
 
 export const skillsService = new SkillsService({

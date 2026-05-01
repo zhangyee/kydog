@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SkillsService } from './skillsService';
+import { makeTarball } from './__fixtures__/makeTarball';
 
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0-test' },
@@ -114,5 +116,61 @@ describe('SkillsService.uninstall', () => {
     const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
     await expect(svc.uninstall('fastpaper')).rejects.toThrow(/skill\.uninstall_forbidden|内置/);
     expect(existsSync(path.join(skillsDir, 'fastpaper'))).toBe(true);
+  });
+});
+
+describe('SkillsService.previewFromFolder', () => {
+  it('returns candidates from a folder', async () => {
+    const skillsDir = tmp();
+    const src = tmp();
+    mkSkill(src, 'foo');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
+    const r = await svc.previewFromFolder({ srcDir: src });
+    expect(r.srcKind).toBe('folder');
+    expect(r.candidates.map(c => c.name)).toEqual(['foo']);
+  });
+
+  it('marks alreadyInstalled when name exists', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'foo');     // already installed
+    const src = tmp();
+    mkSkill(src, 'foo');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    const svc = new SkillsService({ skillsDir, isBuiltin: (n) => n === 'foo', builtinKydogVersion: () => '0' });
+    const r = await svc.previewFromFolder({ srcDir: src });
+    expect(r.candidates[0].alreadyInstalled).toBe('builtin');
+  });
+});
+
+describe('SkillsService.previewFromUrl', () => {
+  it('downloads tarball and enumerates', async () => {
+    const skillsDir = tmp();
+    const cacheDir = tmp();
+    const archive = await makeTarball({ entries: [
+      { path: 'repo-abc/SKILL.md', content: '---\nname: agent-browser\ndescription: d\n---' },
+    ]});
+    const buf = readFileSync(archive);
+    const srv = http.createServer((_req, r) => {
+      r.writeHead(200, { 'Content-Length': String(buf.length) });
+      r.end(buf);
+    });
+    await new Promise<void>((res) => srv.listen(0, '127.0.0.1', () => res()));
+    const addr = srv.address();
+    if (typeof addr === 'string' || !addr) throw new Error('bad addr');
+    const url = `http://127.0.0.1:${addr.port}/x.tar.gz`;
+    try {
+      (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+      const svc = new SkillsService({
+        skillsDir,
+        isBuiltin: () => false,
+        builtinKydogVersion: () => '0',
+        stagingDir: cacheDir,
+        urlOverride: { codeloadUrl: url, allowHttp: true },
+      });
+      const r = await svc.previewFromUrl({ url: 'https://github.com/owner/repo' });
+      expect(r.srcKind).toBe('url');
+      expect(r.candidates[0].name).toBe('agent-browser');
+    } finally { srv.close(); }
   });
 });
