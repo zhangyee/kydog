@@ -1,9 +1,11 @@
-import { app } from 'electron';
+import { app, dialog } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { settingsService } from './settings/settingsService';
 import { projectService } from './project/projectService';
 import { threadService } from './thread/threadService';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
+import { skillsService } from './skills/skillsService';
+import { toolsService } from './skills/toolsService';
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -39,4 +41,18 @@ export function registerAllHandlers(): void {
     await skillSyncStateHolder.applyOverrides(args.operations);
     return skillSyncStateHolder.getStatus();
   });
+
+  registerHandler('skill.list', () => skillsService.list());
+  registerHandler('skill.setEnabled', (args) => skillsService.setEnabled(args.name, args.enabled));
+  registerHandler('skill.uninstall', (args) => skillsService.uninstall(args.name));
+  registerHandler('skill.openInOS', (args) => skillsService.openInOS(args.name));
+  registerHandler('skill.previewFromFolder', (args) => skillsService.previewFromFolder(args));
+  registerHandler('skill.previewFromUrl', (args) => skillsService.previewFromUrl(args));
+  registerHandler('skill.commitFromPreview', (args) => skillsService.commitFromPreview(args));
+  registerHandler('skill.pickFolder', async () => {
+    const r = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    return r.filePaths[0];
+  });
+  registerHandler('tool.list', (args) => toolsService.list({ force: args?.force }));
 }
