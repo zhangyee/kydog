@@ -4,7 +4,14 @@
 
 ## References
 
-pi coding-agent SDK 相关改动前先查 `docs/references/pi-coding-agent/`（`sdk.md` + `examples/README.md`），不要凭记忆猜 API。`docs/` 已在 `tsconfig.json` exclude，不参与编译。
+pi coding-agent SDK 相关改动前先查 `docs/references/pi-coding-agent/`，不要凭记忆猜 API：
+
+- `sdk.md` — `createAgentSession` / `createAgentSessionRuntime` 等编程接口总览
+- `models.md` — 自定义模型 + 自建 provider（Ollama / vLLM / OpenAI-compat 代理）配置
+- `providers.md` — 内置 provider、OAuth、API key 解析顺序
+- `examples/sdk/` — 13 个分主题 `.ts` 示例（`01-minimal.ts` … `13-session-runtime.ts`），`README.md` 是入口索引
+
+`docs/` 已在 `tsconfig.json` exclude，不参与编译。
 
 ## Commands
 
