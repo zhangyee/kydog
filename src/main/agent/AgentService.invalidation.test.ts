@@ -46,7 +46,7 @@ describe('AgentService invalidation entrypoints', () => {
     (agentService as any).runs.set('t1', { status: 'running', runId: 'r', abortRequested: false });
     await agentService.invalidateSessionsForProviders(['anthropic']);
     expect(b._dispose).not.toHaveBeenCalled();
-    expect(b.staleAfterRun).toBe(true);
+    expect((b as any).staleAfterRun).toBe(true);
   });
 
   it('invalidateSessionsForProviders: 不匹配 provider 的 thread 不动', async () => {

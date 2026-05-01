@@ -17,6 +17,7 @@ export type KydogErrorCode =
   | 'skill.unsupported_archive'
   | 'skill.extract_failed'
   | 'skill.uninstall_forbidden'
+  | 'llm.invalid'
   | 'unknown';
 
 export class KydogError extends Error {
