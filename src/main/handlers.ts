@@ -1,4 +1,4 @@
-import { app, dialog } from 'electron';
+import { app, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
@@ -86,4 +86,17 @@ export function registerAllHandlers(): void {
     if (r.canceled || r.filePaths.length === 0) return null;
     return r.filePaths[0];
   });
+
+  if (process.env.KYDOG_E2E === '1') {
+    ipcMain.handle('kydog:debug:envSnapshot', async () => {
+      const keys = [
+        'AZURE_OPENAI_BASE_URL', 'AZURE_OPENAI_RESOURCE_NAME', 'AZURE_OPENAI_API_VERSION', 'AZURE_OPENAI_DEPLOYMENT_NAME_MAP',
+        'AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_REGION', 'AWS_BEDROCK_FORCE_CACHE',
+        'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_APPLICATION_CREDENTIALS',
+      ];
+      const snap: Record<string, string | null> = {};
+      for (const k of keys) snap[k] = process.env[k] ?? null;
+      return snap;
+    });
+  }
 }
