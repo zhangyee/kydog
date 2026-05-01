@@ -52,7 +52,13 @@ class OAuthCoordinator {
     };
 
     try {
-      await (reg.authStorage as any).login(cat.oauth.piProviderId, callbacks);
+      const fixturePath = process.env.KYDOG_OAUTH_FIXTURE;
+      if (fixturePath) {
+        const { runFixtureFlow } = await import('../../../e2e/fixtures/oauth-fixture-runner');
+        await runFixtureFlow(providerId, fixturePath, callbacks);
+      } else {
+        await (reg.authStorage as any).login(cat.oauth.piProviderId, callbacks);
+      }
       reg.reloadAuth();
       await reg.refreshAfterProviderChange(settingsService, agentService, [providerId]);
       broadcaster.emit('oauth.success', { providerId });
