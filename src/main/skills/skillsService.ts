@@ -173,7 +173,9 @@ export class SkillsService {
       // Clean up the entire staging child for this preview (the dir containing srcPath)
       // srcPath is e.g. <stagingRoot>/<rand>/repo-<sha>/<subPath>; clean up <stagingRoot>/<rand>
       const rand = path.relative(stagingRoot, args.srcPath).split(path.sep)[0];
-      if (rand) await fsp.rm(path.join(stagingRoot, rand), { recursive: true, force: true }).catch(() => {});
+      if (rand && rand !== '..' && !rand.startsWith('..' + path.sep)) {
+        await fsp.rm(path.join(stagingRoot, rand), { recursive: true, force: true }).catch(() => {});
+      }
     }
 
     const list = await this.list();

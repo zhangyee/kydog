@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -230,5 +230,46 @@ describe('SkillsService.commitFromPreview', () => {
   it('multiple picks each get independent staging dir (no collision)', async () => {
     // Implicit: prior test passes proves picks don't clobber.
     expect(true).toBe(true);
+  });
+
+  it('url source: commits a pick and cleans staging', async () => {
+    const skillsDir = tmp();
+    const cacheDir = tmp();
+    const archive = await makeTarball({ entries: [
+      { path: 'repo-abc/skillA/SKILL.md', content: '---\nname: skill-a\ndescription: d\n---' },
+      { path: 'repo-abc/skillB/SKILL.md', content: '---\nname: skill-b\ndescription: d\n---' },
+    ]});
+    const buf = readFileSync(archive);
+    const srv = http.createServer((_req, r) => {
+      r.writeHead(200, { 'Content-Length': String(buf.length) });
+      r.end(buf);
+    });
+    await new Promise<void>((res) => srv.listen(0, '127.0.0.1', () => res()));
+    const addr = srv.address();
+    if (typeof addr === 'string' || !addr) throw new Error('bad addr');
+    const url = `http://127.0.0.1:${addr.port}/x.tar.gz`;
+    try {
+      (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+      const svc = new SkillsService({
+        skillsDir,
+        isBuiltin: () => false,
+        builtinKydogVersion: () => '0',
+        stagingDir: cacheDir,
+        urlOverride: { codeloadUrl: url, allowHttp: true },
+      });
+      const preview = await svc.previewFromUrl({ url: 'https://github.com/owner/repo' });
+      const pickA = preview.candidates.find(c => c.name === 'skill-a');
+      if (!pickA) throw new Error('skill-a candidate missing');
+      const r = await svc.commitFromPreview({
+        srcKind: 'url',
+        srcPath: preview.srcPath,
+        picks: [{ name: pickA.name, relPath: pickA.relPath }],
+      });
+      expect(r.installed.map(s => s.name)).toEqual(['skill-a']);
+      expect(existsSync(path.join(skillsDir, 'skill-a', 'SKILL.md'))).toBe(true);
+      // Verify staging cleanup: the rand dir under cacheDir should be gone
+      const stagingChildren = readdirSync(cacheDir);
+      expect(stagingChildren.length).toBe(0);
+    } finally { srv.close(); }
   });
 });
