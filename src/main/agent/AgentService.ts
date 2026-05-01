@@ -201,6 +201,9 @@ class AgentService {
             if (last.stopReason === 'aborted') reason = 'aborted';
             else if (last.stopReason === 'error') { reason = 'error'; errorMessage = last.errorMessage; }
           }
+          if (reason === 'error') {
+            logger.error('agent', 'run ended with error', { threadId, runId, providerId: bound.providerId, modelId: bound.modelId, errorMessage });
+          }
           // Flush the run's accumulated buffer as one assistant message
           const messageId = bound.activeMessageId;
           if (messageId) broadcaster.emit('run.message_end', { threadId, runId, messageId });
