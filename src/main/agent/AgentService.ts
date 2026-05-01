@@ -6,9 +6,20 @@ import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { KydogError } from '../../shared/errors';
 import { normalizePiMessages, type PiMessage } from './messageNormalizer';
-import type { Message } from '../../shared/types';
+import { settingsService } from '../settings/settingsService';
+import { resolveProviderDefault } from '../llm/resolveProvider';
+import { threadService } from '../thread/threadService';
+import type { Message, ProviderId } from '../../shared/types';
 
-type Bound = { session: AnySession; cwd: string; threadId: string; activeMessageId: string | null };
+export type Bound = {
+  session: AnySession;
+  cwd: string;
+  threadId: string;
+  providerId: ProviderId;
+  modelId: string;
+  activeMessageId: string | null;
+  staleAfterRun?: boolean;
+};
 
 class AgentService {
   private sessions = new Map<string, Bound>();
@@ -21,12 +32,22 @@ class AgentService {
   async ensureSession(threadId: string, projectPath: string): Promise<Bound> {
     const existing = this.sessions.get(threadId);
     if (existing) return existing;
+
+    const { resolveActive } = await import('./resolveActive');
+    const { providerId, modelId } = await resolveActive(threadId, projectPath);
+
     const session = await createSession({
       cwd: projectPath,
       sessionId: threadId,
       sessionsDir: sessionsDirFor(projectPath),
+      providerId,
+      modelId,
     });
-    const bound: Bound = { session, cwd: projectPath, threadId, activeMessageId: null };
+    const bound: Bound = {
+      session, cwd: projectPath, threadId,
+      providerId, modelId,
+      activeMessageId: null,
+    };
     this.sessions.set(threadId, bound);
     this.subscribe(bound);
     return bound;
@@ -73,6 +94,44 @@ class AgentService {
     else if (bound.session.dispose) bound.session.dispose();
     this.sessions.delete(threadId);
     this.runs.delete(threadId);
+  }
+
+  private async markStaleOrDispose(bound: Bound): Promise<void> {
+    const state = this.runs.get(bound.threadId);
+    if (!state || state.status === 'idle') {
+      await this.dispose(bound.threadId);
+      return;
+    }
+    bound.staleAfterRun = true;
+  }
+
+  async invalidateSessionsForProviders(providerIds: ProviderId[]): Promise<void> {
+    const set = new Set(providerIds);
+    for (const bound of [...this.sessions.values()]) {
+      if (set.has(bound.providerId)) await this.markStaleOrDispose(bound);
+    }
+  }
+
+  async invalidateSessionsForThread(threadId: string): Promise<void> {
+    const bound = this.sessions.get(threadId);
+    if (bound) await this.markStaleOrDispose(bound);
+  }
+
+  async recomputeSessionsAfterDefaultChange(): Promise<void> {
+    const settings = await settingsService.get();
+    const allThreads = await threadService.listAll();
+    const threadById = new Map(allThreads.map((t) => [t.id, t]));
+    for (const bound of [...this.sessions.values()]) {
+      const t = threadById.get(bound.threadId);
+      if (t?.modelOverride) continue;
+      const expectedProviderId = settings.llm.defaultProvider;
+      const expectedModelId = expectedProviderId
+        ? (resolveProviderDefault(settings, expectedProviderId) ?? settings.llm.defaultModel)
+        : null;
+      if (bound.providerId !== expectedProviderId || bound.modelId !== expectedModelId) {
+        await this.markStaleOrDispose(bound);
+      }
+    }
   }
 
   private subscribe(bound: Bound) {
@@ -151,6 +210,9 @@ class AgentService {
             : { kind: reason };
           this.runs.set(threadId, transition(this.runs.get(threadId) ?? { status: 'idle' }, endEvt));
           broadcaster.emit('run.ended', { threadId, runId, reason, errorMessage });
+          if (bound.staleAfterRun) {
+            void this.dispose(threadId);
+          }
           return;
         }
         default:
