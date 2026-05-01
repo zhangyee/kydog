@@ -89,7 +89,14 @@ export type LlmConfiguredEntry = {
 };
 
 export type LlmListResult = {
-  catalog: Array<{ id: ProviderId; displayName: string; kind: string; group: string }>;
+  catalog: Array<{
+    id: ProviderId;
+    displayName: string;
+    kind: string;
+    group: string;
+    /** True if this entry supports OAuth login (in addition to whatever its primary kind says). */
+    supportsOAuth?: boolean;
+  }>;
   configured: LlmConfiguredEntry[];
   customProviders: CustomProvider[];
   defaultProvider: ProviderId | null;

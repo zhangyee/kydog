@@ -3,6 +3,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ProviderRowModelPicker } from '../ProviderRowModelPicker';
+import { useOAuthLoginFlow } from '../hooks/useOAuthLoginFlow';
 
 const inputStyle: CSSProperties = {
   background: 'transparent',
@@ -43,6 +44,7 @@ const STATIC_META: Record<string, CatalogApiKeyMeta> = {
 export function ApiKeyForm({ providerId }: { providerId: string }) {
   const meta = STATIC_META[providerId] ?? { baseUrlOverridable: true };
   const configured = useLlmStore((s) => s.configured.find((c) => c.providerId === providerId));
+  const catalogEntry = useLlmStore((s) => s.catalog.find((e) => e.id === providerId));
   const refresh = useLlmStore((s) => s.refresh);
   const closeDetail = useUiStore((s) => s.closeSettingsDetail);
 
@@ -52,6 +54,7 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
   const [saving, setSaving] = useState(false);
   const [testHint, setTestHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authType, setAuthType] = useState<'api_key' | 'oauth' | null>(null);
 
   // Prefill from on-disk settings on mount / providerId change. Both fields are
   // populated so re-saving without edits is a no-op (instead of nuking the key).
@@ -64,9 +67,10 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
       const stored = cred?.type === 'api_key' ? cred.key : '';
       setApiKey(stored);
       setBaseUrl(s.llm.providers[providerId]?.baseUrl ?? '');
+      setAuthType(cred?.type ?? null);
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [providerId]);
+  }, [providerId, configured]);
 
   const submit = async () => {
     setSaving(true); setError(null); setTestHint(null);
@@ -98,9 +102,14 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
     closeDetail();
   };
 
+  const supportsOAuth = !!catalogEntry?.supportsOAuth;
+
   return (
     <form onSubmit={(e) => { e.preventDefault(); void submit(); }} style={{ display: 'grid', rowGap: 0 }}>
-      <FormRow label="API Key" hint={`明文存于 ~/.kydog/kydog.json::llm.auth${meta.envFallback?.length ? `；不填则自动 fallback 到环境变量 ${meta.envFallback.join(' / ')}` : ''}`}>
+      {supportsOAuth ? (
+        <OAuthLoginInline providerId={providerId} authType={authType} onChange={refresh} />
+      ) : null}
+      <FormRow label="API Key" hint={`明文存于 ~/.kydog/kydog.json::llm.auth${meta.envFallback?.length ? `；不填则自动 fallback 到环境变量 ${meta.envFallback.join(' / ')}` : ''}${supportsOAuth ? '；与 OAuth 登录互斥（保存 API key 会覆盖 OAuth 凭证）' : ''}`}>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             type={showKey ? 'text' : 'password'}
@@ -170,5 +179,69 @@ function FormRow({ label, hint, children }: { label: string; hint?: string; chil
       </div>
       <div style={{ flex: 1 }}>{children}</div>
     </div>
+  );
+}
+
+function OAuthLoginInline({ providerId, authType, onChange }: {
+  providerId: string;
+  authType: 'api_key' | 'oauth' | null;
+  onChange: () => Promise<void>;
+}) {
+  const flow = useOAuthLoginFlow(providerId);
+  const isLoggedInOAuth = authType === 'oauth';
+
+  if (flow.state.phase === 'success') {
+    void onChange();
+    flow.reset();
+  }
+
+  const onLogin = async () => { await flow.start(); };
+  const onLogout = async () => {
+    if (!confirm('确认登出 OAuth？API key 仍会保留（如果有）。')) return;
+    await window.kydog.invoke('llm.logout', { providerId });
+    await onChange();
+  };
+
+  return (
+    <FormRow label="OAuth 登录" hint="订阅用户走这条路；登录成功后无需 API key">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)' }}>
+          {isLoggedInOAuth ? '已登录' :
+           flow.state.phase === 'idle' ? '未登录' :
+           flow.state.phase === 'authPrompt' ? '等待浏览器授权…' :
+           flow.state.phase === 'manualCode' ? '等待回调码…' :
+           flow.state.phase === 'finishing' ? '正在完成…' :
+           flow.state.phase === 'error' ? `错误：${flow.state.error}` : ''}
+        </span>
+        {isLoggedInOAuth ? (
+          <button type="button" onClick={onLogout} className="font-sans"
+            style={{ background: 'transparent', color: 'var(--color-accent, #a04040)', fontSize: 11 }}>
+            登出
+          </button>
+        ) : flow.state.phase === 'idle' || flow.state.phase === 'error' ? (
+          <button type="button" onClick={onLogin}
+            className="font-sans bg-[color:var(--color-paper-deep)]"
+            style={{ padding: '5px 12px', borderRadius: 999, fontSize: 11, border: '0.5px solid var(--color-ink-hair)' }}>
+            登录
+          </button>
+        ) : (
+          <button type="button" onClick={() => void flow.cancel()} className="font-sans"
+            style={{ background: 'transparent', color: 'var(--color-accent, #a04040)', fontSize: 11 }}>
+            取消
+          </button>
+        )}
+      </div>
+      {(flow.state.phase === 'authPrompt' || flow.state.phase === 'manualCode') && (
+        <div style={{ marginTop: 10 }}>
+          <div className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink)', background: 'var(--color-paper-deep)', padding: '6px 8px', wordBreak: 'break-all' }}>
+            {(flow.state as { url: string }).url}
+          </div>
+          <div style={{ display: 'flex', gap: 14, fontSize: 11, color: 'var(--color-ink-soft)', marginTop: 6 }}>
+            <button type="button" onClick={() => navigator.clipboard.writeText((flow.state as { url: string }).url)} className="font-sans" style={{ background: 'transparent', textDecoration: 'underline' }}>复制链接</button>
+            <button type="button" onClick={() => window.open((flow.state as { url: string }).url, '_blank')} className="font-sans" style={{ background: 'transparent', textDecoration: 'underline' }}>重新打开</button>
+          </div>
+        </div>
+      )}
+    </FormRow>
   );
 }

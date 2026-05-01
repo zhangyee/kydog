@@ -18,6 +18,7 @@ class LlmService {
     const reg = getProviderRegistry();
     const catalog = PROVIDER_CATALOG.map((e) => ({
       id: e.id, displayName: e.displayName, kind: e.kind, group: e.group,
+      supportsOAuth: e.oauth ? true : undefined,
     }));
     const configured: LlmConfiguredEntry[] = [];
 
