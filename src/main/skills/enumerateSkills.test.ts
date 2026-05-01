@@ -53,4 +53,26 @@ describe('enumerateSkills', () => {
     expect(broken?.nameInvalid).toMatch(/name/);
     expect(r.candidates.find(c => c.relPath === 'good')?.nameInvalid).toBeUndefined();
   });
+
+  it('does not unwrap when 2+ non-hidden subdirs lack SKILL.md', () => {
+    const root = tmp();
+    mkdirSync(path.join(root, 'a-empty'));
+    mkdirSync(path.join(root, 'b-empty'));
+    expect(() => enumerateSkills(root)).toThrow(/skill\.invalid|未找到/);
+  });
+
+  it('does not recurse into wrapper-of-wrapper', () => {
+    const root = tmp();
+    mkSkill(root, 'wrap1/wrap2/skill', 'sk', 'd');
+    expect(() => enumerateSkills(root)).toThrow(/skill\.invalid|未找到/);
+  });
+
+  it('skips hidden directories during unwrap and one-level scan', () => {
+    const root = tmp();
+    mkdirSync(path.join(root, '.git'));
+    mkSkill(root, 'wrap/skill1', 'skill1', 'd');
+    // .git as a sibling of wrap should not block "exactly 1 non-hidden subdir" gate
+    const r = enumerateSkills(root);
+    expect(r.candidates.map(c => c.name)).toEqual(['skill1']);
+  });
 });
