@@ -131,9 +131,33 @@ class LlmService {
   }
 
   async setDefault(providerId: ProviderId, modelId: string): Promise<LlmListResult> {
+    // Write both the global default AND the per-provider default model so the
+    // form's model picker visually persists the selection. Without the per-provider
+    // write, entryFor() falls back to modelIds[0] and the dropdown reverts on refresh.
     const settings = await settingsService.get();
+    const isCustom = settings.llm.customProviders.some((cp) => cp.id === providerId);
+    const customProviders = isCustom
+      ? settings.llm.customProviders.map((cp) =>
+          cp.id === providerId ? { ...cp, defaultModel: modelId } : cp,
+        )
+      : settings.llm.customProviders;
+    const providers = isCustom
+      ? settings.llm.providers
+      : {
+          ...settings.llm.providers,
+          [providerId]: {
+            ...(settings.llm.providers[providerId] ?? {}),
+            defaultModel: modelId,
+          },
+        };
     await settingsService.update({
-      llm: { ...settings.llm, defaultProvider: providerId, defaultModel: modelId },
+      llm: {
+        ...settings.llm,
+        providers,
+        customProviders,
+        defaultProvider: providerId,
+        defaultModel: modelId,
+      },
     });
     await agentService.recomputeSessionsAfterDefaultChange();
     return this.list();
