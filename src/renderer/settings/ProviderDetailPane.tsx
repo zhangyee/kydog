@@ -4,6 +4,8 @@ import { useLlmStore } from '../stores/llmStore';
 import { useUiStore } from '../stores/uiStore';
 import { ApiKeyForm } from './forms/ApiKeyForm';
 import { OAuthForm } from './forms/OAuthForm';
+import { CloudForm } from './forms/CloudForm';
+import { CustomProviderForm } from './forms/CustomProviderForm';
 
 export function ProviderDetailPane() {
   const providerId = useUiStore((s) => s.settingsDetailProviderId);
@@ -43,11 +45,11 @@ export function ProviderDetailPane() {
 }
 
 function FormForKind({ providerId, kind, isNewCustom }: { providerId: string; kind: string; isNewCustom: boolean }) {
-  if (isNewCustom) return <Placeholder text="CustomProviderForm 待 Phase 6 接入。" providerId={providerId} />;
+  if (isNewCustom) return <CustomProviderForm providerId={providerId} />;
   if (kind === 'oauth') return <OAuthForm providerId={providerId} />;
   if (kind === 'apiKey') return <ApiKeyForm providerId={providerId} />;
-  if (kind === 'cloud') return <Placeholder text="CloudForm 待 Phase 6 接入。" providerId={providerId} />;
-  if (kind === 'custom') return <Placeholder text="CustomProviderForm 待 Phase 6 接入。" providerId={providerId} />;
+  if (kind === 'cloud') return <CloudForm providerId={providerId} />;
+  if (kind === 'custom') return <CustomProviderForm providerId={providerId} />;
   return <Placeholder text="未知 kind。" providerId={providerId} />;
 }
 
