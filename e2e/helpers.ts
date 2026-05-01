@@ -27,18 +27,24 @@ export async function launchKydog(opts: { fixture?: string; seed?: (kydogHome: s
 
 export async function seedSettings(kydogHome: string, opts: { providerConfigured?: boolean } = {}) {
   await fs.mkdir(path.join(kydogHome, '.kydog'), { recursive: true });
-  const provider = opts.providerConfigured === false
-    ? null
-    : { kind: 'openai-compat', name: 'Fixture', baseUrl: 'http://fixture', apiKey: 'sk-fix', model: 'fix' };
+  const v2 = {
+    schemaVersion: 2 as const,
+    ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+    llm: opts.providerConfigured === false
+      ? { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }
+      : {
+          auth: { 'anthropic': { type: 'api_key', key: 'sk-fix' } },
+          providers: { 'anthropic': {} },
+          customProviders: [],
+          defaultProvider: 'anthropic',
+          defaultModel: 'claude-sonnet-4-5',
+        },
+    skills: { disabledBuiltins: [] },
+    tools: { externalBins: [] },
+  };
   await fs.writeFile(
     path.join(kydogHome, '.kydog', 'kydog.json'),
-    JSON.stringify({
-      schemaVersion: 1,
-      ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
-      llm: { provider },
-      skills: { disabledBuiltins: [] },
-      tools: { externalBins: [] },
-    }, null, 2),
+    JSON.stringify(v2, null, 2),
   );
 }
 
