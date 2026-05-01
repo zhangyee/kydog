@@ -2,6 +2,7 @@
 import { useEffect, useMemo } from 'react';
 import { useLlmStore } from '../stores/llmStore';
 import { useUiStore } from '../stores/uiStore';
+import { ApiKeyForm } from './forms/ApiKeyForm';
 
 export function ProviderDetailPane() {
   const providerId = useUiStore((s) => s.settingsDetailProviderId);
@@ -43,7 +44,7 @@ export function ProviderDetailPane() {
 function FormForKind({ providerId, kind, isNewCustom }: { providerId: string; kind: string; isNewCustom: boolean }) {
   if (isNewCustom) return <Placeholder text="CustomProviderForm 待 Phase 6 接入。" providerId={providerId} />;
   if (kind === 'oauth') return <Placeholder text="OAuthForm 待 Phase 5 接入。" providerId={providerId} />;
-  if (kind === 'apiKey') return <Placeholder text="ApiKeyForm 待 Phase 4 接入。" providerId={providerId} />;
+  if (kind === 'apiKey') return <ApiKeyForm providerId={providerId} />;
   if (kind === 'cloud') return <Placeholder text="CloudForm 待 Phase 6 接入。" providerId={providerId} />;
   if (kind === 'custom') return <Placeholder text="CustomProviderForm 待 Phase 6 接入。" providerId={providerId} />;
   return <Placeholder text="未知 kind。" providerId={providerId} />;
