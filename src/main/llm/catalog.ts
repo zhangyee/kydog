@@ -48,6 +48,8 @@ export const PROVIDER_CATALOG: CatalogEntry[] = [
     apiKey: { envFallback: ['ANTHROPIC_API_KEY'], baseUrlOverridable: true } },
   { id: 'openai', displayName: 'OpenAI', kind: 'apiKey', group: 'apiKey',
     apiKey: { envFallback: ['OPENAI_API_KEY'], baseUrlOverridable: true } },
+  { id: 'deepseek', displayName: 'DeepSeek', kind: 'apiKey', group: 'apiKey',
+    apiKey: { envFallback: ['DEEPSEEK_API_KEY'], baseUrlOverridable: true } },
   { id: 'google', displayName: 'Google Gemini', kind: 'apiKey', group: 'apiKey',
     apiKey: { envFallback: ['GEMINI_API_KEY'], baseUrlOverridable: false } },
   { id: 'openrouter', displayName: 'OpenRouter', kind: 'apiKey', group: 'apiKey',

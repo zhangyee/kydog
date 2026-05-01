@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { PROVIDER_CATALOG, getCatalogEntry } from './catalog';
 
 describe('PROVIDER_CATALOG', () => {
-  it('共 22 行：5 OAuth + 14 API key + 3 Cloud', () => {
+  it('共 23 行：5 OAuth + 15 API key + 3 Cloud', () => {
     const oauth = PROVIDER_CATALOG.filter((e) => e.kind === 'oauth');
     const key = PROVIDER_CATALOG.filter((e) => e.kind === 'apiKey');
     const cloud = PROVIDER_CATALOG.filter((e) => e.kind === 'cloud');
     expect(oauth).toHaveLength(5);
-    expect(key).toHaveLength(14);
+    expect(key).toHaveLength(15);
     expect(cloud).toHaveLength(3);
-    expect(PROVIDER_CATALOG).toHaveLength(22);
+    expect(PROVIDER_CATALOG).toHaveLength(23);
   });
 
   it('每个 entry 都有 displayName 与 group', () => {

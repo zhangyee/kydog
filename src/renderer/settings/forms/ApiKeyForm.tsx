@@ -25,6 +25,7 @@ type CatalogApiKeyMeta = {
 const STATIC_META: Record<string, CatalogApiKeyMeta> = {
   anthropic: { envFallback: ['ANTHROPIC_API_KEY'], baseUrlOverridable: true },
   openai: { envFallback: ['OPENAI_API_KEY'], baseUrlOverridable: true },
+  deepseek: { envFallback: ['DEEPSEEK_API_KEY'], baseUrlOverridable: true },
   google: { envFallback: ['GEMINI_API_KEY'], baseUrlOverridable: false },
   openrouter: { envFallback: ['OPENROUTER_API_KEY'], baseUrlOverridable: true },
   mistral: { envFallback: ['MISTRAL_API_KEY'], baseUrlOverridable: false },
