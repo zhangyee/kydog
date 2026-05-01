@@ -34,7 +34,7 @@ export class SkillsService {
       const dir = path.join(this.deps.skillsDir, e.name);
       const skillFile = path.join(dir, 'SKILL.md');
       if (!existsSync(skillFile)) continue;
-      const parsed = parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
+      const parsed = await parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
       if (!parsed.ok) {
         console.warn(`[skills] skipping ${e.name}: ${parsed.reason}`);
         continue;
@@ -84,7 +84,7 @@ export class SkillsService {
     if (!existsSync(args.srcDir)) {
       throw new KydogError('skill.invalid', `路径不存在：${args.srcDir}`);
     }
-    const result = enumerateSkills(args.srcDir);
+    const result = await enumerateSkills(args.srcDir);
     const annotated = result.candidates.map((c) => ({
       ...c,
       alreadyInstalled: this.lookupExisting(c.name),
@@ -111,7 +111,7 @@ export class SkillsService {
       await extractTarGz(archive, dir);
       await fsp.unlink(archive).catch(() => {});
       const baseDir = computeBaseDir(dir, parsed.subPath);
-      const result = enumerateSkills(baseDir);
+      const result = await enumerateSkills(baseDir);
       const annotated = result.candidates.map((c) => ({
         ...c,
         alreadyInstalled: this.lookupExisting(c.name),
@@ -137,7 +137,7 @@ export class SkillsService {
         if (!existsSync(skillFile)) {
           throw new KydogError('skill.invalid', `pick 路径已不存在：${pick.relPath}`);
         }
-        const parsed = parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
+        const parsed = await parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
         if (!parsed.ok) {
           throw new KydogError('skill.invalid', `frontmatter 无效：${parsed.reason}`);
         }

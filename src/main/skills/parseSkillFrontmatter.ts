@@ -1,5 +1,3 @@
-import { parseFrontmatter } from '@mariozechner/pi-coding-agent';
-
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
 export type ParseResult =
@@ -8,7 +6,10 @@ export type ParseResult =
 
 type RawFrontmatter = Record<string, unknown> & { name?: unknown; description?: unknown };
 
-export function parseSkillFrontmatter(content: string): ParseResult {
+const piPromise = import('@mariozechner/pi-coding-agent');
+
+export async function parseSkillFrontmatter(content: string): Promise<ParseResult> {
+  const { parseFrontmatter } = await piPromise;
   const { frontmatter } = parseFrontmatter<RawFrontmatter>(content);
   const name = typeof frontmatter.name === 'string' ? frontmatter.name.trim() : '';
   const description = typeof frontmatter.description === 'string' ? frontmatter.description.trim() : '';

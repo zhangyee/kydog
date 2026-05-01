@@ -6,11 +6,11 @@ import { parseSkillFrontmatter } from './parseSkillFrontmatter';
 
 export type EnumerateResult = { candidates: SkillCandidate[] };
 
-export function enumerateSkills(baseDir: string): EnumerateResult {
-  const direct = tryDir(baseDir, '');
+export async function enumerateSkills(baseDir: string): Promise<EnumerateResult> {
+  const direct = await tryDir(baseDir, '');
   if (direct) return { candidates: [direct] };
 
-  const oneLevel = listChildSkills(baseDir, '');
+  const oneLevel = await listChildSkills(baseDir, '');
   if (oneLevel.length > 0) return { candidates: oneLevel };
 
   // Try unwrap one level
@@ -19,22 +19,22 @@ export function enumerateSkills(baseDir: string): EnumerateResult {
   if (subdirs.length === 1) {
     const wrap = subdirs[0].name;
     const wrapPath = path.join(baseDir, wrap);
-    const wrapDirect = tryDir(wrapPath, wrap);
+    const wrapDirect = await tryDir(wrapPath, wrap);
     if (wrapDirect) return { candidates: [wrapDirect] };
-    const inner = listChildSkills(wrapPath, wrap);
+    const inner = await listChildSkills(wrapPath, wrap);
     if (inner.length > 0) return { candidates: inner };
   }
 
   throw new KydogError('skill.invalid', '未找到符合规范的 skill（要求 SKILL.md 在根目录或一层子目录里）');
 }
 
-function tryDir(absDir: string, relPath: string): SkillCandidate | null {
+async function tryDir(absDir: string, relPath: string): Promise<SkillCandidate | null> {
   const skillFile = path.join(absDir, 'SKILL.md');
   if (!existsSync(skillFile)) return null;
-  return buildCandidate(skillFile, relPath);
+  return await buildCandidate(skillFile, relPath);
 }
 
-function listChildSkills(absDir: string, relPrefix: string): SkillCandidate[] {
+async function listChildSkills(absDir: string, relPrefix: string): Promise<SkillCandidate[]> {
   const entries = readdirSync(absDir, { withFileTypes: true });
   const out: SkillCandidate[] = [];
   for (const e of entries) {
@@ -43,14 +43,14 @@ function listChildSkills(absDir: string, relPrefix: string): SkillCandidate[] {
     const skillFile = path.join(childAbs, 'SKILL.md');
     if (!existsSync(skillFile)) continue;
     const rel = relPrefix ? `${relPrefix}/${e.name}` : e.name;
-    out.push(buildCandidate(skillFile, rel));
+    out.push(await buildCandidate(skillFile, rel));
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function buildCandidate(skillFile: string, relPath: string): SkillCandidate {
+async function buildCandidate(skillFile: string, relPath: string): Promise<SkillCandidate> {
   const content = readFileSync(skillFile, 'utf-8');
-  const r = parseSkillFrontmatter(content);
+  const r = await parseSkillFrontmatter(content);
   if (r.ok) {
     return { name: r.name, description: r.description, relPath, alreadyInstalled: null };
   }
