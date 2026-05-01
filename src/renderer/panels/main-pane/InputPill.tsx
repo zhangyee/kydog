@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
+import { useLlmStore } from '../../stores/llmStore';
 
 type Props = {
   threadId: string;
@@ -30,6 +31,11 @@ export function InputPill({
     Object.values(s.threadsByProject).flat().find((t) => t.id === threadId),
   );
   const projectName = thread ? (thread.projectPath.split('/').pop() ?? '') : '';
+
+  const defaultProvider = useLlmStore((s) => s.defaultProvider);
+  const defaultModel = useLlmStore((s) => s.defaultModel);
+  const configured = useLlmStore((s) => s.configured.find((c) => c.providerId === defaultProvider));
+  const pillLabel = configured && defaultModel ? `${configured.displayName} · ${defaultModel}` : 'BYOK';
 
   // Apply external prefill (e.g. ChapterCard click) to internal text.
   useEffect(() => {
@@ -134,7 +140,7 @@ export function InputPill({
             className="font-mono"
             style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
           >
-            BYOK
+            {pillLabel}
           </span>
           <span
             className="font-mono"
