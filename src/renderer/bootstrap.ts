@@ -2,12 +2,14 @@ import { useThreadsStore } from './stores/threadsStore';
 import { useUiStore } from './stores/uiStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { useRunsStore } from './stores/runsStore';
+import { useLlmStore } from './stores/llmStore';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
   useThreadsStore.getState().hydrate(state.projects, state.threads);
   useSettingsStore.getState().setSettings(state.settings);
   useSettingsStore.getState().setAppVersion(state.appVersion);
+  await useLlmStore.getState().refresh();
   const noProvider = state.settings.llm.defaultProvider === null;
   useUiStore.setState({
     theme: state.settings.ui.theme,
