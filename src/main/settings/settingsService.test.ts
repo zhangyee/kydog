@@ -1,96 +1,75 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import * as paths from '../persist/paths';
+import { ensureSettingsFile } from '../persist/settingsFile';
 import { SettingsService } from './settingsService';
-import { defaultSettings } from '../persist/settingsFile';
-import type { SettingsFile } from '../../shared/types';
 
-function makeService() {
-  const base = defaultSettings();
-  const load = vi.fn().mockResolvedValue(structuredClone(base)) as () => Promise<SettingsFile>;
-  const save = vi.fn().mockResolvedValue(undefined) as (s: SettingsFile) => Promise<void>;
-  const svc = new SettingsService(load, save);
-  return { svc, load, save, base };
-}
-
-describe('SettingsService', () => {
-  it('get() calls load once and caches', async () => {
-    const { svc, load } = makeService();
-    await svc.get();
-    await svc.get();
-    expect(load).toHaveBeenCalledTimes(1);
+describe('SettingsService (v2 + proper-lockfile)', () => {
+  let dir: string;
+  let svc: SettingsService;
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-svc-'));
+    vi.spyOn(paths, 'ROOT', 'get').mockReturnValue(dir);
+    vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(path.join(dir, 'kydog.json'));
+    vi.spyOn(paths, 'LOCK_PATH', 'get').mockReturnValue(path.join(dir, '.kydog.json.lock'));
+    ensureSettingsFile();
+    svc = new SettingsService();
   });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('update deep-merges ui with new values, preserves untouched keys', async () => {
-    const { svc } = makeService();
-    const result = await svc.update({ ui: { theme: 'midnight', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false } });
-    expect(result.ui.theme).toBe('midnight');
-    expect(result.ui.locale).toBe('zh');
-  });
-
-  it('update deep-merges llm with new values', async () => {
-    const { svc } = makeService();
-    const provider = { kind: 'openai-compat' as const, name: 'T', baseUrl: 'http://localhost', apiKey: 'k', model: 'm' };
-    const result = await svc.update({ llm: { provider } });
-    expect(result.llm.provider).toEqual(provider);
-  });
-
-  it('update calls save with the merged object', async () => {
-    const { svc, save } = makeService();
-    const result = await svc.update({ ui: { theme: 'midnight', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false } });
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith(result);
-  });
-
-  it('update honors false values (inspectorCollapsed: false preserved)', async () => {
-    const { svc } = makeService();
-    // First set to true
-    await svc.update({ ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: true } });
-    // Then set back to false
-    const result = await svc.update({ ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false } });
-    expect(result.ui.inspectorCollapsed).toBe(false);
-  });
-
-  it('update({skills: {disabledBuiltins:["x"]}}) does not affect ui or llm', async () => {
-    const fakeLoad = async (): Promise<SettingsFile> => ({
-      schemaVersion: 1,
-      ui: { theme: 'sepia', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
-      llm: { provider: { kind: 'openai-compat', name: 'p', baseUrl: 'u', apiKey: 'k', model: 'm' } },
-      skills: { disabledBuiltins: [] },
-      tools: { externalBins: [] },
+  it('withLock: 写 + 读回一致', async () => {
+    await svc.withLock(async (cur) => {
+      const next = { ...cur, llm: { ...cur.llm, defaultProvider: 'anthropic' } };
+      return { next, result: undefined };
     });
-    const savedRef: { value: SettingsFile | null } = { value: null };
-    const svc = new SettingsService(fakeLoad, async (s) => { savedRef.value = s; });
-    await svc.update({ skills: { disabledBuiltins: ['x'] } });
-    expect(savedRef.value?.skills.disabledBuiltins).toEqual(['x']);
-    expect(savedRef.value?.ui.theme).toBe('sepia');
-    expect(savedRef.value?.llm.provider?.name).toBe('p');
+    const got = await svc.get();
+    expect(got.llm.defaultProvider).toBe('anthropic');
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.llm.defaultProvider).toBe('anthropic');
   });
 
-  it('update({tools: {externalBins:[...]}}) does not affect ui/llm/skills', async () => {
-    const fakeLoad = async (): Promise<SettingsFile> => ({
-      schemaVersion: 1,
-      ui: { theme: 'sepia', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
-      llm: { provider: null },
-      skills: { disabledBuiltins: ['x'] },
-      tools: { externalBins: [] },
+  it('withLock: 100 次并发 async 写最终 deterministic（无丢失）', async () => {
+    const N = 100;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        svc.withLock(async (cur) => ({
+          next: { ...cur, llm: { ...cur.llm, providers: { ...cur.llm.providers, [`p${i}`]: {} } } },
+          result: undefined,
+        })),
+      ),
+    );
+    const got = await svc.get();
+    expect(Object.keys(got.llm.providers).length).toBe(N);
+  });
+
+  it('withLockSync: 写 + 读回一致', () => {
+    svc.withLockSync((cur) => {
+      const next = { ...cur, llm: { ...cur.llm, defaultModel: 'claude-sonnet-4-5' } };
+      return { next, result: undefined };
     });
-    const savedRef: { value: SettingsFile | null } = { value: null };
-    const svc = new SettingsService(fakeLoad, async (s) => { savedRef.value = s; });
-    const entry = { name: 'foo', path: '/usr/local/bin/foo', addedAt: '2026-01-01T00:00:00Z' };
-    await svc.update({ tools: { externalBins: [entry] } });
-    expect(savedRef.value?.tools.externalBins).toEqual([entry]);
-    expect(savedRef.value?.skills.disabledBuiltins).toEqual(['x']);
-    expect(savedRef.value?.ui.theme).toBe('sepia');
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.llm.defaultModel).toBe('claude-sonnet-4-5');
   });
 
-  it('reset calls save with defaultSettings and clears cache', async () => {
-    const { svc, save, load } = makeService();
-    // Prime the cache
-    await svc.get();
-    expect(load).toHaveBeenCalledTimes(1);
-    await svc.reset();
-    expect(save).toHaveBeenCalledWith(defaultSettings());
-    // After reset, next get should use the reset cache (not call load again)
-    await svc.get();
-    expect(load).toHaveBeenCalledTimes(1);
+  it('混合 sync/async 写：交替 50 次，最终所有键都存在', async () => {
+    const ops: Array<Promise<void> | void> = [];
+    for (let i = 0; i < 50; i++) {
+      if (i % 2 === 0) {
+        ops.push(svc.withLock(async (cur) => ({
+          next: { ...cur, llm: { ...cur.llm, providers: { ...cur.llm.providers, [`a${i}`]: {} } } },
+          result: undefined,
+        })));
+      } else {
+        svc.withLockSync((cur) => ({
+          next: { ...cur, llm: { ...cur.llm, providers: { ...cur.llm.providers, [`s${i}`]: {} } } },
+          result: undefined,
+        }));
+      }
+    }
+    await Promise.all(ops.filter((x): x is Promise<void> => !!x));
+    const got = await svc.get();
+    expect(Object.keys(got.llm.providers).length).toBe(50);
   });
 });
