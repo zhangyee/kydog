@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync, promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { app, shell } from 'electron';
 import type { SkillEntry } from '../../shared/types';
+import { KydogError } from '../../shared/errors';
 import { settingsService } from '../settings/settingsService';
 import { parseSkillFrontmatter } from './parseSkillFrontmatter';
 import { listBuiltinSkills, builtinSkillsRoot } from './builtinSkills';
@@ -27,7 +28,10 @@ export class SkillsService {
       const skillFile = path.join(dir, 'SKILL.md');
       if (!existsSync(skillFile)) continue;
       const parsed = parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
-      if (!parsed.ok) continue; // bad SKILL.md is invisible to list (preview surface flags it)
+      if (!parsed.ok) {
+        console.warn(`[skills] skipping ${e.name}: ${parsed.reason}`);
+        continue;
+      }
       const origin: 'builtin' | 'user' = this.deps.isBuiltin(e.name) ? 'builtin' : 'user';
       const entry: SkillEntry = {
         name: e.name, // dirname is canonical id (§A.1)
@@ -40,6 +44,33 @@ export class SkillsService {
       out.push(entry);
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async setEnabled(name: string, enabled: boolean): Promise<SkillEntry[]> {
+    if (!this.deps.isBuiltin(name)) {
+      throw new KydogError('skill.invalid', '第三方 skill 不支持禁用，请使用卸载');
+    }
+    const current = (await settingsService.get()).skills.disabledBuiltins;
+    const next = enabled
+      ? current.filter((n) => n !== name)
+      : Array.from(new Set([...current, name]));
+    await settingsService.update({ skills: { disabledBuiltins: next } });
+    return this.list();
+  }
+
+  async uninstall(name: string): Promise<SkillEntry[]> {
+    if (this.deps.isBuiltin(name)) {
+      throw new KydogError('skill.uninstall_forbidden', '内置 skill 不支持卸载');
+    }
+    const dir = path.join(this.deps.skillsDir, name);
+    await fsp.rm(dir, { recursive: true, force: true });
+    return this.list();
+  }
+
+  async openInOS(name: string): Promise<void> {
+    const dir = path.join(this.deps.skillsDir, name);
+    if (!existsSync(dir)) throw new KydogError('skill.invalid', `未找到 skill ${name}`);
+    await shell.openPath(dir);
   }
 }
 

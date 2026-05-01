@@ -1,8 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SkillsService } from './skillsService';
+
+vi.mock('electron', () => ({
+  app: { getVersion: () => '0.0.0-test' },
+  shell: { openPath: vi.fn().mockResolvedValue('') },
+}));
 
 vi.mock('../settings/settingsService', () => ({
   settingsService: { get: vi.fn(), update: vi.fn() },
@@ -32,9 +37,15 @@ describe('SkillsService.list', () => {
     const list = await svc.list();
     const fp = list.find(s => s.name === 'fastpaper');
     const ab = list.find(s => s.name === 'agent-browser');
+    expect(fp?.name).toBe('fastpaper');
+    expect(fp?.dirPath).toBe(path.join(skillsDir, 'fastpaper'));
+    expect(fp?.description).toBe('d');
     expect(fp?.origin).toBe('builtin');
     expect(fp?.enabled).toBe(false);
     expect(fp?.kydogVersion).toBe('0.2.0');
+    expect(ab?.name).toBe('agent-browser');
+    expect(ab?.dirPath).toBe(path.join(skillsDir, 'agent-browser'));
+    expect(ab?.description).toBe('d');
     expect(ab?.origin).toBe('user');
     expect(ab?.enabled).toBe(true);
     expect(ab?.kydogVersion).toBeUndefined();
@@ -50,5 +61,58 @@ describe('SkillsService.list', () => {
     const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
     const list = await svc.list();
     expect(list.map(s => s.name)).toEqual(['good']);
+  });
+});
+
+describe('SkillsService.setEnabled', () => {
+  it('builtin: writes disabledBuiltins via settingsService.update', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'fastpaper');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.update as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: ['fastpaper'] } });
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
+    await svc.setEnabled('fastpaper', false);
+    expect(settingsService.update).toHaveBeenCalledWith({ skills: { disabledBuiltins: ['fastpaper'] } });
+  });
+
+  it('user: throws skill.invalid', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'agent-browser');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.update as ReturnType<typeof vi.fn>).mockReset();
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
+    await expect(svc.setEnabled('agent-browser', false)).rejects.toThrow(/skill\.invalid|第三方/);
+    expect(settingsService.update).not.toHaveBeenCalled();
+  });
+
+  it('idempotent disable then enable removes from list', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'fastpaper');
+    (settingsService.get as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ skills: { disabledBuiltins: ['fastpaper'] } });
+    (settingsService.update as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
+    await svc.setEnabled('fastpaper', true);
+    expect(settingsService.update).toHaveBeenCalledWith({ skills: { disabledBuiltins: [] } });
+  });
+});
+
+describe('SkillsService.uninstall', () => {
+  it('user: removes the directory', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'agent-browser');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
+    await svc.uninstall('agent-browser');
+    expect(existsSync(path.join(skillsDir, 'agent-browser'))).toBe(false);
+  });
+
+  it('builtin: throws skill.uninstall_forbidden', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'fastpaper');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
+    await expect(svc.uninstall('fastpaper')).rejects.toThrow(/skill\.uninstall_forbidden|内置/);
+    expect(existsSync(path.join(skillsDir, 'fastpaper'))).toBe(true);
   });
 });
