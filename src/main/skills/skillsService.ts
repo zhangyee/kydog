@@ -2,8 +2,8 @@ import { existsSync, readFileSync, readdirSync, mkdirSync, promises as fsp } fro
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { app, shell } from 'electron';
-import type { SkillEntry, SkillPreview } from '../../shared/types';
-import { KydogError } from '../../shared/errors';
+import type { SkillCommitArgs, SkillCommitResult, SkillEntry, SkillPreview } from '../../shared/types';
+import { KydogError, serializeError, type SerializedError } from '../../shared/errors';
 import { settingsService } from '../settings/settingsService';
 import { parseSkillFrontmatter } from './parseSkillFrontmatter';
 import { listBuiltinSkills, builtinSkillsRoot } from './builtinSkills';
@@ -122,6 +122,62 @@ export class SkillsService {
       await fsp.unlink(archive).catch(() => {});
       throw err;
     }
+  }
+
+  async commitFromPreview(args: SkillCommitArgs): Promise<SkillCommitResult> {
+    const installed: SkillEntry[] = [];
+    const skipped: { name: string; reason: SerializedError }[] = [];
+    const stagingRoot = this.deps.stagingDir ?? path.join(this.deps.skillsDir, '..', '.cache', 'staging');
+    mkdirSync(stagingRoot, { recursive: true });
+
+    for (const pick of args.picks) {
+      try {
+        const srcSkillDir = path.join(args.srcPath, pick.relPath);
+        const skillFile = path.join(srcSkillDir, 'SKILL.md');
+        if (!existsSync(skillFile)) {
+          throw new KydogError('skill.invalid', `pick 路径已不存在：${pick.relPath}`);
+        }
+        const parsed = parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
+        if (!parsed.ok) {
+          throw new KydogError('skill.invalid', `frontmatter 无效：${parsed.reason}`);
+        }
+        const finalName = parsed.name; // §A.1
+        const targetDir = path.join(this.deps.skillsDir, finalName);
+        if (existsSync(targetDir)) {
+          throw new KydogError('skill.name_conflict', `已有同名 skill：${finalName}`);
+        }
+
+        const pickRand = randomUUID();
+        if (args.srcKind === 'folder') {
+          const stage = path.join(stagingRoot, `.commit-${pickRand}`);
+          await fsp.cp(srcSkillDir, stage, { recursive: true });
+          await fsp.rename(stage, targetDir);
+        } else {
+          // url: srcSkillDir already lives under stagingRoot's volume; rename direct
+          await fsp.rename(srcSkillDir, targetDir);
+        }
+        const entry: SkillEntry = {
+          name: finalName,
+          description: parsed.description,
+          origin: this.deps.isBuiltin(finalName) ? 'builtin' : 'user',
+          enabled: true,
+          dirPath: targetDir,
+        };
+        installed.push(entry);
+      } catch (err) {
+        skipped.push({ name: pick.name, reason: serializeError(err) });
+      }
+    }
+
+    if (args.srcKind === 'url') {
+      // Clean up the entire staging child for this preview (the dir containing srcPath)
+      // srcPath is e.g. <stagingRoot>/<rand>/repo-<sha>/<subPath>; clean up <stagingRoot>/<rand>
+      const rand = path.relative(stagingRoot, args.srcPath).split(path.sep)[0];
+      if (rand) await fsp.rm(path.join(stagingRoot, rand), { recursive: true, force: true }).catch(() => {});
+    }
+
+    const list = await this.list();
+    return { installed, skipped, list };
   }
 
   private lookupExisting(name: string): 'builtin' | 'user' | null {
