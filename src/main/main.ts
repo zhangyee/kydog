@@ -12,6 +12,8 @@ import { detectBashOnWindows } from './bin/shellCheck';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { settingsService } from './settings/settingsService';
 import { ensureSettingsFile } from './persist/settingsFile';
+import { applyCloudEnv } from './llm/cloudEnvSync';
+import { initProviderRegistry } from './llm/providerRegistry';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -91,6 +93,10 @@ app.on('ready', async () => {
 
     await ensureKydogDirs();
     ensureSettingsFile();
+
+    const _initialSettings = await settingsService.get();
+    applyCloudEnv(_initialSettings.llm.providers);
+    await initProviderRegistry(settingsService);
 
     try {
       const settings = await settingsService.get();
