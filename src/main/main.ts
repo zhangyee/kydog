@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, shell } from 'electron';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import started from 'electron-squirrel-startup';
-import { ROOT, SESSIONS_DIR, LOGS_DIR } from './persist/paths';
+import { ROOT, SESSIONS_DIR, LOGS_DIR, STAGING_DIR } from './persist/paths';
 import { installDispatcher } from './ipc/dispatcher';
 import { registerAllHandlers } from './handlers';
 import { logger } from './log';
@@ -88,6 +88,9 @@ app.on('ready', async () => {
     prependBinDirToPath(binDir());
 
     await ensureKydogDirs();
+
+    await fs.rm(STAGING_DIR, { recursive: true, force: true }).catch(() => {});
+    await fs.mkdir(STAGING_DIR, { recursive: true }).catch(() => {});
 
     try {
       await skillSyncStateHolder.runOnStartup();
