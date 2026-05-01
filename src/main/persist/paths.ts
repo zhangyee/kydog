@@ -5,6 +5,7 @@ import { cwdHash } from './cwdHash';
 export const ROOT = path.join(os.homedir(), '.kydog');
 export const INDEX_FILE = path.join(ROOT, 'index.json');
 export const SETTINGS_FILE = path.join(ROOT, 'kydog.json');
+export const LOCK_PATH = path.join(ROOT, '.kydog.json.lock');
 export const SESSIONS_DIR = path.join(ROOT, 'sessions');
 export const LOGS_DIR = path.join(ROOT, 'logs');
 export const CACHE_DIR = path.join(ROOT, '.cache');
