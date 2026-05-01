@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { promises as fsp, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { promises as fsp, statSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from './paths';
@@ -31,7 +31,7 @@ describe('settingsFile v2', () => {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       expect(statSync(path.join(dir, 'kydog.json')).mode & 0o777).toBe(0o600);
     }
-    const content = require('node:fs').readFileSync(path.join(dir, 'kydog.json'), 'utf8');
+    const content = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
     expect(JSON.parse(content).schemaVersion).toBe(2);
   });
 
@@ -39,7 +39,7 @@ describe('settingsFile v2', () => {
     ensureSettingsFile();
     await fsp.writeFile(path.join(dir, 'kydog.json'), '{"sentinel":1}');
     ensureSettingsFile();
-    const content = require('node:fs').readFileSync(path.join(dir, 'kydog.json'), 'utf8');
+    const content = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
     expect(content).toBe('{"sentinel":1}');
   });
 
