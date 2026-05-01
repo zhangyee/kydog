@@ -11,6 +11,13 @@ pi coding-agent SDK 相关改动前先查 `docs/references/pi-coding-agent/`，�
 - `providers.md` — 内置 provider、OAuth、API key 解析顺序
 - `examples/sdk/` — 13 个分主题 `.ts` 示例（`01-minimal.ts` … `13-session-runtime.ts`），`README.md` 是入口索引
 
+LLM provider/model 改动前先查 `docs/superpowers/specs/2026-05-01-providers-and-models-redesign-design.md`：
+
+- 22 个内置 provider 的 catalog 在 `src/main/llm/catalog.ts`，pi 升级时需手动同步
+- 凭证统一存 `~/.kydog/kydog.json::llm.auth`（KydogAuthStorageBackend）；权限强制 0600
+- Cloud cfg 不进 auth blob，靠 `cloudEnvSync.applyCloudEnv` 写 `process.env`
+- 配置变更后必须经 `ProviderRegistry.{reloadAuth, refreshAfterProviderChange}` + `AgentService.{invalidateSessionsForProviders, invalidateSessionsForThread, recomputeSessionsAfterDefaultChange}` 之一
+
 `docs/` 已在 `tsconfig.json` exclude，不参与编译。
 
 ## Commands
