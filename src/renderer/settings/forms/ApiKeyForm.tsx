@@ -66,14 +66,8 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
         apiKey: apiKey.trim() || '',
         baseUrl: meta.baseUrlOverridable && baseUrl.trim() ? baseUrl.trim() : undefined,
       };
-      // If user didn't enter a new key but has one stored, just save baseUrl change
-      // by sending empty apiKey — backend will handle if needed. For now require key.
-      if (cfg.apiKey === '' && hasKey) {
-        // Skip auth blob update; only update providers entry baseUrl/headers via configure with empty key
-        await window.kydog.invoke('llm.configure', { providerId, cfg });
-      } else {
-        await window.kydog.invoke('llm.configure', { providerId, cfg });
-      }
+      // Backend treats empty apiKey as "preserve existing key, update only baseUrl/headers".
+      await window.kydog.invoke('llm.configure', { providerId, cfg });
       await refresh();
       window.kydog.invoke('llm.testConnection', { providerId }).then((r) => {
         setTestHint(r.ok ? '✓ 模型清单可读' : `⚠ ${r.message ?? '探测失败'}`);
