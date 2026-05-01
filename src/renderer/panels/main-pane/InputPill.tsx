@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
+import { useUiStore } from '../../stores/uiStore';
+import { InputPillModelMenu } from './InputPillModelMenu';
 
 type Props = {
   threadId: string;
@@ -34,8 +36,30 @@ export function InputPill({
 
   const defaultProvider = useLlmStore((s) => s.defaultProvider);
   const defaultModel = useLlmStore((s) => s.defaultModel);
-  const configured = useLlmStore((s) => s.configured.find((c) => c.providerId === defaultProvider));
-  const pillLabel = configured && defaultModel ? `${configured.displayName} · ${defaultModel}` : 'BYOK';
+  const allConfigured = useLlmStore((s) => s.configured);
+  const openSettings = useUiStore((s) => s.openSettings);
+  const override = thread?.modelOverride;
+  const effectiveProviderId = override?.providerId ?? defaultProvider;
+  const effectiveModelId = override?.modelId
+    ?? defaultModel
+    ?? allConfigured.find((c) => c.providerId === effectiveProviderId)?.defaultModel
+    ?? null;
+  const eligibleCount = allConfigured.filter((c) => c.authStatus.configured && c.modelIds.length > 0).length;
+  const showBYOK = eligibleCount === 0;
+  const pillLabel = showBYOK
+    ? 'BYOK'
+    : effectiveProviderId && effectiveModelId
+    ? `${allConfigured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId} · ${effectiveModelId}`
+    : '选择模型';
+
+  const pillRef = useRef<HTMLButtonElement>(null);
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
+  const onPillClick = () => {
+    if (showBYOK) { openSettings('provider'); return; }
+    if (!threadId) return;
+    const r = pillRef.current?.getBoundingClientRect();
+    if (r) setMenuRect(r);
+  };
 
   // Apply external prefill (e.g. ChapterCard click) to internal text.
   useEffect(() => {
@@ -136,12 +160,18 @@ export function InputPill({
             </span>
           ))}
           <span style={{ flex: 1 }} />
-          <span
+          <button ref={pillRef} type="button" onClick={onPillClick}
             className="font-mono"
-            style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
-          >
+            style={{
+              padding: '2px 10px', borderRadius: 999, border: '0.5px solid var(--color-ink-hair)',
+              background: 'transparent', fontSize: 10,
+              color: showBYOK ? 'var(--color-ink-faint)' : 'var(--color-ink)',
+              cursor: 'pointer',
+            }}>
             {pillLabel}
-          </span>
+            {!showBYOK ? ' ▾' : ''}
+            {override ? <span title="本 thread 已覆盖" style={{ marginLeft: 4, color: 'var(--color-ink-faint)' }}>ⓘ</span> : null}
+          </button>
           <span
             className="font-mono"
             style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
@@ -188,6 +218,13 @@ export function InputPill({
           )}
         </div>
       </div>
+      {menuRect && threadId ? (
+        <InputPillModelMenu
+          threadId={threadId}
+          anchorRect={menuRect}
+          onClose={() => setMenuRect(null)}
+        />
+      ) : null}
     </div>
   );
 }
