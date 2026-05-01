@@ -3,6 +3,7 @@ import { useUiStore } from '../stores/uiStore';
 import { ProviderForm } from './ProviderForm';
 import type { ProviderConfig } from '../../shared/types';
 import { SETTINGS_PAGE_LABELS } from './settingsPages';
+import { SkillsAndToolsSection } from './SkillsAndToolsSection';
 
 export function SettingsPane() {
   const activeSection = useUiStore((s) => s.settingsTab);
@@ -31,7 +32,9 @@ export function SettingsPane() {
           className="font-serif italic"
           style={{ marginTop: 6, fontSize: 12, color: 'var(--color-ink-soft)' }}
         >
-          {activeSection === 'provider' ? '配置当前使用的模型提供商' : '预留页面'}
+          {activeSection === 'provider' ? '配置当前使用的模型提供商'
+            : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
+            : '预留页面'}
         </div>
         <div style={{ marginTop: 14 }}>
           <span
@@ -61,6 +64,8 @@ export function SettingsPane() {
             </div>
             <ProviderForm initial={settings?.llm.provider ?? null} onSave={onSave} />
           </div>
+        ) : activeSection === 'skills' ? (
+          <SkillsAndToolsSection />
         ) : (
           <EmptySettingsPage title={SETTINGS_PAGE_LABELS[activeSection]} />
         )}

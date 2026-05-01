@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { FsNode, ThemeName } from '../../shared/types';
 
-export type SettingsTabId = 'provider' | 'donate' | 'about';
+export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills';
 type CenterTabKind = 'thread' | 'settings';
 
 type UiState = {

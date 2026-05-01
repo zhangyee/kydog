@@ -4,4 +4,5 @@ export const SETTINGS_PAGE_LABELS: Record<SettingsTabId, string> = {
   provider: '模型与提供商',
   donate: '支持作者',
   about: '关于',
+  skills: '技能和工具',
 };
