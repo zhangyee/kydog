@@ -1,5 +1,6 @@
 import { app, dialog } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
+import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
@@ -67,9 +68,13 @@ export function registerAllHandlers(): void {
   registerHandler('llm.setThreadOverride', (args) => llmService.setThreadOverride(args.threadId, args.override));
   registerHandler('llm.testConnection', (args) => llmService.testConnection(args.providerId));
 
-  // OAuth — Phase 5 implementation; stubs avoid channel-missing errors
-  registerHandler('llm.login', async () => { throw new Error('oauth login: not implemented yet (Phase 5)'); });
-  registerHandler('llm.loginCancel', async () => { throw new Error('oauth: not implemented yet'); });
-  registerHandler('llm.loginPromptReply', async () => { throw new Error('oauth: not implemented yet'); });
-  registerHandler('llm.logout', async () => { throw new Error('oauth: not implemented yet'); });
+  // OAuth — Phase 5
+  registerHandler('llm.login', (args) => oauthCoordinator.login(args.providerId));
+  registerHandler('llm.loginCancel', async (args) => oauthCoordinator.cancel(args.providerId));
+  registerHandler('llm.loginPromptReply', async (args) => oauthCoordinator.promptReply(args.providerId, args.value));
+  registerHandler('llm.logout', async (args) => {
+    await oauthCoordinator.logout(args.providerId);
+    const { llmService } = await import('./llm/llmService');
+    return llmService.list();
+  });
 }
