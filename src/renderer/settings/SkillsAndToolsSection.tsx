@@ -376,7 +376,7 @@ function SkillRow({ skill, onChanged }: { skill: SkillEntry; onChanged: (next: S
         {skill.origin === 'builtin' && (
           <Toggle checked={skill.enabled} onChange={onToggle} disabled={busy} />
         )}
-        <Btn variant="primary" onClick={onOpen}>打开目录↗</Btn>
+        <Btn variant="primary" onClick={onOpen}>打开目录</Btn>
         {skill.origin === 'user' && (
           <Btn variant="danger" onClick={onUninstall} disabled={busy}>卸载</Btn>
         )}
