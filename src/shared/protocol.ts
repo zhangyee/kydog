@@ -1,6 +1,7 @@
 import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SkillSyncStatus,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
+  ProviderId, CustomProvider,
 } from './types';
 import type { SerializedError } from './errors';
 
@@ -34,7 +35,19 @@ export type RpcCall =
   | { method: 'skill.openInOS'; args: { name: string }; result: void }
   | { method: 'tool.list'; args: { force?: boolean }; result: ToolEntry[] }
   | { method: 'tool.addExternal'; args: undefined; result: ToolEntry[] }
-  | { method: 'tool.removeExternal'; args: { path: string }; result: ToolEntry[] };
+  | { method: 'tool.removeExternal'; args: { path: string }; result: ToolEntry[] }
+  // ── LLM ──
+  | { method: 'llm.list'; args: undefined; result: LlmListResult }
+  | { method: 'llm.configure'; args: { providerId: ProviderId; cfg: LlmConfigureCfg }; result: LlmListResult }
+  | { method: 'llm.remove'; args: { providerId: ProviderId }; result: LlmListResult }
+  | { method: 'llm.removeCustom'; args: { customId: string }; result: LlmListResult }
+  | { method: 'llm.setDefault'; args: { providerId: ProviderId; modelId: string }; result: LlmListResult }
+  | { method: 'llm.setThreadOverride'; args: { threadId: string; override: { providerId: ProviderId; modelId: string } | null }; result: LlmListResult }
+  | { method: 'llm.testConnection'; args: { providerId: ProviderId }; result: LlmTestConnectionResult }
+  | { method: 'llm.login'; args: { providerId: ProviderId }; result: void }
+  | { method: 'llm.loginCancel'; args: { providerId: ProviderId }; result: void }
+  | { method: 'llm.loginPromptReply'; args: { providerId: ProviderId; value: string }; result: void }
+  | { method: 'llm.logout'; args: { providerId: ProviderId }; result: LlmListResult };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];
@@ -52,10 +65,39 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
   | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
-  | { topic: 'run.ended'; payload: { threadId: string; runId: string; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string } };
+  | { topic: 'run.ended'; payload: { threadId: string; runId: string; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string } }
+  | { topic: 'oauth.auth'; payload: { providerId: string; url: string; instructions?: string } }
+  | { topic: 'oauth.progress'; payload: { providerId: string; message: string } }
+  | { topic: 'oauth.prompt'; payload: { providerId: string; prompt: { message: string; placeholder?: string; allowEmpty?: boolean } } }
+  | { topic: 'oauth.success'; payload: { providerId: string } }
+  | { topic: 'oauth.error'; payload: { providerId: string; error: string } };
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];
 
 export const RPC_CHANNEL = 'kydog:rpc' as const;
 export const EVENT_CHANNEL = 'kydog:event' as const;
+
+export type LlmConfiguredEntry = {
+  providerId: ProviderId;
+  displayName: string;
+  kind: 'oauth' | 'apiKey' | 'cloud' | 'custom';
+  authStatus: { configured: boolean; source?: string; label?: string };
+  modelIds: string[];
+  defaultModel: string | null;
+};
+
+export type LlmListResult = {
+  catalog: Array<{ id: ProviderId; displayName: string; kind: string; group: string }>;
+  configured: LlmConfiguredEntry[];
+  customProviders: CustomProvider[];
+  defaultProvider: ProviderId | null;
+  defaultModel: string | null;
+};
+
+export type LlmConfigureCfg =
+  | { kind: 'apiKey'; apiKey: string; baseUrl?: string; headers?: Record<string, string> }
+  | { kind: 'cloud'; cloud: import('./types').AzureCfg | import('./types').BedrockCfg | import('./types').VertexCfg; apiKey?: string; baseUrl?: string }
+  | { kind: 'custom'; provider: CustomProvider };
+
+export type LlmTestConnectionResult = { ok: boolean; message?: string };

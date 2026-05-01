@@ -1,6 +1,7 @@
 import { app, dialog } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { settingsService } from './settings/settingsService';
+import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { threadService } from './thread/threadService';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
@@ -57,4 +58,18 @@ export function registerAllHandlers(): void {
   registerHandler('tool.list', (args) => toolsService.list({ force: args?.force }));
   registerHandler('tool.addExternal', () => toolsService.addExternal());
   registerHandler('tool.removeExternal', (args) => toolsService.removeExternal(args));
+
+  registerHandler('llm.list', () => llmService.list());
+  registerHandler('llm.configure', (args) => llmService.configure(args));
+  registerHandler('llm.remove', (args) => llmService.remove(args.providerId));
+  registerHandler('llm.removeCustom', (args) => llmService.removeCustom(args.customId));
+  registerHandler('llm.setDefault', (args) => llmService.setDefault(args.providerId, args.modelId));
+  registerHandler('llm.setThreadOverride', (args) => llmService.setThreadOverride(args.threadId, args.override));
+  registerHandler('llm.testConnection', (args) => llmService.testConnection(args.providerId));
+
+  // OAuth — Phase 5 implementation; stubs avoid channel-missing errors
+  registerHandler('llm.login', async () => { throw new Error('oauth login: not implemented yet (Phase 5)'); });
+  registerHandler('llm.loginCancel', async () => { throw new Error('oauth: not implemented yet'); });
+  registerHandler('llm.loginPromptReply', async () => { throw new Error('oauth: not implemented yet'); });
+  registerHandler('llm.logout', async () => { throw new Error('oauth: not implemented yet'); });
 }
