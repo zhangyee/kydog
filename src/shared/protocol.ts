@@ -32,7 +32,9 @@ export type RpcCall =
   | { method: 'skill.commitFromPreview'; args: SkillCommitArgs; result: SkillCommitResult }
   | { method: 'skill.uninstall'; args: { name: string }; result: SkillEntry[] }
   | { method: 'skill.openInOS'; args: { name: string }; result: void }
-  | { method: 'tool.list'; args: { force?: boolean }; result: ToolEntry[] };
+  | { method: 'tool.list'; args: { force?: boolean }; result: ToolEntry[] }
+  | { method: 'tool.addExternal'; args: undefined; result: ToolEntry[] }
+  | { method: 'tool.removeExternal'; args: { path: string }; result: ToolEntry[] };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];

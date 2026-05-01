@@ -10,6 +10,7 @@ import { binDir } from './bin/binPath';
 import { prependBinDirToPath } from './bin/pathEnv';
 import { detectBashOnWindows } from './bin/shellCheck';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
+import { settingsService } from './settings/settingsService';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -88,6 +89,14 @@ app.on('ready', async () => {
     prependBinDirToPath(binDir());
 
     await ensureKydogDirs();
+
+    try {
+      const settings = await settingsService.get();
+      const externalDirs = new Set(settings.tools.externalBins.map((b) => path.dirname(b.path)));
+      for (const d of externalDirs) prependBinDirToPath(d);
+    } catch (err) {
+      logger.warn('app', 'external bin PATH inject failed', { err: String(err) });
+    }
 
     await fs.rm(STAGING_DIR, { recursive: true, force: true }).catch(() => {});
     await fs.mkdir(STAGING_DIR, { recursive: true }).catch(() => {});

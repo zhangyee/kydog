@@ -20,6 +20,7 @@ export class SettingsService {
       ui: { ...current.ui, ...(patch.ui ?? {}) },
       llm: { ...current.llm, ...(patch.llm ?? {}) },
       skills: { ...current.skills, ...(patch.skills ?? {}) },
+      tools: { ...current.tools, ...(patch.tools ?? {}) },
     };
     await this.save(next);
     this.cache = next;

@@ -27,6 +27,9 @@ describe('settingsFile', () => {
   it('defaultSettings includes skills.disabledBuiltins=[]', () => {
     expect(defaultSettings().skills).toEqual({ disabledBuiltins: [] });
   });
+  it('defaultSettings includes tools.externalBins=[]', () => {
+    expect(defaultSettings().tools).toEqual({ externalBins: [] });
+  });
   it('loadSettings normalizes legacy file missing skills field', async () => {
     const dir2 = mkdtempSync(path.join(tmpdir(), 'kydog-set-'));
     const file = path.join(dir2, 'kydog.json');
@@ -38,5 +41,18 @@ describe('settingsFile', () => {
     vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(file);
     const loaded = await loadSettings();
     expect(loaded.skills).toEqual({ disabledBuiltins: [] });
+  });
+  it('loadSettings normalizes legacy file missing tools field', async () => {
+    const dir2 = mkdtempSync(path.join(tmpdir(), 'kydog-tools-'));
+    const file = path.join(dir2, 'kydog.json');
+    writeFileSync(file, JSON.stringify({
+      schemaVersion: 1,
+      ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+      llm: { provider: null },
+      skills: { disabledBuiltins: [] },
+    }));
+    vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(file);
+    const loaded = await loadSettings();
+    expect(loaded.tools).toEqual({ externalBins: [] });
   });
 });

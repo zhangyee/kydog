@@ -13,6 +13,7 @@ export function SkillsAndToolsSection() {
   const [urlInputOpen, setUrlInputOpen] = useState(false);
   const [url, setUrl] = useState('');
   const [scanning, setScanning] = useState(false);
+  const [toolError, setToolError] = useState<string | null>(null);
 
   const refresh = async (opts?: { force?: boolean }) => {
     setLoading('loading');
@@ -91,6 +92,14 @@ export function SkillsAndToolsSection() {
     finally { setInstalling(false); }
   };
 
+  const onAddExternal = async () => {
+    setToolError(null);
+    try {
+      const next = await window.kydog.invoke('tool.addExternal');
+      setTools(next);
+    } catch (e) { setToolError(String((e as Error).message)); }
+  };
+
   useEffect(() => {
     if (loading === 'idle') void refresh();
   }, []);
@@ -165,11 +174,14 @@ export function SkillsAndToolsSection() {
       <Card>
         <SubHeader subtitle="agent 可调用的捆绑 CLI" />
         {tools.length === 0 && <Empty />}
-        {tools.map((t) => <ToolRow key={t.name} tool={t} />)}
+        {tools.map((t) => <ToolRow key={t.path} tool={t} onChanged={setTools} setError={setToolError} />)}
 
         <div style={{ marginTop: 12 }}>
-          <Btn variant="primary" disabled title="即将开放">+ 添加外部工具</Btn>
+          <Btn variant="primary" onClick={onAddExternal}>+ 添加外部工具</Btn>
         </div>
+        {toolError && (
+          <div style={{ color: 'var(--color-danger, #c0392b)', marginTop: 8, fontSize: 12 }}>{toolError}</div>
+        )}
       </Card>
     </div>
   );
@@ -271,6 +283,8 @@ function Btn({
   children: ReactNode;
   title?: string;
 }) {
+  // Base layout (font, padding, radius) stays inline; colors/borders + hover live in className
+  // so :hover (which inline styles cannot express) works via Tailwind arbitrary-value classes.
   const base: CSSProperties = {
     fontFamily: 'var(--font-mono, ui-monospace)',
     fontSize: 11,
@@ -278,8 +292,15 @@ function Btn({
     borderRadius: 6,
     cursor: disabled ? 'default' : 'pointer',
     opacity: disabled ? 0.5 : 1,
-    transition: 'background-color 120ms',
+    transition: 'background-color 120ms, color 120ms, border-color 120ms',
   };
+  const hoverClass = disabled
+    ? ''
+    : variant === 'primary'
+      ? 'hover:bg-[color:var(--color-hover-bg)]'
+      : variant === 'secondary'
+        ? 'hover:bg-[color:var(--color-hover-bg)] hover:text-[color:var(--color-ink)] hover:border-[color:var(--color-ink-hair-soft)]'
+        : 'hover:bg-[color:var(--color-danger-soft,rgba(192,57,43,0.08))]';
   const variantStyle: Record<BtnVariant, CSSProperties> = {
     primary: {
       background: 'var(--color-paper-edge)',
@@ -302,7 +323,9 @@ function Btn({
       type="button"
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
+      aria-disabled={disabled || undefined}
       title={title}
+      className={hoverClass}
       style={{ ...base, ...variantStyle[variant] }}
     >
       {children}
@@ -353,7 +376,7 @@ function SkillRow({ skill, onChanged }: { skill: SkillEntry; onChanged: (next: S
         {skill.origin === 'builtin' && (
           <Toggle checked={skill.enabled} onChange={onToggle} disabled={busy} />
         )}
-        <Btn variant="secondary" onClick={onOpen}>打开目录↗</Btn>
+        <Btn variant="primary" onClick={onOpen}>打开目录↗</Btn>
         {skill.origin === 'user' && (
           <Btn variant="danger" onClick={onUninstall} disabled={busy}>卸载</Btn>
         )}
@@ -362,12 +385,40 @@ function SkillRow({ skill, onChanged }: { skill: SkillEntry; onChanged: (next: S
   );
 }
 
-function ToolRow({ tool }: { tool: ToolEntry }) {
+function ToolRow({ tool, onChanged, setError }: {
+  tool: ToolEntry;
+  onChanged: (next: ToolEntry[]) => void;
+  setError: (msg: string | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const onRemove = async () => {
+    setBusy(true); setError(null);
+    try {
+      const next = await window.kydog.invoke('tool.removeExternal', { path: tool.path });
+      onChanged(next);
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
-      <div style={{ width: 140, fontWeight: 500 }}>{tool.name}</div>
+      <div style={{ width: 140, fontWeight: 500 }}>
+        {tool.name}
+        {tool.origin === 'external' && (
+          <span className="font-mono uppercase" style={{ marginLeft: 8, fontSize: 9, color: 'var(--color-ink-faint)' }}>
+            [external]
+          </span>
+        )}
+      </div>
       <div className="font-mono" style={{ width: 80, fontSize: 11, color: 'var(--color-ink-soft)' }}>{tool.version ?? '—'}</div>
       <div className="font-mono truncate" style={{ flex: 1, fontSize: 11, color: 'var(--color-ink-faint)' }}>{tool.path}</div>
+      {tool.origin === 'external' && (
+        <div style={{ marginLeft: 8 }}>
+          <Btn variant="danger" onClick={onRemove} disabled={busy}>卸载</Btn>
+        </div>
+      )}
     </div>
   );
 }

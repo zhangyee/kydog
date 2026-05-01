@@ -55,4 +55,6 @@ export function registerAllHandlers(): void {
     return r.filePaths[0];
   });
   registerHandler('tool.list', (args) => toolsService.list({ force: args?.force }));
+  registerHandler('tool.addExternal', () => toolsService.addExternal());
+  registerHandler('tool.removeExternal', (args) => toolsService.removeExternal(args));
 }

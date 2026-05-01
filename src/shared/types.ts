@@ -40,6 +40,12 @@ export type ProviderConfig = {
 
 export type ThemeName = 'vellum' | 'porcelain' | 'sepia' | 'midnight' | 'lilac';
 
+export type ExternalBinEntry = {
+  name: string;
+  path: string;          // absolute path to the binary
+  addedAt: string;       // ISO timestamp
+};
+
 export type SettingsFile = {
   schemaVersion: 1;
   ui: {
@@ -50,6 +56,7 @@ export type SettingsFile = {
   };
   llm: { provider: ProviderConfig | null };
   skills: { disabledBuiltins: string[] };
+  tools: { externalBins: ExternalBinEntry[] };
 };
 
 export type IndexFile = {
@@ -96,6 +103,7 @@ export type ToolEntry = {
   name: string;
   version: string | null;
   path: string;
+  origin: 'builtin' | 'external';
 };
 
 export type SkillCandidate = {

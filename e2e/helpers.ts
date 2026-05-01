@@ -37,6 +37,7 @@ export async function seedSettings(kydogHome: string, opts: { providerConfigured
       ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
       llm: { provider },
       skills: { disabledBuiltins: [] },
+      tools: { externalBins: [] },
     }, null, 2),
   );
 }

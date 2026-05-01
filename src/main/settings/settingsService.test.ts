@@ -55,6 +55,7 @@ describe('SettingsService', () => {
       ui: { theme: 'sepia', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
       llm: { provider: { kind: 'openai-compat', name: 'p', baseUrl: 'u', apiKey: 'k', model: 'm' } },
       skills: { disabledBuiltins: [] },
+      tools: { externalBins: [] },
     });
     const savedRef: { value: SettingsFile | null } = { value: null };
     const svc = new SettingsService(fakeLoad, async (s) => { savedRef.value = s; });
@@ -62,6 +63,23 @@ describe('SettingsService', () => {
     expect(savedRef.value?.skills.disabledBuiltins).toEqual(['x']);
     expect(savedRef.value?.ui.theme).toBe('sepia');
     expect(savedRef.value?.llm.provider?.name).toBe('p');
+  });
+
+  it('update({tools: {externalBins:[...]}}) does not affect ui/llm/skills', async () => {
+    const fakeLoad = async (): Promise<SettingsFile> => ({
+      schemaVersion: 1,
+      ui: { theme: 'sepia', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+      llm: { provider: null },
+      skills: { disabledBuiltins: ['x'] },
+      tools: { externalBins: [] },
+    });
+    const savedRef: { value: SettingsFile | null } = { value: null };
+    const svc = new SettingsService(fakeLoad, async (s) => { savedRef.value = s; });
+    const entry = { name: 'foo', path: '/usr/local/bin/foo', addedAt: '2026-01-01T00:00:00Z' };
+    await svc.update({ tools: { externalBins: [entry] } });
+    expect(savedRef.value?.tools.externalBins).toEqual([entry]);
+    expect(savedRef.value?.skills.disabledBuiltins).toEqual(['x']);
+    expect(savedRef.value?.ui.theme).toBe('sepia');
   });
 
   it('reset calls save with defaultSettings and clears cache', async () => {

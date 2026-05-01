@@ -10,6 +10,7 @@ export function defaultSettings(): SettingsFile {
     ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
     llm: { provider: null },
     skills: { disabledBuiltins: [] },
+    tools: { externalBins: [] },
   };
 }
 
@@ -26,6 +27,7 @@ export async function loadSettings(): Promise<SettingsFile> {
       ui: parsed.ui,
       llm: parsed.llm,
       skills: parsed.skills ?? defaultSettings().skills,
+      tools: parsed.tools ?? defaultSettings().tools,
     };
   } catch (err) {
     logger.warn('persist.settingsFile', 'load failed; returning defaults', { err: String(err) });
