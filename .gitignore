@@ -97,6 +97,7 @@ vendor/
 # coding-agents draft documents
 docs/superpowers/
 docs/scratch/
+.superpowers/
 
 test-results/
 playwright-report/
