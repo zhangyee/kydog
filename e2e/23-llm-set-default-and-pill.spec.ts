@@ -1,13 +1,28 @@
 import { test, expect } from '@playwright/test';
-import { launchKydog, teardown, seedSettings } from './helpers';
+import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage } from './helpers';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
-test.skip('23-llm: set default → InputPill shows provider · model', async () => {
-  const launched = await launchKydog({ });
-  const { page, kydogHome } = launched;
+test('23-llm: seeded provider + InputPill label reflects default', async () => {
+  const projectPath = await fs.mkdtemp(path.join(process.env.TMPDIR || '/tmp', 'kydog-proj-'));
+  await seedSamplePackage(projectPath);
+
+  const launched = await launchKydog({
+    seed: async (h) => {
+      await seedSettings(h);
+      await seedProject(h, projectPath, [{ id: 't-23', title: '23-test' }]);
+    },
+  });
+  const { page } = launched;
   try {
-    await seedSettings(kydogHome, { providerConfigured: true });
-    // user reloads / restarts to pick up seed; in real test, drive UI
-    await expect(page.locator('text=/Anthropic · /')).toBeVisible({ timeout: 5000 });
+    // Provider configured → settings tab not auto-opened.
+    await expect(page.locator('[data-testid="tab-__settings__"]')).toBeHidden();
+
+    // Click the seeded thread to surface the InputPill.
+    await page.getByText('23-test').first().click();
+
+    // InputPill shows "Anthropic · claude-sonnet-4-5".
+    await expect(page.locator('text=/Anthropic · claude-sonnet-4-5/')).toBeVisible({ timeout: 5000 });
   } finally {
     await teardown(launched);
   }

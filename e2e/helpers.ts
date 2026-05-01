@@ -5,7 +5,12 @@ import os from 'node:os';
 
 export type LaunchedApp = { app: ElectronApplication; page: Page; userDataDir: string; kydogHome: string };
 
-export async function launchKydog(opts: { fixture?: string; seed?: (kydogHome: string) => Promise<void> } = {}): Promise<LaunchedApp> {
+export async function launchKydog(opts: {
+  fixture?: string;
+  seed?: (kydogHome: string) => Promise<void>;
+  /** Extra env vars merged into the launched Electron process (e.g. KYDOG_E2E, KYDOG_OAUTH_FIXTURE). */
+  env?: Record<string, string>;
+} = {}): Promise<LaunchedApp> {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-userdata-'));
   const kydogHome = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-home-'));
   if (opts.seed) await opts.seed(kydogHome);
@@ -14,6 +19,7 @@ export async function launchKydog(opts: { fixture?: string; seed?: (kydogHome: s
     HOME: kydogHome,
     USERPROFILE: kydogHome,
     KYDOG_LOG: 'warn',
+    ...(opts.env ?? {}),
   };
   if (opts.fixture) env.KYDOG_AGENT_FIXTURE = opts.fixture;
   const app = await electron.launch({
