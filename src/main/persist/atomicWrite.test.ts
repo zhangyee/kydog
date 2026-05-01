@@ -28,3 +28,36 @@ describe('atomicWrite', () => {
     expect(entries.filter(e => e.includes('.tmp.'))).toEqual([]);
   });
 });
+
+import { promises as fsp, statSync } from 'node:fs';
+import { atomicWriteWith0600Async, atomicWriteWith0600Sync } from './atomicWrite';
+
+describe('atomicWriteWith0600 (POSIX)', () => {
+  const skip = process.platform === 'win32';
+  it.skipIf(skip)('temp 出生即 0600（不依赖 umask）', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kydog-atomic-'));
+    const target = path.join(dir, 'a.json');
+    await atomicWriteWith0600Async(target, '{"x":1}');
+    const mode = statSync(target).mode & 0o777;
+    expect(mode).toBe(0o600);
+    await fsp.rm(dir, { recursive: true });
+  });
+
+  it.skipIf(skip)('rename 后 idempotent chmod 修正异常 mode', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kydog-atomic-'));
+    const target = path.join(dir, 'a.json');
+    await atomicWriteWith0600Async(target, '{}');
+    await fsp.chmod(target, 0o644);            // 模拟外部破坏
+    await atomicWriteWith0600Async(target, '{"y":2}');
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    await fsp.rm(dir, { recursive: true });
+  });
+
+  it.skipIf(skip)('sync 版本同等行为', () => {
+    const dir = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'kydog-atomic-sync-'));
+    const target = path.join(dir, 'a.json');
+    atomicWriteWith0600Sync(target, '{"sync":true}');
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    require('node:fs').rmSync(dir, { recursive: true });
+  });
+});
