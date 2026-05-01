@@ -16,6 +16,9 @@ type UiState = {
   settingsDetailProviderId: string | null;
   openSettingsDetail: (providerId: string) => void;
   closeSettingsDetail: () => void;
+  settingsAddProviderOpen: boolean;
+  openSettingsAddProvider: () => void;
+  closeSettingsAddProvider: () => void;
   activeCenterTab: CenterTabKind;
   expandedDirs: Set<string>;
   expandedProjects: Set<string>;
@@ -49,6 +52,7 @@ export const useUiStore = create<UiState>((set) => ({
   settingsTabOpen: false,
   settingsTab: 'provider',
   settingsDetailProviderId: null,
+  settingsAddProviderOpen: false,
   activeCenterTab: 'thread',
   expandedDirs: new Set(),
   expandedProjects: new Set<string>(),
@@ -69,9 +73,11 @@ export const useUiStore = create<UiState>((set) => ({
     activeCenterTab: 'settings',
     userMenuOpen: false,
   }),
-  openSettingsDetail: (providerId) => set({ settingsDetailProviderId: providerId }),
+  openSettingsDetail: (providerId) => set({ settingsDetailProviderId: providerId, settingsAddProviderOpen: false }),
   closeSettingsDetail: () => set({ settingsDetailProviderId: null }),
-  closeSettings: () => set({ settingsTabOpen: false, activeCenterTab: 'thread', settingsDetailProviderId: null }),
+  openSettingsAddProvider: () => set({ settingsAddProviderOpen: true, settingsDetailProviderId: null }),
+  closeSettingsAddProvider: () => set({ settingsAddProviderOpen: false }),
+  closeSettings: () => set({ settingsTabOpen: false, activeCenterTab: 'thread', settingsDetailProviderId: null, settingsAddProviderOpen: false }),
   showThreadTab: () => set({ activeCenterTab: 'thread' }),
   toggleUserMenu: () => set((s) => ({ userMenuOpen: !s.userMenuOpen })),
   setDir: (path, nodes) => set((s) => ({ dirCache: { ...s.dirCache, [path]: nodes } })),

@@ -1,17 +1,17 @@
-import { useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useUiStore } from '../stores/uiStore';
 import { SETTINGS_PAGE_LABELS } from './settingsPages';
 import { SkillsAndToolsSection } from './SkillsAndToolsSection';
 import { ProviderListSection } from './ProviderListSection';
-import { AddProviderDrawer } from './AddProviderDrawer';
+import { AddProviderPage } from './AddProviderPage';
 import { ProviderDetailPane } from './ProviderDetailPane';
 
 export function SettingsPane() {
   const activeSection = useUiStore((s) => s.settingsTab);
   const appVersion = useSettingsStore((s) => s.appVersion);
   const detailProviderId = useUiStore((s) => s.settingsDetailProviderId);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const addProviderOpen = useUiStore((s) => s.settingsAddProviderOpen);
+  const openAddProvider = useUiStore((s) => s.openSettingsAddProvider);
 
   return (
     <div className="ky-paper-grain h-full flex flex-col">
@@ -47,8 +47,10 @@ export function SettingsPane() {
         {activeSection === 'provider' ? (
           detailProviderId ? (
             <ProviderDetailPane />
+          ) : addProviderOpen ? (
+            <AddProviderPage />
           ) : (
-            <ProviderListSection onAdd={() => setDrawerOpen(true)} />
+            <ProviderListSection onAdd={openAddProvider} />
           )
         ) : activeSection === 'skills' ? (
           <SkillsAndToolsSection />
@@ -56,7 +58,6 @@ export function SettingsPane() {
           <EmptySettingsPage title={SETTINGS_PAGE_LABELS[activeSection]} />
         )}
       </div>
-      <AddProviderDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
   );
 }
