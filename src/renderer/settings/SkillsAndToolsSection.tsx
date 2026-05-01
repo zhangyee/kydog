@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useSkillsStore } from '../stores/skillsStore';
 import type { SkillEntry, ToolEntry } from '../../shared/types';
 
@@ -49,11 +49,11 @@ export function SkillsAndToolsSection() {
 
       <SectionHeader title="技能 · 内置" subtitle="对已打开的对话不生效，下次新建对话起生效。" />
       {builtin.length === 0 && <Empty />}
-      {builtin.map((s) => <SkillRow key={s.name} skill={s} />)}
+      {builtin.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
 
       <SectionHeader title="技能 · 已安装" />
       {user.length === 0 && <Empty />}
-      {user.map((s) => <SkillRow key={s.name} skill={s} />)}
+      {user.map((s) => <SkillRow key={s.name} skill={s} onChanged={setSkills} />)}
 
       <SectionHeader title="工具" subtitle="agent 可调用的捆绑 CLI" />
       {tools.length === 0 && <Empty />}
@@ -91,7 +91,24 @@ function Empty() {
   return <div style={{ color: 'var(--color-ink-faint)', fontSize: 12, padding: '4px 0' }}>（无）</div>;
 }
 
-function SkillRow({ skill }: { skill: SkillEntry }) {
+function SkillRow({ skill, onChanged }: { skill: SkillEntry; onChanged: (next: SkillEntry[]) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const onToggle = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const next = await window.kydog.invoke('skill.setEnabled', { name: skill.name, enabled: !skill.enabled });
+      onChanged(next);
+    } catch (e) { setErr(String((e as Error).message)); } finally { setBusy(false); }
+  };
+  const onUninstall = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const next = await window.kydog.invoke('skill.uninstall', { name: skill.name });
+      onChanged(next);
+    } catch (e) { setErr(String((e as Error).message)); } finally { setBusy(false); }
+  };
+  const onOpen = () => { void window.kydog.invoke('skill.openInOS', { name: skill.name }); };
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -107,6 +124,20 @@ function SkillRow({ skill }: { skill: SkillEntry }) {
           )}
         </div>
         <div className="truncate" style={{ fontSize: 12, color: 'var(--color-ink-soft)' }}>{skill.description}</div>
+        {err && <div style={{ color: 'var(--color-danger, #c0392b)', fontSize: 11 }}>{err}</div>}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 12 }}>
+        {skill.origin === 'builtin' && (
+          <button onClick={onToggle} disabled={busy} className="font-mono" style={{ fontSize: 11 }}>
+            {skill.enabled ? '禁用' : '启用'}
+          </button>
+        )}
+        <button onClick={onOpen} className="font-mono" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>打开目录↗</button>
+        {skill.origin === 'user' && (
+          <button onClick={onUninstall} disabled={busy} className="font-mono" style={{ fontSize: 11, color: 'var(--color-danger, #c0392b)' }}>
+            卸载
+          </button>
+        )}
       </div>
     </div>
   );
