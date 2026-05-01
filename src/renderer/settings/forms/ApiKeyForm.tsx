@@ -1,5 +1,5 @@
 // src/renderer/settings/forms/ApiKeyForm.tsx
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ProviderRowModelPicker } from '../ProviderRowModelPicker';
@@ -158,7 +158,7 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
   );
 }
 
-function FormRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function FormRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 24, padding: '16px 0', borderTop: '0.5px solid var(--color-ink-hair-soft)', alignItems: 'flex-start' }}>
       <div style={{ width: 180, flexShrink: 0 }}>

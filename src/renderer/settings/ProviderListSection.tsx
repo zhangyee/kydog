@@ -43,11 +43,24 @@ export function ProviderListSection({ onAdd }: { onAdd: () => void }) {
                 cursor: 'pointer',
               }}
             >
-              <span aria-hidden style={{
-                width: 7, height: 7, borderRadius: 999,
-                background: defaultProvider === c.providerId ? 'var(--color-ink)' : 'transparent',
-                border: '0.5px solid var(--color-ink-hair)',
-              }} />
+              <button
+                type="button"
+                aria-label={defaultProvider === c.providerId ? '当前默认' : '设为默认'}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (defaultProvider === c.providerId) return;
+                  if (!c.defaultModel) return;
+                  await window.kydog.invoke('llm.setDefault', { providerId: c.providerId, modelId: c.defaultModel });
+                  await useLlmStore.getState().refresh();
+                }}
+                style={{
+                  width: 7, height: 7, borderRadius: 999,
+                  background: defaultProvider === c.providerId ? 'var(--color-ink)' : 'transparent',
+                  border: '0.5px solid var(--color-ink-hair)',
+                  padding: 0,
+                  cursor: defaultProvider === c.providerId ? 'default' : 'pointer',
+                }}
+              />
               <div style={{ flex: 1 }}>
                 <div className="font-serif" style={{ fontSize: 13, color: 'var(--color-ink)' }}>
                   {c.displayName}
@@ -67,7 +80,21 @@ export function ProviderListSection({ onAdd }: { onAdd: () => void }) {
               />
               {defaultProvider === c.providerId ? (
                 <span className="font-mono uppercase" style={{ fontSize: 9, color: 'var(--color-ink-faint)', letterSpacing: 1 }}>默认</span>
-              ) : null}
+              ) : (
+                <button
+                  type="button"
+                  className="font-sans"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (!c.defaultModel) return;
+                    await window.kydog.invoke('llm.setDefault', { providerId: c.providerId, modelId: c.defaultModel });
+                    await useLlmStore.getState().refresh();
+                  }}
+                  style={{ fontSize: 11, color: 'var(--color-ink-soft)', background: 'transparent' }}
+                >
+                  设为默认
+                </button>
+              )}
             </div>
           ))}
         </div>
