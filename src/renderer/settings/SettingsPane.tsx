@@ -1,11 +1,17 @@
+import { useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useUiStore } from '../stores/uiStore';
 import { SETTINGS_PAGE_LABELS } from './settingsPages';
 import { SkillsAndToolsSection } from './SkillsAndToolsSection';
+import { ProviderListSection } from './ProviderListSection';
+import { AddProviderDrawer } from './AddProviderDrawer';
+import { ProviderDetailPane } from './ProviderDetailPane';
 
 export function SettingsPane() {
   const activeSection = useUiStore((s) => s.settingsTab);
   const appVersion = useSettingsStore((s) => s.appVersion);
+  const detailProviderId = useUiStore((s) => s.settingsDetailProviderId);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
     <div className="ky-paper-grain h-full flex flex-col">
@@ -23,7 +29,7 @@ export function SettingsPane() {
           className="font-serif italic"
           style={{ marginTop: 6, fontSize: 12, color: 'var(--color-ink-soft)' }}
         >
-          {activeSection === 'provider' ? '配置当前使用的模型提供商'
+          {activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
             : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
             : '预留页面'}
         </div>
@@ -39,17 +45,18 @@ export function SettingsPane() {
 
       <div className="flex-1 min-h-0 overflow-y-auto ky-scroll">
         {activeSection === 'provider' ? (
-          <div style={{ padding: '24px 28px 36px' }}>
-            <div className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)' }}>
-              模型与提供商正在重构（schema v2）；UI 将在后续阶段恢复。
-            </div>
-          </div>
+          detailProviderId ? (
+            <ProviderDetailPane />
+          ) : (
+            <ProviderListSection onAdd={() => setDrawerOpen(true)} />
+          )
         ) : activeSection === 'skills' ? (
           <SkillsAndToolsSection />
         ) : (
           <EmptySettingsPage title={SETTINGS_PAGE_LABELS[activeSection]} />
         )}
       </div>
+      <AddProviderDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
   );
 }
