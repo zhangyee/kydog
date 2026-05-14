@@ -94,6 +94,9 @@ function setupEventBridge(): void {
       useRunsStore.getState().setRun(p.threadId, { status: 'idle' });
     }
   });
+  window.kydog.on('thread.updated', (p) => {
+    useThreadsStore.getState().setThread(p.thread);
+  });
 
   void runs; void threads; // silence unused
 }
