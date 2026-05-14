@@ -1,5 +1,5 @@
 // src/renderer/panels/main-pane/InputPillTextarea.tsx
-import React, { useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, forwardRef, useImperativeHandle, type KeyboardEvent } from 'react';
 
 export type InputPillTextareaHandle = {
   focus: () => void;
@@ -12,7 +12,7 @@ type Props = {
   large: boolean;
   placeholder: string;
   onChange: (next: string) => void;
-  onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   prefill?: string;
 };
 
@@ -30,7 +30,7 @@ export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(func
   // Apply external prefill (e.g. ChapterCard click).
   useEffect(() => {
     if (prefill !== undefined) onChange(prefill);
-  }, [prefill, onChange]);
+  }, [prefill]);
 
   // Auto-grow textarea as content changes (capped to keep send button visible).
   useEffect(() => {
