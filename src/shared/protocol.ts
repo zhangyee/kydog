@@ -22,7 +22,7 @@ export type RpcCall =
   | { method: 'thread.abort'; args: { threadId: string }; result: void }
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
-  | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean; modelOverride?: { providerId: string; modelId: string } | null }; result: Thread }
+  | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean; projectPath?: string; modelOverride?: { providerId: string; modelId: string } | null }; result: Thread }
   | { method: 'skill.getPendingSync'; args: undefined; result: SkillSyncStatus }
   | { method: 'skill.applyOverrides'; args: { operations: { skill: string; files: string[] }[] }; result: SkillSyncStatus }
   | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
