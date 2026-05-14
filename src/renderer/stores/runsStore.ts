@@ -57,9 +57,16 @@ export const useRunsStore = create<RunsState>((set, get) => ({
           text: last.text + delta,
           status: 'running',
           durationMs: Math.max(0, now - startedAt),
+          startedAt: last.startedAt ?? startedAt,
         };
       } else {
-        blocks.push({ kind: 'thinking', text: delta, status: 'running', durationMs: 0 });
+        blocks.push({
+          kind: 'thinking',
+          text: delta,
+          status: 'running',
+          durationMs: 0,
+          startedAt: now,
+        });
       }
       return {
         activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: startedAt },
@@ -78,7 +85,10 @@ export const useRunsStore = create<RunsState>((set, get) => ({
           ...s.bufferByMessage,
           [messageId]: {
             ...buf,
-            blocks: [...blocks, { kind: 'tool_call', id: toolCallId, name, command, chunks: [], status: 'running' }],
+            blocks: [
+              ...blocks,
+              { kind: 'tool_call', id: toolCallId, name, command, chunks: [], status: 'running', startedAt: now },
+            ],
           },
         },
       };
@@ -96,10 +106,11 @@ export const useRunsStore = create<RunsState>((set, get) => ({
     }),
   finalizeToolCall: (messageId, toolCallId, status, exitCode) =>
     set((s) => {
+      const now = Date.now();
       const buf = s.bufferByMessage[messageId];
       if (!buf) return {};
       const blocks = buf.blocks.map((b) =>
-        b.kind === 'tool_call' && b.id === toolCallId ? { ...b, status, exitCode } : b,
+        b.kind === 'tool_call' && b.id === toolCallId ? { ...b, status, exitCode, endedAt: now } : b,
       );
       return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
     }),
@@ -130,6 +141,8 @@ function finalizeActiveThinking(blocks: AssistantBlock[], startedAt: number | un
     text: last.text,
     status: 'done',
     durationMs: Math.max(last.durationMs ?? 0, now - startedAt),
+    startedAt: last.startedAt ?? startedAt,
+    endedAt: now,
   };
   return blocks;
 }
