@@ -101,6 +101,54 @@ describe('extractFirstText', () => {
     };
     expect(extractFirstText([noText], 'assistant')).toBeNull();
   });
+
+  it('concatenates text across multiple assistant messages (tool-heavy turn)', () => {
+    // Real-world shape from pi: each tool round produces its own assistant message;
+    // the first one is typically thinking+toolCall only, with the actual text answer
+    // appearing in a later assistant message.
+    const history: Message[] = [
+      { id: 'u1', role: 'user', createdAt: '', content: '问题' },
+      { id: 'a1', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'thinking', text: 'let me search' },
+        { kind: 'tool_call', id: 't1', name: 'web_search', chunks: [], status: 'ok' },
+      ] },
+      { id: 'a2', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'thinking', text: 'now I know' },
+        { kind: 'tool_call', id: 't2', name: 'fetch', chunks: [], status: 'ok' },
+      ] },
+      { id: 'a3', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'text', text: 'Final answer goes here.' },
+      ] },
+    ];
+    expect(extractFirstText(history, 'assistant')).toBe('Final answer goes here.');
+  });
+
+  it('concatenates multiple text blocks across multiple assistant messages', () => {
+    const history: Message[] = [
+      { id: 'a1', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'text', text: 'Let me think.' },
+        { kind: 'tool_call', id: 't', name: 'x', chunks: [], status: 'ok' },
+      ] },
+      { id: 'a2', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'text', text: 'OK got it: 42.' },
+      ] },
+    ];
+    expect(extractFirstText(history, 'assistant')).toBe('Let me think.\nOK got it: 42.');
+  });
+
+  it('returns null when no assistant message has any text block (only tool calls)', () => {
+    const history: Message[] = [
+      { id: 'u', role: 'user', createdAt: '', content: 'hi' },
+      { id: 'a1', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'thinking', text: 'thinking' },
+        { kind: 'tool_call', id: 't', name: 'x', chunks: [], status: 'ok' },
+      ] },
+      { id: 'a2', role: 'assistant', createdAt: '', blocks: [
+        { kind: 'thinking', text: 'more thinking' },
+      ] },
+    ];
+    expect(extractFirstText(history, 'assistant')).toBeNull();
+  });
 });
 
 import { titleService } from './titleService';

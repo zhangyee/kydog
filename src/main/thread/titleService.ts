@@ -27,19 +27,36 @@ export function parseTitle(raw: string): string | null {
   return t;
 }
 
-/** Returns the textual content of the first message matching `role`, or null. */
+/**
+ * Returns the textual content for the first user message, OR the concatenated
+ * text from ALL assistant messages (joined by '\n'), or null.
+ *
+ * For assistant: we concatenate across messages because tool-heavy turns produce
+ * multiple assistant messages (one per tool round); the actual answer text
+ * usually lives in a LATER message, not the first one. Taking the first one
+ * alone would miss the answer when the first message is [thinking, tool_call].
+ * Text blocks within a single message are joined with '' (no separator).
+ */
 export function extractFirstText(
   history: Message[],
   role: 'user' | 'assistant',
 ): string | null {
-  const msg = history.find((m) => m.role === role);
-  if (!msg) return null;
-  if (msg.role === 'user') return msg.content;
-  // assistant: join only `text` blocks (skip thinking + tool_call)
-  const text = msg.blocks
-    .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
-    .map((b) => b.text)
-    .join('');
+  if (role === 'user') {
+    const msg = history.find((m) => m.role === 'user');
+    return msg?.role === 'user' ? msg.content : null;
+  }
+  // assistant: collect per-message text (joining blocks within a message with ''),
+  // then join across messages with '\n'.
+  const perMessage: string[] = [];
+  for (const msg of history) {
+    if (msg.role !== 'assistant') continue;
+    const msgText = msg.blocks
+      .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
+      .map((b) => b.text)
+      .join('');
+    if (msgText.length > 0) perMessage.push(msgText);
+  }
+  const text = perMessage.join('\n');
   return text.length > 0 ? text : null;
 }
 
