@@ -9,6 +9,7 @@ import { MainPane } from '../panels/main-pane/MainPane';
 import { InspectorPanel } from '../panels/inspector/InspectorPanel';
 import { useThreadsStore } from '../stores/threadsStore';
 import { useUiStore } from '../stores/uiStore';
+import { useUnreadStore } from '../panels/workspace/unreadStore';
 import { SETTINGS_PAGE_LABELS } from '../settings/settingsPages';
 import type { SkillSyncStatus } from '../../shared/types';
 
@@ -51,6 +52,7 @@ export function AppShell() {
           useThreadsStore.getState().upsertThread(thread);
           useUiStore.getState().showThreadTab();
           useThreadsStore.getState().selectThread(thread.id);
+          useUnreadStore.getState().markRead(thread.id);
         });
       } else if (key === 'o') {
         e.preventDefault();

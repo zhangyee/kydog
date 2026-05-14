@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useUnreadStore } from '../workspace/unreadStore';
 import { Welcome } from './Welcome';
 import { ThreadView } from './ThreadView';
 import { TabStrip, type TabItem } from './TabStrip';
@@ -55,6 +56,7 @@ export function MainPane() {
             }
             showThreadTab();
             select(id);
+            useUnreadStore.getState().markRead(id);
           }}
           onClose={(id) => {
             if (id === SETTINGS_TAB_ID) {

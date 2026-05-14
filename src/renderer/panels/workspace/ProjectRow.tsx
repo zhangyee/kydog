@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Ref } from 'react';
 import { NavIcon, IconButton, DropdownMenu, DropdownItem, DropdownDivider } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useUnreadStore } from './unreadStore';
 import type { Project } from '../../../shared/types';
 
 type Props = {
@@ -36,6 +37,7 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
       upsertThread(t);
       showThreadTab();
       selectThread(t.id);
+      useUnreadStore.getState().markRead(t.id);
     } catch (err) { console.error('new thread failed', err); }
   };
 

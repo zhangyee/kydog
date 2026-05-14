@@ -1,6 +1,7 @@
 import { KyLogo, NavIcon } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useUnreadStore } from '../workspace/unreadStore';
 import type { Project } from '../../../shared/types';
 
 export function Welcome() {
@@ -34,6 +35,7 @@ export function Welcome() {
       useThreadsStore.getState().upsertThread(thread);
       showThreadTab();
       useThreadsStore.getState().selectThread(thread.id);
+      useUnreadStore.getState().markRead(thread.id);
     } catch (err) {
       console.error('create thread failed', err);
     }

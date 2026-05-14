@@ -1,5 +1,6 @@
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useUnreadStore } from './unreadStore';
 import { NavPill } from './NavPill';
 
 export function NewThreadButton() {
@@ -15,6 +16,7 @@ export function NewThreadButton() {
     upsert(thread);
     showThreadTab();
     select(thread.id);
+    useUnreadStore.getState().markRead(thread.id);
   };
   return (
     <div style={{ padding: '10px 6px 0' }}>
