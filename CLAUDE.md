@@ -4,7 +4,7 @@
 
 ## Principles
 
-代码逻辑必须严格对应协议事实，不允许用 timestamp 簇判 / 启发式 proxy 等手段补救上游已丢失的信号；典型例子：**并行工具调用 ≡ 一条 LLM assistant message 的 content 数组里 N 个 toolCall；任何不来自同一条 message 的 toolCall 都是串行**。
+判定必须基于协议层事实，不靠启发式 proxy（时间窗 / 阈值 / 近似 / 聚类等）；当下游发现需要 proxy 才能得出结论时，意味着上游某处把信号丢了 —— 回到源头把信号正确保留下来，而不是在下游补救。
 
 ## References
 
