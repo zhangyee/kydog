@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,7 +19,29 @@ async function seedTwoProjects(kydogHome: string, projectA: string, projectB: st
   );
 }
 
-test('27-input-pill: Shift+Enter inserts newline, Enter clears textarea (send fires)', async () => {
+/**
+ * Read the editor's "body" text, i.e. all text in the contenteditable EXCEPT
+ * the leading skill chip element. Mirrors the parseEditor logic in
+ * InputPillEditor.tsx.
+ */
+async function readBodyText(page: Page): Promise<string> {
+  return await page.locator('[data-testid="input-pill"]').evaluate((el: HTMLElement) => {
+    let body = '';
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const elem = node as Element;
+        if (elem.getAttribute('data-skill-chip-name')) continue;
+        if (elem.tagName === 'BR') { body += '\n'; continue; }
+        body += (elem as HTMLElement).innerText ?? elem.textContent ?? '';
+      } else if (node.nodeType === Node.TEXT_NODE) {
+        body += node.textContent ?? '';
+      }
+    }
+    return body;
+  });
+}
+
+test('27-input-pill: Shift+Enter inserts newline, Enter clears editor (send fires)', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -30,15 +52,18 @@ test('27-input-pill: Shift+Enter inserts newline, Enter clears textarea (send fi
     await page.locator('[data-testid="new-thread"]').click();
     const input = page.locator('[data-testid="input-pill"]');
     await input.click();
-    await input.fill('hello');
+    await page.keyboard.type('hello');
     await page.keyboard.press('Shift+Enter');
     await page.keyboard.type('world');
-    await expect(input).toHaveValue('hello\nworld');
+    expect(await readBodyText(page)).toBe('hello\nworld');
 
-    await input.fill('ping');
+    await input.click();
+    // Select all + replace with "ping" to reset.
+    await page.keyboard.press('Meta+A');
+    await page.keyboard.type('ping');
     await page.keyboard.press('Enter');
-    // Textarea is cleared optimistically before the IPC call, regardless of whether the LLM responds.
-    await expect(input).toHaveValue('');
+    // Editor is cleared optimistically before the IPC call.
+    expect(await readBodyText(page)).toBe('');
   } finally {
     await teardown(launched);
   }
@@ -56,22 +81,21 @@ test('27-input-pill: typing / opens slash menu with description; Enter commits a
     const input = page.locator('[data-testid="input-pill"]');
     await input.click();
     await page.keyboard.type('/');
-    // Builtin `fastpaper` skill is auto-installed at first run (see 19-skill-sync.spec.ts).
+    // Builtin `fastpaper` skill is auto-installed at first run.
     await expect(page.locator('[data-testid="slash-menu"]')).toBeVisible();
     await expect(page.locator('[data-testid="slash-item-fastpaper"]')).toBeVisible();
-    // The two-column popover also surfaces the highlighted item's description.
     await expect(page.locator('[data-testid="slash-menu-desc"]')).toBeVisible();
     await page.keyboard.press('Enter');
-    // After commit: the chip is rendered inline; the textarea body is empty.
+    // After commit: the chip is rendered inline; the body is empty.
     await expect(page.locator('[data-testid="skill-chip"]')).toContainText('fastpaper');
-    await expect(input).toHaveValue('');
+    expect(await readBodyText(page)).toBe('');
     await expect(page.locator('[data-testid="slash-menu"]')).toBeHidden();
   } finally {
     await teardown(launched);
   }
 });
 
-test('27-input-pill: backspace at body[0] removes the chip; body text is preserved', async () => {
+test('27-input-pill: backspace immediately after chip removes the chip; body preserved', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -86,15 +110,60 @@ test('27-input-pill: backspace at body[0] removes the chip; body text is preserv
     await page.keyboard.press('Enter');
     await expect(page.locator('[data-testid="skill-chip"]')).toBeVisible();
 
-    // Type some body text after the chip.
+    // Type body text after the chip.
     await page.keyboard.type('hello world');
-    await expect(input).toHaveValue('hello world');
+    expect(await readBodyText(page)).toBe('hello world');
 
-    // Move caret to position 0, then backspace → chip removed, body preserved.
-    await page.keyboard.press('Home');
+    // Place caret at start of the body text node (right after the chip).
+    await input.evaluate((el: HTMLElement) => {
+      for (const node of Array.from(el.childNodes)) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const range = document.createRange();
+          range.setStart(node, 0);
+          range.collapse(true);
+          const sel = window.getSelection();
+          if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+          return;
+        }
+      }
+    });
     await page.keyboard.press('Backspace');
     await expect(page.locator('[data-testid="skill-chip"]')).toHaveCount(0);
-    await expect(input).toHaveValue('hello world');
+    expect(await readBodyText(page)).toBe('hello world');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('27-input-pill: slash menu reopens after chip removal even when body has leading whitespace', async () => {
+  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
+  await seedSamplePackage(projectPath);
+  const launched = await launchKydog({
+    seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
+  });
+  const { page } = launched;
+  try {
+    await page.locator('[data-testid="new-thread"]').click();
+    const input = page.locator('[data-testid="input-pill"]');
+    await input.click();
+    // Type body text directly (no chip).
+    await page.keyboard.type('测试');
+    // Position cursor at the very start, then prefix " " then "/".
+    await input.evaluate((el: HTMLElement) => {
+      const firstText = Array.from(el.childNodes).find((n) => n.nodeType === Node.TEXT_NODE);
+      if (!firstText) return;
+      const range = document.createRange();
+      range.setStart(firstText, 0);
+      range.collapse(true);
+      const sel = window.getSelection();
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+    });
+    await page.keyboard.type('/');
+    // Body is now "/测试" with the slash at position 0 → menu opens, filtering by "测试" yields nothing → menu closed.
+    // Type a space to make it "/ 测试" → token is empty → all skills visible.
+    await page.keyboard.type(' ');
+    await expect(page.locator('[data-testid="slash-menu"]')).toBeVisible();
+    await expect(page.locator('[data-testid="slash-item-fastpaper"]')).toBeVisible();
   } finally {
     await teardown(launched);
   }
@@ -116,7 +185,6 @@ test('27-input-pill: project pill switches the empty thread to another project',
   });
   const { page } = launched;
   try {
-    // Open new thread (default to first project = projectA).
     await page.locator('[data-testid="new-thread"]').click();
     const projectPill = page.locator('[data-testid="project-pill"]');
     await expect(projectPill).toContainText(projectAName);
@@ -129,7 +197,6 @@ test('27-input-pill: project pill switches the empty thread to another project',
     await expect(otherItem).toBeVisible();
     await otherItem.click();
 
-    // Menu closes; pill reflects the new project.
     await expect(page.locator('[data-testid="project-menu"]')).toBeHidden();
     await expect(projectPill).toContainText(projectBName);
   } finally {

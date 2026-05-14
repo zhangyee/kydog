@@ -32,6 +32,13 @@ describe('filterSkillEntries', () => {
   it('returns [] when prefix matches nothing', () => {
     expect(filterSkillEntries(SKILLS, '/xyz')).toEqual([]);
   });
+  it('treats text after first whitespace as args; filter on the leading token only', () => {
+    // empty token before whitespace → all items
+    expect(filterSkillEntries(SKILLS, '/ extra')).toHaveLength(SKILLS.length);
+    // token "fr" filters before whitespace
+    const r = filterSkillEntries(SKILLS, '/fr extra args');
+    expect(r.map((x) => x.name)).toEqual(['frontier']);
+  });
 });
 
 describe('dispatchInputKey', () => {

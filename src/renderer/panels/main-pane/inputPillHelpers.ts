@@ -3,14 +3,21 @@ import type { SkillEntry } from '../../../shared/types';
 /**
  * Returns the skills that match a slash-command query.
  *
- * The query is the textarea body. If it doesn't start with "/" or contains a
- * newline, the menu is not relevant — return []. Otherwise filter by
- * case-insensitive prefix of `name` (without the leading "/").
+ * The text starts with "/" and may continue with the skill name; anything
+ * after the first whitespace is treated as arguments and is NOT part of the
+ * filter query. This matches Codex/Claude-style slash menus: typing "/ word"
+ * still surfaces every skill (empty filter), and "/fr extra" filters by "fr".
+ *
+ * Returns [] when the text doesn't start with "/" or contains a literal
+ * newline (multi-line content is never a slash command).
  */
 export function filterSkillEntries(items: readonly SkillEntry[], text: string): SkillEntry[] {
   if (!text.startsWith('/')) return [];
   if (text.includes('\n')) return [];
-  const q = text.slice(1).toLowerCase();
+  const afterSlash = text.slice(1);
+  const wsMatch = afterSlash.match(/\s/);
+  const token = wsMatch ? afterSlash.slice(0, wsMatch.index) : afterSlash;
+  const q = token.toLowerCase();
   if (q.length === 0) return [...items];
   return items.filter((it) => it.name.toLowerCase().startsWith(q));
 }
