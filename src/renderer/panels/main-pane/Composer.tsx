@@ -21,6 +21,11 @@ type Props = {
   prefill?: string;
 };
 
+// Vertical strip at the top of the composer that overlays MessageList's
+// bottom region with a transparent → paper-deep gradient. Messages scrolling
+// up into this strip dissolve into the composer's paper-deep tone.
+const COMPOSER_FADE_HEIGHT = 32;
+
 export function Composer({ threadId, placeholder, large = false, prefill }: Props) {
   const editorHandle = useRef<ComposerEditorHandle>(null);
   const [skill, setSkill] = useState<SkillEntry | null>(null);
@@ -213,10 +218,25 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
 
   return (
     <div
-      className="ky-paper-grain shrink-0"
-      style={{ padding: '12px 22px 14px' }}
+      className="shrink-0"
+      style={{ position: 'relative', marginTop: -COMPOSER_FADE_HEIGHT }}
     >
-      <div style={{ maxWidth: 840, margin: '0 auto' }}>
+      {/* Gradient fade that overlays the last ~32px of MessageList so messages
+       * scrolling under the composer dissolve into the paper-deep tone instead
+       * of hitting a hard edge. */}
+      <div
+        aria-hidden
+        style={{
+          height: COMPOSER_FADE_HEIGHT,
+          background: 'linear-gradient(to bottom, transparent, var(--paper-deep))',
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        className="ky-paper-grain"
+        style={{ backgroundColor: 'var(--paper-deep)', padding: '0 22px 14px' }}
+      >
+        <div style={{ maxWidth: 840, margin: '0 auto' }}>
         <div
           ref={editorWrapperRef}
           style={{
@@ -298,6 +318,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             }
           />
         </div>
+      </div>
       </div>
 
       {modelMenuRect && threadId ? (
