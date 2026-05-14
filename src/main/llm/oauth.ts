@@ -31,6 +31,9 @@ class OAuthCoordinator {
     const callbacks = {
       onAuth: ({ url, instructions }: { url: string; instructions?: string }) => {
         broadcaster.emit('oauth.auth', { providerId, url, instructions });
+        // Fixture mode (e2e): the URL is a fake example.test address. Suppress
+        // the OS browser open so test runs don't pollute the user's browser.
+        if (process.env.KYDOG_OAUTH_FIXTURE) return;
         void shell.openExternal(url).catch((err) => logger.warn('oauth', 'shell.openExternal failed', { err: String(err) }));
       },
       onProgress: (message: string) => broadcaster.emit('oauth.progress', { providerId, message }),
