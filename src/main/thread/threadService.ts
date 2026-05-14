@@ -64,12 +64,12 @@ export class ThreadService {
     const thread = idx.threads.find((t) => t.id === args.threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${args.threadId} not found`);
     if (args.projectPath !== undefined && args.projectPath !== thread.projectPath) {
-      if (!idx.projects.find((p) => p.path === args.projectPath)) {
-        throw new KydogError('project.not_found', `project ${args.projectPath} is not opened`);
-      }
       const history = await agentService.loadHistory(thread.id, thread.projectPath);
       if (history.length > 0) {
         throw new KydogError('thread.has_messages', `thread ${args.threadId} already has messages`);
+      }
+      if (!idx.projects.find((p) => p.path === args.projectPath)) {
+        throw new KydogError('project.not_found', `project ${args.projectPath} is not opened`);
       }
       const oldPath = sessionFileFor(thread.projectPath, thread.id);
       const newPath = sessionFileFor(args.projectPath, thread.id);
