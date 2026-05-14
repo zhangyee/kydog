@@ -66,7 +66,7 @@ describe('threadService.update projectPath', () => {
     const t = await threadService.create({ projectPath: '/a' });
     await expect(
       threadService.update({ threadId: t.id, projectPath: '/b' }),
-    ).rejects.toThrow(/thread\.has_messages/);
+    ).rejects.toMatchObject({ code: 'thread.has_messages' });
   });
 
   it('rejects switch when target project not opened', async () => {
@@ -74,6 +74,6 @@ describe('threadService.update projectPath', () => {
     const t = await threadService.create({ projectPath: '/a' });
     await expect(
       threadService.update({ threadId: t.id, projectPath: '/does-not-exist' }),
-    ).rejects.toThrow(/project\.not_found/);
+    ).rejects.toMatchObject({ code: 'project.not_found' });
   });
 });
