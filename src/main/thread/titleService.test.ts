@@ -1,4 +1,28 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// vi.mock declarations are hoisted by Vitest — must be at module scope.
+vi.mock('@mariozechner/pi-ai', () => ({
+  completeSimple: vi.fn(),
+}));
+vi.mock('../agent/AgentService', () => ({
+  agentService: { loadHistory: vi.fn() },
+}));
+vi.mock('../agent/resolveActive', () => ({
+  resolveActive: vi.fn(),
+}));
+vi.mock('../llm/providerRegistry', () => ({
+  getProviderRegistry: vi.fn(),
+}));
+vi.mock('../persist/indexFile', () => ({
+  loadIndex: vi.fn(),
+}));
+vi.mock('./threadService', () => ({
+  threadService: { update: vi.fn() },
+}));
+vi.mock('../ipc/broadcaster', () => ({
+  broadcaster: { emit: vi.fn() },
+}));
+
 import { parseTitle } from './titleService';
 
 describe('parseTitle', () => {
@@ -76,5 +100,89 @@ describe('extractFirstText', () => {
       blocks: [{ kind: 'thinking', text: 'only thinking' }],
     };
     expect(extractFirstText([noText], 'assistant')).toBeNull();
+  });
+});
+
+import { titleService } from './titleService';
+import { completeSimple } from '@mariozechner/pi-ai';
+import { agentService } from '../agent/AgentService';
+import { resolveActive } from '../agent/resolveActive';
+import { getProviderRegistry } from '../llm/providerRegistry';
+import { loadIndex } from '../persist/indexFile';
+import { threadService } from './threadService';
+import { broadcaster } from '../ipc/broadcaster';
+
+const THREAD_ID = 't1';
+const PROJECT = '/p';
+
+function fakeThread(title = '无标题') {
+  return { id: THREAD_ID, projectPath: PROJECT, title, createdAt: '', lastActiveAt: '' };
+}
+
+function fakeIndex(thread = fakeThread()) {
+  return { schemaVersion: 1, projects: [], threads: [thread] };
+}
+
+function fakeHistory() {
+  return [
+    { id: 'u1', role: 'user', createdAt: '', content: 'Explain speculative decoding' },
+    { id: 'a1', role: 'assistant', createdAt: '', blocks: [{ kind: 'text', text: 'It is a sampling trick.' }] },
+  ];
+}
+
+function fakeModel() {
+  return { provider: 'openai', id: 'gpt-4o', api: 'openai-completions' };
+}
+
+function fakeRegistry() {
+  return {
+    modelRegistry: {
+      find: vi.fn().mockReturnValue(fakeModel()),
+      getApiKeyAndHeaders: vi.fn().mockResolvedValue({ apiKey: 'sk-test', headers: {} }),
+    },
+  };
+}
+
+function fakeLlmResponse(text: string) {
+  return {
+    stopReason: 'end_turn',
+    content: [{ type: 'text', text }],
+  };
+}
+
+describe('titleService.runGenerate — happy path', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (loadIndex as any).mockResolvedValue(fakeIndex());
+    (agentService.loadHistory as any).mockResolvedValue(fakeHistory());
+    (resolveActive as any).mockResolvedValue({ providerId: 'openai', modelId: 'gpt-4o' });
+    (getProviderRegistry as any).mockReturnValue(fakeRegistry());
+    (completeSimple as any).mockResolvedValue(fakeLlmResponse('Speculative decoding basics'));
+    (threadService.update as any).mockImplementation(async ({ threadId, title }: any) => ({
+      ...fakeThread(title), id: threadId,
+    }));
+  });
+
+  it('writes the parsed title via threadService.update', async () => {
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).toHaveBeenCalledWith({
+      threadId: THREAD_ID,
+      title: 'Speculative decoding basics',
+    });
+  });
+
+  it('emits thread.updated with the returned thread', async () => {
+    await titleService.runGenerate(THREAD_ID);
+    expect(broadcaster.emit).toHaveBeenCalledWith('thread.updated', expect.objectContaining({
+      thread: expect.objectContaining({ title: 'Speculative decoding basics' }),
+    }));
+  });
+
+  it('passes a 60-token budget and a 15s timeout to completeSimple', async () => {
+    await titleService.runGenerate(THREAD_ID);
+    const opts = (completeSimple as any).mock.calls[0][2];
+    expect(opts.maxTokens).toBe(60);
+    expect(opts.apiKey).toBe('sk-test');
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
   });
 });
