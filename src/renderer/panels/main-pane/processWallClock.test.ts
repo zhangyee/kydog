@@ -38,4 +38,17 @@ describe('processWallClock', () => {
     ];
     expect(processWallClock(blocks)).toBe(1000); // 2000 - 1000
   });
+
+  it('NaN 时间戳被排除（不污染结果）', () => {
+    const blocks = [
+      thinkingBlock(NaN, 2000),
+      toolBlock(1000, NaN),
+    ];
+    // 有效的 startedAt 只有 1000；有效的 endedAt 只有 2000 → 2000 - 1000 = 1000
+    expect(processWallClock(blocks)).toBe(1000);
+  });
+
+  it('全 NaN：返回 null', () => {
+    expect(processWallClock([thinkingBlock(NaN, NaN)])).toBeNull();
+  });
 });

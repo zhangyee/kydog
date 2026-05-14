@@ -4,8 +4,8 @@ export function processWallClock(blocks: ProcessBlock[]): number | null {
   const starts: number[] = [];
   const ends: number[] = [];
   for (const b of blocks) {
-    if (typeof b.startedAt === 'number') starts.push(b.startedAt);
-    if (typeof b.endedAt === 'number') ends.push(b.endedAt);
+    if (Number.isFinite(b.startedAt)) starts.push(b.startedAt as number);
+    if (Number.isFinite(b.endedAt)) ends.push(b.endedAt as number);
   }
   if (!starts.length || !ends.length) return null;
   return Math.max(...ends) - Math.min(...starts);
