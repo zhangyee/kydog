@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useEffect, useRef, useState, useMemo } from 'react';
+import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
@@ -9,10 +9,11 @@ import { InputPillModelMenu } from './InputPillModelMenu';
 import { InputPillProjectMenu } from './InputPillProjectMenu';
 import { InputPillSlashMenu } from './InputPillSlashMenu';
 import { InputPillSendButton } from './InputPillSendButton';
+import { InputPillSkillChip } from './InputPillSkillChip';
 import { InputPillTextarea, type InputPillTextareaHandle } from './InputPillTextarea';
 import { InputPillChipBar } from './InputPillChipBar';
-import type { SkillMenuItem } from './skillMenuItems';
-import { filterSlashItems, dispatchInputKey } from './inputPillHelpers';
+import { filterSkillEntries, dispatchInputKey } from './inputPillHelpers';
+import type { SkillEntry } from '../../../shared/types';
 
 type Props = {
   threadId: string;
@@ -21,13 +22,15 @@ type Props = {
   prefill?: string;
 };
 
+const CHIP_GAP_PX = 6;
+
 export function InputPill({ threadId, placeholder, large = false, prefill }: Props) {
   const textareaHandle = useRef<InputPillTextareaHandle>(null);
-  const [text, setText] = useState('');
+  const [skill, setSkill] = useState<SkillEntry | null>(null);
+  const [body, setBody] = useState('');
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [modelMenuRect, setModelMenuRect] = useState<DOMRect | null>(null);
   const [projectMenuRect, setProjectMenuRect] = useState<DOMRect | null>(null);
-  const [justPrefilled, setJustPrefilled] = useState(false);
   const [menuForceClosed, setMenuForceClosed] = useState(false);
 
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
@@ -61,27 +64,30 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
     ? `${allConfigured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId} · ${effectiveModelId}`
     : '选择模型';
 
-  // Slash menu data: real skills installed under ~/.kydog/skills/ (loaded at bootstrap).
+  // Slash menu data: installed enabled skills.
   const skillEntries = useSkillsStore((s) => s.skills);
-  const allSkillItems = useMemo<SkillMenuItem[]>(
-    () => skillEntries
-      .filter((s) => s.enabled)
-      .map((s) => ({
-        name: `/${s.name}`,
-        numeral: '',
-        title: s.description,
-        subtitle: '',
-      })),
+  const enabledSkills = useMemo(
+    () => skillEntries.filter((s) => s.enabled),
     [skillEntries],
   );
-  const slashItems = useMemo(() => filterSlashItems(allSkillItems, text), [allSkillItems, text]);
-  // Exception: when prefill just put a complete "/name " into textarea, do not show menu.
-  const exactPrefillMatch = allSkillItems.some((it) => text === `${it.name} `);
-  const slashMenuOpen = !menuForceClosed && slashItems.length > 0 && !(justPrefilled && exactPrefillMatch);
+  const slashItems = useMemo(
+    () => (skill !== null ? [] : filterSkillEntries(enabledSkills, body)),
+    [skill, enabledSkills, body],
+  );
+  const slashMenuOpen = !menuForceClosed && skill === null && slashItems.length > 0;
 
   useEffect(() => {
     if (slashHighlight >= slashItems.length) setSlashHighlight(0);
   }, [slashItems.length, slashHighlight]);
+
+  // Measure the chip width to indent the textarea's first line.
+  const chipOverlayRef = useRef<HTMLDivElement>(null);
+  const [chipIndent, setChipIndent] = useState(0);
+  useLayoutEffect(() => {
+    if (!skill) { setChipIndent(0); return; }
+    const w = chipOverlayRef.current?.getBoundingClientRect().width ?? 0;
+    setChipIndent(w > 0 ? w + CHIP_GAP_PX : 0);
+  }, [skill]);
 
   const modelPillRef = useRef<HTMLButtonElement>(null);
   const projectPillRef = useRef<HTMLButtonElement>(null);
@@ -99,10 +105,17 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
     if (r) setProjectMenuRect(r);
   };
 
+  const composedContent = (): string => {
+    const b = body.trim();
+    if (skill) return b ? `/${skill.name} ${b}` : `/${skill.name}`;
+    return b;
+  };
+
   const onSend = async () => {
-    const content = text.trim();
+    const content = composedContent();
     if (!content || isRunning) return;
-    setText('');
+    setSkill(null);
+    setBody('');
     appendUser(threadId, {
       id: crypto.randomUUID(),
       role: 'user',
@@ -123,13 +136,29 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
   const commitSlash = (idx: number) => {
     const item = slashItems[idx];
     if (!item) return;
-    setText(`${item.name} `);
-    setJustPrefilled(false);
+    setSkill(item);
+    setBody('');
     setSlashHighlight(0);
+    setMenuForceClosed(false);
+    requestAnimationFrame(() => textareaHandle.current?.focus());
+  };
+
+  const removeSkill = () => {
+    setSkill(null);
     requestAnimationFrame(() => textareaHandle.current?.focus());
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Backspace at the very start of the body removes the leading skill chip.
+    if (e.key === 'Backspace' && skill !== null) {
+      const ta = textareaHandle.current?.el();
+      if (ta && ta.selectionStart === 0 && ta.selectionEnd === 0) {
+        e.preventDefault();
+        removeSkill();
+        return;
+      }
+    }
+
     const action = dispatchInputKey({
       key: e.key,
       shiftKey: e.shiftKey,
@@ -144,7 +173,6 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
         void onSend();
         break;
       case 'newline':
-        // let default textarea behavior insert newline
         break;
       case 'slash-down':
         e.preventDefault();
@@ -168,23 +196,36 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
     }
   };
 
-  const onTextChange = (next: string) => {
-    setText(next);
-    setJustPrefilled(false);
+  const onBodyChange = (next: string) => {
+    setBody(next);
     setMenuForceClosed(false);
   };
 
-  // When prefill arrives, mark it so slash menu doesn't pop on a fresh card click.
+  // When prefill arrives, parse "/<skill> <rest>" and either set a chip or fall
+  // back to placing the raw text in the body. The skill list may not have
+  // loaded yet — when it loads, this effect re-runs (enabledSkills change).
   useEffect(() => {
-    if (prefill !== undefined) {
-      setJustPrefilled(true);
-      setMenuForceClosed(false);
+    if (prefill === undefined) return;
+    const match = prefill.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
+    if (match) {
+      const found = enabledSkills.find((s) => s.name === match[1]);
+      if (found) {
+        setSkill(found);
+        setBody(match[2] ?? '');
+        setMenuForceClosed(false);
+        return;
+      }
     }
-  }, [prefill]);
+    setSkill(null);
+    setBody(prefill);
+    setMenuForceClosed(false);
+  }, [prefill, enabledSkills]);
 
   const effectivePlaceholder = isRunning
     ? '运行中…'
     : (placeholder ?? (large ? '问一个研究问题，或拖入 PDF / 文件夹…' : '继续追问…'));
+
+  const canSend = composedContent().length > 0;
 
   return (
     <div
@@ -204,16 +245,35 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
               (large ? ', 0 8px 24px var(--color-card-shadow-strong)' : ''),
           }}
         >
-          <InputPillTextarea
-            ref={textareaHandle}
-            value={text}
-            disabled={isRunning}
-            large={large}
-            placeholder={effectivePlaceholder}
-            onChange={onTextChange}
-            onKeyDown={onKeyDown}
-            prefill={prefill}
-          />
+          <div style={{ position: 'relative' }}>
+            {skill ? (
+              <div
+                ref={chipOverlayRef}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  // Align with textarea's first-line baseline given lineHeight: 1.5 + fontSize.
+                  // For both modes the chip's own line-height (1.4 with 12px font) is shorter,
+                  // so a small top offset keeps it visually centered on line 1.
+                  paddingTop: large ? 3 : 2,
+                  pointerEvents: 'auto',
+                }}
+              >
+                <InputPillSkillChip skill={skill} onRemove={removeSkill} />
+              </div>
+            ) : null}
+            <InputPillTextarea
+              ref={textareaHandle}
+              value={body}
+              disabled={isRunning}
+              large={large}
+              placeholder={effectivePlaceholder}
+              onChange={onBodyChange}
+              onKeyDown={onKeyDown}
+              firstLineIndent={chipIndent}
+            />
+          </div>
           <InputPillChipBar
             large={large}
             left={large && isEmptyThread ? (
@@ -266,7 +326,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
                 {isRunning ? (
                   <InputPillSendButton variant="stop" onClick={onStop} />
                 ) : (
-                  <InputPillSendButton variant="send" disabled={!text.trim()} onClick={onSend} />
+                  <InputPillSendButton variant="send" disabled={!canSend} onClick={onSend} />
                 )}
               </>
             }
@@ -296,8 +356,10 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
           anchorRect={textareaWrapperRef.current.getBoundingClientRect()}
           onHover={setSlashHighlight}
           onSelect={(item) => {
-            setText(`${item.name} `);
-            setJustPrefilled(false);
+            setSkill(item);
+            setBody('');
+            setSlashHighlight(0);
+            setMenuForceClosed(false);
             requestAnimationFrame(() => textareaHandle.current?.focus());
           }}
         />

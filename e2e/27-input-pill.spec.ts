@@ -44,7 +44,7 @@ test('27-input-pill: Shift+Enter inserts newline, Enter clears textarea (send fi
   }
 });
 
-test('27-input-pill: typing / opens slash menu; Enter commits selection', async () => {
+test('27-input-pill: typing / opens slash menu with description; Enter commits as chip', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -58,12 +58,43 @@ test('27-input-pill: typing / opens slash menu; Enter commits selection', async 
     await page.keyboard.type('/');
     // Builtin `fastpaper` skill is auto-installed at first run (see 19-skill-sync.spec.ts).
     await expect(page.locator('[data-testid="slash-menu"]')).toBeVisible();
-    const firstItem = page.locator('[data-testid="slash-item-fastpaper"]');
-    await expect(firstItem).toBeVisible();
+    await expect(page.locator('[data-testid="slash-item-fastpaper"]')).toBeVisible();
+    // The two-column popover also surfaces the highlighted item's description.
+    await expect(page.locator('[data-testid="slash-menu-desc"]')).toBeVisible();
     await page.keyboard.press('Enter');
-    await expect(input).toHaveValue('/fastpaper ');
-    // Slash menu closes once the selection is committed (exactPrefillMatch + justPrefilled false-out scenario).
+    // After commit: the chip is rendered inline; the textarea body is empty.
+    await expect(page.locator('[data-testid="skill-chip"]')).toContainText('fastpaper');
+    await expect(input).toHaveValue('');
     await expect(page.locator('[data-testid="slash-menu"]')).toBeHidden();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('27-input-pill: backspace at body[0] removes the chip; body text is preserved', async () => {
+  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
+  await seedSamplePackage(projectPath);
+  const launched = await launchKydog({
+    seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
+  });
+  const { page } = launched;
+  try {
+    await page.locator('[data-testid="new-thread"]').click();
+    const input = page.locator('[data-testid="input-pill"]');
+    await input.click();
+    await page.keyboard.type('/');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-testid="skill-chip"]')).toBeVisible();
+
+    // Type some body text after the chip.
+    await page.keyboard.type('hello world');
+    await expect(input).toHaveValue('hello world');
+
+    // Move caret to position 0, then backspace → chip removed, body preserved.
+    await page.keyboard.press('Home');
+    await page.keyboard.press('Backspace');
+    await expect(page.locator('[data-testid="skill-chip"]')).toHaveCount(0);
+    await expect(input).toHaveValue('hello world');
   } finally {
     await teardown(launched);
   }

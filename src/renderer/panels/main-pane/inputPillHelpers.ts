@@ -1,11 +1,18 @@
-import type { SkillMenuItem } from './skillMenuItems';
+import type { SkillEntry } from '../../../shared/types';
 
-export function filterSlashItems(items: readonly SkillMenuItem[], text: string): SkillMenuItem[] {
+/**
+ * Returns the skills that match a slash-command query.
+ *
+ * The query is the textarea body. If it doesn't start with "/" or contains a
+ * newline, the menu is not relevant — return []. Otherwise filter by
+ * case-insensitive prefix of `name` (without the leading "/").
+ */
+export function filterSkillEntries(items: readonly SkillEntry[], text: string): SkillEntry[] {
   if (!text.startsWith('/')) return [];
   if (text.includes('\n')) return [];
   const q = text.slice(1).toLowerCase();
   if (q.length === 0) return [...items];
-  return items.filter((it) => it.name.slice(1).toLowerCase().startsWith(q));
+  return items.filter((it) => it.name.toLowerCase().startsWith(q));
 }
 
 export type KeyAction =

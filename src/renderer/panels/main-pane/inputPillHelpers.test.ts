@@ -1,26 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { filterSlashItems, dispatchInputKey } from './inputPillHelpers';
-import { SKILL_MENU_ITEMS } from './skillMenuItems';
+import { filterSkillEntries, dispatchInputKey } from './inputPillHelpers';
+import type { SkillEntry } from '../../../shared/types';
 
-describe('filterSlashItems', () => {
+const SKILLS: SkillEntry[] = [
+  { name: 'brainstorming', description: 'help turn ideas into designs', origin: 'builtin', enabled: true, dirPath: '/x/brainstorming' },
+  { name: 'frontier', description: 'find latest papers', origin: 'user', enabled: true, dirPath: '/x/frontier' },
+  { name: 'fastpaper', description: 'paper helpers', origin: 'builtin', enabled: true, dirPath: '/x/fastpaper' },
+];
+
+describe('filterSkillEntries', () => {
   it('returns [] when text is empty', () => {
-    expect(filterSlashItems(SKILL_MENU_ITEMS, '')).toEqual([]);
+    expect(filterSkillEntries(SKILLS, '')).toEqual([]);
   });
   it('returns [] when text does not start with /', () => {
-    expect(filterSlashItems(SKILL_MENU_ITEMS, 'hello')).toEqual([]);
+    expect(filterSkillEntries(SKILLS, 'hello')).toEqual([]);
   });
   it('returns [] when text contains a newline', () => {
-    expect(filterSlashItems(SKILL_MENU_ITEMS, '/fr\nmore')).toEqual([]);
+    expect(filterSkillEntries(SKILLS, '/fr\nmore')).toEqual([]);
   });
   it('returns all items for bare "/"', () => {
-    expect(filterSlashItems(SKILL_MENU_ITEMS, '/')).toHaveLength(SKILL_MENU_ITEMS.length);
+    expect(filterSkillEntries(SKILLS, '/')).toHaveLength(SKILLS.length);
   });
-  it('prefix-matches against item.name without the leading slash, case-insensitive', () => {
-    const r = filterSlashItems(SKILL_MENU_ITEMS, '/FR');
-    expect(r.map((x) => x.name)).toEqual(['/frontier']);
+  it('prefix-matches against item.name (no leading /), case-insensitive', () => {
+    const r = filterSkillEntries(SKILLS, '/FR');
+    expect(r.map((x) => x.name)).toEqual(['frontier']);
+  });
+  it('returns multiple matches sorted by store order', () => {
+    const r = filterSkillEntries(SKILLS, '/f');
+    expect(r.map((x) => x.name)).toEqual(['frontier', 'fastpaper']);
   });
   it('returns [] when prefix matches nothing', () => {
-    expect(filterSlashItems(SKILL_MENU_ITEMS, '/xyz')).toEqual([]);
+    expect(filterSkillEntries(SKILLS, '/xyz')).toEqual([]);
   });
 });
 

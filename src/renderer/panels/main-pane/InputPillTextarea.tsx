@@ -1,5 +1,5 @@
 // src/renderer/panels/main-pane/InputPillTextarea.tsx
-import { useEffect, useRef, forwardRef, useImperativeHandle, type KeyboardEvent } from 'react';
+import { useEffect, useRef, forwardRef, useImperativeHandle, type CSSProperties, type KeyboardEvent } from 'react';
 
 export type InputPillTextareaHandle = {
   focus: () => void;
@@ -13,11 +13,12 @@ type Props = {
   placeholder: string;
   onChange: (next: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
-  prefill?: string;
+  /** Indent the first line by this many pixels (used to make room for a leading skill chip overlay). */
+  firstLineIndent?: number;
 };
 
 export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(function InputPillTextarea(
-  { value, disabled, large, placeholder, onChange, onKeyDown, prefill },
+  { value, disabled, large, placeholder, onChange, onKeyDown, firstLineIndent = 0 },
   ref,
 ) {
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -26,14 +27,6 @@ export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(func
     focus: () => taRef.current?.focus(),
     el: () => taRef.current,
   }), []);
-
-  // Apply external prefill (e.g. ChapterCard click). `onChange` is intentionally
-  // omitted from deps: it changes identity every render (parent passes an inline
-  // closure), and re-firing this effect would clobber user-typed text with the
-  // last prefill value. Only re-run when `prefill` itself changes.
-  useEffect(() => {
-    if (prefill !== undefined) onChange(prefill);
-  }, [prefill]);
 
   // Auto-grow textarea as content changes (capped to keep send button visible).
   useEffect(() => {
@@ -46,6 +39,14 @@ export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(func
     el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
   }, [value, large]);
 
+  const style: CSSProperties = {
+    fontSize: large ? 15 : 14,
+    lineHeight: 1.5,
+    color: 'var(--color-ink)',
+    minHeight: large ? 44 : 24,
+    textIndent: firstLineIndent ? `${firstLineIndent}px` : undefined,
+  };
+
   return (
     <textarea
       ref={taRef}
@@ -57,12 +58,7 @@ export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(func
       placeholder={placeholder}
       rows={large ? 2 : 1}
       className="font-serif w-full resize-none bg-transparent border-0 outline-none disabled:opacity-50"
-      style={{
-        fontSize: large ? 15 : 14,
-        lineHeight: 1.5,
-        color: 'var(--color-ink)',
-        minHeight: large ? 44 : 24,
-      }}
+      style={style}
     />
   );
 });
