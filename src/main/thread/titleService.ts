@@ -115,13 +115,20 @@ async function callLlm(thread: Thread, firstUser: string, firstAssistant: string
     { apiKey, headers, maxTokens: 60, signal: AbortSignal.timeout(TIMEOUT_MS) },
   );
 
-  if (response.stopReason === 'error') return null;
+  if (response.stopReason === 'error') {
+    logger.warn('title', 'llm stopReason=error', { threadId: thread.id, providerId, modelId, errorMessage: (response as { errorMessage?: string }).errorMessage });
+    return null;
+  }
   const text = response.content
     .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
     .map((c) => c.text)
     .join('')
     .trim();
-  return parseTitle(text);
+  const parsed = parseTitle(text);
+  if (parsed === null) {
+    logger.warn('title', 'parseTitle rejected llm output', { threadId: thread.id, providerId, modelId, raw: text.slice(0, 200), rawLen: text.length });
+  }
+  return parsed;
 }
 
 export const titleService = {
