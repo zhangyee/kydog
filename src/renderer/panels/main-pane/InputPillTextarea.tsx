@@ -27,7 +27,10 @@ export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(func
     el: () => taRef.current,
   }), []);
 
-  // Apply external prefill (e.g. ChapterCard click).
+  // Apply external prefill (e.g. ChapterCard click). `onChange` is intentionally
+  // omitted from deps: it changes identity every render (parent passes an inline
+  // closure), and re-firing this effect would clobber user-typed text with the
+  // last prefill value. Only re-run when `prefill` itself changes.
   useEffect(() => {
     if (prefill !== undefined) onChange(prefill);
   }, [prefill]);

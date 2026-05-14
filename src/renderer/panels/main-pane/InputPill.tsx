@@ -27,6 +27,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
   const [modelMenuRect, setModelMenuRect] = useState<DOMRect | null>(null);
   const [projectMenuRect, setProjectMenuRect] = useState<DOMRect | null>(null);
   const [justPrefilled, setJustPrefilled] = useState(false);
+  const [menuForceClosed, setMenuForceClosed] = useState(false);
 
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const isRunning = runState?.status === 'running';
@@ -63,7 +64,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
   const slashItems = useMemo(() => filterSlashItems(SKILL_MENU_ITEMS, text), [text]);
   // Exception: when prefill just put a complete "/name " into textarea, do not show menu.
   const exactPrefillMatch = SKILL_MENU_ITEMS.some((it) => text === `${it.name} `);
-  const slashMenuOpen = slashItems.length > 0 && !(justPrefilled && exactPrefillMatch);
+  const slashMenuOpen = !menuForceClosed && slashItems.length > 0 && !(justPrefilled && exactPrefillMatch);
 
   useEffect(() => {
     if (slashHighlight >= slashItems.length) setSlashHighlight(0);
@@ -146,8 +147,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
         break;
       case 'slash-close':
         e.preventDefault();
-        // close by inserting a space — keeps text but breaks menu condition
-        setText((t) => (t.startsWith('/') ? `${t} ` : t));
+        setMenuForceClosed(true);
         break;
       case 'ignore':
       default:
@@ -158,11 +158,15 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
   const onTextChange = (next: string) => {
     setText(next);
     setJustPrefilled(false);
+    setMenuForceClosed(false);
   };
 
   // When prefill arrives, mark it so slash menu doesn't pop on a fresh card click.
   useEffect(() => {
-    if (prefill !== undefined) setJustPrefilled(true);
+    if (prefill !== undefined) {
+      setJustPrefilled(true);
+      setMenuForceClosed(false);
+    }
   }, [prefill]);
 
   const effectivePlaceholder = isRunning

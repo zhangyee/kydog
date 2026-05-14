@@ -95,7 +95,7 @@ function setupEventBridge(): void {
     }
   });
   window.kydog.on('thread.updated', (p) => {
-    useThreadsStore.getState().setThread(p.thread);
+    useThreadsStore.getState().upsertThread(p.thread);
   });
 
   void runs; void threads; // silence unused
