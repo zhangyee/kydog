@@ -137,10 +137,6 @@ class AgentService {
 
   private subscribe(bound: Bound) {
     const { threadId } = bound;
-    // 跟踪当前 pi assistant message 的 tool_call id；message_end 时若 ≥2 个，
-    // 广播 parallelGroupId 让 renderer 回填到对应 blocks 上。这是协议层"一条 LLM
-    // 回复里 N 个 toolCall = 并行"的事实信号，不依赖时间戳启发式。
-    const piMessageTools: string[] = [];
     bound.session.subscribe((evt) => {
       const state = this.runs.get(threadId);
       const runId = state?.status === 'running' ? state.runId : 'unknown';
@@ -151,13 +147,11 @@ class AgentService {
           // one turn all attach to the same buffer. Tool calls fire AFTER pi's
           // first message_end, so consuming the buffer at message_end loses them.
           bound.activeMessageId = `${threadId}:${randomUUID()}`;
-          piMessageTools.length = 0;
           broadcaster.emit('run.started', { threadId, runId });
           return;
         case 'message_start':
-          // 新一条 pi assistant message 开始，重置当前 message 的 tool id 列表。
-          // kydog 的 activeMessageId 仍跨 pi message 保留（buffer 不变）。
-          piMessageTools.length = 0;
+          // No-op: keep the run-level activeMessageId so the buffer stays alive
+          // across pi's multiple message_start/end pairs within one turn.
           return;
         case 'message_update': {
           const sub = (evt as unknown as { assistantMessageEvent?: { type: string; delta?: string } }).assistantMessageEvent;
@@ -173,7 +167,6 @@ class AgentService {
         case 'tool_execution_start': {
           const e = evt as unknown as { toolCallId: string; toolName: string; args?: { command?: string } };
           const command = typeof e.args?.command === 'string' ? e.args.command : JSON.stringify(e.args ?? {});
-          piMessageTools.push(e.toolCallId);
           broadcaster.emit('run.tool_call_start', {
             threadId, runId, toolCallId: e.toolCallId, name: e.toolName, command,
           });
@@ -197,17 +190,25 @@ class AgentService {
           return;
         }
         case 'message_end': {
-          // 协议层并行判定的唯一时机：本条 pi assistant message 收尾时，
-          // 若有 ≥2 个 toolCall，给它们盖同一个 parallelGroupId。
-          if (piMessageTools.length >= 2 && bound.activeMessageId) {
-            broadcaster.emit('run.parallel_group', {
-              threadId, runId,
-              messageId: bound.activeMessageId,
-              toolCallIds: [...piMessageTools],
-              parallelGroupId: randomUUID(),
-            });
+          // 协议层并行判定：本条 pi assistant message 的 content 数组里 ≥2 个 toolCall → 并行。
+          // 注意：pi 的 tool_execution_start 在 message_end **之后**才发，所以不能靠累积流式状态，
+          // 必须直接读 message_end 事件携带的 message.content（这是协议事实）。
+          const e = evt as unknown as { message?: { role?: string; content?: Array<{ type?: string; id?: string }> } };
+          const msg = e.message;
+          if (msg?.role === 'assistant' && Array.isArray(msg.content) && bound.activeMessageId) {
+            const toolIds: string[] = [];
+            for (const c of msg.content) {
+              if (c.type === 'toolCall' && typeof c.id === 'string') toolIds.push(c.id);
+            }
+            if (toolIds.length >= 2) {
+              broadcaster.emit('run.parallel_group', {
+                threadId, runId,
+                messageId: bound.activeMessageId,
+                toolCallIds: toolIds,
+                parallelGroupId: randomUUID(),
+              });
+            }
           }
-          piMessageTools.length = 0;
           // Defer buffer flush to agent_end so the buffer survives pi's
           // intra-turn message boundaries (assistant w/ toolcall → toolResult → assistant w/ text).
           return;

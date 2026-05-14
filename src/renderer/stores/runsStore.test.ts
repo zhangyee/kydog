@@ -149,4 +149,28 @@ describe('runsStore 时间戳写入', () => {
     useRunsStore.getState().markParallelGroup('ghost', ['x', 'y'], 'g-1');
     expect(useRunsStore.getState().bufferByMessage).toBe(before);
   });
+
+  it('markParallelGroup 先于 addToolCall（真实 pi 顺序）：新建 tool_call 时自动挂上 groupId', () => {
+    const s = useRunsStore.getState();
+    s.startMessageBuffer(TID, MID);
+    // 协议事实：message_end 先到，登记 pending
+    s.markParallelGroup(MID, ['tc-a', 'tc-b', 'tc-c'], 'g-1');
+    // 然后 pi 才发 tool_execution_start，addToolCall 才创建 block
+    s.addToolCall(MID, 'tc-a', 'bash', 'fastpaper a');
+    s.addToolCall(MID, 'tc-b', 'bash', 'fastpaper b');
+    s.addToolCall(MID, 'tc-c', 'bash', 'fastpaper c');
+    const blocks = useRunsStore.getState().bufferByMessage[MID].blocks;
+    for (const b of blocks) {
+      if (b.kind === 'tool_call') expect(b.parallelGroupId).toBe('g-1');
+    }
+  });
+
+  it('未登记 pending 的 tool_call 不会被误挂 groupId', () => {
+    const s = useRunsStore.getState();
+    s.startMessageBuffer(TID, MID);
+    s.markParallelGroup(MID, ['tc-a', 'tc-b'], 'g-1');
+    s.addToolCall(MID, 'tc-other', 'bash', 'ls');
+    const block = useRunsStore.getState().bufferByMessage[MID].blocks[0];
+    if (block.kind === 'tool_call') expect(block.parallelGroupId).toBeUndefined();
+  });
 });

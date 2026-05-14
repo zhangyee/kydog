@@ -6,9 +6,18 @@ export type RunUiState =
   | { status: 'running'; runId: string }
   | { status: 'error'; error: string };
 
+type Buffer = {
+  threadId: string;
+  blocks: AssistantBlock[];
+  // 协议层并行 groupId 的预登记：message_end 时已知 parallelGroupId，但对应的
+  // tool_call block 还要等 tool_execution_start 才会被 addToolCall 加入 blocks。
+  // 这里登记 toolCallId → groupId，addToolCall 时回查并落到 block 上。
+  pendingParallelGroupByToolId?: Record<string, string>;
+};
+
 type RunsState = {
   runStateByThread: Record<string, RunUiState>;
-  bufferByMessage: Record<string, { threadId: string; blocks: AssistantBlock[] }>;
+  bufferByMessage: Record<string, Buffer>;
   activeThinkingStartByMessage: Record<string, number | undefined>;
   setRun: (threadId: string, state: RunUiState) => void;
   startMessageBuffer: (threadId: string, messageId: string) => void;
@@ -80,18 +89,15 @@ export const useRunsStore = create<RunsState>((set, get) => ({
       if (!buf) return {};
       const now = Date.now();
       const blocks = finalizeActiveThinking([...buf.blocks], s.activeThinkingStartByMessage[messageId], now);
+      const pendingGroupId = buf.pendingParallelGroupByToolId?.[toolCallId];
+      blocks.push({
+        kind: 'tool_call', id: toolCallId, name, command, chunks: [],
+        status: 'running', startedAt: now,
+        ...(pendingGroupId ? { parallelGroupId: pendingGroupId } : {}),
+      });
       return {
         activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: undefined },
-        bufferByMessage: {
-          ...s.bufferByMessage,
-          [messageId]: {
-            ...buf,
-            blocks: [
-              ...blocks,
-              { kind: 'tool_call', id: toolCallId, name, command, chunks: [], status: 'running', startedAt: now },
-            ],
-          },
-        },
+        bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } },
       };
     }),
   appendToolChunk: (messageId, toolCallId, stream, chunk) =>
@@ -120,10 +126,20 @@ export const useRunsStore = create<RunsState>((set, get) => ({
       const buf = s.bufferByMessage[messageId];
       if (!buf) return {};
       const idSet = new Set(toolCallIds);
+      // 现有 blocks 直接回填（fixture / 已到达的 tool_call 走这条）
       const blocks = buf.blocks.map((b) =>
         b.kind === 'tool_call' && idSet.has(b.id) ? { ...b, parallelGroupId } : b,
       );
-      return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+      // 同时登记到 pending，让后续 addToolCall 时也能挂上 groupId
+      // （真实 pi：tool_execution_start 在 message_end 之后，所以走 pending 路径）
+      const pending = { ...(buf.pendingParallelGroupByToolId ?? {}) };
+      for (const id of toolCallIds) pending[id] = parallelGroupId;
+      return {
+        bufferByMessage: {
+          ...s.bufferByMessage,
+          [messageId]: { ...buf, blocks, pendingParallelGroupByToolId: pending },
+        },
+      };
     }),
   takeBuffer: (messageId) => {
     const buf = get().bufferByMessage[messageId];

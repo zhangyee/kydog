@@ -107,8 +107,19 @@ function toPiShape(evt: FixtureEvent, aborted: boolean, toolChunks: Map<string, 
       };
     }
 
-    case 'message_end':
-      return { type: 'message_end', message: stubAssistantMessage('stop') };
+    case 'message_end': {
+      // 把 fixture 声明的 toolCallIds 注入到 message.content —— 这是协议事实的载体：
+      // 真实 pi 的 message_end 携带的 assistant message 的 content 里就包含本条 message
+      // 的所有 toolCall（即使对应的 tool_execution_start 还没发出来）。
+      const content: Array<{ type: string; [k: string]: unknown }> = [];
+      if (Array.isArray(evt.toolCallIds)) {
+        for (const id of evt.toolCallIds) {
+          content.push({ type: 'toolCall', id, name: 'bash', arguments: {} });
+        }
+      }
+      const msg = { ...stubAssistantMessage('stop'), content };
+      return { type: 'message_end', message: msg };
+    }
 
     case 'agent_end': {
       const reason = aborted ? 'aborted' : evt.reason;
