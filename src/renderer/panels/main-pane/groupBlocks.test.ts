@@ -32,6 +32,7 @@ describe('groupBlocks', () => {
     const out = groupBlocks([tool('tc-1')]);
     expect(out).toHaveLength(1);
     expect(out[0].kind).toBe('process');
+    if (out[0].kind === 'process') expect(out[0].blocks).toHaveLength(1);
   });
 
   it('thinking + tool 合并到一个 process group', () => {
@@ -50,5 +51,18 @@ describe('groupBlocks', () => {
   it('交错完整序列：thinking → tool → text → tool → text', () => {
     const out = groupBlocks([thinking('t'), tool('tc-1'), text('mid'), tool('tc-2'), text('final')]);
     expect(out.map(g => g.kind)).toEqual(['process', 'text', 'process', 'text']);
+  });
+
+  it('tool 紧跟 text 后再跟 text：分成 text / process / text', () => {
+    const out = groupBlocks([text('pre'), tool('tc-x'), text('post')]);
+    expect(out.map(g => g.kind)).toEqual(['text', 'process', 'text']);
+    if (out[1].kind === 'process') expect(out[1].blocks).toHaveLength(1);
+  });
+
+  it('thinking → tool → thinking 全部进同一个 process group', () => {
+    const out = groupBlocks([thinking('a'), tool('tc-1'), thinking('b')]);
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe('process');
+    if (out[0].kind === 'process') expect(out[0].blocks).toHaveLength(3);
   });
 });
