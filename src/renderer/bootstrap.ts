@@ -4,6 +4,7 @@ import { useSettingsStore } from './stores/settingsStore';
 import { useRunsStore } from './stores/runsStore';
 import { useLlmStore } from './stores/llmStore';
 import { useSkillsStore } from './stores/skillsStore';
+import { useUnreadStore } from './panels/workspace/unreadStore';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
@@ -98,6 +99,10 @@ function setupEventBridge(): void {
       useRunsStore.getState().setRun(p.threadId, { status: 'error', error: p.errorMessage ?? 'unknown' });
     } else {
       useRunsStore.getState().setRun(p.threadId, { status: 'idle' });
+    }
+    const currentId = useThreadsStore.getState().currentThreadId;
+    if (p.threadId !== currentId) {
+      useUnreadStore.getState().markUnread(p.threadId);
     }
   });
   window.kydog.on('thread.updated', (p) => {
