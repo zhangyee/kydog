@@ -28,7 +28,9 @@ export type NavIconName =
   | 'x'
   | 'clock'
   | 'messages-square'
-  | 'circle-plus';
+  | 'circle-plus'
+  | 'arrow-up'
+  | 'check';
 
 type IconSpec = {
   paths?: string[];
@@ -181,6 +183,8 @@ const ICONS: Record<NavIconName, IconSpec> = {
     paths: ['M8 12h8', 'M12 8v8'],
     circles: [{ cx: 12, cy: 12, r: 10 }],
   },
+  'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
+  'check': { paths: ['M20 6 9 17l-5-5'] },
   dot: { circles: [{ cx: 12, cy: 12, r: 3 }] },
 };
 
