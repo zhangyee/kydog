@@ -1,4 +1,3 @@
-import { agentService } from '../agent/AgentService';
 import { resolveActive } from '../agent/resolveActive';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { loadIndex } from '../persist/indexFile';
@@ -6,7 +5,7 @@ import { threadService } from './threadService';
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { KydogError } from '../../shared/errors';
-import type { Message, Thread } from '../../shared/types';
+import type { Thread } from '../../shared/types';
 
 /**
  * Returns the trimmed/cleaned title, or null if it fails validation.
@@ -27,47 +26,13 @@ export function parseTitle(raw: string): string | null {
   return t;
 }
 
-/**
- * Returns the textual content for the first user message, OR the concatenated
- * text from ALL assistant messages (joined by '\n'), or null.
- *
- * For assistant: we concatenate across messages because tool-heavy turns produce
- * multiple assistant messages (one per tool round); the actual answer text
- * usually lives in a LATER message, not the first one. Taking the first one
- * alone would miss the answer when the first message is [thinking, tool_call].
- * Text blocks within a single message are joined with '' (no separator).
- */
-export function extractText(
-  history: Message[],
-  role: 'user' | 'assistant',
-): string | null {
-  if (role === 'user') {
-    const msg = history.find((m) => m.role === 'user');
-    return msg?.role === 'user' ? msg.content : null;
-  }
-  // assistant: collect per-message text (joining blocks within a message with ''),
-  // then join across messages with '\n'.
-  const perMessage: string[] = [];
-  for (const msg of history) {
-    if (msg.role !== 'assistant') continue;
-    const msgText = msg.blocks
-      .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
-      .map((b) => b.text)
-      .join('');
-    if (msgText.length > 0) perMessage.push(msgText);
-  }
-  const text = perMessage.join('\n');
-  return text.length > 0 ? text : null;
-}
-
 // ─── orchestration ────────────────────────────────────────────────────────────
 
 const PLACEHOLDER = '无标题';
 const TIMEOUT_MS = 15_000;
-const MAX_ASSISTANT_CHARS = 2_000;
 const FALLBACK_SLICE = 20;
 
-const TITLE_SYSTEM_PROMPT = `You name conversations. Given the first user message and the first assistant reply, produce a single concise title.
+const TITLE_SYSTEM_PROMPT = `You name conversations. Given the user's first message, produce a single concise title that captures what they want.
 
 Rules:
 - Match the dominant language of the user message (Chinese → Chinese, English → English).
@@ -76,19 +41,7 @@ Rules:
 - No quotes, no markdown, no prefix like "Title:".
 - Output ONLY the title, nothing else.`;
 
-function buildUserContent(firstUser: string, firstAssistant: string): string {
-  return `First user message:
-"""
-${firstUser}
-"""
-
-First assistant reply:
-"""
-${firstAssistant}
-"""`;
-}
-
-async function callLlm(thread: Thread, firstUser: string, firstAssistant: string): Promise<string | null> {
+async function callLlm(thread: Thread, firstUser: string): Promise<string | null> {
   const { providerId, modelId } = await resolveActive(thread.id, thread.projectPath);
   const reg = getProviderRegistry();
   const model = reg.modelRegistry.find(providerId, modelId);
@@ -98,17 +51,13 @@ async function callLlm(thread: Thread, firstUser: string, firstAssistant: string
   const { apiKey, headers } = auth;
 
   const { completeSimple } = await import('@mariozechner/pi-ai');
-  const truncated = firstAssistant.length > MAX_ASSISTANT_CHARS
-    ? firstAssistant.slice(0, MAX_ASSISTANT_CHARS) + '…'
-    : firstAssistant;
-
   const response = await completeSimple(
     model as Parameters<typeof completeSimple>[0],
     {
       systemPrompt: TITLE_SYSTEM_PROMPT,
       messages: [{
         role: 'user',
-        content: [{ type: 'text', text: buildUserContent(firstUser, truncated) }],
+        content: [{ type: 'text', text: firstUser }],
         timestamp: Date.now(),
       }],
     },
@@ -133,34 +82,30 @@ async function callLlm(thread: Thread, firstUser: string, firstAssistant: string
 
 export const titleService = {
   /** Fire-and-forget. Logs errors internally; never throws. */
-  generateForThread(threadId: string): void {
-    void this.runGenerate(threadId).catch((err) =>
+  generateForThread(threadId: string, firstUserContent: string): void {
+    void this.runGenerate(threadId, firstUserContent).catch((err) =>
       logger.warn('title', 'generate failed', { threadId, err: String(err) })
     );
   },
 
   /**
-   * Visible for testing. Returns void; updates thread index and emits IPC on success.
-   * On any failure, writes `firstUser.slice(0, FALLBACK_SLICE)` as a fallback title.
+   * Visible for testing. Updates thread index and emits IPC on success.
+   * On failure, writes `firstUserContent.slice(0, FALLBACK_SLICE)` as fallback.
    */
-  async runGenerate(threadId: string): Promise<void> {
+  async runGenerate(threadId: string, firstUserContent: string): Promise<void> {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === threadId);
     if (!thread) return;
     if (thread.title !== PLACEHOLDER) return;
-
-    const history = await agentService.loadHistory(threadId, thread.projectPath);
-    const firstUser = extractText(history, 'user');
-    const firstAssistant = extractText(history, 'assistant');
-    if (!firstUser || !firstAssistant) return;
+    if (!firstUserContent) return;
 
     let title: string | null = null;
     try {
-      title = await callLlm(thread, firstUser, firstAssistant);
+      title = await callLlm(thread, firstUserContent);
     } catch (err) {
       logger.warn('title', 'llm call failed, using fallback', { threadId, err: String(err) });
     }
-    if (!title) title = firstUser.slice(0, FALLBACK_SLICE);
+    if (!title) title = firstUserContent.slice(0, FALLBACK_SLICE);
 
     // race re-check: user may have manually renamed in the meantime
     const after = await loadIndex();

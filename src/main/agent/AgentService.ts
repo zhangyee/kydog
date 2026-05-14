@@ -113,7 +113,7 @@ class AgentService {
       if (!thread || thread.title !== '无标题') return;
 
       const { titleService } = await import('../thread/titleService');
-      titleService.generateForThread(threadId);
+      titleService.generateForThread(threadId, '');
     } catch (err) {
       logger.warn('agent', 'maybeTriggerTitleGen failed', { threadId, err: String(err) });
     }

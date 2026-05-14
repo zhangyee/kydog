@@ -70,7 +70,7 @@ describe('AgentService — title generation trigger', () => {
     // Wait until the fixture provider drains its event queue.
     await new Promise((r) => setTimeout(r, 50));
     expect(titleService.generateForThread).toHaveBeenCalledTimes(1);
-    expect(titleService.generateForThread).toHaveBeenCalledWith(t.id);
+    expect(titleService.generateForThread).toHaveBeenCalledWith(t.id, '');
     void runId;
   });
 
