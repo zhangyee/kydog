@@ -12,7 +12,7 @@ test('07-persist: thread + ui state survive restart', async () => {
   await seedSettings(home);
   await seedProject(home, projectPath, [{ id: 'aaaaaaaa-1111-1111-1111-111111111111', title: 'kept' }]);
 
-  const env = { ...process.env, HOME: home, USERPROFILE: home, KYDOG_LOG: 'warn' as string };
+  const env = { ...process.env, HOME: home, USERPROFILE: home, KYDOG_LOG: 'warn' as string, KYDOG_E2E: '1' };
 
   // 第一次启动：切主题
   let app = await electron.launch({ args: ['.vite/build/main.js'], env, timeout: 20_000 });

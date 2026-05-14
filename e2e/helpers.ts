@@ -19,6 +19,7 @@ export async function launchKydog(opts: {
     HOME: kydogHome,
     USERPROFILE: kydogHome,
     KYDOG_LOG: 'warn',
+    KYDOG_E2E: '1',
     ...(opts.env ?? {}),
   };
   if (opts.fixture) env.KYDOG_AGENT_FIXTURE = opts.fixture;

@@ -62,7 +62,17 @@ async function createWindow() {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
-    await mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+    const indexPath = path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`);
+    try {
+      await mainWindow.loadFile(indexPath);
+    } catch (err) {
+      // Transient ERR_FAILED (-2) can happen when a previous Electron process
+      // just released the file (e.g. e2e relaunching the app). Wait a tick
+      // and retry once before bubbling up.
+      await new Promise((r) => setTimeout(r, 200));
+      logger.warn('app', 'loadFile retry after transient failure', { err: String(err) });
+      await mainWindow.loadFile(indexPath);
+    }
   }
   if (!app.isPackaged) mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
@@ -121,7 +131,9 @@ app.on('ready', async () => {
     logger.info('app', 'ready');
   } catch (err) {
     logger.error('app', 'startup failed', { err: String(err) });
-    dialog.showErrorBox('KyDog failed to start', String(err));
+    if (process.env.KYDOG_E2E !== '1') {
+      dialog.showErrorBox('KyDog failed to start', String(err));
+    }
     app.quit();
   }
 });
