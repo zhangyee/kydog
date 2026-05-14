@@ -102,5 +102,30 @@ describe('runsStore 时间戳写入', () => {
       expect(th.endedAt).toBe(t2);
       expect(th.status).toBe('done');
     }
+    vi.restoreAllMocks();
+  });
+
+  it('addToolCall 后 appendThinking 得到新 startedAt，而非复用上一段', () => {
+    const t1 = 1_700_000_030_000;
+    const t2 = 1_700_000_031_000;
+    const t3 = 1_700_000_032_500;
+    const spy = vi.spyOn(Date, 'now');
+    spy.mockReturnValueOnce(t1); // appendThinking('a')
+    spy.mockReturnValueOnce(t2); // addToolCall（触发 finalizeActiveThinking）
+    spy.mockReturnValueOnce(t3); // appendThinking('b')
+    const s = useRunsStore.getState();
+    s.startMessageBuffer(TID, MID);
+    s.appendThinking(MID, 'a');
+    s.addToolCall(MID, 'tc-1', 'bash', 'ls');
+    s.appendThinking(MID, 'b');
+    const blocks = useRunsStore.getState().bufferByMessage[MID].blocks;
+    expect(blocks).toHaveLength(3); // [thinking(done), tool_call, thinking(running)]
+    const second = blocks[2];
+    expect(second.kind).toBe('thinking');
+    if (second.kind === 'thinking') {
+      expect(second.startedAt).toBe(t3);
+      expect(second.startedAt).not.toBe(t1);
+    }
+    vi.restoreAllMocks();
   });
 });
