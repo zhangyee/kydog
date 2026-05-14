@@ -37,6 +37,10 @@ export const InputPillEditor = forwardRef<InputPillEditorHandle, Props>(function
   // When state props match this snapshot, the DOM already reflects them, so we
   // skip the rebuild (avoids fighting the cursor + flicker on every keystroke).
   const lastUserInput = useRef<{ skillName: string | null; body: string } | null>(null);
+  // Always points at the latest body so the chip's × button (a long-lived raw
+  // DOM listener) reads the current body, not the body captured at build time.
+  const bodyRef = useRef(body);
+  bodyRef.current = body;
 
   useImperativeHandle(ref, () => ({
     focus: () => editorRef.current?.focus(),
@@ -56,7 +60,7 @@ export const InputPillEditor = forwardRef<InputPillEditorHandle, Props>(function
     }
     el.innerHTML = '';
     if (skill) {
-      el.appendChild(buildChipNode(skill, () => onChange(null, body)));
+      el.appendChild(buildChipNode(skill, () => onChange(null, bodyRef.current)));
     }
     if (body) {
       el.appendChild(document.createTextNode(body));

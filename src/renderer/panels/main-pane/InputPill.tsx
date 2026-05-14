@@ -121,14 +121,23 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
     await window.kydog.invoke('thread.abort', { threadId });
   };
 
-  const commitSlash = (idx: number) => {
-    const item = slashItems[idx];
-    if (!item) return;
+  const applySlashSelection = (item: SkillEntry) => {
+    // Strip the leading "/<query><whitespace>" from body and keep the rest.
+    // body always starts with "/" here (slash-menu open condition).
+    const afterSlash = body.startsWith('/') ? body.slice(1) : body;
+    const wsMatch = afterSlash.match(/\s/);
+    const remaining = wsMatch ? afterSlash.slice((wsMatch.index ?? 0) + 1) : '';
     setSkill(item);
-    setBody('');
+    setBody(remaining);
     setSlashHighlight(0);
     setMenuForceClosed(false);
     requestAnimationFrame(() => editorHandle.current?.focus());
+  };
+
+  const commitSlash = (idx: number) => {
+    const item = slashItems[idx];
+    if (!item) return;
+    applySlashSelection(item);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -312,13 +321,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
           highlightIndex={slashHighlight}
           anchorRect={editorWrapperRef.current.getBoundingClientRect()}
           onHover={setSlashHighlight}
-          onSelect={(item) => {
-            setSkill(item);
-            setBody('');
-            setSlashHighlight(0);
-            setMenuForceClosed(false);
-            requestAnimationFrame(() => editorHandle.current?.focus());
-          }}
+          onSelect={applySlashSelection}
         />
       ) : null}
     </div>

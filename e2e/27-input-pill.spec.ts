@@ -95,6 +95,61 @@ test('27-input-pill: typing / opens slash menu with description; Enter commits a
   }
 });
 
+test('27-input-pill: × button removes chip without losing existing body text', async () => {
+  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
+  await seedSamplePackage(projectPath);
+  const launched = await launchKydog({
+    seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
+  });
+  const { page } = launched;
+  try {
+    await page.locator('[data-testid="new-thread"]').click();
+    const input = page.locator('[data-testid="input-pill"]');
+    await input.click();
+    await page.keyboard.type('/');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-testid="skill-chip"]')).toBeVisible();
+
+    // Type body content AFTER the chip exists.
+    await page.keyboard.type('hello world');
+    expect(await readBodyText(page)).toBe('hello world');
+
+    // Hover the chip to reveal × (we just click directly — the button is present in DOM, opacity is fine for click).
+    await page.locator('[data-testid="skill-chip-remove"]').click();
+
+    await expect(page.locator('[data-testid="skill-chip"]')).toHaveCount(0);
+    // Body text MUST survive the × click.
+    expect(await readBodyText(page)).toBe('hello world');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('27-input-pill: committing a slash command preserves trailing body text', async () => {
+  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
+  await seedSamplePackage(projectPath);
+  const launched = await launchKydog({
+    seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
+  });
+  const { page } = launched;
+  try {
+    await page.locator('[data-testid="new-thread"]').click();
+    const input = page.locator('[data-testid="input-pill"]');
+    await input.click();
+    // Type "/fast extra args" — slash + filter token + trailing args.
+    await page.keyboard.type('/fast extra args');
+    await expect(page.locator('[data-testid="slash-menu"]')).toBeVisible();
+    await expect(page.locator('[data-testid="slash-item-fastpaper"]')).toBeVisible();
+    await page.keyboard.press('Enter');
+
+    // Chip = fastpaper, body keeps "extra args" (stripped only the "/fast " prefix).
+    await expect(page.locator('[data-testid="skill-chip"]')).toContainText('fastpaper');
+    expect(await readBodyText(page)).toBe('extra args');
+  } finally {
+    await teardown(launched);
+  }
+});
+
 test('27-input-pill: backspace immediately after chip removes the chip; body preserved', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
