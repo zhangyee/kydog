@@ -2,6 +2,8 @@ import { useState, type MouseEvent } from 'react';
 import { NavIcon } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useUnreadStore } from './unreadStore';
+import { ThreadStatusBadge } from './ThreadStatusBadge';
 import type { Thread } from '../../../shared/types';
 
 type Props = {
@@ -17,11 +19,11 @@ export function ThreadRow({ thread }: Props) {
   const showThreadTab = useUiStore((s) => s.showThreadTab);
 
   const isSelected = currentThreadId === thread.id;
-  const showLeftPin = !!thread.pinned || hover;
 
   const onPick = () => {
     showThreadTab();
     select(thread.id);
+    useUnreadStore.getState().markRead(thread.id);
   };
 
   const onTogglePin = async (e: MouseEvent) => {
@@ -41,6 +43,7 @@ export function ThreadRow({ thread }: Props) {
     e.stopPropagation();
     try {
       await window.kydog.invoke('thread.delete', { threadId: thread.id });
+      useUnreadStore.getState().clearOne(thread.id);
       remove(thread.id);
     } catch (err) { console.error('delete thread failed', err); }
   };
@@ -60,23 +63,14 @@ export function ThreadRow({ thread }: Props) {
         gap: 8,
       }}
     >
-      <span
-        className="w-4 h-4 inline-flex items-center justify-center shrink-0"
-        style={{ color: 'var(--color-ink-faint)' }}
-      >
-        {showLeftPin ? (
-          <button
-            type="button"
-            data-testid={`pin-thread-${thread.id}`}
-            aria-label={thread.pinned ? '取消置顶' : '置顶'}
-            onClick={onTogglePin}
-            className="inline-flex items-center justify-center w-4 h-4 rounded"
-            style={{ color: thread.pinned ? 'var(--color-ink-soft)' : 'var(--color-ink-faint)', cursor: 'pointer' }}
-          >
-            <NavIcon name="pin" size={12} />
-          </button>
-        ) : null}
-      </span>
+      <ThreadStatusBadge
+        threadId={thread.id}
+        pinned={!!thread.pinned}
+        hovered={hover}
+        onTogglePin={onTogglePin}
+        togglePinAriaLabel={thread.pinned ? '取消置顶' : '置顶'}
+        togglePinTestId={`pin-thread-${thread.id}`}
+      />
       <span className="flex-1 truncate">{thread.title}</span>
       <button
         type="button"
