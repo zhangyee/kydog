@@ -4,7 +4,7 @@ import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage } from './helpers';
 
-test('21-process-group: thinking 跑完后外层 ProcessGroup 收起，点击展开后内层 ThinkingBlock 仍可独立折叠', async () => {
+test('28-process-group: thinking 跑完后外层 ProcessGroup 收起，点击展开后内层 ThinkingBlock 仍可独立折叠', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const fixture = path.resolve('e2e/fixtures/happy-path-thinking.json');
