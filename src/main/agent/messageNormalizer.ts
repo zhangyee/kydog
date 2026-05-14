@@ -48,8 +48,19 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
     }
   }
 
+  // 聚合连续的 pi assistant message 为一条 KyDog Message，user 与循环末尾为边界。
+  // 与实时模式（AgentService 的 per-run activeMessageId）的合并语义对齐：
+  // pi 协议把"assistant→tool→toolResult→assistant→..."拆成多条 assistant，但语义上属于同一个 turn。
+  let pendingBlocks: AssistantBlock[] = [];
+  const flushAssistant = () => {
+    if (pendingBlocks.length === 0) return;
+    out.push({ id: randomUUID(), role: 'assistant', createdAt: new Date().toISOString(), blocks: pendingBlocks });
+    pendingBlocks = [];
+  };
+
   for (const m of messages) {
     if (m.role === 'user') {
+      flushAssistant();
       const content = typeof m.content === 'string'
         ? m.content
         : (m.content as (PiTextContent | PiImageContent)[])
@@ -58,15 +69,14 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
             .join('');
       out.push({ id: randomUUID(), role: 'user', createdAt: new Date().toISOString(), content });
     } else if (m.role === 'assistant') {
-      const blocks: AssistantBlock[] = [];
       for (const c of m.content) {
         if (c.type === 'text') {
-          blocks.push({ kind: 'text', text: c.text });
+          pendingBlocks.push({ kind: 'text', text: c.text });
         } else if (c.type === 'thinking') {
-          blocks.push({ kind: 'thinking', text: c.thinking, status: 'done' });
+          pendingBlocks.push({ kind: 'thinking', text: c.thinking, status: 'done' });
         } else if (c.type === 'toolCall') {
           const tr = toolResults.get(c.id);
-          blocks.push({
+          pendingBlocks.push({
             kind: 'tool_call',
             id: c.id,
             name: c.name,
@@ -76,9 +86,9 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
           });
         }
       }
-      out.push({ id: randomUUID(), role: 'assistant', createdAt: new Date().toISOString(), blocks });
     }
     // toolResult messages are consumed above; skip emitting them as top-level messages
   }
+  flushAssistant();
   return out;
 }
