@@ -35,7 +35,7 @@ describe('parseTitle', () => {
   });
 
   it('strips Chinese curly quotes', () => {
-    expect(parseTitle('"量子计算入门"')).toBe('量子计算入门');
+    expect(parseTitle('“量子计算入门”')).toBe('量子计算入门');
   });
 
   it('strips a leading "Title:" prefix (any case)', () => {

@@ -17,7 +17,7 @@ import type { Message, Thread } from '../../shared/types';
 export function parseTitle(raw: string): string | null {
   let t = raw.trim();
   // strip a single layer of wrapping quotes — both ASCII and CJK curly forms
-  t = t.replace(/^[""'']/, '').replace(/[""'']$/, '').trim();
+  t = t.replace(/^["“'']/, '').replace(/["”'']$/, '').trim();
   // strip a leading "Title:" preamble (case-insensitive, optional whitespace)
   t = t.replace(/^title:\s*/i, '').trim();
   if (!t) return null;
