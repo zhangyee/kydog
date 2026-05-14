@@ -105,6 +105,20 @@ class AgentService {
     bound.staleAfterRun = true;
   }
 
+  private async maybeTriggerTitleGen(threadId: string): Promise<void> {
+    try {
+      const { loadIndex } = await import('../persist/indexFile');
+      const idx = await loadIndex();
+      const thread = idx.threads.find((t) => t.id === threadId);
+      if (!thread || thread.title !== '无标题') return;
+
+      const { titleService } = await import('../thread/titleService');
+      titleService.generateForThread(threadId);
+    } catch (err) {
+      logger.warn('agent', 'maybeTriggerTitleGen failed', { threadId, err: String(err) });
+    }
+  }
+
   async invalidateSessionsForProviders(providerIds: ProviderId[]): Promise<void> {
     const set = new Set(providerIds);
     for (const bound of [...this.sessions.values()]) {
@@ -213,6 +227,9 @@ class AgentService {
             : { kind: reason };
           this.runs.set(threadId, transition(this.runs.get(threadId) ?? { status: 'idle' }, endEvt));
           broadcaster.emit('run.ended', { threadId, runId, reason, errorMessage });
+          if (reason === 'completed') {
+            void this.maybeTriggerTitleGen(threadId);
+          }
           if (bound.staleAfterRun) {
             void this.dispose(threadId);
           }
