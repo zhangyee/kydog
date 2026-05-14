@@ -37,7 +37,7 @@ export async function bootstrap(): Promise<void> {
 
   setupEventBridge();
 
-  // Fire-and-forget: pull installed skills so the InputPill slash menu has real data.
+  // Fire-and-forget: pull installed skills so the Composer slash menu has real data.
   void window.kydog.invoke('skill.list')
     .then((skills) => useSkillsStore.getState().setSkills(skills))
     .catch((err) => console.error('skill.list failed', err));

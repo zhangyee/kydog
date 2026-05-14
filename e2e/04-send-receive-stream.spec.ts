@@ -15,7 +15,7 @@ test('04-send: fixture LLM streams text + bash tool card', async () => {
   });
   try {
     await launched.page.locator('[data-testid="new-thread"]').click();
-    await launched.page.locator('[data-testid="input-pill"]').fill('list files');
+    await launched.page.locator('[data-testid="composer-input"]').fill('list files');
     await launched.page.locator('[data-testid="send-button"]').click();
     await expect(launched.page.locator('[data-testid="message-list"]')).toContainText('list files');
     await expect(launched.page.locator('[data-testid="message-list"]')).toContainText('我来 ls 看看', { timeout: 5000 });

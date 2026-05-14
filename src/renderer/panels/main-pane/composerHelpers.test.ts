@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey } from './inputPillHelpers';
+import { filterSkillEntries, dispatchInputKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [

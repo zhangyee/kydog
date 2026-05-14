@@ -9,7 +9,7 @@ import {
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
 
-export type InputPillEditorHandle = {
+export type ComposerEditorHandle = {
   focus: () => void;
   rootEl: () => HTMLDivElement | null;
 };
@@ -28,7 +28,7 @@ type Props = {
 
 const CHIP_ATTR = 'data-skill-chip-name';
 
-export const InputPillEditor = forwardRef<InputPillEditorHandle, Props>(function InputPillEditor(
+export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function ComposerEditor(
   { skill, body, disabled, large, placeholder, skills, onChange, onKeyDown },
   ref,
 ) {
@@ -92,7 +92,7 @@ export const InputPillEditor = forwardRef<InputPillEditorHandle, Props>(function
     <div style={{ position: 'relative' }}>
       <div
         ref={editorRef}
-        data-testid="input-pill"
+        data-testid="composer-input"
         contentEditable={!disabled}
         suppressContentEditableWarning
         onInput={onInput}

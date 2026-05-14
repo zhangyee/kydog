@@ -22,11 +22,11 @@ test('06-concurrent: two threads streaming with same fixture do not cross-contam
   try {
     // 打开 A，发送
     await launched.page.locator('[data-testid="thread-00000000-0000-0000-0000-00000000000a"]').click();
-    await launched.page.locator('[data-testid="input-pill"]').fill('hello A');
+    await launched.page.locator('[data-testid="composer-input"]').fill('hello A');
     await launched.page.locator('[data-testid="send-button"]').click();
     // 立刻切到 B，发送
     await launched.page.locator('[data-testid="thread-00000000-0000-0000-0000-00000000000b"]').click();
-    await launched.page.locator('[data-testid="input-pill"]').fill('hello B');
+    await launched.page.locator('[data-testid="composer-input"]').fill('hello B');
     await launched.page.locator('[data-testid="send-button"]').click();
     // 等 B 跑完
     await expect(launched.page.locator('[data-testid="message-list"]')).toContainText('hello B');

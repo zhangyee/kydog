@@ -3,7 +3,7 @@ import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage } f
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-test('23-llm: seeded provider + InputPill label reflects default', async () => {
+test('23-llm: seeded provider + Composer label reflects default', async () => {
   const projectPath = await fs.mkdtemp(path.join(process.env.TMPDIR || '/tmp', 'kydog-proj-'));
   await seedSamplePackage(projectPath);
 
@@ -18,10 +18,10 @@ test('23-llm: seeded provider + InputPill label reflects default', async () => {
     // Provider configured → settings tab not auto-opened.
     await expect(page.locator('[data-testid="tab-__settings__"]')).toBeHidden();
 
-    // Click the seeded thread to surface the InputPill.
+    // Click the seeded thread to surface the Composer.
     await page.getByText('23-test').first().click();
 
-    // InputPill shows "Anthropic · claude-sonnet-4-5".
+    // Composer shows "Anthropic · claude-sonnet-4-5".
     await expect(page.locator('text=/Anthropic · claude-sonnet-4-5/')).toBeVisible({ timeout: 5000 });
   } finally {
     await teardown(launched);

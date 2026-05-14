@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { KyLogo, ChapterCard } from '../../shared';
-import { InputPill } from './InputPill';
+import { Composer } from './Composer';
 import { SKILL_MENU_ITEMS } from './skillMenuItems';
 
 type Props = { threadId: string };
@@ -52,7 +52,7 @@ export function NewThreadEmptyState({ threadId }: Props) {
         </div>
 
         <div style={{ marginTop: 40, textAlign: 'left' }}>
-          <InputPill
+          <Composer
             threadId={threadId}
             large
             prefill={prefill}

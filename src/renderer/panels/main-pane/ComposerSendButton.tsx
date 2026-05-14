@@ -1,11 +1,11 @@
-// src/renderer/panels/main-pane/InputPillSendButton.tsx
+// src/renderer/panels/main-pane/ComposerSendButton.tsx
 import { NavIcon } from '../../shared';
 
 type Props =
   | { variant: 'send'; disabled: boolean; onClick: () => void }
   | { variant: 'stop'; onClick: () => void };
 
-export function InputPillSendButton(props: Props) {
+export function ComposerSendButton(props: Props) {
   const isSend = props.variant === 'send';
   return (
     <button

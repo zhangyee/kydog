@@ -27,7 +27,7 @@ async function seedTwoProviders(kydogHome: string) {
   await fs.writeFile(path.join(kydogHome, '.kydog', 'kydog.json'), JSON.stringify(v2, null, 2));
 }
 
-test('24-llm: in-session thread override switches InputPill label', async () => {
+test('24-llm: in-session thread override switches Composer label', async () => {
   const projectPath = await fs.mkdtemp(path.join(process.env.TMPDIR || '/tmp', 'kydog-proj-'));
   await seedSamplePackage(projectPath);
 

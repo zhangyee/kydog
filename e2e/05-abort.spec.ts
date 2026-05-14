@@ -15,7 +15,7 @@ test('05-abort: Stop button transitions run state to idle and stops events', asy
   });
   try {
     await launched.page.locator('[data-testid="new-thread"]').click();
-    await launched.page.locator('[data-testid="input-pill"]').fill('think long');
+    await launched.page.locator('[data-testid="composer-input"]').fill('think long');
     await launched.page.locator('[data-testid="send-button"]').click();
     await expect(launched.page.locator('[data-testid="stop-button"]')).toBeVisible({ timeout: 2000 });
     await launched.page.locator('[data-testid="stop-button"]').click();

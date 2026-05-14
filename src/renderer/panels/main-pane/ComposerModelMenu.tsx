@@ -1,10 +1,10 @@
-// src/renderer/panels/main-pane/InputPillModelMenu.tsx
+// src/renderer/panels/main-pane/ComposerModelMenu.tsx
 import { useEffect, useRef } from 'react';
 import { useLlmStore } from '../../stores/llmStore';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 
-export function InputPillModelMenu({ threadId, anchorRect, onClose }: {
+export function ComposerModelMenu({ threadId, anchorRect, onClose }: {
   threadId: string;
   anchorRect: DOMRect;
   onClose: () => void;

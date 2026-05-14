@@ -13,7 +13,7 @@ test('03-create-thread: clicking 新建对话 selects new thread and shows Empty
   try {
     await launched.page.locator('[data-testid="new-thread"]').click();
     await expect(launched.page.locator('[data-testid="chapter-frontier"]')).toBeVisible();
-    await expect(launched.page.locator('[data-testid="input-pill"]')).toBeVisible();
+    await expect(launched.page.locator('[data-testid="composer-input"]')).toBeVisible();
   } finally {
     await teardown(launched);
   }

@@ -22,10 +22,10 @@ async function seedTwoProjects(kydogHome: string, projectA: string, projectB: st
 /**
  * Read the editor's "body" text, i.e. all text in the contenteditable EXCEPT
  * the leading skill chip element. Mirrors the parseEditor logic in
- * InputPillEditor.tsx.
+ * ComposerEditor.tsx.
  */
 async function readBodyText(page: Page): Promise<string> {
-  return await page.locator('[data-testid="input-pill"]').evaluate((el: HTMLElement) => {
+  return await page.locator('[data-testid="composer-input"]').evaluate((el: HTMLElement) => {
     let body = '';
     for (const node of Array.from(el.childNodes)) {
       if (node.nodeType === Node.ELEMENT_NODE) {
@@ -41,7 +41,7 @@ async function readBodyText(page: Page): Promise<string> {
   });
 }
 
-test('27-input-pill: Shift+Enter inserts newline, Enter clears editor (send fires)', async () => {
+test('27-composer: Shift+Enter inserts newline, Enter clears editor (send fires)', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -50,7 +50,7 @@ test('27-input-pill: Shift+Enter inserts newline, Enter clears editor (send fire
   const { page } = launched;
   try {
     await page.locator('[data-testid="new-thread"]').click();
-    const input = page.locator('[data-testid="input-pill"]');
+    const input = page.locator('[data-testid="composer-input"]');
     await input.click();
     await page.keyboard.type('hello');
     await page.keyboard.press('Shift+Enter');
@@ -69,7 +69,7 @@ test('27-input-pill: Shift+Enter inserts newline, Enter clears editor (send fire
   }
 });
 
-test('27-input-pill: typing / opens slash menu with description; Enter commits as chip', async () => {
+test('27-composer: typing / opens slash menu with description; Enter commits as chip', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -78,7 +78,7 @@ test('27-input-pill: typing / opens slash menu with description; Enter commits a
   const { page } = launched;
   try {
     await page.locator('[data-testid="new-thread"]').click();
-    const input = page.locator('[data-testid="input-pill"]');
+    const input = page.locator('[data-testid="composer-input"]');
     await input.click();
     await page.keyboard.type('/');
     // Builtin `fastpaper` skill is auto-installed at first run.
@@ -95,7 +95,7 @@ test('27-input-pill: typing / opens slash menu with description; Enter commits a
   }
 });
 
-test('27-input-pill: × button removes chip without losing existing body text', async () => {
+test('27-composer: × button removes chip without losing existing body text', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -104,7 +104,7 @@ test('27-input-pill: × button removes chip without losing existing body text', 
   const { page } = launched;
   try {
     await page.locator('[data-testid="new-thread"]').click();
-    const input = page.locator('[data-testid="input-pill"]');
+    const input = page.locator('[data-testid="composer-input"]');
     await input.click();
     await page.keyboard.type('/');
     await page.keyboard.press('Enter');
@@ -125,7 +125,7 @@ test('27-input-pill: × button removes chip without losing existing body text', 
   }
 });
 
-test('27-input-pill: committing a slash command preserves trailing body text', async () => {
+test('27-composer: committing a slash command preserves trailing body text', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -134,7 +134,7 @@ test('27-input-pill: committing a slash command preserves trailing body text', a
   const { page } = launched;
   try {
     await page.locator('[data-testid="new-thread"]').click();
-    const input = page.locator('[data-testid="input-pill"]');
+    const input = page.locator('[data-testid="composer-input"]');
     await input.click();
     // Type "/fast extra args" — slash + filter token + trailing args.
     await page.keyboard.type('/fast extra args');
@@ -150,7 +150,7 @@ test('27-input-pill: committing a slash command preserves trailing body text', a
   }
 });
 
-test('27-input-pill: backspace immediately after chip removes the chip; body preserved', async () => {
+test('27-composer: backspace immediately after chip removes the chip; body preserved', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -159,7 +159,7 @@ test('27-input-pill: backspace immediately after chip removes the chip; body pre
   const { page } = launched;
   try {
     await page.locator('[data-testid="new-thread"]').click();
-    const input = page.locator('[data-testid="input-pill"]');
+    const input = page.locator('[data-testid="composer-input"]');
     await input.click();
     await page.keyboard.type('/');
     await page.keyboard.press('Enter');
@@ -190,7 +190,7 @@ test('27-input-pill: backspace immediately after chip removes the chip; body pre
   }
 });
 
-test('27-input-pill: slash menu reopens after chip removal even when body has leading whitespace', async () => {
+test('27-composer: slash menu reopens after chip removal even when body has leading whitespace', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   const launched = await launchKydog({
@@ -199,7 +199,7 @@ test('27-input-pill: slash menu reopens after chip removal even when body has le
   const { page } = launched;
   try {
     await page.locator('[data-testid="new-thread"]').click();
-    const input = page.locator('[data-testid="input-pill"]');
+    const input = page.locator('[data-testid="composer-input"]');
     await input.click();
     // Type body text directly (no chip).
     await page.keyboard.type('测试');
@@ -224,7 +224,7 @@ test('27-input-pill: slash menu reopens after chip removal even when body has le
   }
 });
 
-test('27-input-pill: project pill switches the empty thread to another project', async () => {
+test('27-composer: project pill switches the empty thread to another project', async () => {
   const projectA = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-a-'));
   const projectB = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-b-'));
   await seedSamplePackage(projectA);

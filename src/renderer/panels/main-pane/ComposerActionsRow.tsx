@@ -6,7 +6,7 @@ type Props = {
   right: ReactNode;
 };
 
-export function InputPillChipBar({ large, left, right }: Props) {
+export function ComposerActionsRow({ large, left, right }: Props) {
   return (
     <div
       className="flex items-center gap-2"

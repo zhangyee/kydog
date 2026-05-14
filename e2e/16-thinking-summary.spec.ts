@@ -15,7 +15,7 @@ test('16-thinking-summary: thinking block is collapsed by default and expands on
   });
   try {
     await launched.page.locator('[data-testid="new-thread"]').click();
-    await launched.page.locator('[data-testid="input-pill"]').fill('summarize your reasoning');
+    await launched.page.locator('[data-testid="composer-input"]').fill('summarize your reasoning');
     await launched.page.locator('[data-testid="send-button"]').click();
     await expect(launched.page.locator('[data-testid="message-list"]')).toContainText('我先看了下目录', { timeout: 5000 });
     await expect(launched.page.locator('[data-testid="thinking-toggle"]')).toContainText('已思考');

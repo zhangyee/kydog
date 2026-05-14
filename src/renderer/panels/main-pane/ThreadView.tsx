@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { MessageList } from './MessageList';
-import { InputPill } from './InputPill';
+import { Composer } from './Composer';
 import { NewThreadEmptyState } from './NewThreadEmptyState';
 import { ThreadBreadcrumb } from './ThreadBreadcrumb';
 
@@ -29,7 +29,7 @@ export function ThreadView({ threadId }: { threadId: string }) {
         ) : (
           <>
             <MessageList threadId={threadId} />
-            <InputPill threadId={threadId} />
+            <Composer threadId={threadId} />
           </>
         )}
       </div>

@@ -5,13 +5,13 @@ import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useSkillsStore } from '../../stores/skillsStore';
 import { NavIcon } from '../../shared';
-import { InputPillModelMenu } from './InputPillModelMenu';
-import { InputPillProjectMenu } from './InputPillProjectMenu';
-import { InputPillSlashMenu } from './InputPillSlashMenu';
-import { InputPillSendButton } from './InputPillSendButton';
-import { InputPillEditor, type InputPillEditorHandle } from './InputPillEditor';
-import { InputPillChipBar } from './InputPillChipBar';
-import { filterSkillEntries, dispatchInputKey } from './inputPillHelpers';
+import { ComposerModelMenu } from './ComposerModelMenu';
+import { ComposerProjectMenu } from './ComposerProjectMenu';
+import { ComposerSlashMenu } from './ComposerSlashMenu';
+import { ComposerSendButton } from './ComposerSendButton';
+import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
+import { ComposerActionsRow } from './ComposerActionsRow';
+import { filterSkillEntries, dispatchInputKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 type Props = {
@@ -21,8 +21,8 @@ type Props = {
   prefill?: string;
 };
 
-export function InputPill({ threadId, placeholder, large = false, prefill }: Props) {
-  const editorHandle = useRef<InputPillEditorHandle>(null);
+export function Composer({ threadId, placeholder, large = false, prefill }: Props) {
+  const editorHandle = useRef<ComposerEditorHandle>(null);
   const [skill, setSkill] = useState<SkillEntry | null>(null);
   const [body, setBody] = useState('');
   const [slashHighlight, setSlashHighlight] = useState(0);
@@ -229,7 +229,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
               (large ? ', 0 8px 24px var(--color-card-shadow-strong)' : ''),
           }}
         >
-          <InputPillEditor
+          <ComposerEditor
             ref={editorHandle}
             skill={skill}
             body={body}
@@ -240,7 +240,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
             onChange={onEditorChange}
             onKeyDown={onKeyDown}
           />
-          <InputPillChipBar
+          <ComposerActionsRow
             large={large}
             left={large && isEmptyThread ? (
               <button
@@ -290,9 +290,9 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
                   ) : null}
                 </button>
                 {isRunning ? (
-                  <InputPillSendButton variant="stop" onClick={onStop} />
+                  <ComposerSendButton variant="stop" onClick={onStop} />
                 ) : (
-                  <InputPillSendButton variant="send" disabled={!canSend} onClick={onSend} />
+                  <ComposerSendButton variant="send" disabled={!canSend} onClick={onSend} />
                 )}
               </>
             }
@@ -301,14 +301,14 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
       </div>
 
       {modelMenuRect && threadId ? (
-        <InputPillModelMenu
+        <ComposerModelMenu
           threadId={threadId}
           anchorRect={modelMenuRect}
           onClose={() => setModelMenuRect(null)}
         />
       ) : null}
       {projectMenuRect && thread ? (
-        <InputPillProjectMenu
+        <ComposerProjectMenu
           threadId={threadId}
           currentProjectPath={thread.projectPath}
           anchorRect={projectMenuRect}
@@ -316,7 +316,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
         />
       ) : null}
       {slashMenuOpen && editorWrapperRef.current ? (
-        <InputPillSlashMenu
+        <ComposerSlashMenu
           items={slashItems}
           highlightIndex={slashHighlight}
           anchorRect={editorWrapperRef.current.getBoundingClientRect()}

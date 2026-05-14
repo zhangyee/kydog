@@ -1,4 +1,4 @@
-// src/renderer/panels/main-pane/InputPillProjectMenu.tsx
+// src/renderer/panels/main-pane/ComposerProjectMenu.tsx
 import { useEffect, useRef, useState } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { NavIcon } from '../../shared';
@@ -11,7 +11,7 @@ type Props = {
   onClose: () => void;
 };
 
-export function InputPillProjectMenu({ threadId, currentProjectPath, anchorRect, onClose }: Props) {
+export function ComposerProjectMenu({ threadId, currentProjectPath, anchorRect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const projects = useThreadsStore((s) => s.projects);
   const upsertThread = useThreadsStore((s) => s.upsertThread);

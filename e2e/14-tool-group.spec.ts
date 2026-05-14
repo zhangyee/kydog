@@ -16,7 +16,7 @@ test('14-tool-group: three concurrent tool_calls render as a ToolGroup with PARA
   });
   try {
     await launched.page.locator('[data-testid="new-thread"]').click();
-    await launched.page.locator('[data-testid="input-pill"]').fill('parallel search');
+    await launched.page.locator('[data-testid="composer-input"]').fill('parallel search');
     await launched.page.locator('[data-testid="send-button"]').click();
     await expect(launched.page.locator('[data-testid="message-list"]')).toContainText('parallel search');
     await expect(launched.page.locator('[data-testid="message-list"]')).toContainText('PARALLEL · 3', { timeout: 5000 });

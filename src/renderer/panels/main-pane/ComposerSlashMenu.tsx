@@ -12,7 +12,7 @@ const LIST_MIN_WIDTH = 240;
 const DESC_MAX_WIDTH = 320;
 const GAP_X = 8;
 
-export function InputPillSlashMenu({ items, highlightIndex, anchorRect, onHover, onSelect }: Props) {
+export function ComposerSlashMenu({ items, highlightIndex, anchorRect, onHover, onSelect }: Props) {
   if (items.length === 0) return null;
   const safeIndex = Math.min(Math.max(highlightIndex, 0), items.length - 1);
   const highlighted = items[safeIndex];
