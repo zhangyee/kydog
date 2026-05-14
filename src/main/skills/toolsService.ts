@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import { dialog } from 'electron';
 import type { ExternalBinEntry, ToolEntry } from '../../shared/types';
 import { binDir as defaultBinDir } from '../bin/binPath';
@@ -196,6 +197,7 @@ async function defaultPickFile(): Promise<string | null> {
   const r = await dialog.showOpenDialog({
     properties: ['openFile'],
     title: '选择 CLI 二进制',
+    defaultPath: os.homedir(),
   });
   if (r.canceled || r.filePaths.length === 0) return null;
   return r.filePaths[0];

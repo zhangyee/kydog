@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { app, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { oauthCoordinator } from './llm/oauth';
@@ -52,7 +53,10 @@ export function registerAllHandlers(): void {
   registerHandler('skill.previewFromUrl', (args) => skillsService.previewFromUrl(args));
   registerHandler('skill.commitFromPreview', (args) => skillsService.commitFromPreview(args));
   registerHandler('skill.pickFolder', async () => {
-    const r = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    const r = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      defaultPath: os.homedir(),
+    });
     if (r.canceled || r.filePaths.length === 0) return null;
     return r.filePaths[0];
   });
@@ -82,6 +86,7 @@ export function registerAllHandlers(): void {
     const r = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: args?.filters,
+      defaultPath: os.homedir(),
     });
     if (r.canceled || r.filePaths.length === 0) return null;
     return r.filePaths[0];

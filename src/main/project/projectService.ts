@@ -1,5 +1,6 @@
 import { dialog, shell } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { loadIndex, saveIndex } from '../persist/indexFile';
 import { KydogError } from '../../shared/errors';
@@ -15,6 +16,7 @@ export class ProjectService {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],
       title: 'KyDog — 打开 Project 文件夹',
+      defaultPath: os.homedir(),
     });
     if (result.canceled || result.filePaths.length === 0) {
       throw new KydogError('project.access_denied', '用户取消');
