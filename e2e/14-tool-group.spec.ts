@@ -24,9 +24,12 @@ test('14-tool-group: three concurrent tool_calls render as a ToolGroup with PARA
     await expect(launched.page.getByTestId('tool-group-toggle-tc-arxiv')).toContainText('全部完成', { timeout: 10000 });
     await expect(launched.page.getByTestId('tool-tc-arxiv')).toHaveCount(0);
     await launched.page.getByTestId('tool-group-toggle-tc-arxiv').click();
-    await expect(launched.page.getByTestId('tool-tc-arxiv')).toBeVisible();
-    await expect(launched.page.getByTestId('tool-tc-s2')).toBeVisible();
-    await expect(launched.page.getByTestId('tool-tc-pubmed')).toBeVisible();
+    // Under full-suite load, React can take >5s to flush all three cards after
+    // the group toggle — bump explicit timeouts (default is 5s). Root-cause
+    // race in takeBuffer/run.message_end ordering tracked separately.
+    await expect(launched.page.getByTestId('tool-tc-arxiv')).toBeVisible({ timeout: 15000 });
+    await expect(launched.page.getByTestId('tool-tc-s2')).toBeVisible({ timeout: 15000 });
+    await expect(launched.page.getByTestId('tool-tc-pubmed')).toBeVisible({ timeout: 15000 });
   } finally {
     await teardown(launched);
   }
