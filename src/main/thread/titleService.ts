@@ -37,7 +37,7 @@ export function parseTitle(raw: string): string | null {
  * alone would miss the answer when the first message is [thinking, tool_call].
  * Text blocks within a single message are joined with '' (no separator).
  */
-export function extractFirstText(
+export function extractText(
   history: Message[],
   role: 'user' | 'assistant',
 ): string | null {
@@ -143,8 +143,8 @@ export const titleService = {
     if (thread.title !== PLACEHOLDER) return;
 
     const history = await agentService.loadHistory(threadId, thread.projectPath);
-    const firstUser = extractFirstText(history, 'user');
-    const firstAssistant = extractFirstText(history, 'assistant');
+    const firstUser = extractText(history, 'user');
+    const firstAssistant = extractText(history, 'assistant');
     if (!firstUser || !firstAssistant) return;
 
     let title: string | null = null;

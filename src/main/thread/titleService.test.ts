@@ -60,10 +60,10 @@ describe('parseTitle', () => {
   });
 });
 
-import { extractFirstText } from './titleService';
+import { extractText } from './titleService';
 import type { Message } from '../../shared/types';
 
-describe('extractFirstText', () => {
+describe('extractText', () => {
   const userMsg: Message = { id: 'u1', role: 'user', createdAt: '', content: 'What is X?' };
   const assistantMsg: Message = {
     id: 'a1', role: 'assistant', createdAt: '',
@@ -76,22 +76,22 @@ describe('extractFirstText', () => {
   };
 
   it('returns the user message content', () => {
-    expect(extractFirstText([userMsg, assistantMsg], 'user')).toBe('What is X?');
+    expect(extractText([userMsg, assistantMsg], 'user')).toBe('What is X?');
   });
 
   it('concatenates only text blocks from the assistant message', () => {
     // 'thinking' and 'tool_call' blocks are excluded
-    expect(extractFirstText([userMsg, assistantMsg], 'assistant')).toBe('X is a thing.');
+    expect(extractText([userMsg, assistantMsg], 'assistant')).toBe('X is a thing.');
   });
 
   it('returns the first matching message even if later ones exist', () => {
     const second: Message = { id: 'u2', role: 'user', createdAt: '', content: 'later' };
-    expect(extractFirstText([userMsg, second], 'user')).toBe('What is X?');
+    expect(extractText([userMsg, second], 'user')).toBe('What is X?');
   });
 
   it('returns null when no matching role exists', () => {
-    expect(extractFirstText([userMsg], 'assistant')).toBeNull();
-    expect(extractFirstText([], 'user')).toBeNull();
+    expect(extractText([userMsg], 'assistant')).toBeNull();
+    expect(extractText([], 'user')).toBeNull();
   });
 
   it('returns null when assistant message has no text blocks', () => {
@@ -99,7 +99,7 @@ describe('extractFirstText', () => {
       id: 'a', role: 'assistant', createdAt: '',
       blocks: [{ kind: 'thinking', text: 'only thinking' }],
     };
-    expect(extractFirstText([noText], 'assistant')).toBeNull();
+    expect(extractText([noText], 'assistant')).toBeNull();
   });
 
   it('concatenates text across multiple assistant messages (tool-heavy turn)', () => {
@@ -120,7 +120,7 @@ describe('extractFirstText', () => {
         { kind: 'text', text: 'Final answer goes here.' },
       ] },
     ];
-    expect(extractFirstText(history, 'assistant')).toBe('Final answer goes here.');
+    expect(extractText(history, 'assistant')).toBe('Final answer goes here.');
   });
 
   it('concatenates multiple text blocks across multiple assistant messages', () => {
@@ -133,7 +133,7 @@ describe('extractFirstText', () => {
         { kind: 'text', text: 'OK got it: 42.' },
       ] },
     ];
-    expect(extractFirstText(history, 'assistant')).toBe('Let me think.\nOK got it: 42.');
+    expect(extractText(history, 'assistant')).toBe('Let me think.\nOK got it: 42.');
   });
 
   it('returns null when no assistant message has any text block (only tool calls)', () => {
@@ -147,7 +147,7 @@ describe('extractFirstText', () => {
         { kind: 'thinking', text: 'more thinking' },
       ] },
     ];
-    expect(extractFirstText(history, 'assistant')).toBeNull();
+    expect(extractText(history, 'assistant')).toBeNull();
   });
 });
 
