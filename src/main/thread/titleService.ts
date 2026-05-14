@@ -1,3 +1,5 @@
+import type { Message } from '../../shared/types';
+
 /**
  * Returns the trimmed/cleaned title, or null if it fails validation.
  *
@@ -15,4 +17,20 @@ export function parseTitle(raw: string): string | null {
   const codepoints = [...t];
   if (codepoints.length > 30) return null;
   return t;
+}
+
+/** Returns the textual content of the first message matching `role`, or null. */
+export function extractFirstText(
+  history: Message[],
+  role: 'user' | 'assistant',
+): string | null {
+  const msg = history.find((m) => m.role === role);
+  if (!msg) return null;
+  if (msg.role === 'user') return msg.content;
+  // assistant: join only `text` blocks (skip thinking + tool_call)
+  const text = msg.blocks
+    .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
+    .map((b) => b.text)
+    .join('');
+  return text.length > 0 ? text : null;
 }
