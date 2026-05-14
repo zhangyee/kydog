@@ -14,7 +14,7 @@ type Props = {
 export function InputPillProjectMenu({ threadId, currentProjectPath, anchorRect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const projects = useThreadsStore((s) => s.projects);
-  const setThread = useThreadsStore((s) => s.setThread);
+  const upsertThread = useThreadsStore((s) => s.upsertThread);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export function InputPillProjectMenu({ threadId, currentProjectPath, anchorRect,
     if (projectPath === currentProjectPath) { onClose(); return; }
     try {
       const updated = await window.kydog.invoke('thread.update', { threadId, projectPath });
-      setThread(updated);
+      upsertThread(updated);
       onClose();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
