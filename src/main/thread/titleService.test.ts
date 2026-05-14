@@ -186,3 +186,78 @@ describe('titleService.runGenerate — happy path', () => {
     expect(opts.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+describe('titleService.runGenerate — edge cases', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (loadIndex as any).mockResolvedValue(fakeIndex());
+    (agentService.loadHistory as any).mockResolvedValue(fakeHistory());
+    (resolveActive as any).mockResolvedValue({ providerId: 'openai', modelId: 'gpt-4o' });
+    (getProviderRegistry as any).mockReturnValue(fakeRegistry());
+    (threadService.update as any).mockImplementation(async ({ threadId, title }: any) => ({
+      ...fakeThread(title), id: threadId,
+    }));
+  });
+
+  it('falls back to slice(0, 20) when the LLM call rejects', async () => {
+    (completeSimple as any).mockRejectedValue(new Error('rate limit'));
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).toHaveBeenCalledWith({
+      threadId: THREAD_ID,
+      title: 'Explain speculative ', // first 20 codepoints of "Explain speculative decoding"
+    });
+  });
+
+  it('falls back when the LLM returns a malformed title (over 30 codepoints)', async () => {
+    (completeSimple as any).mockResolvedValue(fakeLlmResponse('a'.repeat(50)));
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).toHaveBeenCalledWith({
+      threadId: THREAD_ID,
+      title: 'Explain speculative ',
+    });
+  });
+
+  it('falls back when response.stopReason === "error"', async () => {
+    (completeSimple as any).mockResolvedValue({ stopReason: 'error', content: [], errorMessage: 'oops' });
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).toHaveBeenCalledWith({
+      threadId: THREAD_ID,
+      title: 'Explain speculative ',
+    });
+  });
+
+  it('does not update when thread already has a non-placeholder title', async () => {
+    (loadIndex as any).mockResolvedValue(fakeIndex(fakeThread('Renamed by user')));
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).not.toHaveBeenCalled();
+    expect(broadcaster.emit).not.toHaveBeenCalled();
+  });
+
+  it('does not update when thread vanished mid-flight (race)', async () => {
+    (completeSimple as any).mockResolvedValue(fakeLlmResponse('A title'));
+    // First loadIndex returns the placeholder thread; second (race re-check) returns empty.
+    (loadIndex as any)
+      .mockResolvedValueOnce(fakeIndex())
+      .mockResolvedValueOnce({ schemaVersion: 1, projects: [], threads: [] });
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).not.toHaveBeenCalled();
+  });
+
+  it('does not update when user renamed mid-flight', async () => {
+    (completeSimple as any).mockResolvedValue(fakeLlmResponse('A title'));
+    (loadIndex as any)
+      .mockResolvedValueOnce(fakeIndex())                                  // pre-LLM check: placeholder
+      .mockResolvedValueOnce(fakeIndex(fakeThread('User picked this')));   // race re-check: changed
+    await titleService.runGenerate(THREAD_ID);
+    expect(threadService.update).not.toHaveBeenCalled();
+  });
+
+  it('returns silently when history has no assistant message', async () => {
+    (agentService.loadHistory as any).mockResolvedValue([
+      { id: 'u1', role: 'user', createdAt: '', content: 'Hi' },
+    ]);
+    await titleService.runGenerate(THREAD_ID);
+    expect(completeSimple).not.toHaveBeenCalled();
+    expect(threadService.update).not.toHaveBeenCalled();
+  });
+});
