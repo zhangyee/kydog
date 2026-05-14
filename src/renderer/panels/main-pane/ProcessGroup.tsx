@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ProcessBlock } from './groupBlocks';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCard } from './ToolCard';
@@ -19,10 +19,10 @@ function formatHeader(isRunning: boolean, wallMs: number | null): string {
 }
 
 export function ProcessGroup({ threadId, messageId, blocks }: Props) {
-  const runState = useRunsStore((s) => s.runStateByThread[threadId]);
-  const isBuffered = useRunsStore((s) => !!s.bufferByMessage[messageId]);
-  const isRunning = runState?.status === 'running' && isBuffered;
-  const wallMs = processWallClock(blocks);
+  const isRunning = useRunsStore(
+    (s) => s.runStateByThread[threadId]?.status === 'running' && !!s.bufferByMessage[messageId]
+  );
+  const wallMs = useMemo(() => processWallClock(blocks), [blocks]);
   const [manual, setManual] = useState<boolean | null>(null);
   const open = manual ?? isRunning;
   const header = formatHeader(isRunning, wallMs);
@@ -32,7 +32,7 @@ export function ProcessGroup({ threadId, messageId, blocks }: Props) {
       <button
         type="button"
         data-testid="process-toggle"
-        onClick={() => setManual(open ? false : true)}
+        onClick={() => setManual(!open)}
         className="w-full flex items-center gap-2 text-left"
         style={{
           padding: 0,
