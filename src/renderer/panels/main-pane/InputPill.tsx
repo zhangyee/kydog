@@ -1,81 +1,89 @@
-import { useEffect, useRef, useState } from 'react';
+import { type KeyboardEvent, useEffect, useRef, useState, useMemo } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
+import { NavIcon } from '../../shared';
 import { InputPillModelMenu } from './InputPillModelMenu';
+import { InputPillProjectMenu } from './InputPillProjectMenu';
+import { InputPillSlashMenu } from './InputPillSlashMenu';
+import { InputPillSendButton } from './InputPillSendButton';
+import { InputPillTextarea, type InputPillTextareaHandle } from './InputPillTextarea';
+import { InputPillChipBar } from './InputPillChipBar';
+import { SKILL_MENU_ITEMS } from './skillMenuItems';
+import { filterSlashItems, dispatchInputKey } from './inputPillHelpers';
 
 type Props = {
   threadId: string;
   placeholder?: string;
   large?: boolean;
-  /**
-   * External prefill value. When this changes (e.g. user clicks a ChapterCard),
-   * the textarea text is reset to this value.
-   * NOTE: Re-clicking the SAME card with the same string won't re-trigger the
-   * effect (React only runs effects when deps change). Acceptable MVP UX.
-   */
   prefill?: string;
 };
 
-export function InputPill({
-  threadId,
-  placeholder = '继续追问，或 ⌘K 切换 Skill…',
-  large = false,
-  prefill,
-}: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+export function InputPill({ threadId, placeholder, large = false, prefill }: Props) {
+  const textareaHandle = useRef<InputPillTextareaHandle>(null);
   const [text, setText] = useState('');
+  const [slashHighlight, setSlashHighlight] = useState(0);
+  const [modelMenuRect, setModelMenuRect] = useState<DOMRect | null>(null);
+  const [projectMenuRect, setProjectMenuRect] = useState<DOMRect | null>(null);
+  const [justPrefilled, setJustPrefilled] = useState(false);
+
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const isRunning = runState?.status === 'running';
   const appendUser = useThreadsStore((s) => s.appendUserMessage);
   const thread = useThreadsStore((s) =>
     Object.values(s.threadsByProject).flat().find((t) => t.id === threadId),
   );
+  const messages = useThreadsStore((s) => s.historyByThread[threadId]) ?? [];
+  const isEmptyThread = messages.length === 0;
+
   const projectName = thread ? (thread.projectPath.split('/').pop() ?? '') : '';
 
+  // Model picker state (existing pattern preserved).
   const defaultProvider = useLlmStore((s) => s.defaultProvider);
   const defaultModel = useLlmStore((s) => s.defaultModel);
   const allConfigured = useLlmStore((s) => s.configured);
   const openSettings = useUiStore((s) => s.openSettings);
   const override = thread?.modelOverride;
   const effectiveProviderId = override?.providerId ?? defaultProvider;
-  const effectiveModelId = override?.modelId
+  const effectiveModelId =
+    override?.modelId
     ?? defaultModel
     ?? allConfigured.find((c) => c.providerId === effectiveProviderId)?.defaultModel
     ?? null;
   const eligibleCount = allConfigured.filter((c) => c.authStatus.configured && c.modelIds.length > 0).length;
   const showBYOK = eligibleCount === 0;
-  const pillLabel = showBYOK
+  const modelLabel = showBYOK
     ? 'BYOK'
     : effectiveProviderId && effectiveModelId
     ? `${allConfigured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId} · ${effectiveModelId}`
     : '选择模型';
 
-  const pillRef = useRef<HTMLButtonElement>(null);
-  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
-  const onPillClick = () => {
+  // Slash menu state (derived from text).
+  const slashItems = useMemo(() => filterSlashItems(SKILL_MENU_ITEMS, text), [text]);
+  // Exception: when prefill just put a complete "/name " into textarea, do not show menu.
+  const exactPrefillMatch = SKILL_MENU_ITEMS.some((it) => text === `${it.name} `);
+  const slashMenuOpen = slashItems.length > 0 && !(justPrefilled && exactPrefillMatch);
+
+  useEffect(() => {
+    if (slashHighlight >= slashItems.length) setSlashHighlight(0);
+  }, [slashItems.length, slashHighlight]);
+
+  const modelPillRef = useRef<HTMLButtonElement>(null);
+  const projectPillRef = useRef<HTMLButtonElement>(null);
+  const textareaWrapperRef = useRef<HTMLDivElement>(null);
+
+  const onModelPillClick = () => {
     if (showBYOK) { openSettings('provider'); return; }
     if (!threadId) return;
-    const r = pillRef.current?.getBoundingClientRect();
-    if (r) setMenuRect(r);
+    const r = modelPillRef.current?.getBoundingClientRect();
+    if (r) setModelMenuRect(r);
   };
 
-  // Apply external prefill (e.g. ChapterCard click) to internal text.
-  useEffect(() => {
-    if (prefill !== undefined) setText(prefill);
-  }, [prefill]);
-
-  // Auto-grow textarea as content changes (capped to keep send button visible).
-  useEffect(() => {
-    if (!textareaRef.current) return;
-    const el = textareaRef.current;
-    el.style.height = 'auto';
-    const max = large ? 240 : 160;
-    const next = Math.min(el.scrollHeight, max);
-    el.style.height = next + 'px';
-    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
-  }, [text, large]);
+  const onProjectPillClick = () => {
+    const r = projectPillRef.current?.getBoundingClientRect();
+    if (r) setProjectMenuRect(r);
+  };
 
   const onSend = async () => {
     const content = text.trim();
@@ -98,131 +106,183 @@ export function InputPill({
     await window.kydog.invoke('thread.abort', { threadId });
   };
 
+  const commitSlash = (idx: number) => {
+    const item = slashItems[idx];
+    if (!item) return;
+    setText(`${item.name} `);
+    setJustPrefilled(false);
+    setSlashHighlight(0);
+    requestAnimationFrame(() => textareaHandle.current?.focus());
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const action = dispatchInputKey({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey,
+      isComposing: e.nativeEvent.isComposing,
+      slashMenuOpen,
+    });
+    switch (action.kind) {
+      case 'send':
+        e.preventDefault();
+        void onSend();
+        break;
+      case 'newline':
+        // let default textarea behavior insert newline
+        break;
+      case 'slash-down':
+        e.preventDefault();
+        setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i + 1) % slashItems.length));
+        break;
+      case 'slash-up':
+        e.preventDefault();
+        setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i - 1 + slashItems.length) % slashItems.length));
+        break;
+      case 'slash-commit':
+        e.preventDefault();
+        commitSlash(slashHighlight);
+        break;
+      case 'slash-close':
+        e.preventDefault();
+        // close by inserting a space — keeps text but breaks menu condition
+        setText((t) => (t.startsWith('/') ? `${t} ` : t));
+        break;
+      case 'ignore':
+      default:
+        break;
+    }
+  };
+
+  const onTextChange = (next: string) => {
+    setText(next);
+    setJustPrefilled(false);
+  };
+
+  // When prefill arrives, mark it so slash menu doesn't pop on a fresh card click.
+  useEffect(() => {
+    if (prefill !== undefined) setJustPrefilled(true);
+  }, [prefill]);
+
+  const effectivePlaceholder = isRunning
+    ? '运行中…'
+    : (placeholder ?? (large ? '问一个研究问题，或拖入 PDF / 文件夹…' : '继续追问…'));
+
   return (
     <div
       className="ky-paper-deep shrink-0"
       style={{ borderTop: '0.5px solid var(--color-ink-hair)', padding: '12px 22px 14px' }}
     >
-      <div
-        style={{
-          background: 'var(--color-paper)',
-          border: '0.5px solid var(--color-ink-hair)',
-          borderRadius: 4,
-          padding: large ? '14px 18px 12px' : '10px 14px',
-          boxShadow:
-            '0 1px 0 var(--color-card-shadow-strong)' +
-            (large ? ', 0 8px 24px var(--color-card-shadow-strong)' : ''),
-        }}
-      >
-        <textarea
-          ref={textareaRef}
-          data-testid="input-pill"
-          value={text}
-          disabled={isRunning}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void onSend();
-            }
-          }}
-          placeholder={isRunning ? '运行中…' : placeholder}
-          rows={large ? 2 : 1}
-          className="font-serif w-full resize-none bg-transparent border-0 outline-none disabled:opacity-50"
-          style={{
-            fontSize: large ? 15 : 14,
-            lineHeight: 1.5,
-            color: 'var(--color-ink)',
-            minHeight: large ? 44 : 24,
-          }}
-        />
+      <div style={{ maxWidth: 840, margin: '0 auto' }}>
         <div
-          className="flex items-center gap-2"
+          ref={textareaWrapperRef}
           style={{
-            marginTop: large ? 10 : 8,
-            paddingTop: large ? 10 : 8,
-            borderTop: '0.5px solid var(--color-ink-hair-soft)',
+            background: 'var(--color-paper)',
+            border: '0.5px solid var(--color-ink-hair)',
+            borderRadius: 4,
+            padding: large ? '14px 18px 12px' : '10px 14px',
+            boxShadow:
+              '0 1px 0 var(--color-card-shadow-strong)' +
+              (large ? ', 0 8px 24px var(--color-card-shadow-strong)' : ''),
           }}
         >
-          {[`＠ ${projectName || 'Project'}`, '§ Skills', '¶ 记忆'].map((s) => (
-            <span
-              key={s}
-              className="font-sans"
-              style={{
-                padding: large ? '3px 9px' : '2px 8px',
-                border: '0.5px solid var(--color-ink-hair)',
-                borderRadius: 2,
-                fontSize: large ? 11 : 10.5,
-                color: 'var(--color-ink-soft)',
-              }}
-            >
-              {s}
-            </span>
-          ))}
-          <span style={{ flex: 1 }} />
-          <button ref={pillRef} type="button" onClick={onPillClick}
-            className="font-mono"
-            style={{
-              padding: '2px 10px', borderRadius: 999, border: '0.5px solid var(--color-ink-hair)',
-              background: 'transparent', fontSize: 10,
-              color: showBYOK ? 'var(--color-ink-faint)' : 'var(--color-ink)',
-              cursor: 'pointer',
-            }}>
-            {pillLabel}
-            {!showBYOK ? ' ▾' : ''}
-            {override ? <span title="本 thread 已覆盖" style={{ marginLeft: 4, color: 'var(--color-ink-faint)' }}>ⓘ</span> : null}
-          </button>
-          <span
-            className="font-mono"
-            style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}
-          >
-            ⌘↵
-          </span>
-          {isRunning ? (
-            <button
-              type="button"
-              data-testid="stop-button"
-              onClick={onStop}
-              className="font-serif bg-[color:var(--color-accent)] transition-colors hover:bg-[color:var(--color-accent-hover)]"
-              style={{
-                width: large ? 30 : 26,
-                height: large ? 30 : 26,
-                padding: 0,
-                color: 'var(--color-paper)',
-                borderRadius: 2,
-                fontSize: large ? 13 : 12,
-              }}
-              aria-label="停止"
-            >
-              ■
-            </button>
-          ) : (
-            <button
-              type="button"
-              data-testid="send-button"
-              onClick={onSend}
-              disabled={!text.trim()}
-              className="font-serif italic bg-[color:var(--color-accent)] disabled:opacity-50 transition-colors hover:bg-[color:var(--color-accent-hover)]"
-              style={{
-                width: large ? 30 : 26,
-                height: large ? 30 : 26,
-                padding: 0,
-                color: 'var(--color-paper)',
-                borderRadius: 2,
-                fontSize: large ? 15 : 13,
-              }}
-              aria-label="发送"
-            >
-              ↵
-            </button>
-          )}
+          <InputPillTextarea
+            ref={textareaHandle}
+            value={text}
+            disabled={isRunning}
+            large={large}
+            placeholder={effectivePlaceholder}
+            onChange={onTextChange}
+            onKeyDown={onKeyDown}
+            prefill={prefill}
+          />
+          <InputPillChipBar
+            large={large}
+            left={large && isEmptyThread ? (
+              <button
+                ref={projectPillRef}
+                type="button"
+                data-testid="project-pill"
+                onClick={onProjectPillClick}
+                className="font-mono inline-flex items-center"
+                style={{
+                  padding: '2px 10px',
+                  borderRadius: 999,
+                  border: '0.5px solid var(--color-ink-hair)',
+                  background: 'transparent',
+                  fontSize: 10,
+                  color: 'var(--color-ink)',
+                  cursor: 'pointer',
+                  gap: 6,
+                }}
+              >
+                <NavIcon name="folder" size={11} />
+                <span>{projectName || 'Project'}</span>
+                <NavIcon name="chevron-down" size={10} />
+              </button>
+            ) : undefined}
+            right={
+              <>
+                <button
+                  ref={modelPillRef}
+                  type="button"
+                  data-testid="model-pill"
+                  onClick={onModelPillClick}
+                  className="font-mono"
+                  style={{
+                    padding: '2px 10px',
+                    borderRadius: 999,
+                    border: '0.5px solid var(--color-ink-hair)',
+                    background: 'transparent',
+                    fontSize: 10,
+                    color: showBYOK ? 'var(--color-ink-faint)' : 'var(--color-ink)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {modelLabel}
+                  {!showBYOK ? ' ▾' : ''}
+                  {override ? (
+                    <span title="本 thread 已覆盖" style={{ marginLeft: 4, color: 'var(--color-ink-faint)' }}>ⓘ</span>
+                  ) : null}
+                </button>
+                {isRunning ? (
+                  <InputPillSendButton variant="stop" onClick={onStop} />
+                ) : (
+                  <InputPillSendButton variant="send" disabled={!text.trim()} onClick={onSend} />
+                )}
+              </>
+            }
+          />
         </div>
       </div>
-      {menuRect && threadId ? (
+
+      {modelMenuRect && threadId ? (
         <InputPillModelMenu
           threadId={threadId}
-          anchorRect={menuRect}
-          onClose={() => setMenuRect(null)}
+          anchorRect={modelMenuRect}
+          onClose={() => setModelMenuRect(null)}
+        />
+      ) : null}
+      {projectMenuRect && thread ? (
+        <InputPillProjectMenu
+          threadId={threadId}
+          currentProjectPath={thread.projectPath}
+          anchorRect={projectMenuRect}
+          onClose={() => setProjectMenuRect(null)}
+        />
+      ) : null}
+      {slashMenuOpen && textareaWrapperRef.current ? (
+        <InputPillSlashMenu
+          items={slashItems}
+          highlightIndex={slashHighlight}
+          anchorRect={textareaWrapperRef.current.getBoundingClientRect()}
+          onHover={setSlashHighlight}
+          onSelect={(item) => {
+            setText(`${item.name} `);
+            setJustPrefilled(false);
+            requestAnimationFrame(() => textareaHandle.current?.focus());
+          }}
         />
       ) : null}
     </div>
