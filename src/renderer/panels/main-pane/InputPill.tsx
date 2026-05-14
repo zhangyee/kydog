@@ -253,10 +253,12 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
                   position: 'absolute',
                   top: 0,
                   left: 0,
-                  // Align with textarea's first-line baseline given lineHeight: 1.5 + fontSize.
-                  // For both modes the chip's own line-height (1.4 with 12px font) is shorter,
-                  // so a small top offset keeps it visually centered on line 1.
-                  paddingTop: large ? 3 : 2,
+                  // Match the textarea's first-line box exactly so the chip is
+                  // vertically centered against the typed text's baseline.
+                  // fontSize (14 or 15) × lineHeight (1.5).
+                  height: large ? '22.5px' : '21px',
+                  display: 'flex',
+                  alignItems: 'center',
                   pointerEvents: 'auto',
                 }}
               >
@@ -271,7 +273,7 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
               placeholder={effectivePlaceholder}
               onChange={onBodyChange}
               onKeyDown={onKeyDown}
-              firstLineIndent={chipIndent}
+              inlineStartPadding={chipIndent}
             />
           </div>
           <InputPillChipBar

@@ -13,12 +13,14 @@ type Props = {
   placeholder: string;
   onChange: (next: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
-  /** Indent the first line by this many pixels (used to make room for a leading skill chip overlay). */
-  firstLineIndent?: number;
+  /** Reserve this many pixels of space at the left of every line (for a leading
+   * skill chip overlay). All lines indent — not just the first — so wrapped text
+   * does not flow under the chip. */
+  inlineStartPadding?: number;
 };
 
 export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(function InputPillTextarea(
-  { value, disabled, large, placeholder, onChange, onKeyDown, firstLineIndent = 0 },
+  { value, disabled, large, placeholder, onChange, onKeyDown, inlineStartPadding = 0 },
   ref,
 ) {
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -44,7 +46,7 @@ export const InputPillTextarea = forwardRef<InputPillTextareaHandle, Props>(func
     lineHeight: 1.5,
     color: 'var(--color-ink)',
     minHeight: large ? 44 : 24,
-    textIndent: firstLineIndent ? `${firstLineIndent}px` : undefined,
+    paddingInlineStart: inlineStartPadding ? `${inlineStartPadding}px` : undefined,
   };
 
   return (
