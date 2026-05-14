@@ -76,7 +76,9 @@ async function callLlm(thread: Thread, firstUser: string, firstAssistant: string
   const reg = getProviderRegistry();
   const model = reg.modelRegistry.find(providerId, modelId);
   if (!model) throw new KydogError('llm.invalid', `no model for ${providerId}/${modelId}`);
-  const { apiKey, headers } = await (reg.modelRegistry as any).getApiKeyAndHeaders(model);
+  const auth = await (reg.modelRegistry as any).getApiKeyAndHeaders(model);
+  if (!auth.ok) throw new KydogError('llm.invalid', auth.error);
+  const { apiKey, headers } = auth;
 
   const { completeSimple } = await import('@mariozechner/pi-ai');
   const truncated = firstAssistant.length > MAX_ASSISTANT_CHARS

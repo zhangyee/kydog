@@ -138,7 +138,7 @@ function fakeRegistry() {
   return {
     modelRegistry: {
       find: vi.fn().mockReturnValue(fakeModel()),
-      getApiKeyAndHeaders: vi.fn().mockResolvedValue({ apiKey: 'sk-test', headers: {} }),
+      getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: 'sk-test', headers: {} }),
     },
   };
 }
