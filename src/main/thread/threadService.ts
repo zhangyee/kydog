@@ -100,8 +100,14 @@ export class ThreadService {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${threadId} not found`);
+    const needsTitle = thread.title === '无标题';
     thread.lastActiveAt = new Date().toISOString();
     await saveIndex(idx);
+    if (needsTitle) {
+      // Dynamic import to break the circular dependency: titleService imports threadService.
+      const { titleService } = await import('./titleService');
+      titleService.generateForThread(threadId, content);
+    }
     return agentService.send(threadId, thread.projectPath, content);
   }
 
