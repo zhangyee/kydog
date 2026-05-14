@@ -17,7 +17,6 @@ export type ComposerEditorHandle = {
 type Props = {
   skill: SkillEntry | null;
   body: string;
-  disabled: boolean;
   large: boolean;
   placeholder: string;
   /** Available skills — needed to re-resolve a SkillEntry from its DOM chip on input. */
@@ -29,7 +28,7 @@ type Props = {
 const CHIP_ATTR = 'data-skill-chip-name';
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function ComposerEditor(
-  { skill, body, disabled, large, placeholder, skills, onChange, onKeyDown },
+  { skill, body, large, placeholder, skills, onChange, onKeyDown },
   ref,
 ) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -93,7 +92,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       <div
         ref={editorRef}
         data-testid="composer-input"
-        contentEditable={!disabled}
+        contentEditable
         suppressContentEditableWarning
         onInput={onInput}
         onKeyDown={onKeyDown}
@@ -108,8 +107,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
           overflowY: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          cursor: disabled ? 'not-allowed' : 'text',
-          opacity: disabled ? 0.5 : 1,
+          cursor: 'text',
         }}
       />
       {isEmpty ? (

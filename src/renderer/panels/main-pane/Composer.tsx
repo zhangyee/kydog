@@ -211,7 +211,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   }, [prefill, enabledSkills]);
 
   const effectivePlaceholder = isRunning
-    ? '运行中…'
+    ? '运行中，可继续编辑下一条…'
     : (placeholder ?? (large ? '问一个研究问题，或拖入 PDF / 文件夹…' : '继续追问…'));
 
   const canSend = composedContent().length > 0;
@@ -253,7 +253,6 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             ref={editorHandle}
             skill={skill}
             body={body}
-            disabled={isRunning}
             large={large}
             placeholder={effectivePlaceholder}
             skills={enabledSkills}
