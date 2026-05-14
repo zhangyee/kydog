@@ -3,6 +3,7 @@ import { useUiStore } from './stores/uiStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { useRunsStore } from './stores/runsStore';
 import { useLlmStore } from './stores/llmStore';
+import { useSkillsStore } from './stores/skillsStore';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
@@ -35,6 +36,11 @@ export async function bootstrap(): Promise<void> {
   });
 
   setupEventBridge();
+
+  // Fire-and-forget: pull installed skills so the InputPill slash menu has real data.
+  void window.kydog.invoke('skill.list')
+    .then((skills) => useSkillsStore.getState().setSkills(skills))
+    .catch((err) => console.error('skill.list failed', err));
 }
 
 function setupEventBridge(): void {

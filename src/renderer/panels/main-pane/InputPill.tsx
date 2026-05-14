@@ -3,6 +3,7 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useSkillsStore } from '../../stores/skillsStore';
 import { NavIcon } from '../../shared';
 import { InputPillModelMenu } from './InputPillModelMenu';
 import { InputPillProjectMenu } from './InputPillProjectMenu';
@@ -10,7 +11,7 @@ import { InputPillSlashMenu } from './InputPillSlashMenu';
 import { InputPillSendButton } from './InputPillSendButton';
 import { InputPillTextarea, type InputPillTextareaHandle } from './InputPillTextarea';
 import { InputPillChipBar } from './InputPillChipBar';
-import { SKILL_MENU_ITEMS } from './skillMenuItems';
+import type { SkillMenuItem } from './skillMenuItems';
 import { filterSlashItems, dispatchInputKey } from './inputPillHelpers';
 
 type Props = {
@@ -60,10 +61,22 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
     ? `${allConfigured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId} · ${effectiveModelId}`
     : '选择模型';
 
-  // Slash menu state (derived from text).
-  const slashItems = useMemo(() => filterSlashItems(SKILL_MENU_ITEMS, text), [text]);
+  // Slash menu data: real skills installed under ~/.kydog/skills/ (loaded at bootstrap).
+  const skillEntries = useSkillsStore((s) => s.skills);
+  const allSkillItems = useMemo<SkillMenuItem[]>(
+    () => skillEntries
+      .filter((s) => s.enabled)
+      .map((s) => ({
+        name: `/${s.name}`,
+        numeral: '',
+        title: s.description,
+        subtitle: '',
+      })),
+    [skillEntries],
+  );
+  const slashItems = useMemo(() => filterSlashItems(allSkillItems, text), [allSkillItems, text]);
   // Exception: when prefill just put a complete "/name " into textarea, do not show menu.
-  const exactPrefillMatch = SKILL_MENU_ITEMS.some((it) => text === `${it.name} `);
+  const exactPrefillMatch = allSkillItems.some((it) => text === `${it.name} `);
   const slashMenuOpen = !menuForceClosed && slashItems.length > 0 && !(justPrefilled && exactPrefillMatch);
 
   useEffect(() => {
@@ -175,8 +188,8 @@ export function InputPill({ threadId, placeholder, large = false, prefill }: Pro
 
   return (
     <div
-      className="ky-paper-deep shrink-0"
-      style={{ borderTop: '0.5px solid var(--color-ink-hair)', padding: '12px 22px 14px' }}
+      className="ky-paper-grain shrink-0"
+      style={{ padding: '12px 22px 14px' }}
     >
       <div style={{ maxWidth: 840, margin: '0 auto' }}>
         <div

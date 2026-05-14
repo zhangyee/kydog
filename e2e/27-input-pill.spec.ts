@@ -56,10 +56,12 @@ test('27-input-pill: typing / opens slash menu; Enter commits selection', async 
     const input = page.locator('[data-testid="input-pill"]');
     await input.click();
     await page.keyboard.type('/');
+    // Builtin `fastpaper` skill is auto-installed at first run (see 19-skill-sync.spec.ts).
     await expect(page.locator('[data-testid="slash-menu"]')).toBeVisible();
-    await expect(page.locator('[data-testid="slash-item-frontier"]')).toBeVisible();
+    const firstItem = page.locator('[data-testid="slash-item-fastpaper"]');
+    await expect(firstItem).toBeVisible();
     await page.keyboard.press('Enter');
-    await expect(input).toHaveValue('/frontier ');
+    await expect(input).toHaveValue('/fastpaper ');
     // Slash menu closes once the selection is committed (exactPrefillMatch + justPrefilled false-out scenario).
     await expect(page.locator('[data-testid="slash-menu"]')).toBeHidden();
   } finally {
