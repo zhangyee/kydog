@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
 import { TOOL_STATUS_COLOR } from './toolStatus';
-import { toolLabel, toolStatusLabel } from './toolSummary';
+import { groupToolLabel, toolStatusLabel } from './toolSummary';
 
 type Props = { tool: Extract<AssistantBlock, { kind: 'tool_call' }> };
 
 export function ToolCard({ tool }: Props) {
   const [open, setOpen] = useState(false);
   const hasOutput = tool.chunks.length > 0;
-  const label = toolLabel(tool);
+  const label = groupToolLabel(tool);
   const status = toolStatusLabel(tool.status);
 
   return (

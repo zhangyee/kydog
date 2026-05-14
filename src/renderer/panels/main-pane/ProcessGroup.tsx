@@ -1,9 +1,41 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState, type ReactNode } from 'react';
+import type { AssistantBlock } from '../../../shared/types';
 import type { ProcessBlock } from './groupBlocks';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCard } from './ToolCard';
+import { ToolGroup } from './ToolGroup';
 import { useRunsStore } from '../../stores/runsStore';
 import { processWallClock } from './processWallClock';
+import { isParallelGroup } from './parallelGroup';
+
+type ToolBlock = Extract<AssistantBlock, { kind: 'tool_call' }>;
+
+function renderProcessBlocks(blocks: ProcessBlock[]): ReactNode {
+  const items: ReactNode[] = [];
+  let toolBuf: ToolBlock[] = [];
+
+  const flushTools = () => {
+    if (toolBuf.length === 0) return;
+    if (isParallelGroup(toolBuf)) {
+      items.push(<ToolGroup key={`tg-${toolBuf[0].id}`} tools={toolBuf} />);
+    } else {
+      for (const t of toolBuf) items.push(<ToolCard key={t.id} tool={t} />);
+    }
+    toolBuf = [];
+  };
+
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.kind === 'thinking') {
+      flushTools();
+      items.push(<ThinkingBlock key={`th-${i}`} block={b} />);
+    } else {
+      toolBuf.push(b);
+    }
+  }
+  flushTools();
+  return <Fragment>{items}</Fragment>;
+}
 
 type Props = {
   threadId: string;
@@ -54,10 +86,7 @@ export function ProcessGroup({ threadId, messageId, blocks }: Props) {
       </button>
       {open && (
         <div data-testid="process-content" style={{ marginTop: 4 }}>
-          {blocks.map((b, i) => {
-            if (b.kind === 'thinking') return <ThinkingBlock key={`th-${i}`} block={b} />;
-            return <ToolCard key={b.id} tool={b} />;
-          })}
+          {renderProcessBlocks(blocks)}
         </div>
       )}
     </div>
