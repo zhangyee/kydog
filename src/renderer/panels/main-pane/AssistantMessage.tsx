@@ -7,7 +7,7 @@ import { ErrorMarginalia } from './ErrorMarginalia';
 import { useRunsStore } from '../../stores/runsStore';
 import { groupBlocks } from './groupBlocks';
 
-type Props = { threadId: string; messageId: string; blocks: AssistantBlock[]; createdAt?: string; live?: boolean };
+type Props = { threadId: string; messageId: string; blocks: AssistantBlock[]; createdAt?: string };
 
 export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Props) {
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);

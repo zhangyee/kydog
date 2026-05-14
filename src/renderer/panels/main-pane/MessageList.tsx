@@ -28,7 +28,6 @@ export function MessageList({ threadId }: { threadId: string }) {
               threadId={threadId}
               messageId={messageId}
               blocks={buf.blocks}
-              live
             />
             <StreamingIndicator />
           </div>
