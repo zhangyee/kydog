@@ -77,11 +77,9 @@ export function ThreadRow({ thread }: Props) {
         data-testid={`delete-thread-${thread.id}`}
         onClick={onDelete}
         aria-label="删除对话"
-        className="inline-flex items-center justify-center shrink-0 transition-opacity"
+        className="inline-flex items-center justify-center shrink-0 transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
         style={{
           width: 18, height: 18, borderRadius: 4,
-          opacity: hover ? 1 : 0,
-          pointerEvents: hover ? 'auto' : 'none',
           color: 'var(--color-ink-faint)',
         }}
       >
