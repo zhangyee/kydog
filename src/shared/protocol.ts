@@ -65,6 +65,7 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_start'; payload: { threadId: string; runId: string; toolCallId: string; name: string; command?: string } }
   | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
+  | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
   | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
   | { topic: 'run.ended'; payload: { threadId: string; runId: string; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string } }
   | { topic: 'oauth.auth'; payload: { providerId: string; url: string; instructions?: string } }

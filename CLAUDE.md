@@ -2,6 +2,10 @@
 
 面向科研工作流的 AI 智能体桌面应用（Electron + pi coding-agent SDK）。
 
+## Principles
+
+代码逻辑必须严格对应协议事实，不允许用 timestamp 簇判 / 启发式 proxy 等手段补救上游已丢失的信号；典型例子：**并行工具调用 ≡ 一条 LLM assistant message 的 content 数组里 N 个 toolCall；任何不来自同一条 message 的 toolCall 都是串行**。
+
 ## References
 
 pi coding-agent SDK 相关改动前先查 `docs/references/pi-coding-agent/`，不要凭记忆猜 API：

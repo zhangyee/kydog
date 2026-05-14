@@ -81,6 +81,9 @@ function setupEventBridge(): void {
     )?.[0];
     if (target) useRunsStore.getState().finalizeToolCall(target, p.toolCallId, p.status, p.exitCode);
   });
+  window.kydog.on('run.parallel_group', (p) => {
+    useRunsStore.getState().markParallelGroup(p.messageId, p.toolCallIds, p.parallelGroupId);
+  });
   window.kydog.on('run.message_end', (p) => {
     const blocks = useRunsStore.getState().takeBuffer(p.messageId);
     if (!blocks) return;

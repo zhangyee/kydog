@@ -176,4 +176,97 @@ describe('normalizePiMessages', () => {
     expect(out).toHaveLength(2);
     expect(out.every(m => m.role === 'user')).toBe(true);
   });
+
+  // ── 并行 groupId 注入：协议层信号 ──
+
+  it('一条 pi assistant message 里 ≥2 个 toolCall：共享同一个 parallelGroupId', () => {
+    const input: PiMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'fastpaper search a' } },
+          { type: 'toolCall', id: 't2', name: 'bash', arguments: { command: 'fastpaper search b' } },
+          { type: 'toolCall', id: 't3', name: 'bash', arguments: { command: 'fastpaper search c' } },
+        ],
+      },
+    ];
+    const out = normalizePiMessages(input);
+    expect(out).toHaveLength(1);
+    if (out[0].role !== 'assistant') return;
+    const tools = out[0].blocks.filter(b => b.kind === 'tool_call');
+    expect(tools).toHaveLength(3);
+    const groupIds = tools.map(t => t.kind === 'tool_call' ? t.parallelGroupId : undefined);
+    expect(groupIds[0]).toBeTruthy();
+    expect(groupIds[0]).toBe(groupIds[1]);
+    expect(groupIds[1]).toBe(groupIds[2]);
+  });
+
+  it('一条 pi assistant message 里只有 1 个 toolCall：不带 parallelGroupId', () => {
+    const input: PiMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'fastpaper search a' } },
+        ],
+      },
+    ];
+    const out = normalizePiMessages(input);
+    if (out[0].role !== 'assistant') return;
+    const tool = out[0].blocks[0];
+    if (tool.kind === 'tool_call') expect(tool.parallelGroupId).toBeUndefined();
+  });
+
+  it('两条 pi assistant message 各 1 个 toolCall（串行）：都不带 groupId，即使被聚合到同一条 KyDog Message', () => {
+    const input: PiMessage[] = [
+      { role: 'assistant', content: [{ type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'fastpaper search a' } }] },
+      {
+        role: 'toolResult', toolCallId: 't1', toolName: 'bash',
+        content: [{ type: 'text', text: 'r1' }], isError: false,
+      },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 't2', name: 'bash', arguments: { command: 'fastpaper search b' } }] },
+      {
+        role: 'toolResult', toolCallId: 't2', toolName: 'bash',
+        content: [{ type: 'text', text: 'r2' }], isError: false,
+      },
+    ];
+    const out = normalizePiMessages(input);
+    expect(out).toHaveLength(1);
+    if (out[0].role !== 'assistant') return;
+    const tools = out[0].blocks.filter(b => b.kind === 'tool_call');
+    expect(tools).toHaveLength(2);
+    for (const t of tools) {
+      if (t.kind === 'tool_call') expect(t.parallelGroupId).toBeUndefined();
+    }
+  });
+
+  it('两条 pi assistant message 都各自有 ≥2 个 toolCall（两次独立并行）：两个 groupId 互不相同', () => {
+    const input: PiMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'fastpaper a' } },
+          { type: 'toolCall', id: 't2', name: 'bash', arguments: { command: 'fastpaper b' } },
+        ],
+      },
+      { role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: '' }], isError: false },
+      { role: 'toolResult', toolCallId: 't2', toolName: 'bash', content: [{ type: 'text', text: '' }], isError: false },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 't3', name: 'bash', arguments: { command: 'fastpaper c' } },
+          { type: 'toolCall', id: 't4', name: 'bash', arguments: { command: 'fastpaper d' } },
+        ],
+      },
+    ];
+    const out = normalizePiMessages(input);
+    if (out[0].role !== 'assistant') return;
+    const tools = out[0].blocks.filter(b => b.kind === 'tool_call');
+    expect(tools).toHaveLength(4);
+    const ids = tools.map(t => t.kind === 'tool_call' ? t.parallelGroupId : undefined);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[2]).toBeTruthy();
+    expect(ids[2]).toBe(ids[3]);
+    expect(ids[0]).not.toBe(ids[2]);
+  });
 });

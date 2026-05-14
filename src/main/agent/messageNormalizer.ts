@@ -69,6 +69,10 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
             .join('');
       out.push({ id: randomUUID(), role: 'user', createdAt: new Date().toISOString(), content });
     } else if (m.role === 'assistant') {
+      // 协议层并行：当且仅当本条 pi assistant message 的 content 里 ≥2 个 toolCall 时，
+      // 它们共享同一个 parallelGroupId。跨 message 永不共享。
+      const toolCallCount = m.content.filter((c) => c.type === 'toolCall').length;
+      const groupId = toolCallCount >= 2 ? randomUUID() : undefined;
       for (const c of m.content) {
         if (c.type === 'text') {
           pendingBlocks.push({ kind: 'text', text: c.text });
@@ -83,6 +87,7 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
             command: typeof c.arguments?.command === 'string' ? c.arguments.command : undefined,
             chunks: tr ? [{ stream: 'stdout', data: tr.content }] : [],
             status: tr ? (tr.isError ? 'failed' : 'ok') : 'running',
+            parallelGroupId: groupId,
           });
         }
       }

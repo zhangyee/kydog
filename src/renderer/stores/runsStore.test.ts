@@ -128,4 +128,25 @@ describe('runsStore 时间戳写入', () => {
     }
     vi.restoreAllMocks();
   });
+
+  it('markParallelGroup 回填 parallelGroupId 到指定 tool_call blocks', () => {
+    const s = useRunsStore.getState();
+    s.startMessageBuffer(TID, MID);
+    s.addToolCall(MID, 'tc-a', 'bash', 'fastpaper a');
+    s.addToolCall(MID, 'tc-b', 'bash', 'fastpaper b');
+    s.addToolCall(MID, 'tc-c', 'bash', 'ls');
+    s.markParallelGroup(MID, ['tc-a', 'tc-b'], 'g-1');
+    const blocks = useRunsStore.getState().bufferByMessage[MID].blocks;
+    const findTool = (id: string) => blocks.find(b => b.kind === 'tool_call' && b.id === id);
+    const a = findTool('tc-a'); const b = findTool('tc-b'); const c = findTool('tc-c');
+    if (a?.kind === 'tool_call') expect(a.parallelGroupId).toBe('g-1');
+    if (b?.kind === 'tool_call') expect(b.parallelGroupId).toBe('g-1');
+    if (c?.kind === 'tool_call') expect(c.parallelGroupId).toBeUndefined();
+  });
+
+  it('markParallelGroup 找不到对应 messageId：no-op，不抛错', () => {
+    const before = useRunsStore.getState().bufferByMessage;
+    useRunsStore.getState().markParallelGroup('ghost', ['x', 'y'], 'g-1');
+    expect(useRunsStore.getState().bufferByMessage).toBe(before);
+  });
 });

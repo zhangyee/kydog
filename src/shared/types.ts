@@ -26,6 +26,9 @@ export type AssistantBlock =
       status: 'running' | 'ok' | 'failed'; exitCode?: number;
       startedAt?: number;
       endedAt?: number;
+      // 协议级并行标记：同一条 pi assistant message 里 ≥2 个 toolCall 共享同一个 id；
+      // 不同 message 的 toolCall 永不共享，即使时间上紧挨着。
+      parallelGroupId?: string;
     };
 
 export type Message =

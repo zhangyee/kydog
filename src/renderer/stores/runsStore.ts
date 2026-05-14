@@ -17,6 +17,7 @@ type RunsState = {
   addToolCall: (messageId: string, toolCallId: string, name: string, command?: string) => void;
   appendToolChunk: (messageId: string, toolCallId: string, stream: 'stdout' | 'stderr', chunk: string) => void;
   finalizeToolCall: (messageId: string, toolCallId: string, status: 'ok' | 'failed', exitCode?: number) => void;
+  markParallelGroup: (messageId: string, toolCallIds: string[], parallelGroupId: string) => void;
   takeBuffer: (messageId: string) => AssistantBlock[] | null;
 };
 
@@ -111,6 +112,16 @@ export const useRunsStore = create<RunsState>((set, get) => ({
       if (!buf) return {};
       const blocks = buf.blocks.map((b) =>
         b.kind === 'tool_call' && b.id === toolCallId ? { ...b, status, exitCode, endedAt: now } : b,
+      );
+      return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+    }),
+  markParallelGroup: (messageId, toolCallIds, parallelGroupId) =>
+    set((s) => {
+      const buf = s.bufferByMessage[messageId];
+      if (!buf) return {};
+      const idSet = new Set(toolCallIds);
+      const blocks = buf.blocks.map((b) =>
+        b.kind === 'tool_call' && idSet.has(b.id) ? { ...b, parallelGroupId } : b,
       );
       return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
     }),
