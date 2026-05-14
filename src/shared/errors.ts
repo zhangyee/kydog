@@ -3,6 +3,7 @@ export type KydogErrorCode =
   | 'settings.write_failed'
   | 'thread.not_found'
   | 'thread.busy'
+  | 'thread.has_messages'
   | 'project.not_found'
   | 'project.access_denied'
   | 'agent.provider_error'

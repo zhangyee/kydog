@@ -53,10 +53,31 @@ export class ThreadService {
     await saveIndex(idx);
   }
 
-  async update(args: { threadId: string; title?: string; pinned?: boolean; modelOverride?: { providerId: string; modelId: string } | null }): Promise<Thread> {
+  async update(args: {
+    threadId: string;
+    title?: string;
+    pinned?: boolean;
+    modelOverride?: { providerId: string; modelId: string } | null;
+    projectPath?: string;
+  }): Promise<Thread> {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === args.threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${args.threadId} not found`);
+    if (args.projectPath !== undefined && args.projectPath !== thread.projectPath) {
+      if (!idx.projects.find((p) => p.path === args.projectPath)) {
+        throw new KydogError('project.not_found', `[project.not_found] project ${args.projectPath} is not opened`);
+      }
+      const history = await agentService.loadHistory(thread.id, thread.projectPath);
+      if (history.length > 0) {
+        throw new KydogError('thread.has_messages', `[thread.has_messages] thread ${args.threadId} already has messages`);
+      }
+      const oldPath = sessionFileFor(thread.projectPath, thread.id);
+      const newPath = sessionFileFor(args.projectPath, thread.id);
+      await fs.rename(oldPath, newPath).catch(() =>
+        fs.unlink(oldPath).catch(() => {}),
+      );
+      thread.projectPath = args.projectPath;
+    }
     if (args.title !== undefined) thread.title = args.title;
     if (args.pinned !== undefined) thread.pinned = args.pinned;
     if (args.modelOverride === null) thread.modelOverride = undefined;
