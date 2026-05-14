@@ -14,11 +14,18 @@ export type Thread = {
 
 export type AssistantBlock =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string; status?: 'running' | 'done'; durationMs?: number }
+  | {
+      kind: 'thinking'; text: string; status?: 'running' | 'done';
+      durationMs?: number;
+      startedAt?: number;
+      endedAt?: number;
+    }
   | {
       kind: 'tool_call'; id: string; name: string; command?: string;
       chunks: Array<{ stream: 'stdout' | 'stderr'; data: string }>;
       status: 'running' | 'ok' | 'failed'; exitCode?: number;
+      startedAt?: number;
+      endedAt?: number;
     };
 
 export type Message =
