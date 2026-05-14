@@ -79,9 +79,6 @@ export class ThreadService {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${threadId} not found`);
-    if (thread.title === '无标题') {
-      thread.title = content.slice(0, 40);
-    }
     thread.lastActiveAt = new Date().toISOString();
     await saveIndex(idx);
     return agentService.send(threadId, thread.projectPath, content);
