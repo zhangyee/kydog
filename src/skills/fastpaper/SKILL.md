@@ -54,15 +54,7 @@ fastpaper get <DOI|arXiv_ID|PMID|URL>
 fastpaper search <source> <query>
 ```
 
-For broad topics, search multiple sources in parallel:
-
-```
-fastpaper search arxiv "transformer attention" --format json &
-fastpaper search semantic "transformer attention" --format json &
-wait
-```
-
-Each process is independent; failures don't affect other sources.
+For broad topics, invoke `fastpaper search` multiple times in parallel across different sources. Each call is independent — one source failing doesn't affect the others. Use whatever parallelism your runtime supports (parallel tool calls within one response, or shell-level backgrounding inside a single command).
 
 ## When you need full text or specific sections
 
