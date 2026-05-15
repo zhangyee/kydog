@@ -41,8 +41,7 @@ export const CrepeEditor = forwardRef<CrepeEditorHandle, Props>(
           [Crepe.Feature.Latex]: true,
         },
       });
-      // listener plugin は CrepeBuilder が内部で既に use 済み。
-      // crepe.on() 経由でリスナー登録するだけでよい。
+      // Crepe 内部已注册 listener 插件，直接用 crepe.on 取 markdownUpdated，无需引 @milkdown/plugin-listener。
       crepe.on((api) => {
         api.markdownUpdated((_, md, prevMd) => {
           if (md !== prevMd) onChangeRef.current(md);

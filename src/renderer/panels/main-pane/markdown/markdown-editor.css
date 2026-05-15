@@ -19,7 +19,7 @@
   --crepe-color-inverse: var(--color-ink);
   --crepe-color-on-inverse: var(--color-paper);
   --crepe-color-inline-code: var(--color-accent);
-  --crepe-color-error: var(--color-accent);
+  --crepe-color-error: oklch(0.55 0.18 25);
   --crepe-color-hover: var(--color-hover-bg);
   --crepe-color-selected: var(--color-hover-bg);
   --crepe-color-inline-area: var(--color-paper-deep);
