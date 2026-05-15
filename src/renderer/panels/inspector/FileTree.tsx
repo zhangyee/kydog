@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import { NavIcon, type NavIconName } from '../../shared';
 import type { FsNode } from '../../../shared/types';
+import { isMarkdownPath } from '../main-pane/markdown/fileTabHelpers';
 
 type RowProps = { node: FsNode };
 
@@ -30,6 +31,7 @@ function Row({ node }: RowProps) {
   const cache = useUiStore((s) => s.dirCache[node.path]);
   const toggleDir = useUiStore((s) => s.toggleDir);
   const setDir = useUiStore((s) => s.setDir);
+  const openFile = useUiStore((s) => s.openFile);
 
   useEffect(() => {
     if (node.kind !== 'dir' || !expanded || cache) return;
@@ -45,7 +47,10 @@ function Row({ node }: RowProps) {
       <div
         data-testid={`fs-${node.path}`}
         onClick={() => isDir ? toggleDir(node.path) : null}
-        onDoubleClick={() => !isDir && console.info('open file (D subsystem):', node.path)}
+        onDoubleClick={() => {
+          if (isDir) return;
+          if (isMarkdownPath(node.path)) openFile(node.path);
+        }}
         className="flex items-center cursor-pointer hover:bg-[color:var(--color-hover-bg)]"
         style={{
           padding: '3px 8px 3px 0',
