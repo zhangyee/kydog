@@ -48,7 +48,9 @@ export type RpcCall =
   | { method: 'llm.loginCancel'; args: { providerId: ProviderId }; result: void }
   | { method: 'llm.loginPromptReply'; args: { providerId: ProviderId; value: string }; result: void }
   | { method: 'llm.logout'; args: { providerId: ProviderId }; result: LlmListResult }
-  | { method: 'dialog.pickFile'; args: { filters?: Array<{ name: string; extensions: string[] }> }; result: string | null };
+  | { method: 'dialog.pickFile'; args: { filters?: Array<{ name: string; extensions: string[] }> }; result: string | null }
+  | { method: 'file.readText'; args: { path: string }; result: { content: string } }
+  | { method: 'file.writeText'; args: { path: string; content: string }; result: void };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];

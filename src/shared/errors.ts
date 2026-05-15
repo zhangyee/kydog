@@ -10,6 +10,7 @@ export type KydogErrorCode =
   | 'agent.aborted'
   | 'fs.read_failed'
   | 'fs.write_failed'
+  | 'fs.too_large'
   | 'not_implemented'
   | 'skill.invalid'
   | 'skill.name_conflict'
