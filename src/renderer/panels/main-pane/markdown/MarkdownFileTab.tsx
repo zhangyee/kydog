@@ -36,10 +36,10 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
       setSaveError(null);
       return true;
     } catch (err) {
-      setSaveError((err as Error).message);
+      setSaveError(err instanceof Error ? err.message : String(err));
       return false;
     }
-  }, [tab.id, tab.path, setFileTabDiskContent]);
+  }, [tab.id, tab.path, setFileTabDiskContent, setSaveError]);
 
   // 向 saveRegistry 注册，供关闭确认框触发
   useEffect(() => {
