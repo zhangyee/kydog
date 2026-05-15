@@ -1,6 +1,7 @@
 import { isValidElement, type CSSProperties, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { isInlineCode } from './markdownCode';
 
 const CITATION_STYLE: CSSProperties = {
   color: 'var(--color-accent)',
@@ -43,7 +44,7 @@ const COMPONENTS: Components = {
     );
   },
   code: ({ children, className }) => {
-    const isInline = !(className && className.startsWith('language-'));
+    const isInline = isInlineCode(className, children);
     if (isInline) {
       return (
         <code
