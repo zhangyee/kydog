@@ -57,6 +57,7 @@ export function TabStrip({ tabs, activeId, onSelect, onClose }: Props) {
             <span className="truncate" style={{ maxWidth: 180 }}>{t.title}</span>
             {t.dirty && (
               <span
+                data-testid={`tab-dirty-${t.id}`}
                 style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--color-accent)' }}
               />
             )}

@@ -65,7 +65,7 @@ test('30-markdown-editor: 关含未保存修改的 tab 弹确认框', async () =
     await page.keyboard.type('脏内容');
 
     // 等待 tab 脏状态指示点出现（Crepe markdownUpdated → setFileTabDirty 传播）
-    await expect(page.locator(`[data-testid="tab-${notesPath}"] span[style*="border-radius: 50%"]`)).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(`[data-testid="tab-dirty-${notesPath}"]`)).toBeVisible({ timeout: 3000 });
 
     // 点 tab 关闭按钮 → 因脏出现确认框
     await page.click(`[data-testid="tab-close-${notesPath}"]`);
