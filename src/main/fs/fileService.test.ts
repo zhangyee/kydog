@@ -25,6 +25,12 @@ describe('fileService', () => {
       .rejects.toMatchObject({ code: 'fs.too_large' });
   });
 
+  it('readText 传目录路径抛 fs.read_failed', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-'));
+    await expect(fileService.readText({ path: dir }))
+      .rejects.toMatchObject({ code: 'fs.read_failed' });
+  });
+
   it('writeText 后 readText 往返一致', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-'));
     const f = path.join(dir, 'w.md');
