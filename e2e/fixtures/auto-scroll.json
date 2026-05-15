@@ -1,0 +1,15 @@
+{
+  "events": [
+    { "after_ms": 0, "type": "agent_start" },
+    { "after_ms": 0, "type": "message_start", "messageId": "m1" },
+    { "after_ms": 50, "type": "text_delta", "messageId": "m1", "delta": "PHASE1_START\n第1行\n第2行\n第3行\n第4行\n第5行\n第6行\n第7行\n第8行\n第9行\n第10行\n第11行\n第12行\n第13行\n第14行\n第15行\n第16行\n第17行\n第18行\n第19行\n第20行\n第21行\n第22行\n第23行\n第24行\n第25行\n第26行\n第27行\n第28行\n第29行\n第30行\n第31行\n第32行\n第33行\n第34行\n第35行\n第36行\n第37行\n第38行\n第39行\n第40行\nPHASE1_END" },
+    { "after_ms": 200, "type": "tool_start", "toolCallId": "t1", "name": "bash", "command": "find ." },
+    { "after_ms": 800, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "tool-output-1\n" },
+    { "after_ms": 800, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "tool-output-2\n" },
+    { "after_ms": 800, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "tool-output-3\n" },
+    { "after_ms": 200, "type": "tool_end", "toolCallId": "t1", "status": "ok", "exitCode": 0 },
+    { "after_ms": 200, "type": "text_delta", "messageId": "m1", "delta": "PHASE2_TEXT" },
+    { "after_ms": 50, "type": "message_end", "messageId": "m1" },
+    { "after_ms": 0, "type": "agent_end", "reason": "completed" }
+  ]
+}
