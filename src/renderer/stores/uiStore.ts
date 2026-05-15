@@ -1,8 +1,19 @@
 import { create } from 'zustand';
 import type { FsNode, ThemeName } from '../../shared/types';
+import { fileTitle } from '../panels/main-pane/markdown/fileTabHelpers';
+
+export type FileTab = {
+  id: string;                  // = 文件绝对路径（天然唯一键）
+  path: string;
+  title: string;
+  status: 'loading' | 'ready' | 'error';
+  diskContent: string | null;  // 上次落盘内容，dirty 比对基准
+  dirty: boolean;
+  errorMessage?: string;
+};
 
 export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills';
-type CenterTabKind = 'thread' | 'settings';
+type CenterTabKind = 'thread' | 'settings' | 'file';
 
 type UiState = {
   theme: ThemeName;
@@ -20,6 +31,14 @@ type UiState = {
   openSettingsAddProvider: () => void;
   closeSettingsAddProvider: () => void;
   activeCenterTab: CenterTabKind;
+  openFileTabs: FileTab[];
+  activeFileTabId: string | null;
+  openFile: (path: string) => void;
+  focusFileTab: (id: string) => void;
+  closeFileTab: (id: string) => void;
+  setFileTabStatus: (id: string, patch: { status: FileTab['status']; diskContent?: string | null; errorMessage?: string }) => void;
+  setFileTabDirty: (id: string, dirty: boolean) => void;
+  setFileTabDiskContent: (id: string, content: string) => void;
   expandedDirs: Set<string>;
   expandedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
@@ -54,6 +73,49 @@ export const useUiStore = create<UiState>((set) => ({
   settingsDetailProviderId: null,
   settingsAddProviderOpen: false,
   activeCenterTab: 'thread',
+  openFileTabs: [],
+  activeFileTabId: null,
+  openFile: (path) => set((s) => {
+    if (s.openFileTabs.some((t) => t.id === path)) {
+      return { activeFileTabId: path, activeCenterTab: 'file' };
+    }
+    const tab: FileTab = {
+      id: path, path, title: fileTitle(path),
+      status: 'loading', diskContent: null, dirty: false,
+    };
+    return {
+      openFileTabs: [...s.openFileTabs, tab],
+      activeFileTabId: path,
+      activeCenterTab: 'file',
+    };
+  }),
+  focusFileTab: (id) => set({ activeFileTabId: id, activeCenterTab: 'file' }),
+  closeFileTab: (id) => set((s) => {
+    const remaining = s.openFileTabs.filter((t) => t.id !== id);
+    const wasActive = s.activeFileTabId === id;
+    const nextActive = wasActive
+      ? (remaining.length ? remaining[remaining.length - 1].id : null)
+      : s.activeFileTabId;
+    return {
+      openFileTabs: remaining,
+      activeFileTabId: nextActive,
+      activeCenterTab: wasActive && remaining.length === 0 ? 'thread' : s.activeCenterTab,
+    };
+  }),
+  setFileTabStatus: (id, patch) => set((s) => ({
+    openFileTabs: s.openFileTabs.map((t) => t.id === id ? {
+      ...t,
+      status: patch.status,
+      diskContent: patch.diskContent !== undefined ? patch.diskContent : t.diskContent,
+      errorMessage: patch.errorMessage,
+    } : t),
+  })),
+  setFileTabDirty: (id, dirty) => set((s) => ({
+    openFileTabs: s.openFileTabs.map((t) => t.id === id ? { ...t, dirty } : t),
+  })),
+  setFileTabDiskContent: (id, content) => set((s) => ({
+    openFileTabs: s.openFileTabs.map((t) => t.id === id ? { ...t, diskContent: content, dirty: false } : t),
+  })),
   expandedDirs: new Set(),
   expandedProjects: new Set<string>(),
   dirCache: {},
