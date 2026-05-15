@@ -99,7 +99,7 @@ export const useUiStore = create<UiState>((set) => ({
     return {
       openFileTabs: remaining,
       activeFileTabId: nextActive,
-      activeCenterTab: wasActive && remaining.length === 0 ? 'thread' : s.activeCenterTab,
+      activeCenterTab: wasActive && remaining.length === 0 && s.activeCenterTab === 'file' ? 'thread' : s.activeCenterTab,
     };
   }),
   setFileTabStatus: (id, patch) => set((s) => ({

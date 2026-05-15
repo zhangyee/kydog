@@ -73,4 +73,33 @@ describe('uiStore 文件 tab', () => {
     expect(s.activeFileTabId).toBeNull();
     expect(s.activeCenterTab).toBe('thread');
   });
+
+  it('关闭非激活的后台 tab → 激活 tab 与 activeCenterTab 不变', () => {
+    const st = useUiStore.getState();
+    st.openFile('/p/a.md');
+    st.openFile('/p/b.md');
+    useUiStore.getState().closeFileTab('/p/a.md');
+    const s = useUiStore.getState();
+    expect(s.openFileTabs.map((t) => t.id)).toEqual(['/p/b.md']);
+    expect(s.activeFileTabId).toBe('/p/b.md');
+    expect(s.activeCenterTab).toBe('file');
+  });
+
+  it('在 settings 视图下关闭后台文件 tab → 不跳走 settings', () => {
+    useUiStore.getState().openFile('/p/a.md');
+    useUiStore.setState({ activeCenterTab: 'settings' });
+    useUiStore.getState().closeFileTab('/p/a.md');
+    const s = useUiStore.getState();
+    expect(s.openFileTabs).toHaveLength(0);
+    expect(s.activeFileTabId).toBeNull();
+    expect(s.activeCenterTab).toBe('settings');
+  });
+
+  it('setFileTabStatus 写回 error 状态与 errorMessage', () => {
+    useUiStore.getState().openFile('/p/a.md');
+    useUiStore.getState().setFileTabStatus('/p/a.md', { status: 'error', errorMessage: '读失败' });
+    const tab = useUiStore.getState().openFileTabs[0];
+    expect(tab.status).toBe('error');
+    expect(tab.errorMessage).toBe('读失败');
+  });
 });
