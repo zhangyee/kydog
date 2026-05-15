@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useUnreadStore } from '../workspace/unreadStore';
@@ -32,6 +32,12 @@ export function MainPane() {
   );
 
   const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pendingCloseId && !openFileTabs.some((t) => t.id === pendingCloseId)) {
+      setPendingCloseId(null);
+    }
+  }, [openFileTabs, pendingCloseId]);
 
   const showFile = activeCenterTab === 'file'
     && activeFileTabId !== null
@@ -110,12 +116,10 @@ export function MainPane() {
             <div
               key={ft.id}
               data-testid={`file-pane-${ft.id}`}
-              className="absolute inset-0"
+              className="absolute inset-0 flex flex-col"
               style={{ display: visible ? 'flex' : 'none' }}
             >
-              <div className="flex-1 min-h-0">
-                <MarkdownFileTab tab={ft} isActive={visible} />
-              </div>
+              <MarkdownFileTab tab={ft} isActive={visible} />
             </div>
           );
         })}
