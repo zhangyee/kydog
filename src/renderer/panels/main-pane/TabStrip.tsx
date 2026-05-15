@@ -1,4 +1,4 @@
-import { NavIcon } from '../../shared';
+import { NavIcon, type NavIconName } from '../../shared';
 
 export type TabKind = 'thread' | 'md' | 'pdf' | 'settings';
 export type TabItem = { id: string; kind: TabKind; title: string; dirty?: boolean };
@@ -15,6 +15,13 @@ const KIND_COLOR: Record<TabKind, string> = {
   md: 'var(--color-marginalia)',
   pdf: 'var(--color-accent)',
   settings: 'var(--color-ink-soft)',
+};
+
+const KIND_ICON: Record<TabKind, NavIconName> = {
+  thread: 'messages-square',
+  md: 'file-text',
+  pdf: 'book-open-text',
+  settings: 'settings-2',
 };
 
 export function TabStrip({ tabs, activeId, onSelect, onClose }: Props) {
@@ -42,18 +49,9 @@ export function TabStrip({ tabs, activeId, onSelect, onClose }: Props) {
               fontWeight: isActive ? 500 : 400,
             }}
             >
-            {t.kind === 'settings' ? (
-              <span style={{ color: KIND_COLOR[t.kind] }}>
-                <NavIcon name="settings-2" size={13} />
-              </span>
-            ) : (
-              <span
-                className="font-serif italic"
-                style={{ fontSize: 12, color: KIND_COLOR[t.kind] }}
-              >
-                {t.kind === 'thread' ? '❋' : t.kind === 'md' ? '§' : '¶'}
-              </span>
-            )}
+            <span style={{ color: KIND_COLOR[t.kind] }}>
+              <NavIcon name={KIND_ICON[t.kind]} size={13} />
+            </span>
             <span className="truncate" style={{ maxWidth: 180 }}>{t.title}</span>
             {t.dirty && (
               <span
