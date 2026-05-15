@@ -9,6 +9,7 @@ import { threadService } from './thread/threadService';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { skillsService } from './skills/skillsService';
 import { toolsService } from './skills/toolsService';
+import { fileService } from './fs/fileService';
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -27,6 +28,8 @@ export function registerAllHandlers(): void {
   registerHandler('project.list', () => projectService.list());
   registerHandler('project.close', (args) => projectService.close(args));
   registerHandler('project.readDir', (args) => projectService.readDir(args));
+  registerHandler('file.readText', (args) => fileService.readText(args));
+  registerHandler('file.writeText', (args) => fileService.writeText(args));
   registerHandler('project.openInOS', (args) => projectService.openInOS(args));
   registerHandler('project.update', (args) => projectService.update(args));
 
