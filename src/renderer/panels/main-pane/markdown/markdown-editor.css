@@ -1,0 +1,68 @@
+/* KyDog 从零写的 Milkdown Crepe 主题：只用 Crepe 的结构 CSS（common/style.css），
+   配色全部由这里的 --crepe-* 变量映射到 KyDog 的 --color-* token，五主题自动跟随。 */
+
+.kydog-md-editor {
+  height: 100%;
+  overflow: auto;
+
+  /* Crepe 配色变量 —— 映射到 KyDog token */
+  --crepe-color-background: var(--color-paper);
+  --crepe-color-on-background: var(--color-ink);
+  --crepe-color-surface: var(--color-paper);
+  --crepe-color-surface-low: var(--color-paper-deep);
+  --crepe-color-on-surface: var(--color-ink);
+  --crepe-color-on-surface-variant: var(--color-ink-soft);
+  --crepe-color-outline: var(--color-ink-hair);
+  --crepe-color-primary: var(--color-accent);
+  --crepe-color-secondary: var(--color-paper-deep);
+  --crepe-color-on-secondary: var(--color-ink);
+  --crepe-color-inverse: var(--color-ink);
+  --crepe-color-on-inverse: var(--color-paper);
+  --crepe-color-inline-code: var(--color-accent);
+  --crepe-color-error: var(--color-accent);
+  --crepe-color-hover: var(--color-hover-bg);
+  --crepe-color-selected: var(--color-hover-bg);
+  --crepe-color-inline-area: var(--color-paper-deep);
+
+  --crepe-font-title: var(--font-serif);
+  --crepe-font-default: var(--font-serif);
+  --crepe-font-code: var(--font-mono);
+
+  --crepe-shadow-1: 0 1px 3px oklch(0 0 0 / 0.12);
+  --crepe-shadow-2: 0 4px 12px oklch(0 0 0 / 0.16);
+}
+
+/* 正文排版 —— 对齐 MarkdownBlock.tsx 的纸感 */
+.kydog-md-editor .milkdown {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+}
+
+.kydog-md-editor .ProseMirror {
+  padding: 32px 48px 120px;
+  font-size: 14.5px;
+  line-height: 1.75;
+  outline: none;
+}
+
+.kydog-md-editor .ProseMirror h1 { font-size: 26px; font-weight: 600; margin: 32px 0 12px; }
+.kydog-md-editor .ProseMirror h2 { font-size: 22px; font-weight: 600; margin: 28px 0 10px; }
+.kydog-md-editor .ProseMirror h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+.kydog-md-editor .ProseMirror p  { margin: 0 0 12px; }
+
+.kydog-md-editor .ProseMirror blockquote {
+  margin: 14px 0; padding: 8px 16px;
+  border-left: 3px solid var(--color-accent);
+  font-style: italic; color: var(--color-ink-soft);
+}
+
+.kydog-md-editor .ProseMirror pre {
+  font-family: var(--font-mono);
+  background: #1f1a15; color: #d9cfbf;
+  border-radius: 2px; padding: 12px 14px; font-size: 12px;
+}
+
+.kydog-md-editor .ProseMirror code {
+  font-family: var(--font-mono); font-size: 12px;
+}
