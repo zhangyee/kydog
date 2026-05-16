@@ -29,6 +29,7 @@ export function registerAllHandlers(): void {
   registerHandler('project.close', (args) => projectService.close(args));
   registerHandler('project.readDir', (args) => projectService.readDir(args));
   registerHandler('file.readText', (args) => fileService.readText(args));
+  registerHandler('file.readBytes', (args) => fileService.readBytes(args));
   registerHandler('file.writeText', (args) => fileService.writeText(args));
   registerHandler('project.openInOS', (args) => projectService.openInOS(args));
   registerHandler('project.update', (args) => projectService.update(args));

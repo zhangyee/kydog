@@ -37,4 +37,32 @@ describe('fileService', () => {
     await fileService.writeText({ path: f, content: '# written' });
     expect(await fileService.readText({ path: f })).toEqual({ content: '# written' });
   });
+
+  it('readBytes 返回文件字节', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-'));
+    const f = path.join(dir, 'a.pdf');
+    await fs.writeFile(f, Buffer.from([0x25, 0x50, 0x44, 0x46]));
+    const { bytes } = await fileService.readBytes({ path: f });
+    expect(Array.from(bytes)).toEqual([0x25, 0x50, 0x44, 0x46]);
+  });
+
+  it('readBytes 文件不存在抛 fs.read_failed', async () => {
+    await expect(fileService.readBytes({ path: '/nonexistent/x.pdf' }))
+      .rejects.toMatchObject({ code: 'fs.read_failed' });
+  });
+
+  it('readBytes 传目录路径抛 fs.read_failed', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-'));
+    await expect(fileService.readBytes({ path: dir }))
+      .rejects.toMatchObject({ code: 'fs.read_failed' });
+  });
+
+  it('readBytes 超过 100MB 抛 fs.too_large', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-'));
+    const f = path.join(dir, 'big.pdf');
+    await fs.writeFile(f, '');
+    await fs.truncate(f, 100 * 1024 * 1024 + 1); // 稀疏文件，瞬时
+    await expect(fileService.readBytes({ path: f }))
+      .rejects.toMatchObject({ code: 'fs.too_large' });
+  });
 });
