@@ -27,7 +27,7 @@ export const fileService = {
     }
   },
 
-  async readBytes({ path }: { path: string }): Promise<{ bytes: Uint8Array }> {
+  async readBytes({ path }: { path: string }): Promise<{ bytes: Uint8Array<ArrayBuffer> }> {
     let stat;
     try {
       stat = await fsp.stat(path);

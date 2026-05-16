@@ -50,7 +50,7 @@ export type RpcCall =
   | { method: 'llm.logout'; args: { providerId: ProviderId }; result: LlmListResult }
   | { method: 'dialog.pickFile'; args: { filters?: Array<{ name: string; extensions: string[] }> }; result: string | null }
   | { method: 'file.readText'; args: { path: string }; result: { content: string } }
-  | { method: 'file.readBytes'; args: { path: string }; result: { bytes: Uint8Array } }
+  | { method: 'file.readBytes'; args: { path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
   | { method: 'file.writeText'; args: { path: string; content: string }; result: void };
 
 export type RpcMethod = RpcCall['method'];
