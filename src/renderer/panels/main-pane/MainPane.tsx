@@ -8,6 +8,7 @@ import { TabStrip, type TabItem } from './TabStrip';
 import { SettingsPane } from '../../settings/SettingsPane';
 import { SETTINGS_PAGE_LABELS } from '../../settings/settingsPages';
 import { MarkdownFileTab } from './markdown/MarkdownFileTab';
+import { PdfFileTab } from './pdf/PdfFileTab';
 import { UnsavedChangesModal } from './markdown/UnsavedChangesModal';
 import { getSaver } from './markdown/saveRegistry';
 
@@ -50,7 +51,7 @@ export function MainPane() {
     tabs.push({ id: SETTINGS_TAB_ID, kind: 'settings', title: SETTINGS_PAGE_LABELS[settingsTab] });
   }
   for (const ft of openFileTabs) {
-    tabs.push({ id: ft.id, kind: 'md', title: ft.title, dirty: ft.dirty });
+    tabs.push({ id: ft.id, kind: ft.kind, title: ft.title, dirty: ft.dirty });
   }
 
   let activeId: string | null;
@@ -119,7 +120,9 @@ export function MainPane() {
               className="absolute inset-0 flex flex-col"
               style={{ display: visible ? 'flex' : 'none' }}
             >
-              <MarkdownFileTab tab={ft} isActive={visible} />
+              {ft.kind === 'pdf'
+                ? <PdfFileTab tab={ft} />
+                : <MarkdownFileTab tab={ft} isActive={visible} />}
             </div>
           );
         })}
