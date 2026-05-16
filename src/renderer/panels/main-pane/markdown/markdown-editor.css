@@ -40,7 +40,8 @@
 }
 
 .kydog-md-editor .ProseMirror {
-  padding: 32px 48px 120px;
+  /* 左右 88px：容下 Crepe 块手柄（+ 与拖拽，约 82px）于左侧留白内 */
+  padding: 32px 88px 120px;
   font-size: 14.5px;
   line-height: 1.75;
   outline: none;
