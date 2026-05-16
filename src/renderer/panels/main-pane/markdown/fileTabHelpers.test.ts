@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isMarkdownPath, fileTitle } from './fileTabHelpers';
+import { isMarkdownPath, isPdfPath, fileTitle } from './fileTabHelpers';
 
 describe('isMarkdownPath', () => {
   it('.md / .markdown 命中（大小写不敏感）', () => {
@@ -10,6 +10,18 @@ describe('isMarkdownPath', () => {
     expect(isMarkdownPath('/a/b/x.ts')).toBe(false);
     expect(isMarkdownPath('/a/b/x.txt')).toBe(false);
     expect(isMarkdownPath('/a/b/mdfile')).toBe(false);
+  });
+});
+
+describe('isPdfPath', () => {
+  it('.pdf 命中（大小写不敏感）', () => {
+    expect(isPdfPath('/a/b.pdf')).toBe(true);
+    expect(isPdfPath('/a/b.PDF')).toBe(true);
+    expect(isPdfPath('/a/paper.final.pdf')).toBe(true);
+  });
+  it('其他扩展名不命中', () => {
+    expect(isPdfPath('/a/b.md')).toBe(false);
+    expect(isPdfPath('/a/notpdf')).toBe(false);
   });
 });
 
