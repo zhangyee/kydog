@@ -20,6 +20,16 @@ describe('uiStore 文件 tab', () => {
     expect(s.activeCenterTab).toBe('file');
   });
 
+  it('openFile .md → kind=md', () => {
+    useUiStore.getState().openFile('/p/notes.md');
+    expect(useUiStore.getState().openFileTabs[0].kind).toBe('md');
+  });
+
+  it('openFile .pdf → kind=pdf', () => {
+    useUiStore.getState().openFile('/p/paper.pdf');
+    expect(useUiStore.getState().openFileTabs[0].kind).toBe('pdf');
+  });
+
   it('openFile 已打开的文件 → 只聚焦不重复 push', () => {
     const st = useUiStore.getState();
     st.openFile('/p/notes.md');

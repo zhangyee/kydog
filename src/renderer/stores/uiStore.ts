@@ -1,14 +1,15 @@
 import { create } from 'zustand';
 import type { FsNode, ThemeName } from '../../shared/types';
-import { fileTitle } from '../panels/main-pane/markdown/fileTabHelpers';
+import { fileTitle, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
 
 export type FileTab = {
   id: string;                  // = 文件绝对路径（天然唯一键）
   path: string;
+  kind: 'md' | 'pdf';
   title: string;
   status: 'loading' | 'ready' | 'error';
-  diskContent: string | null;  // 上次落盘内容，dirty 比对基准
-  dirty: boolean;
+  diskContent: string | null;  // 上次落盘内容，dirty 比对基准（仅 md）
+  dirty: boolean;              // 仅 md；pdf 恒 false
   errorMessage?: string;
 };
 
@@ -80,7 +81,8 @@ export const useUiStore = create<UiState>((set) => ({
       return { activeFileTabId: path, activeCenterTab: 'file' };
     }
     const tab: FileTab = {
-      id: path, path, title: fileTitle(path),
+      id: path, path, kind: isPdfPath(path) ? 'pdf' : 'md',
+      title: fileTitle(path),
       status: 'loading', diskContent: null, dirty: false,
     };
     return {
