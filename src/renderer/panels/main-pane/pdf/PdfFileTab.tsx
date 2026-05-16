@@ -50,6 +50,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // 触摸板捏合缩放：Chromium 把捏合转成 ctrl+wheel
   useEffect(() => {
+    if (tab.status !== 'ready') return;
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
@@ -72,7 +73,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       el.removeEventListener('wheel', onWheel);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-  }, []);
+  }, [tab.status]);
 
   if (tab.status === 'loading') {
     return (
