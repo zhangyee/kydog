@@ -88,7 +88,7 @@ function toPiShape(evt: FixtureEvent, aborted: boolean, toolChunks: Map<string, 
         type: 'tool_execution_start',
         toolCallId: evt.toolCallId,
         toolName: evt.name,
-        args: { command: evt.command },
+        args: evt.args ?? { command: evt.command },
       };
 
     case 'tool_chunk':
