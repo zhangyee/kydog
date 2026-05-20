@@ -84,7 +84,7 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
             kind: 'tool_call',
             id: c.id,
             name: c.name,
-            command: typeof c.arguments?.command === 'string' ? c.arguments.command : undefined,
+            command: typeof c.arguments?.command === 'string' ? c.arguments.command : JSON.stringify(c.arguments ?? {}),
             chunks: tr ? [{ stream: 'stdout', data: tr.content }] : [],
             status: tr ? (tr.isError ? 'failed' : 'ok') : 'running',
             parallelGroupId: groupId,

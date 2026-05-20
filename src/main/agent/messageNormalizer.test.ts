@@ -269,4 +269,35 @@ describe('normalizePiMessages', () => {
     expect(ids[2]).toBe(ids[3]);
     expect(ids[0]).not.toBe(ids[2]);
   });
+
+  it('write tool: 历史回放时 arguments 序列化为 command 字符串（与 realtime 对齐）', () => {
+    const input: PiMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'tw1', name: 'write', arguments: { file_path: '/p/a.md', content: '# hi' } },
+        ],
+        stopReason: 'toolUse',
+        api: 'anthropic' as never,
+        provider: 'anthropic' as never,
+        model: 'claude-3-5-sonnet',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        timestamp: Date.now(),
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'tw1',
+        toolName: 'write',
+        content: [{ type: 'text', text: 'wrote' }],
+        isError: false,
+        timestamp: Date.now(),
+      },
+    ];
+    const out = normalizePiMessages(input);
+    expect(out).toHaveLength(1);
+    if (out[0].role !== 'assistant') throw new Error('not assistant');
+    const tool = out[0].blocks.find((b) => b.kind === 'tool_call');
+    if (!tool || tool.kind !== 'tool_call') throw new Error('no tool block');
+    expect(tool.command).toBe(JSON.stringify({ file_path: '/p/a.md', content: '# hi' }));
+  });
 });
