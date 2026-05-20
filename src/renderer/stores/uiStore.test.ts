@@ -112,4 +112,23 @@ describe('uiStore 文件 tab', () => {
     expect(tab.status).toBe('error');
     expect(tab.errorMessage).toBe('读失败');
   });
+
+  it('invalidateDir 删除单个缓存条目，其他不动', () => {
+    useUiStore.setState({
+      dirCache: {
+        '/p': [{ name: 'a', path: '/p/a', kind: 'file' }],
+        '/p/sub': [{ name: 'b', path: '/p/sub/b', kind: 'file' }],
+      },
+    });
+    useUiStore.getState().invalidateDir('/p/sub');
+    expect(useUiStore.getState().dirCache).toEqual({
+      '/p': [{ name: 'a', path: '/p/a', kind: 'file' }],
+    });
+  });
+
+  it('invalidateDir 对不存在的 path 是 noop', () => {
+    useUiStore.setState({ dirCache: { '/p': [] } });
+    useUiStore.getState().invalidateDir('/missing');
+    expect(useUiStore.getState().dirCache).toEqual({ '/p': [] });
+  });
 });

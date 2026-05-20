@@ -63,6 +63,7 @@
     "@mariozechner/pi-ai": "0.70.5",
     "@mariozechner/pi-coding-agent": "latest",
     "@milkdown/crepe": "^7.21.1",
+    "chokidar": "^5.0.0",
     "electron-squirrel-startup": "^1.0.1",
     "katex": "^0.16.46",
     "proper-lockfile": "^4.1.2",

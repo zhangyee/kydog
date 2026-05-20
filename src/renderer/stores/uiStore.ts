@@ -58,6 +58,7 @@ type UiState = {
   showThreadTab: () => void;
   toggleUserMenu: () => void;
   setDir: (path: string, nodes: FsNode[]) => void;
+  invalidateDir: (path: string) => void;
   toggleDir: (path: string) => void;
   toggleProject: (path: string) => void;
 };
@@ -145,6 +146,12 @@ export const useUiStore = create<UiState>((set) => ({
   showThreadTab: () => set({ activeCenterTab: 'thread' }),
   toggleUserMenu: () => set((s) => ({ userMenuOpen: !s.userMenuOpen })),
   setDir: (path, nodes) => set((s) => ({ dirCache: { ...s.dirCache, [path]: nodes } })),
+  invalidateDir: (path) => set((s) => {
+    if (!(path in s.dirCache)) return s;
+    const next = { ...s.dirCache };
+    delete next[path];
+    return { dirCache: next };
+  }),
   toggleDir: (path) => set((s) => {
     const next = new Set(s.expandedDirs);
     if (next.has(path)) next.delete(path); else next.add(path);

@@ -111,6 +111,27 @@ function setupEventBridge(): void {
   window.kydog.on('thread.updated', (p) => {
     useThreadsStore.getState().upsertThread(p.thread);
   });
+  window.kydog.on('fs.changed', (p) => {
+    void refreshCachedDirsUnder(p.projectPath);
+  });
 
   void runs; void threads; // silence unused
+}
+
+function isWithin(dir: string, root: string): boolean {
+  if (dir === root) return true;
+  return dir.startsWith(root + '/') || dir.startsWith(root + '\\');
+}
+
+async function refreshCachedDirsUnder(projectPath: string): Promise<void> {
+  const dirs = Object.keys(useUiStore.getState().dirCache).filter((d) => isWithin(d, projectPath));
+  await Promise.all(dirs.map(async (dir) => {
+    try {
+      const nodes = await window.kydog.invoke('project.readDir', { path: dir });
+      useUiStore.getState().setDir(dir, nodes);
+    } catch (err) {
+      useUiStore.getState().invalidateDir(dir);
+      console.warn('fs.changed refresh failed', dir, err);
+    }
+  }));
 }

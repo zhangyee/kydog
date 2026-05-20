@@ -5,11 +5,18 @@ import { promises as fs } from 'node:fs';
 import { loadIndex, saveIndex } from '../persist/indexFile';
 import { KydogError } from '../../shared/errors';
 import type { Project, FsNode } from '../../shared/types';
+import { fileWatcherService } from './fileWatcher';
 
 export class ProjectService {
   async list(): Promise<Project[]> {
     const idx = await loadIndex();
     return idx.projects;
+  }
+
+  /** Boot-time watcher attach for all persisted projects. */
+  async initWatchers(): Promise<void> {
+    const idx = await loadIndex();
+    for (const p of idx.projects) fileWatcherService.start(p.path);
   }
 
   async open(): Promise<Project> {
@@ -29,6 +36,7 @@ export class ProjectService {
       idx.projects.push(project);
       await saveIndex(idx);
     }
+    fileWatcherService.start(absPath);
     return project;
   }
 
@@ -37,6 +45,7 @@ export class ProjectService {
     idx.projects = idx.projects.filter((p) => p.path !== projectPath);
     idx.threads = idx.threads.filter((t) => t.projectPath !== projectPath);
     await saveIndex(idx);
+    await fileWatcherService.stop(projectPath);
   }
 
   async readDir({ path: dirPath }: { path: string }): Promise<FsNode[]> {

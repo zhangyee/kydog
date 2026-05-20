@@ -76,7 +76,8 @@ export type RuntimeEvent =
   | { topic: 'oauth.prompt'; payload: { providerId: string; prompt: { message: string; placeholder?: string; allowEmpty?: boolean } } }
   | { topic: 'oauth.success'; payload: { providerId: string } }
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
-  | { topic: 'thread.updated'; payload: { thread: Thread } };
+  | { topic: 'thread.updated'; payload: { thread: Thread } }
+  | { topic: 'fs.changed'; payload: { projectPath: string } };
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];

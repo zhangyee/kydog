@@ -14,6 +14,8 @@ import { settingsService } from './settings/settingsService';
 import { ensureSettingsFile } from './persist/settingsFile';
 import { applyCloudEnv } from './llm/cloudEnvSync';
 import { initProviderRegistry } from './llm/providerRegistry';
+import { projectService } from './project/projectService';
+import { fileWatcherService } from './project/fileWatcher';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -127,6 +129,11 @@ app.on('ready', async () => {
 
     installDispatcher();
     registerAllHandlers();
+    try {
+      await projectService.initWatchers();
+    } catch (err) {
+      logger.warn('app', 'file watcher init failed', { err: String(err) });
+    }
     await createWindow();
     logger.info('app', 'ready');
   } catch (err) {
@@ -140,3 +147,4 @@ app.on('ready', async () => {
 
 app.on('window-all-closed', () => { app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
+app.on('before-quit', () => { void fileWatcherService.stopAll(); });
