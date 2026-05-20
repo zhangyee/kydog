@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AssistantBlock } from '../../../shared/types';
-import { resolveAgainst, collectFileCards } from './fileCards';
+import { resolveAgainst, collectFileCards, relativePrefix } from './fileCards';
 
 function writeTool(args: Record<string, unknown>, status: 'ok' | 'failed' | 'running' = 'ok'): Extract<AssistantBlock, { kind: 'tool_call' }> {
   return { kind: 'tool_call', id: 'tc-1', name: 'write', command: JSON.stringify(args), chunks: [], status };
@@ -98,5 +98,27 @@ describe('collectFileCards', () => {
       writeTool({ file_path: '/p/a.md' }),
     ];
     expect(collectFileCards(blocks, '/p')).toEqual(['/p/a.md']);
+  });
+});
+
+describe('relativePrefix', () => {
+  it('projectPath 为 null → 空串', () => {
+    expect(relativePrefix(null, '/p/foo.md')).toBe('');
+  });
+  it('文件直接在 project 根下 → 空串', () => {
+    expect(relativePrefix('/p', '/p/foo.md')).toBe('');
+  });
+  it('子目录 → 末尾带分隔符的相对前缀', () => {
+    expect(relativePrefix('/p', '/p/sub/foo.md')).toBe('sub/');
+    expect(relativePrefix('/p', '/p/a/b/foo.md')).toBe('a/b/');
+  });
+  it('projectPath 尾部带分隔符也兼容', () => {
+    expect(relativePrefix('/p/', '/p/sub/foo.md')).toBe('sub/');
+  });
+  it('absPath 不在 project 根下 → 空串', () => {
+    expect(relativePrefix('/p', '/other/foo.md')).toBe('');
+  });
+  it('Windows 分隔符', () => {
+    expect(relativePrefix('C:\\p', 'C:\\p\\sub\\foo.md')).toBe('sub\\');
   });
 });

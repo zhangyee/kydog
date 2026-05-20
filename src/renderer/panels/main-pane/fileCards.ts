@@ -43,3 +43,13 @@ export function collectFileCards(blocks: AssistantBlock[], projectPath: string |
   }
   return [...seen.entries()].sort((a, b) => a[1] - b[1]).map(e => e[0]);
 }
+
+export function relativePrefix(projectPath: string | null, absPath: string): string {
+  if (!projectPath) return '';
+  const sep = projectPath.includes('\\') ? '\\' : '/';
+  const root = projectPath.endsWith(sep) ? projectPath.slice(0, -1) : projectPath;
+  if (!absPath.startsWith(root + sep)) return '';
+  const rel = absPath.slice(root.length + sep.length);
+  const lastSep = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
+  return lastSep < 0 ? '' : rel.slice(0, lastSep + 1);
+}

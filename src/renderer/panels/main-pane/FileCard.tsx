@@ -1,22 +1,13 @@
 import { useUiStore } from '../../stores/uiStore';
 import { NavIcon } from '../../shared';
 import { fileTitle } from './markdown/fileTabHelpers';
+import { relativePrefix } from './fileCards';
 
 type Props = { path: string; projectPath: string | null };
 
-function relativePrefix(absPath: string, projectPath: string | null): string {
-  if (!projectPath) return '';
-  const sep = projectPath.includes('\\') ? '\\' : '/';
-  const root = projectPath.endsWith(sep) ? projectPath.slice(0, -1) : projectPath;
-  if (!absPath.startsWith(root + sep)) return '';
-  const rel = absPath.slice(root.length + sep.length);
-  const lastSep = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
-  return lastSep < 0 ? '' : rel.slice(0, lastSep + 1);
-}
-
 export function FileCard({ path, projectPath }: Props) {
   const openFile = useUiStore((s) => s.openFile);
-  const prefix = relativePrefix(path, projectPath);
+  const prefix = relativePrefix(projectPath, path);
   return (
     <button
       type="button"
