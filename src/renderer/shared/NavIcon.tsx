@@ -30,6 +30,7 @@ export type NavIconName =
   | 'messages-square'
   | 'circle-plus'
   | 'arrow-up'
+  | 'arrow-right'
   | 'check';
 
 type IconSpec = {
@@ -184,6 +185,7 @@ const ICONS: Record<NavIconName, IconSpec> = {
     circles: [{ cx: 12, cy: 12, r: 10 }],
   },
   'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
+  'arrow-right': { paths: ['M5 12h14', 'm12 5 7 7-7 7'] },
   'check': { paths: ['M20 6 9 17l-5-5'] },
   dot: { circles: [{ cx: 12, cy: 12, r: 3 }] },
 };

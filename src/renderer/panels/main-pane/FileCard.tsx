@@ -14,39 +14,27 @@ export function FileCard({ path, projectPath, size }: Props) {
       type="button"
       data-testid={`file-card-${path}`}
       onClick={() => openFile(path)}
-      className="group ky-paper-deep w-full flex items-center gap-3 text-left hover:bg-[color:var(--color-hover-bg)]"
+      className="group ky-paper-deep w-full flex items-center gap-4 text-left hover:bg-[color:var(--color-hover-bg)]"
       style={{
         margin: '8px 0',
-        padding: '12px 14px',
+        padding: '12px 16px',
         border: '0.5px solid var(--color-ink-hair)',
-        borderRadius: 4,
+        borderRadius: 6,
         fontFamily: 'var(--font-sans)',
       }}
     >
-      {/* 纸张质感 tile：背后错位叠一张纸 + 前面主纸面 + 文档字形 */}
-      <span className="relative inline-flex items-center justify-center shrink-0" style={{ width: 38, height: 44 }}>
-        <span
-          aria-hidden
-          style={{
-            position: 'absolute', left: 3, top: 4, width: 30, height: 38,
-            borderRadius: 4, background: 'var(--color-paper)',
-            border: '0.5px solid var(--color-ink-hair)',
-            transform: 'rotate(-5deg)',
-          }}
-        />
-        <span
-          aria-hidden
-          className="relative"
-          style={{
-            width: 32, height: 40, borderRadius: 4,
-            background: 'var(--color-paper-edge)',
-            border: '0.5px solid var(--color-ink-hair)',
-            boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
-          }}
-        />
-        <span className="absolute inset-0 inline-flex items-center justify-center" style={{ color: 'var(--color-accent)' }}>
-          <NavIcon name="file-text" size={18} />
-        </span>
+      {/* 文档图标框：静止微倾，hover 转正 + 放大 */}
+      <span
+        className="inline-flex items-center justify-center shrink-0 -rotate-6 group-hover:rotate-0 group-hover:scale-110 transition-transform duration-200 ease-out"
+        style={{
+          width: 40, height: 40, borderRadius: 9,
+          background: 'var(--color-paper-edge)',
+          border: '0.5px solid var(--color-ink-hair)',
+          boxShadow: '0 2px 5px rgba(0,0,0,0.10)',
+          color: 'var(--color-accent)',
+        }}
+      >
+        <NavIcon name="file-text" size={20} />
       </span>
 
       {/* 文本区 */}
@@ -66,12 +54,20 @@ export function FileCard({ path, projectPath, size }: Props) {
         </span>
       </span>
 
-      {/* 打开 affordance：hover 整张卡时浮现 */}
+      {/* 打开 pill：hover 整张卡时浮现 */}
       <span
-        className="shrink-0 font-mono opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}
+        className="shrink-0 inline-flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+        style={{
+          fontSize: 11.5,
+          color: 'var(--color-ink-soft)',
+          padding: '5px 11px',
+          borderRadius: 999,
+          border: '0.5px solid var(--color-ink-hair)',
+          background: 'var(--color-paper)',
+        }}
       >
-        打开 →
+        打开
+        <NavIcon name="arrow-right" size={13} />
       </span>
     </button>
   );
