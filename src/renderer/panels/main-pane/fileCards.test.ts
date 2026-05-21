@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AssistantBlock } from '../../../shared/types';
-import { resolveAgainst, collectFileCards, relativePrefix } from './fileCards';
+import { resolveAgainst, collectFileCards, relativePrefix, formatBytes } from './fileCards';
 
 function writeTool(args: Record<string, unknown>, status: 'ok' | 'failed' | 'running' = 'ok'): Extract<AssistantBlock, { kind: 'tool_call' }> {
   return { kind: 'tool_call', id: 'tc-1', name: 'write', command: JSON.stringify(args), chunks: [], status };
@@ -35,36 +35,44 @@ describe('resolveAgainst', () => {
 });
 
 describe('collectFileCards', () => {
-  it('收集 write + ok + .md', () => {
+  it('收集 write + ok + .md，带 content 字节大小', () => {
+    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md', content: 'hello' })];
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/a.md', size: 5 }]);
+  });
+  it('content 含多字节字符按 UTF-8 字节算', () => {
+    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md', content: '中文' })];
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/a.md', size: 6 }]);
+  });
+  it('没有 content → size 为 null', () => {
     const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md' })];
-    expect(collectFileCards(blocks, '/p')).toEqual(['/p/a.md']);
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/a.md', size: null }]);
   });
   it('支持 args.path 作为 file_path 别名', () => {
-    const blocks: AssistantBlock[] = [writeTool({ path: '/p/a.md' })];
-    expect(collectFileCards(blocks, '/p')).toEqual(['/p/a.md']);
+    const blocks: AssistantBlock[] = [writeTool({ path: '/p/a.md', content: 'x' })];
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/a.md', size: 1 }]);
   });
   it('相对路径用 projectPath 绝对化', () => {
-    const blocks: AssistantBlock[] = [writeTool({ file_path: 'report.md' })];
-    expect(collectFileCards(blocks, '/p')).toEqual(['/p/report.md']);
+    const blocks: AssistantBlock[] = [writeTool({ file_path: 'report.md', content: 'x' })];
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/report.md', size: 1 }]);
   });
   it('跳过非 .md 扩展名', () => {
     const blocks: AssistantBlock[] = [
-      writeTool({ file_path: '/p/a.txt' }),
-      writeTool({ file_path: '/p/b.pdf' }),
-      writeTool({ file_path: '/p/c' }),
+      writeTool({ file_path: '/p/a.txt', content: 'x' }),
+      writeTool({ file_path: '/p/b.pdf', content: 'x' }),
+      writeTool({ file_path: '/p/c', content: 'x' }),
     ];
     expect(collectFileCards(blocks, '/p')).toEqual([]);
   });
   it('.md 大小写不敏感', () => {
-    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/A.MD' })];
-    expect(collectFileCards(blocks, '/p')).toEqual(['/p/A.MD']);
+    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/A.MD', content: 'x' })];
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/A.MD', size: 1 }]);
   });
   it('跳过 status=failed', () => {
-    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md' }, 'failed')];
+    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md', content: 'x' }, 'failed')];
     expect(collectFileCards(blocks, '/p')).toEqual([]);
   });
   it('跳过 status=running', () => {
-    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md' }, 'running')];
+    const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md', content: 'x' }, 'running')];
     expect(collectFileCards(blocks, '/p')).toEqual([]);
   });
   it('跳过非 write 工具', () => {
@@ -83,21 +91,43 @@ describe('collectFileCards', () => {
     const blocks: AssistantBlock[] = [writeTool({ content: 'hi' })];
     expect(collectFileCards(blocks, '/p')).toEqual([]);
   });
-  it('同一路径多次写，去重保留顺序末位', () => {
+  it('同一路径多次写，去重保留顺序末位（含最后一次的 size）', () => {
     const blocks: AssistantBlock[] = [
-      writeTool({ file_path: '/p/a.md' }),
-      writeTool({ file_path: '/p/b.md' }),
-      writeTool({ file_path: '/p/a.md' }),
+      writeTool({ file_path: '/p/a.md', content: 'aaaa' }),
+      writeTool({ file_path: '/p/b.md', content: 'bb' }),
+      writeTool({ file_path: '/p/a.md', content: 'a' }),
     ];
-    expect(collectFileCards(blocks, '/p')).toEqual(['/p/b.md', '/p/a.md']);
+    expect(collectFileCards(blocks, '/p')).toEqual([
+      { path: '/p/b.md', size: 2 },
+      { path: '/p/a.md', size: 1 },
+    ]);
   });
   it('忽略 text/thinking 块', () => {
     const blocks: AssistantBlock[] = [
       { kind: 'text', text: 'hi' },
       { kind: 'thinking', text: 't' },
-      writeTool({ file_path: '/p/a.md' }),
+      writeTool({ file_path: '/p/a.md', content: 'x' }),
     ];
-    expect(collectFileCards(blocks, '/p')).toEqual(['/p/a.md']);
+    expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/a.md', size: 1 }]);
+  });
+});
+
+describe('formatBytes', () => {
+  it('< 1KB 显示 B', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(1023)).toBe('1023 B');
+  });
+  it('< 10KB 显示一位小数', () => {
+    expect(formatBytes(1024)).toBe('1.0 KB');
+    expect(formatBytes(5242)).toBe('5.1 KB');
+  });
+  it('>= 10KB 显示整数', () => {
+    expect(formatBytes(56320)).toBe('55 KB');
+  });
+  it('>= 1MB 显示 MB 一位小数', () => {
+    expect(formatBytes(1048576)).toBe('1.0 MB');
+    expect(formatBytes(5242880)).toBe('5.0 MB');
   });
 });
 

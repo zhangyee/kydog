@@ -2,6 +2,8 @@ import type { AssistantBlock } from '../../../shared/types';
 
 type ToolBlock = Extract<AssistantBlock, { kind: 'tool_call' }>;
 
+export type FileCardEntry = { path: string; size: number | null };
+
 const isAbsolute = (p: string): boolean => p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);
 
 export function resolveAgainst(projectPath: string | null, rawPath: string): string | null {
@@ -13,7 +15,7 @@ export function resolveAgainst(projectPath: string | null, rawPath: string): str
   return `${root}${sep}${rawPath}`;
 }
 
-function extractWritePath(tool: ToolBlock): string | null {
+function extractWrite(tool: ToolBlock): { raw: string; size: number | null } | null {
   if (tool.name !== 'write' || tool.status !== 'ok') return null;
   if (!tool.command) return null;
   let parsed: unknown;
@@ -25,23 +27,26 @@ function extractWritePath(tool: ToolBlock): string | null {
   if (!parsed || typeof parsed !== 'object') return null;
   const a = parsed as Record<string, unknown>;
   const raw = a.file_path ?? a.path;
-  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  const size = typeof a.content === 'string' ? new TextEncoder().encode(a.content).length : null;
+  return { raw, size };
 }
 
-export function collectFileCards(blocks: AssistantBlock[], projectPath: string | null): string[] {
-  const seen = new Map<string, number>();
+export function collectFileCards(blocks: AssistantBlock[], projectPath: string | null): FileCardEntry[] {
+  const seen = new Map<string, { order: number; size: number | null }>();
   let order = 0;
   for (const b of blocks) {
     if (b.kind !== 'tool_call') continue;
-    const raw = extractWritePath(b);
-    if (raw === null) continue;
-    const abs = resolveAgainst(projectPath, raw);
+    const w = extractWrite(b);
+    if (w === null) continue;
+    const abs = resolveAgainst(projectPath, w.raw);
     if (abs === null) continue;
     if (!abs.toLowerCase().endsWith('.md')) continue;
-    seen.set(abs, order);
-    order++;
+    seen.set(abs, { order: order++, size: w.size });
   }
-  return [...seen.entries()].sort((a, b) => a[1] - b[1]).map(e => e[0]);
+  return [...seen.entries()]
+    .sort((a, b) => a[1].order - b[1].order)
+    .map(([path, v]) => ({ path, size: v.size }));
 }
 
 export function relativePrefix(projectPath: string | null, absPath: string): string {
@@ -52,4 +57,11 @@ export function relativePrefix(projectPath: string | null, absPath: string): str
   const rel = absPath.slice(root.length + sep.length);
   const lastSep = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
   return lastSep < 0 ? '' : rel.slice(0, lastSep + 1);
+}
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const kb = n / 1024;
+  if (kb < 1024) return kb < 10 ? `${kb.toFixed(1)} KB` : `${Math.round(kb)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
 }
