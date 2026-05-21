@@ -6,6 +6,7 @@ import { launchKydog, seedSettings, seedProject, teardown } from './helpers';
 const NOTES_REL = 'notes.md';
 const MATH_REL = 'math.md';
 const NORM_REL = 'norm.md';
+const CODE_REL = 'code.md';
 
 // 语法会被 Crepe 规范化的内容：- 列表 → *，--- → ***，表格重新补空格对齐。
 const NORM_CONTENT = [
@@ -32,6 +33,10 @@ async function seedAll(home: string) {
     '# 行内公式标题\n\n这里有行内公式 $E = mc^2$ 在文字中。\n',
   );
   await fs.writeFile(path.join(projectPath, NORM_REL), NORM_CONTENT);
+  await fs.writeFile(
+    path.join(projectPath, CODE_REL),
+    '# 代码块\n\n```python\ndef hello():\n    print("hi")\n```\n',
+  );
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -114,6 +119,43 @@ test('30-markdown-editor: 打开会被规范化的 md 不应标脏（开档即�
 
     // 没有任何编辑，脏标记不应出现
     await expect(page.locator(`[data-testid="tab-dirty-${normPath}"]`)).toHaveCount(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('30-markdown-editor: 代码块当前行高亮跟随主题，而非 One Dark 深色', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const codePath = path.join(kydogHome, 'proj', CODE_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${codePath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+    await page.locator('.kydog-md-editor .cm-activeLineGutter').first().waitFor();
+
+    const r = await page.evaluate(() => {
+      const gutter = document.querySelector('.kydog-md-editor .cm-activeLineGutter') as HTMLElement;
+      const line = document.querySelector('.kydog-md-editor .cm-activeLine') as HTMLElement;
+      const probe = document.createElement('div');
+      probe.style.background = 'var(--color-hover-bg)';
+      document.querySelector('.kydog-md-editor')!.appendChild(probe);
+      const want = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return {
+        gutterBg: getComputedStyle(gutter).backgroundColor,
+        lineBg: getComputedStyle(line).backgroundColor,
+        want,
+      };
+    });
+
+    // 不再是 One Dark 的深色 highlightBackground (#2c313a)
+    expect(r.gutterBg).not.toBe('rgb(44, 49, 58)');
+    // 当前行行号与内容行都跟随主题 token --color-hover-bg
+    expect(r.gutterBg).toBe(r.want);
+    expect(r.lineBg).toBe(r.want);
   } finally {
     await teardown(launched);
   }

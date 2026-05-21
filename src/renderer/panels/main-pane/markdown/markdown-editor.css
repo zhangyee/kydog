@@ -67,3 +67,12 @@
 .kydog-md-editor .ProseMirror code {
   font-family: var(--font-mono); font-size: 12px;
 }
+
+/* 代码块（CodeMirror）当前行高亮：Crepe 默认套 One Dark，会把当前行行号染成
+   暗色 #2c313a，浅色纸主题下漏出来很突兀。改用 KyDog 的 per-theme token，
+   五主题各自跟随。两个 gutter（行号 + 折叠）和内容行用同一底色形成连续高亮带。 */
+.kydog-md-editor .cm-activeLine { background: var(--color-hover-bg); }
+.kydog-md-editor .cm-activeLineGutter {
+  background: var(--color-hover-bg);
+  color: var(--color-ink);
+}
