@@ -4,12 +4,17 @@ import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown } from './helpers';
 
 const NOTES_REL = 'notes.md';
+const MATH_REL = 'math.md';
 
 async function seedAll(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
   await fs.mkdir(projectPath, { recursive: true });
   await fs.writeFile(path.join(projectPath, NOTES_REL), '# 初始标题\n\n正文段落。\n');
+  await fs.writeFile(
+    path.join(projectPath, MATH_REL),
+    '# 行内公式标题\n\n这里有行内公式 $E = mc^2$ 在文字中。\n',
+  );
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -43,6 +48,30 @@ test('30-markdown-editor: 双击打开 → 编辑 → ⌘S 保存往返', async 
     await expect.poll(async () => {
       return fs.readFile(notesPath, 'utf8').catch(() => '');
     }, { timeout: 5000 }).toContain('追加文字');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('30-markdown-editor: 行内公式 $...$ 不白屏、KaTeX 正常渲染', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const mathPath = path.join(kydogHome, 'proj', MATH_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${mathPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+    await expect(page.locator(`[data-testid="tab-${mathPath}"]`)).toBeVisible();
+
+    // 编辑器不能白屏：标题正文要出现
+    const editor = page.locator('.kydog-md-editor .ProseMirror');
+    await editor.waitFor();
+    await expect(editor).toContainText('行内公式标题');
+
+    // KaTeX 真渲染出来（行内公式节点存在 .katex）
+    await expect(editor.locator('.katex').first()).toBeVisible();
   } finally {
     await teardown(launched);
   }
