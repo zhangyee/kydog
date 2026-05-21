@@ -6,8 +6,10 @@ import { registerSaver, unregisterSaver } from './saveRegistry';
 export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const editorRef = useRef<CrepeEditorHandle>(null);
-  const diskContentRef = useRef<string | null>(tab.diskContent);
-  diskContentRef.current = tab.diskContent;
+  // 脏判定基准：编辑器加载后的序列化结果（而非磁盘原文字节）。
+  // Crepe 会规范化语法（- → *、--- → ***、表格补空格等），拿磁盘字节比会"开档即脏"。
+  const baselineRef = useRef<string | null>(null);
+  const readyRef = useRef(false);
 
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
   const setFileTabDirty = useUiStore((s) => s.setFileTabDirty);
@@ -32,6 +34,7 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
     const md = editorRef.current?.getMarkdown() ?? '';
     try {
       await window.kydog.invoke('file.writeText', { path: tab.path, content: md });
+      baselineRef.current = md; // 保存后以落盘内容为新基准
       setFileTabDiskContent(tab.id, md);
       setSaveError(null);
       return true;
@@ -90,7 +93,19 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
         <CrepeEditor
           ref={editorRef}
           initialMarkdown={tab.diskContent ?? ''}
-          onChange={(md) => setFileTabDirty(tab.id, md !== diskContentRef.current)}
+          onReady={(initialMd) => {
+            baselineRef.current = initialMd;
+            readyRef.current = true;
+            setFileTabDirty(tab.id, false);
+          }}
+          onChange={(md) => {
+            // 加载期的规范化 markdownUpdated：持续刷新基准，不算脏。
+            if (!readyRef.current) {
+              baselineRef.current = md;
+              return;
+            }
+            setFileTabDirty(tab.id, md !== baselineRef.current);
+          }}
         />
       </div>
     </div>

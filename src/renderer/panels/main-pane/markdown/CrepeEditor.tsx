@@ -50,14 +50,18 @@ export type CrepeEditorHandle = { getMarkdown: () => string };
 type Props = {
   initialMarkdown: string;
   onChange: (markdown: string) => void;
+  // 编辑器加载完成、内容稳定后回调，参数是 Crepe 序列化出的初始 markdown（脏判定基准）。
+  onReady?: (initialMarkdown: string) => void;
 };
 
 export const CrepeEditor = forwardRef<CrepeEditorHandle, Props>(
-  function CrepeEditor({ initialMarkdown, onChange }, ref) {
+  function CrepeEditor({ initialMarkdown, onChange, onReady }, ref) {
     const rootRef = useRef<HTMLDivElement>(null);
     const crepeRef = useRef<Crepe | null>(null);
     const onChangeRef = useRef(onChange);
     onChangeRef.current = onChange;
+    const onReadyRef = useRef(onReady);
+    onReadyRef.current = onReady;
 
     useImperativeHandle(ref, () => ({
       getMarkdown: () => crepeRef.current?.getMarkdown() ?? '',
@@ -93,6 +97,10 @@ export const CrepeEditor = forwardRef<CrepeEditorHandle, Props>(
       // create() 異步：cleanup 必须等 create resolve 後再 destroy，
       // 否则 StrictMode 双调用会 mount→unmount 竞态。
       const created = crepe.create();
+      void created.then(() => {
+        // 仍是当前实例才回调（避免 StrictMode 卸载后调用已销毁编辑器）。
+        if (crepeRef.current === crepe) onReadyRef.current?.(crepe.getMarkdown());
+      });
       return () => {
         void created.then(() => crepe.destroy());
         crepeRef.current = null;

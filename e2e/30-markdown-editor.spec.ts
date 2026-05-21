@@ -5,6 +5,22 @@ import { launchKydog, seedSettings, seedProject, teardown } from './helpers';
 
 const NOTES_REL = 'notes.md';
 const MATH_REL = 'math.md';
+const NORM_REL = 'norm.md';
+
+// 语法会被 Crepe 规范化的内容：- 列表 → *，--- → ***，表格重新补空格对齐。
+const NORM_CONTENT = [
+  '# 规范化标题',
+  '',
+  '- 列表项一',
+  '- 列表项二',
+  '',
+  '---',
+  '',
+  '| A | B |',
+  '|---|---|',
+  '| 1 | 2 |',
+  '',
+].join('\n');
 
 async function seedAll(home: string) {
   await seedSettings(home);
@@ -15,6 +31,7 @@ async function seedAll(home: string) {
     path.join(projectPath, MATH_REL),
     '# 行内公式标题\n\n这里有行内公式 $E = mc^2$ 在文字中。\n',
   );
+  await fs.writeFile(path.join(projectPath, NORM_REL), NORM_CONTENT);
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -72,6 +89,31 @@ test('30-markdown-editor: 行内公式 $...$ 不白屏、KaTeX 正常渲染', as
 
     // KaTeX 真渲染出来（行内公式节点存在 .katex）
     await expect(editor.locator('.katex').first()).toBeVisible();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('30-markdown-editor: 打开会被规范化的 md 不应标脏（开档即脏 bug）', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const normPath = path.join(kydogHome, 'proj', NORM_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${normPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const editor = page.locator('.kydog-md-editor .ProseMirror');
+    await editor.waitFor();
+    await expect(editor).toContainText('规范化标题');
+
+    // 等编辑器加载期的 markdownUpdated（规范化）跑完
+    await page.waitForTimeout(1500);
+
+    // 没有任何编辑，脏标记不应出现
+    await expect(page.locator(`[data-testid="tab-dirty-${normPath}"]`)).toHaveCount(0);
   } finally {
     await teardown(launched);
   }
