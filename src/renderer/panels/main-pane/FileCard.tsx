@@ -52,11 +52,11 @@ export function FileCard({ path, projectPath, size }: Props) {
       {/* 文本区 */}
       <span className="flex flex-col min-w-0 flex-1" style={{ gap: 2 }}>
         <span className="flex items-baseline gap-2 min-w-0">
-          <span className="truncate" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-ink)' }}>
+          <span className="truncate min-w-0" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-ink)' }}>
             {fileTitle(path)}
           </span>
           {prefix && (
-            <span className="font-mono truncate shrink-0" style={{ fontSize: 11, color: 'var(--color-ink-faint)' }}>
+            <span className="font-mono truncate min-w-0 shrink-[3]" style={{ fontSize: 11, color: 'var(--color-ink-faint)' }}>
               {prefix}
             </span>
           )}
