@@ -17,9 +17,9 @@ export function FileCard({ path, projectPath, size }: Props) {
       className="group ky-paper-deep relative overflow-hidden w-full flex items-center gap-4 text-left hover:bg-[color:var(--color-hover-bg)]"
       style={{
         margin: '8px 0',
-        padding: '14px 16px',
+        padding: '18px 20px',
         border: '0.5px solid var(--color-ink-hair)',
-        borderRadius: 8,
+        borderRadius: 10,
         fontFamily: 'var(--font-sans)',
       }}
     >
@@ -29,8 +29,8 @@ export function FileCard({ path, projectPath, size }: Props) {
         aria-hidden
         className="absolute inline-flex items-start justify-center -rotate-6 group-hover:rotate-0 group-hover:scale-105 transition-transform duration-200 ease-out"
         style={{
-          left: 16, bottom: -12, width: 40, height: 52, paddingTop: 9,
-          borderRadius: 9,
+          left: 22, bottom: -14, width: 48, height: 62, paddingTop: 12,
+          borderRadius: 11,
           background: 'var(--color-paper-edge)',
           border: '0.5px solid var(--color-ink-hair)',
           boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
@@ -38,11 +38,11 @@ export function FileCard({ path, projectPath, size }: Props) {
           transformOrigin: 'center bottom',
         }}
       >
-        <NavIcon name="file-text" size={20} />
+        <NavIcon name="file-text" size={24} />
       </span>
 
       {/* 文本区：左侧让出图标宽度 */}
-      <span className="flex flex-col min-w-0 flex-1" style={{ marginLeft: 56, gap: 3 }}>
+      <span className="flex flex-col min-w-0 flex-1" style={{ marginLeft: 70, gap: 3 }}>
         <span className="flex items-baseline gap-2 min-w-0">
           <span className="truncate min-w-0" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-ink)' }}>
             {fileTitle(path)}
