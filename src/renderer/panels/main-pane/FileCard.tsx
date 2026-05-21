@@ -14,31 +14,35 @@ export function FileCard({ path, projectPath, size }: Props) {
       type="button"
       data-testid={`file-card-${path}`}
       onClick={() => openFile(path)}
-      className="group ky-paper-deep w-full flex items-center gap-4 text-left hover:bg-[color:var(--color-hover-bg)]"
+      className="group ky-paper-deep relative overflow-hidden w-full flex items-center gap-4 text-left hover:bg-[color:var(--color-hover-bg)]"
       style={{
         margin: '8px 0',
-        padding: '12px 16px',
+        padding: '14px 16px',
         border: '0.5px solid var(--color-ink-hair)',
-        borderRadius: 6,
+        borderRadius: 8,
         fontFamily: 'var(--font-sans)',
       }}
     >
-      {/* 文档图标框：静止微倾，hover 转正 + 放大 */}
+      {/* 文档图标框：绝对定位、骑在卡片底边上探出，下半截被卡片裁掉；
+          hover 以底边为轴回正 + 微放大，底边始终在裁切线下方不外露 */}
       <span
-        className="inline-flex items-center justify-center shrink-0 -rotate-6 group-hover:rotate-0 group-hover:scale-110 transition-transform duration-200 ease-out"
+        aria-hidden
+        className="absolute inline-flex items-start justify-center -rotate-6 group-hover:rotate-0 group-hover:scale-105 transition-transform duration-200 ease-out"
         style={{
-          width: 40, height: 40, borderRadius: 9,
+          left: 16, bottom: -12, width: 40, height: 52, paddingTop: 9,
+          borderRadius: 9,
           background: 'var(--color-paper-edge)',
           border: '0.5px solid var(--color-ink-hair)',
-          boxShadow: '0 2px 5px rgba(0,0,0,0.10)',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
           color: 'var(--color-accent)',
+          transformOrigin: 'center bottom',
         }}
       >
         <NavIcon name="file-text" size={20} />
       </span>
 
-      {/* 文本区 */}
-      <span className="flex flex-col min-w-0 flex-1" style={{ gap: 2 }}>
+      {/* 文本区：左侧让出图标宽度 */}
+      <span className="flex flex-col min-w-0 flex-1" style={{ marginLeft: 56, gap: 3 }}>
         <span className="flex items-baseline gap-2 min-w-0">
           <span className="truncate min-w-0" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-ink)' }}>
             {fileTitle(path)}
