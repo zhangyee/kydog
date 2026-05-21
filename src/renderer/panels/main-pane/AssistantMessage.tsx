@@ -43,8 +43,8 @@ export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Pro
         })}
         {fileCards.length > 0 && (
           <div data-testid="file-card-strip" style={{ marginTop: 10 }}>
-            {fileCards.map((p) => (
-              <FileCard key={p} path={p} projectPath={projectPath} />
+            {fileCards.map((f) => (
+              <FileCard key={f.path} path={f.path} projectPath={projectPath} size={f.size} />
             ))}
           </div>
         )}
