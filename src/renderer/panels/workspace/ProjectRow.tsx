@@ -3,6 +3,7 @@ import { NavIcon, IconButton, DropdownMenu, DropdownItem, DropdownDivider } from
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useUnreadStore } from './unreadStore';
+import { confirm } from '../../stores/confirmStore';
 import type { Project } from '../../../shared/types';
 
 type Props = {
@@ -69,7 +70,12 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
   };
 
   const onRemove = async () => {
-    if (!window.confirm(`从侧边栏移除「${baseName}」？文件夹本身不会被删除。`)) return;
+    const ok = await confirm({
+      title: `从侧边栏移除「${baseName}」？`,
+      message: '文件夹本身不会被删除。',
+      confirmLabel: '移除',
+    });
+    if (!ok) return;
     try {
       await window.kydog.invoke('project.close', { projectPath: project.path });
       removeProject(project.path);
