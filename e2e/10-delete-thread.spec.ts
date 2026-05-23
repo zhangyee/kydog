@@ -18,6 +18,8 @@ test('10-delete: removes thread from index and JSONL on disk', async () => {
     await expect(row).toBeVisible();
     await row.hover();
     await launched.page.locator('[data-testid="delete-thread-cccccccc-1111-1111-1111-111111111111"]').click();
+    await expect(launched.page.locator('[data-testid="confirm-dialog"]')).toBeVisible();
+    await launched.page.locator('[data-testid="confirm-dialog-confirm"]').click();
     await expect(row).toBeHidden();
     // 校验 disk 上 index 已更新
     const indexRaw = await fs.readFile(path.join(launched.kydogHome, '.kydog', 'index.json'), 'utf8');
