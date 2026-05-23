@@ -4,6 +4,7 @@ import { TitleBar } from './TitleBar';
 import { ThreeColumnLayout } from './ThreeColumnLayout';
 import { ErrorBoundary } from './ErrorBoundary';
 import { SkillSyncModal } from './SkillSyncModal';
+import { ConfirmHost } from './ConfirmHost';
 import { WorkspacePanel } from '../panels/workspace/WorkspacePanel';
 import { MainPane } from '../panels/main-pane/MainPane';
 import { InspectorPanel } from '../panels/inspector/InspectorPanel';
@@ -85,6 +86,7 @@ export function AppShell() {
           onDismiss={() => setSkillSync(null)}
         />
       )}
+      <ConfirmHost />
     </div>
   );
 }
