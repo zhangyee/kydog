@@ -1,7 +1,8 @@
-import { useState, type MouseEvent } from 'react';
-import { NavIcon } from '../../shared';
+import { useEffect, useRef, useState, type MouseEvent, type Ref } from 'react';
+import { NavIcon, IconButton, DropdownMenu, DropdownItem } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { confirm } from '../../stores/confirmStore';
 import { useUnreadStore } from './unreadStore';
 import { ThreadStatusBadge } from './ThreadStatusBadge';
 import type { Thread } from '../../../shared/types';
@@ -12,6 +13,9 @@ type Props = {
 
 export function ThreadRow({ thread }: Props) {
   const [hover, setHover] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(thread.title);
+  const inputRef = useRef<HTMLInputElement>(null);
   const currentThreadId = useThreadsStore((s) => s.currentThreadId);
   const select = useThreadsStore((s) => s.selectThread);
   const remove = useThreadsStore((s) => s.removeThread);
@@ -19,6 +23,14 @@ export function ThreadRow({ thread }: Props) {
   const showThreadTab = useUiStore((s) => s.showThreadTab);
 
   const isSelected = currentThreadId === thread.id;
+
+  useEffect(() => {
+    if (renaming) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      setDraft(thread.title);
+    }
+  }, [renaming, thread.title]);
 
   const onPick = () => {
     showThreadTab();
@@ -39,8 +51,25 @@ export function ThreadRow({ thread }: Props) {
     }
   };
 
+  const commitRename = async () => {
+    if (!renaming) return;
+    const t = draft.trim();
+    setRenaming(false);
+    if (!t || t === thread.title) return;
+    setThread({ ...thread, title: t });
+    try {
+      const updated = await window.kydog.invoke('thread.update', { threadId: thread.id, title: t });
+      setThread(updated);
+    } catch (err) {
+      setThread(thread);
+      console.error('rename thread failed', err);
+    }
+  };
+
   const onDelete = async (e: MouseEvent) => {
     e.stopPropagation();
+    const ok = await confirm({ title: `删除对话「${thread.title}」？`, confirmLabel: '删除' });
+    if (!ok) return;
     try {
       await window.kydog.invoke('thread.delete', { threadId: thread.id });
       useUnreadStore.getState().clearOne(thread.id);
@@ -53,7 +82,7 @@ export function ThreadRow({ thread }: Props) {
       data-testid={`thread-${thread.id}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onClick={onPick}
+      onClick={renaming ? undefined : onPick}
       className="group flex items-center cursor-pointer rounded px-2.5 py-1 transition-colors hover:bg-[color:var(--color-hover-bg)]"
       style={{
         background: isSelected ? 'var(--color-paper-edge)' : undefined,
@@ -71,20 +100,68 @@ export function ThreadRow({ thread }: Props) {
         togglePinAriaLabel={thread.pinned ? '取消置顶' : '置顶'}
         togglePinTestId={`pin-thread-${thread.id}`}
       />
-      <span className="flex-1 truncate">{thread.title}</span>
-      <button
-        type="button"
-        data-testid={`delete-thread-${thread.id}`}
-        onClick={onDelete}
-        aria-label="删除对话"
-        className="inline-flex items-center justify-center shrink-0 transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
-        style={{
-          width: 18, height: 18, borderRadius: 4,
-          color: 'var(--color-ink-faint)',
-        }}
-      >
-        <NavIcon name="x" size={12} />
-      </button>
+      {renaming ? (
+        <input
+          ref={inputRef}
+          data-testid={`thread-rename-input-${thread.id}`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); void commitRename(); }
+            else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false); }
+          }}
+          onBlur={() => void commitRename()}
+          className="flex-1 min-w-0 bg-transparent outline-none"
+          style={{ fontSize: 13, color: 'var(--color-ink)' }}
+        />
+      ) : (
+        <>
+          <span className="flex-1 truncate">{thread.title}</span>
+          <div
+            className="flex items-center"
+            onClick={(e) => e.stopPropagation()}
+            style={{ opacity: hover ? 1 : 0, transition: 'opacity 100ms', pointerEvents: hover ? 'auto' : 'none' }}
+          >
+            <DropdownMenu
+              align="right"
+              width={160}
+              testId={`thread-menu-${thread.id}`}
+              trigger={({ toggle, ref, open }) => (
+                <IconButton
+                  ref={ref as Ref<HTMLButtonElement>}
+                  size={18}
+                  tone="faint"
+                  tooltip={open ? undefined : '更多操作'}
+                  ariaLabel="更多操作"
+                  active={open}
+                  testId={`thread-menu-trigger-${thread.id}`}
+                  onClick={toggle}
+                >
+                  <NavIcon name="more-horizontal" size={13} />
+                </IconButton>
+              )}
+            >
+              <DropdownItem
+                icon={<NavIcon name="pencil-line" size={14} />}
+                label="重命名"
+                testId={`thread-rename-${thread.id}`}
+                onClick={() => setRenaming(true)}
+              />
+            </DropdownMenu>
+            <button
+              type="button"
+              data-testid={`delete-thread-${thread.id}`}
+              onClick={onDelete}
+              aria-label="删除对话"
+              className="inline-flex items-center justify-center shrink-0"
+              style={{ width: 18, height: 18, borderRadius: 4, color: 'var(--color-ink-faint)' }}
+            >
+              <NavIcon name="x" size={12} />
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
