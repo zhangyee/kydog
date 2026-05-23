@@ -20,15 +20,15 @@ export function ConfirmDialog({
 }: Props) {
   const confirmRef = useRef<HTMLButtonElement>(null);
 
+  // Enter 交给被聚焦的确认按钮原生触发；焦点在「取消」上按 Enter 就不会误确认。
   useEffect(() => {
     confirmRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
-      else if (e.key === 'Enter') { e.preventDefault(); onConfirm(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onConfirm, onCancel]);
+  }, [onCancel]);
 
   return createPortal(
     <div
@@ -39,6 +39,9 @@ export function ConfirmDialog({
     >
       <div
         className="flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 360, padding: '20px 22px', borderRadius: 4,
@@ -48,6 +51,7 @@ export function ConfirmDialog({
         }}
       >
         <div
+          id="confirm-dialog-title"
           className="font-serif"
           style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-ink)', marginBottom: message ? 6 : 18 }}
         >{title}</div>
