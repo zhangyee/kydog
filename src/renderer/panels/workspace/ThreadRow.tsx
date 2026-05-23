@@ -24,13 +24,15 @@ export function ThreadRow({ thread }: Props) {
 
   const isSelected = currentThreadId === thread.id;
 
+  // 只在进入重命名态时把 draft 重置为当前标题；不把 thread.title 放进依赖，
+  // 避免编辑途中标题被并发更新（自动生成 / 跨窗口）冲掉用户正在输入的内容。
   useEffect(() => {
     if (renaming) {
       inputRef.current?.focus();
       inputRef.current?.select();
       setDraft(thread.title);
     }
-  }, [renaming, thread.title]);
+  }, [renaming]);
 
   const onPick = () => {
     showThreadTab();
