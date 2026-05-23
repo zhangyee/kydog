@@ -120,7 +120,7 @@ export function ThreadRow({ thread }: Props) {
       ) : (
         <>
           <MarqueeText
-            className="flex-1"
+            className="flex-1 min-w-0"
             text={thread.title}
             active={hover}
             scrollTestId={`thread-title-scroll-${thread.id}`}
