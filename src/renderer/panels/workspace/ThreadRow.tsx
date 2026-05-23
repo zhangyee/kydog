@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type Ref } from 'react';
-import { NavIcon, IconButton, DropdownMenu, DropdownItem } from '../../shared';
+import { NavIcon, IconButton, DropdownMenu, DropdownItem, MarqueeText } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { confirm } from '../../stores/confirmStore';
@@ -119,7 +119,12 @@ export function ThreadRow({ thread }: Props) {
         />
       ) : (
         <>
-          <span className="flex-1 truncate">{thread.title}</span>
+          <MarqueeText
+            className="flex-1"
+            text={thread.title}
+            active={hover}
+            scrollTestId={`thread-title-scroll-${thread.id}`}
+          />
           <div
             className="flex items-center"
             onClick={(e) => e.stopPropagation()}
