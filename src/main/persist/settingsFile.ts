@@ -78,26 +78,11 @@ function parseAndMigrate(raw: string): SettingsFile {
   if (!parsed || typeof parsed !== 'object') return defaultSettings();
   const d = defaultSettings();
 
-  // v3：直接合并，d.ui 兜底缺字段
-  if (parsed.schemaVersion === 3) {
-    return {
-      schemaVersion: 3,
-      ui: { ...d.ui, ...(parsed.ui ?? {}) },
-      llm: {
-        auth: parsed.llm?.auth ?? {},
-        providers: parsed.llm?.providers ?? {},
-        customProviders: parsed.llm?.customProviders ?? [],
-        defaultProvider: parsed.llm?.defaultProvider ?? null,
-        defaultModel: parsed.llm?.defaultModel ?? null,
-      },
-      skills: { ...d.skills, ...(parsed.skills ?? {}) },
-      tools: { ...d.tools, ...(parsed.tools ?? {}) },
-    };
-  }
-
-  // v2 → v3：保留 llm，ui 合并 default 自动补 readingFontSize
-  if (parsed.schemaVersion === 2) {
-    logger.warn('persist.settingsFile', 'migrating schema v2 → v3');
+  // v2/v3：保留所有字段，d.ui 兜底缺字段（v2 额外记录迁移日志）
+  if (parsed.schemaVersion === 2 || parsed.schemaVersion === 3) {
+    if (parsed.schemaVersion === 2) {
+      logger.warn('persist.settingsFile', 'migrating schema v2 → v3');
+    }
     return {
       schemaVersion: 3,
       ui: { ...d.ui, ...(parsed.ui ?? {}) },
