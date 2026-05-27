@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./theme/tokens.css";
+@import "./theme/fonts.css";
 @import "./theme/vellum.css";
 @import "./theme/porcelain.css";
 @import "./theme/sepia.css";

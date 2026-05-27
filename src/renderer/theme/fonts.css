@@ -1,0 +1,10 @@
+/* 字体打包入口。fontsource 已经把 WOFF2 子集化并附带正确的 @font-face / unicode-range。
+   Vite 会自动 hash + bundle 这些 woff2，跨平台一致。
+   两个家族都遵循 SIL Open Font License 1.1，署名与 OFL 全文见「关于」页。 */
+
+/* Source Serif 4 — Adobe，OFL 1.1（拉丁字符） */
+@import "@fontsource-variable/source-serif-4/index.css";
+
+/* Noto Serif SC — Google，OFL 1.1（简体中文 + 拉丁字符兜底） */
+@import "@fontsource/noto-serif-sc/400.css";
+@import "@fontsource/noto-serif-sc/600.css";
