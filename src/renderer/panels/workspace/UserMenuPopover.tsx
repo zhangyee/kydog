@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useUiStore } from '../../stores/uiStore';
-import type { ThemeName } from '../../../shared/types';
+import type { ReadingFontSize, ThemeName } from '../../../shared/types';
 
 const SWATCHES: Array<{ name: ThemeName; label: string }> = [
   { name: 'vellum',    label: 'Vellum' },
@@ -15,12 +15,13 @@ export function UserMenuPopover() {
   const close = () => useUiStore.setState({ userMenuOpen: false });
   const setTheme = useUiStore((s) => s.setTheme);
   const theme = useUiStore((s) => s.theme);
+  const readingFontSize = useUiStore((s) => s.readingFontSize);
+  const setReadingFontSize = useUiStore((s) => s.setReadingFontSize);
   const openSettings = useUiStore((s) => s.openSettings);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // 语言 / 字体 / 字号：本阶段仅本地 state；H' 子项目接持久化
+  // 语言切换暂仍是本地 state；locale 持久化与字体无关，独立后续任务。
   const [locale, setLocale] = useState<'zh' | 'en'>('zh');
-  const [fontSize, setFontSize] = useState(15);
 
   // Esc / 外部点击关闭菜单（键盘与指针可访问性）
   useEffect(() => {
@@ -114,35 +115,33 @@ export function UserMenuPopover() {
         <span className="font-serif italic" style={{ fontSize: 10.5, color: 'var(--color-ink-faint)' }}>{themeMeta?.label}</span>
       </div>
 
-      {/* 字体、字号（visual-only） */}
-      <SectionLabel>字体、字号</SectionLabel>
-      <div style={{ padding: '2px 14px 4px' }}>
-        <button
-          type="button"
-          className="flex items-center gap-2 w-full cursor-pointer"
-          style={{
-            padding: '6px 0 7px',
-            borderBottom: '0.5px solid var(--color-ink-hair-soft)',
-            fontSize: 12.5,
-            color: 'var(--color-ink)',
-          }}
-        >
-          <span className="font-serif italic" style={{ color: 'var(--color-ink-soft)' }}>Aa</span>
-          <span className="flex-1 text-left">思源宋体</span>
-          <span className="font-mono text-[10px]" style={{ color: 'var(--color-ink-faint)' }}>▾</span>
-        </button>
-      </div>
-      <div className="flex items-center gap-2.5" style={{ padding: '2px 14px 8px' }}>
-        <span className="font-serif text-[9px]" style={{ color: 'var(--color-ink-faint)' }}>A</span>
-        <input
-          type="range" min={10} max={20} value={fontSize}
-          onChange={(e) => setFontSize(Number(e.target.value))}
-          className="flex-1"
-          aria-label="字号"
-          style={{ accentColor: 'var(--color-ink-soft)' }}
-        />
-        <span className="font-serif text-[14px]" style={{ color: 'var(--color-ink-faint)' }}>A</span>
-        <span className="font-mono text-[10px] w-6 text-right" style={{ color: 'var(--color-ink-soft)' }}>{fontSize}</span>
+      {/* 字号 */}
+      <SectionLabel>字号</SectionLabel>
+      <div className="flex gap-1.5" style={{ padding: '2px 14px 8px' }}>
+        {(
+          [
+            { id: 'small',  label: '小' },
+            { id: 'medium', label: '中' },
+            { id: 'large',  label: '大' },
+          ] as Array<{ id: ReadingFontSize; label: string }>
+        ).map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            data-testid={`reading-size-${opt.id}`}
+            aria-pressed={readingFontSize === opt.id}
+            onClick={() => setReadingFontSize(opt.id)}
+            className="cursor-pointer"
+            style={{
+              padding: '3px 14px', borderRadius: 2,
+              border: readingFontSize === opt.id
+                ? '1px solid var(--color-ink)'
+                : '0.5px solid var(--color-ink-hair-soft)',
+              background: readingFontSize === opt.id ? 'var(--color-paper-deep)' : 'transparent',
+              fontSize: 11, color: 'var(--color-ink)',
+            }}
+          >{opt.label}</button>
+        ))}
       </div>
 
       <div style={{ height: 1, background: 'var(--color-paper-edge)', margin: '6px 0' }} />
