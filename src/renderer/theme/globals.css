@@ -1,3 +1,16 @@
+:root {
+  --reading-font-size: 15px;
+  --reading-line-height: 1.75;
+}
+:root[data-reading-size="small"] {
+  --reading-font-size: 13.5px;
+  --reading-line-height: 1.7;
+}
+:root[data-reading-size="large"] {
+  --reading-font-size: 17px;
+  --reading-line-height: 1.8;
+}
+
 html, body, #root { height: 100%; margin: 0; }
 
 body {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ThemeApplier } from './ThemeApplier';
+import { ReadingFontSizeApplier } from './ReadingFontSizeApplier';
 import { TitleBar } from './TitleBar';
 import { ThreeColumnLayout } from './ThreeColumnLayout';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -71,6 +72,7 @@ export function AppShell() {
   return (
     <div className="h-full flex flex-col">
       <ThemeApplier />
+      <ReadingFontSizeApplier />
       <TitleBar title={currentTitle} />
       <div className="flex-1 min-h-0">
         <ThreeColumnLayout
