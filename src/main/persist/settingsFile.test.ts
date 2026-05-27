@@ -5,7 +5,7 @@ import path from 'node:path';
 import * as paths from './paths';
 import { ensureSettingsFile, loadSettings, defaultSettings } from './settingsFile';
 
-describe('settingsFile v2', () => {
+describe('settingsFile v3', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-settings-'));
@@ -15,9 +15,10 @@ describe('settingsFile v2', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('defaultSettings: schemaVersion=2 + 空 llm', () => {
+  it('defaultSettings: schemaVersion=3 + 空 llm + readingFontSize=medium', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(2);
+    expect(d.schemaVersion).toBe(3);
+    expect(d.ui.readingFontSize).toBe('medium');
     expect(d.llm.auth).toEqual({});
     expect(d.llm.providers).toEqual({});
     expect(d.llm.customProviders).toEqual([]);
@@ -25,14 +26,14 @@ describe('settingsFile v2', () => {
     expect(d.llm.defaultModel).toBeNull();
   });
 
-  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600)', () => {
+  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v3', () => {
     ensureSettingsFile();
     if (process.platform !== 'win32') {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       expect(statSync(path.join(dir, 'kydog.json')).mode & 0o777).toBe(0o600);
     }
     const content = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
-    expect(JSON.parse(content).schemaVersion).toBe(2);
+    expect(JSON.parse(content).schemaVersion).toBe(3);
   });
 
   it('ensureSettingsFile: 已存在文件不覆盖', async () => {
@@ -43,7 +44,7 @@ describe('settingsFile v2', () => {
     expect(content).toBe('{"sentinel":1}');
   });
 
-  it('loadSettings: v1 → v2 reset (保留 ui/skills/tools，重置 llm)', async () => {
+  it('loadSettings: v1 → v3 reset (保留 ui/skills/tools，重置 llm)', async () => {
     ensureSettingsFile();
     const v1 = {
       schemaVersion: 1,
@@ -54,23 +55,48 @@ describe('settingsFile v2', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(2);
+    expect(next.schemaVersion).toBe(3);
     expect(next.ui.theme).toBe('midnight');
+    expect(next.ui.readingFontSize).toBe('medium');
     expect(next.skills.disabledBuiltins).toEqual(['old']);
     expect(next.llm.auth).toEqual({});
     expect(next.llm.providers).toEqual({});
   });
 
-  it('loadSettings: v2 解析正常返回', async () => {
+  it('loadSettings: v2 → v3（保留所有字段，补 readingFontSize=medium）', async () => {
     ensureSettingsFile();
-    const v2 = defaultSettings();
-    v2.llm.auth['anthropic'] = { type: 'api_key', key: 'sk-ant-xxx' };
-    v2.llm.defaultProvider = 'anthropic';
-    v2.llm.defaultModel = 'claude-sonnet-4-5';
+    const v2 = {
+      schemaVersion: 2,
+      ui: { theme: 'midnight', locale: 'zh', workspaceCollapsed: true, inspectorCollapsed: false },
+      llm: {
+        auth: { 'anthropic': { type: 'api_key', key: 'sk-x' } },
+        providers: { 'anthropic': {} },
+        customProviders: [],
+        defaultProvider: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5',
+      },
+      skills: { disabledBuiltins: ['old'] },
+      tools: { externalBins: [] },
+    };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v2));
     const next = await loadSettings();
+    expect(next.schemaVersion).toBe(3);
+    expect(next.ui.theme).toBe('midnight');
+    expect(next.ui.readingFontSize).toBe('medium');
     expect(next.llm.defaultProvider).toBe('anthropic');
-    expect(next.llm.auth['anthropic']).toEqual({ type: 'api_key', key: 'sk-ant-xxx' });
+    expect(next.skills.disabledBuiltins).toEqual(['old']);
+  });
+
+  it('loadSettings: v3 → v3（passthrough，保留 readingFontSize=large）', async () => {
+    ensureSettingsFile();
+    const v3 = defaultSettings();
+    v3.ui.readingFontSize = 'large';
+    v3.ui.theme = 'sepia';
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
+    const next = await loadSettings();
+    expect(next.schemaVersion).toBe(3);
+    expect(next.ui.readingFontSize).toBe('large');
+    expect(next.ui.theme).toBe('sepia');
   });
 
   it('loadSettings: 文件权限放宽 → warn + 修正回 0600', async () => {

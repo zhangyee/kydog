@@ -107,13 +107,16 @@ export type CustomProvider = {
   compat?: CompatFlags;
 };
 
+export type ReadingFontSize = 'small' | 'medium' | 'large';
+
 export type SettingsFile = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   ui: {
     theme: ThemeName;
     locale: 'zh';
     workspaceCollapsed: boolean;
     inspectorCollapsed: boolean;
+    readingFontSize: ReadingFontSize;
   };
   llm: {
     auth: AuthBlob;

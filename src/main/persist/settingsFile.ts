@@ -7,8 +7,14 @@ import { logger } from '../log';
 
 export function defaultSettings(): SettingsFile {
   return {
-    schemaVersion: 2,
-    ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+    schemaVersion: 3,
+    ui: {
+      theme: 'vellum',
+      locale: 'zh',
+      workspaceCollapsed: false,
+      inspectorCollapsed: false,
+      readingFontSize: 'medium',
+    },
     llm: {
       auth: {},
       providers: {},
@@ -60,16 +66,22 @@ export async function saveSettings(value: SettingsFile): Promise<void> {
   await atomicWriteWith0600Async(paths.SETTINGS_FILE, JSON.stringify(value, null, 2));
 }
 
-/** v1 → v2：保留 ui/skills/tools，llm 重置为空白；其他形状不对 → 全 default。 */
+/** v1/v2 → v3 迁移。
+ *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize 默认值。
+ *  - v2：保留所有字段，仅补 readingFontSize 默认值。
+ *  - v3：原样回写。
+ *  - 形状不对：全部 default。 */
 function parseAndMigrate(raw: string): SettingsFile {
   let parsed: any;
   try { parsed = JSON.parse(raw); }
   catch { return defaultSettings(); }
   if (!parsed || typeof parsed !== 'object') return defaultSettings();
   const d = defaultSettings();
-  if (parsed.schemaVersion === 2) {
+
+  // v3：直接合并，d.ui 兜底缺字段
+  if (parsed.schemaVersion === 3) {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       ui: { ...d.ui, ...(parsed.ui ?? {}) },
       llm: {
         auth: parsed.llm?.auth ?? {},
@@ -82,10 +94,29 @@ function parseAndMigrate(raw: string): SettingsFile {
       tools: { ...d.tools, ...(parsed.tools ?? {}) },
     };
   }
-  // v1 或更旧 → reset llm，保留其它
-  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v2 default');
+
+  // v2 → v3：保留 llm，ui 合并 default 自动补 readingFontSize
+  if (parsed.schemaVersion === 2) {
+    logger.warn('persist.settingsFile', 'migrating schema v2 → v3');
+    return {
+      schemaVersion: 3,
+      ui: { ...d.ui, ...(parsed.ui ?? {}) },
+      llm: {
+        auth: parsed.llm?.auth ?? {},
+        providers: parsed.llm?.providers ?? {},
+        customProviders: parsed.llm?.customProviders ?? [],
+        defaultProvider: parsed.llm?.defaultProvider ?? null,
+        defaultModel: parsed.llm?.defaultModel ?? null,
+      },
+      skills: { ...d.skills, ...(parsed.skills ?? {}) },
+      tools: { ...d.tools, ...(parsed.tools ?? {}) },
+    };
+  }
+
+  // v1 或更旧：reset llm、补 ui 默认（包括 readingFontSize）
+  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v3 default');
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     ui: { ...d.ui, ...(parsed.ui ?? {}) },
     llm: d.llm,
     skills: { ...d.skills, ...(parsed.skills ?? {}) },
