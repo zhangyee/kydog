@@ -34,9 +34,15 @@ export async function launchKydog(opts: {
 
 export async function seedSettings(kydogHome: string, opts: { providerConfigured?: boolean } = {}) {
   await fs.mkdir(path.join(kydogHome, '.kydog'), { recursive: true });
-  const v2 = {
-    schemaVersion: 2 as const,
-    ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false },
+  const v3 = {
+    schemaVersion: 3 as const,
+    ui: {
+      theme: 'vellum',
+      locale: 'zh',
+      workspaceCollapsed: false,
+      inspectorCollapsed: false,
+      readingFontSize: 'medium',
+    },
     llm: opts.providerConfigured === false
       ? { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }
       : {
@@ -51,7 +57,7 @@ export async function seedSettings(kydogHome: string, opts: { providerConfigured
   };
   await fs.writeFile(
     path.join(kydogHome, '.kydog', 'kydog.json'),
-    JSON.stringify(v2, null, 2),
+    JSON.stringify(v3, null, 2),
   );
 }
 
