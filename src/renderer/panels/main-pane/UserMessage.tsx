@@ -9,7 +9,9 @@ export function UserMessage({ name, content, createdAt }: Props) {
       <div
         className="font-serif whitespace-pre-wrap"
         style={{
-          fontSize: 15, lineHeight: 1.65, color: 'var(--color-ink)',
+          fontSize: 'var(--reading-font-size)',
+          lineHeight: 'var(--reading-line-height)',
+          color: 'var(--color-ink)',
           paddingLeft: 16, borderLeft: '2px solid var(--color-marginalia)',
         }}
       >

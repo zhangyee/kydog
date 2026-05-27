@@ -26,7 +26,11 @@ export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Pro
       <MessageMeta side="agent" label="KyDog" time={fmtTime(createdAt)} />
       <div
         className="font-serif"
-        style={{ fontSize: 14.5, lineHeight: 1.75, color: 'var(--color-ink)' }}
+        style={{
+          fontSize: 'var(--reading-font-size)',
+          lineHeight: 'var(--reading-line-height)',
+          color: 'var(--color-ink)',
+        }}
       >
         {groups.map((g, i) => {
           if (g.kind === 'process') {

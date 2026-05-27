@@ -42,14 +42,16 @@
 .kydog-md-editor .ProseMirror {
   /* 左右 88px：容下 Crepe 块手柄（+ 与拖拽，约 82px）于左侧留白内 */
   padding: 32px 88px 120px;
-  font-size: 14.5px;
-  line-height: 1.75;
+  font-size: var(--reading-font-size);
+  line-height: var(--reading-line-height);
   outline: none;
 }
 
-.kydog-md-editor .ProseMirror h1 { font-size: 26px; font-weight: 600; margin: 32px 0 12px; }
-.kydog-md-editor .ProseMirror h2 { font-size: 22px; font-weight: 600; margin: 28px 0 10px; }
-.kydog-md-editor .ProseMirror h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+/* h1/h2/h3 改 em 相对父级缩放，自动跟字号档位走；
+   比例参照原 px / 14.5：26/14.5≈1.79, 22/14.5≈1.52, 16/14.5≈1.10。 */
+.kydog-md-editor .ProseMirror h1 { font-size: 1.75em; font-weight: 600; margin: 32px 0 12px; }
+.kydog-md-editor .ProseMirror h2 { font-size: 1.5em;  font-weight: 600; margin: 28px 0 10px; }
+.kydog-md-editor .ProseMirror h3 { font-size: 1.1em;  font-weight: 600; margin: 20px 0 8px; }
 .kydog-md-editor .ProseMirror p  { margin: 0 0 12px; }
 
 .kydog-md-editor .ProseMirror blockquote {

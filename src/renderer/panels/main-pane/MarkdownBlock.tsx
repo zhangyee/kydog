@@ -80,7 +80,11 @@ export function MarkdownBlock({ content }: { content: string }) {
   return (
     <div
       className="font-serif"
-      style={{ fontSize: 14.5, lineHeight: 1.75, color: 'var(--color-ink)' }}
+      style={{
+        fontSize: 'var(--reading-font-size)',
+        lineHeight: 'var(--reading-line-height)',
+        color: 'var(--color-ink)',
+      }}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
         {content}
