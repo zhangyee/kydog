@@ -5,6 +5,7 @@ import { SkillsAndToolsSection } from './SkillsAndToolsSection';
 import { ProviderListSection } from './ProviderListSection';
 import { AddProviderPage } from './AddProviderPage';
 import { ProviderDetailPane } from './ProviderDetailPane';
+import { AboutSection } from './AboutSection';
 
 export function SettingsPane() {
   const activeSection = useUiStore((s) => s.settingsTab);
@@ -54,6 +55,8 @@ export function SettingsPane() {
           )
         ) : activeSection === 'skills' ? (
           <SkillsAndToolsSection />
+        ) : activeSection === 'about' ? (
+          <AboutSection />
         ) : (
           <EmptySettingsPage title={SETTINGS_PAGE_LABELS[activeSection]} />
         )}
