@@ -46,7 +46,7 @@ export class SettingsService {
   async update(patch: Partial<SettingsFile>): Promise<SettingsFile> {
     return this.withLock(async (cur) => {
       const next: SettingsFile = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         ui: { ...cur.ui, ...(patch.ui ?? {}) },
         llm: { ...cur.llm, ...(patch.llm ?? {}) },
         skills: { ...cur.skills, ...(patch.skills ?? {}) },

@@ -26,10 +26,10 @@ describe('dispatcher', () => {
   });
 
   it('routes to a registered handler and returns ok', async () => {
-    registerHandler('settings.get', async () => ({ schemaVersion: 2, ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false }, llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }, skills: { disabledBuiltins: [] }, tools: { externalBins: [] } }));
+    registerHandler('settings.get', async () => ({ schemaVersion: 3, ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'medium' }, llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }, skills: { disabledBuiltins: [] }, tools: { externalBins: [] } }));
     const invoke = handlers[RPC_CHANNEL];
     const result = await invoke(fakeEvt, { method: 'settings.get', args: undefined });
-    expect(result).toMatchObject({ ok: true, data: { schemaVersion: 2 } });
+    expect(result).toMatchObject({ ok: true, data: { schemaVersion: 3 } });
   });
 
   it('returns serialized error when handler throws', async () => {

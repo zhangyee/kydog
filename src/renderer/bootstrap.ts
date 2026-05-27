@@ -26,12 +26,14 @@ export async function bootstrap(): Promise<void> {
   useUiStore.subscribe((s) => {
     if (s.theme === prev.theme && s.workspaceCollapsed === prev.workspaceCollapsed && s.inspectorCollapsed === prev.inspectorCollapsed) return;
     prev = s;
+    const curSettings = useSettingsStore.getState().settings;
     void window.kydog.invoke('settings.update', {
       ui: {
         theme: s.theme,
         locale: 'zh',
         workspaceCollapsed: s.workspaceCollapsed,
         inspectorCollapsed: s.inspectorCollapsed,
+        readingFontSize: curSettings?.ui.readingFontSize ?? 'medium',
       },
     }).catch((err) => console.error('persist ui failed', err));
   });
