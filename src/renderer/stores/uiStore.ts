@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { FsNode, ThemeName } from '../../shared/types';
+import type { FsNode, ReadingFontSize, ThemeName } from '../../shared/types';
 import { fileTitle, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
 
 export type FileTab = {
@@ -18,6 +18,7 @@ type CenterTabKind = 'thread' | 'settings' | 'file';
 
 type UiState = {
   theme: ThemeName;
+  readingFontSize: ReadingFontSize;
   workspaceCollapsed: boolean;
   inspectorCollapsed: boolean;
   workspaceWidth: number;
@@ -49,6 +50,7 @@ type UiState = {
   setProjectsSortBy: (s: 'created' | 'updated') => void;
   collapseAllProjects: () => void;
   setTheme: (t: ThemeName) => void;
+  setReadingFontSize: (s: ReadingFontSize) => void;
   toggleWorkspace: () => void;
   toggleInspector: () => void;
   setWorkspaceWidth: (w: number) => void;
@@ -65,6 +67,7 @@ type UiState = {
 
 export const useUiStore = create<UiState>((set) => ({
   theme: 'vellum',
+  readingFontSize: 'medium',
   workspaceCollapsed: false,
   inspectorCollapsed: false,
   workspaceWidth: 260,
@@ -128,6 +131,7 @@ export const useUiStore = create<UiState>((set) => ({
   setProjectsSortBy: (s) => set({ projectsSortBy: s }),
   collapseAllProjects: () => set({ expandedProjects: new Set<string>() }),
   setTheme: (t) => set({ theme: t }),
+  setReadingFontSize: (s) => set({ readingFontSize: s }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
   setWorkspaceWidth: (w) => set({ workspaceWidth: Math.max(0, w) }),
