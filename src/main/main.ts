@@ -30,11 +30,16 @@ async function ensureKydogDirs() {
   ]);
 }
 
+// 打包后 macOS .icns / Windows .ico 由 forge packagerConfig.icon 烧进 bundle，
+// 开发模式 Electron 默认显示自带 logo —— 这里仅为 dev 模式补上 dock / 任务栏图标。
+const DEV_ICON_PATH = path.join(__dirname, '../../assets/icons/icon.png');
+
 async function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    icon: app.isPackaged || process.platform === 'darwin' ? undefined : DEV_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'index.js'),
       contextIsolation: true,
@@ -81,6 +86,13 @@ async function createWindow() {
 
 app.on('ready', async () => {
   try {
+    if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
+      try {
+        app.dock.setIcon(DEV_ICON_PATH);
+      } catch (err) {
+        logger.warn('app', 'failed to set dev dock icon', { err: String(err) });
+      }
+    }
     if (process.platform === 'win32') {
       const { found, searched } = detectBashOnWindows();
       if (!found) {

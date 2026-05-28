@@ -14,6 +14,7 @@ const fastpaperRel = process.platform === 'win32'
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    icon: path.join(__dirname, 'assets/icons/icon'), // forge 按平台自动追加 .icns / .ico
     extraResource: [fastpaperRel, 'src/skills'],
     // 等加签名时：osxSign / osxNotarize / windowsSign
   },
