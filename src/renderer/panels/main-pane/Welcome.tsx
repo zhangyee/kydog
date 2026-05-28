@@ -1,4 +1,4 @@
-import { KyLogo, NavIcon } from '../../shared';
+import { KyLogo, KyMascot, NavIcon } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useUnreadStore } from '../workspace/unreadStore';
@@ -43,6 +43,9 @@ export function Welcome() {
 
   return (
     <div className="ky-paper-grain h-full flex flex-col items-center justify-center select-none">
+      <div style={{ color: 'var(--color-ink)', marginBottom: 14 }}>
+        <KyMascot size={72} />
+      </div>
       <div className="flex items-baseline" style={{ gap: 18 }}>
         <KyLogo size={68} peerSize />
       </div>

@@ -1,4 +1,4 @@
-import { KyLogo, PanelIcon } from '../../shared';
+import { KyLogo, KyMascot, PanelIcon } from '../../shared';
 import { useUiStore } from '../../stores/uiStore';
 
 export function WorkspaceHeader() {
@@ -11,7 +11,18 @@ export function WorkspaceHeader() {
         borderBottom: '0.5px solid var(--color-ink-hair-soft)',
       }}
     >
-      <div style={{ flex: 1 }}><KyLogo size={20} /></div>
+      <div
+        style={{
+          flex: 1,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          color: 'var(--color-ink)',
+        }}
+      >
+        <KyLogo size={20} />
+        <KyMascot size={24} />
+      </div>
       <button
         type="button"
         data-testid="collapse-workspace"

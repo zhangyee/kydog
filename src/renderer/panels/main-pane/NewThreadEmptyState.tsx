@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { KyLogo, ChapterCard } from '../../shared';
+import { KyLogo, KyMascot, ChapterCard } from '../../shared';
 import { Composer } from './Composer';
 import { SKILL_MENU_ITEMS } from './skillMenuItems';
 
@@ -34,6 +34,12 @@ export function NewThreadEmptyState({ threadId }: Props) {
           <span style={{ width: 22, height: 1, background: 'var(--color-ink-hair)' }} />
         </div>
 
+        <div
+          className="flex justify-center"
+          style={{ color: 'var(--color-ink)', marginBottom: 14 }}
+        >
+          <KyMascot size={72} />
+        </div>
         <div className="flex items-baseline justify-center" style={{ gap: 18 }}>
           <KyLogo size={68} peerSize />
         </div>

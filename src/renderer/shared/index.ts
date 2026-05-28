@@ -1,5 +1,6 @@
 export { NavIcon, type NavIconName } from './NavIcon';
 export { KyLogo } from './KyLogo';
+export { KyMascot } from './KyMascot';
 export { PanelIcon } from './PanelIcon';
 export { Seal } from './Seal';
 export { MessageMeta } from './MessageMeta';
