@@ -2,8 +2,7 @@
 // 下载（sha 校验）+ 解压 + 启发式定位 binary
 
 import { createHash } from 'node:crypto';
-import { createWriteStream, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
-import { pipeline } from 'node:stream/promises';
+import { readdirSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
