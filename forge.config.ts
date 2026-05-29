@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
@@ -7,15 +8,19 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
-const fastpaperRel = process.platform === 'win32'
-  ? path.join('vendor', 'current', 'fastpaper.exe')
-  : path.join('vendor', 'current', 'fastpaper');
+const binsManifest = JSON.parse(
+  readFileSync(path.join(__dirname, 'scripts', 'bins.json'), 'utf-8')
+) as { tools: Record<string, { binaryName: string }> };
+const isWindows = process.platform === 'win32';
+const vendorBins = Object.values(binsManifest.tools).map((cfg) =>
+  path.join('vendor', 'current', cfg.binaryName + (isWindows ? '.exe' : ''))
+);
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     icon: path.join(__dirname, 'assets/icons/icon'), // forge 按平台自动追加 .icns / .ico
-    extraResource: [fastpaperRel, 'src/skills'],
+    extraResource: [...vendorBins, 'src/skills'],
     // 等加签名时：osxSign / osxNotarize / windowsSign
   },
   rebuildConfig: {},
