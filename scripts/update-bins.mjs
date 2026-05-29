@@ -3,11 +3,9 @@
 // bins:update 入口：交互式检查 upstream + 选择性升级
 
 import readline from 'node:readline';
-import { loadManifest, saveManifest } from './bins/manifest.mjs';
+import { loadManifest, saveManifest, TARGETS } from './bins/manifest.mjs';
 import { latestStableTag, fetchShaForAsset, fetchDistManifest } from './bins/github.mjs';
 import { installOne, reconcileVendor, vendorDir } from './bins/install-one.mjs';
-
-const TARGETS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 
 // cargo-dist target triple 映射；其他来源的 manifest 形态在此扩展
 const CARGO_DIST_TRIPLE = {

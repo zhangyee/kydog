@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
-const REQUIRED_TARGETS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
+export const TARGETS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const REQUIRED_TOOL_FIELDS = ['repo', 'version', 'releaseTagTemplate', 'binaryName', 'assets', 'sha256'];
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -18,7 +18,7 @@ export function validateManifest(m) {
     for (const f of REQUIRED_TOOL_FIELDS) {
       if (!(f in cfg)) throw new Error(`manifest: tool "${name}" missing field "${f}"`);
     }
-    for (const t of REQUIRED_TARGETS) {
+    for (const t of TARGETS) {
       if (!(t in cfg.assets)) throw new Error(`manifest: tool "${name}" assets missing target "${t}"`);
       if (!(t in cfg.sha256)) throw new Error(`manifest: tool "${name}" sha256 missing target "${t}"`);
     }

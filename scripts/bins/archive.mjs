@@ -1,8 +1,8 @@
 // scripts/bins/archive.mjs
-// 下载（sha 校验）+ 解压 + 启发式定位 binary
+// 下载（sha 校验）+ 解压 + 在解压目录里按名字定位文件
 
 import { createHash } from 'node:crypto';
-import { readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -37,31 +37,6 @@ export function extractArchive(archive, outDir) {
   }
   const r = spawnSync('tar', ['-xJf', archive, '-C', outDir], { stdio: 'inherit' });
   if (r.status !== 0) throw new Error(`tar -xJf failed for ${archive}`);
-}
-
-export function discoverExecutable(dir) {
-  const candidates = [];
-  const stack = [dir];
-  while (stack.length > 0) {
-    const cur = stack.pop();
-    for (const ent of readdirSync(cur, { withFileTypes: true })) {
-      const p = path.join(cur, ent.name);
-      if (ent.isDirectory()) { stack.push(p); continue; }
-      if (!ent.isFile()) continue;
-      if (process.platform === 'win32') {
-        if (ent.name.toLowerCase().endsWith('.exe')) candidates.push(ent.name);
-      } else {
-        const mode = statSync(p).mode;
-        // any exec bit set
-        if (mode & 0o111) candidates.push(ent.name);
-      }
-    }
-  }
-  if (candidates.length === 0) throw new Error(`discoverExecutable: no executable found in ${dir}`);
-  if (candidates.length > 1) {
-    throw new Error(`discoverExecutable: multiple executable candidates in ${dir}: ${candidates.join(', ')}`);
-  }
-  return candidates[0];
 }
 
 export function findFile(dir, name) {
