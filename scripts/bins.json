@@ -2,18 +2,18 @@
   "tools": {
     "fastpaper": {
       "repo": "zhangyee/fastpaper-cli",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "releaseTagTemplate": "v{version}",
       "binaryName": "fastpaper",
       "assets": {
         "darwin-arm64": "fastpaper-cli-aarch64-apple-darwin.tar.xz",
-        "darwin-x64":   "fastpaper-cli-x86_64-apple-darwin.tar.xz",
-        "win32-x64":    "fastpaper-cli-x86_64-pc-windows-msvc.zip"
+        "darwin-x64": "fastpaper-cli-x86_64-apple-darwin.tar.xz",
+        "win32-x64": "fastpaper-cli-x86_64-pc-windows-msvc.zip"
       },
       "sha256": {
-        "darwin-arm64": "9e57f6adf0ffee1362b7c76df2d2a3a68ba72bc677b02078ab5d655eed9f0ff7",
-        "darwin-x64":   "e386a0dbe40a2fc3cda17fe14e50b5dff21797f5dd58cc02b4dce0a82b747174",
-        "win32-x64":    "934371ab807648d738e4d348de23d3c21701d57dab16e1c40bcdb56406b7d111"
+        "darwin-arm64": "ef1a00c6745ab866d34aa864ba300a9c3782adc788062203fb18c30904f51dd7",
+        "darwin-x64": "cb679b6e7767ee26d4978d9f0f963f6c023252976b1e5031e291531be9f55cc9",
+        "win32-x64": "75df8b2975ef6fce0acb63a508da77bf621946e9afe60679ddc7b9dfdf5eb662"
       }
     }
   }
