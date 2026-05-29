@@ -1,6 +1,6 @@
 # KyDog
 
-KyDog — a research AI agent GUI for academic literature discovery and synthesis.
+KyDog — an AI research agent for academic literature discovery, review, and frontier insight.
 
 ## First launch
 
