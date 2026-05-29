@@ -21,7 +21,8 @@ export function WorkspaceHeader() {
         }}
       >
         <KyLogo size={20} />
-        <KyMascot size={24} />
+        {/* mascot content 在 SVG box 偏下，align-items:center 会显得比文字低 ~2-3px；负 marginTop 校正 */}
+        <KyMascot size={24} style={{ marginTop: -5 }} />
       </div>
       <button
         type="button"
