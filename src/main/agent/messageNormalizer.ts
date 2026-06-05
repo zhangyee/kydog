@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Message, AssistantBlock } from '../../shared/types';
 
-// Real pi-ai shapes (from @mariozechner/pi-ai)
+// Real pi-ai shapes (from @earendil-works/pi-ai)
 export type PiTextContent = { type: 'text'; text: string };
 export type PiThinkingContent = { type: 'thinking'; thinking: string };
 export type PiToolCall = { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> };

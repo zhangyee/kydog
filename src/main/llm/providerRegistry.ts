@@ -28,7 +28,7 @@ export class ProviderRegistry {
   }
 
   static async build(svc: SettingsService): Promise<ProviderRegistry> {
-    const pi = await import('@mariozechner/pi-coding-agent');
+    const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
     const authStorage = (pi as any).AuthStorage.fromStorage(new KydogAuthStorageBackend(svc));
     const modelRegistry = await ProviderRegistry.buildModelRegistry(pi, settings, authStorage);
@@ -44,7 +44,7 @@ export class ProviderRegistry {
     agent: AgentInvalidatable,
     changedIds: ProviderId[],
   ): Promise<void> {
-    const pi = await import('@mariozechner/pi-coding-agent');
+    const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
     this.modelRegistry = await ProviderRegistry.buildModelRegistry(pi, settings, this.authStorage);
     await agent.invalidateSessionsForProviders(changedIds);
@@ -52,7 +52,7 @@ export class ProviderRegistry {
 
   // ────────────────────────────────────────────────────
   private static async buildModelRegistry(
-    pi: typeof import('@mariozechner/pi-coding-agent'),
+    pi: typeof import('@earendil-works/pi-coding-agent'),
     settings: SettingsFile,
     authStorage: AnyAuthStorage,
   ): Promise<AnyModelRegistry> {

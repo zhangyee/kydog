@@ -1,6 +1,6 @@
 # LLM Providers
 
-KyDog 用 [`@mariozechner/pi-coding-agent`][pi] 跑 LLM agent。这份文档说明 provider/model 这层是怎么组织的、为什么这么组织、改动它要做什么。
+KyDog 用 [`@earendil-works/pi-coding-agent`][pi] 跑 LLM agent。这份文档说明 provider/model 这层是怎么组织的、为什么这么组织、改动它要做什么。
 
 [pi]: ../docs/references/pi-coding-agent/sdk.md
 
@@ -179,7 +179,7 @@ Vertex 的 ADC 检测有自己的探针（`vertexStatus.ts`，平台分支 win32
 - `google-gemini-cli`
 - `google-antigravity`
 
-catalog 里 OAuth 相关 provider 的 `id` 与 `oauth.piProviderId` 必须取自这个列表。改名会导致 `Unknown OAuth provider` 抛错。pi-ai 升级时记得验证这个列表是否变更（看 `node_modules/@mariozechner/pi-ai/dist/utils/oauth/index.d.ts`）。
+catalog 里 OAuth 相关 provider 的 `id` 与 `oauth.piProviderId` 必须取自这个列表。改名会导致 `Unknown OAuth provider` 抛错。pi-ai 升级时记得验证这个列表是否变更（看 `node_modules/@earendil-works/pi-ai/dist/utils/oauth/index.d.ts`）。
 
 ### 8.2 一个 auth 槽位只能存一种凭证
 
@@ -245,5 +245,5 @@ KyDog 的 catalog 是手维护的静态数据。pi-ai 升级新 provider 时不�
 
 - pi-coding-agent SDK 总览：`docs/references/pi-coding-agent/sdk.md`
 - pi-coding-agent 自定义 provider / model：`docs/references/pi-coding-agent/models.md`、`providers.md`
-- pi-ai OAuth provider 列表（权威）：`node_modules/@mariozechner/pi-ai/dist/utils/oauth/index.d.ts`
-- pi-ai env 变量映射：`node_modules/@mariozechner/pi-ai/dist/env-api-keys.js`（`getApiKeyEnvVars`）
+- pi-ai OAuth provider 列表（权威）：`node_modules/@earendil-works/pi-ai/dist/utils/oauth/index.d.ts`
+- pi-ai env 变量映射：`node_modules/@earendil-works/pi-ai/dist/env-api-keys.js`（`getApiKeyEnvVars`）

@@ -24,7 +24,7 @@ export async function createSession(opts: {
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
   if (fixturePath) return createFixtureSession(fixturePath);
 
-  const pi = await import('@mariozechner/pi-coding-agent');
+  const pi = await import('@earendil-works/pi-coding-agent');
   const reg = getProviderRegistry();
   const model = reg.modelRegistry.find(opts.providerId, opts.modelId);
   if (!model) {

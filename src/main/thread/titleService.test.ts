@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // vi.mock declarations are hoisted by Vitest — must be at module scope.
-vi.mock('@mariozechner/pi-ai', () => ({
+vi.mock('@earendil-works/pi-ai', () => ({
   completeSimple: vi.fn(),
 }));
 vi.mock('../agent/resolveActive', () => ({
@@ -58,7 +58,7 @@ describe('parseTitle', () => {
 });
 
 import { titleService } from './titleService';
-import { completeSimple } from '@mariozechner/pi-ai';
+import { completeSimple } from '@earendil-works/pi-ai';
 import { resolveActive } from '../agent/resolveActive';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { loadIndex } from '../persist/indexFile';

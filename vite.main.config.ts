@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   build: {
     rollupOptions: {
-      external: ['@mariozechner/pi-coding-agent', 'electron'],
+      external: ['@earendil-works/pi-coding-agent', 'electron'],
     },
   },
 });

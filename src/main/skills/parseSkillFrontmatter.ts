@@ -6,7 +6,7 @@ export type ParseResult =
 
 type RawFrontmatter = Record<string, unknown> & { name?: unknown; description?: unknown };
 
-const piPromise = import('@mariozechner/pi-coding-agent');
+const piPromise = import('@earendil-works/pi-coding-agent');
 
 export async function parseSkillFrontmatter(content: string): Promise<ParseResult> {
   const { parseFrontmatter } = await piPromise;

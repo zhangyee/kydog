@@ -50,7 +50,7 @@ async function callLlm(thread: Thread, firstUser: string): Promise<string | null
   if (!auth.ok) throw new KydogError('llm.invalid', auth.error);
   const { apiKey, headers } = auth;
 
-  const { completeSimple } = await import('@mariozechner/pi-ai');
+  const { completeSimple } = await import('@earendil-works/pi-ai');
   const response = await completeSimple(
     model as Parameters<typeof completeSimple>[0],
     {

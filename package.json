@@ -63,8 +63,8 @@
   "dependencies": {
     "@fontsource-variable/source-serif-4": "^5.2.9",
     "@fontsource/noto-serif-sc": "^5.2.9",
-    "@mariozechner/pi-ai": "0.70.5",
-    "@mariozechner/pi-coding-agent": "latest",
+    "@earendil-works/pi-ai": "0.78.1",
+    "@earendil-works/pi-coding-agent": "0.78.1",
     "@milkdown/crepe": "^7.21.1",
     "chokidar": "^5.0.0",
     "electron-squirrel-startup": "^1.0.1",

@@ -18,7 +18,7 @@ export function buildSkillsOverride(
 }
 
 export async function createKydogResourceLoader(projectCwd: string) {
-  const pi = await import('@mariozechner/pi-coding-agent');
+  const pi = await import('@earendil-works/pi-coding-agent');
   // Snapshot disabled list at construction time (spec §A.2): in-flight sessions
   // keep their original filter; new sessions pick up the latest setting.
   const disabled = (await settingsService.get()).skills.disabledBuiltins;

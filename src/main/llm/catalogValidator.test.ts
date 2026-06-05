@@ -3,9 +3,9 @@ import { PROVIDER_CATALOG } from './catalog';
 
 describe('catalogValidator (informational)', () => {
   it('对比 pi.BUILTIN_PROVIDERS（warning，不 fail）', async () => {
-    let pi: typeof import('@mariozechner/pi-coding-agent');
+    let pi: typeof import('@earendil-works/pi-coding-agent');
     try {
-      pi = await import('@mariozechner/pi-coding-agent');
+      pi = await import('@earendil-works/pi-coding-agent');
     } catch {
       console.warn('pi-coding-agent 未安装，跳过 catalog 同步检查');
       return;
