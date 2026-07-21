@@ -31,15 +31,32 @@ function envLevel(): Level {
   return (raw in LEVELS ? raw : 'info') as Level;
 }
 
-const logDir = path.join(os.homedir(), '.kydog', 'logs');
-const logFile = path.join(logDir, 'main.log');
-let dirEnsured = false;
-
-async function ensureDir() {
-  if (dirEnsured) return;
-  await fs.mkdir(logDir, { recursive: true });
-  dirEnsured = true;
+// 串行写 + size-cap 轮换：超过 maxSize 时 rename 成 <file>.1（只留一代）。
+// appendFile 每次按路径打开，rename 后下一笔写入自动新建空文件，无需重开流。
+export function createLogSink(file: string, maxSize: number) {
+  let approxSize = -1; // -1 = 未初始化，首笔写入时从磁盘 stat
+  let queue = Promise.resolve();
+  return {
+    write(line: string): Promise<void> {
+      queue = queue.then(async () => {
+        if (approxSize < 0) {
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          approxSize = await fs.stat(file).then(s => s.size, () => 0);
+        }
+        if (approxSize > maxSize) {
+          await fs.rename(file, file + '.1').catch(() => {});
+          approxSize = 0;
+        }
+        await fs.appendFile(file, line + '\n', 'utf8');
+        approxSize += Buffer.byteLength(line) + 1;
+      }).catch(() => {});
+      return queue;
+    },
+  };
 }
+
+const logFile = path.join(os.homedir(), '.kydog', 'logs', 'main.log');
+const sink = createLogSink(logFile, 2 * 1024 * 1024);
 
 function emit(level: Level, scope: string, msg: string, ctx?: unknown) {
   if (LEVELS[level] < LEVELS[envLevel()]) return;
@@ -51,7 +68,7 @@ function emit(level: Level, scope: string, msg: string, ctx?: unknown) {
     ...(ctx === undefined ? {} : { ctx: redactSecrets(ctx) }),
   });
   console[level === 'debug' ? 'log' : level](line);
-  void ensureDir().then(() => fs.appendFile(logFile, line + '\n', 'utf8')).catch(() => {});
+  void sink.write(line);
 }
 
 export const logger = {
