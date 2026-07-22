@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import * as paths from '../persist/paths';
 import { defaultSettings, loadSettings, ensureSettingsFile } from '../persist/settingsFile';
 import { atomicWriteWith0600Async, atomicWriteWith0600Sync } from '../persist/atomicWrite';
-import type { SettingsFile } from '../../shared/types';
+import type { SettingsFile, SettingsPatch } from '../../shared/types';
 
 // In-process serialization: all operations (sync and async) are serialized
 // through this chain so proper-lockfile is never contested within one process.
@@ -43,14 +43,15 @@ export class SettingsService {
   }
 
   /** 兼容旧 callsites（settings.update IPC 等）；内部走 withLock 统一锁。 */
-  async update(patch: Partial<SettingsFile>): Promise<SettingsFile> {
+  async update(patch: SettingsPatch): Promise<SettingsFile> {
     return this.withLock(async (cur) => {
       const next: SettingsFile = {
-        schemaVersion: 3,
+        schemaVersion: 4,
         ui: { ...cur.ui, ...(patch.ui ?? {}) },
         llm: { ...cur.llm, ...(patch.llm ?? {}) },
         skills: { ...cur.skills, ...(patch.skills ?? {}) },
         tools: { ...cur.tools, ...(patch.tools ?? {}) },
+        onboarding: cur.onboarding, // 只能由 onboarding 服务改（spec §7）
       };
       return { next, result: next };
     });

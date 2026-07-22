@@ -1,5 +1,5 @@
 import type {
-  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SkillSyncStatus,
+  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncStatus,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider,
 } from './types';
@@ -8,7 +8,7 @@ import type { SerializedError } from './errors';
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
   | { method: 'settings.get'; args: undefined; result: SettingsFile }
-  | { method: 'settings.update'; args: Partial<SettingsFile>; result: SettingsFile }
+  | { method: 'settings.update'; args: SettingsPatch; result: SettingsFile }
   | { method: 'project.open'; args: undefined; result: Project }
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }

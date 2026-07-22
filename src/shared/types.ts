@@ -41,6 +41,9 @@ export type ThemeName = 'vellum' | 'porcelain' | 'sepia' | 'midnight' | 'lilac';
 
 export type ExternalBinEntry = { name: string; path: string; addedAt: string };
 
+export const THEME_NAMES = ['vellum', 'porcelain', 'sepia', 'midnight', 'lilac'] as const satisfies readonly ThemeName[];
+export const READING_FONT_SIZES = ['small', 'medium', 'large'] as const satisfies readonly ReadingFontSize[];
+
 // ── LLM schema v2 ──
 export type ProviderId = string;
 
@@ -110,10 +113,10 @@ export type CustomProvider = {
 export type ReadingFontSize = 'small' | 'medium' | 'large';
 
 export type SettingsFile = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   ui: {
     theme: ThemeName;
-    locale: 'zh';
+    locale: 'zh' | 'en';
     workspaceCollapsed: boolean;
     inspectorCollapsed: boolean;
     readingFontSize: ReadingFontSize;
@@ -127,6 +130,15 @@ export type SettingsFile = {
   };
   skills: { disabledBuiltins: string[] };
   tools: { externalBins: ExternalBinEntry[] };
+  onboarding: { completedAt: string | null };
+};
+
+/** settings.update 专用 patch：排除 schemaVersion 与 onboarding（spec §7）。 */
+export type SettingsPatch = {
+  ui?: Partial<SettingsFile['ui']>;
+  llm?: Partial<SettingsFile['llm']>;
+  skills?: Partial<SettingsFile['skills']>;
+  tools?: Partial<SettingsFile['tools']>;
 };
 
 export type IndexFile = {

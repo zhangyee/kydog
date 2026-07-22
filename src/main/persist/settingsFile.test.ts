@@ -17,7 +17,7 @@ describe('settingsFile v3', () => {
 
   it('defaultSettings: schemaVersion=3 + 空 llm + readingFontSize=medium', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(3);
+    expect(d.schemaVersion).toBe(4);
     expect(d.ui.readingFontSize).toBe('medium');
     expect(d.llm.auth).toEqual({});
     expect(d.llm.providers).toEqual({});
@@ -33,7 +33,7 @@ describe('settingsFile v3', () => {
       expect(statSync(path.join(dir, 'kydog.json')).mode & 0o777).toBe(0o600);
     }
     const content = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
-    expect(JSON.parse(content).schemaVersion).toBe(3);
+    expect(JSON.parse(content).schemaVersion).toBe(4);
   });
 
   it('ensureSettingsFile: 已存在文件不覆盖', async () => {
@@ -55,7 +55,7 @@ describe('settingsFile v3', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(3);
+    expect(next.schemaVersion).toBe(4);
     expect(next.ui.theme).toBe('midnight');
     expect(next.ui.readingFontSize).toBe('medium');
     expect(next.skills.disabledBuiltins).toEqual(['old']);
@@ -80,7 +80,7 @@ describe('settingsFile v3', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v2));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(3);
+    expect(next.schemaVersion).toBe(4);
     expect(next.ui.theme).toBe('midnight');
     expect(next.ui.readingFontSize).toBe('medium');
     expect(next.llm.defaultProvider).toBe('anthropic');
@@ -94,7 +94,7 @@ describe('settingsFile v3', () => {
     v3.ui.theme = 'sepia';
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(3);
+    expect(next.schemaVersion).toBe(4);
     expect(next.ui.readingFontSize).toBe('large');
     expect(next.ui.theme).toBe('sepia');
   });
@@ -107,5 +107,38 @@ describe('settingsFile v3', () => {
     await loadSettings();
     expect(statSync(path.join(dir, 'kydog.json')).mode & 0o777).toBe(0o600);
     warn.mockRestore();
+  });
+
+  it('defaultSettings: schemaVersion=4 + onboarding.completedAt=null', () => {
+    const d = defaultSettings();
+    expect(d.schemaVersion).toBe(4);
+    expect(d.onboarding).toEqual({ completedAt: null });
+    expect(d.ui.locale).toBe('zh');
+  });
+
+  it('loadSettings: v3 → v4 补 onboarding，保留其余字段', async () => {
+    ensureSettingsFile();
+    const v3 = {
+      schemaVersion: 3,
+      ui: { theme: 'midnight', locale: 'zh', workspaceCollapsed: true, inspectorCollapsed: false, readingFontSize: 'large' },
+      llm: { auth: { a: 1 }, providers: {}, customProviders: [], defaultProvider: 'anthropic', defaultModel: 'm1' },
+      skills: { disabledBuiltins: ['x'] },
+      tools: { externalBins: [] },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
+    const s = await loadSettings();
+    expect(s.schemaVersion).toBe(4);
+    expect(s.onboarding).toEqual({ completedAt: null });
+    expect(s.ui.theme).toBe('midnight');
+    expect(s.llm.defaultProvider).toBe('anthropic');
+  });
+
+  it('loadSettings: v4 原样回读（completedAt 保留）；非法 locale 归位 zh', async () => {
+    ensureSettingsFile();
+    const v4 = { ...defaultSettings(), ui: { ...defaultSettings().ui, locale: 'fr' }, onboarding: { completedAt: '2026-01-01T00:00:00.000Z' } };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v4));
+    const s = await loadSettings();
+    expect(s.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(s.ui.locale).toBe('zh');
   });
 });

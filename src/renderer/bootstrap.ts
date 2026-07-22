@@ -35,7 +35,6 @@ export async function bootstrap(): Promise<void> {
     void window.kydog.invoke('settings.update', {
       ui: {
         theme: s.theme,
-        locale: 'zh',
         workspaceCollapsed: s.workspaceCollapsed,
         inspectorCollapsed: s.inspectorCollapsed,
         readingFontSize: s.readingFontSize,
