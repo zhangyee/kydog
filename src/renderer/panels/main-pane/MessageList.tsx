@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
-import { APP_USER_NAME } from '../../shared';
+import { useIdentityStore } from '../../stores/identityStore';
 import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
@@ -13,7 +13,7 @@ export function MessageList({ threadId }: { threadId: string }) {
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
 
-  const userName = APP_USER_NAME.split(' ')[0];
+  const userName = useIdentityStore((s) => s.userName);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
