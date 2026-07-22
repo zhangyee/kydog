@@ -143,6 +143,12 @@ export type SettingsPatch = {
   tools?: Partial<SettingsFile['tools']>;
 };
 
+// ── Onboarding RPC ──
+export type OnboardingRecovery = 'none' | 'pending' | 'corrupt-discarded';
+export type OnboardingCompleteArgs = { locale: 'zh' | 'en'; theme: ThemeName; readingFontSize: ReadingFontSize; userName: string; agentName: string };
+export type OnboardingErrorCode = 'invalid-input' | 'model-missing' | 'seed-failed' | 'recovery-pending' | 'manifest-corrupt' | 'already-completed';
+export type OnboardingResult = { ok: true } | { ok: false; code: OnboardingErrorCode; message: string };
+
 export type IndexFile = {
   schemaVersion: 1;
   projects: Project[];
