@@ -64,9 +64,22 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
   const applyOkAndEnter = async () => {
     useUiStore.getState().setTheme(theme);
     useUiStore.getState().setReadingFontSize(size);
+    // bootstrap() 在 noProvider 时把 settingsTabOpen/activeCenterTab 写成了 settings 落地页(引导用户先配 provider)。
+    // 向导走完后必须复位,否则新用户完成向导进主界面直接停在 Settings 页而非空态欢迎页。
+    // closeSettings() 是 uiStore 现成 setter,一次性重置 settingsTabOpen/activeCenterTab,
+    // 同时顺带清掉 settingsDetailProviderId/settingsAddProviderOpen——即第 3 步模型子步骤里
+    // 可能打开过的 ProviderDetailPane/AddProviderPage 残留,避免主界面 Settings 首次打开时
+    // 停在残留的子页面而不是 provider 列表。
+    useUiStore.getState().closeSettings();
     const fresh = await window.kydog.invoke('settings.get');
-    const id = { userName: userName.trim() || 'You', agentName: agentName.trim() || 'KyDog' };
-    useIdentityStore.getState().setIdentity(id);
+    // recovery 模式下 userName/agentName 只是本组件本地的空 state,并非用户上次真实填写的称呼;
+    // 用它们调 setIdentity 会用猜测值('You'/'KyDog')覆盖已有身份。recovery 的身份由
+    // main 侧 onboarding.resume 完成后通过 identity.changed 事件推送、或下次 bootstrap() 读取,
+    // 这里跳过即可,fresh 模式保持原逻辑不变。
+    if (mode === 'fresh') {
+      const id = { userName: userName.trim() || 'You', agentName: agentName.trim() || 'KyDog' };
+      useIdentityStore.getState().setIdentity(id);
+    }
     useSettingsStore.getState().setSettings(fresh); // completedAt 非空 → Root 切 AppShell
   };
 
@@ -90,6 +103,16 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
   };
 
   const steps = useMemo(() => [t.stepLanguage, t.stepNames, t.stepModel, t.stepLook, t.stepDone], [t]);
+
+  // 离开第 3 步(模型/provider)前进到第 4 步时,收起可能残留打开的 ProviderDetailPane/AddProviderPage,
+  // 把 provider 子导航复位到列表态,避免完成向导后主界面 Settings 首次打开时停在残留子页面。
+  const goNext = () => {
+    if (step === 2) {
+      useUiStore.getState().closeSettingsDetail();
+      useUiStore.getState().closeSettingsAddProvider();
+    }
+    setStep((s) => (s + 1) as Step);
+  };
 
   if (mode === 'recovery') {
     return (
@@ -165,7 +188,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
         <div style={{ flex: 1 }} />
         {step < 4 && (
           <button data-testid="onboarding-next" disabled={step === 2 && !llmReady}
-            onClick={() => setStep((s) => (s + 1) as Step)}
+            onClick={goNext}
             className={primaryBtnClass} style={primaryBtn}>{t.next}</button>
         )}
         {step === 4 && (
