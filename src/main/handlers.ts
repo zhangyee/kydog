@@ -10,16 +10,38 @@ import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { skillsService } from './skills/skillsService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
+import { getIdentity } from './harness/identityService';
+import { onboardingService } from './harness/onboardingService';
+import { readManifest, deleteManifest, discardCorruptManifest } from './harness/manifest';
+import { mapSystemLocale } from './harness/locale';
+import type { OnboardingRecovery } from '../shared/types';
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
-    const [settings, projects, threads] = await Promise.all([
+    const [settings, projects, threads, identity] = await Promise.all([
       settingsService.get(),
       projectService.list(),
       threadService.listAll(),
+      getIdentity(),
     ]);
-    return { settings, projects, threads, appVersion: app.getVersion() };
+    let onboardingRecovery: OnboardingRecovery = 'none';
+    const m = await readManifest();
+    if (settings.onboarding.completedAt === null) {
+      if (m.status === 'ok') onboardingRecovery = 'pending';
+      else if (m.status === 'corrupt') { await discardCorruptManifest(); onboardingRecovery = 'corrupt-discarded'; }
+    } else if (m.status !== 'none') {
+      await deleteManifest(); // stale manifest：completed 为准（spec §8）
+    }
+    return {
+      settings, projects, threads,
+      appVersion: app.getVersion(),
+      systemLocale: mapSystemLocale(app.getLocale()),
+      identity, onboardingRecovery,
+    };
   });
+
+  registerHandler('onboarding.complete', (args) => onboardingService.complete(args));
+  registerHandler('onboarding.resume', () => onboardingService.resume());
 
   registerHandler('settings.get', () => settingsService.get());
   registerHandler('settings.update', (args) => settingsService.update(args));

@@ -1,7 +1,7 @@
 import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncStatus,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
-  ProviderId, CustomProvider,
+  ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult,
 } from './types';
 import type { SerializedError } from './errors';
 
@@ -51,7 +51,10 @@ export type RpcCall =
   | { method: 'dialog.pickFile'; args: { filters?: Array<{ name: string; extensions: string[] }> }; result: string | null }
   | { method: 'file.readText'; args: { path: string }; result: { content: string } }
   | { method: 'file.readBytes'; args: { path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
-  | { method: 'file.writeText'; args: { path: string; content: string }; result: void };
+  | { method: 'file.writeText'; args: { path: string; content: string }; result: void }
+  // ── Onboarding ──
+  | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
+  | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult };
 
 export type RpcMethod = RpcCall['method'];
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];
@@ -77,7 +80,8 @@ export type RuntimeEvent =
   | { topic: 'oauth.success'; payload: { providerId: string } }
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }
-  | { topic: 'fs.changed'; payload: { projectPath: string } };
+  | { topic: 'fs.changed'; payload: { projectPath: string } }
+  | { topic: 'identity.changed'; payload: Identity };
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];

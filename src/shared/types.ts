@@ -160,6 +160,9 @@ export type BootstrapState = {
   threads: Thread[];
   settings: SettingsFile;
   appVersion: string;
+  systemLocale: 'zh' | 'en';
+  identity: Identity;
+  onboardingRecovery: OnboardingRecovery;
 };
 
 // ── Skills（保留旧定义不变）──

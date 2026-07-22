@@ -16,6 +16,8 @@ import { applyCloudEnv } from './llm/cloudEnvSync';
 import { initProviderRegistry } from './llm/providerRegistry';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
+import { startIdentityWatcher } from './harness/identityService';
+import { broadcaster } from './ipc/broadcaster';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -141,6 +143,7 @@ app.on('ready', async () => {
 
     installDispatcher();
     registerAllHandlers();
+    startIdentityWatcher((id) => broadcaster.emit('identity.changed', id));
     try {
       await projectService.initWatchers();
     } catch (err) {
