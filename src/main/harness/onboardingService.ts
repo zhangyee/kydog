@@ -30,10 +30,15 @@ export function createOnboardingService(deps: OnboardingDeps) {
     return inflight;
   };
 
-  /** 锁内公共尾段：模型校验 → 播种 → 组装 next。 */
+  /** 服务端模型校验：默认 provider/model 未配置或不可解析。 */
+  function modelMissing(cur: SettingsFile): boolean {
+    return !cur.llm.defaultProvider || !cur.llm.defaultModel
+      || !deps.isModelResolvable(cur.llm.defaultProvider, cur.llm.defaultModel);
+  }
+
+  /** 锁内公共尾段：模型校验 → 播种 → 组装 next。（resume 路径靠这里做模型校验；complete 已在写 manifest 前校验过，这里属二次触达，无害） */
   async function seedAndFinish(cur: SettingsFile, m: SeedManifest): Promise<LockStep> {
-    if (!cur.llm.defaultProvider || !cur.llm.defaultModel
-      || !deps.isModelResolvable(cur.llm.defaultProvider, cur.llm.defaultModel)) {
+    if (modelMissing(cur)) {
       return fail('model-missing', '尚未配置默认模型');
     }
     try {
@@ -73,8 +78,14 @@ export function createOnboardingService(deps: OnboardingDeps) {
           || !(READING_FONT_SIZES as readonly string[]).includes(args.readingFontSize)) {
           return fail('invalid-input', '参数不合法');
         }
+        if (modelMissing(cur)) return fail('model-missing', '尚未配置默认模型'); // 顺序：校验（含模型）→ 写 manifest → 播种（spec §8）
         const manifest: SeedManifest = { schemaVersion: 1, locale: args.locale, theme: args.theme, readingFontSize: args.readingFontSize, userName, agentName };
-        await deps.writeManifest(manifest);
+        try {
+          await deps.writeManifest(manifest);
+        } catch (err) {
+          logger.error('harness.onboarding', 'write manifest failed', { err: String(err) });
+          return fail('seed-failed', String(err));
+        }
         return seedAndFinish(cur, manifest);
       }).then(cleanupOnOk));
     },

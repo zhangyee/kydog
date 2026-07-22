@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createOnboardingService, type OnboardingDeps } from './onboardingService';
 import type { SettingsFile, OnboardingCompleteArgs } from '../../shared/types';
 import type { SeedManifest, ManifestReadResult } from './manifest';
 
 const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFontSize: 'medium', userName: '老张', agentName: 'KyDog' };
 
-function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean }> = {}) {
+function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean }> = {}) {
   const state = {
     settings: {
       schemaVersion: 4,
@@ -32,7 +32,10 @@ function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; m
       return { created: ['SOUL.md', 'USER.md', 'AGENTS.md'], skipped: [] };
     },
     readManifest: async () => (state.written ? { status: 'ok', manifest: state.written } : state.manifest),
-    writeManifest: async (m) => { state.written = m; },
+    writeManifest: async (m) => {
+      if (over.writeManifestFail) throw new Error('ENOSPC');
+      state.written = m;
+    },
     deleteManifest: async () => { state.deleted += 1; state.written = null; },
     discardCorruptManifest: async () => { state.discarded += 1; state.manifest = { status: 'none' }; },
     isModelResolvable: () => over.model !== false,
@@ -61,8 +64,9 @@ describe('onboarding.complete', () => {
   });
 
   it('model-missing：默认模型未配置', async () => {
-    const { svc } = makeWorld({ model: false });
+    const { state, svc } = makeWorld({ model: false });
     expect(await svc.complete(ARGS)).toMatchObject({ ok: false, code: 'model-missing' });
+    expect(state.written).toBeNull();
   });
 
   it('seed-failed：不写 completedAt，manifest 保留', async () => {
@@ -70,6 +74,14 @@ describe('onboarding.complete', () => {
     expect(await svc.complete(ARGS)).toMatchObject({ ok: false, code: 'seed-failed' });
     expect(state.settings.onboarding.completedAt).toBeNull();
     expect(state.written).not.toBeNull();
+  });
+
+  it('writeManifest 抛错：seed-failed，不写 completedAt，不播种', async () => {
+    const { state, svc } = makeWorld({ writeManifestFail: true });
+    expect(await svc.complete(ARGS)).toMatchObject({ ok: false, code: 'seed-failed' });
+    expect(state.settings.onboarding.completedAt).toBeNull();
+    expect(state.written).toBeNull();
+    expect(state.seedCalls).toHaveLength(0);
   });
 
   it('recovery-pending：已有 manifest 时不覆盖、不接受新参数', async () => {
