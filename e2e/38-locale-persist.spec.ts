@@ -15,6 +15,12 @@ test('38-locale: en 用户改主题后重启 locale 仍为 en（回归 bootstrap
     await page.locator('[data-testid="user-menu-trigger"]').click();
     await page.locator('[data-testid="theme-midnight"]').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight');
+
+    // ui 持久化订阅是 fire-and-forget：关闭前反复读盘直到写入落地，避免竞态（对齐 34-thread-rename.spec.ts:29 的既有模式）。
+    await expect.poll(async () => {
+      const raw = await fs.readFile(path.join(kydogHome, '.kydog', 'kydog.json'), 'utf8');
+      return JSON.parse(raw).ui;
+    }).toMatchObject({ theme: 'midnight', locale: 'en' });
   } finally {
     await teardown(first);
   }

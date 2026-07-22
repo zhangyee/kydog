@@ -43,6 +43,8 @@ test('37a-onboarding: 首启向导 → 自定义称呼走完 → 三文件落盘
   // 二次启动：复用同一 HOME，onboarding 已完成 → 不再出向导。
   const second = await launchKydog({ kydogHome });
   try {
+    // 先等主界面真正挂载（正向信号），避免 React 挂载前的瞬时 DOM 让 toHaveCount(0) 假通过。
+    await expect(second.page.locator('[data-testid="title-bar"]')).toBeVisible({ timeout: 10_000 });
     await expect(second.page.locator('[data-testid="onboarding-root"]')).toHaveCount(0);
   } finally {
     await teardown(second);
@@ -55,7 +57,6 @@ test('37b-identity: USER.md 含空格称呼在消息列表完整显示', async (
   const launched = await launchKydog({
     fixture: 'e2e/fixtures/happy-path-text.json',
     seed: async (home) => {
-      await seedSettings(home);
       await seedProject(home, projectPath, [{ id: threadId, title: '37b thread' }]);
       await fs.writeFile(path.join(home, '.kydog', 'USER.md'), '---\nname: "Dr. Zhang"\n---\nbody');
     },
