@@ -1,5 +1,7 @@
 import type { SerializedError } from './errors';
 
+export type Identity = { userName: string; agentName: string };
+
 export type Project = { path: string; label?: string; addedAt: string; pinned?: boolean };
 
 export type Thread = {
