@@ -5,7 +5,7 @@ import path from 'node:path';
 import * as paths from './paths';
 import { ensureSettingsFile, loadSettings, defaultSettings } from './settingsFile';
 
-describe('settingsFile v3', () => {
+describe('settingsFile v4', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-settings-'));
@@ -15,7 +15,7 @@ describe('settingsFile v3', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('defaultSettings: schemaVersion=3 + 空 llm + readingFontSize=medium', () => {
+  it('defaultSettings: schemaVersion=4 + 空 llm + readingFontSize=medium', () => {
     const d = defaultSettings();
     expect(d.schemaVersion).toBe(4);
     expect(d.ui.readingFontSize).toBe('medium');
@@ -26,7 +26,7 @@ describe('settingsFile v3', () => {
     expect(d.llm.defaultModel).toBeNull();
   });
 
-  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v3', () => {
+  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v4', () => {
     ensureSettingsFile();
     if (process.platform !== 'win32') {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
@@ -44,7 +44,7 @@ describe('settingsFile v3', () => {
     expect(content).toBe('{"sentinel":1}');
   });
 
-  it('loadSettings: v1 → v3 reset (保留 ui/skills/tools，重置 llm)', async () => {
+  it('loadSettings: v1 → v4 reset (保留 ui/skills/tools，重置 llm)', async () => {
     ensureSettingsFile();
     const v1 = {
       schemaVersion: 1,
@@ -63,7 +63,7 @@ describe('settingsFile v3', () => {
     expect(next.llm.providers).toEqual({});
   });
 
-  it('loadSettings: v2 → v3（保留所有字段，补 readingFontSize=medium）', async () => {
+  it('loadSettings: v2 → v4（保留所有字段，补 readingFontSize=medium）', async () => {
     ensureSettingsFile();
     const v2 = {
       schemaVersion: 2,
@@ -87,7 +87,7 @@ describe('settingsFile v3', () => {
     expect(next.skills.disabledBuiltins).toEqual(['old']);
   });
 
-  it('loadSettings: v3 → v3（passthrough，保留 readingFontSize=large）', async () => {
+  it('loadSettings: v3 → v4（passthrough，保留 readingFontSize=large）', async () => {
     ensureSettingsFile();
     const v3 = defaultSettings();
     v3.ui.readingFontSize = 'large';
@@ -131,6 +131,22 @@ describe('settingsFile v3', () => {
     expect(s.onboarding).toEqual({ completedAt: null });
     expect(s.ui.theme).toBe('midnight');
     expect(s.llm.defaultProvider).toBe('anthropic');
+  });
+
+  it('loadSettings: v3 → v4 迁移时 ui.locale=\'en\' 保留', async () => {
+    ensureSettingsFile();
+    const v3 = {
+      schemaVersion: 3,
+      ui: { theme: 'midnight', locale: 'en', workspaceCollapsed: true, inspectorCollapsed: false, readingFontSize: 'large' },
+      llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null },
+      skills: { disabledBuiltins: [] },
+      tools: { externalBins: [] },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
+    const s = await loadSettings();
+    expect(s.schemaVersion).toBe(4);
+    expect(s.ui.locale).toBe('en');
+    expect(s.onboarding).toEqual({ completedAt: null });
   });
 
   it('loadSettings: v4 原样回读（completedAt 保留）；非法 locale 归位 zh', async () => {

@@ -72,4 +72,17 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     const got = await svc.get();
     expect(Object.keys(got.llm.providers).length).toBe(50);
   });
+
+  it('update(): patch 混入 onboarding.completedAt + schemaVersion 被过滤（守住不变式）', async () => {
+    const before = await svc.get();
+    const patch = {
+      ui: { theme: 'sepia' as const },
+      onboarding: { completedAt: 'HACK' } as any,
+      schemaVersion: 99 as any,
+    };
+    const result = await svc.update(patch);
+    expect(result.schemaVersion).toBe(4);
+    expect(result.ui.theme).toBe('sepia');
+    expect(result.onboarding.completedAt).toBe(before.onboarding.completedAt);
+  });
 });
