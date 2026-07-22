@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { StrictMode } from 'react';
-import { AppShell } from './app/AppShell';
+import { Root } from './app/Root';
 import { bootstrap } from './bootstrap';
 import './index.css';
 
@@ -11,7 +11,7 @@ if (root) {
   });
   createRoot(root).render(
     <StrictMode>
-      <AppShell />
+      <Root />
     </StrictMode>,
   );
 }

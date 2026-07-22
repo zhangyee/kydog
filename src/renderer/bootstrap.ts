@@ -4,6 +4,7 @@ import { useSettingsStore } from './stores/settingsStore';
 import { useRunsStore } from './stores/runsStore';
 import { useLlmStore } from './stores/llmStore';
 import { useSkillsStore } from './stores/skillsStore';
+import { useIdentityStore } from './stores/identityStore';
 import { useUnreadStore } from './panels/workspace/unreadStore';
 
 export async function bootstrap(): Promise<void> {
@@ -11,6 +12,11 @@ export async function bootstrap(): Promise<void> {
   useThreadsStore.getState().hydrate(state.projects, state.threads);
   useSettingsStore.getState().setSettings(state.settings);
   useSettingsStore.getState().setAppVersion(state.appVersion);
+  useIdentityStore.getState().setIdentity(state.identity);
+  useSettingsStore.getState().setBootstrapMeta({
+    systemLocale: state.systemLocale,
+    onboardingRecovery: state.onboardingRecovery,
+  });
   await useLlmStore.getState().refresh();
   const noProvider = state.settings.llm.defaultProvider === null;
   useUiStore.setState({
@@ -48,6 +54,8 @@ export async function bootstrap(): Promise<void> {
   void window.kydog.invoke('skill.list')
     .then((skills) => useSkillsStore.getState().setSkills(skills))
     .catch((err) => console.error('skill.list failed', err));
+
+  useSettingsStore.getState().setBootstrapped(true);
 }
 
 function setupEventBridge(): void {
@@ -119,6 +127,9 @@ function setupEventBridge(): void {
   });
   window.kydog.on('fs.changed', (p) => {
     void refreshCachedDirsUnder(p.projectPath);
+  });
+  window.kydog.on('identity.changed', (id) => {
+    useIdentityStore.getState().setIdentity(id);
   });
 
   void runs; void threads; // silence unused
