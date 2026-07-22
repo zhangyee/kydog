@@ -10,6 +10,10 @@ export const SESSIONS_DIR = path.join(ROOT, 'sessions');
 export const LOGS_DIR = path.join(ROOT, 'logs');
 export const CACHE_DIR = path.join(ROOT, '.cache');
 export const STAGING_DIR = path.join(CACHE_DIR, 'staging');
+export const SOUL_FILE = path.join(ROOT, 'SOUL.md');
+export const USER_FILE = path.join(ROOT, 'USER.md');
+export const AGENTS_FILE = path.join(ROOT, 'AGENTS.md');
+export const SEED_MANIFEST_FILE = path.join(ROOT, '.onboarding-seed.json');
 
 export function sessionsDirFor(projectPath: string): string {
   return path.join(SESSIONS_DIR, cwdHash(projectPath));
