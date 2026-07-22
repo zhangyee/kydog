@@ -10,9 +10,14 @@ export async function launchKydog(opts: {
   seed?: (kydogHome: string) => Promise<void>;
   /** Extra env vars merged into the launched Electron process (e.g. KYDOG_E2E, KYDOG_OAUTH_FIXTURE). */
   env?: Record<string, string>;
+  /** true = 全新 HOME 不预置（onboarding 专项用）。默认自动预置"已完成 onboarding"。 */
+  freshHome?: boolean;
+  /** 传入则复用该 HOME（重启场景）。 */
+  kydogHome?: string;
 } = {}): Promise<LaunchedApp> {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-userdata-'));
-  const kydogHome = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-home-'));
+  const kydogHome = opts.kydogHome ?? await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-home-'));
+  if (!opts.freshHome && !opts.kydogHome) await seedSettings(kydogHome);
   if (opts.seed) await opts.seed(kydogHome);
   const env: Record<string, string> = {
     ...process.env,
@@ -32,13 +37,13 @@ export async function launchKydog(opts: {
   return { app, page, userDataDir, kydogHome };
 }
 
-export async function seedSettings(kydogHome: string, opts: { providerConfigured?: boolean } = {}) {
+export async function seedSettings(kydogHome: string, opts: { providerConfigured?: boolean; onboardingCompleted?: boolean; locale?: 'zh' | 'en' } = {}) {
   await fs.mkdir(path.join(kydogHome, '.kydog'), { recursive: true });
-  const v3 = {
-    schemaVersion: 3 as const,
+  const v4 = {
+    schemaVersion: 4 as const,
     ui: {
       theme: 'vellum',
-      locale: 'zh',
+      locale: opts.locale ?? 'zh',
       workspaceCollapsed: false,
       inspectorCollapsed: false,
       readingFontSize: 'medium',
@@ -54,10 +59,11 @@ export async function seedSettings(kydogHome: string, opts: { providerConfigured
         },
     skills: { disabledBuiltins: [] },
     tools: { externalBins: [] },
+    onboarding: { completedAt: opts.onboardingCompleted === false ? null : '2026-01-01T00:00:00.000Z' },
   };
   await fs.writeFile(
     path.join(kydogHome, '.kydog', 'kydog.json'),
-    JSON.stringify(v3, null, 2),
+    JSON.stringify(v4, null, 2),
   );
 }
 

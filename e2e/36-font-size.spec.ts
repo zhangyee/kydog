@@ -48,6 +48,7 @@ test('36-font-size: 持久化 — 关 app 重开后档位不丢', async () => {
     llm: { auth: { 'anthropic': { type: 'api_key', key: 'sk-fix' } }, providers: { 'anthropic': {} }, customProviders: [], defaultProvider: 'anthropic', defaultModel: 'claude-sonnet-4-5' },
     skills: { disabledBuiltins: [] },
     tools: { externalBins: [] },
+    onboarding: { completedAt: '2026-01-01T00:00:00.000Z' },
   }, null, 2));
 
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-userdata-'));

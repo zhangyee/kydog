@@ -1,8 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { launchKydog, teardown } from './helpers';
+import { launchKydog, teardown, seedSettings } from './helpers';
 
 test('25-llm: save Bedrock IAM keys → main process.env reflects', async () => {
-  const launched = await launchKydog({ env: { KYDOG_E2E: '1' } });
+  const launched = await launchKydog({
+    seed: (home) => seedSettings(home, { providerConfigured: false }),
+    env: { KYDOG_E2E: '1' },
+  });
   const { page, app } = launched;
   try {
     await expect(page.getByText('还未配置任何 provider')).toBeVisible();

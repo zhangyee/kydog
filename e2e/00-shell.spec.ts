@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { launchKydog, teardown } from './helpers';
+import { launchKydog, teardown, seedSettings } from './helpers';
 
 test('00-shell: app boots; three panes render; theme applies; settings pane force-opens on first run', async () => {
-  const launched = await launchKydog();
+  // onboarding 已完成、但未配置 provider 的"首次真实使用"态：settings 面板强制打开。
+  const launched = await launchKydog({ seed: (home) => seedSettings(home, { providerConfigured: false }) });
   const { page } = launched;
   try {
     await expect(page.locator('[data-pane="workspace"]')).toBeVisible();

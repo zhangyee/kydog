@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { launchKydog, teardown } from './helpers';
+import { launchKydog, teardown, seedSettings } from './helpers';
 
 test('22-llm: add Anthropic key shows entry in list', async () => {
-  const launched = await launchKydog();
+  const launched = await launchKydog({ seed: (home) => seedSettings(home, { providerConfigured: false }) });
   const { page } = launched;
   try {
     // First-run: settings tab auto-opens, list is empty.

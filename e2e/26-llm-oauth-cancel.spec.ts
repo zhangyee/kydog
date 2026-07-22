@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { launchKydog, teardown } from './helpers';
+import { launchKydog, teardown, seedSettings } from './helpers';
 import { cancelPath } from './fixtures/oauth-mock';
 
 test('26-llm: OAuth login (fixture cancelPath) → cancel returns to idle', async () => {
@@ -9,7 +9,10 @@ test('26-llm: OAuth login (fixture cancelPath) → cancel returns to idle', asyn
   const fixturePath = path.join(tmpDir, 'cancel.json');
   await fs.writeFile(fixturePath, JSON.stringify(cancelPath));
 
-  const launched = await launchKydog({ env: { KYDOG_OAUTH_FIXTURE: fixturePath } });
+  const launched = await launchKydog({
+    seed: (home) => seedSettings(home, { providerConfigured: false }),
+    env: { KYDOG_OAUTH_FIXTURE: fixturePath },
+  });
   const { page } = launched;
   try {
     await page.getByRole('button', { name: '+ 添加 provider' }).click();

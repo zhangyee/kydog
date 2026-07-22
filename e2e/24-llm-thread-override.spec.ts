@@ -22,6 +22,7 @@ async function seedTwoProviders(kydogHome: string) {
     },
     skills: { disabledBuiltins: [] },
     tools: { externalBins: [] },
+    onboarding: { completedAt: '2026-01-01T00:00:00.000Z' },
   };
   await fs.mkdir(path.join(kydogHome, '.kydog'), { recursive: true });
   await fs.writeFile(path.join(kydogHome, '.kydog', 'kydog.json'), JSON.stringify(v2, null, 2));
