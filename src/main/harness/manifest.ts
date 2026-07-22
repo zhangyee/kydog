@@ -19,7 +19,7 @@ export type ManifestReadResult =
   | { status: 'ok'; manifest: SeedManifest }
   | { status: 'corrupt' };
 
-function manifestPath(dir: string): string { return path.join(dir, '.onboarding-seed.json'); }
+function manifestPath(dir: string): string { return path.join(dir, path.basename(paths.SEED_MANIFEST_FILE)); }
 
 export async function readManifest(dir: string = paths.ROOT): Promise<ManifestReadResult> {
   let raw: string;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readManifest, writeManifest, deleteManifest, discardCorruptManifest, type SeedManifest } from './manifest';
@@ -15,6 +15,9 @@ describe('manifest', () => {
     await writeManifest(M, dir);
     const r = await readManifest(dir);
     expect(r).toEqual({ status: 'ok', manifest: M });
+    if (process.platform !== 'win32') {
+      expect(statSync(path.join(dir, '.onboarding-seed.json')).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('不存在 → none', async () => {
@@ -30,6 +33,8 @@ describe('manifest', () => {
     writeFileSync(p, JSON.stringify({ ...M, schemaVersion: 2 }));
     expect((await readManifest(dir)).status).toBe('corrupt');
     writeFileSync(p, JSON.stringify({ ...M, userName: 'a\nb' }));
+    expect((await readManifest(dir)).status).toBe('corrupt');
+    writeFileSync(p, JSON.stringify({ ...M, locale: 'fr' }));
     expect((await readManifest(dir)).status).toBe('corrupt');
   });
 
