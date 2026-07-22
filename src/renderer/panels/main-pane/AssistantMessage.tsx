@@ -7,6 +7,7 @@ import { ErrorMarginalia } from './ErrorMarginalia';
 import { FileCard } from './FileCard';
 import { useRunsStore } from '../../stores/runsStore';
 import { useThreadsStore } from '../../stores/threadsStore';
+import { useIdentityStore } from '../../stores/identityStore';
 import { groupBlocks } from './groupBlocks';
 import { collectFileCards } from './fileCards';
 
@@ -18,12 +19,13 @@ export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Pro
     const t = Object.values(s.threadsByProject).flat().find((x) => x.id === threadId);
     return t?.projectPath ?? null;
   });
+  const agentName = useIdentityStore((s) => s.agentName);
   const groups = useMemo(() => groupBlocks(blocks), [blocks]);
   const fileCards = useMemo(() => collectFileCards(blocks, projectPath), [blocks, projectPath]);
 
   return (
     <div style={{ margin: '24px 0' }}>
-      <MessageMeta side="agent" label="KyDog" time={fmtTime(createdAt)} />
+      <MessageMeta side="agent" label={agentName} time={fmtTime(createdAt)} />
       <div
         className="font-serif"
         style={{
