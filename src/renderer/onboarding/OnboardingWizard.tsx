@@ -61,9 +61,9 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
     }
   }, [step, theme, size]);
 
-  const applyOkAndEnter = async () => {
-    useUiStore.getState().setTheme(theme);
-    useUiStore.getState().setReadingFontSize(size);
+  // applyIdentity: 仅当调用方确认"真正走完 onboarding.complete 成功(result.ok)且 mode==='fresh'"时传 true;
+  // already-completed 重放路径(即使 mode==='fresh')不传——identity 已由 bootstrap 注水,不应用本地猜测值覆盖。
+  const applyOkAndEnter = async (applyIdentity: boolean) => {
     // bootstrap() 在 noProvider 时把 settingsTabOpen/activeCenterTab 写成了 settings 落地页(引导用户先配 provider)。
     // 向导走完后必须复位,否则新用户完成向导进主界面直接停在 Settings 页而非空态欢迎页。
     // closeSettings() 是 uiStore 现成 setter,一次性重置 settingsTabOpen/activeCenterTab,
@@ -72,11 +72,15 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
     // 停在残留的子页面而不是 provider 列表。
     useUiStore.getState().closeSettings();
     const fresh = await window.kydog.invoke('settings.get');
-    // recovery 模式下 userName/agentName 只是本组件本地的空 state,并非用户上次真实填写的称呼;
-    // 用它们调 setIdentity 会用猜测值('You'/'KyDog')覆盖已有身份。recovery 的身份由
-    // main 侧 onboarding.resume 完成后通过 identity.changed 事件推送、或下次 bootstrap() 读取,
-    // 这里跳过即可,fresh 模式保持原逻辑不变。
-    if (mode === 'fresh') {
+    // recovery/already-completed 模式下本地 theme/size state 从未被用户在本次会话触碰,仍是
+    // 初始默认值 'vellum'/'medium';直接用它们调 setTheme/setReadingFontSize 会覆盖 main 侧刚从
+    // manifest 恢复(或本就已持久化)的用户真实选择,且 bootstrap 的持久化订阅会把这个错误值
+    // 写回磁盘造成永久丢失。改用刚 settings.get 到的 fresh.ui.* ——fresh 模式下这与本地 state
+    // 等价(本地 state 正是提交给 main 生成它的来源),recovery/already-completed 模式下则是正确的
+    // 已恢复值,两种模式统一处理,无需按 mode 分支。
+    useUiStore.getState().setTheme(fresh.ui.theme);
+    useUiStore.getState().setReadingFontSize(fresh.ui.readingFontSize);
+    if (applyIdentity) {
       const id = { userName: userName.trim() || 'You', agentName: agentName.trim() || 'KyDog' };
       useIdentityStore.getState().setIdentity(id);
     }
@@ -93,9 +97,12 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
           agentName: agentName.trim() || 'KyDog',
         });
     setBusy(false);
-    if (result.ok) { await applyOkAndEnter(); return; }
+    // applyIdentity 只在这条"真正走完 complete/resume 成功"的路径且 mode==='fresh' 时为 true——
+    // 此时 userName/agentName 是本次向导里用户真实填写的值。already-completed 分支即使 mode
+    // 仍是 'fresh' 也一律传 false,见 applyOkAndEnter 注释。
+    if (result.ok) { await applyOkAndEnter(mode === 'fresh'); return; }
     switch (result.code) {
-      case 'already-completed': await applyOkAndEnter(); return;
+      case 'already-completed': await applyOkAndEnter(false); return;
       case 'recovery-pending': useSettingsStore.getState().setOnboardingRecovery('pending'); return;
       case 'manifest-corrupt': useSettingsStore.getState().setOnboardingRecovery('corrupt-discarded'); return;
       default: setError(result.code);
