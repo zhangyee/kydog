@@ -72,6 +72,14 @@ function OnboardingInput({ testId, style, onFocus, onBlur, ...rest }: InputHTMLA
   );
 }
 
+// 完成页「这些文件属于你」清单——路径不需要翻译，只有说明文案走 dict。
+const FILES_GUIDE = [
+  { path: '~/.kydog/kydog.json', descKey: 'filesGuideSettingsDesc' as const },
+  { path: '~/.kydog/SOUL.md', descKey: 'filesGuideSoulDesc' as const },
+  { path: '~/.kydog/USER.md', descKey: 'filesGuideUserDesc' as const },
+  { path: '~/.kydog/AGENTS.md', descKey: 'filesGuideAgentsDesc' as const },
+];
+
 function stepTitle(step: Step, t: Dict): string {
   switch (step) {
     case 0: return t.stepTitleLanguage;
@@ -318,6 +326,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
                   <p className="font-serif" style={{ fontSize: 13, color: 'var(--color-ink-soft)', lineHeight: 1.7 }}>
                     {t.doneSummary(userName.trim() || 'You', agentName.trim() || 'KyDog')}
                   </p>
+                  <FilesGuide t={t} />
                   {error && <ErrorLine code={error} t={t} />}
                 </div>
               )}
@@ -357,6 +366,28 @@ function ModelStep({ notReady }: { notReady: string | null }) {
     <div>
       {detailProviderId ? <ProviderDetailPane /> : addOpen ? <AddProviderPage /> : <ProviderListSection onAdd={openAdd} />}
       {notReady && <p data-testid="onboarding-model-notready" className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-soft)', marginTop: 4 }}>{notReady}</p>}
+    </div>
+  );
+}
+
+/** 完成页「这些文件属于你」清单：mono 路径 + sans 说明(ink-soft)，行间发丝分隔线，紧凑不留白撑高。 */
+function FilesGuide({ t }: { t: Dict }) {
+  return (
+    <div data-testid="onboarding-files-guide" style={{ marginTop: 20 }}>
+      <div className="font-mono uppercase" style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 2 }}>
+        {t.filesGuideTitle}
+      </div>
+      {FILES_GUIDE.map(({ path, descKey }, i) => (
+        <div key={path} style={{
+          display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 10, rowGap: 2,
+          padding: '6px 0',
+          borderTop: i === 0 ? 'none' : '0.5px solid var(--color-ink-hair-soft)',
+        }}>
+          <span className="font-mono" style={{ fontSize: 11, color: 'var(--color-ink)', flexShrink: 0 }}>{path}</span>
+          <span className="font-sans" style={{ fontSize: 11.5, color: 'var(--color-ink-soft)' }}>{t[descKey]}</span>
+        </div>
+      ))}
+      <p className="font-serif italic" style={hintStyle}>{t.filesGuideHint}</p>
     </div>
   );
 }
