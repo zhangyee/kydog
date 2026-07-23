@@ -34,7 +34,8 @@ const inputStyle: CSSProperties = {
   border: 'none',
   outline: 'none',
   padding: '7px 0',
-  fontFamily: 'var(--font-mono)', fontSize: 11.5,
+  // 正文默认字体，无额外字距——曾套 mono 字体，英文在等宽字体下被拉成全角观感（用户反馈）。
+  fontFamily: 'var(--font-sans)', fontSize: 11.5,
   color: 'var(--color-ink)',
   width: '100%',
   marginTop: 6,
@@ -58,7 +59,7 @@ function OnboardingInput({ testId, style, onFocus, onBlur, ...rest }: InputHTMLA
   return (
     <input
       data-testid={testId}
-      className="font-mono"
+      className="font-sans"
       style={{
         ...inputStyle,
         borderBottom: `0.5px solid ${focused ? 'var(--color-ink)' : 'var(--color-ink-hair-soft)'}`,
@@ -178,6 +179,8 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
   // Enter 语义(比如 ApiKeyForm 是个 <form>,Enter 会触发它自己的保存),不去劫持;这天然
   // 满足"门禁未过时 Enter 无效"——门禁通过后走已可点的"下一步"按钮即可。
   const onNameInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    // IME 组合输入(如拼音候选)期间的确认回车不算"下一步"，否则中文输入法选字会被误触发跳步。
+    if (e.nativeEvent.isComposing) return;
     if (e.key !== 'Enter') return;
     e.preventDefault();
     goNext();
@@ -185,7 +188,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
   useEffect(() => {
     if (mode !== 'fresh' || step !== 4) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Enter' || busy) return;
+      if (e.isComposing || e.key !== 'Enter' || busy) return;
       e.preventDefault();
       void submit();
     };
@@ -212,15 +215,21 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
       <style>{WIZARD_STYLE}</style>
       <div style={{
         maxWidth: 860, width: '100%', margin: '0 auto', padding: '56px 24px',
-        display: 'grid', gridTemplateColumns: '200px 1fr', gap: 0,
-        minHeight: 460, alignItems: 'stretch',
+        display: 'grid', gridTemplateColumns: '236px 1fr', gap: 0,
+        height: 520, alignItems: 'stretch',
       }}>
-        {/* 左栏：欢迎语 + 步骤 rail + 吉祥物（沉底）——与右栏共享同一条发丝线分区 + 同一条 footer 基线 */}
+        {/* 左栏：欢迎语(与吉祥物同行) + 步骤 rail——与右栏共享同一条发丝线分区、同一容器高度(520，
+            与右栏一起被外层 grid 的 height+alignItems:'stretch' 撑到等高) */}
         <div style={{
           display: 'flex', flexDirection: 'column',
           paddingRight: 28, borderRight: '0.5px solid var(--color-ink-hair-soft)',
         }}>
-          <h1 className="font-serif" style={{ fontSize: 22 }}>{t.welcome}</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* mascot content 在 SVG box 偏下，align-items:center 会显得比文字低；负 marginTop 校正
+                （技巧同 WorkspaceHeader.tsx 里 KyLogo/KyMascot 同行的用法） */}
+            <KyMascot size={28} style={{ marginTop: -6 }} />
+            <h1 className="font-serif" style={{ fontSize: 22 }}>{t.welcome}</h1>
+          </div>
           <nav style={{ marginTop: 30, display: 'flex', flexDirection: 'column', gap: 11 }}>
             {steps.map((label, i) => {
               const idx = i as Step;
@@ -248,17 +257,17 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
               );
             })}
           </nav>
-          <KyMascot size={40} style={{ marginTop: 'auto' }} />
         </div>
 
-        {/* 右栏：当前步问题式大标题 + 控件 + 辅助说明 + footer（沉底，与左栏吉祥物同一基线） */}
-        <div style={{ minWidth: 0, paddingLeft: 36, display: 'flex', flexDirection: 'column' }}>
+        {/* 右栏：标题(固定) → 内容区(flex:1+内部滚动，防止第 3 步 provider 列表撑高把 footer 顶跑)
+            → footer(固定在列尾)。容器整体等高 520，任何一步内容再高都在内容区内部滚动。 */}
+        <div style={{ minWidth: 0, minHeight: 0, paddingLeft: 36, display: 'flex', flexDirection: 'column' }}>
           {corruptNotice && (
             <p className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)', marginBottom: 18 }}>{t.corruptNotice}</p>
           )}
-          <div key={step} className="onboarding-step-fade">
-            <h2 className="font-serif" style={{ fontSize: 26 }}>{stepTitle(step, t)}</h2>
-            <div style={{ marginTop: 22 }}>
+          <div key={step} className="onboarding-step-fade" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+            <h2 className="font-serif" style={{ fontSize: 26, flexShrink: 0 }}>{stepTitle(step, t)}</h2>
+            <div className="ky-scroll" style={{ marginTop: 22, flex: 1, minHeight: 0, overflowY: 'auto' }}>
               {step === 0 && (
                 <div>
                   <button data-testid="onboarding-locale-zh" aria-pressed={locale === 'zh'} onClick={() => setLocale('zh')}
@@ -312,8 +321,8 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
                   {error && <ErrorLine code={error} t={t} />}
                 </div>
               )}
+              {stepHint(step, t) && <p className="font-serif italic" style={hintStyle}>{stepHint(step, t)}</p>}
             </div>
-            {stepHint(step, t) && <p className="font-serif italic" style={hintStyle}>{stepHint(step, t)}</p>}
           </div>
 
           <footer style={{ marginTop: 'auto', paddingTop: 28, display: 'flex', alignItems: 'center', gap: 16 }}>
