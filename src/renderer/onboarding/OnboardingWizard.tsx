@@ -212,7 +212,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
       <style>{WIZARD_STYLE}</style>
       <div style={{
         maxWidth: 860, width: '100%', margin: '0 auto', padding: '56px 24px',
-        display: 'grid', gridTemplateColumns: '200px 1fr', gap: 48,
+        display: 'grid', gridTemplateColumns: '200px 1fr', gap: 0,
         minHeight: 460, alignItems: 'stretch',
       }}>
         {/* 左栏：欢迎语 + 步骤 rail + 吉祥物（沉底）——与右栏共享同一条发丝线分区 + 同一条 footer 基线 */}
