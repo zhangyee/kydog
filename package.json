@@ -11,6 +11,7 @@
   "scripts": {
     "postinstall": "node scripts/install-bins.mjs",
     "bins:update": "node scripts/update-bins.mjs",
+    "onboarding:reset": "node scripts/reset-onboarding.mjs",
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",
