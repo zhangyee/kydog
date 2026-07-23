@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  useEffect, useMemo, useState,
+  type CSSProperties, type InputHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type ReactNode,
+} from 'react';
 import { onboardingDict, type OnboardingLocale } from '../i18n/onboardingDict';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useUiStore } from '../stores/uiStore';
@@ -7,9 +10,18 @@ import { useIdentityStore } from '../stores/identityStore';
 import { ProviderListSection } from '../settings/ProviderListSection';
 import { AddProviderPage } from '../settings/AddProviderPage';
 import { ProviderDetailPane } from '../settings/ProviderDetailPane';
+import { KyMascot } from '../shared';
 import { THEME_NAMES, READING_FONT_SIZES, type ThemeName, type ReadingFontSize, type OnboardingErrorCode } from '../../shared/types';
 
 type Step = 0 | 1 | 2 | 3 | 4;
+type Dict = (typeof onboardingDict)['zh'];
+
+// 双列布局仅第 4/5 步过渡用得到：切步时 remount + 150ms 淡入；聚焦态用 JS 状态而非 CSS
+// 伪类驱动（内联 style 的优先级高于样式表，:focus 规则压不过内联 borderBottom，故不走 <style> 方案）。
+const WIZARD_STYLE = `
+@keyframes onboarding-step-fade { from { opacity: 0; } to { opacity: 1; } }
+.onboarding-step-fade { animation: onboarding-step-fade 150ms ease-out; }
+`;
 
 const primaryBtn: CSSProperties = {
   padding: '6px 16px', borderRadius: 999, fontSize: 12, fontWeight: 500,
@@ -20,14 +32,14 @@ const textBtnStyle: CSSProperties = { background: 'transparent', color: 'var(--c
 const inputStyle: CSSProperties = {
   background: 'transparent',
   border: 'none',
-  borderBottom: '0.5px solid var(--color-ink-hair-soft)',
   padding: '7px 0',
   fontFamily: 'var(--font-mono)', fontSize: 11.5,
   color: 'var(--color-ink)',
   width: '100%',
   marginTop: 6,
 };
-const labelStyle: CSSProperties = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--color-ink)', fontWeight: 500 };
+const labelStyle: CSSProperties = { fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--color-ink-soft)', fontWeight: 500 };
+const hintStyle: CSSProperties = { fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 12, color: 'var(--color-ink-soft)', marginTop: 14, lineHeight: 1.6 };
 
 function pillStyle(active: boolean): CSSProperties {
   return {
@@ -37,6 +49,44 @@ function pillStyle(active: boolean): CSSProperties {
     background: active ? 'var(--color-paper-deep)' : 'transparent',
     color: 'var(--color-ink)',
   };
+}
+
+/** 底边框式输入框：聚焦变 ink——inline style 驱动（不用 CSS :focus，避免被内联样式盖掉）。 */
+function OnboardingInput({ testId, style, onFocus, onBlur, ...rest }: InputHTMLAttributes<HTMLInputElement> & { testId?: string }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      data-testid={testId}
+      className="font-mono"
+      style={{
+        ...inputStyle,
+        borderBottom: `0.5px solid ${focused ? 'var(--color-ink)' : 'var(--color-ink-hair-soft)'}`,
+        ...style,
+      }}
+      onFocus={(e) => { setFocused(true); onFocus?.(e); }}
+      onBlur={(e) => { setFocused(false); onBlur?.(e); }}
+      {...rest}
+    />
+  );
+}
+
+function stepTitle(step: Step, t: Dict): string {
+  switch (step) {
+    case 0: return t.stepTitleLanguage;
+    case 1: return t.stepTitleNames;
+    case 2: return t.stepTitleModel;
+    case 3: return t.stepTitleLook;
+    case 4: return t.stepTitleDone;
+  }
+}
+
+function stepHint(step: Step, t: Dict): string | null {
+  switch (step) {
+    case 1: return t.namesHint;
+    case 2: return t.modelHint;
+    case 3: return t.lookHint;
+    default: return null;
+  }
 }
 
 export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'recovery'; corruptNotice: boolean }) {
@@ -53,13 +103,14 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
 
   const llmReady = useLlmStore((s) => s.defaultProvider !== null && s.defaultModel !== null);
 
-  // 第 4/5 步预览：直接改 document 属性，不碰 uiStore(spec §8 第 4 步暂存)
+  // 主题/字号预览：向导一 mount 就生效（bug 修复——原先要 step>=3 才设置 document 属性，
+  // 导致真·首启时第 0-2 步全程跑在未定义的 CSS 变量下，即 vellum.css 等按 [data-theme="x"]
+  // 选择器生效，属性没设就等于什么颜色/字体变量都没有）。回退步骤不撤销已选值——这里没有
+  // 任何"离开就恢复默认"的逻辑，本身就自然满足"保留所选"。
   useEffect(() => {
-    if (step >= 3) {
-      document.documentElement.setAttribute('data-theme', theme);
-      document.documentElement.setAttribute('data-reading-size', size);
-    }
-  }, [step, theme, size]);
+    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute('data-reading-size', size);
+  }, [theme, size]);
 
   // applyIdentity: 仅当调用方确认"真正走完 onboarding.complete 成功(result.ok)且 mode==='fresh'"时传 true;
   // already-completed 重放路径(即使 mode==='fresh')不传——identity 已由 bootstrap 注水,不应用本地猜测值覆盖。
@@ -121,120 +172,194 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
     setStep((s) => (s + 1) as Step);
   };
 
+  // Enter=下一步。只接管向导自己的文本输入(称呼两个输入框)和完成步(无输入,全局监听)——
+  // 模型步内嵌的是 ProviderListSection/ApiKeyForm 等共享设置组件,它们的输入框有自己的
+  // Enter 语义(比如 ApiKeyForm 是个 <form>,Enter 会触发它自己的保存),不去劫持;这天然
+  // 满足"门禁未过时 Enter 无效"——门禁通过后走已可点的"下一步"按钮即可。
+  const onNameInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    goNext();
+  };
+  useEffect(() => {
+    if (mode !== 'fresh' || step !== 4) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || busy) return;
+      e.preventDefault();
+      void submit();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mode, step, busy]);
+
   if (mode === 'recovery') {
     return (
-      <Frame title={t.recoveryTitle}>
+      <RecoveryFrame title={t.recoveryTitle}>
         <p className="font-serif" style={{ fontSize: 13, color: 'var(--color-ink-soft)', lineHeight: 1.7 }}>{t.recoveryBody}</p>
         {error && <ErrorLine code={error} t={t} />}
         <footer style={{ marginTop: 24 }}>
           <button data-testid="onboarding-retry" disabled={busy} onClick={() => void submit()}
             className={primaryBtnClass} style={primaryBtn}>{t.retry}</button>
         </footer>
-      </Frame>
+      </RecoveryFrame>
     );
   }
 
   return (
-    <Frame title={t.welcome} subtitle={steps[step]} corrupt={corruptNotice ? t.corruptNotice : null}>
-      {step === 0 && (
+    <div data-testid="onboarding-root" className="ky-paper-grain h-full w-full overflow-y-auto flex items-center justify-center"
+      style={{ background: 'var(--color-paper)', color: 'var(--color-ink)' }}>
+      <style>{WIZARD_STYLE}</style>
+      <div style={{
+        maxWidth: 860, width: '100%', margin: '0 auto', padding: '56px 24px',
+        display: 'grid', gridTemplateColumns: '200px 1fr', gap: 48,
+        minHeight: 420, alignItems: 'start',
+      }}>
+        {/* 左栏：欢迎语 + 吉祥物 + 步骤 rail */}
         <div>
-          <button data-testid="onboarding-locale-zh" aria-pressed={locale === 'zh'} onClick={() => setLocale('zh')}
-            className="font-sans" style={pillStyle(locale === 'zh')}>中文</button>
-          <button data-testid="onboarding-locale-en" aria-pressed={locale === 'en'} onClick={() => setLocale('en')}
-            className="font-sans" style={pillStyle(locale === 'en')}>English</button>
+          <h1 className="font-serif" style={{ fontSize: 22 }}>{t.welcome}</h1>
+          <KyMascot size={40} style={{ marginTop: 18 }} />
+          <nav style={{ marginTop: 30, display: 'flex', flexDirection: 'column', gap: 11 }}>
+            {steps.map((label, i) => {
+              const idx = i as Step;
+              const done = idx < step;
+              const current = idx === step;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  data-testid={`onboarding-rail-${i}`}
+                  disabled={!done}
+                  onClick={done ? () => setStep(idx) : undefined}
+                  className="font-mono text-left"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    background: 'transparent', border: 'none', padding: 0,
+                    fontSize: 11,
+                    color: done || current ? 'var(--color-ink)' : 'var(--color-ink-faint)',
+                    cursor: done ? 'pointer' : 'default',
+                  }}
+                >
+                  <span style={{ width: 10, flexShrink: 0, textAlign: 'center' }}>{done ? '✓' : current ? '●' : '○'}</span>
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </nav>
         </div>
-      )}
-      {step === 1 && (
-        <div>
-          <label style={{ display: 'block', marginBottom: 20 }}>
-            <span style={labelStyle}>{t.namesUserLabel}</span>
-            <input data-testid="onboarding-username" value={userName} maxLength={64}
-              placeholder={t.namesUserPlaceholder} onChange={(e) => setUserName(e.target.value)} style={inputStyle} />
-          </label>
-          <label style={{ display: 'block' }}>
-            <span style={labelStyle}>{t.namesAgentLabel}</span>
-            <input data-testid="onboarding-agentname" value={agentName} maxLength={64}
-              placeholder={t.namesAgentPlaceholder} onChange={(e) => setAgentName(e.target.value)} style={inputStyle} />
-          </label>
-        </div>
-      )}
-      {step === 2 && <ModelStep hint={t.modelHint} notReady={llmReady ? null : t.modelNotReady} />}
-      {step === 3 && (
-        <div>
-          <div className="font-mono uppercase" style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 10 }}>{t.lookTheme}</div>
-          <div style={{ marginBottom: 24 }}>
-            {THEME_NAMES.map((n) => (
-              <button key={n} data-testid={`onboarding-theme-${n}`} aria-pressed={theme === n} onClick={() => setTheme(n)}
-                className="font-sans" style={pillStyle(theme === n)}>{n}</button>
-            ))}
+
+        {/* 右栏：当前步问题式大标题 + 控件 + 辅助说明 + footer */}
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          {corruptNotice && (
+            <p className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)', marginBottom: 18 }}>{t.corruptNotice}</p>
+          )}
+          <div key={step} className="onboarding-step-fade">
+            <h2 className="font-serif" style={{ fontSize: 26 }}>{stepTitle(step, t)}</h2>
+            <div style={{ marginTop: 22 }}>
+              {step === 0 && (
+                <div>
+                  <button data-testid="onboarding-locale-zh" aria-pressed={locale === 'zh'} onClick={() => setLocale('zh')}
+                    className="font-sans" style={pillStyle(locale === 'zh')}>中文</button>
+                  <button data-testid="onboarding-locale-en" aria-pressed={locale === 'en'} onClick={() => setLocale('en')}
+                    className="font-sans" style={pillStyle(locale === 'en')}>English</button>
+                </div>
+              )}
+              {step === 1 && (
+                <div>
+                  <label style={{ display: 'block', marginBottom: 22 }}>
+                    <span style={labelStyle}>{t.namesUserLabel}</span>
+                    <OnboardingInput testId="onboarding-username" value={userName} maxLength={64}
+                      placeholder={t.namesUserPlaceholder} onChange={(e) => setUserName(e.target.value)}
+                      onKeyDown={onNameInputKeyDown} />
+                  </label>
+                  <label style={{ display: 'block' }}>
+                    <span style={labelStyle}>{t.namesAgentLabel}</span>
+                    <OnboardingInput testId="onboarding-agentname" value={agentName} maxLength={64}
+                      placeholder={t.namesAgentPlaceholder} onChange={(e) => setAgentName(e.target.value)}
+                      onKeyDown={onNameInputKeyDown} />
+                  </label>
+                </div>
+              )}
+              {step === 2 && <ModelStep notReady={llmReady ? null : t.modelNotReady} />}
+              {step === 3 && (
+                <div>
+                  <div className="font-mono uppercase" style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 10 }}>{t.lookTheme}</div>
+                  <div style={{ marginBottom: 24 }}>
+                    {THEME_NAMES.map((n) => (
+                      <button key={n} data-testid={`onboarding-theme-${n}`} aria-pressed={theme === n} onClick={() => setTheme(n)}
+                        className="font-sans" style={pillStyle(theme === n)}>{n}</button>
+                    ))}
+                  </div>
+                  <div className="font-mono uppercase" style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 10 }}>{t.lookSize}</div>
+                  <div>
+                    {READING_FONT_SIZES.map((n) => (
+                      <button key={n} data-testid={`onboarding-size-${n}`} aria-pressed={size === n} onClick={() => setSize(n)}
+                        className="font-sans" style={pillStyle(size === n)}>
+                        {n === 'small' ? t.sizeSmall : n === 'medium' ? t.sizeMedium : t.sizeLarge}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {step === 4 && (
+                <div>
+                  <p className="font-serif" style={{ fontSize: 13, color: 'var(--color-ink-soft)', lineHeight: 1.7 }}>
+                    {t.doneSummary(userName.trim() || 'You', agentName.trim() || 'KyDog')}
+                  </p>
+                  {error && <ErrorLine code={error} t={t} />}
+                </div>
+              )}
+            </div>
+            {stepHint(step, t) && <p className="font-serif italic" style={hintStyle}>{stepHint(step, t)}</p>}
           </div>
-          <div className="font-mono uppercase" style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 10 }}>{t.lookSize}</div>
-          <div>
-            {READING_FONT_SIZES.map((n) => (
-              <button key={n} data-testid={`onboarding-size-${n}`} aria-pressed={size === n} onClick={() => setSize(n)}
-                className="font-sans" style={pillStyle(size === n)}>
-                {n === 'small' ? t.sizeSmall : n === 'medium' ? t.sizeMedium : t.sizeLarge}
-              </button>
-            ))}
-          </div>
+
+          <footer style={{ marginTop: 28, display: 'flex', alignItems: 'center', gap: 16 }}>
+            {step > 0 && <button data-testid="onboarding-back" onClick={() => setStep((s) => (s - 1) as Step)}
+              className="font-sans" style={textBtnStyle}>{t.back}</button>}
+            {step < 4 && step !== 2 && <button data-testid="onboarding-skip" onClick={() => setStep((s) => (s + 1) as Step)}
+              className="font-sans" style={textBtnStyle}>{t.skip}</button>}
+            <div style={{ flex: 1 }} />
+            {step < 4 && (
+              <button data-testid="onboarding-next" disabled={step === 2 && !llmReady}
+                onClick={goNext}
+                className={primaryBtnClass} style={primaryBtn}>{t.next}</button>
+            )}
+            {step === 4 && (
+              <button data-testid="onboarding-finish" disabled={busy} onClick={() => void submit()}
+                className={primaryBtnClass} style={primaryBtn}>{t.finish}</button>
+            )}
+          </footer>
         </div>
-      )}
-      {step === 4 && (
-        <div>
-          <p className="font-serif" style={{ fontSize: 13, color: 'var(--color-ink-soft)', lineHeight: 1.7 }}>
-            {t.doneSummary(userName.trim() || 'You', agentName.trim() || 'KyDog')}
-          </p>
-          {error && <ErrorLine code={error} t={t} />}
-        </div>
-      )}
-      <footer style={{ marginTop: 28, display: 'flex', alignItems: 'center', gap: 12 }}>
-        {step > 0 && <button data-testid="onboarding-back" onClick={() => setStep((s) => (s - 1) as Step)}
-          className="font-sans" style={textBtnStyle}>{t.back}</button>}
-        {step < 4 && step !== 2 && <button data-testid="onboarding-skip" onClick={() => setStep((s) => (s + 1) as Step)}
-          className="font-sans" style={textBtnStyle}>{t.skip}</button>}
-        <div style={{ flex: 1 }} />
-        {step < 4 && (
-          <button data-testid="onboarding-next" disabled={step === 2 && !llmReady}
-            onClick={goNext}
-            className={primaryBtnClass} style={primaryBtn}>{t.next}</button>
-        )}
-        {step === 4 && (
-          <button data-testid="onboarding-finish" disabled={busy} onClick={() => void submit()}
-            className={primaryBtnClass} style={primaryBtn}>{t.finish}</button>
-        )}
-      </footer>
-    </Frame>
+      </div>
+    </div>
   );
 }
 
 /** 第 3 步：复用 SettingsPane 的 provider 三分支(列表/新增/详情)。 */
-function ModelStep({ hint, notReady }: { hint: string; notReady: string | null }) {
+function ModelStep({ notReady }: { notReady: string | null }) {
   const detailProviderId = useUiStore((s) => s.settingsDetailProviderId);
   const addOpen = useUiStore((s) => s.settingsAddProviderOpen);
   const openAdd = useUiStore((s) => s.openSettingsAddProvider);
   useEffect(() => { void useLlmStore.getState().refresh(); }, []);
   return (
     <div>
-      <p className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)', marginBottom: 14 }}>{hint}</p>
       {detailProviderId ? <ProviderDetailPane /> : addOpen ? <AddProviderPage /> : <ProviderListSection onAdd={openAdd} />}
       {notReady && <p data-testid="onboarding-model-notready" className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-soft)', marginTop: 4 }}>{notReady}</p>}
     </div>
   );
 }
 
-function ErrorLine({ code, t }: { code: OnboardingErrorCode; t: (typeof onboardingDict)['zh'] }) {
+function ErrorLine({ code, t }: { code: OnboardingErrorCode; t: Dict }) {
   const msg = code === 'invalid-input' ? t.errInvalidInput : code === 'model-missing' ? t.errModelMissing : t.errSeedFailed;
   return <p data-testid="onboarding-error" role="alert" className="font-serif" style={{ fontSize: 12, color: 'var(--color-accent, #a04040)', marginTop: 12 }}>{msg}</p>;
 }
 
-function Frame({ title, subtitle, corrupt, children }: { title: string; subtitle?: string; corrupt?: string | null; children: ReactNode }) {
+/** recovery 模式:单列,主题/字号预览同样从 mount 就生效(见上方 useEffect,与 mode 无关)。 */
+function RecoveryFrame({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div data-testid="onboarding-root" className="ky-paper-grain h-full w-full overflow-y-auto"
+    <div data-testid="onboarding-root" className="ky-paper-grain h-full w-full overflow-y-auto flex items-center justify-center"
       style={{ background: 'var(--color-paper)', color: 'var(--color-ink)' }}>
-      <div style={{ maxWidth: 560, margin: '0 auto', padding: '64px 24px' }}>
+      <div style={{ maxWidth: 560, width: '100%', padding: '64px 24px' }}>
         <h1 className="font-serif" style={{ fontSize: 28 }}>{title}</h1>
-        {subtitle && <div className="font-mono uppercase" style={{ fontSize: 10, letterSpacing: 1.5, color: 'var(--color-ink-faint)', marginTop: 8 }}>{subtitle}</div>}
-        {corrupt && <p className="font-serif italic" style={{ marginTop: 12, fontSize: 12, color: 'var(--color-ink-soft)' }}>{corrupt}</p>}
         <div style={{ marginTop: 28 }}>{children}</div>
       </div>
     </div>
