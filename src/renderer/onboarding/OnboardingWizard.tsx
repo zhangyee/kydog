@@ -32,6 +32,7 @@ const textBtnStyle: CSSProperties = { background: 'transparent', color: 'var(--c
 const inputStyle: CSSProperties = {
   background: 'transparent',
   border: 'none',
+  outline: 'none',
   padding: '7px 0',
   fontFamily: 'var(--font-mono)', fontSize: 11.5,
   color: 'var(--color-ink)',
@@ -212,12 +213,14 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
       <div style={{
         maxWidth: 860, width: '100%', margin: '0 auto', padding: '56px 24px',
         display: 'grid', gridTemplateColumns: '200px 1fr', gap: 48,
-        minHeight: 420, alignItems: 'start',
+        minHeight: 460, alignItems: 'stretch',
       }}>
-        {/* 左栏：欢迎语 + 吉祥物 + 步骤 rail */}
-        <div>
+        {/* 左栏：欢迎语 + 步骤 rail + 吉祥物（沉底）——与右栏共享同一条发丝线分区 + 同一条 footer 基线 */}
+        <div style={{
+          display: 'flex', flexDirection: 'column',
+          paddingRight: 28, borderRight: '0.5px solid var(--color-ink-hair-soft)',
+        }}>
           <h1 className="font-serif" style={{ fontSize: 22 }}>{t.welcome}</h1>
-          <KyMascot size={40} style={{ marginTop: 18 }} />
           <nav style={{ marginTop: 30, display: 'flex', flexDirection: 'column', gap: 11 }}>
             {steps.map((label, i) => {
               const idx = i as Step;
@@ -245,10 +248,11 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
               );
             })}
           </nav>
+          <KyMascot size={40} style={{ marginTop: 'auto' }} />
         </div>
 
-        {/* 右栏：当前步问题式大标题 + 控件 + 辅助说明 + footer */}
-        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* 右栏：当前步问题式大标题 + 控件 + 辅助说明 + footer（沉底，与左栏吉祥物同一基线） */}
+        <div style={{ minWidth: 0, paddingLeft: 36, display: 'flex', flexDirection: 'column' }}>
           {corruptNotice && (
             <p className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)', marginBottom: 18 }}>{t.corruptNotice}</p>
           )}
@@ -312,7 +316,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
             {stepHint(step, t) && <p className="font-serif italic" style={hintStyle}>{stepHint(step, t)}</p>}
           </div>
 
-          <footer style={{ marginTop: 28, display: 'flex', alignItems: 'center', gap: 16 }}>
+          <footer style={{ marginTop: 'auto', paddingTop: 28, display: 'flex', alignItems: 'center', gap: 16 }}>
             {step > 0 && <button data-testid="onboarding-back" onClick={() => setStep((s) => (s - 1) as Step)}
               className="font-sans" style={textBtnStyle}>{t.back}</button>}
             {step < 4 && step !== 2 && <button data-testid="onboarding-skip" onClick={() => setStep((s) => (s + 1) as Step)}
