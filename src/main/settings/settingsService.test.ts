@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
@@ -71,6 +71,29 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     await Promise.all(ops.filter((x): x is Promise<void> => !!x));
     const got = await svc.get();
     expect(Object.keys(got.llm.providers).length).toBe(50);
+  });
+
+  it('withLockSync: 磁盘遗留 v3 settings（无 onboarding 键）时按 schema 迁移，不把裸 JSON 污染进 cache（真机 P0 复现）', async () => {
+    // 磁盘上是迁移前落地的 v3 文件：没有 onboarding 键。
+    const v3OnDisk = {
+      schemaVersion: 3,
+      ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'medium' },
+      llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null },
+      skills: { disabledBuiltins: [] },
+      tools: { externalBins: [] },
+    };
+    writeFileSync(path.join(dir, 'kydog.json'), JSON.stringify(v3OnDisk, null, 2), 'utf8');
+
+    // 真机链路：kydogAuthBackend 在启动阶段调 withLockSync 读 auth，回调拿到的 current
+    // 必须是迁移后的 v4 形状（onboarding 键存在），而不是裸 JSON.parse 的 v3 形状。
+    const captured = svc.withLockSync((cur) => ({ result: cur.onboarding?.completedAt }));
+    expect(captured).toBe(null); // undefined 说明 cur.onboarding 缺失（bug 复现）；null 说明已迁移
+
+    // withLockSync 内部把 current 写进 this.cache；未迁移的裸对象污染 cache 后，
+    // 后续任何 svc.get() 都会返回缺 onboarding 键的对象。
+    const after = await svc.get();
+    expect(after.onboarding).toBeDefined();
+    expect(after.schemaVersion).toBe(4);
   });
 
   it('update(): patch 混入 onboarding.completedAt + schemaVersion 被过滤（守住不变式）', async () => {

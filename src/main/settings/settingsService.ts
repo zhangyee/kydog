@@ -2,7 +2,7 @@
 import { lock, lockSync } from 'proper-lockfile';
 import { readFileSync } from 'node:fs';
 import * as paths from '../persist/paths';
-import { defaultSettings, loadSettings, ensureSettingsFile } from '../persist/settingsFile';
+import { defaultSettings, loadSettings, ensureSettingsFile, parseAndMigrateSettings } from '../persist/settingsFile';
 import { atomicWriteWith0600Async, atomicWriteWith0600Sync } from '../persist/atomicWrite';
 import type { SettingsFile, SettingsPatch } from '../../shared/types';
 
@@ -93,7 +93,7 @@ export class SettingsService {
     let result: T;
     try {
       const raw = readFileSync(paths.SETTINGS_FILE, 'utf8');
-      const current: SettingsFile = JSON.parse(raw);
+      const current: SettingsFile = parseAndMigrateSettings(raw);
       const { next, result: r } = fn(current);
       result = r;
       if (next && next !== current) {

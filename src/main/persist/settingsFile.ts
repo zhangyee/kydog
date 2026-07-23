@@ -60,7 +60,7 @@ export async function loadSettings(): Promise<SettingsFile> {
       }
     } catch { /* 忽略 */ }
   }
-  return parseAndMigrate(raw);
+  return parseAndMigrateSettings(raw);
 }
 
 export async function saveSettings(value: SettingsFile): Promise<void> {
@@ -74,7 +74,7 @@ function sanitizeLocale(v: unknown): 'zh' | 'en' { return v === 'en' ? 'en' : 'z
  *  - v2/v3：保留所有字段，补 onboarding 默认值。
  *  - v4：原样回写（completedAt 保留；locale 非法值归位 zh）。
  *  - 形状不对：全部 default。 */
-function parseAndMigrate(raw: string): SettingsFile {
+export function parseAndMigrateSettings(raw: string): SettingsFile {
   let parsed: any;
   try { parsed = JSON.parse(raw); }
   catch { return defaultSettings(); }
