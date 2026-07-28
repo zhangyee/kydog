@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill } from './skill-sync.mjs';
+import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill, materializeSkill, applySkill } from './skill-sync.mjs';
 
 describe('gitBlobSha', () => {
   // 期望值来自 `git hash-object --stdin`，与 git 自身一致
@@ -80,6 +80,11 @@ describe('upstreamSkillHashes', () => {
   it('skips .DS_Store committed upstream', () => {
     expect(upstreamSkillHashes(tree, 'skills/fastpaper')['.DS_Store']).toBeUndefined();
   });
+
+  it('rejects a traversing path from the tree', () => {
+    const evil = [{ path: 'skills/fp/../escape.txt', type: 'blob', sha: 'aaaa' }];
+    expect(() => upstreamSkillHashes(evil, 'skills/fp')).toThrow(/refusing to touch/);
+  });
 });
 
 describe('classifySkill', () => {
@@ -121,5 +126,119 @@ describe('classifySkill', () => {
     });
     expect(r.changed).toEqual(['a.md', 'c.md']);
     expect(r.removed).toEqual(['b.md', 'z.md']);
+  });
+});
+
+describe('materializeSkill', () => {
+  let dir;
+  beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'cli-skill-mat-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('downloads each rel path under repoPath into tmpDir, creating parent dirs', async () => {
+    const calls = [];
+    const fetchFile = async (repo, tag, filePath) => {
+      calls.push([repo, tag, filePath]);
+      return Buffer.from(`body of ${filePath}`);
+    };
+    await materializeSkill({
+      repo: 'o/r', tag: 'v1.0', repoPath: 'skills/fp',
+      rels: ['SKILL.md', 'references/x.md'], tmpDir: dir, fetchFile,
+    });
+    expect(calls).toEqual([
+      ['o/r', 'v1.0', 'skills/fp/SKILL.md'],
+      ['o/r', 'v1.0', 'skills/fp/references/x.md'],
+    ]);
+    expect(readFileSync(path.join(dir, 'SKILL.md'), 'utf-8')).toBe('body of skills/fp/SKILL.md');
+    expect(readFileSync(path.join(dir, 'references', 'x.md'), 'utf-8')).toBe('body of skills/fp/references/x.md');
+  });
+
+  it('refuses a traversing rel', async () => {
+    const fetchFile = async () => Buffer.from('x');
+    await expect(materializeSkill({
+      repo: 'o/r', tag: 'v1.0', repoPath: 'skills/fp',
+      rels: ['../escape.txt'], tmpDir: dir, fetchFile,
+    })).rejects.toThrow(/refusing to touch/);
+  });
+});
+
+describe('applySkill', () => {
+  let src, dest;
+  beforeEach(() => {
+    src = mkdtempSync(path.join(tmpdir(), 'cli-skill-src-'));
+    dest = mkdtempSync(path.join(tmpdir(), 'cli-skill-dest-'));
+  });
+  afterEach(() => {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
+  });
+
+  it('writes changed and added files, deletes removed ones', async () => {
+    writeFileSync(path.join(src, 'SKILL.md'), 'new\n');
+    mkdirSync(path.join(src, 'references'));
+    writeFileSync(path.join(src, 'references', 'x.md'), 'added\n');
+    writeFileSync(path.join(dest, 'SKILL.md'), 'old\n');
+    writeFileSync(path.join(dest, 'stale.md'), 'bye\n');
+
+    const r = await applySkill({
+      srcDir: src,
+      destAbs: dest,
+      plan: { changed: ['SKILL.md'], added: ['references/x.md'], removed: ['stale.md'] },
+    });
+
+    expect(readFileSync(path.join(dest, 'SKILL.md'), 'utf-8')).toBe('new\n');
+    expect(readFileSync(path.join(dest, 'references', 'x.md'), 'utf-8')).toBe('added\n');
+    expect(existsSync(path.join(dest, 'stale.md'))).toBe(false);
+    expect(r).toEqual({ written: 2, removed: 1 });
+  });
+
+  it('creates the dest dir when the skill is new', async () => {
+    const fresh = path.join(dest, 'nested', 'fastpaper');
+    writeFileSync(path.join(src, 'SKILL.md'), 'hi\n');
+    await applySkill({ srcDir: src, destAbs: fresh, plan: { changed: [], added: ['SKILL.md'], removed: [] } });
+    expect(readFileSync(path.join(fresh, 'SKILL.md'), 'utf-8')).toBe('hi\n');
+  });
+
+  it('prunes directories left empty by removals, but keeps dest itself', async () => {
+    mkdirSync(path.join(dest, 'references'));
+    writeFileSync(path.join(dest, 'references', 'x.md'), 'bye\n');
+    await applySkill({ srcDir: src, destAbs: dest, plan: { changed: [], added: [], removed: ['references/x.md'] } });
+    expect(existsSync(path.join(dest, 'references'))).toBe(false);
+    expect(existsSync(dest)).toBe(true);
+  });
+
+  it('refuses to write outside destAbs', async () => {
+    writeFileSync(path.join(src, 'escape.txt'), 'evil\n');
+    await expect(applySkill({
+      srcDir: src, destAbs: dest,
+      plan: { changed: [], added: ['../escape.txt'], removed: [] },
+    })).rejects.toThrow(/refusing to touch/);
+    expect(existsSync(path.join(dest, '..', 'escape.txt'))).toBe(false);
+  });
+
+  it('refuses to delete outside destAbs, without having written anything first', async () => {
+    const outside = path.join(dest, '..', 'victim.txt');
+    writeFileSync(outside, 'keep me\n');
+    writeFileSync(path.join(src, 'SKILL.md'), 'new\n');
+    await expect(applySkill({
+      srcDir: src, destAbs: dest,
+      plan: { changed: [], added: ['SKILL.md'], removed: ['../victim.txt'] },
+    })).rejects.toThrow(/refusing to touch/);
+    expect(existsSync(outside)).toBe(true);
+    expect(existsSync(path.join(dest, 'SKILL.md'))).toBe(false);   // 校验先于写入
+    rmSync(outside, { force: true });
+  });
+
+  it('refuses an absolute rel', async () => {
+    await expect(applySkill({
+      srcDir: src, destAbs: dest,
+      plan: { changed: [], added: [path.join(src, 'SKILL.md')], removed: [] },
+    })).rejects.toThrow(/refusing to touch/);
+  });
+
+  it('refuses a rel with an empty segment', async () => {
+    await expect(applySkill({
+      srcDir: src, destAbs: dest,
+      plan: { changed: [], added: ['references//x.md'], removed: [] },
+    })).rejects.toThrow(/refusing to touch/);
   });
 });
