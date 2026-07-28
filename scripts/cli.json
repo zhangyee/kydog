@@ -5,6 +5,10 @@
       "version": "0.2.0",
       "releaseTagTemplate": "v{version}",
       "binaryName": "fastpaper",
+      "skill": {
+        "repoPath": "skills/fastpaper",
+        "dest": "src/skills/fastpaper"
+      },
       "assets": {
         "darwin-arm64": "fastpaper-cli-aarch64-apple-darwin.tar.xz",
         "darwin-x64": "fastpaper-cli-x86_64-apple-darwin.tar.xz",
