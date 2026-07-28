@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { latestStableTag, fetchShaForAsset, releaseAssetUrl, fetchDistManifest } from './github.mjs';
+import { latestStableTag, fetchShaForAsset, releaseAssetUrl, fetchDistManifest, fetchRepoTree, fetchRepoFile } from './github.mjs';
 
 function mockFetch(handlers) {
   // handlers: array of { match: (url) => bool, body, status }
@@ -61,5 +61,51 @@ describe('github', () => {
   it('fetchDistManifest returns null on 404', async () => {
     vi.stubGlobal('fetch', mockFetch([]));
     expect(await fetchDistManifest('o/r', 'v1.0')).toBeNull();
+  });
+
+  it('fetchRepoTree returns path/type/sha for every entry', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      {
+        match: (u) => u.includes('/git/trees/'),
+        body: {
+          truncated: false,
+          tree: [
+            { path: 'skills', mode: '040000', type: 'tree', sha: 'tttt', url: 'https://…' },
+            { path: 'skills/fastpaper/SKILL.md', mode: '100644', type: 'blob', sha: 'aaaa', size: 12, url: 'https://…' },
+          ],
+        },
+      },
+    ]));
+    // 保留 type：blob 过滤是 upstreamSkillHashes 的职责，这里只负责取回事实
+    expect(await fetchRepoTree('o/r', 'v1.0')).toEqual([
+      { path: 'skills', type: 'tree', sha: 'tttt' },
+      { path: 'skills/fastpaper/SKILL.md', type: 'blob', sha: 'aaaa' },
+    ]);
+  });
+
+  it('fetchRepoTree throws when GitHub truncated the tree', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      { match: (u) => u.includes('/git/trees/'), body: { truncated: true, tree: [] } },
+    ]));
+    await expect(fetchRepoTree('o/r', 'v1.0')).rejects.toThrow(/truncated/i);
+  });
+
+  it('fetchRepoTree throws on 404 (tag missing)', async () => {
+    vi.stubGlobal('fetch', mockFetch([]));
+    await expect(fetchRepoTree('o/r', 'v1.0')).rejects.toThrow(/404/);
+  });
+
+  it('fetchRepoFile returns raw bytes', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      { match: (u) => u.startsWith('https://raw.githubusercontent.com/o/r/v1.0/skills/x/SKILL.md'), body: 'hi\n' },
+    ]));
+    const buf = await fetchRepoFile('o/r', 'v1.0', 'skills/x/SKILL.md');
+    expect(Buffer.isBuffer(buf)).toBe(true);
+    expect(buf.toString('utf-8')).toBe('hi\n');
+  });
+
+  it('fetchRepoFile throws on 404', async () => {
+    vi.stubGlobal('fetch', mockFetch([]));
+    await expect(fetchRepoFile('o/r', 'v1.0', 'skills/x/SKILL.md')).rejects.toThrow(/404/);
   });
 });

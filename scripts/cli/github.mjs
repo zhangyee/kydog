@@ -3,6 +3,7 @@
 
 const API = 'https://api.github.com';
 const DL = 'https://github.com';
+const RAW = 'https://raw.githubusercontent.com';
 
 function authHeaders() {
   const tok = process.env.GITHUB_TOKEN;
@@ -61,4 +62,21 @@ export async function fetchDistManifest(repo, tag) {
     if (e.status === 404) return null;
     throw e;
   }
+}
+
+/** 该 tag 下的整棵树（含目录项，由调用方按 type 过滤）；被截断则拒绝，避免漏文件被当成"上游删了" */
+export async function fetchRepoTree(repo, tag) {
+  const r = await getJson(`${API}/repos/${repo}/git/trees/${encodeURIComponent(tag)}?recursive=1`);
+  if (r.truncated) {
+    throw new Error(`tree for ${repo}@${tag} is truncated by GitHub; can't enumerate files reliably`);
+  }
+  return (r.tree ?? []).map((e) => ({ path: e.path, type: e.type, sha: e.sha }));
+}
+
+/** 取仓库单文件的原始字节（skill 里可能有图片等二进制，所以不走 getText） */
+export async function fetchRepoFile(repo, tag, filePath) {
+  const url = `${RAW}/${repo}/${encodeURIComponent(tag)}/${filePath}`;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
+  return Buffer.from(await res.arrayBuffer());
 }
