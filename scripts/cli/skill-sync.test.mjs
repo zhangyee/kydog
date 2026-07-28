@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { gitBlobSha, localSkillHashes } from './skill-sync.mjs';
+import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill } from './skill-sync.mjs';
 
 describe('gitBlobSha', () => {
   // 期望值来自 `git hash-object --stdin`，与 git 自身一致
@@ -46,5 +46,80 @@ describe('localSkillHashes', () => {
     writeFileSync(path.join(dir, 'SKILL.md'), 'hello\n');
     writeFileSync(path.join(dir, '.DS_Store'), 'junk');
     expect(Object.keys(localSkillHashes(dir))).toEqual(['SKILL.md']);
+  });
+});
+
+describe('upstreamSkillHashes', () => {
+  // 形如 GET /repos/<repo>/git/trees/<tag>?recursive=1 的 tree 数组
+  const tree = [
+    { path: 'skills', type: 'tree', sha: 'tttt' },
+    { path: 'skills/fastpaper', type: 'tree', sha: 'uuuu' },
+    { path: 'skills/fastpaper/SKILL.md', type: 'blob', sha: 'aaaa' },
+    { path: 'skills/fastpaper/references/x.md', type: 'blob', sha: 'bbbb' },
+    { path: 'skills/fastpaper/.DS_Store', type: 'blob', sha: 'ffff' },
+    { path: 'skills/fastpaper-extra/SKILL.md', type: 'blob', sha: 'cccc' },
+    { path: '.claude/skills/sync-docs/SKILL.md', type: 'blob', sha: 'dddd' },
+    { path: 'README.md', type: 'blob', sha: 'eeee' },
+  ];
+
+  it('keeps only blobs strictly under repoPath, keyed by relative path', () => {
+    expect(upstreamSkillHashes(tree, 'skills/fastpaper')).toEqual({
+      'SKILL.md': 'aaaa',
+      'references/x.md': 'bbbb',
+    });
+  });
+
+  it('does not match a sibling dir sharing the prefix', () => {
+    expect(upstreamSkillHashes(tree, 'skills/fastpaper-extra')).toEqual({ 'SKILL.md': 'cccc' });
+  });
+
+  it('returns {} when repoPath has no blobs', () => {
+    expect(upstreamSkillHashes(tree, 'skills/nope')).toEqual({});
+  });
+
+  it('skips .DS_Store committed upstream', () => {
+    expect(upstreamSkillHashes(tree, 'skills/fastpaper')['.DS_Store']).toBeUndefined();
+  });
+});
+
+describe('classifySkill', () => {
+  it('reports in-sync when every blob matches', () => {
+    const r = classifySkill({ upstream: { 'SKILL.md': 'aaaa' }, local: { 'SKILL.md': 'aaaa' } });
+    expect(r).toEqual({ status: 'in-sync', changed: [], added: [], removed: [] });
+  });
+
+  it('reports changed when content differs', () => {
+    const r = classifySkill({ upstream: { 'SKILL.md': 'aaaa' }, local: { 'SKILL.md': 'zzzz' } });
+    expect(r).toEqual({ status: 'differs', changed: ['SKILL.md'], added: [], removed: [] });
+  });
+
+  it('reports added for upstream-only files', () => {
+    const r = classifySkill({
+      upstream: { 'SKILL.md': 'aaaa', 'references/x.md': 'bbbb' },
+      local: { 'SKILL.md': 'aaaa' },
+    });
+    expect(r).toEqual({ status: 'differs', changed: [], added: ['references/x.md'], removed: [] });
+  });
+
+  it('reports removed for local-only files', () => {
+    const r = classifySkill({
+      upstream: { 'SKILL.md': 'aaaa' },
+      local: { 'SKILL.md': 'aaaa', 'stale.md': 'bbbb' },
+    });
+    expect(r).toEqual({ status: 'differs', changed: [], added: [], removed: ['stale.md'] });
+  });
+
+  it('treats a missing local dir as everything added', () => {
+    const r = classifySkill({ upstream: { 'SKILL.md': 'aaaa', 'b.md': 'bbbb' }, local: {} });
+    expect(r).toEqual({ status: 'differs', changed: [], added: ['SKILL.md', 'b.md'], removed: [] });
+  });
+
+  it('sorts each bucket', () => {
+    const r = classifySkill({
+      upstream: { 'c.md': '1', 'a.md': '2' },
+      local: { 'c.md': 'x', 'a.md': 'y', 'z.md': '3', 'b.md': '4' },
+    });
+    expect(r.changed).toEqual(['a.md', 'c.md']);
+    expect(r.removed).toEqual(['b.md', 'z.md']);
   });
 });

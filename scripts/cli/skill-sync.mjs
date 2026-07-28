@@ -33,3 +33,36 @@ function walk(root, rel, out) {
     else if (ent.isFile()) out[childRel] = gitBlobSha(readFileSync(path.join(root, childRel)));
   }
 }
+
+/** 从 tree 数组过滤出 repoPath 下的 blob → { 相对路径: blobSha } */
+export function upstreamSkillHashes(tree, repoPath) {
+  const prefix = `${repoPath}/`;
+  const out = {};
+  for (const e of tree) {
+    if (e.type !== 'blob') continue;
+    if (!e.path.startsWith(prefix)) continue;
+    const rel = e.path.slice(prefix.length);
+    if (IGNORED_FILES.has(path.posix.basename(rel))) continue;
+    out[rel] = e.sha;
+  }
+  return out;
+}
+
+/** 上游 vs 本地 → { status, changed[], added[], removed[] }，每个桶已排序 */
+export function classifySkill({ upstream, local }) {
+  const changed = [];
+  const added = [];
+  const removed = [];
+  for (const [rel, sha] of Object.entries(upstream)) {
+    if (!(rel in local)) added.push(rel);
+    else if (local[rel] !== sha) changed.push(rel);
+  }
+  for (const rel of Object.keys(local)) {
+    if (!(rel in upstream)) removed.push(rel);
+  }
+  changed.sort();
+  added.sort();
+  removed.sort();
+  const status = changed.length + added.length + removed.length === 0 ? 'in-sync' : 'differs';
+  return { status, changed, added, removed };
+}
