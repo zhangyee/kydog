@@ -33,7 +33,8 @@ E2E（Playwright + Electron，需要先打包）：
 - `npm run e2e` — Playwright 全跑；`npm run e2e -- 00-shell 01-first-run-settings` 过滤
 - `npx playwright install chromium` — 一次性，幂等
 
-交互式（不要在 agent 上下文里跑，需要桌面 UI）：
+交互式（不要在 agent 上下文里跑）：
 
-- `npm start` — `electron-forge start` 开窗口
+- `npm start` — `electron-forge start` 开窗口（需要桌面 UI）
 - `npm install` — 装依赖（让用户自己跑）
+- `npm run cli:update` — 检查上游 CLI 新版本 + 同步其 skill 到 `src/skills/`，逐项 `[y/N]` 确认
