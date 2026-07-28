@@ -56,4 +56,56 @@ describe('manifest', () => {
     delete bad.tools.fastpaper.sha256['win32-x64'];
     expect(() => validateManifest(bad)).toThrow(/sha256/);
   });
+
+  it('validateManifest accepts a tool without skill', () => {
+    expect(() => validateManifest(goodManifest)).not.toThrow();
+  });
+
+  it('validateManifest accepts a well-formed skill', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { repoPath: 'skills/fastpaper', dest: 'src/skills/fastpaper' };
+    expect(() => validateManifest(m)).not.toThrow();
+  });
+
+  it('validateManifest rejects a non-object skill', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = 'skills/fastpaper';
+    expect(() => validateManifest(m)).toThrow(/skill must be an object/);
+  });
+
+  it('validateManifest rejects skill missing repoPath', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { dest: 'src/skills/fastpaper' };
+    expect(() => validateManifest(m)).toThrow(/skill\.repoPath/);
+  });
+
+  it('validateManifest rejects an empty dest', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { repoPath: 'skills/fastpaper', dest: '  ' };
+    expect(() => validateManifest(m)).toThrow(/skill\.dest/);
+  });
+
+  it('validateManifest rejects an absolute dest (sync deletes files — must stay in-repo)', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { repoPath: 'skills/fastpaper', dest: '/etc/skills' };
+    expect(() => validateManifest(m)).toThrow(/repo-relative/);
+  });
+
+  it('validateManifest rejects a dest escaping the repo with ..', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { repoPath: 'skills/fastpaper', dest: '../../evil' };
+    expect(() => validateManifest(m)).toThrow(/repo-relative/);
+  });
+
+  it('validateManifest rejects a dest outside src/skills (sync deletes everything under dest)', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { repoPath: 'skills/fastpaper', dest: 'src' };
+    expect(() => validateManifest(m)).toThrow(/must be under src\/skills/);
+  });
+
+  it('validateManifest rejects src/skills itself as dest', () => {
+    const m = JSON.parse(JSON.stringify(goodManifest));
+    m.tools.fastpaper.skill = { repoPath: 'skills/fastpaper', dest: 'src/skills' };
+    expect(() => validateManifest(m)).toThrow(/must be under src\/skills/);
+  });
 });
