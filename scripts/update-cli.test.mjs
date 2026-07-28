@@ -1,0 +1,116 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import readline from 'node:readline';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { gitBlobSha } from './cli/skill-sync.mjs';
+
+// github.mjs 是这条流程里唯一的网络出口，整个 mock 掉；
+// skill-sync.mjs 里的 `import { fetchRepoFile } from './github.mjs'` 解析到同一个模块，一并被替换
+vi.mock('./cli/github.mjs', () => ({
+  latestStableTag: vi.fn(async () => { throw new Error('latestStableTag 不该被调用'); }),
+  fetchShaForAsset: vi.fn(async () => { throw new Error('fetchShaForAsset 不该被调用'); }),
+  fetchDistManifest: vi.fn(async () => { throw new Error('fetchDistManifest 不该被调用'); }),
+  fetchRepoTree: vi.fn(),
+  fetchRepoFile: vi.fn(async () => Buffer.from('upstream\n')),
+}));
+
+const { fetchRepoTree, fetchRepoFile } = await import('./cli/github.mjs');
+const { checkAndSyncSkill } = await import('./update-cli.mjs');
+
+// checkAndSyncSkill 内部按 REPO_ROOT 解析 cfg.skill.dest，与 update-cli.mjs 里算法一致
+const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+
+describe('checkAndSyncSkill', () => {
+  let dest, createInterface;
+
+  beforeEach(() => {
+    dest = mkdtempSync(path.join(tmpdir(), 'cli-update-dest-'));
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    // 任何提问都要先建 readline；没建过就等于一次都没问过用户。
+    // 这里故意让假接口一律答 "y"：守卫一旦失效，流程就会真的走到 applySkill 把 dest 删空，
+    // 下面那几条 existsSync 断言才是真在兜底，而不是靠 stub 抛错提前拦住
+    createInterface = vi.spyOn(readline, 'createInterface').mockImplementation(() => ({
+      on() {},
+      setPrompt() {},
+      prompt() {},
+      close() {},
+      [Symbol.asyncIterator]: () => ({ next: async () => ({ value: 'y', done: false }) }),
+    }));
+  });
+
+  afterEach(() => {
+    rmSync(dest, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  /** dest 必须写成相对 REPO_ROOT 的路径，才能被 path.join(REPO_ROOT, dest) 还原回临时目录 */
+  const cfgFor = (repoPath) => ({
+    repo: 'zhangyee/fastpaper-cli',
+    version: '0.2.0',
+    releaseTagTemplate: 'v{version}',
+    skill: { repoPath, dest: path.relative(REPO_ROOT, dest) },
+  });
+
+  it('没有 skill 字段的 tool 直接返回 null，一次网络都不发', async () => {
+    const cfg = { repo: 'zhangyee/fastpaper-cli', version: '0.2.0', releaseTagTemplate: 'v{version}' };
+    await expect(checkAndSyncSkill('fastpaper', cfg)).resolves.toBeNull();
+    expect(fetchRepoTree).not.toHaveBeenCalled();
+    expect(fetchRepoFile).not.toHaveBeenCalled();
+  });
+
+  it('上游一个文件都没有时硬报错，且不碰 dest 里的任何东西', async () => {
+    // 本地有内容；repoPath 打错了字（fastpapre），上游 tree 里没有任何东西落在它下面
+    writeFileSync(path.join(dest, 'SKILL.md'), 'hello\n');
+    mkdirSync(path.join(dest, 'references'));
+    writeFileSync(path.join(dest, 'references', 'x.md'), 'refs\n');
+
+    fetchRepoTree.mockResolvedValue([
+      { path: 'skills', type: 'tree', sha: 'tttt' },
+      { path: 'skills/fastpaper/SKILL.md', type: 'blob', sha: 'aaaa' },
+      { path: 'README.md', type: 'blob', sha: 'eeee' },
+    ]);
+
+    await expect(checkAndSyncSkill('fastpaper', cfgFor('skills/fastpapre')))
+      .rejects.toThrow(/no files under "skills\/fastpapre"/);
+
+    // 这条守卫的全部意义：没有它，upstream={} 会把下面每个文件都判成 removed 然后删光
+    expect(existsSync(path.join(dest, 'SKILL.md'))).toBe(true);
+    expect(existsSync(path.join(dest, 'references', 'x.md'))).toBe(true);
+    expect(readdirSync(dest).sort()).toEqual(['SKILL.md', 'references']);
+    // 连下载都没开始，更没走到 applySkill
+    expect(fetchRepoFile).not.toHaveBeenCalled();
+    expect(createInterface).not.toHaveBeenCalled();
+  });
+
+  it('报错信息里带上 repo@tag，好让人知道该去哪儿核对', async () => {
+    fetchRepoTree.mockResolvedValue([{ path: 'README.md', type: 'blob', sha: 'eeee' }]);
+    await expect(checkAndSyncSkill('fastpaper', cfgFor('skills/nope')))
+      .rejects.toThrow(/zhangyee\/fastpaper-cli@v0\.2\.0/);
+  });
+
+  it('已同步时返回 null，不下载也不提问', async () => {
+    writeFileSync(path.join(dest, 'SKILL.md'), 'hello\n');
+    fetchRepoTree.mockResolvedValue([
+      { path: 'skills/fastpaper/SKILL.md', type: 'blob', sha: gitBlobSha(Buffer.from('hello\n')) },
+    ]);
+
+    await expect(checkAndSyncSkill('fastpaper', cfgFor('skills/fastpaper'))).resolves.toBeNull();
+    expect(fetchRepoFile).not.toHaveBeenCalled();
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(expect.stringMatching(/in sync/));
+  });
+
+  it('tag 跟着 manifest 里的版本走（升级被跳过时按旧 tag 比对）', async () => {
+    writeFileSync(path.join(dest, 'SKILL.md'), 'hello\n');
+    fetchRepoTree.mockResolvedValue([
+      { path: 'skills/fastpaper/SKILL.md', type: 'blob', sha: gitBlobSha(Buffer.from('hello\n')) },
+    ]);
+    const cfg = cfgFor('skills/fastpaper');
+    cfg.version = '0.1.0';
+
+    await checkAndSyncSkill('fastpaper', cfg);
+    expect(fetchRepoTree).toHaveBeenCalledWith('zhangyee/fastpaper-cli', 'v0.1.0');
+  });
+});

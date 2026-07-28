@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { loadManifest, saveManifest, TARGETS } from './cli/manifest.mjs';
 import { latestStableTag, fetchShaForAsset, fetchDistManifest, fetchRepoTree } from './cli/github.mjs';
@@ -139,7 +140,7 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '..');
  * tag 用 manifest 里最终生效的版本——升级被跳过时就按旧 tag 比对，保证 skill 与实际装着的二进制同源。
  * 返回 null（无 skill 配置 / 已同步 / 用户跳过）或 { files } 摘要；抛错交给调用方计入 failed。
  */
-async function checkAndSyncSkill(name, cfg) {
+export async function checkAndSyncSkill(name, cfg) {
   if (!cfg.skill) return null;
   const tag = currentTag(cfg);
   const { repoPath, dest } = cfg.skill;
@@ -278,7 +279,11 @@ async function main() {
   process.exit(failed.length ? 1 : 0);
 }
 
-main().catch((err) => {
-  console.error('[cli:update] FATAL:', err.message);
-  process.exit(1);
-});
+// 只在被当脚本直接执行时跑 main()。测试要 import checkAndSyncSkill，
+// 而模块顶层无条件跑 main() 的话，一 import 就会走完整条交互流程并 process.exit
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error('[cli:update] FATAL:', err.message);
+    process.exit(1);
+  });
+}
