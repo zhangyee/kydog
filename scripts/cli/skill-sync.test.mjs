@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill, materializeSkill, applySkill } from './skill-sync.mjs';
+
+/** existsSync 会跟着软链走（断链返回 false），判断"这个目录项还在不在"必须用 lstat */
+function entryExists(p) {
+  try { lstatSync(p); return true; } catch { return false; }
+}
 
 describe('gitBlobSha', () => {
   // 期望值来自 `git hash-object --stdin`，与 git 自身一致
@@ -46,6 +51,21 @@ describe('localSkillHashes', () => {
     writeFileSync(path.join(dir, 'SKILL.md'), 'hello\n');
     writeFileSync(path.join(dir, '.DS_Store'), 'junk');
     expect(Object.keys(localSkillHashes(dir))).toEqual(['SKILL.md']);
+  });
+
+  it('records a symlink with a sentinel sha instead of skipping it', () => {
+    writeFileSync(path.join(dir, 'SKILL.md'), 'hello\n');
+    symlinkSync(path.join(dir, 'SKILL.md'), path.join(dir, 'link.md'));
+    const h = localSkillHashes(dir);
+    // 被记下来了（漏掉就永远不会被判 removed / changed），而且值不可能等于任何真 blob sha
+    expect(Object.keys(h).sort()).toEqual(['SKILL.md', 'link.md']);
+    expect(h['link.md']).toBe('symlink');
+    expect(h['link.md']).not.toBe(h['SKILL.md']);
+  });
+
+  it('records a dangling symlink without throwing (target 不存在也不能崩)', () => {
+    symlinkSync(path.join(dir, 'nowhere.md'), path.join(dir, 'dangling.md'));
+    expect(localSkillHashes(dir)).toEqual({ 'dangling.md': 'symlink' });
   });
 });
 
@@ -240,5 +260,57 @@ describe('applySkill', () => {
       srcDir: src, destAbs: dest,
       plan: { changed: [], added: ['references//x.md'], removed: [] },
     })).rejects.toThrow(/refusing to touch/);
+  });
+});
+
+/**
+ * dest 是纯 vendor 副本，里面不该有软链。软链既能让写入跟着链跑到目录外，
+ * 又会因为不进 local 而永远删不掉——这组用例盯的是"目录外的真身没被动过"。
+ */
+describe('applySkill × 软链', () => {
+  let src, dest, outside;
+  beforeEach(() => {
+    src = mkdtempSync(path.join(tmpdir(), 'cli-skill-src-'));
+    dest = mkdtempSync(path.join(tmpdir(), 'cli-skill-dest-'));
+    outside = mkdtempSync(path.join(tmpdir(), 'cli-skill-outside-'));
+  });
+  afterEach(() => {
+    for (const d of [src, dest, outside]) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('上游有同名文件时判 changed，写入落在 dest 里而不是链外的真身上', async () => {
+    const victim = path.join(outside, 'victim.txt');
+    writeFileSync(victim, 'keep me\n');
+    symlinkSync(victim, path.join(dest, 'SKILL.md'));
+    writeFileSync(path.join(src, 'SKILL.md'), 'upstream\n');
+
+    const upstream = { 'SKILL.md': gitBlobSha(Buffer.from('upstream\n')) };
+    const plan = classifySkill({ upstream, local: localSkillHashes(dest) });
+    expect(plan).toEqual({ status: 'differs', changed: ['SKILL.md'], added: [], removed: [] });
+
+    await applySkill({ srcDir: src, destAbs: dest, plan });
+
+    // 关键断言：链外的真身一个字节都没变
+    expect(readFileSync(victim, 'utf-8')).toBe('keep me\n');
+    // 而 dest 里的那一项已经是真文件（不再是链），内容是上游的
+    expect(lstatSync(path.join(dest, 'SKILL.md')).isSymbolicLink()).toBe(false);
+    expect(readFileSync(path.join(dest, 'SKILL.md'), 'utf-8')).toBe('upstream\n');
+  });
+
+  it('上游没有同名文件时判 removed，删掉链本身而不是它指向的文件', async () => {
+    const victim = path.join(outside, 'victim.txt');
+    writeFileSync(victim, 'keep me\n');
+    symlinkSync(victim, path.join(dest, 'stale.md'));
+    writeFileSync(path.join(dest, 'SKILL.md'), 'same\n');
+
+    const upstream = { 'SKILL.md': gitBlobSha(Buffer.from('same\n')) };
+    const plan = classifySkill({ upstream, local: localSkillHashes(dest) });
+    expect(plan).toEqual({ status: 'differs', changed: [], added: [], removed: ['stale.md'] });
+
+    await applySkill({ srcDir: src, destAbs: dest, plan });
+
+    expect(entryExists(path.join(dest, 'stale.md'))).toBe(false);
+    expect(existsSync(victim)).toBe(true);
+    expect(readFileSync(victim, 'utf-8')).toBe('keep me\n');
   });
 });

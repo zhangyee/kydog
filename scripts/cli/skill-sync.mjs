@@ -9,6 +9,10 @@ import { fetchRepoFile } from './github.mjs';
 /** Finder 生成、.gitignore 已忽略；纳入比对会变成每次都出现的假漂移 */
 const IGNORED_FILES = new Set(['.DS_Store']);
 
+/** 软链没有 blob sha，也不该留在纯 vendor 副本里；用一个永不等于真 sha 的哨兵值，
+ *  让它要么被判为 changed（上游有同名文件）要么被判为 removed（上游没有），总之不会静默留下 */
+const SYMLINK_SHA = 'symlink';
+
 /** git 的 blob 对象 id：sha1("blob <字节数>\0" + 内容)。与 `git hash-object` 一致。 */
 export function gitBlobSha(buf) {
   return createHash('sha1')
@@ -30,7 +34,11 @@ function walk(root, rel, out) {
   for (const ent of readdirSync(here, { withFileTypes: true })) {
     if (IGNORED_FILES.has(ent.name)) continue;
     const childRel = rel ? `${rel}/${ent.name}` : ent.name;
-    if (ent.isDirectory()) walk(root, childRel, out);
+    // 软链要先判：readdirSync 的 Dirent 走的是 lstat 语义，软链的 isDirectory()/isFile() 都是 false，
+    // 不单独认出来就会被整个跳过——既不会被判 removed（永远删不掉），
+    // 上游有同名文件时还会因为不在 local 里而被判成 added，写入时跟着链跑到目录外
+    if (ent.isSymbolicLink()) out[childRel] = SYMLINK_SHA;
+    else if (ent.isDirectory()) walk(root, childRel, out);
     else if (ent.isFile()) out[childRel] = gitBlobSha(readFileSync(path.join(root, childRel)));
   }
 }
@@ -91,6 +99,9 @@ export async function applySkill({ srcDir, destAbs, plan }) {
   for (const rel of toWrite) {
     const abs = path.join(destAbs, rel);
     mkdirSync(path.dirname(abs), { recursive: true });
+    // 先 unlink 再写：目标位置若是软链，writeFileSync 会跟着链把内容写到目录外的真身上。
+    // rmSync 删的是链本身而不是它指向的文件，所以这里既堵住了越界写，也不会误删链外的东西
+    rmSync(abs, { force: true });
     writeFileSync(abs, readFileSync(path.join(srcDir, rel)));
   }
   for (const rel of plan.removed) {
