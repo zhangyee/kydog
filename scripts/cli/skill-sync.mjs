@@ -88,7 +88,22 @@ export async function materializeSkill({ repo, tag, repoPath, rels, tmpDir, fetc
   }
 }
 
-/** 把 tmpDir 里已下好的文件搬到 destAbs，并删掉上游已不存在的本地文件 */
+/**
+ * 把 tmpDir 里已下好的文件搬到 destAbs，并删掉上游已不存在的本地文件。
+ *
+ * 顺序是「先删后写」，不要改回「先写后删」——两个真实存在的 bug 都出在这个顺序上：
+ *
+ * 1. 软链子目录逃逸：dest/references 是指向目录外的软链，上游有 references/x.md，
+ *    于是 plan 是 added:['references/x.md'] + removed:['references']。先写的话
+ *    mkdirSync(recursive) 见到已存在的链就直接放行，writeFileSync 跟着链把文件写到了 dest 外面。
+ *    写入前那句 rmSync 只删叶子，救不了经由父级路径段的逃逸——只有先把链删掉才行。
+ * 2. 大小写改名丢文件：上游把 foo.md 改名成 Foo.md，plan 是 added:['Foo.md'] + removed:['foo.md']。
+ *    在大小写不敏感的文件系统（macOS 默认，本项目主力开发平台）上这两者是同一个目录项，
+ *    先写 Foo.md 再 rmSync('foo.md') 等于把刚写好的内容删了个干净，而同步还报成功。
+ *
+ * 普通路径下这个顺序不可观测：classifySkill 的 removed 来自 upstream 里没有的 key，
+ * changed/added 来自 upstream 里有的 key，两个集合天然不相交。
+ */
 export async function applySkill({ srcDir, destAbs, plan }) {
   const toWrite = [...plan.changed, ...plan.added];
   // 先把这次会碰到的每个 rel 都校验一遍，再动手写/删——避免校验途中中止时已经半应用
@@ -96,6 +111,9 @@ export async function applySkill({ srcDir, destAbs, plan }) {
   for (const rel of plan.removed) assertSafeRel(rel, 'applySkill');
 
   mkdirSync(destAbs, { recursive: true });
+  for (const rel of plan.removed) {
+    rmSync(path.join(destAbs, rel), { force: true });
+  }
   for (const rel of toWrite) {
     const abs = path.join(destAbs, rel);
     mkdirSync(path.dirname(abs), { recursive: true });
@@ -103,9 +121,6 @@ export async function applySkill({ srcDir, destAbs, plan }) {
     // rmSync 删的是链本身而不是它指向的文件，所以这里既堵住了越界写，也不会误删链外的东西
     rmSync(abs, { force: true });
     writeFileSync(abs, readFileSync(path.join(srcDir, rel)));
-  }
-  for (const rel of plan.removed) {
-    rmSync(path.join(destAbs, rel), { force: true });
   }
   pruneEmptyDirs(destAbs);
   return { written: toWrite.length, removed: plan.removed.length };

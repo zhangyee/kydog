@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill, materializeSkill, applySkill } from './skill-sync.mjs';
@@ -7,6 +7,18 @@ import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill, mater
 /** existsSync 会跟着软链走（断链返回 false），判断"这个目录项还在不在"必须用 lstat */
 function entryExists(p) {
   try { lstatSync(p); return true; } catch { return false; }
+}
+
+/**
+ * 现场探测 dir 所在文件系统大小写敏不敏感。
+ * macOS（本项目主力平台）默认不敏感、Linux ext4 默认敏感，而临时目录落在哪个卷上又不好预判——
+ * 硬编码假设会让"只改大小写的改名"那条用例在另一半机器上悄悄失去意义，所以每次现场探。
+ */
+function isCaseInsensitiveFs(dir) {
+  const probe = path.join(dir, '.case-probe');
+  writeFileSync(probe, '');
+  try { return entryExists(path.join(dir, '.CASE-PROBE')); }
+  finally { rmSync(probe, { force: true }); }
 }
 
 describe('gitBlobSha', () => {
@@ -248,6 +260,32 @@ describe('applySkill', () => {
     rmSync(outside, { force: true });
   });
 
+  it('只改大小写的改名不丢内容（先删后写）', async () => {
+    // 上游把 foo.md 改名成 Foo.md：plan 是 added:['Foo.md'] + removed:['foo.md']。
+    // 大小写不敏感的 FS 上这两者是同一个目录项，先写后删等于把刚写好的内容删干净了。
+    writeFileSync(path.join(dest, 'foo.md'), 'old\n');
+    writeFileSync(path.join(src, 'Foo.md'), 'upstream\n');
+    const insensitive = isCaseInsensitiveFs(dest);
+
+    const r = await applySkill({
+      srcDir: src, destAbs: dest,
+      plan: { changed: [], added: ['Foo.md'], removed: ['foo.md'] },
+    });
+
+    // 两种 FS 上都成立的那条：上游内容必须还在
+    expect(readFileSync(path.join(dest, 'Foo.md'), 'utf-8')).toBe('upstream\n');
+    expect(r).toEqual({ written: 1, removed: 1 });
+    if (insensitive) {
+      // 同一个目录项：foo.md 这个名字解析到的就是刚写好的那份，绝不能是 old 或者不存在
+      expect(readFileSync(path.join(dest, 'foo.md'), 'utf-8')).toBe('upstream\n');
+      expect(readdirSync(dest)).toEqual(['Foo.md']);
+    } else {
+      // 两个不同的目录项：旧的按 plan 被删掉
+      expect(entryExists(path.join(dest, 'foo.md'))).toBe(false);
+      expect(readdirSync(dest)).toEqual(['Foo.md']);
+    }
+  });
+
   it('refuses an absolute rel', async () => {
     await expect(applySkill({
       srcDir: src, destAbs: dest,
@@ -295,6 +333,33 @@ describe('applySkill × 软链', () => {
     // 而 dest 里的那一项已经是真文件（不再是链），内容是上游的
     expect(lstatSync(path.join(dest, 'SKILL.md')).isSymbolicLink()).toBe(false);
     expect(readFileSync(path.join(dest, 'SKILL.md'), 'utf-8')).toBe('upstream\n');
+  });
+
+  it('软链子目录：写入落在 dest 里，链外的目录一个文件都没多', async () => {
+    // dest/references 是指向目录外的软链，上游有 references/x.md：
+    // plan 是 added:['references/x.md'] + removed:['references']。
+    // 先写的话 mkdirSync(recursive) 见到已存在的链直接放行，文件就顺着链写到 dest 外面去了；
+    // 写入前那句 rmSync 只管叶子，拦不住经由父级路径段的逃逸。
+    const outsideRefs = path.join(outside, 'refs');
+    mkdirSync(outsideRefs);
+    writeFileSync(path.join(outsideRefs, 'keep.txt'), 'keep me\n');
+    symlinkSync(outsideRefs, path.join(dest, 'references'));
+    mkdirSync(path.join(src, 'references'));
+    writeFileSync(path.join(src, 'references', 'x.md'), 'upstream\n');
+
+    await applySkill({
+      srcDir: src, destAbs: dest,
+      plan: { changed: [], added: ['references/x.md'], removed: ['references'] },
+    });
+
+    // 关键断言：链外的目录还是只有 keep.txt，x.md 没被塞进去
+    expect(readdirSync(outsideRefs)).toEqual(['keep.txt']);
+    expect(readFileSync(path.join(outsideRefs, 'keep.txt'), 'utf-8')).toBe('keep me\n');
+    // dest/references 现在是真目录（链已被删掉），上游文件落在里面
+    const st = lstatSync(path.join(dest, 'references'));
+    expect(st.isSymbolicLink()).toBe(false);
+    expect(st.isDirectory()).toBe(true);
+    expect(readFileSync(path.join(dest, 'references', 'x.md'), 'utf-8')).toBe('upstream\n');
   });
 
   it('上游没有同名文件时判 removed，删掉链本身而不是它指向的文件', async () => {
