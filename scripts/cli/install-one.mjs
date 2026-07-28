@@ -1,4 +1,4 @@
-// scripts/bins/install-one.mjs
+// scripts/cli/install-one.mjs
 // 装一个 tool 到 vendor/current/；reconcileVendor 清理多余文件
 
 import { mkdtempSync, readdirSync, existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, chmodSync, renameSync, statSync } from 'node:fs';
@@ -31,7 +31,7 @@ export async function installOne(name, cfg, { vendor = VENDOR_DIR, force = false
   const tag = cfg.releaseTagTemplate.replace('{version}', cfg.version);
   const url = releaseAssetUrl(cfg.repo, tag, asset);
 
-  const tmp = mkdtempSync(path.join(tmpdir(), `bins-install-${name}-`));
+  const tmp = mkdtempSync(path.join(tmpdir(), `cli-install-${name}-`));
   try {
     const archive = path.join(tmp, asset);
     await downloadAndVerify(url, expectedSha, archive);

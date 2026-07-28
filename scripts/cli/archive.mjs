@@ -1,4 +1,4 @@
-// scripts/bins/archive.mjs
+// scripts/cli/archive.mjs
 // 下载（sha 校验）+ 解压 + 在解压目录里按名字定位文件
 
 import { createHash } from 'node:crypto';

@@ -1,4 +1,4 @@
-// scripts/bins/github.mjs
+// scripts/cli/github.mjs
 // GitHub Releases API + 资产直链（Node fetch；不依赖 gh CLI）
 
 const API = 'https://api.github.com';

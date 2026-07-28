@@ -8,11 +8,11 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
-const binsManifest = JSON.parse(
-  readFileSync(path.join(__dirname, 'scripts', 'bins.json'), 'utf-8')
+const cliManifest = JSON.parse(
+  readFileSync(path.join(__dirname, 'scripts', 'cli.json'), 'utf-8')
 ) as { tools: Record<string, { binaryName: string }> };
 const isWindows = process.platform === 'win32';
-const vendorBins = Object.values(binsManifest.tools).map((cfg) =>
+const vendorBins = Object.values(cliManifest.tools).map((cfg) =>
   path.join('vendor', 'current', cfg.binaryName + (isWindows ? '.exe' : ''))
 );
 

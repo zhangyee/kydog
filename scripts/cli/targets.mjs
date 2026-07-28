@@ -1,4 +1,4 @@
-// scripts/bins/targets.mjs
+// scripts/cli/targets.mjs
 // host 平台映射；binary 文件名加 Windows .exe 后缀
 
 const ALLOWED = new Set(['darwin-arm64', 'darwin-x64', 'win32-x64']);

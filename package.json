@@ -9,8 +9,8 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "postinstall": "node scripts/install-bins.mjs",
-    "bins:update": "node scripts/update-bins.mjs",
+    "postinstall": "node scripts/install-cli.mjs",
+    "cli:update": "node scripts/update-cli.mjs",
     "onboarding:reset": "node scripts/reset-onboarding.mjs",
     "start": "electron-forge start",
     "package": "electron-forge package",

@@ -19,25 +19,25 @@ const goodManifest = {
 
 describe('manifest', () => {
   let dir;
-  beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'bins-manifest-')); });
+  beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'cli-manifest-')); });
 
   it('loadManifestFrom reads and validates JSON', () => {
-    const p = path.join(dir, 'bins.json');
+    const p = path.join(dir, 'cli.json');
     writeFileSync(p, JSON.stringify(goodManifest));
     const m = loadManifestFrom(p);
     expect(m.tools.fastpaper.version).toBe('0.1.0');
   });
 
   it('saveManifestTo writes atomically (no leftover .tmp)', () => {
-    const p = path.join(dir, 'bins.json');
+    const p = path.join(dir, 'cli.json');
     saveManifestTo(p, goodManifest);
     const files = readdirSync(dir);
-    expect(files).toEqual(['bins.json']);
+    expect(files).toEqual(['cli.json']);
     expect(JSON.parse(readFileSync(p, 'utf-8')).tools.fastpaper.version).toBe('0.1.0');
   });
 
   it('saveManifestTo round-trip matches', () => {
-    const p = path.join(dir, 'bins.json');
+    const p = path.join(dir, 'cli.json');
     saveManifestTo(p, goodManifest);
     expect(loadManifestFrom(p)).toEqual(goodManifest);
   });

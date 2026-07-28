@@ -1,5 +1,5 @@
-// scripts/bins/manifest.mjs
-// 读写 scripts/bins.json，原子写，schema 校验
+// scripts/cli/manifest.mjs
+// 读写 scripts/cli.json，原子写，schema 校验
 
 import { readFileSync, writeFileSync, renameSync, existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -8,7 +8,7 @@ export const TARGETS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const REQUIRED_TOOL_FIELDS = ['repo', 'version', 'releaseTagTemplate', 'binaryName', 'assets', 'sha256'];
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
-const DEFAULT_PATH = path.join(REPO_ROOT, 'scripts', 'bins.json');
+const DEFAULT_PATH = path.join(REPO_ROOT, 'scripts', 'cli.json');
 
 export function validateManifest(m) {
   if (!m || typeof m !== 'object' || !m.tools || typeof m.tools !== 'object') {

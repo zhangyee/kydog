@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// scripts/update-bins.mjs
-// bins:update 入口：交互式检查 upstream + 选择性升级
+// scripts/update-cli.mjs
+// cli:update 入口：交互式检查 upstream + 选择性升级
 
 import readline from 'node:readline';
-import { loadManifest, saveManifest, TARGETS } from './bins/manifest.mjs';
-import { latestStableTag, fetchShaForAsset, fetchDistManifest } from './bins/github.mjs';
-import { installOne, reconcileVendor, vendorDir } from './bins/install-one.mjs';
+import { loadManifest, saveManifest, TARGETS } from './cli/manifest.mjs';
+import { latestStableTag, fetchShaForAsset, fetchDistManifest } from './cli/github.mjs';
+import { installOne, reconcileVendor, vendorDir } from './cli/install-one.mjs';
 
 // cargo-dist target triple 映射；其他来源的 manifest 形态在此扩展
 const CARGO_DIST_TRIPLE = {
@@ -70,7 +70,7 @@ async function checkAndPlan(name, cfg) {
     newCfg.binaryName = discovered.binaryName;
     newCfg.assets = discovered.assets;
   } else if (placeholder) {
-    throw new Error(`${name}: upstream ${cfg.repo}@${latest} has no dist-manifest.json; can't auto-discover binaryName/assets. Fill them in scripts/bins.json manually and rerun.`);
+    throw new Error(`${name}: upstream ${cfg.repo}@${latest} has no dist-manifest.json; can't auto-discover binaryName/assets. Fill them in scripts/cli.json manually and rerun.`);
   }
   // 抓 sha
   newCfg.sha256 = {};
@@ -158,6 +158,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[bins:update] FATAL:', err.message);
+  console.error('[cli:update] FATAL:', err.message);
   process.exit(1);
 });

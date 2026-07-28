@@ -19,7 +19,7 @@ const goodManifest = {
 
 describe('install-one', () => {
   let vendor;
-  beforeEach(() => { vendor = mkdtempSync(path.join(tmpdir(), 'bins-install-')); });
+  beforeEach(() => { vendor = mkdtempSync(path.join(tmpdir(), 'cli-install-')); });
   afterEach(() => { rmSync(vendor, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
   it('reconcileVendor keeps manifest binaries and per-tool sha markers', () => {

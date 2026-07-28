@@ -7,7 +7,7 @@ import { downloadAndVerify, findFile } from './archive.mjs';
 
 describe('archive', () => {
   let dir;
-  beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'bins-archive-')); });
+  beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'cli-archive-')); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
   it('downloadAndVerify throws on sha mismatch', async () => {
