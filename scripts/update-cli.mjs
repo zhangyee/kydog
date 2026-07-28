@@ -32,6 +32,44 @@ function versionFromTag(tag) {
   return tag.startsWith('v') ? tag.slice(1) : tag;
 }
 
+const USAGE = 'usage: npm run cli:update [<tool>[@<version>]]';
+
+/**
+ * 解析命令行 → null（没点名 tool）或 { name, version }（version 可为 null）。
+ * 以位置参数为规范形式：npm 在不带 `--` 时会自己吞掉 `--tool`，只把值当位置参数递过来，
+ * 所以三种敲法（-- --tool X / --tool X / X）必须都落到同一个结果。
+ * 畸形输入一律抛错不静默忽略：把 `--verison 0.2.1` 当成"没给参数"会让脚本转头去升最新版。
+ */
+export function parseToolArg(argv) {
+  const values = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--tool') {
+      const v = argv[++i];
+      if (v === undefined) throw new Error(`--tool needs a value. ${USAGE}`);
+      values.push(v);
+    } else if (a.startsWith('--tool=')) {
+      values.push(a.slice('--tool='.length));
+    } else if (a.startsWith('-')) {
+      throw new Error(`unknown option "${a}". ${USAGE}`);
+    } else {
+      values.push(a);
+    }
+  }
+  if (values.length === 0) return null;
+  if (values.length > 1) throw new Error(`only one tool can be named, got ${values.length}. ${USAGE}`);
+  return parseSelector(values[0]);
+}
+
+function parseSelector(raw) {
+  const parts = raw.split('@');
+  if (parts.length > 2) throw new Error(`malformed "${raw}": more than one "@". ${USAGE}`);
+  const name = parts[0];
+  if (!name) throw new Error(`malformed "${raw}": missing tool name. ${USAGE}`);
+  if (parts.length === 2 && !parts[1]) throw new Error(`malformed "${raw}": missing version after "@". ${USAGE}`);
+  return { name, version: parts.length === 2 ? parts[1] : null };
+}
+
 let rl = null;
 let lines = null;
 let inputEnded = false;

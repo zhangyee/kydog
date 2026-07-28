@@ -16,7 +16,7 @@ vi.mock('./cli/github.mjs', () => ({
 }));
 
 const { fetchRepoTree, fetchRepoFile } = await import('./cli/github.mjs');
-const { checkAndSyncSkill } = await import('./update-cli.mjs');
+const { checkAndSyncSkill, parseToolArg } = await import('./update-cli.mjs');
 
 // checkAndSyncSkill 内部按 REPO_ROOT 解析 cfg.skill.dest，与 update-cli.mjs 里算法一致
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -112,5 +112,54 @@ describe('checkAndSyncSkill', () => {
 
     await checkAndSyncSkill('fastpaper', cfg);
     expect(fetchRepoTree).toHaveBeenCalledWith('zhangyee/fastpaper-cli', 'v0.1.0');
+  });
+});
+
+describe('parseToolArg', () => {
+  it('没有参数时返回 null（保持"所有 tool 对最新版"的现状）', () => {
+    expect(parseToolArg([])).toBeNull();
+  });
+
+  it('只给 tool 名，版本为 null', () => {
+    expect(parseToolArg(['fastpaper'])).toEqual({ name: 'fastpaper', version: null });
+  });
+
+  it('name@version 形式', () => {
+    expect(parseToolArg(['fastpaper@0.2.1'])).toEqual({ name: 'fastpaper', version: '0.2.1' });
+  });
+
+  // npm 在带 -- 时会把 --tool 原样透传，不带 -- 时会自己吞掉它只留下值；
+  // 两种形态都要能落到同一个结果，否则用户按哪种敲法都得看运气
+  it('--tool <值> 与位置参数等价', () => {
+    expect(parseToolArg(['--tool', 'fastpaper@0.2.1'])).toEqual({ name: 'fastpaper', version: '0.2.1' });
+  });
+
+  it('--tool=<值> 与位置参数等价', () => {
+    expect(parseToolArg(['--tool=fastpaper@0.2.1'])).toEqual({ name: 'fastpaper', version: '0.2.1' });
+  });
+
+  it('--tool 后面没值时报错', () => {
+    expect(() => parseToolArg(['--tool'])).toThrow(/--tool needs a value/);
+  });
+
+  it('缺 tool 名时报错', () => {
+    expect(() => parseToolArg(['@0.2.1'])).toThrow(/missing tool name/);
+  });
+
+  it('@ 后面没版本时报错', () => {
+    expect(() => parseToolArg(['fastpaper@'])).toThrow(/missing version/);
+  });
+
+  it('多个 @ 时报错', () => {
+    expect(() => parseToolArg(['a@b@c'])).toThrow(/more than one/);
+  });
+
+  it('点名多个 tool 时报错', () => {
+    expect(() => parseToolArg(['a', 'b'])).toThrow(/only one tool/);
+  });
+
+  // 手滑打错的 flag 若被当成"没给参数"，脚本会转头去升最新版——与本意正相反，必须拦
+  it('无法识别的 flag 报错而不是被忽略', () => {
+    expect(() => parseToolArg(['--verison', '0.2.1'])).toThrow(/unknown option/);
   });
 });
