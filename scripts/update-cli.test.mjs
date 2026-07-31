@@ -16,7 +16,7 @@ vi.mock('./cli/github.mjs', () => ({
 }));
 
 const { fetchRepoTree, fetchRepoFile } = await import('./cli/github.mjs');
-const { checkAndSyncSkill, parseToolArg } = await import('./update-cli.mjs');
+const { checkAndSyncSkill, parseToolArg, selectTools } = await import('./update-cli.mjs');
 
 // checkAndSyncSkill 内部按 REPO_ROOT 解析 cfg.skill.dest，与 update-cli.mjs 里算法一致
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -161,5 +161,25 @@ describe('parseToolArg', () => {
   // 手滑打错的 flag 若被当成"没给参数"，脚本会转头去升最新版——与本意正相反，必须拦
   it('无法识别的 flag 报错而不是被忽略', () => {
     expect(() => parseToolArg(['--verison', '0.2.1'])).toThrow(/unknown option/);
+  });
+});
+
+describe('selectTools', () => {
+  const manifest = { tools: { fastpaper: { version: '0.2.0' }, other: { version: '1.0.0' } } };
+
+  it('没点名时返回全部 tool', () => {
+    expect(selectTools(manifest, null).map(([n]) => n)).toEqual(['fastpaper', 'other']);
+  });
+
+  it('点名时只返回那一个', () => {
+    const got = selectTools(manifest, { name: 'other', version: null });
+    expect(got.map(([n]) => n)).toEqual(['other']);
+    expect(got[0][1]).toBe(manifest.tools.other);
+  });
+
+  // 名字打错不该先花几秒去拉 GitHub 才告诉你，所以这一步在任何网络请求之前
+  it('未知 tool 名报错并列出已知的名字', () => {
+    expect(() => selectTools(manifest, { name: 'nope', version: null }))
+      .toThrow(/unknown tool "nope".*fastpaper, other/);
   });
 });

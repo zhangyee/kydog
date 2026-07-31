@@ -70,6 +70,17 @@ function parseSelector(raw) {
   return { name, version: parts.length === 2 ? parts[1] : null };
 }
 
+/** 按选择器挑出要处理的 tool；未知名字在联网之前就报错 */
+export function selectTools(manifest, selector) {
+  const all = Object.entries(manifest.tools);
+  if (!selector) return all;
+  const hit = all.find(([name]) => name === selector.name);
+  if (!hit) {
+    throw new Error(`unknown tool "${selector.name}" — manifest has: ${all.map(([n]) => n).join(', ')}`);
+  }
+  return [hit];
+}
+
 let rl = null;
 let lines = null;
 let inputEnded = false;
