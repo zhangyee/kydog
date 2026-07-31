@@ -80,3 +80,22 @@ export async function fetchRepoFile(repo, tag, filePath) {
   if (!res.ok) throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
   return Buffer.from(await res.arrayBuffer());
 }
+
+/**
+ * 该 tag 下有没有 release。
+ * 只有 404 才算"没有"；限流、5xx 等一律原样抛出——把它们降级成"版本不存在"
+ * 会让用户去查一个根本没问题的版本号
+ */
+export async function releaseTagExists(repo, tag) {
+  const url = `${API}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`;
+  const res = await fetch(url, { headers: { accept: 'application/vnd.github+json', ...authHeaders() } });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
+  return true;
+}
+
+/** 仅用于报错时列候选：滤掉 draft 与 prerelease，保持 API 的顺序（新 → 旧） */
+export async function listStableTags(repo, limit = 10) {
+  const rs = await getJson(`${API}/repos/${repo}/releases`);
+  return rs.filter((r) => !r.draft && !r.prerelease).map((r) => r.tag_name).slice(0, limit);
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { latestStableTag, fetchShaForAsset, releaseAssetUrl, fetchDistManifest, fetchRepoTree, fetchRepoFile } from './github.mjs';
+import { latestStableTag, fetchShaForAsset, releaseAssetUrl, fetchDistManifest, fetchRepoTree, fetchRepoFile, releaseTagExists, listStableTags } from './github.mjs';
 
 function mockFetch(handlers) {
   // handlers: array of { match: (url) => bool, body, status }
@@ -107,5 +107,54 @@ describe('github', () => {
   it('fetchRepoFile throws on 404', async () => {
     vi.stubGlobal('fetch', mockFetch([]));
     await expect(fetchRepoFile('o/r', 'v1.0', 'skills/x/SKILL.md')).rejects.toThrow(/404/);
+  });
+
+  it('releaseTagExists returns true when the tag has a release', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      { match: (u) => u.includes('/releases/tags/v1.0'), body: { tag_name: 'v1.0' } },
+    ]));
+    expect(await releaseTagExists('o/r', 'v1.0')).toBe(true);
+  });
+
+  it('releaseTagExists returns false on 404', async () => {
+    vi.stubGlobal('fetch', mockFetch([]));
+    expect(await releaseTagExists('o/r', 'v9.9')).toBe(false);
+  });
+
+  // 限流/服务端错误绝不能被当成"这个版本不存在"——那会把人引向完全错误的方向
+  it('releaseTagExists throws on a non-404 failure instead of reporting "missing"', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      { match: (u) => u.includes('/releases/tags/'), body: 'rate limited', status: 403 },
+    ]));
+    await expect(releaseTagExists('o/r', 'v1.0')).rejects.toThrow(/403/);
+  });
+
+  it('listStableTags drops drafts and prereleases, keeping API order', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      {
+        match: (u) => u.endsWith('/releases'),
+        body: [
+          { tag_name: 'v2.0', draft: false, prerelease: false },
+          { tag_name: 'v2.0-rc1', draft: false, prerelease: true },
+          { tag_name: 'v1.9-wip', draft: true, prerelease: false },
+          { tag_name: 'v1.8', draft: false, prerelease: false },
+        ],
+      },
+    ]));
+    expect(await listStableTags('o/r')).toEqual(['v2.0', 'v1.8']);
+  });
+
+  it('listStableTags respects the limit', async () => {
+    vi.stubGlobal('fetch', mockFetch([
+      {
+        match: (u) => u.endsWith('/releases'),
+        body: [
+          { tag_name: 'v3', draft: false, prerelease: false },
+          { tag_name: 'v2', draft: false, prerelease: false },
+          { tag_name: 'v1', draft: false, prerelease: false },
+        ],
+      },
+    ]));
+    expect(await listStableTags('o/r', 2)).toEqual(['v3', 'v2']);
   });
 });
