@@ -266,9 +266,10 @@ function printDiff(localAbs, upstreamAbs, label) {
   console.log(r.stdout);
 }
 
-async function main() {
+async function main(argv = process.argv.slice(2)) {
+  const selector = parseToolArg(argv);     // 参数畸形在这里就抛，早于任何网络请求与 manifest 写入
   const manifest = loadManifest();
-  const tools = Object.entries(manifest.tools);
+  const tools = selectTools(manifest, selector);
   console.log(`\nChecking ${tools.length} tool${tools.length === 1 ? '' : 's'}…\n`);
 
   const updated = [];
@@ -280,7 +281,7 @@ async function main() {
   for (const [name, cfg] of tools) {
     let plan;
     try {
-      plan = await checkAndPlan(name, cfg);
+      plan = await checkAndPlan(name, cfg, selector?.version ?? null);
     } catch (e) {
       console.error(`  ${name.padEnd(18)} FAILED — ${e.message}`);
       failed.push(name);
@@ -288,10 +289,13 @@ async function main() {
     }
 
     if (plan.status === 'up-to-date') {
-      console.log(`  ${name.padEnd(18)} ${cfg.version}  =  latest  ✓`);
+      const tail = plan.requested ? `  =  requested  ✓  (latest is ${versionFromTag(plan.latestTag)})` : '  =  latest  ✓';
+      console.log(`  ${name.padEnd(18)} ${cfg.version}${tail}`);
     } else {
       const arrow = plan.status === 'new' ? '(new)' : cfg.version;
-      console.log(`  ${name.padEnd(18)} ${arrow}  →  ${versionFromTag(plan.latest)}`);
+      // 钉版本时把 latest 一并显示：让人看得出这是有意偏离最新版，而不是脚本没看见新版
+      const pinned = plan.requested ? `  (pinned; latest is ${versionFromTag(plan.latestTag)})` : '';
+      console.log(`  ${name.padEnd(18)} ${arrow}  →  ${versionFromTag(plan.targetTag)}${pinned}`);
       console.log(`                     release notes: ${plan.releaseUrl}`);
       console.log(`                     changes: ${plan.changes.join(', ')}`);
       if (await confirm('  Apply? [y/N]  ')) {
