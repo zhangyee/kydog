@@ -38,3 +38,4 @@ E2E（Playwright + Electron，需要先打包）：
 - `npm start` — `electron-forge start` 开窗口（需要桌面 UI）
 - `npm install` — 装依赖（让用户自己跑）
 - `npm run cli:update` — 检查上游 CLI 新版本 + 同步其 skill 到 `src/skills/`，逐项 `[y/N]` 确认
+- `npm run cli:update fastpaper@0.2.1` — 钉到指定版本（可回退），skill 跟着走同一个 tag；用位置参数，别写 `--tool`（npm 会吞掉它）
