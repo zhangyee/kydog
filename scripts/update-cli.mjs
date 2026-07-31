@@ -9,7 +9,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { loadManifest, saveManifest, TARGETS } from './cli/manifest.mjs';
-import { latestStableTag, fetchShaForAsset, fetchDistManifest, fetchRepoTree } from './cli/github.mjs';
+import { latestStableTag, fetchShaForAsset, fetchDistManifest, fetchRepoTree, releaseTagExists, listStableTags } from './cli/github.mjs';
 import { installOne, reconcileVendor, vendorDir } from './cli/install-one.mjs';
 import { upstreamSkillHashes, localSkillHashes, classifySkill, materializeSkill, applySkill } from './cli/skill-sync.mjs';
 
@@ -142,27 +142,42 @@ function discoverFromDistManifest(dm) {
   return { binaryName, assets };
 }
 
-async function checkAndPlan(name, cfg) {
-  const latest = await latestStableTag(cfg.repo);
+/**
+ * requestedVersion 为 null 时行为不变（对 latest）；给了就钉到那个版本。
+ * plan 里三个 tag 相关字段各司其职：targetTag 是本次要去的，latestTag 只供显示，
+ * requested 标明这是不是命令行点名的——没有它就无法区分"已是最新"和"已是你要的版本"。
+ */
+export async function checkAndPlan(name, cfg, requestedVersion = null) {
+  const latestTag = await latestStableTag(cfg.repo);
   const placeholder = isPlaceholder(cfg);
-  const upToDate = !placeholder && currentTag(cfg) === latest;
-  if (upToDate) return { name, status: 'up-to-date', latest };
+
+  let targetTag = latestTag;
+  if (requestedVersion !== null) {
+    targetTag = cfg.releaseTagTemplate.replace('{version}', requestedVersion);
+    if (!await releaseTagExists(cfg.repo, targetTag)) {
+      const tags = await listStableTags(cfg.repo);
+      throw new Error(`${name}: no release ${targetTag} in ${cfg.repo} — available: ${tags.length ? tags.join(', ') : '(none)'}`);
+    }
+  }
+
+  const base = { name, latestTag, targetTag, requested: requestedVersion !== null };
+  if (!placeholder && currentTag(cfg) === targetTag) return { ...base, status: 'up-to-date' };
 
   // 抓 dist-manifest.json 推断 binaryName/assets
-  const dm = await fetchDistManifest(cfg.repo, latest);
+  const dm = await fetchDistManifest(cfg.repo, targetTag);
   const discovered = discoverFromDistManifest(dm);
   const newCfg = JSON.parse(JSON.stringify(cfg));
-  newCfg.version = versionFromTag(latest);
+  newCfg.version = versionFromTag(targetTag);
   if (discovered) {
     newCfg.binaryName = discovered.binaryName;
     newCfg.assets = discovered.assets;
   } else if (placeholder) {
-    throw new Error(`${name}: upstream ${cfg.repo}@${latest} has no dist-manifest.json; can't auto-discover binaryName/assets. Fill them in scripts/cli.json manually and rerun.`);
+    throw new Error(`${name}: upstream ${cfg.repo}@${targetTag} has no dist-manifest.json; can't auto-discover binaryName/assets. Fill them in scripts/cli.json manually and rerun.`);
   }
   // 抓 sha
   newCfg.sha256 = {};
   for (const t of TARGETS) {
-    newCfg.sha256[t] = await fetchShaForAsset(cfg.repo, latest, newCfg.assets[t]);
+    newCfg.sha256[t] = await fetchShaForAsset(cfg.repo, targetTag, newCfg.assets[t]);
   }
 
   const changes = [];
@@ -172,12 +187,11 @@ async function checkAndPlan(name, cfg) {
   if (JSON.stringify(cfg.sha256) !== JSON.stringify(newCfg.sha256)) changes.push('sha256[*]');
 
   return {
-    name,
+    ...base,
     status: placeholder ? 'new' : 'update',
-    latest,
     newCfg,
     changes,
-    releaseUrl: `https://github.com/${cfg.repo}/releases/tag/${latest}`,
+    releaseUrl: `https://github.com/${cfg.repo}/releases/tag/${targetTag}`,
     oldBinaryName: cfg.binaryName,
   };
 }

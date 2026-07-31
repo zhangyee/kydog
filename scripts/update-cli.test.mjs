@@ -8,15 +8,17 @@ import { gitBlobSha } from './cli/skill-sync.mjs';
 // github.mjs 是这条流程里唯一的网络出口，整个 mock 掉；
 // skill-sync.mjs 里的 `import { fetchRepoFile } from './github.mjs'` 解析到同一个模块，一并被替换
 vi.mock('./cli/github.mjs', () => ({
-  latestStableTag: vi.fn(async () => { throw new Error('latestStableTag 不该被调用'); }),
+  latestStableTag: vi.fn(),
   fetchShaForAsset: vi.fn(async () => { throw new Error('fetchShaForAsset 不该被调用'); }),
   fetchDistManifest: vi.fn(async () => { throw new Error('fetchDistManifest 不该被调用'); }),
   fetchRepoTree: vi.fn(),
   fetchRepoFile: vi.fn(async () => Buffer.from('upstream\n')),
+  releaseTagExists: vi.fn(),
+  listStableTags: vi.fn(),
 }));
 
-const { fetchRepoTree, fetchRepoFile } = await import('./cli/github.mjs');
-const { checkAndSyncSkill, parseToolArg, selectTools } = await import('./update-cli.mjs');
+const { fetchRepoTree, fetchRepoFile, latestStableTag, fetchShaForAsset, fetchDistManifest, releaseTagExists, listStableTags } = await import('./cli/github.mjs');
+const { checkAndSyncSkill, parseToolArg, selectTools, checkAndPlan } = await import('./update-cli.mjs');
 
 // checkAndSyncSkill 内部按 REPO_ROOT 解析 cfg.skill.dest，与 update-cli.mjs 里算法一致
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -181,5 +183,52 @@ describe('selectTools', () => {
   it('未知 tool 名报错并列出已知的名字', () => {
     expect(() => selectTools(manifest, { name: 'nope', version: null }))
       .toThrow(/unknown tool "nope".*fastpaper, other/);
+  });
+});
+
+describe('checkAndPlan', () => {
+  const cfg = () => ({
+    repo: 'zhangyee/fastpaper-cli',
+    version: '0.2.0',
+    releaseTagTemplate: 'v{version}',
+    binaryName: 'fastpaper',
+    assets: { 'darwin-arm64': 'a', 'darwin-x64': 'b', 'win32-x64': 'c' },
+    sha256: { 'darwin-arm64': 'aa', 'darwin-x64': 'bb', 'win32-x64': 'cc' },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    latestStableTag.mockResolvedValue('v0.3.0');
+  });
+
+  it('不指定版本时目标就是 latest，不去查 tag 是否存在', async () => {
+    // 没钉版本 = 从 0.2.0 升到 latest，走的是 update 那条路，dist-manifest 与 sha 照常要抓；
+    // 工厂里给这两个的默认实现是"不该被调用"的哨兵，此处必须打桩，否则测的就不是 tag 选择了
+    fetchDistManifest.mockResolvedValue(null);
+    fetchShaForAsset.mockResolvedValue('dd');
+    const plan = await checkAndPlan('fastpaper', cfg(), null);
+    expect(plan.targetTag).toBe('v0.3.0');
+    expect(plan.latestTag).toBe('v0.3.0');
+    expect(plan.requested).toBe(false);
+    expect(releaseTagExists).not.toHaveBeenCalled();
+  });
+
+  // 钉住的版本正好是当前版本：不是 no-op，要照常返回让上层落到 skill 检查
+  it('指定的版本正好是当前版本时报 up-to-date，但仍带上 latest 供显示', async () => {
+    releaseTagExists.mockResolvedValue(true);
+    const plan = await checkAndPlan('fastpaper', cfg(), '0.2.0');
+    expect(releaseTagExists).toHaveBeenCalledWith('zhangyee/fastpaper-cli', 'v0.2.0');
+    expect(plan.status).toBe('up-to-date');
+    expect(plan.targetTag).toBe('v0.2.0');
+    expect(plan.latestTag).toBe('v0.3.0');
+    expect(plan.requested).toBe(true);
+  });
+
+  it('指定的版本上游没有时抛错并列出候选，且不去抓 dist-manifest', async () => {
+    releaseTagExists.mockResolvedValue(false);
+    listStableTags.mockResolvedValue(['v0.3.0', 'v0.2.1', 'v0.2.0']);
+    await expect(checkAndPlan('fastpaper', cfg(), '9.9.9'))
+      .rejects.toThrow(/v9\.9\.9.*v0\.3\.0, v0\.2\.1, v0\.2\.0/s);
+    expect(fetchDistManifest).not.toHaveBeenCalled();
   });
 });
