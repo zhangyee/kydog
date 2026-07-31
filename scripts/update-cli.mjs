@@ -145,7 +145,7 @@ function discoverFromDistManifest(dm) {
 /**
  * requestedVersion 为 null 时行为不变（对 latest）；给了就钉到那个版本。
  * plan 里三个 tag 相关字段各司其职：targetTag 是本次要去的，latestTag 只供显示，
- * requested 标明这是不是命令行点名的——没有它就无法区分"已是最新"和"已是你要的版本"。
+ * pinned 标明这是不是命令行点名的——没有它就无法区分"已是最新"和"已是你要的版本"。
  */
 export async function checkAndPlan(name, cfg, requestedVersion = null) {
   const latestTag = await latestStableTag(cfg.repo);
@@ -156,11 +156,15 @@ export async function checkAndPlan(name, cfg, requestedVersion = null) {
     targetTag = cfg.releaseTagTemplate.replace('{version}', requestedVersion);
     if (!await releaseTagExists(cfg.repo, targetTag)) {
       const tags = await listStableTags(cfg.repo);
-      throw new Error(`${name}: no release ${targetTag} in ${cfg.repo} — available: ${tags.length ? tags.join(', ') : '(none)'}`);
+      const available = tags.length ? tags.join(', ') : '(none)';
+      // 敲 `fastpaper@v0.2.1` 拼出来的是 vv0.2.1，而候选表里明晃晃列着 v0.2.1——
+      // 只说"没这个 release"会让人以为脚本瞎了。把 tag 的来历一并交代，多出来的那个 v 自己就露出来了
+      const from = `(tag built from "@${requestedVersion}" via releaseTagTemplate "${cfg.releaseTagTemplate}")`;
+      throw new Error(`${name}: no release ${targetTag} in ${cfg.repo} — available: ${available} ${from}`);
     }
   }
 
-  const base = { name, latestTag, targetTag, requested: requestedVersion !== null };
+  const base = { name, latestTag, targetTag, pinned: requestedVersion !== null };
   if (!placeholder && currentTag(cfg) === targetTag) return { ...base, status: 'up-to-date' };
 
   // 抓 dist-manifest.json 推断 binaryName/assets
@@ -194,6 +198,19 @@ export async function checkAndPlan(name, cfg, requestedVersion = null) {
     releaseUrl: `https://github.com/${cfg.repo}/releases/tag/${targetTag}`,
     oldBinaryName: cfg.binaryName,
   };
+}
+
+/** 四种情形各一行；抽成函数是为了能直接对四种输出下断言——它们本身就是这四种输出的文档 */
+export function planLine(name, cfg, plan) {
+  const head = `  ${name.padEnd(18)} `;
+  if (plan.status === 'up-to-date') {
+    const tail = plan.pinned ? `  =  pinned  ✓  (latest is ${versionFromTag(plan.latestTag)})` : '  =  latest  ✓';
+    return head + cfg.version + tail;
+  }
+  const from = plan.status === 'new' ? '(new)' : cfg.version;
+  // 钉版本时把 latest 一并显示：让人看得出这是有意偏离最新版，而不是脚本没看见新版
+  const suffix = plan.pinned ? `  (pinned; latest is ${versionFromTag(plan.latestTag)})` : '';
+  return `${head}${from}  →  ${versionFromTag(plan.targetTag)}${suffix}`;
 }
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -288,14 +305,8 @@ async function main(argv = process.argv.slice(2)) {
       continue;
     }
 
-    if (plan.status === 'up-to-date') {
-      const tail = plan.requested ? `  =  requested  ✓  (latest is ${versionFromTag(plan.latestTag)})` : '  =  latest  ✓';
-      console.log(`  ${name.padEnd(18)} ${cfg.version}${tail}`);
-    } else {
-      const arrow = plan.status === 'new' ? '(new)' : cfg.version;
-      // 钉版本时把 latest 一并显示：让人看得出这是有意偏离最新版，而不是脚本没看见新版
-      const pinned = plan.requested ? `  (pinned; latest is ${versionFromTag(plan.latestTag)})` : '';
-      console.log(`  ${name.padEnd(18)} ${arrow}  →  ${versionFromTag(plan.targetTag)}${pinned}`);
+    console.log(planLine(name, cfg, plan));
+    if (plan.status !== 'up-to-date') {
       console.log(`                     release notes: ${plan.releaseUrl}`);
       console.log(`                     changes: ${plan.changes.join(', ')}`);
       if (await confirm('  Apply? [y/N]  ')) {

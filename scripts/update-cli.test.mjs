@@ -18,7 +18,7 @@ vi.mock('./cli/github.mjs', () => ({
 }));
 
 const { fetchRepoTree, fetchRepoFile, latestStableTag, fetchShaForAsset, fetchDistManifest, releaseTagExists, listStableTags } = await import('./cli/github.mjs');
-const { checkAndSyncSkill, parseToolArg, selectTools, checkAndPlan } = await import('./update-cli.mjs');
+const { checkAndSyncSkill, parseToolArg, selectTools, checkAndPlan, planLine } = await import('./update-cli.mjs');
 
 // checkAndSyncSkill 内部按 REPO_ROOT 解析 cfg.skill.dest，与 update-cli.mjs 里算法一致
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -209,7 +209,7 @@ describe('checkAndPlan', () => {
     const plan = await checkAndPlan('fastpaper', cfg(), null);
     expect(plan.targetTag).toBe('v0.3.0');
     expect(plan.latestTag).toBe('v0.3.0');
-    expect(plan.requested).toBe(false);
+    expect(plan.pinned).toBe(false);
     expect(releaseTagExists).not.toHaveBeenCalled();
   });
 
@@ -221,14 +221,57 @@ describe('checkAndPlan', () => {
     expect(plan.status).toBe('up-to-date');
     expect(plan.targetTag).toBe('v0.2.0');
     expect(plan.latestTag).toBe('v0.3.0');
-    expect(plan.requested).toBe(true);
+    expect(plan.pinned).toBe(true);
   });
 
   it('指定的版本上游没有时抛错并列出候选，且不去抓 dist-manifest', async () => {
     releaseTagExists.mockResolvedValue(false);
     listStableTags.mockResolvedValue(['v0.3.0', 'v0.2.1', 'v0.2.0']);
-    await expect(checkAndPlan('fastpaper', cfg(), '9.9.9'))
-      .rejects.toThrow(/v9\.9\.9.*v0\.3\.0, v0\.2\.1, v0\.2\.0/s);
+    const err = await checkAndPlan('fastpaper', cfg(), '9.9.9').then(() => null, (e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/v9\.9\.9.*v0\.3\.0, v0\.2\.1, v0\.2\.0/s);
+    // tag 的来历必须写进报错：敲 @v0.2.1 会拼出 vv0.2.1，而候选表里就摆着 v0.2.1，不交代就是在误导人
+    expect(err.message).toMatch(/tag built from "@9\.9\.9" via releaseTagTemplate "v\{version\}"/);
     expect(fetchDistManifest).not.toHaveBeenCalled();
+  });
+
+  // 钉版本升级是这个功能的主路径；缺了它，把 targetTag 全改回 latestTag 也能全绿
+  it('钉到既非当前也非 latest 的版本时，dist-manifest/sha/releaseUrl 全走 target', async () => {
+    releaseTagExists.mockResolvedValue(true);
+    fetchDistManifest.mockResolvedValue(null);
+    fetchShaForAsset.mockResolvedValue('dd');
+    const plan = await checkAndPlan('fastpaper', cfg(), '0.2.1');
+    expect(plan.status).toBe('update');
+    expect(plan.newCfg.version).toBe('0.2.1');
+    expect(plan.releaseUrl).toMatch(/tag\/v0\.2\.1$/);
+    expect(fetchDistManifest).toHaveBeenCalledWith('zhangyee/fastpaper-cli', 'v0.2.1');
+    expect(fetchShaForAsset).toHaveBeenCalledWith('zhangyee/fastpaper-cli', 'v0.2.1', 'a');
+  });
+});
+
+// 四条断言写死整行输出：对齐宽度和双空格都是肉眼要读的东西，改坏了得有人喊
+describe('planLine', () => {
+  const cfg = { version: '0.2.0' };
+
+  it('没钉版本且已是最新', () => {
+    const plan = { status: 'up-to-date', pinned: false, latestTag: 'v0.2.0', targetTag: 'v0.2.0' };
+    expect(planLine('fastpaper', cfg, plan)).toBe('  fastpaper          0.2.0  =  latest  ✓');
+  });
+
+  // 钉住的版本恰好装着：既要说"就是你要的"，也要让人看见 latest 已经往前跑了
+  it('钉住版本且已是那个版本时，额外带出 latest', () => {
+    const plan = { status: 'up-to-date', pinned: true, latestTag: 'v0.3.0', targetTag: 'v0.2.0' };
+    expect(planLine('fastpaper', cfg, plan)).toBe('  fastpaper          0.2.0  =  pinned  ✓  (latest is 0.3.0)');
+  });
+
+  it('没钉版本的升级不带任何后缀', () => {
+    const plan = { status: 'update', pinned: false, latestTag: 'v0.3.0', targetTag: 'v0.3.0' };
+    expect(planLine('fastpaper', cfg, plan)).toBe('  fastpaper          0.2.0  →  0.3.0');
+  });
+
+  // 有意降级/偏离最新版时，latest 必须同屏出现，否则看着像脚本没发现新版
+  it('钉住版本的升级把 latest 缀在后面', () => {
+    const plan = { status: 'update', pinned: true, latestTag: 'v0.3.0', targetTag: 'v0.2.1' };
+    expect(planLine('fastpaper', cfg, plan)).toBe('  fastpaper          0.2.0  →  0.2.1  (pinned; latest is 0.3.0)');
   });
 });
