@@ -17,7 +17,7 @@ pi coding-agent SDK 相关改动前先查 `docs/references/pi-coding-agent/`，�
 
 LLM provider/model 改动前先读 `docs/llm-architecture.md`（数据流 / 状态不变量 / 变更传播规则 / 已知偏离）。
 
-「关于」页由 `src/about/*.md` 驱动：frontmatter `date` 最大的一篇即当前关于页，其余进页面底部「往期」。新增一篇就是新建一个带 `title` + `date`（YYYY-MM-DD）的 md，正文别写一级标题。`licenses.md` 是保留名，放字体授权，不带 frontmatter（它不是正文）。加/改篇目后 `aboutDocs.test.ts` 的契约测试是结构性的，不用改；`e2e/39-about-page.spec.ts` 断言的是 src/about 当前具体内容，改了篇目记得同步。
+「关于」页由 `src/about/*.md` 驱动：frontmatter `date` 最大的一篇即当前关于页，其余进页面底部「往期」。新增一篇就是新建一个带 `title` + `date`（YYYY-MM-DD）的 md，正文别写一级标题。`licenses.md` 是保留名，不带 frontmatter（它不是正文），内容是「字体」+「开源库」两节；开源库那节每条依赖的 license 标识符会被 `aboutDocs.test.ts` 拿去跟 `node_modules/<pkg>/package.json` 的 `license` 字段核对，改了依赖记得同步更新那一行。加/改篇目后 `aboutDocs.test.ts` 的契约测试是结构性的，不用改；`e2e/39-about-page.spec.ts` 断言的是 src/about 当前具体内容，改了篇目记得同步。
 
 `docs/` 已在 `tsconfig.json` exclude，不参与编译。
 
