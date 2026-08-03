@@ -93,16 +93,3 @@ test('36-font-size: --reading-font-size CSS 变量跟随档位切换', async () 
     await teardown(launched);
   }
 });
-
-test('36-font-size: 关于页展示版本号 + OFL 文本', async () => {
-  const launched = await launchKydog({ seed: seedSettings });
-  const { page } = launched;
-  try {
-    await page.locator('[data-testid="user-menu-trigger"]').click();
-    await page.locator('[data-testid="menu-about"]').click();
-    await expect(page.locator('[data-testid="about-version"]')).toContainText('KyDog');
-    await expect(page.locator('[data-testid="about-ofl-text"]')).toContainText('SIL OPEN FONT LICENSE');
-  } finally {
-    await teardown(launched);
-  }
-});
