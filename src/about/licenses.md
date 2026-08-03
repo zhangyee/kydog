@@ -1,3 +1,5 @@
+## 字体
+
 Source Serif 4 © Adobe Inc.
 
 Noto Serif SC © Google LLC
@@ -95,3 +97,26 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+## 开源库
+
+本项目直接依赖的开源库及各自的许可证：
+
+- `@earendil-works/pi-ai`: MIT
+- `@earendil-works/pi-coding-agent`: MIT
+- `@fontsource-variable/source-serif-4`: OFL-1.1
+- `@fontsource/noto-serif-sc`: OFL-1.1
+- `@milkdown/crepe`: MIT
+- `chokidar`: MIT
+- `electron`: MIT
+- `electron-squirrel-startup`: Apache-2.0
+- `katex`: MIT
+- `proper-lockfile`: MIT
+- `react`: MIT
+- `react-dom`: MIT
+- `react-markdown`: MIT
+- `react-pdf`: MIT
+- `remark-gfm`: MIT
+- `tar`: BlueOak-1.0.0
+- `zod`: MIT
+- `zustand`: MIT

@@ -5,6 +5,32 @@ import { parseAboutDoc, hasLevelOneHeading, type AboutDoc } from './aboutDoc';
 import { ABOUT_DOCS, ABOUT_LICENSES } from './aboutDocs';
 
 const ABOUT_DIR = path.resolve(__dirname, '..', '..', '..', 'about');
+// __dirname 是 src/renderer/settings/about/，向上四层是仓库根，node_modules 挂在那儿。
+const ROOT_DIR = path.resolve(__dirname, '..', '..', '..', '..');
+
+/**
+ * licenses.md「## 开源库」小节里，每一行的格式约定为：
+ *   - `<package>`: <license-identifier>
+ * 包名用反引号包住（scope 包名里的 `@`、`/` 都是合法字符，反引号只是让它在 md 里按 inline code
+ * 渲染，不影响解析），冒号后是这行唯一剩下的内容、就是 license 标识符本身。
+ * 这个形状手写起来自然，正则也不用理解 markdown 语法，逐行匹配即可。
+ */
+const LIB_LINE_RE = /^- `([^`]+)`: (.+)$/;
+
+type LibEntry = { pkg: string; license: string };
+
+function parseLicensesLibrarySection(raw: string): LibEntry[] {
+  const m = raw.match(/^## 开源库\s*\n([\s\S]*)$/m);
+  if (!m) throw new Error('licenses.md 缺少 "## 开源库" 小节');
+  return m[1]
+    .split('\n')
+    .filter((line) => line.startsWith('- '))
+    .map((line) => {
+      const lm = line.match(LIB_LINE_RE);
+      if (!lm) throw new Error(`licenses.md 开源库小节里有一行不符合 "- \`pkg\`: license" 格式：${line}`);
+      return { pkg: lm[1], license: lm[2] };
+    });
+}
 
 function mdFiles(): string[] {
   return readdirSync(ABOUT_DIR).filter((f) => f.endsWith('.md')).sort();
@@ -83,6 +109,25 @@ describe('src/about 文件契约', () => {
     // 一坨乱码。这条断言就是不让这种情况混进来。
     const raw = readFileSync(path.join(ABOUT_DIR, 'licenses.md'), 'utf8');
     expect(raw.replace(/^\uFEFF/, '').startsWith('---')).toBe(false);
+  });
+});
+
+describe('licenses.md\u300C\u5F00\u6E90\u5E93\u300D\u5C0F\u8282\uFF1A\u58F0\u660E\u7684 license \u5FC5\u987B\u8DDF node_modules \u91CC\u7684\u5B9E\u9645\u4E00\u81F4', () => {
+  // \u8FD9\u6761\u53EA\u6838\u5BF9\u300C\u5DF2\u7ECF\u5199\u8FDB\u53BB\u7684\u6761\u76EE\u300D\u662F\u5426\u5C5E\u5B9E\uFF0C\u4E0D\u65AD\u8A00\u5217\u8868\u8986\u76D6\u4E86 package.json \u7684\u5168\u90E8\u4F9D\u8D56\u2014\u2014
+  // \u5C11\u5217\u4E00\u4E2A\u5305\u4E0D\u662F\u300C\u5047\u300D\uFF0C\u53EA\u662F\u4E0D\u5168\uFF1B\u4F46\u5217\u51FA\u7684\u6BCF\u4E00\u6761\uFF0C\u6807\u8BC6\u7B26\u5FC5\u987B\u8DDF\u5305\u81EA\u5DF1\u58F0\u660E\u7684\u4E00\u5B57\u4E0D\u5DEE\uFF0C
+  // \u56E0\u4E3A\u8FD9\u662F\u7ED9\u7528\u6237\u770B\u7684\u6CD5\u5F8B\u5C42\u9762\u7684\u6388\u6743\u58F0\u660E\uFF0C\u4E0D\u8BE5\u51ED\u8BB0\u5FC6\u5199\u3001\u66F4\u4E0D\u8BE5\u6084\u6084\u8DDF\u4F9D\u8D56\u5B9E\u9645\u7684\u8BB8\u53EF\u8BC1\u8131\u8282\u3002
+  it('\u6BCF\u4E00\u6761\u58F0\u660E\u7684 license \u90FD\u7B49\u4E8E\u5BF9\u5E94 node_modules/<pkg>/package.json \u7684 license \u5B57\u6BB5', () => {
+    const raw = readFileSync(path.join(ABOUT_DIR, 'licenses.md'), 'utf8');
+    const entries = parseLicensesLibrarySection(raw);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const { pkg, license } of entries) {
+      const pkgJsonPath = path.join(ROOT_DIR, 'node_modules', pkg, 'package.json');
+      const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf8')) as { license?: unknown };
+      expect(
+        pkgJson.license,
+        `${pkg}: licenses.md \u58F0\u660E\u7684 license \u662F "${license}"\uFF0C\u4F46 node_modules/${pkg}/package.json \u5B9E\u9645\u662F "${pkgJson.license as string}"`,
+      ).toBe(license);
+    }
   });
 });
 
