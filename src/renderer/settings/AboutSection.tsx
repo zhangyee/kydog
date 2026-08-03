@@ -66,29 +66,35 @@ export function AboutSection() {
           >
             往期
           </div>
-          {archive.map((d) => (
-            <button
-              key={d.slug}
-              type="button"
-              data-testid="about-archive-item"
-              onClick={() => setViewingSlug(d.slug)}
-              className="font-serif"
-              style={{
-                display: 'block', width: '100%', textAlign: 'left',
-                padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer',
-                fontSize: 12.5, lineHeight: 1.6,
-                color: d.slug === doc?.slug ? 'var(--color-ink)' : 'var(--color-ink-soft)',
-              }}
-            >
-              <span
-                className="font-mono"
-                style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginRight: 10 }}
+          {archive.map((d) => {
+            const isCurrent = d.slug === doc?.slug;
+            return (
+              <button
+                key={d.slug}
+                type="button"
+                data-testid="about-archive-item"
+                aria-current={isCurrent ? 'true' : undefined}
+                onClick={() => setViewingSlug(d.slug)}
+                className="font-serif"
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  padding: '5px 8px', margin: '0 -8px', borderRadius: 2,
+                  background: isCurrent ? 'var(--color-paper-edge)' : 'none',
+                  border: 'none', cursor: 'pointer',
+                  fontSize: 12.5, lineHeight: 1.6, fontWeight: isCurrent ? 500 : 400,
+                  color: isCurrent ? 'var(--color-ink)' : 'var(--color-ink-soft)',
+                }}
               >
-                {d.date}
-              </span>
-              {d.title}
-            </button>
-          ))}
+                <span
+                  className="font-mono"
+                  style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginRight: 10 }}
+                >
+                  {d.date}
+                </span>
+                {d.title}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -96,6 +102,7 @@ export function AboutSection() {
         <div style={{ borderTop: HAIRLINE, marginTop: 26, paddingTop: 18 }}>
           <div
             data-testid="about-ofl-text"
+            tabIndex={0}
             style={{
               maxHeight: 280, overflow: 'auto',
               background: 'var(--color-paper-deep)',
