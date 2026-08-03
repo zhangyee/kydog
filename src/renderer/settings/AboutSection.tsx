@@ -109,15 +109,22 @@ export function AboutSection() {
       {ABOUT_LICENSES && (
         <div style={{ borderTop: HAIRLINE, marginTop: 26, paddingTop: 18 }}>
           <div
+            className="font-mono uppercase"
+            style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.4, marginBottom: 8 }}
+          >
+            字体授权
+          </div>
+          <div
             data-testid="about-ofl-text"
             tabIndex={0}
+            aria-label="字体授权全文"
             style={{
               maxHeight: 280, overflow: 'auto',
               background: 'var(--color-paper-deep)',
               border: HAIRLINE, borderRadius: 2, padding: '12px 14px',
             }}
           >
-            <AboutMarkdown content={ABOUT_LICENSES} fontSize={11.5} />
+            <AboutMarkdown content={ABOUT_LICENSES} fontSize={11.5} compact />
           </div>
         </div>
       )}

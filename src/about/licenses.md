@@ -1,5 +1,3 @@
-## 字体授权
-
 Source Serif 4 © Adobe Inc.
 
 Noto Serif SC © Google LLC
