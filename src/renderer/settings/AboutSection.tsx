@@ -1,102 +1,24 @@
+import { useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
+import { ABOUT_DOCS, ABOUT_LICENSES } from './about/aboutDocs';
+import { AboutMarkdown } from './about/AboutMarkdown';
 
-const OFL_TEXT = `Copyright 2014–2024 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
-Copyright 2014–2024 Google LLC.
-
-This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at:
-https://openfontlicense.org
-
------------------------------------------------------------
-SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
------------------------------------------------------------
-
-PREAMBLE
-The goals of the Open Font License (OFL) are to stimulate worldwide
-development of collaborative font projects, to support the font creation
-efforts of academic and linguistic communities, and to provide a free and
-open framework in which fonts may be shared and improved in partnership
-with others.
-
-The OFL allows the licensed fonts to be used, studied, modified and
-redistributed freely as long as they are not sold by themselves. The
-fonts, including any derivative works, can be bundled, embedded,
-redistributed and/or sold with any software provided that any reserved
-names are not used by derivative works. The fonts and derivatives,
-however, cannot be released under any other type of license. The
-requirement for fonts to remain under this license does not apply to any
-document created using the fonts or their derivatives.
-
-DEFINITIONS
-"Font Software" refers to the set of files released by the Copyright
-Holder(s) under this license and clearly marked as such. This may
-include source files, build scripts and documentation.
-
-"Reserved Font Name" refers to any names specified as such after the
-copyright statement(s).
-
-"Original Version" refers to the collection of Font Software components as
-distributed by the Copyright Holder(s).
-
-"Modified Version" refers to any derivative made by adding to, deleting,
-or substituting -- in part or in whole -- any of the components of the
-Original Version, by changing formats or by porting the Font Software to a
-new environment.
-
-"Author" refers to any designer, engineer, programmer, technical writer
-or other person who contributed to the Font Software.
-
-PERMISSION & CONDITIONS
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of the Font Software, to use, study, copy, merge, embed, modify,
-redistribute, and sell modified and unmodified copies of the Font
-Software, subject to the following conditions:
-
-1) Neither the Font Software nor any of its individual components, in
-Original or Modified Versions, may be sold by itself.
-
-2) Original or Modified Versions of the Font Software may be bundled,
-redistributed and/or sold with any software, provided that each copy
-contains the above copyright notice and this license. These can be
-included either as stand-alone text files, human-readable headers or in
-the appropriate machine-readable metadata fields within text or binary
-files as long as those fields can be easily viewed by the user.
-
-3) No Modified Version of the Font Software may use the Reserved Font
-Name(s) unless explicit written permission is granted by the corresponding
-Copyright Holder. This restriction only applies to the primary font name
-as presented to the users.
-
-4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
-Software shall not be used to promote, endorse or advertise any Modified
-Version, except to acknowledge the contribution(s) of the Copyright
-Holder(s) and the Author(s) or with their explicit written permission.
-
-5) The Font Software, modified or unmodified, in part or in whole, must
-be distributed entirely under this license, and must not be distributed
-under any other license. The requirement for fonts to remain under this
-license does not apply to any document created using the Font Software.
-
-TERMINATION
-This license becomes null and void if any of the above conditions are
-not met.
-
-DISCLAIMER
-THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
-OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
-COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
-DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
-OTHER DEALINGS IN THE FONT SOFTWARE.`;
+const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
 
 export function AboutSection() {
   const appVersion = useSettingsStore((s) => s.appVersion);
+  // null = 看当前篇（ABOUT_DOCS[0]）
+  const [viewingSlug, setViewingSlug] = useState<string | null>(null);
+
+  const latest = ABOUT_DOCS[0] ?? null;
+  const doc = (viewingSlug ? ABOUT_DOCS.find((d) => d.slug === viewingSlug) : null) ?? latest;
+  // 往期列表恒为「除最新篇外的所有篇」，不随 viewingSlug 变化，列表才不会跳动。
+  const archive = ABOUT_DOCS.slice(1);
+  const isArchive = !!doc && !!latest && doc.slug !== latest.slug;
 
   return (
     <div style={{ padding: '28px 28px 40px', maxWidth: 720 }}>
+      {/* 版本行说的是「你正在跑的版本」，翻看往期篇时也不变。 */}
       <div
         className="font-mono uppercase"
         style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.5, marginBottom: 14 }}
@@ -105,46 +27,85 @@ export function AboutSection() {
         KyDog · v{appVersion || '0.1.0'}
       </div>
 
-      <div
-        className="font-serif"
-        style={{ fontSize: 13, color: 'var(--color-ink-soft)', lineHeight: 1.7, marginBottom: 20 }}
-      >
-        面向科研工作流的 AI 智能体桌面应用。
-      </div>
+      {isArchive && doc && (
+        <button
+          type="button"
+          onClick={() => setViewingSlug(null)}
+          data-testid="about-back-to-latest"
+          className="font-mono"
+          style={{
+            display: 'block', marginBottom: 12, padding: 0,
+            background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 10.5, letterSpacing: 0.6, color: 'var(--color-marginalia)',
+          }}
+        >
+          ← 回到最新 · {doc.date}
+        </button>
+      )}
 
-      <div style={{ borderTop: '0.5px solid var(--color-ink-hair-soft)', paddingTop: 18 }}>
-        <div
-          className="font-mono uppercase"
-          style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.4, marginBottom: 8 }}
-        >
-          字体授权
+      {doc && (
+        <>
+          <h1
+            className="font-serif"
+            data-testid="about-title"
+            style={{ fontSize: 22, fontWeight: 600, lineHeight: 1.3, color: 'var(--color-ink)', margin: '0 0 14px' }}
+          >
+            {doc.title}
+          </h1>
+          <div data-testid="about-body">
+            <AboutMarkdown content={doc.body} />
+          </div>
+        </>
+      )}
+
+      {archive.length > 0 && (
+        <div style={{ borderTop: HAIRLINE, marginTop: 26, paddingTop: 18 }}>
+          <div
+            className="font-mono uppercase"
+            style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.4, marginBottom: 8 }}
+          >
+            往期
+          </div>
+          {archive.map((d) => (
+            <button
+              key={d.slug}
+              type="button"
+              data-testid="about-archive-item"
+              onClick={() => setViewingSlug(d.slug)}
+              className="font-serif"
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                padding: '5px 0', background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 12.5, lineHeight: 1.6,
+                color: d.slug === doc?.slug ? 'var(--color-ink)' : 'var(--color-ink-soft)',
+              }}
+            >
+              <span
+                className="font-mono"
+                style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginRight: 10 }}
+              >
+                {d.date}
+              </span>
+              {d.title}
+            </button>
+          ))}
         </div>
-        <div
-          className="font-serif"
-          style={{ fontSize: 12.5, color: 'var(--color-ink)', lineHeight: 1.65, marginBottom: 14 }}
-        >
-          <div>Source Serif 4 © Adobe Inc.</div>
-          <div>Noto Serif SC © Google LLC</div>
-          <div style={{ marginTop: 6, color: 'var(--color-ink-soft)' }}>
-            Licensed under the SIL Open Font License, Version 1.1.
+      )}
+
+      {ABOUT_LICENSES && (
+        <div style={{ borderTop: HAIRLINE, marginTop: 26, paddingTop: 18 }}>
+          <div
+            data-testid="about-ofl-text"
+            style={{
+              maxHeight: 280, overflow: 'auto',
+              background: 'var(--color-paper-deep)',
+              border: HAIRLINE, borderRadius: 2, padding: '12px 14px',
+            }}
+          >
+            <AboutMarkdown content={ABOUT_LICENSES} fontSize={11.5} />
           </div>
         </div>
-        <pre
-          className="font-mono"
-          data-testid="about-ofl-text"
-          style={{
-            fontSize: 10.5, lineHeight: 1.55,
-            background: 'var(--color-paper-deep)',
-            color: 'var(--color-ink-soft)',
-            border: '0.5px solid var(--color-ink-hair-soft)',
-            borderRadius: 2,
-            padding: '12px 14px',
-            maxHeight: 280,
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-          }}
-        >{OFL_TEXT}</pre>
-      </div>
+      )}
     </div>
   );
 }
