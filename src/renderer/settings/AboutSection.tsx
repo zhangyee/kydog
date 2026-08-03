@@ -130,15 +130,23 @@ export function AboutSection() {
                 type="button"
                 data-testid="about-licenses-entry"
                 onClick={() => setView({ kind: 'licenses' })}
-                className="font-mono uppercase"
+                className="font-serif"
                 style={{
                   display: 'block', width: '100%', textAlign: 'left',
                   padding: '5px 8px', margin: '0 -8px', borderRadius: 2,
                   background: 'none', border: 'none', cursor: 'pointer',
-                  fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 1.4,
+                  fontSize: 12.5, lineHeight: 1.6, color: 'var(--color-ink-soft)',
                 }}
               >
                 开源许可
+                {/* 尾箭头是这一条唯一的可点提示 —— 它没有「往期」那样的日期前缀，
+                    纯文字会和上面的分组标签看起来一样，像个空小节。 */}
+                <span
+                  className="font-mono"
+                  style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginLeft: 8 }}
+                >
+                  →
+                </span>
               </button>
             </div>
           )}
