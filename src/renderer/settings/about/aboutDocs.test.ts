@@ -9,24 +9,34 @@ function mdFiles(): string[] {
   return readdirSync(ABOUT_DIR).filter((f) => f.endsWith('.md')).sort();
 }
 
+/** 正文文件 = 除 licenses.md 外的所有 .md，两处需要这个集合的地方共用同一份定义。 */
+function posts(): string[] {
+  return mdFiles().filter((f) => f !== 'licenses.md');
+}
+
 describe('src/about 文件契约', () => {
   it('licenses.md 存在且含 OFL 全文', () => {
     const raw = readFileSync(path.join(ABOUT_DIR, 'licenses.md'), 'utf8');
     expect(raw).toContain('SIL OPEN FONT LICENSE');
-    expect(raw.length).toBeGreaterThan(3000);
+    // 按协议层事实断言，而不是字符数阈值：OFL 1.1 的五个必备条款小节都得在。
+    // 少了任何一节（尤其是 TERMINATION / DISCLAIMER 这两条免责条款）就不是完整的 OFL 全文。
+    for (const heading of ['PREAMBLE', 'DEFINITIONS', 'PERMISSION & CONDITIONS', 'TERMINATION', 'DISCLAIMER']) {
+      expect(raw, `licenses.md 缺少 OFL 条款小节：${heading}`).toContain(heading);
+    }
   });
 
   it('至少有一篇正文', () => {
-    const posts = mdFiles().filter((f) => f !== 'licenses.md');
-    expect(posts.length).toBeGreaterThanOrEqual(1);
+    expect(posts().length).toBeGreaterThanOrEqual(1);
   });
 
-  it('每篇正文的 frontmatter 都合法', () => {
-    for (const f of mdFiles()) {
-      if (f === 'licenses.md') continue;
+  it('每篇正文的 frontmatter 都合法，且 body 非空', () => {
+    for (const f of posts()) {
       const slug = f.replace(/\.md$/, '');
       const r = parseAboutDoc(slug, readFileSync(path.join(ABOUT_DIR, f), 'utf8'));
       expect(r.ok, r.ok ? '' : r.reason).toBe(true);
+      if (r.ok) {
+        expect(r.doc.body.trim().length, `${f}: body 为空或全是空白`).toBeGreaterThan(0);
+      }
     }
   });
 
