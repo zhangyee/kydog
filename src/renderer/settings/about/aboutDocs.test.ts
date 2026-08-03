@@ -45,6 +45,15 @@ describe('src/about 文件契约', () => {
     const slugs = mdFiles().map((f) => f.replace(/\.md$/, ''));
     expect(new Set(slugs).size).toBe(slugs.length);
   });
+
+  it('没有文件含一级 ATX 标题（页面自己渲染 <h1>，正文/licenses 里再来一个会撞层级）', () => {
+    // 只挡行首的 "# "（ATX h1）。OFL 原文里成段的 "---" 是分隔线/setext 下划线，
+    // setext 的 "-" 产出的是 <h2> 不是 <h1>，不在本条检查范围内，不应误报。
+    for (const f of mdFiles()) {
+      const raw = readFileSync(path.join(ABOUT_DIR, f), 'utf8');
+      expect(/^# /m.test(raw), `${f}: 含有一级标题（"# " 开头的行），会和页面自身的 <h1> 冲突`).toBe(false);
+    }
+  });
 });
 
 describe('ABOUT_DOCS / ABOUT_LICENSES', () => {
