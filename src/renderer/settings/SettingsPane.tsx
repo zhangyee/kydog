@@ -32,7 +32,7 @@ export function SettingsPane() {
         >
           {activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
             : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
-            : activeSection === 'about' ? '版本号、字体授权信息'
+            : activeSection === 'about' ? '版本号、更新记录、字体授权'
             : '预留页面'}
         </div>
         <div style={{ marginTop: 14 }}>
