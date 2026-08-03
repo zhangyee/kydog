@@ -1,7 +1,7 @@
 {
   "name": "kydog",
   "productName": "KyDog",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "KyDog — an AI research agent for academic literature discovery, review, and frontier insight.",
   "main": ".vite/build/main.js",
   "private": true,
