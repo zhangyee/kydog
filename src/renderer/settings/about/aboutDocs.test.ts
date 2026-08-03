@@ -64,6 +64,6 @@ describe('ABOUT_DOCS / ABOUT_LICENSES', () => {
   });
 
   it('ABOUT_LICENSES 是 licenses.md 原文', () => {
-    expect(ABOUT_LICENSES).toContain('SIL OPEN FONT LICENSE');
+    expect(ABOUT_LICENSES).toBe(readFileSync(path.join(ABOUT_DIR, 'licenses.md'), 'utf8'));
   });
 });

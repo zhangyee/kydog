@@ -28,6 +28,9 @@ for (const [key, raw] of Object.entries(RAW)) {
   else console.warn(`[about] 跳过 ${key}：${parsed.reason}`);
 }
 
+if (docs.length === 0) console.warn('[about] 一篇正文都没解析出来，检查 glob 路径与 src/about 内容');
+if (!licenses) console.warn('[about] licenses.md 缺失或为空');
+
 /** 已按 date 降序排好；[0] 即当前的关于页。解析失败的篇已被跳过。 */
 export const ABOUT_DOCS: AboutDoc[] = sortAboutDocs(docs);
 
