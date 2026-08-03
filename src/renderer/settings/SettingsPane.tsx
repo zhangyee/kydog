@@ -14,6 +14,13 @@ export function SettingsPane() {
   const addProviderOpen = useUiStore((s) => s.settingsAddProviderOpen);
   const openAddProvider = useUiStore((s) => s.openSettingsAddProvider);
 
+  // about 页自己的内容里已经交代了版本/更新/授权是什么，这里再放一行副标题纯属重复。
+  // null 时整个副标题元素都不渲染（不留空 div 占位），其余 tab 不受影响。
+  const subtitle = activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
+    : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
+    : activeSection === 'about' ? null
+    : '预留页面';
+
   return (
     <div className="ky-paper-grain h-full flex flex-col">
       <div
@@ -26,17 +33,17 @@ export function SettingsPane() {
         <div className="font-serif" style={{ fontSize: 28, color: 'var(--color-ink)' }}>
           {SETTINGS_PAGE_LABELS[activeSection]}
         </div>
-        <div
-          className="font-serif italic"
-          style={{ marginTop: 6, fontSize: 12, color: 'var(--color-ink-soft)' }}
-        >
-          {activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
-            : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
-            : activeSection === 'about' ? '版本号、更新记录、字体授权'
-            : '预留页面'}
-        </div>
-        <div style={{ marginTop: 14 }}>
+        {subtitle !== null && (
+          <div
+            className="font-serif italic"
+            style={{ marginTop: 6, fontSize: 12, color: 'var(--color-ink-soft)' }}
+          >
+            {subtitle}
+          </div>
+        )}
+        <div style={{ marginTop: subtitle !== null ? 14 : 32 }}>
           <span
+            data-testid="settings-version"
             className="font-mono"
             style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 0.8 }}
           >
