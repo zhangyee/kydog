@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { parseAboutDoc } from './aboutDoc';
+import { ABOUT_DOCS, ABOUT_LICENSES } from './aboutDocs';
 
 const ABOUT_DIR = path.resolve(__dirname, '..', '..', '..', 'about');
 
@@ -43,5 +44,26 @@ describe('src/about 文件契约', () => {
   it('slug 不重复', () => {
     const slugs = mdFiles().map((f) => f.replace(/\.md$/, ''));
     expect(new Set(slugs).size).toBe(slugs.length);
+  });
+});
+
+describe('ABOUT_DOCS / ABOUT_LICENSES', () => {
+  it('ABOUT_DOCS[0] 是 date 最大的一篇', () => {
+    expect(ABOUT_DOCS.length).toBeGreaterThanOrEqual(2);
+    expect(ABOUT_DOCS[0].slug).toBe('2026-08-03-hello');
+    expect(ABOUT_DOCS[0].title).toBe('关于 KyDog');
+  });
+
+  it('按 date 降序', () => {
+    const dates = ABOUT_DOCS.map((d) => d.date);
+    expect([...dates].sort().reverse()).toEqual(dates);
+  });
+
+  it('licenses 不混进 ABOUT_DOCS', () => {
+    expect(ABOUT_DOCS.some((d) => d.slug === 'licenses')).toBe(false);
+  });
+
+  it('ABOUT_LICENSES 是 licenses.md 原文', () => {
+    expect(ABOUT_LICENSES).toContain('SIL OPEN FONT LICENSE');
   });
 });
