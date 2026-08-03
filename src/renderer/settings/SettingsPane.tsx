@@ -6,6 +6,7 @@ import { ProviderListSection } from './ProviderListSection';
 import { AddProviderPage } from './AddProviderPage';
 import { ProviderDetailPane } from './ProviderDetailPane';
 import { AboutSection } from './AboutSection';
+import { SponsorSection } from './SponsorSection';
 
 export function SettingsPane() {
   const activeSection = useUiStore((s) => s.settingsTab);
@@ -19,6 +20,7 @@ export function SettingsPane() {
   const subtitle = activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
     : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
     : activeSection === 'about' ? null
+    : activeSection === 'donate' ? '微信赞赏码'
     : '预留页面';
 
   return (
@@ -65,6 +67,8 @@ export function SettingsPane() {
           <SkillsAndToolsSection />
         ) : activeSection === 'about' ? (
           <AboutSection />
+        ) : activeSection === 'donate' ? (
+          <SponsorSection />
         ) : (
           <EmptySettingsPage title={SETTINGS_PAGE_LABELS[activeSection]} />
         )}
