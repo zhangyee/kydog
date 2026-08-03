@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAboutDoc, sortAboutDocs, type AboutDoc } from './aboutDoc';
+import { parseAboutDoc, sortAboutDocs, hasLevelOneHeading, type AboutDoc } from './aboutDoc';
 
 const OK = `---
 title: 关于 KyDog
@@ -104,5 +104,47 @@ describe('sortAboutDocs', () => {
 
   it('空数组', () => {
     expect(sortAboutDocs([])).toEqual([]);
+  });
+});
+
+describe('hasLevelOneHeading', () => {
+  it('ATX 一级标题 → true', () => {
+    expect(hasLevelOneHeading('# 标题\n\n正文\n')).toBe(true);
+  });
+
+  it('setext 一级标题（文本行 + "=" 下划线）→ true', () => {
+    expect(hasLevelOneHeading('标题\n====\n\n正文\n')).toBe(true);
+  });
+
+  it('setext 一级标题，"=" 只有一个也算 → true', () => {
+    expect(hasLevelOneHeading('标题\n=\n')).toBe(true);
+  });
+
+  it('ATX 二级/三级标题 → false（不该被一级标题检测误伤）', () => {
+    expect(hasLevelOneHeading('## 标题\n\n正文\n')).toBe(false);
+    expect(hasLevelOneHeading('### 标题\n\n正文\n')).toBe(false);
+  });
+
+  it('setext 二级标题（"-" 下划线）→ false', () => {
+    expect(hasLevelOneHeading('标题\n----\n\n正文\n')).toBe(false);
+  });
+
+  it('孤立的分隔线（thematic break，前面是空行）→ false', () => {
+    expect(hasLevelOneHeading('正文一段\n\n---\n\n正文另一段\n')).toBe(false);
+  });
+
+  it('OFL 原文的双 "-" 装饰行（分隔线 + setext h2）→ false', () => {
+    const ofl = [
+      '-----------------------------------------------------------',
+      'SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007',
+      '-----------------------------------------------------------',
+      '',
+      'PREAMBLE',
+    ].join('\n');
+    expect(hasLevelOneHeading(ofl)).toBe(false);
+  });
+
+  it('普通正文，没有任何标题 → false', () => {
+    expect(hasLevelOneHeading('第一段。\n\n第二段。\n')).toBe(false);
   });
 });

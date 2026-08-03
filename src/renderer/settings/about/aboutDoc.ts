@@ -65,3 +65,15 @@ export function sortAboutDocs(docs: AboutDoc[]): AboutDoc[] {
     a.date === b.date ? b.slug.localeCompare(a.slug) : b.date.localeCompare(a.date),
   );
 }
+
+/** setext h1：非空文本行，紧跟一行只有 1~3 个前导空格 + 一个或多个 "=" + 尾随空白。 */
+const SETEXT_H1_RE = /^[ \t]{0,3}\S[^\n]*\n[ \t]{0,3}=+[ \t]*$/m;
+
+/**
+ * 探测一级标题：ATX（行首 "# "）或 setext（文本行 + 下一行全 "=" 的下划线）。
+ * 两种都会被 CommonMark 渲染成 <h1>，和页面自身的标题撞层级。
+ * 不认 "-" 下划线（setext h2）和分隔线 "---"（thematic break）—— OFL 原文里两者都有，是正常内容。
+ */
+export function hasLevelOneHeading(raw: string): boolean {
+  return /^# /m.test(raw) || SETEXT_H1_RE.test(raw);
+}
