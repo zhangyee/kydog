@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { ABOUT_DOCS, ABOUT_LICENSES } from './about/aboutDocs';
 import { AboutMarkdown } from './about/AboutMarkdown';
@@ -9,12 +9,19 @@ export function AboutSection() {
   const appVersion = useSettingsStore((s) => s.appVersion);
   // null = 看当前篇（ABOUT_DOCS[0]）
   const [viewingSlug, setViewingSlug] = useState<string | null>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
 
   const latest = ABOUT_DOCS[0] ?? null;
   const doc = (viewingSlug ? ABOUT_DOCS.find((d) => d.slug === viewingSlug) : null) ?? latest;
   // 往期列表恒为「除最新篇外的所有篇」，不随 viewingSlug 变化，列表才不会跳动。
   const archive = ABOUT_DOCS.slice(1);
   const isArchive = !!doc && !!latest && doc.slug !== latest.slug;
+
+  // 往期列表在页面底部，设置页一长就会滚动。切篇后把标题滚回可见范围，
+  // 不然读者视线还停在列表上，「← 回到最新」也渲染到了视口外面。
+  useEffect(() => {
+    titleRef.current?.scrollIntoView({ block: 'start' });
+  }, [doc?.slug]);
 
   return (
     <div style={{ padding: '28px 28px 40px', maxWidth: 720 }}>
@@ -46,6 +53,7 @@ export function AboutSection() {
       {doc && (
         <>
           <h1
+            ref={titleRef}
             className="font-serif"
             data-testid="about-title"
             style={{ fontSize: 22, fontWeight: 600, lineHeight: 1.3, color: 'var(--color-ink)', margin: '0 0 14px' }}
