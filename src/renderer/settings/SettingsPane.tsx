@@ -15,12 +15,12 @@ export function SettingsPane() {
   const addProviderOpen = useUiStore((s) => s.settingsAddProviderOpen);
   const openAddProvider = useUiStore((s) => s.openSettingsAddProvider);
 
-  // about 页自己的内容里已经交代了版本/更新/授权是什么，这里再放一行副标题纯属重复。
+  // about / donate 两页的内容自己就说清楚了是什么，再加一行副标题纯属重复。
   // null 时整个副标题元素都不渲染（不留空 div 占位），其余 tab 不受影响。
   const subtitle = activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
     : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
     : activeSection === 'about' ? null
-    : activeSection === 'donate' ? '微信赞赏码'
+    : activeSection === 'donate' ? null
     : '预留页面';
 
   return (
