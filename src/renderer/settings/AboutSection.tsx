@@ -79,7 +79,7 @@ export function AboutSection() {
                 {doc.title}
               </h1>
               <div data-testid="about-body">
-                <AboutMarkdown content={doc.body} />
+                <AboutMarkdown content={doc.body} softBreaks />
               </div>
             </>
           )}
