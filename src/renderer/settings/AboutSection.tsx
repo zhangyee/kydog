@@ -52,7 +52,9 @@ export function AboutSection() {
         </>
       ) : (
         <>
-          {isArchive && doc && (
+          {isArchive && (
+            // 不带日期：动作标签后面跟一个日期，会被读成「最新那篇是这个日期」，
+            // 而当前篇的日期本来就在下方「往期」的高亮行里写着。
             <button
               type="button"
               onClick={() => setView({ kind: 'post', slug: null })}
@@ -64,7 +66,7 @@ export function AboutSection() {
                 fontSize: 10.5, letterSpacing: 0.6, color: 'var(--color-marginalia)',
               }}
             >
-              ← 回到最新 · {doc.date}
+              ← 回到最新
             </button>
           )}
 

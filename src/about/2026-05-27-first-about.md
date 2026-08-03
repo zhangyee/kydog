@@ -1,5 +1,5 @@
 ---
-title: 关于 KyDog
+title: Initial KyDog README
 date: 2026-05-27
 ---
 

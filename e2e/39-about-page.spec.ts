@@ -14,7 +14,7 @@ test('39-about-page: 展示最新篇、往期可切换、版本行常驻', async
     const versionText = await page.locator('[data-testid="settings-version"]').textContent();
     if (versionText === null) throw new Error('settings-version textContent 不应为 null');
     // 当前篇 = date 最大的 2026-08-03-read-me
-    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog');
+    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog V0.1.0');
     await expect(page.locator('[data-testid="about-body"]')).toContainText('fastpaper-cli');
     await expect(page.locator('[data-testid="about-back-to-latest"]')).toBeHidden();
 
@@ -26,14 +26,14 @@ test('39-about-page: 展示最新篇、往期可切换、版本行常驻', async
 
     // 切到往期篇：标题与正文变，版本行逐字不变
     await items.first().click();
-    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于 KyDog');
+    await expect(page.locator('[data-testid="about-title"]')).toHaveText('Initial KyDog README');
     await expect(page.locator('[data-testid="about-body"]')).toContainText('面向科研工作流');
     await expect(page.locator('[data-testid="settings-version"]')).toHaveText(versionText);
     await expect(items.first()).toHaveAttribute('aria-current', 'true');
 
     // 回到最新
     await page.locator('[data-testid="about-back-to-latest"]').click();
-    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog');
+    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog V0.1.0');
     await expect(page.locator('[data-testid="about-back-to-latest"]')).toBeHidden();
     await expect(items.first()).not.toHaveAttribute('aria-current', 'true');
 
@@ -47,7 +47,7 @@ test('39-about-page: 展示最新篇、往期可切换、版本行常驻', async
     expect(bodyText).toContain('react'); // 开源库列表里的一条依赖
 
     await licensesBack.click();
-    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog');
+    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog V0.1.0');
     await expect(licensesBack).toBeHidden();
   } finally {
     await teardown(launched);
