@@ -1,4 +1,4 @@
-import type { SettingsFile, ResearchVarKind, ResearchCustomVar } from './types';
+import type { SettingsFile, ResearchVarKind } from './types';
 import { PRESET_RESEARCH_VARS, PRESET_RESEARCH_VAR_NAMES } from './researchVars';
 import { STATIC_META } from './apiKeyMeta';
 import { MANAGED_VARS } from './managedCloudEnvVars';
@@ -44,31 +44,41 @@ export const RESERVED_ENV_NAMES: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * trim 变量名与值；剔掉值为空的预设项（空 = 未设置）。自定义项一律保留条目。
+ * 把任意运行时输入收敛成合法形状。
  *
- * 对任何输入都是全函数（total）：不认得的形状一律当成「没有」，落回空表，
- * 不抛错。它是归一化的总入口，IPC 边界上的 args 在运行时不可信 —— 类型
- * 标注挡不住畸形 payload，`research.save` 不该因为一个形状问题就给渲染层
- * 甩一个裸 TypeError，而应该走 validateResearch 那条「settings.invalid」
- * 的干净错误路径（这里归一化成空表，后续校验该拦的还是会拦）。
+ * 这是信任边界上的函数：输入来自磁盘 JSON 和 IPC payload，两者在运行时
+ * 都可以是任意形状，类型标注在这里不作数。因此它对任何 unknown 输入都
+ * 必须是全函数（永不抛），把认不出的东西一律丢掉而不是试图挽救。
+ *
+ * kind 收敛成 'key'：任何认不出的 kind（包括缺失）落到更严格的那一档 ——
+ * 'key' 不触发邮箱格式校验，但也不会因为伪造 kind 而跳过任何检查。
+ * name 非字符串收敛成空串而不是丢掉整条条目：空名会被 validateCustomVarName
+ * 判为非法，走正常的报错路径，比条目静默消失更容易排查。
  */
 export function normalizeResearch(r: SettingsFile['research']): SettingsFile['research'] {
+  const src = r as unknown;
+  const obj = src && typeof src === 'object' && !Array.isArray(src)
+    ? (src as Record<string, unknown>)
+    : {};
+
   const presets: Record<string, string> = {};
-  const rawPresets = r?.presets;
+  const rawPresets = obj.presets;
   if (rawPresets && typeof rawPresets === 'object' && !Array.isArray(rawPresets)) {
-    for (const [name, value] of Object.entries(rawPresets)) {
-      const v = typeof value === 'string' ? value.trim() : '';
+    for (const [name, value] of Object.entries(rawPresets as Record<string, unknown>)) {
+      if (typeof value !== 'string') continue;
+      const v = value.trim();
       if (v) presets[name.trim()] = v;
     }
   }
-  const rawCustom = Array.isArray(r?.custom) ? r.custom : [];
-  const custom = rawCustom
-    .filter((c): c is ResearchCustomVar => c !== null && typeof c === 'object')
+
+  const custom = (Array.isArray(obj.custom) ? obj.custom : [])
+    .filter((c): c is Record<string, unknown> => c !== null && typeof c === 'object' && !Array.isArray(c))
     .map((c) => ({
-      name: (c.name ?? '').trim(),
-      kind: c.kind,
-      value: (c.value ?? '').trim(),
+      name: typeof c.name === 'string' ? c.name.trim() : '',
+      kind: (c.kind === 'email' ? 'email' : 'key') as ResearchVarKind,
+      value: typeof c.value === 'string' ? c.value.trim() : '',
     }));
+
   return { presets, custom };
 }
 

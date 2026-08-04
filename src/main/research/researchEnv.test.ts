@@ -135,4 +135,28 @@ describe('researchEnv.applyResearchEnv', () => {
     expect(process.env.MY_KEY).toBe('v1');
     warn.mockRestore();
   });
+
+  // applyResearchEnv 是启动必经路径（main.ts 直接传磁盘原始值），必须和
+  // normalizeResearch 一样对任意 unknown 输入都不抛 —— 这里覆盖的是
+  // researchValidate.test.ts 里 normalizeResearch 那张表的同一组畸形输入，
+  // 两个入口都要保。
+  it.each([
+    ['custom 元素含 null', { presets: {}, custom: [null] }],
+    ['custom 元素全非对象', { presets: {}, custom: ['garbage', 42, undefined] }],
+    ['custom 是字符串', { presets: {}, custom: 'nope' }],
+    ['custom 是对象（非数组）', { presets: {}, custom: { a: 1 } }],
+    ['presets 是字符串', { presets: 'nope', custom: [] }],
+    ['presets 是数组', { presets: ['a'], custom: [] }],
+    ['presets 的值是嵌套对象', { presets: { NCBI_API_KEY: { nested: 1 } }, custom: [] }],
+    ['presets 的值是 null', { presets: { NCBI_API_KEY: null }, custom: [] }],
+    ['整个对象是 undefined', undefined],
+    ['整个对象是 null', null],
+    ['整个对象是字符串', 'garbage'],
+    ['custom 元素是空对象', { presets: {}, custom: [{}] }],
+    ['custom 元素的 name 是数字', { presets: {}, custom: [{ name: 42, kind: 'key', value: 'v' }] }],
+  ])('applyResearchEnv 对畸形输入 %s 不抛错', (_label, input) => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    expect(() => applyResearchEnv(input as never)).not.toThrow();
+    warn.mockRestore();
+  });
 });
