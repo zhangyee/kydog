@@ -75,4 +75,24 @@ describe('validateQuestions', () => {
     expect(() => validateQuestions({ questions: 'nope' })).toThrow();
     expect(() => validateQuestions({})).toThrow();
   });
+
+  it('正好 4 条 questions 通过', () => {
+    expect(validateQuestions({ questions: [q(), q({ question: 'b？' }), q({ question: 'c？' }), q({ question: 'd？' })] }))
+      .toHaveLength(4);
+  });
+
+  it('正好 4 个选项通过', () => {
+    const out = validateQuestions({ questions: [q({ options: [opt('A'), opt('B'), opt('C'), opt('D')] })] });
+    expect(out[0].options).toHaveLength(4);
+  });
+
+  it('正好 12 字符的 header 通过', () => {
+    expect(() => validateQuestions({ questions: [q({ header: '一二三四五六七八九十十一' })] })).not.toThrow();
+  });
+
+  it('输出里的 question 与 label 是 trim 过的', () => {
+    const out = validateQuestions({ questions: [q({ question: '  选哪个？  ', options: [opt(' A '), opt('B')] })] });
+    expect(out[0].question).toBe('选哪个？');
+    expect(out[0].options[0].label).toBe('A');
+  });
 });
