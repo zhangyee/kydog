@@ -1,9 +1,9 @@
 {
   "events": [
     { "type": "agent_start", "after_ms": 0 },
-    { "type": "message_start", "after_ms": 10 },
-    { "type": "text_delta", "after_ms": 10, "delta": "我需要先确认几件事。" },
-    { "type": "message_end", "after_ms": 10, "toolCallIds": ["ask-1"], "toolNames": ["ask_user_question"] },
+    { "type": "message_start", "after_ms": 10, "messageId": "m1" },
+    { "type": "text_delta", "after_ms": 10, "messageId": "m1", "delta": "我需要先确认几件事。" },
+    { "type": "message_end", "after_ms": 10, "messageId": "m1", "toolCallIds": ["ask-1"], "toolNames": ["ask_user_question"] },
     {
       "type": "ask",
       "after_ms": 10,
