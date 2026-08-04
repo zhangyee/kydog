@@ -7,7 +7,7 @@ import { logger } from '../log';
 
 export function defaultSettings(): SettingsFile {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     ui: {
       theme: 'vellum',
       locale: 'zh',
@@ -24,6 +24,7 @@ export function defaultSettings(): SettingsFile {
     },
     skills: { disabledBuiltins: [] },
     tools: { externalBins: [] },
+    research: { presets: {}, custom: [] },
     onboarding: { completedAt: null },
   };
 }
@@ -69,10 +70,10 @@ export async function saveSettings(value: SettingsFile): Promise<void> {
 
 function sanitizeLocale(v: unknown): 'zh' | 'en' { return v === 'en' ? 'en' : 'zh'; }
 
-/** v1/v2/v3 → v4 迁移。
- *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize 默认值。
- *  - v2/v3：保留所有字段，补 onboarding 默认值。
- *  - v4：原样回写（completedAt 保留；locale 非法值归位 zh）。
+/** v1/v2/v3/v4 → v5 迁移。
+ *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize / onboarding / research 默认值。
+ *  - v2/v3/v4：保留所有字段，补缺失的 onboarding / research 默认值。
+ *  - v5：原样回写（completedAt 保留；locale 非法值归位 zh）。
  *  - 形状不对：全部 default。 */
 export function parseAndMigrateSettings(raw: string): SettingsFile {
   let parsed: any;
@@ -82,10 +83,10 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
   const d = defaultSettings();
   const v = parsed.schemaVersion;
 
-  if (v === 2 || v === 3 || v === 4) {
-    if (v !== 4) logger.warn('persist.settingsFile', `migrating schema v${v} → v4`);
+  if (v === 2 || v === 3 || v === 4 || v === 5) {
+    if (v !== 5) logger.warn('persist.settingsFile', `migrating schema v${v} → v5`);
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
       llm: {
         auth: parsed.llm?.auth ?? {},
@@ -96,18 +97,23 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
       },
       skills: { ...d.skills, ...(parsed.skills ?? {}) },
       tools: { ...d.tools, ...(parsed.tools ?? {}) },
+      research: {
+        presets: parsed.research?.presets ?? {},
+        custom: Array.isArray(parsed.research?.custom) ? parsed.research.custom : [],
+      },
       onboarding: { completedAt: typeof parsed.onboarding?.completedAt === 'string' ? parsed.onboarding.completedAt : null },
     };
   }
 
   // v1 或更旧：reset llm、补 ui 默认（包括 readingFontSize）
-  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v4 default');
+  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v5 default');
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
     llm: d.llm,
     skills: { ...d.skills, ...(parsed.skills ?? {}) },
     tools: { ...d.tools, ...(parsed.tools ?? {}) },
+    research: d.research,
     onboarding: { completedAt: null },
   };
 }

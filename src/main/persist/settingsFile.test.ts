@@ -5,7 +5,7 @@ import path from 'node:path';
 import * as paths from './paths';
 import { ensureSettingsFile, loadSettings, defaultSettings } from './settingsFile';
 
-describe('settingsFile v4', () => {
+describe('settingsFile v5', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-settings-'));
@@ -15,9 +15,9 @@ describe('settingsFile v4', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('defaultSettings: schemaVersion=4 + 空 llm + readingFontSize=medium', () => {
+  it('defaultSettings: schemaVersion=5 + 空 llm + readingFontSize=medium', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(4);
+    expect(d.schemaVersion).toBe(5);
     expect(d.ui.readingFontSize).toBe('medium');
     expect(d.llm.auth).toEqual({});
     expect(d.llm.providers).toEqual({});
@@ -26,14 +26,14 @@ describe('settingsFile v4', () => {
     expect(d.llm.defaultModel).toBeNull();
   });
 
-  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v4', () => {
+  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v5', () => {
     ensureSettingsFile();
     if (process.platform !== 'win32') {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       expect(statSync(path.join(dir, 'kydog.json')).mode & 0o777).toBe(0o600);
     }
     const content = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
-    expect(JSON.parse(content).schemaVersion).toBe(4);
+    expect(JSON.parse(content).schemaVersion).toBe(5);
   });
 
   it('ensureSettingsFile: 已存在文件不覆盖', async () => {
@@ -44,7 +44,7 @@ describe('settingsFile v4', () => {
     expect(content).toBe('{"sentinel":1}');
   });
 
-  it('loadSettings: v1 → v4 reset (保留 ui/skills/tools，重置 llm)', async () => {
+  it('loadSettings: v1 → v5 reset (保留 ui/skills/tools，重置 llm)', async () => {
     ensureSettingsFile();
     const v1 = {
       schemaVersion: 1,
@@ -55,7 +55,7 @@ describe('settingsFile v4', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(4);
+    expect(next.schemaVersion).toBe(5);
     expect(next.ui.theme).toBe('midnight');
     expect(next.ui.readingFontSize).toBe('medium');
     expect(next.skills.disabledBuiltins).toEqual(['old']);
@@ -63,7 +63,7 @@ describe('settingsFile v4', () => {
     expect(next.llm.providers).toEqual({});
   });
 
-  it('loadSettings: v2 → v4（保留所有字段，补 readingFontSize=medium）', async () => {
+  it('loadSettings: v2 → v5（保留所有字段，补 readingFontSize=medium）', async () => {
     ensureSettingsFile();
     const v2 = {
       schemaVersion: 2,
@@ -80,21 +80,21 @@ describe('settingsFile v4', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v2));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(4);
+    expect(next.schemaVersion).toBe(5);
     expect(next.ui.theme).toBe('midnight');
     expect(next.ui.readingFontSize).toBe('medium');
     expect(next.llm.defaultProvider).toBe('anthropic');
     expect(next.skills.disabledBuiltins).toEqual(['old']);
   });
 
-  it('loadSettings: v3 → v4（passthrough，保留 readingFontSize=large）', async () => {
+  it('loadSettings: v3 → v5（passthrough，保留 readingFontSize=large）', async () => {
     ensureSettingsFile();
     const v3 = defaultSettings();
     v3.ui.readingFontSize = 'large';
     v3.ui.theme = 'sepia';
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(4);
+    expect(next.schemaVersion).toBe(5);
     expect(next.ui.readingFontSize).toBe('large');
     expect(next.ui.theme).toBe('sepia');
   });
@@ -109,14 +109,14 @@ describe('settingsFile v4', () => {
     warn.mockRestore();
   });
 
-  it('defaultSettings: schemaVersion=4 + onboarding.completedAt=null', () => {
+  it('defaultSettings: schemaVersion=5 + onboarding.completedAt=null', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(4);
+    expect(d.schemaVersion).toBe(5);
     expect(d.onboarding).toEqual({ completedAt: null });
     expect(d.ui.locale).toBe('zh');
   });
 
-  it('loadSettings: v3 → v4 补 onboarding，保留其余字段', async () => {
+  it('loadSettings: v3 → v5 补 onboarding，保留其余字段', async () => {
     ensureSettingsFile();
     const v3 = {
       schemaVersion: 3,
@@ -127,13 +127,13 @@ describe('settingsFile v4', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const s = await loadSettings();
-    expect(s.schemaVersion).toBe(4);
+    expect(s.schemaVersion).toBe(5);
     expect(s.onboarding).toEqual({ completedAt: null });
     expect(s.ui.theme).toBe('midnight');
     expect(s.llm.defaultProvider).toBe('anthropic');
   });
 
-  it('loadSettings: v3 → v4 迁移时 ui.locale=\'en\' 保留', async () => {
+  it('loadSettings: v3 → v5 迁移时 ui.locale=\'en\' 保留', async () => {
     ensureSettingsFile();
     const v3 = {
       schemaVersion: 3,
@@ -144,17 +144,82 @@ describe('settingsFile v4', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const s = await loadSettings();
-    expect(s.schemaVersion).toBe(4);
+    expect(s.schemaVersion).toBe(5);
     expect(s.ui.locale).toBe('en');
     expect(s.onboarding).toEqual({ completedAt: null });
   });
 
-  it('loadSettings: v4 原样回读（completedAt 保留）；非法 locale 归位 zh', async () => {
+  it('loadSettings: v5 原样回读（completedAt 保留）；非法 locale 归位 zh', async () => {
     ensureSettingsFile();
-    const v4 = { ...defaultSettings(), ui: { ...defaultSettings().ui, locale: 'fr' }, onboarding: { completedAt: '2026-01-01T00:00:00.000Z' } };
-    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v4));
+    const v5 = { ...defaultSettings(), ui: { ...defaultSettings().ui, locale: 'fr' }, onboarding: { completedAt: '2026-01-01T00:00:00.000Z' } };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v5));
     const s = await loadSettings();
     expect(s.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
     expect(s.ui.locale).toBe('zh');
+  });
+
+  it('defaultSettings: schemaVersion=5 + research 为空表', () => {
+    const d = defaultSettings();
+    expect(d.schemaVersion).toBe(5);
+    expect(d.research).toEqual({ presets: {}, custom: [] });
+  });
+
+  it('loadSettings: v4 → v5 补出空 research，其余字段保留', async () => {
+    ensureSettingsFile();
+    const v4 = {
+      schemaVersion: 4,
+      ui: { theme: 'sepia', locale: 'en', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'large' },
+      llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: 'anthropic', defaultModel: 'm1' },
+      skills: { disabledBuiltins: ['x'] },
+      tools: { externalBins: [] },
+      onboarding: { completedAt: '2026-01-01T00:00:00.000Z' },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v4));
+    const s = await loadSettings();
+    expect(s.schemaVersion).toBe(5);
+    expect(s.research).toEqual({ presets: {}, custom: [] });
+    expect(s.ui.theme).toBe('sepia');
+    expect(s.ui.locale).toBe('en');
+    expect(s.llm.defaultProvider).toBe('anthropic');
+    expect(s.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('loadSettings: v5 原样回读 research', async () => {
+    ensureSettingsFile();
+    const v5 = {
+      ...defaultSettings(),
+      research: {
+        presets: { NCBI_API_KEY: 'k1' },
+        custom: [{ name: 'MY_KEY', kind: 'key', value: 'v1' }],
+      },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v5));
+    const s = await loadSettings();
+    expect(s.research.presets).toEqual({ NCBI_API_KEY: 'k1' });
+    expect(s.research.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
+  });
+
+  it('loadSettings: research.custom 不是数组时兜底成 []', async () => {
+    ensureSettingsFile();
+    const bad = { ...defaultSettings(), research: { presets: { A: 'b' }, custom: 'nope' } };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(bad));
+    const s = await loadSettings();
+    expect(s.research.presets).toEqual({ A: 'b' });
+    expect(s.research.custom).toEqual([]);
+  });
+
+  it('loadSettings: v1 → v5 时 research 为空表', async () => {
+    ensureSettingsFile();
+    const v1 = {
+      schemaVersion: 1,
+      ui: { theme: 'midnight', locale: 'zh', workspaceCollapsed: true, inspectorCollapsed: false },
+      llm: { provider: { kind: 'openai-compat' } },
+      skills: { disabledBuiltins: ['old'] },
+      tools: { externalBins: [] },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
+    const s = await loadSettings();
+    expect(s.schemaVersion).toBe(5);
+    expect(s.research).toEqual({ presets: {}, custom: [] });
   });
 });

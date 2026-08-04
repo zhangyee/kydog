@@ -93,7 +93,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     // 后续任何 svc.get() 都会返回缺 onboarding 键的对象。
     const after = await svc.get();
     expect(after.onboarding).toBeDefined();
-    expect(after.schemaVersion).toBe(4);
+    expect(after.schemaVersion).toBe(5);
   });
 
   it('update(): patch 混入 onboarding.completedAt + schemaVersion 被过滤（守住不变式）', async () => {
@@ -104,7 +104,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
       schemaVersion: 99 as any,
     };
     const result = await svc.update(patch);
-    expect(result.schemaVersion).toBe(4);
+    expect(result.schemaVersion).toBe(5);
     expect(result.ui.theme).toBe('sepia');
     expect(result.onboarding.completedAt).toBe(before.onboarding.completedAt);
   });

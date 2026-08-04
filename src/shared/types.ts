@@ -114,8 +114,11 @@ export type CustomProvider = {
 
 export type ReadingFontSize = 'small' | 'medium' | 'large';
 
+export type ResearchVarKind = 'key' | 'email';
+export type ResearchCustomVar = { name: string; kind: ResearchVarKind; value: string };
+
 export type SettingsFile = {
-  schemaVersion: 4;
+  schemaVersion: 5;
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
@@ -132,6 +135,11 @@ export type SettingsFile = {
   };
   skills: { disabledBuiltins: string[] };
   tools: { externalBins: ExternalBinEntry[] };
+  research: {
+    /** 变量名 → 值；键只可能来自 PRESET_RESEARCH_VAR_NAMES。空值不入表。 */
+    presets: Record<string, string>;
+    custom: ResearchCustomVar[];
+  };
   onboarding: { completedAt: string | null };
 };
 
@@ -141,6 +149,7 @@ export type SettingsPatch = {
   llm?: Partial<SettingsFile['llm']>;
   skills?: Partial<SettingsFile['skills']>;
   tools?: Partial<SettingsFile['tools']>;
+  research?: Partial<SettingsFile['research']>;
 };
 
 // ── Onboarding RPC ──
