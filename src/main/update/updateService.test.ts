@@ -123,3 +123,134 @@ describe('UpdateService 迟到事件（Windows deadline 之后）', () => {
     expect(e.runs).toBe(before);
   });
 });
+
+describe('UpdateService single-flight', () => {
+  it('并发 check() 只触发一次底层检查', async () => {
+    let release!: (o: CheckOutcome) => void;
+    let runs = 0;
+    const engine: CheckEngine = {
+      run: () => { runs += 1; return new Promise((r) => { release = r; }); },
+      onLateOutcome: () => {},
+      quitAndInstall: () => {},
+    };
+    const s = svc(engine);
+    const a = s.check(); const b = s.check(); const c = s.check();
+    expect(runs).toBe(1);
+    release({ kind: 'none' });
+    await Promise.all([a, b, c]);
+    expect(runs).toBe(1);
+  });
+
+  it('前一次完成后可以再次检查', async () => {
+    const e = scriptedEngine([{ kind: 'none' }, { kind: 'none' }]);
+    const s = svc(e);
+    await s.check();
+    await s.check();
+    expect(e.runs).toBe(2);
+  });
+});
+
+describe('UpdateService 忽略与开关', () => {
+  function svcWith(engine: CheckEngine, over: Partial<{
+    persistDismissed: (id: string) => Promise<void>;
+    persistAutoCheck: (v: boolean) => Promise<void>;
+    onAutoCheckChanged: (v: boolean) => void;
+    initialAutoCheck: boolean;
+  }>) {
+    return new UpdateService({
+      engine, currentVersion: '0.1.0', deadlineMs: 1000,
+      initialAutoCheck: over.initialAutoCheck ?? true,
+      initialDismissedCandidateId: null,
+      persistAutoCheck: over.persistAutoCheck ?? (async () => {}),
+      persistDismissed: over.persistDismissed ?? (async () => {}),
+      onStatusChange: () => {},
+      onAutoCheckChanged: over.onAutoCheckChanged,
+    });
+  }
+
+  it('available：忽略后 bannerDismissed 为真，且落盘的是 candidateId', async () => {
+    const persisted: string[] = [];
+    const e = scriptedEngine([{ kind: 'available', candidateId: 'c1', label: 'KyDog' }]);
+    const s = svcWith(e, { persistDismissed: async (id) => { persisted.push(id); } });
+    await s.check();
+    expect(s.getStatus().bannerDismissed).toBe(false);
+    await s.dismissBanner();
+    expect(s.getStatus().bannerDismissed).toBe(true);
+    expect(persisted).toEqual(['c1']);
+  });
+
+  it('label 相同但 candidateId 不同的下一个版本仍然出横幅', async () => {
+    const e = scriptedEngine([
+      { kind: 'available', candidateId: 'c1', label: 'KyDog' },
+      { kind: 'available', candidateId: 'c2', label: 'KyDog' },
+    ]);
+    const s = svcWith(e, {});
+    await s.check();
+    await s.dismissBanner();
+    expect(s.getStatus().bannerDismissed).toBe(true);
+    await s.check();
+    expect(s.getStatus().bannerDismissed).toBe(false);
+  });
+
+  it('downloaded 的忽略不落盘', async () => {
+    const persisted: string[] = [];
+    const e = scriptedEngine([{ kind: 'downloaded', label: 'v2' }]);
+    const s = svcWith(e, { persistDismissed: async (id) => { persisted.push(id); } });
+    await s.check();
+    await s.dismissBanner();
+    expect(s.getStatus().bannerDismissed).toBe(true);
+    expect(persisted).toEqual([]);
+  });
+
+  it('setAutoCheck：值没变则不写盘、不重配置', async () => {
+    const writes: boolean[] = []; const reconf: boolean[] = [];
+    const s = svcWith(scriptedEngine([{ kind: 'none' }]), {
+      persistAutoCheck: async (v) => { writes.push(v); },
+      onAutoCheckChanged: (v) => { reconf.push(v); },
+    });
+    await s.setAutoCheck(true);
+    expect(writes).toEqual([]); expect(reconf).toEqual([]);
+    await s.setAutoCheck(false);
+    expect(writes).toEqual([false]); expect(reconf).toEqual([false]);
+    expect(s.getStatus().autoCheck).toBe(false);
+  });
+
+  it('setAutoCheck：写盘失败则不重配置，内存值也不变', async () => {
+    const reconf: boolean[] = [];
+    const s = svcWith(scriptedEngine([{ kind: 'none' }]), {
+      persistAutoCheck: async () => { throw new Error('disk full'); },
+      onAutoCheckChanged: (v) => { reconf.push(v); },
+    });
+    await expect(s.setAutoCheck(false)).rejects.toThrow('disk full');
+    expect(reconf).toEqual([]);
+    expect(s.getStatus().autoCheck).toBe(true);
+  });
+
+  it('setAutoCheck 连点两次以最后一次为准，且写盘与重配置顺序一致', async () => {
+    const writes: boolean[] = []; const reconf: boolean[] = [];
+    const s = svcWith(scriptedEngine([{ kind: 'none' }]), {
+      persistAutoCheck: async (v) => { writes.push(v); },
+      onAutoCheckChanged: (v) => { reconf.push(v); },
+    });
+    await Promise.all([s.setAutoCheck(false), s.setAutoCheck(true)]);
+    expect(s.getStatus().autoCheck).toBe(true);
+    expect(writes).toEqual([false, true]);
+    expect(reconf).toEqual([false, true]);
+  });
+
+  it('restartAndInstall 在非 downloaded 态被拒绝', async () => {
+    const e = scriptedEngine([{ kind: 'available', candidateId: 'c1', label: 'v2' }]);
+    const s = svcWith(e, {});
+    await s.check();
+    expect(() => s.quitAndInstall()).toThrow();
+    expect(s.canOpenDownload()).toBe(true);
+  });
+
+  it('canOpenDownload 只在 available 态为真', async () => {
+    const e = scriptedEngine([{ kind: 'downloaded', label: 'v2' }]);
+    const s = svcWith(e, {});
+    await s.check();
+    expect(s.canOpenDownload()).toBe(false);
+    expect(() => s.quitAndInstall()).not.toThrow();
+  });
+});

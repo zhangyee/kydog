@@ -10,6 +10,7 @@ export interface UpdateServiceDeps {
   persistAutoCheck(enabled: boolean): Promise<void>;
   persistDismissed(candidateId: string): Promise<void>;
   onStatusChange(status: UpdateStatus): void;
+  onAutoCheckChanged?(enabled: boolean): void;
 }
 
 export class UpdateService {
@@ -22,6 +23,8 @@ export class UpdateService {
   private sessionDismissed = false;
   /** Windows deadline 到达后置位：本进程不再检查，直到迟到的终态事件解除它。 */
   private disabledUntilRestart = false;
+  private inFlight: Promise<UpdateStatus> | null = null;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private deps: UpdateServiceDeps) {
     this.autoCheck_ = deps.initialAutoCheck;
@@ -72,7 +75,16 @@ export class UpdateService {
     this.applyOutcome(o);
   }
 
-  async check(): Promise<UpdateStatus> {
+  /** single-flight：并发调用复用同一次检查。Electron 文档明确
+   *  重复调用 checkForUpdates() 会把更新下载两次。 */
+  check(): Promise<UpdateStatus> {
+    if (this.inFlight) return this.inFlight;
+    const p = this.runCheck().finally(() => { this.inFlight = null; });
+    this.inFlight = p;
+    return p;
+  }
+
+  private async runCheck(): Promise<UpdateStatus> {
     if (this.update_.kind === 'downloaded') return this.getStatus(); // 进程终态
     if (this.disabledUntilRestart) return this.getStatus();
     this.check_ = { phase: 'checking' };
@@ -87,4 +99,38 @@ export class UpdateService {
     }
     return this.getStatus();
   }
+
+  async dismissBanner(): Promise<UpdateStatus> {
+    if (this.update_.kind === 'available') {
+      await this.deps.persistDismissed(this.update_.candidateId);
+      this.dismissedCandidateId = this.update_.candidateId;
+    } else if (this.update_.kind === 'downloaded') {
+      this.sessionDismissed = true;
+    }
+    this.emit();
+    return this.getStatus();
+  }
+
+  /** 开关不走通用的 settings.update：那条路径被主题/字号/面板折叠高频写入，
+   *  无条件 reconfigure 会把 30 秒与 24 小时定时器反复打回起点。
+   *  这里用自己的队列串行，保证连点两次时盘上与调度器一致。 */
+  setAutoCheck(enabled: boolean): Promise<UpdateStatus> {
+    const task = this.queue.then(async () => {
+      if (this.autoCheck_ === enabled) return this.getStatus();
+      await this.deps.persistAutoCheck(enabled);   // 写盘失败则下面两行不执行
+      this.autoCheck_ = enabled;
+      this.deps.onAutoCheckChanged?.(enabled);
+      this.emit();
+      return this.getStatus();
+    });
+    this.queue = task.then(() => {}, () => {});    // 失败不卡住队列尾部
+    return task;
+  }
+
+  quitAndInstall(): void {
+    if (this.update_.kind !== 'downloaded') throw new Error('当前没有已下载的更新');
+    this.deps.engine.quitAndInstall();
+  }
+
+  canOpenDownload(): boolean { return this.update_.kind === 'available'; }
 }
