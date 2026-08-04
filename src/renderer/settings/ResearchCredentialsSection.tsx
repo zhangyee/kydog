@@ -44,7 +44,10 @@ export function ResearchCredentialsSection() {
       const payload: Research = { presets, custom: custom.map(({ uid: _uid, ...rest }) => rest) };
       const r = await window.kydog.invoke('research.save', payload);
       setPresets(r.presets);
-      setCustom(withUid(r.custom));
+      // 按位置复用已有 uid（而非无条件重新发号），否则 key 变了会让 React 卸载重建
+      // 每一行 VarRow，显隐这类本地 state 每次保存都会被打回默认值。位置对应在
+      // 成功路径下是成立的：normalizeResearch 不会丢条目，顺序也随 .map 原样保留。
+      setCustom((prev) => r.custom.map((c, i) => ({ ...c, uid: prev[i]?.uid ?? nextUid.current++ })));
       setSaved(true);
     } catch (e) {
       setError(String((e as Error).message));
