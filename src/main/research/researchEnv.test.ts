@@ -99,4 +99,28 @@ describe('researchEnv.applyResearchEnv', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  // 过滤按名字而非按条目：同一个变量名下只要有一个条目非法（这里是自定义项
+  // 与预设重名），该名字下所有条目都不写入 —— 哪怕其中一个本来是合法的。
+  it('同名冲突时该名字下所有条目都不写入，包括本来合法的那个', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    applyResearchEnv(R({
+      presets: { NCBI_API_KEY: 'legit-preset-value' },
+      custom: [{ name: 'NCBI_API_KEY', kind: 'key', value: 'dup' }],
+    }));
+    expect(process.env.NCBI_API_KEY).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it('同名冲突会清掉上一轮已生效的合法值', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    applyResearchEnv(R({ presets: { NCBI_API_KEY: 'legit-preset-value' } }));
+    expect(process.env.NCBI_API_KEY).toBe('legit-preset-value');
+    applyResearchEnv(R({
+      presets: { NCBI_API_KEY: 'legit-preset-value' },
+      custom: [{ name: 'NCBI_API_KEY', kind: 'key', value: 'dup' }],
+    }));
+    expect(process.env.NCBI_API_KEY).toBeUndefined();
+    warn.mockRestore();
+  });
 });

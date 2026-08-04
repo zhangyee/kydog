@@ -17,11 +17,20 @@ let lastApplied = new Set<string>();
  *
  * 快照是惰性的（写之前才记）：自定义变量名在启动时还不知道，等真要写它
  * 的那一刻再记，覆盖面与「按固定名单统一快照」等价。
+ *
+ * 过滤按名字而非按条目：同一个变量名只要有任何一个条目非法（比如自定义项
+ * 与预设重名、或两个自定义项重名），该名字下的所有条目都不写入。这是有意
+ * 的 —— 配置说同一个环境变量有两个互相矛盾的值时，拒绝猜比随便挑一个安全。
+ * 正常路径下构造不出这种状态（UI 录入时 validateCustomVarName 会拦，
+ * research.save 会整单拒绝），只有手改 kydog.json 才会触发。
  */
 export function applyResearchEnv(research: SettingsFile['research']): void {
-  const bad = new Set(validateResearch(research).map((e) => e.field));
-  if (bad.size > 0) {
-    logger.warn('research.env', 'skipping invalid entries', { fields: [...bad] });
+  const errors = validateResearch(research);
+  const bad = new Set(errors.map((e) => e.field));
+  if (errors.length > 0) {
+    logger.warn('research.env', 'skipping invalid entries', {
+      errors: errors.map((e) => `${e.field}: ${e.message}`),
+    });
   }
 
   const desired = new Map<string, string>();
