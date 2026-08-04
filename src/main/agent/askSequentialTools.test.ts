@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isParallelBatch, toolCallsOf, SEQUENTIAL_TOOL_NAMES } from './askSequentialTools';
+import { createAskUserQuestionTool } from './askUserQuestionTool';
 import { ASK_TOOL_NAME } from '../../shared/askQuestion';
 
 const call = (name: string, id = name) => ({ type: 'toolCall', id, name });
@@ -47,5 +48,10 @@ describe('isParallelBatch', () => {
 
   it('ask 在 SEQUENTIAL_TOOL_NAMES 里', () => {
     expect(SEQUENTIAL_TOOL_NAMES.has(ASK_TOOL_NAME)).toBe(true);
+  });
+
+  it('名单与工具定义的 executionMode 保持一致', () => {
+    const tool = createAskUserQuestionTool('t', { onOpened: () => {}, onClosed: () => {} });
+    expect(SEQUENTIAL_TOOL_NAMES.has(tool.name)).toBe(tool.executionMode === 'sequential');
   });
 });

@@ -6,7 +6,9 @@ import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { KydogError } from '../../shared/errors';
 import { normalizePiMessages, type PiMessage } from './messageNormalizer';
+import { ASK_TOOL_NAME, type AskOutcome, type AskQuestion } from '../../shared/askQuestion';
 import { isParallelBatch, toolCallsOf } from './askSequentialTools';
+import type { AskSharedState } from './askUserQuestionTool';
 import { settingsService } from '../settings/settingsService';
 import { resolveProviderDefault } from '../llm/resolveProvider';
 import { threadService } from '../thread/threadService';
@@ -19,6 +21,10 @@ export type Bound = {
   providerId: ProviderId;
   modelId: string;
   activeMessageId: string | null;
+  /** 已经发出过 run.ask_start 的 toolCallId。tool_execution_end 靠它二分。 */
+  askOpened: Set<string>;
+  /** tool_execution_end 不带 args，所以在被抑制的 start 上缓存下来。 */
+  askArgs: Map<string, { toolName: string; args: unknown }>;
   staleAfterRun?: boolean;
 };
 
@@ -37,17 +43,43 @@ class AgentService {
     const { resolveActive } = await import('./resolveActive');
     const { providerId, modelId } = await resolveActive(threadId, projectPath);
 
+    // 工具 → AgentService 的上行通道。这里补上 runId / messageId 再对外广播：
+    // 只有工具知道 pending 何时真正就绪，所以事件必须由它触发，不能挂在
+    // pi 的 tool_execution_start 上（那时还没校验、没分配 id、broker 也没注册）。
+    const askShared: AskSharedState = {
+      onOpened: (toolCallId: string, questions: AskQuestion[]) => {
+        const b = this.sessions.get(threadId);
+        const messageId = b?.activeMessageId;
+        if (!b || !messageId) return;
+        b.askOpened.add(toolCallId);
+        broadcaster.emit('run.ask_start', {
+          threadId, runId: this.currentRunId(threadId), messageId, toolCallId, questions,
+        });
+      },
+      onClosed: (toolCallId: string, outcome: AskOutcome) => {
+        const b = this.sessions.get(threadId);
+        const messageId = b?.activeMessageId;
+        if (!b || !messageId) return;
+        broadcaster.emit('run.ask_end', {
+          threadId, runId: this.currentRunId(threadId), messageId, toolCallId, outcome,
+        });
+      },
+    };
+
     const session = await createSession({
       cwd: projectPath,
       sessionId: threadId,
       sessionsDir: sessionsDirFor(projectPath),
       providerId,
       modelId,
+      askShared,
     });
     const bound: Bound = {
       session, cwd: projectPath, threadId,
       providerId, modelId,
       activeMessageId: null,
+      askOpened: new Set(),
+      askArgs: new Map(),
     };
     this.sessions.set(threadId, bound);
     this.subscribe(bound);
@@ -95,6 +127,11 @@ class AgentService {
     else if (bound.session.dispose) bound.session.dispose();
     this.sessions.delete(threadId);
     this.runs.delete(threadId);
+  }
+
+  private currentRunId(threadId: string): string {
+    const s = this.runs.get(threadId);
+    return s?.status === 'running' ? s.runId : 'unknown';
   }
 
   private async markStaleOrDispose(bound: Bound): Promise<void> {
@@ -167,6 +204,14 @@ class AgentService {
         }
         case 'tool_execution_start': {
           const e = evt as unknown as { toolCallId: string; toolName: string; args?: { command?: string } };
+          if (e.toolName === ASK_TOOL_NAME) {
+            // 抑制对外事件：这时还没校验、没分配 id、broker 也没注册，
+            // 照它开 UI 会让非法参数和非法批次也闪一下提问界面。
+            // 但它是 { toolName, args } 的唯一来源（tool_execution_end 不带 args），
+            // 所以缓存起来供回退路径用。
+            bound.askArgs.set(e.toolCallId, { toolName: e.toolName, args: e.args });
+            return;
+          }
           const command = typeof e.args?.command === 'string' ? e.args.command : JSON.stringify(e.args ?? {});
           broadcaster.emit('run.tool_call_start', {
             threadId, runId, toolCallId: e.toolCallId, name: e.toolName, command,
@@ -177,7 +222,32 @@ class AgentService {
           // Skip updates — full result text is emitted at tool_execution_end to avoid duplication
           return;
         case 'tool_execution_end': {
-          const e = evt as unknown as { toolCallId: string; isError: boolean; result: unknown };
+          const e = evt as unknown as { toolCallId: string; toolName: string; isError: boolean; result: unknown };
+          if (e.toolName === ASK_TOOL_NAME) {
+            const cached = bound.askArgs.get(e.toolCallId);
+            bound.askArgs.delete(e.toolCallId);
+            if (bound.askOpened.delete(e.toolCallId)) {
+              // 提问确实开过，结束事件已由 shared.onClosed 发出，这里什么都不做。
+              return;
+            }
+            // 从没开过（校验失败、批次非法、其他异常）→ 补发一对普通工具事件，
+            // 渲染成失败的工具卡片。chunk 必须带上，否则实时只有「失败」两个字、
+            // 重启后从 session 恢复却能展开看到错误详情。
+            broadcaster.emit('run.tool_call_start', {
+              threadId, runId, toolCallId: e.toolCallId, name: e.toolName,
+              command: JSON.stringify(cached?.args ?? {}),
+            });
+            const errText = extractToolResultText(e.result);
+            if (errText) {
+              broadcaster.emit('run.tool_call_chunk', {
+                threadId, runId, toolCallId: e.toolCallId, stream: 'stderr', chunk: errText,
+              });
+            }
+            broadcaster.emit('run.tool_call_end', {
+              threadId, runId, toolCallId: e.toolCallId, status: 'failed',
+            });
+            return;
+          }
           const chunk = extractToolResultText(e.result);
           if (chunk) {
             broadcaster.emit('run.tool_call_chunk', {

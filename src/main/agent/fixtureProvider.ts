@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import type { AskSharedState } from './askUserQuestionTool';
 import type { FixtureFile, FixtureEvent } from '../../../e2e/fixtures/fixture.types';
 
 export type FakeSessionListener = (event: { type: string; [k: string]: unknown }) => void;
@@ -11,7 +12,12 @@ export type FakeAgentSession = {
   state: { messages: unknown[] };
 };
 
-export async function createFixtureSession(fixturePath: string): Promise<FakeAgentSession> {
+export async function createFixtureSession(
+  fixturePath: string,
+  // Task 23 接上真实的挂起逻辑；先占位，让 sessionFactory 的调用点能通过类型检查。
+  _askShared: AskSharedState,
+  _threadId: string,
+): Promise<FakeAgentSession> {
   const raw = await fs.readFile(fixturePath, 'utf8');
   const file = JSON.parse(raw) as FixtureFile;
   const listeners = new Set<FakeSessionListener>();

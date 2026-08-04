@@ -1,5 +1,6 @@
 // src/main/agent/sessionFactory.ts
 import { createFixtureSession } from './fixtureProvider';
+import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { KydogError } from '../../shared/errors';
 import type { ProviderId } from '../../shared/types';
@@ -20,9 +21,12 @@ export async function createSession(opts: {
   sessionsDir: string;
   providerId: ProviderId;
   modelId: string;
+  askShared: AskSharedState;
 }): Promise<AnySession> {
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
-  if (fixturePath) return createFixtureSession(fixturePath);
+  // sessionId 就是 threadId，fixture 里的工具必须用它注册 broker，
+  // 否则 renderer 发来的 ask.submit / ask.cancel 会因 threadId 对不上被丢弃。
+  if (fixturePath) return createFixtureSession(fixturePath, opts.askShared, opts.sessionId);
 
   const pi = await import('@earendil-works/pi-coding-agent');
   const reg = getProviderRegistry();
@@ -42,6 +46,7 @@ export async function createSession(opts: {
     modelRegistry: reg.modelRegistry,
     model,
     resourceLoader,
+    customTools: [createAskUserQuestionTool(opts.sessionId, opts.askShared)],
   });
   return session as AnySession;
 }

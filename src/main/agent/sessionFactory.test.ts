@@ -8,6 +8,9 @@ import { settingsService } from '../settings/settingsService';
 import { _resetProviderRegistryForTest, initProviderRegistry } from '../llm/providerRegistry';
 import { createSession } from './sessionFactory';
 
+/** 本文件只关心 session 怎么造出来，提问回调不参与——给个最小实现即可。 */
+const noopAskShared = { onOpened: () => {}, onClosed: () => {} };
+
 describe('sessionFactory', () => {
   let dir: string;
   beforeEach(async () => {
@@ -31,6 +34,7 @@ describe('sessionFactory', () => {
       const session = await createSession({
         cwd: dir, sessionId: 't1', sessionsDir: dir,
         providerId: 'anthropic', modelId: 'claude',
+        askShared: noopAskShared,
       });
       expect(session).toBeDefined();
     } finally {
@@ -43,6 +47,7 @@ describe('sessionFactory', () => {
     await expect(createSession({
       cwd: dir, sessionId: 't1', sessionsDir: dir,
       providerId: 'anthropic', modelId: 'claude-sonnet-4-5',
+      askShared: noopAskShared,
     })).rejects.toThrow();
   });
 
@@ -52,6 +57,7 @@ describe('sessionFactory', () => {
     await expect(createSession({
       cwd: dir, sessionId: 't1', sessionsDir: dir,
       providerId: 'anthropic', modelId: 'unknown-model-xx',
+      askShared: noopAskShared,
     })).rejects.toThrow(/model not found/);
   });
 });
