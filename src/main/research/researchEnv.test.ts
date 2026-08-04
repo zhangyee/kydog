@@ -3,7 +3,7 @@ import type { SettingsFile } from '../../shared/types';
 import { applyResearchEnv, __resetResearchEnvForTest } from './researchEnv';
 import { logger } from '../log';
 
-const TOUCHED = ['NCBI_API_KEY', 'UNPAYWALL_EMAIL', 'CORE_API_KEY', 'MY_KEY', 'AMBIENT_KEY'];
+const TOUCHED = ['NCBI_API_KEY', 'UNPAYWALL_EMAIL', 'CORE_API_KEY', 'MY_KEY', 'AMBIENT_KEY', '1BAD'];
 
 const R = (r: Partial<SettingsFile['research']>): SettingsFile['research'] =>
   ({ presets: {}, custom: [], ...r });
@@ -70,17 +70,21 @@ describe('researchEnv.applyResearchEnv', () => {
     expect('CORE_API_KEY' in process.env).toBe(false);
   });
 
-  // 锁死与 researchValidate 的契约：validateResearch 返回的 field 必须是原始 key
-  // 本身（哪怕是空串），这里的 bad.has() 才匹配得上。field 一旦被美化成展示
-  // 标签，这条非法记录就会漏进 desired。
-  it('空变量名的非法条目被过滤掉，不写进 env', () => {
+  // 变量名格式非法（数字开头），但 OS 层面完全可写 —— 过滤器一旦失效，
+  // 这个值会真的落进 process.env，所以这条测试是可观测的。
+  // 空变量名那种情况不在这里测：Node 对 process.env[''] = x 静默丢弃，
+  // 无论过滤器是否生效结果都一样，断言不出东西来。它对应的契约
+  // （validateResearch 的 field 必须是原始 key）已由 researchValidate.test.ts
+  // 里那条红绿验证过的用例锁死。
+  it('变量名格式非法的条目被过滤掉，不写进 env', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     applyResearchEnv(R({
       presets: { NCBI_API_KEY: 'k1' },
-      custom: [{ name: '', kind: 'key', value: 'should-not-apply' }],
+      custom: [{ name: '1BAD', kind: 'key', value: 'should-not-apply' }],
     }));
     expect(process.env.NCBI_API_KEY).toBe('k1');
-    expect(Object.keys(process.env)).not.toContain('');
+    expect(process.env['1BAD']).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 
