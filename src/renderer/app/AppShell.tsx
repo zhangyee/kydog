@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ThemeApplier } from './ThemeApplier';
 import { ReadingFontSizeApplier } from './ReadingFontSizeApplier';
 import { TitleBar } from './TitleBar';
+import { UpdateBanner } from './UpdateBanner';
 import { ThreeColumnLayout } from './ThreeColumnLayout';
 import { ErrorBoundary } from './ErrorBoundary';
 import { SkillSyncModal } from './SkillSyncModal';
@@ -74,6 +75,7 @@ export function AppShell() {
       <ThemeApplier />
       <ReadingFontSizeApplier />
       <TitleBar title={currentTitle} />
+      <UpdateBanner />
       <div className="flex-1 min-h-0">
         <ThreeColumnLayout
           left={<ErrorBoundary fallbackLabel="工作区出错"><WorkspacePanel /></ErrorBoundary>}
