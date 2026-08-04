@@ -49,3 +49,55 @@ export function createDarwinEngine(deps: {
     quitAndInstall() { throw new Error('macOS 不支持应用内安装更新'); },
   };
 }
+
+export function createWin32Engine(deps: {
+  port: UpdaterPort;
+  feedUrl: string;
+  userAgent: string;
+  deadlineMs: number;
+}): CheckEngine {
+  let settle: ((o: CheckOutcome) => void) | null = null;
+  let lateCb: ((o: CheckOutcome) => void) | null = null;
+  let feedSet = false;
+
+  // autoUpdater 的事件不带检查标识，无法把一个事件归给某一轮检查。
+  // 因此这里只区分「本轮还没结束」和「本轮已结束」：前者兑现 promise，
+  // 后者作为迟到结果交给 UpdateService 按规则处理。
+  const toOutcome = (e: UpdaterEvent): CheckOutcome | null => {
+    if (e.type === 'update-not-available') return { kind: 'none' };
+    if (e.type === 'update-downloaded') return { kind: 'downloaded', label: e.releaseName };
+    if (e.type === 'error') return { kind: 'failed', message: e.message, retry: 'allowed' };
+    return null; // update-available：下载还在后面，不是终态
+  };
+
+  deps.port.on((e) => {
+    const o = toOutcome(e);
+    if (!o) return;
+    if (settle) { const s = settle; settle = null; s(o); }
+    else lateCb?.(o);
+  });
+
+  return {
+    run(_signal) {
+      return new Promise<CheckOutcome>((resolve) => {
+        if (!feedSet) {
+          deps.port.setFeedURL(deps.feedUrl, { 'User-Agent': deps.userAgent });
+          feedSet = true;
+        }
+        const timer = setTimeout(() => {
+          if (!settle) return;
+          settle = null;
+          resolve({
+            kind: 'failed',
+            message: '检查更新超时；本次运行期间已停止检查，请重启应用',
+            retry: 'restart-required',
+          });
+        }, deps.deadlineMs);
+        settle = (o) => { clearTimeout(timer); resolve(o); };
+        deps.port.checkForUpdates();
+      });
+    },
+    onLateOutcome(cb) { lateCb = cb; },
+    quitAndInstall() { deps.port.quitAndInstall(); },
+  };
+}
