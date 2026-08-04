@@ -7,6 +7,9 @@ const tool = (id: string): AssistantBlock => ({
   kind: 'tool_call', id, name: 'bash', chunks: [], status: 'ok',
 });
 const text = (t: string): AssistantBlock => ({ kind: 'text', text: t });
+const askBlock = (toolCallId: string): AssistantBlock => ({
+  kind: 'ask', toolCallId, questions: [], status: 'pending',
+});
 
 describe('groupBlocks', () => {
   it('空数组返回空', () => {
@@ -64,5 +67,31 @@ describe('groupBlocks', () => {
     expect(out).toHaveLength(1);
     expect(out[0].kind).toBe('process');
     if (out[0].kind === 'process') expect(out[0].blocks).toHaveLength(3);
+  });
+
+  it('ask 独立成组', () => {
+    const out = groupBlocks([askBlock('a1')]);
+    expect(out).toEqual([{ kind: 'ask', block: askBlock('a1') }]);
+  });
+
+  it('ask 打断 process 分组', () => {
+    const out = groupBlocks([thinking('t'), askBlock('a1'), tool('x')]);
+    expect(out.map((g) => g.kind)).toEqual(['process', 'ask', 'process']);
+  });
+
+  it('相邻的两个 ask 各自成组', () => {
+    const out = groupBlocks([askBlock('a1'), askBlock('a2')]);
+    expect(out.map((g) => g.kind)).toEqual(['ask', 'ask']);
+  });
+
+  it('ask 前后的 text 仍然各自成组', () => {
+    const out = groupBlocks([text('a'), askBlock('a1'), text('b')]);
+    expect(out.map((g) => g.kind)).toEqual(['text', 'ask', 'text']);
+  });
+
+  it('ask 之前未 flush 的 process buffer 会被先冲出去', () => {
+    const out = groupBlocks([tool('x'), tool('y'), askBlock('a1')]);
+    expect(out.map((g) => g.kind)).toEqual(['process', 'ask']);
+    expect((out[0] as { blocks: unknown[] }).blocks).toHaveLength(2);
   });
 });

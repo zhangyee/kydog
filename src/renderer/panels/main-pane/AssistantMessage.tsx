@@ -45,6 +45,8 @@ export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Pro
               />
             );
           }
+          // 占位：ask 卡片的渲染接线是后续任务的事，这里先不出图。
+          if (g.kind === 'ask') return null;
           return <MarkdownBlock key={`tx-${i}`} content={g.block.text} />;
         })}
         {fileCards.length > 0 && (
