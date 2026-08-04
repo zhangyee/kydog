@@ -90,7 +90,7 @@ describe('validateResearch', () => {
     expect(validateResearch(R({ custom: [{ name: 'X_EMAIL', kind: 'email', value: '' }] }))).toEqual([]);
   });
 
-  it.each([['a\nb'], ['a\u0000b']])('值含控制字符 %j → 报错', (value) => {
+  it.each([['a\nb'], ['a\u0000b'], ['a\u007fb']])('值含控制字符 %j → 报错', (value) => {
     const errs = validateResearch(R({ presets: { NCBI_API_KEY: value } }));
     expect(errs).toHaveLength(1);
   });

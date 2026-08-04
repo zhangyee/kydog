@@ -8,7 +8,7 @@ export type ResearchValidationError = { field: string; message: string };
 const VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHAR_RE = /[\x00-\x1f]/;
+const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
 
 /**
  * 不允许被这一页写入的环境变量。三类：
