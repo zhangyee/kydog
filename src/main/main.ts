@@ -18,6 +18,7 @@ import { initProviderRegistry } from './llm/providerRegistry';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
 import { startIdentityWatcher } from './harness/identityService';
+import { initUpdateService } from './update/assemble';
 import { broadcaster } from './ipc/broadcaster';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -145,6 +146,12 @@ app.on('ready', async () => {
 
     installDispatcher();
     registerAllHandlers();
+    try {
+      await initUpdateService();
+    } catch (err) {
+      // 更新服务永远不能打断启动
+      logger.warn('update', 'init failed; continuing without update checks', { err: String(err) });
+    }
     startIdentityWatcher((id) => broadcaster.emit('identity.changed', id));
     try {
       await projectService.initWatchers();

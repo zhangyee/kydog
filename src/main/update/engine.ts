@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { UpdaterPort, UpdaterEvent } from './updaterPort';
 
 /** 一次检查的结果。engine 只负责得出它，状态迁移与不变量归 UpdateService 管。 */
@@ -16,6 +17,32 @@ export interface CheckEngine {
 }
 
 const fail = (message: string): CheckOutcome => ({ kind: 'failed', message, retry: 'allowed' });
+
+/** 开发态与 e2e 的默认引擎：永不联网，永远「已是最新」。 */
+export function createNoopEngine(): CheckEngine {
+  return {
+    async run() { return { kind: 'none' }; },
+    onLateOutcome() {},
+    quitAndInstall() { throw new Error('no-op 更新服务不支持安装'); },
+  };
+}
+
+/** e2e 专用：从文件读一个 outcome。每次 run 都重读，
+ *  用例才能中途改写 fixture 驱动状态迁移。 */
+export function createFixtureEngine(file: string): CheckEngine {
+  return {
+    async run() {
+      // 与真实引擎同契约：读不到或形状不对都返回 failed，不能 reject 出去
+      try {
+        return JSON.parse(readFileSync(file, 'utf8')) as CheckOutcome;
+      } catch (err) {
+        return fail(`更新 fixture 无法读取：${String((err as Error)?.message ?? err)}`);
+      }
+    },
+    onLateOutcome() {},
+    quitAndInstall() {},
+  };
+}
 
 export function createDarwinEngine(deps: {
   feedUrl: string;

@@ -11,6 +11,7 @@ import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { skillsService } from './skills/skillsService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
+import { getUpdateService, openDownloadPage } from './update/assemble';
 import { getIdentity } from './harness/identityService';
 import { onboardingService } from './harness/onboardingService';
 import { readManifest, deleteManifest, discardCorruptManifest } from './harness/manifest';
@@ -48,6 +49,17 @@ export function registerAllHandlers(): void {
   registerHandler('settings.update', (args) => settingsService.update(args));
   registerHandler('research.get', () => researchService.get());
   registerHandler('research.save', (args) => researchService.save(args));
+
+  registerHandler('update.getStatus', () => getUpdateService().getStatus());
+  registerHandler('update.check', () => getUpdateService().check());
+  registerHandler('update.setAutoCheck', (args) => getUpdateService().setAutoCheck(args.enabled));
+  registerHandler('update.dismissBanner', () => getUpdateService().dismissBanner());
+  registerHandler('update.openDownload', async () => {
+    // 状态不匹配时报错而非静默忽略，避免 UI 与主进程漂移时产生无声失败
+    if (!getUpdateService().canOpenDownload()) throw new Error('当前没有可下载的更新');
+    await openDownloadPage();
+  });
+  registerHandler('update.restartAndInstall', () => { getUpdateService().quitAndInstall(); });
 
   registerHandler('project.open', () => projectService.open());
   registerHandler('project.list', () => projectService.list());
