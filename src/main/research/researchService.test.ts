@@ -56,6 +56,18 @@ describe('researchService', () => {
     expect((await settingsService.get()).research.presets).toEqual({});
   });
 
+  // 锁死「先落盘、后写 env」的顺序：落盘失败时 env 必须没被动过。
+  // 顺序一旦颠倒，env 会先被写上，然后 update 抛错 —— 用户当前会话生效、
+  // 重启就没了，是最难排查的一类不一致。
+  it('落盘失败时不写 env', async () => {
+    const spy = vi.spyOn(settingsService, 'update').mockRejectedValue(new Error('disk full'));
+    await expect(
+      researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [] }),
+    ).rejects.toThrow('disk full');
+    expect(process.env.NCBI_API_KEY).toBeUndefined();
+    spy.mockRestore();
+  });
+
   it('清空已存的值：盘上删掉，env 也删掉', async () => {
     await researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [] });
     await researchService.save({ presets: { NCBI_API_KEY: '' }, custom: [] });
