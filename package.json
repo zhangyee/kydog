@@ -33,6 +33,10 @@
     "email": "yee.zhang@gmail.com"
   },
   "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhangyee/kydog.git"
+  },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.1",
     "@electron-forge/maker-squirrel": "^7.11.1",
