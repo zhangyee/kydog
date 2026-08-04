@@ -16,6 +16,7 @@ test('12-user-menu: opens with all sections; account CTA opens settings pane', a
     await expect(page.locator('[data-testid="theme-lilac"]')).toBeVisible();
     await expect(page.locator('[data-testid="menu-donate"]')).toBeVisible();
     await expect(page.locator('[data-testid="menu-about"]')).toBeVisible();
+    await expect(page.locator('[data-testid="open-research"]')).toBeVisible();
 
     // Account CTA dispatches openSettings('provider') and closes the menu.
     await page.locator('[data-testid="open-settings"]').click();
