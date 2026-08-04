@@ -124,3 +124,44 @@ export function Btn({
 export function Empty() {
   return <div style={{ color: 'var(--color-ink-faint)', fontSize: 12, padding: '4px 0' }}>（无）</div>;
 }
+
+export function Toggle({ checked, onChange, disabled }: {
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={disabled ? undefined : onChange}
+      disabled={disabled}
+      style={{
+        width: 32,
+        height: 18,
+        borderRadius: 999,
+        background: checked ? 'var(--color-accent, #6b8e7f)' : 'var(--color-ink-faint)',
+        position: 'relative',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        border: 'none',
+        padding: 0,
+        transition: 'background-color 120ms',
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: checked ? 16 : 2,
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          background: 'var(--color-paper)',
+          transition: 'left 120ms',
+        }}
+      />
+    </button>
+  );
+}
