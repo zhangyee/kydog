@@ -208,3 +208,31 @@ export type SkillCommitArgs = {
 export type SkillCommitResult = {
   installed: SkillEntry[]; skipped: { name: string; reason: SerializedError }[]; list: SkillEntry[];
 };
+
+// ── 自动升级 ──
+export type UpdateCheckPhase =
+  | { phase: 'never' }
+  | { phase: 'checking' }
+  | { phase: 'ok' }
+  | {
+      phase: 'failed';
+      message: string;
+      /** 能否再试是协议事实，不是文案细节。UI 据此决定是否禁用「立即检查」，
+       *  绝不解析 message。'restart-required' 仅出现在「Windows deadline 已到
+       *  且尚未收到任何终态事件」这一种情形。 */
+      retry: 'allowed' | 'restart-required';
+    };
+
+export type UpdateAvailability =
+  | { kind: 'none' }
+  | { kind: 'available'; candidateId: string; label: string }
+  | { kind: 'downloaded'; label: string };
+
+export type UpdateStatus = {
+  check: UpdateCheckPhase;
+  update: UpdateAvailability;
+  /** 忽略策略（macOS 落盘 / Windows 会话级）被这个布尔吸收，渲染进程不感知差异。 */
+  bannerDismissed: boolean;
+  autoCheck: boolean;
+  currentVersion: string;
+};

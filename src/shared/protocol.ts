@@ -1,7 +1,7 @@
 import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncStatus,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
-  ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult,
+  ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
 } from './types';
 import type { SerializedError } from './errors';
 
@@ -54,6 +54,13 @@ export type RpcCall =
   | { method: 'file.readText'; args: { path: string }; result: { content: string } }
   | { method: 'file.readBytes'; args: { path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
   | { method: 'file.writeText'; args: { path: string; content: string }; result: void }
+  // ── 自动升级 ──
+  | { method: 'update.getStatus'; args: undefined; result: UpdateStatus }
+  | { method: 'update.check'; args: undefined; result: UpdateStatus }
+  | { method: 'update.setAutoCheck'; args: { enabled: boolean }; result: UpdateStatus }
+  | { method: 'update.dismissBanner'; args: undefined; result: UpdateStatus }
+  | { method: 'update.openDownload'; args: undefined; result: void }
+  | { method: 'update.restartAndInstall'; args: undefined; result: void }
   // ── Onboarding ──
   | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
   | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult };
@@ -83,7 +90,8 @@ export type RuntimeEvent =
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }
   | { topic: 'fs.changed'; payload: { projectPath: string } }
-  | { topic: 'identity.changed'; payload: Identity };
+  | { topic: 'identity.changed'; payload: Identity }
+  | { topic: 'update.status'; payload: UpdateStatus };
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];
