@@ -6,7 +6,9 @@ import globals from 'globals';
 /** @type {import('eslint').Linter.Config[]} */
 export default [
   {
-    ignores: ['node_modules/**', 'dist/**', 'out/**', '.vite/**', 'docs/**', 'main.js'],
+    // .claude/** 是 Claude Code 的 harness 目录（worktrees 等），不是项目源码。
+    // 不排除的话，一个并发 worktree 会把整份仓库副本拖进 lint，报一堆无关错误。
+    ignores: ['node_modules/**', 'dist/**', 'out/**', '.vite/**', 'docs/**', '.claude/**', 'main.js'],
   },
   js.configs.recommended,
   {
