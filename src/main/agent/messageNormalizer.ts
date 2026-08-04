@@ -85,10 +85,11 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
         } else if (c.type === 'toolCall') {
           const tr = toolResults.get(c.id);
           if (c.name === ASK_TOOL_NAME) {
-            const restored = restoreAskBlock(c.id, c.arguments, tr?.details);
+            const restored = restoreAskBlock(c.id, c.arguments, tr);
             if (restored) { pendingBlocks.push(restored); continue; }
-            // details 不是合法 AskOutcome（校验失败 / 批次非法留下的 error
-            // toolResult，details 是 {}）→ 落到下面按普通失败工具渲染。
+            // 有 toolResult 但 details 不是合法 AskOutcome（校验失败 / 批次非法留下的
+            // error toolResult，details 是 {}，或干脆没有 details）→ 落到下面按
+            // 普通失败工具渲染。
           }
           pendingBlocks.push({
             kind: 'tool_call',
@@ -120,12 +121,14 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
 function restoreAskBlock(
   toolCallId: string,
   args: Record<string, unknown> | undefined,
-  details: unknown,
+  tr: { details?: unknown } | undefined,
 ): AssistantBlock | null {
-  // 没有 toolResult：进程在挂起时退出，留下一个永远等不到答案的提问。
-  if (details === undefined) {
+  // 「有没有 toolResult」是协议事实，直接读，不要用 details 是否存在去反推 ——
+  // 没有 toolResult 才是「进程在挂起时退出，留下一个永远等不到答案的提问」。
+  if (tr === undefined) {
     return { kind: 'ask', toolCallId, questions: rawQuestionsAsFallback(args), status: 'unanswered' };
   }
+  const details = tr.details;
   if (!isAskOutcome(details)) return null;
 
   const questions = (details as { questions?: AskQuestion[] }).questions ?? rawQuestionsAsFallback(args);

@@ -425,6 +425,21 @@ describe('normalizePiMessages — ask_user_question', () => {
     expect(block.chunks).toEqual([{ stream: 'stdout', data: 'questions 只能有 1–4 条' }]);
   });
 
+  // 「有没有 toolResult」是协议事实，不能用 details 在不在去反推：details 缺失的
+  // toolResult 依然是一个已经结束的调用，不是「进程挂在提问上退出」。
+  it('有 toolResult 但没有 details 时还原成普通失败工具卡片，不是 unanswered', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: true,
+        content: [{ type: 'text', text: 'questions 只能有 1–4 条' }],
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block.kind).toBe('tool_call');
+    expect(block.status).toBe('failed');
+  });
+
   it('普通工具不受影响', () => {
     const out = normalizePiMessages([
       { role: 'assistant', content: [{ type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: 'ls' } }] },
