@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ABOUT_DOCS, ABOUT_LICENSES } from './about/aboutDocs';
 import { AboutMarkdown } from './about/AboutMarkdown';
+import { UpdateBlock } from './UpdateBlock';
 
 const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
 
@@ -32,6 +33,7 @@ export function AboutSection() {
 
   return (
     <div style={{ padding: '28px 28px 40px', maxWidth: 720 }}>
+      {view.kind === 'post' && <UpdateBlock />}
       {view.kind === 'licenses' ? (
         <>
           <button
