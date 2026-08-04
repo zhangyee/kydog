@@ -4,7 +4,7 @@ import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ProviderRowModelPicker } from '../ProviderRowModelPicker';
 import { useOAuthLoginFlow } from '../hooks/useOAuthLoginFlow';
-import { STATIC_META } from './apiKeyMeta';
+import { STATIC_META } from '../../../shared/apiKeyMeta';
 
 const inputStyle: CSSProperties = {
   background: 'transparent',

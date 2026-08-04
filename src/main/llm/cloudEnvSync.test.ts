@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { ProviderOverride, ProviderId } from '../../shared/types';
-import { applyCloudEnv, MANAGED_VARS } from './cloudEnvSync';
+import { applyCloudEnv } from './cloudEnvSync';
+import { MANAGED_VARS } from '../../shared/managedCloudEnvVars';
 
 const ALL_VARS: string[] = [...MANAGED_VARS];
 
