@@ -4,6 +4,7 @@ import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ProviderRowModelPicker } from '../ProviderRowModelPicker';
 import { useOAuthLoginFlow } from '../hooks/useOAuthLoginFlow';
+import { STATIC_META } from './apiKeyMeta';
 
 const inputStyle: CSSProperties = {
   background: 'transparent',
@@ -17,29 +18,6 @@ const inputStyle: CSSProperties = {
 
 const labelStyle: CSSProperties = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--color-ink)', fontWeight: 500 };
 const hintStyle: CSSProperties = { fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 11, color: 'var(--color-ink-faint)', marginTop: 4, lineHeight: 1.55 };
-
-type CatalogApiKeyMeta = {
-  envFallback?: string[];
-  baseUrlOverridable: boolean;
-};
-
-const STATIC_META: Record<string, CatalogApiKeyMeta> = {
-  anthropic: { envFallback: ['ANTHROPIC_API_KEY'], baseUrlOverridable: true },
-  openai: { envFallback: ['OPENAI_API_KEY'], baseUrlOverridable: true },
-  deepseek: { envFallback: ['DEEPSEEK_API_KEY'], baseUrlOverridable: true },
-  google: { envFallback: ['GEMINI_API_KEY'], baseUrlOverridable: false },
-  openrouter: { envFallback: ['OPENROUTER_API_KEY'], baseUrlOverridable: true },
-  mistral: { envFallback: ['MISTRAL_API_KEY'], baseUrlOverridable: false },
-  groq: { envFallback: ['GROQ_API_KEY'], baseUrlOverridable: false },
-  cerebras: { envFallback: ['CEREBRAS_API_KEY'], baseUrlOverridable: false },
-  xai: { envFallback: ['XAI_API_KEY'], baseUrlOverridable: false },
-  'vercel-ai-gateway': { envFallback: ['AI_GATEWAY_API_KEY'], baseUrlOverridable: true },
-  zai: { envFallback: ['ZAI_API_KEY'], baseUrlOverridable: false },
-  huggingface: { envFallback: ['HF_TOKEN'], baseUrlOverridable: false },
-  'kimi-coding': { envFallback: ['KIMI_API_KEY'], baseUrlOverridable: false },
-  minimax: { envFallback: ['MINIMAX_API_KEY'], baseUrlOverridable: false },
-  opencode: { envFallback: ['OPENCODE_API_KEY'], baseUrlOverridable: false },
-};
 
 export function ApiKeyForm({ providerId }: { providerId: string }) {
   const meta = STATIC_META[providerId] ?? { baseUrlOverridable: true };
