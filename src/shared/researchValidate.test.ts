@@ -95,8 +95,8 @@ describe('validateResearch', () => {
     expect(errs).toHaveLength(1);
   });
 
-  it('自定义项的值含控制字符 → 报错', () => {
-    const errs = validateResearch(R({ custom: [{ name: 'CTRL_KEY', kind: 'key', value: 'a\nb' }] }));
+  it.each([['a\nb'], ['a\u0000b'], ['a\u007fb']])('自定义项的值含控制字符 %j → 报错', (value) => {
+    const errs = validateResearch(R({ custom: [{ name: 'CTRL_KEY', kind: 'key', value }] }));
     expect(errs).toHaveLength(1);
     expect(errs[0].field).toBe('CTRL_KEY');
   });
