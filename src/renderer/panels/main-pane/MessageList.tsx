@@ -2,6 +2,7 @@ import { useMemo, useRef } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useIdentityStore } from '../../stores/identityStore';
+import { useAskStore } from '../../stores/askStore';
 import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
@@ -12,6 +13,7 @@ export function MessageList({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
+  const askPending = useAskStore((s) => s.pendingByThread[threadId]);
 
   const userName = useIdentityStore((s) => s.userName);
 
@@ -50,7 +52,8 @@ export function MessageList({ threadId }: { threadId: string }) {
               messageId={messageId}
               blocks={buf.blocks}
             />
-            <StreamingIndicator />
+            {/* 提问态下卡片本身就是最强的状态提示，再挂个转圈只会打架。 */}
+            {!askPending && <StreamingIndicator />}
           </div>
         ))}
       </div>

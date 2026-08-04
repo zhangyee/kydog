@@ -4,10 +4,13 @@ import { MessageList } from './MessageList';
 import { Composer } from './Composer';
 import { NewThreadEmptyState } from './NewThreadEmptyState';
 import { ThreadBreadcrumb } from './ThreadBreadcrumb';
+import { QuestionComposer } from './QuestionComposer';
+import { useAskStore } from '../../stores/askStore';
 
 export function ThreadView({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId]);
   const initHistory = useThreadsStore((s) => s.initHistory);
+  const askPending = useAskStore((s) => s.pendingByThread[threadId]);
 
   useEffect(() => {
     if (messages !== undefined) return;
@@ -29,7 +32,9 @@ export function ThreadView({ threadId }: { threadId: string }) {
         ) : (
           <>
             <MessageList threadId={threadId} />
-            <Composer threadId={threadId} />
+            {/* 整体替换而非叠加：模型 pill、发送按钮、slash 菜单一并消失，
+                提问期间不存在第二条输入路径。 */}
+            {askPending ? <QuestionComposer threadId={threadId} /> : <Composer threadId={threadId} />}
           </>
         )}
       </div>

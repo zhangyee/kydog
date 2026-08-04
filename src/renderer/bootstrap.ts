@@ -5,6 +5,7 @@ import { useRunsStore } from './stores/runsStore';
 import { useLlmStore } from './stores/llmStore';
 import { useSkillsStore } from './stores/skillsStore';
 import { useIdentityStore } from './stores/identityStore';
+import { useAskStore } from './stores/askStore';
 import { useUnreadStore } from './panels/workspace/unreadStore';
 
 export async function bootstrap(): Promise<void> {
@@ -97,6 +98,15 @@ function setupEventBridge(): void {
   });
   window.kydog.on('run.parallel_group', (p) => {
     useRunsStore.getState().markParallelGroup(p.messageId, p.toolCallIds, p.parallelGroupId);
+  });
+  // 一条事件两个消费者：askStore 驱动提问态 composer，runsStore 驱动留痕 block。
+  window.kydog.on('run.ask_start', (p) => {
+    useAskStore.getState().open(p.threadId, p.toolCallId, p.questions);
+    useRunsStore.getState().addAskBlock(p.messageId, p.toolCallId, p.questions);
+  });
+  window.kydog.on('run.ask_end', (p) => {
+    useAskStore.getState().close(p.threadId, p.toolCallId);
+    useRunsStore.getState().finalizeAskBlock(p.messageId, p.toolCallId, p.outcome);
   });
   window.kydog.on('run.message_end', (p) => {
     const blocks = useRunsStore.getState().takeBuffer(p.messageId);
