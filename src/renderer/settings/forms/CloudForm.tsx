@@ -1,14 +1,10 @@
 // src/renderer/settings/forms/CloudForm.tsx
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ProviderRowModelPicker } from '../ProviderRowModelPicker';
+import { inputStyle } from '../ui';
 import type { AzureCfg, BedrockCfg, VertexCfg } from '../../../shared/types';
-
-const inputStyle: CSSProperties = {
-  background: 'transparent', border: 'none', borderBottom: '0.5px solid var(--color-ink-hair-soft)',
-  padding: '7px 0', fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--color-ink)', width: '100%',
-};
 
 const CFG_KIND_BY_PROVIDER: Record<string, 'azure' | 'bedrock' | 'vertex'> = {
   'azure-openai-responses': 'azure',
