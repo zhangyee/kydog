@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
+import { MakerDMG } from '@electron-forge/maker-dmg';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
@@ -24,7 +25,15 @@ const config: ForgeConfig = {
     // 等加签名时：osxSign / osxNotarize / windowsSign
   },
   rebuildConfig: {},
-  makers: [new MakerSquirrel({}), new MakerZIP({}, ['darwin'])],
+  makers: [
+    new MakerSquirrel({}),
+    // zip 必须保留：更新服务靠 .*-(mac|darwin|osx).*\.zip 匹配 darwin 资产，
+    // 没有它 macOS 的 feed 直接 404。dmg 只给人手动安装用，服务会忽略它。
+    new MakerZIP({}, ['darwin']),
+    // 文件名必须带 arch —— arm64 与 x64 是两个独立 CI job，产物在
+    // merge-multiple 时汇到同一目录，同名会互相覆盖。
+    new MakerDMG({ name: `KyDog-${process.arch}` }, ['darwin']),
+  ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
     new VitePlugin({
