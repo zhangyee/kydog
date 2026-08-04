@@ -234,4 +234,23 @@ describe('settingsFile v5', () => {
     expect(s.schemaVersion).toBe(5);
     expect(s.research).toEqual({ presets: {}, custom: [] });
   });
+
+  it('research 容器形状不对时兜底：presets 非对象归空表、custom 里的数组元素被滤掉', async () => {
+    ensureSettingsFile();
+    const bad = {
+      ...defaultSettings(),
+      research: { presets: ['a', 'b'], custom: [['x'], { name: 'OK_KEY', kind: 'key', value: 'v' }] },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(bad));
+    const s = await loadSettings();
+    expect(s.research.presets).toEqual({});
+    expect(s.research.custom).toEqual([{ name: 'OK_KEY', kind: 'key', value: 'v' }]);
+  });
+
+  it('research.presets 是字符串时归空表', async () => {
+    ensureSettingsFile();
+    const bad = { ...defaultSettings(), research: { presets: 'garbage', custom: [] } };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(bad));
+    expect((await loadSettings()).research.presets).toEqual({});
+  });
 });

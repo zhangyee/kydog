@@ -70,6 +70,11 @@ export async function saveSettings(value: SettingsFile): Promise<void> {
 
 function sanitizeLocale(v: unknown): 'zh' | 'en' { return v === 'en' ? 'en' : 'zh'; }
 
+/** 数组也是 object，单靠 typeof 分不出来 —— research 的两个容器都要排除数组。 */
+function isPlainObject(v: unknown): boolean {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
 /** v1/v2/v3/v4 → v5 迁移。
  *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize / onboarding / research 默认值。
  *  - v2/v3/v4：保留所有字段，补缺失的 onboarding / research 默认值。
@@ -97,10 +102,14 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
       },
       skills: { ...d.skills, ...(parsed.skills ?? {}) },
       tools: { ...d.tools, ...(parsed.tools ?? {}) },
+      // 只兜形状不动值：get() 刻意返回落盘原值（让手改过 kydog.json 的用户
+      // 能看见真实状态），所以这里不 trim、不校验内容，但必须保证容器与元素
+      // 的形状与类型标注一致 —— 否则 research.get 会把 SettingsFile 上那句
+      // Record<string,string> / ResearchCustomVar[] 的承诺撒谎给渲染层。
       research: {
-        presets: parsed.research?.presets ?? {},
+        presets: isPlainObject(parsed.research?.presets) ? parsed.research.presets : {},
         custom: Array.isArray(parsed.research?.custom)
-          ? parsed.research.custom.filter((c: unknown) => c !== null && typeof c === 'object')
+          ? parsed.research.custom.filter(isPlainObject)
           : [],
       },
       onboarding: { completedAt: typeof parsed.onboarding?.completedAt === 'string' ? parsed.onboarding.completedAt : null },
