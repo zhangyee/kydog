@@ -15,7 +15,6 @@ import {
   FIRST_CHECK_DELAY_MS, CHECK_INTERVAL_MS, CHECK_DEADLINE_MS,
 } from './constants';
 
-export { pickAssembly, type Assembly } from './pickAssembly';
 
 let service: UpdateService | null = null;
 

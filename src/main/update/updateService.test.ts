@@ -254,3 +254,36 @@ describe('UpdateService 忽略与开关', () => {
     expect(() => s.quitAndInstall()).not.toThrow();
   });
 });
+
+describe('UpdateService deadline 与引擎的接合处', () => {
+  // 两个 task 各测了自己一半：引擎那边验了 signal 会透传给 fetch，
+  // service 这边验了状态迁移，但没人验过「引擎真的挂住时，service 的
+  // AbortController 会把它拉回来，并且之后还能再检查」。
+  it('引擎悬挂时 service 的 deadline 中止它，且后续可重试', async () => {
+    vi.useFakeTimers();
+    let runs = 0;
+    const engine: CheckEngine = {
+      run: (signal) => {
+        runs += 1;
+        return new Promise<CheckOutcome>((resolve) => {
+          signal.addEventListener('abort', () =>
+            resolve({ kind: 'failed', message: '请求超时', retry: 'allowed' }));
+        });
+      },
+      onLateOutcome: () => {},
+      quitAndInstall: () => {},
+    };
+    const s = svc(engine);
+    const p = s.check();
+    expect(runs).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await p).check).toMatchObject({ phase: 'failed', retry: 'allowed' });
+
+    // abort 是真取消，不像 Windows 那样要禁用整个进程
+    const p2 = s.check();
+    expect(runs).toBe(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    await p2;
+    vi.useRealTimers();
+  });
+});

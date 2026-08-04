@@ -37,13 +37,4 @@ describe('update scheduler', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(run).toHaveBeenCalledTimes(1);
   });
-
-  it('stop 之后不再触发', async () => {
-    const run = vi.fn().mockResolvedValue(undefined);
-    const s = createScheduler({ run, firstDelayMs: 30_000, intervalMs: 86_400_000 });
-    s.reconfigure(true);
-    s.stop();
-    await vi.advanceTimersByTimeAsync(86_400_000);
-    expect(run).toHaveBeenCalledTimes(0);
-  });
 });

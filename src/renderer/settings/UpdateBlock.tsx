@@ -7,15 +7,19 @@ const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
 
 /** 状态文案必须两个维度联合决定，不能单看 check。 */
 export function statusText(s: UpdateStatus): { main: string; failure?: string } {
-  const label = s.update.kind === 'none' ? '' : s.update.label;
-  const failure = s.check.phase === 'failed' ? `上次检查失败：${s.check.message}` : undefined;
-
-  if (s.update.kind === 'available') return { main: `发现新版 ${label}`, failure };
-  if (s.update.kind === 'downloaded') return { main: `新版 ${label} 已下载，重启后生效`, failure };
+  // 生命周期先判：never / checking 与「有没有更新」无关，任何 update 值下都是这两句。
   if (s.check.phase === 'never') return { main: '尚未检查' };
   if (s.check.phase === 'checking') return { main: '检查中…' };
+
+  // 检查失败不得掩盖已经拿到的更新信息 —— 两者并列显示，更新文案仍占主行。
+  const failure = s.check.phase === 'failed' ? `上次检查失败：${s.check.message}` : undefined;
+  if (s.update.kind === 'available') return { main: `发现新版 ${s.update.label}`, failure };
+  if (s.update.kind === 'downloaded') return { main: `新版 ${s.update.label} 已下载，重启后生效`, failure };
+
   if (s.check.phase === 'ok') return { main: '已是最新' };
-  return { main: '尚未检查', failure };
+  // failed + none：如实说失败。这里曾经显示「尚未检查」，而检查确实发生过，
+  // 与下面那行「上次检查失败」自相矛盾，且醒目的那句是假的。
+  return { main: `上次检查失败：${s.check.message}` };
 }
 
 export function UpdateBlock() {

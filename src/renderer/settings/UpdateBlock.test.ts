@@ -26,6 +26,20 @@ describe('statusText', () => {
     expect(statusText({ ...base, check: { phase: 'never' } }).main).toBe('尚未检查');
   });
 
+  it('failed + none：主行如实说失败，不能显示「尚未检查」', () => {
+    const s: UpdateStatus = { ...base, check: { phase: 'failed', message: '无法连接更新服务', retry: 'allowed' } };
+    expect(statusText(s).main).toBe('上次检查失败：无法连接更新服务');
+  });
+
+  it('checking 时不管有没有已知更新，主行都是「检查中…」', () => {
+    const s: UpdateStatus = {
+      ...base,
+      check: { phase: 'checking' },
+      update: { kind: 'available', candidateId: 'c', label: 'v2' },
+    };
+    expect(statusText(s).main).toBe('检查中…');
+  });
+
   it('failed + downloaded：更新信息与失败提示并列，失败不得掩盖更新', () => {
     const s: UpdateStatus = {
       ...base,
