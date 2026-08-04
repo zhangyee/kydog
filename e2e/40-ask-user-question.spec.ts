@@ -78,6 +78,76 @@ test('40-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
   }
 });
 
+// 键盘规格是刻意设计过的：三条快捷键都只在焦点不在输入框时生效，且这一版
+// 不做任何 Enter 提交/前进 —— 用户正在框里写想法时一个回车就跳走太危险。
+test('40-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提交', async () => {
+  const launched = await launchWithProject();
+  const page = launched.page;
+  try {
+    await askUntilPending(page);
+    const composer = page.locator('[data-testid="question-composer"]');
+    const customRow = page.locator('[data-testid="ask-custom-row"]');
+    const customInput = page.locator('[data-testid="ask-custom-input"]');
+
+    // 1) 数字键选中并前进：单选按 1 等同点第一项，选中即前进。
+    await composer.focus();
+    await expect(composer).toContainText('1 / 3');
+    await page.keyboard.press('1');
+    await expect(composer).toContainText('2 / 3');
+    // 前进后第 1 题已经不在 DOM 里，翻回去才看得到那一下确实选中了。
+    await page.locator('[data-testid="ask-prev"]').click();
+    await expect(composer).toContainText('1 / 3');
+    await expect(page.locator('[data-testid="ask-option-q0o0"]')).toHaveAttribute('data-selected', 'true');
+    await page.locator('[data-testid="ask-next"]').click();
+    await expect(composer).toContainText('2 / 3');
+
+    // 2) n+1 是把光标送进自定义输入框，不是选中 —— 选中只由文本非空驱动。
+    await composer.focus();
+    await page.keyboard.press('3');
+    await expect(customInput).toBeFocused();
+    await expect(customRow).toHaveAttribute('data-selected', 'false');
+
+    // 3) 焦点在框里时数字键就是打字，不会顺手选中选项、也不翻页。
+    await page.keyboard.type('12');
+    await expect(customInput).toHaveValue('12');
+    await expect(page.locator('[data-testid="ask-option-q1o0"]')).toHaveAttribute('data-selected', 'false');
+    await expect(page.locator('[data-testid="ask-option-q1o1"]')).toHaveAttribute('data-selected', 'false');
+    await expect(composer).toContainText('2 / 3');
+
+    // 4) 焦点在框里时 ← 是移光标，不翻页。
+    await page.keyboard.press('ArrowLeft');
+    await expect(composer).toContainText('2 / 3');
+
+    // 5) Enter 不做任何事：不提交、不前进，提问态原地不动。框内框外都一样 ——
+    //    这一版根本没有 Enter 通路，前进和提交只走底部的显式按钮。
+    await page.keyboard.press('Enter');
+    await expect(composer).toContainText('2 / 3');
+    await expect(composer).toHaveCount(1);
+    await expect(page.locator('[data-testid="composer-input"]')).toHaveCount(0);
+    await expect(customInput).toHaveValue('12');
+    await composer.focus();
+    await page.keyboard.press('Enter');
+    await expect(composer).toContainText('2 / 3');
+    await expect(composer).toHaveCount(1);
+    await expect(page.locator('[data-testid="composer-input"]')).toHaveCount(0);
+
+    // 6) 焦点离开输入框后 ←→ 才翻页。
+    await expect(customInput).not.toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(composer).toContainText('3 / 3');
+    await page.keyboard.press('ArrowLeft');
+    await expect(composer).toContainText('2 / 3');
+
+    // 7) Esc 等同 ×：结束提问，composer 形态恢复，留痕记为取消。
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-testid="question-composer"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="composer-input"]')).toBeVisible();
+    await expect(page.locator('[data-testid="ask-recap"]')).toHaveAttribute('data-status', 'cancelled', { timeout: 10_000 });
+  } finally {
+    await teardown(launched);
+  }
+});
+
 test('40-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
