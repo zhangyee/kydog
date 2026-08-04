@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { AssistantBlock } from '../../shared/types';
+import type { AskOutcome, AskQuestion } from '../../shared/askQuestion';
 
 export type RunUiState =
   | { status: 'idle' }
@@ -27,6 +28,8 @@ type RunsState = {
   appendToolChunk: (messageId: string, toolCallId: string, stream: 'stdout' | 'stderr', chunk: string) => void;
   finalizeToolCall: (messageId: string, toolCallId: string, status: 'ok' | 'failed', exitCode?: number) => void;
   markParallelGroup: (messageId: string, toolCallIds: string[], parallelGroupId: string) => void;
+  addAskBlock: (messageId: string, toolCallId: string, questions: AskQuestion[]) => void;
+  finalizeAskBlock: (messageId: string, toolCallId: string, outcome: AskOutcome) => void;
   takeBuffer: (messageId: string) => AssistantBlock[] | null;
 };
 
@@ -140,6 +143,31 @@ export const useRunsStore = create<RunsState>((set, get) => ({
           [messageId]: { ...buf, blocks, pendingParallelGroupByToolId: pending },
         },
       };
+    }),
+  addAskBlock: (messageId, toolCallId, questions) =>
+    set((s) => {
+      const buf = s.bufferByMessage[messageId];
+      if (!buf) return {};
+      const blocks = finalizeActiveThinking([...buf.blocks], s.activeThinkingStartByMessage[messageId], Date.now());
+      blocks.push({ kind: 'ask', toolCallId, questions, status: 'pending' });
+      return {
+        activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: undefined },
+        bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } },
+      };
+    }),
+  finalizeAskBlock: (messageId, toolCallId, outcome) =>
+    set((s) => {
+      const buf = s.bufferByMessage[messageId];
+      if (!buf) return {};
+      const blocks = buf.blocks.map((b) => {
+        if (b.kind !== 'ask' || b.toolCallId !== toolCallId) return b;
+        // answered 必带 answers，其余三态必不带 —— 由 AskBlock 的判别联合保证。
+        // 所以非 answered 分支要重建对象而不是 spread，否则 answers 会残留。
+        return outcome.kind === 'answered'
+          ? { ...b, status: 'answered' as const, answers: outcome.answers }
+          : { kind: 'ask' as const, toolCallId: b.toolCallId, questions: b.questions, status: outcome.kind };
+      });
+      return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
     }),
   takeBuffer: (messageId) => {
     const buf = get().bufferByMessage[messageId];
