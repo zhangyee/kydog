@@ -7,7 +7,7 @@ import { logger } from '../log';
 
 export function defaultSettings(): SettingsFile {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     ui: {
       theme: 'vellum',
       locale: 'zh',
@@ -25,6 +25,7 @@ export function defaultSettings(): SettingsFile {
     skills: { disabledBuiltins: [] },
     tools: { externalBins: [] },
     research: { presets: {}, custom: [] },
+    updates: { autoCheck: true, dismissedCandidateId: null },
     onboarding: { completedAt: null },
   };
 }
@@ -75,10 +76,21 @@ function isPlainObject(v: unknown): boolean {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-/** v1/v2/v3/v4 → v5 迁移。
- *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize / onboarding / research 默认值。
- *  - v2/v3/v4：保留所有字段，补缺失的 onboarding / research 默认值。
- *  - v5：原样回写（completedAt 保留；locale 非法值归位 zh）。
+/** updates 逐字段兜形状 —— 某个字段类型不对就只把该字段回默认，不牵连另一个。 */
+function sanitizeUpdates(v: unknown): SettingsFile['updates'] {
+  const d = { autoCheck: true, dismissedCandidateId: null as string | null };
+  if (!isPlainObject(v)) return d;
+  const o = v as Record<string, unknown>;
+  return {
+    autoCheck: typeof o.autoCheck === 'boolean' ? o.autoCheck : d.autoCheck,
+    dismissedCandidateId: typeof o.dismissedCandidateId === 'string' ? o.dismissedCandidateId : null,
+  };
+}
+
+/** v1..v5 → v6 迁移。
+ *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize / onboarding / research / updates 默认值。
+ *  - v2/v3/v4/v5：保留所有字段，补缺失的 onboarding / research / updates 默认值。
+ *  - v6：原样回写（completedAt 保留；locale 非法值归位 zh；updates 只兜形状）。
  *  - 形状不对：全部 default。 */
 export function parseAndMigrateSettings(raw: string): SettingsFile {
   let parsed: any;
@@ -88,10 +100,10 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
   const d = defaultSettings();
   const v = parsed.schemaVersion;
 
-  if (v === 2 || v === 3 || v === 4 || v === 5) {
-    if (v !== 5) logger.warn('persist.settingsFile', `migrating schema v${v} → v5`);
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 6) {
+    if (v !== 6) logger.warn('persist.settingsFile', `migrating schema v${v} → v6`);
     return {
-      schemaVersion: 5,
+      schemaVersion: 6,
       ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
       llm: {
         auth: parsed.llm?.auth ?? {},
@@ -112,19 +124,21 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
           ? parsed.research.custom.filter(isPlainObject)
           : [],
       },
+      updates: sanitizeUpdates(parsed.updates),
       onboarding: { completedAt: typeof parsed.onboarding?.completedAt === 'string' ? parsed.onboarding.completedAt : null },
     };
   }
 
   // v1 或更旧：reset llm、补 ui 默认（包括 readingFontSize）
-  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v5 default');
+  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v6 default');
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
     llm: d.llm,
     skills: { ...d.skills, ...(parsed.skills ?? {}) },
     tools: { ...d.tools, ...(parsed.tools ?? {}) },
     research: d.research,
+    updates: d.updates,
     onboarding: { completedAt: null },
   };
 }

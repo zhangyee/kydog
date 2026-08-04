@@ -118,7 +118,7 @@ export type ResearchVarKind = 'key' | 'email';
 export type ResearchCustomVar = { name: string; kind: ResearchVarKind; value: string };
 
 export type SettingsFile = {
-  schemaVersion: 5;
+  schemaVersion: 6;
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
@@ -140,10 +140,16 @@ export type SettingsFile = {
     presets: Record<string, string>;
     custom: ResearchCustomVar[];
   };
+  /** 只能由更新服务改（见 update/updateService.ts），故不在 SettingsPatch 中。 */
+  updates: {
+    autoCheck: boolean;
+    /** 已忽略横幅的不透明发布标识；仅做相等比较，不解析。 */
+    dismissedCandidateId: string | null;
+  };
   onboarding: { completedAt: string | null };
 };
 
-/** settings.update 专用 patch：排除 schemaVersion 与 onboarding（spec §7）。 */
+/** settings.update 专用 patch：排除 schemaVersion、onboarding 与 updates（spec §7）。 */
 export type SettingsPatch = {
   ui?: Partial<SettingsFile['ui']>;
   llm?: Partial<SettingsFile['llm']>;
