@@ -3,7 +3,9 @@ import { promises as fs } from 'node:fs';
 import { loadIndex, saveIndex } from '../persist/indexFile';
 import { sessionFileFor } from '../persist/paths';
 import { agentService } from '../agent/AgentService';
+import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
+import type { AskAnswer } from '../../shared/askQuestion';
 import type { Thread, Message } from '../../shared/types';
 
 export class ThreadService {
@@ -113,6 +115,18 @@ export class ThreadService {
 
   async abort({ threadId }: { threadId: string }): Promise<void> {
     agentService.abort(threadId);
+  }
+
+  async submitAsk(
+    { threadId, toolCallId, answers }:
+    { threadId: string; toolCallId: string; answers: AskAnswer[] },
+  ): Promise<void> {
+    // 校验不过时 broker 抛错，RPC 返回失败，UI 保持打开让用户重来。
+    questionBroker.submit(threadId, toolCallId, answers);
+  }
+
+  async cancelAsk({ threadId, toolCallId }: { threadId: string; toolCallId: string }): Promise<void> {
+    questionBroker.cancel(threadId, toolCallId);
   }
 }
 
