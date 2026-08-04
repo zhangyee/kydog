@@ -76,6 +76,7 @@ export function ResearchCredentialsSection() {
             hint={`${v.sources} · ${v.note}`}
             value={presets[v.name] ?? ''}
             onChange={(next) => edit(() => setPresets((p) => ({ ...p, [v.name]: next })))}
+            disabled={saving}
           />
         ))}
       </Card>
@@ -96,6 +97,7 @@ export function ResearchCredentialsSection() {
             value={c.value}
             onChange={(next) => edit(() => setCustom((list) => list.map((x, j) => (j === i ? { ...x, value: next } : x))))}
             onRemove={() => edit(() => setCustom((list) => list.filter((_, j) => j !== i)))}
+            disabled={saving}
           />
         ))}
 
@@ -110,7 +112,7 @@ export function ResearchCredentialsSection() {
           </>
         ) : (
           <div style={{ marginTop: 12 }}>
-            <Btn variant="primary" testId="research-add-var" onClick={() => setAdding(true)}>+ 添加变量</Btn>
+            <Btn variant="primary" testId="research-add-var" disabled={saving} onClick={() => setAdding(true)}>+ 添加变量</Btn>
           </div>
         )}
       </Card>
@@ -149,7 +151,7 @@ export function ResearchCredentialsSection() {
   );
 }
 
-function VarRow({ name, kind, label, hint, value, onChange, onRemove }: {
+function VarRow({ name, kind, label, hint, value, onChange, onRemove, disabled }: {
   name: string;
   kind: ResearchVarKind;
   label: string;
@@ -157,6 +159,7 @@ function VarRow({ name, kind, label, hint, value, onChange, onRemove }: {
   value: string;
   onChange: (next: string) => void;
   onRemove?: () => void;
+  disabled?: boolean;
 }) {
   const [shown, setShown] = useState(false);
   const isKey = kind === 'key';
@@ -176,19 +179,21 @@ function VarRow({ name, kind, label, hint, value, onChange, onRemove }: {
           value={value}
           placeholder={isKey ? '未填写' : 'you@example.com'}
           onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
           style={{ ...inputStyle, flex: 1 }}
         />
         {isKey && (
           <button
             type="button"
             onClick={() => setShown((v) => !v)}
+            disabled={disabled}
             className="font-sans"
             style={{ background: 'transparent', color: 'var(--color-ink-soft)', fontSize: 11, padding: '4px 0' }}
           >
             {shown ? '隐藏' : '显示'}
           </button>
         )}
-        {onRemove && <Btn variant="danger" onClick={onRemove}>删除</Btn>}
+        {onRemove && <Btn variant="danger" disabled={disabled} onClick={onRemove}>删除</Btn>}
       </div>
     </div>
   );
