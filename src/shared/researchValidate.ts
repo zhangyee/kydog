@@ -43,6 +43,17 @@ export const RESERVED_ENV_NAMES: ReadonlySet<string> = new Set<string>([
   ...Object.values(STATIC_META).flatMap((m) => m.envFallback ?? []),
 ]);
 
+// 大小写不敏感比较：Node 在 Windows 上的 process.env 是大小写不敏感的，
+// process.env['Path'] = x 改写的就是真正 PATH 那个槽位。POSIX 上 Path 确实
+// 是另一个变量、从严会误伤，但那个代价（换个名字）远小于漏洞代价，且不按
+// 平台分支才能保证同一份 kydog.json 在哪台机器上校验结果都一样。
+const RESERVED_ENV_NAMES_UPPER: ReadonlySet<string> = new Set(
+  [...RESERVED_ENV_NAMES].map((n) => n.toUpperCase()),
+);
+const PRESET_NAMES_UPPER: ReadonlySet<string> = new Set(
+  [...PRESET_RESEARCH_VAR_NAMES].map((n) => n.toUpperCase()),
+);
+
 /**
  * 把任意运行时输入收敛成合法形状。
  *
@@ -87,8 +98,8 @@ export function validateCustomVarName(name: string, existing: string[]): string 
   if (!VAR_NAME_RE.test(name)) {
     return `${name || '(空)'}：变量名只能由字母、数字、下划线组成，且不能以数字开头`;
   }
-  if (PRESET_RESEARCH_VAR_NAMES.has(name)) return `${name} 已经是预设项，直接在上面填即可`;
-  if (RESERVED_ENV_NAMES.has(name)) return `${name} 是保留变量名，不能在这里设置`;
+  if (PRESET_NAMES_UPPER.has(name.toUpperCase())) return `${name} 已经是预设项，直接在上面填即可`;
+  if (RESERVED_ENV_NAMES_UPPER.has(name.toUpperCase())) return `${name} 是保留变量名，不能在这里设置`;
   if (existing.includes(name)) return `${name} 已存在`;
   return null;
 }

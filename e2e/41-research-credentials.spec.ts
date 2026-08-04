@@ -97,8 +97,10 @@ test('41-research: 自定义变量落到 env；保留变量名被拦下', async 
     await page.locator('[data-testid="user-menu-trigger"]').click();
     await page.locator('[data-testid="open-research"]').click();
 
+    // 用 Path（非全大写）而不是 PATH：在 Windows 上 process.env 大小写不敏感，
+    // Path 才是真正能绕过精确匹配、劫持 PATH 槽位的那个变体。
     await page.locator('[data-testid="research-add-var"]').click();
-    await page.locator('[data-testid="research-new-name"]').fill('PATH');
+    await page.locator('[data-testid="research-new-name"]').fill('Path');
     await page.locator('[data-testid="research-new-value"]').fill('hijacked');
     await page.locator('[data-testid="research-new-confirm"]').click();
     await expect(page.getByText('保留变量名', { exact: false })).toBeVisible();

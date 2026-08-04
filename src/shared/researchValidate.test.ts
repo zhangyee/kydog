@@ -178,6 +178,20 @@ describe('validateCustomVarName', () => {
   it('保留名返回提示', () => {
     expect(validateCustomVarName('PATH', [])).toContain('保留');
   });
+
+  it.each(['Path', 'path', 'nOdE_oPtIoNs', 'aws_region', 'anthropic_api_key'])(
+    '保留名的大小写变体 %s 同样被拦（Windows 的 process.env 大小写不敏感）',
+    (name) => {
+      expect(validateCustomVarName(name, [])).toContain('保留');
+    },
+  );
+
+  it.each(['ncbi_api_key', 'Unpaywall_Email'])(
+    '预设名的大小写变体 %s 同样被拦',
+    (name) => {
+      expect(validateCustomVarName(name, [])).toContain('预设项');
+    },
+  );
 });
 
 describe('RESERVED_ENV_NAMES', () => {
