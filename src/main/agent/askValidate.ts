@@ -1,4 +1,4 @@
-import type { AskQuestion, RawAskQuestion } from '../../shared/askQuestion';
+import type { AskAnswer, AskQuestion, RawAskQuestion } from '../../shared/askQuestion';
 
 /** 校验失败一律抛这个；工具层不 catch，让 pi 转成 error toolResult 回给模型。 */
 export class AskValidationError extends Error {}
@@ -66,4 +66,46 @@ export function validateQuestions(input: unknown): AskQuestion[] {
   });
 
   return out;
+}
+
+/**
+ * 校验 renderer 提交上来的答案。IPC 是运行时边界，不能相信 renderer 的自律。
+ * 任一条不过就抛错，RPC 返回失败，UI 保持打开让用户重来。
+ */
+export function validateAnswers(questions: AskQuestion[], answers: AskAnswer[]): void {
+  if (!Array.isArray(answers)) fail('answers 必须是数组');
+
+  const byId = new Map(questions.map((q) => [q.id, q]));
+  const seen = new Set<string>();
+
+  for (const a of answers) {
+    const q = byId.get(a?.questionId);
+    if (!q) fail(`未知的 questionId：${a?.questionId}`);
+    if (seen.has(a.questionId)) fail(`questionId 重复：${a.questionId}`);
+    seen.add(a.questionId);
+
+    if (a.kind === 'skipped') continue;
+    if (a.kind !== 'answered') fail(`未知的答案 kind：${(a as { kind?: string }).kind}`);
+
+    if (!Array.isArray(a.optionIds)) fail(`${q.id} 的 optionIds 必须是数组`);
+
+    const validIds = new Set(q.options.map((o) => o.id));
+    const seenOpts = new Set<string>();
+    for (const oid of a.optionIds) {
+      if (!validIds.has(oid)) fail(`optionId ${oid} 不属于 ${q.id}`);
+      if (seenOpts.has(oid)) fail(`${q.id} 的 optionId 重复：${oid}`);
+      seenOpts.add(oid);
+    }
+
+    const custom = typeof a.custom === 'string' ? a.custom.trim() : '';
+    if (!q.multiSelect) {
+      if (a.optionIds.length > 1) fail(`${q.id} 是单选题，只能选一个`);
+      if (a.optionIds.length > 0 && custom !== '') fail(`${q.id} 是单选题，选项与 custom 互斥`);
+    }
+    if (a.optionIds.length === 0 && custom === '') {
+      fail(`${q.id} 至少要有一个选项或非空的 custom`);
+    }
+  }
+
+  if (seen.size !== questions.length) fail('提交时每道题都要有终态（已答或已跳过）');
 }
