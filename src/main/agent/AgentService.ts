@@ -50,7 +50,14 @@ class AgentService {
       onOpened: (toolCallId: string, questions: AskQuestion[]) => {
         const b = this.sessions.get(threadId);
         const messageId = b?.activeMessageId;
-        if (!b || !messageId) return;
+        if (!b || !messageId) {
+          // 不可达：activeMessageId 在 agent_start 与 agent_end 之间恒非空，
+          // 工具执行必然落在窗口内。真发生了说明这个不变量被破坏了——
+          // 后果是工具已在 await pending 而 UI 从未打开，run 会一直挂着，
+          // 所以必须留下痕迹而不是静默。
+          logger.error('agent', 'ask opened without active message', { threadId, toolCallId });
+          return;
+        }
         b.askOpened.add(toolCallId);
         broadcaster.emit('run.ask_start', {
           threadId, runId: this.currentRunId(threadId), messageId, toolCallId, questions,
@@ -59,7 +66,10 @@ class AgentService {
       onClosed: (toolCallId: string, outcome: AskOutcome) => {
         const b = this.sessions.get(threadId);
         const messageId = b?.activeMessageId;
-        if (!b || !messageId) return;
+        if (!b || !messageId) {
+          logger.error('agent', 'ask closed without active message', { threadId, toolCallId, kind: outcome.kind });
+          return;
+        }
         broadcaster.emit('run.ask_end', {
           threadId, runId: this.currentRunId(threadId), messageId, toolCallId, outcome,
         });
@@ -295,6 +305,10 @@ class AgentService {
           const messageId = bound.activeMessageId;
           if (messageId) broadcaster.emit('run.message_end', { threadId, runId, messageId });
           bound.activeMessageId = null;
+          // tool_execution_end 是正常的清理点；run 异常退出时它可能不发，
+          // 所以这里兜一次底，免得条目跨轮残留。
+          bound.askOpened.clear();
+          bound.askArgs.clear();
           const endEvt = reason === 'error'
             ? { kind: 'error' as const, message: errorMessage ?? 'unknown' }
             : { kind: reason };

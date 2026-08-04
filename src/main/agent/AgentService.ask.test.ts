@@ -125,6 +125,30 @@ describe('AgentService 的 ask_user_question 事件分派', () => {
     expect(ends[0][1]).toMatchObject({ toolCallId: 'tc1', status: 'failed' });
   });
 
+  it('agent_end 清空 askOpened / askArgs，条目不跨轮残留', async () => {
+    const { askShared, fire, bound } = await setup();
+    fire(askStart('tc1', { questions: [] }));
+    askShared.onOpened('tc1', QUESTIONS);
+    expect(bound.askOpened.size).toBe(1);
+    expect(bound.askArgs.size).toBe(1);
+
+    fire({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] });
+
+    expect(bound.askOpened.size).toBe(0);
+    expect(bound.askArgs.size).toBe(0);
+  });
+
+  it('tool_execution_end 从未到达时，agent_end 兜底清掉缓存的 args', async () => {
+    // run 异常退出的形态：pi 发了 start 就没了下文，正常的清理点不会触发。
+    const { fire, bound } = await setup();
+    fire(askStart('tc1', { questions: [] }));
+    expect(bound.askArgs.size).toBe(1);
+
+    fire({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'boom' }] });
+
+    expect(bound.askArgs.size).toBe(0);
+  });
+
   it('普通工具照旧走 start / chunk / end，不受 ask 分支影响', async () => {
     const { fire } = await setup();
     fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'ls' } });
