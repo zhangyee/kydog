@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ResearchCustomVar, ResearchVarKind, SettingsFile } from '../../shared/types';
 import { PRESET_RESEARCH_VARS } from '../../shared/researchVars';
 import { validateCustomVarName } from '../../shared/researchValidate';
@@ -6,21 +6,28 @@ import { Card, BlockHeader, SubHeader, Divider, Btn, Empty, inputStyle, labelSty
 
 type Research = SettingsFile['research'];
 
+// custom 行的 React key 不能用 name：手改 kydog.json 完全可能产生重名（甚至空串）
+// 条目，name 撞车会让 React 把一行的 fiber（连带 VarRow 里的显隐本地 state）
+// 复用到位置不同的另一行上。uid 只活在渲染层，不落盘、不进保存 payload。
+type CustomRow = ResearchCustomVar & { uid: number };
+
 export function ResearchCredentialsSection() {
   const [presets, setPresets] = useState<Record<string, string>>({});
-  const [custom, setCustom] = useState<ResearchCustomVar[]>([]);
+  const [custom, setCustom] = useState<CustomRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const nextUid = useRef(0);
+  const withUid = (list: ResearchCustomVar[]): CustomRow[] => list.map((c) => ({ ...c, uid: nextUid.current++ }));
 
   useEffect(() => {
     void (async () => {
       try {
         const r = await window.kydog.invoke('research.get');
         setPresets(r.presets);
-        setCustom(r.custom);
+        setCustom(withUid(r.custom));
       } catch (e) {
         setError(String((e as Error).message));
       } finally {
@@ -34,10 +41,10 @@ export function ResearchCredentialsSection() {
   const onSave = async () => {
     setSaving(true); setError(null);
     try {
-      const payload: Research = { presets, custom };
+      const payload: Research = { presets, custom: custom.map(({ uid: _uid, ...rest }) => rest) };
       const r = await window.kydog.invoke('research.save', payload);
       setPresets(r.presets);
-      setCustom(r.custom);
+      setCustom(withUid(r.custom));
       setSaved(true);
     } catch (e) {
       setError(String((e as Error).message));
@@ -78,7 +85,7 @@ export function ResearchCredentialsSection() {
         {custom.length === 0 && !adding && <Empty />}
         {custom.map((c, i) => (
           <VarRow
-            key={c.name}
+            key={c.uid}
             name={c.name}
             kind={c.kind}
             label={c.name}
@@ -95,7 +102,7 @@ export function ResearchCredentialsSection() {
             <AddVarForm
               existing={customNames}
               onCancel={() => setAdding(false)}
-              onAdd={(entry) => { edit(() => setCustom((list) => [...list, entry])); setAdding(false); }}
+              onAdd={(entry) => { edit(() => setCustom((list) => [...list, { ...entry, uid: nextUid.current++ }])); setAdding(false); }}
             />
           </>
         ) : (
@@ -110,7 +117,7 @@ export function ResearchCredentialsSection() {
           type="button"
           data-testid="research-save"
           onClick={() => void onSave()}
-          disabled={saving}
+          disabled={saving || adding}
           className="font-sans bg-[color:var(--color-paper-deep)] disabled:opacity-50 transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
             padding: '6px 16px', borderRadius: 999, fontSize: 12, fontWeight: 500,
@@ -119,14 +126,21 @@ export function ResearchCredentialsSection() {
         >
           {saving ? '保存中…' : '保存'}
         </button>
-        {saved && (
+        {adding && (
+          <span data-testid="research-save-blocked" className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>
+            先「确定」或「取消」正在添加的变量
+          </span>
+        )}
+        {saved && !adding && (
           <span data-testid="research-saved" className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>
             已保存，下一次工具调用即生效
           </span>
         )}
       </div>
       {error && (
-        <div data-testid="research-error" style={{ color: 'var(--color-danger, #c0392b)', marginTop: 10, fontSize: 12 }}>{error}</div>
+        <div data-testid="research-error" style={{ color: 'var(--color-danger, #c0392b)', marginTop: 10, fontSize: 12 }}>
+          {error.split('；').map((line, i) => <div key={i}>{line}</div>)}
+        </div>
       )}
     </div>
   );

@@ -85,7 +85,7 @@ export function normalizeResearch(r: SettingsFile['research']): SettingsFile['re
 /** 单个自定义变量名的校验，供「+ 添加变量」就地反馈。合法返回 null。 */
 export function validateCustomVarName(name: string, existing: string[]): string | null {
   if (!VAR_NAME_RE.test(name)) {
-    return '变量名只能由字母、数字、下划线组成，且不能以数字开头';
+    return `${name || '(空)'}：变量名只能由字母、数字、下划线组成，且不能以数字开头`;
   }
   if (PRESET_RESEARCH_VAR_NAMES.has(name)) return `${name} 已经是预设项，直接在上面填即可`;
   if (RESERVED_ENV_NAMES.has(name)) return `${name} 是保留变量名，不能在这里设置`;
