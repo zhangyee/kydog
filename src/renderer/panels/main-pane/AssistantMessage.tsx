@@ -3,6 +3,7 @@ import type { AssistantBlock } from '../../../shared/types';
 import { MessageMeta, fmtTime } from '../../shared';
 import { MarkdownBlock } from './MarkdownBlock';
 import { ProcessGroup } from './ProcessGroup';
+import { QuestionRecapCard } from './QuestionRecapCard';
 import { ErrorMarginalia } from './ErrorMarginalia';
 import { FileCard } from './FileCard';
 import { useRunsStore } from '../../stores/runsStore';
@@ -45,9 +46,15 @@ export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Pro
               />
             );
           }
-          // 占位：ask 卡片的渲染接线是后续任务的事，这里先不出图。
-          if (g.kind === 'ask') return null;
-          return <MarkdownBlock key={`tx-${i}`} content={g.block.text} />;
+          if (g.kind === 'ask') {
+            return <QuestionRecapCard key={`ask-${g.block.toolCallId}`} block={g.block} />;
+          }
+          if (g.kind === 'text') {
+            return <MarkdownBlock key={`tx-${i}`} content={g.block.text} />;
+          }
+          // 新增 Group 变体而忘了在这里处理时，这一行会编译不过。
+          const exhaustive: never = g;
+          return exhaustive;
         })}
         {fileCards.length > 0 && (
           <div data-testid="file-card-strip" style={{ marginTop: 10 }}>
