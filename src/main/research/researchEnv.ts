@@ -1,6 +1,6 @@
 // src/main/research/researchEnv.ts
 import type { SettingsFile } from '../../shared/types';
-import { validateResearch } from '../../shared/researchValidate';
+import { normalizeResearch, validateResearch } from '../../shared/researchValidate';
 import { logger } from '../log';
 
 /** KyDog 首次接管某变量时它的原始值。只记第一次 —— 这才是「启动时的环境值」。 */
@@ -23,8 +23,15 @@ let lastApplied = new Set<string>();
  * 的 —— 配置说同一个环境变量有两个互相矛盾的值时，拒绝猜比随便挑一个安全。
  * 正常路径下构造不出这种状态（UI 录入时 validateCustomVarName 会拦，
  * research.save 会整单拒绝），只有手改 kydog.json 才会触发。
+ *
+ * 入参先过 normalizeResearch 再校验：这里吃的是磁盘原始值（main.ts 启动时
+ * 直接传 settingsService.get() 的结果，未经 research.save 那关），custom
+ * 数组里可能混入 null（手改 kydog.json，或 JSON.stringify 把数组空洞序列化
+ * 成 null）。不 normalize 就直接访问 c.name 会在启动必经路径上抛错，把整个
+ * 应用挡在门外——比忽略一条脏数据严重得多。
  */
-export function applyResearchEnv(research: SettingsFile['research']): void {
+export function applyResearchEnv(input: SettingsFile['research']): void {
+  const research = normalizeResearch(input);
   const errors = validateResearch(research);
   const bad = new Set(errors.map((e) => e.field));
   if (errors.length > 0) {

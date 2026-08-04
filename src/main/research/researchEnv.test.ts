@@ -123,4 +123,16 @@ describe('researchEnv.applyResearchEnv', () => {
     expect(process.env.NCBI_API_KEY).toBeUndefined();
     warn.mockRestore();
   });
+
+  it('custom 里混入畸形元素不抛错，合法条目照常生效', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    expect(() => applyResearchEnv({
+      presets: { NCBI_API_KEY: 'k1' },
+      // 模拟手改 kydog.json 或 JSON.stringify 把数组空洞序列化成 null
+      custom: [null, { name: 'MY_KEY', kind: 'key', value: 'v1' }] as never,
+    })).not.toThrow();
+    expect(process.env.NCBI_API_KEY).toBe('k1');
+    expect(process.env.MY_KEY).toBe('v1');
+    warn.mockRestore();
+  });
 });

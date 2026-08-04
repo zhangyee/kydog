@@ -99,7 +99,9 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
       tools: { ...d.tools, ...(parsed.tools ?? {}) },
       research: {
         presets: parsed.research?.presets ?? {},
-        custom: Array.isArray(parsed.research?.custom) ? parsed.research.custom : [],
+        custom: Array.isArray(parsed.research?.custom)
+          ? parsed.research.custom.filter((c: unknown) => c !== null && typeof c === 'object')
+          : [],
       },
       onboarding: { completedAt: typeof parsed.onboarding?.completedAt === 'string' ? parsed.onboarding.completedAt : null },
     };

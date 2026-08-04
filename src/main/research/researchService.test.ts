@@ -7,7 +7,7 @@ import { researchService } from './researchService';
 import { __resetResearchEnvForTest } from './researchEnv';
 import { settingsService } from '../settings/settingsService';
 
-const TOUCHED = ['NCBI_API_KEY', 'UNPAYWALL_EMAIL'];
+const TOUCHED = ['NCBI_API_KEY', 'UNPAYWALL_EMAIL', 'MY_KEY'];
 
 describe('researchService', () => {
   let dir: string;
@@ -73,5 +73,22 @@ describe('researchService', () => {
     await researchService.save({ presets: { NCBI_API_KEY: '' }, custom: [] });
     expect((await settingsService.get()).research.presets).toEqual({});
     expect('NCBI_API_KEY' in process.env).toBe(false);
+  });
+
+  it('custom 条目的 save/get 往返，env 也写上', async () => {
+    const out = await researchService.save({
+      presets: {},
+      custom: [{ name: 'MY_KEY', kind: 'key', value: '  v1  ' }],
+    });
+    expect(out.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
+    expect(process.env.MY_KEY).toBe('v1');
+    expect((await researchService.get()).custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
+  });
+
+  it('get 返回落盘原值，不做归一化', async () => {
+    const cur = await settingsService.get();
+    await settingsService.update({ research: { presets: { NCBI_API_KEY: '  untrimmed  ' }, custom: [] } });
+    expect((await researchService.get()).presets.NCBI_API_KEY).toBe('  untrimmed  ');
+    void cur;
   });
 });

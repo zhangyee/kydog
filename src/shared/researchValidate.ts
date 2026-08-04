@@ -1,4 +1,4 @@
-import type { SettingsFile, ResearchVarKind } from './types';
+import type { SettingsFile, ResearchVarKind, ResearchCustomVar } from './types';
 import { PRESET_RESEARCH_VARS, PRESET_RESEARCH_VAR_NAMES } from './researchVars';
 import { STATIC_META } from './apiKeyMeta';
 import { MANAGED_VARS } from './managedCloudEnvVars';
@@ -50,11 +50,13 @@ export function normalizeResearch(r: SettingsFile['research']): SettingsFile['re
     const v = (value ?? '').trim();
     if (v) presets[name.trim()] = v;
   }
-  const custom = (r.custom ?? []).map((c) => ({
-    name: (c.name ?? '').trim(),
-    kind: c.kind,
-    value: (c.value ?? '').trim(),
-  }));
+  const custom = (r.custom ?? [])
+    .filter((c): c is ResearchCustomVar => c !== null && typeof c === 'object')
+    .map((c) => ({
+      name: (c.name ?? '').trim(),
+      kind: c.kind,
+      value: (c.value ?? '').trim(),
+    }));
   return { presets, custom };
 }
 

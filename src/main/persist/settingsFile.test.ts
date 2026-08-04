@@ -208,6 +208,18 @@ describe('settingsFile v5', () => {
     expect(s.research.custom).toEqual([]);
   });
 
+  it('loadSettings: research.custom 混入 null 等畸形元素时被滤掉，合法条目保留', async () => {
+    ensureSettingsFile();
+    // JSON.stringify 会把数组空洞序列化成 null；手改 kydog.json 也可能直接写出这种形状。
+    const bad = {
+      ...defaultSettings(),
+      research: { presets: {}, custom: [null, { name: 'MY_KEY', kind: 'key', value: 'v1' }] },
+    };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(bad));
+    const s = await loadSettings();
+    expect(s.research.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
+  });
+
   it('loadSettings: v1 → v5 时 research 为空表', async () => {
     ensureSettingsFile();
     const v1 = {
