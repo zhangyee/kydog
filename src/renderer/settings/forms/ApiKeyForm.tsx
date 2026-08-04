@@ -1,23 +1,11 @@
 // src/renderer/settings/forms/ApiKeyForm.tsx
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ProviderRowModelPicker } from '../ProviderRowModelPicker';
 import { useOAuthLoginFlow } from '../hooks/useOAuthLoginFlow';
 import { STATIC_META } from '../../../shared/apiKeyMeta';
-
-const inputStyle: CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  borderBottom: '0.5px solid var(--color-ink-hair-soft)',
-  padding: '7px 0',
-  fontFamily: 'var(--font-mono)', fontSize: 11.5,
-  color: 'var(--color-ink)',
-  width: '100%',
-};
-
-const labelStyle: CSSProperties = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--color-ink)', fontWeight: 500 };
-const hintStyle: CSSProperties = { fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 11, color: 'var(--color-ink-faint)', marginTop: 4, lineHeight: 1.55 };
+import { inputStyle, labelStyle, hintStyle } from '../ui';
 
 export function ApiKeyForm({ providerId }: { providerId: string }) {
   const meta = STATIC_META[providerId] ?? { baseUrlOverridable: true };
