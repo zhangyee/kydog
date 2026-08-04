@@ -9,10 +9,11 @@
  * 存在的理由：ask 工具的设计建立在若干条 pi 行为上，而其它测试全用假 broker、
  * 假事件、fixture session，钉不住 pi 本身。升级 pi 时这个文件会先红。
  *
- * 不写用户目录：cwd / agentDir 都指向 os.tmpdir() 下的临时目录，
- * sessionManager 用 inMemory，authStorage 用 inMemory。
+ * 不写用户目录：cwd / agentDir 都指向 os.tmpdir() 下的临时目录，authStorage 用
+ * inMemory。sessionManager 默认 inMemory；只有验证 jsonl 往返那条用真实文件，
+ * 落在同一个临时目录里，afterEach 一起删掉。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,7 @@ import { createAskUserQuestionTool } from './askUserQuestionTool';
 import { QuestionBroker } from './questionBroker';
 import { createAskBatchExtension } from './askBatchExtension';
 import { BATCH_BLOCK_REASON } from './askBatchGuard';
+import { normalizePiMessages, type PiMessage } from './messageNormalizer';
 import { ASK_TOOL_NAME, isAskOutcome, type AskQuestion } from '../../shared/askQuestion';
 
 const THREAD = 'thread-1';
@@ -113,6 +115,8 @@ async function makeHarness(opts: {
   /** true 时装上批次独占扩展（生产形态）；false 时是裸 pi，用来观察 pi 自己的调度。 */
   batchGuard?: boolean;
   log?: string[];
+  /** 给了就写真实 jsonl（与 sessionFactory 生产形态同一个构造器）；否则 inMemory。 */
+  sessionFile?: string;
 }): Promise<Harness> {
   const dir = tmpDir();
   const pi = await import('@earendil-works/pi-coding-agent');
@@ -164,7 +168,9 @@ async function makeHarness(opts: {
     agentDir: dir,
     model: FAKE_MODEL,
     authStorage: pi.AuthStorage.inMemory({ anthropic: { type: 'api_key', key: 'test-key' } }),
-    sessionManager: pi.SessionManager.inMemory(dir),
+    sessionManager: opts.sessionFile
+      ? pi.SessionManager.open(opts.sessionFile)
+      : pi.SessionManager.inMemory(dir),
     resourceLoader,
     noTools: 'builtin',
     customTools: [askTool as any, ...(opts.extraTools ?? [])],
@@ -330,6 +336,48 @@ describe('ask_user_question × pi agent loop', () => {
     const tr = h.toolResults()[0];
     expect(tr.isError).toBe(true);
     expect(tr.details).toEqual({});
+  }, 20_000);
+
+  // 历史路径（session jsonl → normalizePiMessages）唯一的地基：details 必须原样
+  // 穿过落盘和读回。messageNormalizer.test.ts 的 ask 用例全都手写 details，等于
+  // 假设了这条往返成立；pi 哪天改成只持久化 content/isError，所有历史里的 ask
+  // 卡片会静默退化成 unanswered，而那边一条都不会红。
+  it('details 穿过 session jsonl 的往返，历史恢复还原成 answered', async () => {
+    const sessionFile = path.join(tmpDir(), `${THREAD}.jsonl`);
+    const h = await makeHarness({
+      sessionFile,
+      turns: [[toolCall('tc-ask', ASK_TOOL_NAME, VALID_ASK_ARGS)], [text(SECOND_TURN)]],
+    });
+    let asked: AskQuestion[] = [];
+    h.onOpened = (toolCallId, questions) => {
+      asked = questions;
+      setTimeout(() => h.broker.submit(THREAD, toolCallId, answerFirstOption(questions)), 0);
+    };
+    await h.run();
+
+    const written = h.toolResults()[0].details;
+    expect(written.kind).toBe('answered');
+    expect(existsSync(sessionFile)).toBe(true);
+
+    // 重新打开同一个 jsonl。createAgentSession 恢复历史走的也是 buildSessionContext，
+    // 所以这就是生产重启后 loadHistory 拿到的那份 messages。
+    const pi = await import('@earendil-works/pi-coding-agent');
+    const reopened = pi.SessionManager.open(sessionFile);
+    const messages = reopened.buildSessionContext().messages as any[];
+    const reread = messages.find((m) => m.role === 'toolResult' && m.toolCallId === 'tc-ask');
+    expect(reread).toBeDefined();
+    expect(reread.details).toEqual(written);
+
+    const blocks = normalizePiMessages(messages as PiMessage[])
+      .filter((m): m is Extract<typeof m, { role: 'assistant' }> => m.role === 'assistant')
+      .flatMap((m) => m.blocks);
+    expect(blocks.find((b) => b.kind === 'ask')).toEqual({
+      kind: 'ask',
+      toolCallId: 'tc-ask',
+      questions: asked,
+      status: 'answered',
+      answers: answerFirstOption(asked),
+    });
   }, 20_000);
 
   describe('批次独占（装了 askBatchExtension）', () => {
