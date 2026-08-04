@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type Ref } from 'react';
-import { NavIcon, IconButton, DropdownMenu, DropdownItem, MarqueeText } from '../../shared';
+import { NavIcon, IconButton, DropdownMenu, DropdownItem, MarqueeText, isWindowBlur } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { confirm } from '../../stores/confirmStore';
@@ -113,7 +113,9 @@ export function ThreadRow({ thread }: Props) {
             if (e.key === 'Enter') { e.preventDefault(); void commitRename(); }
             else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false); }
           }}
-          onBlur={() => void commitRename()}
+          // 窗口整体失焦不算「编辑结束」—— 否则切到别的应用再切回来，
+          // 正在编辑的重命名框已经没了（见 isWindowBlur 的说明）。
+          onBlur={() => { if (isWindowBlur()) return; void commitRename(); }}
           className="flex-1 min-w-0 bg-transparent outline-none"
           style={{ fontSize: 13, color: 'var(--color-ink)' }}
         />

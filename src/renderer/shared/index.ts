@@ -8,6 +8,7 @@ export { Citation } from './Citation';
 export { ChapterCard } from './ChapterCard';
 export { Hairline } from './Hairline';
 export { fmtTime } from './fmtTime';
+export { isWindowBlur } from './windowBlur';
 export { Tooltip } from './Tooltip';
 export { IconButton } from './IconButton';
 export { ConfirmDialog } from './ConfirmDialog';

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Ref } from 'react';
-import { NavIcon, IconButton, DropdownMenu, DropdownItem, DropdownDivider } from '../../shared';
+import { NavIcon, IconButton, DropdownMenu, DropdownItem, DropdownDivider, isWindowBlur } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useUnreadStore } from './unreadStore';
@@ -106,7 +106,8 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
               if (e.key === 'Enter') { e.preventDefault(); void commitRename(); }
               else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false); }
             }}
-            onBlur={() => void commitRename()}
+            // 与 ThreadRow 同理：窗口整体失焦不算「编辑结束」
+            onBlur={() => { if (isWindowBlur()) return; void commitRename(); }}
             className="flex-1 min-w-0 bg-transparent outline-none"
             style={{ fontSize: 13, color: 'var(--color-ink)' }}
           />
