@@ -328,3 +328,93 @@ describe('normalizePiMessages — 含 sequential 工具的批次不判为并行'
     expect(blocks[1].parallelGroupId).toBeUndefined();
   });
 });
+
+describe('normalizePiMessages — ask_user_question', () => {
+  const questions = [{
+    id: 'q0', question: '选哪个？', header: '选择',
+    options: [{ id: 'q0o0', label: 'A', description: 'a' }, { id: 'q0o1', label: 'B', description: 'b' }],
+  }];
+  const askCall = { type: 'toolCall' as const, id: 'tc1', name: ASK_TOOL_NAME, arguments: {} };
+
+  it('有合法 AskOutcome 的 toolResult 还原成 answered 的 ask block', () => {
+    const answers = [{ questionId: 'q0', kind: 'answered' as const, optionIds: ['q0o0'] }];
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: false,
+        content: [{ type: 'text', text: '用户回答：' }],
+        details: { kind: 'answered', answers, questions },
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toEqual({ kind: 'ask', toolCallId: 'tc1', questions, status: 'answered', answers });
+  });
+
+  it('cancelled 的 toolResult 还原成 cancelled，不带 answers', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: false,
+        content: [{ type: 'text', text: '用户关闭了提问，未作回答。' }],
+        details: { kind: 'cancelled', questions },
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toEqual({ kind: 'ask', toolCallId: 'tc1', questions, status: 'cancelled' });
+  });
+
+  it('aborted 同样还原，且与 cancelled 区分', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: false,
+        content: [{ type: 'text', text: '提问被中止，用户未作回答。' }],
+        details: { kind: 'aborted', questions },
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toMatchObject({ kind: 'ask', status: 'aborted' });
+    expect(block).not.toHaveProperty('answers');
+  });
+
+  it('没有 toolResult 还原成 unanswered，问题文本取自 arguments', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [{
+        type: 'toolCall', id: 'tc1', name: ASK_TOOL_NAME,
+        arguments: { questions: [{ question: '选哪个？', header: '选择', options: [
+          { label: 'A', description: 'a' }, { label: 'B', description: 'b' },
+        ] }] },
+      }] },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toMatchObject({ kind: 'ask', toolCallId: 'tc1', status: 'unanswered' });
+    const qs = (block as { questions: Array<{ id: string; question: string }> }).questions;
+    expect(qs[0].id).toBe('q0');
+    expect(qs[0].question).toBe('选哪个？');
+  });
+
+  it('details 是空对象（校验失败留下的 error toolResult）还原成普通失败工具卡片', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: true,
+        content: [{ type: 'text', text: 'questions 只能有 1–4 条' }],
+        details: {},
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block.kind).toBe('tool_call');
+    expect(block.status).toBe('failed');
+    expect(block.chunks).toEqual([{ stream: 'stdout', data: 'questions 只能有 1–4 条' }]);
+  });
+
+  it('普通工具不受影响', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', isError: false, content: [{ type: 'text', text: 'ok' }] },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block.kind).toBe('tool_call');
+    expect(block.status).toBe('ok');
+  });
+});

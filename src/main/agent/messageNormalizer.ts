@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Message, AssistantBlock } from '../../shared/types';
 import { isParallelBatch } from './askSequentialTools';
+import { ASK_TOOL_NAME, isAskOutcome, type AskQuestion } from '../../shared/askQuestion';
 
 // Real pi-ai shapes (from @earendil-works/pi-ai)
 export type PiTextContent = { type: 'text'; text: string };
@@ -29,6 +30,8 @@ export type PiToolResultMessage = {
   toolName: string;
   content: (PiTextContent | PiImageContent)[];
   isError: boolean;
+  /** 工具自定义的结构化载荷。ask_user_question 把 AskOutcome 放在这里。 */
+  details?: unknown;
   timestamp?: number;
 };
 
@@ -36,7 +39,7 @@ export type PiMessage = PiUserMessage | PiAssistantMessage | PiToolResultMessage
 
 export function normalizePiMessages(messages: PiMessage[]): Message[] {
   const out: Message[] = [];
-  const toolResults = new Map<string, { content: string; isError: boolean }>();
+  const toolResults = new Map<string, { content: string; isError: boolean; details?: unknown }>();
 
   // Collect all tool results first
   for (const m of messages) {
@@ -45,7 +48,7 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
         .filter((c): c is PiTextContent => c.type === 'text')
         .map(c => c.text)
         .join('');
-      toolResults.set(m.toolCallId, { content: text, isError: m.isError });
+      toolResults.set(m.toolCallId, { content: text, isError: m.isError, details: m.details });
     }
   }
 
@@ -81,6 +84,12 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
           pendingBlocks.push({ kind: 'thinking', text: c.thinking, status: 'done' });
         } else if (c.type === 'toolCall') {
           const tr = toolResults.get(c.id);
+          if (c.name === ASK_TOOL_NAME) {
+            const restored = restoreAskBlock(c.id, c.arguments, tr?.details);
+            if (restored) { pendingBlocks.push(restored); continue; }
+            // details 不是合法 AskOutcome（校验失败 / 批次非法留下的 error
+            // toolResult，details 是 {}）→ 落到下面按普通失败工具渲染。
+          }
           pendingBlocks.push({
             kind: 'tool_call',
             id: c.id,
@@ -97,4 +106,56 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
   }
   flushAssistant();
   return out;
+}
+
+/**
+ * 从 toolCall + toolResult 还原 ask block。
+ *
+ * questions 存在 details 里（工具返回时一并写入），因为 toolCall.arguments 是
+ * 模型的原始形状，没有主进程分配的 id。没有 toolResult 时退化到 arguments，
+ * 只为把问题文本显示出来——那种情况本来就没有答案可对齐。
+ *
+ * 返回 null 表示「这不是一个可还原的 ask」，调用方应按普通失败工具渲染。
+ */
+function restoreAskBlock(
+  toolCallId: string,
+  args: Record<string, unknown> | undefined,
+  details: unknown,
+): AssistantBlock | null {
+  // 没有 toolResult：进程在挂起时退出，留下一个永远等不到答案的提问。
+  if (details === undefined) {
+    return { kind: 'ask', toolCallId, questions: rawQuestionsAsFallback(args), status: 'unanswered' };
+  }
+  if (!isAskOutcome(details)) return null;
+
+  const questions = (details as { questions?: AskQuestion[] }).questions ?? rawQuestionsAsFallback(args);
+  if (details.kind === 'answered') {
+    return { kind: 'ask', toolCallId, questions, status: 'answered', answers: details.answers };
+  }
+  return { kind: 'ask', toolCallId, questions, status: details.kind };
+}
+
+/** toolResult 缺失时的降级：用模型的原始问题，按下标补上 id 只为渲染。 */
+function rawQuestionsAsFallback(args: Record<string, unknown> | undefined): AskQuestion[] {
+  const raw = (args as { questions?: unknown })?.questions;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((q, qi) => {
+    const rq = q as { question?: string; header?: string; multiSelect?: boolean; options?: unknown };
+    const options = Array.isArray(rq.options) ? rq.options : [];
+    return {
+      id: `q${qi}`,
+      question: typeof rq.question === 'string' ? rq.question : '',
+      header: typeof rq.header === 'string' ? rq.header : '',
+      ...(rq.multiSelect === true ? { multiSelect: true as const } : {}),
+      options: options.map((o, oi) => {
+        const ro = o as { label?: string; description?: string; recommended?: boolean };
+        return {
+          id: `q${qi}o${oi}`,
+          label: typeof ro.label === 'string' ? ro.label : '',
+          description: typeof ro.description === 'string' ? ro.description : '',
+          ...(ro.recommended === true ? { recommended: true as const } : {}),
+        };
+      }),
+    };
+  });
 }
