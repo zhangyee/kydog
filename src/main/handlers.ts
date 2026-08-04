@@ -3,6 +3,7 @@ import { app, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
+import { researchService } from './research/researchService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { threadService } from './thread/threadService';
@@ -45,6 +46,8 @@ export function registerAllHandlers(): void {
 
   registerHandler('settings.get', () => settingsService.get());
   registerHandler('settings.update', (args) => settingsService.update(args));
+  registerHandler('research.get', () => researchService.get());
+  registerHandler('research.save', (args) => researchService.save(args));
 
   registerHandler('project.open', () => projectService.open());
   registerHandler('project.list', () => projectService.list());

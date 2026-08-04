@@ -9,6 +9,8 @@ export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
   | { method: 'settings.get'; args: undefined; result: SettingsFile }
   | { method: 'settings.update'; args: SettingsPatch; result: SettingsFile }
+  | { method: 'research.get'; args: undefined; result: SettingsFile['research'] }
+  | { method: 'research.save'; args: SettingsFile['research']; result: SettingsFile['research'] }
   | { method: 'project.open'; args: undefined; result: Project }
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }

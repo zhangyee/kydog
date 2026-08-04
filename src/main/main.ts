@@ -13,6 +13,7 @@ import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { settingsService } from './settings/settingsService';
 import { ensureSettingsFile } from './persist/settingsFile';
 import { applyCloudEnv } from './llm/cloudEnvSync';
+import { applyResearchEnv } from './research/researchEnv';
 import { initProviderRegistry } from './llm/providerRegistry';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
@@ -122,6 +123,7 @@ app.on('ready', async () => {
 
     const _initialSettings = await settingsService.get();
     applyCloudEnv(_initialSettings.llm.providers);
+    applyResearchEnv(_initialSettings.research);
     await initProviderRegistry(settingsService);
 
     try {
