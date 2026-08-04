@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Message, AssistantBlock } from '../../shared/types';
+import { isParallelBatch } from './askSequentialTools';
 
 // Real pi-ai shapes (from @earendil-works/pi-ai)
 export type PiTextContent = { type: 'text'; text: string };
@@ -71,8 +72,8 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
     } else if (m.role === 'assistant') {
       // 协议层并行：当且仅当本条 pi assistant message 的 content 里 ≥2 个 toolCall 时，
       // 它们共享同一个 parallelGroupId。跨 message 永不共享。
-      const toolCallCount = m.content.filter((c) => c.type === 'toolCall').length;
-      const groupId = toolCallCount >= 2 ? randomUUID() : undefined;
+      // 与实时路径同一条规则：含 sequential 工具的批次实际是串行的，不能判为并行。
+      const groupId = isParallelBatch(m.content) ? randomUUID() : undefined;
       for (const c of m.content) {
         if (c.type === 'text') {
           pendingBlocks.push({ kind: 'text', text: c.text });

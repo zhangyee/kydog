@@ -1,6 +1,7 @@
 // src/main/agent/messageNormalizer.test.ts
 import { describe, it, expect } from 'vitest';
 import { normalizePiMessages, type PiMessage } from './messageNormalizer';
+import { ASK_TOOL_NAME } from '../../shared/askQuestion';
 
 describe('normalizePiMessages', () => {
   it('user message → KyDog user', () => {
@@ -299,5 +300,31 @@ describe('normalizePiMessages', () => {
     const tool = out[0].blocks.find((b) => b.kind === 'tool_call');
     if (!tool || tool.kind !== 'tool_call') throw new Error('no tool block');
     expect(tool.command).toBe(JSON.stringify({ file_path: '/p/a.md', content: '# hi' }));
+  });
+});
+
+describe('normalizePiMessages — 含 sequential 工具的批次不判为并行', () => {
+  it('两个普通工具仍然共享 parallelGroupId', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 't1', name: 'bash', arguments: {} },
+        { type: 'toolCall', id: 't2', name: 'read', arguments: {} },
+      ] },
+    ] as never);
+    const blocks = (out[0] as { blocks: Array<{ parallelGroupId?: string }> }).blocks;
+    expect(blocks[0].parallelGroupId).toBeDefined();
+    expect(blocks[0].parallelGroupId).toBe(blocks[1].parallelGroupId);
+  });
+
+  it('批次里有 ask 时所有 toolCall 都没有 parallelGroupId', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 't1', name: 'bash', arguments: {} },
+        { type: 'toolCall', id: 't2', name: ASK_TOOL_NAME, arguments: {} },
+      ] },
+    ] as never);
+    const blocks = (out[0] as { blocks: Array<{ parallelGroupId?: string }> }).blocks;
+    expect(blocks[0].parallelGroupId).toBeUndefined();
+    expect(blocks[1].parallelGroupId).toBeUndefined();
   });
 });

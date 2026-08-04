@@ -6,6 +6,7 @@ import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { KydogError } from '../../shared/errors';
 import { normalizePiMessages, type PiMessage } from './messageNormalizer';
+import { isParallelBatch, toolCallsOf } from './askSequentialTools';
 import { settingsService } from '../settings/settingsService';
 import { resolveProviderDefault } from '../llm/resolveProvider';
 import { threadService } from '../thread/threadService';
@@ -190,24 +191,19 @@ class AgentService {
           return;
         }
         case 'message_end': {
-          // 协议层并行判定：本条 pi assistant message 的 content 数组里 ≥2 个 toolCall → 并行。
-          // 注意：pi 的 tool_execution_start 在 message_end **之后**才发，所以不能靠累积流式状态，
-          // 必须直接读 message_end 事件携带的 message.content（这是协议事实）。
-          const e = evt as unknown as { message?: { role?: string; content?: Array<{ type?: string; id?: string }> } };
+          // 协议层并行判定：读 message_end 携带的 message.content（这是协议事实，
+          // 因为 pi 的 tool_execution_start 在 message_end **之后**才发）。
+          // 注意不能只数个数：批次里只要有一个 executionMode: 'sequential' 的工具，
+          // pi 就把整批拖成串行（agent-loop.js:256）。
+          const e = evt as unknown as { message?: { role?: string; content?: unknown } };
           const msg = e.message;
-          if (msg?.role === 'assistant' && Array.isArray(msg.content) && bound.activeMessageId) {
-            const toolIds: string[] = [];
-            for (const c of msg.content) {
-              if (c.type === 'toolCall' && typeof c.id === 'string') toolIds.push(c.id);
-            }
-            if (toolIds.length >= 2) {
-              broadcaster.emit('run.parallel_group', {
-                threadId, runId,
-                messageId: bound.activeMessageId,
-                toolCallIds: toolIds,
-                parallelGroupId: randomUUID(),
-              });
-            }
+          if (msg?.role === 'assistant' && bound.activeMessageId && isParallelBatch(msg.content)) {
+            broadcaster.emit('run.parallel_group', {
+              threadId, runId,
+              messageId: bound.activeMessageId,
+              toolCallIds: toolCallsOf(msg.content).map((c) => c.id),
+              parallelGroupId: randomUUID(),
+            });
           }
           // Defer buffer flush to agent_end so the buffer survives pi's
           // intra-turn message boundaries (assistant w/ toolcall → toolResult → assistant w/ text).
