@@ -5,6 +5,7 @@ import { useRunsStore } from './stores/runsStore';
 import { useLlmStore } from './stores/llmStore';
 import { useSkillsStore } from './stores/skillsStore';
 import { useIdentityStore } from './stores/identityStore';
+import { useUpdateStore } from './stores/updateStore';
 import { useUnreadStore } from './panels/workspace/unreadStore';
 
 export async function bootstrap(): Promise<void> {
@@ -49,6 +50,11 @@ export async function bootstrap(): Promise<void> {
   });
 
   setupEventBridge();
+
+  window.kydog.on('update.status', (s) => useUpdateStore.getState().setStatus(s));
+  void window.kydog.invoke('update.getStatus')
+    .then((s) => useUpdateStore.getState().setStatus(s))
+    .catch((err) => console.error('update.getStatus failed', err));
 
   // Fire-and-forget: pull installed skills so the Composer slash menu has real data.
   void window.kydog.invoke('skill.list')
