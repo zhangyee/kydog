@@ -16,19 +16,27 @@ function tmp() {
   return mkdtempSync(path.join(tmpdir(), 'tools-'));
 }
 
+// Any test asserting a real `--version` string must state its own spawn budget instead
+// of inheriting the 1500ms production default: under a full `npm test` run the suites
+// go in parallel, and spawning `/bin/sh` on a loaded machine can exceed 1500ms, making
+// detectVersion time out and report version=null. The per-test timeout is raised to
+// match so vitest's own 5s default is not the binding constraint either.
+const SPAWN_TIMEOUT_MS = 10_000;
+const TEST_TIMEOUT_MS = 15_000;
+
 describe('ToolsService.list', () => {
   it('lists executables and their --version', async () => {
     const dir = tmp();
     const fp = path.join(dir, 'fastpaper');
     writeFileSync(fp, '#!/bin/sh\necho 1.4.0\n');
     chmodSync(fp, 0o755);
-    const svc = new ToolsService({ binDir: () => dir, ttlMs: 1000 });
+    const svc = new ToolsService({ binDir: () => dir, ttlMs: 1000, spawnTimeoutMs: SPAWN_TIMEOUT_MS });
     const list = await svc.list();
     expect(list[0].name).toBe('fastpaper');
     expect(list[0].version).toBe('1.4.0');
     expect(list[0].path).toBe(fp);
     expect(list[0].origin).toBe('builtin');
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('handles --version timeout → version=null', async () => {
     const dir = tmp();
@@ -45,14 +53,19 @@ describe('ToolsService.list', () => {
     const fp = path.join(dir, 'tool');
     writeFileSync(fp, '#!/bin/sh\necho 1\n');
     chmodSync(fp, 0o755);
-    const svc = new ToolsService({ binDir: () => dir, ttlMs: 1_000_000 });
+    const svc = new ToolsService({
+      binDir: () => dir,
+      ttlMs: 1_000_000,
+      spawnTimeoutMs: SPAWN_TIMEOUT_MS,
+    });
     const a = await svc.list();
+    expect(a[0].version).toBe('1');
     writeFileSync(fp, '#!/bin/sh\necho 2\n');
     const b = await svc.list();
     expect(b[0].version).toBe(a[0].version);
     const c = await svc.list({ force: true });
     expect(c[0].version).toBe('2');
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('includes external bin entries with origin=external, sorted alongside builtins', async () => {
     const builtinDir = tmp();
@@ -73,6 +86,7 @@ describe('ToolsService.list', () => {
     const svc = new ToolsService({
       binDir: () => builtinDir,
       ttlMs: 1000,
+      spawnTimeoutMs: SPAWN_TIMEOUT_MS,
       externalBins: async () => externals,
     });
     const list = await svc.list();
@@ -81,7 +95,7 @@ describe('ToolsService.list', () => {
     expect(list.find((t) => t.name === 'zinc')?.origin).toBe('external');
     expect(list.find((t) => t.name === 'mango')?.origin).toBe('external');
     expect(list.find((t) => t.name === 'mango')?.version).toBe('m-3');
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('external entry whose file is missing returns version=null but stays in list', async () => {
     const builtinDir = tmp();
