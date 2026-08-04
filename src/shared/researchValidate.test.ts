@@ -94,6 +94,26 @@ describe('validateResearch', () => {
     const errs = validateResearch(R({ presets: { NCBI_API_KEY: value } }));
     expect(errs).toHaveLength(1);
   });
+
+  it('自定义项的值含控制字符 → 报错', () => {
+    const errs = validateResearch(R({ custom: [{ name: 'CTRL_KEY', kind: 'key', value: 'a\nb' }] }));
+    expect(errs).toHaveLength(1);
+    expect(errs[0].field).toBe('CTRL_KEY');
+  });
+
+  it('presets 与 custom 的错误累加', () => {
+    const errs = validateResearch(R({
+      presets: { UNPAYWALL_EMAIL: 'nope' },
+      custom: [{ name: 'PATH', kind: 'key', value: 'v' }],
+    }));
+    expect(errs.map((e) => e.field).sort()).toEqual(['PATH', 'UNPAYWALL_EMAIL']);
+  });
+
+  it('空变量名的 field 保持原始空串，不替换成展示用占位符', () => {
+    const errs = validateResearch(R({ custom: [{ name: '', kind: 'key', value: 'v' }] }));
+    expect(errs).toHaveLength(1);
+    expect(errs[0].field).toBe('');
+  });
 });
 
 describe('validateCustomVarName', () => {

@@ -69,6 +69,13 @@ export function validateCustomVarName(name: string, existing: string[]): string 
   return null;
 }
 
+/**
+ * 校验整份 research。本函数不做 trim —— 调用方自行决定是否先 normalizeResearch。
+ *
+ * 返回的 `field` 是**原始 key 本身**（可能是空串），不是给人看的标签：
+ * applyResearchEnv 靠它做 `bad.has(name)` 匹配来剔除非法条目，所以任何
+ * 展示用的美化都必须留到展示层做。
+ */
 export function validateResearch(r: SettingsFile['research']): ResearchValidationError[] {
   const errors: ResearchValidationError[] = [];
   const kindOfPreset = new Map<string, ResearchVarKind>(PRESET_RESEARCH_VARS.map((v) => [v.name, v.kind]));
@@ -91,7 +98,7 @@ export function validateResearch(r: SettingsFile['research']): ResearchValidatio
   for (const c of r.custom ?? []) {
     const nameErr = validateCustomVarName(c.name, seen);
     if (nameErr) {
-      errors.push({ field: c.name || '(空变量名)', message: nameErr });
+      errors.push({ field: c.name, message: nameErr });
       continue;
     }
     seen.push(c.name);
