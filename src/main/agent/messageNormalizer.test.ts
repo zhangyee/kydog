@@ -393,6 +393,23 @@ describe('normalizePiMessages — ask_user_question', () => {
     expect(qs[0].question).toBe('选哪个？');
   });
 
+  it('fallback 的 id 按下标分配，多问题时不会全挤在 q0', () => {
+    const opts = [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }];
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [{
+        type: 'toolCall', id: 'tc1', name: ASK_TOOL_NAME,
+        arguments: { questions: [
+          { question: '第一题？', header: '一', options: opts },
+          { question: '第二题？', header: '二', options: opts },
+        ] },
+      }] },
+    ] as never);
+    const qs = (out[0] as { blocks: Array<{ questions: Array<{ id: string; options: Array<{ id: string }> }> }> })
+      .blocks[0].questions;
+    expect(qs.map((q) => q.id)).toEqual(['q0', 'q1']);
+    expect(qs[1].options.map((o) => o.id)).toEqual(['q1o0', 'q1o1']);
+  });
+
   it('details 是空对象（校验失败留下的 error toolResult）还原成普通失败工具卡片', () => {
     const out = normalizePiMessages([
       { role: 'assistant', content: [askCall] },
