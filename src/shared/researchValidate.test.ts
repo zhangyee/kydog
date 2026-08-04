@@ -25,6 +25,23 @@ describe('normalizeResearch', () => {
     const out = normalizeResearch(R({ custom: [{ name: 'A_KEY', kind: 'key', value: '  ' }] }));
     expect(out.custom).toEqual([{ name: 'A_KEY', kind: 'key', value: '' }]);
   });
+
+  // normalizeResearch 是归一化的总入口，IPC 边界上的 args 在运行时不可信 ——
+  // 类型标注挡不住畸形 payload。它必须对任何输入都是全函数（total），不该抛，
+  // 而是把不认得的形状当成「没有」，落回空表。
+  it.each([
+    ['custom 是字符串', { presets: {}, custom: 'nope' }],
+    ['custom 是数字', { presets: {}, custom: 42 }],
+    ['presets 是字符串', { presets: 'nope', custom: [] }],
+    ['presets 是数组', { presets: ['a'], custom: [] }],
+    ['presets 的值不是字符串', { presets: { NCBI_API_KEY: 123 }, custom: [] }],
+    ['整个对象是 undefined', undefined],
+  ])('normalizeResearch 对畸形输入 %s 不抛错，返回空表', (_label, input) => {
+    expect(() => normalizeResearch(input as never)).not.toThrow();
+    const out = normalizeResearch(input as never);
+    expect(out.presets).toEqual({});
+    expect(out.custom).toEqual([]);
+  });
 });
 
 describe('validateResearch', () => {

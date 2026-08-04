@@ -43,14 +43,26 @@ export const RESERVED_ENV_NAMES: ReadonlySet<string> = new Set<string>([
   ...Object.values(STATIC_META).flatMap((m) => m.envFallback ?? []),
 ]);
 
-/** trim 变量名与值；剔掉值为空的预设项（空 = 未设置）。自定义项一律保留条目。 */
+/**
+ * trim 变量名与值；剔掉值为空的预设项（空 = 未设置）。自定义项一律保留条目。
+ *
+ * 对任何输入都是全函数（total）：不认得的形状一律当成「没有」，落回空表，
+ * 不抛错。它是归一化的总入口，IPC 边界上的 args 在运行时不可信 —— 类型
+ * 标注挡不住畸形 payload，`research.save` 不该因为一个形状问题就给渲染层
+ * 甩一个裸 TypeError，而应该走 validateResearch 那条「settings.invalid」
+ * 的干净错误路径（这里归一化成空表，后续校验该拦的还是会拦）。
+ */
 export function normalizeResearch(r: SettingsFile['research']): SettingsFile['research'] {
   const presets: Record<string, string> = {};
-  for (const [name, value] of Object.entries(r.presets ?? {})) {
-    const v = (value ?? '').trim();
-    if (v) presets[name.trim()] = v;
+  const rawPresets = r?.presets;
+  if (rawPresets && typeof rawPresets === 'object' && !Array.isArray(rawPresets)) {
+    for (const [name, value] of Object.entries(rawPresets)) {
+      const v = typeof value === 'string' ? value.trim() : '';
+      if (v) presets[name.trim()] = v;
+    }
   }
-  const custom = (r.custom ?? [])
+  const rawCustom = Array.isArray(r?.custom) ? r.custom : [];
+  const custom = rawCustom
     .filter((c): c is ResearchCustomVar => c !== null && typeof c === 'object')
     .map((c) => ({
       name: (c.name ?? '').trim(),
