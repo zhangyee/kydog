@@ -2,6 +2,7 @@ import { useSettingsStore } from '../stores/settingsStore';
 import { useUiStore } from '../stores/uiStore';
 import { SETTINGS_PAGE_LABELS } from './settingsPages';
 import { SkillsAndToolsSection } from './SkillsAndToolsSection';
+import { ResearchCredentialsSection } from './ResearchCredentialsSection';
 import { ProviderListSection } from './ProviderListSection';
 import { AddProviderPage } from './AddProviderPage';
 import { ProviderDetailPane } from './ProviderDetailPane';
@@ -19,6 +20,7 @@ export function SettingsPane() {
   // null 时整个副标题元素都不渲染（不留空 div 占位），其余 tab 不受影响。
   const subtitle = activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
     : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
+    : activeSection === 'research' ? '填写后立即生效，无需新建对话'
     : activeSection === 'about' ? null
     : activeSection === 'donate' ? null
     : '预留页面';
@@ -65,6 +67,8 @@ export function SettingsPane() {
           )
         ) : activeSection === 'skills' ? (
           <SkillsAndToolsSection />
+        ) : activeSection === 'research' ? (
+          <ResearchCredentialsSection />
         ) : activeSection === 'about' ? (
           <AboutSection />
         ) : activeSection === 'donate' ? (

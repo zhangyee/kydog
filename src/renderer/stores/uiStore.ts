@@ -13,7 +13,7 @@ export type FileTab = {
   errorMessage?: string;
 };
 
-export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills';
+export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills' | 'research';
 type CenterTabKind = 'thread' | 'settings' | 'file';
 
 type UiState = {

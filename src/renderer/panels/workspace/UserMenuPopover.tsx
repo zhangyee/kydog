@@ -67,6 +67,12 @@ export function UserMenuPopover() {
         testId="open-settings"
         onClick={() => { openSettings('provider'); close(); }}
       />
+      <ActionRow
+        label="文献检索密钥"
+        summary="文献源 API Key 与联系邮箱"
+        testId="open-research"
+        onClick={() => { openSettings('research'); close(); }}
+      />
 
       <div style={{ height: 1, background: 'var(--color-paper-edge)', margin: '6px 0' }} />
 
