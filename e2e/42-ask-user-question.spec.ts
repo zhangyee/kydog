@@ -5,12 +5,14 @@ import { promises as fs } from 'node:fs';
 import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp } from './helpers';
 
 const fixture = path.resolve('e2e/fixtures/ask-user-question.json');
+// 这一轮直接发 ask，前面没有任何 text / thinking —— 于是渲染进程没收到过 delta 事件。
+const noPreambleFixture = path.resolve('e2e/fixtures/ask-no-preamble.json');
 
-async function launchWithProject(): Promise<LaunchedApp> {
+async function launchWithProject(fixturePath = fixture): Promise<LaunchedApp> {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
   return launchKydog({
-    fixture,
+    fixture: fixturePath,
     seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
   });
 }
@@ -166,6 +168,27 @@ test('42-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async
     const recap = page.locator('[data-testid="ask-recap"]');
     await expect(recap).toHaveAttribute('data-status', 'cancelled', { timeout: 10_000 });
     await expect(recap).toContainText('你关闭了这次提问，未作回答。');
+    await expect(recap).toContainText('这次改动落在哪个分支上？');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// 留痕 buffer 只由 text / thinking 的 delta 事件创建，模型这一轮完全可以不写开场白
+// 直接发 ask。取消路径最险：terminate 让 loop 早停、第二轮永不到来，buffer 至始至终
+// 不存在，整轮在消息流里就什么都不剩了 —— 而重启走历史路径又能还原出来。
+test('42-ask: 这一轮没有开场白直接提问，取消后照样留下卡片', async () => {
+  const launched = await launchWithProject(noPreambleFixture);
+  const page = launched.page;
+  try {
+    await askUntilPending(page);
+    const composer = page.locator('[data-testid="question-composer"]');
+    await expect(composer).toContainText('这次改动落在哪个分支上？');
+
+    await page.locator('[data-testid="ask-close"]').click();
+
+    const recap = page.locator('[data-testid="ask-recap"]');
+    await expect(recap).toHaveAttribute('data-status', 'cancelled', { timeout: 10_000 });
     await expect(recap).toContainText('这次改动落在哪个分支上？');
   } finally {
     await teardown(launched);

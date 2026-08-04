@@ -102,6 +102,10 @@ function setupEventBridge(): void {
   // 一条事件两个消费者：askStore 驱动提问态 composer，runsStore 驱动留痕 block。
   window.kydog.on('run.ask_start', (p) => {
     useAskStore.getState().open(p.threadId, p.toolCallId, p.questions);
+    // 与两个 delta handler 同形：这一轮如果直接发 ask、前面没有任何文字或思考，
+    // buffer 还不存在，addAskBlock 会静默 no-op，整轮留痕就没了。
+    const buf = useRunsStore.getState().bufferByMessage[p.messageId];
+    if (!buf) useRunsStore.getState().startMessageBuffer(p.threadId, p.messageId);
     useRunsStore.getState().addAskBlock(p.messageId, p.toolCallId, p.questions);
   });
   window.kydog.on('run.ask_end', (p) => {
