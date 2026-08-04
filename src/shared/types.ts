@@ -1,3 +1,4 @@
+import type { AskAnswer, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
 
 export type Identity = { userName: string; agentName: string };
@@ -13,6 +14,23 @@ export type Thread = {
   pinned?: boolean;
   modelOverride?: { providerId: ProviderId; modelId: string };
 };
+
+export type AskBlockBase = {
+  kind: 'ask';
+  toolCallId: string;
+  questions: AskQuestion[];
+};
+
+/**
+ * 判别联合而不是 status + 可选 answers：让「answered 必有 answers、其余必无」
+ * 由编译器保证，下游不必靠注释记忆。
+ *
+ * cancelled（用户点 ×）/ aborted（signal 被外部中止）/ unanswered（有 toolCall
+ * 无 toolResult，进程在挂起时退出）是三个不同的协议事实，不合并。
+ */
+export type AskBlock =
+  | (AskBlockBase & { status: 'answered'; answers: AskAnswer[] })
+  | (AskBlockBase & { status: 'pending' | 'cancelled' | 'aborted' | 'unanswered'; answers?: never });
 
 export type AssistantBlock =
   | { kind: 'text'; text: string }
@@ -31,7 +49,8 @@ export type AssistantBlock =
       // 协议级并行标记：同一条 pi assistant message 里 ≥2 个 toolCall 共享同一个 id；
       // 不同 message 的 toolCall 永不共享，即使时间上紧挨着。
       parallelGroupId?: string;
-    };
+    }
+  | AskBlock;
 
 export type Message =
   | { id: string; role: 'user'; createdAt: string; content: string }
