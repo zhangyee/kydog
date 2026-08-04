@@ -17,18 +17,14 @@ describe('researchVars', () => {
     }
   });
 
-  it('包含需求点名的 6 个变量，邮箱两项 kind 为 email', () => {
-    expect([...PRESET_RESEARCH_VAR_NAMES]).toEqual([
-      'NCBI_API_KEY',
-      'SEMANTIC_SCHOLAR_API_KEY',
-      'OPENALEX_API_KEY',
-      'CORE_API_KEY',
-      'UNPAYWALL_EMAIL',
-      'FASTPAPER_EMAIL',
+  it('6 个变量的顺序与 kind 都锁死', () => {
+    expect(PRESET_RESEARCH_VARS.map((v) => [v.name, v.kind])).toEqual([
+      ['NCBI_API_KEY', 'key'],
+      ['SEMANTIC_SCHOLAR_API_KEY', 'key'],
+      ['OPENALEX_API_KEY', 'key'],
+      ['CORE_API_KEY', 'key'],
+      ['UNPAYWALL_EMAIL', 'email'],
+      ['FASTPAPER_EMAIL', 'email'],
     ]);
-    const kindOf = (n: string) => PRESET_RESEARCH_VARS.find((v) => v.name === n)?.kind;
-    expect(kindOf('UNPAYWALL_EMAIL')).toBe('email');
-    expect(kindOf('FASTPAPER_EMAIL')).toBe('email');
-    expect(kindOf('NCBI_API_KEY')).toBe('key');
   });
 });

@@ -12,7 +12,7 @@ export type PresetResearchVar = {
 };
 
 /** 预设项元数据的唯一真相。存储层只装值，不装这里的任何字段。 */
-export const PRESET_RESEARCH_VARS: readonly PresetResearchVar[] = [
+export const PRESET_RESEARCH_VARS = [
   {
     name: 'NCBI_API_KEY',
     kind: 'key',
@@ -55,7 +55,7 @@ export const PRESET_RESEARCH_VARS: readonly PresetResearchVar[] = [
     sources: 'crossref、openalex、pubmed、pmc',
     note: 'crossref 用它进 polite pool',
   },
-];
+] as const satisfies readonly PresetResearchVar[];
 
 export const PRESET_RESEARCH_VAR_NAMES: ReadonlySet<string> = new Set(
   PRESET_RESEARCH_VARS.map((v) => v.name),
