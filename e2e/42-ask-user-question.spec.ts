@@ -23,7 +23,7 @@ async function askUntilPending(page: Page) {
   await expect(page.locator('[data-testid="question-composer"]')).toBeVisible({ timeout: 10_000 });
 }
 
-test('40-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
+test('42-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
   try {
@@ -80,7 +80,7 @@ test('40-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
 
 // 键盘规格是刻意设计过的：三条快捷键都只在焦点不在输入框时生效，且这一版
 // 不做任何 Enter 提交/前进 —— 用户正在框里写想法时一个回车就跳走太危险。
-test('40-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提交', async () => {
+test('42-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提交', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
   try {
@@ -148,7 +148,7 @@ test('40-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提
   }
 });
 
-test('40-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async () => {
+test('42-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
   try {
