@@ -28,9 +28,11 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
   const selectedIds = answered?.optionIds ?? [];
   const custom = answered?.custom ?? '';
   const isLast = draft.cursor === total - 1;
+  // 主按钮的文案必须和它的动作读同一个来源。用 isLast 决定文案会撒谎：
+  // 用户翻回第 1 题复看时三题都已处理，按钮写着「下一题」，点下去却是提交。
+  const gap = firstUnhandled(draft, pending.questions);
 
   const onSubmit = async () => {
-    const gap = firstUnhandled(draft, pending.questions);
     // 不置灰按钮：还有没处理的题就跳过去，而不是让用户对着一个禁用控件猜原因。
     if (gap !== null) { updateDraft(threadId, (d) => goTo(d, gap, total)); return; }
     try {
@@ -130,7 +132,7 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
                 style={{ ...btnStyle, border: 'none', color: 'var(--color-ink-soft)' }}
               >跳过</button>
               <button type="button" data-testid="ask-submit" onClick={() => void onSubmit()} style={btnStyle}>
-                {isLast ? '提交' : '下一题'}
+                {gap === null ? '提交' : '下一题'}
               </button>
             </div>
           </div>

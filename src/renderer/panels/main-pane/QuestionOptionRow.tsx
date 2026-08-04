@@ -93,7 +93,14 @@ export function QuestionCustomRow({
 }) {
   const selected = value.trim() !== '';
   return (
-    <div data-testid="ask-custom-row" data-selected={selected ? 'true' : 'false'} style={rowStyle(selected)}>
+    <div
+      data-testid="ask-custom-row"
+      data-selected={selected ? 'true' : 'false'}
+      style={rowStyle(selected)}
+      // 整行可点：它长得跟其他选项行一样（同样的 cursor: pointer），点编号或
+      // 勾选框却没反应会很怪。聚焦是导航，不是选中——选中仍然只由文本非空驱动。
+      onClick={(e) => e.currentTarget.querySelector('input')?.focus()}
+    >
       <Lead multiSelect={multiSelect} index={index} selected={selected} />
       <input
         ref={inputRef}
