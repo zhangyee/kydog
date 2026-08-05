@@ -67,7 +67,7 @@ test('42-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
 
     const recap = page.locator('[data-testid="ask-recap"]');
     await expect(recap).toHaveAttribute('data-status', 'answered', { timeout: 10_000 });
-    await expect(recap).toContainText('询问了 分支、验证、交付');
+    await expect(recap).toContainText('询问了 3 个问题，跳过 1 题');
     await expect(recap).toContainText('当前 worktree');
     await expect(recap).toContainText('tsc、vitest；再跑一遍 e2e');
     await expect(recap).toContainText('（跳过）');

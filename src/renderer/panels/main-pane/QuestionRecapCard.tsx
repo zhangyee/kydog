@@ -17,6 +17,20 @@ export function answerText(q: AskQuestion, a: AskAnswer | undefined): string | n
   return picked || custom;
 }
 
+/**
+ * 摘要行只陈述结构事实，不拼模型生成的 `header`。
+ *
+ * `header` 当初的唯一用途是「卡片折叠时的摘要行」，但这张卡片没做折叠——
+ * 于是那行变成三个 ≤12 字的短词硬拼，既和下面的问题全文重复、又不成句。
+ * 状态不在这里说：非 answered 的情况由卡片底部的说明承担。
+ */
+export function recapSummary(block: AskBlock): string {
+  const base = `询问了 ${block.questions.length} 个问题`;
+  if (block.status !== 'answered') return base;
+  const skipped = block.answers.filter((a) => a.kind === 'skipped').length;
+  return skipped > 0 ? `${base}，跳过 ${skipped} 题` : base;
+}
+
 export function QuestionRecapCard({ block }: { block: AskBlock }) {
   const byId = new Map((block.status === 'answered' ? block.answers : []).map((a) => [a.questionId, a]));
 
@@ -36,7 +50,7 @@ export function QuestionRecapCard({ block }: { block: AskBlock }) {
         className="font-mono"
         style={{ fontSize: 10, color: 'var(--color-ink-faint)', marginBottom: 6 }}
       >
-        询问了 {block.questions.map((q) => q.header).join('、')}
+        {recapSummary(block)}
       </div>
       {block.questions.map((q) => {
         const text = answerText(q, byId.get(q.id));
