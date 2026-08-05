@@ -30,7 +30,9 @@ const ParamsSchema = Type.Object({
   questions: Type.Array(QuestionSchema, { minItems: 1, maxItems: 4 }),
 });
 
-const GUIDELINES = [
+// 导出给 systemPrompt.ts：KyDog 走自定义系统提示词后，pi 不再渲染工具的
+// promptGuidelines（见 systemPrompt.ts 顶部注释），得由我们自己搬进去。
+export const ASK_GUIDELINES = [
   '遇到不可逆决策、多条同样合理的路径、或纯粹的口味问题时，用 ask_user_question 问用户，不要自己挑一个假设继续。',
   '自己查得到的事实、只有一个合理答案的问题，不要问。',
   'ask_user_question 必须单独调用，不能和其他工具放在同一批 tool call 里，否则整批都会被拒绝。',
@@ -50,7 +52,7 @@ export function createAskUserQuestionTool(
     label: '提问',
     description: '在遇到需要用户决定的分叉点时暂停，向用户提出 1–4 个多选题并等待回答。',
     promptSnippet: 'ask_user_question — 停下来向用户提问（必须单独调用）',
-    promptGuidelines: GUIDELINES,
+    promptGuidelines: ASK_GUIDELINES,
     parameters: ParamsSchema,
     executionMode: 'sequential' as const,
 

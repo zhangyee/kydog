@@ -5,6 +5,7 @@ import { settingsService } from '../settings/settingsService';
 import * as paths from '../persist/paths';
 import { logger } from '../log';
 import { createAskBatchExtension } from '../agent/askBatchExtension';
+import { buildKydogSystemPrompt } from '../agent/systemPrompt';
 
 export const KYDOG_SKILLS_DIR = path.join(os.homedir(), '.kydog', 'skills');
 
@@ -71,9 +72,14 @@ export async function createKydogResourceLoader(projectCwd: string) {
   const harness = await loadHarnessAgentsFiles();
   // 批次独占：loader 与 session 同生命周期，所以守卫天然按 thread 隔离。
   const { factory: askBatchFactory } = createAskBatchExtension();
+  // 不给 systemPromptOverride 的话 pi 会拼它自己的默认提示词（「You are an expert coding
+  // assistant operating inside pi…」），排在 SOUL/USER/AGENTS 之前，等于两套人格并存。
+  // 覆盖是无条件的：<agentDir>/SYSTEM.md 存在也不采纳，系统提示词只有 KyDog 一个来源。
+  const systemPrompt = await buildKydogSystemPrompt(projectCwd);
   return new pi.DefaultResourceLoader({
     cwd: projectCwd,
     agentDir: kydogAgentDir(),
+    systemPromptOverride: () => systemPrompt,
     noSkills: true,
     // 从磁盘发现的扩展（agentDir/extensions、项目 .pi/extensions、pi settings 声明的
     // packages）一律不加载 —— KyDog 一个都没有，加载进来的只会是环境里别人的东西。

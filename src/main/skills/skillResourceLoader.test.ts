@@ -5,6 +5,7 @@ import path from 'node:path';
 import * as paths from '../persist/paths';
 import { ensureSettingsFile } from '../persist/settingsFile';
 import { buildSkillsOverride, loadHarnessAgentsFiles, buildAgentsFilesOverride, HARNESS_MAX_CHARS, kydogAgentDir, createKydogResourceLoader } from './skillResourceLoader';
+import { buildKydogSystemPrompt } from '../agent/systemPrompt';
 
 describe('buildSkillsOverride', () => {
   it('filters disabled names from skills, preserves diagnostics', () => {
@@ -84,18 +85,35 @@ describe('createKydogResourceLoader', () => {
   });
 
   // agentDir 若退回 pi.getAgentDir() 就会变成 ~/.pi/agent —— 用户 pi CLI 的家目录。
-  // 那里的 settings.json / SYSTEM.md / extensions 会被静默吃进来，装了 pi 的机器和没装的
-  // 行为不一致且无从察觉。用 agentDir/SYSTEM.md 的发现结果反证 agentDir 指到了哪。
+  // 那里的 settings.json / AGENTS.md / extensions 会被静默吃进来，装了 pi 的机器和没装的
+  // 行为不一致且无从察觉。用 agentDir 下 AGENTS.md 的发现结果反证 agentDir 指到了哪
+  // （loadProjectContextFiles() 把 agentDir 的 context file 排在最前）。
   it('agentDir 指向 <ROOT>/agent，不是 pi 的 ~/.pi/agent', async () => {
     expect(kydogAgentDir()).toBe(path.join(home, 'agent'));
 
     const agentDir = path.join(home, 'agent');
     mkdirSync(agentDir, { recursive: true });
-    writeFileSync(path.join(agentDir, 'SYSTEM.md'), 'kydog system prompt');
+    writeFileSync(path.join(agentDir, 'AGENTS.md'), 'from agent dir');
 
     const loader = await createKydogResourceLoader(proj);
     await loader.reload();
-    expect(loader.getSystemPrompt()).toBe('kydog system prompt');
+    const files = loader.getAgentsFiles().agentsFiles;
+    expect(files.some((f) => f.path === path.join(agentDir, 'AGENTS.md'))).toBe(true);
+  });
+
+  // 系统提示词只有 KyDog 一个来源：pi 的默认提示词（「expert coding assistant …inside pi」）
+  // 和任何磁盘上的 SYSTEM.md 都顶不掉它。override 一旦被删，pi 会退回默认分支，SOUL/USER/
+  // AGENTS 就从「你是谁」降级成排在 pi 人格之后的「项目补充说明」。
+  it('系统提示词恒为 KyDog 自己的，agentDir/SYSTEM.md 也顶不掉', async () => {
+    const agentDir = path.join(home, 'agent');
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(path.join(agentDir, 'SYSTEM.md'), 'stray system prompt');
+
+    const loader = await createKydogResourceLoader(proj);
+    await loader.reload();
+    const prompt = loader.getSystemPrompt();
+    expect(prompt).toBe(await buildKydogSystemPrompt(proj));
+    expect(prompt).not.toContain('stray system prompt');
   });
 
   // noExtensions 关的是「从磁盘发现的扩展」，走的是 extensionPaths 那条路；
@@ -132,25 +150,27 @@ describe('createKydogResourceLoader', () => {
   // sessionFactory 调 reload({ resolveProjectTrust: async () => false })。DefaultResourceLoader
   // 只在传了这个选项时才去问信任（resource-loader.js `if (options?.resolveProjectTrust)`），
   // SettingsManager.projectTrusted 默认是 true —— 也就是说不传等于「信任用户随手打开的任意
-  // 目录」，那里的 .pi/settings.json 会被整份吃进来，.pi/SYSTEM.md 会顶掉 KyDog 自己的系统提示。
-  // 双向断言：不传时项目 SYSTEM.md 确实生效，传了才不生效。只断言后一半的话，选项被删掉测试照绿。
-  it('resolveProjectTrust=false 挡掉项目本地 .pi/SYSTEM.md，不传则会被吃进来', async () => {
+  // 目录」，那里的 .pi/settings.json 会被整份吃进来。
+  // 探针用 APPEND_SYSTEM.md 而不是 SYSTEM.md：systemPromptOverride 之后 SYSTEM.md 两边都不
+  // 生效，探不出信任门；append 仍会被 buildSystemPrompt 追加到提示词里，是活的注入面。
+  // 双向断言：不传时项目 APPEND_SYSTEM.md 确实生效，传了才不生效。只断言后一半的话，选项被删掉测试照绿。
+  it('resolveProjectTrust=false 挡掉项目本地 .pi/APPEND_SYSTEM.md，不传则会被吃进来', async () => {
     const agentDir = path.join(home, 'agent');
     mkdirSync(agentDir, { recursive: true });
-    writeFileSync(path.join(agentDir, 'SYSTEM.md'), 'kydog own prompt');
+    writeFileSync(path.join(agentDir, 'APPEND_SYSTEM.md'), 'kydog own append');
     mkdirSync(path.join(proj, '.pi'), { recursive: true });
-    writeFileSync(path.join(proj, '.pi', 'SYSTEM.md'), 'project injected prompt');
+    writeFileSync(path.join(proj, '.pi', 'APPEND_SYSTEM.md'), 'project injected append');
     writeFileSync(path.join(proj, 'AGENTS.md'), 'P');
 
-    // 默认信任：项目的 SYSTEM.md 赢过 agentDir 的。这半边证明发现路径本身是通的，
+    // 默认信任：项目的 APPEND_SYSTEM.md 赢过 agentDir 的。这半边证明发现路径本身是通的，
     // 下半边的「没吃到」才不会是因为文件根本没被看见。
     const trusting = await createKydogResourceLoader(proj);
     await trusting.reload();
-    expect(trusting.getSystemPrompt()).toBe('project injected prompt');
+    expect(trusting.getAppendSystemPrompt()).toEqual(['project injected append']);
 
     const loader = await createKydogResourceLoader(proj);
     await loader.reload({ resolveProjectTrust: async () => false });
-    expect(loader.getSystemPrompt()).toBe('kydog own prompt');
+    expect(loader.getAppendSystemPrompt()).toEqual(['kydog own append']);
 
     // 项目 AGENTS.md 不受 trust 门禁管（loadProjectContextFiles() 无条件走 cwd 及祖先），
     // 钉在这里免得以后有人把它当回归。
