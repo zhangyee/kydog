@@ -1,5 +1,5 @@
 // src/main/persist/atomicWrite.ts
-import { promises as fsp, writeFileSync, renameSync, chmodSync, mkdirSync } from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -21,13 +21,4 @@ export async function atomicWriteWith0600Async(target: string, data: string): Pr
   await fsp.writeFile(tmp, data, POSIX ? { encoding: 'utf8', mode: MODE } : 'utf8');
   await fsp.rename(tmp, target);
   if (POSIX) await fsp.chmod(target, MODE);
-}
-
-/** 同步版本、専供 SettingsService.withLockSync 走 pi 的同步路径。 */
-export function atomicWriteWith0600Sync(target: string, data: string): void {
-  mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.tmp.${randomUUID()}`;
-  writeFileSync(tmp, data, POSIX ? { encoding: 'utf8', mode: MODE } : 'utf8');
-  renameSync(tmp, target);
-  if (POSIX) chmodSync(target, MODE);
 }

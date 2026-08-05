@@ -67,8 +67,8 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.78.1",
-    "@earendil-works/pi-coding-agent": "0.78.1",
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
     "@fontsource-variable/source-serif-4": "^5.2.9",
     "@fontsource/noto-serif-sc": "^5.2.9",
     "@milkdown/crepe": "^7.21.1",

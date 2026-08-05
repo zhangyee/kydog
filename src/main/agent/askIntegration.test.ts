@@ -2,15 +2,16 @@
  * ask_user_question × pi agent loop 的集成测试。
  *
  * 这里跑的是**真实的 pi agent loop**：`createAgentSession()` 造出真 session，
- * 然后把 `session.agent.streamFn` 换成脚本化的假 provider（公开可写字段，
- * agent.d.ts 里 `streamFn: StreamFn`），所以不联网、不需要 API 调用，
+ * 然后把 `session.agent.streamFunction` 换成脚本化的假 provider（公开可写字段，
+ * agent.d.ts 里 `streamFunction: StreamFn`），所以不联网、不需要 API 调用，
  * 但工具分发 / 事件顺序 / terminate / 批次调度全都是 pi 自己的代码。
  *
  * 存在的理由：ask 工具的设计建立在若干条 pi 行为上，而其它测试全用假 broker、
  * 假事件、fixture session，钉不住 pi 本身。升级 pi 时这个文件会先红。
  *
- * 不写用户目录：cwd / agentDir 都指向 os.tmpdir() 下的临时目录，authStorage 用
- * inMemory。sessionManager 默认 inMemory；只有验证 jsonl 往返那条用真实文件，
+ * 不写用户目录：cwd / agentDir 都指向 os.tmpdir() 下的临时目录，modelRuntime 的
+ * 凭据走内存 CredentialStore、modelsPath 给 null，够不着真实用户状态。
+ * sessionManager 默认 inMemory；只有验证 jsonl 往返那条用真实文件，
  * 落在同一个临时目录里，afterEach 一起删掉。
  */
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -18,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Type } from 'typebox';
-import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Model, TextContent, ToolCall } from '@earendil-works/pi-ai';
 import { createAskUserQuestionTool } from './askUserQuestionTool';
 import { QuestionBroker } from './questionBroker';
@@ -35,7 +36,7 @@ const ZERO_USAGE = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-/** 满足 Model 结构即可——streamFn 被替换后它永远不会真的被调用。 */
+/** 满足 Model 结构即可——streamFunction 被替换后它永远不会真的被调用。 */
 const FAKE_MODEL = {
   id: 'fake', name: 'Fake', api: 'anthropic-messages', provider: 'anthropic',
   baseUrl: 'https://example.invalid', reasoning: false, input: ['text'],
@@ -151,6 +152,14 @@ async function makeHarness(opts: {
     },
   }, broker);
 
+  // session.prompt() 在开流之前先要求 provider 有 auth（hasConfiguredAuth），
+  // 这一步跟 streamFunction 被不被替换无关，所以假 key 还是得给。0.83 去掉了
+  // AuthStorage，等价物是喂一个内存 CredentialStore 的 ModelRuntime。
+  const credentials = new InMemoryCredentialStore();
+  await credentials.modify('anthropic', async () => ({ type: 'api_key', key: 'test-key' }));
+  // modelsPath: null —— 不去读 ~/.pi/agent/models.json，保持不碰用户状态。
+  const modelRuntime = await pi.ModelRuntime.create({ credentials, modelsPath: null });
+
   const extensionFactories = opts.batchGuard ? [createAskBatchExtension().factory] : [];
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd: dir,
@@ -167,7 +176,7 @@ async function makeHarness(opts: {
     cwd: dir,
     agentDir: dir,
     model: FAKE_MODEL,
-    authStorage: pi.AuthStorage.inMemory({ anthropic: { type: 'api_key', key: 'test-key' } }),
+    modelRuntime,
     sessionManager: opts.sessionFile
       ? pi.SessionManager.open(opts.sessionFile)
       : pi.SessionManager.inMemory(dir),
@@ -177,7 +186,7 @@ async function makeHarness(opts: {
   });
 
   let turnIndex = 0;
-  session.agent.streamFn = ((model: any, _context: unknown, options: any) => {
+  session.agent.streamFunction = ((model: any, _context: unknown, options: any) => {
     turnIndex += 1;
     const stream = createAssistantMessageEventStream();
     const base: AssistantMessage = {

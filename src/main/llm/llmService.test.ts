@@ -25,14 +25,14 @@ describe('llmService', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('list: 空 settings → catalog 22 行 + configured 空', async () => {
+  it('list: 空 settings → catalog 20 行 + configured 空', async () => {
     const r = await llmService.list();
-    expect(r.catalog.length).toBe(22);
+    expect(r.catalog.length).toBe(20);
     expect(r.configured).toEqual([]);
     expect(r.defaultProvider).toBeNull();
   });
 
-  it('configure(apiKey): 写 auth blob + providers entry + reloadAuth', async () => {
+  it('configure(apiKey): 写 auth blob + providers entry + 出现在 configured 列表', async () => {
     await llmService.configure({
       providerId: 'anthropic',
       cfg: { kind: 'apiKey', apiKey: 'sk-ant-1', baseUrl: 'https://x.example' },

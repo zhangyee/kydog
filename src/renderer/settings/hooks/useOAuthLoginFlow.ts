@@ -1,9 +1,12 @@
 // src/renderer/settings/hooks/useOAuthLoginFlow.ts
 import { useEffect, useRef, useState } from 'react';
+import type { OAuthPromptOption } from '../../../shared/protocol';
 
 export type OAuthFlowState =
   | { phase: 'idle' }
   | { phase: 'authPrompt'; url: string; instructions?: string; progress: string[] }
+  // select 在 Codex 流程里是第一步，早于 auth_url，所以这个态不能依赖 url 存在。
+  | { phase: 'select'; message: string; options: readonly OAuthPromptOption[]; progress: string[] }
   | { phase: 'manualCode'; url: string; instructions?: string; prompt: { message: string; placeholder?: string }; progress: string[] }
   | { phase: 'finishing'; progress: string[] }
   | { phase: 'error'; error: string }
@@ -26,13 +29,35 @@ export function useOAuthLoginFlow(providerId: string) {
     }));
     offs.push(window.kydog.on('oauth.prompt', (p) => {
       if (p.providerId !== providerId) return;
-      setState((s) => ({
-        phase: 'manualCode',
-        url: 'url' in s ? s.url : lastUrl.current,
-        instructions: 'instructions' in s ? s.instructions : undefined,
-        prompt: p.prompt,
-        progress: 'progress' in s ? s.progress : [],
-      }));
+      setState((s) => {
+        const progress = 'progress' in s ? s.progress : [];
+        if (p.prompt.type === 'select') {
+          return { phase: 'select', message: p.prompt.message, options: p.prompt.options, progress };
+        }
+        return {
+          phase: 'manualCode',
+          url: 'url' in s ? s.url : lastUrl.current,
+          instructions: 'instructions' in s ? s.instructions : undefined,
+          prompt: p.prompt,
+          progress,
+        };
+      });
+    }));
+    offs.push(window.kydog.on('oauth.promptCancel', (p) => {
+      if (p.providerId !== providerId) return;
+      setState((s) => {
+        // 只有正挂着一次提问的两个态需要退出去；success / error / idle 收到这个事件不该被拽回来。
+        if (s.phase !== 'manualCode' && s.phase !== 'select') return s;
+        const url = s.phase === 'manualCode' ? s.url : lastUrl.current;
+        // progress 是一路攒下来的，换态时原样带走。
+        if (!url) return { phase: 'finishing', progress: s.progress };
+        return {
+          phase: 'authPrompt',
+          url,
+          instructions: s.phase === 'manualCode' ? s.instructions : undefined,
+          progress: s.progress,
+        };
+      });
     }));
     offs.push(window.kydog.on('oauth.success', (p) => {
       if (p.providerId !== providerId) return;
@@ -56,7 +81,7 @@ export function useOAuthLoginFlow(providerId: string) {
   };
   const reply = async (value: string) => {
     await window.kydog.invoke('llm.loginPromptReply', { providerId, value });
-    setState((s) => 'progress' in s ? { ...s, phase: 'finishing' as const, progress: s.progress } : { phase: 'finishing', progress: [] });
+    setState((s) => ({ phase: 'finishing', progress: 'progress' in s ? s.progress : [] }));
   };
   const reset = () => setState({ phase: 'idle' });
 

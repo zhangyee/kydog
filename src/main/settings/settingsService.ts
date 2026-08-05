@@ -1,13 +1,12 @@
 // src/main/settings/settingsService.ts
-import { lock, lockSync } from 'proper-lockfile';
-import { readFileSync } from 'node:fs';
+import { lock } from 'proper-lockfile';
 import * as paths from '../persist/paths';
-import { defaultSettings, loadSettings, ensureSettingsFile, parseAndMigrateSettings } from '../persist/settingsFile';
-import { atomicWriteWith0600Async, atomicWriteWith0600Sync } from '../persist/atomicWrite';
+import { defaultSettings, loadSettings, ensureSettingsFile } from '../persist/settingsFile';
+import { atomicWriteWith0600Async } from '../persist/atomicWrite';
 import type { SettingsFile, SettingsPatch } from '../../shared/types';
 
-// In-process serialization: all operations (sync and async) are serialized
-// through this chain so proper-lockfile is never contested within one process.
+// In-process serialization: all operations are serialized through this chain
+// so proper-lockfile is never contested within one process.
 let _queue: Promise<unknown> = Promise.resolve();
 
 /** Enqueue an async operation after all pending operations complete. */
@@ -25,12 +24,6 @@ const FILE_LOCK_OPTS = (): Parameters<typeof lock>[1] => ({
   lockfilePath: paths.LOCK_PATH,
   realpath: false,
   retries: { retries: 5, minTimeout: 50, maxTimeout: 200 },
-  stale: 10_000,
-});
-
-const FILE_LOCK_OPTS_SYNC = (): Parameters<typeof lockSync>[1] => ({
-  lockfilePath: paths.LOCK_PATH,
-  realpath: false,
   stale: 10_000,
 });
 
@@ -85,32 +78,6 @@ export class SettingsService {
     });
   }
 
-  withLockSync<T>(
-    fn: (current: SettingsFile) => { next?: SettingsFile; result: T },
-  ): T {
-    // Sync operations are serialized with the async queue via a synchronous
-    // placeholder: we append a settled promise so future async ops wait after us.
-    ensureSettingsFile();
-    const release = lockSync(paths.ROOT, FILE_LOCK_OPTS_SYNC());
-    let result: T;
-    try {
-      const raw = readFileSync(paths.SETTINGS_FILE, 'utf8');
-      const current: SettingsFile = parseAndMigrateSettings(raw);
-      const { next, result: r } = fn(current);
-      result = r;
-      if (next && next !== current) {
-        atomicWriteWith0600Sync(paths.SETTINGS_FILE, JSON.stringify(next, null, 2));
-        this.cache = next;
-      } else {
-        this.cache = current;
-      }
-    } finally {
-      release();
-    }
-    // Block any pending async ops from seeing stale data by draining their
-    // pre-acquired lock attempts — not needed because enqueueAsync serializes.
-    return result!;
-  }
 }
 
 export const settingsService = new SettingsService();
