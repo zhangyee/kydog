@@ -78,6 +78,8 @@ export function registerAllHandlers(): void {
   registerHandler('thread.loadHistory', (args) => threadService.loadHistory(args));
   registerHandler('thread.send', (args) => threadService.send(args));
   registerHandler('thread.abort', (args) => threadService.abort(args));
+  registerHandler('ask.submit', (args) => threadService.submitAsk(args));
+  registerHandler('ask.cancel', (args) => threadService.cancelAsk(args));
   registerHandler('thread.update', (args) => threadService.update(args));
 
   registerHandler('skill.getPendingSync', () => skillSyncStateHolder.getStatus());

@@ -3,6 +3,7 @@ import type {
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
 } from './types';
+import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
 
 export type RpcCall =
@@ -63,6 +64,8 @@ export type RpcCall =
   | { method: 'update.restartAndInstall'; args: undefined; result: void }
   // ── Onboarding ──
   | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
+  | { method: 'ask.submit'; args: { threadId: string; toolCallId: string; answers: AskAnswer[] }; result: void }
+  | { method: 'ask.cancel'; args: { threadId: string; toolCallId: string }; result: void }
   | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult };
 
 export type RpcMethod = RpcCall['method'];
@@ -82,6 +85,8 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
   | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
+  | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[] } }
+  | { topic: 'run.ask_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; outcome: AskOutcome } }
   | { topic: 'run.ended'; payload: { threadId: string; runId: string; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string } }
   | { topic: 'oauth.auth'; payload: { providerId: string; url: string; instructions?: string } }
   | { topic: 'oauth.progress'; payload: { providerId: string; message: string } }

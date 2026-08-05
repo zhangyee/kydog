@@ -4,6 +4,7 @@ import { promises as fsp } from 'node:fs';
 import { settingsService } from '../settings/settingsService';
 import * as paths from '../persist/paths';
 import { logger } from '../log';
+import { createAskBatchExtension } from '../agent/askBatchExtension';
 
 export const KYDOG_SKILLS_DIR = path.join(os.homedir(), '.kydog', 'skills');
 
@@ -62,6 +63,8 @@ export async function createKydogResourceLoader(projectCwd: string) {
   // keep their original filter; new sessions pick up the latest setting.
   const disabled = (await settingsService.get()).skills.disabledBuiltins;
   const harness = await loadHarnessAgentsFiles();
+  // 批次独占：loader 与 session 同生命周期，所以守卫天然按 thread 隔离。
+  const { factory: askBatchFactory } = createAskBatchExtension();
   return new pi.DefaultResourceLoader({
     cwd: projectCwd,
     agentDir: pi.getAgentDir(),
@@ -69,5 +72,6 @@ export async function createKydogResourceLoader(projectCwd: string) {
     additionalSkillPaths: [KYDOG_SKILLS_DIR],
     skillsOverride: buildSkillsOverride(disabled),
     agentsFilesOverride: buildAgentsFilesOverride(harness),
+    extensionFactories: [askBatchFactory],
   });
 }

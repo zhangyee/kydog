@@ -1,0 +1,41 @@
+{
+  "events": [
+    { "type": "agent_start", "after_ms": 0 },
+    { "type": "message_start", "after_ms": 10, "messageId": "m1" },
+    { "type": "text_delta", "after_ms": 10, "messageId": "m1", "delta": "我需要先确认几件事。" },
+    { "type": "message_end", "after_ms": 10, "messageId": "m1", "toolCallIds": ["ask-1"], "toolNames": ["ask_user_question"] },
+    {
+      "type": "ask",
+      "after_ms": 10,
+      "toolCallId": "ask-1",
+      "questions": [
+        {
+          "question": "这次改动落在哪个分支上？",
+          "header": "分支",
+          "options": [
+            { "label": "当前 worktree", "description": "继续留在这个隔离分支上。", "recommended": true },
+            { "label": "新开一个 worktree", "description": "跟当前改动完全隔离。" }
+          ]
+        },
+        {
+          "question": "需要跑哪些验证？",
+          "header": "验证",
+          "multiSelect": true,
+          "options": [
+            { "label": "tsc", "description": "类型检查。" },
+            { "label": "vitest", "description": "单元测试。" }
+          ]
+        },
+        {
+          "question": "完成后怎么交付？",
+          "header": "交付",
+          "options": [
+            { "label": "开 PR", "description": "走评审流程。" },
+            { "label": "直接推", "description": "小改动直接落。" }
+          ]
+        }
+      ]
+    },
+    { "type": "agent_end", "after_ms": 10, "reason": "completed" }
+  ]
+}

@@ -1,6 +1,7 @@
 // src/main/agent/messageNormalizer.test.ts
 import { describe, it, expect } from 'vitest';
 import { normalizePiMessages, type PiMessage } from './messageNormalizer';
+import { ASK_TOOL_NAME } from '../../shared/askQuestion';
 
 describe('normalizePiMessages', () => {
   it('user message → KyDog user', () => {
@@ -299,5 +300,153 @@ describe('normalizePiMessages', () => {
     const tool = out[0].blocks.find((b) => b.kind === 'tool_call');
     if (!tool || tool.kind !== 'tool_call') throw new Error('no tool block');
     expect(tool.command).toBe(JSON.stringify({ file_path: '/p/a.md', content: '# hi' }));
+  });
+});
+
+describe('normalizePiMessages — 含 sequential 工具的批次不判为并行', () => {
+  it('两个普通工具仍然共享 parallelGroupId', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 't1', name: 'bash', arguments: {} },
+        { type: 'toolCall', id: 't2', name: 'read', arguments: {} },
+      ] },
+    ] as never);
+    const blocks = (out[0] as { blocks: Array<{ parallelGroupId?: string }> }).blocks;
+    expect(blocks[0].parallelGroupId).toBeDefined();
+    expect(blocks[0].parallelGroupId).toBe(blocks[1].parallelGroupId);
+  });
+
+  it('批次里有 ask 时所有 toolCall 都没有 parallelGroupId', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 't1', name: 'bash', arguments: {} },
+        { type: 'toolCall', id: 't2', name: ASK_TOOL_NAME, arguments: {} },
+      ] },
+    ] as never);
+    const blocks = (out[0] as { blocks: Array<{ parallelGroupId?: string }> }).blocks;
+    expect(blocks[0].parallelGroupId).toBeUndefined();
+    expect(blocks[1].parallelGroupId).toBeUndefined();
+  });
+});
+
+describe('normalizePiMessages — ask_user_question', () => {
+  const questions = [{
+    id: 'q0', question: '选哪个？', header: '选择',
+    options: [{ id: 'q0o0', label: 'A', description: 'a' }, { id: 'q0o1', label: 'B', description: 'b' }],
+  }];
+  const askCall = { type: 'toolCall' as const, id: 'tc1', name: ASK_TOOL_NAME, arguments: {} };
+
+  it('有合法 AskOutcome 的 toolResult 还原成 answered 的 ask block', () => {
+    const answers = [{ questionId: 'q0', kind: 'answered' as const, optionIds: ['q0o0'] }];
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: false,
+        content: [{ type: 'text', text: '用户回答：' }],
+        details: { kind: 'answered', answers, questions },
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toEqual({ kind: 'ask', toolCallId: 'tc1', questions, status: 'answered', answers });
+  });
+
+  it('cancelled 的 toolResult 还原成 cancelled，不带 answers', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: false,
+        content: [{ type: 'text', text: '用户关闭了提问，未作回答。' }],
+        details: { kind: 'cancelled', questions },
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toEqual({ kind: 'ask', toolCallId: 'tc1', questions, status: 'cancelled' });
+  });
+
+  it('aborted 同样还原，且与 cancelled 区分', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: false,
+        content: [{ type: 'text', text: '提问被中止，用户未作回答。' }],
+        details: { kind: 'aborted', questions },
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toMatchObject({ kind: 'ask', status: 'aborted' });
+    expect(block).not.toHaveProperty('answers');
+  });
+
+  it('没有 toolResult 还原成 unanswered，问题文本取自 arguments', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [{
+        type: 'toolCall', id: 'tc1', name: ASK_TOOL_NAME,
+        arguments: { questions: [{ question: '选哪个？', header: '选择', options: [
+          { label: 'A', description: 'a' }, { label: 'B', description: 'b' },
+        ] }] },
+      }] },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block).toMatchObject({ kind: 'ask', toolCallId: 'tc1', status: 'unanswered' });
+    const qs = (block as { questions: Array<{ id: string; question: string }> }).questions;
+    expect(qs[0].id).toBe('q0');
+    expect(qs[0].question).toBe('选哪个？');
+  });
+
+  it('fallback 的 id 按下标分配，多问题时不会全挤在 q0', () => {
+    const opts = [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }];
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [{
+        type: 'toolCall', id: 'tc1', name: ASK_TOOL_NAME,
+        arguments: { questions: [
+          { question: '第一题？', header: '一', options: opts },
+          { question: '第二题？', header: '二', options: opts },
+        ] },
+      }] },
+    ] as never);
+    const qs = (out[0] as { blocks: Array<{ questions: Array<{ id: string; options: Array<{ id: string }> }> }> })
+      .blocks[0].questions;
+    expect(qs.map((q) => q.id)).toEqual(['q0', 'q1']);
+    expect(qs[1].options.map((o) => o.id)).toEqual(['q1o0', 'q1o1']);
+  });
+
+  it('details 是空对象（校验失败留下的 error toolResult）还原成普通失败工具卡片', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: true,
+        content: [{ type: 'text', text: 'questions 只能有 1–4 条' }],
+        details: {},
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block.kind).toBe('tool_call');
+    expect(block.status).toBe('failed');
+    expect(block.chunks).toEqual([{ stream: 'stdout', data: 'questions 只能有 1–4 条' }]);
+  });
+
+  // 「有没有 toolResult」是协议事实，不能用 details 在不在去反推：details 缺失的
+  // toolResult 依然是一个已经结束的调用，不是「进程挂在提问上退出」。
+  it('有 toolResult 但没有 details 时还原成普通失败工具卡片，不是 unanswered', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [askCall] },
+      {
+        role: 'toolResult', toolCallId: 'tc1', toolName: ASK_TOOL_NAME, isError: true,
+        content: [{ type: 'text', text: 'questions 只能有 1–4 条' }],
+      },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block.kind).toBe('tool_call');
+    expect(block.status).toBe('failed');
+  });
+
+  it('普通工具不受影响', () => {
+    const out = normalizePiMessages([
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', isError: false, content: [{ type: 'text', text: 'ok' }] },
+    ] as never);
+    const block = (out[0] as { blocks: Array<Record<string, unknown>> }).blocks[0];
+    expect(block.kind).toBe('tool_call');
+    expect(block.status).toBe('ok');
   });
 });
