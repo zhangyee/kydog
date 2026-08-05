@@ -7,6 +7,9 @@ import { settingsService } from '../settings/settingsService';
 import { agentService } from '../agent/AgentService';
 import { logger } from '../log';
 import type { ProviderId } from '../../shared/types';
+import type { OAuthPromptPayload } from '../../shared/protocol';
+// 用 pi 自己的 AuthPrompt 钉住形状：pi 哪天加一个 prompt 变体，这里编译期就会报错。
+import type { AuthPrompt } from '@earendil-works/pi-ai';
 
 type Pending = {
   controller: AbortController;
@@ -29,7 +32,7 @@ class OAuthCoordinator {
     this.inflight.set(providerId, { controller });
 
     // 等一个渲染进程回填的输入：把 resolver 挂到 inflight 上，再把提示广播出去。
-    const askRenderer = (prompt: { message: string; placeholder?: string }) =>
+    const askRenderer = (prompt: OAuthPromptPayload) =>
       new Promise<string>((resolve) => {
         const pending = this.inflight.get(providerId);
         if (!pending) return resolve('');
@@ -62,15 +65,22 @@ class OAuthCoordinator {
         }
         // 未知的新 event 变体：忽略。通知类事件不该让一次登录崩掉。
       },
-      prompt: (p: { type: string; message: string; placeholder?: string }) => {
-        // KyDog 的 oauth.prompt IPC 只带 {message, placeholder}，表达不了 select 的选项列表。
-        // 真出现了要响，不要静默降级成文本框——那会拿一个错答案继续走下去。
+      prompt: (p: AuthPrompt) => {
+        // select 的 message / label 是 provider 自己的内容，逐字带过去，不翻译也不改写：
+        // 想翻译就得按 provider 维护一张英文串→中文的表，pi 改一次措辞或多给一个选项，
+        // 那张表就会静默失真甚至张冠李戴。中文外框由渲染进程给（它知道这是「选择登录方式」，
+        // 与 provider 无关），选项本身照抄。id 尤其要原样回传——pi 拿它分支。
         if (p.type === 'select') {
-          throw new Error(`provider ${providerId} 的登录流程需要 select 提示，KyDog 尚未支持`);
+          return askRenderer({
+            type: 'select',
+            message: p.message,
+            options: p.options.map((o) => ({ id: o.id, label: o.label, description: o.description })),
+          });
         }
-        // manual_code 沿用原来的中文提示：pi 给的是英文串，这里的 UI 是中文的。
-        if (p.type === 'manual_code') return askRenderer({ message: '请粘贴回调码' });
-        return askRenderer({ message: p.message, placeholder: p.placeholder });
+        // manual_code 沿用原来的中文提示：这是「回调码」这个类型本身的译名，与 provider 无关，
+        // 不像 select 的选项那样承载 provider 特有内容，所以覆盖是安全的。
+        if (p.type === 'manual_code') return askRenderer({ type: 'manual_code', message: '请粘贴回调码' });
+        return askRenderer({ type: p.type, message: p.message, placeholder: p.placeholder });
       },
     };
 

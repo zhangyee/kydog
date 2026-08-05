@@ -38,6 +38,7 @@ export function OAuthForm({ providerId }: { providerId: string }) {
           <span className="font-serif italic" style={{ fontSize: 12, color: 'var(--color-ink-soft)' }}>
             {isLoggedIn ? `已登录${configured?.authStatus.label ? ` · ${configured.authStatus.label}` : ''}` :
              flow.state.phase === 'idle' ? '未登录' :
+             flow.state.phase === 'select' ? '等待选择登录方式…' :
              flow.state.phase === 'authPrompt' ? '等待浏览器授权…' :
              flow.state.phase === 'manualCode' ? '等待回调码…' :
              flow.state.phase === 'finishing' ? '正在完成…' :
@@ -62,6 +63,40 @@ export function OAuthForm({ providerId }: { providerId: string }) {
           )}
         </div>
       </Section>
+
+      {flow.state.phase === 'select' && (
+        <div style={{ paddingTop: 10, marginTop: -10, marginBottom: 16 }}>
+          {/* select 早于 auth_url，此时还没有授权链接，所以这一块不带 URL 展示。 */}
+          <div className="font-mono uppercase" style={{ fontSize: 9, color: 'var(--color-ink-faint)', letterSpacing: 1.2 }}>
+            选择登录方式
+          </div>
+          {/* pi 的原文与选项措辞照抄：KyDog 不认识各家 provider 的选项含义，翻译只会失真。 */}
+          <div className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-faint)', marginTop: 4 }}>
+            {flow.state.message}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, marginTop: 8 }}>
+            {flow.state.options.map((o) => (
+              <div key={o.id}>
+                <button type="button" onClick={() => void flow.reply(o.id)}
+                  className="font-sans bg-[color:var(--color-paper-deep)]"
+                  style={{ padding: '5px 12px', borderRadius: 999, fontSize: 11, border: '0.5px solid var(--color-ink-hair)' }}>
+                  {o.label}
+                </button>
+                {o.description ? (
+                  <div className="font-serif italic" style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginTop: 3 }}>
+                    {o.description}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {flow.state.progress.length ? (
+            <div className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-soft)', marginTop: 10 }}>
+              {flow.state.progress.map((m: string, i: number) => <div key={i}>· {m}</div>)}
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {(flow.state.phase === 'authPrompt' || flow.state.phase === 'manualCode') && (
         <div style={{ paddingTop: 10, marginTop: -10, marginBottom: 16 }}>

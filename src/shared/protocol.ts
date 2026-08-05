@@ -90,13 +90,27 @@ export type RuntimeEvent =
   | { topic: 'run.ended'; payload: { threadId: string; runId: string; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string } }
   | { topic: 'oauth.auth'; payload: { providerId: string; url: string; instructions?: string } }
   | { topic: 'oauth.progress'; payload: { providerId: string; message: string } }
-  | { topic: 'oauth.prompt'; payload: { providerId: string; prompt: { message: string; placeholder?: string; allowEmpty?: boolean } } }
+  | { topic: 'oauth.prompt'; payload: { providerId: string; prompt: OAuthPromptPayload } }
   | { topic: 'oauth.success'; payload: { providerId: string } }
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }
   | { topic: 'fs.changed'; payload: { projectPath: string } }
   | { topic: 'identity.changed'; payload: Identity }
   | { topic: 'update.status'; payload: UpdateStatus };
+
+/** select 的一个候选项。`id` 是要原样回传给 pi 的答案，label/description 是 provider 自己的措辞。 */
+export type OAuthPromptOption = { id: string; label: string; description?: string };
+
+/**
+ * 登录流程里 pi 抛给用户的一次提问，镜像 pi 的 `AuthPrompt`（去掉 `signal`——那是主进程内部的事）。
+ * select 必须整条把 options 带到渲染进程：只传 message 就等于把「有哪些选项」这个信号丢了，
+ * 下游只能猜一个默认值。
+ */
+export type OAuthPromptPayload =
+  | { type: 'text'; message: string; placeholder?: string }
+  | { type: 'secret'; message: string; placeholder?: string }
+  | { type: 'manual_code'; message: string; placeholder?: string }
+  | { type: 'select'; message: string; options: readonly OAuthPromptOption[] };
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];
