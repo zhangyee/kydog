@@ -30,7 +30,7 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
     void window.kydog.invoke('settings.get').then((s) => {
       if (cancelled) return;
       const cred = s.llm.auth[providerId];
-      const stored = cred?.type === 'api_key' ? cred.key : '';
+      const stored = cred?.type === 'api_key' ? cred.key ?? '' : '';
       setApiKey(stored);
       setBaseUrl(s.llm.providers[providerId]?.baseUrl ?? '');
       setAuthType(cred?.type ?? null);
