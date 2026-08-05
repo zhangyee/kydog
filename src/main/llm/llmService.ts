@@ -49,7 +49,7 @@ class LlmService {
   private async entryFor(id: ProviderId, settings: SettingsFile, reg: ProviderRegistry): Promise<LlmConfiguredEntry> {
     const cat = getCatalogEntry(id);
     const provOverride = settings.llm.providers[id];
-    const all = (reg.modelRegistry as any).getAll?.() ?? [];
+    const all = (reg.modelRuntime as any).getModels?.() ?? [];
     const modelIds = (all as Array<{ provider: string; id: string }>)
       .filter((m) => m.provider === id)
       .map((m) => m.id);
@@ -58,7 +58,7 @@ class LlmService {
     if (cat?.kind === 'cloud' && cat.cloud?.cfgKind === 'vertex') {
       authStatus = await getVertexAuthStatus(provOverride?.cloud?.kind === 'vertex' ? provOverride.cloud : undefined);
     } else {
-      const piStatus = (reg.authStorage as any).getAuthStatus?.(id) ?? { configured: false };
+      const piStatus = (reg.modelRuntime as any).getProviderAuthStatus?.(id) ?? { configured: false };
       authStatus = piStatus;
     }
     return {
@@ -188,7 +188,7 @@ class LlmService {
   async testConnection(providerId: ProviderId): Promise<LlmTestConnectionResult> {
     try {
       const reg = getProviderRegistry();
-      const all = (reg.modelRegistry as any).getAll?.() ?? [];
+      const all = (reg.modelRuntime as any).getModels?.() ?? [];
       const has = (all as Array<{ provider: string }>).some((m) => m.provider === providerId);
       return { ok: has, message: has ? undefined : 'no models registered for provider' };
     } catch (err) {

@@ -32,7 +32,7 @@ describe('llmService', () => {
     expect(r.defaultProvider).toBeNull();
   });
 
-  it('configure(apiKey): 写 auth blob + providers entry + reloadAuth', async () => {
+  it('configure(apiKey): 写 auth blob + providers entry + 出现在 configured 列表', async () => {
     await llmService.configure({
       providerId: 'anthropic',
       cfg: { kind: 'apiKey', apiKey: 'sk-ant-1', baseUrl: 'https://x.example' },

@@ -114,6 +114,6 @@ export const onboardingService = createOnboardingService({
   deleteManifest: () => deleteManifest(),
   discardCorruptManifest: () => discardCorruptManifest(),
   isModelResolvable: (providerId, modelId) =>
-    Boolean(getProviderRegistry().modelRegistry.find(providerId, modelId)),
+    Boolean(getProviderRegistry().modelRuntime.getModel(providerId, modelId)),
   now: () => new Date().toISOString(),
 });
