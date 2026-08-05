@@ -46,13 +46,14 @@ export class SettingsService {
   async update(patch: SettingsPatch): Promise<SettingsFile> {
     return this.withLock(async (cur) => {
       const next: SettingsFile = {
-        schemaVersion: 6,
+        schemaVersion: 7,
         ui: { ...cur.ui, ...(patch.ui ?? {}) },
         llm: { ...cur.llm, ...(patch.llm ?? {}) },
         skills: { ...cur.skills, ...(patch.skills ?? {}) },
         tools: { ...cur.tools, ...(patch.tools ?? {}) },
         research: { ...cur.research, ...(patch.research ?? {}) },
         updates: cur.updates,     // 只能由更新服务改（spec §7）
+        telemetry: cur.telemetry, // 只能由 telemetryService 改（见 telemetry/telemetryService.ts）
         onboarding: cur.onboarding, // 只能由 onboarding 服务改（spec §7）
       };
       return { next, result: next };

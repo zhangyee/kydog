@@ -5,7 +5,7 @@ import path from 'node:path';
 import * as paths from './paths';
 import { ensureSettingsFile, loadSettings, defaultSettings, parseAndMigrateSettings } from './settingsFile';
 
-describe('settingsFile v6', () => {
+describe('settingsFile v7', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-settings-'));
@@ -15,9 +15,9 @@ describe('settingsFile v6', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('defaultSettings: schemaVersion=6 + 空 llm + readingFontSize=medium', () => {
+  it('defaultSettings: schemaVersion=7 + 空 llm + readingFontSize=medium', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(6);
+    expect(d.schemaVersion).toBe(7);
     expect(d.ui.readingFontSize).toBe('medium');
     expect(d.llm.auth).toEqual({});
     expect(d.llm.providers).toEqual({});
@@ -26,14 +26,14 @@ describe('settingsFile v6', () => {
     expect(d.llm.defaultModel).toBeNull();
   });
 
-  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v6', () => {
+  it('ensureSettingsFile: 创建 ~/.kydog (0700) + kydog.json (0600) v7', () => {
     ensureSettingsFile();
     if (process.platform !== 'win32') {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       expect(statSync(path.join(dir, 'kydog.json')).mode & 0o777).toBe(0o600);
     }
     const content = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
-    expect(JSON.parse(content).schemaVersion).toBe(6);
+    expect(JSON.parse(content).schemaVersion).toBe(7);
   });
 
   it('ensureSettingsFile: 已存在文件不覆盖', async () => {
@@ -44,7 +44,7 @@ describe('settingsFile v6', () => {
     expect(content).toBe('{"sentinel":1}');
   });
 
-  it('loadSettings: v1 → v6 reset (保留 ui/skills/tools，重置 llm)', async () => {
+  it('loadSettings: v1 → v7 reset (保留 ui/skills/tools，重置 llm)', async () => {
     ensureSettingsFile();
     const v1 = {
       schemaVersion: 1,
@@ -55,7 +55,7 @@ describe('settingsFile v6', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(6);
+    expect(next.schemaVersion).toBe(7);
     expect(next.ui.theme).toBe('midnight');
     expect(next.ui.readingFontSize).toBe('medium');
     expect(next.skills.disabledBuiltins).toEqual(['old']);
@@ -63,7 +63,7 @@ describe('settingsFile v6', () => {
     expect(next.llm.providers).toEqual({});
   });
 
-  it('loadSettings: v2 → v6（保留所有字段，补 readingFontSize=medium）', async () => {
+  it('loadSettings: v2 → v7（保留所有字段，补 readingFontSize=medium）', async () => {
     ensureSettingsFile();
     const v2 = {
       schemaVersion: 2,
@@ -80,21 +80,21 @@ describe('settingsFile v6', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v2));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(6);
+    expect(next.schemaVersion).toBe(7);
     expect(next.ui.theme).toBe('midnight');
     expect(next.ui.readingFontSize).toBe('medium');
     expect(next.llm.defaultProvider).toBe('anthropic');
     expect(next.skills.disabledBuiltins).toEqual(['old']);
   });
 
-  it('loadSettings: v3 → v6（passthrough，保留 readingFontSize=large）', async () => {
+  it('loadSettings: v3 → v7（passthrough，保留 readingFontSize=large）', async () => {
     ensureSettingsFile();
     const v3 = defaultSettings();
     v3.ui.readingFontSize = 'large';
     v3.ui.theme = 'sepia';
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const next = await loadSettings();
-    expect(next.schemaVersion).toBe(6);
+    expect(next.schemaVersion).toBe(7);
     expect(next.ui.readingFontSize).toBe('large');
     expect(next.ui.theme).toBe('sepia');
   });
@@ -109,14 +109,14 @@ describe('settingsFile v6', () => {
     warn.mockRestore();
   });
 
-  it('defaultSettings: schemaVersion=6 + onboarding.completedAt=null', () => {
+  it('defaultSettings: schemaVersion=7 + onboarding.completedAt=null', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(6);
+    expect(d.schemaVersion).toBe(7);
     expect(d.onboarding).toEqual({ completedAt: null });
     expect(d.ui.locale).toBe('zh');
   });
 
-  it('loadSettings: v3 → v6 补 onboarding，保留其余字段', async () => {
+  it('loadSettings: v3 → v7 补 onboarding，保留其余字段', async () => {
     ensureSettingsFile();
     const v3 = {
       schemaVersion: 3,
@@ -127,13 +127,13 @@ describe('settingsFile v6', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const s = await loadSettings();
-    expect(s.schemaVersion).toBe(6);
+    expect(s.schemaVersion).toBe(7);
     expect(s.onboarding).toEqual({ completedAt: null });
     expect(s.ui.theme).toBe('midnight');
     expect(s.llm.defaultProvider).toBe('anthropic');
   });
 
-  it('loadSettings: v3 → v6 迁移时 ui.locale=\'en\' 保留', async () => {
+  it('loadSettings: v3 → v7 迁移时 ui.locale=\'en\' 保留', async () => {
     ensureSettingsFile();
     const v3 = {
       schemaVersion: 3,
@@ -144,27 +144,27 @@ describe('settingsFile v6', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v3));
     const s = await loadSettings();
-    expect(s.schemaVersion).toBe(6);
+    expect(s.schemaVersion).toBe(7);
     expect(s.ui.locale).toBe('en');
     expect(s.onboarding).toEqual({ completedAt: null });
   });
 
-  it('loadSettings: v6 原样回读（completedAt 保留）；非法 locale 归位 zh', async () => {
+  it('loadSettings: v7 原样回读（completedAt 保留）；非法 locale 归位 zh', async () => {
     ensureSettingsFile();
-    const v6 = { ...defaultSettings(), ui: { ...defaultSettings().ui, locale: 'fr' }, onboarding: { completedAt: '2026-01-01T00:00:00.000Z' } };
-    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v6));
+    const v7 = { ...defaultSettings(), ui: { ...defaultSettings().ui, locale: 'fr' }, onboarding: { completedAt: '2026-01-01T00:00:00.000Z' } };
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v7));
     const s = await loadSettings();
     expect(s.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
     expect(s.ui.locale).toBe('zh');
   });
 
-  it('defaultSettings: schemaVersion=6 + research 为空表', () => {
+  it('defaultSettings: schemaVersion=7 + research 为空表', () => {
     const d = defaultSettings();
-    expect(d.schemaVersion).toBe(6);
+    expect(d.schemaVersion).toBe(7);
     expect(d.research).toEqual({ presets: {}, custom: [] });
   });
 
-  it('loadSettings: v4 → v6 补出空 research，其余字段保留', async () => {
+  it('loadSettings: v4 → v7 补出空 research，其余字段保留', async () => {
     ensureSettingsFile();
     const v4 = {
       schemaVersion: 4,
@@ -176,7 +176,7 @@ describe('settingsFile v6', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v4));
     const s = await loadSettings();
-    expect(s.schemaVersion).toBe(6);
+    expect(s.schemaVersion).toBe(7);
     expect(s.research).toEqual({ presets: {}, custom: [] });
     expect(s.ui.theme).toBe('sepia');
     expect(s.ui.locale).toBe('en');
@@ -184,16 +184,16 @@ describe('settingsFile v6', () => {
     expect(s.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
   });
 
-  it('loadSettings: v6 原样回读 research', async () => {
+  it('loadSettings: v7 原样回读 research', async () => {
     ensureSettingsFile();
-    const v6 = {
+    const v7 = {
       ...defaultSettings(),
       research: {
         presets: { NCBI_API_KEY: 'k1' },
         custom: [{ name: 'MY_KEY', kind: 'key', value: 'v1' }],
       },
     };
-    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v6));
+    await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v7));
     const s = await loadSettings();
     expect(s.research.presets).toEqual({ NCBI_API_KEY: 'k1' });
     expect(s.research.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
@@ -220,7 +220,7 @@ describe('settingsFile v6', () => {
     expect(s.research.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
   });
 
-  it('loadSettings: v1 → v6 时 research 为空表', async () => {
+  it('loadSettings: v1 → v7 时 research 为空表', async () => {
     ensureSettingsFile();
     const v1 = {
       schemaVersion: 1,
@@ -231,7 +231,7 @@ describe('settingsFile v6', () => {
     };
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
     const s = await loadSettings();
-    expect(s.schemaVersion).toBe(6);
+    expect(s.schemaVersion).toBe(7);
     expect(s.research).toEqual({ presets: {}, custom: [] });
   });
 
@@ -255,7 +255,7 @@ describe('settingsFile v6', () => {
   });
 });
 
-describe('settings v5 → v6 迁移', () => {
+describe('settings v5 → v7 迁移', () => {
   it('v5 旧文件补齐 updates 节的默认值', () => {
     const v5 = JSON.stringify({
       schemaVersion: 5,
@@ -267,7 +267,7 @@ describe('settings v5 → v6 迁移', () => {
       onboarding: { completedAt: '2026-01-01T00:00:00.000Z' },
     });
     const got = parseAndMigrateSettings(v5);
-    expect(got.schemaVersion).toBe(6);
+    expect(got.schemaVersion).toBe(7);
     expect(got.updates).toEqual({ autoCheck: true, dismissedCandidateId: null });
     expect(got.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
   });
@@ -282,26 +282,26 @@ describe('settings v5 → v6 迁移', () => {
       onboarding: { completedAt: '2026-01-01T00:00:00.000Z' },
     });
     const got = parseAndMigrateSettings(v4);
-    expect(got.schemaVersion).toBe(6);
+    expect(got.schemaVersion).toBe(7);
     expect(got.updates).toEqual({ autoCheck: true, dismissedCandidateId: null });
     expect(got.research).toEqual({ presets: {}, custom: [] });
     expect(got.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
   });
 
-  it('v6 文件原样保留 updates 的真实值', () => {
-    const v6 = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), updates: { autoCheck: false, dismissedCandidateId: 'https://example/x.zip' } });
-    const got = parseAndMigrateSettings(v6);
+  it('v7 文件原样保留 updates 的真实值', () => {
+    const v7 = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), updates: { autoCheck: false, dismissedCandidateId: 'https://example/x.zip' } });
+    const got = parseAndMigrateSettings(v7);
     expect(got.updates).toEqual({ autoCheck: false, dismissedCandidateId: 'https://example/x.zip' });
   });
 
   it('updates 形状损坏时回落到默认值而不是把脏值透给上层', () => {
-    const bad = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), schemaVersion: 6, updates: { autoCheck: 'yes', dismissedCandidateId: 42 } });
+    const bad = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), schemaVersion: 7, updates: { autoCheck: 'yes', dismissedCandidateId: 42 } });
     const got = parseAndMigrateSettings(bad);
     expect(got.updates).toEqual({ autoCheck: true, dismissedCandidateId: null });
   });
 
   it('updates 逐字段兜形状：合法字段不被另一个字段的脏值牵连', () => {
-    const bad = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), schemaVersion: 6, updates: { autoCheck: false, dismissedCandidateId: 42 } });
+    const bad = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), schemaVersion: 7, updates: { autoCheck: false, dismissedCandidateId: 42 } });
     expect(parseAndMigrateSettings(bad).updates).toEqual({ autoCheck: false, dismissedCandidateId: null });
   });
 
@@ -311,7 +311,7 @@ describe('settings v5 → v6 迁移', () => {
     withLlm.llm.defaultModel = 'claude-sonnet-4-5';
     const bad = JSON.stringify({ ...withLlm, schemaVersion: '5' });
     const got = parseAndMigrateSettings(bad);
-    expect(got.schemaVersion).toBe(6);
+    expect(got.schemaVersion).toBe(7);
     // 落入保留分支的话 defaultProvider 会是 'anthropic'；落入 v1 重置分支才会是 null。
     expect(got.llm.defaultProvider).toBeNull();
     expect(got.llm.defaultModel).toBeNull();
@@ -319,9 +319,53 @@ describe('settings v5 → v6 迁移', () => {
   });
 
   it('超出已知范围的 schemaVersion 走重置分支 —— 下次 bump 记得抬高上界', () => {
-    const v7 = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), schemaVersion: 7 });
-    const got = parseAndMigrateSettings(v7);
-    expect(got.schemaVersion).toBe(6);
+    const v8 = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), schemaVersion: 8 });
+    const got = parseAndMigrateSettings(v8);
+    expect(got.schemaVersion).toBe(7);
     expect(got.llm.defaultProvider).toBeNull();
+  });
+});
+
+describe('telemetry 迁移', () => {
+  // 这条是本次迁移存在的理由：老用户从未被询问过，静默开启不是
+  // 「有瑕疵的同意」而是没有同意。undecided 与「明确选了关」必须可区分。
+  it('v6 迁到 v7 时 telemetry 为 undecided', () => {
+    const v6 = JSON.stringify({ ...defaultSettings(), schemaVersion: 6, telemetry: undefined });
+    const out = parseAndMigrateSettings(v6);
+    expect(out.schemaVersion).toBe(7);
+    expect(out.telemetry).toEqual({ state: 'undecided', decidedAt: null });
+  });
+
+  it('v1 迁到 v7 同样是 undecided', () => {
+    const out = parseAndMigrateSettings(JSON.stringify({ schemaVersion: 1, ui: { theme: 'vellum' } }));
+    expect(out.telemetry.state).toBe('undecided');
+  });
+
+  it('v7 原样保留用户的选择', () => {
+    const v7 = JSON.stringify({
+      ...defaultSettings(),
+      telemetry: { state: 'enabled', decidedAt: '2026-08-05T10:00:00.000Z' },
+    });
+    expect(parseAndMigrateSettings(v7).telemetry)
+      .toEqual({ state: 'enabled', decidedAt: '2026-08-05T10:00:00.000Z' });
+  });
+
+  // deleting 是最该被保住的状态：丢了它等于静默吞掉用户已经发出的删除请求 ——
+  // 重启后 telemetryService.init() 正是靠它决定要不要重试删除
+  it('v7 保留 deleting 状态，重启后才能重试删除', () => {
+    const v7 = JSON.stringify({
+      ...defaultSettings(),
+      telemetry: { state: 'deleting', decidedAt: '2026-08-05T10:00:00.000Z' },
+    });
+    expect(parseAndMigrateSettings(v7).telemetry.state).toBe('deleting');
+  });
+
+  it('state 值非法时回落 undecided，decidedAt 一并回落', () => {
+    const bad = JSON.stringify({ ...defaultSettings(), telemetry: { state: 'yes-please', decidedAt: 5 } });
+    expect(parseAndMigrateSettings(bad).telemetry).toEqual({ state: 'undecided', decidedAt: null });
+  });
+
+  it('全新安装默认 undecided —— 由 onboarding 询问后写入', () => {
+    expect(defaultSettings().telemetry).toEqual({ state: 'undecided', decidedAt: null });
   });
 });

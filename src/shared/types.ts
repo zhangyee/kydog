@@ -136,8 +136,10 @@ export type ReadingFontSize = 'small' | 'medium' | 'large';
 export type ResearchVarKind = 'key' | 'email';
 export type ResearchCustomVar = { name: string; kind: ResearchVarKind; value: string };
 
+export type TelemetryState = 'undecided' | 'enabled' | 'deleting' | 'disabled';
+
 export type SettingsFile = {
-  schemaVersion: 6;
+  schemaVersion: 7;
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
@@ -165,10 +167,14 @@ export type SettingsFile = {
     /** 已忽略横幅的不透明发布标识；仅做相等比较，不解析。 */
     dismissedCandidateId: string | null;
   };
+  /** 四态而非布尔：「已请求删除但尚未收到耐久确认」必须是可落盘的状态，
+   *  否则进程在删本地 ID 与写盘之间崩溃时，重启会生成新 ID 重新上报。
+   *  只能由 telemetryService 改（见 telemetry/telemetryService.ts），故不在 SettingsPatch 中。 */
+  telemetry: { state: TelemetryState; decidedAt: string | null };
   onboarding: { completedAt: string | null };
 };
 
-/** settings.update 专用 patch：排除 schemaVersion、onboarding 与 updates（spec §7）。 */
+/** settings.update 专用 patch：排除 schemaVersion、onboarding、updates 与 telemetry（spec §7）。 */
 export type SettingsPatch = {
   ui?: Partial<SettingsFile['ui']>;
   llm?: Partial<SettingsFile['llm']>;

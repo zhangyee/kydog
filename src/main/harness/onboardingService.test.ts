@@ -8,12 +8,13 @@ const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFon
 function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean }> = {}) {
   const state = {
     settings: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       ui: { theme: 'porcelain', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'small' },
       llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: over.model === false ? null : 'anthropic', defaultModel: over.model === false ? null : 'm1' },
       skills: { disabledBuiltins: [] }, tools: { externalBins: [] },
       research: { presets: {}, custom: [] },
       updates: { autoCheck: true, dismissedCandidateId: null },
+      telemetry: { state: 'undecided', decidedAt: null },
       onboarding: { completedAt: over.completedAt ?? null },
     } as SettingsFile,
     manifest: over.manifest ?? { status: 'none' as const },
