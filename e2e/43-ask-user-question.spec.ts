@@ -25,7 +25,7 @@ async function askUntilPending(page: Page) {
   await expect(page.locator('[data-testid="question-composer"]')).toBeVisible({ timeout: 10_000 });
 }
 
-test('42-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
+test('43-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
   try {
@@ -82,7 +82,7 @@ test('42-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
 
 // 键盘规格是刻意设计过的：三条快捷键都只在焦点不在输入框时生效，且这一版
 // 不做任何 Enter 提交/前进 —— 用户正在框里写想法时一个回车就跳走太危险。
-test('42-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提交', async () => {
+test('43-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提交', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
   try {
@@ -150,7 +150,7 @@ test('42-ask: 提问态的键盘快捷键只在输入框外生效，Enter 不提
   }
 });
 
-test('42-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async () => {
+test('43-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async () => {
   const launched = await launchWithProject();
   const page = launched.page;
   try {
@@ -177,7 +177,7 @@ test('42-ask: 关闭提问后 composer 恢复，留痕卡片记为取消', async
 // 留痕 buffer 只由 text / thinking 的 delta 事件创建，模型这一轮完全可以不写开场白
 // 直接发 ask。取消路径最险：terminate 让 loop 早停、第二轮永不到来，buffer 至始至终
 // 不存在，整轮在消息流里就什么都不剩了 —— 而重启走历史路径又能还原出来。
-test('42-ask: 这一轮没有开场白直接提问，取消后照样留下卡片', async () => {
+test('43-ask: 这一轮没有开场白直接提问，取消后照样留下卡片', async () => {
   const launched = await launchWithProject(noPreambleFixture);
   const page = launched.page;
   try {
