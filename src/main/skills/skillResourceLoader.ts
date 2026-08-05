@@ -8,6 +8,12 @@ import { createAskBatchExtension } from '../agent/askBatchExtension';
 
 export const KYDOG_SKILLS_DIR = path.join(os.homedir(), '.kydog', 'skills');
 
+// pi 把我们当成它自己的 CLI，`getAgentDir()` 会返回 ~/.pi/agent —— 也就是用户 pi CLI
+// 的家目录。KyDog 只是 SDK 嵌入方，不该读那里的 settings.json / SYSTEM.md / extensions，
+// 否则装了 pi 的机器和没装的机器行为不一致，且无从察觉。指向自己的目录把这条路断掉。
+// 从 paths.ROOT 派生（而不是 os.homedir()）是为了让测试能重定向到临时目录。
+export const kydogAgentDir = (): string => path.join(paths.ROOT, 'agent');
+
 export const HARNESS_MAX_CHARS = 24_000;
 const HARNESS_ORDER = ['SOUL.md', 'USER.md', 'AGENTS.md'] as const; // spec §9.2
 
@@ -67,8 +73,12 @@ export async function createKydogResourceLoader(projectCwd: string) {
   const { factory: askBatchFactory } = createAskBatchExtension();
   return new pi.DefaultResourceLoader({
     cwd: projectCwd,
-    agentDir: pi.getAgentDir(),
+    agentDir: kydogAgentDir(),
     noSkills: true,
+    // 从磁盘发现的扩展（agentDir/extensions、项目 .pi/extensions、pi settings 声明的
+    // packages）一律不加载 —— KyDog 一个都没有，加载进来的只会是环境里别人的东西。
+    // 不影响 extensionFactories：inline factory 走 loadExtensionFactories()，另一条路。
+    noExtensions: true,
     additionalSkillPaths: [KYDOG_SKILLS_DIR],
     skillsOverride: buildSkillsOverride(disabled),
     agentsFilesOverride: buildAgentsFilesOverride(harness),
