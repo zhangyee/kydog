@@ -129,6 +129,35 @@ describe('createKydogResourceLoader', () => {
     expect(errors.filter((e) => e.path.includes('evil.js'))).toEqual([]);
   });
 
+  // sessionFactory 调 reload({ resolveProjectTrust: async () => false })。DefaultResourceLoader
+  // 只在传了这个选项时才去问信任（resource-loader.js `if (options?.resolveProjectTrust)`），
+  // SettingsManager.projectTrusted 默认是 true —— 也就是说不传等于「信任用户随手打开的任意
+  // 目录」，那里的 .pi/settings.json 会被整份吃进来，.pi/SYSTEM.md 会顶掉 KyDog 自己的系统提示。
+  // 双向断言：不传时项目 SYSTEM.md 确实生效，传了才不生效。只断言后一半的话，选项被删掉测试照绿。
+  it('resolveProjectTrust=false 挡掉项目本地 .pi/SYSTEM.md，不传则会被吃进来', async () => {
+    const agentDir = path.join(home, 'agent');
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(path.join(agentDir, 'SYSTEM.md'), 'kydog own prompt');
+    mkdirSync(path.join(proj, '.pi'), { recursive: true });
+    writeFileSync(path.join(proj, '.pi', 'SYSTEM.md'), 'project injected prompt');
+    writeFileSync(path.join(proj, 'AGENTS.md'), 'P');
+
+    // 默认信任：项目的 SYSTEM.md 赢过 agentDir 的。这半边证明发现路径本身是通的，
+    // 下半边的「没吃到」才不会是因为文件根本没被看见。
+    const trusting = await createKydogResourceLoader(proj);
+    await trusting.reload();
+    expect(trusting.getSystemPrompt()).toBe('project injected prompt');
+
+    const loader = await createKydogResourceLoader(proj);
+    await loader.reload({ resolveProjectTrust: async () => false });
+    expect(loader.getSystemPrompt()).toBe('kydog own prompt');
+
+    // 项目 AGENTS.md 不受 trust 门禁管（loadProjectContextFiles() 无条件走 cwd 及祖先），
+    // 钉在这里免得以后有人把它当回归。
+    const files = loader.getAgentsFiles().agentsFiles;
+    expect(files.some((f) => f.path === path.join(proj, 'AGENTS.md'))).toBe(true);
+  });
+
   it('harness 文件前置于项目 agents files', async () => {
     writeFileSync(path.join(proj, 'AGENTS.md'), 'P');
     const loader = await createKydogResourceLoader(proj);
