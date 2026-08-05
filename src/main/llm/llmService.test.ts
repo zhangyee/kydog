@@ -25,9 +25,9 @@ describe('llmService', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('list: 空 settings → catalog 22 行 + configured 空', async () => {
+  it('list: 空 settings → catalog 20 行 + configured 空', async () => {
     const r = await llmService.list();
-    expect(r.catalog.length).toBe(22);
+    expect(r.catalog.length).toBe(20);
     expect(r.configured).toEqual([]);
     expect(r.defaultProvider).toBeNull();
   });

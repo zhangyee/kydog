@@ -24,20 +24,20 @@ export type CatalogEntry = {
 };
 
 export const PROVIDER_CATALOG: CatalogEntry[] = [
-  // ── 订阅（4）──
+  // ── 订阅（2）──
   // OAuth piProviderId 必须与 pi-ai 暴露的 OAuthProviderId 一致：anthropic / openai-codex /
-  // github-copilot / google-gemini-cli / google-antigravity。pi-ai 把 Claude Pro/Max OAuth
-  // 与 Anthropic API key 共用 auth['anthropic']，所以下面 'anthropic' 行同时承载两种 auth
-  // 模式（kind=apiKey 但带 oauth 字段；UI 在该 provider 的 detail 里同时给出登录按钮 + key 输入框）。
+  // github-copilot。pi-ai 把 Claude Pro/Max OAuth 与 Anthropic API key 共用 auth['anthropic']，
+  // 所以下面 'anthropic' 行同时承载两种 auth 模式（kind=apiKey 但带 oauth 字段；UI 在该
+  // provider 的 detail 里同时给出登录按钮 + key 输入框）。
+  //
+  // Gemini CLI 与 Google Antigravity 曾在这里，pi 0.83 把它们整个删了（CHANGELOG：「Removed
+  // built-in Google Gemini CLI and Google Antigravity support」），留着就是 UI 上的死链接。
+  // Gemini 本身不受影响 —— 下面 API key 组的 'google' 行照常，Vertex 也在。
   { id: 'openai-codex', displayName: 'ChatGPT (Codex)', kind: 'oauth', group: 'subscription',
     oauth: { piProviderId: 'openai-codex' } },
   { id: 'github-copilot', displayName: 'GitHub Copilot', kind: 'oauth', group: 'subscription',
     oauth: { piProviderId: 'github-copilot',
              helperText: '若提示「model not supported」，请在 VS Code Copilot Chat 模型选择器里启用对应模型。' } },
-  { id: 'google-gemini-cli', displayName: 'Gemini CLI', kind: 'oauth', group: 'subscription',
-    oauth: { piProviderId: 'google-gemini-cli' } },
-  { id: 'google-antigravity', displayName: 'Google Antigravity', kind: 'oauth', group: 'subscription',
-    oauth: { piProviderId: 'google-antigravity' } },
 
   // ── API Key（15）──
   // 'anthropic' 是混合行：API key + Claude Pro/Max OAuth 登录共一行
