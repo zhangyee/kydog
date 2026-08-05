@@ -238,6 +238,42 @@ describe('oauthCoordinator 的 prompt 映射', () => {
     expect(emitted.some((e) => e.topic === 'oauth.success')).toBe(true);
   });
 
+  // device_code 没有专门的 UI，退化成 oauth.progress 一行文字送到渲染进程。
+  // 这行文字是 Copilot 登录的全部内容——用户得照着它去浏览器里敲代码，丢一个字段就登不进去。
+  it('device_code：退化成进度行，验证地址与代码都在消息里', async () => {
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      // 与 pi github-copilot.js 里那次 notify 一模一样。
+      interaction.notify({
+        type: 'device_code',
+        userCode: 'ABCD-1234',
+        verificationUri: 'https://github.com/login/device',
+        intervalSeconds: 5,
+        expiresInSeconds: 900,
+      });
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('github-copilot');
+
+    const progress = emitted.filter((e) => e.topic === 'oauth.progress');
+    expect(progress).toHaveLength(1);
+    expect(progress[0].payload.providerId).toBe('github-copilot');
+    expect(progress[0].payload.message).toBe('在 https://github.com/login/device 输入代码 ABCD-1234');
+  });
+
+  it('progress / info：message 原样进同一条进度通道', async () => {
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      interaction.notify({ type: 'progress', message: 'Enabling models...' });
+      interaction.notify({ type: 'info', message: '附加说明' });
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('github-copilot');
+
+    expect(emitted.filter((e) => e.topic === 'oauth.progress').map((e) => e.payload.message))
+      .toEqual(['Enabling models...', '附加说明']);
+  });
+
   it('select 期间取消：resolver 被放空，登录以 error 收场而不是挂住', async () => {
     fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
       const method = await interaction.prompt({
