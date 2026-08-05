@@ -91,6 +91,9 @@ export type RuntimeEvent =
   | { topic: 'oauth.auth'; payload: { providerId: string; url: string; instructions?: string } }
   | { topic: 'oauth.progress'; payload: { providerId: string; message: string } }
   | { topic: 'oauth.prompt'; payload: { providerId: string; prompt: OAuthPromptPayload } }
+  // 上一次 oauth.prompt 作废了：pi 的 per-prompt signal 被 abort（例如浏览器回调先返回，
+  // 还挂着的粘贴框就没意义了）。渲染进程该把那个输入框收起来，别等整条登录出结果。
+  | { topic: 'oauth.promptCancel'; payload: { providerId: string } }
   | { topic: 'oauth.success'; payload: { providerId: string } }
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }

@@ -32,11 +32,32 @@ class OAuthCoordinator {
     this.inflight.set(providerId, { controller });
 
     // 等一个渲染进程回填的输入：把 resolver 挂到 inflight 上，再把提示广播出去。
-    const askRenderer = (prompt: OAuthPromptPayload) =>
-      new Promise<string>((resolve) => {
+    //
+    // signal 是 pi 的 per-prompt 取消（`AuthPrompt.signal`，区别于整条登录的 `interaction.signal`）：
+    // 浏览器回调先跑赢本地服务器时，pi 会 abort 掉还挂着的粘贴框。不订阅它，渲染进程就会一直停在
+    // 「请粘贴回调码」直到整条登录出结果，promptResolver 也一直悬着。
+    // abort 时按 pi 的契约 reject（types.d.ts: "Rejects on cancel/abort"），不是 resolve 一个空串——
+    // 空串会被 pi 当成用户真的粘了个空值。
+    const askRenderer = (prompt: OAuthPromptPayload, signal?: AbortSignal) =>
+      new Promise<string>((resolve, reject) => {
         const pending = this.inflight.get(providerId);
         if (!pending) return resolve('');
-        pending.promptResolver = resolve;
+        // 订阅之前就已经 abort 的话，addEventListener 再也不会触发，得当场了结。
+        if (signal?.aborted) return reject(new Error('oauth prompt aborted'));
+        const onAbort = () => {
+          const p = this.inflight.get(providerId);
+          // 只放空自己挂上去的那个 resolver：迟到的 abort 不许误伤下一个 prompt。
+          if (p?.promptResolver === settle) p.promptResolver = undefined;
+          broadcaster.emit('oauth.promptCancel', { providerId });
+          reject(new Error('oauth prompt aborted'));
+        };
+        const settle = (value: string) => {
+          // 一次长登录里 pi 可能连着问好几轮，答完就摘监听器，别让它们攒着。
+          signal?.removeEventListener('abort', onAbort);
+          resolve(value);
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        pending.promptResolver = settle;
         broadcaster.emit('oauth.prompt', { providerId, prompt });
       });
 
@@ -75,12 +96,12 @@ class OAuthCoordinator {
             type: 'select',
             message: p.message,
             options: p.options.map((o) => ({ id: o.id, label: o.label, description: o.description })),
-          });
+          }, p.signal);
         }
         // manual_code 沿用原来的中文提示：这是「回调码」这个类型本身的译名，与 provider 无关，
         // 不像 select 的选项那样承载 provider 特有内容，所以覆盖是安全的。
-        if (p.type === 'manual_code') return askRenderer({ type: 'manual_code', message: '请粘贴回调码' });
-        return askRenderer({ type: p.type, message: p.message, placeholder: p.placeholder });
+        if (p.type === 'manual_code') return askRenderer({ type: 'manual_code', message: '请粘贴回调码' }, p.signal);
+        return askRenderer({ type: p.type, message: p.message, placeholder: p.placeholder }, p.signal);
       },
     };
 

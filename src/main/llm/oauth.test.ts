@@ -130,6 +130,114 @@ describe('oauthCoordinator 的 prompt 映射', () => {
     expect(prompt.placeholder).toBe('acme');
   });
 
+  // pi 的 AuthPrompt.signal 是 per-prompt 取消，跟整条登录的 interaction.signal 不是一回事：
+  // openai-codex / anthropic / openrouter 都在 finally 里 `manualAbort.abort()`，用来撤掉
+  // 浏览器回调已经赢下之后还挂着的粘贴框。
+  it('per-prompt abort：广播 promptCancel，prompt 以 reject 收场，登录照样成功', async () => {
+    const manualAbort = new AbortController();
+    let manualPromise: Promise<void> | undefined;
+    let rejected: unknown;
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      manualPromise = interaction
+        .prompt({ type: 'manual_code', message: 'paste the code', signal: manualAbort.signal })
+        .then(() => {})
+        .catch((e: unknown) => { rejected = e; });
+      await waitFor(() => emitted.some((e) => e.topic === 'oauth.prompt'));
+      // 本地回调服务器先拿到 code，pi 在 finally 里撤掉粘贴框。
+      manualAbort.abort();
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('openai-codex');
+    await manualPromise;
+
+    const cancels = emitted.filter((e) => e.topic === 'oauth.promptCancel');
+    expect(cancels.map((e) => e.payload.providerId)).toEqual(['openai-codex']);
+    expect(rejected).toBeInstanceOf(Error);
+    // 契约是 reject 而不是 resolve('')：空串会被 pi 当成用户真粘了个空值。
+    expect(emitted.some((e) => e.topic === 'oauth.success')).toBe(true);
+    expect(emitted.some((e) => e.topic === 'oauth.error')).toBe(false);
+  });
+
+  it('per-prompt abort 之后迟到的 promptReply：喂不进已死的 prompt', async () => {
+    const manualAbort = new AbortController();
+    const settled: string[] = [];
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      const manual = interaction
+        .prompt({ type: 'manual_code', message: 'paste the code', signal: manualAbort.signal })
+        .then((v: string) => { settled.push(`resolve:${v}`); })
+        .catch(() => { settled.push('reject'); });
+      await waitFor(() => emitted.some((e) => e.topic === 'oauth.prompt'));
+      manualAbort.abort();
+      await manual;
+      // 渲染进程慢半拍才把用户粘的码送回来。
+      oauthCoordinator.promptReply('openai-codex', 'late-code');
+      await new Promise((r) => setTimeout(r, 10));
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('openai-codex');
+    expect(settled).toEqual(['reject']);
+  });
+
+  it('迟到的 abort 不误伤下一个 prompt：只放空自己挂上去的 resolver', async () => {
+    const staleAbort = new AbortController();
+    let second: string | undefined;
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      const first = interaction
+        .prompt({ type: 'manual_code', message: 'paste the code', signal: staleAbort.signal })
+        .catch(() => {});
+      await waitFor(() => emitted.some((e) => e.topic === 'oauth.prompt'));
+      // 第一个问题还挂着，pi 就问了第二个（第二个没有 per-prompt signal）。
+      const secondPromise = interaction.prompt({ type: 'text', message: 'Enter your tenant' });
+      await waitFor(() => emitted.filter((e) => e.topic === 'oauth.prompt').length === 2);
+      // 这时候第一个问题的 signal 才 abort。
+      staleAbort.abort();
+      await first;
+      oauthCoordinator.promptReply('openai-codex', 'acme-corp');
+      second = await secondPromise;
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('openai-codex');
+    expect(second).toBe('acme-corp');
+  });
+
+  it('signal 在订阅前就已经 aborted：当场 reject，连 oauth.prompt 都不广播', async () => {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    let rejected: unknown;
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      await interaction
+        .prompt({ type: 'manual_code', message: 'paste the code', signal: preAborted.signal })
+        .catch((e: unknown) => { rejected = e; });
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('openai-codex');
+    expect(rejected).toBeInstanceOf(Error);
+    expect(emitted.some((e) => e.topic === 'oauth.prompt')).toBe(false);
+  });
+
+  it('正常答完的 prompt：照常 resolve，pi 事后 abort 也不再广播 promptCancel', async () => {
+    const manualAbort = new AbortController();
+    let received: string | undefined;
+    fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
+      const manual = interaction.prompt({ type: 'manual_code', message: 'paste the code', signal: manualAbort.signal });
+      await waitFor(() => emitted.some((e) => e.topic === 'oauth.prompt'));
+      oauthCoordinator.promptReply('openai-codex', 'code-123');
+      received = await manual;
+      // pi 的 finally 照样会 abort 一次：监听器该已经摘掉了。
+      manualAbort.abort();
+      return CREDENTIAL;
+    });
+
+    await oauthCoordinator.login('openai-codex');
+    expect(received).toBe('code-123');
+    expect(emitted.some((e) => e.topic === 'oauth.promptCancel')).toBe(false);
+    expect(emitted.some((e) => e.topic === 'oauth.success')).toBe(true);
+  });
+
   it('select 期间取消：resolver 被放空，登录以 error 收场而不是挂住', async () => {
     fakeRuntime.login.mockImplementation(async (_id: string, _type: string, interaction: AuthInteraction) => {
       const method = await interaction.prompt({

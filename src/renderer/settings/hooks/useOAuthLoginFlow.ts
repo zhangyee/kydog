@@ -43,6 +43,22 @@ export function useOAuthLoginFlow(providerId: string) {
         };
       });
     }));
+    offs.push(window.kydog.on('oauth.promptCancel', (p) => {
+      if (p.providerId !== providerId) return;
+      setState((s) => {
+        // 只有正挂着一次提问的两个态需要退出去；success / error / idle 收到这个事件不该被拽回来。
+        if (s.phase !== 'manualCode' && s.phase !== 'select') return s;
+        const url = s.phase === 'manualCode' ? s.url : lastUrl.current;
+        // progress 是一路攒下来的，换态时原样带走。
+        if (!url) return { phase: 'finishing', progress: s.progress };
+        return {
+          phase: 'authPrompt',
+          url,
+          instructions: s.phase === 'manualCode' ? s.instructions : undefined,
+          progress: s.progress,
+        };
+      });
+    }));
     offs.push(window.kydog.on('oauth.success', (p) => {
       if (p.providerId !== providerId) return;
       setState({ phase: 'success' });
