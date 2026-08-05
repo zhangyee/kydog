@@ -41,16 +41,17 @@ Rules:
 - No quotes, no markdown, no prefix like "Title:".
 - Output ONLY the title, nothing else.`;
 
-// ProviderRegistry 对外声明的 modelRuntime 带索引签名，取不出 completeSimple 的签名；
-// 这里收窄回 pi 的真类型（type-only，编译后不留 import，不影响 CJS 解析）。
-type PiModelRuntime = import('@earendil-works/pi-coding-agent').ModelRuntime;
+// modelRuntime 的 getModel 只声明到 unknown（那份 shim 只钉了实际被调用的方法签名），
+// 这里按 completeSimple 的入参类型收窄 —— 全流程唯一一处 cast。
+// type-only，编译后不留 import，不影响 CJS 解析。
+type PiModel = Parameters<import('@earendil-works/pi-coding-agent').ModelRuntime['completeSimple']>[0];
 
 async function callLlm(thread: Thread, firstUser: string): Promise<string | null> {
   const { providerId, modelId } = await resolveActive(thread.id, thread.projectPath);
   const reg = getProviderRegistry();
   // ModelRuntime 自己在 completeSimple 里解析凭据，调用方不再取 apiKey / headers。
-  const runtime = reg.modelRuntime as unknown as PiModelRuntime;
-  const model = runtime.getModel(providerId, modelId);
+  const runtime = reg.modelRuntime;
+  const model = runtime.getModel(providerId, modelId) as PiModel | undefined;
   if (!model) throw new KydogError('llm.invalid', `no model for ${providerId}/${modelId}`);
 
   const response = await runtime.completeSimple(
