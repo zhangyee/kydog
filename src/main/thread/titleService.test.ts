@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // vi.mock declarations are hoisted by Vitest — must be at module scope.
-vi.mock('@earendil-works/pi-ai', () => ({
-  completeSimple: vi.fn(),
-}));
+// completeSimple 不再是 pi-ai 的根导出（0.83 起是 ModelRuntime 上的方法），
+// 所以它在这里是通过被 mock 的 getProviderRegistry 一起给出来的，见 fakeRegistry()。
 vi.mock('../agent/resolveActive', () => ({
   resolveActive: vi.fn(),
 }));
@@ -58,7 +57,6 @@ describe('parseTitle', () => {
 });
 
 import { titleService } from './titleService';
-import { completeSimple } from '@earendil-works/pi-ai';
 import { resolveActive } from '../agent/resolveActive';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { loadIndex } from '../persist/indexFile';
@@ -80,14 +78,29 @@ function fakeModel() {
   return { provider: 'openai', id: 'gpt-4o', api: 'openai-completions' };
 }
 
+/**
+ * ModelRuntime 自己在 completeSimple 里解析凭据，所以这里不再有 apiKey / headers 那一步。
+ * 每个 beforeEach 造一份新的，测试通过 `registry.modelRuntime.completeSimple` 改行为。
+ */
 function fakeRegistry() {
   return {
-    modelRegistry: {
-      find: vi.fn().mockReturnValue(fakeModel()),
-      getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: 'sk-test', headers: {} }),
+    modelRuntime: {
+      getModel: vi.fn().mockReturnValue(fakeModel()),
+      completeSimple: vi.fn(),
     },
   };
 }
+
+let registry: ReturnType<typeof fakeRegistry>;
+
+/** 装好一份新的 registry 并让 getProviderRegistry 返回它。 */
+function installRegistry() {
+  registry = fakeRegistry();
+  (getProviderRegistry as any).mockReturnValue(registry);
+  return registry;
+}
+
+const completeSimple = () => registry.modelRuntime.completeSimple;
 
 function fakeLlmResponse(text: string) {
   return {
@@ -101,8 +114,8 @@ describe('titleService.runGenerate — happy path', () => {
     vi.clearAllMocks();
     (loadIndex as any).mockResolvedValue(fakeIndex());
     (resolveActive as any).mockResolvedValue({ providerId: 'openai', modelId: 'gpt-4o' });
-    (getProviderRegistry as any).mockReturnValue(fakeRegistry());
-    (completeSimple as any).mockResolvedValue(fakeLlmResponse('Speculative decoding basics'));
+    installRegistry();
+    completeSimple().mockResolvedValue(fakeLlmResponse('Speculative decoding basics'));
     (threadService.update as any).mockImplementation(async ({ threadId, title }: any) => ({
       ...fakeThread(title), id: threadId,
     }));
@@ -125,10 +138,18 @@ describe('titleService.runGenerate — happy path', () => {
 
   it('passes a 60-token budget and a 15s timeout to completeSimple', async () => {
     await titleService.runGenerate(THREAD_ID, 'Explain speculative decoding');
-    const opts = (completeSimple as any).mock.calls[0][2];
+    const opts = completeSimple().mock.calls[0][2];
     expect(opts.maxTokens).toBe(60);
-    expect(opts.apiKey).toBe('sk-test');
     expect(opts.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  // 取代原来「apiKey 被转交给 completeSimple」那条：凭据现在由 ModelRuntime 内部解析，
+  // 调用方这一侧还剩下的连线就是 resolveActive → getModel → completeSimple 的第一个参数。
+  it('feeds completeSimple the model resolved from modelRuntime.getModel', async () => {
+    await titleService.runGenerate(THREAD_ID, 'Explain speculative decoding');
+    expect(registry.modelRuntime.getModel).toHaveBeenCalledWith('openai', 'gpt-4o');
+    const resolved = registry.modelRuntime.getModel.mock.results[0].value;
+    expect(completeSimple().mock.calls[0][0]).toBe(resolved);
   });
 });
 
@@ -137,14 +158,14 @@ describe('titleService.runGenerate — edge cases', () => {
     vi.clearAllMocks();
     (loadIndex as any).mockResolvedValue(fakeIndex());
     (resolveActive as any).mockResolvedValue({ providerId: 'openai', modelId: 'gpt-4o' });
-    (getProviderRegistry as any).mockReturnValue(fakeRegistry());
+    installRegistry();
     (threadService.update as any).mockImplementation(async ({ threadId, title }: any) => ({
       ...fakeThread(title), id: threadId,
     }));
   });
 
   it('falls back to slice(0, 20) when the LLM call rejects', async () => {
-    (completeSimple as any).mockRejectedValue(new Error('rate limit'));
+    completeSimple().mockRejectedValue(new Error('rate limit'));
     await titleService.runGenerate(THREAD_ID, 'Explain speculative decoding');
     expect(threadService.update).toHaveBeenCalledWith({
       threadId: THREAD_ID,
@@ -153,7 +174,7 @@ describe('titleService.runGenerate — edge cases', () => {
   });
 
   it('falls back when the LLM returns a malformed title (over 30 codepoints)', async () => {
-    (completeSimple as any).mockResolvedValue(fakeLlmResponse('a'.repeat(50)));
+    completeSimple().mockResolvedValue(fakeLlmResponse('a'.repeat(50)));
     await titleService.runGenerate(THREAD_ID, 'Explain speculative decoding');
     expect(threadService.update).toHaveBeenCalledWith({
       threadId: THREAD_ID,
@@ -162,7 +183,7 @@ describe('titleService.runGenerate — edge cases', () => {
   });
 
   it('falls back when response.stopReason === "error"', async () => {
-    (completeSimple as any).mockResolvedValue({ stopReason: 'error', content: [], errorMessage: 'oops' });
+    completeSimple().mockResolvedValue({ stopReason: 'error', content: [], errorMessage: 'oops' });
     await titleService.runGenerate(THREAD_ID, 'Explain speculative decoding');
     expect(threadService.update).toHaveBeenCalledWith({
       threadId: THREAD_ID,
@@ -178,7 +199,7 @@ describe('titleService.runGenerate — edge cases', () => {
   });
 
   it('does not update when thread vanished mid-flight (race)', async () => {
-    (completeSimple as any).mockResolvedValue(fakeLlmResponse('A title'));
+    completeSimple().mockResolvedValue(fakeLlmResponse('A title'));
     // First loadIndex returns the placeholder thread; second (race re-check) returns empty.
     (loadIndex as any)
       .mockResolvedValueOnce(fakeIndex())
@@ -188,7 +209,7 @@ describe('titleService.runGenerate — edge cases', () => {
   });
 
   it('does not update when user renamed mid-flight', async () => {
-    (completeSimple as any).mockResolvedValue(fakeLlmResponse('A title'));
+    completeSimple().mockResolvedValue(fakeLlmResponse('A title'));
     (loadIndex as any)
       .mockResolvedValueOnce(fakeIndex())                                  // pre-LLM check: placeholder
       .mockResolvedValueOnce(fakeIndex(fakeThread('User picked this')));   // race re-check: changed
