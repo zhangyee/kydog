@@ -1,21 +1,24 @@
 // src/main/llm/kydogAuthBackend.ts
+import type { CredentialStore, Credential as PiCredential } from '@earendil-works/pi-ai';
 import type { SettingsService } from '../settings/settingsService';
 import type { SettingsFile, AuthBlob } from '../../shared/types';
 
-// pi-ai 的 CredentialStore 接口形状（从 dist/auth/types.d.ts 抄；不直接 import 避免
-// 把 pi 拖进这个模块的静态依赖图 —— 其余模块都走 dynamic import）。
+// 这里直接 import type pi 的 CredentialStore：`import type` 转译时整句擦除，不进运行时
+// 依赖图，所以「其余模块走 dynamic import」的约束不受影响（providerRegistry.ts 的
+// `typeof import(...)` 同理）。
+//
+// 凭证的数据形状仍用 KyDog 自己的 AuthBlob，不复用 pi 的 Credential：shared/types.ts
+// 是主/渲染进程共用的，不该把 pi 拖进渲染侧。代价是 AuthBlob 必须跟 pi 的 Credential
+// 保持一致 —— 由下面的 _authBlobMatchesPi 在编译期钉住。
 export type Credential = AuthBlob[string];
 export type CredentialInfo = { providerId: string; type: Credential['type'] };
 
-export interface CredentialStore {
-  read(providerId: string): Promise<Credential | undefined>;
-  list(): Promise<readonly CredentialInfo[]>;
-  modify(
-    providerId: string,
-    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
-  ): Promise<Credential | undefined>;
-  delete(providerId: string): Promise<void>;
-}
+/** 双向 extends 的精确相等；单向 assignable 挡不住 pi 加字段/放宽字段。 */
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+
+// pi 升级改了 Credential（加字段、改可选性、动 union 分支），先炸在这一行；否则
+// 全部调用点都是 `as any`，下游没有任何东西会发现形状对不上了。
+const _authBlobMatchesPi: Exact<Credential, PiCredential> = true;
 
 /**
  * 把 KyDog 的 `settings.llm.auth` 暴露成 pi-ai 的 CredentialStore。

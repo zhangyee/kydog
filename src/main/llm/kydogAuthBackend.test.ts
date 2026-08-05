@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
@@ -28,11 +28,15 @@ describe('KydogCredentialStore', () => {
     expect(await store.read('anthropic')).toBeUndefined();
   });
 
-  it('modify: 写入后 read 能读到，且落到 settings.llm.auth', async () => {
+  it('modify: 写入后 read 能读到，且真的落到磁盘上的 kydog.json', async () => {
     const written = await store.modify('anthropic', async () => ({ type: 'api_key', key: 'sk-1' }));
     expect(written).toEqual({ type: 'api_key', key: 'sk-1' });
     expect(await store.read('anthropic')).toEqual({ type: 'api_key', key: 'sk-1' });
     expect((await svc.get()).llm.auth.anthropic).toEqual({ type: 'api_key', key: 'sk-1' });
+    // 上面三条都只证明内存 cache 是对的（svc.get() 返回的就是 cache）。这个模块存在的
+    // 唯一理由是把凭证持久化，所以直接读回磁盘 —— 只热 cache 不落盘的实现要在这里挂掉。
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.llm.auth.anthropic).toEqual({ type: 'api_key', key: 'sk-1' });
   });
 
   it('modify: fn 能看到当前值（refresh 场景依赖它）', async () => {
@@ -74,13 +78,24 @@ describe('KydogCredentialStore', () => {
     await expect(store.delete('nope')).resolves.toBeUndefined();
   });
 
-  it('modify: 并发调用被串行化，不丢更新', async () => {
+  it('modify: 同一 provider 的并发写不交错，每个 fn 都看得到上一次的结果', async () => {
+    // 这是 CredentialStore 文档注释里那条不变式：pi 的 OAuth refresh 就跑在 modify 的
+    // fn 内部，同 provider 的读-改-写一旦交错就会双刷 / 丢掉刚轮换的 token。
+    // （跨 provider 的串行化是 SettingsService 全局队列的事，settingsService.test.ts
+    // 已经用 N=100 覆盖，这里不重复测那一层。）
     await Promise.all(
       Array.from({ length: 5 }, (_, i) =>
-        store.modify(`p${i}`, async () => ({ type: 'api_key', key: `k${i}` })),
+        store.modify('anthropic', async (current) => {
+          // 读到 current 后强行 await 一次，制造交错窗口。
+          await new Promise((r) => setTimeout(r, 1));
+          const prev = current?.type === 'api_key' ? (current.key ?? '') : '';
+          return { type: 'api_key', key: `${prev}${i}` };
+        }),
       ),
     );
-    const auth = (await svc.get()).llm.auth;
-    expect(Object.keys(auth).sort()).toEqual(['p0', 'p1', 'p2', 'p3', 'p4']);
+    const final = await store.read('anthropic');
+    expect(final?.type).toBe('api_key');
+    // 5 次追加全部落地才有 5 个字符；任何一次交错都会覆盖掉别人的写入，长度变短。
+    expect((final as { key: string }).key).toHaveLength(5);
   });
 });
