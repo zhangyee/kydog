@@ -62,7 +62,6 @@ class OAuthCoordinator {
       } else {
         await (reg.authStorage as any).login(cat.oauth.piProviderId, callbacks);
       }
-      reg.reloadAuth();
       await reg.refreshAfterProviderChange(settingsService, agentService, [providerId]);
       broadcaster.emit('oauth.success', { providerId });
     } catch (err) {
@@ -92,7 +91,6 @@ class OAuthCoordinator {
   async logout(providerId: ProviderId): Promise<void> {
     const reg = getProviderRegistry();
     (reg.authStorage as any).logout(providerId);
-    reg.reloadAuth();
     await reg.refreshAfterProviderChange(settingsService, agentService, [providerId]);
   }
 }

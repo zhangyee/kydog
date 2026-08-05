@@ -93,7 +93,6 @@ class LlmService {
           },
         },
       });
-      reg.reloadAuth();
       await reg.refreshAfterProviderChange(settingsService, agentService, [args.providerId]);
     } else if (args.cfg.kind === 'cloud') {
       const cfg = args.cfg;
@@ -117,7 +116,6 @@ class LlmService {
       };
       await settingsService.update(next);
       applyCloudEnv((await settingsService.get()).llm.providers);
-      reg.reloadAuth();
       await reg.refreshAfterProviderChange(settingsService, agentService, [args.providerId]);
     } else if (args.cfg.kind === 'custom') {
       const cp = args.cfg.provider;
@@ -176,7 +174,6 @@ class LlmService {
     const next = sweepDefaultsAfterRemove(settings, providerId);
     await settingsService.update(next);
     applyCloudEnv(next.llm.providers);
-    reg.reloadAuth();
     await reg.refreshAfterProviderChange(settingsService, agentService, [providerId]);
     if (settings.llm.defaultProvider === providerId) {
       await agentService.recomputeSessionsAfterDefaultChange();

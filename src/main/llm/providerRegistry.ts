@@ -1,42 +1,51 @@
 // src/main/llm/providerRegistry.ts
+import path from 'node:path';
 import type { SettingsFile, ProviderId, CustomProvider, ProviderOverride } from '../../shared/types';
 import { SettingsService } from '../settings/settingsService';
-import { KydogAuthStorageBackend } from './kydogAuthBackend';
+import { KydogCredentialStore } from './kydogAuthBackend';
+import { kydogAgentDir } from '../skills/skillResourceLoader';
 
 // pi-coding-agent 通过 dynamic import（与 sessionFactory 一致；CJS resolution 已踩过坑）
-type AnyAuthStorage = {
-  reload(): void;
-  getAuthStatus(provider: string): unknown;
+// 0.80.8 起 AuthStorage + ModelRegistry 合并成 ModelRuntime，凭据与模型目录同一个对象。
+type AnyModelRuntime = {
+  getModel(providerId: string, modelId: string): unknown | undefined;
+  getModels(providerId?: string): readonly unknown[];
+  getProviderAuthStatus(providerId: string): unknown;
+  registerProvider(providerId: string, cfg: unknown): void;
+  login(providerId: string, type: string, interaction: unknown): Promise<unknown>;
+  logout(providerId: string): Promise<void>;
   [k: string]: unknown;
 };
-type AnyModelRegistry = {
-  find(provider: string, modelId: string): unknown | undefined;
-  registerProvider(name: string, cfg: unknown): void;
-  [k: string]: unknown;
-};
+
+export function buildModelRuntimeOptions(svc: SettingsService): {
+  credentials: KydogCredentialStore;
+  modelsPath: string;
+  allowModelNetwork: boolean;
+} {
+  return {
+    credentials: new KydogCredentialStore(svc),
+    // 不传会默认到 ~/.pi/agent/models.json，并往那儿写 models-store.json —— 等于把
+    // f96afc7 拆掉的 .pi 耦合重建出来（model-runtime.js:59,63）。
+    modelsPath: path.join(kydogAgentDir(), 'models.json'),
+    // 不打开就只有打包时烤进去的静态目录，新模型永远进不来（model-runtime.js:74）。
+    allowModelNetwork: true,
+  };
+}
 
 interface AgentInvalidatable {
   invalidateSessionsForProviders(providerIds: ProviderId[]): Promise<void>;
 }
 
 export class ProviderRegistry {
-  readonly authStorage: AnyAuthStorage;
-  modelRegistry: AnyModelRegistry;
-  private constructor(authStorage: AnyAuthStorage, modelRegistry: AnyModelRegistry) {
-    this.authStorage = authStorage;
-    this.modelRegistry = modelRegistry;
+  modelRuntime: AnyModelRuntime;
+  private constructor(modelRuntime: AnyModelRuntime) {
+    this.modelRuntime = modelRuntime;
   }
 
   static async build(svc: SettingsService): Promise<ProviderRegistry> {
     const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
-    const authStorage = (pi as any).AuthStorage.fromStorage(new KydogAuthStorageBackend(svc));
-    const modelRegistry = await ProviderRegistry.buildModelRegistry(pi, settings, authStorage);
-    return new ProviderRegistry(authStorage, modelRegistry);
-  }
-
-  reloadAuth(): void {
-    this.authStorage.reload();
+    return new ProviderRegistry(await ProviderRegistry.buildModelRuntime(pi, settings, svc));
   }
 
   async refreshAfterProviderChange(
@@ -46,22 +55,22 @@ export class ProviderRegistry {
   ): Promise<void> {
     const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
-    this.modelRegistry = await ProviderRegistry.buildModelRegistry(pi, settings, this.authStorage);
+    this.modelRuntime = await ProviderRegistry.buildModelRuntime(pi, settings, svc);
     await agent.invalidateSessionsForProviders(changedIds);
   }
 
   // ────────────────────────────────────────────────────
-  private static async buildModelRegistry(
+  private static async buildModelRuntime(
     pi: typeof import('@earendil-works/pi-coding-agent'),
     settings: SettingsFile,
-    authStorage: AnyAuthStorage,
-  ): Promise<AnyModelRegistry> {
-    const reg = (pi as any).ModelRegistry.inMemory(authStorage) as AnyModelRegistry;
+    svc: SettingsService,
+  ): Promise<AnyModelRuntime> {
+    const rt = await (pi as any).ModelRuntime.create(buildModelRuntimeOptions(svc)) as AnyModelRuntime;
     for (const cp of settings.llm.customProviders) {
-      reg.registerProvider(cp.id, customProviderToPiConfig(cp));
+      rt.registerProvider(cp.id, customProviderToPiConfig(cp));
     }
-    applyBuiltinOverrides(reg, settings.llm.providers);
-    return reg;
+    applyBuiltinOverrides(rt, settings.llm.providers);
+    return rt;
   }
 }
 
@@ -87,7 +96,7 @@ function customProviderToPiConfig(cp: CustomProvider): unknown {
 }
 
 function applyBuiltinOverrides(
-  reg: AnyModelRegistry,
+  reg: AnyModelRuntime,
   providers: Record<ProviderId, ProviderOverride>,
 ): void {
   for (const [id, ov] of Object.entries(providers)) {
