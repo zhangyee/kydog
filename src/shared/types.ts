@@ -69,7 +69,7 @@ export const READING_FONT_SIZES = ['small', 'medium', 'large'] as const satisfie
 export type ProviderId = string;
 
 export type AuthBlob = Record<ProviderId,
-  | { type: 'api_key'; key: string }
+  | { type: 'api_key'; key?: string; env?: Record<string, string> }
   | { type: 'oauth'; refresh: string; access: string; expires: number; [k: string]: unknown }
 >;
 
