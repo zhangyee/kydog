@@ -39,17 +39,24 @@ export class SettingsService {
   async update(patch: SettingsPatch): Promise<SettingsFile> {
     return this.withLock(async (cur) => {
       const next: SettingsFile = {
-        schemaVersion: 6,
+        schemaVersion: 7,
         ui: { ...cur.ui, ...(patch.ui ?? {}) },
         llm: { ...cur.llm, ...(patch.llm ?? {}) },
         skills: { ...cur.skills, ...(patch.skills ?? {}) },
         tools: { ...cur.tools, ...(patch.tools ?? {}) },
         research: { ...cur.research, ...(patch.research ?? {}) },
         updates: cur.updates,     // 只能由更新服务改（spec §7）
+        telemetry: cur.telemetry, // 只能由 telemetryService 改（见 telemetry/telemetryService.ts）
         onboarding: cur.onboarding, // 只能由 onboarding 服务改（spec §7）
       };
       return { next, result: next };
     });
+  }
+
+  /** telemetry 只能由 telemetryService 经此方法改，故不在 SettingsPatch 中
+   *  —— 与 updates 同样的约定。 */
+  async setTelemetry(t: SettingsFile['telemetry']): Promise<void> {
+    await this.withLock(async (cur) => ({ next: { ...cur, telemetry: t }, result: undefined }));
   }
 
   async reset(): Promise<void> {

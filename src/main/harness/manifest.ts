@@ -3,16 +3,23 @@ import path from 'node:path';
 import * as paths from '../persist/paths';
 import { atomicWriteWith0600Async } from '../persist/atomicWrite';
 import { validateDisplayName } from './names';
-import { THEME_NAMES, READING_FONT_SIZES, type ThemeName, type ReadingFontSize } from '../../shared/types';
+import { THEME_NAMES, READING_FONT_SIZES, type ThemeName, type ReadingFontSize, type TelemetryState } from '../../shared/types';
 import { logger } from '../log';
 
+// manifest 里只可能是用户在 onboarding 当场做出的二选一，或迁移而来的未决。
+// deleting 是运行期才可能进入的状态，播种记录里不会出现。
+export type ManifestTelemetryState = Extract<TelemetryState, 'undecided' | 'enabled' | 'disabled'>;
+const MANIFEST_TELEMETRY_STATES: readonly ManifestTelemetryState[] = ['undecided', 'enabled', 'disabled'];
+
 export type SeedManifest = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   locale: 'zh' | 'en';
   theme: ThemeName;
   readingFontSize: ReadingFontSize;
   userName: string;
   agentName: string;
+  telemetryState: ManifestTelemetryState;
+  decidedAt: string | null;
 };
 export type ManifestReadResult =
   | { status: 'none' }
@@ -31,12 +38,24 @@ export async function readManifest(dir: string = paths.ROOT): Promise<ManifestRe
     const p = JSON.parse(raw) as Record<string, unknown>;
     const userName = validateDisplayName(p?.userName);
     const agentName = validateDisplayName(p?.agentName);
-    if (p?.schemaVersion === 1
-      && (p.locale === 'zh' || p.locale === 'en')
+    if (!((p?.locale === 'zh' || p?.locale === 'en')
       && (THEME_NAMES as readonly string[]).includes(p.theme as string)
       && (READING_FONT_SIZES as readonly string[]).includes(p.readingFontSize as string)
-      && userName && agentName) {
-      return { status: 'ok', manifest: { schemaVersion: 1, locale: p.locale, theme: p.theme as ThemeName, readingFontSize: p.readingFontSize as ReadingFontSize, userName, agentName } };
+      && userName && agentName)) {
+      return { status: 'corrupt' };
+    }
+    const common: Omit<SeedManifest, 'schemaVersion' | 'telemetryState' | 'decidedAt'> = {
+      locale: p.locale, theme: p.theme as ThemeName, readingFontSize: p.readingFontSize as ReadingFontSize,
+      userName, agentName,
+    };
+    // v1 是旧版写下的，那时还没有统计勾选框，用户从没被问过 → undecided，不替他选。
+    if (p.schemaVersion === 1) {
+      return { status: 'ok', manifest: { ...common, schemaVersion: 2, telemetryState: 'undecided', decidedAt: null } };
+    }
+    if (p.schemaVersion === 2
+      && MANIFEST_TELEMETRY_STATES.includes(p.telemetryState as ManifestTelemetryState)
+      && (p.decidedAt === null || typeof p.decidedAt === 'string')) {
+      return { status: 'ok', manifest: { ...common, schemaVersion: 2, telemetryState: p.telemetryState as ManifestTelemetryState, decidedAt: p.decidedAt } };
     }
     return { status: 'corrupt' };
   } catch { return { status: 'corrupt' }; }

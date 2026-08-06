@@ -26,10 +26,10 @@ describe('dispatcher', () => {
   });
 
   it('routes to a registered handler and returns ok', async () => {
-    registerHandler('settings.get', async () => ({ schemaVersion: 6, ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'medium' }, llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }, skills: { disabledBuiltins: [] }, tools: { externalBins: [] }, research: { presets: {}, custom: [] }, updates: { autoCheck: true, dismissedCandidateId: null }, onboarding: { completedAt: null } }));
+    registerHandler('settings.get', async () => ({ schemaVersion: 7, ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'medium' }, llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }, skills: { disabledBuiltins: [] }, tools: { externalBins: [] }, research: { presets: {}, custom: [] }, updates: { autoCheck: true, dismissedCandidateId: null }, telemetry: { state: 'undecided', decidedAt: null }, onboarding: { completedAt: null } }));
     const invoke = handlers[RPC_CHANNEL];
     const result = await invoke(fakeEvt, { method: 'settings.get', args: undefined });
-    expect(result).toMatchObject({ ok: true, data: { schemaVersion: 6 } });
+    expect(result).toMatchObject({ ok: true, data: { schemaVersion: 7 } });
   });
 
   it('returns serialized error when handler throws', async () => {

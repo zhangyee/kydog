@@ -1,20 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
-import { ABOUT_DOCS, ABOUT_LICENSES } from './about/aboutDocs';
+import { ABOUT_DOCS, ABOUT_LICENSES, ABOUT_PRIVACY } from './about/aboutDocs';
 import { AboutMarkdown } from './about/AboutMarkdown';
+import { PrivacyPanel } from './about/PrivacyPanel';
 import { UpdateBlock } from './UpdateBlock';
 
 const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
 
+/** 底部两条文档入口（开源许可 / 隐私与统计）的共用样式，与「往期」条目同一套度量。 */
+const ENTRY_STYLE = {
+  display: 'block', width: '100%', textAlign: 'left',
+  padding: '5px 8px', margin: '0 -8px', borderRadius: 2,
+  background: 'none', border: 'none', cursor: 'pointer',
+  fontSize: 12.5, lineHeight: 1.6, color: 'var(--color-ink-soft)',
+} as const;
+
 // post: slug === null 看当前篇（ABOUT_DOCS[0]），否则看指定往期篇。
 // licenses: 整页替换成开源许可（字体 + 依赖库），不是叠在 post 视图下面的附加区块。
+// privacy: 同 licenses 的形状 —— 隐私说明也是 src/about/ 下的保留名文档，
+// 只是多带一组统计开关，所以走的是同一套「底部入口 → 全屏文档 → ← 返回」。
 // 用一个判别联合而不是拆开的两个布尔，state 不会出现「两边都为真」这种互相矛盾的组合。
-type View = { kind: 'post'; slug: string | null } | { kind: 'licenses' };
+type View = { kind: 'post'; slug: string | null } | { kind: 'licenses' } | { kind: 'privacy' };
 
 export function AboutSection() {
   const [view, setView] = useState<View>({ kind: 'post', slug: null });
-  // 每次切换视图（往期切篇 / 进出开源许可页），把这个 ref 指向的元素滚回可见区域。
+  // 每次切换视图（往期切篇 / 进出开源许可页与隐私页），把这个 ref 指向的元素滚回可见区域。
   // 设置页整体会滚动，翻到底部点了链接之后，不滚的话新内容会渲染到视口外面。
-  // post 视图挂在 <h1>，licenses 视图挂在返回按钮，两种元素类型不同，用回调 ref 统一存进同一个盒子。
+  // post 视图挂在 <h1>，licenses / privacy 挂在各自的返回按钮，元素类型不同，用回调 ref 统一存进同一个盒子。
   const topRef = useRef<HTMLElement | null>(null);
   const setTopRef = (el: HTMLElement | null) => { topRef.current = el; };
 
@@ -25,7 +36,7 @@ export function AboutSection() {
   // 往期列表恒为「除最新篇外的所有篇」，不随 view 变化，列表才不会跳动。
   const archive = ABOUT_DOCS.slice(1);
   const isArchive = !!doc && !!latest && doc.slug !== latest.slug;
-  const viewKey = view.kind === 'post' ? `post:${view.slug ?? 'latest'}` : 'licenses';
+  const viewKey = view.kind === 'post' ? `post:${view.slug ?? 'latest'}` : view.kind;
 
   useEffect(() => {
     topRef.current?.scrollIntoView({ block: 'start' });
@@ -51,6 +62,24 @@ export function AboutSection() {
             ← 返回
           </button>
           <AboutMarkdown content={ABOUT_LICENSES} />
+        </>
+      ) : view.kind === 'privacy' ? (
+        <>
+          <button
+            ref={setTopRef}
+            type="button"
+            onClick={() => setView({ kind: 'post', slug: null })}
+            data-testid="about-privacy-back"
+            className="font-mono"
+            style={{
+              display: 'block', marginBottom: 12, padding: 0,
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 10.5, letterSpacing: 0.6, color: 'var(--color-marginalia)',
+            }}
+          >
+            ← 返回
+          </button>
+          <PrivacyPanel />
         </>
       ) : (
         <>
@@ -128,30 +157,46 @@ export function AboutSection() {
             </div>
           )}
 
-          {ABOUT_LICENSES && (
+          {/* 两条入口共用同一条分隔线之下的区域 —— 它们是同一类东西（src/about/ 下的
+              保留名文档），各自再起一条 hairline 会读成两个互不相干的小节。 */}
+          {(ABOUT_LICENSES || ABOUT_PRIVACY) && (
             <div style={{ borderTop: HAIRLINE, marginTop: 26, paddingTop: 18 }}>
-              <button
-                type="button"
-                data-testid="about-licenses-entry"
-                onClick={() => setView({ kind: 'licenses' })}
-                className="font-serif"
-                style={{
-                  display: 'block', width: '100%', textAlign: 'left',
-                  padding: '5px 8px', margin: '0 -8px', borderRadius: 2,
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  fontSize: 12.5, lineHeight: 1.6, color: 'var(--color-ink-soft)',
-                }}
-              >
-                开源许可
-                {/* 尾箭头是这一条唯一的可点提示 —— 它没有「往期」那样的日期前缀，
-                    纯文字会和上面的分组标签看起来一样，像个空小节。 */}
-                <span
-                  className="font-mono"
-                  style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginLeft: 8 }}
+              {ABOUT_LICENSES && (
+                <button
+                  type="button"
+                  data-testid="about-licenses-entry"
+                  onClick={() => setView({ kind: 'licenses' })}
+                  className="font-serif"
+                  style={ENTRY_STYLE}
                 >
-                  →
-                </span>
-              </button>
+                  开源许可
+                  {/* 尾箭头是这一条唯一的可点提示 —— 它没有「往期」那样的日期前缀，
+                      纯文字会和上面的分组标签看起来一样，像个空小节。 */}
+                  <span
+                    className="font-mono"
+                    style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginLeft: 8 }}
+                  >
+                    →
+                  </span>
+                </button>
+              )}
+              {ABOUT_PRIVACY && (
+                <button
+                  type="button"
+                  data-testid="about-privacy-entry"
+                  onClick={() => setView({ kind: 'privacy' })}
+                  className="font-serif"
+                  style={ENTRY_STYLE}
+                >
+                  隐私与统计
+                  <span
+                    className="font-mono"
+                    style={{ fontSize: 10.5, color: 'var(--color-ink-faint)', marginLeft: 8 }}
+                  >
+                    →
+                  </span>
+                </button>
+              )}
             </div>
           )}
         </>

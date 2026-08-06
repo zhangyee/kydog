@@ -2,12 +2,12 @@
 import { promises as fsp, statSync, chmodSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { atomicWriteWith0600Async } from './atomicWrite';
 import * as paths from './paths';
-import type { SettingsFile } from '../../shared/types';
+import type { SettingsFile, TelemetryState } from '../../shared/types';
 import { logger } from '../log';
 
 export function defaultSettings(): SettingsFile {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     ui: {
       theme: 'vellum',
       locale: 'zh',
@@ -26,6 +26,7 @@ export function defaultSettings(): SettingsFile {
     tools: { externalBins: [] },
     research: { presets: {}, custom: [] },
     updates: { autoCheck: true, dismissedCandidateId: null },
+    telemetry: { state: 'undecided', decidedAt: null },
     onboarding: { completedAt: null },
   };
 }
@@ -87,10 +88,25 @@ function sanitizeUpdates(v: unknown): SettingsFile['updates'] {
   };
 }
 
-/** v1..v5 → v6 迁移。
+const TELEMETRY_STATES: readonly TelemetryState[] = ['undecided', 'enabled', 'deleting', 'disabled'];
+
+function sanitizeTelemetry(v: unknown): SettingsFile['telemetry'] {
+  const d = { state: 'undecided' as TelemetryState, decidedAt: null as string | null };
+  if (!isPlainObject(v)) return d;
+  const o = v as Record<string, unknown>;
+  // state 非法说明整份记录不可信，decidedAt 一并回落
+  if (!TELEMETRY_STATES.includes(o.state as TelemetryState)) return d;
+  return {
+    state: o.state as TelemetryState,
+    decidedAt: typeof o.decidedAt === 'string' ? o.decidedAt : null,
+  };
+}
+
+/** v1..v6 → v7 迁移。
  *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize / onboarding / research / updates 默认值。
- *  - v2/v3/v4/v5：保留所有字段，补缺失的 onboarding / research / updates 默认值。
- *  - v6：原样回写（completedAt 保留；locale 非法值归位 zh；updates 只兜形状）。
+ *  - v2/v3/v4/v5/v6：保留所有字段，补缺失的 onboarding / research / updates 默认值。
+ *  - v7：原样回写（completedAt 保留；locale 非法值归位 zh；updates 只兜形状）。
+ *  - v6→v7：新增 telemetry，一律置 undecided（老用户从未被询问）。
  *  - 形状不对：全部 default。 */
 export function parseAndMigrateSettings(raw: string): SettingsFile {
   let parsed: any;
@@ -100,10 +116,10 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
   const d = defaultSettings();
   const v = parsed.schemaVersion;
 
-  if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 6) {
-    if (v !== 6) logger.warn('persist.settingsFile', `migrating schema v${v} → v6`);
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 7) {
+    if (v !== 7) logger.warn('persist.settingsFile', `migrating schema v${v} → v7`);
     return {
-      schemaVersion: 6,
+      schemaVersion: 7,
       ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
       llm: {
         auth: parsed.llm?.auth ?? {},
@@ -125,20 +141,22 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
           : [],
       },
       updates: sanitizeUpdates(parsed.updates),
+      telemetry: sanitizeTelemetry(parsed.telemetry),
       onboarding: { completedAt: typeof parsed.onboarding?.completedAt === 'string' ? parsed.onboarding.completedAt : null },
     };
   }
 
   // v1 或更旧：reset llm、补 ui 默认（包括 readingFontSize）
-  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v6 default');
+  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v7 default');
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
     llm: d.llm,
     skills: { ...d.skills, ...(parsed.skills ?? {}) },
     tools: { ...d.tools, ...(parsed.tools ?? {}) },
     research: d.research,
     updates: d.updates,
+    telemetry: sanitizeTelemetry(parsed.telemetry),
     onboarding: { completedAt: null },
   };
 }

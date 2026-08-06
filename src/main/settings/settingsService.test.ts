@@ -64,7 +64,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     // 后续任何 svc.get() 都会返回缺 onboarding 键的对象。
     const after = await svc.get();
     expect(after.onboarding).toBeDefined();
-    expect(after.schemaVersion).toBe(6);
+    expect(after.schemaVersion).toBe(7);
   });
 
   it('update(): patch 混入 onboarding.completedAt + schemaVersion 被过滤（守住不变式）', async () => {
@@ -75,7 +75,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
       schemaVersion: 99 as any,
     };
     const result = await svc.update(patch);
-    expect(result.schemaVersion).toBe(6);
+    expect(result.schemaVersion).toBe(7);
     expect(result.ui.theme).toBe('sepia');
     expect(result.onboarding.completedAt).toBe(before.onboarding.completedAt);
   });
@@ -94,5 +94,30 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect(result.updates).toEqual({ autoCheck: false, dismissedCandidateId: 'keep-me' });
     const got = await svc.get();
     expect(got.updates).toEqual({ autoCheck: false, dismissedCandidateId: 'keep-me' });
+  });
+
+  it('update() 不碰 telemetry —— 它只能由 telemetryService 改', async () => {
+    // 用 deleting：它是最该被保住的状态，丢了等于静默吞掉用户已发出的删除请求。
+    await svc.withLock(async (cur) => ({
+      next: { ...cur, telemetry: { state: 'deleting' as const, decidedAt: '2026-08-05T10:00:00.000Z' } },
+      result: undefined,
+    }));
+    const patch = { ui: { theme: 'midnight' as const } };
+    const result = await svc.update(patch);
+    expect(result.ui.theme).toBe('midnight');
+    expect(result.telemetry).toEqual({ state: 'deleting', decidedAt: '2026-08-05T10:00:00.000Z' });
+    const got = await svc.get();
+    expect(got.telemetry).toEqual({ state: 'deleting', decidedAt: '2026-08-05T10:00:00.000Z' });
+  });
+
+  it('setTelemetry(): 落盘且只动 telemetry 一节', async () => {
+    await svc.update({ ui: { theme: 'midnight' as const } });
+    await svc.setTelemetry({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });
+
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.telemetry).toEqual({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });
+    expect(onDisk.ui.theme).toBe('midnight');
+    const got = await svc.get();
+    expect(got.telemetry).toEqual({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });
   });
 });

@@ -50,6 +50,7 @@ export function createOnboardingService(deps: OnboardingDeps) {
     const next: SettingsFile = {
       ...cur,
       ui: { ...cur.ui, locale: m.locale, theme: m.theme, readingFontSize: m.readingFontSize },
+      telemetry: { state: m.telemetryState, decidedAt: m.decidedAt },
       onboarding: { completedAt: deps.now() },
     };
     return { next, result: { ok: true } };
@@ -79,7 +80,11 @@ export function createOnboardingService(deps: OnboardingDeps) {
           return fail('invalid-input', '参数不合法');
         }
         if (modelMissing(cur)) return fail('model-missing', '尚未配置默认模型'); // 顺序：校验（含模型）→ 写 manifest → 播种（spec §8）
-        const manifest: SeedManifest = { schemaVersion: 1, locale: args.locale, theme: args.theme, readingFontSize: args.readingFontSize, userName, agentName };
+        const manifest: SeedManifest = {
+          schemaVersion: 2, locale: args.locale, theme: args.theme, readingFontSize: args.readingFontSize, userName, agentName,
+          telemetryState: args.telemetryEnabled ? 'enabled' : 'disabled',
+          decidedAt: deps.now(),
+        };
         try {
           await deps.writeManifest(manifest);
         } catch (err) {

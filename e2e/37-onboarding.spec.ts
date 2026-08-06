@@ -23,6 +23,9 @@ test('37a-onboarding: 首启向导 → 自定义称呼走完 → 三文件落盘
     await page.locator('[data-testid="onboarding-next"]').click();            // 第2步 模型（已配置 → next 放行）
     await page.locator('[data-testid="onboarding-theme-midnight"]').click();
     await page.locator('[data-testid="onboarding-next"]').click();            // 第3步 外观
+    // 统计勾选默认打勾（刻意的产品决定，见 OnboardingWizard.tsx 的注释），下面不动它，
+    // 好让落盘断言证明这个默认值真的一路传到了 settings。
+    await expect(page.locator('[data-testid="onboarding-telemetry"]')).toBeChecked();
     await page.locator('[data-testid="onboarding-finish"]').click();          // 第4步 完成
 
     await expect(page.locator('[data-testid="onboarding-root"]')).toBeHidden({ timeout: 10_000 });
@@ -36,6 +39,18 @@ test('37a-onboarding: 首启向导 → 自定义称呼走完 → 三文件落盘
     const settings = JSON.parse(await fs.readFile(path.join(home, 'kydog.json'), 'utf8'));
     expect(settings.onboarding.completedAt).toBeTruthy();
     expect(settings.ui.theme).toBe('midnight');
+    // 勾选结果落盘 —— 这条断言存在的理由是曾有过一个 telemetryEnabled: false 的占位，
+    // 它让每个走完向导的用户都被记成「明确拒绝」，而 UI 上根本没有可拒绝的东西。
+    expect(settings.telemetry.state).toBe('enabled');
+    // 但 e2e 下闸门是关的：enabled 也不该在本地留下任何标识文件。
+    await expect(fs.access(path.join(home, 'install-id'))).rejects.toThrow();
+
+    // 上面测的是磁盘，这里测**运行中的服务**：装配发生在启动时（那会儿还是 undecided），
+    // 勾选若不同步进去，同一会话里这个开关就显示未勾选 —— 用户刚勾过。
+    await page.locator('[data-testid="user-menu-trigger"]').click();
+    await page.locator('[data-testid="menu-about"]').click();
+    await page.locator('[data-testid="about-privacy-entry"]').click();
+    await expect(page.locator('[data-testid="telemetry-toggle"]')).toBeChecked();
   } finally {
     await teardown(launched);
   }

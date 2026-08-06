@@ -136,8 +136,23 @@ export type ReadingFontSize = 'small' | 'medium' | 'large';
 export type ResearchVarKind = 'key' | 'email';
 export type ResearchCustomVar = { name: string; kind: ResearchVarKind; value: string };
 
+export type TelemetryState = 'undecided' | 'enabled' | 'deleting' | 'disabled';
+
+export type TelemetryStatus = {
+  state: TelemetryState;
+  /** 完整 install ID；未参与统计时为 null。设置页显示前 8 位并支持完整复制。 */
+  installId: string | null;
+  /** 能不能发 beacon：闸门 + 版本与平台自检。false 时开关的**开启**方向没有意义。 */
+  canBeacon: boolean;
+  /** 能不能出网（开发态 / e2e 为 false）。删除只需要它 —— 半开态（打包版但版本或
+   *  平台自检没过）下 canBeacon 为 false 而这个仍为 true，用户照样删得掉、关得掉。
+   *  两个布尔必须分开送到 UI：合成一个的话，半开态下 state 为 enabled 的用户
+   *  会被禁用的开关锁死，连撤回同意都做不到。 */
+  canReachNetwork: boolean;
+};
+
 export type SettingsFile = {
-  schemaVersion: 6;
+  schemaVersion: 7;
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
@@ -165,10 +180,14 @@ export type SettingsFile = {
     /** 已忽略横幅的不透明发布标识；仅做相等比较，不解析。 */
     dismissedCandidateId: string | null;
   };
+  /** 四态而非布尔：「已请求删除但尚未收到耐久确认」必须是可落盘的状态，
+   *  否则进程在删本地 ID 与写盘之间崩溃时，重启会生成新 ID 重新上报。
+   *  只能由 telemetryService 改（见 telemetry/telemetryService.ts），故不在 SettingsPatch 中。 */
+  telemetry: { state: TelemetryState; decidedAt: string | null };
   onboarding: { completedAt: string | null };
 };
 
-/** settings.update 专用 patch：排除 schemaVersion、onboarding 与 updates（spec §7）。 */
+/** settings.update 专用 patch：排除 schemaVersion、onboarding、updates 与 telemetry（spec §7）。 */
 export type SettingsPatch = {
   ui?: Partial<SettingsFile['ui']>;
   llm?: Partial<SettingsFile['llm']>;
@@ -179,7 +198,15 @@ export type SettingsPatch = {
 
 // ── Onboarding RPC ──
 export type OnboardingRecovery = 'none' | 'pending' | 'corrupt-discarded';
-export type OnboardingCompleteArgs = { locale: 'zh' | 'en'; theme: ThemeName; readingFontSize: ReadingFontSize; userName: string; agentName: string };
+export type OnboardingCompleteArgs = {
+  locale: 'zh' | 'en';
+  theme: ThemeName;
+  readingFontSize: ReadingFontSize;
+  userName: string;
+  agentName: string;
+  /** onboarding 最后一页的勾选结果。 */
+  telemetryEnabled: boolean;
+};
 export type OnboardingErrorCode = 'invalid-input' | 'model-missing' | 'seed-failed' | 'recovery-pending' | 'manifest-corrupt' | 'already-completed';
 export type OnboardingResult = { ok: true } | { ok: false; code: OnboardingErrorCode; message: string };
 

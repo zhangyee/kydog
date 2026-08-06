@@ -14,6 +14,8 @@ export const SOUL_FILE = path.join(ROOT, 'SOUL.md');
 export const USER_FILE = path.join(ROOT, 'USER.md');
 export const AGENTS_FILE = path.join(ROOT, 'AGENTS.md');
 export const SEED_MANIFEST_FILE = path.join(ROOT, '.onboarding-seed.json');
+export const INSTALL_ID_FILE = path.join(ROOT, 'install-id');
+export const LAST_BEACON_FILE = path.join(ROOT, 'last-beacon');
 
 export function sessionsDirFor(projectPath: string): string {
   return path.join(SESSIONS_DIR, cwdHash(projectPath));

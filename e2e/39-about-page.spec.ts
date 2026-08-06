@@ -49,6 +49,25 @@ test('39-about-page: 展示最新篇、往期可切换、版本行常驻', async
     await licensesBack.click();
     await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog V0.1.0');
     await expect(licensesBack).toBeHidden();
+
+    // 底部两条入口（都是 src/about/ 下的保留名文档）并列且顺序稳定。
+    // 用一个逗号选择器一次取两条：Playwright 按 DOM 顺序返回，first/last 才是
+    // 真的在断言顺序，而不是各断言一次「存在」。
+    const entries = page.locator('[data-testid="about-licenses-entry"], [data-testid="about-privacy-entry"]');
+    await expect(entries).toHaveCount(2);
+    await expect(entries.first()).toContainText('开源许可');
+    await expect(entries.last()).toContainText('隐私与统计');
+
+    // 隐私与统计：和开源许可同一套「整页替换 → ← 返回 → 落回当前篇」
+    await entries.last().click();
+    await expect(page.locator('[data-testid="about-title"]')).toBeHidden();
+    const privacyBack = page.locator('[data-testid="about-privacy-back"]');
+    await expect(privacyBack).toBeVisible();
+    await expect(page.locator('[data-testid="privacy-pane"]')).toBeVisible();
+
+    await privacyBack.click();
+    await expect(page.locator('[data-testid="about-title"]')).toHaveText('关于KyDog V0.1.0');
+    await expect(privacyBack).toBeHidden();
   } finally {
     await teardown(launched);
   }
