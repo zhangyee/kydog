@@ -13,6 +13,13 @@ export type TelemetryService = {
   disable(): Promise<void>;
   /** 删除已上报的数据但继续参与统计。成功后必须轮换新 ID。 */
   deleteMyData(): Promise<void>;
+  /** onboarding 落盘后把用户的选择同步进运行中的服务。装配发生在启动时（那会儿还是
+   *  undecided），不同步的话勾选在本次会话完全不生效：不起调度、不生成 ID，设置页
+   *  还会显示成未勾选。
+   *  不 persist —— onboardingService 已经写过了；而且 manifest 里的 decidedAt 才是权威的
+   *  （Task 6 专门把选择写进了播种记录），复用 enable() 会用 now() 把它覆盖掉。
+   *  取消勾选时也不该走 disable()：那会为一个从没发送过任何东西的安装发一次删除请求。 */
+  syncFromSettings(next: TelemetrySettings): Promise<void>;
   state(): TelemetryState;
   currentId(): string | null;
 };
@@ -166,6 +173,13 @@ export function createTelemetryService(deps: {
       //   则本次会话彻底不发心跳，而 enable() 的早退让用户自己也恢复不了。
       await finishDelete();
       startSchedule();
+    }),
+
+    // 与其余四个入口同一条链：并发时交错执行同样会泄漏一个活着的 schedule。
+    syncFromSettings: (next) => serialize(async () => {
+      cur = next;                                  // 直接采纳，不落盘也不改 decidedAt
+      if (next.state === 'enabled') startSchedule();
+      else await stopSchedule();
     }),
 
     state: () => cur.state,

@@ -18,6 +18,7 @@ import { getIdentity } from './harness/identityService';
 import { onboardingService } from './harness/onboardingService';
 import { readManifest, deleteManifest, discardCorruptManifest } from './harness/manifest';
 import { mapSystemLocale } from './harness/locale';
+import { logger } from './log';
 import type { OnboardingRecovery, TelemetryStatus } from '../shared/types';
 
 function telemetryStatus(): TelemetryStatus {
@@ -29,6 +30,16 @@ function telemetryStatus(): TelemetryStatus {
     // UI 显示开关可用、实际静默不报
     allowed: telemetryGateOpen(),
   };
+}
+
+/** 把刚落盘的遥测选择推给运行中的服务。装配失败时 getTelemetryService() 会抛 ——
+ *  统计永远不该让 onboarding 失败，所以这里接住只记日志（与 main.ts 装配处同一约定）。 */
+async function syncTelemetryFromSettings(): Promise<void> {
+  try {
+    await getTelemetryService().syncFromSettings((await settingsService.get()).telemetry);
+  } catch (err) {
+    logger.warn('telemetry', 'onboarding 后同步遥测状态失败', { err: String(err) });
+  }
 }
 
 export function registerAllHandlers(): void {
@@ -55,8 +66,21 @@ export function registerAllHandlers(): void {
     };
   });
 
-  registerHandler('onboarding.complete', (args) => onboardingService.complete(args));
-  registerHandler('onboarding.resume', () => onboardingService.resume());
+  registerHandler('onboarding.complete', async (args) => {
+    const result = await onboardingService.complete(args);
+    // 遥测服务在启动时就装配好了，那会儿状态还是 undecided。onboardingService 只把
+    // 用户的勾选写进 settings，运行中的服务对此一无所知 —— 不补这一步，勾选在本次
+    // 会话完全不生效（不起调度、不生成 ID，设置页还显示成未勾选）。
+    // 读回 settings 而不是直接用 args：manifest/settings 里的 decidedAt 才是权威值。
+    if (result.ok) await syncTelemetryFromSettings();
+    return result;
+  });
+  registerHandler('onboarding.resume', async () => {
+    // resume 走的是 manifest 里记着的那次勾选，同样要同步。
+    const result = await onboardingService.resume();
+    if (result.ok) await syncTelemetryFromSettings();
+    return result;
+  });
 
   registerHandler('settings.get', () => settingsService.get());
   registerHandler('settings.update', (args) => settingsService.update(args));

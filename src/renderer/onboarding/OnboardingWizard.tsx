@@ -108,6 +108,10 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
   const [theme, setTheme] = useState<ThemeName>('vellum');
   const [size, setSize] = useState<ReadingFontSize>('medium');
   const [error, setError] = useState<OnboardingErrorCode | null>(null);
+  // 默认打勾是知情后的产品决定，不是漏了：GDPR Recital 32 与欧盟法院 Planet49 案（C-673/17）
+  // 认定预勾选不构成有效同意，也就是说对 EU/UK 用户而言此处的「同意」在协议上不成立。
+  // 维护者两次确认仍要这个形态。要翻转就是把这里的 true 改成 false，别处不用动。
+  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const t = onboardingDict[locale];
 
@@ -156,9 +160,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
           locale, theme, readingFontSize: size,
           userName: userName.trim() || 'You',
           agentName: agentName.trim() || 'KyDog',
-          telemetryEnabled: false, // 占位：勾选框在 Task 11 接入，届时连同本行注释一起删掉。
-                                   // spec 定的默认是「打勾」；此处取 false 只为在 UI 缺位时不静默开启，
-                                   // 不代表默认值结论。此期间完成的 onboarding 会被记成 disabled+decidedAt。
+          telemetryEnabled,
         });
     setBusy(false);
     // applyIdentity 只在这条"真正走完 complete/resume 成功"的路径且 mode==='fresh' 时为 true——
@@ -335,6 +337,10 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
               )}
               {stepHint(step, t) && <p className="font-serif italic" style={hintStyle}>{stepHint(step, t)}</p>}
             </div>
+            {/* 勾选块钉在滚动区**外面**：完成页内容本就快撑满 520 的固定高度，放进滚动区时
+                实测整块被折叠线切掉大半（文案断在句子中间）。一个用户根本没看见的同意勾选，
+                比没有勾选更糟。 */}
+            {step === 4 && <TelemetryOptIn t={t} checked={telemetryEnabled} onChange={setTelemetryEnabled} />}
           </div>
 
           <footer style={{ marginTop: 'auto', paddingTop: 28, display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -392,6 +398,35 @@ function FilesGuide({ t }: { t: Dict }) {
       ))}
       <p className="font-serif italic" style={hintStyle}>{t.filesGuideHint}</p>
     </div>
+  );
+}
+
+/** 完成页的统计勾选：与关于页那个开关是同一件事，勾选框样式（accentColor）也对齐 PrivacyPanel。 */
+function TelemetryOptIn({ t, checked, onChange }: { t: Dict; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label
+      data-testid="onboarding-telemetry-block"
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
+        marginTop: 18, paddingTop: 16, borderTop: '0.5px solid var(--color-ink-hair-soft)',
+        // 不参与 flex 压缩：被压扁就等于又回到了「文案被切掉」那个状态
+        flexShrink: 0,
+      }}
+    >
+      <input
+        type="checkbox"
+        data-testid="onboarding-telemetry"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ accentColor: 'var(--color-accent, #6b8e7f)', marginTop: 2, flexShrink: 0 }}
+      />
+      <span style={{ minWidth: 0 }}>
+        <span style={{ ...labelStyle, color: 'var(--color-ink)' }}>{t.telemetryLabel}</span>
+        <span className="font-sans" style={{ display: 'block', fontSize: 11, color: 'var(--color-ink-soft)', lineHeight: 1.6, marginTop: 4 }}>
+          {t.telemetryBody}
+        </span>
+      </span>
+    </label>
   );
 }
 

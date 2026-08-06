@@ -35,6 +35,7 @@ vi.mock('./telemetryService', () => ({
     return {
       init: vi.fn(async () => {}),
       enable: async () => {}, disable: async () => {}, deleteMyData: async () => {},
+      syncFromSettings: async () => {},
       state: () => 'undecided', currentId: () => null,
     } satisfies TelemetryService;
   },

@@ -435,3 +435,62 @@ describe('deleting 的重试入口', () => {
     expect(readFileSync(idFile(), 'utf8')).toBe(old);
   });
 });
+
+describe('syncFromSettings（onboarding 落盘后的同步）', () => {
+  it('undecided 收到 enabled → 起调度、生成 ID、state 跟着变', async () => {
+    const s = make();
+    expect(s.state()).toBe('undecided');
+    await s.syncFromSettings({ state: 'enabled', decidedAt: '2026-08-05T09:00:00.000Z' });
+    expect(s.state()).toBe('enabled');
+    expect(existsSync(idFile())).toBe(true);
+    expect(s.currentId()).not.toBeNull();
+  });
+
+  it('收到 disabled → 不起调度、不生成 ID、不写盘', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ forget });
+    await s.syncFromSettings({ state: 'disabled', decidedAt: '2026-08-05T09:00:00.000Z' });
+    expect(s.state()).toBe('disabled');
+    expect(existsSync(idFile())).toBe(false);
+    expect(s.currentId()).toBeNull();
+    // 复用 disable() 会在这里写两次盘（deleting → disabled），且用 now() 改写 decidedAt
+    expect(saved).toEqual([]);
+    expect(forget).not.toHaveBeenCalled();
+  });
+
+  // 上一条的 forget 断言其实拦不住 disable()：没有 ID 时 serverStateCleared() 早退，
+  // 它压根走不到 forget。要真拦住复用 disable() 这个改法，磁盘上得先有个 ID。
+  // syncFromSettings 是「把已经落好盘的选择告诉服务」，它不该有任何删除语义。
+  it('磁盘上已有 ID 时收到 disabled：不发删除请求，也不动本地 ID', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ forget });
+    const existing = ensureInstallId();
+    await s.syncFromSettings({ state: 'disabled', decidedAt: '2026-08-05T09:00:00.000Z' });
+    expect(forget).not.toHaveBeenCalled();
+    expect(readFileSync(idFile(), 'utf8')).toBe(existing);
+    expect(saved).toEqual([]);
+  });
+
+  // 落盘是 onboardingService 的事。这里一写盘，就说明要么 persist 了、要么复用了
+  // enable() —— 两者都会用 now() 把 manifest 里那个权威的 decidedAt 覆盖掉。
+  it('一次都不回写磁盘', async () => {
+    const s = make();
+    await s.syncFromSettings({ state: 'enabled', decidedAt: '2019-03-04T05:06:07.000Z' });
+    expect(saved).toEqual([]);
+    // 已是 enabled，enable() 早退不写盘 —— 顺带证明 state 确实被采纳了
+    await s.enable();
+    expect(saved).toEqual([]);
+  });
+
+  // 上一条只能证明「没写盘」，证明不了内部记下的是哪个值。disable() 从 deleting 进去会
+  // 跳过 persist('deleting')，最终那条 disabled 记录带的就是服务内部的 decidedAt ——
+  // syncFromSettings 若用 now() 覆盖过它，这里就露馅。
+  it('内部记下的就是传进来的 decidedAt，不是 now()', async () => {
+    const s = make({ forget: vi.fn().mockResolvedValue({ kind: 'confirmed' }) });
+    ensureInstallId();
+    const decidedAt = '2019-03-04T05:06:07.000Z';   // 与 now() 的 2026-08-05T10:00:00Z 明显不同
+    await s.syncFromSettings({ state: 'deleting', decidedAt });
+    await s.disable();
+    expect(saved).toEqual([{ state: 'disabled', decidedAt }]);
+  });
+});
