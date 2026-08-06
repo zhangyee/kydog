@@ -15,7 +15,7 @@ async function openPrivacy(page: Page) {
 // 断言空洞通过 —— 而这类断言存在的全部理由就是「闸门失效会污染真实统计」。
 const dotKydog = (home: string) => path.join(home, '.kydog');
 
-test('44-telemetry: e2e 下闸门关闭，开关禁用且本地无标识文件', async () => {
+test('45-telemetry: e2e 下闸门关闭，开关禁用且本地无标识文件', async () => {
   const launched = await launchKydog();
   const { page, kydogHome } = launched;
   try {
@@ -41,7 +41,7 @@ test('44-telemetry: e2e 下闸门关闭，开关禁用且本地无标识文件',
 // 主进程会在渲染层没发起任何调用的时候改遥测状态（启动时那次删除重试就是），
 // 面板必须靠 telemetry.status 广播跟上。这里用渲染进程直接调 RPC 来制造这种
 // 「不是面板发起的变化」—— 与 42-auto-update 里那条 update.status 用例同一手法。
-test('44-telemetry: 状态变化经广播回流到面板，不必用户点任何东西', async () => {
+test('45-telemetry: 状态变化经广播回流到面板，不必用户点任何东西', async () => {
   const launched = await launchKydog();
   const { page } = launched;
   try {
@@ -63,7 +63,7 @@ test('44-telemetry: 状态变化经广播回流到面板，不必用户点任何
 
 // 停在 deleting 的恰好是网络不稳的那批用户。启动时那次重试是 fire-and-forget，
 // 面板只摆一个按钮等用户点的话，界面会一直挂着「删除请求尚未完成」。
-test('44-telemetry: 进入隐私面板即重试未完成的删除，且不改写 decidedAt', async () => {
+test('45-telemetry: 进入隐私面板即重试未完成的删除，且不改写 decidedAt', async () => {
   const DECIDED_AT = '2026-01-01T00:00:00.000Z';
   const launched = await launchKydog({
     seed: async (home) => {
@@ -102,7 +102,7 @@ test('44-telemetry: 进入隐私面板即重试未完成的删除，且不改写
   }
 });
 
-test('44-telemetry: 隐私说明在关于页内可读', async () => {
+test('45-telemetry: 隐私说明在关于页内可读', async () => {
   const launched = await launchKydog();
   const { page } = launched;
   try {
@@ -124,7 +124,7 @@ test('44-telemetry: 隐私说明在关于页内可读', async () => {
   }
 });
 
-test('44-telemetry: 迁移而来的老配置不会被静默开启', async () => {
+test('45-telemetry: 迁移而来的老配置不会被静默开启', async () => {
   const launched = await launchKydog({
     seed: async (home) => {
       // 一份 v6 配置：没有 telemetry 字段，模拟升级上来的老用户。
