@@ -156,6 +156,9 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
           locale, theme, readingFontSize: size,
           userName: userName.trim() || 'You',
           agentName: agentName.trim() || 'KyDog',
+          telemetryEnabled: false, // 占位：勾选框在 Task 11 接入，届时连同本行注释一起删掉。
+                                   // spec 定的默认是「打勾」；此处取 false 只为在 UI 缺位时不静默开启，
+                                   // 不代表默认值结论。此期间完成的 onboarding 会被记成 disabled+decidedAt。
         });
     setBusy(false);
     // applyIdentity 只在这条"真正走完 complete/resume 成功"的路径且 mode==='fresh' 时为 true——

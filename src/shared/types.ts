@@ -185,7 +185,15 @@ export type SettingsPatch = {
 
 // ── Onboarding RPC ──
 export type OnboardingRecovery = 'none' | 'pending' | 'corrupt-discarded';
-export type OnboardingCompleteArgs = { locale: 'zh' | 'en'; theme: ThemeName; readingFontSize: ReadingFontSize; userName: string; agentName: string };
+export type OnboardingCompleteArgs = {
+  locale: 'zh' | 'en';
+  theme: ThemeName;
+  readingFontSize: ReadingFontSize;
+  userName: string;
+  agentName: string;
+  /** onboarding 最后一页的勾选结果。 */
+  telemetryEnabled: boolean;
+};
 export type OnboardingErrorCode = 'invalid-input' | 'model-missing' | 'seed-failed' | 'recovery-pending' | 'manifest-corrupt' | 'already-completed';
 export type OnboardingResult = { ok: true } | { ok: false; code: OnboardingErrorCode; message: string };
 

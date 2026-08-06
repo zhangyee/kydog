@@ -3,9 +3,9 @@ import { createOnboardingService, type OnboardingDeps } from './onboardingServic
 import type { SettingsFile, OnboardingCompleteArgs } from '../../shared/types';
 import type { SeedManifest, ManifestReadResult } from './manifest';
 
-const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFontSize: 'medium', userName: '老张', agentName: 'KyDog' };
+const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFontSize: 'medium', userName: '老张', agentName: 'KyDog', telemetryEnabled: false };
 
-function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean }> = {}) {
+function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean; telemetry: SettingsFile['telemetry'] }> = {}) {
   const state = {
     settings: {
       schemaVersion: 7,
@@ -14,11 +14,13 @@ function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; m
       skills: { disabledBuiltins: [] }, tools: { externalBins: [] },
       research: { presets: {}, custom: [] },
       updates: { autoCheck: true, dismissedCandidateId: null },
-      telemetry: { state: 'undecided', decidedAt: null },
+      // 可覆写：验证「落盘值来自 manifest」时，初始值必须与期望值不同，否则断言证明不了任何东西。
+      telemetry: over.telemetry ?? { state: 'undecided', decidedAt: null },
       onboarding: { completedAt: over.completedAt ?? null },
     } as SettingsFile,
     manifest: over.manifest ?? { status: 'none' as const },
     written: null as SeedManifest | null,
+    lastWritten: null as SeedManifest | null,   // 与 written 不同：成功后 manifest 会被删，这里留痕以便断言写进去的内容
     deleted: 0, discarded: 0, seedCalls: [] as Array<{ locale: string; userName: string; agentName: string }>,
   };
   const deps: OnboardingDeps = {
@@ -38,6 +40,7 @@ function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; m
     writeManifest: async (m) => {
       if (over.writeManifestFail) throw new Error('ENOSPC');
       state.written = m;
+      state.lastWritten = m;
     },
     deleteManifest: async () => { state.deleted += 1; state.written = null; },
     discardCorruptManifest: async () => { state.discarded += 1; state.manifest = { status: 'none' }; },
@@ -55,7 +58,16 @@ describe('onboarding.complete', () => {
     expect(state.settings.ui.theme).toBe('vellum');
     expect(state.settings.ui.readingFontSize).toBe('medium');
     expect(state.seedCalls).toEqual([{ locale: 'zh', userName: '老张', agentName: 'KyDog' }]);
+    expect(state.lastWritten).toMatchObject({ telemetryState: 'disabled', decidedAt: '2026-07-22T00:00:00.000Z' });
+    expect(state.settings.telemetry).toEqual({ state: 'disabled', decidedAt: '2026-07-22T00:00:00.000Z' });
     expect(state.deleted).toBeGreaterThan(0);
+  });
+
+  it('勾了统计 → manifest 与 settings 都落 enabled', async () => {
+    const { state, svc } = makeWorld({ telemetry: { state: 'disabled', decidedAt: '2020-01-01T00:00:00.000Z' } });
+    expect(await svc.complete({ ...ARGS, telemetryEnabled: true })).toEqual({ ok: true });
+    expect(state.lastWritten).toMatchObject({ telemetryState: 'enabled' });
+    expect(state.settings.telemetry).toEqual({ state: 'enabled', decidedAt: '2026-07-22T00:00:00.000Z' });
   });
 
   it('invalid-input：坏称呼/坏主题不播种不写标记', async () => {
@@ -88,7 +100,7 @@ describe('onboarding.complete', () => {
   });
 
   it('recovery-pending：已有 manifest 时不覆盖、不接受新参数', async () => {
-    const pending: SeedManifest = { schemaVersion: 1, locale: 'en', theme: 'midnight', readingFontSize: 'large', userName: 'Old', agentName: 'OldDog' };
+    const pending: SeedManifest = { schemaVersion: 2, locale: 'en', theme: 'midnight', readingFontSize: 'large', userName: 'Old', agentName: 'OldDog', telemetryState: 'disabled', decidedAt: '2026-07-22T00:00:00.000Z' };
     const { state, svc } = makeWorld({ manifest: { status: 'ok', manifest: pending } });
     expect(await svc.complete({ ...ARGS, userName: 'New' })).toMatchObject({ ok: false, code: 'recovery-pending' });
     expect(state.written).toBeNull(); // 未写新 manifest
@@ -110,15 +122,29 @@ describe('onboarding.complete', () => {
 });
 
 describe('onboarding.resume', () => {
-  const pending: SeedManifest = { schemaVersion: 1, locale: 'en', theme: 'midnight', readingFontSize: 'large', userName: 'Dr. Zhang', agentName: 'KyDog' };
+  // telemetry 取值刻意与 makeWorld 初始值（undecided/null）不同，否则断言证明不了值是从 manifest 来的。
+  const pending: SeedManifest = { schemaVersion: 2, locale: 'en', theme: 'midnight', readingFontSize: 'large', userName: 'Dr. Zhang', agentName: 'KyDog', telemetryState: 'enabled', decidedAt: '2026-08-01T00:00:00.000Z' };
 
-  it('沿用 manifest 原输入（含 theme/字号）补齐并提交', async () => {
+  it('沿用 manifest 原输入（含 theme/字号/统计选择）补齐并提交', async () => {
     const { state, svc } = makeWorld({ manifest: { status: 'ok', manifest: pending } });
     expect(await svc.resume()).toEqual({ ok: true });
     expect(state.seedCalls).toEqual([{ locale: 'en', userName: 'Dr. Zhang', agentName: 'KyDog' }]);
     expect(state.settings.ui.theme).toBe('midnight');       // ui 来自 manifest 而非现值
     expect(state.settings.ui.readingFontSize).toBe('large');
     expect(state.settings.ui.locale).toBe('en');
+    expect(state.settings.telemetry).toEqual({ state: 'enabled', decidedAt: '2026-08-01T00:00:00.000Z' });
+  });
+
+  // v1 manifest 经迁移后 telemetryState 是 undecided；恢复必须原样落成 undecided，
+  // 而不是沿用现值或替用户选一边 —— 他当年根本没见过勾选框。
+  it('恢复迁移自 v1 的 manifest → settings 落 undecided，不沿用现值', async () => {
+    const migrated: SeedManifest = { ...pending, telemetryState: 'undecided', decidedAt: null };
+    const { state, svc } = makeWorld({
+      manifest: { status: 'ok', manifest: migrated },
+      telemetry: { state: 'enabled', decidedAt: '2020-01-01T00:00:00.000Z' },
+    });
+    expect(await svc.resume()).toEqual({ ok: true });
+    expect(state.settings.telemetry).toEqual({ state: 'undecided', decidedAt: null });
   });
 
   it('manifest 损坏 → 弃置 + manifest-corrupt', async () => {
