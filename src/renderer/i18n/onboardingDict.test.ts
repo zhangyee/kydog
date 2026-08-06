@@ -27,8 +27,10 @@ describe('onboarding 统计文案与隐私说明的一致性', () => {
     expect(onboardingDict[locale].telemetryBody).toContain(m![1]);
   });
 
-  it('中文文案的频率措辞与隐私说明一致', () => {
-    expect(PRIVACY_MD).toContain('每天至多一次');
-    expect(onboardingDict.zh.telemetryBody).toContain('每天至多一次');
+  // 「每天至多一次」是省流量的约定，不是承诺：实现刻意选择宁可多发一次（写日期失败 /
+  // 时钟回拨 / 同日删除后继续参与）。两处措辞都得带上这个保留，只改一处就是两份文案漂开。
+  it('中文文案的频率措辞与隐私说明一致，且都不把话说满', () => {
+    expect(PRIVACY_MD).toContain('通常每天至多一次');
+    expect(onboardingDict.zh.telemetryBody).toContain('通常每天至多一次');
   });
 });

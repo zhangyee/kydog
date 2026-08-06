@@ -306,7 +306,7 @@ describe('deleteMyData（保持参与）', () => {
 
 describe('闸门', () => {
   // 「闸优先于用户设置」这个不变量只能在这一层测到 —— telemetryAllowed 本身
-  // 不接受用户设置入参，assembly.test.ts 结构上测不了它。别以为那边已经覆盖了。
+  // 不接受用户设置入参，gate.test.ts 结构上测不了它。别以为那边已经覆盖了。
   it('闸门全关时不发送，也不生成 ID', async () => {
     const send = vi.fn();
     const s = make({ canReachNetwork: false, canBeacon: false, send });
@@ -355,7 +355,8 @@ describe('闸门', () => {
 // canBeacon 关而 canReachNetwork 开 = 打包版但版本非法 / 平台不在枚举内。
 // 与开发态的区别是**永久性**：这个构建永远发不出 beacon，不存在「以后能发的上下文」。
 // forget 的 payload 只有 {id}，与版本、平台毫无关系 —— 两道闸必须分开，
-// 否则用户会永远冻在 deleting，而 UI 拿到 allowed:false 会禁用开关，连重试入口都没有。
+// 否则用户会永远冻在 deleting。UI 那侧同一条约定：canBeacon 只管开启方向，
+// 关闭方向永远可用（见 PrivacyPanel.test.ts 的半开态用例）。
 describe('两道闸分开：canBeacon 关但 canReachNetwork 开', () => {
   const halfOpen = { canReachNetwork: true, canBeacon: false } as const;
 
@@ -422,6 +423,27 @@ describe('deleting 的重试入口', () => {
     expect(existsSync(idFile())).toBe(false);
   });
 
+  // 守 deleting 一个不够：面板进来会自动重试一次，用户手上还有「立即重试」那个按钮，
+  // 第二次到达时状态很可能已经是 disabled。那时用 now() 重写 decidedAt，就把
+  // 「用户何时按下关闭」这条事实抹成了「他刚刚才关」—— 与 enable() 保护原始同意
+  // 时间同一条约定，deleting 与 disabled 都不是新决定。
+  it('disable() 从 disabled 进来同样不改写 decidedAt', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ forget, initial: { state: 'disabled', decidedAt: '2026-01-01T00:00:00.000Z' } });
+    await s.disable();
+    expect(saved.some((x) => x.state === 'deleting')).toBe(false);
+    expect(saved.every((x) => x.decidedAt === '2026-01-01T00:00:00.000Z')).toBe(true);
+    expect(s.state()).toBe('disabled');
+  });
+
+  // undecided → 关闭确实是一个新决定，这条守着上面那个守卫别收得过宽
+  it('disable() 从 undecided 进来是新决定，decidedAt 取 now()', async () => {
+    const s = make({ initial: { state: 'undecided', decidedAt: null } });
+    await s.disable();
+    expect(saved.map((x) => x.state)).toEqual(['deleting', 'disabled']);
+    expect(saved[0].decidedAt).toBe('2026-08-05T10:00:00.000Z');
+  });
+
   // 曾经的写法把状态守卫放在 clearLocal() 之后：本地 ID 被删掉、state 仍是 deleting、
   // save 一次没调 —— 本会话再也回不到 disabled，服务端那份数据也永远没人来删
   it('deleteMyData() 在 deleting 下什么都不做，本地 ID 必须留着', async () => {
@@ -433,6 +455,64 @@ describe('deleting 的重试入口', () => {
     expect(saved).toEqual([]);
     expect(s.state()).toBe('deleting');
     expect(readFileSync(idFile(), 'utf8')).toBe(old);
+  });
+});
+
+// 面板是被动的：它进来时看到的 deleting，可能是启动时那次 fire-and-forget 的重试
+// 还在飞。没有这条通知，那句「删除请求尚未完成」就再也不会被纠正 —— 而撞上它的
+// 恰好是网络不稳的那批用户（他们本来就是因此才停在 deleting 的）。
+describe('状态变更通知', () => {
+  type Seen = { state: TelemetryState; installId: string | null };
+  const collect = () => {
+    const seen: Seen[] = [];
+    return { seen, onChange: (s: Seen) => { seen.push(s); } };
+  };
+
+  it('deleting 期间删除兑现 → 最后一条通知是 disabled，不是停在 deleting', async () => {
+    const { seen, onChange } = collect();
+    const s = make({ initial: { state: 'deleting', decidedAt: null }, onChange });
+    ensureInstallId();
+    await s.init();
+    expect(s.state()).toBe('disabled');
+    expect(seen.at(-1)).toEqual({ state: 'disabled', installId: null });
+  });
+
+  // 通知里必须带 ID：面板显示的是标识，只报 state 的话，enable() 之后那串前 8 位
+  // 永远推不出去（它是在 persist 之后才由 startSchedule 生成的）。
+  it('enable 生成 ID 后再通知一次，带上新标识', async () => {
+    const { seen, onChange } = collect();
+    const s = make({ onChange });
+    await s.enable();
+    expect(seen.map((x) => x.state)).toEqual(['enabled', 'enabled']);
+    expect(seen[0].installId).toBeNull();          // 落盘那一刻还没有 ID
+    expect(seen.at(-1)!.installId).toBe(s.currentId());
+    expect(s.currentId()).not.toBeNull();
+  });
+
+  it('清本地 ID 也要通知：UI 上那串标识得跟着消失', async () => {
+    const { seen, onChange } = collect();
+    const s = make({ initial: { state: 'enabled', decidedAt: null }, onChange });
+    ensureInstallId();
+    await s.disable();
+    expect(seen.map((x) => x.state)).toEqual(['deleting', 'deleting', 'deleting', 'disabled']);
+    //                                          落盘      回填 ID    清 ID
+    expect(seen[1].installId).not.toBeNull();
+    expect(seen[2].installId).toBeNull();
+  });
+
+  it('落盘失败一次都不通知 —— 通知出去就是把一个没发生的变化告诉了 UI', async () => {
+    const { seen, onChange } = collect();
+    const s = make({ save: async () => { throw new Error('EIO'); }, onChange });
+    await s.enable();
+    expect(seen).toEqual([]);
+  });
+
+  it('syncFromSettings 也通知：onboarding 勾完，设置页得看到已开启', async () => {
+    const { seen, onChange } = collect();
+    const s = make({ onChange });
+    await s.syncFromSettings({ state: 'enabled', decidedAt: '2026-08-05T09:00:00.000Z' });
+    expect(seen.map((x) => x.state)).toEqual(['enabled', 'enabled']);
+    expect(seen.at(-1)!.installId).toBe(s.currentId());
   });
 });
 

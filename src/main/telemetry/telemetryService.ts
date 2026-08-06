@@ -44,6 +44,11 @@ export function createTelemetryService(deps: {
    *  物化，就只剩注释和另一个模块的非局部不变量拦着它进 payload。 */
   platform: Platform | null;
   arch: Arch | null;
+  /** 状态或标识一变就调一次，用于把变化推给渲染层。UI 显示的是 (state, id) 这一对，
+   *  所以两者各自都算变化 —— 只盯 state 的话，enable() 之后生成的 ID 永远推不出去。
+   *  必须是**推**而不是让 UI 轮询：启动时那次删除重试是 fire-and-forget，窗口开出来
+   *  时它可能还在飞，面板拿到的 deleting 之后再也没有第二次机会被纠正。 */
+  onChange?: (s: { state: TelemetryState; installId: string | null }) => void;
   now?: () => Date;
 }): TelemetryService {
   // 不接 dir 参数：installId / schedule 直接用 paths 常量，测试靠 vi.spyOn 重定向
@@ -51,6 +56,20 @@ export function createTelemetryService(deps: {
   let cur = deps.initial;
   let schedule: Schedule | null = null;
   let id: string | null = null;
+
+  function notify(): void {
+    deps.onChange?.({ state: cur.state, installId: id });
+  }
+
+  /** cur 与 id 只经由这两个函数改写。通知挂在赋值上而不是挂在四个入口的出口 ——
+   *  入口在途中就会变（disable 先落 deleting，再等 forget 回来），只在出口发的话，
+   *  恰好在这段时间里打开面板的用户看到的就是一个再也不会被纠正的中间态。 */
+  function setCur(next: TelemetrySettings): void { cur = next; notify(); }
+  function setId(next: string | null): void {
+    if (next === id) return;
+    id = next;
+    notify();
+  }
 
   /** 四个入口串到一条链上。交错执行会泄漏一个活着的 schedule：并发
    *  disable + enable（用户觉得卡住又点开启）时，第二次 enable 建的 schedule
@@ -67,8 +86,10 @@ export function createTelemetryService(deps: {
    *  若先删本地 ID 再写 disabled，进程在两者之间崩溃时磁盘仍是 enabled，
    *  重启即生成新 ID 重新上报。落盘失败就当什么都没发生。 */
   async function persist(next: TelemetrySettings): Promise<boolean> {
-    try { await deps.save(next); cur = next; return true; }
-    catch { return false; }
+    // setCur 放在 try 外：通知里抛出的异常不该把一次已经落盘成功的写入报成失败
+    try { await deps.save(next); } catch { return false; }
+    setCur(next);
+    return true;
   }
 
   function startSchedule(): void {
@@ -80,7 +101,7 @@ export function createTelemetryService(deps: {
     // 捕获成局部常量：闭包若读外层的 id，读到的是**当前值**，clearLocal() 之后
     // 就是 null，而 id! 会把这个谎言原样带进 payload（实测发出过 {"id":null,...}）
     const beaconId = ensureInstallId();
-    id = beaconId;
+    setId(beaconId);
     schedule = createSchedule({
       now,
       send: () => deps.send({ id: beaconId, platform: beaconPlatform, arch: beaconArch, version: deps.appVersion }),
@@ -100,10 +121,10 @@ export function createTelemetryService(deps: {
   async function serverStateCleared(): Promise<boolean> {
     await stopSchedule();
     // 只读不创建。用 ensureInstallId() 会凭空造出一个服务端从没见过的标识，
-    // 并在开发态（allowed=false，从未生成过 ID）下产生一次本不该有的网络调用。
+    // 并在开发态（canReachNetwork=false，从未生成过 ID）下产生一次本不该有的网络调用。
     const target = id ?? readInstallId();
     if (!target) return true; // 没有要删的东西 = 已经删完了
-    id = target; // 回填：否则磁盘有 ID 而 currentId() 返回 null，UI 显示不出来
+    setId(target); // 回填：否则磁盘有 ID 而 currentId() 返回 null，UI 显示不出来
     // 闸门：开发态/e2e 绝不出网。但删除请求不能被静默丢弃 —— 停在 deleting，
     // 等下次在打包版里启动时由 init() 真正完成。deleting 的语义本就是
     // 「请求未确认，持续重试」，推迟到能发的上下文正是它该做的事。
@@ -118,7 +139,7 @@ export function createTelemetryService(deps: {
   function clearLocal(): void {
     dropInstallId();
     dropLastBeacon();
-    id = null;
+    setId(null);
   }
 
   async function finishDelete(): Promise<boolean> {
@@ -148,10 +169,12 @@ export function createTelemetryService(deps: {
     }),
 
     disable: () => serialize(async () => {
-      // 已经在 deleting 就别重写：重试收尾不是一个新决定，改写 decidedAt 会抹掉
-      // 用户最初按下关闭的时间 —— 与 enable() 保护原始同意时间同一条约定。
-      // 这也让 disable() 成为 deleting 的干净重试入口（设置页的「关闭统计」直接用它）。
-      if (cur.state !== 'deleting') {
+      // 只有「还没决定关」的两个状态进来才算一个新决定。deleting 是重试收尾，
+      // disabled 是已经关掉了（面板进来自动重试、用户又点一次「立即重试」，第二次
+      // 到达时状态已经是 disabled），两者都不该用 now() 抹掉用户最初按下关闭的时间
+      // —— 与 enable() 保护原始同意时间同一条约定。
+      // 这也让 disable() 成为 deleting 的干净重试入口（面板的重试直接用它）。
+      if (cur.state === 'enabled' || cur.state === 'undecided') {
         if (!(await persist({ state: 'deleting', decidedAt: now().toISOString() }))) return;
       }
       if (!(await finishDelete())) return;   // 停在 deleting，下次 init 重试
@@ -177,7 +200,7 @@ export function createTelemetryService(deps: {
 
     // 与其余四个入口同一条链：并发时交错执行同样会泄漏一个活着的 schedule。
     syncFromSettings: (next) => serialize(async () => {
-      cur = next;                                  // 直接采纳，不落盘也不改 decidedAt
+      setCur(next);                                // 直接采纳，不落盘也不改 decidedAt
       if (next.state === 'enabled') startSchedule();
       else await stopSchedule();
     }),

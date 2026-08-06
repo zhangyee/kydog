@@ -103,7 +103,11 @@ export type RuntimeEvent =
   | { topic: 'thread.updated'; payload: { thread: Thread } }
   | { topic: 'fs.changed'; payload: { projectPath: string } }
   | { topic: 'identity.changed'; payload: Identity }
-  | { topic: 'update.status'; payload: UpdateStatus };
+  | { topic: 'update.status'; payload: UpdateStatus }
+  // 主进程会在渲染层没发起任何调用的时候改遥测状态：启动时那次「重试未完成的删除」
+  // 是 fire-and-forget，窗口开出来时它可能还在飞。没有这条广播，隐私面板就只能
+  // 停在它进来那一刻的快照上 —— 删除其实已经完成了，界面却还说「尚未完成」。
+  | { topic: 'telemetry.status'; payload: TelemetryStatus };
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];

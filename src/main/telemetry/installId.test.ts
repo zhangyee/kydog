@@ -74,6 +74,17 @@ describe('readInstallId', () => {
     const id = ensureInstallId();
     expect(readInstallId()).toBe(id);
   });
+
+  // 判定用的是契约里那份 UUID_V4_RE（带 /i），不是本地另写的一份。服务端拿同一份
+  // 字面量校验：本地多写一个只认小写的版本，就会把一个服务端照收的 ID 判成损坏、
+  // 静默换掉 —— 用户看到标识自己变了，服务端那份数据从此没人认领。
+  it('大写形式照样认：与契约的 UUID_V4_RE 是同一份判定', () => {
+    const id = ensureInstallId();
+    const upper = id.toUpperCase();
+    expect(upper).not.toBe(id);
+    writeFileSync(path.join(dir, 'install-id'), upper);
+    expect(readInstallId()).toBe(upper);
+  });
 });
 
 describe('dropInstallId', () => {

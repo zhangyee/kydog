@@ -1,14 +1,23 @@
 import { app } from 'electron';
 import { createTelemetryService, type TelemetryService, type TelemetrySettings } from './telemetryService';
-import { telemetryAllowed, exactPlatform, exactArch, versionOk } from './assembly';
+import { telemetryAllowed, exactPlatform, exactArch, versionOk } from './gate';
 import { sendBeacon, forget } from './transport';
 import { settingsService } from '../settings/settingsService';
+import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
+import type { TelemetryState, TelemetryStatus } from '../../shared/types';
 
 // 单独一个装配模块而不是在 main.ts 里 export：handlers.ts 需要这个服务，而
 // main.ts 又要 import handlers.ts 才能注册 —— 那是循环 import。与 update/assemble.ts 同形。
 let service: TelemetryService | null = null;
 let beaconAllowed = false;
+let networkAllowed = false;
+
+/** TelemetryStatus 的唯一装配点。IPC 的三个返回值与 telemetry.status 广播都走这里 ——
+ *  两处各拼一份的话，加字段时必然漏掉一处，而漏掉的那处会是广播（没人手动点它）。 */
+function statusOf(state: TelemetryState, installId: string | null): TelemetryStatus {
+  return { state, installId, canBeacon: beaconAllowed, canReachNetwork: networkAllowed };
+}
 
 export function assembleTelemetry(initial: TelemetrySettings): void {
   // KYDOG_E2E 与 update/assemble.ts 用的是同一个变量名，别另起一个
@@ -25,6 +34,7 @@ export function assembleTelemetry(initial: TelemetrySettings): void {
   }
 
   beaconAllowed = gateOk && okVersion && platform !== null && arch !== null;
+  networkAllowed = gateOk;
 
   service = createTelemetryService({
     // 两道闸分开：版本非法 / 平台不在枚举内是这个构建的永久属性，发不了 beacon；
@@ -38,6 +48,9 @@ export function assembleTelemetry(initial: TelemetrySettings): void {
     appVersion,
     platform,
     arch,
+    // 与 update/assemble.ts 的 onStatusChange → broadcaster.emit 同形。
+    // 这条广播是隐私面板唯一能知道「启动时那次删除重试兑现了」的途径。
+    onChange: (s) => broadcaster.emit('telemetry.status', statusOf(s.state, s.installId)),
   });
 
   // init() 里 ensureInstallId() 写盘可能失败。不接住会变成 unhandled rejection ——
@@ -52,8 +65,9 @@ export function getTelemetryService(): TelemetryService {
   return service;
 }
 
-/** 闸门的**最终**结果（含版本与平台自检），即 canBeacon，供 IPC 返回给渲染层。
- *  不要用裸的 telemetryAllowed() —— 那会让版本非法时 UI 显示开关可用、实际静默不报。 */
-export function telemetryGateOpen(): boolean {
-  return beaconAllowed;
+/** 供 IPC 返回给渲染层的当前状态。canBeacon 是闸门的**最终**结果（含版本与平台自检），
+ *  不是裸的 telemetryAllowed() —— 那会让版本非法时 UI 显示开关可用、实际静默不报。 */
+export function telemetryStatus(): TelemetryStatus {
+  const svc = getTelemetryService();
+  return statusOf(svc.state(), svc.currentId());
 }

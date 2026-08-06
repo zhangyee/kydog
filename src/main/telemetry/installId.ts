@@ -2,15 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { atomicWriteWith0600Sync } from '../persist/atomicWrite';
 import * as paths from '../persist/paths';
-
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// 判定用契约里那一份，不在这里另起：这个正则决定「哪些内容会被当成标识发给服务端」，
+// 服务端拿同一份字面量校验。本地再写一份就是两份定义漂开的起点（曾经的那份漏了 /i，
+// 于是一个服务端会照收的 ID 在客户端被判成损坏、静默换一个新标识）。
+import { UUID_V4_RE } from '../../shared/telemetryContract';
 
 /** 只读：读不到就是没有。与 ensureInstallId 的区别是它绝不创建 ——
  *  删除路径上凭空造一个服务端从没见过的标识，比不删更糟。 */
 export function readInstallId(): string | null {
   try {
     const raw = readFileSync(paths.INSTALL_ID_FILE, 'utf8').trim();
-    return UUID_V4.test(raw) ? raw : null;
+    return UUID_V4_RE.test(raw) ? raw : null;
   } catch { return null; /* 不存在或读不出 */ }
 }
 

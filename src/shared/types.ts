@@ -142,8 +142,13 @@ export type TelemetryStatus = {
   state: TelemetryState;
   /** 完整 install ID；未参与统计时为 null。设置页显示前 8 位并支持完整复制。 */
   installId: string | null;
-  /** 闸门结果，已含版本与平台自检。false 时 UI 显示「开发态下不上报」并禁用开关。 */
-  allowed: boolean;
+  /** 能不能发 beacon：闸门 + 版本与平台自检。false 时开关的**开启**方向没有意义。 */
+  canBeacon: boolean;
+  /** 能不能出网（开发态 / e2e 为 false）。删除只需要它 —— 半开态（打包版但版本或
+   *  平台自检没过）下 canBeacon 为 false 而这个仍为 true，用户照样删得掉、关得掉。
+   *  两个布尔必须分开送到 UI：合成一个的话，半开态下 state 为 enabled 的用户
+   *  会被禁用的开关锁死，连撤回同意都做不到。 */
+  canReachNetwork: boolean;
 };
 
 export type SettingsFile = {

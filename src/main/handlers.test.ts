@@ -9,7 +9,8 @@ import type { TelemetryService, TelemetrySettings } from './telemetry/telemetryS
 const h = vi.hoisted(() => ({
   captured: {} as Partial<Record<RpcMethod, (args: unknown) => unknown>>,
   calls: [] as string[],
-  gateOpen: false,
+  canBeacon: false,
+  canReachNetwork: false,
   state: 'enabled' as 'undecided' | 'enabled' | 'deleting' | 'disabled',
   installId: null as string | null,
   // onboarding → 遥测同步那条接线用：结果由用例摆布，同步进去的值记在 synced 里
@@ -31,7 +32,9 @@ vi.mock('./ipc/dispatcher', () => ({
 }));
 
 vi.mock('./telemetry/assemble', () => ({
-  telemetryGateOpen: () => h.gateOpen,
+  telemetryStatus: () => ({
+    state: h.state, installId: h.installId, canBeacon: h.canBeacon, canReachNetwork: h.canReachNetwork,
+  }),
   getTelemetryService: (): TelemetryService => ({
     init: async () => {},
     enable: async () => { h.calls.push('enable'); },
@@ -67,7 +70,8 @@ function invoke(method: RpcMethod, args?: unknown) {
 beforeEach(() => {
   h.captured = {};
   h.calls = [];
-  h.gateOpen = false;
+  h.canBeacon = false;
+  h.canReachNetwork = false;
   h.state = 'enabled';
   h.installId = null;
   h.onboardingOk = true;
@@ -83,18 +87,20 @@ describe('telemetry IPC 接线', () => {
     }
   });
 
-  // 要害：allowed 必须取最终闸门（含版本与平台自检）。写死 true 的话，
-  // 版本非法时 UI 会显示开关可用而实际静默不报
-  it('getStatus 的 allowed 取自 telemetryGateOpen()，不是写死的', async () => {
+  // 要害：状态整份取自 assemble 的 telemetryStatus()，这里不许自己拼一份 ——
+  // 闸门字段（含版本与平台自检）写死或漏掉，UI 就会显示开关可用而实际静默不报
+  it('getStatus 原样返回 telemetryStatus()，不是自己拼的', async () => {
     h.installId = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
     expect(await invoke('telemetry.getStatus')).toEqual({
       state: 'enabled',
       installId: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
-      allowed: false,
+      canBeacon: false,
+      canReachNetwork: false,
     });
 
-    h.gateOpen = true;
-    expect((await invoke('telemetry.getStatus')).allowed).toBe(true);
+    // 两道闸分开送到 UI：半开态（发不出 beacon 但出得了网）下用户必须还能关掉统计
+    h.canReachNetwork = true;
+    expect(await invoke('telemetry.getStatus')).toMatchObject({ canBeacon: false, canReachNetwork: true });
   });
 
   // 对调了就是「用户点开启实际执行关闭」，一路静默到人工验收
@@ -120,7 +126,9 @@ describe('telemetry IPC 接线', () => {
       ['telemetry.deleteMyData', undefined],
     ] as const) {
       const r = await invoke(m, args);
-      expect(r, m).toEqual({ state: 'deleting', installId: h.installId, allowed: false });
+      expect(r, m).toEqual({
+        state: 'deleting', installId: h.installId, canBeacon: false, canReachNetwork: false,
+      });
     }
   });
 });

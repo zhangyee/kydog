@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { telemetryAllowed, exactPlatform, exactArch, versionOk } from './assembly';
+import { telemetryAllowed, exactPlatform, exactArch, versionOk } from './gate';
 import { MAX_VERSION_LEN } from '../../shared/telemetryContract';
 
 describe('telemetryAllowed', () => {

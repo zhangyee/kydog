@@ -29,7 +29,7 @@ const zh = {
   // 这条一致性由 onboardingDict.test.ts 盯着。路径写「设置 → 关于 → 隐私与统计」：
   // 面板在关于页底部，没有独立的设置页，写成「设置 → 隐私与统计」就是一条走不通的路。
   telemetryLabel: '参与匿名使用统计',
-  telemetryBody: '每天至多一次，发送应用版本、操作系统、CPU 架构与一个随机标识，服务端据此推断国家与城市。'
+  telemetryBody: '通常每天至多一次，发送应用版本、操作系统、CPU 架构与一个随机标识，服务端据此推断国家与城市。'
     + '不发送文件内容、对话内容或任何个人信息，KyDog 服务端不存储原始 IP。'
     + '随时可在「设置 → 关于 → 隐私与统计」里关闭并删除已上报的数据，完整的隐私说明也在那里。'
     + '服务端代码开源：github.com/zhangyee/kydog-telemetry',
@@ -75,7 +75,7 @@ const en: OnboardingDict = {
   telemetryLabel: 'Share anonymous usage statistics',
   // 设置页与关于页是中文硬编码的（只有向导有 en），所以这里把中文原文一并给出，
   // 英文读者才找得到那个入口 —— 只写英文标签等于给他一条对不上的路。
-  telemetryBody: 'At most once a day: app version, OS, CPU architecture, and one random identifier — '
+  telemetryBody: 'Usually at most once a day: app version, OS, CPU architecture, and one random identifier — '
     + 'the server infers country and city from the connection. No file contents, no conversation contents, '
     + 'no personal information, and the KyDog server does not store raw IP addresses. '
     + 'You can turn it off and delete what was sent at any time under 设置 → 关于 → 隐私与统计 '
