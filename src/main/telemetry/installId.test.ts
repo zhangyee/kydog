@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
-import { ensureInstallId, dropInstallId } from './installId';
+import { ensureInstallId, readInstallId, dropInstallId } from './installId';
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -55,6 +55,24 @@ describe('ensureInstallId', () => {
     ensureInstallId();
     writeFileSync(path.join(dir, 'install-id'), 'garbage');
     expect(ensureInstallId()).toMatch(UUID_V4);
+  });
+});
+
+describe('readInstallId', () => {
+  it('文件不存在时返回 null —— 绝不创建', () => {
+    expect(readInstallId()).toBeNull();
+    expect(existsSync(path.join(dir, 'install-id'))).toBe(false);
+  });
+
+  it('内容损坏时返回 null，且不重新生成', () => {
+    writeFileSync(path.join(dir, 'install-id'), 'garbage');
+    expect(readInstallId()).toBeNull();
+    expect(readFileSync(path.join(dir, 'install-id'), 'utf8')).toBe('garbage');
+  });
+
+  it('已有 ID 时原样读出', () => {
+    const id = ensureInstallId();
+    expect(readInstallId()).toBe(id);
   });
 });
 
