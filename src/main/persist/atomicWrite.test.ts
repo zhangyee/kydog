@@ -29,8 +29,8 @@ describe('atomicWrite', () => {
   });
 });
 
-import { promises as fsp, statSync } from 'node:fs';
-import { atomicWriteWith0600Async } from './atomicWrite';
+import { promises as fsp, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { atomicWriteWith0600Async, atomicWriteWith0600Sync } from './atomicWrite';
 
 describe('atomicWriteWith0600 (POSIX)', () => {
   const skip = process.platform === 'win32';
@@ -51,5 +51,13 @@ describe('atomicWriteWith0600 (POSIX)', () => {
     await atomicWriteWith0600Async(target, '{"y":2}');
     expect(statSync(target).mode & 0o777).toBe(0o600);
     await fsp.rm(dir, { recursive: true });
+  });
+
+  it.skipIf(skip)('sync 版本同等行为', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-atomic-sync-'));
+    const target = path.join(dir, 'a.json');
+    atomicWriteWith0600Sync(target, '{"sync":true}');
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    rmSync(dir, { recursive: true });
   });
 });

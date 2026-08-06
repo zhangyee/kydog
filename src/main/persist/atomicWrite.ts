@@ -1,5 +1,5 @@
 // src/main/persist/atomicWrite.ts
-import { promises as fsp } from 'node:fs';
+import { promises as fsp, mkdirSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -21,4 +21,15 @@ export async function atomicWriteWith0600Async(target: string, data: string): Pr
   await fsp.writeFile(tmp, data, POSIX ? { encoding: 'utf8', mode: MODE } : 'utf8');
   await fsp.rename(tmp, target);
   if (POSIX) await fsp.chmod(target, MODE);
+}
+
+/** 同步版。d712007 曾因「失去调用者」删掉它，现在遥测的 install-id 与 last-beacon
+ *  又需要它了 —— 那两处是启动期的一次几十字节写入，改成异步会把调用链上所有
+ *  同步初始化逻辑一并染成异步，代价大于收益。 */
+export function atomicWriteWith0600Sync(target: string, data: string): void {
+  mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.tmp.${randomUUID()}`;
+  writeFileSync(tmp, data, POSIX ? { encoding: 'utf8', mode: MODE } : 'utf8');
+  renameSync(tmp, target);
+  if (POSIX) chmodSync(target, MODE);
 }
