@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { parseAboutDoc, hasLevelOneHeading, type AboutDoc } from './aboutDoc';
-import { ABOUT_DOCS, ABOUT_LICENSES } from './aboutDocs';
+import { ABOUT_DOCS, ABOUT_LICENSES, ABOUT_PRIVACY } from './aboutDocs';
 
 const ABOUT_DIR = path.resolve(__dirname, '..', '..', '..', 'about');
 // __dirname 是 src/renderer/settings/about/，向上四层是仓库根，node_modules 挂在那儿。
@@ -36,9 +36,15 @@ function mdFiles(): string[] {
   return readdirSync(ABOUT_DIR).filter((f) => f.endsWith('.md')).sort();
 }
 
-/** 正文文件 = 除 licenses.md 外的所有 .md，两处需要这个集合的地方共用同一份定义。 */
+/**
+ * 保留名文档：不是正文，不带 frontmatter，由 aboutDocs.ts 单独取出，不参与 date 排序。
+ * 与 aboutDocs.ts 里的 LICENSES_SLUG / PRIVACY_SLUG 一一对应，新增一个保留名要两边同时加。
+ */
+const RESERVED_FILES = new Set(['licenses.md', 'privacy.md']);
+
+/** 正文文件 = 除保留名外的所有 .md，两处需要这个集合的地方共用同一份定义。 */
 function posts(): string[] {
-  return mdFiles().filter((f) => f !== 'licenses.md');
+  return mdFiles().filter((f) => !RESERVED_FILES.has(f));
 }
 
 /**
@@ -110,6 +116,14 @@ describe('src/about 文件契约', () => {
     const raw = readFileSync(path.join(ABOUT_DIR, 'licenses.md'), 'utf8');
     expect(raw.replace(/^\uFEFF/, '').startsWith('---')).toBe(false);
   });
+
+  it('privacy.md \u4E0D\u542B frontmatter \u56F4\u680F\uFF08\u5E26\u4E86\u5C31\u4F1A\u53C2\u4E0E date \u6392\u5E8F\uFF0C\u628A\u5F53\u524D\u5173\u4E8E\u9875\u6324\u6210\u5F80\u671F\uFF09', () => {
+    // \u8FD9\u662F privacy.md \u6700\u5BB9\u6613\u51FA\u7684\u9519\uFF1A\u7167\u7740\u300C\u65B0\u589E\u4E00\u7BC7\u6B63\u6587\u300D\u7684\u60EF\u4F8B\u7ED9\u5B83\u52A0 title/date\u3002
+    // \u540E\u679C\u6BD4 licenses.md \u90A3\u6761\u66F4\u91CD \u2014\u2014 \u4E00\u65E6\u5B83\u6709\u4E86\u5408\u6CD5 frontmatter \u53C8\u6070\u597D\u88AB\u5F53\u6B63\u6587\u89E3\u6790\uFF0C
+    // \u5B83\u7684 date \u4F1A\u8DDF\u771F\u6B63\u7684\u5173\u4E8E\u9875\u4E89 ABOUT_DOCS[0]\u3002
+    const raw = readFileSync(path.join(ABOUT_DIR, 'privacy.md'), 'utf8');
+    expect(raw.replace(/^\uFEFF/, '').startsWith('---')).toBe(false);
+  });
 });
 
 describe('licenses.md\u300C\u5F00\u6E90\u5E93\u300D\u5C0F\u8282\uFF1A\u58F0\u660E\u7684 license \u5FC5\u987B\u8DDF node_modules \u91CC\u7684\u5B9E\u9645\u4E00\u81F4', () => {
@@ -154,5 +168,30 @@ describe('ABOUT_DOCS / ABOUT_LICENSES', () => {
 
   it('ABOUT_LICENSES 是 licenses.md 原文', () => {
     expect(ABOUT_LICENSES).toBe(readFileSync(path.join(ABOUT_DIR, 'licenses.md'), 'utf8'));
+  });
+
+  it('privacy.md 作为保留名被单独取出，不进正文列表', () => {
+    expect(ABOUT_PRIVACY.length).toBeGreaterThan(0);
+    expect(ABOUT_DOCS.some((d) => d.slug === 'privacy')).toBe(false);
+  });
+
+  it('ABOUT_PRIVACY 是 privacy.md 原文', () => {
+    expect(ABOUT_PRIVACY).toBe(readFileSync(path.join(ABOUT_DIR, 'privacy.md'), 'utf8'));
+  });
+
+  it('隐私说明覆盖 spec 要求的全部披露项', () => {
+    // 这几条是对用户的承诺里最实质的部分，少一条就是承诺缩水，不是文案润色：
+    //   Cloudflare / 180 天 / Time Travel —— 数据处理方、保留期、以及「删除后仍有
+    //     恢复窗口」的诚实交代。窗口正文写作「7 至 30 天」，钉这个短语而不是
+    //     '7 天' / '30 天' 两个 token —— 同样锁住两个数字，且不会被拆成两段分别命中别处。
+    //   纯随机 —— 标识不从任何设备特征派生（对应 installId.ts「绝不从 MAC/主机名/机器码
+    //     派生」的不变量）。这是伪匿名标识与设备指纹的分界，不能悄悄弱化。
+    //   默认为勾选 —— onboarding 那个框是预勾选的。这个默认值本身是知情的产品决定
+    //     （spec 取舍第 5 条），正因如此更要写出来：省略它看起来像隐瞒。
+    //   关于 → 隐私与统计 —— 关闭与删除的真实路径。隐私与统计挂在关于页底部、没有独立
+    //     设置页（Task 10），此前写成「设置 → 隐私与统计」是一条走不通的路，比不写更糟。
+    for (const must of ['Cloudflare', '180 天', '7 至 30 天', 'Time Travel', '纯随机', '默认为勾选', '关于 → 隐私与统计']) {
+      expect(ABOUT_PRIVACY, `隐私说明缺少必须披露的内容：${must}`).toContain(must);
+    }
   });
 });
