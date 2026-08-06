@@ -12,11 +12,24 @@ import { skillsService } from './skills/skillsService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
 import { getUpdateService, openDownloadPage } from './update/assemble';
+// 从 telemetry/assemble.ts 取，不要从 main.ts —— 后者会造成循环 import
+import { getTelemetryService, telemetryGateOpen } from './telemetry/assemble';
 import { getIdentity } from './harness/identityService';
 import { onboardingService } from './harness/onboardingService';
 import { readManifest, deleteManifest, discardCorruptManifest } from './harness/manifest';
 import { mapSystemLocale } from './harness/locale';
-import type { OnboardingRecovery } from '../shared/types';
+import type { OnboardingRecovery, TelemetryStatus } from '../shared/types';
+
+function telemetryStatus(): TelemetryStatus {
+  const svc = getTelemetryService();
+  return {
+    state: svc.state(),
+    installId: svc.currentId(),
+    // 用最终闸门结果，含版本与平台自检 —— 裸的 telemetryAllowed() 会让版本非法时
+    // UI 显示开关可用、实际静默不报
+    allowed: telemetryGateOpen(),
+  };
+}
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -60,6 +73,17 @@ export function registerAllHandlers(): void {
     await openDownloadPage();
   });
   registerHandler('update.restartAndInstall', () => { getUpdateService().quitAndInstall(); });
+
+  registerHandler('telemetry.getStatus', () => telemetryStatus());
+  registerHandler('telemetry.setEnabled', async (args) => {
+    if (args.enabled) await getTelemetryService().enable();
+    else await getTelemetryService().disable();
+    return telemetryStatus();
+  });
+  registerHandler('telemetry.deleteMyData', async () => {
+    await getTelemetryService().deleteMyData();
+    return telemetryStatus();
+  });
 
   registerHandler('project.open', () => projectService.open());
   registerHandler('project.list', () => projectService.list());

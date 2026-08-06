@@ -60,6 +60,12 @@ export class SettingsService {
     });
   }
 
+  /** telemetry 只能由 telemetryService 经此方法改，故不在 SettingsPatch 中
+   *  —— 与 updates 同样的约定。 */
+  async setTelemetry(t: SettingsFile['telemetry']): Promise<void> {
+    await this.withLock(async (cur) => ({ next: { ...cur, telemetry: t }, result: undefined }));
+  }
+
   async reset(): Promise<void> {
     await this.withLock(async () => ({ next: defaultSettings(), result: undefined }));
   }

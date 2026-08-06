@@ -14,7 +14,8 @@ let saved: { state: TelemetryState; decidedAt: string | null }[];
 function make(over: Partial<Parameters<typeof createTelemetryService>[0]> = {}) {
   saved = [];
   return createTelemetryService({
-    allowed: true,
+    canReachNetwork: true,
+    canBeacon: true,
     initial: { state: 'undecided', decidedAt: null },
     save: async (t) => { saved.push(t); },
     forget: vi.fn().mockResolvedValue({ kind: 'confirmed' }),
@@ -306,9 +307,9 @@ describe('deleteMyData（保持参与）', () => {
 describe('闸门', () => {
   // 「闸优先于用户设置」这个不变量只能在这一层测到 —— telemetryAllowed 本身
   // 不接受用户设置入参，assembly.test.ts 结构上测不了它。别以为那边已经覆盖了。
-  it('allowed 为 false 时不发送，也不生成 ID', async () => {
+  it('闸门全关时不发送，也不生成 ID', async () => {
     const send = vi.fn();
-    const s = make({ allowed: false, send });
+    const s = make({ canReachNetwork: false, canBeacon: false, send });
     await s.enable();
     await s.init();
     expect(send).not.toHaveBeenCalled();
@@ -317,9 +318,9 @@ describe('闸门', () => {
 
   // 闸门必须覆盖每一条出网路径，不只是 enable/init。曾经的写法在 runForget 里
   // 用 ensureInstallId()，开发态下点关闭会凭空造出一个标识并为它发一次删除请求。
-  it('allowed 为 false 且磁盘上本来就没有 ID 时，disable 不造 ID，直接落 disabled', async () => {
+  it('出网关闭且磁盘上本来就没有 ID 时，disable 不造 ID，直接落 disabled', async () => {
     const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
-    const s = make({ allowed: false, forget, initial: { state: 'enabled', decidedAt: null } });
+    const s = make({ canReachNetwork: false, canBeacon: false, forget, initial: { state: 'enabled', decidedAt: null } });
     await s.disable();
     expect(forget).not.toHaveBeenCalled();
     expect(existsSync(idFile())).toBe(false);
@@ -329,9 +330,9 @@ describe('闸门', () => {
   // paths.ROOT 是 ~/.kydog，开发态与正式版共用：这台机器装过正式版并开过统计的话，
   // npm start 点一下关闭就会拿真实生产 ID 发真实删除请求、并删掉真实文件。
   // 但删除请求也不能被静默丢弃 —— 停在 deleting，等打包版启动时由 init() 兑现。
-  it('allowed 为 false 但磁盘上真有 ID 时，不出网且停在 deleting', async () => {
+  it('出网关闭但磁盘上真有 ID 时，不出网且停在 deleting', async () => {
     const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
-    const s = make({ allowed: false, forget, initial: { state: 'enabled', decidedAt: null } });
+    const s = make({ canReachNetwork: false, canBeacon: false, forget, initial: { state: 'enabled', decidedAt: null } });
     const old = ensureInstallId();
     await s.disable();
     expect(forget).not.toHaveBeenCalled();
@@ -348,5 +349,89 @@ describe('闸门', () => {
     expect(forget).not.toHaveBeenCalled();
     expect(s.state()).toBe('enabled');
     expect(existsSync(idFile())).toBe(true);
+  });
+});
+
+// canBeacon 关而 canReachNetwork 开 = 打包版但版本非法 / 平台不在枚举内。
+// 与开发态的区别是**永久性**：这个构建永远发不出 beacon，不存在「以后能发的上下文」。
+// forget 的 payload 只有 {id}，与版本、平台毫无关系 —— 两道闸必须分开，
+// 否则用户会永远冻在 deleting，而 UI 拿到 allowed:false 会禁用开关，连重试入口都没有。
+describe('两道闸分开：canBeacon 关但 canReachNetwork 开', () => {
+  const halfOpen = { canReachNetwork: true, canBeacon: false } as const;
+
+  it('deleting 状态下 init() 照常兑现删除，落到 disabled 而不是永久冻结', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ ...halfOpen, forget, initial: { state: 'deleting', decidedAt: null } });
+    ensureInstallId();
+    await s.init();
+    expect(forget).toHaveBeenCalledTimes(1);
+    expect(s.state()).toBe('disabled');
+    expect(existsSync(idFile())).toBe(false);
+  });
+
+  it('disable() 能真删除并收尾 —— 用户仍有退出的路', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ ...halfOpen, forget, initial: { state: 'enabled', decidedAt: null } });
+    const old = ensureInstallId();
+    await s.disable();
+    expect(forget).toHaveBeenCalledWith(old);
+    expect(s.state()).toBe('disabled');
+    expect(existsSync(idFile())).toBe(false);
+  });
+
+  describe('（fake timers）', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('enabled 状态下 init() 不起调度、不生成 ID', async () => {
+      const send = vi.fn().mockResolvedValue({ kind: 'sent' });
+      const s = make({ ...halfOpen, send, initial: { state: 'enabled', decidedAt: null } });
+      await s.init();
+      await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS);
+      expect(send).not.toHaveBeenCalled();
+      expect(existsSync(idFile())).toBe(false);
+    });
+
+    // platform/arch 为 null 时绝不能有任何东西被发出去。守卫在这里而不是靠
+    // 「assemble.ts 保证 canBeacon 蕴含二者非 null」这条非局部不变量撑着。
+    it.each([
+      ['platform', { platform: null }],
+      ['arch', { arch: null }],
+    ] as const)('%s 为 null 时即使 canBeacon 为真也不起调度', async (_name, over) => {
+      const send = vi.fn().mockResolvedValue({ kind: 'sent' });
+      const s = make({ ...over, send, initial: { state: 'enabled', decidedAt: null } });
+      await s.init();
+      await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS);
+      expect(send).not.toHaveBeenCalled();
+      expect(existsSync(idFile())).toBe(false);
+    });
+  });
+});
+
+// deleting 是个能停住的状态（forget 失败就停在这里），必须有一条干净的收尾路径，
+// 否则用户卡在「正在删除」而没有任何按钮能推进。设置页的「关闭统计」直接用 disable()。
+describe('deleting 的重试入口', () => {
+  it('disable() 在已是 deleting 时不改写 decidedAt，直接收尾', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ forget, initial: { state: 'deleting', decidedAt: '2026-01-01T00:00:00.000Z' } });
+    ensureInstallId();
+    await s.disable();
+    // 重写 decidedAt 等于把「重试收尾」谎报成一个新决定
+    expect(saved).toEqual([{ state: 'disabled', decidedAt: '2026-01-01T00:00:00.000Z' }]);
+    expect(s.state()).toBe('disabled');
+    expect(existsSync(idFile())).toBe(false);
+  });
+
+  // 曾经的写法把状态守卫放在 clearLocal() 之后：本地 ID 被删掉、state 仍是 deleting、
+  // save 一次没调 —— 本会话再也回不到 disabled，服务端那份数据也永远没人来删
+  it('deleteMyData() 在 deleting 下什么都不做，本地 ID 必须留着', async () => {
+    const forget = vi.fn().mockResolvedValue({ kind: 'confirmed' });
+    const s = make({ forget, initial: { state: 'deleting', decidedAt: null } });
+    const old = ensureInstallId();
+    await s.deleteMyData();
+    expect(forget).not.toHaveBeenCalled();
+    expect(saved).toEqual([]);
+    expect(s.state()).toBe('deleting');
+    expect(readFileSync(idFile(), 'utf8')).toBe(old);
   });
 });

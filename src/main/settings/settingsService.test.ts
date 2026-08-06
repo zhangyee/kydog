@@ -138,4 +138,15 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     const got = await svc.get();
     expect(got.telemetry).toEqual({ state: 'deleting', decidedAt: '2026-08-05T10:00:00.000Z' });
   });
+
+  it('setTelemetry(): 落盘且只动 telemetry 一节', async () => {
+    await svc.update({ ui: { theme: 'midnight' as const } });
+    await svc.setTelemetry({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });
+
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.telemetry).toEqual({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });
+    expect(onDisk.ui.theme).toBe('midnight');
+    const got = await svc.get();
+    expect(got.telemetry).toEqual({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });
+  });
 });

@@ -2,6 +2,7 @@ import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncStatus,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
+  TelemetryStatus,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
@@ -62,6 +63,12 @@ export type RpcCall =
   | { method: 'update.dismissBanner'; args: undefined; result: UpdateStatus }
   | { method: 'update.openDownload'; args: undefined; result: void }
   | { method: 'update.restartAndInstall'; args: undefined; result: void }
+  // ── 匿名使用统计 ──
+  // 三个方法都返回完整状态：渲染层每次操作后都看得到当前真实状态 —— 用户点「关闭」
+  // 后拿回 state: 'enabled' 就意味着「什么都没发生」，无需再拉一次。
+  | { method: 'telemetry.getStatus'; args: undefined; result: TelemetryStatus }
+  | { method: 'telemetry.setEnabled'; args: { enabled: boolean }; result: TelemetryStatus }
+  | { method: 'telemetry.deleteMyData'; args: undefined; result: TelemetryStatus }
   // ── Onboarding ──
   | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
   | { method: 'ask.submit'; args: { threadId: string; toolCallId: string; answers: AskAnswer[] }; result: void }

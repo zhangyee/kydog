@@ -138,6 +138,14 @@ export type ResearchCustomVar = { name: string; kind: ResearchVarKind; value: st
 
 export type TelemetryState = 'undecided' | 'enabled' | 'deleting' | 'disabled';
 
+export type TelemetryStatus = {
+  state: TelemetryState;
+  /** 完整 install ID；未参与统计时为 null。设置页显示前 8 位并支持完整复制。 */
+  installId: string | null;
+  /** 闸门结果，已含版本与平台自检。false 时 UI 显示「开发态下不上报」并禁用开关。 */
+  allowed: boolean;
+};
+
 export type SettingsFile = {
   schemaVersion: 7;
   ui: {

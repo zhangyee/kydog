@@ -19,6 +19,7 @@ import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
 import { startIdentityWatcher } from './harness/identityService';
 import { initUpdateService } from './update/assemble';
+import { assembleTelemetry } from './telemetry/assemble';
 import { broadcaster } from './ipc/broadcaster';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -151,6 +152,12 @@ app.on('ready', async () => {
     } catch (err) {
       // 更新服务永远不能打断启动
       logger.warn('update', 'init failed; continuing without update checks', { err: String(err) });
+    }
+    try {
+      assembleTelemetry((await settingsService.get()).telemetry);
+    } catch (err) {
+      // 统计永远不能打断启动
+      logger.warn('telemetry', 'assemble failed; continuing without telemetry', { err: String(err) });
     }
     startIdentityWatcher((id) => broadcaster.emit('identity.changed', id));
     try {

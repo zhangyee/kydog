@@ -1,6 +1,7 @@
 import { ensureInstallId, readInstallId, dropInstallId } from './installId';
 import { createSchedule, dropLastBeacon, type Schedule } from './schedule';
 import type { BeaconOutcome, ForgetOutcome } from './transport';
+import type { Arch, Platform } from '../../shared/telemetryContract';
 import type { TelemetryState } from '../../shared/types';
 
 export type TelemetrySettings = { state: TelemetryState; decidedAt: string | null };
@@ -17,16 +18,25 @@ export type TelemetryService = {
 };
 
 export function createTelemetryService(deps: {
-  allowed: boolean;
+  /** 能不能出网。守 forget 路径 —— forget 的 payload 只有 {id}，与版本、平台无关。
+   *  只有开发态/e2e 会关掉它，而开发态是**暂时**的，所以「停在 deleting、等打包版
+   *  启动时兑现」成立。 */
+  canReachNetwork: boolean;
+  /** 能不能发 beacon。守 startSchedule()。版本非法 / 平台不在枚举内是这个构建的
+   *  **永久**属性，不存在「以后能发的上下文」—— 与 canReachNetwork 合成一个布尔的话，
+   *  这类用户会永远冻在 deleting 且没有重试入口。 */
+  canBeacon: boolean;
   initial: TelemetrySettings;
   save(t: TelemetrySettings): Promise<void>;
   forget(id: string): Promise<ForgetOutcome>;
   send(payload: {
-    id: string; platform: 'darwin' | 'win32'; arch: 'x64' | 'arm64'; version: string;
+    id: string; platform: Platform; arch: Arch; version: string;
   }): Promise<BeaconOutcome>;
   appVersion: string;
-  platform: 'darwin' | 'win32';
-  arch: 'x64' | 'arm64';
+  /** 不在契约枚举内时为 null。绝不接受 'darwin' 这种占位值 —— 一个编造的值一旦被
+   *  物化，就只剩注释和另一个模块的非局部不变量拦着它进 payload。 */
+  platform: Platform | null;
+  arch: Arch | null;
   now?: () => Date;
 }): TelemetryService {
   // 不接 dir 参数：installId / schedule 直接用 paths 常量，测试靠 vi.spyOn 重定向
@@ -55,14 +65,18 @@ export function createTelemetryService(deps: {
   }
 
   function startSchedule(): void {
-    if (!deps.allowed || schedule) return;
+    // platform/arch 一并守在这里：canBeacon 蕴含二者非 null 是 assemble.ts 的
+    // 不变量，但那是非局部的，不能靠它把 null 挡在 payload 之外
+    const beaconPlatform = deps.platform;
+    const beaconArch = deps.arch;
+    if (!deps.canBeacon || !beaconPlatform || !beaconArch || schedule) return;
     // 捕获成局部常量：闭包若读外层的 id，读到的是**当前值**，clearLocal() 之后
     // 就是 null，而 id! 会把这个谎言原样带进 payload（实测发出过 {"id":null,...}）
     const beaconId = ensureInstallId();
     id = beaconId;
     schedule = createSchedule({
       now,
-      send: () => deps.send({ id: beaconId, platform: deps.platform, arch: deps.arch, version: deps.appVersion }),
+      send: () => deps.send({ id: beaconId, platform: beaconPlatform, arch: beaconArch, version: deps.appVersion }),
     });
     schedule.start();
   }
@@ -88,7 +102,8 @@ export function createTelemetryService(deps: {
     // 「请求未确认，持续重试」，推迟到能发的上下文正是它该做的事。
     // 判断顺序不可换：先「有没有东西要删」再「能不能出网」，否则全新 HOME 的
     // e2e 会卡在 deleting；只有「开发态 + 磁盘上真有 ID」才该停下来等。
-    if (!deps.allowed) return false;
+    // 用 canReachNetwork 而不是 canBeacon：版本非法的构建照样能、也必须能删数据。
+    if (!deps.canReachNetwork) return false;
     const r = await deps.forget(target);
     return r.kind === 'confirmed';
   }
@@ -107,7 +122,8 @@ export function createTelemetryService(deps: {
 
   return {
     init: () => serialize(async () => {
-      if (!deps.allowed) return;
+      // 这里守的是 forget 重试那条路；起调度那条另有 startSchedule() 的 canBeacon 闸
+      if (!deps.canReachNetwork) return;
       if (cur.state === 'deleting') {
         if (await finishDelete()) await persist({ state: 'disabled', decidedAt: cur.decidedAt });
         return;
@@ -125,26 +141,30 @@ export function createTelemetryService(deps: {
     }),
 
     disable: () => serialize(async () => {
-      if (!(await persist({ state: 'deleting', decidedAt: now().toISOString() }))) return;
+      // 已经在 deleting 就别重写：重试收尾不是一个新决定，改写 decidedAt 会抹掉
+      // 用户最初按下关闭的时间 —— 与 enable() 保护原始同意时间同一条约定。
+      // 这也让 disable() 成为 deleting 的干净重试入口（设置页的「关闭统计」直接用它）。
+      if (cur.state !== 'deleting') {
+        if (!(await persist({ state: 'deleting', decidedAt: now().toISOString() }))) return;
+      }
       if (!(await finishDelete())) return;   // 停在 deleting，下次 init 重试
       await persist({ state: 'disabled', decidedAt: cur.decidedAt });
     }),
 
     deleteMyData: () => serialize(async () => {
-      if (!(await finishDelete())) {
-        // 删除失败但用户仍在参与：把被 serverStateCleared 停掉的调度拉回来。
-        // 否则本次会话不再发心跳，而 enable() 的早退让用户没法自己恢复 ——
-        // 功能静默降级到重启为止，比少一条数据糟。沿用旧 ID 是诚实的：
-        // 什么都没删掉，数据还在服务端，用户可以再点一次重试。
-        if (cur.state === 'enabled') startSchedule();
-        return;
-      }
-      // 只在仍参与统计时重启。若在 disabled/undecided 下被调用还去 startSchedule()，
-      // 就会给一个已明确关掉统计的用户生成新 ID 并重新开始上报 —— UI 今天到不了
-      // 这条路径，但 IPC 方法是无条件暴露的，纵深防御守住。
+      // 状态守卫必须在**做任何事之前**。放在 finishDelete() 之后的话，从 deleting
+      // 进来会先把本地 ID 删掉再早退：state 仍是 deleting、save 一次没调，本会话
+      // 再也回不到 disabled，服务端那份数据也没人来删了。
+      // 「删数据但继续参与」只对 enabled 成立；disabled/undecided 下重启上报等于
+      // 给一个明确关掉统计的用户重新开了口子 —— UI 今天到不了这里，但 IPC 是
+      // 无条件暴露的。要收尾一个 deleting，走 disable()。
       if (cur.state !== 'enabled') return;
-      // tombstone 永久，旧 ID 已被抑制 —— 继续参与就必须换一个新 ID，
-      // 否则「删数据但继续参与」的后半句永远不会兑现
+      // 成败都要把被 serverStateCleared() 停掉的调度拉回来 —— 用户仍是 enabled。
+      // 成功：本地 ID 已清，这里会生成新 ID（tombstone 永久，旧 ID 已被抑制，
+      //   不换新 ID 的话「继续参与」的后半句永远不会兑现）。
+      // 失败：沿用旧 ID 才诚实，什么都没删掉，用户可以再点一次重试；不拉回调度
+      //   则本次会话彻底不发心跳，而 enable() 的早退让用户自己也恢复不了。
+      await finishDelete();
       startSchedule();
     }),
 
