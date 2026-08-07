@@ -6,10 +6,11 @@ import { UpdateBlock } from './UpdateBlock';
 
 const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
 
-/** 底部两条文档入口（开源许可 / 隐私与统计）的共用样式，与「往期」条目同一套度量。 */
+/** 底部两条文档入口（开源许可 / 隐私与统计）的共用样式，与「往期」条目同一套度量。
+    两条并排一行、贴两端，所以各自只把靠外的那侧用负 margin 抵掉 padding —— 内侧留着，
+    中间才不会挤在一起。 */
 const ENTRY_STYLE = {
-  display: 'block', width: '100%', textAlign: 'left',
-  padding: '5px 8px', margin: '0 -8px', borderRadius: 2,
+  padding: '5px 8px', borderRadius: 2,
   background: 'none', border: 'none', cursor: 'pointer',
   fontSize: 12.5, lineHeight: 1.6, color: 'var(--color-ink-soft)',
 } as const;
@@ -160,14 +161,19 @@ export function AboutSection() {
           {/* 两条入口共用同一条分隔线之下的区域 —— 它们是同一类东西（src/about/ 下的
               保留名文档），各自再起一条 hairline 会读成两个互不相干的小节。 */}
           {(ABOUT_LICENSES || ABOUT_PRIVACY) && (
-            <div style={{ borderTop: HAIRLINE, marginTop: 26, paddingTop: 18 }}>
+            <div
+              style={{
+                borderTop: HAIRLINE, marginTop: 26, paddingTop: 18,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+              }}
+            >
               {ABOUT_LICENSES && (
                 <button
                   type="button"
                   data-testid="about-licenses-entry"
                   onClick={() => setView({ kind: 'licenses' })}
                   className="font-serif"
-                  style={ENTRY_STYLE}
+                  style={{ ...ENTRY_STYLE, textAlign: 'left', marginLeft: -8 }}
                 >
                   开源许可
                   {/* 尾箭头是这一条唯一的可点提示 —— 它没有「往期」那样的日期前缀，
@@ -186,7 +192,7 @@ export function AboutSection() {
                   data-testid="about-privacy-entry"
                   onClick={() => setView({ kind: 'privacy' })}
                   className="font-serif"
-                  style={ENTRY_STYLE}
+                  style={{ ...ENTRY_STYLE, textAlign: 'right', marginRight: -8 }}
                 >
                   隐私与统计
                   <span
