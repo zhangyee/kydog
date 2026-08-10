@@ -1,8 +1,6 @@
 # LLM Providers
 
-KyDog 用 [`@earendil-works/pi-coding-agent`][pi] 跑 LLM agent。这份文档说明 provider/model 这层是怎么组织的、为什么这么组织、改动它要做什么。
-
-[pi]: ../docs/references/pi-coding-agent/sdk.md
+KyDog 用 `@earendil-works/pi-coding-agent` 跑 LLM agent。这份文档只写**从代码里读不出来的东西**：跨文件的传播规则、pi 施加的外部约束、以及已知偏离。具体在哪个文件、函数签名长什么样，自己 grep——那些写进来只会腐化。
 
 ---
 
@@ -14,12 +12,12 @@ KyDog 把 provider 分成四种 **kind**，决定它如何 auth、UI 用哪种�
 
 | kind | auth 来源 | 例子 |
 |---|---|---|
-| `oauth` | 浏览器跳转走 OAuth flow，token 存盘 | ChatGPT (Codex)、GitHub Copilot、Gemini CLI、Google Antigravity |
+| `oauth` | 浏览器跳转走 OAuth flow，token 存盘 | ChatGPT (Codex)、GitHub Copilot |
 | `apiKey` | 用户填一段 secret，明文存盘 | OpenAI、DeepSeek、Mistral、Groq …… |
 | `cloud` | Azure/Bedrock/Vertex 各自的凭证机制（profile / SA / IAM keys） | Amazon Bedrock、Google Vertex AI、Azure OpenAI |
 | `custom` | 用户填一份 OpenAI-compat JSON 注册自建 provider | 本地 Ollama / vLLM / 自有代理 |
 
-> 特例：Anthropic 是 **混合行**——同时支持 OAuth 登录（Claude Pro/Max）和 API key。pi-ai 把两者写到同一个 `auth['anthropic']` 槽，所以 KyDog catalog 里只有一行 `anthropic`，detail 表单同时给两条路径。
+> 特例：Anthropic 是**混合行**——同时支持 OAuth 登录（Claude Pro/Max）和 API key。pi 把两者写到同一个 `auth['anthropic']` 槽，所以 catalog 里只有一行 `anthropic`，detail 表单同时给两条路径。
 
 ## 2. 数据落点
 
@@ -27,7 +25,6 @@ KyDog 把 provider 分成四种 **kind**，决定它如何 auth、UI 用哪种�
 
 ```jsonc
 {
-  "schemaVersion": 2,
   "llm": {
     "auth": {
       "anthropic": { "type": "api_key", "key": "sk-ant-…" },
@@ -51,50 +48,41 @@ KyDog 把 provider 分成四种 **kind**，决定它如何 auth、UI 用哪种�
 }
 ```
 
+> 文件还有一个 `schemaVersion` 字段，这里刻意不写它的值——当前版本与迁移链以 `src/main/persist/settingsFile.ts` 为准。
+
 字段含义：
 
-- **`auth[id]`**：凭证。一个 id 同时只能有一种 type（pi 的限制）。
+- **`auth[id]`**：凭证。一个 id 同时只能有一种 type（pi 的限制，见 §7.2）。
 - **`providers[id]`**：内置 provider 的覆盖项——`baseUrl`、`headers`、`cloud`（云 cfg）、`defaultModel`（该 provider 的默认 model）。
 - **`customProviders[]`**：用户自建的 OpenAI-compat provider，每条是完整定义。
-- **`defaultProvider` / `defaultModel`**：全局默认，InputPill 显示这个组合。
+- **`defaultProvider` / `defaultModel`**：全局默认，Composer 的模型胶囊显示这个组合。
 - **`Thread.modelOverride`**（在 `index.json::threads[i]` 上）：单个 thread 覆盖；优先级最高。
 
-写盘走 `atomicWriteWith0600Async/Sync`：`temp` 文件出生即 0600（设 `mode` flag，不依赖 umask），rename 后再 idempotent `chmod` 一遍。
+写盘走 `atomicWriteWith0600Async/Sync`：temp 文件出生即 0600（设 `mode` flag，不依赖 umask），rename 后再 idempotent `chmod` 一遍。
 
 ## 3. 运行时架构
 
-启动序列（`src/main/main.ts::app.on('ready')`）：
+启动序列在 `src/main/main.ts` 的 ready 回调里，顺序有意义：
 
 ```
-ensureSettingsFile()            ← 保证 ~/.kydog/kydog.json 存在 + 0600
-applyCloudEnv(providers)        ← 把 cloud cfg 同步进 process.env
-initProviderRegistry(svc)       ← 全进程 singleton；持唯一 AuthStorage + ModelRegistry
+ensureSettingsFile()       ← 保证 ~/.kydog/kydog.json 存在 + 0600
+applyCloudEnv(providers)   ← 把 cloud cfg 同步进 process.env（必须早于下一步）
+initProviderRegistry(svc)  ← 全进程 singleton
+installDispatcher() / createWindow()
 ```
 
-`ProviderRegistry` 是 main 进程的桥梁：
+`ProviderRegistry` 是 main 进程与 pi 之间的唯一桥梁，持有一个 **`ModelRuntime`**（pi 0.80.8 起把 AuthStorage 与 ModelRegistry 合并成了这一个对象，凭据与模型目录同源）。构造它时有两个刻意的选项，改动前先看 `providerRegistry.ts` 里的成段注释：
 
-- `authStorage` = `pi.AuthStorage.fromStorage(KydogAuthStorageBackend(SettingsService))`
-  - pi 把 auth blob 当一段 JSON 字符串读写；我们的 backend 把它桥接到 `kydog.json::llm.auth`
-- `modelRegistry` = `pi.ModelRegistry.inMemory(authStorage)`
-  - 启动时把 `customProviders` 一一 `registerProvider` 进去
-  - `providers[id]` 里的 `baseUrl/headers` 覆盖通过同一个 `registerProvider` 接入
+- **`modelsPath` 指向 `~/.kydog/agent/models.json`**。不传会默认到 `~/.pi/agent/`，等于把已经拆掉的 pi CLI 耦合重建出来。
+- **`allowModelNetwork: false`**。打开的话 `create()` 会 await 一次带 15s 预算的远程目录拉取，而它排在建窗口之前——网络被黑洞（强制门户、公司代理）时就是十几秒白屏。远程目录改由构造后一次**不 await** 的后台 `refresh()` 拉。
 
-新 thread 发消息时：
+**为什么必须是 singleton**：`ModelRuntime` 自带内部 cache。每次新建一个就会出现「盘上写了但 pi 不知道」的状态不一致。全进程一份，配合 §5 的显式传播调用，状态才可控。
 
-```
-AgentService.ensureSession(threadId, projectPath)
-  → resolveActive() 拿 (providerId, modelId)
-  → sessionFactory.createSession({ ... providerId, modelId })
-      → modelRegistry.find(providerId, modelId)        ← 找 Model 对象
-      → pi.createAgentSession({ authStorage, modelRegistry, model, ... })
-  → bound = { session, providerId, modelId, ... }       ← 记下绑哪个 model
-```
-
-为什么 `ProviderRegistry` 是 singleton：pi 的 `AuthStorage` 实例本身有内部 `data` cache。如果每次新建一个 `AuthStorage`，就会出现「写盘了但 pi 不知道」的状态不一致。全进程一份，配合显式 `reload()` / 重建 `modelRegistry`，状态可控。
+新 thread 发消息时：`AgentService.ensureSession` → `resolveActive()` 拿 (providerId, modelId) → `sessionFactory` 从 runtime 找到 Model 并创建 pi session → `bound` 记下绑的是哪个 provider/model（§5 的失效判断靠它）。
 
 ## 4. 解析顺序
 
-`resolveActive(threadId, _projectPath)` 决定 thread 用哪个 provider/model：
+`resolveActive(threadId, projectPath)` 决定 thread 用哪个 provider/model：
 
 ```
 providerId =
@@ -110,140 +98,81 @@ modelId =
   ?? throw ResolveError('no-model')
 ```
 
-为什么需要 `providers[id].defaultModel`（每个 provider 有自己的默认）：用户在 settings 给每个 provider 选了一个 default 之后，切 `defaultProvider` 时 InputPill 不应该重置 model——它应该用新 provider 自己记着的那个。
+为什么需要 `providers[id].defaultModel` 这一层（每个 provider 记自己的默认）：用户在设置里给每个 provider 选过默认之后，切 `defaultProvider` 时不应该重置 model——应该用新 provider 自己记着的那个。
 
-## 5. 配置变更如何传播
+## 5. 配置变更如何传播 ★
 
-任何写 `settings.llm.*` 的代码必须配合下表里对应的传播调用，否则 pi/AgentService 还在用陈旧状态：
+**这一节是这份文档存在的主要理由。** 写 `settings.llm.*` 只是落盘；不配合下表的传播调用，pi 和 AgentService 会继续用陈旧状态——**不编译报错、不测试失败，只在运行时静默用错**。
 
 | 写了什么 | 必须接着调 |
 |---|---|
-| `auth[id]`（增/删 key 或 OAuth token） | `providerRegistry.reloadAuth()` |
-| `providers[id]` 或 `customProviders[]` | `providerRegistry.refreshAfterProviderChange(svc, agentService, [changedIds])` |
+| `auth[id]`（增/删 API key 或 OAuth token） | `providerRegistry.refreshAfterProviderChange(svc, agentService, [changedIds])` |
+| `providers[id]` 或 `customProviders[]` | 同上 |
+| `providers[id].cloud`（任何 cloud cfg 改动） | **先** `cloudEnvSync.applyCloudEnv(providers)`，**再**上面那一条 |
 | `defaultProvider` 或 `defaultModel` | `agentService.recomputeSessionsAfterDefaultChange()` |
 | `thread.modelOverride` | `agentService.invalidateSessionsForThread(threadId)` |
-| `providers[id].cloud`（任何 cloud cfg 改动） | 上一行 + `cloudEnvSync.applyCloudEnv(providers)`（同步 process.env） |
+| 移除 provider | `cascade.sweepDefaultsAfterRemove` 清默认值 → 落盘 → `applyCloudEnv` → `refreshAfterProviderChange`；被移除的若正是当前默认，再补一次 `recomputeSessionsAfterDefaultChange()` |
+
+凭证变更之所以也走 `refreshAfterProviderChange`：0.83 之后没有单独的"重读凭证"入口了（旧的 `reloadAuth` 已删除），该方法直接**重建整个 `ModelRuntime`**，凭据随之一起重新读取，并通知 AgentService 失效相关 session。
 
 `AgentService` 的失效语义统一走 `markStaleOrDispose(bound)`：
 
 - thread idle → 立即 `dispose()`，下次发消息时新建 session
-- thread running → `bound.staleAfterRun = true`，等 pi 的 `agent_end` 事件后再 dispose（避免打断进行中的回答）
-
-`reloadAuth` 与 `refreshAfterProviderChange` 的区别：
-
-- `reloadAuth()` 让 pi 的 AuthStorage 重新从我们的 backend 读一遍（凭证类变更）
-- `refreshAfterProviderChange(...)` 重建整个 ModelRegistry（baseUrl / 模型清单 / 自定义 provider 类变更），并通知 AgentService 失效相关 session
+- thread running → 打上 `staleAfterRun`，等 pi 的 `agent_end` 之后再 dispose（不打断进行中的回答）
 
 ## 6. Cloud providers 的特殊路径
 
-Cloud（Azure / Bedrock / Vertex）的凭证机制不是简单的 API key——它们要么走 SDK 的 profile 链，要么走环境变量。pi-ai 跟其他 SDK 一样，**靠 `process.env` 读取**这些凭证。所以：
+Cloud（Azure / Bedrock / Vertex）的凭证不是简单的 API key——要么走 SDK 的 profile 链，要么走环境变量，而 pi-ai 跟其他 SDK 一样**靠 `process.env` 读取**。所以：
 
-- Cloud cfg 写到 `providers[id].cloud`（而不是 `auth[id]`）
-- `cloudEnvSync.applyCloudEnv(providers)` 把当前所有 cloud cfg **先全清** `MANAGED_VARS` 再按当前配置写进 `process.env`
-- 启动时调一次（main.ts），settings 变更时再调一次（llmService.configure 内）
-- 这样切换 authMode 时（如 Bedrock 从 IAM keys 改成 profile）旧的 `AWS_ACCESS_KEY_ID` 不会残留
+- Cloud cfg 写到 `providers[id].cloud`，**不是** `auth[id]`
+- `applyCloudEnv(providers)` 会**先全清** `MANAGED_VARS` 再按当前配置重写 `process.env`。全清这一步是必须的：否则从 IAM keys 切到 profile 时，旧的 `AWS_ACCESS_KEY_ID` 会残留并继续生效
+- 启动时调一次，settings 变更时再调一次（见 §5 表）
 
-`MANAGED_VARS` 列表见 `src/main/llm/cloudEnvSync.ts`。
+`MANAGED_VARS` 白名单见 `src/main/llm/cloudEnvSync.ts`。Vertex 的 ADC 检测有自己的探针（`vertexStatus.ts`，win32 / posix 分支），不依赖 pi 的内部缓存。
 
-Vertex 的 ADC 检测有自己的探针（`vertexStatus.ts`，平台分支 win32 vs posix），不依赖 pi 的内部缓存。
+## 7. 已知约束
 
-## 7. 加一个新 provider
+### 7.1 OAuth providerId 必须等于 pi-ai 认识的 id
 
-### 内置 (catalog) provider，pi-ai 已支持
+登录时 pi 内部会拿这个 id 查它自己的 OAuth flow 注册表，对不上直接抛 `Unknown OAuth provider`。catalog 里 OAuth 相关行的 `id` 与 `oauth.piProviderId` 必须取自 pi-ai 实际暴露的那一组。
 
-例：DeepSeek、Mistral 这种 pi-ai 的 `KnownProvider`。
+**权威来源**：`node_modules/@earendil-works/pi-ai/dist/auth/oauth/`——目录下每个 provider 一个文件，`load.d.ts` 的 `OAuthFlowLoaders` 类型是完整清单。升级 pi 后务必重新核对：0.83 就删掉了 Gemini CLI 与 Antigravity 两个（`9167a10` 跟的就是这件事）。
 
-1. 在 `src/main/llm/catalog.ts::PROVIDER_CATALOG` 加一行
-2. 如果是 API key 类，往 `src/renderer/settings/forms/ApiKeyForm.tsx::STATIC_META` 加 `envFallback / baseUrlOverridable`
-3. 跑 `npm test -- catalog` 更新计数测试
+### 7.2 一个 auth 槽位只能存一种凭证
 
-不用改 pi 或 ProviderRegistry——pi-ai 内置的 provider 它自己已经知道 baseUrl + 模型清单。
+pi 的 `auth[providerId]` 同时只能是 `api_key` 或 `oauth`，不能并存。所以 Anthropic 的 OAuth（Claude Pro/Max）与 API key **互斥**——存 API key 会覆盖 OAuth 凭证，反之亦然。`ApiKeyForm` 的 hint 文字提示了这件事。
 
-### 内置 provider，pi-ai 没支持
+### 7.3 ApiKey 表单 mount 时反显已存 key
 
-需要先升 pi-ai；不行的话走自定义路径。
+为避免「用户只想改 baseUrl，但 input 为空被当成清空 key」，表单 mount 时主动把已存 key 拉进 input state（`type='password'`，需点「显示」才看明文）。
 
-### 用户自定义 provider
+代价是 key 短暂出现在 renderer 内存。Packaged build 默认禁用 DevTools，分发出去的包不存在用 inspector 读 renderer 内存的路径。
 
-走 `customProviders[]` 路径，UI 表单是 `CustomProviderForm.tsx`。raw JSON + zod 校验，apiKey 字段必填（pi 要求；本地 LLM 可填占位字符串如 `'ollama'`）。
+### 7.4 catalog 与 pi 内置 provider 的一致性
 
-## 8. 已知约束
+catalog 是手维护的静态数据，pi-ai 升级新增/删除 provider 时不会自动同步。`catalogValidator.test.ts` 盯这件事，跟着 `npm test` 走，两个方向的力度不同：
 
-### 8.1 OAuth providerId 必须等于 pi-ai 的内置 `OAuthProviderId`
+- **catalog 里有、pi 没有 → 直接 fail。** 这是真 bug：用户能在设置里选中它，建 session 时 pi 却找不到。pi 删掉某个我们还在露的 provider 时也在这里炸（0.83 删 Gemini CLI / Antigravity 就是这种情况）。
+- **pi 有、catalog 没有 → `console.warn`。** 我们本来就只挑一部分露给用户，所以测试里有一份 `UNSURFACED` 快照记着「刻意没收的那些」，warn 只针对**既不在 catalog、也不在快照里**的新名字。pi 升级后如果报了新名字，做个决定：想收就进 `PROVIDER_CATALOG`，不收就补进 `UNSURFACED`——两种都行，但要显式做过一次。反过来 pi 删掉的名字还留在快照里，也会 warn 提示可以清理。
 
-调 `authStorage.login(piProviderId, callbacks)` 时，pi 内部会查 OAuth provider 注册表。pi-ai 当前暴露的 5 个 OAuth provider：
+清单的权威来源是 `@earendil-works/pi-ai/providers/all` 的 `getBuiltinProviders()`，读的是生成出来的静态目录，不联网、可重现。0.83 之前用的 `pi.BUILTIN_PROVIDERS` 已经没有了；那次改名之后测试静默走了跳过分支、绿着但什么都没比较过，所以现在**「拿不到清单」本身也是一条断言**，不再允许跳过。
 
-- `anthropic` （Claude Pro/Max）
-- `openai-codex` （ChatGPT Codex）
-- `github-copilot`
-- `google-gemini-cli`
-- `google-antigravity`
+## 8. 改动前的 checklist
 
-catalog 里 OAuth 相关 provider 的 `id` 与 `oauth.piProviderId` 必须取自这个列表。改名会导致 `Unknown OAuth provider` 抛错。pi-ai 升级时记得验证这个列表是否变更（看 `node_modules/@earendil-works/pi-ai/dist/utils/oauth/index.d.ts`）。
+- [ ] catalog 加新 provider？同步检查 `ApiKeyForm` 的静态元数据（API key 类），以及 pi-ai 是否真的内置了该 provider
+- [ ] 写了 `settings.llm.*` 的任何字段？对照 §5 的表补上传播调用
+- [ ] 加 OAuth provider？`piProviderId` 必须在 §7.1 的权威来源里存在
+- [ ] 改了 cloud cfg？除了落盘还要 `applyCloudEnv`，否则 `process.env` 不更新
+- [ ] 加/减 catalog 条目？`catalog.test.ts` 是计数测试，要跟着改
+- [ ] 升级了 pi？看 `catalogValidator.test.ts` 有没有 warn 出新 provider（§7.4）
+- [ ] 跑：`npm test -- llmService catalog providerRegistry resolveActive`
+- [ ] 改了 UI 再跑：`npm run e2e -- 22 23 24 25 26`（e2e 前先 `npm run package`）
 
-### 8.2 一个 auth 槽位只能存一种凭证
+## 9. 外部参考
 
-pi 的 `auth[providerId]` 同时只能是 `{type: 'api_key', ...}` 或 `{type: 'oauth', ...}`，不能两者并存。所以 Anthropic 的 OAuth (Claude Pro/Max) 与 API key 互斥——保存 API key 会覆盖 OAuth 凭证、反之亦然。`ApiKeyForm` 的 hint 文字提示了这件事。
+- pi-coding-agent 官方文档（完整一套）：`node_modules/@earendil-works/pi-coding-agent/docs/`，SDK 编程接口看其中的 `sdk.md`，自定义 provider / model 看 `models.md` 与 `providers.md`
+- pi 官方 SDK 示例：`node_modules/@earendil-works/pi-coding-agent/examples/sdk/`
+- pi-ai OAuth provider 清单（权威）：`node_modules/@earendil-works/pi-ai/dist/auth/oauth/`
+- pi-ai env 变量映射：`node_modules/@earendil-works/pi-ai/dist/env-api-keys.js` 的 `getApiKeyEnvVars`
 
-### 8.3 ApiKey 表单 mount 时反显已存 key
-
-为避免「用户开表单只想改 baseUrl，但因为 input 为空被当作清空 key」，表单 mount 时主动 `settings.get` 把已存 key 拉到 input state（`type='password'` 掩盖，需点「显示」才看明文）。
-
-代价：key 短暂出现在 renderer 进程内存。Packaged build 默认禁用 DevTools（`main.ts` 里 `if (!app.isPackaged) openDevTools(...)`），分发的 .app 不存在 inspector 把 renderer 内存暴露的路径。
-
-### 8.4 SettingsService 的 sync/async 锁
-
-`proper-lockfile` 的 sync API 不支持 retries。我们的 async 路径走 in-process promise queue 把同进程并发串行化，sync 路径只走单次 `lockSync`。理论上 async 持锁 await 期间收到 sync 调用会立即 `ELOCKED` 抛错——实际并发模型下没观察到（pi 的 sync auth 写入是稀疏事件，不与 IPC 设置写入并发）。
-
-### 8.5 catalog 与 pi-ai 的 BUILTIN_PROVIDERS
-
-KyDog 的 catalog 是手维护的静态数据。pi-ai 升级新 provider 时不会自动出现在 catalog 里——`catalogValidator.test.ts` 是个 informational drift check，会 `console.warn` 提示但不 fail，跑测试时留意输出。
-
-## 9. 文件索引
-
-### main 进程
-
-| 文件 | 作用 |
-|---|---|
-| `src/main/llm/catalog.ts` | builtin provider 静态数据（kind / group / piProviderId / envFallback / cloudCfgKind） |
-| `src/main/llm/providerRegistry.ts` | singleton，build / reloadAuth / refreshAfterProviderChange |
-| `src/main/llm/kydogAuthBackend.ts` | pi 的 `AuthStorageBackend` 实现，桥接到 `SettingsService` |
-| `src/main/llm/cloudEnvSync.ts` | Azure/Bedrock/Vertex env 同步；`MANAGED_VARS` 白名单 |
-| `src/main/llm/vertexStatus.ts` | Vertex ADC 探针（平台分支） |
-| `src/main/llm/cascade.ts` | 移除 provider / 模型清单变化时清理默认值 |
-| `src/main/llm/llmService.ts` | `llm.*` IPC 业务逻辑 |
-| `src/main/llm/oauth.ts` | OAuth 协调器（broadcast `oauth.*` 事件给 renderer） |
-| `src/main/agent/sessionFactory.ts` | 走 ProviderRegistry singleton 创建 pi session |
-| `src/main/agent/resolveActive.ts` | (provider, model) 解析 helper |
-| `src/main/persist/settingsFile.ts` | schema v2 + ensureSettingsFile + v1→v2 migration |
-| `src/main/settings/settingsService.ts` | proper-lockfile 互斥 + in-process queue |
-
-### renderer
-
-| 文件 | 作用 |
-|---|---|
-| `src/renderer/stores/llmStore.ts` | catalog / configured / defaultProvider/Model 镜像 |
-| `src/renderer/settings/ProviderListSection.tsx` | 已配置列表（点击进 detail；● 设为默认） |
-| `src/renderer/settings/AddProviderPage.tsx` | 4 段分组 catalog（推入式整页） |
-| `src/renderer/settings/ProviderDetailPane.tsx` | kind 路由表单 |
-| `src/renderer/settings/forms/ApiKeyForm.tsx` | 15 个 API key provider；`anthropic` 行额外内嵌 OAuth 登录块 |
-| `src/renderer/settings/forms/OAuthForm.tsx` | 4 个纯 OAuth provider |
-| `src/renderer/settings/forms/CloudForm.tsx` | Azure / Bedrock / Vertex 三分支 |
-| `src/renderer/settings/forms/CustomProviderForm.tsx` | raw JSON + zod，apiKey 必填 |
-| `src/renderer/panels/main-pane/InputPill.tsx` | 显示 effective provider · model |
-| `src/renderer/panels/main-pane/InputPillModelMenu.tsx` | 二级菜单切 thread modelOverride |
-
-## 10. 改动前的 checklist
-
-- [ ] catalog 加新 provider？同步检查 `ApiKeyForm.STATIC_META`（API key 类）+ pi-ai 是否已内置该 KnownProvider
-- [ ] 写 `settings.llm.{auth, providers, customProviders, defaultProvider, defaultModel}`？必须配合 §5 表里对应的传播调用
-- [ ] 加 OAuth provider？`piProviderId` 必须等于 pi-ai 真实暴露的 `OAuthProviderId`（见 §8.1）
-- [ ] Cloud cfg 改动？除了写盘还要 `cloudEnvSync.applyCloudEnv`，否则 `process.env` 不更新
-- [ ] 改完跑：`npm test -- llmService catalog providerRegistry resolveActive`；改 UI 还要跑 `npm run e2e -- 22 23 24 25 26`
-
-## 11. 外部参考
-
-- pi-coding-agent SDK 总览：`docs/references/pi-coding-agent/sdk.md`
-- pi-coding-agent 自定义 provider / model：`docs/references/pi-coding-agent/models.md`、`providers.md`
-- pi-ai OAuth provider 列表（权威）：`node_modules/@earendil-works/pi-ai/dist/utils/oauth/index.d.ts`
-- pi-ai env 变量映射：`node_modules/@earendil-works/pi-ai/dist/env-api-keys.js`（`getApiKeyEnvVars`）
+> 干净 checkout 下 `node_modules/` 不存在，上面这些路径要先 `npm install` 才有。
