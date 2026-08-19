@@ -71,7 +71,15 @@ fastpaper cite <近期某篇的DOI> --direction incoming -n 20
 
 **`--sort citations` 只在 `semantic` 上用。** 在 `crossref` 和 `openalex` 上会严重跑题——按引用排序时相关性权重被压过，返回的是整个学科的巨无霸（搜可穿戴心电返回 UK Biobank、ESC 指南）。`pubmed` 会明确报错，不用担心。
 
-**不要用 `europepmc` 的 `CITED:>N`。** 实测阈值 0 / 500 / 100000 返回完全相同的结果——它写在 query 字符串里，源端原样透传，fastpaper 的校验层看不到，**不会报错**。推而广之：**任何写进 query 字符串的过滤条件，用一个极端值再跑一次验证它真的生效**（`PUB_YEAR:1800` 应该返回零条）。两次调用换掉一整类静默错误。
+**`CITED:>N` 不生效，要用区间形式 `CITED:[N TO *]`。** fastpaper 的 SKILL.md 举的是 `CITED:>500`，但实测 `>` 形式被静默忽略（阈值 500 和 100000 返回完全相同的结果）；换成 Lucene 区间形式才真的过滤：
+
+```
+CRISPR AND CITED:[0 TO *]      → 20 条
+CRISPR AND CITED:[10000 TO *]  →  5 条
+CRISPR AND CITED:[50000 TO *]  →  1 条
+```
+
+推而广之：**任何写进 query 字符串的过滤条件，用一个极端值再跑一次验证它真的生效**（阈值拉到极高应该返回零条）。这类条件由源端解析，fastpaper 的校验层看不到，写错不会报错。两次调用换掉一整类静默错误。
 
 **没有的东西**：下载量（18 个源都不提供）、发文量逐年趋势（`search` 不返回总命中数）、临床试验注册库（ClinicalTrials.gov 不在源里）。不要用别的指标冒充，也不要写"广受关注"这种含糊话。
 
@@ -143,8 +151,6 @@ fastpaper search pubmed "<主题>" --author "<姓 名首字母>" --sort date -n 
 
 **存在性 + 元数据**：每篇 `fastpaper get <id>`，比对标题、年份、第一作者。查不到就删掉；两个源打架就并列呈现，不擅自挑一个。
 
-**注意 `get` 和 `download` 对裸 DOI 路由到不同的源**（get→crossref，download→semantic），所以 `get` 返回的 `pdf_url: null` 不代表拿不到 PDF——crossref 结构上就没有这个字段。
-
 **论断**：简报里的每个具体数字、效应量、结论方向都要能指到原文。`fastpaper read papers/<file>.pdf --section results --max-length 4000` 定段回原文。
 
 **拿不准这篇 PDF 有哪些节，先列一下**，比猜一个再失败便宜：
@@ -175,7 +181,8 @@ fastpaper read papers/<file>.pdf --grep "limitation" --context 500 --max-matches
 
 **换源基本救不回来**：那 6 篇逐个试过 `europepmc` 和 `core`，零成功；题名去 `arxiv` 找预印本，五篇全无命中（临床行为医学的预印本在 medRxiv，而 medRxiv 自己封了 PDF 下载）。`unpaywall` 也不行——它对这些论文只有落地页没有 PDF 直链。所以：
 
-- **失败了照 fastpaper 给的判断办。** 它的下载错误会告诉你试的是哪个 URL、以及值不值得换源（例如「Other resolvers usually hand back this same URL, so opening it yourself is more likely to help than retrying through another source」）。**照抄它的判断，别自己另起一套重试策略。**
+- **先看退出码。** `4` = 请求没问题、这个源就是没有（没这篇 / 没 OA 副本 / `--grep` 无命中），换个源或换个 id 才有意义；`2` = 命令写错了，改命令；`1` = 别的问题。**不要看到失败就一律重试**——退出码已经告诉你该不该。
+- **`4` 之外，照 fastpaper 给的判断办。** 它的下载错误会告诉你试的是哪个 URL、以及值不值得换源（例如「Other resolvers usually hand back this same URL, so opening it yourself is more likely to help than retrying through another source」）。**照抄它的判断，别自己另起一套重试策略。**
 - 报告失败原因时**写成因，不要只抄错误串**：「2026 年新发表，聚合源尚未收录全文」比「Response is not a PDF」对读者有用得多
 - **开放获取 ≠ 拿得到**。Frontiers 这类完全 OA 期刊的新论文，官网免费但聚合源里没有
 

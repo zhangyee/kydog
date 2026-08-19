@@ -213,18 +213,20 @@ CLI 校验过的 `--after` 加排序，不碰引用边的抽样，没有截断�
 
 ## 必须避开的坑
 
-### `europepmc` 的 `CITED:>N` 被静默忽略
+### `CITED:>N` 不生效，要用 `CITED:[N TO *]`
 
-实测（v0.3.3）。同一条 query 换三个阈值加不加过滤，返回第一条完全相同：
+fastpaper 的 SKILL.md 举的是 `CITED:>500`，但实测（v0.5.0）`>` 形式被 europepmc 静默忽略——阈值 500 和 100000 返回完全相同的结果。换成 Lucene 区间形式才真的过滤：
 
 ```
-CITED:>0        [42170493] Correction to "Ion-Driven Interfacial Engineering..."
-CITED:>500      [42170493] 同上
-CITED:>100000   [42170493] 同上      ← 应该返回零条
-不加 CITED      [42170493] 同上
+CRISPR AND CITED:>500          → 2 条
+CRISPR AND CITED:>100000       → 2 条   ← 没过滤
+CRISPR AND CITED:[500 TO *]    → 2 条
+CRISPR AND CITED:[100000 TO *] → 0 条   ← 过滤了
+
+递增验证：CITED:[0 TO *] 20 条 → [10000 TO *] 5 条 → [50000 TO *] 1 条
 ```
 
-它写在 query 字符串里，europepmc 原样透传，fastpaper 的 filter 校验层看不到它，所以**不会报错**。**不要用它。** 要按引用筛就用 `semantic --sort citations`。
+**用区间形式。** 这是唯一能在检索阶段按引用数筛的办法（`semantic --sort citations` 只能排序不能设阈值）。
 
 ### 通用技术：写在 query 里的过滤条件，换个极端值验一遍
 
