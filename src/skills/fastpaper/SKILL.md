@@ -9,9 +9,21 @@ A pre-installed CLI for academic search, download and reading. Verify once with
 `which fastpaper`; it is NOT a Python package, never `pip install` it.
 
 Pass `--format json` on every call. Output is `{"source": "...", "results": [...]}`
-— the papers are under `results`. Exit 0 = success, non-zero = error. Any field
+— the papers are under `results`. Exit codes are `0` success, `2` a malformed
+command, `4` **nothing to return** — no such paper, no `--grep` match, no PDF
+for this paper at this source — and `1` for everything else. Branch on `4`: it
+means the request was fine and this source simply has nothing, so retry
+elsewhere rather than rewording. Any field
 the source did not supply is `null`, meaning **unknown**; report it as unknown
 rather than filling it in.
+
+`null` covers two opposite situations, and the record cannot tell them apart:
+the source has nothing to say about that field *at all*, or it does carry the
+field and has nothing for this paper. `fastpaper sources` separates them — its
+`pdf_url` / `open_access` / `citations` columns say which fields each source can
+fill. A `null` from a source marked `✗` means **ask a different source**; from
+one marked `✓` it means the answer really is unknown. Checking that column first
+is cheaper than a download attempt that was never going to work.
 
 ## Commands
 
@@ -30,20 +42,60 @@ fastpaper download <id> [-d <dir>] [--overwrite]
 fastpaper cite <id> [--direction incoming|outgoing] [-n 20]
 
 # extract text from a PDF already on disk
+fastpaper read papers/<id>.pdf --list-sections        # which sections are there
 fastpaper read papers/<id>.pdf [--section methods] [--max-length 4000]
 
 fastpaper sources --capabilities            # what each source supports, live
 ```
 
+`get` routes a bare identifier by its shape: arXiv→`arxiv`, PMC→`pmc`,
+PMID→`pubmed`, DOI→`crossref`, `S2:`→`semantic`.
+
 `download` routes a bare identifier by its shape: arXiv→`arxiv`, PMC→`pmc`,
 DOI→`semantic`; a PMID or a URL is rejected outright. Naming the source —
 `fastpaper download europepmc <id>` — overrides the routing.
+
+**The two disagree on DOIs, on purpose**: `get` sends one to `crossref`, the
+registrar with the most authoritative metadata, and `download` sends it to
+`semantic`, which resolves open access copies — crossref serves no files. The
+consequence for you is that `get <DOI>` shows a crossref record whose `pdf_url`
+is always `null`, while `download <DOI>` uses a link from a semantic record you
+never saw. **Do not read `pdf_url` from `get <DOI>` to predict whether
+`download` will work.** To see the link download would use, ask that source
+directly: `fastpaper get semantic DOI:<doi>`.
 
 `cite` routes a bare DOI→`openalex` (no key needed), and arXiv or `S2:` ids→
 `semantic`. Those two are the only sources here that carry citation edges.
 
 `read` sections: abstract, introduction, methods, results, discussion,
 conclusion, references, full.
+
+**A PDF records no section structure** — `--section` infers it from the
+typography, so it can fail to find a section on an unusual layout. It exits 4
+rather than returning something else, but **check before you quote**: run
+`fastpaper read <pdf> --list-sections` first, and only ask for a section that
+appears in the list. Under `--format json` a section read reports the heading
+its slice began at (`heading.text`, `heading.offset`), which is what you
+verify a quotation against.
+
+**When the list has no `abstract` or `introduction`**, that is usually the
+paper, not the tool: Nature and its family print the abstract with no heading
+over it at all. Read the opening instead — it is the same few thousand
+characters you were after:
+
+```
+fastpaper read papers/<id>.pdf --max-length 3000
+```
+
+The point of `--section` is to keep the paper out of your context, and the
+opening of a paper is its abstract and the start of its introduction. Falling
+back to it costs the same as the section would have.
+
+Two limits to plan around. Running heads, folios and journal footers are left
+in the text and can land in the middle of a quoted sentence — strip them
+yourself if you are quoting. And "the section was found" is not "the section
+is right": if a passage matters, confirm it with
+`--section full --grep '<phrase>'`.
 
 **Search filters** — every one is validated per source. Asking for one a source
 cannot honour is a hard error that names what it *does* support **and which
@@ -126,8 +178,26 @@ fetch it for you.
 under some conditions · `0` field present but 0 on most records · `—` never.
 
 Even on a `✓` PDF source an individual record may hold no file — `pdf_url` is
-`null` and the download fails with "No PDF URL found". That is normal rather
-than a fault.
+`null` and the download fails with "No PDF URL found", **exit 4**. That is
+normal rather than a fault.
+
+**A `403` is a different thing and worth reading, not retrying.** The message
+names the host and prints the full URL:
+
+```
+Error: 403 from www.mdpi.com
+https://www.mdpi.com/1424-8220/21/16/5542/pdf?version=1629270899
+The server refused this request. fastpaper cannot tell a paywall from a bot
+block here -- they look the same from outside. ...
+```
+
+Do **not** loop over other sources after one of these. Measured: that MDPI
+paper is fully open access and still 403s, an AHA subscription paper 403s
+identically, and Semantic Scholar reports `open_access: true` for both — so
+the status tells you nothing about whether a free copy exists. And the
+alternatives are not independent: unpaywall resolves that DOI to the *same*
+publisher URL byte for byte, and `download europepmc <DOI>` lands on it too.
+Report the URL to the user instead; exit is `1`, not `4`.
 
 | Source | PDF | Cites | Use it for | Watch out |
 |---|:--:|:--:|---|---|
@@ -142,7 +212,7 @@ than a fault.
 | `crossref` | — | ✓ | **cross-discipline** DOI registry — the best title→DOI lookup here | registered metadata only: no PDFs, no OA status, and an abstract on few hits. Use it to resolve, then go elsewhere for content |
 | `dblp` | — | — | **computer science** bibliography — conference and journal records, curated and clean | no abstracts at all; metadata only. The API takes a query and paging, nothing else |
 | `core` | ✓ | 0 | **cross-discipline** OA aggregate, 400M+ from repositories and journals — a PDF on nearly every hit | a DOI on few hits and no journal name. `CORE_API_KEY` lifts the rate limit |
-| `openaire` | — | ✓ | **cross-discipline** EU open science graph | no PDF links at all — resolve the DOI elsewhere. `get` wants an OpenAIRE id, not a DOI |
+| `openaire` | — | ✓ | **cross-discipline** EU open science graph | `download` does not work here, but a `pdf_url` comes back on the minority of hits where a publisher file link is on record — most of its links are DOI resolvers and are not offered as PDFs. `get` wants an OpenAIRE id, not a DOI |
 | `doaj` | — | — | **cross-discipline** peer-reviewed OA journals — complete metadata, with a journal name and abstract on nearly every hit | **its `pdf_url` is a landing page, not a file** — fetching one returns HTML. Year granularity only, no sorting |
 | `hal` | ✓ | — | **cross-discipline** French national archive, with an abstract on nearly every hit and full text on most | `--field` takes a domain code: `math` `phys` `chim` `sdv` `shs` `spi` `info` `sde`. No journal name, and some records are metadata-only — filter on `pdf_url` before downloading |
 | `zenodo` | ✓ | — | **cross-discipline** CERN general-purpose repository — papers, datasets and software, with a DOI on nearly every hit | `-n` capped at 25. No journal name, and some records are metadata-only |
