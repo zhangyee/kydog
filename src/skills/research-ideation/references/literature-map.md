@@ -172,7 +172,9 @@ fastpaper read papers/<id>.pdf --section results --max-length 4000
 | 样本量、人群、测量方式 | `methods` |
 | 作者承认的局限、失败的尝试 | `discussion` |
 
-分节是靠启发式切的，不总切得准。`--section discussion` 没抓到你要的东西时，直接 `--section full --max-length 8000` 把全文读进来自己看。**不要把全文写进文件再用脚本搜关键词**——那既看不见过程，也比直接读慢。真的需要更大的量，就分两次读不同的 `--max-length` 窗口。
+拿不准这篇 PDF 有哪些节，先 `fastpaper read <pdf> --list-sections` 列一下，比猜一个再失败便宜。
+
+要在全文里找某个说法（「作者承认了什么局限」「某个数字出现在什么上下文」），用 `--grep`：`fastpaper read <pdf> --grep "limitation" --context 500 --max-matches 10`（正则、默认大小写不敏感）。**别把全文倒出来自己翻，更不要写进文件再用脚本搜。**
 
 | 情况 | 处置 |
 |---|---|
