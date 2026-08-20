@@ -15,10 +15,16 @@
 
   四条硬约束，违反了报告在 KyDog 里会静默坏掉（不报错，只是不对劲）：
 
-  1. 不写 <script>。查看器用不给 allow-scripts 的沙箱 iframe，脚本一律不执行。
-     要动效只能用 CSS animation 或 SVG SMIL（声明式，沙箱不拦）。
+  1. <script> 只能写在模板底部那一个内联 <script> 块里（方向键翻节 + 进度条，
+     见文末）：查看器沙箱现在给 allow-scripts，脚本能跑，但同时注入了一条严格
+     CSP（connect-src 'none' 等），发不出任何网络请求。**不要再加别的脚本**——
+     这条硬约束是「只有这一处」，不是「随便写」。逐条入场动效、SVG 描边动画
+     这类修饰性效果仍然优先用 CSS animation / SVG SMIL（声明式，不占这唯一的
+     脚本预算）；只有键盘交互与进度条这种非脚本做不到的行为才用 JS。
+     这条推翻了 v1「不写 <script>」——v1 的沙箱不给 allow-scripts，v2 给了。
   2. 不引任何外部资源：没有 CDN、没有 <link rel=stylesheet>、没有 @import、
-     没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()。
+     没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()、
+     脚本里没有 fetch/XHR/WebSocket（CSP 会拦，但也别写这种一眼假的代码）。
      所有样式在下面这一个 <style> 里，所有图内联 <svg>。
   3. 所有外链必须写 target="_blank" rel="noopener"。沙箱不给 allow-top-navigation，
      普通链接点了会试图在 iframe 里就地跳转。指向论文的 <a href="https://…"> 是链接
@@ -37,8 +43,12 @@
   明确不做（spec 排除，别自己加回来）：
   - <details> 折叠区块 —— 折起来的内容在扫读和 ⌘F 里都消失了，对自学是负收益。
   - 固定悬浮目录 —— 要么挡正文，要么窄窗口失效，导航由 ② 知识地图承担。
+    顶部那条 2px 的 .progress 进度条不算在这条排除里：它是 position: sticky
+    不是 fixed，不挡正文，也不是导航面板，纯粹是只读的位置指示，见下面
+    「顶部进度条」那段注释。
 
-  结构 ①–⑪ 与 class 的对应，见下面各 section 的注释。
+  结构 ①–⑪ 与 class 的对应，见下面各 section 的注释；幕封页（.curtain）与
+  scroll-snap/方向键/进度条的交互，见「幕封页」那段注释与文末的 <script>。
 -->
 
 <style>
@@ -50,6 +60,15 @@
 html {
   font-size: var(--reading-font-size, 15px);
   scroll-behavior: smooth;
+  /* scroll-snap-type 必须放在真正滚动的那一层。已实测（量尺脚本，见 task-4-report）：
+     document.scrollingElement === document.documentElement，且滚动过程中
+     .deck 的 scrollTop 恒为 0、.deck 的 computed overflow-y 是 visible——
+     .deck 从来不是一个滚动容器，只是个有内边距的普通块。真正滚动的是
+     documentElement（这里就是 html）。scroll-snap-type 只对「滚动容器」生效，
+     .deck 既然不是滚动容器，放在它身上不会有效果，所以放在这里。
+     用 proximity 不用 mandatory：长节要能自由滚到底再吸附下一节，mandatory 会把
+     读者一直往章节头拽，在长文档里非常难受。 */
+  scroll-snap-type: y proximity;
 }
 
 body {
@@ -75,6 +94,28 @@ body {
 section[id],
 dt[id] {
   scroll-margin-top: 1.5rem;
+}
+
+/* 顶部进度条：反映当前在全篇的位置，是「位置感」在 slide 节奏下的实现
+   （替代 v1 那个「第 3 / 7 个」的文字计数——.counter 那个计数仍然保留，
+   两者不冲突，见下面 ⑤ 知识点正文）。
+
+   position: sticky 不是 spec 排除的「固定悬浮目录」——那条排除针对的是
+   会挡住正文、需要另外交互才能收起的导航面板；这里只是一条 2px 高的细线，
+   不遮挡任何内容也不承担导航功能，纯粹是个只读的进度指示。别把它当成
+   同一类东西删掉。 */
+.progress {
+  position: sticky;
+  top: 0;
+  height: 2px;
+  background: var(--ink-hair, #c9c3be);
+  z-index: 1;
+}
+
+#progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent, #bd4238);
 }
 
 /* ==========================================================================
@@ -162,6 +203,53 @@ code, .formula {
 /* ==========================================================================
    3. 块类型 —— ①–⑪ 各节与节内的固定位置
    ========================================================================== */
+
+/* --- 幕封页 --------------------------------------------------------------
+   每个知识点小节（.concept）前一屏高的封面，只有大号章节号 + 标题 + 一句话
+   定义。这是 v1「节首加粗一句话定义」的升级形态，不是新增内容——
+   .curtain-lede 的文字必须和紧跟其后 .concept 里的 .lede 逐字相同，
+   是同一句话在两处的呈现（封面放大展示一次，进入正文时再见一次），
+   不是各写一句、也不是为了不重复而拆成两半。写真报告时改这句话，
+   两处要一起改。 */
+
+.curtain {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.curtain-num {
+  font-family: var(--font-mono, Menlo, monospace);
+  font-size: 1em;
+  letter-spacing: .3em;
+  color: var(--accent, #bd4238);
+  margin: 0 0 1.2em;
+}
+
+.curtain-title {
+  font-family: var(--font-serif, Georgia, "Songti SC", serif);
+  font-size: 2.4em;
+  line-height: 1.25;
+  margin: 0 0 .6em;
+  text-wrap: balance;
+}
+
+.curtain-lede {
+  max-width: 34em;
+  margin: 0;
+  font-size: 1.15em;
+  font-weight: 600;
+  color: var(--ink-soft, #47413c);
+}
+
+/* .concept 的吸附点与幕封页共用同一条规则，滚动到章节顶部就吸附对齐；
+   .map/.path/.primer/.compare/… 这类辅助小节不吸附（仍然是下面脚本里
+   keydown 能跳到的停靠点，只是不参与 scroll-snap，避免长文档里到处硬吸）。 */
+.curtain,
+.concept {
+  scroll-snap-align: start;
+}
 
 /* --- ① 抬头 ------------------------------------------------------------ */
 
@@ -835,6 +923,10 @@ figcaption b {
 </head>
 
 <body>
+<!-- 顶部进度条：sticky、2px，反映当前在全篇的滚动位置。宽度由文末 <script>
+     算，公式与滚动容器要跟着「已实测」的 documentElement 走，见 html 那条
+     scroll-snap-type 旁边的注释。 -->
+<div class="progress"><div id="progress-bar"></div></div>
 <div class="deck">
 
 <!-- ① 抬头：主题 / 日期 / 一句话「这份报告为谁而写」（基于访谈的起点画像） -->
@@ -1005,6 +1097,17 @@ figcaption b {
     </dd>
   </dl>
 </section>
+
+<!-- 幕封页 · 第 1 节：整屏封面，curtain-lede 与下面 .concept 里的 .lede
+     是同一句「节首一句话定义」，逐字相同——见「幕封页」那段 CSS 注释。 -->
+<div class="curtain">
+  <div class="curtain-num">01</div>
+  <h2 class="curtain-title">前向加噪过程</h2>
+  <p class="curtain-lede">
+    前向过程是一条<strong>不含任何可学参数</strong>的马尔可夫链：
+    从真实数据出发，每步掺一点高斯噪声，走够多步就把任何数据分布碾成标准正态。
+  </p>
+</div>
 
 <!-- ⑤ 知识点正文 · 第 1 节 ------------------------------------------------
      节内固定顺序：
@@ -1189,6 +1292,17 @@ figcaption b {
   </p>
   <p class="back"><a href="#map">↑ 回知识地图</a></p>
 </section>
+
+<!-- 幕封页 · 第 2 节：curtain-lede 与下面 .concept 里的 .lede 是同一句，逐字相同。 -->
+<div class="curtain">
+  <div class="curtain-num">02</div>
+  <h2 class="curtain-title">反向去噪目标</h2>
+  <p class="curtain-lede">
+    反向过程要学的东西，经过化简之后朴素得出人意料：
+    <strong>给网络看一张加过噪的图和它的时间步，让它把当初掺进去的那团噪声猜出来</strong>，
+    损失就是猜的和真的之间的均方误差。
+  </p>
+</div>
 
 <!-- ⑤ 知识点正文 · 第 2 节 -->
 <section class="concept" id="c2">
@@ -1547,5 +1661,74 @@ figcaption b {
 </section>
 
 </div>
+
+<!-- 方向键翻节 + 进度条。这是模板全文唯一允许的 <script> 块，见文件头「四条
+     硬约束」第 1 条。 -->
+<script>
+(() => {
+  // .curtain 是幕封页、.concept 是知识点正文，二者都参与 scroll-snap 吸附
+  // （见 CSS「幕封页」那段）；section[id] 把 .map/.path/.primer/.compare/…
+  // 这些不吸附的辅助小节也算进可跳转的停靠点——它们同样是完整的一屏内容，
+  // 只是不需要「滚到附近就吸过去」这个行为。
+  const stops = [...document.querySelectorAll('.curtain, .concept, section[id]')];
+  const bar = document.getElementById('progress-bar');
+
+  // prefers-reduced-motion 对 scrollIntoView 的 smooth 同样适用：这个设置
+  // 开启时应该瞬时跳转，不做平滑滚动动画。
+  // ⚠️ 量尺脚本实测踩到的坑：这里不能用 behavior: 'auto'。scrollIntoView
+  // 的 'auto' 定义是「跟随滚动容器的 CSS scroll-behavior 计算值」，而上面
+  // html 规则里为了让锚点跳转顺滑写了 scroll-behavior: smooth——'auto' 在
+  // 这份文档里跟 'smooth' 是同一个效果，实测两者落点-时间曲线完全重合
+  // （150ms 时都只滚了不到一半）。必须显式传 'instant' 才能绕开 CSS 声明、
+  // 真正瞬时跳转；实测 'instant' 在 150ms 内已经到终点。
+  const jumpBehavior = () =>
+    matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+
+  // ⚠️ 量尺脚本实测发现的坑（brief 原文是 stops[k].offsetTop，这里改了）：
+  // section[id] 有 scroll-margin-top: 1.5rem（见 CSS「1. 布局」），.curtain
+  // 没有 id、没有这条 margin。scrollIntoView 落点会按 scroll-margin-top 减去
+  // 一截，于是 .concept/section[id] 的实际落点比它的 offsetTop 早了约 22px
+  // （15px 阅读字号下）。如果 currentIndex() 直接拿 window.scrollY 去比
+  // offsetTop，落在某个 section 上时会因为「差了这 22px」被误判成还没到、
+  // 退回上一个停靠点——连续按 ArrowDown 会卡在第二个停靠点上不动，
+  // 只有 .curtain 之间（都没有这条 margin）不受影响。用 scrollMarginTop
+  // 修正比较基准，让判断落点跟 scrollIntoView 实际落的地方对齐。
+  function stopTarget(el) {
+    return el.offsetTop - (parseFloat(getComputedStyle(el).scrollMarginTop) || 0);
+  }
+  function currentIndex() {
+    const y = window.scrollY + 4;
+    let i = 0;
+    for (let k = 0; k < stops.length; k++) if (stopTarget(stops[k]) <= y) i = k;
+    return i;
+  }
+  function go(delta) {
+    const next = Math.min(stops.length - 1, Math.max(0, currentIndex() + delta));
+    stops[next].scrollIntoView({ behavior: jumpBehavior() });
+  }
+  document.addEventListener('keydown', (e) => {
+    // 不劫持修饰键组合，也不管普通滚轮 —— 只接管四个方向键与 Home/End
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); go(1); }
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+    else if (e.key === 'Home') { e.preventDefault(); stops[0].scrollIntoView({ behavior: jumpBehavior() }); }
+    else if (e.key === 'End') { e.preventDefault(); stops[stops.length - 1].scrollIntoView({ behavior: jumpBehavior() }); }
+  });
+
+  if (bar) {
+    // 已实测：真正滚动的是 documentElement（html），不是 .deck——.deck 从未
+    // 设过 overflow，量尺脚本里 .deck 的 scrollTop 恒为 0。这里用
+    // document.documentElement.scrollHeight / window.scrollY 而不是
+    // .deck 的滚动尺寸，跟上面 html 的 scroll-snap-type 放在同一层。
+    const update = () => {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      bar.style.width = (max > 0 ? (window.scrollY / max) * 100 : 0) + '%';
+    };
+    addEventListener('scroll', update, { passive: true });
+    addEventListener('resize', update);
+    update();
+  }
+})();
+</script>
 </body>
 </html>
