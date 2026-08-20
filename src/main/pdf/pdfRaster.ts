@@ -13,6 +13,7 @@
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import { BrowserWindow } from 'electron';
+import { atomicWriteBytes } from '../persist/atomicWrite';
 import { KydogError } from '../../shared/errors';
 import { logger } from '../log';
 
@@ -127,7 +128,12 @@ function rasterPageLocation(): { url?: string; file?: string } {
   };
 }
 
-async function createRasterWindow(): Promise<BrowserWindow> {
+/**
+ * `onGone` 是这个窗口的「坏消息通道」。渲染进程中途消失时（OOM、GPU 进程崩），
+ * loadFile / executeJavaScript 的 promise 可能永不 settle —— 只靠 await 它们等不到
+ * 任何结果。把 render-process-gone 变成一条 reject，调用方 race 一下就能脱身。
+ */
+async function createRasterWindow(onGone: (err: Error) => void): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     show: false,
     width: 800,
@@ -142,6 +148,17 @@ async function createRasterWindow(): Promise<BrowserWindow> {
   // 这个窗口只加载我们自己那一页，任何导航都是异常，一律拦掉。
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('render-process-gone', (_e, details) => {
+    onGone(new KydogError('fs.read_failed', `PDF 渲染进程退出：${details.reason}`));
+  });
+  // 这页没人看得见，它的 console 就是唯一能说话的地方 —— pdf.js 的字体回退告警之类
+  // 全落在这里。只转 warning/error，正常渲染日志不刷屏。
+  win.webContents.on('console-message', (details) => {
+    if (details.level !== 'warning' && details.level !== 'error') return;
+    logger.warn('pdf-raster', `渲染页 console.${details.level}`, {
+      message: details.message, source: details.sourceId, line: details.lineNumber,
+    });
+  });
   activeWindow = win;
 
   const loc = rasterPageLocation();
@@ -149,7 +166,6 @@ async function createRasterWindow(): Promise<BrowserWindow> {
     if (loc.url) await win.loadURL(loc.url);
     else await win.loadFile(loc.file!);
   } catch (err) {
-    destroyRasterWindow();
     throw new KydogError('fs.read_failed', `PDF 渲染页加载失败：${String(err)}`);
   }
   return win;
@@ -172,7 +188,23 @@ async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<
   }
 }
 
-async function doRender(args: NormalizedRenderArgs): Promise<{ pngPath: string }> {
+/** signal 一 abort 就 reject 的通道；没有 signal 时是一条永不 settle 的路，race 里等于不存在。 */
+function abortChannel(signal: AbortSignal | undefined): Promise<never> {
+  if (!signal) return new Promise<never>(() => {});
+  if (signal.aborted) return Promise.reject(new KydogError('agent.aborted', 'PDF 渲染已中止'));
+  return new Promise<never>((_, reject) => {
+    signal.addEventListener(
+      'abort',
+      () => reject(new KydogError('agent.aborted', 'PDF 渲染已中止')),
+      { once: true },
+    );
+  });
+}
+
+async function doRender(
+  args: NormalizedRenderArgs,
+  signal: AbortSignal | undefined,
+): Promise<{ pngPath: string }> {
   let stat;
   try {
     stat = await fsp.stat(args.path);
@@ -191,24 +223,34 @@ async function doRender(args: NormalizedRenderArgs): Promise<{ pngPath: string }
   // 不用轮询探 window.__renderPdfPage 在不在，等一个真信号。
   const code = `window.__pdfRasterReady.then(() => window.__renderPdfPage(`
     + `${JSON.stringify(base64)}, ${args.page}, ${args.scale}))`;
+  let onGone!: (err: Error) => void;
+  const gone = new Promise<never>((_, reject) => { onGone = reject; });
+  // 没被 race 到时它仍是一条 rejected promise，先挂个消费者，别变成 unhandled rejection。
+  gone.catch(() => {});
+  const aborted = abortChannel(signal);
+  aborted.catch(() => {});
+
   let result: RasterResult;
   try {
-    const win = await createRasterWindow();
-    result = await withTimeout(
+    const win = await Promise.race([createRasterWindow(onGone), gone, aborted]);
+    result = await Promise.race([
       win.webContents.executeJavaScript(code) as Promise<RasterResult>,
-      RENDER_TIMEOUT_MS,
-      `渲染 ${path.basename(args.path)} 第 ${args.page} 页`,
-    );
+      gone,
+      aborted,
+    ]);
   } catch (err) {
     if (err instanceof KydogError) throw err;
     throw new KydogError('fs.read_failed', `渲染失败：${String(err)}`, err);
-  } finally {
-    destroyRasterWindow();
   }
 
   const pngPath = pngOutputPath(args.path, args.page);
+  // 覆盖是幂等重转时的期望行为，但附件包里本来就有同名文件时这一下不可逆，留个痕。
+  const overwriting = await fsp.stat(pngPath).then(() => true, () => false);
+  if (overwriting) logger.warn('pdf-raster', '覆盖已存在的 PNG', { pngPath });
   try {
-    await fsp.writeFile(pngPath, Buffer.from(result.pngBase64, 'base64'));
+    // 走 atomicWrite 那套 tmp + rename：写一半崩掉不会留下截断的 PNG（agent 可能转手
+    // 就把它嵌进报告），rename 也不跟随符号链接 —— 目标若是个 symlink，换掉的是链接本身。
+    await atomicWriteBytes(pngPath, Buffer.from(result.pngBase64, 'base64'));
   } catch (err) {
     throw new KydogError('fs.write_failed', `无法写入 ${pngPath}`, err);
   }
@@ -222,10 +264,27 @@ async function doRender(args: NormalizedRenderArgs): Promise<{ pngPath: string }
 
 /**
  * 渲染一页并落成 PNG，返回产物路径。并发调用会排队 —— 一个窗口一次只画一页。
+ *
+ * 超时必须罩住**整个** doRender，不能只罩 executeJavaScript：建窗与 loadFile 那段同样
+ * 可能永不 settle（渲染进程在加载途中消失时 loadFile 的 promise 就不会 settle）。
+ * 而 queue 是模块级、进程内唯一的一条链 —— 只要有一次不 settle，后面所有渲染都排在它
+ * 后面，既不返回也不报错，且没有恢复路径。外面那层 finally 也是为此：doRender 卡住时
+ * 它自己的清理跑不到，窗口得由这里销毁。
  */
-export async function renderPageToPng(rawArgs: RenderPageArgs): Promise<{ pngPath: string }> {
+export async function renderPageToPng(
+  rawArgs: RenderPageArgs,
+  signal?: AbortSignal,
+): Promise<{ pngPath: string }> {
   const args = validateRenderArgs(rawArgs);
-  const run = queue.then(() => doRender(args), () => doRender(args));
+  const what = `渲染 ${path.basename(args.path)} 第 ${args.page} 页`;
+  const runOnce = async () => {
+    try {
+      return await withTimeout(doRender(args, signal), RENDER_TIMEOUT_MS, what);
+    } finally {
+      destroyRasterWindow();
+    }
+  };
+  const run = queue.then(runOnce, runOnce);
   queue = run.then(() => undefined, () => undefined);
   return run;
 }

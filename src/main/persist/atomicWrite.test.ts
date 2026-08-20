@@ -3,11 +3,38 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { atomicWrite } from './atomicWrite';
+import { atomicWrite, atomicWriteBytes } from './atomicWrite';
 
 let dir: string;
 beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-')); });
 afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
+
+describe('atomicWriteBytes', () => {
+  it('原样写出二进制，不经 utf8 编码', async () => {
+    const target = path.join(dir, 'a.png');
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe]);
+    await atomicWriteBytes(target, bytes);
+    expect([...(await fs.readFile(target))]).toEqual([...bytes]);
+  });
+
+  it('目标是符号链接时换掉链接本身，不写穿到链接目标', async () => {
+    const outside = path.join(dir, 'outside.png');
+    await fs.writeFile(outside, 'ORIGINAL');
+    const target = path.join(dir, 'link.png');
+    await fs.symlink(outside, target);
+    await atomicWriteBytes(target, new Uint8Array([1, 2, 3]));
+    expect(await fs.readFile(outside, 'utf8')).toBe('ORIGINAL');
+    expect((await fs.lstat(target)).isSymbolicLink()).toBe(false);
+  });
+
+  it('写失败不留 tmp 残渣', async () => {
+    const target = path.join(dir, 'sub', 'a.png');
+    // 目标目录名被一个普通文件占了 → mkdir 失败，直接抛，目录里不该多出东西
+    await fs.writeFile(path.join(dir, 'sub'), 'x');
+    await expect(atomicWriteBytes(target, new Uint8Array([1]))).rejects.toThrow();
+    expect((await fs.readdir(dir)).filter((f) => f.includes('.tmp.'))).toEqual([]);
+  });
+});
 
 describe('atomicWrite', () => {
   it('writes the file', async () => {

@@ -40,15 +40,16 @@ export function createPdfFigureTool(render: typeof renderPageToPng = renderPageT
     async execute(
       _toolCallId: string,
       params: { path: string; page?: number; scale?: number },
-      _signal?: AbortSignal,
+      signal?: AbortSignal,
     ) {
       // 参数校验留在 renderPageToPng 里（validateRenderArgs），RPC 与工具两个入口
       // 共用同一套判定，不在这里再写一份会漂移的。
+      // signal 一路传下去：用户中止这一轮时渲染要跟着停，否则它还会占着渲染队列。
       const { pngPath } = await render({
         path: params?.path,
         page: params?.page ?? 1,
         scale: params?.scale,
-      });
+      }, signal);
       return {
         content: [{ type: 'text' as const, text: `已渲染成 PNG：${pngPath}` }],
         details: { pngPath },

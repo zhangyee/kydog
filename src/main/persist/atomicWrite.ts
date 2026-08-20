@@ -14,6 +14,20 @@ export async function atomicWrite(target: string, data: string): Promise<void> {
   await fsp.rename(tmp, target);
 }
 
+/** 二进制版。PNG 之类的产物用它：tmp + rename，写一半崩掉不会留下截断的文件，
+ *  rename 也不跟随符号链接（目标若是 symlink，被换掉的是链接本身）。 */
+export async function atomicWriteBytes(target: string, data: Uint8Array): Promise<void> {
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  const tmp = `${target}.tmp.${randomUUID()}`;
+  try {
+    await fsp.writeFile(tmp, data);
+    await fsp.rename(tmp, target);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
 /** 凭证文件专用：temp 即 0600 + rename 后 idempotent chmod。 */
 export async function atomicWriteWith0600Async(target: string, data: string): Promise<void> {
   await fsp.mkdir(path.dirname(target), { recursive: true });
