@@ -105,6 +105,10 @@ export type RuntimeEvent =
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }
   | { topic: 'fs.changed'; payload: { projectPath: string } }
+  // fs.changed 是「项目结构变了」（增删文件/目录 → 刷文件树）；file.changed 是
+  // 「这个文件的内容变了」，带路径。两者语义不同，不要用前者代替后者 ——
+  // 拿项目级事件当文件级信号就是在下游补 proxy，而路径信号在 chokidar 回调里本来就有。
+  | { topic: 'file.changed'; payload: { path: string } }
   | { topic: 'identity.changed'; payload: Identity }
   | { topic: 'update.status'; payload: UpdateStatus }
   // 主进程会在渲染层没发起任何调用的时候改遥测状态：启动时那次「重试未完成的删除」
