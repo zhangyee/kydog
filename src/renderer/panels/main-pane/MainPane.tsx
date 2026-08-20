@@ -124,7 +124,7 @@ export function MainPane() {
               {ft.kind === 'pdf'
                 ? <PdfFileTab tab={ft} />
                 : ft.kind === 'html'
-                  ? <HtmlFileTab tab={ft} />
+                  ? <HtmlFileTab tab={ft} isActive={visible} />
                   : <MarkdownFileTab tab={ft} isActive={visible} />}
             </div>
           );

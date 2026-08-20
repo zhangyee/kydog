@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { buildHostThemeCss, injectHostTheme, readHostVar } from './reportTheme';
 
-export function HtmlFileTab({ tab }: { tab: FileTab }) {
+export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
   const [html, setHtml] = useState<string | null>(null);
 
@@ -37,13 +37,15 @@ export function HtmlFileTab({ tab }: { tab: FileTab }) {
     setSrcDoc(injectHostTheme(html, buildHostThemeCss(readHostVar)));
   }, [html, theme, readingFontSize]);
 
-  // 打开报告后不必先点一下页面，方向键就能翻节：srcDoc 一旦写入（iframe 已加载新文档），
-  // 主动把焦点交给 iframe 元素。e2e/46-html-tab.spec.ts「方向键在节间跳转」不点击、
-  // 直接按键，就是在验这段代码真的有用。
+  // 打开报告后不必先点一下页面，方向键就能翻节：主动把焦点交给 iframe 元素。
+  // 依赖里必须有 isActive：tab 是保持挂载、用 display 切换可见的（MainPane.tsx），
+  // 只依赖 srcDoc 的话，切走再切回来 srcDoc 没变，effect 不重跑，而焦点在
+  // display:none 期间已经丢了 —— 那时候方向键就退化回「要先点一下」。
+  // e2e/46-html-tab.spec.ts「方向键在节间跳转（切走再切回）」守着这条链。
   const frameRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
-    if (srcDoc !== null) frameRef.current?.focus();
-  }, [srcDoc]);
+    if (isActive && srcDoc !== null) frameRef.current?.focus();
+  }, [srcDoc, isActive]);
 
   if (tab.status === 'error') {
     return (

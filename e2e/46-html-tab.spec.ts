@@ -6,8 +6,12 @@ import { launchKydog, seedSettings, seedProject, teardown } from './helpers';
 const HTML_REL = 'report.html';
 
 // 正文里那个 <script> 是探针：沙箱现在给了 allow-scripts，它应该跑起来
-// （#probe 的文字被改成 SCRIPT-RAN），但 CSP 的 connect-src 'none' 应该拦住它发出的请求
-// （#net 停在 BLOCKED，不会变成 ALLOWED）。
+// （#probe 的文字被改成 SCRIPT-RAN）。
+// #net 判据用协议层事实而不是代理信号：`fetch` 请求失败既可能是 CSP 拦截，也可能是
+// 单纯连不上 127.0.0.1:9（没人监听），两者在 .catch() 里产生的都是同一个 TypeError ——
+// 用 catch 区分不出"CSP 拦了"和"CSP 没拦、只是连接被操作系统拒绝"，会把假绿和真绿混在一起。
+// 真正只在 CSP 生效时才发生的协议层事实是 `securitypolicyviolation` 事件，所以 #net
+// 只由这个事件驱动，fetch 的 .catch() 什么都不做。
 // #jump / #c1 是页内锚点那条链（知识地图节点 → 章节）；#external 是 DOI 外链那条链；
 // #s1 / #s2 / #h2 是方向键翻节那条链——keydown 监听器把 ArrowDown 接到 #s2.scrollIntoView()。
 const REPORT_HTML = `<!doctype html>
@@ -31,9 +35,12 @@ const REPORT_HTML = `<!doctype html>
   document.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') document.getElementById('s2').scrollIntoView();
   });
-  fetch('http://127.0.0.1:9/beacon')
-    .then(() => { document.getElementById('net').textContent = 'ALLOWED'; })
-    .catch(() => { document.getElementById('net').textContent = 'BLOCKED'; });
+  document.addEventListener('securitypolicyviolation', (e) => {
+    document.getElementById('net').textContent = 'CSP-BLOCKED:' + e.violatedDirective;
+  });
+  // 连接失败与被 CSP 拦截会产生同样的 TypeError，这里什么都不做——
+  // 判据只看上面那个 securitypolicyviolation 事件。
+  fetch('http://127.0.0.1:9/beacon').catch(() => {});
 </script>
 </body>
 </html>
@@ -99,7 +106,9 @@ test('46-html-tab: CSP 拦住脚本的对外请求', async () => {
     await fsRow.dblclick();
 
     const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
-    await expect(frame.locator('#net')).toHaveText('BLOCKED', { timeout: 10000 });
+    // 判据是 securitypolicyviolation 事件（协议层事实），不是 fetch 失败与否
+    // （代理信号——连接被拒和被 CSP 拦截产生同样的 TypeError，见 fixture 里的注释）。
+    await expect(frame.locator('#net')).toHaveText(/^CSP-BLOCKED:connect-src/, { timeout: 10000 });
   } finally {
     await teardown(launched);
   }
@@ -278,6 +287,40 @@ test('46-html-tab: 方向键在节间跳转', async () => {
 
     // 不点击：验的就是 HtmlFileTab 里 srcDoc 就绪后对 iframe 调 .focus() 是否真的让
     // 方向键免点击生效。
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() =>
+      frame.locator('#h2').evaluate((el) => el.getBoundingClientRect().top),
+    ).toBeLessThan(200);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// 锁住 focus effect 的 isActive 依赖：tab 是保持挂载、用 display 切换可见的
+// （MainPane.tsx），只依赖 srcDoc 的话，切走再切回来 srcDoc 不变，effect 不重跑，
+// 焦点在 display:none 期间已经丢了——方向键会退化回「要先点一下」。没有这条测试，
+// 这个退化是静默的：上一条「方向键在节间跳转」只验了 dblclick 那一刻。
+test('46-html-tab: 方向键在节间跳转（切走再切回）', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#heading')).toHaveText('知识地图');
+    await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
+
+    // 切到 thread tab，再切回 html tab —— 触发 isActive: true → false → true。
+    await page.locator('[data-testid="tab-thr-1"]').click();
+    await page.locator(`[data-testid="tab-${htmlPath}"]`).click();
+    await expect(page.locator(`[data-testid="file-pane-${htmlPath}"]`)).toBeVisible();
+
+    // 不点击：切回来那次 isActive effect 应该重新把焦点交给 iframe。
     await page.keyboard.press('ArrowDown');
     await expect.poll(() =>
       frame.locator('#h2').evaluate((el) => el.getBoundingClientRect().top),
