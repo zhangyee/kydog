@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PDF raster</title>
+  </head>
+  <body>
+    <!--
+      这一页不给人看：主进程开一个 show:false 的 BrowserWindow 加载它，只为借 Chromium
+      的 canvas 把 PDF 画成 PNG（见 src/main/pdf/pdfRaster.ts）。
+
+      下面这段同步脚本必须排在模块之前：模块是 defer 的，主进程 executeJavaScript
+      进来时它可能还没跑完。有了这个 promise，主进程就能等一个真信号，而不是轮询探
+      window.__renderPdfPage 在不在。
+    -->
+    <script>
+      window.__pdfRasterReady = new Promise((resolve, reject) => {
+        window.__pdfRasterResolve = resolve;
+        window.__pdfRasterReject = reject;
+      });
+    </script>
+    <script type="module" src="./pdfRasterPage.ts"></script>
+  </body>
+</html>

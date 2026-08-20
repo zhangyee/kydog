@@ -17,6 +17,7 @@ import { applyResearchEnv } from './research/researchEnv';
 import { initProviderRegistry } from './llm/providerRegistry';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
+import { destroyRasterWindow } from './pdf/pdfRaster';
 import { startIdentityWatcher } from './harness/identityService';
 import { initUpdateService } from './update/assemble';
 import { assembleTelemetry } from './telemetry/assemble';
@@ -178,4 +179,8 @@ app.on('ready', async () => {
 
 app.on('window-all-closed', () => { app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
-app.on('before-quit', () => { void fileWatcherService.stopAll(); });
+app.on('before-quit', () => {
+  void fileWatcherService.stopAll();
+  // 复用的 PDF 渲染窗口平时靠闲置定时器回收，退出时直接销毁，别让它拖住关闭。
+  destroyRasterWindow();
+});

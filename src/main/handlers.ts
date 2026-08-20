@@ -11,6 +11,7 @@ import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { skillsService } from './skills/skillsService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
+import { renderPageToPng } from './pdf/pdfRaster';
 import { getUpdateService, openDownloadPage } from './update/assemble';
 // 从 telemetry/assemble.ts 取，不要从 main.ts —— 后者会造成循环 import
 import { getTelemetryService, telemetryStatus } from './telemetry/assemble';
@@ -105,6 +106,7 @@ export function registerAllHandlers(): void {
   registerHandler('file.readText', (args) => fileService.readText(args));
   registerHandler('file.readBytes', (args) => fileService.readBytes(args));
   registerHandler('file.writeText', (args) => fileService.writeText(args));
+  registerHandler('pdf.renderPage', (args) => renderPageToPng(args));
   registerHandler('project.openInOS', (args) => projectService.openInOS(args));
   registerHandler('project.update', (args) => projectService.update(args));
 

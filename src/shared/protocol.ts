@@ -56,6 +56,9 @@ export type RpcCall =
   | { method: 'file.readText'; args: { path: string }; result: { content: string } }
   | { method: 'file.readBytes'; args: { path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
   | { method: 'file.writeText'; args: { path: string; content: string }; result: void }
+  // 把 PDF 的一页画成 PNG（主进程借一个不显示的窗口跑 pdfjs，见 src/main/pdf/pdfRaster.ts）。
+  // arXiv 源码包里的插图常常是 .pdf，嵌不进 HTML 报告，得先过一道渲染。
+  | { method: 'pdf.renderPage'; args: { path: string; page: number; scale?: number }; result: { pngPath: string } }
   // ── 自动升级 ──
   | { method: 'update.getStatus'; args: undefined; result: UpdateStatus }
   | { method: 'update.check'; args: undefined; result: UpdateStatus }

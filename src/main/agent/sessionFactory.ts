@@ -1,6 +1,7 @@
 // src/main/agent/sessionFactory.ts
 import { createFixtureSession } from './fixtureProvider';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
+import { createPdfFigureTool } from './pdfFigureTool';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { KydogError } from '../../shared/errors';
 import type { ProviderId } from '../../shared/types';
@@ -46,7 +47,10 @@ export async function createSession(opts: {
     modelRuntime: reg.modelRuntime,
     model,
     resourceLoader,
-    customTools: [createAskUserQuestionTool(opts.sessionId, opts.askShared)],
+    customTools: [
+      createAskUserQuestionTool(opts.sessionId, opts.askShared),
+      createPdfFigureTool(),
+    ],
   });
   return session as AnySession;
 }
