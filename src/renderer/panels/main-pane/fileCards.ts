@@ -32,19 +32,43 @@ function extractWrite(tool: ToolBlock): { raw: string; size: number | null } | n
   return { raw, size };
 }
 
+/** edit 不带完整内容，拿不到体积；路径参数名与 write 一致（path / file_path 都收）。 */
+function extractEdit(tool: ToolBlock): { raw: string; size: number | null } | null {
+  if (tool.name !== 'edit' || tool.status !== 'ok') return null;
+  if (!tool.command) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tool.command);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const a = parsed as Record<string, unknown>;
+  const raw = a.file_path ?? a.path;
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  return { raw, size: null };
+}
+
 export function collectFileCards(blocks: AssistantBlock[], projectPath: string | null): FileCardEntry[] {
   const seen = new Map<string, { order: number; size: number | null }>();
   let order = 0;
   for (const b of blocks) {
     if (b.kind !== 'tool_call') continue;
-    const w = extractWrite(b);
+    const w = extractWrite(b) ?? extractEdit(b);
     if (w === null) continue;
     const abs = resolveAgainst(projectPath, w.raw);
     if (abs === null) continue;
     // 卡片只给「用户会想打开来看」的产物：Markdown 报告与 HTML 报告。
     // 判定与 fileTabHelpers 的 isMarkdownPath / isHtmlPath 保持一致。
     if (!/\.(md|markdown|html?)$/i.test(abs)) continue;
-    seen.set(abs, { order: order++, size: w.size });
+    // edit 拿不到体积（size 为 null）；同一路径若之前已经从 write 拿到过体积，
+    // 不能被后来的 edit 覆盖成空白——保留已知的那个。排序仍按最后一次触达的位置
+    // （与去重前 write-only 时的顺序语义保持一致）。
+    const prev = seen.get(abs);
+    seen.set(abs, {
+      order: order++,
+      size: w.size ?? prev?.size ?? null,
+    });
   }
   return [...seen.entries()]
     .sort((a, b) => a[1].order - b[1].order)

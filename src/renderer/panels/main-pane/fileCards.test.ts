@@ -6,6 +6,10 @@ function writeTool(args: Record<string, unknown>, status: 'ok' | 'failed' | 'run
   return { kind: 'tool_call', id: 'tc-1', name: 'write', command: JSON.stringify(args), chunks: [], status };
 }
 
+function editTool(args: Record<string, unknown>, status: 'ok' | 'failed' | 'running' = 'ok'): Extract<AssistantBlock, { kind: 'tool_call' }> {
+  return { kind: 'tool_call', id: 'tc-e', name: 'edit', command: JSON.stringify(args), chunks: [], status };
+}
+
 describe('resolveAgainst', () => {
   it('POSIX 绝对路径原样返回', () => {
     expect(resolveAgainst('/proj', '/abs/foo.md')).toBe('/abs/foo.md');
@@ -123,6 +127,34 @@ describe('collectFileCards', () => {
       writeTool({ file_path: '/p/a.md', content: 'x' }),
     ];
     expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/a.md', size: 1 }]);
+  });
+  it('edit 出的 .html 也出卡片（size 未知）', () => {
+    const blocks = [editTool({ path: 'learning-deck-crispr-2026-08-20.html', edits: [{ oldText: 'a', newText: 'b' }] })];
+    expect(collectFileCards(blocks, '/proj')).toEqual([
+      { path: '/proj/learning-deck-crispr-2026-08-20.html', size: null },
+    ]);
+  });
+  it('同一路径多次 edit 只出一张卡片', () => {
+    const blocks = [
+      editTool({ path: 'r.html', edits: [{ oldText: 'a', newText: 'b' }] }),
+      editTool({ path: 'r.html', edits: [{ oldText: 'c', newText: 'd' }] }),
+    ];
+    expect(collectFileCards(blocks, '/proj')).toEqual([{ path: '/proj/r.html', size: null }]);
+  });
+  it('edit 的后缀白名单与 write 一致', () => {
+    const blocks = [editTool({ path: 'notes.txt', edits: [{ oldText: 'a', newText: 'b' }] })];
+    expect(collectFileCards(blocks, '/proj')).toEqual([]);
+  });
+  it('跳过 status=failed 的 edit', () => {
+    const blocks = [editTool({ path: 'r.html', edits: [{ oldText: 'a', newText: 'b' }] }, 'failed')];
+    expect(collectFileCards(blocks, '/proj')).toEqual([]);
+  });
+  it('write 与 edit 命中同一路径时按首次出现排序、只一张卡片', () => {
+    const blocks = [
+      writeTool({ file_path: 'r.html', content: 'x' }),
+      editTool({ path: 'r.html', edits: [{ oldText: 'a', newText: 'b' }] }),
+    ];
+    expect(collectFileCards(blocks, '/proj')).toEqual([{ path: '/proj/r.html', size: 1 }]);
   });
 });
 
