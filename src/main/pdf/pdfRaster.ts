@@ -152,9 +152,18 @@ async function createRasterWindow(onGone: (err: Error) => void): Promise<Browser
     onGone(new KydogError('fs.read_failed', `PDF 渲染进程退出：${details.reason}`));
   });
   // 这页没人看得见，它的 console 就是唯一能说话的地方 —— pdf.js 的字体回退告警之类
-  // 全落在这里。只转 warning/error，正常渲染日志不刷屏。
+  // 全落在这里。
+  //
+  // 不能只按 level 过滤，这一点反直觉：pdf.js 的 warn() 实现就是
+  // `console.log(\`Warning: ${msg}\`)`（见 pdfjs-dist/build/pdf.mjs），它从不调
+  // console.warn；而 Electron 的 level 取自 Chromium 实际调用的 console 方法名，
+  // console.log 映射成 'info'。所以只放行 warning/error 会把字体回退告警整批漏掉 ——
+  // 而那正是这条转发唯一要抓的东西。下面这个前缀判据是 pdf.js 自己加的，
+  // 既捕得到，又不会把正常日志刷进来。**别把它当冗余删掉。**
+  const PDFJS_ALERT = /^(Warning|Error):/;
   win.webContents.on('console-message', (details) => {
-    if (details.level !== 'warning' && details.level !== 'error') return;
+    const loud = details.level === 'warning' || details.level === 'error';
+    if (!loud && !PDFJS_ALERT.test(details.message)) return;
     logger.warn('pdf-raster', `渲染页 console.${details.level}`, {
       message: details.message, source: details.sourceId, line: details.lineNumber,
     });
@@ -281,7 +290,13 @@ export async function renderPageToPng(
     try {
       return await withTimeout(doRender(args, signal), RENDER_TIMEOUT_MS, what);
     } finally {
-      destroyRasterWindow();
+      // 清理的次生错误不该顶掉 try 里那条真正的错误（超时 / 渲染失败），
+      // 否则调用方看到的是一条误导性的信息。
+      try {
+        destroyRasterWindow();
+      } catch (err) {
+        logger.warn('pdf-raster', '销毁渲染窗口失败', { err: String(err) });
+      }
     }
   };
   const run = queue.then(runOnce, runOnce);

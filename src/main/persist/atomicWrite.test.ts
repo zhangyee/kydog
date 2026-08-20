@@ -27,10 +27,11 @@ describe('atomicWriteBytes', () => {
     expect((await fs.lstat(target)).isSymbolicLink()).toBe(false);
   });
 
-  it('写失败不留 tmp 残渣', async () => {
-    const target = path.join(dir, 'sub', 'a.png');
-    // 目标目录名被一个普通文件占了 → mkdir 失败，直接抛，目录里不该多出东西
-    await fs.writeFile(path.join(dir, 'sub'), 'x');
+  it('rename 失败时清掉 tmp 残渣', async () => {
+    // 失败必须发生在 try 内部才走得到清理路径：mkdir 在 try 外面，那时 tmp 还没建。
+    // 让 target 是一个已存在的目录 → tmp 写得出来，rename 到目录上必失败。
+    const target = path.join(dir, 'occupied');
+    await fs.mkdir(target);
     await expect(atomicWriteBytes(target, new Uint8Array([1]))).rejects.toThrow();
     expect((await fs.readdir(dir)).filter((f) => f.includes('.tmp.'))).toEqual([]);
   });
