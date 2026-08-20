@@ -64,3 +64,62 @@ test('46-html-tab: 沙箱不执行页面里的脚本', async () => {
     await teardown(launched);
   }
 });
+
+test('46-html-tab: 报告跟随 app 主题', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const body = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`).locator('body');
+    const bgOf = () => body.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+    await expect(page.locator(`[data-testid="tab-${htmlPath}"]`)).toBeVisible();
+    const before = await bgOf();
+
+    // 走真实 UI 切主题（同 e2e/08-theme-switch.spec.ts 的路径）：
+    // 用户菜单 → midnight。注入的 --paper 变了，frame 里的背景必须跟着变。
+    await page.locator('[data-testid="user-menu-trigger"]').click();
+    await page.locator('[data-testid="theme-midnight"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight');
+
+    await expect.poll(bgOf).not.toBe(before);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: 报告跟随阅读字号', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const body = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`).locator('body');
+    const sizeVar = () => body.evaluate(
+      (el) => getComputedStyle(el).getPropertyValue('--reading-font-size').trim(),
+    );
+
+    await expect(page.locator(`[data-testid="tab-${htmlPath}"]`)).toBeVisible();
+    await expect.poll(sizeVar).not.toBe('');
+
+    // 同 e2e/36-font-size.spec.ts 的路径：用户菜单 → 大号
+    await page.locator('[data-testid="user-menu-trigger"]').click();
+    await page.locator('[data-testid="reading-size-large"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-reading-size', 'large');
+
+    await expect.poll(sizeVar).toBe('17px');
+  } finally {
+    await teardown(launched);
+  }
+});
