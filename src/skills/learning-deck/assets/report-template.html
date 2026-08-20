@@ -744,13 +744,21 @@ figure svg {
 }
 
 /* 内嵌的原文插图（<img src="papers/…">，查看器渲染时会内联成 data URI）。
-   跟 figure svg 同款：跟着容器缩放，不按自然像素铺开。少了这条，
-   pdf_page_png 转出来的图（默认 scale: 2，像素是预期的两倍）会按自然宽度渲染，
-   撑破 figure 的 max-width: 56em 和 .deck，整份报告出横向滚动条。
+
+   ⚠️ 是 max-width 不是 width，两个方向都要管住，别改成 width: 100%：
+   - 图比容器大：pdf_page_png 转出来的图默认 scale: 2，像素是预期的两倍，
+     不限宽就按自然宽度渲染，撑破 figure 的 max-width: 56em 和 .deck，
+     整份报告出横向滚动条。max-width 把它缩回容器内。
+   - 图比容器小：figure 是块级、没有显式 width，会撑满 56em 上限，
+     width: 100% 会把每一张原图都强行拉到那个宽度 —— 栅格图放大就是糊，
+     而 references/figures.md 把「插原图」列为第一优先的来源，几乎每份真报告都会中。
+     max-width 让小图保持自然尺寸。
+   上面 figure svg 用 width: 100% 是对的（矢量放大无损），这个理由**不能**搬到 <img> 上。
+
    有了这条，报告里的 <img> 就不需要写任何行内 style —— 别再往正文里加。 */
 figure img {
   display: block;
-  width: 100%;
+  max-width: 100%;
   height: auto;
 }
 

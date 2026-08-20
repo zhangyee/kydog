@@ -130,8 +130,9 @@ pdf_page_png  { "path": "<绝对路径>/figs/architecture.pdf" }
 - 没有体积闸门、没有张数上限——查看器会做单张 8MB / 全篇 24MB 的兜底，
   正常论文插图远远碰不到这个数字，不用先量再决定。
 
-`figure` / `figcaption` / `figure img` 的样式模板里都已经有了（`figure img` 与 `figure svg`
-同款：`width: 100%; height: auto`）。**不要给 `<img>` 写行内 `style`**——模板已经管好缩放，
+`figure` / `figcaption` / `figure img` 的样式模板里都已经有了（`figure img` 是
+`max-width: 100%; height: auto`：太宽的图缩回版心，比版心窄的图保持自然尺寸不被拉糊）。
+**不要给 `<img>` 写行内 `style`**——模板已经管好缩放，
 写了反而是在跟通则对着干（见 `references/layout.md` 开头）。
 
 ---
