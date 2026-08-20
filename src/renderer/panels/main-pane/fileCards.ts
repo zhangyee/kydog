@@ -41,7 +41,9 @@ export function collectFileCards(blocks: AssistantBlock[], projectPath: string |
     if (w === null) continue;
     const abs = resolveAgainst(projectPath, w.raw);
     if (abs === null) continue;
-    if (!abs.toLowerCase().endsWith('.md')) continue;
+    // 卡片只给「用户会想打开来看」的产物：Markdown 报告与 HTML 报告。
+    // 判定与 fileTabHelpers 的 isMarkdownPath / isHtmlPath 保持一致。
+    if (!/\.(md|markdown|html?)$/i.test(abs)) continue;
     seen.set(abs, { order: order++, size: w.size });
   }
   return [...seen.entries()]

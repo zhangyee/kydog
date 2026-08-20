@@ -55,7 +55,7 @@ describe('collectFileCards', () => {
     const blocks: AssistantBlock[] = [writeTool({ file_path: 'report.md', content: 'x' })];
     expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/report.md', size: 1 }]);
   });
-  it('跳过非 .md 扩展名', () => {
+  it('跳过不在白名单里的扩展名', () => {
     const blocks: AssistantBlock[] = [
       writeTool({ file_path: '/p/a.txt', content: 'x' }),
       writeTool({ file_path: '/p/b.pdf', content: 'x' }),
@@ -66,6 +66,20 @@ describe('collectFileCards', () => {
   it('.md 大小写不敏感', () => {
     const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/A.MD', content: 'x' })];
     expect(collectFileCards(blocks, '/p')).toEqual([{ path: '/p/A.MD', size: 1 }]);
+  });
+  it('.html 也出卡片', () => {
+    const blocks = [writeTool({ file_path: 'learning-deck-crispr-2026-08-20.html', content: '<h1>x</h1>' })];
+    expect(collectFileCards(blocks, '/proj')).toEqual([
+      { path: '/proj/learning-deck-crispr-2026-08-20.html', size: 10 },
+    ]);
+  });
+  it('.htm 也出卡片', () => {
+    const blocks = [writeTool({ file_path: 'a.htm', content: 'x' })];
+    expect(collectFileCards(blocks, '/proj')).toEqual([{ path: '/proj/a.htm', size: 1 }]);
+  });
+  it('其他后缀仍然不出卡片', () => {
+    const blocks = [writeTool({ file_path: 'notes.txt', content: 'x' })];
+    expect(collectFileCards(blocks, '/proj')).toEqual([]);
   });
   it('跳过 status=failed', () => {
     const blocks: AssistantBlock[] = [writeTool({ file_path: '/p/a.md', content: 'x' }, 'failed')];
