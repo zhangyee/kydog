@@ -1,6 +1,6 @@
 import { NavIcon, type NavIconName } from '../../shared';
 
-export type TabKind = 'thread' | 'md' | 'pdf' | 'settings';
+export type TabKind = 'thread' | 'md' | 'pdf' | 'html' | 'settings';
 export type TabItem = { id: string; kind: TabKind; title: string; dirty?: boolean };
 
 type Props = {
@@ -14,6 +14,7 @@ const KIND_COLOR: Record<TabKind, string> = {
   thread: 'var(--color-ink-soft)',
   md: 'var(--color-marginalia)',
   pdf: 'var(--color-accent)',
+  html: 'var(--color-ink-soft)',
   settings: 'var(--color-ink-soft)',
 };
 
@@ -21,6 +22,7 @@ const KIND_ICON: Record<TabKind, NavIconName> = {
   thread: 'messages-square',
   md: 'file-text',
   pdf: 'book-open-text',
+  html: 'file-diff',
   settings: 'settings-2',
 };
 

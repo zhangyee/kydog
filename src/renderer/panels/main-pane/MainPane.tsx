@@ -9,6 +9,7 @@ import { SettingsPane } from '../../settings/SettingsPane';
 import { SETTINGS_PAGE_LABELS } from '../../settings/settingsPages';
 import { MarkdownFileTab } from './markdown/MarkdownFileTab';
 import { PdfFileTab } from './pdf/PdfFileTab';
+import { HtmlFileTab } from './html/HtmlFileTab';
 import { UnsavedChangesModal } from './markdown/UnsavedChangesModal';
 import { getSaver } from './markdown/saveRegistry';
 
@@ -122,7 +123,9 @@ export function MainPane() {
             >
               {ft.kind === 'pdf'
                 ? <PdfFileTab tab={ft} />
-                : <MarkdownFileTab tab={ft} isActive={visible} />}
+                : ft.kind === 'html'
+                  ? <HtmlFileTab tab={ft} />
+                  : <MarkdownFileTab tab={ft} isActive={visible} />}
             </div>
           );
         })}

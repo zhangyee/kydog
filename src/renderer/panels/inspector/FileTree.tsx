@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import { NavIcon, type NavIconName } from '../../shared';
 import type { FsNode } from '../../../shared/types';
-import { isMarkdownPath, isPdfPath } from '../main-pane/markdown/fileTabHelpers';
+import { isHtmlPath, isMarkdownPath, isPdfPath } from '../main-pane/markdown/fileTabHelpers';
 
 type RowProps = { node: FsNode };
 
@@ -49,7 +49,7 @@ function Row({ node }: RowProps) {
         onClick={() => isDir ? toggleDir(node.path) : null}
         onDoubleClick={() => {
           if (isDir) return;
-          if (isMarkdownPath(node.path) || isPdfPath(node.path)) openFile(node.path);
+          if (isMarkdownPath(node.path) || isPdfPath(node.path) || isHtmlPath(node.path)) openFile(node.path);
         }}
         className="flex items-center cursor-pointer hover:bg-[color:var(--color-hover-bg)]"
         style={{

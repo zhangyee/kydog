@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isMarkdownPath, isPdfPath, fileTitle } from './fileTabHelpers';
+import { isMarkdownPath, isPdfPath, fileTitle, isHtmlPath } from './fileTabHelpers';
 
 describe('isMarkdownPath', () => {
   it('.md / .markdown 命中（大小写不敏感）', () => {
@@ -31,5 +31,20 @@ describe('fileTitle', () => {
   });
   it('取 Windows 路径 basename', () => {
     expect(fileTitle('C:\\docs\\notes.md')).toBe('notes.md');
+  });
+});
+
+describe('isHtmlPath', () => {
+  it('认 .html 与 .htm', () => {
+    expect(isHtmlPath('/a/b/report.html')).toBe(true);
+    expect(isHtmlPath('/a/b/report.htm')).toBe(true);
+  });
+  it('大小写不敏感', () => {
+    expect(isHtmlPath('/a/REPORT.HTML')).toBe(true);
+  });
+  it('不认只是包含 html 的其他后缀', () => {
+    expect(isHtmlPath('/a/report.html.md')).toBe(false);
+    expect(isHtmlPath('/a/htmlnotes.txt')).toBe(false);
+    expect(isHtmlPath('/a/report.xhtml')).toBe(false);
   });
 });
