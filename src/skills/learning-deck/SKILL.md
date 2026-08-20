@@ -212,7 +212,8 @@ v1 槽位一个不缺、格式完全合规，读起来却像审稿人清单—�
    `fetch` / `XMLHttpRequest` / `WebSocket`——沙箱同时注入了一条严格 CSP
    （`default-src 'none'`、`connect-src 'none'`、`img-src data:`），
    **上面这些全会被拦掉，写了就是白写，而且页面上只是缺一块，不报错**。
-   所以图片内嵌只能用 `data:` URI，见 `references/figures.md`。
+   所以图片改用报告目录树内的相对路径 `<img src="papers/…">` 引用，查看器渲染时会
+   自动读文件转成 `data:` URI 内嵌——不要自己打 base64，见 `references/figures.md`。
 3. **所有外链写 `target="_blank" rel="noopener"`。** 沙箱不给 `allow-top-navigation`，普通链接点下去会试图在 iframe 里就地跳转。指向论文的 `<a href="https://…">` 是链接不是资源，允许；把它当资源加载（`img` / `link` / `@import`）不允许。
 4. **颜色一律写成 `var(--ink, #2a2620)` 这种带 fallback 的形态**，变量名只能取自模板头部注释里的那份清单。写死颜色的报告在 midnight 主题下会瞎眼；用清单外的变量名则永远走 fallback，等于写死。
 

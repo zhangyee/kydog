@@ -80,6 +80,35 @@ async function seedAll(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// Task 7b：查看器把报告里的相对路径 <img> 在渲染时内联成 data URI。
+// 1x1 透明像素的最小合法 PNG（能被真解码，不是随手拼的假字节）。
+const MINIMAL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
+
+// 在 REPORT_HTML 基础上加两张图：#fig 是合法的报告目录内相对路径（应内联成功），
+// #bad 是逃出报告目录树的路径（应被拒绝、退化成 alt 文字）。不复用给其余测试的
+// REPORT_HTML 常量本身（只在这两条测试用的变体里加），其余测试的断言/时序不受影响。
+const REPORT_HTML_WITH_IMAGES = REPORT_HTML.replace(
+  '<h1 id="heading">知识地图</h1>',
+  '<h1 id="heading">知识地图</h1>\n'
+  + '<img id="fig" src="fig.png" alt="架构图">\n'
+  + '<img id="bad" src="../outside.png" alt="ALT-FALLBACK">',
+);
+
+async function seedWithImages(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  await fs.writeFile(path.join(projectPath, HTML_REL), REPORT_HTML_WITH_IMAGES);
+  await fs.writeFile(path.join(projectPath, 'fig.png'), MINIMAL_PNG);
+  // 放在 proj/ 外面一级 —— 真实存在、可读，证明拒绝的原因是「逃出目录树」而不是
+  // 单纯的「文件不存在」。
+  await fs.writeFile(path.join(home, 'outside.png'), MINIMAL_PNG);
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 test('46-html-tab: 双击打开 HTML tab → 渲染内容', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
@@ -393,6 +422,53 @@ test('46-html-tab: 入场动效——滚到 .reveal 元素后最终可见', asyn
     await reveal2.scrollIntoViewIfNeeded();
     await expect(reveal2).toBeVisible();
     await expect.poll(() => opacityOf(reveal2)).toBe('1');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: 报告目录内的本地图片渲染时内联成 data URI', async () => {
+  const launched = await launchKydog({ seed: seedWithImages });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const fig = frame.locator('#fig');
+    await expect(fig).toBeVisible();
+
+    // src 以 data:image/png;base64, 开头只证明字符串被替换了——那怕替换成的是垃圾字节
+    // 这条也能过。真正证明"内联出来的字节确实是一张能被浏览器解码的图"的是
+    // naturalWidth > 0：解码失败的 <img> naturalWidth 恒为 0。两条都要断言。
+    await expect.poll(() => fig.evaluate((el: HTMLImageElement) => el.src)).toMatch(/^data:image\/png;base64,/);
+    await expect.poll(() => fig.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: 逃出报告目录的图片路径被拒绝，退化成 alt 文字', async () => {
+  const launched = await launchKydog({ seed: seedWithImages });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const bad = frame.locator('#bad');
+    await expect.poll(() => bad.evaluate((el) => el.getAttribute('data-kydog-inline'))).toBe('rejected');
+    // src 属性被整个摘掉（不是留一个读不到的坏路径），元素靠 alt 退化成文字。
+    expect(await bad.evaluate((el) => el.hasAttribute('src'))).toBe(false);
+    expect(await bad.evaluate((el) => el.getAttribute('alt'))).toBe('ALT-FALLBACK');
   } finally {
     await teardown(launched);
   }

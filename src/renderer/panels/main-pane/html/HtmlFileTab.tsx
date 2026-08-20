@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
-import { buildHostThemeCss, injectHostTheme, readHostVar } from './reportTheme';
+import { buildHostThemeCss, dirnameOf, injectHostTheme, readHostVar } from './reportTheme';
 
 export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
@@ -32,10 +32,22 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
 
   // 注入放在普通 effect 里而不是 useMemo：主题切换时 data-theme 由
   // ThemeApplier 的 layout effect 写入，渲染期间读 getComputedStyle 会读到旧值。
+  // injectHostTheme 因为要 await file.readBytes 内联本地图片，是 async 的 ——
+  // 切 tab / 快速切主题时可能有多个调用同时在飞，cancelled 守卫保证只有最后一次
+  // 触发的调用能写 setSrcDoc，过期的结果落地时静默丢弃。
   useEffect(() => {
     if (html === null) { setSrcDoc(null); return; }
-    setSrcDoc(injectHostTheme(html, buildHostThemeCss(readHostVar)));
-  }, [html, theme, readingFontSize]);
+    let cancelled = false;
+    injectHostTheme(html, buildHostThemeCss(readHostVar), dirnameOf(tab.path))
+      .then((doc) => { if (!cancelled) setSrcDoc(doc); })
+      .catch((err: Error) => {
+        // inlineLocalImages 内部已经把单张图的失败兜成 rejected 分支，不会走到这里；
+        // 这里只是防御性兜底 —— 万一真的抛了，也不能让报告卡在「加载中」。
+        console.error('inject host theme failed', err);
+        if (!cancelled) setSrcDoc(html);
+      });
+    return () => { cancelled = true; };
+  }, [html, theme, readingFontSize, tab.path]);
 
   // 打开报告后不必先点一下页面，方向键就能翻节：主动把焦点交给 iframe 元素。
   // 依赖里必须有 isActive：tab 是保持挂载、用 display 切换可见的（MainPane.tsx），

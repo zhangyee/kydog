@@ -60,7 +60,7 @@ export function buildHostThemeCss(read: (name: string) => string): string {
  *
  * 只在渲染进程可用（vitest 是 node 环境，没有 DOMParser），因此本函数由 e2e 覆盖。
  */
-export function injectHostTheme(html: string, css: string): string {
+export async function injectHostTheme(html: string, css: string, baseDir: string): Promise<string> {
   const doc = new DOMParser().parseFromString(html, 'text/html');
 
   // srcdoc 文档的 base URL 继承自宿主，导致 href="#x" 解析成 <宿主URL>#x，
@@ -84,7 +84,152 @@ export function injectHostTheme(html: string, css: string): string {
   style.id = 'kydog-host-theme';
   style.textContent = css;
   doc.head.append(style);
+
+  // 本地图片内联（Task 7b）：CSP 是 `img-src data:`，报告不能自带外部 / 相对 URL 的图。
+  // 复用上面已经解析好的 doc，别再 parse 一遍。
+  await inlineLocalImages(doc, baseDir);
+
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+// ── 本地图片内联 ──
+//
+// 背景：C.4 允许报告插原图，B.1 给了严格 CSP（img-src data:）。两条合起来意味着
+// agent 得自己把图片 base64 打进 HTML —— 一张 100KB 图约 13 万字符、几万 token，
+// 还极易出错。改成查看器渲染时内联：报告写相对路径 <img src="figs/a.png">，
+// 这里读文件转 data URI 写回去。agent 一个 base64 字符都不用打，CSP 一个字都不用放宽。
+//
+// 安全边界（路径来自报告内容，报告可能不是本会话生成的，需当不可信输入处理）：
+//   1. 只认报告文件所在目录树内的路径，逃出的（`../`、绝对路径、盘符、反斜杠）拒绝
+//   2. 扩展名白名单：png/jpg/jpeg/gif/webp
+//   3. 单张 8MB、全篇合计 24MB 上限（srcdoc 是一个字符串，太大拖垮 iframe 解析）
+// 三道任一没过，或读文件失败（不存在/无权限），都退化成「移除 src、标 rejected、
+// 保留 alt」——显示成 alt 文字而不是坏图标，且不能让整份报告渲染失败。
+
+/** 白名单扩展名 → MIME，大小写不敏感（比较前调用方会 toLowerCase）。 */
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+};
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;        // 单张上限
+const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024; // 全篇合计上限
+
+/**
+ * 从报告文件的绝对路径推出它所在的目录（内联图片的 baseDir）。
+ *
+ * 不用 node:path：渲染进程 contextIsolation:true / nodeIntegration:false，
+ * node 内置模块在这里不可用（见 main.ts webPreferences）。tab.path 在不同平台
+ * 可能用 '/' 或 '\'，两种分隔符都认。
+ */
+export function dirnameOf(filePath: string): string {
+  const idx = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  return idx === -1 ? '' : filePath.slice(0, idx);
+}
+
+/**
+ * 把报告里 <img src> 的相对路径解析到磁盘绝对路径，同时做安全校验。
+ * 通过 → 绝对路径；被拒（逃出 baseDir / 扩展名不认）→ null。
+ *
+ * 手写而不是 node:path.resolve + 事后判断是否在 baseDir 下：一是渲染进程没有
+ * node 内置模块（同 dirnameOf），二是逐段吃掉 `..` 能在跳出 baseDir 的那一刻
+ * 就地拒绝，语义比「拼完整路径再用字符串前缀判断逃逸」更直接、更不容易在
+ * 边界情况（如 baseDir 恰好是另一路径的前缀）上出错。
+ */
+export function resolveInlineTarget(baseDir: string, src: string): string | null {
+  // 反斜杠 / 前导斜杠 / windows 盘符：都是逃逸或非相对路径的信号，一律拒绝。
+  // 报告里的 src 应该只用 '/' 写相对路径，没有合法场景需要反斜杠。
+  if (!src || src.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(src) || src.includes('\\')) {
+    return null;
+  }
+
+  const dot = src.lastIndexOf('.');
+  const ext = dot >= 0 ? src.slice(dot + 1).toLowerCase() : '';
+  if (!(ext in IMAGE_MIME_BY_EXT)) return null;
+
+  const segments: string[] = [];
+  for (const part of src.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (segments.length === 0) return null; // 逃出 baseDir
+      segments.pop();
+    } else {
+      segments.push(part);
+    }
+  }
+  if (segments.length === 0) return null;
+
+  const sep = baseDir.includes('\\') && !baseDir.includes('/') ? '\\' : '/';
+  const normalizedBase = baseDir.replace(/[\\/]+$/, '');
+  return `${normalizedBase}${sep}${segments.join(sep)}`;
+}
+
+/**
+ * Uint8Array → base64。分块喂 String.fromCharCode 而不是一次性 apply：
+ * 单张图可以到 MAX_IMAGE_BYTES（8MB），一次性展开成函数实参会撑爆调用栈。
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+/**
+ * 从已解析的报告 document 里挑出「本地图片」候选：有非空 src，且不是已经内联的
+ * data: 或会被 CSP 拦下的 http(s):（留着不动，让它退化成坏图标即可，改了反而
+ * 可能掩盖作者的意图）。
+ *
+ * 依赖 DOMParser 产出的 document，vitest 的 node 环境没有 DOMParser/jsdom，
+ * 因此这个函数不参与单测，由 e2e/46-html-tab.spec.ts 覆盖；resolveInlineTarget /
+ * dirnameOf / bytesToBase64 等不碰 DOM 的纯逻辑单独测（见 reportTheme.test.ts）。
+ */
+export function collectLocalImageSrcs(doc: Document): HTMLImageElement[] {
+  return Array.from(doc.querySelectorAll<HTMLImageElement>('img[src]')).filter((img) => {
+    const src = img.getAttribute('src') ?? '';
+    return src !== '' && !/^data:/i.test(src) && !/^https?:/i.test(src);
+  });
+}
+
+/** 拒绝时的退化：去掉 src、标记 rejected，保留 alt —— 显示成 alt 文字而不是坏图标。 */
+function rejectLocalImage(img: HTMLImageElement): void {
+  img.removeAttribute('src');
+  img.setAttribute('data-kydog-inline', 'rejected');
+}
+
+/**
+ * 把 doc 里符合条件的本地图片就地替换成 data URI；不满足任一安全边界或读取失败的
+ * 都走 rejectLocalImage，不抛出 —— 一张图出问题不该拖垮整份报告的渲染。
+ */
+async function inlineLocalImages(doc: Document, baseDir: string): Promise<void> {
+  let totalBytes = 0;
+  for (const img of collectLocalImageSrcs(doc)) {
+    const src = img.getAttribute('src') ?? '';
+    const resolved = resolveInlineTarget(baseDir, src);
+    if (resolved === null) {
+      rejectLocalImage(img);
+      continue;
+    }
+    try {
+      const { bytes } = await window.kydog.invoke('file.readBytes', { path: resolved });
+      if (bytes.length > MAX_IMAGE_BYTES || totalBytes + bytes.length > MAX_TOTAL_IMAGE_BYTES) {
+        console.warn(`[kydog] 图片超出内联体积上限，退化为 alt 文字：${resolved}`);
+        rejectLocalImage(img);
+        continue;
+      }
+      totalBytes += bytes.length;
+      const ext = src.slice(src.lastIndexOf('.') + 1).toLowerCase();
+      img.setAttribute('src', `data:${IMAGE_MIME_BY_EXT[ext]};base64,${bytesToBase64(bytes)}`);
+    } catch (err) {
+      console.warn(`[kydog] 读取图片失败，退化为 alt 文字：${resolved}`, err);
+      rejectLocalImage(img);
+    }
+  }
 }
 
 /** 从宿主根元素读一个自定义属性的计算值。 */

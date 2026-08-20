@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { HOST_THEME_VARS, NOT_FORWARDED_VARS, HOST_SIZE_VARS, buildHostThemeCss } from './reportTheme';
+import {
+  HOST_THEME_VARS, NOT_FORWARDED_VARS, HOST_SIZE_VARS, buildHostThemeCss,
+  resolveInlineTarget, dirnameOf, bytesToBase64,
+} from './reportTheme';
 
 /** 抓出 vellum.css 里声明过的全部自定义属性名。 */
 function declaredVars(): Set<string> {
@@ -52,5 +55,64 @@ describe('buildHostThemeCss', () => {
   it('覆盖主题变量与字号变量两组', () => {
     const css = buildHostThemeCss(() => 'V');
     for (const v of [...HOST_THEME_VARS, ...HOST_SIZE_VARS]) expect(css).toContain(`${v}: V;`);
+  });
+});
+
+// 本地图片内联（Task 7b）：DOM 遍历部分（collectLocalImageSrcs / inlineLocalImages）依赖
+// DOMParser，vitest 是 node 环境没有 DOMParser/jsdom，不参与单测、由 e2e/46-html-tab.spec.ts
+// 覆盖。这里只测能在纯 node 里跑的字符串 / 字节逻辑：路径解析 + 白名单 + base64。
+describe('resolveInlineTarget', () => {
+  const base = '/proj';
+  it('相对路径解析到 base 下', () => {
+    expect(resolveInlineTarget(base, 'figs/a.png')).toBe('/proj/figs/a.png');
+  });
+  it('逃出 base 的一律拒绝', () => {
+    expect(resolveInlineTarget(base, '../secrets.png')).toBe(null);
+    expect(resolveInlineTarget(base, 'a/../../x.png')).toBe(null);
+    expect(resolveInlineTarget(base, '/etc/passwd.png')).toBe(null);
+  });
+  it('不认的扩展名拒绝', () => {
+    expect(resolveInlineTarget(base, 'a.svg.txt')).toBe(null);
+    expect(resolveInlineTarget(base, 'a.exe')).toBe(null);
+  });
+  it('认 png/jpg/jpeg/gif/webp，大小写不敏感', () => {
+    for (const f of ['a.png', 'a.JPG', 'a.jpeg', 'a.gif', 'a.webp']) {
+      expect(resolveInlineTarget(base, f)).not.toBe(null);
+    }
+  });
+  it('反斜杠视为逃逸手段一律拒绝（渲染进程没有 node:path 去规范化它）', () => {
+    expect(resolveInlineTarget(base, 'a\\..\\..\\x.png')).toBe(null);
+  });
+  it('windows 盘符绝对路径拒绝', () => {
+    expect(resolveInlineTarget(base, 'C:\\x.png')).toBe(null);
+  });
+});
+
+describe('dirnameOf', () => {
+  it('unix 路径取目录部分', () => {
+    expect(dirnameOf('/a/b/report.html')).toBe('/a/b');
+  });
+  it('windows 路径也支持（tab.path 在 windows 上可能是反斜杠）', () => {
+    expect(dirnameOf('C:\\a\\b\\report.html')).toBe('C:\\a\\b');
+  });
+  it('没有目录部分时返回空串', () => {
+    expect(dirnameOf('report.html')).toBe('');
+  });
+});
+
+describe('bytesToBase64', () => {
+  it('编码结果与 btoa 对纯文本字符串的结果一致', () => {
+    const bytes = new Uint8Array([72, 101, 108, 108, 111]); // "Hello"
+    expect(bytesToBase64(bytes)).toBe(btoa('Hello'));
+  });
+  it('空数组编码为空串', () => {
+    expect(bytesToBase64(new Uint8Array())).toBe('');
+  });
+  it('跨分块边界（> 0x8000 字节）依然编码正确', () => {
+    const bytes = new Uint8Array(0x8000 + 10).fill(65); // 全 'A'
+    const decoded = atob(bytesToBase64(bytes));
+    expect(decoded.length).toBe(bytes.length);
+    expect(decoded[0]).toBe('A');
+    expect(decoded[decoded.length - 1]).toBe('A');
   });
 });
