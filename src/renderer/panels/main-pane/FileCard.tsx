@@ -1,14 +1,16 @@
 import { useUiStore } from '../../stores/uiStore';
 import { NavIcon } from '../../shared';
-import { fileTitle } from './markdown/fileTabHelpers';
-import { relativePrefix, formatBytes } from './fileCards';
+import { fileTitle, isHtmlPath } from './markdown/fileTabHelpers';
+import { relativePrefix, fileCardMeta } from './fileCards';
 
 type Props = { path: string; projectPath: string | null; size: number | null };
 
 export function FileCard({ path, projectPath, size }: Props) {
   const openFile = useUiStore((s) => s.openFile);
   const prefix = relativePrefix(projectPath, path);
-  const meta = size === null ? 'Markdown 文档' : `Markdown 文档 · ${formatBytes(size)}`;
+  const meta = fileCardMeta(path, size);
+  // 图标与 TabStrip 的 KIND_ICON 对齐：点开这张卡片开出来的就是那种 tab
+  const icon = isHtmlPath(path) ? 'file-diff' : 'file-text';
   return (
     <button
       type="button"
@@ -38,7 +40,7 @@ export function FileCard({ path, projectPath, size }: Props) {
           transformOrigin: 'center bottom',
         }}
       >
-        <NavIcon name="file-text" size={24} />
+        <NavIcon name={icon} size={24} />
       </span>
 
       {/* 文本区：左侧让出图标宽度 */}

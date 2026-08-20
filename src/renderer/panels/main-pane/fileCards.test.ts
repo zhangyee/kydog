@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AssistantBlock } from '../../../shared/types';
-import { resolveAgainst, collectFileCards, relativePrefix, formatBytes } from './fileCards';
+import { resolveAgainst, collectFileCards, relativePrefix, formatBytes, fileCardMeta } from './fileCards';
 
 function writeTool(args: Record<string, unknown>, status: 'ok' | 'failed' | 'running' = 'ok'): Extract<AssistantBlock, { kind: 'tool_call' }> {
   return { kind: 'tool_call', id: 'tc-1', name: 'write', command: JSON.stringify(args), chunks: [], status };
@@ -35,6 +35,42 @@ describe('resolveAgainst', () => {
   });
   it('rawPath 为空 → null', () => {
     expect(resolveAgainst('/proj', '')).toBe(null);
+  });
+  it('折叠 ./ —— 否则和 watcher 发的路径对不上，自动重载静默失效', () => {
+    expect(resolveAgainst('/proj', './report.html')).toBe('/proj/report.html');
+    expect(resolveAgainst('/proj', 'sub/./a/./foo.md')).toBe('/proj/sub/a/foo.md');
+  });
+  it('折叠 ../', () => {
+    expect(resolveAgainst('/proj', 'sub/../report.html')).toBe('/proj/report.html');
+    expect(resolveAgainst('/proj', '../sibling/foo.md')).toBe('/sibling/foo.md');
+  });
+  it('折叠重复分隔符', () => {
+    expect(resolveAgainst('/proj', 'sub//foo.md')).toBe('/proj/sub/foo.md');
+  });
+  it('绝对路径同样归一化', () => {
+    expect(resolveAgainst('/proj', '/abs/./sub/../foo.md')).toBe('/abs/foo.md');
+  });
+  it('根之上的 .. 被丢弃，不会跑到根外面', () => {
+    expect(resolveAgainst(null, '/../../foo.md')).toBe('/foo.md');
+  });
+  it('Windows 路径归一化保留反斜杠与盘符', () => {
+    expect(resolveAgainst('C:\\proj', '.\\sub\\..\\foo.md')).toBe('C:\\proj\\foo.md');
+  });
+});
+
+describe('fileCardMeta', () => {
+  it('.md → Markdown 文档', () => {
+    expect(fileCardMeta('/p/a.md', 1024)).toBe('Markdown 文档 · 1.0 KB');
+  });
+  it('.html → HTML 报告', () => {
+    expect(fileCardMeta('/p/learning-deck-x-2026-08-20.html', 56320)).toBe('HTML 报告 · 55 KB');
+  });
+  it('.htm 与大小写同样认作 HTML 报告', () => {
+    expect(fileCardMeta('/p/a.HTM', null)).toBe('HTML 报告');
+  });
+  it('size 为 null（edit 产出）只留类型，不留一个空的体积位', () => {
+    expect(fileCardMeta('/p/a.html', null)).toBe('HTML 报告');
+    expect(fileCardMeta('/p/a.md', null)).toBe('Markdown 文档');
   });
 });
 
@@ -149,7 +185,7 @@ describe('collectFileCards', () => {
     const blocks = [editTool({ path: 'r.html', edits: [{ oldText: 'a', newText: 'b' }] }, 'failed')];
     expect(collectFileCards(blocks, '/proj')).toEqual([]);
   });
-  it('write 与 edit 命中同一路径时按首次出现排序、只一张卡片', () => {
+  it('write 与 edit 命中同一路径时只一张卡片，体积保留 write 拿到的那个', () => {
     const blocks = [
       writeTool({ file_path: 'r.html', content: 'x' }),
       editTool({ path: 'r.html', edits: [{ oldText: 'a', newText: 'b' }] }),

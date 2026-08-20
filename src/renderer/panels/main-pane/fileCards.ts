@@ -1,4 +1,5 @@
 import type { AssistantBlock } from '../../../shared/types';
+import { isHtmlPath } from './markdown/fileTabHelpers';
 
 type ToolBlock = Extract<AssistantBlock, { kind: 'tool_call' }>;
 
@@ -6,13 +7,37 @@ export type FileCardEntry = { path: string; size: number | null };
 
 const isAbsolute = (p: string): boolean => p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);
 
+/**
+ * 折叠 `.` / `..` 与重复分隔符。
+ *
+ * agent 完全可能写 `edit { path: "./report.html" }`：不折叠的话卡片路径是
+ * `/proj/./report.html`，而 watcher 发的 `file.changed` 带的是
+ * `/proj/report.html` —— 两串对不上，自动重载静默不触发；文件树双击还会
+ * 因为 tab id 不同再开一个 tab，同一个文件出现两份。
+ */
+function normalizePath(p: string): string {
+  const sep = p.includes('\\') ? '\\' : '/';
+  const rootMatch = /^(\\\\|\/|[A-Za-z]:[\\/])/.exec(p);
+  const root = rootMatch ? rootMatch[0] : '';
+  const out: string[] = [];
+  for (const seg of p.slice(root.length).split(/[\\/]/)) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (out.length > 0 && out[out.length - 1] !== '..') { out.pop(); continue; }
+      if (root !== '') continue; // 已经在根上，`/..` 没有意义
+    }
+    out.push(seg);
+  }
+  return root + out.join(sep);
+}
+
 export function resolveAgainst(projectPath: string | null, rawPath: string): string | null {
   if (!rawPath) return null;
-  if (isAbsolute(rawPath)) return rawPath;
+  if (isAbsolute(rawPath)) return normalizePath(rawPath);
   if (!projectPath) return null;
   const sep = projectPath.includes('\\') ? '\\' : '/';
   const root = projectPath.endsWith(sep) ? projectPath.slice(0, -1) : projectPath;
-  return `${root}${sep}${rawPath}`;
+  return normalizePath(`${root}${sep}${rawPath}`);
 }
 
 function extractWrite(tool: ToolBlock): { raw: string; size: number | null } | null {
@@ -83,6 +108,18 @@ export function relativePrefix(projectPath: string | null, absPath: string): str
   const rel = absPath.slice(root.length + sep.length);
   const lastSep = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
   return lastSep < 0 ? '' : rel.slice(0, lastSep + 1);
+}
+
+/**
+ * 卡片副标题：类型 + 体积。
+ *
+ * 白名单里有 .md 和 .html 两类，文案必须跟着后缀走 —— learning-deck 报告是
+ * `cp` 模板再 `edit` 产出的，`edit` 拿不到内容、size 恒为 null，卡片上只剩
+ * 这一句类型文案，写错就是一张写着「Markdown 文档」的 HTML 报告卡片。
+ */
+export function fileCardMeta(path: string, size: number | null): string {
+  const kind = isHtmlPath(path) ? 'HTML 报告' : 'Markdown 文档';
+  return size === null ? kind : `${kind} · ${formatBytes(size)}`;
 }
 
 export function formatBytes(n: number): string {
