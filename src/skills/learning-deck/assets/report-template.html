@@ -82,7 +82,12 @@ html {
 
 body {
   margin: 0;
-  padding: 2.5rem 1.25rem 6rem;
+  /* padding 归零，全部边距交给 .deck —— 否则 body 的这层 padding 会叠在 .deck 的
+     32px / 88px 上（v1 留下的 2.5rem 1.25rem 6rem 曾让实际边距变成约 72px / 108px），
+     「与 Markdown tab 对齐」就只是注释里的说法，量出来对不上。
+     body 里除了 .deck 只有那条 .progress 进度条，归零后它变成通栏、且 sticky 到
+     视口最顶，比缩进 20px 更像一条进度条。 */
+  padding: 0;
   background: var(--paper, #faf8f3);
   color: var(--ink, #2a2620);
   font-family: var(--font-serif, Georgia, "Songti SC", serif);
@@ -93,9 +98,19 @@ body {
 
 /* 与 Markdown tab 的 .ProseMirror 对齐（markdown-editor.css:43 的
    padding: 32px 88px 120px），让同一个主内容区里的两种文件看起来是一套东西。
+   上面 body 的 padding 已经归零，所以这里写的 32/88/120 就是实际边距。
    代价：宽窗口下一行会到 70+ 汉字。这是刻意的产品决定，不是漏了 max-width。 */
 .deck {
   padding: 32px 88px 120px;
+}
+
+/* 窄窗口下 88px 的左右留白会把版心挤没（Markdown tab 那 88px 是留给块手柄的，
+   报告没有块手柄，窄了就没有保留的理由）。放在这里而不是文件末尾：@media print
+   那一段在后面，同一优先级下后来者赢，打印时仍然由那边的 .deck { padding: 0 } 说了算。 */
+@media (max-width: 60em) {
+  .deck {
+    padding: 32px 24px 120px;
+  }
 }
 
 /* 锚点跳转后标题不贴屏幕顶 */
@@ -412,13 +427,33 @@ code, .formula {
   margin-bottom: 0;
 }
 
-.example .tag {
+.example .tag,
+.pointer .tag {
   display: block;
   font-family: var(--font-sans, sans-serif);
   font-size: .78em;
   letter-spacing: .08em;
   color: var(--ink-faint, #76706c);
   margin-bottom: .3em;
+}
+
+/* 指路卡片：原图取不到、或当前模型看不见图时，用它指向原文的那张图
+   （用法见 references/figures.md）。
+
+   ⚠️ 它跟 .example 长得像，但**必须用自己的 class**：references/writing.md 第 4 条
+   的例子闸门数的是 `class="example` 的个数，而指路卡片恰恰是「具体例子」的反面——
+   一张只有一句话加一个 DOI 的卡片不能拿来充数。虚线边框也是在视觉上说同一件事：
+   这里没有内容，只有一个去处。 */
+.pointer {
+  border: 1px dashed var(--ink-hair, #c9c3be);
+  border-radius: 6px;
+  padding: .8em 1em;
+  margin: 1.4em 0;
+  color: var(--ink-soft, #47413c);
+}
+
+.pointer > :last-child {
+  margin-bottom: 0;
 }
 
 /* 常见误解与边界 */
@@ -708,6 +743,17 @@ figure svg {
   height: auto;
 }
 
+/* 内嵌的原文插图（<img src="papers/…">，查看器渲染时会内联成 data URI）。
+   跟 figure svg 同款：跟着容器缩放，不按自然像素铺开。少了这条，
+   pdf_page_png 转出来的图（默认 scale: 2，像素是预期的两倍）会按自然宽度渲染，
+   撑破 figure 的 max-width: 56em 和 .deck，整份报告出横向滚动条。
+   有了这条，报告里的 <img> 就不需要写任何行内 style —— 别再往正文里加。 */
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 figcaption {
   margin-top: .6em;
   font-family: var(--font-sans, sans-serif);
@@ -728,13 +774,19 @@ figcaption b {
 /* SVG 里的共用件。
    ⚠️ viewBox 宽 640 时 font-size 不得低于 10 —— SVG 是跟着容器缩放的，缩放比
       = 实际渲染宽度 / 640。.deck 现在不锁宽（padding: 32px 88px 120px，
-      图另有 max-width: 56em 自己的上限），实测 900/1280/1680/2200px 四档
-      窗口宽度、13.5/15/17px 三档阅读字号，最窄的组合（900px 窗口 + 17px
-      阅读字号）缩放比约 1.065，此时 10 渲染出来约 10.7px；窗口更宽时图撞到
-      56em 的上限，缩放比最高约 1.49（≥1280px 窗口 + 17px 阅读字号）。
-      也就是说新容器下缩放比恒大于 1（图被放大，不再被缩小），旧版为了扛住
-      0.8 缩放比而把图内字号统一上调约 1.3 倍的补丁不再需要，这里已经改回
-      上调前的原始数值；画新图照抄这里的数就行，别自己往下压到 10 以下。
+      图另有 max-width: 56em 自己的上限）。
+      **实测过的区间只有 900/1280/1680/2200px 四档窗口宽度 × 13.5/15/17px 三档
+      阅读字号**：这十二种组合里缩放比落在约 1.065（900px 窗口 + 17px 阅读字号，
+      10 渲染出来约 10.7px）到约 1.49（≥1280px 窗口 + 17px，图撞到 56em 上限）之间，
+      都大于 1，也就是图被放大、不会被缩小。旧版为了扛住 0.8 缩放比而把图内字号
+      统一上调约 1.3 倍的补丁在这个区间里不再需要，这里已经改回上调前的原始数值。
+      **900px 以下没有实测**，ledger 里记着 600–800px 会让缩放比跌破 1（图被缩小，
+      10 号字渲染出来不到 10px）—— 别把「缩放比恒大于 1」当成无条件成立的结论。
+      上面那条 @media (max-width: 60em) 把窄窗口的左右留白从 88px 收到 24px，
+      同样宽度下图更宽一些，但没有改变「更窄的窗口没实测过」这件事。
+      另：这十二组数是在 body 还带着 1.25rem 横向 padding 时量的，现在 body 归零、
+      同一窗口宽度下图更宽，缩放比只会比上面的数更大 —— 记着的这些是下界。
+      画新图照抄这里的数就行，别自己往下压到 10 以下。
    ⚠️ 画新图时颜色一律用这里的 class，不要写成 fill="…" / stroke="…" 属性：
       属性虽然也能被样式表盖住，但只有集中成 class，下面第 4 组的打印兜底
       才能把它们一条条登记清楚。唯一的例外是 fill="url(#…)" 这种指向
@@ -860,6 +912,12 @@ figcaption b {
 
   .example {
     border: 1px solid #000;
+  }
+
+  /* 指路卡片保留虚线（它在说「这里只是个去处」），只把颜色换成打印安全的纯黑。 */
+  .pointer {
+    border-color: #000;
+    color: #000;
   }
 
   .wrapup,

@@ -5,8 +5,8 @@
 样式一个字都不要改。
 
 **不要自己造 class。** 模板里没有的 class 名不会有任何样式，写出来就是一段裸文字，
-而且**不报错**。同理不要给正文加行内 `style`（唯一的例外见 `references/figures.md` 里
-内嵌 `<img>` 那一处）。
+而且**不报错**。同理**不要给正文加行内 `style`**——没有例外：连内嵌原图的 `<img>` 也不用，
+模板里的 `figure img` 已经管好了缩放。
 
 ---
 
@@ -155,6 +155,9 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 - `.checkout` 的问题要**具体到能被回答**（「那个 √(1-β_t) 的缩放是干什么用的」），
   不是「你理解本节内容了吗」。
 - `.example` 里装什么，见 `references/writing.md` 第 4 条——那是全篇最容易敷衍的一处。
+- `.pointer` 指路卡片（结构同 `.example`：`span.tag` + 一段话 + 外链）只在**取不到原图、
+  或当前模型看不见图**时用，指向原文那张图。**它不是 `.example`**，也不能拿来满足
+  「每节至少一个例子」那条闸门——用法见 `references/figures.md`。
 
 ### 行内的两个
 
@@ -193,6 +196,8 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 ## 交付前自检
 
 **固定用 `grep`。KyDog 不打包 ripgrep，`rg` 一定返回 127**，跑三次也一样。
+（系统提示词那句「用 bash 做 ls / rg / find」已经从源头改成 `grep`，见
+`src/main/agent/systemPrompt.ts`；这条仍然写在这里，因为模型也可能自己想用 `rg`。）
 下面这份照抄，把 `报告.html` 换成实际文件名，**不要即兴发挥**：
 
 ```bash
@@ -214,7 +219,9 @@ grep -n '<script' 报告.html
 
 # 4. 外部资源 —— 判据同 #1：命中只应落在文件头注释里
 grep -n 'src="http\|@import\|url(http\|fonts.googleapis\|cdn\.\|unpkg\|fetch(\|XMLHttpRequest\|WebSocket' 报告.html
-#   模板自带 4 处命中，都在文件头硬约束第 2 条里 —— 那段话本身就在列举这些词，不是违规。
+#   模板自带 4 处命中，都在文件头的硬约束注释里：三处在第 2 条（它本身就在列举
+#   CDN / @import / img src="http…" / fetch 这些词），一处在第 3 条（「把它当资源
+#   加载（img/link/@import）不允许」那句）。都不是违规。
 #   <body> 里应该 0 行。指向论文的 <a href="http…"> 是链接不是资源，合法（这条 grep
 #   也不查 href）；真出现在 img / link / @import / url() / 脚本里的，会被 CSP 拦掉，必须删。
 
