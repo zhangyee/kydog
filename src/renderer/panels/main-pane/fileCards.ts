@@ -16,9 +16,11 @@ const isAbsolute = (p: string): boolean => p.startsWith('/') || /^[A-Za-z]:[\\/]
  * 因为 tab id 不同再开一个 tab，同一个文件出现两份。
  */
 function normalizePath(p: string): string {
-  const sep = p.includes('\\') ? '\\' : '/';
   const rootMatch = /^(\\\\|\/|[A-Za-z]:[\\/])/.exec(p);
   const root = rootMatch ? rootMatch[0] : '';
+  // sep 必须从 root 推，不能看整串——否则 POSIX 路径里文件名字面带的反斜杠
+  // 会被误判成 Windows 分隔符，把绝对路径的分隔符整个改写掉。
+  const sep = root.includes('\\') || /^[A-Za-z]:/.test(root) ? '\\' : '/';
   const out: string[] = [];
   for (const seg of p.slice(root.length).split(/[\\/]/)) {
     if (seg === '' || seg === '.') continue;

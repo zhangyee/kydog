@@ -644,10 +644,10 @@ figcaption b {
    ⚠️ 画新图时颜色一律用这里的 class，不要写成 fill="…" / stroke="…" 属性：
       属性虽然也能被样式表盖住，但只有集中成 class，下面第 4 组的打印兜底
       才能把它们一条条登记清楚。唯一的例外是 fill="url(#…)" 这种指向
-      同文档 <pattern> / <marker> 的引用 —— 那种引用留在元素属性上最稳，
-      别为了「统一成 class」把它搬进样式表：样式表里的 url(#…) 要拿文档
-      base URL 去解析，而报告在 app 里是 srcdoc 文档，base 由查看器另外
-      钉住（见 reportTheme.ts），这条链上任何一环变了都会静默失效。 */
+      同文档 <pattern> / <marker> 的引用 —— 那种引用留在元素属性上最稳：
+      presentation attribute 的优先级低于任何 CSS 规则，下面第 4 组
+      打印兜底的那组 class 化 fill 能自动盖住它；一旦把 pattern 引用也
+      做成 class，打印块就得逐条登记，漏一个就会静默把噪声底纹印出来。 */
 .svg-label {
   font-family: var(--font-sans, sans-serif);
   fill: var(--ink-soft, #47413c);
@@ -935,13 +935,13 @@ figcaption b {
       <!-- 图例的色块直接套节点那套 class，样式不会和节点走偏，打印兜底也一并覆盖 -->
       <g class="legend" transform="translate(20, 306)">
         <g class="node n-known"><rect x="0" y="0" width="14" height="14" rx="3"/></g>
-        <text class="svg-label-faint" x="20" y="11" font-size="14">你已掌握</text>
+        <text class="svg-label-faint" x="20" y="12" font-size="14">你已掌握</text>
 
         <g class="node n-focus"><rect x="110" y="0" width="14" height="14" rx="3"/></g>
-        <text class="svg-label-faint" x="130" y="11" font-size="14">要重点补</text>
+        <text class="svg-label-faint" x="130" y="12" font-size="14">要重点补</text>
 
         <g class="node n-brief"><rect x="220" y="0" width="14" height="14" rx="3"/></g>
-        <text class="svg-label-faint" x="240" y="11" font-size="14">一句话带过</text>
+        <text class="svg-label-faint" x="240" y="12" font-size="14">一句话带过</text>
       </g>
     </svg>
     <figcaption>

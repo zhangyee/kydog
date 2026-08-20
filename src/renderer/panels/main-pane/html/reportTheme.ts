@@ -57,7 +57,7 @@ export function injectHostTheme(html: string, css: string): string {
   // 导航到宿主页面）。钉死 base 才能让 #锚点 成为同文档片段导航。
   // 顺带把任意来路 .html 里的相对 URL 也钉在 about:srcdoc 上，它们本来会
   // 解析到宿主页面路径，既没用又是一次多余的本地请求。
-  if (!doc.querySelector('base')) {
+  if (!doc.querySelector('base[href]')) {
     const base = doc.createElement('base');
     base.href = 'about:srcdoc';
     doc.head.prepend(base);

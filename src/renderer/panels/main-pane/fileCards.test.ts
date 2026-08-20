@@ -56,6 +56,9 @@ describe('resolveAgainst', () => {
   it('Windows 路径归一化保留反斜杠与盘符', () => {
     expect(resolveAgainst('C:\\proj', '.\\sub\\..\\foo.md')).toBe('C:\\proj\\foo.md');
   });
+  it('POSIX 根路径下字面反斜杠不会被误当成 Windows 分隔符改写', () => {
+    expect(resolveAgainst(null, '/proj/a\\b.md')).toBe('/proj/a/b.md');
+  });
 });
 
 describe('fileCardMeta', () => {
