@@ -180,14 +180,17 @@ code, .formula {
   margin: 0;
 }
 
-/* 地图节点是页内锚点，兼作导航；三色对应 已掌握 / 要重点补 / 一句话带过 */
-.map .node text,
-.map .legend text {
+/* 地图节点是页内锚点，兼作导航；三色对应 已掌握 / 要重点补 / 一句话带过。
+   这两条基线规则包在 :where() 里把特异度压到 (0,0,1)，否则
+   `.map .node text` 是 (0,2,1)，会静默吃掉节点里 .svg-label-faint 这类
+   单 class 修饰 —— 那种「同一个 class 在别处生效、在这里不生效」的坑
+   最难查。下面的 .n-known / .n-focus / .n-brief 变体照常盖住基线。 */
+:where(.map .node, .map .legend) text {
   font-family: var(--font-sans, sans-serif);
   fill: var(--ink, #2a2620);
 }
 
-.map .node rect {
+:where(.map .node) rect {
   fill: var(--paper-deep, #f0ece4);
   stroke: var(--ink-hair, #c9c3be);
   stroke-width: 1;
@@ -375,9 +378,14 @@ code, .formula {
    负 margin 比 width 大 2em，float 的 margin box 因此完全落在容器之外，
    正文行盒不被它挤窄 —— 34em 的行宽在两种形态下都成立。
 
-   断点为什么是 1180 而不是 1100：em 跟着 --reading-font-size 走，最大档 17px 时
-   34em = 578px、侧注要占 14em = 238px，加上 body 的 1.25rem 内边距与滚动条，
-   1100px 只剩 232px —— 差 6px，侧注会被挤出可视区。1180px 起三档字号都放得下。 */
+   断点为什么是 1180 而不是 1100：媒体查询里的 em 按初始字号 16px 算，看不见
+   --reading-font-size，所以断点只能按最坏情况（最大档 17px）取。17px 时
+   34em = 578px、侧注要占 14em = 238px；右边可用的横向空间是
+     (1100 − 15px 滚动条 − 2×1.25rem 内边距 − 578) / 2 + 1.25rem = 253px
+   （末项是 body 自己那条 padding-right —— 完全浮出容器的 float 正好能占用它）。
+   所以 1100px 其实放得下，只是仅余 15px：窗口略窄、滚动条略宽、或中文字体栈
+   落到更宽的一档都能吃掉它。同样算法下 1180px 得 293px，余 55px，
+   三档字号都从容。1180 是为了留余量，不是因为 1100 会溢出。 */
 
 .aside {
   margin: 1.4em 0;
@@ -552,7 +560,7 @@ code, .formula {
   margin-bottom: .8em;
 }
 
-.refs .doi {
+.refs .ref-link {
   font-family: var(--font-mono, Menlo, monospace);
   font-size: .85em;
   word-break: break-all;
@@ -617,7 +625,13 @@ figcaption b {
   page-break-inside: avoid;
 }
 
-/* SVG 里的共用件 */
+/* SVG 里的共用件。
+   ⚠️ 画新图时颜色一律用这里的 class，不要写成 fill="…" / stroke="…" 属性：
+      属性虽然也能被样式表盖住，但只有集中成 class，下面第 4 组的打印兜底
+      才能把它们一条条登记清楚。唯一的例外是 fill="url(#…)" 这种指向
+      同文档 <pattern> / <marker> 的引用 —— 它必须留在元素属性上，
+      因为样式表里的 url(#…) 会拿文档 base URL 去解析，而 srcdoc 文档的
+      base URL 是宿主页面，解析出来就不是本地引用了。 */
 .svg-label {
   font-family: var(--font-sans, sans-serif);
   fill: var(--ink-soft, #47413c);
@@ -641,6 +655,40 @@ figcaption b {
   fill: none;
   stroke: var(--ink-faint, #76706c);
   stroke-width: 1.3;
+}
+
+/* 实心方块（有底色的框） */
+.svg-box {
+  fill: var(--paper-deep, #f0ece4);
+  stroke: var(--ink-hair, #c9c3be);
+}
+
+/* 空心框 */
+.svg-frame {
+  fill: none;
+  stroke: var(--ink-hair, #c9c3be);
+}
+
+/* 加重的框：图里唯一想让人先看到的那个 */
+.svg-hi {
+  fill: var(--accent-soft, rgba(189, 66, 56, .14));
+  stroke: var(--accent, #bd4238);
+  stroke-width: 2;
+}
+
+/* 基准线 / 分隔线 */
+.svg-rule {
+  fill: none;
+  stroke: var(--ink-soft, #47413c);
+  stroke-width: 1.5;
+}
+
+.svg-fill-moss  { fill: var(--moss, #45674c); }
+.svg-fill-amber { fill: var(--amber, #a97d3a); }
+
+/* 噪声纹样里的一个点；疏密靠元素自带的 opacity 属性拉开 */
+.noise-dot {
+  fill: var(--ink-soft, #47413c);
 }
 
 /* ==========================================================================
@@ -717,6 +765,53 @@ figcaption b {
     color: #000;
   }
 
+  /* ---- SVG 打印兜底 ------------------------------------------------------
+     图里的颜色全绑在宿主注入的主题值上。宿主是 midnight 时 --ink-soft /
+     --ink-faint 是**浅色**，而上面已经把打印背景强制成 #fff —— 不兜底的话
+     整份报告的图会变成白底浅色，导出的 PDF 里几乎看不见。
+
+     前两条是**无条件兜底**，用 !important 盖过一切 class：任何人新画的 SVG
+     都自动拿到「文字全黑、线条全黑」，最坏情况是多一圈描边，绝不会隐身。
+     后面按 class 列的是「面」的回落（填充色没法一刀切，全填白会把剪影抹掉）。
+
+     ⚠️ 你新画的图如果引入了新的填充 class，必须回来在这一段登记一条，
+        否则那张图会重犯同一个洞 —— 而屏幕上完全看不出来。 */
+
+  svg text {
+    fill: #000 !important;
+  }
+
+  svg path,
+  svg rect,
+  svg circle,
+  svg ellipse,
+  svg line,
+  svg polyline,
+  svg polygon {
+    stroke: #000 !important;
+  }
+
+  /* 面：有底色的回落到白，靠描边与线型区分层级 */
+  .svg-box,
+  .svg-frame,
+  .svg-hi,
+  .map .node rect,
+  .map .n-brief rect {
+    fill: #fff;
+  }
+
+  /* 剪影保持实心，否则图 2 里那座山会整个消失 */
+  .svg-fill-moss,
+  .arrow-head,
+  .noise-dot {
+    fill: #000;
+  }
+
+  /* 压在剪影上的亮色元素反过来留白，才分得出前后 */
+  .svg-fill-amber {
+    fill: #fff;
+  }
+
   h2, h3 {
     break-after: avoid;
     page-break-after: avoid;
@@ -752,8 +847,13 @@ figcaption b {
   </p>
 
   <figure>
-    <svg viewBox="0 0 640 340" role="img" aria-label="扩散模型的知识依赖图：目标概念在顶层，依赖的概念在下面两层">
-      <title>扩散模型知识地图</title>
+    <!-- 这张图**不写** role="img"：role="img" 会把整个子树变成 presentational，
+         里面 6 个页内锚点对屏幕阅读器就消失了，而「节点兼作导航」正是知识地图的用处。
+         改用 <title> + <desc> 加 aria-labelledby 命名。
+         下面的图 2、图 3 是纯示意图、没有可点的东西，role="img" 才是对的。 -->
+    <svg viewBox="0 0 640 340" aria-labelledby="map-svg-title map-svg-desc">
+      <title id="map-svg-title">扩散模型知识地图</title>
+      <desc id="map-svg-desc">三层依赖图。顶层是扩散模型本身；第二层是前向加噪过程、反向去噪目标、采样调度与步数；第三层是马尔可夫链、高斯分布与重参数化、变分下界。加重的节点是本报告要补的知识点，每个节点都是可点的页内链接。</desc>
 
       <!-- 连线：目标 → 第二层 -->
       <path class="edge" d="M300 82 C 200 100, 130 110, 105 138"/>
@@ -799,13 +899,18 @@ figcaption b {
       </g>
 
       <!-- 第三层 -->
+      <!-- 「已掌握」的节点同样是锚点：读者未必真记得，链到术语表比留一个死框有用 -->
       <g class="node n-known">
-        <rect x="20" y="240" width="170" height="42" rx="5"/>
-        <text x="105" y="265" text-anchor="middle" font-size="13">马尔可夫链</text>
+        <a href="#g-markov">
+          <rect x="20" y="240" width="170" height="42" rx="5"/>
+          <text x="105" y="265" text-anchor="middle" font-size="13">马尔可夫链</text>
+        </a>
       </g>
       <g class="node n-known">
-        <rect x="235" y="240" width="170" height="42" rx="5"/>
-        <text x="320" y="265" text-anchor="middle" font-size="13">高斯分布 · 重参数化</text>
+        <a href="#g-reparam">
+          <rect x="235" y="240" width="170" height="42" rx="5"/>
+          <text x="320" y="265" text-anchor="middle" font-size="13">高斯分布 · 重参数化</text>
+        </a>
       </g>
       <g class="node n-brief">
         <a href="#primer">
@@ -815,18 +920,15 @@ figcaption b {
       </g>
 
       <!-- 图例 -->
+      <!-- 图例的色块直接套节点那套 class，样式不会和节点走偏，打印兜底也一并覆盖 -->
       <g class="legend" transform="translate(20, 306)">
-        <rect x="0" y="0" width="14" height="14" rx="3" fill="none"
-              stroke="var(--moss, #45674c)" stroke-width="1.5"/>
+        <g class="node n-known"><rect x="0" y="0" width="14" height="14" rx="3"/></g>
         <text class="svg-label-faint" x="20" y="11" font-size="11">你已掌握</text>
 
-        <rect x="110" y="0" width="14" height="14" rx="3"
-              fill="var(--accent-soft, rgba(189, 66, 56, .14))"
-              stroke="var(--accent, #bd4238)" stroke-width="2"/>
+        <g class="node n-focus"><rect x="110" y="0" width="14" height="14" rx="3"/></g>
         <text class="svg-label-faint" x="130" y="11" font-size="11">要重点补</text>
 
-        <rect x="220" y="0" width="14" height="14" rx="3" fill="none"
-              stroke="var(--ink-hair, #c9c3be)" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <g class="node n-brief"><rect x="220" y="0" width="14" height="14" rx="3"/></g>
         <text class="svg-label-faint" x="240" y="11" font-size="11">一句话带过</text>
       </g>
     </svg>
@@ -881,7 +983,8 @@ figcaption b {
     <dt>采样调度与步数</dt>
     <dd>
       前向每一步加多少噪声由一串预设的 <span class="formula">β₁…β_T</span> 决定，
-      这串数叫 noise schedule。它是超参不是学出来的，线性、余弦等几种排法效果差别明显。
+      这串数叫<a class="term" href="#g-schedule">噪声调度（noise schedule）</a>。
+      它是超参不是学出来的，线性、余弦等几种排法效果差别明显。
       反向采样步数可以少于 T，这是后来加速方法的入手点。
     </dd>
 
@@ -948,25 +1051,25 @@ figcaption b {
 
           <!-- 噪声：手排的一格纹样，平铺出颗粒感（纯声明式，无外部资源） -->
           <pattern id="ld-noise" width="24" height="24" patternUnits="userSpaceOnUse">
-            <rect x="2"  y="3"  width="3" height="3" fill="var(--ink-soft, #47413c)" opacity=".55"/>
-            <rect x="9"  y="1"  width="3" height="3" fill="var(--ink-faint, #76706c)" opacity=".8"/>
-            <rect x="18" y="5"  width="3" height="3" fill="var(--ink-soft, #47413c)" opacity=".35"/>
-            <rect x="5"  y="10" width="3" height="3" fill="var(--ink-faint, #76706c)" opacity=".65"/>
-            <rect x="14" y="12" width="3" height="3" fill="var(--ink-soft, #47413c)" opacity=".7"/>
-            <rect x="21" y="15" width="3" height="3" fill="var(--ink-faint, #76706c)" opacity=".45"/>
-            <rect x="1"  y="18" width="3" height="3" fill="var(--ink-soft, #47413c)" opacity=".5"/>
-            <rect x="11" y="20" width="3" height="3" fill="var(--ink-faint, #76706c)" opacity=".75"/>
-            <rect x="17" y="22" width="3" height="3" fill="var(--ink-soft, #47413c)" opacity=".4"/>
-            <rect x="7"  y="16" width="2" height="2" fill="var(--ink-faint, #76706c)" opacity=".6"/>
-            <rect x="20" y="9"  width="2" height="2" fill="var(--ink-soft, #47413c)" opacity=".6"/>
-            <rect x="13" y="6"  width="2" height="2" fill="var(--ink-faint, #76706c)" opacity=".5"/>
+            <rect x="2"  y="3"  width="3" height="3" class="noise-dot" opacity=".55"/>
+            <rect x="9"  y="1"  width="3" height="3" class="noise-dot" opacity=".8"/>
+            <rect x="18" y="5"  width="3" height="3" class="noise-dot" opacity=".35"/>
+            <rect x="5"  y="10" width="3" height="3" class="noise-dot" opacity=".65"/>
+            <rect x="14" y="12" width="3" height="3" class="noise-dot" opacity=".7"/>
+            <rect x="21" y="15" width="3" height="3" class="noise-dot" opacity=".45"/>
+            <rect x="1"  y="18" width="3" height="3" class="noise-dot" opacity=".5"/>
+            <rect x="11" y="20" width="3" height="3" class="noise-dot" opacity=".75"/>
+            <rect x="17" y="22" width="3" height="3" class="noise-dot" opacity=".4"/>
+            <rect x="7"  y="16" width="2" height="2" class="noise-dot" opacity=".6"/>
+            <rect x="20" y="9"  width="2" height="2" class="noise-dot" opacity=".6"/>
+            <rect x="13" y="6"  width="2" height="2" class="noise-dot" opacity=".5"/>
           </pattern>
 
           <!-- 「一张图」的示意信号：山 + 太阳，72×72 内 -->
           <g id="ld-signal">
-            <circle cx="52" cy="20" r="8" fill="var(--amber, #a97d3a)"/>
-            <path d="M6 62 L26 30 L40 48 L52 34 L66 62 Z" fill="var(--moss, #45674c)"/>
-            <path d="M6 62 H66" stroke="var(--ink-soft, #47413c)" stroke-width="1.5" fill="none"/>
+            <circle class="svg-fill-amber" cx="52" cy="20" r="8"/>
+            <path class="svg-fill-moss" d="M6 62 L26 30 L40 48 L52 34 L66 62 Z"/>
+            <path class="svg-rule" d="M6 62 H66"/>
           </g>
         </defs>
 
@@ -979,29 +1082,25 @@ figcaption b {
 
         <!-- 四个状态 -->
         <g>
-          <rect x="20" y="56" width="72" height="72" rx="4"
-                fill="var(--paper-deep, #f0ece4)" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="20" y="56" width="72" height="72" rx="4" class="svg-box"/>
           <use href="#ld-signal" transform="translate(20,56)"/>
           <text class="svg-label" x="56" y="146" text-anchor="middle" font-size="12">x₀ 原始数据</text>
         </g>
         <g>
-          <rect x="196" y="56" width="72" height="72" rx="4"
-                fill="var(--paper-deep, #f0ece4)" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="196" y="56" width="72" height="72" rx="4" class="svg-box"/>
           <use href="#ld-signal" transform="translate(196,56)" opacity=".65"/>
-          <rect x="196" y="56" width="72" height="72" rx="4" fill="url(#ld-noise)" opacity=".4"/>
+          <rect x="196" y="56" width="72" height="72" rx="4" class="svg-noise" fill="url(#ld-noise)" opacity=".4"/>
           <text class="svg-label" x="232" y="146" text-anchor="middle" font-size="12">x₁</text>
         </g>
         <g>
-          <rect x="372" y="56" width="72" height="72" rx="4"
-                fill="var(--paper-deep, #f0ece4)" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="372" y="56" width="72" height="72" rx="4" class="svg-box"/>
           <use href="#ld-signal" transform="translate(372,56)" opacity=".3"/>
-          <rect x="372" y="56" width="72" height="72" rx="4" fill="url(#ld-noise)" opacity=".75"/>
+          <rect x="372" y="56" width="72" height="72" rx="4" class="svg-noise" fill="url(#ld-noise)" opacity=".75"/>
           <text class="svg-label" x="408" y="146" text-anchor="middle" font-size="12">x₂</text>
         </g>
         <g>
-          <rect x="548" y="56" width="72" height="72" rx="4"
-                fill="var(--paper-deep, #f0ece4)" stroke="var(--ink-hair, #c9c3be)"/>
-          <rect x="548" y="56" width="72" height="72" rx="4" fill="url(#ld-noise)"/>
+          <rect x="548" y="56" width="72" height="72" rx="4" class="svg-box"/>
+          <rect x="548" y="56" width="72" height="72" rx="4" class="svg-noise" fill="url(#ld-noise)"/>
           <text class="svg-label" x="584" y="146" text-anchor="middle" font-size="12">x_T ≈ 纯噪声</text>
         </g>
         <text class="svg-label-faint" x="496" y="98" text-anchor="middle" font-size="18">⋯</text>
@@ -1114,7 +1213,7 @@ figcaption b {
     </p>
 
     <figure>
-      <svg viewBox="0 0 640 150" role="img"
+      <svg viewBox="0 0 640 164" role="img"
            aria-label="训练一步的流程：从数据采样、随机时间步、采噪声，合成 x_t 后送入网络，与真噪声比较">
         <title>扩散模型训练的一步</title>
 
@@ -1129,18 +1228,15 @@ figcaption b {
 
         <!-- 三个输入 -->
         <g>
-          <rect x="8" y="14" width="118" height="30" rx="4"
-                fill="none" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="8" y="14" width="118" height="30" rx="4" class="svg-frame"/>
           <text class="svg-label" x="67" y="33" text-anchor="middle" font-size="12">x₀ ~ 数据</text>
         </g>
         <g>
-          <rect x="8" y="56" width="118" height="30" rx="4"
-                fill="none" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="8" y="56" width="118" height="30" rx="4" class="svg-frame"/>
           <text class="svg-label" x="67" y="75" text-anchor="middle" font-size="12">t ~ U(1, T)</text>
         </g>
         <g>
-          <rect x="8" y="98" width="118" height="30" rx="4"
-                fill="none" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="8" y="98" width="118" height="30" rx="4" class="svg-frame"/>
           <text class="svg-label" x="67" y="117" text-anchor="middle" font-size="12">ε ~ N(0, I)</text>
         </g>
 
@@ -1150,8 +1246,7 @@ figcaption b {
 
         <!-- 合成 x_t -->
         <g>
-          <rect x="176" y="48" width="132" height="46" rx="4"
-                fill="var(--paper-deep, #f0ece4)" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="176" y="48" width="132" height="46" rx="4" class="svg-box"/>
           <text class="svg-label" x="242" y="66" text-anchor="middle" font-size="12">合成 x_t</text>
           <text class="svg-formula" x="242" y="83" text-anchor="middle" font-size="10">√ᾱ·x₀ + √(1-ᾱ)·ε</text>
         </g>
@@ -1160,9 +1255,7 @@ figcaption b {
 
         <!-- 网络 -->
         <g>
-          <rect x="358" y="48" width="120" height="46" rx="4"
-                fill="var(--accent-soft, rgba(189, 66, 56, .14))"
-                stroke="var(--accent, #bd4238)" stroke-width="2"/>
+          <rect x="358" y="48" width="120" height="46" rx="4" class="svg-hi"/>
           <text class="svg-label" x="418" y="66" text-anchor="middle" font-size="12">去噪网络</text>
           <text class="svg-formula" x="418" y="83" text-anchor="middle" font-size="10">ε_θ(x_t, t)</text>
         </g>
@@ -1171,8 +1264,7 @@ figcaption b {
 
         <!-- 损失 -->
         <g>
-          <rect x="528" y="48" width="104" height="46" rx="4"
-                fill="none" stroke="var(--ink-hair, #c9c3be)"/>
+          <rect x="528" y="48" width="104" height="46" rx="4" class="svg-frame"/>
           <text class="svg-label" x="580" y="66" text-anchor="middle" font-size="12">损失</text>
           <text class="svg-formula" x="580" y="83" text-anchor="middle" font-size="10">‖ε − ε_θ‖²</text>
         </g>
@@ -1180,7 +1272,7 @@ figcaption b {
         <!-- 真噪声回到损失 -->
         <path class="arrow-line" stroke-dasharray="4 3"
               d="M67 128 C 67 145, 400 145, 560 100" marker-end="url(#ld-arrow-b)"/>
-        <text class="svg-label-faint" x="300" y="141" text-anchor="middle" font-size="11">
+        <text class="svg-label-faint" x="300" y="155" text-anchor="middle" font-size="11">
           同一个 ε 当标签
         </text>
       </svg>
@@ -1242,6 +1334,12 @@ figcaption b {
         <a href="https://arxiv.org/abs/1907.05600" target="_blank" rel="noopener">Song &amp; Ermon (2019)</a>；
         两条路径被统一进同一个 SDE 框架见
         <a href="https://arxiv.org/abs/2011.13456" target="_blank" rel="noopener">Song et al. (2021)</a>。
+      </li>
+      <li>
+        再往前一层：反向过程本质上是一条学出来的马尔可夫链采样器，
+        这条线的源头是
+        <a href="https://doi.org/10.1063/1.1699114" target="_blank" rel="noopener">Metropolis et al. (1953)</a>
+        —— 想弄清「为什么采样必须串行」可以追到这里。
       </li>
     </ul>
   </div>
@@ -1389,22 +1487,30 @@ figcaption b {
 <!-- ⑩ 文献清单：题名 + DOI，全部回源核验过 -->
 <section class="refs" id="refs">
   <h2>文献清单</h2>
+  <!-- DOI 优先。计算机方向的会议论文（NeurIPS / ICML / ICLR 等）常常压根没有
+       分配 DOI，那种情况才退到 arXiv id，并像下面这样让两种形态并存 ——
+       但一条都不许编：每条都要 fastpaper get 回源核验过。 -->
   <ol>
     <li>
+      Metropolis, N. et al. (1953). <i>Equation of State Calculations by Fast Computing Machines.</i>
+      Journal of Chemical Physics 21(6), 1087–1092.
+      <br><a class="ref-link" href="https://doi.org/10.1063/1.1699114" target="_blank" rel="noopener">https://doi.org/10.1063/1.1699114</a>
+    </li>
+    <li>
       Sohl-Dickstein, J. et al. (2015). <i>Deep Unsupervised Learning using Nonequilibrium Thermodynamics.</i>
-      <br><a class="doi" href="https://arxiv.org/abs/1503.03585" target="_blank" rel="noopener">arXiv:1503.03585</a>
+      <br><a class="ref-link" href="https://arxiv.org/abs/1503.03585" target="_blank" rel="noopener">arXiv:1503.03585</a>
     </li>
     <li>
       Song, Y. &amp; Ermon, S. (2019). <i>Generative Modeling by Estimating Gradients of the Data Distribution.</i>
-      <br><a class="doi" href="https://arxiv.org/abs/1907.05600" target="_blank" rel="noopener">arXiv:1907.05600</a>
+      <br><a class="ref-link" href="https://arxiv.org/abs/1907.05600" target="_blank" rel="noopener">arXiv:1907.05600</a>
     </li>
     <li>
       Ho, J., Jain, A. &amp; Abbeel, P. (2020). <i>Denoising Diffusion Probabilistic Models.</i>
-      <br><a class="doi" href="https://arxiv.org/abs/2006.11239" target="_blank" rel="noopener">arXiv:2006.11239</a>
+      <br><a class="ref-link" href="https://arxiv.org/abs/2006.11239" target="_blank" rel="noopener">arXiv:2006.11239</a>
     </li>
     <li>
       Song, Y., Sohl-Dickstein, J. et al. (2021). <i>Score-Based Generative Modeling through Stochastic Differential Equations.</i>
-      <br><a class="doi" href="https://arxiv.org/abs/2011.13456" target="_blank" rel="noopener">arXiv:2011.13456</a>
+      <br><a class="ref-link" href="https://arxiv.org/abs/2011.13456" target="_blank" rel="noopener">arXiv:2011.13456</a>
     </li>
   </ol>
 </section>
@@ -1414,8 +1520,10 @@ figcaption b {
   <h2>诚实边界</h2>
   <ul>
     <li>
-      <b>这是模板的示例内容。</b>真报告在这里写：哪些论断只有摘要支撑（列出具体是哪几条）、
-      哪些是我的概括而非文献原话、哪些图是重画的以及改画自哪一篇的第几张图。
+      <b>这是模板的示例内容，文献条目没有经 fastpaper 回源核验。</b>
+      真报告里每一条 DOI / arXiv id 都必须核验过，且这一节要写：
+      哪些论断只有摘要支撑（列出具体是哪几条）、哪些是我的概括而非文献原话、
+      哪些图是重画的以及改画自哪一篇的第几张图。
     </li>
     <li>
       本报告的图 2、图 3 都是为讲解自画的示意图，不对应任何论文的原图，也不是实验结果图。
