@@ -32,16 +32,16 @@ describe('validateQuestions', () => {
     expect(out[0].options[0].recommended).toBe(true);
   });
 
-  it('questions 为空或超过 4 条都拒绝', () => {
-    expect(() => validateQuestions({ questions: [] })).toThrow(/1[–-]4/);
-    expect(() => validateQuestions({ questions: [q(), q(), q(), q(), q()] })).toThrow(/1[–-]4/);
+  it('questions 为空或超过 10 条都拒绝', () => {
+    expect(() => validateQuestions({ questions: [] })).toThrow(/1[–-]10/);
+    const eleven = Array.from({ length: 11 }, (_, i) => q({ question: `q${i}？` }));
+    expect(() => validateQuestions({ questions: eleven })).toThrow(/1[–-]10/);
   });
 
-  it('选项少于 2 或多于 4 都拒绝', () => {
-    expect(() => validateQuestions({ questions: [q({ options: [opt('A')] })] })).toThrow(/2[–-]4/);
-    expect(() =>
-      validateQuestions({ questions: [q({ options: [opt('A'), opt('B'), opt('C'), opt('D'), opt('E')] })] }),
-    ).toThrow(/2[–-]4/);
+  it('选项少于 2 或多于 8 都拒绝', () => {
+    expect(() => validateQuestions({ questions: [q({ options: [opt('A')] })] })).toThrow(/2[–-]8/);
+    const nineOpts = Array.from({ length: 9 }, (_, i) => opt(`o${i}`));
+    expect(() => validateQuestions({ questions: [q({ options: nineOpts })] })).toThrow(/2[–-]8/);
   });
 
   it('一题里两个 recommended 拒绝', () => {
@@ -76,14 +76,15 @@ describe('validateQuestions', () => {
     expect(() => validateQuestions({})).toThrow();
   });
 
-  it('正好 4 条 questions 通过', () => {
-    expect(validateQuestions({ questions: [q(), q({ question: 'b？' }), q({ question: 'c？' }), q({ question: 'd？' })] }))
-      .toHaveLength(4);
+  it('正好 10 条 questions 通过', () => {
+    const ten = Array.from({ length: 10 }, (_, i) => q({ question: `q${i}？` }));
+    expect(validateQuestions({ questions: ten })).toHaveLength(10);
   });
 
-  it('正好 4 个选项通过', () => {
-    const out = validateQuestions({ questions: [q({ options: [opt('A'), opt('B'), opt('C'), opt('D')] })] });
-    expect(out[0].options).toHaveLength(4);
+  it('正好 8 个选项通过', () => {
+    const eightOpts = Array.from({ length: 8 }, (_, i) => opt(`o${i}`));
+    const out = validateQuestions({ questions: [q({ options: eightOpts })] });
+    expect(out[0].options).toHaveLength(8);
   });
 
   it('正好 12 字符的 header 通过', () => {
@@ -94,5 +95,33 @@ describe('validateQuestions', () => {
     const out = validateQuestions({ questions: [q({ question: '  选哪个？  ', options: [opt(' A '), opt('B')] })] });
     expect(out[0].question).toBe('选哪个？');
     expect(out[0].options[0].label).toBe('A');
+  });
+
+  it('单题接受 8 个选项', () => {
+    const query = { question: 'q', header: 'h', multiSelect: true,
+      options: Array.from({ length: 8 }, (_, i) => ({ label: `o${i}`, description: `d${i}` })) };
+    expect(() => validateQuestions({ questions: [query] })).not.toThrow();
+  });
+
+  it('单题第 9 个选项被拒 —— 数字键快捷键只到 9，第 9 位要留给「其他」', () => {
+    const query = { question: 'q', header: 'h', multiSelect: true,
+      options: Array.from({ length: 9 }, (_, i) => ({ label: `o${i}`, description: `d${i}` })) };
+    expect(() => validateQuestions({ questions: [query] })).toThrow();
+  });
+
+  it('一次接受 10 道题', () => {
+    const qs = Array.from({ length: 10 }, (_, i) => ({
+      question: `q${i}`, header: `h${i}`,
+      options: [{ label: 'a', description: 'da' }, { label: 'b', description: 'db' }],
+    }));
+    expect(() => validateQuestions({ questions: qs })).not.toThrow();
+  });
+
+  it('第 11 道题被拒', () => {
+    const qs = Array.from({ length: 11 }, (_, i) => ({
+      question: `q${i}`, header: `h${i}`,
+      options: [{ label: 'a', description: 'da' }, { label: 'b', description: 'db' }],
+    }));
+    expect(() => validateQuestions({ questions: qs })).toThrow();
   });
 });

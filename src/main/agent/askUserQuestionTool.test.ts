@@ -87,7 +87,7 @@ describe('createAskUserQuestionTool', () => {
     const { onOpened, onClosed, tool } = make();
     await expect(
       tool.execute('tc1', { questions: [] }, undefined, undefined, {} as never),
-    ).rejects.toThrow(/1[–-]4/);
+    ).rejects.toThrow(/1[–-]10/);
     expect(onOpened).not.toHaveBeenCalled();
     expect(onClosed).not.toHaveBeenCalled();
   });
@@ -100,15 +100,15 @@ describe('createAskUserQuestionTool', () => {
     expect(() => broker.ask('t1', 'tc2', [], undefined)).not.toThrow();
   });
 
-  it('parameters 是 typebox schema，声明了 1–4 题与 2–4 选项', () => {
+  it('parameters 是 typebox schema，声明了 1–10 题与 2–8 选项', () => {
     const { tool } = make();
     const s = tool.parameters as unknown as {
       properties: { questions: { minItems: number; maxItems: number; items: {
         properties: { options: { minItems: number; maxItems: number } } } } };
     };
     expect(s.properties.questions.minItems).toBe(1);
-    expect(s.properties.questions.maxItems).toBe(4);
+    expect(s.properties.questions.maxItems).toBe(10);
     expect(s.properties.questions.items.properties.options.minItems).toBe(2);
-    expect(s.properties.questions.items.properties.options.maxItems).toBe(4);
+    expect(s.properties.questions.items.properties.options.maxItems).toBe(8);
   });
 });

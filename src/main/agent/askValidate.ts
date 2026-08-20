@@ -19,7 +19,9 @@ function nonEmpty(v: unknown, field: string, where: string): string {
 export function validateQuestions(input: unknown): AskQuestion[] {
   const raw = (input as { questions?: unknown })?.questions;
   if (!Array.isArray(raw)) fail('questions 必须是数组');
-  if (raw.length < 1 || raw.length > 4) fail('questions 只能有 1–4 条');
+  // 题数上限 10：UI 是一题一屏、靠 cursor 翻页（QuestionComposer.tsx），加题只是
+  // 多翻几屏，没有布局约束——10 是访谈深度的产品选择，不是技术上限。
+  if (raw.length < 1 || raw.length > 10) fail('questions 只能有 1–10 条');
 
   const seenQuestions = new Set<string>();
   const out: AskQuestion[] = [];
@@ -35,8 +37,11 @@ export function validateQuestions(input: unknown): AskQuestion[] {
     const header = nonEmpty(rq?.header, 'header', where);
     if (header.length > 12) fail(`${where} 的 header 不能超过 12 个字符：${header}`);
 
-    if (!Array.isArray(rq?.options) || rq.options.length < 2 || rq.options.length > 4) {
-      fail(`${where} 的 options 只能有 2–4 个`);
+    // 选项上限 8：数字键快捷键选选项，QuestionComposer.tsx 用 1..N 选中第 N 项，
+    // 第 N+1 个数字留给「其他」（聚焦自定义输入框）。到 8 时「其他」是 9，仍在
+    // 单键范围内；再多一个「其他」就要按两位数的 10，单键按不出来——所以封顶 8。
+    if (!Array.isArray(rq?.options) || rq.options.length < 2 || rq.options.length > 8) {
+      fail(`${where} 的 options 只能有 2–8 个`);
     }
 
     const seenLabels = new Set<string>();

@@ -1,0 +1,30 @@
+{
+  "events": [
+    { "type": "agent_start", "after_ms": 0 },
+    { "type": "message_start", "after_ms": 10, "messageId": "m1" },
+    { "type": "text_delta", "after_ms": 10, "messageId": "m1", "delta": "这题选项比较多，一个一个看。" },
+    { "type": "message_end", "after_ms": 10, "messageId": "m1", "toolCallIds": ["ask-1"], "toolNames": ["ask_user_question"] },
+    {
+      "type": "ask",
+      "after_ms": 10,
+      "toolCallId": "ask-1",
+      "questions": [
+        {
+          "question": "这次改动最像下面哪一种？",
+          "header": "分类",
+          "options": [
+            { "label": "新功能", "description": "从零加一块能力。" },
+            { "label": "修复", "description": "改正已知的错误行为。" },
+            { "label": "重构", "description": "行为不变，改内部结构。" },
+            { "label": "文档", "description": "只动说明性文字。" },
+            { "label": "测试", "description": "只加或改测试用例。" },
+            { "label": "性能", "description": "让已有行为跑得更快。" },
+            { "label": "依赖升级", "description": "升级第三方库版本。" },
+            { "label": "杂项", "description": "以上都不贴切的小改动。" }
+          ]
+        }
+      ]
+    },
+    { "type": "agent_end", "after_ms": 10, "reason": "completed" }
+  ]
+}

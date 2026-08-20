@@ -7,6 +7,8 @@ import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, ty
 const fixture = path.resolve('e2e/fixtures/ask-user-question.json');
 // 这一轮直接发 ask，前面没有任何 text / thinking —— 于是渲染进程没收到过 delta 事件。
 const noPreambleFixture = path.resolve('e2e/fixtures/ask-no-preamble.json');
+// 单题 8 个选项：锁住「选项上限为什么是 8」的推导——数字键 1..8 选项，第 9 位留给「其他」。
+const eightOptionsFixture = path.resolve('e2e/fixtures/ask-eight-options.json');
 
 async function launchWithProject(fixturePath = fixture): Promise<LaunchedApp> {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
@@ -190,6 +192,41 @@ test('43-ask: 这一轮没有开场白直接提问，取消后照样留下卡片
     const recap = page.locator('[data-testid="ask-recap"]');
     await expect(recap).toHaveAttribute('data-status', 'cancelled', { timeout: 10_000 });
     await expect(recap).toContainText('这次改动落在哪个分支上？');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// 锁住「为什么选项上限是 8」这条推导：QuestionComposer 的数字键用 1..N 选选项，
+// 第 N+1 个数字留给「其他」。8 个选项时「其他」正好是 9，仍在单键范围内——
+// 这条测试直接按下 8 和 9，断言的是这个机制真的按预期工作，不只是渲染出了 8 项。
+test('43-ask: 8 个选项全部渲染，数字键 8 选中第 8 项、9 聚焦「其他」输入框', async () => {
+  const launched = await launchWithProject(eightOptionsFixture);
+  const page = launched.page;
+  try {
+    await askUntilPending(page);
+    const composer = page.locator('[data-testid="question-composer"]');
+    const customInput = page.locator('[data-testid="ask-custom-input"]');
+    await expect(composer).toContainText('这次改动最像下面哪一种？');
+
+    // 8 个选项全部渲染出来。
+    for (let i = 0; i < 8; i += 1) {
+      await expect(page.locator(`[data-testid="ask-option-q0o${i}"]`)).toBeVisible();
+    }
+
+    // 数字键 8 选中第 8 项（q0o7），不是别的项。
+    await composer.focus();
+    await page.keyboard.press('8');
+    await expect(page.locator('[data-testid="ask-option-q0o7"]')).toHaveAttribute('data-selected', 'true');
+    for (let i = 0; i < 7; i += 1) {
+      await expect(page.locator(`[data-testid="ask-option-q0o${i}"]`)).toHaveAttribute('data-selected', 'false');
+    }
+
+    // 数字键 9 聚焦「其他」输入框，不选中任何选项——第 9 位不是第 9 个选项。
+    await composer.focus();
+    await page.keyboard.press('9');
+    await expect(customInput).toBeFocused();
+    await expect(page.locator('[data-testid="ask-option-q0o7"]')).toHaveAttribute('data-selected', 'true');
   } finally {
     await teardown(launched);
   }

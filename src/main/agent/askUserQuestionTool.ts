@@ -23,11 +23,14 @@ const QuestionSchema = Type.Object({
   question: Type.String({ description: '完整问句' }),
   header: Type.String({ description: '不超过 12 个字符的短标签' }),
   multiSelect: Type.Optional(Type.Boolean({ description: '是否允许多选' })),
-  options: Type.Array(OptionSchema, { minItems: 2, maxItems: 4 }),
+  // 8 是数字键快捷键的上限：QuestionComposer 用 1..N 选项，第 N+1 个数字留给「其他」，
+  // 到 8 时「其他」是 9，仍在单键范围内。要再多必须先改快捷键方案。
+  options: Type.Array(OptionSchema, { minItems: 2, maxItems: 8 }),
 });
 
 const ParamsSchema = Type.Object({
-  questions: Type.Array(QuestionSchema, { minItems: 1, maxItems: 4 }),
+  // 题数没有布局约束：UI 一题一屏、靠 cursor 翻页，加题只是多翻几屏。
+  questions: Type.Array(QuestionSchema, { minItems: 1, maxItems: 10 }),
 });
 
 // 导出给 systemPrompt.ts：KyDog 走自定义系统提示词后，pi 不再渲染工具的
@@ -50,7 +53,7 @@ export function createAskUserQuestionTool(
   return {
     name: ASK_TOOL_NAME,
     label: '提问',
-    description: '在遇到需要用户决定的分叉点时暂停，向用户提出 1–4 个多选题并等待回答。',
+    description: '在遇到需要用户决定的分叉点时暂停，向用户提出 1–10 个多选题并等待回答。',
     promptSnippet: 'ask_user_question — 停下来向用户提问（必须单独调用）',
     promptGuidelines: ASK_GUIDELINES,
     parameters: ParamsSchema,
