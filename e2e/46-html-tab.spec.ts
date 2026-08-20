@@ -7,6 +7,7 @@ const HTML_REL = 'report.html';
 
 // 正文里那个 <script> 是探针：沙箱没给 allow-scripts，它不该跑起来。
 // 跑起来了的话 #probe 的文字会被改成 SCRIPT-RAN。
+// #jump / #c1 是页内锚点那条链（知识地图节点 → 章节）；#external 是 DOI 外链那条链。
 const REPORT_HTML = `<!doctype html>
 <html lang="zh">
 <head><meta charset="utf-8"><title>测试报告</title>
@@ -15,6 +16,10 @@ const REPORT_HTML = `<!doctype html>
 <body>
 <h1 id="heading">知识地图</h1>
 <p id="probe">SCRIPT-DID-NOT-RUN</p>
+<p><a id="jump" href="#c1">跳到第一节</a></p>
+<p><a id="external" href="https://example.com/10.1000/xyz" target="_blank" rel="noopener">DOI 外链</a></p>
+<div style="height: 2400px"></div>
+<h2 id="c1">第一节</h2>
 <script>document.getElementById('probe').textContent = 'SCRIPT-RAN';</script>
 </body>
 </html>
@@ -142,6 +147,80 @@ test('46-html-tab: 文件内容改了 tab 自动重载', async () => {
     await fs.writeFile(htmlPath, REPORT_HTML.replace('知识地图', '知识地图 v2'));
 
     await expect(frame.locator('#heading')).toHaveText('知识地图 v2', { timeout: 10000 });
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: 点页内锚点滚到对应章节', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#heading')).toHaveText('知识地图');
+
+    // srcdoc 文档的 base URL 继承自宿主，不钉死的话 href="#c1" 被当成跨文档导航：
+    // packaged（file://）下静默什么都不发生，dev（http://）下整个 frame 导航去宿主页面。
+    // 这两种失败都是静默的，所以断言要落在「真的滚起来了」而不是「点得动」。
+    const view = () => frame.locator('body').evaluate((el) => {
+      const win = el.ownerDocument.defaultView!;
+      return { scrollY: win.scrollY, url: win.location.href };
+    });
+
+    await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
+    expect(await view()).toEqual({ scrollY: 0, url: 'about:srcdoc' });
+
+    // 点击放进 poll 里重试：frame 刚建好那一小段时间里，第一次合成点击偶尔会被吞掉
+    // （实测约 1/4，紧接着再点必中）。锚点点了不动是幂等的，重试不改变语义。
+    await expect.poll(async () => {
+      await frame.locator('#jump').click();
+      return (await view()).scrollY;
+    }, { timeout: 10_000 }).toBeGreaterThan(0);
+    // frame 还待在自己的文档里（没被导航到宿主页面），只是加了个片段
+    expect((await view()).url).toBe('about:srcdoc#c1');
+    await expect(frame.locator('#c1')).toBeInViewport();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: 报告里的外链交给系统浏览器打开', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { app, page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    // 这条链是 sandbox 的 allow-popups → main.ts 的 setWindowOpenHandler → shell.openExternal。
+    // 在主进程里把最后一环换成记账，中间任何一环被「少给一个权限更好」收紧掉都会红。
+    await app.evaluate(({ shell }) => {
+      const opened: string[] = [];
+      (globalThis as unknown as { __openedExternal: string[] }).__openedExternal = opened;
+      shell.openExternal = (url: string) => { opened.push(url); return Promise.resolve(); };
+    });
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#external')).toBeVisible();
+    await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
+
+    // 同上：点击放进 poll 里重试，第一次点击偶尔会在 frame 刚建好时被吞掉。
+    // 断言落在「URL 原样到了 shell.openExternal」，allow-popups 被拿掉的话
+    // 这里怎么点都不会有记录，10 秒后变红。
+    await expect.poll(async () => {
+      await frame.locator('#external').click();
+      return app.evaluate(() => (globalThis as unknown as { __openedExternal: string[] }).__openedExternal);
+    }, { timeout: 10_000 }).toContain('https://example.com/10.1000/xyz');
   } finally {
     await teardown(launched);
   }

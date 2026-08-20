@@ -8,6 +8,10 @@ export function HtmlFileTab({ tab }: { tab: FileTab }) {
 
   useEffect(() => {
     let cancelled = false;
+    // ⚠️ 这里**故意**没有 PdfFileTab 那样的 `if (tab.status !== 'loading') return;` 守卫：
+    // 自动重载正是靠 reloadNonce 变化时让这个 effect 在 status 已经是 'ready' 的情况下
+    // 重跑一次。加上守卫会让文件变更后什么都不发生，而且不报错 —— 别为了「对齐
+    // PdfFileTab」把它加回来（PdfFileTab 不消费 file.changed，那条守卫对它无害）。
     // 用 readBytes 而不是 readText：后者 2MB 上限，而报告正文不设长度上限，
     // 内联 SVG 很吃字节，顶上去只是时间问题。readBytes 是 100MB。
     window.kydog.invoke('file.readBytes', { path: tab.path })
@@ -59,7 +63,8 @@ export function HtmlFileTab({ tab }: { tab: FileTab }) {
       // 兜底（Songti SC / Georgia 等）。少给一个权限更好，细节见
       // docs/superpowers/specs/2026-08-20-learning-deck-design.md 的「已知边界」。
       // allow-popups 让报告里 target="_blank" 的 DOI 链接能弹出，交给 main.ts:58 的
-      // setWindowOpenHandler 转到系统浏览器。
+      // setWindowOpenHandler 转到系统浏览器 —— 别顺手把它也收掉：报告里的 DOI 链接会
+      // 全部变成点了没反应。e2e/46-html-tab.spec.ts「报告里的外链交给系统浏览器打开」守着这条链。
       sandbox="allow-popups allow-popups-to-escape-sandbox"
       className="w-full h-full"
       style={{ border: 'none', background: 'var(--color-paper)' }}

@@ -51,6 +51,18 @@ export function buildHostThemeCss(read: (name: string) => string): string {
  */
 export function injectHostTheme(html: string, css: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  // srcdoc 文档的 base URL 继承自宿主，导致 href="#x" 解析成 <宿主URL>#x，
+  // 被当成跨文档导航 —— 页内锚点会失效（file:// 下静默无效，http 下把 frame
+  // 导航到宿主页面）。钉死 base 才能让 #锚点 成为同文档片段导航。
+  // 顺带把任意来路 .html 里的相对 URL 也钉在 about:srcdoc 上，它们本来会
+  // 解析到宿主页面路径，既没用又是一次多余的本地请求。
+  if (!doc.querySelector('base')) {
+    const base = doc.createElement('base');
+    base.href = 'about:srcdoc';
+    doc.head.prepend(base);
+  }
+
   const style = doc.createElement('style');
   style.id = 'kydog-host-theme';
   style.textContent = css;
