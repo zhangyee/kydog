@@ -71,10 +71,15 @@ export const fileService = {
    *
    * base 与 target 都要 realpath：base 自己也可能是符号链接（比如项目目录本身），
    * 只 realpath target 不 realpath base 会把「两边都是符号链接、实际互相在彼此
-   * 真实位置内」的合法情况也拒了。两次 realpath + 一次读取在同一个异步函数里
-   * 一次性做完，没有先查再读之间的 TOCTOU 窗口（两次 fs 调用之间没有让出到别的
-   * 请求能改写这个路径的机会——Node 单线程事件循环，中间没有 await 边界之外的
-   * 代码能插进来改这两个路径指向的文件系统状态）。
+   * 真实位置内」的合法情况也拒了。
+   *
+   * TOCTOU：两次 realpath 之间没有让出点，这一段确实原子。但 isWithin 通过之后
+   * 调的 `this.readBytes` 内部还有独立的 `await fsp.stat` / `await fsp.readFile`——
+   * realpath 解析完成到真正读取之间仍有两次 await，理论上本地有写权限的攻击者
+   * 能在这个窗口把 realTarget 指向的文件换掉，窗口很窄（几个微任务）但不是零。
+   * 在「本地单用户桌面应用」的威胁模型下判定为可接受，且不比引入这个 RPC 之前更差
+   * （readBytes 本来就没有原子性保证）。要彻底消除得换成 `O_NOFOLLOW` 打开或者
+   * 先开 fd 再 fstat，目前没做。
    */
   async readBytesWithin(
     { baseDir, path: target }: { baseDir: string; path: string },
