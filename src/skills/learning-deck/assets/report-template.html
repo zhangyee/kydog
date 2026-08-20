@@ -80,7 +80,7 @@ dt[id] {
    2. 排版 —— 标题层次、正文、链接、术语
    ========================================================================== */
 
-h1, h2, h3, h4 {
+h1, h2, h3 {
   font-family: var(--font-serif, Georgia, "Songti SC", serif);
   line-height: 1.35;
   text-wrap: balance;
@@ -106,6 +106,18 @@ h3 {
   margin: 2em 0 .4em;
   color: var(--ink-soft, #47413c);
   letter-spacing: .03em;
+}
+
+/* h4 是节内最细的一级。它换成 sans 的小标签，靠字族和字距跟 serif 正文分开，
+   而不是靠再小一号的字号 —— 只调字号的话它和加粗的正文就分不出来了。 */
+h4 {
+  font-family: var(--font-sans, sans-serif);
+  font-size: .86em;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: .06em;
+  margin: 1.6em 0 .4em;
+  color: var(--ink-soft, #47413c);
 }
 
 p {
@@ -626,12 +638,16 @@ figcaption b {
 }
 
 /* SVG 里的共用件。
+   ⚠️ viewBox 宽 640 时 font-size 不得低于 13 —— SVG 是跟着容器缩放的，
+      .deck 锁 34em、默认阅读字号下只有约 510px 宽，640 的图缩到 0.8，
+      写 10 实际渲染出来只有约 8px，而且读者调大阅读字号也追不上正文。
    ⚠️ 画新图时颜色一律用这里的 class，不要写成 fill="…" / stroke="…" 属性：
       属性虽然也能被样式表盖住，但只有集中成 class，下面第 4 组的打印兜底
       才能把它们一条条登记清楚。唯一的例外是 fill="url(#…)" 这种指向
-      同文档 <pattern> / <marker> 的引用 —— 它必须留在元素属性上，
-      因为样式表里的 url(#…) 会拿文档 base URL 去解析，而 srcdoc 文档的
-      base URL 是宿主页面，解析出来就不是本地引用了。 */
+      同文档 <pattern> / <marker> 的引用 —— 那种引用留在元素属性上最稳，
+      别为了「统一成 class」把它搬进样式表：样式表里的 url(#…) 要拿文档
+      base URL 去解析，而报告在 app 里是 srcdoc 文档，base 由查看器另外
+      钉住（见 reportTheme.ts），这条链上任何一环变了都会静默失效。 */
 .svg-label {
   font-family: var(--font-sans, sans-serif);
   fill: var(--ink-soft, #47413c);
@@ -816,10 +832,6 @@ figcaption b {
     break-after: avoid;
     page-break-after: avoid;
   }
-
-  .concept {
-    break-inside: auto;
-  }
 }
 </style>
 </head>
@@ -861,40 +873,40 @@ figcaption b {
       <path class="edge" d="M340 82 C 440 100, 510 110, 535 138"/>
 
       <!-- 连线：第二层 → 第三层 -->
-      <path class="edge" d="M105 182 L 105 238"/>
-      <path class="edge" d="M140 182 C 200 200, 270 210, 300 238"/>
-      <path class="edge" d="M320 182 L 320 238"/>
-      <path class="edge" d="M360 182 C 430 200, 490 210, 520 238"/>
-      <path class="edge" d="M535 182 L 535 238"/>
+      <path class="edge" d="M105 186 L 105 238"/>
+      <path class="edge" d="M140 186 C 200 202, 270 212, 300 238"/>
+      <path class="edge" d="M320 186 L 320 238"/>
+      <path class="edge" d="M360 186 C 430 202, 490 212, 520 238"/>
+      <path class="edge" d="M535 186 L 535 238"/>
 
       <!-- 顶层：目标概念 -->
       <g class="node n-focus">
         <a href="#wrapup">
           <rect x="240" y="42" width="160" height="40" rx="5"/>
-          <text x="320" y="67" text-anchor="middle" font-size="14">扩散模型</text>
+          <text x="320" y="69" text-anchor="middle" font-size="18">扩散模型</text>
         </a>
       </g>
-      <text class="svg-label-faint" x="320" y="26" text-anchor="middle" font-size="11">目标</text>
+      <text class="svg-label-faint" x="320" y="26" text-anchor="middle" font-size="14">目标</text>
 
       <!-- 第二层 -->
       <g class="node n-focus">
         <a href="#c1">
-          <rect x="20" y="140" width="170" height="42" rx="5"/>
-          <text x="105" y="159" text-anchor="middle" font-size="13">前向加噪过程</text>
-          <text class="svg-label-faint" x="105" y="174" text-anchor="middle" font-size="10">要重点补 · §1</text>
+          <rect x="20" y="140" width="170" height="46" rx="5"/>
+          <text x="105" y="159" text-anchor="middle" font-size="16">前向加噪过程</text>
+          <text class="svg-label-faint" x="105" y="179" text-anchor="middle" font-size="13">要重点补 · §1</text>
         </a>
       </g>
       <g class="node n-focus">
         <a href="#c2">
-          <rect x="235" y="140" width="170" height="42" rx="5"/>
-          <text x="320" y="159" text-anchor="middle" font-size="13">反向去噪目标</text>
-          <text class="svg-label-faint" x="320" y="174" text-anchor="middle" font-size="10">要重点补 · §2</text>
+          <rect x="235" y="140" width="170" height="46" rx="5"/>
+          <text x="320" y="159" text-anchor="middle" font-size="16">反向去噪目标</text>
+          <text class="svg-label-faint" x="320" y="179" text-anchor="middle" font-size="13">要重点补 · §2</text>
         </a>
       </g>
       <g class="node n-brief">
         <a href="#primer">
-          <rect x="450" y="140" width="170" height="42" rx="5"/>
-          <text x="535" y="165" text-anchor="middle" font-size="13">采样调度与步数</text>
+          <rect x="450" y="140" width="170" height="46" rx="5"/>
+          <text x="535" y="170" text-anchor="middle" font-size="16">采样调度与步数</text>
         </a>
       </g>
 
@@ -902,20 +914,20 @@ figcaption b {
       <!-- 「已掌握」的节点同样是锚点：读者未必真记得，链到术语表比留一个死框有用 -->
       <g class="node n-known">
         <a href="#g-markov">
-          <rect x="20" y="240" width="170" height="42" rx="5"/>
-          <text x="105" y="265" text-anchor="middle" font-size="13">马尔可夫链</text>
+          <rect x="20" y="240" width="170" height="46" rx="5"/>
+          <text x="105" y="270" text-anchor="middle" font-size="16">马尔可夫链</text>
         </a>
       </g>
       <g class="node n-known">
         <a href="#g-reparam">
-          <rect x="235" y="240" width="170" height="42" rx="5"/>
-          <text x="320" y="265" text-anchor="middle" font-size="13">高斯分布 · 重参数化</text>
+          <rect x="235" y="240" width="170" height="46" rx="5"/>
+          <text x="320" y="270" text-anchor="middle" font-size="16">高斯分布 · 重参数化</text>
         </a>
       </g>
       <g class="node n-brief">
         <a href="#primer">
-          <rect x="450" y="240" width="170" height="42" rx="5"/>
-          <text x="535" y="265" text-anchor="middle" font-size="13">变分下界 ELBO</text>
+          <rect x="450" y="240" width="170" height="46" rx="5"/>
+          <text x="535" y="270" text-anchor="middle" font-size="16">变分下界 ELBO</text>
         </a>
       </g>
 
@@ -923,13 +935,13 @@ figcaption b {
       <!-- 图例的色块直接套节点那套 class，样式不会和节点走偏，打印兜底也一并覆盖 -->
       <g class="legend" transform="translate(20, 306)">
         <g class="node n-known"><rect x="0" y="0" width="14" height="14" rx="3"/></g>
-        <text class="svg-label-faint" x="20" y="11" font-size="11">你已掌握</text>
+        <text class="svg-label-faint" x="20" y="11" font-size="14">你已掌握</text>
 
         <g class="node n-focus"><rect x="110" y="0" width="14" height="14" rx="3"/></g>
-        <text class="svg-label-faint" x="130" y="11" font-size="11">要重点补</text>
+        <text class="svg-label-faint" x="130" y="11" font-size="14">要重点补</text>
 
         <g class="node n-brief"><rect x="220" y="0" width="14" height="14" rx="3"/></g>
-        <text class="svg-label-faint" x="240" y="11" font-size="11">一句话带过</text>
+        <text class="svg-label-faint" x="240" y="11" font-size="14">一句话带过</text>
       </g>
     </svg>
     <figcaption>
@@ -1077,40 +1089,40 @@ figcaption b {
         <path class="arrow-line" d="M82 54 C 82 26, 206 26, 206 54"  marker-end="url(#ld-arrow)"/>
         <path class="arrow-line" d="M258 54 C 258 26, 382 26, 382 54" marker-end="url(#ld-arrow)"/>
         <path class="arrow-line" d="M434 54 C 434 26, 558 26, 558 54" marker-end="url(#ld-arrow)"/>
-        <text class="svg-formula" x="320" y="14" text-anchor="middle" font-size="12">q(x_t | x_t-1)</text>
-        <text class="svg-label-faint" x="320" y="14" text-anchor="middle" font-size="11" dx="98">加噪 · 固定</text>
+        <text class="svg-formula" x="320" y="17" text-anchor="middle" font-size="15">q(x_t | x_t-1)</text>
+        <text class="svg-label-faint" x="320" y="17" text-anchor="middle" font-size="14" dx="112">加噪 · 固定</text>
 
         <!-- 四个状态 -->
         <g>
           <rect x="20" y="56" width="72" height="72" rx="4" class="svg-box"/>
           <use href="#ld-signal" transform="translate(20,56)"/>
-          <text class="svg-label" x="56" y="146" text-anchor="middle" font-size="12">x₀ 原始数据</text>
+          <text class="svg-label" x="56" y="146" text-anchor="middle" font-size="15">x₀ 原始数据</text>
         </g>
         <g>
           <rect x="196" y="56" width="72" height="72" rx="4" class="svg-box"/>
           <use href="#ld-signal" transform="translate(196,56)" opacity=".65"/>
-          <rect x="196" y="56" width="72" height="72" rx="4" class="svg-noise" fill="url(#ld-noise)" opacity=".4"/>
-          <text class="svg-label" x="232" y="146" text-anchor="middle" font-size="12">x₁</text>
+          <rect x="196" y="56" width="72" height="72" rx="4" fill="url(#ld-noise)" opacity=".4"/>
+          <text class="svg-label" x="232" y="146" text-anchor="middle" font-size="15">x₁</text>
         </g>
         <g>
           <rect x="372" y="56" width="72" height="72" rx="4" class="svg-box"/>
           <use href="#ld-signal" transform="translate(372,56)" opacity=".3"/>
-          <rect x="372" y="56" width="72" height="72" rx="4" class="svg-noise" fill="url(#ld-noise)" opacity=".75"/>
-          <text class="svg-label" x="408" y="146" text-anchor="middle" font-size="12">x₂</text>
+          <rect x="372" y="56" width="72" height="72" rx="4" fill="url(#ld-noise)" opacity=".75"/>
+          <text class="svg-label" x="408" y="146" text-anchor="middle" font-size="15">x₂</text>
         </g>
         <g>
           <rect x="548" y="56" width="72" height="72" rx="4" class="svg-box"/>
-          <rect x="548" y="56" width="72" height="72" rx="4" class="svg-noise" fill="url(#ld-noise)"/>
-          <text class="svg-label" x="584" y="146" text-anchor="middle" font-size="12">x_T ≈ 纯噪声</text>
+          <rect x="548" y="56" width="72" height="72" rx="4" fill="url(#ld-noise)"/>
+          <text class="svg-label" x="584" y="146" text-anchor="middle" font-size="15">x_T ≈ 纯噪声</text>
         </g>
-        <text class="svg-label-faint" x="496" y="98" text-anchor="middle" font-size="18">⋯</text>
+        <text class="svg-label-faint" x="496" y="98" text-anchor="middle" font-size="23">⋯</text>
 
         <!-- 反向：三段向左的弧 -->
         <path class="arrow-line" d="M558 158 C 558 186, 434 186, 434 158" marker-end="url(#ld-arrow)"/>
         <path class="arrow-line" d="M382 158 C 382 186, 258 186, 258 158" marker-end="url(#ld-arrow)"/>
         <path class="arrow-line" d="M206 158 C 206 186, 82 186, 82 158"   marker-end="url(#ld-arrow)"/>
-        <text class="svg-formula" x="320" y="206" text-anchor="middle" font-size="12">p_θ(x_t-1 | x_t)</text>
-        <text class="svg-label-faint" x="320" y="206" text-anchor="middle" font-size="11" dx="104">去噪 · 要学</text>
+        <text class="svg-formula" x="320" y="206" text-anchor="middle" font-size="15">p_θ(x_t-1 | x_t)</text>
+        <text class="svg-label-faint" x="320" y="206" text-anchor="middle" font-size="14" dx="118">去噪 · 要学</text>
       </svg>
       <figcaption>
         <b>图 2</b> 上排是前向过程：固定、无参数、可以离线算。下排是反向过程：
@@ -1229,15 +1241,15 @@ figcaption b {
         <!-- 三个输入 -->
         <g>
           <rect x="8" y="14" width="118" height="30" rx="4" class="svg-frame"/>
-          <text class="svg-label" x="67" y="33" text-anchor="middle" font-size="12">x₀ ~ 数据</text>
+          <text class="svg-label" x="67" y="33" text-anchor="middle" font-size="15">x₀ ~ 数据</text>
         </g>
         <g>
           <rect x="8" y="56" width="118" height="30" rx="4" class="svg-frame"/>
-          <text class="svg-label" x="67" y="75" text-anchor="middle" font-size="12">t ~ U(1, T)</text>
+          <text class="svg-label" x="67" y="75" text-anchor="middle" font-size="15">t ~ U(1, T)</text>
         </g>
         <g>
           <rect x="8" y="98" width="118" height="30" rx="4" class="svg-frame"/>
-          <text class="svg-label" x="67" y="117" text-anchor="middle" font-size="12">ε ~ N(0, I)</text>
+          <text class="svg-label" x="67" y="117" text-anchor="middle" font-size="15">ε ~ N(0, I)</text>
         </g>
 
         <path class="arrow-line" d="M126 29 L 170 63" marker-end="url(#ld-arrow-b)"/>
@@ -1246,18 +1258,18 @@ figcaption b {
 
         <!-- 合成 x_t -->
         <g>
-          <rect x="176" y="48" width="132" height="46" rx="4" class="svg-box"/>
-          <text class="svg-label" x="242" y="66" text-anchor="middle" font-size="12">合成 x_t</text>
-          <text class="svg-formula" x="242" y="83" text-anchor="middle" font-size="10">√ᾱ·x₀ + √(1-ᾱ)·ε</text>
+          <rect x="176" y="48" width="144" height="46" rx="4" class="svg-box"/>
+          <text class="svg-label" x="248" y="66" text-anchor="middle" font-size="15">合成 x_t</text>
+          <text class="svg-formula" x="248" y="86" text-anchor="middle" font-size="13">√ᾱ·x₀ + √(1-ᾱ)·ε</text>
         </g>
 
-        <path class="arrow-line" d="M308 71 L 352 71" marker-end="url(#ld-arrow-b)"/>
+        <path class="arrow-line" d="M320 71 L 352 71" marker-end="url(#ld-arrow-b)"/>
 
         <!-- 网络 -->
         <g>
           <rect x="358" y="48" width="120" height="46" rx="4" class="svg-hi"/>
-          <text class="svg-label" x="418" y="66" text-anchor="middle" font-size="12">去噪网络</text>
-          <text class="svg-formula" x="418" y="83" text-anchor="middle" font-size="10">ε_θ(x_t, t)</text>
+          <text class="svg-label" x="418" y="66" text-anchor="middle" font-size="15">去噪网络</text>
+          <text class="svg-formula" x="418" y="86" text-anchor="middle" font-size="13">ε_θ(x_t, t)</text>
         </g>
 
         <path class="arrow-line" d="M478 71 L 522 71" marker-end="url(#ld-arrow-b)"/>
@@ -1265,14 +1277,14 @@ figcaption b {
         <!-- 损失 -->
         <g>
           <rect x="528" y="48" width="104" height="46" rx="4" class="svg-frame"/>
-          <text class="svg-label" x="580" y="66" text-anchor="middle" font-size="12">损失</text>
-          <text class="svg-formula" x="580" y="83" text-anchor="middle" font-size="10">‖ε − ε_θ‖²</text>
+          <text class="svg-label" x="580" y="66" text-anchor="middle" font-size="15">损失</text>
+          <text class="svg-formula" x="580" y="86" text-anchor="middle" font-size="13">‖ε − ε_θ‖²</text>
         </g>
 
         <!-- 真噪声回到损失 -->
         <path class="arrow-line" stroke-dasharray="4 3"
               d="M67 128 C 67 145, 400 145, 560 100" marker-end="url(#ld-arrow-b)"/>
-        <text class="svg-label-faint" x="300" y="155" text-anchor="middle" font-size="11">
+        <text class="svg-label-faint" x="300" y="157" text-anchor="middle" font-size="14">
           同一个 ε 当标签
         </text>
       </svg>
