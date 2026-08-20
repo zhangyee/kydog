@@ -148,6 +148,9 @@ function setupEventBridge(): void {
   window.kydog.on('fs.changed', (p) => {
     void refreshCachedDirsUnder(p.projectPath);
   });
+  window.kydog.on('file.changed', (p) => {
+    useUiStore.getState().markFileChanged(p.path);
+  });
   window.kydog.on('identity.changed', (id) => {
     useIdentityStore.getState().setIdentity(id);
   });

@@ -11,6 +11,7 @@ export type FileTab = {
   diskContent: string | null;  // 上次落盘内容，dirty 比对基准（仅 md）
   dirty: boolean;              // 仅 md；pdf / html 恒 false
   errorMessage?: string;
+  reloadNonce: number;         // 外部改动计数；仅 html 消费，用来触发重读
 };
 
 export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills' | 'research';
@@ -41,6 +42,7 @@ type UiState = {
   setFileTabStatus: (id: string, patch: { status: FileTab['status']; diskContent?: string | null; errorMessage?: string }) => void;
   setFileTabDirty: (id: string, dirty: boolean) => void;
   setFileTabDiskContent: (id: string, content: string) => void;
+  markFileChanged: (path: string) => void;
   expandedDirs: Set<string>;
   expandedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
@@ -88,7 +90,7 @@ export const useUiStore = create<UiState>((set) => ({
     const tab: FileTab = {
       id: path, path, kind,
       title: fileTitle(path),
-      status: 'loading', diskContent: null, dirty: false,
+      status: 'loading', diskContent: null, dirty: false, reloadNonce: 0,
     };
     return {
       openFileTabs: [...s.openFileTabs, tab],
@@ -123,6 +125,15 @@ export const useUiStore = create<UiState>((set) => ({
   setFileTabDiskContent: (id, content) => set((s) => ({
     openFileTabs: s.openFileTabs.map((t) => t.id === id ? { ...t, diskContent: content, dirty: false } : t),
   })),
+  // 只给 html tab 加计数。md tab 有未保存修改，外部改动怎么和本地脏状态合并是
+  // 另一个问题，现在不碰；pdf tab 不需要。
+  markFileChanged: (path) => set((s) => {
+    if (!s.openFileTabs.some((t) => t.path === path && t.kind === 'html')) return s;
+    return {
+      openFileTabs: s.openFileTabs.map((t) =>
+        t.path === path && t.kind === 'html' ? { ...t, reloadNonce: t.reloadNonce + 1 } : t),
+    };
+  }),
   expandedDirs: new Set(),
   expandedProjects: new Set<string>(),
   dirCache: {},

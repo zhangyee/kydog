@@ -123,3 +123,26 @@ test('46-html-tab: 报告跟随阅读字号', async () => {
     await teardown(launched);
   }
 });
+
+test('46-html-tab: 文件内容改了 tab 自动重载', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#heading')).toHaveText('知识地图');
+
+    // 从进程外改写文件 —— 模拟 agent 重写报告
+    await fs.writeFile(htmlPath, REPORT_HTML.replace('知识地图', '知识地图 v2'));
+
+    await expect(frame.locator('#heading')).toHaveText('知识地图 v2', { timeout: 10000 });
+  } finally {
+    await teardown(launched);
+  }
+});

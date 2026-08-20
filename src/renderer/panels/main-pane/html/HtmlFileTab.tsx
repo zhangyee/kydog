@@ -20,7 +20,7 @@ export function HtmlFileTab({ tab }: { tab: FileTab }) {
         if (!cancelled) setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message });
       });
     return () => { cancelled = true; };
-  }, [tab.id, tab.path, setFileTabStatus]);
+  }, [tab.id, tab.path, tab.reloadNonce, setFileTabStatus]);
 
   const theme = useUiStore((s) => s.theme);
   const readingFontSize = useUiStore((s) => s.readingFontSize);
