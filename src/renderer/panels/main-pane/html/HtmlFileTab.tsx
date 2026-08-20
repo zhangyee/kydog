@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { buildHostThemeCss, injectHostTheme, readHostVar } from './reportTheme';
 
@@ -37,6 +37,14 @@ export function HtmlFileTab({ tab }: { tab: FileTab }) {
     setSrcDoc(injectHostTheme(html, buildHostThemeCss(readHostVar)));
   }, [html, theme, readingFontSize]);
 
+  // 打开报告后不必先点一下页面，方向键就能翻节：srcDoc 一旦写入（iframe 已加载新文档），
+  // 主动把焦点交给 iframe 元素。e2e/46-html-tab.spec.ts「方向键在节间跳转」不点击、
+  // 直接按键，就是在验这段代码真的有用。
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    if (srcDoc !== null) frameRef.current?.focus();
+  }, [srcDoc]);
+
   if (tab.status === 'error') {
     return (
       <div className="font-mono" style={{ padding: '14px 18px', fontSize: 12, color: 'var(--color-accent)' }}>
@@ -53,19 +61,21 @@ export function HtmlFileTab({ tab }: { tab: FileTab }) {
   }
   return (
     <iframe
+      ref={frameRef}
       data-testid={`html-frame-${tab.id}`}
       title={tab.title}
       srcDoc={srcDoc}
-      // 不给 allow-scripts —— 任何来路的 .html 里的 JS 都不执行，这是整套安全模型的地基。
-      // 不给 allow-same-origin：实测过它并不能让 app 打包的 webfont 在 frame 里生效
+      // allow-scripts：报告需要跑 JS（方向键翻节、入场动效、进度条）。
+      // 风险由注入的 CSP 兜住 —— connect-src 'none' 让脚本发不出任何请求。
+      // 仍不给 allow-same-origin：没有它，脚本读不到宿主的任何东西。也因此救不了 webfont
       // （@font-face 只在宿主的 fonts.css 里，从未注入进报告的 <head>，iframe 自己的
       // document.fonts 永远是空集），报告在 app 内退到 --font-serif 等变量里的系统字体
-      // 兜底（Songti SC / Georgia 等）。少给一个权限更好，细节见
-      // docs/superpowers/specs/2026-08-20-learning-deck-design.md 的「已知边界」。
+      // 兜底（Songti SC / Georgia 等）。细节见
+      // docs/superpowers/specs/2026-08-20-learning-deck-v2-design.md 的「已知边界」。
       // allow-popups 让报告里 target="_blank" 的 DOI 链接能弹出，交给 main.ts:58 的
       // setWindowOpenHandler 转到系统浏览器 —— 别顺手把它也收掉：报告里的 DOI 链接会
       // 全部变成点了没反应。e2e/46-html-tab.spec.ts「报告里的外链交给系统浏览器打开」守着这条链。
-      sandbox="allow-popups allow-popups-to-escape-sandbox"
+      sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
       className="w-full h-full"
       style={{ border: 'none', background: 'var(--color-paper)' }}
     />

@@ -5,22 +5,36 @@ import { launchKydog, seedSettings, seedProject, teardown } from './helpers';
 
 const HTML_REL = 'report.html';
 
-// 正文里那个 <script> 是探针：沙箱没给 allow-scripts，它不该跑起来。
-// 跑起来了的话 #probe 的文字会被改成 SCRIPT-RAN。
-// #jump / #c1 是页内锚点那条链（知识地图节点 → 章节）；#external 是 DOI 外链那条链。
+// 正文里那个 <script> 是探针：沙箱现在给了 allow-scripts，它应该跑起来
+// （#probe 的文字被改成 SCRIPT-RAN），但 CSP 的 connect-src 'none' 应该拦住它发出的请求
+// （#net 停在 BLOCKED，不会变成 ALLOWED）。
+// #jump / #c1 是页内锚点那条链（知识地图节点 → 章节）；#external 是 DOI 外链那条链；
+// #s1 / #s2 / #h2 是方向键翻节那条链——keydown 监听器把 ArrowDown 接到 #s2.scrollIntoView()。
 const REPORT_HTML = `<!doctype html>
 <html lang="zh">
 <head><meta charset="utf-8"><title>测试报告</title>
-<style>body { background: var(--paper, #ffffff); color: var(--ink, #222222); }</style>
+<style>body { background: var(--paper, #ffffff); color: var(--ink, #222222); }
+  section { min-height: 120vh; }</style>
 </head>
 <body>
 <h1 id="heading">知识地图</h1>
 <p id="probe">SCRIPT-DID-NOT-RUN</p>
+<p id="net">NOT-RUN</p>
 <p><a id="jump" href="#c1">跳到第一节</a></p>
 <p><a id="external" href="https://example.com/10.1000/xyz" target="_blank" rel="noopener">DOI 外链</a></p>
 <div style="height: 2400px"></div>
 <h2 id="c1">第一节</h2>
-<script>document.getElementById('probe').textContent = 'SCRIPT-RAN';</script>
+<section id="s1">第一节</section>
+<section id="s2"><h2 id="h2">第二节</h2></section>
+<script>
+  document.getElementById('probe').textContent = 'SCRIPT-RAN';
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') document.getElementById('s2').scrollIntoView();
+  });
+  fetch('http://127.0.0.1:9/beacon')
+    .then(() => { document.getElementById('net').textContent = 'ALLOWED'; })
+    .catch(() => { document.getElementById('net').textContent = 'BLOCKED'; });
+</script>
 </body>
 </html>
 `;
@@ -52,7 +66,10 @@ test('46-html-tab: 双击打开 HTML tab → 渲染内容', async () => {
   }
 });
 
-test('46-html-tab: 沙箱不执行页面里的脚本', async () => {
+// v1 安全模型的锚点是「沙箱不执行页面里的脚本」——v2 反过来了：沙箱开了 allow-scripts，
+// 脚本能跑，风险改由 CSP 的 connect-src 'none' 兜（见下一条测试）。这条测试改名 + 反转断言
+// 留下痕迹，而不是删掉重写一条新的。
+test('46-html-tab: 沙箱执行页面里的脚本', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
@@ -64,7 +81,25 @@ test('46-html-tab: 沙箱不执行页面里的脚本', async () => {
     await fsRow.dblclick();
 
     const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
-    await expect(frame.locator('#probe')).toHaveText('SCRIPT-DID-NOT-RUN');
+    await expect(frame.locator('#probe')).toHaveText('SCRIPT-RAN');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: CSP 拦住脚本的对外请求', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#net')).toHaveText('BLOCKED', { timeout: 10000 });
   } finally {
     await teardown(launched);
   }
@@ -221,6 +256,32 @@ test('46-html-tab: 报告里的外链交给系统浏览器打开', async () => {
       await frame.locator('#external').click();
       return app.evaluate(() => (globalThis as unknown as { __openedExternal: string[] }).__openedExternal);
     }, { timeout: 10_000 }).toContain('https://example.com/10.1000/xyz');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('46-html-tab: 方向键在节间跳转', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#heading')).toHaveText('知识地图');
+    await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
+
+    // 不点击：验的就是 HtmlFileTab 里 srcDoc 就绪后对 iframe 调 .focus() 是否真的让
+    // 方向键免点击生效。
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() =>
+      frame.locator('#h2').evaluate((el) => el.getBoundingClientRect().top),
+    ).toBeLessThan(200);
   } finally {
     await teardown(launched);
   }

@@ -7,6 +7,17 @@
  * 用浏览器单独打开时走 fallback，两边都成立。
  */
 
+/**
+ * 报告文档的 CSP。允许内联脚本与内联样式（报告的动效与版式全靠它们），
+ * 但 `default-src 'none'` + `connect-src 'none'` 让页面**一个字节都发不出去也收不进来**。
+ *
+ * 这条串是实测过的原样：改动任何一项都要重新实测，不要凭直觉增删。
+ * 比 v1「不给 allow-scripts」的姿势更严 —— v1 挡脚本但不挡外部子资源请求。
+ */
+export const REPORT_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+  + "img-src data:; font-src data:; connect-src 'none'; form-action 'none'";
+
 /** 转发给报告的变量。清单由 reportTheme.test.ts 与 vellum.css 锁死。 */
 export const HOST_THEME_VARS = [
   '--paper', '--paper-deep', '--paper-edge',
@@ -62,6 +73,12 @@ export function injectHostTheme(html: string, css: string): string {
     base.href = 'about:srcdoc';
     doc.head.prepend(base);
   }
+
+  // CSP 必须是 head 的第一个节点：它只约束在它之后解析的内容。
+  const csp = doc.createElement('meta');
+  csp.setAttribute('http-equiv', 'Content-Security-Policy');
+  csp.setAttribute('content', REPORT_CSP);
+  doc.head.prepend(csp);
 
   const style = doc.createElement('style');
   style.id = 'kydog-host-theme';
