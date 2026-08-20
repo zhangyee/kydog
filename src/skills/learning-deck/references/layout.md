@@ -196,27 +196,37 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 下面这份照抄，把 `报告.html` 换成实际文件名，**不要即兴发挥**：
 
 ```bash
-# 1. 残留的示例内容（模板的例子讲的是扩散模型）—— 应该 0 行
+# 1. 残留的示例内容（模板的例子讲的是扩散模型）
 grep -n '扩散\|马尔可夫\|β_t\|ᾱ\|DDPM\|Sohl-Dickstein\|Ho et al\|ELBO\|噪声调度\|U-Net\|MNIST' 报告.html
+#   判据与 #3 一样：命中**只应落在文件头注释里**（那段硬约束注释本身就写着
+#   「示例内容讲的是『扩散模型』，纯属占位」，它是要保留的，不要去删）。
+#   <body> 里一行都不该有。
 
 # 2. 藏起来的没处理完的内容 —— 应该 0 行
 grep -n 'hidden' 报告.html
 
-# 3. 脚本块 —— 必须正好 1
+# 3. 脚本块 —— 唯一的判据是这个数必须正好 1
 grep -c '^<script>' 报告.html
-grep -n '<script' 报告.html      # 其余命中应当只出现在文件头的注释里
+grep -n '<script' 报告.html
+#   这条会命中很多行（模板自带 9 处），全部落在注释里：文件头的硬约束、
+#   <style> 里的两条、<body> 里的两条、脚本内部的一条 —— 它们都在**讲这条规则本身**，
+#   不是违规，不要去删。真正要找的是第二个**行首的** <script> 标签。
 
-# 4. 外部资源 —— 逐条看
+# 4. 外部资源 —— 判据同 #1：命中只应落在文件头注释里
 grep -n 'src="http\|@import\|url(http\|fonts.googleapis\|cdn\.\|unpkg\|fetch(\|XMLHttpRequest\|WebSocket' 报告.html
-#   指向论文的 <a href="http…"> 是链接不是资源，合法；
-#   出现在 img / link / @import / url() / 脚本里的，全会被 CSP 拦掉，必须删。
+#   模板自带 4 处命中，都在文件头硬约束第 2 条里 —— 那段话本身就在列举这些词，不是违规。
+#   <body> 里应该 0 行。指向论文的 <a href="http…"> 是链接不是资源，合法（这条 grep
+#   也不查 href）；真出现在 img / link / @import / url() / 脚本里的，会被 CSP 拦掉，必须删。
 
 # 5. 外链都带 target/rel —— 两个数必须相等
 grep -o 'href="http' 报告.html | wc -l
 grep -o 'target="_blank" rel="noopener"' 报告.html | wc -l
 
-# 6. 写死的颜色 —— 只有 var(--x, #xxx) 里的 # 是合法的，逐条看
+# 6. 写死的颜色 —— 逐条看，**只看 <body> 里的命中**
 grep -n 'fill="#\|stroke="#\|color: *#\|background: *#' 报告.html
+#   <body> 里只有 var(--x, #xxx) 这种带 fallback 的形态是合法的。
+#   落在 <style> 的 @media print 那一段里的 6 处（#fff / #000）是模板自带的
+#   打印兜底，本来就该写死，而且你被明令「<style> 一个字都不要改」—— 跳过它们。
 
 # 7. 幕封页与正文节成对 —— 三个数必须相等
 grep -c 'class="curtain"' 报告.html

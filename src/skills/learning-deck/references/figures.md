@@ -27,11 +27,24 @@ fastpaper figures <id> -d papers/
 | `0` | 取到了（或文件已存在，没有 `--overwrite` 就跳过了） | 往下走 |
 | `4` | **这篇取不到原图**：arXiv 的 PDF-only 投稿（没有源码包）、非 OA 的 PMC、DOI 转不到 PMCID、包里没有图片文件 | **不重试**，这篇走自画 / 指路卡片 |
 | `1` | 源不支持 `figures`，或标识符类型不对（PMID / URL） | **同一个标识符不要重试**。如果原因是你给的是 PMID / URL，手上有 DOI 或 arXiv id 就换成那个再跑一次；没有就放弃这篇 |
-| `2` | 命令写错了 | 改命令 |
+| `2` | 命令写错了（**下面那种情形除外**） | 改命令 |
 
-**如果报的是「未知子命令」**（usage 输出），说明当前装的 fastpaper 还没有这条命令。
-**别去找别的办法抠图**——直接走自画 SVG + 指路卡片，并在 ⑪ 诚实边界写明
-「当前 fastpaper 版本没有 `figures` 命令，本报告未取用原文插图」。
+⚠️ **先判这一条，再看上面的表。**
+
+退出码是 `2`，**并且 stderr 里出现 `unrecognized subcommand`**——例如：
+
+```
+error: unrecognized subcommand 'figures'
+tip: a similar subcommand exists: 'sources'
+```
+
+这不是你命令写错了，是**当前装的 fastpaper 版本还没有 `figures` 这条命令**。
+
+- **不要改命令重试**，也**不要听那句 `tip`**——`sources` 是列可用源的命令，
+  和取图毫无关系，试它只会浪费一轮。
+- 直接走自画 SVG + 指路卡片，并在 ⑪ 诚实边界写明
+  「当前 fastpaper 版本没有 `figures` 命令，本报告未取用原文插图」。
+- 这一篇不用再试，**整份报告的其余论文也不用再试**——版本不会在一次会话中间变。
 
 **覆盖率约 74%**（用户在 39 篇真实论文上实测），且只覆盖 arXiv 与 Europe PMC。
 别的源没有这个通道，不用试。
