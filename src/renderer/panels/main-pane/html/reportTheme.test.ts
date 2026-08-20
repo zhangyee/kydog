@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   HOST_THEME_VARS, NOT_FORWARDED_VARS, HOST_SIZE_VARS, buildHostThemeCss,
-  resolveInlineTarget, dirnameOf, bytesToBase64,
+  resolveInlineTarget, dirnameOf, bytesToBase64, REPORT_CSP,
 } from './reportTheme';
 
 /** 抓出 vellum.css 里声明过的全部自定义属性名。 */
@@ -35,6 +35,20 @@ describe('转发清单', () => {
   it('字号变量不在主题清单里（它们不由 vellum.css 声明）', () => {
     const declared = declaredVars();
     for (const v of HOST_SIZE_VARS) expect(declared.has(v)).toBe(false);
+  });
+});
+
+// 这条串是 spec「实测记录」那张表逐项验过的原样（内联脚本能跑、fetch 被拦、
+// 外部 img 被拦……）。它是纯字符串，node 环境完全测得动，而 e2e 只间接覆盖了
+// connect-src 那一项 —— 有人把 img-src 放宽成 *、或给 script-src 加 'unsafe-eval'，
+// 不锁的话没有任何测试会红。整串等值断言：改任何一项都必须回到这里改，
+// 顺带回去重新实测（reportTheme.ts 的注释里写着为什么）。
+describe('REPORT_CSP', () => {
+  it('就是实测过的那一串，一个字符都没变', () => {
+    expect(REPORT_CSP).toBe(
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+      + "img-src data:; font-src data:; connect-src 'none'; form-action 'none'",
+    );
   });
 });
 

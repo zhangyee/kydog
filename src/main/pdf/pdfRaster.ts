@@ -104,10 +104,27 @@ let activeWindow: BrowserWindow | null = null;
 let queue: Promise<unknown> = Promise.resolve();
 
 /**
+ * 「这一轮渲染还算数吗」的代号。每次 destroyRasterWindow 都 +1。
+ *
+ * 为什么需要它：超时（withTimeout）可能发生在**建窗之前** —— 60 秒完全可能耗在
+ * 一个 50MB PDF 的 fsp.readFile 上。那一刻 activeWindow 还是 null，外层 finally 的
+ * destroyRasterWindow 什么也没销毁；而被放弃的那次 doRender 并不会因为 race 输了就
+ * 停下，它继续往下跑、建出一个 show:false 的窗口，从此没有任何人持有它——
+ * 而 show:false 的窗口照样压住 window-all-closed，app 再也退不出去。
+ * 所以 doRender 在开头取一次代号，建窗前后各复查一次：对不上就说明自己已经被放弃，
+ * 立刻把（可能已经建出来的）窗口销毁掉再退出。
+ */
+let windowGeneration = 0;
+
+/**
  * 销毁当前这个渲染窗口（如果有）。正常路径由 doRender 的 finally 调用；
  * main.ts 的 before-quit 也会调一次，收拾掉退出时还在飞的那一个。
+ *
+ * 同时把代号 +1：即使此刻没有窗口可销毁（超时发生在建窗之前），也要让还在飞的那次
+ * doRender 知道自己已经作废，见 windowGeneration 的注释。
  */
 export function destroyRasterWindow(): void {
+  windowGeneration += 1;
   const win = activeWindow;
   activeWindow = null;
   if (win && !win.isDestroyed()) win.destroy();
@@ -133,7 +150,15 @@ function rasterPageLocation(): { url?: string; file?: string } {
  * loadFile / executeJavaScript 的 promise 可能永不 settle —— 只靠 await 它们等不到
  * 任何结果。把 render-process-gone 变成一条 reject，调用方 race 一下就能脱身。
  */
-async function createRasterWindow(onGone: (err: Error) => void): Promise<BrowserWindow> {
+async function createRasterWindow(
+  onGone: (err: Error) => void,
+  generation: number,
+): Promise<BrowserWindow> {
+  // 建窗之前先复查一次：超时可能发生在 doRender 读 PDF 的那一段，这时候连窗口都还
+  // 不该建（见 windowGeneration 的注释）。
+  if (windowGeneration !== generation) {
+    throw new KydogError('fs.read_failed', 'PDF 渲染已被放弃（超时或中止）');
+  }
   const win = new BrowserWindow({
     show: false,
     width: 800,
@@ -177,6 +202,14 @@ async function createRasterWindow(onGone: (err: Error) => void): Promise<Browser
   } catch (err) {
     throw new KydogError('fs.read_failed', `PDF 渲染页加载失败：${String(err)}`);
   }
+  // 加载途中同样可能超时（destroyRasterWindow 那一下把 activeWindow 置空、销毁了这个
+  // 窗口，或者压根还没轮到 activeWindow 赋值）。复查代号，对不上就自己收拾干净——
+  // 不能把一个没人持有的窗口 return 出去。
+  if (windowGeneration !== generation) {
+    if (!win.isDestroyed()) win.destroy();
+    if (activeWindow === win) activeWindow = null;
+    throw new KydogError('fs.read_failed', 'PDF 渲染已被放弃（超时或中止）');
+  }
   return win;
 }
 
@@ -213,6 +246,7 @@ function abortChannel(signal: AbortSignal | undefined): Promise<never> {
 async function doRender(
   args: NormalizedRenderArgs,
   signal: AbortSignal | undefined,
+  generation: number,
 ): Promise<{ pngPath: string }> {
   let stat;
   try {
@@ -241,7 +275,7 @@ async function doRender(
 
   let result: RasterResult;
   try {
-    const win = await Promise.race([createRasterWindow(onGone), gone, aborted]);
+    const win = await Promise.race([createRasterWindow(onGone, generation), gone, aborted]);
     result = await Promise.race([
       win.webContents.executeJavaScript(code) as Promise<RasterResult>,
       gone,
@@ -287,8 +321,12 @@ export async function renderPageToPng(
   const args = validateRenderArgs(rawArgs);
   const what = `渲染 ${path.basename(args.path)} 第 ${args.page} 页`;
   const runOnce = async () => {
+    // 代号在这里取，不在 doRender 里取：超时可能在 doRender 走到建窗那步之前就发生，
+    // 而下面 finally 的 destroyRasterWindow 会把代号 +1 —— doRender 拿着这个更早的
+    // 代号才能发现「我已经被放弃了」。见 windowGeneration 的注释。
+    const generation = windowGeneration;
     try {
-      return await withTimeout(doRender(args, signal), RENDER_TIMEOUT_MS, what);
+      return await withTimeout(doRender(args, signal, generation), RENDER_TIMEOUT_MS, what);
     } finally {
       // 清理的次生错误不该顶掉 try 里那条真正的错误（超时 / 渲染失败），
       // 否则调用方看到的是一条误导性的信息。

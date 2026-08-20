@@ -92,7 +92,11 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
       title={tab.title}
       srcDoc={srcDoc}
       // allow-scripts：报告需要跑 JS（方向键翻节、入场动效、进度条）。
-      // 风险由注入的 CSP 兜住 —— connect-src 'none' 让脚本发不出任何请求。
+      // 风险由注入的 CSP 兜住 —— connect-src 'none' 让脚本发不出 fetch / XHR / WebSocket，
+      // form-action 'none' 让它提交不了表单，外部子资源全锁在 data:。
+      // 唯一没被封住的出口是 window.open：CSP 管不到弹窗，而下面的 allow-popups 加上
+      // main.ts 的 setWindowOpenHandler 会把 http(s) URL 交给系统浏览器，URL 里带什么就
+      // 带什么。详见 reportTheme.ts 里 REPORT_CSP 的注释与 spec 的「已知边界」。
       // 仍不给 allow-same-origin：没有它，脚本读不到宿主的任何东西。也因此救不了 webfont
       // （@font-face 只在宿主的 fonts.css 里，从未注入进报告的 <head>，iframe 自己的
       // document.fonts 永远是空集），报告在 app 内退到 --font-serif 等变量里的系统字体

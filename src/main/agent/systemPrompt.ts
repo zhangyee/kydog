@@ -44,8 +44,12 @@ export function renderSystemPrompt(builtins: readonly ToolPromptSource[]): strin
   const names = builtins.map((t) => t.name);
   const raw: string[] = [];
   // pi 只在有 bash、又没有 grep/find/ls 专用工具时才提示拿 bash 兜底（system-prompt.js 同款条件）。
+  // 条件照抄 pi，文案不照抄：pi 那句写的是 `ls, rg, find`，而 KyDog 不打包 ripgrep，
+  // `rg` 一定 127。v1 真跑时模型照着这句连试了四次 `rg` 全部失败 —— 那不是模型的问题，
+  // 是我们自己在提示词里教错了。改成 `grep` 从源头修掉，skill 侧那两条「自检固定用 grep」
+  // 的纪律仍然保留（模型仍可能自己想用 rg），但它们不再是唯一的防线。
   if (names.includes('bash') && !names.some((n) => n === 'grep' || n === 'find' || n === 'ls')) {
-    raw.push('Use bash for file operations like ls, rg, find');
+    raw.push('Use bash for file operations like ls, grep, find');
   }
   for (const tool of builtins) raw.push(...(tool.promptGuidelines ?? []));
   raw.push(...ASK_GUIDELINES);
