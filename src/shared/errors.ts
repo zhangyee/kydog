@@ -11,6 +11,7 @@ export type KydogErrorCode =
   | 'fs.read_failed'
   | 'fs.write_failed'
   | 'fs.too_large'
+  | 'fs.access_denied'
   | 'not_implemented'
   | 'skill.invalid'
   | 'skill.name_conflict'

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
-import { buildHostThemeCss, dirnameOf, injectHostTheme, readHostVar } from './reportTheme';
+import { buildHostThemeCss, dirnameOf, injectHostTheme, inlineLocalImages, readHostVar } from './reportTheme';
 
 export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
@@ -28,26 +28,38 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
 
   const theme = useUiStore((s) => s.theme);
   const readingFontSize = useUiStore((s) => s.readingFontSize);
+
+  // 两段独立 effect（Task 7b review Important 2）：图片内联要读盘 + base64，
+  // 主题注入只是 DOM 操作。揉进同一个函数会导致切主题 / 调阅读字号这种跟图片
+  // 内容毫无关系的操作，把报告里所有本地图片重新读一遍盘——见 reportTheme.ts
+  // 顶部「跟 injectHostTheme 拆成两个独立阶段」的说明。
+  const [inlinedHtml, setInlinedHtml] = useState<string | null>(null);
+  useEffect(() => {
+    if (html === null) { setInlinedHtml(null); return; }
+    let cancelled = false;
+    inlineLocalImages(html, dirnameOf(tab.path))
+      .then((result) => { if (!cancelled) setInlinedHtml(result); })
+      .catch((err: Error) => {
+        // inlineLocalImagesInDoc 内部已经把单张图的失败兜成 rejected 分支，不会走到
+        // 这里；这里只是防御性兜底 —— 万一真的抛了，也不能让报告卡在「加载中」，
+        // 退化成显示未内联的原始 html（图片会以 alt 文字呈现，不会是坏图标）。
+        console.error('inline local images failed', err);
+        if (!cancelled) setInlinedHtml(html);
+      });
+    return () => { cancelled = true; };
+  }, [html, tab.path]);
+
   const [srcDoc, setSrcDoc] = useState<string | null>(null);
 
   // 注入放在普通 effect 里而不是 useMemo：主题切换时 data-theme 由
   // ThemeApplier 的 layout effect 写入，渲染期间读 getComputedStyle 会读到旧值。
-  // injectHostTheme 因为要 await file.readBytes 内联本地图片，是 async 的 ——
-  // 切 tab / 快速切主题时可能有多个调用同时在飞，cancelled 守卫保证只有最后一次
-  // 触发的调用能写 setSrcDoc，过期的结果落地时静默丢弃。
+  // injectHostTheme 现在是同步函数（本地图片内联已经拆到上面那个 effect 里、
+  // inlinedHtml 落地时已经是内联完的字符串），不需要 cancelled 守卫——函数体内
+  // 没有 await 边界，不存在"旧调用的结果比新调用晚落地"的竞态窗口。
   useEffect(() => {
-    if (html === null) { setSrcDoc(null); return; }
-    let cancelled = false;
-    injectHostTheme(html, buildHostThemeCss(readHostVar), dirnameOf(tab.path))
-      .then((doc) => { if (!cancelled) setSrcDoc(doc); })
-      .catch((err: Error) => {
-        // inlineLocalImages 内部已经把单张图的失败兜成 rejected 分支，不会走到这里；
-        // 这里只是防御性兜底 —— 万一真的抛了，也不能让报告卡在「加载中」。
-        console.error('inject host theme failed', err);
-        if (!cancelled) setSrcDoc(html);
-      });
-    return () => { cancelled = true; };
-  }, [html, theme, readingFontSize, tab.path]);
+    if (inlinedHtml === null) { setSrcDoc(null); return; }
+    setSrcDoc(injectHostTheme(inlinedHtml, buildHostThemeCss(readHostVar)));
+  }, [inlinedHtml, theme, readingFontSize]);
 
   // 打开报告后不必先点一下页面，方向键就能翻节：主动把焦点交给 iframe 元素。
   // 依赖里必须有 isActive：tab 是保持挂载、用 display 切换可见的（MainPane.tsx），

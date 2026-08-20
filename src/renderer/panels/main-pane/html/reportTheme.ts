@@ -59,8 +59,14 @@ export function buildHostThemeCss(read: (name: string) => string): string {
  * document —— 不执行脚本、不加载资源。
  *
  * 只在渲染进程可用（vitest 是 node 环境，没有 DOMParser），因此本函数由 e2e 覆盖。
+ *
+ * 特意留成同步函数（本地图片内联 —— 唯一需要 `await` 磁盘 I/O 的部分 —— 被拆到了
+ * `inlineLocalImages` 里，见下方的分工说明）：`HtmlFileTab` 每次切主题 / 调阅读字号
+ * 都会重跑这个函数，同步意味着切主题不会经过一次 promise 微任务，也不需要
+ * cancelled 守卫 —— 函数体内没有 await 边界，不存在「旧调用的结果比新调用晚落地」
+ * 这回事。
  */
-export async function injectHostTheme(html: string, css: string, baseDir: string): Promise<string> {
+export function injectHostTheme(html: string, css: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
 
   // srcdoc 文档的 base URL 继承自宿主，导致 href="#x" 解析成 <宿主URL>#x，
@@ -85,10 +91,6 @@ export async function injectHostTheme(html: string, css: string, baseDir: string
   style.textContent = css;
   doc.head.append(style);
 
-  // 本地图片内联（Task 7b）：CSP 是 `img-src data:`，报告不能自带外部 / 相对 URL 的图。
-  // 复用上面已经解析好的 doc，别再 parse 一遍。
-  await inlineLocalImages(doc, baseDir);
-
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 
@@ -99,12 +101,33 @@ export async function injectHostTheme(html: string, css: string, baseDir: string
 // 还极易出错。改成查看器渲染时内联：报告写相对路径 <img src="figs/a.png">，
 // 这里读文件转 data URI 写回去。agent 一个 base64 字符都不用打，CSP 一个字都不用放宽。
 //
+// 跟 injectHostTheme 拆成两个独立阶段（Task 7b review Important 2）：这里只处理
+// 图片，不碰主题 CSS。原因是 `HtmlFileTab` 的 srcDoc 依赖 [html, theme,
+// readingFontSize]，如果内联揉进同一个函数，切一次主题 / 调一次阅读字号就会把
+// 报告里所有本地图片重新读盘 + 重新 base64 一遍 —— 这些操作跟图片内容毫无关系，
+// 不该触发任何磁盘 I/O。拆开后 `inlineLocalImages(html, baseDir)` 只在 html 或
+// baseDir 变化（文件重新加载 / 换了报告）时跑一次，`injectHostTheme` 则可以退回
+// 同步函数，随便切主题都不用等 promise。代价是 injectHostTheme 会对（已经内联过
+// 图片的）html 再 `new DOMParser().parseFromString` 一次 —— 这次重新解析不碰磁盘，
+// 纯 DOM 操作，比起「切主题重读图片文件」这个量级的浪费可以忽略。
+//
 // 安全边界（路径来自报告内容，报告可能不是本会话生成的，需当不可信输入处理）：
-//   1. 只认报告文件所在目录树内的路径，逃出的（`../`、绝对路径、盘符、反斜杠）拒绝
-//   2. 扩展名白名单：png/jpg/jpeg/gif/webp
-//   3. 单张 8MB、全篇合计 24MB 上限（srcdoc 是一个字符串，太大拖垮 iframe 解析）
-// 三道任一没过，或读文件失败（不存在/无权限），都退化成「移除 src、标 rejected、
-// 保留 alt」——显示成 alt 文字而不是坏图标，且不能让整份报告渲染失败。
+//   1. 字符串层校验（resolveInlineTarget）：只认报告文件所在目录树内的路径，
+//      逃出的（`../`、绝对路径、盘符、反斜杠）拒绝；扩展名白名单
+//      png/jpg/jpeg/gif/webp。这道挡不住符号链接 —— 文件名和路径字符串都可以
+//      看着完全合规，实际指向目录树外的任意文件。
+//   2. realpath 层校验（主进程 `file.readBytesWithin`，见 fileService.ts）：
+//      baseDir 与目标路径都取 realpath 后判定目标是否真的落在 baseDir 内，
+//      符号链接逃逸在这一步被拒。两道校验各管一段，都要过。
+//   3. 体积上限：单张 8MB、全篇合计 24MB（srcdoc 是一个字符串，太大拖垮 iframe
+//      解析）。按文档顺序遍历、边读边累加 totalBytes——「先到先得」：排在前面的
+//      图片吃满预算后，后面即使是一张很小的图也会被拒；不是「先算总量再一次性
+//      决定」。这是有意的简化（一次性算总量需要先把所有图片都读一遍才能判断，
+//      等于牺牲了「小图片不因为排在大图后面而被冤枉拒绝」这个次要公平性，换取
+//      「读到哪张算哪张、不用倒回去重算」的简单实现），不是遗漏。
+// 三道任一没过，或读文件失败（不存在/无权限/realpath 逃出目录树），都退化成
+// 「移除 src、标 rejected、保留 alt」——显示成 alt 文字而不是坏图标，且不能让
+// 整份报告渲染失败。
 
 /** 白名单扩展名 → MIME，大小写不敏感（比较前调用方会 toLowerCase）。 */
 const IMAGE_MIME_BY_EXT: Record<string, string> = {
@@ -205,8 +228,13 @@ function rejectLocalImage(img: HTMLImageElement): void {
 /**
  * 把 doc 里符合条件的本地图片就地替换成 data URI；不满足任一安全边界或读取失败的
  * 都走 rejectLocalImage，不抛出 —— 一张图出问题不该拖垮整份报告的渲染。
+ *
+ * 读文件走 `file.readBytesWithin` 而不是 `file.readBytes`：后者只按字面路径读，
+ * 不会跟着符号链接再校验一次目标是否还在 baseDir 内 —— resolveInlineTarget 的
+ * 字符串校验拦不住「路径字符串合规、实际是个指向目录树外的符号链接」这种向量，
+ * 得靠主进程那道 realpath 校验补上（见文件顶部的安全边界说明）。
  */
-async function inlineLocalImages(doc: Document, baseDir: string): Promise<void> {
+async function inlineLocalImagesInDoc(doc: Document, baseDir: string): Promise<void> {
   let totalBytes = 0;
   for (const img of collectLocalImageSrcs(doc)) {
     const src = img.getAttribute('src') ?? '';
@@ -216,7 +244,7 @@ async function inlineLocalImages(doc: Document, baseDir: string): Promise<void> 
       continue;
     }
     try {
-      const { bytes } = await window.kydog.invoke('file.readBytes', { path: resolved });
+      const { bytes } = await window.kydog.invoke('file.readBytesWithin', { baseDir, path: resolved });
       if (bytes.length > MAX_IMAGE_BYTES || totalBytes + bytes.length > MAX_TOTAL_IMAGE_BYTES) {
         console.warn(`[kydog] 图片超出内联体积上限，退化为 alt 文字：${resolved}`);
         rejectLocalImage(img);
@@ -226,10 +254,24 @@ async function inlineLocalImages(doc: Document, baseDir: string): Promise<void> 
       const ext = src.slice(src.lastIndexOf('.') + 1).toLowerCase();
       img.setAttribute('src', `data:${IMAGE_MIME_BY_EXT[ext]};base64,${bytesToBase64(bytes)}`);
     } catch (err) {
-      console.warn(`[kydog] 读取图片失败，退化为 alt 文字：${resolved}`, err);
+      console.warn(`[kydog] 读取图片失败或路径校验未通过，退化为 alt 文字：${resolved}`, err);
       rejectLocalImage(img);
     }
   }
+}
+
+/**
+ * `inlineLocalImagesInDoc` 的字符串入口：解析 html → 内联图片 → 序列化回字符串。
+ * 是 `HtmlFileTab` 实际调用的那个 —— 只依赖 [html, baseDir]，跟主题/字号无关，
+ * 见文件顶部「跟 injectHostTheme 拆成两个独立阶段」的说明。
+ *
+ * 只在渲染进程可用（同 injectHostTheme，vitest 没有 DOMParser），因此本函数由
+ * e2e 覆盖，不参与单测。
+ */
+export async function inlineLocalImages(html: string, baseDir: string): Promise<string> {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  await inlineLocalImagesInDoc(doc, baseDir);
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 
 /** 从宿主根元素读一个自定义属性的计算值。 */

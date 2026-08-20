@@ -87,14 +87,18 @@ const MINIMAL_PNG = Buffer.from(
   'base64',
 );
 
-// 在 REPORT_HTML 基础上加两张图：#fig 是合法的报告目录内相对路径（应内联成功），
-// #bad 是逃出报告目录树的路径（应被拒绝、退化成 alt 文字）。不复用给其余测试的
-// REPORT_HTML 常量本身（只在这两条测试用的变体里加），其余测试的断言/时序不受影响。
+// 在 REPORT_HTML 基础上加三张图：#fig 是合法的报告目录内相对路径（应内联成功），
+// #bad 是逃出报告目录树的路径（应被拒绝、退化成 alt 文字），#evil 是报告目录树内
+// 的一个符号链接、文件名和路径字符串都合规，但链接目标在树外（Task 7b review
+// Critical：resolveInlineTarget 的字符串校验拦不住这个向量，得靠主进程
+// file.readBytesWithin 的 realpath 校验拦）。不复用给其余测试的 REPORT_HTML
+// 常量本身（只在这几条测试用的变体里加），其余测试的断言/时序不受影响。
 const REPORT_HTML_WITH_IMAGES = REPORT_HTML.replace(
   '<h1 id="heading">知识地图</h1>',
   '<h1 id="heading">知识地图</h1>\n'
   + '<img id="fig" src="fig.png" alt="架构图">\n'
-  + '<img id="bad" src="../outside.png" alt="ALT-FALLBACK">',
+  + '<img id="bad" src="../outside.png" alt="ALT-FALLBACK">\n'
+  + '<img id="evil" src="evil-link.png" alt="EVIL-FALLBACK">',
 );
 
 async function seedWithImages(home: string) {
@@ -105,7 +109,11 @@ async function seedWithImages(home: string) {
   await fs.writeFile(path.join(projectPath, 'fig.png'), MINIMAL_PNG);
   // 放在 proj/ 外面一级 —— 真实存在、可读，证明拒绝的原因是「逃出目录树」而不是
   // 单纯的「文件不存在」。
-  await fs.writeFile(path.join(home, 'outside.png'), MINIMAL_PNG);
+  const outsidePath = path.join(home, 'outside.png');
+  await fs.writeFile(outsidePath, MINIMAL_PNG);
+  // 符号链接放在 proj/ 里面（字符串路径 'evil-link.png' 完全合规、扩展名也在白名单），
+  // 但链接目标指向 proj/ 外面的 outside.png —— 字符串校验看不出问题，得靠 realpath。
+  await fs.symlink(outsidePath, path.join(projectPath, 'evil-link.png'));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -469,6 +477,32 @@ test('46-html-tab: 逃出报告目录的图片路径被拒绝，退化成 alt �
     // src 属性被整个摘掉（不是留一个读不到的坏路径），元素靠 alt 退化成文字。
     expect(await bad.evaluate((el) => el.hasAttribute('src'))).toBe(false);
     expect(await bad.evaluate((el) => el.getAttribute('alt'))).toBe('ALT-FALLBACK');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// Task 7b review 的 Critical 修复：resolveInlineTarget 只做字符串校验（逃出 baseDir
+// 的相对路径、绝对路径），挡不住「路径字符串本身完全合规、实际是个指向目录树外的
+// 符号链接」这种向量。这条测试是唯一验证 file.readBytesWithin 那道 realpath 校验
+// 真的在端到端链路里生效的证据——单测（fileService.test.ts）只测了 realpath
+// 校验函数本身，没有验证 HtmlFileTab → inlineLocalImages → RPC 这条链真的把它接上了。
+test('46-html-tab: 报告目录内指向目录外的符号链接被拒绝，不能靠字符串校验绕过', async () => {
+  const launched = await launchKydog({ seed: seedWithImages });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const evil = frame.locator('#evil');
+    await expect.poll(() => evil.evaluate((el) => el.getAttribute('data-kydog-inline'))).toBe('rejected');
+    expect(await evil.evaluate((el) => el.hasAttribute('src'))).toBe(false);
+    expect(await evil.evaluate((el) => el.getAttribute('alt'))).toBe('EVIL-FALLBACK');
   } finally {
     await teardown(launched);
   }
