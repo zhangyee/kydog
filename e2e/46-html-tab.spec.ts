@@ -14,6 +14,10 @@ const HTML_REL = 'report.html';
 // 只由这个事件驱动，fetch 的 .catch() 什么都不做。
 // #jump / #c1 是页内锚点那条链（知识地图节点 → 章节）；#external 是 DOI 外链那条链；
 // #s1 / #s2 / #h2 是方向键翻节那条链——keydown 监听器把 ArrowDown 接到 #s2.scrollIntoView()。
+// #reveal-1 / #reveal-2 是入场动效那条链：脚本逐字照抄真实模板 report-template.html
+// 里 .reveal 的处理逻辑（IntersectionObserver + prefers-reduced-motion 分支），元素
+// 初始 opacity 由脚本设成 0，滚入视口后动画回 1——测的就是"动画写错导致内容永远
+// opacity:0"这种静默失败会不会被抓出来。
 const REPORT_HTML = `<!doctype html>
 <html lang="zh">
 <head><meta charset="utf-8"><title>测试报告</title>
@@ -27,6 +31,8 @@ const REPORT_HTML = `<!doctype html>
 <p><a id="jump" href="#c1">跳到第一节</a></p>
 <p><a id="external" href="https://example.com/10.1000/xyz" target="_blank" rel="noopener">DOI 外链</a></p>
 <div style="height: 2400px"></div>
+<p class="reveal" id="reveal-1">REVEAL-1</p>
+<p class="reveal" id="reveal-2">REVEAL-2</p>
 <h2 id="c1">第一节</h2>
 <section id="s1">第一节</section>
 <section id="s2"><h2 id="h2">第二节</h2></section>
@@ -38,6 +44,26 @@ const REPORT_HTML = `<!doctype html>
   document.addEventListener('securitypolicyviolation', (e) => {
     document.getElementById('net').textContent = 'CSP-BLOCKED:' + e.violatedDirective;
   });
+  // 逐字照抄 report-template.html 文末 <script> 里 .reveal 那部分逻辑。
+  (() => {
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const items = [...document.querySelectorAll('.reveal')];
+    if (reduce) { items.forEach((el) => { el.style.opacity = '1'; }); return; }
+    items.forEach((el) => { el.style.opacity = '0'; });
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        io.unobserve(e.target);
+        const sibs = [...e.target.parentElement.querySelectorAll(':scope > .reveal')];
+        const delay = Math.min(sibs.indexOf(e.target), 6) * 70;
+        e.target.animate(
+          [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }],
+          { duration: 320, delay, easing: 'cubic-bezier(.2,.6,.2,1)', fill: 'forwards' },
+        );
+      }
+    }, { rootMargin: '0px 0px -12% 0px' });
+    items.forEach((el) => io.observe(el));
+  })();
   // 连接失败与被 CSP 拦截会产生同样的 TypeError，这里什么都不做——
   // 判据只看上面那个 securitypolicyviolation 事件。
   fetch('http://127.0.0.1:9/beacon').catch(() => {});
@@ -325,6 +351,48 @@ test('46-html-tab: 方向键在节间跳转（切走再切回）', async () => {
     await expect.poll(() =>
       frame.locator('#h2').evaluate((el) => el.getBoundingClientRect().top),
     ).toBeLessThan(200);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// 入场动效唯一能造成灾难的失败模式：.reveal 元素的 opacity 由脚本主动设成 0，
+// 靠 IntersectionObserver 在滚入视口时动画回 1——如果这条链路哪里写错（observer
+// 没触发、动画目标写反、条件判断反了……），内容会永远停在 opacity: 0，且不报错。
+// 这条测试锁的就是这个：滚到 .reveal 元素之后必须最终可见、且 opacity 真的回到了
+// 1，不是"滚得到/点得动"这类代理信号。比动效好不好看重要得多。
+test('46-html-tab: 入场动效——滚到 .reveal 元素后最终可见', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
+
+    await page.click('text=测试 Thread');
+    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    await fsRow.waitFor();
+    await fsRow.dblclick();
+
+    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(frame.locator('#heading')).toHaveText('知识地图');
+    await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
+
+    const opacityOf = (loc: ReturnType<typeof frame.locator>) =>
+      loc.evaluate((el) => getComputedStyle(el).opacity);
+
+    const reveal1 = frame.locator('#reveal-1');
+    const reveal2 = frame.locator('#reveal-2');
+
+    // 滚入视口前：脚本已经跑过、opacity 应该是 0（否则下面滚进去看到"从头到尾都是 1"
+    // 就分不清是脚本压根没跑（好的失败模式：至少可见）还是真的做完了淡入淡出）。
+    await expect.poll(() => opacityOf(reveal1)).toBe('0');
+
+    await reveal1.scrollIntoViewIfNeeded();
+    await expect(reveal1).toBeVisible();
+    await expect.poll(() => opacityOf(reveal1)).toBe('1');
+
+    await reveal2.scrollIntoViewIfNeeded();
+    await expect(reveal2).toBeVisible();
+    await expect.poll(() => opacityOf(reveal2)).toBe('1');
   } finally {
     await teardown(launched);
   }

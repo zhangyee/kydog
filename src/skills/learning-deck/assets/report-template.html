@@ -15,12 +15,17 @@
 
   四条硬约束，违反了报告在 KyDog 里会静默坏掉（不报错，只是不对劲）：
 
-  1. <script> 只能写在模板底部那一个内联 <script> 块里（方向键翻节 + 进度条，
-     见文末）：查看器沙箱现在给 allow-scripts，脚本能跑，但同时注入了一条严格
-     CSP（connect-src 'none' 等），发不出任何网络请求。**不要再加别的脚本**——
-     这条硬约束是「只有这一处」，不是「随便写」。逐条入场动效、SVG 描边动画
-     这类修饰性效果仍然优先用 CSS animation / SVG SMIL（声明式，不占这唯一的
-     脚本预算）；只有键盘交互与进度条这种非脚本做不到的行为才用 JS。
+  1. <script> 只能写在模板底部那一个内联 <script> 块里（方向键翻节 + 进度条 +
+     逐条入场 + SVG 描边，见文末）：查看器沙箱现在给 allow-scripts，脚本能跑，
+     但同时注入了一条严格 CSP（connect-src 'none' 等），发不出任何网络请求。
+     **不要再加别的 <script> 标签**——这条硬约束是「只有这一处」，不是
+     「随便写」，新逻辑加进文末那一处、不新开标签。
+     逐条入场动效、SVG 描边动画这两样一度被认为该优先用 CSS animation /
+     SVG SMIL 做（声明式，不占脚本预算）——后来发现站不住：两者都要「元素
+     滚动进入视口才触发」，纯 CSS 没有贴合这个语义的声明式方案（scroll-driven
+     animation 绑定的是滚动位置，不是「是否进入视口」；SMIL 只能连续播放或靠
+     begin="…click" 这类离散事件，没有「进入视口」这个触发源），所以也落进了
+     这唯一的脚本块，跟键盘交互、进度条一样。
      这条推翻了 v1「不写 <script>」——v1 的沙箱不给 allow-scripts，v2 给了。
   2. 不引任何外部资源：没有 CDN、没有 <link rel=stylesheet>、没有 @import、
      没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()、
@@ -813,6 +818,21 @@ figcaption b {
     padding: 0;
   }
 
+  /* 顶部进度条：position: sticky 在打印/导出 PDF 的分页上下文里行为不一致，
+     纸上也没有「当前滚动到哪」这个概念——不清掉的话首页顶部可能残留一条
+     空的 2px 灰线（轨道背景 --ink-hair），且 PDF 导出没有 JS 运行环境，
+     宽度会停在初始值 0%，看起来像个不完整的进度条。直接隐藏。 */
+  .progress {
+    display: none;
+  }
+
+  /* 逐条入场：opacity: 0 是文末 <script> 在浏览器里主动设的，导出 PDF 时
+     脚本未必有机会运行到、动画也未必播完——强制可见，不能让内容停在
+     入场前的隐藏态被印出来（或印不出来）。 */
+  .reveal {
+    opacity: 1 !important;
+  }
+
   /* 侧注屏幕上已经是块级（见上面「侧注」一节的注释），不用再管 float；
      这里只是把颜色换成打印安全的纯黑，顺手把间距收紧一点省纸。 */
   .aside {
@@ -877,7 +897,11 @@ figcaption b {
      后面按 class 列的是「面」的回落（填充色没法一刀切，全填白会把剪影抹掉）。
 
      ⚠️ 你新画的图如果引入了新的填充 class，必须回来在这一段登记一条，
-        否则那张图会重犯同一个洞 —— 而屏幕上完全看不出来。 */
+        否则那张图会重犯同一个洞 —— 而屏幕上完全看不出来。同理，新引入的
+        动效 class 如果会用行内样式动手脚（比如下面的 .draw 用 JS 设
+        stroke-dasharray / stroke-dashoffset 做描边动画），也要在这里
+        登记一条把它清零，否则打印/导出会定格在动画播到一半、甚至完全
+        没播的隐形状态（stroke-dashoffset 等于路径全长）。 */
 
   svg text {
     fill: #000 !important;
@@ -891,6 +915,15 @@ figcaption b {
   svg polyline,
   svg polygon {
     stroke: #000 !important;
+  }
+
+  /* SVG 描边动效：见文末 <script>，.draw 路径进入视口时由 JS 把
+     stroke-dasharray 设成路径长度、stroke-dashoffset 从满长动画到 0。
+     打印/导出没有那段 JS 的运行时序，必须强制清零两个属性——不然可能印出
+     半描一半的线，或者 dashoffset 还停在满长（等于整条线是透明的）。 */
+  .draw {
+    stroke-dasharray: none !important;
+    stroke-dashoffset: 0 !important;
   }
 
   /* 面：有底色的回落到白，靠描边与线型区分层级 */
@@ -1124,7 +1157,7 @@ figcaption b {
     从真实数据出发，每步掺一点高斯噪声，走够多步就把任何数据分布碾成标准正态。
   </p>
 
-  <aside class="aside">
+  <aside class="aside reveal">
     <p>本节假设你已经知道<a class="term" href="#g-markov">马尔可夫链</a>与高斯分布的可加性
     ——访谈里这两项你标的是「熟悉」。</p>
     <p>如果读到「一步跳到 t」那里卡住，先回<a href="#g-reparam">术语表的重参数化</a>。</p>
@@ -1187,9 +1220,9 @@ figcaption b {
         </defs>
 
         <!-- 前向：三段向右的弧 -->
-        <path class="arrow-line" d="M82 54 C 82 26, 206 26, 206 54"  marker-end="url(#ld-arrow)"/>
-        <path class="arrow-line" d="M258 54 C 258 26, 382 26, 382 54" marker-end="url(#ld-arrow)"/>
-        <path class="arrow-line" d="M434 54 C 434 26, 558 26, 558 54" marker-end="url(#ld-arrow)"/>
+        <path class="arrow-line draw" d="M82 54 C 82 26, 206 26, 206 54"  marker-end="url(#ld-arrow)"/>
+        <path class="arrow-line draw" d="M258 54 C 258 26, 382 26, 382 54" marker-end="url(#ld-arrow)"/>
+        <path class="arrow-line draw" d="M434 54 C 434 26, 558 26, 558 54" marker-end="url(#ld-arrow)"/>
         <text class="svg-formula" x="320" y="17" text-anchor="middle" font-size="12">q(x_t | x_t-1)</text>
         <text class="svg-label-faint" x="320" y="17" text-anchor="middle" font-size="11" dx="112">加噪 · 固定</text>
 
@@ -1219,9 +1252,9 @@ figcaption b {
         <text class="svg-label-faint" x="496" y="98" text-anchor="middle" font-size="18">⋯</text>
 
         <!-- 反向：三段向左的弧 -->
-        <path class="arrow-line" d="M558 158 C 558 186, 434 186, 434 158" marker-end="url(#ld-arrow)"/>
-        <path class="arrow-line" d="M382 158 C 382 186, 258 186, 258 158" marker-end="url(#ld-arrow)"/>
-        <path class="arrow-line" d="M206 158 C 206 186, 82 186, 82 158"   marker-end="url(#ld-arrow)"/>
+        <path class="arrow-line draw" d="M558 158 C 558 186, 434 186, 434 158" marker-end="url(#ld-arrow)"/>
+        <path class="arrow-line draw" d="M382 158 C 382 186, 258 186, 258 158" marker-end="url(#ld-arrow)"/>
+        <path class="arrow-line draw" d="M206 158 C 206 186, 82 186, 82 158"   marker-end="url(#ld-arrow)"/>
         <text class="svg-formula" x="320" y="206" text-anchor="middle" font-size="12">p_θ(x_t-1 | x_t)</text>
         <text class="svg-label-faint" x="320" y="206" text-anchor="middle" font-size="11" dx="118">去噪 · 要学</text>
       </svg>
@@ -1242,7 +1275,7 @@ figcaption b {
     这一步靠的是<a class="term" href="#g-reparam">重参数化</a>。
   </p>
 
-  <div class="example">
+  <div class="example reveal">
     <span class="tag">举个例子</span>
     <p>
       训练时你想拿 <span class="formula">t = 743</span> 这一步的样本。
@@ -1252,7 +1285,7 @@ figcaption b {
     </p>
   </div>
 
-  <div class="boundary">
+  <div class="boundary reveal">
     <h3>常见误解与边界</h3>
     <ul>
       <li>
@@ -1271,7 +1304,7 @@ figcaption b {
     </ul>
   </div>
 
-  <div class="source">
+  <div class="source reveal">
     <h3>出处</h3>
     <ul>
       <li>
@@ -1286,7 +1319,7 @@ figcaption b {
     </ul>
   </div>
 
-  <p class="checkout">
+  <p class="checkout reveal">
     <b>读完这节你应该能回答：</b>前向过程为什么不用训练？
     为什么可以一步跳到任意 t，而不必真的迭代 T 次？那个 <span class="formula">√(1-β_t)</span> 的缩放是干什么用的？
   </p>
@@ -1314,7 +1347,7 @@ figcaption b {
     损失就是猜的和真的之间的均方误差。
   </p>
 
-  <aside class="aside">
+  <aside class="aside reveal">
     <p>本节假设你已经读过 <a href="#c1">§1</a> 的
     <span class="formula">x_t = √ᾱ_t·x₀ + √(1-ᾱ_t)·ε</span>
     ——下面每一步都在用它。</p>
@@ -1364,9 +1397,9 @@ figcaption b {
           <text class="svg-label" x="67" y="117" text-anchor="middle" font-size="12">ε ~ N(0, I)</text>
         </g>
 
-        <path class="arrow-line" d="M126 29 L 170 63" marker-end="url(#ld-arrow-b)"/>
-        <path class="arrow-line" d="M126 71 L 170 71" marker-end="url(#ld-arrow-b)"/>
-        <path class="arrow-line" d="M126 113 L 170 79" marker-end="url(#ld-arrow-b)"/>
+        <path class="arrow-line draw" d="M126 29 L 170 63" marker-end="url(#ld-arrow-b)"/>
+        <path class="arrow-line draw" d="M126 71 L 170 71" marker-end="url(#ld-arrow-b)"/>
+        <path class="arrow-line draw" d="M126 113 L 170 79" marker-end="url(#ld-arrow-b)"/>
 
         <!-- 合成 x_t -->
         <g>
@@ -1375,7 +1408,7 @@ figcaption b {
           <text class="svg-formula" x="248" y="86" text-anchor="middle" font-size="10">√ᾱ·x₀ + √(1-ᾱ)·ε</text>
         </g>
 
-        <path class="arrow-line" d="M320 71 L 352 71" marker-end="url(#ld-arrow-b)"/>
+        <path class="arrow-line draw" d="M320 71 L 352 71" marker-end="url(#ld-arrow-b)"/>
 
         <!-- 网络 -->
         <g>
@@ -1384,7 +1417,7 @@ figcaption b {
           <text class="svg-formula" x="418" y="86" text-anchor="middle" font-size="10">ε_θ(x_t, t)</text>
         </g>
 
-        <path class="arrow-line" d="M478 71 L 522 71" marker-end="url(#ld-arrow-b)"/>
+        <path class="arrow-line draw" d="M478 71 L 522 71" marker-end="url(#ld-arrow-b)"/>
 
         <!-- 损失 -->
         <g>
@@ -1393,7 +1426,10 @@ figcaption b {
           <text class="svg-formula" x="580" y="86" text-anchor="middle" font-size="10">‖ε − ε_θ‖²</text>
         </g>
 
-        <!-- 真噪声回到损失 -->
+        <!-- 真噪声回到损失：不加 .draw ——它自带 stroke-dasharray="4 3" 表达
+             「虚线」这个语义（不是实际数据路径），.draw 的 JS 会用行内
+             style.strokeDasharray 覆盖这个属性，动画播完会把虚线变实线，
+             吃掉这层区分。不是漏加，是故意跳过。 -->
         <path class="arrow-line" stroke-dasharray="4 3"
               d="M67 128 C 67 145, 400 145, 560 100" marker-end="url(#ld-arrow-b)"/>
         <text class="svg-label-faint" x="300" y="157" text-anchor="middle" font-size="11">
@@ -1416,7 +1452,7 @@ figcaption b {
     <strong>训练是并行的、采样是串行的</strong>，这条不对称是扩散模型全部工程痛点的根。
   </p>
 
-  <div class="example">
+  <div class="example reveal">
     <span class="tag">举个例子</span>
     <p>
       为什么训练可以并行而采样不能？训练时每个样本自带一个随机的 t，互不依赖，
@@ -1426,7 +1462,7 @@ figcaption b {
     </p>
   </div>
 
-  <div class="boundary">
+  <div class="boundary reveal">
     <h3>常见误解与边界</h3>
     <ul>
       <li>
@@ -1446,7 +1482,7 @@ figcaption b {
     </ul>
   </div>
 
-  <div class="source">
+  <div class="source reveal">
     <h3>出处</h3>
     <ul>
       <li>
@@ -1468,7 +1504,7 @@ figcaption b {
     </ul>
   </div>
 
-  <p class="checkout">
+  <p class="checkout reveal">
     <b>读完这节你应该能回答：</b>网络到底在预测什么？
     为什么这个损失长得像最普通的 MSE，却学出了一个生成模型？
     为什么训练能并行、采样却必须串行？
@@ -1670,6 +1706,9 @@ figcaption b {
   // （见 CSS「幕封页」那段）；section[id] 把 .map/.path/.primer/.compare/…
   // 这些不吸附的辅助小节也算进可跳转的停靠点——它们同样是完整的一屏内容，
   // 只是不需要「滚到附近就吸过去」这个行为。
+  // ⚠️ 选择器写死成这三样：新增一个裸 <section> 忘记给它加 id，就既不落进
+  // .curtain/.concept 也不落进 section[id]，方向键会直接跳过它——不报错，
+  // 读者只会感觉这一屏「按方向键按不到」。新增辅助小节记得带 id。
   const stops = [...document.querySelectorAll('.curtain, .concept, section[id]')];
   const bar = document.getElementById('progress-bar');
 
@@ -1727,6 +1766,84 @@ figcaption b {
     addEventListener('scroll', update, { passive: true });
     addEventListener('resize', update);
     update();
+  }
+})();
+
+// 逐条入场 + SVG 描边。见文件头「四条硬约束」第 1 条已更新的说明——两者都
+// 依赖「滚动进入视口」这个事件，没有贴合语义的纯 CSS 声明式方案，所以也
+// 写进这唯一的脚本块，不新开 <script> 标签。
+//
+// prefers-reduced-motion 必须先判、判了就直接 return：命中时两组元素都
+// 不注册 IntersectionObserver、不跑任何 animate()——这不是可选的礼貌，
+// 是无障碍问题。
+//
+// ⚠️ 失败安全是这段代码唯一不能妥协的地方：
+// - .reveal 的 opacity: 0 是脚本主动设的，不是写在 CSS 里的初始态——脚本
+//   整个没跑起来（CSP 拦、语法错误等任何原因）时，元素停在 CSS 默认的可见
+//   状态，不会出现「脚本挂了 = 内容永远白屏」。
+// - 但如果脚本跑到了「先把 opacity 设成 0」这一步、紧接着 `new
+//   IntersectionObserver(...)` 才失败（宿主环境理论上不支持该 API），
+//   就会真的把内容焊死在不可见状态——这是本节唯一没法靠「脚本没跑=默认可见」
+//   自愈的分支，所以显式特性检测 `hasIO`，把它跟 reduce 走同一条「直接显示、
+//   不注册 observer」的路径，而不是假设宿主环境一定支持（KyDog 只在自家
+//   Electron 里跑，IntersectionObserver 早已是保底能力，但这行检测几乎零成本，
+//   花得起）。
+// - .draw 同理反过来：stroke-dasharray / stroke-dashoffset 只在 observer
+//   真的触发那一刻才设置，不是预先写死的隐藏态。脚本没跑起来时路径停在
+//   浏览器默认的实线渲染，不会停在「整条线从头到尾都是 dash gap」的隐形
+//   状态。reduce 分支下 .draw 干脆什么都不做（不设 dasharray），效果就是
+//   「直接显示完整路径」，比显式清零两个属性更简单也更不容易出错。
+// 这条锁在 e2e/46-html-tab.spec.ts 的「入场动效不挡住内容」那条用例里：
+// 滚动到 .reveal 元素后断言最终 opacity 是 1、且 toBeVisible()。
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hasIO = typeof IntersectionObserver === 'function';
+
+  // --- 逐条入场：.reveal 元素进入视口时淡入上移 ---------------------------
+  const items = [...document.querySelectorAll('.reveal')];
+  if (reduce || !hasIO) {
+    items.forEach((el) => { el.style.opacity = '1'; });
+  } else {
+    items.forEach((el) => { el.style.opacity = '0'; });
+    const revealIo = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        revealIo.unobserve(e.target);
+        // 同一个直接父元素下的 .reveal 依次错开入场，封顶 6 个避免长列表
+        // 拖太久（第 7 个开始跟第 6 个同时入场，不再继续往后叠加延迟）。
+        const sibs = [...e.target.parentElement.querySelectorAll(':scope > .reveal')];
+        const delay = Math.min(sibs.indexOf(e.target), 6) * 70;
+        e.target.animate(
+          [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }],
+          { duration: 320, delay, easing: 'cubic-bezier(.2,.6,.2,1)', fill: 'forwards' },
+        );
+      }
+    }, { rootMargin: '0px 0px -12% 0px' });
+    items.forEach((el) => revealIo.observe(el));
+  }
+
+  // --- SVG 描边：.draw 路径进入视口时按 stroke-dasharray 描出来 -----------
+  // 只对线条（path / line / polyline）用，填充块不描边；文字不参与描边，
+  // 想让文字跟着淡入的话给它单独加 .reveal，跟这里是两套独立机制。
+  if (!reduce && hasIO) {
+    const draws = [...document.querySelectorAll('.draw')];
+    const drawIo = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        drawIo.unobserve(e.target);
+        const path = e.target;
+        // 防御：万一 .draw 被点错到没有 getTotalLength 的元素（比如 <rect>），
+        // 跳过而不是抛错炸掉后面还没处理的路径。
+        if (typeof path.getTotalLength !== 'function') continue;
+        const sibs = [...path.closest('svg').querySelectorAll('.draw')];
+        const len = path.getTotalLength();
+        path.style.strokeDasharray = String(len);
+        path.style.strokeDashoffset = String(len);
+        path.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }],
+          { duration: 700, delay: sibs.indexOf(path) * 120, easing: 'ease-out', fill: 'forwards' });
+      }
+    }, { rootMargin: '0px 0px -12% 0px' });
+    draws.forEach((el) => drawIo.observe(el));
   }
 })();
 </script>
