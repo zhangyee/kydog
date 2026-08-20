@@ -21,11 +21,15 @@
      **不要再加别的 <script> 标签**——这条硬约束是「只有这一处」，不是
      「随便写」，新逻辑加进文末那一处、不新开标签。
      逐条入场动效、SVG 描边动画这两样一度被认为该优先用 CSS animation /
-     SVG SMIL 做（声明式，不占脚本预算）——后来发现站不住：两者都要「元素
-     滚动进入视口才触发」，纯 CSS 没有贴合这个语义的声明式方案（scroll-driven
-     animation 绑定的是滚动位置，不是「是否进入视口」；SMIL 只能连续播放或靠
-     begin="…click" 这类离散事件，没有「进入视口」这个触发源），所以也落进了
-     这唯一的脚本块，跟键盘交互、进度条一样。
+     SVG SMIL 做（声明式，不占脚本预算）。SVG 描边这半确实站不住：每条路径的
+     长度要运行时用 `getTotalLength()` 才知道，纯 CSS 没有等价能力，只能用 JS。
+     逐条入场这半其实有纯 CSS 的路——CSS Scroll-Driven Animations 的
+     `animation-timeline: view()` 语义正是「元素是否进入视口」，KyDog 只在
+     自带的 Electron（Chromium）里渲染，这个特性可用，不是纸上谈兵。这次
+     仍然选了 JS：brief 指定用 JS，而且两个效果本就要共用「同组错峰延迟」这
+     一套逻辑，放进同一个脚本块比一半 CSS 一半 JS 更好维护——是权衡取舍，
+     不是「CSS 做不到」。这条硬约束因此扩大成也覆盖这两个效果，跟键盘交互、
+     进度条写在同一处。
      这条推翻了 v1「不写 <script>」——v1 的沙箱不给 allow-scripts，v2 给了。
   2. 不引任何外部资源：没有 CDN、没有 <link rel=stylesheet>、没有 @import、
      没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()、
@@ -1769,9 +1773,8 @@ figcaption b {
   }
 })();
 
-// 逐条入场 + SVG 描边。见文件头「四条硬约束」第 1 条已更新的说明——两者都
-// 依赖「滚动进入视口」这个事件，没有贴合语义的纯 CSS 声明式方案，所以也
-// 写进这唯一的脚本块，不新开 <script> 标签。
+// 逐条入场 + SVG 描边。见文件头「四条硬约束」第 1 条已更新的说明——写进这
+// 唯一的脚本块，不新开 <script> 标签。
 //
 // prefers-reduced-motion 必须先判、判了就直接 return：命中时两组元素都
 // 不注册 IntersectionObserver、不跑任何 animate()——这不是可选的礼貌，
@@ -1793,6 +1796,18 @@ figcaption b {
 //   浏览器默认的实线渲染，不会停在「整条线从头到尾都是 dash gap」的隐形
 //   状态。reduce 分支下 .draw 干脆什么都不做（不设 dasharray），效果就是
 //   「直接显示完整路径」，比显式清零两个属性更简单也更不容易出错。
+// - ⚠️ 两个 IntersectionObserver 都**不能**给 rootMargin 传负值、也不能给
+//   threshold 传非零值——实测过会导致文档末尾（或比视口更高）的元素永久
+//   不触发：负的底边（比如曾经写过的 '0px 0px -12% 0px'）把视口最后一截
+//   排除在「相交」判定之外，一个紧贴 documentElement.scrollHeight 底部的
+//   元素滚到底也进不了那截排除区，回调永远不触发；非零 threshold（比如
+//   0.15）对比视口更高的元素同样致命——可见比例永远到不了阈值。这两种都
+//   不是「还没滚到」（滚过去就好），是「怎么滚都到不了」，而 .reveal 又是
+//   先设 opacity:0 再等触发，结果就是永久不可见、且不报错。唯一处处安全的
+//   配置是 rootMargin 留默认 0、threshold 留默认 0——只要元素在文档流里、
+//   文档能滚到底，它就一定会跟视口相交至少一瞬间。代价是元素刚露出 1px
+//   就开始动画，比"等它进来一点再动"观感略差，但可靠性优先——这是给别人
+//   照抄的模板，别为了这点观感把负 rootMargin 加回来。
 // 这条锁在 e2e/46-html-tab.spec.ts 的「入场动效不挡住内容」那条用例里：
 // 滚动到 .reveal 元素后断言最终 opacity 是 1、且 toBeVisible()。
 (() => {
@@ -1818,7 +1833,7 @@ figcaption b {
           { duration: 320, delay, easing: 'cubic-bezier(.2,.6,.2,1)', fill: 'forwards' },
         );
       }
-    }, { rootMargin: '0px 0px -12% 0px' });
+    }); // 不传 rootMargin / threshold——原因见上面那条 ⚠️，默认值才是处处安全的
     items.forEach((el) => revealIo.observe(el));
   }
 
@@ -1832,17 +1847,23 @@ figcaption b {
         if (!e.isIntersecting) continue;
         drawIo.unobserve(e.target);
         const path = e.target;
-        // 防御：万一 .draw 被点错到没有 getTotalLength 的元素（比如 <rect>），
-        // 跳过而不是抛错炸掉后面还没处理的路径。
+        // 防御：不是 SVGGeometryElement 的元素没有 getTotalLength，跳过而不是
+        // 抛错炸掉后面还没处理的路径——注意这防不住「.draw 加到 <rect> 之类
+        // 填充图形上」：<rect>/<circle>/<ellipse>/<line>/<polyline>/<polygon>
+        // 全都实现了 getTotalLength（实测过），这个判据挡不住误用，只挡真正
+        // 没有这个方法的目标（比如 <g>、<text>、<foreignObject>）。
         if (typeof path.getTotalLength !== 'function') continue;
         const sibs = [...path.closest('svg').querySelectorAll('.draw')];
+        // 同一张 svg 内的 .draw 依次错开描边，封顶 6 个——跟上面 .reveal 的
+        // 封顶同一个理由：图里 .draw 路径很多时不该让总延迟失控变长。
+        const delay = Math.min(sibs.indexOf(path), 6) * 120;
         const len = path.getTotalLength();
         path.style.strokeDasharray = String(len);
         path.style.strokeDashoffset = String(len);
         path.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }],
-          { duration: 700, delay: sibs.indexOf(path) * 120, easing: 'ease-out', fill: 'forwards' });
+          { duration: 700, delay, easing: 'ease-out', fill: 'forwards' });
       }
-    }, { rootMargin: '0px 0px -12% 0px' });
+    }); // 不传 rootMargin / threshold，理由同上面 .reveal 那个 observer
     draws.forEach((el) => drawIo.observe(el));
   }
 })();
