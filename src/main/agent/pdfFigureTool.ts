@@ -2,7 +2,7 @@
 import { Type } from 'typebox';
 import { MAX_PAGE, MAX_SCALE, MIN_SCALE, renderPageToPng } from '../pdf/pdfRaster';
 
-export const PDF_FIGURE_TOOL_NAME = 'pdf_page_png';
+export const PDF_FIGURE_TOOL_NAME = 'pdf_figure_to_png';
 
 const ParamsSchema = Type.Object({
   path: Type.String({ description: 'PDF 文件的绝对路径，必须以 .pdf 结尾' }),
@@ -16,11 +16,12 @@ const ParamsSchema = Type.Object({
 });
 
 const DESCRIPTION = [
-  '把 PDF 的一页渲染成 PNG 图片，存在同目录下的 <原名>-p<页码>.png，返回该路径。',
+  '把论文插图的 PDF 渲染成 PNG，存在同目录下的 <原名>-p<页码>.png，返回该路径。',
   '',
-  '什么时候用：手上有一个 .pdf 格式的插图（arXiv 源码包里的作者原图常常是',
-  '`figs/architecture.pdf` 这种），而你要把它内嵌进 HTML 报告，或者要用 read 工具亲眼',
-  '看看图里画的是什么 —— 两件事 PDF 都做不到，先转成 PNG。',
+  '为什么需要它：fastpaper figures 从 arXiv 源码包取到的插图常常是 .pdf',
+  '（`figs/architecture.pdf` 这种），而 read 工具只认 jpg / png / gif / webp / bmp —— ',
+  '不转成 PNG，模型就看不见这张图，也就无法判断它是不是要找的那张，',
+  '更谈不上把它内嵌进 HTML 报告。转成 PNG 之后再用 read 打开看。',
   '',
   '什么时候不用：文件本身已经是 PNG/JPG/SVG 就直接用，别多转一道；',
   '整篇论文的 PDF 也不要拿来逐页转图，这个工具是给单张插图用的。',
@@ -32,9 +33,9 @@ const DESCRIPTION = [
 export function createPdfFigureTool(render: typeof renderPageToPng = renderPageToPng) {
   return {
     name: PDF_FIGURE_TOOL_NAME,
-    label: 'PDF 转 PNG',
+    label: '插图转 PNG',
     description: DESCRIPTION,
-    promptSnippet: 'pdf_page_png — 把 .pdf 格式的插图渲染成 PNG',
+    promptSnippet: 'pdf_figure_to_png — 把 .pdf 格式的论文插图渲染成 PNG，好让 read 看得见',
     parameters: ParamsSchema,
 
     async execute(

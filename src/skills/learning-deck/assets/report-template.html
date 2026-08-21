@@ -746,7 +746,7 @@ figure svg {
 /* 内嵌的原文插图（<img src="papers/…">，查看器渲染时会内联成 data URI）。
 
    ⚠️ 是 max-width 不是 width，两个方向都要管住，别改成 width: 100%：
-   - 图比容器大：pdf_page_png 转出来的图默认 scale: 2，像素是预期的两倍，
+   - 图比容器大：pdf_figure_to_png 转出来的图默认 scale: 2，像素是预期的两倍，
      不限宽就按自然宽度渲染，撑破 figure 的 max-width: 56em 和 .deck，
      整份报告出横向滚动条。max-width 把它缩回容器内。
    - 图比容器小：figure 是块级、没有显式 width，会撑满 56em 上限，

@@ -77,10 +77,10 @@ papers/2511.11035/1.pdf   2.pdf   3.pdf
 实测 `2511.11035` 的 `3.pdf` 其实是 Figure 1。**图号只能靠看图确认**，
 不许从文件名推。推错了，图注里那句「Fig. 3」就是编的。
 
-`.pdf` 的图先转成 PNG 再看（PDF 不能直接给 `read`）：
+`.pdf` 的图先转成 PNG 再看（`read` 只认 jpg / png / gif / webp / bmp，PDF 给它等于没给）：
 
 ```
-pdf_page_png  { "path": "<绝对路径>/figs/architecture.pdf" }
+pdf_figure_to_png  { "path": "<绝对路径>/figs/architecture.pdf" }
 ```
 
 默认第 1 页、倍率 2，插图 PDF 通常就一页。图里小字看不清再把 `scale` 提到 3。
@@ -126,7 +126,7 @@ pdf_page_png  { "path": "<绝对路径>/figs/architecture.pdf" }
 - **图必须在报告所在目录树内**——查看器只认这个范围，逃出去的（`../`、绝对路径）
   会被拒绝、自动退化成 `alt` 文字，页面上不会崩，但也不会显示图。
 - 扩展名只认 `png` / `jpg` / `jpeg` / `gif` / `webp`；`.pdf` 先按第二步过一道
-  `pdf_page_png` 转成 PNG 再引用，`.eps` 仍然不处理（跳过，记进 ⑪ 诚实边界）。
+  `pdf_figure_to_png` 转成 PNG 再引用，`.eps` 仍然不处理（跳过，记进 ⑪ 诚实边界）。
 - 没有体积闸门、没有张数上限——查看器会做单张 8MB / 全篇 24MB 的兜底，
   正常论文插图远远碰不到这个数字，不用先量再决定。
 
@@ -158,6 +158,6 @@ pdf_page_png  { "path": "<绝对路径>/figs/architecture.pdf" }
 
 ## 一句话流程
 
-> `fastpaper figures` → 退出码分支 → `.pdf` 走 `pdf_page_png` → `read` 看图 →
+> `fastpaper figures` → 退出码分支 → `.pdf` 走 `pdf_figure_to_png` → `read` 看图 →
 > 看不见图就降级 → 看得见就写相对路径 `<img src="papers/…">`（查看器渲染时自动内联，
 > 不用打 base64）→ 图注标清来源与图号 → 诚实边界记账。
