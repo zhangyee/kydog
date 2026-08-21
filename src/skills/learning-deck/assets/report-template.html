@@ -571,31 +571,17 @@ code, .formula {
      但那片深色同样由 --marginalia 派生，五套主题下各不相同，见「抬头的封面带」那段）；
    - 必须尊重 prefers-reduced-motion（见本节末尾那条 @media）。 */
 
-/* --- 章节区隔：相邻两节之间的一道断线 -------------------------------------
-   一条向两端淡出的 1px 发丝线，正中断开一小段，缺口里放一个 2px 的强调色圆点。
-   三层背景叠出来，不用伪元素以外的任何标记。
+/* --- 章节区隔：只留留白，不放装饰 -----------------------------------------
+   曾经这里是「发丝线正中断开、缺口里一个强调色圆点」（spec D.4 的前一半）。
+   用户第五次真跑后判定它丑，整块删掉了 —— **不要再加回来**：
+   相邻两节之间靠留白分开就够，节标题自己带下划线，已经是足够强的起点信号。
 
-   选择器只挑「上一个兄弟也是 section」的节：
+   选择器仍只挑「上一个兄弟也是 section」的节：
    - ④ 知识点正文（.concept）前面是整屏的幕封页 .curtain（一个 <div>），
      选不中，也不该中——那里已经有一整屏的区隔了；
-   - ⑥ .summary 与 ⑩ .honesty 自己就是有边框的块，再加一道线会重。 */
-.flow > section + section:not(.summary):not(.honesty)::before {
-  content: '';
-  display: block;
-  height: 7px;
-  width: min(20em, 72%);
-  margin: 3.4em auto 3em;
-  background-image:
-    radial-gradient(circle at 50% 50%, var(--accent, #bd4238) 0 2px, transparent 2.5px),
-    linear-gradient(90deg,
-      transparent 0,
-      var(--ink-hair, #c9c3be) 20%, var(--ink-hair, #c9c3be) 44%,
-      transparent 45%, transparent 55%,
-      var(--ink-hair, #c9c3be) 56%, var(--ink-hair, #c9c3be) 80%,
-      transparent 100%);
-  background-size: 100% 100%, 100% 1px;
-  background-position: center center, center center;
-  background-repeat: no-repeat;
+   - ⑥ .summary 与 ⑩ .honesty 自己就是有边框的块。 */
+.flow > section + section:not(.summary):not(.honesty) {
+  margin-top: 4.2em;
 }
 
 /* --- 包裹框的角标 ---------------------------------------------------------
