@@ -178,10 +178,24 @@ body {
   .deck {
     /* 单栏也保住行宽（R2）：仍然是 minmax(0, --ld-measure) 而不是 1fr，
        配上 .deck 那条 justify-content: center，面板比行宽宽时正文居中，
-       比行宽窄时自然缩到面板宽。 */
+       比行宽窄时自然缩到面板宽。目录横条因此和正文列一样宽、左右对齐。 */
     grid-template-columns: minmax(0, var(--ld-measure));
     padding: 24px 20px 120px;
   }
+
+  /* ⚠️ **这一档的 .toc 是网格项，而且跟 .flow 分处两行 —— sticky 仍然生效。**
+     这条写在这里是因为它反直觉、而且被人按「grid 项的包含块是它自己的网格区域，
+     行按内容定高就没有余量可粘」的推理判过一次死刑。**实测不是这样**：
+     Chromium 里最小复现（700px 视口、nav+main、scrollTo 1200）四种布局
+     —— 单列 grid（nav/main 分两行）/ 单列 grid + 显式 auto rows /
+     display:block / 两列 grid（nav/main 同行）—— 滚动后 nav 的
+     getBoundingClientRect().top **全都是 2**（等于 top: 2px），一个都没滚走。
+     真模板在 KyDog 默认面板（实测 clientWidth = 732px）里滚到 scrollY > 1000
+     之后量出来同样是 2。
+     所以**不要**为了「让 sticky 生效」把这一档改成 display: block —— 那是在修
+     一个不存在的 bug，代价是横条变成通栏、跟正文列不再对齐，居中也要拆成两套机制。
+     e2e/46-html-tab.spec.ts「真模板——窄面板下目录横条滚动时仍贴在顶部」
+     把这个行为钉住了：万一哪天 Chromium 真的改了，那条测试会先红。 */
 }
 
 /* 锚点跳转后标题不贴屏幕顶 */
@@ -767,7 +781,9 @@ math[display="block"] {
   margin: 0 0 .6em;
   text-wrap: balance;
   /* 幕封页的大标题不要 h2 那条起笔顿点 + 发丝线：整屏封面上一条底线看着像
-     被截断的表格。三个属性都要清（h2 的装饰是两层 background-image）。 */
+     被截断的表格。清 background-image 与 padding-bottom 两条就够 —— h2 的装饰是
+     两层 background-image，图层没了之后 background-size / -position 自然失效，
+     不用逐条清。 */
   background-image: none;
   padding-bottom: 0;
 }
@@ -1149,8 +1165,11 @@ math[display="block"] {
   color: var(--ink, #2a2620);
 }
 
+/* ⚠️ 跟 .example / .eq 同一条坑：底色用 --paper-deep **原色**，不要兑透明。
+   porcelain 的纸是纯白、--paper-deep 只比它深 2.5%，兑到 45% 之后约 #fbfbfc、
+   对纸的对比度 ≈1.02，整条斑马纹在浅色主题下直接消失。 */
 .compare tbody tr:nth-child(even) {
-  background: color-mix(in oklch, var(--paper-deep, #f0ece4) 45%, transparent);
+  background: var(--paper-deep, #f0ece4);
 }
 
 /* --- ⑦ 收束节 ----------------------------------------------------------- */
@@ -1361,9 +1380,12 @@ figcaption b {
         560px    单栏        520     520     0.81
         719px    单栏        570     570     0.89
         820px    两栏        570     570     0.89
-       1079px    两栏        570     570     0.89
-       1080px    三栏        531     771     1.20
+       1179px    两栏        570     570     0.89
+       1180px    三栏        570     810     1.27
        1400px    三栏        570     810     1.27
+
+      （断点是 820 / 1180，跟上面那三段 @media 一致；早先草稿里那版表按 1080
+      分界，是三栏断点从 1080 抬到 1180 之前量的，已订正。）
 
       三栏下图会借用右边那条边注轨道（见 figure 那条规则），缩放比回到 1.2 以上；
       两栏 / 单栏没有轨道可借，缩放比稳定在 0.89 左右 —— 12 号字渲染出来约
@@ -1688,10 +1710,12 @@ figcaption b {
      ⚠️ 折叠按钮的行为写在文末那个唯一的 <script> 里；脚本没跑起来时目录停在
         展开状态，不会有任何东西被折没（所以它不违反「不用 <details>」那条）。 -->
 <nav class="toc" aria-label="章节导航">
-  <button class="toc-head" type="button" aria-expanded="true">
+  <!-- aria-controls 指向 .toc-body 的 id，屏读者才知道这个按钮折的是哪一块；
+       id 写死成 toc-body，脚本不依赖它，但改名的话这里和下面要一起改。 -->
+  <button class="toc-head" type="button" aria-expanded="true" aria-controls="toc-body">
     <span class="toc-caret" aria-hidden="true"></span>目录
   </button>
-  <div class="toc-body">
+  <div class="toc-body" id="toc-body">
     <ol class="toc-list">
       <li><a href="#map">知识地图</a></li>
       <li><a href="#path">速通路径</a></li>
@@ -2777,8 +2801,11 @@ figcaption b {
       if (s.el.getBoundingClientRect().top + window.scrollY <= line) hit = s;
     }
     if (hit.a === current) return;
-    if (current) current.classList.remove('is-current');
+    if (current) { current.classList.remove('is-current'); current.removeAttribute('aria-current'); }
     hit.a.classList.add('is-current');
+    // aria-current 跟 class 一起设：只加 class 的话屏读者读得到目录，
+    // 但读不出「现在在哪一节」——那正是 scrollspy 唯一的用处。
+    hit.a.setAttribute('aria-current', 'page');
     current = hit.a;
   };
   addEventListener('scroll', sync, { passive: true });

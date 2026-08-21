@@ -640,3 +640,46 @@ test('46-html-tab: 真模板——ArrowDown 从 #primer 落到第一个幕封页
     await teardown(launched);
   }
 });
+
+// 窄面板（报告面板 < 820px）是 KyDog **默认窗口唯一会走到的那一档**：三栏退化成单栏，
+// 左侧目录树退成正文上方一条 sticky 的横条。
+//
+// 这条锁的是「横条真的**贴得住**」，不是「横条存在」——两者的失败模式完全不同，
+// 而且只有滚动之后量 top 才分得清：不滚动时横条本来就在顶上，静态截图看着一样。
+//
+// 为什么值得单开一条：这一档里 .toc 是网格项、还跟 .flow 分处两行，很容易被按
+// 「grid 项的包含块是自己的网格区域，行按内容定高就没有余量可粘」推理成
+// 「sticky 在这里不生效」。实测（Chromium 最小复现四种布局 + 本条测试）**是生效的**，
+// 模板 CSS 那段 @media 里记着复现的数。这条测试把这个行为钉住：万一哪天
+// Chromium 真的改了、或者有人改布局把它弄坏了，这里会先红。
+test('46-html-tab: 真模板——窄面板下目录横条滚动时仍贴在顶部', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const frame = await openTemplate(page, kydogHome);
+
+    // 前置条件：报告面板真的落在窄档。默认窗口 1280px、左会话列表 260 + 右 Inspector 280，
+    // 面板约 738px。哪天这几个默认值变了，这条断言会先红，提醒回来重看这条测试。
+    const clientWidth = await frame.locator('body')
+      .evaluate((el) => el.ownerDocument.documentElement.clientWidth);
+    expect(clientWidth).toBeLessThan(820);
+
+    const toc = frame.locator('.toc');
+    await expect(toc).toBeVisible();
+
+    await frame.locator('body').evaluate((el) => {
+      el.ownerDocument.defaultView!.scrollTo({ top: 1200, behavior: 'instant' });
+    });
+    await expect
+      .poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.defaultView!.scrollY))
+      .toBeGreaterThan(1000);
+
+    // CSS 写的是 sticky top: 2px（让开顶上那条 2px 的 .progress）。
+    // 没贴住的话横条已经被滚到视口上方很远，top 会是一个很大的负数。
+    const top = await toc.evaluate((el) => el.getBoundingClientRect().top);
+    expect(top).toBeGreaterThan(-2);
+    expect(top).toBeLessThan(20);
+  } finally {
+    await teardown(launched);
+  }
+});
