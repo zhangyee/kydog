@@ -206,7 +206,7 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 | | 块 | class | 里面的位 |
 |---|---|---|---|
 | ① | 抬头 | `.deck-head` | `div.hero-art`（动效层，**整块原样保留**：里面的 `canvas.hero-gl` 是 WebGL 那层、`svg.hero-fallback` 是它起不来时的兜底，两个都别删）· `h1` 主题 · `p.meta` 顶部三件套的后两样（见下）· `p.for-whom` **基于访谈的起点画像**，不是套话 |
-| ② | 知识地图 | `.map` | `figure > svg`。节点是 `g.node` 加三色之一，每个节点里用 `<a href="#…">` 包住 `rect` + `text`；连线 `.edge`；图例 `g.legend` 直接套同一套 class |
+| ② | 知识地图 | `.map` | `figure > svg`，**照 `map.sketch` 现画**（JSON 里没有这张图的标记）。节点是 `g.node` 加三色之一，每个节点里用 `<a href="#…">` 包住 `rect` + `text`；连线 `.edge`；图例 `g.legend` 直接套同一套 class |
 | ③ | 速通路径 | `.path` | `ol > li`：`<a href="#cN">§N 标题</a>（时间估计，一句提示）` + `<span class="answers">读完能回答：…</span>`。辅助小节（前序速览 / 方法对比 / 收束）也可以进这张路径表，但**不带 `§` 编号**，只写名字 |
 | ④ | 前序速览 | `.primer` | `dl > dt/dd`，每条两三句话带过 |
 | ⑤ | 知识点正文 | `.concept` | 见下面「节内固定顺序」 |
@@ -345,6 +345,14 @@ Chromium 原生支持 MathML Core，已实测在这套 sandbox + CSP 下是真�
 
 ## 画 SVG
 
+**图在第 5.5 小步（渲染）才画，不在 JSON 里。** JSON 给的是「画什么」——
+`figure` 块的 `sketch`（`form` 骨架 / `elements[]` 画哪些东西与各自身上那行字 /
+`emphasis` 最要紧的那一处）和 ② 知识地图的 `map.sketch`（另有 `nodes[]` / `edges[]`），
+形状见 `references/deck-json.md`。**这一节管「怎么画」，那一册管「画什么」，
+两边不重叠**：`sketch` 里不写坐标、颜色、class、viewBox，下面这些也不由 `sketch` 覆盖。
+
+`emphasis` 指的那一处，渲染时就是套 `.svg-hi` 的那个元素。
+
 - **`viewBox` 宽 640，图内 `font-size` 不得低于 12。**（v3 从 10 提到 12：正文列
   锁定行宽之后图变窄了，两栏/单栏下缩放比约 0.89，12 号字渲染出来才刚够 10.7px。
   实测区间见模板里「SVG 里的共用件」那段。）照抄模板里的数，别自己往下压。
@@ -441,5 +449,10 @@ comm -23 \
 
 **H1 有命中、或 H4 吐出坏锚点，说明渲染贴漏了一处**——回第 5.5 小步把那一章重渲一遍，
 **不要只在 HTML 上补**（见 SKILL.md 硬约束第 6 条：HTML 是产物，改动的源头在 JSON）。
-H2 有 `<body>` 里的命中，说明 JSON 里那段 `svg` / `html` 本身就写错了——回 JSON 改，
-改完把同一行贴进 HTML。
+H2 有 `<body>` 里的命中，分两种：
+
+- 命中落在某张 `<svg>` 里（写死了 `fill="#…"` / `stroke="#…"`）——那是**画法**写错了，
+  **直接在 HTML 上把它改成模板的颜色 class**，JSON 不用动，JSON 里本来就没有画法
+  （见 SKILL.md 硬约束第 6 条的三分表）。
+- 命中落在正文标记里（`<img src="http…">`、`@import`、行内 `color: #…`）——
+  那是 JSON 里那段 `html` 本身就写错了，**回 JSON 改**，改完把同一行贴进 HTML。

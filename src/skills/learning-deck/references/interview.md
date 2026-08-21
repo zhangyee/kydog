@@ -148,6 +148,9 @@ options:
 | 每个知识点的档位（**落进 JSON 每章的 `tier` 字段**，见 `references/deck-json.md`） | ② 知识地图的节点三色（`.n-known` / `.n-focus` / `.n-brief`）+ ⑤ 写哪几节、**每节写多深**（`writing.md` 第 7 条）+ ④ 前序速览收哪几个 |
 | 标「熟悉」的那些 | ⑤ 各节的 `.aside` 依赖侧注「本节假设你已经知道 §X」 |
 
+（JSON 里这三色写成 `map.sketch.nodes[].state` 的 `"known"` / `"focus"` / `"brief"`，
+见 `references/deck-json.md`。）
+
 标「熟悉」的一律是 `.n-known`、不写正文；另外两档是写一节（`.n-focus`）还是
 只在 ④ 前序速览里带一句（`.n-brief`），由这个知识点在图谱里的位置决定——
 外围的前序概念即使标「没接触过」也只值三句话。**那一节到底怎么写，看 `writing.md` 第 7 条**，

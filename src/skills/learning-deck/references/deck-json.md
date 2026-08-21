@@ -26,8 +26,14 @@
 JSON 把「想清楚内容」和「变成 HTML」切开：
 
 - **内容阶段**（第 5.1–5.4 小步）改一章就是改一个节点，`edit` 的匹配面只有几行，
-  而且完全不碰 CSS、不碰 `<head>`、不碰 SVG 之外的任何标记。
-- **渲染阶段**（第 5.5 小步）内容已经定死，是一次机械转换，照下面那张对照表贴就完了。
+  而且完全不碰 CSS、不碰 `<head>`、**不碰 SVG**。
+- **渲染阶段**（第 5.5 小步）内容已经定死，照下面那张对照表贴就完了；
+  **唯一要动手做的是画 SVG**——JSON 里只有「这张图画什么」，标记本身在这一步才写出来。
+
+**SVG 不进 JSON，这是刻意的。** 内容阶段该定的是「这张图讲机制的哪一步、上面有哪些东西」，
+不是 `<path d="…">`；SVG 进 JSON 会让整份报告里最贵的一块被 emit 两遍
+（一遍转义进 JSON、一遍贴进 HTML），正好在最贵的地方违反这一层存在的理由。
+**代价如实记：光靠这份 JSON 重渲不出原来那张图**，重渲时图要重画。
 
 ### 逐字相同：这一册最要紧的一条
 
@@ -48,12 +54,23 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 ——后者才是「整篇重写」的价码。只有加块、删块、换顺序这种**结构**变动才需要重渲整章，
 而那也只是一章一百来行，不是整篇。
 
-**字段名叫 `html` / `intro` / `svg` / `mathml` / `aside` 的一律是字符串数组；
+⚠️ **这条不变量有一个例外：图。** `sketch`（见下面 `figure` 一节）**不是 HTML 的行**，
+它是画 SVG 的依据，渲染时一个字都不会出现在 HTML 里。所以：
+
+- 改**图的画法**（线画歪了、框排不下、颜色 class 用错）——**直接在 HTML 上改那张 `<svg>`**，
+  JSON 不用动，因为 JSON 里本来就没有画法。
+- 改**图的意图**（这张图该讲哪一步、caption、图号、出处）——回 JSON 改 `sketch` /
+  `caption` / `num` / `credit`，然后把那张图**重画一遍**贴回 HTML。
+  这一处没有「复制粘贴」的便宜可占，见 SKILL.md 硬约束第 6 条。
+
+**字段名叫 `html` / `intro` / `mathml` / `aside` 的一律是字符串数组；
 其余含标记的字段（`lede` / `checkout` / `caption` / `text` / `def` / `boundary[]` /
 `source[]` / `honesty[]` …）是单行字符串，只放行内标记。**
+（`sketch` 两样都不是，它是个对象，里面装的是中文说明不是标记。）
 
-字段里的双引号要按 JSON 转义成 `\"`（`<svg viewBox=\"0 0 640 216\">`）。
-这一步烦，但它是逐行的机械操作，**别因为嫌烦就把标记改成单引号**——
+字段里的双引号要按 JSON 转义成 `\"`
+（`<a href=\"https://doi.org/…\" target=\"_blank\" rel=\"noopener\">Thygesen et al. (2018)</a>`）。
+正文行内标记里这种双引号不多，但**别因为嫌烦就把它们改成单引号**——
 交付前自检里 `grep -o 'target="_blank" rel="noopener"'` 这类命令数的是双引号形态。
 
 ---
@@ -69,7 +86,9 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   "readingMinutes": 24,
   "forWhom": "这份报告为你而写：……（基于访谈的起点画像，不是套话）",
 
-  "map":   { "intro": ["<p>…</p>"], "svg": ["<svg viewBox=\"0 0 640 340\" …>", "…", "</svg>"], "num": 1, "caption": "…" },
+  "map":   { "intro": ["<p>…</p>"], "num": 1, "caption": "…",
+             "sketch": { "form": "…", "nodes": [ { "label": "…", "state": "focus", "href": "#c1" } ],
+                         "edges": [ ["…", "…"] ], "emphasis": "…" } },
   "path":  [ { "href": "#c1", "label": "§1 先定义 AMI 任务", "time": "10 分钟", "hint": "先读这节", "answers": "…" } ],
   "primer": { "intro": ["<p>…</p>"], "items": [ { "term": "变分下界（ELBO）", "html": ["  对数似然直接算不动时，退而求其次优化它的一个下界。"] } ] },
 
@@ -89,11 +108,37 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 }
 ```
 
+- **`map` 也只写「画什么」，不写 SVG。** ② 知识地图那张图是全篇最大的一张，
+  同样在 5.5 才画。它的 `sketch` 比正文图多两个字段，因为它的节点和连线本身就是内容：
+
+  ```json
+  "map": {
+    "intro": ["<p>下面这张图把这份报告要讲的东西摆在一起……</p>"],
+    "num": 1,
+    "caption": "深色是这次要重点补的三块，浅色是你已经会的，虚线框一句话带过。",
+    "sketch": {
+      "form": "三层自上而下：数据层 → 表示层 → 任务层，同层横排，箭头从下层指向上层表示依赖",
+      "nodes": [
+        { "label": "12 导联 ECG 与采样率", "state": "known", "href": "#g-lead" },
+        { "label": "按导联归一化",         "state": "focus", "href": "#c2" },
+        { "label": "对比预训练",           "state": "brief", "href": "#primer" }
+      ],
+      "edges": [ ["12 导联 ECG 与采样率", "按导联归一化"], ["按导联归一化", "对比预训练"] ],
+      "emphasis": "「按导联归一化 → 对比预训练」这条边最粗，它是这份报告的主线"
+    }
+  }
+  ```
+
+  `state` 三选一，对应 `references/layout.md`「② 知识地图的节点三色」：
+  `"known"` = `.n-known`（访谈标「熟悉」，链术语表）、`"focus"` = `.n-focus`（正文有一节，链 `#cN`）、
+  `"brief"` = `.n-brief`（一句话带过，链 `#primer`）。`edges[]` 里两个元素都写 `label` 原文。
+  图例（`g.legend`）由渲染器补，不写进 JSON。
 - **`compare` 只在主题是「某个方法」时才有**，否则写 `null`（渲染时把 ⑥ 整节删掉）。
 - **`references[].verified` 只有真的 `fastpaper get` 回源核验过才写 `true`。**
   没核验过的那条不该出现在这个数组里。
 - `readingMinutes` 在这里算好写死：JSON 里的可见汉字数 ÷ 350，向上取整，每张图 +0.5；
-  不含 `references`。算法与 `references/layout.md`「① 抬头的顶部三件套」那条一致。
+  **不含 `references`，也不含 `sketch`**（`sketch` 是给你自己看的施工说明，读者读不到它）。
+  算法与 `references/layout.md`「① 抬头的顶部三件套」那条一致。
 
 ## 一章长什么样
 
@@ -121,7 +166,7 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 `title` 与 `number` 同理，只在幕封页出现一次——所以 `blocks` 里**不许出现 `<h2>`**。
 
 ⚠️ **`tier` 只有两个合法值**：`"听过但说不清"` / `"没接触过"`。
-标 `"熟悉"` 的知识点**不成章**，只在 `map.svg` 里作 `.n-known` 节点出现（见 `references/interview.md`）。
+标 `"熟悉"` 的知识点**不成章**，只在 `map.sketch.nodes[]` 里作 `state: "known"` 的节点出现（见 `references/interview.md`）。
 档位怎么改变这一节的写法，见 `references/writing.md` 第 7 条。
 
 ⚠️ `lede` / `checkout` / `boundary[]` / `source[]` 是**单行字符串**，只放行内标记
@@ -174,17 +219,23 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   "intro": ["  <p>把标签定义画成一条时间轴，三件事各占一段……</p>"],
   "num": 2,
   "kind": "svg",
-  "svg": ["    <svg viewBox=\"0 0 640 216\" role=\"img\" aria-label=\"…\">",
-          "      <title>…</title>",
-          "      …",
-          "    </svg>"],
+  "sketch": {
+    "form": "一条横贯的时间轴，轴上四个刻度；轴上方三个方框，轴下方一条输入窗口带",
+    "elements": [
+      "时间轴从左到右四个刻度：入院 0h · 首张 ECG 0.5h · 肌钙蛋白峰值 12h · 出院诊断 第 5 天",
+      "轴上方三个方框依次贴在前三个刻度上，写「预测的是谁」「在哪个时点」「由什么证据判定」",
+      "轴下方一条窄带覆盖 0h–6h，标「模型可见的输入窗口」",
+      "从「出院诊断」刻度往左拉一条虚线箭头指进窄带，标「标签泄漏：判定证据落回了输入窗口」"
+    ],
+    "emphasis": "窄带的右边界停在肌钙蛋白峰值左边——这就是「判定证据不许落进输入窗口」那句话的图形形态"
+  },
   "caption": "上排是……下排是……",
   "credit": { "kind": "own" } }
 ```
 
-- `kind` 是 `"svg"` 或 `"img"`。`"img"` 时用 `"src"` + `"alt"` 代替 `"svg"`，
+- `kind` 是 `"svg"` 或 `"img"`。`"img"` 时用 `"src"` + `"alt"` 代替 `"sketch"`，
   `src` 写报告目录树内的相对路径（`papers/<id>/<文件名>`），**不要自己打 base64**，
-  见 `references/figures.md`。
+  见 `references/figures.md`。原图不用你画，所以 `"img"` 没有 `sketch`。
 - `heading` 与 `intro` 都省略时渲染成裸 `<figure>`，不包 `.with-figure`。
   **有话讲这张图就别省**——图与讲它那段不在同一个 `.with-figure` 里会漂到下一屏。
 - `num` 是全篇连续的图号，**`map` 那张是图 1**，章节里的图从 2 接着数。
@@ -198,6 +249,32 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 
   图号（`fig`）**只能来自你亲眼看过那张图并在原文里对上了图注**；对不上就不写 `fig`，
   `paper` 后面跟「的架构图」。
+
+#### `sketch`：这张图画什么
+
+三个字段，全都必填：
+
+| 字段 | 写什么 |
+|---|---|
+| `form` | 一句话说清**骨架**：横向时间轴 / 自上而下的流程链 / 左右对照两栏 / 分层框图 / 输入-变换-输出三段…… 以及大致怎么排 |
+| `elements[]` | 图上**有哪些东西**，按从左到右、从上到下的顺序一条一个。每条要带上**它身上那行字**（标签就是内容），以及它和别的元素什么关系（箭头指向谁、包在谁里面、和谁对照） |
+| `emphasis` | 这张图上**最要紧的那一处**，和它为什么要紧。渲染时它就是那个套 `.svg-hi` 的元素；5.4 审这张图值不值得画，审的也是这一句 |
+
+**`elements` 一般 4–8 条。** 少于 3 条说明这张图没什么可画的（那段话直接写进 `prose` 就行）；
+超过 10 条说明这张图想讲的太多，拆成两张，或者把次要的东西挪进正文
+（模板的 `.draw` 描边动画也封顶 6 个，见 `references/layout.md`）。
+
+**粒度的两个边**，两边都会出事：
+
+- **太粗**（「画一张流程图说明数据怎么变成预测」）——5.5 到那一步还得重新构思画什么，
+  等于这张图的内容根本没在 JSON 里定过，5.4 也就无从审起。
+- **太细**——`sketch` 里**不写**坐标、`viewBox`、宽高、颜色、class 名、字号、
+  `<defs>` / `marker` / `path` 的 `d`，一个尖括号都不写。
+  写这些就是在用自然语言重打一遍 SVG，把刚拿出去的东西又搬了回来。
+  **画法全部归 `references/layout.md`「画 SVG」那一节管**，那里已经把 viewBox、
+  字号下限、颜色 class 定死了，`sketch` 不用重复也不许覆盖。
+
+一句话判据：**`sketch` 定的是「画什么」，layout.md 定的是「怎么画」。**
 
 ### `eq`
 
@@ -238,21 +315,26 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 
 ## JSON → HTML 渲染对照表
 
-第 5.5 小步照这张表贴。左边是 JSON 里的字段，右边是模板里的标记，
-**中间没有任何需要发挥的余地**。
+第 5.5 小步照这张表贴。左边是 JSON 里的字段，右边是模板里的标记。
+**除了图，中间没有任何需要发挥的余地**——图是这张表上唯一一处要你动手创作的地方：
+JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来，
+怎么画照 `references/layout.md`「画 SVG」那一节，别自己另立一套。
 
 | JSON | HTML |
 |---|---|
 | `title` | `.deck-head > h1` |
 | `readingMinutes` / `date` | `p.meta` 里的「约 N 分钟」与 `<time datetime="…">最后更新 …</time>` |
 | `forWhom` | `p.for-whom` |
-| `map.intro` / `map.svg` / `map.caption` | `section.map#map` 里的 `<p>` / `figure > svg` / `figcaption`（`<b>图 {num}</b>` 前缀） |
+| `map.intro` / `map.caption` | `section.map#map` 里的 `<p>` / `figcaption`（`<b>图 {num}</b>` 前缀） |
+| `map.sketch` | `section.map#map` 里的 `figure > svg`，**照 `sketch` 现画**：每个 `nodes[]` 是一个 `g.node`，class 由 `state` 定（`known`/`focus`/`brief` → `.n-known`/`.n-focus`/`.n-brief`），节点里用 `<a href="{href}">` 包住 `rect` + `text`（`text` 写 `label`）；`edges[]` 每条一根 `.edge`；`g.legend` 图例照模板补 |
 | `path[]` | `section.path#path > ol > li`：`<a href="{href}">{label}</a>（{time}，{hint}）` + `<span class="answers">读完能回答：{answers}</span>` |
 | `primer.items[]` | `section.primer#primer > dl`：`<dt>{term}</dt>` + `<dd>{html}</dd>` |
 | `chapters[].number` / `.title` / `.lede` | `<div class="curtain" id="{id}">` 里的 `.curtain-num`（写 `§{number}`）/ `.curtain-title` / `.curtain-lede` |
 | `chapters[].lede` | 紧跟的 `<section class="concept">` 的第一个元素 `<p class="lede">`（**与上面那句逐字相同**） |
 | `chapters[].aside` | `<aside class="aside reveal">` |
 | `chapters[].blocks[]` | 见上面五个块各自的写法，按数组顺序排 |
+| `figure` 块（`kind: "svg"`）| `.with-figure`：`<h3>{heading}</h3>` + `{intro}` + `<figure>` + `<figcaption><b>图 {num}</b> {caption} {credit 那句}</figcaption>`。中间那张 `<svg>` **照 `sketch` 现画**（`form` 定骨架、`elements[]` 定画哪些东西与各自的字、`emphasis` 那处套 `.svg-hi`），`sketch` 本身一个字都不进 HTML |
+| `figure` 块（`kind: "img"`）| 同上，只是 `<figure>` 里是 `<img src="{src}" alt="{alt}">`，没有要画的东西 |
 | `chapters[].boundary[]` | `<div class="boundary reveal"><h3>常见误解与边界</h3><ul><li>…</li></ul></div>` |
 | `chapters[].source[]` | `<div class="source reveal"><h3>出处</h3><ul><li>…</li></ul></div>` |
 | `chapters[].checkout` | `<p class="checkout reveal"><b>读完这节你应该能回答：</b>{checkout}</p>` |
@@ -294,35 +376,44 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 5. 每章 `blocks` 里 `type === "example"` 的**至少 1 个**；`pointer` 不计入。
 6. 每章 `blocks` 里 `type === "figure"` 的**至少 1 个**（每个重点知识点至少一张机制图）。
 7. 每个 `figure` 有 `credit.kind`；`"original"` / `"redrawn"` 的还要有 `paper` 与 `url`。
-8. `num` 全篇不重复、从 1（`map` 那张）连续数下来。
+8. 每个 `kind: "svg"` 的 `figure` 都有 `sketch`，`form` / `elements` / `emphasis`
+   三个字段**都非空**，`elements` **不少于 3 条**（少于 3 条的图不值得画，那段话写进 `prose`）；
+   `map.sketch` 另外还要有非空的 `nodes[]` 与 `edges[]`。
+   `kind: "img"` 的有 `src` 与 `alt`，**没有** `sketch`。
+9. **`sketch` 里不许出现画法**：整个 `sketch`（含 `map.sketch`）里搜不到尖括号、
+   搜不到 `viewBox` / `fill` / `stroke` / `svg-` / `n-focus` 这类属性名与 class 名、
+   也没有坐标或宽高数字。有就是在用中文重打一遍 SVG，把那部分删掉
+   ——画法归 `references/layout.md`「画 SVG」管，`sketch` 只说画什么。
+10. `num` 全篇不重复、从 1（`map` 那张）连续数下来。
 
 **J-C 术语与锚点**
 
-9. 正文里出现的每一个缩写（连着两个以上大写字母：AMI、ECG、ELBO、CFG…）
-   在 `glossary` 里有一条（`en` 或 `zh` 命中）。**逐个去搜，别靠印象。**
-10. 每个 `href="#g-…"` 的目标在 `glossary[].id` 里；
+11. 正文里出现的每一个缩写（连着两个以上大写字母：AMI、ECG、ELBO、CFG…）
+    在 `glossary` 里有一条（`en` 或 `zh` 命中）。**逐个去搜，别靠印象。**
+12. 每个 `href="#g-…"` 的目标在 `glossary[].id` 里；
     每个 `href="#c…"` 的目标在 `chapters[].id` 里；
-    `map.svg` 里每个节点链接的目标落在 `chapters[].id` / `glossary[].id` / `#primer` / `#wrapup` 之内。
-11. `glossary[].where` 写的是 `§N` 或辅助小节的名字，且那一节真的是它第一次出现的地方。
+    `map.sketch.nodes[].href` 的目标落在 `chapters[].id` / `glossary[].id` / `#primer` / `#wrapup` 之内，
+    且每个节点都有 `href`（「已掌握」的节点同样要是锚点）。
+13. `glossary[].where` 写的是 `§N` 或辅助小节的名字，且那一节真的是它第一次出现的地方。
 
 **J-D 编号记法**
 
-12. `§` 只用在知识点章节上。`path[]` 里指向章节的条目写 `§N 标题`，
+14. `§` 只用在知识点章节上。`path[]` 里指向章节的条目写 `§N 标题`，
     指向 ④⑥⑦ 这些辅助小节的**不带 `§`**，只写名字。
-13. 全篇没有 `01` / `第 1 章` / `第 N / M 个` 这类第二种记法。
+15. 全篇没有 `01` / `第 1 章` / `第 N / M 个` 这类第二种记法。
 
 **J-E 文献**
 
-14. `references[].verified` 全为 `true`；有一条不是就把那条删掉。
-15. `source[]` 与正文里出现的每个 DOI / arXiv id，在 `references` 里都能找到。
+16. `references[].verified` 全为 `true`；有一条不是就把那条删掉。
+17. `source[]` 与正文里出现的每个 DOI / arXiv id，在 `references` 里都能找到。
 
 **J-F 档位对深度**（`references/writing.md` 第 7 条的结构化形态）
 
-16. `tier === "没接触过"` 的章，第一个 `prose` 块的 `html` **不少于两段**，
+18. `tier === "没接触过"` 的章，第一个 `prose` 块的 `html` **不少于两段**，
     且第一段里没有本章的核心术语。
-17. `tier === "听过但说不清"` 的章，第一个 `figure` 块出现在 `blocks` 的前三个之内
+19. `tier === "听过但说不清"` 的章，第一个 `figure` 块出现在 `blocks` 的前三个之内
     （「三段之内进入机制」）。
-18. 标「熟悉」的知识点**没有**成章，只在 `map.svg` 里作 `.n-known` 节点出现。
+20. 标「熟悉」的知识点**没有**成章，只在 `map.sketch.nodes[]` 里作 `state: "known"` 的节点出现。
 
 不过关就回第 5.3 小步改那一章，**这时候 HTML 还不存在**，改起来只有几行。
 
