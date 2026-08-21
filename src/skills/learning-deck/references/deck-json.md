@@ -89,7 +89,6 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   "map":   { "intro": ["<p>…</p>"], "num": 1, "caption": "…",
              "sketch": { "form": "…", "nodes": [ { "label": "…", "state": "focus", "href": "#c1" } ],
                          "edges": [ ["…", "…"] ], "emphasis": "…" } },
-  "path":  [ { "href": "#c1", "label": "§1 先定义 AMI 任务", "time": "10 分钟", "hint": "先读这节", "answers": "…" } ],
   "primer": { "intro": ["<p>…</p>"], "items": [ { "term": "变分下界（ELBO）", "html": ["  对数似然直接算不动时，退而求其次优化它的一个下界。"] } ] },
 
   "chapters": [ … 见下 … ],
@@ -97,12 +96,13 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   "compare": { "title": "它与几个替代方案", "intro": ["<p>…</p>"],
                "head": ["方法", "核心假设", "适用场景", "代价", "失效情形"],
                "rows": [ ["扩散模型", "…", "…", "…", "…"] ] },
-  "wrapup":  { "title": "所以它到底在干什么", "html": ["<p>…</p>", "<p>…</p>"] },
+  "summary": { "title": "所以它到底在干什么", "html": ["<p>…</p>", "<p>…</p>"] },
   "glossary": [ { "id": "g-markov", "zh": "马尔可夫链", "en": "Markov chain",
                   "def": "下一状态只取决于当前状态，与更早的历史无关。", "where": "§1" } ],
   "next": { "mustRead": [ { "text": "Ho et al. (2020), <i>DDPM</i>", "why": "只读原文第 2–3 节就够。" } ],
             "optional": [], "handsOn": [], "nextDeck": [ { "text": "「条件生成与 CFG」——你实际要用的那一半。" } ] },
-  "references": [ { "text": "Ho, J., Jain, A. &amp; Abbeel, P. (2020). <i>Denoising Diffusion Probabilistic Models.</i>",
+  "references": [ { "id": "r-ho2020",
+                    "text": "Ho, J., Jain, A. &amp; Abbeel, P. (2020). <i>Denoising Diffusion Probabilistic Models.</i>",
                     "url": "https://arxiv.org/abs/2006.11239", "linkText": "arXiv:2006.11239", "verified": true } ],
   "honesty": [ "…", "…" ]
 }
@@ -133,7 +133,15 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   `"known"` = `.n-known`（访谈标「熟悉」，链术语表）、`"focus"` = `.n-focus`（正文有一节，链 `#cN`）、
   `"brief"` = `.n-brief`（一句话带过，链 `#primer`）。`edges[]` 里两个元素都写 `label` 原文。
   图例（`g.legend`）由渲染器补，不写进 JSON。
-- **`compare` 只在主题是「某个方法」时才有**，否则写 `null`（渲染时把 ⑥ 整节删掉）。
+- **`compare` 只在主题是「某个方法」时才有**，否则写 `null`（渲染时把 ⑤ 整节
+  连同目录里那条一起删掉）。
+- **`summary` 就是 v4 的 `wrapup`，v5 改的名**（「收束」是黑话）。看到旧字段名
+  别原样照抄，仓库里搜不到 `wrapup` 才算改干净。
+- **`references[].id` 是 v5 新增的必填字段**：正文 `source[]` 里的引用现在是
+  `<a href=\"#r-xxx\">…</a>` 这种**页内**锚点，指的就是它，渲染时落到 ⑨ 那条
+  `<li id=\"r-xxx\">` 上；那条 `<li>` 里的 `a.ref-link` 才是论文原 URL。
+  两跳的理由与写法见 `references/layout.md`「⑨ 参考文献与两跳引用」。
+  id 用「首作者姓 + 年份」的小写形态，撞了就加序号。
 - **`references[].verified` 只有真的 `fastpaper get` 回源核验过才写 `true`。**
   没核验过的那条不该出现在这个数组里。
 - `readingMinutes` 在这里算好写死：JSON 里的可见汉字数 ÷ 350，向上取整，每张图 +0.5；
@@ -155,7 +163,7 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
     "<strong>「出院诊断码就是标签」</strong>——不是。……（具体情形 / 具体数字 / 具体对照）"
   ],
   "source": [
-    "第四版通用定义来自 <a href=\"https://doi.org/…\" target=\"_blank\" rel=\"noopener\">Thygesen et al. (2018)</a>。"
+    "第四版通用定义来自 <a href=\"#r-thygesen2018\">Thygesen et al. (2018)</a>。"
   ],
   "checkout": "为什么「用出院诊断码当标签」会把模型的 AUROC 抬高又抬不住？"
 }
@@ -198,7 +206,7 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
 `.compare thead th` / `.compare tbody tr:nth-child(even)`），**没有一条通用的 `table` 规则**。
 写进 `.concept` 里的 `<table>` 会渲染成一张没有边框、没有斑马纹、没有对齐的裸表格
 ——不报错，只是难看。所以正文里的表格能拆成 `prose` 就拆，真的必须是表格，
-那说明它是 ⑥ 方法对比，放 `compare` 里。**这不是漏了一个块类型，是刻意不给。**
+那说明它是 ⑤ 方法对比，放 `compare` 里。**这不是漏了一个块类型，是刻意不给。**
 
 ### `prose`
 
@@ -327,7 +335,6 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
 | `forWhom` | `p.for-whom` |
 | `map.intro` / `map.caption` | `section.map#map` 里的 `<p>` / `figcaption`（`<b>图 {num}</b>` 前缀） |
 | `map.sketch` | `section.map#map` 里的 `figure > svg`，**照 `sketch` 现画**：每个 `nodes[]` 是一个 `g.node`，class 由 `state` 定（`known`/`focus`/`brief` → `.n-known`/`.n-focus`/`.n-brief`），节点里用 `<a href="{href}">` 包住 `rect` + `text`（`text` 写 `label`）；`edges[]` 每条一根 `.edge`；`g.legend` 图例照模板补 |
-| `path[]` | `section.path#path > ol > li`：`<a href="{href}">{label}</a>（{time}，{hint}）` + `<span class="answers">读完能回答：{answers}</span>` |
 | `primer.items[]` | `section.primer#primer > dl`：`<dt>{term}</dt>` + `<dd>{html}</dd>` |
 | `chapters[].number` / `.title` / `.lede` | `<div class="curtain" id="{id}">` 里的 `.curtain-num`（写 `§{number}`）/ `.curtain-title` / `.curtain-lede` |
 | `chapters[].lede` | 紧跟的 `<section class="concept">` 的第一个元素 `<p class="lede">`（**与上面那句逐字相同**） |
@@ -340,12 +347,12 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
 | `chapters[].checkout` | `<p class="checkout reveal"><b>读完这节你应该能回答：</b>{checkout}</p>` |
 | （固定）| `<p class="back"><a href="#map">↑ 回知识地图</a></p>`，每章末尾都有，JSON 里不写 |
 | `compare` | `section.compare#compare`：`<h2>{title}</h2>` + `{intro}` + `.table-wrap > table`（`head` 进 `thead th[scope=col]`，`rows[i][0]` 进 `tbody th[scope=row]`，其余进 `td`）+ `p.back` |
-| `wrapup` | `section.wrapup#wrapup`：`<h2>{title}</h2>` + `{html}` |
+| `summary` | `section.summary#summary`：`<h2>{title}</h2>` + `{html}` |
 | `glossary[]` | `section.glossary#glossary > dl`：`<dt id="{id}">{zh}<span class="en">{en}</span></dt>` + `<dd>{def}<span class="where">首次出现 {where}</span></dd>` |
 | `next.*` | `section.next#next`：四个 `<h3>`（必读 / 选读 / 该上手跑什么 / 下一个 learning-deck）各带一个 `<ul>`，`<li>{text}<span class="why">{why}</span></li>`（`why` 可省） |
 | `references[]` | `section.refs#refs > ol > li`：`{text}<br><a class="ref-link" href="{url}" target="_blank" rel="noopener">{linkText}</a>` |
 | `honesty[]` | `section.honesty#honesty > ul > li` |
-| `.toc` 条目 | 由 `map` / `path` / `primer` / `chapters` / `compare` / `wrapup` / `glossary` / `next` / `references` / `honesty` 有没有内容决定；知识点那组写 `§{number} {title}`，其余条目**只写名字不编号** |
+| `.toc` 条目 | 由 `map` / `primer` / `chapters` / `compare` / `summary` / `glossary` / `next` / `references` / `honesty` 有没有内容决定；知识点那组写 `§{number} {title}`，其余条目**只写名字不编号** |
 
 ⚠️ 所有外链一律 `target="_blank" rel="noopener"`；
 所有颜色一律 `var(--x, #xxx)`；这两条见 SKILL.md 硬约束第 2–4 条。
@@ -392,28 +399,35 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
     在 `glossary` 里有一条（`en` 或 `zh` 命中）。**逐个去搜，别靠印象。**
 12. 每个 `href="#g-…"` 的目标在 `glossary[].id` 里；
     每个 `href="#c…"` 的目标在 `chapters[].id` 里；
-    `map.sketch.nodes[].href` 的目标落在 `chapters[].id` / `glossary[].id` / `#primer` / `#wrapup` 之内，
+    每个 `href="#r-…"` 的目标在 `references[].id` 里（**v5 新增**：正文引用是
+    页内两跳，第一跳指的就是这里；`source[]` 里不该再出现 `href="https://…"`）；
+    `map.sketch.nodes[].href` 的目标落在 `chapters[].id` / `glossary[].id` / `#primer` / `#summary` 之内，
     且每个节点都有 `href`（「已掌握」的节点同样要是锚点）。
 13. `glossary[].where` 写的是 `§N` 或辅助小节的名字，且那一节真的是它第一次出现的地方。
 
 **J-D 编号记法**
 
-14. `§` 只用在知识点章节上。`path[]` 里指向章节的条目写 `§N 标题`，
-    指向 ④⑥⑦ 这些辅助小节的**不带 `§`**，只写名字。
+14. `§` 只用在知识点章节上。目录里指向章节的条目写 `§N 标题`，
+    指向 ③⑤⑥ 这些辅助小节的**不带 `§`**，只写名字。
 15. 全篇没有 `01` / `第 1 章` / `第 N / M 个` 这类第二种记法。
 
 **J-E 文献**
 
 16. `references[].verified` 全为 `true`；有一条不是就把那条删掉。
-17. `source[]` 与正文里出现的每个 DOI / arXiv id，在 `references` 里都能找到。
+17. `source[]` 里提到的每一篇，在 `references` 里都有一条对应的 `id`。
+    **`source[]` 与正文里不再直接写 DOI / arXiv 的 URL** —— 那些 URL 只出现在
+    `references[].url` 上，正文一律走 `#r-…`（v5 的两跳，见
+    `references/layout.md`「⑨ 参考文献与两跳引用」）。
+18. `references[].id` 全篇唯一、都以 `r-` 开头，且每条都真的被至少一处 `source[]`
+    或正文引用到 —— 列了一条谁也没引的文献，说明它其实没进这份报告。
 
 **J-F 档位对深度**（`references/writing.md` 第 7 条的结构化形态）
 
-18. `tier === "没接触过"` 的章，第一个 `prose` 块的 `html` **不少于两段**，
+19. `tier === "没接触过"` 的章，第一个 `prose` 块的 `html` **不少于两段**，
     且第一段里没有本章的核心术语。
-19. `tier === "听过但说不清"` 的章，第一个 `figure` 块出现在 `blocks` 的前三个之内
+20. `tier === "听过但说不清"` 的章，第一个 `figure` 块出现在 `blocks` 的前三个之内
     （「三段之内进入机制」）。
-20. 标「熟悉」的知识点**没有**成章，只在 `map.sketch.nodes[]` 里作 `state: "known"` 的节点出现。
+21. 标「熟悉」的知识点**没有**成章，只在 `map.sketch.nodes[]` 里作 `state: "known"` 的节点出现。
 
 不过关就回第 5.3 小步改那一章，**这时候 HTML 还不存在**，改起来只有几行。
 
