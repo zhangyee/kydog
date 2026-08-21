@@ -878,25 +878,35 @@ test('46-html-tab: 真模板——正文引用两跳落到参考文献那一条'
   }
 });
 
-// 窄面板（报告面板 < 820px）是 KyDog **默认窗口唯一会走到的那一档**：三栏退化成单栏，
-// 左侧目录树退成正文上方一条 sticky 的横条。
+// 窄面板（报告面板 < 820px）是 KyDog **默认窗口唯一会走到的那一档**：三栏退化成单栏。
 //
-// 这条锁的是「横条真的**贴得住**」，不是「横条存在」——两者的失败模式完全不同，
-// 而且只有滚动之后量 top 才分得清：不滚动时横条本来就在顶上，静态截图看着一样。
+// ⚠️ **这条测的行为在 v7 里反过来了。** v3–v6 这一档把左侧目录树退成正文上方一条
+// sticky 的胶囊横条，这里原本钉的是「横条贴得住、而且与正文列等宽左对齐」。
+// 用户第五次真跑后拍板**窄档干脆不显示目录**：横条的条目排成一行横向滚动，最长的
+// 那几条被右边缘截断（真跑里是 `§2 从患者、就诊与多份 ECG 建立样…`），读全还得先
+// 横向拖一次，而它常驻在正文上方还占掉一截首屏。被测行为没了，这条跟着改成
+// 断言「窄档下没有这条横条」。
 //
-// 为什么值得单开一条：这一档里 .toc 是网格项、还跟 .flow 分处两行，很容易被按
-// 「grid 项的包含块是自己的网格区域，行按内容定高就没有余量可粘」推理成
-// 「sticky 在这里不生效」。实测（Chromium 最小复现四种布局 + 本条测试）**是生效的**，
-// 模板 CSS 那段 @media 里记着复现的数。这条测试把这个行为钉住：万一哪天
-// Chromium 真的改了、或者有人改布局把它弄坏了，这里会先红。
+// ⚠️ 三组断言缺一不可，少任何一组这条都会退化成自证的空壳：
+// (1) `.toc` 仍然**在 DOM 里**（count === 1）—— ≥820px 那两档还要拿它当左侧导航树，
+//     两档共用同一份标记。只测「看不见」的话，把 <nav class="toc"> 整个删掉也会绿，
+//     而那会顺手弄坏宽档。
+// (2) 窄档下它**不可见、且不占版面**（getClientRects() 为空）—— display: none 才算数，
+//     只是视觉上不显眼不算。
+// (3) **滚动之后再量一次**。旧横条是 sticky 的：不滚动时它本来就在顶上，静态量一次
+//     区分不了「没有横条」和「有横条但还没滚走」。真正能抓住「有人把横条改回来」的
+//     是滚动之后那一次。
 //
-// ⚠️ 第二组断言（横条与正文列等宽、左右对齐）不是锦上添花，是这条测试的另一半：
-// 只断言纵向贴顶的话，**它区分不了单列 grid 和 display: block** —— 两种实现下横条
-// 都贴在 top: 2px，而 display: block 正是模板 CSS 那段 ⚠️ 明令禁止的动作
-// （它会把横条从「与正文列等宽 570px」变成「通栏 698px」，跟正文列错开）。
-// 反向验证过：临时把窄档改成 display: block，纵向那组仍然绿，**这组变红**
-// （实测 toc 698 / flow 570、left 20 vs 84）。别把它删成「只测贴顶」。
-test('46-html-tab: 真模板——窄面板下目录横条贴顶且与正文列对齐', async () => {
+// 反向验证过（把窄档那段 CSS 临时改回 v6 的横条形态 —— .toc 恢复 sticky / top: 0 /
+// 纸色底 + .toc-body 横向滚动 + 条目胶囊化）：(2)(3) 两组立刻变红
+// （`toBeHidden` 失败、getClientRects().length 量到 1），(1) 仍然绿。
+//
+// ⚠️ 窄档删掉目录之后导航靠正文自己：② 知识地图（`#map`，节点指向各章 `#cN`）、
+// 每章末尾那行 `<p class="back"><a href="#map">↑ 回知识地图</a></p>`、方向键 /
+// Home / End、正文交叉引用与术语表锚点。下面只断言 `#map` —— 模板是一副空骨架
+// （v5 起 <body> 里全是 ⟨待填⟩ 注释），章节与它们末尾的 `.back` 要等 agent 渲染
+// 才存在，在模板上断言不了。方向键那条路径由本文件另外两条测试守着。
+test('46-html-tab: 真模板——窄面板下不显示顶部目录横条', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
@@ -909,13 +919,20 @@ test('46-html-tab: 真模板——窄面板下目录横条贴顶且与正文列�
     expect(clientWidth).toBeLessThan(820);
 
     const toc = frame.locator('.toc');
-    await expect(toc).toBeVisible();
 
-    // 滚到 ⑦ 术语对照那一节的位置，而不是一个写死的 1200。
-    // ⚠️ 写死的坐标在这里会被 scroll-snap 掀翻：html 上是 scroll-snap-type: y proximity、
-    //    .curtain 是 scroll-snap-align: start，落点只要离某张幕封页够近就会被吸走，
-    //    scrollY 未必停在你要的地方（实测过：scrollTo 1200 被吸回去，断言 > 1000 直接红）。
-    //    #glossary 是个 section[id]，本身不是吸附点，前后也没有幕封页，落点是确定的。
+    // (1) 标记还在 —— 删的是窄档的显示，不是这份 DOM。
+    await expect(toc).toHaveCount(1);
+
+    // (2) 窄档下不可见、不占版面。
+    await expect(toc).toBeHidden();
+    const boxes = () => frame.locator('body')
+      .evaluate((el) => el.ownerDocument.querySelector('.toc')!.getClientRects().length);
+    expect(await boxes()).toBe(0);
+
+    // (3) 滚动之后再量一次 —— 旧横条是 sticky 的，只有这一次量得出区别。
+    // ⚠️ 别写死坐标：html 上是 scroll-snap-type: y proximity、.curtain 是
+    //    scroll-snap-align: start，落点离某张幕封页够近就会被吸走（实测过）。
+    //    #glossary 是个 section[id]，本身不是吸附点，前后也没有幕封页，落点确定。
     await frame.locator('body').evaluate((el) => {
       const doc = el.ownerDocument;
       const win = doc.defaultView!;
@@ -925,24 +942,10 @@ test('46-html-tab: 真模板——窄面板下目录横条贴顶且与正文列�
     await expect
       .poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.defaultView!.scrollY))
       .toBeGreaterThan(1000);
+    expect(await boxes()).toBe(0);
 
-    // ① 纵向：CSS 写的是 sticky top: 0（v5 删掉顶部进度条之后不用再让开那 2px）。
-    // 没贴住的话横条已经被滚到视口上方很远，top 会是一个很大的负数。
-    const top = await toc.evaluate((el) => el.getBoundingClientRect().top);
-    expect(top).toBeGreaterThan(-2);
-    expect(top).toBeLessThan(20);
-
-    // ② 横向：横条必须和正文列**等宽、左右对齐**（窄档的 .deck 是单列 grid，
-    // 两者共用同一条 minmax(0, --ld-measure) 轨道 + justify-content: center）。
-    // 这是唯一能把「单列 grid」和「display: block」区分开的判据，见上面那条 ⚠️。
-    const box = await frame.locator('body').evaluate((el) => {
-      const doc = el.ownerDocument;
-      const t = doc.querySelector('.toc')!.getBoundingClientRect();
-      const fl = doc.querySelector('.flow')!.getBoundingClientRect();
-      return { tocW: t.width, tocL: t.left, flowW: fl.width, flowL: fl.left };
-    });
-    expect(Math.abs(box.tocW - box.flowW)).toBeLessThan(1);
-    expect(Math.abs(box.tocL - box.flowL)).toBeLessThan(1);
+    // 窄档仍然有导航入口：② 知识地图在，且是每章末尾「↑ 回知识地图」指向的那个锚点。
+    await expect(frame.locator('#map')).toBeVisible();
   } finally {
     await teardown(launched);
   }

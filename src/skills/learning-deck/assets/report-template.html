@@ -65,9 +65,12 @@
       明确不做」，理由是「挡正文 / 窄窗口失效」。用户读完排版调研后确认要做，
       这条排除**作废**。挡正文的顾虑由布局本身解决：.toc 是三栏网格里的一列
       （position: sticky + align-self: start），不是浮在正文之上的 fixed 面板，
-      它占的是自己的一格，压根碰不到正文。窄窗口失效的顾虑由退化断点解决，
-      见下面「三栏」那段注释里的实测数字。
+      它占的是自己的一格，压根碰不到正文。
       **这不是漏删的旧代码，是这次的需求。**
+      ⚠️ 但「窄窗口失效」那半**用户在 v7 里承认了**：< 820px 下目录整个不显示
+      （v3–v6 那条 sticky 胶囊横条在真跑里条目被右边缘截断，删掉了）。
+      窄档的导航改由正文自己承担（知识地图 + 每章末尾的「↑ 回知识地图」+
+      方向键），见下面「退化 2」那段。R1 反转仍然成立，管的是 ≥820px 那两档。
   R2. **正文回到定宽（65–70 字符）。** B.2 那条「对齐 Markdown tab 的
       padding: 32px 88px 120px、不限宽」连同它派生的「已知代价：一行 70+ 汉字」
       **一并作废**。三栏要成立，中间栏必须有度量，所以正文列锁在
@@ -193,37 +196,33 @@ body {
   }
 }
 
-/* ---- 退化 2：窄面板 → 单栏，目录变成顶部一条可折叠的横条 -------------------
-   报告面板 < 820px（KyDog 默认窗口 1280px 下报告面板约 738px，就落在这里）。目录**不隐藏**：它退成正文上方
-   一条 sticky 的横条，默认折叠（.toc-list 横向滚动的胶囊列表），点标题展开。
-   这就是 R1 里「窄窗口失效」那条旧顾虑的答案——不是让它消失，是换个形态。 */
+/* ---- 退化 2：窄面板 → 单栏，目录**整个不显示** ----------------------------
+   报告面板 < 820px（KyDog 默认窗口 1280px 下报告面板约 738px，就落在这里）。
+
+   ⚠️ **v7（用户第五次真跑后拍板）：这一档不再显示目录，别把横条加回来。**
+      v3–v6 在这一档把 .toc 退成正文上方一条 sticky 的胶囊横条。实测下来它在窄档
+      **反而是负担**：条目排成一行横向滚动，最长的那几条直接被右边缘截断
+      （真跑里看到的是 `§2 从患者、就诊与多份 ECG 建立样…`），要读全还得先横向拖一次。
+      一条读不全的目录不比没有目录强，而它常驻在正文上方还占掉一截首屏。
+
+   窄档下的导航因此**全部落在正文自己身上**，这几条都是模板本来就有的：
+     - ② 知识地图（`#map`）是全篇的总入口，每个节点都是指向 `#cN` 的页内锚点；
+     - 每章末尾固定一行 `<p class="back"><a href="#map">↑ 回知识地图</a></p>`，
+       所以任何一章都能一跳回到地图再跳去别处；
+     - 方向键 `↓/→` `↑/←` 与 `Home` / `End`（文末脚本），逐节翻；
+     - 正文里的交叉引用「见 §2」与术语表的「首次出现」也都是页内锚点。
+   删横条之前先确认过这四条都还在——真要再动它们，得连带重新想窄档怎么导航。
+
+   ⚠️ 宽档与中等宽度（≥820px）的左侧 .toc **原样保留**，删的只有窄档这一形态。 */
 @media (max-width: 819px) {
   .deck {
     /* 单栏也保住行宽（R2）：仍然是 minmax(0, --ld-measure) 而不是 1fr，
        配上 .deck 那条 justify-content: center，面板比行宽宽时正文居中，
-       比行宽窄时自然缩到面板宽。目录横条因此和正文列一样宽、左右对齐。 */
+       比行宽窄时自然缩到面板宽。 */
     --ld-deck-top: 24px;
     grid-template-columns: minmax(0, var(--ld-measure));
     padding: var(--ld-deck-top, 24px) 20px 120px;
   }
-
-  /* ⚠️ **这一档的 .toc 是网格项，而且跟 .flow 分处两行 —— sticky 仍然生效。**
-     这条写在这里是因为它反直觉、而且被人按「grid 项的包含块是它自己的网格区域，
-     行按内容定高就没有余量可粘」的推理判过一次死刑。**实测不是这样**：
-     Chromium 里最小复现（700px 视口、nav+main、scrollTo 1200）四种布局
-     —— 单列 grid（nav/main 分两行）/ 单列 grid + 显式 auto rows /
-     display:block / 两列 grid（nav/main 同行）—— 滚动后 nav 的
-     getBoundingClientRect().top **全都是 2**（等于 top: 2px），一个都没滚走。
-     真模板在 KyDog 默认面板（实测 clientWidth = 732px）里滚到 scrollY > 1000
-     之后量出来同样是 2。
-     所以**不要**为了「让 sticky 生效」把这一档改成 display: block —— 那是在修
-     一个不存在的 bug，代价是横条变成通栏、跟正文列不再对齐，居中也要拆成两套机制。
-     e2e/46-html-tab.spec.ts「真模板——窄面板下目录横条贴顶且与正文列对齐」钉住两件事：
-     (1) 滚动后横条仍然贴在视口顶（v5 起 top: 0，v4 是 top: 2px 用来让开进度条）；
-     (2) 横条与 .flow **等宽、左对齐**。
-     第 (2) 条才是拦住 display: block 的那一条 —— 光测贴顶两种实现都会绿（实测过），
-     而 block 会让横条从 570px 变成通栏 692px。反向验证过：临时改成 display: block，
-     那条断言报 `|tocW - flowW| = 122`。 */
 }
 
 /* 锚点跳转后标题不贴屏幕顶。
@@ -231,7 +230,10 @@ body {
    ⚠️ v4 起 `.concept` **没有 id 了**（章节的 id 搬到了它前面那张幕封页上，
       见「幕封页」那段注释），所以必须把 `.concept` 单独列进来 —— 它以前是靠
       `section[id]` 蹭到这条规则的。漏掉不报错，只是方向键停到正文节时
-      首行贴着屏幕顶（窄档下更糟：直接被目录横条压住）。 */
+      首行贴着屏幕顶。
+
+   ⚠️ v7 起窄档不再有顶部目录横条（见上面「退化 2」），所以这条 1.5rem
+      **三档通用**，不再需要窄档那份加大的覆盖值。 */
 :target,
 section[id],
 dt[id],
@@ -263,8 +265,8 @@ dt[id],
      --ld-hero-top / --ld-hero-h 量的是从页面顶端起算的绝对位置。
      ⚠️ 这条不会跟「带的高度由 .deck-head 量出来」形成回路：.toc 的 margin-top
         只撑高网格第一行，而 .flow 从行首开始排，.deck-head 的 offsetTop 不受影响。
-     ⚠️ 窄档下 .toc 排在抬头**之前**（带的上沿反过来夹在它下沿上），那一档把这条
-        清零，见下面 @media (max-width: 819px) 里的 .toc。 */
+     ⚠️ v7 起窄档整个不显示 .toc，所以这条只在 ≥820px 下有实际效果，
+        窄档不需要再清零它（display: none 的元素不占位）。 */
   margin-top: calc(
     var(--ld-hero-top, 0px) + var(--ld-hero-h, 15.5rem) - var(--ld-deck-top, 32px) + 1.8rem);
   max-height: calc(100vh - 2.4rem);
@@ -361,83 +363,28 @@ dt[id],
   font-size: .92em;
 }
 
-/* 窄面板：目录退成正文上方一条横条，条目排成可横向滚动的胶囊。
-   （对应上面「退化 2」那段。） */
+/* 窄面板（< 820px）：目录**整个不显示**。
+
+   ⚠️ **v7（用户第五次真跑后拍板）—— 别把横条加回来。**
+      v3–v6 这一档把 .toc 退成正文上方一条 sticky 的胶囊横条（.toc-body 横向滚动、
+      .toc-list li / .toc-sub 用 display: contents 摊平、条目描边成胶囊）。
+      实测它在窄档反而有问题：条目排成一行横向滚动，最长的那几条被右边缘截断
+      （真跑里是 `§2 从患者、就诊与多份 ECG 建立样…`），读全还得先横向拖一次，
+      而它常驻在正文上方还占掉一截首屏。用户的决定是干脆不显示。
+      连带删掉的：横条那一整套 CSS、窄档 `--ld-hero-top: 5.6rem` 的兜底、
+      文末脚本 measureBand() 里「带的上沿夹在横条下沿」那一段与对 .toc 的
+      ResizeObserver、以及这一档原来把 scroll-margin-top 加大到 4.4rem 的覆盖
+      （没有 sticky 横条要让开了，回到通用的 1.5rem）。
+
+   窄档的导航靠正文自己：② 知识地图（`#map`）、每章末尾的
+   `<p class="back"><a href="#map">↑ 回知识地图</a></p>`、方向键 / Home / End、
+   以及正文交叉引用与术语表锚点。详见上面「退化 2」那段。
+
+   ⚠️ 用 display: none 而不是删掉 <nav class="toc">：那份标记在 ≥820px 下仍然是
+      左侧导航树，两档共用同一份 DOM。 */
 @media (max-width: 819px) {
   .toc {
-    position: sticky;
-    /* v5：顶部那条进度条删掉之后这里不用再让开 2px，直接贴视口顶。 */
-    top: 0;
-    /* 这一档目录排在抬头**之前**，封面带反过来从它的下沿起（文末脚本量的），
-       所以宽档那条「让开整条带」的 margin-top 在这里必须清掉。 */
-    margin-top: 0;
-    max-height: none;
-    overflow: visible;
-    margin-bottom: 1.4rem;
-    padding: .5rem 0;
-    background: var(--paper, #faf8f3);
-    border-bottom: 1px solid var(--ink-hair-soft, #dbd6d2);
-    z-index: 1;
-  }
-
-  .toc-head {
-    border-bottom: none;
-    padding-bottom: 0;
-    margin-bottom: 0;
-  }
-
-  /* 条目铺成一行可横向滚动的胶囊。展开态仍是默认态（脚本没跑起来也展开），
-     折叠由文末脚本的按钮控制，跟宽面板同一套 .is-collapsed。 */
-  .toc-body {
-    display: block;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    margin-top: .5rem;
-  }
-
-  .toc-list {
-    display: flex;
-    gap: .4em;
-    white-space: nowrap;
-  }
-
-  /* 横条形态下不要「树」：所有层级摊平成同级胶囊。
-     display: contents 要一路加到 <li>，只加在 .toc-sub 上的话二级条目会
-     留在它外层那个 <li> 里排成一竖列，摊不平。 */
-  .toc-list li,
-  .toc-sub {
-    display: contents;
-  }
-
-  .toc-group {
     display: none;
-  }
-
-  .toc a {
-    margin-left: 0;
-    padding: .2em .7em;
-    border: 1px solid var(--ink-hair-soft, #dbd6d2);
-    border-radius: 999px;
-  }
-
-  .toc a.is-current {
-    border-color: var(--accent, #bd4238);
-  }
-
-  /* 目录横条是 sticky 的，锚点跳转要多让开它这一条的高度，否则跳过去的标题
-     正好被压在横条底下。
-     ⚠️ **不要把 `.curtain` 直接写进这张选择器清单**：文末脚本的 stopTarget()
-        会把这条 margin 算进停靠点，而 e2e/46-html-tab.spec.ts 那条
-        「ArrowDown 从 #primer 落到第一个幕封页」断言幕封页停在 |top| < 40，
-        4.4rem ≈ 66px 会直接把它顶红。
-     ⚠️ 但 v4 起幕封页**带 id 了**（章节锚点搬到了它身上），所以点目录 §N 时
-        它会命中上面那条 `:target` —— 那是要的：窄档下正好让开顶部横条，
-        而方向键那条路径不涉及 `:target`，e2e 不受影响。 */
-  :target,
-  section[id],
-  dt[id],
-  .concept {
-    scroll-margin-top: 4.4rem;
   }
 }
 
@@ -691,15 +638,15 @@ code, .formula {
    与高度算出来，写成 :root 上的行内样式。**不能写死**：抬头三行字的高度随标题长度、
    阅读字号、面板宽度变，写死的高度必然在某一档下把 forWhom 引文切掉半行。
 
-   两档形态：
-   - 宽档（≥820px）：.toc 与抬头同处网格第一行，带从页面顶端起（上沿夹到 0），
-     .toc 用 margin-top 让开整条带。
-   - 窄档（<820px）：.toc 退成正文上方一条 sticky 横条、排在抬头**之前**，
-     带的上沿因此夹在横条的下沿上——否则横条（不透明纸色、只有正文列那么宽）
-     会在带上切出「暗 | 纸 | 暗」三段。
+   ⚠️ v7 起**只有一种形态**：带一律从页面顶端起（上沿夹到 0）。
+      ≥820px 下 .toc 与抬头同处网格第一行，.toc 用自己的 margin-top 让开整条带；
+      <820px 下 .toc 是 display: none，压根不在页面上。
+      v3–v6 那一档窄档的 .toc 是排在抬头**之前**的 sticky 横条，带的上沿要夹在
+      横条下沿上（不夹的话不透明的纸色横条会在带上切出「暗 | 纸 | 暗」三段）——
+      横条删掉之后这条特判也一起删了，别照旧注释加回来。
 
-   脚本没跑起来时走 :root 上的静态兜底值（宽档 0 / 15.5rem，窄档上沿 5.6rem）：
-   位置会略微不准，但带仍然是一条深色带、字仍然读得出，不会白屏也不会露出半截。
+   脚本没跑起来时走 :root 上的静态兜底值（0 / 15.5rem）：位置会略微不准，
+   但带仍然是一条深色带、字仍然读得出，不会白屏也不会露出半截。
 
    ⚠️ **带是 <body> 的直接子元素，不在 .deck-head 里**，而且用 z-index: -1 压在
       正文之下、纸面之上。两条都是有意的：
@@ -737,17 +684,11 @@ code, .formula {
   --hb-fg: var(--ink, #e9e6e1);
 }
 
-/* 窄档下目录横条排在抬头**之前**，带必须从横条下沿起，兜底值因此不是 0。
-   5.6rem 是展开态横条的近似高度；文末脚本量到真值之后会用行内样式盖掉它。
-   ⚠️ 这条必须写在上面那条 `:root` **之后**：两者特异度相同（都是 (0,1,0)，
-      媒体查询本身不加特异度），谁在后面谁生效。写到 1b 那节（文件更靠前）
-      会被这里的 0px 盖掉，而且**不报错** —— 窄档下带会从页面顶端起，
-      纸色的目录横条在带上切出「暗 | 纸 | 暗」三段。 */
-@media (max-width: 819px) {
-  :root {
-    --ld-hero-top: 5.6rem;
-  }
-}
+/* ⚠️ v7 起这里**没有**窄档的 --ld-hero-top 覆盖了，别加回来。
+   v3–v6 写过 `@media (max-width: 819px) { :root { --ld-hero-top: 5.6rem } }`，
+   为的是让带从那条 sticky 目录横条的下沿起（横条是不透明纸色，带从 0 起的话
+   会被它切成「暗 | 纸 | 暗」三段）。横条已经删掉（见 1b 那节），带在三档下
+   一律从 0 起，兜底值就是上面那条 :root 里的 0px。 */
 
 .hero-band {
   position: absolute;
@@ -2431,35 +2372,31 @@ try {
     // 标题长度、阅读字号、面板宽度变，任何写死的高度都会在某一档下把 forWhom 那段
     // 引文切掉半行。CSS 里那几个 --ld-hero-* 只是脚本没跑起来时的兜底。
     //
-    // ⚠️ 窄档（<820px）下目录横条排在抬头**之前**，带的上沿要夹在横条下沿上 ——
-    //    不夹的话横条（不透明纸色、只有正文列那么宽）会在带上切出「暗 | 纸 | 暗」。
-    //    宽档下目录与抬头同处网格第一行，带从页面顶端起（上沿夹到 0），目录靠
-    //    自己的 margin-top 让开（见 <style> 1b 节）。
-    // ⚠️ 不会形成回路：宽档那条 margin-top 只撑高网格第一行，.flow 仍从行首开始排，
+    // ⚠️ v7 起带一律从页面顶端起（上沿夹到 0），**没有窄档特判了**。
+    //    ≥820px 下目录与抬头同处网格第一行，目录靠自己的 margin-top 让开整条带
+    //    （见 <style> 1b 节）；<820px 下目录是 display: none，不在页面上。
+    //    v3–v6 这里有一段「窄档把上沿夹到目录横条下沿」的 floor 计算，横条删掉后
+    //    一并删了，别照旧注释加回来。
+    // ⚠️ 不会形成回路：那条 margin-top 只撑高网格第一行，.flow 仍从行首开始排，
     //    .deck-head 的 offsetTop 与 offsetHeight 都不受这两个变量影响。
     const BLEED_TOP = 2.6;     // rem，带在抬头之上多留的一截
     const BLEED_BOTTOM = 2.0;  // rem，带在抬头之下多留的一截（.deck-head 的 margin-bottom 要大于它）
     const measureBand = () => {
       const rem = parseFloat(getComputedStyle(root).fontSize) || 15;
-      const narrow = !matchMedia('(min-width: 820px)').matches;
-      const toc = document.querySelector('.toc');
-      // offsetParent 是 <body>（.deck / .flow 都保持 static），所以 offsetTop
-      // 就是文档坐标，跟 sticky 当前被粘到哪儿无关。
-      const floor = (narrow && toc) ? toc.offsetTop + toc.offsetHeight : 0;
-      const top = Math.max(floor, head.offsetTop - BLEED_TOP * rem);
+      const top = Math.max(0, head.offsetTop - BLEED_TOP * rem);
       const bottom = head.offsetTop + head.offsetHeight + BLEED_BOTTOM * rem;
       root.style.setProperty('--ld-hero-top', top + 'px');
       root.style.setProperty('--ld-hero-h', Math.max(0, bottom - top) + 'px');
     };
     measureBand();
-    // ResizeObserver 而不是只听 resize：目录横条折叠 / 展开、阅读字号变化、
-    // 标题换行数变化都会改这两个数，而它们都不发 resize 事件。
-    // 回调里只写 CSS 变量，写的又不是被观察元素的尺寸，不会自激。
+    // ResizeObserver 而不是只听 resize：阅读字号变化、标题换行数变化都会改这两个数，
+    // 而它们都不发 resize 事件。回调里只写 CSS 变量，写的又不是被观察元素的尺寸，
+    // 不会自激。
+    // ⚠️ v7 起**不再观察 .toc**：带的几何已经不依赖目录了（横条删掉之后没有
+    //    「夹在横条下沿」这回事），观察它只会白跑回调。
     if (typeof ResizeObserver === 'function') {
       const ro = new ResizeObserver(measureBand);
       ro.observe(head);
-      const toc = document.querySelector('.toc');
-      if (toc) ro.observe(toc);
     }
     addEventListener('resize', measureBand);
 
