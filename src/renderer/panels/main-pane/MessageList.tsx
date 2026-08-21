@@ -43,14 +43,19 @@ export function MessageList({ threadId }: { threadId: string }) {
         {messages.map((m) =>
           m.role === 'user'
             ? <UserMessage key={m.id} name={userName} content={m.content} createdAt={m.createdAt} />
-            : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} createdAt={m.createdAt} />,
+            // history 里的消息按定义已经落定：主进程在 pi 的 agent_end 上发
+            // run.message_end，bootstrap 收到才把 buffer 搬进这里。
+            : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} settled createdAt={m.createdAt} />,
         )}
         {liveBuffers.map(([messageId, buf]) => (
           <div key={messageId}>
+            {/* 还在 buffer 里 = 本轮没结束。settled=false 让文件卡片先不出现
+                （理由见 AssistantMessage 里 fileCards 那段注释）。 */}
             <AssistantMessage
               threadId={threadId}
               messageId={messageId}
               blocks={buf.blocks}
+              settled={false}
             />
             {/* 提问态下卡片本身就是最强的状态提示，再挂个转圈只会打架。 */}
             {!askPending && <StreamingIndicator />}

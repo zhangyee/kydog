@@ -12,9 +12,27 @@ import { useIdentityStore } from '../../stores/identityStore';
 import { groupBlocks } from './groupBlocks';
 import { collectFileCards } from './fileCards';
 
-type Props = { threadId: string; messageId: string; blocks: AssistantBlock[]; createdAt?: string };
+/**
+ * `settled`：这条消息**本轮已经结束**了吗。
+ *
+ * 由渲染点直接给，不在这里推断——`MessageList` 本来就分两支渲染：
+ * `threadsStore.historyByThread` 里的是落定的消息，`runsStore.bufferByMessage`
+ * 里的是本轮还在跑的那条。两支的边界就是协议事实：主进程在 pi 的 `agent_end`
+ * 上发 `run.message_end`，`bootstrap.ts` 收到后 `takeBuffer` 把 blocks 搬进
+ * history（见 `src/main/agent/AgentService.ts` 的 `agent_end` 分支）。
+ *
+ * 别改成读 `runState.status`：那是**线程**级的，历史消息会跟着新一轮重新变回
+ * 「未落定」，而且换线程时判定也会串。
+ */
+type Props = {
+  threadId: string;
+  messageId: string;
+  blocks: AssistantBlock[];
+  settled: boolean;
+  createdAt?: string;
+};
 
-export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Props) {
+export function AssistantMessage({ threadId, messageId, blocks, settled, createdAt }: Props) {
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const projectPath = useThreadsStore((s) => {
     const t = Object.values(s.threadsByProject).flat().find((x) => x.id === threadId);
@@ -22,7 +40,19 @@ export function AssistantMessage({ threadId, messageId, blocks, createdAt }: Pro
   });
   const agentName = useIdentityStore((s) => s.agentName);
   const groups = useMemo(() => groupBlocks(blocks), [blocks]);
-  const fileCards = useMemo(() => collectFileCards(blocks, projectPath), [blocks, projectPath]);
+  // 卡片延到本轮结束才出。
+  //
+  // 落盘那一刻就出卡片的话，用户点开的是半成品：learning-deck 的模板是 `cp` 之后
+  // 逐章 `edit` 渲染的（spec F.2 的刻意取舍），HTML 文件出现时正文还在一章章往里填，
+  // 交付前自检也还没跑。
+  //
+  // ⚠️ 判定用的是 `settled`（消息已落进 history），不是「最后一次写入之后多久没动静」
+  //    之类的时间窗。skill 走到第几步、自检跑没跑，这些信号根本不存在于协议层；
+  //    应用能拿到的确定事实只有「本轮结束」（`agent_end` → `run.message_end`）。
+  const fileCards = useMemo(
+    () => (settled ? collectFileCards(blocks, projectPath) : []),
+    [settled, blocks, projectPath],
+  );
 
   return (
     <div style={{ margin: '24px 0' }}>

@@ -6,6 +6,6 @@
     { "after_ms": 50, "type": "tool_start", "toolCallId": "tc1", "name": "write", "command": "", "args": { "file_path": "__REPORT_PATH__", "content": "# report\n\n正文\n" } },
     { "after_ms": 50, "type": "tool_end", "toolCallId": "tc1", "status": "ok", "exitCode": 0 },
     { "after_ms": 50, "type": "message_end", "messageId": "m1", "toolCallIds": ["tc1"] },
-    { "after_ms": 50, "type": "agent_end", "reason": "completed" }
+    { "after_ms": 1500, "type": "agent_end", "reason": "completed" }
   ]
 }
