@@ -8,7 +8,13 @@ export default [
   {
     // .claude/** 是 Claude Code 的 harness 目录（worktrees 等），不是项目源码。
     // 不排除的话，一个并发 worktree 会把整份仓库副本拖进 lint，报一堆无关错误。
-    ignores: ['node_modules/**', 'dist/**', 'out/**', '.vite/**', 'docs/**', '.claude/**', 'main.js'],
+    // .superpowers/** 同理：它是 gitignore 掉的试验/实测脚本目录（跟已经排除的
+    // docs/** 里那半是一对），里面的 .mjs 跑在 Playwright 的页面上下文里、
+    // 满是 document / getComputedStyle，按项目规则 lint 只会报一堆 no-undef。
+    ignores: [
+      'node_modules/**', 'dist/**', 'out/**', '.vite/**',
+      'docs/**', '.claude/**', '.superpowers/**', 'main.js',
+    ],
   },
   js.configs.recommended,
   {
