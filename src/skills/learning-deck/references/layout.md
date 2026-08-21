@@ -167,12 +167,30 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 已经用 `stroke-dasharray` 表达虚线语义的路径**不要再加 `.draw`**——两者会打架
 （描边动画会用行内 `style.strokeDasharray` 覆盖那个属性，动画播完虚线变实线）。
 
-### 抬头的动效层 `.hero-art`
+### 抬头的封面带 `.hero-band`
 
-模板已有，**整块原样保留、一个字都不用改**：里面的 `canvas.hero-gl` 是内联 shader 的
-WebGL 那层，`svg.hero-fallback` 是它起不来时的兜底，两个都不能删。它是纯装饰
+模板已有。它是 `<body>` 的**直接子元素**（在 `<div class="deck">` 之前），不在
+`.deck-head` 里——满幅铺开需要这个位置，别把它搬进去。里面 `canvas.hero-canvas`
+是动效那层，`svg.hero-fallback` 是它起不来时的兜底，两个都不能删。它是纯装饰
 （`aria-hidden="true"`），任何信息都不许只画在这里。**别把它复制到别处**——
-只有抬头用 WebGL，理由见下面「明确不做的」。
+只有抬头用 WebGL / canvas，理由见下面「明确不做的」。
+
+**整块原样保留，唯一要动的是 `data-hero` 那一个值**：
+
+```html
+<div class="hero-band" data-hero="gridwave" aria-hidden="true">
+```
+
+三个合法值 —— `gridwave`（扫描线 · HUD）· `constellation`（知识星丛）·
+`holoband`（全息色散）。取 JSON 顶层的 `hero` 字段，怎么由主题简称定出来见
+SKILL.md 第 5.1 小步。写错、写别的值、或者整个属性没写都退回 `gridwave`
+（确定的兜底，不是随机）。
+
+⚠️ **别删这条带。** 抬头的 `h1` / `p.meta` / `p.for-whom` 在模板 CSS 里用的是
+`--hb-fg`（深色带上的浅色）。带删了，标题就是浅色压在浅纸上——**看不见，而且不报错**。
+
+⚠️ **换一张脸只要改这一个值**（JSON 的 `hero` 与 HTML 的 `data-hero` 保持一致），
+不用重渲整份报告。
 
 ---
 
@@ -228,7 +246,7 @@ JSON 里它只写一次（`chapters[].lede`），渲染时贴到两处，所以�
 
 | | 块 | class | 里面的位 |
 |---|---|---|---|
-| ① | 抬头 | `.deck-head` | `div.hero-art`（动效层，**整块原样保留**）· `h1` 主题 · `p.meta` 顶部两件套（见下）· `p.for-whom` **基于访谈的起点画像**，不是套话 |
+| ① | 抬头 | `.deck-head` | `h1` 主题 · `p.meta` 顶部两件套（见下）· `p.for-whom` **基于访谈的起点画像**，不是套话。三行字压在 `div.hero-band` 那条深色封面带上，带本身是 `<body>` 的子元素、**整块原样保留**，只填 `data-hero` |
 | ② | 知识地图 | `.map` | `figure > svg`，**照 `map.sketch` 现画**（JSON 里没有这张图的标记）。一张画完的图见下面那一节 |
 | ③ | 前序速览 | `.primer` | `dl > dt/dd`，每条两三句话带过 |
 | ④ | 知识点正文 | `.concept` | 见下面「④ 一章画完的样子」 |

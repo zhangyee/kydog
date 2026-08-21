@@ -85,6 +85,7 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   "date": "2026-08-21",
   "readingMinutes": 24,
   "forWhom": "这份报告为你而写：……（基于访谈的起点画像，不是套话）",
+  "hero": "gridwave",
 
   "map":   { "intro": ["<p>…</p>"], "num": 1, "caption": "…",
              "sketch": { "form": "…", "nodes": [ { "label": "…", "state": "focus", "href": "#c1" } ],
@@ -107,6 +108,29 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
   "honesty": [ "…", "…" ]
 }
 ```
+
+### `hero` —— 抬头那条封面带用哪个方向
+
+三选一的字符串，渲染时原样贴进 HTML 里 `.hero-band` 的 `data-hero`：
+
+| 值 | 画面 | 手段 |
+|---|---|---|
+| `gridwave` | 扫描线 / 信号波形（HUD 的调子），一道横向扫光 | 内联 shader 的 WebGL |
+| `constellation` | 知识星丛：节点缓慢漂移、近距离连线、少数热节点带光晕 | canvas 2D |
+| `holoband` | 全息色散：domain-warp 的缓慢流动 + 强调色色散环 | 内联 shader 的 WebGL |
+
+三个都是一版通吃五套主题：带底与前景色由主题变量决定，同一份代码在
+vellum / porcelain / sepia / lilac / midnight 下长得明显不同却都成立。
+
+**怎么定这个值：由 slug 前两个字符查表，见 SKILL.md 第 5.1 小步。**
+不许「自己挑一个」（那等于永远挑第一个），也不许运行时随机——
+**同一份报告重新打开必须还是同一张脸**。
+
+**用户想换一张脸，改这一个字段就行**：把 `hero` 改成另外两个值之一，
+再把 HTML 里 `.hero-band` 的 `data-hero` 改成同一个值（一处一行，两处而已，
+不用重渲整份报告）。写错、写别的值、或者属性整个没写，模板都退回 `gridwave`。
+
+⚠️ 淘汰的两个值 —— `contour`、`prism-css` —— **不是合法值**，写进去会退回 `gridwave`。
 
 - **`map` 也只写「画什么」，不写 SVG。** ② 知识地图那张图是全篇最大的一张，
   同样在 5.5 才画。它的 `sketch` 比正文图多两个字段，因为它的节点和连线本身就是内容：
@@ -330,6 +354,7 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
 
 | JSON | HTML |
 |---|---|
+| `hero` | `<body>` 里 `div.hero-band` 的 `data-hero`（**唯一一处**，值原样贴） |
 | `title` | `.deck-head > h1` |
 | `readingMinutes` / `date` | `p.meta` 里的「约 N 分钟」与 `<time datetime="…">最后更新 …</time>` |
 | `forWhom` | `p.for-whom` |
@@ -428,6 +453,12 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
 20. `tier === "听过但说不清"` 的章，第一个 `figure` 块出现在 `blocks` 的前三个之内
     （「三段之内进入机制」）。
 21. 标「熟悉」的知识点**没有**成章，只在 `map.sketch.nodes[]` 里作 `state: "known"` 的节点出现。
+
+**J-G 抬头**
+
+22. `hero` 是 `gridwave` / `constellation` / `holoband` 三个值之一，
+    且**就是按 SKILL.md 第 5.1 小步那两张表由 slug 前两个字符查出来的那一个**——
+    不是「看着顺眼挑的」。写别的值不会报错，只会静默退回 `gridwave`。
 
 不过关就回第 5.3 小步改那一章，**这时候 HTML 还不存在**，改起来只有几行。
 
