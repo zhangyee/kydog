@@ -27,39 +27,53 @@
 ## 第一步：取图
 
 ```bash
-fastpaper figures <id> -d papers/
+fastpaper figures <id> -d papers/ [--overwrite]
 ```
 
-`<id>` 接受 arXiv id、PMC id、DOI（DOI 先转 PMCID 再取）。**PMID / URL 不支持。**
+命令形态、`<id>` 支持的标识符范围（arXiv id / PMC id / DOI，PMID 与 URL 不支持）、
+`-d` 的落盘位置，`src/skills/fastpaper/SKILL.md` 已经讲清楚（「Commands」第 43 行、
+`figures` 那段第 74 行起），这里不重复，只写 learning-deck 这条工作流特有的退出码分支。
 
-⚠️ **先判这一条，再看下面的退出码表。** 今天大概率命中的就是它。
-
-退出码是 `2`，**并且 stderr 里出现 `unrecognized subcommand`**——例如：
-
-```
-error: unrecognized subcommand 'figures'
-tip: a similar subcommand exists: 'sources'
-```
-
-这不是你命令写错了，是**当前装的 fastpaper 版本还没有 `figures` 这条命令**。
-
-- **不要改命令重试**，也**不要听那句 `tip`**——`sources` 是列可用源的命令，
-  和取图毫无关系，试它只会浪费一轮。
-- 直接走自画 SVG + 指路卡片，并在 ⑪ 诚实边界写明
-  「当前 fastpaper 版本没有 `figures` 命令，本报告未取用原文插图」。
-- 这一篇不用再试，**整份报告的其余论文也不用再试**——版本不会在一次会话中间变。
-
-排除掉上面这种情形之后，**退出码分支照着走，不要自己另起一套重试策略**：
+**退出码分支照着走，不要自己另起一套重试策略**（下表已对 fastpaper 0.6.0 实测过）：
 
 | 退出码 | 含义 | 怎么办 |
 |---|---|---|
 | `0` | 取到了（或文件已存在，没有 `--overwrite` 就跳过了） | 往下走 |
 | `4` | **这篇取不到原图**：arXiv 的 PDF-only 投稿（没有源码包）、非 OA 的 PMC、DOI 转不到 PMCID、包里没有图片文件 | **不重试**，这篇走自画 / 指路卡片 |
 | `1` | 源不支持 `figures`，或标识符类型不对（PMID / URL） | **同一个标识符不要重试**。如果原因是你给的是 PMID / URL，手上有 DOI 或 arXiv id 就换成那个再跑一次；没有就放弃这篇 |
-| `2` | 命令写错了（**已排除上面那种情形**） | 改命令 |
+| `2` | 命令写错了，或当前 fastpaper 版本还没有 `figures` 这条命令（见下面补充说明） | 改命令，或走补充说明里的降级 |
 
-**覆盖率约 74%**（用户在 39 篇真实论文上实测），且只覆盖 arXiv 与 Europe PMC。
-别的源没有这个通道，不用试。
+**实测样例**（`./vendor/current/fastpaper figures … -d /tmp/x`，fastpaper 0.6.0）：
+
+- `12345678`（PMID）→ 退出码 `1`，stderr `Error: PubMed indexes abstracts, not
+  files: 12345678`，并提示去查同文的 PMC ID。
+- `arxiv 0000.00000`（不存在的 id）→ 退出码 `4`，stderr `Error: Not found on
+  arXiv: 0000.00000`。
+- `2405.09567`（PDF-only 投稿，没有源码包）→ 退出码 `4`，stderr `Error: arXiv
+  has no source package for 2405.09567 (it was submitted as a PDF), so there
+  are no original figure files.`，并提示改用 `fastpaper download`。**这是
+  arXiv 侧最常见的「取不到」原因**——报错信息本身已经指路：命中这条不用再猜，
+  直接走自画 / 指路卡片，需要 PDF 另作他用就改跑 `fastpaper download`。
+
+**覆盖率约 79%**（用户在 39 篇真实论文上实测，2026-08-20 对 fastpaper 0.6.0
+验证过），且只覆盖 arXiv 与 Europe PMC。别的源没有这个通道，不用试。
+
+### 补充：`unrecognized subcommand` —— 当前版本还没有这条命令
+
+这不是上面表里的 `2`（命令本身写错），是**当前装的 fastpaper 版本比这份文档旧，
+还没有 `figures` 这条命令**——多半会在 0.6.0 之前的版本上撞到。表现同样是退出码
+`2`，但 **stderr 里会出现 `unrecognized subcommand`**：
+
+```
+error: unrecognized subcommand 'figures'
+tip: a similar subcommand exists: 'sources'
+```
+
+- **不要改命令重试**，也**不要听那句 `tip`**——`sources` 是列可用源的命令，
+  和取图毫无关系，试它只会浪费一轮。
+- 直接走自画 SVG + 指路卡片，并在 ⑪ 诚实边界写明
+  「当前 fastpaper 版本没有 `figures` 命令，本报告未取用原文插图」。
+- 这一篇不用再试，**整份报告的其余论文也不用再试**——版本不会在一次会话中间变。
 
 ---
 
