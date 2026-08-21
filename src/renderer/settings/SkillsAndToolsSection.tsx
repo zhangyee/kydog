@@ -215,7 +215,13 @@ function SkillRow({ skill, onChanged }: { skill: SkillEntry; onChanged: (next: S
   };
   const onOpen = () => { void window.kydog.invoke('skill.openInOS', { name: skill.name }); };
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
+    // data-skill-name 让 e2e 能从 DOM 里读出这一行是哪个 skill，
+    // 不必假定内置 skill 的字母序（加一个新 skill 就会换位）。
+    <div
+      data-testid="skill-row"
+      data-skill-name={skill.name}
+      style={{ display: 'flex', alignItems: 'baseline', padding: '6px 0', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}
+    >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 500 }}>
           {skill.name}

@@ -85,6 +85,11 @@ test('27-composer: typing / opens slash menu with description; Enter commits as 
     await expect(page.locator('[data-testid="slash-menu"]')).toBeVisible();
     await expect(page.locator('[data-testid="slash-item-fastpaper"]')).toBeVisible();
     await expect(page.locator('[data-testid="slash-menu-desc"]')).toBeVisible();
+    // Filter down to `fastpaper` before hitting Enter: Enter commits whichever item
+    // is highlighted, and the highlight starts on the alphabetically first builtin —
+    // which changes whenever a skill is added. Filtering pins it by name instead.
+    await page.keyboard.type('fast');
+    await expect(page.locator('[data-testid="slash-item-fastpaper"]')).toBeVisible();
     await page.keyboard.press('Enter');
     // After commit: the chip is rendered inline; the body is empty.
     await expect(page.locator('[data-testid="skill-chip"]')).toContainText('fastpaper');
