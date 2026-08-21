@@ -30,7 +30,7 @@
      仍然选了 JS：brief 指定用 JS，而且两个效果本就要共用「同组错峰延迟」这
      一套逻辑，放进同一个脚本块比一半 CSS 一半 JS 更好维护——是权衡取舍，
      不是「CSS 做不到」。这条硬约束因此扩大成也覆盖这两个效果，跟键盘交互、
-     进度条写在同一处。
+     目录高亮写在同一处。
      这条推翻了 v1「不写 <script>」——v1 的沙箱不给 allow-scripts，v2 给了。
   2. 不引任何外部资源：没有 CDN、没有 <link rel=stylesheet>、没有 @import、
      没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()、
@@ -103,8 +103,8 @@ body {
   /* padding 归零，全部边距交给 .deck —— 否则 body 的这层 padding 会叠在 .deck 的
      32px / 88px 上（v1 留下的 2.5rem 1.25rem 6rem 曾让实际边距变成约 72px / 108px），
      「与 Markdown tab 对齐」就只是注释里的说法，量出来对不上。
-     body 里除了 .deck 只有那条 .progress 进度条，归零后它变成通栏、且 sticky 到
-     视口最顶，比缩进 20px 更像一条进度条。 */
+     ⚠️ v5 起 body 里只剩 .deck 一个孩子：顶部那条进度条已经删掉（见下面 .toc 那段
+        注释里的理由），别再往这里加通栏的 sticky 元素。 */
   padding: 0;
   background: var(--paper, #faf8f3);
   color: var(--ink, #2a2620);
@@ -196,7 +196,8 @@ body {
      所以**不要**为了「让 sticky 生效」把这一档改成 display: block —— 那是在修
      一个不存在的 bug，代价是横条变成通栏、跟正文列不再对齐，居中也要拆成两套机制。
      e2e/46-html-tab.spec.ts「真模板——窄面板下目录横条贴顶且与正文列对齐」钉住两件事：
-     (1) 滚动后横条的 top 仍是 2；(2) 横条与 .flow **等宽、左对齐**。
+     (1) 滚动后横条仍然贴在视口顶（v5 起 top: 0，v4 是 top: 2px 用来让开进度条）；
+     (2) 横条与 .flow **等宽、左对齐**。
      第 (2) 条才是拦住 display: block 的那一条 —— 光测贴顶两种实现都会绿（实测过），
      而 block 会让横条从 570px 变成通栏 692px。反向验证过：临时改成 display: block，
      那条断言报 `|tocW - flowW| = 122`。 */
@@ -227,9 +228,9 @@ dt[id],
       拉满整行高度就没有可以「粘」的余量，看起来像完全没写 sticky。
 
    ⚠️ overflow-y: auto 让它自己成为一个滚动容器 —— 但**不是文档滚动容器**。
-      文档仍然滚 documentElement（进度条与方向键都依赖这一点，见 html 那条
-      scroll-snap-type 旁边的注释与文末脚本）。别把 overflow 加到 .deck /
-      .flow 身上，那会把文档滚动搬家，进度条与 scroll-snap 一起失效。 */
+      文档仍然滚 documentElement（方向键的停靠点与 scroll-snap 都依赖这一点，
+      见 html 那条 scroll-snap-type 旁边的注释与文末脚本）。别把 overflow 加到
+      .deck / .flow 身上，那会把文档滚动搬家，scroll-snap 与方向键一起失效。 */
 .toc {
   position: sticky;
   top: 1.2rem;
@@ -333,8 +334,8 @@ dt[id],
 @media (max-width: 819px) {
   .toc {
     position: sticky;
-    /* 让开顶部那条 2px 的 .progress（它也是 sticky top: 0） */
-    top: 2px;
+    /* v5：顶部那条进度条删掉之后这里不用再让开 2px，直接贴视口顶。 */
+    top: 0;
     max-height: none;
     overflow: visible;
     margin-bottom: 1.4rem;
@@ -405,30 +406,20 @@ dt[id],
   }
 }
 
-/* 顶部进度条：反映当前在全篇的位置，是「位置感」在 slide 节奏下的实现。
+/* ⚠️ **顶部进度条已经删掉（v5，用户决定）—— 别加回来。**
 
-   ⚠️ v4 起它**是唯一的连续进度指示**：v1 那个「第 N / M 个」文字计数
-      （`.counter`）已经删掉了 —— spec E.3，编号只在幕封页上出现一次。
-      别看到「长文档需要进度感」就把 .counter 加回来，那正是被去重掉的东西；
-      章节内的定位由左侧目录的 .is-current 高亮补偿。
+   v4 的模板在 body 顶上有一条 sticky 的 2px 进度条（`.progress` + `#progress-bar`），
+   算是「顶部三件套」的第一样。第四次真跑后用户拍板删掉，理由是他自己的：
+   左栏已经有目录（`.is-current` 高亮同样给位置感），而进度条为了显示进度必须
+   **常驻一条灰色轨道**，于是这个 tab 的顶部长得跟 KyDog 其它 tab 都不一样。
+   一条只为装另一条线而存在的灰线，换来的位置感目录已经给了。
 
-   position: sticky 不是 spec 排除的「固定悬浮目录」——那条排除针对的是
-   会挡住正文、需要另外交互才能收起的导航面板；这里只是一条 2px 高的细线，
-   不遮挡任何内容也不承担导航功能，纯粹是个只读的进度指示。别把它当成
-   同一类东西删掉。 */
-.progress {
-  position: sticky;
-  top: 0;
-  height: 2px;
-  background: var(--ink-hair, #c9c3be);
-  z-index: 1;
-}
+   连带删掉的：那条灰轨道与它的强调色进度块、文末脚本里算宽度的那一段、
+   @media print 里隐藏它的那条、窄档 .toc 让开它那 2px 的偏移。
+   **顶部三件套里「预计阅读时间」与「最后更新日期」保留**，见 .deck-head .meta。
 
-#progress-bar {
-  height: 100%;
-  width: 0%;
-  background: var(--accent, #bd4238);
-}
+   看到旧注释里「它是唯一的连续进度指示」「别把它当成固定悬浮目录删掉」那两句，
+   那是 v4 的说法，已经作废。 */
 
 /* ==========================================================================
    2. 排版 —— 标题层次、正文、链接、术语
@@ -940,12 +931,14 @@ math[display="block"] {
   border-bottom: 2px solid var(--ink-hair, #c9c3be);
 }
 
-/* 顶部三件套（spec D.3，借鉴 Lil'Log）：进度条（body 顶上那条 .progress，
-   模板已有）+ 预计阅读时间 + 最后更新日期。后两样排在这一行里，用小圆点隔开。
+/* 顶部两件套（spec D.3，借鉴 Lil'Log）：预计阅读时间 + 最后更新日期，
+   排在这一行里，用小圆点隔开。
+   ⚠️ v5 起是**两件**不是三件：原来打头的那条进度条已经删掉，理由见上面
+      「顶部进度条已经删掉」那段。别照旧注释把它补回来。
 
    ⚠️ 阅读时间**在生成时算好写死**，不要用 JS 运行时数字数：
       正文可见汉字数 ÷ 350（中文技术材料 300–400 字/分取中值），向上取整，
-      再按每张图 +0.5 分钟。不含 ⑩ 文献清单与 SVG 里的标注。
+      再按每张图 +0.5 分钟。不含 ⑨ 参考文献与 SVG 里的标注。
       算完写成「约 N 分钟」，N < 5 时写「约 5 分钟」（更短的报告不值得单独出一份）。 */
 .deck-head .meta {
   display: flex;
@@ -1664,14 +1657,6 @@ figcaption b {
     color: #000;
   }
 
-  /* 顶部进度条：position: sticky 在打印/导出 PDF 的分页上下文里行为不一致，
-     纸上也没有「当前滚动到哪」这个概念——不清掉的话首页顶部可能残留一条
-     空的 2px 灰线（轨道背景 --ink-hair），且 PDF 导出没有 JS 运行环境，
-     宽度会停在初始值 0%，看起来像个不完整的进度条。直接隐藏。 */
-  .progress {
-    display: none;
-  }
-
   /* 逐条入场：opacity: 0 是文末 <script> 在浏览器里主动设的，导出 PDF 时
      脚本未必有机会运行到、动画也未必播完——强制可见，不能让内容停在
      入场前的隐藏态被印出来（或印不出来）。 */
@@ -1819,10 +1804,6 @@ figcaption b {
 </head>
 
 <body>
-<!-- 顶部进度条：sticky、2px，反映当前在全篇的滚动位置。宽度由文末 <script>
-     算，公式与滚动容器要跟着「已实测」的 documentElement 走，见 html 那条
-     scroll-snap-type 旁边的注释。 -->
-<div class="progress"><div id="progress-bar"></div></div>
 <div class="deck">
 
 <!-- 左侧固定导航树（spec D.2 反转 R1）。
@@ -1867,12 +1848,12 @@ figcaption b {
 
 <!-- 正文列。⚠️ 别给 .flow 加 position / overflow：前者会把 .curtain / .concept
      的 offsetTop 参照系从文档挪到它身上（方向键整体落偏），后者会把文档滚动
-     搬家（进度条与 scroll-snap 一起失效）。 -->
+     搬家（scroll-snap 会失效）。 -->
 <main class="flow">
 
 <!-- ① 抬头：主题 / 阅读时间 / 最后更新 / 一句话「这份报告为谁而写」 -->
 <header class="deck-head">
-  <!-- 标题下垫的动效层（spec D.4 第 2 项 + v4 的 E.5）。
+  <!-- 标题下垫的动效层（spec D.4 第 2 项 + v4 的 E.5，画面在 v5 重做过）。
        ⚠️ aria-hidden="true"：**纯装饰**，任何信息都不许只画在这里。
        ⚠️ **两层叠着，都要保留**：上面的 <canvas> 是 WebGL 那层（着色器与取色
           写在文末唯一那个 <script> 里），下面的 <svg class="hero-fallback"> 是
@@ -2732,8 +2713,10 @@ figcaption b {
 </main>
 </div>
 
-<!-- 方向键翻节 + 进度条 + 目录折叠/高亮。这是模板全文唯一允许的 <script> 块，见文件头「四条
-     硬约束」第 1 条。 -->
+<!-- 方向键翻节 + 逐条入场 / SVG 描边 + 目录折叠与高亮 + 抬头那层 WebGL。
+     这是模板全文唯一允许的 <script> 块，见文件头「四条硬约束」第 1 条。
+     ⚠️ v5 删掉了原来算顶部进度条宽度的那一段（进度条本身也删了，理由见 <style>
+        里「顶部进度条已经删掉」那段）。 -->
 <script>
 (() => {
   // .curtain 是幕封页、.concept 是知识点正文，二者都参与 scroll-snap 吸附
@@ -2744,7 +2727,6 @@ figcaption b {
   // .curtain/.concept 也不落进 section[id]，方向键会直接跳过它——不报错，
   // 读者只会感觉这一屏「按方向键按不到」。新增辅助小节记得带 id。
   const stops = [...document.querySelectorAll('.curtain, .concept, section[id]')];
-  const bar = document.getElementById('progress-bar');
 
   // prefers-reduced-motion 对 scrollIntoView 的 smooth 同样适用：这个设置
   // 开启时应该瞬时跳转，不做平滑滚动动画。
@@ -2787,20 +2769,6 @@ figcaption b {
     else if (e.key === 'Home') { e.preventDefault(); stops[0].scrollIntoView({ behavior: jumpBehavior() }); }
     else if (e.key === 'End') { e.preventDefault(); stops[stops.length - 1].scrollIntoView({ behavior: jumpBehavior() }); }
   });
-
-  if (bar) {
-    // 已实测：真正滚动的是 documentElement（html），不是 .deck——.deck 从未
-    // 设过 overflow，量尺脚本里 .deck 的 scrollTop 恒为 0。这里用
-    // document.documentElement.scrollHeight / window.scrollY 而不是
-    // .deck 的滚动尺寸，跟上面 html 的 scroll-snap-type 放在同一层。
-    const update = () => {
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      bar.style.width = (max > 0 ? (window.scrollY / max) * 100 : 0) + '%';
-    };
-    addEventListener('scroll', update, { passive: true });
-    addEventListener('resize', update);
-    update();
-  }
 })();
 
 // 逐条入场 + SVG 描边。见文件头「四条硬约束」第 1 条已更新的说明——写进这
@@ -2956,7 +2924,7 @@ figcaption b {
 
 // 抬头的 WebGL 动效层（spec E.5，已实测）。同样写在这唯一的脚本块里。
 //
-// ⚠️ **放在最后**：万一这一段抛了异常，上面那三块（方向键 / 进度条、逐条入场 /
+// ⚠️ **放在最后**：万一这一段抛了异常，上面那三块（方向键翻节、逐条入场 /
 //    SVG 描边、目录）都已经跑完并注册好了，不会被拖下水。整块还额外包了一层
 //    try / catch —— 它是纯装饰，任何失败都只该退回下面那张 SVG，不该影响正文。
 //
