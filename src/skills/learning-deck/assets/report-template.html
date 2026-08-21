@@ -201,10 +201,16 @@ body {
      那条断言报 `|tocW - flowW| = 122`。 */
 }
 
-/* 锚点跳转后标题不贴屏幕顶 */
+/* 锚点跳转后标题不贴屏幕顶。
+
+   ⚠️ v4 起 `.concept` **没有 id 了**（章节的 id 搬到了它前面那张幕封页上，
+      见「幕封页」那段注释），所以必须把 `.concept` 单独列进来 —— 它以前是靠
+      `section[id]` 蹭到这条规则的。漏掉不报错，只是方向键停到正文节时
+      首行贴着屏幕顶（窄档下更糟：直接被目录横条压住）。 */
 :target,
 section[id],
-dt[id] {
+dt[id],
+.concept {
   scroll-margin-top: 1.5rem;
 }
 
@@ -383,20 +389,27 @@ dt[id] {
 
   /* 目录横条是 sticky 的，锚点跳转要多让开它这一条的高度，否则跳过去的标题
      正好被压在横条底下。
-     ⚠️ **只加在 section[id] / dt[id] / :target 上，不要加到 .curtain**：
-        .curtain 没有 id，也不该有 scroll-margin —— 文末脚本的 stopTarget()
+     ⚠️ **不要把 `.curtain` 直接写进这张选择器清单**：文末脚本的 stopTarget()
         会把这条 margin 算进停靠点，而 e2e/46-html-tab.spec.ts 那条
-        「ArrowDown 从 #primer 落到第一个幕封页」断言幕封页停在 |top| < 40。 */
+        「ArrowDown 从 #primer 落到第一个幕封页」断言幕封页停在 |top| < 40，
+        4.4rem ≈ 66px 会直接把它顶红。
+     ⚠️ 但 v4 起幕封页**带 id 了**（章节锚点搬到了它身上），所以点目录 §N 时
+        它会命中上面那条 `:target` —— 那是要的：窄档下正好让开顶部横条，
+        而方向键那条路径不涉及 `:target`，e2e 不受影响。 */
   :target,
   section[id],
-  dt[id] {
+  dt[id],
+  .concept {
     scroll-margin-top: 4.4rem;
   }
 }
 
-/* 顶部进度条：反映当前在全篇的位置，是「位置感」在 slide 节奏下的实现
-   （替代 v1 那个「第 3 / 7 个」的文字计数——.counter 那个计数仍然保留，
-   两者不冲突，见下面 ⑤ 知识点正文）。
+/* 顶部进度条：反映当前在全篇的位置，是「位置感」在 slide 节奏下的实现。
+
+   ⚠️ v4 起它**是唯一的连续进度指示**：v1 那个「第 N / M 个」文字计数
+      （`.counter`）已经删掉了 —— spec E.3，编号只在幕封页上出现一次。
+      别看到「长文档需要进度感」就把 .counter 加回来，那正是被去重掉的东西；
+      章节内的定位由左侧目录的 .is-current 高亮补偿。
 
    position: sticky 不是 spec 排除的「固定悬浮目录」——那条排除针对的是
    会挡住正文、需要另外交互才能收起的导航面板；这里只是一条 2px 高的细线，
@@ -748,7 +761,26 @@ math[display="block"] {
    .curtain-lede 的文字必须和紧跟其后 .concept 里的 .lede 逐字相同，
    是同一句话在两处的呈现（封面放大展示一次，进入正文时再见一次），
    不是各写一句、也不是为了不重复而拆成两半。写真报告时改这句话，
-   两处要一起改。 */
+   两处要一起改。
+
+   ⚠️ **v4 的去重（spec E.3，用户第三次真跑之后决定的）——幕封页承担全部。**
+      v2 加幕封页时只把「一句话定义」去了重，标题和编号都留了两份：幕封页上
+      一份，正文 .concept 的 <h2> 里又一份，而且编号两种记法（幕封页 `01`、
+      正文 `第 1 / 4 个`）。用户实测的反馈是「我以为第一章下面有 4 点，
+      结果看到后面才知道是一共 4 章」。所以现在：
+        - 章节标题**只在幕封页**上出现一次（.curtain-title）；
+        - 正文 .concept **没有 <h2>**，直接从 .lede 起，第一个标题是
+          「它解决什么问题」那个 <h3>；
+        - `.counter`（第 N / M 个）**已删除**，别加回来。
+      代价是滚到章节中段时屏上没有章节名 —— 由左侧目录的当前项高亮补偿，
+      这是用户拍板接受的取舍。
+
+   ⚠️ **章节的 id 在幕封页上，不在 .concept 上**（spec E.4）：幕封页那个 div 上带
+      id="c1"。目录里的「§1 …」点下去应该落到幕封页（读者从封面进入这一节），
+      落到正文就等于跳过了封面。.concept 不需要 id —— 文末脚本的停靠点选择器
+      `.curtain, .concept, section[id]` 里它是被 `.concept` 直接选中的。
+      ⚠️ 这段注释里**不要**写出 `class=` + `curtain` 那个完整串：交付前自检第 7 组
+         用 grep -c 数它来核对幕封页与正文节成对，注释里多一处就会把那三个数弄不等。 */
 
 .curtain {
   min-height: 100vh;
@@ -757,9 +789,14 @@ math[display="block"] {
   justify-content: center;
 }
 
+/* 章节号。⚠️ 记法固定写成 `§1` `§2`（spec E.4）：全篇只此一种章节记法，
+   目录、速通路径、知识地图的节点标注、正文里的交叉引用（「见 §2」）用的都是它。
+   **别写成 `01` / `第 1 章`** —— v3 的幕封页写 `01`、目录写 `§1`，同一个东西
+   两种记法，正是这次要统一掉的。`§` 只留给知识点章节，⑥ 方法对比、⑦ 收束
+   这类辅助小节不编号（它们在目录里有名字，编了号反而会被读成第 N 章）。 */
 .curtain-num {
   font-family: var(--font-mono, Menlo, monospace);
-  font-size: 1em;
+  font-size: 1.15em;
   letter-spacing: .3em;
   color: var(--accent, #bd4238);
   margin: 0 0 1.2em;
@@ -944,18 +981,14 @@ math[display="block"] {
 
 /* --- ⑤ 知识点正文 ------------------------------------------------------- */
 
+/* ⚠️ v4 起 .concept 里**没有 <h2>**（标题只在幕封页上，spec E.3），所以第一个
+   子元素就是 .lede。padding-top 是补回原先由 h2 的 margin-top 撑出来的那口气：
+   .concept 参与 scroll-snap-align: start，没有它的话吸附之后正文首行会贴着
+   屏幕顶。**用 padding 不用 margin**：margin 会把 scroll-snap / offsetTop 的
+   落点也一起往上挪，padding 只在盒子内部让开。 */
 .concept {
+  padding-top: 1.6rem;
   margin-bottom: 1rem;
-}
-
-/* 位置感：长文档里缺少进度感是最主要的弃读原因 */
-.counter {
-  font-family: var(--font-sans, sans-serif);
-  font-size: .58em;
-  font-weight: 400;
-  letter-spacing: .08em;
-  color: var(--ink-faint, #76706c);
-  white-space: nowrap;
 }
 
 /* 节首一句话定义：读者据此当场决定要不要细读这节。
@@ -1623,7 +1656,6 @@ figcaption b {
     word-break: break-all;
   }
 
-  .counter,
   .checkout,
   figcaption,
   .honesty {
@@ -1708,8 +1740,13 @@ figcaption b {
 <!-- 左侧固定导航树（spec D.2 反转 R1）。
      ⚠️ **这是有意反转**：v1/v2 的注释里写过「固定悬浮目录 —— 明确不做」，
         用户读完排版调研后确认要做。看到旧说法别把这一块删掉。
-     ⚠️ 条目跟 .flow 里的 section id 一一对应，**手写维护**：少一条不报错，
+     ⚠️ 条目跟 .flow 里的锚点一一对应，**手写维护**：少一条不报错，
         只是那一节在目录里消失。二级列表 .toc-sub 放各知识点，有几节写几条。
+     ⚠️ 知识点那几条的 href 指向的是**幕封页**（`.curtain` 上的 id，spec E.4），
+        不是正文的 .concept —— 读者点 §1 应该从封面进入这一节。
+     ⚠️ 记法：知识点写 `§1 标题`，其余条目只写名字、**不编号**。全篇（目录 /
+        速通路径 / 知识地图节点 / 正文交叉引用 / 术语表的「首次出现」）统一这一种，
+        幕封页上那个 .curtain-num 也是 `§1`。别再出现 `01` 与 `§1` 并存。
      ⚠️ 折叠按钮的行为写在文末那个唯一的 <script> 里；脚本没跑起来时目录停在
         展开状态，不会有任何东西被折没（所以它不违反「不用 <details>」那条）。 -->
 <nav class="toc" aria-label="章节导航">
@@ -1909,7 +1946,9 @@ figcaption b {
       <span class="answers">读完能回答：网络到底在预测什么？为什么损失长得像 MSE？</span>
     </li>
     <li>
-      <a href="#compare">§3 方法对比</a>（5 分钟）
+      <!-- ⚠️ 辅助小节不编号：`§` 只留给知识点章节（spec E.4）。写成「§3 方法对比」
+           会让读者数不清一共几章 —— 这里的条目用名字就够，顺序由 <ol> 表达。 -->
+      <a href="#compare">方法对比</a>（5 分钟）
       <span class="answers">读完能回答：什么时候不该用扩散模型？</span>
     </li>
     <li>
@@ -1950,9 +1989,12 @@ figcaption b {
 </section>
 
 <!-- 幕封页 · 第 1 节：整屏封面，curtain-lede 与下面 .concept 里的 .lede
-     是同一句「节首一句话定义」，逐字相同——见「幕封页」那段 CSS 注释。 -->
-<div class="curtain">
-  <div class="curtain-num">01</div>
+     是同一句「节首一句话定义」，逐字相同——见「幕封页」那段 CSS 注释。
+     ⚠️ **章节的 id 在这里**（spec E.4）：目录的「§1 …」点下去要落到封面，
+        不是落到正文。下面那个 .concept 因此不带 id。
+     ⚠️ 章节号写 `§1` 不写 `01`（spec E.4，全篇统一这一种记法）。 -->
+<div class="curtain" id="c1">
+  <div class="curtain-num">§1</div>
   <h2 class="curtain-title">前向加噪过程</h2>
   <p class="curtain-lede">
     前向过程是一条<strong>不含任何可学参数</strong>的马尔可夫链：
@@ -1966,10 +2008,14 @@ figcaption b {
        → 它解决什么问题 → 机制（figure: svg + figcaption）
        → .boundary 常见误解与边界 → .source 出处
        [节尾] .checkout「你应该能回答」+ .back 回知识地图
--->
-<section class="concept" id="c1">
-  <h2>前向加噪过程 <span class="counter">第 1 / 2 个</span></h2>
 
+     ⚠️ **这里没有 <h2>，也没有 .counter 那个「第 N / M 个」**（spec E.3）：章节标题与
+        编号都由上面那张幕封页承担，正文直接从 .lede 起，第一个标题是
+        「它解决什么问题」那个 <h3>。看到旧版「节首要有 h2」的说法别加回来。
+     ⚠️ **也没有 id**：章节锚点在幕封页上（spec E.4）。方向键的停靠点选择器
+        `.curtain, .concept, section[id]` 直接选中 .concept，不靠 id。
+-->
+<section class="concept">
   <p class="lede">
     前向过程是一条<strong>不含任何可学参数</strong>的马尔可夫链：
     从真实数据出发，每步掺一点高斯噪声，走够多步就把任何数据分布碾成标准正态。
@@ -2184,8 +2230,8 @@ figcaption b {
 </section>
 
 <!-- 幕封页 · 第 2 节：curtain-lede 与下面 .concept 里的 .lede 是同一句，逐字相同。 -->
-<div class="curtain">
-  <div class="curtain-num">02</div>
+<div class="curtain" id="c2">
+  <div class="curtain-num">§2</div>
   <h2 class="curtain-title">反向去噪目标</h2>
   <p class="curtain-lede">
     反向过程要学的东西，经过化简之后朴素得出人意料：
@@ -2195,9 +2241,8 @@ figcaption b {
 </div>
 
 <!-- ⑤ 知识点正文 · 第 2 节 -->
-<section class="concept" id="c2">
-  <h2>反向去噪目标 <span class="counter">第 2 / 2 个</span></h2>
-
+<!-- ⑤ 知识点正文 · 第 2 节。同上：无 <h2>、无 .counter、无 id。 -->
+<section class="concept">
   <p class="lede">
     反向过程要学的东西，经过化简之后朴素得出人意料：
     <strong>给网络看一张加过噪的图和它的时间步，让它把当初掺进去的那团噪声猜出来</strong>，
@@ -2476,7 +2521,7 @@ figcaption b {
   </p>
   <p>
     这也解释了它的性格：<strong>训练便宜、采样昂贵、覆盖度好、可控性强</strong>。
-    <a href="#compare">§3</a> 那张表里每一条差异，最后都能追回到这条「难度搬到哪」的选择上。
+    <a href="#compare">方法对比</a>那张表里每一条差异，最后都能追回到这条「难度搬到哪」的选择上。
   </p>
 </section>
 
@@ -2509,7 +2554,7 @@ figcaption b {
   <ul>
     <li>
       Ho et al. (2020), <i>Denoising Diffusion Probabilistic Models</i>
-      <span class="why">只读 §2–§3 就够，正是本报告两节的原文；后面的实验部分可跳。</span>
+      <span class="why">只读原文第 2–3 节就够，正是本报告两节的出处；后面的实验部分可跳。</span>
     </li>
     <li>
       Song et al. (2021), <i>Score-Based Generative Modeling through SDEs</i>
@@ -2585,7 +2630,7 @@ figcaption b {
       散点、热图、生存曲线这类<b>数据图不重画</b>——需要时改成引用卡片指向原文。
     </li>
     <li>
-      §3 对比表里「流匹配生态比扩散薄」是截至报告日期的印象性判断，
+      方法对比表里「流匹配生态比扩散薄」是截至报告日期的印象性判断，
       没有可引用的量化来源，读的时候按意见看待。
     </li>
   </ul>

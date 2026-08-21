@@ -21,9 +21,9 @@
     <section class="map"      id="map">        ② 知识地图
     <section class="path"     id="path">       ③ 速通路径
     <section class="primer"   id="primer">     ④ 前序速览
-    <div class="curtain">                      幕封页 · 第 1 节
-    <section class="concept"  id="c1">         ⑤ 知识点正文 · 第 1 节
-    <div class="curtain"> … <section class="concept" id="c2"> …   （每节一对）
+    <div class="curtain" id="c1">              幕封页 · 第 1 节（章节锚点在这里）
+    <section class="concept">                  ⑤ 知识点正文 · 第 1 节（无 id、无 h2）
+    <div class="curtain" id="c2"> … <section class="concept"> …   （每节一对）
     <section class="compare"  id="compare">    ⑥ 方法对比表（主题是「某个方法」时才有）
     <section class="wrapup"   id="wrapup">     ⑦ 收束节
     <section class="glossary" id="glossary">   ⑧ 术语对照表
@@ -38,6 +38,8 @@
 ⚠️ **新增的 `<section>` 必须带 `id`。** 方向键的停靠点是
 `.curtain, .concept, section[id]` 这三样；一个裸 `<section>` 三样都不沾，
 方向键会直接跳过它——不报错，读者只会觉得这一屏「按不到」。
+**唯一的例外是 `.concept`**：它靠 class 直接被选中，所以不需要 id——
+章节的锚点在它前面那张幕封页上（见下面「幕封页」）。
 
 ⚠️ **不要给 `.flow` 或 `.deck` 加 `style`、`position` 或 `overflow`。**
 `position` 会把 `.curtain` / `.concept` 的 `offsetTop` 参照系从文档挪到它身上
@@ -92,7 +94,7 @@
       <li>
         <div class="toc-group">知识点</div>
         <ol class="toc-sub">
-          <li><a href="#c1">§1 …</a></li>   ← 有几节写几条
+          <li><a href="#c1">§1 …</a></li>   ← 有几节写几条；href 指向幕封页
         </ol>
       </li>
       …
@@ -101,9 +103,13 @@
 </nav>
 ```
 
-⚠️ 条目与 `.flow` 里的 `section id` **一一对应，手写维护**：少一条不报错，
+⚠️ 条目与 `.flow` 里的锚点 **一一对应，手写维护**：少一条不报错，
 只是那一节在目录里消失；`href` 指到不存在的 id 也不报错，只是点了不动
 （交付前用「自检」第 9 条查一遍，它会直接把指不到的锚点列出来）。
+⚠️ 知识点那几条指向的是**幕封页**（`.curtain` 上的 `id`），不是正文 `.concept`——
+点 §1 应该从这一节的封面进入。窄档下目录横条是 sticky 的，`:target` 的
+`scroll-margin-top` 已经替你让开了它的高度（实测：横条底 68px、幕封页顶落在 66px）。
+⚠️ 知识点条目写 `§N 标题`，其余条目**只写名字不编号**，见上面「编号记法」。
 ⚠️ `aria-expanded` / `aria-controls="toc-body"` 与 `.toc-body` 上的 `id="toc-body"`
 要成对保留；当前项的 `aria-current="page"` 由脚本设，你不用写。
 ⚠️ 只有知识点那一组用 `.toc-sub` 嵌一层，别把 ①–⑪ 全做成树。
@@ -146,22 +152,52 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 
 ---
 
-## 幕封页 `.curtain`
+## 幕封页 `.curtain` —— 章节的标题、编号、锚点全在这里
 
 ```html
-<div class="curtain">
-  <div class="curtain-num">01</div>
+<div class="curtain" id="c1">
+  <div class="curtain-num">§1</div>
   <h2 class="curtain-title">前向加噪过程</h2>
   <p class="curtain-lede">…一句话定义…</p>
 </div>
 ```
 
-一屏高，只有大号章节号 + 标题 + 一句话定义。它是 `<div>` 不是 `<section>`，没有 `id`。
+一屏高，只有大号章节号 + 标题 + 一句话定义。它是 `<div>` 不是 `<section>`。
+
+⚠️ **章节的 `id` 在幕封页上，不在 `.concept` 上。** 目录里的「§1 …」、速通路径、
+知识地图节点、正文里的「见 §2」，指的都是这个 id——读者点过去应该落在封面上，
+从这一节的开头进入。`.concept` 不带 id（方向键靠 class 选中它，见上面那条 ⚠️）。
+
+⚠️ **幕封页承担这一节的全部标题与编号，正文里一个都不再出现。**
+`.concept` 里**没有 `<h2>`**、**没有 `.counter`**：正文第一个元素就是 `.lede`，
+第一个标题是「它解决什么问题」那个 `<h3>`。
+理由是实跑暴露的：v2 加幕封页时只把「一句话定义」去了重，标题和编号各留了两份，
+而且编号两种记法（封面 `01` vs 正文 `第 1 / 4 个`），用户的原话是
+「我以为第一章下面有 4 点，结果看到后面才知道是一共 4 章」。
+代价是滚到章节中段时屏上没有章节名——由左侧目录的当前项高亮补偿，这是取舍不是漏做。
 
 ⚠️ **`.curtain-lede` 与紧跟其后 `.concept` 里的 `.lede` 是同一句话，必须逐字相同。**
 这是「节首一句话定义」在两处的呈现（封面放大展示一次，进入正文时再见一次），
 **不是各写一句，也不是为了不重复而拆成两半**。改这句话时两处一起改。
 这句话怎么写，见 `references/writing.md` 第 1 条。
+
+### 编号记法：全篇只有 `§N` 一种
+
+| 出现在哪 | 写成 |
+|---|---|
+| 幕封页的 `.curtain-num` | `§1` |
+| `.toc-sub` 的条目 | `§1 前向加噪过程` |
+| ③ 速通路径里指向知识点的条目 | `§1 前向加噪过程` |
+| ② 知识地图 `.n-focus` 节点的副标 | `要重点补 · §1` |
+| 正文 / 侧注里的交叉引用 | `见 <a href="#c2">§2</a>` |
+| ⑧ 术语表的 `.where` | `首次出现 §1` |
+
+⚠️ **`§` 只留给 ⑤ 知识点章节。** ⑥ 方法对比、⑦ 收束这些辅助小节**不编号**——
+在目录和速通路径里只写名字，顺序由列表本身表达。把「§3 方法对比」写进速通路径，
+读者就数不清一共几章了。引用论文自己的章节时写「原文第 2–3 节」，别也用 `§`。
+
+⚠️ **不要写 `01` / `第 1 章` / `第 N / M 个`。** 「封面写 `01`、目录写 `§1`」
+这种同一个东西两种记法，正是这次统一掉的东西。
 
 ---
 
@@ -169,9 +205,9 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 
 | | 块 | class | 里面的位 |
 |---|---|---|---|
-| ① | 抬头 | `.deck-head` | `div.hero-art`（动效层，原样保留）· `h1` 主题 · `p.meta` 顶部三件套的后两样（见下）· `p.for-whom` **基于访谈的起点画像**，不是套话 |
+| ① | 抬头 | `.deck-head` | `div.hero-art`（动效层，**整块原样保留**：里面的 `canvas.hero-gl` 是 WebGL 那层、`svg.hero-fallback` 是它起不来时的兜底，两个都别删）· `h1` 主题 · `p.meta` 顶部三件套的后两样（见下）· `p.for-whom` **基于访谈的起点画像**，不是套话 |
 | ② | 知识地图 | `.map` | `figure > svg`。节点是 `g.node` 加三色之一，每个节点里用 `<a href="#…">` 包住 `rect` + `text`；连线 `.edge`；图例 `g.legend` 直接套同一套 class |
-| ③ | 速通路径 | `.path` | `ol > li`：`<a href="#cN">§N 标题</a>（时间估计，一句提示）` + `<span class="answers">读完能回答：…</span>` |
+| ③ | 速通路径 | `.path` | `ol > li`：`<a href="#cN">§N 标题</a>（时间估计，一句提示）` + `<span class="answers">读完能回答：…</span>`。辅助小节（前序速览 / 方法对比 / 收束）也可以进这张路径表，但**不带 `§` 编号**，只写名字 |
 | ④ | 前序速览 | `.primer` | `dl > dt/dd`，每条两三句话带过 |
 | ⑤ | 知识点正文 | `.concept` | 见下面「节内固定顺序」 |
 | ⑥ | 方法对比表 | `.compare` | `div.table-wrap > table`：假设 / 适用场景 / 代价 / 失效情形 |
@@ -193,9 +229,12 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 
 ### ⑤ 节内固定顺序（不要自由发挥）
 
+⚠️ **节首没有 `<h2>`、没有 `.counter`、也没有 `id`**——三样都在前面那张幕封页上，
+见「幕封页」。看到旧版「节首要有 h2」「`.counter` 给读者进度感」的说法，那是 v3 的，
+已经作废；正文直接从 `.lede` 起。
+
 ```
-<section class="concept" id="cN">
-  <h2>标题 <span class="counter">第 N / M 个</span></h2>
+<section class="concept">
   <p class="lede">一句话定义</p>                      ← 与幕封页那句逐字相同
   <aside class="aside reveal">依赖侧注「本节假设你已经知道 §X」</aside>
   <h3>它解决什么问题</h3>  <p>…</p>
@@ -211,7 +250,7 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 </section>
 ```
 
-- `.counter`「第 N / M 个」：长文档里缺少进度感是最主要的弃读原因。
+- 长文档里的进度感由**顶部进度条 + 左侧目录的当前项高亮**给，不再有文字计数。
 - `.aside` 依赖侧注：访谈里标「熟悉」的那些正好填这里。
 - `.with-figure`：**图与讲它的那段必须在同一个 `.with-figure` 里**，
   否则图会漂到下一屏，读者对不上。
@@ -324,9 +363,16 @@ Chromium 原生支持 MathML Core，已实测在这套 sandbox + CSP 下是真�
   未来可能拆成独立 skill。**不要顺手加回来。**
 - **外部数学排版库（KaTeX / MathJax）。** 见上面「公式：原生 MathML」。
 - **外部资源与第二个 `<script>`。** 见 SKILL.md 的硬约束。
+- **正文与章节幕封页的 WebGL 背景。** 通篇铺 GPU 动效的代价（发热、掉电、
+  长文档里一直在跑）换不来任何阅读上的好处。**只有 ① 抬头那一层是 WebGL**，
+  理由是它滚过去就不在视口里了（模板脚本用 IntersectionObserver 把 rAF 停掉）。
+  抬头那块代码模板已经写好，**你什么都不用做**——别把它复制到别处。
+- **正文里的 `<h2>` 和 `.counter`。** 见上面「幕封页」：标题与编号只在幕封页出现一次。
 
 > 上一版这里还写着「固定悬浮目录」和「限死正文行宽」两条排除。
 > **两条都在 v3 被推翻了**（见上面「三栏与它的退化」），别再照旧版删目录、放行宽。
+> 同样地，「不引 WebGL」这条在 v4 被收窄成「正文与幕封页不引」——抬头那一层现在是
+> 内联 shader 的 WebGL（零外部库、零外部资源），别按旧说法把它删掉。
 
 ---
 
@@ -392,6 +438,19 @@ comm -23 \
 #   左边是所有页内锚点（目录条目、知识地图节点、正文里的 §N 链接、术语链接），
 #   右边是所有 id。输出的每一行都是「点了不动」的死链接——**不报错**，
 #   所以必须靠这条查。模板原样跑这条输出为空。
+#   ⚠️ 这条 sed 是**读**，不是改报告：它在管道里把 grep 的输出削成 id，
+#      一个字节都没写回文件。SKILL.md 第 5 条禁的是拿 sed/perl/python 去**改**
+#      报告文件，跟这里不冲突，照抄就是了。
+
+# 10. 章节标题与编号的去重（v4）—— 三条都应该 0 行
+grep -A2 '<section class="concept"' 报告.html | grep '<h2'   # 正文节里不该有 h2
+grep -n 'class="counter"' 报告.html                          # .counter 已删除，不许加回来
+grep -n 'curtain-num">[^§]' 报告.html                        # 章节号写 §N，不写 01 / 1 / 第一章
+#   前两条查的是「标题 / 编号在幕封页和正文里各出现一次」那种重复（见「幕封页」）；
+#   第三条查的是记法：封面写 01、目录写 §1 是 v3 的样子，v4 统一成 §N。
+#   模板原样跑这三条都是空的。
+#   ⚠️ 第一条只看 .concept 开标签后的两行，跨行写法它抓不住 —— 人眼再扫一遍
+#      每个 .concept 的第一个元素是不是 .lede。
 ```
 
 第 7 组三个数不等，通常意味着某一节漏了幕封页、或者 `.curtain-lede` 和 `.lede` 写岔了。
