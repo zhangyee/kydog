@@ -363,9 +363,16 @@ test('46-html-tab: 报告跟随 app 主题', async () => {
 
     const body = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`).locator('body');
     const bgOf = () => body.evaluate((el) => getComputedStyle(el).backgroundColor);
+    // 主题**身份**（reportTheme.ts 的 REPORT_THEME_ATTR）。转发过去的变量只有颜色的
+    // 值，说不出「这是哪一套主题」；报告里按主题语义取色的地方（learning-deck 抬头
+    // 那条深色带上的前景色）靠的就是这个属性。没有它，下游只能量亮度去猜——
+    // 正是 CLAUDE.md Principles 禁的那种 proxy。
+    const themeAttrOf = () => body.evaluate((el) =>
+      el.ownerDocument.documentElement.getAttribute('data-kydog-theme'));
 
     await expect(page.locator(`[data-testid="tab-${htmlPath}"]`)).toBeVisible();
     const before = await bgOf();
+    await expect.poll(themeAttrOf).toBe('vellum');
 
     // 走真实 UI 切主题（同 e2e/08-theme-switch.spec.ts 的路径）：
     // 用户菜单 → midnight。注入的 --paper 变了，frame 里的背景必须跟着变。
@@ -374,6 +381,8 @@ test('46-html-tab: 报告跟随 app 主题', async () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight');
 
     await expect.poll(bgOf).not.toBe(before);
+    // 身份跟着一起换：只换值不换身份的话，深色带上的前景色会停在浅纸那一支。
+    await expect.poll(themeAttrOf).toBe('midnight');
   } finally {
     await teardown(launched);
   }

@@ -5,7 +5,11 @@
  * 五套具名配色，所以只能把宿主当前的计算值注入进去。报告模板一律写
  * `var(--ink, #2a2620)` 这种带 fallback 的形态 —— app 里跟随主题，
  * 用浏览器单独打开时走 fallback，两边都成立。
+ *
+ * 跟着值一起过去的还有一条**主题身份**（`data-kydog-theme`，见 REPORT_THEME_ATTR）：
+ * 值本身说不出「这是哪一套主题」，而报告里确实有按主题语义取色的地方。
  */
+import type { ThemeName } from '../../../../shared/types';
 
 /**
  * 报告文档的 CSP。允许内联脚本与内联样式（报告的动效与版式全靠它们），
@@ -54,6 +58,28 @@ export const NOT_FORWARDED_VARS = [
 /** 阅读字号，由 globals.css 的 :root[data-reading-size] 声明，不在各主题文件里。 */
 export const HOST_SIZE_VARS = ['--reading-font-size', '--reading-line-height'] as const;
 
+/**
+ * 报告根元素上的**主题身份**属性名（值是 `ThemeName`：vellum / porcelain /
+ * sepia / lilac / midnight）。
+ *
+ * 为什么要单独传一个身份、而不是让报告自己从上面那些变量的值里推：
+ * 转发过去的只有**颜色的值**，没有「这是哪一套主题」这条信息。报告里凡是需要
+ * 「按主题语义选一个 token」的地方（learning-deck 的抬头深色带上要一个浅色前景：
+ * 浅纸主题下是纸色 `--paper`，midnight 下是墨色 `--ink`），只拿到值就只能
+ * **量亮度再排序**去猜哪一档是浅的——那正是 CLAUDE.md Principles 禁止的
+ * 启发式 proxy：信号是在上游（这里）丢的，下游只能靠近似补救。
+ * 把身份一起注入，报告就能用 `[data-kydog-theme="midnight"]` 这样的**纯 CSS
+ * 选择器**按语义取色，一行测量都不需要。
+ *
+ * ⚠️ 它不是 CSS 自定义属性，所以**不进** HOST_THEME_VARS / NOT_FORWARDED_VARS
+ *    那两张清单（那两张锁的是 vellum.css 声明的变量集合）。它是一条独立的协议：
+ *    名字这一端在这里，另一端在 learning-deck 的报告模板里，
+ *    reportTheme.test.ts 用一条跨文件断言把两端钉在一起。
+ * ⚠️ 报告在浏览器里单独打开时**没有**这个属性 —— 所以模板那边必须把「没有属性」
+ *    当成一个确定的默认分支（浅纸），不能只写五个具名分支。
+ */
+export const REPORT_THEME_ATTR = 'data-kydog-theme';
+
 export function buildHostThemeCss(read: (name: string) => string): string {
   const lines: string[] = [];
   for (const name of [...HOST_THEME_VARS, ...HOST_SIZE_VARS]) {
@@ -79,8 +105,13 @@ export function buildHostThemeCss(read: (name: string) => string): string {
  * cancelled 守卫 —— 函数体内没有 await 边界，不存在「旧调用的结果比新调用晚落地」
  * 这回事。
  */
-export function injectHostTheme(html: string, css: string): string {
+export function injectHostTheme(html: string, css: string, theme: ThemeName): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  // 主题身份。跟变量的值一起过去，报告才不用靠量亮度去猜自己在哪套主题下，
+  // 见上面 REPORT_THEME_ATTR 的注释。切主题时 HtmlFileTab 会重跑这个函数，
+  // 属性跟着变。
+  doc.documentElement.setAttribute(REPORT_THEME_ATTR, theme);
 
   // srcdoc 文档的 base URL 继承自宿主，导致 href="#x" 解析成 <宿主URL>#x，
   // 被当成跨文档导航 —— 页内锚点会失效（file:// 下静默无效，http 下把 frame

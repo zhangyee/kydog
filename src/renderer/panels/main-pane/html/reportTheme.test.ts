@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   HOST_THEME_VARS, NOT_FORWARDED_VARS, HOST_SIZE_VARS, buildHostThemeCss,
-  resolveInlineTarget, dirnameOf, bytesToBase64, REPORT_CSP,
+  resolveInlineTarget, dirnameOf, bytesToBase64, REPORT_CSP, REPORT_THEME_ATTR,
 } from './reportTheme';
+import { THEME_NAMES } from '../../../../shared/types';
 
 /** 抓出 vellum.css 里声明过的全部自定义属性名。 */
 function declaredVars(): Set<string> {
@@ -49,6 +50,39 @@ describe('REPORT_CSP', () => {
       "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
       + "img-src data:; font-src data:; connect-src 'none'; form-action 'none'",
     );
+  });
+});
+
+// 主题身份（data-kydog-theme）。它跟 REPORT_CSP 一样是一条**两端契约**：
+// 一端是 injectHostTheme 写在报告根元素上的属性，另一端是 learning-deck 模板里
+// 按它取色的那几条 CSS 规则。属性名或取值集合改了而只改一端，不会报错 ——
+// 只会让抬头那条深色带在某套主题下悄悄用错前景色（正是「不报错，只是不对劲」）。
+// 所以这里跨文件读模板断言，把两端钉在一起。
+//
+// ⚠️ 这条不是在测「模板长什么样」，别把它扩成模板的快照测试。它只锁两件事：
+//    (1) 属性名两边一致；(2) 模板对 midnight 有显式分支、对「没有这个属性」
+//    有确定的默认分支（浏览器里单独打开报告时就是这一支）。
+describe('主题身份 data-kydog-theme', () => {
+  const template = readFileSync(
+    path.resolve(__dirname, '../../../../skills/learning-deck/assets/report-template.html'),
+    'utf8',
+  );
+
+  it('属性名就是模板里消费的那一个', () => {
+    expect(REPORT_THEME_ATTR).toBe('data-kydog-theme');
+    expect(template).toContain(REPORT_THEME_ATTR);
+  });
+
+  it('模板对 midnight 有显式分支（深色带上的前景色要换成墨色）', () => {
+    expect(template).toContain(`[${REPORT_THEME_ATTR}="midnight"]`);
+  });
+
+  it('模板不给某套主题写分支就必须落在默认分支上，不能漏成没定义', () => {
+    // 只有 midnight 需要单独一条（它是唯一纸色比墨色深的一套）；其余四套走默认。
+    // 这条断言的用处：将来有人给 sepia 单独写了一条却忘了 lilac，
+    // 「写了几条具名分支」这件事就会在这里被看见。
+    const named = THEME_NAMES.filter((t) => template.includes(`[${REPORT_THEME_ATTR}="${t}"]`));
+    expect(named).toEqual(['midnight']);
   });
 });
 

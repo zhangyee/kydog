@@ -58,7 +58,10 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
   // 没有 await 边界，不存在"旧调用的结果比新调用晚落地"的竞态窗口。
   useEffect(() => {
     if (inlinedHtml === null) { setSrcDoc(null); return; }
-    setSrcDoc(injectHostTheme(inlinedHtml, buildHostThemeCss(readHostVar)));
+    // theme 现在有两个去处：值（buildHostThemeCss 拼出来的 :root 块）和**身份**
+    // （injectHostTheme 写在根元素上的 data-kydog-theme）。后者是让报告不必靠
+    // 量亮度猜「哪一档是浅色」的那条信号，见 reportTheme.ts 的 REPORT_THEME_ATTR。
+    setSrcDoc(injectHostTheme(inlinedHtml, buildHostThemeCss(readHostVar), theme));
   }, [inlinedHtml, theme, readingFontSize]);
 
   // 打开报告后不必先点一下页面，方向键就能翻节：主动把焦点交给 iframe 元素。
