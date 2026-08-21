@@ -25,7 +25,7 @@
   四条硬约束，违反了报告在 KyDog 里会静默坏掉（不报错，只是不对劲）：
 
   1. <script> 只能写在模板底部那一个内联 <script> 块里（方向键翻节 + 逐条入场 +
-     SVG 描边 + 目录折叠与高亮 + 抬头那层 WebGL，见文末）：查看器沙箱现在给
+     SVG 描边 + 目录折叠与高亮 + 抬头那条封面带，见文末）：查看器沙箱现在给
      allow-scripts，脚本能跑，
      但同时注入了一条严格 CSP（connect-src 'none' 等），发不出任何网络请求。
      **不要再加别的 <script> 标签**——这条硬约束是「只有这一处」，不是
@@ -113,8 +113,18 @@ body {
      32px / 88px 上（v1 留下的 2.5rem 1.25rem 6rem 曾让实际边距变成约 72px / 108px），
      「与 Markdown tab 对齐」就只是注释里的说法，量出来对不上。
      ⚠️ v5 起 body 里只剩 .deck 一个孩子：顶部那条进度条已经删掉（见下面 .toc 那段
-        注释里的理由），别再往这里加通栏的 sticky 元素。 */
+        注释里的理由），别再往这里加通栏的 sticky 元素。
+     ⚠️ v6 起多了第二个孩子 `.hero-band`（抬头的深色封面带）。它跟被删掉的进度条
+        **不是一类东西**：它是 position: absolute + z-index: -1 的纯装饰层，不 sticky、
+        不占文档流、收不到指针事件，也就没有「顶部长得跟别的 tab 不一样」那个问题。
+        上面那条禁令管的仍然是 sticky 的通栏元素，别照它把带删掉。 */
   padding: 0;
+  /* .hero-band 的定位祖先。
+     ⚠️ 定在 body 上而不是 .deck 上：换成 .deck 会把 .curtain / .concept /
+        section[id] 的 offsetParent 从 <body> 换成 .deck，它们的 offsetTop 整体
+        少掉 .deck 的 padding-top，文末脚本算的停靠点跟着落偏。body 本来就是
+        offsetParent，给它加 position 不改变任何 offsetTop。 */
+  position: relative;
   background: var(--paper, #faf8f3);
   color: var(--ink, #2a2620);
   font-family: var(--font-serif, Georgia, "Songti SC", serif);
@@ -151,13 +161,16 @@ body {
   --ld-side-w: 14em;   /* 边注自身的宽度 */
   --ld-side-gap: 2em;  /* 边注与正文列之间的沟 */
   --ld-col-gap: 2.2em;
+  /* 版心上边距。抽成变量是因为 .toc 让开封面带的那条 margin-top 要减掉它
+     （见 1b 那节 .toc 的 margin-top），两处必须是同一个数。 */
+  --ld-deck-top: 32px;
 
   display: grid;
   grid-template-columns: var(--ld-toc-w) minmax(0, var(--ld-measure)) calc(var(--ld-side-w) + var(--ld-side-gap));
   column-gap: var(--ld-col-gap);
   /* 超宽面板下整块版心居中，而不是贴左。 */
   justify-content: center;
-  padding: 32px 28px 120px;
+  padding: var(--ld-deck-top, 32px) 28px 120px;
 }
 
 /* 正文列。**保持 static**（不要给它 position: relative）：.curtain / .concept /
@@ -176,7 +189,7 @@ body {
   .deck {
     --ld-toc-w: 10em;
     grid-template-columns: var(--ld-toc-w) minmax(0, var(--ld-measure));
-    padding: 32px 24px 120px;
+    padding: var(--ld-deck-top, 32px) 24px 120px;
   }
 }
 
@@ -189,8 +202,9 @@ body {
     /* 单栏也保住行宽（R2）：仍然是 minmax(0, --ld-measure) 而不是 1fr，
        配上 .deck 那条 justify-content: center，面板比行宽宽时正文居中，
        比行宽窄时自然缩到面板宽。目录横条因此和正文列一样宽、左右对齐。 */
+    --ld-deck-top: 24px;
     grid-template-columns: minmax(0, var(--ld-measure));
-    padding: 24px 20px 120px;
+    padding: var(--ld-deck-top, 24px) 20px 120px;
   }
 
   /* ⚠️ **这一档的 .toc 是网格项，而且跟 .flow 分处两行 —— sticky 仍然生效。**
@@ -244,6 +258,15 @@ dt[id],
   position: sticky;
   top: 1.2rem;
   align-self: start;
+  /* 让开顶上那条封面带。宽档下 .toc 与 .flow 同处网格第一行，不让开的话目录整个
+     压在带底下。减掉 --ld-deck-top 是因为 .toc 的 0 点就在版心上边距之后，而
+     --ld-hero-top / --ld-hero-h 量的是从页面顶端起算的绝对位置。
+     ⚠️ 这条不会跟「带的高度由 .deck-head 量出来」形成回路：.toc 的 margin-top
+        只撑高网格第一行，而 .flow 从行首开始排，.deck-head 的 offsetTop 不受影响。
+     ⚠️ 窄档下 .toc 排在抬头**之前**（带的上沿反过来夹在它下沿上），那一档把这条
+        清零，见下面 @media (max-width: 819px) 里的 .toc。 */
+  margin-top: calc(
+    var(--ld-hero-top, 0px) + var(--ld-hero-h, 15.5rem) - var(--ld-deck-top, 32px) + 1.8rem);
   max-height: calc(100vh - 2.4rem);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -345,6 +368,9 @@ dt[id],
     position: sticky;
     /* v5：顶部那条进度条删掉之后这里不用再让开 2px，直接贴视口顶。 */
     top: 0;
+    /* 这一档目录排在抬头**之前**，封面带反过来从它的下沿起（文末脚本量的），
+       所以宽档那条「让开整条带」的 margin-top 在这里必须清掉。 */
+    margin-top: 0;
     max-height: none;
     overflow: visible;
     margin-bottom: 1.4rem;
@@ -536,11 +562,13 @@ code, .formula {
 
    三条硬约束（spec D.4）：
    - 不引任何外部库（**v4 修订**：D.4 原文写的是「纯 CSS / 内联 SVG，不引 WebGL」，
-     spec E.5 把它收窄成「正文与章节幕封页不引 WebGL」——抬头那一层现在是内联
-     shader 的 WebGL，理由与实测见下面「标题叠在动效上」那段。**不引外部库这半
-     一个字都没松**：shader 写在文末那个唯一的 <script> 里，零外部资源）；
+     spec E.5 把它收窄成「正文与章节幕封页不引 WebGL」——抬头那一条封面带现在是内联
+     shader 的 WebGL / canvas 2D，理由与实测见下面「抬头的封面带」那段。**不引外部库这半
+     一个字都没松**：shader 与画星丛那段都写在文末那个唯一的 <script> 里，零外部资源）；
    - 五套具名主题（vellum / porcelain / sepia / lilac / midnight）下都要成立，
-     所以颜色一律走 var()，且只用发丝色 / soft 色，不用实心强调色铺面；
+     所以颜色一律走 var()，且只用发丝色 / soft 色，不用实心强调色铺面
+     （**抬头那条封面带是这条的唯一例外，而且是有意的**：它满幅铺一片深色，
+     但那片深色同样由 --marginalia 派生，五套主题下各不相同，见「抬头的封面带」那段）；
    - 必须尊重 prefers-reduced-motion（见本节末尾那条 @media）。 */
 
 /* --- 章节区隔：相邻两节之间的一道断线 -------------------------------------
@@ -622,103 +650,135 @@ code, .formula {
   pointer-events: none;
 }
 
-/* --- 标题叠在动效上（quantum.country 那种）--------------------------------
-   .deck-head 的大标题下面垫一层极轻的动效。
+/* --- 抬头的封面带 .hero-band（spec E.5，v6 重做）---------------------------
+
+   抬头不再是「纸面上垫一层极轻的动效」，而是**一条满幅的深色封面带**：正文仍是纸，
+   带压在纸面顶上，标题 / meta / forWhom 三行字落在带上、用浅色。三个方向共存，
+   运行时只跑一个（见 <body> 里 .hero-band 的 data-hero 与文末脚本）。
+
+   为什么换成深色带（v5 那层轻动效被推翻的理由）：
+   浅纸上做不出「科技感」，而报告要在五套具名主题下都成立——v5 的做法是把动效压到
+   几乎看不见来求稳，代价是它在任何一套主题下都不构成一个画面。深色带把这个死结解开：
+   **带底与带上的前景色由主题变量决定，但带本身永远是深的**，于是同一份代码在
+   vellum / porcelain / sepia / lilac / midnight 下长得明显不同却都成立。
 
    ⚠️ 这层是**纯装饰**，aria-hidden="true"，任何信息都不许只画在这里。
-   ⚠️ 它**不能**用 .draw：.draw 是文末脚本按 getTotalLength() 驱动的一次性
-      描边，而且 e2e 会拿文档里第一个 .draw 做断言，把它挪到抬头会改掉那条
-      测试的被测对象。这里用自己的 class。
+   ⚠️ 它**不能**用 .draw：.draw 是文末脚本按 getTotalLength() 驱动的一次性描边，
+      而且 e2e 会拿文档里第一个 .draw 做断言，把它挪到抬头会改掉那条测试的被测对象。
 
-   === v4：抬头改用 WebGL（spec E.5，已实测）=================================
+   === 三个方向（用户在动态对比页上选定，别自己加第四个）====================
 
-   v2 的 A.2 排除过 WebGL，理由是「通篇背景的 GPU / 电量代价不划算」。
-   **那条理由只对通篇背景成立，对只在顶部出现一次的 hero 不成立**——滚过去
-   它就不在视口里了（下面脚本用 IntersectionObserver 把 rAF 停掉）。
+     gridwave       WebGL。横向扫描线钉在物理像素栅格上 + 稀疏竖刻度 + 一道横向扫光。
+                    最「科技 + 设计感」的一个，也是没写 data-hero 时的兜底。
+     constellation  canvas 2D。节点缓慢漂移、近距离连线、少数热节点带光晕。语义最贴。
+     holoband       WebGL。domain-warp 的全息色散 + 强调色色散环。最接近参考实现。
 
-   === v5：画面重做（用户第四次真跑的原话是「丑到想吐」）=====================
+   淘汰的两个（**别加回来**）：`contour`（等值线地形）与 `prism-css`（纯 CSS 蓝图网格）。
+   动态对比页上实测：这两个正是在 midnight 下立不住的那两个。
 
-   v4 那版的观感问题不是「幅度不够」，是**压错了通道**：底色 `mix(u_paper, u_deep,
-   smoothstep(0.30, 0.78, f))` 把 f 映到一个有色相的饱和 token 上、跨度极大，
-   再叠一发 `mix(col, u_accent, pow(sin,5) * 0.16)` —— 结果是一团色相饱和的硬斑
-   （用户看到的「粉渍」）。
+   === 颜色怎么来的（这一段是这块最容易改坏的地方）=========================
 
-   **高级感来自中性色里极窄的亮度起伏 + 微量反相虹彩**，v5 照这个调子重做：
+   带上一共四个量，都写成 --hb-* 的形态，**全部由主题变量派生**：
 
-   1. **底色只在纸色的两档之间调和**，不碰强调色。两档取 `--paper` 与
-      `--paper-edge`（纸色家族里最浅和最深的两档），由脚本按亮度排序 —— midnight
-      下 `--paper-edge` 比 `--paper` 还亮，不排序方向就反了。
-   2. **亮度跨度归一到约 0.10**（脚本里的 SPAN）。五套主题 `--paper`/`--paper-edge`
-      的天然亮度差是 0.03（porcelain）到 0.21（lilac），直接用会让 porcelain 几乎
-      看不见、lilac 变成一道紫渐变。沿着两档之间那条色向量拉伸/压缩：**色相方向
-      不动，只把亮度跨度调到目标值**。
-   3. **虹彩改成乘性、hue-only、反相的两层**：`--amber`（暖）与 `--marginalia`（冷）
-      各自按亮度归一成「亮度 1 的纯色相向量」，再以 `mix(vec3(1.0), 色相, 幅度)`
-      乘上去。乘性意味着它跟着底色缩放（midnight 的深底上绝对偏移极小）；
-      亮度归一意味着它**只改色相不改明暗**，正好是 v4 压错的那个通道。
-      两层相位错开（`ph` 与 `ph*0.8 + 2.0`），一层偏暖时另一层偏冷，叠出珠光。
-   4. **等值线拿掉了。** v4 那条 `mix(col, u_hair, (1-gap) * 0.42)` 是画面里最硬的
-      一处结构，42% 兑向 `--ink-hair` 在浅色主题下就是一圈圈灰纹。参考实现里没有
-      这样东西，画面结构全部交给 fbm 的两级 domain warp。
-   5. **加了鼠标扰动**：光标附近把采样坐标推开一点（`exp(-dl*5)` 的衰减），
-      观感是水面被轻轻按了一下。沙箱里的 iframe 收得到 mousemove（已实测）。
-      `.hero-art` 自己是 `pointer-events: none`，所以监听挂在 document 上，
-      再用 `getBoundingClientRect()` 换算到画布局部坐标。
-      reduced-motion 命中时**不注册这个监听**（鼠标扰动也是动效）。
+     --hb-fg      带上三行字的颜色。**按主题身份取，纯 CSS，不量亮度**——
+                  浅纸的四套里纸色是浅的那一档（--paper），midnight 的纸色近黑、
+                  墨色才是浅的（--ink）。见下面 [data-kydog-theme] 那两条规则。
+     --hb-base    带底。文末脚本把 --marginalia（五套主题里唯一都偏冷的 token）
+                  的亮度归一到约 0.042 写回来；脚本没跑起来时走这里的兜底深色。
+     --hb-accent  带上的强调色（发丝线、引文竖线）。--accent 亮度归一到 0.44。
+     shader 里另有两个纯色相向量（亮度归一到 1 的 --marginalia / --accent），
+     它们只进 uniform，不进 CSS。
 
-   实测（Playwright + Chromium，与线上一致的 sandbox 串与 REPORT_CSP）：
-     WebGL 上下文 = WebGL 2.0 (OpenGL ES 3.0 Chromium)；顶点/片元着色器编译、
-     程序链接全过；readPixels 取回的像素与设定色相符。CSP 不拦 WebGL——它不发
-     任何网络请求，内联 shader 走 script-src 'unsafe-inline'。
+   ⚠️ **--hb-fg 必须靠 [data-kydog-theme] 选，不许靠「量各变量亮度再排序挑最亮的一档」。**
+      探索阶段是后者，那是 CLAUDE.md Principles 明令禁止的启发式 proxy：
+      跨到报告里的只有变量的**值**，没有「这是哪套主题」这条**身份**，下游只能猜。
+      信号已经在上游补回来了（reportTheme.ts 的 REPORT_THEME_ATTR 把主题名写在
+      报告根元素上），这里就该直接按语义取色。
+      reportTheme.test.ts 有一条跨文件断言把属性名与这两条规则钉在一起。
+   ⚠️ **没有这个属性时必须落在一个确定的分支上**：报告在浏览器里单独打开时宿主
+      没注入任何东西，那时 --hb-fg 走 --paper 的 fallback（浅色），带底走 --hb-base
+      的兜底（深色），仍然是「深带 + 浅字」。别把默认值写成依赖注入才成立的形态。
 
-   ⚠️ **范围：只有 hero 用 WebGL。** 正文、章节幕封页一律不用（那是通篇背景，
-      A.2 排除的正是它）。别顺手铺开。
-   ⚠️ **shader 的颜色必须从 CSS 变量读**（见文末脚本的 readThemeColor）。
-      硬编码一组好看的颜色是这一整块最容易犯、也最难在浅色主题下看出来的错：
-      五套具名主题（vellum / porcelain / sepia / lilac / midnight）的纸色从
-      纯白到近黑，写死的底色在其中至少两套下会变成一块突兀的补丁。
-   ⚠️ **底色只在纸色两档（--paper / --paper-edge）之间调和**，虹彩只用
-      --amber / --marginalia 两个色相、且是乘性 hue-only 的 —— 这样它在任何主题
-      下都不可能跟正文打架。**别把 --accent 加回底色**，那正是 v4 的病灶。
-   ⚠️ prefers-reduced-motion 命中时**只画一帧就停**（不是隐藏、也不是继续跑）。
-   ⚠️ WebGL 起不来（无上下文 / 编译链接失败 / 上下文丢失）时退回下面那张
-      SVG —— 两层都在 DOM 里，脚本成功时才给 .hero-art 加 .gl-on 把 SVG 藏掉。
-      **失败安全的方向是「SVG 默认可见」**，反过来写的话脚本一挂抬头就空了。 */
-.deck-head {
-  position: relative;
+   === 几何：量出来，不猜 ===================================================
+
+   带的上沿 --ld-hero-top 与高度 --ld-hero-h 由文末脚本按 .deck-head 的实际位置
+   与高度算出来，写成 :root 上的行内样式。**不能写死**：抬头三行字的高度随标题长度、
+   阅读字号、面板宽度变，写死的高度必然在某一档下把 forWhom 引文切掉半行。
+
+   两档形态：
+   - 宽档（≥820px）：.toc 与抬头同处网格第一行，带从页面顶端起（上沿夹到 0），
+     .toc 用 margin-top 让开整条带。
+   - 窄档（<820px）：.toc 退成正文上方一条 sticky 横条、排在抬头**之前**，
+     带的上沿因此夹在横条的下沿上——否则横条（不透明纸色、只有正文列那么宽）
+     会在带上切出「暗 | 纸 | 暗」三段。
+
+   脚本没跑起来时走 :root 上的静态兜底值（宽档 0 / 15.5rem，窄档上沿 5.6rem）：
+   位置会略微不准，但带仍然是一条深色带、字仍然读得出，不会白屏也不会露出半截。
+
+   ⚠️ **带是 <body> 的直接子元素，不在 .deck-head 里**，而且用 z-index: -1 压在
+      正文之下、纸面之上。两条都是有意的：
+      (1) 只有 body 的子元素才能不靠 100vw 就铺满面板宽度（100vw 含滚动条宽度，
+          在非 overlay 滚动条的平台上会多出一条横向滚动条）；
+      (2) 换成「给 .deck 加 position: relative + z-index: 1」会把 .curtain /
+          .concept / section[id] 的 offsetParent 从 <body> 换成 .deck，offsetTop
+          整体少掉 .deck 的 padding-top，文末脚本算的停靠点跟着落偏
+          （e2e「ArrowDown 从 #primer 落到第一个幕封页」那条会红）。
+      body 的 background 按 CSS 的 canvas 传播规则画在最底层（html 自己没有
+      background），所以 z-index: -1 的带压得住纸面、又压不住正文。
+   ⚠️ WebGL / canvas 起不来（无上下文 / 编译链接失败 / 上下文丢失）时退回下面那张
+      SVG —— 两层都在 DOM 里，脚本成功时才给 .hero-band 加 .gl-on 把 SVG 藏掉。
+      **失败安全的方向是「SVG 默认可见」**，反过来写的话脚本一挂带上就空了。
+   ⚠️ prefers-reduced-motion 命中时**只画一帧就停**（不是隐藏、也不是继续跑），
+      三个方向都要做到。鼠标扰动也算动效，那时不注册监听。 */
+
+:root {
+  /* 带上的前景色：按主题身份取。浅纸四套用纸色。 */
+  --hb-fg: var(--paper, #faf8f3);
+  /* 带底与强调色：文末脚本会按亮度归一算出来盖掉这两条；这里是脚本没跑起来时的兜底。
+     兜底值刻意跟主题无关——它要保证的只有一件事：带是深的、白字读得出。 */
+  --hb-base: #0a0d14;
+  --hb-accent: #7fb6ff;
+  /* 带的几何兜底（脚本会按 .deck-head 的实测位置盖掉）。 */
+  --ld-hero-top: 0px;
+  --ld-hero-h: 15.5rem;
 }
 
-.hero-art {
+/* midnight 是五套里唯一纸色比墨色深的一套：那里浅的一档是 --ink。
+   ⚠️ 这条**不是**「深色主题特判」，是「哪个 token 是浅的那一档」这件事本身
+      在这套主题下反过来了。别改成靠 prefers-color-scheme 判断——宿主的五套具名
+      主题跟系统的明暗偏好不是一回事。 */
+:root[data-kydog-theme="midnight"] {
+  --hb-fg: var(--ink, #e9e6e1);
+}
+
+/* 窄档下目录横条排在抬头**之前**，带必须从横条下沿起，兜底值因此不是 0。
+   5.6rem 是展开态横条的近似高度；文末脚本量到真值之后会用行内样式盖掉它。
+   ⚠️ 这条必须写在上面那条 `:root` **之后**：两者特异度相同（都是 (0,1,0)，
+      媒体查询本身不加特异度），谁在后面谁生效。写到 1b 那节（文件更靠前）
+      会被这里的 0px 盖掉，而且**不报错** —— 窄档下带会从页面顶端起，
+      纸色的目录横条在带上切出「暗 | 纸 | 暗」三段。 */
+@media (max-width: 819px) {
+  :root {
+    --ld-hero-top: 5.6rem;
+  }
+}
+
+.hero-band {
   position: absolute;
-  top: -1.4rem;
-  left: -1.2rem;
-  right: -1.2rem;
-  height: 11rem;
+  z-index: -1;
+  top: var(--ld-hero-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--ld-hero-h, 15.5rem);
   overflow: hidden;
   pointer-events: none;
-  /* 四周淡出，避免动效层出现一条硬边。
-     ⚠️ **两层遮罩取交集**，不是一层（v5 修）：只有那层径向渐变时，窄档下正文
-        上方那条 .toc 横条（不透明的 --paper 底 + z-index: 1）会把动效层的上半截
-        盖住，露出来的就是一条**齐平的硬边**——观感是「贴了一块矩形色板」，
-        正是这一层最该避免的东西。加一层纵向渐变让它从上往下淡入，被横条盖住的
-        那一截本来就已经淡到接近透明，接缝也就没有了。宽档下没有横条，这一层
-        同样让抬头的动效从纸面里浮出来而不是一刀切开。
-     ⚠️ mask-composite: intersect 是标准写法，-webkit-mask-composite: source-in
-        是 WebKit 的老式关键字，两条都要留（Chromium 认前者，写全更稳）。 */
-  -webkit-mask-image:
-    radial-gradient(115% 130% at 32% 46%, #000 26%, transparent 80%),
-    linear-gradient(to bottom, transparent 0, #000 30%, #000 62%, transparent 100%);
-  mask-image:
-    radial-gradient(115% 130% at 32% 46%, #000 26%, transparent 80%),
-    linear-gradient(to bottom, transparent 0, #000 30%, #000 62%, transparent 100%);
-  -webkit-mask-composite: source-in;
-  mask-composite: intersect;
+  background: var(--hb-base, #0a0d14);
 }
 
 /* 两层叠在一起：canvas 在上、SVG 兜底在下。canvas 没画起来时它是透明的，
    下面的 SVG 照常露出来；画起来了就由 .gl-on 把 SVG 收掉。 */
-.hero-art > canvas,
-.hero-art > svg {
+.hero-band > canvas,
+.hero-band > svg {
   position: absolute;
   inset: 0;
   display: block;
@@ -726,40 +786,106 @@ code, .formula {
   height: 100%;
 }
 
-.hero-art.gl-on > .hero-fallback {
+.hero-band.gl-on > .hero-fallback {
   display: none;
 }
 
-/* 抬头的正文压在动效层之上 */
-.deck-head > h1,
-.deck-head > .meta,
-.deck-head > .for-whom {
-  position: relative;
+/* 压在动效之上、文字之下的一层暗罩：画面的重心在左，文字的重心在右，
+   这一层把右边那片压暗一档，让三行字稳稳读得出。 */
+.hero-band::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(100deg,
+    transparent 0 20%, rgba(0, 0, 0, .12) 40%, rgba(0, 0, 0, .30) 66%, rgba(0, 0, 0, .34) 100%);
 }
 
-/* 兜底那张 SVG：几条虚线等高线缓慢横向流动 + 一团几乎看不见的纸色辉光。
-   ⚠️ 深色主题（midnight）实测过：线用 --ink-hair（midnight 下 L≈0.38，
-      纸是 L≈0.24），叠出来是「看得出有东西在动、但读不出形状」的程度，
-      不会糊成一片。
-   ⚠️ v5 起辉光用 --paper-edge 而**不是** --accent-soft：上面那版 WebGL 的病灶
-      就是往画面里兑强调色，兜底层没有理由再犯一次。纸色的一团深浅，跟
-      WebGL 那层是同一个调子。 */
+/* 带底的一条发丝线 —— 让封面带的下沿看着是设计过的边，不是裁切。 */
+.hero-band::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  z-index: 1;
+  background: linear-gradient(90deg,
+    var(--hb-accent, #7fb6ff) 0, var(--hb-accent, #7fb6ff) 14%, transparent 62%);
+  opacity: .55;
+}
+
+/* 文字底下那一层局部压暗。**这一条是上线前必修的那一处**：
+   动态对比页上实测，gridwave 约 11 秒一轮的扫光从文字区正下方经过时，
+   那两三秒里 meta 行与 forWhom 引文的可读性掉一档（静态截图看不出来）。
+   两头都修了：shader 那边把扫光限制在左侧（见文末 FS_GRID 的 sweepVis），
+   这里再给文字本身垫一层跟着它走的软压暗。
+
+   ⚠️ 为什么是 .deck-head 的伪元素而不是把 .hero-band::before 调更暗：
+      窄档（KyDog 默认面板约 738px，这是最常见的一档）下正文列几乎占满面板宽度，
+      「画面在左、文字在右」的构图不成立，三行字是压在整条带上的。跟着 .deck-head
+      走的一层软压暗在任何宽度下都罩得住文字，而按 x 分布的那层做不到。
+   ⚠️ 四周要淡出，不能是一块矩形色块：矩形会在带上切出一条硬边，正是这一层最该避免的东西。
+      纵向靠渐变淡出，横向靠 mask 淡出 —— 两个方向分开做，中间那一片才保得住满强度。
+   ⚠️ z-index: -1 让它压在 .hero-band（同为 -1、但排在文档前面）之上、正文之下。
+      .deck-head 自己没有 z-index，不构成层叠上下文，所以这一层跟带在同一个层里比序。 */
+.deck-head::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -1.7rem -3.4rem -1.3rem -3.4rem;
+  pointer-events: none;
+  /* 纵向：上下两端淡出，中间那一段（三行字所在）压到 .5。
+     横向：靠 mask 在左右两端淡出，中间**保持满强度** —— 用径向渐变试过，
+     它在左右两端就已经淡到几乎没有，而窄档下正文列几乎占满面板宽度，
+     引文最左边那几个字正好落在结构最密的地方，那一档下扫光照样压得住字
+     （实测：radial 版本下 forWhom 头几个字仍然被扫花）。 */
+  background: linear-gradient(180deg,
+    rgba(0, 0, 0, 0) 0, rgba(0, 0, 0, .58) 20%, rgba(0, 0, 0, .60) 78%, rgba(0, 0, 0, 0) 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%);
+}
+
+/* 抬头的三行字：落在深色带上，用 --hb-fg。
+   ⚠️ 这三条跟上面那条 .hero-band 是一对：删了带、留了这三条，标题就是浅色压在
+      浅纸上——**看不见，而且不报错**。 */
+.deck-head > h1 {
+  color: var(--hb-fg, #f4f3f0);
+}
+
+.deck-head .meta {
+  color: var(--hb-fg, #f4f3f0);
+  opacity: .60;
+}
+
+.deck-head .for-whom {
+  color: var(--hb-fg, #f4f3f0);
+  opacity: .88;
+  border-left-color: var(--hb-accent, #7fb6ff);
+}
+
+/* 兜底那张 SVG：几条虚线等高线缓慢横向流动 + 一团辉光。
+   ⚠️ v6 起它画在深色带上，所以线与辉光都取 --hb-fg / --hb-accent（带上那套色），
+      不再用 --ink-hair / --paper-edge（那是纸面上那套，压在深底上会看不见）。 */
 .hero-line {
   fill: none;
-  stroke: var(--ink-hair, #c9c3be);
+  stroke: var(--hb-fg, #f4f3f0);
   stroke-width: 1;
   stroke-dasharray: 9 7;
+  opacity: .30;
   animation: ld-hero-drift 26s linear infinite;
 }
 
-.hero-line-2 { animation-duration: 34s; opacity: .8; }
-.hero-line-3 { animation-duration: 44s; opacity: .62; }
-.hero-line-4 { animation-duration: 30s; opacity: .5; }
+.hero-line-2 { animation-duration: 34s; opacity: .24; }
+.hero-line-3 { animation-duration: 44s; opacity: .19; }
+.hero-line-4 { animation-duration: 30s; opacity: .15; }
 
-.hero-glow-in  { stop-color: var(--paper-edge, #e6e0d4); }
+.hero-glow-in  { stop-color: var(--hb-accent, #7fb6ff); }
 .hero-glow-out { stop-color: transparent; }
 
 .hero-glow {
+  opacity: .5;
   animation: ld-hero-breathe 14s ease-in-out infinite alternate;
 }
 
@@ -768,12 +894,12 @@ code, .formula {
 }
 
 @keyframes ld-hero-breathe {
-  from { opacity: .5; }
-  to   { opacity: 1; }
+  from { opacity: .3; }
+  to   { opacity: .62; }
 }
 
 /* 无障碍：动效一律停在静止的那一帧，不是隐藏。
-   ⚠️ 抬头那层 WebGL 不在这张清单里 —— 它没有 CSS 动画可停，reduced-motion
+   ⚠️ 带上那三个方向不在这张清单里 —— 它们没有 CSS 动画可停，reduced-motion
       由文末脚本处理：只画一帧就不再 requestAnimationFrame。两条路都要有，
       漏掉哪一条都会让这个设置只生效一半。 */
 @media (prefers-reduced-motion: reduce) {
@@ -934,10 +1060,18 @@ math[display="block"] {
 
 /* --- ① 抬头 ------------------------------------------------------------ */
 
+/* ⚠️ v6：抬头整块落在封面带上（见 2b「抬头的封面带」那节）。
+      - 没有底线了：带自己的下沿就是这一节的收束（.hero-band::after 那条发丝线），
+        再画一条 --ink-hair 的横线等于在深底上叠一条浅纸色的线。
+      - padding-top 把三行字从带的上沿推下来一点，别贴着边。
+      - margin-bottom 要大于脚本给带留的下缘余量（2.0rem），否则 ② 知识地图的
+        h2 会顶进带里。 */
 .deck-head {
-  margin-bottom: 3rem;
-  padding-bottom: 1.4rem;
-  border-bottom: 2px solid var(--ink-hair, #c9c3be);
+  position: relative;
+  padding-top: 1.6rem;
+  padding-bottom: 0;
+  margin-bottom: 4.6rem;
+  border-bottom: none;
 }
 
 /* 顶部两件套（spec D.3，借鉴 Lil'Log）：预计阅读时间 + 最后更新日期，
@@ -1621,11 +1755,38 @@ figcaption b {
     padding: 0;
   }
 
-  /* 导航树与抬头的动效层：屏幕专用，纸上一个都不要。
-     .toc 是页内锚点的集合，印出来点不动；.hero-art 是纯装饰。 */
+  /* 导航树与抬头的封面带：屏幕专用，纸上一个都不要。
+     .toc 是页内锚点的集合，印出来点不动；.hero-band 是纯装饰。
+     ⚠️ 带不印是**必须**的，不是省墨：它是一整块 --hb-base 的深底，
+        直接印出来就是页首一片实心黑。 */
   .toc,
-  .hero-art {
+  .hero-band {
     display: none;
+  }
+
+  /* 带没了，抬头那三行字就不能再用带上那套浅色（会变成白纸白字），
+     .deck-head::before 那层压暗同理要撤掉。
+     顺手把 v6 在屏幕上去掉的那条底线补回来——纸上没有带的下沿收束这一节。 */
+  .deck-head::before {
+    display: none;
+  }
+
+  .deck-head {
+    padding-top: 0;
+    padding-bottom: .8em;
+    margin-bottom: 2em;
+    border-bottom: 1px solid #000;
+  }
+
+  .deck-head > h1,
+  .deck-head .meta,
+  .deck-head .for-whom {
+    color: #000;
+    opacity: 1;
+  }
+
+  .deck-head .for-whom {
+    border-left-color: #000;
   }
 
   /* 装饰的打印兜底：角标与章节断线都靠 var() 取色，宿主是 midnight 时是浅色，
@@ -1836,6 +1997,48 @@ figcaption b {
 </head>
 
 <body>
+
+<!-- 抬头的深色封面带（spec E.5 v6）。样式与三个方向的说明见 <style> 里
+     「抬头的封面带 .hero-band」那一节。
+     ⚠️ **位置是有意的：它是 <body> 的直接子元素，不在 .deck / .deck-head 里。**
+        搬进 .deck-head 就铺不满面板宽度（除非用 100vw，而那会在非 overlay 滚动条的
+        平台上多出一条横向滚动条）；给 .deck 加 position 则会让文末脚本算的停靠点落偏。
+     ⚠️ aria-hidden="true"：**纯装饰**，任何信息都不许只画在这里。
+     ⚠️ **整块原样保留、一个字都不用改，只有 data-hero 那一个值要按 JSON 填。**
+        它是纯装饰层，不承载这份报告的任何内容。
+     ⚠️ **别把它删掉。** 抬头那三行字在 <style> 里是 --hb-fg（浅色）——带没了，
+        标题就是浅色压在浅纸上：看不见，而且不报错。
+     ⚠️ **两层叠着，都要保留**：上面的 <canvas> 是动效那层（三个方向的代码与取色
+        写在文末唯一那个 <script> 里），下面的 <svg class="hero-fallback"> 是
+        WebGL / canvas 起不来时的兜底。脚本跑通了才会给 .hero-band 加 .gl-on 把 SVG
+        藏掉 —— 顺序反过来写（默认藏 SVG、脚本负责显示）会让脚本一挂带上就空。
+     ⚠️ SVG 的线条**不要**加 .draw：那是文末脚本按 getTotalLength() 驱动的
+        一次性描边，而且 e2e 拿文档里第一个 .draw 做断言。这里用自己的 class。
+     画新的：路径两端要伸出 viewBox（-60 / 700），否则线头会在边上戛然而止。
+
+     data-hero 取 JSON 顶层的 `hero` 字段，只认三个值：
+       gridwave（扫描线 · HUD）· constellation（知识星丛）· holoband（全息色散）
+     怎么由 slug 定出这三个里的哪一个，见 SKILL.md 第 5.1 小步的那张表。
+     **写错、写别的值、或者整个属性没写，都退回 gridwave**（确定的兜底，不是随机）。
+     ⚠️ 同一份报告重新打开必须还是同一张脸：这里是一个写死在 HTML 里的值，
+        **不许**改成运行时随机挑。 -->
+<div class="hero-band" data-hero="⟨待填：gridwave / constellation / holoband，见 SKILL.md 5.1⟩" aria-hidden="true">
+  <canvas class="hero-canvas"></canvas>
+  <svg class="hero-fallback" viewBox="0 0 640 176" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <radialGradient id="ld-hero-glow" cx="50%" cy="50%" r="50%">
+        <stop class="hero-glow-in" offset="0"/>
+        <stop class="hero-glow-out" offset="1"/>
+      </radialGradient>
+    </defs>
+    <ellipse class="hero-glow" cx="210" cy="84" rx="270" ry="96" fill="url(#ld-hero-glow)"/>
+    <path class="hero-line hero-line-1" d="M-60 38 C 90 6, 210 72, 340 40 S 580 2, 700 34"/>
+    <path class="hero-line hero-line-2" d="M-60 74 C 100 40, 230 108, 360 72 S 590 34, 700 68"/>
+    <path class="hero-line hero-line-3" d="M-60 112 C 110 78, 250 144, 380 108 S 600 72, 700 104"/>
+    <path class="hero-line hero-line-4" d="M-60 148 C 120 116, 270 178, 400 142 S 610 108, 700 140"/>
+  </svg>
+</div>
+
 <div class="deck">
 
 <!-- 左侧固定导航树（spec D.2 反转 R1）。
@@ -1886,34 +2089,6 @@ figcaption b {
 
 <!-- ① 抬头：主题 / 阅读时间 / 最后更新 / 一句话「这份报告为谁而写」 -->
 <header class="deck-head">
-  <!-- 标题下垫的动效层（spec D.4 第 2 项 + v4 的 E.5，画面在 v5 重做过）。
-       ⚠️ aria-hidden="true"：**纯装饰**，任何信息都不许只画在这里。
-       ⚠️ **两层叠着，都要保留**：上面的 <canvas> 是 WebGL 那层（着色器与取色
-          写在文末唯一那个 <script> 里），下面的 <svg class="hero-fallback"> 是
-          WebGL 起不来时的兜底。脚本跑通了才会给 .hero-art 加 .gl-on 把 SVG
-          藏掉 —— 顺序反过来写（默认藏 SVG、脚本负责显示）会让脚本一挂抬头就空。
-       ⚠️ 写真报告时**这一整块原样保留**，一个字都不用改：它是纯装饰层，
-          不承载这份报告的任何内容。
-       ⚠️ SVG 的线条**不要**加 .draw：那是文末脚本按 getTotalLength() 驱动的
-          一次性描边，而且 e2e 拿文档里第一个 .draw 做断言。这里用自己的 class。
-       画新的：路径两端要伸出 viewBox（-60 / 700），否则线头会在边上戛然而止。 -->
-  <div class="hero-art" aria-hidden="true">
-    <canvas class="hero-gl"></canvas>
-    <svg class="hero-fallback" viewBox="0 0 640 176" preserveAspectRatio="xMidYMid slice">
-      <defs>
-        <radialGradient id="ld-hero-glow" cx="50%" cy="50%" r="50%">
-          <stop class="hero-glow-in" offset="0"/>
-          <stop class="hero-glow-out" offset="1"/>
-        </radialGradient>
-      </defs>
-      <ellipse class="hero-glow" cx="210" cy="84" rx="270" ry="96" fill="url(#ld-hero-glow)"/>
-      <path class="hero-line hero-line-1" d="M-60 38 C 90 6, 210 72, 340 40 S 580 2, 700 34"/>
-      <path class="hero-line hero-line-2" d="M-60 74 C 100 40, 230 108, 360 72 S 590 34, 700 68"/>
-      <path class="hero-line hero-line-3" d="M-60 112 C 110 78, 250 144, 380 108 S 600 72, 700 104"/>
-      <path class="hero-line hero-line-4" d="M-60 148 C 120 116, 270 178, 400 142 S 610 108, 700 140"/>
-    </svg>
-  </div>
-
   <h1>⟨待填：报告标题，取 JSON 的 title⟩</h1>
 
   <!-- 顶部两件套：预计阅读时间 + 最后更新日期（v5 删掉了原来打头的进度条）。
@@ -2027,7 +2202,7 @@ figcaption b {
 </main>
 </div>
 
-<!-- 方向键翻节 + 逐条入场 / SVG 描边 + 目录折叠与高亮 + 抬头那层 WebGL。
+<!-- 方向键翻节 + 逐条入场 / SVG 描边 + 目录折叠与高亮 + 抬头那条封面带。
      这是模板全文唯一允许的 <script> 块，见文件头「四条硬约束」第 1 条。
      ⚠️ v5 删掉了原来算顶部进度条宽度的那一段（进度条本身也删了，理由见 <style>
         里「顶部进度条已经删掉」那段）。 -->
@@ -2236,35 +2411,81 @@ figcaption b {
   sync();
 })();
 
-// 抬头的 WebGL 动效层（spec E.5，已实测）。同样写在这唯一的脚本块里。
+// 抬头的封面带（spec E.5 v6，已实测）。同样写在这唯一的脚本块里。
 //
 // ⚠️ **放在最后**：万一这一段抛了异常，上面那三块（方向键翻节、逐条入场 /
 //    SVG 描边、目录）都已经跑完并注册好了，不会被拖下水。整块还额外包了一层
-//    try / catch —— 它是纯装饰，任何失败都只该退回下面那张 SVG，不该影响正文。
+//    try / catch —— 它是纯装饰，任何失败都只该退回那张兜底 SVG，不该影响正文。
 //
-// ⚠️ **只有抬头用 WebGL。** 正文与章节幕封页不用（那是通篇背景，spec A.2 排除的
-//    正是它）；这里成立的理由是「滚过去就不在视口了」，下面用
+// ⚠️ **只有抬头用 WebGL / canvas。** 正文与章节幕封页不用（那是通篇背景，spec A.2
+//    排除的正是它）；这里成立的理由是「滚过去就不在视口了」，下面用
 //    IntersectionObserver 把 rAF 停掉，正是这条理由的兑现。
 //
 // ⚠️ **颜色从 CSS 变量读，不许硬编码。** 宿主注入的五套主题里纸色从纯白
 //    （porcelain）到近黑（midnight），写死一组好看的颜色必然在其中几套下变成
 //    一块突兀的补丁 —— 而且屏幕上只有换主题时才看得出来。
 //
+// ⚠️ **但「哪一档是浅色」不许靠量亮度去猜。** 带上那三行字的前景色 --hb-fg 已经
+//    完全交给 CSS 的 [data-kydog-theme] 选（见 <style> 里「颜色怎么来的」那段）。
+//    这里剩下的三处测量是**确定性的色彩变换**，不是身份判定：输入是点名的某个
+//    token，输出是「保持它的色相方向、把亮度拉到某个定值」。它回答的是「这个颜色
+//    要多亮」，不是「这五个颜色里哪个是纸色」—— 后者才是被禁掉的那种 proxy。
+//
 // ⚠️ prefers-reduced-motion 命中时**画一帧就停**（不是隐藏、也不是继续跑）。
 try {
   (() => {
-    const art = document.querySelector('.hero-art');
-    const canvas = art && art.querySelector('canvas.hero-gl');
-    if (!canvas) return;
+    const band = document.querySelector('.hero-band');
+    const head = document.querySelector('.deck-head');
+    if (!band || !head) return;
+    const root = document.documentElement;
 
-    // --- 从 CSS 变量取色 ---------------------------------------------------
+    // ── 1. 带的几何 ────────────────────────────────────────────────────────
+    //
+    // 带的上沿与高度按 .deck-head 的**实际位置与高度**算，不写死：三行字的高度随
+    // 标题长度、阅读字号、面板宽度变，任何写死的高度都会在某一档下把 forWhom 那段
+    // 引文切掉半行。CSS 里那几个 --ld-hero-* 只是脚本没跑起来时的兜底。
+    //
+    // ⚠️ 窄档（<820px）下目录横条排在抬头**之前**，带的上沿要夹在横条下沿上 ——
+    //    不夹的话横条（不透明纸色、只有正文列那么宽）会在带上切出「暗 | 纸 | 暗」。
+    //    宽档下目录与抬头同处网格第一行，带从页面顶端起（上沿夹到 0），目录靠
+    //    自己的 margin-top 让开（见 <style> 1b 节）。
+    // ⚠️ 不会形成回路：宽档那条 margin-top 只撑高网格第一行，.flow 仍从行首开始排，
+    //    .deck-head 的 offsetTop 与 offsetHeight 都不受这两个变量影响。
+    const BLEED_TOP = 2.6;     // rem，带在抬头之上多留的一截
+    const BLEED_BOTTOM = 2.0;  // rem，带在抬头之下多留的一截（.deck-head 的 margin-bottom 要大于它）
+    const measureBand = () => {
+      const rem = parseFloat(getComputedStyle(root).fontSize) || 15;
+      const narrow = !matchMedia('(min-width: 820px)').matches;
+      const toc = document.querySelector('.toc');
+      // offsetParent 是 <body>（.deck / .flow 都保持 static），所以 offsetTop
+      // 就是文档坐标，跟 sticky 当前被粘到哪儿无关。
+      const floor = (narrow && toc) ? toc.offsetTop + toc.offsetHeight : 0;
+      const top = Math.max(floor, head.offsetTop - BLEED_TOP * rem);
+      const bottom = head.offsetTop + head.offsetHeight + BLEED_BOTTOM * rem;
+      root.style.setProperty('--ld-hero-top', top + 'px');
+      root.style.setProperty('--ld-hero-h', Math.max(0, bottom - top) + 'px');
+    };
+    measureBand();
+    // ResizeObserver 而不是只听 resize：目录横条折叠 / 展开、阅读字号变化、
+    // 标题换行数变化都会改这两个数，而它们都不发 resize 事件。
+    // 回调里只写 CSS 变量，写的又不是被观察元素的尺寸，不会自激。
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(measureBand);
+      ro.observe(head);
+      const toc = document.querySelector('.toc');
+      if (toc) ro.observe(toc);
+    }
+    addEventListener('resize', measureBand);
+
+    // ── 2. 取色 ────────────────────────────────────────────────────────────
+    //
     // 宿主注入的主题值三种记法混着来（oklch() / #hex / rgba()），**不要自己
     // 解析字符串**。这里让浏览器算两次：先用一个探针元素把 var() 解析成计算值，
     // 再把计算值交给 2D canvas 的 fillStyle 落成一个像素，getImageData 取回的
     // 就是 sRGB 三个字节。这条路对任何合法 CSS 颜色都成立，也不用关心色彩空间。
     const probe = document.createElement('span');
     probe.style.display = 'none';
-    art.appendChild(probe);
+    band.appendChild(probe);
     const meter = document.createElement('canvas');
     meter.width = 1;
     meter.height = 1;
@@ -2296,239 +2517,352 @@ try {
         || [0.5, 0.5, 0.5];
     };
 
-    const cPaper = readThemeColor('--paper', '#faf8f3');
-    const cEdge = readThemeColor('--paper-edge', '#e6e0d4');
-    const cWarm = readThemeColor('--amber', '#a97d3a');
+    const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    /** 保持色相方向，把亮度按比例拉到 target（>1 的分量会被夹住，故也做一次归一化保护）。 */
+    const setLuma = (c, target) => {
+      const l = Math.max(luma(c), 0.0001);
+      let k = target / l;
+      const mx = Math.max(c[0], c[1], c[2]) * k;
+      if (mx > 1) k /= mx;
+      return [c[0] * k, c[1] * k, c[2] * k];
+    };
+    const toCss = (c) => 'rgb(' + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)).join(',') + ')';
+
+    // --marginalia 是五套主题里唯一都偏冷的 token（vellum 蓝、sepia 蓝、lilac 灰蓝、
+    // midnight 紫），所以带底与画面里的冷色都由它来。**别换成 --ink**：实测过，
+    // 浅色主题下 --ink 是暖褐，带底出来像咖啡渍，跟这一层要的调子完全反向。
     const cCool = readThemeColor('--marginalia', '#194f81');
+    const cAccent = readThemeColor('--accent', '#bd4238');
+
+    // 0.042 / 0.44 / 1.0 三个目标亮度是探索阶段在五套主题下逐一看过定下来的，
+    // **不是可以随手调的数值**：0.042 是「极深 + 极慢」那个调子的落点，
+    // 调亮一档带就从封面变成色块。
+    const uBase = setLuma(cCool, 0.042);
+    const uCool = setLuma(cCool, 1.0);      // 纯色相向量，只进 shader
+    const uAccent = setLuma(cAccent, 1.0);  // 同上
+    root.style.setProperty('--hb-base', toCss(uBase));
+    root.style.setProperty('--hb-accent', toCss(setLuma(cAccent, 0.44)));
     probe.remove();
 
-    // --- 把取到的色调成 shader 要的两组量 -----------------------------------
+    // ── 3. 选方向 ──────────────────────────────────────────────────────────
     //
-    // ⚠️ 这一段是 v5 重做的核心，**不是可以随手调的数值**。v4 直接把 --paper /
-    //    --paper-deep 喂进 mix()、再叠一发 --accent，结果是一团有色相的硬斑
-    //    （用户的原话：「丑到想吐」）。高级感来自**中性色里极窄的亮度起伏 +
-    //    微量反相虹彩**，也就是：底色只压亮度、虹彩只压色相。
-    const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    // 值写死在 HTML 里（<div class="hero-band" data-hero="…">，由 JSON 的 hero
+    // 字段决定）。**不许在这里随机挑**：同一份报告重新打开必须还是同一张脸。
+    // 不认的值或整个属性缺失 → gridwave，一个确定的兜底。
+    const canvas = band.querySelector('canvas');
+    if (!canvas) return;
+    const wanted = band.getAttribute('data-hero');
+    const KNOWN = ['gridwave', 'constellation', 'holoband'];
+    const hero = KNOWN.indexOf(wanted) >= 0 ? wanted : 'gridwave';
 
-    // 底色的两档：纸色家族里最浅和最深的那两个。**必须按亮度排序** ——
-    // midnight 下 --paper-edge（L≈0.28）比 --paper（L≈0.24）还亮，
-    // 不排序方向就反了，深浅两档会对调。
-    let hiCol = cPaper;
-    let loCol = cEdge;
-    if (luma(loCol) > luma(hiCol)) { const t = hiCol; hiCol = loCol; loCol = t; }
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // 亮度跨度归一到 SPAN。五套主题里 --paper 与 --paper-edge 的天然亮度差是
-    // 0.03（porcelain：纯白 vs 近白）到 0.21（lilac），直接拿来用的话
-    // porcelain 几乎看不见、lilac 会变成一道紫渐变。做法是沿着两档之间那条
-    // **色向量**拉伸或压缩：色相方向一点不动，只把亮度跨度调到目标值。
-    // 0.10 是照参考实现量的（那份的银白两档 sRGB 亮度差约 0.095）。
-    const SPAN = 0.10;
-    const dv = [hiCol[0] - loCol[0], hiCol[1] - loCol[1], hiCol[2] - loCol[2]];
-    const dl = Math.abs(luma(dv));
-    // 两档完全同色（宿主只注了 --paper、没注 --paper-edge，两次 fallback 撞上）
-    // 时 dl 是 0，缩放没有意义 —— 退回沿灰轴往下走 SPAN，画面仍然有起伏。
-    const k = dl > 1e-4 ? SPAN / dl : 0;
-    const clamp01 = (x) => Math.min(1, Math.max(0, x));
-    const uHi = hiCol.slice();
-    const uLo = k > 0
-      ? [clamp01(hiCol[0] - dv[0] * k), clamp01(hiCol[1] - dv[1] * k), clamp01(hiCol[2] - dv[2] * k)]
-      : [clamp01(hiCol[0] - SPAN), clamp01(hiCol[1] - SPAN), clamp01(hiCol[2] - SPAN)];
-
-    // 虹彩的两个色相：**亮度归一成 1 的纯色相向量**。shader 里以
-    // mix(vec3(1.0), 色相, 幅度) 的形态**乘**上去 —— 乘性意味着它跟着底色缩放
-    // （midnight 的深底上绝对偏移极小），亮度归一意味着它只改色相不改明暗。
-    // 这正是 v4 压错的那个通道：那版是 mix(col, u_accent, …)，加性、且直接把
-    // 一个饱和的强调色兑进画面。
-    const hueOf = (c) => {
-      const l = luma(c);
-      return l > 1e-3 ? [c[0] / l, c[1] / l, c[2] / l] : [1, 1, 1];
-    };
-    const uWarm = hueOf(cWarm);
-    const uCool = hueOf(cCool);
-
-    // --- 上下文与着色器 ----------------------------------------------------
-    // alpha: true 是有意的：还没画第一帧时画布是透明的，下面那张 SVG 正常露出来；
-    // alpha: false 会让它先黑一帧，浅色主题下就是一条黑杠。
-    const gl = canvas.getContext('webgl', {
-      alpha: true, antialias: false, depth: false, stencil: false,
-      powerPreference: 'low-power',
-    });
-    if (!gl) return; // 没有 WebGL：什么都不做，SVG 兜底
-
-    const VS = [
-      'attribute vec2 a_pos;',
-      'void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }',
-    ].join('\n');
-
-    // 两级 domain warp 的 fbm 场（丝缎 / 珍珠那一路），加鼠标附近的一点扰动。
+    // ── 4. 共用的运行时 ────────────────────────────────────────────────────
     //
-    // ⚠️ 三条数值纪律，改之前先读上面 <style> 里「v5：画面重做」那段：
-    //    1. **底色只在 u_lo / u_hi 之间线性 mix**，不套 smoothstep、不兑任何
-    //       别的颜色。两档是 JS 那边从 --paper / --paper-edge 调出来的，
-    //       亮度跨度已经归一到 0.10，色相方向就是纸色本身的方向。
-    //    2. **虹彩是乘性的、hue-only 的、反相的两层**（IRI_A / IRI_B）。
-    //       u_warm / u_cool 是亮度归一成 1 的纯色相向量，mix(vec3(1.0), 色相, 幅度)
-    //       乘上去只改色相不改明暗。两层相位错开（ph 与 ph*0.8+2.0），
-    //       一层偏暖时另一层偏冷，叠出珠光而不是一块色斑。
-    //    3. **没有等值线。** v4 那条 `mix(col, u_hair, (1-gap)*0.42)` 是画面里最硬
-    //       的一处结构，浅色主题下就是一圈圈灰纹。结构全部交给 fbm 的两级 warp。
-    //    幅度封顶：高光 0.55×跨度、虹彩 0.07/0.065。抬头的正文压在这一层上，
-    //    它要「看得出有东西在动、但读不出形状」。**别往上加。**
-    const FS = [
-      'precision highp float;',
-      'uniform vec2 u_res;',
-      'uniform float u_time;',
-      'uniform vec2 u_mouse;',   // 画布局部坐标，0–1；没动过鼠标时是 (0.5, 0.5)
-      'uniform vec3 u_hi;',      // 纸色两档里亮的那档
-      'uniform vec3 u_lo;',      // 深的那档（亮度比 u_hi 低约 0.10）
-      'uniform vec3 u_warm;',    // --amber 的纯色相向量（亮度归一到 1）
-      'uniform vec3 u_cool;',    // --marginalia 的纯色相向量
-      'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }',
-      'float noise(vec2 p){',
-      '  vec2 i = floor(p), f = fract(p);',
-      '  float a = hash(i), b = hash(i + vec2(1.0, 0.0));',
-      '  float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));',
-      '  vec2 u = f * f * (3.0 - 2.0 * f);',
-      '  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;',
-      '}',
-      'float fbm(vec2 p){',
-      '  float v = 0.0, a = 0.5;',
-      '  mat2 m = mat2(0.80, 0.60, -0.60, 0.80);',
-      '  for (int i = 0; i < 5; i++){ v += a * noise(p); p = m * p * 2.02; a *= 0.5; }',
-      '  return v;',
-      '}',
-      'void main(){',
-      '  float ar = u_res.x / max(u_res.y, 1.0);',
-      '  vec2 p = gl_FragCoord.xy / u_res;',
-      '  p.x *= ar;',
-      // 鼠标扰动：光标附近把采样坐标沿径向推开一点，衰减很快（exp(-5d)），
-      // 观感是水面被轻轻按了一下。没动过鼠标时 u_mouse 停在正中，效果几乎为零。
-      '  vec2 m = u_mouse;',
-      '  m.x *= ar;',
-      '  vec2 md = p - m;',
-      '  float dl = length(md);',
-      '  p += normalize(md + vec2(0.0001)) * exp(-dl * 5.0) * 0.03;',
-      // 两级 domain warp。
-      // ⚠️ 频率比参考实现高一倍多（3.4 / 3.8 / 4.2 对 1.8 / 2.0 / 2.2）：那份是铺满
-      //    整页的背景，这里只有 11rem 高的一条，同样的频率落到这个高度上只剩两三个
-      //    周期，观感是几团糊开的烟而不是丝缎。抬上来之后纹理才细得起来。
-      '  vec2 q = vec2(fbm(p * 3.4 + u_time * 0.055), fbm(p * 3.4 + vec2(5.2, 1.3) + u_time * 0.048));',
-      '  vec2 r = vec2(fbm(p * 3.8 + q * 1.3 + vec2(1.7, 9.2) + u_time * 0.04),',
-      '                fbm(p * 3.8 + q * 1.3 + vec2(8.3, 2.8) + u_time * 0.032));',
-      '  float f = fbm(p * 4.2 + r * 1.5);',
-      // 1. 底色：只压亮度
-      '  vec3 col = mix(u_lo, u_hi, clamp(f, 0.0, 1.0));',
-      '  col += (u_hi - u_lo) * smoothstep(0.48, 0.92, f) * 0.55;',
-      // 2. 虹彩：只压色相，两层反相
-      '  float ph = r.x * 2.2 + u_time * 0.35;',
-      '  col *= mix(vec3(1.0), u_warm, (sin(ph) * 0.5 + 0.5) * 0.10);',
-      '  col *= mix(vec3(1.0), u_cool, (sin(ph * 0.8 + 2.0) * 0.5 + 0.5) * 0.095);',
-      '  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);',
-      '}',
-    ].join('\n');
+    // draw(sec) 画一帧。三个方向共用这一套：先画一帧再亮相（reduced-motion 下
+    // 这一帧就是最终画面 —— 静止，不是隐藏），滚出视口停 rAF，resize 时静止画面
+    // 也要重画一帧，否则拉宽窗口会看到一张被拉伸的旧帧。
+    const drive = (draw) => {
+      let raf = 0;
+      const t0 = performance.now();
+      const loop = (now) => { raf = 0; draw((now - t0) / 1000); raf = requestAnimationFrame(loop); };
+      const start = () => { if (!raf) raf = requestAnimationFrame(loop); };
+      const stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; };
 
-    // 编译 / 链接**一定要查状态**：失败时 WebGL 不抛异常，只会画出一片空白 ——
-    // 又一个「不报错，只是不对劲」，跟文件头那四条硬约束同一类。
-    const compile = (type, src) => {
-      const sh = gl.createShader(type);
-      gl.shaderSource(sh, src);
-      gl.compileShader(sh);
-      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { gl.deleteShader(sh); return null; }
-      return sh;
+      draw(0);
+      band.classList.add('gl-on');
+
+      if (reduce) {
+        addEventListener('resize', () => draw(0));
+      } else if (typeof IntersectionObserver === 'function') {
+        // 滚出视口就停 —— 这正是「抬头可以用 WebGL 而通篇背景不行」的兑现。
+        new IntersectionObserver((entries) => {
+          for (const e of entries) { e.isIntersecting ? start() : stop(); }
+        }).observe(band);
+      } else {
+        start();
+      }
+
+      // 上下文丢失（切换 GPU、系统休眠唤醒等）：停掉循环并把 .gl-on 摘掉，
+      // 让那张兜底 SVG 重新露出来。不做 restore —— 装饰层不值得那套复杂度。
+      canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        stop();
+        band.classList.remove('gl-on');
+      });
+      return { start, stop };
     };
-    const vs = compile(gl.VERTEX_SHADER, VS);
-    const fs = vs && compile(gl.FRAGMENT_SHADER, FS);
-    if (!fs) return;
-
-    const prog = gl.createProgram();
-    gl.attachShader(prog, vs);
-    gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return;
-    gl.useProgram(prog);
-
-    // 一个铺满裁剪空间的四边形（两个三角形）
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER,
-      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, 'a_pos');
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-
-    const uRes = gl.getUniformLocation(prog, 'u_res');
-    const uTime = gl.getUniformLocation(prog, 'u_time');
-    const uMouse = gl.getUniformLocation(prog, 'u_mouse');
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_hi'), uHi);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_lo'), uLo);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_warm'), uWarm);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_cool'), uCool);
 
     // 鼠标位置（画布局部坐标，0–1，y 轴翻成 GL 的向上为正）。
-    // 初值 (0.5, 0.5)：没动过鼠标时扰动几乎为零，画面就是纯粹的 fbm 流动。
-    // ⚠️ 监听挂在 document 上，不是 .hero-art —— 后者是 pointer-events: none
+    // 初值 (0.5, 0.55)：没动过鼠标时扰动几乎为零。
+    // ⚠️ 监听挂在 document 上，不是 .hero-band —— 后者是 pointer-events: none
     //    的纯装饰层，自己收不到任何指针事件。
-    const mouse = new Float32Array([0.5, 0.5]);
-    const trackMouse = (e) => {
-      const b = canvas.getBoundingClientRect();
-      if (b.width <= 0 || b.height <= 0) return;
-      mouse[0] = (e.clientX - b.left) / b.width;
-      mouse[1] = 1 - (e.clientY - b.top) / b.height;
-    };
+    // ⚠️ 鼠标扰动也是动效：reduced-motion 命中时不注册这个监听。
+    const mouse = new Float32Array([0.5, 0.55]);
+    if (!reduce) {
+      document.addEventListener('mousemove', (e) => {
+        const b = canvas.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) return;
+        mouse[0] = (e.clientX - b.left) / b.width;
+        mouse[1] = 1 - (e.clientY - b.top) / b.height;
+      }, { passive: true });
+    }
 
-    // devicePixelRatio 封到 2：抬头只有 11rem 高，再高的采样率看不出差别，
+    // devicePixelRatio 封到 2：带只有十几 rem 高，再高的采样率看不出差别，
     // 却要多画一倍以上的片元。
-    const render = (sec) => {
+    const fitCanvas = () => {
       const d = Math.min(window.devicePixelRatio || 1, 2);
       const w = Math.max(1, Math.round(canvas.clientWidth * d));
       const h = Math.max(1, Math.round(canvas.clientHeight * d));
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-        gl.viewport(0, 0, w, h);
-      }
-      gl.uniform2f(uRes, canvas.width, canvas.height);
-      gl.uniform2f(uMouse, mouse[0], mouse[1]);
-      gl.uniform1f(uTime, sec);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; return true; }
+      return false;
     };
 
-    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    // 鼠标扰动也是动效：reduced-motion 命中时**不注册这个监听**，
-    // 画面就停在 render(0) 那一帧（静止，不是隐藏）。
-    if (!reduce) document.addEventListener('mousemove', trackMouse, { passive: true });
-    let raf = 0;
-    const t0 = performance.now();
-    const loop = (now) => { raf = 0; render((now - t0) / 1000); raf = requestAnimationFrame(loop); };
-    const start = () => { if (!raf) raf = requestAnimationFrame(loop); };
-    const stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; };
+    // ── 5a. 两个 WebGL 方向共用的引导 ──────────────────────────────────────
+    const bootGL = (fsSrc) => {
+      // alpha: true 是有意的：还没画第一帧时画布是透明的，下面那张 SVG 正常露出来；
+      // alpha: false 会让它先黑一帧。
+      const gl = canvas.getContext('webgl', {
+        alpha: true, antialias: false, depth: false, stencil: false,
+        powerPreference: 'low-power',
+      });
+      if (!gl) return null; // 没有 WebGL：什么都不做，SVG 兜底
 
-    // 先画一帧再亮相：reduced-motion 下这一帧就是最终画面（静止，不是隐藏）。
-    render(0);
-    art.classList.add('gl-on');
+      // 编译 / 链接**一定要查状态**：失败时 WebGL 不抛异常，只会画出一片空白 ——
+      // 又一个「不报错，只是不对劲」，跟文件头那四条硬约束同一类。
+      const compile = (type, src) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { gl.deleteShader(sh); return null; }
+        return sh;
+      };
+      const vs = compile(gl.VERTEX_SHADER,
+        'attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.0,1.0);}');
+      const fs = vs && compile(gl.FRAGMENT_SHADER, fsSrc);
+      if (!fs) return null;
 
-    if (reduce) {
-      // 静止画面也要跟着面板宽度重算，否则拉宽窗口会看到一张被拉伸的旧帧。
-      addEventListener('resize', () => render(0));
-    } else if (typeof IntersectionObserver === 'function') {
-      // 滚出视口就停 —— 这正是「hero 可以用 WebGL 而通篇背景不行」的兑现。
-      new IntersectionObserver((entries) => {
-        for (const e of entries) { e.isIntersecting ? start() : stop(); }
-      }).observe(art);
-    } else {
-      start();
-    }
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+      gl.useProgram(prog);
 
-    // 上下文丢失（切换 GPU、系统休眠唤醒等）：停掉循环并把 .gl-on 摘掉，
-    // 让下面那张 SVG 重新露出来。不做 restore —— 装饰层不值得那套复杂度。
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
-      stop();
-      art.classList.remove('gl-on');
-    });
+      // 一个铺满裁剪空间的四边形（两个三角形）
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, 'a_pos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+      const U = (n) => gl.getUniformLocation(prog, n);
+      gl.uniform3fv(U('u_base'), uBase);
+      gl.uniform3fv(U('u_accent'), uAccent);
+      gl.uniform3fv(U('u_cool'), uCool);
+      const uRes = U('u_resolution');
+      const uTime = U('u_time');
+      const uMouse = U('u_mouse');
+
+      return (sec) => {
+        if (fitCanvas()) gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.uniform2f(uRes, canvas.width, canvas.height);
+        gl.uniform1f(uTime, sec);
+        gl.uniform2f(uMouse, mouse[0], mouse[1]);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      };
+    };
+
+    // fbm 那一套（gridwave / holoband 都要），拼在各自的 shader 前面。
+    const NOISE = [
+      'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }',
+      'float noise(vec2 p){',
+      '  vec2 i = floor(p), f = fract(p);',
+      '  float a = hash(i), b = hash(i+vec2(1,0)), c = hash(i+vec2(0,1)), d = hash(i+vec2(1,1));',
+      '  vec2 u = f*f*(3.0-2.0*f);',
+      '  return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;',
+      '}',
+      'float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<4;i++){ v+=a*noise(p); p*=2.03; a*=0.5; } return v; }',
+    ].join('\n');
+
+    const HEAD = [
+      'precision highp float;',
+      'uniform vec2 u_resolution; uniform float u_time; uniform vec2 u_mouse;',
+      'uniform vec3 u_base;    // 带底（--marginalia 亮度归一到约 0.042）',
+      'uniform vec3 u_accent;  // --accent 的纯色相向量',
+      'uniform vec3 u_cool;    // --marginalia 的纯色相向量',
+    ].join('\n');
+
+    // ── 5b. gridwave —— 扫描线 / 信号波形（HUD）────────────────────────────
+    //
+    // ⚠️ 横向扫描线**钉在物理像素栅格上**（用 gl_FragCoord.y 而不是 uv），
+    //    否则线会糊成一片灰。这一条和下面几个常数都是探索阶段逐一看过定下来的，
+    //    **别调**：这个方向对参数极敏感，线一密就退化成噪点。
+    const FS_GRID = [
+      HEAD, NOISE,
+      'void main(){',
+      '  vec2 uv = gl_FragCoord.xy / u_resolution.xy;',
+      '  float asp = u_resolution.x / u_resolution.y;',
+      '  vec2 p = vec2(uv.x*asp, uv.y);',
+      '  vec2 m = vec2(u_mouse.x*asp, u_mouse.y);',
+      // 网格被一层慢噪声推开 —— 直线仍是直线的印象，但整片在缓缓呼吸
+      '  float w = fbm(p*1.1 + u_time*0.05);',
+      '  vec2 q = p + vec2(w, fbm(p*1.1 + vec2(4.7,2.1) - u_time*0.04)) * 0.22;',
+      '  float px = max(u_resolution.y / 420.0, 1.0);',
+      '  float rowf = gl_FragCoord.y / (7.0 * px);',
+      '  float row = smoothstep(0.42, 0.0, abs(fract(rowf) - 0.5) - 0.06);',
+      // 竖向的刻度：稀疏的几条，被慢噪声推着走
+      '  float colf = (gl_FragCoord.x / (u_resolution.x)) * 26.0 + w * 1.6;',
+      '  float rule = smoothstep(0.46, 0.0, abs(fract(colf) - 0.5) - 0.02);',
+      // 一道横向扫过的光（约 11 秒一轮），让扫描线在它经过时亮起来。
+      //
+      // ⚠️ sweepVis 是**上线前必修的那一处**：动态对比页上实测，扫光扫到文字区
+      //    正下方时那两三秒里 meta 行与 forWhom 引文的可读性掉一档（静态截图看不
+      //    出来）。这里把扫光按 uv.x 掐死在左侧那片结构上，文字区一侧永远拿不到它。
+      //    **修在两头**：这是 shader 这一头，另一头是 <style> 里 .deck-head::before
+      //    那层跟着文字走的软压暗 —— 窄档下正文列几乎占满面板宽度，光靠按 x 分布
+      //    的这一头罩不住。别只留一头。
+      '  float sweep = exp(-pow((fract(u_time*0.09) * 1.5 - 0.25 - uv.x) * 3.2, 2.0));',
+      '  sweep *= smoothstep(0.62, 0.04, uv.x);',
+      '  float md = length(p - m);',
+      '  float halo = exp(-md*3.2);',
+      // 构图：结构在左侧最实，向右溶解
+      '  float vis = smoothstep(0.92, 0.02, uv.x) * 0.86 + 0.14;',
+      // 起伏的「波形」：噪声决定这一行亮不亮，扫描线因此像一段被采样的信号
+      '  float amp = smoothstep(0.34, 0.78, w);',
+      '  vec3 col = u_base * (0.75 + 1.2*w);',
+      '  col += u_cool  * row * vis * amp * (0.20 + 0.55*sweep + 0.30*halo);',
+      '  col += u_accent * row * rule * vis * amp * 0.9;',   // 竖刻度与扫描线相交处点成强调色
+      '  col += u_cool * rule * vis * 0.045;',
+      '  col += pow(sweep, 2.0) * vis * 0.05;',
+      '  gl_FragColor = vec4(col, 1.0);',
+      '}',
+    ].join('\n');
+
+    // ── 5c. holoband —— 全息色散 ──────────────────────────────────────────
+    //
+    // ⚠️ 结构只产生一个标量 g，颜色 = 深底 × g + 强调色色散环 + 白高光。
+    //    **别把颜色交给 cosine palette 自由跑色相**：探索的第一版就是那样，
+    //    vellum 下出了一片墨绿。
+    const FS_HOLO = [
+      HEAD,
+      'void main(){',
+      '  vec2 uv = gl_FragCoord.xy / u_resolution.xy;',
+      '  vec2 p = uv*2.0 - 1.0;',
+      '  p.x *= u_resolution.x / u_resolution.y;',
+      '  p *= 0.5;',                       // 横条远比 16:9 扁，缩一档免得纹样被拉成横条纹
+      '  vec2 m = u_mouse*2.0 - 1.0; m.x *= u_resolution.x / u_resolution.y; m *= 0.5;',
+      '  float md = length(p - m);',
+      '  p += sin(md*15.0 - u_time*4.0) * exp(-md*3.0) * 0.08;',
+      '  vec2 p0 = p;',
+      '  for (float i = 1.0; i < 4.0; i++){',
+      '    p.x += 0.1/i * sin(i*3.0*p.y + u_time*0.4) + 0.05;',
+      '    p.y += 0.1/i * cos(i*2.0*p.x + u_time*0.3) - 0.05;',
+      '  }',
+      '  float r = length(p);',
+      '  float ang = atan(p.y, p.x);',
+      '  float g = 0.5 + 0.5*cos(6.28318*(r*1.5 + p0.x*0.5 + u_time*0.1));',
+      '  vec3 col = u_base * (0.45 + 2.6*g);',
+      '  float disp = sin(r*25.0 - u_time*1.5 + ang*2.0)*0.5 + 0.5;',
+      '  col += u_accent * disp * 0.055;',
+      '  col += u_cool * pow(g, 2.0) * 0.05;',
+      '  col += pow(sin(p.x*4.0 + p.y*3.0 + u_time)*0.5 + 0.5, 8.0) * 0.11;',
+      '  gl_FragColor = vec4(col, 1.0);',
+      '}',
+    ].join('\n');
+
+    // ── 5d. constellation —— 知识星丛（canvas 2D，不是 WebGL）─────────────
+    //
+    // ⚠️ **速度是探索版的 2 倍**（用户在动态对比页上开着倍速滑块定的：「2 倍速看着
+    //    更舒服」）。乘 2 的是这个方向自己的三个时间系数，写死在下面，不是一个开关：
+    //      漂移速度 vx  0.00016 → 0.00032
+    //      漂移速度 vy  0.00012 → 0.00024
+    //      连线光点相位 sin(t*0.5) → sin(t*1.0)
+    //      节点呼吸相位 sin(t*0.8) → sin(t*1.6)
+    //    其余参数（节点数、颜色、连线阈值 0.52、构图 vis）一个都没动。
+    const bootConstellation = () => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      // 带底不是死黑：左上角一团深蓝，往右下沉进底色
+      band.style.background = 'radial-gradient(130% 200% at 10% 6%, '
+        + toCss(setLuma(cCool, 0.10)) + ' 0%, ' + toCss(uBase) + ' 64%)';
+      const A = toCss(setLuma(cAccent, 0.68));
+      const C = toCss([uCool[0] * 0.78, uCool[1] * 0.78, uCool[2] * 0.78]);
+      const N = 68;
+      // 构图：星丛聚在左侧，向右稀疏 —— 跟另外两个方向同一套构图约定
+      const vis = (x) => 0.20 + 0.80 * Math.max(0, Math.min(1, (0.92 - x) / 0.80));
+      const pts = [];
+      // 自带的线性同余发生器：种子写死，同一份报告每次打开的星图完全一样。
+      // ⚠️ 别换成 Math.random()：那会让「同一份报告重新打开还是同一张脸」这条不成立。
+      let seed = 20260821;
+      const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+      for (let i = 0; i < N; i++) {
+        pts.push({
+          x: rnd(), y: rnd(), vx: (rnd() - 0.5) * 0.00032, vy: (rnd() - 0.5) * 0.00024,
+          r: 0.7 + rnd() * 1.9, hot: rnd() < 0.18, ph: rnd() * 6.28,
+        });
+      }
+      return (t) => {
+        fitCanvas();
+        const d = Math.min(window.devicePixelRatio || 1, 2);
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+        ctx.setTransform(d, 0, 0, d, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        for (const p of pts) {
+          p.x += p.vx; p.y += p.vy;
+          if (p.x < -0.05) p.x += 1.1; if (p.x > 1.05) p.x -= 1.1;
+          if (p.y < -0.05) p.y += 1.1; if (p.y > 1.05) p.y -= 1.1;
+        }
+        const AR = W / Math.max(H, 1);
+        for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+          const a = pts[i], b = pts[j];
+          const dx = (a.x - b.x) * AR, dy = a.y - b.y;
+          const dd = Math.hypot(dx, dy);
+          if (dd > 0.52) continue;
+          const k = (1 - dd / 0.52) * vis((a.x + b.x) / 2);
+          ctx.strokeStyle = (a.hot || b.hot) ? A : C;
+          ctx.globalAlpha = k * k * 0.52;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(a.x * W, a.y * H); ctx.lineTo(b.x * W, b.y * H); ctx.stroke();
+          // 沿线跑的一颗光点
+          if ((a.hot || b.hot) && k > 0.45) {
+            const u = (Math.sin(t * 1.0 + a.ph) * 0.5 + 0.5);
+            ctx.globalAlpha = k * 0.55;
+            ctx.fillStyle = A;
+            ctx.beginPath();
+            ctx.arc((a.x + (b.x - a.x) * u) * W, (a.y + (b.y - a.y) * u) * H, 1.4, 0, 6.2832);
+            ctx.fill();
+          }
+        }
+        for (const p of pts) {
+          const pulse = (0.7 + 0.3 * Math.sin(t * 1.6 + p.ph)) * vis(p.x);
+          ctx.globalAlpha = p.hot ? 0.95 * pulse : 0.55 * pulse;
+          ctx.fillStyle = p.hot ? A : C;
+          ctx.beginPath(); ctx.arc(p.x * W, p.y * H, p.r, 0, 6.2832); ctx.fill();
+          if (p.hot) {
+            ctx.globalAlpha = 0.16 * pulse;
+            ctx.beginPath(); ctx.arc(p.x * W, p.y * H, p.r * 4.5, 0, 6.2832); ctx.fill();
+          }
+        }
+        ctx.globalAlpha = 1;
+      };
+    };
+
+    // ── 6. 起 ──────────────────────────────────────────────────────────────
+    // 三个方向任何一个起不来（没有 WebGL / 编译链接失败 / 拿不到 2d 上下文）都
+    // 直接 return：不加 .gl-on，那张兜底 SVG 就一直露着。
+    const draw = hero === 'constellation'
+      ? bootConstellation()
+      : bootGL(hero === 'holoband' ? FS_HOLO : FS_GRID);
+    if (!draw) return;
+    drive(draw);
   })();
 } catch (err) {
   // 纯装饰层，失败就退回 SVG。这里不 rethrow，也不该让它冒到控制台之外。
-  console.warn('[learning-deck] 抬头的 WebGL 层没起来，退回 SVG 兜底', err);
+  console.warn('[learning-deck] 抬头的封面带没起来，退回 SVG 兜底', err);
 }
 </script>
 </body>
