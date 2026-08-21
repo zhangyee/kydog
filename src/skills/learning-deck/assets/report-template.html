@@ -636,6 +636,36 @@ code, .formula {
    **那条理由只对通篇背景成立，对只在顶部出现一次的 hero 不成立**——滚过去
    它就不在视口里了（下面脚本用 IntersectionObserver 把 rAF 停掉）。
 
+   === v5：画面重做（用户第四次真跑的原话是「丑到想吐」）=====================
+
+   v4 那版的观感问题不是「幅度不够」，是**压错了通道**：底色 `mix(u_paper, u_deep,
+   smoothstep(0.30, 0.78, f))` 把 f 映到一个有色相的饱和 token 上、跨度极大，
+   再叠一发 `mix(col, u_accent, pow(sin,5) * 0.16)` —— 结果是一团色相饱和的硬斑
+   （用户看到的「粉渍」）。
+
+   **高级感来自中性色里极窄的亮度起伏 + 微量反相虹彩**，v5 照这个调子重做：
+
+   1. **底色只在纸色的两档之间调和**，不碰强调色。两档取 `--paper` 与
+      `--paper-edge`（纸色家族里最浅和最深的两档），由脚本按亮度排序 —— midnight
+      下 `--paper-edge` 比 `--paper` 还亮，不排序方向就反了。
+   2. **亮度跨度归一到约 0.10**（脚本里的 SPAN）。五套主题 `--paper`/`--paper-edge`
+      的天然亮度差是 0.03（porcelain）到 0.21（lilac），直接用会让 porcelain 几乎
+      看不见、lilac 变成一道紫渐变。沿着两档之间那条色向量拉伸/压缩：**色相方向
+      不动，只把亮度跨度调到目标值**。
+   3. **虹彩改成乘性、hue-only、反相的两层**：`--amber`（暖）与 `--marginalia`（冷）
+      各自按亮度归一成「亮度 1 的纯色相向量」，再以 `mix(vec3(1.0), 色相, 幅度)`
+      乘上去。乘性意味着它跟着底色缩放（midnight 的深底上绝对偏移极小）；
+      亮度归一意味着它**只改色相不改明暗**，正好是 v4 压错的那个通道。
+      两层相位错开（`ph` 与 `ph*0.8 + 2.0`），一层偏暖时另一层偏冷，叠出珠光。
+   4. **等值线拿掉了。** v4 那条 `mix(col, u_hair, (1-gap) * 0.42)` 是画面里最硬的
+      一处结构，42% 兑向 `--ink-hair` 在浅色主题下就是一圈圈灰纹。参考实现里没有
+      这样东西，画面结构全部交给 fbm 的两级 domain warp。
+   5. **加了鼠标扰动**：光标附近把采样坐标推开一点（`exp(-dl*5)` 的衰减），
+      观感是水面被轻轻按了一下。沙箱里的 iframe 收得到 mousemove（已实测）。
+      `.hero-art` 自己是 `pointer-events: none`，所以监听挂在 document 上，
+      再用 `getBoundingClientRect()` 换算到画布局部坐标。
+      reduced-motion 命中时**不注册这个监听**（鼠标扰动也是动效）。
+
    实测（Playwright + Chromium，与线上一致的 sandbox 串与 REPORT_CSP）：
      WebGL 上下文 = WebGL 2.0 (OpenGL ES 3.0 Chromium)；顶点/片元着色器编译、
      程序链接全过；readPixels 取回的像素与设定色相符。CSP 不拦 WebGL——它不发
@@ -647,8 +677,9 @@ code, .formula {
       硬编码一组好看的颜色是这一整块最容易犯、也最难在浅色主题下看出来的错：
       五套具名主题（vellum / porcelain / sepia / lilac / midnight）的纸色从
       纯白到近黑，写死的底色在其中至少两套下会变成一块突兀的补丁。
-   ⚠️ **底色一律以 --paper 起手**，画面只在 --paper / --paper-deep / --ink-hair /
-      --accent 之间调和 —— 这样它在任何主题下都不可能跟正文打架。
+   ⚠️ **底色只在纸色两档（--paper / --paper-edge）之间调和**，虹彩只用
+      --amber / --marginalia 两个色相、且是乘性 hue-only 的 —— 这样它在任何主题
+      下都不可能跟正文打架。**别把 --accent 加回底色**，那正是 v4 的病灶。
    ⚠️ prefers-reduced-motion 命中时**只画一帧就停**（不是隐藏、也不是继续跑）。
    ⚠️ WebGL 起不来（无上下文 / 编译链接失败 / 上下文丢失）时退回下面那张
       SVG —— 两层都在 DOM 里，脚本成功时才给 .hero-art 加 .gl-on 把 SVG 藏掉。
@@ -665,9 +696,23 @@ code, .formula {
   height: 11rem;
   overflow: hidden;
   pointer-events: none;
-  /* 四周淡出，避免动效层出现一条硬边 */
-  -webkit-mask-image: radial-gradient(120% 120% at 30% 40%, #000 30%, transparent 78%);
-  mask-image: radial-gradient(120% 120% at 30% 40%, #000 30%, transparent 78%);
+  /* 四周淡出，避免动效层出现一条硬边。
+     ⚠️ **两层遮罩取交集**，不是一层（v5 修）：只有那层径向渐变时，窄档下正文
+        上方那条 .toc 横条（不透明的 --paper 底 + z-index: 1）会把动效层的上半截
+        盖住，露出来的就是一条**齐平的硬边**——观感是「贴了一块矩形色板」，
+        正是这一层最该避免的东西。加一层纵向渐变让它从上往下淡入，被横条盖住的
+        那一截本来就已经淡到接近透明，接缝也就没有了。宽档下没有横条，这一层
+        同样让抬头的动效从纸面里浮出来而不是一刀切开。
+     ⚠️ mask-composite: intersect 是标准写法，-webkit-mask-composite: source-in
+        是 WebKit 的老式关键字，两条都要留（Chromium 认前者，写全更稳）。 */
+  -webkit-mask-image:
+    radial-gradient(115% 130% at 32% 46%, #000 26%, transparent 80%),
+    linear-gradient(to bottom, transparent 0, #000 30%, #000 62%, transparent 100%);
+  mask-image:
+    radial-gradient(115% 130% at 32% 46%, #000 26%, transparent 80%),
+    linear-gradient(to bottom, transparent 0, #000 30%, #000 62%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
 }
 
 /* 两层叠在一起：canvas 在上、SVG 兜底在下。canvas 没画起来时它是透明的，
@@ -692,10 +737,13 @@ code, .formula {
   position: relative;
 }
 
-/* 兜底那张 SVG：几条虚线等高线缓慢横向流动 + 一团几乎看不见的强调色辉光。
+/* 兜底那张 SVG：几条虚线等高线缓慢横向流动 + 一团几乎看不见的纸色辉光。
    ⚠️ 深色主题（midnight）实测过：线用 --ink-hair（midnight 下 L≈0.38，
-      纸是 L≈0.24），辉光用 --accent-soft（自带 alpha），叠出来仍然是
-      「看得出有东西在动、但读不出形状」的程度，不会糊成一片。 */
+      纸是 L≈0.24），叠出来是「看得出有东西在动、但读不出形状」的程度，
+      不会糊成一片。
+   ⚠️ v5 起辉光用 --paper-edge 而**不是** --accent-soft：上面那版 WebGL 的病灶
+      就是往画面里兑强调色，兜底层没有理由再犯一次。纸色的一团深浅，跟
+      WebGL 那层是同一个调子。 */
 .hero-line {
   fill: none;
   stroke: var(--ink-hair, #c9c3be);
@@ -708,7 +756,7 @@ code, .formula {
 .hero-line-3 { animation-duration: 44s; opacity: .62; }
 .hero-line-4 { animation-duration: 30s; opacity: .5; }
 
-.hero-glow-in  { stop-color: var(--accent-soft, rgba(189, 66, 56, .14)); }
+.hero-glow-in  { stop-color: var(--paper-edge, #e6e0d4); }
 .hero-glow-out { stop-color: transparent; }
 
 .hero-glow {
@@ -2967,10 +3015,54 @@ try {
     };
 
     const cPaper = readThemeColor('--paper', '#faf8f3');
-    const cDeep = readThemeColor('--paper-deep', '#f0ece4');
-    const cHair = readThemeColor('--ink-hair', '#c9c3be');
-    const cAccent = readThemeColor('--accent', '#bd4238');
+    const cEdge = readThemeColor('--paper-edge', '#e6e0d4');
+    const cWarm = readThemeColor('--amber', '#a97d3a');
+    const cCool = readThemeColor('--marginalia', '#194f81');
     probe.remove();
+
+    // --- 把取到的色调成 shader 要的两组量 -----------------------------------
+    //
+    // ⚠️ 这一段是 v5 重做的核心，**不是可以随手调的数值**。v4 直接把 --paper /
+    //    --paper-deep 喂进 mix()、再叠一发 --accent，结果是一团有色相的硬斑
+    //    （用户的原话：「丑到想吐」）。高级感来自**中性色里极窄的亮度起伏 +
+    //    微量反相虹彩**，也就是：底色只压亮度、虹彩只压色相。
+    const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+    // 底色的两档：纸色家族里最浅和最深的那两个。**必须按亮度排序** ——
+    // midnight 下 --paper-edge（L≈0.28）比 --paper（L≈0.24）还亮，
+    // 不排序方向就反了，深浅两档会对调。
+    let hiCol = cPaper;
+    let loCol = cEdge;
+    if (luma(loCol) > luma(hiCol)) { const t = hiCol; hiCol = loCol; loCol = t; }
+
+    // 亮度跨度归一到 SPAN。五套主题里 --paper 与 --paper-edge 的天然亮度差是
+    // 0.03（porcelain：纯白 vs 近白）到 0.21（lilac），直接拿来用的话
+    // porcelain 几乎看不见、lilac 会变成一道紫渐变。做法是沿着两档之间那条
+    // **色向量**拉伸或压缩：色相方向一点不动，只把亮度跨度调到目标值。
+    // 0.10 是照参考实现量的（那份的银白两档 sRGB 亮度差约 0.095）。
+    const SPAN = 0.10;
+    const dv = [hiCol[0] - loCol[0], hiCol[1] - loCol[1], hiCol[2] - loCol[2]];
+    const dl = Math.abs(luma(dv));
+    // 两档完全同色（宿主只注了 --paper、没注 --paper-edge，两次 fallback 撞上）
+    // 时 dl 是 0，缩放没有意义 —— 退回沿灰轴往下走 SPAN，画面仍然有起伏。
+    const k = dl > 1e-4 ? SPAN / dl : 0;
+    const clamp01 = (x) => Math.min(1, Math.max(0, x));
+    const uHi = hiCol.slice();
+    const uLo = k > 0
+      ? [clamp01(hiCol[0] - dv[0] * k), clamp01(hiCol[1] - dv[1] * k), clamp01(hiCol[2] - dv[2] * k)]
+      : [clamp01(hiCol[0] - SPAN), clamp01(hiCol[1] - SPAN), clamp01(hiCol[2] - SPAN)];
+
+    // 虹彩的两个色相：**亮度归一成 1 的纯色相向量**。shader 里以
+    // mix(vec3(1.0), 色相, 幅度) 的形态**乘**上去 —— 乘性意味着它跟着底色缩放
+    // （midnight 的深底上绝对偏移极小），亮度归一意味着它只改色相不改明暗。
+    // 这正是 v4 压错的那个通道：那版是 mix(col, u_accent, …)，加性、且直接把
+    // 一个饱和的强调色兑进画面。
+    const hueOf = (c) => {
+      const l = luma(c);
+      return l > 1e-3 ? [c[0] / l, c[1] / l, c[2] / l] : [1, 1, 1];
+    };
+    const uWarm = hueOf(cWarm);
+    const uCool = hueOf(cCool);
 
     // --- 上下文与着色器 ----------------------------------------------------
     // alpha: true 是有意的：还没画第一帧时画布是透明的，下面那张 SVG 正常露出来；
@@ -2986,20 +3078,29 @@ try {
       'void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }',
     ].join('\n');
 
-    // 两级 domain warp 的 fbm 场，再取它的等值线 —— 观感是缓慢流动的水纹等高线，
-    // 正好是下面那张 SVG（四条漂移的虚线）的连续版本。
-    // ⚠️ 画面**从 u_paper 起手**，只在 paper / deep / hair / accent 之间调和：
-    //    这是「五套主题下都成立」的结构性保证，不是调出来的巧合。
-    // ⚠️ 幅度压得很低（等值线 0.42、虹彩 0.16）：抬头的正文压在它上面，
-    //    这一层要「看得出有东西在动、但读不出形状」。别往上加。
+    // 两级 domain warp 的 fbm 场（丝缎 / 珍珠那一路），加鼠标附近的一点扰动。
+    //
+    // ⚠️ 三条数值纪律，改之前先读上面 <style> 里「v5：画面重做」那段：
+    //    1. **底色只在 u_lo / u_hi 之间线性 mix**，不套 smoothstep、不兑任何
+    //       别的颜色。两档是 JS 那边从 --paper / --paper-edge 调出来的，
+    //       亮度跨度已经归一到 0.10，色相方向就是纸色本身的方向。
+    //    2. **虹彩是乘性的、hue-only 的、反相的两层**（IRI_A / IRI_B）。
+    //       u_warm / u_cool 是亮度归一成 1 的纯色相向量，mix(vec3(1.0), 色相, 幅度)
+    //       乘上去只改色相不改明暗。两层相位错开（ph 与 ph*0.8+2.0），
+    //       一层偏暖时另一层偏冷，叠出珠光而不是一块色斑。
+    //    3. **没有等值线。** v4 那条 `mix(col, u_hair, (1-gap)*0.42)` 是画面里最硬
+    //       的一处结构，浅色主题下就是一圈圈灰纹。结构全部交给 fbm 的两级 warp。
+    //    幅度封顶：高光 0.55×跨度、虹彩 0.07/0.065。抬头的正文压在这一层上，
+    //    它要「看得出有东西在动、但读不出形状」。**别往上加。**
     const FS = [
       'precision highp float;',
       'uniform vec2 u_res;',
       'uniform float u_time;',
-      'uniform vec3 u_paper;',
-      'uniform vec3 u_deep;',
-      'uniform vec3 u_hair;',
-      'uniform vec3 u_accent;',
+      'uniform vec2 u_mouse;',   // 画布局部坐标，0–1；没动过鼠标时是 (0.5, 0.5)
+      'uniform vec3 u_hi;',      // 纸色两档里亮的那档
+      'uniform vec3 u_lo;',      // 深的那档（亮度比 u_hi 低约 0.10）
+      'uniform vec3 u_warm;',    // --amber 的纯色相向量（亮度归一到 1）
+      'uniform vec3 u_cool;',    // --marginalia 的纯色相向量
       'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }',
       'float noise(vec2 p){',
       '  vec2 i = floor(p), f = fract(p);',
@@ -3011,24 +3112,36 @@ try {
       'float fbm(vec2 p){',
       '  float v = 0.0, a = 0.5;',
       '  mat2 m = mat2(0.80, 0.60, -0.60, 0.80);',
-      '  for (int i = 0; i < 4; i++){ v += a * noise(p); p = m * p * 2.03; a *= 0.5; }',
+      '  for (int i = 0; i < 5; i++){ v += a * noise(p); p = m * p * 2.02; a *= 0.5; }',
       '  return v;',
       '}',
       'void main(){',
+      '  float ar = u_res.x / max(u_res.y, 1.0);',
       '  vec2 p = gl_FragCoord.xy / u_res;',
-      '  p.x *= u_res.x / max(u_res.y, 1.0);',
-      '  float t = u_time * 0.05;',
-      '  vec2 q = vec2(fbm(p * 1.7 + t), fbm(p * 1.7 + vec2(3.1, 1.7) - t));',
-      '  vec2 r = vec2(fbm(p * 2.1 + q * 1.4 + vec2(1.7, 9.2)),',
-      '                fbm(p * 2.1 + q * 1.4 + vec2(8.3, 2.8)));',
-      '  float f = fbm(p * 2.4 + r * 1.6);',
-      '  vec3 col = mix(u_paper, u_deep, smoothstep(0.30, 0.78, f));',
-      '  float band = fract(f * 8.0 + r.x * 0.6);',
-      '  float gap = smoothstep(0.0, 0.10, band) * smoothstep(0.0, 0.10, 1.0 - band);',
-      '  col = mix(col, u_hair, (1.0 - gap) * 0.42);',
-      '  float sheen = pow(max(sin(f * 12.566 + u_time * 0.22) * 0.5 + 0.5, 0.0), 5.0);',
-      '  col = mix(col, u_accent, sheen * 0.16);',
-      '  gl_FragColor = vec4(col, 1.0);',
+      '  p.x *= ar;',
+      // 鼠标扰动：光标附近把采样坐标沿径向推开一点，衰减很快（exp(-5d)），
+      // 观感是水面被轻轻按了一下。没动过鼠标时 u_mouse 停在正中，效果几乎为零。
+      '  vec2 m = u_mouse;',
+      '  m.x *= ar;',
+      '  vec2 md = p - m;',
+      '  float dl = length(md);',
+      '  p += normalize(md + vec2(0.0001)) * exp(-dl * 5.0) * 0.03;',
+      // 两级 domain warp。
+      // ⚠️ 频率比参考实现高一倍多（3.4 / 3.8 / 4.2 对 1.8 / 2.0 / 2.2）：那份是铺满
+      //    整页的背景，这里只有 11rem 高的一条，同样的频率落到这个高度上只剩两三个
+      //    周期，观感是几团糊开的烟而不是丝缎。抬上来之后纹理才细得起来。
+      '  vec2 q = vec2(fbm(p * 3.4 + u_time * 0.055), fbm(p * 3.4 + vec2(5.2, 1.3) + u_time * 0.048));',
+      '  vec2 r = vec2(fbm(p * 3.8 + q * 1.3 + vec2(1.7, 9.2) + u_time * 0.04),',
+      '                fbm(p * 3.8 + q * 1.3 + vec2(8.3, 2.8) + u_time * 0.032));',
+      '  float f = fbm(p * 4.2 + r * 1.5);',
+      // 1. 底色：只压亮度
+      '  vec3 col = mix(u_lo, u_hi, clamp(f, 0.0, 1.0));',
+      '  col += (u_hi - u_lo) * smoothstep(0.48, 0.92, f) * 0.55;',
+      // 2. 虹彩：只压色相，两层反相
+      '  float ph = r.x * 2.2 + u_time * 0.35;',
+      '  col *= mix(vec3(1.0), u_warm, (sin(ph) * 0.5 + 0.5) * 0.10);',
+      '  col *= mix(vec3(1.0), u_cool, (sin(ph * 0.8 + 2.0) * 0.5 + 0.5) * 0.095);',
+      '  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);',
       '}',
     ].join('\n');
 
@@ -3062,10 +3175,23 @@ try {
 
     const uRes = gl.getUniformLocation(prog, 'u_res');
     const uTime = gl.getUniformLocation(prog, 'u_time');
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_paper'), cPaper);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_deep'), cDeep);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_hair'), cHair);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'u_accent'), cAccent);
+    const uMouse = gl.getUniformLocation(prog, 'u_mouse');
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_hi'), uHi);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_lo'), uLo);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_warm'), uWarm);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_cool'), uCool);
+
+    // 鼠标位置（画布局部坐标，0–1，y 轴翻成 GL 的向上为正）。
+    // 初值 (0.5, 0.5)：没动过鼠标时扰动几乎为零，画面就是纯粹的 fbm 流动。
+    // ⚠️ 监听挂在 document 上，不是 .hero-art —— 后者是 pointer-events: none
+    //    的纯装饰层，自己收不到任何指针事件。
+    const mouse = new Float32Array([0.5, 0.5]);
+    const trackMouse = (e) => {
+      const b = canvas.getBoundingClientRect();
+      if (b.width <= 0 || b.height <= 0) return;
+      mouse[0] = (e.clientX - b.left) / b.width;
+      mouse[1] = 1 - (e.clientY - b.top) / b.height;
+    };
 
     // devicePixelRatio 封到 2：抬头只有 11rem 高，再高的采样率看不出差别，
     // 却要多画一倍以上的片元。
@@ -3079,11 +3205,15 @@ try {
         gl.viewport(0, 0, w, h);
       }
       gl.uniform2f(uRes, canvas.width, canvas.height);
+      gl.uniform2f(uMouse, mouse[0], mouse[1]);
       gl.uniform1f(uTime, sec);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     };
 
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // 鼠标扰动也是动效：reduced-motion 命中时**不注册这个监听**，
+    // 画面就停在 render(0) 那一帧（静止，不是隐藏）。
+    if (!reduce) document.addEventListener('mousemove', trackMouse, { passive: true });
     let raf = 0;
     const t0 = performance.now();
     const loop = (now) => { raf = 0; render((now - t0) / 1000); raf = requestAnimationFrame(loop); };
