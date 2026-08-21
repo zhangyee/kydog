@@ -81,11 +81,165 @@ const REPORT_HTML = `<!doctype html>
 
 // 真模板。仓库里此前没有任何东西解析过它——脚本块里写出语法错误也会静默发布，
 // 而它正是 /learning-deck 让 agent 逐字照抄的那份文件。seed 进去当报告打开，
-// 就等于让 Chromium 替我们解析一遍，再对它自己那三条能力（入场动效、进度条、
-// 方向键停靠点）下断言。路径相对 cwd：e2e 由 playwright 从仓库根跑起
+// 就等于让 Chromium 替我们解析一遍，再对它自己那几条能力（入场动效、SVG 描边、
+// 方向键停靠点、目录 scrollspy、窄档目录横条）下断言。路径相对 cwd：e2e 由 playwright 从仓库根跑起
 // （helpers.ts 传给 electron 的 '.vite/build/main.js' 也是这么解析的）。
 const TEMPLATE_REL = 'template.html';
 const TEMPLATE_SRC = path.resolve(process.cwd(), 'src/skills/learning-deck/assets/report-template.html');
+
+// ── 真模板 + 最小章节 fixture ────────────────────────────────────────────────
+//
+// v5 起模板 <body> 里**没有任何示例内容**：没有示例章节、没有 .reveal、没有 .draw，
+// ④ 知识点正文那一块只剩一行插入锚点注释。（为什么删干净见模板里
+// 「④ 知识点正文 —— 章节的插入锚点」那段：v4 留了两个示例章节的壳，替换壳比插入贵
+// 得多，于是真跑时九章全走插入、两个壳原地留下。）
+//
+// 下面这几条测试要断言的是**模板自己的行为**——入场动效、SVG 描边、方向键停靠点、
+// 目录 scrollspy、窄档目录横条——而这些行为全部长在章节上。所以 fixture 的做法是：
+//
+//   读真模板 → 找到那一行插入锚点 → 用一对最小的「幕封页 + .concept」把它换掉
+//
+// **这跟 /learning-deck 第 5.5 小步插章节是同一个操作**（`references/layout.md`
+// 的「④ 一章画完的样子」定义了这对标记的形态），所以被测的仍然是真模板：
+// <style> 一个字没动、文末那个唯一的 <script> 一个字没动、三栏网格与 @media 断点
+// 一个字没动。fixture 只提供内容标记，也就是真报告里同样由 agent 提供的那一半。
+//
+// ⚠️ **锚点找不到就 throw，不要静默跳过。** 模板哪天把这行注释改了名或删了，
+//    这些测试必须**红在构造 fixture 这一步**，而不是退化成「测了一份没有章节的
+//    模板、断言全过」。这条 throw 就是模板漂移的探测器。
+const CHAPTER_ANCHOR = '<!-- ④-ANCHOR 知识点章节插在这一行之前 ⟨待填⟩ -->';
+const TOC_SUB_ANCHOR = '          <!-- 有几章写几条，一章一行：<li><a href="#cN">§N 标题</a></li> ⟨待填⟩ -->';
+const REFS_HEADING = '  <h2>参考文献</h2>';
+const PRIMER_HEADING = '  <h2>前序速览</h2>';
+
+// ③ 前序速览也要填出真实高度，不能留空。
+//
+// 这不是「为了让测试过」的凑数：`html` 上写着 scroll-snap-type: y proximity，
+// 而 .curtain 是 scroll-snap-align: start。#primer 空着的时候第一张幕封页离它只有
+// 几十像素，instant scrollTo 停在 #primer 的落点之后会被 proximity 直接吸到幕封页上
+// ——「ArrowDown 从 #primer 落到第一个幕封页」那条测试的**前置条件**（幕封页此刻还在
+// 视口下方）就不成立了，测试量的东西也就没了。真报告里 ③ 一定有内容，
+// fixture 补上它才是照着真形态测。
+const PRIMER_ITEMS = [
+  ['12 导联与采样率', '体表 12 个观察角度，各自看到心脏电活动的一个投影。常见采样率 250–500 Hz。'],
+  ['基线漂移', '呼吸与电极接触带来的低频起伏，会把 ST 段的绝对高度整段抬起或压下。'],
+  ['对比预训练', '不用标签，靠「同一段的两个视图应该靠得更近」这一条来学表示。'],
+  ['线性探针', '冻住主干只训一层线性分类头，用来量表示本身好不好，而不是量微调技巧。'],
+  ['类别不平衡', '阳性样本占比很低时，准确率会被多数类刷满，得看 AUPRC 而不是 accuracy。'],
+  ['外部验证', '换一家医院、换一批设备再测一次。同院测试集上的数字撑不起临床结论。'],
+];
+
+/** 一对最小的「幕封页 + .concept」，形态照 references/layout.md「④ 一章画完的样子」。 */
+function fixtureChapter(n: number): string {
+  return `<div class="curtain" id="c${n}">
+  <div class="curtain-num">§${n}</div>
+  <h2 class="curtain-title">e2e fixture 第 ${n} 节</h2>
+  <p class="curtain-lede">这一节只为 e2e 存在，形态照 references/layout.md。</p>
+</div>
+
+<section class="concept">
+  <p class="lede">这一节只为 e2e 存在，形态照 references/layout.md。</p>
+
+  <aside class="aside reveal">
+    <p>依赖侧注：本节假设你已经读过 <a href="#map">知识地图</a>。</p>
+  </aside>
+
+  <h3>它解决什么问题</h3>
+  <p>正文一段，撑出高度用。</p>
+
+  <div class="with-figure">
+    <h3>机制</h3>
+    <p>讲下面这张图的那一段。</p>
+    <figure>
+      <svg viewBox="0 0 640 120" role="img" aria-label="从输入到输出的一条箭头">
+        <title>e2e fixture 的最小示意图</title>
+        <defs>
+          <marker id="ld-arrow-f${n}" viewBox="0 0 10 10" refX="8" refY="5"
+                  markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path class="arrow-head" d="M0,0 L10,5 L0,10 z"/>
+          </marker>
+        </defs>
+        <rect x="20" y="34" width="150" height="52" rx="4" class="svg-frame"/>
+        <text class="svg-label" x="95" y="65" text-anchor="middle" font-size="14">输入</text>
+        <path class="arrow-line draw" d="M176 60 L 464 60" marker-end="url(#ld-arrow-f${n})"/>
+        <rect x="470" y="34" width="150" height="52" rx="4" class="svg-hi"/>
+        <text class="svg-label" x="545" y="65" text-anchor="middle" font-size="14">输出</text>
+      </svg>
+      <figcaption>
+        <b>图 ${n + 1}</b> e2e fixture 用的最小示意图。
+        <br>示意图为本报告自画，不对应原文任何一张图。
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="example reveal">
+    <span class="tag">举个例子</span>
+    <p>一个具体到能被核对的例子。</p>
+  </div>
+
+  <div class="boundary reveal">
+    <h3>常见误解与边界</h3>
+    <ul><li><strong>「这是真报告」</strong>——不是，它是 e2e 的 fixture。</li></ul>
+  </div>
+
+  <div class="source reveal">
+    <h3>出处</h3>
+    <ul><li>见 <a href="#r-fixture">Fixture et al. (2026)</a>。</li></ul>
+  </div>
+
+  <p class="checkout reveal">
+    <b>读完这节你应该能回答：</b>这对标记是从哪一册抄来的？
+  </p>
+  <p class="back"><a href="#map">↑ 回知识地图</a></p>
+</section>`;
+}
+
+/** 真模板 + 两章 fixture。两章是为了让文档高到能滚（每张幕封页 100vh）。 */
+function buildTemplateFixture(template: string): string {
+  if (!template.includes(CHAPTER_ANCHOR)) {
+    throw new Error(
+      `真模板里找不到章节插入锚点：${CHAPTER_ANCHOR}\n`
+      + '模板改了形态，下面那几条「真模板」测试要跟着改 —— 不要把这个 throw 去掉。',
+    );
+  }
+  if (!template.includes(TOC_SUB_ANCHOR)) {
+    throw new Error(
+      `真模板里找不到目录里知识点那组的占位注释：${TOC_SUB_ANCHOR}\n`
+      + '目录 scrollspy 那条测试要靠它插 §N 条目 —— 不要把这个 throw 去掉。',
+    );
+  }
+  if (!template.includes(REFS_HEADING)) {
+    throw new Error(
+      `真模板里找不到 ⑨ 参考文献那个 <h2>：${REFS_HEADING}\n`
+      + '两跳引用那条测试要靠它插一条 <li id="r-…"> —— 不要把这个 throw 去掉。',
+    );
+  }
+  if (!template.includes(PRIMER_HEADING)) {
+    throw new Error(
+      `真模板里找不到 ③ 前序速览那个 <h2>：${PRIMER_HEADING}\n`
+      + '方向键那条测试要靠它撑出高度 —— 不要把这个 throw 去掉。',
+    );
+  }
+  return template
+    .replace(TOC_SUB_ANCHOR,
+      '          <li><a href="#c1">§1 e2e fixture 第 1 节</a></li>\n'
+      + '          <li><a href="#c2">§2 e2e fixture 第 2 节</a></li>')
+    .replace(CHAPTER_ANCHOR, `${fixtureChapter(1)}\n\n${fixtureChapter(2)}`)
+    .replace(PRIMER_HEADING, `${PRIMER_HEADING}
+  <p>下面这些不是本报告的重点，但后文会用到。够用就行。</p>
+  <dl>
+${PRIMER_ITEMS.map(([t, d]) => `    <dt>${t}</dt>\n    <dd>${d}</dd>`).join('\n')}
+  </dl>`)
+    // 两跳的第二站：正文 .source 里的 #r-fixture 落到这条 <li> 上，
+    // 这条 <li> 里的 a.ref-link 才是外链。
+    .replace(REFS_HEADING, `${REFS_HEADING}
+  <ol>
+    <li id="r-fixture">
+      Fixture, F. et al. (2026). <i>A Minimal Fixture.</i> e2e 45(1), 1–2.
+      <br><a class="ref-link" href="https://example.com/10.1000/fixture" target="_blank" rel="noopener">https://example.com/10.1000/fixture</a>
+    </li>
+  </ol>`);
+}
 
 async function seedAll(home: string) {
   await seedSettings(home);
@@ -94,7 +248,8 @@ async function seedAll(home: string) {
   await fs.writeFile(path.join(projectPath, HTML_REL), REPORT_HTML);
   // 真模板与合成 fixture 并存、各测各的：合成 fixture 的元素 id 与时序是那几条
   // 测试的判据，不能为了「换成真模板」把它们改掉。
-  await fs.copyFile(TEMPLATE_SRC, path.join(projectPath, TEMPLATE_REL));
+  const template = await fs.readFile(TEMPLATE_SRC, 'utf8');
+  await fs.writeFile(path.join(projectPath, TEMPLATE_REL), buildTemplateFixture(template));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -581,19 +736,47 @@ test('46-html-tab: 真模板——.reveal 滚入视口后可见，.draw 路径�
   }
 });
 
-test('46-html-tab: 真模板——顶部进度条随滚动变宽', async () => {
+// 这条**取代了 v4 那条「顶部进度条随滚动变宽」**：进度条 v5 整个删掉了
+// （用户决定，理由见模板 <style> 里「顶部进度条已经删掉」那段），被测对象没了。
+//
+// 换成 scrollspy 不是随便挑的替补：旧那条真正守着的是「文末那个唯一的 <script> 真的
+// 跑起来了、而且真的在响应滚动」——脚本被 CSP 拦掉、语法错误、scroll 监听写错，
+// 三种失败模式旧那条都能抓。删掉进度条之后，模板里**唯一**还符合这个描述的行为就是
+// 目录的当前项高亮（`.is-current` + `aria-current`），而它此前没有任何测试覆盖。
+// 同一个失败模式，换了一个仍然真实存在的被测对象。
+//
+// ⚠️ 判据是「高亮**跟着滚动挪**」，不是「有一个 .is-current」：载入时脚本会立刻
+//    sync() 一次并把第一条设成当前项，只断言「存在」的话脚本挂在 addEventListener
+//    那一行也照样绿。所以先断言初始是 #map，再滚下去断言变成 #glossary。
+test('46-html-tab: 真模板——滚动时目录当前项跟着走', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
     const frame = await openTemplate(page, kydogHome);
 
-    const bar = frame.locator('#progress-bar');
-    const widthOf = () => bar.evaluate((el: HTMLElement) => el.getBoundingClientRect().width);
-    // 载入时脚本跑过一次 update()，scrollY 是 0 ⇒ 宽度 0。
-    await expect.poll(widthOf).toBe(0);
+    const currentHref = () => frame.locator('body').evaluate((el) => {
+      const a = el.ownerDocument.querySelector('.toc a.is-current');
+      return a ? a.getAttribute('href') : null;
+    });
 
-    await frame.locator('body').evaluate((el) => { el.ownerDocument.defaultView!.scrollTo(0, 4000); });
-    await expect.poll(widthOf).toBeGreaterThan(0);
+    // 载入时 sync() 跑过一次，scrollY 是 0 ⇒ 当前项是第一条。
+    await expect.poll(currentHref).toBe('#map');
+
+    // 滚到「⑦ 术语对照」刚过判定线（视口上方三成处）的位置：模板脚本取的是
+    // scrollY + innerHeight * 0.3，所以让 #glossary 的文档内 top 落在这条线上方
+    // 10px —— 它过线、而它后面那条（#next）还没过，命中唯一确定。
+    await frame.locator('body').evaluate((el) => {
+      const doc = el.ownerDocument;
+      const win = doc.defaultView!;
+      const g = doc.querySelector('#glossary')!;
+      const top = g.getBoundingClientRect().top + win.scrollY;
+      win.scrollTo({ top: top - win.innerHeight * 0.3 + 10, behavior: 'instant' });
+    });
+
+    await expect.poll(currentHref).toBe('#glossary');
+    // aria-current 跟 class 一起设 —— 只加 class 的话屏读者读得到目录，却读不出
+    // 「现在在哪一节」，而那正是 scrollspy 唯一的用处。
+    await expect(frame.locator('.toc a[href="#glossary"]')).toHaveAttribute('aria-current', 'page');
   } finally {
     await teardown(launched);
   }
@@ -606,8 +789,11 @@ test('46-html-tab: 真模板——顶部进度条随滚动变宽', async () => {
 // OOPIF 送键盘事件的限制，不是模板的行为，所以别把它写成「多按几次」的循环，
 // 那种测试会停在第二个停靠点上永远超时。上面那条合成 fixture 的方向键测试同样只按一次。
 //
-// 于是这条测试先用 scrollTo 停到 #primer（第 3 个停靠点，这一步不用键盘），
+// 于是这条测试先用 scrollTo 停到 #primer（这一步不用键盘），
 // 再按唯一的一次 ArrowDown——落点应该正好是第一个幕封页。
+// 停靠点是 `.curtain, .concept, section[id]`，文档序下 #map、#primer 之后就是
+// fixture 插进去的第一张幕封页（v5 删掉「速通路径」之后 #primer 从第 3 个变成第 2 个，
+// 但这条测试不依赖序号，只依赖「幕封页紧跟在 #primer 后面」）。
 test('46-html-tab: 真模板——ArrowDown 从 #primer 落到第一个幕封页', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
@@ -636,6 +822,48 @@ test('46-html-tab: 真模板——ArrowDown 从 #primer 落到第一个幕封页
     await expect.poll(async () => Math.round(await topOf()), { timeout: 15_000 })
       .toBeLessThan(40);
     expect(await topOf()).toBeGreaterThan(-40);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// v5 的两跳引用：正文 .source 里的 <a href="#r-…"> 先落到 ⑨ 参考文献那条 <li>，
+// 那条 <li> 里的 a.ref-link 才通向论文原 URL。v4 是正文直接外链，点一下就跳出 app。
+//
+// 为什么值得单开一条：这条链依赖的是**查看器注入的 <base href="about:srcdoc">**
+// （srcdoc 文档的 base URL 本来继承宿主，href="#x" 会被当成跨文档导航——
+// packaged 下静默无事，dev 下整个 frame 导航去宿主页面）。两种失败都不报错，
+// 所以断言落在「真的滚到那条 <li> 了」和「:target 底色真的上了」，不是「点得动」。
+test('46-html-tab: 真模板——正文引用两跳落到参考文献那一条', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const frame = await openTemplate(page, kydogHome);
+
+    const cite = frame.locator('.source a[href="#r-fixture"]').first();
+    const item = frame.locator('#r-fixture');
+
+    // 前置条件：参考文献那一条此刻在视口外 —— 否则「落到它」不能证明是这次点击干的。
+    await expect(item).not.toBeInViewport();
+
+    // 点击放进 poll 里重试：frame 刚建好那一小段时间里，第一次合成点击偶尔会被吞掉
+    // （实测约 1/4，紧接着再点必中）。点锚点是幂等的，重试不改变语义。
+    await expect.poll(async () => {
+      await cite.click();
+      return frame.locator('body').evaluate((el) => el.ownerDocument.defaultView!.location.href);
+    }, { timeout: 10_000 }).toBe('about:srcdoc#r-fixture');
+    await expect(item).toBeInViewport();
+
+    // .refs li:target 的底色 —— 落地时读者要看得出「就是这一条」。
+    // 没有这条断言，「跳过去了但看不出跳到哪一条」会静默通过。
+    const bg = await item.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bg).not.toBe('rgba(0, 0, 0, 0)');
+    expect(bg).not.toBe('transparent');
+
+    // 第二跳仍然是外链：a.ref-link 带 target/rel，由 setWindowOpenHandler 交给系统浏览器
+    // （那条链本身由「报告里的外链交给系统浏览器打开」那条测试覆盖）。
+    await expect(item.locator('a.ref-link')).toHaveAttribute('target', '_blank');
+    await expect(item.locator('a.ref-link')).toHaveAttribute('rel', 'noopener');
   } finally {
     await teardown(launched);
   }
@@ -674,14 +902,22 @@ test('46-html-tab: 真模板——窄面板下目录横条贴顶且与正文列�
     const toc = frame.locator('.toc');
     await expect(toc).toBeVisible();
 
+    // 滚到 ⑦ 术语对照那一节的位置，而不是一个写死的 1200。
+    // ⚠️ 写死的坐标在这里会被 scroll-snap 掀翻：html 上是 scroll-snap-type: y proximity、
+    //    .curtain 是 scroll-snap-align: start，落点只要离某张幕封页够近就会被吸走，
+    //    scrollY 未必停在你要的地方（实测过：scrollTo 1200 被吸回去，断言 > 1000 直接红）。
+    //    #glossary 是个 section[id]，本身不是吸附点，前后也没有幕封页，落点是确定的。
     await frame.locator('body').evaluate((el) => {
-      el.ownerDocument.defaultView!.scrollTo({ top: 1200, behavior: 'instant' });
+      const doc = el.ownerDocument;
+      const win = doc.defaultView!;
+      const g = doc.querySelector('#glossary')!;
+      win.scrollTo({ top: g.getBoundingClientRect().top + win.scrollY, behavior: 'instant' });
     });
     await expect
       .poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.defaultView!.scrollY))
       .toBeGreaterThan(1000);
 
-    // ① 纵向：CSS 写的是 sticky top: 2px（让开顶上那条 2px 的 .progress）。
+    // ① 纵向：CSS 写的是 sticky top: 0（v5 删掉顶部进度条之后不用再让开那 2px）。
     // 没贴住的话横条已经被滚到视口上方很远，top 会是一个很大的负数。
     const top = await toc.evaluate((el) => el.getBoundingClientRect().top);
     expect(top).toBeGreaterThan(-2);
