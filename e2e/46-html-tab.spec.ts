@@ -652,7 +652,14 @@ test('46-html-tab: 真模板——ArrowDown 从 #primer 落到第一个幕封页
 // 「sticky 在这里不生效」。实测（Chromium 最小复现四种布局 + 本条测试）**是生效的**，
 // 模板 CSS 那段 @media 里记着复现的数。这条测试把这个行为钉住：万一哪天
 // Chromium 真的改了、或者有人改布局把它弄坏了，这里会先红。
-test('46-html-tab: 真模板——窄面板下目录横条滚动时仍贴在顶部', async () => {
+//
+// ⚠️ 第二组断言（横条与正文列等宽、左右对齐）不是锦上添花，是这条测试的另一半：
+// 只断言纵向贴顶的话，**它区分不了单列 grid 和 display: block** —— 两种实现下横条
+// 都贴在 top: 2px，而 display: block 正是模板 CSS 那段 ⚠️ 明令禁止的动作
+// （它会把横条从「与正文列等宽 570px」变成「通栏 698px」，跟正文列错开）。
+// 反向验证过：临时把窄档改成 display: block，纵向那组仍然绿，**这组变红**
+// （实测 toc 698 / flow 570、left 20 vs 84）。别把它删成「只测贴顶」。
+test('46-html-tab: 真模板——窄面板下目录横条贴顶且与正文列对齐', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
@@ -674,11 +681,23 @@ test('46-html-tab: 真模板——窄面板下目录横条滚动时仍贴在顶�
       .poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.defaultView!.scrollY))
       .toBeGreaterThan(1000);
 
-    // CSS 写的是 sticky top: 2px（让开顶上那条 2px 的 .progress）。
+    // ① 纵向：CSS 写的是 sticky top: 2px（让开顶上那条 2px 的 .progress）。
     // 没贴住的话横条已经被滚到视口上方很远，top 会是一个很大的负数。
     const top = await toc.evaluate((el) => el.getBoundingClientRect().top);
     expect(top).toBeGreaterThan(-2);
     expect(top).toBeLessThan(20);
+
+    // ② 横向：横条必须和正文列**等宽、左右对齐**（窄档的 .deck 是单列 grid，
+    // 两者共用同一条 minmax(0, --ld-measure) 轨道 + justify-content: center）。
+    // 这是唯一能把「单列 grid」和「display: block」区分开的判据，见上面那条 ⚠️。
+    const box = await frame.locator('body').evaluate((el) => {
+      const doc = el.ownerDocument;
+      const t = doc.querySelector('.toc')!.getBoundingClientRect();
+      const fl = doc.querySelector('.flow')!.getBoundingClientRect();
+      return { tocW: t.width, tocL: t.left, flowW: fl.width, flowL: fl.left };
+    });
+    expect(Math.abs(box.tocW - box.flowW)).toBeLessThan(1);
+    expect(Math.abs(box.tocL - box.flowL)).toBeLessThan(1);
   } finally {
     await teardown(launched);
   }
