@@ -31,8 +31,11 @@ fastpaper figures <id> -d papers/ [--overwrite]
 ```
 
 命令形态、`<id>` 支持的标识符范围（arXiv id / PMC id / DOI，PMID 与 URL 不支持）、
-`-d` 的落盘位置，`src/skills/fastpaper/SKILL.md` 已经讲清楚（「Commands」第 43 行、
-`figures` 那段第 74 行起），这里不重复，只写 learning-deck 这条工作流特有的退出码分支。
+`-d` 的落盘位置，`src/skills/fastpaper/SKILL.md` 已经讲清楚——去它的「Commands」代码块里
+找 `fastpaper figures` 那一行，以及正文里含「an arXiv source package or a Europe PMC
+supplementary package」那一段（按内容搜，别按行号找——那份文件是 `npm run cli:update`
+从上游同步下来的，每次升级都会重排），这里不重复，只写 learning-deck 这条工作流特有的
+退出码分支。
 
 **退出码分支照着走，不要自己另起一套重试策略**（下表已对 fastpaper 0.6.0 实测过）：
 
