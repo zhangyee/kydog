@@ -16,7 +16,8 @@
   四条硬约束，违反了报告在 KyDog 里会静默坏掉（不报错，只是不对劲）：
 
   1. <script> 只能写在模板底部那一个内联 <script> 块里（方向键翻节 + 进度条 +
-     逐条入场 + SVG 描边，见文末）：查看器沙箱现在给 allow-scripts，脚本能跑，
+     逐条入场 + SVG 描边 + 抬头那层 WebGL，见文末）：查看器沙箱现在给
+     allow-scripts，脚本能跑，
      但同时注入了一条严格 CSP（connect-src 'none' 等），发不出任何网络请求。
      **不要再加别的 <script> 标签**——这条硬约束是「只有这一处」，不是
      「随便写」，新逻辑加进文末那一处、不新开标签。
@@ -534,7 +535,10 @@ code, .formula {
    **改这一节前先想清楚：你是在加一条细线，还是在加一张卡片。**
 
    三条硬约束（spec D.4）：
-   - 纯 CSS / 内联 SVG，不引 WebGL、不引任何外部库；
+   - 不引任何外部库（**v4 修订**：D.4 原文写的是「纯 CSS / 内联 SVG，不引 WebGL」，
+     spec E.5 把它收窄成「正文与章节幕封页不引 WebGL」——抬头那一层现在是内联
+     shader 的 WebGL，理由与实测见下面「标题叠在动效上」那段。**不引外部库这半
+     一个字都没松**：shader 写在文末那个唯一的 <script> 里，零外部资源）；
    - 五套具名主题（vellum / porcelain / sepia / lilac / midnight）下都要成立，
      所以颜色一律走 var()，且只用发丝色 / soft 色，不用实心强调色铺面；
    - 必须尊重 prefers-reduced-motion（见本节末尾那条 @media）。 */
@@ -619,16 +623,36 @@ code, .formula {
 }
 
 /* --- 标题叠在动效上（quantum.country 那种）--------------------------------
-   .deck-head 的大标题下面垫一层极轻的动效：几条虚线等高线缓慢横向流动，
-   加一团几乎看不见的强调色辉光。
+   .deck-head 的大标题下面垫一层极轻的动效。
 
    ⚠️ 这层是**纯装饰**，aria-hidden="true"，任何信息都不许只画在这里。
-   ⚠️ 它用 CSS animation，**不能**用 .draw：.draw 是文末脚本按
-      getTotalLength() 驱动的一次性描边，而且 e2e 会拿文档里第一个 .draw
-      做断言，把它挪到抬头会改掉那条测试的被测对象。这里用自己的 class。
-   ⚠️ 深色主题（midnight）实测过：线用 --ink-hair（midnight 下 L≈0.38，
-      纸是 L≈0.24），辉光用 --accent-soft（自带 alpha），叠出来仍然是
-      「看得出有东西在动、但读不出形状」的程度，不会糊成一片。 */
+   ⚠️ 它**不能**用 .draw：.draw 是文末脚本按 getTotalLength() 驱动的一次性
+      描边，而且 e2e 会拿文档里第一个 .draw 做断言，把它挪到抬头会改掉那条
+      测试的被测对象。这里用自己的 class。
+
+   === v4：抬头改用 WebGL（spec E.5，已实测）=================================
+
+   v2 的 A.2 排除过 WebGL，理由是「通篇背景的 GPU / 电量代价不划算」。
+   **那条理由只对通篇背景成立，对只在顶部出现一次的 hero 不成立**——滚过去
+   它就不在视口里了（下面脚本用 IntersectionObserver 把 rAF 停掉）。
+
+   实测（Playwright + Chromium，与线上一致的 sandbox 串与 REPORT_CSP）：
+     WebGL 上下文 = WebGL 2.0 (OpenGL ES 3.0 Chromium)；顶点/片元着色器编译、
+     程序链接全过；readPixels 取回的像素与设定色相符。CSP 不拦 WebGL——它不发
+     任何网络请求，内联 shader 走 script-src 'unsafe-inline'。
+
+   ⚠️ **范围：只有 hero 用 WebGL。** 正文、章节幕封页一律不用（那是通篇背景，
+      A.2 排除的正是它）。别顺手铺开。
+   ⚠️ **shader 的颜色必须从 CSS 变量读**（见文末脚本的 readThemeColor）。
+      硬编码一组好看的颜色是这一整块最容易犯、也最难在浅色主题下看出来的错：
+      五套具名主题（vellum / porcelain / sepia / lilac / midnight）的纸色从
+      纯白到近黑，写死的底色在其中至少两套下会变成一块突兀的补丁。
+   ⚠️ **底色一律以 --paper 起手**，画面只在 --paper / --paper-deep / --ink-hair /
+      --accent 之间调和 —— 这样它在任何主题下都不可能跟正文打架。
+   ⚠️ prefers-reduced-motion 命中时**只画一帧就停**（不是隐藏、也不是继续跑）。
+   ⚠️ WebGL 起不来（无上下文 / 编译链接失败 / 上下文丢失）时退回下面那张
+      SVG —— 两层都在 DOM 里，脚本成功时才给 .hero-art 加 .gl-on 把 SVG 藏掉。
+      **失败安全的方向是「SVG 默认可见」**，反过来写的话脚本一挂抬头就空了。 */
 .deck-head {
   position: relative;
 }
@@ -646,10 +670,19 @@ code, .formula {
   mask-image: radial-gradient(120% 120% at 30% 40%, #000 30%, transparent 78%);
 }
 
-.hero-art svg {
+/* 两层叠在一起：canvas 在上、SVG 兜底在下。canvas 没画起来时它是透明的，
+   下面的 SVG 照常露出来；画起来了就由 .gl-on 把 SVG 收掉。 */
+.hero-art > canvas,
+.hero-art > svg {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.hero-art.gl-on > .hero-fallback {
+  display: none;
 }
 
 /* 抬头的正文压在动效层之上 */
@@ -659,6 +692,10 @@ code, .formula {
   position: relative;
 }
 
+/* 兜底那张 SVG：几条虚线等高线缓慢横向流动 + 一团几乎看不见的强调色辉光。
+   ⚠️ 深色主题（midnight）实测过：线用 --ink-hair（midnight 下 L≈0.38，
+      纸是 L≈0.24），辉光用 --accent-soft（自带 alpha），叠出来仍然是
+      「看得出有东西在动、但读不出形状」的程度，不会糊成一片。 */
 .hero-line {
   fill: none;
   stroke: var(--ink-hair, #c9c3be);
@@ -687,7 +724,10 @@ code, .formula {
   to   { opacity: 1; }
 }
 
-/* 无障碍：动效一律停在静止的那一帧，不是隐藏。 */
+/* 无障碍：动效一律停在静止的那一帧，不是隐藏。
+   ⚠️ 抬头那层 WebGL 不在这张清单里 —— 它没有 CSS 动画可停，reduced-motion
+      由文末脚本处理：只画一帧就不再 requestAnimationFrame。两条路都要有，
+      漏掉哪一条都会让这个设置只生效一半。 */
 @media (prefers-reduced-motion: reduce) {
   .hero-line,
   .hero-glow,
@@ -1784,15 +1824,20 @@ figcaption b {
 
 <!-- ① 抬头：主题 / 阅读时间 / 最后更新 / 一句话「这份报告为谁而写」 -->
 <header class="deck-head">
-  <!-- 标题下垫的动效层（spec D.4 第 2 项，quantum.country 那种）。
+  <!-- 标题下垫的动效层（spec D.4 第 2 项 + v4 的 E.5）。
        ⚠️ aria-hidden="true"：**纯装饰**，任何信息都不许只画在这里。
-       ⚠️ 动画写在 CSS 的 .hero-line / .hero-glow 里，prefers-reduced-motion
-          命中时自动停在静止帧（见「2b. 装饰」末尾那条 @media）。
-       ⚠️ 线条**不要**加 .draw：那是文末脚本按 getTotalLength() 驱动的一次性
-          描边，而且 e2e 拿文档里第一个 .draw 做断言。这里用自己的 class。
+       ⚠️ **两层叠着，都要保留**：上面的 <canvas> 是 WebGL 那层（着色器与取色
+          写在文末唯一那个 <script> 里），下面的 <svg class="hero-fallback"> 是
+          WebGL 起不来时的兜底。脚本跑通了才会给 .hero-art 加 .gl-on 把 SVG
+          藏掉 —— 顺序反过来写（默认藏 SVG、脚本负责显示）会让脚本一挂抬头就空。
+       ⚠️ 写真报告时**这一整块原样保留**，一个字都不用改：它是纯装饰层，
+          不承载这份报告的任何内容。
+       ⚠️ SVG 的线条**不要**加 .draw：那是文末脚本按 getTotalLength() 驱动的
+          一次性描边，而且 e2e 拿文档里第一个 .draw 做断言。这里用自己的 class。
        画新的：路径两端要伸出 viewBox（-60 / 700），否则线头会在边上戛然而止。 -->
   <div class="hero-art" aria-hidden="true">
-    <svg viewBox="0 0 640 176" preserveAspectRatio="xMidYMid slice">
+    <canvas class="hero-gl"></canvas>
+    <svg class="hero-fallback" viewBox="0 0 640 176" preserveAspectRatio="xMidYMid slice">
       <defs>
         <radialGradient id="ld-hero-glow" cx="50%" cy="50%" r="50%">
           <stop class="hero-glow-in" offset="0"/>
@@ -2860,6 +2905,219 @@ figcaption b {
   addEventListener('resize', sync);
   sync();
 })();
+
+// 抬头的 WebGL 动效层（spec E.5，已实测）。同样写在这唯一的脚本块里。
+//
+// ⚠️ **放在最后**：万一这一段抛了异常，上面那三块（方向键 / 进度条、逐条入场 /
+//    SVG 描边、目录）都已经跑完并注册好了，不会被拖下水。整块还额外包了一层
+//    try / catch —— 它是纯装饰，任何失败都只该退回下面那张 SVG，不该影响正文。
+//
+// ⚠️ **只有抬头用 WebGL。** 正文与章节幕封页不用（那是通篇背景，spec A.2 排除的
+//    正是它）；这里成立的理由是「滚过去就不在视口了」，下面用
+//    IntersectionObserver 把 rAF 停掉，正是这条理由的兑现。
+//
+// ⚠️ **颜色从 CSS 变量读，不许硬编码。** 宿主注入的五套主题里纸色从纯白
+//    （porcelain）到近黑（midnight），写死一组好看的颜色必然在其中几套下变成
+//    一块突兀的补丁 —— 而且屏幕上只有换主题时才看得出来。
+//
+// ⚠️ prefers-reduced-motion 命中时**画一帧就停**（不是隐藏、也不是继续跑）。
+try {
+  (() => {
+    const art = document.querySelector('.hero-art');
+    const canvas = art && art.querySelector('canvas.hero-gl');
+    if (!canvas) return;
+
+    // --- 从 CSS 变量取色 ---------------------------------------------------
+    // 宿主注入的主题值三种记法混着来（oklch() / #hex / rgba()），**不要自己
+    // 解析字符串**。这里让浏览器算两次：先用一个探针元素把 var() 解析成计算值，
+    // 再把计算值交给 2D canvas 的 fillStyle 落成一个像素，getImageData 取回的
+    // 就是 sRGB 三个字节。这条路对任何合法 CSS 颜色都成立，也不用关心色彩空间。
+    const probe = document.createElement('span');
+    probe.style.display = 'none';
+    art.appendChild(probe);
+    const meter = document.createElement('canvas');
+    meter.width = 1;
+    meter.height = 1;
+    const mctx = meter.getContext('2d', { willReadFrequently: true });
+
+    // fillStyle 的 setter 会**静默忽略**解析不了的值（保持原值不变），没有异常
+    // 也没有返回值可查。所以种两次不同的底色各试一次：两次结果相同 ⇒ 这个字符串
+    // 真的被接受了；不同 ⇒ 它被忽略了，两次都留着各自的种子色。
+    const parseColor = (str) => {
+      if (!mctx || !str) return null;
+      mctx.fillStyle = '#000000';
+      mctx.fillStyle = str;
+      const a = mctx.fillStyle;
+      mctx.fillStyle = '#ffffff';
+      mctx.fillStyle = str;
+      if (a !== mctx.fillStyle) return null;
+      mctx.clearRect(0, 0, 1, 1);
+      mctx.fillRect(0, 0, 1, 1);
+      const d = mctx.getImageData(0, 0, 1, 1).data;
+      return [d[0] / 255, d[1] / 255, d[2] / 255];
+    };
+
+    // fallback 跟正文里 var(--x, #xxx) 那套是同一个意思：宿主没注入时走它。
+    const readThemeColor = (name, fallback) => {
+      probe.style.color = '';
+      probe.style.color = 'var(' + name + ', ' + fallback + ')';
+      return parseColor(getComputedStyle(probe).color)
+        || parseColor(fallback)
+        || [0.5, 0.5, 0.5];
+    };
+
+    const cPaper = readThemeColor('--paper', '#faf8f3');
+    const cDeep = readThemeColor('--paper-deep', '#f0ece4');
+    const cHair = readThemeColor('--ink-hair', '#c9c3be');
+    const cAccent = readThemeColor('--accent', '#bd4238');
+    probe.remove();
+
+    // --- 上下文与着色器 ----------------------------------------------------
+    // alpha: true 是有意的：还没画第一帧时画布是透明的，下面那张 SVG 正常露出来；
+    // alpha: false 会让它先黑一帧，浅色主题下就是一条黑杠。
+    const gl = canvas.getContext('webgl', {
+      alpha: true, antialias: false, depth: false, stencil: false,
+      powerPreference: 'low-power',
+    });
+    if (!gl) return; // 没有 WebGL：什么都不做，SVG 兜底
+
+    const VS = [
+      'attribute vec2 a_pos;',
+      'void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }',
+    ].join('\n');
+
+    // 两级 domain warp 的 fbm 场，再取它的等值线 —— 观感是缓慢流动的水纹等高线，
+    // 正好是下面那张 SVG（四条漂移的虚线）的连续版本。
+    // ⚠️ 画面**从 u_paper 起手**，只在 paper / deep / hair / accent 之间调和：
+    //    这是「五套主题下都成立」的结构性保证，不是调出来的巧合。
+    // ⚠️ 幅度压得很低（等值线 0.42、虹彩 0.16）：抬头的正文压在它上面，
+    //    这一层要「看得出有东西在动、但读不出形状」。别往上加。
+    const FS = [
+      'precision highp float;',
+      'uniform vec2 u_res;',
+      'uniform float u_time;',
+      'uniform vec3 u_paper;',
+      'uniform vec3 u_deep;',
+      'uniform vec3 u_hair;',
+      'uniform vec3 u_accent;',
+      'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }',
+      'float noise(vec2 p){',
+      '  vec2 i = floor(p), f = fract(p);',
+      '  float a = hash(i), b = hash(i + vec2(1.0, 0.0));',
+      '  float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));',
+      '  vec2 u = f * f * (3.0 - 2.0 * f);',
+      '  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;',
+      '}',
+      'float fbm(vec2 p){',
+      '  float v = 0.0, a = 0.5;',
+      '  mat2 m = mat2(0.80, 0.60, -0.60, 0.80);',
+      '  for (int i = 0; i < 4; i++){ v += a * noise(p); p = m * p * 2.03; a *= 0.5; }',
+      '  return v;',
+      '}',
+      'void main(){',
+      '  vec2 p = gl_FragCoord.xy / u_res;',
+      '  p.x *= u_res.x / max(u_res.y, 1.0);',
+      '  float t = u_time * 0.05;',
+      '  vec2 q = vec2(fbm(p * 1.7 + t), fbm(p * 1.7 + vec2(3.1, 1.7) - t));',
+      '  vec2 r = vec2(fbm(p * 2.1 + q * 1.4 + vec2(1.7, 9.2)),',
+      '                fbm(p * 2.1 + q * 1.4 + vec2(8.3, 2.8)));',
+      '  float f = fbm(p * 2.4 + r * 1.6);',
+      '  vec3 col = mix(u_paper, u_deep, smoothstep(0.30, 0.78, f));',
+      '  float band = fract(f * 8.0 + r.x * 0.6);',
+      '  float gap = smoothstep(0.0, 0.10, band) * smoothstep(0.0, 0.10, 1.0 - band);',
+      '  col = mix(col, u_hair, (1.0 - gap) * 0.42);',
+      '  float sheen = pow(max(sin(f * 12.566 + u_time * 0.22) * 0.5 + 0.5, 0.0), 5.0);',
+      '  col = mix(col, u_accent, sheen * 0.16);',
+      '  gl_FragColor = vec4(col, 1.0);',
+      '}',
+    ].join('\n');
+
+    // 编译 / 链接**一定要查状态**：失败时 WebGL 不抛异常，只会画出一片空白 ——
+    // 又一个「不报错，只是不对劲」，跟文件头那四条硬约束同一类。
+    const compile = (type, src) => {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { gl.deleteShader(sh); return null; }
+      return sh;
+    };
+    const vs = compile(gl.VERTEX_SHADER, VS);
+    const fs = vs && compile(gl.FRAGMENT_SHADER, FS);
+    if (!fs) return;
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return;
+    gl.useProgram(prog);
+
+    // 一个铺满裁剪空间的四边形（两个三角形）
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, 'a_pos');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+    const uRes = gl.getUniformLocation(prog, 'u_res');
+    const uTime = gl.getUniformLocation(prog, 'u_time');
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_paper'), cPaper);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_deep'), cDeep);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_hair'), cHair);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'u_accent'), cAccent);
+
+    // devicePixelRatio 封到 2：抬头只有 11rem 高，再高的采样率看不出差别，
+    // 却要多画一倍以上的片元。
+    const render = (sec) => {
+      const d = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.round(canvas.clientWidth * d));
+      const h = Math.max(1, Math.round(canvas.clientHeight * d));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        gl.viewport(0, 0, w, h);
+      }
+      gl.uniform2f(uRes, canvas.width, canvas.height);
+      gl.uniform1f(uTime, sec);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    };
+
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let raf = 0;
+    const t0 = performance.now();
+    const loop = (now) => { raf = 0; render((now - t0) / 1000); raf = requestAnimationFrame(loop); };
+    const start = () => { if (!raf) raf = requestAnimationFrame(loop); };
+    const stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; };
+
+    // 先画一帧再亮相：reduced-motion 下这一帧就是最终画面（静止，不是隐藏）。
+    render(0);
+    art.classList.add('gl-on');
+
+    if (reduce) {
+      // 静止画面也要跟着面板宽度重算，否则拉宽窗口会看到一张被拉伸的旧帧。
+      addEventListener('resize', () => render(0));
+    } else if (typeof IntersectionObserver === 'function') {
+      // 滚出视口就停 —— 这正是「hero 可以用 WebGL 而通篇背景不行」的兑现。
+      new IntersectionObserver((entries) => {
+        for (const e of entries) { e.isIntersecting ? start() : stop(); }
+      }).observe(art);
+    } else {
+      start();
+    }
+
+    // 上下文丢失（切换 GPU、系统休眠唤醒等）：停掉循环并把 .gl-on 摘掉，
+    // 让下面那张 SVG 重新露出来。不做 restore —— 装饰层不值得那套复杂度。
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      stop();
+      art.classList.remove('gl-on');
+    });
+  })();
+} catch (err) {
+  // 纯装饰层，失败就退回 SVG。这里不 rethrow，也不该让它冒到控制台之外。
+  console.warn('[learning-deck] 抬头的 WebGL 层没起来，退回 SVG 兜底', err);
+}
 </script>
 </body>
 </html>
