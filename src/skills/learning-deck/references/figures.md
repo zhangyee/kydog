@@ -15,8 +15,9 @@
    </div>
    ```
 
-   ⚠️ **指路卡片不能写成 `.example`。** `references/writing.md` 第 4 条的例子闸门数的是
-   `class="example` 的个数，而指路卡片恰恰是「具体例子」的反面——它没有数字、没有输入
+   ⚠️ **指路卡片不能写成 `example`。** JSON 里它是自己的块类型 `pointer`
+   （`references/deck-json.md`），`references/writing.md` 第 4 条的例子闸门数的是
+   `type === "example"`，而指路卡片恰恰是「具体例子」的反面——它没有数字、没有输入
    输出、没有对照，只有一个去处。混用会让闸门被一张带 DOI 的卡片轻松满足，等于闸门失效。
 
 **数据图（散点、热图、ROC 曲线、生存曲线、森林图）永远不重画**，只能走 1 或 3。
@@ -127,6 +128,9 @@ pdf_figure_to_png  { "path": "<绝对路径>/figs/architecture.pdf" }
 
 ## 第四步：内嵌原图（能看见图时）
 
+JSON 里写成 `{ "type": "figure", "kind": "img", "src": "papers/…", "alt": "…" }`，
+渲染出来是下面这个形状。
+
 **写相对路径，不要自己打 base64。** 查看器渲染报告时会自己读文件、转成
 `data:` URI 写回 `src`——这一步不用你操心：
 
@@ -157,6 +161,10 @@ pdf_figure_to_png  { "path": "<绝对路径>/figs/architecture.pdf" }
 ## 标注纪律
 
 **原图和自画，两边都不许冒充对方。**
+
+JSON 里这件事是 `figure` 块的 `credit` 字段（`"original"` / `"redrawn"` / `"own"`，
+见 `references/deck-json.md`），渲染时按下表拼成 `figcaption` 里的那句话。
+**`credit` 是必填的**，JSON 层自检第 7 条会核；下表是它渲染出来的样子。
 
 | 图的来源 | 图注必须写 |
 |---|---|

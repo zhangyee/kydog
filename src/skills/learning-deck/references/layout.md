@@ -105,7 +105,7 @@
 
 ⚠️ 条目与 `.flow` 里的锚点 **一一对应，手写维护**：少一条不报错，
 只是那一节在目录里消失；`href` 指到不存在的 id 也不报错，只是点了不动
-（交付前用「自检」第 9 条查一遍，它会直接把指不到的锚点列出来）。
+（交付前用「自检 · HTML 层」的 H4 查一遍，它会直接把指不到的锚点列出来）。
 ⚠️ 知识点那几条指向的是**幕封页**（`.curtain` 上的 `id`），不是正文 `.concept`——
 点 §1 应该从这一节的封面进入。窄档下目录横条是 sticky 的，`:target` 的
 `scroll-margin-top` 已经替你让开了它的高度（实测：横条底 68px、幕封页顶落在 66px）。
@@ -228,6 +228,12 @@ aside.aside · div.example · div.boundary · div.source · p.checkout
 「已掌握」的节点**同样要是锚点**——读者未必真记得，链到术语表比留一个死框有用。
 
 ### ⑤ 节内固定顺序（不要自由发挥）
+
+⚠️ **这个顺序不用你守，它是渲染出来的。** `.lede` / `.aside` / `.boundary` /
+`.source` / `.checkout` / `.back` 在 `.learning-deck` JSON 里是章的固定槽位，
+位置由 `references/deck-json.md` 的渲染对照表定死；能自由排的只有中间那段
+`blocks`（`prose` / `figure` / `eq` / `example` / `pointer` 五种）。
+下面这张图是渲染出来的样子，**照它核对，不要照它手打**。
 
 ⚠️ **节首没有 `<h2>`、没有 `.counter`、也没有 `id`**——三样都在前面那张幕封页上，
 见「幕封页」。看到旧版「节首要有 h2」「`.counter` 给读者进度感」的说法，那是 v3 的，
@@ -376,7 +382,16 @@ Chromium 原生支持 MathML Core，已实测在这套 sandbox + CSP 下是真�
 
 ---
 
-## 交付前自检
+## 交付前自检 · HTML 层
+
+**自检分两层。** 结构类的判据（块计数、每章有没有例子、术语是否都进了 glossary、
+编号记法、图的来源）全部在 JSON 上核，见 `references/deck-json.md` 的「JSON 层自检」——
+JSON 小到可以读完，那些判据在那里是**直接断言**，不像在两千行 HTML 上只能拿 `grep` 数 class
+当结构的代理。
+
+**这里只留渲染之后才成立的四组**：示例内容清没清干净、模板骨架有没有被动过、
+外链形态、锚点指不指得到。第 5.6 小步跑一次，**只跑一次**——
+上一轮跑了三遍是浪费（而且那三遍之间是拿 python 改的文件，正是要禁的那件事）。
 
 **固定用 `grep`。KyDog 不打包 ripgrep，`rg` 一定返回 127**，跑三次也一样。
 （系统提示词那句「用 bash 做 ls / rg / find」已经从源头改成 `grep`，见
@@ -384,74 +399,47 @@ Chromium 原生支持 MathML Core，已实测在这套 sandbox + CSP 下是真�
 下面这份照抄，把 `报告.html` 换成实际文件名，**不要即兴发挥**：
 
 ```bash
-# 1. 残留的示例内容（模板的例子讲的是扩散模型）
+# H1. 残留的示例内容（模板的例子讲的是扩散模型）
 grep -n '扩散\|马尔可夫\|β_t\|ᾱ\|DDPM\|Sohl-Dickstein\|Ho et al\|ELBO\|噪声调度\|U-Net\|MNIST' 报告.html
-#   判据与 #3 一样：命中**只应落在文件头注释里**（那段硬约束注释本身就写着
-#   「示例内容讲的是『扩散模型』，纯属占位」，它是要保留的，不要去删）。
-#   <body> 里一行都不该有。
+#   命中**只应落在文件头注释里**（那段硬约束注释本身就写着「示例内容讲的是
+#   『扩散模型』，纯属占位」，它是要保留的，不要去删）。<body> 里一行都不该有。
+#   这一条也顺带查「藏起来没处理完的内容」：JSON 里没有藏东西的地方，
+#   渲染又是照对照表贴的，所以示例文字要么被替换掉、要么整节被删，不该剩。
 
-# 2. 藏起来的没处理完的内容 —— 应该 0 行
-grep -n 'hidden' 报告.html | grep -v 'aria-hidden' | grep -v 'overflow: hidden'
-#   两个 grep -v 是必须的：模板自己用 aria-hidden="true" 标了三处**纯装饰**
-#   （抬头的动效层 .hero-art、目录的小三角 .toc-caret、meta 里的分隔点 .meta-sep），
-#   还有 .hero-art 的 overflow: hidden —— 它们是要保留的。
-#   这一条查的是 SKILL.md 第 6 条禁的那种「把没处理完的示例内容藏起来」。
-
-# 3. 脚本块 —— 唯一的判据是这个数必须正好 1
+# H2. 模板骨架没被动过 —— 三条都只应命中文件头 / <style> 里的注释
 grep -c '^<script>' 报告.html
-grep -n '<script' 报告.html
-#   这条会命中很多行（模板自带 11 处），全部落在注释里：文件头的硬约束、
-#   <style> 里的几条、<body> 里的几条、脚本内部的一条 —— 它们都在**讲这条规则本身**，
-#   不是违规，不要去删。真正要找的是第二个**行首的** <script> 标签。
-
-# 4. 外部资源 —— 判据同 #1：命中只应落在文件头注释里
+#   唯一的判据是这个数正好 1。<script 这个词模板自带 11 处命中，全在注释里
+#   （文件头的硬约束、<style> 里几条、<body> 里几条、脚本内部一条），它们在
+#   **讲这条规则本身**，不是违规。真正要找的是第二个**行首的** <script> 标签。
 grep -n 'src="http\|@import\|url(http\|fonts.googleapis\|cdn\.\|unpkg\|fetch(\|XMLHttpRequest\|WebSocket' 报告.html
-#   模板自带 4 处命中，都在文件头的硬约束注释里：三处在第 2 条（它本身就在列举
-#   CDN / @import / img src="http…" / fetch 这些词），一处在第 3 条（「把它当资源
-#   加载（img/link/@import）不允许」那句）。都不是违规。
+#   模板自带 4 处命中，都在文件头的硬约束注释里（第 2 条本身在列举 CDN / @import /
+#   img src="http…" / fetch 这些词，第 3 条那句「把它当资源加载」）。都不是违规。
 #   <body> 里应该 0 行。指向论文的 <a href="http…"> 是链接不是资源，合法（这条 grep
-#   也不查 href）；真出现在 img / link / @import / url() / 脚本里的，会被 CSP 拦掉，必须删。
-
-# 5. 外链都带 target/rel —— 两个数必须相等
-grep -o 'href="http' 报告.html | wc -l
-grep -o 'target="_blank" rel="noopener"' 报告.html | wc -l
-
-# 6. 写死的颜色 —— 逐条看，**只看 <body> 里的命中**
+#   也不查 href）；真出现在 img / link / @import / url() / 脚本里的会被 CSP 拦掉，必须删。
 grep -n 'fill="#\|stroke="#\|color: *#\|background: *#' 报告.html
 #   <body> 里只有 var(--x, #xxx) 这种带 fallback 的形态是合法的。
 #   落在 <style> 的 @media print 那一段里的 10 处（#fff / #000）是模板自带的
 #   打印兜底，本来就该写死，而且你被明令「<style> 一个字都不要改」—— 跳过它们。
 
-# 7. 幕封页与正文节成对 —— 三个数必须相等
-grep -c 'class="curtain"' 报告.html
-grep -c 'class="concept"' 报告.html
-grep -c 'class="lede"' 报告.html
+# H3. 外链都带 target/rel —— 两个数必须相等
+grep -o 'href="http' 报告.html | wc -l
+grep -o 'target="_blank" rel="noopener"' 报告.html | wc -l
 
-# 8. 每节至少一个例子 —— 应 ≥ 上面的 .concept 数（模板注释里另有 1 处命中，
-#    在 .pointer 那段 CSS 注释里，所以真实门槛是「这个数 − 1 ≥ .concept 数」）
-grep -c 'class="example' 报告.html
-
-# 9. 指不到的页内锚点 —— 应该 0 行（直接吐出坏锚点，不要靠人眼比对两份清单）
+# H4. 指不到的页内锚点 —— 应该 0 行（直接吐出坏锚点，不要靠人眼比对两份清单）
 comm -23 \
   <(grep -o '<a href="#[a-zA-Z0-9_-]*"' 报告.html | sed 's/.*#//;s/"//' | sort -u) \
   <(grep -o 'id="[a-zA-Z0-9_-]*"' 报告.html | sed 's/id="//;s/"//' | sort -u)
 #   左边是所有页内锚点（目录条目、知识地图节点、正文里的 §N 链接、术语链接），
 #   右边是所有 id。输出的每一行都是「点了不动」的死链接——**不报错**，
 #   所以必须靠这条查。模板原样跑这条输出为空。
+#   JSON 层第 J-C 组已经核过 href 的目标存不存在，这一条查的是**渲染有没有把
+#   对应的 id 真的写出来**（比如某章插进去时 .curtain 的 id 漏了），只有渲染后才成立。
 #   ⚠️ 这条 sed 是**读**，不是改报告：它在管道里把 grep 的输出削成 id，
 #      一个字节都没写回文件。SKILL.md 第 5 条禁的是拿 sed/perl/python 去**改**
 #      报告文件，跟这里不冲突，照抄就是了。
-
-# 10. 章节标题与编号的去重（v4）—— 三条都应该 0 行
-grep -A2 '<section class="concept"' 报告.html | grep '<h2'   # 正文节里不该有 h2
-grep -n 'class="counter"' 报告.html                          # .counter 已删除，不许加回来
-grep -n 'curtain-num">[^§]' 报告.html                        # 章节号写 §N，不写 01 / 1 / 第一章
-#   前两条查的是「标题 / 编号在幕封页和正文里各出现一次」那种重复（见「幕封页」）；
-#   第三条查的是记法：封面写 01、目录写 §1 是 v3 的样子，v4 统一成 §N。
-#   模板原样跑这三条都是空的。
-#   ⚠️ 第一条只看 .concept 开标签后的两行，跨行写法它抓不住 —— 人眼再扫一遍
-#      每个 .concept 的第一个元素是不是 .lede。
 ```
 
-第 7 组三个数不等，通常意味着某一节漏了幕封页、或者 `.curtain-lede` 和 `.lede` 写岔了。
-第 8 组不达标，回 `references/writing.md` 第 4 条。
+**H1 有命中、或 H4 吐出坏锚点，说明渲染贴漏了一处**——回第 5.5 小步把那一章重渲一遍，
+**不要只在 HTML 上补**（见 SKILL.md 硬约束第 6 条：HTML 是产物，改动的源头在 JSON）。
+H2 有 `<body>` 里的命中，说明 JSON 里那段 `svg` / `html` 本身就写错了——回 JSON 改，
+改完把同一行贴进 HTML。
