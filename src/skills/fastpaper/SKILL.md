@@ -1,6 +1,6 @@
 ---
 name: fastpaper
-description: Use when the user asks to find academic papers or patents, survey a literature, look up a paper by DOI, arXiv id, PMID or PMC id, trace who cites what, get a paper's PDF, or read one. Covers 18 sources — arXiv, PubMed, PMC, Europe PMC, bioRxiv, medRxiv, Semantic Scholar, OpenAlex, Crossref, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, Google Scholar, Baidu Xueshu.
+description: Use when the user asks to find academic papers or patents, survey a literature, look up a paper by DOI, arXiv id, PMID or PMC id, trace who cites what, get a paper's PDF, fetch its original figure files, or read one. Covers 18 sources — arXiv, PubMed, PMC, Europe PMC, bioRxiv, medRxiv, Semantic Scholar, OpenAlex, Crossref, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, Google Scholar, Baidu Xueshu.
 ---
 
 # fastpaper
@@ -11,7 +11,8 @@ A pre-installed CLI for academic search, download and reading. Verify once with
 Pass `--format json` on every call. Output is `{"source": "...", "results": [...]}`
 — the papers are under `results`. Exit codes are `0` success, `2` a malformed
 command, `4` **nothing to return** — no such paper, no `--grep` match, no PDF
-for this paper at this source — and `1` for everything else. Branch on `4`: it
+for this paper at this source, no figure files for this paper — and `1` for
+everything else. Branch on `4`: it
 means the request was fine and this source simply has nothing, so retry
 elsewhere rather than rewording. Any field
 the source did not supply is `null`, meaning **unknown**; report it as unknown
@@ -37,6 +38,9 @@ fastpaper get <source> <id>                 # or name the source
 
 # save a PDF (default ./papers/<id>.pdf)
 fastpaper download <id> [-d <dir>] [--overwrite]
+
+# save the authors' original figure files (default ./papers/<id>/)
+fastpaper figures <id> -d papers/ [--overwrite]
 
 # citation edges — who cites this, or what it cites
 fastpaper cite <id> [--direction incoming|outgoing] [-n 20]
@@ -66,6 +70,18 @@ directly: `fastpaper get semantic DOI:<doi>`.
 
 `cite` routes a bare DOI→`openalex` (no key needed), and arXiv or `S2:` ids→
 `semantic`. Those two are the only sources here that carry citation edges.
+
+`figures` fetches the authors' **original** figure files — an arXiv source
+package or a Europe PMC supplementary package — it does not extract images
+from the PDF, render anything, or parse figure numbers. Only `arxiv` and
+`europepmc` can provide them; a PMC ID or a DOI both route to `europepmc` (a
+DOI is resolved to a PMC ID first). Naming any other source is exit `1`; a
+paper with no figure files at a supported source is exit `4`. **Filenames are
+kept exactly as they appear in the archive, so they do not correspond to
+figure numbers** — for `2511.11035`, the file `3.pdf` is actually Figure 1;
+do not assume `1.pdf` is Figure 1. Measured on a 39-paper corpus, verified
+end-to-end on 2026-08-20: 31 papers (79%) yielded figure files, so treat a
+`4` here as normal, not as a sign something is broken.
 
 `read` sections: abstract, introduction, methods, results, discussion,
 conclusion, references, full.
@@ -129,7 +145,7 @@ fastpaper search arxiv "attention mechanism" --field cs.CL --after 2023-01-01 -n
 fastpaper search pubmed 'CRISPR AND systematic review[pt] AND humans[mh]' -n 20 --format json
 
 # Europe PMC: threshold on citations, then sort by them
-fastpaper search europepmc 'CRISPR AND CITED:>500' --sort citations -n 20 --format json
+fastpaper search europepmc 'CRISPR AND CITED:[500 TO *]' --sort citations -n 20 --format json
 
 # patents only
 fastpaper search europepmc "gene editing" --patents -n 10 --format json
@@ -199,26 +215,26 @@ alternatives are not independent: unpaywall resolves that DOI to the *same*
 publisher URL byte for byte, and `download europepmc <DOI>` lands on it too.
 Report the URL to the user instead; exit is `1`, not `4`.
 
-| Source | PDF | Cites | Use it for | Watch out |
-|---|:--:|:--:|---|---|
-| `arxiv` | ✓ | — | **CS, AI, math, physics, stats, q-bio, q-fin, econ** preprints, every one of them free to read | query syntax is rewritten — see below. `pdf_url` on every hit, but a DOI on only about half |
-| `pubmed` | — | — | **biomedicine**, 35M+ records — the reference index for clinical and life-science work | abstracts only, no PDFs and no journal name; move to `pmc` or `europepmc` for either |
-| `pmc` | ✓ | — | **biomedical full text** (NLM) — the OA subset of what pubmed indexes | PDFs come from the OA subset only, so a pubmed hit may have no pmc record |
-| `europepmc` | ✓ | ~ | **widest biomedical** — 45M+ abstracts, 9M+ full text, plus EPO patents, NICE guidelines, Agricola, preprints and Chinese Biological Abstracts | richest query syntax here, and the only source that can threshold on citations (`CITED:>N`). Relevance-ranked hits are mostly uncited, so sort or threshold explicitly when you want impact |
-| `biorxiv` | ✓ | — | **life-science preprints** (CSHL), full text on all of them | **no keyword search API** — browses a date window and matches locally, so `--after`/`--before` decide what is even searched |
-| `medrxiv` | — | — | **medical / health preprints** (CSHL) | same date-window search as biorxiv, and its PDFs are blocked (403) — take the DOI elsewhere |
-| `semantic` | ✓ | ✓ | **cross-discipline**, and the surest citation counts here — the basis for any ranking by impact | throttles hard without `SEMANTIC_SCHOLAR_API_KEY`. Carries a DOI on most hits and a PDF on about half |
-| `openalex` | — | ✓ | **cross-discipline**, 200M+ works | `--field` takes a concept ID (`C154945302`), not a name. Rarely carries a PDF link — good for finding and ranking, not for fetching. Relevance drifts on title lookups |
-| `crossref` | — | ✓ | **cross-discipline** DOI registry — the best title→DOI lookup here | registered metadata only: no PDFs, no OA status, and an abstract on few hits. Use it to resolve, then go elsewhere for content |
-| `dblp` | — | — | **computer science** bibliography — conference and journal records, curated and clean | no abstracts at all; metadata only. The API takes a query and paging, nothing else |
-| `core` | ✓ | 0 | **cross-discipline** OA aggregate, 400M+ from repositories and journals — a PDF on nearly every hit | a DOI on few hits and no journal name. `CORE_API_KEY` lifts the rate limit |
-| `openaire` | — | ✓ | **cross-discipline** EU open science graph | `download` does not work here, but a `pdf_url` comes back on the minority of hits where a publisher file link is on record — most of its links are DOI resolvers and are not offered as PDFs. `get` wants an OpenAIRE id, not a DOI |
-| `doaj` | — | — | **cross-discipline** peer-reviewed OA journals — complete metadata, with a journal name and abstract on nearly every hit | **its `pdf_url` is a landing page, not a file** — fetching one returns HTML. Year granularity only, no sorting |
-| `hal` | ✓ | — | **cross-discipline** French national archive, with an abstract on nearly every hit and full text on most | `--field` takes a domain code: `math` `phys` `chim` `sdv` `shs` `spi` `info` `sde`. No journal name, and some records are metadata-only — filter on `pdf_url` before downloading |
-| `zenodo` | ✓ | — | **cross-discipline** CERN general-purpose repository — papers, datasets and software, with a DOI on nearly every hit | `-n` capped at 25. No journal name, and some records are metadata-only |
-| `unpaywall` | — | — | **DOI → a downloadable URL.** No search, no discipline — a resolver | needs `UNPAYWALL_EMAIL`; one DOI per call, and the URL must be fetched separately |
-| `scholar` | — | — | broadest reach of anything here — it surfaces work the indexed sources miss, and a PDF link when nothing else has one | HTML scraping, captcha-prone; `doi` is always `null`, and only some hits carry a `pdf_url`. `[CITATION]` stubs have no link at all and are dropped |
-| `xueshu` | — | 0 | **Chinese literature** — journals, master's/PhD theses, conference papers, patents, standards; 700M+ records over 500+ subjects. Indexes English work too, but other sources serve that better | unofficial endpoint with bot detection; search only, no `get`. **One request per search, first page only** — the page holds 10 records, so `-n` above ~10 silently returns fewer, and `--offset` past that page returns nothing. `pdf_url` is rare and `doi` present on about half, though validated, so a patent number or bare URL never masquerades as one |
+| Source | PDF | Figures | Cites | Use it for | Watch out |
+|---|:--:|:-----:|:--:|---|---|
+| `arxiv` | ✓ | ✓ | — | **CS, AI, math, physics, stats, q-bio, q-fin, econ** preprints, every one of them free to read | query syntax is rewritten — see below. `pdf_url` on every hit, but a DOI on only about half |
+| `pubmed` | — | — | — | **biomedicine**, 35M+ records — the reference index for clinical and life-science work | abstracts only, no PDFs and no journal name; move to `pmc` or `europepmc` for either |
+| `pmc` | ✓ | — | — | **biomedical full text** (NLM) — the OA subset of what pubmed indexes | PDFs come from the OA subset only, so a pubmed hit may have no pmc record |
+| `europepmc` | ✓ | ✓ | ~ | **widest biomedical** — 45M+ abstracts, 9M+ full text, plus EPO patents, NICE guidelines, Agricola, preprints and Chinese Biological Abstracts | richest query syntax here, and the only source that can threshold on citations (`CITED:[N TO *]`). Relevance-ranked hits are mostly uncited, so sort or threshold explicitly when you want impact |
+| `biorxiv` | ✓ | — | — | **life-science preprints** (CSHL), full text on all of them | **no keyword search API** — browses a date window and matches locally, so `--after`/`--before` decide what is even searched |
+| `medrxiv` | — | — | — | **medical / health preprints** (CSHL) | same date-window search as biorxiv, and its PDFs are blocked (403) — take the DOI elsewhere |
+| `semantic` | ✓ | — | ✓ | **cross-discipline**, and the surest citation counts here — the basis for any ranking by impact | throttles hard without `SEMANTIC_SCHOLAR_API_KEY`. Carries a DOI on most hits and a PDF on about half |
+| `openalex` | — | — | ✓ | **cross-discipline**, 200M+ works | `--field` takes a concept ID (`C154945302`), not a name. Rarely carries a PDF link — good for finding and ranking, not for fetching. Relevance drifts on title lookups |
+| `crossref` | — | — | ✓ | **cross-discipline** DOI registry — the best title→DOI lookup here | registered metadata only: no PDFs, no OA status, and an abstract on few hits. Use it to resolve, then go elsewhere for content |
+| `dblp` | — | — | — | **computer science** bibliography — conference and journal records, curated and clean | no abstracts at all; metadata only. The API takes a query and paging, nothing else |
+| `core` | ✓ | — | 0 | **cross-discipline** OA aggregate, 400M+ from repositories and journals — a PDF on nearly every hit | a DOI on few hits and no journal name. `CORE_API_KEY` lifts the rate limit |
+| `openaire` | — | — | ✓ | **cross-discipline** EU open science graph | `download` does not work here, but a `pdf_url` comes back on the minority of hits where a publisher file link is on record — most of its links are DOI resolvers and are not offered as PDFs. `get` wants an OpenAIRE id, not a DOI |
+| `doaj` | — | — | — | **cross-discipline** peer-reviewed OA journals — complete metadata, with a journal name and abstract on nearly every hit | **its `pdf_url` is a landing page, not a file** — fetching one returns HTML. Year granularity only, no sorting |
+| `hal` | ✓ | — | — | **cross-discipline** French national archive, with an abstract on nearly every hit and full text on most | `--field` takes a domain code: `math` `phys` `chim` `sdv` `shs` `spi` `info` `sde`. No journal name, and some records are metadata-only — filter on `pdf_url` before downloading |
+| `zenodo` | ✓ | — | — | **cross-discipline** CERN general-purpose repository — papers, datasets and software, with a DOI on nearly every hit | `-n` capped at 25. No journal name, and some records are metadata-only |
+| `unpaywall` | — | — | — | **DOI → a downloadable URL.** No search, no discipline — a resolver | needs `UNPAYWALL_EMAIL`; one DOI per call, and the URL must be fetched separately |
+| `scholar` | — | — | — | broadest reach of anything here — it surfaces work the indexed sources miss, and a PDF link when nothing else has one | HTML scraping, captcha-prone; `doi` is always `null`, and only some hits carry a `pdf_url`. `[CITATION]` stubs have no link at all and are dropped |
+| `xueshu` | — | — | 0 | **Chinese literature** — journals, master's/PhD theses, conference papers, patents, standards; 700M+ records over 500+ subjects. Indexes English work too, but other sources serve that better | unofficial endpoint with bot detection; search only, no `get`. **One request per search, first page only** — the page holds 10 records, so `-n` above ~10 silently returns fewer, and `--offset` past that page returns nothing. `pdf_url` is rare and `doi` present on about half, though validated, so a patent number or bare URL never masquerades as one |
 
 **Two fields that lie.** `core` and `xueshu` return `citations` but leave it 0 on
 most records, so sorting by it appears to work while silently burying the
@@ -259,7 +275,7 @@ arXiv categories for `--field`: `cs.CL` `cs.LG` `cs.CV` `cs.AI` `cs.RO`,
 your query through verbatim**, so their own field syntax works:
 
 - `pubmed` / `pmc`: `[pt]` publication type · `[mh]` MeSH · `[tiab]` title/abstract · `[au]` author · `[dp]` date
-- `europepmc`: `CITED:>N` · `AUTH:` · `PUB_YEAR:` · `OPEN_ACCESS:y` · `HAS_FT:y` · `LANG:` · `KW:` · `SRC:` subsets (`PPR` preprints, `CTX` NICE guidelines, `AGR` Agricola, `CBA` Chinese Biological Abstracts, `MED`, `PMC`)
+- `europepmc`: `CITED:[N TO *]` · `AUTH:` · `PUB_YEAR:` · `OPEN_ACCESS:y` · `HAS_FT:y` · `LANG:` · `KW:` · `SRC:` subsets (`PPR` preprints, `CTX` NICE guidelines, `AGR` Agricola, `CBA` Chinese Biological Abstracts, `MED`, `PMC`)
 - `doaj`: Lucene on `bibjson.*` · `zenodo`: Elasticsearch · `hal`: Solr · `dblp`: `year:` `author:` `venue:`
 
 **`crossref`, `openalex`, `semantic`, `scholar`, `xueshu` are free-text only** —
