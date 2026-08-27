@@ -10,7 +10,20 @@ const piPromise = import('@earendil-works/pi-coding-agent');
 
 export async function parseSkillFrontmatter(content: string): Promise<ParseResult> {
   const { parseFrontmatter } = await piPromise;
-  const { frontmatter } = parseFrontmatter<RawFrontmatter>(content);
+  // parseFrontmatter 对语法错误是**抛**而不是返回空 —— 不接住的话异常会穿过所有调用方：
+  // listUnlocked 整个 reject（skill.list RPC 挂掉，连带 tool 列表一起变错误态）、
+  // localeSet 的 settled() 在树已经换完之后才抛（回滚不会执行，正好造成它要避免的不一致）、
+  // enumerateSkills 的「坏 frontmatter 渲染成禁用行」降级路被架空。
+  // 这些下游都已经写好了 ok:false 的处理，缺的只是不让 throw 逃出去。
+  //
+  // 最容易踩到的一种：description 是无引号 plain scalar 且含半角 `: `，YAML 判成嵌套 mapping。
+  // 中文文案用全角 `：` 天然免疫，英文版没有这层保护。
+  let frontmatter: RawFrontmatter;
+  try {
+    ({ frontmatter } = parseFrontmatter<RawFrontmatter>(content));
+  } catch (err) {
+    return { ok: false, reason: `frontmatter YAML 解析失败：${err instanceof Error ? err.message : String(err)}` };
+  }
   const name = typeof frontmatter.name === 'string' ? frontmatter.name.trim() : '';
   const description = typeof frontmatter.description === 'string' ? frontmatter.description.trim() : '';
   if (!name) return { ok: false, reason: 'frontmatter 缺 name' };

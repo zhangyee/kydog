@@ -53,6 +53,27 @@ describe('SkillsService.list', () => {
     expect(ab?.kydogVersion).toBeUndefined();
   });
 
+  // 一个 skill 的 frontmatter 是坏 YAML，不能把整个 list() reject 掉 —— 那会让 skill.list RPC 挂掉，
+  // 连带渲染层同一个 Promise.all 里的 tool 列表一起变错误态。坏的那个 warn+skip，其余照常返回。
+  it('列表里一个坏 YAML 的 skill 只跳过它自己，不拖垮其余', async () => {
+    const skillsDir = tmp();
+    mkSkill(skillsDir, 'good-a');
+    mkSkill(skillsDir, 'good-b');
+    mkdirSync(path.join(skillsDir, 'broken'), { recursive: true });
+    // 无引号 plain scalar 里的半角 `: `：英文 description 最容易写出来的那种语法错
+    writeFileSync(path.join(skillsDir, 'broken', 'SKILL.md'),
+      '---\nname: broken\ndescription: How it differs: it does not.\n---\nbody');
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      skills: { disabledBuiltins: [] },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
+    const list = await svc.list();
+    expect(list.map(s => s.name)).toEqual(['good-a', 'good-b']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('broken'));
+    warn.mockRestore();
+  });
+
   it('skips hidden dirs (.cache, .manifest.json wouldn’t be a dir)', async () => {
     const skillsDir = tmp();
     mkdirSync(path.join(skillsDir, '.cache'));
