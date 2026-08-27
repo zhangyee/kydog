@@ -98,7 +98,8 @@ vendor/
 docs/superpowers/
 docs/scratch/
 .superpowers/
-.claude/
+.claude/*
+!.claude/skills/
 
 test-results/
 playwright-report/
