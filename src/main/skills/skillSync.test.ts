@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runSkillSync } from './skillSync';
@@ -56,6 +56,49 @@ describe('runSkillSync', () => {
     expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toContain('zh-body');
   });
 
+  it('磁盘上多出一个文件 → 整棵重写，多出来的那个被清掉', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    const args = { builtinRoot, locale: 'zh' as const, phase: 'startup' as const, kydogVersion: '0.3.0', ...h };
+    await runSkillSync(args);
+    const extra = path.join(h.skillsDir, 'demo', 'extra.md');
+    writeFileSync(extra, 'user added this');
+    const r = await runSkillSync(args);
+    expect(r).toMatchObject({ state: 'ok', installedOrUpgraded: ['demo'] });
+    expect(existsSync(extra)).toBe(false);
+  });
+
+  it('磁盘上少一个文件 → 整棵重写补回来', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    const args = { builtinRoot, locale: 'zh' as const, phase: 'startup' as const, kydogVersion: '0.3.0', ...h };
+    await runSkillSync(args);
+    const ref = path.join(h.skillsDir, 'demo', 'references', 'r.md');
+    rmSync(ref);
+    const r = await runSkillSync(args);
+    expect(r).toMatchObject({ state: 'ok', installedOrUpgraded: ['demo'] });
+    expect(readFileSync(ref, 'utf8')).toBe('zh-ref');
+  });
+
+  it('落盘树里出现软链 → 整棵换掉，不会把整轮同步带停', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    const args = { builtinRoot, locale: 'zh' as const, phase: 'startup' as const, kydogVersion: '0.3.0', ...h };
+    await runSkillSync(args);
+    // 断链（读它是 ENOENT）与指向目录的链（读它是 EISDIR）各来一个
+    const skillMd = path.join(h.skillsDir, 'demo', 'SKILL.md');
+    const ref = path.join(h.skillsDir, 'demo', 'references', 'r.md');
+    rmSync(skillMd);
+    rmSync(ref);
+    symlinkSync(path.join(h.skillsDir, 'demo', 'nowhere'), skillMd);
+    symlinkSync(path.join(h.skillsDir, 'demo', 'references'), ref);
+    const r = await runSkillSync(args);
+    expect(r).toMatchObject({ state: 'ok', installedOrUpgraded: ['demo'] });
+    expect(lstatSync(skillMd).isSymbolicLink()).toBe(false);
+    expect(readFileSync(skillMd, 'utf8')).toContain('zh-body');
+    expect(readFileSync(ref, 'utf8')).toBe('zh-ref');
+  });
+
   it('切换 locale 会重写整棵树', async () => {
     const builtinRoot = makeBuiltinRoot();
     const h = home();
@@ -85,6 +128,26 @@ describe('runSkillSync', () => {
     }));
     await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
     expect(existsSync(path.join(h.skillsDir, 'gone'))).toBe(false);
+  });
+
+  it('manifest 里的名字不是安全的单段目录名 → 跳过它，不拿去 rm', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    mkdirSync(path.join(h.skillsDir, 'mine'), { recursive: true });
+    writeFileSync(path.join(h.skillsDir, 'mine', 'SKILL.md'), 'mine');
+    const outside = path.join(path.dirname(h.skillsDir), 'outside.txt');
+    writeFileSync(outside, 'outside');
+    writeFileSync(h.manifestPath, JSON.stringify({
+      schemaVersion: 2, kydogVersion: '0.2.0', writtenAt: 'x',
+      builtin: ['demo', '.', '..', '../x', 'a/b'],
+    }));
+    const r = await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
+    expect(r.state).toBe('ok');
+    // `.` 会让 rm 的目标退回 skillsDir 本身，`..` / `../x` 直接逃出去
+    expect(existsSync(h.skillsDir)).toBe(true);
+    expect(readFileSync(path.join(h.skillsDir, 'mine', 'SKILL.md'), 'utf8')).toBe('mine');
+    expect(readFileSync(outside, 'utf8')).toBe('outside');
+    expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toContain('zh-body');
   });
 
   it('manifest 损坏 → 照常同步，但跳过孤儿清理（旧目录留着）', async () => {

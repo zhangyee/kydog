@@ -5,6 +5,7 @@ import { hashProjectedSkill, listSkillSourceFiles, listBuiltinSkills } from './b
 import { projectSkillFiles, type SkillLocale } from './localeProjection';
 import { replaceSkillTree } from './replaceSkillTree';
 import { readManifest, writeManifest } from './manifest';
+import { assertSafeSkillName } from './safeRel';
 import { logger } from '../log';
 import type { SkillSyncHealth, SyncPhase } from '../../shared/types';
 
@@ -26,27 +27,46 @@ function needsRewrite(shipped: Record<string, string>, skillDir: string): boolea
   // 整轮同步就停了 —— 一个放错位置的文件让所有内置 skill 不再更新。
   // replaceSkillTree 的 rename 换得掉文件与软链，交给它就行。
   if (!lstatSync(skillDir, { throwIfNoEntry: false })?.isDirectory()) return true;
-  const onDisk = new Set(listExistingRels(skillDir));
-  const want = Object.keys(shipped);
-  if (onDisk.size !== want.length) return true;          // 有多余文件也要重写
-  for (const rel of want) {
-    if (!onDisk.has(rel)) return true;
-    if (sha256OfFile(path.join(skillDir, rel)) !== shipped[rel]) return true;
+  try {
+    const scan = scanSkillDir(skillDir);
+    if (scan.kind === 'alien') return true;
+    const onDisk = new Set(scan.rels);
+    const want = Object.keys(shipped);
+    if (onDisk.size !== want.length) return true;          // 有多余文件也要重写
+    for (const rel of want) {
+      if (!onDisk.has(rel)) return true;
+      if (sha256OfFile(path.join(skillDir, rel)) !== shipped[rel]) return true;
+    }
+    return false;
+  } catch {
+    // 磁盘侧读不动（权限、竞态改动……）就当成需要重写：判不出来时重写是安全的一侧，
+    // 整棵原子替换本来就会把那里换成已知状态；抛出去则会停掉整轮同步。
+    // 真换不动的话 replaceSkillTree 会失败，那时才报 failed，且带得上是哪个 skill。
+    return true;
   }
-  return false;
 }
 
-function listExistingRels(dir: string): string[] {
-  const out: string[] = [];
-  const walk = (rel: string): void => {
+/** 磁盘现状：普通文件的相对路径列表，或者「撞见了不该在这儿的东西」。 */
+type DiskScan = { kind: 'files'; rels: string[] } | { kind: 'alien' };
+
+/**
+ * 软链必须显式判掉，不能靠「它既非 file 也非 directory 所以自然被漏掉」——
+ * `Dirent.isDirectory()` 对软链返回 false，它走的是 else 分支，会被当成普通文件收进来，
+ * 随后 sha256OfFile 读断链是 ENOENT、读目录链是 EISDIR，整轮同步就此停摆。
+ * 用户会在 Finder 里动这棵树，软链是预期内会出现的东西，不是异常。
+ */
+function scanSkillDir(dir: string): DiskScan {
+  const rels: string[] = [];
+  const walk = (rel: string): boolean => {
     for (const e of readdirSync(rel ? path.join(dir, rel) : dir, { withFileTypes: true })) {
       const child = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(child);
-      else out.push(child);          // 软链在这里既非 file 也非 directory，天然被漏掉 → 触发重写
+      if (e.isDirectory()) { if (!walk(child)) return false; }
+      else if (e.isFile()) rels.push(child);
+      else return false;             // 软链/设备/FIFO：不是我们发出去的东西 → 整棵换掉
     }
+    return true;
   };
-  walk('');
-  return out;
+  return walk('') ? { kind: 'files', rels } : { kind: 'alien' };
 }
 
 export async function runSkillSync(i: SyncInputs): Promise<SkillSyncHealth> {
@@ -77,6 +97,15 @@ export async function runSkillSync(i: SyncInputs): Promise<SkillSyncHealth> {
     if (prior.kind === 'ok') {
       for (const name of prior.builtin) {
         if (builtinNames.includes(name)) continue;
+        // 名字来自 manifest 这份可编辑、可损坏的 JSON，而 readManifest 只校验类型不校验取值。
+        // 递归删除之前必须过闸口：`"."` 会让目标退回 skillsDir 本身、把用户自己装的
+        // skill 一起删光，`"../x"` 直接删到目录外面去。
+        try {
+          assertSafeSkillName(name, 'manifest orphan cleanup');
+        } catch (err) {
+          logger.warn('skill-sync', 'unsafe name in manifest, orphan skipped', { name, err: String(err) });
+          continue;
+        }
         await fsp.rm(path.join(i.skillsDir, name), { recursive: true, force: true });
       }
     } else {

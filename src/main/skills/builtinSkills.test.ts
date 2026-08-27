@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { listBuiltinSkills, listSkillSourceFiles, hashProjectedSkill } from './builtinSkills';
@@ -8,6 +8,7 @@ function makeFakeBuiltin(): string {
   const root = mkdtempSync(path.join(tmpdir(), 'bskills-'));
   mkdirSync(path.join(root, 'fastpaper'), { recursive: true });
   writeFileSync(path.join(root, 'fastpaper', 'SKILL.md'), '---\nname: fastpaper\ndescription: x\n---\nbody');
+  writeFileSync(path.join(root, 'fastpaper', 'SKILL.en.md'), '---\nname: fastpaper\ndescription: x\n---\nen body');
   mkdirSync(path.join(root, 'fastpaper', 'references'), { recursive: true });
   writeFileSync(path.join(root, 'fastpaper', 'references', 'r.md'), 'r');
   // a non-skill stray file at root should be skipped
@@ -25,7 +26,13 @@ describe('listBuiltinSkills', () => {
 describe('listSkillSourceFiles', () => {
   it('递归列出全部源文件（含 .en 变体），相对路径为 key', () => {
     const root = makeFakeBuiltin();
-    expect(listSkillSourceFiles(root, 'fastpaper').sort()).toEqual(['SKILL.md', 'references/r.md']);
+    expect(listSkillSourceFiles(root, 'fastpaper').sort()).toEqual(['SKILL.en.md', 'SKILL.md', 'references/r.md']);
+  });
+
+  it('源侧出现非普通文件 → 抛错中止，不从投影里静默消失', () => {
+    const root = makeFakeBuiltin();
+    symlinkSync(path.join(root, 'fastpaper', 'SKILL.md'), path.join(root, 'fastpaper', 'alias.md'));
+    expect(() => listSkillSourceFiles(root, 'fastpaper')).toThrow(/not a regular file/);
   });
 });
 

@@ -40,6 +40,9 @@ function walk(absRoot: string, relPath: string, out: string[]): void {
     const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
     if (entry.isDirectory()) walk(absRoot, childRel, out);
     else if (entry.isFile()) out.push(childRel);
+    // 软链/设备/FIFO：源在仓库里，出现即是错误，报错中止而不是静默跳过 ——
+    // 跳过的话它只是从投影树里消失，落盘少一个文件，没有任何人会发现。
+    else throw new Error(`${path.join(absRoot, childRel)} is not a regular file`);
   }
 }
 
