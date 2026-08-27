@@ -76,7 +76,7 @@ Between rounds you may adjust the next round's options based on the previous ans
 ### Handling the answers
 
 - **The user skips a question** (the text that comes back is 「用户跳过了这一题」): that question is unanswered, and the report says so truthfully. **The skip is itself information** — Q9 skipped in particular means this topic has no success criterion yet, and that must go into the Step 3 assessment. Do not fill one in for them.
-- **The user closed the prompt**: stop this round and ask whether they want to talk it through another way or set it aside for now. Do not answer the nine questions for them on your own.
+- **The user closed the prompt** (the text that comes back is 「用户关闭了提问，未作回答。」): stop this round and ask whether they want to talk it through another way or set it aside for now. Do not answer the nine questions for them on your own.
 - **Q1 is the hardest and the most famous one**. If the answer the user finally settles on still carries field jargon, say so plainly ("X and Y in this sentence are not something an outsider follows"), and offer a plainer rewrite for them to confirm. Heilmeier's own words: if you cannot explain it, you have not thought it through. This is the most valuable output of this step; do not let it slide for the sake of seeming smooth.
 
 Once the nine answers are collected, go straight to Step 2; there is no need to have the user confirm again — they just picked through them one question at a time.
@@ -219,9 +219,9 @@ The bad version:
 
 > Hangs on: the box-2 controversy over "whether three leads are enough".
 
-Internal numbering means nothing to the reader, and should not have to. You know in your own head which gap in the map each direction hangs on — one that hangs on nothing was made up out of imagination, so delete it — but **what gets written down must be the literature itself**.
+The reader cannot follow internal numbering and should not have to. You know in your own head which gap in the map each direction hangs on — one that hangs on nothing was made up out of imagination, so delete it — but **what gets written down must be the literature itself**.
 
-Nor should you write sentences like "one could study the application of X in the field of Y", which fit any field at all.
+Do not write sentences like "one could study the application of X in the field of Y" either, which fit any field at all.
 
 ### The report
 
