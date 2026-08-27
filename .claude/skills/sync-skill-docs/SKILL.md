@@ -47,12 +47,15 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `literature-review/references/search-strategy.en.md:54` | 综述、述评、进展、研究现状、展望 | **原样保留**，不译 | 同上 | 2026-08-27 |
 | `learning-deck/references/deck-json.md:177` | 可见**汉字**数 ÷ **350** | visible **words** ÷ **210** | 见下「阅读速度」 | 2026-08-27 |
 | `learning-deck/references/layout.md:386` | ÷ **350**（中文技术材料 **300–400** 字/分） | ÷ **210**（English technical material **180–240** words/min） | 同上 | 2026-08-27 |
+| `learning-deck/assets/report-template.html:1010`（`.deck-head .meta` 注释里的算法） | ÷ **350**（中文技术材料 **300–400** 字/分） | ÷ **210**（English technical material **180–240** words/min） | 同上；这是同一条算法的**第三处** | 2026-08-27 |
 | `learning-deck/references/*.md`、`SKILL.md`（`tier` 枚举） | `"听过但说不清"` / `"没接触过"`（另有档位名「熟悉」） | `"heard of it, cannot explain"` / `"never encountered"`（另有 `familiar`） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md:292` | 「听过**、**说不清」（中文版此处用了变体写法） | `"heard of it, cannot explain"`（正名） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
 | `learning-deck/references/interview.en.md:49` | 「听过**，**说不清」（示例 `label`，第二种变体写法） | `Heard of it, cannot explain`（正名） | 同上，另见「示例 label 的副作用」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md`、`references/layout.en.md`（`⟨待填⟩`） | `⟨待填⟩` | **原样保留**，不译 | 见下「`⟨待填⟩` 与 ④-ANCHOR」 | 2026-08-27 |
 | `learning-deck/references/layout.md:879`（H2 的「模板自带 4 处」） | 断言依赖模板 L44/45/46/50 的中文散文注释字面 | **同一个数 4**，依赖同样四行 | 见下「H2 的标定常数」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md:3`（description） | 「它比直接讲解多做的事：**先问清起点再决定讲什么**，…」 | 该分句**未译出**，其余四项全在 | 见下「learning-deck 的 description」 | 2026-08-27 |
+| `learning-deck/assets/report-template.html:2`（`<html lang>`） | `lang="zh"` | `lang="en"` | 文档语言声明，跟着模板默认产出语言走；模型可按用户语言改写 | 2026-08-27 |
+| `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term<span class="en">English</span></dt>` | 见下「⑦ 术语对照的 zh/en 双槽」——**结构缺口，等用户裁决，不要自行发明规则** | 2026-08-27 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。
 这几条指令自己写明了意图——「写长了没人读，而且会不可避免地滑向综述」「价值在判定和证据链，
@@ -82,8 +85,9 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 **阅读速度**：`readingMinutes` 是**算给读者看的数**，不是控制篇幅的预算，但换算理由和「字数预算」
 同源——单位从「汉字」换成「words」时除数必须跟着换。照抄 350 会让英文报告的时长虚高近一倍。
 按同一个 0.6 word/字：`350 × 0.6 = 210`，区间 `300–400 × 0.6 = 180–240`，落在英文技术材料的
-常见阅读速度带内。**两处必须同时改**（`deck-json.md` 顶层那条 + `layout.md`「① 抬头的顶部两件套」），
-它们互相声明「算法一致」。「每张图 +0.5 分钟」不换算——那是图，不是字。
+常见阅读速度带内。**三处必须同时改**（`deck-json.md` 顶层那条 + `layout.md`「① 抬头的顶部两件套」
++ `assets/report-template.html` 的 `.deck-head .meta` 注释），它们互相声明「算法一致」。
+「每张图 +0.5 分钟」不换算——那是图，不是字。
 
 **learning-deck 的 `tier` 枚举**：`tier` 是**模型自己写、自己读**的内部字段，
 既不进 HTML（`deck-json.md` 的渲染对照表里没有它），也不进 CLI，`SKILL.md` 第 5.2 小步还明令
@@ -108,36 +112,44 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 
 **`⟨待填⟩` 与 ④-ANCHOR**：`⟨待填⟩` 是**哨兵串**，`layout.md` 的自检 H1 直接
 `grep -n '⟨待填⟩' report.html`，它必须和 `assets/report-template.html` 里的那 15 处逐字相同。
-英文版按「技术标识符不动」保留原串，en 模板（下一批翻）**也必须保留 `⟨待填⟩` 不译**，
+英文版按「技术标识符不动」保留原串，`assets/report-template.en.html` **同样一字未译地保留了那 15 处**，
 否则 H1 恒不命中——正好复现该注释里写明的「一条永远绿的自检」。
-④-ANCHOR 那行注释的**散文部分**已译，en 模板必须逐字用：
+④-ANCHOR 那行注释的**散文部分**已译，en 模板 `:2069` 逐字就是：
 `<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->`
 （`SKILL.en.md:397` 与 `references/layout.en.md:518` 拿它当 `oldText`，对不上 `edit` 会报错）。
 
+> **顺带记下的两处中文版缺口（不修，等裁决）**：
+> (1) H1 的 `grep '⟨待填⟩'` 在**任何**交付的报告上都至少命中 3 行——模板文件头 L10/L14/L15 的散文
+>     本身就带这个串，而 H2 又明确要求文件头注释原样保留。注释里写的「一条都不该剩」做不到，
+>     真正的判据其实是「`<body>` 里一条都不该剩」。
+> (2) 模板里另有 7 处 `⟨待填：…⟩`（带说明文字的占位符，如 `:1952` / `:2019` / `:2030`×2 / `:2033`
+>     / `:2074` / `:2085`），**H1 那条 grep 完全查不到它们**——漏填这几处不会被自检拦下。
+> 两条中英一致（en 模板照译，形态与位置一一对应），是中文版本来就有的问题。
+
 **H2 的标定常数**：`layout.md` / `layout.en.md` 的自检 H2 把**对模板散文注释的计数断言写死在注释里**，
-四个数对当前 `assets/report-template.html` 实测全部精确命中：
+四个数对 `assets/report-template.html` **与 `assets/report-template.en.html` 两份**实测全部精确命中：
 
 | grep | 命中数 | 文中写法 | 命中位置 |
 |---|---:|---|---|
-| `src="http\|@import\|url(http\|…` | **4** | 「模板自带 4 处」/ "comes with 4 matches" | 模板 **L44/45/46/50**，全是中文散文注释 |
+| `src="http\|@import\|url(http\|…` | **4** | 「模板自带 4 处」/ "comes with 4 matches" | 两份模板都在 **L44/45/46/50** |
 | `^<script>` | **1** | 「这个数正好 1」/ "exactly 1" | 文末唯一脚本块 |
 | `<script`（任意位置） | **12** | 「十来处」/ "a dozen" | 硬约束注释 + `<style>` 内 + 脚本内 |
 | `fill="#\|stroke="#\|color: *#\|background: *#` | **13** | 「十来处」/ "a dozen or so" | `<style>` 的 `@media print` |
 
-**这是第三条跨批次契约。** 那 4 处命中来自模板 L44/45/46/50 的中文散文，正是下一批要翻的：
+**这是第三条跨批次契约。** 那 4 处命中来自模板 L44/45/46/50 的散文注释，英文版为此**保住了记号的字面形态**：
 
 ```
-44:  2. 不引任何外部资源：没有 CDN、没有 <link rel=stylesheet>、没有 @import、
-45:     没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()、
-46:     脚本里没有 fetch/XHR/WebSocket（CSP 会拦，但也别写这种一眼假的代码）。
-50:     不是资源，允许；把它当资源加载（img/link/@import）不允许。
+44:  2. Pull in no external resource: no CDN, no <link rel=stylesheet>, no @import,
+45:     no web fonts, no <img src="http…">, no url() in the CSS pointing at the network,
+46:     no fetch/XHR/WebSocket in the script (the CSP blocks them, but do not write code that obviously fakes it either).
+50:     not a resource, and is allowed; loading it as a resource (img/link/@import) is not.
 ```
 
-翻这四行时**字面形态必须保持能被同一条 grep 命中**（`<img src="http…">` 不能改写成
+**字面形态必须保持能被同一条 grep 命中**（`<img src="http…">` 不能改写成
 `an <img> pointing at http`，`@import` / `fetch` / `XMLHttpRequest` / `WebSocket` 等词不能拆开或复述）。
 命中数从 4 变 3，H2 注释里「模板自带 4 处，都不是违规」就成了错的标定 → 漏判或误判。
 与 `⟨待填⟩` 同类：**改模板会让 `layout.*.md` 里的常数失效，而失效不报错。**
-真要改动那几行，就得同时改 `layout.md:879` 与 `layout.en.md:879` 的数字。
+真要改动那几行，就得同时改 `layout.md:879` 与 `layout.en.md:879` 的数字，**并且两份模板一起改**。
 
 **learning-deck 的 description**：中文 381 字符、英文 986（余量 38），是六个 skill 里最紧的一份。
 直译约 1300，超 1024 会让它在 en 树里静默降级成禁用行。压缩只动叙述句：
@@ -145,6 +157,23 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 删掉的是「先问清起点再决定讲什么」——它与同一句开头的
 「Three interview rounds find which layer the user already stands on … fill in only the missing layers」
 表达的是同一件事，属于中文版内部的复述，去掉不损失任何触发面或行为约束。
+
+**⑦ 术语对照的 zh/en 双槽（结构缺口，等用户裁决——不要自行「修好」）**：
+`deck-json.md:382` 的渲染对照把术语表的 `dt` 写死成两个具名槽——
+`<dt id="{id}">{zh}<span class="en">{en}</span></dt>`，模板 `:2093` 是它的字面示例。
+这套结构假定「产物语言 ≠ 英文」，于是「术语本体 + 英文对照」永远是两个不同的词。
+**英文报告里两个槽只能填同一个词**，⑦ 整节退化成一列重复影子
+（上一批的英文示例已经写成 `"zh": "Markov chain", "en": "Markov chain"`）。
+`.glossary dt .en` 那条 CSS 还会把重复的那份用更小的 sans 字号再排一遍，视觉上更明显。
+
+en 模板**照译、不加规则**：`:2093` 只把 `中文` 这个槽位标签译成 `Term`，
+`English` 与 `<span class="en">` 原样保留，退化行为原封不动地留在那里。
+**不许**在 en 侧发明「同语言时省略 `en`」「`en` 为空就不渲染 span」之类的旁路——
+那是改 skill 的行为，超出翻译的职权。
+
+真正的修法在 JSON schema 那一侧（例如把 `zh`/`en` 换成 `term` + 可选 `alt`），
+要动 `deck-json.md` / `deck-json.en.md` 的渲染对照、两份模板、以及 JSON 自检第 13 条。
+**这条登记在用户裁决之前不要撤。**
 
 > 2026-08-27 删掉了 `research-ideation/SKILL.en.md:78/79` 两条「保留中文串」登记及其
 > 「硬编码中文串」说明段。`src/main/agent/askAnswers.ts` 的 `renderOutcome` 已按 locale

@@ -1,0 +1,2792 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>learning-deck report template</title>
+
+<!--
+  ============================================================================
+  /learning-deck report skeleton — `cp` a copy of it, then replace every ⟨待填⟩ with real content.
+  ============================================================================
+
+  ⚠️ **Since v5 there is no example content anywhere in this file.** <body> is an empty skeleton: every position
+     waiting to be filled is a comment carrying the `⟨待填⟩` mark, saying what belongs there and where to find
+     a sample you can copy from (all in references/layout.md). The first item of the pre-delivery self-check is that `grep '⟨待填⟩'` should
+     leave not one line — every line left is "this section was never rendered at all".
+
+     v4's template carried example content (two chapters on diffusion models + example text in each section), meant to let you see
+     what every kind of block looks like. The cost is that it also **created a cheap path**: replacing a shell full of examples
+     takes an `oldText` of eighty lines at a stretch, while inserting a chapter at the anchor takes an `oldText` of one comment line. The fourth real run
+     ended with all nine chapters taking insertion and the two example chapters' shells left where they were — 9 chapters in the JSON, 11
+     curtain pages in the HTML, and 41 pieces of example text left through the report. **The same class of error a third time, and the root is always "a cheap path was left
+     that skips work that has to be done".** There is no shell to use now, and insertion is the only path.
+
+  Four hard constraints; break one and the report breaks silently inside KyDog (no error, it is just wrong):
+
+  1. <script> may only be written in the one inline <script> block at the bottom of the template (arrow keys turning sections + entering one item at a time +
+     SVG stroking + the contents collapse and highlight + the header's cover band, see the end of the file): the viewer sandbox now grants
+     allow-scripts, so scripts do run,
+     but it also injects a strict CSP (connect-src 'none' and the rest), which lets no network request out.
+     **Do not add any other <script> tag** — this hard constraint is "only this one place", not
+     "write it anywhere"; new logic goes into that one place at the end of the file, without opening a new tag.
+     Entering one item at a time and the SVG stroke animation were once thought to be better done with CSS animation /
+     SVG SMIL (declarative, and no charge against the script budget). The stroking half does not hold up: the length of every path
+     is only known at runtime through `getTotalLength()`, plain CSS has no equivalent, and only JS can do it.
+     The entering half does have a plain-CSS path — the semantics of CSS Scroll-Driven Animations'
+     `animation-timeline: view()` are exactly "has the element entered the viewport", KyDog renders only in
+     the Electron (Chromium) it ships with, and the feature is available, not theoretical. This time
+     JS was still chosen: the brief specifies JS, and the two effects have to share the same "stagger within a group"
+     logic anyway, so one script block is easier to maintain than half CSS and half JS — a trade-off,
+     not "CSS cannot do it". This hard constraint therefore grew to cover those two effects as well, written in the same
+     place as the keyboard interaction and the contents highlight.
+     This overturns v1's "write no <script>" — v1's sandbox did not grant allow-scripts, v2 does.
+  2. Pull in no external resource: no CDN, no <link rel=stylesheet>, no @import,
+     no web fonts, no <img src="http…">, no url() in the CSS pointing at the network,
+     no fetch/XHR/WebSocket in the script (the CSP blocks them, but do not write code that obviously fakes it either).
+     Every style lives in the one <style> below, and every figure is an inline <svg>.
+  3. Every external link must carry target="_blank" rel="noopener". The sandbox does not grant allow-top-navigation,
+     so a plain link, when clicked, tries to navigate in place inside the iframe. An <a href="https://…"> pointing at a paper is a link
+     and not a resource, and is allowed; loading it as a resource (img/link/@import) is not.
+  4. Every color takes the form var(--ink, #2a2620) with a fallback, and the variable name may only come from
+     the list in src/renderer/panels/main-pane/html/reportTheme.ts:
+       --paper --paper-deep --paper-edge
+       --ink --ink-soft --ink-faint --ink-hair --ink-hair-soft
+       --accent --accent-soft --accent-hover
+       --marginalia --moss --amber
+       --font-serif --font-sans --font-mono
+       --reading-font-size --reading-line-height
+     A report with hard-coded colors is blinding under the midnight theme; a variable name outside the list always takes the fallback,
+     which amounts to hard-coding. Fallback values approximate vellum (the light one).
+
+  ⚠️ Two **deliberate reversals** in v3 (spec D.2, confirmed by the user; do not put them back by following an older comment):
+
+  R1. **The fixed navigation tree on the left (.toc) is now to be built.** The v1/v2 comments said "a fixed floating contents panel —
+      explicitly not doing it", on the grounds that it "covers the body / fails in a narrow window". The user confirmed after reading the typography research that it is wanted,
+      so that exclusion is **void**. The worry about covering the body is solved by the layout itself: .toc is one column of the three-column grid
+      (position: sticky + align-self: start), not a fixed panel floating above the body,
+      and it occupies its own cell, where it cannot touch the body at all.
+      **This is not old code someone forgot to delete, it is this round's requirement.**
+      ⚠️ But the "fails in a narrow window" half **the user conceded in v7**: below 820px the contents is not shown at all
+      (the sticky pill bar of v3–v6 had its entries cut off by the right edge in real runs, and was deleted).
+      Navigation in the narrow tier is carried by the body itself instead (the knowledge map + the "↑ Back to the knowledge map" at the end of every chapter +
+      the arrow keys), see "Degradation 2" below. The R1 reversal still stands, and governs the two tiers at ≥820px.
+  R2. **The body goes back to a fixed measure (65–70 characters).** B.2's "match the Markdown tab's
+      padding: 32px 88px 120px, with no width limit", together with its derived "known cost: 70+ Chinese characters per line",
+      **are both void**. Three columns cannot work unless the middle column has a measure, so the body column is locked to
+      --ld-measure (38em by default). **When you see the old claim "the lack of a width limit is a deliberate product decision",
+      that is v2's, and it has been overturned.**
+
+  Explicitly not doing (excluded by spec D.6, do not add them back yourself):
+  - <details> collapsible blocks — collapsed content disappears from both skimming and ⌘F, a net loss for self-study.
+    (The .toc collapse does not go through <details>, it goes through a button in the script at the end of the file, precisely so as not to fight this rule:
+    when the script fails to run the contents stays expanded, and nothing gets collapsed away.)
+  - Self-test cards / inline runnable code / a slides form — all three the user explicitly decided against,
+    and they may become a separate skill in future. **Do not add them back in passing.**
+  - External math typesetting libraries (KaTeX / MathJax) — formulas go through Chromium's native MathML, see
+    the "Formulas · MathML" part below. Pulling in an external library is blocked outright by the CSP.
+
+  The mapping from structures ①–⑩ to classes is in the comments on each section below; how the curtain page (.curtain) interacts with
+  scroll-snap / the arrow keys is in the "curtain page" comment and in the <script> at the end of the file.
+-->
+
+<style>
+/* ==========================================================================
+   1. Layout — measure, containers, where anchors land
+   ========================================================================== */
+
+/* The reading font size is injected by the host; every dimension is expressed in em/rem so that it moves with it. */
+html {
+  font-size: var(--reading-font-size, 15px);
+  scroll-behavior: smooth;
+  /* scroll-snap-type has to sit on the layer that actually scrolls. Measured (the ruler script, see task-4-report):
+     document.scrollingElement === document.documentElement, and during scrolling
+     .deck's scrollTop stays 0 while .deck's computed overflow-y is visible —
+     .deck has never been a scroll container, only an ordinary block with padding. What actually scrolls is
+     documentElement (which is html here). scroll-snap-type only takes effect on a "scroll container",
+     and since .deck is not one, putting it there would do nothing, so it goes here.
+     proximity rather than mandatory: a long section has to be free to scroll to its end before snapping to the next one, whereas mandatory keeps
+     dragging the reader back to the chapter head, which is miserable in a long document. */
+  scroll-snap-type: y proximity;
+}
+
+body {
+  margin: 0;
+  /* padding zeroed, with every margin handed to .deck — otherwise body's padding stacks on top of .deck's
+     32px / 88px (the 2.5rem 1.25rem 6rem left over from v1 once made the real margins about 72px / 108px),
+     and "aligned with the Markdown tab" is only a claim in a comment that does not survive measurement.
+     ⚠️ Since v5 body has only one child, .deck: the progress bar at the top has been deleted (the reasoning is in the .toc
+        comment below), so do not add any more full-width sticky elements here.
+     ⚠️ Since v6 there is a second child, `.hero-band` (the header's dark cover band). Compared with the deleted progress bar it is
+        **not the same kind of thing**: it is a purely decorative layer at position: absolute + z-index: -1, it is not sticky,
+        takes no part in the document flow and receives no pointer events, so it does not have the "the top looks unlike the other tabs" problem.
+        The ban above still governs sticky full-width elements; do not follow it into deleting the band. */
+  padding: 0;
+  /* The positioning ancestor of .hero-band.
+     ⚠️ On body rather than on .deck: moving it to .deck would change the offsetParent of .curtain / .concept /
+        section[id] from <body> to .deck, their offsetTop would all lose .deck's padding-top,
+        and the stopping points computed by the script at the end of the file would land off by that much. body was the
+        offsetParent to begin with, and giving it position changes no offsetTop at all. */
+  position: relative;
+  background: var(--paper, #faf8f3);
+  color: var(--ink, #2a2620);
+  font-family: var(--font-serif, Georgia, "Songti SC", serif);
+  line-height: var(--reading-line-height, 1.75);
+  /* Give punctuation and Latin text a little room when mixed with CJK */
+  text-spacing-trim: normal;
+}
+
+/* ---- Three columns (spec D.2, reversal R2; the breakpoints were measured, do not change them off the top of your head) ----
+
+   .deck is a three-column grid:
+
+     [ .toc navigation tree ] [ .flow body column ] [ margin-note whitespace (an empty track, .aside floats into it) ]
+
+   ⚠️ Dimension variables take the --ld- prefix, keeping them apart from the theme variables the host injects.
+      The hard constraint "variable names may only come from the list" governs **colors** — colors have to be swappable by the host;
+      these are layout dimensions this file declares and consumes itself, which the host does not inject and should not.
+
+   ⚠️ Breakpoints are written in px, not em: em inside a media query is computed against "the initial value of font-size" (16px)
+      and **does not follow html { font-size: var(--reading-font-size) }**, so writing em gives the impression that
+      "the breakpoints scale with the reading font size" when they do not. The breakpoints are therefore set for the worst case
+      of the largest reading font size (17px), and smaller sizes simply leave extra room.
+
+   ⚠️ The physical reality that three columns do not fit (measured, numbers below): KyDog's default window is 1280px, the session list on the left is
+      260px + the Inspector on the right is 280px + two dividers ⇒ the report panel is only about 738px.
+      That is, **the default layout never reaches three columns at all**; three columns need the window widened or one panel collapsed.
+      That is not a bug, it is the arithmetic of the panel widths; the degradation paths have to be genuinely good, not a token backstop. */
+.deck {
+  /* The measures of the three columns. --ld-measure is the width of the body column (this is where R2's "65–70 characters" lands):
+     38em at a 15px reading font size is about 570px ≈ 38 Chinese characters / about 66 Latin characters per line.
+     The measured numbers are in the comments beside the @media blocks below. */
+  --ld-toc-w: 12.5em;
+  --ld-measure: 38em;
+  --ld-side-w: 14em;   /* the margin note's own width */
+  --ld-side-gap: 2em;  /* the gutter between the margin note and the body column */
+  --ld-col-gap: 2.2em;
+  /* The top margin of the text block. It is a variable because the margin-top with which .toc clears the cover band has to subtract it
+     (see .toc's margin-top in section 1b), and the two places have to be the same number. */
+  --ld-deck-top: 32px;
+
+  display: grid;
+  grid-template-columns: var(--ld-toc-w) minmax(0, var(--ld-measure)) calc(var(--ld-side-w) + var(--ld-side-gap));
+  column-gap: var(--ld-col-gap);
+  /* On an extra-wide panel the whole text block is centered rather than pinned left. */
+  justify-content: center;
+  padding: var(--ld-deck-top, 32px) 28px 120px;
+}
+
+/* The body column. **Keep it static** (do not give it position: relative): the offsetTop of .curtain / .concept /
+   section[id] is what the script at the end of the file uses to compute stopping points, and the moment some ancestor becomes a positioned element,
+   offsetTop's frame of reference jumps from the document to that ancestor, and the arrow keys land off across the board.
+   e2e/46-html-tab.spec.ts, "ArrowDown from #primer lands on the first curtain page", guards this chain. */
+.flow {
+  min-width: 0; /* grid items default to min-width:auto, and a wide table / long URL would burst the body column */
+}
+
+/* ---- Degradation 1: medium width → two columns (contents + body), margin notes fall back to block level ----
+   Report panel 820–1179px. The margin-note track goes first: of the three it is the one that degrades best in place (a block-level margin note is still
+   where it was, only no longer floating on the right); the contents stays, because it is the half that means "not getting lost in a long document".
+   The contents also narrows to 10em, giving the width it saves back to the body column. */
+@media (max-width: 1179px) {
+  .deck {
+    --ld-toc-w: 10em;
+    grid-template-columns: var(--ld-toc-w) minmax(0, var(--ld-measure));
+    padding: var(--ld-deck-top, 32px) 24px 120px;
+  }
+}
+
+/* ---- Degradation 2: narrow panel → one column, the contents is **not shown at all** ----
+   Report panel < 820px (under KyDog's default 1280px window the report panel is about 738px, which lands here).
+
+   ⚠️ **v7 (the user's call after the fifth real run): this tier no longer shows the contents; do not add the bar back.**
+      In v3–v6 this tier degraded .toc into a sticky pill-shaped bar above the body. Measured, in the narrow tier it is
+      **a burden instead**: the entries line up in one row that scrolls horizontally, and the longest of them are cut straight off by the right edge
+      (what a real run showed was `§2 Building samples from patients, visits and multiple E…`), so reading one in full takes a horizontal drag first.
+      A contents you cannot read in full is no better than none, and living permanently above the body it also eats a slice of the first screen.
+
+   Navigation in the narrow tier therefore **rests entirely on the body itself**, and all of these were in the template to begin with:
+     - ② the knowledge map (`#map`) is the whole report's main entrance, every node an in-page anchor pointing at `#cN`;
+     - every chapter ends with the fixed line `<p class="back"><a href="#map">↑ Back to the knowledge map</a></p>`,
+       so any chapter can jump back to the map in one hop and then on to somewhere else;
+     - the arrow keys `↓/→` `↑/←` and `Home` / `End` (the script at the end of the file), turning section by section;
+     - cross-references in the body such as "see §2" and the glossary's "first appears in" are in-page anchors too.
+   All four were confirmed still present before the bar was deleted — touching them again means rethinking navigation in the narrow tier as well.
+
+   ⚠️ The left-hand .toc in the wide and medium tiers (≥820px) is **kept as it was**; only this narrow-tier form was deleted. */
+@media (max-width: 819px) {
+  .deck {
+    /* One column keeps the measure too (R2): still minmax(0, --ld-measure) rather than 1fr,
+       which together with .deck's justify-content: center centers the body when the panel is wider than the measure
+       and lets it shrink naturally to the panel width when it is narrower. */
+    --ld-deck-top: 24px;
+    grid-template-columns: minmax(0, var(--ld-measure));
+    padding: var(--ld-deck-top, 24px) 20px 120px;
+  }
+}
+
+/* After an anchor jump the heading does not sit against the top of the screen.
+
+   ⚠️ Since v4 `.concept` **has no id** (the chapter's id moved onto the curtain page in front of it,
+      see the "curtain page" comment), so `.concept` has to be listed separately here — it used to catch this rule
+      by riding on `section[id]`. Missing it raises no error, it only means that when the arrow keys stop at a body section
+      the first line sits against the top of the screen.
+
+   ⚠️ Since v7 the narrow tier has no contents bar at the top (see "Degradation 2" above), so this 1.5rem
+      **serves all three tiers**, and the enlarged narrow-tier override is no longer needed. */
+:target,
+section[id],
+dt[id],
+.concept {
+  scroll-margin-top: 1.5rem;
+}
+
+/* ==========================================================================
+   1b. The navigation tree on the left, .toc (spec D.2, reversal R1)
+   ==========================================================================
+
+   ⚠️ position: sticky is **not** position: fixed. It stays in its own grid cell, scrolling with the page
+      and sticking once it reaches the top, and never covers the body — which is exactly why the old exclusion
+      "a fixed floating contents panel covers the body" no longer holds.
+
+   ⚠️ align-self: start is the precondition for sticky to work inside a grid: grid items default to stretch,
+      and filling the whole row height leaves no slack to "stick" against, which looks as though sticky was never written.
+
+   ⚠️ overflow-y: auto makes it a scroll container of its own — but **not the document scroll container**.
+      The document still scrolls documentElement (the arrow keys' stopping points and scroll-snap both depend on that,
+      see the comment beside html's scroll-snap-type and the script at the end of the file). Do not put overflow on
+      .deck / .flow, which would move the document scroll elsewhere and break scroll-snap and the arrow keys together. */
+.toc {
+  position: sticky;
+  top: 1.2rem;
+  align-self: start;
+  /* Clear the cover band at the top. In the wide tier .toc and .flow share the grid's first row, and without clearing it the contents
+     sits entirely underneath the band. --ld-deck-top is subtracted because .toc's zero point is already past the text block's top margin, while
+     --ld-hero-top / --ld-hero-h measure absolute positions from the top of the page.
+     ⚠️ This does not form a loop with "the band's height is measured from .deck-head": .toc's margin-top
+        only makes the grid's first row taller, while .flow lays out from the start of the row, so .deck-head's offsetTop is unaffected.
+     ⚠️ Since v7 the narrow tier does not show .toc at all, so this only has any real effect at ≥820px,
+        and the narrow tier does not need to zero it out (an element at display: none takes no space). */
+  margin-top: calc(
+    var(--ld-hero-top, 0px) + var(--ld-hero-h, 15.5rem) - var(--ld-deck-top, 32px) + 1.8rem);
+  max-height: calc(100vh - 2.4rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .8em;
+  line-height: 1.5;
+}
+
+/* The collapse button. It is a <button>, not <details>: see the note under "Explicitly not doing" in the file header. */
+.toc-head {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+  width: 100%;
+  padding: 0 0 .6em;
+  margin: 0 0 .7em;
+  border: none;
+  border-bottom: 1px solid var(--ink-hair-soft, #dbd6d2);
+  background: none;
+  font: inherit;
+  letter-spacing: .14em;
+  color: var(--ink-faint, #76706c);
+  text-align: left;
+  cursor: pointer;
+}
+
+.toc-head:hover {
+  color: var(--accent, #bd4238);
+}
+
+/* The collapse indicator: a small pure-CSS triangle, pointing down when expanded and right when collapsed.
+   Not a character (▾ and the like differ a lot in size across system fonts); it is drawn with borders. */
+.toc-caret {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transition: transform .18s ease;
+}
+
+.toc.is-collapsed .toc-caret {
+  transform: rotate(-90deg);
+}
+
+.toc.is-collapsed .toc-body {
+  display: none;
+}
+
+.toc-list,
+.toc-sub {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The second level (the concepts) is indented one step, with a hairline vertical rail on the left — the "tree" form is expressed by that rail,
+   not by connector lines or icons. */
+.toc-sub {
+  margin: .25em 0 .5em .35em;
+  padding-left: .8em;
+  border-left: 1px solid var(--ink-hair-soft, #dbd6d2);
+}
+
+.toc a {
+  display: block;
+  padding: .28em 0 .28em .7em;
+  margin-left: -.7em;
+  border-left: 2px solid transparent;
+  color: var(--ink-soft, #47413c);
+  text-decoration: none;
+}
+
+.toc a:hover {
+  color: var(--accent, #bd4238);
+}
+
+/* The scrollspy's current item: a 2px short rail in the accent color + a heavier text color.
+   The class is added by the script at the end of the file, and when the script fails to run the contents is still entirely usable, only unhighlighted. */
+.toc a.is-current {
+  border-left-color: var(--accent, #bd4238);
+  color: var(--ink, #2a2620);
+  font-weight: 600;
+}
+
+.toc-group {
+  margin-top: .5em;
+  padding: .28em 0 0 0;
+  color: var(--ink-faint, #76706c);
+  letter-spacing: .1em;
+  font-size: .92em;
+}
+
+/* Narrow panel (< 820px): the contents is **not shown at all**.
+
+   ⚠️ **v7 (the user's call after the fifth real run) — do not add the bar back.**
+      In v3–v6 this tier degraded .toc into a sticky pill-shaped bar above the body (.toc-body scrolling horizontally,
+      .toc-list li / .toc-sub flattened with display: contents, the entries outlined into pills).
+      Measured, in the narrow tier it is a problem instead: the entries line up in one row that scrolls horizontally, and the longest of them are cut off by the right edge
+      (in a real run it was `§2 Building samples from patients, visits and multiple E…`), so reading one in full takes a horizontal drag first,
+      and living permanently above the body it also eats a slice of the first screen. The user's decision was simply not to show it.
+      Deleted along with it: that whole set of CSS for the bar, the narrow tier's `--ld-hero-top: 5.6rem` backstop,
+      the part of measureBand() in the script at the end of the file that clamped "the band's top edge to the bar's bottom edge" along with the
+      ResizeObserver on .toc, and this tier's override that raised scroll-margin-top to 4.4rem
+      (there is no sticky bar left to clear, so it goes back to the general 1.5rem).
+
+   Navigation in the narrow tier rests on the body itself: ② the knowledge map (`#map`), the
+   `<p class="back"><a href="#map">↑ Back to the knowledge map</a></p>` at the end of every chapter, the arrow keys / Home / End,
+   and the body's cross-references and glossary anchors. See "Degradation 2" above for the details.
+
+   ⚠️ display: none rather than deleting <nav class="toc">: at ≥820px that markup is still
+      the navigation tree on the left, and the two tiers share one DOM. */
+@media (max-width: 819px) {
+  .toc {
+    display: none;
+  }
+}
+
+/* ⚠️ **The progress bar at the top has been deleted (v5, the user's decision) — do not add it back.**
+
+   v4's template had a sticky 2px progress bar at the top of body (`.progress` + `#progress-bar`),
+   the first of what was then "the three items at the top". After the fourth real run the user called it, in his own words:
+   the left column already has the contents (the `.is-current` highlight gives the same sense of place), while a progress bar, in order to show progress, needs
+   **a permanent grey track**, which makes the top of this tab look unlike every other KyDog tab.
+   A grey line that exists only to hold another line, in exchange for a sense of place the contents already gives.
+
+   Deleted along with it: that grey track and its accent-colored progress block, the part of the script at the end of the file that computed the width,
+   the rule in @media print that hid it, and the 2px offset with which the narrow tier's .toc cleared it.
+   **Of the three items at the top, "estimated reading time" and "date last updated" are kept**, see .deck-head .meta.
+
+   When you see the two lines "it is the only continuous progress indicator" and "do not delete it thinking it is the fixed floating contents" in an old comment,
+   that is v4's wording, and it is void. */
+
+/* ==========================================================================
+   2. Typography — heading hierarchy, body, links, terms
+   ========================================================================== */
+
+h1, h2, h3 {
+  font-family: var(--font-serif, Georgia, "Songti SC", serif);
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: 1.9em;
+  margin: 0 0 .3em;
+  letter-spacing: .01em;
+}
+
+/* The section hierarchy is opened up by size, weight and whitespace, not by piling on numbers and rules.
+
+   The decoration (the first half of spec D.4's "section separation"): the underline is no longer one full-width rule of even weight, it is
+   two background layers stacked — a short 2px stretch of the accent color to start (about 2.4em, exactly the length of a word or two),
+   followed by a 1px hairline that fades out to the right. Both layers are background-image, take no room in the box model and
+   need no pseudo-element, so they cannot fight an h2 with its own typography such as .curtain-title.
+
+   ⚠️ Scale: this is "a pause at the start of a passage", not a color block. Do not lengthen the 2.4em into half a line,
+      and do not thicken the 2px — what the user asked for explicitly is "a refined ornament, not a ppt card". */
+h2 {
+  font-size: 1.35em;
+  margin: 3.2em 0 .6em;
+  padding-bottom: .35em;
+  background-image:
+    linear-gradient(90deg, var(--accent, #bd4238) 0 2.4em, transparent 2.4em),
+    linear-gradient(90deg, var(--ink-hair, #c9c3be) 0 62%, transparent 100%);
+  background-size: 100% 2px, 100% 1px;
+  background-position: 0 100%, 0 100%;
+  background-repeat: no-repeat;
+}
+
+h3 {
+  font-size: 1.02em;
+  font-weight: 600;
+  margin: 2em 0 .4em;
+  color: var(--ink-soft, #47413c);
+  letter-spacing: .03em;
+}
+
+/* h4 is the finest level within a section. It becomes a small sans label, separated from the serif body by family and letter-spacing
+   rather than by yet another step down in size — size alone would leave it indistinguishable from bold body text. */
+h4 {
+  font-family: var(--font-sans, sans-serif);
+  font-size: .86em;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: .06em;
+  margin: 1.6em 0 .4em;
+  color: var(--ink-soft, #47413c);
+}
+
+p {
+  margin: 0 0 1.05em;
+}
+
+strong {
+  font-weight: 600;
+}
+
+a {
+  color: var(--accent, #bd4238);
+  text-decoration-color: var(--accent-soft, rgba(189, 66, 56, .35));
+  text-underline-offset: .18em;
+}
+
+a:hover {
+  color: var(--accent-hover, #ac312a);
+  text-decoration-color: currentColor;
+}
+
+code, .formula {
+  font-family: var(--font-mono, Menlo, monospace);
+  font-size: .88em;
+  color: var(--ink-soft, #47413c);
+}
+
+/* A term's first appearance: bold + linked to the glossary. Later mentions are neither bold nor linked. */
+.term {
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dashed var(--ink-faint, #76706c);
+}
+
+.term:hover {
+  color: var(--accent, #bd4238);
+  border-bottom-color: currentColor;
+}
+
+/* ==========================================================================
+   2b. Decoration (spec D.4) — section separation / wrapper corner marks / the title over an animated layer
+   ==========================================================================
+
+   The user's verdict on v2 was "too plain, no extra typography under the default page theme", and he set the
+   scale at the same time: **"not large color blocks or ppt-like cards, but a refined ornament"**.
+   Every item below is built to that scale — hairline rules, dots a few pixels across, animated layers at very low contrast.
+   **Before changing this section, be clear about which you are doing: adding a thin line, or adding a card.**
+
+   Three hard constraints (spec D.4):
+   - Pull in no external library (**revised in v4**: D.4 originally read "pure CSS / inline SVG, no WebGL",
+     and spec E.5 narrowed that to "the body and the chapter curtain pages pull in no WebGL" — the header's cover band is now WebGL with an inline
+     shader / canvas 2D, with the reasoning and the measurements in "The header's cover band" below. **The no-external-library half
+     has not been loosened by one word**: both the shader and the constellation drawing are written in the one <script> at the end of the file, with zero external resources);
+   - It has to hold up under all five named themes (vellum / porcelain / sepia / lilac / midnight),
+     so every color goes through var(), using only hairline / soft colors and never a solid accent color across an area
+     (**the header's cover band is the one exception to this, and a deliberate one**: it lays a dark field across the full width,
+     but that dark is likewise derived from --marginalia and differs under each of the five themes, see "The header's cover band");
+   - It must respect prefers-reduced-motion (see the @media at the end of this section). */
+
+/* --- Section separation: whitespace only, no ornament ----------------------
+   This used to be "a hairline broken in the middle with an accent-colored dot in the gap" (the first half of spec D.4).
+   After the fifth real run the user judged it ugly and the whole thing was deleted — **do not add it back**:
+   whitespace between two adjacent sections is enough, and the section heading already carries its own underline, which is a strong enough start signal.
+
+   The selector still picks only sections whose previous sibling is also a section:
+   - ④ the concept body (.concept) is preceded by the full-screen curtain page .curtain (a <div>),
+     which it does not match, and should not — there is already a whole screen of separation there;
+   - ⑥ .summary and ⑩ .honesty are bordered blocks in their own right. */
+.flow > section + section:not(.summary):not(.honesty) {
+  margin-top: 4.2em;
+}
+
+/* --- The wrapper's corner marks -------------------------------------------
+   .example / .eq get one L-shaped corner mark at the top left and one at the bottom right: two 1px short lines, laid over their own border.
+   It says "this is something inside a frame", at a cost of 4 lines rather than a field of background color. */
+.example,
+.pointer,
+.eq {
+  position: relative;
+}
+
+.example::before,
+.example::after,
+.eq::before,
+.eq::after {
+  content: '';
+  position: absolute;
+  width: .7em;
+  height: .7em;
+  pointer-events: none;
+  border-color: var(--accent, #bd4238);
+  border-style: solid;
+  opacity: .55;
+}
+
+.example::before,
+.eq::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.example::after,
+.eq::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+/* The pointer card's corner mark takes a hairline color instead: the whole block says "there is no content here, only somewhere to go",
+   and its corner mark should not draw more attention than .example's. */
+.pointer::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: .7em;
+  height: .7em;
+  border: 1px dashed var(--ink-faint, #76706c);
+  border-right: none;
+  border-bottom: none;
+  pointer-events: none;
+}
+
+/* --- The header's cover band .hero-band (spec E.5, rebuilt in v6) ----------
+
+   The header is no longer "a very light animated layer laid over the paper", it is **a full-width dark cover band**: the body is still paper,
+   the band sits over the top of the paper, and the three lines — title / meta / forWhom — land on the band in a light color. Three directions coexist,
+   and only one runs at a time (see .hero-band's data-hero in <body> and the script at the end of the file).
+
+   Why a dark band instead (why v5's light animated layer was overturned):
+   light paper cannot produce a "technical" feel, and the report has to hold up under all five named themes — v5's approach was to press the animation down to
+   near invisibility for safety, at the cost of it not composing a picture under any theme at all. A dark band undoes that knot:
+   **the band's ground and the foreground on it are decided by the theme variables, but the band itself is always dark**, so the same code
+   looks markedly different under vellum / porcelain / sepia / lilac / midnight and holds up under all of them.
+
+   ⚠️ This layer is **pure decoration**, aria-hidden="true", and no information may be drawn only here.
+   ⚠️ It **must not** use .draw: .draw is the one-shot stroking driven by getTotalLength() in the script at the end of the file,
+      and the e2e suite asserts on the first .draw in the document, so moving it into the header would change what that test measures.
+
+   === The three directions (chosen by the user on a live comparison page; do not add a fourth) ============
+
+     gridwave       WebGL. Horizontal scan lines pinned to the physical pixel grid + sparse vertical ticks + one horizontal sweep of light.
+                    The most "technical + designed" of them, and the backstop when data-hero is not written.
+     constellation  canvas 2D. Nodes drift slowly, nearby ones are linked, and a few hot nodes carry a halo. Semantically the closest fit.
+     holoband       WebGL. Domain-warped holographic dispersion + accent-colored dispersion rings. The closest to the reference implementation.
+
+   The two that were dropped (**do not add them back**): `contour` (contour-line terrain) and `prism-css` (a pure-CSS blueprint grid).
+   Measured on the comparison page: those two are precisely the ones that do not hold up under midnight.
+
+   === Where the colors come from (this part is the easiest thing here to break) ============
+
+   There are four quantities on the band, all written in the --hb-* form and **all derived from theme variables**:
+
+     --hb-fg      the color of the three lines on the band. **Taken by theme identity, in pure CSS, without measuring luminance** —
+                  in the four light-paper themes the paper color is the light one (--paper), while midnight's paper is near black
+                  and the ink is the light one (--ink). See the two [data-kydog-theme] rules below.
+     --hb-base    the band's ground. The script at the end of the file normalizes the luminance of --marginalia (the one token that is cool
+                  in all five themes) to about 0.042 and writes it back; when the script fails to run the backstop dark here is used.
+     --hb-accent  the accent color on the band (hairlines, the quote rule). --accent normalized to a luminance of 0.44.
+     The shader has two more pure hue vectors (--marginalia / --accent normalized to a luminance of 1),
+     which go only into uniforms, never into CSS.
+
+   ⚠️ **--hb-fg must be selected through [data-kydog-theme]; it must not be selected by "measuring each variable's luminance and picking the brightest".**
+      The exploration stage did the latter, which is exactly the heuristic proxy CLAUDE.md's Principles forbids:
+      what crosses into the report is only the variables' **values**, without the **identity** "which theme is this", so downstream can only guess.
+      The signal has already been restored upstream (reportTheme.ts's REPORT_THEME_ATTR writes the theme name on
+      the report's root element), so the color here should be taken by semantics directly.
+      reportTheme.test.ts has a cross-file assertion pinning the attribute name to these two rules.
+   ⚠️ **Without that attribute it must still land on a determined branch**: when the report is opened on its own in a browser the host has
+      injected nothing, and then --hb-fg takes --paper's fallback (light) while the ground takes --hb-base's
+      backstop (dark), which is still "dark band + light text". Do not write a default that only works if something is injected.
+
+   === Geometry: measured, not guessed ======================================
+
+   The band's top edge --ld-hero-top and its height --ld-hero-h are computed by the script at the end of the file from .deck-head's actual position
+   and height, and written as inline styles on :root. **They cannot be hard-coded**: the height of the header's three lines varies with title length,
+   reading font size and panel width, and any hard-coded height would cut half a line off the forWhom quote in some tier.
+
+   ⚠️ Since v7 there is **only one form**: the band always starts at the top of the page (its top edge clamped to 0).
+      At ≥820px .toc and the header share the grid's first row, and .toc clears the whole band with its own margin-top;
+      below 820px .toc is display: none and is not on the page at all.
+      In v3–v6 the narrow tier's .toc was a sticky bar laid out **before** the header, and the band's top edge had to be clamped to
+      that bar's bottom edge (without the clamp, an opaque paper-colored bar cut the band into "dark | paper | dark") —
+      once the bar was deleted this special case went with it; do not add it back by following an old comment.
+
+   When the script fails to run, the static backstop values on :root (0 / 15.5rem) are used: the position is slightly off,
+   but the band is still a dark band and the text is still readable, with no blank screen and no half-exposed band.
+
+   ⚠️ **The band is a direct child of <body>, not inside .deck-head**, and it uses z-index: -1 to sit
+      below the body and above the paper. Both are deliberate:
+      (1) only a child of body can bleed to the panel width without resorting to 100vw (100vw includes the scrollbar width,
+          which adds a horizontal scrollbar on platforms without overlay scrollbars);
+      (2) switching to "give .deck position: relative + z-index: 1" would change the offsetParent of .curtain /
+          .concept / section[id] from <body> to .deck, and their offsetTop would all lose
+          .deck's padding-top, so the stopping points computed by the script at the end of the file would land off
+          (the e2e case "ArrowDown from #primer lands on the first curtain page" would go red).
+      body's background is painted at the very bottom by CSS's canvas propagation rules (html has no
+      background of its own), so a band at z-index: -1 covers the paper while still not covering the body.
+   ⚠️ When WebGL / canvas fails to start (no context / compile or link failure / context lost) it falls back to the
+      SVG below — both layers are in the DOM, and only on success does the script add .gl-on to .hero-band to hide the SVG.
+      **The fail-safe direction is "the SVG is visible by default"**; written the other way round, one failing script leaves the band empty.
+   ⚠️ When prefers-reduced-motion matches, **draw one frame and stop** (do not hide it, and do not keep running),
+      in all three directions. Mouse disturbance counts as motion too, so the listener is not registered then. */
+
+:root {
+  /* The foreground color on the band: taken by theme identity. The four light-paper themes use the paper color. */
+  --hb-fg: var(--paper, #faf8f3);
+  /* The ground and the accent color: the script at the end of the file computes both by luminance normalization and overrides these two; these are the backstops for when the script fails to run.
+     The backstop values are deliberately theme-independent — the only thing they have to guarantee is that the band is dark and white text is readable. */
+  --hb-base: #0a0d14;
+  --hb-accent: #7fb6ff;
+  /* The band's geometry backstops (the script overrides them from .deck-head's measured position). */
+  --ld-hero-top: 0px;
+  --ld-hero-h: 15.5rem;
+}
+
+/* midnight is the one of the five whose paper is darker than its ink: there the light one is --ink.
+   ⚠️ This is **not** a "dark theme special case", it is that "which token is the light one" itself
+      is reversed under this theme. Do not change it to a prefers-color-scheme test — the host's five named
+      themes are not the same thing as the system's light/dark preference. */
+:root[data-kydog-theme="midnight"] {
+  --hb-fg: var(--ink, #e9e6e1);
+}
+
+/* ⚠️ Since v7 there is **no** narrow-tier --ld-hero-top override here; do not add one back.
+   v3–v6 had `@media (max-width: 819px) { :root { --ld-hero-top: 5.6rem } }`,
+   so that the band would start at the bottom edge of that sticky contents bar (the bar was opaque paper color, and a band starting at 0
+   was cut by it into "dark | paper | dark"). The bar has been deleted (see section 1b), and in all three tiers the band
+   always starts at 0, with the backstop value being the 0px in the :root above. */
+
+.hero-band {
+  position: absolute;
+  z-index: -1;
+  top: var(--ld-hero-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--ld-hero-h, 15.5rem);
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--hb-base, #0a0d14);
+}
+
+/* Two layers stacked: the canvas on top, the SVG backstop below. While the canvas has not drawn anything it is transparent and
+   the SVG below shows through as usual; once it has drawn, .gl-on takes the SVG away. */
+.hero-band > canvas,
+.hero-band > svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hero-band.gl-on > .hero-fallback {
+  display: none;
+}
+
+/* A dark veil over the animation and under the text: the picture's weight is on the left and the text's weight is on the right,
+   and this layer darkens the right-hand field a step so that the three lines stay solidly readable. */
+.hero-band::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(100deg,
+    transparent 0 20%, rgba(0, 0, 0, .12) 40%, rgba(0, 0, 0, .30) 66%, rgba(0, 0, 0, .34) 100%);
+}
+
+/* A hairline at the foot of the band — so that the cover band's bottom edge looks designed rather than cropped. */
+.hero-band::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  z-index: 1;
+  background: linear-gradient(90deg,
+    var(--hb-accent, #7fb6ff) 0, var(--hb-accent, #7fb6ff) 14%, transparent 62%);
+  opacity: .55;
+}
+
+/* The local darkening under the text. **This one is the thing that had to be fixed before shipping**:
+   measured on the live comparison page, when gridwave's roughly 11-second sweep passes directly under the text area,
+   the readability of the meta line and the forWhom quote drops a step for those two or three seconds (a static screenshot does not show it).
+   It was fixed at both ends: on the shader side the sweep is confined to the left (see sweepVis in FS_GRID at the end of the file),
+   and here a soft darkening that travels with the text itself is laid under it.
+
+   ⚠️ Why a pseudo-element on .deck-head rather than making .hero-band::before darker:
+      in the narrow tier (KyDog's default panel is about 738px, the most common tier) the body column nearly fills the panel width,
+      the "picture on the left, text on the right" composition does not hold, and the three lines sit over the whole band. A soft darkening that travels with .deck-head
+      covers the text at any width, while a layer distributed by x cannot.
+   ⚠️ It has to fade out on all sides and must not be a rectangular color block: a rectangle cuts a hard edge into the band, which is exactly what this layer should avoid most.
+      Vertically it fades by gradient and horizontally by mask — done separately in the two directions, which is the only way the middle field keeps full strength.
+   ⚠️ z-index: -1 puts it above .hero-band (also -1, but earlier in the document) and below the body.
+      .deck-head itself has no z-index and forms no stacking context, so this layer is ordered against the band within the same layer. */
+.deck-head::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -1.7rem -3.4rem -1.3rem -3.4rem;
+  pointer-events: none;
+  /* Vertically: fade out at the top and bottom, with the middle stretch (where the three lines are) pressed to .5.
+     Horizontally: fade out at the left and right edges by mask, with the middle **kept at full strength** — a radial gradient was tried,
+     and it had already faded to almost nothing at the left and right edges, while in the narrow tier the body column nearly fills the panel width
+     and the first few words of the quote land exactly where the structure is densest, so in that tier the sweep still washed out the text
+     (measured: with the radial version the first few words of forWhom were still washed out by the sweep). */
+  background: linear-gradient(180deg,
+    rgba(0, 0, 0, 0) 0, rgba(0, 0, 0, .58) 20%, rgba(0, 0, 0, .60) 78%, rgba(0, 0, 0, 0) 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%);
+}
+
+/* The header's three lines: they land on the dark band and use --hb-fg.
+   ⚠️ These three and the .hero-band above are a pair: delete the band and keep these three, and the title is a light color over
+      light paper — **invisible, and with no error**. */
+.deck-head > h1 {
+  color: var(--hb-fg, #f4f3f0);
+}
+
+.deck-head .meta {
+  color: var(--hb-fg, #f4f3f0);
+  opacity: .60;
+}
+
+.deck-head .for-whom {
+  color: var(--hb-fg, #f4f3f0);
+  opacity: .88;
+  border-left-color: var(--hb-accent, #7fb6ff);
+}
+
+/* The backstop SVG: a few dashed contour lines drifting slowly sideways + one patch of glow.
+   ⚠️ Since v6 it is drawn on the dark band, so the lines and the glow both take --hb-fg / --hb-accent (the band's palette),
+      no longer --ink-hair / --paper-edge (that is the paper's palette, which would be invisible over a dark ground). */
+.hero-line {
+  fill: none;
+  stroke: var(--hb-fg, #f4f3f0);
+  stroke-width: 1;
+  stroke-dasharray: 9 7;
+  opacity: .30;
+  animation: ld-hero-drift 26s linear infinite;
+}
+
+.hero-line-2 { animation-duration: 34s; opacity: .24; }
+.hero-line-3 { animation-duration: 44s; opacity: .19; }
+.hero-line-4 { animation-duration: 30s; opacity: .15; }
+
+.hero-glow-in  { stop-color: var(--hb-accent, #7fb6ff); }
+.hero-glow-out { stop-color: transparent; }
+
+.hero-glow {
+  opacity: .5;
+  animation: ld-hero-breathe 14s ease-in-out infinite alternate;
+}
+
+@keyframes ld-hero-drift {
+  to { stroke-dashoffset: -320; }
+}
+
+@keyframes ld-hero-breathe {
+  from { opacity: .3; }
+  to   { opacity: .62; }
+}
+
+/* Accessibility: motion always stops on a still frame, it is not hidden.
+   ⚠️ The band's three directions are not on this list — they have no CSS animation to stop, and reduced-motion
+      is handled by the script at the end of the file: it draws one frame and calls requestAnimationFrame no more. Both routes are needed,
+      and missing either leaves this setting only half in effect. */
+@media (prefers-reduced-motion: reduce) {
+  .hero-line,
+  .hero-glow,
+  .toc-caret {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ==========================================================================
+   2c. Formulas — native MathML (spec D.5)
+   ==========================================================================
+
+   Chromium supports MathML Core natively, **measured** (Playwright + the same sandbox string used in production
+   and REPORT_CSP): <math>'s constructor is MathMLElement (real typesetting, not degraded to text),
+   and a fraction block is 43px tall vs 22px for an ordinary paragraph. Zero external resources, zero JS, zero embedded fonts, and it passes the CSP straight through.
+
+   ⚠️ **Do not pull in KaTeX / MathJax.** They are external resources (or need fonts of 100KiB and up embedded),
+      the CSP's default-src 'none' blocks them outright, and all that would be left on the page is a stretch of raw formula source.
+   ⚠️ The honest cost: MathML Core's typesetting quality is below KaTeX's, and Greek letters and mathematical symbols fall back to
+      system fonts. Subscripts, fractions and sums are good enough, and a long derivation will look rough — **so do not write long derivations**,
+      and explain in one sentence what they are doing instead. */
+
+math {
+  font-family: var(--font-serif, Georgia, "Songti SC", serif);
+  color: var(--ink, #2a2620);
+}
+
+math[display="block"] {
+  margin: 0;
+}
+
+/* The formula wrapper (the formula half of D.4's "wrappers for concepts and formulas"): an accent-colored rule on the left +
+   a very light background + two corner marks at the top left and bottom right (see .eq::before/::after above).
+   .eq-num is the number mark at the top right, and is optional. */
+.eq {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  margin: 1.6em 0;
+  padding: .9em 1.1em;
+  border: 1px solid var(--ink-hair-soft, #dbd6d2);
+  border-left: 2px solid var(--accent, #bd4238);
+  border-radius: 0 6px 6px 0;
+  /* As with .example: a background mixed with transparency disappears under the light themes, so use --paper-deep at full strength */
+  background: var(--paper-deep, #f0ece4);
+}
+
+.eq-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* A long formula scrolls horizontally in a narrow panel rather than bursting the body column.
+     This is its own scroll container and has nothing to do with the document scroll. */
+  overflow-x: auto;
+}
+
+.eq-num {
+  flex: none;
+  font-family: var(--font-mono, Menlo, monospace);
+  font-size: .8em;
+  color: var(--ink-faint, #76706c);
+}
+
+/* ==========================================================================
+   3. Block types — the ①–⑪ sections and the fixed positions within a section
+   ========================================================================== */
+
+/* --- The curtain page ----------------------------------------------------
+   A one-screen-tall cover in front of every concept section (.concept), holding nothing but a large chapter number + the title + the one-line
+   definition. This is the upgraded form of v1's "a bold one-line definition at the head of the section", not new content —
+   the text of .curtain-lede must be word for word identical to the .lede inside the .concept right after it,
+   being the same sentence presented in two places (shown enlarged on the cover once, seen again on entering the body),
+   not one sentence written for each, and not split into halves to avoid repetition. When you change this sentence while writing a real report,
+   change it in both places together.
+
+   ⚠️ **v4's de-duplication (spec E.3, decided after the user's third real run) — the curtain page carries all of it.**
+      When v2 added curtain pages it only de-duplicated the "one-line definition", leaving two copies each of the title and the number: one on
+      the curtain page and another in the <h2> of the body .concept, and the number in two notations (`01` on the curtain page,
+      `item 1 / 4` in the body). The user's feedback from a real run was "I thought there were 4 points under chapter one,
+      and only worked out much later that there were 4 chapters in total". So now:
+        - the chapter title appears once, **only on the curtain page** (.curtain-title);
+        - the body .concept has **no <h2>** and starts straight from .lede, with the first heading being
+          the <h3> reading "What problem it solves";
+        - `.counter` (item N / M) **has been deleted**; do not add it back.
+      The cost is that scrolling into the middle of a chapter leaves no chapter name on screen — compensated by the current-item highlight in the contents on the left,
+      a trade-off the user called and accepted.
+
+   ⚠️ **The chapter's id is on the curtain page, not on .concept** (spec E.4): that curtain page div carries
+      id="c1". Clicking "§1 …" in the contents should land on the curtain page (the reader enters this section from its cover),
+      and landing in the body would mean skipping the cover. .concept needs no id — in the stopping-point selector
+      `.curtain, .concept, section[id]` in the script at the end of the file it is matched directly by `.concept`.
+      ⚠️ **Do not** write out the full string `class=` + `curtain` in this comment: group 7 of the pre-delivery self-check
+         counts it with grep -c to check that curtain pages and body sections come in pairs, and one extra in a comment would make those three numbers unequal. */
+
+.curtain {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* The chapter number. ⚠️ The notation is fixed as `§1` `§2` (spec E.4): it is the only chapter notation in the whole report, and
+   the contents, the knowledge map's node labels and the body's cross-references ("see §2") all use it.
+   **Do not write `01` / `Chapter 1`** — v3's curtain page said `01` while the contents said `§1`, two notations for one thing,
+   which is exactly what was unified this time. `§` is reserved for the concept chapters, and auxiliary sections such as
+   ⑤ the method comparison and ⑥ the summary take no number (they have names in the contents, and numbering them would only get them read as chapter N). */
+.curtain-num {
+  font-family: var(--font-mono, Menlo, monospace);
+  font-size: 1.15em;
+  letter-spacing: .3em;
+  color: var(--accent, #bd4238);
+  margin: 0 0 1.2em;
+}
+
+/* A short line trailing off to the right after the number (the number half of D.4's "thin lines + numbers + a rhythm of whitespace").
+   3.2em, 1px, and fading out — it is a tail on the number, not a separator rule. */
+.curtain-num::after {
+  content: '';
+  display: inline-block;
+  width: 3.2em;
+  height: 1px;
+  margin-left: .8em;
+  vertical-align: .35em;
+  background: linear-gradient(90deg, var(--accent, #bd4238), transparent);
+}
+
+.curtain-title {
+  font-family: var(--font-serif, Georgia, "Songti SC", serif);
+  font-size: 2.4em;
+  line-height: 1.25;
+  margin: 0 0 .6em;
+  text-wrap: balance;
+  /* The curtain page's large title takes neither h2's opening pause nor its hairline: on a full-screen cover an underline looks like
+     a truncated table. Clearing background-image and padding-bottom is enough — h2's decoration is
+     two background-image layers, and once the layers are gone background-size / -position stop having any effect on their own,
+     with no need to clear them one by one. */
+  background-image: none;
+  padding-bottom: 0;
+}
+
+.curtain-lede {
+  max-width: 34em;
+  margin: 0;
+  font-size: 1.15em;
+  font-weight: 600;
+  color: var(--ink-soft, #47413c);
+}
+
+/* .concept's snap point shares one rule with the curtain page, so scrolling to the top of a chapter snaps into alignment;
+   auxiliary sections such as .map/.path/.primer/.compare/… do not snap (they are still stopping points that
+   keydown can jump to in the script below, they simply take no part in scroll-snap, which avoids hard snapping everywhere in a long document). */
+.curtain,
+.concept {
+  scroll-snap-align: start;
+}
+
+/* --- ① The header ------------------------------------------------------ */
+
+/* ⚠️ v6: the whole header lands on the cover band (see section 2b, "The header's cover band").
+      - There is no underline any more: the band's own bottom edge closes this section (the hairline in .hero-band::after),
+        and drawing another --ink-hair rule would mean laying a light paper-colored line over a dark ground.
+      - padding-top pushes the three lines down a little from the band's top edge, not right against it.
+      - margin-bottom has to be larger than the bottom bleed the script leaves for the band (2.0rem), or ② the knowledge map's
+        h2 pushes up into the band. */
+.deck-head {
+  position: relative;
+  padding-top: 1.6rem;
+  padding-bottom: 0;
+  margin-bottom: 4.6rem;
+  border-bottom: none;
+}
+
+/* The two items at the top (spec D.3, borrowed from Lil'Log): estimated reading time + date last updated,
+   laid out in this one line and separated by small dots.
+   ⚠️ Since v5 there are **two** items, not three: the progress bar that used to lead has been deleted, the reasoning being in
+      "The progress bar at the top has been deleted" above. Do not restore it by following an old comment.
+
+   ⚠️ The reading time is **computed at generation time and written in**; do not count words with JS at runtime:
+      the visible words of the body ÷ 210 (English technical material runs 180–240 words/min, take the midpoint), rounded up,
+      plus 0.5 minutes per figure. Excluding ⑨ the references and the labels inside SVGs.
+      Write the result as "about N min", and when N < 5 write "about 5 min" (a shorter report is not worth producing on its own). */
+.deck-head .meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .55em;
+  margin: 0 0 1em;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .8em;
+  letter-spacing: .06em;
+  color: var(--ink-faint, #76706c);
+}
+
+/* The separator between the items: a 3px dot, steadier than "·" across system fonts */
+.meta-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .6;
+}
+
+/* "Who this report is written for" — the starting-point picture drawn from the interview */
+.deck-head .for-whom {
+  margin: 0;
+  padding-left: .9em;
+  border-left: 3px solid var(--accent, #bd4238);
+  color: var(--ink-soft, #47413c);
+}
+
+/* --- ② The knowledge map ------------------------------------------------ */
+
+/* Clear the vertical margins only (h2 has already left the spacing); the horizontal direction is left to the baseline rule's
+   margin-inline: auto, without which this figure would sit against the left edge in a wide window rather than centered. */
+.map figure {
+  margin-block: 0;
+}
+
+/* The map's nodes are in-page anchors doing double duty as navigation; the three colors correspond to already known / to cover / one line only.
+   These two baseline rules are wrapped in :where() to press their specificity down to (0,0,1), because otherwise
+   `.map .node text` is (0,2,1) and would silently swallow single-class modifiers inside a node such as .svg-label-faint —
+   and that kind of trap, "the same class works elsewhere but not here",
+   is the hardest to track down. The .n-known / .n-focus / .n-brief variants below override the baseline as usual. */
+:where(.map .node, .map .legend) text {
+  font-family: var(--font-sans, sans-serif);
+  fill: var(--ink, #2a2620);
+}
+
+:where(.map .node) rect {
+  fill: var(--paper-deep, #f0ece4);
+  stroke: var(--ink-hair, #c9c3be);
+  stroke-width: 1;
+}
+
+/* SVG <text> takes text-decoration too, and without turning it off explicitly the node text catches a's default underline */
+.map a {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.map a:hover rect {
+  stroke-width: 2;
+}
+
+.map .n-known rect { stroke: var(--moss, #45674c); }
+.map .n-known text { fill: var(--ink-soft, #47413c); }
+
+.map .n-focus rect {
+  stroke: var(--accent, #bd4238);
+  stroke-width: 2;
+  fill: var(--accent-soft, rgba(189, 66, 56, .14));
+}
+
+.map .n-brief rect {
+  stroke: var(--ink-hair, #c9c3be);
+  stroke-dasharray: 4 3;
+  fill: none;
+}
+.map .n-brief text { fill: var(--ink-faint, #76706c); }
+
+.map .edge {
+  fill: none;
+  stroke: var(--ink-hair, #c9c3be);
+  stroke-width: 1.2;
+}
+
+/* ⚠️ **The "fast track" section has been deleted (v5, the user's decision) — do not add it back.**
+   v4's ③ was a list of "the suggested reading order + what you can answer after each step" (`.path` / `.answers`).
+   The user's judgement after reading through the fourth real run was "it means nothing at all": the chapters are ordered by dependency to begin with,
+   the contents already puts that order on the left, and this section only listed the same string of titles again in different words.
+   Deleted along with it: the `.path` / `.answers` styles, that entry in the contents, the JSON's `path` field,
+   deck-json.md's rendering-map row and its how-to, layout.md's table, and the self-check criterion that counted it.
+   The numbering ①–⑩ therefore all moved up one place (the old ④ primer is now ③, and so on). */
+
+/* --- ③ The primer ------------------------------------------------------- */
+
+/* Even earlier concepts that are out of reach of the main points and get two or three sentences only */
+.primer dl {
+  margin: 0;
+}
+
+.primer dt {
+  margin-top: 1.2em;
+  font-weight: 600;
+}
+
+.primer dd {
+  margin: .2em 0 0;
+  color: var(--ink-soft, #47413c);
+}
+
+/* --- ④ The concept body ------------------------------------------------- */
+
+/* ⚠️ Since v4 .concept has **no <h2>** (the title is only on the curtain page, spec E.3), so the first
+   child element is .lede. padding-top restores the breath that h2's margin-top used to provide:
+   .concept takes part in scroll-snap-align: start, and without it the body's first line would sit against
+   the top of the screen after snapping. **Use padding, not margin**: margin would move the scroll-snap / offsetTop
+   landing point up as well, whereas padding only clears space inside the box. */
+.concept {
+  padding-top: 1.6rem;
+  margin-bottom: 1rem;
+}
+
+/* The one-line definition at the head of the section: the reader decides on the spot whether to read this section closely.
+   It is also the first of the five passages within the section, not an extra sentence written on top. */
+.lede {
+  font-size: 1.06em;
+  font-weight: 600;
+  margin-bottom: 1.2em;
+}
+
+/* The example block is visually separated from the body so that it can be skipped at a glance while skimming */
+/* ⚠️ The background uses --paper-deep **at full strength** and is no longer mixed with 60% transparency: under porcelain (--paper is pure white and
+   --paper-deep is only 2.5% darker) the mix comes out essentially white and the wrapper disappears under the light themes.
+   The border likewise moved from --paper-edge to --ink-hair-soft — the former is "the paper's edge", only a shade darker than the paper;
+   the latter is the lightest step of the ink, which is distinguishable under all five themes. The measurements are in the task-12 report. */
+.example {
+  background: var(--paper-deep, #f0ece4);
+  border: 1px solid var(--ink-hair-soft, #dbd6d2);
+  border-radius: 6px;
+  padding: .8em 1em;
+  margin: 1.4em 0;
+}
+
+.example > :last-child {
+  margin-bottom: 0;
+}
+
+.example .tag,
+.pointer .tag {
+  display: block;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .78em;
+  letter-spacing: .08em;
+  color: var(--ink-faint, #76706c);
+  margin-bottom: .3em;
+}
+
+/* The pointer card: when the original figure cannot be fetched, or the current model cannot see images, it points at that figure in the original
+   (usage is in references/figures.md).
+
+   ⚠️ It looks like .example, but **it must use its own class**: the example gate in item 4 of references/writing.md
+   counts occurrences of `class="example`, and the pointer card is precisely the opposite of "a concrete example" —
+   a card holding one sentence and a DOI cannot be used to make up the numbers. The dashed border says the same thing visually:
+   there is no content here, only somewhere to go. */
+.pointer {
+  border: 1px dashed var(--ink-hair, #c9c3be);
+  border-radius: 6px;
+  padding: .8em 1em;
+  margin: 1.4em 0;
+  color: var(--ink-soft, #47413c);
+}
+
+.pointer > :last-child {
+  margin-bottom: 0;
+}
+
+/* Common misconceptions and limits */
+.boundary {
+  margin: 1.6em 0;
+  padding: .2em 0 .2em 1em;
+  border-left: 3px solid var(--amber, #a97d3a);
+}
+
+.boundary h3 {
+  margin-top: .6em;
+}
+
+.boundary ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.boundary li {
+  margin-bottom: .5em;
+}
+
+/* Sources: the founding papers + reviews */
+.source {
+  margin: 1.6em 0;
+  font-size: .92em;
+  color: var(--ink-soft, #47413c);
+}
+
+.source ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+/* The section's closing "after this section you should be able to answer" — not an equivalent substitute for JS self-test questions */
+.checkout {
+  margin: 1.8em 0 .8em;
+  padding: .75em 1em;
+  border-top: 1px solid var(--ink-hair, #c9c3be);
+  border-bottom: 1px solid var(--ink-hair, #c9c3be);
+  font-family: var(--font-sans, sans-serif);
+  font-size: .92em;
+  color: var(--ink-soft, #47413c);
+}
+
+.checkout b {
+  color: var(--ink, #2a2620);
+}
+
+/* The anchor back to the knowledge map: a way to re-orient at any time when stuck */
+.back {
+  margin: 0 0 2.5em;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .85em;
+}
+
+.back a {
+  color: var(--ink-faint, #76706c);
+  text-decoration: none;
+}
+
+.back a:hover {
+  color: var(--accent, #bd4238);
+}
+
+/* --- Margin notes -------------------------------------------------------
+   The dependency note "this section assumes you already know §X". The picture obtained by the step 3 interview fills exactly this slot.
+
+   ⚠️ **This is one of v3's deliberate reversals (spec D.2).** In Task 2 .aside was demoted to block level,
+      on the grounds that ".deck takes no width limit ⇒ there is no slack outside the measure and inside the container to borrow, and 88px cannot hold it".
+      .deck is now a three-column grid whose third column is an empty track kept specifically for margin notes, so that reason no longer holds and
+      .aside goes back to being a Tufte-style floating margin note. **When you see the old comment's line "so it falls back to block level: wide or narrow alike",
+      that is v2's wording, and it has been overturned.**
+
+   How the float works: float: right + a margin-right more negative than its own width, which pushes the whole margin note's
+   margin box out of the body column and into the third track. Grid items default to overflow: visible,
+   so the part hanging outside displays normally; the track's width is exactly --ld-side-w + --ld-side-gap, and the two agree.
+
+   clear: right is required: two margin notes in a row (or a figure right after a margin note) would, without clearing, stack in
+   the same track and cover each other. The cost is that the second margin note slides down below the first, slightly lower than
+   the paragraph it belongs to — which beats overlapping. */
+
+.aside {
+  margin: 1.4em 0;
+  padding: .1em 0 .1em .9em;
+  border-left: 2px solid var(--marginalia, #194f81);
+  font-family: var(--font-sans, sans-serif);
+  font-size: .85em;
+  line-height: 1.6;
+  color: var(--marginalia, #194f81);
+}
+
+/* It only floats when three columns hold. 1180px is the measured breakpoint, see "1. Layout".
+   `min-width` is written as the complement of the `max-width: 1179px` above, so the two never match at once. */
+@media (min-width: 1180px) {
+  .aside {
+    float: right;
+    clear: right;
+    /* box-sizing has to become border-box: --ld-side-w is set from the track's width,
+       and the default content-box would squeeze the border + padding (about 13px) additionally into the gutter between
+       the body and the margin note, which measured cut the 30px gutter down to 17px. */
+    box-sizing: border-box;
+    /* .aside's own font size is .85em, while --ld-side-w is measured against the body font size —
+       divide by .85 to convert it into this element's em, or the real width comes out 15% narrower than the track. */
+    width: calc(var(--ld-side-w) / .85);
+    /* The right margin takes the negative of "its own width + the gutter width": a right float's right margin edge sits against the container's content right edge,
+       so the border box lands entirely --ld-side-gap to the right of the content area. The left margin must be 0 —
+       leaving space on the left would push the margin note further right and take it past the track. */
+    margin: .35em calc(-1 * (var(--ld-side-w) + var(--ld-side-gap)) / .85) 1em 0;
+  }
+}
+
+.aside p {
+  margin: 0 0 .5em;
+}
+
+.aside > :last-child {
+  margin-bottom: 0;
+}
+
+/* --- ⑤ The method comparison table --------------------------------------- */
+
+/* A real table, not the burst pseudo-table Markdown gives. Narrow screens fall back to horizontal scrolling;
+   now that .deck no longer limits its width the table itself no longer has to borrow width either, and can simply follow the body column's width. */
+.table-wrap {
+  overflow-x: auto;
+  margin: 1.4em 0;
+}
+
+.compare table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .82em;
+  line-height: 1.55;
+}
+
+.compare th,
+.compare td {
+  text-align: left;
+  vertical-align: top;
+  padding: .55em .7em;
+  border-bottom: 1px solid var(--ink-hair-soft, #dbd6d2);
+}
+
+.compare thead th {
+  border-bottom: 1.5px solid var(--ink-hair, #c9c3be);
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--ink-soft, #47413c);
+  white-space: nowrap;
+}
+
+.compare tbody th {
+  white-space: nowrap;
+  color: var(--ink, #2a2620);
+}
+
+/* ⚠️ The same trap as .example / .eq: the background uses --paper-deep **at full strength**, not mixed with transparency.
+   porcelain's paper is pure white and --paper-deep is only 2.5% darker, so at 45% it comes out around #fbfbfc with
+   a contrast against the paper of ≈1.02, and the whole zebra striping vanishes outright under the light themes. */
+.compare tbody tr:nth-child(even) {
+  background: var(--paper-deep, #f0ece4);
+}
+
+/* --- ⑥ The summary section ----------------------------------------------- */
+
+/* The reader has to reach a moment where it "comes together" at the end, rather than finishing with a pile of parts.
+   ⚠️ The class is `.summary`, not `.wrapup` (renamed in v5, the user's decision): "wrap-up" is jargon that
+      the reader does not follow. The heading text, the contents entry and the JSON field name (`wrapup` → `summary`) were all changed with it,
+      and it is only cleanly done once `wrapup` cannot be found anywhere in the repo. */
+.summary {
+  margin-top: 3.5rem;
+  padding: 1.4em 1.4em .6em;
+  background: var(--paper-deep, #f0ece4);
+  border-top: 2px solid var(--accent, #bd4238);
+  border-radius: 0 0 6px 6px;
+}
+
+.summary h2 {
+  margin-top: 0;
+  /* The summary section already has a 2px top edge of its own, and another underline on the heading would be too much */
+  background-image: none;
+  padding-bottom: 0;
+}
+
+/* --- ⑦ The glossary table ------------------------------------------------ */
+
+/* Two columns: the term | a one-sentence explanation + which section it first appears in */
+.glossary dl {
+  display: grid;
+  grid-template-columns: minmax(7em, 11em) 1fr;
+  gap: .55em 1.1em;
+  margin: 0;
+  font-size: .92em;
+}
+
+.glossary dt {
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.glossary dt .en {
+  display: block;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .82em;
+  font-weight: 400;
+  color: var(--ink-faint, #76706c);
+}
+
+.glossary dd {
+  margin: 0;
+  color: var(--ink-soft, #47413c);
+}
+
+.glossary .where {
+  font-family: var(--font-sans, sans-serif);
+  font-size: .82em;
+  color: var(--ink-faint, #76706c);
+  white-space: nowrap;
+}
+
+@media (max-width: 30em) {
+  .glossary dl {
+    grid-template-columns: 1fr;
+    gap: .15em;
+  }
+  .glossary dd {
+    margin-bottom: .8em;
+  }
+}
+
+/* --- ⑧ What to do next --------------------------------------------------- */
+
+.next h3 {
+  margin-top: 1.6em;
+}
+
+.next ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.next li {
+  margin-bottom: .6em;
+}
+
+.next .why {
+  display: block;
+  font-size: .88em;
+  color: var(--ink-soft, #47413c);
+}
+
+/* --- ⑨ References -------------------------------------------------------
+
+   ⚠️ **Citations in the body are two hops (v5, the user's decision)**: the `<a href="#r-xxx">〈first author〉 et al. (year)</a>` in the body
+      jumps to the matching `<li id="r-xxx">` in this section, and it is the `a.ref-link` inside that `<li>` that leads to the paper's own
+      URL. v4 had the body link straight out to the paper — one click and you are out of the app, with the reader seeing neither the full
+      record of that reference nor a way back to where they were reading. The two hops split "which entry is this sentence's source" and "I want to go read
+      the original now" into two actions, with the first hop staying in the page.
+   ⚠️ In-page anchors only work because the viewer injects `<base href="about:srcdoc">` (a srcdoc document's
+      base URL is otherwise inherited from the host page, and `href="#x"` would be treated as cross-document navigation). **Do not write
+      a `<base>` of your own in the report**; injectHostTheme injects its own only when there is no base.
+   ⚠️ Every `<li>` needs an `id="r-…"` for the body to point at it; the external link `.refs a.ref-link` takes
+      `target="_blank" rel="noopener"` as always. */
+
+.refs ol {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: .92em;
+}
+
+.refs li {
+  margin-bottom: .8em;
+  /* When the second of the two hops lands, it has to be visible that "this is the entry". Use scroll-margin + a very light background,
+     not a border (which would be confused with the .example / .eq wrappers). */
+  scroll-margin-top: 1.5rem;
+  padding: .15em .5em;
+  margin-left: -.5em;
+  border-radius: 4px;
+}
+
+.refs li:target {
+  background: var(--paper-deep, #f0ece4);
+}
+
+.refs .ref-link {
+  font-family: var(--font-mono, Menlo, monospace);
+  font-size: .85em;
+  word-break: break-all;
+}
+
+/* --- ⑩ Honest boundaries ------------------------------------------------- */
+
+.honesty {
+  margin-top: 3rem;
+  padding: 1em 1.2em;
+  border: 1px solid var(--ink-hair, #c9c3be);
+  border-radius: 6px;
+  font-size: .9em;
+  color: var(--ink-soft, #47413c);
+}
+
+.honesty h2 {
+  margin-top: .2em;
+  background-image: none;
+  padding-bottom: 0;
+  font-size: 1.05em;
+}
+
+.honesty ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.honesty li {
+  margin-bottom: .5em;
+}
+
+/* --- Figure and text stay together ---------------------------------------
+   The caption follows the svg immediately and both live in one <figure>; the passage discussing the figure sits in the same
+   unbreakable block as the figure, which keeps the figure from being turned onto the next screen. */
+
+/* Now that the body column is back to a fixed measure (38em), a figure that stays obediently inside the column gets only about 570px,
+   and a figure with viewBox 640 drops below a scale of 0.9, with size-10 text inside the figure rendering below 9px.
+   So when three columns hold, the figure **borrows the margin-note track on the right** (Tufte's fullwidth figure tradition):
+   38em + 2em + 14em ≈ 54em, and the scale goes back above 1.2.
+   In the two-column / one-column tiers there is no track to borrow and the figure is the body column's width — which is also why the SVG font-size floor below
+   had to go from 10 to 12, see the measured range in "Shared pieces inside SVGs". */
+figure {
+  margin-block: 1.8em;
+  margin-inline: 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+@media (min-width: 1180px) {
+  figure {
+    /* clear: right is required: the track the figure reaches into is exactly the one .aside's float occupies,
+       and without clearing it would stack on top of the margin note. The cost is that the figure slides down below the margin note. */
+    clear: right;
+    margin-right: calc(-1 * (var(--ld-side-w) + var(--ld-side-gap)));
+  }
+}
+
+figure svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* An embedded figure from the original paper (<img src="papers/…">, which the viewer inlines as a data URI when rendering).
+
+   ⚠️ It is max-width, not width; both directions have to be held, so do not change it to width: 100%:
+   - Figure larger than the container: pdf_figure_to_png outputs at scale: 2 by default, so the pixels are twice what is expected,
+     and without a width limit it renders at its natural width, bursting figure's max-width: 56em and .deck,
+     which gives the whole report a horizontal scrollbar. max-width shrinks it back inside the container.
+   - Figure smaller than the container: figure is block level with no explicit width and fills the 56em cap,
+     and width: 100% would force every original figure up to that width — a raster image enlarged is simply blurry,
+     and references/figures.md lists "insert the original figure" as the first-priority source, so nearly every real report hits this.
+     max-width lets a small figure keep its natural size.
+   figure svg above using width: 100% is right (vectors enlarge losslessly), and that reasoning **cannot** be carried over to <img>.
+
+   With this rule, an <img> in the report needs no inline style at all — do not add any to the body. */
+figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+figcaption {
+  margin-top: .6em;
+  font-family: var(--font-sans, sans-serif);
+  font-size: .82em;
+  line-height: 1.6;
+  color: var(--ink-faint, #76706c);
+}
+
+figcaption b {
+  color: var(--ink-soft, #47413c);
+}
+
+.with-figure {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* Shared pieces inside SVGs.
+   ⚠️ **With a viewBox 640 wide, font-size inside the figure must not go below 12** (v3 raised this floor from 10 to 12,
+      because the figure got narrower once the body column was locked to --ld-measure, see the measurements below).
+      Scale = the figure's actual rendered width / 640. **This round's measurements** (the ruler script, report panel width ×
+      a 15px reading font size, with the knowledge map taken as the figure):
+
+        Panel      Form         Body col  Fig w   Scale
+        560px      1 column     520       520     0.81
+        719px      1 column     570       570     0.89
+        820px      2 columns    570       570     0.89
+       1179px      2 columns    570       570     0.89
+       1180px      3 columns    570       810     1.27
+       1400px      3 columns    570       810     1.27
+
+      (The breakpoints are 820 / 1180, matching the three @media blocks above; the version of this table in an earlier draft divided at
+      1080, which was measured before the three-column breakpoint moved from 1080 up to 1180, and has been corrected.)
+
+      In three columns the figure borrows the margin-note track on the right (see the figure rule), and the scale goes back above 1.2;
+      in two columns / one column there is no track to borrow and the scale settles around 0.89 — size-12 text renders at about
+      10.7px, which is just about still readable. **That is the entire reason the floor is 12 and not 10**; do not press it lower.
+      **Below 560px there are no measurements**, and the scale keeps dropping (at a 400px panel it is about 0.56, with
+      size-12 text rendering below 7px) — a very narrow report panel was never suited to looking at figures anyway,
+      so do not treat "0.89" as a lower bound that holds unconditionally.
+   ⚠️ When drawing a new figure, always take colors from the classes here, and do not write them as fill="…" / stroke="…" attributes:
+      an attribute can be overridden by the stylesheet too, but only once they are gathered into classes can the print backstop in
+      group 4 below register them one by one. The one exception is a reference like fill="url(#…)" pointing at
+      a <pattern> / <marker> / <radialGradient> in the same document — that kind of reference is safest left on the element's
+      attribute: a presentation attribute ranks below any CSS rule, so the set of classed fills in group 4's
+      print backstop below overrides it automatically; the moment a pattern reference is turned into a class as well,
+      the print block has to register it explicitly, and one missed entry silently prints a noise texture. */
+.svg-label {
+  font-family: var(--font-sans, sans-serif);
+  fill: var(--ink-soft, #47413c);
+}
+
+.svg-label-faint {
+  font-family: var(--font-sans, sans-serif);
+  fill: var(--ink-faint, #76706c);
+}
+
+.svg-formula {
+  font-family: var(--font-mono, Menlo, monospace);
+  fill: var(--ink, #2a2620);
+}
+
+.arrow-head {
+  fill: var(--ink-faint, #76706c);
+}
+
+.arrow-line {
+  fill: none;
+  stroke: var(--ink-faint, #76706c);
+  stroke-width: 1.3;
+}
+
+/* A solid block (a frame with a background) */
+.svg-box {
+  fill: var(--paper-deep, #f0ece4);
+  stroke: var(--ink-hair, #c9c3be);
+}
+
+/* An empty frame */
+.svg-frame {
+  fill: none;
+  stroke: var(--ink-hair, #c9c3be);
+}
+
+/* The emphasized frame: the one thing in the figure you want seen first */
+.svg-hi {
+  fill: var(--accent-soft, rgba(189, 66, 56, .14));
+  stroke: var(--accent, #bd4238);
+  stroke-width: 2;
+}
+
+/* Baselines / separator lines */
+.svg-rule {
+  fill: none;
+  stroke: var(--ink-soft, #47413c);
+  stroke-width: 1.5;
+}
+
+.svg-fill-moss  { fill: var(--moss, #45674c); }
+.svg-fill-amber { fill: var(--amber, #a97d3a); }
+
+/* One dot in a noise texture; density is expressed through the element's own opacity attribute */
+.noise-dot {
+  fill: var(--ink-soft, #47413c);
+}
+
+/* ==========================================================================
+   4. Printing — the user will want to export a PDF
+   ========================================================================== */
+
+@media print {
+  html {
+    font-size: 11pt;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+    padding: 0;
+  }
+
+  /* On paper there is no such thing as three columns: the grid falls back to one column (without which an empty contents track would be left on the left),
+     and the side margins are zeroed so the body can use the whole print area. */
+  .deck {
+    display: block;
+    padding: 0;
+  }
+
+  /* The navigation tree and the header's cover band: screen only, and neither goes on paper.
+     .toc is a set of in-page anchors and cannot be clicked in print; .hero-band is pure decoration.
+     ⚠️ Not printing the band is **required**, not ink-saving: it is a whole field of --hb-base dark ground,
+        and printing it straight out gives a solid black slab at the top of the page. */
+  .toc,
+  .hero-band {
+    display: none;
+  }
+
+  /* With the band gone, the header's three lines can no longer use the band's light palette (which would be white text on white paper),
+     and the .deck-head::before darkening layer likewise has to be withdrawn.
+     While we are here, restore the underline that v6 removed on screen — on paper there is no band bottom edge to close this section. */
+  .deck-head::before {
+    display: none;
+  }
+
+  .deck-head {
+    padding-top: 0;
+    padding-bottom: .8em;
+    margin-bottom: 2em;
+    border-bottom: 1px solid #000;
+  }
+
+  .deck-head > h1,
+  .deck-head .meta,
+  .deck-head .for-whom {
+    color: #000;
+    opacity: 1;
+  }
+
+  .deck-head .for-whom {
+    border-left-color: #000;
+  }
+
+  /* The print backstop for the decoration: the corner marks and the section break line both take their color through var(), which is light when the host is midnight,
+     and they would vanish over paper forced to #fff. The corner marks are simply not printed (they are only decoration), and the break line becomes a
+     print-safe pure black thin rule. */
+  .example::before,
+  .example::after,
+  .pointer::before,
+  .eq::before,
+  .eq::after {
+    display: none;
+  }
+
+  .flow > section + section::before {
+    background: none;
+    border-top: 1px solid #000;
+    height: 0;
+    width: 40%;
+    margin: 2.4em auto 2em;
+  }
+
+  /* h2's opening pause + hairline are two background-image layers (not a border),
+     and likewise become a print-safe pure black border. */
+  h2 {
+    background-image: none;
+    border-bottom: 1px solid #000;
+  }
+
+  /* These three explicitly take no underline on screen (the curtain page's large title / the summary section / the honest boundaries),
+     and take none on paper either — the h2 above is a catch-all, and this pulls them back out. */
+  .curtain-title,
+  .summary h2,
+  .honesty h2 {
+    border-bottom: none;
+  }
+
+  .curtain-num::after {
+    background: #000;
+  }
+
+  /* The formula wrapper: drop the background (to save ink, and to avoid a light ground over white paper under midnight), keep the border. */
+  .eq {
+    background: none;
+    border: 1px solid #000;
+  }
+
+  .eq-body {
+    overflow: visible;
+  }
+
+  math {
+    color: #000;
+  }
+
+  /* Entering one item at a time: the opacity: 0 is set actively by the <script> at the end of the file in the browser, and when exporting a PDF
+     the script may not get the chance to run, nor the animation to finish — so force visibility; content must not be printed (or fail to print)
+     stuck in the hidden state it holds before entering. */
+  .reveal {
+    opacity: 1 !important;
+  }
+
+  /* Margin notes are already block level on screen (see the comment in the "Margin notes" section above), so float needs no further handling here;
+     this only switches the color to print-safe pure black, and tightens the spacing a little to save paper while we are at it. */
+  .aside {
+    /* On a wide screen panel .aside is a right-floated Tufte margin note (see the "Margin notes" section).
+       On paper there is no margin-note track, so it is forced back to block level — without clearing float / width / margin,
+       the negative margin-right would push it out of the print area. */
+    float: none;
+    clear: none;
+    width: auto;
+    margin: 1em 0;
+    padding-left: .8em;
+    border-left: 2px solid #000;
+    color: #000;
+  }
+
+  /* On a wide panel a figure borrows the margin-note track (a negative margin-right), which likewise has to be cleared on paper. */
+  figure {
+    clear: none;
+    margin-right: 0;
+  }
+
+  /* On screen .table-wrap catches a wide table with overflow-x: auto; on paper there is no horizontal scrolling,
+     so force it open, and if it does not fit let the content overflow the print area (better than being cropped away). */
+  .compare .table-wrap {
+    overflow: visible;
+  }
+
+  .example,
+  .summary,
+  .compare tbody tr:nth-child(even) {
+    background: none;
+  }
+
+  .example {
+    border: 1px solid #000;
+  }
+
+  /* The pointer card keeps its dashed border (it is saying "this is only somewhere to go"), and only the color becomes print-safe pure black. */
+  .pointer {
+    border-color: #000;
+    color: #000;
+  }
+
+  .summary,
+  .honesty {
+    border: 1px solid #000;
+  }
+
+  .boundary {
+    border-left-color: #000;
+  }
+
+  a {
+    color: #000;
+    text-decoration: none;
+  }
+
+  /* Links cannot be clicked on paper, so print the address.
+     ⚠️ Print only the **external link** inside `.refs`: since v5 the citations in the body's `.source` are two in-page hops
+        (`href="#r-…"`), and printing those would only produce a string like "〈#r-ho2020〉",
+        which is of no use whatever to a reader on paper. The selector is therefore narrowed to the ones starting with http. */
+  .refs a[href^="http"]::after {
+    content: " 〈" attr(href) "〉";
+    font-size: .82em;
+    word-break: break-all;
+  }
+
+  /* The two in-page hops mean nothing on paper, but the citation itself has to stay visible — keep the text, drop the link styling
+     (the catch-all `a { color: #000; text-decoration: none }` above has already done that).
+     :target's background is not printed either. */
+  .refs li:target {
+    background: none;
+  }
+
+  .checkout,
+  figcaption,
+  .honesty {
+    color: #000;
+  }
+
+  /* ---- The SVG print backstop --------------------------------------------
+     The colors in the figures are all bound to the theme values the host injects. When the host is midnight, --ink-soft /
+     --ink-faint are **light**, while the print background has already been forced to #fff above — without a backstop
+     every figure in the report becomes light on white, and is nearly invisible in the exported PDF.
+
+     The first two rules are an **unconditional backstop** that overrides every class with !important: any SVG anyone newly draws
+     automatically gets "all text black, all lines black", and the worst case is an extra outline, never invisibility.
+     What follows, listed by class, is the fallback for "areas" (fill colors cannot be handled with one stroke, and filling everything white would erase the silhouettes).
+
+     ⚠️ If a figure you draw introduces a new fill class, you must come back and register a rule in this part,
+        or that figure repeats the same hole — and it is completely invisible on screen. Likewise, a newly introduced
+        animation class that manipulates inline styles (for instance .draw below, which uses JS to set
+        stroke-dasharray / stroke-dashoffset for the stroke animation) also has to be registered here
+        with a rule that zeroes it out, or printing/exporting freezes it half-played, or even completely
+        unplayed and invisible (stroke-dashoffset equal to the path's full length). */
+
+  svg text {
+    fill: #000 !important;
+  }
+
+  svg path,
+  svg rect,
+  svg circle,
+  svg ellipse,
+  svg line,
+  svg polyline,
+  svg polygon {
+    stroke: #000 !important;
+  }
+
+  /* The SVG stroke animation: see the <script> at the end of the file — when a .draw path enters the viewport, JS sets
+     stroke-dasharray to the path's length and animates stroke-dashoffset from the full length to 0.
+     Printing/exporting has no runtime for that JS, so both properties must be forcibly zeroed — otherwise it may print
+     a line stroked halfway, or with dashoffset still at full length (meaning the whole line is transparent). */
+  .draw {
+    stroke-dasharray: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+
+  /* Areas: anything with a background falls back to white, with the hierarchy carried by strokes and line styles */
+  .svg-box,
+  .svg-frame,
+  .svg-hi,
+  .map .node rect,
+  .map .n-brief rect {
+    fill: #fff;
+  }
+
+  /* Silhouettes stay solid, or the mountain in Fig. 2 would disappear entirely */
+  .svg-fill-moss,
+  .arrow-head,
+  .noise-dot {
+    fill: #000;
+  }
+
+  /* A light element laid over a silhouette goes white instead, which is the only way front and back stay distinguishable */
+  .svg-fill-amber {
+    fill: #fff;
+  }
+
+  h2, h3 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<!-- The header's dark cover band (spec E.5 v6). The styles and the explanation of the three directions are in the
+     "The header's cover band .hero-band" section inside <style>.
+     ⚠️ **The position is deliberate: it is a direct child of <body>, not inside .deck / .deck-head.**
+        Moved into .deck-head it cannot bleed to the panel width (except through 100vw, which adds a horizontal scrollbar
+        on platforms without overlay scrollbars); giving .deck position would make the stopping points computed by the script at the end of the file land off.
+     ⚠️ aria-hidden="true": **pure decoration**, and no information may be drawn only here.
+     ⚠️ **Keep the whole block as it is, without changing one word; the one value to fill from the JSON is data-hero.**
+        It is a purely decorative layer and carries none of this report's content.
+     ⚠️ **Do not delete it.** The header's three lines are --hb-fg (a light color) in <style> — with the band gone,
+        the title is a light color over light paper: invisible, and with no error.
+     ⚠️ **Two layers stacked, and both must be kept**: the <canvas> on top is the animated layer (the code and color-picking for the three directions are
+        written in the one <script> at the end of the file), and the <svg class="hero-fallback"> below is
+        the backstop for when WebGL / canvas fails to start. Only once the script succeeds does it add .gl-on to .hero-band to hide
+        the SVG — written the other way round (hide the SVG by default and let the script show it) one failing script leaves the band empty.
+     ⚠️ **Do not** add .draw to the SVG's lines: that is the one-shot stroking driven by getTotalLength() in the script at the end of the file,
+        and the e2e suite asserts on the first .draw in the document. Use its own classes here.
+     Drawing a new one: both ends of a path have to reach outside the viewBox (-60 / 700), or the line ends stop dead at the edge.
+
+     data-hero takes the `hero` field at the top of the JSON, and recognizes only three values:
+       gridwave (scan lines · HUD) · constellation (constellation of knowledge) · holoband (holographic dispersion)
+     How the slug decides which of the three it is, is in the table in SKILL.md sub-step 5.1.
+     **A typo, some other value, or the attribute missing entirely all fall back to gridwave** (a determined backstop, not a random one).
+     ⚠️ Reopening the same report must give the same face: this is a value hard-coded into the HTML,
+        and it **must not** be changed to a random pick at runtime. -->
+<div class="hero-band" data-hero="⟨待填: gridwave / constellation / holoband, see SKILL.md 5.1⟩" aria-hidden="true">
+  <canvas class="hero-canvas"></canvas>
+  <svg class="hero-fallback" viewBox="0 0 640 176" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <radialGradient id="ld-hero-glow" cx="50%" cy="50%" r="50%">
+        <stop class="hero-glow-in" offset="0"/>
+        <stop class="hero-glow-out" offset="1"/>
+      </radialGradient>
+    </defs>
+    <ellipse class="hero-glow" cx="210" cy="84" rx="270" ry="96" fill="url(#ld-hero-glow)"/>
+    <path class="hero-line hero-line-1" d="M-60 38 C 90 6, 210 72, 340 40 S 580 2, 700 34"/>
+    <path class="hero-line hero-line-2" d="M-60 74 C 100 40, 230 108, 360 72 S 590 34, 700 68"/>
+    <path class="hero-line hero-line-3" d="M-60 112 C 110 78, 250 144, 380 108 S 600 72, 700 104"/>
+    <path class="hero-line hero-line-4" d="M-60 148 C 120 116, 270 178, 400 142 S 610 108, 700 140"/>
+  </svg>
+</div>
+
+<div class="deck">
+
+<!-- The fixed navigation tree on the left (spec D.2, reversal R1).
+     ⚠️ **This is a deliberate reversal**: the v1/v2 comments said "a fixed floating contents panel — explicitly not doing it",
+        and the user confirmed after reading the typography research that it is wanted. Do not delete this block because of the old wording.
+     ⚠️ The entries correspond one to one with the anchors in .flow and are **maintained by hand**: one missing raises no error,
+        that section simply disappears from the contents. The second-level list .toc-sub holds the concepts, one entry per section.
+     ⚠️ The href of the concept entries points at the **curtain page** (the id on `.curtain`, spec E.4),
+        not the body's .concept — a reader clicking §1 should enter this section from its cover.
+     ⚠️ Notation: concepts are written `§1 Title`, and the other entries write the name only, **unnumbered**. This one notation is used throughout
+        (the contents / the knowledge-map nodes / the body's cross-references / the glossary's "first appears in"),
+        and the .curtain-num on the curtain page is `§1` as well. `01` and `§1` must never coexist again.
+     ⚠️ ⑤ the method comparison only exists when the topic is "a method". When the JSON's `compare` is null,
+        delete the "Method comparison" entry below together with that whole section in the body — deleting only one side leaves
+        a dead anchor that does nothing when clicked (pre-delivery self-check H4 lists it).
+     ⚠️ The collapse button's behavior is written in the one <script> at the end of the file; when the script fails to run the contents stays
+        expanded and nothing gets collapsed away (which is why it does not violate the "no <details>" rule). -->
+<nav class="toc" aria-label="Chapter navigation">
+  <!-- aria-controls points at .toc-body's id, which is how a screen reader knows which block this button collapses;
+       the id is hard-coded as toc-body, the script does not depend on it, but renaming it means changing it here and below together. -->
+  <button class="toc-head" type="button" aria-expanded="true" aria-controls="toc-body">
+    <span class="toc-caret" aria-hidden="true"></span>Contents
+  </button>
+  <div class="toc-body" id="toc-body">
+    <ol class="toc-list">
+      <li><a href="#map">Knowledge map</a></li>
+      <li><a href="#primer">Primer</a></li>
+      <li>
+        <div class="toc-group">Concepts</div>
+        <ol class="toc-sub">
+          <!-- One entry per chapter, one chapter per line: <li><a href="#cN">§N Title</a></li> ⟨待填⟩ -->
+        </ol>
+      </li>
+      <li><a href="#compare">Method comparison</a></li>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#glossary">Glossary</a></li>
+      <li><a href="#next">What to do next</a></li>
+      <li><a href="#refs">References</a></li>
+      <li><a href="#honesty">Honest boundaries</a></li>
+    </ol>
+  </div>
+</nav>
+
+<!-- The body column. ⚠️ Do not give .flow position / overflow: the former moves the offsetTop frame of reference of .curtain / .concept
+     from the document onto it (the arrow keys land off across the board), and the latter moves the document scroll
+     elsewhere (scroll-snap stops working). -->
+<main class="flow">
+
+<!-- ① The header: topic / reading time / last updated / one line on "who this report is written for" -->
+<header class="deck-head">
+  <h1>⟨待填: the report title, taken from the JSON's title⟩</h1>
+
+  <!-- The two items at the top: estimated reading time + date last updated (v5 deleted the progress bar that used to lead).
+       ⚠️ The number of minutes is **computed at generation time and written in**; do not count words with JS at runtime —
+          the algorithm is in the .deck-head .meta comment inside <style>.
+       ⚠️ <time datetime> takes the ISO date; the date in the text that follows agrees with it. -->
+  <p class="meta">
+    <span>learning-deck</span>
+    <span class="meta-sep" aria-hidden="true"></span>
+    <span>about ⟨待填⟩ min</span>
+    <span class="meta-sep" aria-hidden="true"></span>
+    <time datetime="⟨待填: ISO date⟩">Last updated ⟨待填: the same date⟩</time>
+  </p>
+
+  <p class="for-whom">⟨待填: forWhom — the starting-point picture from the interview, one whole paragraph, not boilerplate⟩</p>
+</header>
+
+<!-- ② The knowledge map: an SVG whose nodes take three colors (already known / to cover / one line only), the nodes being in-page anchors -->
+<section class="map" id="map">
+  <h2>Knowledge map</h2>
+  <!-- Paste map.intro's several <p> here, followed by a <figure>: inside it is the
+       <svg> drawn on the spot from map.sketch (one g.node per node plus one of .n-known / .n-focus / .n-brief, with the node's
+       rect + text wrapped in an <a href="#…">; edges use .edge; the legend g.legend follows the sample),
+       and then one <figcaption><b>Fig. 1</b> …</figcaption>.
+       **There is a finished figure you can copy**: references/layout.md, "② The knowledge map: one finished figure". ⟨待填⟩ -->
+</section>
+
+<!-- ③ The primer: earlier concepts you have not grasped but that are out of reach of the main points, two or three sentences each -->
+<section class="primer" id="primer">
+  <h2>Primer</h2>
+  <!-- Paste primer.intro's <p> here, followed by a <dl>, one pair per entry:
+       <dt>term</dt> + <dd>two or three sentences</dd>. ⟨待填⟩ -->
+</section>
+
+<!-- ④ The concept body — the chapters' insertion anchor -------------------------
+
+     ⚠️ **The template carries no example chapters (v5, the user's decision).** v4's template came with the shells of two example chapters,
+        and the render instruction was "chapters 1 and 2 consume those two shells, chapter 3 onward uses insertion". The problem was that the two paths cost
+        far too differently: insertion's oldText is one comment line, while replacing a shell has eighty lines of example SVG in its oldText.
+        The result on the fourth real run was that all nine chapters took the cheap insertion path and the two shells stayed in the file —
+        9 chapters in the JSON, 11 curtain pages in the HTML, and the contents no longer matching the body.
+        **There is no shell to use now, insertion is the only path, and so there is nothing left to leak.**
+
+     How to insert: **one edit per chapter**, with oldText being the single anchor comment line below and
+     newText = this chapter's "curtain page + .concept" pair + that same anchor comment line.
+     **When inserting the last chapter, do not bring that comment back in newText** — the anchor should disappear once used;
+     it carries ⟨待填⟩, and leaving it in gets caught by pre-delivery self-check H1.
+
+     What a pair looks like, the fixed order within a section, and a complete chapter you can copy,
+     are in the two sections "The curtain page" and "④ What one finished chapter looks like" of references/layout.md. -->
+<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->
+
+<!-- ⑤ The method comparison table: only when the topic is "a method". Assumptions / where it applies / cost / failure modes.
+     ⚠️ When the JSON's compare is null, delete this whole section together with the "Method comparison" entry in the contents. -->
+<section class="compare" id="compare">
+  <h2>⟨待填: compare.title, for example "It and a few alternatives"⟩</h2>
+  <!-- Paste compare.intro's <p> here, followed by
+       <div class="table-wrap"><table><thead>…</thead><tbody>…</tbody></table></div>
+       (head goes into thead's th[scope=col], each row's first cell into tbody's th[scope=row], the rest into td),
+       with the last line being <p class="back"><a href="#map">↑ Back to the knowledge map</a></p>. ⟨待填⟩ -->
+</section>
+
+<!-- ⑥ The summary section: put the points above back together to answer "so what is this method actually doing".
+     ⚠️ It is called the **summary**, not the "wrap-up" (renamed in v5, the user's decision) — "wrap-up" is jargon the reader does not follow.
+        The class / id / JSON field are all summary, and it is only cleanly done once wrapup cannot be found anywhere in the repo. -->
+<section class="summary" id="summary">
+  <h2>⟨待填: summary.title, for example "So what is XX actually doing"⟩</h2>
+  <!-- Paste summary.html's several <p> here. ⟨待填⟩ -->
+</section>
+
+<!-- ⑦ The glossary table: the term paired with its English + a one-sentence explanation + which section it first appears in -->
+<section class="glossary" id="glossary">
+  <h2>Glossary</h2>
+  <!-- Paste a <dl> here, one pair per entry:
+       <dt id="g-xxx">Term<span class="en">English</span></dt>
+       <dd>A one-sentence explanation.<span class="where">first appears in §N</span></dd>
+       dt's id is the one the body's <a class="term" href="#g-xxx"> points at. ⟨待填⟩ -->
+</section>
+
+<!-- ⑧ What to do next: which 2–3 papers to read closely (split into must read / optional), what to run yourself, what the next deck should open -->
+<section class="next" id="next">
+  <h2>What to do next</h2>
+  <!-- Four <h3>s (Must read / Optional / What to run yourself / The next learning-deck) each with a <ul>,
+       every item <li>the title or the practice<span class="why">why this one</span></li> (why may be omitted).
+       If one group is empty, drop that <h3> together with its <ul>. ⟨待填⟩ -->
+</section>
+
+<!-- ⑨ References: title + DOI, every one verified back at the source.
+     ⚠️ **Citations in the body take two hops** (v5): the body's .source writes <a href="#r-xxx">〈first author〉 et al. (year)</a>
+        pointing at the matching <li> below, and the a.ref-link inside that <li> is the paper's own URL.
+        So **every <li> must carry id="r-…"**, and one missing is a dead anchor that does nothing when clicked.
+        The id takes the lowercase form "first author's surname + year" (r-ho2020 / r-thygesen2018), with a serial number added on a clash. -->
+<section class="refs" id="refs">
+  <h2>References</h2>
+  <!-- Paste an <ol> here, each entry:
+       <li id="r-xxx">Author (year). <i>Title.</i> Venue.
+         <br><a class="ref-link" href="https://…" target="_blank" rel="noopener">DOI or arXiv id</a></li>
+       DOI first. Conference papers in computer science (NeurIPS / ICML / ICLR and the like) often have no
+       DOI assigned at all, and only then does it fall back to the arXiv id. **Not one may be invented**, and every one has to be
+       verified back at the source with fastpaper get. ⟨待填⟩ -->
+</section>
+
+<!-- ⑩ Honest boundaries: which claims are supported by the abstract only, which are paraphrase rather than the original words, which figures were redrawn -->
+<section class="honesty" id="honesty">
+  <h2>Honest boundaries</h2>
+  <!-- Paste a <ul> here, one <li> per entry of honesty[]. Write each one concretely, with no blanket disclaimer:
+       which words in which sources turned up nothing, which are preprints, which claims are supported by the abstract only,
+       whether each figure is the original / redrawn / drawn from scratch, and whether the current model can see images. ⟨待填⟩ -->
+</section>
+
+</main>
+</div>
+
+<!-- Arrow keys turning sections + entering one item at a time / SVG stroking + the contents collapse and highlight + the header's cover band.
+     This is the one <script> block allowed in the whole template, see hard constraint 1 in "Four hard constraints" in the file header.
+     ⚠️ v5 deleted the part that computed the top progress bar's width (the progress bar itself was deleted too, the reasoning being in
+        "The progress bar at the top has been deleted" inside <style>). -->
+<script>
+(() => {
+  // .curtain is the curtain page and .concept is the concept body, and both take part in scroll-snap
+  // (see the "curtain page" part of the CSS); section[id] also counts auxiliary sections such as .map/.path/.primer/.compare/…
+  // that do not snap as jumpable stopping points — they are equally a full screen of content,
+  // they simply do not need the "scroll near it and get pulled over" behavior.
+  // ⚠️ The selector is hard-coded as these three: add a bare <section> and forget to give it an id, and it falls into neither
+  // .curtain/.concept nor section[id], so the arrow keys skip straight past it — with no error,
+  // and the reader only feels that this screen "cannot be reached with the arrow keys". Remember to give a new auxiliary section an id.
+  const stops = [...document.querySelectorAll('.curtain, .concept, section[id]')];
+
+  // prefers-reduced-motion applies to scrollIntoView's smooth as well: when that setting
+  // is on, the jump should be instant, with no smooth-scroll animation.
+  // ⚠️ A trap hit while measuring with the ruler script: behavior: 'auto' cannot be used here. scrollIntoView's
+  // definition of 'auto' is "follow the scroll container's computed CSS scroll-behavior", and the
+  // html rule above writes scroll-behavior: smooth so that anchor jumps are smooth — so in
+  // this document 'auto' has exactly the same effect as 'smooth', and measured, their position-time curves coincide exactly
+  // (at 150ms both have scrolled less than halfway). 'instant' has to be passed explicitly to bypass the CSS declaration and
+  // really jump instantly; measured, 'instant' has already reached the destination within 150ms.
+  const jumpBehavior = () =>
+    matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+
+  // ⚠️ A trap found while measuring with the ruler script (the brief said stops[k].offsetTop, changed here):
+  // section[id] has scroll-margin-top: 1.5rem (see "1. Layout" in the CSS), while .curtain
+  // has no id and no such margin. scrollIntoView's landing point is pulled back by scroll-margin-top,
+  // so .concept/section[id] actually land about 22px before their offsetTop
+  // (at a 15px reading font size). If currentIndex() compared window.scrollY against
+  // offsetTop directly, then when it is on a section those 22px would make it judge that it has not arrived yet and
+  // fall back to the previous stopping point — pressing ArrowDown repeatedly would stick on the second stopping point,
+  // and only stretches between .curtain elements (which have no such margin) would be unaffected. scrollMarginTop
+  // corrects the comparison baseline so that the judged landing point agrees with where scrollIntoView actually lands.
+  function stopTarget(el) {
+    return el.offsetTop - (parseFloat(getComputedStyle(el).scrollMarginTop) || 0);
+  }
+  function currentIndex() {
+    const y = window.scrollY + 4;
+    let i = 0;
+    for (let k = 0; k < stops.length; k++) if (stopTarget(stops[k]) <= y) i = k;
+    return i;
+  }
+  function go(delta) {
+    const next = Math.min(stops.length - 1, Math.max(0, currentIndex() + delta));
+    stops[next].scrollIntoView({ behavior: jumpBehavior() });
+  }
+  document.addEventListener('keydown', (e) => {
+    // Do not hijack modifier combinations, and leave the ordinary wheel alone — take over only the four arrow keys and Home/End
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); go(1); }
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+    else if (e.key === 'Home') { e.preventDefault(); stops[0].scrollIntoView({ behavior: jumpBehavior() }); }
+    else if (e.key === 'End') { e.preventDefault(); stops[stops.length - 1].scrollIntoView({ behavior: jumpBehavior() }); }
+  });
+})();
+
+// Entering one item at a time + SVG stroking. See the updated note under "Four hard constraints" in the file header — write it into this
+// one script block, without opening a new <script> tag.
+//
+// prefers-reduced-motion has to be tested first, and return immediately when it matches: on a match neither group of elements
+// registers an IntersectionObserver or runs any animate() — that is not optional courtesy,
+// it is an accessibility matter.
+//
+// ⚠️ Fail-safety is the one thing in this code that cannot be compromised:
+// - .reveal's opacity: 0 is set actively by the script, it is not an initial state written in CSS — when the script
+//   does not run at all (blocked by the CSP, a syntax error, any reason), the elements stay in CSS's default visible
+//   state, and there is no "the script died = the content is blank forever".
+// - But if the script did get as far as "set opacity to 0" and only then `new
+//   IntersectionObserver(...)` failed (a host environment theoretically not supporting that API),
+//   the content really would be welded into an invisible state — this is the one branch in this section that cannot heal itself through
+//   "the script did not run = visible by default", so `hasIO` is feature-detected explicitly and put on the same "show it directly,
+//   register no observer" path as reduce, rather than assuming the host environment must support it (KyDog runs only in its own
+//   Electron, where IntersectionObserver has long been a guaranteed capability, but this one line of detection costs almost nothing,
+//   so it is affordable).
+// - .draw is the same the other way round: stroke-dasharray / stroke-dashoffset are only set at the moment the observer
+//   actually fires, they are not a hidden state written in beforehand. When the script does not run, the path stays in
+//   the browser's default solid rendering, and does not stay in the invisible state of "the whole line is dash gap from end to
+//   end". On the reduce branch .draw simply does nothing (it sets no dasharray), whose effect is
+//   "show the complete path directly", which is simpler and less error-prone than explicitly zeroing the two properties.
+// - ⚠️ Both IntersectionObservers **must not** be given a negative rootMargin, nor a non-zero
+//   threshold — measured, that makes elements at the end of the document (or taller than the viewport) never
+//   fire: a negative bottom edge (for instance the '0px 0px -12% 0px' once written here) excludes the last slice of the viewport
+//   from the "intersecting" test, and an element flush against the bottom of documentElement.scrollHeight
+//   cannot enter that excluded slice even when scrolled to the end, so the callback never fires; a non-zero threshold (for instance
+//   0.15) is equally fatal for an element taller than the viewport — the visible ratio never reaches the threshold. Neither is
+//   "it has not been scrolled to yet" (scroll past and it is fine), both are "no amount of scrolling reaches it", and .reveal
+//   sets opacity:0 first and then waits to be fired, so the result is permanent invisibility, with no error. The only configuration safe everywhere
+//   is leaving rootMargin at the default 0 and threshold at the default 0 — as long as the element is in the document flow and
+//   the document can be scrolled to the end, it is bound to intersect the viewport for at least an instant. The cost is that the element starts animating
+//   as soon as 1px of it shows, which looks slightly worse than "wait until it is a little further in", but reliability comes first — this is a template for others
+//   to copy, so do not add a negative rootMargin back for that bit of polish.
+// This is locked by the case "the entering animation does not block the content" in e2e/46-html-tab.spec.ts:
+// after scrolling to a .reveal element it asserts that the final opacity is 1 and that it is toBeVisible().
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hasIO = typeof IntersectionObserver === 'function';
+
+  // --- Entering one item at a time: a .reveal element fades in and rises when it enters the viewport ---------
+  const items = [...document.querySelectorAll('.reveal')];
+  if (reduce || !hasIO) {
+    items.forEach((el) => { el.style.opacity = '1'; });
+  } else {
+    items.forEach((el) => { el.style.opacity = '0'; });
+    const revealIo = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        revealIo.unobserve(e.target);
+        // .reveal elements under the same direct parent enter staggered in turn, capped at 6 to keep a long list
+        // from dragging on (from the 7th on they enter together with the 6th, with no further delay accumulating).
+        const sibs = [...e.target.parentElement.querySelectorAll(':scope > .reveal')];
+        const delay = Math.min(sibs.indexOf(e.target), 6) * 70;
+        e.target.animate(
+          [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }],
+          { duration: 320, delay, easing: 'cubic-bezier(.2,.6,.2,1)', fill: 'forwards' },
+        );
+      }
+    }); // No rootMargin / threshold passed — the reason is in the ⚠️ above; the defaults are what is safe everywhere
+    items.forEach((el) => revealIo.observe(el));
+  }
+
+  // --- SVG stroking: a .draw path is stroked out through stroke-dasharray when it enters the viewport ---------
+  // Only for lines (path / line / polyline), not for filled blocks; text takes no part in stroking, and
+  // if you want text to fade in give it its own .reveal, which is an independent mechanism from this one.
+  if (!reduce && hasIO) {
+    const draws = [...document.querySelectorAll('.draw')];
+    const drawIo = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        drawIo.unobserve(e.target);
+        const path = e.target;
+        // Defensive: an element that is not an SVGGeometryElement has no getTotalLength, so skip it rather than
+        // throwing and blowing up the paths not yet handled — note that this does not guard against ".draw added to a filled
+        // shape such as <rect>": <rect>/<circle>/<ellipse>/<line>/<polyline>/<polygon>
+        // all implement getTotalLength (measured), so this test cannot stop misuse, it only stops targets that really
+        // do not have the method (<g>, <text>, <foreignObject> and the like).
+        if (typeof path.getTotalLength !== 'function') continue;
+        const sibs = [...path.closest('svg').querySelectorAll('.draw')];
+        // .draw elements inside one svg are stroked staggered in turn, capped at 6 — the same reason as the cap on
+        // .reveal above: when a figure has many .draw paths the total delay should not be allowed to grow out of control.
+        const delay = Math.min(sibs.indexOf(path), 6) * 120;
+        const len = path.getTotalLength();
+        path.style.strokeDasharray = String(len);
+        path.style.strokeDashoffset = String(len);
+        path.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }],
+          { duration: 700, delay, easing: 'ease-out', fill: 'forwards' });
+      }
+    }); // No rootMargin / threshold passed, for the same reason as the .reveal observer above
+    draws.forEach((el) => drawIo.observe(el));
+  }
+})();
+
+// The navigation tree on the left, .toc: the collapse button + the scrollspy highlight. Likewise written in this one script block.
+//
+// ⚠️ Fail-safety: the contents' expanded state is the CSS default, and collapsing works by the script adding .is-collapsed. When the script
+//    does not run at all the contents stays **expanded** and every link is still clickable — there is no
+//    "the script died = the contents disappeared". The highlight is the same: without .is-current it is simply not highlighted.
+//    That is also why a <button> is used here rather than <details>: content collapsed inside <details>
+//    disappears from ⌘F, which is exactly what the "Explicitly not doing" exclusion in the file header rules out.
+//
+// ⚠️ Positions always use getBoundingClientRect().top + scrollY, **not offsetTop**:
+//    offsetTop's frame of reference is the nearest positioned ancestor, so the day someone gives .flow position:relative
+//    everything shifts. (The arrow-key script above using offsetTop is a historical choice, and the accompanying
+//    "do not give .flow position" warning is written beside the .flow rule in the CSS.)
+(() => {
+  const toc = document.querySelector('.toc');
+  if (!toc) return;
+
+  const head = toc.querySelector('.toc-head');
+  if (head) {
+    head.addEventListener('click', () => {
+      const collapsed = toc.classList.toggle('is-collapsed');
+      head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+  }
+
+  const spots = [...toc.querySelectorAll('a[href^="#"]')]
+    .map((a) => {
+      let el = null;
+      try { el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1))); }
+      catch { el = null; } // decodeURIComponent throws when the href contains an illegal % escape
+      return { a, el };
+    })
+    .filter((s) => s.el !== null);
+  if (spots.length === 0) return;
+
+  let current = null;
+  const sync = () => {
+    // The decision line is taken about three tenths down the viewport: the moment a section's top passes this line it counts as "now reading this section",
+    // which follows the hand better than using the viewport top (which would only switch after scrolling past the whole section).
+    const line = window.scrollY + window.innerHeight * 0.3;
+    let hit = spots[0];
+    for (const s of spots) {
+      if (s.el.getBoundingClientRect().top + window.scrollY <= line) hit = s;
+    }
+    if (hit.a === current) return;
+    if (current) { current.classList.remove('is-current'); current.removeAttribute('aria-current'); }
+    hit.a.classList.add('is-current');
+    // aria-current is set together with the class: with only the class, a screen reader can read the contents
+    // but cannot tell "which section we are in now" — and that is the scrollspy's only use.
+    hit.a.setAttribute('aria-current', 'page');
+    current = hit.a;
+  };
+  addEventListener('scroll', sync, { passive: true });
+  addEventListener('resize', sync);
+  sync();
+})();
+
+// The header's cover band (spec E.5 v6, measured). Likewise written in this one script block.
+//
+// ⚠️ **It goes last**: should this part throw, the three blocks above (arrow keys turning sections, entering one item at a time /
+//    SVG stroking, the contents) have already run and registered, and are not dragged down with it. The whole block is additionally wrapped in a
+//    try / catch — it is pure decoration, any failure should only fall back to that backstop SVG, and should not affect the body.
+//
+// ⚠️ **Only the header uses WebGL / canvas.** The body and the chapter curtain pages do not (that would be a background through the whole report, which is exactly what spec A.2
+//    excludes); the reason it holds here is "scroll past it and it is out of the viewport", and using
+//    IntersectionObserver below to stop the rAF is precisely how that reason is honored.
+//
+// ⚠️ **Colors are read from CSS variables and must not be hard-coded.** Across the five themes the host injects, the paper color runs from pure white
+//    (porcelain) to near black (midnight), and hard-coding one good-looking set is bound to turn into
+//    an incongruous patch under several of them — and it only shows on screen when the theme is changed.
+//
+// ⚠️ **But "which one is the light one" must not be guessed by measuring luminance.** The foreground color of the band's three lines, --hb-fg, has been
+//    handed entirely to CSS's [data-kydog-theme] (see "Where the colors come from" inside <style>).
+//    The three measurements left here are **deterministic color transforms**, not identity decisions: the input is a named
+//    token and the output is "keep its hue direction, pull the luminance to a fixed value". It answers "how bright should this color
+//    be", not "which of these five colors is the paper color" — the latter is the kind of proxy that is forbidden.
+//
+// ⚠️ When prefers-reduced-motion matches, **draw one frame and stop** (do not hide it, and do not keep running).
+try {
+  (() => {
+    const band = document.querySelector('.hero-band');
+    const head = document.querySelector('.deck-head');
+    if (!band || !head) return;
+    const root = document.documentElement;
+
+    // ── 1. The band's geometry ─────────────────────────────────────────────
+    //
+    // The band's top edge and height are computed from .deck-head's **actual position and height**, not hard-coded: the height of the three lines varies with
+    // title length, reading font size and panel width, and any hard-coded height would cut half a line off the forWhom
+    // quote in some tier. The --ld-hero-* values in the CSS are only backstops for when the script fails to run.
+    //
+    // ⚠️ Since v7 the band always starts at the top of the page (its top edge clamped to 0), with **no narrow-tier special case**.
+    //    At ≥820px the contents and the header share the grid's first row, and the contents clears the whole band with its own margin-top
+    //    (see section 1b of <style>); below 820px the contents is display: none and is not on the page.
+    //    In v3–v6 there was a floor computation here that "clamps the top edge to the contents bar's bottom edge in the narrow tier", and once the bar was deleted
+    //    it went with it; do not add it back by following an old comment.
+    // ⚠️ No loop forms: that margin-top only makes the grid's first row taller, .flow still lays out from the start of the row,
+    //    and .deck-head's offsetTop and offsetHeight are unaffected by those two variables.
+    const BLEED_TOP = 2.6;     // rem, the extra stretch the band keeps above the header
+    const BLEED_BOTTOM = 2.0;  // rem, the extra stretch the band keeps below the header (.deck-head's margin-bottom has to be larger than it)
+    const measureBand = () => {
+      const rem = parseFloat(getComputedStyle(root).fontSize) || 15;
+      const top = Math.max(0, head.offsetTop - BLEED_TOP * rem);
+      const bottom = head.offsetTop + head.offsetHeight + BLEED_BOTTOM * rem;
+      root.style.setProperty('--ld-hero-top', top + 'px');
+      root.style.setProperty('--ld-hero-h', Math.max(0, bottom - top) + 'px');
+    };
+    measureBand();
+    // A ResizeObserver rather than listening to resize alone: a change in reading font size or in how many lines the title wraps to changes these two numbers,
+    // and neither fires a resize event. The callback only writes CSS variables, and what it writes is not the observed element's size,
+    // so it does not feed back on itself.
+    // ⚠️ Since v7 it **no longer observes .toc**: the band's geometry no longer depends on the contents (with the bar deleted there is no
+    //    "clamped to the bar's bottom edge" any more), and observing it would only run the callback for nothing.
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(measureBand);
+      ro.observe(head);
+    }
+    addEventListener('resize', measureBand);
+
+    // ── 2. Picking the colors ──────────────────────────────────────────────
+    //
+    // The theme values the host injects come in a mixture of three notations (oklch() / #hex / rgba()), so **do not parse
+    // the strings yourself**. Here the browser is made to compute twice: first a probe element resolves the var() into a computed value,
+    // then that computed value is handed to a 2D canvas's fillStyle and laid down as one pixel, and what getImageData reads back
+    // is three bytes of sRGB. This route holds for any legal CSS color, with no need to care about color spaces.
+    const probe = document.createElement('span');
+    probe.style.display = 'none';
+    band.appendChild(probe);
+    const meter = document.createElement('canvas');
+    meter.width = 1;
+    meter.height = 1;
+    const mctx = meter.getContext('2d', { willReadFrequently: true });
+
+    // fillStyle's setter **silently ignores** a value it cannot parse (leaving the old value in place), with no exception
+    // and no return value to inspect. So try it once against each of two different seeded grounds: the same result both times ⇒ the string
+    // really was accepted; different ⇒ it was ignored, and each attempt kept its own seed color.
+    const parseColor = (str) => {
+      if (!mctx || !str) return null;
+      mctx.fillStyle = '#000000';
+      mctx.fillStyle = str;
+      const a = mctx.fillStyle;
+      mctx.fillStyle = '#ffffff';
+      mctx.fillStyle = str;
+      if (a !== mctx.fillStyle) return null;
+      mctx.clearRect(0, 0, 1, 1);
+      mctx.fillRect(0, 0, 1, 1);
+      const d = mctx.getImageData(0, 0, 1, 1).data;
+      return [d[0] / 255, d[1] / 255, d[2] / 255];
+    };
+
+    // The fallback means the same thing as the var(--x, #xxx) form in the body: it is taken when the host injects nothing.
+    const readThemeColor = (name, fallback) => {
+      probe.style.color = '';
+      probe.style.color = 'var(' + name + ', ' + fallback + ')';
+      return parseColor(getComputedStyle(probe).color)
+        || parseColor(fallback)
+        || [0.5, 0.5, 0.5];
+    };
+
+    const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    /** Keep the hue direction and scale the luminance to target (components above 1 get clamped, so a normalization guard is applied as well). */
+    const setLuma = (c, target) => {
+      const l = Math.max(luma(c), 0.0001);
+      let k = target / l;
+      const mx = Math.max(c[0], c[1], c[2]) * k;
+      if (mx > 1) k /= mx;
+      return [c[0] * k, c[1] * k, c[2] * k];
+    };
+    const toCss = (c) => 'rgb(' + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)).join(',') + ')';
+
+    // --marginalia is the one token that is cool in all five themes (blue in vellum, blue in sepia, grey-blue in lilac,
+    // purple in midnight), so both the band's ground and the cool colors in the picture come from it. **Do not switch it to --ink**: measured,
+    // --ink is a warm brown under the light themes, and the ground comes out looking like a coffee stain, exactly the opposite of the key this layer needs.
+    const cCool = readThemeColor('--marginalia', '#194f81');
+    const cAccent = readThemeColor('--accent', '#bd4238');
+
+    // The three target luminances 0.042 / 0.44 / 1.0 were settled during exploration by looking at each of the five themes in turn,
+    // and are **not numbers to adjust casually**: 0.042 is where the "very dark + very slow" key lands,
+    // and one step brighter turns the band from a cover into a color block.
+    const uBase = setLuma(cCool, 0.042);
+    const uCool = setLuma(cCool, 1.0);      // a pure hue vector, going only into the shader
+    const uAccent = setLuma(cAccent, 1.0);  // likewise
+    root.style.setProperty('--hb-base', toCss(uBase));
+    root.style.setProperty('--hb-accent', toCss(setLuma(cAccent, 0.44)));
+    probe.remove();
+
+    // ── 3. Picking the direction ───────────────────────────────────────────
+    //
+    // The value is hard-coded in the HTML (<div class="hero-band" data-hero="…">, decided by the JSON's hero
+    // field). **Do not pick at random here**: reopening the same report must give the same face.
+    // An unrecognized value or a missing attribute → gridwave, a determined backstop.
+    const canvas = band.querySelector('canvas');
+    if (!canvas) return;
+    const wanted = band.getAttribute('data-hero');
+    const KNOWN = ['gridwave', 'constellation', 'holoband'];
+    const hero = KNOWN.indexOf(wanted) >= 0 ? wanted : 'gridwave';
+
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // ── 4. The shared runtime ──────────────────────────────────────────────
+    //
+    // draw(sec) draws one frame. The three directions share this: draw one frame before appearing (under reduced-motion
+    // that frame is the final picture — still, not hidden), stop the rAF when scrolled out of the viewport, and on resize a still picture
+    // has to be redrawn for one frame too, or widening the window shows a stretched old frame.
+    const drive = (draw) => {
+      let raf = 0;
+      const t0 = performance.now();
+      const loop = (now) => { raf = 0; draw((now - t0) / 1000); raf = requestAnimationFrame(loop); };
+      const start = () => { if (!raf) raf = requestAnimationFrame(loop); };
+      const stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; };
+
+      draw(0);
+      band.classList.add('gl-on');
+
+      if (reduce) {
+        addEventListener('resize', () => draw(0));
+      } else if (typeof IntersectionObserver === 'function') {
+        // Stop once it scrolls out of the viewport — this is precisely how "the header may use WebGL while a background through the whole report may not" is honored.
+        new IntersectionObserver((entries) => {
+          for (const e of entries) { e.isIntersecting ? start() : stop(); }
+        }).observe(band);
+      } else {
+        start();
+      }
+
+      // Context loss (switching GPUs, waking from system sleep and so on): stop the loop and take .gl-on off,
+      // letting that backstop SVG show again. No restore is attempted — a decorative layer is not worth that complexity.
+      canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        stop();
+        band.classList.remove('gl-on');
+      });
+      return { start, stop };
+    };
+
+    // The mouse position (canvas-local coordinates, 0–1, with the y axis flipped to GL's up-is-positive).
+    // The initial value (0.5, 0.55): with the mouse never moved, the disturbance is close to zero.
+    // ⚠️ The listener hangs on document, not on .hero-band — the latter is a purely decorative layer at
+    //    pointer-events: none, and receives no pointer events of its own.
+    // ⚠️ Mouse disturbance is motion too: when reduced-motion matches, this listener is not registered.
+    const mouse = new Float32Array([0.5, 0.55]);
+    if (!reduce) {
+      document.addEventListener('mousemove', (e) => {
+        const b = canvas.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) return;
+        mouse[0] = (e.clientX - b.left) / b.width;
+        mouse[1] = 1 - (e.clientY - b.top) / b.height;
+      }, { passive: true });
+    }
+
+    // devicePixelRatio is capped at 2: the band is only a dozen or so rem tall, a higher sampling rate makes no visible difference,
+    // and it would mean drawing more than twice the fragments.
+    const fitCanvas = () => {
+      const d = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.round(canvas.clientWidth * d));
+      const h = Math.max(1, Math.round(canvas.clientHeight * d));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; return true; }
+      return false;
+    };
+
+    // ── 5a. The bootstrap shared by the two WebGL directions ───────────────
+    const bootGL = (fsSrc) => {
+      // alpha: true is deliberate: before the first frame is drawn the canvas is transparent and the SVG below shows through as usual;
+      // alpha: false would make it black for one frame first.
+      const gl = canvas.getContext('webgl', {
+        alpha: true, antialias: false, depth: false, stencil: false,
+        powerPreference: 'low-power',
+      });
+      if (!gl) return null; // No WebGL: do nothing, and let the SVG be the backstop
+
+      // Compilation / linking **must have its status checked**: on failure WebGL throws no exception and simply draws a blank field —
+      // another "no error, it is just wrong", of the same kind as the four hard constraints in the file header.
+      const compile = (type, src) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { gl.deleteShader(sh); return null; }
+        return sh;
+      };
+      const vs = compile(gl.VERTEX_SHADER,
+        'attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.0,1.0);}');
+      const fs = vs && compile(gl.FRAGMENT_SHADER, fsSrc);
+      if (!fs) return null;
+
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+      gl.useProgram(prog);
+
+      // One quad covering clip space (two triangles)
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, 'a_pos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+      const U = (n) => gl.getUniformLocation(prog, n);
+      gl.uniform3fv(U('u_base'), uBase);
+      gl.uniform3fv(U('u_accent'), uAccent);
+      gl.uniform3fv(U('u_cool'), uCool);
+      const uRes = U('u_resolution');
+      const uTime = U('u_time');
+      const uMouse = U('u_mouse');
+
+      return (sec) => {
+        if (fitCanvas()) gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.uniform2f(uRes, canvas.width, canvas.height);
+        gl.uniform1f(uTime, sec);
+        gl.uniform2f(uMouse, mouse[0], mouse[1]);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      };
+    };
+
+    // The fbm set (needed by both gridwave and holoband), spliced in front of each shader.
+    const NOISE = [
+      'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }',
+      'float noise(vec2 p){',
+      '  vec2 i = floor(p), f = fract(p);',
+      '  float a = hash(i), b = hash(i+vec2(1,0)), c = hash(i+vec2(0,1)), d = hash(i+vec2(1,1));',
+      '  vec2 u = f*f*(3.0-2.0*f);',
+      '  return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;',
+      '}',
+      'float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<4;i++){ v+=a*noise(p); p*=2.03; a*=0.5; } return v; }',
+    ].join('\n');
+
+    const HEAD = [
+      'precision highp float;',
+      'uniform vec2 u_resolution; uniform float u_time; uniform vec2 u_mouse;',
+      'uniform vec3 u_base;    // the band ground (--marginalia with its luminance normalized to about 0.042)',
+      'uniform vec3 u_accent;  // the pure hue vector of --accent',
+      'uniform vec3 u_cool;    // the pure hue vector of --marginalia',
+    ].join('\n');
+
+    // ── 5b. gridwave — scan lines / signal waveform (HUD) ──────────────────
+    //
+    // ⚠️ The horizontal scan lines are **pinned to the physical pixel grid** (using gl_FragCoord.y rather than uv),
+    //    or the lines smear into a grey mush. This and the constants below were each settled by looking at them during exploration,
+    //    so **do not adjust them**: this direction is extremely sensitive to its parameters, and the moment the lines get dense it degenerates into noise.
+    const FS_GRID = [
+      HEAD, NOISE,
+      'void main(){',
+      '  vec2 uv = gl_FragCoord.xy / u_resolution.xy;',
+      '  float asp = u_resolution.x / u_resolution.y;',
+      '  vec2 p = vec2(uv.x*asp, uv.y);',
+      '  vec2 m = vec2(u_mouse.x*asp, u_mouse.y);',
+      // The grid is pushed around by a layer of slow noise — the impression that straight lines are still straight, while the whole field breathes slowly
+      '  float w = fbm(p*1.1 + u_time*0.05);',
+      '  vec2 q = p + vec2(w, fbm(p*1.1 + vec2(4.7,2.1) - u_time*0.04)) * 0.22;',
+      '  float px = max(u_resolution.y / 420.0, 1.0);',
+      '  float rowf = gl_FragCoord.y / (7.0 * px);',
+      '  float row = smoothstep(0.42, 0.0, abs(fract(rowf) - 0.5) - 0.06);',
+      // The vertical ticks: a sparse few, pushed along by the slow noise
+      '  float colf = (gl_FragCoord.x / (u_resolution.x)) * 26.0 + w * 1.6;',
+      '  float rule = smoothstep(0.46, 0.0, abs(fract(colf) - 0.5) - 0.02);',
+      // One sweep of light passing horizontally (about one round every 11 seconds), which lights the scan lines as it goes by.
+      //
+      // ⚠️ sweepVis is **the thing that had to be fixed before shipping**: measured on the live comparison page, when the sweep reaches
+      //    directly under the text area, the readability of the meta line and the forWhom quote drops a step for those two or three seconds (a static screenshot does not
+      //    show it). Here the sweep is pinned by uv.x onto the structure on the left, so the text side never receives it.
+      //    **Fixed at both ends**: this is the shader end, and the other end is the soft darkening in <style>'s .deck-head::before
+      //    that travels with the text — in the narrow tier the body column nearly fills the panel width, and this end alone, distributed by x,
+      //    cannot cover it. Do not keep only one end.
+      '  float sweep = exp(-pow((fract(u_time*0.09) * 1.5 - 0.25 - uv.x) * 3.2, 2.0));',
+      '  sweep *= smoothstep(0.62, 0.04, uv.x);',
+      '  float md = length(p - m);',
+      '  float halo = exp(-md*3.2);',
+      // Composition: the structure is most solid on the left and dissolves toward the right
+      '  float vis = smoothstep(0.92, 0.02, uv.x) * 0.86 + 0.14;',
+      // The undulating "waveform": the noise decides whether a given row is bright, which makes the scan lines look like a sampled signal
+      '  float amp = smoothstep(0.34, 0.78, w);',
+      '  vec3 col = u_base * (0.75 + 1.2*w);',
+      '  col += u_cool  * row * vis * amp * (0.20 + 0.55*sweep + 0.30*halo);',
+      '  col += u_accent * row * rule * vis * amp * 0.9;',   // where the vertical ticks cross the scan lines, dotted in the accent color
+      '  col += u_cool * rule * vis * 0.045;',
+      '  col += pow(sweep, 2.0) * vis * 0.05;',
+      '  gl_FragColor = vec4(col, 1.0);',
+      '}',
+    ].join('\n');
+
+    // ── 5c. holoband — holographic dispersion ─────────────────────────────
+    //
+    // ⚠️ The structure produces only one scalar g, and the color = dark ground × g + accent-colored dispersion rings + white highlights.
+    //    **Do not hand the color to a cosine palette running free over hue**: the first version in exploration did exactly that,
+    //    and vellum came out a field of ink green.
+    const FS_HOLO = [
+      HEAD,
+      'void main(){',
+      '  vec2 uv = gl_FragCoord.xy / u_resolution.xy;',
+      '  vec2 p = uv*2.0 - 1.0;',
+      '  p.x *= u_resolution.x / u_resolution.y;',
+      '  p *= 0.5;',                       // a band is far flatter than 16:9, so scale down a step to keep the texture from being stretched into horizontal stripes
+      '  vec2 m = u_mouse*2.0 - 1.0; m.x *= u_resolution.x / u_resolution.y; m *= 0.5;',
+      '  float md = length(p - m);',
+      '  p += sin(md*15.0 - u_time*4.0) * exp(-md*3.0) * 0.08;',
+      '  vec2 p0 = p;',
+      '  for (float i = 1.0; i < 4.0; i++){',
+      '    p.x += 0.1/i * sin(i*3.0*p.y + u_time*0.4) + 0.05;',
+      '    p.y += 0.1/i * cos(i*2.0*p.x + u_time*0.3) - 0.05;',
+      '  }',
+      '  float r = length(p);',
+      '  float ang = atan(p.y, p.x);',
+      '  float g = 0.5 + 0.5*cos(6.28318*(r*1.5 + p0.x*0.5 + u_time*0.1));',
+      '  vec3 col = u_base * (0.45 + 2.6*g);',
+      '  float disp = sin(r*25.0 - u_time*1.5 + ang*2.0)*0.5 + 0.5;',
+      '  col += u_accent * disp * 0.055;',
+      '  col += u_cool * pow(g, 2.0) * 0.05;',
+      '  col += pow(sin(p.x*4.0 + p.y*3.0 + u_time)*0.5 + 0.5, 8.0) * 0.11;',
+      '  gl_FragColor = vec4(col, 1.0);',
+      '}',
+    ].join('\n');
+
+    // ── 5d. constellation — a constellation of knowledge (canvas 2D, not WebGL) ──
+    //
+    // ⚠️ **The speed is 2× the exploration version's** (the user settled it on the live comparison page with the speed slider open: "2× looks
+    //    more comfortable"). What is multiplied by 2 is this direction's own three time coefficients, hard-coded below, not a switch:
+    //      drift speed vx  0.00016 → 0.00032
+    //      drift speed vy  0.00012 → 0.00024
+    //      the phase of the light point on a link sin(t*0.5) → sin(t*1.0)
+    //      the node's breathing phase sin(t*0.8) → sin(t*1.6)
+    //    Every other parameter (node count, colors, the link threshold 0.52, the composition vis) is untouched.
+    const bootConstellation = () => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      // The band's ground is not dead black: a patch of deep blue at the top left, sinking into the ground color toward the bottom right
+      band.style.background = 'radial-gradient(130% 200% at 10% 6%, '
+        + toCss(setLuma(cCool, 0.10)) + ' 0%, ' + toCss(uBase) + ' 64%)';
+      const A = toCss(setLuma(cAccent, 0.68));
+      const C = toCss([uCool[0] * 0.78, uCool[1] * 0.78, uCool[2] * 0.78]);
+      const N = 68;
+      // Composition: the constellation gathers on the left and thins out to the right — the same composition convention as the other two directions
+      const vis = (x) => 0.20 + 0.80 * Math.max(0, Math.min(1, (0.92 - x) / 0.80));
+      const pts = [];
+      // A linear congruential generator of its own: the seed is hard-coded, so the star map is exactly the same every time the same report is opened.
+      // ⚠️ Do not switch it to Math.random(): that would break "reopening the same report gives the same face".
+      let seed = 20260821;
+      const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+      for (let i = 0; i < N; i++) {
+        pts.push({
+          x: rnd(), y: rnd(), vx: (rnd() - 0.5) * 0.00032, vy: (rnd() - 0.5) * 0.00024,
+          r: 0.7 + rnd() * 1.9, hot: rnd() < 0.18, ph: rnd() * 6.28,
+        });
+      }
+      return (t) => {
+        fitCanvas();
+        const d = Math.min(window.devicePixelRatio || 1, 2);
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+        ctx.setTransform(d, 0, 0, d, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        for (const p of pts) {
+          p.x += p.vx; p.y += p.vy;
+          if (p.x < -0.05) p.x += 1.1; if (p.x > 1.05) p.x -= 1.1;
+          if (p.y < -0.05) p.y += 1.1; if (p.y > 1.05) p.y -= 1.1;
+        }
+        const AR = W / Math.max(H, 1);
+        for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+          const a = pts[i], b = pts[j];
+          const dx = (a.x - b.x) * AR, dy = a.y - b.y;
+          const dd = Math.hypot(dx, dy);
+          if (dd > 0.52) continue;
+          const k = (1 - dd / 0.52) * vis((a.x + b.x) / 2);
+          ctx.strokeStyle = (a.hot || b.hot) ? A : C;
+          ctx.globalAlpha = k * k * 0.52;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(a.x * W, a.y * H); ctx.lineTo(b.x * W, b.y * H); ctx.stroke();
+          // One light point running along the link
+          if ((a.hot || b.hot) && k > 0.45) {
+            const u = (Math.sin(t * 1.0 + a.ph) * 0.5 + 0.5);
+            ctx.globalAlpha = k * 0.55;
+            ctx.fillStyle = A;
+            ctx.beginPath();
+            ctx.arc((a.x + (b.x - a.x) * u) * W, (a.y + (b.y - a.y) * u) * H, 1.4, 0, 6.2832);
+            ctx.fill();
+          }
+        }
+        for (const p of pts) {
+          const pulse = (0.7 + 0.3 * Math.sin(t * 1.6 + p.ph)) * vis(p.x);
+          ctx.globalAlpha = p.hot ? 0.95 * pulse : 0.55 * pulse;
+          ctx.fillStyle = p.hot ? A : C;
+          ctx.beginPath(); ctx.arc(p.x * W, p.y * H, p.r, 0, 6.2832); ctx.fill();
+          if (p.hot) {
+            ctx.globalAlpha = 0.16 * pulse;
+            ctx.beginPath(); ctx.arc(p.x * W, p.y * H, p.r * 4.5, 0, 6.2832); ctx.fill();
+          }
+        }
+        ctx.globalAlpha = 1;
+      };
+    };
+
+    // ── 6. Starting it ─────────────────────────────────────────────────────
+    // If any one of the three directions fails to start (no WebGL / a compile or link failure / no 2d context) it
+    // returns straight away: .gl-on is not added, and that backstop SVG stays showing.
+    const draw = hero === 'constellation'
+      ? bootConstellation()
+      : bootGL(hero === 'holoband' ? FS_HOLO : FS_GRID);
+    if (!draw) return;
+    drive(draw);
+  })();
+} catch (err) {
+  // A purely decorative layer; on failure it falls back to the SVG. Nothing is rethrown here, and it should not travel further than the console.
+  console.warn('[learning-deck] the header cover band failed to start, falling back to the SVG backstop', err);
+}
+</script>
+</body>
+</html>
