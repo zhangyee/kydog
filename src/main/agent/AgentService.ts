@@ -360,6 +360,3 @@ function extractToolResultText(result: unknown): string {
 }
 
 export const agentService = new AgentService();
-
-// Re-export RunState so downstream consumers can import it from this module
-export type { RunState } from './runState';

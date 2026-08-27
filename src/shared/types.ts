@@ -187,13 +187,27 @@ export type SettingsFile = {
   onboarding: { completedAt: string | null };
 };
 
-/** settings.update 专用 patch：排除 schemaVersion、onboarding、updates 与 telemetry（spec §7）。 */
+/** settings.update 专用 patch：排除 schemaVersion、onboarding、updates 与 telemetry（spec §7）。
+ *  这是**服务层** `settingsService.update` 的入参，含 `ui.locale` —— `locale.set` 的
+ *  commitLocale 正是靠它提交语言。RPC 那一侧要窄一档，见 SettingsUpdateArgs。 */
 export type SettingsPatch = {
   ui?: Partial<SettingsFile['ui']>;
   llm?: Partial<SettingsFile['llm']>;
   skills?: Partial<SettingsFile['skills']>;
   tools?: Partial<SettingsFile['tools']>;
   research?: Partial<SettingsFile['research']>;
+};
+
+/**
+ * `settings.update` **RPC** 的参数：在 SettingsPatch 基础上再抠掉 `ui.locale`。
+ *
+ * 语言切换必须是一个 RPC（换树 + 提交是同一件事，见 protocol.ts 的 `locale.set`）。
+ * 允许单独 `settings.update({ ui: { locale } })` 就等于开了一条绕过换树的路，
+ * 留下「settings 说 en、磁盘还是中文」的长期不一致 —— 而且它不会报错，只在运行时静默生效。
+ * 目前零调用方，这道闸是防将来有人顺手加一个。
+ */
+export type SettingsUpdateArgs = Omit<SettingsPatch, 'ui'> & {
+  ui?: Partial<Omit<SettingsFile['ui'], 'locale'>>;
 };
 
 // ── Onboarding RPC ──
@@ -237,7 +251,9 @@ export type SkillSyncHealth =
   | { state: 'ok'; installedOrUpgraded: string[]; userSkills: string[] }
   | { state: 'skipped'; reason: 'onboarding-pending' }
   | { state: 'failed'; phase: SyncPhase; skill?: string; message: string };
-export type SkillSyncOk = Extract<SkillSyncHealth, { state: 'ok' }>;
+/** 不导出：只有本文件的 LocaleSetOutcome 用得上。要在别处表达「同步成功」请直接用
+ *  SkillSyncHealth 判别 state，别为了少写一次 Extract 把它放出去。 */
+type SkillSyncOk = Extract<SkillSyncHealth, { state: 'ok' }>;
 export type SkillSyncFailed = Extract<SkillSyncHealth, { state: 'failed' }>;
 /**
  * `locale.set` 的结果分档。

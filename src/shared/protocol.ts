@@ -1,5 +1,5 @@
 import type {
-  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncHealth, LocaleSetOutcome,
+  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsUpdateArgs, SkillSyncHealth, LocaleSetOutcome,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   TelemetryStatus,
@@ -10,7 +10,9 @@ import type { SerializedError } from './errors';
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
   | { method: 'settings.get'; args: undefined; result: SettingsFile }
-  | { method: 'settings.update'; args: SettingsPatch; result: SettingsFile }
+  // args 是 SettingsUpdateArgs 而不是 SettingsPatch：`ui.locale` 被抠掉了，语言只能走
+  // 下面的 locale.set。见 types.ts 的 SettingsUpdateArgs。
+  | { method: 'settings.update'; args: SettingsUpdateArgs; result: SettingsFile }
   | { method: 'research.get'; args: undefined; result: SettingsFile['research'] }
   | { method: 'research.save'; args: SettingsFile['research']; result: SettingsFile['research'] }
   | { method: 'project.open'; args: undefined; result: Project }

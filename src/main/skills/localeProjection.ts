@@ -6,6 +6,10 @@ export type SkillLocale = 'zh' | 'en';
  *  `vendor.min.js` 的 `min` 与 `report.en.html` 的 `en` 在形态上无法区分，
  *  靠启发式区分就会静默吃掉文件。加语言时只改这里。 */
 export const SKILL_LOCALES = ['zh', 'en'] as const;
+/** 「默认语言就是无后缀那份源文件」这条约定的名字。**生产代码不引用它**：投影永远拿显式
+ *  传进来的 locale，不做兜底。它服务 `builtinSkillsI18n.test.ts` 的配对校验 ——
+ *  那道校验要判「哪一份该是无后缀的」，把这个常量写成字面量 'zh' 反而是把约定散开。
+ *  故意保留，不是漏删。 */
 export const DEFAULT_SKILL_LOCALE: SkillLocale = 'zh';
 
 const LOCALE_SET: ReadonlySet<string> = new Set(SKILL_LOCALES);
