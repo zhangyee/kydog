@@ -48,8 +48,10 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `learning-deck/references/deck-json.md:177` | 可见**汉字**数 ÷ **350** | visible **words** ÷ **210** | 见下「阅读速度」 | 2026-08-27 |
 | `learning-deck/references/layout.md:386` | ÷ **350**（中文技术材料 **300–400** 字/分） | ÷ **210**（English technical material **180–240** words/min） | 同上 | 2026-08-27 |
 | `learning-deck/references/*.md`、`SKILL.md`（`tier` 枚举） | `"听过但说不清"` / `"没接触过"`（另有档位名「熟悉」） | `"heard of it, cannot explain"` / `"never encountered"`（另有 `familiar`） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
-| `learning-deck/SKILL.en.md:292` | 「听过、说不清」（中文版此处用了变体写法） | `"heard of it, cannot explain"`（正名） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
+| `learning-deck/SKILL.en.md:292` | 「听过**、**说不清」（中文版此处用了变体写法） | `"heard of it, cannot explain"`（正名） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
+| `learning-deck/references/interview.en.md:49` | 「听过**，**说不清」（示例 `label`，第二种变体写法） | `Heard of it, cannot explain`（正名） | 同上，另见「示例 label 的副作用」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md`、`references/layout.en.md`（`⟨待填⟩`） | `⟨待填⟩` | **原样保留**，不译 | 见下「`⟨待填⟩` 与 ④-ANCHOR」 | 2026-08-27 |
+| `learning-deck/references/layout.md:879`（H2 的「模板自带 4 处」） | 断言依赖模板 L44/45/46/50 的中文散文注释字面 | **同一个数 4**，依赖同样四行 | 见下「H2 的标定常数」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md:3`（description） | 「它比直接讲解多做的事：**先问清起点再决定讲什么**，…」 | 该分句**未译出**，其余四项全在 | 见下「learning-deck 的 description」 | 2026-08-27 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。
@@ -91,8 +93,18 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 `interview.md` 的三个 `label` 本来就随用户语言走，不译会让 en 树出现
 「选项是英文、落档要写中文串」的自相矛盾。**六个文件的三个名字必须逐字一致**
 （`familiar` / `heard of it, cannot explain` / `never encountered`），
-中文版 `SKILL.md:292` 的变体写法「听过、说不清」在英文侧统一成正名——
-枚举值出现第二种拼法是真缺陷，不照抄。
+中文版有**两处**变体写法在英文侧统一成了正名——枚举值出现第二、第三种拼法是真缺陷，不照抄：
+`SKILL.md:292`「听过**、**说不清」（顿号）、`references/interview.md:49`「听过**，**说不清」（逗号）。
+全仓另有 13 处是正名「听过但说不清」；`没接触过` 与「熟悉」没有变体。
+
+> **示例 label 的副作用（登记，不改译文）**：`interview.md:49` 那处变体在中文里是
+> 示例 `label` 与档位名**三取一相同**，归一之后英文变成**三取二相同**
+> （`Heard of it, cannot explain` 与 `Never encountered` 都与档位名逐字相同，只有
+> `Can explain it` / `familiar` 仍然不同）。紧接着的 `:57` 正要教「`label` 措辞按主题调、
+> 档位固定」，`SKILL.en.md:286` 又说用户「never seen those three words」——
+> 英文侧的自相矛盾比中文侧更明显。**运行不会挂，是教学性退化。**
+> 根子在中文版把示例 label 写成了档位名的近似串；中文侧把 `:49` 的示例 label
+> 改成一个真正定制过的措辞（如「知道公式，没想过统计范围」）之后，英文侧跟着改，这条登记即可撤销。
 
 **`⟨待填⟩` 与 ④-ANCHOR**：`⟨待填⟩` 是**哨兵串**，`layout.md` 的自检 H1 直接
 `grep -n '⟨待填⟩' report.html`，它必须和 `assets/report-template.html` 里的那 15 处逐字相同。
@@ -101,6 +113,31 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 ④-ANCHOR 那行注释的**散文部分**已译，en 模板必须逐字用：
 `<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->`
 （`SKILL.en.md:397` 与 `references/layout.en.md:518` 拿它当 `oldText`，对不上 `edit` 会报错）。
+
+**H2 的标定常数**：`layout.md` / `layout.en.md` 的自检 H2 把**对模板散文注释的计数断言写死在注释里**，
+四个数对当前 `assets/report-template.html` 实测全部精确命中：
+
+| grep | 命中数 | 文中写法 | 命中位置 |
+|---|---:|---|---|
+| `src="http\|@import\|url(http\|…` | **4** | 「模板自带 4 处」/ "comes with 4 matches" | 模板 **L44/45/46/50**，全是中文散文注释 |
+| `^<script>` | **1** | 「这个数正好 1」/ "exactly 1" | 文末唯一脚本块 |
+| `<script`（任意位置） | **12** | 「十来处」/ "a dozen" | 硬约束注释 + `<style>` 内 + 脚本内 |
+| `fill="#\|stroke="#\|color: *#\|background: *#` | **13** | 「十来处」/ "a dozen or so" | `<style>` 的 `@media print` |
+
+**这是第三条跨批次契约。** 那 4 处命中来自模板 L44/45/46/50 的中文散文，正是下一批要翻的：
+
+```
+44:  2. 不引任何外部资源：没有 CDN、没有 <link rel=stylesheet>、没有 @import、
+45:     没有网络字体、没有 <img src="http…">、CSS 里没有指向网络的 url()、
+46:     脚本里没有 fetch/XHR/WebSocket（CSP 会拦，但也别写这种一眼假的代码）。
+50:     不是资源，允许；把它当资源加载（img/link/@import）不允许。
+```
+
+翻这四行时**字面形态必须保持能被同一条 grep 命中**（`<img src="http…">` 不能改写成
+`an <img> pointing at http`，`@import` / `fetch` / `XMLHttpRequest` / `WebSocket` 等词不能拆开或复述）。
+命中数从 4 变 3，H2 注释里「模板自带 4 处，都不是违规」就成了错的标定 → 漏判或误判。
+与 `⟨待填⟩` 同类：**改模板会让 `layout.*.md` 里的常数失效，而失效不报错。**
+真要改动那几行，就得同时改 `layout.md:879` 与 `layout.en.md:879` 的数字。
 
 **learning-deck 的 description**：中文 381 字符、英文 986（余量 38），是六个 skill 里最紧的一份。
 直译约 1300，超 1024 会让它在 en 树里静默降级成禁用行。压缩只动叙述句：
