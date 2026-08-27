@@ -28,14 +28,21 @@ export const skillSyncStateHolder = {
   // 返回这一次的结果而不是让调用方回头读 getHealth()：locale.set 要按「这次」成没成决定提交还是重投影，
   // 而 cached 会被随后的重投影覆盖，读回来的就不是同一件事了。
   async runForUnlocked(locale: SkillLocale, phase: SyncPhase): Promise<SkillSyncHealth> {
-    cached = await runSkillSync({
-      builtinRoot: builtinSkillsRoot(),
-      skillsDir: KYDOG_SKILLS_DIR,
-      manifestPath: MANIFEST,
-      stagingRoot: SKILL_STAGING,
-      locale, phase,
-      kydogVersion: app.getVersion(),
-    });
+    try {
+      cached = await runSkillSync({
+        // 这两个周边调用在 try 里面是必需的：它们抛出时 runSkillSync 根本没进去，
+        // cached 不赋值，getHealth() 会在 onboarding 已完成的情况下仍答 skipped ——
+        // 界面显示「尚未播种」而真相是「播种失败」，两者含义完全相反。
+        builtinRoot: builtinSkillsRoot(),
+        skillsDir: KYDOG_SKILLS_DIR,
+        manifestPath: MANIFEST,
+        stagingRoot: SKILL_STAGING,
+        locale, phase,
+        kydogVersion: app.getVersion(),
+      });
+    } catch (err) {
+      cached = { state: 'failed', phase, message: String(err) };
+    }
     // runSkillSync 不抛，失败只体现在返回值里 —— 不在这儿记一笔就彻底没声音了。
     if (cached.state === 'failed') {
       logger.warn('skill-sync', 'sync failed', { phase: cached.phase, skill: cached.skill, message: cached.message });
@@ -44,6 +51,7 @@ export const skillSyncStateHolder = {
   },
   getHealth(): SkillSyncHealth {
     // 还没跑过：onboarding 未完成时启动流程走不到同步这一步。
+    // 跑过就一定有值 —— runForUnlocked 无论成败都会写 cached，且它不再抛。
     return cached ?? { state: 'skipped', reason: 'onboarding-pending' };
   },
 };

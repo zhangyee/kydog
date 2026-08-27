@@ -7,6 +7,7 @@ import { useSettingsStore } from '../stores/settingsStore';
 import { useUiStore } from '../stores/uiStore';
 import { useLlmStore } from '../stores/llmStore';
 import { useIdentityStore } from '../stores/identityStore';
+import { useSkillsStore } from '../stores/skillsStore';
 import { ProviderListSection } from '../settings/ProviderListSection';
 import { AddProviderPage } from '../settings/AddProviderPage';
 import { ProviderDetailPane } from '../settings/ProviderDetailPane';
@@ -149,6 +150,17 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
       const id = { userName: userName.trim() || 'You', agentName: agentName.trim() || 'KyDog' };
       useIdentityStore.getState().setIdentity(id);
     }
+    // bootstrap 那次 skill.list 跑在 onboarding 播种**之前**，拿到的是空列表；不在这里重拉，
+    // Composer 的 slash 菜单会一直空着，直到用户手动进一次 Settings 的技能页。
+    // 同理重取一次 health —— 播种成没成只有主进程知道。
+    await Promise.all([
+      window.kydog.invoke('skill.list')
+        .then((skills) => useSkillsStore.getState().setSkills(skills))
+        .catch((err) => console.error('skill.list after onboarding failed', err)),
+      window.kydog.invoke('skill.getSyncHealth')
+        .then((h) => useUiStore.getState().setSkillSyncHealth(h))
+        .catch((err) => console.error('skill.getSyncHealth after onboarding failed', err)),
+    ]);
     useSettingsStore.getState().setSettings(fresh); // completedAt 非空 → Root 切 AppShell
   };
 

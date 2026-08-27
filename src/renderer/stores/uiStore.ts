@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { FsNode, ReadingFontSize, ThemeName } from '../../shared/types';
+import type { FsNode, ReadingFontSize, SkillSyncHealth, ThemeName } from '../../shared/types';
 import { fileTitle, isHtmlPath, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
 
 export type FileTab = {
@@ -25,6 +25,11 @@ type UiState = {
   workspaceWidth: number;
   inspectorWidth: number;
   userMenuOpen: boolean;
+  /** 内置 skill 同步的健康度。null = 还没问过主进程，与「问过、答的是 skipped」不是一回事。
+   *  UI 一律读这个显式状态，不许从「skill 列表是空的」反推 —— 空列表在 skipped 与 failed
+   *  下含义完全不同（前者是还没播种，后者是播种失败）。 */
+  skillSyncHealth: SkillSyncHealth | null;
+  setSkillSyncHealth: (h: SkillSyncHealth) => void;
   settingsTabOpen: boolean;
   settingsTab: SettingsTabId;
   settingsDetailProviderId: string | null;
@@ -75,6 +80,8 @@ export const useUiStore = create<UiState>((set) => ({
   workspaceWidth: 260,
   inspectorWidth: 280,
   userMenuOpen: false,
+  skillSyncHealth: null,
+  setSkillSyncHealth: (h) => set({ skillSyncHealth: h }),
   settingsTabOpen: false,
   settingsTab: 'provider',
   settingsDetailProviderId: null,

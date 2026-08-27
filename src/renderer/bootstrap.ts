@@ -62,6 +62,11 @@ export async function bootstrap(): Promise<void> {
     .then((skills) => useSkillsStore.getState().setSkills(skills))
     .catch((err) => console.error('skill.list failed', err));
 
+  // 启动那次 sync 成没成，只有主进程知道；Settings 的提示读的就是这一份。
+  void window.kydog.invoke('skill.getSyncHealth')
+    .then((h) => useUiStore.getState().setSkillSyncHealth(h))
+    .catch((err) => console.error('skill.getSyncHealth failed', err));
+
   useSettingsStore.getState().setBootstrapped(true);
 }
 

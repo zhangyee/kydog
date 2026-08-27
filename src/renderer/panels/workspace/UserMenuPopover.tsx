@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useUiStore } from '../../stores/uiStore';
-import type { ReadingFontSize, ThemeName } from '../../../shared/types';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { useSkillsStore } from '../../stores/skillsStore';
+import type { ReadingFontSize, SettingsFile, ThemeName } from '../../../shared/types';
 
 const SWATCHES: Array<{ name: ThemeName; label: string }> = [
   { name: 'vellum',    label: 'Vellum' },
@@ -20,8 +22,31 @@ export function UserMenuPopover() {
   const openSettings = useUiStore((s) => s.openSettings);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // 语言切换暂仍是本地 state；locale 持久化与字体无关，独立后续任务。
-  const [locale, setLocale] = useState<'zh' | 'en'>('zh');
+  // 语言的唯一真相是 settings，不留本地副本：locale.set 是个事务，失败时它带回的是**旧**
+  // locale，直接覆盖 store 就把界面钉回旧语言了；乐观地先改本地 state 反而要写一条回滚。
+  const locale = useSettingsStore((s) => s.settings?.ui.locale ?? 'zh');
+  const [localeBusy, setLocaleBusy] = useState(false);
+  const [localeError, setLocaleError] = useState<string | null>(null);
+
+  const applyLocale = async (next: SettingsFile['ui']['locale']) => {
+    if (next === locale || localeBusy) return;
+    setLocaleBusy(true);
+    setLocaleError(null);
+    try {
+      const r = await window.kydog.invoke('locale.set', { locale: next });
+      // 三个 store 一律用主进程返回值覆盖，界面因此不会和磁盘脱节。
+      // skills 尤其不能省：bootstrap 拿到的是旧语言的 description，换完树它自己不会刷新。
+      useSettingsStore.getState().setSettings(r.settings);
+      useSkillsStore.getState().setSkills(r.skills);
+      useUiStore.getState().setSkillSyncHealth(r.sync);
+      // 被拒（有 run 在跑）与换树失败都走这条正常返回，message 是给用户看的中文。
+      if (r.sync.state === 'failed') setLocaleError(r.sync.message);
+    } catch (e) {
+      setLocaleError(String((e as Error)?.message ?? e));
+    } finally {
+      setLocaleBusy(false);
+    }
+  };
 
   // Esc / 外部点击关闭菜单（键盘与指针可访问性）
   useEffect(() => {
@@ -84,17 +109,27 @@ export function UserMenuPopover() {
             key={l}
             type="button"
             data-testid={`locale-${l}`}
-            onClick={() => setLocale(l)}
+            aria-pressed={locale === l}
+            disabled={localeBusy}
+            onClick={() => void applyLocale(l)}
             className="cursor-pointer"
             style={{
               padding: '3px 10px', borderRadius: 2,
               border: locale === l ? '1px solid var(--color-ink)' : '0.5px solid var(--color-ink-hair-soft)',
               background: locale === l ? 'var(--color-paper-deep)' : 'transparent',
               fontSize: 11, color: 'var(--color-ink)',
+              opacity: localeBusy ? 0.5 : 1,
             }}
           >{l === 'zh' ? '中文' : 'English'}</button>
         ))}
       </div>
+      {/* 换树是真实文件 IO，失败原因就在点击处说清楚 —— 让用户去 Settings 里找太远了 */}
+      {localeError && (
+        <div
+          data-testid="locale-switch-error"
+          style={{ padding: '0 14px 8px', fontSize: 10.5, lineHeight: 1.5, color: 'var(--color-accent)' }}
+        >{localeError}</div>
+      )}
 
       {/* 主题 */}
       <SectionLabel>主题</SectionLabel>

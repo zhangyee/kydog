@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useSkillsStore } from '../stores/skillsStore';
+import { useUiStore } from '../stores/uiStore';
 import type { SkillEntry, SkillPreview, ToolEntry } from '../../shared/types';
 import { Card, BlockHeader, SubHeader, Divider, Btn, Empty, Toggle } from './ui';
 
 export function SkillsAndToolsSection() {
   const { skills, tools, loading, error, setSkills, setTools, setLoading } = useSkillsStore();
+  const health = useUiStore((s) => s.skillSyncHealth);
   const [preview, setPreview] = useState<SkillPreview | null>(null);
   const [picks, setPicks] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
@@ -122,6 +124,26 @@ export function SkillsAndToolsSection() {
       )}
 
       <BlockHeader>技能</BlockHeader>
+      {/* 内置 skill 的状态读的是显式 health，不从「列表是空的」反推：
+          空列表在 skipped（还没播种）与 failed（播种失败）下含义完全相反。 */}
+      {health?.state === 'failed' && (
+        <div
+          data-testid="skill-sync-error"
+          className="font-sans"
+          style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--color-accent)', marginBottom: 8 }}
+        >
+          skill 同步失败（{health.phase}{health.skill ? ` · ${health.skill}` : ''}）：{health.message}
+        </div>
+      )}
+      {health?.state === 'skipped' && (
+        <div
+          data-testid="skill-sync-skipped"
+          className="font-serif italic"
+          style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--color-ink-faint)', marginBottom: 8 }}
+        >
+          内置 skill 尚未播种，完成初次设置后自动装入。
+        </div>
+      )}
       <Card>
         <SubHeader title="内置" subtitle="对已打开的对话不生效，下次新建对话起生效。" />
         {builtin.length === 0 && <Empty />}

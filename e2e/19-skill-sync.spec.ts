@@ -17,8 +17,11 @@ test('19-skill-sync: first run installs builtin fastpaper skill into <HOME>/.kyd
       { timeout: 5_000 },
     ).toBe(true);
 
+    // manifest 只记「装过哪些内置 skill」的名字列表，逐文件的 sha 账本已随两方比对一并删掉：
+    // 磁盘现状随时能算，跨启动需要记住的只有这份名字（孤儿清理靠它）。
     const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf-8'));
-    expect(manifest.builtin?.fastpaper?.files?.['SKILL.md']).toMatch(/^[0-9a-f]{64}$/);
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.builtin).toContain('fastpaper');
     expect(manifest.kydogVersion).toBeTruthy();
   } finally {
     await teardown(launched);

@@ -36,3 +36,30 @@ test('38-locale: en 用户改主题后重启 locale 仍为 en（回归 bootstrap
     await teardown(second);
   }
 });
+
+test('38-locale: 菜单里切到 en 后重启，选中态仍是 en（不是本地 state）', async () => {
+  const first = await launchKydog({
+    seed: async (home) => { await seedSettings(home, { locale: 'zh' }); },
+  });
+  const kydogHome = first.kydogHome;
+  try {
+    const { page } = first;
+    await page.locator('[data-testid="user-menu-trigger"]').click();
+    await page.locator('[data-testid="locale-en"]').click();
+    await expect(page.locator('[data-testid="locale-en"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+  } finally {
+    await teardown(first);
+  }
+
+  const settings = JSON.parse(await fs.readFile(path.join(kydogHome, '.kydog', 'kydog.json'), 'utf8'));
+  expect(settings.ui.locale).toBe('en');
+
+  // 选中态读的是 settings store；本地 state 的写法在这里一定退回 zh。
+  const second = await launchKydog({ kydogHome });
+  try {
+    await second.page.locator('[data-testid="user-menu-trigger"]').click();
+    await expect(second.page.locator('[data-testid="locale-en"]')).toHaveAttribute('aria-pressed', 'true');
+  } finally {
+    await teardown(second);
+  }
+});
