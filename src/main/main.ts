@@ -140,10 +140,10 @@ app.on('ready', async () => {
     await fs.rm(STAGING_DIR, { recursive: true, force: true }).catch(() => {});
     await fs.mkdir(STAGING_DIR, { recursive: true }).catch(() => {});
 
-    try {
-      await skillSyncStateHolder.runOnStartup();
-    } catch (err) {
-      logger.warn('skill-sync', 'startup sync failed; continuing without builtin skills', { err: String(err) });
+    // onboarding 未完成时 locale 还不存在，跳过；由 onboardingService 在用户选定后播种。
+    // 此时 Root.tsx 不渲染 AppShell，skills UI 不可达，跳过没有可观测副作用。
+    if (_initialSettings.onboarding.completedAt !== null) {
+      await skillSyncStateHolder.runFor(_initialSettings.ui.locale, 'startup');
     }
 
     installDispatcher();

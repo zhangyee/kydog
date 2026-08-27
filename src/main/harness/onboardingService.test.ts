@@ -5,7 +5,7 @@ import type { SeedManifest, ManifestReadResult } from './manifest';
 
 const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFontSize: 'medium', userName: '老张', agentName: 'KyDog', telemetryEnabled: false };
 
-function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean; telemetry: SettingsFile['telemetry'] }> = {}) {
+function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean; telemetry: SettingsFile['telemetry']; syncFail: boolean }> = {}) {
   const state = {
     settings: {
       schemaVersion: 7,
@@ -22,6 +22,7 @@ function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; m
     written: null as SeedManifest | null,
     lastWritten: null as SeedManifest | null,   // 与 written 不同：成功后 manifest 会被删，这里留痕以便断言写进去的内容
     deleted: 0, discarded: 0, seedCalls: [] as Array<{ locale: string; userName: string; agentName: string }>,
+    order: [] as string[], syncCalls: [] as string[],   // 验证 seed → sync 的先后顺序，以及 sync 收到的 locale
   };
   const deps: OnboardingDeps = {
     settings: {
@@ -34,6 +35,7 @@ function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; m
     seed: async (input) => {
       if (over.seedFail) throw new Error('EACCES');
       state.seedCalls.push(input);
+      state.order.push('seed');
       return { created: ['SOUL.md', 'USER.md', 'AGENTS.md'], skipped: [] };
     },
     readManifest: async () => (state.written ? { status: 'ok', manifest: state.written } : state.manifest),
@@ -45,6 +47,11 @@ function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; m
     deleteManifest: async () => { state.deleted += 1; state.written = null; },
     discardCorruptManifest: async () => { state.discarded += 1; state.manifest = { status: 'none' }; },
     isModelResolvable: () => over.model !== false,
+    syncSkills: async (locale) => {
+      if (over.syncFail) throw new Error('EACCES');
+      state.order.push('sync');
+      state.syncCalls.push(locale);
+    },
     now: () => '2026-07-22T00:00:00.000Z',
   };
   return { state, svc: createOnboardingService(deps) };
@@ -118,6 +125,19 @@ describe('onboarding.complete', () => {
     const [a, b] = await Promise.all([svc.complete(ARGS), svc.complete(ARGS)]);
     expect(a).toEqual(b);
     expect(state.seedCalls).toHaveLength(1);
+  });
+
+  it('complete 成功后按选定 locale 播种 skills，顺序在 seed 之后', async () => {
+    const { state, svc } = makeWorld();
+    expect(await svc.complete({ ...ARGS, locale: 'en' })).toEqual({ ok: true });
+    expect(state.order).toEqual(['seed', 'sync']);
+    expect(state.syncCalls).toEqual(['en']);
+  });
+
+  it('skill 播种失败不挡住 onboarding（seed 失败才挡）', async () => {
+    const { state, svc } = makeWorld({ syncFail: true });
+    expect(await svc.complete(ARGS)).toEqual({ ok: true });
+    expect(state.settings.onboarding.completedAt).toBe('2026-07-22T00:00:00.000Z');
   });
 });
 

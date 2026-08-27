@@ -5,6 +5,7 @@ import { seedHarnessFiles, type SeedInput, type SeedOutcome } from './seed';
 import { readManifest, writeManifest, deleteManifest, discardCorruptManifest, type SeedManifest, type ManifestReadResult } from './manifest';
 import { settingsService } from '../settings/settingsService';
 import { getProviderRegistry } from '../llm/providerRegistry';
+import { skillSyncStateHolder } from '../skills/skillSyncStateHolder';
 import { logger } from '../log';
 
 export type OnboardingDeps = {
@@ -15,6 +16,7 @@ export type OnboardingDeps = {
   deleteManifest: () => Promise<void>;
   discardCorruptManifest: () => Promise<void>;
   isModelResolvable: (providerId: string, modelId: string) => boolean;
+  syncSkills: (locale: 'zh' | 'en') => Promise<void>;
   now: () => string;
 };
 
@@ -46,6 +48,13 @@ export function createOnboardingService(deps: OnboardingDeps) {
     } catch (err) {
       logger.error('harness.onboarding', 'seed failed', { err: String(err) });
       return fail('seed-failed', String(err));
+    }
+    // skills 播种失败不挡 onboarding：harness 文件是人格基础，缺了要挡；
+    // skill 缺失只是能力少一块，不该把人卡在向导里。失败经 health 状态上报给 Settings。
+    try {
+      await deps.syncSkills(m.locale);
+    } catch (err) {
+      logger.warn('harness.onboarding', 'skill sync failed', { err: String(err) });
     }
     const next: SettingsFile = {
       ...cur,
@@ -120,5 +129,6 @@ export const onboardingService = createOnboardingService({
   discardCorruptManifest: () => discardCorruptManifest(),
   isModelResolvable: (providerId, modelId) =>
     Boolean(getProviderRegistry().modelRuntime.getModel(providerId, modelId)),
+  syncSkills: (locale) => skillSyncStateHolder.runFor(locale, 'onboarding'),
   now: () => new Date().toISOString(),
 });
