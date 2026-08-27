@@ -45,7 +45,10 @@ export function UserMenuPopover() {
           useUiStore.getState().setSkillSyncHealth(r.outcome.sync);
           break;
         case 'failed':
-          useUiStore.getState().setSkillSyncHealth(r.outcome.sync);
+          // 两个字段各喂各的：health store 写的是**重投影之后**树的健康度（成功还原时就是
+          // ok），内联提示写的才是「这次为什么没切成」。反过来把 sync 写进 health store，
+          // Settings 会显示「skill 同步失败」，而磁盘是完好的旧语言树、主进程也答 ok。
+          useUiStore.getState().setSkillSyncHealth(r.outcome.health);
           setLocaleError(r.outcome.sync.message);
           break;
         case 'rejected':

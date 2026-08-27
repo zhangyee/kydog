@@ -45,9 +45,14 @@ export function createLocaleSet(deps: LocaleSetDeps) {
 
     // 向前重投影：源就是备份，按旧 locale 重跑一次即可精确还原。
     // 不做 backup handle 的逆序回滚 —— 那要管备份的生命周期，还会出现「清理备份时部分删除成功」。
+    //
+    // `health` 一律带回重投影**这一次**的结果，而不是 `failure`：它描述的是 RPC 返回那一刻
+    // 磁盘上那棵树，和主进程 `getHealth()` 读的是同一个值（`cached` 已被这次重投影覆盖）。
+    // 重投影成功 → health 是 ok，渲染层与主进程于是对「树好不好」给出同一个答案；
+    // 失败的原因另走 `sync`，只喂内联提示。
     const restoreAndReport = async (failure: SkillSyncFailed): Promise<LocaleSetResult> => {
       const restored = await deps.sync(previous, 'locale-switch');
-      if (restored.state === 'ok') return settled({ kind: 'failed', sync: failure });
+      if (restored.state === 'ok') return settled({ kind: 'failed', sync: failure, health: restored });
       logger.error('locale.set', 'restore failed', {
         previous, locale,
         original: failure.message,
@@ -57,6 +62,7 @@ export function createLocaleSet(deps: LocaleSetDeps) {
       return settled({
         kind: 'failed',
         sync: { ...failure, message: `${failure.message}；skill 树可能不一致，重启将自动修复` },
+        health: restored,
       });
     };
 

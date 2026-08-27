@@ -254,8 +254,19 @@ export type LocaleSetOutcome =
   | { kind: 'applied'; sync: SkillSyncOk }
   /** 业务拒绝（如有任务在跑）。message 是给用户看的中文，skill 树没被碰过。 */
   | { kind: 'rejected'; message: string }
-  /** 换树或提交失败，已按旧语言重投影。settings / skills 带回的是旧语言。 */
-  | { kind: 'failed'; sync: SkillSyncFailed };
+  /**
+   * 换树或提交失败，已按旧语言重投影。settings / skills 带回的是旧语言。
+   *
+   * 两个字段**说的是两件事，不能合并**：
+   * - `sync` 是「这次切换为什么没成」的诊断，给内联提示用，是过去时；
+   * - `health` 是重投影**之后** skill 树此刻的健康度，给 health store 用，是现在时。
+   *
+   * 重投影成功时 `health` 就是 ok —— 磁盘上是完好的旧语言树，主进程 `getHealth()`
+   * 答的也是这个（`cached` 已被重投影覆盖）。只带 `sync` 回去会让渲染层写一条
+   * 「skill 同步失败」进 health store，与主进程对同一个问题给出相反答案，
+   * 而且那条横幅刷新一下就消失 —— 正是 `rejected` 当初被从 SkillSyncHealth 里拆出来的同一个毛病。
+   */
+  | { kind: 'failed'; sync: SkillSyncFailed; health: SkillSyncHealth };
 export type SkillEntry = {
   name: string; description: string; origin: 'builtin' | 'user';
   enabled: boolean; dirPath: string; kydogVersion?: string;

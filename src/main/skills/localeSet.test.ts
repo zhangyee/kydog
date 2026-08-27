@@ -70,10 +70,29 @@ describe('locale.set', () => {
     const r = await createLocaleSet(d)('en');
     expect(seen).toEqual(['en', 'zh']);            // 第二次是向前重投影回旧语言
     expect(d.commitLocale).not.toHaveBeenCalled();
-    expect(r.outcome).toEqual({ kind: 'failed', sync: FAIL });
+    // health 是**重投影之后**那棵树（ok），sync 才是这次没切成的原因 —— 两者分开。
+    expect(r.outcome).toEqual({ kind: 'failed', sync: FAIL, health: OK });
     // 契约核心：settings 带回旧 locale，渲染层一次 setSettings 就把 UI 钉回原样。
     expect(r.settings.ui.locale).toBe('zh');
     expect(r.skills[0].description).toBe('中文描述');
+  });
+
+  it('重投影成功 → health 描述的是重投影之后那棵树，与主进程 getHealth() 是同一个答案', async () => {
+    // 回归：曾经只带回 failure，渲染层照写 health store，于是 Settings 说「skill 同步失败」，
+    // 而此刻磁盘上是完好的旧语言树、主进程 cached 已被重投影覆盖成 ok —— 两边相反。
+    // 这里用两份**可区分**的 ok，钉住返回的是重投影那一次的结果，不是随便一个 ok。
+    const RESTORED_OK: SkillSyncHealth = { state: 'ok', installedOrUpgraded: ['demo'], userSkills: ['mine'] };
+    const cached: SkillSyncHealth[] = [];
+    const d = deps();
+    d.sync = vi.fn(async (loc, _p) => {
+      const h = loc === 'en' ? FAIL : RESTORED_OK;
+      cached.push(h);   // 主进程 skillSyncStateHolder.cached 的建模：每次同步都覆盖它
+      return h;
+    });
+    const r = await createLocaleSet(d)('en');
+    expect(r.outcome).toEqual({ kind: 'failed', sync: FAIL, health: RESTORED_OK });
+    // getHealth() 读的就是最后一次同步的结果 —— 渲染层拿到的 health 必须与它逐字相同。
+    expect(r.outcome.kind === 'failed' && r.outcome.health).toEqual(cached[cached.length - 1]);
   });
 
   it('提交 settings 失败 → 同样重投影回旧语言', async () => {
@@ -82,7 +101,11 @@ describe('locale.set', () => {
     d.sync = vi.fn(async (loc, _p) => { seen.push(loc); return OK; });
     const r = await createLocaleSet(d)('en');
     expect(seen).toEqual(['en', 'zh']);
-    expect(r.outcome).toMatchObject({ kind: 'failed', sync: { message: 'Error: write failed' } });
+    expect(r.outcome).toMatchObject({
+      kind: 'failed',
+      sync: { message: 'Error: write failed' },
+      health: OK,                                  // 重投影成功，树是健康的旧语言树
+    });
     expect(r.settings.ui.locale).toBe('zh');       // commitLocale 抛了，磁盘没变
   });
 
@@ -94,6 +117,9 @@ describe('locale.set', () => {
     expect(r.outcome).toEqual({
       kind: 'failed',
       sync: { state: 'failed', phase: 'locale-switch', skill: 'demo', message: 'boom；skill 树可能不一致，重启将自动修复' },
+      // health 是重投影那一次的**原始**返回值，不带上面那句后缀 —— 它要和主进程
+      // cached 逐字相同；给用户看的话术只加在 sync 上。
+      health: FAIL,
     });
   });
 
