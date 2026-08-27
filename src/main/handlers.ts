@@ -9,6 +9,9 @@ import { projectService } from './project/projectService';
 import { threadService } from './thread/threadService';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { skillsService } from './skills/skillsService';
+import { withSkillTree } from './skills/skillTreeLock';
+import { createLocaleSet } from './skills/localeSet';
+import { agentService } from './agent/AgentService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
 import { renderPageToPng } from './pdf/pdfRaster';
@@ -31,6 +34,18 @@ async function syncTelemetryFromSettings(): Promise<void> {
     logger.warn('telemetry', 'onboarding 后同步遥测状态失败', { err: String(err) });
   }
 }
+
+/** 注意这里全部接的是**无锁**入口：外层 registerHandler 已经用 withSkillTree 包住整个事务，
+ *  再走 runFor() / list() 那两个加锁壳就是重入死锁。 */
+const localeSet = createLocaleSet({
+  currentLocale: async () => (await settingsService.get()).ui.locale,
+  hasActiveRun: () => agentService.hasActiveRun(),
+  disposeAllSessions: () => agentService.disposeAllSessions(),
+  sync: (locale, phase) => skillSyncStateHolder.runForUnlocked(locale, phase),
+  commitLocale: (locale) => settingsService.update({ ui: { locale } }),
+  readSettings: () => settingsService.get(),
+  listSkills: () => skillsService.listUnlocked(),
+});
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -121,6 +136,10 @@ export function registerAllHandlers(): void {
   registerHandler('ask.submit', (args) => threadService.submitAsk(args));
   registerHandler('ask.cancel', (args) => threadService.cancelAsk(args));
   registerHandler('thread.update', (args) => threadService.update(args));
+
+  // 整个事务在一把 skillTreeLock 里跑完：dispose session → 换树 → 提交 locale。
+  // 期间任何 skill 读写入口都排在后面，不会看到半换的树。
+  registerHandler('locale.set', (args) => withSkillTree(() => localeSet(args.locale)));
 
   registerHandler('skill.getSyncHealth', () => skillSyncStateHolder.getHealth());
 

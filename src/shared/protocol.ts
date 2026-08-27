@@ -27,6 +27,10 @@ export type RpcCall =
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
   | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean; projectPath?: string; modelOverride?: { providerId: string; modelId: string } | null }; result: Thread }
+  // 界面语言切换是一个事务，不是「settings.update + 一次 sync」两次调用：两次之间新建的
+  // session 会快照到旧 skill 树，而 sync 失败会留下 settings 说英文、磁盘是中文的长期不一致。
+  // 所以 args 只给目标语言，settings / skills / sync 三样结果一次带回。
+  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFile; skills: SkillEntry[]; sync: SkillSyncHealth } }
   | { method: 'skill.getSyncHealth'; args: undefined; result: SkillSyncHealth }
   | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
   | { method: 'skill.setEnabled'; args: { name: string; enabled: boolean }; result: SkillEntry[] }
