@@ -150,7 +150,7 @@ async function makeHarness(opts: {
     onClosed(toolCallId, outcome) {
       closed.push({ toolCallId, outcome });
     },
-  }, broker);
+  }, 'zh', broker);
 
   // session.prompt() 在开流之前先要求 provider 有 auth（hasConfiguredAuth），
   // 这一步跟 streamFunction 被不被替换无关，所以假 key 还是得给。0.83 去掉了

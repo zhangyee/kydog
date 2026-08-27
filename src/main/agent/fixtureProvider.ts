@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
+import type { AskLocale } from './askAnswers';
 import { ASK_TOOL_NAME } from '../../shared/askQuestion';
 import type { FixtureFile, FixtureEvent } from '../../../e2e/fixtures/fixture.types';
 
@@ -17,6 +18,7 @@ export async function createFixtureSession(
   fixturePath: string,
   askShared: AskSharedState,
   threadId: string,
+  locale: AskLocale,
 ): Promise<FakeAgentSession> {
   const raw = await fs.readFile(fixturePath, 'utf8');
   const file = JSON.parse(raw) as FixtureFile;
@@ -33,7 +35,7 @@ export async function createFixtureSession(
       const toolChunks = new Map<string, string>();
       // 必须用真实 threadId：broker 按 threadId 索引 pending，
       // renderer 发来的 ask.submit / ask.cancel 带的就是它。
-      const askTool = createAskUserQuestionTool(threadId, askShared);
+      const askTool = createAskUserQuestionTool(threadId, askShared, locale);
       for (const evt of file.events) {
         if (aborted && evt.type !== 'agent_end') continue;
         await new Promise((r) => setTimeout(r, evt.after_ms));

@@ -51,7 +51,7 @@ describe('isParallelBatch', () => {
   });
 
   it('名单与工具定义的 executionMode 保持一致', () => {
-    const tool = createAskUserQuestionTool('t', { onOpened: () => {}, onClosed: () => {} });
+    const tool = createAskUserQuestionTool('t', { onOpened: () => {}, onClosed: () => {} }, 'zh');
     expect(SEQUENTIAL_TOOL_NAMES.has(tool.name)).toBe(tool.executionMode === 'sequential');
   });
 });

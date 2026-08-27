@@ -1,6 +1,6 @@
 import { Type } from 'typebox';
 import { validateQuestions } from './askValidate';
-import { renderOutcome } from './askAnswers';
+import { renderOutcome, type AskLocale } from './askAnswers';
 import { questionBroker as defaultBroker, type QuestionBroker } from './questionBroker';
 import { ASK_TOOL_NAME, type AskOutcome, type AskQuestion } from '../../shared/askQuestion';
 
@@ -44,10 +44,12 @@ export const ASK_GUIDELINES = [
 /**
  * 每个 thread 一个实例。threadId 由闭包绑定——pi 的 execute 拿不到它。
  * broker 参数只为测试注入，生产代码用默认的单例。
+ * locale 由调用方在 session 构造时快照传入（见 sessionFactory.ts），本函数不读 settings。
  */
 export function createAskUserQuestionTool(
   threadId: string,
   shared: AskSharedState,
+  locale: AskLocale,
   broker: QuestionBroker = defaultBroker,
 ) {
   return {
@@ -78,7 +80,7 @@ export function createAskUserQuestionTool(
       shared.onClosed(toolCallId, outcome);
 
       return {
-        content: [{ type: 'text' as const, text: renderOutcome(questions, outcome) }],
+        content: [{ type: 'text' as const, text: renderOutcome(questions, outcome, locale) }],
         // questions 一并落盘：toolCall.arguments 里的是模型原始形状、没有 id，
         // 历史恢复要靠 details 里这份带 id 的才能和 answers 对齐。
         details: { ...outcome, questions },

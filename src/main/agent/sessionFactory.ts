@@ -3,6 +3,7 @@ import { createFixtureSession } from './fixtureProvider';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { createPdfFigureTool } from './pdfFigureTool';
 import { getProviderRegistry } from '../llm/providerRegistry';
+import { settingsService } from '../settings/settingsService';
 import { KydogError } from '../../shared/errors';
 import type { ProviderId } from '../../shared/types';
 
@@ -24,10 +25,16 @@ export async function createSession(opts: {
   modelId: string;
   askShared: AskSharedState;
 }): Promise<AnySession> {
+  // locale 在这里（session 构造时）快照一次，理由与写法同下面 createKydogResourceLoader
+  // 里的 disabledBuiltins：已开的 session 用的是开工那一刻的界面语言，之后用户在设置里
+  // 切语言不会追着改正在跑的 session（spec §A.2）。ask_user_question 的回传文本要进
+  // agent 上下文，必须跟这份快照走，不能各自现读 settings。
+  const locale = (await settingsService.get()).ui.locale;
+
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
   // sessionId 就是 threadId，fixture 里的工具必须用它注册 broker，
   // 否则 renderer 发来的 ask.submit / ask.cancel 会因 threadId 对不上被丢弃。
-  if (fixturePath) return createFixtureSession(fixturePath, opts.askShared, opts.sessionId);
+  if (fixturePath) return createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale);
 
   const pi = await import('@earendil-works/pi-coding-agent');
   const reg = getProviderRegistry();
@@ -48,7 +55,7 @@ export async function createSession(opts: {
     model,
     resourceLoader,
     customTools: [
-      createAskUserQuestionTool(opts.sessionId, opts.askShared),
+      createAskUserQuestionTool(opts.sessionId, opts.askShared, locale),
       createPdfFigureTool(),
     ],
   });

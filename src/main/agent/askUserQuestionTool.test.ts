@@ -13,7 +13,7 @@ function make() {
   const broker = new QuestionBroker();
   const onOpened = vi.fn();
   const onClosed = vi.fn();
-  const tool = createAskUserQuestionTool('t1', { onOpened, onClosed }, broker);
+  const tool = createAskUserQuestionTool('t1', { onOpened, onClosed }, 'zh', broker);
   return { broker, onOpened, onClosed, tool };
 }
 
