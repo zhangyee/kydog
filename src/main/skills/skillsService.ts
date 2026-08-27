@@ -84,11 +84,14 @@ export class SkillsService {
   }
 
   async openInOS(name: string): Promise<void> {
-    return withSkillTree(async () => {
-      const dir = path.join(this.deps.skillsDir, name);
+    const dir = path.join(this.deps.skillsDir, name);
+    // 锁里只放对 skill 树的那一次读：`shell.openPath` 是系统 UI 调用（Finder 可能弹权限框、
+    // 可能挂住），而 skillTreeLock 无超时，且新建 session 的 createKydogResourceLoader
+    // 也排在这把锁上 —— 把它圈进来等于让一次「在访达中显示」有机会卡死整个 skill 通路。
+    await withSkillTree(async () => {
       if (!existsSync(dir)) throw new KydogError('skill.invalid', `未找到 skill ${name}`);
-      await shell.openPath(dir);
     });
+    await shell.openPath(dir);
   }
 
   async previewFromFolder(args: { srcDir: string }): Promise<SkillPreview> {
