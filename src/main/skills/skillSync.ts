@@ -1,179 +1,100 @@
-import { promises as fsp, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { promises as fsp, lstatSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { sha256OfFile } from './sha';
-import { hashBuiltinSkill, listBuiltinSkills } from './builtinSkills';
-import { readManifest, writeManifest, type SkillManifest } from './manifest';
-
-export type SkillAction = 'install' | 'skip' | 'auto-upgrade' | 'conflict';
-
-export interface SkillFileConflict {
-  relPath: string;
-  shippedSha: string;
-  diskSha: string;
-  recordedSha: string | null;
-}
-
-export interface SkillClassification {
-  action: SkillAction;
-  /** files we should write unconditionally (missing or auto-upgrade) */
-  toWrite: string[];
-  /** files where user changed and ship also changed; user must decide */
-  conflicts: SkillFileConflict[];
-}
-
-export interface ClassifyInputs {
-  shippedFiles: Record<string, string>;       // relPath → sha256
-  recordedFiles: Record<string, string>;      // last manifest snapshot
-  diskHashes: Record<string, string>;         // current ~/.kydog/skills/<name>/ contents (only files we know how to hash)
-  diskExists: boolean;
-}
-
-export function classifySkill(i: ClassifyInputs): SkillClassification {
-  if (!i.diskExists) {
-    return { action: 'install', toWrite: Object.keys(i.shippedFiles).sort(), conflicts: [] };
-  }
-  const toWrite: string[] = [];
-  const conflicts: SkillFileConflict[] = [];
-  for (const [rel, shippedSha] of Object.entries(i.shippedFiles)) {
-    const diskSha = i.diskHashes[rel] ?? null;
-    const recordedSha = i.recordedFiles[rel] ?? null;
-    if (diskSha === null) { toWrite.push(rel); continue; }       // missing → write
-    if (diskSha === shippedSha) continue;                        // already correct
-    if (recordedSha !== null && diskSha === recordedSha) {
-      // user untouched, shipped updated
-      toWrite.push(rel); continue;
-    }
-    // user changed AND shipped also changed
-    conflicts.push({ relPath: rel, shippedSha, diskSha, recordedSha });
-  }
-  let action: SkillAction;
-  if (conflicts.length > 0) action = 'conflict';
-  else if (toWrite.length === 0) action = 'skip';
-  else action = 'auto-upgrade';
-  return { action, toWrite: toWrite.sort(), conflicts: conflicts.sort((a, b) => a.relPath.localeCompare(b.relPath)) };
-}
-
-// ----------------------------------------------------------------
-
-export interface PendingSkillConflict {
-  skill: string;
-  conflicts: SkillFileConflict[];
-}
-
-export interface SyncResult {
-  installedOrUpgraded: { skill: string; files: string[]; action: 'install' | 'auto-upgrade' }[];
-  pendingConflicts: PendingSkillConflict[];
-  /** Names of user-only skill dirs found in ~/.kydog/skills/ — left untouched. */
-  userSkills: string[];
-  /** Latest manifest after auto-applies. */
-  manifest: SkillManifest;
-}
+import { hashProjectedSkill, listSkillSourceFiles, listBuiltinSkills } from './builtinSkills';
+import { projectSkillFiles, type SkillLocale } from './localeProjection';
+import { replaceSkillTree } from './replaceSkillTree';
+import { readManifest, writeManifest } from './manifest';
+import { logger } from '../log';
+import type { SkillSyncHealth, SyncPhase } from '../../shared/types';
 
 export interface SyncInputs {
   builtinRoot: string;
-  kydogSkillsDir: string;       // ~/.kydog/skills
-  manifestPath: string;          // ~/.kydog/skills/.manifest.json
-  kydogVersion: string;
-}
-
-export async function runSkillSync(i: SyncInputs): Promise<SyncResult> {
-  await fsp.mkdir(i.kydogSkillsDir, { recursive: true });
-  const builtinNames = listBuiltinSkills(i.builtinRoot);
-  const manifestStart = await readManifest(i.manifestPath);
-  const manifest: SkillManifest = {
-    kydogVersion: i.kydogVersion,
-    writtenAt: new Date().toISOString(),
-    builtin: { ...manifestStart.builtin },
-  };
-
-  const installedOrUpgraded: SyncResult['installedOrUpgraded'] = [];
-  const pendingConflicts: PendingSkillConflict[] = [];
-
-  for (const name of builtinNames) {
-    const shipped = hashBuiltinSkill(i.builtinRoot, name);
-    const recorded = manifestStart.builtin[name]?.files ?? {};
-    const diskDir = path.join(i.kydogSkillsDir, name);
-    const diskExists = existsSync(diskDir);
-    const diskHashes: Record<string, string> = {};
-    if (diskExists) {
-      for (const rel of Object.keys(shipped)) {
-        const abs = path.join(diskDir, rel);
-        if (existsSync(abs)) diskHashes[rel] = sha256OfFile(abs);
-      }
-    }
-    const cls = classifySkill({ shippedFiles: shipped, recordedFiles: recorded, diskHashes, diskExists });
-    if (cls.action === 'skip') continue;
-    if (cls.action === 'conflict') {
-      // Auto-write the non-conflicting toWrite files now (missing-only); leave conflicts pending.
-      if (cls.toWrite.length > 0) {
-        await writeFiles(i.builtinRoot, name, cls.toWrite, i.kydogSkillsDir);
-      }
-      pendingConflicts.push({ skill: name, conflicts: cls.conflicts });
-      // Record the auto-written files into the manifest so the next sync uses the right
-      // baseline for them. Leave the conflicting files' recordedSha untouched so the same
-      // conflict reappears on every boot until the user resolves it via the UI.
-      if (cls.toWrite.length > 0) {
-        const prev = manifest.builtin[name];
-        const newFiles: Record<string, string> = { ...(prev?.files ?? recorded) };
-        for (const rel of cls.toWrite) newFiles[rel] = shipped[rel];
-        manifest.builtin[name] = { kydogVersion: i.kydogVersion, files: newFiles };
-      }
-      continue;
-    }
-    // install or auto-upgrade
-    await writeFiles(i.builtinRoot, name, cls.toWrite, i.kydogSkillsDir);
-    manifest.builtin[name] = {
-      kydogVersion: i.kydogVersion,
-      files: shipped,  // all shipped files now match disk
-    };
-    installedOrUpgraded.push({ skill: name, files: cls.toWrite, action: cls.action });
-  }
-
-  await writeManifest(i.manifestPath, manifest);
-
-  // Enumerate user-only skill dirs (not in builtin list)
-  const userSkills = existsSync(i.kydogSkillsDir)
-    ? readdirSync(i.kydogSkillsDir, { withFileTypes: true })
-        .filter((e) => e.isDirectory() && !builtinNames.includes(e.name))
-        .map((e) => e.name)
-    : [];
-
-  return { installedOrUpgraded, pendingConflicts, userSkills, manifest };
-}
-
-async function writeFiles(builtinRoot: string, name: string, rels: string[], kydogSkillsDir: string): Promise<void> {
-  for (const rel of rels) {
-    const src = path.join(builtinRoot, name, rel);
-    const dest = path.join(kydogSkillsDir, name, rel);
-    mkdirSync(path.dirname(dest), { recursive: true });
-    await fsp.copyFile(src, dest);
-  }
-}
-
-// ----------------------------------------------------------------
-// Apply user choices from the conflict modal.
-
-export interface ApplyOverridesInputs {
-  builtinRoot: string;
-  kydogSkillsDir: string;
+  skillsDir: string;          // ~/.kydog/skills
   manifestPath: string;
+  stagingRoot: string;
+  locale: SkillLocale;
+  phase: SyncPhase;
   kydogVersion: string;
-  operations: { skill: string; files: string[] }[];   // files user chose to overwrite
 }
 
-export async function applyOverrides(i: ApplyOverridesInputs): Promise<SkillManifest> {
-  const m = await readManifest(i.manifestPath);
-  for (const op of i.operations) {
-    await writeFiles(i.builtinRoot, op.skill, op.files, i.kydogSkillsDir);
-    // After writing chosen files, fold them into manifest entry.
-    const shipped = hashBuiltinSkill(i.builtinRoot, op.skill);
-    const entry = m.builtin[op.skill] ?? { kydogVersion: i.kydogVersion, files: {} };
-    for (const rel of op.files) entry.files[rel] = shipped[rel];
-    entry.kydogVersion = i.kydogVersion;
-    m.builtin[op.skill] = entry;
+/** 投影 vs 磁盘的两方比对：不一致就整棵重写。
+ *  不需要「上次发出去的是什么」——三方比对唯一的用途是识别用户改动，而我们不再识别。 */
+function needsRewrite(shipped: Record<string, string>, skillDir: string): boolean {
+  // 不存在，或那个位置根本不是目录（普通文件、软链）→ 直接整棵重写。
+  // 这里不能只判存在：readdirSync 碰上普通文件会 ENOTDIR 抛出去，被外层兜住之后
+  // 整轮同步就停了 —— 一个放错位置的文件让所有内置 skill 不再更新。
+  // replaceSkillTree 的 rename 换得掉文件与软链，交给它就行。
+  if (!lstatSync(skillDir, { throwIfNoEntry: false })?.isDirectory()) return true;
+  const onDisk = new Set(listExistingRels(skillDir));
+  const want = Object.keys(shipped);
+  if (onDisk.size !== want.length) return true;          // 有多余文件也要重写
+  for (const rel of want) {
+    if (!onDisk.has(rel)) return true;
+    if (sha256OfFile(path.join(skillDir, rel)) !== shipped[rel]) return true;
   }
-  m.kydogVersion = i.kydogVersion;
-  m.writtenAt = new Date().toISOString();
-  await writeManifest(i.manifestPath, m);
-  return m;
+  return false;
+}
+
+function listExistingRels(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (rel: string): void => {
+    for (const e of readdirSync(rel ? path.join(dir, rel) : dir, { withFileTypes: true })) {
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(child);
+      else out.push(child);          // 软链在这里既非 file 也非 directory，天然被漏掉 → 触发重写
+    }
+  };
+  walk('');
+  return out;
+}
+
+export async function runSkillSync(i: SyncInputs): Promise<SkillSyncHealth> {
+  try {
+    await fsp.mkdir(i.skillsDir, { recursive: true });
+    const builtinNames = listBuiltinSkills(i.builtinRoot);
+    const prior = await readManifest(i.manifestPath);
+    const installedOrUpgraded: string[] = [];
+
+    for (const name of builtinNames) {
+      const shipped = hashProjectedSkill(i.builtinRoot, name, i.locale);
+      const skillDir = path.join(i.skillsDir, name);
+      if (!needsRewrite(shipped, skillDir)) continue;
+      const projection = projectSkillFiles(listSkillSourceFiles(i.builtinRoot, name), i.locale);
+      try {
+        await replaceSkillTree({
+          srcRoot: i.builtinRoot, skillName: name, projection,
+          targetDir: skillDir, stagingRoot: i.stagingRoot,
+        });
+      } catch (err) {
+        return { state: 'failed', phase: i.phase, skill: name, message: String(err) };
+      }
+      installedOrUpgraded.push(name);
+    }
+
+    // 孤儿清理：manifest 记过、当前已不是 builtin 的目录。
+    // 历史列表未知时跳过而不是猜 —— 误删用户自己装的 skill 比留下一个旧目录严重得多。
+    if (prior.kind === 'ok') {
+      for (const name of prior.builtin) {
+        if (builtinNames.includes(name)) continue;
+        await fsp.rm(path.join(i.skillsDir, name), { recursive: true, force: true });
+      }
+    } else {
+      logger.warn('skill-sync', 'manifest unreadable, orphan cleanup skipped', { path: i.manifestPath });
+    }
+
+    await writeManifest(i.manifestPath, {
+      schemaVersion: 2, kydogVersion: i.kydogVersion,
+      writtenAt: new Date().toISOString(), builtin: builtinNames,
+    });
+
+    const userSkills = readdirSync(i.skillsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !builtinNames.includes(e.name))
+      .map((e) => e.name)
+      .sort();
+
+    return { state: 'ok', installedOrUpgraded, userSkills };
+  } catch (err) {
+    return { state: 'failed', phase: i.phase, message: String(err) };
+  }
 }

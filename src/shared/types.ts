@@ -226,16 +226,17 @@ export type BootstrapState = {
   onboardingRecovery: OnboardingRecovery;
 };
 
-// ── Skills（保留旧定义不变）──
-export interface SkillFileConflict {
-  relPath: string; shippedSha: string; diskSha: string; recordedSha: string | null;
-}
-export interface PendingSkillConflict { skill: string; conflicts: SkillFileConflict[]; }
-export interface SkillSyncStatus {
-  installedOrUpgraded: { skill: string; files: string[]; action: 'install' | 'auto-upgrade' }[];
-  pendingConflicts: PendingSkillConflict[];
-  userSkills: string[];
-}
+// ── Skills ──
+/** 一次 sync 是在什么时机跑的。失败时原样带回渲染层，用来说清「哪一步没成」。 */
+export type SyncPhase = 'startup' | 'onboarding' | 'locale-switch';
+/**
+ * 内置 skill 同步的健康度。没有「待用户裁决」这一档 —— 内置 skill 按 locale 投影整棵重写，
+ * 不再识别用户改动，也就不存在冲突。
+ */
+export type SkillSyncHealth =
+  | { state: 'ok'; installedOrUpgraded: string[]; userSkills: string[] }
+  | { state: 'skipped'; reason: 'onboarding-pending' }
+  | { state: 'failed'; phase: SyncPhase; skill?: string; message: string };
 export type SkillEntry = {
   name: string; description: string; origin: 'builtin' | 'user';
   enabled: boolean; dirPath: string; kydogVersion?: string;

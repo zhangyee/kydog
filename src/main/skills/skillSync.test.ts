@@ -1,152 +1,125 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { classifySkill, applyOverrides, runSkillSync } from './skillSync';
-import { createHash } from 'node:crypto';
+import { runSkillSync } from './skillSync';
 
-function tmp() { return mkdtempSync(path.join(tmpdir(), 'sync-')); }
+function tmp(p: string) { return mkdtempSync(path.join(tmpdir(), p)); }
 
-describe('classifySkill', () => {
-  it('skill not on disk → action=install, no conflicts', () => {
-    const r = classifySkill({
-      shippedFiles: { 'SKILL.md': 'A' },
-      recordedFiles: {},
-      diskHashes: {},          // disk dir absent
-      diskExists: false,
-    });
-    expect(r.action).toBe('install');
-    expect(r.conflicts).toEqual([]);
-    expect(r.toWrite).toEqual(['SKILL.md']);
+function makeBuiltinRoot(): string {
+  const root = tmp('sync-src-');
+  mkdirSync(path.join(root, 'demo', 'references'), { recursive: true });
+  writeFileSync(path.join(root, 'demo', 'SKILL.md'), '---\nname: demo\ndescription: d\n---\nzh-body');
+  writeFileSync(path.join(root, 'demo', 'SKILL.en.md'), '---\nname: demo\ndescription: d\n---\nen-body');
+  writeFileSync(path.join(root, 'demo', 'references', 'r.md'), 'zh-ref');
+  return root;
+}
+
+function home() {
+  const h = tmp('sync-home-');
+  return {
+    skillsDir: path.join(h, 'skills'),
+    manifestPath: path.join(h, 'skills', '.manifest.json'),
+    stagingRoot: path.join(h, 'staging'),
+  };
+}
+
+describe('runSkillSync', () => {
+  it('zh 落中文，en 落英文，变体文件都不落盘', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    for (const [loc, want] of [['zh', 'zh-body'], ['en', 'en-body']] as const) {
+      const h = home();
+      const r = await runSkillSync({ builtinRoot, locale: loc, phase: 'startup', kydogVersion: '0.3.0', ...h });
+      expect(r.state).toBe('ok');
+      expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toContain(want);
+      expect(existsSync(path.join(h.skillsDir, 'demo', 'SKILL.en.md'))).toBe(false);
+    }
   });
 
-  it('all files match shipped → action=skip', () => {
-    const r = classifySkill({
-      shippedFiles: { 'SKILL.md': 'A', 'r/r.md': 'B' },
-      recordedFiles: { 'SKILL.md': 'A', 'r/r.md': 'B' },
-      diskHashes: { 'SKILL.md': 'A', 'r/r.md': 'B' },
-      diskExists: true,
-    });
-    expect(r.action).toBe('skip');
+  it('第二次跑没有变化 → installedOrUpgraded 为空（两方比对生效）', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    const args = { builtinRoot, locale: 'zh' as const, phase: 'startup' as const, kydogVersion: '0.3.0', ...h };
+    await runSkillSync(args);
+    const r2 = await runSkillSync(args);
+    expect(r2).toMatchObject({ state: 'ok', installedOrUpgraded: [] });
   });
 
-  it('user untouched, ship updated → action=auto-upgrade', () => {
-    const r = classifySkill({
-      shippedFiles: { 'SKILL.md': 'NEW' },
-      recordedFiles: { 'SKILL.md': 'OLD' },
-      diskHashes:    { 'SKILL.md': 'OLD' },
-      diskExists: true,
-    });
-    expect(r.action).toBe('auto-upgrade');
-    expect(r.toWrite).toEqual(['SKILL.md']);
+  it('用户改过的内置 skill 被直接覆盖，不再产生冲突', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    const args = { builtinRoot, locale: 'zh' as const, phase: 'startup' as const, kydogVersion: '0.3.0', ...h };
+    await runSkillSync(args);
+    writeFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'hand-edited');
+    const r = await runSkillSync(args);
+    expect(r).toMatchObject({ state: 'ok', installedOrUpgraded: ['demo'] });
+    expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toContain('zh-body');
   });
 
-  it('user changed AND shipped changed → action=conflict', () => {
-    const r = classifySkill({
-      shippedFiles: { 'SKILL.md': 'NEW' },
-      recordedFiles: { 'SKILL.md': 'OLD' },
-      diskHashes:    { 'SKILL.md': 'USER' },
-      diskExists: true,
-    });
-    expect(r.action).toBe('conflict');
-    expect(r.conflicts).toEqual([{ relPath: 'SKILL.md', shippedSha: 'NEW', diskSha: 'USER', recordedSha: 'OLD' }]);
+  it('切换 locale 会重写整棵树', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
+    await runSkillSync({ builtinRoot, locale: 'en', phase: 'locale-switch', kydogVersion: '0.3.0', ...h });
+    expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toContain('en-body');
   });
 
-  it('partial: one file conflict, one missing → action=conflict, missing in toWrite', () => {
-    const r = classifySkill({
-      shippedFiles: { 'SKILL.md': 'NEW', 'r.md': 'X' },
-      recordedFiles: { 'SKILL.md': 'OLD' },
-      diskHashes:    { 'SKILL.md': 'USER' },  // r.md missing on disk
-      diskExists: true,
-    });
-    expect(r.action).toBe('conflict');
-    expect(r.conflicts.map(c => c.relPath)).toEqual(['SKILL.md']);
-    // missing files become non-conflicting auto-writes baked into the conflict result
-    expect(r.toWrite).toEqual(['r.md']);
+  it('用户自己的 skill 目录不被触碰，且列在 userSkills 里', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    mkdirSync(path.join(h.skillsDir, 'mine'), { recursive: true });
+    writeFileSync(path.join(h.skillsDir, 'mine', 'SKILL.md'), 'mine');
+    const r = await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
+    expect(r).toMatchObject({ state: 'ok', userSkills: ['mine'] });
+    expect(readFileSync(path.join(h.skillsDir, 'mine', 'SKILL.md'), 'utf8')).toBe('mine');
   });
 
-  it('user added an extra file in skill dir → not in conflicts and not in toWrite', () => {
-    const r = classifySkill({
-      shippedFiles: { 'SKILL.md': 'A' },
-      recordedFiles: { 'SKILL.md': 'A' },
-      diskHashes:    { 'SKILL.md': 'A', 'notes.md': 'USER_EXTRA' },
-      diskExists: true,
-    });
-    expect(r.action).toBe('skip');
-    expect(r.toWrite).toEqual([]);
-  });
-});
-
-describe('runSkillSync conflict + auto-write manifest', () => {
-  it('records auto-written missing files but preserves recordedSha for conflicts', async () => {
-    const root = tmp();
-    const built = path.join(root, 'src-skills');
-    const target = path.join(root, 'kydog-skills');
-    const manifest = path.join(target, '.manifest.json');
-
-    const sha = (s: string) => createHash('sha256').update(s).digest('hex');
-
-    // Built-in skill ships SKILL.md (NEW) + r.md
-    mkdirSync(path.join(built, 'fastpaper'), { recursive: true });
-    writeFileSync(path.join(built, 'fastpaper', 'SKILL.md'), 'NEW_SKILL');
-    writeFileSync(path.join(built, 'fastpaper', 'r.md'), 'NEW_R');
-
-    // User has SKILL.md on disk with their own edit; r.md doesn't exist on disk
-    mkdirSync(path.join(target, 'fastpaper'), { recursive: true });
-    writeFileSync(path.join(target, 'fastpaper', 'SKILL.md'), 'USER_EDITED');
-
-    // Manifest already records OLD_SKILL for SKILL.md (so user-modified is detected)
-    mkdirSync(target, { recursive: true });
-    writeFileSync(manifest, JSON.stringify({
-      kydogVersion: '0.1.0',
-      writtenAt: '2026-04-29T00:00:00Z',
-      builtin: { fastpaper: { kydogVersion: '0.1.0', files: { 'SKILL.md': sha('OLD_SKILL') } } },
+  it('manifest 记过、当前已不是 builtin 的目录被当成孤儿删掉', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    mkdirSync(path.join(h.skillsDir, 'gone'), { recursive: true });
+    writeFileSync(path.join(h.skillsDir, 'gone', 'SKILL.md'), 'x');
+    mkdirSync(path.dirname(h.manifestPath), { recursive: true });
+    writeFileSync(h.manifestPath, JSON.stringify({
+      schemaVersion: 2, kydogVersion: '0.2.0', writtenAt: 'x', builtin: ['demo', 'gone'],
     }));
-
-    const result = await runSkillSync({
-      builtinRoot: built,
-      kydogSkillsDir: target,
-      manifestPath: manifest,
-      kydogVersion: '0.2.0',
-    });
-
-    // Skill is in pendingConflicts (SKILL.md conflicts)
-    expect(result.pendingConflicts.map(c => c.skill)).toEqual(['fastpaper']);
-    expect(result.pendingConflicts[0].conflicts.map(c => c.relPath)).toEqual(['SKILL.md']);
-
-    // r.md got auto-written
-    expect(readFileSync(path.join(target, 'fastpaper', 'r.md'), 'utf-8')).toBe('NEW_R');
-
-    // Manifest's r.md sha is the NEW shipped sha; SKILL.md sha is unchanged (still OLD_SKILL's sha)
-    const reread = JSON.parse(readFileSync(manifest, 'utf-8'));
-    expect(reread.builtin.fastpaper.files['r.md']).toBe(sha('NEW_R'));
-    expect(reread.builtin.fastpaper.files['SKILL.md']).toBe(sha('OLD_SKILL'));
+    await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
+    expect(existsSync(path.join(h.skillsDir, 'gone'))).toBe(false);
   });
-});
 
-describe('applyOverrides', () => {
-  it('writes selected files + updates manifest', async () => {
-    const root = tmp();
-    const built = path.join(root, 'src-skills');
-    const target = path.join(root, 'kydog-skills');
-    const manifest = path.join(target, '.manifest.json');
-    mkdirSync(path.join(built, 'fastpaper', 'r'), { recursive: true });
-    writeFileSync(path.join(built, 'fastpaper', 'SKILL.md'), 'NEW');
-    writeFileSync(path.join(built, 'fastpaper', 'r', 'r.md'), 'NEW2');
+  it('manifest 损坏 → 照常同步，但跳过孤儿清理（旧目录留着）', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    mkdirSync(path.join(h.skillsDir, 'gone'), { recursive: true });
+    writeFileSync(path.join(h.skillsDir, 'gone', 'SKILL.md'), 'x');
+    writeFileSync(h.manifestPath, '{broken');
+    const r = await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
+    expect(r.state).toBe('ok');
+    expect(existsSync(path.join(h.skillsDir, 'demo', 'SKILL.md'))).toBe(true);
+    expect(existsSync(path.join(h.skillsDir, 'gone'))).toBe(true);
+  });
 
-    const writtenManifest = await applyOverrides({
-      builtinRoot: built,
-      kydogSkillsDir: target,
-      manifestPath: manifest,
-      kydogVersion: '0.2.0',
-      operations: [
-        { skill: 'fastpaper', files: ['SKILL.md', 'r/r.md'] },
-      ],
-    });
+  it('skill 名下躺着的是普通文件而不是目录 → 照样整棵换掉，不卡死整轮同步', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    mkdirSync(h.skillsDir, { recursive: true });
+    writeFileSync(path.join(h.skillsDir, 'demo'), 'not a dir');
+    const r = await runSkillSync({ builtinRoot, locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h });
+    expect(r).toMatchObject({ state: 'ok', installedOrUpgraded: ['demo'] });
+    expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toContain('zh-body');
+  });
 
-    expect(readFileSync(path.join(target, 'fastpaper', 'SKILL.md'), 'utf-8')).toBe('NEW');
-    expect(readFileSync(path.join(target, 'fastpaper', 'r', 'r.md'), 'utf-8')).toBe('NEW2');
-    expect(writtenManifest.builtin.fastpaper.files['SKILL.md']).toMatch(/^[0-9a-f]{64}$/);
-    expect(existsSync(manifest)).toBe(true);
+  it('替换失败 → 返回 failed 而不是抛，且带上 phase 与 skill', async () => {
+    const builtinRoot = makeBuiltinRoot();
+    const h = home();
+    // 名字排在 demo 之前，保证它是第一个被处理的那个
+    mkdirSync(path.join(builtinRoot, 'broken'), { recursive: true });
+    writeFileSync(path.join(builtinRoot, 'broken', 'SKILL.md'), '---\nname: broken\ndescription: d\n---\nb');
+    // 暂存根被一个普通文件占住 → replaceSkillTree 建暂存目录时就失败。
+    // 不用「源文件换成目录」造 "not a regular file"：listSkillSourceFiles 只收普通文件，
+    // 目录根本进不了投影，那种造法造不出失败。
+    writeFileSync(h.stagingRoot, 'not a dir');
+    const r = await runSkillSync({ builtinRoot, locale: 'en', phase: 'locale-switch', kydogVersion: '0.3.0', ...h });
+    expect(r).toMatchObject({ state: 'failed', phase: 'locale-switch', skill: 'broken' });
   });
 });

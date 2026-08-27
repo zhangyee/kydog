@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { listBuiltinSkills, hashBuiltinSkill } from './builtinSkills';
+import { listBuiltinSkills, listSkillSourceFiles, hashProjectedSkill } from './builtinSkills';
 
 function makeFakeBuiltin(): string {
   const root = mkdtempSync(path.join(tmpdir(), 'bskills-'));
@@ -22,11 +22,23 @@ describe('listBuiltinSkills', () => {
   });
 });
 
-describe('hashBuiltinSkill', () => {
-  it('returns sha256 for every file under skill dir, recursive, relative path keys', () => {
+describe('listSkillSourceFiles', () => {
+  it('递归列出全部源文件（含 .en 变体），相对路径为 key', () => {
     const root = makeFakeBuiltin();
-    const m = hashBuiltinSkill(root, 'fastpaper');
-    expect(Object.keys(m).sort()).toEqual(['SKILL.md', 'references/r.md']);
-    expect(m['SKILL.md']).toMatch(/^[0-9a-f]{64}$/);
+    expect(listSkillSourceFiles(root, 'fastpaper').sort()).toEqual(['SKILL.md', 'references/r.md']);
+  });
+});
+
+describe('hashProjectedSkill', () => {
+  it('key 是投影后路径，value 是被选中源文件的 sha', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'bskills-'));
+    mkdirSync(path.join(root, 'demo'), { recursive: true });
+    writeFileSync(path.join(root, 'demo', 'SKILL.md'), 'zh');
+    writeFileSync(path.join(root, 'demo', 'SKILL.en.md'), 'en');
+    const zh = hashProjectedSkill(root, 'demo', 'zh');
+    const en = hashProjectedSkill(root, 'demo', 'en');
+    expect(Object.keys(zh)).toEqual(['SKILL.md']);
+    expect(Object.keys(en)).toEqual(['SKILL.md']);
+    expect(zh['SKILL.md']).not.toBe(en['SKILL.md']);   // 同一 key，不同源
   });
 });

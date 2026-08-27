@@ -122,11 +122,7 @@ export function registerAllHandlers(): void {
   registerHandler('ask.cancel', (args) => threadService.cancelAsk(args));
   registerHandler('thread.update', (args) => threadService.update(args));
 
-  registerHandler('skill.getPendingSync', () => skillSyncStateHolder.getStatus());
-  registerHandler('skill.applyOverrides', async (args) => {
-    await skillSyncStateHolder.applyOverrides(args.operations);
-    return skillSyncStateHolder.getStatus();
-  });
+  registerHandler('skill.getSyncHealth', () => skillSyncStateHolder.getHealth());
 
   registerHandler('skill.list', () => skillsService.list());
   registerHandler('skill.setEnabled', (args) => skillsService.setEnabled(args.name, args.enabled));

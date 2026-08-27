@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readdirSync, existsSync } from 'node:fs';
 import { app } from 'electron';
 import { sha256OfFile } from './sha';
+import { projectSkillFiles, type SkillLocale } from './localeProjection';
 
 function liveRepoRoot(): string {
   return path.resolve(__dirname, '..', '..');
@@ -26,23 +27,34 @@ export function listBuiltinSkills(root: string): string[] {
     .sort();
 }
 
-/** Walk the skill dir and return { relPath: sha256 } for every regular file. */
-export function hashBuiltinSkill(root: string, name: string): Record<string, string> {
-  const skillRoot = path.join(root, name);
-  const out: Record<string, string> = {};
-  walk(skillRoot, '', out);
+/** 递归列出 skill 源目录下全部普通文件的相对路径（含 .en 变体）。 */
+export function listSkillSourceFiles(root: string, name: string): string[] {
+  const out: string[] = [];
+  walk(path.join(root, name), '', out);
   return out;
 }
 
-function walk(absRoot: string, relPath: string, out: Record<string, string>): void {
+function walk(absRoot: string, relPath: string, out: string[]): void {
   const here = relPath ? path.join(absRoot, relPath) : absRoot;
   for (const entry of readdirSync(here, { withFileTypes: true })) {
     const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
-    const childAbs = path.join(absRoot, childRel);
-    if (entry.isDirectory()) {
-      walk(absRoot, childRel, out);
-    } else if (entry.isFile()) {
-      out[childRel] = sha256OfFile(childAbs);
-    }
+    if (entry.isDirectory()) walk(absRoot, childRel, out);
+    else if (entry.isFile()) out.push(childRel);
   }
+}
+
+/**
+ * `{ 投影后路径: 被选中那个源文件的 sha256 }`。
+ *
+ * key 用投影后路径而非源路径是刻意的：上游后来补了 `SKILL.en.md`、投影源从 A 换成 B 时，
+ * 这在 sha 层面就是一次普通的「源变了」，两方比对原样能处理；
+ * key 若用源路径，同一个落盘文件会在两次 sync 之间换 key，比对就失准了。
+ */
+export function hashProjectedSkill(root: string, name: string, locale: SkillLocale): Record<string, string> {
+  const projection = projectSkillFiles(listSkillSourceFiles(root, name), locale);
+  const out: Record<string, string> = {};
+  for (const [projRel, srcRel] of projection) {
+    out[projRel] = sha256OfFile(path.join(root, name, srcRel));
+  }
+  return out;
 }

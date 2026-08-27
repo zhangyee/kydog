@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { ThemeApplier } from './ThemeApplier';
 import { ReadingFontSizeApplier } from './ReadingFontSizeApplier';
 import { TitleBar } from './TitleBar';
 import { UpdateBanner } from './UpdateBanner';
 import { ThreeColumnLayout } from './ThreeColumnLayout';
 import { ErrorBoundary } from './ErrorBoundary';
-import { SkillSyncModal } from './SkillSyncModal';
 import { ConfirmHost } from './ConfirmHost';
 import { WorkspacePanel } from '../panels/workspace/WorkspacePanel';
 import { MainPane } from '../panels/main-pane/MainPane';
@@ -14,21 +13,8 @@ import { useThreadsStore } from '../stores/threadsStore';
 import { useUiStore } from '../stores/uiStore';
 import { useUnreadStore } from '../panels/workspace/unreadStore';
 import { SETTINGS_PAGE_LABELS } from '../settings/settingsPages';
-import type { SkillSyncStatus } from '../../shared/types';
 
 export function AppShell() {
-  const [skillSync, setSkillSync] = useState<SkillSyncStatus | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    void window.kydog.invoke('skill.getPendingSync').then((s) => {
-      if (mounted) setSkillSync(s);
-    }).catch((err) => {
-      console.error('skill.getPendingSync failed', err);
-    });
-    return () => { mounted = false; };
-  }, []);
-
   const activeCenterTab = useUiStore((s) => s.activeCenterTab);
   const settingsTabOpen = useUiStore((s) => s.settingsTabOpen);
   const settingsTab = useUiStore((s) => s.settingsTab);
@@ -83,13 +69,6 @@ export function AppShell() {
           right={<ErrorBoundary fallbackLabel="检视区出错"><InspectorPanel /></ErrorBoundary>}
         />
       </div>
-      {skillSync && (
-        <SkillSyncModal
-          status={skillSync}
-          onApply={(ops) => window.kydog.invoke('skill.applyOverrides', { operations: ops }).then(setSkillSync)}
-          onDismiss={() => setSkillSync(null)}
-        />
-      )}
       <ConfirmHost />
     </div>
   );

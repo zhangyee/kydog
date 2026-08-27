@@ -1,5 +1,5 @@
 import type {
-  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncStatus,
+  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncHealth,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   TelemetryStatus,
@@ -27,8 +27,7 @@ export type RpcCall =
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
   | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean; projectPath?: string; modelOverride?: { providerId: string; modelId: string } | null }; result: Thread }
-  | { method: 'skill.getPendingSync'; args: undefined; result: SkillSyncStatus }
-  | { method: 'skill.applyOverrides'; args: { operations: { skill: string; files: string[] }[] }; result: SkillSyncStatus }
+  | { method: 'skill.getSyncHealth'; args: undefined; result: SkillSyncHealth }
   | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
   | { method: 'skill.setEnabled'; args: { name: string; enabled: boolean }; result: SkillEntry[] }
   | { method: 'skill.pickFolder'; args: undefined; result: string | null }
