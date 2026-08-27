@@ -34,19 +34,40 @@ export function UserMenuPopover() {
     setLocaleError(null);
     try {
       const r = await window.kydog.invoke('locale.set', { locale: next });
-      // 三个 store 一律用主进程返回值覆盖，界面因此不会和磁盘脱节。
+      // settings / skills 一律用主进程返回值覆盖，界面因此不会和磁盘脱节。
       // skills 尤其不能省：bootstrap 拿到的是旧语言的 description，换完树它自己不会刷新。
       useSettingsStore.getState().setSettings(r.settings);
       useSkillsStore.getState().setSkills(r.skills);
-      useUiStore.getState().setSkillSyncHealth(r.sync);
-      // 被拒（有 run 在跑）与换树失败都走这条正常返回，message 是给用户看的中文。
-      if (r.sync.state === 'failed') setLocaleError(r.sync.message);
+      // health store 只在这一轮真的跑过同步时才写。rejected / unchanged 都没碰 skill 树，
+      // 拿它们去写会让 Settings 显示一条与磁盘现状相反、且永远不会消失的横幅。
+      switch (r.outcome.kind) {
+        case 'applied':
+          useUiStore.getState().setSkillSyncHealth(r.outcome.sync);
+          break;
+        case 'failed':
+          useUiStore.getState().setSkillSyncHealth(r.outcome.sync);
+          setLocaleError(r.outcome.sync.message);
+          break;
+        case 'rejected':
+          // 只走内联提示：这不是同步失败，是「现在不能切」。
+          setLocaleError(r.outcome.message);
+          break;
+        case 'unchanged':
+          break;
+      }
     } catch (e) {
       setLocaleError(String((e as Error)?.message ?? e));
     } finally {
       setLocaleBusy(false);
     }
   };
+
+  // 菜单关掉时把失败原因清掉。这个组件是**无条件挂在** WorkspacePanel 上的（内部靠
+  // `if (!open) return null` 决定画不画），React 不会卸载它，useState 全都留着 ——
+  // 不主动清，「有任务正在运行」会在 run 早就结束、此刻切换明明能成的时候原样再出现一次。
+  useEffect(() => {
+    if (!open) setLocaleError(null);
+  }, [open]);
 
   // Esc / 外部点击关闭菜单（键盘与指针可访问性）
   useEffect(() => {

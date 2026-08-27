@@ -237,6 +237,25 @@ export type SkillSyncHealth =
   | { state: 'ok'; installedOrUpgraded: string[]; userSkills: string[] }
   | { state: 'skipped'; reason: 'onboarding-pending' }
   | { state: 'failed'; phase: SyncPhase; skill?: string; message: string };
+export type SkillSyncOk = Extract<SkillSyncHealth, { state: 'ok' }>;
+export type SkillSyncFailed = Extract<SkillSyncHealth, { state: 'failed' }>;
+/**
+ * `locale.set` 的结果分档。
+ *
+ * **「被拒绝」刻意不是一个 `SkillSyncHealth`**：拒绝发生在碰 skill 树之前，树与 settings
+ * 都原封不动。把它编码成 `failed` 会让渲染层写进 health store，Settings 从此持久显示
+ * 「skill 同步失败」，而主进程记的健康度仍是 ok —— 同一个问题两个相反答案，且 run 结束后
+ * 那条横幅也不会自己消失。同理「已经是这个语言」也不产生 health：那一轮根本没跑同步。
+ */
+export type LocaleSetOutcome =
+  /** 目标语言就是当前语言，什么都没做。 */
+  | { kind: 'unchanged' }
+  /** 换树成功并已提交 settings。sync 是这一轮的健康度，可以直接进 health store。 */
+  | { kind: 'applied'; sync: SkillSyncOk }
+  /** 业务拒绝（如有任务在跑）。message 是给用户看的中文，skill 树没被碰过。 */
+  | { kind: 'rejected'; message: string }
+  /** 换树或提交失败，已按旧语言重投影。settings / skills 带回的是旧语言。 */
+  | { kind: 'failed'; sync: SkillSyncFailed };
 export type SkillEntry = {
   name: string; description: string; origin: 'builtin' | 'user';
   enabled: boolean; dirPath: string; kydogVersion?: string;

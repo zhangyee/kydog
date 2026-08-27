@@ -130,6 +130,36 @@ describe('runSkillSync', () => {
     expect(existsSync(path.join(h.skillsDir, 'gone'))).toBe(false);
   });
 
+  it('源目录读不到内容而 manifest 记过 → 报 failed，一个都不删', async () => {
+    // 数据丢失回归：listBuiltinSkills 在 root 不存在时返回 []，若照常往下走，
+    // 孤儿清理会把 manifest 记过的每个目录 rm -rf 删光、写一份空 manifest 覆盖历史，
+    // 最后还返回 ok。「源读不到」与「内置 skill 全被下架了」在磁盘上长得一样，
+    // 分不出来时不动才是安全的一侧。
+    const h = home();
+    mkdirSync(path.join(h.skillsDir, 'demo'), { recursive: true });
+    writeFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'keep me');
+    writeFileSync(h.manifestPath, JSON.stringify({
+      schemaVersion: 2, kydogVersion: '0.2.0', writtenAt: 'x', builtin: ['demo'],
+    }));
+    const r = await runSkillSync({
+      builtinRoot: path.join(tmpdir(), 'kydog-does-not-exist-' + Date.now()),
+      locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h,
+    });
+    expect(r).toMatchObject({ state: 'failed', phase: 'startup' });
+    expect(readFileSync(path.join(h.skillsDir, 'demo', 'SKILL.md'), 'utf8')).toBe('keep me');
+    // manifest 也没被空列表覆盖：历史还在，下次源回来了孤儿仍认得出。
+    expect(JSON.parse(readFileSync(h.manifestPath, 'utf8')).builtin).toEqual(['demo']);
+  });
+
+  it('源目录读不到内容但 manifest 也没记过 → 照常返回 ok（首启空跑不算故障）', async () => {
+    const h = home();
+    const r = await runSkillSync({
+      builtinRoot: path.join(tmpdir(), 'kydog-does-not-exist-' + Date.now()),
+      locale: 'zh', phase: 'startup', kydogVersion: '0.3.0', ...h,
+    });
+    expect(r).toMatchObject({ state: 'ok', installedOrUpgraded: [] });
+  });
+
   it('manifest 里的名字不是安全的单段目录名 → 跳过它，不拿去 rm', async () => {
     const builtinRoot = makeBuiltinRoot();
     const h = home();

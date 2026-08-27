@@ -107,15 +107,24 @@ test('48-locale: 有任务在跑时切换被拒，界面停在旧语言并说明
 
     // 被拒是一次正常返回：message 是给用户看的中文，不走异常路径。
     await expect(page.locator('[data-testid="locale-switch-error"]')).toContainText('有任务正在运行', { timeout: 10_000 });
-    // 失败时 locale.set 带回的是旧 locale，直接 set 就把界面钉在旧语言上。
+    // 被拒时 locale.set 带回的是原封不动的现状，直接 set 就把界面钉在旧语言上。
     await expect(page.locator('[data-testid="locale-zh"]')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('[data-testid="locale-en"]')).toHaveAttribute('aria-pressed', 'false');
     expect(await readLocaleOnDisk(kydogHome)).toBe('zh');
 
-    // 同一份 health 也挂在 Settings 的技能页上（读的是显式 state，不从空列表反推）。
+    // 被拒不是同步失败：skill 树根本没被碰过，Settings 不该冒出「skill 同步失败」。
     // 切到 Settings 后中间栏不再是对话，stop 按钮随之消失；run 由 teardown 关进程收掉。
     await page.locator('[data-testid="nav-skills"]').click();
-    await expect(page.locator('[data-testid="skill-sync-error"]')).toContainText('有任务正在运行');
+    await expect(page.locator('[data-testid="skill-row"]').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="skill-sync-error"]')).toHaveCount(0);
+
+    // 陈旧提示不许留：popover 只是 return null、组件不卸载，不主动清就会在下次打开时
+    // 原样再出现一次 —— 而那时 run 可能早就结束、切换明明已经能成了。
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-testid="user-menu"]')).toHaveCount(0);
+    await page.locator('[data-testid="user-menu-trigger"]').click();
+    await expect(page.locator('[data-testid="user-menu"]')).toBeVisible();
+    await expect(page.locator('[data-testid="locale-switch-error"]')).toHaveCount(0);
   } finally {
     await teardown(app);
   }

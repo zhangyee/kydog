@@ -1,5 +1,5 @@
 import type {
-  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncHealth,
+  BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsPatch, SkillSyncHealth, LocaleSetOutcome,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   TelemetryStatus,
@@ -30,7 +30,9 @@ export type RpcCall =
   // 界面语言切换是一个事务，不是「settings.update + 一次 sync」两次调用：两次之间新建的
   // session 会快照到旧 skill 树，而 sync 失败会留下 settings 说英文、磁盘是中文的长期不一致。
   // 所以 args 只给目标语言，settings / skills / sync 三样结果一次带回。
-  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFile; skills: SkillEntry[]; sync: SkillSyncHealth } }
+  // outcome 是判别联合而不是一个 SkillSyncHealth：业务拒绝与同步失败必须分开，
+  // 前者压根没碰 skill 树，渲染层不该拿它去写同步状态。见 types.ts 的 LocaleSetOutcome。
+  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFile; skills: SkillEntry[]; outcome: LocaleSetOutcome } }
   | { method: 'skill.getSyncHealth'; args: undefined; result: SkillSyncHealth }
   | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
   | { method: 'skill.setEnabled'; args: { name: string; enabled: boolean }; result: SkillEntry[] }

@@ -74,6 +74,19 @@ export async function runSkillSync(i: SyncInputs): Promise<SkillSyncHealth> {
     await fsp.mkdir(i.skillsDir, { recursive: true });
     const builtinNames = listBuiltinSkills(i.builtinRoot);
     const prior = await readManifest(i.manifestPath);
+
+    // 源侧一个内置 skill 都列不出来，而 manifest 记过：`listBuiltinSkills` 在 root 不存在时
+    // 返回空数组，所以这说明源读不到（资源目录缺失、卷没挂上），**不是**「内置 skill 全被下架了」。
+    // 照常往下走的后果是数据丢失：孤儿清理会把 manifest 记过的每个目录 `rm -rf` 删光，
+    // 随后写一份空 manifest 覆盖历史，最后还返回 ok —— 静默删光内置 skill 并报告健康。
+    // 判不出来时什么都不做才是安全的一侧，让 Settings 有东西可显示。
+    if (builtinNames.length === 0 && prior.kind === 'ok' && prior.builtin.length > 0) {
+      return {
+        state: 'failed', phase: i.phase,
+        message: `内置 skill 源目录列不出任何 skill（${i.builtinRoot}），本轮跳过同步与清理`,
+      };
+    }
+
     const installedOrUpgraded: string[] = [];
 
     for (const name of builtinNames) {
