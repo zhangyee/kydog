@@ -324,6 +324,23 @@ class AgentService {
       }
     });
   }
+
+  /** 有没有正在跑的 run。locale.set 靠它决定是否拒绝切换。 */
+  hasActiveRun(): boolean {
+    return [...this.runs.values()].some((s) => s.status === 'running');
+  }
+
+  /**
+   * 丢弃全部 session。
+   *
+   * 只在「已确认没有 run 在跑」之后调用，所以不需要 markStaleOrDispose 那套延后逻辑。
+   * 线程历史在文件里，下次访问会重建 session，自然拿到新语言的 skill 树。
+   */
+  async disposeAllSessions(): Promise<void> {
+    for (const bound of [...this.sessions.values()]) {
+      await this.dispose(bound.threadId);
+    }
+  }
 }
 
 function extractToolResultText(result: unknown): string {
