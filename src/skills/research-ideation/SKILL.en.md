@@ -238,7 +238,7 @@ The topic slug is English or pinyin joined by hyphens, no spaces. The date is th
 Two things that are easy to botch:
 
 - **The first line is the funnel numbers** (the eight steps N1–N8 in §2.1), not "search tool: fastpaper". Which tool you used is internal implementation and the reader does not care; how thick the evidence is decides how they read every sentence after. When done, check N3 ≥ N4 ≥ N5 ≥ N6, D1 ≤ N7, N8 = D1 + D3 — anything that does not add up means you miscounted.
-- **The first chapter is prose, not a Q&A**. Use three to five paragraphs to make the topic clear, with the nine questions' item-by-item answers folded in at the end of the chapter. The reader may read only the first chapter and the assessment chapter, and each of those two must stand on its own.
+- **The first chapter is prose, not a Q&A**. Use three to five paragraphs to make the topic clear. The reader may read only the first chapter and the assessment chapter, and each of those two must stand on its own.
 
 When done, give a summary in the conversation: which of the three verdicts, the two or three most decisive grounds, the report path, how many papers landed in `papers/`. Do not recount the whole report — it is already in the file.
 
