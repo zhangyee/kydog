@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { assertSafeRel } from './safeRel';
 import { sha256OfFile } from './sha';
+import { logger } from '../log';
 
 export interface ReplaceSkillTreeInputs {
   srcRoot: string;
@@ -61,7 +62,17 @@ export async function replaceSkillTree(i: ReplaceSkillTreeInputs): Promise<void>
     try {
       await fsp.rename(stage, i.targetDir);
     } catch (err) {
-      if (hadOld) await fsp.rename(trash, i.targetDir);   // 换回去
+      if (hadOld) {
+        // 换回去这一步本身也可能失败（概率低，但发生时 targetDir 会两头落空）。
+        // 换回失败不能盖掉原始错误，只能记日志把 trash 的位置留给人工恢复。
+        try {
+          await fsp.rename(trash, i.targetDir);
+        } catch (rollbackErr) {
+          logger.error('skills.replaceSkillTree', 'rollback rename failed, old tree stuck in trash', {
+            trash, targetDir: i.targetDir, rollbackErr: String(rollbackErr),
+          });
+        }
+      }
       throw err;
     }
     // ④ 清理旧树。fsp.rm 不跟随软链，只 unlink 链本身
