@@ -39,11 +39,12 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `research-frontier/SKILL.md:8` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
 | `research-frontier/SKILL.md:213` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
 | `research-frontier/assets/briefing-template.md:9` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
-| `research-ideation/SKILL.en.md:78` | —— | 保留中文串 `「用户跳过了这一题」` | 见下「硬编码中文串」 | 2026-08-27 |
-| `research-ideation/SKILL.en.md:79` | —— | 保留中文串 `「用户关闭了提问，未作回答。」` | 同上 | 2026-08-27 |
 | `literature-review/SKILL.md:30`（篇幅档「短」） | 800–1200 **字** | 500–750 **words** | 见下「字数预算」 | 2026-08-27 |
 | `literature-review/SKILL.md:31`（篇幅档「中」） | 2000–3000 **字** | 1200–1800 **words** | 同上 | 2026-08-27 |
 | `literature-review/SKILL.md:32`（篇幅档「长」） | 4000–6000 **字** | 2400–3600 **words** | 同上 | 2026-08-27 |
+| `paper-summary/SKILL.en.md:106` | 「作者 等（年份）」或 (Author et al., year) | **原样并列**，中文串保留 | 见下「保留的中文字面量」 | 2026-08-27 |
+| `literature-review/SKILL.en.md:191` | 同上 | **原样并列**，中文串保留 | 同上 | 2026-08-27 |
+| `literature-review/references/search-strategy.en.md:54` | 综述、述评、进展、研究现状、展望 | **原样保留**，不译 | 同上 | 2026-08-27 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。
 这几条指令自己写明了意图——「写长了没人读，而且会不可避免地滑向综述」「价值在判定和证据链，
@@ -55,12 +56,26 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 > literature-review 的篇数上限（正文 25–35 篇 / 12–18 篇）**没有**跟着换算，是对的：
 > 那是检索铺开的宽度，不是散文长度，两种语言下同一档要覆盖的文献量一样。
 
-**硬编码中文串**：`src/main/agent/askAnswers.ts:5,11` 的 `renderOutcome` 三条 outcome 文案
-（`用户关闭了提问，未作回答。` / `提问被中止，用户未作回答。` / `（用户跳过了这一题）`）
-是硬编码中文，**不随 locale 走**。英文界面下工具回给模型的仍是这几句中文，所以英文 skill 里
-用来识别它们的字面量必须保持中文，翻成英文会让识别直接失效。
-这是规则「模型会照抄/匹配的字面量保留原语言」的实例。
-→ 若哪天 `askAnswers.ts` 做了本地化，**这两行要跟着改回英文**，届时删掉这两条登记。
+**保留的中文字面量**：判定靠**落点与可恢复性**，不靠界面 locale。
+`SKILL.en.md` 自己写明「They ask in Chinese, you produce Chinese — prose, report and section
+headings all follow」——**产物跟的是用户说话的语言，不是界面 locale**，所以「英文界面下报告
+就是英文」不是理由。真正的分界是：
+
+- **落进用户自己的东西**（论文正文、送进 CLI 的 query 串）→ **原样保留中文**。
+  弄错了要用户手工返工，或者命令根本搜不到东西，超出这份产物的边界。
+  - `paper-summary/SKILL.en.md:106`、`literature-review/SKILL.en.md:191` 的引用格式
+    「作者 等（年份）」——它进的是**用户自己的论文**，英文界面下的中文提问者仍要拿到中文格式。
+  - `search-strategy.en.md:54` 的「综述、述评、进展、研究现状、展望」——它是直接送进
+    `xueshu`（中文源）的**检索串**，翻成英文这条检索指令直接作废。
+- **落进模型自己写的报告**（如 `literature-review/assets/report-template.en.md:68-69` 的
+  「作者（年份）《题名》」→ `"Author (year), Title"`）→ **翻成英文**。错了不出这份文件的边界，
+  重跑一次即可。research-ideation / fact-check / research-frontier 的英文模板同此裁决。
+
+> 2026-08-27 删掉了 `research-ideation/SKILL.en.md:78/79` 两条「保留中文串」登记及其
+> 「硬编码中文串」说明段。`src/main/agent/askAnswers.ts` 的 `renderOutcome` 已按 locale
+> 本地化（commit `6610855`），en 分支回给模型的是
+> `(the user skipped this question)` / `The user closed the prompt without answering.`，
+> `SKILL.en.md` 那两行已同步成英文、全文零中文字符。原登记写好的退出条件已兑现。
 
 ---
 
@@ -73,6 +88,23 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
    另一版都必须有。**数字与标识符必须完全一致**（步骤编号、上限值、文件名、工具名）。
 3. **frontmatter**：`name` 必须完全相同；`description` 是同一句话的两种语言，
    不能一边描述了触发场景另一边没有。
+   **改中文 description 之前，先量一遍英文侧的余量。** 英文平均是中文的 3.4–3.7 倍，
+   中文加一个短句 = 英文加几十上百字符。超过 1024 时 `parseSkillFrontmatter`
+   （`src/main/skills/parseSkillFrontmatter.ts:33`）返回 `ok:false`，那个 skill 在 en 树里
+   降级成禁用行、**根本进不了 system prompt** —— 不报错、不崩，只是安静地不再被触发。
+   当前余量（2026-08-27 实测）：
+
+   | skill | 中文 | 英文 | 余量 |
+   |---|---:|---:|---:|
+   | `literature-review` | 278 | 980 | **44** ← 最紧 |
+   | `fact-check` | 253 | 929 | 95 |
+   | `research-frontier` | 260 | 929 | 95 |
+   | `paper-summary` | 253 | 895 | 129 |
+   | `research-ideation` | 227 | 770 | 254 |
+
+   量法必须走生产代码那条路（`parseFrontmatter` + 长度校验），**不能用正则数**——
+   无引号 plain scalar 里的半角 `: ` 会被 YAML 判成嵌套 mapping，正则看不出来。
+   压缩时**先压叙述性解释句，触发场景一条都不能删**（表面词形决定匹配）。
 4. **HTML 类模板**（如 `learning-deck/assets/report-template.html`）：
    除可见文本外，还要比对 DOM 结构、CSS 选择器与 JS 里的字符串字面量。
    只看渲染后的可见文字会漏掉一半。

@@ -1,6 +1,6 @@
 ---
 name: literature-review
-description: Search the literature on one topic (or one paper) across multiple rounds, keywords and sources — reviews first, then citation chains traced back to the classics, results organized into a literature map — and produce one file whose front half is review prose ready to paste straight into a paper's Related Work section (author-year citations + reference list), and whose back half is the full report on searching, verification and insight. Use this skill when the user says they want to write a review, write a state-of-the-art section, map out a direction, wants to know how far a field has got by now, needs related work filled in for a paper, or asks "which are the important papers in this direction". Beyond just listing papers it separates foundational work, existing reviews, mainstream lines, consensus and controversy, and the latest progress; every paper is verified back at its source; and it says where it differs from the reviews that already exist.
+description: Search the literature on one topic (or one paper) across multiple rounds, keywords and sources — reviews first, then citation chains traced back to the classics, results organized into a literature map — and produce one file whose front half is review prose ready to paste straight into a paper's Related Work / state-of-the-art section (author-year citations + reference list), and whose back half is the full report on searching, verification and insight. Use this skill when the user says they want to write a review, write a state-of-the-art section, map out a direction, wants to know how far a field has got by now, needs related work filled in for a paper, or asks "which are the important papers in this direction". Beyond just listing papers it separates foundational work, existing reviews, mainstream lines, consensus and controversy, and the latest progress; every paper is verified back at its source; and it says where it differs from the reviews that already exist.
 ---
 
 # Literature Review
@@ -182,7 +182,7 @@ The template is in `assets/report-template.md`; use `write` to write it to the *
 literature-review-<short-topic-name>-YYYY-MM-DD.md
 ```
 
-The short topic name uses hyphen-joined English or pinyin, no spaces, no underscores, the date last — the same style as `research-ideation-*`, so that the deliverables under one project directory sort together by type.
+The short topic name uses hyphen-joined English or pinyin, do not use spaces, do not use underscores, the date goes last — the same style as `research-ideation-*`, so that the deliverables under one project directory sort together by type.
 
 Requirements for the prose part:
 

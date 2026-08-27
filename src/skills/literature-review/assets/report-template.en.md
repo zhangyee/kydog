@@ -68,7 +68,7 @@
 > **The first time a paper appears in this part, write "Author (year), Title"**; only a repeat mention within the same section
 > shortens to "Author (year)". Part One has the reference list right beside it, this part does not — with author and year alone,
 > the reader cannot tell which paper it is, nor recall whether it appeared earlier. No need to repeat it where a table already has a title column.
-> **The title has to be transcribed in full, no ellipsis truncation, no shortening of your own** — the reader is going to search with it.
+> **The title has to be transcribed in full, do not truncate it with an ellipsis, do not shorten it yourself** — the reader is going to search with it.
 
 ## 1. What this field looks like now
 
