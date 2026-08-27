@@ -12,6 +12,7 @@ import { enumerateSkills } from './enumerateSkills';
 import { downloadToFile } from './urlFetch';
 import { extractTarGz } from './urlExtract';
 import { parseGithubUrl } from './githubUrl';
+import { withSkillTree } from './skillTreeLock';
 
 export interface SkillsServiceDeps {
   skillsDir: string;
@@ -25,6 +26,12 @@ export class SkillsService {
   constructor(private readonly deps: SkillsServiceDeps) {}
 
   async list(): Promise<SkillEntry[]> {
+    return withSkillTree(() => this.listUnlocked());
+  }
+
+  // 无锁实现，给已经持锁的调用方用（如 locale.set）；list() 是给 RPC 用的加锁壳。
+  // 别在已持锁的方法体内调用 list()——那是重入死锁，应该调这个。
+  async listUnlocked(): Promise<SkillEntry[]> {
     if (!existsSync(this.deps.skillsDir)) mkdirSync(this.deps.skillsDir, { recursive: true });
     const entries = readdirSync(this.deps.skillsDir, { withFileTypes: true });
     const disabled = (await settingsService.get()).skills.disabledBuiltins;
@@ -66,18 +73,22 @@ export class SkillsService {
   }
 
   async uninstall(name: string): Promise<SkillEntry[]> {
-    if (this.deps.isBuiltin(name)) {
-      throw new KydogError('skill.uninstall_forbidden', '内置 skill 不支持卸载');
-    }
-    const dir = path.join(this.deps.skillsDir, name);
-    await fsp.rm(dir, { recursive: true, force: true });
-    return this.list();
+    return withSkillTree(async () => {
+      if (this.deps.isBuiltin(name)) {
+        throw new KydogError('skill.uninstall_forbidden', '内置 skill 不支持卸载');
+      }
+      const dir = path.join(this.deps.skillsDir, name);
+      await fsp.rm(dir, { recursive: true, force: true });
+      return this.listUnlocked();
+    });
   }
 
   async openInOS(name: string): Promise<void> {
-    const dir = path.join(this.deps.skillsDir, name);
-    if (!existsSync(dir)) throw new KydogError('skill.invalid', `未找到 skill ${name}`);
-    await shell.openPath(dir);
+    return withSkillTree(async () => {
+      const dir = path.join(this.deps.skillsDir, name);
+      if (!existsSync(dir)) throw new KydogError('skill.invalid', `未找到 skill ${name}`);
+      await shell.openPath(dir);
+    });
   }
 
   async previewFromFolder(args: { srcDir: string }): Promise<SkillPreview> {
@@ -125,61 +136,64 @@ export class SkillsService {
   }
 
   async commitFromPreview(args: SkillCommitArgs): Promise<SkillCommitResult> {
-    const installed: SkillEntry[] = [];
-    const skipped: { name: string; reason: SerializedError }[] = [];
-    const stagingRoot = this.deps.stagingDir ?? path.join(this.deps.skillsDir, '..', '.cache', 'staging');
-    mkdirSync(stagingRoot, { recursive: true });
+    return withSkillTree(async () => {
+      const installed: SkillEntry[] = [];
+      const skipped: { name: string; reason: SerializedError }[] = [];
+      const stagingRoot = this.deps.stagingDir ?? path.join(this.deps.skillsDir, '..', '.cache', 'staging');
+      mkdirSync(stagingRoot, { recursive: true });
 
-    for (const pick of args.picks) {
-      try {
-        const srcSkillDir = path.join(args.srcPath, pick.relPath);
-        const skillFile = path.join(srcSkillDir, 'SKILL.md');
-        if (!existsSync(skillFile)) {
-          throw new KydogError('skill.invalid', `pick 路径已不存在：${pick.relPath}`);
-        }
-        const parsed = await parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
-        if (!parsed.ok) {
-          throw new KydogError('skill.invalid', `frontmatter 无效：${parsed.reason}`);
-        }
-        const finalName = parsed.name; // §A.1
-        const targetDir = path.join(this.deps.skillsDir, finalName);
-        if (existsSync(targetDir)) {
-          throw new KydogError('skill.name_conflict', `已有同名 skill：${finalName}`);
-        }
+      for (const pick of args.picks) {
+        try {
+          const srcSkillDir = path.join(args.srcPath, pick.relPath);
+          const skillFile = path.join(srcSkillDir, 'SKILL.md');
+          if (!existsSync(skillFile)) {
+            throw new KydogError('skill.invalid', `pick 路径已不存在：${pick.relPath}`);
+          }
+          const parsed = await parseSkillFrontmatter(readFileSync(skillFile, 'utf-8'));
+          if (!parsed.ok) {
+            throw new KydogError('skill.invalid', `frontmatter 无效：${parsed.reason}`);
+          }
+          const finalName = parsed.name; // §A.1
+          const targetDir = path.join(this.deps.skillsDir, finalName);
+          if (existsSync(targetDir)) {
+            throw new KydogError('skill.name_conflict', `已有同名 skill：${finalName}`);
+          }
 
-        const pickRand = randomUUID();
-        if (args.srcKind === 'folder') {
-          const stage = path.join(stagingRoot, `.commit-${pickRand}`);
-          await fsp.cp(srcSkillDir, stage, { recursive: true });
-          await fsp.rename(stage, targetDir);
-        } else {
-          // url: srcSkillDir already lives under stagingRoot's volume; rename direct
-          await fsp.rename(srcSkillDir, targetDir);
+          const pickRand = randomUUID();
+          if (args.srcKind === 'folder') {
+            const stage = path.join(stagingRoot, `.commit-${pickRand}`);
+            await fsp.cp(srcSkillDir, stage, { recursive: true });
+            await fsp.rename(stage, targetDir);
+          } else {
+            // url: srcSkillDir already lives under stagingRoot's volume; rename direct
+            await fsp.rename(srcSkillDir, targetDir);
+          }
+          const entry: SkillEntry = {
+            name: finalName,
+            description: parsed.description,
+            origin: this.deps.isBuiltin(finalName) ? 'builtin' : 'user',
+            enabled: true,
+            dirPath: targetDir,
+          };
+          installed.push(entry);
+        } catch (err) {
+          skipped.push({ name: pick.name, reason: serializeError(err) });
         }
-        const entry: SkillEntry = {
-          name: finalName,
-          description: parsed.description,
-          origin: this.deps.isBuiltin(finalName) ? 'builtin' : 'user',
-          enabled: true,
-          dirPath: targetDir,
-        };
-        installed.push(entry);
-      } catch (err) {
-        skipped.push({ name: pick.name, reason: serializeError(err) });
       }
-    }
 
-    if (args.srcKind === 'url') {
-      // Clean up the entire staging child for this preview (the dir containing srcPath)
-      // srcPath is e.g. <stagingRoot>/<rand>/repo-<sha>/<subPath>; clean up <stagingRoot>/<rand>
-      const rand = path.relative(stagingRoot, args.srcPath).split(path.sep)[0];
-      if (rand && rand !== '..' && !rand.startsWith('..' + path.sep)) {
-        await fsp.rm(path.join(stagingRoot, rand), { recursive: true, force: true }).catch(() => {});
+      if (args.srcKind === 'url') {
+        // Clean up the entire staging child for this preview (the dir containing srcPath)
+        // srcPath is e.g. <stagingRoot>/<rand>/repo-<sha>/<subPath>; clean up <stagingRoot>/<rand>
+        const rand = path.relative(stagingRoot, args.srcPath).split(path.sep)[0];
+        if (rand && rand !== '..' && !rand.startsWith('..' + path.sep)) {
+          await fsp.rm(path.join(stagingRoot, rand), { recursive: true, force: true }).catch(() => {});
+        }
       }
-    }
 
-    const list = await this.list();
-    return { installed, skipped, list };
+      // 已经持锁，不能再调 list()（重入死锁），用无锁版
+      const list = await this.listUnlocked();
+      return { installed, skipped, list };
+    });
   }
 
   private lookupExisting(name: string): 'builtin' | 'user' | null {
