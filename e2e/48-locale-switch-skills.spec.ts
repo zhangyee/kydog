@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type ElectronApplication } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,7 +20,28 @@ async function readLocaleOnDisk(kydogHome: string): Promise<string> {
   return JSON.parse(raw).ui.locale;
 }
 
-test('48-locale: 切到 en 落到磁盘，投影树里不出现 .en 变体文件', async () => {
+/** 内置 skill 源树的位置，跟 `builtinSkillsRoot()` 同一套判据（打包与否两条路都要走对）。 */
+async function builtinSkillsRoot(electronApp: ElectronApplication): Promise<string> {
+  const main = await electronApp.evaluate(({ app }) => ({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+  }));
+  return main.isPackaged
+    ? path.join(main.resourcesPath, 'skills')
+    : path.resolve(process.cwd(), 'src', 'skills');
+}
+
+/** `references/writing.md` + `en` → `references/writing.en.md`。 */
+function variantOf(rel: string, locale: string): string {
+  const dot = rel.lastIndexOf('.');
+  return dot === -1 ? `${rel}.${locale}` : `${rel.slice(0, dot)}.${locale}${rel.slice(dot)}`;
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  return fs.access(p).then(() => true).catch(() => false);
+}
+
+test('48-locale: 切到 en 落到磁盘，投影树逐字节就是英文源', async () => {
   const app = await launchKydog({
     seed: async (home) => { await seedSettings(home, { locale: 'zh' }); },
   });
@@ -44,11 +65,54 @@ test('48-locale: 切到 en 落到磁盘，投影树里不出现 .en 变体文件
     await expect.poll(() => readLocaleOnDisk(kydogHome), { timeout: 10_000 }).toBe('en');
 
     // 语言变体是源侧的维度，落盘树里只该有投影后的单语言文件。
-    // 今天源侧还没有 .en 变体（Task 11 才写），这条断言此刻恒真；
-    // 英文版落地后它才开始真正拦东西，先钉在这里。
     const tree = await listTree(path.join(skillsDir, 'paper-summary'));
     expect(tree).toContain('SKILL.md');
     expect(tree.filter((f) => /\.(zh|en)\.[^./]+$/.test(f))).toEqual([]);
+
+    const srcRoot = await builtinSkillsRoot(app.app);
+
+    // 整棵树是异步重写的：locale 落盘不等于内容已经换过来，先等它真的翻成英文再逐字节比。
+    const summaryEn = await fs.readFile(path.join(srcRoot, 'paper-summary', 'SKILL.en.md'), 'utf8');
+    await expect.poll(
+      () => fs.readFile(path.join(skillsDir, 'paper-summary', 'SKILL.md'), 'utf8').catch(() => ''),
+      { timeout: 10_000 },
+    ).toBe(summaryEn);
+
+    // 内容层：每个落盘文件都该逐字节等于「en 这一格命中的那个源」——有 `.en` 变体就是变体，
+    // 没有才回落到默认语言文件。只看文件名换没换，投影选错源是查不出来的。
+    const fellBack: string[] = [];
+    for (const entry of await fs.readdir(srcRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const srcSkill = path.join(srcRoot, entry.name);
+      if (!await fileExists(path.join(srcSkill, 'SKILL.md'))) continue;   // 不是 skill 目录
+      const landedSkill = path.join(skillsDir, entry.name);
+      for (const rel of await listTree(landedSkill)) {
+        const variant = variantOf(rel, 'en');
+        const picked = await fileExists(path.join(srcSkill, variant)) ? variant : rel;
+        if (picked === rel) fellBack.push(`${entry.name}/${rel}`);
+        expect(
+          (await fs.readFile(path.join(landedSkill, rel))).equals(await fs.readFile(path.join(srcSkill, picked))),
+          `${entry.name}/${rel} 落盘内容应逐字节等于源侧的 ${picked}`,
+        ).toBe(true);
+      }
+    }
+    // 负向对照：上面那圈在「一个 `.en` 变体都没有」的世界里同样全绿（处处回落到默认文件），
+    // 所以必须钉住回落清单。fastpaper 归上游，暂时只有中文；上游发出双语 tag 之后这里跟着清空
+    // ——和 `builtinSkillsI18n.test.ts` 的 `EXEMPT` 是同一条有期限的例外。
+    expect(fellBack).toEqual(['fastpaper/SKILL.md']);
+
+    // 具体锚点。④-ANCHOR 那行是 `SKILL.en.md` / `references/layout.en.md` 拿去当 `edit` oldText 的串，
+    // 对不上模型的 edit 会直接报错，所以它必须逐字落在 en 树里。
+    // ⚠️ **不要**在这里加「英文树里没有汉字」：`⟨待填⟩` / `⟨待填: …⟩` 是刻意保留的哨兵串，
+    // en 模板里 21 行带汉字全是它，加了会假红（见 `.claude/skills/sync-skill-docs/SKILL.md`）。
+    const deckTpl = await fs.readFile(path.join(skillsDir, 'learning-deck', 'assets', 'report-template.html'), 'utf8');
+    expect(deckTpl).toContain('<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->');
+    expect(deckTpl).not.toContain('知识点章节插在这一行之前');
+    expect(deckTpl).toContain('<html lang="en">');
+
+    const summaryOnDisk = await fs.readFile(path.join(skillsDir, 'paper-summary', 'SKILL.md'), 'utf8');
+    expect(summaryOnDisk).toContain('# Close Reading and Writing Material');
+    expect(summaryOnDisk).not.toContain('# 论文精读与写作素材');
   } finally {
     await teardown(app);
   }
