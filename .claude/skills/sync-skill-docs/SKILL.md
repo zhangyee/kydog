@@ -45,6 +45,12 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `paper-summary/SKILL.en.md:106` | 「作者 等（年份）」或 (Author et al., year) | **原样并列**，中文串保留 | 见下「保留的中文字面量」 | 2026-08-27 |
 | `literature-review/SKILL.en.md:191` | 同上 | **原样并列**，中文串保留 | 同上 | 2026-08-27 |
 | `literature-review/references/search-strategy.en.md:54` | 综述、述评、进展、研究现状、展望 | **原样保留**，不译 | 同上 | 2026-08-27 |
+| `learning-deck/references/deck-json.md:177` | 可见**汉字**数 ÷ **350** | visible **words** ÷ **210** | 见下「阅读速度」 | 2026-08-27 |
+| `learning-deck/references/layout.md:386` | ÷ **350**（中文技术材料 **300–400** 字/分） | ÷ **210**（English technical material **180–240** words/min） | 同上 | 2026-08-27 |
+| `learning-deck/references/*.md`、`SKILL.md`（`tier` 枚举） | `"听过但说不清"` / `"没接触过"`（另有档位名「熟悉」） | `"heard of it, cannot explain"` / `"never encountered"`（另有 `familiar`） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
+| `learning-deck/SKILL.en.md:292` | 「听过、说不清」（中文版此处用了变体写法） | `"heard of it, cannot explain"`（正名） | 见下「learning-deck 的 `tier` 枚举」 | 2026-08-27 |
+| `learning-deck/SKILL.en.md`、`references/layout.en.md`（`⟨待填⟩`） | `⟨待填⟩` | **原样保留**，不译 | 见下「`⟨待填⟩` 与 ④-ANCHOR」 | 2026-08-27 |
+| `learning-deck/SKILL.en.md:3`（description） | 「它比直接讲解多做的事：**先问清起点再决定讲什么**，…」 | 该分句**未译出**，其余四项全在 | 见下「learning-deck 的 description」 | 2026-08-27 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。
 这几条指令自己写明了意图——「写长了没人读，而且会不可避免地滑向综述」「价值在判定和证据链，
@@ -71,6 +77,38 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
   「作者（年份）《题名》」→ `"Author (year), Title"`）→ **翻成英文**。错了不出这份文件的边界，
   重跑一次即可。research-ideation / fact-check / research-frontier 的英文模板同此裁决。
 
+**阅读速度**：`readingMinutes` 是**算给读者看的数**，不是控制篇幅的预算，但换算理由和「字数预算」
+同源——单位从「汉字」换成「words」时除数必须跟着换。照抄 350 会让英文报告的时长虚高近一倍。
+按同一个 0.6 word/字：`350 × 0.6 = 210`，区间 `300–400 × 0.6 = 180–240`，落在英文技术材料的
+常见阅读速度带内。**两处必须同时改**（`deck-json.md` 顶层那条 + `layout.md`「① 抬头的顶部两件套」），
+它们互相声明「算法一致」。「每张图 +0.5 分钟」不换算——那是图，不是字。
+
+**learning-deck 的 `tier` 枚举**：`tier` 是**模型自己写、自己读**的内部字段，
+既不进 HTML（`deck-json.md` 的渲染对照表里没有它），也不进 CLI，`SKILL.md` 第 5.2 小步还明令
+**不许把档位名给用户看**（「档位名是我们内部的标签，他没见过这三个词」）。
+按上面「保留的中文字面量」那条已裁决的判据（落点与可恢复性），它落在
+「落进模型自己写的东西 → 翻成英文」那一侧，所以译。
+`interview.md` 的三个 `label` 本来就随用户语言走，不译会让 en 树出现
+「选项是英文、落档要写中文串」的自相矛盾。**六个文件的三个名字必须逐字一致**
+（`familiar` / `heard of it, cannot explain` / `never encountered`），
+中文版 `SKILL.md:292` 的变体写法「听过、说不清」在英文侧统一成正名——
+枚举值出现第二种拼法是真缺陷，不照抄。
+
+**`⟨待填⟩` 与 ④-ANCHOR**：`⟨待填⟩` 是**哨兵串**，`layout.md` 的自检 H1 直接
+`grep -n '⟨待填⟩' report.html`，它必须和 `assets/report-template.html` 里的那 15 处逐字相同。
+英文版按「技术标识符不动」保留原串，en 模板（下一批翻）**也必须保留 `⟨待填⟩` 不译**，
+否则 H1 恒不命中——正好复现该注释里写明的「一条永远绿的自检」。
+④-ANCHOR 那行注释的**散文部分**已译，en 模板必须逐字用：
+`<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->`
+（`SKILL.en.md:397` 与 `references/layout.en.md:518` 拿它当 `oldText`，对不上 `edit` 会报错）。
+
+**learning-deck 的 description**：中文 381 字符、英文 986（余量 38），是六个 skill 里最紧的一份。
+直译约 1300，超 1024 会让它在 en 树里静默降级成禁用行。压缩只动叙述句：
+**九条触发场景一条未删、词形全保**，与 `/paper-summary` 的消歧整句保留；
+删掉的是「先问清起点再决定讲什么」——它与同一句开头的
+「Three interview rounds find which layer the user already stands on … fill in only the missing layers」
+表达的是同一件事，属于中文版内部的复述，去掉不损失任何触发面或行为约束。
+
 > 2026-08-27 删掉了 `research-ideation/SKILL.en.md:78/79` 两条「保留中文串」登记及其
 > 「硬编码中文串」说明段。`src/main/agent/askAnswers.ts` 的 `renderOutcome` 已按 locale
 > 本地化（commit `6610855`），en 分支回给模型的是
@@ -96,7 +134,8 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 
    | skill | 中文 | 英文 | 余量 |
    |---|---:|---:|---:|
-   | `literature-review` | 278 | 980 | **44** ← 最紧 |
+   | `learning-deck` | 381 | 986 | **38** ← 最紧 |
+   | `literature-review` | 278 | 980 | 44 |
    | `fact-check` | 253 | 929 | 95 |
    | `research-frontier` | 260 | 929 | 95 |
    | `paper-summary` | 253 | 895 | 129 |
