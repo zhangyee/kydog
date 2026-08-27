@@ -23,8 +23,10 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
   **这条有期限**：上游发出双语 tag、`cli:update` 拉进来之后，它会自然通过配对校验，
   届时把这条豁免删掉，并把这一对纳入 Pass A。
 
-> 豁免清单与 `src/main/skills/builtinSkillsI18n.test.ts` 的 `EXEMPT` 常量同源（该测试在 Task 11 建立）。
+> 豁免清单与 `src/main/skills/builtinSkillsI18n.test.ts` 的 `EXEMPT` 常量同源。
 > 改一处必须改另一处，否则单测与审核会给出矛盾的结论。
+> 该单测还会检查每条豁免是否仍挡着真实缺口——上游补齐双语之后它自己变红，
+> 催你把这两处一起删掉，而不是让例外无声地留一辈子。
 
 ## 有意的双语差异（已裁决，不要"修正"）
 
@@ -54,7 +56,7 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `learning-deck/SKILL.en.md`、`references/layout.en.md`（`⟨待填⟩`） | `⟨待填⟩` | **原样保留**，不译 | 见下「`⟨待填⟩` 与 ④-ANCHOR」 | 2026-08-27 |
 | `learning-deck/references/layout.md:879`（H2 的「模板自带 4 处」） | 断言依赖模板 L44/45/46/50 的中文散文注释字面 | **同一个数 4**，依赖同样四行 | 见下「H2 的标定常数」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md:3`（description） | 「它比直接讲解多做的事：**先问清起点再决定讲什么**，…」 | 该分句**未译出**，其余四项全在 | 见下「learning-deck 的 description」 | 2026-08-27 |
-| `learning-deck/assets/report-template.html:2`（`<html lang>`） | `lang="zh"` | `lang="en"` | 文档语言声明，跟着模板默认产出语言走；模型可按用户语言改写 | 2026-08-27 |
+| `learning-deck/assets/report-template.html:2`（`<html lang>`） | `lang="zh"` | `lang="en"` | 文档语言声明，各自跟本份模板的默认产出语言走。`SKILL.{md,en.md}` 与全部 `references/*.md` 无一处提到 `lang`，模型从未被告知可以改它 | 2026-08-27 |
 | `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term<span class="en">English</span></dt>` | 见下「⑦ 术语对照的 zh/en 双槽」——**结构缺口，等用户裁决，不要自行发明规则** | 2026-08-27 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。

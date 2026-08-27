@@ -46,8 +46,8 @@
      no fetch/XHR/WebSocket in the script (the CSP blocks them, but do not write code that obviously fakes it either).
      Every style lives in the one <style> below, and every figure is an inline <svg>.
   3. Every external link must carry target="_blank" rel="noopener". The sandbox does not grant allow-top-navigation,
-     so a plain link, when clicked, tries to navigate in place inside the iframe. An <a href="https://…"> pointing at a paper is a link
-     and not a resource, and is allowed; loading it as a resource (img/link/@import) is not.
+     so a plain link, when clicked, tries to navigate in place inside the iframe. An <a href="https://…"> pointing at a paper is a link,
+     not a resource, and is allowed; loading it as a resource (img/link/@import) is not.
   4. Every color takes the form var(--ink, #2a2620) with a fallback, and the variable name may only come from
      the list in src/renderer/panels/main-pane/html/reportTheme.ts:
        --paper --paper-deep --paper-edge
