@@ -153,7 +153,7 @@ test('48-locale: 切到 en 落到磁盘，投影树逐字节就是英文源', as
     // 具体锚点。④-ANCHOR 那行是 `SKILL.en.md` / `references/layout.en.md` 拿去当 `edit` oldText 的串，
     // 对不上模型的 edit 会直接报错，所以它必须逐字落在 en 树里。
     // ⚠️ **不要**在这里加「英文树里没有汉字」：`⟨待填⟩` / `⟨待填: …⟩` 是刻意保留的哨兵串，
-    // en 模板里 21 行带汉字全是它，加了会假红（见 `.claude/skills/sync-skill-docs/SKILL.md`）。
+    // en 模板里 17 行带汉字全是它，加了会假红（见 `.claude/skills/sync-skill-docs/SKILL.md`）。
     const deckTpl = await fs.readFile(path.join(skillsDir, 'learning-deck', 'assets', 'report-template.html'), 'utf8');
     expect(deckTpl).toContain('<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->');
     expect(deckTpl).not.toContain('知识点章节插在这一行之前');
