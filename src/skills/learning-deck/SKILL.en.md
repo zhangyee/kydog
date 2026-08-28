@@ -34,7 +34,7 @@ with the trailing `SKILL.md` removed):
 `assets/report-template.html` is the skeleton, and **read it through completely before rendering**:
 the header comments carry the hard constraints that fail silently, and each `<section>`'s comment marks ①–⑩ and what goes in it.
 **The template's `<body>` contains no example content** (since v5, reason at sub-step 5.5) — every position waiting to be
-filled is a comment carrying `⟨待填⟩`; the complete samples you can copy from are in `references/layout.md`.
+filled is a comment carrying `⟨待填⟩` or `⟨待填: …⟩`; the complete samples you can copy from are in `references/layout.md`.
 
 ## Division of labor with the other five skills
 
@@ -375,7 +375,7 @@ and do not invent your own scheme. Not one word of the `sketch` itself enters th
 do not improvise the design here, because that means this figure's content was never reviewed by 5.4.
 
 ⚠️ **The template's `<body>` contains no example content (v5, the user's decision).** Every position waiting to be filled
-is a comment carrying `⟨待填⟩`; **every one of them must be consumed by an `edit`**, with no exceptions
+is a comment carrying `⟨待填⟩` or `⟨待填: …⟩`; **every one of them must be consumed by an `edit`**, with no exceptions
 and no cheap path of "copy one and change a few words".
 
 Why it was changed this way: v4's template came with the shells of two example chapters, and this step's instruction was "chapters 1 and 2 use up those two

@@ -854,10 +854,15 @@ Copy the list below, replacing `report.html` with the real file name, and **do n
 
 ```bash
 # H1. Were the fill anchors consumed? — the first must be 0 lines, the other two equal and equal to the JSON's chapter count
-grep -n '⟨待填⟩' report.html
-#   Every place in the template <body> waiting for you to fill it (including ④'s chapter insertion anchor) carries the ⟨待填⟩ marker,
+grep -n '⟨待填' report.html
+#   Every place in the template <body> waiting for you to fill it (including ④'s chapter insertion anchor) carries the fill mark,
 #   and at render time that comment is replaced by newText along with the position it marks, so not one should remain at delivery.
 #   Every remaining line means "this section was never rendered at all".
+#   ⚠️ **The pattern is the prefix `⟨待填`, not `⟨待填⟩`.** The mark comes in two forms: the bare `⟨待填⟩`,
+#      and forms carrying explanatory text such as `⟨待填: ISO date⟩`. The whole of ① the header (`data-hero`,
+#      `h1`, the reading time, the date, `for-whom`) and the two `h2` of ⑤ and ⑥ use the latter,
+#      and an exact match on `⟨待填⟩` reaches none of them — when `data-hero` is left unfilled the JS falls back to gridwave silently
+#      and the page still renders, which makes this grep the only place it can be caught.
 #   ⚠️ This replaces v4's "grep diffusion|Markov|DDPM|ELBO…". The old one checked
 #      **whether the template's own example text had been replaced cleanly**; since v5 the template <body> has not one line of example,
 #      so that grep never matches, which makes it a self-check that is permanently green. The failure mode it was really guarding against has not changed —
