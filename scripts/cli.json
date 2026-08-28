@@ -2,7 +2,7 @@
   "tools": {
     "fastpaper": {
       "repo": "zhangyee/fastpaper-cli",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "releaseTagTemplate": "v{version}",
       "binaryName": "fastpaper",
       "skill": {
@@ -15,9 +15,9 @@
         "win32-x64": "fastpaper-cli-x86_64-pc-windows-msvc.zip"
       },
       "sha256": {
-        "darwin-arm64": "84d358d618441b47cd61949fee35512731366574d3d38b8dd3f03c99d0756e58",
-        "darwin-x64": "1fe9cfb6b6b07badb47ea03f279d7bf39448a0051719afea76fbf58fb93409d3",
-        "win32-x64": "f84d741942c1340adb966b8176ba5da939021ad86e28aea35183360e320abd80"
+        "darwin-arm64": "aa7703fe1df2278a00aa153af5f32b99ef5468830d90ea2047701f0c2da6eabc",
+        "darwin-x64": "40bc0ceffce5b312d948f9aeaa468193f55bf26950a88a15fab93f22af711aa4",
+        "win32-x64": "22a523c3355bbaa234b3a769c0944d7c50701ec22d9fa4abc4f162d6456ae4b0"
       }
     }
   }
