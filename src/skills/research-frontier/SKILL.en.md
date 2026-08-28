@@ -76,7 +76,7 @@ The third, cross-disciplinary entry point is the critical one: people bringing m
 
 Where citation ordering is wanted and `semantic` does not suit (its recall on this subject is too poor, say), **do not sort at all**: switch to `--sort date` or drop the ordering, and state in the appendix that this round did no citation ordering. Do not go try it on another source.
 
-**`CITED:>N` does not take effect; the range form `CITED:[N TO *]` is required.** fastpaper's SKILL.md gives `CITED:>500`, but measured, the `>` form is silently ignored (thresholds of 500 and 100000 return exactly the same results); only the Lucene range form actually filters:
+**`CITED:>N` does not take effect; the range form `CITED:[N TO *]` is required.** Measured, the `>` form is silently ignored at the source end and raises no error (thresholds of 500 and 100000 return exactly the same results); only the Lucene range form actually filters:
 
 ```
 CRISPR AND CITED:[0 TO *]      → 20 results

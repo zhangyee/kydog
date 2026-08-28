@@ -215,7 +215,7 @@ do not write it as "the work whose citations are growing fastest" — the latter
 
 ### `CITED:>N` has no effect, use `CITED:[N TO *]`
 
-fastpaper's SKILL.md gives `CITED:>500` as its example, but measured (v0.5.0) the `>` form is silently ignored by europepmc — thresholds of 500 and 100000 return exactly the same results. Only the Lucene range form actually filters:
+Measured, the `>` form is silently ignored by europepmc and raises no error — thresholds of 500 and 100000 return exactly the same results (the figures below were taken on v0.5.0; the behaviour was re-checked on v0.7.1 and is unchanged). Only the Lucene range form actually filters:
 
 ```
 CRISPR AND CITED:>500          → 2 hits

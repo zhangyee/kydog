@@ -76,7 +76,7 @@ fastpaper cite <近期某篇的DOI> --direction incoming -n 20
 
 要按引用排序而 `semantic` 不合适（比如它对这个主题召回太差），**就不排序**：换 `--sort date` 或干脆不排，在附录里写明本轮没做引用排序。不要去别的源上试。
 
-**`CITED:>N` 不生效，要用区间形式 `CITED:[N TO *]`。** fastpaper 的 SKILL.md 举的是 `CITED:>500`，但实测 `>` 形式被静默忽略（阈值 500 和 100000 返回完全相同的结果）；换成 Lucene 区间形式才真的过滤：
+**`CITED:>N` 不生效，要用区间形式 `CITED:[N TO *]`。** 实测 `>` 形式被源端静默忽略、不报错（阈值 500 和 100000 返回完全相同的结果）；换成 Lucene 区间形式才真的过滤：
 
 ```
 CRISPR AND CITED:[0 TO *]      → 20 条
