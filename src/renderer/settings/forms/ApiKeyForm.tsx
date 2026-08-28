@@ -112,6 +112,7 @@ export function ApiKeyForm({ providerId }: { providerId: string }) {
             await refresh();
           }}
           disabled={!configured}
+          emptyLabel={configured ? '无可用模型' : '先保存 API Key'}
         />
       </FormRow>
 

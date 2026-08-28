@@ -4,7 +4,11 @@ export const inputStyle: CSSProperties = {
   background: 'transparent',
   border: 'none',
   borderBottom: '0.5px solid var(--color-ink-hair-soft)',
-  padding: '7px 0',
+  // 左内边距不能是 0。空值时插入点落在内容盒最左那一列，被文本控件内层的
+  // 滚动容器裁掉 —— 聚焦后只看得到 focus ring、看不到光标，打进第一个字符
+  // 光标右移了才露出来（浏览器里逐项复现过：唯一变量就是 padding-left）。
+  // 2px 是 UA 默认值（1px 2px），视觉上看不出来，但光标画得出来。
+  padding: '7px 0 7px 2px',
   fontFamily: 'var(--font-mono)', fontSize: 11.5,
   color: 'var(--color-ink)',
   width: '100%',

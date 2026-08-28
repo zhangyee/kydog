@@ -77,6 +77,7 @@ export function ProviderListSection({ onAdd }: { onAdd: () => void }) {
                   await useLlmStore.getState().refresh();
                 }}
                 disabled={!c.authStatus.configured}
+                emptyLabel={c.authStatus.configured ? '无可用模型' : '未配置'}
               />
               {defaultProvider === c.providerId ? (
                 <span className="font-mono uppercase" style={{ fontSize: 9, color: 'var(--color-ink-faint)', letterSpacing: 1 }}>默认</span>

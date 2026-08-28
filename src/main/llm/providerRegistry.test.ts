@@ -6,7 +6,10 @@ import * as paths from '../persist/paths';
 import { ensureSettingsFile } from '../persist/settingsFile';
 import { SettingsService } from '../settings/settingsService';
 import { logger } from '../log';
-import { ProviderRegistry, buildModelRuntimeOptions } from './providerRegistry';
+import {
+  ProviderRegistry, buildModelRuntimeOptions,
+  setCatalogRefreshedHook, initProviderRegistry, getProviderRegistry, _resetProviderRegistryForTest,
+} from './providerRegistry';
 
 /** 让已 attach 的 .catch / unhandledRejection 有机会跑完。 */
 const flush = () => new Promise<void>((r) => setImmediate(r));
@@ -126,7 +129,11 @@ describe('ProviderRegistry', () => {
         }],
       } });
     });
-    afterEach(() => { vi.doUnmock('@earendil-works/pi-coding-agent'); });
+    afterEach(() => {
+      vi.doUnmock('@earendil-works/pi-coding-agent');
+      setCatalogRefreshedHook(undefined);
+      _resetProviderRegistryForTest();
+    });
 
     it('网络黑洞时 build 仍然立刻返回', async () => {
       mockPi(fakeRuntime());
@@ -138,10 +145,12 @@ describe('ProviderRegistry', () => {
       expect(createOpts?.allowModelNetwork).not.toBe(true);
     });
 
+    // 刷新由 initProviderRegistry 在 _instance 落位之后起，不在 build() 里 ——
+    // 见 startCatalogRefresh() 的注释：钩子回调要走 getProviderRegistry()。
     it('刷新照旧发生，且排在 provider 注册之后（否则看不到自定义 provider）', async () => {
       const rt = fakeRuntime();
       mockPi(rt);
-      await ProviderRegistry.build(svc);
+      await initProviderRegistry(svc);
       expect(rt.refresh).toHaveBeenCalledTimes(1);
       // 不带参数 —— 上一条测试证明了这正是让 PI_OFFLINE 继续生效的调用形状。
       expect(rt.refresh).toHaveBeenCalledWith();
@@ -150,13 +159,49 @@ describe('ProviderRegistry', () => {
         .toBeLessThan(rt.refresh.mock.invocationCallOrder[0]);
     });
 
+    // 这个钩子是渲染层唯一能知道「后台目录拉完了」的途径：create() 拿到的是内置静态清单，
+    // 远端目录几秒后才落地，而 llm.* 全是请求-响应，没人推就只能等用户下一次动作。
+    it('后台刷新落地后触发目录通知钩子', async () => {
+      mockPi(fakeRuntime());
+      const hook = vi.fn();
+      setCatalogRefreshedHook(hook);
+      await initProviderRegistry(svc);
+      await flush();
+      expect(hook).toHaveBeenCalledTimes(1);
+    });
+
+    // 这条守的是本次改动的理由本身：refresh 立刻 resolve 时钩子也不能早于 _instance 落位，
+    // 否则钩子里的 getProviderRegistry() 会抛，广播静默丢掉——而 fakeRuntime 的 refresh
+    // 正是「立刻 resolve」，真实的那个要读文件，靠它慢就是在赌时序。
+    it('钩子触发时 registry 已经可达（不靠 refresh 比 build 慢）', async () => {
+      mockPi(fakeRuntime());
+      let reachable: boolean | undefined;
+      setCatalogRefreshedHook(() => {
+        try { reachable = !!getProviderRegistry(); } catch { reachable = false; }
+      });
+      await initProviderRegistry(svc);
+      await flush();
+      expect(reachable).toBe(true);
+    });
+
+    it('刷新失败不触发钩子——目录没变，广播出去只是让渲染层白读一次同样的清单', async () => {
+      vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      mockPi(fakeRuntime(vi.fn().mockRejectedValue(new Error('boom'))));
+      const hook = vi.fn();
+      setCatalogRefreshedHook(hook);
+      await initProviderRegistry(svc);
+      await flush();
+      await flush();
+      expect(hook).not.toHaveBeenCalled();
+    });
+
     it('刷新失败只落一条 warn，不冒未处理拒绝', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       const unhandled = vi.fn();
       process.on('unhandledRejection', unhandled);
       try {
         mockPi(fakeRuntime(vi.fn().mockRejectedValue(new Error('boom'))));
-        await expect(ProviderRegistry.build(svc)).resolves.toBeDefined();
+        await expect(initProviderRegistry(svc)).resolves.toBeDefined();
         await flush();
         await flush();
       } finally {

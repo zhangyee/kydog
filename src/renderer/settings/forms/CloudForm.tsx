@@ -194,6 +194,7 @@ function ModelRow({ providerId }: { providerId: string }) {
         providerId={providerId}
         value={configured?.defaultModel ?? null}
         disabled={!configured}
+        emptyLabel={configured ? '无可用模型' : '先保存配置'}
         onChange={async (m) => { await window.kydog.invoke('llm.setDefault', { providerId, modelId: m }); }}
       />
     </Row>

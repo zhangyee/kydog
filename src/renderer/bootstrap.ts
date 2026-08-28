@@ -19,7 +19,6 @@ export async function bootstrap(): Promise<void> {
     systemLocale: state.systemLocale,
     onboardingRecovery: state.onboardingRecovery,
   });
-  await useLlmStore.getState().refresh();
   const noProvider = state.settings.llm.defaultProvider === null;
   useUiStore.setState({
     theme: state.settings.ui.theme,
@@ -51,6 +50,11 @@ export async function bootstrap(): Promise<void> {
   });
 
   setupEventBridge();
+
+  // 排在 setupEventBridge 之后，不在前面：主进程那次后台目录刷新是 fire-and-forget 的，
+  // 先读清单再订阅的话，落在这两步之间的 llm.listChanged 就没人接——清单会一直停在
+  // 内置那份，直到用户下一次动作。先订阅再读，这个缝就不存在了。
+  await useLlmStore.getState().refresh();
 
   window.kydog.on('update.status', (s) => useUpdateStore.getState().setStatus(s));
   void window.kydog.invoke('update.getStatus')
@@ -158,6 +162,10 @@ function setupEventBridge(): void {
   });
   window.kydog.on('identity.changed', (id) => {
     useIdentityStore.getState().setIdentity(id);
+  });
+  // 主进程后台拉完 pi.dev 的模型目录后推的整份快照。渲染层自己没有别的办法知道它落地了。
+  window.kydog.on('llm.listChanged', (r) => {
+    useLlmStore.getState().setSnapshot(r);
   });
 
   void runs; void threads; // silence unused

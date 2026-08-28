@@ -134,7 +134,8 @@ export function OAuthForm({ providerId }: { providerId: string }) {
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 placeholder={flow.state.prompt.placeholder ?? '跳回失败时使用'}
-                style={{ width: '100%', marginTop: 6, padding: '6px 0', fontFamily: 'monospace', fontSize: 11.5, background: 'transparent', border: 'none', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}
+                // padding 左边不能是 0，否则空输入框看不到光标（说明在 settings/ui.tsx 的 inputStyle）。
+                style={{ width: '100%', marginTop: 6, padding: '6px 0 6px 2px', fontFamily: 'monospace', fontSize: 11.5, background: 'transparent', border: 'none', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}
               />
               <button type="button" onClick={async () => { await flow.reply(code); setCode(''); }}
                 className="font-sans" style={{ marginTop: 6, padding: '4px 12px', borderRadius: 999, fontSize: 11, border: '0.5px solid var(--color-ink-hair)' }}>
@@ -170,6 +171,7 @@ export function OAuthForm({ providerId }: { providerId: string }) {
           providerId={providerId}
           value={configured?.defaultModel ?? null}
           disabled={!isLoggedIn}
+          emptyLabel={isLoggedIn ? '无可用模型' : '先登录'}
           onChange={async (m) => {
             await window.kydog.invoke('llm.setDefault', { providerId, modelId: m });
             await refresh();

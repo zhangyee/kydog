@@ -1,5 +1,5 @@
 import {
-  useEffect, useMemo, useState,
+  useEffect, useMemo, useRef, useState,
   type CSSProperties, type InputHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type ReactNode,
 } from 'react';
 import { onboardingDict, type OnboardingLocale } from '../i18n/onboardingDict';
@@ -34,7 +34,8 @@ const inputStyle: CSSProperties = {
   background: 'transparent',
   border: 'none',
   outline: 'none',
-  padding: '7px 0',
+  // 左内边距 0 会让空输入框的光标被裁掉（同 settings/ui.tsx 的 inputStyle，那里有完整说明）。
+  padding: '7px 0 7px 2px',
   // 正文默认字体，无额外字距——曾套 mono 字体，英文在等宽字体下被拉成全角观感（用户反馈）。
   fontFamily: 'var(--font-sans)', fontSize: 11.5,
   color: 'var(--color-ink)',
@@ -117,6 +118,18 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
   const t = onboardingDict[locale];
 
   const llmReady = useLlmStore((s) => s.defaultProvider !== null && s.defaultModel !== null);
+
+  // 第 3 步的三个子视图(provider 列表 / 新增 / 详情)换的是同一个滚动容器里的内容——
+  // 容器挂在 <div key={step}> 里面，只有换步才重挂，所以子视图切换时 scrollTop 原样留着。
+  // 结果是：列表里靠下的 provider(DeepSeek 就在第二屏)得先滚下去才点得到，点进详情后
+  // 视口还停在那个位置，用户看到的是表单中段(Base URL / 默认模型)，顶上的 API Key 行在
+  // 视口外——第一次用的人根本不知道要往上滚。返回列表同理。
+  const stepScrollRef = useRef<HTMLDivElement>(null);
+  const detailProviderId = useUiStore((s) => s.settingsDetailProviderId);
+  const addProviderOpen = useUiStore((s) => s.settingsAddProviderOpen);
+  useEffect(() => {
+    if (stepScrollRef.current) stepScrollRef.current.scrollTop = 0;
+  }, [step, detailProviderId, addProviderOpen]);
 
   // 主题/字号预览：向导一 mount 就生效（bug 修复——原先要 step>=3 才设置 document 属性，
   // 导致真·首启时第 0-2 步全程跑在未定义的 CSS 变量下，即 vellum.css 等按 [data-theme="x"]
@@ -292,7 +305,7 @@ export function OnboardingWizard({ mode, corruptNotice }: { mode: 'fresh' | 'rec
           )}
           <div key={step} className="onboarding-step-fade" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             <h2 className="font-serif" style={{ fontSize: 26, flexShrink: 0 }}>{stepTitle(step, t)}</h2>
-            <div className="ky-scroll" style={{ marginTop: 22, flex: 1, minHeight: 0, overflowY: 'auto' }}>
+            <div ref={stepScrollRef} className="ky-scroll" style={{ marginTop: 22, flex: 1, minHeight: 0, overflowY: 'auto' }}>
               {step === 0 && (
                 <div>
                   <button data-testid="onboarding-locale-zh" aria-pressed={locale === 'zh'} onClick={() => setLocale('zh')}

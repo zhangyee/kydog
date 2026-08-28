@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useUiStore } from '../stores/uiStore';
 import { SETTINGS_PAGE_LABELS } from './settingsPages';
@@ -15,6 +16,14 @@ export function SettingsPane() {
   const detailProviderId = useUiStore((s) => s.settingsDetailProviderId);
   const addProviderOpen = useUiStore((s) => s.settingsAddProviderOpen);
   const openAddProvider = useUiStore((s) => s.openSettingsAddProvider);
+
+  // 下面那个 .ky-scroll 是所有设置页共用的滚动容器，换页/进出 provider 详情都不重挂它，
+  // scrollTop 会原样留着——从列表下半屏点进一个 provider，详情页就停在表单中段，顶上的
+  // API Key 行落在视口外。换 tab 同理。所以内容一换就把它归零。
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [activeSection, detailProviderId, addProviderOpen]);
 
   // about / donate 两页的内容自己就说清楚了是什么，再加一行副标题纯属重复。
   // null 时整个副标题元素都不渲染（不留空 div 占位），其余 tab 不受影响。
@@ -56,7 +65,7 @@ export function SettingsPane() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto ky-scroll">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto ky-scroll">
         {activeSection === 'provider' ? (
           detailProviderId ? (
             <ProviderDetailPane />

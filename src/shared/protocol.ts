@@ -124,6 +124,13 @@ export type RuntimeEvent =
   // 拿项目级事件当文件级信号就是在下游补 proxy，而路径信号在 chokidar 回调里本来就有。
   | { topic: 'file.changed'; payload: { path: string } }
   | { topic: 'identity.changed'; payload: Identity }
+  // pi 的模型目录是两段式的：ModelRuntime.create() 先给内置那份静态清单，随后
+  // providerRegistry 起一次不 await 的后台 refresh() 去 pi.dev 拉远端目录（那次 await
+  // 会卡住启动，见 providerRegistry.ts 的注释）。后台那次落地时渲染层不会自己知道 ——
+  // 没有这条广播，新发布的模型要等用户下一次动作触发 llm.list 才冒出来（全新安装第一次
+  // 配 provider 时就是这样：下拉里先只有内置的两个，点一下才长出第三个）。
+  // 带整份 LlmListResult 而不是让渲染层再 invoke 一次：主进程这边本来就有，省一个往返。
+  | { topic: 'llm.listChanged'; payload: LlmListResult }
   | { topic: 'update.status'; payload: UpdateStatus }
   // 主进程会在渲染层没发起任何调用的时候改遥测状态：启动时那次「重试未完成的删除」
   // 是 fire-and-forget，窗口开出来时它可能还在飞。没有这条广播，隐私面板就只能

@@ -14,7 +14,8 @@ import { settingsService } from './settings/settingsService';
 import { ensureSettingsFile } from './persist/settingsFile';
 import { applyCloudEnv } from './llm/cloudEnvSync';
 import { applyResearchEnv } from './research/researchEnv';
-import { initProviderRegistry } from './llm/providerRegistry';
+import { initProviderRegistry, setCatalogRefreshedHook } from './llm/providerRegistry';
+import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
 import { destroyRasterWindow } from './pdf/pdfRaster';
@@ -127,6 +128,12 @@ app.on('ready', async () => {
     const _initialSettings = await settingsService.get();
     applyCloudEnv(_initialSettings.llm.providers);
     applyResearchEnv(_initialSettings.research);
+    // 必须排在 initProviderRegistry 之前：build() 里那次后台目录刷新就是从它开始飞的。
+    setCatalogRefreshedHook(() => {
+      void llmService.list()
+        .then((r) => broadcaster.emit('llm.listChanged', r))
+        .catch((err) => logger.warn('llm', 'catalog broadcast failed', { err: String(err) }));
+    });
     await initProviderRegistry(settingsService);
 
     try {
