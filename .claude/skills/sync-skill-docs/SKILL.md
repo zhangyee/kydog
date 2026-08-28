@@ -18,15 +18,17 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 **双语对**——`src/skills/<name>/` 下每个文件与它的 `<base>.en.<ext>`，包括
 `SKILL.md`、`references/*.md`、`assets/*`。
 
-**豁免**（**不要**当成"缺翻译"来标记）：
-- `src/skills/fastpaper/`——归上游 fastpaper-cli，本仓库只负责接纳。
-  **这条有期限**：上游发出双语 tag、`cli:update` 拉进来之后，它会自然通过配对校验，
-  届时把这条豁免删掉，并把这一对纳入 Pass A。
+**豁免**：目前一条都没有。上游 fastpaper 在 v0.7.0 补齐了 `SKILL.en.md`，原先那条
+有期限的豁免已经删掉，`src/skills/fastpaper/` 现在和其余六个一样纳入 Pass A。
+
+**但 fastpaper 这一对的修法不同**：它的两份都是上游 `zhangyee/fastpaper-cli` 的产物，
+经 `npm run cli:update fastpaper` 整树镜像过来。发现漂移**不要在本仓库改**——改了下次
+同步就被覆盖，而且上游那边还错着。去上游修，发新 tag，再 `cli:update` 拉回来。
 
 > 豁免清单与 `src/main/skills/builtinSkillsI18n.test.ts` 的 `EXEMPT` 常量同源。
 > 改一处必须改另一处，否则单测与审核会给出矛盾的结论。
-> 该单测还会检查每条豁免是否仍挡着真实缺口——上游补齐双语之后它自己变红，
-> 催你把这两处一起删掉，而不是让例外无声地留一辈子。
+> 该单测还会检查每条豁免是否仍挡着真实缺口——挡不到东西时它自己变红，
+> 催你把这两处一起删掉，而不是让例外无声地留一辈子。（fastpaper 那条就是这么走完的。）
 
 ## 有意的双语差异（已裁决，不要"修正"）
 

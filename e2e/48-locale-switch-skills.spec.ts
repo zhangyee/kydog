@@ -96,7 +96,7 @@ test('48-locale: 以 en 启动，投影树一上来就是英文（startup 路径
     }
 
     // 内容层：整棵树逐字节对上 en 这一格的源，回落清单与切换路径那条用例是同一份。
-    expect(await projectionMismatches(srcRoot, skillsDir, 'en')).toEqual(['fastpaper/SKILL.md']);
+    expect(await projectionMismatches(srcRoot, skillsDir, 'en')).toEqual([]);
 
     // 界面侧同样是 en —— 启动路径下 settings 与磁盘说的是同一件事。
     await page.locator('[data-testid="user-menu-trigger"]').click();
@@ -145,10 +145,10 @@ test('48-locale: 切到 en 落到磁盘，投影树逐字节就是英文源', as
     ).toBe(summaryEn);
 
     // 内容层：整棵树逐字节对上 en 这一格的源。
-    // 回落清单是这圈比对的负向对照（见 projectionMismatches 的注释）。fastpaper 归上游，
-    // 暂时只有中文；上游发出双语 tag 之后这里跟着清空 —— 和 `builtinSkillsI18n.test.ts`
-    // 的 `EXEMPT` 是同一条有期限的例外。
-    expect(await projectionMismatches(srcRoot, skillsDir, 'en')).toEqual(['fastpaper/SKILL.md']);
+    // 回落清单是这圈比对的负向对照（见 projectionMismatches 的注释）：六个内置 skill 加
+    // 上游 fastpaper 现在都有 .en 变体，一份都不该回落到默认语言。
+    // 哪天又出现回落，多半是谁加了文件却没配英文版 —— 那时这里会红，而不是静默少一个文件。
+    expect(await projectionMismatches(srcRoot, skillsDir, 'en')).toEqual([]);
 
     // 具体锚点。④-ANCHOR 那行是 `SKILL.en.md` / `references/layout.en.md` 拿去当 `edit` oldText 的串，
     // 对不上模型的 edit 会直接报错，所以它必须逐字落在 en 树里。

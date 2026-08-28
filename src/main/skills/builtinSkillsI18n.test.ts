@@ -11,12 +11,9 @@ const SRC_ROOT = path.resolve(__dirname, '..', '..', 'skills');
  * 豁免名单——**显式白名单**，不做「看起来没文字就跳过」的自动判断。
  * 前缀匹配 `<skill 名>/<相对路径>`，所以既能豁免整个 skill（`fastpaper/`）也能豁免单个文件。
  */
-const EXEMPT = [
-  // 有期限的豁免：上游 fastpaper-cli 正在把 SKILL.md 改成中文、原英文挪成 SKILL.en.md。
-  // 等 `npm run cli:update fastpaper@<双语 tag>` 落地后，它会自然通过下面的配对校验，
-  // 届时**必须把这一行删掉** —— 设了就忘的例外正是这套校验最不该有的东西。
-  'fastpaper/',
-];
+// 目前一条都不需要。上游 fastpaper 在 v0.7.0 补齐了 SKILL.en.md，原先那条有期限的
+// 豁免已由下面第二个用例逼着删掉——这正是它该有的下场。
+const EXEMPT: string[] = [];
 
 type Violation = { id: string; message: string };
 
