@@ -41,13 +41,13 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `fact-check/SKILL.md:148` | 控制在 800–1200 **字** | Keep it to 500–750 **words** | 见下「字数预算」 | 2026-08-27 |
 | `research-frontier/SKILL.md:3`（description） | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
 | `research-frontier/SKILL.md:8` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
-| `research-frontier/SKILL.md:213` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
+| `research-frontier/SKILL.md:230` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
 | `research-frontier/assets/briefing-template.md:9` | 1500–2500 **字** | 900–1500 **words** | 同上 | 2026-08-27 |
 | `literature-review/SKILL.md:30`（篇幅档「短」） | 800–1200 **字** | 500–750 **words** | 见下「字数预算」 | 2026-08-27 |
 | `literature-review/SKILL.md:31`（篇幅档「中」） | 2000–3000 **字** | 1200–1800 **words** | 同上 | 2026-08-27 |
 | `literature-review/SKILL.md:32`（篇幅档「长」） | 4000–6000 **字** | 2400–3600 **words** | 同上 | 2026-08-27 |
 | `paper-summary/SKILL.en.md:106` | 「作者 等（年份）」或 (Author et al., year) | **原样并列**，中文串保留 | 见下「保留的中文字面量」 | 2026-08-27 |
-| `literature-review/SKILL.en.md:191` | 同上 | **原样并列**，中文串保留 | 同上 | 2026-08-27 |
+| `literature-review/SKILL.en.md:193` | 同上 | **原样并列**，中文串保留 | 同上 | 2026-08-27 |
 | `literature-review/references/search-strategy.en.md:54` | 综述、述评、进展、研究现状、展望 | **原样保留**，不译 | 同上 | 2026-08-27 |
 | `learning-deck/references/deck-json.md:177` | 可见**汉字**数 ÷ **350** | visible **words** ÷ **210** | 见下「阅读速度」 | 2026-08-27 |
 | `learning-deck/references/layout.md:386` | ÷ **350**（中文技术材料 **300–400** 字/分） | ÷ **210**（English technical material **180–240** words/min） | 同上 | 2026-08-27 |
@@ -79,7 +79,7 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 
 - **落进用户自己的东西**（论文正文、送进 CLI 的 query 串）→ **原样保留中文**。
   弄错了要用户手工返工，或者命令根本搜不到东西，超出这份产物的边界。
-  - `paper-summary/SKILL.en.md:106`、`literature-review/SKILL.en.md:191` 的引用格式
+  - `paper-summary/SKILL.en.md:106`、`literature-review/SKILL.en.md:193` 的引用格式
     「作者 等（年份）」——它进的是**用户自己的论文**，英文界面下的中文提问者仍要拿到中文格式。
   - `search-strategy.en.md:54` 的「综述、述评、进展、研究现状、展望」——它是直接送进
     `xueshu`（中文源）的**检索串**，翻成英文这条检索指令直接作废。

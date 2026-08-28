@@ -146,6 +146,8 @@ fact-check-<claim-slug>-YYYY-MM-DD.md
 ```
 
 Same style set as the other four skills. **Keep it to 500–750 words** — a verification report's value is in the verdict and the evidence chain, not in elaboration.
+**Two kinds of blockquote in the template, do not confuse them.** The ones opening with `[WRITING NOTE]` are written for you, and **the whole block (down to the blank line) stays out of the report** — not one line of it may remain. Every other `>` blockquote — the verdict line at the top, and the one holding the claim as originally stated — **is part of the report**: keep it as it stands and fill in its placeholders.
+
 
 **Plain Markdown only, no HTML tags** — KyDog's renderer has no rehype-raw.
 

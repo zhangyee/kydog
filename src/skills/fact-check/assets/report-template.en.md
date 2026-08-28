@@ -13,7 +13,7 @@
 
 ## 1. The verdict
 
-> One or two paragraphs. **Must carry a boundary**: within what range it holds, beyond what range there is no evidence.
+> [WRITING NOTE] One or two paragraphs. **Must carry a boundary**: within what range it holds, beyond what range there is no evidence.
 > Academic claims are almost never unconditional, and a verdict without a boundary is essentially always wrong.
 > Cite specific studies (author year), do not point to this report's own sections.
 
@@ -23,7 +23,7 @@
 
 ## 2. The sub-claims one by one
 
-> For each, an experiment that could falsify it must be imaginable. The type decides the criterion:
+> [WRITING NOTE] For each, an experiment that could falsify it must be imaginable. The type decides the criterion:
 > existence holds once one paper is found; universality is overturned by one counterexample; causal needs interventional evidence;
 > quantitative and comparative must be decided together with their conditions.
 
@@ -41,7 +41,7 @@
 
 ## 3. Counter-evidence search record
 
-> **This section cannot be dropped.** Looking only for supporting evidence is confirmation bias — the reader must be able to see that you really did look for the other side.
+> [WRITING NOTE] **This section cannot be dropped.** Looking only for supporting evidence is confirmation bias — the reader must be able to see that you really did look for the other side.
 
 - Negation-phrase search: searched <keywords> in <sources>, <result>
 - Citation-chain tracking: ran `cite --direction incoming` on <the key supporting paper>, <whether a later refutation exists>
@@ -55,7 +55,7 @@
 |---|---|---|---|---|---|
 | Author et al. | | | meta-analysis / RCT / cohort / retrospective / case report / preprint | checked, not retracted / checked, **retracted** / **cannot be checked in this field** | p. N <section name> |
 
-> **The retraction-check column must not be left blank.** Checked means write checked; where it cannot be checked write "cannot be checked in this field" —
+> [WRITING NOTE] **The retraction-check column must not be left blank.** Checked means write checked; where it cannot be checked write "cannot be checked in this field" —
 > `retracted publication[pt]` works only on pubmed/pmc.
 > Pretending to have checked is the most dangerous error in this report.
 >

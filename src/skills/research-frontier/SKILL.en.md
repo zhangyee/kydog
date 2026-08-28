@@ -69,7 +69,12 @@ The third, cross-disciplinary entry point is the critical one: people bringing m
 
 **Do not compute a "citation growth rate".** `cite` has neither `--sort` nor a date filter, it can only truncate; measured on one paper (280 citations in total), the share of citations from the past year came out as 28% / 43% / 56% under `-n 25 / 60 / 120` — **the distribution drifts with `-n`**, so what is computed is the parameter you typed, not heat. To speak of heating up, use entry point 4 above, and call it honestly "work published in the past N years that ranks high on citations".
 
-**Use `--sort citations` only on `semantic`.** On `crossref` and `openalex` it goes badly off topic — sorting by citations crushes the relevance weighting, and back come the whole discipline's behemoths (search wearable ECG, get UK Biobank and ESC guidelines). `pubmed` raises an explicit error, so there is nothing to worry about there.
+**In this skill `--sort citations` has exactly one legitimate place: `semantic`. Not one other source may use it, no exceptions.** The reasons split into two kinds, and neither is something "just try it and see" resolves:
+
+- **Sources that fail outright**: they publish no citation counts, the command errors, and a call is spent for nothing.
+- **Sources that do not error but return the wrong thing**: sorting by citations crushes the relevance weighting, and back come the whole discipline's behemoths (search wearable ECG, get UK Biobank and ESC guidelines). This kind costs more — it looks like it worked.
+
+Where citation ordering is wanted and `semantic` does not suit (its recall on this subject is too poor, say), **do not sort at all**: switch to `--sort date` or drop the ordering, and state in the appendix that this round did no citation ordering. Do not go try it on another source.
 
 **`CITED:>N` does not take effect; the range form `CITED:[N TO *]` is required.** fastpaper's SKILL.md gives `CITED:>500`, but measured, the `>` form is silently ignored (thresholds of 500 and 100000 return exactly the same results); only the Lucene range form actually filters:
 
@@ -171,6 +176,16 @@ Regex, case-insensitive by default (use `(?-i)` for case-sensitive). For checkin
 
 Where the full text is out of reach, fall back to the abstract, **and mark in the appendix which claims are backed by the abstract alone**.
 
+**"Abstract only" is written as two distinct things, never merged.** In the appendix paper list, verification level is one of three:
+
+| Label | Meaning |
+|---|---|
+| `full text` | The full text was read — downloaded this round, or already in `papers/` |
+| `full text not fetched` | The source has it; this round judged the abstract sufficient and did not fetch it |
+| `no full text at source` | It was tried, and the source simply does not have it |
+
+The last two are both backed by abstract alone, but the reader reacts to them completely differently: "not fetched" means they can go get it themselves, "none at source" means they will not get it either. Collapsing both into "abstract only" states the former as if it were the latter — **the reader concludes you tried and could not, when in fact you did not try**. Marking something `full text not fetched` is nothing to be ashamed of, as long as the appendix says why the abstract was judged sufficient; getting the label wrong is the problem.
+
 ## Step 4: Downloads
 
 `ls papers/` once when starting, `ls` again before writing the briefing, and the difference between the two is this round's additions. Do not count from memory how many download commands were issued.
@@ -187,6 +202,8 @@ Filename rule: a DOI's `/` becomes `_`, while arXiv ids and PMC ids stay as they
 - **Open access ≠ obtainable**. A new paper in a fully OA journal like Frontiers is free on the publisher's site but absent from the aggregators
 
 So it is normal for this briefing to have **a great many claims backed by the abstract alone**; label them truthfully in the appendix, with no need to feel sheepish about how little full text there is — but that is no license to treat what the abstract says as verified against the full text.
+
+**Everything above is about journal papers.** It was learned on the ingestion lag at PMC / Europe PMC / CORE, and it does not hold for preprint sources — `arxiv`, `biorxiv`, `zenodo` and `hal` are all ✓ for download, and a new paper has a PDF the same day. So: an undownloaded preprint is labeled `full text not fetched` in the appendix, not `no full text at source`, and its reason is written as "the abstract was judged sufficient" — it may not borrow the "structurally out of reach" line.
 
 **Do not fabricate a successful download.**
 
@@ -212,7 +229,9 @@ Same style set as `research-ideation-*` and `literature-review-*`.
 
 **Keep it to 900–1500 words.** A frontier's value is in timeliness and judgment, not in completeness; write it long and nobody reads it, and it inevitably slides toward being a review.
 
-**Section names and labels use academic register, not colloquial.** The `>` blockquotes in the template are guidance written for you and may talk however they like; but **every heading, table header, and field name that will appear in the briefing is written in academic register**. "Principal research groups and their research trajectories", not "teams worth watching"; "Open controversies", not "what people are still arguing about"; "Revisions to established conclusions", not "beliefs that need updating". This thing gets forwarded to supervisors and colleagues.
+**Two kinds of blockquote in the template, do not confuse them.** The ones opening with `[WRITING NOTE]` are written for you, and **the whole block (down to the blank line) stays out of the briefing** — not one line of it may remain. Every other `>` blockquote — currently only the coverage line at the top — **is part of the briefing**: keep it as it stands and fill in its placeholders.
+
+**Section names and labels use academic register, not colloquial.** `[WRITING NOTE]` blocks may talk however they like; but **every heading, table header, and field name that will appear in the briefing is written in academic register**. "Principal research groups and their research trajectories", not "teams worth watching"; "Open controversies", not "what people are still arguing about"; "Revisions to established conclusions", not "beliefs that need updating". This thing gets forwarded to supervisors and colleagues.
 
 When done, give a three-sentence summary in the conversation: the single most important finding, the one person or group most worth watching, the briefing path.
 

@@ -232,6 +232,8 @@ research-ideation-<topic-slug>-YYYY-MM-DD.md
 ```
 
 The topic slug is English or pinyin joined by hyphens, no spaces. The date is the result of `date +%F` from when you started.
+**Two kinds of blockquote in the template, do not confuse them.** The ones opening with `[WRITING NOTE]` are written for you, and **the whole block (down to the blank line) stays out of the report** — not one line of it may remain. Every other `>` blockquote — currently only the count line at the top — **is part of the report**: keep it as it stands and fill in its placeholders.
+
 
 **Plain Markdown only, do not write HTML tags.** KyDog's renderer is ReactMarkdown + remark-gfm with no rehype-raw — `<details>`, `<summary>`, `<br>` display verbatim as strings. If content needs collapsing, put it in an appendix; collapsing is not an available option.
 

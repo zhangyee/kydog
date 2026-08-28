@@ -4,7 +4,7 @@
 > screened in by relevance for verification, <N6> into the conclusions. Full text: <D1> newly
 > obtained this round, plus the <D3> already in `papers/`, <N8> in all.**
 
-> The nine numbers are all different; do not smear one placeholder over them. When done, check once:
+> [WRITING NOTE] The nine numbers are all different; do not smear one placeholder over them. When done, check once:
 > **N3 ≥ N4 ≥ N5 ≥ N6**, **N8 = D1 + D3**, **N8 ≤ N5**. Anything that does not add up means you miscounted.
 >
 > **The download part must lay D1 and D3 out separately.** Write only "N8 full texts obtained" and the
@@ -20,7 +20,7 @@
 
 ## 1. The topic
 
-> Use three to five paragraphs of prose to make this topic clear: what they actually want to do (in plain words), for whom,
+> [WRITING NOTE] Use three to five paragraphs of prose to make this topic clear: what they actually want to do (in plain words), for whom,
 > on what grounds they believe it can be done, how long and how much resource it will take, what counts as done. This
 > section must stand on its own — the reader may look only at this one and section 3. **Write prose, no Q&A format.**
 
@@ -28,13 +28,13 @@
 
 **The jargon-free statement**
 
-> If the settled goal still carries field jargon, name here which words those are, and give a rewrite an outsider can follow.
+> [WRITING NOTE] If the settled goal still carries field jargon, name here which words those are, and give a rewrite an outsider can follow.
 > If that rewrite differs in substance from the original wording (say "pre-episode warning" is really "post-episode
 > detection"), it must be called out — this is often the single most valuable sentence in the whole report.
 
 <the rewrite>
 
-> The body ends here. **The nine questions must not appear in the report** — not in the body, not in an appendix.
+> [WRITING NOTE] The body ends here. **The nine questions must not appear in the report** — not in the body, not in an appendix.
 > The paragraphs above are their synthesis; a reader holding the synthesis does not need the raw material, and whoever answered them needs even less to see what they just filled in.
 > If tracing back is really needed, the session log holds the full text.
 
@@ -42,7 +42,7 @@
 
 ## 2. Literature map
 
-> Write the six subsections in order; where a section has no content write "not found" and state what was searched, do not delete the section.
+> [WRITING NOTE] Write the six subsections in order; where a section has no content write "not found" and state what was searched, do not delete the section.
 >
 > **On a paper's first appearance write "Author (year), Title"**, and only on later mentions shorten it to "Author (year)".
 > This report has no reference list; with author and year alone the reader cannot tell which paper it is, nor recall whether it appeared earlier.
@@ -51,21 +51,21 @@
 
 ### Established findings
 
-> Those where multiple independent teams agree. One conclusion per line, not one paper per line.
+> [WRITING NOTE] Those where multiple independent teams agree. One conclusion per line, not one paper per line.
 
 ### Contested findings
 
-> **Write them in pairs**: who concluded what, who is on the other side and what they concluded, where the disagreement may come from
+> [WRITING NOTE] **Write them in pairs**: who concluded what, who is on the other side and what they concluded, where the disagreement may come from
 > (different populations? different measurement? different statistical conventions?). Listing one side alone is not a controversy.
 
 ### Negative findings
 
-> Negative results. If genuinely none were found, write "searched <keywords> in <sources>, not found", and explain that this is very
+> [WRITING NOTE] Negative results. If genuinely none were found, write "searched <keywords> in <sources>, not found", and explain that this is very
 > likely publication bias rather than absence.
 
 ### Mechanism
 
-> Evidence explaining "why this happens". If this section is empty (the phenomenon has been observed but nobody can say why),
+> [WRITING NOTE] Evidence explaining "why this happens". If this section is empty (the phenomenon has been observed but nobody can say why),
 > that is itself a high-value landing spot for a topic; remember to carry it into section 4.
 
 ### Methodological landscape
@@ -74,11 +74,11 @@
 |---|---|---|---|
 | | | | |
 
-> "What it actually measures" is often not the same as what it claims to measure, and that column is where this table's value lies.
+> [WRITING NOTE] "What it actually measures" is often not the same as what it claims to measure, and that column is where this table's value lies.
 
 ### Closest related work
 
-> 3–5 of them. For each, state clearly what they did, plus **one falsifiable gap statement** —
+> [WRITING NOTE] 3–5 of them. For each, state clearly what they did, plus **one falsifiable gap statement** —
 > "only validated in mice", "sample size 32, cannot detect effect sizes below 0.4", "follow-up of 6 months at most"
 > all qualify; "did not go deep enough", "room for further research" do not, being true of any paper.
 
@@ -88,7 +88,7 @@
 
 ### Literature verification outcome
 
-> This section answers "how far did you verify the conclusions above". It decides what the reader uses this map for,
+> [WRITING NOTE] This section answers "how far did you verify the conclusions above". It decides what the reader uses this map for,
 > so it sits at the end of the map, before the assessment. **Write only the outcome; the per-paper record is in Appendix A.**
 
 All <N5> papers above were traced back to source item by item: <N6> entered the conclusions, <N5−N6> were removed for <reason>;
@@ -97,17 +97,17 @@ All <N5> papers above were traced back to source item by item: <N6> entered the 
 At the claim level <C1> conclusions were checked: <C2> compared against the full source text, <C3> backed by the abstract alone (marked
 `[abstract only]` in the text), <C4> corrected or deleted where the source disagreed with the draft. <N8> full texts obtained, held in `papers/`.
 
-> N5, N6, N8 must be the same numbers as in the opening line. C1 = C2 + C3 (C4 is how many of those were changed,
+> [WRITING NOTE] N5, N6, N8 must be the same numbers as in the opening line. C1 = C2 + C3 (C4 is how many of those were changed,
 > not counted separately), and M is the number of metadata corrections, unrelated to the claim counts.
 
-> If not one problem was turned up, explain that here — that means either the search quality was very high or the verification was not serious,
+> [WRITING NOTE] If not one problem was turned up, explain that here — that means either the search quality was very high or the verification was not serious,
 > and the reader has a right to know which you lean toward.
 
 ---
 
 ## 3. Assessment
 
-> An assessment is two actions, recounting and appraising, and neither can be missing: **first recount clearly what the
+> [WRITING NOTE] An assessment is two actions, recounting and appraising, and neither can be missing: **first recount clearly what the
 > literature says on this question, then appraise what it means for this topic**. Recounting without appraising is a survey; appraising without recounting is hot air.
 > Write it as prose, do not write it as a scorecard — a judgment's weight comes from the argument, not from labels in a table.
 > State the position once at the start and once at the end, with argument all the way between.
@@ -116,7 +116,7 @@ At the claim level <C1> conclusions were checked: <C2> compared against the full
 
 <one paragraph stating the position. Cite specific studies (author + year), not this report's section numbers.>
 
-> The body unfolds across four sub-themes. Each section is two paragraphs, recount → appraise:
+> [WRITING NOTE] The body unfolds across four sub-themes. Each section is two paragraphs, recount → appraise:
 > first recount the literature's evidence on this question (who did what, and got what), then appraise what it means for this topic.
 
 ### Whether the novelty still stands
@@ -145,19 +145,19 @@ At the claim level <C1> conclusions were checked: <C2> compared against the full
 
 ### The criteria behind the judgment
 
-> An appraisal cannot be "I think so". State here what you judged on — for instance: whether the gap statement is falsifiable,
+> [WRITING NOTE] An appraisal cannot be "I think so". State here what you judged on — for instance: whether the gap statement is falsifiable,
 > whether the method required is reachable within their resources, whether the success criterion is observable. **Write the criteria out and the reader can disagree with you.**
 
 <the criteria>
 
-> That is where it ends. **Do not attach another "where each of the nine questions landed" table** — the four sections above have been over
+> [WRITING NOTE] That is where it ends. **Do not attach another "where each of the nine questions landed" table** — the four sections above have been over
 > every claim of theirs once, and listing them again repeats what was just said.
 > If some question was skipped, name the consequence in the prose of the section it belongs to (Q9 above all: with a topic that cannot state a success criterion,
 > three years on nobody can judge whether it was achieved).
 
 ### Conclusion and recommendations
 
-> Restate the verdict (echoing the opening at the close is the rule of the form), then give the recommendations.
+> [WRITING NOTE] Restate the verdict (echoing the opening at the close is the rule of the form), then give the recommendations.
 
 **<the verdict restated, one sentence>**
 
@@ -171,7 +171,7 @@ When the verdict is "needs narrowing":
 
 ## 4. Other directions worth pursuing
 
-> 3–5 of them. **Write them the way a review is written**: first recount the specific tension or gap in the literature (with author-and-year citations),
+> [WRITING NOTE] 3–5 of them. **Write them the way a review is written**: first recount the specific tension or gap in the literature (with author-and-year citations),
 > then draw the topic out of it. Do not write internal numbering like "hangs on box N"; the reader cannot follow it and should not have to.
 >
 > The good version:
@@ -193,7 +193,7 @@ When the verdict is "needs narrowing":
 
 ## Appendix A: Search and verification
 
-> The process record goes here. The body cites conclusions, not process; but the process must be checkable, or the conclusions carry no weight.
+> [WRITING NOTE] The process record goes here. The body cites conclusions, not process; but the process must be checkable, or the conclusions carry no weight.
 
 **Search**
 
@@ -215,10 +215,10 @@ other <D2g>. List the verbatim error for each failure.
 Of the <N6> that entered the conclusions, another <D3> full texts were already in `papers/` when work started. Full texts obtained
 therefore total <N8> = D1 + D3; the remaining <N6−N8> have abstracts only, and the claims involved are marked `[abstract only]`.
 
-> D1 and D3 come from **the difference between two `ls papers/` calls**; do not count from memory how many commands you issued — with source
+> [WRITING NOTE] D1 and D3 come from **the difference between two `ls papers/` calls**; do not count from memory how many commands you issued — with source
 > switches retried midway, and failures that later succeeded, memory will certainly get it wrong.
 
-> The distribution of failure causes carries information in itself — a lot of 403s means this field's key literature sits behind paywalls,
+> [WRITING NOTE] The distribution of failure causes carries information in itself — a lot of 403s means this field's key literature sits behind paywalls,
 > which constrains any later work that depends on full text. Do not write only "several could not be obtained".
 
 **Per-paper verification record**
@@ -227,7 +227,7 @@ therefore total <N8> = D1 + D3; the remaining <N6−N8> have abstracts only, and
 |---|---|---|---|---|---|
 | Author year, `DOI` | | | | | |
 
-> **The title column cannot be dropped.** What appears in the body is "Author (year)", and this table is the only place a reader can match that to
+> [WRITING NOTE] **The title column cannot be dropped.** What appears in the body is "Author (year)", and this table is the only place a reader can match that to
 > a specific paper; listing the DOI alone amounts to sending them off to a browser.
 > Removed ones must keep their line — list only the ones that passed and this table becomes decoration.
 

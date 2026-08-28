@@ -6,7 +6,7 @@
 
 <date>
 
-> **Every number has a locked-down definition; blur one and the whole line is worthless:**
+> [WRITING NOTE] **Every number has a locked-down definition; blur one and the whole line is worthless:**
 >
 > | | What it is | What it is **not** |
 > |---|---|---|
@@ -27,7 +27,7 @@
 
 # Part One: The Literature Review
 
-> **Everything from here down to the horizontal rule can be pasted into a paper as a block.**
+> [WRITING NOTE] **Everything from here down to the horizontal rule can be pasted into a paper as a block.**
 >
 > Hard rules: no `[abstract only]`, no "this report", no "we searched", no "see section N", no meta-information of any kind.
 > Continuous prose, not a list of papers — if every paragraph reads "X et al. did A, Y et al. did B", that is a list, not a review.
@@ -36,11 +36,11 @@
 
 ## <section title, e.g. "Related Work" or "State of the Art">
 
-> An opening paragraph stating what problem this direction is out to solve and why it matters. With citations.
+> [WRITING NOTE] An opening paragraph stating what problem this direction is out to solve and why it matters. With citations.
 
 ### <subtopic 1: usually the earliest line or the most basic problem>
 
-> 2–4 paragraphs per subtopic. Organized by **line / school**, not as a chronological running account.
+> [WRITING NOTE] 2–4 paragraphs per subtopic. Organized by **line / school**, not as a chronological running account.
 > There has to be an argument inside a paragraph: what premise these works share, who solved whose problem, what is left unsolved.
 
 ### <subtopic 2>
@@ -49,12 +49,12 @@
 
 ## <section: the problems that remain>
 
-> The closing paragraph. Say how far the existing work goes and what is still missing — this paragraph is what makes room for your own work,
+> [WRITING NOTE] The closing paragraph. Say how far the existing work goes and what is still missing — this paragraph is what makes room for your own work,
 > and it is often the most cited one in the whole piece. Be specific; "further research is still needed" is the same as writing nothing.
 
 ## References
 
-> In alphabetical order by first author. Each entry gives a complete bibliographic record + DOI. Everything appearing in the prose has to be here,
+> [WRITING NOTE] In alphabetical order by first author. Each entry gives a complete bibliographic record + DOI. Everything appearing in the prose has to be here,
 > and everything here has to appear in the prose.
 
 1. Author, A., Author, B. (Year). Title. *Journal*, Volume(Issue), pages. DOI: `10.xxxx/xxxxx`
@@ -63,7 +63,7 @@
 
 # Part Two: The Review Report in Detail
 
-> None of the following goes into the paper; it is how this review came about and what was read out of it.
+> [WRITING NOTE] None of the following goes into the paper; it is how this review came about and what was read out of it.
 >
 > **The first time a paper appears in this part, write "Author (year), Title"**; only a repeat mention within the same section
 > shortens to "Author (year)". Part One has the reference list right beside it, this part does not — with author and year alone,
@@ -72,16 +72,16 @@
 
 ## 1. What this field looks like now
 
-> Three to five paragraphs of prose giving a reader unfamiliar with this direction a map: where it came from, which lines it splits into now,
+> [WRITING NOTE] Three to five paragraphs of prose giving a reader unfamiliar with this direction a map: where it came from, which lines it splits into now,
 > what is being argued about, where it has been heading lately. This section has to be understandable on its own.
 
 ## 2. The literature map
 
-> Write the six sections in order. Keep an empty section too, stating "not found" and which keywords and which sources were searched.
+> [WRITING NOTE] Write the six sections in order. Keep an empty section too, stating "not found" and which keywords and which sources were searched.
 
 ### Foundations and classics
 
-> Derived by intersecting the reference lists of the reviews. Note for each **how many reviews cite it in common** — that number is a protocol-level fact,
+> [WRITING NOTE] Derived by intersecting the reference lists of the reviews. Note for each **how many reviews cite it in common** — that number is a protocol-level fact,
 > and it says more about its standing within this topic than the global citation count does.
 
 | Study | What it did | Reviews citing it in common | Why it is a classic |
@@ -90,7 +90,7 @@
 
 ### Existing reviews and commentaries
 
-> **This section decides whether this review of yours has any reason to exist.** For each one state: the scope covered, which year the search stops at,
+> [WRITING NOTE] **This section decides whether this review of yours has any reason to exist.** For each one state: the scope covered, which year the search stops at,
 > the type (narrative review / systematic review / meta-analysis — the weight of the conclusion differs completely), its position or organizing angle.
 
 | Review | Year | Type | Scope and cutoff | Its angle |
@@ -104,7 +104,7 @@ If you cannot say, admit it honestly — it means the reader would do just as we
 
 ### Mainstream lines and schools
 
-> Grouped by technical line / methodological school. Each group states **what assumptions it is built on**, and its boundary of applicability.
+> [WRITING NOTE] Grouped by technical line / methodological school. Each group states **what assumptions it is built on**, and its boundary of applicability.
 
 | Line | Representative work | Assumptions | Boundary of applicability and known limitations |
 |---|---|---|---|
@@ -125,11 +125,11 @@ If you cannot say, admit it honestly — it means the reader would do just as we
 
 ### Latest progress
 
-> The past 2–3 years, especially what came after the newest review's cutoff. **Mark which ones are still preprints.**
+> [WRITING NOTE] The past 2–3 years, especially what came after the newest review's cutoff. **Mark which ones are still preprints.**
 
 ### Gaps and opportunities
 
-> Specific enough to be falsified in one sentence. "Validated only in mice", "longest follow-up 6 months" qualify;
+> [WRITING NOTE] Specific enough to be falsified in one sentence. "Validated only in mice", "longest follow-up 6 months" qualify;
 > "research is still insufficient" does not, since it holds for any direction.
 
 ## 3. Literature verification outcome
@@ -140,13 +140,13 @@ All <N5> papers above were verified back at the source one by one: <N6> entered 
 At the claim level <C1> conclusions were checked: <C2> compared against the full original text, <C3> resting on the abstract alone,
 <C4> corrected or deleted because the original disagreed with the draft. Full text obtained for <N8>, stored in `papers/`.
 
-> **List here which conclusions rest on the abstract alone** — the prose carries no mark (that would go into the paper),
+> [WRITING NOTE] **List here which conclusions rest on the abstract alone** — the prose carries no mark (that would go into the paper),
 > so this is the only place the reader can find out.
 > If checking a number relayed from a review back against the original paper turned up a discrepancy, it must be written here.
 
 ## 4. Review-level insights
 
-> This section is where the value is added, not a restatement of the map. Judgment and speculation are allowed, but **every judgment has to hang on a specific paper**,
+> [WRITING NOTE] This section is where the value is added, not a restatement of the map. Judgment and speculation are allowed, but **every judgment has to hang on a specific paper**,
 > and it has to distinguish clearly between "what the literature says" and "my inference".
 
 ### The line of development
@@ -194,7 +194,7 @@ The <D3> already in `papers/` and actually read this round, plus the <D1> newly 
 |---|---|---|---|---|---|
 | Author year, `DOI` | | | | | |
 
-> **The title column cannot be dropped** — what appears in the Part Two prose is "Author (year)", and this table has to match up with it.
+> [WRITING NOTE] **The title column cannot be dropped** — what appears in the Part Two prose is "Author (year)", and this table has to match up with it.
 > Dropped papers must keep their row; list only the ones that passed and this table becomes decoration.
 
 ## Appendix C: The boundaries of this review

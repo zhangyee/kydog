@@ -5,7 +5,7 @@
 
 <date>
 
-> **The reader is by default an insider in this direction.** Do not explain what the direction is, do not define existing terminology, do not lay groundwork for why it matters.
+> [WRITING NOTE] **The reader is by default an insider in this direction.** Do not explain what the direction is, do not define existing terminology, do not lay groundwork for why it matters.
 > 900–1500 words in all. Written long it slides toward a review, and a review is `/literature-review`'s job.
 > Where the time window was widened (12 months turned up nothing), state in the line above how far it was widened.
 >
@@ -20,7 +20,7 @@
 
 ## Core judgments
 
-> 3–5 items, each one sentence + a paper hung on it. The reader may read only this passage, so it must stand on its own.
+> [WRITING NOTE] 3–5 items, each one sentence + a paper hung on it. The reader may read only this passage, so it must stand on its own.
 > Each must be a **judgment**, not a description — "X has appeared" is a description, "X ends the cost advantage of route Y" is a judgment.
 > Inference and what the literature states must be labeled apart.
 
@@ -32,7 +32,7 @@
 
 ## 1. Recent significant advances
 
-> Group by **where the newness lies**, not by chronological sequence. Preprints must be marked.
+> [WRITING NOTE] Group by **where the newness lies**, not by chronological sequence. Preprints must be marked.
 > The criterion: an insider reading it says "I had not noticed that", not "I know that".
 
 **New method**
@@ -45,14 +45,14 @@
 
 ## 2. Revisions to established conclusions
 
-> This section is worth the most to an insider — they already hold a map, and most want to know where it needs changing.
+> [WRITING NOTE] This section is worth the most to an insider — they already hold a map, and most want to know where it needs changing.
 > **Write them in pairs**, and the degree of destabilization must land on one of the three grades, not blur into "has been challenged".
 
 | Established conclusion | New evidence | Degree of revision |
 |---|---|---|
 | …(old paper) | …(new paper) | overturned / scope of applicability narrowed / a first counterexample has appeared |
 
-> If no assumption was shaken in a year, write "none found" and keep this section — that means the direction is converging rather than opening up,
+> [WRITING NOTE] If no assumption was shaken in a year, write "none found" and keep this section — that means the direction is converging rather than opening up,
 > and it is a conclusion worth stating.
 
 ---
@@ -61,7 +61,7 @@
 
 ### Groups working the direction continuously
 
-> **Write a trajectory, not a paper list.** For each group pick 2–4 waypoints that let a reader see what they went from and to.
+> [WRITING NOTE] **Write a trajectory, not a paper list.** For each group pick 2–4 waypoints that let a reader see what they went from and to.
 > "What makes them a leader" needs grounds: repeatedly pointed at by citation chains, having defined a task or a benchmark, written into a guideline or consensus statement.
 > "Publishes a lot" is not grounds.
 
@@ -75,7 +75,7 @@
 
 ### Groups newly entering the direction
 
-> Above all those migrating in from another discipline. An old group publishing more papers is not news; a signal-processing group starting on clinical endpoints is.
+> [WRITING NOTE] Above all those migrating in from another discipline. An old group publishing more papers is not news; a signal-processing group starting on clinical endpoints is.
 
 **<group>** — came from <which field>, brought <what method>, <why this migration may work out>
 
@@ -83,7 +83,7 @@
 
 ## 4. Newly emerged terminology
 
-> Each new term must be followed by a line on "what it finds that the old words do not".
+> [WRITING NOTE] Each new term must be followed by a line on "what it finds that the old words do not".
 > This is the only part of the briefing that directly improves the reader's own searching, more useful than listing a few more papers.
 
 | Term | What it refers to | What it finds that existing vocabulary does not |
@@ -94,7 +94,7 @@
 
 ## 5. Open controversies
 
-> **Write them in pairs**: who concluded what, who is on the other side, where the disagreement may come from (population / measurement / task definition / statistical convention).
+> [WRITING NOTE] **Write them in pairs**: who concluded what, who is on the other side, where the disagreement may come from (population / measurement / task definition / statistical convention).
 > The defining feature of a frontier is that there is no consensus yet. If everyone agrees, it is no longer a frontier but a consensus —
 > and that is itself worth naming.
 
@@ -122,19 +122,33 @@
 
 **Paper list**
 
-> The briefing body gives only "Author (year), Title", and a reader who wants the source needs the DOI. **This table cannot be dropped** —
+> [WRITING NOTE] The briefing body gives only "Author (year), Title", and a reader who wants the source needs the DOI. **This table cannot be dropped** —
 > a briefing saying "you missed these" is as good as unwritten if the reader cannot get hold of those papers. Ordered by first author alphabetically.
+>
+> **Verification level is one of three, never collapsed into "abstract only"**:
+> `full text` = the full text was read (downloaded this round, or already in `papers/`);
+> `full text not fetched` = the source has it, this round judged the abstract sufficient and did not fetch it;
+> `no full text at source` = it was tried, and the source simply does not have it.
+> The last two are both backed by abstract alone, but the reader reacts to them completely differently: "not fetched"
+> means they can go get it themselves; "none at source" means they will not get it either. Collapsing both into
+> "abstract only" states the former as if it were the latter.
 
 | Paper | Title | Year | Type | DOI / id | Verification level |
 |---|---|---:|---|---|---|
-| Author et al. | | | journal / preprint | | full text / abstract only |
+| Author et al. | | | journal / preprint | | full text / full text not fetched / no full text at source |
 
 **Verification**
 
 All <N> were traced back to source one by one with `fastpaper get`; <N> removed for <reason>; <N> metadata corrections.
-<N> verified against full text, the rest backed by abstract alone — **the claims backed by abstract alone are listed one by one here**:
 
-- <claim> — <paper>, abstract only
+<N> verified against full text. The other two categories are written out separately:
+
+- **No full text at source**, <N>: <paper by paper, which source was tried, the error text>
+- **Full text not fetched**, <N>: <paper by paper, why the abstract was judged sufficient>
+
+**The claims backed by abstract alone are listed one by one here** (both categories count):
+
+- <claim> — <paper>, <full text not fetched / no full text at source>
 
 **Full-text acquisition**: <N> downloads initiated, <N> succeeded; <N> failed, with the error text <listed one by one>.
 Another <N> were already in `papers/`.

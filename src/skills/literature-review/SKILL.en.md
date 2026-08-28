@@ -183,6 +183,8 @@ literature-review-<short-topic-name>-YYYY-MM-DD.md
 ```
 
 The short topic name uses hyphen-joined English or pinyin, do not use spaces, do not use underscores, the date goes last — the same style as `research-ideation-*`, so that the deliverables under one project directory sort together by type.
+**Two kinds of blockquote in the template, do not confuse them.** The ones opening with `[WRITING NOTE]` are written for you, and **the whole block (down to the blank line) stays out of the report** — not one line of it may remain. Every other `>` blockquote — currently only the count line at the top — **is part of the report**: keep it as it stands and fill in its placeholders.
+
 
 Requirements for the prose part:
 
