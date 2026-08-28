@@ -1,21 +1,18 @@
 # <one-line topic name>
 
 > **Searched <N1> data sources with <N2> queries, <N3> hits; <N4> after deduplicating by title, <N5>
-> screened in by relevance for verification, <N6> into the conclusions. Full text: <N7> downloads
-> initiated yielding <D1> new, plus the <D3> already in `papers/`, <N8> in all.**
+> screened in by relevance for verification, <N6> into the conclusions. Full text: <D1> newly
+> obtained this round, plus the <D3> already in `papers/`, <N8> in all.**
 
 > The nine numbers are all different; do not smear one placeholder over them. When done, check once:
-> **N3 ≥ N4 ≥ N5 ≥ N6**, **D1 ≤ N7**, **N8 = D1 + D3**. Anything that does not add up means you miscounted.
+> **N3 ≥ N4 ≥ N5 ≥ N6**, **N8 = D1 + D3**, **N8 ≤ N5**. Anything that does not add up means you miscounted.
 >
-> **The download part must lay D1 and D3 out separately.** Write only "attempted N7 downloads, obtained
-> N8 full texts" and the reader reads it as "N8 of the N7 succeeded" — when most came from `papers/`,
+> **The download part must lay D1 and D3 out separately.** Write only "N8 full texts obtained" and the
+> reader reads it as "all N8 came down this round" — when most came from `papers/`,
 > that misreading is the exact opposite of the fact. This is the spot in that line most likely to mislead.
 >
 > The N4 → N5 step is **triage**, not loss: of the dozens or hundreds left after deduplication, most are
 > out of focus for the topic. Leave that step out and the reader will think you threw the literature away.
->
-> **N7 is the number of `fastpaper download` commands you actually issued**, not "the number of
-> candidates". A retry on another source, another try by PMC number, each counts once.
 
 <date> | papers held in `papers/`
 
@@ -210,10 +207,10 @@ When the verdict is "needs narrowing":
 
 **Full-text acquisition**
 
-This round initiated <N7> `fastpaper download` calls (retries on other sources included), <D1> succeeded and <D2> failed
-(D1 + D2 = N7). Distribution of failure causes: 403 paywall <D2a>, HTML returned instead of PDF <D2b>,
+<D1> were newly downloaded this round, <D2> `fastpaper download` calls failed (source-switch retries
+included; D2 is the number of failures listed one by one below). Distribution of failure causes: 403 paywall <D2a>, HTML returned instead of PDF <D2b>,
 no open-access PDF <D2c>, PMC not in the OA subset <D2d>, response body over the tool's limit <D2e>, source-side rate limiting <D2f>,
-other <D2g>.
+other <D2g>. List the verbatim error for each failure.
 
 Of the <N6> that entered the conclusions, another <D3> full texts were already in `papers/` when work started. Full texts obtained
 therefore total <N8> = D1 + D3; the remaining <N6−N8> have abstracts only, and the claims involved are marked `[abstract only]`.

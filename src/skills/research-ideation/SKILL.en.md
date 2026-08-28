@@ -99,14 +99,14 @@ Pull three axes out of the nine answers: **object/phenomenon terms**, **method/t
 
 Choose sources by discipline (fastpaper's `sources --capabilities` is live; run it once when unsure). Deduplicate across sources by DOI.
 
-**Keep count while searching**: how many queries each source ran, how many hits, how many remain after deduplication, how many were screened through into verification. The report's very first line is that funnel, and **the eight numbers are all different**:
+**Keep count while searching**: how many queries each source ran, how many hits, how many remain after deduplication, how many were screened through into verification. The report's very first line is that funnel, and **the nine numbers are all different**:
 
 > sources N1 → queries N2 → hits N3 → after dedup N4 → **screened into verification N5** → into the conclusions N6;
-> full text = **newly downloaded this round D1** (N7 downloads initiated) + **already in `papers/` D3** = N8
+> full text = **newly downloaded this round D1** (the difference between the two `ls papers/` runs in §2.4) + **already in `papers/` D3** = N8
 
 The N4 → N5 step is triage; leave it out and the reader will think you threw literature away.
 
-**D1 and D3 must be written separately.** Put only "attempted N7 downloads, obtained N8 full texts" side by side and the reader will certainly read it as "N8 of the N7 succeeded" — when most of the full text was already in `papers/`, that misreading is the exact opposite of the fact. This is the spot in that whole line most likely to mislead.
+**D1 and D3 must be written separately.** Report only "N8 full texts obtained" and the reader will certainly read it as "all N8 came down this round" — when most of the full text was already in `papers/`, that misreading is the exact opposite of the fact. This is the spot in that whole line most likely to mislead.
 
 This funnel decides how the reader weighs every conclusion that follows. **It cannot be reconstructed afterward; record it as you go.**
 
@@ -237,7 +237,7 @@ The topic slug is English or pinyin joined by hyphens, no spaces. The date is th
 
 Two things that are easy to botch:
 
-- **The first line is the funnel numbers** (the eight steps N1–N8 in §2.1), not "search tool: fastpaper". Which tool you used is internal implementation and the reader does not care; how thick the evidence is decides how they read every sentence after. When done, check N3 ≥ N4 ≥ N5 ≥ N6, D1 ≤ N7, N8 = D1 + D3 — anything that does not add up means you miscounted.
+- **The first line is the funnel numbers** (the nine numbers in §2.1), not "search tool: fastpaper". Which tool you used is internal implementation and the reader does not care; how thick the evidence is decides how they read every sentence after. When done, check N3 ≥ N4 ≥ N5 ≥ N6, N8 = D1 + D3, N8 ≤ N5 — anything that does not add up means you miscounted.
 - **The first chapter is prose, not a Q&A**. Use three to five paragraphs to make the topic clear. The reader may read only the first chapter and the assessment chapter, and each of those two must stand on its own.
 
 When done, give a summary in the conversation: which of the three verdicts, the two or three most decisive grounds, the report path, how many papers landed in `papers/`. Do not recount the whole report — it is already in the file.
