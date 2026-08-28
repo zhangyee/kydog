@@ -200,10 +200,10 @@ fastpaper get <DOI> --format json                          # 单篇的总引用�
 不去算速度，改成**搜近期发表、且已经积累了引用的论文**：
 
 ```bash
-fastpaper search semantic "<主题>" --after 2025-01-01 --sort citations -n 10
+fastpaper search semantic "<主题>" --after <前年>-01-01 --sort citations -n 10
 ```
 
-一篇 2025 年发表的论文已经拿到几十次引用，本身就是升温信号。这条路用的是
+一篇近两年发表的论文已经拿到几十次引用，本身就是升温信号。这条路用的是
 CLI 校验过的 `--after` 加排序，不碰引用边的抽样，没有截断偏差。
 
 在报告里要如实描述它是什么：**「近 N 年发表且引用数居前的工作」**，

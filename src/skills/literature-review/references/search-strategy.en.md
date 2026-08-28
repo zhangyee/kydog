@@ -200,10 +200,10 @@ A "citation growth rate" computed from a truncated sample like this measures how
 Instead of computing a rate, **search for papers published recently that have already accumulated citations**:
 
 ```bash
-fastpaper search semantic "<topic>" --after 2025-01-01 --sort citations -n 10
+fastpaper search semantic "<topic>" --after <the year before last>-01-01 --sort citations -n 10
 ```
 
-A paper published in 2025 that has already taken tens of citations is itself a heating-up signal. This route uses
+A paper published in the past two years that has already taken tens of citations is itself a heating-up signal. This route uses
 the CLI-validated `--after` plus sorting, never touches the sampling of citation edges, and has no truncation bias.
 
 In the report, describe honestly what it is: **"work published in the past N years that ranks high on citation count"**,

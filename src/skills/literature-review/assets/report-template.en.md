@@ -19,9 +19,9 @@
 > | N8 | How many really got full-text verification this round = D1 + D3 | |
 >
 > **Never report the total file count of the `papers/` directory.** That directory holds papers left over from other projects,
-> which mean nothing to this review, and reporting it only makes the reader think you read 24 papers.
+> which mean nothing to this review, and reporting it only makes the reader think you read the entire directory.
 >
-> Check once: **N3 ≥ N4 ≥ N5 ≥ N6**, **D1 ≤ N7**, **N8 = D1 + D3**, **N8 ≤ N5**.
+> Check once: **N3 ≥ N4 ≥ N5 ≥ N6**, **N8 = D1 + D3**, **N8 ≤ N5**.
 
 ---
 
@@ -181,8 +181,8 @@ Give a judgment, do not just list possibilities — but hang every judgment on a
 
 **Full-text acquisition**
 
-<N7> `fastpaper download` calls were made this round (source-switch retries included), <D1> succeeded, <D2> failed
-(D1 + D2 = N7). Failure reasons: 403 paywall <D2a>, HTML returned instead of PDF <D2b>,
+<D1> were newly downloaded this round, <D2> `fastpaper download` calls failed (source-switch retries
+included; D2 is the number of failures listed one by one below). Failure reasons: 403 paywall <D2a>, HTML returned instead of PDF <D2b>,
 no open-access PDF <D2c>, PMC not in the OA subset <D2d>, published this year and not yet indexed by the aggregator <D2e>,
 source-side rate limiting <D2f>, other <D2g>. List the verbatim error for each failure.
 

@@ -127,9 +127,9 @@ Published recently and already accumulating citations is itself a signal. In the
 How many queries were run per source, how many hits, how many left after deduplication, how many selected for verification. The funnel line at the top of the report needs them, and **you cannot reconstruct them afterwards, so record them on the spot**:
 
 > sources N1 → queries N2 → hits N3 → after dedup N4 → **selected for verification N5** → into the prose N6;
-> full texts = **newly downloaded this round D1** (N7 download attempts) + **already in `papers/` D3** = N8
+> full texts = **newly downloaded this round D1** (the difference between the two `ls papers/` runs in step 4) + **already in `papers/` D3** = N8
 
-Check once when you are done: `N3 ≥ N4 ≥ N5 ≥ N6`, `D1 ≤ N7`, `N8 = D1 + D3`.
+Check once when you are done: `N3 ≥ N4 ≥ N5 ≥ N6`, `N8 = D1 + D3`, `N8 ≤ N5`.
 
 ---
 
