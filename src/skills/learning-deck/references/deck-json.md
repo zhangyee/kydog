@@ -104,7 +104,7 @@ newText:  "    这条链有一个关键性质——每步都是高斯，复合�
                "head": ["方法", "核心假设", "适用场景", "代价", "失效情形"],
                "rows": [ ["扩散模型", "…", "…", "…", "…"] ] },
   "summary": { "title": "所以它到底在干什么", "html": ["<p>…</p>", "<p>…</p>"] },
-  "glossary": [ { "id": "g-markov", "zh": "马尔可夫链", "en": "Markov chain",
+  "glossary": [ { "id": "g-markov", "term": "马尔可夫链", "original": "Markov chain",
                   "def": "下一状态只取决于当前状态，与更早的历史无关。", "where": "§1" } ],
   "next": { "mustRead": [ { "text": "Ho et al. (2020), <i>DDPM</i>", "why": "只读原文第 2–3 节就够。" } ],
             "optional": [], "handsOn": [], "nextDeck": [ { "text": "「条件生成与 CFG」——你实际要用的那一半。" } ] },
@@ -379,7 +379,7 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
 | （固定）| `<p class="back"><a href="#map">↑ 回知识地图</a></p>`，每章末尾都有，JSON 里不写 |
 | `compare` | `section.compare#compare`：`<h2>{title}</h2>` + `{intro}` + `.table-wrap > table`（`head` 进 `thead th[scope=col]`，`rows[i][0]` 进 `tbody th[scope=row]`，其余进 `td`）+ `p.back` |
 | `summary` | `section.summary#summary`：`<h2>{title}</h2>` + `{html}` |
-| `glossary[]` | `section.glossary#glossary > dl`：`<dt id="{id}">{zh}<span class="en">{en}</span></dt>` + `<dd>{def}<span class="where">首次出现 {where}</span></dd>`。**`en` 可省**：没写、或者与 `zh` 逐字相同时，`<span class="en">` 整个不渲染（报告本身就是英文时两个槽只能填同一个词，重排一遍是重复影子，不是对照） |
+| `glossary[]` | `section.glossary#glossary > dl`：`<dt id="{id}">{term}<span class="en">{original}</span></dt>` + `<dd>{def}<span class="where">首次出现 {where}</span></dd>`。**`original` 可省**：没写、或者与 `term` 逐字相同时，`<span class="en">` 整个不渲染（报告本身就是英文时两个槽只能填同一个词，重排一遍是重复影子，不是对照） |
 | `next.*` | `section.next#next`：四个 `<h3>`（必读 / 选读 / 该上手跑什么 / 下一个 learning-deck）各带一个 `<ul>`，`<li>{text}<span class="why">{why}</span></li>`（`why` 可省） |
 | `references[]` | `section.refs#refs > ol > li`：`{text}<br><a class="ref-link" href="{url}" target="_blank" rel="noopener">{linkText}</a>` |
 | `honesty[]` | `section.honesty#honesty > ul > li` |
@@ -427,7 +427,7 @@ JSON 给的是「画什么」（`sketch`），SVG 标记在这一步才写出来
 **J-C 术语与锚点**
 
 11. 正文里出现的每一个缩写（连着两个以上大写字母：AMI、ECG、ELBO、CFG…）
-    在 `glossary` 里有一条（`zh` 命中，或者写了 `en` 的话 `en` 命中）。**逐个去搜，别靠印象。**
+    在 `glossary` 里有一条（`term` 命中，或者写了 `original` 的话 `original` 命中）。**逐个去搜，别靠印象。**
 12. 每个 `href="#g-…"` 的目标在 `glossary[].id` 里；
     每个 `href="#c…"` 的目标在 `chapters[].id` 里；
     每个 `href="#r-…"` 的目标在 `references[].id` 里（**v5 新增**：正文引用是

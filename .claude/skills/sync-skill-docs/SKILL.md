@@ -57,8 +57,8 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `learning-deck/references/layout.md:884`（H2 的「模板自带 4 处」） | 断言依赖模板 L44/45/46/50 的中文散文注释字面 | **同一个数 4**，依赖同样四行 | 见下「H2 的标定常数」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md:3`（description） | 「它比直接讲解多做的事：**先问清起点再决定讲什么**，…」 | 该分句**未译出**，其余四项全在 | 见下「learning-deck 的 description」 | 2026-08-27 |
 | `learning-deck/assets/report-template.html:2`（`<html lang>`） | `lang="zh"` | `lang="en"` | 文档语言声明，各自跟本份模板的默认产出语言走。`SKILL.{md,en.md}` 与全部 `references/*.md` 无一处提到 `lang`，模型从未被告知可以改它 | 2026-08-27 |
-| `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term<span class="en">English</span></dt>` | 见下「⑦ 术语对照的 zh/en 双槽」 | 2026-08-27 |
-| `learning-deck/references/deck-json.md:107`（`glossary` 示例） | `"zh": "马尔可夫链", "en": "Markov chain"` | **只写 `"zh": "Markov chain"`，不写 `en`** | 同上；`en` 已改成可选字段，英文报告里两个槽只能填同一个词，示例必须示范省掉它 | 2026-08-28 |
+| `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term<span class="en">English</span></dt>` | 见下「⑦ 术语对照的两个槽」 | 2026-08-27 |
+| `learning-deck/references/deck-json.md:107`（`glossary` 示例） | `"term": "马尔可夫链", "original": "Markov chain"` | **只写 `"term": "Markov chain"`，不写 `original`** | 同上；`original` 已改成可选字段，英文报告里两个槽只能填同一个词，示例必须示范省掉它 | 2026-08-28 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。
 这几条指令自己写明了意图——「写长了没人读，而且会不可避免地滑向综述」「价值在判定和证据链，
@@ -177,29 +177,31 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 「Three interview rounds find which layer the user already stands on … fill in only the missing layers」
 表达的是同一件事，属于中文版内部的复述，去掉不损失任何触发面或行为约束。
 
-**⑦ 术语对照的 zh/en 双槽（2026-08-28 用户裁决，已修）**：
-`deck-json.md:382` 的渲染对照把术语表的 `dt` 写死成两个具名槽——
-`<dt id="{id}">{zh}<span class="en">{en}</span></dt>`，模板 `:2093` 是它的字面示例。
+**⑦ 术语对照的两个槽（2026-08-28 用户裁决，已修）**：
+`deck-json.md:382` 的渲染对照把术语表的 `dt` 写死成两个具名槽，原先叫 `zh` / `en`
+（`<dt id="{id}">{zh}<span class="en">{en}</span></dt>`），模板 `:2093` 是它的字面示例。
 这套结构假定「产物语言 ≠ 英文」，于是「术语本体 + 英文对照」永远是两个不同的词。
 **英文报告里两个槽只能填同一个词**，⑦ 整节退化成一列重复影子
 （那一批的英文示例就写成了 `"zh": "Markov chain", "en": "Markov chain"`）。
 `.glossary dt .en` 那条 CSS 还会把重复的那份用更小的 sans 字号再排一遍，视觉上更明显。
 
-**裁决：`en` 改成可选字段**——没写、或与 `zh` 逐字相同时，`<span class="en">` 整个不渲染。
-**这是 skill 的行为规则，中英两版同时写明，不是 en 侧的单边旁路。** 落到六处，缺一处就是漂移：
+**裁决分两步走。** 先把外语原词改成**可选字段**——没写、或与术语本体逐字相同时，
+`<span class="en">` 整个不渲染；再把**字段名**从 `zh` / `en` 换成 `term` / `original`
+（`term` = 本报告语言的术语本体，必填；`original` = 外语原词，可省）。
+换名是因为旧名字在英文报告里撒谎：一个叫 `zh` 的字段装着 `"Markov chain"`，
+而模型写 JSON 时是照 schema 里的 key 理解语义的，猜错的代价是整节术语表跑偏。
+**这是 skill 的行为规则，中英两版同时写明，不是 en 侧的单边旁路。**
+**CSS class 名 `.en` 没动**——它是样式钩子，改了要连带动 `<style>` 里的规则，
+而 class 名不参与模型的语义推理。落到六处，缺一处就是漂移：
 
 | 位置 | 改了什么 |
 |---|---|
-| `deck-json.md:382` / `deck-json.en.md:382` | 渲染对照补「`en` 可省 → 整个 span 不渲染」 |
-| `deck-json.en.md:107` | 示例去掉 `"en"`（ZH 版保留，见上表新增的那一行） |
-| `deck-json.md:430` / `deck-json.en.md:430` | JSON 自检 J-C 第 11 条：缩写命中从「`en` 或 `zh`」改成「`zh`，写了 `en` 的话 `en`」 |
-| `layout.md:365` / `layout.en.md:365` | ⑦ 那一行块表：`span.en` 标成「与术语本身相同就不写」 |
-| 两份模板 `:2089` | ⑦ 节首注释不再说「中英对照 / paired with its English」 |
-| 两份模板 `:2095`（新增一行） | 在 `dt` 样例下面写明省略规则；两份模板同步 +1 行，行数仍相同 |
-
-**字段名 `zh`/`en` 本身没动。** 它预设了「报告是中文的」，更彻底的解法是换成
-`term` / `original` 一类，但那是**数据契约的命名**，影响面大于让 `en` 可选，
-**要先跟用户提，不要顺手做掉**。
+| `deck-json.md:107` / `deck-json.en.md:107` | schema 示例的 key 换成 `term` / `original`；en 侧只写 `term`，示范省掉 `original`（见上表那一行） |
+| `deck-json.md:382` / `deck-json.en.md:382` | 渲染对照换成 `{term}` / `{original}`，并写明「`original` 可省 → 整个 span 不渲染」 |
+| `deck-json.md:430` / `deck-json.en.md:430` | JSON 自检 J-C 第 11 条：缩写命中从「`en` 或 `zh`」改成「`term` 命中，写了 `original` 的话 `original` 命中」 |
+| `layout.md:365` / `layout.en.md:365` | ⑦ 那一行块表：`span.en` 从「英文原词」改「外语原词」，并标「与术语本身相同就整个不写」 |
+| 两份模板 `:2089` | ⑦ 节首注释不再说「中英对照 / paired with its English」，也跟着改成「外语原词」 |
+| 两份模板 `:2095` | 在 `dt` 样例下面写明省略规则，字段名用 `original`；该行是可选化那一步新增的，两份模板同步 +1 行，行数仍相同 |
 
 > 2026-08-27 删掉了 `research-ideation/SKILL.en.md:78/79` 两条「保留中文串」登记及其
 > 「硬编码中文串」说明段。`src/main/agent/askAnswers.ts` 的 `renderOutcome` 已按 locale

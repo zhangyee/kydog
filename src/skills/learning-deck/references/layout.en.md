@@ -362,7 +362,7 @@ Moving a chapter somewhere else (or swapping two):
 | ④ | concept body | `.concept` | See "④ What one finished chapter looks like" below |
 | ⑤ | method comparison | `.compare` | `div.table-wrap > table`: assumptions / where it applies / cost / failure modes |
 | ⑥ | summary section | `.summary` | Put the points above back together to answer "so what is this thing actually doing" |
-| ⑦ | glossary table | `.glossary` | `dt[id]` + `span.en` the English original (left out entirely when it is the same as the term itself) · `dd` a one-sentence explanation + `span.where` which section it first appears in |
+| ⑦ | glossary table | `.glossary` | `dt[id]` + `span.en` the original-language word (left out entirely when it is the same as the term itself) · `dd` a one-sentence explanation + `span.where` which section it first appears in |
 | ⑧ | what to do next | `.next` | `h3` splitting into "Must read / Optional / What to run yourself / The next learning-deck", `li` + `span.why` |
 | ⑨ | references | `.refs` | `ol > li[id]`, the title + `a.ref-link`. **Every entry must carry `id="r-…"`**, see "⑨ References and the two-hop citation" below |
 | ⑩ | honest boundaries | `.honesty` | `ul > li`, one item at a time, no blanket disclaimer |

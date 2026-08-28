@@ -104,7 +104,7 @@ pre-delivery self-check commands like `grep -o 'target="_blank" rel="noopener"'`
                "head": ["Method", "Core assumption", "Where it applies", "Cost", "Failure mode"],
                "rows": [ ["Diffusion model", "…", "…", "…", "…"] ] },
   "summary": { "title": "So what is it actually doing", "html": ["<p>…</p>", "<p>…</p>"] },
-  "glossary": [ { "id": "g-markov", "zh": "Markov chain",
+  "glossary": [ { "id": "g-markov", "term": "Markov chain",
                   "def": "The next state depends only on the current state, not on any earlier history.", "where": "§1" } ],
   "next": { "mustRead": [ { "text": "Ho et al. (2020), <i>DDPM</i>", "why": "Sections 2–3 of the original are enough." } ],
             "optional": [], "handsOn": [], "nextDeck": [ { "text": "Conditional generation and CFG — the half you actually need." } ] },
@@ -379,7 +379,7 @@ and how to draw it follows "Drawing SVG" in `references/layout.md`; do not inven
 | (fixed) | `<p class="back"><a href="#map">↑ Back to the knowledge map</a></p>`, at the end of every chapter, not written in the JSON |
 | `compare` | `section.compare#compare`: `<h2>{title}</h2>` + `{intro}` + `.table-wrap > table` (`head` goes into `thead th[scope=col]`, `rows[i][0]` into `tbody th[scope=row]`, the rest into `td`) + `p.back` |
 | `summary` | `section.summary#summary`: `<h2>{title}</h2>` + `{html}` |
-| `glossary[]` | `section.glossary#glossary > dl`: `<dt id="{id}">{zh}<span class="en">{en}</span></dt>` + `<dd>{def}<span class="where">first appears in {where}</span></dd>`. **`en` may be omitted**: when it is absent, or word for word the same as `zh`, the whole `<span class="en">` is not rendered (when the report itself is in English the two slots can only hold the same word, and setting it twice is a duplicate shadow, not a pairing) |
+| `glossary[]` | `section.glossary#glossary > dl`: `<dt id="{id}">{term}<span class="en">{original}</span></dt>` + `<dd>{def}<span class="where">first appears in {where}</span></dd>`. **`original` may be omitted**: when it is absent, or word for word the same as `term`, the whole `<span class="en">` is not rendered (when the report itself is in English the two slots can only hold the same word, and setting it twice is a duplicate shadow, not a pairing) |
 | `next.*` | `section.next#next`: four `<h3>`s (Must read / Optional / What to run yourself / The next learning-deck) each with a `<ul>`, `<li>{text}<span class="why">{why}</span></li>` (`why` may be omitted) |
 | `references[]` | `section.refs#refs > ol > li`: `{text}<br><a class="ref-link" href="{url}" target="_blank" rel="noopener">{linkText}</a>` |
 | `honesty[]` | `section.honesty#honesty > ul > li` |
@@ -427,7 +427,7 @@ Only a rule with no exceptions holds.
 **J-C terms and anchors**
 
 11. Every abbreviation appearing in the body (two or more capitals in a row: AMI, ECG, ELBO, CFG…)
-    has an entry in `glossary` (matched on `zh`, or on `en` where an `en` was written). **Search for each one; do not go by impression.**
+    has an entry in `glossary` (matched on `term`, or on `original` where an `original` was written). **Search for each one; do not go by impression.**
 12. Every `href="#g-…"` has its target in `glossary[].id`;
     every `href="#c…"` has its target in `chapters[].id`;
     every `href="#r-…"` has its target in `references[].id` (**new in v5**: body citations are

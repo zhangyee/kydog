@@ -362,7 +362,7 @@ JSON 里它只写一次（`chapters[].lede`），渲染时贴到两处，所以�
 | ④ | 知识点正文 | `.concept` | 见下面「④ 一章画完的样子」 |
 | ⑤ | 方法对比表 | `.compare` | `div.table-wrap > table`：假设 / 适用场景 / 代价 / 失效情形 |
 | ⑥ | 总结节 | `.summary` | 把上面的点合起来回答「所以这东西到底在干什么」 |
-| ⑦ | 术语对照表 | `.glossary` | `dt[id]` + `span.en` 英文原词（与术语本身相同就整个不写）· `dd` 一句话解释 + `span.where` 首次出现在哪节 |
+| ⑦ | 术语对照表 | `.glossary` | `dt[id]` + `span.en` 外语原词（与术语本身相同就整个不写）· `dd` 一句话解释 + `span.where` 首次出现在哪节 |
 | ⑧ | 建议下一步 | `.next` | `h3` 分「必读 / 选读 / 该上手跑什么 / 下一个 learning-deck」，`li` + `span.why` |
 | ⑨ | 参考文献 | `.refs` | `ol > li[id]`，题名 + `a.ref-link`。**每条都要有 `id="r-…"`**，见下面「⑨ 参考文献与两跳引用」 |
 | ⑩ | 诚实边界 | `.honesty` | `ul > li`，逐条列，不写笼统的免责声明 |
