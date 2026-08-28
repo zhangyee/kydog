@@ -5,6 +5,7 @@ import { useThreadsStore } from '../../stores/threadsStore';
 
 export function ProjectsHeaderActions() {
   const collapseAll = useUiStore((s) => s.collapseAllProjects);
+  const projects = useThreadsStore((s) => s.projects);
   const groupBy = useUiStore((s) => s.projectsGroupBy);
   const sortBy = useUiStore((s) => s.projectsSortBy);
   const setGroupBy = useUiStore((s) => s.setProjectsGroupBy);
@@ -29,7 +30,7 @@ export function ProjectsHeaderActions() {
         tooltip="全部收起"
         ariaLabel="全部收起"
         testId="projects-collapse-all"
-        onClick={collapseAll}
+        onClick={() => collapseAll(projects.map((p) => p.path))}
       >
         <NavIcon name="minimize-2" size={14} />
       </IconButton>

@@ -49,13 +49,18 @@ type UiState = {
   setFileTabDiskContent: (id: string, content: string) => void;
   markFileChanged: (path: string) => void;
   expandedDirs: Set<string>;
-  expandedProjects: Set<string>;
+  /** 记「收起」而不是「展开」：project 默认展开，只有用户显式收起的才进这个集合。
+   *  倒过来记的话，「刚加进来还没人碰过」与「用户展开过」在集合里长得一模一样，
+   *  于是要么新 project 一律是收起的，要么得靠一个 seen 表在渲染期替它补记录 ——
+   *  两条都是拿启发式补上游丢掉的信号。落盘的是 settings.ui.collapsedProjects。 */
+  collapsedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
   projectsGroupBy: 'project' | 'time';
   projectsSortBy: 'created' | 'updated';
   setProjectsGroupBy: (g: 'project' | 'time') => void;
   setProjectsSortBy: (s: 'created' | 'updated') => void;
-  collapseAllProjects: () => void;
+  collapseAllProjects: (paths: string[]) => void;
+  expandProject: (path: string) => void;
   setTheme: (t: ThemeName) => void;
   setReadingFontSize: (s: ReadingFontSize) => void;
   toggleWorkspace: () => void;
@@ -142,13 +147,13 @@ export const useUiStore = create<UiState>((set) => ({
     };
   }),
   expandedDirs: new Set(),
-  expandedProjects: new Set<string>(),
+  collapsedProjects: new Set<string>(),
   dirCache: {},
   projectsGroupBy: 'project',
   projectsSortBy: 'updated',
   setProjectsGroupBy: (g) => set({ projectsGroupBy: g }),
   setProjectsSortBy: (s) => set({ projectsSortBy: s }),
-  collapseAllProjects: () => set({ expandedProjects: new Set<string>() }),
+  collapseAllProjects: (paths) => set({ collapsedProjects: new Set(paths) }),
   setTheme: (t) => set({ theme: t }),
   setReadingFontSize: (s) => set({ readingFontSize: s }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
@@ -181,8 +186,14 @@ export const useUiStore = create<UiState>((set) => ({
     return { expandedDirs: next };
   }),
   toggleProject: (path) => set((s) => {
-    const next = new Set(s.expandedProjects);
+    const next = new Set(s.collapsedProjects);
     if (next.has(path)) next.delete(path); else next.add(path);
-    return { expandedProjects: next };
+    return { collapsedProjects: next };
+  }),
+  expandProject: (path) => set((s) => {
+    if (!s.collapsedProjects.has(path)) return {};
+    const next = new Set(s.collapsedProjects);
+    next.delete(path);
+    return { collapsedProjects: next };
   }),
 }));

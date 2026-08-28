@@ -4,6 +4,7 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { confirm } from '../../stores/confirmStore';
 import { useUnreadStore } from './unreadStore';
+import { useComposerDraftStore } from '../main-pane/composerDraftStore';
 import { ThreadStatusBadge } from './ThreadStatusBadge';
 import type { Thread } from '../../../shared/types';
 
@@ -75,6 +76,7 @@ export function ThreadRow({ thread }: Props) {
     try {
       await window.kydog.invoke('thread.delete', { threadId: thread.id });
       useUnreadStore.getState().clearOne(thread.id);
+      useComposerDraftStore.getState().clearDraft(thread.id);
       remove(thread.id);
     } catch (err) { console.error('delete thread failed', err); }
   };

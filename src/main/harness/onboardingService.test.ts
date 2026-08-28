@@ -8,8 +8,8 @@ const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFon
 function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean; telemetry: SettingsFile['telemetry']; syncFail: boolean }> = {}) {
   const state = {
     settings: {
-      schemaVersion: 7,
-      ui: { theme: 'porcelain', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'small' },
+      schemaVersion: 8,
+      ui: { theme: 'porcelain', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'small', collapsedProjects: [] },
       llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: over.model === false ? null : 'anthropic', defaultModel: over.model === false ? null : 'm1' },
       skills: { disabledBuiltins: [] }, tools: { externalBins: [] },
       research: { presets: {}, custom: [] },

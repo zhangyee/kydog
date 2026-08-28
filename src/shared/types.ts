@@ -152,13 +152,17 @@ export type TelemetryStatus = {
 };
 
 export type SettingsFile = {
-  schemaVersion: 7;
+  schemaVersion: 8;
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
     workspaceCollapsed: boolean;
     inspectorCollapsed: boolean;
     readingFontSize: ReadingFontSize;
+    /** 被用户显式收起的 project 路径。记「收起」而不是「展开」：默认展开，
+     *  新加入的 project 无需任何人替它写一条记录就是展开的，而「从没见过」
+     *  与「用户收起过」两件事也不会挤在同一个集合里彼此冒充。 */
+    collapsedProjects: string[];
   };
   llm: {
     auth: AuthBlob;

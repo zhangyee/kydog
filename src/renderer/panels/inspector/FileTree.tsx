@@ -1,6 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useUiStore } from '../../stores/uiStore';
-import { NavIcon, type NavIconName } from '../../shared';
+import { MarqueeText, NavIcon, type NavIconName } from '../../shared';
 import type { FsNode } from '../../../shared/types';
 import { isHtmlPath, isMarkdownPath, isPdfPath } from '../main-pane/markdown/fileTabHelpers';
 
@@ -27,6 +27,7 @@ function iconForNode(node: FsNode, expanded: boolean): NavIconName {
 }
 
 function Row({ node }: RowProps) {
+  const [hover, setHover] = useState(false);
   const expanded = useUiStore((s) => s.expandedDirs.has(node.path));
   const cache = useUiStore((s) => s.dirCache[node.path]);
   const toggleDir = useUiStore((s) => s.toggleDir);
@@ -46,6 +47,8 @@ function Row({ node }: RowProps) {
     <div>
       <div
         data-testid={`fs-${node.path}`}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         onClick={() => isDir ? toggleDir(node.path) : null}
         onDoubleClick={() => {
           if (isDir) return;
@@ -73,12 +76,17 @@ function Row({ node }: RowProps) {
         >
           <NavIcon name={iconName} size={14} />
         </span>
-        <span
-          className="flex-1 truncate"
+        {/* 与左栏 ThreadRow 同一套：hover 时整名匀速左移，不 hover 时省略号。 */}
+        <div
+          className="flex-1 min-w-0"
           style={readme ? { color: 'var(--color-accent)' } : undefined}
         >
-          {node.name}
-        </span>
+          <MarqueeText
+            text={node.name}
+            active={hover}
+            scrollTestId={`fs-name-scroll-${node.path}`}
+          />
+        </div>
       </div>
       {isDir && expanded && cache && (
         <div style={{ position: 'relative', paddingLeft: 14 }}>

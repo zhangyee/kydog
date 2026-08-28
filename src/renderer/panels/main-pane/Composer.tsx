@@ -1,4 +1,5 @@
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { useComposerDraftStore, EMPTY_DRAFT } from './composerDraftStore';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
@@ -28,8 +29,12 @@ const COMPOSER_FADE_HEIGHT = 32;
 
 export function Composer({ threadId, placeholder, large = false, prefill }: Props) {
   const editorHandle = useRef<ComposerEditorHandle>(null);
-  const [skill, setSkill] = useState<SkillEntry | null>(null);
-  const [body, setBody] = useState('');
+  // 未发送的输入存在组件外（见 composerDraftStore）：切文件 tab / 设置页 / 别的
+  // thread 都会把这个组件卸载掉，留在组件 state 里的字会跟着一起没。
+  const { skill, body } = useComposerDraftStore((s) => s.byThread[threadId]) ?? EMPTY_DRAFT;
+  const setDraft = useCallback((nextSkill: SkillEntry | null, nextBody: string) => {
+    useComposerDraftStore.getState().setDraft(threadId, { skill: nextSkill, body: nextBody });
+  }, [threadId]);
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [modelMenuRect, setModelMenuRect] = useState<DOMRect | null>(null);
   const [projectMenuRect, setProjectMenuRect] = useState<DOMRect | null>(null);
@@ -107,8 +112,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const onSend = async () => {
     const content = composedContent();
     if (!content || isRunning) return;
-    setSkill(null);
-    setBody('');
+    useComposerDraftStore.getState().clearDraft(threadId);
     appendUser(threadId, {
       id: crypto.randomUUID(),
       role: 'user',
@@ -132,8 +136,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     const afterSlash = body.startsWith('/') ? body.slice(1) : body;
     const wsMatch = afterSlash.match(/\s/);
     const remaining = wsMatch ? afterSlash.slice((wsMatch.index ?? 0) + 1) : '';
-    setSkill(item);
-    setBody(remaining);
+    setDraft(item, remaining);
     setSlashHighlight(0);
     setMenuForceClosed(false);
     requestAnimationFrame(() => editorHandle.current?.focus());
@@ -185,10 +188,9 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   };
 
   const onEditorChange = useCallback((nextSkill: SkillEntry | null, nextBody: string) => {
-    setSkill(nextSkill);
-    setBody(nextBody);
+    setDraft(nextSkill, nextBody);
     setMenuForceClosed(false);
-  }, []);
+  }, [setDraft]);
 
   // When prefill arrives, parse "/<skill> <rest>" into chip + body if the skill
   // exists; otherwise put the raw text in the body. enabledSkills is in deps so
@@ -199,16 +201,14 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     if (match) {
       const found = enabledSkills.find((s) => s.name === match[1]);
       if (found) {
-        setSkill(found);
-        setBody(match[2] ?? '');
+        setDraft(found, match[2] ?? '');
         setMenuForceClosed(false);
         return;
       }
     }
-    setSkill(null);
-    setBody(prefill);
+    setDraft(null, prefill);
     setMenuForceClosed(false);
-  }, [prefill, enabledSkills]);
+  }, [prefill, enabledSkills, setDraft]);
 
   const effectivePlaceholder = isRunning
     ? '运行中，可继续编辑下一条…'

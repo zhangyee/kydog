@@ -20,11 +20,15 @@ export async function bootstrap(): Promise<void> {
     onboardingRecovery: state.onboardingRecovery,
   });
   const noProvider = state.settings.llm.defaultProvider === null;
+  // 落盘的收起记录里，指向已被移除的 project 的那些留着也没人再读，
+  // 只会随着开开关关无限长；在唯一知道当前 project 全集的地方剪掉。
+  const knownProjects = new Set(state.projects.map((p) => p.path));
   useUiStore.setState({
     theme: state.settings.ui.theme,
     readingFontSize: state.settings.ui.readingFontSize,
     workspaceCollapsed: state.settings.ui.workspaceCollapsed,
     inspectorCollapsed: state.settings.ui.inspectorCollapsed,
+    collapsedProjects: new Set(state.settings.ui.collapsedProjects.filter((p) => knownProjects.has(p))),
     settingsTabOpen: noProvider,
     settingsTab: 'provider',
     activeCenterTab: noProvider ? 'settings' : 'thread',
@@ -37,6 +41,8 @@ export async function bootstrap(): Promise<void> {
       && s.readingFontSize === prev.readingFontSize
       && s.workspaceCollapsed === prev.workspaceCollapsed
       && s.inspectorCollapsed === prev.inspectorCollapsed
+      // Set 每次改动都换新引用，比引用就够了，不必逐元素比
+      && s.collapsedProjects === prev.collapsedProjects
     ) return;
     prev = s;
     void window.kydog.invoke('settings.update', {
@@ -45,6 +51,7 @@ export async function bootstrap(): Promise<void> {
         workspaceCollapsed: s.workspaceCollapsed,
         inspectorCollapsed: s.inspectorCollapsed,
         readingFontSize: s.readingFontSize,
+        collapsedProjects: [...s.collapsedProjects],
       },
     }).catch((err) => console.error('persist ui failed', err));
   });

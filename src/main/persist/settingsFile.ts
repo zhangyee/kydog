@@ -7,13 +7,14 @@ import { logger } from '../log';
 
 export function defaultSettings(): SettingsFile {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     ui: {
       theme: 'vellum',
       locale: 'zh',
       workspaceCollapsed: false,
       inspectorCollapsed: false,
       readingFontSize: 'medium',
+      collapsedProjects: [],
     },
     llm: {
       auth: {},
@@ -72,6 +73,13 @@ export async function saveSettings(value: SettingsFile): Promise<void> {
 
 function sanitizeLocale(v: unknown): 'zh' | 'en' { return v === 'en' ? 'en' : 'zh'; }
 
+/** ui 其余字段是标量、坏值最多显示得怪；这条是数组，坏值会让渲染层 `new Set(...)`
+ *  直接抛。所以只有它单独兜形状：非数组回空，非字符串元素丢掉。 */
+function sanitizeCollapsedProjects(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === 'string');
+}
+
 /** 数组也是 object，单靠 typeof 分不出来 —— research 的两个容器都要排除数组。 */
 function isPlainObject(v: unknown): boolean {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -102,11 +110,12 @@ function sanitizeTelemetry(v: unknown): SettingsFile['telemetry'] {
   };
 }
 
-/** v1..v6 → v7 迁移。
+/** v1..v7 → v8 迁移。
  *  - v1：保留 ui/skills/tools，重置 llm（与旧行为一致），补 readingFontSize / onboarding / research / updates 默认值。
- *  - v2/v3/v4/v5/v6：保留所有字段，补缺失的 onboarding / research / updates 默认值。
- *  - v7：原样回写（completedAt 保留；locale 非法值归位 zh；updates 只兜形状）。
+ *  - v2..v7：保留所有字段，补缺失的 onboarding / research / updates 默认值。
+ *  - v8：原样回写（completedAt 保留；locale 非法值归位 zh；updates 只兜形状）。
  *  - v6→v7：新增 telemetry，一律置 undecided（老用户从未被询问）。
+ *  - v7→v8：新增 ui.collapsedProjects，一律置空（老用户的 project 全是展开的）。
  *  - 形状不对：全部 default。 */
 export function parseAndMigrateSettings(raw: string): SettingsFile {
   let parsed: any;
@@ -116,11 +125,16 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
   const d = defaultSettings();
   const v = parsed.schemaVersion;
 
-  if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 7) {
-    if (v !== 7) logger.warn('persist.settingsFile', `migrating schema v${v} → v7`);
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 8) {
+    if (v !== 8) logger.warn('persist.settingsFile', `migrating schema v${v} → v8`);
     return {
-      schemaVersion: 7,
-      ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
+      schemaVersion: 8,
+      ui: {
+        ...d.ui,
+        ...(parsed.ui ?? {}),
+        locale: sanitizeLocale(parsed.ui?.locale),
+        collapsedProjects: sanitizeCollapsedProjects(parsed.ui?.collapsedProjects),
+      },
       llm: {
         auth: parsed.llm?.auth ?? {},
         providers: parsed.llm?.providers ?? {},
@@ -147,10 +161,15 @@ export function parseAndMigrateSettings(raw: string): SettingsFile {
   }
 
   // v1 或更旧：reset llm、补 ui 默认（包括 readingFontSize）
-  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v7 default');
+  logger.warn('persist.settingsFile', 'schema v1 detected; resetting llm to v8 default');
   return {
-    schemaVersion: 7,
-    ui: { ...d.ui, ...(parsed.ui ?? {}), locale: sanitizeLocale(parsed.ui?.locale) },
+    schemaVersion: 8,
+    ui: {
+      ...d.ui,
+      ...(parsed.ui ?? {}),
+      locale: sanitizeLocale(parsed.ui?.locale),
+      collapsedProjects: sanitizeCollapsedProjects(parsed.ui?.collapsedProjects),
+    },
     llm: d.llm,
     skills: { ...d.skills, ...(parsed.skills ?? {}) },
     tools: { ...d.tools, ...(parsed.tools ?? {}) },

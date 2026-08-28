@@ -12,13 +12,16 @@ export function ProjectsTree() {
   const projects = useThreadsStore((s) => s.projects);
   const threadsByProject = useThreadsStore((s) => s.threadsByProject);
   const currentThreadId = useThreadsStore((s) => s.currentThreadId);
-  const expanded = useUiStore((s) => s.expandedProjects);
+  const collapsed = useUiStore((s) => s.collapsedProjects);
   const toggleProject = useUiStore((s) => s.toggleProject);
+  const expandProject = useUiStore((s) => s.expandProject);
   const groupBy = useUiStore((s) => s.projectsGroupBy);
   const sortBy = useUiStore((s) => s.projectsSortBy);
 
   const view = applyProjectsView({ projects, threadsByProject, groupBy, sortBy });
 
+  // 选中某个 thread 时把它所在的 project 展开一次。ref 记住「已经为这个 thread
+  // 展开过了」，否则用户随后手动收起会被这个 effect 立刻顶回去（见 e2e/17）。
   const autoExpandedThreadRef = useRef<string | null>(null);
   useEffect(() => {
     if (!currentThreadId) { autoExpandedThreadRef.current = null; return; }
@@ -26,19 +29,8 @@ export function ProjectsTree() {
     autoExpandedThreadRef.current = currentThreadId;
     const t = Object.values(threadsByProject).flat().find(x => x.id === currentThreadId);
     if (!t) return;
-    const cur = useUiStore.getState().expandedProjects;
-    if (!cur.has(t.projectPath)) toggleProject(t.projectPath);
-  }, [currentThreadId, threadsByProject, toggleProject]);
-
-  const seenRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    for (const p of projects) {
-      if (seenRef.current.has(p.path)) continue;
-      seenRef.current.add(p.path);
-      const cur = useUiStore.getState().expandedProjects;
-      if (!cur.has(p.path)) toggleProject(p.path);
-    }
-  }, [projects, toggleProject]);
+    expandProject(t.projectPath);
+  }, [currentThreadId, threadsByProject, expandProject]);
 
   if (projects.length === 0) {
     return (
@@ -53,7 +45,7 @@ export function ProjectsTree() {
       <NavSection title="课题 Projects" right={<ProjectsHeaderActions />}>
         {view.kind === 'grouped' ? (
           view.groups.map(({ project, threads }) => {
-            const open = expanded.has(project.path);
+            const open = !collapsed.has(project.path);
             return (
               <div key={project.path} data-testid={`project-${project.path}`}>
                 <ProjectRow

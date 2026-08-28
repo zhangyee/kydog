@@ -132,3 +132,43 @@ describe('uiStore 文件 tab', () => {
     expect(useUiStore.getState().dirCache).toEqual({ '/p': [] });
   });
 });
+
+describe('uiStore project 收折', () => {
+  beforeEach(() => { useUiStore.setState({ collapsedProjects: new Set<string>() }); });
+
+  it('默认全展开：没进过集合的 project 就是展开的', () => {
+    expect(useUiStore.getState().collapsedProjects.has('/p/a')).toBe(false);
+  });
+
+  it('toggleProject 收起 → 再 toggle 展开', () => {
+    useUiStore.getState().toggleProject('/p/a');
+    expect(useUiStore.getState().collapsedProjects.has('/p/a')).toBe(true);
+    useUiStore.getState().toggleProject('/p/a');
+    expect(useUiStore.getState().collapsedProjects.has('/p/a')).toBe(false);
+  });
+
+  it('expandProject 只删不加：对本来就展开的 project 是 noop', () => {
+    const before = useUiStore.getState().collapsedProjects;
+    useUiStore.getState().expandProject('/p/a');
+    // 引用不变 —— bootstrap 的落盘订阅就是靠引用比对判断该不该写盘
+    expect(useUiStore.getState().collapsedProjects).toBe(before);
+  });
+
+  it('expandProject 把收起过的 project 放出来', () => {
+    useUiStore.getState().toggleProject('/p/a');
+    useUiStore.getState().expandProject('/p/a');
+    expect(useUiStore.getState().collapsedProjects.has('/p/a')).toBe(false);
+  });
+
+  it('collapseAllProjects 用传入的全集覆盖，不保留旧条目', () => {
+    useUiStore.getState().toggleProject('/p/gone');
+    useUiStore.getState().collapseAllProjects(['/p/a', '/p/b']);
+    expect([...useUiStore.getState().collapsedProjects].sort()).toEqual(['/p/a', '/p/b']);
+  });
+
+  it('每次改动都换新 Set 引用', () => {
+    const before = useUiStore.getState().collapsedProjects;
+    useUiStore.getState().toggleProject('/p/a');
+    expect(useUiStore.getState().collapsedProjects).not.toBe(before);
+  });
+});
