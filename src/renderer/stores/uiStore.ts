@@ -137,13 +137,16 @@ export const useUiStore = create<UiState>((set) => ({
   setFileTabDiskContent: (id, content) => set((s) => ({
     openFileTabs: s.openFileTabs.map((t) => t.id === id ? { ...t, diskContent: content, dirty: false } : t),
   })),
-  // 只给 html tab 加计数。md tab 有未保存修改，外部改动怎么和本地脏状态合并是
-  // 另一个问题，现在不碰；pdf tab 不需要。
+  // html 与 md tab 都加计数：两者都要跟着磁盘走。计数只是「该去看一眼了」的信号，
+  // 看完之后怎么处置由各自的 tab 决定 —— md 那边还要拿新内容跟 diskContent 逐字节
+  // 比一次（滤掉自己 ⌘S 写出去的回声），并且在本地有未保存修改时改成提示而不是覆盖。
+  // pdf tab 不消费这个计数。
   markFileChanged: (path) => set((s) => {
-    if (!s.openFileTabs.some((t) => t.path === path && t.kind === 'html')) return s;
+    const watches = (t: FileTab) => t.path === path && (t.kind === 'html' || t.kind === 'md');
+    if (!s.openFileTabs.some(watches)) return s;
     return {
       openFileTabs: s.openFileTabs.map((t) =>
-        t.path === path && t.kind === 'html' ? { ...t, reloadNonce: t.reloadNonce + 1 } : t),
+        watches(t) ? { ...t, reloadNonce: t.reloadNonce + 1 } : t),
     };
   }),
   expandedDirs: new Set(),

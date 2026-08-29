@@ -172,3 +172,48 @@ describe('uiStore project 收折', () => {
     expect(useUiStore.getState().collapsedProjects).not.toBe(before);
   });
 });
+
+describe('uiStore markFileChanged', () => {
+  beforeEach(() => { useUiStore.setState({ openFileTabs: [], activeFileTabId: null, activeCenterTab: 'thread' }); });
+
+  it('md tab 也跟着磁盘走 —— 外部改动给它加计数', () => {
+    useUiStore.getState().openFile('/p/report.md');
+    useUiStore.getState().markFileChanged('/p/report.md');
+    expect(useUiStore.getState().openFileTabs[0].reloadNonce).toBe(1);
+  });
+
+  it('html tab 的计数不受影响', () => {
+    useUiStore.getState().openFile('/p/report.html');
+    useUiStore.getState().markFileChanged('/p/report.html');
+    expect(useUiStore.getState().openFileTabs[0].reloadNonce).toBe(1);
+  });
+
+  it('pdf tab 不消费这个信号', () => {
+    useUiStore.getState().openFile('/p/paper.pdf');
+    useUiStore.getState().markFileChanged('/p/paper.pdf');
+    expect(useUiStore.getState().openFileTabs[0].reloadNonce).toBe(0);
+  });
+
+  it('只给同路径的 tab 加计数，其他 tab 不动', () => {
+    useUiStore.getState().openFile('/p/a.md');
+    useUiStore.getState().openFile('/p/b.md');
+    useUiStore.getState().markFileChanged('/p/a.md');
+    const tabs = useUiStore.getState().openFileTabs;
+    expect(tabs.find((t) => t.id === '/p/a.md')!.reloadNonce).toBe(1);
+    expect(tabs.find((t) => t.id === '/p/b.md')!.reloadNonce).toBe(0);
+  });
+
+  it('没有对应 tab 时是 noop，不换 openFileTabs 引用', () => {
+    useUiStore.getState().openFile('/p/a.md');
+    const before = useUiStore.getState().openFileTabs;
+    useUiStore.getState().markFileChanged('/p/missing.md');
+    expect(useUiStore.getState().openFileTabs).toBe(before);
+  });
+
+  it('连续多次改动逐次累加 —— 每一次都要让 tab 再去看一眼磁盘', () => {
+    useUiStore.getState().openFile('/p/a.md');
+    useUiStore.getState().markFileChanged('/p/a.md');
+    useUiStore.getState().markFileChanged('/p/a.md');
+    expect(useUiStore.getState().openFileTabs[0].reloadNonce).toBe(2);
+  });
+});
