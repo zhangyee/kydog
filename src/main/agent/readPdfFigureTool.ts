@@ -120,7 +120,11 @@ export function createReadPdfFigureTool(deps: ReadPdfFigureDeps) {
       } catch (err) {
         // pi 的 read 抛的是普通 Error（中止时是 `Operation aborted`），不会自己变成 KydogError。
         if (signal?.aborted) throw new KydogError('agent.aborted', 'PDF 插图读取已中止', err);
-        throw new KydogError('fs.read_failed', `渲染出的 PNG 无法读取：${pngPath}`, err);
+        // message 不带路径：pi 把 KydogError.message 原样回给模型（createErrorToolResult），
+        // 而这条路径下图没进上下文 —— 带路径就破了「没看过的图不许被引用」这条闸门。
+        // cause 仍是原始错误，供本地排障；pngPath 本身早在 renderPageToPng 成功时
+        // 就由 logger.info 记过了，日志侧不缺这份信息。
+        throw new KydogError('fs.read_failed', '渲染出的 PNG 无法读取', err);
       }
 
       // 交付闸门：图没进上下文就不交出路径。判据是委托结果里有没有 image 块 ——
@@ -128,11 +132,13 @@ export function createReadPdfFigureTool(deps: ReadPdfFigureDeps) {
       // 在上面那个分支就已经返回了，根本走不到这里）。
       const attached = readResult.content.some((c) => c.type === 'image');
       if (!attached) {
-        return { content: [{ type: 'text' as const, text: NO_IMAGE_NOTE }, ...readResult.content] };
+        // 末尾补换行：AgentService.extractToolResultText 用 join('') 拼多个 text 块，
+        // 这个工具是第一个返回两段文本的，不补就会跟委托结果的下一段文本粘在一起。
+        return { content: [{ type: 'text' as const, text: `${NO_IMAGE_NOTE}\n` }, ...readResult.content] };
       }
 
       return {
-        content: [{ type: 'text' as const, text: `已渲染成 PNG：${pngPath}` }, ...readResult.content],
+        content: [{ type: 'text' as const, text: `已渲染成 PNG：${pngPath}\n` }, ...readResult.content],
         details: { pngPath },
       };
     },

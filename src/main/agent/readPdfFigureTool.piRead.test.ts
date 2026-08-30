@@ -36,7 +36,7 @@ describe('read_pdf_figure × pi 真实 read', () => {
       );
 
       expect(res.content.some((c) => c.type === 'image')).toBe(true);
-      expect(res.content[0]).toEqual({ type: 'text', text: `已渲染成 PNG：${pngPath}` });
+      expect(res.content[0]).toEqual({ type: 'text', text: `已渲染成 PNG：${pngPath}\n` });
       expect(res.details).toEqual({ pngPath });
     } finally {
       rmSync(dir, { recursive: true, force: true });

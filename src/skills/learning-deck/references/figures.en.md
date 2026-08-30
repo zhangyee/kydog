@@ -126,14 +126,16 @@ When `read_pdf_figure` or `read` returns any of these, **you did not see this fi
 ```
 
 The first two are the same thing — the current model does not accept image input (the first comes
-from `read_pdf_figure`, which skips rendering entirely; the second from `read`). The third means the
-image could not be attached, and `read_pdf_figure` will not hand you a PNG path either. All three are
-handled the same way:
+from `read_pdf_figure`, which skips rendering entirely; the second from `read`). The third is different:
+**here the model does support images — rendering succeeded, but the image failed to make it into
+context afterward** (e.g. the image pipeline itself broke), which has nothing to do with the model's
+vision support. All three fall back the same way (no original figure, pointer card + your own SVG
+instead), but the sentence you write in ⑩ the honest boundaries differs by which sentinel you hit:
 
 - **Do not embed original figures.** You cannot tell which file belongs to which section, still less confirm the figure number; embedding is embedding at random.
 - Fall back to **pointer cards + your own SVG** (your drawing is based on the prose and the caption text, not on the figure you did not see;
   the JSON still only carries `sketch`, and the figure is drawn at 5.5).
-- State in ⑩ the honest boundaries: "the current model does not support image input, so no original figures were embedded".
+- State in ⑩ the honest boundaries: for the first two sentinels — "the current model does not support image input, so no original figures were embedded"; for the third sentinel — "the image failed to make it into context, so no original figure was embedded" (do not write it as the model lacking image support — that would be false).
 
 Only a model that can see images goes on to the section below.
 
