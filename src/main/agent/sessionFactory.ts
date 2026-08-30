@@ -56,7 +56,14 @@ export async function createSession(opts: {
     resourceLoader,
     customTools: [
       createAskUserQuestionTool(opts.sessionId, opts.askShared, locale),
-      createReadPdfFigureTool(),
+      // read 定义在这里构造、注入进去，而不是在工具文件里 import：pi 在 vite.main.config.ts
+      // 里是 external、main 打成 CJS，所以 pi 的一切运行时引用都必须走上面那个动态 import()。
+      // autoResizeImages 显式给 true，不跟随 pi 的 settings（那个开关在 pi 的 settingsManager
+      // 里、KyDog 没有暴露）：渲染页的像素上限是 2400 万，不 resize 会把请求撑爆。
+      // 这份 read 定义只用于工具内部委托，不注册成一个对模型可见的工具。
+      createReadPdfFigureTool({
+        readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
+      }),
     ],
   });
   return session as AnySession;
