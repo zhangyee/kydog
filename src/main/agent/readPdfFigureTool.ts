@@ -1,8 +1,19 @@
 // src/main/agent/readPdfFigureTool.ts
 import { Type } from 'typebox';
-import { MAX_PAGE, MAX_SCALE, MIN_SCALE, renderPageToPng } from '../pdf/pdfRaster';
+import {
+  MAX_PAGE, MAX_SCALE, MIN_SCALE, renderPageToPng, validateRenderArgs,
+} from '../pdf/pdfRaster';
 
 export const READ_PDF_FIGURE_TOOL_NAME = 'read_pdf_figure';
+
+/**
+ * 当前模型不支持图片输入时返回的判据。
+ *
+ * 不抄 pi 那句（`…The image will be omitted from this request.`）：它的后半句在这里是假的
+ * —— 我们压根没渲染，也就没有「被省掉的图」。写成同样的方括号体是因为 skill 文档要按
+ * 字面量匹配它，中英两份得引同一个串。**改这个串就要同步改 learning-deck 的 figures.md。**
+ */
+export const NO_VISION_NOTE = '[Current model does not support images. Nothing was rendered.]';
 
 const ParamsSchema = Type.Object({
   path: Type.String({ description: 'PDF 文件的绝对路径，必须以 .pdf 结尾' }),
@@ -42,15 +53,30 @@ export function createReadPdfFigureTool(render: typeof renderPageToPng = renderP
       _toolCallId: string,
       params: { path: string; page?: number; scale?: number },
       signal?: AbortSignal,
-    ) {
-      // 参数校验留在 renderPageToPng 里（validateRenderArgs），RPC 与工具两个入口
-      // 共用同一套判定，不在这里再写一份会漂移的。
-      // signal 一路传下去：用户中止这一轮时渲染要跟着停，否则它还会占着渲染队列。
-      const { pngPath } = await render({
+      _onUpdate?: unknown,
+      ctx?: { model?: { input?: readonly string[] } },
+      // 返回类型必须显式写出来。不写的话两个 return 会被推成联合类型，
+      // 测试里读 res.details 就报「联合类型上没有这个属性」。
+    ): Promise<{ content: { type: 'text'; text: string }[]; details?: { pngPath: string } }> {
+      // 校验必须在最前面，不能留给 renderPageToPng 顺带做：下面的无 vision 分支根本走不到
+      // 渲染，非法参数会拿到一句能力哨兵而不是契约规定的 KydogError。
+      // 用的是 renderPageToPng 内部同一个函数（复用，不是复制），两个入口的判定不会漂移。
+      const args = validateRenderArgs({
         path: params?.path,
         page: params?.page ?? 1,
         scale: params?.scale,
-      }, signal);
+      });
+
+      // 能不能看图在渲染之前就是既定事实（协议层：model.input），没必要先渲染再由 read
+      // 回一句「你看不见」。ctx 缺席时按看得见处理 —— 与 pi read 的 getNonVisionImageNote
+      // 同一个默认。
+      const input = ctx?.model?.input;
+      if (input && !input.includes('image')) {
+        return { content: [{ type: 'text' as const, text: NO_VISION_NOTE }] };
+      }
+
+      // signal 一路传下去：用户中止这一轮时渲染要跟着停，否则它还会占着渲染队列。
+      const { pngPath } = await render(args, signal);
       return {
         content: [{ type: 'text' as const, text: `已渲染成 PNG：${pngPath}` }],
         details: { pngPath },
