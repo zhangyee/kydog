@@ -1,8 +1,8 @@
-// src/main/agent/pdfFigureTool.ts
+// src/main/agent/readPdfFigureTool.ts
 import { Type } from 'typebox';
 import { MAX_PAGE, MAX_SCALE, MIN_SCALE, renderPageToPng } from '../pdf/pdfRaster';
 
-export const PDF_FIGURE_TOOL_NAME = 'pdf_figure_to_png';
+export const READ_PDF_FIGURE_TOOL_NAME = 'read_pdf_figure';
 
 const ParamsSchema = Type.Object({
   path: Type.String({ description: 'PDF 文件的绝对路径，必须以 .pdf 结尾' }),
@@ -30,9 +30,9 @@ const DESCRIPTION = [
 /**
  * 照 askUserQuestionTool 的形态注册。render 参数只为测试注入。
  */
-export function createPdfFigureTool(render: typeof renderPageToPng = renderPageToPng) {
+export function createReadPdfFigureTool(render: typeof renderPageToPng = renderPageToPng) {
   return {
-    name: PDF_FIGURE_TOOL_NAME,
+    name: READ_PDF_FIGURE_TOOL_NAME,
     label: '插图转 PNG',
     description: DESCRIPTION,
     promptSnippet: 'pdf_figure_to_png — 把 .pdf 格式的论文插图渲染成 PNG，好让 read 看得见',
