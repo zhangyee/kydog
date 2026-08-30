@@ -164,7 +164,7 @@ fastpaper figures <id> -d papers/
 ```
 
 **动手之前先读 `references/figures.md`**——退出码分支（`4` 和 `1` 都不重试）、
-文件名与图号不对应、`.pdf` 走 `pdf_figure_to_png`、`.eps` 跳过、
+文件名与图号不对应、`.pdf` 走 `read_pdf_figure`、`.eps` 跳过、
 **能不能插原图取决于当前模型看不看得见图**，还有内嵌与标注的纪律，全在那一册。
 
 **每篇写进报告的文献都要 `fastpaper get <id>` 回源核验过**：比对标题、年份、第一作者。查不到就从报告里删掉；两个源打架就并列呈现，不擅自挑一个。

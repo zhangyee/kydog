@@ -164,7 +164,7 @@ fastpaper figures <id> -d papers/
 ```
 
 **Read `references/figures.md` before you start** — the exit-code branches (neither `4` nor `1` is retried),
-file names not matching figure numbers, `.pdf` going through `pdf_figure_to_png`, `.eps` being skipped,
+file names not matching figure numbers, `.pdf` going through `read_pdf_figure`, `.eps` being skipped,
 **whether original figures can be embedded at all depending on whether the current model can see images**, plus the embedding and attribution discipline, are all in that volume.
 
 **Every paper that goes into the report has to be verified back at source with `fastpaper get <id>`**: compare title, year and first author. If it cannot be found, delete it from the report; if two sources disagree, present both side by side rather than picking one on your own.

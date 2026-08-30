@@ -98,28 +98,35 @@ papers/2511.11035/1.pdf   2.pdf   3.pdf
 实测 `2511.11035` 的 `3.pdf` 其实是 Figure 1。**图号只能靠看图确认**，
 不许从文件名推。推错了，图注里那句「Fig. 3」就是编的。
 
-`.pdf` 的图先转成 PNG 再看（`read` 只认 jpg / png / gif / webp / bmp，PDF 给它等于没给）：
+`.pdf` 的图用 `read_pdf_figure` 打开（`read` 只认 jpg / png / gif / webp / bmp，
+PDF 给它等于没给）。它一步到位：渲染成 PNG、把图给你看、并返回 PNG 路径：
 
 ```
-pdf_figure_to_png  { "path": "<绝对路径>/figs/architecture.pdf" }
+read_pdf_figure  { "path": "<绝对路径>/figs/architecture.pdf" }
 ```
 
 默认第 1 页、倍率 2，插图 PDF 通常就一页。图里小字看不清再把 `scale` 提到 3。
 **`.eps` 不处理**——跳过那张，记进 ⑩ 诚实边界。
 
-然后用 `read` 打开图片文件，**亲眼看**它画的是什么。
+已经是 png / jpg / gif / webp 的图不用过这一道，直接用 `read` 打开。
+两条路一样：**亲眼看**它画的是什么。**它返回的 PNG 路径就是后面 `<img src>` 要用的那个**
+——拿不到路径就说明你没看见这张图，见下一节。
 
 ---
 
 ## 第三步：能力分支（判据由 harness 给，不用猜）
 
-`read` 打开图片后，如果返回的是：
+`read_pdf_figure` 或 `read` 返回下面任意一条时，**这张图你没有看见**：
 
 ```
+[Current model does not support images. Nothing was rendered.]
 [Current model does not support images. The image will be omitted from this request.]
+[Image could not be attached. No path is returned for this figure.]
 ```
 
-说明**当前模型看不了图**。这时候：
+前两条是同一件事——当前模型不支持图片输入（第一条来自 `read_pdf_figure`，它连渲染都省了；
+第二条来自 `read`）。第三条是图没能进上下文，这时 `read_pdf_figure` 也不会给你 PNG 路径。
+三条都一样处理：
 
 - **不插原图。** 你无法判断哪张文件对应哪一节、更无法确认图号，插了就是乱插。
 - 降级到**指路卡片 + 自画 SVG**（自画的依据是正文与图注文字，不是那张你没看见的图；
@@ -151,7 +158,7 @@ JSON 里写成 `{ "type": "figure", "kind": "img", "src": "papers/…", "alt": "
 - **图必须在报告所在目录树内**——查看器只认这个范围，逃出去的（`../`、绝对路径）
   会被拒绝、自动退化成 `alt` 文字，页面上不会崩，但也不会显示图。
 - 扩展名只认 `png` / `jpg` / `jpeg` / `gif` / `webp`；`.pdf` 先按第二步过一道
-  `pdf_figure_to_png` 转成 PNG 再引用，`.eps` 仍然不处理（跳过，记进 ⑩ 诚实边界）。
+  `read_pdf_figure`，**引用它返回的那个 PNG 路径**，`.eps` 仍然不处理（跳过，记进 ⑩ 诚实边界）。
 - 没有体积闸门、没有张数上限——查看器会做单张 8MB / 全篇 24MB 的兜底，
   正常论文插图远远碰不到这个数字，不用先量再决定。
 
@@ -196,6 +203,6 @@ JSON 里这件事是 `figure` 块的 `credit` 字段（`"original"` / `"redrawn"
 
 ## 一句话流程
 
-> `fastpaper figures` → 退出码分支 → `.pdf` 走 `pdf_figure_to_png` → `read` 看图 →
+> `fastpaper figures` → 退出码分支 → `.pdf` 走 `read_pdf_figure`（转成 PNG + 看图一步到位）→
 > 看不见图就降级 → 看得见就写相对路径 `<img src="papers/…">`（查看器渲染时自动内联，
 > 不用打 base64）→ 图注标清来源与图号 → 诚实边界记账。

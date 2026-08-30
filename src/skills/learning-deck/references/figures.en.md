@@ -98,28 +98,37 @@ papers/2511.11035/1.pdf   2.pdf   3.pdf
 in practice `3.pdf` under `2511.11035` is actually Figure 1. **A figure number can only be confirmed by looking at the figure**,
 never inferred from the file name. Infer it wrong and that "Fig. 3" in your caption is invented.
 
-Convert `.pdf` figures to PNG before looking at them (`read` only accepts jpg / png / gif / webp / bmp; handing it a PDF is handing it nothing):
+Open `.pdf` figures with `read_pdf_figure` (`read` only accepts jpg / png / gif / webp / bmp;
+handing it a PDF is handing it nothing). It does the whole thing in one call: render to PNG,
+show you the image, and return the PNG path:
 
 ```
-pdf_figure_to_png  { "path": "<absolute path>/figs/architecture.pdf" }
+read_pdf_figure  { "path": "<absolute path>/figs/architecture.pdf" }
 ```
 
 Page 1 and scale 2 by default; a figure PDF is usually one page. If small text in the figure is unreadable, raise `scale` to 3.
 **`.eps` is not handled** — skip that one and record it in ⑩ the honest boundaries.
 
-Then open the image file with `read` and **look at it yourself** to see what it draws.
+Figures that are already png / jpg / gif / webp do not go through this — open them with `read` directly.
+Either way: **look at it yourself** to see what it draws. **The PNG path it returns is the one to use
+in `<img src>` later** — no path means you did not see this figure, see the next section.
 
 ---
 
 ## Step three: the capability branch (the criterion comes from the harness, do not guess)
 
-After `read` opens an image, if what comes back is:
+When `read_pdf_figure` or `read` returns any of these, **you did not see this figure**:
 
 ```
+[Current model does not support images. Nothing was rendered.]
 [Current model does not support images. The image will be omitted from this request.]
+[Image could not be attached. No path is returned for this figure.]
 ```
 
-then **the current model cannot see images**. In that case:
+The first two are the same thing — the current model does not accept image input (the first comes
+from `read_pdf_figure`, which skips rendering entirely; the second from `read`). The third means the
+image could not be attached, and `read_pdf_figure` will not hand you a PNG path either. All three are
+handled the same way:
 
 - **Do not embed original figures.** You cannot tell which file belongs to which section, still less confirm the figure number; embedding is embedding at random.
 - Fall back to **pointer cards + your own SVG** (your drawing is based on the prose and the caption text, not on the figure you did not see;
@@ -151,7 +160,7 @@ a `data:` URI written back into `src` — none of that is your concern:
 - **The image must be inside the report's own directory tree** — the viewer only accepts that range, and anything that escapes it (`../`, absolute paths)
   is rejected and degrades to the `alt` text; the page will not break, but it will not show the image either.
 - Only the extensions `png` / `jpg` / `jpeg` / `gif` / `webp` are accepted; a `.pdf` is first put through step two's
-  `pdf_figure_to_png` and referenced as PNG, and `.eps` is still not handled (skip it, record it in ⑩ the honest boundaries).
+  `read_pdf_figure`, **reference the PNG path it returns**, and `.eps` is still not handled (skip it, record it in ⑩ the honest boundaries).
 - There is no size gate and no cap on how many — the viewer has a backstop of 8MB per image / 24MB per report,
   and normal paper figures come nowhere near those numbers, so there is no need to measure before deciding.
 
@@ -196,6 +205,6 @@ which are entirely your own, and which could not be used because of format (`.ep
 
 ## The process in one line
 
-> `fastpaper figures` → exit-code branch → `.pdf` goes through `pdf_figure_to_png` → `read` to look at it →
+> `fastpaper figures` → exit-code branch → `.pdf` goes through `read_pdf_figure` (renders to PNG and shows the image in one step) →
 > cannot see it, fall back → can see it, write a relative path `<img src="papers/…">` (the viewer inlines it at render time,
 > no base64 by hand) → caption states the source and figure number → record it in the honest boundaries.

@@ -1538,7 +1538,7 @@ figure svg {
 /* An embedded figure from the original paper (<img src="papers/…">, which the viewer inlines as a data URI when rendering).
 
    ⚠️ It is max-width, not width; both directions have to be held, so do not change it to width: 100%:
-   - Figure larger than the container: pdf_figure_to_png outputs at scale: 2 by default, so the pixels are twice what is expected,
+   - Figure larger than the container: read_pdf_figure outputs at scale: 2 by default, so the pixels are twice what is expected,
      and without a width limit it renders at its natural width, bursting figure's max-width: 56em and .deck,
      which gives the whole report a horizontal scrollbar. max-width shrinks it back inside the container.
    - Figure smaller than the container: figure is block level with no explicit width and fills the 56em cap,
