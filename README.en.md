@@ -21,13 +21,7 @@
 
 ## Demo
 
-<!-- Hero screenshot: uncomment once the image lands in docs/images/ -->
-<!-- ![KyDog main window](docs/images/hero.png) -->
-
-<!-- Demo GIF: upload via a GitHub Issue and reference the user-images URL, keeping it out of the repo -->
-<!-- ![A full literature review](https://user-images.githubusercontent.com/.../demo.gif) -->
-
-> Screenshots and the demo animation are still to come — see [docs/images/README.md](docs/images/README.md).
+![KyDog in action: running a skill through a full literature review](docs/images/kydog-demo.webp)
 
 ## What KyDog is
 
@@ -172,14 +166,8 @@ If KyDog saves you time, or you believe in where it's headed, a star helps — i
 
 Sponsorship is welcome too. The QR code is a WeChat one, so it's only usable inside China — see [支持这个项目](README.md#支持这个项目) in the Chinese README.
 
-<!-- Chart URLs: since 2026-06-30 GitHub limits the stargazers API to a repo's own admins and
-     collaborators, so a token-less URL renders an error panel. After registering a token per
-     https://star-history.com/blog/github-stargazer-api-restriction, swap both
-     api.star-history.com URLs below for the encrypted-token embed. -->
-<a href="https://star-history.com/#zhangyee/kydog&amp;Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zhangyee/kydog&amp;type=Date&amp;theme=dark">
-    <img src="https://api.star-history.com/svg?repos=zhangyee/kydog&amp;type=Date" alt="Star History Chart" height="220">
-  </picture>
-</a>
-<br><sub>Star history · click through for the full record</sub>
+<!-- No star history chart: since 2026-06-30 GitHub limits the stargazers API to a repo's own
+     admins and collaborators, so any third-party chart service needs a token with contents
+     WRITE access (GitHub uses write to verify collaborator status; read-only is rejected).
+     Not worth it. The badge at the top gives the current count. Revisit if an approach
+     appears that doesn't require handing out write access. -->

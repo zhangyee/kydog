@@ -21,13 +21,7 @@
 
 ## 演示
 
-<!-- 主截图：docs/images/ 下补图后取消注释 -->
-<!-- ![KyDog 主界面](docs/images/hero.png) -->
-
-<!-- 演示动图：建议通过 GitHub Issue 上传后引用 user-images URL，不入库 -->
-<!-- ![一次完整的文献综述](https://user-images.githubusercontent.com/.../demo.gif) -->
-
-> 截图与演示动图待补，见 [docs/images/README.md](docs/images/README.md)。
+![KyDog 科研智能体示例：调用 skill 完成文献研究](docs/images/kydog-demo.webp)
 
 ## KyDog 是什么
 
@@ -170,23 +164,11 @@ KyDog 默认参与匿名使用统计（一个随机安装标识 + 应用版本 /
 
 如果 KyDog 帮你省下了时间，或者你认可它的目标与方向，欢迎给个 star —— 这是我判断该往哪儿投入精力最直接的信号。也欢迎赞助本项目的开发，你的鼓励与支持，是它继续做下去的全部理由。
 
-<!-- 图的 URL：GitHub 于 2026-06-30 起把 stargazers API 限制为仓库自己的 admin/collaborator，
-     未带 token 的地址会渲染成一块报错板。按 https://star-history.com/blog/github-stargazer-api-restriction
-     登记 token 后，把下面两条 api.star-history.com 地址换成带加密 token 的那版。 -->
-<table>
-  <tr>
-    <td width="350" align="center">
-      <a href="https://star-history.com/#zhangyee/kydog&amp;Date">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zhangyee/kydog&amp;type=Date&amp;theme=dark">
-          <img src="https://api.star-history.com/svg?repos=zhangyee/kydog&amp;type=Date" alt="Star History Chart" height="220">
-        </picture>
-      </a>
-      <br><sub>Star 趋势 · 点开看完整记录</sub>
-    </td>
-    <td width="250" align="center">
-      <img src="src/renderer/assets/sponsor.jpg" alt="微信赞赏码" height="220">
-      <br><sub>微信扫码赞助</sub>
-    </td>
-  </tr>
-</table>
+<!-- 不放 star 趋势图：GitHub 于 2026-06-30 起把 stargazers API 限制为仓库自己的
+     admin/collaborator，第三方服务要画历史曲线就得拿到一个带 contents write 的
+     token（GitHub 用写权限判定 collaborator，只读会被拒），不值得。顶部徽章给
+     的是当前星数，够用。等有不需要交出写权限的方案再考虑加回来。 -->
+
+<img src="src/renderer/assets/sponsor.jpg" alt="微信赞赏码" width="180">
+
+<sub>微信扫码赞助</sub>
