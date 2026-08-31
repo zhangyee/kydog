@@ -1,12 +1,18 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { KyLogo, KyMascot, ChapterCard } from '../../shared';
+import { useSkillsStore } from '../../stores/skillsStore';
 import { Composer } from './Composer';
-import { SKILL_MENU_ITEMS } from './skillMenuItems';
+import { pickFeaturedSkills } from './skillMenuItems';
 
 type Props = { threadId: string };
 
 export function NewThreadEmptyState({ threadId }: Props) {
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
+
+  // 推荐起点只列**真实装着且启用**的 skill —— 策展表见 skillMenuItems.ts。
+  // 一个都没命中就整块不渲染，宁可少一节，也不给一张点下去无效的卡。
+  const skills = useSkillsStore((s) => s.skills);
+  const featured = useMemo(() => pickFeaturedSkills(skills), [skills]);
 
   return (
     <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto">
@@ -67,40 +73,44 @@ export function NewThreadEmptyState({ threadId }: Props) {
         </div>
 
         {/* 推荐起点 */}
-        <div
-          className="flex items-center"
-          style={{ marginTop: 40, marginBottom: 20, gap: 14 }}
-        >
-          <div style={{ flex: 1, height: 1, background: 'var(--color-ink-hair)' }} />
-          <span
-            className="font-serif italic"
-            style={{
-              fontSize: 12,
-              color: 'var(--color-ink-faint)',
-              letterSpacing: 0.3,
-            }}
-          >
-            — 推荐起点 —
-          </span>
-          <div style={{ flex: 1, height: 1, background: 'var(--color-ink-hair)' }} />
-        </div>
+        {featured.length > 0 && (
+          <>
+            <div
+              className="flex items-center"
+              style={{ marginTop: 40, marginBottom: 20, gap: 14 }}
+            >
+              <div style={{ flex: 1, height: 1, background: 'var(--color-ink-hair)' }} />
+              <span
+                className="font-serif italic"
+                style={{
+                  fontSize: 12,
+                  color: 'var(--color-ink-faint)',
+                  letterSpacing: 0.3,
+                }}
+              >
+                — 推荐起点 —
+              </span>
+              <div style={{ flex: 1, height: 1, background: 'var(--color-ink-hair)' }} />
+            </div>
 
-        <div
-          className="grid gap-3"
-          style={{ gridTemplateColumns: '1fr 1fr', textAlign: 'left' }}
-        >
-          {SKILL_MENU_ITEMS.map((c) => (
-            <ChapterCard
-              key={c.name}
-              num={c.numeral}
-              title={c.title}
-              subtitle={c.subtitle}
-              tag={c.name}
-              onClick={() => setPrefill(`${c.name} `)}
-              testId={`chapter-${c.name.slice(1)}`}
-            />
-          ))}
-        </div>
+            <div
+              className="grid gap-3"
+              style={{ gridTemplateColumns: '1fr 1fr', textAlign: 'left' }}
+            >
+              {featured.map((c) => (
+                <ChapterCard
+                  key={c.name}
+                  num={c.numeral}
+                  title={c.title}
+                  subtitle={c.subtitle}
+                  tag={c.command}
+                  onClick={() => setPrefill(`${c.command} `)}
+                  testId={`chapter-${c.name}`}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
