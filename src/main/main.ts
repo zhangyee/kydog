@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -25,6 +25,7 @@ import { startIdentityWatcher } from './harness/identityService';
 import { initUpdateService } from './update/assemble';
 import { assembleTelemetry } from './telemetry/assemble';
 import { broadcaster } from './ipc/broadcaster';
+import iconDataUrl from '../../assets/icons/icon.png?inline';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -39,16 +40,22 @@ async function ensureKydogDirs() {
   ]);
 }
 
-// 打包后 macOS .icns / Windows .ico 由 forge packagerConfig.icon 烧进 bundle，
-// 开发模式 Electron 默认显示自带 logo —— 这里仅为 dev 模式补上 dock / 任务栏图标。
-const DEV_ICON_PATH = path.join(__dirname, '../../assets/icons/icon.png');
+// Windows 任务栏按钮优先用**窗口自己的**图标（WM_GETICON），没有才回落去读 exe 里的图标
+// 资源。打包版原先不设窗口图标，任务栏只能拿 .ico 里预先烤死的小帧，肉眼明显比开发模式糊。
+// 实测（Electron 41 / win32）：dev 的窗口 ICON_BIG = 1024x1024，打包版为「无」。
+// 所以两种模式一律设同一张 1024 源图，让 Windows 按它实际需要的尺寸一次性缩放 —— 这比在
+// .ico 里猜它要哪一档可靠：任务栏究竟请求多大由外壳决定，进程外观测不到。
+//
+// 用 ?inline 打成 data URI 而不是读文件：打包后 __dirname 落在 asar 内，相对路径解析不到
+// assets/。39KB 的图，进包代价可以忽略。
+const APP_ICON = nativeImage.createFromDataURL(iconDataUrl);
 
 async function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     ...windowChrome(process.platform),
-    icon: app.isPackaged || process.platform === 'darwin' ? undefined : DEV_ICON_PATH,
+    icon: process.platform === 'darwin' ? undefined : APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'index.js'),
       contextIsolation: true,
@@ -97,7 +104,7 @@ app.on('ready', async () => {
   try {
     if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
       try {
-        app.dock.setIcon(DEV_ICON_PATH);
+        app.dock.setIcon(APP_ICON);
       } catch (err) {
         logger.warn('app', 'failed to set dev dock icon', { err: String(err) });
       }
