@@ -6,6 +6,8 @@ import { ROOT, SESSIONS_DIR, LOGS_DIR, STAGING_DIR } from './persist/paths';
 import { installDispatcher } from './ipc/dispatcher';
 import { registerAllHandlers } from './handlers';
 import { logger } from './log';
+import { windowChrome } from './windowChrome';
+import { installAppMenu } from './menu';
 import { binDir } from './bin/binPath';
 import { prependBinDirToPath } from './bin/pathEnv';
 import { detectBashOnWindows } from './bin/shellCheck';
@@ -45,7 +47,7 @@ async function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    ...windowChrome(process.platform),
     icon: app.isPackaged || process.platform === 'darwin' ? undefined : DEV_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'index.js'),
@@ -173,6 +175,7 @@ app.on('ready', async () => {
     } catch (err) {
       logger.warn('app', 'file watcher init failed', { err: String(err) });
     }
+    installAppMenu();
     await createWindow();
     logger.info('app', 'ready');
   } catch (err) {

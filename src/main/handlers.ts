@@ -1,6 +1,7 @@
 import os from 'node:os';
-import { app, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
+import { TITLE_BAR_HEIGHT } from './windowChrome';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
 import { researchService } from './research/researchService';
@@ -188,6 +189,14 @@ export function registerAllHandlers(): void {
     });
     if (r.canceled || r.filePaths.length === 0) return null;
     return r.filePaths[0];
+  });
+
+  // Windows 的窗口按钮是原生叠加层，颜色只能由主进程设；而主题色的真源在渲染层的
+  // theme CSS，所以由 ThemeApplier 落完 data-theme 后推过来。height 每次一并带上，
+  // 免得它和 TitleBar 的 h-9 悄悄错开。非 win32 没有 overlay，调它会抛，直接不做。
+  registerHandler('window.setTitleBarOverlay', (args, evt) => {
+    if (process.platform !== 'win32') return;
+    BrowserWindow.fromWebContents(evt.sender)?.setTitleBarOverlay({ ...args, height: TITLE_BAR_HEIGHT });
   });
 
   if (process.env.KYDOG_E2E === '1') {
