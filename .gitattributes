@@ -1,1 +1,6 @@
+# 行尾统一：库里存 LF，检出也写 LF。
+# 不写这条时 Windows 的 core.autocrlf=true 会把工作区变成 CRLF，而按行解析的代码
+# （front matter 围栏、逐行正则）会在 Windows 上静默失配 —— 不报错，只是解析结果不对。
+* text=auto eol=lf
+
 third_party/** linguist-vendored=true

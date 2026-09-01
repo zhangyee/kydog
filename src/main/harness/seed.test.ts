@@ -27,6 +27,13 @@ describe('renderTemplate', () => {
     expect(out).toContain(`name: ${JSON.stringify('A"\\B')}`);
     expect(out).toContain('称呼 A"\\B');
   });
+  // Windows 上 core.autocrlf 把模板签出成 CRLF：围栏只认 \n 的话会掉进「无 front
+  // matter」分支，把原值原样塞进 front matter，name 里一个冒号就写出不合法的 YAML。
+  it('CRLF 模板同样识别 front matter（签出换行不影响判定）', () => {
+    const out = renderTemplate(tpl.replaceAll('\n', '\r\n'), { userName: 'A: B', agentName: 'KyDog' });
+    expect(out).toContain(`name: ${JSON.stringify('A: B')}`);
+    expect(out).toContain('称呼 A: B');
+  });
   it('无 front matter 的模板整体按原值替换', () => {
     expect(renderTemplate('hi {{agentName}}', { userName: 'u', agentName: '狗哥' })).toBe('hi 狗哥');
   });

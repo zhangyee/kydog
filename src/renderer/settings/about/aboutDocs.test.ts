@@ -19,7 +19,11 @@ const LIB_LINE_RE = /^- `([^`]+)`: (.+)$/;
 
 type LibEntry = { pkg: string; license: string };
 
-function parseLicensesLibrarySection(raw: string): LibEntry[] {
+function parseLicensesLibrarySection(input: string): LibEntry[] {
+  // 逐行切之前先归一化行尾：CRLF 检出下每行会残留 \r，LIB_LINE_RE 的 `(.+)$` 匹配不上
+  // （`.` 不匹配 \r，`$` 又要求到串尾），整条规则就会误判成「格式不对」。
+  // 产品侧 aboutDoc.ts 读同一批文件时也是先归一化再解析，这里跟它保持一致。
+  const raw = input.replace(/\r\n/g, '\n');
   const m = raw.match(/^## 开源库\s*\n([\s\S]*)$/m);
   if (!m) throw new Error('licenses.md 缺少 "## 开源库" 小节');
   return m[1]
