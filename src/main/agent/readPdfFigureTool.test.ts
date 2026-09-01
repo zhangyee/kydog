@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import path from 'node:path';
 import type { RenderPageArgs } from '../pdf/pdfRaster';
 import { KydogError } from '../../shared/errors';
 import {
@@ -53,8 +54,9 @@ describe('read_pdf_figure', () => {
     const { render, tool } = make();
     const res = await tool.execute('tc1', { path: PDF }, undefined, undefined, VISION);
     expect(render).toHaveBeenCalledTimes(1);
-    // 校验先行之后，render 收到的是 validateRenderArgs 归一化过的参数：scale 默认补成 2。
-    expect(render.mock.calls[0][0]).toEqual({ path: PDF, page: 1, scale: 2 });
+    // 校验先行之后，render 收到的是 validateRenderArgs 归一化过的参数：scale 默认补成 2，
+    // 路径按当前平台归一化（win32 上分隔符变反斜杠）。
+    expect(render.mock.calls[0][0]).toEqual({ path: path.normalize(PDF), page: 1, scale: 2 });
     expect(res.content[0]).toEqual({ type: 'text', text: `已渲染成 PNG：${PNG}\n` });
     expect(res.content.slice(1)).toEqual(WITH_IMAGE);
     expect(res.details).toEqual({ pngPath: PNG });

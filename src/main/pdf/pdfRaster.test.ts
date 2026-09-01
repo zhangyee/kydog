@@ -39,7 +39,7 @@ describe('validateRenderArgs', () => {
 
   it('scale 省略时给默认值 2，page 原样带出', () => {
     expect(validateRenderArgs({ path: '/a/b.pdf', page: 3 })).toEqual({
-      path: '/a/b.pdf', page: 3, scale: 2,
+      path: path.normalize('/a/b.pdf'), page: 3, scale: 2,
     });
   });
 

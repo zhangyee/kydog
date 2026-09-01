@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import readline from 'node:readline';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gitBlobSha } from './cli/skill-sync.mjs';
 
@@ -27,7 +26,13 @@ describe('checkAndSyncSkill', () => {
   let dest, createInterface;
 
   beforeEach(() => {
-    dest = mkdtempSync(path.join(tmpdir(), 'cli-update-dest-'));
+    // dest 不能放 os.tmpdir()：下面 cfgFor 要用 path.relative(REPO_ROOT, dest) 把它相对化，
+    // Windows 上仓库与 %TEMP% 可能不同盘（如 D: vs C:），跨盘 path.relative 只能原样返回
+    // 绝对路径，join 回去就成了 D:\repo\C:\... 的假路径。放进仓库内的 node_modules/.cache
+    // 保证同盘且不进 git。
+    const scratch = path.join(REPO_ROOT, 'node_modules', '.cache');
+    mkdirSync(scratch, { recursive: true });
+    dest = mkdtempSync(path.join(scratch, 'cli-update-dest-'));
     vi.clearAllMocks();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     // 任何提问都要先建 readline；没建过就等于一次都没问过用户。
