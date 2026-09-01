@@ -9,6 +9,12 @@ import { seedSettings } from './helpers';
 const execFileP = promisify(execFile);
 const repoRoot = path.resolve(__dirname, '..');
 
+// 这是 infra 预算（冷 CI 首启 + 打包应用），不是行为判据；expect.timeout 的 5s
+// 紧判据不受影响。内部预算加总（30s 启动 + 15s 首页 + 3×5s 三栏断言 + 15s 投影
+// poll + 5s 收尾 + 15s fastpaper）逼近 playwright.config.ts 的全局 60s，冷 CI
+// （如 windows-latest 首次 Defender 扫描）撞上限是基础设施抖动，不是产品判据。
+test.setTimeout(120_000);
+
 // 打包成品的落点（electron-forge package / make 的输出布局）。
 // 二进制缺失时直接红、报错指路——不做 skipIf：静默跳过会让「打包成品层」的覆盖
 // 在流水线上无声消失，与 KYDOG_REQUIRE_SYMLINK 的教训同型。
@@ -38,7 +44,13 @@ function packagedPaths(): { exe: string; resources: string } {
 // 但看 stderr 会以为「DevTools listening 都打出来了」。加上这行，行为与其余
 // 113 条走 electron.launch 的 spec 一致（Playwright 对 Chromium 系家族测试
 // 默认也是不摸真钥匙串）。
-async function launchPackaged(exe: string, home: string, userDataDir: string): Promise<{ child: ChildProcess; port: number }> {
+// 不变量：任何失败路径都必须有人持有并回收子进程句柄，否则孤儿实例会活进 retry。
+// 之前 spawn 与「等端口」缝在同一个 async 函数里：30s deadline 或 exit 一旦
+// reject，调用方的 `const launched = await launchPackaged(...)` 整句抛出，
+// child 从未被赋值给外层变量，finally 里的 kill 无从谈起。现在 spawn 同步返回，
+// 调用方拿到 child 之后才 await 端口 promise —— 端口等待失败时外层 child 早已
+// 持有句柄，finally 照常回收。
+function launchPackaged(exe: string, home: string, userDataDir: string): { child: ChildProcess; portPromise: Promise<number> } {
   const child = spawn(exe, ['--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, '--use-mock-keychain'], {
     env: {
       ...process.env,
@@ -49,7 +61,7 @@ async function launchPackaged(exe: string, home: string, userDataDir: string): P
     },
   });
   let stderrBuf = '';
-  const port = await new Promise<number>((resolve, reject) => {
+  const portPromise = new Promise<number>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`打包应用 30s 内未打出 DevTools listening。stderr 累积：\n${stderrBuf}`));
     }, 30_000);
@@ -63,7 +75,7 @@ async function launchPackaged(exe: string, home: string, userDataDir: string): P
       reject(new Error(`打包应用启动即退出（code=${code}）。stderr：\n${stderrBuf}`));
     });
   });
-  return { child, port };
+  return { child, portPromise };
 }
 
 // CDP 连上时页面可能尚未创建，poll 到第一个页面出现为止。
@@ -101,9 +113,10 @@ test('54-packaged-smoke: 打包成品能启动、资源齐全、投影成功、�
   let child: ChildProcess | null = null;
   let browser: Browser | null = null;
   try {
-    const launched = await launchPackaged(exe, home, userDataDir);
-    child = launched.child;
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.port}`);
+    const launched = launchPackaged(exe, home, userDataDir);
+    child = launched.child; // 先持有句柄，再等端口——端口等待失败也回收得到
+    const port = await launched.portPromise;
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     const page = await firstPage(browser);
 
     // —— 断言 1：启动渲染（fuses / asar / loadFile 生产分支）——

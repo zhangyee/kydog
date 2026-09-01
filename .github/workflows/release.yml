@@ -94,6 +94,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          # e2e 现场 artifact 不是发版资产，不许进 dist（trace.zip / error-context.md
+          # 一旦混进 SHA256SUMS.txt 就会被当成公开发布件上传）。
+          pattern: kydog-*
           merge-multiple: true
       - name: Compute SHA256SUMS.txt
         run: |
