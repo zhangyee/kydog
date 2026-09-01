@@ -52,9 +52,23 @@ test('34-thread-rename: 切走再切回来，重命名框和已输入内容都�
   try {
     const { page } = launched;
     const row = page.getByTestId(`thread-${THREAD_ID}`);
+    const trigger = page.getByTestId(`thread-menu-trigger-${THREAD_ID}`);
     await expect(row).toBeVisible();
-    await row.hover();
-    await page.getByTestId(`thread-menu-trigger-${THREAD_ID}`).click();
+
+    // row.hover() 是单发 mousemove、无到达回执（Playwright 的 hit-target 拦截器
+    // 事件没送达也照样报 "done"，与 35-thread-title-marquee 同一类问题）。CI 高
+    // 负载下（round 2 arm64、round 3/4 win32 实测）这一发有时没被应用层收到，
+    // ThreadRow 的 hover 态就没翻，menu-trigger 外层 wrapper 的 pointerEvents
+    // 仍是 'none'（继承到按钮本身），点击落到下面的 row 上——round 4 的 trace
+    // 显示 30s 内 56 次重试全部卡在 "<row> intercepts pointer events"，不是断言
+    // 判错，是刺激没送达。把刺激放进 poll 里每轮重新施加，锚定在协议层事实——
+    // 按钮自身实际生效的 computed pointer-events——而不是加 sleep 或放宽断言。
+    await expect.poll(async () => {
+      await row.hover();
+      return await trigger.evaluate((el) => getComputedStyle(el).pointerEvents);
+    }).toBe('auto');
+
+    await trigger.click();
     await page.getByTestId(`thread-rename-${THREAD_ID}`).click();
 
     const input = page.getByTestId(`thread-rename-input-${THREAD_ID}`);
