@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { replaceSkillTree } from './replaceSkillTree';
+import { SKIP_WITHOUT_SYMLINK } from '../../test-support/symlinkCapability';
 
 function tmp(p: string) { return mkdtempSync(path.join(tmpdir(), p)); }
 
@@ -119,7 +120,7 @@ describe('replaceSkillTree', () => {
     expect(readFileSync(path.join(stagingRoot, trashEntries[0], 'SKILL.md'), 'utf8')).toBe('old');
   });
 
-  it('源侧出现软链直接报错，不静默跳过', async () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('源侧出现软链直接报错，不静默跳过', async () => {
     const srcRoot = makeSrc();
     symlinkSync('/etc/hosts', path.join(srcRoot, 'demo', 'link.md'));
     const home = tmp('rst-home-');

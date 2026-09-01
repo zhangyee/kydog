@@ -3,6 +3,7 @@ import { promises as fs, mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileService } from './fileService';
+import { SKIP_WITHOUT_SYMLINK } from '../../test-support/symlinkCapability';
 
 describe('fileService', () => {
   it('readText 返回文件内容', async () => {
@@ -80,7 +81,7 @@ describe('fileService.readBytesWithin', () => {
     expect(Array.from(bytes)).toEqual([1, 2, 3]);
   });
 
-  it('树内符号链接指向树外 → 拒绝', async () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('树内符号链接指向树外 → 拒绝', async () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-base-'));
     const outside = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-outside-'));
     const secret = path.join(outside, 'secret.png');
@@ -91,7 +92,7 @@ describe('fileService.readBytesWithin', () => {
       .rejects.toMatchObject({ code: 'fs.access_denied' });
   });
 
-  it('baseDir 自己是符号链接、目标文件在其真实位置内 → 通过（两边都 realpath 了才对）', async () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('baseDir 自己是符号链接、目标文件在其真实位置内 → 通过（两边都 realpath 了才对）', async () => {
     const realBase = mkdtempSync(path.join(os.tmpdir(), 'kydog-fs-real-'));
     const target = path.join(realBase, 'a.png');
     await fs.writeFile(target, Buffer.from([4, 5, 6]));

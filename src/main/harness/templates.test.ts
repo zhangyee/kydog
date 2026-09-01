@@ -5,7 +5,8 @@ describe('harnessTemplates', () => {
   for (const locale of ['zh', 'en'] as const) {
     it(`${locale}: 三模板齐全且占位符/路径正确`, () => {
       const t = harnessTemplates(locale);
-      expect(t.soul.startsWith('---\n')).toBe(true);
+      // 认 \r\n：断言的是「以 front matter 围栏开头」，不是签出用哪种换行。
+      expect(/^---\r?\n/.test(t.soul)).toBe(true);
       expect(t.soul).toContain('name: {{agentName}}');
       expect(t.user).toContain('name: {{userName}}');
       expect(t.agents).not.toContain('{{');          // AGENTS 无占位符

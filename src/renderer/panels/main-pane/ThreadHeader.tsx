@@ -16,7 +16,7 @@ export function ThreadHeader({ threadId }: Props) {
   );
   if (!thread || number === null) return null;
 
-  const projectName = thread.projectPath.split('/').pop() ?? thread.projectPath;
+  const projectName = thread.projectPath.split(/[\\/]/).pop() ?? thread.projectPath;
   const numberLabel = `Thread · No. ${String(number).padStart(4, '0')}`;
   return (
     <div style={{ marginBottom: 20 }}>

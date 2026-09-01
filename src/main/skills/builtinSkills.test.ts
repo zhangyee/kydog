@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { listBuiltinSkills, listSkillSourceFiles, hashProjectedSkill } from './builtinSkills';
+import { SKIP_WITHOUT_SYMLINK } from '../../test-support/symlinkCapability';
 
 function makeFakeBuiltin(): string {
   const root = mkdtempSync(path.join(tmpdir(), 'bskills-'));
@@ -29,7 +30,7 @@ describe('listSkillSourceFiles', () => {
     expect(listSkillSourceFiles(root, 'fastpaper').sort()).toEqual(['SKILL.en.md', 'SKILL.md', 'references/r.md']);
   });
 
-  it('源侧出现非普通文件 → 抛错中止，不从投影里静默消失', () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('源侧出现非普通文件 → 抛错中止，不从投影里静默消失', () => {
     const root = makeFakeBuiltin();
     symlinkSync(path.join(root, 'fastpaper', 'SKILL.md'), path.join(root, 'fastpaper', 'alias.md'));
     expect(() => listSkillSourceFiles(root, 'fastpaper')).toThrow(/not a regular file/);

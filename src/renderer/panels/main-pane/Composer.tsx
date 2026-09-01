@@ -49,7 +49,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const messages = useThreadsStore((s) => s.historyByThread[threadId]) ?? [];
   const isEmptyThread = messages.length === 0;
 
-  const projectName = thread ? (thread.projectPath.split('/').pop() ?? '') : '';
+  const projectName = thread ? (thread.projectPath.split(/[\\/]/).pop() ?? '') : '';
 
   // Model picker state (existing pattern preserved).
   const defaultProvider = useLlmStore((s) => s.defaultProvider);

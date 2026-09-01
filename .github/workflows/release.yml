@@ -12,9 +12,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14,       target: darwin-arm64 }
-          - { os: macos-13,       target: darwin-x64   }
-          - { os: windows-latest, target: win32-x64    }
+          # requireSymlink：把「必须能建符号链接」钉在至少一个平台上。
+          # 那批用例考的是软链能不能越出目录、写入会不会穿透链接 —— 平台无关的逻辑。
+          # 没有这道闸，「本机建不了就跳过」的机制会一路跳到 CI，安全覆盖在发版流水线上
+          # 静默消失，而绿灯照常亮。
+          # Windows runner 到底能不能建软链，本仓库没验证过，所以那一栏先不钉死；
+          # 下面的 Report 步骤会把实际能力打进日志，确认能建之后把它也改成 '1'。
+          - { os: macos-14,       target: darwin-arm64, requireSymlink: '1' }
+          - { os: macos-13,       target: darwin-x64,   requireSymlink: '1' }
+          - { os: windows-latest, target: win32-x64,    requireSymlink: ''  }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,8 +38,33 @@ jobs:
             exit 1
           fi
       - run: npm ci          # postinstall fetches host-platform fastpaper
+      # Windows 上建符号链接要 SeCreateSymbolicLinkPrivilege，普通用户默认没有。
+      # 「开发者模式」是把这项特权给到普通用户的一次性开关。runner 上尽力而为：
+      # 开不成也不挡流水线，能力如何由下一步如实打印。
+      - name: Enable Windows developer mode (for symlink tests)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+      # 把「这台机器能不能建软链」打进日志：跳过多少条必须看得见，不能是静默的。
+      - name: Report symlink capability
+        shell: bash
+        run: |
+          node -e "
+            const fs=require('node:fs'), os=require('node:os'), p=require('node:path');
+            const d=fs.mkdtempSync(p.join(os.tmpdir(),'kydog-symcap-'));
+            fs.writeFileSync(p.join(d,'t.txt'),'x');
+            try { fs.symlinkSync(p.join(d,'t.txt'), p.join(d,'l.txt')); console.log('symlink capability: OK'); }
+            catch (e) { console.log('symlink capability: UNAVAILABLE ->', e.code); }
+            finally { fs.rmSync(d,{recursive:true,force:true}); }
+          "
       - run: npm run lint
       - run: npm test
+        env:
+          # 空字符串 = 不强制（见上面 matrix 里的说明）。非空时软链用例不再跳过，
+          # 建不出来就让它以 EPERM 红出来。
+          KYDOG_REQUIRE_SYMLINK: ${{ matrix.requireSymlink }}
       - run: npm run make
       - uses: actions/upload-artifact@v4
         with:

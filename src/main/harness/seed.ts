@@ -11,7 +11,9 @@ export type SeedOutcome = { created: string[]; skipped: string[] };
 export function renderTemplate(tpl: string, names: { userName: string; agentName: string }): string {
   const sub = (s: string, enc: (v: string) => string) =>
     s.replaceAll('{{userName}}', enc(names.userName)).replaceAll('{{agentName}}', enc(names.agentName));
-  const m = /^---\n[\s\S]*?\n---\n/.exec(tpl);
+  // 围栏认 \r\n：模板是 ?raw 进来的签出内容，Windows 的 core.autocrlf 会把它变成
+  // CRLF。只认 \n 的话 front matter 认不出来，会掉进下面的原值分支静默写坏 YAML。
+  const m = /^---\r?\n[\s\S]*?\n---\r?\n/.exec(tpl);
   if (!m) return sub(tpl, (v) => v);
   return sub(m[0], (v) => JSON.stringify(v)) + sub(tpl.slice(m[0].length), (v) => v);
 }

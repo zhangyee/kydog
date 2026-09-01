@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
+import { SKIP_WITHOUT_SYMLINK, SYMLINK_SKIP_REASON } from '../src/test-support/symlinkCapability';
 
 const HTML_REL = 'report.html';
 
@@ -618,6 +619,7 @@ test('46-html-tab: 入场动效——滚到 .reveal 元素后最终可见', asyn
 });
 
 test('46-html-tab: 报告目录内的本地图片渲染时内联成 data URI', async () => {
+  test.skip(SKIP_WITHOUT_SYMLINK, SYMLINK_SKIP_REASON);
   const launched = await launchKydog({ seed: seedWithImages });
   try {
     const { page, kydogHome } = launched;
@@ -643,6 +645,7 @@ test('46-html-tab: 报告目录内的本地图片渲染时内联成 data URI', a
 });
 
 test('46-html-tab: 逃出报告目录的图片路径被拒绝，退化成 alt 文字', async () => {
+  test.skip(SKIP_WITHOUT_SYMLINK, SYMLINK_SKIP_REASON);
   const launched = await launchKydog({ seed: seedWithImages });
   try {
     const { page, kydogHome } = launched;
@@ -670,6 +673,7 @@ test('46-html-tab: 逃出报告目录的图片路径被拒绝，退化成 alt �
 // 真的在端到端链路里生效的证据——单测（fileService.test.ts）只测了 realpath
 // 校验函数本身，没有验证 HtmlFileTab → inlineLocalImages → RPC 这条链真的把它接上了。
 test('46-html-tab: 报告目录内指向目录外的符号链接被拒绝，不能靠字符串校验绕过', async () => {
+  test.skip(SKIP_WITHOUT_SYMLINK, SYMLINK_SKIP_REASON);
   const launched = await launchKydog({ seed: seedWithImages });
   try {
     const { page, kydogHome } = launched;
