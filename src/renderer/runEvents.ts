@@ -1,0 +1,133 @@
+import type { RunEvent } from '../shared/protocol';
+import { useRunsStore } from './stores/runsStore';
+import { useThreadsStore } from './stores/threadsStore';
+import { useAskStore } from './stores/askStore';
+import { useUnreadStore } from './panels/workspace/unreadStore';
+
+/**
+ * 本轮的 buffer 还不存在就先建出来。
+ *
+ * 每个往 buffer 里写东西的 handler 都要先过这一道：主进程发事件的顺序不保证
+ * 「一定有个 delta 打头」—— 模型可以张口就是一批工具调用。少一道这个，那一轮的
+ * block 会静默 no-op 掉。
+ */
+function ensureBuffer(threadId: string, messageId: string): void {
+  if (!useRunsStore.getState().bufferByMessage[messageId]) {
+    useRunsStore.getState().startMessageBuffer(threadId, messageId);
+  }
+}
+
+/**
+ * 一条 run.* 事件落进 store 的唯一入口。
+ *
+ * setupEventBridge 的实时订阅和 thread.loadHistory 的 journal 重放都走这里 ——
+ * 重放不是「另一条复原路径」，它就是把同一批事件再喂一遍。两条路径共用一段代码，
+ * 才不会出现「直播时算出来的 block 和重载后复原的 block 不一样」。
+ */
+export function applyRunEvent(e: RunEvent): void {
+  switch (e.topic) {
+    case 'run.started': {
+      useRunsStore.getState().setRun(e.payload.threadId, { status: 'running', runId: e.payload.runId });
+      return;
+    }
+    case 'run.thinking_delta': {
+      const p = e.payload;
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().appendThinking(p.messageId, p.delta);
+      return;
+    }
+    case 'run.message_delta': {
+      const p = e.payload;
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().appendDelta(p.messageId, p.delta);
+      return;
+    }
+    // 三个 tool_call 事件一律按 payload 里的 messageId 归位 —— 那是主进程发事件时
+    // 手上的 activeMessageId，是协议事实。曾经这里靠「最近的那个 buffer」「已经含这个
+    // toolCallId 的 buffer」去猜，渲染进程一重载 buffer 全空，两个近似都落空，
+    // 于是重载期间结束的工具永远停在「运行中」。
+    case 'run.tool_call_start': {
+      const p = e.payload;
+      // 与两个 delta handler 同形：本轮如果直接就是工具调用、前面没有任何文字或思考，
+      // buffer 还不存在，addToolCall 会静默 no-op。
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().addToolCall(p.messageId, p.toolCallId, p.name, p.command);
+      return;
+    }
+    case 'run.tool_call_chunk': {
+      const p = e.payload;
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().appendToolChunk(p.messageId, p.toolCallId, p.stream, p.chunk);
+      return;
+    }
+    case 'run.tool_call_end': {
+      const p = e.payload;
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().finalizeToolCall(p.messageId, p.toolCallId, p.status, p.exitCode);
+      return;
+    }
+    case 'run.parallel_group': {
+      const p = e.payload;
+      // 这条来自 pi 的 message_end，比批次里任何一个 tool_execution_start 都早。
+      // 本轮若直接就是一批工具调用（前面没有文字或思考），buffer 还不存在，
+      // markParallelGroup 会静默 no-op —— 并行 groupId 登记不上，六张卡片就散开了。
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().markParallelGroup(p.messageId, p.toolCallIds, p.parallelGroupId);
+      return;
+    }
+    // 一条事件两个消费者：askStore 驱动提问态 composer，runsStore 驱动留痕 block。
+    case 'run.ask_start': {
+      const p = e.payload;
+      useAskStore.getState().open(p.threadId, p.toolCallId, p.questions);
+      // 与 delta / tool handler 同形：这一轮如果直接发 ask、前面没有任何文字或思考，
+      // buffer 还不存在，addAskBlock 会静默 no-op，整轮留痕就没了。
+      ensureBuffer(p.threadId, p.messageId);
+      useRunsStore.getState().addAskBlock(p.messageId, p.toolCallId, p.questions);
+      return;
+    }
+    case 'run.ask_end': {
+      const p = e.payload;
+      useAskStore.getState().close(p.threadId, p.toolCallId);
+      useRunsStore.getState().finalizeAskBlock(p.messageId, p.toolCallId, p.outcome);
+      return;
+    }
+    case 'run.message_end': {
+      const p = e.payload;
+      const blocks = useRunsStore.getState().takeBuffer(p.messageId);
+      if (!blocks) return;
+      useThreadsStore.setState((s) => ({
+        historyByThread: {
+          ...s.historyByThread,
+          [p.threadId]: [
+            ...(s.historyByThread[p.threadId] ?? []),
+            { id: p.messageId, role: 'assistant', createdAt: new Date().toISOString(), blocks },
+          ],
+        },
+      }));
+      return;
+    }
+    // 「把你手上关于这一轮的东西全扔了」。紧随其后的就是主进程重放的本轮 journal，
+    // 由它把 buffer 重建出来。run 状态在这里就先置上，重放的 run.started 会再确认一次。
+    case 'run.resync': {
+      const p = e.payload;
+      // 按 thread 整体清，不是按某个 messageId 清：上一轮没能 flush 掉的残留 buffer
+      // 也一并扫走，重放之后这条 thread 手上只剩本轮的真实内容。
+      useRunsStore.getState().dropBuffersForThread(p.threadId);
+      useRunsStore.getState().setRun(p.threadId, { status: 'running', runId: p.runId });
+      return;
+    }
+    case 'run.ended': {
+      const p = e.payload;
+      if (p.reason === 'error') {
+        useRunsStore.getState().setRun(p.threadId, { status: 'error', error: p.errorMessage ?? 'unknown' });
+      } else {
+        useRunsStore.getState().setRun(p.threadId, { status: 'idle' });
+      }
+      const currentId = useThreadsStore.getState().currentThreadId;
+      if (p.threadId !== currentId) {
+        useUnreadStore.getState().markUnread(p.threadId);
+      }
+      return;
+    }
+  }
+}

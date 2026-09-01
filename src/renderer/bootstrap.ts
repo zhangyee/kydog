@@ -1,13 +1,12 @@
 import { useThreadsStore } from './stores/threadsStore';
 import { useUiStore } from './stores/uiStore';
 import { useSettingsStore } from './stores/settingsStore';
-import { useRunsStore } from './stores/runsStore';
 import { useLlmStore } from './stores/llmStore';
 import { useSkillsStore } from './stores/skillsStore';
 import { useIdentityStore } from './stores/identityStore';
 import { useUpdateStore } from './stores/updateStore';
-import { useAskStore } from './stores/askStore';
-import { useUnreadStore } from './panels/workspace/unreadStore';
+import { applyRunEvent } from './runEvents';
+import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
@@ -82,82 +81,13 @@ export async function bootstrap(): Promise<void> {
 }
 
 function setupEventBridge(): void {
-  const runs = useRunsStore.getState();
-  const threads = useThreadsStore.getState();
-
-  window.kydog.on('run.started', (p) => {
-    useRunsStore.getState().setRun(p.threadId, { status: 'running', runId: p.runId });
-  });
-  window.kydog.on('run.thinking_delta', (p) => {
-    const buf = useRunsStore.getState().bufferByMessage[p.messageId];
-    if (!buf) useRunsStore.getState().startMessageBuffer(p.threadId, p.messageId);
-    useRunsStore.getState().appendThinking(p.messageId, p.delta);
-  });
-  window.kydog.on('run.message_delta', (p) => {
-    const buf = useRunsStore.getState().bufferByMessage[p.messageId];
-    if (!buf) useRunsStore.getState().startMessageBuffer(p.threadId, p.messageId);
-    useRunsStore.getState().appendDelta(p.messageId, p.delta);
-  });
-  window.kydog.on('run.tool_call_start', (p) => {
-    // tool calls anchor on most-recent message buffer of this thread
-    const allBufs = useRunsStore.getState().bufferByMessage;
-    const target = Object.entries(allBufs).reverse().find(([, v]) => v.threadId === p.threadId)?.[0];
-    if (target) useRunsStore.getState().addToolCall(target, p.toolCallId, p.name, p.command);
-  });
-  window.kydog.on('run.tool_call_chunk', (p) => {
-    const allBufs = useRunsStore.getState().bufferByMessage;
-    const target = Object.entries(allBufs).reverse().find(([, v]) =>
-      v.threadId === p.threadId && v.blocks.some(b => b.kind === 'tool_call' && b.id === p.toolCallId)
-    )?.[0];
-    if (target) useRunsStore.getState().appendToolChunk(target, p.toolCallId, p.stream, p.chunk);
-  });
-  window.kydog.on('run.tool_call_end', (p) => {
-    const allBufs = useRunsStore.getState().bufferByMessage;
-    const target = Object.entries(allBufs).reverse().find(([, v]) =>
-      v.threadId === p.threadId && v.blocks.some(b => b.kind === 'tool_call' && b.id === p.toolCallId)
-    )?.[0];
-    if (target) useRunsStore.getState().finalizeToolCall(target, p.toolCallId, p.status, p.exitCode);
-  });
-  window.kydog.on('run.parallel_group', (p) => {
-    useRunsStore.getState().markParallelGroup(p.messageId, p.toolCallIds, p.parallelGroupId);
-  });
-  // 一条事件两个消费者：askStore 驱动提问态 composer，runsStore 驱动留痕 block。
-  window.kydog.on('run.ask_start', (p) => {
-    useAskStore.getState().open(p.threadId, p.toolCallId, p.questions);
-    // 与两个 delta handler 同形：这一轮如果直接发 ask、前面没有任何文字或思考，
-    // buffer 还不存在，addAskBlock 会静默 no-op，整轮留痕就没了。
-    const buf = useRunsStore.getState().bufferByMessage[p.messageId];
-    if (!buf) useRunsStore.getState().startMessageBuffer(p.threadId, p.messageId);
-    useRunsStore.getState().addAskBlock(p.messageId, p.toolCallId, p.questions);
-  });
-  window.kydog.on('run.ask_end', (p) => {
-    useAskStore.getState().close(p.threadId, p.toolCallId);
-    useRunsStore.getState().finalizeAskBlock(p.messageId, p.toolCallId, p.outcome);
-  });
-  window.kydog.on('run.message_end', (p) => {
-    const blocks = useRunsStore.getState().takeBuffer(p.messageId);
-    if (!blocks) return;
-    useThreadsStore.setState((s) => ({
-      historyByThread: {
-        ...s.historyByThread,
-        [p.threadId]: [
-          ...(s.historyByThread[p.threadId] ?? []),
-          { id: p.messageId, role: 'assistant', createdAt: new Date().toISOString(), blocks },
-        ],
-      },
-    }));
-  });
-  window.kydog.on('run.ended', (p) => {
-    if (p.reason === 'error') {
-      useRunsStore.getState().setRun(p.threadId, { status: 'error', error: p.errorMessage ?? 'unknown' });
-    } else {
-      useRunsStore.getState().setRun(p.threadId, { status: 'idle' });
-    }
-    const currentId = useThreadsStore.getState().currentThreadId;
-    if (p.threadId !== currentId) {
-      useUnreadStore.getState().markUnread(p.threadId);
-    }
-  });
+  // 全部 run.* 都汇到 applyRunEvent 一个口子：loadHistory 的 journal 重放走的也是它，
+  // 直播与重放必须是同一段代码，否则重载后复原出来的 block 会慢慢跟直播的走偏。
+  for (const topic of RUN_EVENT_TOPICS) {
+    window.kydog.on(topic, (payload) => {
+      applyRunEvent({ topic, payload } as RunEvent);
+    });
+  }
   window.kydog.on('thread.updated', (p) => {
     useThreadsStore.getState().upsertThread(p.thread);
   });
@@ -174,8 +104,6 @@ function setupEventBridge(): void {
   window.kydog.on('llm.listChanged', (r) => {
     useLlmStore.getState().setSnapshot(r);
   });
-
-  void runs; void threads; // silence unused
 }
 
 function isWithin(dir: string, root: string): boolean {

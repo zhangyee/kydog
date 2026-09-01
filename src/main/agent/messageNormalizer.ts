@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { Message, AssistantBlock } from '../../shared/types';
 import { isParallelBatch } from './askSequentialTools';
 import { ASK_TOOL_NAME, isAskOutcome, type AskQuestion } from '../../shared/askQuestion';
@@ -37,7 +36,12 @@ export type PiToolResultMessage = {
 
 export type PiMessage = PiUserMessage | PiAssistantMessage | PiToolResultMessage;
 
-export function normalizePiMessages(messages: PiMessage[]): Message[] {
+/**
+ * @param idPrefix 归一化结果的 message id 前缀。id 取自消息在 transcript 里的位置而不是
+ *   randomUUID：同一份 transcript 归一化两次必须得到同一批 id —— 渲染层要靠 id 判断
+ *   「这条我已经有了」（见 threadsStore.initHistory 的去重）。
+ */
+export function normalizePiMessages(messages: PiMessage[], idPrefix = 'm'): Message[] {
   const out: Message[] = [];
   const toolResults = new Map<string, { content: string; isError: boolean; details?: unknown }>();
 
@@ -58,7 +62,7 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
   let pendingBlocks: AssistantBlock[] = [];
   const flushAssistant = () => {
     if (pendingBlocks.length === 0) return;
-    out.push({ id: randomUUID(), role: 'assistant', createdAt: new Date().toISOString(), blocks: pendingBlocks });
+    out.push({ id: `${idPrefix}#${out.length}`, role: 'assistant', createdAt: new Date().toISOString(), blocks: pendingBlocks });
     pendingBlocks = [];
   };
 
@@ -71,12 +75,14 @@ export function normalizePiMessages(messages: PiMessage[]): Message[] {
             .filter((c): c is PiTextContent => c.type === 'text')
             .map(c => c.text)
             .join('');
-      out.push({ id: randomUUID(), role: 'user', createdAt: new Date().toISOString(), content });
+      out.push({ id: `${idPrefix}#${out.length}`, role: 'user', createdAt: new Date().toISOString(), content });
     } else if (m.role === 'assistant') {
       // 协议层并行：当且仅当本条 pi assistant message 的 content 里 ≥2 个 toolCall 时，
       // 它们共享同一个 parallelGroupId。跨 message 永不共享。
       // 与实时路径同一条规则：含 sequential 工具的批次实际是串行的，不能判为并行。
-      const groupId = isParallelBatch(m.content) ? randomUUID() : undefined;
+      // groupId 同样按位置生成，理由同上：归一化必须是纯函数，同一份 transcript 进去、
+      // 同一批 block 出来。
+      const groupId = isParallelBatch(m.content) ? `${idPrefix}#${out.length}g${pendingBlocks.length}` : undefined;
       for (const c of m.content) {
         if (c.type === 'text') {
           pendingBlocks.push({ kind: 'text', text: c.text });

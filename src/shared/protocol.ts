@@ -23,6 +23,15 @@ export type RpcCall =
   | { method: 'thread.list'; args: { projectPath: string }; result: Thread[] }
   | { method: 'thread.delete'; args: { threadId: string }; result: void }
   | { method: 'thread.rename'; args: { threadId: string; title: string }; result: void }
+  // 除了返回历史，这个调用还有一个副作用：如果该 thread 有 run 在飞，主进程会把本轮
+  // 已经广播过的 run.* 事件**原样重放给发起调用的那个窗口**（见 AgentService.loadHistory）。
+  // 理由是渲染进程重载后 buffer 全丢，而在途 run 的终态无法从 pi 的 transcript 反推：
+  // 并行批次里 pi 要等整批 settle 才追加 toolResult，此前每个工具的 tool_execution_end
+  // 早已发过。所以「重载后拿回终态」只能靠重放主进程留下的事件，不能靠重新归一化 transcript。
+  //
+  // 重放走 EVENT_CHANNEL、与后续实时事件同一条通道且在同一个同步块里发出，因此二者严格有序、
+  // 不重不漏 —— 这也是为什么重放不放在本调用的 result 里：那是另一条通道，跟事件流之间没有顺序保证。
+  // 对应地，result 里的 messages **不含**这一轮 in-flight turn（它由重放的事件重建）。
   | { method: 'thread.loadHistory'; args: { threadId: string }; result: Message[] }
   | { method: 'thread.send'; args: { threadId: string; content: string }; result: { runId: string } }
   | { method: 'thread.abort'; args: { threadId: string }; result: void }
@@ -101,13 +110,21 @@ export type RuntimeEvent =
   | { topic: 'run.started'; payload: { threadId: string; runId: string } }
   | { topic: 'run.message_delta'; payload: { threadId: string; runId: string; messageId: string; delta: string } }
   | { topic: 'run.thinking_delta'; payload: { threadId: string; runId: string; messageId: string; delta: string } }
-  | { topic: 'run.tool_call_start'; payload: { threadId: string; runId: string; toolCallId: string; name: string; command?: string } }
-  | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
-  | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
+  // 三个 tool_call 事件都带 messageId：主进程发它们的时候 bound.activeMessageId 就在手上，
+  // 不带等于把「这个工具属于哪一轮」丢掉，逼渲染层拿「最近的那个 buffer」「已经含这个
+  // toolCallId 的 buffer」去猜 —— 而 buffer 集合为空时（渲染进程刚重载）这两个近似都返回
+  // 空，事件就被静默丢弃。归属关系是协议事实，在源头带上。
+  | { topic: 'run.tool_call_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; name: string; command?: string } }
+  | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
+  | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
   | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
   | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[] } }
   | { topic: 'run.ask_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; outcome: AskOutcome } }
+  // 「把你手上关于这一轮的东西全扔了，接下来我重放一遍」。只在 thread.loadHistory 里
+  // 发给发起调用的那个窗口，紧跟其后的就是本轮 journal。它不进 journal —— 它是重放的
+  // 帧头，不是 run 本身发生过的事。
+  | { topic: 'run.resync'; payload: { threadId: string; runId: string } }
   | { topic: 'run.ended'; payload: { threadId: string; runId: string; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string } }
   | { topic: 'oauth.auth'; payload: { providerId: string; url: string; instructions?: string } }
   | { topic: 'oauth.progress'; payload: { providerId: string; message: string } }
@@ -153,6 +170,37 @@ export type OAuthPromptPayload =
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];
+
+/**
+ * 一轮 run 期间主进程发出的事件。主进程按发出顺序留一份（journal），渲染进程重载后
+ * 原样重放，落回同一批 store 动作 —— 重放路径与直播路径是同一段代码，不存在第二套
+ * 「从 transcript 反推 block」的推导逻辑会跟直播路径走偏。
+ *
+ * run.ended 在类型上属于这里，但永远不会进 journal：它一到就说明这轮不再在飞，
+ * 主进程在同一处把 journal 清掉。
+ */
+export type RunEvent = Extract<RuntimeEvent, { topic: `run.${string}` }>;
+export type RunEventTopic = RunEvent['topic'];
+
+/** 渲染层照这张表逐个订阅。下面那行断言保证新加的 run.* topic 不会漏在这里。 */
+export const RUN_EVENT_TOPICS = [
+  'run.started',
+  'run.message_delta',
+  'run.thinking_delta',
+  'run.tool_call_start',
+  'run.tool_call_chunk',
+  'run.tool_call_end',
+  'run.parallel_group',
+  'run.message_end',
+  'run.ask_start',
+  'run.ask_end',
+  'run.resync',
+  'run.ended',
+] as const satisfies readonly RunEventTopic[];
+
+// 漏一个 topic 就在这里编译不过（Exclude 剩下的那个不是 never）。
+const _allRunTopicsListed: Exclude<RunEventTopic, (typeof RUN_EVENT_TOPICS)[number]> extends never ? true : never = true;
+void _allRunTopicsListed;
 
 export const RPC_CHANNEL = 'kydog:rpc' as const;
 export const EVENT_CHANNEL = 'kydog:event' as const;

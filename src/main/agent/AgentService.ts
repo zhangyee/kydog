@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { sessionsDirFor } from '../persist/paths';
 import { createSession, type AnySession } from './sessionFactory';
 import { transition, type RunState } from './runState';
-import { broadcaster } from '../ipc/broadcaster';
+import { broadcaster, type EventSink } from '../ipc/broadcaster';
+import type { EventPayload, RunEvent, RunEventTopic } from '../../shared/protocol';
 import { logger } from '../log';
 import { KydogError } from '../../shared/errors';
 import { normalizePiMessages, type PiMessage } from './messageNormalizer';
@@ -25,8 +26,47 @@ export type Bound = {
   askOpened: Set<string>;
   /** tool_execution_end 不带 args，所以在被抑制的 start 上缓存下来。 */
   askArgs: Map<string, { toolName: string; args: unknown }>;
+  /**
+   * 本轮 run 已经广播出去的 run.* 事件，按发出顺序。渲染进程重载后 buffer 全丢，
+   * 这份 journal 是把它复原回来的唯一依据 —— 不能改成「重载后重新归一化 pi transcript」：
+   * 并行批次里 pi 要等整批 settle 才追加 toolResult（agent-loop.js 的
+   * executeToolCallsParallel），在那之前每个工具的 tool_execution_end 早就发过了，
+   * transcript 上却还看不出终态。丢掉的是事件，能补回来的也只有事件。
+   *
+   * 生命周期严格绑在一轮 run 上：agent_start 清空，agent_end 清空。
+   */
+  runJournal: RunEvent[];
+  /**
+   * agent_start 那一刻 pi transcript 的长度 —— 即本轮 run 的第一条消息的下标。
+   * loadHistory 靠它把「已落定的历史」和「由 journal 复原的 in-flight turn」切开，
+   * 免得同一轮既出现在 history 里又出现在 buffer 里。
+   */
+  runStartIndex: number | null;
   staleAfterRun?: boolean;
 };
+
+/** pi 的 transcript。Adaptation A: handle both real SDK (state.messages) and fake (messages). */
+function piMessagesOf(bound: Bound): PiMessage[] {
+  return (bound.session.state?.messages ?? bound.session.messages ?? []) as PiMessage[];
+}
+
+/**
+ * 工具事件要挂在哪一轮上。activeMessageId 在 agent_start 与 agent_end 之间恒非空，
+ * 工具执行必然落在这个窗口内，所以 null 是不可达的 —— 真发生了说明不变量破了，
+ * 后果是这张工具卡片彻底不出现，必须留下痕迹而不是静默丢弃。写法与上面 askShared 一致。
+ */
+function toolMessageId(bound: Bound, toolCallId: string): string | null {
+  if (!bound.activeMessageId) {
+    logger.error('agent', 'tool event without active message', { threadId: bound.threadId, toolCallId });
+  }
+  return bound.activeMessageId;
+}
+
+/** 把一条 run.* 事件广播出去，同时按序记进本轮 journal。 */
+function emitRun<T extends RunEventTopic>(bound: Bound, topic: T, payload: EventPayload<T>): void {
+  bound.runJournal.push({ topic, payload } as RunEvent);
+  broadcaster.emit(topic, payload);
+}
 
 class AgentService {
   private sessions = new Map<string, Bound>();
@@ -59,7 +99,7 @@ class AgentService {
           return;
         }
         b.askOpened.add(toolCallId);
-        broadcaster.emit('run.ask_start', {
+        emitRun(b, 'run.ask_start', {
           threadId, runId: this.currentRunId(threadId), messageId, toolCallId, questions,
         });
       },
@@ -70,7 +110,7 @@ class AgentService {
           logger.error('agent', 'ask closed without active message', { threadId, toolCallId, kind: outcome.kind });
           return;
         }
-        broadcaster.emit('run.ask_end', {
+        emitRun(b, 'run.ask_end', {
           threadId, runId: this.currentRunId(threadId), messageId, toolCallId, outcome,
         });
       },
@@ -90,17 +130,47 @@ class AgentService {
       activeMessageId: null,
       askOpened: new Set(),
       askArgs: new Map(),
+      runJournal: [],
+      runStartIndex: null,
     };
     this.sessions.set(threadId, bound);
     this.subscribe(bound);
     return bound;
   }
 
-  async loadHistory(threadId: string, projectPath: string): Promise<Message[]> {
+  /**
+   * 历史 + 在途 run 的复原。
+   *
+   * 给了 replay（即调用方是某个具体窗口）时，若这条 thread 有 run 在飞，就把本轮 journal
+   * 原样重放给那个窗口。ensureSession 之后这个方法**全程同步**，而 pi 的事件也只在主进程
+   * 这一根线程上派发，所以「读 transcript、切历史、重放 journal」这三步之间插不进任何新事件：
+   * 重放与其后的实时广播走同一条 EVENT_CHANNEL、先进先出，不重不漏，不需要序号去对齐。
+   *
+   * 对应地，返回的 messages 要把本轮 in-flight turn 摘掉 —— 它由重放的事件在渲染层的
+   * buffer 里重建。留下本轮的 user 消息：直播路径里它本来也是 Composer 直接写进 history 的，
+   * 不经过 buffer。
+   */
+  async loadHistory(threadId: string, projectPath: string, replay?: EventSink): Promise<Message[]> {
     const bound = await this.ensureSession(threadId, projectPath);
-    // Adaptation A: handle both real SDK (messages) and fake (state.messages)
-    const raw = bound.session.state?.messages ?? bound.session.messages ?? [];
-    return normalizePiMessages(raw as PiMessage[]);
+    const raw = piMessagesOf(bound);
+    const state = this.runs.get(threadId);
+    const startIndex = bound.runStartIndex;
+    if (state?.status !== 'running' || startIndex === null) return normalizePiMessages(raw, threadId);
+
+    const committed = [
+      ...raw.slice(0, startIndex),
+      ...raw.slice(startIndex).filter((m) => m.role === 'user'),
+    ];
+    const messages = normalizePiMessages(committed, threadId);
+    if (replay) {
+      // 先发 run.resync 作废这个窗口手上关于本轮的一切，再按序重放 journal。
+      // 没有这一下，「run 在飞时窗口没打开这条 thread」的情形会出问题：那些事件已经
+      // 建过 buffer 了，紧接着重放会把它们再算一遍。journal 是本轮的全量事实，
+      // 所以「清空再重建」是安全的，而且顺带把上一轮的残留 buffer 也扫掉。
+      replay({ topic: 'run.resync', payload: { threadId, runId: state.runId } });
+      for (const event of bound.runJournal) replay(event);
+    }
+    return messages;
   }
 
   async send(threadId: string, projectPath: string, content: string): Promise<{ runId: string }> {
@@ -195,7 +265,12 @@ class AgentService {
           // one turn all attach to the same buffer. Tool calls fire AFTER pi's
           // first message_end, so consuming the buffer at message_end loses them.
           bound.activeMessageId = `${threadId}:${randomUUID()}`;
-          broadcaster.emit('run.started', { threadId, runId });
+          // 新一轮：上一轮的 journal 到此为止，切开历史的下标也在这一刻定下来。
+          // pi 是先发 agent_start 再把 prompt 消息 push 进 transcript 的
+          // （agent-loop.js 的 runAgentLoop），所以这里读到的长度正好是本轮第一条消息的下标。
+          bound.runJournal = [];
+          bound.runStartIndex = piMessagesOf(bound).length;
+          emitRun(bound, 'run.started', { threadId, runId });
           return;
         case 'message_start':
           // No-op: keep the run-level activeMessageId so the buffer stays alive
@@ -206,9 +281,9 @@ class AgentService {
           const messageId = bound.activeMessageId;
           if (!messageId || !sub) return;
           if (sub.type === 'text_delta' && sub.delta) {
-            broadcaster.emit('run.message_delta', { threadId, runId, messageId, delta: sub.delta });
+            emitRun(bound, 'run.message_delta', { threadId, runId, messageId, delta: sub.delta });
           } else if (sub.type === 'thinking_delta' && sub.delta) {
-            broadcaster.emit('run.thinking_delta', { threadId, runId, messageId, delta: sub.delta });
+            emitRun(bound, 'run.thinking_delta', { threadId, runId, messageId, delta: sub.delta });
           }
           return;
         }
@@ -223,8 +298,10 @@ class AgentService {
             return;
           }
           const command = typeof e.args?.command === 'string' ? e.args.command : JSON.stringify(e.args ?? {});
-          broadcaster.emit('run.tool_call_start', {
-            threadId, runId, toolCallId: e.toolCallId, name: e.toolName, command,
+          const startMessageId = toolMessageId(bound, e.toolCallId);
+          if (!startMessageId) return;
+          emitRun(bound, 'run.tool_call_start', {
+            threadId, runId, messageId: startMessageId, toolCallId: e.toolCallId, name: e.toolName, command,
           });
           return;
         }
@@ -233,6 +310,7 @@ class AgentService {
           return;
         case 'tool_execution_end': {
           const e = evt as unknown as { toolCallId: string; toolName: string; isError: boolean; result: unknown };
+          const messageId = toolMessageId(bound, e.toolCallId);
           if (e.toolName === ASK_TOOL_NAME) {
             const cached = bound.askArgs.get(e.toolCallId);
             bound.askArgs.delete(e.toolCallId);
@@ -243,29 +321,31 @@ class AgentService {
             // 从没开过（校验失败、批次非法、其他异常）→ 补发一对普通工具事件，
             // 渲染成失败的工具卡片。chunk 必须带上，否则实时只有「失败」两个字、
             // 重启后从 session 恢复却能展开看到错误详情。
-            broadcaster.emit('run.tool_call_start', {
-              threadId, runId, toolCallId: e.toolCallId, name: e.toolName,
+            if (!messageId) return;
+            emitRun(bound, 'run.tool_call_start', {
+              threadId, runId, messageId, toolCallId: e.toolCallId, name: e.toolName,
               command: JSON.stringify(cached?.args ?? {}),
             });
             const errText = extractToolResultText(e.result);
             if (errText) {
-              broadcaster.emit('run.tool_call_chunk', {
-                threadId, runId, toolCallId: e.toolCallId, stream: 'stderr', chunk: errText,
+              emitRun(bound, 'run.tool_call_chunk', {
+                threadId, runId, messageId, toolCallId: e.toolCallId, stream: 'stderr', chunk: errText,
               });
             }
-            broadcaster.emit('run.tool_call_end', {
-              threadId, runId, toolCallId: e.toolCallId, status: 'failed',
+            emitRun(bound, 'run.tool_call_end', {
+              threadId, runId, messageId, toolCallId: e.toolCallId, status: 'failed',
             });
             return;
           }
+          if (!messageId) return;
           const chunk = extractToolResultText(e.result);
           if (chunk) {
-            broadcaster.emit('run.tool_call_chunk', {
-              threadId, runId, toolCallId: e.toolCallId, stream: e.isError ? 'stderr' : 'stdout', chunk,
+            emitRun(bound, 'run.tool_call_chunk', {
+              threadId, runId, messageId, toolCallId: e.toolCallId, stream: e.isError ? 'stderr' : 'stdout', chunk,
             });
           }
-          broadcaster.emit('run.tool_call_end', {
-            threadId, runId, toolCallId: e.toolCallId,
+          emitRun(bound, 'run.tool_call_end', {
+            threadId, runId, messageId, toolCallId: e.toolCallId,
             status: e.isError ? 'failed' : 'ok',
           });
           return;
@@ -278,7 +358,7 @@ class AgentService {
           const e = evt as unknown as { message?: { role?: string; content?: unknown } };
           const msg = e.message;
           if (msg?.role === 'assistant' && bound.activeMessageId && isParallelBatch(msg.content)) {
-            broadcaster.emit('run.parallel_group', {
+            emitRun(bound, 'run.parallel_group', {
               threadId, runId,
               messageId: bound.activeMessageId,
               toolCallIds: toolCallsOf(msg.content).map((c) => c.id),
@@ -303,7 +383,7 @@ class AgentService {
           }
           // Flush the run's accumulated buffer as one assistant message
           const messageId = bound.activeMessageId;
-          if (messageId) broadcaster.emit('run.message_end', { threadId, runId, messageId });
+          if (messageId) emitRun(bound, 'run.message_end', { threadId, runId, messageId });
           bound.activeMessageId = null;
           // tool_execution_end 是正常的清理点；run 异常退出时它可能不发，
           // 所以这里兜一次底，免得条目跨轮残留。
@@ -313,6 +393,9 @@ class AgentService {
             ? { kind: 'error' as const, message: errorMessage ?? 'unknown' }
             : { kind: reason };
           this.runs.set(threadId, transition(this.runs.get(threadId) ?? { status: 'idle' }, endEvt));
+          // run.ended 不进 journal：它一到就说明这轮不在飞了，journal 到此作废。
+          bound.runJournal = [];
+          bound.runStartIndex = null;
           broadcaster.emit('run.ended', { threadId, runId, reason, errorMessage });
           if (bound.staleAfterRun) {
             void this.dispose(threadId);

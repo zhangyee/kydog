@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { app, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
+import { sinkFor } from './ipc/broadcaster';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
 import { researchService } from './research/researchService';
@@ -130,7 +131,7 @@ export function registerAllHandlers(): void {
   registerHandler('thread.list', (args) => threadService.list(args));
   registerHandler('thread.delete', (args) => threadService.delete(args));
   registerHandler('thread.rename', (args) => threadService.rename(args));
-  registerHandler('thread.loadHistory', (args) => threadService.loadHistory(args));
+  registerHandler('thread.loadHistory', (args, evt) => threadService.loadHistory(args, sinkFor(evt.sender)));
   registerHandler('thread.send', (args) => threadService.send(args));
   registerHandler('thread.abort', (args) => threadService.abort(args));
   registerHandler('ask.submit', (args) => threadService.submitAsk(args));
