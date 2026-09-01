@@ -2,6 +2,7 @@ import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsUpdateArgs, SkillSyncHealth, LocaleSetOutcome,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
+  CenterViewState,
   TelemetryStatus,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
@@ -92,6 +93,10 @@ export type RpcCall =
   | { method: 'telemetry.getStatus'; args: undefined; result: TelemetryStatus }
   | { method: 'telemetry.setEnabled'; args: { enabled: boolean }; result: TelemetryStatus }
   | { method: 'telemetry.deleteMyData'; args: undefined; result: TelemetryStatus }
+  // 渲染进程重载后要接回原处，靠的就是这条：中央区状态一变就上报，主进程**只存在内存里**，
+  // app.bootstrap 再带回去。刻意不落盘 —— 它要活过渲染进程重载（那时主进程没重启），
+  // 但不该活过 app 退出，否则就成了「冷启动也恢复上次会话」那种另一回事的产品行为。
+  | { method: 'ui.saveViewState'; args: { state: CenterViewState }; result: void }
   // ── 窗口 ──
   // Windows 的 titleBarOverlay 颜色只能由渲染层给：主题色的真源是 theme CSS 的
   // --color-titlebar-* token，而窗口创建时渲染进程还没起来，主进程手里没有它。

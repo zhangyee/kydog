@@ -2,6 +2,7 @@ import os from 'node:os';
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { sinkFor } from './ipc/broadcaster';
+import { viewStateStore } from './ui/viewState';
 import { TITLE_BAR_HEIGHT } from './windowChrome';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
@@ -70,6 +71,8 @@ export function registerAllHandlers(): void {
       appVersion: app.getVersion(),
       systemLocale: mapSystemLocale(app.getLocale()),
       identity, onboardingRecovery,
+      // 只有渲染进程重载时这里才非空 —— 主进程内存里的东西，冷启动是干净的。
+      viewState: viewStateStore.get(),
     };
   });
 
@@ -88,6 +91,8 @@ export function registerAllHandlers(): void {
     if (result.ok) await syncTelemetryFromSettings();
     return result;
   });
+
+  registerHandler('ui.saveViewState', (args) => { viewStateStore.set(args.state); });
 
   registerHandler('settings.get', () => settingsService.get());
   registerHandler('settings.update', (args) => settingsService.update(args));

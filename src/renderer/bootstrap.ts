@@ -6,6 +6,7 @@ import { useSkillsStore } from './stores/skillsStore';
 import { useIdentityStore } from './stores/identityStore';
 import { useUpdateStore } from './stores/updateStore';
 import { applyRunEvent } from './runEvents';
+import { restoreViewState, installViewStateSync } from './viewState';
 import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
 
 export async function bootstrap(): Promise<void> {
@@ -32,6 +33,11 @@ export async function bootstrap(): Promise<void> {
     settingsTab: 'provider',
     activeCenterTab: noProvider ? 'settings' : 'thread',
   });
+
+  // 渲染进程重载后接回原处。必须排在上面那次 setState 之后 —— 它会把 activeCenterTab
+  // 重置掉。noProvider 时把 activeCenterTab 让给上面的强制设置页，只把 tab 开回来。
+  restoreViewState(state.viewState, new Set(state.threads.map((t) => t.id)), noProvider);
+  installViewStateSync();
 
   let prev = useUiStore.getState();
   useUiStore.subscribe((s) => {

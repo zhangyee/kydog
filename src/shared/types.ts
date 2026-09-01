@@ -234,6 +234,23 @@ export type IndexFile = {
   threads: Thread[];
 };
 
+/**
+ * 中央区「正在看什么」。渲染进程重载后照它接回原处。
+ *
+ * 只记路径与选择，不记内容：FileTab.id 就是文件绝对路径，其余字段（kind / title /
+ * 磁盘内容）uiStore.openFile() 都能重建，记下来只会变成第二份会过期的真相。
+ *
+ * activeTab 故意不含 'settings'：设置页什么时候顶到前面由 bootstrap 自己判断
+ * （首启没配 provider 就强制打开），恢复逻辑不该跟它抢。
+ */
+export type CenterViewState = {
+  threadId: string | null;
+  /** 按 tab 顺序排列的文件绝对路径。 */
+  filePaths: string[];
+  activeFilePath: string | null;
+  activeTab: 'thread' | 'file';
+};
+
 export type BootstrapState = {
   projects: Project[];
   threads: Thread[];
@@ -242,6 +259,8 @@ export type BootstrapState = {
   systemLocale: 'zh' | 'en';
   identity: Identity;
   onboardingRecovery: OnboardingRecovery;
+  /** 上一次渲染进程留下的中央区快照；null = 本次是冷启动（或还没人存过）。 */
+  viewState: CenterViewState | null;
 };
 
 // ── Skills ──
