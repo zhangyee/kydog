@@ -20,7 +20,7 @@ test('15-titlebar: defaults to KyDog and reflects selected thread title', async 
     await expect(titleBar).toBeVisible();
     await expect(titleBar).toContainText('KyDog');
 
-    await launched.page.locator(`[data-testid="thread-${threadId}"]`).click();
+    await launched.page.getByTestId(`thread-${threadId}`).click();
     await expect(titleBar).toContainText(threadTitle);
   } finally {
     await teardown(launched);

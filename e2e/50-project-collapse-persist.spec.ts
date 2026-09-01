@@ -37,7 +37,7 @@ test('50-collapse-persist: 收起的 project 重启后仍是收起的，其余�
     await expect(l1.page.locator('[data-testid="thread-t-a"]')).toBeVisible();
     await expect(l1.page.locator('[data-testid="thread-t-b"]')).toBeVisible();
 
-    await l1.page.locator(`[data-testid="project-toggle-${nameA}"]`).click();
+    await l1.page.getByTestId(`project-toggle-${nameA}`).click();
     await expect(l1.page.locator('[data-testid="thread-t-a"]')).toHaveCount(0);
 
     // 落盘的是路径本身，不是「第几个 project」这种会随排序漂移的东西
@@ -53,12 +53,12 @@ test('50-collapse-persist: 收起的 project 重启后仍是收起的，其余�
   const l2 = await launchKydog({ kydogHome: home });
   try {
     // A 仍收起（行还在，但它的 thread 不在），B 仍展开
-    await expect(l2.page.locator(`[data-testid="project-toggle-${nameA}"]`)).toBeVisible();
+    await expect(l2.page.getByTestId(`project-toggle-${nameA}`)).toBeVisible();
     await expect(l2.page.locator('[data-testid="thread-t-b"]')).toBeVisible();
     await expect(l2.page.locator('[data-testid="thread-t-a"]')).toHaveCount(0);
 
     // 再点开就能恢复
-    await l2.page.locator(`[data-testid="project-toggle-${nameA}"]`).click();
+    await l2.page.getByTestId(`project-toggle-${nameA}`).click();
     await expect(l2.page.locator('[data-testid="thread-t-a"]')).toBeVisible();
   } finally {
     await teardown(l2);

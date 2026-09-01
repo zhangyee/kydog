@@ -19,15 +19,15 @@ test('13-tab-strip: thread tab renders, breadcrumb stats visible, close deselect
     const page = launched.page;
 
     // Select the seeded thread from the projects tree.
-    await page.locator(`[data-testid="thread-${threadId}"]`).click();
+    await page.getByTestId(`thread-${threadId}`).click();
 
     // TabStrip + Breadcrumb visible.
-    await expect(page.locator(`[data-testid="tab-${threadId}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${threadId}`)).toBeVisible();
     await expect(page.locator('[data-testid="thread-stats"]')).toBeVisible();
 
     // Close tab → main pane returns to Welcome.
-    await page.locator(`[data-testid="tab-close-${threadId}"]`).click();
-    await expect(page.locator(`[data-testid="tab-${threadId}"]`)).toHaveCount(0);
+    await page.getByTestId(`tab-close-${threadId}`).click();
+    await expect(page.getByTestId(`tab-${threadId}`)).toHaveCount(0);
     await expect(page.getByTestId('welcome-slogan')).toBeVisible();
   } finally {
     await teardown(launched);

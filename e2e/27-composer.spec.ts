@@ -253,7 +253,7 @@ test('27-composer: project pill switches the empty thread to another project', a
     await expect(page.locator('[data-testid="project-menu"]')).toBeVisible();
     await expect(page.locator('[data-testid="project-item-current"]')).toContainText(projectAName);
 
-    const otherItem = page.locator(`[data-testid="project-item-${projectBName}"]`);
+    const otherItem = page.getByTestId(`project-item-${projectBName}`);
     await expect(otherItem).toBeVisible();
     await otherItem.click();
 

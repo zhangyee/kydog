@@ -16,15 +16,15 @@ test('17-project-tree-collapse: selected thread project still toggles closed', a
   });
 
   try {
-    const threadRow = launched.page.locator(`[data-testid="thread-${threadId}"]`);
-    const projectToggle = launched.page.locator(`[data-testid="project-toggle-${path.basename(projectPath)}"]`);
+    const threadRow = launched.page.getByTestId(`thread-${threadId}`);
+    const projectToggle = launched.page.getByTestId(`project-toggle-${path.basename(projectPath)}`);
 
     await threadRow.click();
     await projectToggle.click();
     await expect(threadRow).toHaveCount(0);
 
     await projectToggle.click();
-    await expect(launched.page.locator(`[data-testid="thread-${threadId}"]`)).toBeVisible();
+    await expect(launched.page.getByTestId(`thread-${threadId}`)).toBeVisible();
   } finally {
     await teardown(launched);
   }
