@@ -25,14 +25,14 @@ test('53-reload: 刷新后仍停在原来的会话上，不回欢迎页', async 
     const { page } = launched;
 
     await page.click('text=测试 Thread');
-    await expect(page.locator('[data-testid="tab-thr-1"]')).toBeVisible();
-    await expect(page.locator('[data-testid="welcome-slogan"]')).toHaveCount(0);
+    await expect(page.getByTestId('tab-thr-1')).toBeVisible();
+    await expect(page.getByTestId('welcome-slogan')).toHaveCount(0);
 
     await page.reload();
 
     // 这两条就是用户报的那个现象本身：会话 tab 还在，欢迎页没回来
-    await expect(page.locator('[data-testid="tab-thr-1"]')).toBeVisible();
-    await expect(page.locator('[data-testid="welcome-slogan"]')).toHaveCount(0);
+    await expect(page.getByTestId('tab-thr-1')).toBeVisible();
+    await expect(page.getByTestId('welcome-slogan')).toHaveCount(0);
   } finally {
     await teardown(launched);
   }
@@ -75,7 +75,7 @@ test('53-reload: 冷启动不恢复，仍是干净的欢迎页', async () => {
   const home = launched.kydogHome;
   try {
     await launched.page.click('text=测试 Thread');
-    await expect(launched.page.locator('[data-testid="tab-thr-1"]')).toBeVisible();
+    await expect(launched.page.getByTestId('tab-thr-1')).toBeVisible();
   } finally {
     await teardown(launched);
   }
@@ -83,9 +83,12 @@ test('53-reload: 冷启动不恢复，仍是干净的欢迎页', async () => {
   launched = await launchKydog({ kydogHome: home });
   try {
     const { page } = launched;
-    await expect(page.locator('[data-testid="thread-thr-1"]')).toBeVisible(); // 侧栏里当然还在
-    await expect(page.locator('[data-testid="tab-thr-1"]')).toHaveCount(0);   // 但没有被自动选中
-    await expect(page.locator('[data-testid="welcome-slogan"]')).toBeVisible();
+    // 先等冷启动真的走完，再断言。这是**基础设施等待**，给足余量：满负载跑全量时
+    // 冷启动会明显变慢，而 expect 的 5s 是行为判据、按 playwright.config 的约定不能放大。
+    await page.getByTestId('welcome-slogan').waitFor({ timeout: 20_000 });
+
+    await expect(page.getByTestId('tab-thr-1')).toHaveCount(0);   // 没有被自动选中
+    await expect(page.getByTestId('thread-thr-1')).toBeVisible(); // 侧栏里当然还在
   } finally {
     await teardown(launched);
   }
