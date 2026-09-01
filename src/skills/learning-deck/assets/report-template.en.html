@@ -2337,6 +2337,21 @@ figcaption b {
   addEventListener('scroll', sync, { passive: true });
   addEventListener('resize', sync);
   sync();
+  // ⚠️ When the host loads the report into a sandboxed srcdoc iframe, this script can finish
+  //    running before the iframe has a layout tree (before the OOPIF attaches to the compositor):
+  //    at that moment every getBoundingClientRect() is all zero and innerHeight is 0 too, so the
+  //    sync() call above locks onto the last toc item, because "0 <= 0" holds for every one of
+  //    them — and "rendering starts" neither dispatches scroll nor guarantees a resize (CI traces
+  //    show zero correction for 5 seconds after the lock). IntersectionObserver's callback is
+  //    guaranteed to fire after real layout exists: body going from no-layout (not intersecting)
+  //    to intersecting must cross the 0 threshold, forcing another callback, and that sync() call
+  //    gets the real value. Keep observing, don't disconnect — the first callback may still arrive
+  //    before layout; body's intersection state only crosses the threshold on render/hide
+  //    transitions, scrolling never triggers it, so the always-on cost is negligible. Environments
+  //    without IO keep the original behavior (scroll/resize is already enough there).
+  if (typeof IntersectionObserver === 'function') {
+    new IntersectionObserver(sync).observe(document.body);
+  }
 })();
 
 // The header's cover band (spec E.5 v6, measured). Likewise written in this one script block.

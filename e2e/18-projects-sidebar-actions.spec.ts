@@ -65,7 +65,11 @@ test('18-projects-sidebar: pin project persists across restart', async () => {
   });
   try {
     const nameB = path.basename(projDirB);
-    await l1.page.getByTestId(`project-${projDirB}`).hover();
+    // hover 目标必须是 ProjectRow 自己的 .group 行（project-toggle-*），不能是
+    // ProjectsTree 里包住整行 + 子节点区域的外层 wrapper（project-${path}）——
+    // .hover() 落在 wrapper 外接矩形的中心点，行高差一点（字体渲染/DPI）就可能
+    // 跨出真正持有 onMouseEnter 的那个 .group div，导致操作按钮一直不出现。
+    await l1.page.locator(`[data-testid="project-toggle-${nameB}"]`).hover();
     await l1.page.locator(`[data-testid="project-menu-trigger-${nameB}"]`).click();
     await l1.page.locator(`[data-testid="project-pin-${nameB}"]`).click();
 

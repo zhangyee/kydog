@@ -2337,6 +2337,18 @@ figcaption b {
   addEventListener('scroll', sync, { passive: true });
   addEventListener('resize', sync);
   sync();
+  // ⚠️ 宿主把报告装进 sandbox srcdoc iframe 时，这个脚本可能在 iframe 获得布局
+  //    之前就跑完（OOPIF 附加到合成器之前）：那一刻所有 getBoundingClientRect()
+  //    全是 0、innerHeight 也是 0，上面那次 sync() 会因「0 <= 0」对每条都成立
+  //    而锁死在目录最后一条；而「开始渲染」既不派发 scroll，也不保证派发
+  //    resize（CI 实测锁死后 5 秒零纠正）。IntersectionObserver 的回调保证发生
+  //    在真实布局之后：body 从无布局（不相交）变为相交要跨过阈值 0，必再回调
+  //    一次，那次 sync() 拿到的就是真值。持续观察不 disconnect——首次回调可能
+  //    仍在未渲染阶段送达；body 的相交态只在渲染/隐藏切换时跨阈值，滚动不会
+  //    触发它，常驻代价可忽略。没有 IO 的环境维持原状（scroll/resize 本来就够）。
+  if (typeof IntersectionObserver === 'function') {
+    new IntersectionObserver(sync).observe(document.body);
+  }
 })();
 
 // 抬头的封面带（spec E.5 v6，已实测）。同样写在这唯一的脚本块里。
