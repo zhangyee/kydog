@@ -79,7 +79,7 @@ test('37b-identity: USER.md 含空格称呼在消息列表完整显示', async (
   try {
     const { page } = launched;
     // 打开已有线程 + 发消息：交互序列对齐 04-send-receive-stream.spec.ts 现行写法。
-    await page.locator(`[data-testid="thread-${threadId}"]`).click();
+    await page.getByTestId(`thread-${threadId}`).click();
     await page.locator('[data-testid="composer-input"]').fill('hi');
     await page.locator('[data-testid="send-button"]').click();
     // 完整称呼出现，且不能被截断成 "Dr."（回归含空格称呼被拆分的问题）。

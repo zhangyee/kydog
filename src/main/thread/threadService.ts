@@ -6,6 +6,7 @@ import { agentService } from '../agent/AgentService';
 import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import type { AskAnswer } from '../../shared/askQuestion';
+import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message } from '../../shared/types';
 
 export class ThreadService {
@@ -89,13 +90,16 @@ export class ThreadService {
     return thread;
   }
 
-  async loadHistory({ threadId }: { threadId: string }): Promise<Message[]> {
+  // replay 是发起这次调用的那个窗口的事件出口。有 run 在飞时，本轮已广播过的 run.* 事件
+  // 会原样重放给它 —— 渲染进程重载后就是靠这个把在途 turn 接回去。见 protocol.ts 里
+  // thread.loadHistory 那段注释，以及 AgentService.loadHistory。
+  async loadHistory({ threadId }: { threadId: string }, replay?: EventSink): Promise<Message[]> {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${threadId} not found`);
     thread.lastActiveAt = new Date().toISOString();
     await saveIndex(idx);
-    return agentService.loadHistory(threadId, thread.projectPath);
+    return agentService.loadHistory(threadId, thread.projectPath, replay);
   }
 
   async send({ threadId, content }: { threadId: string; content: string }): Promise<{ runId: string }> {

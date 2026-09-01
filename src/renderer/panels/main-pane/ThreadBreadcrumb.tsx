@@ -11,7 +11,7 @@ export function ThreadBreadcrumb({ threadId }: Props) {
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
 
   if (!thread) return null;
-  const projectName = thread.projectPath.split('/').pop() ?? thread.projectPath;
+  const projectName = thread.projectPath.split(/[\\/]/).pop() ?? thread.projectPath;
   const turns = messages.length;
   const tools = messages.reduce(
     (acc, m) =>

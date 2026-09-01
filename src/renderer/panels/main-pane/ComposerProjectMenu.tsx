@@ -55,7 +55,7 @@ export function ComposerProjectMenu({ threadId, currentProjectPath, anchorRect, 
     }
   };
 
-  const projectName = (p: Project) => p.path.split('/').pop() ?? p.path;
+  const projectName = (p: Project) => p.path.split(/[\\/]/).pop() ?? p.path;
   const current = projects.find((p) => p.path === currentProjectPath);
   const others = projects.filter((p) => p.path !== currentProjectPath);
 

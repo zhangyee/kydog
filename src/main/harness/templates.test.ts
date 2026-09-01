@@ -5,9 +5,9 @@ describe('harnessTemplates', () => {
   for (const locale of ['zh', 'en'] as const) {
     it(`${locale}: 三模板齐全且占位符/路径正确`, () => {
       const t = harnessTemplates(locale);
-      // ?raw 拿到的是磁盘字节，行尾随检出而变（core.autocrlf）。行尾是检出噪声、不是模板内容，
-      // 必须在这一层归一化：否则 seed.ts 的 front matter 正则在 Windows 上匹配不上，
-      // 称呼会漏掉引号、写出坏 YAML。
+      // ?raw 拿到的是磁盘字节，行尾随检出而变（core.autocrlf）。templates.ts 在入口处
+      // 归一化成 LF —— 行尾是检出噪声、不是模板内容。这里的 no-CR 断言就是归一化的回归测试，
+      // 归一化之后围栏断言收紧回严格 '---\n' 才是对的。
       for (const [name, text] of Object.entries(t)) {
         expect(text.includes('\r'), `${name} 模板含 CR，行尾未归一化`).toBe(false);
       }

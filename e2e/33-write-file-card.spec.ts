@@ -21,7 +21,15 @@ test('33-write-file-card: write 工具落盘 .md → 文件卡出现 → 单击�
         // 真落盘：fixture 不会实际写盘，markdown tab 打开时要能读到内容
         await fs.writeFile(reportPath, '# report\n\n正文\n');
         await seedProject(home, projectPath, [{ id: 'thr-1', title: 'WriteTest' }]);
-        const concrete = fixtureTemplate.replace('__REPORT_PATH__', reportPath);
+        // 占位符在 JSON 字符串里，路径必须按 JSON 转义再塞进去：Windows 的
+        // `C:\Users\admin\...` 直接替换会产出 `\U`、`\a` 这种非法转义，整份 fixture
+        // JSON.parse 不了 —— 主进程建不出 session，thread.loadHistory 直接失败。
+        // JSON.stringify 出来是带引号的合法字符串，去掉首尾引号就是要嵌进去的内容。
+        // （用函数式 replace：替换串里的 `$` 有特殊含义，路径里出现就会被吃掉。）
+        const concrete = fixtureTemplate.replace(
+          '__REPORT_PATH__',
+          () => JSON.stringify(reportPath).slice(1, -1),
+        );
         await fs.writeFile(concreteFixturePath, concrete);
       },
     });
@@ -32,7 +40,7 @@ test('33-write-file-card: write 工具落盘 .md → 文件卡出现 → 单击�
     await page.locator('[data-testid="composer-input"]').fill('生成报告');
     await page.locator('[data-testid="send-button"]').click();
 
-    const card = page.locator(`[data-testid="file-card-${reportPath}"]`);
+    const card = page.getByTestId(`file-card-${reportPath}`);
 
     // ① 本轮还没结束时**不出卡片**。
     // agent 落盘的那一刻正文可能还在一章章往里填（learning-deck 的模板是 `cp` 之后
@@ -51,7 +59,7 @@ test('33-write-file-card: write 工具落盘 .md → 文件卡出现 → 单击�
 
     // 单击 → markdown tab 打开
     await card.click();
-    await expect(page.locator(`[data-testid="tab-${reportPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${reportPath}`)).toBeVisible();
     const editor = page.locator('.kydog-md-editor .ProseMirror');
     await expect(editor).toContainText('report');
   } finally {

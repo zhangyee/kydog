@@ -7,7 +7,7 @@ test('11-themes: five themes switch via UserMenu and toggle data-theme', async (
     await expect(launched.page.locator('html')).toHaveAttribute('data-theme', 'vellum');
     await launched.page.locator('[data-testid="user-menu-trigger"]').click();
     for (const name of ['vellum', 'porcelain', 'sepia', 'midnight', 'lilac'] as const) {
-      await launched.page.locator(`[data-testid="theme-${name}"]`).click();
+      await launched.page.getByTestId(`theme-${name}`).click();
       await expect(launched.page.locator('html')).toHaveAttribute('data-theme', name);
     }
   } finally {

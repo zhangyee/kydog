@@ -48,12 +48,12 @@ test('30-markdown-editor: 双击打开 → 编辑 → ⌘S 保存往返', async 
 
     // 选中 thread，Inspector 才显示该项目的文件树
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${notesPath}"]`);
+    const fsRow = page.getByTestId(`fs-${notesPath}`);
     await fsRow.waitFor();
 
     // 双击打开 markdown 编辑器 tab
     await fsRow.dblclick();
-    await expect(page.locator(`[data-testid="tab-${notesPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${notesPath}`)).toBeVisible();
     const editor = page.locator('.kydog-md-editor .ProseMirror');
     await editor.waitFor();
     await expect(editor).toContainText('初始标题');
@@ -82,10 +82,10 @@ test('30-markdown-editor: 行内公式 $...$ 不白屏、KaTeX 正常渲染', as
     const mathPath = path.join(kydogHome, 'proj', MATH_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${mathPath}"]`);
+    const fsRow = page.getByTestId(`fs-${mathPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
-    await expect(page.locator(`[data-testid="tab-${mathPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${mathPath}`)).toBeVisible();
 
     // 编辑器不能白屏：标题正文要出现
     const editor = page.locator('.kydog-md-editor .ProseMirror');
@@ -106,7 +106,7 @@ test('30-markdown-editor: 打开会被规范化的 md 不应标脏（开档即�
     const normPath = path.join(kydogHome, 'proj', NORM_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${normPath}"]`);
+    const fsRow = page.getByTestId(`fs-${normPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
@@ -118,7 +118,7 @@ test('30-markdown-editor: 打开会被规范化的 md 不应标脏（开档即�
     await page.waitForTimeout(1500);
 
     // 没有任何编辑，脏标记不应出现
-    await expect(page.locator(`[data-testid="tab-dirty-${normPath}"]`)).toHaveCount(0);
+    await expect(page.getByTestId(`tab-dirty-${normPath}`)).toHaveCount(0);
   } finally {
     await teardown(launched);
   }
@@ -131,7 +131,7 @@ test('30-markdown-editor: 代码块当前行高亮跟随主题，而非 One Dark
     const codePath = path.join(kydogHome, 'proj', CODE_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${codePath}"]`);
+    const fsRow = page.getByTestId(`fs-${codePath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
     await page.locator('.kydog-md-editor .cm-activeLineGutter').first().waitFor();
@@ -168,7 +168,7 @@ test('30-markdown-editor: 关含未保存修改的 tab 弹确认框', async () =
     const notesPath = path.join(kydogHome, 'proj', NOTES_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${notesPath}"]`);
+    const fsRow = page.getByTestId(`fs-${notesPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
@@ -178,21 +178,21 @@ test('30-markdown-editor: 关含未保存修改的 tab 弹确认框', async () =
     await page.keyboard.type('脏内容');
 
     // 等待 tab 脏状态指示点出现（Crepe markdownUpdated → setFileTabDirty 传播）
-    await expect(page.locator(`[data-testid="tab-dirty-${notesPath}"]`)).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId(`tab-dirty-${notesPath}`)).toBeVisible({ timeout: 3000 });
 
     // 点 tab 关闭按钮 → 因脏出现确认框
-    await page.click(`[data-testid="tab-close-${notesPath}"]`);
+    await page.getByTestId(`tab-close-${notesPath}`).click();
     await expect(page.locator('[data-testid="unsaved-modal"]')).toBeVisible();
 
     // 取消 → tab 仍在
     await page.click('[data-testid="unsaved-cancel"]');
     await expect(page.locator('[data-testid="unsaved-modal"]')).toHaveCount(0);
-    await expect(page.locator(`[data-testid="tab-${notesPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${notesPath}`)).toBeVisible();
 
     // 再关 → 不保存 → tab 消失
-    await page.click(`[data-testid="tab-close-${notesPath}"]`);
+    await page.getByTestId(`tab-close-${notesPath}`).click();
     await page.click('[data-testid="unsaved-discard"]');
-    await expect(page.locator(`[data-testid="tab-${notesPath}"]`)).toHaveCount(0);
+    await expect(page.getByTestId(`tab-${notesPath}`)).toHaveCount(0);
   } finally {
     await teardown(launched);
   }

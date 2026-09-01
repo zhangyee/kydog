@@ -33,6 +33,20 @@ E2E（Playwright + Electron，需要先打包）：
 - `npm run cli:update` — 检查上游 CLI 新版本 + 同步其 skill 到 `src/skills/`，逐项 `[y/N]` 确认（交互式）
 - `npm run cli:update fastpaper@0.2.1` — 钉到指定版本（可回退），skill 跟着走同一个 tag；用位置参数，别写 `--tool`（npm 会吞掉它）
 
+## Windows 上跑测试：先开一次「开发者模式」
+
+有一批用例要**真的建符号链接**（考的是软链能不能越出目录、写入会不会穿透链接）。Windows 建符号链接需要 `SeCreateSymbolicLinkPrivilege`，普通用户默认没有，`fs.symlink` 直接抛 `EPERM`。
+
+**设置 → 系统 → 开发者选项 → 开发者模式**，打开即可。这是一次性开关，开完普通用户就一直有这项特权，**不需要每次开管理员窗口**。开之前可以先确认现状：
+
+```bash
+node -e "const f=require('fs'),o=require('os'),p=require('path');const d=f.mkdtempSync(p.join(o.tmpdir(),'c-'));f.writeFileSync(p.join(d,'t'),'x');try{f.symlinkSync(p.join(d,'t'),p.join(d,'l'));console.log('OK')}catch(e){console.log('UNAVAILABLE',e.code)}finally{f.rmSync(d,{recursive:true,force:true})}"
+```
+
+没开也**不会红**：`src/test-support/symlinkCapability.ts` 会探针式判定，建不了就 `skipIf` 跳过（跳过原因带在用例上，不是静默的）。代价是那批安全用例本机没跑到——所以别把「本机绿」当成「这块没问题」。
+
+CI 里靠 `KYDOG_REQUIRE_SYMLINK=1` 反过来**禁止跳过**：能力缺失就让它以 EPERM 红出来，免得覆盖在发版流水线上悄悄消失。目前钉在两个 macOS 矩阵项上（见 `.github/workflows/release.yml`）。
+
 ## 约定
 
 - **不要引入危险色**。设计系统里没有红色 token，破坏性操作走统一的 `confirm()` 对话框，不靠颜色警示。

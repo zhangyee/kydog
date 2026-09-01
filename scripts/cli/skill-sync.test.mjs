@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, exist
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gitBlobSha, localSkillHashes, upstreamSkillHashes, classifySkill, materializeSkill, applySkill } from './skill-sync.mjs';
+import { SKIP_WITHOUT_SYMLINK } from '../../src/test-support/symlinkCapability';
 
 /** existsSync 会跟着软链走（断链返回 false），判断"这个目录项还在不在"必须用 lstat */
 function entryExists(p) {
@@ -65,7 +66,7 @@ describe('localSkillHashes', () => {
     expect(Object.keys(localSkillHashes(dir))).toEqual(['SKILL.md']);
   });
 
-  it('records a symlink with a sentinel sha instead of skipping it', () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('records a symlink with a sentinel sha instead of skipping it', () => {
     writeFileSync(path.join(dir, 'SKILL.md'), 'hello\n');
     symlinkSync(path.join(dir, 'SKILL.md'), path.join(dir, 'link.md'));
     const h = localSkillHashes(dir);
@@ -75,7 +76,7 @@ describe('localSkillHashes', () => {
     expect(h['link.md']).not.toBe(h['SKILL.md']);
   });
 
-  it('records a dangling symlink without throwing (target 不存在也不能崩)', () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('records a dangling symlink without throwing (target 不存在也不能崩)', () => {
     symlinkSync(path.join(dir, 'nowhere.md'), path.join(dir, 'dangling.md'));
     expect(localSkillHashes(dir)).toEqual({ 'dangling.md': 'symlink' });
   });
@@ -305,7 +306,7 @@ describe('applySkill', () => {
  * dest 是纯 vendor 副本，里面不该有软链。软链既能让写入跟着链跑到目录外，
  * 又会因为不进 local 而永远删不掉——这组用例盯的是"目录外的真身没被动过"。
  */
-describe('applySkill × 软链', () => {
+describe.skipIf(SKIP_WITHOUT_SYMLINK)('applySkill × 软链', () => {
   let src, dest, outside;
   beforeEach(() => {
     src = mkdtempSync(path.join(tmpdir(), 'cli-skill-src-'));

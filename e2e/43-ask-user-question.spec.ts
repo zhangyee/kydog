@@ -211,7 +211,7 @@ test('43-ask: 8 个选项全部渲染，数字键 8 选中第 8 项、9 聚焦�
 
     // 8 个选项全部渲染出来。
     for (let i = 0; i < 8; i += 1) {
-      await expect(page.locator(`[data-testid="ask-option-q0o${i}"]`)).toBeVisible();
+      await expect(page.getByTestId(`ask-option-q0o${i}`)).toBeVisible();
     }
 
     // 数字键 8 选中第 8 项（q0o7），不是别的项。
@@ -219,7 +219,7 @@ test('43-ask: 8 个选项全部渲染，数字键 8 选中第 8 项、9 聚焦�
     await page.keyboard.press('8');
     await expect(page.locator('[data-testid="ask-option-q0o7"]')).toHaveAttribute('data-selected', 'true');
     for (let i = 0; i < 7; i += 1) {
-      await expect(page.locator(`[data-testid="ask-option-q0o${i}"]`)).toHaveAttribute('data-selected', 'false');
+      await expect(page.getByTestId(`ask-option-q0o${i}`)).toHaveAttribute('data-selected', 'false');
     }
 
     // 数字键 9 聚焦「其他」输入框，不选中任何选项——第 9 位不是第 9 个选项。

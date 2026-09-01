@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runSkillSync } from './skillSync';
+import { SKIP_WITHOUT_SYMLINK } from '../../test-support/symlinkCapability';
 
 function tmp(p: string) { return mkdtempSync(path.join(tmpdir(), p)); }
 
@@ -80,7 +81,7 @@ describe('runSkillSync', () => {
     expect(readFileSync(ref, 'utf8')).toBe('zh-ref');
   });
 
-  it('落盘树里出现软链 → 整棵换掉，不会把整轮同步带停', async () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('落盘树里出现软链 → 整棵换掉，不会把整轮同步带停', async () => {
     const builtinRoot = makeBuiltinRoot();
     const h = home();
     const args = { builtinRoot, locale: 'zh' as const, phase: 'startup' as const, kydogVersion: '0.3.0', ...h };

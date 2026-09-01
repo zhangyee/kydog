@@ -1,6 +1,9 @@
 import os from 'node:os';
-import { app, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
+import { sinkFor } from './ipc/broadcaster';
+import { viewStateStore } from './ui/viewState';
+import { TITLE_BAR_HEIGHT } from './windowChrome';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService } from './settings/settingsService';
 import { researchService } from './research/researchService';
@@ -68,6 +71,8 @@ export function registerAllHandlers(): void {
       appVersion: app.getVersion(),
       systemLocale: mapSystemLocale(app.getLocale()),
       identity, onboardingRecovery,
+      // 只有渲染进程重载时这里才非空 —— 主进程内存里的东西，冷启动是干净的。
+      viewState: viewStateStore.get(),
     };
   });
 
@@ -86,6 +91,8 @@ export function registerAllHandlers(): void {
     if (result.ok) await syncTelemetryFromSettings();
     return result;
   });
+
+  registerHandler('ui.saveViewState', (args) => { viewStateStore.set(args.state); });
 
   registerHandler('settings.get', () => settingsService.get());
   registerHandler('settings.update', (args) => settingsService.update(args));
@@ -130,7 +137,7 @@ export function registerAllHandlers(): void {
   registerHandler('thread.list', (args) => threadService.list(args));
   registerHandler('thread.delete', (args) => threadService.delete(args));
   registerHandler('thread.rename', (args) => threadService.rename(args));
-  registerHandler('thread.loadHistory', (args) => threadService.loadHistory(args));
+  registerHandler('thread.loadHistory', (args, evt) => threadService.loadHistory(args, sinkFor(evt.sender)));
   registerHandler('thread.send', (args) => threadService.send(args));
   registerHandler('thread.abort', (args) => threadService.abort(args));
   registerHandler('ask.submit', (args) => threadService.submitAsk(args));
@@ -188,6 +195,14 @@ export function registerAllHandlers(): void {
     });
     if (r.canceled || r.filePaths.length === 0) return null;
     return r.filePaths[0];
+  });
+
+  // Windows 的窗口按钮是原生叠加层，颜色只能由主进程设；而主题色的真源在渲染层的
+  // theme CSS，所以由 ThemeApplier 落完 data-theme 后推过来。height 每次一并带上，
+  // 免得它和 TitleBar 的 h-9 悄悄错开。非 win32 没有 overlay，调它会抛，直接不做。
+  registerHandler('window.setTitleBarOverlay', (args, evt) => {
+    if (process.platform !== 'win32') return;
+    BrowserWindow.fromWebContents(evt.sender)?.setTitleBarOverlay({ ...args, height: TITLE_BAR_HEIGHT });
   });
 
   if (process.env.KYDOG_E2E === '1') {

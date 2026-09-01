@@ -31,6 +31,7 @@ type RunsState = {
   addAskBlock: (messageId: string, toolCallId: string, questions: AskQuestion[]) => void;
   finalizeAskBlock: (messageId: string, toolCallId: string, outcome: AskOutcome) => void;
   takeBuffer: (messageId: string) => AssistantBlock[] | null;
+  dropBuffersForThread: (threadId: string) => void;
 };
 
 export const useRunsStore = create<RunsState>((set, get) => ({
@@ -168,6 +169,22 @@ export const useRunsStore = create<RunsState>((set, get) => ({
           : { kind: 'ask' as const, toolCallId: b.toolCallId, questions: b.questions, status: outcome.kind };
       });
       return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+    }),
+  // run.resync 的落点：把这条 thread 手上的在途 block 全扔掉，交给紧随其后的 journal
+  // 重放重建。journal 是本轮的全量事实，所以「先清空」比「想办法合并」既简单又准确。
+  dropBuffersForThread: (threadId) =>
+    set((s) => {
+      const doomed = Object.entries(s.bufferByMessage)
+        .filter(([, v]) => v.threadId === threadId)
+        .map(([messageId]) => messageId);
+      if (doomed.length === 0) return {};
+      const bufferByMessage = { ...s.bufferByMessage };
+      const activeThinkingStartByMessage = { ...s.activeThinkingStartByMessage };
+      for (const messageId of doomed) {
+        delete bufferByMessage[messageId];
+        delete activeThinkingStartByMessage[messageId];
+      }
+      return { bufferByMessage, activeThinkingStartByMessage };
     }),
   takeBuffer: (messageId) => {
     const buf = get().bufferByMessage[messageId];

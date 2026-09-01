@@ -16,12 +16,12 @@ test('34-thread-rename: 菜单重命名写回 index', async () => {
     },
   });
   try {
-    const row = launched.page.locator(`[data-testid="thread-${THREAD_ID}"]`);
+    const row = launched.page.getByTestId(`thread-${THREAD_ID}`);
     await expect(row).toBeVisible();
     await row.hover();
-    await launched.page.locator(`[data-testid="thread-menu-trigger-${THREAD_ID}"]`).click();
-    await launched.page.locator(`[data-testid="thread-rename-${THREAD_ID}"]`).click();
-    const input = launched.page.locator(`[data-testid="thread-rename-input-${THREAD_ID}"]`);
+    await launched.page.getByTestId(`thread-menu-trigger-${THREAD_ID}`).click();
+    await launched.page.getByTestId(`thread-rename-${THREAD_ID}`).click();
+    const input = launched.page.getByTestId(`thread-rename-input-${THREAD_ID}`);
     await expect(input).toBeFocused();
     await input.fill('新名字');
     await input.press('Enter');
@@ -51,13 +51,13 @@ test('34-thread-rename: 切走再切回来，重命名框和已输入内容都�
   });
   try {
     const { page } = launched;
-    const row = page.locator(`[data-testid="thread-${THREAD_ID}"]`);
+    const row = page.getByTestId(`thread-${THREAD_ID}`);
     await expect(row).toBeVisible();
     await row.hover();
-    await page.locator(`[data-testid="thread-menu-trigger-${THREAD_ID}"]`).click();
-    await page.locator(`[data-testid="thread-rename-${THREAD_ID}"]`).click();
+    await page.getByTestId(`thread-menu-trigger-${THREAD_ID}`).click();
+    await page.getByTestId(`thread-rename-${THREAD_ID}`).click();
 
-    const input = page.locator(`[data-testid="thread-rename-input-${THREAD_ID}"]`);
+    const input = page.getByTestId(`thread-rename-input-${THREAD_ID}`);
     await expect(input).toBeFocused();
     await input.fill('改到一半');
 
@@ -98,10 +98,10 @@ test('34-thread-rename: 删除点取消则会话保留', async () => {
     },
   });
   try {
-    const row = launched.page.locator(`[data-testid="thread-${THREAD_ID}"]`);
+    const row = launched.page.getByTestId(`thread-${THREAD_ID}`);
     await expect(row).toBeVisible();
     await row.hover();
-    await launched.page.locator(`[data-testid="delete-thread-${THREAD_ID}"]`).click();
+    await launched.page.getByTestId(`delete-thread-${THREAD_ID}`).click();
     await expect(launched.page.locator('[data-testid="confirm-dialog"]')).toBeVisible();
     await launched.page.locator('[data-testid="confirm-dialog-cancel"]').click();
     await expect(launched.page.locator('[data-testid="confirm-dialog"]')).toBeHidden();

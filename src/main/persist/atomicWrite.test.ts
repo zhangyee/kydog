@@ -17,7 +17,7 @@ describe('atomicWriteBytes', () => {
     expect([...(await fs.readFile(target))]).toEqual([...bytes]);
   });
 
-  it('目标是符号链接时换掉链接本身，不写穿到链接目标', async () => {
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('目标是符号链接时换掉链接本身，不写穿到链接目标', async () => {
     const outside = path.join(dir, 'outside.png');
     await fs.writeFile(outside, 'ORIGINAL');
     const target = path.join(dir, 'link.png');
@@ -59,6 +59,7 @@ describe('atomicWrite', () => {
 
 import { promises as fsp, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { atomicWriteWith0600Async, atomicWriteWith0600Sync } from './atomicWrite';
+import { SKIP_WITHOUT_SYMLINK } from '../../test-support/symlinkCapability';
 
 describe('atomicWriteWith0600 (POSIX)', () => {
   const skip = process.platform === 'win32';

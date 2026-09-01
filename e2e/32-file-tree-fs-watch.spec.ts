@@ -24,16 +24,16 @@ test('32-file-tree-fs-watch: 外部新写入文件 → FileTree 自动出现新�
 
     // 选中 thread → Inspector 渲染 FileTree
     await page.click('text=测试 Thread');
-    await page.locator(`[data-testid="fs-${seededPath}"]`).waitFor();
+    await page.getByTestId(`fs-${seededPath}`).waitFor();
 
     // 新文件还没存在
-    await expect(page.locator(`[data-testid="fs-${reportPath}"]`)).toHaveCount(0);
+    await expect(page.getByTestId(`fs-${reportPath}`)).toHaveCount(0);
 
     // 外部进程写入（模拟 agent Write 工具落盘）
     await fs.writeFile(reportPath, '# report\n');
 
     // chokidar awaitWriteFinish(200) + debounce(200) ≈ 400ms，给到 5s 留余量
-    await expect(page.locator(`[data-testid="fs-${reportPath}"]`)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId(`fs-${reportPath}`)).toBeVisible({ timeout: 5000 });
   } finally {
     await teardown(launched);
   }
@@ -56,11 +56,11 @@ test('32-file-tree-fs-watch: 外部删除文件 → FileTree 行消失', async (
     const tmpPath = path.join(projectPath, 'tmp.md');
 
     await page.click('text=测试 Thread');
-    await page.locator(`[data-testid="fs-${tmpPath}"]`).waitFor();
+    await page.getByTestId(`fs-${tmpPath}`).waitFor();
 
     await fs.unlink(tmpPath);
 
-    await expect(page.locator(`[data-testid="fs-${tmpPath}"]`)).toHaveCount(0, { timeout: 5000 });
+    await expect(page.getByTestId(`fs-${tmpPath}`)).toHaveCount(0, { timeout: 5000 });
   } finally {
     await teardown(launched);
   }

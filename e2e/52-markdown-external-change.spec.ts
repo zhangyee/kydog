@@ -17,7 +17,7 @@ async function seedAll(home: string) {
 async function openReport(page: Page, kydogHome: string) {
   const reportPath = path.join(kydogHome, 'proj', REPORT_REL);
   await page.click('text=测试 Thread');
-  const fsRow = page.locator(`[data-testid="fs-${reportPath}"]`);
+  const fsRow = page.getByTestId(`fs-${reportPath}`);
   await fsRow.waitFor();
   await fsRow.dblclick();
   const editor = page.locator('.kydog-md-editor .ProseMirror');

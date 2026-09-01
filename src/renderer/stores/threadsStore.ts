@@ -71,8 +71,23 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
   }),
   setHistory: (threadId, messages) =>
     set((s) => ({ historyByThread: { ...s.historyByThread, [threadId]: messages } })),
+  // 装载 thread.loadHistory 拿回来的那一段历史。
+  //
+  // 不是「只在缺失时写入」：这次 RPC 在途期间，主进程可能已经把某一轮 flush 成
+  // run.message_end 追加进来了（事件与 RPC 结果是两条通道，谁先到没有保证）。
+  // 那种情况下直接放弃写入会把整段历史丢掉，直接覆盖又会把追加的那条抹掉。
+  // messages 按定义是这条 thread 已落定历史的**前缀**，所以：接在已有内容前面，
+  // 按 id 去重。id 来自 normalizePiMessages 的位置编号、是确定性的，因此重复装载幂等
+  // （StrictMode 会把这次加载跑两遍）。
   initHistory: (threadId, messages) =>
-    set((s) => s.historyByThread[threadId] !== undefined ? {} : { historyByThread: { ...s.historyByThread, [threadId]: messages } }),
+    set((s) => {
+      const existing = s.historyByThread[threadId];
+      if (existing === undefined) return { historyByThread: { ...s.historyByThread, [threadId]: messages } };
+      const have = new Set(existing.map((m) => m.id));
+      const prefix = messages.filter((m) => !have.has(m.id));
+      if (prefix.length === 0) return {};
+      return { historyByThread: { ...s.historyByThread, [threadId]: [...prefix, ...existing] } };
+    }),
   appendUserMessage: (threadId, message) =>
     set((s) => ({
       historyByThread: {

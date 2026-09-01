@@ -65,14 +65,18 @@ test('18-projects-sidebar: pin project persists across restart', async () => {
   });
   try {
     const nameB = path.basename(projDirB);
-    await l1.page.locator(`[data-testid="project-${projDirB}"]`).hover();
+    await l1.page.getByTestId(`project-${projDirB}`).hover();
     await l1.page.locator(`[data-testid="project-menu-trigger-${nameB}"]`).click();
     await l1.page.locator(`[data-testid="project-pin-${nameB}"]`).click();
 
+    // 这个 poll 等的是**落盘**（RPC → loadIndex → 原子写），不是 UI 响应速度，所以给足余量：
+    // 满负载连跑多个 spec 时它超过默认的 5s，观察到过一次假红。放宽的是基础设施等待，
+    // 不是行为判据 —— 「点没点到」已经由上一行 click 的 actionability 保证了（真没点到会
+    // 停在那一行，而不是走到这里）。
     await expect.poll(async () => {
       const idxRaw = await fs.readFile(path.join(savedHome, '.kydog', 'index.json'), 'utf8');
       return JSON.parse(idxRaw).projects.find((p: { path: string; pinned?: boolean }) => p.path === projDirB)?.pinned === true;
-    }).toBe(true);
+    }, { timeout: 15_000 }).toBe(true);
   } finally {
     await l1.app.close();
     await fs.rm(l1.userDataDir, { recursive: true, force: true }).catch(() => {});
@@ -123,7 +127,7 @@ test('18-projects-sidebar: inline rename project', async () => {
   try {
     const oldName = path.basename(projDirA);
     const newName = '我的研究';
-    await l1.page.locator(`[data-testid="project-${projDirA}"]`).hover();
+    await l1.page.getByTestId(`project-${projDirA}`).hover();
     await l1.page.locator(`[data-testid="project-menu-trigger-${oldName}"]`).click();
     await l1.page.locator(`[data-testid="project-rename-${oldName}"]`).click();
     const input = l1.page.locator(`[data-testid="project-rename-input-${oldName}"]`);
