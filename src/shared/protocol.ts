@@ -92,6 +92,11 @@ export type RpcCall =
   | { method: 'telemetry.getStatus'; args: undefined; result: TelemetryStatus }
   | { method: 'telemetry.setEnabled'; args: { enabled: boolean }; result: TelemetryStatus }
   | { method: 'telemetry.deleteMyData'; args: undefined; result: TelemetryStatus }
+  // ── 窗口 ──
+  // Windows 的 titleBarOverlay 颜色只能由渲染层给：主题色的真源是 theme CSS 的
+  // --color-titlebar-* token，而窗口创建时渲染进程还没起来，主进程手里没有它。
+  // ThemeApplier 落完 data-theme 后调这条补上；非 win32 主进程侧直接 no-op。
+  | { method: 'window.setTitleBarOverlay'; args: { color: string; symbolColor: string }; result: void }
   // ── Onboarding ──
   | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
   | { method: 'ask.submit'; args: { threadId: string; toolCallId: string; answers: AskAnswer[] }; result: void }
