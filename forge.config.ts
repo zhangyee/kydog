@@ -30,9 +30,12 @@ const config: ForgeConfig = {
     // zip 必须保留：更新服务靠 .*-(mac|darwin|osx).*\.zip 匹配 darwin 资产，
     // 没有它 macOS 的 feed 直接 404。dmg 只给人手动安装用，服务会忽略它。
     new MakerZIP({}, ['darwin']),
-    // 文件名必须带 arch —— arm64 与 x64 是两个独立 CI job，产物在
-    // merge-multiple 时汇到同一目录，同名会互相覆盖。
-    new MakerDMG({ name: `KyDog-${process.arch}` }, ['darwin']),
+    // 不设 name：maker-dmg 默认把产物重命名为 KyDog-<version>-<targetArch>.dmg
+    // （MakerDMG.js 里 forgeDefaultOutPath），版本、架构都齐——arm64 与 x64 是两个
+    // 独立 CI job，产物 merge-multiple 汇到同一目录，靠 targetArch 后缀防互相覆盖。
+    // 别再手工设 name：那会覆盖掉这个默认名（曾产出过缺版本号的 KyDog-arm64.dmg），
+    // 且 process.arch 是构建机架构，不如 Forge 传入的 targetArch 准确。
+    new MakerDMG({}, ['darwin']),
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
