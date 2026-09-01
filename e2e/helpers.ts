@@ -44,16 +44,23 @@ export async function launchKydog(opts: {
   };
   if (opts.fixture) env.KYDOG_AGENT_FIXTURE = opts.fixture;
   const app = await electron.launch({
-    args: ['.vite/build/main.js', `--user-data-dir=${userDataDir}`],
+    // --force-prefers-no-reduced-motion：OOPIF 进程创建时快照 OS 层 reduce，CDP 仿真
+    // 按构造晚于模板 parse，所以必须用进程级开关在信号入口换源；一处覆盖主 frame 与
+    // 沙箱 iframe。上一轮（fix wave B）加过 page.emulateMedia({ reducedMotion:
+    // 'no-preference' })，已证明形同虚设：主 frame 本来就被 Playwright 连接时无条件钉在
+    // no-preference（那次调用是多余的），沙箱报告 iframe 是独立 renderer 进程
+    // （OOPIF），CDP 仿真要等 Playwright auto-attach 之后才落地，而模板内联脚本在 parse
+    // 期就已把 reduce 读进 const 并选定分支——晚到即永久走错分支。CI runner 镜像默认
+    // prefers-reduced-motion: reduce，于是所有断言动效的用例（reveal/draw/marquee）在
+    // CI 上永远等不到动画。这个开关在信号进入 Chromium 的那一层（gfx::Animation）就把它
+    // 换成确定的 no-preference，先于一切 parse，因此删掉了那行 emulateMedia。本地 OS
+    // 本来就是 no-preference，行为不变；要测 reduce 行为的用例应自行
+    // emulateMedia({ reducedMotion: 'reduce' }) 显式声明（对主 frame 仍然生效）。
+    args: ['.vite/build/main.js', '--force-prefers-no-reduced-motion', `--user-data-dir=${userDataDir}`],
     env,
     timeout: 20_000,
   });
   const page = await app.firstWindow();
-  // CI runner 镜像默认 prefers-reduced-motion: reduce，应用会按 a11y 规范正确地跳过
-  // 动画——于是所有断言动效的用例（reveal/draw/marquee）在 CI 上永远等不到动画。
-  // 这里统一钉成 no-preference，让三平台与开发机对齐；要测 reduce 行为的用例
-  // 应自行 emulateMedia({ reducedMotion: 'reduce' }) 显式声明。
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
   return { app, page, userDataDir, kydogHome };
 }
 

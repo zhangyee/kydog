@@ -29,9 +29,19 @@ test('35-marquee: 长标题 hover 滚动，短标题不滚，离开复位', asyn
     await expect(longRow).toBeVisible();
 
     // 1) hover 长标题 → 内层 transform 变成负向 translateX（滚动）
-    await longRow.hover();
+    // hover 是单发 mousemove、无到达回执（Playwright 的 hit-target 拦截器在事件
+    // 未到达时照样返回 "done"）。把刺激放进 poll 每轮重新施加：断言仍是
+    // 「hover 态下滚动节点存在且负向位移」，一个字没放宽；失败时返回页面态
+    // JSON 落进 Received，红了直接携带协议层证据（hoverChain 指向派发/悬停链
+    // 是否真的成立，reduce 指向媒体层是否有残留）。
     await expect.poll(async () => {
-      if (await longScroll.count() === 0) return '';
+      await longRow.hover();
+      if (await longScroll.count() === 0) {
+        return await longRow.evaluate((el) => JSON.stringify({
+          hoverChain: el.matches(':hover'),
+          reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        }));
+      }
       return await longScroll.evaluate((el) => (el as HTMLElement).style.transform);
     }).toMatch(/translateX\(-\d/);
 
