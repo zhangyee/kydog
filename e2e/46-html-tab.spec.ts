@@ -351,6 +351,20 @@ test('46-html-tab: CSP 拦住脚本的对外请求', async () => {
   }
 });
 
+// 主题 / 阅读字号一变，HtmlFileTab 的注入 effect 就重建 srcDoc，iframe 随即导航，
+// 在飞的 evaluate 会以「Execution context was destroyed」收场——那是取早了，不是坏了
+// （全量串行跑时机器负载把时序拉开才撞得到，2026-09-01 macOS 观测到一次）。而
+// expect.poll 只在断言不匹配时重试，回调抛错会立刻判死，所以两条「跟随」用例得把
+// 这类瞬态错误折叠成 null 让 poll 继续等；其他错误照抛，真坏了不许吞。
+// 配套纪律：poll 的断言必须是 null 满足不了的正向匹配（toBe('midnight') / toBe('15px')），
+// 用 .not.toBe(...) 会把重建期的 null 当成「变了」放过去。
+function nullWhileFrameRebuilds<T>(p: Promise<T>): Promise<T | null> {
+  return p.catch((err) => {
+    if (/Execution context was destroyed|Frame was detached/i.test(String(err))) return null;
+    throw err;
+  });
+}
+
 test('46-html-tab: 报告跟随 app 主题', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
@@ -363,17 +377,21 @@ test('46-html-tab: 报告跟随 app 主题', async () => {
     await fsRow.dblclick();
 
     const body = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`)).locator('body');
-    const bgOf = () => body.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const bgOf = () => nullWhileFrameRebuilds(
+      body.evaluate((el) => getComputedStyle(el).backgroundColor));
     // 主题**身份**（reportTheme.ts 的 REPORT_THEME_ATTR）。转发过去的变量只有颜色的
     // 值，说不出「这是哪一套主题」；报告里按主题语义取色的地方（learning-deck 抬头
     // 那条深色带上的前景色）靠的就是这个属性。没有它，下游只能量亮度去猜——
     // 正是 CLAUDE.md Principles 禁的那种 proxy。
-    const themeAttrOf = () => body.evaluate((el) =>
-      el.ownerDocument.documentElement.getAttribute('data-kydog-theme'));
+    const themeAttrOf = () => nullWhileFrameRebuilds(body.evaluate((el) =>
+      el.ownerDocument.documentElement.getAttribute('data-kydog-theme')));
 
     await expect(page.getByTestId(`tab-${htmlPath}`)).toBeVisible();
-    const before = await bgOf();
+    // 先锚定身份再取值：身份和颜色烤在同一份 srcdoc 里，身份到位说明读到的已经是
+    // 注入完的文档（不是初始提交前的 about:blank），此后到切主题前不再有导航。
     await expect.poll(themeAttrOf).toBe('vellum');
+    const before = await bgOf();
+    expect(before).not.toBeNull();
 
     // 走真实 UI 切主题（同 e2e/08-theme-switch.spec.ts 的路径）：
     // 用户菜单 → midnight。注入的 --paper 变了，frame 里的背景必须跟着变。
@@ -381,9 +399,11 @@ test('46-html-tab: 报告跟随 app 主题', async () => {
     await page.locator('[data-testid="theme-midnight"]').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight');
 
-    await expect.poll(bgOf).not.toBe(before);
     // 身份跟着一起换：只换值不换身份的话，深色带上的前景色会停在浅纸那一支。
     await expect.poll(themeAttrOf).toBe('midnight');
+    const after = await bgOf();
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
   } finally {
     await teardown(launched);
   }
@@ -401,12 +421,14 @@ test('46-html-tab: 报告跟随阅读字号', async () => {
     await fsRow.dblclick();
 
     const body = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`)).locator('body');
-    const sizeVar = () => body.evaluate(
+    const sizeVar = () => nullWhileFrameRebuilds(body.evaluate(
       (el) => getComputedStyle(el).getPropertyValue('--reading-font-size').trim(),
-    );
+    ));
 
     await expect(page.getByTestId(`tab-${htmlPath}`)).toBeVisible();
-    await expect.poll(sizeVar).not.toBe('');
+    // medium 档的值（globals.css :root），正向断言：重建期的 null / 初始 about:blank
+    // 的空串都满足不了它，poll 会一直等到注入完的文档。
+    await expect.poll(sizeVar).toBe('15px');
 
     // 同 e2e/36-font-size.spec.ts 的路径：用户菜单 → 大号
     await page.locator('[data-testid="user-menu-trigger"]').click();
