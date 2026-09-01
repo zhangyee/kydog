@@ -38,29 +38,28 @@ test('53-reload: 刷新后仍停在原来的会话上，不回欢迎页', async 
   }
 });
 
-// fixme 不是因为这条行为没做 —— 文件 tab 的恢复由 viewState.test.ts 逐条盖住了
-// （顺序、聚焦、文件已删、首启设置页）。卡住的是**前置步骤**：这条要先在右栏文件树里
-// 双击开一个 tab，而 main 上右栏文件树整个不渲染 —— 1023c43 上 30-markdown 五条、
-// 32-file-tree-fs-watch 两条、49-file-name-marquee 一条全红，症状一致（fs-<path>
-// 那一行等到超时都不可见），且与本文件的改动无关。文件树修好后把这行 fixme 去掉即可。
-test.fixme('53-reload: 刷新后文件 tab 还在，且仍停在原来那个 tab 上', async () => {
+// 定位文件树的行一律走 getByTestId，别拼 `[data-testid="fs-${路径}"]`：
+// Windows 绝对路径里的反斜杠在 CSS 属性值里是转义符（`\a`+dmin、`\A`+ppData 都会被
+// 当成字符转义吃掉），选择器永远匹配不上 —— 而元素其实好好地渲染着、位置尺寸都正常。
+// 30-markdown / 32-file-tree-fs-watch / 49-file-name-marquee 目前都栽在这上面。
+test('53-reload: 刷新后文件 tab 还在，且仍停在原来那个 tab 上', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
     const notesPath = path.join(kydogHome, 'proj', NOTES_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${notesPath}"]`);
+    const fsRow = page.getByTestId(`fs-${notesPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
-    await expect(page.locator(`[data-testid="tab-${notesPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${notesPath}`)).toBeVisible();
     await expect(page.locator('.kydog-md-editor .ProseMirror')).toContainText('初始标题');
 
     await page.reload();
 
     // tab 条上两个 tab 都回来了，而且前面那个仍然是 md
-    await expect(page.locator('[data-testid="tab-thr-1"]')).toBeVisible();
-    await expect(page.locator(`[data-testid="tab-${notesPath}"]`)).toBeVisible();
+    await expect(page.getByTestId('tab-thr-1')).toBeVisible();
+    await expect(page.getByTestId(`tab-${notesPath}`)).toBeVisible();
     await expect(page.locator('.kydog-md-editor .ProseMirror')).toContainText('初始标题');
   } finally {
     await teardown(launched);
