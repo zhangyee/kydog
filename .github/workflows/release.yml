@@ -18,8 +18,8 @@ jobs:
           # 静默消失，而绿灯照常亮。
           # Windows runner 到底能不能建软链，本仓库没验证过，所以那一栏先不钉死；
           # 下面的 Report 步骤会把实际能力打进日志，确认能建之后把它也改成 '1'。
-          - { os: macos-14,       target: darwin-arm64, requireSymlink: '1' }
-          - { os: macos-13,       target: darwin-x64,   requireSymlink: '1' }
+          - { os: macos-15,       target: darwin-arm64, requireSymlink: '1' }
+          - { os: macos-15-intel, target: darwin-x64,   requireSymlink: '1' }
           - { os: windows-latest, target: win32-x64,    requireSymlink: ''  }
     runs-on: ${{ matrix.os }}
     steps:
@@ -66,6 +66,18 @@ jobs:
           # 建不出来就让它以 EPERM 红出来。
           KYDOG_REQUIRE_SYMLINK: ${{ matrix.requireSymlink }}
       - run: npm run make
+      # e2e 复用 make 刚产出的 .vite/build 与 out/ 打包成品（含 54 冒烟），不重复打包。
+      - run: npx playwright install chromium
+      - run: npm run e2e
+      # always 而非 failure：flaky（retry 转绿）时 job 是成功态，failure() 不执行，
+      # 而失败尝试的 trace 就留在 test-results 里（实证见 spec 事实基础）——不上传就随
+      # runner 销毁。全绿时这里只有一个 .last-run.json，成本可忽略。
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results-${{ matrix.target }}
+          path: test-results/
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: kydog-${{ matrix.target }}
@@ -74,7 +86,9 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # workflow_dispatch 可以选 tag 作运行 ref，只看 ref 会让演练误发版。
+    # 协议语义：dispatch 只演练，tag push 才发版。
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
