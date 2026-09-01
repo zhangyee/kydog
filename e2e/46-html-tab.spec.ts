@@ -555,6 +555,14 @@ test('46-html-tab: 方向键在节间跳转', async () => {
 
     // 不点击：验的就是 HtmlFileTab 里 srcDoc 就绪后对 iframe 调 .focus() 是否真的让
     // 方向键免点击生效。
+    // 按键不能抢跑在 HtmlFileTab 的 focus effect 之前：CI 慢机上 effect 晚到，键落进宿主
+    // 文档就永久丢了（v0.1.0 tag run darwin-arm64 双败即此形态）。锚定的是协议事实本身
+    // ——宿主的 activeElement 已经是这个 iframe；不点击（点击会破坏本测试「免点击」的
+    // 验证目的），不循环按键（上面 ⚠️ 的一次性纪律不变）。
+    await expect.poll(() => page.evaluate((sel) => {
+      const el = document.activeElement;
+      return el instanceof HTMLIFrameElement && el.matches(sel);
+    }, testIdSelector(`html-frame-${htmlPath}`))).toBe(true);
     await page.keyboard.press('ArrowDown');
     await expect.poll(() =>
       frame.locator('#h2').evaluate((el) => el.getBoundingClientRect().top),
@@ -589,6 +597,14 @@ test('46-html-tab: 方向键在节间跳转（切走再切回）', async () => {
     await expect(page.getByTestId(`file-pane-${htmlPath}`)).toBeVisible();
 
     // 不点击：切回来那次 isActive effect 应该重新把焦点交给 iframe。
+    // 按键不能抢跑在 HtmlFileTab 的 focus effect 之前：CI 慢机上 effect 晚到，键落进宿主
+    // 文档就永久丢了（v0.1.0 tag run darwin-arm64 双败即此形态）。锚定的是协议事实本身
+    // ——宿主的 activeElement 已经是这个 iframe；不点击（点击会破坏本测试「免点击」的
+    // 验证目的），不循环按键（上面 ⚠️ 的一次性纪律不变）。
+    await expect.poll(() => page.evaluate((sel) => {
+      const el = document.activeElement;
+      return el instanceof HTMLIFrameElement && el.matches(sel);
+    }, testIdSelector(`html-frame-${htmlPath}`))).toBe(true);
     await page.keyboard.press('ArrowDown');
     await expect.poll(() =>
       frame.locator('#h2').evaluate((el) => el.getBoundingClientRect().top),
