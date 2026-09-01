@@ -277,6 +277,12 @@ class AgentService {
           // across pi's multiple message_start/end pairs within one turn.
           return;
         case 'message_update': {
+          // 这里**故意**不查 abort 状态。pi 的 abort 语义是「尽快终止、保留已达、终态标
+          // aborted」：agent-loop 的事件泵在发出每条 message_update **之前**就已把 partial
+          // 写进它自己的 transcript（streamAssistantResponse），abort 竞态窗口里漏出的
+          // delta 是 pi 已持久化的事实。在这儿加闸会让直播画面比重载后从 transcript
+          // 恢复的少——制造分歧而不是防御。abort 后事件很快停，是流层收到信号终止
+          // （stopReason: 'aborted'）→ runLoop break → agent_end 的协议保证，不靠这里拦。
           const sub = (evt as unknown as { assistantMessageEvent?: { type: string; delta?: string } }).assistantMessageEvent;
           const messageId = bound.activeMessageId;
           if (!messageId || !sub) return;
