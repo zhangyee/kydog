@@ -61,6 +61,21 @@ export async function launchKydog(opts: {
     timeout: 20_000,
   });
   const page = await app.firstWindow();
+  // launchKydog 的返回契约：应用已启动完成并渲染出真实 UI（不是还停在 bootstrap 前的
+  // "KYDOG" 占位闪屏）。没有这道锚，每条 spec 的首个断言都在用 5 秒的行为判据替启动方差
+  // 买单——冷 runner 上首帧超 5s 就红（50/00/10/36/18 各中过一次，跨五轮 CI 与本地）。这里
+  // 的 30s 是启动 infra 预算（config 注释：「光 launch 就允许 20s」同类），行为判据的 5s
+  // expect.timeout 一毫米不动。
+  //
+  // Root() 落地后只会二选一：onboarding 未完成 → OnboardingWizard（[data-testid=
+  // "onboarding-root"]，freshHome:true / onboardingCompleted:false 都走这条），否则 →
+  // AppShell/ThreeColumnLayout（[data-pane="workspace"]，包括 providerConfigured:false ——
+  // 那只是强制切到设置 tab，左侧工作区栏照常渲染）。两者互斥，任一时刻只有其中一个存在于
+  // DOM，selector list 里用哪个都不会撞 strict-mode；`.first()` 只是兜个底。
+  await page
+    .locator('[data-pane="workspace"], [data-testid="onboarding-root"]')
+    .first()
+    .waitFor({ timeout: 30_000 });
   return { app, page, userDataDir, kydogHome };
 }
 
