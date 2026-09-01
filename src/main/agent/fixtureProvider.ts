@@ -24,11 +24,17 @@ export async function createFixtureSession(
   const file = JSON.parse(raw) as FixtureFile;
   const listeners = new Set<FakeSessionListener>();
   let aborted = false;
+  // abort() 落地时可能已经有一个事件在 setTimeout 里等待（比如 fixture 里
+  // after_ms 很长的下一条 delta）——只置 aborted 标志拦不住它：定时器到点后
+  // 事件照样会被 emit 出去，慢机器上 Stop 就形同虚设。abort 之后不得再送任何
+  // 事件——这是协议层面的语义，不是"尽量快地停"，所以必须能短路当前正在
+  // 等待的那一个定时器，而不是干等它自然到点。
+  let cancelPendingWait: (() => void) | null = null;
 
   return {
     state: { messages: [] },
     subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
-    abort() { aborted = true; },
+    abort() { aborted = true; cancelPendingWait?.(); },
     async cleanup() { listeners.clear(); },
     async prompt() {
       // Accumulate tool chunks so tool_end can embed them in result
@@ -38,7 +44,14 @@ export async function createFixtureSession(
       const askTool = createAskUserQuestionTool(threadId, askShared, locale);
       for (const evt of file.events) {
         if (aborted && evt.type !== 'agent_end') continue;
-        await new Promise((r) => setTimeout(r, evt.after_ms));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, evt.after_ms);
+          cancelPendingWait = () => { clearTimeout(timer); resolve(); };
+        });
+        cancelPendingWait = null;
+        // abort 可能就发生在上面这次等待期间：定时器被提前短路唤醒，这条事件
+        // 本身也不该再送出去（agent_end 除外——UI 靠它把状态收回 idle）。
+        if (aborted && evt.type !== 'agent_end') continue;
 
         if (evt.type === 'ask') {
           // 走真实的工具：校验、分配 id、注册 broker、挂起等 renderer。

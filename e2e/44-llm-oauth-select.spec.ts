@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { launchKydog, teardown, seedSettings } from './helpers';
 import { selectPath } from './fixtures/oauth-mock';
 
 test('44-llm: OAuth select 提示 → 选项可见可点，选完进入授权页', async () => {
-  const tmpDir = await fs.mkdtemp(path.join(process.env.TMPDIR || '/tmp', 'kydog-oauth-select-'));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-oauth-select-'));
   const fixturePath = path.join(tmpDir, 'select.json');
   await fs.writeFile(fixturePath, JSON.stringify(selectPath));
 

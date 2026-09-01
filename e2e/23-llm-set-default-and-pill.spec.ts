@@ -2,9 +2,10 @@ import { test, expect } from '@playwright/test';
 import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage } from './helpers';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 test('23-llm: seeded provider + Composer label reflects default', async () => {
-  const projectPath = await fs.mkdtemp(path.join(process.env.TMPDIR || '/tmp', 'kydog-proj-'));
+  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
   await seedSamplePackage(projectPath);
 
   const launched = await launchKydog({

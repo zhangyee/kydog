@@ -49,6 +49,11 @@ export async function launchKydog(opts: {
     timeout: 20_000,
   });
   const page = await app.firstWindow();
+  // CI runner 镜像默认 prefers-reduced-motion: reduce，应用会按 a11y 规范正确地跳过
+  // 动画——于是所有断言动效的用例（reveal/draw/marquee）在 CI 上永远等不到动画。
+  // 这里统一钉成 no-preference，让三平台与开发机对齐；要测 reduce 行为的用例
+  // 应自行 emulateMedia({ reducedMotion: 'reduce' }) 显式声明。
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   return { app, page, userDataDir, kydogHome };
 }
 

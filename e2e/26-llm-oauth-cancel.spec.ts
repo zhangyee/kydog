@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { launchKydog, teardown, seedSettings } from './helpers';
 import { cancelPath } from './fixtures/oauth-mock';
 
 test('26-llm: OAuth login (fixture cancelPath) → cancel returns to idle', async () => {
-  const tmpDir = await fs.mkdtemp(path.join(process.env.TMPDIR || '/tmp', 'kydog-oauth-'));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-oauth-'));
   const fixturePath = path.join(tmpDir, 'cancel.json');
   await fs.writeFile(fixturePath, JSON.stringify(cancelPath));
 
