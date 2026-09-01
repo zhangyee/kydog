@@ -829,11 +829,26 @@ test('46-html-tab: 真模板——滚动时目录当前项跟着走', async () =
 // 停靠点是 `.curtain, .concept, section[id]`，文档序下 #map、#primer 之后就是
 // fixture 插进去的第一张幕封页（v5 删掉「速通路径」之后 #primer 从第 3 个变成第 2 个，
 // 但这条测试不依赖序号，只依赖「幕封页紧跟在 #primer 后面」）。
+//
+// ⚠️ CI 实测（本轮）：上面那条「只按一次」的纪律成立的前提——`page.keyboard.press`
+//    的第一次总能送进 iframe——只在本地成立。CI 上观测到三次首键不达（darwin-x64
+//    round 2 / round 3、darwin-arm64 round-3 复跑），跟上面注释里「只有在 frame 里
+//    点一下才会再收到一次」同一个机制：宿主的 activeElement 停在 <iframe> 上，
+//    键盘事件没被路由进 OOPIF 文档。所以这里先在 frame 里真点一下武装键盘投递，
+//    按键本身仍然只按一次，禁循环的纪律不变——点击不是那一次按键的替代，是它的前提。
 test('46-html-tab: 真模板——ArrowDown 从 #primer 落到第一个幕封页', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
     const frame = await openTemplate(page, kydogHome);
+
+    // 武装点：#primer 自己（h2 + 一个 <p> + 一个 <dl>，buildTemplateFixture 填进去的
+    // 那段，见本文件顶部）——通篇没有 <a> 或表单控件，模板脚本里唯一的 click 监听器
+    // 挂在 .toc-head 上（跟 #primer 无关，见 report-template.html 里「左侧导航树」
+    // 那段 IIFE）。点在它的左上角，不落在任何子元素的文字上。Playwright 点击前会把
+    // 目标滚进视口——这一下滚到哪不重要，下一步紧接着就是程序化 scrollTo 到 #primer，
+    // 会把滚动位置整个覆盖掉。
+    await frame.locator('#primer').click({ position: { x: 4, y: 4 } });
 
     const curtain = frame.locator('.curtain').first();
     const topOf = () => curtain.evaluate((el) => el.getBoundingClientRect().top);
