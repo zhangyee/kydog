@@ -32,7 +32,7 @@ test('33-write-file-card: write 工具落盘 .md → 文件卡出现 → 单击�
     await page.locator('[data-testid="composer-input"]').fill('生成报告');
     await page.locator('[data-testid="send-button"]').click();
 
-    const card = page.locator(`[data-testid="file-card-${reportPath}"]`);
+    const card = page.getByTestId(`file-card-${reportPath}`);
 
     // ① 本轮还没结束时**不出卡片**。
     // agent 落盘的那一刻正文可能还在一章章往里填（learning-deck 的模板是 `cp` 之后
@@ -51,7 +51,7 @@ test('33-write-file-card: write 工具落盘 .md → 文件卡出现 → 单击�
 
     // 单击 → markdown tab 打开
     await card.click();
-    await expect(page.locator(`[data-testid="tab-${reportPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${reportPath}`)).toBeVisible();
     const editor = page.locator('.kydog-md-editor .ProseMirror');
     await expect(editor).toContainText('report');
   } finally {

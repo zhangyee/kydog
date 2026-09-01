@@ -37,16 +37,16 @@ test('31-pdf-viewer: 双击打开 PDF tab → 渲染页面', async () => {
 
     // 选中 thread，Inspector 才显示该项目文件树
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${pdfPath}"]`);
+    const fsRow = page.getByTestId(`fs-${pdfPath}`);
     await fsRow.waitFor();
 
     // 双击打开 PDF tab
     await fsRow.dblclick();
-    await expect(page.locator(`[data-testid="tab-${pdfPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${pdfPath}`)).toBeVisible();
 
     // PDF 滚动容器出现，且页面 canvas 渲染出来
-    const pane = page.locator(`[data-testid="file-pane-${pdfPath}"]`);
-    await expect(pane.locator(`[data-testid="pdf-scroll-${pdfPath}"]`)).toBeVisible();
+    const pane = page.getByTestId(`file-pane-${pdfPath}`);
+    await expect(pane.getByTestId(`pdf-scroll-${pdfPath}`)).toBeVisible();
     await expect(pane.locator('canvas').first()).toBeVisible({ timeout: 10000 });
 
     // 未出现错误提示
@@ -63,16 +63,16 @@ test('31-pdf-viewer: 关闭 PDF tab 不弹未保存确认框', async () => {
     const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${pdfPath}"]`);
+    const fsRow = page.getByTestId(`fs-${pdfPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const tab = page.locator(`[data-testid="tab-${pdfPath}"]`);
+    const tab = page.getByTestId(`tab-${pdfPath}`);
     await expect(tab).toBeVisible();
 
     // 关闭 tab —— 悬停后点关闭按钮
     await tab.hover();
-    await page.locator(`[data-testid="tab-close-${pdfPath}"]`).click();
+    await page.getByTestId(`tab-close-${pdfPath}`).click();
 
     // tab 直接消失，不弹未保存确认框
     await expect(tab).toHaveCount(0);

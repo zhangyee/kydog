@@ -5,6 +5,21 @@ import os from 'node:os';
 
 export type LaunchedApp = { app: ElectronApplication; page: Page; userDataDir: string; kydogHome: string };
 
+/**
+ * 把一个 testid 拼成 CSS 属性选择器，并转义值里的反斜杠。
+ *
+ * 别直接写 `[data-testid="${绝对路径}"]`：**反斜杠在 CSS 属性值里是转义符**，
+ * Windows 路径里的 `\a`（admin）、`\A`（AppData）会被当成字符转义吃掉，选择器永远
+ * 匹配不上 —— 而元素其实渲染得好好的，位置尺寸都正常，看起来就像"功能坏了"。
+ * POSIX 路径全是正斜杠，所以这个坑只在 Windows 上炸，macOS/Linux 上两种写法等价。
+ *
+ * 能用 `page.getByTestId()` 的地方优先用它（Playwright 自己会转义）；这个函数是给
+ * `frameLocator()` 之类只收选择器字符串的 API 用的。
+ */
+export function testIdSelector(testId: string): string {
+  return `[data-testid="${testId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`;
+}
+
 export async function launchKydog(opts: {
   fixture?: string;
   seed?: (kydogHome: string) => Promise<void>;

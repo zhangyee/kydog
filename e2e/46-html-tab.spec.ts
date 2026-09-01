@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { launchKydog, seedSettings, seedProject, teardown } from './helpers';
+import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
 
 const HTML_REL = 'report.html';
 
@@ -297,12 +297,12 @@ test('46-html-tab: 双击打开 HTML tab → 渲染内容', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    await expect(page.locator(`[data-testid="tab-${htmlPath}"]`)).toBeVisible();
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    await expect(page.getByTestId(`tab-${htmlPath}`)).toBeVisible();
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#heading')).toHaveText('知识地图');
   } finally {
     await teardown(launched);
@@ -319,11 +319,11 @@ test('46-html-tab: 沙箱执行页面里的脚本', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#probe')).toHaveText('SCRIPT-RAN');
   } finally {
     await teardown(launched);
@@ -337,11 +337,11 @@ test('46-html-tab: CSP 拦住脚本的对外请求', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     // 判据是 securitypolicyviolation 事件（协议层事实），不是 fetch 失败与否
     // （代理信号——连接被拒和被 CSP 拦截产生同样的 TypeError，见 fixture 里的注释）。
     await expect(frame.locator('#net')).toHaveText(/^CSP-BLOCKED:connect-src/, { timeout: 10000 });
@@ -357,11 +357,11 @@ test('46-html-tab: 报告跟随 app 主题', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const body = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`).locator('body');
+    const body = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`)).locator('body');
     const bgOf = () => body.evaluate((el) => getComputedStyle(el).backgroundColor);
     // 主题**身份**（reportTheme.ts 的 REPORT_THEME_ATTR）。转发过去的变量只有颜色的
     // 值，说不出「这是哪一套主题」；报告里按主题语义取色的地方（learning-deck 抬头
@@ -370,7 +370,7 @@ test('46-html-tab: 报告跟随 app 主题', async () => {
     const themeAttrOf = () => body.evaluate((el) =>
       el.ownerDocument.documentElement.getAttribute('data-kydog-theme'));
 
-    await expect(page.locator(`[data-testid="tab-${htmlPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${htmlPath}`)).toBeVisible();
     const before = await bgOf();
     await expect.poll(themeAttrOf).toBe('vellum');
 
@@ -395,16 +395,16 @@ test('46-html-tab: 报告跟随阅读字号', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const body = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`).locator('body');
+    const body = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`)).locator('body');
     const sizeVar = () => body.evaluate(
       (el) => getComputedStyle(el).getPropertyValue('--reading-font-size').trim(),
     );
 
-    await expect(page.locator(`[data-testid="tab-${htmlPath}"]`)).toBeVisible();
+    await expect(page.getByTestId(`tab-${htmlPath}`)).toBeVisible();
     await expect.poll(sizeVar).not.toBe('');
 
     // 同 e2e/36-font-size.spec.ts 的路径：用户菜单 → 大号
@@ -425,11 +425,11 @@ test('46-html-tab: 文件内容改了 tab 自动重载', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#heading')).toHaveText('知识地图');
 
     // 从进程外改写文件 —— 模拟 agent 重写报告
@@ -448,11 +448,11 @@ test('46-html-tab: 点页内锚点滚到对应章节', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#heading')).toHaveText('知识地图');
 
     // srcdoc 文档的 base URL 继承自宿主，不钉死的话 href="#c1" 被当成跨文档导航：
@@ -495,11 +495,11 @@ test('46-html-tab: 报告里的外链交给系统浏览器打开', async () => {
     });
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#external')).toBeVisible();
     await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
 
@@ -522,11 +522,11 @@ test('46-html-tab: 方向键在节间跳转', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#heading')).toHaveText('知识地图');
     await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
 
@@ -552,18 +552,18 @@ test('46-html-tab: 方向键在节间跳转（切走再切回）', async () => {
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#heading')).toHaveText('知识地图');
     await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
 
     // 切到 thread tab，再切回 html tab —— 触发 isActive: true → false → true。
     await page.locator('[data-testid="tab-thr-1"]').click();
-    await page.locator(`[data-testid="tab-${htmlPath}"]`).click();
-    await expect(page.locator(`[data-testid="file-pane-${htmlPath}"]`)).toBeVisible();
+    await page.getByTestId(`tab-${htmlPath}`).click();
+    await expect(page.getByTestId(`file-pane-${htmlPath}`)).toBeVisible();
 
     // 不点击：切回来那次 isActive effect 应该重新把焦点交给 iframe。
     await page.keyboard.press('ArrowDown');
@@ -587,11 +587,11 @@ test('46-html-tab: 入场动效——滚到 .reveal 元素后最终可见', asyn
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     await expect(frame.locator('#heading')).toHaveText('知识地图');
     await expect.poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState)).toBe('complete');
 
@@ -624,11 +624,11 @@ test('46-html-tab: 报告目录内的本地图片渲染时内联成 data URI', a
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     const fig = frame.locator('#fig');
     await expect(fig).toBeVisible();
 
@@ -649,11 +649,11 @@ test('46-html-tab: 逃出报告目录的图片路径被拒绝，退化成 alt �
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     const bad = frame.locator('#bad');
     await expect.poll(() => bad.evaluate((el) => el.getAttribute('data-kydog-inline'))).toBe('rejected');
     // src 属性被整个摘掉（不是留一个读不到的坏路径），元素靠 alt 退化成文字。
@@ -676,11 +676,11 @@ test('46-html-tab: 报告目录内指向目录外的符号链接被拒绝，不�
     const htmlPath = path.join(kydogHome, 'proj', HTML_REL);
 
     await page.click('text=测试 Thread');
-    const fsRow = page.locator(`[data-testid="fs-${htmlPath}"]`);
+    const fsRow = page.getByTestId(`fs-${htmlPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
 
-    const frame = page.frameLocator(`[data-testid="html-frame-${htmlPath}"]`);
+    const frame = page.frameLocator(testIdSelector(`html-frame-${htmlPath}`));
     const evil = frame.locator('#evil');
     await expect.poll(() => evil.evaluate((el) => el.getAttribute('data-kydog-inline'))).toBe('rejected');
     expect(await evil.evaluate((el) => el.hasAttribute('src'))).toBe(false);
@@ -702,10 +702,10 @@ test('46-html-tab: 报告目录内指向目录外的符号链接被拒绝，不�
 async function openTemplate(page: Awaited<ReturnType<typeof launchKydog>>['page'], kydogHome: string) {
   const templatePath = path.join(kydogHome, 'proj', TEMPLATE_REL);
   await page.click('text=测试 Thread');
-  const fsRow = page.locator(`[data-testid="fs-${templatePath}"]`);
+  const fsRow = page.getByTestId(`fs-${templatePath}`);
   await fsRow.waitFor();
   await fsRow.dblclick();
-  const frame = page.frameLocator(`[data-testid="html-frame-${templatePath}"]`);
+  const frame = page.frameLocator(testIdSelector(`html-frame-${templatePath}`));
   await expect(frame.locator('.deck-head h1')).toBeVisible();
   await expect
     .poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.readyState))

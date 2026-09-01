@@ -44,7 +44,7 @@ test('51-composer-draft: 切到 md 编辑器再切回来，未发送的输入还
     expect(await readBodyText(page)).toBe('写了一半的问题');
 
     // 打开 md 文件 tab —— thread 那半边会被整个卸载
-    const fsRow = page.locator(`[data-testid="fs-${notesPath}"]`);
+    const fsRow = page.getByTestId(`fs-${notesPath}`);
     await fsRow.waitFor();
     await fsRow.dblclick();
     await expect(page.locator('.kydog-md-editor .ProseMirror')).toContainText('初始标题');

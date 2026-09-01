@@ -65,7 +65,7 @@ test('18-projects-sidebar: pin project persists across restart', async () => {
   });
   try {
     const nameB = path.basename(projDirB);
-    await l1.page.locator(`[data-testid="project-${projDirB}"]`).hover();
+    await l1.page.getByTestId(`project-${projDirB}`).hover();
     await l1.page.locator(`[data-testid="project-menu-trigger-${nameB}"]`).click();
     await l1.page.locator(`[data-testid="project-pin-${nameB}"]`).click();
 
@@ -123,7 +123,7 @@ test('18-projects-sidebar: inline rename project', async () => {
   try {
     const oldName = path.basename(projDirA);
     const newName = '我的研究';
-    await l1.page.locator(`[data-testid="project-${projDirA}"]`).hover();
+    await l1.page.getByTestId(`project-${projDirA}`).hover();
     await l1.page.locator(`[data-testid="project-menu-trigger-${oldName}"]`).click();
     await l1.page.locator(`[data-testid="project-rename-${oldName}"]`).click();
     const input = l1.page.locator(`[data-testid="project-rename-input-${oldName}"]`);

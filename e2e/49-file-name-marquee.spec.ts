@@ -24,11 +24,11 @@ test('49-file-marquee: 右栏文件树长文件名 hover 滚动，短名不滚',
 
     // 选中 thread，右栏才显示该项目的文件树
     await page.click('text=测试 Thread');
-    const longRow = page.locator(`[data-testid="fs-${longPath}"]`);
+    const longRow = page.getByTestId(`fs-${longPath}`);
     await longRow.waitFor();
 
-    const longScroll = page.locator(`[data-testid="fs-name-scroll-${longPath}"]`);
-    const shortScroll = page.locator(`[data-testid="fs-name-scroll-${shortPath}"]`);
+    const longScroll = page.getByTestId(`fs-name-scroll-${longPath}`);
+    const shortScroll = page.getByTestId(`fs-name-scroll-${shortPath}`);
 
     await longRow.hover();
     await expect.poll(async () => {
@@ -37,7 +37,7 @@ test('49-file-marquee: 右栏文件树长文件名 hover 滚动，短名不滚',
     }).toMatch(/translateX\(-\d/);
 
     // 移到短名行：长名复位（滚动节点消失），短名过了起始延迟也不滚
-    await page.locator(`[data-testid="fs-${shortPath}"]`).hover();
+    await page.getByTestId(`fs-${shortPath}`).hover();
     await expect(longScroll).toHaveCount(0);
     await page.waitForTimeout(450);
     await expect(shortScroll).toHaveCount(0);
