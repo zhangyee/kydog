@@ -16,11 +16,11 @@ jobs:
           # 那批用例考的是软链能不能越出目录、写入会不会穿透链接 —— 平台无关的逻辑。
           # 没有这道闸，「本机建不了就跳过」的机制会一路跳到 CI，安全覆盖在发版流水线上
           # 静默消失，而绿灯照常亮。
-          # Windows runner 到底能不能建软链，本仓库没验证过，所以那一栏先不钉死；
-          # 下面的 Report 步骤会把实际能力打进日志，确认能建之后把它也改成 '1'。
+          # 三个 runner 的软链能力都已由 Report 步骤实测确认（2026-09-01 run 33513291710
+          # 三平台探针均打出 OK），全部钉死。探针步骤保留：能力哪天退化，日志里看得见。
           - { os: macos-15,       target: darwin-arm64, requireSymlink: '1' }
           - { os: macos-15-intel, target: darwin-x64,   requireSymlink: '1' }
-          - { os: windows-latest, target: win32-x64,    requireSymlink: ''  }
+          - { os: windows-latest, target: win32-x64,    requireSymlink: '1' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
