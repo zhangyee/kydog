@@ -22,6 +22,11 @@ export default defineConfig({
   // 放大上面那个是给基础设施留余量，放大这个是掩盖 bug，两者不是一回事。
   timeout: 60_000,
   expect: { timeout: 5_000 },
+  // CI-only retry：整条用例在更安静的第二次机会里重跑，expect.timeout 保持上面那条紧判据，
+  // 不是放大任何断言的容忍度。重试后转绿的用例 Playwright 标 flaky 列进摘要（不静默），
+  // 失败尝试的 trace 留在 test-results（2026-09-01 受控实验证实），由 workflow 的
+  // if: always() 上传步骤带出 CI。本地恒为 0：开发时该红照红。
+  retries: process.env.CI ? 1 : 0,
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],
