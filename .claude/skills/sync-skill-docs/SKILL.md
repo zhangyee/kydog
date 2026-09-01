@@ -59,6 +59,7 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `learning-deck/references/layout.md:884`（H2 的「模板自带 4 处」） | 断言依赖模板 L44/45/46/50 的中文散文注释字面 | **同一个数 4**，依赖同样四行 | 见下「H2 的标定常数」 | 2026-08-27 |
 | `learning-deck/SKILL.en.md:3`（description） | 「它比直接讲解多做的事：**先问清起点再决定讲什么**，…」 | 该分句**未译出**，其余四项全在 | 见下「learning-deck 的 description」 | 2026-08-27 |
 | `learning-deck/assets/report-template.html:2`（`<html lang>`） | `lang="zh"` | `lang="en"` | 文档语言声明，各自跟本份模板的默认产出语言走。`SKILL.{md,en.md}` 与全部 `references/*.md` 无一处提到 `lang`，模型从未被告知可以改它 | 2026-08-27 |
+| 两份 `assets/report-template*.html`（scrollspy 尾部的布局锚点注释，插入点在原 :2339 之后） | 注释 9 行，总行数 **2805** | 注释 12 行，总行数 **2808** | 同一机理（iframe 无布局时首次 sync() 锁死末条，IO 锚定真实布局）的两种语言表述，英文散文天然更长。用户裁决接受行数不再平价：**自插入点起两份模板行号不再一一对应**，此后跨模板引用行号需各写各的；插入点之前（含全部 `⟨待填` 命中行 ≤2127 与 H2 标定常数所在行）行号仍逐一相同 | 2026-09-01 |
 | `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term</dt>` | 英文报告下 `original` 省掉，示例必须示范省掉它，否则模型照抄就排重复影子；见下「⑦ 术语对照的两个槽」 | 2026-08-28 |
 | `learning-deck/references/deck-json.md:107`（`glossary` 示例） | `"term": "马尔可夫链", "original": "Markov chain"` | **只写 `"term": "Markov chain"`，不写 `original`** | 同上；`original` 已改成可选字段，英文报告里两个槽只能填同一个词，示例必须示范省掉它 | 2026-08-28 |
 
