@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
@@ -109,7 +110,8 @@ const config: ForgeConfig = {
     prune: false,
     icon: path.join(__dirname, 'assets/icons/icon'), // forge 按平台自动追加 .icns / .ico
     extraResource: [...vendorBins, 'src/skills'],
-    // 等加签名时：osxSign / osxNotarize / windowsSign
+    // 等加 Developer ID 时：osxSign / osxNotarize / windowsSign。在那之前由下面的
+    // postPackage 钩子做 adhoc 整包重签（只消 Gatekeeper 的 Fatal，消不掉「未验证开发者」）。
   },
   rebuildConfig: {},
   makers: [
@@ -153,6 +155,35 @@ const config: ForgeConfig = {
       [FuseV1Options.WasmTrapHandlers]: false,
     }),
   ],
+  hooks: {
+    // macOS 成品必须在这里整包重签一次 adhoc，否则从浏览器下载的成品（带
+    // com.apple.quarantine）会被 Gatekeeper 判成「已损坏，应移到废纸篓」。
+    //
+    // 成因是签名与改动的先后：Electron 预置二进制自带一份 adhoc 签名，而
+    // @electron/packager 在拷完文件之后还要改 Info.plist（写应用名与版本）、铺
+    // extraResource —— 封印随即作废。FusesPlugin 的 resetAdHocDarwinSignature 补不上
+    // 这一刀：它只重签「Electron 可执行文件」那一个 Mach-O，且发生在 packageAfterCopy，
+    // 早于 Info.plist 改写（FusesPlugin.js:20 与 :36）。2026-09-02 的 v0.2.0 就是这么发出去的，
+    // syspolicy_check 的原话：Invalid Info.plist (plist or signature have been modified)，
+    // Severity: Fatal，Suggested Fix: Resign the application using the codesign command。
+    //
+    // postPackage 是全部文件落盘之后的第一个时机，重签放这里才盖得住所有改动。
+    // 消掉的只是那条 Fatal；剩下的「adhoc signed，不适合分发」要 Developer ID + 公证，
+    // 是另一档（届时改配 osxSign/osxNotarize，这个钩子就该让位）。
+    postPackage: async (_forgeConfig, result) => {
+      if (result.platform !== 'darwin') return;
+      for (const out of result.outputPaths) {
+        const apps = readdirSync(out).filter((f) => f.endsWith('.app'));
+        // 不从 productName 拼路径：产物名由 packager 决定，拼错会静默跳过重签，
+        // 而漏签只在用户下载后才看得见。这里认产物本身，数量不是 1 就直接红。
+        if (apps.length !== 1) throw new Error(`postPackage 期望 ${out} 下恰好一个 .app，实得 ${apps.length} 个`);
+        const app = path.join(out, apps[0]);
+        execFileSync('codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });
+        // 签完立刻验：签名坏在构建期是可修的，坏在用户机器上只剩「已损坏」四个字。
+        execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' });
+      }
+    },
+  },
 };
 
 export default config;
