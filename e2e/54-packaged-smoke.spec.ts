@@ -1,7 +1,8 @@
 import { test, expect, chromium, type Browser, type Page } from '@playwright/test';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
-import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { promisify } from 'node:util';
+import { builtinModules } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
 import { seedSettings } from './helpers';
@@ -9,28 +10,137 @@ import { seedSettings } from './helpers';
 const execFileP = promisify(execFile);
 const repoRoot = path.resolve(__dirname, '..');
 
-// 这是 infra 预算（冷 CI 首启 + 打包应用），不是行为判据；expect.timeout 的 5s
-// 紧判据不受影响。内部预算加总（30s 启动 + 15s 首页 + 3×5s 三栏断言 + 15s 投影
-// poll + 5s 收尾 + 15s fastpaper）逼近 playwright.config.ts 的全局 60s，冷 CI
-// （如 windows-latest 首次 Defender 扫描）撞上限是基础设施抖动，不是产品判据。
-test.setTimeout(120_000);
+// 这是 infra 预算（冷 CI 首启 + 打包应用 + 一次 500MB 整目录复制），不是行为判据；
+// expect.timeout 的 5s 紧判据不受影响。内部预算加总（复制 + 30s 启动 + 15s 首页 +
+// 3×5s 三栏断言 + 15s 投影 poll + 5s 收尾 + 15s fastpaper）逼近 playwright.config.ts
+// 的全局 60s，冷 CI（如 windows-latest 首次 Defender 扫描）撞上限是基础设施抖动，
+// 不是产品判据。
+test.setTimeout(180_000);
 
-// 打包成品的落点（electron-forge package / make 的输出布局）。
+// 打包成品在 out/ 里的落点（electron-forge package / make 的输出布局）。
 // 二进制缺失时直接红、报错指路——不做 skipIf：静默跳过会让「打包成品层」的覆盖
 // 在流水线上无声消失，与 KYDOG_REQUIRE_SYMLINK 的教训同型。
-function packagedPaths(): { exe: string; resources: string } {
+function builtPaths(): { appDir: string; exeRel: string; resourcesRel: string } {
   if (process.platform === 'darwin') {
-    const appDir = path.join(repoRoot, 'out', `KyDog-darwin-${process.arch}`);
     return {
-      exe: path.join(appDir, 'KyDog.app', 'Contents', 'MacOS', 'KyDog'),
-      resources: path.join(appDir, 'KyDog.app', 'Contents', 'Resources'),
+      appDir: path.join(repoRoot, 'out', `KyDog-darwin-${process.arch}`),
+      exeRel: path.join('KyDog.app', 'Contents', 'MacOS', 'KyDog'),
+      resourcesRel: path.join('KyDog.app', 'Contents', 'Resources'),
     };
   }
-  const appDir = path.join(repoRoot, 'out', 'KyDog-win32-x64');
   return {
-    exe: path.join(appDir, 'KyDog.exe'),
-    resources: path.join(appDir, 'resources'),
+    appDir: path.join(repoRoot, 'out', 'KyDog-win32-x64'),
+    exeRel: 'KyDog.exe',
+    resourcesRel: 'resources',
   };
+}
+
+// 成品必须在**仓库之外**启动，否则这条用例是假绿。
+//
+// Node 解析 bare specifier（`import('@earendil-works/pi-coding-agent')`）时会从模块
+// 所在目录逐级上溯找 node_modules。out/ 就在仓库里，<repo>/node_modules 正好在上溯
+// 路径上——成品哪怕一个依赖都没带进去，在开发机和 CI 上也照样跑得起来，借的是开发树
+// 的货。2026-09-02 的事故就是这么漏出去的：三平台 CI 全绿，装到 %LOCALAPPDATA% 一开
+// 就是 ERR_MODULE_NOT_FOUND，ProviderRegistry.build() 在启动 await 链上，应用开机即死。
+//
+// 复制到 tmpdir 再启动，把这条逃生路径掐掉：那里的祖先目录不含任何 node_modules，
+// 解析得到的东西只能来自包内。
+
+// 复制出来的这份成品有 500MB，用例成败都要收掉，别在 runner 上堆盘。
+let stagedRoot: string | null = null;
+test.afterEach(async () => {
+  if (stagedRoot) await fs.rm(stagedRoot, { recursive: true, force: true }).catch(() => {});
+  stagedRoot = null;
+});
+
+async function stageOutsideRepo(appDir: string): Promise<string> {
+  stagedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-smoke-app-'));
+  // tmpdir 落在仓库里（有人把 TMP 指进工作区）这条用例就退回假绿，而且是无声的。
+  // 宁可在这里红。
+  const rel = path.relative(repoRoot, stagedRoot);
+  if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+    throw new Error(`tmpdir 在仓库内（${stagedRoot}），成品仍能上溯到 <repo>/node_modules；换一个 TMPDIR`);
+  }
+  const staged = path.join(stagedRoot, path.basename(appDir));
+  // verbatimSymlinks：macOS 的 .app 里 Frameworks/Versions 全是相对软链，默认那套
+  // 「解析成绝对路径」会让复制出来的成品指回 out/——等于没搬出仓库。
+  await fs.cp(appDir, staged, { recursive: true, verbatimSymlinks: true });
+  return staged;
+}
+
+// app.asar 的最小读取器：8 字节 pickle 头 + 4 字节头长度 + JSON 文件表，之后是数据区。
+// 不引 @electron/asar —— 它只是 @electron/packager 的传递依赖，e2e 直接 require 等于
+// 把没在 package.json 里声明的包当接口用。这里只要文件表和取一个文件的内容。
+type AsarNode = { files?: Record<string, AsarNode>; size?: number; offset?: string };
+function readAsar(file: string): {
+  read(p: string): string | null;
+  has(p: string): boolean;
+  list(prefix: string): string[];
+} {
+  const fd = openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(16);
+    readSync(fd, head, 0, 16, 0);
+    const headerLen = head.readUInt32LE(12);
+    const headerBuf = Buffer.alloc(headerLen);
+    readSync(fd, headerBuf, 0, headerLen, 16);
+    const root = JSON.parse(headerBuf.toString('utf8')) as AsarNode;
+    const dataBase = 16 + headerLen;
+    const at = (p: string): AsarNode | null => {
+      let node: AsarNode | undefined = root;
+      for (const seg of p.split('/')) {
+        node = node?.files?.[seg];
+        if (!node) return null;
+      }
+      return node;
+    };
+    return {
+      has: (p) => at(p) !== null,
+      list: (prefix: string) => {
+        const out: string[] = [];
+        const walk = (node: AsarNode, p: string) => {
+          for (const [name, child] of Object.entries(node.files ?? {})) {
+            if (child.files) walk(child, `${p}/${name}`);
+            else out.push(`${p}/${name}`);
+          }
+        };
+        const start = at(prefix);
+        if (start) walk(start, prefix);
+        return out;
+      },
+      // 每次现开现关：文件表已经在内存里，句柄不必跨调用活着（活着就得管生命周期，
+      // 上一版把它 finally 掉了，read() 一调就 EBADF）。
+      read: (p) => {
+        const node = at(p);
+        if (!node || node.size === undefined || node.offset === undefined) return null;
+        const buf = Buffer.alloc(node.size);
+        const rfd = openSync(file, 'r');
+        try {
+          readSync(rfd, buf, 0, node.size, dataBase + Number(node.offset));
+        } finally {
+          closeSync(rfd);
+        }
+        return buf.toString('utf8');
+      },
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// 产物里剩下的第三方 bare specifier。vite 把绝大多数依赖打进 bundle，
+// external 的那几个以裸名留在产物里，运行时才按 Node 的规则去找 node_modules。
+const BARE_SPECIFIER = /(?:\brequire\(|\bimport\(|\bfrom\s*)["']([^"'./][^"']*)["']/g;
+function thirdPartySpecifiers(source: string): Set<string> {
+  const found = new Set<string>();
+  for (const m of source.matchAll(BARE_SPECIFIER)) {
+    const spec = m[1];
+    if (spec === 'electron' || spec.startsWith('node:')) continue;
+    const pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+    if (builtinModules.includes(pkg)) continue;
+    found.add(pkg);
+  }
+  return found;
 }
 
 // 启动打包二进制并等 CDP 端口。生产 fuse 拦死 electron.launch（注入的 --inspect=0
@@ -90,8 +200,13 @@ async function firstPage(browser: Browser): Promise<Page> {
 }
 
 test('54-packaged-smoke: 打包成品能启动、资源齐全、投影成功、内置二进制可执行', async () => {
-  const { exe, resources } = packagedPaths();
-  expect(existsSync(exe), `打包成品不存在：${exe}\n先跑 npm run package（或 npm run make）`).toBe(true);
+  const built = builtPaths();
+  const builtExe = path.join(built.appDir, built.exeRel);
+  expect(existsSync(builtExe), `打包成品不存在：${builtExe}\n先跑 npm run package（或 npm run make）`).toBe(true);
+
+  const appDir = await stageOutsideRepo(built.appDir);
+  const exe = path.join(appDir, built.exeRel);
+  const resources = path.join(appDir, built.resourcesRel);
 
   // —— 断言 2：资源布局静态检查（防整目录漏包）——
   // cli.json 声明的全部二进制都被 extraResource 铺到 resources 根；skills 整目录同理。
@@ -105,6 +220,26 @@ test('54-packaged-smoke: 打包成品能启动、资源齐全、投影成功、�
   }
   const builtinSkill = path.join(resources, 'skills', 'fact-check', 'SKILL.md');
   expect(existsSync(builtinSkill), `packaged resources 缺内置 skill：${builtinSkill}`).toBe(true);
+
+  // —— 断言 2b：产物里剩下的 bare specifier 都能在包内解析到 ——
+  // 断言 1 只覆盖启动路径上被 await 到的那一个（ProviderRegistry.build()）；懒加载的
+  // external（比如某个只在用户打开 .docx 时才 import 的包）漏掉了，启动照样绿，
+  // 要等用户点到那一步才炸。这里直接读产物里真实残留的裸名，逐个对照包内的
+  // node_modules —— 判据来自 bundle 本身，不来自 vite.main.config.ts 的意图声明。
+  const asar = readAsar(path.join(resources, 'app.asar'));
+  const specs = new Set<string>();
+  for (const js of asar.list('.vite/build')) {
+    if (!js.endsWith('.js')) continue;
+    for (const s of thirdPartySpecifiers(asar.read(js) ?? '')) specs.add(s);
+  }
+  expect(specs.size, '产物里一个 external 都不剩，说明这条断言的取样口失效了').toBeGreaterThan(0);
+  for (const spec of specs) {
+    expect(
+      asar.has(`node_modules/${spec}/package.json`),
+      `打包成品缺 external 模块 ${spec}：运行时 import 会 ERR_MODULE_NOT_FOUND。` +
+        `把它加进 forge.config.ts 的 EXTERNAL_RUNTIME_MODULES`,
+    ).toBe(true);
+  }
 
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-smoke-home-'));
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-smoke-userdata-'));
