@@ -55,13 +55,18 @@ export function SettingsPane() {
           </div>
         )}
         <div style={{ marginTop: subtitle !== null ? 14 : 32 }}>
-          <span
-            data-testid="settings-version"
-            className="font-mono"
-            style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 0.8 }}
-          >
-            v{appVersion || '0.1.0'}
-          </span>
+          {/* 兜底串写死等于「拿不到版本时安静地报一个错的版本」——用户据此判断要不要更新，
+              报错比不报更坏。appVersion 由 bootstrap 从主进程的 app.getVersion() 灌入，
+              空只可能出现在 bootstrap 之前；那一瞬不显示，好过显示一个假的。 */}
+          {appVersion !== '' && (
+            <span
+              data-testid="settings-version"
+              className="font-mono"
+              style={{ fontSize: 10, color: 'var(--color-ink-faint)', letterSpacing: 0.8 }}
+            >
+              v{appVersion}
+            </span>
+          )}
         </div>
       </div>
 
