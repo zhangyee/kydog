@@ -83,6 +83,8 @@ research 选题与研究  →  study 科研自学  →  write 论文写作辅助
 
 | 命令 | 它回答什么 | 它比直接问多做的事 | 产物 |
 |---|---|---|---|
+| `/peer-review` | 评审自查：这稿子投出去之前，还有什么会被审稿人打？ | 按评审内核跑一轮模拟评审：先判全局——论证链逐环追、贡献定位用检索钉出最接近的前置工作（新意的层次、可证伪的差量、对目标场合的分量），大方向有问题先跟你谈方向再谈细节；随后逐条分诊，该你拍板的处置（改 / 挂起 / 拒绝）问你确认；收到的真实审稿意见也能直接喂进来 | 修改方案报告 —— 全局判断 + 逐条评审意见（严重度、处置、位置与「改成什么」）+ 引用文献，全部回源核验 |
+| `/peer-review-response` | 同行评审：受邀审稿，怎么写出经得起作者反查的正式意见？ | 先中性映射钉住稿子说了什么，再判整体、后逐条；每条意见带位置、问题、为何重要、怎么改；「已有人做过 / 漏引 / 引文不支持」这类文献判断全部检索回源后才写；没有意见就写「未发现」，不凑数 | 可直接提交的评审报告 —— 总体判断、Major / Minor、未能评估项、本评审的局限、评审引用的文献 |
 | `/fact-check` | 论据核验：这个说法有证据支持吗？ | 先把断言拆成可判定的子命题并跟你确认拆法；正反两路都找证据（只找支持证据是确认偏误）；按研究设计和样本分层评估证据强度，**不看期刊名气**；每篇当证据用的论文都反查是否被撤稿（限 PubMed / PMC 覆盖的领域，覆盖不到的如实写明没查） | 五档判定（成立 / 有条件成立 / 证据不足 / 有反证 / 不成立）+ 成立的边界 + 800–1200 字核查报告。判定必须带边界 —— 不带边界的学术判定基本一定是错的 |
 
 ## 安装
@@ -124,7 +126,7 @@ npm start
 
 KyDog 现在能做的，离完整构想还不到三分之一。下面这些功能，已列入了我的开发计划：
 
-- [ ] **补齐 skill** —— 沿「研究 — 学习 — 写作 — 评审」往后做。目前研究阶段有三个、学习阶段一个，写作与评审各只有一个，后两段还很薄。
+- [ ] **补齐 skill** —— 沿「研究 — 学习 — 写作 — 评审」往后做。目前研究阶段有三个、学习阶段一个、评审阶段三个，写作段还很薄。
 - [ ] **PDF 标注** —— 划线批注，中文翻译与双语对照阅读。
 - [ ] **文档追问与引文评述** —— 在 Markdown 编辑器里就地对选中段落追问，并对它引用的文献给出评述。
 - [ ] **slowpaper：in-app browsing** —— 让智能体在应用内操作浏览器，支持 CARSI（中国教育和科研计算机网联邦认证服务）登录，接入更多必须经浏览器才能访问的学术文献源。
@@ -138,15 +140,16 @@ KyDog 站在这些项目的肩膀上。
 
 **架构核心**
 
-- **[Pi](https://github.com/earendil-works/pi)** — Mario Zechner。KyDog 的 agent loop 直接构建在 `pi-coding-agent` 之上：LLM provider 接入与凭据管理、模型目录、工具注册与执行、上下文管理、会话持久化，这一整层都由它承担。KyDog 在它之上只加了自己的工具（向用户提问、读 PDF 插图）、skill 的加载与语言投影，以及桌面端的事件回流。
+- **[Pi](https://github.com/earendil-works/pi)** — Mario Zechner。KyDog 的 agent loop 直接构建在 `pi-coding-agent` 之上：LLM provider 接入与凭据管理、模型目录、工具注册与执行、上下文管理、会话持久化，这一整层都由它承担。KyDog 在它之上只加了自己的工具（向用户提问、读 PDF 插图、直读 Word 文档）、skill 的加载与语言投影，以及桌面端的事件回流。
 - **[Electron](https://github.com/electron/electron)** — 桌面外壳。主进程跑 Node，负责 agent 会话、文件读写与 CLI 调用；渲染进程跑 Chromium，负责界面、PDF 阅读器与 Markdown 编辑器；两者只经 `src/shared/protocol.ts` 收口的 RPC 与事件通信。跨平台打包走 electron-forge，自动更新走 Electron 的 `autoUpdater` 与 update.electronjs.org。
 
 **灵感来源**
 
 - **[Openclaw](https://github.com/openclaw/openclaw)** — Peter Steinberger。它把智能体的配置摊在明面上：不藏在 GUI 或私有格式里，而是工作区目录下几份可读、可改、可进版本库的 markdown。KyDog 取了其中三份 —— `SOUL.md` 定人格与语气、`AGENTS.md` 定工作方式与流程、`USER.md` 记「你是谁、在研究什么」—— 用来组装系统提示词，用户也因此可以直接改文件来定制自己的助手。
-- **[Open Scholar Skill](https://github.com/joshzyj/open-scholar-skill)** — 张勇军教授。面向社会科学顶刊写作的 Claude Code skill 套件，35 个 skill 把选题、文献综述、假设、研究设计、分析、写作、投稿到回应审稿意见这一整条链路逐段拆开，并在关键节点强制人工确认。它让我看到科研工作流可以被 skill 切到多细，KyDog 的研究类 skill 在颗粒度与「先问清楚再动手」这两点上受它启发。
+- **[Open Scholar Skill](https://github.com/joshzyj/open-scholar-skill)** — 张勇军教授。面向社会科学顶刊写作的 Claude Code skill 套件，35 个 skill 把选题、文献综述、假设、研究设计、分析、写作、投稿到回应审稿意见这一整条链路逐段拆开，并在关键节点强制人工确认。它让我看到科研工作流可以被 skill 切到多细，KyDog 的研究类 skill 在颗粒度与「先问清楚再动手」这两点上受它启发；评审两个 skill 的意见分诊——先给处置、经你确认再动笔——与返修不加戏的规则，也源自它的 scholar-respond。
 - **[Academic Research Skills for Claude Code](https://github.com/Imbad0202/academic-research-skills)** — Edward Cheng-I Wu。四个 skill 组成 research → write → review → revise → finalize 的管线，每个阶段都留人工决策点而不追求全自动，并把引用核验、论断与出处对齐做成独立的审计环节。KyDog 的四阶段划分，以及「引文必须回源核验」这条硬约束，都在这里得到过印证。
-
+- **[Claude Academic Research](https://github.com/mronkko/claude-academic-research)** — Mikko Rönkkö。它的 critic-loop 把「改稿改到什么时候算完」建立在可核对的账面事实上：每条意见必须有去向，拒绝一条 Major 只有「可验证的反驳」或「作者明示出界」两条路。KyDog 评审 skill 的处置纪律直接来自这里。
+- **[Research Skills](https://github.com/neuromechanist/research-skills)** — Seyed Yahya Shirazi。它的 paper-review 把每条评审意见钉成「位置 + 问题 + 为何重要 + 建议 + 依据」五要素，严重度判据逐字写死、不许含糊。KyDog 评审内核的意见结构与严重度分级从它搬来。
 ## 参与贡献
 
 KyDog 由一个人开发和维护，非常需要来自真实科研场景的反馈。
