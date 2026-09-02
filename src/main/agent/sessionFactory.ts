@@ -2,6 +2,7 @@
 import { createFixtureSession } from './fixtureProvider';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { createReadPdfFigureTool } from './readPdfFigureTool';
+import { createReadDocxTool } from './readDocxTool';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { settingsService } from '../settings/settingsService';
 import { KydogError } from '../../shared/errors';
@@ -64,6 +65,7 @@ export async function createSession(opts: {
       createReadPdfFigureTool({
         readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
       }),
+      createReadDocxTool(),
     ],
   });
   return session as AnySession;

@@ -55,6 +55,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/tar": "^6.1.13",
+    "@types/word-extractor": "^1.0.6",
     "@typescript-eslint/eslint-plugin": "^8.8.0",
     "@typescript-eslint/parser": "^8.8.0",
     "@vitejs/plugin-react": "^4.3.0",
@@ -75,6 +76,7 @@
     "chokidar": "^5.0.0",
     "electron-squirrel-startup": "^1.0.1",
     "katex": "^0.16.46",
+    "mammoth": "^1.12.2",
     "proper-lockfile": "^4.1.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -83,6 +85,7 @@
     "remark-gfm": "^4.0.0",
     "tar": "^7.4.3",
     "typebox": "1.1.38",
+    "word-extractor": "^1.0.4",
     "zod": "^4.4.1",
     "zustand": "^5.0.0"
   },
