@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { useUpdateStore, shouldShowBanner } from '../stores/updateStore';
 
 const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
 
 export function UpdateBanner() {
   const status = useUpdateStore((s) => s.status);
+  const [actionHover, setActionHover] = useState(false);
   if (!shouldShowBanner(status) || !status || status.update.kind === 'none') return null;
 
   const downloaded = status.update.kind === 'downloaded';
@@ -35,12 +37,20 @@ export function UpdateBanner() {
       }}
     >
       <span className="font-serif">{text}</span>
+      {/* 与设置页的「立即检查」同一套描边小按钮：同一个功能的两颗按钮长一样。
+          边框到位后不再需要「→」——那个箭头本来就是无边框态下用来暗示「这行可点」的替代品。 */}
       <button
         type="button" onClick={act} data-testid="update-banner-action"
         className="font-mono"
-        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 11, color: 'var(--color-ink)' }}
+        onMouseEnter={() => setActionHover(true)}
+        onMouseLeave={() => setActionHover(false)}
+        style={{
+          padding: '2px 10px', borderRadius: 2, border: HAIRLINE,
+          background: actionHover ? 'var(--color-paper-deep)' : 'transparent',
+          cursor: 'pointer', fontSize: 11, lineHeight: 1.5, color: 'var(--color-ink)',
+        }}
       >
-        → {actionLabel}
+        {actionLabel}
       </button>
       <span style={{ flex: 1 }} />
       <button
