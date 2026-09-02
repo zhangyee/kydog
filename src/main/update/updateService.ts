@@ -60,6 +60,13 @@ export class UpdateService {
       this.emit();
       return;
     }
+    // 下载中只写 check：这一刻还没有可展示的版本标识（Squirrel 的 update-available
+    // 不带 releaseName），update 保持原样，横幅也就不会在下载途中先冒出来。
+    if (o.kind === 'downloading') {
+      this.check_ = { phase: 'downloading' };
+      this.emit();
+      return;
+    }
     this.check_ = { phase: 'ok' };
     if (this.update_.kind === 'downloaded') { this.emit(); return; } // 不可降级
     if (o.kind === 'none') this.update_ = { kind: 'none' };
@@ -87,6 +94,9 @@ export class UpdateService {
   private async runCheck(): Promise<UpdateStatus> {
     if (this.update_.kind === 'downloaded') return this.getStatus(); // 进程终态
     if (this.disabledUntilRestart) return this.getStatus();
+    // 下载在途时不得再发起检查：Electron 文档明确重复 checkForUpdates() 会把更新
+    // 下载两遍。解除靠迟到的 downloaded / error（applyLateOutcome 会改写 check_）。
+    if (this.check_.phase === 'downloading') return this.getStatus();
     this.check_ = { phase: 'checking' };
     this.emit();
     const ac = new AbortController();

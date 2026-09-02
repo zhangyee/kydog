@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createWin32Engine } from './engine';
+import { createWin32Engine, type CheckOutcome } from './engine';
 import type { UpdaterPort, UpdaterEvent } from './updaterPort';
 
 function fakePort() {
@@ -42,15 +42,32 @@ describe('win32 CheckEngine', () => {
     expect(r).toMatchObject({ kind: 'failed', retry: 'allowed' });
   });
 
-  it('update-available 不是终态，不结束本次检查', async () => {
+  // update-available 之后 Squirrel 会自动下整包（v0.2.0 的 nupkg 182MB），耗时按带宽算
+  // 分钟起步，必然越过 deadline。此前这里把它当非终态，于是 30 秒后本次检查被判成
+  // 「检查更时超时；本次运行期间已停止检查，请重启应用」——而下载正在正常进行，两分钟后
+  // 迟到的 downloaded 又把横幅弹出来。用户看到的那条失败提示是假的。
+  // 现在 update-available 就是本次检查的终态：它是协议事实（下载已开始），如实说出来。
+  it('update-available → downloading，立即兑现，不拖到 deadline', async () => {
+    const port = fakePort();
+    const e = createWin32Engine({ port, feedUrl: 'u', userAgent: 'ua', deadlineMs: 1000 });
+    const p = e.run(new AbortController().signal);
+    port.emit({ type: 'update-available' });
+    expect(await p).toEqual({ kind: 'downloading' });
+  });
+
+  it('downloading 之后越过 deadline 也不再产出失败；downloaded 走迟到通道', async () => {
     vi.useFakeTimers();
     const port = fakePort();
     const e = createWin32Engine({ port, feedUrl: 'u', userAgent: 'ua', deadlineMs: 1000 });
-    let settled = false;
-    void e.run(new AbortController().signal).then(() => { settled = true; });
+    const late: CheckOutcome[] = [];
+    e.onLateOutcome((o) => late.push(o));
+    const p = e.run(new AbortController().signal);
     port.emit({ type: 'update-available' });
-    await vi.advanceTimersByTimeAsync(500);
-    expect(settled).toBe(false);
+    expect(await p).toEqual({ kind: 'downloading' });
+    await vi.advanceTimersByTimeAsync(5_000);       // 早已越过 deadline
+    expect(late).toEqual([]);                        // 关键：不许冒出 failed
+    port.emit({ type: 'update-downloaded', releaseName: 'KyDog 0.2.0' });
+    expect(late).toEqual([{ kind: 'downloaded', label: 'KyDog 0.2.0' }]);
     vi.useRealTimers();
   });
 
@@ -79,7 +96,10 @@ describe('win32 CheckEngine', () => {
     vi.useRealTimers();
   });
 
-  it('迟到的 update-available 不产生 late outcome（它不是终态）', async () => {
+  // 慢网络下 deadline 可能先于 update-available 到达：本次检查已被判成
+  // 「超时，本次运行停止检查」，随后下载才开始。这条迟到的 downloading 是解锁的证据 ——
+  // 丢掉它，用户就要盯着一条假失败等到下载完成为止。
+  it('迟到的 update-available → downloading，用来解除 deadline 造成的禁用', async () => {
     vi.useFakeTimers();
     const port = fakePort();
     const e = createWin32Engine({ port, feedUrl: 'u', userAgent: 'ua', deadlineMs: 1000 });
@@ -89,7 +109,7 @@ describe('win32 CheckEngine', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await p;
     port.emit({ type: 'update-available' });
-    expect(late).toEqual([]);
+    expect(late).toEqual([{ kind: 'downloading' }]);
     vi.useRealTimers();
   });
 });

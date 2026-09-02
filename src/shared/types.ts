@@ -329,6 +329,10 @@ export type SkillCommitResult = {
 export type UpdateCheckPhase =
   | { phase: 'never' }
   | { phase: 'checking' }
+  /** 仅 Windows：Squirrel 收到 update-available 后会自动下整包，耗时按带宽算分钟起步。
+   *  这段时间既不是「检查中」也不是失败，必须自成一态 —— 否则只能靠 deadline 判超时，
+   *  而那条超时提示是假的（下载正在正常进行）。终态由迟到的 downloaded / error 给出。 */
+  | { phase: 'downloading' }
   | { phase: 'ok' }
   | {
       phase: 'failed';

@@ -22,6 +22,10 @@ describe('statusText', () => {
     expect(statusText(s).main).toBe('新版 v2 已下载，重启后生效');
   });
 
+  it('downloading → 正在下载新版，既不是失败也不是已是最新', () => {
+    expect(statusText({ ...base, check: { phase: 'downloading' } }).main).toBe('正在下载新版…');
+  });
+
   it('never → 尚未检查', () => {
     expect(statusText({ ...base, check: { phase: 'never' } }).main).toBe('尚未检查');
   });

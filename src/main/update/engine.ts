@@ -5,6 +5,8 @@ import type { UpdaterPort, UpdaterEvent } from './updaterPort';
 export type CheckOutcome =
   | { kind: 'none' }
   | { kind: 'available'; candidateId: string; label: string }
+  /** 仅 Windows：下载已开始。是本次检查的终态，真正的终局由迟到通道给出。 */
+  | { kind: 'downloading' }
   | { kind: 'downloaded'; label: string }
   | { kind: 'failed'; message: string; retry: 'allowed' | 'restart-required' };
 
@@ -94,7 +96,10 @@ export function createWin32Engine(deps: {
     if (e.type === 'update-not-available') return { kind: 'none' };
     if (e.type === 'update-downloaded') return { kind: 'downloaded', label: e.releaseName };
     if (e.type === 'error') return { kind: 'failed', message: e.message, retry: 'allowed' };
-    return null; // update-available：下载还在后面，不是终态
+    // update-available：整包下载就此开始（182MB 起，分钟级），必然越过 deadline。
+    // 它是本次检查的终态 —— 把它当非终态，deadline 就会把一次正常的下载判成
+    // 「超时，请重启应用」，而两分钟后迟到的 downloaded 又把横幅弹出来，自相矛盾。
+    return { kind: 'downloading' };
   };
 
   deps.port.on((e) => {

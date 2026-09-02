@@ -36,6 +36,41 @@ describe('UpdateService 状态迁移', () => {
     expect(s.getStatus().currentVersion).toBe('0.1.0');
   });
 
+  it('downloading：check 进入下载态，update 不变，且不是失败', async () => {
+    const s = svc(scriptedEngine([{ kind: 'downloading' }]));
+    await s.check();
+    expect(s.getStatus().check).toEqual({ phase: 'downloading' });
+    expect(s.getStatus().update).toEqual({ kind: 'none' });
+  });
+
+  it('下载中不再发起第二次检查：Electron 重复 checkForUpdates 会把包下两遍', async () => {
+    const e = scriptedEngine([{ kind: 'downloading' }, { kind: 'none' }]);
+    const s = svc(e);
+    await s.check();
+    await s.check();
+    expect(e.runs).toBe(1);
+  });
+
+  it('deadline 判失败后，迟到的 downloading 解除禁用并如实说在下载', async () => {
+    const e = scriptedEngine([
+      { kind: 'failed', message: '检查更新超时；本次运行期间已停止检查，请重启应用', retry: 'restart-required' },
+    ]);
+    const s = svc(e);
+    await s.check();
+    expect(s.getStatus().check).toMatchObject({ phase: 'failed', retry: 'restart-required' });
+    e.late({ kind: 'downloading' });
+    expect(s.getStatus().check).toEqual({ phase: 'downloading' });
+  });
+
+  it('迟到的 downloaded 解除下载态：check 回 ok，update 拿到 downloaded', async () => {
+    const e = scriptedEngine([{ kind: 'downloading' }]);
+    const s = svc(e);
+    await s.check();
+    e.late({ kind: 'downloaded', label: 'KyDog 0.2.0' });
+    expect(s.getStatus().check).toEqual({ phase: 'ok' });
+    expect(s.getStatus().update).toEqual({ kind: 'downloaded', label: 'KyDog 0.2.0' });
+  });
+
   it('none → check.ok + update.none', async () => {
     const s = svc(scriptedEngine([{ kind: 'none' }]));
     await s.check();

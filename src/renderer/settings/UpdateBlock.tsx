@@ -10,6 +10,9 @@ export function statusText(s: UpdateStatus): { main: string; failure?: string } 
   // 生命周期先判：never / checking 与「有没有更新」无关，任何 update 值下都是这两句。
   if (s.check.phase === 'never') return { main: '尚未检查' };
   if (s.check.phase === 'checking') return { main: '检查中…' };
+  // Windows 专有的下载途中态。它必须先于下面的失败/已是最新判断 —— 少了这一支，
+  // 未知 phase 会一路掉进最后那条 failed 分支，显示「上次检查失败：undefined」。
+  if (s.check.phase === 'downloading') return { main: '正在下载新版…' };
 
   // 检查失败不得掩盖已经拿到的更新信息 —— 两者并列显示，更新文案仍占主行。
   const failure = s.check.phase === 'failed' ? `上次检查失败：${s.check.message}` : undefined;
@@ -30,7 +33,8 @@ export function UpdateBlock() {
   const { main, failure } = statusText(status);
   // 能否再试是协议事实，读 retry 字段，不解析 message
   const restartRequired = status.check.phase === 'failed' && status.check.retry === 'restart-required';
-  const checking = status.check.phase === 'checking';
+  // 下载在途与检查中同样禁用按钮：服务层已经拒绝重入，UI 不该给出一颗按了没反应的按钮。
+  const checking = status.check.phase === 'checking' || status.check.phase === 'downloading';
 
   async function check() {
     setBusy(true);
