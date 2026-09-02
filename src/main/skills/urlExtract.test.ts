@@ -4,6 +4,7 @@ import path from 'node:path';
 import * as tar from 'tar';
 import { extractTarGz } from './urlExtract';
 import { makeTarball, mkTmp } from './__fixtures__/makeTarball';
+import { SKIP_WITHOUT_SYMLINK } from '../../test-support/symlinkCapability';
 
 function tmp(): string {
   return mkTmp('tar-');
@@ -31,7 +32,10 @@ describe('extractTarGz', () => {
     );
   });
 
-  it.skipIf(process.platform === 'win32')('rejects symlink entries', async () => {
+  // 拒绝的判据是 tar entry 的 type（urlExtract.ts 的 filter），与平台无关；这里唯一
+  // 需要平台配合的是**造夹具**——得先建出一个软链才能打进 tar。所以按能力探针跳，
+  // 不按平台名字跳：开了开发者模式的 Windows 建得出来，就该真跑。
+  it.skipIf(SKIP_WITHOUT_SYMLINK)('rejects symlink entries', async () => {
     const { symlinkSync } = await import('node:fs');
     const stage = tmp();
     writeFileSync(path.join(stage, 'real.txt'), 'real');
@@ -39,8 +43,9 @@ describe('extractTarGz', () => {
     const out = path.join(tmp(), 'sym.tar.gz');
     await tar.c({ gzip: true, file: out, cwd: stage }, ['real.txt', 'evil-link']);
     const dest = tmp();
-    await expect(extractTarGz(out, dest)).rejects.toThrow(
-      /SymbolicLink|skill\.extract_failed|拒绝|extract_failed/,
-    );
+    // 钉死是 filter 里那条软链分支拒的，而不是 tar.x 因为别的原因抛了
+    // ——原来那个 `skill.extract_failed|extract_failed` 的宽正则任何解压失败都能匹配上，
+    // 在这条刚被放开跑的平台上，等于允许它因为错误的理由变绿。
+    await expect(extractTarGz(out, dest)).rejects.toThrow(/含 SymbolicLink 条目/);
   });
 });
