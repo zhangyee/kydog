@@ -5,8 +5,10 @@ import { emptyAnnotations } from '../../../../shared/pdfSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
+import { PdfAnnotationNotice } from './PdfAnnotationNotice';
 import { PdfSelectionBar, type Anchor } from './PdfSelectionBar';
 import { PdfToolbar } from './PdfToolbar';
+import { pdfSaveScheduler } from './saveScheduler';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage, type PageRect } from './pageReadout';
 
@@ -55,6 +57,19 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       });
     return () => { cancelled = true; };
   }, [tab.id, tab.path]);
+
+  // 关 tab：先把未落盘的改动冲掉，再释放桶；窗口卸载同样冲写（spec §8.1）
+  useEffect(() => {
+    const tabId = tab.id;
+    const onBeforeUnload = () => { void pdfSaveScheduler.flush(tabId); };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      void pdfSaveScheduler.flush(tabId);   // 返回前已把 doc 快照交给写入，下面立刻 drop 也不丢
+      pdfSaveScheduler.forget(tabId);
+      usePdfAnnotationStore.getState().drop(tabId);
+    };
+  }, [tab.id]);
 
   // 某页第一次要用文本几何时才取，取失败按无文本行处理（spec §6.3 / §8.3）
   const ensureLines = useCallback((n: number): Promise<TextLine[]> => {
@@ -333,6 +348,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           </Document>
         )}
       </div>
+      <PdfAnnotationNotice tabId={tab.id} pdfPath={tab.path} />
       <PdfToolbar tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)} />
       {anchor && <PdfSelectionBar tabId={tab.id} anchor={anchor} />}
     </div>

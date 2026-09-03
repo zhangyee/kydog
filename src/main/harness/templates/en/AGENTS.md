@@ -62,6 +62,14 @@ explanation grow with follow-up questions.
 - Deleting or overwriting the user's files.
 - Modifying SOUL.md.
 
+## The user's PDF annotations
+
+Highlights and notes the user made on a PDF in KyDog live next to it in a
+dot-prefixed file of the same name (`paper.pdf` → `.paper.pdf.json`); highlight
+entries carry the underlined source text. When the user refers to passages
+they marked or to their notes, `read` that file first. A translation, if any,
+is in `.paper.pdf.zh.json`.
+
 ## Self-Maintenance
 
 Your workspace files: `~/.kydog/SOUL.md` (identity), `~/.kydog/USER.md`
