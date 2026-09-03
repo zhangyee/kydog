@@ -101,9 +101,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           return { page: Number(node.dataset.pdfPage), top: r.top - top, bottom: r.bottom - top };
         });
       setCurrentPage(mostVisiblePage(rects, 0, el.clientHeight));
-      setScrollTick((t) => t + 1);
+      // scrollTick 只是喂给浮条锚点 useLayoutEffect 的重算信号；没有选中项时浮条不存在，
+      // 重算是白费一次全 tab 子树重渲染——只在有选中时才 bump（item 3）。
+      if (usePdfAnnotationStore.getState().buckets[tab.id]?.selectedId) setScrollTick((t) => t + 1);
     });
-  }, []);
+  }, [tab.id]);
   useEffect(() => () => { if (readoutRaf.current != null) cancelAnimationFrame(readoutRaf.current); }, []);
 
   // 双缓冲消除缩放闪烁（react-pdf 每页只有一个 canvas，改 scale 会清空并隐藏 canvas）：

@@ -161,7 +161,9 @@ test('55-pdf-annotations: 坏 JSON 边车 → 工具置灰、提示可见、文�
     await pane.getByTestId('pdf-annotation-layer-1').click({ position: { x: 150, y: 350 } });
     await page.keyboard.press('h');
     await page.waitForTimeout(1000);
-    await expect(pane.getByTestId('pdf-tool-highlight')).toBeDisabled();
+    // 按键没能切到高亮笔工具：卡片只在「当前工具是非 select 的激活工具」时才渲染，
+    // 有卡片就说明 'h' 生效切了工具——这比再查一遍已知禁用的按钮更能证明按键被吞掉了
+    await expect(pane.getByTestId('pdf-tool-card-highlight')).toHaveCount(0);
     expect(await fs.readFile(path.join(kydogHome, 'proj', SIDECAR_REL), 'utf8')).toBe('{broken');
   } finally {
     await teardown(launched);
