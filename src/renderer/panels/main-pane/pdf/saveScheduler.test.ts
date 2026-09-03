@@ -103,4 +103,45 @@ describe('saveScheduler', () => {
     expect(save).toHaveBeenCalledWith(T, expect.objectContaining({ annotations: [expect.objectContaining({ id: 'a' })] }));
     stop();
   });
+
+  it('flush 与在途写入碰撞时，await 到补写真正落盘才 resolve', async () => {
+    let release: () => void = () => {};
+    const save = vi.fn().mockImplementationOnce(() => new Promise<void>((r) => { release = r; })).mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    st().addHighlight(T, H('a')); sch.schedule(T);
+    await vi.advanceTimersByTimeAsync(300);          // 第一份在飞
+    st().addHighlight(T, H('b'));
+    let resolved = false;
+    void sch.flush(T).then(() => { resolved = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolved).toBe(false);                     // 第一份还没写完，flush 不能先 resolve
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1][1].annotations.map((a: Highlight) => a.id)).toEqual(['a', 'b']);
+    expect(resolved).toBe(true);
+  });
+
+  it('forget 在途期间：已排队的补写照常落盘一次，之后没有多余写入', async () => {
+    let release: () => void = () => {};
+    const save = vi.fn().mockImplementationOnce(() => new Promise<void>((r) => { release = r; })).mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    st().addHighlight(T, H('a')); sch.schedule(T);
+    await vi.advanceTimersByTimeAsync(300);
+    st().addHighlight(T, H('b'));
+    void sch.flush(T);
+    sch.forget(T);
+    release();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('forget 清掉待触发的定时器', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    st().addHighlight(T, H('a')); sch.schedule(T);
+    sch.forget(T);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(save).not.toHaveBeenCalled();
+  });
 });
