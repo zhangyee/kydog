@@ -12,6 +12,7 @@ export type KydogErrorCode =
   | 'fs.write_failed'
   | 'fs.too_large'
   | 'fs.access_denied'
+  | 'pdf.annotations_invalid'
   | 'not_implemented'
   | 'skill.invalid'
   | 'skill.name_conflict'

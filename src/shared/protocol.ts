@@ -7,6 +7,7 @@ import type {
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
+import type { PdfAnnotationsFile } from './pdfSidecar';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -80,6 +81,11 @@ export type RpcCall =
   // 把 PDF 的一页画成 PNG（主进程借一个不显示的窗口跑 pdfjs，见 src/main/pdf/pdfRaster.ts）。
   // arXiv 源码包里的插图常常是 .pdf，嵌不进 HTML 报告，得先过一道渲染。
   | { method: 'pdf.renderPage'; args: { path: string; page: number; scale?: number }; result: { pngPath: string } }
+  // PDF 旁的标注边车（spec: docs/superpowers/specs/2026-09-03-pdf-annotations-design.md）。
+  // load 的 null 只代表边车不存在；解析失败或版本不认识抛 pdf.annotations_invalid，
+  // 渲染层据此置灰标注工具且永不覆盖它。
+  | { method: 'pdf.annotations.load'; args: { pdfPath: string }; result: { doc: PdfAnnotationsFile | null } }
+  | { method: 'pdf.annotations.save'; args: { pdfPath: string; doc: PdfAnnotationsFile }; result: void }
   // ── 自动升级 ──
   | { method: 'update.getStatus'; args: undefined; result: UpdateStatus }
   | { method: 'update.check'; args: undefined; result: UpdateStatus }
