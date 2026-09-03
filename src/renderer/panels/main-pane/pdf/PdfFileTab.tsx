@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
+import { emptyAnnotations } from '../../../../shared/pdfSidecar';
+import { usePdfAnnotationStore } from './pdfAnnotationStore';
+import { PdfAnnotationLayer } from './PdfAnnotationLayer';
+import { PdfToolbar } from './PdfToolbar';
+import { textLines, type TextItemLike, type TextLine } from './textLines';
+import { mostVisiblePage, type PageRect } from './pageReadout';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -18,10 +24,69 @@ const PAGE_PAD = 24;             // 上下留白基准（px，随缩放等比）
 
 type Layer = { id: number; scale: number };
 
+// 结构化地描述 react-pdf 交给 onLoadSuccess 的 page proxy 里我们用到的三样东西，避免引 react-pdf 的内部类型路径。
+type PageProxyLike = {
+  pageNumber: number;
+  getViewport(opts: { scale: number }): { width: number; height: number; convertToViewportPoint(x: number, y: number): number[] };
+  getTextContent(): Promise<{ items: unknown[] }>;
+};
+
 export function PdfFileTab({ tab }: { tab: FileTab }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
   const [bytes, setBytes] = useState<Uint8Array<ArrayBuffer> | null>(null);
   const [numPages, setNumPages] = useState(0);
+  const [pageSizes, setPageSizes] = useState<Record<number, { w: number; h: number }>>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageProxies = useRef<Record<number, PageProxyLike>>({});
+  const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
+  const readoutRaf = useRef<number | null>(null);
+
+  // 打开即并行加载标注；边车不存在 → 空文档（spec §6.4）
+  useEffect(() => {
+    let cancelled = false;
+    window.kydog.invoke('pdf.annotations.load', { pdfPath: tab.path })
+      .then(({ doc }) => {
+        if (!cancelled) usePdfAnnotationStore.getState().setLoaded(tab.id, doc ?? emptyAnnotations(tab.path));
+      })
+      .catch((err: Error) => {
+        if (!cancelled) usePdfAnnotationStore.getState().setLoadError(tab.id, err.message);
+      });
+    return () => { cancelled = true; };
+  }, [tab.id, tab.path]);
+
+  // 某页第一次要用文本几何时才取，取失败按无文本行处理（spec §6.3 / §8.3）
+  const ensureLines = useCallback((n: number): Promise<TextLine[]> => {
+    const cached = linesCache.current[n];
+    if (cached) return cached;
+    const proxy = pageProxies.current[n];
+    if (!proxy) return Promise.resolve([]);
+    const p = proxy.getTextContent()
+      .then((c) => textLines(
+        c.items.filter((it): it is TextItemLike => typeof (it as { str?: unknown }).str === 'string'),
+        proxy.getViewport({ scale: 1 }),
+      ))
+      .catch(() => [] as TextLine[]);
+    linesCache.current[n] = p;
+    return p;
+  }, []);
+
+  // 页码读数：滚动时按 rAF 节流，取视口内可见高度最大的页（spec §7.1）
+  const updateReadout = useCallback(() => {
+    if (readoutRaf.current != null) return;
+    readoutRaf.current = requestAnimationFrame(() => {
+      readoutRaf.current = null;
+      const el = scrollRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      const rects: PageRect[] = Array.from(el.querySelectorAll<HTMLElement>('[data-pdf-layer="stable"] [data-pdf-page]'))
+        .map((node) => {
+          const r = node.getBoundingClientRect();
+          return { page: Number(node.dataset.pdfPage), top: r.top - top, bottom: r.bottom - top };
+        });
+      setCurrentPage(mostVisiblePage(rects, 0, el.clientHeight));
+    });
+  }, []);
+  useEffect(() => () => { if (readoutRaf.current != null) cancelAnimationFrame(readoutRaf.current); }, []);
 
   // 双缓冲消除缩放闪烁（react-pdf 每页只有一个 canvas，改 scale 会清空并隐藏 canvas）：
   // - layers[0]：已渲染完成、正在显示的「清晰层」
@@ -140,13 +205,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       }, COMMIT_DELAY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('scroll', updateReadout, { passive: true });
     return () => {
       el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('scroll', updateReadout);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       if (commitTimer.current != null) clearTimeout(commitTimer.current);
       if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
     };
-  }, [tab.status, promote]);
+  }, [tab.status, promote, updateReadout]);
+
+  useEffect(() => { updateReadout(); }, [visualScale, layers, numPages, updateReadout]);
 
   if (tab.status === 'loading') {
     return (
@@ -163,59 +232,79 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     );
   }
   return (
-    <div
-      ref={scrollRef}
-      data-testid={`pdf-scroll-${tab.id}`}
-      className="ky-scroll h-full overflow-auto"
-      style={{ background: 'var(--color-paper-deep)' }}
-    >
-      {fileUrl && (
-        <Document
-          file={fileUrl}
-          loading={null}
-          error={null}
-          onLoadSuccess={(pdf) => { numPagesRef.current = pdf.numPages; setNumPages(pdf.numPages); }}
-          onLoadError={(err) =>
-            setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message })
-          }
-        >
-          {/* relative 容器：清晰层（idx 0）在流内定版面，后台新层（idx 1）绝对叠在其下方 */}
-          <div style={{ position: 'relative' }}>
-            {layers.map((layer, idx) => (
-              <div
-                key={layer.id}
-                style={idx === 0
-                  ? { position: 'relative', zIndex: 1, zoom: visualScale / layer.scale }
-                  : { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 0, zoom: visualScale / layer.scale }}
-              >
-                {/* w-max + min-w-full：宽度贴合最宽的一页且不小于视口 —— 页比视口宽时
-                    左右都能滚到、页比视口窄时仍居中。gap/padding 随 layer.scale 等比，
-                    与 zoom 叠加后两层版面恒等，顶替时不跳。 */}
+    <div style={{ position: 'relative', height: '100%' }}>
+      <div
+        ref={scrollRef}
+        data-testid={`pdf-scroll-${tab.id}`}
+        className="ky-scroll h-full overflow-auto"
+        style={{ background: 'var(--color-paper-deep)' }}
+      >
+        {fileUrl && (
+          <Document
+            file={fileUrl}
+            loading={null}
+            error={null}
+            onLoadSuccess={(pdf) => { numPagesRef.current = pdf.numPages; setNumPages(pdf.numPages); }}
+            onLoadError={(err) =>
+              setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message })
+            }
+          >
+            {/* relative 容器：清晰层（idx 0）在流内定版面，后台新层（idx 1）绝对叠在其下方 */}
+            <div style={{ position: 'relative' }}>
+              {layers.map((layer, idx) => (
                 <div
-                  className="flex flex-col items-center w-max min-w-full"
-                  style={{
-                    gap: `${PAGE_GAP * layer.scale}px`,
-                    padding: `${PAGE_PAD * layer.scale}px 0`,
-                  }}
+                  key={layer.id}
+                  data-pdf-layer={idx === 0 ? 'stable' : 'incoming'}
+                  style={idx === 0
+                    ? { position: 'relative', zIndex: 1, zoom: visualScale / layer.scale }
+                    : { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 0, zoom: visualScale / layer.scale }}
                 >
-                  {Array.from({ length: numPages }, (_, i) => (
-                    <Page
-                      key={i + 1}
-                      pageNumber={i + 1}
-                      scale={layer.scale}
-                      renderTextLayer={false}
-                      renderAnnotationLayer={false}
-                      className="shadow-md"
-                      onRenderSuccess={() => onPageSettled(layer.id)}
-                      onRenderError={() => onPageSettled(layer.id)}
-                    />
-                  ))}
+                  {/* w-max + min-w-full：宽度贴合最宽的一页且不小于视口 —— 页比视口宽时
+                      左右都能滚到、页比视口窄时仍居中。gap/padding 随 layer.scale 等比，
+                      与 zoom 叠加后两层版面恒等，顶替时不跳。 */}
+                  <div
+                    className="flex flex-col items-center w-max min-w-full"
+                    style={{
+                      gap: `${PAGE_GAP * layer.scale}px`,
+                      padding: `${PAGE_PAD * layer.scale}px 0`,
+                    }}
+                  >
+                    {Array.from({ length: numPages }, (_, i) => {
+                      const n = i + 1;
+                      const size = pageSizes[n];
+                      return (
+                        <div key={n} data-pdf-page={n} style={{ position: 'relative' }}>
+                          <Page
+                            pageNumber={n}
+                            scale={layer.scale}
+                            renderTextLayer={false}
+                            renderAnnotationLayer={false}
+                            className="shadow-md"
+                            onLoadSuccess={(p) => {
+                              pageProxies.current[n] = p;
+                              const v = p.getViewport({ scale: 1 });
+                              setPageSizes((s) => (s[n] ? s : { ...s, [n]: { w: v.width, h: v.height } }));
+                            }}
+                            onRenderSuccess={() => onPageSettled(layer.id)}
+                            onRenderError={() => onPageSettled(layer.id)}
+                          />
+                          {idx === 0 && size && (
+                            <PdfAnnotationLayer
+                              tabId={tab.id} page={n} pageWidth={size.w} pageHeight={size.h}
+                              layerScale={layer.scale} ensureLines={ensureLines}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </Document>
-      )}
+              ))}
+            </div>
+          </Document>
+        )}
+      </div>
+      <PdfToolbar tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)} />
     </div>
   );
 }
