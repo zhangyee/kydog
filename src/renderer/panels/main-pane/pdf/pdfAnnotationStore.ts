@@ -54,11 +54,18 @@ const without = (doc: PdfAnnotationsFile, id: string): PdfAnnotationsFile =>
   ({ ...doc, annotations: doc.annotations.filter((a) => a.id !== id) });
 
 export const usePdfAnnotationStore = create<State>((set, get) => {
-  // 桶不存在就按空桶建
+  // 桶不存在时按空桶建——但前提是这次改动确实有东西要写。像 addHighlight 这类改 doc 的动作，
+  // 对着一个 doc: null 的空桶只会算出空 patch（{}）；如果这时还是把桶建出来，就会把 tab 已经
+  // 关闭之后迟到的一次 addHighlight 变成一个凭空长出来的 doc: null 桶（item 6）。
+  // setLoaded / setLoadError / setTool / setHlParams / setNoteParams / select 这些总能算出非空
+  // patch 的动作不受影响，照常建桶。
   const patch = (tab: string, fn: (b: Bucket) => Partial<Bucket>) =>
     set((s) => {
-      const b = s.buckets[tab] ?? emptyBucket();
-      return { buckets: { ...s.buckets, [tab]: { ...b, ...fn(b) } } };
+      const existing = s.buckets[tab];
+      const b = existing ?? emptyBucket();
+      const p = fn(b);
+      if (!existing && Object.keys(p).length === 0) return {};
+      return { buckets: { ...s.buckets, [tab]: { ...b, ...p } } };
     });
   // 桶不存在就什么都不做（关 tab 之后迟到的保存结果不该把桶造回来）
   const patchExisting = (tab: string, fn: (b: Bucket) => Partial<Bucket>) =>

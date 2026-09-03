@@ -55,6 +55,37 @@ describe('pdfAnnotations', () => {
       .rejects.toMatchObject({ code: 'pdf.annotations_invalid' });
   });
 
+  it('annotations 里混入 null 抛 pdf.annotations_invalid', async () => {
+    const dir = tmp();
+    await fs.writeFile(path.join(dir, '.paper.pdf.json'), JSON.stringify({ version: 1, pdf: 'x', annotations: [null] }));
+    await expect(pdfAnnotations.load({ pdfPath: path.join(dir, 'paper.pdf') }))
+      .rejects.toMatchObject({ code: 'pdf.annotations_invalid', message: expect.stringContaining('第 1 条') });
+  });
+
+  it('高亮的 segments 不是数组时抛 pdf.annotations_invalid', async () => {
+    const dir = tmp();
+    const bad = { ...DOC, annotations: [{ ...DOC.annotations[0], segments: 'x' }] };
+    await fs.writeFile(path.join(dir, '.paper.pdf.json'), JSON.stringify(bad));
+    await expect(pdfAnnotations.load({ pdfPath: path.join(dir, 'paper.pdf') }))
+      .rejects.toMatchObject({ code: 'pdf.annotations_invalid', message: expect.stringContaining('segments') });
+  });
+
+  it('文字注缺 text 抛 pdf.annotations_invalid', async () => {
+    const dir = tmp();
+    const note = { id: 'n1', type: 'note', page: 1, color: 'ink', size: 2, x: 10, y: 20, width: 120,
+      createdAt: 'now', updatedAt: 'now' };
+    await fs.writeFile(path.join(dir, '.paper.pdf.json'), JSON.stringify({ version: 1, pdf: 'x', annotations: [note] }));
+    await expect(pdfAnnotations.load({ pdfPath: path.join(dir, 'paper.pdf') }))
+      .rejects.toMatchObject({ code: 'pdf.annotations_invalid', message: expect.stringContaining('text') });
+  });
+
+  it('已有的合法 DOC 仍能正常往返（逐条校验不误伤合法数据）', async () => {
+    const dir = tmp();
+    const pdfPath = path.join(dir, 'paper.pdf');
+    await pdfAnnotations.save({ pdfPath, doc: DOC });
+    expect(await pdfAnnotations.load({ pdfPath })).toEqual({ doc: DOC });
+  });
+
   it('边车是目录 → fs.read_failed 而不是 null', async () => {
     const dir = tmp();
     await fs.mkdir(path.join(dir, '.paper.pdf.json'));

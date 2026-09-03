@@ -54,15 +54,24 @@ export function HighlightGlyph({ h, selected }: { h: Highlight; selected: boolea
 type ToPage = (e: ReactPointerEvent) => Point;
 const DRAG_THRESHOLD = 4;
 
+// 输入中的草稿按 note id 记在这张模块级表里（spec §6.2）：缩放顶替会把 layers[0] 换成新的 Layer，
+// 整棵覆盖层子树（含 NoteBox）随 React key 变化而重挂，textarea 的组件内 state 会丢；不能改用「卸载时提交」
+// 来兜底——src/renderer/main.tsx 开了 StrictMode，dev 下挂载效果会双调用一次，卸载时提交会把每个刚创建、
+// 还是空文本的新笔记误提交成「清空即删除」，在 dev 里把新建笔记直接干掉。改成模块级表：挂载时从表里
+// 恢复草稿，提交/丢弃时清表，不依赖卸载时机。
+const noteDrafts = new Map<string, string>();
+
 export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
   tabId: string; n: Note; layerScale: number; selected: boolean; tool: Tool; toPage: ToPage;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  const [text, setText] = useState(n.text);
+  const [text, setText] = useState(() => noteDrafts.get(n.id) ?? n.text);
   const [offset, setOffset] = useState<Point | null>(null);   // 拖动中的临时位移
   const drag = useRef<{ start: Point; origin: { x: number; y: number }; moving: boolean } | null>(null);
 
-  useEffect(() => { setText(n.text); }, [n.text]);
+  // 挂载时若草稿表里还留着这条 id 的草稿（刚经历一次缩放顶替的重挂），不要用 n.text 覆盖它；
+  // 其余情况（外部改动，如撤销/重做把 doc 换回旧快照）照常跟随 n.text。
+  useEffect(() => { if (!noteDrafts.has(n.id)) setText(n.text); }, [n.text, n.id]);
   useEffect(() => { if (selected && tool !== 'highlight') ref.current?.focus(); }, [selected, tool]);
 
   const autosize = useCallback(() => {
@@ -75,8 +84,16 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
 
   const commit = () => {
     const st = usePdfAnnotationStore.getState();
-    if (text.trim() === '') st.discardNote(tabId, n.id);
-    else if (text !== n.text) st.commitNoteText(tabId, n.id, text);
+    noteDrafts.delete(n.id);   // 提交或丢弃都清草稿，不然下次挂载会误读已经交代过的旧草稿
+    if (text.trim() === '') {
+      // 已提交过的笔记（n.text 非空）被清空 = 删除：走 remove，压快照、可撤销。
+      // 从未提交过的笔记（n.text 仍是新建时的空串）清空 = 放弃：走 discardNote，不入撤销栈——
+      // 它在撤销栈里本来就不存在过一条「有文本」的记录，没有『删除』可言（spec §6.1/§7.4）。
+      if (n.text !== '') st.remove(tabId, n.id);
+      else st.discardNote(tabId, n.id);
+    } else if (text !== n.text) {
+      st.commitNoteText(tabId, n.id, text);
+    }
   };
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -104,7 +121,9 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     const d = drag.current;
     drag.current = null;
     if (!d?.moving) return;
-    e.currentTarget.releasePointerCapture(e.pointerId);
+    // touch/pen 手势在 pointercancel 时浏览器已经自行释放了捕获，这里若还去 release 会抛异常（Chromium）
+    const el = e.currentTarget;
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
     const p = toPage(e);
     usePdfAnnotationStore.getState().moveNote(tabId, n.id, d.origin.x + p[0] - d.start[0], d.origin.y + p[1] - d.start[1]);
     setOffset(null);
@@ -117,7 +136,9 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     <div
       data-annotation-id={n.id} data-testid={`pdf-note-${n.id}`}
       className="font-serif"
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
+      // pointercancel 也交给 onPointerUp：手势被系统打断时仍按「抬手」结算这次拖动，不留半拖状态（spec §7.5）
+      onPointerCancel={onPointerUp}
       style={{
         position: 'absolute', left: x * layerScale, top: y * layerScale, width: n.width * layerScale,
         fontSize: NOTE_FONT_SIZE[n.size] * layerScale, lineHeight: 1.45, color: NOTE_INK[n.color],
@@ -128,7 +149,7 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
       <textarea
         ref={ref} data-testid={`pdf-note-input-${n.id}`}
         value={text} rows={1} readOnly={tool === 'highlight'}
-        onChange={(e) => setText(e.target.value)} onBlur={commit}
+        onChange={(e) => { setText(e.target.value); noteDrafts.set(n.id, e.target.value); }} onBlur={commit}
         style={{
           display: 'block', width: '100%', border: 'none', background: 'transparent', resize: 'none',
           padding: 0, margin: 0, outline: 'none', overflow: 'hidden',
@@ -188,7 +209,8 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
       const { points, lines } = drawing.current;
       drawing.current = null;
       setLive(null);
-      rootRef.current?.releasePointerCapture(e.pointerId);
+      // touch/pen 手势在 pointercancel 时浏览器已经自行释放了捕获，这里若还去 release 会抛异常（Chromium）
+      if (rootRef.current?.hasPointerCapture(e.pointerId)) rootRef.current.releasePointerCapture(e.pointerId);
       const segments = snapToLines(points, await lines);
       if (segments.length === 0 || !hl) return;
       st.addHighlight(tabId, {
@@ -216,9 +238,13 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
     <div
       ref={rootRef} data-testid={`pdf-annotation-layer-${page}`}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-      onPointerUp={(e) => { void onPointerUp(e); }} onPointerCancel={(e) => { void onPointerUp(e); }}
+      onPointerUp={(e) => { void onPointerUp(e); }}
+      // pointercancel 也交给 onPointerUp：手势被系统打断时仍按「抬手」结算这一笔（吸附或丢弃），不留半笔（spec §7.3）
+      onPointerCancel={(e) => { void onPointerUp(e); }}
       style={{
-        position: 'absolute', inset: 0, touchAction: 'none',
+        position: 'absolute', inset: 0,
+        // 只有高亮笔工具下才吞掉触摸滚动（要接管手势画笔画）；其余工具下让触摸照常滚动阅读（item 8）
+        touchAction: tool === 'highlight' ? 'none' : 'auto',
         cursor: tool === 'highlight' ? 'crosshair' : tool === 'note' ? 'text' : 'default',
       }}
     >

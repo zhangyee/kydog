@@ -163,4 +163,9 @@ describe('pdfAnnotationStore', () => {
     st().drop(T);
     expect(st().buckets[T]).toBeUndefined();
   });
+
+  it('addHighlight 对不存在的 tab 不造桶（关 tab 之后迟到的一次改动不该凭空长出 doc: null 的桶）', () => {
+    st().addHighlight('/p/nope.pdf', H('h1'));
+    expect(st().buckets['/p/nope.pdf']).toBeUndefined();
+  });
 });
