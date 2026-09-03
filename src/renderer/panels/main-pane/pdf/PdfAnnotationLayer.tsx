@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import type { Highlight, HighlightSegment, Note } from '../../../../shared/pdfSidecar';
 import { NavIcon } from '../../../shared';
 import { HIGHLIGHT_FILL, NOTE_FONT_SIZE, NOTE_INK, STROKE_WIDTH } from './annotationInks';
+import { noteDrafts } from './noteDrafts';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
 import { straightSegment, type Point } from './straightenStroke';
 import type { TextLine } from './textLines';
@@ -70,13 +71,6 @@ const MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="2
   + `<path d="${MARKER_TIP}" fill="#fffdf7" stroke="#2b2721" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`
   + `<path d="${MARKER_BODY}" stroke="#2b2721" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const MARKER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(MARKER_SVG)}") 3 21, crosshair`;
-
-// 输入中的草稿按 note id 记在这张模块级表里（spec §6.2）：缩放顶替会把 layers[0] 换成新的 Layer，
-// 整棵覆盖层子树（含 NoteBox）随 React key 变化而重挂，textarea 的组件内 state 会丢；不能改用「卸载时提交」
-// 来兜底——src/renderer/main.tsx 开了 StrictMode，dev 下挂载效果会双调用一次，卸载时提交会把每个刚创建、
-// 还是空文本的新笔记误提交成「清空即删除」，在 dev 里把新建笔记直接干掉。改成模块级表：挂载时从表里
-// 恢复草稿，提交/丢弃时清表，不依赖卸载时机。
-const noteDrafts = new Map<string, string>();
 
 // 刚落下、还没提交过的笔记：挂载时自动聚焦，但**不进选中态**——选中会弹出改样式浮条，而插入时不该弹，
 // 第二次点它才弹（用户反馈 5，与高亮笔一致）。和草稿表一样放模块级，缩放顶替重挂之后照样认得这条 id。

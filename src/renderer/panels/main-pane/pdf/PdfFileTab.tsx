@@ -3,6 +3,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
 import { handleAnnotationKey } from './annotationKeys';
+import { flushDrafts } from './noteDrafts';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
@@ -58,14 +59,15 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     return () => { cancelled = true; };
   }, [tab.id, tab.path]);
 
-  // 关 tab：先把未落盘的改动冲掉，再释放桶；窗口卸载同样冲写（spec §8.1）
+  // 关 tab：先把草稿提交进 store、再把未落盘的改动冲掉，最后释放桶（spec §8.1）
   useEffect(() => {
     const tabId = tab.id;
-    const onBeforeUnload = () => { void pdfSaveScheduler.flush(tabId); };
+    const onBeforeUnload = () => { flushDrafts(tabId); void pdfSaveScheduler.flush(tabId); };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
-      void pdfSaveScheduler.flush(tabId);   // 返回前已把 doc 快照交给写入，下面立刻 drop 也不丢
+      flushDrafts(tabId);                 // 草稿只在模块级 Map 里，不冲进 store 就随卸载一起没了
+      void pdfSaveScheduler.flush(tabId);
       pdfSaveScheduler.forget(tabId);
       usePdfAnnotationStore.getState().drop(tabId);
     };
