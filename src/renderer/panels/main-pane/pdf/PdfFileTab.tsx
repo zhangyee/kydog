@@ -12,6 +12,7 @@ import { PdfToolbar } from './PdfToolbar';
 import { pdfSaveScheduler } from './saveScheduler';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage, type PageRect } from './pageReadout';
+import type { PageSize } from './pageLayout';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -40,11 +41,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
   const [bytes, setBytes] = useState<Uint8Array<ArrayBuffer> | null>(null);
   const [numPages, setNumPages] = useState(0);
-  const [pageSizes, setPageSizes] = useState<Record<number, { w: number; h: number }>>({});
+  const [sizes, setSizes] = useState<PageSize[] | null>(null); // null = 还没预取完；sizes[n-1] 对应第 n 页
   const [currentPage, setCurrentPage] = useState(1);
   const pageProxies = useRef<Record<number, PageProxyLike>>({});
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
   const readoutRaf = useRef<number | null>(null);
+  // 换文件时把这代自增，让上一趟在途的页尺寸预取（见下方 Document onLoadSuccess）作废——
+  // 不能在旧数据可能落地的那一刻才判断，得在“这是第几代文件”上打标。
+  const prefetchToken = useRef(0);
 
   // 打开即并行加载标注；边车不存在 → 空文档（spec §6.4）
   useEffect(() => {
@@ -157,6 +161,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   }, [bytes]);
   useEffect(() => () => {
     if (fileUrl) URL.revokeObjectURL(fileUrl);
+  }, [fileUrl]);
+
+  // 换文件：让上一代的页尺寸预取作废，并清掉它可能已经部分填过的缓存/state。
+  // 这个 effect 在 commit 之后同步跑，严格早于新 Document 的异步加载完成（onLoadSuccess
+  // 只会在其自身 effect 之后、经过至少一次 pdf.js 的异步工作才触发）——所以预取回调里
+  // 在“调用那一刻”读到的 prefetchToken.current 必然已经是这次自增后的新代号。
+  useEffect(() => {
+    prefetchToken.current += 1;
+    setSizes(null);
+    pageProxies.current = {};
+    linesCache.current = {};
   }, [fileUrl]);
 
   // 缩放后按鼠标锚点回算滚动位置，使鼠标下的内容点保持不动（同 macOS 预览）
@@ -292,7 +307,32 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
             file={fileUrl}
             loading={null}
             error={null}
-            onLoadSuccess={(pdf) => { numPagesRef.current = pdf.numPages; setNumPages(pdf.numPages); }}
+            onLoadSuccess={(pdf) => {
+              numPagesRef.current = pdf.numPages;
+              setNumPages(pdf.numPages);
+              // 预取全部页的 scale 1 尺寸：解析页字典，不栅格化。虚拟化要靠它给窗口外的行
+              // 精确高度，顺带把 page proxy 填满——ensureLines 原先等 <Page onLoadSuccess>，
+              // 虚拟化后窗口外的页那个回调永远不来。
+              //
+              // 取消机制：myToken 在“回调被调用的那一刻”读取 prefetchToken.current（不是在
+              // render 时提前捕获）。上面换文件的 effect 保证了它对这次加载而言必然已经自增到
+              // 位——effect 在 commit 之后同步跑，严格早于本次 onLoadSuccess 能触发的最早时机
+              // （那至少要经过一轮 pdf.js 的异步加载）。所以 myToken 就是“这次加载所属的那一
+              // 代”；此后若再换文件，effect 会再自增一次，循环体里下一次 await 之后的比较就会
+              // 失配而提前返回，旧数据不会写进 pageProxies / linesCache / setSizes。
+              const myToken = prefetchToken.current;
+              void (async () => {
+                const out: PageSize[] = [];
+                for (let n = 1; n <= pdf.numPages; n++) {
+                  const p = await pdf.getPage(n);
+                  if (prefetchToken.current !== myToken) return; // 换文件了，丢弃这一趟
+                  pageProxies.current[n] = p as unknown as PageProxyLike;
+                  const v = p.getViewport({ scale: 1 });
+                  out.push({ w: v.width, h: v.height });
+                }
+                if (prefetchToken.current === myToken) setSizes(out);
+              })();
+            }}
             onLoadError={(err) =>
               setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message })
             }
@@ -319,7 +359,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                   >
                     {Array.from({ length: numPages }, (_, i) => {
                       const n = i + 1;
-                      const size = pageSizes[n];
+                      const size = sizes?.[n - 1];
                       return (
                         <div key={n} data-pdf-page={n} style={{ position: 'relative' }}>
                           <Page
@@ -328,11 +368,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                             renderTextLayer={false}
                             renderAnnotationLayer={false}
                             className="shadow-md"
-                            onLoadSuccess={(p) => {
-                              pageProxies.current[n] = p;
-                              const v = p.getViewport({ scale: 1 });
-                              setPageSizes((s) => (s[n] ? s : { ...s, [n]: { w: v.width, h: v.height } }));
-                            }}
+                            onLoadSuccess={(p) => { pageProxies.current[n] = p; }}
                             onRenderSuccess={() => onPageSettled(layer.id)}
                             onRenderError={() => onPageSettled(layer.id)}
                           />
