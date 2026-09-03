@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { launchKydog, seedSettings, seedProject, teardown, type LaunchedApp } from './helpers';
+import { launchKydog, seedSettings, seedProject, teardown, testIdSelector, type LaunchedApp } from './helpers';
 import { buildTextPdf } from './fixtures/textPdf';
 
 const PDF_REL = 'paper.pdf';
@@ -54,7 +54,7 @@ async function pinch(page: Page, pdfPath: string, deltaY: number) {
     const el = document.querySelector(sel) as HTMLElement;
     const r = el.getBoundingClientRect();
     el.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY, clientX: r.left + r.width / 2, clientY: r.top + 120, bubbles: true, cancelable: true }));
-  }, { sel: `[data-testid="pdf-scroll-${pdfPath}"]`, deltaY });
+  }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), deltaY });
 }
 
 test('55-pdf-annotations: 拖一笔高亮 → 边车里有 line 段且带原文', async () => {
@@ -156,8 +156,12 @@ test('55-pdf-annotations: 坏 JSON 边车 → 工具置灰、提示可见、文�
     await expect(pane.getByTestId('pdf-tool-highlight')).toBeDisabled();
     await expect(pane.getByTestId('pdf-tool-note')).toBeDisabled();
     await expect(pane.getByTestId('pdf-notice')).toContainText('标注文件无法读取');
+    // 先点进页面空白处让 wrapper 拿到焦点（focus 只在 onPointerDownCapture 里触发），
+    // 不这样按键永远到不了 handleAnnotationKey，"文件一字不动"就测不出东西。
+    await pane.getByTestId('pdf-annotation-layer-1').click({ position: { x: 150, y: 350 } });
     await page.keyboard.press('h');
     await page.waitForTimeout(1000);
+    await expect(pane.getByTestId('pdf-tool-highlight')).toBeDisabled();
     expect(await fs.readFile(path.join(kydogHome, 'proj', SIDECAR_REL), 'utf8')).toBe('{broken');
   } finally {
     await teardown(launched);
