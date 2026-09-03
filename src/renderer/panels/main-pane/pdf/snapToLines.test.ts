@@ -14,6 +14,12 @@ describe('snapToLines', () => {
     expect(segs).toEqual([{ kind: 'line', y: 53, x1: 110, x2: 170, text: 'passage' }]);
   });
 
+  it('中途抖出行框仍是一条直线：同一行的点按行归并，不碎成几段', () => {
+    const segs = snapToLines([[50, 53], [80, 68], [110, 53], [150, 53]], LINES);
+    expect(segs).toHaveLength(1);
+    expect(segs[0]).toMatchObject({ kind: 'line', y: 53, x1: 50, x2: 150 });
+  });
+
   it('斜跨两行拆成两段，顺序跟采样顺序', () => {
     const segs = snapToLines([[50, 52], [120, 56], [160, 90], [200, 94]], LINES);
     expect(segs.map((s) => s.kind)).toEqual(['line', 'line']);
@@ -21,7 +27,14 @@ describe('snapToLines', () => {
     expect(segs[1]).toMatchObject({ y: 93, x1: 160, x2: 200 });
   });
 
-  it('上下沿外 4 单位以内仍算这一行，再远就是自由笔画', () => {
+  it('回头补划同一行：合进同一条直线，不新开一段', () => {
+    const segs = snapToLines([[150, 53], [200, 90], [60, 53]], LINES);
+    expect(segs).toHaveLength(2);
+    expect(segs[0]).toMatchObject({ y: 53, x1: 60, x2: 150 });
+    expect(segs[1]).toMatchObject({ y: 93, x1: 200, x2: 200 });
+  });
+
+  it('上下沿外 4 单位以内仍算落在文字上，再远整笔就是自由笔画', () => {
     expect(snapToLines([[50, 63], [120, 63]], LINES)[0].kind).toBe('line');   // bottom 60 + 3
     expect(snapToLines([[50, 66], [120, 66]], LINES)[0].kind).toBe('path');   // bottom 60 + 6
   });
@@ -31,9 +44,9 @@ describe('snapToLines', () => {
     expect(snapToLines(pts, [])).toEqual([{ kind: 'path', points: pts }]);
   });
 
-  it('先在行上再划到图上：line 段后跟 path 段', () => {
+  it('先在行上再划到图上：只留文字那条直线，够不着任何行的点不落墨', () => {
     const segs = snapToLines([[50, 53], [120, 53], [130, 300], [160, 310]], LINES);
-    expect(segs.map((s) => s.kind)).toEqual(['line', 'path']);
+    expect(segs).toEqual([{ kind: 'line', y: 53, x1: 50, x2: 120, text: 'Cited passage' }]);
   });
 
   it('不足 2 点或总长小于 4 的笔画丢弃', () => {

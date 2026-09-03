@@ -10,6 +10,9 @@ export type Bucket = {
   loadError: string | null;         // 有值 = 边车坏了，工具置灰、永不保存
   saveError: string | null;
   tool: Tool;
+  // 参数卡片是否展开。选工具时自动展开，第一次在页面上落笔就收起（用户反馈 3）：
+  // 卡片只在「刚选了工具、还没开始画」这段时间有用，之后它只是挡着正文。
+  cardOpen: boolean;
   hl: { color: HighlightColor; width: Level };
   note: { color: NoteColor; size: Level };
   selectedId: string | null;
@@ -21,7 +24,7 @@ const UNDO_LIMIT = 100;
 
 export function emptyBucket(): Bucket {
   return {
-    doc: null, loadError: null, saveError: null, tool: 'select',
+    doc: null, loadError: null, saveError: null, tool: 'select', cardOpen: false,
     hl: { color: 'amber', width: 2 }, note: { color: 'ink', size: 2 },
     selectedId: null, undo: [], redo: [],
   };
@@ -34,6 +37,7 @@ type State = {
   setSaveError: (tab: string, msg: string | null) => void;
   drop: (tab: string) => void;
   setTool: (tab: string, tool: Tool) => void;
+  closeCard: (tab: string) => void;
   setHlParams: (tab: string, p: Partial<Bucket['hl']>) => void;
   setNoteParams: (tab: string, p: Partial<Bucket['note']>) => void;
   addHighlight: (tab: string, a: Highlight) => void;
@@ -94,7 +98,9 @@ export const usePdfAnnotationStore = create<State>((set, get) => {
       delete rest[tab];
       return { buckets: rest };
     }),
-    setTool: (tab, tool) => patch(tab, () => ({ tool, selectedId: null })),
+    // 点工具键（含点已激活的那个）都重新展开卡片：改参数就是这么找回来的
+    setTool: (tab, tool) => patch(tab, () => ({ tool, selectedId: null, cardOpen: tool !== 'select' })),
+    closeCard: (tab) => patchExisting(tab, () => ({ cardOpen: false })),
     setHlParams: (tab, p) => patch(tab, (b) => ({ hl: { ...b.hl, ...p } })),
     setNoteParams: (tab, p) => patch(tab, (b) => ({ note: { ...b.note, ...p } })),
     addHighlight: (tab, a) => edit(tab, (doc) => ({ ...doc, annotations: [...doc.annotations, a] })),

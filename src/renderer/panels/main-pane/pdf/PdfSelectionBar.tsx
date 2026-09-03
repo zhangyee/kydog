@@ -1,6 +1,6 @@
 import type { HighlightColor, Level, NoteColor } from '../../../../shared/pdfSidecar';
 import { NavIcon } from '../../../shared';
-import { HIGHLIGHT_COLORS, LEVELS, NOTE_COLORS, NOTE_FONT_SIZE, STROKE_PREVIEW, SWATCH } from './annotationInks';
+import { HIGHLIGHT_COLORS, LEVELS, NOTE_COLORS, NOTE_SIZE_PREVIEW, STROKE_PREVIEW, SWATCH } from './annotationInks';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { PANEL_SHADOW } from './PdfToolCard';
 
@@ -52,7 +52,7 @@ export function PdfSelectionBar({ tabId, anchor }: { tabId: string; anchor: Anch
         >
           {isHl
             ? <span style={{ display: 'block', width: 18, height: STROKE_PREVIEW[lv], borderRadius: 999, background: SWATCH[selected.color] }} />
-            : <span className="font-serif" style={{ fontSize: NOTE_FONT_SIZE[lv] * 0.8, lineHeight: 1, color: SWATCH.ink, paddingBottom: 3 }}>A</span>}
+            : <span className="font-serif" style={{ fontSize: NOTE_SIZE_PREVIEW[lv] * 0.8, lineHeight: 1, color: SWATCH.ink, paddingBottom: 3 }}>A</span>}
         </button>
       ))}
       <div style={{ width: 0.5, height: 16, background: 'var(--color-ink-hair)', margin: '0 3px' }} />

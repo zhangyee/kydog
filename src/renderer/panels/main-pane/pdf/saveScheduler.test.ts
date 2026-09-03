@@ -144,4 +144,46 @@ describe('saveScheduler', () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(save).not.toHaveBeenCalled();
   });
+
+  it('打开没编辑就关（markClean 之后 flush）不写盘', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    sch.markClean(T, st().buckets[T].doc!);
+    await sch.flush(T);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('内容改了才写；改完再 flush 同一份不重复写', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    sch.markClean(T, st().buckets[T].doc!);
+    st().addHighlight(T, H('a'));
+    await sch.flush(T);
+    expect(save).toHaveBeenCalledTimes(1);
+    await sch.flush(T);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('写失败之后重试照写，不被「内容没变」挡住', async () => {
+    const save = vi.fn().mockRejectedValueOnce(new Error('磁盘满')).mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    sch.markClean(T, st().buckets[T].doc!);
+    st().addHighlight(T, H('a'));
+    await sch.flush(T);
+    expect(st().buckets[T].saveError).toBe('磁盘满');
+    await sch.flush(T);                       // 「重试」按钮走的就是这条
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(st().buckets[T].saveError).toBeNull();
+  });
+
+  it('watchDocs 把加载当成干净：只打开不编辑，之后 flush 不写盘', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const sch = createSaveScheduler(save);
+    const stop = watchDocs(sch);
+    st().setLoaded('/p/fresh.pdf', { version: 1, pdf: 'fresh.pdf', annotations: [] });
+    await vi.advanceTimersByTimeAsync(300);
+    await sch.flush('/p/fresh.pdf');
+    expect(save).not.toHaveBeenCalled();
+    stop();
+  });
 });

@@ -84,7 +84,7 @@ export function PdfToolbar({ tabId, pageLabel, zoomPct }: Props) {
         >
           {pageLabel} · {zoomPct}%
         </div>
-        {anchorX !== null && tool !== 'select' && (
+        {anchorX !== null && tool !== 'select' && bucket?.cardOpen && (
           <PdfToolCard tabId={tabId} kind={tool} centerX={anchorX} />
         )}
       </div>

@@ -61,18 +61,26 @@ const DRAG_THRESHOLD = 4;
 // 恢复草稿，提交/丢弃时清表，不依赖卸载时机。
 const noteDrafts = new Map<string, string>();
 
+// 刚落下、还没提交过的笔记：挂载时自动聚焦，但**不进选中态**——选中会弹出改样式浮条，而插入时不该弹，
+// 第二次点它才弹（用户反馈 5，与高亮笔一致）。和草稿表一样放模块级，缩放顶替重挂之后照样认得这条 id。
+const noteAutoFocus = new Set<string>();
+
 export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
   tabId: string; n: Note; layerScale: number; selected: boolean; tool: Tool; toPage: ToPage;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState(() => noteDrafts.get(n.id) ?? n.text);
+  const [hover, setHover] = useState(false);                  // 悬停时显虚线框，让空白处的笔记有边界可循
   const [offset, setOffset] = useState<Point | null>(null);   // 拖动中的临时位移
   const drag = useRef<{ start: Point; origin: { x: number; y: number }; moving: boolean } | null>(null);
 
   // 挂载时若草稿表里还留着这条 id 的草稿（刚经历一次缩放顶替的重挂），不要用 n.text 覆盖它；
   // 其余情况（外部改动，如撤销/重做把 doc 换回旧快照）照常跟随 n.text。
   useEffect(() => { if (!noteDrafts.has(n.id)) setText(n.text); }, [n.text, n.id]);
-  useEffect(() => { if (selected && tool !== 'highlight') ref.current?.focus(); }, [selected, tool]);
+  // 刚新建的框自动聚焦（它没被选中，所以不弹浮条）；已有的框在被选中时聚焦，落下光标。
+  useEffect(() => {
+    if (noteAutoFocus.has(n.id) || (selected && tool !== 'highlight')) ref.current?.focus();
+  }, [selected, tool, n.id]);
 
   const autosize = useCallback(() => {
     const el = ref.current;
@@ -84,7 +92,8 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
 
   const commit = () => {
     const st = usePdfAnnotationStore.getState();
-    noteDrafts.delete(n.id);   // 提交或丢弃都清草稿，不然下次挂载会误读已经交代过的旧草稿
+    noteDrafts.delete(n.id);     // 提交或丢弃都清草稿，不然下次挂载会误读已经交代过的旧草稿
+    noteAutoFocus.delete(n.id);  // 交代过一次之后就不再是「刚落下的新框」，别再抢焦点
     if (text.trim() === '') {
       // 已提交过的笔记（n.text 非空）被清空 = 删除：走 remove，压快照、可撤销。
       // 从未提交过的笔记（n.text 仍是新建时的空串）清空 = 放弃：走 discardNote，不入撤销栈——
@@ -139,10 +148,12 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
       // pointercancel 也交给 onPointerUp：手势被系统打断时仍按「抬手」结算这次拖动，不留半拖状态（spec §7.5）
       onPointerCancel={onPointerUp}
+      onPointerEnter={() => { if (tool !== 'highlight') setHover(true); }}
+      onPointerLeave={() => setHover(false)}
       style={{
         position: 'absolute', left: x * layerScale, top: y * layerScale, width: n.width * layerScale,
         fontSize: NOTE_FONT_SIZE[n.size] * layerScale, lineHeight: 1.45, color: NOTE_INK[n.color],
-        outline: selected ? '1px dashed oklch(0.42 0.10 250)' : 'none', outlineOffset: 2,
+        outline: selected || hover ? '1px dashed oklch(0.42 0.10 250)' : 'none', outlineOffset: 2,
         cursor: tool === 'select' ? 'text' : 'inherit',
       }}
     >
@@ -187,6 +198,8 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
     if (target.closest('textarea')) return;
     const p = toPage(e);
     const st = usePdfAnnotationStore.getState();
+    // 第一次在页面上落笔就收起参数卡片（用户反馈 3）；已经收起时不再多发一次 set
+    if (st.buckets[tabId]?.cardOpen) st.closeCard(tabId);
     if (tool === 'highlight') {
       e.preventDefault();
       rootRef.current!.setPointerCapture(e.pointerId);
@@ -226,11 +239,12 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
       if (Math.hypot(p[0] - start[0], p[1] - start[1]) >= DRAG_THRESHOLD) return;
       const now = new Date().toISOString();
       const id = crypto.randomUUID();
+      // 先登记自动聚焦再落框：NoteBox 一挂载就照着这张表抢焦点，不必经过选中态（用户反馈 5）
+      noteAutoFocus.add(id);
       st.addNote(tabId, {
         id, type: 'note', page, color: noteParams.color, size: noteParams.size,
         x: p[0], y: p[1], width: Math.max(120, pageWidth * 0.4), text: '', createdAt: now, updatedAt: now,
       });
-      st.select(tabId, id);
     }
   };
 

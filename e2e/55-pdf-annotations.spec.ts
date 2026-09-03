@@ -73,10 +73,14 @@ test('55-pdf-annotations: 拖一笔高亮 → 边车里有 line 段且带原文'
     const doc = (await readSidecar(kydogHome))!;
     const h = doc.annotations[0] as { type: string; color: string; width: number; segments: Array<{ kind: string; y: number; text?: string }> };
     expect(h).toMatchObject({ type: 'highlight', color: 'amber', width: 2 });
+    // 一行上的一笔就是一条直线：不许因为采样抖动碎成几段（用户反馈 2）
+    expect(h.segments).toHaveLength(1);
     expect(h.segments[0].kind).toBe('line');
     expect(Math.abs(h.segments[0].y - LINE1_Y)).toBeLessThan(3);
     expect(h.segments[0].text).toContain('passage');
     await expect(pane.locator('[data-testid^="pdf-highlight-"]')).toHaveCount(1);
+    // 落笔即收起参数卡片（用户反馈 3）
+    await expect(pane.getByTestId('pdf-tool-card-highlight')).toHaveCount(0);
     // 待实测 3：截图人工看一次——amber 笔画呈半透明暖黄，文字仍可读
     await page.screenshot({ path: 'test-results/pdf-annotations-highlight.png' });
     expect(errors).toEqual([]);
@@ -97,6 +101,8 @@ test('55-pdf-annotations: 文字注落盘，关 tab 重开与重启后还原', a
     await page.mouse.click(box.x + 150, box.y + 250);
     const input = pane.locator('[data-testid^="pdf-note-input-"]');
     await expect(input).toBeFocused();
+    // 插入时只聚焦、不进选中态：改样式浮条要等第二次点它才出现（用户反馈 5）
+    await expect(pane.getByTestId('pdf-selection-bar')).toHaveCount(0);
     await page.keyboard.type('复核数据来源');
     await page.keyboard.press('Escape');
     await expect.poll(async () => (await readSidecar(kydogHome))?.annotations.length ?? 0).toBe(1);
@@ -116,6 +122,27 @@ test('55-pdf-annotations: 文字注落盘，关 tab 重开与重启后还原', a
     launched = await launchKydog({ kydogHome });
     pane = await openPdf(launched.page, pdfPath);
     await expect(pane.locator('[data-testid^="pdf-note-input-"]')).toHaveValue('复核数据来源');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('55-pdf-annotations: 只打开不编辑 → 关掉 tab 也不生成边车文件', async () => {
+  const launched = await launchKydog({ seed: (h) => seedAll(h) });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    await openPdf(page, pdfPath);
+
+    const tab = page.getByTestId(`tab-${pdfPath}`);
+    await tab.hover();
+    await page.getByTestId(`tab-close-${pdfPath}`).click();
+    await expect(tab).toHaveCount(0);
+
+    // 关 tab 会 flush 一次；给它足够时间落盘，然后确认论文旁边什么都没多出来（用户反馈 6）
+    await page.waitForTimeout(1000);
+    expect(await readSidecar(kydogHome)).toBeNull();
+    expect(await fs.readdir(path.join(kydogHome, 'proj'))).toEqual([PDF_REL]);
   } finally {
     await teardown(launched);
   }

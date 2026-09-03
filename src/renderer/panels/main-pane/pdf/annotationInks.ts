@@ -22,7 +22,10 @@ export const NOTE_COLORS: NoteColor[] = ['ink', 'accent', 'marginalia', 'moss'];
 export const LEVELS: Level[] = [1, 2, 3];
 /** scale 1 下的笔画宽度（px） */
 export const STROKE_WIDTH: Record<Level, number> = { 1: 6, 2: 10, 3: 14 };
-/** scale 1 下的文字注字号（px） */
-export const NOTE_FONT_SIZE: Record<Level, number> = { 1: 11, 2: 14, 3: 18 };
+/** scale 1 下的文字注字号（px = pt，因为 scale 1 就是 PDF 用户坐标）。
+ *  论文正文通常 9–10pt，所以最小档必须比它更小，笔记才不会喧宾夺主（用户反馈 4）。 */
+export const NOTE_FONT_SIZE: Record<Level, number> = { 1: 7, 2: 10, 3: 14 };
+/** 卡片与浮条里字号预览用的「A」字号：按 NOTE_FONT_SIZE 原样画在 28px 高的格子里太小，认不出档位差别。 */
+export const NOTE_SIZE_PREVIEW: Record<Level, number> = { 1: 11, 2: 15, 3: 20 };
 /** 卡片与浮条里粗细预览的线高 */
 export const STROKE_PREVIEW: Record<Level, number> = { 1: 3, 2: 6, 3: 10 };

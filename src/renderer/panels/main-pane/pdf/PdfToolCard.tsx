@@ -1,5 +1,5 @@
 import type { HighlightColor, Level, NoteColor } from '../../../../shared/pdfSidecar';
-import { HIGHLIGHT_COLORS, LEVELS, NOTE_COLORS, NOTE_FONT_SIZE, STROKE_PREVIEW, SWATCH } from './annotationInks';
+import { HIGHLIGHT_COLORS, LEVELS, NOTE_COLORS, NOTE_SIZE_PREVIEW, STROKE_PREVIEW, SWATCH } from './annotationInks';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 
 export const PANEL_SHADOW = '0 12px 32px rgba(50,35,20,0.14), 0 2px 6px rgba(50,35,20,0.08)';
@@ -60,7 +60,7 @@ export function PdfToolCard({ tabId, kind, centerX }: Props) {
           >
             {kind === 'highlight'
               ? <span style={{ display: 'block', width: 30, height: STROKE_PREVIEW[lv], borderRadius: 999, background: SWATCH[selColor ?? 'amber'] }} />
-              : <span className="font-serif" style={{ fontSize: NOTE_FONT_SIZE[lv], lineHeight: 1, color: SWATCH.ink }}>A</span>}
+              : <span className="font-serif" style={{ fontSize: NOTE_SIZE_PREVIEW[lv], lineHeight: 1, color: SWATCH.ink }}>A</span>}
           </button>
         ))}
       </div>

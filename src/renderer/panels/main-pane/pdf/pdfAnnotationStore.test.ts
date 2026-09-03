@@ -57,6 +57,23 @@ describe('pdfAnnotationStore', () => {
     expect(b().selectedId).toBeNull();
   });
 
+  it('选工具展开参数卡片，closeCard 收起；回到选择工具也收起', () => {
+    expect(b().cardOpen).toBe(false);
+    st().setTool(T, 'highlight');
+    expect(b().cardOpen).toBe(true);
+    st().closeCard(T);
+    expect(b().cardOpen).toBe(false);
+    st().setTool(T, 'highlight');      // 再点一次同一个工具：卡片重新展开
+    expect(b().cardOpen).toBe(true);
+    st().setTool(T, 'select');
+    expect(b().cardOpen).toBe(false);
+  });
+
+  it('closeCard 不会给不存在的桶建桶', () => {
+    st().closeCard('/p/never-opened.pdf');
+    expect(usePdfAnnotationStore.getState().buckets['/p/never-opened.pdf']).toBeUndefined();
+  });
+
   it('addNote 与 discardNote 不入栈', () => {
     st().addNote(T, N('n1'));
     expect(b().doc?.annotations).toHaveLength(1);
