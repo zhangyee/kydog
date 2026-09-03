@@ -32,6 +32,7 @@ export type NavIconName =
   | 'arrow-up'
   | 'arrow-right'
   | 'check'
+  | 'grip-vertical'
   | 'mouse-pointer-2'
   | 'highlighter'
   | 'type'
@@ -194,6 +195,12 @@ const ICONS: Record<NavIconName, IconSpec> = {
   'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
   'arrow-right': { paths: ['M5 12h14', 'm12 5 7 7-7 7'] },
   'check': { paths: ['M20 6 9 17l-5-5'] },
+  'grip-vertical': {
+    circles: [
+      { cx: 9, cy: 12, r: 1 }, { cx: 9, cy: 5, r: 1 }, { cx: 9, cy: 19, r: 1 },
+      { cx: 15, cy: 12, r: 1 }, { cx: 15, cy: 5, r: 1 }, { cx: 15, cy: 19, r: 1 },
+    ],
+  },
   'mouse-pointer-2': {
     paths: ['M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z'],
   },

@@ -1,5 +1,7 @@
 import type { HighlightColor, Level, NoteColor } from '../../../../shared/pdfSidecar';
-import { HIGHLIGHT_COLORS, LEVELS, NOTE_COLORS, NOTE_SIZE_PREVIEW, STROKE_PREVIEW, SWATCH } from './annotationInks';
+import {
+  HIGHLIGHT_COLORS, HIGHLIGHT_SWATCH, LEVELS, NOTE_COLORS, NOTE_SIZE_PREVIEW, STROKE_PREVIEW, SWATCH,
+} from './annotationInks';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 
 export const PANEL_SHADOW = '0 12px 32px rgba(50,35,20,0.14), 0 2px 6px rgba(50,35,20,0.08)';
@@ -23,6 +25,9 @@ export function PdfToolCard({ tabId, kind, centerX }: Props) {
     if (kind === 'highlight') st().setHlParams(tabId, { width: lv });
     else st().setNoteParams(tabId, { size: lv });
   };
+  // 高亮的黄绿另有一套亮色（见 annotationInks.ts），色点得跟着走，不然卡片里是暗调、纸上是亮的
+  const swatch = (c: HighlightColor | NoteColor): string =>
+    (kind === 'highlight' ? HIGHLIGHT_SWATCH[c as HighlightColor] : SWATCH[c]);
   return (
     <div
       data-testid={`pdf-tool-card-${kind}`}
@@ -40,7 +45,7 @@ export function PdfToolCard({ tabId, kind, centerX }: Props) {
             onClick={() => pickColor(c)}
             style={{
               width: 20, height: 20, borderRadius: 999, border: 'none', padding: 0, cursor: 'pointer',
-              background: SWATCH[c],
+              background: swatch(c),
               boxShadow: c === selColor ? '0 0 0 2px var(--color-paper), 0 0 0 3.5px var(--color-ink)' : 'none',
             }}
           />
@@ -59,7 +64,7 @@ export function PdfToolCard({ tabId, kind, centerX }: Props) {
             }}
           >
             {kind === 'highlight'
-              ? <span style={{ display: 'block', width: 30, height: STROKE_PREVIEW[lv], borderRadius: 999, background: SWATCH[selColor ?? 'amber'] }} />
+              ? <span style={{ display: 'block', width: 30, height: STROKE_PREVIEW[lv], borderRadius: 999, background: swatch(selColor ?? 'amber') }} />
               : <span className="font-serif" style={{ fontSize: NOTE_SIZE_PREVIEW[lv], lineHeight: 1, color: SWATCH.ink }}>A</span>}
           </button>
         ))}

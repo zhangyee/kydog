@@ -19,8 +19,9 @@ describe('textLines 对着真 pdf.js', () => {
     expect(items.length).toBeGreaterThan(0);
     const lines = textLines(items, page.getViewport({ scale: 1 }));
     expect(lines.map((l) => l.items.map((i) => i.str).join(''))).toEqual(TEXT_PDF_LINES);
-    expect(lines[0].y).toBeCloseTo(53, 0);   // 基线 340、字高 14 → 视口 top 46、bottom 60
-    expect(lines[1].y).toBeCloseTo(93, 0);
+    // 基线 340、字高 14 → 视口 top 46、bottom 60；y 取基线上方 1/4 字高 = 56.5
+    expect(lines[0].y).toBeCloseTo(56.5, 0);
+    expect(lines[1].y).toBeCloseTo(96.5, 0);
     expect(lines[0].items[0].x1).toBeCloseTo(40, 0);
     await doc.destroy();
   });

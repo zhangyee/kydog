@@ -13,7 +13,13 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike): TextLi
   const flush = () => {
     if (!cur) return;
     cur.items.sort((a, b) => a.x1 - b.x1);
-    lines.push({ y: (cur.top + cur.bottom) / 2, top: cur.top, bottom: cur.bottom, items: cur.items });
+    // y 取「基线上方四分之一个字高」，不是字身框的正中。
+    // 字身框是 [基线, 基线 + 字高]，正中落在半个字高处 —— 那是大写字母的腰部，比人眼看到的
+    // 「这行字的中间」高出一截：小写字母只到 x 高（≈ 0.5 字高），还有 g/y 的降部伸到基线以下。
+    // 拿正中当中线，高亮就整体偏上、盖住行上方的空白而露出字的下半（用户实测的偏移）。
+    // 四分之一处约等于 x 高的中点，正是记号笔该压的位置。
+    const emHeight = cur.bottom - cur.top;
+    lines.push({ y: cur.bottom - emHeight / 4, top: cur.top, bottom: cur.bottom, items: cur.items });
     cur = null;
   };
   for (const it of items) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { Highlight, HighlightSegment, Note } from '../../../../shared/pdfSidecar';
+import { NavIcon } from '../../../shared';
 import { HIGHLIGHT_FILL, NOTE_FONT_SIZE, NOTE_INK, STROKE_WIDTH } from './annotationInks';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
 import { straightSegment, type Point } from './straightenStroke';
@@ -53,6 +54,19 @@ export function HighlightGlyph({ h, selected }: { h: Highlight; selected: boolea
 
 type ToPage = (e: ReactPointerEvent) => Point;
 const DRAG_THRESHOLD = 4;
+const GRIP = 18;   // 文字注左上角的拖动把手边长（scale 1 下）
+
+// 高亮笔的鼠标指针：一支记号笔，笔尖对准热点。十字准星是给「精确取点」用的，与记号笔的手感不符。
+// 先用纸色描一层粗轮廓，压在黑字上也看得清。图像走 data URI，颜色只用 hex —— 光标位图不在 CSS 上下文里，
+// oklch() 这类颜色函数在这里不保证认。笔形取 Lucide 的 highlighter（与胶囊上那颗图标同源）。
+const MARKER_TIP = 'm9 11-6 6v3h9l3-3';
+const MARKER_BODY = 'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4';
+const MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">`
+  + `<g stroke="#fffdf7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">`
+  + `<path d="${MARKER_TIP}"/><path d="${MARKER_BODY}"/></g>`
+  + `<path d="${MARKER_TIP}" fill="#fffdf7" stroke="#2b2721" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`
+  + `<path d="${MARKER_BODY}" stroke="#2b2721" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const MARKER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(MARKER_SVG)}") 3 21, crosshair`;
 
 // 输入中的草稿按 note id 记在这张模块级表里（spec §6.2）：缩放顶替会把 layers[0] 换成新的 Layer，
 // 整棵覆盖层子树（含 NoteBox）随 React key 变化而重挂，textarea 的组件内 state 会丢；不能改用「卸载时提交」
@@ -72,7 +86,7 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
   const [text, setText] = useState(() => noteDrafts.get(n.id) ?? n.text);
   const [hover, setHover] = useState(false);                  // 悬停时显虚线框，让空白处的笔记有边界可循
   const [offset, setOffset] = useState<Point | null>(null);   // 拖动中的临时位移
-  const drag = useRef<{ start: Point; origin: { x: number; y: number }; moving: boolean } | null>(null);
+  const drag = useRef<{ start: Point; origin: { x: number; y: number } } | null>(null);
 
   // 挂载时若草稿表里还留着这条 id 的草稿（刚经历一次缩放顶替的重挂），不要用 n.text 覆盖它；
   // 其余情况（外部改动，如撤销/重做把 doc 换回旧快照）照常跟随 n.text。
@@ -105,58 +119,78 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     }
   };
 
+  // 点框body只选中、不拖：框里是文本，按住拖该是选字（原生行为）。挪位置走左上角那个把手，
+  // 意图明确、不跟选字抢手势（用户反馈的交互设计问题）。
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (tool !== 'select' || e.button !== 0) return;
-    e.stopPropagation();   // 根层不要把这一下当成「点空白取消选中」
+    if (tool === 'highlight' || e.button !== 0) return;
+    e.stopPropagation();   // 根层不要把这一下当成「点空白取消选中」，也不要当成「在这儿新建一个框」
     usePdfAnnotationStore.getState().select(tabId, n.id);
-    drag.current = { start: toPage(e), origin: { x: n.x, y: n.y }, moving: false };
   };
-  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.buttons === 0) { drag.current = null; return; }   // 手势已经在别处结束（越界/丢事件），别再当悬停算拖动
+  const onGripDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    usePdfAnnotationStore.getState().select(tabId, n.id);
+    ref.current?.blur();   // 拖动期间不编辑；blur 顺带把已输入的文本提交掉
+    drag.current = { start: toPage(e), origin: { x: n.x, y: n.y } };
+    e.currentTarget.setPointerCapture(e.pointerId);   // 把手上按下即捕获：不需要阈值，意图已经明确
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d) return;
     const p = toPage(e);
-    const dx = p[0] - d.start[0];
-    const dy = p[1] - d.start[1];
-    if (!d.moving) {
-      if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-      d.moving = true;
-      ref.current?.blur();   // 拖动期间不选字；blur 会顺带提交文本
-      e.currentTarget.setPointerCapture(e.pointerId);   // 越过阈值才捕获，之前的点击照常落在 textarea 上放 caret
-    }
-    setOffset([dx, dy]);
+    setOffset([p[0] - d.start[0], p[1] - d.start[1]]);
   };
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+  const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     drag.current = null;
-    if (!d?.moving) return;
+    if (!d) return;
     // touch/pen 手势在 pointercancel 时浏览器已经自行释放了捕获，这里若还去 release 会抛异常（Chromium）
     const el = e.currentTarget;
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
     const p = toPage(e);
-    usePdfAnnotationStore.getState().moveNote(tabId, n.id, d.origin.x + p[0] - d.start[0], d.origin.y + p[1] - d.start[1]);
     setOffset(null);
-    ref.current?.focus();
+    usePdfAnnotationStore.getState().moveNote(tabId, n.id, d.origin.x + p[0] - d.start[0], d.origin.y + p[1] - d.start[1]);
   };
 
   const x = n.x + (offset?.[0] ?? 0);
   const y = n.y + (offset?.[1] ?? 0);
+  const frame = (selected || hover) && tool !== 'highlight';   // 虚线框与把手同时出现
   return (
     <div
       data-annotation-id={n.id} data-testid={`pdf-note-${n.id}`}
       className="font-serif"
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-      // pointercancel 也交给 onPointerUp：手势被系统打断时仍按「抬手」结算这次拖动，不留半拖状态（spec §7.5）
-      onPointerCancel={onPointerUp}
+      onPointerDown={onPointerDown}
       onPointerEnter={() => { if (tool !== 'highlight') setHover(true); }}
       onPointerLeave={() => setHover(false)}
       style={{
         position: 'absolute', left: x * layerScale, top: y * layerScale, width: n.width * layerScale,
         fontSize: NOTE_FONT_SIZE[n.size] * layerScale, lineHeight: 1.45, color: NOTE_INK[n.color],
-        outline: selected || hover ? '1px dashed oklch(0.42 0.10 250)' : 'none', outlineOffset: 2,
-        cursor: tool === 'select' ? 'text' : 'inherit',
+        outline: frame ? '1px dashed oklch(0.42 0.10 250)' : 'none', outlineOffset: 2,
+        cursor: tool === 'highlight' ? 'inherit' : 'text',
       }}
     >
+      {/* 拖动把手：虚线框出现时它才在（悬停或选中）。位置这件事的手柄挂在对象自己身上，
+          浮条只管样式（颜色 / 字号 / 删除）—— 这是所有设计工具的分工，找起来不用猜。
+          挂在框的**左侧**而不是上方：上方是选中态浮条的位置，两者都在那儿就会互相盖住（实测过）。
+          贴着页面左边距的框往右侧放，免得把手跑到纸外面去。 */}
+      {frame && (
+        <div
+          data-testid={`pdf-note-grip-${n.id}`} title="拖动挪位置"
+          onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp} onPointerCancel={onGripUp}
+          style={{
+            position: 'absolute', top: 0,
+            left: (n.x >= GRIP + 4 ? -(GRIP + 3) : n.width + 3) * layerScale,
+            width: GRIP * layerScale, height: GRIP * layerScale,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'var(--color-paper)', border: '0.5px solid var(--color-ink-hair)',
+            borderRadius: 4 * layerScale, color: 'var(--color-ink-soft)',
+            cursor: 'grab', touchAction: 'none',
+          }}
+        >
+          <NavIcon name="grip-vertical" size={13 * layerScale} />
+        </div>
+      )}
       <textarea
         ref={ref} data-testid={`pdf-note-input-${n.id}`}
         value={text} rows={1} readOnly={tool === 'highlight'}
@@ -217,7 +251,8 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
       void ready.then((ls) => { if (drawing.current) { drawing.current.lines = ls; refreshLive(); } });
       return;
     }
-    if (tool === 'note') { press.current = p; return; }
+    // 文字注工具下点在空白处：要新建一个框，先把旧的选中放掉（浮条不该还指着上一个框）
+    if (tool === 'note') { st.select(tabId, null); press.current = p; return; }
     const hit = target.closest<HTMLElement>('[data-annotation-id]');
     st.select(tabId, hit?.dataset.annotationId ?? null);
   };
@@ -273,7 +308,7 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
         position: 'absolute', inset: 0,
         // 只有高亮笔工具下才吞掉触摸滚动（要接管手势画笔画）；其余工具下让触摸照常滚动阅读（item 8）
         touchAction: tool === 'highlight' ? 'none' : 'auto',
-        cursor: tool === 'highlight' ? 'crosshair' : tool === 'note' ? 'text' : 'default',
+        cursor: tool === 'highlight' ? MARKER_CURSOR : tool === 'note' ? 'text' : 'default',
       }}
     >
       <svg

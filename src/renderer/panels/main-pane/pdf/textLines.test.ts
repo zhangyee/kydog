@@ -14,14 +14,14 @@ describe('textLines', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0].top).toBeCloseTo(46);      // 400 − (340 + 14)
     expect(lines[0].bottom).toBeCloseTo(60);   // 400 − 340
-    expect(lines[0].y).toBeCloseTo(53);
+    expect(lines[0].y).toBeCloseTo(56.5);   // 基线上方 1/4 字高：60 − 14/4，不是字身框正中 53
     expect(lines[0].items).toEqual([{ x1: 40, x2: 80, str: 'Cited ' }, { x1: 80, x2: 140, str: 'passage' }]);
   });
 
   it('hasEOL 断行', () => {
     const lines = textLines([item('a', 40, 340, 10, true), item('b', 40, 300, 10, true)], viewport);
     expect(lines.map((l) => l.items[0].str)).toEqual(['a', 'b']);
-    expect(lines[1].y).toBeCloseTo(93);
+    expect(lines[1].y).toBeCloseTo(96.5);
   });
 
   it('行内项按 x 排序', () => {

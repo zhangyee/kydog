@@ -1,6 +1,8 @@
 import type { HighlightColor, Level, NoteColor } from '../../../../shared/pdfSidecar';
 import { NavIcon } from '../../../shared';
-import { HIGHLIGHT_COLORS, LEVELS, NOTE_COLORS, NOTE_SIZE_PREVIEW, STROKE_PREVIEW, SWATCH } from './annotationInks';
+import {
+  HIGHLIGHT_COLORS, HIGHLIGHT_SWATCH, LEVELS, NOTE_COLORS, NOTE_SIZE_PREVIEW, STROKE_PREVIEW, SWATCH,
+} from './annotationInks';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { PANEL_SHADOW } from './PdfToolCard';
 
@@ -19,6 +21,9 @@ export function PdfSelectionBar({ tabId, anchor }: { tabId: string; anchor: Anch
   const isHl = selected.type === 'highlight';
   const colors: Array<HighlightColor | NoteColor> = isHl ? HIGHLIGHT_COLORS : NOTE_COLORS;
   const level: Level = isHl ? selected.width : selected.size;
+  // 高亮的黄绿另有一套亮色（见 annotationInks.ts）；文字注仍用语义色的暗调，那是要当正文读的
+  const swatch = (c: HighlightColor | NoteColor): string =>
+    (isHl ? HIGHLIGHT_SWATCH[c as HighlightColor] : SWATCH[c]);
   const top = anchor.top - GAP - BAR_HEIGHT >= 0 ? anchor.top - GAP - BAR_HEIGHT : anchor.bottom + GAP;
   return (
     <div
@@ -34,7 +39,7 @@ export function PdfSelectionBar({ tabId, anchor }: { tabId: string; anchor: Anch
           key={c} type="button" data-testid={`pdf-selection-color-${c}`} aria-label={c}
           onClick={() => st().restyle(tabId, selected.id, { color: c })}
           style={{
-            width: 12, height: 12, borderRadius: 999, border: 'none', padding: 0, cursor: 'pointer', background: SWATCH[c],
+            width: 12, height: 12, borderRadius: 999, border: 'none', padding: 0, cursor: 'pointer', background: swatch(c),
             boxShadow: c === selected.color ? '0 0 0 2px var(--color-paper), 0 0 0 3px var(--color-ink)' : 'none',
           }}
         />
@@ -51,7 +56,7 @@ export function PdfSelectionBar({ tabId, anchor }: { tabId: string; anchor: Anch
           }}
         >
           {isHl
-            ? <span style={{ display: 'block', width: 18, height: STROKE_PREVIEW[lv], borderRadius: 999, background: SWATCH[selected.color] }} />
+            ? <span style={{ display: 'block', width: 18, height: STROKE_PREVIEW[lv], borderRadius: 999, background: swatch(selected.color) }} />
             : <span className="font-serif" style={{ fontSize: NOTE_SIZE_PREVIEW[lv] * 0.8, lineHeight: 1, color: SWATCH.ink, paddingBottom: 3 }}>A</span>}
         </button>
       ))}

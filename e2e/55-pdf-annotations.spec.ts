@@ -7,8 +7,9 @@ import { buildTextPdf } from './fixtures/textPdf';
 const PDF_REL = 'paper.pdf';
 const SIDECAR_REL = '.paper.pdf.json';
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
-// fixture 是 300 × 400 pt；第一行正文视口 y ≈ 53，第二行 ≈ 93（见 e2e/fixtures/textPdf.ts）
-const LINE1_Y = 53;
+// fixture 是 300 × 400 pt（见 e2e/fixtures/textPdf.ts）；第一行字身框视口 [46, 60]，
+// 行中线取基线上方 1/4 字高 = 56.5（记号笔该压的位置，不是字身框正中），第二行同理 96.5。
+const LINE1_Y = 56.5;
 
 async function seedAll(home: string, sidecar?: string) {
   await seedSettings(home);
@@ -122,6 +123,47 @@ test('55-pdf-annotations: 文字注落盘，关 tab 重开与重启后还原', a
     launched = await launchKydog({ kydogHome });
     pane = await openPdf(launched.page, pdfPath);
     await expect(pane.locator('[data-testid^="pdf-note-input-"]')).toHaveValue('复核数据来源');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('55-pdf-annotations: 文字注选中后拖左侧把手挪位置', async () => {
+  const launched = await launchKydog({ seed: (h) => seedAll(h) });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const pane = await openPdf(page, pdfPath);
+    const layer = pane.getByTestId('pdf-annotation-layer-1');
+    const box = (await layer.boundingBox())!;
+    const sx = box.width / 300;
+    const sy = box.height / 400;
+
+    await pane.getByTestId('pdf-tool-note').click();
+    await page.mouse.click(box.x + 100 * sx, box.y + 250 * sy);
+    await page.keyboard.type('挪我');
+    await page.keyboard.press('Escape');
+    await expect.poll(async () => (await readSidecar(kydogHome))?.annotations.length ?? 0).toBe(1);
+    const before = (await readSidecar(kydogHome))!.annotations[0] as { x: number; y: number; text: string };
+
+    // 选中（第二次点它）→ 虚线框与左侧把手出现 → 按住把手拖（把手在左边：上方是浮条的位置）
+    await pane.locator('[data-testid^="pdf-note-"]').first().click({ position: { x: 10, y: 5 } });
+    const grip = pane.locator('[data-testid^="pdf-note-grip-"]');
+    await expect(grip).toBeVisible();
+    const g = (await grip.boundingBox())!;
+    await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(g.x + g.width / 2 + 60 * sx, g.y + g.height / 2 + 40 * sy, { steps: 6 });
+    await page.mouse.up();
+
+    await expect.poll(async () => {
+      const n = (await readSidecar(kydogHome))!.annotations[0] as { x: number };
+      return Math.round(n.x - before.x);
+    }).toBeGreaterThan(50);
+    const after = (await readSidecar(kydogHome))!.annotations[0] as { x: number; y: number; text: string };
+    expect(Math.abs(after.x - before.x - 60)).toBeLessThan(4);
+    expect(Math.abs(after.y - before.y - 40)).toBeLessThan(4);
+    expect(after.text).toBe('挪我');   // 拖动不该动到正文
   } finally {
     await teardown(launched);
   }
