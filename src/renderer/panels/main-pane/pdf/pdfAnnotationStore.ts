@@ -95,7 +95,7 @@ export const usePdfAnnotationStore = create<State>((set, get) => {
     addNote: (tab, n) => patch(tab, (b) =>
       (b.doc && !b.loadError ? { doc: { ...b.doc, annotations: [...b.doc.annotations, n] } } : {})),
     discardNote: (tab, id) => patch(tab, (b) =>
-      (b.doc ? { doc: without(b.doc, id), selectedId: b.selectedId === id ? null : b.selectedId } : {})),
+      (b.doc && !b.loadError ? { doc: without(b.doc, id), selectedId: b.selectedId === id ? null : b.selectedId } : {})),
     commitNoteText: (tab, id, text) => {
       const cur = get().buckets[tab]?.doc?.annotations.find((a) => a.id === id);
       if (!cur || cur.type !== 'note' || cur.text === text) return;
@@ -113,19 +113,24 @@ export const usePdfAnnotationStore = create<State>((set, get) => {
       }
       return { ...a, ...(p.color ? { color: p.color as NoteColor } : {}), ...(p.level ? { size: p.level } : {}) };
     })),
-    remove: (tab, id) => {
-      if (!get().buckets[tab]?.doc?.annotations.some((a) => a.id === id)) return;
-      edit(tab, (doc) => without(doc, id));
-      patch(tab, () => ({ selectedId: null }));
-    },
+    remove: (tab, id) => patch(tab, (b) => {
+      if (!b.doc || b.loadError || !b.doc.annotations.some((a) => a.id === id)) return {};
+      const newDoc = without(b.doc, id);
+      return {
+        doc: newDoc,
+        undo: [...b.undo, b.doc].slice(-UNDO_LIMIT),
+        redo: [],
+        selectedId: b.selectedId === id ? null : b.selectedId,
+      };
+    }),
     select: (tab, id) => patch(tab, () => ({ selectedId: id })),
     undo: (tab) => patch(tab, (b) => {
-      if (!b.doc || b.undo.length === 0) return {};
+      if (!b.doc || b.loadError || b.undo.length === 0) return {};
       const prev = b.undo[b.undo.length - 1];
       return { doc: prev, undo: b.undo.slice(0, -1), redo: [...b.redo, b.doc], selectedId: null };
     }),
     redo: (tab) => patch(tab, (b) => {
-      if (!b.doc || b.redo.length === 0) return {};
+      if (!b.doc || b.loadError || b.redo.length === 0) return {};
       const next = b.redo[b.redo.length - 1];
       return { doc: next, redo: b.redo.slice(0, -1), undo: [...b.undo, b.doc].slice(-UNDO_LIMIT), selectedId: null };
     }),

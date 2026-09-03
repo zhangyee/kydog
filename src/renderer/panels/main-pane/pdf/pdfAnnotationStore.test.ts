@@ -121,6 +121,42 @@ describe('pdfAnnotationStore', () => {
     expect(b().undo).toHaveLength(0);
   });
 
+  it('setLoaded 后 setLoadError 时，discardNote / undo / redo / remove 拒改', () => {
+    st().addHighlight(T, H('h1'));
+    st().addNote(T, N('n1', 'x'));
+    st().select(T, 'h1');
+    const docBefore = b().doc;
+    const undoBefore = b().undo;
+    const redoBefore = b().redo;
+    const selectedBefore = b().selectedId;
+    st().setLoadError(T, '坏了');
+    st().discardNote(T, 'n1');
+    expect(b().doc).toEqual(docBefore);
+    expect(b().undo).toEqual(undoBefore);
+    expect(b().redo).toEqual(redoBefore);
+    expect(b().selectedId).toBe(selectedBefore);
+    st().undo(T);
+    expect(b().doc).toEqual(docBefore);
+    expect(b().undo).toEqual(undoBefore);
+    expect(b().selectedId).toBe(selectedBefore);
+    st().redo(T);
+    expect(b().doc).toEqual(docBefore);
+    expect(b().redo).toEqual(redoBefore);
+    expect(b().selectedId).toBe(selectedBefore);
+    st().remove(T, 'h1');
+    expect(b().doc).toEqual(docBefore);
+    expect(b().undo).toEqual(undoBefore);
+    expect(b().selectedId).toBe(selectedBefore);
+  });
+
+  it('remove 不改非目标选中', () => {
+    st().addHighlight(T, H('h1'));
+    st().addHighlight(T, H('h2'));
+    st().select(T, 'h1');
+    st().remove(T, 'h2');
+    expect(b().selectedId).toBe('h1');
+  });
+
   it('setSaveError 不会凭空造桶；drop 删桶', () => {
     st().setSaveError('/p/other.pdf', 'x');
     expect(st().buckets['/p/other.pdf']).toBeUndefined();
