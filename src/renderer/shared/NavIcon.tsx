@@ -31,7 +31,14 @@ export type NavIconName =
   | 'circle-plus'
   | 'arrow-up'
   | 'arrow-right'
-  | 'check';
+  | 'check'
+  | 'mouse-pointer-2'
+  | 'highlighter'
+  | 'type'
+  | 'undo-2'
+  | 'redo-2'
+  | 'trash-2'
+  | 'languages';
 
 type IconSpec = {
   paths?: string[];
@@ -187,6 +194,28 @@ const ICONS: Record<NavIconName, IconSpec> = {
   'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
   'arrow-right': { paths: ['M5 12h14', 'm12 5 7 7-7 7'] },
   'check': { paths: ['M20 6 9 17l-5-5'] },
+  'mouse-pointer-2': {
+    paths: ['M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z'],
+  },
+  highlighter: {
+    paths: ['m9 11-6 6v3h9l3-3', 'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
+  },
+  type: {
+    paths: ['M12 4v16', 'M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2', 'M9 20h6'],
+  },
+  'undo-2': {
+    paths: ['M9 14 4 9l5-5', 'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11'],
+  },
+  'redo-2': {
+    paths: ['m15 14 5-5-5-5', 'M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13'],
+  },
+  'trash-2': {
+    paths: ['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6', 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2', 'M10 11v6', 'M14 11v6'],
+  },
+  // 翻译对照键的占位图标；正式图标等用户提供的设计稿（assets/icons/ 下未跟踪的文件），届时整体替换。
+  languages: {
+    paths: ['m5 8 6 6', 'm4 14 6-6 2-3', 'M2 5h12', 'M7 2h1', 'm22 22-5-10-5 10', 'M14 18h6'],
+  },
   dot: { circles: [{ cx: 12, cy: 12, r: 3 }] },
 };
 
