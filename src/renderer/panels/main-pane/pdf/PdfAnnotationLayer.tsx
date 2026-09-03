@@ -63,7 +63,7 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
   const drag = useRef<{ start: Point; origin: { x: number; y: number }; moving: boolean } | null>(null);
 
   useEffect(() => { setText(n.text); }, [n.text]);
-  useEffect(() => { if (selected && tool === 'select') ref.current?.focus(); }, [selected, tool]);
+  useEffect(() => { if (selected && tool !== 'highlight') ref.current?.focus(); }, [selected, tool]);
 
   const autosize = useCallback(() => {
     const el = ref.current;
@@ -86,6 +86,7 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     drag.current = { start: toPage(e), origin: { x: n.x, y: n.y }, moving: false };
   };
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.buttons === 0) { drag.current = null; return; }   // 手势已经在别处结束（越界/丢事件），别再当悬停算拖动
     const d = drag.current;
     if (!d) return;
     const p = toPage(e);
@@ -126,13 +127,13 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     >
       <textarea
         ref={ref} data-testid={`pdf-note-input-${n.id}`}
-        value={text} rows={1} readOnly={tool !== 'select'}
+        value={text} rows={1} readOnly={tool === 'highlight'}
         onChange={(e) => setText(e.target.value)} onBlur={commit}
         style={{
           display: 'block', width: '100%', border: 'none', background: 'transparent', resize: 'none',
           padding: 0, margin: 0, outline: 'none', overflow: 'hidden',
           fontFamily: 'inherit', fontSize: 'inherit', lineHeight: 'inherit', color: 'inherit',
-          pointerEvents: tool === 'select' ? 'auto' : 'none',
+          pointerEvents: tool === 'highlight' ? 'none' : 'auto',
         }}
       />
     </div>
