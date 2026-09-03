@@ -54,7 +54,9 @@ export function HighlightGlyph({ h, selected }: { h: Highlight; selected: boolea
 
 type ToPage = (e: ReactPointerEvent) => Point;
 const DRAG_THRESHOLD = 4;
-const GRIP = 18;             // 文字注左侧拖动把手的边长（scale 1 下）
+// 文字注的两个把手共用一套几何：贴着框的左右缘各一条可抓的窄带，整条框高都能抓。
+const HANDLE = 8;            // 可抓宽度（scale 1 下）
+const HANDLE_GAP = 3;        // 与框的间距（虚线框的 outlineOffset 是 2，所以 3 刚好在框外）
 const MIN_NOTE_WIDTH = 40;   // 文字注宽度下限：再窄就放不下一两个字了
 
 // 高亮笔的鼠标指针：一支记号笔，笔尖对准热点。十字准星是给「精确取点」用的，与记号笔的手感不符。
@@ -206,31 +208,31 @@ export function NoteBox({ tabId, n, pageWidth, layerScale, selected, tool, toPag
       {/* 两个几何把手，虚线框出现时才在（悬停或选中）：**左边挪位置、右边改宽度**。
           位置与尺寸的手柄挂在对象自己身上，浮条只管样式（颜色 / 字号 / 删除）—— 这是设计工具的通行分工，
           也让框里的按住拖动回归它本来的语义：选字。
-          左右分家不是随意选的：上方是选中态浮条的位置，把手放上去会被浮条盖住（实测撞过）。 */}
+          左右分家不是随意选的：上方是选中态浮条的位置，把手放上去会被浮条盖住（实测撞过）。
+          两个把手同一套视觉：贴着框缘的一条窄带、整条高度可抓、里面一个发丝色的裸标记，不带纸底与描边
+          （早先左边做成了带底带边的小方块，跟右边不是一种语言）。形状分工：左边六点是「挪」的通用记号，
+          右边一道竖条是「拉边」；再加上 grab / ew-resize 两种指针，不会认错。 */}
       {frame && (
         <div
           data-testid={`pdf-note-grip-${n.id}`} title="拖动挪位置"
           onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp} onPointerCancel={onGripUp}
           style={{
-            position: 'absolute', top: 0, left: -(GRIP + 3) * layerScale,
-            width: GRIP * layerScale, height: GRIP * layerScale,
+            position: 'absolute', top: 0, bottom: 0, left: -(HANDLE + HANDLE_GAP) * layerScale,
+            width: HANDLE * layerScale, cursor: 'grab', touchAction: 'none',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'var(--color-paper)', border: '0.5px solid var(--color-ink-hair)',
-            borderRadius: 4 * layerScale, color: 'var(--color-ink-soft)',
-            cursor: 'grab', touchAction: 'none',
+            color: 'var(--color-ink-hair)',
           }}
         >
-          <NavIcon name="grip-vertical" size={13 * layerScale} />
+          <NavIcon name="grip-vertical" size={14 * layerScale} />
         </div>
       )}
-      {/* 宽度把手贴右缘，整条高度都可抓（边缘本身就是它的可视提示）；只改宽，高度由换行结果撑开 */}
       {frame && (
         <div
           data-testid={`pdf-note-resize-${n.id}`} title="拖动改宽度"
           onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeUp} onPointerCancel={onResizeUp}
           style={{
-            position: 'absolute', top: 0, bottom: 0, left: (w + 3) * layerScale,
-            width: 8 * layerScale, cursor: 'ew-resize', touchAction: 'none',
+            position: 'absolute', top: 0, bottom: 0, left: (w + HANDLE_GAP) * layerScale,
+            width: HANDLE * layerScale, cursor: 'ew-resize', touchAction: 'none',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >
