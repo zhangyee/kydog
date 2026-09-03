@@ -128,7 +128,7 @@ test('55-pdf-annotations: 文字注落盘，关 tab 重开与重启后还原', a
   }
 });
 
-test('55-pdf-annotations: 文字注选中后拖左侧把手挪位置', async () => {
+test('55-pdf-annotations: 文字注选中后左侧把手挪位置、右缘把手改宽度', async () => {
   const launched = await launchKydog({ seed: (h) => seedAll(h) });
   try {
     const { page, kydogHome } = launched;
@@ -160,10 +160,28 @@ test('55-pdf-annotations: 文字注选中后拖左侧把手挪位置', async () 
       const n = (await readSidecar(kydogHome))!.annotations[0] as { x: number };
       return Math.round(n.x - before.x);
     }).toBeGreaterThan(50);
-    const after = (await readSidecar(kydogHome))!.annotations[0] as { x: number; y: number; text: string };
+    const after = (await readSidecar(kydogHome))!.annotations[0] as { x: number; y: number; width: number; text: string };
     expect(Math.abs(after.x - before.x - 60)).toBeLessThan(4);
     expect(Math.abs(after.y - before.y - 40)).toBeLessThan(4);
     expect(after.text).toBe('挪我');   // 拖动不该动到正文
+
+    // 右缘把手改宽度：只动 width，位置与正文不变
+    const handle = pane.locator('[data-testid^="pdf-note-resize-"]');
+    await expect(handle).toBeVisible();
+    const h = (await handle.boundingBox())!;
+    await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(h.x + h.width / 2 - 50 * sx, h.y + h.height / 2, { steps: 6 });
+    await page.mouse.up();
+
+    await expect.poll(async () => {
+      const n = (await readSidecar(kydogHome))!.annotations[0] as { width: number };
+      return Math.round(after.width - n.width);
+    }).toBeGreaterThan(40);
+    const resized = (await readSidecar(kydogHome))!.annotations[0] as { x: number; y: number; width: number; text: string };
+    expect(Math.abs(after.width - resized.width - 50)).toBeLessThan(4);
+    expect(resized.x).toBeCloseTo(after.x, 1);
+    expect(resized.text).toBe('挪我');
   } finally {
     await teardown(launched);
   }

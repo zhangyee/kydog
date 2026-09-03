@@ -123,6 +123,15 @@ describe('pdfAnnotationStore', () => {
     expect(b().doc?.annotations[1]).toMatchObject({ size: 1, color: 'ink' });
   });
 
+  it('resizeNote 改宽度并入栈，不动别的字段', () => {
+    st().addNote(T, N('n1', 'x'));
+    st().resizeNote(T, 'n1', 220);
+    expect(b().doc?.annotations[0]).toMatchObject({ width: 220, text: 'x', x: 10, y: 20 });
+    expect(b().undo).toHaveLength(1);
+    st().undo(T);
+    expect(b().doc?.annotations[0]).toMatchObject({ width: 120 });
+  });
+
   it('moveNote 改位置并入栈', () => {
     st().addNote(T, N('n1', 'x'));
     st().moveNote(T, 'n1', 99, 88);

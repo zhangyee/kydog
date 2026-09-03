@@ -54,7 +54,8 @@ export function HighlightGlyph({ h, selected }: { h: Highlight; selected: boolea
 
 type ToPage = (e: ReactPointerEvent) => Point;
 const DRAG_THRESHOLD = 4;
-const GRIP = 18;   // 文字注左上角的拖动把手边长（scale 1 下）
+const GRIP = 18;             // 文字注左侧拖动把手的边长（scale 1 下）
+const MIN_NOTE_WIDTH = 40;   // 文字注宽度下限：再窄就放不下一两个字了
 
 // 高亮笔的鼠标指针：一支记号笔，笔尖对准热点。十字准星是给「精确取点」用的，与记号笔的手感不符。
 // 先用纸色描一层粗轮廓，压在黑字上也看得清。图像走 data URI，颜色只用 hex —— 光标位图不在 CSS 上下文里，
@@ -79,14 +80,20 @@ const noteDrafts = new Map<string, string>();
 // 第二次点它才弹（用户反馈 5，与高亮笔一致）。和草稿表一样放模块级，缩放顶替重挂之后照样认得这条 id。
 const noteAutoFocus = new Set<string>();
 
-export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
-  tabId: string; n: Note; layerScale: number; selected: boolean; tool: Tool; toPage: ToPage;
+export function NoteBox({ tabId, n, pageWidth, layerScale, selected, tool, toPage }: {
+  tabId: string; n: Note; pageWidth: number; layerScale: number; selected: boolean; tool: Tool; toPage: ToPage;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState(() => noteDrafts.get(n.id) ?? n.text);
   const [hover, setHover] = useState(false);                  // 悬停时显虚线框，让空白处的笔记有边界可循
   const [offset, setOffset] = useState<Point | null>(null);   // 拖动中的临时位移
+  const [widthDelta, setWidthDelta] = useState<number | null>(null);   // 改宽度中的临时增量
   const drag = useRef<{ start: Point; origin: { x: number; y: number } } | null>(null);
+  const resize = useRef<{ start: Point; origin: number } | null>(null);
+
+  // 宽度下限保证还能放下一两个字；上限是「不超出这一页的右边」——超出去的部分看不见，等于把字藏了
+  const clampWidth = (raw: number) => Math.max(MIN_NOTE_WIDTH, Math.min(raw, pageWidth - n.x));
+  const w = clampWidth(n.width + (widthDelta ?? 0));
 
   // 挂载时若草稿表里还留着这条 id 的草稿（刚经历一次缩放顶替的重挂），不要用 n.text 覆盖它；
   // 其余情况（外部改动，如撤销/重做把 doc 换回旧快照）照常跟随 n.text。
@@ -102,7 +109,8 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     el.style.height = '0px';
     el.style.height = `${el.scrollHeight}px`;
   }, []);
-  useLayoutEffect(() => { autosize(); }, [text, layerScale, n.size, n.width, autosize]);
+  // w 而不是 n.width：改宽度的过程中高度就要跟着换行结果长／缩，不然要等松手才对
+  useLayoutEffect(() => { autosize(); }, [text, layerScale, n.size, w, autosize]);
 
   const commit = () => {
     const st = usePdfAnnotationStore.getState();
@@ -141,6 +149,31 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
     const p = toPage(e);
     setOffset([p[0] - d.start[0], p[1] - d.start[1]]);
   };
+  // 改宽度：只动 width，高度由正文换行自己撑开。与移动把手同一套手感（按住即捕获、松手结算一次）。
+  const onResizeDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    usePdfAnnotationStore.getState().select(tabId, n.id);
+    ref.current?.blur();
+    resize.current = { start: toPage(e), origin: n.width };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const r = resize.current;
+    if (!r) return;
+    setWidthDelta(toPage(e)[0] - r.start[0]);
+  };
+  const onResizeUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const r = resize.current;
+    resize.current = null;
+    if (!r) return;
+    const el = e.currentTarget;
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    const next = clampWidth(r.origin + toPage(e)[0] - r.start[0]);
+    setWidthDelta(null);
+    usePdfAnnotationStore.getState().resizeNote(tabId, n.id, next);
+  };
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     drag.current = null;
@@ -164,23 +197,22 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
       onPointerEnter={() => { if (tool !== 'highlight') setHover(true); }}
       onPointerLeave={() => setHover(false)}
       style={{
-        position: 'absolute', left: x * layerScale, top: y * layerScale, width: n.width * layerScale,
+        position: 'absolute', left: x * layerScale, top: y * layerScale, width: w * layerScale,
         fontSize: NOTE_FONT_SIZE[n.size] * layerScale, lineHeight: 1.45, color: NOTE_INK[n.color],
         outline: frame ? '1px dashed oklch(0.42 0.10 250)' : 'none', outlineOffset: 2,
         cursor: tool === 'highlight' ? 'inherit' : 'text',
       }}
     >
-      {/* 拖动把手：虚线框出现时它才在（悬停或选中）。位置这件事的手柄挂在对象自己身上，
-          浮条只管样式（颜色 / 字号 / 删除）—— 这是所有设计工具的分工，找起来不用猜。
-          挂在框的**左侧**而不是上方：上方是选中态浮条的位置，两者都在那儿就会互相盖住（实测过）。
-          贴着页面左边距的框往右侧放，免得把手跑到纸外面去。 */}
+      {/* 两个几何把手，虚线框出现时才在（悬停或选中）：**左边挪位置、右边改宽度**。
+          位置与尺寸的手柄挂在对象自己身上，浮条只管样式（颜色 / 字号 / 删除）—— 这是设计工具的通行分工，
+          也让框里的按住拖动回归它本来的语义：选字。
+          左右分家不是随意选的：上方是选中态浮条的位置，把手放上去会被浮条盖住（实测撞过）。 */}
       {frame && (
         <div
           data-testid={`pdf-note-grip-${n.id}`} title="拖动挪位置"
           onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp} onPointerCancel={onGripUp}
           style={{
-            position: 'absolute', top: 0,
-            left: (n.x >= GRIP + 4 ? -(GRIP + 3) : n.width + 3) * layerScale,
+            position: 'absolute', top: 0, left: -(GRIP + 3) * layerScale,
             width: GRIP * layerScale, height: GRIP * layerScale,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: 'var(--color-paper)', border: '0.5px solid var(--color-ink-hair)',
@@ -189,6 +221,23 @@ export function NoteBox({ tabId, n, layerScale, selected, tool, toPage }: {
           }}
         >
           <NavIcon name="grip-vertical" size={13 * layerScale} />
+        </div>
+      )}
+      {/* 宽度把手贴右缘，整条高度都可抓（边缘本身就是它的可视提示）；只改宽，高度由换行结果撑开 */}
+      {frame && (
+        <div
+          data-testid={`pdf-note-resize-${n.id}`} title="拖动改宽度"
+          onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeUp} onPointerCancel={onResizeUp}
+          style={{
+            position: 'absolute', top: 0, bottom: 0, left: (w + 3) * layerScale,
+            width: 8 * layerScale, cursor: 'ew-resize', touchAction: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div style={{
+            width: 3 * layerScale, height: '55%', minHeight: 9 * layerScale,
+            borderRadius: 999, background: 'var(--color-ink-hair)',
+          }} />
         </div>
       )}
       <textarea
@@ -322,7 +371,8 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
         )}
       </svg>
       {mine.map((a) => (a.type === 'note'
-        ? <NoteBox key={a.id} tabId={tabId} n={a} layerScale={layerScale} selected={a.id === selectedId} tool={tool} toPage={toPage} />
+        ? <NoteBox key={a.id} tabId={tabId} n={a} pageWidth={pageWidth} layerScale={layerScale}
+            selected={a.id === selectedId} tool={tool} toPage={toPage} />
         : null))}
     </div>
   );

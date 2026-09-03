@@ -45,6 +45,7 @@ type State = {
   discardNote: (tab: string, id: string) => void;
   commitNoteText: (tab: string, id: string, text: string) => void;
   moveNote: (tab: string, id: string, x: number, y: number) => void;
+  resizeNote: (tab: string, id: string, width: number) => void;
   restyle: (tab: string, id: string, patch: { color?: HighlightColor | NoteColor; level?: Level }) => void;
   remove: (tab: string, id: string) => void;
   select: (tab: string, id: string | null) => void;
@@ -120,6 +121,8 @@ export const usePdfAnnotationStore = create<State>((set, get) => {
       );
     },
     moveNote: (tab, id, x, y) => edit(tab, (doc) => withAnn(doc, id, (a) => ({ ...(a as Note), x, y }))),
+    // 只改宽度：高度由正文换行撑开，不入模型（spec §4.2）。一次拖动结算一次，算一个撤销单位。
+    resizeNote: (tab, id, width) => edit(tab, (doc) => withAnn(doc, id, (a) => ({ ...(a as Note), width }))),
     restyle: (tab, id, p) => edit(tab, (doc) => withAnn(doc, id, (a) => {
       if (a.type === 'highlight') {
         return { ...a, ...(p.color ? { color: p.color as HighlightColor } : {}), ...(p.level ? { width: p.level } : {}) };
