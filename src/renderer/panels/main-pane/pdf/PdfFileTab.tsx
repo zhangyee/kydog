@@ -2,8 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
+import { handleAnnotationKey } from './annotationKeys';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
+import { PdfSelectionBar, type Anchor } from './PdfSelectionBar';
 import { PdfToolbar } from './PdfToolbar';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage, type PageRect } from './pageReadout';
@@ -84,6 +86,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           return { page: Number(node.dataset.pdfPage), top: r.top - top, bottom: r.bottom - top };
         });
       setCurrentPage(mostVisiblePage(rects, 0, el.clientHeight));
+      setScrollTick((t) => t + 1);
     });
   }, []);
   useEffect(() => () => { if (readoutRaf.current != null) cancelAnimationFrame(readoutRaf.current); }, []);
@@ -217,6 +220,23 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   useEffect(() => { updateReadout(); }, [visualScale, layers, numPages, updateReadout]);
 
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [scrollTick, setScrollTick] = useState(0);
+  const selectedId = usePdfAnnotationStore((s) => s.buckets[tab.id]?.selectedId ?? null);
+  const doc = usePdfAnnotationStore((s) => s.buckets[tab.id]?.doc ?? null);
+  const [anchor, setAnchor] = useState<Anchor | null>(null);
+
+  // 浮条锚点：选中项元素相对外层容器的框；滚动、缩放、doc 变化都重算
+  useLayoutEffect(() => {
+    const wrap = wrapperRef.current;
+    if (!wrap || !selectedId) { setAnchor(null); return; }
+    const el = wrap.querySelector<HTMLElement>(`[data-pdf-layer="stable"] [data-annotation-id="${selectedId}"]`);
+    if (!el) { setAnchor(null); return; }
+    const w = wrap.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    setAnchor({ left: r.left - w.left, top: r.top - w.top, bottom: r.bottom - w.top, width: r.width });
+  }, [selectedId, doc, visualScale, layers, scrollTick]);
+
   if (tab.status === 'loading') {
     return (
       <div className="font-mono" style={{ padding: '14px 18px', fontSize: 12, color: 'var(--color-ink-soft)' }}>
@@ -232,7 +252,16 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     );
   }
   return (
-    <div style={{ position: 'relative', height: '100%' }}>
+    <div
+      ref={wrapperRef}
+      tabIndex={0}
+      style={{ position: 'relative', height: '100%', outline: 'none' }}
+      onKeyDown={(e) => { if (handleAnnotationKey(e, tab.id)) e.preventDefault(); }}
+      onPointerDownCapture={(e) => {
+        const t = e.target as Element;
+        if (!t.closest('textarea, button')) wrapperRef.current?.focus();
+      }}
+    >
       <div
         ref={scrollRef}
         data-testid={`pdf-scroll-${tab.id}`}
@@ -305,6 +334,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         )}
       </div>
       <PdfToolbar tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)} />
+      {anchor && <PdfSelectionBar tabId={tab.id} anchor={anchor} />}
     </div>
   );
 }
