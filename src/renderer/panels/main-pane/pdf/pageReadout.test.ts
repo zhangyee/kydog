@@ -13,8 +13,13 @@ describe('mostVisiblePage', () => {
   it('两页各占一半时取靠前的', () => {
     expect(mostVisiblePage([{ page: 1, top: -300, bottom: 263 }, { page: 2, top: 263, bottom: 826 }], 0, 526)).toBe(1);
   });
-  it('都不可见时取第一页', () => {
+  it('都不可见时取离视口最近的页', () => {
     expect(mostVisiblePage([{ page: 4, top: 900, bottom: 1500 }], 0, 526)).toBe(4);
+    // 视口滚到最后一页下方的留白：两页都在视口之上/之外，取离视口最近的（靠后的）那页
+    expect(mostVisiblePage(
+      [{ page: 1, top: 0, bottom: 400 }, { page: 2, top: 500, bottom: 800 }],
+      1000, 1500,
+    )).toBe(2);
   });
   it('空表返回 1', () => {
     expect(mostVisiblePage([], 0, 526)).toBe(1);

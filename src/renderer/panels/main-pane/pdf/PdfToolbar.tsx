@@ -1,28 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { NavIcon, Tooltip, type NavIconName } from '../../../shared';
+import { IconButton, NavIcon } from '../../../shared';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
 import { PANEL_SHADOW, PdfToolCard } from './PdfToolCard';
-
-function ToolButton({ icon, tip, active, disabled, onClick, testId, color, btnRef }: {
-  icon: NavIconName; tip: string; active?: boolean; disabled?: boolean; onClick: () => void; testId: string;
-  color?: string; btnRef?: (el: HTMLButtonElement | null) => void;
-}) {
-  const btn = (
-    <button
-      ref={btnRef} type="button" data-testid={testId} disabled={disabled} aria-label={tip} onClick={onClick}
-      className="inline-flex items-center justify-center rounded-md transition-colors hover:bg-[color:var(--color-hover-bg)] disabled:opacity-50"
-      style={{
-        width: 28, height: 28, border: 'none', padding: 0,
-        background: active ? 'var(--color-hover-bg)' : 'transparent',
-        color: color ?? (active ? 'var(--color-ink)' : 'var(--color-ink-soft)'),
-        cursor: disabled ? 'default' : 'pointer',
-      }}
-    >
-      <NavIcon name={icon} size={15} />
-    </button>
-  );
-  return disabled ? btn : <Tooltip content={tip} placement="top">{btn}</Tooltip>;
-}
 
 function Divider(): ReactNode {
   return <div style={{ width: 0.5, height: 16, background: 'var(--color-ink-hair)', margin: '0 3px', flexShrink: 0 }} />;
@@ -37,13 +16,14 @@ export function PdfToolbar({ tabId, pageLabel, zoomPct }: Props) {
   const tool: Tool = bucket?.tool ?? 'select';
   const st = usePdfAnnotationStore.getState;
   const pillRef = useRef<HTMLDivElement>(null);
-  const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const highlightBtnRef = useRef<HTMLButtonElement>(null);
+  const noteBtnRef = useRef<HTMLButtonElement>(null);
   const [anchorX, setAnchorX] = useState<number | null>(null);
 
   // 卡片锚点：当前工具按钮相对胶囊内层的中心 x
   useLayoutEffect(() => {
     if (tool === 'select' || !ready) { setAnchorX(null); return; }
-    const btn = btnRefs.current[tool];
+    const btn = tool === 'highlight' ? highlightBtnRef.current : noteBtnRef.current;
     const pill = pillRef.current;
     if (!btn || !pill) { setAnchorX(null); return; }
     setAnchorX(btn.offsetLeft - pill.clientLeft + btn.offsetWidth / 2);
@@ -62,21 +42,41 @@ export function PdfToolbar({ tabId, pageLabel, zoomPct }: Props) {
           pointerEvents: 'auto',
         }}
       >
-        <ToolButton icon="mouse-pointer-2" tip="选择 · V" active={tool === 'select'} disabled={!ready}
-          onClick={() => st().setTool(tabId, 'select')} testId="pdf-tool-select" />
-        <ToolButton icon="highlighter" tip="高亮笔 · H" active={tool === 'highlight'} disabled={!ready}
-          onClick={() => st().setTool(tabId, 'highlight')} testId="pdf-tool-highlight"
-          btnRef={(el) => { btnRefs.current.highlight = el; }} />
-        <ToolButton icon="type" tip="文字注 · T" active={tool === 'note'} disabled={!ready}
-          onClick={() => st().setTool(tabId, 'note')} testId="pdf-tool-note"
-          btnRef={(el) => { btnRefs.current.note = el; }} />
+        <IconButton
+          size={28} tooltip="选择 · V" tooltipPlacement="top" active={tool === 'select'} disabled={!ready}
+          tone={tool === 'select' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'select')} testId="pdf-tool-select"
+        >
+          <NavIcon name="mouse-pointer-2" size={15} />
+        </IconButton>
+        <IconButton
+          ref={highlightBtnRef} size={28} tooltip="高亮笔 · H" tooltipPlacement="top" active={tool === 'highlight'} disabled={!ready}
+          tone={tool === 'highlight' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'highlight')} testId="pdf-tool-highlight"
+        >
+          <NavIcon name="highlighter" size={15} />
+        </IconButton>
+        <IconButton
+          ref={noteBtnRef} size={28} tooltip="文字注 · T" tooltipPlacement="top" active={tool === 'note'} disabled={!ready}
+          tone={tool === 'note' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'note')} testId="pdf-tool-note"
+        >
+          <NavIcon name="type" size={15} />
+        </IconButton>
         <Divider />
-        <ToolButton icon="undo-2" tip="撤销 · ⌘Z" disabled={!ready || !bucket?.undo.length}
-          onClick={() => st().undo(tabId)} testId="pdf-undo" />
-        <ToolButton icon="redo-2" tip="重做 · ⇧⌘Z" disabled={!ready || !bucket?.redo.length}
-          onClick={() => st().redo(tabId)} testId="pdf-redo" />
+        <IconButton
+          size={28} tooltip="撤销 · ⌘Z" tooltipPlacement="top" disabled={!ready || !bucket?.undo.length}
+          onClick={() => st().undo(tabId)} testId="pdf-undo"
+        >
+          <NavIcon name="undo-2" size={15} />
+        </IconButton>
+        <IconButton
+          size={28} tooltip="重做 · ⇧⌘Z" tooltipPlacement="top" disabled={!ready || !bucket?.redo.length}
+          onClick={() => st().redo(tabId)} testId="pdf-redo"
+        >
+          <NavIcon name="redo-2" size={15} />
+        </IconButton>
         <Divider />
-        <ToolButton icon="languages" tip="翻译对照 · 即将开放" disabled onClick={() => {}} testId="pdf-translate" />
+        <IconButton size={28} tooltip="翻译对照 · 即将开放" tooltipPlacement="top" disabled onClick={() => {}} testId="pdf-translate">
+          <NavIcon name="languages" size={15} />
+        </IconButton>
         <Divider />
         <div
           className="font-mono" data-testid="pdf-readout"
