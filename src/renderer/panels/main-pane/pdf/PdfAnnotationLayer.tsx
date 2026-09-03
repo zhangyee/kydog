@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import type { Highlight, HighlightSegment, Note } from '../../../../shared/pdfSidecar';
 import { HIGHLIGHT_FILL, NOTE_FONT_SIZE, NOTE_INK, STROKE_WIDTH } from './annotationInks';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
-import { snapToLines, type Point } from './snapToLines';
+import { straightSegment, type Point } from './straightenStroke';
 import type { TextLine } from './textLines';
 
 export type EnsureLines = (page: number) => Promise<TextLine[]>;
@@ -181,9 +181,10 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
   const noteParams = usePdfAnnotationStore((s) => s.buckets[tabId]?.note);
   const ready = usePdfAnnotationStore((s) => !!s.buckets[tabId]?.doc && !s.buckets[tabId]?.loadError);
   const rootRef = useRef<HTMLDivElement>(null);
-  const drawing = useRef<{ points: Point[]; lines: Promise<TextLine[]> } | null>(null);
+  // 一笔只记起点与当前点：直线由这两点加行表算出来（spec §6.3），不再攒采样点。
+  const drawing = useRef<{ from: Point; to: Point; lines: TextLine[]; ready: Promise<TextLine[]> } | null>(null);
   const press = useRef<Point | null>(null);
-  const [live, setLive] = useState<Point[] | null>(null);
+  const [live, setLive] = useState<HighlightSegment | null>(null);
   const mine = (annotations ?? []).filter((a) => a.page === page);
 
   // 页坐标 = 相对页元素的比例 × scale 1 的页尺寸；只依赖 boundingClientRect，不引用缩放值（spec §6.2）
@@ -191,6 +192,12 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
     const r = rootRef.current!.getBoundingClientRect();
     return [((e.clientX - r.left) / r.width) * pageWidth, ((e.clientY - r.top) / r.height) * pageHeight];
   }, [pageWidth, pageHeight]);
+
+  // 按住期间每一帧都按「起点 + 当前点 + 行表」重算预览：屏幕上显示的就是松手后落下的那条
+  const refreshLive = useCallback(() => {
+    const d = drawing.current;
+    setLive(d ? straightSegment(d.from, d.to, d.lines) : null);
+  }, []);
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!ready || e.button !== 0) return;
@@ -203,8 +210,11 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
     if (tool === 'highlight') {
       e.preventDefault();
       rootRef.current!.setPointerCapture(e.pointerId);
-      drawing.current = { points: [p], lines: ensureLines(page) };
-      setLive([p]);
+      const ready = ensureLines(page);
+      drawing.current = { from: p, to: p, lines: [], ready };
+      setLive(null);
+      // 行表是异步取的：没到之前预览按「没有行」画直连线，到了立刻重算一次贴上去
+      void ready.then((ls) => { if (drawing.current) { drawing.current.lines = ls; refreshLive(); } });
       return;
     }
     if (tool === 'note') { press.current = p; return; }
@@ -212,23 +222,27 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
     st.select(tabId, hit?.dataset.annotationId ?? null);
   };
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drawing.current) return;
-    drawing.current.points.push(toPage(e));
-    setLive([...drawing.current.points]);
+    const d = drawing.current;
+    if (!d) return;
+    d.to = toPage(e);
+    refreshLive();
   };
   const onPointerUp = async (e: ReactPointerEvent<HTMLDivElement>) => {
     const st = usePdfAnnotationStore.getState();
     if (drawing.current) {
-      const { points, lines } = drawing.current;
+      const d = drawing.current;
+      d.to = toPage(e);
       drawing.current = null;
       setLive(null);
       // touch/pen 手势在 pointercancel 时浏览器已经自行释放了捕获，这里若还去 release 会抛异常（Chromium）
       if (rootRef.current?.hasPointerCapture(e.pointerId)) rootRef.current.releasePointerCapture(e.pointerId);
-      const segments = snapToLines(points, await lines);
-      if (segments.length === 0 || !hl) return;
+      // 第一笔可能赶在行表到位之前就松手了，这时补等一下——落盘的那条必须贴行
+      const lines = d.lines.length > 0 ? d.lines : await d.ready;
+      const seg = straightSegment(d.from, d.to, lines);
+      if (!seg || !hl) return;
       st.addHighlight(tabId, {
         id: crypto.randomUUID(), type: 'highlight', page,
-        color: hl.color, width: hl.width, segments, createdAt: new Date().toISOString(),
+        color: hl.color, width: hl.width, segments: [seg], createdAt: new Date().toISOString(),
       });
       return;
     }
@@ -268,7 +282,7 @@ export function PdfAnnotationLayer({ tabId, page, pageWidth, pageHeight, layerSc
       >
         {mine.map((a) => (a.type === 'highlight' ? <HighlightGlyph key={a.id} h={a} selected={a.id === selectedId} /> : null))}
         {live && hl && (
-          <path d={segmentPath({ kind: 'path', points: live })} fill="none"
+          <path d={segmentPath(live)} fill="none"
             stroke={HIGHLIGHT_FILL[hl.color]} strokeWidth={STROKE_WIDTH[hl.width]} strokeLinecap="round" strokeLinejoin="round" />
         )}
       </svg>
