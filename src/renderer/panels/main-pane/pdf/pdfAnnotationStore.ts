@@ -1,0 +1,133 @@
+import { create } from 'zustand';
+import type {
+  Highlight, HighlightColor, Level, Note, NoteColor, PdfAnnotation, PdfAnnotationsFile,
+} from '../../../../shared/pdfSidecar';
+
+export type Tool = 'select' | 'highlight' | 'note';
+
+export type Bucket = {
+  doc: PdfAnnotationsFile | null;   // null = 尚未加载
+  loadError: string | null;         // 有值 = 边车坏了，工具置灰、永不保存
+  saveError: string | null;
+  tool: Tool;
+  hl: { color: HighlightColor; width: Level };
+  note: { color: NoteColor; size: Level };
+  selectedId: string | null;
+  undo: PdfAnnotationsFile[];       // 整份快照，spec §3
+  redo: PdfAnnotationsFile[];
+};
+
+const UNDO_LIMIT = 100;
+
+export function emptyBucket(): Bucket {
+  return {
+    doc: null, loadError: null, saveError: null, tool: 'select',
+    hl: { color: 'amber', width: 2 }, note: { color: 'ink', size: 2 },
+    selectedId: null, undo: [], redo: [],
+  };
+}
+
+type State = {
+  buckets: Record<string, Bucket>;
+  setLoaded: (tab: string, doc: PdfAnnotationsFile) => void;
+  setLoadError: (tab: string, msg: string) => void;
+  setSaveError: (tab: string, msg: string | null) => void;
+  drop: (tab: string) => void;
+  setTool: (tab: string, tool: Tool) => void;
+  setHlParams: (tab: string, p: Partial<Bucket['hl']>) => void;
+  setNoteParams: (tab: string, p: Partial<Bucket['note']>) => void;
+  addHighlight: (tab: string, a: Highlight) => void;
+  addNote: (tab: string, n: Note) => void;
+  discardNote: (tab: string, id: string) => void;
+  commitNoteText: (tab: string, id: string, text: string) => void;
+  moveNote: (tab: string, id: string, x: number, y: number) => void;
+  restyle: (tab: string, id: string, patch: { color?: HighlightColor | NoteColor; level?: Level }) => void;
+  remove: (tab: string, id: string) => void;
+  select: (tab: string, id: string | null) => void;
+  undo: (tab: string) => void;
+  redo: (tab: string) => void;
+};
+
+const withAnn = (doc: PdfAnnotationsFile, id: string, fn: (a: PdfAnnotation) => PdfAnnotation): PdfAnnotationsFile =>
+  ({ ...doc, annotations: doc.annotations.map((a) => (a.id === id ? fn(a) : a)) });
+const without = (doc: PdfAnnotationsFile, id: string): PdfAnnotationsFile =>
+  ({ ...doc, annotations: doc.annotations.filter((a) => a.id !== id) });
+
+export const usePdfAnnotationStore = create<State>((set, get) => {
+  // 桶不存在就按空桶建
+  const patch = (tab: string, fn: (b: Bucket) => Partial<Bucket>) =>
+    set((s) => {
+      const b = s.buckets[tab] ?? emptyBucket();
+      return { buckets: { ...s.buckets, [tab]: { ...b, ...fn(b) } } };
+    });
+  // 桶不存在就什么都不做（关 tab 之后迟到的保存结果不该把桶造回来）
+  const patchExisting = (tab: string, fn: (b: Bucket) => Partial<Bucket>) =>
+    set((s) => {
+      const b = s.buckets[tab];
+      if (!b) return {};
+      return { buckets: { ...s.buckets, [tab]: { ...b, ...fn(b) } } };
+    });
+  // 改 doc 的统一入口：先压快照（默认压当前 doc，可指定），清 redo，再改
+  const edit = (
+    tab: string,
+    next: (doc: PdfAnnotationsFile) => PdfAnnotationsFile,
+    snapshot: (doc: PdfAnnotationsFile) => PdfAnnotationsFile = (d) => d,
+  ) => patch(tab, (b) => {
+    if (!b.doc || b.loadError) return {};
+    return { doc: next(b.doc), undo: [...b.undo, snapshot(b.doc)].slice(-UNDO_LIMIT), redo: [] };
+  });
+
+  return {
+    buckets: {},
+    setLoaded: (tab, doc) => patch(tab, () => ({ doc, loadError: null })),
+    setLoadError: (tab, msg) => patch(tab, () => ({ loadError: msg })),
+    setSaveError: (tab, msg) => patchExisting(tab, () => ({ saveError: msg })),
+    drop: (tab) => set((s) => {
+      const rest = { ...s.buckets };
+      delete rest[tab];
+      return { buckets: rest };
+    }),
+    setTool: (tab, tool) => patch(tab, () => ({ tool, selectedId: null })),
+    setHlParams: (tab, p) => patch(tab, (b) => ({ hl: { ...b.hl, ...p } })),
+    setNoteParams: (tab, p) => patch(tab, (b) => ({ note: { ...b.note, ...p } })),
+    addHighlight: (tab, a) => edit(tab, (doc) => ({ ...doc, annotations: [...doc.annotations, a] })),
+    // 新建不入栈：note 在首次 commitNoteText 之前是「未提交」状态（spec §6.1）
+    addNote: (tab, n) => patch(tab, (b) =>
+      (b.doc && !b.loadError ? { doc: { ...b.doc, annotations: [...b.doc.annotations, n] } } : {})),
+    discardNote: (tab, id) => patch(tab, (b) =>
+      (b.doc ? { doc: without(b.doc, id), selectedId: b.selectedId === id ? null : b.selectedId } : {})),
+    commitNoteText: (tab, id, text) => {
+      const cur = get().buckets[tab]?.doc?.annotations.find((a) => a.id === id);
+      if (!cur || cur.type !== 'note' || cur.text === text) return;
+      const firstCommit = cur.text === '';
+      edit(
+        tab,
+        (doc) => withAnn(doc, id, (a) => ({ ...(a as Note), text, updatedAt: new Date().toISOString() })),
+        firstCommit ? (doc) => without(doc, id) : undefined,
+      );
+    },
+    moveNote: (tab, id, x, y) => edit(tab, (doc) => withAnn(doc, id, (a) => ({ ...(a as Note), x, y }))),
+    restyle: (tab, id, p) => edit(tab, (doc) => withAnn(doc, id, (a) => {
+      if (a.type === 'highlight') {
+        return { ...a, ...(p.color ? { color: p.color as HighlightColor } : {}), ...(p.level ? { width: p.level } : {}) };
+      }
+      return { ...a, ...(p.color ? { color: p.color as NoteColor } : {}), ...(p.level ? { size: p.level } : {}) };
+    })),
+    remove: (tab, id) => {
+      if (!get().buckets[tab]?.doc?.annotations.some((a) => a.id === id)) return;
+      edit(tab, (doc) => without(doc, id));
+      patch(tab, () => ({ selectedId: null }));
+    },
+    select: (tab, id) => patch(tab, () => ({ selectedId: id })),
+    undo: (tab) => patch(tab, (b) => {
+      if (!b.doc || b.undo.length === 0) return {};
+      const prev = b.undo[b.undo.length - 1];
+      return { doc: prev, undo: b.undo.slice(0, -1), redo: [...b.redo, b.doc], selectedId: null };
+    }),
+    redo: (tab) => patch(tab, (b) => {
+      if (!b.doc || b.redo.length === 0) return {};
+      const next = b.redo[b.redo.length - 1];
+      return { doc: next, redo: b.redo.slice(0, -1), undo: [...b.undo, b.doc].slice(-UNDO_LIMIT), selectedId: null };
+    }),
+  };
+});
