@@ -20,11 +20,16 @@ export const HIGHLIGHT_SWATCH: Record<HighlightColor, string> = {
   marginalia: 'oklch(0.42 0.10 250)',
   accent: 'oklch(0.55 0.16 28)',
 };
+/**
+ * 文字注的墨色（也是它的色点）。黑与蓝取 vellum 的语义色；红与绿在语义色的色相上把彩度提上来 ——
+ * 语义色的 accent / moss 是给界面小字用的暗调，写成批注偏灰、不够醒目（用户反馈）。
+ * 明度仍压在 0.5 上下：这是要当正文读的字，纸底上得有对比度，不能像高亮那样往亮处推。
+ */
 export const SWATCH: Record<HighlightColor | NoteColor, string> = {
   amber: 'oklch(0.62 0.10 75)',
-  moss: 'oklch(0.48 0.06 150)',
+  moss: 'oklch(0.50 0.17 146)',
   marginalia: 'oklch(0.42 0.10 250)',
-  accent: 'oklch(0.55 0.16 28)',
+  accent: 'oklch(0.53 0.21 27)',
   ink: 'oklch(0.22 0.015 60)',
 };
 export const NOTE_INK: Record<NoteColor, string> = {
@@ -35,10 +40,17 @@ export const NOTE_COLORS: NoteColor[] = ['ink', 'accent', 'marginalia', 'moss'];
 export const LEVELS: Level[] = [1, 2, 3];
 /** scale 1 下的笔画宽度（px） */
 export const STROKE_WIDTH: Record<Level, number> = { 1: 6, 2: 10, 3: 14 };
-/** scale 1 下的文字注字号（px = pt，因为 scale 1 就是 PDF 用户坐标）。
- *  论文正文通常 9–10pt，所以最小档必须比它更小，笔记才不会喧宾夺主（用户反馈 4）。 */
-export const NOTE_FONT_SIZE: Record<Level, number> = { 1: 7, 2: 10, 3: 14 };
-/** 卡片与浮条里字号预览用的「A」字号：按 NOTE_FONT_SIZE 原样画在 28px 高的格子里太小，认不出档位差别。 */
-export const NOTE_SIZE_PREVIEW: Record<Level, number> = { 1: 11, 2: 15, 3: 20 };
+/**
+ * scale 1 下的文字注字号（px = pt，因为 scale 1 就是 PDF 用户坐标）。
+ *
+ * 三档按用途定，不是等比数列：
+ * - 小号 5 ≈ 正文的半个字，是注音假名／旁注那一档 —— 塞进正文行间做夹注用。
+ * - 中号 8 看起来与论文正文齐平。注意不能照 10pt 填：笔记多是中文，Noto Serif SC 的字面把整个字身撑满，
+ *   同样的 pt 值看着比 Times 的拉丁正文大一号，所以要往下压一档才「差不多」。
+ * - 大号 10 是原先的中号，给需要显眼的批注。
+ */
+export const NOTE_FONT_SIZE: Record<Level, number> = { 1: 5, 2: 8, 3: 10 };
+/** 卡片与浮条里字号预览用的「A」字号：按真实字号画在格子里太小，认不出档位差别。整体放大 2 倍，保持档间比例。 */
+export const NOTE_SIZE_PREVIEW: Record<Level, number> = { 1: 10, 2: 16, 3: 20 };
 /** 卡片与浮条里粗细预览的线高 */
 export const STROKE_PREVIEW: Record<Level, number> = { 1: 3, 2: 6, 3: 10 };
