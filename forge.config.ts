@@ -139,7 +139,17 @@ const config: ForgeConfig = {
       version: FuseVersion.V1,
       strictlyRequireAllFuses: true,
       [FuseV1Options.RunAsNode]: false,
-      [FuseV1Options.EnableCookieEncryption]: true,
+      // 关着：开了它 Chromium 会把 cookie 库加密落盘，密钥放 macOS 钥匙串（条目 "KyDog Safe Storage"）。
+      // 钥匙串的访问控制绑在代码签名上，而下面的 postPackage 每次打包都重签一次 adhoc、cdhash 每次不同，
+      // 于是每个新成品第一次启动都弹一次「KyDog 想使用钥匙串中的机密信息」，要输登录密码。
+      //
+      // 现在护的是空的：登录走 shell.openExternal 交给系统浏览器（src/main/llm/oauth.ts），应用内没有网页
+      // 会话，全仓库不碰 session / cookies API；BYOK 密钥在 ~/.kydog 下 0600 的文件里，与这把钥匙无关。
+      //
+      // **做应用内浏览（in-app browsing）时改回 true**：那时会话 cookie 才真的存东西，明文躺在
+      // ~/Library/Application Support/KyDog/ 里就不合适了。届时同期该有 Developer ID 证书，签名身份稳定，
+      // 钥匙串也就不会每次打包都重问。
+      [FuseV1Options.EnableCookieEncryption]: false,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       // EmbeddedAsarIntegrityValidation + OnlyLoadAppFromAsar both require macOS
