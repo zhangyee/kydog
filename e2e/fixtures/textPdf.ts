@@ -1,0 +1,30 @@
+/**
+ * 带文本层的最小单页 PDF：300 × 400 pt，Helvetica 14 pt 两行正文，基线分别在 y = 340 与 y = 300
+ * （PDF 坐标，y 向上；换成 react-pdf scale 1 的视口坐标就是 y = 60 与 y = 100）。
+ * 自带正确的 xref 与 /Length，pdf.js 不需要走 recovery。
+ */
+export const TEXT_PDF_LINES = ['Cited passage conditioning', 'reduces unsupported claims'];
+
+export function buildTextPdf(): Buffer {
+  const content =
+    `BT /F1 14 Tf 40 340 Td (${TEXT_PDF_LINES[0]}) Tj ET\n` +
+    `BT /F1 14 Tf 40 300 Td (${TEXT_PDF_LINES[1]}) Tj ET\n`;
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`,
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objs.forEach((body, i) => {
+    offsets.push(Buffer.byteLength(out, 'latin1'));
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(out, 'latin1');
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offsets) out += `${String(o).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
