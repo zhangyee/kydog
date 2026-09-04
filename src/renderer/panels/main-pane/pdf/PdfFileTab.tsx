@@ -736,6 +736,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       focal.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       // 逐事件累积目标缩放（只动 ref，不惊动 React），逐帧才真正落地一次——落地与「排提交」
       // 都在 requestScale 里，见模块级 useVisualScale。
+      //
+      // `targetScale` 是**捏合手势的累积器，不是「当前缩放」**：两次 wheel 之间它领先
+      // visualScale，rAF 落地时才对齐。useVisualScale 那句「requestScale 是唯一入口」说的是
+      // visualScale 这一个 state，不覆盖这里对累积器的自增——读当前缩放请用 visualScaleRef。
+      // 这里那次 MIN/MAX 夹取也不是 requestScale 里那次的重复：不夹的话，往一个方向连推几十个
+      // wheel 事件会把累积器推到远离区间的地方，反向捏合要先「绕回来」才看得见变化。
       targetScale.current = Math.min(
         MAX_SCALE,
         Math.max(MIN_SCALE, targetScale.current * (1 - e.deltaY * ZOOM_SENSITIVITY)),

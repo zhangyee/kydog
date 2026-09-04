@@ -220,6 +220,12 @@ type Props = {
    * null 只有一个含义：右格还一次都没合成过。此时块底下压根没有我们填的底，露出来的是滚动
    * 容器的 `--color-paper-deep`——按任何一个颜色推墨色都是猜，所以整层先不显示（见下面的
    * visibility），等底图落地。
+   *
+   * 有一个后果是**有意接受**的，不是漏做：左格渲染失败的页，右格连译文都不显示，整页空白。
+   * 链路是 `setLeftCanvas` 只在 `onRenderSuccess` 里调用（PdfFileTab 的 MountedPageCells），
+   * `onRenderError` 只调 `onSettled` → `leftCanvas` 恒 null → RightPage 早退、从不调
+   * `onBackground` → 这里的 `bg` 恒 null → 译文层永久 hidden。理由同上：那一页底下露出来的是
+   * 滚动容器的 paper-deep，按任何颜色推墨色都是猜。
    */
   bg: RGB | null;
 };
@@ -281,6 +287,8 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page 
         // 底图还没合成过（bg === null）就先别显示：那时块底下是滚动容器的深色 paper-deep，
         // 不是我们填的任何一个颜色，墨色按什么推都是猜。visibility 不影响布局，测量宿主照常
         // 量得到 scrollHeight，字号该收敛还是会收敛。
+        // 左格渲染失败的页 bg 会**恒为** null（onRenderError 不给 leftCanvas），那一页的右格
+        // 因此整页空白、连译文都不显示——有意接受的边界，链路见上面 bg 那条 prop 的注释。
         visibility: bg ? undefined : 'hidden',
       }}
     >
