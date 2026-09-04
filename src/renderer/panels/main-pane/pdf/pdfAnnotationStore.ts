@@ -16,6 +16,10 @@ export type Bucket = {
   hl: { color: HighlightColor; width: Level };
   note: { color: NoteColor; size: Level };
   selectedId: string | null;
+  // 正在编辑正文的文字注所在页（1-based）。虚拟化窗口拿它当必保页，免得编辑中的那页被滚出
+  // 窗口卸载。**写入方在 Task 7**（文字注 focus/blur 上报）；在那之前它恒为 null，窗口逻辑
+  // 照常工作（computeWindow 对 null 的处理就是「没有额外必保页」）。
+  editingPage: number | null;
   undo: PdfAnnotationsFile[];       // 整份快照，spec §3
   redo: PdfAnnotationsFile[];
 };
@@ -26,7 +30,7 @@ export function emptyBucket(): Bucket {
   return {
     doc: null, loadError: null, saveError: null, tool: 'select', cardOpen: false,
     hl: { color: 'amber', width: 2 }, note: { color: 'ink', size: 2 },
-    selectedId: null, undo: [], redo: [],
+    selectedId: null, editingPage: null, undo: [], redo: [],
   };
 }
 

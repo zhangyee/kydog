@@ -12,7 +12,8 @@ import { PdfToolbar } from './PdfToolbar';
 import { pdfSaveScheduler } from './saveScheduler';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage, type PageRect } from './pageReadout';
-import type { PageSize } from './pageLayout';
+import { unitLayout, type PageSize } from './pageLayout';
+import { computeWindow, type WindowResult } from './pageWindow';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -90,6 +91,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const [numPages, setNumPages] = useState(0);
   const [sizes, setSizes] = useState<PageSize[] | null>(null); // null = 还没预取完；sizes[n-1] 对应第 n 页
   const [currentPage, setCurrentPage] = useState(1);
+  // 虚拟化窗口的输入：视口在**内容坐标**（scale 1 单位）里的位置，以及视口高度（CSS px）。
+  //
+  // 为什么记 scrollTop / visualScale 而不是 scrollTop 本身：缩放是按鼠标锚点回算滚动位置的
+  // （见下方 useLayoutEffect），所以捏合时 scrollTop 每帧都被改写，改写量正比于滚动的绝对
+  // 位置 —— 长文档翻到第 100 页时，一帧的差值就有好几页。而喂窗口的这个值必然落后一帧
+  // （scroll 事件按 rAF 节流回来），于是手势期间窗口一直算在别的页上，把正看着的这页卸掉。
+  // 实测过：25 帧的捏合里有 24 帧可见页身上没有 canvas，整个手势屏幕是空白的。
+  //
+  // 换成内容坐标就没有这个问题：锚点缩放的定义就是「锚点下的内容点不动」，所以内容坐标每帧
+  // 只挪 focal·(1 − 1/f)/scale，几个 pt 而已，与滚动的绝对位置无关。落后一帧也无所谓。
+  // 读的时候必须拿 el.scrollTop 配 visualScaleRef（DOM 当前反映的那个缩放），不能配将要
+  // 提交的新缩放——两者在同一次 commit 里一起变，读到的永远是自洽的一对。
+  const [contentTop, setContentTop] = useState(0);
+  const [clientHeight, setClientHeight] = useState(0);
   const pageProxies = useRef<Record<number, PageProxyLike>>({});
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
   const readoutRaf = useRef<number | null>(null);
@@ -147,6 +162,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       readoutRaf.current = null;
       const el = scrollRef.current;
       if (!el) return;
+      // 顺路把滚动几何记进 state：窗口要靠它算。挤在同一个 rAF 里读，不额外触发一次重排。
+      setContentTop(el.scrollTop / visualScaleRef.current);
+      setClientHeight(el.clientHeight);
       const top = el.getBoundingClientRect().top;
       const rects: PageRect[] = Array.from(el.querySelectorAll<HTMLElement>('[data-pdf-layer="stable"] [data-pdf-page]'))
         .map((node) => {
@@ -175,14 +193,38 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   layersRef.current = layers;
   const visualScaleRef = useRef(visualScale);
   visualScaleRef.current = visualScale;
-  const numPagesRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const commitTimer = useRef<number | null>(null);
   const promoteTimer = useRef<number | null>(null);
-  const progress = useRef<{ id: number; done: number }>({ id: -1, done: 0 }); // 新层渲染进度
+  // 新层渲染进度：按页号存，不是计数——同一页 onRenderError 之后又 onRenderSuccess 不能重复计数
+  const progress = useRef<{ id: number; done: Set<number> }>({ id: -1, done: new Set() });
   const focal = useRef({ x: 0, y: 0 });       // 缩放锚点：鼠标相对滚动视口的位置
   // 每帧缩放前的快照，供缩放后按锚点回算滚动位置
   const zoomAnchor = useRef<{ prevScale: number; sl: number; st: number } | null>(null);
+
+  // 每页顶边偏移与内容总高，按预取到的页尺寸算——虚拟化之后窗口外的行没有内容可量，
+  // 只能算（pageLayout.ts）。
+  //
+  // 已知误差：sizes 里可能混着占位尺寸。某页预取失败时 prefetchPageSizes 用上一页（首页失败
+  // 则用 FALLBACK_PAGE_SIZE）顶上，占位与真实高度之差会让**该页之后所有页**的 tops 带一个
+  // 恒定偏移，表现为滚过那一页之后页与视口错开一点、窗口偏了一格。失败页本来就拿不到真实
+  // 尺寸，这里没法修；记在这里是免得下次把它当成布局 bug 从头查一遍。
+  const layout = useMemo(() => (sizes ? unitLayout(sizes, PAGE_GAP, PAGE_PAD) : null), [sizes]);
+
+  // Task 7 之前这里恒为 null（store 里有槽位、还没有写入方），窗口逻辑照常工作。
+  const editingPage = usePdfAnnotationStore((s) => s.buckets[tab.id]?.editingPage ?? null);
+
+  // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
+  const win = useMemo<WindowResult>(() => {
+    if (!sizes || !layout) return { pages: new Set(), visible: new Set(), rasterScale: visualScale };
+    return computeWindow({
+      sizes, tops: layout.tops, scrollTop: contentTop * visualScale, clientHeight,
+      visualScale, dpr: window.devicePixelRatio, columns: 1, editingPage,
+    });
+  }, [sizes, layout, contentTop, clientHeight, visualScale, editingPage]);
+  // onWheel / onPageSettled 都挂在 effect 或回调里，闭包拿不到最新的 win，用 ref 镜像
+  const winRef = useRef(win);
+  winRef.current = win;
 
   // 加载 PDF 字节
   useEffect(() => {
@@ -238,14 +280,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     setLayers((cur) => (cur.length > 1 ? [cur[cur.length - 1]] : cur));
   }, []);
 
-  // 新层某一页渲染结束（成功或失败都计入）；全部页就绪即顶替
-  const onPageSettled = useCallback((layerId: number) => {
+  // 新层某一页渲染结束（成功或失败都计入）；**可见页**全部就绪即顶替。
+  // 不能再按 numPages 判定：虚拟化之后窗口外的页压根不挂载，那个数永远凑不齐，每次缩放都要
+  // 卡满 PROMOTE_TIMEOUT 才顶替。也不按整个窗口判定：窗口里还有预取页，它们画完与否用户看不见，
+  // 等它们只会让顶替更晚。
+  const onPageSettled = useCallback((layerId: number, page: number) => {
     const cur = layersRef.current;
     const incoming = cur.length > 1 ? cur[cur.length - 1] : null;
     if (!incoming || incoming.id !== layerId) return; // 只统计后台新层
-    if (progress.current.id !== layerId) progress.current = { id: layerId, done: 0 };
-    progress.current.done += 1;
-    if (numPagesRef.current > 0 && progress.current.done >= numPagesRef.current) promote();
+    const need = winRef.current.visible;              // 读 ref：渲染期间用户可能已经滚走了
+    if (!need.has(page)) return;
+    if (progress.current.id !== layerId) progress.current = { id: layerId, done: new Set() };
+    const done = progress.current.done;
+    done.add(page);
+    if (need.size > 0 && [...need].every((p) => done.has(p))) promote();
   }, [promote]);
 
   // 触摸板捏合缩放：Chromium 把捏合转成 ctrl+wheel
@@ -275,14 +323,16 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       commitTimer.current = window.setTimeout(() => {
         commitTimer.current = null;
         const stable = layersRef.current[0];
-        const target = targetScale.current;
+        // 用窗口算出来的栅格分辨率，不是视觉缩放：视觉超出预算上界的那部分由外层 CSS zoom
+        // （下面的 visualScale / layer.scale）补，表现为「放到很大只是变糊」，而不是把位图撑爆。
+        const target = winRef.current.rasterScale;
         if (Math.abs(target - stable.scale) < 0.001) {
           setLayers([stable]); // 已是该缩放，丢弃任何未完成的新层
           return;
         }
         layerSeq.current += 1;
         const incoming: Layer = { id: layerSeq.current, scale: target };
-        progress.current = { id: incoming.id, done: 0 };
+        progress.current = { id: incoming.id, done: new Set() };
         setLayers([stable, incoming]);
         if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
         promoteTimer.current = window.setTimeout(promote, PROMOTE_TIMEOUT);
@@ -298,6 +348,18 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
     };
   }, [tab.status, promote, updateReadout]);
+
+  // 视口尺寸变了（拖窗、开合侧栏）窗口也要重算——这时没有滚动事件，updateReadout 不会跑
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setClientHeight(el.clientHeight);
+      setContentTop(el.scrollTop / visualScaleRef.current);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tab.status]);
 
   useEffect(() => { updateReadout(); }, [visualScale, layers, numPages, updateReadout]);
 
@@ -355,7 +417,6 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
             loading={null}
             error={null}
             onLoadSuccess={(pdf) => {
-              numPagesRef.current = pdf.numPages;
               setNumPages(pdf.numPages);
               // 预取全部页的 scale 1 尺寸：解析页字典，不栅格化。虚拟化要靠它给窗口外的行
               // 精确高度，顺带把 page proxy 填满——ensureLines 原先等 <Page onLoadSuccess>，
@@ -407,26 +468,38 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                       padding: `${PAGE_PAD * layer.scale}px 0`,
                     }}
                   >
-                    {Array.from({ length: numPages }, (_, i) => {
-                      const n = i + 1;
-                      const size = sizes?.[n - 1];
+                    {/* 页行始终在 DOM 且显式给出高宽（不再靠 <Page> 撑起来）：窗口外的空行也占住
+                        正确的位置，scrollHeight 从第一帧起就是终值，滚动条不会边滚边变长。
+                        只有窗口内的行才挂 <Page>（真正的 canvas 与栅格化开销）。 */}
+                    {sizes && layout && sizes.map((size, k) => {
+                      const n = k + 1;
+                      const mounted = win.pages.has(n);
                       return (
-                        <div key={n} data-pdf-page={n} style={{ position: 'relative' }}>
-                          <Page
-                            pageNumber={n}
-                            scale={layer.scale}
-                            renderTextLayer={false}
-                            renderAnnotationLayer={false}
-                            className="shadow-md"
-                            onLoadSuccess={(p) => { pageProxies.current[n] = p; }}
-                            onRenderSuccess={() => onPageSettled(layer.id)}
-                            onRenderError={() => onPageSettled(layer.id)}
-                          />
-                          {idx === 0 && size && (
-                            <PdfAnnotationLayer
-                              tabId={tab.id} page={n} pageWidth={size.w} pageHeight={size.h}
-                              layerScale={layer.scale} ensureLines={ensureLines}
-                            />
+                        <div
+                          key={n}
+                          data-pdf-page={n}
+                          data-pdf-mounted={mounted ? '1' : undefined}
+                          style={{ height: size.h * layer.scale, width: size.w * layer.scale, flexShrink: 0 }}
+                        >
+                          {mounted && (
+                            <div style={{ position: 'relative' }}>
+                              <Page
+                                pageNumber={n}
+                                scale={layer.scale}
+                                renderTextLayer={false}
+                                renderAnnotationLayer={false}
+                                className="shadow-md"
+                                onLoadSuccess={(p) => { pageProxies.current[n] = p; }}
+                                onRenderSuccess={() => onPageSettled(layer.id, n)}
+                                onRenderError={() => onPageSettled(layer.id, n)}
+                              />
+                              {idx === 0 && (
+                                <PdfAnnotationLayer
+                                  tabId={tab.id} page={n} pageWidth={size.w} pageHeight={size.h}
+                                  layerScale={layer.scale} ensureLines={ensureLines}
+                                />
+                              )}
+                            </div>
                           )}
                         </div>
                       );

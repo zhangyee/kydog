@@ -16,6 +16,38 @@ export function buildTextPdf(): Buffer {
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
     `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`,
   ];
+  return assemble(objs);
+}
+
+/**
+ * 页数与页尺寸都可给的多页 PDF，每页只写一行页码——虚拟化用例要的是「页够多、页够大」，
+ * 不需要文本几何精度（那是 buildTextPdf 的活）。对象编号：1 Catalog、2 Pages、3 Font，
+ * 4 起是 count 个页对象，再往后是它们各自的内容流。
+ */
+export function buildPagedPdf(count: number, w: number, h: number): Buffer {
+  const firstPage = 4;
+  const firstContent = firstPage + count;
+  const kids = Array.from({ length: count }, (_, i) => `${firstPage + i} 0 R`).join(' ');
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${kids}] /Count ${count} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  for (let i = 0; i < count; i++) {
+    objs.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] `
+      + `/Resources << /Font << /F1 3 0 R >> >> /Contents ${firstContent + i} 0 R >>`,
+    );
+  }
+  for (let i = 0; i < count; i++) {
+    const content = `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
+    objs.push(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`);
+  }
+  return assemble(objs);
+}
+
+/** objs[i] 是对象 i+1 的正文；补上头、xref 与 trailer。自带正确偏移，pdf.js 不用走 recovery。 */
+function assemble(objs: string[]): Buffer {
   let out = '%PDF-1.4\n';
   const offsets: number[] = [];
   objs.forEach((body, i) => {

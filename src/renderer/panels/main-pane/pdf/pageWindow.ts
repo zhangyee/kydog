@@ -18,7 +18,11 @@ export type WindowInput = {
   budgetPx?: number;           // 默认 WINDOW_BUDGET_PX
 };
 
-export type WindowResult = { pages: Set<number>; rasterScale: number };
+export type WindowResult = {
+  pages: Set<number>;    // 要挂载的页（可见 ∪ editingPage ∪ 预算内的预取页）
+  visible: Set<number>;  // 仅与视口相交的页；双缓冲按它判定顶替
+  rasterScale: number;
+};
 
 /**
  * 窗口与栅格分辨率一起算出来（spec §8.2）。
@@ -33,7 +37,7 @@ export type WindowResult = { pages: Set<number>; rasterScale: number };
 export function computeWindow(i: WindowInput): WindowResult {
   const n = i.sizes.length;
   const budget = i.budgetPx ?? WINDOW_BUDGET_PX;
-  if (n === 0) return { pages: new Set(), rasterScale: i.visualScale };
+  if (n === 0) return { pages: new Set(), visible: new Set(), rasterScale: i.visualScale };
 
   const s = i.visualScale;
   const top = i.scrollTop;
@@ -52,6 +56,10 @@ export function computeWindow(i: WindowInput): WindowResult {
   }
   // 视口整个落在页间留白或首尾留白里：取最近的一页，不返回空集（返回空集会让整屏没有内容）
   if (must.size === 0) must.add(nearest);
+  // visible 在加 editingPage 之前定格：editingPage 只是「钉住别卸载」，不是屏幕上看得见的东西。
+  // 双缓冲的顶替条件按 visible 判定，把 editingPage 算进去就可能永远等一页视口外的渲染回调，
+  // 每次缩放都卡满 PROMOTE_TIMEOUT。（留白兜底挑出来的 nearest 算可见：那一页就是屏幕上的内容。）
+  const visible = new Set(must);
   if (i.editingPage != null && i.editingPage >= 1 && i.editingPage <= n) must.add(i.editingPage);
 
   // rasterScale：反解让必保集合恰好装进预算的上限 cap，即 A·(cap·dpr)²·columns = budget。
@@ -97,5 +105,5 @@ export function computeWindow(i: WindowInput): WindowResult {
     turnHi = !turnHi;
   }
 
-  return { pages, rasterScale };
+  return { pages, visible, rasterScale };
 }

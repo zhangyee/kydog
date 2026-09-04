@@ -64,6 +64,29 @@ describe('computeWindow', () => {
     expect(r.pages.has(1)).toBe(true);
   });
 
+  it('visible 不含 editingPage（它可能在视口外，不该拖住双缓冲顶替）', () => {
+    const r = computeWindow(input({ sizes: pages(500), scrollTop: 300000, editingPage: 1 }));
+    expect(r.pages.has(1)).toBe(true);
+    expect(r.visible.has(1)).toBe(false);
+    expect(r.visible.size).toBeGreaterThan(0);
+  });
+
+  it('visible 是 pages 的子集，且只含与视口相交的页', () => {
+    const sizes = pages(50);
+    const { tops } = unitLayout(sizes, 16, 24);
+    const r = computeWindow(input({ sizes, scrollTop: tops[9] }));
+    for (const p of r.visible) expect(r.pages.has(p)).toBe(true);
+    // 视口 [tops[9], tops[9] + 900]：第 10 页（顶边正好在视口顶）与第 11 页各占一段
+    expect([...r.visible].sort((a, b) => a - b)).toEqual([10, 11]);
+  });
+
+  it('视口落在留白里时 visible 不为空（否则顶替条件永远凑不齐）', () => {
+    const sizes = pages(5);
+    const { tops } = unitLayout(sizes, 16, 24);
+    const r = computeWindow(input({ sizes, scrollTop: tops[1] + 842 + 4, clientHeight: 8 }));
+    expect(r.visible.size).toBe(1);
+  });
+
   it('双栏时同一预算下 rasterScale 更低', () => {
     const sizes = pages(20);
     const one = computeWindow(input({ sizes, visualScale: 5, columns: 1 }));
