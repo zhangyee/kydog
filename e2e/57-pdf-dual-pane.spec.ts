@@ -722,6 +722,87 @@ test('57-pdf-dual-pane: 进入对照时按需 fit-width，退出还原（连位�
   }
 });
 
+test('57-pdf-dual-pane: 自动退出也还原缩放，且与收掉 dual 落在同一次 commit 里', async () => {
+  // 两件事一起守。
+  //
+  // 一是**自动退出也要还原**：边车换了版本（focus 重探撞见 mismatch）时 setLoaded 会把 dual
+  // 收掉，用户没按过任何键，缩放不还原就被丢在双栏的 fit-width 小画面上。
+  //
+  // 二是**还原的时机**：收掉 dual 的那次 commit 已经把版面画成「单栏 + 还没还原的小缩放」，
+  // 还原必须落在同一次 commit 里，中间隔一次渲染机会用户就会看到一帧小画面再跳回去。
+  //
+  // 同任务这条今天由两条协议层事实保证，不靠 effect 用哪一种：zustand 读值走
+  // useSyncExternalStore，React 的 forceStoreRerender 无条件用 SyncLane；而 commit 末尾会对
+  // SyncLane 那批更新同步冲刷 passive effect（react-dom-client 里
+  // `0 !== (pendingEffectsLanes & 3) && flushPendingEffects()`）。所以 useEffect 与
+  // useLayoutEffect 在这条路径上观察不出差别（两种写法都实测过）。这条用例守的是那个**结果**：
+  // 还原一旦退化成晚一个任务（改用 setTimeout / rAF，或还原不再由那个 effect 负责），它就红。
+  //
+  // 观测手段是 MutationObserver：它的回调是**微任务**，排在「产生这批 DOM 改动的那个任务」的
+  // 微任务检查点上，一定早于任何后续宏任务。所以「看到右格消失的那一批 mutation 时外层 zoom
+  // 已经是还原后的值」等价于「两次改动同任务、中间没有渲染机会」。不看帧、不赌毫秒。
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    const readout = pane.getByTestId('pdf-readout');
+    const before = await readout.textContent();
+
+    await enterDual(page, pane);
+    // 提交收敛之后位图与显示同档、外层 zoom 回到 1——下面的判据就建立在这个前提上：还没还原时
+    // zoom 恒为 1，还原了就是 1 / fit。fit 不猜数字，从协议层事实现推：对照期间清晰层左格
+    // canvas 的 CSS 宽就是 size.w × layer.scale。
+    await expect.poll(
+      () => stableLayerZoom(page, paneSel),
+      { timeout: 15000, message: '等进对照后的清晰层提交，外层 zoom 收敛回 1' },
+    ).toBeCloseTo(1, 2);
+    const duringW = await stableCanvasWidth(page, paneSel);
+    expect(duringW, '对照期间左格 canvas 应当已经定好 CSS 尺寸').toBeGreaterThan(0);
+
+    // 把边车的 source.sha256 改成对不上的值：下一次重探 checkVersion 判 mismatch，setLoaded
+    // 自动收 dual。边车本身仍是合法 JSON——要走的是 mismatch 那条路，不是 loadError。
+    const zhPath = path.join(projectPath, ZH_REL);
+    const zh = JSON.parse(await fs.readFile(zhPath, 'utf8')) as { source: { sha256: string } };
+    zh.source.sha256 = 'f'.repeat(64);
+    await fs.writeFile(zhPath, JSON.stringify(zh, null, 2));
+
+    // 装观察者与发 focus 在同一次 evaluate 里：重探要走一个 IPC 往返，绝无可能在这中间落地，
+    // 「观察者先就位」因此是确定的，不靠抢时间窗口。
+    await page.evaluate((sel) => {
+      const w = window as unknown as { __kydogExitZoom?: number | null };
+      w.__kydogExitZoom = null;
+      const paneEl = document.querySelector(sel);
+      if (!paneEl) throw new Error('找不到 PDF pane');
+      const obs = new MutationObserver(() => {
+        if (w.__kydogExitZoom != null) return;
+        if (paneEl.querySelectorAll('[data-pdf-right="1"]').length > 0) return; // 还没收掉
+        const layer = paneEl.querySelector('[data-pdf-layer="stable"]');
+        if (!layer) return;
+        w.__kydogExitZoom = parseFloat(getComputedStyle(layer).zoom);
+        obs.disconnect();
+      });
+      obs.observe(paneEl, { childList: true, subtree: true, attributes: true });
+      window.dispatchEvent(new Event('focus'));
+    }, paneSel);
+
+    await expect(pane.locator('[data-pdf-right="1"]')).toHaveCount(0);
+    await expect(pane.getByText(/另一个版本的 PDF/)).toBeVisible();
+    await expect(readout, '自动退出也要把缩放还原回进入对照前').toHaveText(before!);
+
+    const zoomAtExit = await page.evaluate(
+      () => (window as unknown as { __kydogExitZoom?: number | null }).__kydogExitZoom,
+    );
+    expect(zoomAtExit, '没抓到「右格消失」那一批 mutation').not.toBeNull();
+    expect(zoomAtExit!, '自动退出的还原必须与收掉 dual 落在同一次 commit 里，不能晚一个任务')
+      .toBeCloseTo(PAGE_W / duringW, 1);
+  } finally {
+    await teardown(launched);
+  }
+});
+
 test('57-pdf-dual-pane: 捏合过之后再按 L，不拿陈旧锚点把视图弹回去', async () => {
   // 这条守的是「改缩放的路径必须走同一个入口」：进/出对照也是一次缩放改动，既要显式清掉上一次
   // 捏合留下的回算锚点，也要排一次清晰层提交。现有那条 fit-width 用例的顺序是「进对照 → 捏合」，

@@ -584,6 +584,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 判据是 store 里那个「已经不在对照中、但还留着一份进入前的缩放」的瞬态：dual 收掉的那一刻
   // 它成立，这里消费掉（clearPrevScale）并还原，此后 `dual === false && prevScale !== null`
   // 就不再稳定存在。谁把 dual 收掉都行，还原都会发生。
+  //
+  // passive useEffect 就够，**不需要** useLayoutEffect。担心的是这个：收掉 dual 的那次 commit
+  // 已经把版面画成「单栏 + 还没还原的 fit-width 小缩放」，还原若晚一个任务，中间就隔着一次
+  // 渲染机会，用户会看到一帧小画面再跳回去。它的前提是 passive effect 会被排进 Scheduler 的
+  // 宏任务——在这条路径上不成立，两条协议层事实：
+  //   1. dual / prevScale 都出自 zustand，读它们走 useSyncExternalStore，而 React 的
+  //      forceStoreRerender **无条件**用 SyncLane（react-dom-client.development.js 里的
+  //      `scheduleUpdateOnFiber(root, fiber, 2)`），与触发它的是不是 discrete 事件无关——按 L
+  //      与自动退出（`pdf.translation.load` 续体里的 setLoaded）走的是同一条。
+  //   2. commit 末尾对 SyncLane 那批更新**同步**冲刷 passive effect（同文件的
+  //      `0 !== (pendingEffectsLanes & 3) && flushPendingEffects()`）。
+  // 收 dual 与还原因此恒在同一个任务里跑完，中间没有渲染机会可插。e2e「自动退出也还原缩放，
+  // 且与收掉 dual 落在同一次 commit 里」把这条同任务性质钉住了：真退化成晚一个任务（改用
+  // setTimeout / rAF 还原，或还原不再由这个 effect 负责），那条会红。
   const pendingRestore = usePdfTranslationStore((s) => s.buckets[tab.id]?.prevScale ?? null);
   useEffect(() => {
     if (dual || pendingRestore == null) return;
