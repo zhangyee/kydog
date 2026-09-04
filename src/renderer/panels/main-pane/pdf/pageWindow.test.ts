@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { unitLayout, PAGE_GAP, PAGE_PAD, type PageSize } from './pageLayout';
-import { computeWindow, sameWindow, WINDOW_BUDGET_PX, type WindowInput } from './pageWindow';
+import { computeWindow, sameWindow, COLUMN_BUDGET_PX, type WindowInput } from './pageWindow';
 
 const A4: PageSize = { w: 595, h: 842 };
 const pages = (n: number): PageSize[] => Array.from({ length: n }, () => A4);
@@ -9,14 +9,14 @@ function input(over: Partial<WindowInput> & { sizes: PageSize[] }): WindowInput 
   const { tops } = unitLayout(over.sizes, PAGE_GAP, PAGE_PAD);
   return {
     tops, scrollTop: 0, clientHeight: 900, visualScale: 1, dpr: 2,
-    columns: 1, editingPage: null, ...over,
+    editingPage: null, ...over,
   };
 }
 
-/** 窗口内所有页所有栏的像素总和 */
-function used(r: { pages: Set<number>; rasterScale: number }, sizes: PageSize[], dpr: number, columns: number) {
+/** 窗口内一栏的像素总和（columns 已不进入 computeWindow，这里就是总用量） */
+function used(r: { pages: Set<number>; rasterScale: number }, sizes: PageSize[], dpr: number) {
   let sum = 0;
-  for (const p of r.pages) sum += sizes[p - 1].w * sizes[p - 1].h * (r.rasterScale * dpr) ** 2 * columns;
+  for (const p of r.pages) sum += sizes[p - 1].w * sizes[p - 1].h * (r.rasterScale * dpr) ** 2;
   return sum;
 }
 
@@ -37,14 +37,14 @@ describe('computeWindow', () => {
     const sizes = pages(1000);
     const r = computeWindow(input({ sizes, scrollTop: 200000 }));
     expect(r.pages.size).toBeLessThan(30);
-    expect(used(r, sizes, 2, 1)).toBeLessThanOrEqual(WINDOW_BUDGET_PX);
+    expect(used(r, sizes, 2)).toBeLessThanOrEqual(COLUMN_BUDGET_PX);
   });
 
   it('高缩放：rasterScale 被预算封顶，低于 visualScale', () => {
     const sizes = pages(20);
     const r = computeWindow(input({ sizes, visualScale: 5, scrollTop: 0 }));
     expect(r.rasterScale).toBeLessThan(5);
-    expect(used(r, sizes, 2, 1)).toBeLessThanOrEqual(WINDOW_BUDGET_PX);
+    expect(used(r, sizes, 2)).toBeLessThanOrEqual(COLUMN_BUDGET_PX);
   });
 
   it('必保集合从 2 页变 3 页时，rasterScale 相应降低而不是超额', () => {
@@ -56,7 +56,7 @@ describe('computeWindow', () => {
     const three = computeWindow(input({ sizes, scrollTop: boundary, visualScale: 5, editingPage: 1 }));
 
     expect(three.rasterScale).toBeLessThan(two.rasterScale);
-    expect(used(three, sizes, 2, 1)).toBeLessThanOrEqual(WINDOW_BUDGET_PX);
+    expect(used(three, sizes, 2)).toBeLessThanOrEqual(COLUMN_BUDGET_PX);
   });
 
   it('editingPage 必在窗口内，哪怕它离视口很远', () => {
@@ -87,13 +87,10 @@ describe('computeWindow', () => {
     expect(r.visible.size).toBe(1);
   });
 
-  it('双栏时同一预算下 rasterScale 更低', () => {
-    const sizes = pages(20);
-    const one = computeWindow(input({ sizes, visualScale: 5, columns: 1 }));
-    const two = computeWindow(input({ sizes, visualScale: 5, columns: 2 }));
-    expect(two.rasterScale).toBeLessThan(one.rasterScale);
-    expect(used(two, sizes, 2, 2)).toBeLessThanOrEqual(WINDOW_BUDGET_PX);
-  });
+  // 栏数不影响 rasterScale（v6 订正）：预算口径是「每栏」，每栏各自反解 cap，互不拖累。
+  // computeWindow / WindowInput 已经不接受 columns 参数——栏数根本不进入这条计算，
+  // 所以「双栏时 rasterScale 更低」这个维度不存在了，没有对应的用例可写；这条不变量由
+  // COLUMN_BUDGET_PX 头部注释与 cap 公式（sqrt(budget / A) / dpr，不含 columns）保证。
 
   it('预算被调到极小时窗口仍不为空', () => {
     const r = computeWindow(input({ sizes: pages(100), scrollTop: 50000, budgetPx: 1000 }));
@@ -118,7 +115,7 @@ describe('computeWindow', () => {
     // 0.25 缩放 / dpr 1：单页像素只有 3.13e4，预算装得下 1532 页——只按预算会把全部 800 页挂上
     const r = computeWindow(input({ sizes, visualScale: 0.25, dpr: 1, scrollTop: 20000 }));
     expect(r.pages.size).toBeLessThanOrEqual(14);
-    expect(used(r, sizes, 1, 1) / WINDOW_BUDGET_PX).toBeLessThan(0.02); // 远没花光预算，是空间上界在收手
+    expect(used(r, sizes, 1) / COLUMN_BUDGET_PX).toBeLessThan(0.02); // 远没花光预算，是空间上界在收手
 
     // 窗口里每一页都与 [视口顶 − 视口高, 视口底 + 视口高] 相交（必保集合这里恰好也在带内）
     const bandTop = 20000 - 900;

@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
 import { buildPagedPdf } from './fixtures/textPdf';
-import { WINDOW_BUDGET_PX } from '../src/renderer/panels/main-pane/pdf/pageWindow';
+import { COLUMN_BUDGET_PX } from '../src/renderer/panels/main-pane/pdf/pageWindow';
 import { PAGE_GAP, PAGE_PAD } from '../src/renderer/panels/main-pane/pdf/pageLayout';
 
 // 这套用例专用的 fixture 尺寸：4800 × 500 pt。55 那份 300 × 400 的两行正文撑不起来——
@@ -115,7 +115,7 @@ test('56-pdf-virtualization: 长文档只挂载窗口内的页，未挂载的行
       (cs) => cs.reduce((sum, c) => sum + (c as HTMLCanvasElement).width * (c as HTMLCanvasElement).height, 0),
     );
     expect(totalPx).toBeGreaterThan(0);
-    expect(totalPx).toBeLessThanOrEqual(WINDOW_BUDGET_PX);
+    expect(totalPx).toBeLessThanOrEqual(COLUMN_BUDGET_PX);
 
     // 4. 未挂载的行占住正确高度：scrollHeight 一开始就是终值，滚动条不会边滚边变长
     const expected = PAGE_PAD * 2 + LONG_PAGES * PAGE_H + (LONG_PAGES - 1) * PAGE_GAP;
@@ -152,12 +152,12 @@ test('56-pdf-virtualization: 高缩放下 canvas 位图被预算封顶，版面�
     await expect.poll(width, { timeout: 15000 }).toBeGreaterThan(at1);
     const at5 = await width();
 
-    // 视觉放大了 5 倍，位图宽度不该也是 5 倍——它被 WINDOW_BUDGET_PX 封住了
+    // 视觉放大了 5 倍，位图宽度不该也是 5 倍——它被 COLUMN_BUDGET_PX 封住了
     expect(at5).toBeLessThan(at1 * 5);
     // 封顶的位置就是预算本身：必保集合（这里只有第 1 页）恰好铺满预算
     const px = await canvas.evaluate((c) => (c as HTMLCanvasElement).width * (c as HTMLCanvasElement).height);
-    expect(px).toBeLessThanOrEqual(WINDOW_BUDGET_PX);
-    expect(px).toBeGreaterThan(WINDOW_BUDGET_PX * 0.95);
+    expect(px).toBeLessThanOrEqual(COLUMN_BUDGET_PX);
+    expect(px).toBeGreaterThan(COLUMN_BUDGET_PX * 0.95);
     // 差额由外层 CSS zoom 补：版面还是实打实的 5 倍，只是糊一点
     const box = (await row.boundingBox())!;
     expect(Math.abs(box.width - PAGE_W * 5)).toBeLessThan(10);

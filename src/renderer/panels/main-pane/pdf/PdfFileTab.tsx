@@ -302,7 +302,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     setCurrentPage(mostVisiblePage(layout.tops, sizes, visualScale, top, top + clientHeight.current));
     const next = computeWindow({
       sizes, tops: layout.tops, scrollTop: top, clientHeight: clientHeight.current,
-      visualScale, dpr: window.devicePixelRatio, columns: 1, editingPage,
+      visualScale, dpr: window.devicePixelRatio, editingPage,
     });
     setWin((prev) => (sameWindow(prev, next) ? prev : next));
   }, [sizes, layout, visualScale, editingPage]);

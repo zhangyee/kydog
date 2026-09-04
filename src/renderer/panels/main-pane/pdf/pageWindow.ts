@@ -1,11 +1,13 @@
 import type { PageSize } from './pageLayout';
 
 /**
- * 窗口内所有页所有栏的像素上限。**不是恒等式**——真实的界有三档（spec §8.2「v4 订正」）：
+ * 窗口内**每一栏**（所有页在该栏上叠加）的像素上限——不是所有栏合计。总量 = 栏数 × 这个值，这
+ * 本来就是事实：两倍的画面就是两倍的位图（v6 订正，spec §8.2「v6 订正」；Yee 2026-09-04 拍板）。
+ * **不是恒等式**——真实的界有三档（spec §8.2「v4 订正」，界口径同为「每栏」）：
  *
- *   稳态（不跨页边界、且缩放至少提交过一次）  ≤ WINDOW_BUDGET_PX
- *   跨页边界 / 还没提交过缩放的初始层         ≤ 2 ×
- *   双缓冲顶替前的瞬时（两层并存）            ≤ 2 × 上面两者 → 最坏 4 ×
+ *   稳态（不跨页边界、且缩放至少提交过一次）  ≤ COLUMN_BUDGET_PX / 栏
+ *   跨页边界 / 还没提交过缩放的初始层         ≤ 2 × / 栏
+ *   双缓冲顶替前的瞬时（两层并存）            ≤ 2 × 上面两者 → 最坏 4 × / 栏
  *
  * 为什么会有 2×：`layer.scale` 只在缩放提交的那一刻被赋值，纯滚动永远不重新对账，层的初值又
  * 写死 1。于是「按一页可见时反解出的 rasterScale 栅格化，随后滚到两页都可见」这类日常路径下，
@@ -16,9 +18,11 @@ import type { PageSize } from './pageLayout';
  * 用常见情况的清晰度去换边界情况的严格性。也不用「漂移超过 X% 就重新提交」——那是阈值 proxy，
  * 而且会让每次跨页边界都重栅格化。改为把预算减半当安全余量。
  *
- * 4.8e7 px × 4 B ≈ 192 MiB 稳态、768 MiB 最坏。用真实文档量过之后可以调（spec §17 第 2 项）。
+ * 4.8e7 px × 4 B ≈ 192 MiB 稳态、768 MiB 最坏，**每栏**。多栏是这个数的整数倍，不是这个数本身
+ * 除以栏数——按栏数各开各的预算，锐利度因此与栏数无关，由构造保证。用真实文档量过之后可以调
+ * 常数本身（spec §17 第 2 项）。
  */
-export const WINDOW_BUDGET_PX = 4.8e7;
+export const COLUMN_BUDGET_PX = 4.8e7;
 
 export type WindowInput = {
   sizes: PageSize[];           // 索引 k 对应页号 k+1
@@ -27,9 +31,8 @@ export type WindowInput = {
   clientHeight: number;        // px
   visualScale: number;
   dpr: number;
-  columns: number;             // 1 = 单栏，2 = 双栏
   editingPage: number | null;  // 1-based；正在编辑文字注的页
-  budgetPx?: number;           // 默认 WINDOW_BUDGET_PX
+  budgetPx?: number;           // 默认 COLUMN_BUDGET_PX，每栏
 };
 
 export type WindowResult = {
@@ -50,7 +53,7 @@ export type WindowResult = {
  */
 export function computeWindow(i: WindowInput): WindowResult {
   const n = i.sizes.length;
-  const budget = i.budgetPx ?? WINDOW_BUDGET_PX;
+  const budget = i.budgetPx ?? COLUMN_BUDGET_PX;
   if (n === 0) return { pages: new Set(), visible: new Set(), rasterScale: i.visualScale };
 
   const s = i.visualScale;
@@ -76,16 +79,16 @@ export function computeWindow(i: WindowInput): WindowResult {
   const visible = new Set(must);
   if (i.editingPage != null && i.editingPage >= 1 && i.editingPage <= n) must.add(i.editingPage);
 
-  // rasterScale：反解让必保集合恰好装进预算的上限 cap，即 A·(cap·dpr)²·columns = budget。
-  // rasterScale = min(visualScale, cap) 之后，必保集合的像素永远 ≤ budget（等号只在
+  // rasterScale：反解让必保集合（每栏）恰好装进预算的上限 cap，即 A·(cap·dpr)² = budget。
+  // rasterScale = min(visualScale, cap) 之后，必保集合每栏的像素永远 ≤ budget（等号只在
   // visualScale ≥ cap 时取到）——所以必保集合必然装得下，不需要任何「装不下就踢页」的冲突规则。
   let A = 0;
   for (const p of must) A += i.sizes[p - 1].w * i.sizes[p - 1].h;
-  const cap = Math.sqrt(budget / (i.columns * A)) / i.dpr;
+  const cap = Math.sqrt(budget / A) / i.dpr;
   const rasterScale = Math.min(i.visualScale, cap);
 
   const px = (p: number) =>
-    i.sizes[p - 1].w * i.sizes[p - 1].h * (rasterScale * i.dpr) ** 2 * i.columns;
+    i.sizes[p - 1].w * i.sizes[p - 1].h * (rasterScale * i.dpr) ** 2;
 
   const pages = new Set(must);
   let usedPx = 0;
