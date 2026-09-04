@@ -1,4 +1,5 @@
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
+import { usePdfTranslationStore } from './pdfTranslationStore';
 
 type KeyLike = {
   key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean;
@@ -9,11 +10,26 @@ type KeyLike = {
 
 /** spec §7.6 的快捷键表。返回 true 表示已处理（调用方应 preventDefault）。 */
 export function handleAnnotationKey(e: KeyLike, tabId: string): boolean {
+  const target = e.target as { tagName?: string; blur?: () => void } | null;
+  const inText = target?.tagName === 'TEXTAREA';
+
+  // L：进 / 出双栏对照（PDF 双栏 spec §12）。它是**视图模式不是标注工具** —— 不走 setTool，
+  // 也不受标注边车加载状态的限制（标注边车坏了照样该能读译文），所以这一条排在下面那道
+  // 「标注没加载就什么都不处理」的闸**前面**。
+  // 禁用态（没有译文 / 边车有误 / 摘要对不上）按「没处理」返回 false，不 preventDefault。
+  // Task 8 会把这里换成从 PdfFileTab 传进来的 onToggleDual：进对照要按需 fit-width，那要读
+  // 滚动容器的宽度，只能在组件里做；本 task 只需要一个能端到端验的最小写入方。
+  if (!inText && !e.metaKey && !e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
+    const t = usePdfTranslationStore.getState();
+    const tb = t.buckets[tabId];
+    if (!tb?.doc || tb.loadError || tb.version === 'mismatch') return false;
+    t.setDual(tabId, !tb.dual);
+    return true;
+  }
+
   const st = usePdfAnnotationStore.getState();
   const b = st.buckets[tabId];
   if (!b?.doc || b.loadError) return false;
-  const target = e.target as { tagName?: string; blur?: () => void } | null;
-  const inText = target?.tagName === 'TEXTAREA';
   if (e.key === 'Escape') {
     if (inText) target?.blur?.();
     st.setTool(tabId, 'select');

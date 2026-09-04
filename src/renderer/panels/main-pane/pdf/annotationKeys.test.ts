@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { handleAnnotationKey } from './annotationKeys';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
+import { usePdfTranslationStore } from './pdfTranslationStore';
 import type { Highlight, PdfAnnotationsFile } from '../../../../shared/pdfSidecar';
+import type { TranslatedDoc } from '../../../../shared/zhSidecar';
 
 const T = '/p/paper.pdf';
 const EMPTY: PdfAnnotationsFile = { version: 1, pdf: 'paper.pdf', annotations: [] };
@@ -11,9 +13,16 @@ const st = () => usePdfAnnotationStore.getState();
 const key = (k: string, extra: Partial<{ metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; target: unknown }> = {}) =>
   ({ key: k, metaKey: false, ctrlKey: false, shiftKey: false, target: null, preventDefault() {}, ...extra });
 
+const ZH: TranslatedDoc = {
+  version: 1, pdf: 'paper.pdf', lang: { in: 'en', out: 'zh' },
+  blocks: [{ id: 'b1', page: 1, x: 0, y: 0, width: 10, height: 10, fontSize: 10, kind: 'text', source: 'a', target: '甲' }],
+};
+const tst = () => usePdfTranslationStore.getState();
+
 describe('handleAnnotationKey', () => {
   beforeEach(() => {
     usePdfAnnotationStore.setState({ buckets: {} });
+    usePdfTranslationStore.setState({ buckets: {} });
     st().setLoaded(T, EMPTY);
   });
 
@@ -59,5 +68,32 @@ describe('handleAnnotationKey', () => {
     st().setLoadError(T, '坏了');
     expect(handleAnnotationKey(key('h'), T)).toBe(false);
     expect(handleAnnotationKey(key('h'), '/p/other.pdf')).toBe(false);
+  });
+
+  it('L 进出双栏对照，且不动标注工具（它是视图模式不是工具）', () => {
+    tst().setLoaded(T, ZH, 'ok', 0);
+    st().setTool(T, 'highlight');
+    expect(handleAnnotationKey(key('l'), T)).toBe(true);
+    expect(tst().buckets[T].dual).toBe(true);
+    expect(st().buckets[T].tool).toBe('highlight');
+    expect(handleAnnotationKey(key('L'), T)).toBe(true);
+    expect(tst().buckets[T].dual).toBe(false);
+  });
+
+  it('没译文 / 摘要对不上 / ⌘L / 焦点在 textarea 里：L 都不处理', () => {
+    expect(handleAnnotationKey(key('l'), T)).toBe(false);      // 边车不存在
+    tst().setLoaded(T, ZH, 'mismatch', 0);
+    expect(handleAnnotationKey(key('l'), T)).toBe(false);
+    tst().setLoaded(T, ZH, 'ok', 0);
+    expect(handleAnnotationKey(key('l', { metaKey: true }), T)).toBe(false);
+    expect(handleAnnotationKey(key('l', { target: { tagName: 'TEXTAREA' } }), T)).toBe(false);
+    expect(tst().buckets[T].dual).toBe(false);
+  });
+
+  it('标注边车坏了照样能按 L —— 译文视图不该受标注加载状态牵连', () => {
+    st().setLoadError(T, '坏了');
+    tst().setLoaded(T, ZH, 'ok', 0);
+    expect(handleAnnotationKey(key('l'), T)).toBe(true);
+    expect(tst().buckets[T].dual).toBe(true);
   });
 });

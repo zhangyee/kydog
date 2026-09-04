@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
-import { filterByGeometry } from '../../../../shared/zhSidecar';
+import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { flushDrafts } from './noteDrafts';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
@@ -12,6 +12,7 @@ import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
 import { PdfSelectionBar, type Anchor } from './PdfSelectionBar';
 import { PdfToolbar } from './PdfToolbar';
+import { RightPage } from './RightPage';
 import { pdfSaveScheduler } from './saveScheduler';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage } from './pageReadout';
@@ -40,6 +41,9 @@ const EMPTY_WINDOW: WindowResult = { pages: new Set(), visible: new Set(), raste
 // 占位错了只影响那一页自己的行高，不会让后面的页整体偏移——布局模型与 DOM 行高出自同一个
 // sizes，不会互相错开。详见下面 layout 处的注释。
 export const FALLBACK_PAGE_SIZE: PageSize = { w: 595, h: 842 };
+// 没有译文块的页共用这一个空数组：RightPage 的合成 effect 以 blocks 为依赖，每页每次渲染
+// 新建一个 [] 会让它每次重渲染都重合成一遍整页位图。
+const NO_BLOCKS: Block[] = [];
 
 type Layer = { id: number; scale: number };
 
@@ -119,27 +123,75 @@ export async function prefetchPageSizes(
 }
 
 /**
- * 页格子的挂载边界：React 的 mount / unmount 正好对应 pageLifecycle 的 acquire / release，
- * effect 挂在这里最直接。
+ * 一页挂载后的两个格子：左格 = 原页（`<Page>` + 标注层），右格 = 对照时的译文底图。
+ * 同时是这一页的挂载边界：React 的 mount / unmount 正好对应 pageLifecycle 的
+ * acquire / release，effect 挂在这里最直接。
  *
  * 必须是模块级函数组件，不能定义在 PdfFileTab 内部——定义在组件体内的话每次渲染都是新的函数
  * 引用，React 会把它当成换了一个组件类型，每次渲染都触发一轮 unmount→mount，acquire/release
  * 全乱套（引用计数永远在虚假地归零又回升）。
  *
- * 只接手内层「position: relative」那个格子（Page + 标注层）；外层带 data-pdf-page、用
- * size.h/size.w 撑出行高的那层留在 PdfFileTab 里不动——那才是行高唯一的来源，Task 5 特意
- * 要求它不能被拆走、藏进子组件里看不见。
+ * 只接手两个格子本身；外层带 data-pdf-page、用 size.h/size.w 撑出行高行宽的那层留在
+ * PdfFileTab 里不动——那才是行几何唯一的来源，Plan 1 Task 6 特意要求它不能被拆走、藏进子
+ * 组件里看不见。
+ *
+ * **`<Page>` 建在这里而不是留在调用处**：右格要拷左格画完的 canvas，得有个地方存「左格已经
+ * 就绪的那个 canvas 元素」；这个状态天然是逐页逐层的，而调用处是一个 `sizes.map(...)`，
+ * 循环体里挂不了 hook。标注层反过来仍以 ReactNode 从外面传进来（`annotations`），它的一串
+ * props 因此还留在调用处看得见。
+ *
+ * **右格不 acquire lifecycle**：那个引用计数是给 `page.cleanup()` 用的，而右格根本不调
+ * pdf.js 渲染（它只从左格 canvas 拷位图）。多 acquire 一次会让页永远清理不掉。
  */
-function MountedPageCell({ n, lifecycle, children }: {
+function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, onPageLoad, onSettled, annotations }: {
   n: number;
   lifecycle: PageLifecycle;
-  children: ReactNode;
+  size: PageSize;
+  layerScale: number;
+  dual: boolean;
+  blocks: Block[];
+  onPageLoad: (p: PageProxyLike) => void;
+  onSettled: () => void;
+  /** 标注层；只有清晰层（idx 0）给，后台新层传 null。 */
+  annotations: ReactNode;
 }) {
+  const leftRef = useRef<HTMLDivElement>(null);
+  const [leftCanvas, setLeftCanvas] = useState<HTMLCanvasElement | null>(null);
+
   useEffect(() => {
     lifecycle.acquire(n);
     return () => lifecycle.release(n);
   }, [n, lifecycle]);
-  return <div style={{ position: 'relative' }}>{children}</div>;
+
+  return (
+    <>
+      {/* 左格宽度显式给出（而不是让 flex 收缩到内容宽）：行是 flex 之后，收缩到内容宽会让这个
+          格子取 canvas 的 CSS 宽（react-pdf 对它取过 floor），标注层的坐标换算基准就跟着变了。
+          写死 size.w × scale 与拆两格之前的块级布局逐像素一致。 */}
+      <div ref={leftRef} style={{ position: 'relative', width: size.w * layerScale }}>
+        <Page
+          pageNumber={n}
+          scale={layerScale}
+          renderTextLayer={false}
+          renderAnnotationLayer={false}
+          className="shadow-md"
+          onLoadSuccess={onPageLoad}
+          onRenderSuccess={() => {
+            setLeftCanvas(leftRef.current?.querySelector('canvas') ?? null);
+            onSettled();
+          }}
+          onRenderError={onSettled}
+        />
+        {annotations}
+      </div>
+      {dual && (
+        <div style={{ position: 'relative' }}>
+          <RightPage size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas} />
+          {/* Task 7：译文块（TranslationBlocks）绝对定位叠在这里 */}
+        </div>
+      )}
+    </>
+  );
 }
 
 export function PdfFileTab({ tab }: { tab: FileTab }) {
@@ -336,6 +388,22 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // Task 7 之前这里恒为 null（store 里有槽位、还没有写入方），窗口逻辑照常工作。
   const editingPage = usePdfAnnotationStore((s) => s.buckets[tab.id]?.editingPage ?? null);
+
+  // 双栏对照：本期唯一的写入方是 annotationKeys.ts 的 L 分支（工具栏三态留给 Task 8）。
+  const dual = usePdfTranslationStore((s) => s.buckets[tab.id]?.dual ?? false);
+  const translated = usePdfTranslationStore((s) => s.buckets[tab.id]?.doc ?? null);
+  // 按页分桶一次，而不是在页行的 map 里逐页 filter：filter 每次渲染都产出新数组，
+  // 会让 RightPage 的合成 effect（依赖 blocks）每次重渲染都重合成一遍整页位图。
+  const blocksByPage = useMemo(() => {
+    const m = new Map<number, Block[]>();
+    if (translated) {
+      for (const b of translated.blocks) {
+        const bucket = m.get(b.page);
+        if (bucket) bucket.push(b); else m.set(b.page, [b]);
+      }
+    }
+    return m;
+  }, [translated]);
 
   // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
   //
@@ -662,7 +730,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                   >
                     {/* 页行始终在 DOM 且显式给出高宽（不再靠 <Page> 撑起来）：窗口外的空行也占住
                         正确的位置，scrollHeight 从第一帧起就是终值，滚动条不会边滚边变长。
-                        只有窗口内的行才挂 <Page>（真正的 canvas 与栅格化开销）。 */}
+                        只有窗口内的行才挂 <Page>（真正的 canvas 与栅格化开销）。
+                        对照时行是「两页 + 一个间距」宽，两格由 flex 并排、顶对齐——对齐由行保证，
+                        不由"两格高度恰好相等"这个偶然事实保证（spec §3.1）。 */}
                     {sizes && layout && sizes.map((size, k) => {
                       const n = k + 1;
                       const mounted = win.pages.has(n);
@@ -671,27 +741,28 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                           key={n}
                           data-pdf-page={n}
                           data-pdf-mounted={mounted ? '1' : undefined}
-                          style={{ height: size.h * layer.scale, width: size.w * layer.scale, flexShrink: 0 }}
+                          style={{
+                            height: size.h * layer.scale,
+                            width: (dual ? size.w * 2 + PAGE_GAP : size.w) * layer.scale,
+                            flexShrink: 0,
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: `${PAGE_GAP * layer.scale}px`,
+                          }}
                         >
                           {mounted && (
-                            <MountedPageCell n={n} lifecycle={lifecycle.current}>
-                              <Page
-                                pageNumber={n}
-                                scale={layer.scale}
-                                renderTextLayer={false}
-                                renderAnnotationLayer={false}
-                                className="shadow-md"
-                                onLoadSuccess={(p) => { pageProxies.current[n] = p; }}
-                                onRenderSuccess={() => onPageSettled(layer.id, n)}
-                                onRenderError={() => onPageSettled(layer.id, n)}
-                              />
-                              {idx === 0 && (
+                            <MountedPageCells
+                              n={n} lifecycle={lifecycle.current} size={size} layerScale={layer.scale}
+                              dual={dual} blocks={blocksByPage.get(n) ?? NO_BLOCKS}
+                              onPageLoad={(p) => { pageProxies.current[n] = p; }}
+                              onSettled={() => onPageSettled(layer.id, n)}
+                              annotations={idx === 0 ? (
                                 <PdfAnnotationLayer
                                   tabId={tab.id} page={n} pageWidth={size.w} pageHeight={size.h}
                                   layerScale={layer.scale} ensureLines={ensureLines}
                                 />
-                              )}
-                            </MountedPageCell>
+                              ) : null}
+                            />
                           )}
                         </div>
                       );
