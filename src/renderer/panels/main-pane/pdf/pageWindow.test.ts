@@ -115,7 +115,7 @@ describe('computeWindow', () => {
   it('扩张不超出「视口上下各一个视口高度」：低缩放下窗口远小于预算装得下的页数', () => {
     const sizes = pages(800);
     const { tops } = unitLayout(sizes, PAGE_GAP, PAGE_PAD);
-    // 0.25 缩放 / dpr 1：单页像素只有 3.13e4，预算装得下 766 页——只按预算会把全部 800 页挂上
+    // 0.25 缩放 / dpr 1：单页像素只有 3.13e4，预算装得下 1532 页——只按预算会把全部 800 页挂上
     const r = computeWindow(input({ sizes, visualScale: 0.25, dpr: 1, scrollTop: 20000 }));
     expect(r.pages.size).toBeLessThanOrEqual(14);
     expect(used(r, sizes, 1, 1) / WINDOW_BUDGET_PX).toBeLessThan(0.02); // 远没花光预算，是空间上界在收手
@@ -141,11 +141,11 @@ describe('computeWindow', () => {
       }
       return max;
     };
-    // 独立验算（A4 595×842、gap 16、pad 24、视口 900、预算 2.4e7）：
-    //   缩放 1.0 / dpr 2 → 仅按预算 11 页，空间上界 5 页
-    //   缩放 0.5 / dpr 2 → 仅按预算 47 页，空间上界 8 页
-    //   缩放 0.25 / dpr 2 → 仅按预算 191 页，空间上界 14 页
-    //   缩放 0.25 / dpr 1 → 仅按预算 766 页，空间上界 14 页（dpr 只影响预算那一侧，上界不动）
+    // 独立验算（A4 595×842、gap 16、pad 24、视口 900、预算 4.8e7）：
+    //   缩放 1.0 / dpr 2 → 仅按预算 23 页，空间上界 5 页
+    //   缩放 0.5 / dpr 2 → 仅按预算 95 页，空间上界 8 页
+    //   缩放 0.25 / dpr 2 → 仅按预算 383 页，空间上界 14 页
+    //   缩放 0.25 / dpr 1 → 仅按预算 1532 页，空间上界 14 页（dpr 只影响预算那一侧，上界不动）
     expect(worst(1, 2)).toBe(5);
     expect(worst(0.5, 2)).toBe(8);
     expect(worst(0.25, 2)).toBe(14);

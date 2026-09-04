@@ -16,9 +16,9 @@ import type { PageSize } from './pageLayout';
  * 用常见情况的清晰度去换边界情况的严格性。也不用「漂移超过 X% 就重新提交」——那是阈值 proxy，
  * 而且会让每次跨页边界都重栅格化。改为把预算减半当安全余量。
  *
- * 2.4e7 px × 4 B ≈ 96 MiB 稳态、384 MiB 最坏。用真实文档量过之后可以调（spec §17 第 2 项）。
+ * 4.8e7 px × 4 B ≈ 192 MiB 稳态、768 MiB 最坏。用真实文档量过之后可以调（spec §17 第 2 项）。
  */
-export const WINDOW_BUDGET_PX = 2.4e7;
+export const WINDOW_BUDGET_PX = 4.8e7;
 
 export type WindowInput = {
   sizes: PageSize[];           // 索引 k 对应页号 k+1
