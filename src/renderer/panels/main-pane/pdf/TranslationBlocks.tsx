@@ -3,7 +3,7 @@ import type { Block } from '../../../../shared/zhSidecar';
 import { fitFontScale } from './fitFontScale';
 import { inkForBackground, toCss } from './inkForBackground';
 import type { RGB } from './pageBackground';
-import { splitPlaceholders } from './renderPlaceholders';
+import { splitPlaceholders, type Segment } from './renderPlaceholders';
 
 const MIN_RATIO = 0.5;
 const WEIGHT = (kind: Block['kind']) => (kind === 'title' ? 600 : 400);
@@ -46,19 +46,75 @@ export function fitCacheKey(
 }
 
 /**
- * 在一个 zoom:1 的隐藏宿主里量一次，得到能装进 maxH 的最大字号比例。
+ * 一个 segment 在排版上与普通正文的差别。**测量与渲染共用这一份**：measureFit 把它 Object.assign
+ * 到宿主里的 span 上，下面的渲染把它当 React style 用。
+ *
+ * 分成两份写过一次，代价是测量宿主用纯文本（`host.textContent = measureText`）、渲染却把同一
+ * 串文本切成带 italic / 等宽字体的 span——等宽字体通常更宽，含 inline-code 的块量出来的行数
+ * 少于真正画出来的行数，于是「刚好装下」的比例一渲染就溢出成块内滚动条。
+ *
+ * 写成 Record 而不是 if/else 链还有个好处：Placeholder 加了新 kind，tsc 会逼这里补上。
+ */
+const SEG_STYLE: Record<Segment['kind'], { fontStyle?: string; fontFamily?: string }> = {
+  text: {},
+  citation: {},
+  formula: { fontStyle: 'italic' },
+  'inline-code': { fontFamily: 'var(--font-mono)' },
+};
+
+/** 把 segments 按渲染时的同一套 span 结构填进测量宿主。 */
+function fillHost(host: HTMLElement, segs: Segment[]) {
+  host.textContent = '';
+  for (const s of segs) {
+    const el = document.createElement('span');
+    Object.assign(el.style, SEG_STYLE[s.kind]);
+    el.textContent = s.text;
+    host.appendChild(el);
+  }
+}
+
+/**
+ * 等这一次测量真正会用到的字体族到位。
+ *
+ * 字族从宿主与它的 span 上现读（`getComputedStyle(...).fontFamily`），不写死某一个族名：
+ * `--font-serif` 是一整串回退栈（Source Serif 4 / Noto Serif SC / Songti SC / Georgia），
+ * 拉丁文与数字实际命中的是栈里靠前的那个，只等 `"Noto Serif SC"` 等不到它；inline-code 段
+ * 用的是 `--font-mono`，更是另一条栈。`document.fonts.load` 接受完整的 font shorthand（含
+ * 整串 family list），会把其中所有匹配到的 face 一并加载。
+ *
+ * 加载失败不阻断测量：字体本来就有回退，量出来的比例可能略偏，但拒绝整块渲染更糟。
+ */
+async function awaitFonts(host: HTMLElement, weight: number, px: number, text: string) {
+  const stacks = new Set<string>([getComputedStyle(host).fontFamily]);
+  for (const el of Array.from(host.children)) stacks.add(getComputedStyle(el).fontFamily);
+  await Promise.all([...stacks].map(async (family) => {
+    try {
+      await document.fonts.load(`${weight} ${px}px ${family}`, text);
+    } catch {
+      /* 无法解析的 font shorthand / 加载失败：按回退字体量，见上 */
+    }
+  }));
+}
+
+/**
+ * 在一个隐藏宿主里量一次，得到能装进 maxH 的最大字号比例。
  *
  * 必须先等字体真的到位：@fontsource/noto-serif-sc 是 font-display: swap 且按 unicode-range
  * 分片加载（node_modules/@fontsource/noto-serif-sc/400.css 与 600.css 各自切片），不等就量的
- * 是回退字体（Source Serif 4 / Songti SC），而结果只算一次就被缓存——版面会永久错。
+ * 是回退字体，而结果只算一次就被缓存——版面会永久错。等哪些族见 awaitFonts。
  *
  * document.fonts.load 的第二个参数决定加载哪些子集，所以要传测量会真正用到的字符：这里用
  * 占位符已还原的文本（splitPlaceholders 拼接），而不是 b.target 原文——b.target 里还留着
  * `{v1}` 这样的字面 token，用它去请求字体子集，测出来的换行也是按 token 长度、不是按真实
  * 显示文本，两者在公式/引用较长时会明显偏差。
+ *
+ * 宿主的宽是**未缩放的 `b.width`**、字号是 `px * r`，两者都与当前缩放无关，量出来的比例
+ * 因此也与缩放无关（结果又只算一次就进缓存）。宿主上那个 `zoom: 1` 起不到这个作用——CSS
+ * `zoom` 是累乘继承的，写 1 只表示「不再额外缩放」，宿主仍处在层容器的 visualScale /
+ * layer.scale 之下。
  */
 async function measureFit(
-  docKey: string, b: Block, measureText: string, host: HTMLElement,
+  docKey: string, b: Block, segs: Segment[], measureText: string, host: HTMLElement,
 ): Promise<number> {
   const px = b.fontSize * SIZE_MUL(b.kind);
   const weight = WEIGHT(b.kind);
@@ -67,10 +123,10 @@ async function measureFit(
   const hit = fitCache.get(key);
   if (hit !== undefined) return hit;
 
-  await document.fonts.load(font, measureText);
   host.style.width = `${b.width}px`;
   host.style.fontWeight = String(weight);
-  host.textContent = measureText;
+  fillHost(host, segs);
+  await awaitFonts(host, weight, px, measureText);
 
   const ratio = fitFontScale((r) => {
     host.style.fontSize = `${px * r}px`;
@@ -128,9 +184,9 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Pro
       const out: Record<string, number> = {};
       for (const b of blocks) {
         if (b.target === undefined) continue;
-        const measureText = splitPlaceholders(b.target, b.placeholders ?? [])
-          .map((s) => s.text).join('');
-        out[b.id] = await measureFit(docKey, b, measureText, host);
+        const segs = splitPlaceholders(b.target, b.placeholders ?? []);
+        const measureText = segs.map((s) => s.text).join('');
+        out[b.id] = await measureFit(docKey, b, segs, measureText, host);
         if (!alive) return; // 换页/换文档中途作废：不把已经量到一半的结果落地
       }
       if (alive) setFits(out);
@@ -157,7 +213,11 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Pro
         visibility: bg ? undefined : 'hidden',
       }}
     >
-      {/* 测量宿主：zoom 1、不可见、不参与布局、不接收指针事件。量出来的比例因此与当前缩放无关。 */}
+      {/* 测量宿主：不可见、不参与布局（绝对定位）、不接收指针事件。
+          `zoom: 1` 不是「与缩放无关」的来源——CSS zoom 累乘继承，写 1 只表示「不再额外缩放」，
+          这个宿主仍处在层容器的 visualScale / layer.scale 之下；写它只是防止外面某处给宿主
+          链路加了 zoom。真正让结果与缩放无关的是 measureFit：宿主按未缩放的 b.width 定宽、
+          按 px * r 定字号，两者都不含缩放，而且结果只算一次就进 fitCache。 */}
       <div
         ref={hostRef}
         aria-hidden
@@ -186,17 +246,10 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Pro
               overflowY: 'auto', userSelect: 'text', pointerEvents: 'auto',
             }}
           >
+            {/* 与测量宿主同一份 SEG_STYLE、同一套 span 结构（见 fillHost）——两边一分家，
+                量出来的行数就不是真正画出来的行数。 */}
             {splitPlaceholders(b.target, b.placeholders ?? []).map((s, i) => (
-              <span
-                key={i}
-                style={
-                  s.kind === 'formula' ? { fontStyle: 'italic' }
-                    : s.kind === 'inline-code' ? { fontFamily: 'var(--font-mono)' }
-                      : undefined
-                }
-              >
-                {s.text}
-              </span>
+              <span key={i} style={SEG_STYLE[s.kind]}>{s.text}</span>
             ))}
           </div>
         );

@@ -161,6 +161,40 @@ async function seedFallbackBg(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// 「测量与渲染同源」那条用例的 fixture：整块译文都是一个 inline-code 占位符。
+// 渲染时它走 --font-mono，而测量宿主若拿纯文本（继承 --font-serif）去量，量到的行数会少于
+// 真正画出来的行数——等宽字体对 `i` `l` `(` `;` 这类窄字形尤其宽，这段文本刻意堆满它们，
+// 把两种字体的宽度差拉到最大。文本长度选在「按 serif 量一次就装得下、按 mono 画出来装不下」
+// 这个区间里：测量错了必然溢出成块内滚动条，测量对了必然收到装得下。
+const MONO_REL = 'inline-code.pdf';
+const MONO_BLOCK = { x: 60, y: 200, w: 460, h: 120 };
+const MONO_CODE = 'if (i < l) { i = l; } '.repeat(32);
+
+function buildMonoSidecar(pdf: Buffer): string {
+  return JSON.stringify({
+    version: 1,
+    pdf: MONO_REL,
+    lang: { in: 'en', out: 'zh' },
+    source: { sha256: createHash('sha256').update(pdf).digest('hex'), bytes: pdf.byteLength },
+    blocks: [{
+      id: 'm1', page: 1,
+      x: MONO_BLOCK.x, y: MONO_BLOCK.y, width: MONO_BLOCK.w, height: MONO_BLOCK.h,
+      fontSize: 11, kind: 'text', source: 'a code-heavy paragraph', target: '{v1}',
+      placeholders: [{ id: 'v1', kind: 'inline-code', text: MONO_CODE }],
+    }],
+  }, null, 2);
+}
+
+async function seedMono(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  const pdf = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, MONO_REL), pdf);
+  await fs.writeFile(path.join(projectPath, `.${MONO_REL}.zh.json`), buildMonoSidecar(pdf));
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 async function seedContrast(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
@@ -721,6 +755,49 @@ test('57-pdf-dual-pane: 两组主题 × 背景的对比度达标——墨色由�
     const darkContrast = await sampleContrast(page, darkSel);
     expect(darkContrast, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').not.toBeNull();
     expect(darkContrast!.ratio, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 含 inline-code 的块，量的和画的是同一套排版——不溢出', async () => {
+  // 测量宿主与渲染必须同一套 span 结构（同一份 SEG_STYLE），且要等 --font-mono 那条栈到位。
+  // 用纯文本量的话，inline-code 段按 serif 的宽度算行数，画出来却是等宽字体：行数变多，
+  // 「刚好装下」的比例一渲染就溢出成块内滚动条——而 spec 的立场是溢出只在收到下限 0.5 仍
+  // 装不下时才允许发生。这段文本离下限远得很（见 MONO_CODE 处的推算）。
+  const launched = await launchKydog({ seed: seedMono });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', MONO_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+
+    const block = page.locator(`${paneSel} [data-translation-block="m1"]`);
+    await expect(block).toHaveCount(1);
+    // 等测量真的落地：把 computed 字号除掉 rasterScale（= 块的 CSS 宽 / bbox 宽）还原成
+    // 「未缩放的 px」，它小于 11（= b.fontSize × SIZE_MUL('text')）才说明 fit 已经收下来了。
+    // 不能直接拿 computed 字号跟 11 比：对照里 rasterScale 只有 0.6 上下，朴素占位值本来就是
+    // 6.6px，那样比是恒真的，会在测量落地之前就放行（fit 仍是占位的 1，块当然「装得下」）。
+    await expect.poll(
+      async () => block.evaluate((el, bboxW) => {
+        const s = el.clientWidth / bboxW;
+        return s > 0 ? parseFloat(getComputedStyle(el).fontSize) / s : 99;
+      }, MONO_BLOCK.w),
+      { timeout: 15000, message: '等字号测量落地（这段文本按 mono 量必然要收缩，见 MONO_CODE 处推算）' },
+    ).toBeLessThan(11);
+
+    // 失败时把这几个数一并印出来：光看 scrollH > clientH 分不清是「测量用错了字体」还是
+    // 「这段文本连收到下限也装不下」。
+    const box = await block.evaluate((el) => ({
+      scrollH: el.scrollHeight, clientH: el.clientHeight, clientW: el.clientWidth,
+      chars: (el.textContent ?? '').length, fontSize: getComputedStyle(el).fontSize,
+    }));
+    expect(box.chars, '块里得真有那段代码文本').toBeGreaterThan(600);
+    expect(box.clientH, '块高应当是 bbox 高（120pt × rasterScale）那个量级').toBeGreaterThan(50);
+    // 唯一的判据：画出来的内容装得进块里。测量用 serif、渲染用 mono 时这里会明显超出。
+    expect(box.scrollH, `含 inline-code 的块不该溢出：测量与渲染必须用同一套排版 ${JSON.stringify(box)}`)
+      .toBeLessThanOrEqual(box.clientH + 1);
   } finally {
     await teardown(launched);
   }
