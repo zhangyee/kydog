@@ -4,20 +4,23 @@ import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
 import { buildPagedPdf } from './fixtures/textPdf';
 import { WINDOW_BUDGET_PX } from '../src/renderer/panels/main-pane/pdf/pageWindow';
+import { PAGE_GAP, PAGE_PAD } from '../src/renderer/panels/main-pane/pdf/pageLayout';
 
-// 这套用例专用的 fixture 尺寸：1600 × 2000 pt。55 那份 300 × 400 的两行正文撑不起来——
-// - 页面积 3.2e6 pt² 让像素预算 4.8e7 反解出的栅格上界 sqrt(4.8e7 / 3.2e6) / dpr = 3.87 / dpr
-//   落在 MAX_SCALE = 5 以内：捏到 500% 时 rasterScale 一定被咬住。同时它在 dpr ≤ 3 时都 > 1，
+// 这套用例专用的 fixture 尺寸：2400 × 500 pt。55 那份 300 × 400 的两行正文撑不起来——
+// - 页面积 1.2e6 pt² 让像素预算 2.4e7 反解出的栅格上界 sqrt(2.4e7 / 1.2e6) / dpr = 4.47 / dpr
+//   落在 MAX_SCALE = 5 以内：捏到 500% 时 rasterScale 一定被咬住。同时它在 dpr ≤ 4 时都 > 1，
 //   所以 100% 那一档不被咬，可以当干净基线。两条都与 dpr 无关，Retina 与否都成立
-//   （300 × 400 的上界是 20 / dpr，远在 5 之外，永远咬不住，测不出封顶）。
-// - 200 页让窗口在任何 dpr 下都只挂得下十几页，「裁掉了大部分」才有判据。
-const PAGE_W = 1600;
-const PAGE_H = 2000;
+//   （300 × 400 的上界是 28 / dpr，远在 5 之外，永远咬不住，测不出封顶）。
+// - 页高 500 + 页间距 16 明显小于窗口视口高（1280 × 800 的窗口里滚动区约 700 px），于是
+//   「视口上下各一个视口高度」的空间上界总能罩住可见页之外的邻页——预取真的发生，可见集是
+//   挂载集的真子集，最后那条顶替用例才练得到 promoteReady 按可见页判定这件事。
+// - 200 页让窗口在任何 dpr 下都只挂得下几页，「裁掉了大部分」才有判据。
+const PAGE_W = 2400;
+const PAGE_H = 500;
 const LONG_PAGES = 200;
-const PAGE_GAP = 16;   // 与 PdfFileTab 的同名常量对齐
-const PAGE_PAD = 24;
 const LONG_REL = 'many.pdf';
 const BIG_REL = 'big.pdf';
+const LONG_SIDECAR_REL = '.many.pdf.json';
 
 async function seedAll(home: string) {
   await seedSettings(home);
@@ -26,6 +29,11 @@ async function seedAll(home: string) {
   await fs.writeFile(path.join(projectPath, LONG_REL), buildPagedPdf(LONG_PAGES, PAGE_W, PAGE_H));
   await fs.writeFile(path.join(projectPath, BIG_REL), buildPagedPdf(1, PAGE_W, PAGE_H));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
+async function readLongSidecar(home: string): Promise<{ annotations: Array<Record<string, unknown>> } | null> {
+  try { return JSON.parse(await fs.readFile(path.join(home, 'proj', LONG_SIDECAR_REL), 'utf8')); }
+  catch { return null; }
 }
 
 async function openPdf(page: Page, pdfPath: string): Promise<Locator> {
@@ -131,7 +139,7 @@ test('56-pdf-virtualization: 高缩放下 canvas 位图被预算封顶，版面�
     const canvas = row.locator('canvas');
     const width = () => canvas.evaluate((c) => (c as HTMLCanvasElement).width);
 
-    // 100%：栅格上界 3.87 / dpr > 1，没被咬，位图就是 页宽 × dpr —— 干净基线
+    // 100%：栅格上界 4.47 / dpr > 1，没被咬，位图就是 页宽 × dpr —— 干净基线
     const dpr = await page.evaluate(() => window.devicePixelRatio);
     const at1 = await width();
     expect(Math.abs(at1 - PAGE_W * dpr)).toBeLessThan(2);
@@ -181,13 +189,13 @@ test('56-pdf-virtualization: 捏合过程中可见页一帧都不掉（窗口输
   }
 });
 
-test('56-pdf-virtualization: 编辑中的文字注滚出视口再关文件，草稿不丢', async () => {
+test('56-pdf-virtualization: 编辑中的文字注滚出视口，不失焦地走关闭链路草稿也落得了盘', async () => {
   const launched = await launchKydog({ seed: seedAll });
   const { kydogHome } = launched;
   const pdfPath = path.join(kydogHome, 'proj', LONG_REL);
   try {
     const { page } = launched;
-    let pane = await openPdf(page, pdfPath);
+    const pane = await openPdf(page, pdfPath);
     const scroll = page.locator(testIdSelector(`pdf-scroll-${pdfPath}`));
 
     await pane.getByTestId('pdf-tool-note').click();
@@ -208,13 +216,23 @@ test('56-pdf-virtualization: 编辑中的文字注滚出视口再关文件，草
     await expect(noteInput).toHaveValue('还没失焦的草稿');
     await expect(noteInput).toBeFocused();
 
-    // 环节二：关 tab 重开——textarea 卸载，草稿只能靠 Task 1 的 flushDrafts 冲进 store 才落得了盘
-    const tab = page.getByTestId(`tab-${pdfPath}`);
-    await tab.hover();
-    await page.getByTestId(`tab-close-${pdfPath}`).click();
-    await expect(tab).toHaveCount(0);
-    pane = await openPdf(page, pdfPath);
-    await expect(pane.locator('[data-pdf-page="1"] [data-testid^="pdf-note-input-"]')).toHaveValue('还没失焦的草稿');
+    // 环节二：**不失焦**地走一遍关闭链路，草稿只能靠 flushDrafts 冲进 store 才落得了盘。
+    //
+    // 关闭链路故意选 beforeunload（关窗口 / 退出应用走的就是它）而不是点 tab-close 按钮：点按钮
+    // 会先给 textarea 发一次 blur（Chromium 实测事件序 blur, click），NoteBox 的 commit() 抢在
+    // 前面就把文本写进 store、把草稿表清空了，等 flushDrafts 跑到时是一次空转——那样这条用例
+    // 测的其实是 blur → commit，把 PdfFileTab 里的 flushDrafts 整行删掉它照样绿。
+    // beforeunload 全程不碰焦点：先断言焦点还在（草稿仍只存在于模块级 Map 里），再派发事件，
+    // 落盘就只剩 flushDrafts 这一条路。
+    await expect(noteInput).toBeFocused();
+    await page.evaluate(() => window.dispatchEvent(new Event('beforeunload')));
+    // 轮询的是文本本身，不是条数：落笔那一下（addNote）就已经把一条 text: '' 的笔记按防抖写过
+    // 一次盘了，光看条数会被那一份满足，读到的却可能还是空文本。
+    await expect.poll(async () => (await readLongSidecar(kydogHome))?.annotations[0]?.text ?? null)
+      .toBe('还没失焦的草稿');
+    const notes = (await readLongSidecar(kydogHome))!.annotations;
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ type: 'note', page: 1 });
   } finally {
     await teardown(launched);
   }
@@ -234,11 +252,12 @@ test('56-pdf-virtualization: 逐页浏览之后确实清理过页面', async () 
     // 在 lo 边界（页号不能 < 1）反复撞墙，扩张结果算来算去还是 {1,2,3}——挂载集合真的没变，不是
     // sweep 没跑，这不是卡住，是这几步本来就没有「挂载集合层面」的变化可等。
     // 换成 pdf-readout 的文本（当前最可见页）：它是连续的位置判定，不是预算限制的离散集合，
-    // 3000px 的步长（> 一页行高 2016）几乎必然让它每步都变，用它判定「这一步滚动真的被处理过、
-    // updateReadout → 窗口重算的链路真的跑完」——不是靠猜一个「大概率够用」的固定毫秒数。
+    // 2000px 的步长（> 一页行高 516，且 40 步 × 2000 = 80000 还没滚到 103232 的底）几乎必然
+    // 让它每步都变，用它判定「这一步滚动真的被处理过、滚动帧 → 窗口重算的链路真的跑完」——
+    // 不是靠猜一个「大概率够用」的固定毫秒数。
     let prevText = await readout.textContent();
     for (let i = 1; i <= 40; i++) {
-      await scroll.evaluate((el, k) => { el.scrollTop = k * 3000; }, i);
+      await scroll.evaluate((el, k) => { el.scrollTop = k * 2000; }, i);
       await expect.poll(() => readout.textContent()).not.toBe(prevText);
       prevText = await readout.textContent();
     }
