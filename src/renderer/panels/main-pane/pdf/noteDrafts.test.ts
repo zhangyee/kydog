@@ -98,6 +98,21 @@ describe('flushDrafts', () => {
     expect(noteAutoFocus.has('n1')).toBe(false);
   });
 
+  // noteAutoFocus 的清理必须无条件——不能挂在「有草稿」的判断之下。刚落下的空笔记（addNote
+  // 时 noteAutoFocus.add 过）如果用户一个字都没打过，noteDrafts 里从来不会出现这条 id
+  // （NoteBox 只在 onChange 时才 noteDrafts.set），draft 会一直是 undefined。这条钉的就是
+  // 只 add 不 set 这条路径：flushDrafts 仍然要把它从 noteAutoFocus 里清掉。
+  it('从未打过字的笔记（noteDrafts 里没留过草稿）关 tab 时也要清 noteAutoFocus', () => {
+    usePdfAnnotationStore.getState().setLoaded('t1', doc(note('n1', '')));
+    noteAutoFocus.add('n1');
+    // 特意不 noteDrafts.set('n1', ...)：复刻「只 add 不 set」这条路径
+
+    flushDrafts('t1');
+
+    expect(noteAutoFocus.has('n1')).toBe(false);
+    expect(noteDrafts.has('n1')).toBe(false);
+  });
+
   it('tab 不存在时什么都不做，不抛', () => {
     noteDrafts.set('n1', 'A');
     expect(() => flushDrafts('没有这个 tab')).not.toThrow();

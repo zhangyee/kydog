@@ -100,9 +100,14 @@ export function computeWindow(i: WindowInput): WindowResult {
   // 标注层与 DOM 节点、几百个 page proxy）。
   //
   // 这是协议层的空间量——「用户要滚多远才需要新页」——不是时间窗，也不是拍脑袋的页数上限。
-  // clientHeight === 0（tab 被 display:none 隐藏，Chromium 照样触发 ResizeObserver 且读数为 0）
-  // 因此自然退化成「没有视口」：带宽为 0，一页都不预取，窗口只剩必保集合。这与「视口落在页间
-  // 留白里」是两件事——后者视口是真实存在的，带宽照常是 3 个视口高。
+  //
+  // 待实测（浏览器行为假设，不算关键决策；PdfFileTab.tsx 挂 ResizeObserver 那段注释里是同一个
+  // 假设，两处都待验，判据相同）：clientHeight === 0 时的含义是「tab 被 display:none 隐藏，
+  // Chromium 照样触发 ResizeObserver 且读数为 0」。判据：开两个 file tab、切到另一个 tab 让这
+  // 个 PDF tab 变成 display:none，隐藏期间对它的滚动容器读 el.clientHeight 应为 0。若假设成立，
+  // clientHeight === 0 因此自然退化成「没有视口」：带宽为 0，一页都不预取，窗口只剩必保集合。
+  // 这与「视口落在页间留白里」是两件事——后者视口是真实存在的，带宽照常是 3 个视口高。若不
+  // 成立，要重新核实这条退化路径。
   const bandTop = top - i.clientHeight;
   const bandBottom = bottom + i.clientHeight;
   const inBand = (p: number) =>

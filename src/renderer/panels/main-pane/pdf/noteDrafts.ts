@@ -29,9 +29,11 @@ export const noteAutoFocus = new Set<string>();
  * 只保留最后一条的话，用户清空一条已有笔记后**不失焦**地关 tab（Cmd+W / beforeunload 路径），
  * 边车里会留下一条 `text: ''` 的隐形笔记，而不是把它删掉。
  *
- * 同样对齐 commit() 的还有 noteAutoFocus：交代过一次之后就不再是「刚落下的新框」，别再抢焦点
- * ——否则不失焦的关 tab 路径会让这条 id 永远留在 noteAutoFocus 里，同一会话内重开同一份 PDF
- * 时这条 note 会莫名其妙自动抢焦点。
+ * 同样对齐 commit() 的还有 noteAutoFocus，且和 commit() 一样是**无条件**清——不管这条 note
+ * 有没有留过草稿。刚落下的空笔记（addNote 时 noteAutoFocus.add 过，但用户一个字都没打过、
+ * noteDrafts 里从来没有这条 id）也要清，不能挂在「draft !== undefined」的判断之下：否则不失焦
+ * 的关 tab 路径会让这条 id 永远留在 noteAutoFocus 里，同一会话内重开同一份 PDF 时这条 note 会
+ * 莫名其妙自动抢焦点——这条路径不经过草稿表，只看 doc.annotations 里有没有这条 note。
  */
 export function flushDrafts(tabId: string): void {
   const st = usePdfAnnotationStore.getState();
@@ -39,10 +41,10 @@ export function flushDrafts(tabId: string): void {
   if (!doc) return;
   for (const a of doc.annotations) {
     if (a.type !== 'note') continue;
+    noteAutoFocus.delete(a.id); // 无条件，见上方 docstring——不能放进下面「有草稿」的分支里
     const draft = noteDrafts.get(a.id);
     if (draft === undefined) continue;
     noteDrafts.delete(a.id);
-    noteAutoFocus.delete(a.id);
     const text = (a as Note).text;
     if (draft.trim() === '') {
       if (text !== '') st.remove(tabId, a.id);
