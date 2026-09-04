@@ -79,6 +79,7 @@ describe('handleAnnotationKey', () => {
   // 有被调用、调用了几次」，进出对照本身的行为交给 e2e（57-pdf-dual-pane.spec.ts）。
   it('L 触发 onToggleDual，且不动标注工具（它是视图模式不是工具）', () => {
     tst().setLoaded(T, ZH, 'ok', 0);
+    tst().setLayoutReady(T, true);   // 页尺寸没预取完时进不了对照（fit-width 要用第一页的宽）
     st().setTool(T, 'highlight');
     const onToggleDual = vi.fn();
     expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(true);
@@ -88,7 +89,7 @@ describe('handleAnnotationKey', () => {
     expect(onToggleDual).toHaveBeenCalledTimes(2);
   });
 
-  it('没译文 / 边车有误 / 摘要对不上 / ⌘L / ⌥L / 焦点在 textarea 里：L 都不处理，也不调用 onToggleDual', () => {
+  it('没译文 / 边车有误 / 摘要对不上 / 页尺寸没到 / ⌘L / ⌥L / 焦点在 textarea 里：L 都不处理，也不调用 onToggleDual', () => {
     const onToggleDual = vi.fn();
     expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(false);      // 边车不存在
     tst().setLoadError(T, '坏了');
@@ -96,6 +97,10 @@ describe('handleAnnotationKey', () => {
     tst().setLoaded(T, ZH, 'mismatch', 0);
     expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(false);      // 摘要对不上
     tst().setLoaded(T, ZH, 'ok', 0);
+    // 译文没问题，但页尺寸还没预取完：进对照要用第一页的宽度算 fit-width，这时按 L 只会静默
+    // 无事发生——判据必须与工具栏那颗键一致（都走 canToggleDual），不能一处能进一处不能进。
+    expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(false);
+    tst().setLayoutReady(T, true);
     expect(handleAnnotationKey(key('l', { metaKey: true }), T, onToggleDual)).toBe(false);
     expect(handleAnnotationKey(key('l', { altKey: true }), T, onToggleDual)).toBe(false);
     expect(handleAnnotationKey(key('l', { target: { tagName: 'TEXTAREA' } }), T, onToggleDual)).toBe(false);
@@ -105,6 +110,7 @@ describe('handleAnnotationKey', () => {
   it('标注边车坏了照样能按 L —— 译文视图不该受标注加载状态牵连', () => {
     st().setLoadError(T, '坏了');
     tst().setLoaded(T, ZH, 'ok', 0);
+    tst().setLayoutReady(T, true);
     const onToggleDual = vi.fn();
     expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(true);
     expect(onToggleDual).toHaveBeenCalledTimes(1);

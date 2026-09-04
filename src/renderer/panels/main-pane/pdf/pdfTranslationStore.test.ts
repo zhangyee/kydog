@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
+import { canToggleDual, checkVersion, emptyTBucket, translateUiState, usePdfTranslationStore, type TBucket } from './pdfTranslationStore';
 import type { TranslatedDoc } from '../../../../shared/zhSidecar';
 
 const doc = (source?: { sha256: string; bytes: number }): TranslatedDoc => ({
@@ -62,6 +62,47 @@ describe('usePdfTranslationStore.setLoaded 维持 dual', () => {
     expect(st().buckets[T].dual).toBe(true);
     st().setLoaded(T, ZH, 'ok', 3);
     expect(st().buckets[T].dual).toBe(true);
+  });
+});
+
+// 进对照要读第一页的宽度算 fit-width，页尺寸没预取完就只能静默不动。原先这条不在判据里：
+// 翻译键在预取期间是 enabled 的，按下去什么都不发生、也没有反馈（大文档预取几百页时这段窗口
+// 不短）。判据必须由 translateUiState 这一份出——工具栏与 `L` 键共用它。
+describe('translateUiState 的 pending 态', () => {
+  const b = (over: Partial<TBucket> = {}): TBucket => ({ ...emptyTBucket(), ...over });
+  const ZH: TranslatedDoc = {
+    version: 1, pdf: 'p.pdf', lang: { in: 'en', out: 'zh' },
+    source: { sha256: 'aa', bytes: 10 }, blocks: [],
+  };
+
+  it('译文可用但页尺寸还没到 → pending，且不放行', () => {
+    const bucket = b({ doc: ZH, version: 'ok', layoutReady: false });
+    expect(translateUiState(bucket)).toBe('pending');
+    expect(canToggleDual(bucket)).toBe(false);
+  });
+
+  it('页尺寸到位 → ready，放行', () => {
+    const bucket = b({ doc: ZH, version: 'ok', layoutReady: true });
+    expect(translateUiState(bucket)).toBe('ready');
+    expect(canToggleDual(bucket)).toBe(true);
+  });
+
+  it('译文本身有问题时先说那个，不说 pending —— 边车都没有还提示「正在准备页面」是误导', () => {
+    expect(translateUiState(b({ layoutReady: false }))).toBe('none');
+    expect(translateUiState(b({ loadError: '坏了', layoutReady: false }))).toBe('invalid');
+    expect(translateUiState(b({ doc: ZH, version: 'mismatch', layoutReady: false }))).toBe('mismatch');
+  });
+
+  it('setLayoutReady 写的就是这一维，且能收回去（换文件时 sizes 归 null）', () => {
+    const T = '/p/paper.pdf';
+    usePdfTranslationStore.setState({ buckets: {} });
+    const st = () => usePdfTranslationStore.getState();
+    st().setLoaded(T, ZH, 'ok', 0);
+    expect(canToggleDual(st().buckets[T])).toBe(false);
+    st().setLayoutReady(T, true);
+    expect(canToggleDual(st().buckets[T])).toBe(true);
+    st().setLayoutReady(T, false);
+    expect(canToggleDual(st().buckets[T])).toBe(false);
   });
 });
 

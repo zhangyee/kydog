@@ -8,7 +8,7 @@ function Divider(): ReactNode {
   return <div style={{ width: 0.5, height: 16, background: 'var(--color-ink-hair)', margin: '0 3px', flexShrink: 0 }} />;
 }
 
-// 四态各自的 tooltip；active 由调用处按 translateUiState 的返回值推，disabled 直接调
+// 各状态的 tooltip；active 由调用处按 translateUiState 的返回值推，disabled 直接调
 // canToggleDual（而不是自己手写 state === 'none' || ... 的析取）。这份判据与 annotationKeys.ts
 // 的 L 分支共用同一个 translateUiState/canToggleDual（pdfTranslationStore.ts），不在这里另写
 // 一遍——两处各判一次是最难查的那类 bug（一处能进、另一处不能进），手写析取还会在
@@ -17,6 +17,7 @@ const TRANSLATE_TIP: Record<TranslateUiState, string> = {
   none: '翻译对照 · 未找到译文',
   invalid: '翻译对照 · 译文文件有误',
   mismatch: '翻译对照 · 译文版本不匹配',
+  pending: '翻译对照 · 正在准备页面',
   ready: '翻译对照 · L',
   active: '退出对照 · L',
 };

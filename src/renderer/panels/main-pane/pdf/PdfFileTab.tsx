@@ -520,6 +520,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // 双栏对照：写入方是上面的 onToggleDual（工具栏翻译键的 onClick 与 annotationKeys.ts 的
   // L 分支都调它），以及 setLoaded 在 doc 变 null / version 变 mismatch 时的自动退出。
+  // 页尺寸预取完没有，写进译文桶：进对照要用第一页的宽度算 fit-width，sizes 没到就只能什么都
+  // 不做。原先这条不进判据，翻译键在预取期间仍是 enabled，按下去静默无事发生（大文档预取几百
+  // 页时这段窗口不短）。放进 store 而不是只在工具栏里判，是为了让工具栏与 `L` 键共用同一份
+  // 判据——两处各判一次是最难查的那类 bug。
+  useEffect(() => {
+    usePdfTranslationStore.getState().setLayoutReady(tab.id, sizes !== null);
+  }, [tab.id, sizes]);
+
   const dual = usePdfTranslationStore((s) => s.buckets[tab.id]?.dual ?? false);
   const translated = usePdfTranslationStore((s) => s.buckets[tab.id]?.doc ?? null);
   // 按页分桶一次，而不是在页行的 map 里逐页 filter：filter 每次渲染都产出新数组，
