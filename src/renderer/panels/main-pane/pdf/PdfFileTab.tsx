@@ -2,9 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
+import { filterByGeometry } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { flushDrafts } from './noteDrafts';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
+import { checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
+import { sha256Hex } from './sha256';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
 import { PdfSelectionBar, type Anchor } from './PdfSelectionBar';
@@ -191,6 +194,40 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       });
     return () => { cancelled = true; };
   }, [tab.id, tab.path]);
+
+  // 加载译文边车：并行取字节摘要与边车本身，摘要校验版本、几何过滤越界块（spec §5）。
+  // 几何过滤要等页尺寸预取完；sizes 还没到（首次挂载时几乎总是如此）就先按未过滤存一版，
+  // sizes 到位后这个 effect 靠依赖数组里的 sizes 再跑一次，用真实尺寸重新过滤、覆盖前一版。
+  const loadTranslation = useCallback(async () => {
+    if (!bytes) return;
+    try {
+      const [{ doc }, sha] = await Promise.all([
+        window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path }),
+        sha256Hex(bytes),
+      ]);
+      const st = usePdfTranslationStore.getState();
+      if (!doc) { st.setLoaded(tab.id, null, 'unknown', 0); return; }
+      const version = checkVersion(doc, sha, bytes.byteLength);
+      const g = sizes ? filterByGeometry(doc.blocks, sizes) : { blocks: doc.blocks, dropped: 0 };
+      st.setLoaded(tab.id, { ...doc, blocks: g.blocks }, version, g.dropped);
+    } catch (err) {
+      usePdfTranslationStore.getState().setLoadError(tab.id, (err as Error).message);
+    }
+  }, [bytes, sizes, tab.id, tab.path]);
+
+  useEffect(() => { void loadTranslation(); }, [loadTranslation]);
+
+  // 边车是点号开头的文件，fileWatcher 的 ignored 会跳过它，agent 写完译文边车之后不会有
+  // file.changed 事件——不给 watcher 开后门，改成窗口重新拿到焦点时重探一次（spec §3.4）。
+  useEffect(() => {
+    const onFocus = () => { void loadTranslation(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [loadTranslation]);
+
+  // 关 tab 释放译文桶：与标注桶分开释放（下面那个 effect），译文本期只读、没有草稿/未落盘改动
+  // 要冲，drop 不需要跟 flushDrafts/saveScheduler 那套顺序绑在一起。
+  useEffect(() => () => { usePdfTranslationStore.getState().drop(tab.id); }, [tab.id]);
 
   // 关 tab：先把草稿提交进 store、再把未落盘的改动冲掉，最后释放桶（spec §8.1）
   useEffect(() => {
