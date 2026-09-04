@@ -105,3 +105,10 @@ export const usePdfTranslationStore = create<State>((set) => ({
     return { buckets: next };
   }),
 }));
+
+// 测试探针：当前还挂着几个译文桶。同 PdfFileTab 的 __kydogCleanedPages，纯计数、不进 state，
+// 只是让「关 tab 之后在途的那趟加载有没有把桶重建回来」这件事从组件外部（e2e）读得到——
+// 组件已经卸载，那条路径不再有任何 DOM 痕迹，除此之外无从观察。
+usePdfTranslationStore.subscribe((s) => {
+  (globalThis as { __kydogTranslationBuckets?: number }).__kydogTranslationBuckets = Object.keys(s.buckets).length;
+});

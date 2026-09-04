@@ -332,16 +332,31 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 存到 ref 里跨两次调用复用，多一条状态路径；而 sha256 是纯本地计算，收敛比边车 RPC 更快，
   // 等它没有可觉察的代价。选择"等"是为了不让版本校验在 sha 未就绪的窗口里把 unknown 当成
   // 阶段性正确答案去展示——bucket 在这段窗口里维持"还没加载"的初始状态，不会被写入。
+  //
+  // 取消与代际：`translationSeq` 在每次发起时自增，落地前比一次。它同时挡住两件事——
+  //   1. **关 tab 之后落地**：卸载的 cleanup（下面释放译文桶那个 effect）也把它自增一次，于是
+  //      在途的这趟落地时代号已经失配，不会在 `drop(tab.id)` 之后又把桶（连同整份 TranslatedDoc）
+  //      靠 setLoaded 里的 `?? emptyTBucket()` 重建回来、此后永不释放。
+  //   2. **两趟并发时先发后至**：这个函数有两个调用点（下面「跑一次」的 effect、以及窗口 focus
+  //      重探），sizes 落地与一次 focus 撞在一起时会有两趟在途。没有代际标记的话，先发的那趟
+  //      （sizes 还是 null、blocks 未经几何过滤、dropped 恒为 0）若后到，就会覆盖掉后发那趟
+  //      已经过滤好的结果。
+  // 标注那条加载器（上面）只有一个调用点、也不会重入，用一个 `cancelled` 闭包就够；这里的两条
+  // 都是「哪一趟才算数」的问题，闭包标记表达不了，只能用代号。
+  const translationSeq = useRef(0);
   const loadTranslation = useCallback(async () => {
     if (!bytes || sha === null) return;
+    const mySeq = ++translationSeq.current;
     try {
       const { doc } = await window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path });
+      if (mySeq !== translationSeq.current) return;
       const st = usePdfTranslationStore.getState();
       if (!doc) { st.setLoaded(tab.id, null, 'unknown', 0); return; }
       const version = checkVersion(doc, sha, bytes.byteLength);
       const g = sizes ? filterByGeometry(doc.blocks, sizes) : { blocks: doc.blocks, dropped: 0 };
       st.setLoaded(tab.id, { ...doc, blocks: g.blocks }, version, g.dropped);
     } catch (err) {
+      if (mySeq !== translationSeq.current) return;
       usePdfTranslationStore.getState().setLoadError(tab.id, (err as Error).message);
     }
   }, [bytes, sha, sizes, tab.id, tab.path]);
@@ -358,7 +373,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // 关 tab 释放译文桶：与标注桶分开释放（下面那个 effect），译文本期只读、没有草稿/未落盘改动
   // 要冲，drop 不需要跟 flushDrafts/saveScheduler 那套顺序绑在一起。
-  useEffect(() => () => { usePdfTranslationStore.getState().drop(tab.id); }, [tab.id]);
+  // 自增代号那一步不能省：drop 是同步的，而在途的 loadTranslation 随后才 resolve，
+  // 它的 setLoaded 会把桶原地重建回来（见 loadTranslation 头上的注释）。
+  useEffect(() => () => {
+    translationSeq.current += 1;
+    usePdfTranslationStore.getState().drop(tab.id);
+  }, [tab.id]);
 
   // 关 tab：先把草稿提交进 store、再把未落盘的改动冲掉，最后释放桶（spec §8.1）
   useEffect(() => {

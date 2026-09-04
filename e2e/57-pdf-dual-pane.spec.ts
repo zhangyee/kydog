@@ -726,6 +726,40 @@ test('57-pdf-dual-pane: 两组主题 × 背景的对比度达标——墨色由�
   }
 });
 
+test('57-pdf-dual-pane: 关 tab 之后，在途的译文加载不会把桶重建回来', async () => {
+  // 关 tab 时 `drop(tab.id)` 是同步的，而在途的 `pdf.translation.load` 随后才 resolve——它的
+  // setLoaded 里有 `?? emptyTBucket()`，会把桶连同整份 TranslatedDoc 原地重建，此后再没有人
+  // 释放它（组件已经卸载，不会再有第二次 drop）。
+  //
+  // 判据取协议层事实：store 里还挂着几个译文桶（__kydogTranslationBuckets 探针）。组件卸载
+  // 之后这条路径不再有任何 DOM 痕迹，别的地方观察不到。
+  const launched = await launchKydog({ seed: seedContrast });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', CONTRAST_WHITE_REL);
+    await openPdf(page, pdfPath);
+    const count = () => page.evaluate(
+      () => (window as unknown as { __kydogTranslationBuckets?: number }).__kydogTranslationBuckets ?? -1,
+    );
+    await expect.poll(count, { timeout: 10000, message: '等译文桶建起来' }).toBe(1);
+
+    // 同一次 evaluate 里先发 focus（触发一次重探，RPC 就此在途）、再点关闭按钮：两件事落在
+    // 同一个任务里，RPC 绝无可能在中间 resolve，「关 tab 时正好有一趟在途」因此是确定的，
+    // 不靠抢时间窗口。
+    await page.evaluate((sel) => {
+      window.dispatchEvent(new Event('focus'));
+      (document.querySelector(sel) as HTMLElement).click();
+    }, testIdSelector(`tab-close-${pdfPath}`));
+    await expect(page.getByTestId(`file-pane-${pdfPath}`)).toHaveCount(0);
+
+    // 在途那趟落地要走一个 IPC 往返，给它足够时间；桶数必须一直是 0。
+    await page.waitForTimeout(1500);
+    expect(await count(), '关 tab 之后在途的加载不该把译文桶重建回来').toBe(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
 test('57-pdf-dual-pane: 页背景取不到时，墨色按实际填下去的兜底底色推——不是按白底', async () => {
   // 上面那条用例的两份 fixture 都是整页纯色，八点取样恒能取到，走的全是 pageBackground()
   // **取得到**的那条路。这条补的是**取不到**的那条：RightPage 退回去填主题纸色，而墨色若仍
