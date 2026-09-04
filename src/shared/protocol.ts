@@ -8,6 +8,7 @@ import type {
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
 import type { PdfAnnotationsFile } from './pdfSidecar';
+import type { TranslatedDoc } from './zhSidecar';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -86,6 +87,9 @@ export type RpcCall =
   // 渲染层据此置灰标注工具且永不覆盖它。
   | { method: 'pdf.annotations.load'; args: { pdfPath: string }; result: { doc: PdfAnnotationsFile | null } }
   | { method: 'pdf.annotations.save'; args: { pdfPath: string; doc: PdfAnnotationsFile }; result: void }
+  // PDF 旁的译文边车（spec: docs/superpowers/specs/2026-09-03-pdf-dual-pane-translation-design.md）。
+  // 本期只读，写入方是 agent。null 只代表边车不存在。
+  | { method: 'pdf.translation.load'; args: { pdfPath: string }; result: { doc: TranslatedDoc | null } }
   // ── 自动升级 ──
   | { method: 'update.getStatus'; args: undefined; result: UpdateStatus }
   | { method: 'update.check'; args: undefined; result: UpdateStatus }
