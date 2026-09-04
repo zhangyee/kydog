@@ -89,8 +89,17 @@ describe('computeWindow', () => {
 
   // 栏数不影响 rasterScale（v6 订正）：预算口径是「每栏」，每栏各自反解 cap，互不拖累。
   // computeWindow / WindowInput 已经不接受 columns 参数——栏数根本不进入这条计算，
-  // 所以「双栏时 rasterScale 更低」这个维度不存在了，没有对应的用例可写；这条不变量由
-  // COLUMN_BUDGET_PX 头部注释与 cap 公式（sqrt(budget / A) / dpr，不含 columns）保证。
+  // 所以「双栏时 rasterScale 更低」这个维度不存在了，没有对应的行为用例可写；下面这条
+  // 编译期哨兵钉住「不接受」本身，不是靠注释宣称。
+  it('WindowInput 不接受 columns（回归哨兵）', () => {
+    // @ts-expect-error —— columns 不在 WindowInput 里。这行一旦不再报错，说明有人把栏数加回了
+    // 这条计算：先去核对 spec §8.2「v6 订正」的「每栏各自反解 cap、互不拖累」是否还成立，
+    // 而不是默默让它编译通过。
+    // 局限：这条哨兵防的是「加回 columns 这个名字」，防不住换个名字（比如 paneCount）重新
+    // 引入同一个 bug——静态检查只能钉住已知的名字，钉不住任意换皮的复发。
+    const withColumns: WindowInput = { ...input({ sizes: pages(1) }), columns: 2 };
+    void withColumns;
+  });
 
   it('预算被调到极小时窗口仍不为空', () => {
     const r = computeWindow(input({ sizes: pages(100), scrollTop: 50000, budgetPx: 1000 }));
