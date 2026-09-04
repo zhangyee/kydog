@@ -141,6 +141,26 @@ function buildContrastSidecar(pdfRel: string, pdf: Buffer): string {
   }, null, 2);
 }
 
+// 「页背景取不到」那条兜底路径的 fixture：白页，左上角压一个深色小矩形。pageBackground() 的
+// 八点取样里只有左上角那一点落在矩形内（inset 2 位图像素 ≈ 1 pt，远在 30 pt 的矩形之内），
+// 其余七点仍是白 —— 八点不全同 → 返回 null → RightPage 走兜底填主题纸色。
+// 这正是扫描件（JPEG 噪声让四角逐字节不等）与四边压出血图的页在真实世界里的等价触发。
+const FALLBACK_REL = 'fallback-bg.pdf';
+const FALLBACK_PATCH = { x: 0, y: 0, w: 30, h: 30, color: [40, 90, 60] as [number, number, number] };
+
+async function seedFallbackBg(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  const pdf = buildPagedPdf(1, PAGE_W, PAGE_H, undefined, undefined, FALLBACK_PATCH);
+  await fs.writeFile(path.join(projectPath, FALLBACK_REL), pdf);
+  await fs.writeFile(
+    path.join(projectPath, `.${FALLBACK_REL}.zh.json`),
+    buildContrastSidecar(FALLBACK_REL, pdf),
+  );
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 async function seedContrast(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
@@ -216,8 +236,16 @@ function parseRgb(css: string): RGB {
  * canvas 绘制，所以矩形内任一点的底图像素都只是 RightPage 填的纯色，不需要避开什么。
  * 块还没挂载、或右格还没合成过时返回 null——调用方先用它 poll 就绪，再对数值本身断言，
  * 这样断言失败时报的是真实对比度数字，不是一个含糊的超时。
+ *
+ * 顺带把两个原始量也交出来：`bg` 是底图那一点的实际像素，`themePaper` 是当前主题
+ * `--color-paper` 解析成的 sRGB（在页内过一次 1×1 画布，和 RightPage 的 themePaperRgb
+ * 同一条路子——主题 token 是 oklch()，computed style 不再折算成 rgb()）。兜底路径那条用例
+ * 靠这两个数证明「这一次真的走了兜底」，不然页面要是仍被判成白底，midnight + 白底本来就
+ * 达标，那条用例会在 bug 还在的时候一样绿。
  */
-async function sampleContrast(page: Page, paneSel: string): Promise<number | null> {
+type Sampled = { ratio: number; bg: RGB; themePaper: RGB };
+
+async function sampleContrast(page: Page, paneSel: string): Promise<Sampled | null> {
   const raw = await page.evaluate(({ sel, box, pageW }) => {
     const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`);
     const block = row?.querySelector('[data-translation-block]') as HTMLElement | null;
@@ -227,9 +255,22 @@ async function sampleContrast(page: Page, paneSel: string): Promise<number | nul
     const cx = Math.round((box.x + box.w / 2) * S);
     const cy = Math.round((box.y + box.h / 2) * S);
     const d = right.getContext('2d')!.getImageData(cx, cy, 1, 1).data;
-    return { inkCss: getComputedStyle(block).color, bg: [d[0], d[1], d[2]] as [number, number, number] };
+    const probe = document.createElement('canvas');
+    probe.width = 1;
+    probe.height = 1;
+    const pctx = probe.getContext('2d')!;
+    pctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim();
+    pctx.fillRect(0, 0, 1, 1);
+    const p = pctx.getImageData(0, 0, 1, 1).data;
+    return {
+      inkCss: getComputedStyle(block).color,
+      bg: [d[0], d[1], d[2]] as [number, number, number],
+      themePaper: [p[0], p[1], p[2]] as [number, number, number],
+    };
   }, { sel: paneSel, box: CONTRAST_BLOCK, pageW: PAGE_W });
-  return raw ? contrast(parseRgb(raw.inkCss), raw.bg) : null;
+  return raw
+    ? { ratio: contrast(parseRgb(raw.inkCss), raw.bg), bg: raw.bg, themePaper: raw.themePaper }
+    : null;
 }
 
 type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null; dGap: number | null };
@@ -570,7 +611,7 @@ test('57-pdf-dual-pane: 两组主题 × 背景的对比度达标——墨色由�
     ).not.toBeNull();
     const whiteContrast = await sampleContrast(page, whiteSel);
     expect(whiteContrast, 'midnight 主题 + 白底 PDF：译文块对比度应 ≥ 4.5:1').not.toBeNull();
-    expect(whiteContrast!, 'midnight 主题 + 白底 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
+    expect(whiteContrast!.ratio, 'midnight 主题 + 白底 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
 
     await setTheme(page, 'vellum');
     const darkPane = await openPdf(page, darkPath);
@@ -582,7 +623,38 @@ test('57-pdf-dual-pane: 两组主题 × 背景的对比度达标——墨色由�
     ).not.toBeNull();
     const darkContrast = await sampleContrast(page, darkSel);
     expect(darkContrast, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').not.toBeNull();
-    expect(darkContrast!, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
+    expect(darkContrast!.ratio, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 页背景取不到时，墨色按实际填下去的兜底底色推——不是按白底', async () => {
+  // 上面那条用例的两份 fixture 都是整页纯色，八点取样恒能取到，走的全是 pageBackground()
+  // **取得到**的那条路。这条补的是**取不到**的那条：RightPage 退回去填主题纸色，而墨色若仍
+  // 按白底推，midnight（--color-paper 是深蓝灰）下就是近黑字压深蓝灰，约 1.4:1。
+  const launched = await launchKydog({ seed: seedFallbackBg });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', FALLBACK_REL);
+    const sel = testIdSelector(`file-pane-${pdfPath}`);
+
+    await setTheme(page, 'midnight');
+    const pane = await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+    await expect.poll(
+      () => sampleContrast(page, sel),
+      { timeout: 10000, message: 'midnight + 取不到页背景：等右格合成、译文块着色' },
+    ).not.toBeNull();
+
+    const s = (await sampleContrast(page, sel))!;
+    // ① 这一次确实走了兜底：块矩形里填的是主题纸色，不是页面本身的白。缺了这条，页面万一
+    //    仍被判成白底，「midnight + 白底」本来就达标，整条用例在 bug 还在时也会绿。
+    expect(s.themePaper, 'midnight 的 --color-paper 不该解析成白（否则这条用例区分不了两条路径）')
+      .not.toEqual([255, 255, 255]);
+    expect(s.bg, '块矩形里应当填的是主题纸色 —— 即八点取样确实没取到统一背景色').toEqual(s.themePaper);
+    // ② 墨色按①里那个实际底色推，对比度达标
+    expect(s.ratio, 'midnight 主题 + 取不到页背景：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
   } finally {
     await teardown(launched);
   }

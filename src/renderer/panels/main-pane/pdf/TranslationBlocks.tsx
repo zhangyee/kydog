@@ -71,7 +71,14 @@ type Props = {
   rasterScale: number;
   /** 这一页的译文块。只渲染有 target 的（右格只在这些矩形里盖过原文）。 */
   blocks: Block[];
-  /** RightPage 用同一份位图算出的页背景色；取不到时按白底处理。 */
+  /**
+   * RightPage 这一次**实际填进块矩形的那个底色**（探测到的页背景，或探测不到时它退回去填的
+   * 主题纸色）。墨色按它推，两边说的是同一块像素。
+   *
+   * null 只有一个含义：右格还一次都没合成过。此时块底下压根没有我们填的底，露出来的是滚动
+   * 容器的 `--color-paper-deep`——按任何一个颜色推墨色都是猜，所以整层先不显示（见下面的
+   * visibility），等底图落地。
+   */
   bg: RGB | null;
 };
 
@@ -112,6 +119,8 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Pro
     return () => { alive = false; };
   }, [blocks, docKey]);
 
+  // bg 为 null 时整层是 hidden 的（见下面容器的 visibility），这里的白底只是个占位，不会有
+  // 任何一个像素按它着色——真正的判据永远是 RightPage 交回来的那个「实际填下去的底色」。
   const ink = toCss(inkForBackground(bg ?? [255, 255, 255]));
 
   return (
@@ -123,6 +132,10 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Pro
         // floor），两层因此逐像素同源，不依赖「兄弟节点先渲染过、我再靠 inset:0 借它的尺寸」。
         width: Math.floor(size.w * rasterScale), height: Math.floor(size.h * rasterScale),
         pointerEvents: 'none', // 块本身开 user-select: text 可各自接收指针事件；容器不拦截
+        // 底图还没合成过（bg === null）就先别显示：那时块底下是滚动容器的深色 paper-deep，
+        // 不是我们填的任何一个颜色，墨色按什么推都是猜。visibility 不影响布局，测量宿主照常
+        // 量得到 scrollHeight，字号该收敛还是会收敛。
+        visibility: bg ? undefined : 'hidden',
       }}
     >
       {/* 测量宿主：zoom 1、不可见、不参与布局、不接收指针事件。量出来的比例因此与当前缩放无关。 */}

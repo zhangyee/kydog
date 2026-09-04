@@ -161,7 +161,9 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, docKey
 }) {
   const leftRef = useRef<HTMLDivElement>(null);
   const [leftCanvas, setLeftCanvas] = useState<HTMLCanvasElement | null>(null);
-  // RightPage 每次合成都把探测到的页背景色交出来；TranslationBlocks 拿它推墨色（Task 7）。
+  // RightPage 每次合成都把**这次实际填下去的底色**交出来；TranslationBlocks 拿它推墨色（Task 7）。
+  // null 只有一个含义：右格还一次都没合成过（底图是空的），不是「探测不到背景色」——探测不到
+  // 时 RightPage 交出来的是它退回去填的主题纸色，见该文件的 themePaperRgb。
   const [bg, setBg] = useState<RGB | null>(null);
 
   useEffect(() => {

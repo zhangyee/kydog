@@ -31,11 +31,16 @@ export function buildTextPdf(): Buffer {
  * `bg`：每页先铺一层整页纯色底（RGB，0–255），可选、不传就是原来「无填色 = 白底」的行为。
  * 57 的对比度 e2e 用它造深色页——`pageBackground()` 是对页角 + 四边中点八点取样、全同才采用，
  * 整页纯色填充天然满足这一点，不需要另起一套画法。
+ *
+ * `patch`：在页面上再压一个纯色小矩形（视口坐标，y 向下）。57 用它把左上角那个采样点染成
+ * 与其余七点不同的颜色，造出「八点取样取不到统一背景色」这条兜底路径——真实世界里落进这条
+ * 路径的是扫描件与四边压着出血图的页，用一个角上的色块是最小的等价触发。
  */
 export function buildPagedPdf(
   count: number, w: number, h: number,
   extra?: { x: number; y: number; text: string; size?: number },
   bg?: [number, number, number],
+  patch?: { x: number; y: number; w: number; h: number; color: [number, number, number] },
 ): Buffer {
   const firstPage = 4;
   const firstContent = firstPage + count;
@@ -56,6 +61,11 @@ export function buildPagedPdf(
     if (bg) {
       const [r, g, b] = bg.map((v) => v / 255);
       content += `${r} ${g} ${b} rg 0 0 ${w} ${h} re f\n`;
+    }
+    if (patch) {
+      const [r, g, b] = patch.color.map((v) => v / 255);
+      // 视口坐标（y 向下）换成 PDF 坐标（y 向上）：矩形底边在 h - (patch.y + patch.h)
+      content += `${r} ${g} ${b} rg ${patch.x} ${h - patch.y - patch.h} ${patch.w} ${patch.h} re f\n`;
     }
     content += `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
     if (extra) content += `BT /F1 ${extra.size ?? 14} Tf ${extra.x} ${h - extra.y} Td (${extra.text}) Tj ET\n`;
