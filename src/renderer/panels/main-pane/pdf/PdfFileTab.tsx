@@ -21,6 +21,7 @@ import { mostVisiblePage } from './pageReadout';
 import { unitLayout, PAGE_GAP, PAGE_PAD, type PageSize } from './pageLayout';
 import { computeWindow, sameWindow, type WindowResult } from './pageWindow';
 import { createPageLifecycle, type Cleanable, type PageLifecycle } from './pageLifecycle';
+import { ZOOM_SENSITIVITY } from './zoomSensitivity';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -30,7 +31,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 5;
-const ZOOM_SENSITIVITY = 0.0075; // 每单位 deltaY 的缩放系数（越大捏合幅度越大）
 const COMMIT_DELAY = 200;        // ms：手势停顿这么久后才在后台渲染清晰层
 const PROMOTE_TIMEOUT = 4000;    // ms：清晰层渲染兜底超时，防个别页不回调而卡住
 // 页尺寸都还没预取到时的窗口：模块级单例，好让「还是空窗口」这件事在 setState 层面被 Object.is

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
 import { buildPagedPdf } from './fixtures/textPdf';
 import { PAGE_GAP } from '../src/renderer/panels/main-pane/pdf/pageLayout';
+import { ZOOM_SENSITIVITY } from '../src/renderer/panels/main-pane/pdf/zoomSensitivity';
 
 const PDF_REL = 'paper.pdf';
 const ZH_REL = '.paper.pdf.zh.json';
@@ -255,10 +256,9 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
     // 会在行宽装不下时先把进对照的起始缩放降下来（本 fixture 装不下，见「进入对照时按需
     // fit-width」那条用例），实际起点因此不再是 100%。这里先读真实起点，再按同一个乘法公式
     // （`targetScale.current * (1 - deltaY * ZOOM_SENSITIVITY)`，见 PdfFileTab.tsx 的 onWheel）
-    // 反推要多大的 deltaY 才能落在 150%。ZOOM_SENSITIVITY 是那边的私有常量，不从组件文件
-    // import（会把 react-pdf / pdf.js worker 那一整串副作用拖进 Playwright 的 node 上下文，
-    // 同 pageLayout.ts 顶部关于 PAGE_GAP 单独抽出来的理由一样）——这里照抄数值，两处要保持一致。
-    const ZOOM_SENSITIVITY = 0.0075;
+    // 反推要多大的 deltaY 才能落在 150%。ZOOM_SENSITIVITY 从 zoomSensitivity.ts import（同
+    // PAGE_GAP 一样，是抽出来给两边共用的纯常量，不拖 react-pdf / pdf.js worker 那串副作用），
+    // 不再照抄字面量。
     const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
     const deltaY = (1 - 150 / startPct) / ZOOM_SENSITIVITY;
     await page.evaluate(({ sel, deltaY }) => {

@@ -1,16 +1,18 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { IconButton, NavIcon } from '../../../shared';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
-import { translateUiState, usePdfTranslationStore, type TranslateUiState } from './pdfTranslationStore';
+import { canToggleDual, translateUiState, usePdfTranslationStore, type TranslateUiState } from './pdfTranslationStore';
 import { PANEL_SHADOW, PdfToolCard } from './PdfToolCard';
 
 function Divider(): ReactNode {
   return <div style={{ width: 0.5, height: 16, background: 'var(--color-ink-hair)', margin: '0 3px', flexShrink: 0 }} />;
 }
 
-// 四态各自的 tooltip；disabled/active 由调用处按 translateUiState 的返回值推。这份判据与
-// annotationKeys.ts 的 L 分支共用同一个 translateUiState/canToggleDual（pdfTranslationStore.ts），
-// 不在这里另写一遍——两处各判一次是最难查的那类 bug（一处能进、另一处不能进）。
+// 四态各自的 tooltip；active 由调用处按 translateUiState 的返回值推，disabled 直接调
+// canToggleDual（而不是自己手写 state === 'none' || ... 的析取）。这份判据与 annotationKeys.ts
+// 的 L 分支共用同一个 translateUiState/canToggleDual（pdfTranslationStore.ts），不在这里另写
+// 一遍——两处各判一次是最难查的那类 bug（一处能进、另一处不能进），手写析取还会在
+// TranslateUiState 加新分支时不被 tsc 逼着同步（TRANSLATE_TIP 这张表会）。
 const TRANSLATE_TIP: Record<TranslateUiState, string> = {
   none: '翻译对照 · 未找到译文',
   invalid: '翻译对照 · 译文文件有误',
@@ -90,7 +92,7 @@ export function PdfToolbar({ tabId, pageLabel, zoomPct, onToggleDual }: Props) {
         <Divider />
         <IconButton
           size={28} tooltip={TRANSLATE_TIP[translateState]} tooltipPlacement="top"
-          disabled={translateState === 'none' || translateState === 'invalid' || translateState === 'mismatch'}
+          disabled={!canToggleDual(translateBucket)}
           active={translateState === 'active'}
           tone={translateState === 'active' ? 'ink' : 'default'}
           onClick={onToggleDual} testId="pdf-translate"
