@@ -500,6 +500,23 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     }, COMMIT_DELAY);
   }, [promote]);
 
+  // 上面这两个计时器的清理**放在一个不设门的 effect 里**，与「排」同域。
+  //
+  // 原先它写在下面那个捏合 effect 的 cleanup 里——那时 scheduleCommit 的代码本身就在那个 effect
+  // 内部，排与清天然同域。抽出来之后不再是：那个 effect 开头是 `if (tab.status !== 'ready') return;`
+  // （不注册 cleanup），而 requestScale 现在还有一个**不设门**的调用点（退出对照的还原 effect）。
+  // 今天不可达——ready → error 只可能来自 <Document> 的 onLoadError，它与 onLoadSuccess 互斥，
+  // 没有 onLoadSuccess 就没有 sizes、进不了对照——但「不可达」是一条要每次重新论证的性质，
+  // 而不设门的 cleanup 让配对由构造成立。同 readoutRaf 上面那条。
+  //
+  // 代价是 tab.status 离开 ready 时不再顺手取消在途的提交：那时组件还挂着，计时器触发也只是
+  // setLayers / setPromoteReason，错误态下什么都不渲染；真正要紧的卸载路径反而从「看状态」变成了
+  // 无条件。
+  useEffect(() => () => {
+    if (commitTimer.current != null) clearTimeout(commitTimer.current);
+    if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
+  }, []);
+
   const [visualScale, requestScale] = useVisualScale(scrollRef, targetScale, zoomAnchor, scheduleCommit);
   const visualScaleRef = useRef(visualScale);
   visualScaleRef.current = visualScale;
@@ -760,8 +777,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('scroll', scheduleRecompute);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-      if (commitTimer.current != null) clearTimeout(commitTimer.current);
-      if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
+      // commitTimer / promoteTimer 的清理不在这里——见 scheduleCommit 下面那个不设门的 effect。
     };
   }, [tab.status, requestScale, scheduleRecompute]);
 
