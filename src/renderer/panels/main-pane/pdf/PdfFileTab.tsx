@@ -11,9 +11,9 @@ import { PdfSelectionBar, type Anchor } from './PdfSelectionBar';
 import { PdfToolbar } from './PdfToolbar';
 import { pdfSaveScheduler } from './saveScheduler';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
-import { mostVisiblePage, type PageRect } from './pageReadout';
-import { unitLayout, type PageSize } from './pageLayout';
-import { computeWindow, type WindowResult } from './pageWindow';
+import { mostVisiblePage } from './pageReadout';
+import { unitLayout, PAGE_GAP, PAGE_PAD, type PageSize } from './pageLayout';
+import { computeWindow, sameWindow, type WindowResult } from './pageWindow';
 import { createPageLifecycle, type Cleanable, type PageLifecycle } from './pageLifecycle';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
@@ -27,8 +27,9 @@ const MAX_SCALE = 5;
 const ZOOM_SENSITIVITY = 0.0075; // 每单位 deltaY 的缩放系数（越大捏合幅度越大）
 const COMMIT_DELAY = 200;        // ms：手势停顿这么久后才在后台渲染清晰层
 const PROMOTE_TIMEOUT = 4000;    // ms：清晰层渲染兜底超时，防个别页不回调而卡住
-const PAGE_GAP = 16;             // 页间距基准（px，随缩放等比）
-const PAGE_PAD = 24;             // 上下留白基准（px，随缩放等比）
+// 页尺寸都还没预取到时的窗口：模块级单例，好让「还是空窗口」这件事在 setState 层面被 Object.is
+// 认出来（每次新建一个空对象就等于每次都重渲染）。
+const EMPTY_WINDOW: WindowResult = { pages: new Set(), visible: new Set(), rasterScale: 1 };
 // 单页预取失败（坏页字典等）时的占位尺寸——用最近一次成功页的尺寸，首页就失败则退到 A4。
 // 目的是让 sizes 数组下标始终对齐页号（不能因为一页失败就少 push 一个，让后面的页整体前移），
 // 且占位是个真实、非零的尺寸，故意避免下游（本文件的布局、以及 unitLayout）
@@ -156,8 +157,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 只挪 focal·(1 − 1/f)/scale，几个 pt 而已，与滚动的绝对位置无关。落后一帧也无所谓。
   // 读的时候必须拿 el.scrollTop 配 visualScaleRef（DOM 当前反映的那个缩放），不能配将要
   // 提交的新缩放——两者在同一次 commit 里一起变，读到的永远是自洽的一对。
-  const [contentTop, setContentTop] = useState(0);
-  const [clientHeight, setClientHeight] = useState(0);
+  //
+  // 为什么是 ref 不是 state：这两个量每个滚动帧都变，而由它们算出来的窗口大多数帧不变。放
+  // state 的话每帧都是一次新值，整棵 PdfFileTab 子树（含 <Document> 与 N 个页行 div）每帧
+  // 重渲染一次——正好把虚拟化省下来的开销从位图搬到 reconcile 上。真正驱动渲染的是下面那个
+  // 派生出来的 win（recompute 只在窗口真的变了时才 setWin），它的变化频率低得多。
+  const contentTop = useRef(0);
+  const clientHeight = useRef(0);
   const pageProxies = useRef<Record<number, PageProxyLike>>({});
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
   // 什么时候把一页还给 pdf.js（page.cleanup()）由 pageLifecycle.ts 的引用计数决定，挂载/卸载
@@ -214,23 +220,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     return p;
   }, []);
 
-  // 页码读数：滚动时按 rAF 节流，取视口内可见高度最大的页（spec §7.1）
-  const updateReadout = useCallback(() => {
+  // 滚动帧：按 rAF 节流，重读滚动几何并重算窗口与页码读数（recompute 在下面，它要用到
+  // sizes/layout/editingPage，得等它们先声明；这里走 ref 拿最新的一版，好让这个回调本身的
+  // 引用恒定——它是 scroll 监听器的入参，换引用就要重挂监听）。
+  const scheduleRecompute = useCallback(() => {
     if (readoutRaf.current != null) return;
     readoutRaf.current = requestAnimationFrame(() => {
       readoutRaf.current = null;
-      const el = scrollRef.current;
-      if (!el) return;
-      // 顺路把滚动几何记进 state：窗口要靠它算。挤在同一个 rAF 里读，不额外触发一次重排。
-      setContentTop(el.scrollTop / visualScaleRef.current);
-      setClientHeight(el.clientHeight);
-      const top = el.getBoundingClientRect().top;
-      const rects: PageRect[] = Array.from(el.querySelectorAll<HTMLElement>('[data-pdf-layer="stable"] [data-pdf-page]'))
-        .map((node) => {
-          const r = node.getBoundingClientRect();
-          return { page: Number(node.dataset.pdfPage), top: r.top - top, bottom: r.bottom - top };
-        });
-      setCurrentPage(mostVisiblePage(rects, 0, el.clientHeight));
+      recomputeRef.current();
       // scrollTick 只是喂给浮条锚点 useLayoutEffect 的重算信号；没有选中项时浮条不存在，
       // 重算是白费一次全 tab 子树重渲染——只在有选中时才 bump（item 3）。
       if (usePdfAnnotationStore.getState().buckets[tab.id]?.selectedId) setScrollTick((t) => t + 1);
@@ -281,16 +278,37 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const editingPage = usePdfAnnotationStore((s) => s.buckets[tab.id]?.editingPage ?? null);
 
   // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
-  const win = useMemo<WindowResult>(() => {
-    if (!sizes || !layout) return { pages: new Set(), visible: new Set(), rasterScale: visualScale };
-    return computeWindow({
-      sizes, tops: layout.tops, scrollTop: contentTop * visualScale, clientHeight,
-      visualScale, dpr: window.devicePixelRatio, columns: 1, editingPage,
-    });
-  }, [sizes, layout, contentTop, clientHeight, visualScale, editingPage]);
+  //
+  // 不是 useMemo：它的输入里有一个每帧都变的量（滚动位置），而输出大多数帧不变。改成「算出来
+  // 与上一版是同一个窗口就原样返回上一版」（sameWindow），React 的 Object.is 就会把这次
+  // setState 整个 bail out——纯滚动于是大多数帧一次重渲染都没有。判据是算出来的窗口本身，
+  // 不是滚动了多少像素，没有阈值。
+  const [win, setWin] = useState<WindowResult>(EMPTY_WINDOW);
   // onWheel / onPageSettled 都挂在 effect 或回调里，闭包拿不到最新的 win，用 ref 镜像
   const winRef = useRef(win);
   winRef.current = win;
+
+  // 重读滚动几何 → 重算窗口与页码读数。两件事都从 layout.tops 纯算，一次 DOM 量取都不做
+  // （scrollTop / clientHeight 是滚动容器自己的两个数，不是逐页的 getBoundingClientRect）。
+  const recompute = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    contentTop.current = el.scrollTop / visualScaleRef.current;
+    clientHeight.current = el.clientHeight;
+    if (!sizes || !layout) { setWin(EMPTY_WINDOW); return; }
+    const top = contentTop.current * visualScale;
+    setCurrentPage(mostVisiblePage(layout.tops, sizes, visualScale, top, top + clientHeight.current));
+    const next = computeWindow({
+      sizes, tops: layout.tops, scrollTop: top, clientHeight: clientHeight.current,
+      visualScale, dpr: window.devicePixelRatio, columns: 1, editingPage,
+    });
+    setWin((prev) => (sameWindow(prev, next) ? prev : next));
+  }, [sizes, layout, visualScale, editingPage]);
+  const recomputeRef = useRef(recompute);
+  recomputeRef.current = recompute;
+  // 窗口的其余输入（页尺寸、缩放、钉住的编辑页）变了也要重算一次——它们不来自滚动，没有
+  // scroll 事件可搭。deps 就是 recompute 自己：它的引用恰好在这些输入变化时才换。
+  useEffect(() => { recompute(); }, [recompute]);
 
   // 窗口变化后扫一遍：把「引用已归零、当时还在窗口内被放过一马」的页重新判定一次
   // （pageLifecycle.ts 的 sweep）。窗口挪走了才真的清，还在窗口内就继续留着。
@@ -332,12 +350,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 这个 effect 在 commit 之后同步跑，严格早于新 Document 的异步加载完成（onLoadSuccess
   // 只会在其自身 effect 之后、经过至少一次 pdf.js 的异步工作才触发）——所以预取回调里
   // 在“调用那一刻”读到的 prefetchToken.current 必然已经是这次自增后的新代号。
+  //
+  // 旧文档的页**不会**走 cleanup()：`pageProxies.current = {}` 是同步的，早于旧 lifecycle
+  // 已经排在 microtask 里的那些清理；它们跑到时 getProxy 拿到的是新的空表，什么都清不了
+  // （也因此不再虚增 cleanedCount，见 pageLifecycle 的 run）。真正把旧文档的解码缓存还回去的
+  // 是 react-pdf 销毁 <Document>（fileUrl 变了整棵子树重建）。这里换掉 lifecycle 是为了别把
+  // 上一份文档的引用计数和待清理队列带进新文档，不是为了清理旧文档。
   useEffect(() => {
     prefetchToken.current += 1;
     setSizes(null);
     pageProxies.current = {};
     linesCache.current = {};
-    // 上一份文档的引用计数、待清理队列都跟着它的 pageProxies 一起作废，不能带到新文档里。
     lifecycle.current = createPageLifecycle(
       (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
     );
@@ -418,7 +441,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         // （下面的 visualScale / layer.scale）补，表现为「放到很大只是变糊」，而不是把位图撑爆。
         const target = winRef.current.rasterScale;
         if (Math.abs(target - stable.scale) < 0.001) {
-          setLayers([stable]); // 已是该缩放，丢弃任何未完成的新层
+          // 已是该缩放：丢弃任何未完成的新层，连同它的兜底计时器与上一轮的顶替结论。
+          // 不清的话 data-pdf-promote-reason 会挂着上一轮的答案，而这一轮压根没顶替过；
+          // 计时器不清则会在 4 秒后拿 'timeout' 去覆盖它——两者都在削弱这个属性的可观测性。
+          if (promoteTimer.current != null) { clearTimeout(promoteTimer.current); promoteTimer.current = null; }
+          setPromoteReason(null);
+          setLayers([stable]);
           return;
         }
         layerSeq.current += 1;
@@ -431,29 +459,26 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       }, COMMIT_DELAY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('scroll', updateReadout, { passive: true });
+    el.addEventListener('scroll', scheduleRecompute, { passive: true });
     return () => {
       el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('scroll', updateReadout);
+      el.removeEventListener('scroll', scheduleRecompute);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       if (commitTimer.current != null) clearTimeout(commitTimer.current);
       if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
     };
-  }, [tab.status, promote, updateReadout]);
+  }, [tab.status, promote, scheduleRecompute]);
 
-  // 视口尺寸变了（拖窗、开合侧栏）窗口也要重算——这时没有滚动事件，updateReadout 不会跑
+  // 视口尺寸变了（拖窗、开合侧栏）窗口也要重算——这时没有滚动事件，滚动帧那条路不会跑。
+  // tab 被 display:none 藏起来时 Chromium 同样会触发这个回调、且 clientHeight 读数为 0：
+  // 那是「没有视口」而不是「视口很小」，computeWindow 的空间上界会让窗口退到只剩必保页。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      setClientHeight(el.clientHeight);
-      setContentTop(el.scrollTop / visualScaleRef.current);
-    });
+    const ro = new ResizeObserver(() => recomputeRef.current());
     ro.observe(el);
     return () => ro.disconnect();
   }, [tab.status]);
-
-  useEffect(() => { updateReadout(); }, [visualScale, layers, numPages, updateReadout]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [scrollTick, setScrollTick] = useState(0);
