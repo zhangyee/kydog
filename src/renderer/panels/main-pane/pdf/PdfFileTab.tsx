@@ -30,11 +30,32 @@ const PAGE_GAP = 16;             // 页间距基准（px，随缩放等比）
 const PAGE_PAD = 24;             // 上下留白基准（px，随缩放等比）
 // 单页预取失败（坏页字典等）时的占位尺寸——用最近一次成功页的尺寸，首页就失败则退到 A4。
 // 目的是让 sizes 数组下标始终对齐页号（不能因为一页失败就少 push 一个，让后面的页整体前移），
-// 且占位是个真实、非零的尺寸，故意避免下游（本文件的布局、以及 Task 5 的 unitLayout）
+// 且占位是个真实、非零的尺寸，故意避免下游（本文件的布局、以及 unitLayout）
 // 因 0 高度或 null 而出现异常布局或空指针。
+// 占位错了只影响那一页自己的行高，不会让后面的页整体偏移——布局模型与 DOM 行高出自同一个
+// sizes，不会互相错开。详见下面 layout 处的注释。
 export const FALLBACK_PAGE_SIZE: PageSize = { w: 595, h: 842 };
 
 type Layer = { id: number; scale: number };
+
+/**
+ * 后台新层能不能顶替：**可见页全部 settled**，即 need ⊆ done。
+ *
+ * 抽成纯函数有两个原因。一是它有两个调用点——渲染回调里一次（新画完一页），可见集变化的
+ * effect 里一次；只在回调里判会漏掉「visible 收缩之后剩下的页其实早就画完了」这条路径，
+ * 那时没有新回调，没人重新判定，就只能等 PROMOTE_TIMEOUT 兜底。二是这个判据只能用单测钉：
+ * 从外面区分「按条件顶替」与「按超时兜底」唯一的可观测差别是墙上时间，拿时间当判据既是
+ * 启发式 proxy，也证明不了走的是哪条路。
+ *
+ * done 允许含 need 之外的页（预取页画完了照样记），多记无害：判据是包含关系，不是相等。
+ * need 为空 → false：空集只会在窗口还没算出来（页尺寸没预取完）时出现，那不是「都好了」，
+ * 当成 true 会让新层在一页都没画的情况下顶上去。
+ */
+export function promoteReady(need: Set<number>, done: Set<number>): boolean {
+  if (need.size === 0) return false;
+  for (const p of need) if (!done.has(p)) return false;
+  return true;
+}
 
 // 结构化地描述 react-pdf 交给 onLoadSuccess 的 page proxy 里我们用到的三样东西，避免引 react-pdf 的内部类型路径。
 export type PageProxyLike = {
@@ -205,10 +226,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 每页顶边偏移与内容总高，按预取到的页尺寸算——虚拟化之后窗口外的行没有内容可量，
   // 只能算（pageLayout.ts）。
   //
-  // 已知误差：sizes 里可能混着占位尺寸。某页预取失败时 prefetchPageSizes 用上一页（首页失败
-  // 则用 FALLBACK_PAGE_SIZE）顶上，占位与真实高度之差会让**该页之后所有页**的 tops 带一个
-  // 恒定偏移，表现为滚过那一页之后页与视口错开一点、窗口偏了一格。失败页本来就拿不到真实
-  // 尺寸，这里没法修；记在这里是免得下次把它当成布局 bug 从头查一遍。
+  // sizes 里可能混着占位尺寸（某页预取失败时 prefetchPageSizes 拿上一页的尺寸顶上，首页就
+  // 失败则用 FALLBACK_PAGE_SIZE）。它**不会**让后面的页整体错位：DOM 里每一行的高度出自
+  // 同一个 sizes（`size.h * layer.scale`），gap/padding 两边同样按 layer.scale 等比、外层
+  // zoom 抵掉，所以行的实际顶边恒等于 tops[k] × visualScale——模型与 DOM 用的是同一份数据，
+  // 哪怕这份数据是错的，两者也不会互相错开，窗口不会偏。
+  // 真实后果只落在那一页自己身上：它的行是错的高度。若该页后来居然渲染成功（预取时 getPage
+  // 瞬时失败、<Page> 却成功），它的 canvas 会溢出这个行或缩在行里；若始终失败，就只是留下
+  // 一个尺寸不对的空位。
   const layout = useMemo(() => (sizes ? unitLayout(sizes, PAGE_GAP, PAGE_PAD) : null), [sizes]);
 
   // Task 7 之前这里恒为 null（store 里有槽位、还没有写入方），窗口逻辑照常工作。
@@ -280,7 +305,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     setLayers((cur) => (cur.length > 1 ? [cur[cur.length - 1]] : cur));
   }, []);
 
-  // 新层某一页渲染结束（成功或失败都计入）；**可见页**全部就绪即顶替。
+  // 新层某一页渲染结束（成功或失败都计入）；**可见页**全部就绪即顶替（promoteReady）。
   // 不能再按 numPages 判定：虚拟化之后窗口外的页压根不挂载，那个数永远凑不齐，每次缩放都要
   // 卡满 PROMOTE_TIMEOUT 才顶替。也不按整个窗口判定：窗口里还有预取页，它们画完与否用户看不见，
   // 等它们只会让顶替更晚。
@@ -288,13 +313,22 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const cur = layersRef.current;
     const incoming = cur.length > 1 ? cur[cur.length - 1] : null;
     if (!incoming || incoming.id !== layerId) return; // 只统计后台新层
-    const need = winRef.current.visible;              // 读 ref：渲染期间用户可能已经滚走了
-    if (!need.has(page)) return;
     if (progress.current.id !== layerId) progress.current = { id: layerId, done: new Set() };
-    const done = progress.current.done;
-    done.add(page);
-    if (need.size > 0 && [...need].every((p) => done.has(p))) promote();
+    // 先无条件记下「这一页画完了」，再判条件——不能拿「此刻可不可见」过滤，那会把预取页的完成
+    // 事实丢掉：预取页画完时不可见（直接 return、不记），用户随后滚一点让它进了视口，need 里
+    // 有它、done 里没有，而它**已经画完、不会再有回调**（key 稳定、scale 未变，react-pdf 不重画），
+    // 于是只能等 PROMOTE_TIMEOUT。记多了无害，判据是 need ⊆ done，不会提前顶替。
+    progress.current.done.add(page);
+    if (promoteReady(winRef.current.visible, progress.current.done)) promote();
   }, [promote]);
+
+  // 可见集变化之后也要重判一次：visible 收缩时剩下的页可能早已 settled，条件其实已经满足，
+  // 但 promote 只在渲染回调里被调用——没有新回调就没人重新判定，同样只能等 PROMOTE_TIMEOUT。
+  useEffect(() => {
+    const incoming = layers.length > 1 ? layers[layers.length - 1] : null;
+    if (!incoming || progress.current.id !== incoming.id) return;
+    if (promoteReady(win.visible, progress.current.done)) promote();
+  }, [win.visible, layers, promote]);
 
   // 触摸板捏合缩放：Chromium 把捏合转成 ctrl+wheel
   useEffect(() => {

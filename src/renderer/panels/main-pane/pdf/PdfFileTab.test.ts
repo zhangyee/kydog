@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { prefetchPageSizes, FALLBACK_PAGE_SIZE, type PageProxyLike } from './PdfFileTab';
+import { prefetchPageSizes, promoteReady, FALLBACK_PAGE_SIZE, type PageProxyLike } from './PdfFileTab';
 
 // `prefetchPageSizes` 是 Task 4 复审要求的容错路径（单页失败要隔离、不能拖垮整份文档）的核心
 // 循环，从 PdfFileTab 组件里抽出来单测。组件本体依赖 react-pdf / DOM / window.kydog，这个仓库
@@ -106,5 +106,44 @@ describe('prefetchPageSizes', () => {
     );
     expect(out).toBeNull();
     expect(onPageFailed).not.toHaveBeenCalled();
+  });
+});
+
+// 双缓冲的顶替判据。它只能在这里钉：从外面（e2e）区分「按条件顶替」与「按 PROMOTE_TIMEOUT
+// 兜底顶替」，唯一的可观测差别是墙上时间——拿时间当判据既是启发式 proxy，也证明不了走的是
+// 哪条路（两条路的终态一模一样）。所以判据抽成纯函数，行为由这组用例负责。
+describe('promoteReady', () => {
+  const S = (...ns: number[]) => new Set(ns);
+
+  it('可见页全部 settled → 可以顶替', () => {
+    expect(promoteReady(S(4, 5, 6), S(4, 5, 6))).toBe(true);
+  });
+
+  it('可见页里有一页还没 settled → 不能顶替', () => {
+    expect(promoteReady(S(4, 5, 6), S(4, 6))).toBe(false);
+  });
+
+  it('done 含可见集之外的页不影响判定（预取页画完了照样记，判据是包含不是相等）', () => {
+    // 这正是「先记后判」的依据：预取页画完时不可见，也必须记下来——它之后可能因为一次滚动
+    // 进入 need，而它不会再有第二次渲染回调。记多了不会让顶替提前发生。
+    expect(promoteReady(S(5), S(1, 2, 3, 4, 5, 6, 7))).toBe(true);
+    expect(promoteReady(S(5, 8), S(1, 2, 3, 4, 5, 6, 7))).toBe(false);
+  });
+
+  it('可见集为空 → 不能顶替（空集只在窗口还没算出来时出现，不是「都好了」）', () => {
+    expect(promoteReady(S(), S())).toBe(false);
+    expect(promoteReady(S(), S(1, 2, 3))).toBe(false);
+  });
+
+  it('done 为空 → 不能顶替', () => {
+    expect(promoteReady(S(1), S())).toBe(false);
+  });
+
+  it('不改动入参', () => {
+    const need = S(1, 2);
+    const done = S(1);
+    promoteReady(need, done);
+    expect([...need]).toEqual([1, 2]);
+    expect([...done]).toEqual([1]);
   });
 });
