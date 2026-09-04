@@ -2,10 +2,7 @@ import { promises as fsp } from 'node:fs';
 import { atomicWrite } from '../persist/atomicWrite';
 import { KydogError } from '../../shared/errors';
 import { sidecarPath, type PdfAnnotationsFile } from '../../shared/pdfSidecar';
-
-function isErrno(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === 'object' && err !== null && 'code' in err;
-}
+import { isErrno } from './fsGuard';
 
 const HIGHLIGHT_COLORS = new Set(['amber', 'moss', 'marginalia', 'accent']);
 const NOTE_COLORS = new Set(['ink', 'accent', 'marginalia', 'moss']);

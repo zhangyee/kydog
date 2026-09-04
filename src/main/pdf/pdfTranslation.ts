@@ -2,10 +2,7 @@ import { promises as fsp } from 'node:fs';
 import { KydogError } from '../../shared/errors';
 import { sidecarPath } from '../../shared/pdfSidecar';
 import { validateTranslatedDoc, type TranslatedDoc } from '../../shared/zhSidecar';
-
-function isErrno(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === 'object' && err !== null && 'code' in err;
-}
+import { isErrno } from './fsGuard';
 
 export const pdfTranslation = {
   /** ENOENT 归 null（还没翻译过）；其他读错误照抛。本期只读，没有 save。 */
