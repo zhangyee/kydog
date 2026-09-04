@@ -195,6 +195,43 @@ async function seedMono(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// Notice 那六条分支里，原先只有「译文文件有误」与「版本不匹配」两条有用例。这两份 fixture 补
+// 上剩下两条**译文侧**的：几何越界被丢块（dropped > 0）、边车没写 source 摘要（version
+// unknown，spec §12 明确列出的一态）。两条都是「能用但要提示」，不像前两条那样禁用对照。
+const DROPPED_REL = 'dropped-blocks.pdf';
+const UNKNOWN_REL = 'no-digest.pdf';
+
+async function seedNotices(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+
+  // 两条块：一条在页内，一条 y 直接越出页底（842 pt 的页放到 y = 900）→ filterByGeometry 丢掉它。
+  // 留一条合法的，是为了让 doc 非空、version 仍是 ok——否则会先撞上别的分支。
+  const dropped = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, DROPPED_REL), dropped);
+  await fs.writeFile(path.join(projectPath, `.${DROPPED_REL}.zh.json`), JSON.stringify({
+    version: 1, pdf: DROPPED_REL, lang: { in: 'en', out: 'zh' },
+    source: { sha256: createHash('sha256').update(dropped).digest('hex'), bytes: dropped.byteLength },
+    blocks: [
+      { id: 'ok1', page: 1, x: 60, y: 200, width: 460, height: 120, fontSize: 11, kind: 'text', source: 'a', target: '甲' },
+      { id: 'bad1', page: 1, x: 60, y: 900, width: 460, height: 120, fontSize: 11, kind: 'text', source: 'b', target: '乙' },
+    ],
+  }));
+
+  // 不写 source：checkVersion 返回 unknown —— 可用，但没法确认译文与这份 PDF 是不是同一版。
+  const unknown = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, UNKNOWN_REL), unknown);
+  await fs.writeFile(path.join(projectPath, `.${UNKNOWN_REL}.zh.json`), JSON.stringify({
+    version: 1, pdf: UNKNOWN_REL, lang: { in: 'en', out: 'zh' },
+    blocks: [
+      { id: 'ok1', page: 1, x: 60, y: 200, width: 460, height: 120, fontSize: 11, kind: 'text', source: 'a', target: '甲' },
+    ],
+  }));
+
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 async function seedContrast(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
@@ -347,7 +384,10 @@ async function pinchTo(page: Page, pdfPath: string, fromPct: number, toPct: numb
   }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), deltaY });
 }
 
-type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null; dGap: number | null };
+type RowGeom = {
+  page: string; sized: boolean;
+  dTop: number | null; dHeight: number | null; dGap: number | null; dLeftCell: number | null;
+};
 
 /**
  * 清晰层里每个已挂载页行的左右两格几何差。读的是 getBoundingClientRect，含外层 zoom。
@@ -356,6 +396,12 @@ type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: num
  * 「左格右边缘 + 页间距」上。`pageGap` 传的是 PAGE_GAP（pt，scale 1 下的值），乘的 scale
  * 从 `lr.width / pageW` 现推——CSS 宽本就是 `size.w * layer.scale`（见 task-6 report），
  * 不猜一个写死的缩放比例。
+ *
+ * `dLeftCell` 守的是左格那个 div 的**显式宽度**：它写的是未取整的 `size.w × layer.scale`，
+ * 而不是让 flex 收缩到内容宽（那会取 canvas 的 CSS 宽，react-pdf 对它取过 floor）。这个宽度是
+ * 标注层的坐标基准（PdfAnnotationLayer 用 inset:0 贴上去），少 1 px 就会把整页高亮悄悄平移。
+ * 判据里的 scale 从**行宽**现推（行宽 = `(2 × 页宽 + 间距) × layer.scale`，也是未取整的），
+ * 不从 canvas 宽推——那个数正是被 floor 过的那个，拿它当基准就等于把要测的东西当成了标尺。
  */
 async function rowGeometry(page: Page, paneSel: string, pageW: number, pageGap: number): Promise<RowGeom[]> {
   return page.evaluate(({ sel, pageW, pageGap }) => {
@@ -368,6 +414,9 @@ async function rowGeometry(page: Page, paneSel: string, pageW: number, pageGap: 
       const lr = left?.getBoundingClientRect();
       const rr = right?.getBoundingClientRect();
       const scale = lr ? lr.width / pageW : null;
+      const cell = left?.parentElement?.getBoundingClientRect();
+      const rowW = row.getBoundingClientRect().width;
+      const rowScale = rowW / (2 * pageW + pageGap);
       return {
         page: (row as HTMLElement).dataset.pdfPage ?? '?',
         // react-pdf 要等自己的 effect 跑过才给左格 canvas 写 CSS 尺寸；在那之前它是
@@ -376,6 +425,7 @@ async function rowGeometry(page: Page, paneSel: string, pageW: number, pageGap: 
         dTop: lr && rr ? Math.abs(lr.top - rr.top) : null,
         dHeight: lr && rr ? Math.abs(lr.height - rr.height) : null,
         dGap: lr && rr && scale !== null ? Math.abs((rr.left - (lr.left + lr.width)) - pageGap * scale) : null,
+        dLeftCell: cell ? Math.abs(cell.width - pageW * rowScale) : null,
       };
     });
   }, { sel: paneSel, pageW, pageGap });
@@ -413,6 +463,10 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
         // 150% 缩放、Retina（DPR 2）下单条能到 ~0.52 CSS px。2px 仍比这类取整噪声宽出几倍，
         // 但远小于「重叠」会出现的偏差量级（右格叠在左格上时 dGap 会偏出几百 px，即左格整页宽）。
         expect(r.dGap ?? Infinity, `${label} 第 ${r.page} 页两格间距`).toBeLessThan(2);
+        // 左格显式宽 == 页宽 × 本层缩放，逐位相等（两边都是同一个未取整的乘法，见 rowGeometry
+        // 注释）。容差取 0.05 px：让 flex 收缩到 canvas 内容宽的话，差的是一次 floor，
+        // 非整除缩放下必然远大于这个量级。
+        expect(r.dLeftCell ?? Infinity, `${label} 第 ${r.page} 页左格显式宽度`).toBeLessThan(0.05);
       }
     };
 
@@ -448,6 +502,34 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
     }, { sel: paneSel, ink: INK, pageW: PAGE_W });
     expect(sample.same, '右格在无 target 的块矩形里应与左格逐字节相同').toBe(true);
     expect(sample.dark, '右格那行原文应当还在（有暗像素）').toBeGreaterThan(0);
+
+    // 译文 HTML 层压在底图上的位置。上面 dTop/dHeight/dGap 量的都是两块 canvas 之间的关系，
+    // 不涉及 HTML 层——TranslationBlocks 若用了与 RightPage 不同的缩放算块矩形，那几条照样全绿，
+    // 而屏幕上是「译文没盖在原文上」。这条把 HTML 块的框换算到**右格 canvas 自己的坐标系**里
+    // 比：RightPage 的 fillRect 用的正是同一组 `b.x × S`（S = 位图宽 / 页宽），所以钉住「HTML
+    // 层与这块 canvas 同坐标系」就等于钉住「块正好落在那个填色矩形里」（填色还按 BLOCK_PAD
+    // 向外扩了一点点，是有意的余量，不影响这条判据）。
+    const overlap = await page.evaluate(({ sel, box, pageW }) => {
+      const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`)!;
+      const right = row.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement;
+      const block = row.querySelector('[data-translation-block="b1-text"]') as HTMLElement | null;
+      if (!block) return null;
+      const rr = right.getBoundingClientRect();
+      const br = block.getBoundingClientRect();
+      const perPt = rr.width / pageW;          // CSS px / pt，全部从这块 canvas 自己推
+      return {
+        dx: Math.abs(br.left - (rr.left + box.x * perPt)),
+        dy: Math.abs(br.top - (rr.top + box.y * perPt)),
+        dw: Math.abs(br.width - box.w * perPt),
+        dh: Math.abs(br.height - box.h * perPt),
+      };
+    }, { sel: paneSel, box: TARGET_BLOCK, pageW: PAGE_W });
+    expect(overlap, '第 1 页应当有那个有 target 的译文块').not.toBeNull();
+    // 容差 1.5 px：canvas 的 CSS 宽被 react-pdf floor 过，用它反推的 perPt 与块自己用的
+    // rasterScale 相差最多 1/595，落到 460 pt 宽的块上不到 0.8 px。缩放算错的话差的是几十上百 px。
+    for (const [k, v] of Object.entries(overlap!)) {
+      expect(v, `译文块与右格底图同坐标系：${k}`).toBeLessThan(1.5);
+    }
 
     // 滚几屏：换一批挂载的页，两格照样对齐
     await scroll.evaluate((el) => { el.scrollTop = el.clientHeight * 4; });
@@ -755,6 +837,26 @@ test('57-pdf-dual-pane: 两组主题 × 背景的对比度达标——墨色由�
     const darkContrast = await sampleContrast(page, darkSel);
     expect(darkContrast, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').not.toBeNull();
     expect(darkContrast!.ratio, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: Notice——几何越界丢块、没写源摘要，两条都提示且都不禁用对照', async () => {
+  const launched = await launchKydog({ seed: seedNotices });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+
+    // 每次 openPdf 都切到新 tab（前一个 pane 被 display:none 藏起来），断言必须紧跟其后。
+    const dropped = await openPdf(page, path.join(projectPath, DROPPED_REL));
+    await expect(dropped.getByTestId('pdf-notice')).toHaveText(/1 条译文块超出页面范围，已跳过/);
+    // 只是丢了一条越界的块，剩下的照样能对照——这条提示不该顺手把功能关掉
+    await expect(dropped.getByTestId('pdf-translate')).toBeEnabled();
+
+    const unknown = await openPdf(page, path.join(projectPath, UNKNOWN_REL));
+    await expect(unknown.getByTestId('pdf-notice')).toHaveText(/未记录源文件摘要/);
+    await expect(unknown.getByTestId('pdf-translate')).toBeEnabled();
   } finally {
     await teardown(launched);
   }
