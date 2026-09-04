@@ -145,18 +145,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const [numPages, setNumPages] = useState(0);
   const [sizes, setSizes] = useState<PageSize[] | null>(null); // null = 还没预取完；sizes[n-1] 对应第 n 页
   const [currentPage, setCurrentPage] = useState(1);
-  // 虚拟化窗口的输入：视口在**内容坐标**（scale 1 单位）里的位置，以及视口高度（CSS px）。
+  // 虚拟化窗口的输入：滚动容器的 scrollTop 与视口高度，都是 CSS px。
   //
-  // 为什么记 scrollTop / visualScale 而不是 scrollTop 本身：缩放是按鼠标锚点回算滚动位置的
-  // （见下方 useLayoutEffect），所以捏合时 scrollTop 每帧都被改写，改写量正比于滚动的绝对
-  // 位置 —— 长文档翻到第 100 页时，一帧的差值就有好几页。而喂窗口的这个值必然落后一帧
-  // （scroll 事件按 rAF 节流回来），于是手势期间窗口一直算在别的页上，把正看着的这页卸掉。
-  // 实测过：25 帧的捏合里有 24 帧可见页身上没有 canvas，整个手势屏幕是空白的。
+  // contentTop / clientHeight 只是 recompute（下面 :293 起）自己的暂存，写、读都在同一次调用
+  // 里完成（:296-302），不跨帧留存——放在 ref 上只是图共享读写代码，语义上等价于函数局部变量。
+  // contentTop 写入的是 `el.scrollTop / visualScaleRef.current`，读的时候再乘回同一次渲染里
+  // 赋值的 `visualScale`（两者由同一次 render 同步写入：下面 visualScaleRef.current = visualScale
+  // 和 recompute 这个闭包捕获的 visualScale，出自同一次 render body 的执行，恒是同一个数）——
+  // 一除一乘精确相消，`top` 就是 `el.scrollTop` 本身，不是什么独立的「内容坐标」。
   //
-  // 换成内容坐标就没有这个问题：锚点缩放的定义就是「锚点下的内容点不动」，所以内容坐标每帧
-  // 只挪 focal·(1 − 1/f)/scale，几个 pt 而已，与滚动的绝对位置无关。落后一帧也无所谓。
-  // 读的时候必须拿 el.scrollTop 配 visualScaleRef（DOM 当前反映的那个缩放），不能配将要
-  // 提交的新缩放——两者在同一次 commit 里一起变，读到的永远是自洽的一对。
+  // 这次现读是准的：recompute 无论从哪条路径被调用——缩放提交后的 effect，还是滚动帧的 rAF
+  // 回调（scheduleRecompute）——读到的都是调用那一刻 DOM 里的 scrollTop。缩放提交那条路径
+  // 尤其要紧：它的 effect（下面 `useEffect(() => { recompute(); }, [recompute])`）排在按鼠标
+  // 锚点回算滚动位置的 useLayoutEffect 之后、同一次 commit 里跑（见下方缩放锚点那段），所以
+  // 此刻读到的 scrollTop 已经是按新缩放校正过的值，不是校正前的旧位置。
   //
   // 为什么是 ref 不是 state：这两个量每个滚动帧都变，而由它们算出来的窗口大多数帧不变。放
   // state 的话每帧都是一次新值，整棵 PdfFileTab 子树（含 <Document> 与 N 个页行 div）每帧
@@ -354,7 +356,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 旧文档的页**不会**走 cleanup()：`pageProxies.current = {}` 是同步的，早于旧 lifecycle
   // 已经排在 microtask 里的那些清理；它们跑到时 getProxy 拿到的是新的空表，什么都清不了
   // （也因此不再虚增 cleanedCount，见 pageLifecycle 的 run）。真正把旧文档的解码缓存还回去的
-  // 是 react-pdf 销毁 <Document>（fileUrl 变了整棵子树重建）。这里换掉 lifecycle 是为了别把
+  // 是 react-pdf 内部 `loadDocument` 这个 effect 的 cleanup——它以 `source`（随 file/fileUrl
+  // 派生）为依赖，fileUrl 变了就先跑 cleanup 再重建，cleanup 里对旧 loadingTask 调用
+  // `destroy()`（node_modules/react-pdf/dist/esm/Document.js:257）。不是 `<Document>` 元素被
+  // 销毁重建——它的元素类型没变，React 不会拆整棵子树。这里换掉 lifecycle 是为了别把
   // 上一份文档的引用计数和待清理队列带进新文档，不是为了清理旧文档。
   useEffect(() => {
     prefetchToken.current += 1;
@@ -470,8 +475,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   }, [tab.status, promote, scheduleRecompute]);
 
   // 视口尺寸变了（拖窗、开合侧栏）窗口也要重算——这时没有滚动事件，滚动帧那条路不会跑。
-  // tab 被 display:none 藏起来时 Chromium 同样会触发这个回调、且 clientHeight 读数为 0：
-  // 那是「没有视口」而不是「视口很小」，computeWindow 的空间上界会让窗口退到只剩必保页。
+  //
+  // 待实测（浏览器行为假设，不算关键决策）：tab 被 display:none 藏起来时 Chromium 同样会触发
+  // 这个 ResizeObserver 回调、且 clientHeight 读数为 0。仓库里目前没有覆盖它的用例——e2e/ 下
+  // 没有「开两个 file tab、切走再切回同一个 PDF tab」这条路径，唯一现成的切 tab 用例是 HTML
+  // 的（e2e/46-html-tab.spec.ts:579 附近）。若假设成立，那是「没有视口」而不是「视口很小」，
+  // computeWindow 的空间上界会让窗口退到只剩必保页；若不成立，这段推理要重新核实。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;

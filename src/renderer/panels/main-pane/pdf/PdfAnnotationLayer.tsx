@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import type { Highlight, HighlightSegment, Note } from '../../../../shared/pdfSidecar';
 import { NavIcon } from '../../../shared';
 import { HIGHLIGHT_FILL, NOTE_FONT_SIZE, NOTE_INK, STROKE_WIDTH } from './annotationInks';
-import { noteDrafts } from './noteDrafts';
+import { noteAutoFocus, noteDrafts } from './noteDrafts';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
 import { straightSegment, type Point } from './straightenStroke';
 import type { TextLine } from './textLines';
@@ -71,10 +71,6 @@ const MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="2
   + `<path d="${MARKER_TIP}" fill="#fffdf7" stroke="#2b2721" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`
   + `<path d="${MARKER_BODY}" stroke="#2b2721" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const MARKER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(MARKER_SVG)}") 3 21, crosshair`;
-
-// 刚落下、还没提交过的笔记：挂载时自动聚焦，但**不进选中态**——选中会弹出改样式浮条，而插入时不该弹，
-// 第二次点它才弹（用户反馈 5，与高亮笔一致）。和草稿表一样放模块级，缩放顶替重挂之后照样认得这条 id。
-const noteAutoFocus = new Set<string>();
 
 export function NoteBox({ tabId, n, pageWidth, layerScale, selected, tool, toPage }: {
   tabId: string; n: Note; pageWidth: number; layerScale: number; selected: boolean; tool: Tool; toPage: ToPage;
