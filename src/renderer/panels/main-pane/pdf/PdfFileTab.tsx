@@ -282,7 +282,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const pageProxies = useRef<Record<number, PageProxyLike>>({});
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
   // 什么时候把一页还给 pdf.js（page.cleanup()）由 pageLifecycle.ts 的引用计数决定，挂载/卸载
-  // 边界在 MountedPageCell。PageProxyLike 故意没声明 cleanup（那是给 ensureLines 用的最小
+  // 边界在 MountedPageCells。PageProxyLike 故意没声明 cleanup（那是给 ensureLines 用的最小
   // 接口），这里单独转型取用。
   const lifecycle = useRef<PageLifecycle>(createPageLifecycle(
     (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
@@ -518,7 +518,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // Task 7 之前这里恒为 null（store 里有槽位、还没有写入方），窗口逻辑照常工作。
   const editingPage = usePdfAnnotationStore((s) => s.buckets[tab.id]?.editingPage ?? null);
 
-  // 双栏对照：写入方是上面的 onToggleDual（工具栏翻译键的 onClick 与 annotationKeys.ts 的
+  // 双栏对照：写入方是下面的 onToggleDual（工具栏翻译键的 onClick 与 annotationKeys.ts 的
   // L 分支都调它），以及 setLoaded 在 doc 变 null / version 变 mismatch 时的自动退出。
   // 页尺寸预取完没有，写进译文桶：进对照要用第一页的宽度算 fit-width，sizes 没到就只能什么都
   // 不做。原先这条不进判据，翻译键在预取期间仍是 enabled，按下去静默无事发生（大文档预取几百
