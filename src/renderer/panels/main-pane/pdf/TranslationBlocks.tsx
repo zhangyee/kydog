@@ -17,8 +17,56 @@ const SIZE_MUL = (kind: Block['kind']) => (kind === 'caption' ? 0.9 : 1);
  * TranslationBlocks，都写同一个 fitCache）：block.id 按 spec 只保证「文档内」唯一，两篇不同
  * 论文完全可能都有 `p1-b01`。key 必须带上 docKey（调用方传 tab.id，= 文件绝对路径，天然
  * 跨文档唯一）才能避免后打开的文档撞上前一份文档缓存的 fontScale。
+ *
+ * 分两层（域 → key → ratio）而不是一张扁平表：key 里含全文 measureText 与 bbox 之后，agent
+ * 每重译一次就是一整代**全新的** key，旧代再也不会被命中——扁平表下它们只是永不释放的死数据
+ * （单条约 0.5–1 KB，30 页论文一代约 450 条，而本期的主工作流恰恰是「让 agent 反复重译同一
+ * 篇」，KyDog 又是会开好几天的桌面应用）。分层之后一次测量就能按「域」整代换掉。
+ *
+ * 域是 (docKey, page)，不是 docKey：TranslationBlocks 是**按页**挂载的（blocksByPage 已经把
+ * 块分好桶），一趟测量只看得见一页的块。按 docKey 整代换会把同一文档其余页的条目当成「本轮
+ * 没出现」而误删——那些页只是没在这一趟里被测，不是失效了。
  */
-const fitCache = new Map<string, number>();
+const fitCache = new Map<string, Map<string, number>>();
+
+/** 淘汰域。见 fitCache 的注释：一趟测量覆盖的正好是一页。 */
+export function fitCacheDomain(docKey: string, page: number): string {
+  return JSON.stringify([docKey, page]);
+}
+
+/**
+ * 一趟测量的缓存句柄。
+ *
+ * 淘汰按**精确集合差**做，而且是由构造成立的：读到的（`get` 命中）与新算的（`set`）都记进这一
+ * 代的表，`commit` 拿它整个替掉旧表——「本轮没出现过的条目」于是自然不在新表里。判据是集合本身，
+ * 不是条目数、不是时间、不是访问顺序（LRU / maxSize 那类阈值会给这份缓存引进一个近似判据，
+ * 正是 CLAUDE.md 那条原则要避开的东西）。
+ *
+ * 只有跑完整趟才 `commit`：换页 / 换文档 / 重译中途作废的那一趟（alive=false）压根不落地，
+ * 半代结果不会替掉完整的上一代。
+ */
+export type FitRound = {
+  get(key: string): number | undefined;
+  set(key: string, ratio: number): void;
+  commit(): void;
+};
+
+export function beginFitRound(domain: string): FitRound {
+  const prev = fitCache.get(domain);
+  const next = new Map<string, number>();
+  return {
+    get(key) {
+      const hit = prev?.get(key);
+      if (hit !== undefined) next.set(key, hit); // 命中 = 本轮也用到了，带进新一代
+      return hit;
+    },
+    set(key, ratio) { next.set(key, ratio); },
+    commit() {
+      if (next.size > 0) fitCache.set(domain, next);
+      else fitCache.delete(domain); // 整页的块都没了：连域一起收掉，不留空表
+    },
+  };
+}
 
 /**
  * 缓存 key 的构造。
@@ -114,13 +162,13 @@ async function awaitFonts(host: HTMLElement, weight: number, px: number, text: s
  * layer.scale 之下。
  */
 async function measureFit(
-  docKey: string, b: Block, segs: Segment[], measureText: string, host: HTMLElement,
+  round: FitRound, docKey: string, b: Block, segs: Segment[], measureText: string, host: HTMLElement,
 ): Promise<number> {
   const px = b.fontSize * SIZE_MUL(b.kind);
   const weight = WEIGHT(b.kind);
   const font = `${weight} ${px}px "Noto Serif SC"`;
   const key = fitCacheKey(docKey, b.id, font, measureText, b.width, b.height);
-  const hit = fitCache.get(key);
+  const hit = round.get(key);
   if (hit !== undefined) return hit;
 
   // 先填一次是为了让 awaitFonts 能从真正的 span 上现读字族（它在第一个 await 之前就把
@@ -146,13 +194,19 @@ async function measureFit(
     return host.scrollHeight;
   }, b.height, MIN_RATIO);
 
-  fitCache.set(key, ratio);
+  round.set(key, ratio);
   return ratio;
 }
 
 type Props = {
   /** fitCache key 的文档隔离维度。调用方传 tab.id（= 文件绝对路径，天然跨文档唯一）。 */
   docKey: string;
+  /**
+   * 这一层挂的是第几页。与 `blocks` 里各块的 `b.page` 同值（blocks 出自 blocksByPage 的同一个
+   * `n`），显式传是为了让 fitCache 的淘汰域在**blocks 为空时也有定义**——某一代译文把整页的块
+   * 都删掉时，正是要靠这一趟空测量把该页上一代的条目收掉。
+   */
+  page: number;
   /** 这一页 scale 1 的视口尺寸（pt）。容器按它显式定宽高——与 RightPage 的 canvas 同源，不靠隐式布局撑起来。 */
   size: { w: number; h: number };
   /** 所在清晰层的已提交缩放；与 RightPage 的 rasterScale 是同一个数。 */
@@ -185,7 +239,7 @@ type Props = {
  * （zhSidecar.ts 的 Placeholder.text），不是 LaTeX 源，KaTeX 没有输入可渲染。formula 段落只
  * 用 font-style: italic 做视觉区分，这是本期的诚实边界，留给以后接抽取 LaTeX 源之后再补。
  */
-export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Props) {
+export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [fits, setFits] = useState<Record<string, number>>({});
 
@@ -193,19 +247,23 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Pro
     const host = hostRef.current;
     if (!host) return;
     let alive = true;
+    const round = beginFitRound(fitCacheDomain(docKey, page));
     void (async () => {
       const out: Record<string, number> = {};
       for (const b of blocks) {
         if (b.target === undefined) continue;
         const segs = splitPlaceholders(b.target, b.placeholders ?? []);
         const measureText = segs.map((s) => s.text).join('');
-        out[b.id] = await measureFit(docKey, b, segs, measureText, host);
+        out[b.id] = await measureFit(round, docKey, b, segs, measureText, host);
         if (!alive) return; // 换页/换文档中途作废：不把已经量到一半的结果落地
       }
-      if (alive) setFits(out);
+      if (!alive) return;
+      setFits(out);
+      // 整趟跑完才落地这一代缓存：本轮没出现过的条目随旧表一起被换掉（见 beginFitRound）。
+      round.commit();
     })();
     return () => { alive = false; };
-  }, [blocks, docKey]);
+  }, [blocks, docKey, page]);
 
   // bg 为 null 时整层是 hidden 的（见下面容器的 visibility），这里的白底只是个占位，不会有
   // 任何一个像素按它着色——真正的判据永远是 RightPage 交回来的那个「实际填下去的底色」。

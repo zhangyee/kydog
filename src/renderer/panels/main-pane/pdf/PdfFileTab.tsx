@@ -198,7 +198,9 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, docKey
             size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas}
             onBackground={setBg}
           />
-          <TranslationBlocks blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} />
+          <TranslationBlocks
+            blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} page={n}
+          />
         </div>
       )}
     </>
