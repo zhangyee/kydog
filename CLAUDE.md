@@ -52,4 +52,5 @@ CI 里靠 `KYDOG_REQUIRE_SYMLINK=1` 反过来**禁止跳过**：能力缺失就�
 - **不要引入危险色**。设计系统里没有红色 token，破坏性操作走统一的 `confirm()` 对话框，不靠颜色警示。
 - **改了 `src/about/` 的篇目**（新增、删除、改标题或正文）→ 同步 `e2e/39-about-page.spec.ts`。它硬编码了当前的篇数、标题与正文片段，而 `npm test` 覆盖不到 e2e，只跑 gate 命令不会发现它红了。
 - **往 `vite.main.config.ts` 的 `external` 加包** → 同步 `forge.config.ts` 的 `EXTERNAL_RUNTIME_MODULES`。external 的包不进 bundle，只以裸名留在产物里，运行时按 Node 规则找 `node_modules`；打包成品里没有它就是 `ERR_MODULE_NOT_FOUND`。**开发机上看不出来**：`out/` 在仓库内，解析会一路上溯摸到 `<repo>/node_modules`，借开发树的货照样跑。守这条的是 `e2e/54-packaged-smoke` 的断言 2b（它把成品复制到仓库外再启动），而 e2e 要先 `npm run package`，只跑 gate 命令发现不了。
+- **改了 `src/shared/zhSidecar.ts` 的 `BLOCK_KINDS` / `PLACEHOLDER_KINDS`** → 同步 `src/main/harness/templates/{zh,en}/AGENTS.md` 里那份 `kind` 契约（bullet 列表与「只认这六个值」的数目）。模板是 agent 写译文边车时唯一读得到的说明，一个不认识的 kind 会让**整份文件**被拒。守这条的是 `templates.test.ts`（集合相等，两个方向都守）。
 - **改了 `src/skills/` 的内容**（新增、删除、改 SKILL.md / references / assets）→ 跑 `sync-skill-docs` 审核中英文一致性。`builtinSkillsI18n.test.ts` 只校验双语文件**存在**，校验不了内容有没有同步；放弃 sha 账本之后，这套审核是内容一致性的唯一保障。

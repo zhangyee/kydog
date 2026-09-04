@@ -3,7 +3,15 @@
 import { KydogError } from './errors';
 
 export type Term = { source: string; target: string };
-export type Placeholder = { id: string; kind: 'formula' | 'citation' | 'inline-code'; text: string };
+/**
+ * 合法的 `kind` 取值。这两份数组是**唯一**的一份：下面的类型、运行时校验用的 Set、报错信息里
+ * 列出来的取值串都从它现推，harness 模板 AGENTS.md 里给 agent 的那份契约由 templates.test.ts
+ * 钉住（模板是 agent 写边车时唯一读得到的说明，没有测试就会静默过期）。
+ */
+export const BLOCK_KINDS = ['text', 'title', 'caption', 'formula', 'table', 'skip'] as const;
+export const PLACEHOLDER_KINDS = ['formula', 'citation', 'inline-code'] as const;
+
+export type Placeholder = { id: string; kind: (typeof PLACEHOLDER_KINDS)[number]; text: string };
 
 export type Block = {
   id: string;
@@ -11,7 +19,7 @@ export type Block = {
   x: number; y: number;            // scale 1 视口坐标，块左上角
   width: number; height: number;
   fontSize: number;
-  kind: 'text' | 'title' | 'caption' | 'formula' | 'table' | 'skip';
+  kind: (typeof BLOCK_KINDS)[number];
   source: string;
   /** 缺省 = 不翻译这一块。这是「右栏要不要在这个矩形里盖掉原文」的唯一判据（spec §3.2）。 */
   target?: string;
@@ -28,8 +36,8 @@ export type TranslatedDoc = {
   blocks: Block[];
 };
 
-const KINDS = new Set(['text', 'title', 'caption', 'formula', 'table', 'skip']);
-const PH_KINDS = new Set(['formula', 'citation', 'inline-code']);
+const KINDS = new Set<string>(BLOCK_KINDS);
+const PH_KINDS = new Set<string>(PLACEHOLDER_KINDS);
 // 报错时把合法取值一并列出来：边车的唯一写入方是 agent（契约写在 harness 模板的 AGENTS.md 里），
 // 而一条不认识的 kind 会让**整份文件**被拒（不是逐块降级——静默丢块比报错更难查）。错误信息里
 // 带上取值集合，agent 从错误本身就能自我修正，不必回头去猜契约。列表从 Set 现推，不手写第二份。
