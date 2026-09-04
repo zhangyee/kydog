@@ -195,16 +195,37 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     return () => { cancelled = true; };
   }, [tab.id, tab.path]);
 
-  // 加载译文边车：并行取字节摘要与边车本身，摘要校验版本、几何过滤越界块（spec §5）。
+  // 字节摘要只算一次：bytes 在一个 tab 生命周期里只会从 null 变成一份字节、此后不再变（见下方
+  // "加载 PDF 字节"那个 effect，只在 tab.status === 'loading' 时才 setBytes）。loadTranslation
+  // 会在 sizes 到位、以及每次窗口 focus 时重跑（见下）——若每次都重算 sha256，开着 N 个 PDF、
+  // alt-tab 回来一次就是 N 次对整份字节的全量哈希。算好存这里，loadTranslation 直接读，不再自己算。
+  const [sha, setSha] = useState<string | null>(null);
+  useEffect(() => {
+    if (!bytes) { setSha(null); return; }
+    let cancelled = false;
+    sha256Hex(bytes)
+      .then((h) => { if (!cancelled) setSha(h); })
+      .catch((err: Error) => {
+        if (!cancelled) usePdfTranslationStore.getState().setLoadError(tab.id, err.message);
+      });
+    return () => { cancelled = true; };
+  }, [bytes, tab.id]);
+
+  // 加载译文边车：摘要校验版本、几何过滤越界块（spec §5）。
   // 几何过滤要等页尺寸预取完；sizes 还没到（首次挂载时几乎总是如此）就先按未过滤存一版，
   // sizes 到位后这个 effect 靠依赖数组里的 sizes 再跑一次，用真实尺寸重新过滤、覆盖前一版。
+  //
+  // sha 是异步算出来的，这个 effect 可能在它算好之前就先跑一次（比如 sizes 先到、或首次挂载时
+  // bytes 刚落地那一刻）——这时直接不做事（不取边车、不写 store），等上面那个 effect 把 sha
+  // 算好、这个 useCallback 因依赖变化换引用，"跑一次"的 effect（下面）自然会重新触发。没有选
+  // "先按 unknown 存一版、sha 到位后再单独重判"：那条路要么得再拉一次边车 RPC，要么得把 doc
+  // 存到 ref 里跨两次调用复用，多一条状态路径；而 sha256 是纯本地计算，收敛比边车 RPC 更快，
+  // 等它没有可觉察的代价。选择"等"是为了不让版本校验在 sha 未就绪的窗口里把 unknown 当成
+  // 阶段性正确答案去展示——bucket 在这段窗口里维持"还没加载"的初始状态，不会被写入。
   const loadTranslation = useCallback(async () => {
-    if (!bytes) return;
+    if (!bytes || sha === null) return;
     try {
-      const [{ doc }, sha] = await Promise.all([
-        window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path }),
-        sha256Hex(bytes),
-      ]);
+      const { doc } = await window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path });
       const st = usePdfTranslationStore.getState();
       if (!doc) { st.setLoaded(tab.id, null, 'unknown', 0); return; }
       const version = checkVersion(doc, sha, bytes.byteLength);
@@ -213,7 +234,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     } catch (err) {
       usePdfTranslationStore.getState().setLoadError(tab.id, (err as Error).message);
     }
-  }, [bytes, sizes, tab.id, tab.path]);
+  }, [bytes, sha, sizes, tab.id, tab.path]);
 
   useEffect(() => { void loadTranslation(); }, [loadTranslation]);
 
