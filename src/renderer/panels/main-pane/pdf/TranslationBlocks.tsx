@@ -10,20 +10,39 @@ const WEIGHT = (kind: Block['kind']) => (kind === 'title' ? 600 : 400);
 const SIZE_MUL = (kind: Block['kind']) => (kind === 'caption' ? 0.9 : 1);
 
 /**
- * fontScale 缓存：key = docKey + block.id + 用于测量的 font shorthand。
+ * fontScale 缓存。
  *
  * 模块级、不落盘——agent 写边车时算不出这个值，让它成为契约字段只会逼 agent 编一个。
  * 模块级 Map 在同一个渲染进程内是单例，而应用支持同时打开多个 PDF tab（每个 tab 各挂一份
  * TranslationBlocks，都写同一个 fitCache）：block.id 按 spec 只保证「文档内」唯一，两篇不同
  * 论文完全可能都有 `p1-b01`。key 必须带上 docKey（调用方传 tab.id，= 文件绝对路径，天然
- * 跨文档唯一）才能避免后打开的文档撞上前一份文档缓存的 fontScale——那个比例是按另一份译文的
- * 长度和 bbox 算出来的，对这份文档而言是错的，且不会自愈、依赖打开顺序。
+ * 跨文档唯一）才能避免后打开的文档撞上前一份文档缓存的 fontScale。
  */
 const fitCache = new Map<string, number>();
 
-/** 缓存 key 的构造：抽成纯函数，单测钉住「不同 docKey 必须得到不同 key」。 */
-export function fitCacheKey(docKey: string, blockId: string, font: string): string {
-  return `${docKey}|${blockId}|${font}`;
+/**
+ * 缓存 key 的构造。
+ *
+ * key 里必须带上**决定这个比例的那几个量本身**：measureText（真正被排版的那串字）、块的
+ * bbox（`b.width` 是测量宿主的宽、`b.height` 是要装进去的高）、以及测量用的 font。这几项
+ * 加上「同一个 measure 实现」就是 ratio 的全部输入，一项不落。
+ *
+ * 原先的 key 是 `docKey|blockId|font`——拿 `block.id` 当这些量的身份代理。这在本期的主工作流
+ * 下是错的：agent 重新翻译同一份 PDF 时源字节没变（`source.sha256` 仍匹配、version 仍 ok、
+ * dual 保持），blocks 却换成了新的，而 `b.id` 与 `b.fontSize` 通常不变——于是新译文命中旧
+ * 缓存，继续用按旧文本算出来的比例：偏大就溢出成块内滚动条，偏小就留一大片空白。fitCache 又是
+ * 模块级、`docKey` 是文件路径，关掉 tab 重开同一个文件照样命中，只有重启应用才清得掉。
+ *
+ * 也是 CLAUDE.md 那条原则的一次应用：判定要基于协议层事实（这里就是 measure 的那几个入参），
+ * 不拿 id 这种身份代理去替。
+ *
+ * 用 JSON.stringify 一个数组、不用 `a|b|c` 拼串：路径与译文里都可能出现分隔符，拼串会让
+ * 「不同的入参组合」撞成同一个 key。
+ */
+export function fitCacheKey(
+  docKey: string, blockId: string, font: string, measureText: string, width: number, height: number,
+): string {
+  return JSON.stringify([docKey, blockId, font, width, height, measureText]);
 }
 
 /**
@@ -44,7 +63,7 @@ async function measureFit(
   const px = b.fontSize * SIZE_MUL(b.kind);
   const weight = WEIGHT(b.kind);
   const font = `${weight} ${px}px "Noto Serif SC"`;
-  const key = fitCacheKey(docKey, b.id, font);
+  const key = fitCacheKey(docKey, b.id, font, measureText, b.width, b.height);
   const hit = fitCache.get(key);
   if (hit !== undefined) return hit;
 
