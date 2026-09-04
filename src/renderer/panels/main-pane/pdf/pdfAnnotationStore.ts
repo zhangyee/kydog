@@ -53,6 +53,7 @@ type State = {
   restyle: (tab: string, id: string, patch: { color?: HighlightColor | NoteColor; level?: Level }) => void;
   remove: (tab: string, id: string) => void;
   select: (tab: string, id: string | null) => void;
+  setEditingPage: (tab: string, page: number | null) => void;
   undo: (tab: string) => void;
   redo: (tab: string) => void;
 };
@@ -144,6 +145,12 @@ export const usePdfAnnotationStore = create<State>((set, get) => {
       };
     }),
     select: (tab, id) => patch(tab, () => ({ selectedId: id })),
+    // 视图状态，不改内容——不走 edit()，不压撤销快照
+    setEditingPage: (tab, page) => set((s) => {
+      const b = s.buckets[tab];
+      if (!b || b.editingPage === page) return s;
+      return { buckets: { ...s.buckets, [tab]: { ...b, editingPage: page } } };
+    }),
     undo: (tab) => patch(tab, (b) => {
       if (!b.doc || b.loadError || b.undo.length === 0) return {};
       const prev = b.undo[b.undo.length - 1];

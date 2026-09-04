@@ -239,7 +239,9 @@ export function NoteBox({ tabId, n, pageWidth, layerScale, selected, tool, toPag
       <textarea
         ref={ref} data-testid={`pdf-note-input-${n.id}`}
         value={text} rows={1} readOnly={tool === 'highlight'}
-        onChange={(e) => { setText(e.target.value); noteDrafts.set(n.id, e.target.value); }} onBlur={commit}
+        onChange={(e) => { setText(e.target.value); noteDrafts.set(n.id, e.target.value); }}
+        onFocus={() => usePdfAnnotationStore.getState().setEditingPage(tabId, n.page)}
+        onBlur={() => { usePdfAnnotationStore.getState().setEditingPage(tabId, null); commit(); }}
         style={{
           display: 'block', width: '100%', border: 'none', background: 'transparent', resize: 'none',
           padding: 0, margin: 0, outline: 'none', overflow: 'hidden',
