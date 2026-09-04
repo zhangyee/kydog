@@ -145,13 +145,15 @@ export async function prefetchPageSizes(
  * **右格不 acquire lifecycle**：那个引用计数是给 `page.cleanup()` 用的，而右格根本不调
  * pdf.js 渲染（它只从左格 canvas 拷位图）。多 acquire 一次会让页永远清理不掉。
  */
-function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, onPageLoad, onSettled, annotations }: {
+function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, docKey, onPageLoad, onSettled, annotations }: {
   n: number;
   lifecycle: PageLifecycle;
   size: PageSize;
   layerScale: number;
   dual: boolean;
   blocks: Block[];
+  /** TranslationBlocks 的 fitCache key 隔离维度；调用方传 tab.id。见该组件顶部注释。 */
+  docKey: string;
   onPageLoad: (p: PageProxyLike) => void;
   onSettled: () => void;
   /** 标注层；只有清晰层（idx 0）给，后台新层传 null。 */
@@ -194,7 +196,7 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, onPage
             size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas}
             onBackground={setBg}
           />
-          <TranslationBlocks blocks={blocks} size={size} rasterScale={layerScale} bg={bg} />
+          <TranslationBlocks blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} />
         </div>
       )}
     </>
@@ -760,7 +762,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                           {mounted && (
                             <MountedPageCells
                               n={n} lifecycle={lifecycle.current} size={size} layerScale={layer.scale}
-                              dual={dual} blocks={blocksByPage.get(n) ?? NO_BLOCKS}
+                              dual={dual} blocks={blocksByPage.get(n) ?? NO_BLOCKS} docKey={tab.id}
                               onPageLoad={(p) => { pageProxies.current[n] = p; }}
                               onSettled={() => onPageSettled(layer.id, n)}
                               annotations={idx === 0 ? (

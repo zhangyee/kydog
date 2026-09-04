@@ -10,15 +10,21 @@ const WEIGHT = (kind: Block['kind']) => (kind === 'title' ? 600 : 400);
 const SIZE_MUL = (kind: Block['kind']) => (kind === 'caption' ? 0.9 : 1);
 
 /**
- * fontScale 缓存：key = block.id + 用于测量的 font shorthand。
+ * fontScale 缓存：key = docKey + block.id + 用于测量的 font shorthand。
  *
  * 模块级、不落盘——agent 写边车时算不出这个值，让它成为契约字段只会逼 agent 编一个。
- * 只按 id 分区（不含文档摘要）：不同 PDF 若碰巧用了同样的 block id（比如都是
- * `b1-text` 这类顺序生成的 id）会共享缓存条目。这是 spec 明确要求的 key 形状——id +
- * font shorthand——权衡是「同一个 tab 内 fontScale 只算一次」换来的，跨文档 id 碰撞
- * 目前没有已知的现实触发路径（block id 由抽取阶段生成，实践中带文档特征），先接受。
+ * 模块级 Map 在同一个渲染进程内是单例，而应用支持同时打开多个 PDF tab（每个 tab 各挂一份
+ * TranslationBlocks，都写同一个 fitCache）：block.id 按 spec 只保证「文档内」唯一，两篇不同
+ * 论文完全可能都有 `p1-b01`。key 必须带上 docKey（调用方传 tab.id，= 文件绝对路径，天然
+ * 跨文档唯一）才能避免后打开的文档撞上前一份文档缓存的 fontScale——那个比例是按另一份译文的
+ * 长度和 bbox 算出来的，对这份文档而言是错的，且不会自愈、依赖打开顺序。
  */
 const fitCache = new Map<string, number>();
+
+/** 缓存 key 的构造：抽成纯函数，单测钉住「不同 docKey 必须得到不同 key」。 */
+export function fitCacheKey(docKey: string, blockId: string, font: string): string {
+  return `${docKey}|${blockId}|${font}`;
+}
 
 /**
  * 在一个 zoom:1 的隐藏宿主里量一次，得到能装进 maxH 的最大字号比例。
@@ -32,11 +38,13 @@ const fitCache = new Map<string, number>();
  * `{v1}` 这样的字面 token，用它去请求字体子集，测出来的换行也是按 token 长度、不是按真实
  * 显示文本，两者在公式/引用较长时会明显偏差。
  */
-async function measureFit(b: Block, measureText: string, host: HTMLElement): Promise<number> {
+async function measureFit(
+  docKey: string, b: Block, measureText: string, host: HTMLElement,
+): Promise<number> {
   const px = b.fontSize * SIZE_MUL(b.kind);
   const weight = WEIGHT(b.kind);
   const font = `${weight} ${px}px "Noto Serif SC"`;
-  const key = `${b.id}|${font}`;
+  const key = fitCacheKey(docKey, b.id, font);
   const hit = fitCache.get(key);
   if (hit !== undefined) return hit;
 
@@ -55,6 +63,8 @@ async function measureFit(b: Block, measureText: string, host: HTMLElement): Pro
 }
 
 type Props = {
+  /** fitCache key 的文档隔离维度。调用方传 tab.id（= 文件绝对路径，天然跨文档唯一）。 */
+  docKey: string;
   /** 这一页 scale 1 的视口尺寸（pt）。容器按它显式定宽高——与 RightPage 的 canvas 同源，不靠隐式布局撑起来。 */
   size: { w: number; h: number };
   /** 所在清晰层的已提交缩放；与 RightPage 的 rasterScale 是同一个数。 */
@@ -80,7 +90,7 @@ type Props = {
  * （zhSidecar.ts 的 Placeholder.text），不是 LaTeX 源，KaTeX 没有输入可渲染。formula 段落只
  * 用 font-style: italic 做视觉区分，这是本期的诚实边界，留给以后接抽取 LaTeX 源之后再补。
  */
-export function TranslationBlocks({ blocks, size, rasterScale, bg }: Props) {
+export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [fits, setFits] = useState<Record<string, number>>({});
 
@@ -94,13 +104,13 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg }: Props) {
         if (b.target === undefined) continue;
         const measureText = splitPlaceholders(b.target, b.placeholders ?? [])
           .map((s) => s.text).join('');
-        out[b.id] = await measureFit(b, measureText, host);
+        out[b.id] = await measureFit(docKey, b, measureText, host);
         if (!alive) return; // 换页/换文档中途作废：不把已经量到一半的结果落地
       }
       if (alive) setFits(out);
     })();
     return () => { alive = false; };
-  }, [blocks]);
+  }, [blocks, docKey]);
 
   const ink = toCss(inkForBackground(bg ?? [255, 255, 255]));
 
