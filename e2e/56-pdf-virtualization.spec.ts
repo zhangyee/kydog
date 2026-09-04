@@ -180,3 +180,102 @@ test('56-pdf-virtualization: 捏合过程中可见页一帧都不掉（窗口输
     await teardown(launched);
   }
 });
+
+test('56-pdf-virtualization: 编辑中的文字注滚出视口再关文件，草稿不丢', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  const { kydogHome } = launched;
+  const pdfPath = path.join(kydogHome, 'proj', LONG_REL);
+  try {
+    const { page } = launched;
+    let pane = await openPdf(page, pdfPath);
+    const scroll = page.locator(testIdSelector(`pdf-scroll-${pdfPath}`));
+
+    await pane.getByTestId('pdf-tool-note').click();
+    const layerBox = (await pane.getByTestId('pdf-annotation-layer-1').boundingBox())!;
+    await page.mouse.click(layerBox.x + 100, layerBox.y + 100);
+    const noteInput = pane.locator('[data-pdf-page="1"] [data-testid^="pdf-note-input-"]');
+    await expect(noteInput).toBeFocused();
+    await page.keyboard.type('还没失焦的草稿');
+    await expect(noteInput).toHaveValue('还没失焦的草稿');
+
+    // 环节一：滚到很远处（第 100 页）再看第 1 页——不点别处、不按 Escape，textarea 焦点不丢，
+    // 靠的是 Task 7 的钉住（editingPage 进 must 集合）。先证明窗口真的挪走了（第 100 页挂上），
+    // 再证明第 1 页依然挂着（data-pdf-mounted，协议层事实，不是「textarea 还有内容」这种间接推断）——
+    // 这两条缺一不可：只测最后一步的话，钉住失效但 flushDrafts 兜住了，测试照样绿。
+    await scroll.evaluate((el, top) => { el.scrollTop = top; }, PAGE_PAD + 99 * (PAGE_H + PAGE_GAP) + 10);
+    await expect(pane.locator('[data-pdf-page="100"][data-pdf-mounted="1"]')).toHaveCount(1);
+    await expect(pane.locator('[data-pdf-page="1"][data-pdf-mounted="1"]')).toHaveCount(1);
+    await expect(noteInput).toHaveValue('还没失焦的草稿');
+    await expect(noteInput).toBeFocused();
+
+    // 环节二：关 tab 重开——textarea 卸载，草稿只能靠 Task 1 的 flushDrafts 冲进 store 才落得了盘
+    const tab = page.getByTestId(`tab-${pdfPath}`);
+    await tab.hover();
+    await page.getByTestId(`tab-close-${pdfPath}`).click();
+    await expect(tab).toHaveCount(0);
+    pane = await openPdf(page, pdfPath);
+    await expect(pane.locator('[data-pdf-page="1"] [data-testid^="pdf-note-input-"]')).toHaveValue('还没失焦的草稿');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('56-pdf-virtualization: 逐页浏览之后确实清理过页面', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', LONG_REL);
+    await openPdf(page, pdfPath); // 只用它的等待锚点确认已加载，返回的 pane 本用例用不上
+    const scroll = page.locator(testIdSelector(`pdf-scroll-${pdfPath}`));
+
+    // 逐页翻：每一步之间留够时间让 rAF 节流的 updateReadout → 窗口重算 → sweep 走完一轮，
+    // 这里的等待只是给协议事件（scroll → 窗口变化 → 清理）留出发生的空间，不是拿它当判据——
+    // 判据是下面读到的清理计数，不是等了多久。
+    for (let i = 1; i <= 40; i++) {
+      await scroll.evaluate((el, k) => { el.scrollTop = k * 3000; }, i);
+      await page.waitForTimeout(60);
+    }
+    const cleaned = await page.evaluate(() =>
+      (window as unknown as { __kydogCleanedPages?: number }).__kydogCleanedPages ?? 0);
+    expect(cleaned).toBeGreaterThan(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('56-pdf-virtualization: 多页文档下完整走完一次缩放提交，顶替确实发生', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', LONG_REL);
+    const pane = await openPdf(page, pdfPath);
+    const scroll = page.locator(testIdSelector(`pdf-scroll-${pdfPath}`));
+
+    // 翻到中间页：窗口里除了可见页还挂着预取的邻页（可见集是挂载集的真子集）——这条路径单页文档
+    // （前一条用例用的 BIG_REL）测不出来，可见集恰好等于挂载集，练不到 promoteReady 按可见页
+    // 判定这件事本身。
+    await scroll.evaluate((el, top) => { el.scrollTop = top; }, PAGE_PAD + 49 * (PAGE_H + PAGE_GAP) + 10);
+    const row = pane.locator('[data-pdf-layer="stable"] [data-pdf-page="50"]');
+    await expect(row).toHaveAttribute('data-pdf-mounted', '1');
+    const canvas = row.locator('canvas');
+    const width = () => canvas.evaluate((c) => (c as HTMLCanvasElement).width);
+    const at1 = await width();
+
+    await pinchToMax(page, pdfPath);
+
+    // 顶替收尾——两条协议层事实一起看：① 位图分辨率变了（新层真的画完，不是空的，不是原地跳过）；
+    // ② DOM 最终收回到只剩一层，且这层标记是 stable（旧层已被摘掉）。这条判据只证明「顶替确实
+    // 发生」，证明不了走的是 promoteReady 的条件顶替还是 PROMOTE_TIMEOUT 的兜底——PdfFileTab.tsx
+    // 里 promoteReady 上方的注释说得很清楚：从外部（含 e2e）看，两条路径唯一的可观测差别就是墙上
+    // 时间，拿时间当判据既是启发式 proxy 也证明不了走的是哪条路，这个区分只用单测钉（promoteReady
+    // 自己的单测）。这条 e2e 要补的缺口不在那，是「多页文档下这条端到端链路真的能跑通、真的会
+    // 收敛」，此前只有单测覆盖到 promoteReady 这个纯函数本身，没有真的经过一次渲染 → 顶替的完整
+    // 往返。（曾经加过一条「commit 之后先出现 2 层 incoming」的中间断言：实测里可见集往往只有一两页，
+    // 渲染 + 顶替快到 5s 的轮询窗口一次都没逮到 2 层的瞬间，是在拿撞见时序当判据，删掉了。）
+    await expect.poll(width, { timeout: 15000 }).toBeGreaterThan(at1);
+    await expect(pane.locator('[data-pdf-layer]')).toHaveCount(1);
+    await expect(pane.locator('[data-pdf-layer]')).toHaveAttribute('data-pdf-layer', 'stable');
+  } finally {
+    await teardown(launched);
+  }
+});
