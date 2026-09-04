@@ -123,10 +123,23 @@ async function measureFit(
   const hit = fitCache.get(key);
   if (hit !== undefined) return hit;
 
+  // 先填一次是为了让 awaitFonts 能从真正的 span 上现读字族（它在第一个 await 之前就把
+  // getComputedStyle 读完了，这一段与 fillHost 之间没有让出点）。
+  fillHost(host, segs);
+  await awaitFonts(host, weight, px, measureText);
+
+  // 等完字体**重新落一次宿主状态再量**：宿主是这个组件唯一的一个 DOM 节点，上面那个 await 是
+  // 一个让出点。同一个组件的测量 effect 会因为 blocks 换了新数组而重跑（每次重探译文都会产生
+  // 新的 doc → 新的 blocksByPage → 新数组），cleanup 只置 alive=false，拦不住已经挂在 await 上
+  // 的那一趟——旧 loop 恢复后量到的会是新 loop 刚填进去的内容，然后以**旧内容的正确 key**把这个
+  // 错值写进 fitCache，正是这份缓存要消灭的「key 对但值错」。重填之后到 fitFontScale 之间全是
+  // 同步的（fitFontScale 的二分本身是同步函数），写与量因此重新变回原子的。
+  //
+  // 重填走的仍是 fillHost + SEG_STYLE，与渲染同一份 span 结构与字体栈——测量与渲染同源那条不能
+  // 因为这次修复而破掉。
   host.style.width = `${b.width}px`;
   host.style.fontWeight = String(weight);
   fillHost(host, segs);
-  await awaitFonts(host, weight, px, measureText);
 
   const ratio = fitFontScale((r) => {
     host.style.fontSize = `${px * r}px`;
