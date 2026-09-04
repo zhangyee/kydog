@@ -225,15 +225,22 @@ test('56-pdf-virtualization: 逐页浏览之后确实清理过页面', async () 
   try {
     const { page, kydogHome } = launched;
     const pdfPath = path.join(kydogHome, 'proj', LONG_REL);
-    await openPdf(page, pdfPath); // 只用它的等待锚点确认已加载，返回的 pane 本用例用不上
+    const pane = await openPdf(page, pdfPath);
     const scroll = page.locator(testIdSelector(`pdf-scroll-${pdfPath}`));
+    const readout = pane.getByTestId('pdf-readout');
 
-    // 逐页翻：每一步之间留够时间让 rAF 节流的 updateReadout → 窗口重算 → sweep 走完一轮，
-    // 这里的等待只是给协议事件（scroll → 窗口变化 → 清理）留出发生的空间，不是拿它当判据——
-    // 判据是下面读到的清理计数，不是等了多久。
+    // 用「挂载集合变了」当判据试过——不行：文档一开始窗口预算只装得下 3 页（本文件用的 retina
+    // 尺寸算出来的栅格上界卡在这，见文件头注释），从第 1 页往下滚的头几步，budget 驱动的扩张会
+    // 在 lo 边界（页号不能 < 1）反复撞墙，扩张结果算来算去还是 {1,2,3}——挂载集合真的没变，不是
+    // sweep 没跑，这不是卡住，是这几步本来就没有「挂载集合层面」的变化可等。
+    // 换成 pdf-readout 的文本（当前最可见页）：它是连续的位置判定，不是预算限制的离散集合，
+    // 3000px 的步长（> 一页行高 2016）几乎必然让它每步都变，用它判定「这一步滚动真的被处理过、
+    // updateReadout → 窗口重算的链路真的跑完」——不是靠猜一个「大概率够用」的固定毫秒数。
+    let prevText = await readout.textContent();
     for (let i = 1; i <= 40; i++) {
       await scroll.evaluate((el, k) => { el.scrollTop = k * 3000; }, i);
-      await page.waitForTimeout(60);
+      await expect.poll(() => readout.textContent()).not.toBe(prevText);
+      prevText = await readout.textContent();
     }
     const cleaned = await page.evaluate(() =>
       (window as unknown as { __kydogCleanedPages?: number }).__kydogCleanedPages ?? 0);
@@ -263,18 +270,24 @@ test('56-pdf-virtualization: 多页文档下完整走完一次缩放提交，顶
 
     await pinchToMax(page, pdfPath);
 
-    // 顶替收尾——两条协议层事实一起看：① 位图分辨率变了（新层真的画完，不是空的，不是原地跳过）；
-    // ② DOM 最终收回到只剩一层，且这层标记是 stable（旧层已被摘掉）。这条判据只证明「顶替确实
-    // 发生」，证明不了走的是 promoteReady 的条件顶替还是 PROMOTE_TIMEOUT 的兜底——PdfFileTab.tsx
-    // 里 promoteReady 上方的注释说得很清楚：从外部（含 e2e）看，两条路径唯一的可观测差别就是墙上
-    // 时间，拿时间当判据既是启发式 proxy 也证明不了走的是哪条路，这个区分只用单测钉（promoteReady
-    // 自己的单测）。这条 e2e 要补的缺口不在那，是「多页文档下这条端到端链路真的能跑通、真的会
-    // 收敛」，此前只有单测覆盖到 promoteReady 这个纯函数本身，没有真的经过一次渲染 → 顶替的完整
-    // 往返。（曾经加过一条「commit 之后先出现 2 层 incoming」的中间断言：实测里可见集往往只有一两页，
-    // 渲染 + 顶替快到 5s 的轮询窗口一次都没逮到 2 层的瞬间，是在拿撞见时序当判据，删掉了。）
+    // 顶替收尾——三条协议层事实一起看：① 位图分辨率变了（新层真的画完，不是空的，不是原地跳过）；
+    // ② DOM 最终收回到只剩一层，且这层标记是 stable（旧层已被摘掉）；③ 这层的
+    // data-pdf-promote-reason 是 'condition'，不是 'timeout'。
+    //
+    // ①② 只能证明「最终某种方式会收敛」，证明不了走的是 promoteReady 的条件顶替还是
+    // PROMOTE_TIMEOUT 的兜底——哪怕 promoteReady 被彻底破坏（比如永远返回 false，或可见集变化
+    // 那个 effect 的依赖数组漏挂，重判从不触发），只要 4 秒兜底计时器还在，①②在 15s 的轮询
+    // 窗口内照样会绿，而「不该每次缩放都卡满超时」正是 Task 5 引入 promoteReady 要解决的问题，
+    // 也是这条 e2e 存在的理由——不能让它对这类回归失明。
+    // ③ 补上这个区分力：PdfFileTab.tsx 里 promote() 的三个调用点（onPageSettled 的条件判定、
+    // 可见集变化后的重判定、PROMOTE_TIMEOUT 兜底）现在各自把触发原因打到 data-pdf-promote-reason
+    // 上，让「走的是哪条路」从组件外部也能读到——不再是只能靠墙上时间去猜的黑盒，也不用靠单测
+    // 才能钉住（promoteReady 自己的单测测的是这个纯函数本身「该不该顶替」，不覆盖「它有没有真的
+    // 在一次端到端的渲染里被调用到、赶在兜底之前顶替」这件事）。
     await expect.poll(width, { timeout: 15000 }).toBeGreaterThan(at1);
+    const stable = pane.locator('[data-pdf-layer="stable"]');
     await expect(pane.locator('[data-pdf-layer]')).toHaveCount(1);
-    await expect(pane.locator('[data-pdf-layer]')).toHaveAttribute('data-pdf-layer', 'stable');
+    await expect(stable).toHaveAttribute('data-pdf-promote-reason', 'condition');
   } finally {
     await teardown(launched);
   }

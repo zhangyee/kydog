@@ -39,6 +39,13 @@ export const FALLBACK_PAGE_SIZE: PageSize = { w: 595, h: 842 };
 
 type Layer = { id: number; scale: number };
 
+// promote() 有三个调用点：onPageSettled 的条件判定、可见集变化后的重判定、PROMOTE_TIMEOUT 兜底。
+// 前两个都是「按 promoteReady 条件顶替」，只是触发时机不同（一个来自渲染回调，一个来自可见集
+// effect）；第三个是纯计时器兜底，不看任何条件。落到 data-pdf-promote-reason 上，让「这次顶替
+// 走的是哪条路」从组件外部（e2e）也能读到——单靠 promoteReady 单测钉不住「端到端真的没卡满
+// PROMOTE_TIMEOUT」这件事，因为单测测的是纯函数本身，不是它有没有被实际调用到。
+type PromoteReason = 'condition' | 'timeout';
+
 /**
  * 后台新层能不能顶替：**可见页全部 settled**，即 need ⊆ done。
  *
@@ -237,6 +244,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // - 手势进行中只改各层外层的 CSS zoom（visualScale），不触发 canvas 重渲染 → 不闪
   const [layers, setLayers] = useState<Layer[]>([{ id: 0, scale: 1 }]);
   const [visualScale, setVisualScale] = useState(1); // 当前显示缩放（连续）
+  // 最近一次顶替走的是哪条路（见上面 PromoteReason 的注释）；只落在 stable 层上（见渲染处）。
+  // 新一轮双缓冲开始（后台新层刚创建）时清空——2 层并存期间这个值属于上一轮，不该被读到。
+  const [promoteReason, setPromoteReason] = useState<PromoteReason | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const layerSeq = useRef(0);
@@ -344,9 +354,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     el.scrollTop = (a.st + focal.current.y) * f - focal.current.y;
   }, [visualScale]);
 
-  // 把后台新层提升为唯一的清晰层（旧层同时移除）
-  const promote = useCallback(() => {
+  // 把后台新层提升为唯一的清晰层（旧层同时移除）。reason 记录这次顶替是被哪条路触发的
+  // （见 PromoteReason 的注释），落进 state 供渲染层挂到 stable 层的 data 属性上。
+  const promote = useCallback((reason: PromoteReason) => {
     if (promoteTimer.current != null) { clearTimeout(promoteTimer.current); promoteTimer.current = null; }
+    setPromoteReason(reason);
     setLayers((cur) => (cur.length > 1 ? [cur[cur.length - 1]] : cur));
   }, []);
 
@@ -364,7 +376,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // 有它、done 里没有，而它**已经画完、不会再有回调**（key 稳定、scale 未变，react-pdf 不重画），
     // 于是只能等 PROMOTE_TIMEOUT。记多了无害，判据是 need ⊆ done，不会提前顶替。
     progress.current.done.add(page);
-    if (promoteReady(winRef.current.visible, progress.current.done)) promote();
+    if (promoteReady(winRef.current.visible, progress.current.done)) promote('condition');
   }, [promote]);
 
   // 可见集变化之后也要重判一次：visible 收缩时剩下的页可能早已 settled，条件其实已经满足，
@@ -372,7 +384,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   useEffect(() => {
     const incoming = layers.length > 1 ? layers[layers.length - 1] : null;
     if (!incoming || progress.current.id !== incoming.id) return;
-    if (promoteReady(win.visible, progress.current.done)) promote();
+    if (promoteReady(win.visible, progress.current.done)) promote('condition');
   }, [win.visible, layers, promote]);
 
   // 触摸板捏合缩放：Chromium 把捏合转成 ctrl+wheel
@@ -412,9 +424,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         layerSeq.current += 1;
         const incoming: Layer = { id: layerSeq.current, scale: target };
         progress.current = { id: incoming.id, done: new Set() };
+        setPromoteReason(null); // 新一轮双缓冲开始：上一轮的顶替原因作废，还没轮到这一轮的结论
         setLayers([stable, incoming]);
         if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
-        promoteTimer.current = window.setTimeout(promote, PROMOTE_TIMEOUT);
+        promoteTimer.current = window.setTimeout(() => promote('timeout'), PROMOTE_TIMEOUT);
       }, COMMIT_DELAY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -533,6 +546,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                 <div
                   key={layer.id}
                   data-pdf-layer={idx === 0 ? 'stable' : 'incoming'}
+                  // 只挂在 stable 层上：这个值是「最近一次顶替走的是哪条路」，incoming 层还没被
+                  // 顶替过，不该有这个属性（e2e 用它区分 promoteReady 条件顶替与 PROMOTE_TIMEOUT
+                  // 兜底，见 PromoteReason 的注释）。
+                  data-pdf-promote-reason={idx === 0 ? (promoteReason ?? undefined) : undefined}
                   style={idx === 0
                     ? { position: 'relative', zIndex: 1, zoom: visualScale / layer.scale }
                     : { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 0, zoom: visualScale / layer.scale }}
