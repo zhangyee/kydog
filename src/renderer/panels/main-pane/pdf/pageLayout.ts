@@ -1,5 +1,11 @@
 export type PageSize = { w: number; h: number };
 
+// 页间距与上下留白的基准（px，随缩放等比）。放在这里而不是 PdfFileTab：它们是版面几何的一部分，
+// 与 unitLayout 同源；e2e 也要按同一份数字反算 scrollHeight 与滚动目标，从组件文件 import
+// 会把 react-pdf / pdf.js worker 那一整串副作用拖进 Playwright 的 node 上下文。
+export const PAGE_GAP = 16;
+export const PAGE_PAD = 24;
+
 /**
  * 每页在 scale 1 下的顶边偏移与内容总高，单位 pt。
  *
