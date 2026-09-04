@@ -27,15 +27,62 @@ const COMMIT_DELAY = 200;        // ms：手势停顿这么久后才在后台渲
 const PROMOTE_TIMEOUT = 4000;    // ms：清晰层渲染兜底超时，防个别页不回调而卡住
 const PAGE_GAP = 16;             // 页间距基准（px，随缩放等比）
 const PAGE_PAD = 24;             // 上下留白基准（px，随缩放等比）
+// 单页预取失败（坏页字典等）时的占位尺寸——用最近一次成功页的尺寸，首页就失败则退到 A4。
+// 目的是让 sizes 数组下标始终对齐页号（不能因为一页失败就少 push 一个，让后面的页整体前移），
+// 且占位是个真实、非零的尺寸，故意避免下游（本文件的布局、以及 Task 5 的 unitLayout）
+// 因 0 高度或 null 而出现异常布局或空指针。
+export const FALLBACK_PAGE_SIZE: PageSize = { w: 595, h: 842 };
 
 type Layer = { id: number; scale: number };
 
 // 结构化地描述 react-pdf 交给 onLoadSuccess 的 page proxy 里我们用到的三样东西，避免引 react-pdf 的内部类型路径。
-type PageProxyLike = {
+export type PageProxyLike = {
   pageNumber: number;
   getViewport(opts: { scale: number }): { width: number; height: number; convertToViewportPoint(x: number, y: number): number[] };
   getTextContent(): Promise<{ items: unknown[] }>;
 };
+
+/**
+ * 预取全部页 scale 1 尺寸的核心循环，抽成不依赖 React/DOM/pdf.js 具体类型的纯函数，方便单测
+ * 覆盖「单页失败」「取消」这两条容错路径——PdfFileTab 组件本体依赖 react-pdf/DOM/window.kydog，
+ * 这个仓库的 vitest 是 `environment: 'node'`（无 jsdom），组件级渲染测试目前不可行，也不打算为
+ * 这一条容错逻辑新增 jsdom / @testing-library 依赖（CLAUDE.md：加依赖先跟用户 review）。
+ *
+ * 单页失败被隔离（try/catch）：失败页不中断循环，占位后继续，故障粒度停在页级、不退化到文档级。
+ * 占位统一用 `lastKnownSize`（最近一次成功页的尺寸，一页都没成功过则是 FALLBACK_PAGE_SIZE），
+ * 保证下标依旧对齐页号——不能因为一页失败就不 push，否则后面的页在返回数组里全部前移一位。
+ *
+ * `isCancelled()` 在每次 await 之后都重新检查（成功分支、失败分支各一次），一旦为真立即返回
+ * null：调用方据此判断这一趟作废，不该把已收集到的部分结果落地（那些结果属于已经切走的旧文件）。
+ *
+ * 页级副作用（写 proxy、失败留痕）通过回调交给调用方，好让「proxy 逐页可用、sizes 整趟完成后
+ * 才提交」这一约定（Yee 2026-09-04 拍板）留在组件里，这个函数只管数组本身对不对。
+ */
+export async function prefetchPageSizes(
+  numPages: number,
+  getPage: (n: number) => Promise<PageProxyLike>,
+  isCancelled: () => boolean,
+  onPageReady: (n: number, page: PageProxyLike) => void,
+  onPageFailed: (n: number, err: unknown) => void,
+): Promise<PageSize[] | null> {
+  const out: PageSize[] = [];
+  let lastKnownSize = FALLBACK_PAGE_SIZE;
+  for (let n = 1; n <= numPages; n++) {
+    try {
+      const p = await getPage(n);
+      if (isCancelled()) return null;
+      onPageReady(n, p);
+      const v = p.getViewport({ scale: 1 });
+      lastKnownSize = { w: v.width, h: v.height };
+      out.push(lastKnownSize);
+    } catch (err) {
+      if (isCancelled()) return null;
+      onPageFailed(n, err);
+      out.push(lastKnownSize); // 占位保对齐，见函数注释
+    }
+  }
+  return out;
+}
 
 export function PdfFileTab({ tab }: { tab: FileTab }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
@@ -322,15 +369,18 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
               // 失配而提前返回，旧数据不会写进 pageProxies / linesCache / setSizes。
               const myToken = prefetchToken.current;
               void (async () => {
-                const out: PageSize[] = [];
-                for (let n = 1; n <= pdf.numPages; n++) {
-                  const p = await pdf.getPage(n);
-                  if (prefetchToken.current !== myToken) return; // 换文件了，丢弃这一趟
-                  pageProxies.current[n] = p as unknown as PageProxyLike;
-                  const v = p.getViewport({ scale: 1 });
-                  out.push({ w: v.width, h: v.height });
-                }
-                if (prefetchToken.current === myToken) setSizes(out);
+                // 逐页容错/取消的循环体在 prefetchPageSizes（本文件顶部）里，抽成纯函数是为了
+                // 能在不拉起整个组件（jsdom 等）的前提下单测「单页失败」「换文件取消」这两条路径。
+                // proxy 写入仍留在这里逐页发生（不是等整趟跑完再批量写）：ensureLines 依赖某页
+                // 一成功就能立刻拿到 proxy，不用等同一文档的其余页也解析完。
+                const out = await prefetchPageSizes(
+                  pdf.numPages,
+                  (n) => pdf.getPage(n) as unknown as Promise<PageProxyLike>,
+                  () => prefetchToken.current !== myToken,
+                  (n, p) => { pageProxies.current[n] = p; },
+                  (n, err) => console.warn(`PDF 第 ${n} 页尺寸预取失败，占位后继续`, err),
+                );
+                if (out && prefetchToken.current === myToken) setSizes(out);
               })();
             }}
             onLoadError={(err) =>
