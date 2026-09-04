@@ -45,6 +45,25 @@ describe('validateTranslatedDoc', () => {
     expect(() => validateTranslatedDoc(d, 'f.json')).not.toThrow();
   });
 
+  // 边车的唯一写入方是 agent，而这个校验是「一条不认识就拒整份文件」。错误信息只说「不认识
+  // （paragraph）」的话，agent 从错误里学不到该写什么，只能瞎猜——把合法取值列进去，它就能
+  // 自我修正。这两条同时钉住「取值集合确实是这六个 / 这三个」，抄错也会红。
+  it('kind 不认识 → 抛，且 message 列出全部合法取值', () => {
+    const d = doc({ blocks: [block({ kind: 'paragraph' as unknown as Block['kind'] })] });
+    const run = () => validateTranslatedDoc(d, 'f.json');
+    expect(run).toThrowError(/kind 不认识（paragraph）/);
+    expect(run).toThrowError(/text \/ title \/ caption \/ formula \/ table \/ skip/);
+  });
+
+  it('placeholder 的 kind 不认识 → 抛，且 message 列出全部合法取值', () => {
+    const d = doc({
+      blocks: [block({ placeholders: [{ id: 'v1', kind: 'figure' as never, text: '[1]' }] })],
+    });
+    const run = () => validateTranslatedDoc(d, 'f.json');
+    expect(run).toThrowError(/placeholders/);
+    expect(run).toThrowError(/formula \/ citation \/ inline-code/);
+  });
+
   it('source 摘要原样带出来', () => {
     const d = validateTranslatedDoc(doc({ source: { sha256: 'abc', bytes: 10 } }), 'f.json');
     expect(d.source).toEqual({ sha256: 'abc', bytes: 10 });

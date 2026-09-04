@@ -55,6 +55,35 @@ width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF
 不会在这块矩形里盖掉原文。`source.sha256` 是源 PDF 的 SHA-256：不写，用户会看到
 「无法确认版本」的提示；写错，会直接禁用对照。
 
+`kind` 只认这六个值，别自创（写了别的，**整份文件**会被判为格式错，用户看到「译文文件
+有误」并且对照键被禁用，不是只跳过那一块）：
+
+- `text` 正文段落
+- `title` 标题（会加粗）
+- `caption` 图表题注（字号按 0.9 缩）
+- `formula` 公式
+- `table` 表格
+- `skip` 明确不处理
+
+`placeholders` 用来在译文里保住不该被翻译的片段（行内公式、引用标记、行内代码）。
+每条是 `{ id, kind, text }`，`kind` 只认 `formula` / `citation` / `inline-code`，
+`text` 是原文里那一小段的原样文本。在 `target` 里用 `{v1}`、`{v2}` 这样的 token
+占位，token 名要与对应 placeholder 的 `id` 一致——渲染时会把 token 换回 `text`。
+对不上任何 `id` 的 token 会原样留在译文里显示成 `{v1}`。举例：
+
+```json
+{
+  "id": "p3-b02", "page": 3, "x": 72, "y": 240, "width": 451, "height": 96,
+  "fontSize": 10, "kind": "text",
+  "source": "As shown in Eq. (2), the loss decreases [12].",
+  "target": "如 {v1} 所示，损失随之下降 {v2}。",
+  "placeholders": [
+    { "id": "v1", "kind": "formula", "text": "Eq. (2)" },
+    { "id": "v2", "kind": "citation", "text": "[12]" }
+  ]
+}
+```
+
 ## 自维护
 
 你的工作区文件：`~/.kydog/SOUL.md`（人格）、`~/.kydog/USER.md`（用户）、

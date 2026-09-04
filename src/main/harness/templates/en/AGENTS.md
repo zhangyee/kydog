@@ -82,6 +82,39 @@ the SHA-256 of that source PDF: leave it out and the user sees a "can't
 confirm the version" notice; get it wrong and the side-by-side view is
 disabled outright.
 
+`kind` accepts exactly these six values — don't invent others (anything else
+makes the **whole file** invalid: the user sees a "translation file is
+malformed" notice and the side-by-side button is disabled; the bad block is
+not simply skipped):
+
+- `text` a body paragraph
+- `title` a heading (rendered bold)
+- `caption` a figure/table caption (rendered at 0.9× the font size)
+- `formula` a formula
+- `table` a table
+- `skip` explicitly left alone
+
+`placeholders` keep fragments that must not be translated (inline formulas,
+citation markers, inline code). Each one is `{ id, kind, text }`, where `kind`
+accepts only `formula` / `citation` / `inline-code` and `text` is the verbatim
+fragment from the source. Inside `target`, stand them in as `{v1}`, `{v2}`
+tokens whose names match the corresponding placeholder's `id` — rendering
+substitutes each token back with its `text`. A token matching no `id` is left
+in the translation literally, as `{v1}`. For example:
+
+```json
+{
+  "id": "p3-b02", "page": 3, "x": 72, "y": 240, "width": 451, "height": 96,
+  "fontSize": 10, "kind": "text",
+  "source": "As shown in Eq. (2), the loss decreases [12].",
+  "target": "As shown in {v1}, the loss decreases {v2}.",
+  "placeholders": [
+    { "id": "v1", "kind": "formula", "text": "Eq. (2)" },
+    { "id": "v2", "kind": "citation", "text": "[12]" }
+  ]
+}
+```
+
 ## Self-Maintenance
 
 Your workspace files: `~/.kydog/SOUL.md` (identity), `~/.kydog/USER.md`

@@ -30,6 +30,10 @@ export type TranslatedDoc = {
 
 const KINDS = new Set(['text', 'title', 'caption', 'formula', 'table', 'skip']);
 const PH_KINDS = new Set(['formula', 'citation', 'inline-code']);
+// 报错时把合法取值一并列出来：边车的唯一写入方是 agent（契约写在 harness 模板的 AGENTS.md 里），
+// 而一条不认识的 kind 会让**整份文件**被拒（不是逐块降级——静默丢块比报错更难查）。错误信息里
+// 带上取值集合，agent 从错误本身就能自我修正，不必回头去猜契约。列表从 Set 现推，不手写第二份。
+const list = (s: Set<string>) => [...s].join(' / ');
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
 function fail(file: string, what: string): never {
@@ -47,7 +51,7 @@ function validateBlock(raw: unknown, i: number, file: string): Block {
     if (!num(b[k]) || (b[k] as number) <= 0) return at(`的 ${k} 不是正数（${String(b[k])}）`);
   }
   if (!num(b.fontSize) || b.fontSize <= 0) return at(`的 fontSize 不是正数（${String(b.fontSize)}）`);
-  if (typeof b.kind !== 'string' || !KINDS.has(b.kind)) return at(`的 kind 不认识（${String(b.kind)}）`);
+  if (typeof b.kind !== 'string' || !KINDS.has(b.kind)) return at(`的 kind 不认识（${String(b.kind)}），只认 ${list(KINDS)}`);
   if (typeof b.source !== 'string') return at('的 source 不是字符串');
   if (b.target !== undefined && typeof b.target !== 'string') return at('的 target 既不是字符串也不是缺省');
   if (b.placeholders !== undefined) {
@@ -55,7 +59,7 @@ function validateBlock(raw: unknown, i: number, file: string): Block {
     for (const p of b.placeholders) {
       const q = p as Record<string, unknown>;
       if (typeof q?.id !== 'string' || typeof q?.text !== 'string' || !PH_KINDS.has(q?.kind as string)) {
-        return at('的 placeholders 里有一条缺 id / kind / text');
+        return at(`的 placeholders 里有一条缺 id / kind / text，或 kind 不在 ${list(PH_KINDS)} 之内`);
       }
     }
   }
