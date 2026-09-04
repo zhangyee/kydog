@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createPageLifecycle, type Cleanable } from './pageLifecycle';
 
 function harness() {
@@ -61,9 +61,10 @@ describe('createPageLifecycle', () => {
     expect(calls).toEqual([3]);
   });
 
-  it('proxy 还没有时不抛', () => {
+  it('proxy 还没有时不抛，也不计入清理数（探针要分得清「清了」与「决定要清」）', () => {
     const lc = createPageLifecycle(() => undefined, (fn) => fn());
     lc.acquire(9);
     expect(() => lc.release(9)).not.toThrow();
+    expect(lc.cleanedCount()).toBe(0);
   });
 });

@@ -39,9 +39,11 @@ export function createPageLifecycle(
   const run = (page: number) => {
     if (!pending.delete(page)) return;       // 已被取消（重新 acquire，或 sweep 发现仍在窗口内）
     if ((refs.get(page) ?? 0) > 0) return;    // 双重保险：排队期间又被持有
-    getProxy(page)?.cleanup();
-    cleaned += 1;
-    refs.delete(page);                        // 清理已完成，refs 不必再记这页的账
+    // 只有真的调了 cleanup() 才计数：proxy 不存在（换文件已经把 pageProxies 整个丢掉、或这页
+    // 压根没加载成功）时什么都没还回去，把它算进去会让探针分不清「清了」与「决定要清」。
+    const proxy = getProxy(page);
+    if (proxy) { proxy.cleanup(); cleaned += 1; }
+    refs.delete(page);                        // 这一页的账已经了结（清了，或确认无可清），refs 不必再记
   };
 
   return {

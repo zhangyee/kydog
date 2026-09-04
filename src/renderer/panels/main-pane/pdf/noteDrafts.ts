@@ -12,7 +12,14 @@ import type { Note } from '../../../../shared/pdfSidecar';
  */
 export const noteDrafts = new Map<string, string>();
 
-/** 把该 tab 名下所有 note 的草稿提交进 store。只在关 tab / 卸载前调。 */
+/**
+ * 把该 tab 名下所有 note 的草稿提交进 store。只在关 tab / 卸载前调。
+ *
+ * 三个分支与 NoteBox 的 `commit()`（失焦路径）逐条对齐——同一份草稿走哪条路出去，结果必须一样：
+ * 清空一条已提交过的笔记 = 删除（可撤销）、清空一条从未提交过的 = 放弃（不入撤销栈）、其余是改文本。
+ * 只保留最后一条的话，用户清空一条已有笔记后**不失焦**地关 tab（Cmd+W / beforeunload 路径），
+ * 边车里会留下一条 `text: ''` 的隐形笔记，而不是把它删掉。
+ */
 export function flushDrafts(tabId: string): void {
   const st = usePdfAnnotationStore.getState();
   const doc = st.buckets[tabId]?.doc;
@@ -22,6 +29,12 @@ export function flushDrafts(tabId: string): void {
     const draft = noteDrafts.get(a.id);
     if (draft === undefined) continue;
     noteDrafts.delete(a.id);
-    if (draft !== (a as Note).text) st.commitNoteText(tabId, a.id, draft);
+    const text = (a as Note).text;
+    if (draft.trim() === '') {
+      if (text !== '') st.remove(tabId, a.id);
+      else st.discardNote(tabId, a.id);
+    } else if (draft !== text) {
+      st.commitNoteText(tabId, a.id, draft);
+    }
   }
 }
