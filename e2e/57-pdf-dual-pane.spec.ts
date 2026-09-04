@@ -6,6 +6,11 @@ import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from
 import { buildPagedPdf } from './fixtures/textPdf';
 import { PAGE_GAP } from '../src/renderer/panels/main-pane/pdf/pageLayout';
 import { ZOOM_SENSITIVITY } from '../src/renderer/panels/main-pane/pdf/zoomSensitivity';
+// contrast() 是纯函数（luminance 算术，见文件内注释），不依赖 DOM——同 PAGE_GAP / ZOOM_SENSITIVITY
+// 一样可以直接从组件目录 import 到 Node 端的 e2e 文件，不会拖入 react-pdf / pdf.js worker 的副作用
+// （那两个文件都没有其他 import；inkForBackground.ts 只 import 了 pageBackground.ts 的一个类型）。
+import { contrast } from '../src/renderer/panels/main-pane/pdf/inkForBackground';
+import type { RGB } from '../src/renderer/panels/main-pane/pdf/pageBackground';
 
 const PDF_REL = 'paper.pdf';
 const ZH_REL = '.paper.pdf.zh.json';
@@ -110,6 +115,54 @@ async function seedFourStates(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// 对比度 e2e（design spec §13）的最小 fixture：一份白底、一份深底，各配一条有 target 的块。
+// 不复用 seedAll 的 paper.pdf——那份 fixture 是给对齐/残留/字号三条用例的，混进一份深色页
+// 会让读 seedAll 的人多想一层「这份深色底是给谁用的」；仿 seedFourStates 的先例，各测试自带
+// 自己需要的最小 fixture，互不牵连。
+const CONTRAST_WHITE_REL = 'contrast-white.pdf';
+const CONTRAST_DARK_REL = 'contrast-dark.pdf';
+const CONTRAST_BLOCK = { x: 60, y: 200, w: 460, h: 120 };
+const CONTRAST_TEXT = '这块译文的墨色应当由背景推出，不管应用主题是什么。';
+// 近黑深底——不取 INK_ON_DARK/INK_ON_LIGHT 本身的坐标，避免 fixture 和被测常量凑巧同值、
+// 把「墨色确实由背景推导」这件事测成了「两边抄的是同一个数」。
+const CONTRAST_DARK_BG: [number, number, number] = [12, 12, 16];
+
+function buildContrastSidecar(pdfRel: string, pdf: Buffer): string {
+  return JSON.stringify({
+    version: 1,
+    pdf: pdfRel,
+    lang: { in: 'en', out: 'zh' },
+    source: { sha256: createHash('sha256').update(pdf).digest('hex'), bytes: pdf.byteLength },
+    blocks: [{
+      id: 'c1', page: 1,
+      x: CONTRAST_BLOCK.x, y: CONTRAST_BLOCK.y, width: CONTRAST_BLOCK.w, height: CONTRAST_BLOCK.h,
+      fontSize: 14, kind: 'text', source: 'contrast check', target: CONTRAST_TEXT,
+    }],
+  }, null, 2);
+}
+
+async function seedContrast(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+
+  const white = buildPagedPdf(1, PAGE_W, PAGE_H); // 无 bg 参数 = 原来的行为 = 白底
+  await fs.writeFile(path.join(projectPath, CONTRAST_WHITE_REL), white);
+  await fs.writeFile(
+    path.join(projectPath, `.${CONTRAST_WHITE_REL}.zh.json`),
+    buildContrastSidecar(CONTRAST_WHITE_REL, white),
+  );
+
+  const dark = buildPagedPdf(1, PAGE_W, PAGE_H, undefined, CONTRAST_DARK_BG);
+  await fs.writeFile(path.join(projectPath, CONTRAST_DARK_REL), dark);
+  await fs.writeFile(
+    path.join(projectPath, `.${CONTRAST_DARK_REL}.zh.json`),
+    buildContrastSidecar(CONTRAST_DARK_REL, dark),
+  );
+
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 async function openPdf(page: Page, pdfPath: string): Promise<Locator> {
   await page.locator('[data-pane="workspace"]').getByText('测试 Thread').click();
   const row = page.getByTestId(`fs-${pdfPath}`);
@@ -142,6 +195,41 @@ async function enterDual(page: Page, pane: Locator) {
 /** 从 `${page} / ${numPages} · ${zoomPct}%` 读数里取出百分比数字。 */
 function readoutPct(text: string): number {
   return Number(text.split('·')[1].trim().replace('%', ''));
+}
+
+/** 切主题：走用户菜单，同 08-theme-switch / 11-themes-five 的路径。 */
+async function setTheme(page: Page, name: 'vellum' | 'midnight') {
+  await page.getByTestId('user-menu-trigger').click();
+  await page.getByTestId(`theme-${name}`).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', name);
+}
+
+function parseRgb(css: string): RGB {
+  const m = css.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (!m) throw new Error(`无法从 computed style 解析颜色：${css}`);
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/**
+ * 读一个译文块的 computed color、以及右格底图在这个块矩形正中心的像素，算 WCAG 对比度。
+ * 采中心点而不是像 TARGET_SAMPLE 那样避让墨迹：译文块本身是叠在底图上的 HTML 层，不进
+ * canvas 绘制，所以矩形内任一点的底图像素都只是 RightPage 填的纯色，不需要避开什么。
+ * 块还没挂载、或右格还没合成过时返回 null——调用方先用它 poll 就绪，再对数值本身断言，
+ * 这样断言失败时报的是真实对比度数字，不是一个含糊的超时。
+ */
+async function sampleContrast(page: Page, paneSel: string): Promise<number | null> {
+  const raw = await page.evaluate(({ sel, box, pageW }) => {
+    const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`);
+    const block = row?.querySelector('[data-translation-block]') as HTMLElement | null;
+    const right = row?.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement | null;
+    if (!block || !right || right.width === 0) return null;
+    const S = right.width / pageW; // 位图像素 / pt，同其余用例的换算
+    const cx = Math.round((box.x + box.w / 2) * S);
+    const cy = Math.round((box.y + box.h / 2) * S);
+    const d = right.getContext('2d')!.getImageData(cx, cy, 1, 1).data;
+    return { inkCss: getComputedStyle(block).color, bg: [d[0], d[1], d[2]] as [number, number, number] };
+  }, { sel: paneSel, box: CONTRAST_BLOCK, pageW: PAGE_W });
+  return raw ? contrast(parseRgb(raw.inkCss), raw.bg) : null;
 }
 
 type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null; dGap: number | null };
@@ -452,6 +540,49 @@ test('57-pdf-dual-pane: 左栏可标注，右格内没有标注层', async () =>
     // 测不出「右格是不是真的没有标注层」这件事。
     const rightCell = pane.locator('[data-pdf-page="1"] [data-pdf-right="1"]').locator('xpath=..');
     await expect(rightCell.locator('[data-annotation-id]')).toHaveCount(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 两组主题 × 背景的对比度达标——墨色由背景推导，不跟应用主题', async () => {
+  // design spec §13：「两组主题 × 背景的对比度达标」是墨色由实际背景推导（Task 7 的
+  // inkForBackground）这条核心主张唯一的端到端验证——单测只验了 contrast()/inkForBackground()
+  // 这两个纯函数本身，没有任何东西证明它们真的接到了 RightPage 探测出的背景、真的绕过了
+  // --color-ink 那条会跟主题走的默认路径。两组刻意选成会互相冲突的搭配：midnight 主题的
+  // --color-ink 接近白，压在白页上先天就低对比度；vellum 主题的 --color-ink 接近黑，压在
+  // 深色页上同样先天低对比度——如果实现退化成读 --color-ink，这两组里至少有一组会红。
+  const launched = await launchKydog({ seed: seedContrast });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+
+    const whitePath = path.join(projectPath, CONTRAST_WHITE_REL);
+    const darkPath = path.join(projectPath, CONTRAST_DARK_REL);
+
+    await setTheme(page, 'midnight');
+    const whitePane = await openPdf(page, whitePath);
+    await enterDual(page, whitePane);
+    const whiteSel = testIdSelector(`file-pane-${whitePath}`);
+    await expect.poll(
+      () => sampleContrast(page, whiteSel),
+      { timeout: 10000, message: 'midnight + 白页：等右格合成、译文块着色' },
+    ).not.toBeNull();
+    const whiteContrast = await sampleContrast(page, whiteSel);
+    expect(whiteContrast, 'midnight 主题 + 白底 PDF：译文块对比度应 ≥ 4.5:1').not.toBeNull();
+    expect(whiteContrast!, 'midnight 主题 + 白底 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
+
+    await setTheme(page, 'vellum');
+    const darkPane = await openPdf(page, darkPath);
+    await enterDual(page, darkPane);
+    const darkSel = testIdSelector(`file-pane-${darkPath}`);
+    await expect.poll(
+      () => sampleContrast(page, darkSel),
+      { timeout: 10000, message: 'vellum + 深色页：等右格合成、译文块着色' },
+    ).not.toBeNull();
+    const darkContrast = await sampleContrast(page, darkSel);
+    expect(darkContrast, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').not.toBeNull();
+    expect(darkContrast!, 'vellum 主题 + 深色页 PDF：译文块对比度应 ≥ 4.5:1').toBeGreaterThanOrEqual(4.5);
   } finally {
     await teardown(launched);
   }

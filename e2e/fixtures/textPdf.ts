@@ -27,10 +27,15 @@ export function buildTextPdf(): Buffer {
  * `extra`：每页额外画一行文本（视口坐标，y 向下，函数内部换算成 PDF 的 y 向上）。
  * 可选、不传就是原来的行为——57 用它在「有 target 的译文块」矩形里放一点真实原文墨迹，
  * 好让「右格有没有把它盖掉」这条断言真的能测出东西；不传时 56 的既有用例不受影响。
+ *
+ * `bg`：每页先铺一层整页纯色底（RGB，0–255），可选、不传就是原来「无填色 = 白底」的行为。
+ * 57 的对比度 e2e 用它造深色页——`pageBackground()` 是对页角 + 四边中点八点取样、全同才采用，
+ * 整页纯色填充天然满足这一点，不需要另起一套画法。
  */
 export function buildPagedPdf(
   count: number, w: number, h: number,
   extra?: { x: number; y: number; text: string; size?: number },
+  bg?: [number, number, number],
 ): Buffer {
   const firstPage = 4;
   const firstContent = firstPage + count;
@@ -47,7 +52,12 @@ export function buildPagedPdf(
     );
   }
   for (let i = 0; i < count; i++) {
-    let content = `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
+    let content = '';
+    if (bg) {
+      const [r, g, b] = bg.map((v) => v / 255);
+      content += `${r} ${g} ${b} rg 0 0 ${w} ${h} re f\n`;
+    }
+    content += `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
     if (extra) content += `BT /F1 ${extra.size ?? 14} Tf ${extra.x} ${h - extra.y} Td (${extra.text}) Tj ET\n`;
     objs.push(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`);
   }

@@ -67,8 +67,20 @@ explanation grow with follow-up questions.
 Highlights and notes the user made on a PDF in KyDog live next to it in a
 dot-prefixed file of the same name (`paper.pdf` → `.paper.pdf.json`); highlight
 entries carry the underlined source text. When the user refers to passages
-they marked or to their notes, `read` that file first. A translation, if any,
-is in `.paper.pdf.zh.json`.
+they marked or to their notes, `read` that file first.
+
+A translation lives under the same naming, in `.paper.pdf.zh.json`. Writing
+one lets the user open a side-by-side view from the PDF toolbar's translate
+button (or the `L` key). Shape: `{ version: 1, pdf, lang: {in, out},
+source: {sha256, bytes}, blocks: [...] }`; each block is `{ id, page
+(1-based), x, y, width, height, fontSize, kind, source, target?,
+placeholders? }`, with coordinates in PDF points, origin at the page's
+top-left, y pointing down. **A missing `target` means that block isn't
+translated** (use it for formulas and tables) — the right pane leaves the
+original in place there instead of painting over it. `source.sha256` must be
+the SHA-256 of that source PDF: leave it out and the user sees a "can't
+confirm the version" notice; get it wrong and the side-by-side view is
+disabled outright.
 
 ## Self-Maintenance
 

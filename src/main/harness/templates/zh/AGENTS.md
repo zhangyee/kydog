@@ -45,7 +45,15 @@ KyDog 不是编程智能体。用户在图形界面上看着你每一步，他�
 
 用户在 KyDog 里给某个 PDF 做的高亮和笔记存在同目录下点号开头的同名文件里
 （`paper.pdf` 对应 `.paper.pdf.json`），高亮条目带有被划到的原文。用户提到
-「我标的那几段」「我的笔记」时，先用 `read` 读它。译文（若有）在 `.paper.pdf.zh.json`。
+「我标的那几段」「我的笔记」时，先用 `read` 读它。
+
+译文存在同一套命名下的 `.paper.pdf.zh.json` 里。写了它，用户在 PDF 工具栏按翻译键
+（或按 `L`）就能开左右双栏对照。格式：`{ version: 1, pdf, lang: {in, out},
+source: {sha256, bytes}, blocks: [...] }`；每个 block 是 `{ id, page（从 1 起）, x, y,
+width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF pt、
+原点在页左上、y 向下。**`target` 缺省表示这一块不翻译**（公式、表格用它）——右栏
+不会在这块矩形里盖掉原文。`source.sha256` 是源 PDF 的 SHA-256：不写，用户会看到
+「无法确认版本」的提示；写错，会直接禁用对照。
 
 ## 自维护
 
