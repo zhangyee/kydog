@@ -19,6 +19,11 @@ type Props = {
   blocks: Block[];
   /** 左格已经画完的 canvas。null = 还没就绪，右格先空着（CSS 尺寸已占位，版面不跳）。 */
   leftCanvas: HTMLCanvasElement | null;
+  /**
+   * 每次合成都把这次算出的页背景色交出去（Task 7：译文块拿它推墨色）。
+   * 只在真的合成过一次时调用——早退（leftCanvas 未就绪）不调用，调用方的初始 state 本就是 null。
+   */
+  onBackground?: (bg: RGB | null) => void;
 };
 
 /**
@@ -38,7 +43,7 @@ type Props = {
  * 右格还没合成。useLayoutEffect 与那次顶替同属一次 commit、绘制之前跑完，「settled」与
  * 「右格已合成」于是由构造同时发生，不需要再给顶替加第二个信号。
  */
-export function RightPage({ size, rasterScale, blocks, leftCanvas }: Props) {
+export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useLayoutEffect(() => {
@@ -70,6 +75,10 @@ export function RightPage({ size, rasterScale, blocks, leftCanvas }: Props) {
     ctx.fillStyle = bg
       ? toCss(bg)
       : getComputedStyle(c).getPropertyValue('--color-paper').trim() || '#fff';
+    // 交给译文块推墨色的是探测到的真实背景（可能是 null），不是上面这行选用的主题兜底色——
+    // 「取不到就按白底」是 TranslationBlocks 自己的处理（inkForBackground(bg ?? 白)），
+    // 两处兜底逻辑不同，不能共用同一个已经揉过主题色的值。
+    onBackground?.(bg);
 
     for (const b of blocks) {
       if (b.target === undefined) continue;   // 不翻译的块不盖：公式、表格、页眉页脚原样留着
@@ -81,7 +90,7 @@ export function RightPage({ size, rasterScale, blocks, leftCanvas }: Props) {
         Math.ceil((b.height + 2 * BLOCK_PAD) * S),
       );
     }
-  }, [leftCanvas, blocks, size.w]);
+  }, [leftCanvas, blocks, size.w, onBackground]);
 
   return (
     <canvas

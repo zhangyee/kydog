@@ -23,8 +23,15 @@ export function buildTextPdf(): Buffer {
  * 页数与页尺寸都可给的多页 PDF，每页只写一行页码——虚拟化用例要的是「页够多、页够大」，
  * 不需要文本几何精度（那是 buildTextPdf 的活）。对象编号：1 Catalog、2 Pages、3 Font，
  * 4 起是 count 个页对象，再往后是它们各自的内容流。
+ *
+ * `extra`：每页额外画一行文本（视口坐标，y 向下，函数内部换算成 PDF 的 y 向上）。
+ * 可选、不传就是原来的行为——57 用它在「有 target 的译文块」矩形里放一点真实原文墨迹，
+ * 好让「右格有没有把它盖掉」这条断言真的能测出东西；不传时 56 的既有用例不受影响。
  */
-export function buildPagedPdf(count: number, w: number, h: number): Buffer {
+export function buildPagedPdf(
+  count: number, w: number, h: number,
+  extra?: { x: number; y: number; text: string; size?: number },
+): Buffer {
   const firstPage = 4;
   const firstContent = firstPage + count;
   const kids = Array.from({ length: count }, (_, i) => `${firstPage + i} 0 R`).join(' ');
@@ -40,7 +47,8 @@ export function buildPagedPdf(count: number, w: number, h: number): Buffer {
     );
   }
   for (let i = 0; i < count; i++) {
-    const content = `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
+    let content = `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
+    if (extra) content += `BT /F1 ${extra.size ?? 14} Tf ${extra.x} ${h - extra.y} Td (${extra.text}) Tj ET\n`;
     objs.push(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`);
   }
   return assemble(objs);

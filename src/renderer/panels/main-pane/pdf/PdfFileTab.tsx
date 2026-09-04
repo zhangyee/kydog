@@ -12,8 +12,10 @@ import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
 import { PdfSelectionBar, type Anchor } from './PdfSelectionBar';
 import { PdfToolbar } from './PdfToolbar';
+import type { RGB } from './pageBackground';
 import { RightPage } from './RightPage';
 import { pdfSaveScheduler } from './saveScheduler';
+import { TranslationBlocks } from './TranslationBlocks';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage } from './pageReadout';
 import { unitLayout, PAGE_GAP, PAGE_PAD, type PageSize } from './pageLayout';
@@ -157,6 +159,8 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, onPage
 }) {
   const leftRef = useRef<HTMLDivElement>(null);
   const [leftCanvas, setLeftCanvas] = useState<HTMLCanvasElement | null>(null);
+  // RightPage 每次合成都把探测到的页背景色交出来；TranslationBlocks 拿它推墨色（Task 7）。
+  const [bg, setBg] = useState<RGB | null>(null);
 
   useEffect(() => {
     lifecycle.acquire(n);
@@ -186,8 +190,11 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, onPage
       </div>
       {dual && (
         <div style={{ position: 'relative' }}>
-          <RightPage size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas} />
-          {/* Task 7：译文块（TranslationBlocks）绝对定位叠在这里 */}
+          <RightPage
+            size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas}
+            onBackground={setBg}
+          />
+          <TranslationBlocks blocks={blocks} size={size} rasterScale={layerScale} bg={bg} />
         </div>
       )}
     </>

@@ -16,6 +16,18 @@ const PAGES = 8;
 // 页上那行字所在的矩形（视口 pt）。下面的 fixture 把它划成一个**没有 target** 的块，
 // 用来验「不翻译的块不盖」——右格里那行字必须原样还在。
 const INK = { x: 30, y: 35, w: 110, h: 30 };
+// 有 target 的那个块（视口 pt）。TARGET_INK 是这个矩形里真放的一行原文墨迹（Helvetica，
+// baseline 落在矩形纵向居中附近）——「右格应该把它盖干净」这条断言得先有东西可盖才立得住，
+// 不能盖的是一片本来就空白的区域（那样断言在实现错了的时候也一样绿）。
+const TARGET_BLOCK = { x: 60, y: 200, w: 460, h: 120 };
+const TARGET_INK = { x: 80, y: 260, text: 'residue check', size: 14 };
+// 采样框：包住 TARGET_INK 的墨迹，且完全落在 TARGET_BLOCK 内部（不挨边，不吃 BLOCK_PAD 外扩）。
+const TARGET_SAMPLE = { x: 65, y: 235, w: 300, h: 40 };
+// 译文块字号 e2e（字体加载前后一致）要用的长文本：块高 120pt、字号 11、行高 1.5 → 一屏约
+// 7 行、每行约 41 个全角字符，纯文本装不下的门槛在 ~290 字左右。这里往上叠了好几倍余量，
+// 确保 fitFontScale 真的会二分收缩——只有触发收缩，「测量时用的是不是真字体」才会体现在
+// 量出来的字号（换行位置）上；文本一次就能装下的话，前后测两次字号恒等，测不出什么。
+const LONG_ZH = '这段译文足够长，用来确保字号自适应必须收缩，从而让"有没有等字体加载再测量"这件事在几何上真的可观测。'.repeat(15);
 
 /**
  * 最小译文边车：每页两条块，一条有 target（要被底色盖掉）、一条没有（原样保留）。
@@ -30,8 +42,9 @@ function buildSidecar(pdf: Buffer): string {
       fontSize: 24, kind: 'formula', source: `Page ${p}`,   // 无 target = 不翻译 = 不盖
     });
     blocks.push({
-      id: `b${p}-text`, page: p, x: 60, y: 200, width: 460, height: 120,
-      fontSize: 11, kind: 'text', source: 'a body paragraph', target: '一段正文',
+      id: `b${p}-text`, page: p, x: TARGET_BLOCK.x, y: TARGET_BLOCK.y,
+      width: TARGET_BLOCK.w, height: TARGET_BLOCK.h,
+      fontSize: 11, kind: 'text', source: 'a body paragraph', target: LONG_ZH,
     });
   }
   return JSON.stringify({
@@ -47,7 +60,7 @@ async function seedAll(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
   await fs.mkdir(projectPath, { recursive: true });
-  const pdf = buildPagedPdf(PAGES, PAGE_W, PAGE_H);
+  const pdf = buildPagedPdf(PAGES, PAGE_W, PAGE_H, TARGET_INK);
   await fs.writeFile(path.join(projectPath, PDF_REL), pdf);
   await fs.writeFile(path.join(projectPath, ZH_REL), buildSidecar(pdf));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
@@ -210,6 +223,99 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
     ).toBeGreaterThan(PAGE_W);
     await expect(pane.locator('[data-pdf-layer]')).toHaveCount(1);
     await check('缩放之后');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 右栏在有 target 的块矩形内没有原文残留', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+
+    await enterDual(page, pane);
+
+    // 等右格真的合成过一次（位图尺寸落地才有意义可读），同上面用例的判据
+    await expect.poll(async () => page.evaluate((sel) => {
+      const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`);
+      const l = row?.querySelector('canvas:not([data-pdf-right])') as HTMLCanvasElement | null;
+      const r = row?.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement | null;
+      return !!l && !!r && l.width > 0 && r.width === l.width;
+    }, paneSel), { timeout: 10000, message: '等右格合成' }).toBe(true);
+
+    // 把译文 HTML 层临时藏掉，只看底图——这条只验合成阶段（RightPage 的 fillRect），
+    // 不牵涉 TranslationBlocks 本身画了什么。
+    await page.evaluate((sel) => {
+      document.querySelectorAll<HTMLElement>(`${sel} [data-translation-blocks]`)
+        .forEach((el) => { el.style.visibility = 'hidden'; });
+    }, paneSel);
+
+    // TARGET_SAMPLE 包住 TARGET_INK 那行真实原文墨迹，且完全落在 TARGET_BLOCK 矩形内部。
+    // 这行墨迹是 seedAll 特意放进去的（buildPagedPdf 的 extra 参数）——不放的话这里本来就是
+    // 空白页背景，"盖没盖"这条断言在实现错了的时候也会一样绿（这正是 Task 6 报告提醒过的
+    // 「验收标准要能证伪」那类坑：断言必须先有东西可盖，才谈得上"盖没盖住"）。
+    const uniform = await page.evaluate(({ sel, box, pageW }) => {
+      const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`);
+      const c = row?.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement | null;
+      if (!c) return false;
+      const ctx = c.getContext('2d')!;
+      const S = c.width / pageW;
+      const d = ctx.getImageData(
+        Math.round(box.x * S), Math.round(box.y * S),
+        Math.round(box.w * S), Math.round(box.h * S),
+      ).data;
+      for (let i = 4; i < d.length; i += 4) {
+        if (d[i] !== d[0] || d[i + 1] !== d[1] || d[i + 2] !== d[2]) return false;
+      }
+      return true;
+    }, { sel: paneSel, box: TARGET_SAMPLE, pageW: PAGE_W });
+    expect(uniform, '有 target 的块矩形内应当已被页背景色盖平，不留原文墨迹').toBe(true);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 字号测量必须等字体真的到位——先量后到位会被人为延迟当场抓到', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+
+    // 给 document.fonts.load 包一层确定性的人为延迟（真实加载照常发生，只是把"resolve" 这件事
+    // 晚一点交给页面代码）——不赌真实网络/磁盘加载会不会恰好落在某个时间点上，而是自己制造一段
+    // "肯定还没到位"的窗口。实现如果按 spec 内部 await 这个调用，这段窗口内就不该已经测过；
+    // 不 await 的话，会在窗口内就测完并把（可能用了回退字体量出来的）结果写进 state。
+    const DELAY_MS = 1500;
+    await page.evaluate((delay) => {
+      const orig = document.fonts.load.bind(document.fonts);
+      document.fonts.load = (font: string, text?: string) =>
+        orig(font, text).then((faces) => new Promise<FontFace[]>((r) => setTimeout(() => r(faces), delay)));
+    }, DELAY_MS);
+
+    await enterDual(page, pane);
+
+    // 朴素占位值：fontSize(11) × SIZE_MUL('text')(1) × fit(测量落地前的占位 1) × rasterScale(1)。
+    // LONG_ZH 足够长（binary search 门槛之上，见常量定义处的推算），真测过一次之后 fit 必然 ≠ 1，
+    // 字号必然偏离这个值——用"偏离朴素值"当作"已经测过"的判据。
+    const NAIVE = '11px';
+    const block1 = page.locator(`${paneSel} [data-translation-block="b1-text"]`);
+    await expect(block1).toBeVisible();
+
+    // 延迟窗口内：字体"到位"这件事被我们钉死晚了 DELAY_MS 才会发生。按 spec 先 await 再量的
+    // 实现，此刻测量还没跑完，字号应当还是朴素占位值。
+    const duringDelay = await block1.evaluate((el) => getComputedStyle(el).fontSize);
+    expect(duringDelay, '人为延迟窗口内不该已经量完——量完了说明没有真的等字体到位就测了').toBe(NAIVE);
+
+    // 等延迟过去、字体真正就绪
+    await expect.poll(
+      async () => block1.evaluate((el) => getComputedStyle(el).fontSize),
+      { timeout: DELAY_MS + 5000, message: '等延迟过去、字体真正就绪之后量出真实字号' },
+    ).not.toBe(NAIVE);
   } finally {
     await teardown(launched);
   }
