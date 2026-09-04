@@ -10,7 +10,16 @@ export type TBucket = {
   version: VersionState;
   dropped: number;              // 几何越界被丢掉的块数
   dual: boolean;
-  prevScale: number | null;     // 进入对照前的缩放；退出时还原
+  /**
+   * 进入对照前的缩放，退出时用它还原；null = 没有待还原的缩放（进对照时行宽本来就放得下，
+   * 压根没改过缩放）。
+   *
+   * 语义是「一份**还没被消费**的还原请求」，不是「进对照时的快照」：`dual === false &&
+   * prevScale !== null` 是个瞬态——渲染层看见它就还原并 clearPrevScale（PdfFileTab 里那个
+   * effect）。所以 setDual(tab, false) **不清**它：显式退出与 setLoaded 的自动退出因此共用
+   * 同一条还原路径，不会出现「自动退出把用户丢在双栏的小缩放上」。
+   */
+  prevScale: number | null;
 };
 
 export function emptyTBucket(): TBucket {
@@ -60,6 +69,8 @@ type State = {
   setLoaded: (tab: string, doc: TranslatedDoc | null, version: VersionState, dropped: number) => void;
   setLoadError: (tab: string, msg: string) => void;
   setDual: (tab: string, dual: boolean, prevScale?: number | null) => void;
+  /** 消费掉那份待还原的缩放（见 TBucket.prevScale）。调用方负责真的去还原。 */
+  clearPrevScale: (tab: string) => void;
   drop: (tab: string) => void;
 };
 
@@ -78,9 +89,16 @@ export const usePdfTranslationStore = create<State>((set) => ({
   setLoadError: (tab, msg) => set((s) => ({
     buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), doc: null, loadError: msg, dual: false } },
   })),
-  setDual: (tab, dual, prevScale = null) => set((s) => ({
-    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), dual, prevScale: dual ? prevScale : null } },
-  })),
+  // 进对照：prevScale 记下进入前的缩放（行宽本来就放得下则显式传 null，表示没什么要还原的）。
+  // 出对照：**原样留着** prevScale——它此刻的含义是「一份还没被消费的还原请求」，由渲染层
+  // 消费（见 TBucket.prevScale 的注释）。setLoaded 那条自动退出因此和显式退出走同一条还原路径。
+  setDual: (tab, dual, prevScale = null) => set((s) => {
+    const prev = s.buckets[tab] ?? emptyTBucket();
+    return { buckets: { ...s.buckets, [tab]: { ...prev, dual, prevScale: dual ? prevScale : prev.prevScale } } };
+  }),
+  clearPrevScale: (tab) => set((s) => (
+    s.buckets[tab] ? { buckets: { ...s.buckets, [tab]: { ...s.buckets[tab], prevScale: null } } } : s
+  )),
   drop: (tab) => set((s) => {
     const next = { ...s.buckets };
     delete next[tab];

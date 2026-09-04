@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
@@ -205,6 +205,53 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, docKey
   );
 }
 
+/** 每次改缩放前的快照，供缩放后按锚点回算滚动位置（见组件里那个 useLayoutEffect）。 */
+type ZoomAnchor = { prevScale: number; sl: number; st: number };
+
+/**
+ * 视觉缩放（连续值）与它**唯一**的写入口 `requestScale`。
+ *
+ * 定义在模块级、而不是组件体内，为的是让 `useState` 的 setter 落在组件**够不着的作用域**里。
+ * 改缩放这件事有两条随行规矩：
+ *   1. 要么记下回算锚点（`zoomAnchor`），要么显式把它清空；
+ *   2. 必须排一次清晰层提交（`scheduleCommit`），否则位图会一直停在旧缩放上被 CSS zoom 拉着糊。
+ * 原先只有捏合一个调用点，两条规矩写在那个 rAF 里；Task 8 的进/出对照又加了两个调用点，两条
+ * 都没跟上——于是「按 L 之后视图跳回上次捏合的位置」「退出对照后位图永久糊着」。收成一个入口
+ * 之后这两条由构造成立，不再依赖每个调用点自觉。
+ *
+ * 这不是把整台缩放状态机（targetScale / layers / promote / 双缓冲）搬家：那些仍留在组件里，
+ * 这里只搬走「当前视觉缩放」这一个 state 和写它的那条路径。`scheduleCommit` 由组件注入，
+ * 双缓冲的细节这个 hook 一概不知道。
+ *
+ * `targetScale`（连续累积的目标值）仍是组件的 ref：捏合是**逐 wheel 事件累积、逐帧提交**，
+ * 累积那一步不该每次都惊动 React。这里只负责在真正落地时把它对齐到同一个值。
+ */
+function useVisualScale(
+  scrollRef: RefObject<HTMLDivElement | null>,
+  targetScale: RefObject<number>,
+  zoomAnchor: RefObject<ZoomAnchor | null>,
+  scheduleCommit: () => void,
+): [number, (next: number, anchored: boolean) => void] {
+  const [visualScale, setVisualScale] = useState(1);
+  const cur = useRef(visualScale);
+  cur.current = visualScale;
+
+  const requestScale = useCallback((next: number, anchored: boolean) => {
+    const el = scrollRef.current;
+    const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+    targetScale.current = clamped;
+    // anchored=false 时**显式置 null**，不是「不写」：锚点是一次性快照，留着上一次捏合的那份
+    // 会让下一次非捏合的缩放（进/出对照）按上次捏合那一刻的滚动位置回算，把视图弹走。
+    zoomAnchor.current = anchored && el
+      ? { prevScale: cur.current, sl: el.scrollLeft, st: el.scrollTop }
+      : null;
+    setVisualScale(clamped);
+    scheduleCommit();
+  }, [scrollRef, targetScale, zoomAnchor, scheduleCommit]);
+
+  return [visualScale, requestScale];
+}
+
 export function PdfFileTab({ tab }: { tab: FileTab }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
   const [bytes, setBytes] = useState<Uint8Array<ArrayBuffer> | null>(null);
@@ -363,7 +410,6 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // - layers[1]（若有）：按新缩放在后台（旧层下方）渲染的「新层」，全部页画好后整层顶替
   // - 手势进行中只改各层外层的 CSS zoom（visualScale），不触发 canvas 重渲染 → 不闪
   const [layers, setLayers] = useState<Layer[]>([{ id: 0, scale: 1 }]);
-  const [visualScale, setVisualScale] = useState(1); // 当前显示缩放（连续）
   // 最近一次顶替走的是哪条路（见上面 PromoteReason 的注释）；只落在 stable 层上（见渲染处）。
   // 新一轮双缓冲开始（后台新层刚创建）时清空——2 层并存期间这个值属于上一轮，不该被读到。
   const [promoteReason, setPromoteReason] = useState<PromoteReason | null>(null);
@@ -373,16 +419,68 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const targetScale = useRef(1);              // 连续累积的目标缩放
   const layersRef = useRef(layers);
   layersRef.current = layers;
-  const visualScaleRef = useRef(visualScale);
-  visualScaleRef.current = visualScale;
   const rafRef = useRef<number | null>(null);
   const commitTimer = useRef<number | null>(null);
   const promoteTimer = useRef<number | null>(null);
   // 新层渲染进度：按页号存，不是计数——同一页 onRenderError 之后又 onRenderSuccess 不能重复计数
   const progress = useRef<{ id: number; done: Set<number> }>({ id: -1, done: new Set() });
   const focal = useRef({ x: 0, y: 0 });       // 缩放锚点：鼠标相对滚动视口的位置
-  // 每帧缩放前的快照，供缩放后按锚点回算滚动位置
-  const zoomAnchor = useRef<{ prevScale: number; sl: number; st: number } | null>(null);
+  const zoomAnchor = useRef<ZoomAnchor | null>(null);
+
+  // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
+  //
+  // 不是 useMemo：它的输入里有一个每帧都变的量（滚动位置），而输出大多数帧不变。改成「算出来
+  // 与上一版是同一个窗口就原样返回上一版」（sameWindow），React 的 Object.is 就会把这次
+  // setState 整个 bail out——纯滚动于是大多数帧一次重渲染都没有。判据是算出来的窗口本身，
+  // 不是滚动了多少像素，没有阈值。
+  const [win, setWin] = useState<WindowResult>(EMPTY_WINDOW);
+  // onWheel / onPageSettled 都挂在 effect 或回调里，闭包拿不到最新的 win，用 ref 镜像
+  const winRef = useRef(win);
+  winRef.current = win;
+
+  // 把后台新层提升为唯一的清晰层（旧层同时移除）。reason 记录这次顶替是被哪条路触发的
+  // （见 PromoteReason 的注释），落进 state 供渲染层挂到 stable 层的 data 属性上。
+  const promote = useCallback((reason: PromoteReason) => {
+    if (promoteTimer.current != null) { clearTimeout(promoteTimer.current); promoteTimer.current = null; }
+    setPromoteReason(reason);
+    setLayers((cur) => (cur.length > 1 ? [cur[cur.length - 1]] : cur));
+  }, []);
+
+  // 排一次「停顿 COMMIT_DELAY 之后在后台以新缩放渲染一层清晰层」。
+  //
+  // 由 requestScale 统一调用（见模块级 useVisualScale）：**任何**改缩放的路径都会经过它，
+  // 而不只是捏合。少排一次的后果是位图停在旧缩放、被外层 CSS zoom 拉着糊，且在用户下一次
+  // 捏合之前不会自愈——退出对照那条路径原先就是这样。
+  const scheduleCommit = useCallback(() => {
+    if (commitTimer.current != null) clearTimeout(commitTimer.current);
+    commitTimer.current = window.setTimeout(() => {
+      commitTimer.current = null;
+      const stable = layersRef.current[0];
+      // 用窗口算出来的栅格分辨率，不是视觉缩放：视觉超出预算上界的那部分由外层 CSS zoom
+      // （渲染处的 visualScale / layer.scale）补，表现为「放到很大只是变糊」，而不是把位图撑爆。
+      const target = winRef.current.rasterScale;
+      if (Math.abs(target - stable.scale) < 0.001) {
+        // 已是该缩放：丢弃任何未完成的新层，连同它的兜底计时器与上一轮的顶替结论。
+        // 不清的话 data-pdf-promote-reason 会挂着上一轮的答案，而这一轮压根没顶替过；
+        // 计时器不清则会在 4 秒后拿 'timeout' 去覆盖它——两者都在削弱这个属性的可观测性。
+        if (promoteTimer.current != null) { clearTimeout(promoteTimer.current); promoteTimer.current = null; }
+        setPromoteReason(null);
+        setLayers([stable]);
+        return;
+      }
+      layerSeq.current += 1;
+      const incoming: Layer = { id: layerSeq.current, scale: target };
+      progress.current = { id: incoming.id, done: new Set() };
+      setPromoteReason(null); // 新一轮双缓冲开始：上一轮的顶替原因作废，还没轮到这一轮的结论
+      setLayers([stable, incoming]);
+      if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
+      promoteTimer.current = window.setTimeout(() => promote('timeout'), PROMOTE_TIMEOUT);
+    }, COMMIT_DELAY);
+  }, [promote]);
+
+  const [visualScale, requestScale] = useVisualScale(scrollRef, targetScale, zoomAnchor, scheduleCommit);
+  const visualScaleRef = useRef(visualScale);
+  visualScaleRef.current = visualScale;
 
   // 每页顶边偏移与内容总高，按预取到的页尺寸算——虚拟化之后窗口外的行没有内容可量，
   // 只能算（pageLayout.ts）。
@@ -425,44 +523,45 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   //
   // 一行的宽度是 2 × 页宽 + 间距（dual 时行宽的算法见下面渲染处 `size.w * 2 + PAGE_GAP`，
   // 这里用 sizes[0] 是因为 fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，
-  // 用第一页的宽度足够；量出来的 fit 又会被 MIN_SCALE 兜底，极端情况下也不会缩到不可用）。
-  // 放不下就缩到刚好放下，把进入前的缩放存进 prevScale；退出时原样还原。行宽本来就放得下
-  // 则不动、prevScale 存 null（setDual 内部按这个值判断退出时要不要还原）。
+  // 用第一页的宽度足够；量出来的 fit 又会被 requestScale 的 MIN_SCALE 兜底，极端情况下也不会
+  // 缩到不可用）。放不下就缩到刚好放下，把进入前的缩放存进 prevScale；行宽本来就放得下则不动、
+  // prevScale 存 null。
+  //
+  // **退出这条路径不在这里还原缩放**：还原只有下面那个 effect 一条路（显式退出与 setLoaded 的
+  // 自动退出共用），这里只负责把 dual 收掉。`dual === false && prevScale !== null` 因此是一个
+  // 「还没被消费的还原请求」瞬态，谁把 dual 收掉都行，还原都会发生。
   const onToggleDual = useCallback(() => {
     const st = usePdfTranslationStore.getState();
     const b = st.buckets[tab.id];
     const el = scrollRef.current;
     if (!b || !el || !sizes) return;
-    if (b.dual) {
-      // 退出：还原进入前的缩放
-      if (b.prevScale != null) { targetScale.current = b.prevScale; setVisualScale(b.prevScale); }
-      st.setDual(tab.id, false);
-      return;
-    }
+    if (b.dual) { st.setDual(tab.id, false); return; }
     if (!canToggleDual(b)) return; // 未找到译文 / 边车有误 / 摘要对不上：与工具栏四态同一份判据
     const rowUnit = sizes[0].w * 2 + PAGE_GAP;
     const fit = el.clientWidth / rowUnit;
     const prev = visualScaleRef.current;
     if (fit < prev) {
-      const next = Math.max(MIN_SCALE, fit);
-      targetScale.current = next;
-      setVisualScale(next);
       st.setDual(tab.id, true, prev);
+      // 非捏合的缩放：锚点显式清空（anchored=false），否则会拿上一次捏合的快照回算滚动位置
+      requestScale(fit, false);
     } else {
       st.setDual(tab.id, true, null);
     }
-  }, [tab.id, sizes]);
+  }, [tab.id, sizes, requestScale]);
 
-  // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
+  // 退出对照后把缩放还原回进入前——**唯一**的还原路径，显式退出（上面的 onToggleDual）与自动
+  // 退出（pdfTranslationStore 的 setLoaded 在 doc 变 null / version 变 mismatch 时收 dual）
+  // 都走它。原先只有显式退出那条路会还原，自动退出把用户丢在双栏 fit-width 的小缩放上。
   //
-  // 不是 useMemo：它的输入里有一个每帧都变的量（滚动位置），而输出大多数帧不变。改成「算出来
-  // 与上一版是同一个窗口就原样返回上一版」（sameWindow），React 的 Object.is 就会把这次
-  // setState 整个 bail out——纯滚动于是大多数帧一次重渲染都没有。判据是算出来的窗口本身，
-  // 不是滚动了多少像素，没有阈值。
-  const [win, setWin] = useState<WindowResult>(EMPTY_WINDOW);
-  // onWheel / onPageSettled 都挂在 effect 或回调里，闭包拿不到最新的 win，用 ref 镜像
-  const winRef = useRef(win);
-  winRef.current = win;
+  // 判据是 store 里那个「已经不在对照中、但还留着一份进入前的缩放」的瞬态：dual 收掉的那一刻
+  // 它成立，这里消费掉（clearPrevScale）并还原，此后 `dual === false && prevScale !== null`
+  // 就不再稳定存在。谁把 dual 收掉都行，还原都会发生。
+  const pendingRestore = usePdfTranslationStore((s) => s.buckets[tab.id]?.prevScale ?? null);
+  useEffect(() => {
+    if (dual || pendingRestore == null) return;
+    usePdfTranslationStore.getState().clearPrevScale(tab.id);
+    requestScale(pendingRestore, false);
+  }, [dual, pendingRestore, tab.id, requestScale]);
 
   // 重读滚动几何 → 重算窗口与页码读数。两件事都从 layout.tops 纯算，一次 DOM 量取都不做
   // （scrollTop / clientHeight 是滚动容器自己的两个数，不是逐页的 getBoundingClientRect）。
@@ -556,14 +655,6 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     el.scrollTop = (a.st + focal.current.y) * f - focal.current.y;
   }, [visualScale]);
 
-  // 把后台新层提升为唯一的清晰层（旧层同时移除）。reason 记录这次顶替是被哪条路触发的
-  // （见 PromoteReason 的注释），落进 state 供渲染层挂到 stable 层的 data 属性上。
-  const promote = useCallback((reason: PromoteReason) => {
-    if (promoteTimer.current != null) { clearTimeout(promoteTimer.current); promoteTimer.current = null; }
-    setPromoteReason(reason);
-    setLayers((cur) => (cur.length > 1 ? [cur[cur.length - 1]] : cur));
-  }, []);
-
   // 新层某一页渲染结束（成功或失败都计入）；**可见页**全部就绪即顶替（promoteReady）。
   // 不能再按 numPages 判定：虚拟化之后窗口外的页压根不挂载，那个数永远凑不齐，每次缩放都要
   // 卡满 PROMOTE_TIMEOUT 才顶替。也不按整个窗口判定：窗口里还有预取页，它们画完与否用户看不见，
@@ -599,6 +690,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       focal.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      // 逐事件累积目标缩放（只动 ref，不惊动 React），逐帧才真正落地一次——落地与「排提交」
+      // 都在 requestScale 里，见模块级 useVisualScale。
       targetScale.current = Math.min(
         MAX_SCALE,
         Math.max(MIN_SCALE, targetScale.current * (1 - e.deltaY * ZOOM_SENSITIVITY)),
@@ -607,35 +700,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       if (rafRef.current == null) {
         rafRef.current = requestAnimationFrame(() => {
           rafRef.current = null;
-          zoomAnchor.current = { prevScale: visualScaleRef.current, sl: el.scrollLeft, st: el.scrollTop };
-          setVisualScale(targetScale.current);
+          requestScale(targetScale.current, true);
         });
       }
-      // 停顿 COMMIT_DELAY 后：在后台以新缩放渲染一层清晰层
-      if (commitTimer.current != null) clearTimeout(commitTimer.current);
-      commitTimer.current = window.setTimeout(() => {
-        commitTimer.current = null;
-        const stable = layersRef.current[0];
-        // 用窗口算出来的栅格分辨率，不是视觉缩放：视觉超出预算上界的那部分由外层 CSS zoom
-        // （下面的 visualScale / layer.scale）补，表现为「放到很大只是变糊」，而不是把位图撑爆。
-        const target = winRef.current.rasterScale;
-        if (Math.abs(target - stable.scale) < 0.001) {
-          // 已是该缩放：丢弃任何未完成的新层，连同它的兜底计时器与上一轮的顶替结论。
-          // 不清的话 data-pdf-promote-reason 会挂着上一轮的答案，而这一轮压根没顶替过；
-          // 计时器不清则会在 4 秒后拿 'timeout' 去覆盖它——两者都在削弱这个属性的可观测性。
-          if (promoteTimer.current != null) { clearTimeout(promoteTimer.current); promoteTimer.current = null; }
-          setPromoteReason(null);
-          setLayers([stable]);
-          return;
-        }
-        layerSeq.current += 1;
-        const incoming: Layer = { id: layerSeq.current, scale: target };
-        progress.current = { id: incoming.id, done: new Set() };
-        setPromoteReason(null); // 新一轮双缓冲开始：上一轮的顶替原因作废，还没轮到这一轮的结论
-        setLayers([stable, incoming]);
-        if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
-        promoteTimer.current = window.setTimeout(() => promote('timeout'), PROMOTE_TIMEOUT);
-      }, COMMIT_DELAY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('scroll', scheduleRecompute, { passive: true });
@@ -646,7 +713,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       if (commitTimer.current != null) clearTimeout(commitTimer.current);
       if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
     };
-  }, [tab.status, promote, scheduleRecompute]);
+  }, [tab.status, requestScale, scheduleRecompute]);
 
   // 视口尺寸变了（拖窗、开合侧栏）窗口也要重算——这时没有滚动事件，滚动帧那条路不会跑。
   //

@@ -64,3 +64,65 @@ describe('usePdfTranslationStore.setLoaded 维持 dual', () => {
     expect(st().buckets[T].dual).toBe(true);
   });
 });
+
+// prevScale 的语义是「一份**还没被消费**的还原请求」，不是「进对照时的快照」：谁把 dual 收掉
+// 都行，`dual === false && prevScale !== null` 这个瞬态由渲染层看见、还原缩放、再 clearPrevScale
+// （PdfFileTab 里那个 effect）。收 dual 的路径有两条——显式退出，和 setLoaded 撞见边车没了 /
+// 摘要对不上时的自动退出。setDual 若在退出时把 prevScale 清成 null，自动退出那条路就永远没有
+// 还原请求可消费，用户被踢出对照后停在双栏 fit-width 的小缩放上。
+describe('usePdfTranslationStore 的 prevScale 是一份待消费的还原请求', () => {
+  const T = '/p/paper.pdf';
+  const ZH: TranslatedDoc = {
+    version: 1, pdf: 'p.pdf', lang: { in: 'en', out: 'zh' },
+    source: { sha256: 'aa', bytes: 10 }, blocks: [],
+  };
+  const st = () => usePdfTranslationStore.getState();
+
+  beforeEach(() => {
+    usePdfTranslationStore.setState({ buckets: {} });
+  });
+
+  it('显式退出：dual 收掉，prevScale 留着等人还原', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setDual(T, true, 0.5);
+    st().setDual(T, false);
+    expect(st().buckets[T].dual).toBe(false);
+    expect(st().buckets[T].prevScale).toBe(0.5);
+  });
+
+  it('自动退出（setLoaded 撞见 mismatch）：prevScale 同样留着，还原走同一条路径', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setDual(T, true, 0.5);
+    st().setLoaded(T, ZH, 'mismatch', 0);
+    expect(st().buckets[T].dual).toBe(false);
+    expect(st().buckets[T].prevScale).toBe(0.5);
+  });
+
+  it('自动退出（边车被删）：prevScale 同样留着', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setDual(T, true, 0.5);
+    st().setLoaded(T, null, 'unknown', 0);
+    expect(st().buckets[T].dual).toBe(false);
+    expect(st().buckets[T].prevScale).toBe(0.5);
+  });
+
+  it('消费之后 dual=false 且 prevScale≠null 不再成立', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setDual(T, true, 0.5);
+    st().setDual(T, false);
+    st().clearPrevScale(T);
+    expect(st().buckets[T].prevScale).toBeNull();
+  });
+
+  it('进对照时行宽本来就放得下 → 没有还原请求', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setDual(T, true, null);
+    st().setDual(T, false);
+    expect(st().buckets[T].prevScale).toBeNull();
+  });
+
+  it('clearPrevScale 对不存在的桶是 no-op，不会凭空造一个桶出来', () => {
+    st().clearPrevScale('/p/never-opened.pdf');
+    expect(st().buckets['/p/never-opened.pdf']).toBeUndefined();
+  });
+});

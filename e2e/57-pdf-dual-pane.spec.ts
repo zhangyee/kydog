@@ -273,6 +273,46 @@ async function sampleContrast(page: Page, paneSel: string): Promise<Sampled | nu
     : null;
 }
 
+/**
+ * 清晰层里第一张左格 canvas 的 CSS 宽 —— 也就是 `size.w × layer.scale`（react-pdf 对它取过
+ * floor）。这是「位图层现在处在哪一档缩放」唯一从外部读得到的协议层事实：读数只反映
+ * visualScale（外层 CSS zoom 的分子），位图停在哪一档它是看不出来的。还没定尺寸时返回 0。
+ */
+async function stableCanvasWidth(page: Page, paneSel: string): Promise<number> {
+  return page.evaluate((sel) => {
+    const c = document.querySelector(`${sel} [data-pdf-layer="stable"] canvas:not([data-pdf-right])`);
+    const w = c ? (c as HTMLCanvasElement).style.width : '';
+    return w ? parseFloat(w) : 0;
+  }, paneSel);
+}
+
+/** 清晰层外层的 CSS zoom（= visualScale / layer.scale）。位图与显示同档时它是 1。 */
+async function stableLayerZoom(page: Page, paneSel: string): Promise<number | null> {
+  return page.evaluate((sel) => {
+    const l = document.querySelector(`${sel} [data-pdf-layer="stable"]`);
+    if (!l) return null;
+    const z = getComputedStyle(l).zoom;
+    return z ? parseFloat(z) : null;
+  }, paneSel);
+}
+
+/**
+ * 发一次 ctrl+wheel 把缩放捏到 `toPct`%。deltaY 按 onWheel 里那个乘法公式
+ * （`targetScale.current * (1 - deltaY * ZOOM_SENSITIVITY)`）从当前读数反推，
+ * ZOOM_SENSITIVITY 从 zoomSensitivity.ts import，不照抄字面量。
+ */
+async function pinchTo(page: Page, pdfPath: string, fromPct: number, toPct: number) {
+  const deltaY = (1 - toPct / fromPct) / ZOOM_SENSITIVITY;
+  await page.evaluate(({ sel, deltaY }) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new WheelEvent('wheel', {
+      ctrlKey: true, deltaY,
+      clientX: r.left + r.width / 2, clientY: r.top + 120, bubbles: true, cancelable: true,
+    }));
+  }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), deltaY });
+}
+
 type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null; dGap: number | null };
 
 /**
@@ -389,15 +429,7 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
     // PAGE_GAP 一样，是抽出来给两边共用的纯常量，不拖 react-pdf / pdf.js worker 那串副作用），
     // 不再照抄字面量。
     const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
-    const deltaY = (1 - 150 / startPct) / ZOOM_SENSITIVITY;
-    await page.evaluate(({ sel, deltaY }) => {
-      const el = document.querySelector(sel) as HTMLElement;
-      const r = el.getBoundingClientRect();
-      el.dispatchEvent(new WheelEvent('wheel', {
-        ctrlKey: true, deltaY,
-        clientX: r.left + r.width / 2, clientY: r.top + 120, bubbles: true, cancelable: true,
-      }));
-    }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), deltaY });
+    await pinchTo(page, pdfPath, startPct, 150);
     await expect(pane.getByTestId('pdf-readout')).toContainText('150%');
     // 等顶替：判据是协议层事实——清晰层的左格 canvas 换成了按新缩放开的那一张（CSS 宽从
     // 595 变成 892），不是「等 800 ms」。双缓冲期间 stable 还是旧层，这个数就还没变。
@@ -534,14 +566,17 @@ test('57-pdf-dual-pane: 翻译键四态——无边车 / 边车有误 / 摘要�
   }
 });
 
-test('57-pdf-dual-pane: 进入对照时按需 fit-width，退出还原', async () => {
+test('57-pdf-dual-pane: 进入对照时按需 fit-width，退出还原（连位图层一起还原）', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {
     const { page, kydogHome } = launched;
     const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
     const pane = await openPdf(page, pdfPath);
     const readout = pane.getByTestId('pdf-readout');
     const before = await readout.textContent();
+    const beforeW = await stableCanvasWidth(page, paneSel);
+    expect(beforeW, '进对照前清晰层的左格 canvas 应当已经定好 CSS 尺寸').toBeGreaterThan(0);
 
     // 一行是 2 × 595pt + 16pt 间距 = 1206pt，默认窗口宽度（main pane 减去两条侧栏之后）明显
     // 装不下——进对照应当把缩放降到刚好放下，读数因此跟着变小。
@@ -549,11 +584,73 @@ test('57-pdf-dual-pane: 进入对照时按需 fit-width，退出还原', async (
     const during = await readout.textContent();
     expect(during, '进对照后行宽放不下，读数应当已经变小').not.toBe(before);
     expect(readoutPct(during!)).toBeLessThan(readoutPct(before!));
+    // 位图层也跟着降下来（进对照那一次缩放同样排了提交）
+    await expect.poll(
+      () => stableCanvasWidth(page, paneSel),
+      { timeout: 15000, message: '等进对照后的清晰层提交' },
+    ).toBeLessThan(beforeW);
 
     // 退出：还原成进入前的缩放
     await page.keyboard.press('l');
     await expect(pane.locator('[data-pdf-right="1"]')).toHaveCount(0);
     await expect(readout).toHaveText(before!);
+    // 读数回到进入前只说明 CSS zoom 那个数字回来了——位图层若停在 fit 那一档，画面就是被放大
+    // 两倍显示的糊图，而且在用户下一次捏合之前不会自愈。判据取协议层事实：清晰层左格 canvas
+    // 的 CSS 宽（= size.w × layer.scale）必须回到进对照前那个值。
+    await expect.poll(
+      () => stableCanvasWidth(page, paneSel),
+      { timeout: 15000, message: '等退出对照后的清晰层提交' },
+    ).toBe(beforeW);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 捏合过之后再按 L，不拿陈旧锚点把视图弹回去', async () => {
+  // 这条守的是「改缩放的路径必须走同一个入口」：进/出对照也是一次缩放改动，既要显式清掉上一次
+  // 捏合留下的回算锚点，也要排一次清晰层提交。现有那条 fit-width 用例的顺序是「进对照 → 捏合」，
+  // 从不在捏合之后再切 dual，而那正是唯一能撞上陈旧锚点的顺序。
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    const scroll = page.locator(testIdSelector(`pdf-scroll-${pdfPath}`));
+    const readout = pane.getByTestId('pdf-readout');
+
+    // 1. 先捏合一次（这一步才会写下 zoomAnchor），等新层顶替
+    const startPct = readoutPct((await readout.textContent())!);
+    await pinchTo(page, pdfPath, startPct, 150);
+    await expect(readout).toContainText('150%');
+    await expect.poll(
+      () => stableCanvasWidth(page, paneSel),
+      { timeout: 15000, message: '等捏合后的新层顶替' },
+    ).toBeGreaterThan(PAGE_W);
+
+    // 2. 滚到中间某页——锚点里存的是**捏合那一刻**的滚动位置，与这里差得越远，被它回算一次的
+    //    后果越明显（实测是夹到 0，即整个视图弹回第 1 页）。
+    await scroll.evaluate((el) => { el.scrollTop = el.scrollHeight * 0.55; });
+    await expect(readout).not.toContainText(`1 / ${PAGES}`);
+    const beforeTop = await scroll.evaluate((el) => el.scrollTop);
+    expect(beforeTop).toBeGreaterThan(0);
+
+    // 3. 按 L 进对照
+    await enterDual(page, pane);
+
+    // 滚动位置只该被「内容变矮了」这件事影响（浏览器把 scrollTop 夹到新的最大值），不该被任何
+    // 锚点回算改写。陈旧锚点那条路算出来的是负数，会被夹成 0 —— 视图弹回第 1 页。
+    const after = await scroll.evaluate((el) => ({ top: el.scrollTop, max: el.scrollHeight - el.clientHeight }));
+    expect(after.top, '按 L 之后不该弹回文档开头').toBeGreaterThan(0);
+    expect(after.top, '按 L 之后 scrollTop 只该被新的滚动上界夹一下，不该被锚点回算改写')
+      .toBeCloseTo(Math.min(beforeTop, after.max), 0);
+
+    // 提交也必须排上：位图层收敛到新缩放之后，外层 CSS zoom（visualScale / layer.scale）回到 1。
+    // 不排提交的话它会一直停在 fit / 上一次捏合的比值上（实测约 0.5），画面一直糊着。
+    await expect.poll(
+      () => stableLayerZoom(page, paneSel),
+      { timeout: 15000, message: '等进对照后的清晰层提交，外层 zoom 收敛回 1' },
+    ).toBeCloseTo(1, 2);
   } finally {
     await teardown(launched);
   }
