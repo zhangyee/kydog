@@ -29,6 +29,32 @@ export function checkVersion(doc: TranslatedDoc, sha: string, bytes: number): Ve
   return same ? 'ok' : 'mismatch';
 }
 
+/** 工具栏翻译键的四态（Task 8）：'none' 没有译文、'invalid' 边车结构有误、'mismatch' 摘要
+ *  对不上、'ready' 可点、'active' 已在对照中。 */
+export type TranslateUiState = 'none' | 'invalid' | 'mismatch' | 'ready' | 'active';
+
+/**
+ * 工具栏四态与 `L` 快捷键能不能进对照，是同一份判据——两处各判一次是最难查的那类 bug
+ * （一处能进、另一处不能进）。收敛成这一个纯函数，两个消费方（PdfToolbar 的四态渲染、
+ * annotationKeys.ts 的 L 分支）都调它，不各自重写一遍条件。
+ *
+ * 顺序很关键：`loadError` 时 `doc` 恒为 null（见下面 `setLoadError`），必须先判 `loadError`
+ * 才能把「边车结构校验失败」（invalid）与「边车压根不存在」（none，`pdf.translation.load`
+ * 返回空 doc）区分开——顺序反了的话，结构有误的边车会先被 `!doc` 挡住，永远走不到 invalid。
+ */
+export function translateUiState(b: TBucket | undefined): TranslateUiState {
+  if (b?.loadError) return 'invalid';
+  if (!b?.doc) return 'none';
+  if (b.version === 'mismatch') return 'mismatch';
+  return b.dual ? 'active' : 'ready';
+}
+
+/** 能不能按 L / 点工具栏键切换对照：四态里只有 ready、active 放行。 */
+export function canToggleDual(b: TBucket | undefined): boolean {
+  const s = translateUiState(b);
+  return s === 'ready' || s === 'active';
+}
+
 type State = {
   buckets: Record<string, TBucket>;
   setLoaded: (tab: string, doc: TranslatedDoc | null, version: VersionState, dropped: number) => void;

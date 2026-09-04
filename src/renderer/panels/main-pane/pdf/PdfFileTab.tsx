@@ -6,7 +6,7 @@ import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { flushDrafts } from './noteDrafts';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
-import { checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
+import { canToggleDual, checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
 import { sha256Hex } from './sha256';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
@@ -398,7 +398,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // Task 7 之前这里恒为 null（store 里有槽位、还没有写入方），窗口逻辑照常工作。
   const editingPage = usePdfAnnotationStore((s) => s.buckets[tab.id]?.editingPage ?? null);
 
-  // 双栏对照：本期唯一的写入方是 annotationKeys.ts 的 L 分支（工具栏三态留给 Task 8）。
+  // 双栏对照：写入方是上面的 onToggleDual（工具栏翻译键的 onClick 与 annotationKeys.ts 的
+  // L 分支都调它），以及 setLoaded 在 doc 变 null / version 变 mismatch 时的自动退出。
   const dual = usePdfTranslationStore((s) => s.buckets[tab.id]?.dual ?? false);
   const translated = usePdfTranslationStore((s) => s.buckets[tab.id]?.doc ?? null);
   // 按页分桶一次，而不是在页行的 map 里逐页 filter：filter 每次渲染都产出新数组，
@@ -413,6 +414,42 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     }
     return m;
   }, [translated]);
+
+  // 进 / 出双栏对照，按需 fit-width（spec §12）。两个调用点：工具栏翻译键的 onClick（点击时
+  // 已经被 disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过
+  // IconButton 的 disabled，靠它自己先调 canToggleDual 判过一轮）。这里再判一次 canToggleDual
+  // 不是重复的第三份条件——调的是同一个纯函数（pdfTranslationStore.ts），只是让这个真正做
+  // 状态改动的函数本身对「不该进」的调用也是安全的，不必信任每个调用点都已经判过。
+  //
+  // 一行的宽度是 2 × 页宽 + 间距（dual 时行宽的算法见下面渲染处 `size.w * 2 + PAGE_GAP`，
+  // 这里用 sizes[0] 是因为 fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，
+  // 用第一页的宽度足够；量出来的 fit 又会被 MIN_SCALE 兜底，极端情况下也不会缩到不可用）。
+  // 放不下就缩到刚好放下，把进入前的缩放存进 prevScale；退出时原样还原。行宽本来就放得下
+  // 则不动、prevScale 存 null（setDual 内部按这个值判断退出时要不要还原）。
+  const onToggleDual = useCallback(() => {
+    const st = usePdfTranslationStore.getState();
+    const b = st.buckets[tab.id];
+    const el = scrollRef.current;
+    if (!b || !el || !sizes) return;
+    if (b.dual) {
+      // 退出：还原进入前的缩放
+      if (b.prevScale != null) { targetScale.current = b.prevScale; setVisualScale(b.prevScale); }
+      st.setDual(tab.id, false);
+      return;
+    }
+    if (!canToggleDual(b)) return; // 未找到译文 / 边车有误 / 摘要对不上：与工具栏四态同一份判据
+    const rowUnit = sizes[0].w * 2 + PAGE_GAP;
+    const fit = el.clientWidth / rowUnit;
+    const prev = visualScaleRef.current;
+    if (fit < prev) {
+      const next = Math.max(MIN_SCALE, fit);
+      targetScale.current = next;
+      setVisualScale(next);
+      st.setDual(tab.id, true, prev);
+    } else {
+      st.setDual(tab.id, true, null);
+    }
+  }, [tab.id, sizes]);
 
   // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
   //
@@ -664,7 +701,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       ref={wrapperRef}
       tabIndex={0}
       style={{ position: 'relative', height: '100%', outline: 'none' }}
-      onKeyDown={(e) => { if (handleAnnotationKey(e, tab.id)) e.preventDefault(); }}
+      onKeyDown={(e) => { if (handleAnnotationKey(e, tab.id, onToggleDual)) e.preventDefault(); }}
       onPointerDownCapture={(e) => {
         const t = e.target as Element;
         if (!t.closest('textarea, button')) wrapperRef.current?.focus();
@@ -784,7 +821,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         )}
       </div>
       <PdfAnnotationNotice tabId={tab.id} pdfPath={tab.path} />
-      <PdfToolbar tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)} />
+      <PdfToolbar
+        tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)}
+        onToggleDual={onToggleDual}
+      />
       {anchor && <PdfSelectionBar tabId={tab.id} anchor={anchor} />}
     </div>
   );

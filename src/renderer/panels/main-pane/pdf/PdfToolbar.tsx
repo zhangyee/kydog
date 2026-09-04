@@ -1,20 +1,34 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { IconButton, NavIcon } from '../../../shared';
 import { usePdfAnnotationStore, type Tool } from './pdfAnnotationStore';
+import { translateUiState, usePdfTranslationStore, type TranslateUiState } from './pdfTranslationStore';
 import { PANEL_SHADOW, PdfToolCard } from './PdfToolCard';
 
 function Divider(): ReactNode {
   return <div style={{ width: 0.5, height: 16, background: 'var(--color-ink-hair)', margin: '0 3px', flexShrink: 0 }} />;
 }
 
-type Props = { tabId: string; pageLabel: string; zoomPct: number };
+// 四态各自的 tooltip；disabled/active 由调用处按 translateUiState 的返回值推。这份判据与
+// annotationKeys.ts 的 L 分支共用同一个 translateUiState/canToggleDual（pdfTranslationStore.ts），
+// 不在这里另写一遍——两处各判一次是最难查的那类 bug（一处能进、另一处不能进）。
+const TRANSLATE_TIP: Record<TranslateUiState, string> = {
+  none: '翻译对照 · 未找到译文',
+  invalid: '翻译对照 · 译文文件有误',
+  mismatch: '翻译对照 · 译文版本不匹配',
+  ready: '翻译对照 · L',
+  active: '退出对照 · L',
+};
 
-/** 底部居中的胶囊：选择 · 高亮 · 文字 | 撤销 · 重做 | 翻译（本期禁用） | 读数（spec §7.1）。 */
-export function PdfToolbar({ tabId, pageLabel, zoomPct }: Props) {
+type Props = { tabId: string; pageLabel: string; zoomPct: number; onToggleDual: () => void };
+
+/** 底部居中的胶囊：选择 · 高亮 · 文字 | 撤销 · 重做 | 翻译对照 | 读数（spec §7.1）。 */
+export function PdfToolbar({ tabId, pageLabel, zoomPct, onToggleDual }: Props) {
   const bucket = usePdfAnnotationStore((s) => s.buckets[tabId]);
   const ready = !!bucket?.doc && !bucket.loadError;
   const tool: Tool = bucket?.tool ?? 'select';
   const st = usePdfAnnotationStore.getState;
+  const translateBucket = usePdfTranslationStore((s) => s.buckets[tabId]);
+  const translateState = translateUiState(translateBucket);
   const pillRef = useRef<HTMLDivElement>(null);
   const highlightBtnRef = useRef<HTMLButtonElement>(null);
   const noteBtnRef = useRef<HTMLButtonElement>(null);
@@ -74,7 +88,13 @@ export function PdfToolbar({ tabId, pageLabel, zoomPct }: Props) {
           <NavIcon name="redo-2" size={15} />
         </IconButton>
         <Divider />
-        <IconButton size={28} tooltip="翻译对照 · 即将开放" tooltipPlacement="top" disabled onClick={() => {}} testId="pdf-translate">
+        <IconButton
+          size={28} tooltip={TRANSLATE_TIP[translateState]} tooltipPlacement="top"
+          disabled={translateState === 'none' || translateState === 'invalid' || translateState === 'mismatch'}
+          active={translateState === 'active'}
+          tone={translateState === 'active' ? 'ink' : 'default'}
+          onClick={onToggleDual} testId="pdf-translate"
+        >
           <NavIcon name="languages" size={15} />
         </IconButton>
         <Divider />

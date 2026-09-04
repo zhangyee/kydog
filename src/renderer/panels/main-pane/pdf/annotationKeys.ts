@@ -1,29 +1,29 @@
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
-import { usePdfTranslationStore } from './pdfTranslationStore';
+import { canToggleDual, usePdfTranslationStore } from './pdfTranslationStore';
 
 type KeyLike = {
-  key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean;
+  key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean;
   // 测试里传的是精简的 target 桩，不是真的 EventTarget；用 unknown 收，内部再窄化。
   target: unknown;
   preventDefault(): void;
 };
 
-/** spec §7.6 的快捷键表。返回 true 表示已处理（调用方应 preventDefault）。 */
-export function handleAnnotationKey(e: KeyLike, tabId: string): boolean {
+/** spec §7.6 的快捷键表。返回 true 表示已处理（调用方应 preventDefault）。
+ *  `onToggleDual` 由 PdfFileTab 传入：进对照要按需 fit-width（读滚动容器宽度、可能改缩放），
+ *  那部分 DOM 相关的逻辑留在组件里，这个纯函数只管「是不是这个快捷键、该不该放行」。 */
+export function handleAnnotationKey(e: KeyLike, tabId: string, onToggleDual?: () => void): boolean {
   const target = e.target as { tagName?: string; blur?: () => void } | null;
   const inText = target?.tagName === 'TEXTAREA';
 
   // L：进 / 出双栏对照（PDF 双栏 spec §12）。它是**视图模式不是标注工具** —— 不走 setTool，
   // 也不受标注边车加载状态的限制（标注边车坏了照样该能读译文），所以这一条排在下面那道
   // 「标注没加载就什么都不处理」的闸**前面**。
-  // 禁用态（没有译文 / 边车有误 / 摘要对不上）按「没处理」返回 false，不 preventDefault。
-  // Task 8 会把这里换成从 PdfFileTab 传进来的 onToggleDual：进对照要按需 fit-width，那要读
-  // 滚动容器的宽度，只能在组件里做；本 task 只需要一个能端到端验的最小写入方。
-  if (!inText && !e.metaKey && !e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
-    const t = usePdfTranslationStore.getState();
-    const tb = t.buckets[tabId];
-    if (!tb?.doc || tb.loadError || tb.version === 'mismatch') return false;
-    t.setDual(tabId, !tb.dual);
+  // 能不能放行由 canToggleDual 判——与 PdfToolbar 的四态渲染共用同一份纯函数（见
+  // pdfTranslationStore.ts 顶部注释），不在这里另写一遍「没有译文 / 边车有误 / 摘要对不上」
+  // 的条件，避免两处判据走岔。禁用态按「没处理」返回 false，不 preventDefault，也不调用回调。
+  if (!inText && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'l' || e.key === 'L')) {
+    if (!canToggleDual(usePdfTranslationStore.getState().buckets[tabId])) return false;
+    onToggleDual?.();
     return true;
   }
 

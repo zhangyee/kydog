@@ -66,6 +66,49 @@ async function seedAll(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// Task 8 四态用例的最小 fixture：就地造，不建独立文件（Task 9 再统一整理成 e2e/fixtures 的常设份）。
+const NONE_REL = 'plain.pdf';
+const INVALID_REL = 'bad-translation.pdf';
+const MISMATCH_REL = 'stale-translation.pdf';
+const READY_REL = 'ok-translation.pdf';
+
+/** 无边车（none）、边车不是合法 JSON（invalid）、摘要对不上（mismatch）、正常（ready）各一份。
+ *  四份都是一页空白 PDF——四态测的是工具栏/Notice 对 store 状态的响应，不需要页面内容或译文
+ *  块几何，用最小 PDF 省去 buildSidecar 那套逐页塞块的开销。 */
+async function seedFourStates(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+
+  const none = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, NONE_REL), none);
+  // 不写 .plain.pdf.zh.json —— pdf.translation.load 对 ENOENT 返回 { doc: null }，即「未找到译文」
+
+  const invalid = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, INVALID_REL), invalid);
+  // 不是合法 JSON：主进程 JSON.parse 直接抛 KydogError，同 55 的「坏 JSON 边车」用例手法
+  await fs.writeFile(path.join(projectPath, `.${INVALID_REL}.zh.json`), '{broken');
+
+  const stale = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, MISMATCH_REL), stale);
+  await fs.writeFile(path.join(projectPath, `.${MISMATCH_REL}.zh.json`), JSON.stringify({
+    version: 1, pdf: MISMATCH_REL, lang: { in: 'en', out: 'zh' },
+    // 摘要写死成不可能匹配真实字节的值——mismatch 只看摘要，不看这份 PDF 实际长什么样。
+    source: { sha256: '0'.repeat(64), bytes: 1 },
+    blocks: [],
+  }));
+
+  const ready = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, READY_REL), ready);
+  await fs.writeFile(path.join(projectPath, `.${READY_REL}.zh.json`), JSON.stringify({
+    version: 1, pdf: READY_REL, lang: { in: 'en', out: 'zh' },
+    source: { sha256: createHash('sha256').update(ready).digest('hex'), bytes: ready.byteLength },
+    blocks: [],
+  }));
+
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 async function openPdf(page: Page, pdfPath: string): Promise<Locator> {
   await page.locator('[data-pane="workspace"]').getByText('测试 Thread').click();
   const row = page.getByTestId(`fs-${pdfPath}`);
@@ -93,6 +136,11 @@ async function enterDual(page: Page, pane: Locator) {
     await page.waitForTimeout(200);
   }
   throw new Error('按 L 没能进入双栏对照：译文边车迟迟没加载');
+}
+
+/** 从 `${page} / ${numPages} · ${zoomPct}%` 读数里取出百分比数字。 */
+function readoutPct(text: string): number {
+  return Number(text.split('·')[1].trim().replace('%', ''));
 }
 
 type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null; dGap: number | null };
@@ -202,15 +250,25 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
     await expect(pane.getByTestId('pdf-readout')).not.toContainText(`1 / ${PAGES}`);
     await check('滚动之后');
 
-    // 捏合到 150%，等新层顶替，两格照样对齐（两栏的 CSS 尺寸出自同一个 layer.scale）
-    await page.evaluate((sel) => {
+    // 捏合到 150%，等新层顶替，两格照样对齐（两栏的 CSS 尺寸出自同一个 layer.scale）。
+    // deltaY 不能再写死 -66.67：那个值是按「进对照后仍是 100%」反推的，Task 8 的 fit-width
+    // 会在行宽装不下时先把进对照的起始缩放降下来（本 fixture 装不下，见「进入对照时按需
+    // fit-width」那条用例），实际起点因此不再是 100%。这里先读真实起点，再按同一个乘法公式
+    // （`targetScale.current * (1 - deltaY * ZOOM_SENSITIVITY)`，见 PdfFileTab.tsx 的 onWheel）
+    // 反推要多大的 deltaY 才能落在 150%。ZOOM_SENSITIVITY 是那边的私有常量，不从组件文件
+    // import（会把 react-pdf / pdf.js worker 那一整串副作用拖进 Playwright 的 node 上下文，
+    // 同 pageLayout.ts 顶部关于 PAGE_GAP 单独抽出来的理由一样）——这里照抄数值，两处要保持一致。
+    const ZOOM_SENSITIVITY = 0.0075;
+    const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
+    const deltaY = (1 - 150 / startPct) / ZOOM_SENSITIVITY;
+    await page.evaluate(({ sel, deltaY }) => {
       const el = document.querySelector(sel) as HTMLElement;
       const r = el.getBoundingClientRect();
       el.dispatchEvent(new WheelEvent('wheel', {
-        ctrlKey: true, deltaY: -66.67,
+        ctrlKey: true, deltaY,
         clientX: r.left + r.width / 2, clientY: r.top + 120, bubbles: true, cancelable: true,
       }));
-    }, testIdSelector(`pdf-scroll-${pdfPath}`));
+    }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), deltaY });
     await expect(pane.getByTestId('pdf-readout')).toContainText('150%');
     // 等顶替：判据是协议层事实——清晰层的左格 canvas 换成了按新缩放开的那一张（CSS 宽从
     // 595 变成 892），不是「等 800 ms」。双缓冲期间 stable 还是旧层，这个数就还没变。
@@ -316,6 +374,84 @@ test('57-pdf-dual-pane: 字号测量必须等字体真的到位——先量后�
       async () => block1.evaluate((el) => getComputedStyle(el).fontSize),
       { timeout: DELAY_MS + 5000, message: '等延迟过去、字体真正就绪之后量出真实字号' },
     ).not.toBe(NAIVE);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 翻译键四态——无边车 / 边车有误 / 摘要不匹配都禁用，正常可点', async () => {
+  const launched = await launchKydog({ seed: seedFourStates });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+
+    // 每次 openPdf 都切到一个新 tab（前一个 tab 的 pane 随之被 display:none 藏起来），所以
+    // Notice 文案的可见性断言必须紧跟在对应的 openPdf 之后，不能攒到最后一起查。
+    const none = await openPdf(page, path.join(projectPath, NONE_REL));
+    await expect(none.getByTestId('pdf-translate')).toBeDisabled();
+
+    const invalid = await openPdf(page, path.join(projectPath, INVALID_REL));
+    await expect(invalid.getByTestId('pdf-translate')).toBeDisabled();
+    await expect(invalid.getByText(/译文文件有误/)).toBeVisible();
+
+    const mismatch = await openPdf(page, path.join(projectPath, MISMATCH_REL));
+    await expect(mismatch.getByTestId('pdf-translate')).toBeDisabled();
+    await expect(mismatch.getByText(/另一个版本的 PDF/)).toBeVisible();
+
+    const ready = await openPdf(page, path.join(projectPath, READY_REL));
+    await expect(ready.getByTestId('pdf-translate')).toBeEnabled();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 进入对照时按需 fit-width，退出还原', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const pane = await openPdf(page, pdfPath);
+    const readout = pane.getByTestId('pdf-readout');
+    const before = await readout.textContent();
+
+    // 一行是 2 × 595pt + 16pt 间距 = 1206pt，默认窗口宽度（main pane 减去两条侧栏之后）明显
+    // 装不下——进对照应当把缩放降到刚好放下，读数因此跟着变小。
+    await enterDual(page, pane);
+    const during = await readout.textContent();
+    expect(during, '进对照后行宽放不下，读数应当已经变小').not.toBe(before);
+    expect(readoutPct(during!)).toBeLessThan(readoutPct(before!));
+
+    // 退出：还原成进入前的缩放
+    await page.keyboard.press('l');
+    await expect(pane.locator('[data-pdf-right="1"]')).toHaveCount(0);
+    await expect(readout).toHaveText(before!);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 左栏可标注，右格内没有标注层', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const pane = await openPdf(page, pdfPath);
+
+    await enterDual(page, pane);
+    await pane.getByTestId('pdf-tool-highlight').click();
+
+    const layer = pane.getByTestId('pdf-annotation-layer-1');
+    const box = (await layer.boundingBox())!;
+    await page.mouse.move(box.x + 20, box.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 21, { steps: 8 });
+    await page.mouse.up();
+    await expect(pane.locator('[data-annotation-id]')).toHaveCount(1);
+
+    // 选择器必须限定在右格子树内——左格有标注，全局（或只限定到 pane 根）查一定命中，
+    // 测不出「右格是不是真的没有标注层」这件事。
+    const rightCell = pane.locator('[data-pdf-page="1"] [data-pdf-right="1"]').locator('xpath=..');
+    await expect(rightCell.locator('[data-annotation-id]')).toHaveCount(0);
   } finally {
     await teardown(launched);
   }

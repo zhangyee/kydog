@@ -10,8 +10,10 @@ const EMPTY: PdfAnnotationsFile = { version: 1, pdf: 'paper.pdf', annotations: [
 const H: Highlight = { id: 'h1', type: 'highlight', page: 1, color: 'amber', width: 2,
   segments: [{ kind: 'path', points: [[0, 0], [9, 9]] }], createdAt: 'now' };
 const st = () => usePdfAnnotationStore.getState();
-const key = (k: string, extra: Partial<{ metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; target: unknown }> = {}) =>
-  ({ key: k, metaKey: false, ctrlKey: false, shiftKey: false, target: null, preventDefault() {}, ...extra });
+const key = (
+  k: string,
+  extra: Partial<{ metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; target: unknown }> = {},
+) => ({ key: k, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, target: null, preventDefault() {}, ...extra });
 
 const ZH: TranslatedDoc = {
   version: 1, pdf: 'paper.pdf', lang: { in: 'en', out: 'zh' },
@@ -70,30 +72,41 @@ describe('handleAnnotationKey', () => {
     expect(handleAnnotationKey(key('h'), '/p/other.pdf')).toBe(false);
   });
 
-  it('L 进出双栏对照，且不动标注工具（它是视图模式不是工具）', () => {
+  // L 分支本身只判「该不该放行」（canToggleDual，与 PdfToolbar 四态共用同一份判据），真正
+  // 进 / 出对照与 fit-width 是 PdfFileTab 传入的 onToggleDual 回调的事——那部分要读滚动容器
+  // 的 DOM 宽度，这个仓库的 vitest 是 environment: 'node'（无 jsdom），组件级渲染测试不可行
+  // （同 PdfFileTab.tsx 顶部关于 prefetchPageSizes 抽成纯函数的注释）。这里只能验证「回调有没
+  // 有被调用、调用了几次」，进出对照本身的行为交给 e2e（57-pdf-dual-pane.spec.ts）。
+  it('L 触发 onToggleDual，且不动标注工具（它是视图模式不是工具）', () => {
     tst().setLoaded(T, ZH, 'ok', 0);
     st().setTool(T, 'highlight');
-    expect(handleAnnotationKey(key('l'), T)).toBe(true);
-    expect(tst().buckets[T].dual).toBe(true);
+    const onToggleDual = vi.fn();
+    expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(true);
+    expect(onToggleDual).toHaveBeenCalledTimes(1);
     expect(st().buckets[T].tool).toBe('highlight');
-    expect(handleAnnotationKey(key('L'), T)).toBe(true);
-    expect(tst().buckets[T].dual).toBe(false);
+    expect(handleAnnotationKey(key('L'), T, onToggleDual)).toBe(true);
+    expect(onToggleDual).toHaveBeenCalledTimes(2);
   });
 
-  it('没译文 / 摘要对不上 / ⌘L / 焦点在 textarea 里：L 都不处理', () => {
-    expect(handleAnnotationKey(key('l'), T)).toBe(false);      // 边车不存在
+  it('没译文 / 边车有误 / 摘要对不上 / ⌘L / ⌥L / 焦点在 textarea 里：L 都不处理，也不调用 onToggleDual', () => {
+    const onToggleDual = vi.fn();
+    expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(false);      // 边车不存在
+    tst().setLoadError(T, '坏了');
+    expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(false);      // 边车结构有误
     tst().setLoaded(T, ZH, 'mismatch', 0);
-    expect(handleAnnotationKey(key('l'), T)).toBe(false);
+    expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(false);      // 摘要对不上
     tst().setLoaded(T, ZH, 'ok', 0);
-    expect(handleAnnotationKey(key('l', { metaKey: true }), T)).toBe(false);
-    expect(handleAnnotationKey(key('l', { target: { tagName: 'TEXTAREA' } }), T)).toBe(false);
-    expect(tst().buckets[T].dual).toBe(false);
+    expect(handleAnnotationKey(key('l', { metaKey: true }), T, onToggleDual)).toBe(false);
+    expect(handleAnnotationKey(key('l', { altKey: true }), T, onToggleDual)).toBe(false);
+    expect(handleAnnotationKey(key('l', { target: { tagName: 'TEXTAREA' } }), T, onToggleDual)).toBe(false);
+    expect(onToggleDual).not.toHaveBeenCalled();
   });
 
   it('标注边车坏了照样能按 L —— 译文视图不该受标注加载状态牵连', () => {
     st().setLoadError(T, '坏了');
     tst().setLoaded(T, ZH, 'ok', 0);
-    expect(handleAnnotationKey(key('l'), T)).toBe(true);
-    expect(tst().buckets[T].dual).toBe(true);
+    const onToggleDual = vi.fn();
+    expect(handleAnnotationKey(key('l'), T, onToggleDual)).toBe(true);
+    expect(onToggleDual).toHaveBeenCalledTimes(1);
   });
 });
