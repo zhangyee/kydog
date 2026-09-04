@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
 import { buildPagedPdf } from './fixtures/textPdf';
+import { PAGE_GAP } from '../src/renderer/panels/main-pane/pdf/pageLayout';
 
 const PDF_REL = 'paper.pdf';
 const ZH_REL = '.paper.pdf.zh.json';
@@ -81,11 +82,18 @@ async function enterDual(page: Page, pane: Locator) {
   throw new Error('按 L 没能进入双栏对照：译文边车迟迟没加载');
 }
 
-type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null };
+type RowGeom = { page: string; sized: boolean; dTop: number | null; dHeight: number | null; dGap: number | null };
 
-/** 清晰层里每个已挂载页行的左右两格几何差。读的是 getBoundingClientRect，含外层 zoom。 */
-async function rowGeometry(page: Page, paneSel: string): Promise<RowGeom[]> {
-  return page.evaluate((sel) => {
+/**
+ * 清晰层里每个已挂载页行的左右两格几何差。读的是 getBoundingClientRect，含外层 zoom。
+ * `dGap` 补的是「并排」这一维：只看 top/height 相等，右格被绝对定位盖在左格正上方时两者
+ * 照样成立（重叠时两者的 top 与 height 当然也相等）——两格真正并排，还得是右格左边缘落在
+ * 「左格右边缘 + 页间距」上。`pageGap` 传的是 PAGE_GAP（pt，scale 1 下的值），乘的 scale
+ * 从 `lr.width / pageW` 现推——CSS 宽本就是 `size.w * layer.scale`（见 task-6 report），
+ * 不猜一个写死的缩放比例。
+ */
+async function rowGeometry(page: Page, paneSel: string, pageW: number, pageGap: number): Promise<RowGeom[]> {
+  return page.evaluate(({ sel, pageW, pageGap }) => {
     const rows = Array.from(
       document.querySelectorAll(`${sel} [data-pdf-layer="stable"] [data-pdf-page][data-pdf-mounted="1"]`),
     );
@@ -94,6 +102,7 @@ async function rowGeometry(page: Page, paneSel: string): Promise<RowGeom[]> {
       const right = row.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement | null;
       const lr = left?.getBoundingClientRect();
       const rr = right?.getBoundingClientRect();
+      const scale = lr ? lr.width / pageW : null;
       return {
         page: (row as HTMLElement).dataset.pdfPage ?? '?',
         // react-pdf 要等自己的 effect 跑过才给左格 canvas 写 CSS 尺寸；在那之前它是
@@ -101,9 +110,10 @@ async function rowGeometry(page: Page, paneSel: string): Promise<RowGeom[]> {
         sized: !!left && left.style.width !== '' && !!right,
         dTop: lr && rr ? Math.abs(lr.top - rr.top) : null,
         dHeight: lr && rr ? Math.abs(lr.height - rr.height) : null,
+        dGap: lr && rr && scale !== null ? Math.abs((rr.left - (lr.left + lr.width)) - pageGap * scale) : null,
       };
     });
-  }, paneSel);
+  }, { sel: paneSel, pageW, pageGap });
 }
 
 test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍成立', async () => {
@@ -120,15 +130,24 @@ test('57-pdf-dual-pane: 两栏同页顶对齐、等高，滚动与缩放后仍�
     const check = async (label: string) => {
       await expect.poll(
         async () => {
-          const g = await rowGeometry(page, paneSel);
+          const g = await rowGeometry(page, paneSel, PAGE_W, PAGE_GAP);
           return g.length > 0 && g.every((r) => r.sized);
         },
         { timeout: 15000, message: `${label}：等两格都定好尺寸` },
       ).toBe(true);
-      const g = await rowGeometry(page, paneSel);
+      const g = await rowGeometry(page, paneSel, PAGE_W, PAGE_GAP);
       for (const r of g) {
         expect(r.dTop ?? Infinity, `${label} 第 ${r.page} 页顶边`).toBeLessThan(0.5);
         expect(r.dHeight ?? Infinity, `${label} 第 ${r.page} 页高度`).toBeLessThan(0.5);
+        // 右格左边缘 ≈ 左格右边缘 + 页间距——只看 top/height 相等的话，右格被绝对定位盖在
+        // 左格正上方也会全绿（重叠时两者的 top、height 当然也相等）。这条断住「两格并排」
+        // 本身，而不只是「两格一样大」。容差比 dTop/dHeight 松：dTop/dHeight 是两块 canvas
+        // 同一次 `size.h/w * layer.scale` 乘法算出来的 CSS 尺寸，逐位相同（实测差值为 0）；
+        // dGap 还要再跨一层 `zoom: visualScale / layer.scale`（PdfFileTab.tsx 行的外层样式）——
+        // `zoom` 会让浏览器重新走一次布局，缩放不是 1 时各元素独立按设备像素网格取整，实测
+        // 150% 缩放、Retina（DPR 2）下单条能到 ~0.52 CSS px。2px 仍比这类取整噪声宽出几倍，
+        // 但远小于「重叠」会出现的偏差量级（右格叠在左格上时 dGap 会偏出几百 px，即左格整页宽）。
+        expect(r.dGap ?? Infinity, `${label} 第 ${r.page} 页两格间距`).toBeLessThan(2);
       }
     };
 

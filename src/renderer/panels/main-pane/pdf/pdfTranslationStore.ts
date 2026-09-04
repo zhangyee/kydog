@@ -39,9 +39,16 @@ type State = {
 
 export const usePdfTranslationStore = create<State>((set) => ({
   buckets: {},
-  setLoaded: (tab, doc, version, dropped) => set((s) => ({
-    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), doc, version, dropped, loadError: null } },
-  })),
+  // dual 只在 version 仍是 ok 且 doc 非空时保持——mismatch（focus 重探撞见新版 PDF）或边车被删
+  // 都会让右格继续拿旧块盖旧图，必须跟 setLoadError 一样把 dual 收掉（spec §12「正在对照中
+  // 且边车变了 → 重新加载」）。version 仍是 ok 时原样保留 s.buckets[tab].dual，不能无条件置
+  // false：这个 setLoaded 每次 focus 重探、sizes 到位重跑几何过滤都会调用一次，无条件置 false
+  // 会把用户每次切窗口都踢出对照。
+  setLoaded: (tab, doc, version, dropped) => set((s) => {
+    const prev = s.buckets[tab] ?? emptyTBucket();
+    const dual = doc === null || version === 'mismatch' ? false : prev.dual;
+    return { buckets: { ...s.buckets, [tab]: { ...prev, doc, version, dropped, loadError: null, dual } } };
+  }),
   setLoadError: (tab, msg) => set((s) => ({
     buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), doc: null, loadError: msg, dual: false } },
   })),
