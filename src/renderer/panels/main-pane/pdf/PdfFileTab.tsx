@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
@@ -14,6 +14,7 @@ import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage, type PageRect } from './pageReadout';
 import { unitLayout, type PageSize } from './pageLayout';
 import { computeWindow, type WindowResult } from './pageWindow';
+import { createPageLifecycle, type Cleanable, type PageLifecycle } from './pageLifecycle';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -106,6 +107,30 @@ export async function prefetchPageSizes(
   return out;
 }
 
+/**
+ * 页格子的挂载边界：React 的 mount / unmount 正好对应 pageLifecycle 的 acquire / release，
+ * effect 挂在这里最直接。
+ *
+ * 必须是模块级函数组件，不能定义在 PdfFileTab 内部——定义在组件体内的话每次渲染都是新的函数
+ * 引用，React 会把它当成换了一个组件类型，每次渲染都触发一轮 unmount→mount，acquire/release
+ * 全乱套（引用计数永远在虚假地归零又回升）。
+ *
+ * 只接手内层「position: relative」那个格子（Page + 标注层）；外层带 data-pdf-page、用
+ * size.h/size.w 撑出行高的那层留在 PdfFileTab 里不动——那才是行高唯一的来源，Task 5 特意
+ * 要求它不能被拆走、藏进子组件里看不见。
+ */
+function MountedPageCell({ n, lifecycle, children }: {
+  n: number;
+  lifecycle: PageLifecycle;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    lifecycle.acquire(n);
+    return () => lifecycle.release(n);
+  }, [n, lifecycle]);
+  return <div style={{ position: 'relative' }}>{children}</div>;
+}
+
 export function PdfFileTab({ tab }: { tab: FileTab }) {
   const setFileTabStatus = useUiStore((s) => s.setFileTabStatus);
   const [bytes, setBytes] = useState<Uint8Array<ArrayBuffer> | null>(null);
@@ -128,6 +153,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const [clientHeight, setClientHeight] = useState(0);
   const pageProxies = useRef<Record<number, PageProxyLike>>({});
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
+  // 什么时候把一页还给 pdf.js（page.cleanup()）由 pageLifecycle.ts 的引用计数决定，挂载/卸载
+  // 边界在 MountedPageCell。PageProxyLike 故意没声明 cleanup（那是给 ensureLines 用的最小
+  // 接口），这里单独转型取用。
+  const lifecycle = useRef<PageLifecycle>(createPageLifecycle(
+    (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
+  ));
   const readoutRaf = useRef<number | null>(null);
   // 换文件时把这代自增，让上一趟在途的页尺寸预取（见下方 Document onLoadSuccess）作废——
   // 不能在旧数据可能落地的那一刻才判断，得在“这是第几代文件”上打标。
@@ -251,6 +282,16 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const winRef = useRef(win);
   winRef.current = win;
 
+  // 窗口变化后扫一遍：把「引用已归零、当时还在窗口内被放过一马」的页重新判定一次
+  // （pageLifecycle.ts 的 sweep）。窗口挪走了才真的清，还在窗口内就继续留着。
+  useEffect(() => { lifecycle.current.sweep((p) => win.pages.has(p)); }, [win]);
+
+  // 测试探针：把已清理的页数挂到 window 上（Task 8 的 e2e 用例读它）。纯计数，挂 window 而不
+  // 进 store——进 store 会让每次清理都触发一轮组件重渲染，为一个测试探针不值得。
+  useEffect(() => {
+    (window as unknown as { __kydogCleanedPages?: number }).__kydogCleanedPages = lifecycle.current.cleanedCount();
+  }, [win]);
+
   // 加载 PDF 字节
   useEffect(() => {
     if (tab.status !== 'loading') return;
@@ -286,6 +327,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     setSizes(null);
     pageProxies.current = {};
     linesCache.current = {};
+    // 上一份文档的引用计数、待清理队列都跟着它的 pageProxies 一起作废，不能带到新文档里。
+    lifecycle.current = createPageLifecycle(
+      (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
+    );
   }, [fileUrl]);
 
   // 缩放后按鼠标锚点回算滚动位置，使鼠标下的内容点保持不动（同 macOS 预览）
@@ -516,7 +561,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                           style={{ height: size.h * layer.scale, width: size.w * layer.scale, flexShrink: 0 }}
                         >
                           {mounted && (
-                            <div style={{ position: 'relative' }}>
+                            <MountedPageCell n={n} lifecycle={lifecycle.current}>
                               <Page
                                 pageNumber={n}
                                 scale={layer.scale}
@@ -533,7 +578,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                                   layerScale={layer.scale} ensureLines={ensureLines}
                                 />
                               )}
-                            </div>
+                            </MountedPageCell>
                           )}
                         </div>
                       );
