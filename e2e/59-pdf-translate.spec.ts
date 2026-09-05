@@ -824,6 +824,35 @@ test('59-pdf-translate: 跑完之后边车落盘可解析，右格那一块的�
   }
 });
 
+test('59-pdf-translate: 抽取完的页若不在渲染窗口内，当场还给 pdf.js（不变量 #8）', async () => {
+  // 抽取一趟会碰**每一页**，而窗口里只挂得下几页。不还回去的话，翻一份 200 页的论文 =
+  // 200 页 getTextContent() 的解析结果一直驻留到关 tab。lifecycle.sweep() 兜不住这条：翻译走的
+  // 是 pdf.getPage(n) 现取，那些页从来没 acquire 过、也不一定在 pageProxies 里。
+  //
+  // 探针 __kydogTranslateCleanedPages 只数**这条路上真的调了 cleanup() 的页**（取
+  // lifecycle.cleanedCount() 的差值），所以进对照本身引发的 sweep 清理不会混进来。
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
+    const pane = await openPdf(page, pdfPath);
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+
+    const cleaned = await page.evaluate(() =>
+      (window as unknown as { __kydogTranslateCleanedPages?: number }).__kydogTranslateCleanedPages ?? 0);
+    // 上界：窗口里至少挂着当前这一页，所以不可能 PAGES 页全清掉。这条同时是「fixture 还有
+    // 区分力」的守卫——真到了窗口装得下全部 PAGES 页的那天，下面那条 > 0 会红，而不是悄悄
+    // 变成一条永远成立的断言。
+    expect(cleaned, `窗口外的页应当被还回去（本次 ${cleaned} 页）`).toBeGreaterThan(0);
+    expect(cleaned, '窗口里那几页不该被清').toBeLessThan(PAGES);
+  } finally {
+    await teardown(launched);
+  }
+});
+
 test('59-pdf-translate: 第一条响应违反校验、第二条合法——重试成功，不计入失败', async () => {
   // spec §2.7：一页跑一次 → 失败重试一次 → 仍失败才记 failed。这里第 1 页的第一条响应是空
   // 译文（`1 | text` 后面直接 %%，parseGroups 判 GroupError），第二条合法——最终这一页**有

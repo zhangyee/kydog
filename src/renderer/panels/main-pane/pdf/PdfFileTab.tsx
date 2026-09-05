@@ -303,6 +303,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const lifecycle = useRef<PageLifecycle>(createPageLifecycle(
     (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
   ));
+  // 测试探针的累加器：翻译抽取那条路上还回去了几页（见 startTranslation 的 onPageExtracted）。
+  const translateCleaned = useRef(0);
   const readoutRaf = useRef<number | null>(null);
   // 换文件时把这代自增，让上一趟在途的页尺寸预取（见下方 Document onLoadSuccess）作废——
   // 不能在旧数据可能落地的那一刻才判断，得在“这是第几代文件”上打标。
@@ -729,7 +731,15 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         // 里，读 win 这个 state 拿到的是作业启动那一刻的旧值。
         onPageExtracted: (n, text, src) => {
           linesCache.current[n] = Promise.resolve(text);
+          const before = lifecycle.current.cleanedCount();
           lifecycle.current.cleanupIfIdle(n, src as unknown as Cleanable, winRef.current.pages.has(n));
+          // 测试探针：**这条路上**真的还回去了几页。取 cleanedCount 的差值而不是自己数一遍，
+          // 是为了让探针没法与实际动作脱节（「决定要清」但没清就不该计数）。单开一个计数而不
+          // 复用 __kydogCleanedPages，是因为进对照本身会改窗口、也会让 sweep 清掉几页——共用
+          // 一个数就分不清这次增长是谁贡献的，断言退化成「有人清过」。
+          translateCleaned.current += lifecycle.current.cleanedCount() - before;
+          (window as unknown as { __kydogTranslateCleanedPages?: number })
+            .__kydogTranslateCleanedPages = translateCleaned.current;
         },
         pdfName: tab.path.split(/[\\/]/).pop()!,   // 渲染层没有 node:path
         langOut: locale,
