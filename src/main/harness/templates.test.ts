@@ -60,4 +60,14 @@ describe('harnessTemplates', () => {
     expect(t.soul).toContain('陌生不等于浅薄');
     expect(t.agents).toContain('像跨学科合作者之间那样讲解');
   });
+
+  /**
+   * glossary 从「保留字段」变成流水线真会读的输入（翻译流水线 spec §2.6 / §3），而模板是 agent
+   * 写边车时唯一读得到的说明。同上面那条 kind 契约的守卫，防止它静默过期。
+   */
+  it('两份 AGENTS.md 都写了 glossary 契约', () => {
+    for (const locale of ['zh', 'en'] as const) {
+      expect(harnessTemplates(locale).agents).toContain('glossary');
+    }
+  });
 });

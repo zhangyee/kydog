@@ -115,6 +115,13 @@ in the translation literally, as `{v1}`. For example:
 }
 ```
 
+The sidecar may also carry a glossary: `"glossary": [{ "source": "attention head", "target": "注意力头" }]`.
+When present, the built-in translator injects only the entries that **occur on the current page**
+into the model prompt and requires the model to follow them; "Re-translate" keeps the glossary
+as-is. Without it there is no terminology constraint — the same term may be rendered differently
+on page 3 and on page 17. Both `source` and `target` must be non-empty strings, otherwise the
+whole sidecar is rejected as malformed.
+
 ## Self-Maintenance
 
 Your workspace files: `~/.kydog/SOUL.md` (identity), `~/.kydog/USER.md`

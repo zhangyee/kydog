@@ -23,6 +23,10 @@ export type KydogErrorCode =
   | 'skill.extract_failed'
   | 'skill.uninstall_forbidden'
   | 'llm.invalid'
+  // 「没配模型 / 钉住的模型或运行时已经不在了」。与 llm.invalid 分开，是因为处置不同：
+  // 这条要中止整趟翻译，llm.invalid 只让当前那一页记失败。渲染层按码分支，不匹配 message
+  // 字符串——码是协议层的，字符串不是。
+  | 'llm.not_configured'
   | 'unknown';
 
 export class KydogError extends Error {

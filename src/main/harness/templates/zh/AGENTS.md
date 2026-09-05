@@ -84,6 +84,11 @@ width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF
 }
 ```
 
+译文边车还可以带一份术语表：`"glossary": [{ "source": "attention head", "target": "注意力头" }]`。
+写了它，内置翻译在每一页只把**命中该页原文**的条目注入模型提示词，并要求模型遵守那个译法；
+用户点「重新翻译」时这份表会原样保留。不写就没有术语约束——同一个词在第 3 页和第 17 页可能
+译得不一样。`source` 与 `target` 都必须是非空字符串，否则整份边车会被判为格式错。
+
 ## 自维护
 
 你的工作区文件：`~/.kydog/SOUL.md`（人格）、`~/.kydog/USER.md`（用户）、

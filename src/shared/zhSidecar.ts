@@ -11,6 +11,8 @@ export type Term = { source: string; target: string };
 export const BLOCK_KINDS = ['text', 'title', 'caption', 'formula', 'table', 'skip'] as const;
 export const PLACEHOLDER_KINDS = ['formula', 'citation', 'inline-code'] as const;
 
+export type BlockKind = (typeof BLOCK_KINDS)[number];
+
 export type Placeholder = { id: string; kind: (typeof PLACEHOLDER_KINDS)[number]; text: string };
 
 export type Block = {
@@ -19,7 +21,7 @@ export type Block = {
   x: number; y: number;            // scale 1 视口坐标，块左上角
   width: number; height: number;
   fontSize: number;
-  kind: (typeof BLOCK_KINDS)[number];
+  kind: BlockKind;                 // 原来是 (typeof BLOCK_KINDS)[number]，抽成别名给流水线共用
   source: string;
   /** 缺省 = 不翻译这一块。这是「右栏要不要在这个矩形里盖掉原文」的唯一判据（spec §3.2）。 */
   target?: string;
@@ -86,6 +88,19 @@ export function validateTranslatedDoc(raw: unknown, file: string): TranslatedDoc
     const s = d.source as Record<string, unknown>;
     if (typeof s?.sha256 !== 'string' || !num(s?.bytes)) fail(file, 'source 缺 sha256（字符串）或 bytes（数字）');
   }
+  if (d.glossary !== undefined) {
+    // 一期写的是「本期不读，先占名字」，所以从来没校验过。二期它要被遍历、字符串匹配、拼进
+    // markdown 表格，[null] / 数字字段 / 空 source 都会在运行时炸（spec §2.6）。这是收紧，
+    // 不 bump version：现有的合法边车要么没这个字段，要么本来就是这个形状。
+    if (!Array.isArray(d.glossary)) fail(file, 'glossary 不是数组');
+    d.glossary.forEach((t, i) => {
+      const q = t as Record<string, unknown> | null;
+      const ok = (v: unknown) => typeof v === 'string' && v !== '';
+      if (!q || !ok(q.source) || !ok(q.target)) {
+        fail(file, `glossary 第 ${i + 1} 条的 source / target 不是非空字符串`);
+      }
+    });
+  }
   return { ...(d as unknown as TranslatedDoc), blocks: d.blocks.map((b, i) => validateBlock(b, i, file)) };
 }
 
@@ -105,3 +120,12 @@ export function filterByGeometry(
   });
   return { blocks: kept, dropped: blocks.length - kept.length };
 }
+
+/**
+ * 一页里的一条文本行，翻译 RPC 的载荷形状（spec §4）。放在这里而不是渲染层，是因为它要跨进程:
+ * 渲染层抽取、主进程拼 prompt。
+ *
+ * `n` 是**不透明 id**，不是阅读顺序——它来自 pdf.js 的内容流顺序，而 PDF 不保证内容流等于语义
+ * 阅读顺序（spec §2.3）。几何是 scale 1 的视口坐标。
+ */
+export type PageLine = { n: number; x: number; y: number; w: number; h: number; size: number; text: string };

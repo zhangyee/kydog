@@ -94,3 +94,24 @@ describe('filterByGeometry', () => {
     expect(filterByGeometry([block({ x: -1 })], sizes).dropped).toBe(1);
   });
 });
+
+describe('glossary 结构校验', () => {
+  const base = { version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' }, blocks: [] };
+  it('没有 glossary 的旧边车照常通过', () => {
+    expect(validateTranslatedDoc(base, 'f').glossary).toBeUndefined();
+  });
+  it('合法 glossary 通过', () => {
+    const d = validateTranslatedDoc({ ...base, glossary: [{ source: 'attention head', target: '注意力头' }] }, 'f');
+    expect(d.glossary).toEqual([{ source: 'attention head', target: '注意力头' }]);
+  });
+  it.each([
+    ['不是数组', { glossary: {} }],
+    ['项是 null', { glossary: [null] }],
+    ['缺 target', { glossary: [{ source: 'a' }] }],
+    ['source 是空串', { glossary: [{ source: '', target: 'b' }] }],
+    ['target 不是字符串', { glossary: [{ source: 'a', target: 3 }] }],
+  ])('%s → pdf.translation_invalid', (_name, patch) => {
+    expect(() => validateTranslatedDoc({ ...base, ...patch }, 'f'))
+      .toThrow(expect.objectContaining({ code: 'pdf.translation_invalid' }));
+  });
+});
