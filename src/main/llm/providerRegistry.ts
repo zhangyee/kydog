@@ -55,6 +55,9 @@ interface AgentInvalidatable {
 
 export class ProviderRegistry {
   modelRuntime: AnyModelRuntime;
+  // provider 配置每变一次就 +1。翻译流程用它判定「途中配置变了」——runtimeRevision
+  // 对不上就中止整趟翻译，而不是拿着已经不存在的 provider/model 组合继续跑。
+  runtimeRevision = 0;
   private constructor(modelRuntime: AnyModelRuntime) {
     this.modelRuntime = modelRuntime;
   }
@@ -73,6 +76,7 @@ export class ProviderRegistry {
     const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
     this.modelRuntime = await ProviderRegistry.buildModelRuntime(pi, settings, svc);
+    this.runtimeRevision += 1;
     this.startCatalogRefresh();
     await agent.invalidateSessionsForProviders(changedIds);
   }
