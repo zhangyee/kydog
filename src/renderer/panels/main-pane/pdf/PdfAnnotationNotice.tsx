@@ -17,8 +17,9 @@ const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
  *   7. 译文块因几何越界被丢（dropped > 0）
  *   8. 上一趟**跑完**的作业有页失败（lastFailedPages > 0，那几页右栏保留原文——TBucket 的
  *      字段，job 清空之后仍可读，见 pdfTranslationStore.ts 的注释。不用 job.failed 是因为
- *      job 在 finalize 阶段就把 failed 硬写成 0、完成后整个变 null，用它判的话这条消息在
- *      跑完那一刻——用户恰恰需要看它的时刻——必然读不到，Task 14 审查发现的洞）
+ *      作业一完成 job 就整个变 null，用它判的话这条消息在跑完那一刻——用户恰恰需要看它的
+ *      时刻——必然读不到，Task 14 审查发现的洞。这条消息只活到下一次重探边车为止：从盘上
+ *      读回来的译文是谁翻的、失败过几页，store 无从知道，见那个字段的注释）
  * 标注（1-2）排在译文（3-8）之前：标注是打开 PDF 就在用的常驻能力，译文对照本期默认关闭、
  * 按 L 才进，常驻能力的故障更值得占住这一行。translateError 排在译文其余几条（4-8）之前：
  * 它是「刚刚这一次动作」的直接失败反馈（常见如 llm.not_configured——首次使用没配模型），比边车
