@@ -19,6 +19,11 @@
    import 的是 index.css（= wght 轴，拉丁子集 50 KB）。包里另有 opsz.css / standard.css 带 optical
    size 轴，同一子集 122 KB；本项目衬线主要用于正文，那条轴的收益换不回两倍多的体积。 */
 @import "@fontsource-variable/source-serif-4/index.css";
+/* 斜体是**单独一份**：index.css 只有 font-style: normal。设置页的提示文字大量用
+   `font-serif italic`（src/renderer/settings/ui.tsx 的 hintStyle 等），少了这份就会退化成浏览器
+   合成的假斜体——原先由 Google Fonts 那个 link 里的 `ital,wght@...1,400` 顶着，切到本地后必须
+   自己带上。注册名与正体同为 'Source Serif 4 Variable'，靠 font-style 区分。 */
+@import "@fontsource-variable/source-serif-4/wght-italic.css";
 
 /* Noto Serif SC — Google，OFL 1.1（简体中文 + 拉丁字符兜底） */
 @import "@fontsource/noto-serif-sc/400.css";

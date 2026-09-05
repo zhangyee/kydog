@@ -21,42 +21,53 @@ test('58-font-stack: 衬线用的是打包的 Source Serif，不是 Google Fonts
   try {
     const status = await page.evaluate(async () => {
       // 真正排一段拉丁文，逼浏览器去解析 --font-serif 首项——只 await fonts.ready 不够，
-      // 没被用到的 face 永远停在 unloaded。
-      const el = document.createElement('span');
-      el.textContent = 'Handgloves 123 Quartz jock';
-      Object.assign(el.style, {
-        position: 'absolute', left: '0', top: '0', fontSize: '32px',
-        fontFamily: getComputedStyle(document.body).getPropertyValue('--font-serif'),
-      });
-      document.body.appendChild(el);
+      // 没被用到的 face 永远停在 unloaded。正体与斜体各排一次：斜体在 fontsource 里是单独一份
+      // @import，漏掉它会退化成合成假斜体，而合成是静默的、status 上看不出异常。
+      const stack = getComputedStyle(document.body).getPropertyValue('--font-serif');
+      const made: HTMLElement[] = [];
+      for (const style of ['normal', 'italic']) {
+        const el = document.createElement('span');
+        el.textContent = 'Handgloves 123 Quartz jock';
+        Object.assign(el.style, {
+          position: 'absolute', left: '0', top: '0', fontSize: '32px',
+          fontFamily: stack, fontStyle: style,
+        });
+        document.body.appendChild(el);
+        made.push(el);
+      }
       await document.fonts.ready;
 
       const out: Record<string, string> = {};
       document.fonts.forEach((f) => {
         if (!f.family.startsWith('Source Serif')) return;
-        const k = `${f.family}|${f.weight}`;
-        // 同名同字重可能有多条（按 unicode-range 分片）：只要有一条 loaded 就算用上了
+        const k = `${f.family}|${f.weight}|${f.style}`;
+        // 同名同字重同样式可能有多条（按 unicode-range 分片）：有一条 loaded 就算用上了
         if (out[k] !== 'loaded') out[k] = f.status;
       });
-      el.remove();
+      for (const el of made) el.remove();
       return out;
     });
 
-    const bundled = Object.entries(status).filter(([k]) => k.startsWith('Source Serif 4 Variable'));
-    const remote = Object.entries(status).filter(([k]) => !k.startsWith('Source Serif 4 Variable'));
+    const isBundled = (k: string) => k.startsWith('Source Serif 4 Variable');
+    const loadedBundled = (style: string) => Object.entries(status)
+      .some(([k, v]) => isBundled(k) && k.includes(`|${style}`) && v === 'loaded');
 
-    expect(bundled.length, `产物里没注册 'Source Serif 4 Variable'：${JSON.stringify(status)}`)
-      .toBeGreaterThan(0);
-    expect(
-      bundled.some(([, s]) => s === 'loaded'),
-      `打包的 Source Serif 4 Variable 一条都没被加载——说明 --font-serif 首项没指向它：`
-        + `${JSON.stringify(status)}`,
-    ).toBe(true);
+    expect(Object.keys(status).some(isBundled),
+      `产物里没注册 'Source Serif 4 Variable'：${JSON.stringify(status)}`).toBe(true);
+
+    expect(loadedBundled('normal'),
+      `打包的 Source Serif 4 Variable 正体没被加载——--font-serif 首项没指向它：`
+        + `${JSON.stringify(status)}`).toBe(true);
+
+    expect(loadedBundled('italic'),
+      `打包的 Source Serif 4 Variable 斜体没被加载——fonts.css 少 import 了 wght-italic.css，`
+        + `设置页的 font-serif italic 会退化成合成假斜体：${JSON.stringify(status)}`).toBe(true);
 
     // 远端那份可以存在（index.html 的 link 还在），但不该被排版用到。
     // 它不存在也算通过：离线跑 e2e 时那个 link 根本拉不下来。
-    for (const [k, s] of remote) {
-      expect(s, `${k} 被加载了——衬线仍在用 Google Fonts 拉的那份，不是打包的`).not.toBe('loaded');
+    for (const [k, v] of Object.entries(status)) {
+      if (isBundled(k)) continue;
+      expect(v, `${k} 被加载了——衬线仍在用 Google Fonts 拉的那份，不是打包的`).not.toBe('loaded');
     }
   } finally {
     await teardown(launched);
