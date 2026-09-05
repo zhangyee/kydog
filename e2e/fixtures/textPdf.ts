@@ -74,6 +74,37 @@ export function buildPagedPdf(
   return assemble(objs);
 }
 
+/**
+ * **没有文本层**的多页 PDF：每页只画一个灰色矩形，内容流里一个 `BT ... ET` 都没有，
+ * 也不带 /Font 资源——`getTextContent()` 因此返回空 items，翻译流水线的抽取阶段每页拿到零行，
+ * 走「这份 PDF 没有文本层（可能是扫描件）」那条中止路径（translateDoc 的 `work.length === 0`）。
+ *
+ * 为什么不复用 `buildPagedPdf`：它每页无条件写一行页码（那正是虚拟化用例要的），改成可关会让
+ * 那个"每页都有一行字"的前提变成可选，四个既有 spec 都得跟着重读一遍。真正的扫描件之所以没有
+ * 文本层，正是因为整份内容流里只有图形算子——这里画一个矩形是最小的等价物（页面不是全白，
+ * 「渲染确实发生过」与「抽不出文字」两件事因此能分开验）。
+ */
+export function buildNoTextPdf(count: number, w: number, h: number): Buffer {
+  const firstPage = 3;
+  const firstContent = firstPage + count;
+  const kids = Array.from({ length: count }, (_, i) => `${firstPage + i} 0 R`).join(' ');
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${kids}] /Count ${count} >>`,
+  ];
+  for (let i = 0; i < count; i++) {
+    objs.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] `
+      + `/Resources << >> /Contents ${firstContent + i} 0 R >>`,
+    );
+  }
+  for (let i = 0; i < count; i++) {
+    const content = `0.6 0.6 0.6 rg 40 ${h - 220} ${w - 80} 160 re f\n`;
+    objs.push(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`);
+  }
+  return assemble(objs);
+}
+
 /** objs[i] 是对象 i+1 的正文；补上头、xref 与 trailer。自带正确偏移，pdf.js 不用走 recovery。 */
 function assemble(objs: string[]): Buffer {
   let out = '%PDF-1.4\n';
