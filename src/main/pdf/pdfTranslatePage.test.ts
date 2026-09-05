@@ -1,5 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { MODEL_CONCURRENCY, withPermit } from './pdfTranslatePage';
+
+// registry 替身：真的那份要 pi 的 ModelRuntime。这里只需要它的 runtimeRevision 与 getModel。
+const reg = vi.hoisted(() => ({ runtimeRevision: 0, models: new Set<string>() }));
+vi.mock('../llm/providerRegistry', () => ({
+  getProviderRegistry: () => ({
+    get runtimeRevision() { return reg.runtimeRevision; },
+    modelRuntime: {
+      getModel: (p: string, m: string) => (reg.models.has(`${p}/${m}`) ? { id: m } : undefined),
+      completeSimple: async () => { throw new Error('本文件不该走到真正的上游调用'); },
+    },
+  }),
+}));
 
 const defer = () => { let r!: () => void; const p = new Promise<void>((res) => { r = res; }); return { p, r }; };
 
@@ -52,5 +64,34 @@ describe('fixture 分支', () => {
     expect(await translatePage(base)).toEqual({ text: 'B', truncated: false });
     await expect(translatePage(base)).rejects.toThrow();   // 耗尽即报错，不静默降级
     delete process.env.KYDOG_TRANSLATE_FIXTURE;
+  });
+});
+
+/**
+ * 不变量 #10 的另一半：作业开始钉住的 `runtimeRevision` 与逐页调用时 registry 上的那份必须
+ * 相同，否则整趟中止。这条分支 e2e 走不到——fixture 分支的 `return` 排在它**之前**（那正是
+ * fixture 能不碰上游的原因），所以只能在这里钉。
+ */
+describe('runtimeRevision 失配（provider 配置在翻译途中变了）', () => {
+  const base = {
+    page: 1, providerId: 'anthropic' as const, modelId: 'm',
+    langOut: 'zh' as const, lines: [],
+  };
+  it('对不上 → llm.not_configured 中止整趟，且不去问模型', async () => {
+    delete process.env.KYDOG_TRANSLATE_FIXTURE;   // 上面那条用例跑完已删，这里不依赖它的顺序
+    reg.runtimeRevision = 3;
+    reg.models = new Set(['anthropic/m']);        // 模型还在——被拒的理由只能是 revision
+    const { translatePage } = await import('./pdfTranslatePage');
+    await expect(translatePage({ ...base, runtimeRevision: 2 }))
+      .rejects.toMatchObject({ code: 'llm.not_configured' });
+  });
+
+  it('对得上但模型没了 → 同样是 llm.not_configured（两道校验都在 fixture 分支之后）', async () => {
+    delete process.env.KYDOG_TRANSLATE_FIXTURE;
+    reg.runtimeRevision = 3;
+    reg.models = new Set();
+    const { translatePage } = await import('./pdfTranslatePage');
+    await expect(translatePage({ ...base, runtimeRevision: 3 }))
+      .rejects.toMatchObject({ code: 'llm.not_configured' });
   });
 });

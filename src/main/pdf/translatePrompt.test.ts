@@ -64,7 +64,7 @@ describe('buildSystemPrompt', () => {
    */
   it('提示词的 kind 表与 BLOCK_KINDS 集合相等', () => {
     const p = buildSystemPrompt({ langOut: 'zh', lines });
-    const m = /^4\. kind is one of:\n((?:   \S+ +\S.*\n)+)/m.exec(p);
+    const m = /^4\. kind is one of:\n((?: {3}\S+ +\S.*\n)+)/m.exec(p);
     expect(m, '提示词里 "4. kind is one of:" 那张表找不到了').not.toBeNull();
     const listed = m![1].trimEnd().split('\n').map((l) => l.trim().split(/\s+/)[0]);
     expect(new Set(listed), '提示词的 kind 表与 BLOCK_KINDS 不一致').toEqual(new Set(BLOCK_KINDS));

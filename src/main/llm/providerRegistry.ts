@@ -55,8 +55,17 @@ interface AgentInvalidatable {
 
 export class ProviderRegistry {
   modelRuntime: AnyModelRuntime;
-  // provider 配置每变一次就 +1。翻译流程用它判定「途中配置变了」——runtimeRevision
-  // 对不上就中止整趟翻译，而不是拿着已经不存在的 provider/model 组合继续跑。
+  /**
+   * provider 配置每变一次就 +1。翻译流程用它判定「途中配置变了」——一趟作业开头钉一次
+   * （`pdfTranslation.resolveModel`），逐页调用时比对（`pdfTranslatePage`），对不上就中止整趟，
+   * 而不是拿着已经不存在的 provider/model 组合继续跑（不变量 #10：一趟作业同一个模型 +
+   * 同一份运行时）。
+   *
+   * **每一处替换 `modelRuntime` 都必须紧跟着自增它。** 今天只有两处给它赋值：构造函数（字段
+   * 默认值 0 已经覆盖）与 `refreshAfterProviderChange`（下面那行 `+= 1`）。将来多一条换运行时
+   * 的路而忘了自增，不会有任何报错——翻译会安安静静地拿着旧运行时把整趟跑完，而这正是这个字段
+   * 存在的唯一理由。tsc / lint 都守不住这条，只能靠这句话与 review。
+   */
   runtimeRevision = 0;
   private constructor(modelRuntime: AnyModelRuntime) {
     this.modelRuntime = modelRuntime;
