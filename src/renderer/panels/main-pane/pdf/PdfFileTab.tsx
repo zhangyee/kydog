@@ -686,14 +686,15 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // **这里不清 lastFailedPages**（Task 14 二轮审查发现的洞）：旧一轮在这里无条件清成 0，
     // 结果连同「wasDual 时旧 doc 没变」的场景一起清掉了——从对照中点「重新翻译」，doc 在作业
     // 跑完之前始终是旧的那份，它对应的失败计数不该因为新作业刚起步就先归零。真正该归零的时机
-    // 是 doc 真的变了（store 的 setLoaded/setLoadError 在 doc === null 时兜底），或者这一趟
-    // 成功跑完、doc 真的换成新的那一刻（下面成功收尾时写真值，见 TBucket.lastFailedPages 的
-    // 注释）。取消 / 出错两个出口因此也不用做任何事——它们本就不改 doc，对应的计数也不该改。
-    // 这一趟真正落地的失败页数：只在 'translate' 阶段的 tick 里才是真值——'finalize' 阶段那份
-    // failed 恒为 0（提交点标记，不是「清零」），不能拿它覆盖。job 跑完（Promise.all 收尾）时
-    // 最后一次 'translate' tick 携带的就是全部页跑完之后的最终失败数，成功收尾时把它落进
-    // lastFailedPages（下面）。
+    // 由 store 兜底：**任何一次 setLoaded / setLoadError 都无条件清零**（见 TBucket 的注释），
+    // 而这一趟的真值在下面「加载完之后」才写回去。取消 / 出错两个出口因此也不用做任何事——
+    // 它们既不改 doc、也不重新加载，对应的计数也不该改。
+    //
+    // 这一趟真正落地的失败页数与页数总量：只有 'translate' 阶段的 tick 才是真值——'finalize'
+    // 阶段那一档是我们自己合成的（下面），不能拿它回头覆盖自己。job 跑完（Promise.all 收尾）
+    // 时最后一次 'translate' tick 携带的就是全部页跑完之后的最终数字。
     let lastFailed = 0;
+    let translated = 0;
     try {
       const model = await window.kydog.invoke('pdf.translation.resolveModel', {
         threadId: useThreadsStore.getState().currentThreadId,
@@ -714,7 +715,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         }),
         onProgress: (p) => {
           if (my === jobSeq.current) usePdfTranslationStore.getState().setJob(tab.id, p);
-          if (p.phase === 'translate') lastFailed = p.failed;
+          if (p.phase === 'translate') { lastFailed = p.failed; translated = p.total; }
         },
         isCancelled: () => my !== jobSeq.current,
         // 抽取顺带把文本行交出来，标注层随后要吸附就不必再取一遍（spec §4）；同一时刻把这一页
@@ -741,7 +742,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       if (doc === null) { usePdfTranslationStore.getState().setJob(tab.id, null); return; }
       // 提交点：进入 finalize 之后浮层的取消按钮禁用，因为 jobSeq 挡不住一次已经发出的
       // save——把提交点画在「发出 save 之前」才守得住「取消不留痕」（spec §9.3）。
-      usePdfTranslationStore.getState().setJob(tab.id, { phase: 'finalize', done: 0, total: 1, failed: 0 });
+      // 这一档的三个数字**都得是真的**，别为了「有个东西可填」编一组：`failed: 0` 会让「N 页
+      // 失败」在保存那一刻凭空消失（那正是 lastFailedPages 这个字段被迫存在的原因），
+      // `done: 0 / total: 1` 会让进度条从 100% 跳回 0% 再消失。页已经全部翻完了，保存阶段的
+      // 诚实读数就是「translated / translated」＋这一趟真实的失败页数。
+      usePdfTranslationStore.getState().setJob(
+        tab.id, { phase: 'finalize', done: translated, total: translated, failed: lastFailed },
+      );
       await window.kydog.invoke('pdf.translation.save', { pdfPath: tab.path, doc });
     } catch (err) {
       if (my !== jobSeq.current) return;
@@ -758,8 +765,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     usePdfTranslationStore.getState().setJob(tab.id, null);
     // 这趟作业真正跑完了（走到这里 = 没被取消、没抛错）：把最终失败页数落进 lastFailedPages，
     // job 清空之后 Notice 仍能读到「上一趟有几页失败」（Task 14 审查发现的洞，见其注释）。
+    //
+    // **顺序：先 await 加载，再写计数**（最终评审 I-3）。反过来的话 setLoaded 就必须「doc 非空
+    // 时保留旧值」才不会把刚写的真值冲掉，而那条保留正是 I-3 的病根：agent 只重写边车、PDF
+    // 一个字节没变时 checkVersion 仍判 ok，于是一份全新的、一页都没失败的译文装进 store，
+    // 却继续挂着上一份的「1 页翻译失败」。改成这个顺序，setLoaded 就能**无条件归零**——任何
+    // 一次从盘上加载都是一份 store 无从判断来历的 doc，旧计数不再描述它——不变量由构造保证，
+    // 不必把失效判据升级成逐块的内容比对。
+    //
+    // 代价是这个 await（一次已经要发生的加载）与「计数只活到下一次重探为止」：focus 重探会
+    // 把它清掉。这是诚实的——重探回来的那份译文是谁翻的、失败过几页，store 真的不知道。
+    await loadTranslation();
+    // 加载期间可能又起了一趟新作业 / 关了 tab：那时这个数字描述的已经不是 store 里那份 doc 了。
+    if (my !== jobSeq.current) return;
     usePdfTranslationStore.getState().setLastFailedPages(tab.id, lastFailed);
-    void loadTranslation();
   }, [tab.id, tab.path, sizes, bytes, sha, numPages, enterDualFitWidth, loadTranslation]);
 
   // 取消：自增代际（在途的续体从此写不进 store）、清 job；只有**这趟作业开始前不在对照中**才收

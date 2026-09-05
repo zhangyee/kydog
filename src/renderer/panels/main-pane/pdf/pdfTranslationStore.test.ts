@@ -65,11 +65,14 @@ describe('usePdfTranslationStore.setLoaded 维持 dual', () => {
   });
 });
 
-// lastFailedPages 的不变量（Task 14 二轮审查发现）：这个字段必须始终描述 store 里当前那份
-// doc。一轮修复在 startTranslation 开头无条件清成 0，把「wasDual 时旧 doc 没变」的场景也一并
-// 清掉了——取消 / 出错两个出口保留旧 doc 不动，对应的失败计数却被开头那行提前抹掉。二轮改成
-// 由 setLoaded / setLoadError 自己在 doc 变成 null 时兜底清零，doc 非空时原样保留，不依赖
-// startTranslation 的调用点各自记得清或不清。
+// lastFailedPages 的不变量：这个字段必须始终描述 store 里当前那份 doc。
+//
+// Task 14 二轮：清零责任下沉进 store（不再由 startTranslation 开头无条件清成 0——那会连
+// 「wasDual 时旧 doc 根本没变」的场景一起抹掉，取消 / 出错两个出口保留旧 doc，计数也该保留）。
+// 最终评审 I-3：清零判据从「doc 变成 null」放宽到**任何一次 setLoaded / setLoadError**。
+// checkVersion 只比 sha/bytes，「agent 不改 PDF 只重写边车」时 version 仍判 ok、doc 非空，
+// 旧写法会让一份一页都没失败的新译文继续挂着上一份的失败计数。store 无从判断盘上那份译文是谁
+// 翻的，所以唯一诚实的答案是 0；真值改由 startTranslation 在 await 完加载**之后**写回。
 describe('usePdfTranslationStore.setLoaded/setLoadError 维持 lastFailedPages 的不变量', () => {
   const T = '/p/paper.pdf';
   const ZH: TranslatedDoc = {
@@ -89,18 +92,21 @@ describe('usePdfTranslationStore.setLoaded/setLoadError 维持 lastFailedPages �
     expect(st().buckets[T].lastFailedPages).toBe(0);
   });
 
-  it('doc 非空的重探（focus / 几何重过滤）不动 lastFailedPages——旧 doc 没变，计数也不该变', () => {
+  it('doc 非空、version 仍 ok 的重探也归零——这正是 agent 只重写边车那条路（I-3）', () => {
     st().setLoaded(T, ZH, 'ok', 0);
     st().setLastFailedPages(T, 2);
-    st().setLoaded(T, ZH, 'ok', 3);   // 同一份 doc 再探一次，只是 dropped 数变了
-    expect(st().buckets[T].lastFailedPages).toBe(2);
+    // PDF 一个字节没变 → checkVersion 判 ok → doc 非空。但盘上这份译文可能是 agent 刚重写的
+    // 一份全新的、一页都没失败的译文；旧写法（doc 非空就保留 prev）会让 Notice 继续对着它说
+    // 「2 页翻译失败」。
+    st().setLoaded(T, ZH, 'ok', 3);
+    expect(st().buckets[T].lastFailedPages).toBe(0);
   });
 
-  it('version 变 mismatch 不清 lastFailedPages——doc 本身没变，只是暂时对不上当前 PDF', () => {
+  it('version 变 mismatch 同样归零', () => {
     st().setLoaded(T, ZH, 'ok', 0);
     st().setLastFailedPages(T, 1);
     st().setLoaded(T, ZH, 'mismatch', 0);
-    expect(st().buckets[T].lastFailedPages).toBe(1);
+    expect(st().buckets[T].lastFailedPages).toBe(0);
   });
 
   it('setLoadError（边车结构校验失败，doc 变 null）→ lastFailedPages 归零', () => {
@@ -110,13 +116,19 @@ describe('usePdfTranslationStore.setLoaded/setLoadError 维持 lastFailedPages �
     expect(st().buckets[T].lastFailedPages).toBe(0);
   });
 
-  it('成功收尾紧跟着的 setLoaded 不会把刚写入的真值冲回 0（顺序敏感的回归点）', () => {
+  it('成功收尾的顺序：setLoaded 在前、写真值在后，写完读得到（顺序敏感的回归点）', () => {
+    // startTranslation 的收尾顺序：save → await loadTranslation()（内部 setLoaded，这里把计数
+    // 清成 0）→ setLastFailedPages 写这一趟的真值。顺序写反（先写值再 setLoaded）会被清成 0，
+    // 下一条用例就是那个镜像。
     st().setLoaded(T, ZH, 'ok', 0);
-    // 模拟 startTranslation 成功收尾：先写真值，loadTranslation 的 setLoaded 随后把 doc
-    // 从磁盘读回来（非空），不能覆盖刚写的 3。
+    st().setLastFailedPages(T, 3);
+    expect(st().buckets[T].lastFailedPages).toBe(3);
+  });
+
+  it('顺序写反就会被清掉——这条是上面那条的镜像，钉住「顺序是修复的一半」', () => {
     st().setLastFailedPages(T, 3);
     st().setLoaded(T, ZH, 'ok', 0);
-    expect(st().buckets[T].lastFailedPages).toBe(3);
+    expect(st().buckets[T].lastFailedPages).toBe(0);
   });
 });
 
