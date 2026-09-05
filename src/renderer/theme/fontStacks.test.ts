@@ -83,3 +83,53 @@ describe('字体栈与打包进来的字体', () => {
     }
   });
 });
+
+/**
+ * OFL 1.1 要求署名。字体是随产物分发的，署名页因此是**法律义务**，不能靠改字体的人记得去改。
+ *
+ * 判据用包自己 metadata.json 里的 `family`（上游家族名，如 "Source Serif 4"），而不是 @font-face
+ * 的注册名（"Source Serif 4 Variable"）——署名写的是前者，Variable 后缀是 fontsource 的打包约定，
+ * 不是 Adobe 那套字体的名字。
+ *
+ * aboutDocs.test.ts 已经守住「列出的条目声明的 license 必须属实」，但它明说不管**漏列**。这条补的
+ * 就是漏列：fonts.css 引了包，署名页却没提。
+ */
+describe('打包的字体必须在开源许可页里署名', () => {
+  const licenses = read(path.resolve(ROOT_DIR, 'src', 'about', 'licenses.md'));
+
+  it('每个被 @import 的字体包，上游家族名与包名都出现在 licenses.md 里', () => {
+    const specs = [...read(path.join(THEME_DIR, 'fonts.css')).matchAll(/@import\s+"([^"]+)"/g)]
+      .map((m) => m[1]);
+    expect(specs.length, 'fonts.css 里一条 @import 都没解析到').toBeGreaterThan(0);
+
+    // "@scope/name/400.css" → "@scope/name"；包名可能带 scope，所以取前两段
+    const pkgs = new Set(specs.map((spec) => spec.split('/').slice(0, 2).join('/')));
+
+    // 「字体」小节里逐行的 "<家族> © <权利人>" 才算署名。不能直接在全文里 includes(family)：
+    // 下面成段的版权声明与 OFL 全文里也会出现家族名（"Copyright 2016 The Inter Project Authors"
+    // 就含 "Inter"），那样删掉署名行测试照样绿——这条断言写过一版就是这么废的。
+    const fontSection = licenses.slice(
+      licenses.indexOf('## 字体'),
+      licenses.indexOf('Licensed under the SIL Open Font License'),
+    );
+    const attributed = new Set(
+      [...fontSection.matchAll(/^(.+?) © /gm)].map((m) => m[1].trim()),
+    );
+
+    for (const pkg of pkgs) {
+      const meta = JSON.parse(
+        read(path.join(ROOT_DIR, 'node_modules', pkg, 'metadata.json')),
+      ) as { family?: string };
+      expect(meta.family, `${pkg}/metadata.json 没有 family 字段`).toBeTruthy();
+      expect(
+        attributed,
+        `licenses.md 的「字体」小节没有署名 '${meta.family as string}'（来自 ${pkg}）——OFL 要求署名。`
+          + `已署名的是：${[...attributed].join('、')}`,
+      ).toContain(meta.family as string);
+      expect(
+        licenses,
+        `licenses.md 的「开源库」列表漏了 \`${pkg}\``,
+      ).toContain(`\`${pkg}\``);
+    }
+  });
+});
