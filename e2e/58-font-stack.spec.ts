@@ -89,3 +89,63 @@ test('58-font-stack: 字体全部来自产物，运行期不向字体 CDN 发请
     await teardown(launched);
   }
 });
+
+/**
+ * 等宽场景下的中文用的是打包的 Noto Sans SC，不是系统默认字体。
+ *
+ * 界面上确实有中文走等宽（侧栏的「未选中 Thread」「加载中…」这类空态提示），而 IBM Plex Mono
+ * 没有中文字形。等宽栈末尾不接中文家族的话，这些字会一路落到系统默认——macOS 上是 PingFang SC、
+ * Windows 上是微软雅黑，两个平台长得不一样。
+ *
+ * 判据只能是**像素**：中文是全角方块，同样字号下任何中文字体量出来的宽度都相等（32px 六个字恒为
+ * 192px），宽度对照在这条上恒绿。所以把同一串中文画到画布上比字节。
+ *
+ * 三次渲染而不是两次：只比「等宽栈 == 显式 Noto Sans SC Variable」会在字体压根不存在时空转
+ * （两边都落到系统默认、照样相等）。第三次用一个**不存在的家族名**取到系统默认，断言它与
+ * Noto Sans SC 不同，这条测试才不是自证。这样也与平台无关，Windows CI 上同样成立。
+ */
+test('58-font-stack: 等宽里的中文用打包的 Noto Sans SC，不是系统默认', async () => {
+  const launched = await launchKydog({ seed: seedSettings });
+  const { page } = launched;
+  try {
+    const px = await page.evaluate(async () => {
+      const TEXT = '未选中加载中';
+      const NOTO = '"Noto Sans SC Variable"';
+      const NONE = '"__no_such_family__"';   // 取不到 → 系统默认
+      const mono = getComputedStyle(document.body).getPropertyValue('--font-mono').trim();
+
+      await Promise.all([mono, NOTO].map((f) => document.fonts.load(`400 32px ${f}`, TEXT)));
+
+      const draw = (family: string) => {
+        const c = document.createElement('canvas');
+        c.width = 220; c.height = 44;
+        const g = c.getContext('2d')!;
+        g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+        g.fillStyle = '#000';
+        // 必须用 alphabetic 基线、把 y 固定住。textBaseline: 'top' 是相对**首选字体**的 ascent
+        // 定位的，而这里要比的两次渲染首选字体不同（等宽栈首选 IBM Plex Mono，对照组首选
+        // Noto Sans SC）：同样的中文字形会落在不同的垂直位置，像素于是恒不相等，这条断言就永远
+        // 红，且红的原因与被测的事情无关。基线定位与首选字体的度量无关，两次落点相同。
+        g.textBaseline = 'alphabetic';
+        g.font = `400 32px ${family}`;
+        g.fillText(TEXT, 0, 36);
+        return Array.from(g.getImageData(0, 0, c.width, c.height).data).join(',');
+      };
+      return { monoStack: draw(mono), noto: draw(NOTO), system: draw(NONE) };
+    });
+
+    expect(
+      px.noto === px.system,
+      '显式指定 Noto Sans SC Variable 画出来的像素与系统默认字体一模一样'
+        + '——说明这个家族没打进产物，下面那条断言会变成自证',
+    ).toBe(false);
+
+    expect(
+      px.monoStack === px.noto,
+      '等宽栈画中文得到的像素与 Noto Sans SC Variable 不同'
+        + '——说明 --font-mono 末尾没接上打包的中文家族，中文落到了系统默认',
+    ).toBe(true);
+  } finally {
+    await teardown(launched);
+  }
+});

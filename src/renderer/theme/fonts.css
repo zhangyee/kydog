@@ -40,6 +40,12 @@
 
 /* IBM Plex Mono — IBM，OFL 1.1（等宽的拉丁字符）。
    没有可变版，按实际用到的两个字重引：400 是正文，500 用在少数强调处。
-   等宽栈里没有中文家族——等宽场景下的中文一路落到系统默认，这是既有设计，不在本次改动内。 */
+   等宽栈里的中文由 Noto Sans SC 兜（见各主题 --font-mono 末尾）：IBM Plex Mono 没有中文字形，
+   而侧栏「未选中 Thread」「加载中…」这类空态提示确实是中文走等宽。不接中文家族的话它们会一路
+   落到系统默认——macOS 上是 PingFang SC、Windows 上是微软雅黑，两个平台长得不一样。
+
+   位置在几个等宽家族**之后**而不是紧跟 IBM Plex Mono：字体是逐字符回退的，中文字符走到哪一项
+   都一样（JetBrains Mono / SF Mono / Menlo 都没有中文字形），但万一 IBM Plex Mono 加载失败，
+   拉丁字母应该退到 Menlo 继续保持等宽，而不是掉进一个比例字体里。 */
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
