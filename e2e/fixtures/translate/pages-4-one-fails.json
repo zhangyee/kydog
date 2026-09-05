@@ -1,0 +1,9 @@
+{
+  "1": [{ "text": "1 | text\n第一页的译文\n%%\n", "stopReason": "stop" }],
+  "2": [
+    { "text": "这条响应故意没有 \"|\"，parseGroups 会抛 GroupError（第一次尝试）", "stopReason": "stop" },
+    { "text": "这条同样没有 \"|\"，重试一次仍失败（第二次尝试，runPage 到这里记 failed++）", "stopReason": "stop" }
+  ],
+  "3": [{ "text": "1 | text\n第三页的译文\n%%\n", "stopReason": "stop" }],
+  "4": [{ "text": "1 | text\n第四页的译文\n%%\n", "stopReason": "stop" }]
+}

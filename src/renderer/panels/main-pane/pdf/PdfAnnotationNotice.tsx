@@ -15,7 +15,10 @@ const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
  *   5. 译文对应另一个版本的 PDF（version === 'mismatch'）
  *   6. 译文未记录源摘要（version === 'unknown' 且已有 doc——可用，只是没法校验版本）
  *   7. 译文块因几何越界被丢（dropped > 0）
- *   8. 翻译作业进行中已有页失败（job.failed > 0，那几页右栏保留原文）
+ *   8. 上一趟**跑完**的作业有页失败（lastFailedPages > 0，那几页右栏保留原文——TBucket 的
+ *      字段，job 清空之后仍可读，见 pdfTranslationStore.ts 的注释。不用 job.failed 是因为
+ *      job 在 finalize 阶段就把 failed 硬写成 0、完成后整个变 null，用它判的话这条消息在
+ *      跑完那一刻——用户恰恰需要看它的时刻——必然读不到，Task 14 审查发现的洞）
  * 标注（1-2）排在译文（3-8）之前：标注是打开 PDF 就在用的常驻能力，译文对照本期默认关闭、
  * 按 L 才进，常驻能力的故障更值得占住这一行。translateError 排在译文其余几条（4-8）之前：
  * 它是「刚刚这一次动作」的直接失败反馈（常见如 llm.not_configured——首次使用没配模型），比边车
@@ -37,7 +40,7 @@ export function PdfAnnotationNotice(
   else if (t?.version === 'mismatch') text = '译文对应的是另一个版本的 PDF；请重新翻译，或重新打开该文件';
   else if (t && t.version === 'unknown' && t.doc) text = '未记录源文件摘要，无法确认译文与当前 PDF 匹配';
   else if (t && t.dropped > 0) text = `${t.dropped} 条译文块超出页面范围，已跳过`;
-  else if (t?.job && t.job.failed > 0) text = `${t.job.failed} 页翻译失败，右栏保留原文`;
+  else if (t && t.lastFailedPages > 0) text = `${t.lastFailedPages} 页翻译失败，右栏保留原文`;
   if (!text) return null;
 
   return (

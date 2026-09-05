@@ -371,6 +371,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     if (usePdfTranslationStore.getState().buckets[tab.id]?.job) return;
     if (!bytes || sha === null) return;
     const mySeq = ++translationSeq.current;
+    // 这一趟真的要去探边车了：无论探出什么（成功、mismatch、结构坏了……），都比一次旧作业
+    // 留下的 translateError 更新——不清掉的话它会常驻并压住这里探出来的任何结果（Task 14
+    // 审查发现：PdfAnnotationNotice 把 translateError 排在 loadError / mismatch 之前，见
+    // startTranslation 头上关于清除时机的注释，这是另一个清除点，两处各管一类触发源：这里管
+    // 「自动重探」，那边管「用户按下新动作」）。
+    setTranslateError(null);
     try {
       const { doc } = await window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path });
       if (mySeq !== translationSeq.current) return;
@@ -621,6 +627,18 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   }, [tab.id, sizes, requestScale]);
 
   // 翻译失败的原因，交给 Notice 显示（PdfAnnotationNotice 的 translateError prop）。
+  //
+  // 清除时机（Task 14 审查发现：原先只在下一次作业**开始**时清，没有别的清除点——一次失败之后
+  // 这条消息会在这个 tab 上常驻，因为 PDF tab 是 display:none 保留挂载、不随切换卸载，而 Notice
+  // 把它排在 loadError / mismatch / unknown / dropped 全部之前，压住了此后任何更新更准确的
+  // 提示）。两处都清，各管一类触发源，不是重复：
+  //   1. startTranslation 开头（下面）——用户按下「翻译 / 重新翻译」这个新动作，旧错误对这一趟
+  //      已经不成立。
+  //   2. onToggleDual 入口（下面）——分派函数本身，覆盖「进 / 出对照」这两支不经过
+  //      startTranslation 的路径（active 态退出、ready 态直接进），同时对 startTranslation 那支
+  //      冗余但无害。
+  //   3. loadTranslation 里（上面）——没有用户动作、纯自动重探（挂载 / sizes 到位 / focus）也要
+  //      清：它探出来的结果（哪怕仍是「没有译文」）就此刻而言比一次旧作业留下的错误更新。
   const [translateError, setTranslateError] = useState<string | null>(null);
 
   // 这趟作业**开始前** dual 是不是已经为 true——只有从对照中发起重译（active 态点「重新翻译」
@@ -628,6 +646,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 读它（见下方 catch 与 cancelTranslation）：已经在对照中发起的重译一旦失败或被取消，不该把
   // 用户踢出这个本来完好的对照视图——store 里那份旧 doc 还在。用 ref 而不是局部变量，是因为
   // cancelTranslation 是与 startTranslation 分开的一个回调，读不到后者调用时的局部变量。
+  // **读取约束（这条让它成立的前提没写出来就是个坑）**：只允许在「恰好有一趟 job 存活」时读。
+  // 写入方是 startTranslation 每次调用的**开头**，每次新作业一开始就覆写——所以只要 job 非
+  // null，它挂着的必然是**这唯一一趟**活跃作业的值，不会有陈旧值的空间（不存在两趟并发的
+  // job：新一趟开始前旧一趟早已经过代际比较判负）。两个读取点分别踩这条前提：catch 分支在
+  // 同一次调用里读，隔着若干 await，靠 `my === jobSeq.current` 先挡过期续体；cancelTranslation
+  // 是独立回调、没有 `my` 可比，它读得对纯粹是因为「取消」按钮只在 job 非 null 时才会渲染
+  // （TranslationProgress 的挂载条件），所以点得到它的那一刻前提必然成立。job 是 null 时这个
+  // ref 的值没有任何意义，也没有代码会在那时去读它。
   const wasDualRef = useRef(false);
 
   /**
@@ -638,6 +664,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    */
   const startTranslation = useCallback(async () => {
     if (!sizes || !bytes || sha === null || !numPages) return;
+    // 守卫下沉到这里（Minor #4，Task 14 审查发现）：原来只有 onToggleDual 一个调用点在自己
+    // 那边判过 canPressTranslate，onRetranslate 直接调这个函数、没经过那道判断——「重新翻译」
+    // 键只在 active 态渲染，正常点击时判据恒为真，但让这个真正做状态改动的函数本身对「不该进」
+    // 的调用也安全，好过要求每个调用点都记得先判一遍（本文件另一处同样原则的注释见 onToggleDual）。
+    if (!canPressTranslate(usePdfTranslationStore.getState().buckets[tab.id])) return;
     // 启动作业时**两个代际一起推进**：jobSeq 是这趟作业自己的代号；translationSeq 自增是为了
     // 作废「作业启动前就已经在途」的那趟 load——它的代号仍等于 current，会照常落地，而那时盘上
     // 还是旧边车（或压根没有），setLoaded 会把 dual 收掉，用户刚进对照就被踢出来（spec §9.2）。
@@ -652,6 +683,16 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     enterDualFitWidth();
     st.setJob(tab.id, { phase: 'extract', done: 0, total: numPages, failed: 0 });
     setTranslateError(null);
+    // 新作业开始：先把上一趟的失败计数清成 0（TBucket.lastFailedPages，见其注释）——别把
+    // translateError 那条「旧值长期遮住新结果」的病复制一遍。这一趟如果也有失败页，下面成功
+    // 收尾时会写真值覆盖；如果失败或被取消，就停在这个 0 上（没有「一共失败几页」的确定答案，
+    // 写一个半路的部分计数是编造，见 lastFailedPages 注释）。
+    st.setLastFailedPages(tab.id, 0);
+    // 这一趟真正落地的失败页数：只在 'translate' 阶段的 tick 里才是真值——'finalize' 阶段那份
+    // failed 恒为 0（提交点标记，不是「清零」），不能拿它覆盖。job 跑完（Promise.all 收尾）时
+    // 最后一次 'translate' tick 携带的就是全部页跑完之后的最终失败数，成功收尾时把它落进
+    // lastFailedPages（下面）。
+    let lastFailed = 0;
     try {
       const model = await window.kydog.invoke('pdf.translation.resolveModel', {
         threadId: useThreadsStore.getState().currentThreadId,
@@ -670,7 +711,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           providerId: model.providerId, modelId: model.modelId, runtimeRevision: model.runtimeRevision,
           langOut: locale, glossary: keepGlossary,
         }),
-        onProgress: (p) => { if (my === jobSeq.current) usePdfTranslationStore.getState().setJob(tab.id, p); },
+        onProgress: (p) => {
+          if (my === jobSeq.current) usePdfTranslationStore.getState().setJob(tab.id, p);
+          if (p.phase === 'translate') lastFailed = p.failed;
+        },
         isCancelled: () => my !== jobSeq.current,
         // 抽取顺带把文本行交出来，标注层随后要吸附就不必再取一遍（spec §4）。
         onPageExtracted: (n, text) => { linesCache.current[n] = Promise.resolve(text); },
@@ -700,6 +744,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // **先清 job、再 loadTranslation**：清了 job 那道闸才放行，而此刻边车已经在盘上，
     // setLoaded 拿到的是非空且摘要匹配的 doc，不会把 dual 收掉（spec §9.2）。
     usePdfTranslationStore.getState().setJob(tab.id, null);
+    // 这趟作业真正跑完了（走到这里 = 没被取消、没抛错）：把最终失败页数落进 lastFailedPages，
+    // job 清空之后 Notice 仍能读到「上一趟有几页失败」（Task 14 审查发现的洞，见其注释）。
+    usePdfTranslationStore.getState().setLastFailedPages(tab.id, lastFailed);
     void loadTranslation();
   }, [tab.id, tab.path, sizes, bytes, sha, numPages, enterDualFitWidth, loadTranslation]);
 
@@ -717,7 +764,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // 「重新翻译」键（PdfToolbar，只在 active 态渲染）：直接跑一次新的流水线，与 onToggleDual 的
   // none/invalid/mismatch 分支调的是同一个 startTranslation——区别只在于调用这一刻 dual 已经
-  // 是 true（wasDualRef 会记住这一点）。
+  // 是 true（wasDualRef 会记住这一点）。这里没有另判一次 canPressTranslate：守卫现在下沉在
+  // startTranslation 自己开头（Minor #4，见其注释），这个调用点因此天然安全，不必在这里重复。
   const onRetranslate = useCallback(() => { void startTranslation(); }, [startTranslation]);
 
   // 翻译键 / `L` 的动作分派（spec §1、§10）。两个调用点：工具栏翻译键的 onClick（点击时已经被
@@ -737,6 +785,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const b = st.buckets[tab.id];
     if (!b || !sizes) return;
     if (!canPressTranslate(b)) return; // 与工具栏同一份判据（pending/translating 才会被这里挡住）
+    // 分派函数入口清 translateError（清除时机见其声明处的注释，理由 2）：无论下面三支走哪一支，
+    // 都是用户按下的一次新动作，旧错误对这一刻已经不成立——'none'/'invalid'/'mismatch' 那支会
+    // 走 startTranslation 再清一遍（冗余但无害），'active'/'ready' 那两支原本没有别的清除点。
+    setTranslateError(null);
     const state = translateUiState(b);
     if (state === 'active') { st.setDual(tab.id, false); return; }
     if (state === 'ready') { enterDualFitWidth(); return; }

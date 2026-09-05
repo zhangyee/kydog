@@ -40,12 +40,25 @@ export type TBucket = {
    * 「取消不留痕」（spec §9.3）。
    */
   job: JobProgress | null;
+  /**
+   * 上一趟**真正跑完**（没被取消、没出错半路而废）的作业里失败了几页，`job` 清空之后仍可读
+   * （Task 14 审查发现：`job.failed` 在 `finalize` 阶段被硬写成 0、`job` 完成后又整个变
+   * `null`，靠它判「这趟有几页失败」在跑完那一刻必然读到 0/无——而用户恰恰是在跑完之后才需要
+   * 看它）。
+   *
+   * 写入方只有 `PdfFileTab.startTranslation`：新作业**开始**时先清成 0（别把「翻译失败提示
+   * 长期遮住更准确提示」那条病复制一遍——旧数字不该在新作业跑着甚至还没跑完时继续挂着）；
+   * 只有这趟作业**成功走到 finalize + save**才在清 job 的同时写入真值。取消 / 出错两条出口
+   * 都不写它，停在开始时清成的 0——那两种情况下没有「这趟一共失败几页」这个确定答案，写一个
+   * 半路的部分计数反而是编造。
+   */
+  lastFailedPages: number;
 };
 
 export function emptyTBucket(): TBucket {
   return {
     doc: null, loadError: null, version: 'unknown', dropped: 0, dual: false, prevScale: null,
-    layoutReady: false, job: null,
+    layoutReady: false, job: null, lastFailedPages: 0,
   };
 }
 
@@ -113,6 +126,8 @@ type State = {
   clearPrevScale: (tab: string) => void;
   /** 写入 / 清空当前作业进度（见 TBucket.job）。写入方是 translateDoc 的 onProgress 回调。 */
   setJob: (tab: string, job: JobProgress | null) => void;
+  /** 写入上一趟真正跑完的失败页数（见 TBucket.lastFailedPages）。写入方只有 startTranslation。 */
+  setLastFailedPages: (tab: string, n: number) => void;
   drop: (tab: string) => void;
 };
 
@@ -148,6 +163,9 @@ export const usePdfTranslationStore = create<State>((set) => ({
   )),
   setJob: (tab, job) => set((s) => ({
     buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), job } },
+  })),
+  setLastFailedPages: (tab, n) => set((s) => ({
+    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), lastFailedPages: n } },
   })),
   drop: (tab) => set((s) => {
     const next = { ...s.buckets };

@@ -19,9 +19,20 @@ import { RPC_CHANNEL } from '../src/shared/protocol';
  * 按钮（原来那条 mismatch 入口的用例留着不删——机制仍然一致，多测一条入口无害），并补了一条不
  * 在原始 13 条清单内的回归用例：从 active 态（`dual === true`）发起的重译一旦被取消，不该把
  * 用户踢出这个本来完好的对照视图（PdfFileTab 的 `wasDualRef` 修复，Task 14 审查发现的真 bug）。
+ *
+ * Task 14 审查（Needs fixes）之后又补了两条零回归覆盖：
+ *   - 没配模型时点翻译，`translateError` 要能在 Notice 上显示出来（本任务的头号要求，之前完全
+ *     没有 e2e 钉住——上一版实现者验证过一次就删了 scratch 用例，`translateError` 这行 props
+ *     去掉照样全绿）。
+ *   - 一趟作业**跑完之后**，若有页失败，「N 页翻译失败」这条消息仍要可见（`lastFailedPages`，
+ *     TBucket 上跨 job 清空仍可读的字段——`job.failed` 在 finalize 阶段被硬写成 0、job 完成后
+ *     整个变 null，用它判的话这条消息在用户最需要看到它的那一刻必然读不到）。
  */
 
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
+// 页 2 的响应故意不含 "|"：parseGroups 两次都抛 GroupError（runPage 重试一次），页 2 记
+// failed++，其余三页正常成功——用来验证作业跑完之后 lastFailedPages 仍能读到「1 页失败」。
+const ONE_FAIL_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-one-fails.json');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -47,6 +58,17 @@ async function seedPlain(home: string) {
   await fs.mkdir(projectPath, { recursive: true });
   await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(PAGES, PAGE_W, PAGE_H));
   // 不写 .plain.pdf.zh.json —— pdf.translation.load 对 ENOENT 返回 { doc: null }，即 `none` 态
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
+// 同 seedPlain，只是设置里不给默认模型：pdf.translation.resolveModel 在 startTranslation 的
+// 第一个 await 上就抛 llm.not_configured，不需要 translateFixture / 闸门——这条错误路径走不到
+// 任何一次 pdf.translation.page 调用。
+async function seedNoModel(home: string) {
+  await seedSettings(home, { providerConfigured: false });
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(PAGES, PAGE_W, PAGE_H));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -409,6 +431,7 @@ test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把�
     const { page, kydogHome } = launched;
     const projectPath = path.join(kydogHome, 'proj');
     const pdfPath = path.join(projectPath, READY_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
     const pane = await openPdf(page, pdfPath);
 
     await enterDual(page, pane);
@@ -423,6 +446,16 @@ test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把�
     await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
     await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在')
       .toBeVisible();
+    // Minor #5（Task 14 审查发现）：`[data-pdf-right="1"]` 只是右格那块 canvas 本身，不管它画的
+    // 是内容还是一整格纸色都在——只断言它可见证明不了「对照视图还能用」，「留在 dual 但右格永久
+    // 空白」这种更糟的状态照样能让上面那几行绿。这里补上 store 里那份旧 doc（cancel 不动它）
+    // 应当重新渲染出来的具体那个块：job 收掉之后 `!translating` 重新为真，TranslationBlocks
+    // 才会渲染（见 RightPage 里的注释），能看到 seed1 就说明取消之后合成的确实是可用的旧译文，
+    // 不是空壳。
+    await expect(
+      page.locator(`${paneSel} [data-translation-block="seed1"]`),
+      '取消之后旧译文块应当重新出现——右格是真的可用，不是空壳',
+    ).toBeVisible();
 
     // 放行被扣住的那条请求：它落地时代际已经失配，不该再把 job / dual 写回去。
     await releaseGate(launched);
@@ -497,6 +530,64 @@ test('59-pdf-translate: 翻译期间的边车重探不会把用户踢出对照',
     await expect(pane.getByTestId('pdf-translate-progress')).toBeVisible();
     expect(await pane.locator('[data-pdf-right="1"]').count(), '翻译期间的 focus 重探不该收掉 dual')
       .toBeGreaterThan(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 没配模型时点翻译——Notice 显示「翻译失败」，退回单栏', async () => {
+  // Task 14 审查发现的头号缺口：translateError 接上 Notice 是这个任务的硬要求，之前完全没有
+  // e2e 钉住——把 PdfFileTab 里 `<PdfAnnotationNotice translateError={translateError} />` 那行
+  // props 去掉，gate 全绿、57/59（去掉这条之前）也全绿，谁也不会发现。不需要 translateFixture /
+  // 闸门：resolveModel 在 startTranslation 的第一个 await 上就抛 llm.not_configured，走不到任何
+  // 一次 pdf.translation.page 调用，是这条错误路径里最快、最不脆的触发方式。
+  const launched = await launchKydog({ seed: seedNoModel });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
+    const pane = await openPdf(page, pdfPath);
+
+    // 二期起「没有译文」从禁用变成可点：这条路径能走到，靠的正是这一点。
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+    await pane.getByTestId('pdf-translate').click();
+
+    // 进对照是点下去那一刻的事（startTranslation 在第一个 await 之前就 setDual），resolveModel
+    // 的 await 一拒绝，catch 分支的 `if (!wasDualRef.current) setDual(tab.id, false)` 就会把它
+    // 收掉——wasDualRef 在这条路径上是 false（进来之前不在对照中），所以这里断言的是退回单栏，
+    // 不是留在对照。
+    await expect(pane.getByTestId('pdf-notice'), 'Notice 应当显示 resolveModel 抛出的那句原话')
+      .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
+    await expect(pane.locator('[data-pdf-right="1"]'), '没配模型时翻译失败要退回单栏').toHaveCount(0);
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——lastFailedPages 跨 job 清空可读', async () => {
+  // Task 14 审查发现：Notice 原来判的是 `t?.job && t.job.failed > 0`，而 finalize 阶段把
+  // job.failed 硬写成 0、作业完成后 job 又整个变 null——「这趟有几页失败」在跑完那一刻，也就是
+  // 用户最需要看到它的时刻，必然读不到。修法是把最后一趟的失败计数落进 TBucket.lastFailedPages，
+  // 跨 job 清空仍可读。这里用 ONE_FAIL_FIXTURE 让第 2 页两次响应都不含 "|"（parseGroups 两次都
+  // 抛 GroupError，runPage 重试一次后记 failed++），其余三页正常——作业整体仍然成功跑完、写盘、
+  // 走 loadTranslation 重新加载，不需要闸门。
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    await pane.getByTestId('pdf-translate').click();
+    // 等作业真的跑完：进度浮层消失、job 清空、右格开始正常合成（成功页的译文块渲染出来）。
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
+
+    await expect(pane.getByTestId('pdf-notice'), '作业跑完之后这条消息仍应可见')
+      .toContainText('1 页翻译失败，右栏保留原文');
+    // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
     await teardown(launched);
   }
