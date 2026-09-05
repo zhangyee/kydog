@@ -13,7 +13,17 @@ export function paddedRect(r: Rect): Rect {
   return { x: r.x - BLOCK_PAD, y: r.y - BLOCK_PAD, w: r.w + 2 * BLOCK_PAD, h: r.h + 2 * BLOCK_PAD };
 }
 
+/**
+ * 空数组不返回垃圾矩形而是抛：`Math.min()` 无参回 `Infinity`、`Math.max()` 回 `-Infinity`，
+ * 于是 `unionRect([])` 会安静地产出 `{x: Infinity, y: Infinity, w: -Infinity, h: -Infinity}`
+ * ——一个既盖不住任何东西、又会污染下游一切算术的坐标（不变量 #2 的落点：坐标只由我们算，
+ * 那就不能有一条路径算得出这种值）。
+ *
+ * 今天两个调用点（groupGeometry、buildBlocks）都自己先滤掉了空组，所以这行抛不出来；正因为
+ * 如此，将来多一个忘了过滤的调用点时，失败必须是响的，而不是一块画在无穷远处的覆盖矩形。
+ */
 export function unionRect(rs: Rect[]): Rect {
+  if (rs.length === 0) throw new Error('unionRect: 空的矩形数组没有并集');
   const x = Math.min(...rs.map((r) => r.x));
   const y = Math.min(...rs.map((r) => r.y));
   const x2 = Math.max(...rs.map((r) => r.x + r.w));
