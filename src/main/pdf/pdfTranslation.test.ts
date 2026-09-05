@@ -32,3 +32,26 @@ describe('pdfTranslation', () => {
     expect(await pdfTranslation.load({ pdfPath })).toEqual({ doc: DOC });
   });
 });
+
+describe('pdfTranslation.save', () => {
+  it('写出的边车能被 load 原样读回', async () => {
+    const dir = tmp();
+    const pdf = path.join(dir, 'p.pdf');
+    const doc: TranslatedDoc = {
+      version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' },
+      source: { sha256: 'ab', bytes: 12 },
+      blocks: [{ id: 'p1-b01', page: 1, x: 1, y: 2, width: 3, height: 4, fontSize: 10, kind: 'text', source: 'a', target: 'A' }],
+    };
+    await pdfTranslation.save({ pdfPath: pdf, doc });
+    expect((await pdfTranslation.load({ pdfPath: pdf })).doc).toEqual(doc);
+  });
+
+  it('非法 doc 被拒，且不落盘——写盘方自己校验，不信任调用方', async () => {
+    const dir = tmp();
+    const pdf = path.join(dir, 'p.pdf');
+    const bad = { version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' }, blocks: [{ id: '' }] } as unknown as TranslatedDoc;
+    await expect(pdfTranslation.save({ pdfPath: pdf, doc: bad }))
+      .rejects.toThrow(expect.objectContaining({ code: 'pdf.translation_invalid' }));
+    expect((await pdfTranslation.load({ pdfPath: pdf })).doc).toBeNull();
+  });
+});

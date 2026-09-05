@@ -8,7 +8,7 @@ import type {
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
 import type { PdfAnnotationsFile } from './pdfSidecar';
-import type { TranslatedDoc } from './zhSidecar';
+import type { TranslatedDoc, PageLine, Term } from './zhSidecar';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -88,8 +88,17 @@ export type RpcCall =
   | { method: 'pdf.annotations.load'; args: { pdfPath: string }; result: { doc: PdfAnnotationsFile | null } }
   | { method: 'pdf.annotations.save'; args: { pdfPath: string; doc: PdfAnnotationsFile }; result: void }
   // PDF 旁的译文边车（spec: docs/superpowers/specs/2026-09-03-pdf-dual-pane-translation-design.md）。
-  // 本期只读，写入方是 agent。null 只代表边车不存在。
+  // null 只代表边车不存在。
   | { method: 'pdf.translation.load'; args: { pdfPath: string }; result: { doc: TranslatedDoc | null } }
+  // 翻译流水线（spec: docs/superpowers/specs/2026-09-05-pdf-translation-pipeline-design.md）。
+  // 主进程这三条**不持有任何 job 状态**：一页进一页出，取消 = 渲染层停排队。
+  | { method: 'pdf.translation.resolveModel'; args: { threadId: string | null };
+      result: { providerId: ProviderId; modelId: string; runtimeRevision: number } }
+  | { method: 'pdf.translation.page';
+      args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
+              langOut: string; docTitle?: string; glossary?: Term[]; lines: PageLine[] };
+      result: { text: string; truncated: boolean } }
+  | { method: 'pdf.translation.save'; args: { pdfPath: string; doc: TranslatedDoc }; result: void }
   // ── 自动升级 ──
   | { method: 'update.getStatus'; args: undefined; result: UpdateStatus }
   | { method: 'update.check'; args: undefined; result: UpdateStatus }
