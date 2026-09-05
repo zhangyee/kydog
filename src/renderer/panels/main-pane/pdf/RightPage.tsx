@@ -20,6 +20,14 @@ type Props = {
    * 调用方的初始 state 是 null，含义是「还没有底图」。
    */
   onBackground?: (bg: RGB) => void;
+  /**
+   * 翻译进行中：右格**不合成底图**，只画一个与左格同尺寸的纸色矩形（spec §1「右栏先空白」）。
+   *
+   * 也不调 `onBackground`：它的语义是「这次实际填下去的底色」，译文块拿它推墨色——而翻译期间
+   * 译文层整层不渲染（PdfFileTab 那边同一个开关），把这块兜底纸色交出去只会让重译结束、块回来
+   * 的那一瞬用错底色推一次墨。
+   */
+  blank?: boolean;
 };
 
 /**
@@ -53,6 +61,8 @@ function themePaperRgb(el: Element): RGB {
  *   2. 只在**有 target** 的块矩形里填页背景色 —— 只盖要放译文的地方
  *   3.（Task 7）译文 HTML 叠在上面
  *
+ * `blank`（翻译进行中）时这三步一步都不做，只填一格纸色——见该 prop 的注释。
+ *
  * 为什么默认保留整页、只盖译文矩形，而不是先把正文从 PDF 里剥掉再渲染：删内容流会连带改掉
  * ET 之后的图形状态，而 Form XObject 里也可能整段都是正文——这两条都被实测证否过（spec §0）。
  * 矩形覆盖对二者天然免疫，且不需要任何「这是不是扫描页」的判定：抽不出文本就没有块，步骤 2
@@ -64,7 +74,7 @@ function themePaperRgb(el: Element): RGB {
  * 右格还没合成。useLayoutEffect 与那次顶替同属一次 commit、绘制之前跑完，「settled」与
  * 「右格已合成」于是由构造同时发生，不需要再给顶替加第二个信号。
  */
-export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground }: Props) {
+export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground, blank }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useLayoutEffect(() => {
@@ -78,6 +88,16 @@ export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground 
     // 两栏同源：位图尺寸逐字段照抄左格，所以下面这次 drawImage 是 1:1 拷贝，不做任何缩放
     c.width = leftCanvas.width;
     c.height = leftCanvas.height;
+
+    // 翻译进行中：整格填纸色就结束——不 drawImage、不填块矩形、不调 onBackground（见 blank 的
+    // 注释）。位图尺寸仍照抄左格（上面两行），所以两格的 CSS 尺寸与几何一个字都没变，右格空不
+    // 空白与不变量 #2 / #3 无关。
+    if (blank) {
+      ctx.fillStyle = toCss(themePaperRgb(c));
+      ctx.fillRect(0, 0, c.width, c.height);
+      return;
+    }
+
     ctx.drawImage(leftCanvas, 0, 0);
 
     // 位图像素 / pt。等于 rasterScale × devicePixelRatio，但从 canvas 反推更可靠：
@@ -112,7 +132,7 @@ export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground 
         Math.ceil((b.height + 2 * BLOCK_PAD) * S),
       );
     }
-  }, [leftCanvas, blocks, size.w, onBackground]);
+  }, [leftCanvas, blocks, size.w, onBackground, blank]);
 
   return (
     <canvas

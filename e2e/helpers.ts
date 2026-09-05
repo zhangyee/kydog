@@ -22,6 +22,12 @@ export function testIdSelector(testId: string): string {
 
 export async function launchKydog(opts: {
   fixture?: string;
+  /**
+   * 逐页翻译响应的 fixture 路径（→ `KYDOG_TRANSLATE_FIXTURE`）。设了它，主进程的
+   * `pdf.translation.page` 就从这份 JSON 里按页取响应，不碰上游模型——但仍走同一个 semaphore
+   * 与同一条并发路径（src/main/pdf/pdfTranslatePage.ts）。格式见 e2e/fixtures/translate/。
+   */
+  translateFixture?: string;
   seed?: (kydogHome: string) => Promise<void>;
   /** Extra env vars merged into the launched Electron process (e.g. KYDOG_E2E, KYDOG_OAUTH_FIXTURE). */
   env?: Record<string, string>;
@@ -43,6 +49,7 @@ export async function launchKydog(opts: {
     ...(opts.env ?? {}),
   };
   if (opts.fixture) env.KYDOG_AGENT_FIXTURE = opts.fixture;
+  if (opts.translateFixture) env.KYDOG_TRANSLATE_FIXTURE = opts.translateFixture;
   const app = await electron.launch({
     // --force-prefers-no-reduced-motion：OOPIF 进程创建时快照 OS 层 reduce，CDP 仿真
     // 按构造晚于模板 parse，所以必须用进程级开关在信号入口换源；一处覆盖主 frame 与

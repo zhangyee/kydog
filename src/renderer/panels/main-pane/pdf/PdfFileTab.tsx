@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
+import { useSettingsStore } from '../../../stores/settingsStore';
+import { useThreadsStore } from '../../../stores/threadsStore';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
 import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { flushDrafts } from './noteDrafts';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
-import { canPressTranslate, checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
+import { canPressTranslate, checkVersion, translateUiState, usePdfTranslationStore } from './pdfTranslationStore';
 import { sha256Hex } from './sha256';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
@@ -15,7 +17,9 @@ import { PdfToolbar } from './PdfToolbar';
 import type { RGB } from './pageBackground';
 import { RightPage } from './RightPage';
 import { pdfSaveScheduler } from './saveScheduler';
+import { translateDoc } from './translateDoc';
 import { TranslationBlocks } from './TranslationBlocks';
+import { TranslationProgress } from './TranslationProgress';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
 import { mostVisiblePage } from './pageReadout';
 import { unitLayout, PAGE_GAP, PAGE_PAD, type PageSize } from './pageLayout';
@@ -145,12 +149,14 @@ export async function prefetchPageSizes(
  * **右格不 acquire lifecycle**：那个引用计数是给 `page.cleanup()` 用的，而右格根本不调
  * pdf.js 渲染（它只从左格 canvas 拷位图）。多 acquire 一次会让页永远清理不掉。
  */
-function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, docKey, onPageLoad, onSettled, annotations }: {
+function MountedPageCells({ n, lifecycle, size, layerScale, dual, translating, blocks, docKey, onPageLoad, onSettled, annotations }: {
   n: number;
   lifecycle: PageLifecycle;
   size: PageSize;
   layerScale: number;
   dual: boolean;
+  /** 这个 tab 上有翻译作业在跑：右格走空白分支，译文层整层不渲染（spec §1）。 */
+  translating: boolean;
   blocks: Block[];
   /** TranslationBlocks 的 fitCache key 隔离维度；调用方传 tab.id。见该组件顶部注释。 */
   docKey: string;
@@ -196,11 +202,15 @@ function MountedPageCells({ n, lifecycle, size, layerScale, dual, blocks, docKey
         <div style={{ position: 'relative' }}>
           <RightPage
             size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas}
-            onBackground={setBg}
+            onBackground={setBg} blank={translating}
           />
-          <TranslationBlocks
-            blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} page={n}
-          />
+          {/* 翻译期间**整层不渲染**，不是渲染成空的：重译时 store 里还留着上一版的块（doc 要等
+              新边车落盘才换），照渲染的话右格是「空白底图 + 旧译文浮在上面」。 */}
+          {!translating && (
+            <TranslationBlocks
+              blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} page={n}
+            />
+          )}
         </div>
       )}
     </>
@@ -282,6 +292,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const contentTop = useRef(0);
   const clientHeight = useRef(0);
   const pageProxies = useRef<Record<number, PageProxyLike>>({});
+  // 文档 proxy，翻译时按页现取用。pageProxies 只有**预取成功**的页有份（单页预取失败会缺一格，
+  // 见 prefetchPageSizes），而翻译要在每一页上抽文本，缺的那页得有地方能补取到。
+  // 只留 getPage 一个方法，不把 react-pdf 的内部类型引进来（同上面 PageProxyLike 的理由）。
+  const pdfRef = useRef<{ getPage: (n: number) => Promise<PageProxyLike> } | null>(null);
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
   // 什么时候把一页还给 pdf.js（page.cleanup()）由 pageLifecycle.ts 的引用计数决定，挂载/卸载
   // 边界在 MountedPageCells。PageProxyLike 故意没声明 cleanup（那是给 ensureLines 用的最小
@@ -346,7 +360,15 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 标注那条加载器（上面）只有一个调用点、也不会重入，用一个 `cancelled` 闭包就够；这里的两条
   // 都是「哪一趟才算数」的问题，闭包标记表达不了，只能用代号。
   const translationSeq = useRef(0);
+  // 作业代际。挡三条真实竞态（spec §9.1）：取消后立刻重启时，旧作业的续体会把新作业的 job
+  // 清掉或把旧进度写回去；关 tab 后旧续体靠 setJob 里的 `?? emptyTBucket()` 把桶原地重建回来；
+  // 失败路径的 catch 同样要过代际，否则一趟已经作废的作业照样会把单栏状态写回去。
+  const jobSeq = useRef(0);
   const loadTranslation = useCallback(async () => {
+    // 翻译进行中不重探边车：此刻盘上还是旧边车（重译）或压根没有（首次翻译），而 setLoaded 在
+    // doc === null / version 变 mismatch 时都会把 dual 收掉（一期为「边车被删就自动退出对照」
+    // 写的）——focus 重探每次切窗口都会发生，会把用户踢出刚进的对照（spec §9.2）。
+    if (usePdfTranslationStore.getState().buckets[tab.id]?.job) return;
     if (!bytes || sha === null) return;
     const mySeq = ++translationSeq.current;
     try {
@@ -379,6 +401,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 它的 setLoaded 会把桶原地重建回来（见 loadTranslation 头上的注释）。
   useEffect(() => () => {
     translationSeq.current += 1;
+    // 在途的翻译作业同理：它的续体也会走 setJob，把桶原地重建回来（spec §9.1 第 2 条）。
+    jobSeq.current += 1;
     usePdfTranslationStore.getState().drop(tab.id);
   }, [tab.id]);
 
@@ -548,6 +572,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   }, [tab.id, sizes]);
 
   const dual = usePdfTranslationStore((s) => s.buckets[tab.id]?.dual ?? false);
+  // 正在跑的翻译作业。它同时是三个开关：右格走空白分支、译文层整层不渲染、浮层显不显示。
+  const job = usePdfTranslationStore((s) => s.buckets[tab.id]?.job ?? null);
   const translated = usePdfTranslationStore((s) => s.buckets[tab.id]?.doc ?? null);
   // 按页分桶一次，而不是在页行的 map 里逐页 filter：filter 每次渲染都产出新数组，
   // 会让 RightPage 的合成 effect（依赖 blocks）每次重渲染都重合成一遍整页位图。
@@ -562,28 +588,26 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     return m;
   }, [translated]);
 
-  // 进 / 出双栏对照，按需 fit-width（spec §12）。两个调用点：工具栏翻译键的 onClick（点击时
-  // 已经被 disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过
-  // IconButton 的 disabled，靠它自己先调 canPressTranslate 判过一轮）。这里再判一次
-  // canPressTranslate 不是重复的第三份条件——调的是同一个纯函数（pdfTranslationStore.ts），只是
-  // 让这个真正做状态改动的函数本身对「不该进」的调用也是安全的，不必信任每个调用点都已经判过。
-  //
-  // 一行的宽度是 2 × 页宽 + 间距（dual 时行宽的算法见下面渲染处 `size.w * 2 + PAGE_GAP`，
-  // 这里用 sizes[0] 是因为 fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，
-  // 用第一页的宽度足够；量出来的 fit 又会被 requestScale 的 MIN_SCALE 兜底，极端情况下也不会
-  // 缩到不可用）。放不下就缩到刚好放下，把进入前的缩放存进 prevScale；行宽本来就放得下则不动、
-  // prevScale 存 null。
-  //
-  // **退出这条路径不在这里还原缩放**：还原只有下面那个 effect 一条路（显式退出与 setLoaded 的
-  // 自动退出共用），这里只负责把 dual 收掉。`dual === false && prevScale !== null` 因此是一个
-  // 「还没被消费的还原请求」瞬态，谁把 dual 收掉都行，还原都会发生。
-  const onToggleDual = useCallback(() => {
+  /**
+   * 进对照，按需 fit-width（spec §12）。两个调用点：下面 onToggleDual 的 `ready` 分支（已经有
+   * 可用译文，直接看），以及 startTranslation（点翻译**先进对照**，右格空白等结果）。抽成一段
+   * 是因为两条路的几何处理必须一模一样——分成两份写就会在缩放上分叉，而这类分叉只有用户在两条
+   * 路之间来回切时才看得见。
+   *
+   * 一行的宽度是 2 × 页宽 + 间距（dual 时行宽的算法见下面渲染处 `size.w * 2 + PAGE_GAP`，
+   * 这里用 sizes[0] 是因为 fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，
+   * 用第一页的宽度足够；量出来的 fit 又会被 requestScale 的 MIN_SCALE 兜底，极端情况下也不会
+   * 缩到不可用）。放不下就缩到刚好放下，把进入前的缩放存进 prevScale；行宽本来就放得下则不动、
+   * prevScale 存 null。
+   *
+   * **已经在对照里就一步都不做**：对照中重新翻译会走到这里，那时既不该再动一次缩放，更不该拿
+   * 此刻这个 fit 值去覆盖 prevScale——那份是「还没被消费的还原请求」，覆盖掉的话退出对照就会
+   * 还原到 fit 自己，等于不还原。
+   */
+  const enterDualFitWidth = useCallback(() => {
     const st = usePdfTranslationStore.getState();
-    const b = st.buckets[tab.id];
     const el = scrollRef.current;
-    if (!b || !el || !sizes) return;
-    if (b.dual) { st.setDual(tab.id, false); return; }
-    if (!canPressTranslate(b)) return; // 与工具栏同一份判据（pending/translating 才会被这里挡住）
+    if (!el || !sizes || st.buckets[tab.id]?.dual) return;
     const rowUnit = sizes[0].w * 2 + PAGE_GAP;
     const fit = el.clientWidth / rowUnit;
     const prev = visualScaleRef.current;
@@ -595,6 +619,113 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       st.setDual(tab.id, true, null);
     }
   }, [tab.id, sizes, requestScale]);
+
+  // 翻译失败的原因，交给 Notice 显示（Task 14 接读的那一端）。这里只有 setter：读它的组件还没
+  // 接上，先把值落在 state 上，免得错误信息只剩下一个静默的「退回单栏」。
+  const [, setTranslateError] = useState<string | null>(null);
+
+  /**
+   * 跑一趟翻译流水线（spec §7）：立刻进对照 → 右格空白 + 进度浮层 → 抽取 → 逐页翻译 → 写边车
+   * → 走**现有的** loadTranslation() 重新加载 → 右格开始正常合成。
+   *
+   * 编排本身在 translateDoc（纯逻辑、可单测）；这里只负责把它接上 IPC、代际与 store。
+   */
+  const startTranslation = useCallback(async () => {
+    if (!sizes || !bytes || sha === null || !numPages) return;
+    // 启动作业时**两个代际一起推进**：jobSeq 是这趟作业自己的代号；translationSeq 自增是为了
+    // 作废「作业启动前就已经在途」的那趟 load——它的代号仍等于 current，会照常落地，而那时盘上
+    // 还是旧边车（或压根没有），setLoaded 会把 dual 收掉，用户刚进对照就被踢出来（spec §9.2）。
+    // 只加 loadTranslation 开头那道 `job` 闸挡不住它：那道闸只管**之后**发起的重探。
+    const my = ++jobSeq.current;
+    translationSeq.current += 1;
+    const st = usePdfTranslationStore.getState();
+    // 术语表跨重译保留：它是用户 / agent 写进边车的约定，不是这一趟翻译的产物（spec §2.6）。
+    const keepGlossary = st.buckets[tab.id]?.doc?.glossary;
+    const locale = useSettingsStore.getState().settings?.ui.locale ?? 'zh';
+    enterDualFitWidth();
+    st.setJob(tab.id, { phase: 'extract', done: 0, total: numPages, failed: 0 });
+    setTranslateError(null);
+    try {
+      const model = await window.kydog.invoke('pdf.translation.resolveModel', {
+        threadId: useThreadsStore.getState().currentThreadId,
+      });
+      const doc = await translateDoc({
+        numPages,
+        getPage: async (n) => {
+          const cached = pageProxies.current[n];
+          if (cached) return cached;
+          const d = pdfRef.current;
+          if (!d) throw new Error(`第 ${n} 页还没准备好，无法抽取原文`);
+          return d.getPage(n);
+        },
+        translatePage: (a) => window.kydog.invoke('pdf.translation.page', {
+          page: a.page, lines: a.lines, docTitle: a.docTitle,
+          providerId: model.providerId, modelId: model.modelId, runtimeRevision: model.runtimeRevision,
+          langOut: locale, glossary: keepGlossary,
+        }),
+        onProgress: (p) => { if (my === jobSeq.current) usePdfTranslationStore.getState().setJob(tab.id, p); },
+        isCancelled: () => my !== jobSeq.current,
+        // 抽取顺带把文本行交出来，标注层随后要吸附就不必再取一遍（spec §4）。
+        onPageExtracted: (n, text) => { linesCache.current[n] = Promise.resolve(text); },
+        pdfName: tab.path.split(/[\\/]/).pop()!,   // 渲染层没有 node:path
+        langOut: locale,
+        source: { sha256: sha, bytes: bytes.byteLength },
+        glossary: keepGlossary,
+      });
+      if (my !== jobSeq.current) return;             // 取消 / 关 tab / 重新发起
+      // 取消返回 null。上面那次代际比较已经把这条路挡掉了（isCancelled 与它是同一个谓词），
+      // 留着是为了 translateDoc 将来多一条返回 null 的路径时不至于把 job 永久挂在那儿。
+      if (doc === null) { usePdfTranslationStore.getState().setJob(tab.id, null); return; }
+      // 提交点：进入 finalize 之后浮层的取消按钮禁用，因为 jobSeq 挡不住一次已经发出的
+      // save——把提交点画在「发出 save 之前」才守得住「取消不留痕」（spec §9.3）。
+      usePdfTranslationStore.getState().setJob(tab.id, { phase: 'finalize', done: 0, total: 1, failed: 0 });
+      await window.kydog.invoke('pdf.translation.save', { pdfPath: tab.path, doc });
+    } catch (err) {
+      if (my !== jobSeq.current) return;
+      usePdfTranslationStore.getState().setJob(tab.id, null);
+      usePdfTranslationStore.getState().setDual(tab.id, false);
+      setTranslateError((err as Error).message);
+      return;
+    }
+    if (my !== jobSeq.current) return;
+    // **先清 job、再 loadTranslation**：清了 job 那道闸才放行，而此刻边车已经在盘上，
+    // setLoaded 拿到的是非空且摘要匹配的 doc，不会把 dual 收掉（spec §9.2）。
+    usePdfTranslationStore.getState().setJob(tab.id, null);
+    void loadTranslation();
+  }, [tab.id, tab.path, sizes, bytes, sha, numPages, enterDualFitWidth, loadTranslation]);
+
+  // 取消：自增代际（在途的续体从此写不进 store）、清 job、收 dual。收 dual 会让下面那个 effect
+  // 把缩放还原回进对照前——与显式退出、自动退出共用同一条还原路径。**什么都不写盘**：save 要么
+  // 还没发出，要么已经进了 finalize 而那时取消按钮是禁用的（spec §9.3）。
+  const cancelTranslation = useCallback(() => {
+    jobSeq.current += 1;
+    const st = usePdfTranslationStore.getState();
+    st.setJob(tab.id, null);
+    st.setDual(tab.id, false);
+  }, [tab.id]);
+
+  // 翻译键 / `L` 的动作分派（spec §1、§10）。两个调用点：工具栏翻译键的 onClick（点击时已经被
+  // disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过 IconButton 的
+  // disabled，靠它自己先调 canPressTranslate 判过一轮）。这里再判一次 canPressTranslate 不是
+  // 重复的第三份条件——调的是同一个纯函数（pdfTranslationStore.ts），只是让这个真正做状态改动
+  // 的函数本身对「不该进」的调用也是安全的，不必信任每个调用点都已经判过。
+  //
+  // 二期起这个键有两种动作：已经有可用译文就进 / 出对照，没有（或边车有误 / 摘要对不上）就跑
+  // 翻译流水线。分派按 translateUiState 的返回值，不在这里另写一遍条件。
+  //
+  // **退出这条路径不在这里还原缩放**：还原只有下面那个 effect 一条路（显式退出与 setLoaded 的
+  // 自动退出共用），这里只负责把 dual 收掉。`dual === false && prevScale !== null` 因此是一个
+  // 「还没被消费的还原请求」瞬态，谁把 dual 收掉都行，还原都会发生。
+  const onToggleDual = useCallback(() => {
+    const st = usePdfTranslationStore.getState();
+    const b = st.buckets[tab.id];
+    if (!b || !sizes) return;
+    if (!canPressTranslate(b)) return; // 与工具栏同一份判据（pending/translating 才会被这里挡住）
+    const state = translateUiState(b);
+    if (state === 'active') { st.setDual(tab.id, false); return; }
+    if (state === 'ready') { enterDualFitWidth(); return; }
+    void startTranslation();           // none / invalid / mismatch：动作是「跑流水线」
+  }, [tab.id, sizes, enterDualFitWidth, startTranslation]);
 
   // 退出对照后把缩放还原回进入前——**唯一**的还原路径，显式退出（上面的 onToggleDual）与自动
   // 退出（pdfTranslationStore 的 setLoaded 在 doc 变 null / version 变 mismatch 时收 dual）
@@ -699,6 +830,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     prefetchToken.current += 1;
     setSizes(null);
     pageProxies.current = {};
+    pdfRef.current = null;      // 新文档的 onLoadSuccess 会重新填；在那之前别拿上一份文档的页
+
     linesCache.current = {};
     lifecycle.current = createPageLifecycle(
       (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
@@ -855,6 +988,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
             error={null}
             onLoadSuccess={(pdf) => {
               setNumPages(pdf.numPages);
+              // 翻译要按页抽文本，而 pageProxies 未必每页都有（见 pdfRef 的注释）。
+              pdfRef.current = { getPage: (n) => pdf.getPage(n) as unknown as Promise<PageProxyLike> };
               // 预取全部页的 scale 1 尺寸：解析页字典，不栅格化。虚拟化要靠它给窗口外的行
               // 精确高度，顺带把 page proxy 填满——ensureLines 原先等 <Page onLoadSuccess>，
               // 虚拟化后窗口外的页那个回调永远不来。
@@ -934,7 +1069,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
                           {mounted && (
                             <MountedPageCells
                               n={n} lifecycle={lifecycle.current} size={size} layerScale={layer.scale}
-                              dual={dual} blocks={blocksByPage.get(n) ?? NO_BLOCKS} docKey={tab.id}
+                              dual={dual} translating={job !== null}
+                              blocks={blocksByPage.get(n) ?? NO_BLOCKS} docKey={tab.id}
                               onPageLoad={(p) => { pageProxies.current[n] = p; }}
                               onSettled={() => onPageSettled(layer.id, n)}
                               annotations={idx === 0 ? (
@@ -960,6 +1096,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)}
         onToggleDual={onToggleDual}
       />
+      {/* 进度浮层盖住右半边（右格此刻是空白的），工具栏 zIndex 5 仍压在它上面照常可用。 */}
+      {job && <TranslationProgress job={job} onCancel={cancelTranslation} />}
       {anchor && <PdfSelectionBar tabId={tab.id} anchor={anchor} />}
     </div>
   );

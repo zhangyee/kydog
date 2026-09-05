@@ -1,0 +1,6 @@
+{
+  "1": [{ "text": "1 | text\n第一页的译文\n%%\n", "stopReason": "stop" }],
+  "2": [{ "text": "1 | text\n第二页的译文\n%%\n", "stopReason": "stop" }],
+  "3": [{ "text": "1 | text\n第三页的译文\n%%\n", "stopReason": "stop" }],
+  "4": [{ "text": "1 | text\n第四页的译文\n%%\n", "stopReason": "stop" }]
+}
