@@ -3,12 +3,12 @@ import { KydogError } from '../../shared/errors';
 import type { PageLine, Term } from '../../shared/zhSidecar';
 import type { ProviderId } from '../../shared/types';
 import { getProviderRegistry } from '../llm/providerRegistry';
-import { buildSystemPrompt, buildUserText } from './translatePrompt';
+import { buildSystemPrompt, buildUserText, type TargetLang } from './translatePrompt';
 
 export type TranslatePageArgs = {
   page: number;
   providerId: ProviderId; modelId: string; runtimeRevision: number;
-  langOut: string; docTitle?: string; glossary?: Term[]; lines: PageLine[];
+  langOut: TargetLang; docTitle?: string; glossary?: Term[]; lines: PageLine[];
 };
 
 /**

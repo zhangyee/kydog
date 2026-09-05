@@ -47,7 +47,7 @@ describe('fixture 分支', () => {
     writeFileSync(f, JSON.stringify({ 3: [{ text: 'A', stopReason: 'length' }, { text: 'B', stopReason: 'stop' }] }));
     process.env.KYDOG_TRANSLATE_FIXTURE = f;
     const { translatePage } = await import('./pdfTranslatePage');
-    const base = { page: 3, providerId: 'anthropic' as const, modelId: 'm', runtimeRevision: 0, langOut: 'zh', lines: [] };
+    const base = { page: 3, providerId: 'anthropic' as const, modelId: 'm', runtimeRevision: 0, langOut: 'zh' as const, lines: [] };
     expect(await translatePage(base)).toEqual({ text: 'A', truncated: true });
     expect(await translatePage(base)).toEqual({ text: 'B', truncated: false });
     await expect(translatePage(base)).rejects.toThrow();   // 耗尽即报错，不静默降级

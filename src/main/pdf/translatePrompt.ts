@@ -24,8 +24,20 @@ export function buildUserText(lines: PageLine[]): string {
     .join('\n');
 }
 
+/**
+ * 提示词里的目标语言。渲染层传下来的是 `settings.ui.locale`，也就是 `'zh'` / `'en'` 这样的
+ * **语言代码**——直接插进句子，模型收到的是 "a professional zh native translator"，一个它没
+ * 理由认得的代号。这张表把代号换成语言名，只影响提示词；边车里的 `lang.out` 仍原样写
+ * `'zh'`（那是边车契约字段，与提示词说什么是两回事）。
+ *
+ * 类型是联合而不是 `string`：将来多一种界面语言，`Record` 不全 tsc 就在这里红，逼人补一条
+ * 映射，而不是静默地把新代号原样喂给模型。
+ */
+export type TargetLang = 'zh' | 'en';
+const LANG_NAME: Record<TargetLang, string> = { zh: 'Chinese', en: 'English' };
+
 export function buildSystemPrompt(o: {
-  langOut: string; docTitle?: string; glossary?: Term[]; lines: PageLine[];
+  langOut: TargetLang; docTitle?: string; glossary?: Term[]; lines: PageLine[];
 }): string {
   const hits = o.glossary?.length ? matchGlossary(o.glossary, o.lines) : [];
   const glossary = hits.length === 0 ? '' : [
@@ -39,7 +51,7 @@ export function buildSystemPrompt(o: {
   ].join('\n');
   const context = o.docTitle ? `\n## Context\nThe document is titled "${o.docTitle}".` : '';
 
-  return `You are a professional ${o.langOut} native translator working on one page of a PDF.
+  return `You are a professional ${LANG_NAME[o.langOut]} native translator working on one page of a PDF.
 
 You are given the text lines of the page. Each line is
 "<n>\\t<x>,<y>,<w>,<h>,<size>\\t<text>": n is an opaque line id, x/y are the

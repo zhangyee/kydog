@@ -6,8 +6,16 @@ export class GroupError extends Error {}
 export type ParsedGroup = { lines: number[]; kind: BlockKind; target?: string };
 
 const KINDS = new Set<string>(BLOCK_KINDS);
-/** 这三类必须有非空译文；其余三类（formula / table / skip）必须没有。 */
-const TRANSLATABLE = new Set<BlockKind>(['text', 'title', 'caption']);
+/**
+ * 这三类必须有非空译文；**其余的（今天是 formula / table / skip）必须没有**——补集是隐式的，
+ * 下面按 `else` 分派，没有第二张表。
+ *
+ * 所以 `BLOCK_KINDS` 加第七个值时，这里不会有任何编译期或运行期信号：新 kind 静默落进
+ * 「不可译」那一支。守这条的是 `parseGroups.test.ts` 里那条手写补集的集合相等断言，以及
+ * `translatePrompt.test.ts` 里「提示词的翻译规则 1 两串 kind 与这张表一致」那条——导出这个
+ * 常量就是为了让后者能对着同一份判据断言，而不是各写一遍。
+ */
+export const TRANSLATABLE = new Set<BlockKind>(['text', 'title', 'caption']);
 
 function parseIds(spec: string): number[] {
   const out: number[] = [];

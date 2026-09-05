@@ -96,7 +96,10 @@ export type RpcCall =
       result: { providerId: ProviderId; modelId: string; runtimeRevision: number } }
   | { method: 'pdf.translation.page';
       args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
-              langOut: string; docTitle?: string; glossary?: Term[]; lines: PageLine[] };
+              // 语言**代码**（= settings.ui.locale），不是语言名：提示词自己把它换成
+              // "Chinese" / "English"（translatePrompt.ts 的 LANG_NAME）。收成联合是
+              // 为了让那张映射表少一条时 tsc 就红，别静默把代号喂给模型。
+              langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; lines: PageLine[] };
       result: { text: string; truncated: boolean } }
   | { method: 'pdf.translation.save'; args: { pdfPath: string; doc: TranslatedDoc }; result: void }
   // ── 自动升级 ──
