@@ -97,7 +97,17 @@ async function createWindow() {
       await mainWindow.loadFile(indexPath);
     }
   }
-  if (!app.isPackaged) mainWindow.webContents.openDevTools({ mode: 'detach' });
+  // e2e 跑的也是未打包的 .vite/build/main.js，会走到这里；但 e2e 里不能开这个分离窗口。
+  // macOS 上它在 load 后约 180ms 变成 key window，主窗口随即 blur：渲染层
+  // document.hasFocus() 变 false，而 document.activeElement 不变。Playwright 的
+  // toBeFocused 判的是「activeElement 相等 **且** hasFocus 为 true」，且它的轮询不带任何
+  // 输入刺激；一旦这次 blur 落在最后一次点击之后、断言首轮之前，5s 内就再没有东西把渲染层
+  // 焦点拉回来（任何一次 CDP 输入——哪怕 mousemove——都能拉回，所以后续 fill/press 不受影响，
+  // 只有 toBeFocused 这种纯观察断言会红）。34-thread-rename / 18-projects-sidebar 的
+  // 「输入框应该获得焦点」间歇失败就是它；以前 index.html 里那个 Google Fonts 的 link 把 load
+  // 拖后 2–4s，React 挂载反而排在 load 之后，blur 于是落在用例第一次交互之前、被首次 hover
+  // 顺手拉回，掩盖了整件事（2026-09-05 用主进程/渲染层焦点时间线钉死）。守这条的是 00-shell。
+  if (!app.isPackaged && process.env.KYDOG_E2E !== '1') mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
 app.on('ready', async () => {

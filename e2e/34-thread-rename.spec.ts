@@ -40,6 +40,9 @@ test('34-thread-rename: 菜单重命名写回 index', async () => {
 // document.activeElement。曾经把这当成「编辑结束」去提交，导致用户切到别的
 // 应用再切回来编辑框就没了；在负载较高的机器上，启动期的一次瞬时失焦还会让
 // 上面那个用例间歇性失败（输入框在 Enter 落下前被卸载）。
+// 那次「启动期瞬时失焦」在 e2e 里的来源已经查明：dev 模式在 load 后开的分离 DevTools
+// 窗口抢走了 key window。它另有一种伤法——落在最后一次点击之后时，toBeFocused 因
+// document.hasFocus() 为 false 而一直红——现已在 main.ts 里对 KYDOG_E2E 关掉，00-shell 守着。
 test('34-thread-rename: 切走再切回来，重命名框和已输入内容都还在', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-blur-'));
   await seedSamplePackage(projectPath);
