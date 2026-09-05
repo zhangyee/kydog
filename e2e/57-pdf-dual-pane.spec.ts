@@ -656,7 +656,7 @@ test('57-pdf-dual-pane: 字号测量必须等字体真的到位——先量后�
   }
 });
 
-test('57-pdf-dual-pane: 翻译键四态——无边车 / 边车有误 / 摘要不匹配都禁用，正常可点', async () => {
+test('57-pdf-dual-pane: 翻译键六态——none / invalid / mismatch 从禁用变可点即现翻，tooltip 随态而变，ready 仍进对照', async () => {
   const launched = await launchKydog({ seed: seedFourStates });
   try {
     const { page, kydogHome } = launched;
@@ -664,19 +664,33 @@ test('57-pdf-dual-pane: 翻译键四态——无边车 / 边车有误 / 摘要�
 
     // 每次 openPdf 都切到一个新 tab（前一个 tab 的 pane 随之被 display:none 藏起来），所以
     // Notice 文案的可见性断言必须紧跟在对应的 openPdf 之后，不能攒到最后一起查。
+    //
+    // tooltip 文案走 aria-label 断言，不走 hover：IconButton 把 `aria-label={ariaLabel ?? tooltip}`
+    // 无条件写在按钮元素本身上（不受 disabled 影响，见 IconButton.tsx），比真的悬停触发 Tooltip
+    // 组件更直接、也更不脆——这里要验证的是"文案对不对"，不是"Tooltip 组件本身能不能弹出来"。
+    // 只断言按钮可点（toBeEnabled）而不看 tooltip 文案，会让这条用例退化成"三个态都可点"、
+    // 分不出 none（翻译）与 invalid/mismatch（重新翻译）这两种不同语义。
     const none = await openPdf(page, path.join(projectPath, NONE_REL));
-    await expect(none.getByTestId('pdf-translate')).toBeDisabled();
+    const noneBtn = none.getByTestId('pdf-translate');
+    await expect(noneBtn).toBeEnabled();
+    await expect(noneBtn).toHaveAttribute('aria-label', '翻译 · L');
 
     const invalid = await openPdf(page, path.join(projectPath, INVALID_REL));
-    await expect(invalid.getByTestId('pdf-translate')).toBeDisabled();
+    const invalidBtn = invalid.getByTestId('pdf-translate');
+    await expect(invalidBtn).toBeEnabled();
+    await expect(invalidBtn).toHaveAttribute('aria-label', '重新翻译 · L');
     await expect(invalid.getByText(/译文文件有误/)).toBeVisible();
 
     const mismatch = await openPdf(page, path.join(projectPath, MISMATCH_REL));
-    await expect(mismatch.getByTestId('pdf-translate')).toBeDisabled();
+    const mismatchBtn = mismatch.getByTestId('pdf-translate');
+    await expect(mismatchBtn).toBeEnabled();
+    await expect(mismatchBtn).toHaveAttribute('aria-label', '重新翻译 · L');
     await expect(mismatch.getByText(/另一个版本的 PDF/)).toBeVisible();
 
     const ready = await openPdf(page, path.join(projectPath, READY_REL));
-    await expect(ready.getByTestId('pdf-translate')).toBeEnabled();
+    const readyBtn = ready.getByTestId('pdf-translate');
+    await expect(readyBtn).toBeEnabled();
+    await expect(readyBtn).toHaveAttribute('aria-label', '翻译对照 · L');
   } finally {
     await teardown(launched);
   }

@@ -620,9 +620,15 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     }
   }, [tab.id, sizes, requestScale]);
 
-  // 翻译失败的原因，交给 Notice 显示（Task 14 接读的那一端）。这里只有 setter：读它的组件还没
-  // 接上，先把值落在 state 上，免得错误信息只剩下一个静默的「退回单栏」。
-  const [, setTranslateError] = useState<string | null>(null);
+  // 翻译失败的原因，交给 Notice 显示（PdfAnnotationNotice 的 translateError prop）。
+  const [translateError, setTranslateError] = useState<string | null>(null);
+
+  // 这趟作业**开始前** dual 是不是已经为 true——只有从对照中发起重译（active 态点「重新翻译」
+  // 键）才会是 true，从 none/invalid/mismatch 发起翻译时恒为 false。错误与取消两个出口都要
+  // 读它（见下方 catch 与 cancelTranslation）：已经在对照中发起的重译一旦失败或被取消，不该把
+  // 用户踢出这个本来完好的对照视图——store 里那份旧 doc 还在。用 ref 而不是局部变量，是因为
+  // cancelTranslation 是与 startTranslation 分开的一个回调，读不到后者调用时的局部变量。
+  const wasDualRef = useRef(false);
 
   /**
    * 跑一趟翻译流水线（spec §7）：立刻进对照 → 右格空白 + 进度浮层 → 抽取 → 逐页翻译 → 写边车
@@ -642,6 +648,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // 术语表跨重译保留：它是用户 / agent 写进边车的约定，不是这一趟翻译的产物（spec §2.6）。
     const keepGlossary = st.buckets[tab.id]?.doc?.glossary;
     const locale = useSettingsStore.getState().settings?.ui.locale ?? 'zh';
+    wasDualRef.current = st.buckets[tab.id]?.dual ?? false;
     enterDualFitWidth();
     st.setJob(tab.id, { phase: 'extract', done: 0, total: numPages, failed: 0 });
     setTranslateError(null);
@@ -683,7 +690,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     } catch (err) {
       if (my !== jobSeq.current) return;
       usePdfTranslationStore.getState().setJob(tab.id, null);
-      usePdfTranslationStore.getState().setDual(tab.id, false);
+      // 已经在对照中发起的重译失败了：那份旧 doc 还在 store 里、右格能正常合成，不该把用户
+      // 一并踢出对照（wasDualRef，见上面的注释）。
+      if (!wasDualRef.current) usePdfTranslationStore.getState().setDual(tab.id, false);
       setTranslateError((err as Error).message);
       return;
     }
@@ -694,15 +703,22 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     void loadTranslation();
   }, [tab.id, tab.path, sizes, bytes, sha, numPages, enterDualFitWidth, loadTranslation]);
 
-  // 取消：自增代际（在途的续体从此写不进 store）、清 job、收 dual。收 dual 会让下面那个 effect
-  // 把缩放还原回进对照前——与显式退出、自动退出共用同一条还原路径。**什么都不写盘**：save 要么
-  // 还没发出，要么已经进了 finalize 而那时取消按钮是禁用的（spec §9.3）。
+  // 取消：自增代际（在途的续体从此写不进 store）、清 job；只有**这趟作业开始前不在对照中**才收
+  // dual（wasDualRef，见 startTranslation 头上的注释）——已经在对照中发起的重译被取消，不该把
+  // 用户一并踢出这个本来完好的对照视图。收 dual 会让下面那个 effect 把缩放还原回进对照前——
+  // 与显式退出、自动退出共用同一条还原路径。**什么都不写盘**：save 要么还没发出，要么已经进了
+  // finalize 而那时取消按钮是禁用的（spec §9.3）。
   const cancelTranslation = useCallback(() => {
     jobSeq.current += 1;
     const st = usePdfTranslationStore.getState();
     st.setJob(tab.id, null);
-    st.setDual(tab.id, false);
+    if (!wasDualRef.current) st.setDual(tab.id, false);
   }, [tab.id]);
+
+  // 「重新翻译」键（PdfToolbar，只在 active 态渲染）：直接跑一次新的流水线，与 onToggleDual 的
+  // none/invalid/mismatch 分支调的是同一个 startTranslation——区别只在于调用这一刻 dual 已经
+  // 是 true（wasDualRef 会记住这一点）。
+  const onRetranslate = useCallback(() => { void startTranslation(); }, [startTranslation]);
 
   // 翻译键 / `L` 的动作分派（spec §1、§10）。两个调用点：工具栏翻译键的 onClick（点击时已经被
   // disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过 IconButton 的
@@ -1091,10 +1107,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           </Document>
         )}
       </div>
-      <PdfAnnotationNotice tabId={tab.id} pdfPath={tab.path} />
+      <PdfAnnotationNotice tabId={tab.id} pdfPath={tab.path} translateError={translateError} />
       <PdfToolbar
         tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)}
-        onToggleDual={onToggleDual}
+        onToggleDual={onToggleDual} onRetranslate={onRetranslate}
       />
       {/* 进度浮层盖住右半边（右格此刻是空白的），工具栏 zIndex 5 仍压在它上面照常可用。 */}
       {job && <TranslationProgress job={job} onCancel={cancelTranslation} />}

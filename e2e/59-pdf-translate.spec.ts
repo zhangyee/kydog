@@ -15,6 +15,10 @@ import { RPC_CHANNEL } from '../src/shared/protocol';
  * 校验在渲染层，e2e 与生产因此跑的是同一份纯函数。
  *
  * 本文件目前覆盖 Task 13 接线的五条（计划里的第 2 / 4 / 9 / 10 / 11 条）；其余八条随 Task 15 补。
+ * Task 14 把第 9 条（对照中「重新翻译」键）从 mismatch 入口代替升级成走真正的 `pdf-retranslate`
+ * 按钮（原来那条 mismatch 入口的用例留着不删——机制仍然一致，多测一条入口无害），并补了一条不
+ * 在原始 13 条清单内的回归用例：从 active 态（`dual === true`）发起的重译一旦被取消，不该把
+ * 用户踢出这个本来完好的对照视图（PdfFileTab 的 `wasDualRef` 修复，Task 14 审查发现的真 bug）。
  */
 
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
@@ -286,11 +290,12 @@ test('59-pdf-translate: 取消退回单栏，磁盘上什么都没写', async ()
 });
 
 test('59-pdf-translate: 重新翻译——右格回到空白，旧译文块一并消失，跑完又都回来', async () => {
-  // 计划里的第 9 条是「对照中点『重新翻译』键」。那个键本身属于 Task 14（PdfToolbar），本 Task
-  // 只有主键这一个入口——而 spec §1 明说「mismatch / invalid 那两档进不了对照，它们的主键语义
-  // 就是重新翻译，两个入口同一个动作」。所以这里走 mismatch 这个入口，被测的东西一字不差：
-  // store 里留着上一版的 doc（连同它的块），此时发起一趟新作业，右格必须回到空白、旧块必须
-  // 一并消失。Task 15 再补按钮那个入口。
+  // 计划里的第 9 条是「对照中点『重新翻译』键」。那个键本身属于 Task 14（PdfToolbar），Task 13
+  // 落地时按钮还不存在，只有主键这一个入口——而 spec §1 明说「mismatch / invalid 那两档进不了
+  // 对照，它们的主键语义就是重新翻译，两个入口同一个动作」。所以这里走 mismatch 这个入口，被测
+  // 的东西一字不差：store 里留着上一版的 doc（连同它的块），此时发起一趟新作业，右格必须回到
+  // 空白、旧块必须一并消失。这条留着不删：机制与走真按钮的那条一致，多测一条入口无害；真正走
+  // `pdf-retranslate` 按钮、从 `dual === true` 发起的那条在下面（Task 14 补）。
   const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
   try {
     const { page, kydogHome } = launched;
@@ -344,6 +349,85 @@ test('59-pdf-translate: 重新翻译——右格回到空白，旧译文块一�
     ).toHaveCount(0);
     const after = await waitSample(page, paneSel, INK, '重译之后');
     expect(after.paper, `跑完之后右格不该还是一片主题纸色 ${JSON.stringify(after)}`).toBeLessThan(after.total);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回到空白，跑完出现新块', async () => {
+  // 上面那条「重新翻译」用例走的是 mismatch 入口代替（Task 13 落地时按钮还不存在）：那时 dual
+  // 已经被 setLoaded 自动收掉，进入 startTranslation 时 wasDual 恒为 false，测不到 `dual ===
+  // true` 时发起作业这条路径——而那正是 wasDual 这条修复（Task 14）要保的地方。这里改走真正的
+  // pdf-retranslate 按钮，从 active 态（dual 已经是 true）发起。
+  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, READY_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    const blocks = page.locator(`${paneSel} [data-translation-block]`);
+
+    await enterDual(page, pane);
+    await expect(blocks.first(), '进对照后旧译文块可见').toBeVisible();
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
+    const retranslateBtn = pane.getByTestId('pdf-retranslate');
+    await expect(retranslateBtn, '「重新翻译」键只在 active 态渲染').toBeVisible();
+
+    await installTranslateGate(launched);
+    await retranslateBtn.click();
+    await waitJobParked(launched);
+
+    const during = await waitSample(page, paneSel, INK, '按「重新翻译」键之后进行中');
+    expect(during.paper, `重译期间右格应当逐像素都是主题纸色 ${JSON.stringify(during)}`).toBe(during.total);
+    // 译文层若不整层关掉，这里会是「空白底图 + 上一版译文浮在上面」——同上面 mismatch 那条用例
+    // 的判据，见其注释。
+    await expect(blocks, '重译期间旧译文块必须一并消失').toHaveCount(0);
+    // 仍在对照中，没有被踢出单栏——这条断言只有在从 dual === true 发起、且这一趟没出错时才成立，
+    // 单独放这里是因为它此刻还测不出 wasDual 的修复（成功路径压根不碰 setDual），真正测到修复的
+    // 是下面「被取消」那条用例。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+
+    await releaseGate(launched);
+    const fresh = page.locator(`${paneSel} [data-translation-block="p1-b01"]`);
+    await expect(fresh, '跑完之后应当渲染的是新这一版的译文块').toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator(`${paneSel} [data-translation-block="seed1"]`),
+      '上一版的块不该还留在那儿',
+    ).toHaveCount(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把用户踢出对照（wasDual 修复）', async () => {
+  // 这才是真正钉住 wasDual 修复的用例：从 active 态（dual === true）发起重译，取消。修复前
+  // cancelTranslation 无条件 setDual(false)，会把用户踢出这个本来完好的对照视图——store 里
+  // 那份旧 doc 还在、右格本可以照常合成，退回单栏是纯粹的体验退化，不是任何数据一致性要求。
+  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, READY_REL);
+    const pane = await openPdf(page, pdfPath);
+
+    await enterDual(page, pane);
+    await installTranslateGate(launched);
+    await pane.getByTestId('pdf-retranslate').click();
+    await waitJobParked(launched);
+
+    await pane.getByTestId('pdf-translate-cancel').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
+    await expect(pane.locator('[data-pdf-right="1"]').first(), '取消对照中的重译不该把用户踢出对照')
+      .toBeVisible();
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
+    await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在')
+      .toBeVisible();
+
+    // 放行被扣住的那条请求：它落地时代际已经失配，不该再把 job / dual 写回去。
+    await releaseGate(launched);
+    await page.waitForTimeout(1000);
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
     await teardown(launched);
   }
