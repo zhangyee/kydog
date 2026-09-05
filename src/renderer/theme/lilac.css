@@ -22,7 +22,7 @@
   --card-shadow-strong: rgba(87,66,102,0.12);
   --hover-bg: #cdc4e0;
   --accent-hover: #7a68c4;
-  --font-serif: "Source Serif 4", "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-serif: "Source Serif 4 Variable", "Noto Serif SC", "Songti SC", Georgia, serif;
   --font-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", sans-serif;
   --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
 }

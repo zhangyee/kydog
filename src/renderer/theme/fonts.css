@@ -2,7 +2,22 @@
    Vite 会自动 hash + bundle 这些 woff2，跨平台一致。
    两个家族都遵循 SIL Open Font License 1.1，署名与 OFL 全文见「关于」页。 */
 
-/* Source Serif 4 — Adobe，OFL 1.1（拉丁字符） */
+/* Source Serif 4 — Adobe，OFL 1.1（拉丁字符）
+
+   族名带 **Variable 后缀**：fontsource 的 variable 包一律把 @font-face 注册成「<家族> Variable」
+   （上游 Google Fonts 的家族名不带后缀，只出现在 metadata.json 与署名里）。主题的 --font-serif
+   必须写这个注册名。
+
+   写错这个名字**不会**退化成「没有衬线」——index.html 里还有一个 Google Fonts 的 <link>，它提供
+   同名不带后缀的 "Source Serif 4"。所以首项写错时字面看着完全正常，实际是在联网拉字体，打包进
+   产物的这份一次都不会被加载（实测：改名前 'Source Serif 4|400' 是 loaded 而
+   'Source Serif 4 Variable' 是 unloaded，改名后两者互换）。正因为两份是同一套字面、度量几乎一致
+   （32px 下同为 419.398px），任何「量宽度」的对照测试在这个 bug 上都是恒绿的——守这条的是
+   e2e/58-font-stack.spec.ts，判据是 FontFace 的 status，以及 fontStacks.test.ts（打包进来的族
+   必须至少被一个字体 token 引用）。
+
+   import 的是 index.css（= wght 轴，拉丁子集 50 KB）。包里另有 opsz.css / standard.css 带 optical
+   size 轴，同一子集 122 KB；本项目衬线主要用于正文，那条轴的收益换不回两倍多的体积。 */
 @import "@fontsource-variable/source-serif-4/index.css";
 
 /* Noto Serif SC — Google，OFL 1.1（简体中文 + 拉丁字符兜底） */
