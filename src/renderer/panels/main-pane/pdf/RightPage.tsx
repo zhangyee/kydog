@@ -2,13 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { Block } from '../../../../shared/zhSidecar';
 import { pageBackground, type RGB } from './pageBackground';
 import { toCss } from './inkForBackground';
-
-/**
- * 覆盖矩形四周外扩的 pt 数。段落 bbox 常比实际墨迹紧一两点，不外扩会在块边缘留一圈没盖住的原文。
- *
- * 这是一个常数，不参与任何判定，只是让覆盖区略大于 bbox —— 不是阈值拟合（spec §3.2）。
- */
-export const BLOCK_PAD = 1.5;
+import { BLOCK_PAD } from './blockRect';
 
 type Props = {
   /** 这一页 scale 1 的视口尺寸（pt）。右格的 CSS 尺寸按它算，与左格逐字段同源。 */
