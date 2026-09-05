@@ -88,3 +88,32 @@ function assemble(objs: string[]): Buffer {
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, 'latin1');
 }
+
+/**
+ * 双栏 PDF，同一份版面用两种内容流顺序生成——这是 `textLines` 那条已知边界的最小复现件
+ * （spec `2026-09-05-pdf-translation-pipeline-design.md` §0.2 / §4 末尾）。
+ *
+ * `order: 'columnwise'`：整条左栏走完再走右栏。实测的真实生成器（LaTeX、以及 Nature / PLOS /
+ * Frontiers / Elsevier / IEEE / IOP 的排版链）都是这么发文本的。
+ * `order: 'interleaved'`：同一基线先左后右，再下一基线。合法的 PDF，但 pdf.js 只在换基线处给
+ * `hasEOL`，于是 `textLines` 会把左右两栏并进同一条「行」。
+ *
+ * 两栏的 x 分别是 72 与 320，四条基线 700 / 686 / 672 / 658，A4 尺寸（612 × 792）。
+ */
+export const TWO_COL_LEFT = ['Left line one here', 'Left line two here', 'Left line three ok', 'Left line four ok'];
+export const TWO_COL_RIGHT = ['Right line one xx', 'Right line two xx', 'Right line three x', 'Right line four xx'];
+
+export function buildTwoColumnPdf(order: 'columnwise' | 'interleaved'): Buffer {
+  const ys = [700, 686, 672, 658];
+  const draw = (x: number, y: number, s: string) => `BT /F1 10 Tf ${x} ${y} Td (${s}) Tj ET\n`;
+  const content = order === 'columnwise'
+    ? ys.map((y, i) => draw(72, y, TWO_COL_LEFT[i])).join('') + ys.map((y, i) => draw(320, y, TWO_COL_RIGHT[i])).join('')
+    : ys.map((y, i) => draw(72, y, TWO_COL_LEFT[i]) + draw(320, y, TWO_COL_RIGHT[i])).join('');
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`,
+  ]);
+}
