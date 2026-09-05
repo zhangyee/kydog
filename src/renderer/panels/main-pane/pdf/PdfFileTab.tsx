@@ -6,7 +6,7 @@ import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { flushDrafts } from './noteDrafts';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
-import { canToggleDual, checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
+import { canPressTranslate, checkVersion, usePdfTranslationStore } from './pdfTranslationStore';
 import { sha256Hex } from './sha256';
 import { PdfAnnotationLayer } from './PdfAnnotationLayer';
 import { PdfAnnotationNotice } from './PdfAnnotationNotice';
@@ -564,9 +564,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // 进 / 出双栏对照，按需 fit-width（spec §12）。两个调用点：工具栏翻译键的 onClick（点击时
   // 已经被 disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过
-  // IconButton 的 disabled，靠它自己先调 canToggleDual 判过一轮）。这里再判一次 canToggleDual
-  // 不是重复的第三份条件——调的是同一个纯函数（pdfTranslationStore.ts），只是让这个真正做
-  // 状态改动的函数本身对「不该进」的调用也是安全的，不必信任每个调用点都已经判过。
+  // IconButton 的 disabled，靠它自己先调 canPressTranslate 判过一轮）。这里再判一次
+  // canPressTranslate 不是重复的第三份条件——调的是同一个纯函数（pdfTranslationStore.ts），只是
+  // 让这个真正做状态改动的函数本身对「不该进」的调用也是安全的，不必信任每个调用点都已经判过。
   //
   // 一行的宽度是 2 × 页宽 + 间距（dual 时行宽的算法见下面渲染处 `size.w * 2 + PAGE_GAP`，
   // 这里用 sizes[0] 是因为 fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，
@@ -583,7 +583,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const el = scrollRef.current;
     if (!b || !el || !sizes) return;
     if (b.dual) { st.setDual(tab.id, false); return; }
-    if (!canToggleDual(b)) return; // 未找到译文 / 边车有误 / 摘要对不上：与工具栏四态同一份判据
+    if (!canPressTranslate(b)) return; // 与工具栏同一份判据（pending/translating 才会被这里挡住）
     const rowUnit = sizes[0].w * 2 + PAGE_GAP;
     const fit = el.clientWidth / rowUnit;
     const prev = visualScaleRef.current;

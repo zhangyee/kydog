@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { canToggleDual, checkVersion, emptyTBucket, translateUiState, usePdfTranslationStore, type TBucket } from './pdfTranslationStore';
+import { canPressTranslate, checkVersion, emptyTBucket, translateUiState, usePdfTranslationStore, type TBucket } from './pdfTranslationStore';
 import type { TranslatedDoc } from '../../../../shared/zhSidecar';
 
 const doc = (source?: { sha256: string; bytes: number }): TranslatedDoc => ({
@@ -78,31 +78,72 @@ describe('translateUiState 的 pending 态', () => {
   it('译文可用但页尺寸还没到 → pending，且不放行', () => {
     const bucket = b({ doc: ZH, version: 'ok', layoutReady: false });
     expect(translateUiState(bucket)).toBe('pending');
-    expect(canToggleDual(bucket)).toBe(false);
+    expect(canPressTranslate(bucket)).toBe(false);
   });
 
   it('页尺寸到位 → ready，放行', () => {
     const bucket = b({ doc: ZH, version: 'ok', layoutReady: true });
     expect(translateUiState(bucket)).toBe('ready');
-    expect(canToggleDual(bucket)).toBe(true);
+    expect(canPressTranslate(bucket)).toBe(true);
   });
 
-  it('译文本身有问题时先说那个，不说 pending —— 边车都没有还提示「正在准备页面」是误导', () => {
-    expect(translateUiState(b({ layoutReady: false }))).toBe('none');
-    expect(translateUiState(b({ loadError: '坏了', layoutReady: false }))).toBe('invalid');
-    expect(translateUiState(b({ doc: ZH, version: 'mismatch', layoutReady: false }))).toBe('mismatch');
-  });
+  // 二期反转：pending 现在排在 invalid/none/mismatch 之前（那三条都通向「跑流水线」，需要
+  // 页尺寸算 fit-width）。完整的顺序断言在下面 `translateUiState 的新顺序` 里，这里不重复。
 
   it('setLayoutReady 写的就是这一维，且能收回去（换文件时 sizes 归 null）', () => {
     const T = '/p/paper.pdf';
     usePdfTranslationStore.setState({ buckets: {} });
     const st = () => usePdfTranslationStore.getState();
     st().setLoaded(T, ZH, 'ok', 0);
-    expect(canToggleDual(st().buckets[T])).toBe(false);
+    expect(canPressTranslate(st().buckets[T])).toBe(false);
     st().setLayoutReady(T, true);
-    expect(canToggleDual(st().buckets[T])).toBe(true);
+    expect(canPressTranslate(st().buckets[T])).toBe(true);
     st().setLayoutReady(T, false);
-    expect(canToggleDual(st().buckets[T])).toBe(false);
+    expect(canPressTranslate(st().buckets[T])).toBe(false);
+  });
+});
+
+const B = (o: Partial<TBucket>): TBucket => ({ ...emptyTBucket(), layoutReady: true, ...o });
+const zhDoc: TranslatedDoc = { version: 1, pdf: 'p', lang: { in: 'auto', out: 'zh' }, blocks: [] };
+
+describe('translateUiState 的新顺序', () => {
+  it('translating 压过一切，包括 active', () => {
+    expect(translateUiState(B({ doc: zhDoc, dual: true, job: { phase: 'translate', done: 1, total: 9, failed: 0 } })))
+      .toBe('translating');
+  });
+  it('pending 排在 invalid / none / mismatch 之前——它们现在都通向一个要页尺寸的动作', () => {
+    expect(translateUiState(B({ layoutReady: false }))).toBe('pending');
+    expect(translateUiState(B({ layoutReady: false, loadError: 'x' }))).toBe('pending');
+    expect(translateUiState(B({ layoutReady: false, doc: zhDoc, version: 'mismatch' }))).toBe('pending');
+  });
+  it('其余五档', () => {
+    expect(translateUiState(B({ loadError: 'x' }))).toBe('invalid');
+    expect(translateUiState(B({}))).toBe('none');
+    expect(translateUiState(B({ doc: zhDoc, version: 'mismatch' }))).toBe('mismatch');
+    expect(translateUiState(B({ doc: zhDoc, dual: true }))).toBe('active');
+    expect(translateUiState(B({ doc: zhDoc }))).toBe('ready');
+  });
+});
+
+describe('canPressTranslate', () => {
+  it.each([['none', B({})], ['invalid', B({ loadError: 'x' })], ['mismatch', B({ doc: zhDoc, version: 'mismatch' })],
+           ['ready', B({ doc: zhDoc })], ['active', B({ doc: zhDoc, dual: true })]])('%s 放行', (_n, b) => {
+    expect(canPressTranslate(b)).toBe(true);
+  });
+  it.each([['pending', B({ layoutReady: false })],
+           ['translating', B({ doc: zhDoc, dual: true, job: { phase: 'extract', done: 0, total: 3, failed: 0 } })]])('%s 不放行', (_n, b) => {
+    expect(canPressTranslate(b)).toBe(false);
+  });
+});
+
+describe('setJob', () => {
+  it('写入与清空', () => {
+    const st = usePdfTranslationStore.getState();
+    st.setJob('t', { phase: 'extract', done: 1, total: 3, failed: 0 });
+    expect(usePdfTranslationStore.getState().buckets.t.job?.done).toBe(1);
+    usePdfTranslationStore.getState().setJob('t', null);
+    expect(usePdfTranslationStore.getState().buckets.t.job).toBeNull();
+    usePdfTranslationStore.getState().drop('t');
   });
 });
 

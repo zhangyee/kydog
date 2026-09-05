@@ -1,5 +1,5 @@
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
-import { canToggleDual, usePdfTranslationStore } from './pdfTranslationStore';
+import { canPressTranslate, usePdfTranslationStore } from './pdfTranslationStore';
 
 type KeyLike = {
   key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean;
@@ -18,11 +18,11 @@ export function handleAnnotationKey(e: KeyLike, tabId: string, onToggleDual?: ()
   // L：进 / 出双栏对照（PDF 双栏 spec §12）。它是**视图模式不是标注工具** —— 不走 setTool，
   // 也不受标注边车加载状态的限制（标注边车坏了照样该能读译文），所以这一条排在下面那道
   // 「标注没加载就什么都不处理」的闸**前面**。
-  // 能不能放行由 canToggleDual 判——与 PdfToolbar 的四态渲染共用同一份纯函数（见
+  // 能不能放行由 canPressTranslate 判——与 PdfToolbar 的状态渲染共用同一份纯函数（见
   // pdfTranslationStore.ts 顶部注释），不在这里另写一遍「没有译文 / 边车有误 / 摘要对不上」
   // 的条件，避免两处判据走岔。禁用态按「没处理」返回 false，不 preventDefault，也不调用回调。
   if (!inText && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'l' || e.key === 'L')) {
-    if (!canToggleDual(usePdfTranslationStore.getState().buckets[tabId])) return false;
+    if (!canPressTranslate(usePdfTranslationStore.getState().buckets[tabId])) return false;
     onToggleDual?.();
     return true;
   }

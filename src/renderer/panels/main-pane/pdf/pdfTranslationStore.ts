@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { TranslatedDoc } from '../../../../shared/zhSidecar';
+import type { JobProgress } from './translateDoc';
 
 /** ok = 摘要对得上；mismatch = 对不上，禁用；unknown = 边车没写摘要，可用但提示。 */
 export type VersionState = 'ok' | 'mismatch' | 'unknown';
@@ -29,10 +30,23 @@ export type TBucket = {
    * 那类 bug。
    */
   layoutReady: boolean;
+  /**
+   * 正在跑的翻译作业；null = 没有。进度是渲染层自己的 state，不跨进程推——编排就在渲染层
+   * （翻译 spec §2.1）。
+   *
+   * phase 的第三档 `'finalize'` 是**提交点**：进入它的那一刻取消入口关闭。jobSeq 只挡得住
+   * 「写渲染层的 store」，挡不住一次已经发出的 save——比过代际 → 发出 save → 用户在它返回前
+   * 点取消 → 后续写入被挡掉，但边车已经落盘。把提交点画在「发出 save 之前」才守得住
+   * 「取消不留痕」（spec §9.3）。
+   */
+  job: JobProgress | null;
 };
 
 export function emptyTBucket(): TBucket {
-  return { doc: null, loadError: null, version: 'unknown', dropped: 0, dual: false, prevScale: null, layoutReady: false };
+  return {
+    doc: null, loadError: null, version: 'unknown', dropped: 0, dual: false, prevScale: null,
+    layoutReady: false, job: null,
+  };
 }
 
 /**
@@ -47,35 +61,45 @@ export function checkVersion(doc: TranslatedDoc, sha: string, bytes: number): Ve
   return same ? 'ok' : 'mismatch';
 }
 
-/** 工具栏翻译键的五态：'none' 没有译文、'invalid' 边车结构有误、'mismatch' 摘要对不上、
- *  'pending' 译文可用但页尺寸还没预取完、'ready' 可点、'active' 已在对照中。 */
-export type TranslateUiState = 'none' | 'invalid' | 'mismatch' | 'pending' | 'ready' | 'active';
+/** 工具栏翻译键的七态：'translating' 正在跑翻译流水线、'pending' 页尺寸还没预取完、
+ *  'invalid' 边车结构有误、'none' 没有译文、'mismatch' 摘要对不上、'ready' 可点进对照、
+ *  'active' 已在对照中。二期起，没有译文 / 边车有误 / 摘要不匹配这三态从禁用变成可点——
+ *  动作是「跑翻译流水线」，不再是「进对照」。 */
+export type TranslateUiState = 'translating' | 'pending' | 'invalid' | 'none' | 'mismatch' | 'ready' | 'active';
 
 /**
- * 工具栏的状态与 `L` 快捷键能不能进对照，是同一份判据——两处各判一次是最难查的那类 bug
+ * 工具栏的状态与 `L` 快捷键能不能动作，是同一份判据——两处各判一次是最难查的那类 bug
  * （一处能进、另一处不能进）。收敛成这一个纯函数，两个消费方（PdfToolbar 的状态渲染、
  * annotationKeys.ts 的 L 分支）都调它，不各自重写一遍条件。
  *
- * 顺序很关键：`loadError` 时 `doc` 恒为 null（见下面 `setLoadError`），必须先判 `loadError`
- * 才能把「边车结构校验失败」（invalid）与「边车压根不存在」（none，`pdf.translation.load`
- * 返回空 doc）区分开——顺序反了的话，结构有误的边车会先被 `!doc` 挡住，永远走不到 invalid。
+ * `loadError` 时 `doc` 恒为 null（见下面 `setLoadError`），必须先判 `loadError` 才能把
+ * 「边车结构校验失败」（invalid）与「边车压根不存在」（none，`pdf.translation.load` 返回
+ * 空 doc）区分开——顺序反了的话，结构有误的边车会先被 `!doc` 挡住，永远走不到 invalid。
  *
- * `pending` 排在这三条「译文本身有问题」之后：边车压根没有的时候说「正在准备页面」是误导，
- * 那三条与页尺寸预取到哪儿了无关，先说出来。`active` 反过来排在 `pending` 之前——已经在对照
- * 中就说明 sizes 早就到位了，不存在既 active 又 pending 的状态。
+ * **`pending` 的排序理由在二期反过来了，别照一期的注释挪回去**：一期把 `pending`（页尺寸还没
+ * 预取完）排在 invalid / none / mismatch **之后**，理由是「边车压根没有的时候说『正在准备
+ * 页面』是误导，那三条与页尺寸预取到哪儿了无关」。二期那三条从禁用变成可点，动作是「跑翻译
+ * 流水线」，而跑流水线要先进对照、进对照要用第一页宽度算 fit-width——它们**变得与页尺寸有关
+ * 了**。所以 `pending` 必须排到它们前面。
+ *
+ * `translating` 排第一：翻译期间 `dual` 恒为 true（进度显示借用双栏布局），不先判它就会被
+ * 后面的 `b.dual` 分支误判成 active。
  */
 export function translateUiState(b: TBucket | undefined): TranslateUiState {
-  if (b?.loadError) return 'invalid';
-  if (!b?.doc) return 'none';
+  if (b?.job) return 'translating';
+  if (!b?.layoutReady) return 'pending';
+  if (b.loadError) return 'invalid';
+  if (!b.doc) return 'none';
   if (b.version === 'mismatch') return 'mismatch';
   if (b.dual) return 'active';
-  return b.layoutReady ? 'ready' : 'pending';
+  return 'ready';
 }
 
-/** 能不能按 L / 点工具栏键切换对照：五态里只有 ready、active 放行。 */
-export function canToggleDual(b: TBucket | undefined): boolean {
+/** 能不能按 L / 点工具栏键：七态里只有 pending 与 translating 不放行——其余五态（含二期新放
+ *  行的 none/invalid/mismatch）都有对应动作可做（跑流水线或进/出对照）。 */
+export function canPressTranslate(b: TBucket | undefined): boolean {
   const s = translateUiState(b);
-  return s === 'ready' || s === 'active';
+  return s !== 'pending' && s !== 'translating';
 }
 
 type State = {
@@ -87,6 +111,8 @@ type State = {
   setLayoutReady: (tab: string, ready: boolean) => void;
   /** 消费掉那份待还原的缩放（见 TBucket.prevScale）。调用方负责真的去还原。 */
   clearPrevScale: (tab: string) => void;
+  /** 写入 / 清空当前作业进度（见 TBucket.job）。写入方是 translateDoc 的 onProgress 回调。 */
+  setJob: (tab: string, job: JobProgress | null) => void;
   drop: (tab: string) => void;
 };
 
@@ -120,6 +146,9 @@ export const usePdfTranslationStore = create<State>((set) => ({
   clearPrevScale: (tab) => set((s) => (
     s.buckets[tab] ? { buckets: { ...s.buckets, [tab]: { ...s.buckets[tab], prevScale: null } } } : s
   )),
+  setJob: (tab, job) => set((s) => ({
+    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), job } },
+  })),
   drop: (tab) => set((s) => {
     const next = { ...s.buckets };
     delete next[tab];
