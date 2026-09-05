@@ -59,6 +59,12 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   let done = 0;
   const groupsOf = new Map<number, ParsedGroup[]>();
   const tick = () => o.onProgress({ phase: 'translate', done, total, failed });
+  // 中止信号：跟 isCancelled() 是两码事——isCancelled() 是「用户 / 调用方要求停」，aborted 是
+  // 「某个 worker 已经因 llm.not_configured 在抛错路径上了」。Promise.all 一旦有一个 worker
+  // 拒绝就会 reject，但其余 ≤3 个 worker 的 translatePage 仍在飞（配置是在它们发出之后才丢的，
+  // 这是现实时序）——它们成功落地时如果不认这面旗子，会在调用方已经拿到 rejection 之后再
+  // 触发一次 onProgress，也会在另一个 worker 已经在抛错路径上时继续派发新页。
+  let aborted = false;
 
   /** 截断就对半拆重试，递归到单行。整页原样重试只会再截断一次，所以处置必须是拆（spec §2.4）。 */
   const runBatch = async (page: number, lines: PageLine[], docTitle?: string): Promise<ParsedGroup[]> => {
@@ -91,14 +97,20 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     try {
       groupsOf.set(page, await attempt());
     } catch (e) {
-      if (isNotConfigured(e)) throw e;
+      // aborted 必须在 throw 之前落地：它是「别的 worker 该收手了」的唯一信号源，
+      // 迟一步落地就会被其余 worker 的检查点错过（见上面对 aborted 的注释）。
+      if (isNotConfigured(e)) { aborted = true; throw e; }
       try {
         groupsOf.set(page, await attempt());
       } catch (e2) {
-        if (isNotConfigured(e2)) throw e2;
+        if (isNotConfigured(e2)) { aborted = true; throw e2; }
         failed++;
       }
     }
+    // 这次 attempt 是在别的 worker 已经因 llm.not_configured 抛错之后才落地的——Promise.all
+    // 迟早会 reject，调用方大概率已经拿到那个 rejection，这次 done++/tick() 只是一次多余且
+    // 误导调用方的 onProgress，直接跳过（不影响 groupsOf：上面已经 set 过，只是不再计入进度）。
+    if (aborted) return;
     done++;
     tick();
   };
@@ -119,7 +131,13 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   let cancelled = false;
   const worker = async () => {
     for (;;) {
-      if (o.isCancelled()) { cancelled = true; return; }
+      // aborted 和 isCancelled() 都是「派发前的检查点」，处理方式一样：不再派发新页、正常
+      // return（不 throw）。这里把 cancelled 也一起置上是安全的——aborted 只会由抛错的那个
+      // worker 置位并且紧跟着 throw，那个 worker 自己的 promise 会 reject，Promise.all 因此
+      // 必然 reject，`await Promise.all(...)` 会直接抛出、跳过下面 `if (cancelled ...)
+      // return null` 那一行，cancelled 在这条路径上根本不会被读到，不会把「该 reject」错变成
+      // 「返回 null」。
+      if (aborted || o.isCancelled()) { cancelled = true; return; }
       const i = next++;
       if (i >= rest.length) return;
       await runPage(rest[i].page, rest[i].lines, docTitle);

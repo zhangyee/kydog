@@ -135,7 +135,11 @@ describe('translateDoc', () => {
         return { text: `1 | text\nT${page}\n%%\n`, truncated: false };
       },
     }));
-    expect(peak).toBeLessThanOrEqual(PAGE_CONCURRENCY);
+    // 断言 toBe 而不是 toBeLessThanOrEqual：<= 在实现完全串行（peak 恒为 1）时也绿，
+    // 而「把 Promise.all 误改成串行 for」的用户可见后果是翻译慢 4 倍。peak 恒等于 4 是确定的
+    // ——Array.from 同步依次调 4 个 worker，到 fake 内部的 await 才第一次挂起，4 次 inFlight++
+    // 落在同一个同步段里。不引入任何时间阈值。
+    expect(peak).toBe(PAGE_CONCURRENCY);
   });
 
   it('取消后不再发起新页，返回 null', async () => {
@@ -150,7 +154,11 @@ describe('translateDoc', () => {
       },
     }));
     expect(doc).toBeNull();
-    expect(seen.length).toBeLessThan(20);
+    // 同上，`< 20` 弱到「每 10 页才检查一次取消」也能绿。seen 恒为 [1,2,3,4,5] 是确定的：
+    // head 先跑第 1 页，4 个 worker 同步各推一页（2/3/4/5），第 5 次推入时置 cancelled，
+    // 微任务展开后四个 worker 都在派发前的检查点退出。这条同时钉住「取消后不再发新页」
+    // 与「在飞上界 = PAGE_CONCURRENCY」——后者原先没有任何断言在守。
+    expect(seen).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('llm.not_configured 不重试，直接抛出中止整趟', async () => {
@@ -161,5 +169,25 @@ describe('translateDoc', () => {
     });
     await expect(translateDoc(base({ numPages: 3, translatePage }))).rejects.toThrow('没有可用的模型');
     expect(translatePage).toHaveBeenCalledTimes(1);
+  });
+
+  it('第一次校验失败触发重试、第二次才遇到 llm.not_configured → 中止整趟，不计入 failed', async () => {
+    let calls = 0;
+    const progress: number[] = [];
+    await expect(translateDoc(base({
+      numPages: 1,
+      translatePage: async () => {
+        calls++;
+        if (calls === 1) return { text: 'garbage', truncated: false };
+        const e = new Error('没有可用的模型') as Error & { code?: string };
+        e.code = 'llm.not_configured';
+        throw e;
+      },
+      onProgress: (p) => progress.push(p.failed),
+    }))).rejects.toThrow('没有可用的模型');
+    expect(calls).toBe(2);
+    // 没有任何一次 onProgress 把 failed 报成 1——这页是被中止代码路径（throw e2）带走的，
+    // 不是普通的「重试仍失败」（那条路径才该把 failed++）。
+    expect(progress).not.toContain(1);
   });
 });
