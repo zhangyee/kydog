@@ -125,7 +125,7 @@ function fillHost(host: HTMLElement, segs: Segment[]) {
  * 等这一次测量真正会用到的字体族到位。
  *
  * 字族从宿主与它的 span 上现读（`getComputedStyle(...).fontFamily`），不写死某一个族名：
- * `--font-serif` 是一整串回退栈（Source Serif 4 / Noto Serif SC / Songti SC / Georgia），
+ * `--font-serif` 是一整串回退栈（Source Serif 4 Variable / Noto Serif SC / Songti SC / Georgia），
  * 拉丁文与数字实际命中的是栈里靠前的那个，只等 `"Noto Serif SC"` 等不到它；inline-code 段
  * 用的是 `--font-mono`，更是另一条栈。`document.fonts.load` 接受完整的 font shorthand（含
  * 整串 family list），会把其中所有匹配到的 face 一并加载。
