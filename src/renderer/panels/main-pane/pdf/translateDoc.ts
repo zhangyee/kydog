@@ -25,8 +25,15 @@ export type TranslateDocOptions = {
   translatePage: PageTranslator;
   onProgress: (p: JobProgress) => void;
   isCancelled: () => boolean;
-  /** 抽完一页就交出去：调用方拿它填 linesCache 并对窗口外的页调 page.cleanup()。 */
-  onPageExtracted?: (page: number, text: TextLine[]) => void;
+  /**
+   * 抽完一页就交出去：调用方拿 `text` 填 linesCache，拿 `source` 对**不在渲染窗口内**的页调
+   * `page.cleanup()` 把 pdf.js 的解码缓存还回去（spec §4、不变量 #8）。
+   *
+   * proxy 必须原样交出去、不能让调用方自己回表里找：翻译这条路的页是现取的
+   * （`pdf.getPage(n)`），多数从来没进过调用方那张 proxy 表——找不到就等于不清，翻 200 页
+   * 就是 200 页 `getTextContent()` 的解析结果一直驻留到关 tab。
+   */
+  onPageExtracted?: (page: number, text: TextLine[], source: TextSource) => void;
   pdfName: string;
   langOut: string;
   source: { sha256: string; bytes: number };
@@ -44,9 +51,10 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   const perPage = new Map<number, PageLine[]>();
   for (let n = 1; n <= o.numPages; n++) {
     if (o.isCancelled()) return null;
-    const { lines, text } = await extractPageLines(await o.getPage(n));
+    const src = await o.getPage(n);
+    const { lines, text } = await extractPageLines(src);
     perPage.set(n, lines);
-    o.onPageExtracted?.(n, text);
+    o.onPageExtracted?.(n, text, src);
     o.onProgress({ phase: 'extract', done: n, total: o.numPages, failed: 0 });
   }
   const work = [...perPage.entries()].filter(([, ls]) => ls.length > 0).map(([page, lines]) => ({ page, lines }));

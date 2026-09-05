@@ -61,6 +61,44 @@ describe('createPageLifecycle', () => {
     expect(calls).toEqual([3]);
   });
 
+  /**
+   * 翻译抽取那条路（不变量 #8）。proxy 由调用方直接交进来，因为那些页从来没 acquire 过、
+   * 也不一定在 pageProxies 里——sweep / release 那条路的 getProxy 找不到它们。
+   */
+  describe('cleanupIfIdle', () => {
+    it('不在窗口内且没人持有 → 当场清，计入 cleanedCount', () => {
+      const { lc, calls } = harness();
+      const proxy = { cleanup: () => calls.push(7) };
+      lc.cleanupIfIdle(7, proxy, false);
+      expect(calls).toEqual([7]);
+      expect(lc.cleanedCount()).toBe(1);
+    });
+
+    it('还在窗口内 → 不清（马上要画它，清了等于白抽）', () => {
+      const { lc, calls } = harness();
+      lc.cleanupIfIdle(7, { cleanup: () => calls.push(7) }, true);
+      expect(calls).toEqual([]);
+      expect(lc.cleanedCount()).toBe(0);
+    });
+
+    it('还有层持有 → 不清（cleanup() 会打断在途的渲染）', () => {
+      const { lc, calls } = harness();
+      lc.acquire(7);
+      lc.cleanupIfIdle(7, { cleanup: () => calls.push(7) }, false);
+      expect(calls).toEqual([]);
+    });
+
+    it('顶掉已经排队的那次清理，同一页不会清两次、也不虚增计数', () => {
+      const { lc, calls, drain } = harness();
+      lc.acquire(7);
+      lc.release(7);                                     // 排了一次清理，还没跑到
+      lc.cleanupIfIdle(7, { cleanup: () => calls.push(7) }, false);
+      drain();                                           // 排队的那次现在跑
+      expect(calls).toEqual([7]);
+      expect(lc.cleanedCount()).toBe(1);
+    });
+  });
+
   it('proxy 还没有时不抛，也不计入清理数（探针要分得清「清了」与「决定要清」）', () => {
     const lc = createPageLifecycle(() => undefined, (fn) => fn());
     lc.acquire(9);

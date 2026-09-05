@@ -717,8 +717,19 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           if (p.phase === 'translate') lastFailed = p.failed;
         },
         isCancelled: () => my !== jobSeq.current,
-        // 抽取顺带把文本行交出来，标注层随后要吸附就不必再取一遍（spec §4）。
-        onPageExtracted: (n, text) => { linesCache.current[n] = Promise.resolve(text); },
+        // 抽取顺带把文本行交出来，标注层随后要吸附就不必再取一遍（spec §4）；同一时刻把这一页
+        // 还给 pdf.js（不变量 #8）——不然翻一份 200 页的论文 = 200 页 getTextContent() 的解析
+        // 结果一直驻留到关 tab，只为了抽一次文本。
+        //
+        // **lifecycle.sweep() 兜不住这条**，所以 proxy 必须由这里直接交进去：翻译走的是
+        // pdfRef.current.getPage(n) 现取，这些页从来没 acquire 过，也不一定在 pageProxies 里，
+        // sweep 循环的是 refs、run() 又只认 getProxy —— 两头都找不到它们。判据仍是 lifecycle
+        // 那一条（不在窗口内 + 没有任何层持有），窗口用 winRef：这个回调挂在 useCallback 的闭包
+        // 里，读 win 这个 state 拿到的是作业启动那一刻的旧值。
+        onPageExtracted: (n, text, src) => {
+          linesCache.current[n] = Promise.resolve(text);
+          lifecycle.current.cleanupIfIdle(n, src as unknown as Cleanable, winRef.current.pages.has(n));
+        },
         pdfName: tab.path.split(/[\\/]/).pop()!,   // 渲染层没有 node:path
         langOut: locale,
         source: { sha256: sha, bytes: bytes.byteLength },

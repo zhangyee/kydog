@@ -4,6 +4,15 @@ export type PageLifecycle = {
   acquire(page: number): void;
   release(page: number): void;
   sweep(inWindow: (page: number) => boolean): void;
+  /**
+   * 「刚用完一页，proxy 在我手上」：不在窗口内、也没有任何层持有就立刻还给 pdf.js。
+   *
+   * 与 acquire/release 那条路的区别只在 proxy 从哪儿来。翻译抽取走的是
+   * `pdfRef.current.getPage(n)` 现取，那些页从来没 acquire 过、多数也不在 `pageProxies` 里，
+   * `getProxy` 找不到它们——所以 proxy 只能由调用方直接交进来。判据仍是同一条（没人用 +
+   * 不在窗口内），计数也仍进同一个 `cleanedCount()`。
+   */
+  cleanupIfIdle(page: number, proxy: Cleanable, inWindow: boolean): void;
   cleanedCount(): number;
 };
 
@@ -71,6 +80,16 @@ export function createPageLifecycle(
           schedule(() => run(page));
         }
       }
+    },
+    cleanupIfIdle(page, proxy, inWindow) {
+      if (inWindow) return;                     // 马上还要画它，清了等于白抽
+      if ((refs.get(page) ?? 0) > 0) return;     // 还有层挂着——cleanup() 会打断在途的渲染
+      // 这一页的账在这里了结，与 run() 的收尾一致：撤掉可能已经排在队里的那次清理（否则
+      // run() 跑到时会对同一页再 cleanup() 一次、cleanedCount 也会虚增一个），refs 不必再记。
+      pending.delete(page);
+      refs.delete(page);
+      proxy.cleanup();
+      cleaned += 1;
     },
     cleanedCount: () => cleaned,
   };

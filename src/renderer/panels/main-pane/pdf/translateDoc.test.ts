@@ -32,6 +32,23 @@ describe('translateDoc', () => {
     expect(doc!.blocks.map((b) => [b.page, b.target])).toEqual([[1, 'T1'], [2, 'T2'], [3, 'T3']]);
   });
 
+  it('onPageExtracted 交出的就是 getPage 返回的那个 proxy 本身（调用方要拿它 cleanup）', async () => {
+    // 不变量 #8：抽完的页若不在渲染窗口内，调用方要对它调 page.cleanup() 把 pdf.js 的解码
+    // 缓存还回去。调用方回自己那张 proxy 表里找是不行的——翻译这条路的页是现取的，多数根本
+    // 不在表里。所以这里钉的是**对象同一性**：交出去的必须是刚抽完的那一个，不是等价物。
+    const made: { page: number; proxy: object }[] = [];
+    const got: { page: number; source: unknown }[] = [];
+    await translateDoc(base({
+      getPage: async (n: number) => { const p = fakePage(n); made.push({ page: n, proxy: p }); return p; },
+      onPageExtracted: (page: number, _text: unknown, source: unknown) => { got.push({ page, source }); },
+    }));
+    expect(got.map((g) => g.page)).toEqual([1, 2, 3]);
+    // 每页只取一次 proxy：再取一次也能拿到「一个第 n 页的 proxy」，但那是个**没被抽过**的新
+    // 对象，对它 cleanup() 什么都没还回去——所以「取了几次」和「交出去的是哪一个」要一起钉。
+    expect(made.map((m) => m.page)).toEqual([1, 2, 3]);
+    for (const g of got) expect(g.source).toBe(made.find((m) => m.page === g.page)!.proxy);
+  });
+
   it('全文档零行 → 抛错，一次调用都不发', async () => {
     const translatePage = vi.fn();
     await expect(translateDoc(base({
