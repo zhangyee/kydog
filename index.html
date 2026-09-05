@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <title>KyDog</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@400;500&display=swap">
+    <!-- 字体全部随产物打包，不联网拉。曾经这里有一个 Google Fonts 的 <link>，五个家族都从它来；
+         删掉的理由与 src/renderer/theme/fonts.css 顶部那段注释是同一件事——离线可用、不向第三方
+         发请求、且不再出现「同一个家族有远端和本地两份」导致本地那份静默失效。
+         守这条的是 e2e/58-font-stack.spec.ts（断言运行期没有任何字体域名的请求）。 -->
   </head>
   <body>
     <div id="root"></div>

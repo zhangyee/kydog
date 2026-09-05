@@ -4,10 +4,18 @@ Source Serif 4 © Adobe Inc.
 
 Noto Serif SC © Google LLC
 
+Noto Sans SC © Google LLC
+
+Inter © The Inter Project Authors
+
+IBM Plex Mono © IBM Corp.
+
 Licensed under the SIL Open Font License, Version 1.1.
 
 Copyright 2014–2024 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
 Copyright 2014–2024 Google LLC.
+Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter).
+Copyright 2017 IBM Corp. All rights reserved.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
@@ -104,7 +112,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 - `@earendil-works/pi-ai`: MIT
 - `@earendil-works/pi-coding-agent`: MIT
+- `@fontsource-variable/inter`: OFL-1.1
+- `@fontsource-variable/noto-sans-sc`: OFL-1.1
 - `@fontsource-variable/source-serif-4`: OFL-1.1
+- `@fontsource/ibm-plex-mono`: OFL-1.1
 - `@fontsource/noto-serif-sc`: OFL-1.1
 - `@milkdown/crepe`: MIT
 - `chokidar`: MIT
