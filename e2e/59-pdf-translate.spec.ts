@@ -27,6 +27,11 @@ import { RPC_CHANNEL } from '../src/shared/protocol';
  *   - 一趟作业**跑完之后**，若有页失败，「N 页翻译失败」这条消息仍要可见（`lastFailedPages`，
  *     TBucket 上跨 job 清空仍可读的字段——`job.failed` 在 finalize 阶段被硬写成 0、job 完成后
  *     整个变 null，用它判的话这条消息在用户最需要看到它的那一刻必然读不到）。
+ *
+ * Task 14 二轮审查又发现一条：`lastFailedPages` 的清除时机把上面那条 `translateError` 的病
+ * 镜像复制了一遍——该留的被清掉。补了最后一条：成功翻译一次、有失败页 → 点「重新翻译」→ 取消 →
+ * Notice 应当仍显示上一趟真正跑完的失败计数，不该因为新作业刚起步就被清成 0（画面还是原来那份
+ * 带失败页的旧译文，doc 没变，计数也不该变）。
  */
 
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
@@ -587,6 +592,53 @@ test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——las
     await expect(pane.getByTestId('pdf-notice'), '作业跑完之后这条消息仍应可见')
       .toContainText('1 页翻译失败，右栏保留原文');
     // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显示上一趟的计数，不被清成 0', async () => {
+  // Task 14 二轮审查发现的洞：lastFailedPages 的清除时机把 translateError 那条病镜像复制了
+  // 一遍——上一轮修复在 startTranslation 开头无条件清成 0，而取消 / 出错两个出口在 wasDual
+  // 为真时保留旧 dual 与 store 里那份旧 doc 不变（这正是 wasDual 修复本身要保证的行为）。于是：
+  // 先成功翻译一次、有 1 页失败 → 点「重新翻译」→ 半路取消 → 画面仍是原来那份带失败页的旧译文，
+  // Notice 却因为开头那行清零而不再提示「1 页翻译失败」——不变量被破坏：lastFailedPages 没有
+  // 描述 store 里当前那份 doc（那份 doc 根本没变）。
+  //
+  // 用 ONE_FAIL_FIXTURE 造出第一趟真实的失败页（同上面「跨 job 清空可读」那条），跑完确认 Notice
+  // 显示「1 页翻译失败」；再点「重新翻译」进第二趟作业，扣住它、取消，断言 Notice 仍显示同一句——
+  // 因为右格合成的仍是第一趟落盘的那份旧译文，doc 没变，计数不该变。
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    // 第一趟：不装闸门，直接跑到底，落地 1 页失败。
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
+    await expect(pane.getByTestId('pdf-notice'), '第一趟跑完之后应显示 1 页失败')
+      .toContainText('1 页翻译失败，右栏保留原文');
+    // 此刻已经在对照中（第一趟成功就会进 active），「重新翻译」键应当可见。
+    const retranslateBtn = pane.getByTestId('pdf-retranslate');
+    await expect(retranslateBtn).toBeVisible();
+
+    // 第二趟：装闸门、发起、停在半路、取消——doc 没变，仍是第一趟落盘的那份。
+    await installTranslateGate(launched);
+    await retranslateBtn.click();
+    await waitJobParked(launched);
+    await pane.getByTestId('pdf-translate-cancel').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
+
+    // 关键断言：取消之后 Notice 应当仍显示第一趟的失败计数，不该因为第二趟刚起步就被清成 0。
+    await expect(pane.getByTestId('pdf-notice'), '取消重译之后仍应显示上一趟真正跑完的失败计数')
+      .toContainText('1 页翻译失败，右栏保留原文');
+    // 顺带确认还在对照中——这不是本条的重点（wasDual 那条用例已经钉住），只是让上面那句断言的
+    // 前提（「右格合成的仍是旧译文」）不是空中楼阁。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
     await teardown(launched);

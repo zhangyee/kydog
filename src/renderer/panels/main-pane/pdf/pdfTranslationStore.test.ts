@@ -65,6 +65,61 @@ describe('usePdfTranslationStore.setLoaded 维持 dual', () => {
   });
 });
 
+// lastFailedPages 的不变量（Task 14 二轮审查发现）：这个字段必须始终描述 store 里当前那份
+// doc。一轮修复在 startTranslation 开头无条件清成 0，把「wasDual 时旧 doc 没变」的场景也一并
+// 清掉了——取消 / 出错两个出口保留旧 doc 不动，对应的失败计数却被开头那行提前抹掉。二轮改成
+// 由 setLoaded / setLoadError 自己在 doc 变成 null 时兜底清零，doc 非空时原样保留，不依赖
+// startTranslation 的调用点各自记得清或不清。
+describe('usePdfTranslationStore.setLoaded/setLoadError 维持 lastFailedPages 的不变量', () => {
+  const T = '/p/paper.pdf';
+  const ZH: TranslatedDoc = {
+    version: 1, pdf: 'p.pdf', lang: { in: 'en', out: 'zh' },
+    source: { sha256: 'aa', bytes: 10 }, blocks: [],
+  };
+  const st = () => usePdfTranslationStore.getState();
+
+  beforeEach(() => {
+    usePdfTranslationStore.setState({ buckets: {} });
+  });
+
+  it('doc 变成 null（边车被删）→ lastFailedPages 归零', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setLastFailedPages(T, 2);
+    st().setLoaded(T, null, 'unknown', 0);
+    expect(st().buckets[T].lastFailedPages).toBe(0);
+  });
+
+  it('doc 非空的重探（focus / 几何重过滤）不动 lastFailedPages——旧 doc 没变，计数也不该变', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setLastFailedPages(T, 2);
+    st().setLoaded(T, ZH, 'ok', 3);   // 同一份 doc 再探一次，只是 dropped 数变了
+    expect(st().buckets[T].lastFailedPages).toBe(2);
+  });
+
+  it('version 变 mismatch 不清 lastFailedPages——doc 本身没变，只是暂时对不上当前 PDF', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setLastFailedPages(T, 1);
+    st().setLoaded(T, ZH, 'mismatch', 0);
+    expect(st().buckets[T].lastFailedPages).toBe(1);
+  });
+
+  it('setLoadError（边车结构校验失败，doc 变 null）→ lastFailedPages 归零', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    st().setLastFailedPages(T, 1);
+    st().setLoadError(T, '结构有误');
+    expect(st().buckets[T].lastFailedPages).toBe(0);
+  });
+
+  it('成功收尾紧跟着的 setLoaded 不会把刚写入的真值冲回 0（顺序敏感的回归点）', () => {
+    st().setLoaded(T, ZH, 'ok', 0);
+    // 模拟 startTranslation 成功收尾：先写真值，loadTranslation 的 setLoaded 随后把 doc
+    // 从磁盘读回来（非空），不能覆盖刚写的 3。
+    st().setLastFailedPages(T, 3);
+    st().setLoaded(T, ZH, 'ok', 0);
+    expect(st().buckets[T].lastFailedPages).toBe(3);
+  });
+});
+
 // 进对照要读第一页的宽度算 fit-width，页尺寸没预取完就只能静默不动。原先这条不在判据里：
 // 翻译键在预取期间是 enabled 的，按下去什么都不发生、也没有反馈（大文档预取几百页时这段窗口
 // 不短）。判据必须由 translateUiState 这一份出——工具栏与 `L` 键共用它。

@@ -683,11 +683,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     enterDualFitWidth();
     st.setJob(tab.id, { phase: 'extract', done: 0, total: numPages, failed: 0 });
     setTranslateError(null);
-    // 新作业开始：先把上一趟的失败计数清成 0（TBucket.lastFailedPages，见其注释）——别把
-    // translateError 那条「旧值长期遮住新结果」的病复制一遍。这一趟如果也有失败页，下面成功
-    // 收尾时会写真值覆盖；如果失败或被取消，就停在这个 0 上（没有「一共失败几页」的确定答案，
-    // 写一个半路的部分计数是编造，见 lastFailedPages 注释）。
-    st.setLastFailedPages(tab.id, 0);
+    // **这里不清 lastFailedPages**（Task 14 二轮审查发现的洞）：旧一轮在这里无条件清成 0，
+    // 结果连同「wasDual 时旧 doc 没变」的场景一起清掉了——从对照中点「重新翻译」，doc 在作业
+    // 跑完之前始终是旧的那份，它对应的失败计数不该因为新作业刚起步就先归零。真正该归零的时机
+    // 是 doc 真的变了（store 的 setLoaded/setLoadError 在 doc === null 时兜底），或者这一趟
+    // 成功跑完、doc 真的换成新的那一刻（下面成功收尾时写真值，见 TBucket.lastFailedPages 的
+    // 注释）。取消 / 出错两个出口因此也不用做任何事——它们本就不改 doc，对应的计数也不该改。
     // 这一趟真正落地的失败页数：只在 'translate' 阶段的 tick 里才是真值——'finalize' 阶段那份
     // failed 恒为 0（提交点标记，不是「清零」），不能拿它覆盖。job 跑完（Promise.all 收尾）时
     // 最后一次 'translate' tick 携带的就是全部页跑完之后的最终失败数，成功收尾时把它落进
