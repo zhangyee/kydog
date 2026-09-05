@@ -26,7 +26,7 @@ export type TBucket = {
    *
    * 进对照要用第一页的宽度算 fit-width，sizes 还没到就只能什么都不做。原先它不进判据：
    * 大文档预取几百页时翻译键仍是 enabled，按下去静默无事发生、也没有任何反馈。放进 bucket 是
-   * 为了让工具栏四态与 `L` 键共用同一份判据（translateUiState）——两处各判一次是最难查的
+   * 为了让工具栏与 `L` 键共用同一份判据（translateUiState）——两处各判一次是最难查的
    * 那类 bug。
    */
   layoutReady: boolean;

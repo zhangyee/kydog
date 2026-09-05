@@ -111,6 +111,10 @@ describe('translateUiState 的新顺序', () => {
     expect(translateUiState(B({ doc: zhDoc, dual: true, job: { phase: 'translate', done: 1, total: 9, failed: 0 } })))
       .toBe('translating');
   });
+  it('translating 也压过 pending：作业跑起来时页尺寸必然已经到位，但顺序不能反', () => {
+    expect(translateUiState(B({ layoutReady: false, job: { phase: 'extract', done: 0, total: 3, failed: 0 } })))
+      .toBe('translating');
+  });
   it('pending 排在 invalid / none / mismatch 之前——它们现在都通向一个要页尺寸的动作', () => {
     expect(translateUiState(B({ layoutReady: false }))).toBe('pending');
     expect(translateUiState(B({ layoutReady: false, loadError: 'x' }))).toBe('pending');
