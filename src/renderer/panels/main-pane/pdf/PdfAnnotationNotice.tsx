@@ -36,6 +36,10 @@ export function PdfAnnotationNotice(
   const t = usePdfTranslationStore((s) => s.buckets[tabId]);
 
   let text: string | null = null;
+  // 第 8 条分支自己置位，showReasons 判它而不是回头从 text 里抠子串——text 是给人看的文案，
+  // 不是给代码分支用的 tag，靠 includes('页翻译失败') 反推「当前渲染的是第几条」是在拿渲染结果
+  // 当输入用，文案措辞一改这条判断就悄悄失真。
+  let isFailedPages = false;
   if (loadError) text = `标注文件无法读取：${loadError}（${sidecarPath(pdfPath, 'annotations')}）`;
   else if (saveError) text = `标注未能保存：${saveError}`;
   else if (translateError) text = `翻译失败：${translateError}`;
@@ -44,6 +48,7 @@ export function PdfAnnotationNotice(
   else if (t && t.version === 'unknown' && t.doc) text = '未记录源文件摘要，无法确认译文与当前 PDF 匹配';
   else if (t && t.dropped > 0) text = `${t.dropped} 条译文块超出页面范围，已跳过`;
   else if (t?.doc?.failedPages?.length) {
+    isFailedPages = true;
     const pages = t.doc.failedPages;
     text = `${pages.length} 页翻译失败（第 ${pages.join('、')} 页），右栏保留原文`;
   }
@@ -51,7 +56,7 @@ export function PdfAnnotationNotice(
 
   const reasons = t?.doc?.failureReasons;
   const failed = t?.doc?.failedPages ?? [];
-  const showReasons = text.includes('页翻译失败') && !!reasons && failed.some((p) => reasons[String(p)]);
+  const showReasons = isFailedPages && !!reasons && failed.some((p) => reasons[String(p)]);
   const body = <span className="font-serif" style={{ overflowWrap: 'anywhere' }}>{text}</span>;
 
   return (
@@ -69,7 +74,10 @@ export function PdfAnnotationNotice(
           <Tooltip
             placement="top"
             content={
-              <div data-testid="pdf-notice-reasons">
+              <div
+                data-testid="pdf-notice-reasons"
+                style={{ whiteSpace: 'normal', maxWidth: 'min(60vw, 520px)', overflowWrap: 'anywhere' }}
+              >
                 {failed.filter((p) => reasons![String(p)]).map((p) => (
                   <div key={p}>{`第 ${p} 页：${reasons![String(p)]}`}</div>
                 ))}

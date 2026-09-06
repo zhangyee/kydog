@@ -859,9 +859,8 @@ test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——失
       .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
     // 顺带钉住信号的落点：Notice 上那句话的来源是**边车里的页号**，不是内存里某个作业留下的
     // 数字。页号而不是计数——计数是逐页信号的有损汇总，长度随时能推出来，反过来不行。
-    expect((await readSidecar(path.join(kydogHome, 'proj', `.${PLAIN_REL}.zh.json`))).failedPages,
-      '失败页号应当写进边车').toEqual([2]);
     const saved = await readSidecar(path.join(kydogHome, 'proj', `.${PLAIN_REL}.zh.json`));
+    expect(saved.failedPages, '失败页号应当写进边车').toEqual([2]);
     // fixture 的第 2 页两条响应文本里都嵌了一个引号包住的字面 "|"（"这条响应故意没有 \"|\"…"），
     // 那个字符恰好被 parseGroups 的 `head.indexOf('|')` 当成组头分隔符找到，于是它不是走「组头
     // 缺少 "|"」那支，而是把 "|" 前面那一截当行号规格喂给 parseIds、拿到「行号不认识」——
@@ -873,6 +872,27 @@ test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——失
     await expect(tip).toBeVisible();
     await expect(tip).toContainText('第 2 页：');
     await expect(tip).toContainText('行号不认识');
+    // fixture 里第 2 页第一条响应文本被撑到 300+ 字符（模型输出原样被 JSON.stringify 回显进
+    // 原因串），真实场景下这类长原因会把没有 max-width / white-space: normal 的面板宽出窗口。
+    //
+    // 只断 getBoundingClientRect() 的 left/right 不够：容器有 overflow: visible（默认值），
+    // `max-width` 只钳容器**自己这个盒子**的宽度，`white-space: nowrap` 时那一整行文字仍会
+    // 照常画到盒子外面——盒子的 rect 依旧乖乖落在 max-width 之内，但真正画出来的字远远宽出去，
+    // 实测过：去掉 `white-space: normal` 之后 clientWidth 还是 520，scrollWidth 却蹿到 3323，
+    // 只断 rect 的话这条用例会假绿。scrollWidth 才是「有没有真的换行」的信号：换行成立时内容
+    // 撑不出容器本身的宽度，scrollWidth ≈ clientWidth；不换行则一整行文字的固有宽度全部计入
+    // scrollWidth，远超 clientWidth。
+    const rect = await tip.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        left: r.left, right: r.right, innerWidth: window.innerWidth,
+        scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+      };
+    });
+    expect(rect.scrollWidth, `原因文本没有真的换行，撑出了容器本身 ${JSON.stringify(rect)}`)
+      .toBeLessThanOrEqual(rect.clientWidth + 1);   // +1 容小数像素舍入
+    expect(rect.left, `原因面板不该宽出视口左边 ${JSON.stringify(rect)}`).toBeGreaterThanOrEqual(0);
+    expect(rect.right, `原因面板不该宽出视口右边 ${JSON.stringify(rect)}`).toBeLessThanOrEqual(rect.innerWidth);
     // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
