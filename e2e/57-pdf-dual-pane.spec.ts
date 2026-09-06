@@ -1207,6 +1207,21 @@ test('57-pdf-dual-pane: 同页两格按栏顶对齐、等高——右格真在�
 
     await check('刚进对照');
 
+    // fit-width 必须扣掉纵向滚动条厚度（Important #1，Task 2 审查发现）：栏宽从 wrapper 的
+    // border-box 宽算，而栏内容的可用宽是各自的 clientWidth（= border-box − 滚动条占位厚度，
+    // globals.css 的 .ky-scroll::-webkit-scrollbar 在 Chromium 下是占位条）。少扣一次的话
+    // pageW × fit 会比栏的 clientWidth 宽出这一份厚度，两栏各自长出一条横向滚动条。
+    // scrollWidth === clientWidth 是协议层事实（没有横向溢出），不是近似或阈值。
+    await expect.poll(
+      async () => page.evaluate((sel) => {
+        const l = document.querySelector(`${sel} [data-pdf-pane="left"]`) as HTMLElement | null;
+        const r = document.querySelector(`${sel} [data-pdf-pane="right"]`) as HTMLElement | null;
+        if (!l || !r) return null;
+        return { l: l.scrollWidth - l.clientWidth, r: r.scrollWidth - r.clientWidth };
+      }, paneSel),
+      { timeout: 5000, message: '刚进对照：fit-width 扣了滚动条厚度之后两栏都不该有横向溢出' },
+    ).toEqual({ l: 0, r: 0 });
+
     // 滚几屏：换一批挂载的页，两栏照样对齐
     await page.locator(testIdSelector(`pdf-scroll-${pdfPath}`))
       .evaluate((el) => { el.scrollTop = el.clientHeight * 4; });

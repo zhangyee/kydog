@@ -32,6 +32,16 @@ export function PaneDivider({ onDragTo, onDragEnd }: {
     setDragging(false);
     onDragEnd();
   };
+  // pointercancel 专用（Minor #4，Task 2 审查发现）：这个事件本身就意味着指针已经不再是
+  // active pointer 了（系统手势接管、指针离开设备等），规范要求这时候调 releasePointerCapture
+  // 会抛 NotFoundError——复用 onUp 的话那次 release 一抛，后面的 setDragging(false) /
+  // onDragEnd() 就执行不到，wrapper 的 user-select: none 与线的 hover 态会一直卡到下一次
+  // pointerdown 才解开。不 release（指针已经不需要释放）、只收自己的状态。
+  const onCancel = () => {
+    if (!dragging) return;
+    setDragging(false);
+    onDragEnd();
+  };
 
   return (
     <div
@@ -39,7 +49,7 @@ export function PaneDivider({ onDragTo, onDragEnd }: {
       onPointerDown={onDown}
       onPointerMove={onMove}
       onPointerUp={onUp}
-      onPointerCancel={onUp}
+      onPointerCancel={onCancel}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
       style={{ flex: `0 0 ${DIVIDER_PX}px`, position: 'relative', cursor: 'col-resize', zIndex: 2 }}

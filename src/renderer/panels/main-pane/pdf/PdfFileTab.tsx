@@ -512,7 +512,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 百分比 + 分隔线像素会让右栏宽变成一个减法结果，对不上 paneWidths 的算法。
   const [wrapperW, setWrapperW] = useState(0);
   // 左格画完的 canvas 交给右格的通道（canvasRegistry.ts）。ref 持有：每个 tab 一份、跨渲染恒定。
-  const registry = useRef(createCanvasRegistry()).current;
+  // 懒初始化（Minor #5，Task 2 审查发现）：`useRef(createCanvasRegistry()).current` 那种写法
+  // 每次渲染都会先调用一遍 createCanvasRegistry()——它的返回值确实只在首次渲染被采用，但函数
+  // 本身每次都执行，白造两个 Map 加几个闭包再丢弃。捏合手势逐帧重渲染，这笔白造的开销按帧计。
+  // 判断 `!ref.current` 才真正创建一次，此后原样复用同一个实例。
+  const registryRef = useRef<CanvasRegistry | null>(null);
+  if (!registryRef.current) registryRef.current = createCanvasRegistry();
+  const registry = registryRef.current;
   const layerSeq = useRef(0);
   const targetScale = useRef(1);              // 连续累积的目标缩放
   const layersRef = useRef(layers);
@@ -650,6 +656,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    * 窄栏被裁，对着窄栏 fit 顶多让宽栏留白——留白比裁掉好。栏宽从 wrapper 的 clientWidth 与当前
    * 比例现算（paneWidths），不读两个 DOM 元素：进对照这一刻右栏还没挂上，读不到。
    *
+   * **栏宽要扣掉纵向滚动条的厚度**（Important #1，Task 2 审查发现）：`paneWidths` 切的是
+   * wrapper 的 border-box 宽（wrapper 自己无滚动条），而两栏各自的可用宽是它们各自的
+   * `clientWidth`（= border-box − 滚动条占位厚度）——`.ky-scroll::-webkit-scrollbar { width: 8px }`
+   * 在 Chromium 里是占位条不是浮层条。不扣的话 `pageW × fit` 会比栏的 `clientWidth` 宽出这一份
+   * 厚度，两栏各自长出一条横向滚动条、页面右缘被裁。
+   *
+   * `bar` 不是一个猜出来的常量：这一刻左栏还没进对照、仍铺满整条 wrapper，`wrap.clientWidth`
+   * 与 `scrollRef.current.clientWidth` 量的是同一个元素的 border-box 宽与内容盒宽，两者之差就
+   * 是**此刻实测的**纵向滚动条厚度——文档没有纵向滚动条（页数少、装得下一屏）时它恰好是 0，
+   * 不是每次都硬扣 8px。两栏各自也会有一条纵向滚动条，同一个 bar 从两栏宽里各扣一次。
+   *
    * 页宽用 sizes[0]：fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，用第一页
    * 的宽度足够；量出来的 fit 又会被 requestScale 的 MIN_SCALE 兜底，极端情况下也不会缩到不可用。
    * 放不下就缩到刚好放下，把进入前的缩放存进 prevScale；本来就放得下则不动、prevScale 存 null。
@@ -661,9 +678,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const enterDualFitWidth = useCallback(() => {
     const st = usePdfTranslationStore.getState();
     const wrap = wrapperRef.current;
-    if (!wrap || !sizes || st.buckets[tab.id]?.dual) return;
+    const el = scrollRef.current;
+    if (!wrap || !el || !sizes || st.buckets[tab.id]?.dual) return;
+    const bar = wrap.clientWidth - el.clientWidth; // 此刻实测的纵向滚动条厚度，见上方注释
     const { left, right } = paneWidths(wrap.clientWidth, split);
-    const fit = fitToNarrower(left, right, sizes[0].w);
+    const fit = fitToNarrower(left - bar, right - bar, sizes[0].w);
     const prev = visualScaleRef.current;
     if (fit < prev) {
       st.setDual(tab.id, true, prev);
@@ -699,9 +718,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // null，它挂着的必然是**这唯一一趟**活跃作业的值，不会有陈旧值的空间（不存在两趟并发的
   // job：新一趟开始前旧一趟早已经过代际比较判负）。两个读取点分别踩这条前提：catch 分支在
   // 同一次调用里读，隔着若干 await，靠 `my === jobSeq.current` 先挡过期续体；cancelTranslation
-  // 是独立回调、没有 `my` 可比，它读得对纯粹是因为「取消」按钮只在 job 非 null 时才会渲染
-  // （TranslationProgress 的挂载条件），所以点得到它的那一刻前提必然成立。job 是 null 时这个
-  // ref 的值没有任何意义，也没有代码会在那时去读它。
+  // 是独立回调、没有 `my` 可比，它读得对是因为「取消」按钮只在 **job 非 null 且 dual** 时才会
+  // 渲染（TranslationProgress 挂在渲染树里 `dual && (...)` 那层下面，不是单靠 job 判的）——而
+  // `job ⇒ dual` 由 startTranslation 自己的调用顺序绑死（Important #2，Task 2 审查发现：见下面
+  // 「进对照是发起作业的前置条件」那段），job 非 null 时 dual 必然也是 true，所以点得到取消键
+  // 的那一刻前提必然成立。job 是 null 时这个 ref 的值没有任何意义，也没有代码会在那时去读它。
   const wasDualRef = useRef(false);
 
   /**
@@ -717,6 +738,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // 键只在 active 态渲染，正常点击时判据恒为真，但让这个真正做状态改动的函数本身对「不该进」
     // 的调用也安全，好过要求每个调用点都记得先判一遍（本文件另一处同样原则的注释见 onToggleDual）。
     if (!canPressTranslate(usePdfTranslationStore.getState().buckets[tab.id])) return;
+    // **进对照是发起作业的前置条件**（Important #2，Task 2 审查发现）：浮层与取消按钮都在渲染树
+    // 的 `dual && (...)` 里面（见下方 JSX），job 非 null 而 dual 仍是 false 的话，用户看不到
+    // 进度、点不到取消，作业只能干等它自己跑完——`job ⇒ dual` 因此是一条承重不变量。
+    // `enterDualFitWidth` 在 `!wrap || !sizes` 时不设 dual 就返回；`sizes` 已经在函数开头判过，
+    // 唯一还可能落空的是 `!wrap`——今天不可达（wrapper 与 scrollRef 总是先于按钮可点而挂载），
+    // 但「不可达」是一条每次改动都要重新论证的性质，不该是这条不变量成立的唯一理由。所以在这里
+    // 老老实实读一次刚落地的 store：dual 仍不是 true 就整个函数当场退出，**不推进任何代际、
+    // 不 setJob**——不变量由构造成立，不依赖「这两个分支今天恰好都不会走到」这种默契。
+    wasDualRef.current = usePdfTranslationStore.getState().buckets[tab.id]?.dual ?? false;
+    enterDualFitWidth();
+    if (!usePdfTranslationStore.getState().buckets[tab.id]?.dual) return;
     // 启动作业时**两个代际一起推进**：jobSeq 是这趟作业自己的代号；translationSeq 自增是为了
     // 作废「作业启动前就已经在途」的那趟 load——它的代号仍等于 current，会照常落地，而那时盘上
     // 还是旧边车（或压根没有），setLoaded 会把 dual 收掉，用户刚进对照就被踢出来（spec §9.2）。
@@ -727,8 +759,6 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // 术语表跨重译保留：它是用户 / agent 写进边车的约定，不是这一趟翻译的产物（spec §2.6）。
     const keepGlossary = st.buckets[tab.id]?.doc?.glossary;
     const locale = useSettingsStore.getState().settings?.ui.locale ?? 'zh';
-    wasDualRef.current = st.buckets[tab.id]?.dual ?? false;
-    enterDualFitWidth();
     st.setJob(tab.id, { phase: 'extract', done: 0, total: numPages, failed: 0 });
     setTranslateError(null);
     // 这一趟真正落地的失败页数与页数总量，只给下面 finalize 那一档进度用：只有 'translate'
