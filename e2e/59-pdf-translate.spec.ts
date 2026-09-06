@@ -594,8 +594,12 @@ test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把�
     // 应当重新渲染出来的具体那个块：job 收掉之后 `!translating` 重新为真，TranslationBlocks
     // 才会渲染（见 RightPage 里的注释），能看到 seed1 就说明取消之后合成的确实是可用的旧译文，
     // 不是空壳。
+    // 定位限死在 **stable 层**上：缩放走双缓冲，顶替完成之前 layers 有两份，同一个块在 DOM 里
+    // 就有两个（进对照那一下的 fit-width 提交在机器忙时能拖到这里还没顶替完）——不限层的话
+    // Playwright 会以 strict mode violation 间歇性地红在这一行，而那与本条要钉的东西无关。
+    // 取 stable 层不是放宽：它就是用户此刻真正看着的那一层（incoming 层压在它下面，zIndex 0）。
     await expect(
-      page.locator(`${paneSel} [data-translation-block="seed1"]`),
+      page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`),
       '取消之后旧译文块应当重新出现——右格是真的可用，不是空壳',
     ).toBeVisible();
 
