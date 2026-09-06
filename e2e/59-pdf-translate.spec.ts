@@ -1037,9 +1037,12 @@ async function paneLayout(page: Page, paneSel: string) {
   return page.evaluate((sel) => {
     const left = document.querySelector(`${sel} [data-pdf-pane="left"]`) as HTMLElement | null;
     if (!left) return null;
+    // 左栏是 `<左栏相对定位父层><滚动容器 data-pdf-pane="left">`（OverlayScrollbar 的锚点，
+    // Task 2）——那层父层与左栏恒等宽，量它当 wrapW 会让下面「仍是单栏」的三条断言恒真。
+    // 两栏 + 分隔线共同的 flex 行是再上一层，同 57 的 paneBoxWidths。
     return {
       leftW: left.getBoundingClientRect().width,
-      wrapW: left.parentElement!.getBoundingClientRect().width,
+      wrapW: left.parentElement!.parentElement!.getBoundingClientRect().width,
       rightPanes: document.querySelectorAll(`${sel} [data-pdf-pane="right"]`).length,
       dividers: document.querySelectorAll(`${sel} [data-testid="pdf-pane-divider"]`).length,
     };

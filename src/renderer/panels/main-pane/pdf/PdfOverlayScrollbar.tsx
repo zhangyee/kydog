@@ -12,8 +12,10 @@ type Props = { targetRef: RefObject<HTMLElement | null>; axis: 'y' | 'x'; testId
  * ——覆盖层不参与同步，只是滚动位置的又一个读写方（不变量 #2）。
  *
  * 显隐：target 的 scroll 事件出现、FADE_MS 后淡出；指针悬停在拇指上或正在拖拽时保持可见并变粗。
- * 尺寸重算：scroll 事件、target 与其第一个子元素的 ResizeObserver（内容高随缩放变、栏随窗口 /
- * 分隔线变，两者都不是 scroll 事件）。
+ * 尺寸重算：栏本身的尺寸变化（随窗口 / 分隔线拖动）靠 target 的 ResizeObserver；内容高随缩放
+ * 变化不触发 RO（内容元素尺寸没变，变的是它在 target 里的滚动范围），靠缩放锚点回写落地时
+ * 触发的 scroll 事件重算——`show()` 里先 `measure()` 再排定淡出。拇指只在 scroll 之后才可见，
+ * 所以不存在「可见但读数是缩放前那份」的窗口。
  */
 export function OverlayScrollbar({ targetRef, axis, testId }: Props) {
   const [thumb, setThumb] = useState<Thumb | null>(null);
@@ -53,7 +55,6 @@ export function OverlayScrollbar({ targetRef, axis, testId }: Props) {
     target.addEventListener('scroll', show, { passive: true });
     const ro = new ResizeObserver(measure);
     ro.observe(target);
-    if (target.firstElementChild) ro.observe(target.firstElementChild);
     return () => {
       target.removeEventListener('scroll', show);
       ro.disconnect();

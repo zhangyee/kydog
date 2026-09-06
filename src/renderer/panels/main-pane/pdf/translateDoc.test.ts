@@ -374,6 +374,22 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
     expect('failureReasons' in doc!).toBe(false);
   });
 
+  it('底本只有 failedPages 没有 failureReasons、这趟全成功 → 不写出空的 failureReasons: {}（M-6）', async () => {
+    // 陈旧边车可能是早于 failureReasons 存在时写的、或被 agent 手改过：failedPages 有条目、
+    // failureReasons 整个键都不在。这趟只重跑 pages 之外的第 3 页且全成功，第 2 页的陈旧失败
+    // 原样留着——不该凭空多出一个没有任何内容的 failureReasons 对象。
+    const baseNoReasons: TranslatedDoc = {
+      version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' },
+      source: { sha256: 'old', bytes: 1 }, failedPages: [2],
+      blocks: [
+        { id: 'p1-b01', page: 1, x: 72, y: 100, width: 40, height: 10, fontSize: 10, kind: 'title', source: 'My Title', target: '标题' },
+      ],
+    };
+    const doc = await translateDoc(base({ numPages: 4, pages: [3], base: baseNoReasons }));
+    expect(doc!.failedPages).toEqual([2]);
+    expect('failureReasons' in doc!).toBe(false);
+  });
+
   it('docTitle 取 base 里第一个 title 块的 source，不再单跑第 1 页', async () => {
     const titles: (string | undefined)[] = [];
     await translateDoc(base({

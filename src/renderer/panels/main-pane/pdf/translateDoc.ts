@@ -226,6 +226,9 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   };
   if (o.glossary?.length) doc.glossary = o.glossary;
   if (failed.length) doc.failedPages = failed;
-  if (failed.length) doc.failureReasons = mergedReasons;
+  // 失败页可能没有对应的原因（比如底本的陈旧 failedPages 从来没记过 failureReasons）——
+  // 那种情况下 mergedReasons 是空对象，不能靠 failed.length 判断要不要写这个键，否则边车
+  // 里会落一个没有任何内容的 "failureReasons": {}。
+  if (Object.keys(mergedReasons).length) doc.failureReasons = mergedReasons;
   return doc;
 }

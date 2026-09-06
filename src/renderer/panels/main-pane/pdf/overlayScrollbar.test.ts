@@ -32,6 +32,14 @@ describe('thumbGeometry', () => {
     const over = thumbGeometry({ ...base, scrollPos: 99_999 })!;
     expect(over.pos).toBeCloseTo(400 - over.len, 6);
   });
+
+  it('轨道比 THUMB_MIN_PX 还短 → 长度钳到轨道全长、range 归零、拇指贴死在起点', () => {
+    // trackLen(10) < THUMB_MIN_PX(24)：len 想取 24 但 Math.min(trackLen, …) 把它按到 10；
+    // range = trackLen − len = 0，拖拽范围为零，拇指不管 scrollPos 是多少都钉在 0。
+    const t = thumbGeometry({ clientLen: 20, scrollLen: 200, scrollPos: 90, trackLen: 10 })!;
+    expect(t.len).toBe(10);
+    expect(t.pos).toBe(0);
+  });
 });
 
 describe('scrollPosForThumb', () => {
@@ -51,5 +59,9 @@ describe('scrollPosForThumb', () => {
 
   it('不能滚 → 0', () => {
     expect(scrollPosForThumb({ clientLen: 500, scrollLen: 500, trackLen: 400 }, 30)).toBe(0);
+  });
+
+  it('轨道比 THUMB_MIN_PX 还短 → range 为零，反算恒为 0', () => {
+    expect(scrollPosForThumb({ clientLen: 20, scrollLen: 200, trackLen: 10 }, 5)).toBe(0);
   });
 });
