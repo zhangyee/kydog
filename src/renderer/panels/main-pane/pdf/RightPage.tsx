@@ -68,11 +68,28 @@ function themePaperRgb(el: Element): RGB {
  * 矩形覆盖对二者天然免疫，且不需要任何「这是不是扫描页」的判定：抽不出文本就没有块，步骤 2
  * 空转，右栏 = 原图。
  *
- * 合成放在 useLayoutEffect 而不是 useEffect：双缓冲的顶替判据是「可见页全部 settled」，而
- * settled 的信号正是左格的 onRenderSuccess——它同一批 setState 里既把 leftCanvas 交给这里，
- * 又可能触发顶替。用 useEffect（passive，浏览器绘制之后才跑）就会有一帧：新层已经顶上来了，
- * 右格还没合成。useLayoutEffect 与那次顶替同属一次 commit、绘制之前跑完，「settled」与
- * 「右格已合成」于是由构造同时发生，不需要再给顶替加第二个信号。
+ * **要保的不变量**：右格合成的那次 commit 恒排在双缓冲顶替的那次 commit 之前——否则会有一帧
+ * 「新层已经顶上来、右格还空着」。
+ *
+ * 它由**优先级车道**保证，不由这段代码维持。信号源是左格的 `onRenderSuccess`，它在同一个回调
+ * 里做两件事：`registry.set` 把画完的 canvas 交给右格，`onSettled` 可能触发顶替。两件事走的车道
+ * 不同：
+ *
+ * - `registry.set` 通知的是右格的 `useSyncExternalStore` 订阅，React 的 `forceStoreRerender`
+ *   **无条件**用 SyncLane（`react-dom/cjs/react-dom-client.development.js:8260`，与触发它的是不是
+ *   discrete 事件无关——spec §12 的 v7 订正已经对着源码核过一次）；
+ * - 顶替走的是 `setLayers`，而 `onRenderSuccess` 出自 react-pdf 的异步续体（不是事件处理器），
+ *   拿到的是 DefaultLane。
+ *
+ * 同一个 root 上两者都挂着时，React 先冲 Sync 再冲 Default，于是「右格拿到 leftCanvas 并合成」
+ * 必然先于「顶替」。**注意理由已经变了**：这里原先写的是「同一批 setState」——那是 leftCanvas 还
+ * 走 `MountedPageCells` 本地 state 时的事，改成跨树注册表之后那句不再是事实，结论却仍成立。
+ *
+ * 仍然用 useLayoutEffect 而不是 useEffect：合成要落在**画出这张 canvas 的那次 commit 绘制之前**。
+ * 上面那条 Sync 路径上两者其实等价（sync commit 末尾同步冲 passive effect，中间不插绘制），但这个
+ * effect 的依赖里还有走 DefaultLane 的量——`size.w` 出自页尺寸预取续体里的 `setSizes`，那条路上
+ * passive effect 走 MessageChannel 宏任务，浏览器会在中间绘制一帧，右格就会拿旧位图配新 CSS 尺寸
+ * 露出来。useLayoutEffect 让两条路一视同仁。
  */
 export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground, blank }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
