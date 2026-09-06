@@ -1135,13 +1135,19 @@ test('59-pdf-translate: 没有文本层的 PDF——Notice 报「没有文本层
   }
 });
 
-test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用', async () => {
+test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用，且那一档的三个数字都是真值', async () => {
   // spec §9.3 的提交点：jobSeq 挡得住「写渲染层的 store」，挡不住一次**已经发出的 save**。
   // 所以取消入口在进入 finalize 的那一刻关闭——否则会出现「取消了但边车落了盘」的中间态。
   //
   // finalize 只有一次 IPC 往返那么宽，靠时机去抓抓不住。把闸门改成扣 `pdf.translation.save`：
   // 翻译整趟照常跑完，作业**确定地**停在「已经 setJob(finalize)、save 请求已发出未落地」这一刻。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
+  //
+  // 这个「确定地停在 finalize」的落点也是全仓唯一能看住 M-1 的地方，所以顺带把那一档的读数一起
+  // 钉在这里：曾经硬写过一版 `{ done: 0, total: 1, failed: 0 }`，后果是保存那一刻进度条从 100%
+  // 打回 0%、「N 页失败」凭空消失，而当时没有任何断言会因此变红。fixture 因此选带失败页的那份
+  // （ONE_FAIL_FIXTURE，第 2 页两次响应都不含 "|"）——三个数字这才与那组硬写值**逐个**不同，
+  // 换成全成功的 fixture 只有 done/total 有区分力，failed 那位又回到零覆盖。
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
   try {
     const { page, kydogHome } = launched;
     const projectPath = path.join(kydogHome, 'proj');
@@ -1162,7 +1168,8 @@ test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用', async
     // 浮层还在，而且报的是 finalize 那一档的文案——不然下面那条 disabled 可能是别的原因。
     const progress = pane.getByTestId('pdf-translate-progress');
     await expect(progress).toBeVisible();
-    await expect(progress).toContainText('正在保存');
+    await expect(progress, 'finalize 那一档的三个数字都得是这一趟的真值：4 页全翻完、其中 1 页失败')
+      .toContainText('正在保存 · 4 / 4 · 1 页失败');
     await expect(pane.getByTestId('pdf-translate-cancel'), 'finalize 之后不再给取消').toBeDisabled();
 
     // 放行：这一趟照常写盘、重新加载，画面进对照。钉住「禁用的是取消，不是把作业卡死了」。
