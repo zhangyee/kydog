@@ -5,9 +5,12 @@ import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
 import { buildPagedPdf } from './fixtures/textPdf';
 import { ZOOM_SENSITIVITY } from '../src/renderer/panels/main-pane/pdf/zoomSensitivity';
-import { MIN_PANE_PX, DIVIDER_PX } from '../src/renderer/panels/main-pane/pdf/splitPane';
+// splitPane.ts 整个文件都是纯算（两个常量 + 三个纯函数，无 import），所以连函数一起拿过来用：
+// 拖分隔线那条用例要断的是「DOM 与这两个纯函数逐像素一致」，照抄一份公式到测试里等于把被测的
+// 算法抄了两遍，抄错了两边一起错。
+import { clampSplit, DIVIDER_PX, paneWidths } from '../src/renderer/panels/main-pane/pdf/splitPane';
 // contrast() 是纯函数（luminance 算术，见文件内注释），不依赖 DOM——同 ZOOM_SENSITIVITY /
-// splitPane 的两个常量一样可以直接从组件目录 import 到 Node 端的 e2e 文件，不会拖入 react-pdf /
+// splitPane 一样可以直接从组件目录 import 到 Node 端的 e2e 文件，不会拖入 react-pdf /
 // pdf.js worker 的副作用
 // （那两个文件都没有其他 import；inkForBackground.ts 只 import 了 pageBackground.ts 的一个类型）。
 import { contrast } from '../src/renderer/panels/main-pane/pdf/inkForBackground';
@@ -622,8 +625,10 @@ test('57-pdf-dual-pane: 进入对照时按需 fit-width，退出还原（连位�
     const beforeW = await stableCanvasWidth(page, paneSel);
     expect(beforeW, '进对照前清晰层的左格 canvas 应当已经定好 CSS 尺寸').toBeGreaterThan(0);
 
-    // 一行是 2 × 595pt + 16pt 间距 = 1206pt，默认窗口宽度（main pane 减去两条侧栏之后）明显
-    // 装不下——进对照应当把缩放降到刚好放下，读数因此跟着变小。
+    // 分栏之后一行恒是**一页**宽（两栏各 map 一遍同一份 sizes，行宽都是 `size.w × scale`），
+    // 不再是 v7 之前那个「一行 = 2 × 595pt + 16pt 间距」的单容器版面。变窄的是**视口**：进对照
+    // 那一刻左栏从铺满 wrapper 变成约一半，而 fit 对着较窄那一栏。默认窗口（main pane 减去两条
+    // 侧栏之后）的一半明显放不下 595pt，所以缩放会被降到刚好放下，读数跟着变小。
     await enterDual(page, pane);
     const during = await readout.textContent();
     expect(during, '进对照后行宽放不下，读数应当已经变小').not.toBe(before);
@@ -1376,13 +1381,17 @@ test('57-pdf-dual-pane: 拖分隔线改两栏宽度，拖到最右右栏也不�
     // 按住之后先原地挪一小段：clampSplit 把「指针到 wrapper 左边缘的距离」直接当左栏宽，而
     // 命中区中心比左栏右边缘还靠右 DIVIDER_PX / 2。先挪一次把基准落到指针上，后面那 150 才是
     // 干干净净的 150（不然会多出这半条命中区的宽度）。
+    // 等的是「左栏真的变宽了」，不是「左栏有宽度」——后者进对照之后恒真，poll 会立刻通过，
+    // 那时 React 可能还没 commit 这次拖动，读走的 base 是拖动前的宽度，下面那个 150 就变成
+    // 160（多算了上面这 10）。
+    const l0 = (await paneBoxWidths(page, paneSel))!.left;
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
     await page.mouse.move(c.x + 10, c.y, { steps: 3 });
     await expect.poll(
       async () => (await paneBoxWidths(page, paneSel))?.left ?? 0,
       { timeout: 5000, message: '等第一次拖动落地' },
-    ).toBeGreaterThan(0);
+    ).toBeGreaterThan(l0 + 5);
     const base = (await paneBoxWidths(page, paneSel))!;
 
     // 再往右 150：左栏宽 +150、右栏宽 −150（两栏加分隔线恒等于 wrapper，见 paneWidths）。
@@ -1406,17 +1415,24 @@ test('57-pdf-dual-pane: 拖分隔线改两栏宽度，拖到最右右栏也不�
     // 分隔线已经被上一次拖动挪走了，位置必须重新量——按老坐标按下去按的是左栏，什么都不会发生。
     const c2 = await dividerCenter(pane);
     expect(c2.x, '分隔线应当跟着上一次拖动往右挪了').toBeGreaterThan(c.x + 100);
+    const hugeX = base.wrapRight + 400;
     await page.mouse.move(c2.x, c2.y);
     await page.mouse.down();
-    await page.mouse.move(base.wrapRight + 400, c2.y, { steps: 8 });
+    await page.mouse.move(hugeX, c2.y, { steps: 8 });
     await page.mouse.up();
     await expect.poll(
       async () => (await paneBoxWidths(page, paneSel))?.right ?? Infinity,
       { timeout: 5000, message: '等拖到最右落地' },
     ).toBeLessThan(moved.right);
     const pinned = (await paneBoxWidths(page, paneSel))!;
-    expect(pinned.right, `右栏拖到最窄也不该小于 MIN_PANE_PX ${JSON.stringify(pinned)}`)
-      .toBeGreaterThanOrEqual(MIN_PANE_PX);
+    // 断的是「DOM 与 clampSplit / paneWidths 逐像素一致」，不是「右栏 ≥ MIN_PANE_PX」。
+    // 后者在这里是**构造性等号**：clampSplit 的上限就是 usable − MIN_PANE_PX，`usable ×
+    // (hi/usable)` 的浮点结果再经 Blink 的 1/64 px 量化，实测正好落在 120 的刀刃上，
+    // 119.99998 会让它红成一条看起来像分隔线回归的假警报。而放宽容差就是把判据换成阈值。
+    // MIN_PANE_PX 这个下限本身由 splitPane.test.ts 守（纯函数，零容差）；这里守的是产品代码
+    // 有没有把它接对——DOM 里那两栏必须正好是纯函数在同一组输入下算出来的宽。
+    expect(pinned.right, `右栏宽应当就是 paneWidths(clampSplit(…)) 算出来的那个数 ${JSON.stringify(pinned)}`)
+      .toBeCloseTo(paneWidths(pinned.wrapWidth, clampSplit(hugeX, pinned.wrapLeft, pinned.wrapWidth)).right, 0);
     // 两栏加一条分隔线恰好铺满 wrapper——右栏不是靠溢出撑住的那 120 px。
     expect(pinned.left + pinned.right + DIVIDER_PX, '两栏 + 分隔线应当铺满 wrapper')
       .toBeCloseTo(pinned.wrapWidth, 0);
