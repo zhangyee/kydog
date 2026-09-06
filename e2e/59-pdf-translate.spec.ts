@@ -324,9 +324,12 @@ async function sampleRight(
   page: Page, paneSel: string, box: { x: number; y: number; w: number; h: number },
 ): Promise<RightPixels> {
   return page.evaluate(({ sel, box, pageW }) => {
-    const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`);
-    const left = row?.querySelector('canvas:not([data-pdf-right])') as HTMLCanvasElement | null;
-    const right = row?.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement | null;
+    // 对照是左右两个滚动栏，两栏的页行**都**带 data-pdf-page / data-pdf-layer（靠外面那层
+    // `[data-pdf-pane]` 区分，见 PdfFileTab 的 renderLayers）。左右两格因此不在同一行里，
+    // 各自按栏找；不限栏的话 querySelector 命中的是文档序在前的左栏那一行，里面没有右格。
+    const pane = (w: string) => `${sel} [data-pdf-pane="${w}"] [data-pdf-layer="stable"] [data-pdf-page="1"]`;
+    const left = document.querySelector(`${pane('left')} canvas`) as HTMLCanvasElement | null;
+    const right = document.querySelector(`${pane('right')} canvas[data-pdf-right]`) as HTMLCanvasElement | null;
     if (!left || !right || left.width === 0 || right.width !== left.width) return null;
     const S = right.width / pageW;                       // 位图像素 / pt
     const rect: [number, number, number, number] = [
@@ -369,7 +372,10 @@ async function waitJobParked(host: GateHost) {
   ).toBeGreaterThan(0);
 }
 
-test('59-pdf-translate: 点翻译键立刻进双栏，右格是空白像素、右半边有进度浮层', async () => {
+// 「右半边」是分栏改造之前的说法（那时两格在同一个滚动容器的同一行里）。现在浮层的父层就是
+// **右栏**那个容器的兄弟（PdfFileTab 里右栏与 TranslationProgress 的共同 relative 父层），
+// 措辞跟着 DOM 走。
+test('59-pdf-translate: 点翻译键立刻进双栏，右格是空白像素、右栏里有进度浮层', async () => {
   const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
   try {
     const { page, kydogHome } = launched;
@@ -387,6 +393,20 @@ test('59-pdf-translate: 点翻译键立刻进双栏，右格是空白像素、�
     // setJob，不等抽取跑完。
     await expect(pane.getByTestId('pdf-translate-progress')).toBeVisible();
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+    // 「在右栏里」取几何，不取「元素在不在」：浮层是右栏容器的兄弟、absolute 居中（放进滚动
+    // 容器会跟着内容滚走），挂错父层的话它会居中在整个 wrapper 上，横向中心落到左栏里去。
+    const overlayIn = await page.evaluate((sel) => {
+      const o = document.querySelector(`${sel} [data-testid="pdf-translate-progress"]`);
+      const r = document.querySelector(`${sel} [data-pdf-pane="right"]`);
+      if (!o || !r) return null;
+      const ob = o.getBoundingClientRect();
+      const rb = r.getBoundingClientRect();
+      return { cx: ob.left + ob.width / 2, rl: rb.left, rr: rb.right };
+    }, paneSel);
+    expect(overlayIn, '应当同时量得到浮层与右栏').not.toBeNull();
+    expect(overlayIn!.cx, `进度浮层的横向中心应当落在右栏里 ${JSON.stringify(overlayIn)}`)
+      .toBeGreaterThan(overlayIn!.rl);
+    expect(overlayIn!.cx).toBeLessThan(overlayIn!.rr);
 
     await waitJobParked(launched);
 
@@ -503,10 +523,10 @@ test('59-pdf-translate: 重新翻译——右格回到空白，旧译文块一�
     //    的 seed1，两者不可能混淆。这条因此真的钉住了那个顺序：反过来的话那趟加载会被 job 闸自己
     //    挡掉，边车虽然落了盘，界面上却永远停在上一版。
     await releaseGate(launched);
-    const fresh = page.locator(`${paneSel} [data-translation-block="p1-b01"]`);
+    const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
     await expect(fresh, '跑完之后应当渲染的是**新**这一版的译文块').toBeVisible({ timeout: 15000 });
     await expect(
-      page.locator(`${paneSel} [data-translation-block="seed1"]`),
+      page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`),
       '上一版的块不该还留在那儿',
     ).toHaveCount(0);
     const after = await waitSample(page, paneSel, INK, '重译之后');
@@ -552,10 +572,10 @@ test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回�
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
 
     await releaseGate(launched);
-    const fresh = page.locator(`${paneSel} [data-translation-block="p1-b01"]`);
+    const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
     await expect(fresh, '跑完之后应当渲染的是新这一版的译文块').toBeVisible({ timeout: 15000 });
     await expect(
-      page.locator(`${paneSel} [data-translation-block="seed1"]`),
+      page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`),
       '上一版的块不该还留在那儿',
     ).toHaveCount(0);
   } finally {
@@ -633,7 +653,7 @@ test('59-pdf-translate: 「重新翻译」确认框点取消——边车不变�
     const before = await fs.readFile(zhPath, 'utf8');
 
     await enterDual(page, pane);
-    await expect(page.locator(`${paneSel} [data-translation-block="seed1"]`)).toBeVisible();
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`)).toBeVisible();
 
     await installTranslateGate(launched);
     await pane.getByTestId('pdf-retranslate').click();
@@ -651,7 +671,7 @@ test('59-pdf-translate: 「重新翻译」确认框点取消——边车不变�
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
     await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
     await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在').toBeVisible();
-    await expect(page.locator(`${paneSel} [data-translation-block="seed1"]`), '旧译文块原样还在')
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`), '旧译文块原样还在')
       .toBeVisible();
   } finally {
     await teardown(launched);
@@ -946,21 +966,25 @@ async function waitSidecar(file: string) {
 }
 
 /**
- * 第 1 页那一行的几何：行宽与行里左格的 CSS 宽度。
+ * 单栏 / 双栏的**版面**区别。
  *
- * 单栏 / 双栏在 DOM 上的区别不是「有没有那块 canvas」，而是**行宽**——PdfFileTab 给页行显式
- * 写死 `(dual ? w * 2 + PAGE_GAP : w) * scale`。所以「仍是单栏几何」这条断言取的是
- * 行宽 ÷ 左格宽：单栏 ≈ 1，双栏 ≈ 2 以上。两者同处一个 zoom 之下，比值与缩放无关。
+ * 分栏改造（spec v8 §3.1）之前，两格在同一个 flex 行里，行宽是 `(dual ? w * 2 + PAGE_GAP : w)
+ * × scale`，「仍是单栏」于是取「行宽 ÷ 左格宽」。改造之后行宽恒是**一页**宽，那个比值在双栏下
+ * 也是 1 —— 老写法会在留在双栏时照样绿，是个测不出东西的断言。
+ *
+ * 现在的区别落在栏本身：单栏只有左栏一个滚动容器，它是 wrapper 里唯一的在流子元素（Notice /
+ * 工具栏 / 浮条都是 absolute），宽度因此就是 wrapper 的宽；双栏则多出一条分隔线和右栏，左栏
+ * 宽掉到 `(wrapper − DIVIDER_PX) × split` ≈ 一半。三个数一起取，任何一处留在双栏都会被抓到。
  */
-async function rowGeometry(page: Page, paneSel: string) {
+async function paneLayout(page: Page, paneSel: string) {
   return page.evaluate((sel) => {
-    const row = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-pdf-page="1"]`);
-    const left = row?.querySelector('canvas:not([data-pdf-right])') as HTMLCanvasElement | null;
-    if (!row || !left) return null;
+    const left = document.querySelector(`${sel} [data-pdf-pane="left"]`) as HTMLElement | null;
+    if (!left) return null;
     return {
-      rowW: row.getBoundingClientRect().width,
       leftW: left.getBoundingClientRect().width,
-      rights: row.querySelectorAll('canvas[data-pdf-right]').length,
+      wrapW: left.parentElement!.getBoundingClientRect().width,
+      rightPanes: document.querySelectorAll(`${sel} [data-pdf-pane="right"]`).length,
+      dividers: document.querySelectorAll(`${sel} [data-testid="pdf-pane-divider"]`).length,
     };
   }, paneSel);
 }
@@ -987,7 +1011,7 @@ test('59-pdf-translate: 跑完之后边车落盘可解析，右格那一块的�
     expect(b1?.target, 'fixture 给第 1 页的那句译文应当原样落进边车').toBe('第一页的译文');
 
     // ② 译文块渲染出来了，文字就是边车里那句。
-    await expect(page.locator(`${paneSel} [data-translation-block="p1-b01"]`)).toHaveText('第一页的译文');
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toHaveText('第一页的译文');
 
     // ③ 像素：右格这一块里的原文墨迹没了（RightPage 按页背景色把块矩形填平了），左格同一块里
     //    还在。取样矩形直接用边车里那个块**自己的几何**内缩 1 pt，不写死坐标——写死的话 fixture
@@ -1057,7 +1081,7 @@ test('59-pdf-translate: 第一条响应违反校验、第二条合法——重�
       .toBe('第一页的译文（重试之后）');
     expect(doc.blocks.filter((b) => b.page === 1), '第 1 页应当正好一个块').toHaveLength(1);
 
-    await expect(page.locator(`${paneSel} [data-translation-block="p1-b01"]`))
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`))
       .toHaveText('第一页的译文（重试之后）');
 
     // 不计入失败：四页全成功、版本匹配、没有丢块 → Notice 一条消息都没有（它只有一行，任何一
@@ -1144,7 +1168,7 @@ test('59-pdf-translate: 输出被截断——对半拆重试，最终块数等�
     await expect(pane.getByTestId('pdf-notice'), '截断被正确处置，没有失败页').toHaveCount(0);
 
     // 拆出来的第二个块真的画在了下半页——只看边车的话，块画没画出来还是未知数。
-    await expect(page.locator(`${paneSel} [data-translation-block="p1-b02"]`))
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b02"]`))
       .toHaveText('第一页下半的译文');
   } finally {
     await teardown(launched);
@@ -1165,9 +1189,10 @@ test('59-pdf-translate: 没有文本层的 PDF——Notice 报「没有文本层
     const pane = await openPdf(page, pdfPath);
 
     await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-    const before = await rowGeometry(page, paneSel);
-    expect(before, '点之前就该量得到第 1 页那一行').not.toBeNull();
-    expect(before!.rights, '点之前是单栏').toBe(0);
+    const before = await paneLayout(page, paneSel);
+    expect(before, '点之前就该量得到左栏').not.toBeNull();
+    expect(before!.rightPanes, '点之前是单栏').toBe(0);
+    expect(before!.leftW, '单栏时左栏就是 wrapper 那么宽').toBeCloseTo(before!.wrapW, 0);
 
     await pane.getByTestId('pdf-translate').click();
 
@@ -1175,15 +1200,16 @@ test('59-pdf-translate: 没有文本层的 PDF——Notice 报「没有文本层
       .toContainText('翻译失败：这份 PDF 没有文本层');
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
 
-    // 「仍是单栏」取几何，不取「那块 canvas 在不在」：页行的宽度是 dual 唯一的版面后果
-    // （`(dual ? w * 2 + PAGE_GAP : w) * scale`）。留在双栏的话这个比值 ≥ 2。
+    // 「仍是单栏」取版面几何，不取「那块 canvas 在不在」：留在双栏的话左栏只有 wrapper 的一半宽，
+    // 还多出一条分隔线和一个右栏容器。三条都断，任何一处没退干净都会红。
     await expect.poll(
-      async () => (await rowGeometry(page, paneSel))?.rowW,
+      async () => (await paneLayout(page, paneSel))?.leftW,
       { timeout: 10000, message: '等失败之后退回单栏' },
-    ).toBeCloseTo(before!.rowW, 0);
-    const after = (await rowGeometry(page, paneSel))!;
-    expect(after.rowW / after.leftW, `行宽应当仍是一页宽 ${JSON.stringify(after)}`).toBeLessThan(1.05);
-    expect(after.rights, '不该留下右格').toBe(0);
+    ).toBeCloseTo(before!.wrapW, 0);
+    const after = (await paneLayout(page, paneSel))!;
+    expect(after.leftW, `左栏应当仍铺满 wrapper ${JSON.stringify(after)}`).toBeCloseTo(after.wrapW, 0);
+    expect(after.rightPanes, '不该留下右栏').toBe(0);
+    expect(after.dividers, '不该留下分隔线').toBe(0);
     // 顺带确认这条失败路径什么都没写盘。
     expect(await fs.stat(sidecar).then(() => true, () => false), '抽取阶段就中止，不该有边车')
       .toBe(false);
@@ -1233,7 +1259,7 @@ test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用，且�
     await releaseGate(launched);
     await waitSidecar(sidecar);
     await expect(progress).toHaveCount(0, { timeout: 20000 });
-    await expect(page.locator(`${paneSel} [data-translation-block="p1-b01"]`)).toBeVisible({ timeout: 20000 });
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toBeVisible({ timeout: 20000 });
   } finally {
     await teardown(launched);
   }
