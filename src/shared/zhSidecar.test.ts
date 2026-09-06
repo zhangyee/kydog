@@ -138,3 +138,21 @@ describe('failedPages 结构校验', () => {
       .toThrow(expect.objectContaining({ code: 'pdf.translation_invalid' }));
   });
 });
+
+describe('failureReasons 结构校验', () => {
+  const fdoc = (failureReasons: unknown) => ({ ...doc(), failedPages: [4], failureReasons });
+  it('合法 → 原样带出', () => {
+    expect(validateTranslatedDoc(fdoc({ '4': '行 59 没有出现在任何组里' }), 'f').failureReasons).toEqual({ '4': '行 59 没有出现在任何组里' });
+  });
+  it('不是对象 / 是数组 → 抛', () => {
+    expect(() => validateTranslatedDoc(fdoc('x'), 'f')).toThrow(/failureReasons 不是对象/);
+    expect(() => validateTranslatedDoc(fdoc(['a']), 'f')).toThrow(/failureReasons 不是对象/);
+  });
+  it('键不是 ≥ 1 的整数页号 → 抛', () => {
+    expect(() => validateTranslatedDoc(fdoc({ '0': 'a' }), 'f')).toThrow(/不是 ≥ 1 的整数页号/);
+    expect(() => validateTranslatedDoc(fdoc({ p4: 'a' }), 'f')).toThrow(/不是 ≥ 1 的整数页号/);
+  });
+  it('值为空串 → 抛', () => {
+    expect(() => validateTranslatedDoc(fdoc({ '4': '' }), 'f')).toThrow(/不是非空字符串/);
+  });
+});

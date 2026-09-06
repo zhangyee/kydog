@@ -52,6 +52,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
    * 里捞——一切关于它「活多久」的补丁都是那次丢信号的下游症状。
    */
   const failedPages: number[] = [];
+  const reasons: Record<string, string> = {};
 
   // ── 1. 抽取。不 catch：抽取失败与「这页没字」是两件事（spec §4），异常中止整趟。
   const perPage = new Map<number, PageLine[]>();
@@ -133,6 +134,9 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
       } catch (e2) {
         if (isNotConfigured(e2)) { aborted = true; throw e2; }
         failedPages.push(page);
+        // 原因随页号一起落边车（spec 2026-09-06 §4.2）：以前这里只 push 页号，异常当场丢掉，
+        // 「为什么失败」在流水线里就地消失，事后从任何记录里都查不出来。
+        reasons[String(page)] = `${(e as Error).message}；重试：${(e2 as Error).message}`;
       }
     }
     // 这次 attempt 是在别的 worker 已经因 llm.not_configured 抛错之后才落地的——Promise.all
@@ -192,5 +196,6 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   // 升序：页是并发跑的，push 的次序是完成次序。排一次序让边车内容只由「哪几页失败」决定，
   // 不由这一趟的调度巧合决定（否则同样的输入会写出不同的文件）。
   if (failedPages.length) doc.failedPages = [...failedPages].sort((a, b) => a - b);
+  if (failedPages.length) doc.failureReasons = reasons;
   return doc;
 }

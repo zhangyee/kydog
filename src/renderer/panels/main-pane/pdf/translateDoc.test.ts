@@ -127,6 +127,25 @@ describe('translateDoc', () => {
     expect(Object.keys(doc!)).not.toContain('failedPages');
   });
 
+  describe('failureReasons', () => {
+    it('两次都失败 → 边车里有该页的两次报错文本；成功页没有条目', async () => {
+      const doc = await translateDoc(base({
+        numPages: 2,
+        translatePage: async ({ page }) => ({
+          text: page === 2 ? 'no bar here' : '1 | text\nT\n%%\n', truncated: false,
+        }),
+      }));
+      expect(doc!.failedPages).toEqual([2]);
+      expect(Object.keys(doc!.failureReasons!)).toEqual(['2']);
+      expect(doc!.failureReasons!['2']).toMatch(/组头缺少 "\|"/);
+      expect(doc!.failureReasons!['2']).toMatch(/；重试：/);
+    });
+    it('一页都没失败 → 没有 failureReasons 这个键', async () => {
+      const doc = await translateDoc(base());
+      expect('failureReasons' in doc!).toBe(false);
+    });
+  });
+
   it('截断 → 对半拆重试，递归到单行', async () => {
     const calls: number[] = [];
     const doc = await translateDoc(base({

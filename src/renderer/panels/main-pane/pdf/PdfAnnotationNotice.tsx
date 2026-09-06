@@ -1,4 +1,5 @@
 import { sidecarPath } from '../../../../shared/pdfSidecar';
+import { Tooltip } from '../../../shared';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { usePdfTranslationStore } from './pdfTranslationStore';
 import { pdfSaveScheduler } from './saveScheduler';
@@ -42,8 +43,16 @@ export function PdfAnnotationNotice(
   else if (t?.version === 'mismatch') text = '译文对应的是另一个版本的 PDF；请重新翻译，或重新打开该文件';
   else if (t && t.version === 'unknown' && t.doc) text = '未记录源文件摘要，无法确认译文与当前 PDF 匹配';
   else if (t && t.dropped > 0) text = `${t.dropped} 条译文块超出页面范围，已跳过`;
-  else if (t?.doc?.failedPages?.length) text = `${t.doc.failedPages.length} 页翻译失败，右栏保留原文`;
+  else if (t?.doc?.failedPages?.length) {
+    const pages = t.doc.failedPages;
+    text = `${pages.length} 页翻译失败（第 ${pages.join('、')} 页），右栏保留原文`;
+  }
   if (!text) return null;
+
+  const reasons = t?.doc?.failureReasons;
+  const failed = t?.doc?.failedPages ?? [];
+  const showReasons = text.includes('页翻译失败') && !!reasons && failed.some((p) => reasons[String(p)]);
+  const body = <span className="font-serif" style={{ overflowWrap: 'anywhere' }}>{text}</span>;
 
   return (
     <div style={{ position: 'absolute', left: 0, right: 0, bottom: 64, display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 5 }}>
@@ -56,7 +65,20 @@ export function PdfAnnotationNotice(
           fontSize: 12, lineHeight: 1.5, pointerEvents: 'auto',
         }}
       >
-        <span className="font-serif" style={{ overflowWrap: 'anywhere' }}>{text}</span>
+        {showReasons ? (
+          <Tooltip
+            placement="top"
+            content={
+              <div data-testid="pdf-notice-reasons">
+                {failed.filter((p) => reasons![String(p)]).map((p) => (
+                  <div key={p}>{`第 ${p} 页：${reasons![String(p)]}`}</div>
+                ))}
+              </div>
+            }
+          >
+            {body}
+          </Tooltip>
+        ) : body}
         {!loadError && !!saveError && (
           // 只在正在显示的是标注保存失败这条时才给「重试」——其余七条（标注 loadError、
           // 译文那六条）都没有对应的重试动作。原来 `!loadError` 就够，是因为那时只有这两条

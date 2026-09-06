@@ -842,11 +842,23 @@ test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——失
     await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
 
     await expect(pane.getByTestId('pdf-notice'), '作业跑完之后这条消息仍应可见')
-      .toContainText('1 页翻译失败，右栏保留原文');
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
     // 顺带钉住信号的落点：Notice 上那句话的来源是**边车里的页号**，不是内存里某个作业留下的
     // 数字。页号而不是计数——计数是逐页信号的有损汇总，长度随时能推出来，反过来不行。
     expect((await readSidecar(path.join(kydogHome, 'proj', `.${PLAIN_REL}.zh.json`))).failedPages,
       '失败页号应当写进边车').toEqual([2]);
+    const saved = await readSidecar(path.join(kydogHome, 'proj', `.${PLAIN_REL}.zh.json`));
+    // fixture 的第 2 页两条响应文本里都嵌了一个引号包住的字面 "|"（"这条响应故意没有 \"|\"…"），
+    // 那个字符恰好被 parseGroups 的 `head.indexOf('|')` 当成组头分隔符找到，于是它不是走「组头
+    // 缺少 "|"」那支，而是把 "|" 前面那一截当行号规格喂给 parseIds、拿到「行号不认识」——
+    // 断言照真实产物走，不是照 fixture 描述性注释里说的意图走。
+    expect(saved.failureReasons?.['2'], '失败原因应当随页号一起落盘').toMatch(/行号不认识/);
+    // 悬停 Notice → Tooltip 里每页一行原因
+    await pane.getByTestId('pdf-notice').hover();
+    const tip = page.getByTestId('pdf-notice-reasons');
+    await expect(tip).toBeVisible();
+    await expect(tip).toContainText('第 2 页：');
+    await expect(tip).toContainText('行号不认识');
     // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
@@ -877,7 +889,7 @@ test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
     await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
     await expect(pane.getByTestId('pdf-notice'), '第一趟跑完之后应显示 1 页失败')
-      .toContainText('1 页翻译失败，右栏保留原文');
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
     // 此刻已经在对照中（第一趟成功就会进 active），「重新翻译」键应当可见。
     const retranslateBtn = pane.getByTestId('pdf-retranslate');
     await expect(retranslateBtn).toBeVisible();
@@ -892,7 +904,7 @@ test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显
 
     // 关键断言：取消之后 Notice 应当仍显示第一趟的失败计数，不该因为第二趟刚起步就被清成 0。
     await expect(pane.getByTestId('pdf-notice'), '取消重译之后仍应显示上一趟真正跑完的失败计数')
-      .toContainText('1 页翻译失败，右栏保留原文');
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
     // 顺带确认还在对照中——这不是本条的重点（wasDual 那条用例已经钉住），只是让上面那句断言的
     // 前提（「右格合成的仍是旧译文」）不是空中楼阁。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
@@ -931,7 +943,7 @@ test('59-pdf-translate: 切一次窗口（focus 重探）之后「N 页翻译失
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
     await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
     await expect(pane.getByTestId('pdf-notice'), '跑完之后应显示 1 页失败')
-      .toContainText('1 页翻译失败，右栏保留原文');
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
     expect((await readSidecar(sidecar)).failedPages, '失败页号应当写进边车').toEqual([2]);
 
     // 闸门只用来数 pdf.translation.* 的调用次数（hold 传空数组 = 一条都不扣，全部原样透传）。
@@ -948,7 +960,7 @@ test('59-pdf-translate: 切一次窗口（focus 重探）之后「N 页翻译失
 
     // 关键断言：重探回来之后提示仍在。信号在盘上，不是内存里某个数字的余额。
     await expect(pane.getByTestId('pdf-notice'), '切一次窗口不该把「N 页翻译失败」抹掉')
-      .toContainText('1 页翻译失败，右栏保留原文');
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
     // 顺带确认重探没有把用户踢出对照（setLoaded 的 dual 维持，与本条正交但同一条路径）。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
@@ -1143,7 +1155,7 @@ test('59-pdf-translate: 空译文两次都不合法——该页判失败，右�
     // 上面那条的成因：这一页两次都判不合法，所以压根没有块。
     expect(doc.blocks.filter((b) => b.page === 1), '第 1 页两次都不合法，不该产出任何块').toHaveLength(0);
     await expect(pane.getByTestId('pdf-notice'), '这一页判失败，右栏保留原文')
-      .toContainText('1 页翻译失败，右栏保留原文');
+      .toContainText('1 页翻译失败（第 1 页），右栏保留原文');
   } finally {
     await teardown(launched);
   }

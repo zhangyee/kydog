@@ -83,4 +83,13 @@ describe('harnessTemplates', () => {
       expect(harnessTemplates(locale).agents).toContain('failedPages');
     }
   });
+
+  /**
+   * failureReasons 与 failedPages 同一趟写、同一份写入方约束——同样的漂移风险，同样的守法。
+   */
+  it('两份 AGENTS.md 都点名 failureReasons 由内置翻译写、agent 不用写', () => {
+    for (const locale of ['zh', 'en'] as const) {
+      expect(harnessTemplates(locale).agents).toContain('failureReasons');
+    }
+  });
 });

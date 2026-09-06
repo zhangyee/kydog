@@ -128,6 +128,10 @@ don't write it**: just leave it out of a sidecar you author, and its absence mea
 pages". If you do carry one over from an existing sidecar it must be an array of integers
 starting at 1 — string page numbers, 0 or fractions make the **whole file** malformed.
 
+The same goes for `failureReasons` (page-number string → why that page failed): written by the
+built-in translation only, not by you. If you carry it over it must be an object mapping integer
+page-number strings (≥ 1) to non-empty strings, otherwise the **whole file** is malformed.
+
 ## Self-Maintenance
 
 Your workspace files: `~/.kydog/SOUL.md` (identity), `~/.kydog/USER.md`

@@ -47,6 +47,12 @@ export type TranslatedDoc = {
    * spread、不拒），现有的合法边车要么没这个字段，要么本来就是这个形状。
    */
   failedPages?: number[];
+  /**
+   * 失败页的原因，键是页号的十进制字符串（JSON 键只能是字符串），值是那一页最后两次尝试的报错
+   * （`首跑原因；重试：重试原因`）。与 failedPages 同一趟写、同一趟清；缺省 = 没记。
+   * 不 bump version，同 failedPages。（spec 2026-09-06 §4.2）
+   */
+  failureReasons?: Record<string, string>;
   blocks: Block[];
 };
 
@@ -123,6 +129,14 @@ export function validateTranslatedDoc(raw: unknown, file: string): TranslatedDoc
         fail(file, `failedPages 第 ${i + 1} 项不是 ≥ 1 的整数（${String(p)}）`);
       }
     });
+  }
+  if (d.failureReasons !== undefined) {
+    const fr = d.failureReasons;
+    if (typeof fr !== 'object' || fr === null || Array.isArray(fr)) fail(file, 'failureReasons 不是对象');
+    for (const [k, v] of Object.entries(fr as Record<string, unknown>)) {
+      if (!/^[1-9]\d*$/.test(k)) fail(file, `failureReasons 的键 ${JSON.stringify(k)} 不是 ≥ 1 的整数页号`);
+      if (typeof v !== 'string' || v === '') fail(file, `failureReasons["${k}"] 不是非空字符串`);
+    }
   }
   return { ...(d as unknown as TranslatedDoc), blocks: d.blocks.map((b, i) => validateBlock(b, i, file)) };
 }
