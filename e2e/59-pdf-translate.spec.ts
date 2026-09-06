@@ -53,6 +53,9 @@ const EMPTY_TARGET_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-empty-
 const TRUNCATED_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-truncated.json');
 // 页 1 是单行 title：`1 | title` + 两字译文「首页」，用来钉住标题字号首尾半行距放到块外这条修复。
 const TITLE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-title.json');
+// 页 2 第一条响应漏了第 2 行（页码行），第二条只补那一行：用来验证补漏只再发缺的那几行，
+// 不整页重试（spec 2026-09-06 §4.1）。
+const REPAIR_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-repair.json');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -1308,6 +1311,29 @@ test('59-pdf-translate: 单行标题块的译文字号不再被 1.5 倍行高压
     expect(geo.font).toBeCloseTo(b.fontSize * rasterScale, 1);
     expect(geo.top).toBeCloseTo((b.y - 0.25 * b.fontSize) * rasterScale, 1);
     expect(geo.height).toBeCloseTo((b.height + 0.5 * b.fontSize) * rasterScale, 1);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 划分缺一行——只把那一行再发一次并合并，页不判失败', async () => {
+  const launched = await launchKydog({ seed: seedTwoLines, translateFixture: REPAIR_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const pane = await openPdf(page, pdfPath);
+    await installTranslateGate(launched, []);      // 只计数，不扣
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const doc = await readSidecar(sidecar);
+    expect(doc.failedPages, '补漏之后这一页不该判失败').toBeUndefined();
+    const p2 = doc.blocks.filter((b) => b.page === 2).map((b) => [b.kind, b.target]);
+    expect(p2, '第 2 页两行都有块：主组 text + 补漏那趟的 skip').toEqual([['text', '第二页的译文'], ['skip', undefined]]);
+    // 4 页 + 1 次补漏 = 5 次 page 调用，不是整页重试的 6 次
+    expect((await gateCounts(launched)).done['pdf.translation.page']).toBe(5);
   } finally {
     await teardown(launched);
   }

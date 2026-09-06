@@ -33,6 +33,8 @@ function parseIds(spec: string): number[] {
   return out;
 }
 
+export type Partition = { groups: ParsedGroup[]; missing: number[] };
+
 /**
  * 解析 §6 的 `%%` 协议，并做两层校验：**划分**（不重、不漏，对着 `expected`）与
  * **kind ↔ target**（可译的必须有非空译文，不可译的必须没有）。第三层几何校验在 groupGeometry。
@@ -41,8 +43,12 @@ function parseIds(spec: string): number[] {
  * 解析是个好测的纯函数。JSON 被截断则整份不可解析（spec §6）。
  *
  * 行号是不透明 id：**不排序、不过 Set 重建**。顺序是协议字段——buildBlocks 要按它拼 source。
+ *
+ * 宽松版：**只对缺行宽松**——不抛，把缺的行号按 expected 顺序回给调用方（translateDoc 据此只把
+ * 缺的那几行再发一次，spec 2026-09-06 §4.1）。重复 / 未知行号 / 组头格式 / kind↔target 照抛：
+ * 那些是模型没按契约走，补不了。
  */
-export function parseGroups(text: string, expected: number[]): ParsedGroup[] {
+export function partitionGroups(text: string, expected: number[]): Partition {
   const groups: ParsedGroup[] = [];
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   let i = 0;
@@ -85,7 +91,15 @@ export function parseGroups(text: string, expected: number[]): ParsedGroup[] {
       seen.add(n);
     }
   }
-  for (const n of expected) if (!seen.has(n)) throw new GroupError(`行 ${n} 没有出现在任何组里`);
+  // 未知行号的检查排在缺行之前：宽松版必须先把「模型编了行号」这类硬错误抛掉，才能安全地把
+  // 剩下的缺行回给调用方（否则一份把 x 坐标当行号发回来的输出会被当成「只是缺了几行」补发）。
   for (const n of seen) if (!expected.includes(n)) throw new GroupError(`行 ${n} 不在这次发出的行里`);
+  return { groups, missing: expected.filter((n) => !seen.has(n)) };
+}
+
+/** 严格版 = partitionGroups 之后缺行即抛。现有调用方与用例语义不变。 */
+export function parseGroups(text: string, expected: number[]): ParsedGroup[] {
+  const { groups, missing } = partitionGroups(text, expected);
+  if (missing.length > 0) throw new GroupError(`行 ${missing[0]} 没有出现在任何组里`);
   return groups;
 }

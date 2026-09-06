@@ -233,3 +233,74 @@ describe('translateDoc', () => {
     expect(progress).not.toContain(1);
   });
 });
+
+describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
+  it('只把缺的那几行再发一次，合并后成功、不计失败', async () => {
+    const calls: number[][] = [];
+    const doc = await translateDoc(base({
+      numPages: 1,
+      getPage: async (n: number) => fakePage(n, 3),
+      translatePage: async ({ lines }) => {
+        calls.push(lines.map((l) => l.n));
+        if (lines.length === 3) return { text: '1-2 | text\nT\n%%\n', truncated: false };   // 漏了 3
+        return { text: '3 | skip\n%%\n', truncated: false };
+      },
+    }));
+    expect(calls).toEqual([[1, 2, 3], [3]]);
+    expect(doc!.failedPages).toBeUndefined();
+    expect(doc!.blocks.map((b) => [b.kind, b.target])).toEqual([['text', 'T'], ['skip', undefined]]);
+  });
+
+  it('补漏那一趟又漏 → 整页重试（第三次调用收到整页）', async () => {
+    const calls: number[][] = [];
+    let full = 0;
+    const doc = await translateDoc(base({
+      numPages: 1,
+      getPage: async (n: number) => fakePage(n, 3),
+      translatePage: async ({ lines }) => {
+        calls.push(lines.map((l) => l.n));
+        if (lines.length === 3) {
+          full++;
+          return { text: full === 1 ? '1-2 | text\nT\n%%\n' : '1-3 | text\nT\n%%\n', truncated: false };
+        }
+        return { text: '', truncated: false };   // 补漏那趟什么都没回
+      },
+    }));
+    expect(calls).toEqual([[1, 2, 3], [3], [1, 2, 3]]);
+    expect(doc!.failedPages).toBeUndefined();
+  });
+
+  it('什么都没回来（缺的就是全部）→ 不补漏，直接整页重试', async () => {
+    const calls: number[][] = [];
+    let n = 0;
+    await translateDoc(base({
+      numPages: 1,
+      getPage: async (p: number) => fakePage(p, 2),
+      translatePage: async ({ lines }) => {
+        calls.push(lines.map((l) => l.n));
+        n++;
+        return { text: n === 1 ? '' : '1-2 | text\nT\n%%\n', truncated: false };
+      },
+    }));
+    expect(calls).toEqual([[1, 2], [1, 2]]);
+  });
+
+  it('截断对半拆之后，两半各自补漏', async () => {
+    const calls: number[][] = [];
+    const doc = await translateDoc(base({
+      numPages: 1,
+      getPage: async (p: number) => fakePage(p, 4),
+      translatePage: async ({ lines }) => {
+        const ids = lines.map((l) => l.n);
+        calls.push(ids);
+        if (ids.length === 4) return { text: '', truncated: true };
+        if (ids.join() === '1,2') return { text: '1 | text\nA\n%%\n', truncated: false };   // 漏 2
+        if (ids.join() === '2') return { text: '2 | skip\n%%\n', truncated: false };
+        return { text: '3-4 | text\nB\n%%\n', truncated: false };
+      },
+    }));
+    expect(calls).toEqual([[1, 2, 3, 4], [1, 2], [2], [3, 4]]);
+    expect(doc!.failedPages).toBeUndefined();
+    expect(doc!.blocks.map((b) => b.kind)).toEqual(['text', 'skip', 'text']);
+  });
+});

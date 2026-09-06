@@ -65,8 +65,10 @@ Group the lines into logical blocks, classify each block, and translate it.
 
 ## Grouping rules
 1. Every line id you are given MUST appear in exactly one group. Never invent,
-   drop or duplicate ids. Ids inside a group need not be consecutive, and you
-   may order them as reading order requires.
+   drop or duplicate ids. Running heads, page numbers and footers are lines
+   too: put each in a skip group. Ids are the leading <n> field, never a
+   coordinate. Ids inside a group need not be consecutive, and you may order
+   them as reading order requires.
 2. The bounding box of a group is the union of its lines' boxes. That box must
    not contain any line belonging to another group. If a figure, a formula or
    another column sits between two halves of a paragraph, emit two groups.
@@ -112,6 +114,7 @@ Input:
 2\t72,104,451,12,10\tresults on a wide range of tasks [12].
 3\t72,130,120,14,14\t2  Method
 4\t72,700,451,9,8\tPreprint. Under review.
+5\\t303,740,5,10,10\\t4
 
 Output:
 1-2 | text
@@ -121,5 +124,7 @@ Output:
 2  方法
 %%
 4 | skip
+%%
+5 | skip
 %%`;
 }

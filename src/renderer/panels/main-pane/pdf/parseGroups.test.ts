@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { GroupError, parseGroups, TRANSLATABLE } from './parseGroups';
+import { GroupError, parseGroups, partitionGroups, TRANSLATABLE } from './parseGroups';
 import { BLOCK_KINDS } from '../../../../shared/zhSidecar';
 
 const ok = `1-2 | text
@@ -71,5 +71,28 @@ describe('parseGroups', () => {
       .toEqual(new Set(BLOCK_KINDS));
     expect([...TRANSLATABLE].filter((k) => NON_TRANSLATABLE.includes(k)), '两张表有重叠').toEqual([]);
     expect(TRANSLATABLE.size + NON_TRANSLATABLE.length).toBe(BLOCK_KINDS.length);
+  });
+});
+
+describe('partitionGroups（宽松版：只对缺行宽松）', () => {
+  it('缺行 → 不抛，missing 升序列出', () => {
+    const r = partitionGroups('1-2 | text\nA\n%%\n5 | skip\n%%\n', [1, 2, 3, 4, 5]);
+    expect(r.groups.map((g) => g.lines)).toEqual([[1, 2], [5]]);
+    expect(r.missing).toEqual([3, 4]);
+  });
+  it('一行不缺 → missing 为空', () => {
+    expect(partitionGroups('1-3 | text\nA\n%%\n', [1, 2, 3]).missing).toEqual([]);
+  });
+  it('重复行号仍抛', () => {
+    expect(() => partitionGroups('1-2 | text\nA\n%%\n2 | skip\n%%\n', [1, 2])).toThrow(/出现在多个组/);
+  });
+  it('未知行号仍抛——即使同时也有缺行（第 8 页把 x 坐标 303 当行号那种）', () => {
+    expect(() => partitionGroups('1 | text\nA\n%%\n303 | skip\n%%\n', [1, 2])).toThrow(/不在这次发出的行里/);
+  });
+  it('可译 kind 没译文仍抛', () => {
+    expect(() => partitionGroups('1 | text\n%%\n', [1, 2])).toThrow(/没有译文/);
+  });
+  it('parseGroups 对缺行仍抛，报错信息与从前相同', () => {
+    expect(() => parseGroups('1 | text\nA\n%%\n', [1, 2])).toThrow('行 2 没有出现在任何组里');
   });
 });

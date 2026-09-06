@@ -53,6 +53,14 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt({ langOut: 'zh', lines })).toContain('%%');
   });
 
+  it('规则 1 点名页眉页码页脚也是行、行号不是坐标；例子里有一行页码归 skip', () => {
+    const p = buildSystemPrompt({ langOut: 'zh', lines });
+    expect(p).toContain('Running heads, page numbers and footers are lines');
+    expect(p).toContain('never a\n   coordinate');
+    expect(p).toContain('5\\t303,740,5,10,10\\t4');
+    expect(p).toContain('5 | skip\n%%');
+  });
+
   /**
    * 提示词里那份 kind 表是**英文散文硬编码**的，`BLOCK_KINDS` 加第七个值时它不会有任何信号：
    * 模型永远不知道新 kind 存在，而 parseGroups 的 KINDS 已经认了它。同 AGENTS.md 那份契约

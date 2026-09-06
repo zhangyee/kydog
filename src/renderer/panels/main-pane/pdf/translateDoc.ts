@@ -2,7 +2,7 @@ import type { Block, PageLine, Term, TranslatedDoc } from '../../../../shared/zh
 import { buildBlocks } from './buildBlocks';
 import { extractPageLines, type TextSource } from './extractPageLines';
 import { checkGroupGeometry } from './groupGeometry';
-import { parseGroups, type ParsedGroup } from './parseGroups';
+import { GroupError, partitionGroups, type ParsedGroup } from './parseGroups';
 import type { TextLine } from './textLines';
 
 /**
@@ -80,18 +80,31 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   // 触发一次 onProgress，也会在另一个 worker 已经在抛错路径上时继续派发新页。
   let aborted = false;
 
-  /** 截断就对半拆重试，递归到单行。整页原样重试只会再截断一次，所以处置必须是拆（spec §2.4）。 */
-  const runBatch = async (page: number, lines: PageLine[], docTitle?: string): Promise<ParsedGroup[]> => {
+  /**
+   * 截断就对半拆重试，递归到单行。整页原样重试只会再截断一次，所以处置必须是拆（spec §2.4）。
+   *
+   * 划分只缺行时**先补漏一次**（spec 2026-09-06 §4.1）：缺哪几行由 partitionGroups 精确给出，
+   * 只把那几行再发一次让模型分组，并到后面。补漏那一趟（repair=false）再漏、或缺的就是全部
+   * （模型什么都没回）→ 抛 GroupError，走 runPage 现有的整页重试。几何校验在 runPage 对合并
+   * 后的整页做。
+   */
+  const runBatch = async (page: number, lines: PageLine[], docTitle?: string, repair = true): Promise<ParsedGroup[]> => {
     const r = await o.translatePage({ page, lines, docTitle });
     if (r.truncated) {
       if (lines.length <= 1) throw new Error(`第 ${page} 页单行输出仍被截断`);
       const mid = Math.ceil(lines.length / 2);
       return [
-        ...await runBatch(page, lines.slice(0, mid), docTitle),
-        ...await runBatch(page, lines.slice(mid), docTitle),
+        ...await runBatch(page, lines.slice(0, mid), docTitle, repair),
+        ...await runBatch(page, lines.slice(mid), docTitle, repair),
       ];
     }
-    return parseGroups(r.text, lines.map((l) => l.n));
+    const { groups, missing } = partitionGroups(r.text, lines.map((l) => l.n));
+    if (missing.length === 0) return groups;
+    if (!repair || missing.length === lines.length) {
+      throw new GroupError(`行 ${missing.join(',')} 没有出现在任何组里`);
+    }
+    const rest = lines.filter((l) => missing.includes(l.n));
+    return [...groups, ...await runBatch(page, rest, docTitle, false)];
   };
 
   /**
