@@ -160,6 +160,18 @@ async function enterDual(page: Page, pane: Locator) {
   throw new Error('按 L 没能进入双栏对照：译文边车迟迟没加载');
 }
 
+/**
+ * 「重新翻译」会覆盖磁盘上已有的边车（invalid / mismatch 主键、active 态的 pdf-retranslate 键
+ * 三个入口皆是），项目负责人拍板走统一的 confirm() 对话框（PdfFileTab 里三处判据见 onToggleDual
+ * / onRetranslate 的注释）。三个入口弹出的是同一个 ConfirmHost/ConfirmDialog，这里只封一遍
+ * 「确认」分支，不在每条用例里重复断言对话框长什么样——对话框本身的行为已经是别处（如
+ * 10-delete-thread）测过的通用组件。
+ */
+async function confirmRetranslate(page: Page) {
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await page.getByTestId('confirm-dialog-confirm').click();
+}
+
 // ── 翻译闸门 ───────────────────────────────────────────────────────────────────
 //
 // 「作业进行中」的那几条断言（右格空白、取消、按 L、focus 重探）都要求作业**确定地**停在半路。
@@ -450,9 +462,11 @@ test('59-pdf-translate: 重新翻译——右格回到空白，旧译文块一�
     await expect(pane.locator('[data-pdf-right="1"]')).toHaveCount(0);
     await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
 
-    // ③ 重新翻译：右格回到空白，旧块一并消失。
+    // ③ 重新翻译：右格回到空白，旧块一并消失。mismatch 态点主键会先覆盖磁盘上已有的一份边车，
+    //    走统一的 confirm() 确认框（Yee 拍板），这里先过一遍「确认」分支。
     await installTranslateGate(launched);
     await pane.getByTestId('pdf-translate').click();
+    await confirmRetranslate(page);
     await waitJobParked(launched);
     const during = await waitSample(page, paneSel, INK, '重译进行中');
     expect(during.paper, `重译期间右格应当逐像素都是主题纸色 ${JSON.stringify(during)}`).toBe(during.total);
@@ -504,6 +518,7 @@ test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回�
 
     await installTranslateGate(launched);
     await retranslateBtn.click();
+    await confirmRetranslate(page);
     await waitJobParked(launched);
 
     const during = await waitSample(page, paneSel, INK, '按「重新翻译」键之后进行中');
@@ -543,6 +558,7 @@ test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把�
     await enterDual(page, pane);
     await installTranslateGate(launched);
     await pane.getByTestId('pdf-retranslate').click();
+    await confirmRetranslate(page);
     await waitJobParked(launched);
 
     await pane.getByTestId('pdf-translate-cancel').click();
@@ -567,6 +583,52 @@ test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把�
     await releaseGate(launched);
     await page.waitForTimeout(1000);
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 「重新翻译」确认框点取消——边车不变，没有发起任何翻译请求', async () => {
+  // 三个入口（invalid/mismatch 主键、active 态的 pdf-retranslate）共用 PdfFileTab 里同一处
+  // confirm() 调用（见 onToggleDual / onRetranslate 的注释），机制一致，这里只测一个入口的取消
+  // 分支就够——挑 active 态的 pdf-retranslate 键，因为它最常用、断言起来也最直接（旧块原样还在）。
+  //
+  // 断言要落在协议层事实上，不是「弹出过一次对话框」这类过程性动作：
+  //   ① 磁盘上的边车字节逐字节不变（不是只看 mtime）；
+  //   ② `pdf.translation.page` / `pdf.translation.save` 一次都没被调用过——装闸门直接读 started
+  //      计数，不靠等一段墙上时间去猜「后面没有再发生什么」；
+  //   ③ 界面原样留在对照中，旧译文块还在。
+  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, READY_REL);
+    const zhPath = path.join(projectPath, READY_ZH_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    const before = await fs.readFile(zhPath, 'utf8');
+
+    await enterDual(page, pane);
+    await expect(page.locator(`${paneSel} [data-translation-block="seed1"]`)).toBeVisible();
+
+    await installTranslateGate(launched);
+    await pane.getByTestId('pdf-retranslate').click();
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+    await page.getByTestId('confirm-dialog-cancel').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+    // 确认框已经关掉、点取消这一路 confirm() 的 promise 直接 resolve(false)，压根没有一条 IPC
+    // 请求发出过——不需要 fenceRendererIpc 那套栅栏（那是用来等一条**已经发出**的请求收尾）。
+    const counts = await gateCounts(launched);
+    expect(counts.started['pdf.translation.page'] ?? 0, '取消之后不该发出任何翻译请求').toBe(0);
+    expect(counts.started['pdf.translation.save'] ?? 0, '取消之后不该发出任何写盘请求').toBe(0);
+    expect(await fs.readFile(zhPath, 'utf8'), '取消之后边车必须逐字节保持不变').toBe(before);
+
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
+    await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在').toBeVisible();
+    await expect(page.locator(`${paneSel} [data-translation-block="seed1"]`), '旧译文块原样还在')
+      .toBeVisible();
   } finally {
     await teardown(launched);
   }
@@ -731,6 +793,7 @@ test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显
     // 第二趟：装闸门、发起、停在半路、取消——doc 没变，仍是第一趟落盘的那份。
     await installTranslateGate(launched);
     await retranslateBtn.click();
+    await confirmRetranslate(page);
     await waitJobParked(launched);
     await pane.getByTestId('pdf-translate-cancel').click();
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);

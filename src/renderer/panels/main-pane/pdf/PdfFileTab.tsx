@@ -3,6 +3,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { useThreadsStore } from '../../../stores/threadsStore';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
+import { confirm } from '../../../stores/confirmStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
 import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
@@ -807,7 +808,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // none/invalid/mismatch 分支调的是同一个 startTranslation——区别只在于调用这一刻 dual 已经
   // 是 true（wasDualRef 会记住这一点）。这里没有另判一次 canPressTranslate：守卫现在下沉在
   // startTranslation 自己开头（Minor #4，见其注释），这个调用点因此天然安全，不必在这里重复。
-  const onRetranslate = useCallback(() => { void startTranslation(); }, [startTranslation]);
+  //
+  // 这颗键只在 active 态渲染（判据见 PdfToolbar），也就是说点下去这一刻磁盘上必然有一份可用的
+  // 译文边车正在被覆盖——不像 none 态是从无到有。破坏性操作先走统一的 confirm()（CLAUDE.md
+  // 的约定：不引入危险色，覆盖写靠对话框而不是颜色警示），不必再判一次态，判据已经在「这个按钮
+  // 会不会被渲染出来」里体现过了。
+  const onRetranslate = useCallback(async () => {
+    const ok = await confirm({
+      title: '重新翻译，覆盖当前译文？',
+      message: '会覆盖当前译文正文（术语表保留），且不可撤销。',
+      confirmLabel: '重新翻译',
+    });
+    if (!ok) return;
+    void startTranslation();
+  }, [startTranslation]);
 
   // 翻译键 / `L` 的动作分派（spec §1、§10）。两个调用点：工具栏翻译键的 onClick（点击时已经被
   // disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过 IconButton 的
@@ -833,7 +847,27 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const state = translateUiState(b);
     if (state === 'active') { st.setDual(tab.id, false); return; }
     if (state === 'ready') { enterDualFitWidth(); return; }
-    void startTranslation();           // none / invalid / mismatch：动作是「跑流水线」
+    // none / invalid / mismatch：动作是「跑流水线」。只有 invalid（边车存在但结构有误，
+    // loadTranslation 的 catch 分支 setLoadError）与 mismatch（边车存在且合法，只是摘要与当前
+    // PDF 对不上，checkVersion 判的）这两态会**覆盖磁盘上一份已经存在的边车**——判据是协议层
+    // 事实本身（b.loadError / b.doc 与 b.version，见 translateUiState），不是另猜一套。none 是
+    // pdf.translation.load 对 ENOENT 返回的空结果，磁盘上压根没有文件，从无到有不是破坏性操作，
+    // 不加确认——否则最常见的「第一次翻译」路径会平白多一步。
+    if (state === 'invalid' || state === 'mismatch') {
+      void (async () => {
+        const ok = await confirm({
+          title: '重新翻译，覆盖现有译文？',
+          message: state === 'invalid'
+            ? '磁盘上的译文文件已经损坏，重新翻译会整份覆盖掉它，且不可撤销。'
+            : '磁盘上已有一份译文，但和当前 PDF 对不上；重新翻译会覆盖它（术语表保留，译文正文不保留），且不可撤销。',
+          confirmLabel: '重新翻译',
+        });
+        if (!ok) return;
+        void startTranslation();
+      })();
+      return;
+    }
+    void startTranslation();           // none：从无到有，不是破坏性操作
   }, [tab.id, sizes, enterDualFitWidth, startTranslation]);
 
   // 退出对照后把缩放还原回进入前——**唯一**的还原路径，显式退出（上面的 onToggleDual）与自动
