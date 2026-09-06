@@ -51,6 +51,11 @@ body::before {
 .ky-scroll:hover::-webkit-scrollbar-thumb { background: var(--color-ink-hair); }
 .ky-scroll::-webkit-scrollbar-track { background: transparent; }
 
+/* PDF 两栏用的：原生滚动条整个不画、不占位（spec 2026-09-06 §2），拇指由 OverlayScrollbar 自绘。
+   与 .ky-scroll 分开——其余面板仍用占位式那套。 */
+.ky-scroll-overlay { scrollbar-width: none; }
+.ky-scroll-overlay::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
 @keyframes kydog-blink {
   0%, 50% { opacity: 1; }
   50.01%, 100% { opacity: 0; }

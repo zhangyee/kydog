@@ -1148,8 +1148,8 @@ test('57-pdf-dual-pane: 同页两格按栏顶对齐、等高——右格真在�
     await check('刚进对照');
 
     // fit-width 必须扣掉纵向滚动条厚度（Important #1，Task 2 审查发现）：栏宽从 wrapper 的
-    // border-box 宽算，而栏内容的可用宽是各自的 clientWidth（= border-box − 滚动条占位厚度，
-    // globals.css 的 .ky-scroll::-webkit-scrollbar 在 Chromium 下是占位条）。少扣一次的话
+    // border-box 宽算，而栏内容的可用宽是各自的 clientWidth（= border-box − 滚动条占位厚度）。
+    // 两栏现在是覆盖式滚动条，bar 恒 0；保留实测是为了判据不依赖这一点。少扣一次的话
     // pageW × fit 会比栏的 clientWidth 宽出这一份厚度，两栏各自长出一条横向滚动条。
     // scrollWidth === clientWidth 是协议层事实（没有横向溢出），不是近似或阈值。
     await expect.poll(
@@ -1277,7 +1277,10 @@ async function paneBoxWidths(page: Page, paneSel: string) {
     const l = q('left');
     const r = q('right');
     if (!l || !r) return null;
-    const wrap = l.parentElement!.getBoundingClientRect();
+    // 左栏现在是 `<左栏相对定位父层><滚动容器 data-pdf-pane="left">`（OverlayScrollbar 的锚点，
+    // Task 2）。两栏 + 分隔线共同的 flex 行是再上一层——wrap 量的是那一层，不是刚好等宽左栏的
+    // 那个新父层。
+    const wrap = l.parentElement!.parentElement!.getBoundingClientRect();
     return {
       left: l.getBoundingClientRect().width,
       right: r.getBoundingClientRect().width,
@@ -1567,6 +1570,69 @@ test('57-pdf-dual-pane: 拖分隔线改两栏宽度，拖到最右右栏也不�
       async () => (await paneScroll(page, paneSel, 'right'))?.top,
       { timeout: 5000, message: '拖完之后两栏的 scrollTop 仍应当相等' },
     ).toBe(240);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+import { FADE_MS, THUMB_HOVER_PX, THUMB_INSET_PX, scrollPosForThumb } from '../src/renderer/panels/main-pane/pdf/overlayScrollbar';
+
+test('57-pdf-dual-pane: 覆盖式滚动条——没有槽、滚动时拇指出现后淡出、拖拇指按同一映射滚且另一栏跟上', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+
+    // ① 没有槽：两栏 clientWidth === offsetWidth、clientHeight === offsetHeight。占位式滚动条
+    //    会让 client 比 offset 少 8px（globals.css 里 .ky-scroll 给的宽），这两个数是协议层事实。
+    const gutters = await page.evaluate((sel) => {
+      const q = (w: string) => document.querySelector(`${sel} [data-pdf-pane="${w}"]`) as HTMLElement;
+      const g = (el: HTMLElement) => ({ x: el.offsetWidth - el.clientWidth, y: el.offsetHeight - el.clientHeight });
+      return { left: g(q('left')), right: g(q('right')) };
+    }, paneSel);
+    expect(gutters, '两栏都不该再有原生滚动条槽').toEqual({ left: { x: 0, y: 0 }, right: { x: 0, y: 0 } });
+
+    // ② 滚一次 → 纵向拇指可见；静止 FADE_MS 之后淡出。
+    const thumb = pane.getByTestId('pdf-thumb-y-left');
+    await setPaneScroll(page, paneSel, 'left', 'top', 300);
+    await expect(thumb).toHaveCSS('opacity', '1');
+    await expect(thumb).toHaveCSS('opacity', '0', { timeout: FADE_MS + 2000 });
+
+    // ③ 拖拽：把拇指往下拖 Δ 像素，scrollTop 必须等于纯函数 scrollPosForThumb 的反算，右栏跟上。
+    //    先把鼠标挪到拇指上（悬停让它变粗、可见），再按住拖。轨道长按组件同一公式算：
+    //    clientHeight − 2·INSET − (横向也能滚 ? HOVER_PX : 0)。
+    const before = (await paneScroll(page, paneSel, 'left'))!;
+    const metrics = await page.evaluate((sel) => {
+      const el = document.querySelector(`${sel} [data-pdf-pane="left"]`) as HTMLElement;
+      const t = document.querySelector(`${sel} [data-testid="pdf-thumb-y-left"]`) as HTMLElement;
+      const er = el.getBoundingClientRect();
+      const tr = t.getBoundingClientRect();
+      return {
+        clientLen: el.clientHeight, scrollLen: el.scrollHeight,
+        hasX: el.scrollWidth > el.clientWidth,
+        thumbTop: tr.top, thumbLeft: tr.left, thumbW: tr.width, thumbH: tr.height,
+        paneTop: er.top,
+      };
+    }, paneSel);
+    const trackLen = metrics.clientLen - 2 * THUMB_INSET_PX - (metrics.hasX ? THUMB_HOVER_PX : 0);
+    const pos0 = metrics.thumbTop - metrics.paneTop - THUMB_INSET_PX;
+    const delta = 60;
+    const cx = metrics.thumbLeft + metrics.thumbW / 2;
+    const cy = metrics.thumbTop + metrics.thumbH / 2;
+    await page.mouse.move(cx, cy);
+    await expect(thumb, '悬停时拇指变粗').toHaveCSS('width', `${THUMB_HOVER_PX}px`);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy + delta, { steps: 6 });
+    await page.mouse.up();
+    const expected = scrollPosForThumb({ clientLen: metrics.clientLen, scrollLen: metrics.scrollLen, trackLen }, pos0 + delta);
+    expect(expected, '拖了 60px 应当真的滚动了').toBeGreaterThan(before.top + 1);
+    const after = (await paneScroll(page, paneSel, 'left'))!;
+    expect(Math.abs(after.top - expected), `拖拽后 scrollTop=${after.top} 应等于反算 ${expected}`).toBeLessThan(1);
+    await expect.poll(async () => (await paneScroll(page, paneSel, 'right'))!.top, { message: '右栏跟上' })
+      .toBeCloseTo(after.top, 0);
   } finally {
     await teardown(launched);
   }

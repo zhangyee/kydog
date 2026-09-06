@@ -9,6 +9,7 @@ import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { cellKey, createCanvasRegistry, type CanvasRegistry } from './canvasRegistry';
 import { flushDrafts } from './noteDrafts';
+import { OverlayScrollbar } from './PdfOverlayScrollbar';
 import { PaneDivider } from './PaneDivider';
 import { createScrollSync } from './scrollSync';
 import { clampSplit, fitToNarrower, paneWidths } from './splitPane';
@@ -669,9 +670,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    *
    * **栏宽要扣掉纵向滚动条的厚度**（Important #1，Task 2 审查发现）：`paneWidths` 切的是
    * wrapper 的 border-box 宽（wrapper 自己无滚动条），而两栏各自的可用宽是它们各自的
-   * `clientWidth`（= border-box − 滚动条占位厚度）——`.ky-scroll::-webkit-scrollbar { width: 8px }`
-   * 在 Chromium 里是占位条不是浮层条。不扣的话 `pageW × fit` 会比栏的 `clientWidth` 宽出这一份
-   * 厚度，两栏各自长出一条横向滚动条、页面右缘被裁。
+   * `clientWidth`（= border-box − 滚动条占位厚度）——两栏现在是覆盖式滚动条（Task 2），`bar`
+   * 恒为 0；保留这份实测是为了这条判据不依赖这一点。不扣的话 `pageW × fit` 会比栏的
+   * `clientWidth` 宽出这一份厚度，两栏各自长出一条横向滚动条、页面右缘被裁。
    *
    * `bar` 不是一个猜出来的常量：这一刻左栏还没进对照、仍铺满整条 wrapper，`wrap.clientWidth`
    * 与 `scrollRef.current.clientWidth` 量的是同一个元素的 border-box 宽与内容盒宽，两者之差就
@@ -1353,58 +1354,64 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       }}
     >
       <div
-        ref={scrollRef}
-        data-testid={`pdf-scroll-${tab.id}`}
-        data-pdf-pane="left"
-        className="ky-scroll h-full overflow-auto"
         style={{
-          background: 'var(--color-paper-deep)',
+          position: 'relative',
           flex: dual ? `0 0 ${panes.left}px` : '1 1 auto',
-          minWidth: 0,
+          minWidth: 0, height: '100%',
         }}
       >
-        {fileUrl && (
-          <Document
-            file={fileUrl}
-            loading={null}
-            error={null}
-            onLoadSuccess={(pdf) => {
-              setNumPages(pdf.numPages);
-              // 翻译要按页抽文本，而 pageProxies 未必每页都有（见 pdfRef 的注释）。
-              pdfRef.current = { getPage: (n) => pdf.getPage(n) as unknown as Promise<PageProxyLike> };
-              // 预取全部页的 scale 1 尺寸：解析页字典，不栅格化。虚拟化要靠它给窗口外的行
-              // 精确高度，顺带把 page proxy 填满——ensureLines 原先等 <Page onLoadSuccess>，
-              // 虚拟化后窗口外的页那个回调永远不来。
-              //
-              // 取消机制：myToken 在“回调被调用的那一刻”读取 prefetchToken.current（不是在
-              // render 时提前捕获）。上面换文件的 effect 保证了它对这次加载而言必然已经自增到
-              // 位——effect 在 commit 之后同步跑，严格早于本次 onLoadSuccess 能触发的最早时机
-              // （那至少要经过一轮 pdf.js 的异步加载）。所以 myToken 就是“这次加载所属的那一
-              // 代”；此后若再换文件，effect 会再自增一次，循环体里下一次 await 之后的比较就会
-              // 失配而提前返回，旧数据不会写进 pageProxies / linesCache / setSizes。
-              const myToken = prefetchToken.current;
-              void (async () => {
-                // 逐页容错/取消的循环体在 prefetchPageSizes（本文件顶部）里，抽成纯函数是为了
-                // 能在不拉起整个组件（jsdom 等）的前提下单测「单页失败」「换文件取消」这两条路径。
-                // proxy 写入仍留在这里逐页发生（不是等整趟跑完再批量写）：ensureLines 依赖某页
-                // 一成功就能立刻拿到 proxy，不用等同一文档的其余页也解析完。
-                const out = await prefetchPageSizes(
-                  pdf.numPages,
-                  (n) => pdf.getPage(n) as unknown as Promise<PageProxyLike>,
-                  () => prefetchToken.current !== myToken,
-                  (n, p) => { pageProxies.current[n] = p; },
-                  (n, err) => console.warn(`PDF 第 ${n} 页尺寸预取失败，占位后继续`, err),
-                );
-                if (out && prefetchToken.current === myToken) setSizes(out);
-              })();
-            }}
-            onLoadError={(err) =>
-              setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message })
-            }
-          >
-            {renderLayers('left')}
-          </Document>
-        )}
+        <div
+          ref={scrollRef}
+          data-testid={`pdf-scroll-${tab.id}`}
+          data-pdf-pane="left"
+          className="ky-scroll-overlay h-full w-full overflow-auto"
+          style={{ background: 'var(--color-paper-deep)' }}
+        >
+          {fileUrl && (
+            <Document
+              file={fileUrl}
+              loading={null}
+              error={null}
+              onLoadSuccess={(pdf) => {
+                setNumPages(pdf.numPages);
+                // 翻译要按页抽文本，而 pageProxies 未必每页都有（见 pdfRef 的注释）。
+                pdfRef.current = { getPage: (n) => pdf.getPage(n) as unknown as Promise<PageProxyLike> };
+                // 预取全部页的 scale 1 尺寸：解析页字典，不栅格化。虚拟化要靠它给窗口外的行
+                // 精确高度，顺带把 page proxy 填满——ensureLines 原先等 <Page onLoadSuccess>，
+                // 虚拟化后窗口外的页那个回调永远不来。
+                //
+                // 取消机制：myToken 在“回调被调用的那一刻”读取 prefetchToken.current（不是在
+                // render 时提前捕获）。上面换文件的 effect 保证了它对这次加载而言必然已经自增到
+                // 位——effect 在 commit 之后同步跑，严格早于本次 onLoadSuccess 能触发的最早时机
+                // （那至少要经过一轮 pdf.js 的异步加载）。所以 myToken 就是“这次加载所属的那一
+                // 代”；此后若再换文件，effect 会再自增一次，循环体里下一次 await 之后的比较就会
+                // 失配而提前返回，旧数据不会写进 pageProxies / linesCache / setSizes。
+                const myToken = prefetchToken.current;
+                void (async () => {
+                  // 逐页容错/取消的循环体在 prefetchPageSizes（本文件顶部）里，抽成纯函数是为了
+                  // 能在不拉起整个组件（jsdom 等）的前提下单测「单页失败」「换文件取消」这两条路径。
+                  // proxy 写入仍留在这里逐页发生（不是等整趟跑完再批量写）：ensureLines 依赖某页
+                  // 一成功就能立刻拿到 proxy，不用等同一文档的其余页也解析完。
+                  const out = await prefetchPageSizes(
+                    pdf.numPages,
+                    (n) => pdf.getPage(n) as unknown as Promise<PageProxyLike>,
+                    () => prefetchToken.current !== myToken,
+                    (n, p) => { pageProxies.current[n] = p; },
+                    (n, err) => console.warn(`PDF 第 ${n} 页尺寸预取失败，占位后继续`, err),
+                  );
+                  if (out && prefetchToken.current === myToken) setSizes(out);
+                })();
+              }}
+              onLoadError={(err) =>
+                setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message })
+              }
+            >
+              {renderLayers('left')}
+            </Document>
+          )}
+        </div>
+        <OverlayScrollbar targetRef={scrollRef} axis="y" testId="pdf-thumb-y-left" />
+        <OverlayScrollbar targetRef={scrollRef} axis="x" testId="pdf-thumb-x-left" />
       </div>
       {dual && <PaneDivider onDragTo={onDividerDrag} onDragEnd={() => setDragging(false)} />}
       {dual && (
@@ -1416,11 +1423,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
             ref={rightRef}
             data-testid={`pdf-right-scroll-${tab.id}`}
             data-pdf-pane="right"
-            className="ky-scroll h-full overflow-auto"
+            className="ky-scroll-overlay h-full overflow-auto"
             style={{ background: 'var(--color-paper-deep)' }}
           >
             {renderLayers('right')}
           </div>
+          <OverlayScrollbar targetRef={rightRef} axis="y" testId="pdf-thumb-y-right" />
+          <OverlayScrollbar targetRef={rightRef} axis="x" testId="pdf-thumb-x-right" />
           {/* 进度浮层就在右栏矩形里居中（右栏此刻整片空白），工具栏 zIndex 5 仍压在它上面照常可用。 */}
           {job && <TranslationProgress job={job} onCancel={cancelTranslation} />}
         </div>
