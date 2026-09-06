@@ -222,7 +222,7 @@ type Props = {
    * visibility），等底图落地。
    *
    * 有一个后果是**有意接受**的，不是漏做：左格渲染失败的页，右格连译文都不显示，整页空白。
-   * 链路是 `setLeftCanvas` 只在 `onRenderSuccess` 里调用（PdfFileTab 的 MountedPageCells），
+   * 链路是左格只在 `onRenderSuccess` 里把 canvas 写进注册表（PdfFileTab 的 LeftCell），
    * `onRenderError` 只调 `onSettled` → `leftCanvas` 恒 null → RightPage 早退、从不调
    * `onBackground` → 这里的 `bg` 恒 null → 译文层永久 hidden。理由同上：那一页底下露出来的是
    * 滚动容器的 paper-deep，按任何颜色推墨色都是猜。

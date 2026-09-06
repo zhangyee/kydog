@@ -1,6 +1,6 @@
 // 左格画完的 canvas 跨树交给右格（对照壳 spec v8 §3.1「左格 canvas 跨树共享」）。
 //
-// 两格现在在两个滚动容器、两棵子树里，MountedPageCells 那份本地 state 传不过去。放 React state
+// 两格现在在两个滚动容器、两棵子树里（LeftCell / RightCell），一份本地 state 传不过去。放 React state
 // 又会让每一页 settle 都重渲染整个 PdfFileTab（1200 行 JSX）。所以是一个按 key 订阅的小注册表，
 // 右格用 useSyncExternalStore 只订阅自己那一格。
 

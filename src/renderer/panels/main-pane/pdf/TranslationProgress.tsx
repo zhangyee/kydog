@@ -7,12 +7,12 @@ const LABEL: Record<JobProgress['phase'], string> = {
 };
 
 /**
- * 右半边居中的进度浮层。
+ * 右栏居中的进度浮层。
  *
- * 覆盖的是**滚动容器的右半边**，不是像素级对准右栏矩形：进对照会 fit-width，此时行宽等于视口宽，
- * 右半边与右栏近乎重合（差一个 PAGE_GAP / 2）；用户在翻译期间手动缩放会让它偏离。这是刻意的
- * 简化——「整个右栏」在 DOM 里不是一个元素（右格是每页一个），为像素级对准去造一个跟随缩放与
- * 滚动的镜像矩形换不来任何东西（spec §9）。
+ * 铺满父层（`inset: 0`），而父层就是右栏滚动容器的那个 `position: relative` 兄弟壳
+ * （PdfFileTab 的渲染树）——所以它天生就是右栏矩形，不需要任何对准。二期原先那条「盖住视口
+ * 右半边、不像素级对准右栏」的简化随 spec v8 §3.1 一起消掉了：右栏现在是个真实的滚动容器。
+ * 放在滚动容器**外面**是有意的：放进去会随内容滚走。
  *
  * `finalize` 阶段取消按钮禁用：jobSeq 挡得住「写渲染层的 store」，挡不住一次**已经发出的
  * save**。提交点因此画在「发出 save 之前」——进入 finalize 就不再给取消，语义诚实，也不会出现
@@ -24,7 +24,7 @@ export function TranslationProgress({ job, onCancel }: { job: JobProgress; onCan
     <div
       data-testid="pdf-translate-progress"
       style={{
-        position: 'absolute', left: '50%', right: 0, top: 0, bottom: 0, zIndex: 4,
+        position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, zIndex: 4,
         display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
       }}
     >

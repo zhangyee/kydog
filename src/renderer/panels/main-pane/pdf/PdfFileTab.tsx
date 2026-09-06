@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { useThreadsStore } from '../../../stores/threadsStore';
@@ -7,7 +7,11 @@ import { confirm } from '../../../stores/confirmStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
 import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
+import { cellKey, createCanvasRegistry, type CanvasRegistry } from './canvasRegistry';
 import { flushDrafts } from './noteDrafts';
+import { PaneDivider } from './PaneDivider';
+import { createScrollSync } from './scrollSync';
+import { clampSplit, fitToNarrower, paneWidths } from './splitPane';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
 import { canPressTranslate, checkVersion, translateUiState, usePdfTranslationStore } from './pdfTranslationStore';
 import { sha256Hex } from './sha256';
@@ -130,91 +134,117 @@ export async function prefetchPageSizes(
 }
 
 /**
- * 一页挂载后的两个格子：左格 = 原页（`<Page>` + 标注层），右格 = 对照时的译文底图。
- * 同时是这一页的挂载边界：React 的 mount / unmount 正好对应 pageLifecycle 的
- * acquire / release，effect 挂在这里最直接。
+ * 左栏一页挂载后的那一格：原页（`<Page>` + 标注层）。同时是这一页的挂载边界：React 的
+ * mount / unmount 正好对应 pageLifecycle 的 acquire / release，effect 挂在这里最直接。
  *
  * 必须是模块级函数组件，不能定义在 PdfFileTab 内部——定义在组件体内的话每次渲染都是新的函数
  * 引用，React 会把它当成换了一个组件类型，每次渲染都触发一轮 unmount→mount，acquire/release
  * 全乱套（引用计数永远在虚假地归零又回升）。
  *
- * 只接手两个格子本身；外层带 data-pdf-page、用 size.h/size.w 撑出行高行宽的那层留在
- * PdfFileTab 里不动——那才是行几何唯一的来源，Plan 1 Task 6 特意要求它不能被拆走、藏进子
- * 组件里看不见。
+ * 只接手格子本身；外层带 data-pdf-page、用 size.h/size.w 撑出行高行宽的那层留在 PdfFileTab
+ * 里不动——那才是行几何唯一的来源，Plan 1 Task 6 特意要求它不能被拆走、藏进子组件里看不见。
  *
- * **`<Page>` 建在这里而不是留在调用处**：右格要拷左格画完的 canvas，得有个地方存「左格已经
- * 就绪的那个 canvas 元素」；这个状态天然是逐页逐层的，而调用处是一个 `sizes.map(...)`，
- * 循环体里挂不了 hook。标注层反过来仍以 ReactNode 从外面传进来（`annotations`），它的一串
- * props 因此还留在调用处看得见。
+ * **`<Page>` 建在这里而不是留在调用处**：右格要拷这一格画完的 canvas，得有个地方在渲染成功那
+ * 一刻把它交出去；这件事天然是逐页逐层的，而调用处是一个 `sizes.map(...)`，循环体里挂不了
+ * hook。标注层反过来仍以 ReactNode 从外面传进来（`annotations`），它的一串 props 因此还留在
+ * 调用处看得见。
  *
- * **右格不 acquire lifecycle**：那个引用计数是给 `page.cleanup()` 用的，而右格根本不调
- * pdf.js 渲染（它只从左格 canvas 拷位图）。多 acquire 一次会让页永远清理不掉。
+ * 交出去的通道是 `registry`（canvasRegistry.ts）而不是 React state：两格现在分居两栏、两棵树
+ * （spec v8 §3.1），提上来做 state 会让每一页 settle 都重渲染整个 PdfFileTab。
  */
-function MountedPageCells({ n, lifecycle, size, layerScale, dual, translating, blocks, docKey, onPageLoad, onSettled, annotations }: {
+function LeftCell({ n, layerId, lifecycle, size, layerScale, registry, onPageLoad, onSettled, annotations }: {
   n: number;
+  /** 所在双缓冲层的 id；与页号一起构成注册表的 key（同一页在两层里是两张不同的 canvas）。 */
+  layerId: number;
   lifecycle: PageLifecycle;
   size: PageSize;
   layerScale: number;
-  dual: boolean;
-  /** 这个 tab 上有翻译作业在跑：右格走空白分支，译文层整层不渲染（spec §1）。 */
-  translating: boolean;
-  blocks: Block[];
-  /** TranslationBlocks 的 fitCache key 隔离维度；调用方传 tab.id。见该组件顶部注释。 */
-  docKey: string;
+  registry: CanvasRegistry;
   onPageLoad: (p: PageProxyLike) => void;
   onSettled: () => void;
   /** 标注层；只有清晰层（idx 0）给，后台新层传 null。 */
   annotations: ReactNode;
 }) {
   const leftRef = useRef<HTMLDivElement>(null);
-  const [leftCanvas, setLeftCanvas] = useState<HTMLCanvasElement | null>(null);
-  // RightPage 每次合成都把**这次实际填下去的底色**交出来；TranslationBlocks 拿它推墨色（Task 7）。
-  // null 只有一个含义：右格还一次都没合成过（底图是空的），不是「探测不到背景色」——探测不到
-  // 时 RightPage 交出来的是它退回去填的主题纸色，见该文件的 themePaperRgb。
-  const [bg, setBg] = useState<RGB | null>(null);
 
   useEffect(() => {
     lifecycle.acquire(n);
     return () => lifecycle.release(n);
   }, [n, lifecycle]);
 
+  // 卸载时把自己那张 canvas 从注册表拿掉：右格订阅的正是这一格，别让它继续拷一张已经不在
+  // DOM 里的位图（虚拟化滚出窗口、或双缓冲顶替掉整层时都会走到这里）。
+  useEffect(() => () => registry.set(cellKey(layerId, n), null), [registry, layerId, n]);
+
   return (
-    <>
-      {/* 左格宽度显式给出（而不是让 flex 收缩到内容宽）：行是 flex 之后，收缩到内容宽会让这个
-          格子取 canvas 的 CSS 宽（react-pdf 对它取过 floor），标注层的坐标换算基准就跟着变了。
-          写死 size.w × scale 与拆两格之前的块级布局逐像素一致。 */}
-      <div ref={leftRef} style={{ position: 'relative', width: size.w * layerScale }}>
-        <Page
-          pageNumber={n}
-          scale={layerScale}
-          renderTextLayer={false}
-          renderAnnotationLayer={false}
-          className="shadow-md"
-          onLoadSuccess={onPageLoad}
-          onRenderSuccess={() => {
-            setLeftCanvas(leftRef.current?.querySelector('canvas') ?? null);
-            onSettled();
-          }}
-          onRenderError={onSettled}
+    // 格子宽度显式给出（而不是收缩到内容宽）：收缩到内容宽会让它取 canvas 的 CSS 宽
+    // （react-pdf 对它取过 floor），标注层的坐标换算基准就跟着变了。写死 size.w × scale
+    // 与拆格之前的块级布局逐像素一致，也与右栏同页那一格逐字段同源。
+    <div ref={leftRef} style={{ position: 'relative', width: size.w * layerScale }}>
+      <Page
+        pageNumber={n}
+        scale={layerScale}
+        renderTextLayer={false}
+        renderAnnotationLayer={false}
+        className="shadow-md"
+        onLoadSuccess={onPageLoad}
+        onRenderSuccess={() => {
+          registry.set(cellKey(layerId, n), leftRef.current?.querySelector('canvas') ?? null);
+          onSettled();
+        }}
+        onRenderError={onSettled}
+      />
+      {annotations}
+    </div>
+  );
+}
+
+/**
+ * 右栏一页挂载后的那一格：译文底图 + 译文块。
+ *
+ * **不 acquire lifecycle、也不报 settle**：那个引用计数是给 `page.cleanup()` 用的，而这一格
+ * 根本不调 pdf.js 渲染（它只从左格 canvas 拷位图）——多 acquire 一次会让页永远清理不掉；
+ * 双缓冲的顶替判据同理只认左格画完没有（见 promoteReady），右格插一脚只会让判据失去意义。
+ *
+ * 左格那张 canvas 靠 `useSyncExternalStore` **只订阅自己这一格**：注册表按 key 通知，别的页
+ * settle 不会惊动这里，整个 PdfFileTab 更不会因此重渲染。
+ */
+function RightCell({ n, layerId, size, layerScale, translating, blocks, docKey, registry }: {
+  n: number;
+  layerId: number;
+  size: PageSize;
+  layerScale: number;
+  /** 这个 tab 上有翻译作业在跑：底图走空白分支，译文层整层不渲染（spec §1）。 */
+  translating: boolean;
+  blocks: Block[];
+  /** TranslationBlocks 的 fitCache key 隔离维度；调用方传 tab.id。见该组件顶部注释。 */
+  docKey: string;
+  registry: CanvasRegistry;
+}) {
+  const key = cellKey(layerId, n);
+  const leftCanvas = useSyncExternalStore(
+    useCallback((cb: () => void) => registry.subscribe(key, cb), [registry, key]),
+    useCallback(() => registry.get(key), [registry, key]),
+  );
+  // RightPage 每次合成都把**这次实际填下去的底色**交出来；TranslationBlocks 拿它推墨色（Task 7）。
+  // null 只有一个含义：这一格还一次都没合成过（底图是空的），不是「探测不到背景色」——探测不到
+  // 时 RightPage 交出来的是它退回去填的主题纸色，见该文件的 themePaperRgb。
+  const [bg, setBg] = useState<RGB | null>(null);
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <RightPage
+        size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas}
+        onBackground={setBg} blank={translating}
+      />
+      {/* 翻译期间**整层不渲染**，不是渲染成空的：重译时 store 里还留着上一版的块（doc 要等
+          新边车落盘才换），照渲染的话右格是「空白底图 + 旧译文浮在上面」。 */}
+      {!translating && (
+        <TranslationBlocks
+          blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} page={n}
         />
-        {annotations}
-      </div>
-      {dual && (
-        <div style={{ position: 'relative' }}>
-          <RightPage
-            size={size} rasterScale={layerScale} blocks={blocks} leftCanvas={leftCanvas}
-            onBackground={setBg} blank={translating}
-          />
-          {/* 翻译期间**整层不渲染**，不是渲染成空的：重译时 store 里还留着上一版的块（doc 要等
-              新边车落盘才换），照渲染的话右格是「空白底图 + 旧译文浮在上面」。 */}
-          {!translating && (
-            <TranslationBlocks
-              blocks={blocks} size={size} rasterScale={layerScale} bg={bg} docKey={docKey} page={n}
-            />
-          )}
-        </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -299,7 +329,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const pdfRef = useRef<{ getPage: (n: number) => Promise<PageProxyLike> } | null>(null);
   const linesCache = useRef<Record<number, Promise<TextLine[]>>>({});
   // 什么时候把一页还给 pdf.js（page.cleanup()）由 pageLifecycle.ts 的引用计数决定，挂载/卸载
-  // 边界在 MountedPageCells。PageProxyLike 故意没声明 cleanup（那是给 ensureLines 用的最小
+  // 边界在 LeftCell。PageProxyLike 故意没声明 cleanup（那是给 ensureLines 用的最小
   // 接口），这里单独转型取用。
   const lifecycle = useRef<PageLifecycle>(createPageLifecycle(
     (n) => pageProxies.current[n] as unknown as Cleanable | undefined,
@@ -469,7 +499,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 新一轮双缓冲开始（后台新层刚创建）时清空——2 层并存期间这个值属于上一轮，不该被读到。
   const [promoteReason, setPromoteReason] = useState<PromoteReason | null>(null);
 
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  // 左栏是 master：窗口计算、页码读数、缩放锚点、ResizeObserver 全读它（spec v8 §3.1）。
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 右栏是 mirror，只在对照时存在。
+  const rightRef = useRef<HTMLDivElement>(null);
+  // 左栏占 wrapper 可用宽的比例。只活在这个 tab 的组件 state 里，**不持久化**（spec v8 §3.1）。
+  const [split, setSplit] = useState(0.5);
+  // 拖分隔线期间给 wrapper 上 user-select: none，免得横扫时把译文块的文字一路选中。
+  const [dragging, setDragging] = useState(false);
+  // wrapper 的 clientWidth。左栏宽给的是**像素**而不是百分比：两栏尺寸要逐字段可推，
+  // 百分比 + 分隔线像素会让右栏宽变成一个减法结果，对不上 paneWidths 的算法。
+  const [wrapperW, setWrapperW] = useState(0);
+  // 左格画完的 canvas 交给右格的通道（canvasRegistry.ts）。ref 持有：每个 tab 一份、跨渲染恒定。
+  const registry = useRef(createCanvasRegistry()).current;
   const layerSeq = useRef(0);
   const targetScale = useRef(1);              // 连续累积的目标缩放
   const layersRef = useRef(layers);
@@ -603,11 +646,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    * 是因为两条路的几何处理必须一模一样——分成两份写就会在缩放上分叉，而这类分叉只有用户在两条
    * 路之间来回切时才看得见。
    *
-   * 一行的宽度是 2 × 页宽 + 间距（dual 时行宽的算法见下面渲染处 `size.w * 2 + PAGE_GAP`，
-   * 这里用 sizes[0] 是因为 fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，
-   * 用第一页的宽度足够；量出来的 fit 又会被 requestScale 的 MIN_SCALE 兜底，极端情况下也不会
-   * 缩到不可用）。放不下就缩到刚好放下，把进入前的缩放存进 prevScale；行宽本来就放得下则不动、
-   * prevScale 存 null。
+   * fit 对着**较窄那一栏**（fitToNarrower，spec v8 §3.1）：两栏可以不等宽，对着宽栏 fit 会让
+   * 窄栏被裁，对着窄栏 fit 顶多让宽栏留白——留白比裁掉好。栏宽从 wrapper 的 clientWidth 与当前
+   * 比例现算（paneWidths），不读两个 DOM 元素：进对照这一刻右栏还没挂上，读不到。
+   *
+   * 页宽用 sizes[0]：fit-width 只需要一个近似的「装不装得下」判断，多数论文各页同宽，用第一页
+   * 的宽度足够；量出来的 fit 又会被 requestScale 的 MIN_SCALE 兜底，极端情况下也不会缩到不可用。
+   * 放不下就缩到刚好放下，把进入前的缩放存进 prevScale；本来就放得下则不动、prevScale 存 null。
    *
    * **已经在对照里就一步都不做**：对照中重新翻译会走到这里，那时既不该再动一次缩放，更不该拿
    * 此刻这个 fit 值去覆盖 prevScale——那份是「还没被消费的还原请求」，覆盖掉的话退出对照就会
@@ -615,10 +660,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    */
   const enterDualFitWidth = useCallback(() => {
     const st = usePdfTranslationStore.getState();
-    const el = scrollRef.current;
-    if (!el || !sizes || st.buckets[tab.id]?.dual) return;
-    const rowUnit = sizes[0].w * 2 + PAGE_GAP;
-    const fit = el.clientWidth / rowUnit;
+    const wrap = wrapperRef.current;
+    if (!wrap || !sizes || st.buckets[tab.id]?.dual) return;
+    const { left, right } = paneWidths(wrap.clientWidth, split);
+    const fit = fitToNarrower(left, right, sizes[0].w);
     const prev = visualScaleRef.current;
     if (fit < prev) {
       st.setDual(tab.id, true, prev);
@@ -627,7 +672,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     } else {
       st.setDual(tab.id, true, null);
     }
-  }, [tab.id, sizes, requestScale]);
+  }, [tab.id, sizes, split, requestScale]);
 
   // 翻译失败的原因，交给 Notice 显示（PdfAnnotationNotice 的 translateError prop）。
   //
@@ -970,7 +1015,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     );
   }, [fileUrl]);
 
-  // 缩放后按鼠标锚点回算滚动位置，使鼠标下的内容点保持不动（同 macOS 预览）
+  // 缩放后按鼠标锚点回算滚动位置，使鼠标下的内容点保持不动（同 macOS 预览）。
+  //
+  // **只写左栏**，右栏由滚动同步跟上。焦点却可能是相对右栏量的（在右栏上捏合，见上面的 onWheel）
+  // ——那不是错配：两栏的 scrollLeft / scrollTop 恒相等（同步），两栏内容尺寸又逐字段相同，所以
+  // `scrollLeft + focal.x` 在两栏里指的是**同一个内容坐标**。拿右栏量的焦点配左栏的滚动位置，
+  // 回算出来的仍是「鼠标下那一点不动」。
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const a = zoomAnchor.current;
@@ -1006,15 +1056,20 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     if (promoteReady(win.visible, progress.current.done)) promote('condition');
   }, [win.visible, layers, promote]);
 
-  // 触摸板捏合缩放：Chromium 把捏合转成 ctrl+wheel
+  // 触摸板捏合缩放：Chromium 把捏合转成 ctrl+wheel。
+  //
+  // 监听挂在 **wrapper** 而不是左栏上（spec v8 §3.1）：在右栏上捏也要能缩。焦点因此相对
+  // **事件所在的那一栏**算（closest('[data-pdf-pane]')；落在工具栏、Notice 上时退回左栏）。
   useEffect(() => {
     if (tab.status !== 'ready') return;
+    const wrap = wrapperRef.current;
     const el = scrollRef.current;
-    if (!el) return;
+    if (!wrap || !el) return;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return; // 非捏合的滚轮 → 走默认滚动（连续翻页）
       e.preventDefault();
-      const rect = el.getBoundingClientRect();
+      const pane = (e.target as Element).closest('[data-pdf-pane]') ?? el;
+      const rect = pane.getBoundingClientRect();
       focal.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       // 逐事件累积目标缩放（只动 ref，不惊动 React），逐帧才真正落地一次——落地与「排提交」
       // 都在 requestScale 里，见模块级 useVisualScale。
@@ -1036,15 +1091,57 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         });
       }
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
+    wrap.addEventListener('wheel', onWheel, { passive: false });
+    // 窗口重算只搭左栏的滚动事件：右栏的滚动会被同步写回左栏，左栏照样发一次 scroll。
     el.addEventListener('scroll', scheduleRecompute, { passive: true });
     return () => {
-      el.removeEventListener('wheel', onWheel);
+      wrap.removeEventListener('wheel', onWheel);
       el.removeEventListener('scroll', scheduleRecompute);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       // commitTimer / promoteTimer 的清理不在这里——见 scheduleCommit 下面那个不设门的 effect。
     };
   }, [tab.status, requestScale, scheduleRecompute]);
+
+  /**
+   * 两栏滚动同步（spec v8 §3.1）。回声锁与「同值不写」在 scrollSync.ts，这里只负责把两个真
+   * DOM 元素接上去。
+   *
+   * 1:1 直接互写（而不是按比例换算）成立的前提是**两栏内容尺寸逐字段相同**——同一份 sizes /
+   * layout / layer.scale / PAGE_GAP / PAGE_PAD，行宽都是 `size.w * layer.scale`（见下面的
+   * renderLayers）。不等宽时 `scrollLeft` 原样相等，两栏的**内容左边缘**因此对齐；宽栏往右
+   * 多露一截、窄栏被裁，这正是把它拖宽的目的。
+   *
+   * `sync(a, b)` 先跑一次：右栏是刚挂上的，scrollTop 为 0，而左栏可能早就滚在半路。
+   */
+  useEffect(() => {
+    const a = scrollRef.current;
+    const b = rightRef.current;
+    if (!a || !b) return;
+    const sync = createScrollSync((cb) => requestAnimationFrame(cb));
+    const onA = () => sync(a, b);
+    const onB = () => sync(b, a);
+    a.addEventListener('scroll', onA, { passive: true });
+    b.addEventListener('scroll', onB, { passive: true });
+    sync(a, b);
+    return () => {
+      a.removeEventListener('scroll', onA);
+      b.removeEventListener('scroll', onB);
+    };
+  }, [dual, tab.status]);
+
+  /**
+   * 拖分隔线（spec v8 §3.1）。PaneDivider 只交出 clientX，比例的换算连同两侧的 MIN_PANE_PX
+   * 下限都在 clampSplit 里。
+   *
+   * 拖完**不重新 fit-width**：缩放是用户捏出来的，拖栏也是用户拖的，替他改掉其中一个是自作主张。
+   */
+  const onDividerDrag = useCallback((clientX: number) => {
+    const wrap = wrapperRef.current;
+    if (!wrap) return;
+    setDragging(true);
+    const r = wrap.getBoundingClientRect();
+    setSplit(clampSplit(clientX, r.left, r.width));
+  }, []);
 
   // 视口尺寸变了（拖窗、开合侧栏）窗口也要重算——这时没有滚动事件，滚动帧那条路不会跑。
   //
@@ -1057,21 +1154,32 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // ResizeObserver 回调确实又跑了一次。若假设成立，那是「没有视口」而不是「视口很小」，
   // computeWindow 的空间上界会让窗口退到只剩必保页；不成立（回调不触发，或 clientHeight 不是
   // 0）则这段退化逻辑没有实际生效，需要另外显式监听 tab 的可见性切换。
+  //
+  // 同时观察 **wrapper**，把它的 clientWidth 存进 state 供 paneWidths 用。不能只观察左栏：
+  // 对照时左栏的宽是一个由 wrapperW 算出来的**固定像素**，wrapper 变宽只会让右栏（flex: 1）
+  // 跟着变宽，左栏纹丝不动、RO 不触发，wrapperW 就永远停在旧值，左栏再也不随窗口走了。
+  // 回写自己观察的量不会打转：wrapperW 变 → 左栏宽变 → RO 再触发 → setWrapperW 拿到同一个数，
+  // React 的 Object.is 直接 bail out。
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => recomputeRef.current());
+    const wrap = wrapperRef.current;
+    if (!el || !wrap) return;
+    const ro = new ResizeObserver(() => {
+      setWrapperW(wrap.clientWidth);
+      recomputeRef.current();
+    });
     ro.observe(el);
+    ro.observe(wrap);
     return () => ro.disconnect();
   }, [tab.status]);
 
-  const wrapperRef = useRef<HTMLDivElement>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const selectedId = usePdfAnnotationStore((s) => s.buckets[tab.id]?.selectedId ?? null);
   const doc = usePdfAnnotationStore((s) => s.buckets[tab.id]?.doc ?? null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
-  // 浮条锚点：选中项元素相对外层容器的框；滚动、缩放、doc 变化都重算
+  // 浮条锚点：选中项元素相对外层容器的框；滚动、缩放、doc 变化都重算。
+  // 两栏都带 data-pdf-layer，但标注只有左栏有，这个选择器不会误命中右栏。
   useLayoutEffect(() => {
     const wrap = wrapperRef.current;
     if (!wrap || !selectedId) { setAnchor(null); return; }
@@ -1096,11 +1204,103 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       </div>
     );
   }
+
+  /**
+   * 一栏的内容：双缓冲层 → 页行 → 格。两栏各调一次，**逐字段同源**——同一份 layers（连
+   * `layer.scale` 一起）、同一份 sizes / layout、同一个 PAGE_GAP / PAGE_PAD，行宽都是
+   * `size.w * layer.scale`。这是 1:1 滚动映射成立的前提（spec v8 §3.1）：两栏内容尺寸只要有
+   * 一处不同，`scrollTop` 相等就不再意味着两边看到的是同一处。
+   *
+   * 是一个**渲染函数、不是组件**：写成组件的话每次渲染都是新的函数引用，React 会当成换了组件
+   * 类型，整棵子树 unmount→mount（同 LeftCell 头上那条理由）。
+   *
+   * `data-pdf-page` / `data-pdf-mounted` / `data-pdf-layer` 两栏都带，e2e 靠外面那层
+   * `[data-pdf-pane]` 区分是哪一栏。
+   */
+  const renderLayers = (pane: 'left' | 'right') => (
+    /* relative 容器：清晰层（idx 0）在流内定版面，后台新层（idx 1）绝对叠在其下方 */
+    <div style={{ position: 'relative' }}>
+      {layers.map((layer, idx) => (
+        <div
+          key={layer.id}
+          data-pdf-layer={idx === 0 ? 'stable' : 'incoming'}
+          // 只挂在 stable 层上：这个值是「最近一次顶替走的是哪条路」，incoming 层还没被
+          // 顶替过，不该有这个属性（e2e 用它区分 promoteReady 条件顶替与 PROMOTE_TIMEOUT
+          // 兜底，见 PromoteReason 的注释）。
+          data-pdf-promote-reason={idx === 0 ? (promoteReason ?? undefined) : undefined}
+          style={idx === 0
+            ? { position: 'relative', zIndex: 1, zoom: visualScale / layer.scale }
+            : { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 0, zoom: visualScale / layer.scale }}
+        >
+          {/* w-max + min-w-full：宽度贴合最宽的一页且不小于视口 —— 页比视口宽时
+              左右都能滚到、页比视口窄时仍居中。gap/padding 随 layer.scale 等比，
+              与 zoom 叠加后两层版面恒等，顶替时不跳。 */}
+          <div
+            className="flex flex-col items-center w-max min-w-full"
+            style={{
+              gap: `${PAGE_GAP * layer.scale}px`,
+              padding: `${PAGE_PAD * layer.scale}px 0`,
+            }}
+          >
+            {/* 页行始终在 DOM 且显式给出高宽（不再靠 <Page> 撑起来）：窗口外的空行也占住
+                正确的位置，scrollHeight 从第一帧起就是终值，滚动条不会边滚边变长。
+                只有窗口内的行才挂真正的格子（左栏是 canvas 与栅格化开销，右栏是合成）。
+                行宽恒是**一页**宽——两格分居两栏之后，同页两格的顶对齐不再靠同一个 flex 行，
+                而靠两栏行几何逐字段相同 + 滚动同步（spec v8 §3.1 写明了这份代价）。 */}
+            {sizes && layout && sizes.map((size, k) => {
+              const n = k + 1;
+              const mounted = win.pages.has(n);
+              return (
+                <div
+                  key={n}
+                  data-pdf-page={n}
+                  data-pdf-mounted={mounted ? '1' : undefined}
+                  style={{
+                    height: size.h * layer.scale,
+                    width: size.w * layer.scale,
+                    flexShrink: 0,
+                  }}
+                >
+                  {mounted && (pane === 'left' ? (
+                    <LeftCell
+                      n={n} layerId={layer.id} lifecycle={lifecycle.current} size={size}
+                      layerScale={layer.scale} registry={registry}
+                      onPageLoad={(p) => { pageProxies.current[n] = p; }}
+                      onSettled={() => onPageSettled(layer.id, n)}
+                      annotations={idx === 0 ? (
+                        <PdfAnnotationLayer
+                          tabId={tab.id} page={n} pageWidth={size.w} pageHeight={size.h}
+                          layerScale={layer.scale} ensureLines={ensureLines}
+                        />
+                      ) : null}
+                    />
+                  ) : (
+                    <RightCell
+                      n={n} layerId={layer.id} size={size} layerScale={layer.scale}
+                      translating={job !== null} blocks={blocksByPage.get(n) ?? NO_BLOCKS}
+                      docKey={tab.id} registry={registry}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  // 对照时左栏宽给的是像素（paneWidths），非对照时整条铺满——那时没有第二栏可分。
+  const panes = paneWidths(wrapperW, split);
   return (
     <div
       ref={wrapperRef}
       tabIndex={0}
-      style={{ position: 'relative', height: '100%', outline: 'none' }}
+      style={{
+        position: 'relative', height: '100%', outline: 'none', display: 'flex',
+        // 拖分隔线时横扫会把右栏的译文块整片选中，拖完还留着高亮
+        userSelect: dragging ? 'none' : undefined,
+      }}
       onKeyDown={(e) => { if (handleAnnotationKey(e, tab.id, onToggleDual)) e.preventDefault(); }}
       onPointerDownCapture={(e) => {
         const t = e.target as Element;
@@ -1110,8 +1310,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       <div
         ref={scrollRef}
         data-testid={`pdf-scroll-${tab.id}`}
+        data-pdf-pane="left"
         className="ky-scroll h-full overflow-auto"
-        style={{ background: 'var(--color-paper-deep)' }}
+        style={{
+          background: 'var(--color-paper-deep)',
+          flex: dual ? `0 0 ${panes.left}px` : '1 1 auto',
+          minWidth: 0,
+        }}
       >
         {fileUrl && (
           <Document
@@ -1152,84 +1357,34 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
               setFileTabStatus(tab.id, { status: 'error', errorMessage: err.message })
             }
           >
-            {/* relative 容器：清晰层（idx 0）在流内定版面，后台新层（idx 1）绝对叠在其下方 */}
-            <div style={{ position: 'relative' }}>
-              {layers.map((layer, idx) => (
-                <div
-                  key={layer.id}
-                  data-pdf-layer={idx === 0 ? 'stable' : 'incoming'}
-                  // 只挂在 stable 层上：这个值是「最近一次顶替走的是哪条路」，incoming 层还没被
-                  // 顶替过，不该有这个属性（e2e 用它区分 promoteReady 条件顶替与 PROMOTE_TIMEOUT
-                  // 兜底，见 PromoteReason 的注释）。
-                  data-pdf-promote-reason={idx === 0 ? (promoteReason ?? undefined) : undefined}
-                  style={idx === 0
-                    ? { position: 'relative', zIndex: 1, zoom: visualScale / layer.scale }
-                    : { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 0, zoom: visualScale / layer.scale }}
-                >
-                  {/* w-max + min-w-full：宽度贴合最宽的一页且不小于视口 —— 页比视口宽时
-                      左右都能滚到、页比视口窄时仍居中。gap/padding 随 layer.scale 等比，
-                      与 zoom 叠加后两层版面恒等，顶替时不跳。 */}
-                  <div
-                    className="flex flex-col items-center w-max min-w-full"
-                    style={{
-                      gap: `${PAGE_GAP * layer.scale}px`,
-                      padding: `${PAGE_PAD * layer.scale}px 0`,
-                    }}
-                  >
-                    {/* 页行始终在 DOM 且显式给出高宽（不再靠 <Page> 撑起来）：窗口外的空行也占住
-                        正确的位置，scrollHeight 从第一帧起就是终值，滚动条不会边滚边变长。
-                        只有窗口内的行才挂 <Page>（真正的 canvas 与栅格化开销）。
-                        对照时行是「两页 + 一个间距」宽，两格由 flex 并排、顶对齐——对齐由行保证，
-                        不由"两格高度恰好相等"这个偶然事实保证（spec §3.1）。 */}
-                    {sizes && layout && sizes.map((size, k) => {
-                      const n = k + 1;
-                      const mounted = win.pages.has(n);
-                      return (
-                        <div
-                          key={n}
-                          data-pdf-page={n}
-                          data-pdf-mounted={mounted ? '1' : undefined}
-                          style={{
-                            height: size.h * layer.scale,
-                            width: (dual ? size.w * 2 + PAGE_GAP : size.w) * layer.scale,
-                            flexShrink: 0,
-                            display: 'flex',
-                            alignItems: 'flex-start',
-                            gap: `${PAGE_GAP * layer.scale}px`,
-                          }}
-                        >
-                          {mounted && (
-                            <MountedPageCells
-                              n={n} lifecycle={lifecycle.current} size={size} layerScale={layer.scale}
-                              dual={dual} translating={job !== null}
-                              blocks={blocksByPage.get(n) ?? NO_BLOCKS} docKey={tab.id}
-                              onPageLoad={(p) => { pageProxies.current[n] = p; }}
-                              onSettled={() => onPageSettled(layer.id, n)}
-                              annotations={idx === 0 ? (
-                                <PdfAnnotationLayer
-                                  tabId={tab.id} page={n} pageWidth={size.w} pageHeight={size.h}
-                                  layerScale={layer.scale} ensureLines={ensureLines}
-                                />
-                              ) : null}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
+            {renderLayers('left')}
           </Document>
         )}
       </div>
+      {dual && <PaneDivider onDragTo={onDividerDrag} onDragEnd={() => setDragging(false)} />}
+      {dual && (
+        // 右栏与进度浮层的共同父层：浮层是滚动容器的**兄弟**、absolute 居中，放进滚动容器里
+        // 会跟着内容滚走。右栏宽度让 flex 收（`flex: 1`）而不是也写死像素：分隔线与左栏都是
+        // 确定的像素，剩下的正好是 paneWidths 里的 right，两者恒等，少一处四舍五入。
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+          <div
+            ref={rightRef}
+            data-testid={`pdf-right-scroll-${tab.id}`}
+            data-pdf-pane="right"
+            className="ky-scroll h-full overflow-auto"
+            style={{ background: 'var(--color-paper-deep)' }}
+          >
+            {renderLayers('right')}
+          </div>
+          {/* 进度浮层就在右栏矩形里居中（右栏此刻整片空白），工具栏 zIndex 5 仍压在它上面照常可用。 */}
+          {job && <TranslationProgress job={job} onCancel={cancelTranslation} />}
+        </div>
+      )}
       <PdfAnnotationNotice tabId={tab.id} pdfPath={tab.path} translateError={translateError} />
       <PdfToolbar
         tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)}
         onToggleDual={onToggleDual} onRetranslate={onRetranslate}
       />
-      {/* 进度浮层盖住右半边（右格此刻是空白的），工具栏 zIndex 5 仍压在它上面照常可用。 */}
-      {job && <TranslationProgress job={job} onCancel={cancelTranslation} />}
       {anchor && <PdfSelectionBar tabId={tab.id} anchor={anchor} />}
     </div>
   );

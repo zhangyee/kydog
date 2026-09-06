@@ -1064,3 +1064,225 @@ test('57-pdf-dual-pane: 页背景取不到时，墨色按实际填下去的兜�
     await teardown(launched);
   }
 });
+
+// ── 分栏（spec v8 §3.1）：两个滚动容器 + 同步 ───────────────────────────────────────────
+
+type PaneRow = {
+  page: string;
+  sized: boolean;
+  dTop: number | null;
+  dHeight: number | null;
+  /** 右格 canvas 的左边缘是否真的落在左栏容器右边缘之外（= 在另一栏里，不是叠在左格上）。 */
+  separated: boolean | null;
+  dLeftCell: number | null;
+};
+
+/**
+ * **按栏**比同一页的两格几何：左栏 stable 层里每个已挂载的行 n，配右栏 stable 层的行 n。
+ *
+ * 与旧的 rowGeometry 的差别就是这一条——两格不再在同一个 flex 行里（spec v8 §3.1 推翻了原
+ * §3.1），「同一行里找另一格」的写法从此找不到东西。顶对齐现在由两件事共同保证：两栏行几何逐
+ * 字段相同（同一份 sizes / layer.scale / PAGE_GAP / PAGE_PAD，行宽都是一页宽），以及滚动同步。
+ *
+ * `dLeftCell` 仍守左格那个 div 的**显式宽度**：它写的是未取整的 `size.w × layer.scale`，而不是
+ * 让它收缩到内容宽（那会取 canvas 的 CSS 宽，react-pdf 对它取过 floor）。这个宽度是标注层的
+ * 坐标基准（PdfAnnotationLayer 用 inset:0 贴上去），少 1 px 就会把整页高亮悄悄平移。判据里的
+ * scale 从**行宽**现推（行宽 = `页宽 × layer.scale`，同样未取整），不从 canvas 宽推——那个数
+ * 正是被 floor 过的那个，拿它当基准就等于把要测的东西当成了标尺。
+ */
+async function paneRowGeometry(page: Page, paneSel: string, pageW: number): Promise<PaneRow[]> {
+  return page.evaluate(({ sel, pageW }) => {
+    const leftPane = document.querySelector(`${sel} [data-pdf-pane="left"]`);
+    const rightPane = document.querySelector(`${sel} [data-pdf-pane="right"]`);
+    if (!leftPane || !rightPane) return [];
+    const paneRight = leftPane.getBoundingClientRect().right;
+    const rows = Array.from(
+      leftPane.querySelectorAll('[data-pdf-layer="stable"] [data-pdf-page][data-pdf-mounted="1"]'),
+    );
+    return rows.map((row) => {
+      const n = (row as HTMLElement).dataset.pdfPage ?? '?';
+      const mate = rightPane.querySelector(`[data-pdf-layer="stable"] [data-pdf-page="${n}"]`);
+      const left = row.querySelector('canvas:not([data-pdf-right])') as HTMLCanvasElement | null;
+      const right = mate?.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement | null;
+      const lr = left?.getBoundingClientRect();
+      const rr = right?.getBoundingClientRect();
+      const cell = left?.parentElement?.getBoundingClientRect();
+      const rowW = row.getBoundingClientRect().width;
+      const rowScale = rowW / pageW;
+      return {
+        page: n,
+        // react-pdf 要等自己的 effect 跑过才给左格 canvas 写 CSS 尺寸；在那之前它是
+        // 300 × 150 的固有尺寸，量出来的差值没有意义。sized 把「还没定尺寸」与「没对齐」分开。
+        sized: !!left && left.style.width !== '' && !!right,
+        dTop: lr && rr ? Math.abs(lr.top - rr.top) : null,
+        dHeight: lr && rr ? Math.abs(lr.height - rr.height) : null,
+        separated: rr ? rr.left > paneRight : null,
+        dLeftCell: cell ? Math.abs(cell.width - pageW * rowScale) : null,
+      };
+    });
+  }, { sel: paneSel, pageW });
+}
+
+/** 一栏的滚动状态。maxTop / maxLeft 是这一栏自己的滚动上界，用来先确认「有得滚」再断言同步。 */
+async function paneScroll(page: Page, paneSel: string, which: 'left' | 'right') {
+  return page.evaluate(({ sel, which }) => {
+    const el = document.querySelector(`${sel} [data-pdf-pane="${which}"]`) as HTMLElement | null;
+    if (!el) return null;
+    return {
+      top: el.scrollTop, left: el.scrollLeft,
+      maxTop: el.scrollHeight - el.clientHeight,
+      maxLeft: el.scrollWidth - el.clientWidth,
+    };
+  }, { sel: paneSel, which });
+}
+
+async function setPaneScroll(
+  page: Page, paneSel: string, which: 'left' | 'right', axis: 'top' | 'left', value: number,
+) {
+  await page.evaluate(({ sel, which, axis, value }) => {
+    const el = document.querySelector(`${sel} [data-pdf-pane="${which}"]`) as HTMLElement;
+    if (axis === 'top') el.scrollTop = value; else el.scrollLeft = value;
+  }, { sel: paneSel, which, axis, value });
+}
+
+test('57-pdf-dual-pane: 同页两格按栏顶对齐、等高——右格真在另一栏里，滚动与缩放后仍成立', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+
+    await enterDual(page, pane);
+
+    const check = async (label: string) => {
+      // 先把横向滚回 0：`separated`（右格 canvas 左边缘 > 左栏右边缘）这条在横向滚动过之后
+      // 会失真——内容被拉到容器左边缘之外，canvas 的 rect 会伸到右栏左边缘的左侧，那是滚动的
+      // 结果，不是「叠在左格上」。横向同步本身由另一条用例断言，这里只要一个确定的横向基准。
+      // 纵向不动：滚动之后的对齐正是要测的东西。
+      await setPaneScroll(page, paneSel, 'left', 'left', 0);
+      await expect.poll(
+        async () => {
+          const l = await paneScroll(page, paneSel, 'left');
+          const r = await paneScroll(page, paneSel, 'right');
+          return l?.left === 0 && r?.left === 0;
+        },
+        { timeout: 5000, message: `${label}：等两栏横向都回到 0` },
+      ).toBe(true);
+
+      await expect.poll(
+        async () => {
+          const g = await paneRowGeometry(page, paneSel, PAGE_W);
+          return g.length > 0 && g.every((r) => r.sized);
+        },
+        { timeout: 15000, message: `${label}：等两栏都定好尺寸` },
+      ).toBe(true);
+      // 同步有一帧延迟（回声锁在 rAF 里释放，spec v8 §3.1 写明了这份代价），纵向对齐先 poll
+      // 到落定；真没同步的话这里超时，紧接着的断言会把实际差值报出来，不会退化成一句超时。
+      await expect.poll(
+        async () => {
+          const g = await paneRowGeometry(page, paneSel, PAGE_W);
+          return g.every((r) => (r.dTop ?? Infinity) < 0.5);
+        },
+        { timeout: 5000, message: `${label}：等两栏纵向同步落定` },
+      ).toBe(true);
+
+      const g = await paneRowGeometry(page, paneSel, PAGE_W);
+      expect(g.length, `${label}：左栏应当有已挂载的页行`).toBeGreaterThan(0);
+      for (const r of g) {
+        // 两块 canvas 的 CSS 尺寸出自同一次 `size.h/w * layer.scale`，逐位相同；顶边则靠
+        // 「两栏行几何逐字段相同 + scrollTop 相等」。0.5 px 只留给设备像素网格取整。
+        expect(r.dTop ?? Infinity, `${label} 第 ${r.page} 页顶边`).toBeLessThan(0.5);
+        expect(r.dHeight ?? Infinity, `${label} 第 ${r.page} 页高度`).toBeLessThan(0.5);
+        // 只看 top/height 相等的话，右格被绝对定位盖在左格正上方也会全绿（重叠时两者的 top、
+        // height 当然也相等）。这条断住「右格真的在另一栏里」：它的左边缘落在左栏容器的右边缘
+        // 之外——重叠时会偏出整整一栏的宽度，不是零点几 px 的取整噪声。
+        expect(r.separated, `${label} 第 ${r.page} 页右格应当落在左栏之外`).toBe(true);
+        // 左格显式宽 == 页宽 × 本层缩放，逐位相等（两边都是同一个未取整的乘法，见
+        // paneRowGeometry 注释）。容差 0.05 px：让它收缩到 canvas 内容宽的话，差的是一次
+        // floor，非整除缩放下必然远大于这个量级。
+        expect(r.dLeftCell ?? Infinity, `${label} 第 ${r.page} 页左格显式宽度`).toBeLessThan(0.05);
+      }
+    };
+
+    await check('刚进对照');
+
+    // 滚几屏：换一批挂载的页，两栏照样对齐
+    await page.locator(testIdSelector(`pdf-scroll-${pdfPath}`))
+      .evaluate((el) => { el.scrollTop = el.clientHeight * 4; });
+    await expect(pane.getByTestId('pdf-readout')).not.toContainText(`1 / ${PAGES}`);
+    await check('滚动之后');
+
+    // 捏合放大一档、再缩小一档：两栏共用同一份 layers，layer.scale 也共用，对齐不该因此松掉。
+    // 一档溢出栏宽（横向有得滚）、一档窄于栏宽（行被 items-center 居中），两种版面都过一遍。
+    for (const pct of [200, 50]) {
+      const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
+      await pinchTo(page, pdfPath, startPct, pct);
+      // 判据是「读数确实换了一档」，不钉具体百分比：pinchTo 的 deltaY 从**读数**反推，而读数
+      // 是 Math.round(visualScale × 100)，起点因此天生带一位取整误差，落点常常差 1%。钉死它
+      // 测的是那道取整，不是这条用例主张的对齐。
+      await expect(pane.getByTestId('pdf-readout')).not.toContainText(`· ${startPct}%`);
+      await check(`缩放到 ${pct}% 附近之后`);
+    }
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 两栏滚动同步——纵横两轴、两个方向都互写', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+
+    await enterDual(page, pane);
+    await expect(pane.getByTestId(`pdf-right-scroll-${pdfPath}`)).toBeVisible();
+
+    // 纵向：左 → 右
+    const before = await paneScroll(page, paneSel, 'left');
+    expect(before!.maxTop, '这份 fixture 应当有得纵向滚').toBeGreaterThan(300);
+    await setPaneScroll(page, paneSel, 'left', 'top', 300);
+    await expect.poll(
+      async () => (await paneScroll(page, paneSel, 'right'))?.top,
+      { timeout: 5000, message: '右栏应当跟到左栏的 scrollTop' },
+    ).toBe(300);
+
+    // 纵向：右 → 左（回声锁只吞「刚被写过的那个元素」发出的那一次，不该把这次真实滚动也吞掉）
+    await setPaneScroll(page, paneSel, 'right', 'top', 120);
+    await expect.poll(
+      async () => (await paneScroll(page, paneSel, 'left'))?.top,
+      { timeout: 5000, message: '左栏应当跟到右栏的 scrollTop' },
+    ).toBe(120);
+
+    // 横向要先有得滚：进对照会 fit-width（页宽 = 栏宽），捏到 200% 附近才溢出。真正的前提是
+    // 下面这个 maxLeft，不是读数落在哪个整数上（读数取整会让落点差 1%，见另一条用例的注释）。
+    const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
+    await pinchTo(page, pdfPath, startPct, 200);
+    await expect.poll(
+      async () => {
+        const l = await paneScroll(page, paneSel, 'left');
+        const r = await paneScroll(page, paneSel, 'right');
+        return Math.min(l?.maxLeft ?? 0, r?.maxLeft ?? 0);
+      },
+      { timeout: 10000, message: '200% 之后两栏都应当有得横向滚' },
+    ).toBeGreaterThan(80);
+
+    // 横向：左 → 右。不等宽时 scrollLeft 也是**原样相等**（两栏内容左边缘对齐，spec v8 §3.1）。
+    await setPaneScroll(page, paneSel, 'left', 'left', 80);
+    await expect.poll(
+      async () => (await paneScroll(page, paneSel, 'right'))?.left,
+      { timeout: 5000, message: '右栏应当跟到左栏的 scrollLeft' },
+    ).toBe(80);
+
+    // 横向：右 → 左
+    await setPaneScroll(page, paneSel, 'right', 'left', 40);
+    await expect.poll(
+      async () => (await paneScroll(page, paneSel, 'left'))?.left,
+      { timeout: 5000, message: '左栏应当跟到右栏的 scrollLeft' },
+    ).toBe(40);
+  } finally {
+    await teardown(launched);
+  }
+});
