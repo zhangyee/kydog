@@ -525,8 +525,11 @@ test('59-pdf-translate: 重新翻译——右格回到空白，旧译文块一�
     await releaseGate(launched);
     const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
     await expect(fresh, '跑完之后应当渲染的是**新**这一版的译文块').toBeVisible({ timeout: 15000 });
+    // 这条**不**限 stable 层：toHaveCount(0) 不受 strict mode 影响（限层是为了双缓冲两层并存时
+    // 同一个块两份会 strict mode 违规，那只发生在单命中的断言上），限了反而更弱——残留在
+    // incoming 层上的旧块会被放过。否定断言要泛选。
     await expect(
-      page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`),
+      page.locator(`${paneSel} [data-translation-block="seed1"]`),
       '上一版的块不该还留在那儿',
     ).toHaveCount(0);
     const after = await waitSample(page, paneSel, INK, '重译之后');
@@ -574,8 +577,11 @@ test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回�
     await releaseGate(launched);
     const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
     await expect(fresh, '跑完之后应当渲染的是新这一版的译文块').toBeVisible({ timeout: 15000 });
+    // 这条**不**限 stable 层：toHaveCount(0) 不受 strict mode 影响（限层是为了双缓冲两层并存时
+    // 同一个块两份会 strict mode 违规，那只发生在单命中的断言上），限了反而更弱——残留在
+    // incoming 层上的旧块会被放过。否定断言要泛选。
     await expect(
-      page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`),
+      page.locator(`${paneSel} [data-translation-block="seed1"]`),
       '上一版的块不该还留在那儿',
     ).toHaveCount(0);
   } finally {
