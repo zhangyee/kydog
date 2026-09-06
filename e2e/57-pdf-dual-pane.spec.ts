@@ -1364,6 +1364,130 @@ test('57-pdf-dual-pane: 两栏不等宽时内容左边缘仍对齐——窄栏�
   }
 });
 
+/**
+ * 在指定的那一栏上发一次 ctrl+wheel。onWheel 的 focal 是相对 `closest('[data-pdf-pane]')` 量的，
+ * 所以派发目标必须是那一栏本身（`bubbles: true`，监听挂在 wrapper 上）。`fx` / `fy` 是相对该栏
+ * 视口左上角的偏移，也就是实现里那个 focal。deltaY 的反推同 pinchTo。
+ */
+async function pinchOnPane(
+  page: Page, paneSel: string, which: 'left' | 'right',
+  fromPct: number, toPct: number, fx: number, fy: number,
+) {
+  const deltaY = (1 - toPct / fromPct) / ZOOM_SENSITIVITY;
+  await page.evaluate(({ sel, which, deltaY, fx, fy }) => {
+    const el = document.querySelector(`${sel} [data-pdf-pane="${which}"]`) as HTMLElement;
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new WheelEvent('wheel', {
+      ctrlKey: true, deltaY,
+      clientX: r.left + fx, clientY: r.top + fy, bubbles: true, cancelable: true,
+    }));
+  }, { sel: paneSel, which, deltaY, fx, fy });
+}
+
+/**
+ * 「这一栏视口里 (fx, fy) 那一点，压着页面内容的哪个 pt 坐标」。
+ *
+ * 拿第 1 页那张 canvas 的 rect 当标尺：它**就是**那一页，横跨整页宽、纵贯整页高，所以
+ * `(clientX − rect.left) / rect.width × 页宽` 就是内容坐标本身。这与 spec 说的
+ * `(scrollLeft + focal.x) / scale` 是同一个量，但不经过 scrollLeft、CSS zoom、layer.scale 任何
+ * 一个中间量去拼——也因此不受 react-pdf 对 canvas CSS 宽取 floor 的影响：floor 同时缩在 left 与
+ * width 上，比值不变。点落在 canvas 之外时是线性外推，仍是定义良好的内容坐标。
+ */
+async function contentPtUnder(
+  page: Page, paneSel: string, which: 'left' | 'right', fx: number, fy: number,
+) {
+  return page.evaluate(({ sel, which, fx, fy, pageW, pageH }) => {
+    const pane = document.querySelector(`${sel} [data-pdf-pane="${which}"]`) as HTMLElement | null;
+    const c = pane?.querySelector(
+      '[data-pdf-layer="stable"] [data-pdf-page="1"] canvas',
+    ) as HTMLElement | null;
+    if (!pane || !c) return null;
+    const p = pane.getBoundingClientRect();
+    const r = c.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return null;
+    return {
+      x: (p.left + fx - r.left) / r.width * pageW,
+      y: (p.top + fy - r.top) / r.height * pageH,
+    };
+  }, { sel: paneSel, which, fx, fy, pageW: PAGE_W, pageH: PAGE_H });
+}
+
+test('57-pdf-dual-pane: 两栏 scrollLeft 已经不等时在宽栏上捏合，鼠标下那一点不跳', async () => {
+  // spec §3.1 的 v9 订正：缩放锚点的**快照与回写同取事件所在的那一栏**。
+  //
+  // 上一条用例造出的正是这条订正要面对的状态——窄栏横向滚到自己的上界之后，宽栏到不了那么远，
+  // 两栏的 scrollLeft 从此差着两栏可视宽之差（≈ 300 px）。此时若还按「两栏 scrollLeft 恒相等」
+  // 拿**左栏**的快照去配**右栏**量出来的 focal，两个量分属两个基准，回算出来的位置会差
+  // `(sl_left − sl_right) × f`，鼠标下那一点当场跳掉一截。
+  //
+  // 判据是「鼠标压着的那个内容点，捏合前后是同一个」——协议层的恒等式，不是像素容差。
+  const FOCAL = { x: 40, y: 120 };  // 贴着宽栏左边缘取焦点：那里离宽栏自己的滚动上界最远
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    const readout = pane.getByTestId('pdf-readout');
+
+    await enterDual(page, pane);
+    await pinchTo(page, pdfPath, readoutPct((await readout.textContent())!), 200);
+
+    // 分隔线往左拖 150：左栏变窄、右栏变宽，两栏可视宽从此差约 300
+    const c = await dividerCenter(pane);
+    await page.mouse.move(c.x, c.y);
+    await page.mouse.down();
+    await page.mouse.move(c.x - 150, c.y, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(
+      async () => {
+        const w = await paneBoxWidths(page, paneSel);
+        return w ? w.right - w.left : 0;
+      },
+      { timeout: 5000, message: '等分隔线拖动落地：右栏应当比左栏宽出约 300' },
+    ).toBeGreaterThan(200);
+
+    // 窄栏滚到自己的上界，宽栏被夹在自己的上界上 —— 两栏 scrollLeft 从此不等
+    await setPaneScroll(page, paneSel, 'left', 'left', 1e6);
+    await expect.poll(
+      async () => {
+        const l = await paneScroll(page, paneSel, 'left');
+        const r = await paneScroll(page, paneSel, 'right');
+        return l && r ? l.left - r.left : 0;
+      },
+      { timeout: 10000, message: '等两栏的 scrollLeft 真的拉开差距（窄栏到头、宽栏被夹）' },
+    ).toBeGreaterThan(100);
+    // 前提本身也断一次：两栏若仍然相等，下面那条恒等式在坏实现下照样成立，用例会白绿
+    const gap = await paneScroll(page, paneSel, 'left');
+    const gapR = await paneScroll(page, paneSel, 'right');
+    expect(gap!.left - gapR!.left, `捏合之前两栏的 scrollLeft 必须已经不等 ${JSON.stringify({ gap, gapR })}`)
+      .toBeGreaterThan(100);
+
+    const before = await contentPtUnder(page, paneSel, 'right', FOCAL.x, FOCAL.y);
+    expect(before, '右栏第 1 页应当已经挂载并定好尺寸').not.toBeNull();
+
+    // **在右栏上**捏合一次。放大而不是缩小：两栏此刻都贴着各自的横向上界，放大让上界一起变大，
+    // 正确实现有地方可去；错误实现算出来的是左栏那套坐标，写进去会被夹回上界。
+    const pct0 = readoutPct((await readout.textContent())!);
+    await pinchOnPane(page, paneSel, 'right', pct0, Math.round(pct0 * 1.2), FOCAL.x, FOCAL.y);
+    await expect.poll(
+      async () => readoutPct((await readout.textContent())!),
+      { timeout: 5000, message: '等这次捏合落地（读数换档）' },
+    ).toBeGreaterThan(pct0);
+
+    const after = await contentPtUnder(page, paneSel, 'right', FOCAL.x, FOCAL.y);
+    expect(after, '捏合之后右栏第 1 页仍应当在').not.toBeNull();
+    // 锚点若取错栏，这里差的是 (sl_left − sl_right) × f 折算回 pt 的量级（实测 ≈ 40 pt），
+    // 与下面这半个 pt 的判据差着两个数量级——不是靠容差调出来的绿。
+    expect(after!.x, `鼠标下那一点的横坐标不该变 ${JSON.stringify({ before, after })}`)
+      .toBeCloseTo(before!.x, 0);
+    expect(after!.y, `鼠标下那一点的纵坐标不该变 ${JSON.stringify({ before, after })}`)
+      .toBeCloseTo(before!.y, 0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
 test('57-pdf-dual-pane: 拖分隔线改两栏宽度，拖到最右右栏也不小于 MIN_PANE_PX', async () => {
   const launched = await launchKydog({ seed: seedAll });
   try {

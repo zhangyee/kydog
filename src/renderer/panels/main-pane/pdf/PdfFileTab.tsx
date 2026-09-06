@@ -248,8 +248,13 @@ function RightCell({ n, layerId, size, layerScale, translating, blocks, docKey, 
   );
 }
 
-/** 每次改缩放前的快照，供缩放后按锚点回算滚动位置（见组件里那个 useLayoutEffect）。 */
-type ZoomAnchor = { prevScale: number; sl: number; st: number };
+/**
+ * 每次改缩放前的快照，供缩放后按锚点回算滚动位置（见组件里那个 useLayoutEffect）。
+ *
+ * `el` 是**这次快照取自哪一栏**，回写也写回它。焦点（focal）相对事件所在栏量，快照就必须同取
+ * 那一栏——两个量同源，回算才是恒等的，见下面 requestScale 与那个 useLayoutEffect 的注释。
+ */
+type ZoomAnchor = { prevScale: number; sl: number; st: number; el: HTMLElement };
 
 /**
  * 视觉缩放（连续值）与它**唯一**的写入口 `requestScale`。
@@ -271,6 +276,7 @@ type ZoomAnchor = { prevScale: number; sl: number; st: number };
  */
 function useVisualScale(
   scrollRef: RefObject<HTMLDivElement | null>,
+  focalPane: RefObject<HTMLElement | null>,
   targetScale: RefObject<number>,
   zoomAnchor: RefObject<ZoomAnchor | null>,
   scheduleCommit: () => void,
@@ -280,17 +286,19 @@ function useVisualScale(
   cur.current = visualScale;
 
   const requestScale = useCallback((next: number, anchored: boolean) => {
-    const el = scrollRef.current;
+    // 快照取**事件所在的那一栏**（onWheel 每次都写 focalPane，与 focal 同一行来历）。取不到
+    // 才退回左栏——非捏合的调用点（进/出对照）走的是 anchored=false，压根不读这个值。
+    const el = focalPane.current ?? scrollRef.current;
     const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
     targetScale.current = clamped;
     // anchored=false 时**显式置 null**，不是「不写」：锚点是一次性快照，留着上一次捏合的那份
     // 会让下一次非捏合的缩放（进/出对照）按上次捏合那一刻的滚动位置回算，把视图弹走。
     zoomAnchor.current = anchored && el
-      ? { prevScale: cur.current, sl: el.scrollLeft, st: el.scrollTop }
+      ? { prevScale: cur.current, sl: el.scrollLeft, st: el.scrollTop, el }
       : null;
     setVisualScale(clamped);
     scheduleCommit();
-  }, [scrollRef, targetScale, zoomAnchor, scheduleCommit]);
+  }, [scrollRef, focalPane, targetScale, zoomAnchor, scheduleCommit]);
 
   return [visualScale, requestScale];
 }
@@ -528,7 +536,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const promoteTimer = useRef<number | null>(null);
   // 新层渲染进度：按页号存，不是计数——同一页 onRenderError 之后又 onRenderSuccess 不能重复计数
   const progress = useRef<{ id: number; done: Set<number> }>({ id: -1, done: new Set() });
-  const focal = useRef({ x: 0, y: 0 });       // 缩放锚点：鼠标相对滚动视口的位置
+  const focal = useRef({ x: 0, y: 0 });       // 缩放锚点：鼠标相对**事件所在那一栏**视口的位置
+  // 上面那个 focal 是相对谁量的。与 focal 在 onWheel 里同一行写入，两者恒配对——锚点快照
+  // 必须取同一个元素，见 ZoomAnchor 的注释。
+  const focalPane = useRef<HTMLElement | null>(null);
   const zoomAnchor = useRef<ZoomAnchor | null>(null);
 
   // 要挂载哪些页、以多细的位图挂——两件事一起定（pageWindow.ts）。
@@ -599,7 +610,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     if (promoteTimer.current != null) clearTimeout(promoteTimer.current);
   }, []);
 
-  const [visualScale, requestScale] = useVisualScale(scrollRef, targetScale, zoomAnchor, scheduleCommit);
+  const [visualScale, requestScale] = useVisualScale(scrollRef, focalPane, targetScale, zoomAnchor, scheduleCommit);
   const visualScaleRef = useRef(visualScale);
   visualScaleRef.current = visualScale;
 
@@ -1047,18 +1058,19 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
 
   // 缩放后按鼠标锚点回算滚动位置，使鼠标下的内容点保持不动（同 macOS 预览）。
   //
-  // **只写左栏**，右栏由滚动同步跟上。焦点却可能是相对右栏量的（在右栏上捏合，见上面的 onWheel）
-  // ——那不是错配：两栏的 scrollLeft / scrollTop 恒相等（同步），两栏内容尺寸又逐字段相同，所以
-  // `scrollLeft + focal.x` 在两栏里指的是**同一个内容坐标**。拿右栏量的焦点配左栏的滚动位置，
-  // 回算出来的仍是「鼠标下那一点不动」。
+  // 快照与回写**同取事件所在的那一栏**（`a.el`，由 requestScale 一并记下），另一栏由滚动同步
+  // 跟上。两个量必须同源：`scrollLeft + focal.x` 只有在两者出自同一个视口时才是那一栏里的内容
+  // 坐标。**两栏的 scrollLeft 不是恒相等的**——窄栏横向滚到自己的上界之后宽栏还到不了那么远，
+  // 从此差着两栏可视宽之差（spec §3.1「诚实的代价」，57 里有一条用例专门造出这个状态）。此时
+  // 若拿右栏量的焦点配左栏的快照，鼠标下那一点会跳掉这个差值。纵向同理（两栏各有自己的占位
+  // 横向滚动条时 clientHeight 差一条，maxScrollTop 跟着差）。
   useLayoutEffect(() => {
-    const el = scrollRef.current;
     const a = zoomAnchor.current;
-    if (!el || !a) return;
+    if (!a) return;
     const f = visualScale / a.prevScale;
     if (f === 1) return;
-    el.scrollLeft = (a.sl + focal.current.x) * f - focal.current.x;
-    el.scrollTop = (a.st + focal.current.y) * f - focal.current.y;
+    a.el.scrollLeft = (a.sl + focal.current.x) * f - focal.current.x;
+    a.el.scrollTop = (a.st + focal.current.y) * f - focal.current.y;
   }, [visualScale]);
 
   // 新层某一页渲染结束（成功或失败都计入）；**可见页**全部就绪即顶替（promoteReady）。
@@ -1098,9 +1110,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return; // 非捏合的滚轮 → 走默认滚动（连续翻页）
       e.preventDefault();
-      const pane = (e.target as Element).closest('[data-pdf-pane]') ?? el;
+      const pane = ((e.target as Element).closest('[data-pdf-pane]') ?? el) as HTMLElement;
       const rect = pane.getBoundingClientRect();
       focal.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      // 焦点相对谁量的，锚点快照就取谁（requestScale 读这个 ref）。两个量同源，不依赖「两栏
+      // scrollLeft 恒相等」——那条在窄栏滚到头之后就不成立了，见回算那个 useLayoutEffect。
+      focalPane.current = pane;
       // 逐事件累积目标缩放（只动 ref，不惊动 React），逐帧才真正落地一次——落地与「排提交」
       // 都在 requestScale 里，见模块级 useVisualScale。
       //
