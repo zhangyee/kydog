@@ -90,6 +90,25 @@ async function seedNoModel(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// 没配模型 **且** 边车结构坏掉：翻译键因此处在 invalid 态（主键的动作是「覆盖磁盘上那份坏文件」，
+// 要先过 confirm），而任何一次真发起的翻译都会在 resolveModel 上失败、在 Notice 上留下一条
+// 「翻译失败：没有可用的模型」。两者凑在一起才测得到「确认框取消不该抹掉仍然成立的提示」。
+async function seedInvalidNoModel(home: string) {
+  await seedSettings(home, { providerConfigured: false });
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(PAGES, PAGE_W, PAGE_H));
+  // kind 不认识 → validateTranslatedDoc 拒整份文件 → pdf.translation.load 抛 → setLoadError。
+  await fs.writeFile(path.join(projectPath, `.${PLAIN_REL}.zh.json`), JSON.stringify({
+    version: 1, pdf: PLAIN_REL, lang: { in: 'en', out: 'zh' },
+    blocks: [{
+      id: 'bad1', page: 1, x: 60, y: 200, width: 100, height: 20,
+      fontSize: 11, kind: 'paragraph', source: 'a body paragraph', target: '译文',
+    }],
+  }, null, 2));
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 // 每页两行的变体：截断那条用例要的是「一页拆得开」——buildPagedPdf 默认每页只有一行页码，
 // 单行被截断时 runBatch 无处可拆（它会直接抛「单行输出仍被截断」，那是另一条路径）。
 // extra 那行放在 y = 300，与页码那行（y ≈ 43–60）离得足够远，两个组的覆盖矩形不会互相
@@ -728,6 +747,40 @@ test('59-pdf-translate: 没配模型时点翻译——Notice 显示「翻译失�
       .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
     await expect(pane.locator('[data-pdf-right="1"]'), '没配模型时翻译失败要退回单栏').toHaveCount(0);
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 覆盖确认框点取消——一条仍然成立的错误提示不该被顺手抹掉', async () => {
+  // 复审点名的一条：`onToggleDual` 里那句 `setTranslateError(null)` 原先排在 `confirm()`
+  // **之前**，于是「按翻译键 → 看到确认框 → 取消」会顺手清掉一条此刻仍然成立的提示（典型如
+  // 「没配模型」），而这一刻什么都没发生——用户按下取消，界面上唯一的线索却没了。
+  //
+  // 触发条件要两样东西同时成立：翻译键处在 invalid / mismatch（动作会覆盖磁盘上已有的边车，
+  // 因而先过 confirm），并且 Notice 上正挂着一条 translateError。seedInvalidNoModel 把两样
+  // 都造出来：坏边车给 invalid 态，没配模型让第一次确认过的翻译在 resolveModel 上失败。
+  const launched = await launchKydog({ seed: seedInvalidNoModel });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
+    const pane = await openPdf(page, pdfPath);
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    // 先真发起一次并让它失败，把那条提示挂上去（invalid 态覆盖已有边车 → 先过确认框）。
+    await pane.getByTestId('pdf-translate').click();
+    await confirmRetranslate(page);
+    await expect(pane.getByTestId('pdf-notice'), '这一趟应当失败在 resolveModel 上')
+      .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
+
+    // 再按一次，这次在确认框上点取消：什么都没发生，提示就该原样还在。
+    await pane.getByTestId('pdf-translate').click();
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+    await page.getByTestId('confirm-dialog-cancel').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+    await expect(pane.getByTestId('pdf-notice'), '取消覆盖之后那条提示仍然成立，不该被清掉')
+      .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
   } finally {
     await teardown(launched);
   }

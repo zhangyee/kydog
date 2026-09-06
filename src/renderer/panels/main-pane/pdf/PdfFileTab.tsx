@@ -824,19 +824,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const b = st.buckets[tab.id];
     if (!b || !sizes) return;
     if (!canPressTranslate(b)) return; // 与工具栏同一份判据（pending/translating 才会被这里挡住）
-    // 分派函数入口清 translateError（清除时机见其声明处的注释，理由 2）：无论下面三支走哪一支，
-    // 都是用户按下的一次新动作，旧错误对这一刻已经不成立——'none'/'invalid'/'mismatch' 那支会
-    // 走 startTranslation 再清一遍（冗余但无害），'active'/'ready' 那两支原本没有别的清除点。
-    setTranslateError(null);
     const state = translateUiState(b);
-    if (state === 'active') { st.setDual(tab.id, false); return; }
-    if (state === 'ready') { enterDualFitWidth(); return; }
     // none / invalid / mismatch：动作是「跑流水线」。只有 invalid（边车存在但结构有误，
     // loadTranslation 的 catch 分支 setLoadError）与 mismatch（边车存在且合法，只是摘要与当前
     // PDF 对不上，checkVersion 判的）这两态会**覆盖磁盘上一份已经存在的边车**——判据是协议层
     // 事实本身（b.loadError / b.doc 与 b.version，见 translateUiState），不是另猜一套。none 是
     // pdf.translation.load 对 ENOENT 返回的空结果，磁盘上压根没有文件，从无到有不是破坏性操作，
     // 不加确认——否则最常见的「第一次翻译」路径会平白多一步。
+    //
+    // **清 translateError 排在 confirm() 之后**：确认框弹出到用户按下按钮之间什么都没发生，
+    // 取消更是「这次动作根本没开始」——此刻抹掉一条仍然成立的提示（典型如「没配模型」）等于
+    // 把界面上唯一的线索按没了。确认之后再清（startTranslation 开头也会清一遍，冗余但无害）。
     if (state === 'invalid' || state === 'mismatch') {
       void (async () => {
         const ok = await confirm({
@@ -847,10 +845,17 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           confirmLabel: '重新翻译',
         });
         if (!ok) return;
+        setTranslateError(null);
         void startTranslation();
       })();
       return;
     }
+    // 下面三支都是「按下去当场就发生」的动作，旧错误对这一刻已经不成立，入口清掉
+    // （清除时机见 translateError 声明处的注释，理由 2）：'none' 那支会走 startTranslation
+    // 再清一遍（冗余但无害），'active'/'ready' 那两支原本没有别的清除点。
+    setTranslateError(null);
+    if (state === 'active') { st.setDual(tab.id, false); return; }
+    if (state === 'ready') { enterDualFitWidth(); return; }
     void startTranslation();           // none：从无到有，不是破坏性操作
   }, [tab.id, sizes, enterDualFitWidth, startTranslation]);
 
