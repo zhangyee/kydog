@@ -5,7 +5,7 @@ import { useThreadsStore } from '../../../stores/threadsStore';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { confirm } from '../../../stores/confirmStore';
 import { emptyAnnotations } from '../../../../shared/pdfSidecar';
-import { filterByGeometry, type Block } from '../../../../shared/zhSidecar';
+import { filterByGeometry, type Block, type TranslatedDoc } from '../../../../shared/zhSidecar';
 import { handleAnnotationKey } from './annotationKeys';
 import { cellKey, createCanvasRegistry, type CanvasRegistry } from './canvasRegistry';
 import { flushDrafts } from './noteDrafts';
@@ -771,7 +771,9 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // 术语表跨重译保留：它是用户 / agent 写进边车的约定，不是这一趟翻译的产物（spec §2.6）。
     const keepGlossary = st.buckets[tab.id]?.doc?.glossary;
     const locale = useSettingsStore.getState().settings?.ui.locale ?? 'zh';
-    st.setJob(tab.id, { phase: 'extract', done: 0, total: numPages, failed: 0 });
+    // 部分跑（重译本页 / 重试失败页）第一帧的进度总量该是这一趟真要跑的页数，不是全篇页数——
+    // 否则浮层先闪一下「0 / numPages」，等第一条 tick 回来才跳到真实总量。
+    st.setJob(tab.id, { phase: 'extract', done: 0, total: opts?.pages?.length ?? numPages, failed: 0 });
     setTranslateError(null);
     // 这一趟真正落地的失败页数与页数总量，只给下面 finalize 那一档进度用：只有 'translate'
     // 阶段的 tick 才是真值——'finalize' 那一档是我们自己合成的（下面），不能拿它回头覆盖自己。
@@ -786,6 +788,19 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       const model = await window.kydog.invoke('pdf.translation.resolveModel', {
         threadId: useThreadsStore.getState().currentThreadId,
       });
+      // 部分跑（重译本页 / 重试失败页）的 base 必须是盘上的原文（协议层事实），不能拿
+      // store 里那份 doc：它在 loadTranslation 里已经被 filterByGeometry 过滤过一轮
+      // （spec §5），越界块从内存中的 doc.blocks 里丢掉了。拿它当 base 交给 translateDoc
+      // 合并、再整份落盘，等于把那些块从磁盘上永久抹掉——违反 spec §8 不变量 #7。这里
+      // 与 resolveModel 那次 await 一样受 `my === jobSeq.current` 的代际保护：若在等待期间
+      // 被取消 / 关 tab，doc 为 null 时会抛错走下面的 catch，那里已经比过代际再决定要不要
+      // 写 store。
+      let base: TranslatedDoc | undefined;
+      if (opts?.pages) {
+        const { doc: loaded } = await window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path });
+        if (!loaded) throw new Error('译文文件已不存在，请重新翻译');
+        base = loaded;
+      }
       const doc = await translateDoc({
         numPages,
         getPage: async (n) => {
@@ -830,11 +845,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         langOut: locale,
         source: { sha256: sha, bytes: bytes.byteLength },
         glossary: keepGlossary,
-        // 部分页（重译本页 / 重试失败页）：只翻 pages、与 store 里那份 doc 合并（spec 2026-09-06 §4.3）。
-        // 这两个键只在 active 态渲染，doc 此刻必然非空；万一不是，translateDoc 会抛「pages 需要 base」
-        // 走下面的 catch 变成 translateError，不会静默。
+        // 部分页（重译本页 / 重试失败页）：只翻 pages、与盘上原文合并（spec 2026-09-06 §4.3）。
+        // base 已经在上面重新探过盘（见那段注释）；这两个键只在 active 态渲染，正常路径下
+        // base 必然非空——万一盘上此刻确实没有文件，上面已经抛出「译文文件已不存在」，走不到这里。
         pages: opts?.pages,
-        base: opts?.pages ? (st.buckets[tab.id]?.doc ?? undefined) : undefined,
+        base,
       });
       if (my !== jobSeq.current) return;             // 取消 / 关 tab / 重新发起
       // 取消返回 null。上面那次代际比较已经把这条路挡掉了（isCancelled 与它是同一个谓词），
@@ -912,10 +927,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   }, [currentPage, startTranslation]);
 
   // 「重试失败页」：只翻边车里记的失败页。它们没有块，什么都不覆盖，不弹确认。
+  // failedPages 是边车文件里的数据，可能是 agent 手写的——pages 的「升序、不重复」这条前置
+  // 条件（translateDoc 合并逻辑依赖它）没有别的地方守，这里去重排序一遍再交出去。
   const onRetryFailed = useCallback(() => {
     const failed = usePdfTranslationStore.getState().buckets[tab.id]?.doc?.failedPages;
     if (!failed?.length) return;
-    void startTranslation({ pages: failed });
+    void startTranslation({ pages: [...new Set(failed)].sort((a, b) => a - b) });
   }, [tab.id, startTranslation]);
 
   // 「删除译文」：删边车 → 走现有的 loadTranslation 重探，ENOENT → setLoaded(null) 收掉 dual →

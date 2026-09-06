@@ -78,6 +78,10 @@ const INK = { x: 30, y: 35, w: 110, h: 30 };
 // ok.pdf 那份边车里唯一一条有 target 的块。刻意避开 INK：重译前要能同时观察到「右格照常合成
 // （INK 里有墨迹）」与「译文块渲染出来了」，两者不能互相遮挡。
 const READY_BLOCK = { x: 60, y: 200, w: 460, h: 120 };
+// 越界块（I-1 回归）：x + width、y + height 都远超 595×842，filterByGeometry 会把它从内存里的
+// doc.blocks 过滤掉、Notice 显示「1 条译文块超出页面范围，已跳过」。它照样是一条合法的
+// TranslatedDoc.Block（schema 不管上界，只有 filterByGeometry 管），留在磁盘上。
+const DROPPED_BLOCK_ID = 'seed-dropped';
 
 async function seedPlain(home: string) {
   await seedSettings(home);
@@ -160,6 +164,11 @@ async function seedReady(home: string) {
       id: 'seed1', page: 1,
       x: READY_BLOCK.x, y: READY_BLOCK.y, width: READY_BLOCK.w, height: READY_BLOCK.h,
       fontSize: 11, kind: 'text', source: 'a body paragraph', target: '这是上一版的译文',
+    }, {
+      // 越界块：不在任何一次内存合成里出现（filterByGeometry 丢它），但必须在磁盘上活下来——
+      // I-1 钉的就是这个（见 DROPPED_BLOCK_ID 上面的注释）。
+      id: DROPPED_BLOCK_ID, page: 1, x: 900, y: 900, width: 40, height: 10,
+      fontSize: 11, kind: 'text', source: 'off-page paragraph', target: '这条块本不该出现在任何页面上',
     }],
   }, null, 2));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
@@ -1448,6 +1457,49 @@ test('59-pdf-translate: 「重译本页」只重翻读数那一页，确认框�
     const after = await readSidecar(sidecar);
     expect(blocksOf(after, [1, 3, 4])).toEqual(blocksOf(before, [1, 3, 4]));
     expect((await gateCounts(launched)).done['pdf.translation.page']).toBe(5);   // 4 + 1
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 部分跑的 base 是盘上的原文——越界块不会被顺手从磁盘上抹掉（final review I-1）', async () => {
+  // 越界块（DROPPED_BLOCK_ID，见 seedReady 里那条种子边车）在内存里从来不存在：loadTranslation
+  // 用 filterByGeometry 把它滤掉才存进 store，Notice 显示「已跳过」、右格也画不出它。如果
+  // startTranslation 拿 store 里那份已过滤的 doc 当「重译本页」的 base，pages 之外的块会在
+  // 「原样带过来」那步直接漏掉这一条——合并结果整份落盘，等于把它从磁盘上永久抹掉（违反
+  // spec §8 不变量 #7）。这里重译与它无关的第 2 页，只测「pages 之外的块」这条合并路径，钉住
+  // base 必须来自重新探盘（pdf.translation.load），不是 store 里那份几何过滤后的内存副本。
+  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, READY_REL);
+    const sidecar = path.join(projectPath, READY_ZH_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+
+    const before = await readSidecar(sidecar);
+    const droppedBefore = before.blocks.find((b) => b.id === DROPPED_BLOCK_ID);
+    expect(droppedBefore, '种子边车里那条越界块得先在盘上').toBeDefined();
+    // 它在内存里已经被几何过滤丢了：Notice 显示「已跳过」，右格也没有它的踪影——这是过滤
+    // 本身该有的样子，不是本条要钉的 bug；本条钉的是它在**磁盘**上活不活得下来。
+    await expect(pane.getByTestId('pdf-notice')).toContainText('1 条译文块超出页面范围，已跳过');
+    await expect(page.locator(`${paneSel} [data-translation-block="${DROPPED_BLOCK_ID}"]`)).toHaveCount(0);
+
+    await scrollToPage(page, pane, paneSel, 2);
+    await pane.getByTestId('pdf-retranslate-page').click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('重译第 2 页');
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect.poll(async () => (await readSidecar(sidecar)).blocks.find((b) => b.page === 2)?.target, { timeout: 15000 })
+      .toBe('第二页的译文');
+
+    // 关键断言：越界块必须仍在磁盘上，逐字相等——不是「还有条 id 一样的块」，是同一条块的每个
+    // 字段都没被重新生成或截断过。
+    const after = await readSidecar(sidecar);
+    const droppedAfter = after.blocks.find((b) => b.id === DROPPED_BLOCK_ID);
+    expect(droppedAfter, '越界块必须仍在磁盘上，一个字节都不能丢').toEqual(droppedBefore);
   } finally {
     await teardown(launched);
   }
