@@ -122,6 +122,12 @@ as-is. Without it there is no terminology constraint — the same term may be re
 on page 3 and on page 17. Both `source` and `target` must be non-empty strings, otherwise the
 whole sidecar is rejected as malformed.
 
+A sidecar may also carry `failedPages` — the pages the built-in translation failed on (the right
+pane keeps the original text there). **That field is written by the built-in translation; you
+don't write it**: just leave it out of a sidecar you author, and its absence means "no failed
+pages". If you do carry one over from an existing sidecar it must be an array of integers
+starting at 1 — string page numbers, 0 or fractions make the **whole file** malformed.
+
 ## Self-Maintenance
 
 Your workspace files: `~/.kydog/SOUL.md` (identity), `~/.kydog/USER.md`

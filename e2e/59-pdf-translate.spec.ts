@@ -29,19 +29,20 @@ import type { TranslatedDoc } from '../src/shared/zhSidecar';
  *   - 没配模型时点翻译，`translateError` 要能在 Notice 上显示出来（本任务的头号要求，之前完全
  *     没有 e2e 钉住——上一版实现者验证过一次就删了 scratch 用例，`translateError` 这行 props
  *     去掉照样全绿）。
- *   - 一趟作业**跑完之后**，若有页失败，「N 页翻译失败」这条消息仍要可见（`lastFailedPages`，
- *     TBucket 上跨 job 清空仍可读的字段——`job.failed` 在 finalize 阶段被硬写成 0、job 完成后
- *     整个变 null，用它判的话这条消息在用户最需要看到它的那一刻必然读不到）。
+ *   - 一趟作业**跑完之后**，若有页失败，「N 页翻译失败」这条消息仍要可见——`job.failed` 在
+ *     job 完成后整个变 null，用它判的话这条消息在用户最需要看到它的那一刻必然读不到。
  *
- * Task 14 二轮审查又发现一条：`lastFailedPages` 的清除时机把上面那条 `translateError` 的病
- * 镜像复制了一遍——该留的被清掉。补了最后一条：成功翻译一次、有失败页 → 点「重新翻译」→ 取消 →
- * Notice 应当仍显示上一趟真正跑完的失败计数，不该因为新作业刚起步就被清成 0（画面还是原来那份
- * 带失败页的旧译文，doc 没变，计数也不该变）。
+ * 「哪几页失败」这个信号最终**收口进了边车**（`TranslatedDoc.failedPages`，跑翻译那一趟写）。
+ * 在那之前它只从 `onProgress` 侧信道漏出一个瞬时数字、由渲染层的 store 存着，于是「这个数字
+ * 该活多久」被迫成了一个下游问题：保留会在 agent 重写边车后显示陈旧计数，归零则让它撑不过一次
+ * 切窗口（focus 重探）。落进边车之后它天然描述当前这份 doc，两难自己消失。守这件事的是下面
+ * 三条用例：跑完仍显示、重译取消仍显示（doc 没变）、**切一次窗口之后仍显示**（重探从盘上读回
+ * 真值——那条是这套修法的回归点）。
  */
 
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
-// 页 2 的响应故意不含 "|"：parseGroups 两次都抛 GroupError（runPage 重试一次），页 2 记
-// failed++，其余三页正常成功——用来验证作业跑完之后 lastFailedPages 仍能读到「1 页失败」。
+// 页 2 的响应故意不含 "|"：parseGroups 两次都抛 GroupError（runPage 重试一次），页号 2 被记进
+// failedPages，其余三页正常成功——用来验证「1 页失败」这个信号真的落进了边车、并且活得够久。
 const ONE_FAIL_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-one-fails.json');
 // 页 1 的第一条响应是空译文（`1 | text` 后面直接 %%，parseGroups 判 GroupError），第二条合法：
 // runPage 重试一次就成了，这一页最终**有译文**且不计入失败。
@@ -732,13 +733,13 @@ test('59-pdf-translate: 没配模型时点翻译——Notice 显示「翻译失�
   }
 });
 
-test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——lastFailedPages 跨 job 清空可读', async () => {
-  // Task 14 审查发现：Notice 原来判的是 `t?.job && t.job.failed > 0`，而 finalize 阶段把
-  // job.failed 硬写成 0、作业完成后 job 又整个变 null——「这趟有几页失败」在跑完那一刻，也就是
-  // 用户最需要看到它的时刻，必然读不到。修法是把最后一趟的失败计数落进 TBucket.lastFailedPages，
-  // 跨 job 清空仍可读。这里用 ONE_FAIL_FIXTURE 让第 2 页两次响应都不含 "|"（parseGroups 两次都
-  // 抛 GroupError，runPage 重试一次后记 failed++），其余三页正常——作业整体仍然成功跑完、写盘、
-  // 走 loadTranslation 重新加载，不需要闸门。
+test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——失败页号随边车落盘', async () => {
+  // Task 14 审查发现：Notice 原来判的是 `t?.job && t.job.failed > 0`，而作业完成后 job 整个变
+  // null——「这趟有几页失败」在跑完那一刻，也就是用户最需要看到它的时刻，必然读不到。最终修法是
+  // 让 translateDoc 把失败页号写进 doc.failedPages 一起落盘，Notice 从 store 里那份 doc 现读。
+  // 这里用 ONE_FAIL_FIXTURE 让第 2 页两次响应都不含 "|"（parseGroups 两次都抛 GroupError，
+  // runPage 重试一次后把页号 2 记下），其余三页正常——作业整体仍然成功跑完、写盘、走
+  // loadTranslation 重新加载，不需要闸门。
   const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
   try {
     const { page, kydogHome } = launched;
@@ -754,6 +755,10 @@ test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——las
 
     await expect(pane.getByTestId('pdf-notice'), '作业跑完之后这条消息仍应可见')
       .toContainText('1 页翻译失败，右栏保留原文');
+    // 顺带钉住信号的落点：Notice 上那句话的来源是**边车里的页号**，不是内存里某个作业留下的
+    // 数字。页号而不是计数——计数是逐页信号的有损汇总，长度随时能推出来，反过来不行。
+    expect((await readSidecar(path.join(kydogHome, 'proj', `.${PLAIN_REL}.zh.json`))).failedPages,
+      '失败页号应当写进边车').toEqual([2]);
     // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
@@ -762,12 +767,11 @@ test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——las
 });
 
 test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显示上一趟的计数，不被清成 0', async () => {
-  // Task 14 二轮审查发现的洞：lastFailedPages 的清除时机把 translateError 那条病镜像复制了
-  // 一遍——上一轮修复在 startTranslation 开头无条件清成 0，而取消 / 出错两个出口在 wasDual
-  // 为真时保留旧 dual 与 store 里那份旧 doc 不变（这正是 wasDual 修复本身要保证的行为）。于是：
-  // 先成功翻译一次、有 1 页失败 → 点「重新翻译」→ 半路取消 → 画面仍是原来那份带失败页的旧译文，
-  // Notice 却因为开头那行清零而不再提示「1 页翻译失败」——不变量被破坏：lastFailedPages 没有
-  // 描述 store 里当前那份 doc（那份 doc 根本没变）。
+  // 这条钉的不变量是「提示必须描述 store 里当前那份 doc」。取消 / 出错两个出口在 wasDual 为真时
+  // 保留旧 dual 与那份旧 doc 不变（wasDual 修复本身要保证的行为），画面上仍是原来那份带失败页的
+  // 旧译文——提示也就该原样留着。信号收口进边车之后这是白送的（doc 没换，doc.failedPages 自然
+  // 没变），但它历史上真的被破坏过一次（那一版在 startTranslation 开头无条件把计数清成 0），
+  // 所以这条用例留着守。
   //
   // 用 ONE_FAIL_FIXTURE 造出第一趟真实的失败页（同上面「跨 job 清空可读」那条），跑完确认 Notice
   // 显示「1 页翻译失败」；再点「重新翻译」进第二趟作业，扣住它、取消，断言 Notice 仍显示同一句——
@@ -803,6 +807,61 @@ test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显
       .toContainText('1 页翻译失败，右栏保留原文');
     // 顺带确认还在对照中——这不是本条的重点（wasDual 那条用例已经钉住），只是让上面那句断言的
     // 前提（「右格合成的仍是旧译文」）不是空中楼阁。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 切一次窗口（focus 重探）之后「N 页翻译失败」仍在——信号在边车里，不在内存里', async () => {
+  // **这条是「失败页信号收口到边车」那轮修复的回归点。**
+  //
+  // 收口之前，「哪几页失败」只从 onProgress 这条侧信道漏出一个瞬时数字、存在渲染层的 store 里，
+  // 而边车里一个字节都没记。于是「这个数字该活多久」变成一个下游问题，两种写法都是错的：
+  // 保留 → agent 只重写边车（PDF 没变、checkVersion 仍判 ok）时会挂着上一份的陈旧计数；
+  // 归零 → 这条提示撑不过一次切窗口，因为 loadTranslation 挂在 window 的 focus 上，真人 alt-tab
+  // 回来就会重探一次边车。这条用例守的是后者：跑完一趟带失败页的翻译，派发一次 focus，提示还得在。
+  //
+  // 判据全在协议层，没有等墙上时间：
+  //   ① 边车里确实有 failedPages（读盘，逐字节的事实）；
+  //   ② focus 真的触发了一次 pdf.translation.load（闸门的 started 计数，不是「大概会发生」）；
+  //   ③ 那次重探**已经落进渲染层的 store**——靠 fenceRendererIpc 这道栅栏：loadTranslation 在
+  //      focus 回调里同步发出 invoke，排在 fence 自己那条之前，同一条 FIFO 管道，所以 fence 一
+  //      返回，重探的续体（setLoaded）必定已经跑完。此后 Notice 上还有没有那句话，是确定的。
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    // 一趟跑到底：第 2 页两次响应都不含 "|"，其余三页正常。
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
+    await expect(pane.getByTestId('pdf-notice'), '跑完之后应显示 1 页失败')
+      .toContainText('1 页翻译失败，右栏保留原文');
+    expect((await readSidecar(sidecar)).failedPages, '失败页号应当写进边车').toEqual([2]);
+
+    // 闸门只用来数 pdf.translation.* 的调用次数（hold 传空数组 = 一条都不扣，全部原样透传）。
+    await installTranslateGate(launched, []);
+    const before = (await gateCounts(launched)).started['pdf.translation.load'] ?? 0;
+
+    // 切一次窗口。真人 alt-tab 回来就是这个事件，spec §3.4 靠它重探边车（边车是点号开头的
+    // 文件，fileWatcher 跳过它，没有 file.changed 可用）。
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await fenceRendererIpc(page, pdfPath);
+
+    const after = (await gateCounts(launched)).started['pdf.translation.load'] ?? 0;
+    expect(after - before, 'focus 应当真的触发一次重探（另一次是 fence 自己）').toBe(2);
+
+    // 关键断言：重探回来之后提示仍在。信号在盘上，不是内存里某个数字的余额。
+    await expect(pane.getByTestId('pdf-notice'), '切一次窗口不该把「N 页翻译失败」抹掉')
+      .toContainText('1 页翻译失败，右栏保留原文');
+    // 顺带确认重探没有把用户踢出对照（setLoaded 的 dual 维持，与本条正交但同一条路径）。
     await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
   } finally {
     await teardown(launched);

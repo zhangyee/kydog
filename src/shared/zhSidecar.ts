@@ -35,6 +35,18 @@ export type TranslatedDoc = {
   /** 生成译文时那一份 PDF 的摘要。缺省则无法校验版本，渲染层会提示（spec §5）。 */
   source?: { sha256: string; bytes: number };
   glossary?: Term[];               // 本期不读，先占名字免得以后 bump version
+  /**
+   * 内置翻译那一趟里**翻译失败**的页号（从 1 起，升序、不重复）。这几页不产块，右栏原样保留
+   * 原文；缺省 = 没有失败页。
+   *
+   * 记页号不记计数：计数是逐页信号的有损汇总，长度随时能推出来，页号还能让 UI 指出是哪几页。
+   * **不能从 `blocks` 反推**「没有块的页 = 失败页」——`translateDoc` 把零行页整个滤出了 `work`，
+   * 扫描空白页也没有块，两者与失败页混在一起分不开。所以必须显式记。
+   *
+   * 加它**不 bump version**，同 `glossary` 当年占名字那次：校验对未知字段本来就宽松（原样
+   * spread、不拒），现有的合法边车要么没这个字段，要么本来就是这个形状。
+   */
+  failedPages?: number[];
   blocks: Block[];
 };
 
@@ -98,6 +110,17 @@ export function validateTranslatedDoc(raw: unknown, file: string): TranslatedDoc
       const ok = (v: unknown) => typeof v === 'string' && v !== '';
       if (!q || !ok(q.source) || !ok(q.target)) {
         fail(file, `glossary 第 ${i + 1} 条的 source / target 不是非空字符串`);
+      }
+    });
+  }
+  if (d.failedPages !== undefined) {
+    // 校验它是因为下游拿它当页号用（Notice 数长度、将来还要指出是哪几页）。写入方是内置翻译
+    // 自己，手写边车的 agent 没有「失败页」这个概念、也不该写它——但既然校验会拒，模板里就得
+    // 有一句说明（AGENTS.md，templates.test.ts 守着）。
+    if (!Array.isArray(d.failedPages)) fail(file, 'failedPages 不是数组');
+    d.failedPages.forEach((p, i) => {
+      if (!num(p) || !Number.isInteger(p) || p < 1) {
+        fail(file, `failedPages 第 ${i + 1} 项不是 ≥ 1 的整数（${String(p)}）`);
       }
     });
   }

@@ -15,11 +15,12 @@ const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
  *   5. 译文对应另一个版本的 PDF（version === 'mismatch'）
  *   6. 译文未记录源摘要（version === 'unknown' 且已有 doc——可用，只是没法校验版本）
  *   7. 译文块因几何越界被丢（dropped > 0）
- *   8. 上一趟**跑完**的作业有页失败（lastFailedPages > 0，那几页右栏保留原文——TBucket 的
- *      字段，job 清空之后仍可读，见 pdfTranslationStore.ts 的注释。不用 job.failed 是因为
- *      作业一完成 job 就整个变 null，用它判的话这条消息在跑完那一刻——用户恰恰需要看它的
- *      时刻——必然读不到，Task 14 审查发现的洞。这条消息只活到下一次重探边车为止：从盘上
- *      读回来的译文是谁翻的、失败过几页，store 无从知道，见那个字段的注释）
+ *   8. 这份译文里有页翻译失败（doc.failedPages，那几页右栏保留原文）。判据取自**边车自己**
+ *      而不是内存里某个作业留下的数字：失败页号由跑翻译那一趟写进 `TranslatedDoc.failedPages`
+ *      （zhSidecar.ts），所以它天然描述的就是当前这份 doc——关 tab 重开、重启应用、切窗口
+ *      触发的重探都读得回真值，也不会在 agent 重写边车之后还挂着上一份的陈旧计数。
+ *      不用 job.failed：作业一完成 job 就整个变 null，用它判的话这条消息在跑完那一刻——
+ *      用户恰恰需要看它的时刻——必然读不到（Task 14 审查发现的洞）
  * 标注（1-2）排在译文（3-8）之前：标注是打开 PDF 就在用的常驻能力，译文对照本期默认关闭、
  * 按 L 才进，常驻能力的故障更值得占住这一行。translateError 排在译文其余几条（4-8）之前：
  * 它是「刚刚这一次动作」的直接失败反馈（常见如 llm.not_configured——首次使用没配模型），比边车
@@ -41,7 +42,7 @@ export function PdfAnnotationNotice(
   else if (t?.version === 'mismatch') text = '译文对应的是另一个版本的 PDF；请重新翻译，或重新打开该文件';
   else if (t && t.version === 'unknown' && t.doc) text = '未记录源文件摘要，无法确认译文与当前 PDF 匹配';
   else if (t && t.dropped > 0) text = `${t.dropped} 条译文块超出页面范围，已跳过`;
-  else if (t && t.lastFailedPages > 0) text = `${t.lastFailedPages} 页翻译失败，右栏保留原文`;
+  else if (t?.doc?.failedPages?.length) text = `${t.doc.failedPages.length} 页翻译失败，右栏保留原文`;
   if (!text) return null;
 
   return (

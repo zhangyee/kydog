@@ -90,7 +90,7 @@ describe('translateDoc', () => {
     expect(progress.at(-1)).toBe(0);
   });
 
-  it('重试后仍失败 → 该页无块（保留原文）且 failed 计数 +1', async () => {
+  it('重试后仍失败 → 该页无块（保留原文）、failed 计数 +1，且页号记进边车', async () => {
     let last = 0;
     const doc = await translateDoc(base({
       numPages: 2,
@@ -100,6 +100,31 @@ describe('translateDoc', () => {
     }));
     expect(doc!.blocks.map((b) => b.page)).toEqual([1]);
     expect(last).toBe(1);
+    // 计数只是 onProgress 上的瞬时读数；**能活过这趟作业的是边车里这份页号**（Notice 从 doc
+    // 现读）。「第 2 页失败」这件事必须显式在这里，不能靠「哪几页没有块」反推——零行页同样没块。
+    expect(doc!.failedPages).toEqual([2]);
+  });
+
+  it('多页失败 → 页号升序，与并发完成次序无关', async () => {
+    // 页是并发跑的，push 的次序是完成次序。这里让第 4 页比第 2 页先落地（第 2 页多绕两个
+    // 微任务），断言写进边车的仍是 [2, 4]——同样的输入不该写出不同的文件。
+    const doc = await translateDoc(base({
+      numPages: 4,
+      translatePage: async ({ page }: { page: number }) => {
+        if (page === 2) { await Promise.resolve(); await Promise.resolve(); return { text: 'garbage', truncated: false }; }
+        if (page === 4) return { text: 'garbage', truncated: false };
+        return { text: `1 | text\nT${page}\n%%\n`, truncated: false };
+      },
+    }));
+    expect(doc!.failedPages).toEqual([2, 4]);
+  });
+
+  it('一页都没失败 → 边车里没有 failedPages 这个字段', async () => {
+    // 缺省就是「没有失败页」。写成 `failedPages: []` 会让每份边车都多一行噪声，也让
+    // 「有没有这个字段」与「有没有失败页」不再是同一件事。
+    const doc = await translateDoc(base());
+    expect(doc!.failedPages).toBeUndefined();
+    expect(Object.keys(doc!)).not.toContain('failedPages');
   });
 
   it('截断 → 对半拆重试，递归到单行', async () => {

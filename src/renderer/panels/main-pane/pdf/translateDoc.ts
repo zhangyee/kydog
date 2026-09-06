@@ -45,7 +45,13 @@ const isNotConfigured = (e: unknown) => (e as { code?: string } | null)?.code ==
 
 export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDoc | null> {
   const concurrency = o.concurrency ?? PAGE_CONCURRENCY;
-  let failed = 0;
+  /**
+   * 重试之后仍失败的页号。**记页号不记计数**：这份逐页信号要原样写进边车
+   * （`TranslatedDoc.failedPages`），计数只是它的长度。以前这里只留一个 `failed` 数字，
+   * 于是「哪几页失败」在流水线里就地丢掉，下游只能从 `onProgress` 这条侧信道漏出的瞬时数字
+   * 里捞——一切关于它「活多久」的补丁都是那次丢信号的下游症状。
+   */
+  const failedPages: number[] = [];
 
   // ── 1. 抽取。不 catch：抽取失败与「这页没字」是两件事（spec §4），异常中止整趟。
   const perPage = new Map<number, PageLine[]>();
@@ -66,7 +72,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   const total = work.length;
   let done = 0;
   const groupsOf = new Map<number, ParsedGroup[]>();
-  const tick = () => o.onProgress({ phase: 'translate', done, total, failed });
+  const tick = () => o.onProgress({ phase: 'translate', done, total, failed: failedPages.length });
   // 中止信号：跟 isCancelled() 是两码事——isCancelled() 是「用户 / 调用方要求停」，aborted 是
   // 「某个 worker 已经因 llm.not_configured 在抛错路径上了」。Promise.all 一旦有一个 worker
   // 拒绝就会 reject，但其余 ≤3 个 worker 的 translatePage 仍在飞（配置是在它们发出之后才丢的，
@@ -89,7 +95,8 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   };
 
   /**
-   * 一页：跑一次 → 失败重试一次 → 仍失败记 failed 并保留原文（该页不产块 → 右格不覆盖）。
+   * 一页：跑一次 → 失败重试一次 → 仍失败把**页号**记进 failedPages 并保留原文（该页不产块 →
+   * 右格不覆盖）。
    * 几何校验放在拆分**合并之后**、对着整页的行做——拆开的两半各自校验挡不住「A 半的组盖住
    * B 半的行」。
    *
@@ -112,7 +119,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
         groupsOf.set(page, await attempt());
       } catch (e2) {
         if (isNotConfigured(e2)) { aborted = true; throw e2; }
-        failed++;
+        failedPages.push(page);
       }
     }
     // 这次 attempt 是在别的 worker 已经因 llm.not_configured 抛错之后才落地的——Promise.all
@@ -169,5 +176,8 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     blocks,
   };
   if (o.glossary?.length) doc.glossary = o.glossary;
+  // 升序：页是并发跑的，push 的次序是完成次序。排一次序让边车内容只由「哪几页失败」决定，
+  // 不由这一趟的调度巧合决定（否则同样的输入会写出不同的文件）。
+  if (failedPages.length) doc.failedPages = [...failedPages].sort((a, b) => a - b);
   return doc;
 }

@@ -70,4 +70,17 @@ describe('harnessTemplates', () => {
       expect(harnessTemplates(locale).agents).toContain('glossary');
     }
   });
+
+  /**
+   * `failedPages` 与 glossary 不同：它**不是**给 agent 写的——是内置翻译那一趟自己的产物，
+   * 手写边车的 agent 压根没有「失败页」这个概念。模板里仍然要有一句，理由是校验会拒：
+   * validateTranslatedDoc 现在校验这个字段，而 agent 读得到已有边车里的它（用户先跑过一次
+   * 内置翻译、再让 agent 修某几页，是主工作流），照抄时写歪一个值就是**整份文件**被拒。
+   * 模板是 agent 唯一读得到的契约，沉默等于让它猜。
+   */
+  it('两份 AGENTS.md 都点名 failedPages 由内置翻译写、agent 不用写', () => {
+    for (const locale of ['zh', 'en'] as const) {
+      expect(harnessTemplates(locale).agents).toContain('failedPages');
+    }
+  });
 });

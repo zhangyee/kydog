@@ -115,3 +115,26 @@ describe('glossary 结构校验', () => {
       .toThrow(expect.objectContaining({ code: 'pdf.translation_invalid' }));
   });
 });
+
+describe('failedPages 结构校验', () => {
+  const base = { version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' }, blocks: [] };
+  it('没有 failedPages 的边车照常通过（不 bump version，同 glossary 当年那次）', () => {
+    expect(validateTranslatedDoc(base, 'f').failedPages).toBeUndefined();
+  });
+  it('合法页号原样带出来——下游（Notice）要靠它，不是靠从 blocks 反推', () => {
+    // 反推不成立：零行页与扫描空白页同样没有块，跟失败页混在一起分不开。所以边车必须显式记。
+    const d = validateTranslatedDoc({ ...base, failedPages: [2, 7] }, 'f');
+    expect(d.failedPages).toEqual([2, 7]);
+  });
+  it.each([
+    ['不是数组', { failedPages: 3 }],
+    ['项不是数字', { failedPages: ['2'] }],
+    ['页号从 0 起', { failedPages: [0] }],
+    ['负页号', { failedPages: [-1] }],
+    ['小数页号', { failedPages: [1.5] }],
+    ['NaN', { failedPages: [Number.NaN] }],
+  ])('%s → pdf.translation_invalid', (_name, patch) => {
+    expect(() => validateTranslatedDoc({ ...base, ...patch }, 'f'))
+      .toThrow(expect.objectContaining({ code: 'pdf.translation_invalid' }));
+  });
+});

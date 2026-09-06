@@ -40,40 +40,12 @@ export type TBucket = {
    * 「取消不留痕」（spec §9.3）。
    */
   job: JobProgress | null;
-  /**
-   * 上一趟**真正跑完**（没被取消、没出错半路而废）的作业里失败了几页，`job` 清空之后仍可读
-   * （Task 14 一轮审查发现：`job.failed` 在 `finalize` 阶段被硬写成 0、`job` 完成后又整个变
-   * `null`，靠它判「这趟有几页失败」在跑完那一刻必然读到 0/无——而用户恰恰是在跑完之后才需要
-   * 看它）。
-   *
-   * **不变量：这个字段必须始终描述 store 里当前那份 `doc`**（Task 14 二轮审查发现的洞——一轮
-   * 修复在 `startTranslation` 开头无条件清成 0，把这条不变量的反面也一并写死了：从 `active` 态
-   * 点「重新翻译」时 `doc` 其实**没变**——取消 / 出错两个出口保留旧 `doc` 不动（`wasDualRef`
-   * 的职责），旧 `doc` 对应的失败计数却被开头那行清成了 0，Notice 因此在「画面还是那份带失败页
-   * 的旧译文」时把「N 页翻译失败」的提示错误地清没了）。
-   *
-   * 写入方只有 `PdfFileTab.startTranslation`：只在这趟作业**成功走到 finalize + save + 重新
-   * 加载**之后，才写入这一趟的真值——那一刻 store 里那份 `doc` 正是这趟作业刚写出来的。取消 /
-   * 出错两条出口都不碰它：`doc` 没变、也没重新加载，计数也不该变，那两种情况下更没有「这一趟
-   * 一共失败几页」这个确定答案，写一个半路的部分计数反而是编造。
-   *
-   * 清零由 store 自己兜底，且是**无条件**的：`setLoaded` / `setLoadError` 一旦被调用就清零
-   * （最终评审 I-3）。判据不是「doc 变成 null」而是「又从盘上加载了一次」——`checkVersion` 只
-   * 比 `source.sha256`/`bytes`，agent 只重写边车、PDF 一个字节没变时它仍判 `ok`，于是一份全新
-   * 的、一页都没失败的译文装进 store，而按「doc 非空就保留」的旧写法会让它继续挂着上一份的
-   * 「1 页翻译失败」。store 无从判断一份从盘上读回来的译文是谁翻的、失败过几页，所以唯一诚实的
-   * 答案是 0，由 `startTranslation` 在加载**之后**写回真值（那是唯一一处知道答案的地方）。
-   *
-   * 代价说清楚：这个计数只活到下一次重探为止（focus 回来就清）。这是上面那句「store 不知道」的
-   * 直接推论，不是漏做。
-   */
-  lastFailedPages: number;
 };
 
 export function emptyTBucket(): TBucket {
   return {
     doc: null, loadError: null, version: 'unknown', dropped: 0, dual: false, prevScale: null,
-    layoutReady: false, job: null, lastFailedPages: 0,
+    layoutReady: false, job: null,
   };
 }
 
@@ -141,13 +113,6 @@ type State = {
   clearPrevScale: (tab: string) => void;
   /** 写入 / 清空当前作业进度（见 TBucket.job）。写入方是 translateDoc 的 onProgress 回调。 */
   setJob: (tab: string, job: JobProgress | null) => void;
-  /**
-   * 写入上一趟真正跑完的失败页数（见 TBucket.lastFailedPages）。写入方只有
-   * `startTranslation` 的成功收尾，且必须排在它那次 `await loadTranslation()` **之后**——
-   * 取消 / 出错不调它，doc 没变就不该碰这个字段；清零是 `setLoaded` / `setLoadError` 无条件
-   * 做的事，不是这个 setter 的职责。
-   */
-  setLastFailedPages: (tab: string, n: number) => void;
   drop: (tab: string) => void;
 };
 
@@ -161,16 +126,10 @@ export const usePdfTranslationStore = create<State>((set) => ({
   setLoaded: (tab, doc, version, dropped) => set((s) => {
     const prev = s.buckets[tab] ?? emptyTBucket();
     const dual = doc === null || version === 'mismatch' ? false : prev.dual;
-    // lastFailedPages 无条件归零（最终评审 I-3，理由见 TBucket.lastFailedPages）：判据是「又从
-    // 盘上加载了一次」，不是「doc 变成 null」。旧写法在 doc 非空时保留 prev 的值，于是「agent
-    // 不改 PDF 只重写边车」这条主工作流下（sha 不变 → version 仍 ok）会让一份一页都没失败的新
-    // 译文继续挂着上一份的失败计数。成功收尾的真值改由 startTranslation 在 await 完这次加载
-    // **之后**写入，所以这里清掉不会冲掉它——顺序是那个修复的一半，别把它挪回去。
-    return { buckets: { ...s.buckets, [tab]: { ...prev, doc, version, dropped, loadError: null, dual, lastFailedPages: 0 } } };
+    return { buckets: { ...s.buckets, [tab]: { ...prev, doc, version, dropped, loadError: null, dual } } };
   }),
   setLoadError: (tab, msg) => set((s) => ({
-    // 同上：这一趟重探的结果是「边车结构有误」，更没有哪份失败计数还描述得了当前状态。
-    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), doc: null, loadError: msg, dual: false, lastFailedPages: 0 } },
+    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), doc: null, loadError: msg, dual: false } },
   })),
   // 进对照：prevScale 记下进入前的缩放（行宽本来就放得下则显式传 null，表示没什么要还原的）。
   // 出对照：**原样留着** prevScale——它此刻的含义是「一份还没被消费的还原请求」，由渲染层
@@ -189,9 +148,6 @@ export const usePdfTranslationStore = create<State>((set) => ({
   )),
   setJob: (tab, job) => set((s) => ({
     buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), job } },
-  })),
-  setLastFailedPages: (tab, n) => set((s) => ({
-    buckets: { ...s.buckets, [tab]: { ...(s.buckets[tab] ?? emptyTBucket()), lastFailedPages: n } },
   })),
   drop: (tab) => set((s) => {
     const next = { ...s.buckets };
