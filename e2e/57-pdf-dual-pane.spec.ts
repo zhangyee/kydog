@@ -1588,6 +1588,13 @@ test('57-pdf-dual-pane: 覆盖式滚动条——没有槽、滚动时拇指出�
 
     // ① 没有槽：两栏 clientWidth === offsetWidth、clientHeight === offsetHeight。占位式滚动条
     //    会让 client 比 offset 少 8px（globals.css 里 .ky-scroll 给的宽），这两个数是协议层事实。
+    //    这条断言测的是「量本身」，不是靠猜哪条 CSS 规则起了作用——留意它在这台 macOS 机器上测不出
+    //    「把 .ky-scroll-overlay 整条规则清空」这类回归：macOS 默认就是滚动时才现的浮层滚动条，
+    //    裸 overflow-auto 不加任何自定义样式本来就不占位，删规则在这里仍然绿，不是断言失效，是这条
+    //    回归在这台机器上本来就不存在。真正会红、且已经在 Step 6 复现过的，是「class 名回退成
+    //    .ky-scroll」这个具体场景——`.ky-scroll::-webkit-scrollbar { width: 8px }` 强制 Blink 走
+    //    classic 模式、留 8px 槽。在 Windows / Linux（默认经典滚动条，不是浮层模式）上，删掉
+    //    `.ky-scroll-overlay` 整条规则本身也会让这条断言红——只是这台 macOS 机器测不出那一支。
     const gutters = await page.evaluate((sel) => {
       const q = (w: string) => document.querySelector(`${sel} [data-pdf-pane="${w}"]`) as HTMLElement;
       const g = (el: HTMLElement) => ({ x: el.offsetWidth - el.clientWidth, y: el.offsetHeight - el.clientHeight });
@@ -1599,11 +1606,35 @@ test('57-pdf-dual-pane: 覆盖式滚动条——没有槽、滚动时拇指出�
     const thumb = pane.getByTestId('pdf-thumb-y-left');
     await setPaneScroll(page, paneSel, 'left', 'top', 300);
     await expect(thumb).toHaveCSS('opacity', '1');
+    // 拇指可见时的中心点：留着淡出之后再点这个坐标，断言那条热区收起来了。
+    const thumbCenter = await page.evaluate((sel) => {
+      const t = document.querySelector(`${sel} [data-testid="pdf-thumb-y-left"]`) as HTMLElement;
+      const r = t.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, paneSel);
     await expect(thumb).toHaveCSS('opacity', '0', { timeout: FADE_MS + 2000 });
+    // 淡出之后拇指不该再挡指针（Important #1）：pointerEvents 曾经不看 shown 恒为 auto，栏边缘会有
+    // 一条看不见但能点中的热区，吃掉贴边的高亮/文字注点击。同一坐标现在必须落在栏内容上，不是拇指。
+    const hitAfterFade = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y) as HTMLElement | null;
+      return {
+        isThumb: el?.getAttribute('data-testid') === 'pdf-thumb-y-left',
+        insidePane: !!el?.closest('[data-pdf-pane="left"]'),
+      };
+    }, thumbCenter);
+    expect(hitAfterFade, '淡出后拇指原来的位置不该再命中拇指——热区应随可见性收起').toEqual({ isThumb: false, insidePane: true });
 
-    // ③ 拖拽：把拇指往下拖 Δ 像素，scrollTop 必须等于纯函数 scrollPosForThumb 的反算，右栏跟上。
-    //    先把鼠标挪到拇指上（悬停让它变粗、可见），再按住拖。轨道长按组件同一公式算：
+    // ③ 拖拽：淡出之后拇指的 pointerEvents 已经是 none，得先来一次新的 scroll 事件让它重新可见，
+    //    才摸得到它——悬停/拖拽只是让「已经可见」的拇指保持可见，不能凭空唤出一个隐形拇指
+    //    （spec：可见性只由 scroll 触发）。紧接着量它的几何、把鼠标挪上去，全程压在 FADE_MS 窗口内。
+    //    把拇指往下拖 Δ 像素，scrollTop 必须等于纯函数 scrollPosForThumb 的反算，右栏跟上。
+    //    先把鼠标挪到拇指上（悬停让它变粗），再按住拖。轨道长按组件同一公式算：
     //    clientHeight − 2·INSET − (横向也能滚 ? HOVER_PX : 0)。
+    await setPaneScroll(page, paneSel, 'left', 'top', 305);
+    // 等 opacity 回到 1：这不只是「可见了」，show() 里 measure() 先于 setVisible(true) 跑，
+    // 拿到 opacity: 1 就意味着组件已经按新的 scrollTop 重新量过、几何是新鲜的——不然这里读到的
+    // 拇指位置可能还是淡出前那次 measure() 留下的，会把下面的反算算错。
+    await expect(thumb).toHaveCSS('opacity', '1');
     const before = (await paneScroll(page, paneSel, 'left'))!;
     const metrics = await page.evaluate((sel) => {
       const el = document.querySelector(`${sel} [data-pdf-pane="left"]`) as HTMLElement;

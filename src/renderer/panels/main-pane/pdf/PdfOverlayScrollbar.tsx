@@ -114,7 +114,7 @@ export function OverlayScrollbar({ targetRef, axis, testId }: Props) {
         background: hover || dragging ? 'var(--color-ink-soft)' : 'var(--color-ink-faint)',
         opacity: shown ? 1 : 0,
         transition: 'opacity 250ms, width 120ms, height 120ms',
-        pointerEvents: 'auto', touchAction: 'none', cursor: 'default',
+        pointerEvents: shown ? 'auto' : 'none', touchAction: 'none', cursor: 'default',
       }}
     />
   );
