@@ -139,6 +139,7 @@ export function registerAllHandlers(): void {
   registerHandler('pdf.translation.resolveModel', (args) => pdfTranslation.resolveModel(args));
   registerHandler('pdf.translation.page', (args) => translatePage(args));
   registerHandler('pdf.translation.save', (args) => pdfTranslation.save(args));
+  registerHandler('pdf.translation.delete', (args) => pdfTranslation.delete(args));
   registerHandler('project.openInOS', (args) => projectService.openInOS(args));
   registerHandler('project.update', (args) => projectService.update(args));
 

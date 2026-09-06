@@ -55,3 +55,23 @@ describe('pdfTranslation.save', () => {
     expect((await pdfTranslation.load({ pdfPath: pdf })).doc).toBeNull();
   });
 });
+
+describe('pdfTranslation.delete', () => {
+  it('删掉边车，之后 load 回 null', async () => {
+    const dir = tmp();
+    const pdfPath = path.join(dir, 'paper.pdf');
+    await fs.writeFile(path.join(dir, '.paper.pdf.zh.json'), JSON.stringify(DOC));
+    await pdfTranslation.delete({ pdfPath });
+    expect(await pdfTranslation.load({ pdfPath })).toEqual({ doc: null });
+  });
+  it('边车不存在 → 也 resolve（幂等）', async () => {
+    const dir = tmp();
+    await expect(pdfTranslation.delete({ pdfPath: path.join(dir, 'paper.pdf') })).resolves.toBeUndefined();
+  });
+  it('路径由 sidecarPath 推导：不动同目录里别的文件', async () => {
+    const dir = tmp();
+    await fs.writeFile(path.join(dir, '.paper.pdf.json'), '{}');   // 标注边车
+    await pdfTranslation.delete({ pdfPath: path.join(dir, 'paper.pdf') });
+    expect(await fs.stat(path.join(dir, '.paper.pdf.json')).then(() => true, () => false)).toBe(true);
+  });
+});

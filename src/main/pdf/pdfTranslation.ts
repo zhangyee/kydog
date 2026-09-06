@@ -60,4 +60,18 @@ export const pdfTranslation = {
       throw new KydogError('fs.write_failed', `无法写入 ${file}`, err);
     }
   },
+
+  /**
+   * 删掉译文边车（spec 2026-09-06 §6）。ENOENT 当成功——删两次不报错；其它错误按写失败抛
+   * （删除是写操作，不新增错误码）。路径只由 sidecarPath 推导，同 load / save。
+   */
+  async delete({ pdfPath }: { pdfPath: string }): Promise<void> {
+    const file = sidecarPath(pdfPath, 'zh');
+    try {
+      await fsp.unlink(file);
+    } catch (err) {
+      if (isErrno(err) && err.code === 'ENOENT') return;
+      throw new KydogError('fs.write_failed', `无法删除 ${file}`, err);
+    }
+  },
 };

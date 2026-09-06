@@ -102,6 +102,8 @@ export type RpcCall =
               langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; lines: PageLine[] };
       result: { text: string; truncated: boolean } }
   | { method: 'pdf.translation.save'; args: { pdfPath: string; doc: TranslatedDoc }; result: void }
+  // 删译文边车：ENOENT 当成功。渲染层删完走 loadTranslation 重探，doc 变 null 自然退出对照。
+  | { method: 'pdf.translation.delete'; args: { pdfPath: string }; result: void }
   // ── 自动升级 ──
   | { method: 'update.getStatus'; args: undefined; result: UpdateStatus }
   | { method: 'update.check'; args: undefined; result: UpdateStatus }
