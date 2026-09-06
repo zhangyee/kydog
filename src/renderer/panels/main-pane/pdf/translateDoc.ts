@@ -39,11 +39,17 @@ export type TranslateDocOptions = {
   source: { sha256: string; bytes: number };
   glossary?: Term[];
   concurrency?: number;
+  /** 只翻这几页（升序、不重复）。缺省 = 全部。给了它必须给 base（spec 2026-09-06 §4.3）。 */
+  pages?: number[];
+  /** 合并底本：pages 之外的块、术语表、docTitle 都从它来。 */
+  base?: TranslatedDoc;
 };
 
 const isNotConfigured = (e: unknown) => (e as { code?: string } | null)?.code === 'llm.not_configured';
 
 export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDoc | null> {
+  if (o.pages && !o.base) throw new Error('pages 需要 base');
+  const pageList = o.pages ?? Array.from({ length: o.numPages }, (_, i) => i + 1);
   const concurrency = o.concurrency ?? PAGE_CONCURRENCY;
   /**
    * 重试之后仍失败的页号。**记页号不记计数**：这份逐页信号要原样写进边车
@@ -56,16 +62,18 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
 
   // ── 1. 抽取。不 catch：抽取失败与「这页没字」是两件事（spec §4），异常中止整趟。
   const perPage = new Map<number, PageLine[]>();
-  for (let n = 1; n <= o.numPages; n++) {
+  for (let i = 0; i < pageList.length; i++) {
+    const n = pageList[i];
     if (o.isCancelled()) return null;
     const src = await o.getPage(n);
     const { lines, text } = await extractPageLines(src);
     perPage.set(n, lines);
     o.onPageExtracted?.(n, text, src);
-    o.onProgress({ phase: 'extract', done: n, total: o.numPages, failed: 0 });
+    o.onProgress({ phase: 'extract', done: i + 1, total: pageList.length, failed: 0 });
   }
   const work = [...perPage.entries()].filter(([, ls]) => ls.length > 0).map(([page, lines]) => ({ page, lines }));
   if (work.length === 0) {
+    if (o.pages) return { ...o.base!, source: o.source };
     throw new Error('这份 PDF 没有文本层（可能是扫描件），无法翻译');
   }
 
@@ -149,14 +157,22 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
 
   tick();
   // 第 1 页先单跑，为的是拿到 docTitle 传给其余页（BabelDOC「注入全文第一个标题」的轻量版）。
+  // 部分跑（pages）不单跑：文题从底本里现成的第一个 title 块取（第 1 页第一个 title 块就是
+  // 文题），所有页平等地进 worker 池。
   let docTitle: string | undefined;
-  const [head, ...rest] = work;
-  if (o.isCancelled()) return null;
-  await runPage(head.page, head.lines);
-  const titleGroup = groupsOf.get(head.page)?.find((g) => g.kind === 'title');
-  if (titleGroup) {
-    const byId = new Map(head.lines.map((l) => [l.n, l.text]));
-    docTitle = titleGroup.lines.map((n) => byId.get(n) ?? '').join(' ').trim() || undefined;
+  let rest = work;
+  if (o.pages) {
+    docTitle = o.base!.blocks.find((b) => b.kind === 'title')?.source;
+  } else {
+    const [head, ...others] = work;
+    rest = others;
+    if (o.isCancelled()) return null;
+    await runPage(head.page, head.lines);
+    const titleGroup = groupsOf.get(head.page)?.find((g) => g.kind === 'title');
+    if (titleGroup) {
+      const byId = new Map(head.lines.map((l) => [l.n, l.text]));
+      docTitle = titleGroup.lines.map((n) => byId.get(n) ?? '').join(' ').trim() || undefined;
+    }
   }
 
   let next = 0;
@@ -179,23 +195,37 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   if (cancelled || o.isCancelled()) return null;
 
   // ── 3. 组装。失败的页没有 groups → 没有块 → 右格不覆盖 → 用户看到原文。
-  const blocks: Block[] = [];
+  const fresh: Block[] = [];
   for (const { page, lines } of work) {
     const g = groupsOf.get(page);
-    if (g) blocks.push(...buildBlocks(page, lines, g));
+    if (g) fresh.push(...buildBlocks(page, lines, g));
   }
+  // 部分跑：pages 之外的块、失败页、原因都从底本来，只替换 pages 内的（spec 2026-09-06 §4.3）。
+  // 按 (page, id) 排一次：块 id 是 p{page}-b{NN} 零填充，同页内字符串序就是 seq 序；全量跑本来就是
+  // 这个序，排序幂等。
+  const redo = new Set(o.pages ?? []);
+  const blocks = [...(o.base?.blocks ?? []).filter((b) => o.pages && !redo.has(b.page)), ...fresh]
+    .sort((a, b) => a.page - b.page || a.id.localeCompare(b.id));
+  // 升序：页是并发跑的，push 的次序是完成次序。排一次序让边车内容只由「哪几页失败」决定，
+  // 不由这一趟的调度巧合决定（否则同样的输入会写出不同的文件）。
+  const failed = [
+    ...(o.pages ? (o.base!.failedPages ?? []).filter((p) => !redo.has(p)) : []),
+    ...failedPages,
+  ].sort((a, b) => a - b);
+  const mergedReasons: Record<string, string> = {
+    ...(o.pages ? Object.fromEntries(Object.entries(o.base!.failureReasons ?? {}).filter(([k]) => !redo.has(Number(k)))) : {}),
+    ...reasons,
+  };
   const doc: TranslatedDoc = {
     version: 1,
     pdf: o.pdfName,
     // 不做源语言检测——沉浸式翻译的提示词本身也只指定目标语言。'auto' 是诚实地说「我们没测过」。
     lang: { in: 'auto', out: o.langOut },
-    source: o.source,
+    source: o.source,     // 一律写当前 PDF 的摘要：unknown 版本的旧边车经一次部分跑就被盖上摘要
     blocks,
   };
   if (o.glossary?.length) doc.glossary = o.glossary;
-  // 升序：页是并发跑的，push 的次序是完成次序。排一次序让边车内容只由「哪几页失败」决定，
-  // 不由这一趟的调度巧合决定（否则同样的输入会写出不同的文件）。
-  if (failedPages.length) doc.failedPages = [...failedPages].sort((a, b) => a - b);
-  if (failedPages.length) doc.failureReasons = reasons;
+  if (failed.length) doc.failedPages = failed;
+  if (failed.length) doc.failureReasons = mergedReasons;
   return doc;
 }

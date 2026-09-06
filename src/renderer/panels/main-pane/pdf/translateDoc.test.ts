@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { TranslatedDoc } from '../../../../shared/zhSidecar';
 import { PAGE_CONCURRENCY, translateDoc } from './translateDoc';
 
 // 每页一行，文本是 "p{n}"；行几何互不重叠，几何校验必过
@@ -321,5 +322,80 @@ describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
     expect(calls).toEqual([[1, 2, 3, 4], [1, 2], [2], [3, 4]]);
     expect(doc!.failedPages).toBeUndefined();
     expect(doc!.blocks.map((b) => b.kind)).toEqual(['text', 'skip', 'text']);
+  });
+});
+
+describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
+  const BASE: TranslatedDoc = {
+    version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' },
+    source: { sha256: 'old', bytes: 1 }, glossary: [{ source: 'a', target: 'b' }],
+    failedPages: [2, 3], failureReasons: { '2': 'x', '3': 'y' },
+    blocks: [
+      { id: 'p1-b01', page: 1, x: 72, y: 100, width: 40, height: 10, fontSize: 10, kind: 'title', source: 'My Title', target: '标题' },
+      { id: 'p4-b01', page: 4, x: 72, y: 100, width: 40, height: 10, fontSize: 10, kind: 'text', source: 'p4l1', target: 'T4' },
+    ],
+  };
+
+  it('只抽取、只翻 pages 里的页；进度 total 是 pages 的长度', async () => {
+    const got: number[] = [];
+    const translated: number[] = [];
+    const extracts: number[] = [];
+    await translateDoc(base({
+      numPages: 4, pages: [2, 3], base: BASE,
+      getPage: async (n: number) => { got.push(n); return fakePage(n); },
+      translatePage: async ({ page }) => { translated.push(page); return { text: '1 | text\nT\n%%\n', truncated: false }; },
+      onProgress: (p) => { if (p.phase === 'extract') extracts.push(p.total); },
+    }));
+    expect(got).toEqual([2, 3]);
+    expect(translated.sort()).toEqual([2, 3]);
+    expect(new Set(extracts)).toEqual(new Set([2]));
+  });
+
+  it('合并：pages 之外的块逐字不变，failedPages / failureReasons 先删再并，source 是当前摘要', async () => {
+    const doc = await translateDoc(base({
+      numPages: 4, pages: [2, 3], base: BASE, glossary: BASE.glossary,
+      translatePage: async ({ page }) => ({
+        text: page === 3 ? 'no bar' : '1 | text\nNEW\n%%\n', truncated: false,   // 3 两次都失败
+      }),
+    }));
+    expect(doc!.blocks.map((b) => b.id)).toEqual(['p1-b01', 'p2-b01', 'p4-b01']);
+    expect(doc!.blocks[0]).toEqual(BASE.blocks[0]);
+    expect(doc!.blocks[2]).toEqual(BASE.blocks[1]);
+    expect(doc!.blocks[1].target).toBe('NEW');
+    expect(doc!.failedPages).toEqual([3]);
+    expect(doc!.failureReasons).toEqual({ '3': expect.stringMatching(/组头缺少/) });
+    expect(doc!.source).toEqual({ sha256: 'ab', bytes: 1 });
+    expect(doc!.glossary).toEqual(BASE.glossary);
+  });
+
+  it('全部救回 → failedPages / failureReasons 两个键都不再出现', async () => {
+    const doc = await translateDoc(base({ numPages: 4, pages: [2, 3], base: BASE }));
+    expect('failedPages' in doc!).toBe(false);
+    expect('failureReasons' in doc!).toBe(false);
+  });
+
+  it('docTitle 取 base 里第一个 title 块的 source，不再单跑第 1 页', async () => {
+    const titles: (string | undefined)[] = [];
+    await translateDoc(base({
+      numPages: 4, pages: [2], base: BASE,
+      translatePage: async ({ docTitle }) => { titles.push(docTitle); return { text: '1 | text\nT\n%%\n', truncated: false }; },
+    }));
+    expect(titles).toEqual(['My Title']);
+  });
+
+  it('给了 pages 没给 base → 抛', async () => {
+    await expect(translateDoc(base({ numPages: 4, pages: [2] }))).rejects.toThrow('pages 需要 base');
+  });
+
+  it('pages 里全是零行页（纯图页上点「重译本页」）→ 不发请求，底本原样返回、只盖上当前摘要', async () => {
+    const translatePage = vi.fn();
+    const doc = await translateDoc(base({
+      numPages: 4, pages: [2], base: BASE, translatePage,
+      getPage: async () => ({ getTextContent: async () => ({ items: [] }), getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, y] }) }),
+    }));
+    expect(translatePage).not.toHaveBeenCalled();
+    expect(doc!.blocks).toEqual(BASE.blocks);
+    expect(doc!.failedPages).toEqual(BASE.failedPages);
+    expect(doc!.source).toEqual({ sha256: 'ab', bytes: 1 });
   });
 });
