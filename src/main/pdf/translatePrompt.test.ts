@@ -56,8 +56,8 @@ describe('buildSystemPrompt', () => {
   it('规则 1 点名页眉页码页脚也是行、行号不是坐标；例子里有一行页码归 skip', () => {
     const p = buildSystemPrompt({ langOut: 'zh', lines });
     expect(p).toContain('Running heads, page numbers and footers are lines');
-    expect(p).toContain('never a\n   coordinate');
-    expect(p).toContain('5\\t303,740,5,10,10\\t4');
+    expect(p).toMatch(/never a\s+coordinate/);
+    expect(p).toContain('5\t303,740,5,10,10\t4');
     expect(p).toContain('5 | skip\n%%');
   });
 

@@ -114,7 +114,7 @@ Input:
 2\t72,104,451,12,10\tresults on a wide range of tasks [12].
 3\t72,130,120,14,14\t2  Method
 4\t72,700,451,9,8\tPreprint. Under review.
-5\\t303,740,5,10,10\\t4
+5\t303,740,5,10,10\t4
 
 Output:
 1-2 | text
