@@ -15,6 +15,10 @@ import { clampSplit, DIVIDER_PX, paneWidths } from '../src/renderer/panels/main-
 // （那两个文件都没有其他 import；inkForBackground.ts 只 import 了 pageBackground.ts 的一个类型）。
 import { contrast } from '../src/renderer/panels/main-pane/pdf/inkForBackground';
 import type { RGB } from '../src/renderer/panels/main-pane/pdf/pageBackground';
+// 同上，纯函数直接从组件目录 import。LEAD 用来把「块 div 与块矩形同坐标系」那条断言的期望值
+// 换算成 blockFrame 之后的真值——首尾半行距放到块外之后，块 div 不再逐 pt 落在块矩形上
+// （TranslationBlocks.tsx 的 measureFit / blockFrame 改动，spec 2026-09-06 §3）。
+import { LEAD } from '../src/renderer/panels/main-pane/pdf/blockLayout';
 
 const PDF_REL = 'paper.pdf';
 const ZH_REL = '.paper.pdf.zh.json';
@@ -454,7 +458,7 @@ test('57-pdf-dual-pane: 右格拷的是左格位图，译文块与右格底图�
     // 比：RightPage 的 fillRect 用的正是同一组 `b.x × S`（S = 位图宽 / 页宽），所以钉住「HTML
     // 层与这块 canvas 同坐标系」就等于钉住「块正好落在那个填色矩形里」（填色还按 BLOCK_PAD
     // 向外扩了一点点，是有意的余量，不影响这条判据）。
-    const overlap = await page.evaluate(({ rsel, box, pageW }) => {
+    const overlap = await page.evaluate(({ rsel, box, pageW, lead }) => {
       const row = document.querySelector(rsel);
       if (!row) return null;
       const right = row.querySelector('canvas[data-pdf-right]') as HTMLCanvasElement;
@@ -463,13 +467,17 @@ test('57-pdf-dual-pane: 右格拷的是左格位图，译文块与右格底图�
       const rr = right.getBoundingClientRect();
       const br = block.getBoundingClientRect();
       const perPt = rr.width / pageW;          // CSS px / pt，全部从这块 canvas 自己推
+      // 块 div 已经按 blockFrame 上移半个 LEAD、加高一个 LEAD（首尾半行距放到块外）：块自己的
+      // fontSize style 就是 fontPt × rasterScale，与 perPt 同一套缩放，直接拿来反推同样的偏移，
+      // 不能再原样拿 TARGET_BLOCK 的矩形去比。
+      const fontPx = parseFloat(block.style.fontSize);
       return {
         dx: Math.abs(br.left - (rr.left + box.x * perPt)),
-        dy: Math.abs(br.top - (rr.top + box.y * perPt)),
+        dy: Math.abs(br.top - (rr.top + box.y * perPt - (lead / 2) * fontPx)),
         dw: Math.abs(br.width - box.w * perPt),
-        dh: Math.abs(br.height - box.h * perPt),
+        dh: Math.abs(br.height - (box.h * perPt + lead * fontPx)),
       };
-    }, { rsel: rightRowSel(paneSel, 1), box: TARGET_BLOCK, pageW: PAGE_W });
+    }, { rsel: rightRowSel(paneSel, 1), box: TARGET_BLOCK, pageW: PAGE_W, lead: LEAD });
     expect(overlap, '第 1 页应当有那个有 target 的译文块').not.toBeNull();
     // 容差 1.5 px：canvas 的 CSS 宽被 react-pdf floor 过，用它反推的 perPt 与块自己用的
     // rasterScale 相差最多 1/595，落到 460 pt 宽的块上不到 0.8 px。缩放算错的话差的是几十上百 px。

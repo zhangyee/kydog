@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Block } from '../../../../shared/zhSidecar';
+import { LINE_HEIGHT, blockFrame, glyphHeight } from './blockLayout';
 import { fitFontScale } from './fitFontScale';
 import { inkForBackground, toCss } from './inkForBackground';
 import type { RGB } from './pageBackground';
@@ -191,7 +192,8 @@ async function measureFit(
 
   const ratio = fitFontScale((r) => {
     host.style.fontSize = `${px * r}px`;
-    return host.scrollHeight;
+    // 比的是字形跨度，不是行框总高：首尾半行距允许落在块外（blockLayout.ts）。
+    return glyphHeight(host.scrollHeight, px * r);
   }, b.height, MIN_RATIO);
 
   round.set(key, ratio);
@@ -233,8 +235,9 @@ type Props = {
 /**
  * 右格的第三层（spec §3.2 / §7 步骤 3）：把译文 HTML 叠在 RightPage 已经拷贝+填色的底图上。
  *
- * 高度是**固定**的 `b.height * rasterScale`，不是 minHeight：用 minHeight 会让长译文撑高、
- * 压到下一个块，版面就不再与左栏一致——而两栏版面一致是这整个功能的立身之本。译文短则顶对齐
+ * 高度是**固定**的 `blockFrame(b).height × rasterScale`（块高 + 一个 LEAD 的行距余量），不是
+ * minHeight：用 minHeight 会让长译文撑高、压到下一个块，版面就不再与左栏一致——而两栏版面一致
+ * 是这整个功能的立身之本。译文短则顶对齐
  * 留白，长则先靠 fontScale 收，收到下限（0.5）仍装不下才在块内滚动（overflow-y: auto）。
  *
  * 墨色由实际背景推导，不跟应用主题：译文块的底是 PDF 的底（白纸或深色页），而 --color-ink
@@ -303,24 +306,31 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page 
         style={{
           position: 'absolute', visibility: 'hidden', pointerEvents: 'none',
           top: 0, left: 0, zoom: 1,
-          fontFamily: 'var(--font-serif)', lineHeight: 1.5,
+          fontFamily: 'var(--font-serif)', lineHeight: LINE_HEIGHT,
           textAlign: 'justify', textJustify: 'inter-ideograph' as never,
         }}
       />
       {blocks.map((b) => {
         if (b.target === undefined) return null;
-        const fit = fits[b.id] ?? 1;
+        const measured = fits[b.id];
+        const fit = measured ?? 1;
+        const fontPt = b.fontSize * SIZE_MUL(b.kind) * fit;
+        // 上移半个 LEAD、加高一个 LEAD：字形顶对齐 b.y，溢出块矩形的只是行距（blockLayout.ts）。
+        const frame = blockFrame(b, fontPt);
         return (
           <div
             key={b.id}
             data-translation-block={b.id}
+            // 只在量过之后才挂：量之前的缺省 1 与「量出来恰好是 1」在 DOM 上必须分得开，
+            // 否则 e2e 会在测量落地前就读到一个假的 1（见 59 的标题字号用例）。
+            data-fit={measured === undefined ? undefined : measured}
             style={{
               position: 'absolute',
-              left: b.x * rasterScale, top: b.y * rasterScale,
-              width: b.width * rasterScale, height: b.height * rasterScale,
-              fontSize: b.fontSize * SIZE_MUL(b.kind) * fit * rasterScale,
+              left: b.x * rasterScale, top: frame.top * rasterScale,
+              width: b.width * rasterScale, height: frame.height * rasterScale,
+              fontSize: fontPt * rasterScale,
               fontWeight: WEIGHT(b.kind),
-              fontFamily: 'var(--font-serif)', lineHeight: 1.5, color: ink,
+              fontFamily: 'var(--font-serif)', lineHeight: LINE_HEIGHT, color: ink,
               textAlign: 'justify', textJustify: 'inter-ideograph' as never,
               overflowY: 'auto', userSelect: 'text', pointerEvents: 'auto',
             }}

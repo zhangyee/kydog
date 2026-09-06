@@ -51,6 +51,8 @@ const RETRY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-retry.json');
 const EMPTY_TARGET_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-empty-target.json');
 // 页 1 第一条响应 stopReason=length（截断），随后两条是对半拆之后各半页的合法响应。
 const TRUNCATED_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-truncated.json');
+// 页 1 是单行 title：`1 | title` + 两字译文「首页」，用来钉住标题字号首尾半行距放到块外这条修复。
+const TITLE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-title.json');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -1266,6 +1268,46 @@ test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用，且�
     await waitSidecar(sidecar);
     await expect(progress).toHaveCount(0, { timeout: 20000 });
     await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toBeVisible({ timeout: 20000 });
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 单行标题块的译文字号不再被 1.5 倍行高压到 0.67——fit 恰为 1，div 上移四分之一字号', async () => {
+  // buildPagedPdf 每页那行「Page N」是 24 pt：行高 = 字高 = 24，块 h/fontSize = 1.00，正是边车里
+  // 30 个 title 块的中位数。原实现量的是 1.5 倍行框，一行就装不下，二分到 ≈ 0.67。
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: TITLE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const b = (await readSidecar(sidecar)).blocks.find((x) => x.id === 'p1-b01')!;
+    expect(b.kind).toBe('title');
+    expect(b.height / b.fontSize, '前提：单行块的高就是字高').toBeCloseTo(1, 1);
+
+    const block = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
+    await expect(block).toHaveText('首页');
+    // 测量是异步的（等字体）：data-fit 只在 fits 落地之后才挂上，先等它出现，再断值。量之前就断会
+    // 读到缺省的 1，改坏实现也照样绿。
+    await expect.poll(async () => block.getAttribute('data-fit'), { timeout: 15000, message: '等字号测量落地' }).not.toBeNull();
+    expect(await block.getAttribute('data-fit'), '单行标题的 fit 应恰为 1').toBe('1');
+
+    // 几何：rasterScale 取清晰层左格 canvas 的 CSS 宽 ÷ 页宽（协议层事实，同 57 的 stableCanvasWidth）。
+    const geo = await page.evaluate(({ sel }) => {
+      const canvas = document.querySelector(`${sel} [data-pdf-pane="left"] [data-pdf-layer="stable"] canvas`) as HTMLCanvasElement;
+      const el = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`) as HTMLElement;
+      return { canvasW: parseFloat(canvas.style.width), top: parseFloat(el.style.top), height: parseFloat(el.style.height), font: parseFloat(el.style.fontSize) };
+    }, { sel: paneSel });
+    const rasterScale = geo.canvasW / PAGE_W;
+    expect(geo.font).toBeCloseTo(b.fontSize * rasterScale, 1);
+    expect(geo.top).toBeCloseTo((b.y - 0.25 * b.fontSize) * rasterScale, 1);
+    expect(geo.height).toBeCloseTo((b.height + 0.5 * b.fontSize) * rasterScale, 1);
   } finally {
     await teardown(launched);
   }
