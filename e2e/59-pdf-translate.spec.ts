@@ -56,6 +56,10 @@ const TITLE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-title.json');
 // 页 2 第一条响应漏了第 2 行（页码行），第二条只补那一行：用来验证补漏只再发缺的那几行，
 // 不整页重试（spec 2026-09-06 §4.1）。
 const REPAIR_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-repair.json');
+// 页 2 前两条不含 "|"（首趟判失败），第三条留给「重试失败页」发起的第二趟。
+const RETRY_FAILED_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-retry-failed.json');
+// 页 2 第二条响应留给「重译本页」发起的第二趟；首趟四页都是一条响应就成功。
+const PAGE2_TWICE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-page2-twice.json');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -563,6 +567,7 @@ test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回�
     await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
     const retranslateBtn = pane.getByTestId('pdf-retranslate');
     await expect(retranslateBtn, '「重新翻译」键只在 active 态渲染').toBeVisible();
+    await expect(retranslateBtn).toHaveAttribute('aria-label', '全部重译');
 
     await installTranslateGate(launched);
     await retranslateBtn.click();
@@ -1346,6 +1351,140 @@ test('59-pdf-translate: 划分缺一行——只把那一行再发一次并合�
     expect(p2, '第 2 页两行都有块：主组 text + 补漏那趟的 skip').toEqual([['text', '第二页的译文'], ['skip', undefined]]);
     // 4 页 + 1 次补漏 = 5 次 page 调用，不是整页重试的 6 次
     expect((await gateCounts(launched)).done['pdf.translation.page']).toBe(5);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+/** 把读数滚到第 n 页（左栏按内容高等分推一个起点，再 poll 读数）。 */
+/**
+ * 把读数滚到第 n 页：把第 n 页那一行（两栏页行始终在 DOM，见 renderLayers 头上的注释）在
+ * 视口里居中，靠 `getBoundingClientRect` 现量、不重算 unitLayout 的常量。
+ *
+ * 原来按 `(scrollHeight / pages) * (n - 1) + clientHeight * 0.4` 起点 + 定比偏移的公式在本机
+ * 量到会越过第 2 页直接落在第 3 页：4 页 fit-width 在这条用例的窗口宽度下 zoomPct 是 61%，
+ * clientHeight（730px）比一整页缩放后的高度（842 × 0.61 ≈ 514px）还大——视口本身能同时露出一页
+ * 多，`clientHeight * 0.4`（292px）这个偏移量本身就超过半页，会把居中点推进下一页的地界。
+ * `mostVisiblePage`（pageReadout.ts）判的是哪页在视口里重叠面积最大，视口比页还高时这个偏移量
+ * 越大越容易被推给邻页，公式因此对视口/页面的相对大小很敏感。把目标页整行居中不受这个比例影响：
+ * 量的是这一页自己的矩形，与视口比页大还是小无关。
+ */
+async function scrollToPage(page: Page, pane: Locator, paneSel: string, n: number) {
+  await page.evaluate(({ sel, n }) => {
+    const el = document.querySelector(`${sel} [data-pdf-pane="left"]`) as HTMLElement;
+    const row = document.querySelector(
+      `${sel} [data-pdf-pane="left"] [data-pdf-layer="stable"] [data-pdf-page="${n}"]`,
+    ) as HTMLElement;
+    const elRect = el.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    el.scrollTop += (rowRect.top - elRect.top) + rowRect.height / 2 - el.clientHeight / 2;
+  }, { sel: paneSel, n });
+  await expect(pane.getByTestId('pdf-readout')).toContainText(`${n} / ${PAGES}`);
+}
+
+/** 按 id 比对两份边车里某几页的块——「pages 之外逐字不变」这条判据的落点。 */
+function blocksOf(doc: TranslatedDoc, pages: number[]) {
+  return doc.blocks.filter((b) => pages.includes(b.page));
+}
+
+test('59-pdf-translate: 「重试失败页」只重翻失败页，其它页的块逐字不变，键随失败页一起消失', async () => {
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: RETRY_FAILED_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const pane = await openPdf(page, pdfPath);
+    await installTranslateGate(launched, []);
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const before = await readSidecar(sidecar);
+    expect(before.failedPages).toEqual([2]);
+
+    const retry = pane.getByTestId('pdf-retry-failed');
+    await expect(retry).toBeVisible();
+    await expect(pane.getByTestId('pdf-retry-failed-count')).toHaveText('1');
+    await retry.click();
+    // 不弹确认：什么都不覆盖
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect.poll(async () => (await readSidecar(sidecar)).failedPages, { timeout: 15000 }).toBeUndefined();
+    const after = await readSidecar(sidecar);
+    expect(after.failureReasons).toBeUndefined();
+    expect(after.blocks.find((b) => b.page === 2)?.target).toBe('第二页的译文（重试之后）');
+    expect(blocksOf(after, [1, 3, 4]), 'pages 之外的块逐字不变').toEqual(blocksOf(before, [1, 3, 4]));
+    // 4 页 + 重试失败页只发 1 次
+    expect((await gateCounts(launched)).done['pdf.translation.page']).toBe(6);   // 首趟 5（第 2 页两次）+ 1
+    await expect(retry, '没有失败页了，键消失').toHaveCount(0);
+    await expect(pane.locator('[data-pdf-right="1"]').first(), '仍在对照中').toBeVisible();
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 「重译本页」只重翻读数那一页，确认框点名页号', async () => {
+  const launched = await launchKydog({ seed: seedPlain, translateFixture: PAGE2_TWICE_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await installTranslateGate(launched, []);
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const before = await readSidecar(sidecar);
+
+    await scrollToPage(page, pane, paneSel, 2);
+    await pane.getByTestId('pdf-retranslate-page').click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('重译第 2 页');
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect.poll(async () => (await readSidecar(sidecar)).blocks.find((b) => b.page === 2)?.target, { timeout: 15000 })
+      .toBe('第二页的译文（重译）');
+    const after = await readSidecar(sidecar);
+    expect(blocksOf(after, [1, 3, 4])).toEqual(blocksOf(before, [1, 3, 4]));
+    expect((await gateCounts(launched)).done['pdf.translation.page']).toBe(5);   // 4 + 1
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 「删除译文」删掉边车、退回单栏、缩放还原、主键回到「翻译」；取消则什么都不动', async () => {
+  const launched = await launchKydog({ seed: seedReady });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, READY_REL);
+    const sidecar = path.join(projectPath, READY_ZH_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    const readoutBefore = await pane.getByTestId('pdf-readout').textContent();
+    await enterDual(page, pane);
+    const del = pane.getByTestId('pdf-translate-delete');
+    await expect(del).toBeVisible();
+
+    // 取消：文件仍在、仍在对照
+    await del.click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('删除译文');
+    await page.getByTestId('confirm-dialog-cancel').click();
+    expect(await fs.stat(sidecar).then(() => true, () => false)).toBe(true);
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+
+    // 确认：文件没了 → 单栏几何 → 读数还原 → 主键回到「翻译 · L」
+    await del.click();
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect.poll(() => fs.stat(sidecar).then(() => true, () => false), { timeout: 10000 }).toBe(false);
+    await expect.poll(async () => (await paneLayout(page, paneSel))?.rightPanes, { timeout: 10000 }).toBe(0);
+    const layout = (await paneLayout(page, paneSel))!;
+    expect(layout.dividers).toBe(0);
+    expect(layout.leftW).toBeCloseTo(layout.wrapW, 0);
+    await expect(pane.getByTestId('pdf-readout')).toHaveText(readoutBefore!);
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '翻译 · L');
+    await expect(pane.getByTestId('pdf-retranslate')).toHaveCount(0);
   } finally {
     await teardown(launched);
   }

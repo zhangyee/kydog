@@ -40,7 +40,9 @@ export type NavIconName =
   | 'redo-2'
   | 'trash-2'
   | 'languages'
-  | 'rotate-cw';
+  | 'rotate-cw'
+  | 'repeat-1'
+  | 'list-restart';
 
 type IconSpec = {
   paths?: string[];
@@ -225,9 +227,17 @@ const ICONS: Record<NavIconName, IconSpec> = {
     paths: ['m5 8 6 6', 'm4 14 6-6 2-3', 'M2 5h12', 'M7 2h1', 'm22 22-5-10-5 10', 'M14 18h6'],
   },
   dot: { circles: [{ cx: 12, cy: 12, r: 3 }] },
-  // 「重新翻译」键（PdfToolbar，二期）。
+  // 「全部重译」键（PdfToolbar，二期）。
   'rotate-cw': {
     paths: ['M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8', 'M21 3v5h-5'],
+  },
+  // 「重译本页」（PdfToolbar，2026-09-06）：repeat 加一个 1。
+  'repeat-1': {
+    paths: ['m17 2 4 4-4 4', 'M3 11v-1a4 4 0 0 1 4-4h14', 'm7 22-4-4 4-4', 'M21 13v1a4 4 0 0 1-4 4H3', 'M11 10h1v4'],
+  },
+  // 「重试失败页」：清单 + 回转箭头。
+  'list-restart': {
+    paths: ['M21 6H3', 'M7 12H3', 'M7 18H3', 'M12 18a5 5 0 0 0 9-3 4.5 4.5 0 0 0-4.5-4.5c-1.33 0-2.54.54-3.41 1.41L11 14', 'M11 10v4h4'],
   },
 };
 

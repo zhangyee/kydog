@@ -17,7 +17,7 @@ function Divider(): ReactNode {
 //
 // invalid / mismatch 两档文案是「重新翻译」而不是「翻译」：它们表示边车已经存在但有问题（结构
 // 坏了 / 摘要对不上当前 PDF），进不了对照，主键唯一的动作就是重新跑一遍流水线——只有 none
-// （压根没有译文）才是真正的「翻译」。active 态另有一个常驻的「重新翻译」键（见下方
+// （压根没有译文）才是真正的「翻译」。active 态另有一个常驻的「全部重译」键（见下方
 // pdf-retranslate），把译文质量的判断交给用户自己，胶囊的主键因此不必身兼两义（Yee 拍板）。
 const TRANSLATE_TIP: Record<TranslateUiState, string> = {
   translating: '正在翻译',
@@ -31,18 +31,24 @@ const TRANSLATE_TIP: Record<TranslateUiState, string> = {
 
 type Props = {
   tabId: string; pageLabel: string; zoomPct: number; onToggleDual: () => void;
-  /** 只在 active 态可点（见下方 pdf-retranslate 的渲染条件）。 */
+  /** 下面四个只在 active 态渲染（见 pdf-retranslate 一带的渲染条件）。 */
   onRetranslate: () => void;
+  onRetranslatePage: () => void;
+  onRetryFailed: () => void;
+  onDelete: () => void;
 };
 
 /** 底部居中的胶囊：选择 · 高亮 · 文字 | 撤销 · 重做 | 翻译对照 | 读数（spec §7.1）。 */
-export function PdfToolbar({ tabId, pageLabel, zoomPct, onToggleDual, onRetranslate }: Props) {
+export function PdfToolbar({
+  tabId, pageLabel, zoomPct, onToggleDual, onRetranslate, onRetranslatePage, onRetryFailed, onDelete,
+}: Props) {
   const bucket = usePdfAnnotationStore((s) => s.buckets[tabId]);
   const ready = !!bucket?.doc && !bucket.loadError;
   const tool: Tool = bucket?.tool ?? 'select';
   const st = usePdfAnnotationStore.getState;
   const translateBucket = usePdfTranslationStore((s) => s.buckets[tabId]);
   const translateState = translateUiState(translateBucket);
+  const failedCount = translateBucket?.doc?.failedPages?.length ?? 0;
   const pillRef = useRef<HTMLDivElement>(null);
   const highlightBtnRef = useRef<HTMLButtonElement>(null);
   const noteBtnRef = useRef<HTMLButtonElement>(null);
@@ -111,17 +117,37 @@ export function PdfToolbar({ tabId, pageLabel, zoomPct, onToggleDual, onRetransl
         >
           <NavIcon name="languages" size={15} />
         </IconButton>
-        {/* 只在已经在对照中才渲染：mismatch/invalid 那两档进不了对照，主键本身语义就是「重新
-            翻译」，胶囊上不必为它们再多一个键。渲染条件与 translating 天然互斥（job 存在时
-            translateUiState 恒是 'translating' 不是 'active'，见 pdfTranslationStore.ts），
-            所以正在跑的那一趟不会同时露出这颗键。 */}
+        {/* 对照态的四个上下文键（spec 2026-09-06 §5）。只在 active 态渲染：mismatch / invalid 进不了
+            对照，主键本身就是「重新翻译」；translating 时 translateUiState 恒不是 'active'，正在跑的
+            那趟不会同时露出这几颗键。顺序固定：重译本页 · 重试失败页（仅有失败页时）· 全部重译 · 删除译文。 */}
         {translateState === 'active' && (
-          <IconButton
-            size={28} tooltip="重新翻译" tooltipPlacement="top"
-            onClick={onRetranslate} testId="pdf-retranslate"
-          >
-            <NavIcon name="rotate-cw" size={15} />
-          </IconButton>
+          <>
+            <IconButton size={28} tooltip="重译本页" tooltipPlacement="top" onClick={onRetranslatePage} testId="pdf-retranslate-page">
+              <NavIcon name="repeat-1" size={15} />
+            </IconButton>
+            {failedCount > 0 && (
+              <IconButton
+                size={28} tooltip={`重试失败页（${failedCount} 页）`} tooltipPlacement="top"
+                onClick={onRetryFailed} testId="pdf-retry-failed"
+              >
+                <span style={{ position: 'relative', display: 'inline-flex' }}>
+                  <NavIcon name="list-restart" size={15} />
+                  <span
+                    className="font-mono" data-testid="pdf-retry-failed-count"
+                    style={{ position: 'absolute', top: -6, right: -8, fontSize: 9, lineHeight: 1, color: 'var(--color-ink-faint)' }}
+                  >
+                    {failedCount}
+                  </span>
+                </span>
+              </IconButton>
+            )}
+            <IconButton size={28} tooltip="全部重译" tooltipPlacement="top" onClick={onRetranslate} testId="pdf-retranslate">
+              <NavIcon name="rotate-cw" size={15} />
+            </IconButton>
+            <IconButton size={28} tooltip="删除译文" tooltipPlacement="top" onClick={onDelete} testId="pdf-translate-delete">
+              <NavIcon name="trash-2" size={15} />
+            </IconButton>
+          </>
         )}
         <Divider />
         <div

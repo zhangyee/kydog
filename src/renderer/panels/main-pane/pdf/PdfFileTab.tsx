@@ -743,7 +743,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    *
    * 编排本身在 translateDoc（纯逻辑、可单测）；这里只负责把它接上 IPC、代际与 store。
    */
-  const startTranslation = useCallback(async () => {
+  const startTranslation = useCallback(async (opts?: { pages?: number[] }) => {
     if (!sizes || !bytes || sha === null || !numPages) return;
     // 守卫下沉到这里（Minor #4，Task 14 审查发现）：原来只有 onToggleDual 一个调用点在自己
     // 那边判过 canPressTranslate，onRetranslate 直接调这个函数、没经过那道判断——「重新翻译」
@@ -830,6 +830,11 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         langOut: locale,
         source: { sha256: sha, bytes: bytes.byteLength },
         glossary: keepGlossary,
+        // 部分页（重译本页 / 重试失败页）：只翻 pages、与 store 里那份 doc 合并（spec 2026-09-06 §4.3）。
+        // 这两个键只在 active 态渲染，doc 此刻必然非空；万一不是，translateDoc 会抛「pages 需要 base」
+        // 走下面的 catch 变成 translateError，不会静默。
+        pages: opts?.pages,
+        base: opts?.pages ? (st.buckets[tab.id]?.doc ?? undefined) : undefined,
       });
       if (my !== jobSeq.current) return;             // 取消 / 关 tab / 重新发起
       // 取消返回 null。上面那次代际比较已经把这条路挡掉了（isCancelled 与它是同一个谓词），
@@ -875,7 +880,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     if (!wasDualRef.current) st.setDual(tab.id, false);
   }, [tab.id]);
 
-  // 「重新翻译」键（PdfToolbar，只在 active 态渲染）：直接跑一次新的流水线，与 onToggleDual 的
+  // 「全部重译」键（PdfToolbar，只在 active 态渲染）：直接跑一次新的流水线，与 onToggleDual 的
   // none/invalid/mismatch 分支调的是同一个 startTranslation——区别只在于调用这一刻 dual 已经
   // 是 true（wasDualRef 会记住这一点）。这里没有另判一次 canPressTranslate：守卫现在下沉在
   // startTranslation 自己开头（Minor #4，见其注释），这个调用点因此天然安全，不必在这里重复。
@@ -886,13 +891,51 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 会不会被渲染出来」里体现过了。
   const onRetranslate = useCallback(async () => {
     const ok = await confirm({
-      title: '重新翻译，覆盖当前译文？',
+      title: '全部重译，覆盖当前译文？',
       message: '会覆盖当前译文正文（术语表保留），且不可撤销。',
-      confirmLabel: '重新翻译',
+      confirmLabel: '全部重译',
     });
     if (!ok) return;
     void startTranslation();
   }, [startTranslation]);
+
+  // 「重译本页」：只翻读数那一页，覆盖它的块——覆盖写，走 confirm()（同全部重译）。
+  const onRetranslatePage = useCallback(async () => {
+    const pageNo = currentPage;
+    const ok = await confirm({
+      title: `重译第 ${pageNo} 页，覆盖这一页的译文？`,
+      message: '只覆盖这一页的译文正文（术语表保留），且不可撤销。',
+      confirmLabel: '重译本页',
+    });
+    if (!ok) return;
+    void startTranslation({ pages: [pageNo] });
+  }, [currentPage, startTranslation]);
+
+  // 「重试失败页」：只翻边车里记的失败页。它们没有块，什么都不覆盖，不弹确认。
+  const onRetryFailed = useCallback(() => {
+    const failed = usePdfTranslationStore.getState().buckets[tab.id]?.doc?.failedPages;
+    if (!failed?.length) return;
+    void startTranslation({ pages: failed });
+  }, [tab.id, startTranslation]);
+
+  // 「删除译文」：删边车 → 走现有的 loadTranslation 重探，ENOENT → setLoaded(null) 收掉 dual →
+  // 还原缩放那个 effect 把缩放还回去。**不新加任何状态**（spec 2026-09-06 §5，不变量 #9）。
+  const onDeleteTranslation = useCallback(async () => {
+    const ok = await confirm({
+      title: '删除译文？',
+      message: '会删除磁盘上的译文文件（含术语表），退出对照回到原文，且不可撤销。',
+      confirmLabel: '删除',
+    });
+    if (!ok) return;
+    try {
+      await window.kydog.invoke('pdf.translation.delete', { pdfPath: tab.path });
+    } catch (err) {
+      setTranslateError((err as Error).message);
+      return;
+    }
+    setTranslateError(null);
+    void loadTranslation();
+  }, [tab.path, loadTranslation]);
 
   // 翻译键 / `L` 的动作分派（spec §1、§10）。两个调用点：工具栏翻译键的 onClick（点击时已经被
   // disabled 挡过一轮，见 PdfToolbar），annotationKeys.ts 的 L 分支（键盘不经过 IconButton 的
@@ -1438,6 +1481,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       <PdfToolbar
         tabId={tab.id} pageLabel={`${currentPage} / ${numPages || 1}`} zoomPct={Math.round(visualScale * 100)}
         onToggleDual={onToggleDual} onRetranslate={onRetranslate}
+        onRetranslatePage={onRetranslatePage} onRetryFailed={onRetryFailed} onDelete={onDeleteTranslation}
       />
       {anchor && <PdfSelectionBar tabId={tab.id} anchor={anchor} />}
     </div>
