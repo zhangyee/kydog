@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTextPdf, buildTwoColumnPdf, TEXT_PDF_LINES, TWO_COL_LEFT, TWO_COL_RIGHT } from '../../../../../e2e/fixtures/textPdf';
+import { buildScriptPdf, buildTextPdf, buildTwoColumnPdf, SCRIPT_PDF_LINES, TEXT_PDF_LINES, TWO_COL_LEFT, TWO_COL_RIGHT } from '../../../../../e2e/fixtures/textPdf';
 import { textLines } from './textLines';
 
 // 待实测 1 / 4（spec §10）：pdf.js 的 getTextContent 在这个 fixture 上给出
@@ -64,5 +64,28 @@ describe('textLines 对内容流顺序的依赖（已知边界）', () => {
       expect(l).toContain(TWO_COL_LEFT[i]);
       expect(l).toContain(TWO_COL_RIGHT[i]);
     });
+  });
+});
+
+/**
+ * 真 pdf.js 对四种脚标写法的切分（spec 2026-09-07 scripts §0.1 / §8）：脚标是独立项、不触发 hasEOL，
+ * `textLines` 据此标出 sub / sup。第 3 行是「同字号只用 Ts」——按 §2.4 有意不判。
+ */
+describe('脚标：真 pdf.js 把脚标切成独立项，textLines 标出 sub / sup', () => {
+  it('Tf 变小 + Ts 下移 → sub；Ts 上移 → sup；同字号只 Ts → 不判；τ′ᵢ → 一 sup 一 sub', async () => {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(buildScriptPdf()) }).promise;
+    const page = await doc.getPage(1);
+    const content = await page.getTextContent();
+    type ContentItem = Awaited<ReturnType<typeof page.getTextContent>>['items'][number];
+    const items = content.items.filter((it): it is Extract<ContentItem, { str: string }> => typeof (it as { str?: unknown }).str === 'string');
+    const lines = textLines(items, page.getViewport({ scale: 1 }));
+    const texts = lines.map((l) => l.items.map((i) => i.str).join(''));
+    expect(texts).toHaveLength(4);                       // 脚标没把行切开
+    expect(texts.slice(0, 3)).toEqual(SCRIPT_PDF_LINES.slice(0, 3));
+    expect(texts[3]).toMatch(/^type t.i of node$/);      // pdf.js 把 ' 映成 ’，不钉那个字符
+    const flags = lines.map((l) => l.items.filter((i) => i.str.trim() !== '').map((i) => i.script ?? ''));
+    expect(flags).toEqual([['', 'sub', ''], ['', 'sup', ''], ['', '', ''], ['', 'sup', 'sub', '']]);
+    await doc.destroy();
   });
 });

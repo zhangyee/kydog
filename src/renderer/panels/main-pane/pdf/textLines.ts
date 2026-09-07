@@ -2,9 +2,11 @@
 // 项的 transform[4] / [5] 是基线起点（PDF 用户坐标，y 向上），width / height 是宽与字高；
 // 坐标一律交给 viewport.convertToViewportPoint 换算，不手算（MediaBox 原点、/Rotate 都由它处理）。
 
+import type { PlaceholderScript } from '../../../../shared/zhSidecar';
+
 export type TextItemLike = { str: string; transform: number[]; width: number; height: number; hasEOL: boolean; fontName?: string };
 export type ViewportLike = { convertToViewportPoint(x: number, y: number): number[] };
-export type LineItem = { x1: number; x2: number; str: string };
+export type LineItem = { x1: number; x2: number; str: string; script?: PlaceholderScript };
 export type FontStyles = Record<string, { ascent: number; descent: number }>;
 export type TextLine = { y: number; top: number; bottom: number; items: LineItem[]; inkTop?: number; inkBottom?: number };
 
@@ -17,6 +19,12 @@ export type TextLine = { y: number; top: number; bottom: number; items: LineItem
 export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?: FontStyles): TextLine[] {
   const lines: TextLine[] = [];
   let cur: { top: number; bottom: number; items: LineItem[]; inkTop: number; inkBottom: number; anyInk: boolean } | null = null;
+  /**
+   * 本行最近一个非脚标项（spec 2026-09-07 scripts §2.1）。脚标 = height 比它小且基线偏移不为零；
+   * 偏移沿**基字**的向上向量量（旋转项与 §8.1 同一套向量写法）。height === 0 的项（pdf.js 插的假空格，
+   * 继承前一项的基线）既不当基字也不当脚标。换行归零。
+   */
+  let base: { height: number; e: number; f: number; ux: number; uy: number } | null = null;
   const flush = () => {
     if (!cur) return;
     cur.items.sort((a, b) => a.x1 - b.x1);
@@ -30,6 +38,7 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?
     if (cur.anyInk) { line.inkTop = cur.inkTop; line.inkBottom = cur.inkBottom; }
     lines.push(line);
     cur = null;
+    base = null;
   };
   for (const it of items) {
     if (it.str.length > 0) {
@@ -67,7 +76,19 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?
         cur.inkTop = Math.min(cur.inkTop, inkTop); cur.inkBottom = Math.max(cur.inkBottom, inkBottom);
         cur.anyInk = cur.anyInk || !!st;
       }
-      cur.items.push({ x1, x2, str: it.str });
+      // 脚标判定。1e-3 pt 取整是**浮点相等**的处理，不是阈值：2512.03413 第 7 页 ❸ 与后文在内容流里
+      // 同一基线，pdf.js 矩阵乘出来差 4e-14 pt；真实脚标的偏移 ≥ 0.147 倍基字字号（spec §2.2）。
+      let script: PlaceholderScript | undefined;
+      if (it.height > 0) {
+        if (base && it.height < base.height) {
+          const off = (e - base.e) * base.ux + (f - base.f) * base.uy;
+          if (Math.round(off * 1000) !== 0) script = off < 0 ? 'sub' : 'sup';
+        }
+        if (script === undefined) base = { height: it.height, e, f, ux: up[0], uy: up[1] };
+      }
+      const li: LineItem = { x1, x2, str: it.str };
+      if (script) li.script = script;
+      cur.items.push(li);
     }
     if (it.hasEOL) flush();
   }

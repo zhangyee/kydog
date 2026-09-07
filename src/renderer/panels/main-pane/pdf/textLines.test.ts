@@ -102,3 +102,48 @@ describe('/Rotate 90 / 270：视口 y 只是 PDF x 的函数（回归 C-1）', (
     expect(l.inkBottom! - l.inkTop!).toBeCloseTo(emHeight, 6);
   });
 });
+
+describe('脚标：比本行最近的基字更小且基线不同（spec 2026-09-07 scripts §2.1–2.2）', () => {
+  // item(str, x, baseline, width, hasEOL, height)
+  it('(a) 更小 + 更低 → sub；之后的全字号项成为新基字', () => {
+    const [l] = textLines([item('node n', 40, 340, 30, false, 10), item('i', 70, 337.5, 3, false, 7), item(' from', 73, 340, 20, true, 10)], viewport);
+    expect(l.items.map((i) => i.script ?? '')).toEqual(['', 'sub', '']);
+  });
+  it('(b) 更小 + 更高 → sup', () => {
+    const [l] = textLines([item('CO', 40, 300, 12, false, 10), item('2', 52, 303.3, 3, true, 7)], viewport);
+    expect(l.items[1].script).toBe('sup');
+  });
+  it('(c) 同高 + 基线不同 → 不是脚标（Word 式同字号脚注号退化成平排）', () => {
+    const [l] = textLines([item('foot', 40, 260, 20, false, 10), item('1', 60, 263.3, 3, true, 10)], viewport);
+    expect(l.items.map((i) => i.script)).toEqual([undefined, undefined]);
+  });
+  it('(d) 更小 + 同基线 → 不是脚标（题注里 9pt 标签接 8pt 正文）', () => {
+    const [l] = textLines([item('Figure 1.', 40, 300, 30, false, 9), item(' A caption', 70, 300, 40, true, 8)], viewport);
+    expect(l.items.map((i) => i.script)).toEqual([undefined, undefined]);
+  });
+  it('(e) 基线只差浮点尾差（❸ 行：302.479 对 302.47900000000004）→ 不是脚标；去掉 1e-3 取整这条就红', () => {
+    const [l] = textLines([item('❸', 40, 302.47900000000004, 8, false, 10.9), item('Reasoner.', 50, 302.479, 40, true, 8.97)], viewport);
+    expect(l.items[1].script).toBeUndefined();
+  });
+  it('(f) height = 0 的假空格既不当基字也不当脚标；之后的脚标仍相对真基字判', () => {
+    const [l] = textLines([item('v', 40, 340, 5, false, 8), item(' ', 45, 338.8, 0, false, 0), item('n', 46, 338.8, 4, true, 6)], viewport);
+    expect(l.items.map((i) => i.script ?? '')).toEqual(['', '', 'sub']);
+  });
+  it('(g) τ′ᵢ：′ 更高、𝑖 更低，都相对 τ 判 → 一 sup 一 sub', () => {
+    const [l] = textLines([item('τ', 40, 340, 5, false, 9), item('′', 45, 343.3, 2, false, 6.6), item('i', 45, 337.5, 3, true, 6.6)], viewport);
+    expect(l.items.map((i) => i.script ?? '')).toEqual(['', 'sup', 'sub']);
+  });
+  it('(i) 换行归零：下一行首项即使更小也是基字', () => {
+    const lines = textLines([item('big', 40, 340, 20, true, 14), item('small', 40, 300, 20, true, 8)], viewport);
+    expect(lines[1].items[0].script).toBeUndefined();
+  });
+  it('(j) 旋转 90° 的项沿基字的 up 向量判：偏移取 (e − e₀)·up₀', () => {
+    // 前进 (0,1)、向上 (−1,0)：基线偏移落在 −x 方向。脚标 x 更小 → up 方向为正 → sup；x 更大 → sub。
+    const rot = (str: string, e: number, f: number, h: number, hasEOL = false): TextItemLike =>
+      ({ str, transform: [0, h, -h, 0, e, f], width: 20, height: h, hasEOL });
+    const [a] = textLines([rot('base', 100, 300, 10), rot('s', 98, 320, 7, true)], viewport);
+    expect(a.items.find((i) => i.str === 's')!.script).toBe('sup');
+    const [b] = textLines([rot('base', 100, 300, 10), rot('s', 102, 320, 7, true)], viewport);
+    expect(b.items.find((i) => i.str === 's')!.script).toBe('sub');
+  });
+});

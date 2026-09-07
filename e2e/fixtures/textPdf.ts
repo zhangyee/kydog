@@ -20,6 +20,30 @@ export function buildTextPdf(): Buffer {
 }
 
 /**
+ * 四行脚标写法的单页 PDF（300 × 400，Helvetica 10 pt；translation-scripts spec §0.1 / §8）：
+ *   1. 字号变小 + `Ts` 下移 → sub          3. 同字号只用 `Ts` 上升 → 不判（Word 式脚注号，spec §2.4）
+ *   2. 字号变小 + `Ts` 上移 → sup          4. 同一基字先上标（′）后下标（i）
+ * 脚标用 `Ts`（文本上升）而不是 `Td` 挪基线：`Td` 是相对**行首**的位移，会把脚标拉回行首与正文重叠。
+ */
+export const SCRIPT_PDF_LINES = ['For each node ni from the tree', 'mass of CO2 in total', 'foot1 note', "type t'i of node"];
+
+export function buildScriptPdf(): Buffer {
+  const content =
+    'BT /F1 10 Tf 40 340 Td (For each node n) Tj /F1 7 Tf -1.5 Ts (i) Tj 0 Ts /F1 10 Tf ( from the tree) Tj ET\n' +
+    'BT /F1 10 Tf 40 300 Td (mass of CO) Tj /F1 7 Tf 3.6 Ts (2) Tj 0 Ts /F1 10 Tf ( in total) Tj ET\n' +
+    'BT /F1 10 Tf 40 260 Td (foot) Tj 3.6 Ts (1) Tj 0 Ts ( note) Tj ET\n' +
+    "BT /F1 10 Tf 40 220 Td (type t) Tj /F1 7 Tf 3.6 Ts (') Tj -1.5 Ts (i) Tj 0 Ts /F1 10 Tf ( of node) Tj ET\n";
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`,
+  ];
+  return assemble(objs);
+}
+
+/**
  * 页数与页尺寸都可给的多页 PDF，每页只写一行页码——虚拟化用例要的是「页够多、页够大」，
  * 不需要文本几何精度（那是 buildTextPdf 的活）。对象编号：1 Catalog、2 Pages、3 Font，
  * 4 起是 count 个页对象，再往后是它们各自的内容流。
