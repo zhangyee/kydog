@@ -59,6 +59,28 @@ describe('checkGroupGeometry', () => {
     )).not.toThrow();
   });
 
+  // M-1：判据换成了 isTranslatable(kind)，不是「有没有 target」——两步协议里这一关跑在第一步
+  // 之后、译文还没回来，那时每个组的 target 都是 undefined。按 target 判会让整层校验静默失效。
+  it('可译 kind 即使没有 target 也照样校验（两步协议里第一步之后 target 本就还没回来）', () => {
+    const lines = [line(1, 72, 200, 90), line(2, 320, 200, 90)];
+    expect(() => checkGroupGeometry(
+      [{ lines: [1], kind: 'text' }, { lines: [2], kind: 'skip' }], lines,
+    )).not.toThrow();
+    // 同样的几何：矩形横向覆盖到另一栏，把另一行的中心也含进来才该抛。用宽矩形（单行但 width
+    // 撑满两栏）触发它。
+    const wide = [{ ...line(1, 72, 568, 90) }, line(2, 320, 200, 90)];
+    expect(() => checkGroupGeometry(
+      [{ lines: [1], kind: 'text' }], wide,
+    )).toThrow(GroupError);
+  });
+
+  it('不可译 kind（code）同样几何不校验、不抛——判据是 kind 不是有没有 target', () => {
+    const wide = [line(1, 72, 568, 90), line(2, 320, 200, 90)];
+    expect(() => checkGroupGeometry(
+      [{ lines: [1], kind: 'code' }], wide,
+    )).not.toThrow();
+  });
+
   it('mask 按墨迹矩形：字身框并集不含另一行中心、墨迹框并集含 → 抛', () => {
     // 组 {1}：字身框 y 100–110；降部把墨迹底推到 118。第 2 行 y 116–126，中心 121。
     // 字身框 + PAD 1.5 → 到 111.5，不含 121；墨迹框 + PAD → 到 119.5，仍不含；把降部再放大到 122

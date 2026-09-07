@@ -164,7 +164,12 @@ export function filterByGeometry(
   const kept = blocks.filter((b) => {
     const s = sizes[b.page - 1];
     if (!s) return false;
-    return b.x >= 0 && b.y >= 0 && b.x + b.width <= s.w && b.y + b.height <= s.h;
+    if (!(b.x >= 0 && b.y >= 0 && b.x + b.width <= s.w && b.y + b.height <= s.h)) return false;
+    // ink 是右格填色纵向范围的承重字段（不再是 y / height），而边车的写入方之一是 agent——
+    // 一条 ink: { top: -5000, bottom: 5000 } 会静默把整条块宽刷成页背景色。这是这里唯一的
+    // 几何护栏，必须把它也纳入，与 bbox 越界同一处置：越出页面就丢弃、计数。
+    if (b.ink && !(b.ink.top >= 0 && b.ink.bottom <= s.h)) return false;
+    return true;
   });
   return { blocks: kept, dropped: blocks.length - kept.length };
 }

@@ -188,6 +188,11 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     // done++/tick() 只是一次多余且误导调用方的 onProgress，直接跳过。
     if (!layout.ok) { fail(layout.reason); if (!aborted) { done++; tick(); } return; }
 
+    // 版面已回、第二步还没发：取消在这里生效，不多付一次调用。invoke 没有取消语义，已经发出
+    // 的调用会跑完再被丢弃——这道检查点晚一步就是白付一次翻译调用（付费调用上界从 ≤4 变成
+    // ≤12，见文件顶部 PAGE_CONCURRENCY 的注释）。早退不写 groupsOf、不 done++（这页压根没完成）。
+    if (o.isCancelled()) return;
+
     // 组 → 第二步的请求：只发可译的（code / formula / table / skip 不翻不盖，§4.3），id 按
     // 阅读顺序 g1..gN，只活在这两次调用之间。source 用 joinSource 拼好——与边车里 buildBlocks
     // 写的 source 同一条规则，模型这一步看到的就是最终会落盘的那个串。

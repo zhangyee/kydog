@@ -249,6 +249,22 @@ describe('translateDoc', () => {
     expect(seen).toEqual([1, 2, 3, 4, 5]);
   });
 
+  it('版面已回、第二步还没发时取消 → 不再发第二步，返回 null（I-1）', async () => {
+    // 版面这一步成功之后、构造第二步请求之前必须再查一次 isCancelled()——否则取消之后在途页
+    // 仍会白付一次翻译调用（付费调用上界因此从 ≤4 变成 ≤12，见 translateDoc.ts 顶部注释）。
+    // layoutPage 在返回前把 cancelled 翻转，模拟「取消发生在版面结果落地之后」这个时序。
+    let cancelled = false;
+    const translateGroups = vi.fn();
+    const doc = await translateDoc(base({
+      numPages: 1,
+      isCancelled: () => cancelled,
+      layoutPage: async (a) => { const r = await layoutOk(a); cancelled = true; return r; },
+      translateGroups,
+    }));
+    expect(translateGroups).not.toHaveBeenCalled();
+    expect(doc).toBeNull();
+  });
+
   it('llm.not_configured 不重试，直接抛出中止整趟', async () => {
     const layoutPage = vi.fn(async () => {
       const e = new Error('没有可用的模型') as Error & { code?: string };

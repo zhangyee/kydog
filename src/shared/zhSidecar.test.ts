@@ -107,6 +107,20 @@ describe('filterByGeometry', () => {
   it('bbox 负坐标 → 丢弃', () => {
     expect(filterByGeometry([block({ x: -1 })], sizes).dropped).toBe(1);
   });
+
+  // I-2：filterByGeometry 是几何护栏唯一的一道，而右格填色的纵向范围现在由 ink 决定
+  // （不是 y / height）。边车的写入方之一是 agent——ink: { top: -5000, bottom: 5000 } 这种越出
+  // 页面的值如果不校验，会静默把整条块宽刷成页背景色，与 bbox 越界是同一类风险、必须同一处置。
+  it('ink 越出页面（bottom 超过页高）→ 丢弃并计数', () => {
+    const r = filterByGeometry([block({ ink: { top: 100, bottom: 5000 } })], sizes);
+    expect(r.blocks).toHaveLength(0);
+    expect(r.dropped).toBe(1);
+  });
+
+  it('ink 在页内 → 保留', () => {
+    const b = block({ ink: { top: 90, bottom: 170 } });
+    expect(filterByGeometry([b], sizes)).toEqual({ blocks: [b], dropped: 0 });
+  });
 });
 
 describe('glossary 结构校验', () => {
