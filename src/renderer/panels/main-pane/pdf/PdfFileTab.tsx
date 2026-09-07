@@ -768,8 +768,6 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     const my = ++jobSeq.current;
     translationSeq.current += 1;
     const st = usePdfTranslationStore.getState();
-    // 术语表跨重译保留：它是用户 / agent 写进边车的约定，不是这一趟翻译的产物（spec §2.6）。
-    const keepGlossary = st.buckets[tab.id]?.doc?.glossary;
     const locale = useSettingsStore.getState().settings?.ui.locale ?? 'zh';
     // 部分跑（重译本页 / 重试失败页）第一帧的进度总量该是这一趟真要跑的页数，不是全篇页数——
     // 否则浮层先闪一下「0 / numPages」，等第一条 tick 回来才跳到真实总量。
@@ -801,6 +799,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         if (!loaded) throw new Error('译文文件已不存在，请重新翻译');
         base = loaded;
       }
+      // 术语表跨重译保留：它是用户 / agent 写进边车的约定，不是这一趟翻译的产物（spec §2.6）。
+      // 部分跑优先取**刚探到的盘上原文**：store 里那份 doc 是 filterByGeometry 过滤过的内存
+      // 副本，与 base 同一个理由（见上面那段注释）。全量跑没有 base，退回 store 那份，行为不变。
+      const keepGlossary = base?.glossary ?? st.buckets[tab.id]?.doc?.glossary;
       const doc = await translateDoc({
         numPages,
         getPage: async (n) => {
@@ -810,8 +812,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           if (!d) throw new Error(`第 ${n} 页还没准备好，无法抽取原文`);
           return d.getPage(n);
         },
-        translatePage: (a) => window.kydog.invoke('pdf.translation.page', {
+        // 两步协议（spec 2026-09-07 §4）：第一步只分组分类（不需要 langOut / glossary），
+        // 第二步按组翻译。编排、解析、补漏都在 translateDoc，这里只把两个入口接上 IPC。
+        layoutPage: (a) => window.kydog.invoke('pdf.translation.layout', {
           page: a.page, lines: a.lines, docTitle: a.docTitle,
+          providerId: model.providerId, modelId: model.modelId, runtimeRevision: model.runtimeRevision,
+        }),
+        translateGroups: (a) => window.kydog.invoke('pdf.translation.translate', {
+          page: a.page, groups: a.groups, docTitle: a.docTitle,
           providerId: model.providerId, modelId: model.modelId, runtimeRevision: model.runtimeRevision,
           langOut: locale, glossary: keepGlossary,
         }),

@@ -20,7 +20,7 @@ import { fileService } from './fs/fileService';
 import { renderPageToPng } from './pdf/pdfRaster';
 import { pdfAnnotations } from './pdf/pdfAnnotations';
 import { pdfTranslation } from './pdf/pdfTranslation';
-import { translatePageLegacy, layoutPage, translateGroups } from './pdf/pdfTranslatePage';
+import { layoutPage, translateGroups } from './pdf/pdfTranslatePage';
 import { getUpdateService, openDownloadPage } from './update/assemble';
 // 从 telemetry/assemble.ts 取，不要从 main.ts —— 后者会造成循环 import
 import { getTelemetryService, telemetryStatus } from './telemetry/assemble';
@@ -137,7 +137,6 @@ export function registerAllHandlers(): void {
   registerHandler('pdf.annotations.save', (args) => pdfAnnotations.save(args));
   registerHandler('pdf.translation.load', (args) => pdfTranslation.load(args));
   registerHandler('pdf.translation.resolveModel', (args) => pdfTranslation.resolveModel(args));
-  registerHandler('pdf.translation.page', (args) => translatePageLegacy(args));
   registerHandler('pdf.translation.layout', (args) => layoutPage(args));
   registerHandler('pdf.translation.translate', (args) => translateGroups(args));
   registerHandler('pdf.translation.save', (args) => pdfTranslation.save(args));

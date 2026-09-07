@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { KydogError } from '../../shared/errors';
 import type { ProviderId } from '../../shared/types';
-import type { PageLine, Term } from '../../shared/zhSidecar';
 import type { RpcCall } from '../../shared/protocol';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { buildGroupsText, buildLayoutSystemPrompt, buildTranslateSystemPrompt, buildUserText } from './translatePrompt';
@@ -108,18 +107,4 @@ async function callModel(
       }
     }
   });
-}
-
-/**
- * 过渡桩：Task 6 换线后连同 `pdf.translation.page` 一起删。行为与旧的单步 `translatePage`
- * 等价（第一步的提示词 + 原始行文本），只为让 `PdfFileTab` 还调它时编译通过。
- */
-export type TranslatePageArgs = {
-  page: number;
-  providerId: ProviderId; modelId: string; runtimeRevision: number;
-  langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; lines: PageLine[];
-};
-
-export function translatePageLegacy(args: TranslatePageArgs): Promise<{ text: string; truncated: boolean }> {
-  return callModel(args, buildLayoutSystemPrompt({ docTitle: args.docTitle }), buildUserText(args.lines));
 }

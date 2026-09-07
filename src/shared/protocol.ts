@@ -94,13 +94,6 @@ export type RpcCall =
   // 主进程这三条**不持有任何 job 状态**：一页进一页出，取消 = 渲染层停排队。
   | { method: 'pdf.translation.resolveModel'; args: { threadId: string | null };
       result: { providerId: ProviderId; modelId: string; runtimeRevision: number } }
-  | { method: 'pdf.translation.page';
-      args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
-              // 语言**代码**（= settings.ui.locale），不是语言名：提示词自己把它换成
-              // "Chinese" / "English"（translatePrompt.ts 的 LANG_NAME）。收成联合是
-              // 为了让那张映射表少一条时 tsc 就红，别静默把代号喂给模型。
-              langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; lines: PageLine[] };
-      result: { text: string; truncated: boolean } }
   // 两步协议（spec 2026-09-07 §4）：第一步只分组分类，第二步按组逐个翻译。主进程仍无 job 状态。
   | { method: 'pdf.translation.layout';
       args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
@@ -108,6 +101,9 @@ export type RpcCall =
       result: { text: string; truncated: boolean } }
   | { method: 'pdf.translation.translate';
       args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
+              // 语言**代码**（= settings.ui.locale），不是语言名：提示词自己把它换成
+              // "Chinese" / "English"（translatePrompt.ts 的 LANG_NAME）。收成联合是
+              // 为了让那张映射表少一条时 tsc 就红，别静默把代号喂给模型。
               langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; groups: TranslateGroup[] };
       result: { text: string; truncated: boolean } }
   | { method: 'pdf.translation.save'; args: { pdfPath: string; doc: TranslatedDoc }; result: void }
