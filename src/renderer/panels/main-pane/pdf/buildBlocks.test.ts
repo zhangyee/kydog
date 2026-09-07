@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { PageLine } from '../../../../shared/zhSidecar';
-import { buildBlocks } from './buildBlocks';
+import { PLACEHOLDER_TOKEN, type PageLine } from '../../../../shared/zhSidecar';
+import { buildBlocks, tokenize } from './buildBlocks';
 
 const line = (n: number, x: number, y: number, w: number, size: number, text: string): PageLine =>
   ({ n, x, y, w, h: size, size, text });
@@ -57,5 +57,58 @@ describe('buildBlocks', () => {
     const [b] = buildBlocks(1, lines, [{ lines: [1, 2], kind: 'text', target: 'T' }]);
     expect(b.ink).toEqual({ top: 102.8, bottom: 122 });     // 第 2 行按 y + h = 122
     expect(b.y).toBe(100); expect(b.height).toBe(22);        // 字身框并集不变
+  });
+});
+
+describe('tokenize（spec 2026-09-07 scripts §3.1）', () => {
+  const sub = (n: number, text: string, start: number, end: number): PageLine =>
+    ({ ...line(n, 72, 90 + n * 14, 400, 10, text), scripts: [{ start, end, kind: 'sub' }] });
+
+  it('区间换成 {vN}，组内从 v1 起按文本顺序编号；source 是去记号的串；placeholders 带 script', () => {
+    const t = tokenize([sub(1, 'node ni is', 6, 7), line(2, 72, 118, 400, 10, 'plain'), sub(3, 'set Vj', 5, 6)]);
+    expect(t.request).toBe('node n{v1} is plain set V{v2}');
+    expect(t.source).toBe('node ni is plain set Vj');
+    expect(t.placeholders).toEqual([
+      { id: 'v1', kind: 'formula', text: 'i', script: 'sub' },
+      { id: 'v2', kind: 'formula', text: 'j', script: 'sub' },
+    ]);
+  });
+  it('构造性不变量：request 里的记号换回 text 就是 source', () => {
+    const t = tokenize([sub(1, 'a bc-', 3, 5), line(2, 72, 118, 400, 10, 'tail')]);
+    const byId = new Map(t.placeholders.map((p) => [p.id, p.text]));
+    expect(t.request.replace(PLACEHOLDER_TOKEN, (m, id: string) => byId.get(id) ?? m)).toBe(t.source);
+  });
+  it('没有脚标 → request === source，placeholders 为空，与 joinSource 逐字相同', () => {
+    const ls = [line(1, 0, 0, 10, 10, 'trans-'), line(2, 0, 20, 10, 10, 'lation works')];
+    const t = tokenize(ls);
+    expect(t.request).toBe('translation works');
+    expect(t.source).toBe(t.request);
+    expect(t.placeholders).toEqual([]);
+  });
+  it('一行里多个区间、sub 与 sup 混排', () => {
+    const l: PageLine = { ...line(1, 0, 0, 10, 10, 'x2 and yi'), scripts: [{ start: 1, end: 2, kind: 'sup' }, { start: 8, end: 9, kind: 'sub' }] };
+    const t = tokenize([l]);
+    expect(t.request).toBe('x{v1} and y{v2}');
+    expect(t.placeholders.map((p) => p.script)).toEqual(['sup', 'sub']);
+  });
+});
+
+describe('buildBlocks 与 tokenize（spec §3.2）', () => {
+  const ls: PageLine[] = [
+    { ...line(1, 72, 90, 400, 10, 'node ni is'), scripts: [{ start: 6, end: 7, kind: 'sub' }] },
+    line(2, 72, 104, 380, 10, 'plain.'),
+  ];
+  it('source 是明文；有 target 的块带 placeholders', () => {
+    const [b] = buildBlocks(1, ls, [{ lines: [1, 2], kind: 'text', target: '节点 n{v1} 是平的。' }]);
+    expect(b.source).toBe('node ni is plain.');
+    expect(b.placeholders).toEqual([{ id: 'v1', kind: 'formula', text: 'i', script: 'sub' }]);
+  });
+  it('没有 target 的块（不可译 kind）不带 placeholders 键', () => {
+    const [b] = buildBlocks(1, ls, [{ lines: [1, 2], kind: 'formula' }]);
+    expect('placeholders' in b).toBe(false);
+  });
+  it('有 target 但没有脚标 → 不带 placeholders 键', () => {
+    const [b] = buildBlocks(1, ls, [{ lines: [2], kind: 'text', target: '平的。' }]);
+    expect('placeholders' in b).toBe(false);
   });
 });
