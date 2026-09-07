@@ -33,7 +33,7 @@ describe('buildUserText', () => {
 
 describe('buildLayoutSystemPrompt（第一步：只分组分类）', () => {
   const p = buildLayoutSystemPrompt({});
-  it('kind 表与 BLOCK_KINDS 集合相等（七个）', () => {
+  it('kind 表与 BLOCK_KINDS 集合相等、数目相等', () => {
     const table = p.slice(p.indexOf('kind is one of:'), p.indexOf('## Output format'));
     const kinds = [...table.matchAll(/^\s{3}([a-z]+)\s{2,}/gm)].map((m) => m[1]);
     expect(new Set(kinds)).toEqual(new Set(BLOCK_KINDS));
