@@ -110,6 +110,12 @@ test('55-pdf-annotations: 文字注落盘，关 tab 重开与重启后还原', a
     // 而 annotations.length 照样是 1，所以只 poll 条数发现不了）。
     await expect(input).toHaveValue('复核数据来源');
     await page.keyboard.press('Escape');
+    // 轮询的判据必须是**文本本身**，不是条数：落盘分两步——点一下先落一条空文字注（条数当场
+    // 变成 1），文字是后面才写进去的。按条数轮询等于「刚创建就往下走」，然后读到 text: ""。
+    // CI darwin-arm64 上稳定复现（本机那一步快到看不见）。
+    await expect
+      .poll(async () => ((await readSidecar(kydogHome))?.annotations[0] as { text?: string } | undefined)?.text ?? null)
+      .toBe('复核数据来源');
     await expect.poll(async () => (await readSidecar(kydogHome))?.annotations.length ?? 0).toBe(1);
     const n = (await readSidecar(kydogHome))!.annotations[0] as { type: string; text: string; page: number };
     expect(n).toMatchObject({ type: 'note', text: '复核数据来源', page: 1 });

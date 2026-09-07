@@ -1,15 +1,70 @@
 {
   "events": [
-    { "after_ms": 0, "type": "agent_start" },
-    { "after_ms": 0, "type": "message_start", "messageId": "m1" },
-    { "after_ms": 50, "type": "text_delta", "messageId": "m1", "delta": "PHASE1_START\n第1行\n第2行\n第3行\n第4行\n第5行\n第6行\n第7行\n第8行\n第9行\n第10行\n第11行\n第12行\n第13行\n第14行\n第15行\n第16行\n第17行\n第18行\n第19行\n第20行\n第21行\n第22行\n第23行\n第24行\n第25行\n第26行\n第27行\n第28行\n第29行\n第30行\n第31行\n第32行\n第33行\n第34行\n第35行\n第36行\n第37行\n第38行\n第39行\n第40行\nPHASE1_END" },
-    { "after_ms": 200, "type": "tool_start", "toolCallId": "t1", "name": "bash", "command": "find ." },
-    { "after_ms": 800, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "tool-output-1\n" },
-    { "after_ms": 800, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "tool-output-2\n" },
-    { "after_ms": 800, "type": "tool_chunk", "toolCallId": "t1", "stream": "stdout", "chunk": "tool-output-3\n" },
-    { "after_ms": 200, "type": "tool_end", "toolCallId": "t1", "status": "ok", "exitCode": 0 },
-    { "after_ms": 200, "type": "text_delta", "messageId": "m1", "delta": "PHASE2_TEXT" },
-    { "after_ms": 50, "type": "message_end", "messageId": "m1" },
-    { "after_ms": 0, "type": "agent_end", "reason": "completed" }
+    {
+      "after_ms": 0,
+      "type": "agent_start"
+    },
+    {
+      "after_ms": 0,
+      "type": "message_start",
+      "messageId": "m1"
+    },
+    {
+      "after_ms": 50,
+      "type": "text_delta",
+      "messageId": "m1",
+      "delta": "PHASE1_START\n第1行\n第2行\n第3行\n第4行\n第5行\n第6行\n第7行\n第8行\n第9行\n第10行\n第11行\n第12行\n第13行\n第14行\n第15行\n第16行\n第17行\n第18行\n第19行\n第20行\n第21行\n第22行\n第23行\n第24行\n第25行\n第26行\n第27行\n第28行\n第29行\n第30行\n第31行\n第32行\n第33行\n第34行\n第35行\n第36行\n第37行\n第38行\n第39行\n第40行\n第41行\n第42行\n第43行\n第44行\n第45行\n第46行\n第47行\n第48行\n第49行\n第50行\n第51行\n第52行\n第53行\n第54行\n第55行\n第56行\n第57行\n第58行\n第59行\n第60行\n第61行\n第62行\n第63行\n第64行\n第65行\n第66行\n第67行\n第68行\n第69行\n第70行\n第71行\n第72行\n第73行\n第74行\n第75行\n第76行\n第77行\n第78行\n第79行\n第80行\n第81行\n第82行\n第83行\n第84行\n第85行\n第86行\n第87行\n第88行\n第89行\n第90行\n第91行\n第92行\n第93行\n第94行\n第95行\n第96行\n第97行\n第98行\n第99行\n第100行\n第101行\n第102行\n第103行\n第104行\n第105行\n第106行\n第107行\n第108行\n第109行\n第110行\n第111行\n第112行\n第113行\n第114行\n第115行\n第116行\n第117行\n第118行\n第119行\n第120行\nPHASE1_END"
+    },
+    {
+      "after_ms": 200,
+      "type": "tool_start",
+      "toolCallId": "t1",
+      "name": "bash",
+      "command": "find ."
+    },
+    {
+      "after_ms": 800,
+      "type": "tool_chunk",
+      "toolCallId": "t1",
+      "stream": "stdout",
+      "chunk": "tool-output-1\n"
+    },
+    {
+      "after_ms": 800,
+      "type": "tool_chunk",
+      "toolCallId": "t1",
+      "stream": "stdout",
+      "chunk": "tool-output-2\n"
+    },
+    {
+      "after_ms": 800,
+      "type": "tool_chunk",
+      "toolCallId": "t1",
+      "stream": "stdout",
+      "chunk": "tool-output-3\n"
+    },
+    {
+      "after_ms": 200,
+      "type": "tool_end",
+      "toolCallId": "t1",
+      "status": "ok",
+      "exitCode": 0
+    },
+    {
+      "after_ms": 200,
+      "type": "text_delta",
+      "messageId": "m1",
+      "delta": "PHASE2_TEXT"
+    },
+    {
+      "after_ms": 50,
+      "type": "message_end",
+      "messageId": "m1"
+    },
+    {
+      "after_ms": 0,
+      "type": "agent_end",
+      "reason": "completed"
+    }
   ]
 }
