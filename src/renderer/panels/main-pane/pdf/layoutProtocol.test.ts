@@ -25,9 +25,13 @@ describe('parseLayout（第一步：每组一行 `<ids> | <kind>`）', () => {
   it('kind 不认识 → 抛，且信息里列出全部合法值', () => {
     expect(() => parseLayout('1 | paragraph\n', [1])).toThrow(new RegExp(BLOCK_KINDS.join(' / ')));
   });
-  it('重复行号 → 抛；未知行号（把坐标当行号）→ 抛，且排在缺行判定之前', () => {
-    expect(() => parseLayout('1-2 | text\n2 | skip\n', [1, 2])).toThrow(/出现在多个组/);
+  it('重复行号（跨组）→ 抛；未知行号（把坐标当行号）→ 抛，且排在缺行判定之前', () => {
+    expect(() => parseLayout('1-2 | text\n2 | skip\n', [1, 2])).toThrow(/行 2 重复出现/);
     expect(() => parseLayout('1 | text\n303 | skip\n', [1, 2])).toThrow(/不在这次发出的行里/);
+  });
+
+  it('重复行号（组内，如 "1,1"）→ 同一条措辞，不预设重复发生在组间', () => {
+    expect(() => parseLayout('1,1 | text\n', [1])).toThrow(/行 1 重复出现/);
   });
   it('译文混进来（第二步的格式）→ 当成没有 "|" 的行抛，不静默吞', () => {
     expect(() => parseLayout('1 | text\n深度学习\n', [1])).toThrow(GroupError);

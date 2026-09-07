@@ -155,7 +155,9 @@ describe('translateDoc', () => {
     });
   });
 
-  it('截断 → 对半拆重试，递归到单行', async () => {
+  it('截断 → 对半拆重试（拆一层）', async () => {
+    // 名字与断言对齐：这个假实现只在 4 行时判截断，拆开后的两个 2 行组不再截断，所以只拆了
+    // 一层——不是递归到单行。序列断言（[[1,2,3,4],[1,2],[3,4]]）本身就是唯一的事实来源。
     const layouts: number[][] = [];
     const translates: number[] = [];
     const doc = await translateDoc(base({

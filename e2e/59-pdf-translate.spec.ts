@@ -41,11 +41,12 @@ import type { TranslatedDoc } from '../src/shared/zhSidecar';
  */
 
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
-// 页 2 的响应故意不含 "|"：parseGroups 两次都抛 GroupError（runPage 重试一次），页号 2 被记进
-// failedPages，其余三页正常成功——用来验证「1 页失败」这个信号真的落进了边车、并且活得够久。
+// 页 2 的版面合法（`1 | text`），坏的是第二步：两条翻译响应都不是 id 头，parseTranslations
+// 两次都抛 GroupError（runPage 重试一次），页号 2 被记进 failedPages，其余三页正常成功——
+// 用来验证「1 页失败」这个信号真的落进了边车、并且活得够久。
 const ONE_FAIL_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-one-fails.json');
-// 页 1 的第一条响应是空译文（`1 | text` 后面直接 %%，parseGroups 判 GroupError），第二条合法：
-// runPage 重试一次就成了，这一页最终**有译文**且不计入失败。
+// 页 1 版面合法，翻译第一条响应是空译文（`g1` 后面直接 `%%`，parseTranslations 判 GroupError），
+// 第二条合法：runPage 重试一次就成了，这一页最终**有译文**且不计入失败。
 const RETRY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-retry.json');
 // 页 1 两条响应都是空译文：重试也救不回来，这一页判失败、不产块 → 右格那一块保留原文。
 const EMPTY_TARGET_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-empty-target.json');
@@ -386,11 +387,12 @@ async function waitSample(page: Page, paneSel: string, box: typeof INK, label: s
   return (await sampleRight(page, paneSel, box))!;
 }
 
-/** 等第一页的翻译请求发出来并被闸门扣住 —— 作业确定地停在半路的那一刻。 */
+/** 等第一页的版面请求发出来并被闸门扣住 —— 作业确定地停在半路的那一刻（闸门默认扣的是
+ * `pdf.translation.layout`，见 installTranslateGate）。 */
 async function waitJobParked(host: GateHost) {
   await expect.poll(
     () => heldCount(host),
-    { timeout: 30000, message: '等作业跑到第一页的翻译请求上（抽取完成）' },
+    { timeout: 30000, message: '等作业跑到第一页的版面请求上（抽取完成）' },
   ).toBeGreaterThan(0);
 }
 
@@ -1131,9 +1133,9 @@ test('59-pdf-translate: 抽取完的页若不在渲染窗口内，当场还给 p
 });
 
 test('59-pdf-translate: 第一条响应违反校验、第二条合法——重试成功，不计入失败', async () => {
-  // spec §2.7：一页跑一次 → 失败重试一次 → 仍失败才记 failed。这里第 1 页的第一条响应是空
-  // 译文（`1 | text` 后面直接 %%，parseGroups 判 GroupError），第二条合法——最终这一页**有
-  // 译文**，且整趟作业零失败页。
+  // spec §2.7：一页跑一次 → 失败重试一次 → 仍失败才记 failed。这里第 1 页版面合法，翻译第一条
+  // 响应是空译文（`g1` 后面直接 `%%`，parseTranslations 判 GroupError），第二条合法——最终
+  // 这一页**有译文**，且整趟作业零失败页。
   const launched = await launchKydog({ seed: seedPlain, translateFixture: RETRY_FIXTURE });
   try {
     const { page, kydogHome } = launched;
@@ -1167,10 +1169,10 @@ test('59-pdf-translate: 第一条响应违反校验、第二条合法——重�
 });
 
 test('59-pdf-translate: 空译文两次都不合法——该页判失败，右格那一块仍是原文像素', async () => {
-  // 复审 P1-2 的反例：`1 | text` 后面直接 %% 解析成 target: ''，而 RightPage 判的是
+  // 复审 P1-2 的反例：`g1` 后面直接 %% 解析成 target: ''，而 RightPage 判的是
   // `target === undefined`——'' 不是 undefined，块矩形照盖、译文层没字，结果是**一块被涂白的
-  // 原文**。比不翻译糟得多，用户还看不出发生了什么。parseGroups 因此把空译文判成 GroupError，
-  // 这一页两次都失败 → 不产块 → 右格那一块原样保留原文。
+  // 原文**。比不翻译糟得多，用户还看不出发生了什么。parseTranslations 因此把空译文判成
+  // GroupError，这一页（版面合法，翻译两次都失败）不产块 → 右格那一块原样保留原文。
   //
   // 判据只能取像素：失败页在 DOM 上没有任何痕迹（没有块就没有元素），而右格那块 canvas 无论
   // 画的是原文、是涂白的空块、还是一整格纸色都一样在。

@@ -49,7 +49,9 @@ export function parseLayout(text: string, expected: number[]): { groups: LayoutG
   }
   const seen = new Set<number>();
   for (const g of groups) for (const n of g.lines) {
-    if (seen.has(n)) throw new GroupError(`行 ${n} 出现在多个组里`);
+    // 措辞不预设重复发生在哪——组内重复（同一行 "1,1 | text"）与组间重复都会走到这里，
+    // 「出现在多个组里」只描述得了后者。
+    if (seen.has(n)) throw new GroupError(`行 ${n} 重复出现`);
     seen.add(n);
   }
   for (const n of seen) if (!expected.includes(n)) throw new GroupError(`行 ${n} 不在这次发出的行里`);
