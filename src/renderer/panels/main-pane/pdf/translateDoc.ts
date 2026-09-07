@@ -1,10 +1,10 @@
 import type { Block, PageLine, Term, TranslatedDoc, TranslateGroup } from '../../../../shared/zhSidecar';
-import { buildBlocks, joinSource } from './buildBlocks';
+import { buildBlocks, tokenize } from './buildBlocks';
 import { extractPageLines, type TextSource } from './extractPageLines';
 import { repairGroupGeometry } from './groupGeometry';
 import { GroupError, isTranslatable, parseLayout, type LayoutGroup, type ParsedGroup } from './layoutProtocol';
 import type { TextLine } from './textLines';
-import { introducedMarkup, parseTranslations } from './translateProtocol';
+import { describeTokenViolation, introducedMarkup, parseTranslations, tokenViolation } from './translateProtocol';
 
 /**
  * 一趟作业里同时「已发出、未落地」的页数上界——**也就是取消时的浪费上界**（invoke 没有取消
@@ -135,15 +135,22 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
       };
     }
     const { targets, missing } = parseTranslations(r.text, groups.map((g) => g.id));
-    // 译文多出原文没有的 \\ / $：模型把数学符号改写成了 LaTeX（spec 2026-09-07 §8.8）。当缺组处置——
-    // 丢掉这份译文、只把这几组再发一次；补漏那趟仍如此就抛，走 twice 的整步重试。
+    // 两条协议层校验，同一处置——丢掉这份译文、只把这几组再发一次；补漏那趟仍如此就抛，走 twice 的整步重试：
+    //   · 译文多出原文没有的 \ / $：模型把数学符号改写成了 LaTeX（spec 2026-09-07 §8.8）
+    //   · 记号没有恰出现一次：丢 / 重复 / 多出（spec 2026-09-07 scripts §5.2）
     const marked = groups.filter((g) => g.id in targets && introducedMarkup(g.source, targets[g.id]) !== undefined).map((g) => g.id);
-    for (const id of marked) delete targets[id];
-    const redo = groups.filter((g) => missing.includes(g.id) || marked.includes(g.id));
+    const tokenBad = groups.flatMap((g) => {
+      if (!(g.id in targets) || marked.includes(g.id)) return [];
+      const v = tokenViolation(g.source, targets[g.id]);
+      return v ? [{ id: g.id, why: describeTokenViolation(v) }] : [];
+    });
+    for (const id of [...marked, ...tokenBad.map((b) => b.id)]) delete targets[id];
+    const redo = groups.filter((g) => !(g.id in targets));
     if (redo.length === 0) return targets;
     const why = [
       missing.length > 0 ? `组 ${missing.join(',')} 没有译文` : '',
       marked.length > 0 ? `组 ${marked.join(',')} 的译文出现了原文没有的「\\」或「$」（数学符号被改写成了 LaTeX）` : '',
+      tokenBad.length > 0 ? `组 ${tokenBad.map((b) => b.id).join(',')} 的译文记号不对（${tokenBad.map((b) => `${b.id}: ${b.why}`).join('；')}）` : '',
     ].filter(Boolean).join('；');
     if (!repair || redo.length === groups.length) throw new GroupError(why);
     return { ...targets, ...await runTranslate(page, redo, docTitle, false) };
@@ -202,16 +209,17 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     if (o.isCancelled()) return;
 
     // 组 → 第二步的请求：只发可译的（code / formula / table / skip 不翻不盖，§4.3），id 按
-    // 阅读顺序 g1..gN，只活在这两次调用之间。source 用 joinSource 拼好——与边车里 buildBlocks
-    // 写的 source 同一条规则，模型这一步看到的就是最终会落盘的那个串。
-    const byId = new Map(lines.map((l) => [l.n, l.text]));
+    // 阅读顺序 g1..gN，只活在这两次调用之间。source 用 tokenize 拼好——与边车里 buildBlocks
+    // 写的 source / placeholders 出自同一个函数、同一批行（spec 2026-09-07 scripts §3.2）。
+    const byId = new Map(lines.map((l) => [l.n, l]));
+    const linesOf = (g: LayoutGroup) => g.lines.map((n) => byId.get(n)).filter((l): l is PageLine => !!l);
     const req: TranslateGroup[] = [];
     const slot = new Map<number, string>();            // layout 组下标 → g<n>
     layout.value.forEach((g, i) => {
       if (!isTranslatable(g.kind)) return;
       const id = `g${req.length + 1}`;
       slot.set(i, id);
-      req.push({ id, kind: g.kind, source: joinSource(g.lines.map((n) => byId.get(n) ?? '')) });
+      req.push({ id, kind: g.kind, source: tokenize(linesOf(g)).request });
     });
     let targets: Record<string, string> = {};
     // 整页一个可译组都没有（纯代码页、纯表格页）→ 第二步根本不发。
@@ -249,10 +257,12 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
       return repairGroupGeometry(await runLayout(head.page, head.lines), head.lines);
     });
     if (first.ok) {
-      const byId = new Map(head.lines.map((l) => [l.n, l.text]));
+      const byId = new Map(head.lines.map((l) => [l.n, l]));
       const titleGroup = first.value.find((g) => g.kind === 'title');
-      // 与 source 同一条规则（joinSource）：文题进的是第二步的提示词，跟落盘的 source 该是同一个串。
-      if (titleGroup) docTitle = joinSource(titleGroup.lines.map((n) => byId.get(n) ?? '')).trim() || undefined;
+      // 与 source 同一条规则（tokenize().source）：文题进的是第二步的提示词，跟落盘的 source 该是同一个串。
+      if (titleGroup) {
+        docTitle = tokenize(titleGroup.lines.map((n) => byId.get(n)).filter((l): l is PageLine => !!l)).source.trim() || undefined;
+      }
     }
     await runPage(head.page, head.lines, docTitle, first);
   }

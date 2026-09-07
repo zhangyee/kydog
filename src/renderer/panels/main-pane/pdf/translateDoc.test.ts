@@ -636,3 +636,85 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
     expect(doc!.source).toEqual({ sha256: 'ab', bytes: 1 });
   });
 });
+
+describe('脚标占位符（spec 2026-09-07 scripts §3.2 / §5.2）', () => {
+  // 一行 "node n" + 小字号、基线更低的 "i" → 行文本 "node ni"，scripts [{6,7,sub}]
+  const scriptPage = (extraLines = 0) => ({
+    getTextContent: async () => ({
+      items: [
+        { str: 'node n', transform: [10, 0, 0, 10, 72, 300], width: 30, height: 10, hasEOL: false },
+        { str: 'i', transform: [7, 0, 0, 7, 102, 298.5], width: 3, height: 7, hasEOL: true },
+        ...Array.from({ length: extraLines }, (_, k) => ({
+          str: `plain ${k + 1}`, transform: [10, 0, 0, 10, 72, 280 - k * 14], width: 40, height: 10, hasEOL: true,
+        })),
+      ],
+    }),
+    getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, 400 - y] }),
+  });
+
+  it('第二步收到记号化的 source；边车 source 是明文、placeholders 带 script、target 带记号', async () => {
+    const got: unknown[] = [];
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async () => scriptPage(),
+      layoutPage: async () => ({ text: '1 | text', truncated: false }),
+      translateGroups: async ({ groups }) => { got.push(groups); return { text: 'g1\n节点 n{v1}\n%%', truncated: false }; },
+    }));
+    expect(got).toEqual([[{ id: 'g1', kind: 'text', source: 'node n{v1}' }]]);
+    expect(doc!.blocks[0]).toMatchObject({
+      source: 'node ni', target: '节点 n{v1}',
+      placeholders: [{ id: 'v1', kind: 'formula', text: 'i', script: 'sub' }],
+    });
+  });
+
+  it('两组里只有一组丢记号 → 只把那一组再发一次并合并，页不判失败', async () => {
+    const calls: string[][] = [];
+    const translateGroups = vi.fn(async ({ groups }: { groups: { id: string }[] }) => {
+      calls.push(groups.map((g) => g.id));
+      return calls.length === 1
+        ? { text: 'g1\n节点 n\n%%\ng2\n平的 1\n%%', truncated: false }   // g1 丢了 {v1}
+        : { text: 'g1\n节点 n{v1}\n%%', truncated: false };
+    });
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async () => scriptPage(1),
+      layoutPage: async () => ({ text: '1 | text\n2 | text', truncated: false }),
+      translateGroups,
+    }));
+    expect(calls).toEqual([['g1', 'g2'], ['g1']]);
+    expect(doc!.failedPages).toBeUndefined();
+    expect(doc!.blocks.map((b) => b.target)).toEqual(['节点 n{v1}', '平的 1']);
+  });
+
+  it('违约的就是全部 → 整步重试；两次都丢 → 页失败，原因含「记号」与丢的 id', async () => {
+    const translateGroups = vi.fn(async () => ({ text: 'g1\n节点 n\n%%', truncated: false }));
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async () => scriptPage(),
+      layoutPage: async () => ({ text: '1 | text', truncated: false }),
+      translateGroups,
+    }));
+    expect(translateGroups).toHaveBeenCalledTimes(2);
+    expect(doc!.blocks).toEqual([]);
+    expect(doc!.failedPages).toEqual([1]);
+    expect(doc!.failureReasons!['1']).toMatch(/^翻译：组 g1 的译文记号不对（g1: 丢 v1）；重试：/);
+  });
+
+  it('译文多出原文没有的记号 → 同样违约重发', async () => {
+    const translateGroups = vi.fn(async () => ({ text: 'g1\n节点 n{v1} 与 m{v7}\n%%', truncated: false }));
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async () => scriptPage(),
+      layoutPage: async () => ({ text: '1 | text', truncated: false }),
+      translateGroups,
+    }));
+    expect(translateGroups).toHaveBeenCalledTimes(2);
+    expect(doc!.failureReasons!['1']).toMatch(/多出 v7/);
+  });
+
+  it('没有脚标的页：请求串、调用序列与今天相同', async () => {
+    const got: unknown[] = [];
+    await translateDoc(base({
+      numPages: 1, getPage: async (n) => fakePage(n, 2),
+      layoutPage: async () => ({ text: '1-2 | text', truncated: false }),
+      translateGroups: async ({ groups }) => { got.push(groups); return { text: 'g1\nA\n%%', truncated: false }; },
+    }));
+    expect(got).toEqual([[{ id: 'g1', kind: 'text', source: 'p1l1 p1l2' }]]);
+  });
+});
