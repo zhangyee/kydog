@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage } from './helpers';
+import { STICKY_THRESHOLD_PX } from '../src/renderer/panels/main-pane/useAutoScroll';
 
 test('29-auto-scroll: 贴底跟随 + free-read 保持 + 新 text block override 跳底', async () => {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
@@ -26,6 +27,13 @@ test('29-auto-scroll: 贴底跟随 + free-read 保持 + 新 text block override 
 
     // 程序滚到顶（模拟用户翻回去）。这会触发 onScroll → stickyRef = false
     await msgList.evaluate((el) => { el.scrollTop = 0; });
+    // 前置条件：滚到顶之后必须**真的离底足够远**，否则 isNearBottom 仍判贴底，"用户翻回去了"
+    // 这件事根本没发生，后面那条 scrollTop === 0 会以「内容压根没长到要滚」的方式空过。
+    // PHASE1 的行数就是为这条前置条件配的（原来只溢出 50 px < 64，CI 那种 1024×720 的窗口上
+    // 这条用例稳定红在下一行——红的原因不是 hook 坏了，是这一步没生效）。
+    const away = await msgList.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+    expect(away, `滚到顶之后要离底超过 STICKY_THRESHOLD_PX，否则这条用例测不到东西（本次 ${away}）`)
+      .toBeGreaterThan(STICKY_THRESHOLD_PX);
 
     // tool 阶段：ProcessGroup 在运行时自动展开（open = isRunning = true），
     // process-toggle 显示"处理中..."。等它出现说明 tool 正在跑。

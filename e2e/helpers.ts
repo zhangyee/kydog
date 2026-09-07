@@ -64,11 +64,34 @@ export async function launchKydog(opts: {
     // 换成确定的 no-preference，先于一切 parse，因此删掉了那行 emulateMedia。本地 OS
     // 本来就是 no-preference，行为不变；要测 reduce 行为的用例应自行
     // emulateMedia({ reducedMotion: 'reduce' }) 显式声明（对主 frame 仍然生效）。
-    args: ['.vite/build/main.js', '--force-prefers-no-reduced-motion', `--user-data-dir=${userDataDir}`],
+    // --force-device-scale-factor=1：把 canvas 的**器件像素**钉死，与上面那条同一类做法
+    // （在信号入口换源，而不是在下游补救）。开发机是 Retina（dpr 2），CI 的 macOS runner
+    // 是 dpr 1，同一份 PDF 在两边画进 canvas 的像素数差一倍——凡是逐像素采样的判据（降部
+    // 那条带、块内溢出）在开发机上采得到、在 CI 上就落进不足一个像素的亚像素里被抗锯齿抹平。
+    // 判据本身没问题，是量它的分辨率被环境偷偷改了。钉住之后两边量的是同一张位图。
+    args: [
+      '.vite/build/main.js',
+      '--force-prefers-no-reduced-motion',
+      '--force-device-scale-factor=1',
+      `--user-data-dir=${userDataDir}`,
+    ],
     env,
     timeout: 20_000,
   });
   const page = await app.firstWindow();
+  // 窗口尺寸也钉死，理由同 --force-device-scale-factor。
+  //
+  // 应用自己按 1280×800 建窗，但**这个尺寸不由应用说了算**：CI 的 macOS runner 屏幕只有
+  // 1024×768，系统会把窗口压到屏幕内。于是同一份代码在开发机上跑的是 1280 宽、CI 上是 1024
+  // 宽，PDF 对照的每一栏差着一百多像素，逐像素与逐几何的判据两边量的根本不是同一个东西
+  // （v0.3.0 的三轮 tag run：本机全绿、CI 上八条红，全部指向这一处）。
+  //
+  // 钉成 1024×720：宽度取 CI 那台的屏宽（再宽在 CI 上钉不住），高度留出菜单栏与窗口边框的
+  // 余量。两边从此量同一个版面。要测别的尺寸的用例自己 setBounds，不要改这里。
+  await app.evaluate(async ({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    if (w) w.setBounds({ x: 0, y: 0, width: 1024, height: 720 });
+  });
   // launchKydog 的返回契约：应用已启动完成并渲染出真实 UI（不是还停在 bootstrap 前的
   // "KYDOG" 占位闪屏）。没有这道锚，每条 spec 的首个断言都在用 5 秒的行为判据替启动方差
   // 买单——冷 runner 上首帧超 5s 就红（50/00/10/36/18 各中过一次，跨五轮 CI 与本地）。这里
