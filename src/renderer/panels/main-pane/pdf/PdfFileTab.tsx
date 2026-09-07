@@ -1496,8 +1496,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
           >
             {renderLayers('right')}
           </div>
-          <OverlayScrollbar targetRef={rightRef} axis="y" testId="pdf-thumb-y-right" />
-          <OverlayScrollbar targetRef={rightRef} axis="x" testId="pdf-thumb-x-right" />
+          {/* 右栏不画拇指：两栏同步滚动，左栏那条正好落在两栏之间，右栏再来一条只是重复
+              （Yee 2026-09-07 手测）。原生滚动条仍由 ky-scroll-overlay 藏掉，槽不占位。 */}
           {/* 进度浮层就在右栏矩形里居中（右栏此刻整片空白），工具栏 zIndex 5 仍压在它上面照常可用。 */}
           {job && <TranslationProgress job={job} onCancel={cancelTranslation} />}
         </div>
