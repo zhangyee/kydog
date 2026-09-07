@@ -1,6 +1,6 @@
 ---
 name: fastpaper
-description: Use when the user asks to find academic papers or patents, survey a literature, look up a paper by DOI, arXiv id, PMID or PMC id, trace who cites what, get a paper's PDF, fetch its original figure files, or read one. Covers 18 sources — arXiv, PubMed, PMC, Europe PMC, bioRxiv, medRxiv, Semantic Scholar, OpenAlex, Crossref, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, Google Scholar, Baidu Xueshu.
+description: Use when the user asks to find academic papers or patents, survey a literature, look up a paper by DOI, arXiv id, PMID or PMC id, trace who cites what, get a paper's PDF, fetch its original figure files, or read one. Covers 23 sources — arXiv, PubMed, PMC, Europe PMC, bioRxiv, medRxiv, OSF Preprints, Semantic Scholar, OpenAlex, Crossref, DataCite, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, INSPIRE-HEP, zbMATH Open, ERIC, OSTI.GOV, NASA NTRS.
 ---
 
 # fastpaper
@@ -121,15 +121,15 @@ run these commands with `2>/dev/null`, or an exit code is all you get back:
 
 | Flag | Meaning |
 |---|---|
-| `-n <N>` | max results (per-source caps differ; zenodo is 25, xueshu ~10) |
+| `-n <N>` | max results (per-source caps differ; zenodo is 25) |
 | `--offset <N>` | skip N; several sources require a multiple of `-n` |
 | `--sort relevance\|date` + `--order asc\|desc` | ordering — not every source accepts `--sort`; those that do not raise an explicit error |
-| `--sort citations` | **only `europepmc`, `semantic`, `crossref`, `openalex`, `openaire` have citation counts to order by** — that is the complete list; every other source either raises an explicit error (`arxiv`, `pubmed`, `pmc`, `zenodo`, `hal`) or does not accept `--sort` at all. When unsure run `fastpaper sources --capabilities`, whose Notes section spells it out source by source |
+| `--sort citations` | **only `europepmc`, `semantic`, `crossref`, `openalex`, `openaire`, `inspire` have citation counts to sort on**, and that is the whole list; the rest either raise an explicit error (`arxiv`, `pubmed`, `pmc`, `zenodo`, `hal`, `osf`, `osti`) or do not take `--sort` at all. When in doubt run `fastpaper sources --capabilities`, whose Notes spell it out per source |
 | `--year <YYYY>` · `--after <YYYY-MM-DD>` · `--before <YYYY-MM-DD>` | dates |
-| `--author "<name>"` | author — *not* on `semantic`, `dblp`, `scholar`, `xueshu`, `biorxiv`, `medrxiv`; put the name in the query there |
+| `--author "<name>"` | author — *not* on `semantic`, `dblp`, `biorxiv`, `medrxiv`, `osf`, `eric`, `osti`, `ntrs`, `datacite`; put the name in the query there |
 | `--field <code>` | subject/category — takes a *source-specific code*, see below |
 | `--open-access` | OA only |
-| `--patents` | **patents only** (europepmc, xueshu) |
+| `--patents` | **patents only** (europepmc) |
 | `-o <file>` | write to a file instead of stdout |
 
 **Env vars.** `UNPAYWALL_EMAIL` is required by unpaywall. `SEMANTIC_SCHOLAR_API_KEY`
@@ -150,9 +150,6 @@ fastpaper search europepmc 'CRISPR AND CITED:[500 TO *]' --sort citations -n 20 
 
 # patents only
 fastpaper search europepmc "gene editing" --patents -n 10 --format json
-
-# Chinese literature — xueshu reads one page, so ~10 is its ceiling
-fastpaper search xueshu "深度学习 医学影像" -n 8 --format json
 
 # one paper: metadata, an OA link, the file, the text
 fastpaper get 10.1038/nature12373 --format json
@@ -179,16 +176,22 @@ only option.
 |---|---|---|
 | CS · AI · ML | `arxiv` (`cs.*`), `dblp` | `semantic` (best CS coverage of the three, with citations), `openalex` |
 | Math · physics · stats · quant bio/fin/econ | `arxiv` (`math.*` `physics.*` `stat.*` `q-bio.*` `q-fin.*` `econ.*` `eess.*`) | `openalex` `core` `hal` |
+| Mathematics (published record) | `zbmath` (MSC classes + reviews, 1868 onwards) | `crossref` `openalex` |
+| High-energy physics | `inspire` (surest citation counts; `--sort citations` works) | `arxiv` `openalex` |
 | Biomedicine · clinical | `pubmed` `pmc` `europepmc` `biorxiv` `medrxiv` | `semantic` `openalex` |
 | Chemistry · materials · engineering | — | `openalex` `semantic` `crossref` `core` |
 | Earth · environment · agriculture | `europepmc 'SRC:AGR'` (Agricola) | `openalex` `core` `doaj` |
 | Humanities · social science | — | `openalex` `core` `doaj` `hal` (strong on French/European work) |
-| Chinese literature | `xueshu` | `europepmc 'SRC:CBA'` (Chinese biomedical abstracts) |
-| Patents | `europepmc --patents`, `xueshu --patents` | — |
+| Psychology · sociology · education · law (preprints) | `osf --field psyarxiv` (or `socarxiv` / `edarxiv` / `lawarxiv`) | `openalex` `core` |
+| Education research | `eric` | `openalex` `core` `doaj` |
+| Technical reports · grey literature | `osti` (US DOE), `ntrs` (NASA aerospace) | `core` |
+| Datasets · software · theses | `datacite` `zenodo` | `openaire` |
+| Chinese literature | — | `europepmc 'SRC:CBA'` (Chinese biomedical only) |
+| Patents | `europepmc --patents` | — |
 
 `PDF` = `fastpaper download` works against this source. A `—` does not mean no
-full text is reachable: `scholar`, `openalex`, `doaj` and `xueshu` all return a
-`pdf_url` on some hits that you can fetch yourself. It means the CLI will not
+full text is reachable: `openalex` and `doaj` return a `pdf_url` on some hits
+that you can fetch yourself. It means the CLI will not
 fetch it for you.
 
 `Cites` = does `citations` come back populated. `✓` nearly every hit · `~` only
@@ -232,17 +235,22 @@ Report the URL to the user instead; exit is `1`, not `4`.
 | `openaire` | — | — | ✓ | **cross-discipline** EU open science graph | `download` does not work here, but a `pdf_url` comes back on the minority of hits where a publisher file link is on record — most of its links are DOI resolvers and are not offered as PDFs. `get` wants an OpenAIRE id, not a DOI |
 | `doaj` | — | — | — | **cross-discipline** peer-reviewed OA journals — complete metadata, with a journal name and abstract on nearly every hit | **its `pdf_url` is a landing page, not a file** — fetching one returns HTML. Year granularity only, no sorting |
 | `hal` | ✓ | — | — | **cross-discipline** French national archive, with an abstract on nearly every hit and full text on most | `--field` takes a domain code: `math` `phys` `chim` `sdv` `shs` `spi` `info` `sde`. No journal name, and some records are metadata-only — filter on `pdf_url` before downloading |
+| `osf` | ✓ | — | — | **social science, psychology, education and law preprints** — one API over ~32 communities (PsyArXiv, SocArXiv, EdArXiv, EcoEvoRxiv, engrXiv, MetaArXiv, Thesis Commons…), disciplines nothing else here reaches | **searches titles only**; the API has no full-text search (`filter[q]` returns 400). Every hit carries a DOI and a downloadable PDF. `--field` takes a provider id; `--offset` must be a multiple of `-n`. **The API itself is slow — 12–16s for one search** in testing; it is not hung |
+| `inspire` | — | — | ✓ | **high-energy physics** — the surest citation counts here, and `--sort citations` really works | overlaps arXiv almost entirely; the value is citations and author disambiguation. `pdf_url` points at arXiv, where the file is, so `download` is off — fetch it by arXiv id |
+| `zbmath` | — | — | — | **published mathematics** — 1868 onwards with MSC classes and reviews; arXiv has only preprints, so this complements it | **no abstracts** (it publishes reviews, not author abstracts), no full text, no citation counts. `--author` uses an `au:` prefix; `--offset` must be a multiple of `-n` |
+| `eric` | ~ | ~ | — | **education research** — the US Department of Education index; this discipline is otherwise a blank here | only the ERIC-hosted subset (`e_fulltextauth=1`) has a `pdf_url` and `open_access`; both are null on the rest. **Never carries a DOI.** `--offset` is a true record offset |
+| `osti` | ~ | ~ | — | **US Department of Energy technical reports** — grey literature nothing else here covers | `open_access` follows whether the record has a fulltext link. Date filters are converted to `MM/DD/YYYY` internally. `--offset` must be a multiple of `-n` |
+| `ntrs` | ~ | ~ | — | **NASA aerospace reports** | the API **ignores every page-size parameter and always returns 10 per page**, so a larger `-n` costs one request per 10. **Never carries a DOI** (report numbers are not DOIs). `--offset` is a true record offset |
+| `datacite` | — | — | — | **the DOI registry for datasets, software and theses** — the half crossref does not cover, including many university theses and repository deposits | registry metadata only: no full text, no access status. `--year` rides in the query because its own `publication-year` parameter **is silently ignored**. `--offset` must be a multiple of `-n` |
 | `zenodo` | ✓ | — | — | **cross-discipline** CERN general-purpose repository — papers, datasets and software, with a DOI on nearly every hit | `-n` capped at 25. No journal name, and some records are metadata-only |
 | `unpaywall` | — | — | — | **DOI → a downloadable URL.** No search, no discipline — a resolver | needs `UNPAYWALL_EMAIL`; one DOI per call, and the URL must be fetched separately |
-| `scholar` | — | — | — | broadest reach of anything here — it surfaces work the indexed sources miss, and a PDF link when nothing else has one | HTML scraping, captcha-prone; `doi` is always `null`, and only some hits carry a `pdf_url`. `[CITATION]` stubs have no link at all and are dropped |
-| `xueshu` | — | — | 0 | **Chinese literature** — journals, master's/PhD theses, conference papers, patents, standards; 700M+ records over 500+ subjects. Indexes English work too, but other sources serve that better | unofficial endpoint with bot detection; search only, no `get`. **One request per search, first page only** — the page holds 10 records, so `-n` above ~10 silently returns fewer, and `--offset` past that page returns nothing. `pdf_url` is rare and `doi` present on about half, though validated, so a patent number or bare URL never masquerades as one |
 
-**Two fields that lie.** `core` and `xueshu` return `citations` but leave it 0 on
-most records. Neither source accepts `--sort` in the first place (both raise an
+**One field that lies.** `core` returns `citations` but leaves it 0 on most
+records. The source does not accept `--sort` in the first place (it raises an
 explicit error), so what this catches is **ranking the returned JSON yourself**:
-it looks sorted while silently burying the well-cited papers.
-And `arxiv` carries a DOI on only about half its records, so
-a DOI is not a stable key across sources.
+it looks sorted while silently burying the well-cited papers. And `arxiv`
+carries a DOI on only about half its records, so a DOI is not a stable key
+across sources.
 
 ### Content types worth routing on
 
@@ -250,17 +258,15 @@ Most content-type distinctions are not actionable. These are:
 
 | Need | How |
 |---|---|
-| **Patents only** | `--patents` on `europepmc` or `xueshu` |
-| **Chinese literature** | `xueshu`; Chinese biomedical also `europepmc 'SRC:CBA'` |
+| **Patents only** | `--patents` on `europepmc` |
+| **Chinese literature** | no general Chinese source in the CLI; Chinese biomedical via `europepmc 'SRC:CBA'` |
 | **Preprints** | `arxiv`, `biorxiv`, `medrxiv`, or `europepmc 'SRC:PPR'` |
 | **Clinical guidelines** | `europepmc 'SRC:CTX'` (NICE) |
 
 `--patents` means patents only: with the flag you get patents, without it none,
-never a mix. `europepmc` narrows natively; `xueshu` partitions its single page
-locally, so either mode returns only that page's share and comes back short of
-`-n` more often than the ~10 ceiling alone would explain. No other source takes
-the flag — Google Scholar's own switch can only *widen* results to mix patents in,
-never narrow to them, so the CLI leaves it off.
+never a mix. `europepmc` narrows natively and is the only source that takes the
+flag — the rest either carry no patents at all, or their own switch can only
+*widen* results to mix patents in, never narrow to them, so the CLI leaves it off.
 
 ## Query syntax differs per source
 
@@ -281,7 +287,7 @@ your query through verbatim**, so their own field syntax works:
 - `europepmc`: `CITED:[N TO *]` · `AUTH:` · `PUB_YEAR:` · `OPEN_ACCESS:y` · `HAS_FT:y` · `LANG:` · `KW:` · `SRC:` subsets (`PPR` preprints, `CTX` NICE guidelines, `AGR` Agricola, `CBA` Chinese Biological Abstracts, `MED`, `PMC`)
 - `doaj`: Lucene on `bibjson.*` · `zenodo`: Elasticsearch · `hal`: Solr · `dblp`: `year:` `author:` `venue:`
 
-**`crossref`, `openalex`, `semantic`, `scholar`, `xueshu` are free-text only** —
+**`crossref`, `openalex`, `semantic` are free-text only** —
 relevance matching, no field syntax. Filter them with the CLI flags.
 
 ## Rate limits
@@ -291,10 +297,9 @@ fails or is throttled takes down only itself.
 
 | Tier | Sources | Limit |
 |---|---|---|
-| **A — generous** | `arxiv` `europepmc` `crossref` `openalex` `dblp` `doaj` `zenodo` `hal` `openaire` | no auth needed; arXiv asks for ~3s between requests |
-| **A with a key** | `semantic` (`SEMANTIC_SCHOLAR_API_KEY`: 1 req/s → 100), `core` (`CORE_API_KEY`) | without a key both belong in tier C — anonymous `semantic` has been observed failing outright with "rate limited after 5 retries" |
+| **A — generous** | `arxiv` `europepmc` `crossref` `openalex` `dblp` `doaj` `zenodo` `hal` `openaire` `osf` `inspire` `zbmath` `eric` `osti` `ntrs` `datacite` | no auth needed; arXiv asks for ~3s between requests |
+| **A with a key** | `semantic` (`SEMANTIC_SCHOLAR_API_KEY`: 1 req/s → 100), `core` (`CORE_API_KEY`) | without a key both have to be treated as serial-only — anonymous `semantic` has been observed failing outright with "rate limited after 5 retries" |
 | **B — shared budget** | `pubmed` + `pmc` | one NCBI E-utilities budget between them: 3 req/s, 10 with `NCBI_API_KEY` |
-| **C — serial only** | `xueshu` `scholar` | bot detection and captchas; they tolerate only low-frequency serial use |
 
 ## What this tool cannot do
 
@@ -302,6 +307,6 @@ fails or is throttled takes down only itself.
 2. **Citation edges come only from `semantic` and `openalex`**, via `cite`.
    Anything else you assemble (shared authors, venue, concepts) is a proxy — say
    so when you report it.
-3. **It cannot fetch an arbitrary URL.** A `pdf_url` from `unpaywall`,
-   `openalex`, `scholar` or `xueshu` has to be downloaded with something else.
+3. **It cannot fetch an arbitrary URL.** A `pdf_url` from `unpaywall` or
+   `openalex` has to be downloaded with something else.
 4. **Missing fields mean unknown**, not zero and not absent.
