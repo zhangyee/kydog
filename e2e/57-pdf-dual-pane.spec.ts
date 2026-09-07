@@ -8,7 +8,7 @@ import { ZOOM_SENSITIVITY } from '../src/renderer/panels/main-pane/pdf/zoomSensi
 // splitPane.ts 整个文件都是纯算（两个常量 + 三个纯函数，无 import），所以连函数一起拿过来用：
 // 拖分隔线那条用例要断的是「DOM 与这两个纯函数逐像素一致」，照抄一份公式到测试里等于把被测的
 // 算法抄了两遍，抄错了两边一起错。
-import { clampSplit, DIVIDER_PX, paneWidths } from '../src/renderer/panels/main-pane/pdf/splitPane';
+import { clampSplit, DIVIDER_PX, MIN_PANE_PX, paneWidths } from '../src/renderer/panels/main-pane/pdf/splitPane';
 // contrast() 是纯函数（luminance 算术，见文件内注释），不依赖 DOM——同 ZOOM_SENSITIVITY /
 // splitPane 一样可以直接从组件目录 import 到 Node 端的 e2e 文件，不会拖入 react-pdf /
 // pdf.js worker 的副作用
@@ -311,6 +311,12 @@ async function setTheme(page: Page, name: 'vellum' | 'midnight') {
   await page.getByTestId('user-menu-trigger').click();
   await page.getByTestId(`theme-${name}`).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', name);
+  // 选主题**不关菜单**是刻意的产品行为（可以连着换几个看），所以这里必须自己关掉再返回：
+  // 菜单是覆盖在侧边栏上的浮层，不关的话下一步 openPdf 点「测试 Thread」会被它拦截
+  // （CI darwin-arm64 实测：locator.click 等 30s 超时，拦截者是菜单里的「登录订阅或填入
+  // API Key」那一行）。本机只是碰巧关得快，不是不会发生。
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('user-menu')).toHaveCount(0);
 }
 
 function parseRgb(css: string): RGB {
@@ -573,7 +579,11 @@ test('57-pdf-dual-pane: 字号测量必须等字体真的到位——先量后�
     // LONG_ZH 足够长（binary search 门槛之上，见常量定义处的推算），真测过一次之后 fit 必然 ≠ 1，
     // 字号必然偏离这个值——用"偏离朴素值"当作"已经测过"的判据。
     const NAIVE = '11px';
-    const block1 = page.locator(`${paneSel} [data-translation-block="b1-text"]`);
+    // 必须限到 stable 层：进对照会触发一次 fit-width 缩放，缩放期间 stable 与 incoming
+    // 两层同时挂在 DOM 里（见 PdfFileTab 的 renderLayers），两层各渲染一份同页的译文块，
+    // 不限层就是 strict mode 命中两个元素（CI darwin-arm64 / windows 实测）。本机只是顶替
+    // 得快，查询时 incoming 已经走了。
+    const block1 = page.locator(`${rightRowSel(paneSel, 1)} [data-translation-block="b1-text"]`);
     await expect(block1).toBeVisible();
 
     // 延迟窗口内：字体"到位"这件事被我们钉死晚了 DELAY_MS 才会发生。按 spec 先 await 再量的
@@ -928,7 +938,9 @@ test('57-pdf-dual-pane: 含 inline-code 的块，量的和画的是同一套排�
     const pane = await openPdf(page, pdfPath);
     await enterDual(page, pane);
 
-    const block = page.locator(`${paneSel} [data-translation-block="m1"]`);
+    // 同 551：限到 stable 层。缩放双缓冲期间两层各渲染一份同页的块，不限层这条 toHaveCount(1)
+    // 会红在 2 上，而红的原因跟这条用例要验的排版一致性毫无关系。
+    const block = page.locator(`${rightRowSel(paneSel, 1)} [data-translation-block="m1"]`);
     await expect(block).toHaveCount(1);
     // 等测量真的落地：把 computed 字号除掉 rasterScale（= 块的 CSS 宽 / bbox 宽）还原成
     // 「未缩放的 px」，它小于 11（= b.fontSize × SIZE_MUL('text')）才说明 fit 已经收下来了。
@@ -949,7 +961,13 @@ test('57-pdf-dual-pane: 含 inline-code 的块，量的和画的是同一套排�
       chars: (el.textContent ?? '').length, fontSize: getComputedStyle(el).fontSize,
     }));
     expect(box.chars, '块里得真有那段代码文本').toBeGreaterThan(600);
-    expect(box.clientH, '块高应当是 bbox 高（120pt × rasterScale）那个量级').toBeGreaterThan(50);
+    // 块高按 fixture 自己的宽高比推，不写死像素：clientW / MONO_BLOCK.w 就是这一格的
+    // rasterScale，块高该是 MONO_BLOCK.h 乘同一个数。写死 50 是拿本机窗口的 rasterScale
+    // 当常量——CI darwin-arm64 的主面板窄，rasterScale 更小，量到 49 就红了（那不是缺陷，
+    // 是窗口窄）。留一成余量给 blockFrame 的行距增减与像素取整。
+    const expectH = box.clientW * (MONO_BLOCK.h / MONO_BLOCK.w);
+    expect(box.clientH, `块高应当是 bbox 高按同一 rasterScale 缩下来那个量级 ${JSON.stringify({ box, expectH })}`)
+      .toBeGreaterThan(expectH * 0.9);
     // 唯一的判据：画出来的内容装得进块里。测量用 serif、渲染用 mono 时这里会明显超出。
     expect(box.scrollH, `含 inline-code 的块不该溢出：测量与渲染必须用同一套排版 ${JSON.stringify(box)}`)
       .toBeLessThanOrEqual(box.clientH + 1);
@@ -1539,27 +1557,38 @@ test('57-pdf-dual-pane: 拖分隔线改两栏宽度，拖到最右右栏也不�
     ).toBeGreaterThan(l0 + 5);
     const base = (await paneBoxWidths(page, paneSel))!;
 
-    // 再往右 150：左栏宽 +150、右栏宽 −150（两栏加分隔线恒等于 wrapper，见 paneWidths）。
-    await page.mouse.move(c.x + 160, c.y, { steps: 6 });
+    // 再往右挪一段：左栏宽 +DX、右栏宽 −DX（两栏加分隔线恒等于 wrapper，见 paneWidths）。
+    // DX 从**当前窗口实际的可用余量**算，不写死：clampSplit 的上限是 usable − MIN_PANE_PX，
+    // 写死 150 的话，主面板窄到左栏离上限不足 150 时这一段会被 clamp 掉——量到的位移就不是
+    // 150，而这条用例断的恰恰是「位移等量」。CI darwin-arm64 的主面板只有 474 px 宽，左栏
+    // 上限 348，从 248 出发只挪得动 100，于是红在 348 上（本机窗口宽，从来撞不到）。
+    // 取余量的一半：既保证落点离上限还有距离（这一段不会被 clamp），又保证 DX 本身够大。
+    const usable = base.wrapWidth - DIVIDER_PX;
+    const DX = Math.min(150, Math.floor((usable - MIN_PANE_PX - base.left) / 2));
+    expect(DX, `主面板窄到没有可用的拖动余量，这条用例失去意义 ${JSON.stringify(base)}`)
+      .toBeGreaterThan(20);
+    await page.mouse.move(c.x + 10 + DX, c.y, { steps: 6 });
     await page.mouse.up();
     await expect.poll(
       async () => (await paneBoxWidths(page, paneSel))?.left ?? 0,
       { timeout: 5000, message: '等第二次拖动落地' },
-    ).toBeGreaterThan(base.left + 100);
+    ).toBeGreaterThan(base.left + DX - 2);
     const moved = (await paneBoxWidths(page, paneSel))!;
     // ±2 px 是断言容差（设备像素网格 / LayoutUnit 取整），不是判据：位移本身由 clampSplit
     // 逐像素定义，实现算错的话差的是整栏的量级。
-    expect(moved.left - base.left, `左栏应当加宽 150 ${JSON.stringify({ base, moved })}`)
-      .toBeGreaterThan(148);
-    expect(moved.left - base.left).toBeLessThan(152);
-    expect(base.right - moved.right, `右栏应当同量变窄 ${JSON.stringify({ base, moved })}`)
-      .toBeGreaterThan(148);
-    expect(base.right - moved.right).toBeLessThan(152);
+    expect(moved.left - base.left, `左栏应当加宽 ${DX} ${JSON.stringify({ base, moved, DX })}`)
+      .toBeGreaterThan(DX - 2);
+    expect(moved.left - base.left).toBeLessThan(DX + 2);
+    expect(base.right - moved.right, `右栏应当同量变窄 ${JSON.stringify({ base, moved, DX })}`)
+      .toBeGreaterThan(DX - 2);
+    expect(base.right - moved.right).toBeLessThan(DX + 2);
 
     // 再一路拖到 wrapper 最右边：clampSplit 的上限（usable − MIN_PANE_PX）该把右栏钉在最小宽上。
     // 分隔线已经被上一次拖动挪走了，位置必须重新量——按老坐标按下去按的是左栏，什么都不会发生。
     const c2 = await dividerCenter(pane);
-    expect(c2.x, '分隔线应当跟着上一次拖动往右挪了').toBeGreaterThan(c.x + 100);
+    // 位移量跟着上面那个 DX 走，不写死：窄窗口下 DX 会小于 150，写死 100 会红在「分隔线没挪够」
+    // 上，而它其实挪的正是 clampSplit 允许的那一段（1024 px 窗口实测 DX≈54，分隔线挪了 64）。
+    expect(c2.x, `分隔线应当跟着上一次拖动往右挪了 DX=${DX}`).toBeGreaterThan(c.x + DX - 2);
     const hugeX = base.wrapRight + 400;
     await page.mouse.move(c2.x, c2.y);
     await page.mouse.down();

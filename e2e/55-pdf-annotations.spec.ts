@@ -105,6 +105,10 @@ test('55-pdf-annotations: 文字注落盘，关 tab 重开与重启后还原', a
     // 插入时只聚焦、不进选中态：改样式浮条要等第二次点它才出现（用户反馈 5）
     await expect(pane.getByTestId('pdf-selection-bar')).toHaveCount(0);
     await page.keyboard.type('复核数据来源');
+    // 先确认这几个字真的进了输入框，再按 Escape 提交：Escape 提交的是**此刻**输入框里的值，
+    // 打字与提交之间抢跑的话提交的就是空串（CI darwin-arm64 实测：边车里 text 落成 ""，
+    // 而 annotations.length 照样是 1，所以只 poll 条数发现不了）。
+    await expect(input).toHaveValue('复核数据来源');
     await page.keyboard.press('Escape');
     await expect.poll(async () => (await readSidecar(kydogHome))?.annotations.length ?? 0).toBe(1);
     const n = (await readSidecar(kydogHome))!.annotations[0] as { type: string; text: string; page: number };

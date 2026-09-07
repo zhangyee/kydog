@@ -41,6 +41,8 @@ import type { TranslatedDoc } from '../src/shared/zhSidecar';
  */
 
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
+// 页回收那条用例专用：16 页，见 seedManyPages。
+const RECYCLE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-16.json');
 // 页 2 的版面合法（`1 | text`），坏的是第二步：两条翻译响应都不是 id 头，parseTranslations
 // 两次都抛 GroupError（runPage 重试一次），页号 2 被记进 failedPages，其余三页正常成功——
 // 用来验证「1 页失败」这个信号真的落进了边车、并且活得够久。
@@ -71,6 +73,8 @@ const PAGE_H = 842;
 // 4 页：fixture 逐页给响应，页数只要够「多页并发」这条路径成立即可。作业停在哪儿由下面的闸门
 // 决定，不由页数多少决定——所以这里没有必要堆页数去换时间窗口。
 const PAGES = 4;
+// 页回收那条用例的页数：见 seedManyPages 的注释。
+const RECYCLE_PAGES = 16;
 
 const PLAIN_REL = 'plain.pdf';          // 无边车 → 翻译键的动作是「跑流水线」
 const READY_REL = 'ok.pdf';             // 有可用译文 → 先进对照，再重新翻译
@@ -94,6 +98,22 @@ async function seedPlain(home: string) {
   await fs.mkdir(projectPath, { recursive: true });
   await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(PAGES, PAGE_W, PAGE_H));
   // 不写 .plain.pdf.zh.json —— pdf.translation.load 对 ENOENT 返回 { doc: null }，即 `none` 态
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
+/**
+ * 页回收那条用例专用：页数多到**任何窗口都装不下**。
+ *
+ * PAGES(4) 不够：对照的 fit-width 是对着较窄那一栏算的，主面板越窄页面画得越小、一屏里挂得
+ * 下的页越多。CI darwin-arm64 的主面板只有 474 px 宽，4 页全在渲染窗口里，一页都不该回收，
+ * 于是「回收数 > 0」红了——那不是不变量 #8 坏了，是 fixture 在那个窗口下失去了区分力
+ * （用例原本的注释已经预告了这一天）。16 页留出足够的余量，同时保住上界那条断言的意义。
+ */
+async function seedManyPages(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(RECYCLE_PAGES, PAGE_W, PAGE_H));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -1110,7 +1130,7 @@ test('59-pdf-translate: 抽取完的页若不在渲染窗口内，当场还给 p
   //
   // 探针 __kydogTranslateCleanedPages 只数**这条路上真的调了 cleanup() 的页**（取
   // lifecycle.cleanedCount() 的差值），所以进对照本身引发的 sweep 清理不会混进来。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
+  const launched = await launchKydog({ seed: seedManyPages, translateFixture: RECYCLE_FIXTURE });
   try {
     const { page, kydogHome } = launched;
     const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
@@ -1118,15 +1138,15 @@ test('59-pdf-translate: 抽取完的页若不在渲染窗口内，当场还给 p
     await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
 
     await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 30000 });
 
     const cleaned = await page.evaluate(() =>
       (window as unknown as { __kydogTranslateCleanedPages?: number }).__kydogTranslateCleanedPages ?? 0);
-    // 上界：窗口里至少挂着当前这一页，所以不可能 PAGES 页全清掉。这条同时是「fixture 还有
-    // 区分力」的守卫——真到了窗口装得下全部 PAGES 页的那天，下面那条 > 0 会红，而不是悄悄
-    // 变成一条永远成立的断言。
+    // 上界：窗口里至少挂着当前这一页，所以不可能 RECYCLE_PAGES 页全清掉。这条同时是「fixture
+    // 还有区分力」的守卫——真到了窗口装得下全部页的那天，下面那条 > 0 会红，而不是悄悄变成
+    // 一条永远成立的断言。
     expect(cleaned, `窗口外的页应当被还回去（本次 ${cleaned} 页）`).toBeGreaterThan(0);
-    expect(cleaned, '窗口里那几页不该被清').toBeLessThan(PAGES);
+    expect(cleaned, '窗口里那几页不该被清').toBeLessThan(RECYCLE_PAGES);
   } finally {
     await teardown(launched);
   }
