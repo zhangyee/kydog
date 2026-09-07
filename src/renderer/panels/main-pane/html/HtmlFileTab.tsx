@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { buildHostThemeCss, dirnameOf, injectHostTheme, inlineLocalImages, readHostVar } from './reportTheme';
 
@@ -64,15 +64,35 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
     setSrcDoc(injectHostTheme(inlinedHtml, buildHostThemeCss(readHostVar), theme));
   }, [inlinedHtml, theme, readingFontSize]);
 
-  // 打开报告后不必先点一下页面，方向键就能翻节：主动把焦点交给 iframe 元素。
+  // 打开报告后不必先点一下页面，方向键就能翻节：主动把焦点交给 iframe。
+  //
+  // **两步都要做。** `el.focus()` 只把**宿主文档**的 activeElement 指到 iframe 元素上；报告
+  // 里的 keydown 监听挂在 iframe 自己的 document 上，要收到键，还得让 iframe 内部那个 window
+  // 拿到焦点，也就是 `contentWindow.focus()`。以前只有第一步，于是「打开报告直接按方向键」
+  // 在成品里根本不成立——必须先点一下页面（Yee 2026-09-07 手测确认）。
+  // sandbox 没给 allow-same-origin，iframe 是 opaque origin；但 `focus()` 是跨源也允许调的
+  // 那几个方法之一（同 blur / close / postMessage），所以这一步不需要放宽 sandbox。
+  //
+  // 这个 bug 以前被测试盖住了：46 那条用例在开发模式下跑，分离的 DevTools 窗口会让主窗口
+  // blur 一次，Playwright 随后那次 CDP 按键把焦点重新走了一遍链路、顺带补上了第二步，于是
+  // 用例一直是绿的。7a7ad9d 在 e2e 下关掉 DevTools 之后它才露出来（三平台 CI 同时红）。
+  //
   // 依赖里必须有 isActive：tab 是保持挂载、用 display 切换可见的（MainPane.tsx），
   // 只依赖 srcDoc 的话，切走再切回来 srcDoc 没变，effect 不重跑，而焦点在
   // display:none 期间已经丢了 —— 那时候方向键就退化回「要先点一下」。
-  // e2e/46-html-tab.spec.ts「方向键在节间跳转（切走再切回）」守着这条链。
+  // onLoad 那一路是给「srcDoc 刚设上、文档还没解析完」兜底：effect 跑在 React commit 之后、
+  // iframe 文档就绪之前，那一刻聚焦的是还没被 srcDoc 顶替掉的初始文档。
+  // e2e/46-html-tab.spec.ts 的「方向键在节间跳转」与「（切走再切回）」两条守着这条链。
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const focusFrame = useCallback(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    el.focus();
+    el.contentWindow?.focus();
+  }, []);
   useEffect(() => {
-    if (isActive && srcDoc !== null) frameRef.current?.focus();
-  }, [srcDoc, isActive]);
+    if (isActive && srcDoc !== null) focusFrame();
+  }, [srcDoc, isActive, focusFrame]);
 
   if (tab.status === 'error') {
     return (
@@ -91,6 +111,7 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
   return (
     <iframe
       ref={frameRef}
+      onLoad={() => { if (isActive) focusFrame(); }}
       data-testid={`html-frame-${tab.id}`}
       title={tab.title}
       srcDoc={srcDoc}
