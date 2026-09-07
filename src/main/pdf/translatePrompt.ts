@@ -72,7 +72,12 @@ Group the lines into logical blocks and classify each block. Do NOT translate an
    running head is the short line at the very top of every page, usually the
    paper title or the venue: it is skip. Author names, affiliations and e-mail
    addresses on the title page are skip too: they are not prose, and their
-   column layout cannot be reproduced. Never put lines from two different
+   column layout cannot be reproduced. Text that sits inside a figure — the
+   labels of a flowchart or chart, a boxed case study or worked example, a
+   screenshot — is figure content, not prose: group it as figure even when
+   it contains full sentences. The caption line starting with "Figure N" or
+   "Fig. N" is caption; what the figure's frame or region encloses next to
+   it is figure. Never put lines from two different
    columns in one group.
 4. kind is one of:
    text     body paragraph
@@ -81,6 +86,7 @@ Group the lines into logical blocks and classify each block. Do NOT translate an
    formula  displayed formula
    table    table body or cells
    code     source code, prompt template, JSON, command line, or any boxed / monospace listing
+   figure   text that belongs to a figure: flowchart / axis / legend labels, a case-study box, a screenshot
    skip     running head, page number, footer, reference list entry, and the
             author names / affiliations / e-mail lines on the title page
 ${contextOf(o.docTitle)}

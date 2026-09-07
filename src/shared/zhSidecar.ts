@@ -8,7 +8,7 @@ export type Term = { source: string; target: string };
  * 列出来的取值串都从它现推，harness 模板 AGENTS.md 里给 agent 的那份契约由 templates.test.ts
  * 钉住（模板是 agent 写边车时唯一读得到的说明，没有测试就会静默过期）。
  */
-export const BLOCK_KINDS = ['text', 'title', 'caption', 'formula', 'table', 'code', 'skip'] as const;
+export const BLOCK_KINDS = ['text', 'title', 'caption', 'formula', 'table', 'code', 'figure', 'skip'] as const;
 export const PLACEHOLDER_KINDS = ['formula', 'citation', 'inline-code'] as const;
 
 export type BlockKind = (typeof BLOCK_KINDS)[number];

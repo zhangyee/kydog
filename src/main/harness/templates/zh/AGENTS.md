@@ -55,7 +55,7 @@ width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF
 不会在这块矩形里盖掉原文。`source.sha256` 是源 PDF 的 SHA-256：不写，用户会看到
 「无法确认版本」的提示；写错，会直接禁用对照。
 
-`kind` 只认这七个值，别自创（写了别的，**整份文件**会被判为格式错，用户看到「译文文件
+`kind` 只认这八个值，别自创（写了别的，**整份文件**会被判为格式错，用户看到「译文文件
 有误」并且对照键被禁用，不是只跳过那一块）：
 
 - `text` 正文段落
@@ -64,6 +64,7 @@ width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF
 - `formula` 公式
 - `table` 表格
 - `code` 源代码、prompt 模板、JSON、命令行、以及任何画在框里或用等宽字体排的清单（不翻译、不盖，原文原样保留）
+- `figure` 图里的文字：流程图 / 坐标轴 / 图例的标签、案例框、截图里的内容，哪怕是整句（不翻译、不盖，原文原样保留）
 - `skip` 明确不处理
 
 `placeholders` 用来在译文里保住不该被翻译的片段（行内公式、引用标记、行内代码）。

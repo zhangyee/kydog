@@ -41,7 +41,7 @@ describe('harnessTemplates', () => {
       // 增删或换顺序都会让这个子串消失，同样是双向的。
       expect(md, 'AGENTS.md 的 placeholder kind 枚举与 PLACEHOLDER_KINDS 不一致')
         .toContain(PLACEHOLDER_KINDS.map((k) => `\`${k}\``).join(' / '));
-      // 「只认这七个值 / exactly these seven values」里的数目也是这份契约的一部分：再加一个
+      // 「只认这八个值 / exactly these eight values」里的数目也是这份契约的一部分：再加一个
       // kind 却不改它，agent 读到的是自相矛盾的两句话。数词表只列到手写得出的范围，超出即红
       // ——逼人回来同时改模板与这里，正是漂移守卫该有的效果。
       const COUNT_WORD: Record<HarnessLocale, Record<number, string>> = {

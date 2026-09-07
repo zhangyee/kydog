@@ -47,6 +47,10 @@ describe('buildLayoutSystemPrompt（第一步：只分组分类）', () => {
     // 单步协议那一版把它们译成一段流水文，格式全乱）。规则句与 kind 表两处都要有。
     expect(p).toMatch(/Author names, affiliations and e-mail\s+addresses on the title page are skip too/);
     expect(p).toMatch(/author names \/ affiliations \/ e-mail lines on the title page/);
+    // 图里的文字（案例框、流程图标签、截图）归 figure，哪怕是整句：Yee 2026-09-07 手测第 12 页的
+    // Figure 8 案例框被当正文译成一团。规则句与 kind 表两处都要有。
+    expect(p).toMatch(/is figure content, not prose/);
+    expect(p).toMatch(/^\s{3}figure\s{2,}text that belongs to a figure/m);
     expect(p).toMatch(/indented first line/);
   });
   it('输出格式是每组一行、没有译文；例子里有页码行归 skip', () => {

@@ -55,7 +55,7 @@ describe('parseLayout（第一步：每组一行 `<ids> | <kind>`）', () => {
 });
 
 describe('TRANSLATABLE 与 BLOCK_KINDS 的补集（code 落在不可译一侧）', () => {
-  it('补集恰是 formula / table / code / skip', () => {
-    expect(BLOCK_KINDS.filter((k) => !TRANSLATABLE.has(k))).toEqual(['formula', 'table', 'code', 'skip']);
+  it('补集恰是 formula / table / code / figure / skip', () => {
+    expect(BLOCK_KINDS.filter((k) => !TRANSLATABLE.has(k))).toEqual(['formula', 'table', 'code', 'figure', 'skip']);
   });
 });
