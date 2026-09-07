@@ -1,37 +1,9 @@
 import { BLOCK_KINDS, type BlockKind } from '../../../../shared/zhSidecar';
+import { GroupError, TRANSLATABLE, parseIds, type ParsedGroup } from './layoutProtocol';
 
-/** 模型这一页的输出不合契约。调用方据此重试一次，仍失败则整页保留原文（spec §2.4）。 */
-export class GroupError extends Error {}
-
-export type ParsedGroup = { lines: number[]; kind: BlockKind; target?: string };
+export { GroupError, TRANSLATABLE, type ParsedGroup };
 
 const KINDS = new Set<string>(BLOCK_KINDS);
-/**
- * 这三类必须有非空译文；**其余的（今天是 formula / table / skip）必须没有**——补集是隐式的，
- * 下面按 `else` 分派，没有第二张表。
- *
- * 所以 `BLOCK_KINDS` 加第七个值时，这里不会有任何编译期或运行期信号：新 kind 静默落进
- * 「不可译」那一支。守这条的是 `parseGroups.test.ts` 里那条手写补集的集合相等断言，以及
- * `translatePrompt.test.ts` 里「提示词的翻译规则 1 两串 kind 与这张表一致」那条——导出这个
- * 常量就是为了让后者能对着同一份判据断言，而不是各写一遍。
- */
-export const TRANSLATABLE = new Set<BlockKind>(['text', 'title', 'caption']);
-
-function parseIds(spec: string): number[] {
-  const out: number[] = [];
-  for (const part of spec.split(',')) {
-    const s = part.trim();
-    if (s === '') throw new GroupError(`行号里有空项：${JSON.stringify(spec)}`);
-    const m = /^(\d+)(?:-(\d+))?$/.exec(s);
-    if (!m) throw new GroupError(`行号不认识：${JSON.stringify(s)}`);
-    const a = Number(m[1]);
-    if (m[2] === undefined) { out.push(a); continue; }
-    const b = Number(m[2]);
-    if (b < a) throw new GroupError(`行号范围反了：${JSON.stringify(s)}`);
-    for (let i = a; i <= b; i++) out.push(i);
-  }
-  return out;
-}
 
 export type Partition = { groups: ParsedGroup[]; missing: number[] };
 
