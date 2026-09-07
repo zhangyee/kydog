@@ -100,6 +100,18 @@ describe('buildTranslateSystemPrompt（第二步：按组翻译）', () => {
     expect(p).toContain('| attention head | a\\|b |');
     expect(p).not.toContain('| zzz |');
   });
+  it('任一组含 {vN} → 插入记号规则为第 4 条，%% 那条顺延为第 5 条（spec 2026-09-07 scripts §5.1）', () => {
+    const p = buildTranslateSystemPrompt({ langOut: 'zh', groups: [{ id: 'g1', kind: 'text', source: 'node n{v1} in' }, { id: 'g2', kind: 'text', source: 'plain' }] });
+    expect(p).toContain('4. The text may contain placeholder tokens such as {v1}, {v2}.');
+    expect(p).toContain('exactly once, unchanged, attached to the same symbol it follows');
+    expect(p).toContain('5. Never emit a line that is exactly "%%"');
+    expect(p).not.toContain('4. Never emit a line');
+  });
+  it('没有记号 → 没有那条规则，%% 仍是第 4 条（提示词与今天逐字相同）', () => {
+    const p = buildTranslateSystemPrompt({ langOut: 'zh', groups: [{ id: 'g1', kind: 'text', source: 'plain { v1 }' }] });
+    expect(p).not.toContain('placeholder tokens');
+    expect(p).toContain('4. Never emit a line that is exactly "%%"');
+  });
 });
 
 describe('buildGroupsText', () => {

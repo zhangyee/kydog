@@ -1,4 +1,4 @@
-import type { PageLine, Term, TranslateGroup } from '../../shared/zhSidecar';
+import { hasToken, type PageLine, type Term, type TranslateGroup } from '../../shared/zhSidecar';
 
 /**
  * 只注入**命中本页原文**的术语（BabelDOC 的做法）。整表塞进去既费 token 又稀释指令。
@@ -126,6 +126,15 @@ Output:
 export function buildTranslateSystemPrompt(o: {
   langOut: TargetLang; docTitle?: string; glossary?: Term[]; groups: TranslateGroup[];
 }): string {
+  // 记号规则只在这次请求真有记号时才进提示词（是请求的确定事实，不是猜）；没有记号的页提示词逐字不变。
+  // 文本就是实测用的那段（experiments/2026-09-07-pdf-subscript-tokens）。
+  const tokens = o.groups.some((g) => hasToken(g.source));
+  const tokenRule = tokens ? `4. The text may contain placeholder tokens such as {v1}, {v2}. Each stands
+   for a subscript or superscript that must be kept verbatim. Reproduce every
+   token exactly once, unchanged, attached to the same symbol it follows in
+   the source. Never translate, drop, duplicate or renumber a token.
+` : '';
+
   const hits = o.glossary?.length ? matchGlossary(o.glossary, o.groups.map((g) => g.source)) : [];
   const glossary = hits.length === 0 ? '' : [
     '',
@@ -154,7 +163,7 @@ its text.
    Mathematical symbols and variables are copied character for character as
    they appear in the source (𝑣𝑛 stays 𝑣𝑛, 𝜏′𝑖 stays 𝜏′𝑖): never rewrite
    them as LaTeX, never add \\( \\), $ $, \\mathcal, _ or ^.
-4. Never emit a line that is exactly "%%" inside a translation.
+${tokenRule}${tokens ? 5 : 4}. Never emit a line that is exactly "%%" inside a translation.
 ${glossary}${contextOf(o.docTitle)}
 
 ## Output format
