@@ -91,6 +91,18 @@ describe('tokenize（spec 2026-09-07 scripts §3.1）', () => {
     expect(t.request).toBe('x{v1} and y{v2}');
     expect(t.placeholders.map((p) => p.script)).toEqual(['sup', 'sub']);
   });
+  it('组内正文字面含 {v1} 且有一个脚标 → 编号跳过撞车的 id，request 里字面原样保留，source 逐字等于原文', () => {
+    const l: PageLine = { ...line(1, 0, 0, 10, 10, 'xi see literal {v1} tail'), scripts: [{ start: 1, end: 2, kind: 'sub' }] };
+    const t = tokenize([l]);
+    expect(t.placeholders).toEqual([{ id: 'v2', kind: 'formula', text: 'i', script: 'sub' }]);
+    expect(t.request).toBe('x{v2} see literal {v1} tail');
+    expect(t.source).toBe(l.text);
+  });
+  it('正文字面含 {v2}、组内有两个脚标 → 两个脚标拿到的 id 都不是 v2', () => {
+    const t = tokenize([sub(1, 'node ni is {v2} literal', 6, 7), sub(2, 'set Vj here', 5, 6)]);
+    expect(t.placeholders.map((p) => p.id)).toEqual(['v1', 'v3']);
+    expect(t.request).toContain('{v2}');
+  });
 });
 
 describe('buildBlocks 与 tokenize（spec §3.2）', () => {

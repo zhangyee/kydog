@@ -427,7 +427,7 @@ describe('第二步译文多出原文没有的 \\ / $（spec 2026-09-07 §8.8）
 });
 
 describe('两步协议（spec 2026-09-07 §4）', () => {
-  it('第二步只收到可译组，id 按阅读顺序 g1..gN，source 是 joinSource 拼好的整段', async () => {
+  it('第二步只收到可译组，id 按阅读顺序 g1..gN，source 是 tokenize().request', async () => {
     const got: unknown[] = [];
     await translateDoc(base({
       numPages: 1,

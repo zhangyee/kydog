@@ -3,6 +3,10 @@ import { hasToken, type PageLine, type Term, type TranslateGroup } from '../../s
 /**
  * 只注入**命中本页原文**的术语（BabelDOC 的做法）。整表塞进去既费 token 又稀释指令。
  * 大小写不敏感的朴素包含判定——术语表通常几十条，一页几千字符，不值得上 Aho-Corasick。
+ *
+ * `texts` 传的是 `TranslateGroup.source`，即记号化之后的请求串（spec 2026-09-07 scripts §3.2）：
+ * 跨脚标的术语（原文 "node ni" 里 "i" 被换成 `{v1}` 后变成 "node n{v1}"）不会再命中。这是行为
+ * 变更，但对着模型实际读到的串匹配更诚实——不改代码去「还原」术语所在的原文来匹配。
  */
 export function matchGlossary(glossary: Term[], texts: string[]): Term[] {
   const hay = texts.join('\n').toLowerCase();

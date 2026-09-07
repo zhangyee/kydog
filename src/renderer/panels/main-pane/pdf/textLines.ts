@@ -22,7 +22,8 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?
   /**
    * 本行最近一个非脚标项（spec 2026-09-07 scripts §2.1）。脚标 = height 比它小且基线偏移不为零；
    * 偏移沿**基字**的向上向量量（旋转项与 §8.1 同一套向量写法）。height === 0 的项（pdf.js 插的假空格，
-   * 继承前一项的基线）既不当基字也不当脚标。换行归零。
+   * 继承前一项的基线）既不当基字也不当脚标——这只对横排成立：竖排 CJK 时 pdf.js 走 `height = Math.abs(width)`，
+   * 假空格会变成 height > 0 的项并被当成新基字（本应用不处理竖排 PDF，未验证也未处理）。换行归零。
    */
   let base: { height: number; e: number; f: number; ux: number; uy: number } | null = null;
   const flush = () => {

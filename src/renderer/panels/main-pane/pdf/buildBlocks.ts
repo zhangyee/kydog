@@ -11,11 +11,13 @@ function median(ns: number[]): number {
 /**
  * 行尾连字符 + 下一行以小写字母开头 → 去掉连字符直接连；否则用一个空格连。
  *
- * `source` 只进边车给人和 agent 看，不参与渲染，也不参与任何判定，所以这条规则不影响不变量。
+ * `Block.source`（边车里落盘的那份、去记号的明文）只给人和 agent 看，不参与渲染、不参与判定，
+ * 这条规则改动不影响任何不变量。
  *
- * 两步协议之后它还多了一个身份：第二步发给模型的 `TranslateGroup.source` 就是它拼出来的整段
- * （spec 2026-09-07 §4.3）——模型不再看到分行的原文，接合规则必须只此一份，否则边车里的
- * `source` 与模型实际读到的会是两个串。
+ * 但两步协议之后同名的 `TranslateGroup.source`（第二步发给模型的那份，即 `tokenize().request`，
+ * 带 `{vN}` 记号）不是同一回事：它是 `introducedMarkup` 与 `tokenViolation` 两条协议层校验的输入
+ * （spec 2026-09-07 §4.3、scripts §5.2）。接合规则必须只此一份，否则边车里的明文 `source`、模型
+ * 实际读到的请求串、校验时用的串会变成三份不同的东西。
  */
 export function joinSource(texts: string[]): string {
   let out = '';
@@ -35,6 +37,21 @@ export function joinSource(texts: string[]): string {
  * kind 用 `formula`：三个 kind 里最贴近的，不新增 kind，免得动 PLACEHOLDER_KINDS 那整条契约链。
  */
 export function tokenize(lines: PageLine[]): { request: string; source: string; placeholders: Placeholder[] } {
+  // 正文本身可能字面含 "{v1}" 这样的串（讲 prompt 模板、贴 JSON 样例的段落不算稀奇，KyDog 自己的
+  // 领域尤其常见）。编号如果撞上这种字面量，两种后果都不体面：模型把两处 {v1} 都原样抄回来 → 协议层
+  // 判 dup → 重发 → 仍 dup → 整页失败，而失败原因指向"记号对不上"，其实是正文自己就有这串字面量；
+  // 模型只回一个 → missing/dup/unknown 都不响、校验放行，但落盘的 source 会把正文那段字面 {v1} 静默
+  // 换成脚标原文。跳过法：编号前先枚举这一组正文（记号化之前的原文）里出现过的 v\d+，凡撞上就跳过，
+  // 让 tokenize 插入的记号永远不会与正文字面重名——这是协议层可枚举的事实，不是近似或阈值。
+  const literalIds = new Set<string>();
+  for (const l of lines) for (const m of l.text.matchAll(PLACEHOLDER_TOKEN)) literalIds.add(m[1]);
+  let n = 0;
+  const nextId = (): string => {
+    let id: string;
+    do { n++; id = `v${n}`; } while (literalIds.has(id));
+    return id;
+  };
+
   const placeholders: Placeholder[] = [];
   const tokenized = lines.map((l) => {
     const spans = l.scripts ?? [];
@@ -42,7 +59,7 @@ export function tokenize(lines: PageLine[]): { request: string; source: string; 
     let out = '';
     let pos = 0;
     for (const s of spans) {
-      const id = `v${placeholders.length + 1}`;
+      const id = nextId();
       placeholders.push({ id, kind: 'formula', text: l.text.slice(s.start, s.end), script: s.kind });
       out += l.text.slice(pos, s.start) + `{${id}}`;
       pos = s.end;

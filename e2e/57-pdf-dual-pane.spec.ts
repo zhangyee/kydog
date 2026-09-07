@@ -1118,7 +1118,7 @@ test('57-pdf-dual-pane: 脚标占位符按下标 / 上标排——字号更小�
     expect(await s1.getAttribute('data-fit')).toBe(await s0.getAttribute('data-fit'));
     const h1 = await s1.evaluate((el) => el.scrollHeight);
     const h0 = await s0.evaluate((el) => el.scrollHeight);
-    expect(Math.abs(h1 - h0), `带脚标 ${h1} 与平排 ${h0} 的行框高度应相同`).toBeLessThanOrEqual(1);
+    expect(h1, `带脚标 ${h1} 与平排 ${h0} 的行框高度应相同`).toBe(h0);
   } finally {
     await teardown(launched);
   }
