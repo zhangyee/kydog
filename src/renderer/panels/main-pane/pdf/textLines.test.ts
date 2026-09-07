@@ -146,4 +146,11 @@ describe('脚标：比本行最近的基字更小且基线不同（spec 2026-09-
     const [b] = textLines([rot('base', 100, 300, 10), rot('s', 102, 320, 7, true)], viewport);
     expect(b.items.find((i) => i.str === 's')!.script).toBe('sub');
   });
+  it('基字是本行最近一个非脚标项而非行首固定基字', () => {
+    // 三项：10pt 行首基字；7pt 同基线不是脚标但按最近基字语义成为新基字；
+    // 8pt 基线更低。相对新基字(7pt)：8 不小于 7 所以不是脚标。
+    // 若实现改成 if (!base)（行首固定），则 8pt 会相对行首(10pt)判，误认为 sub。
+    const [l] = textLines([item('Figure 1.', 40, 340, 30, false, 10), item(' notes', 70, 340, 25, false, 7), item('x', 95, 337.5, 5, true, 8)], viewport);
+    expect(l.items.map((i) => i.script ?? '')).toEqual(['', '', '']);
+  });
 });
