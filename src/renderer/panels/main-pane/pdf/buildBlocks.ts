@@ -56,6 +56,17 @@ export function tokenize(lines: PageLine[]): { request: string; source: string; 
 }
 
 /**
+ * 组的行号 → 行对象，按行号原本给出的顺序（不重排）。**translateDoc.ts 的 `runPage` 与本文件的
+ * `buildBlocks` 都只能调这一份**，不能各自抄一遍：边车里落盘的 `source` 与模型实际读到的请求串
+ * 只差记号这条不变量，靠的就是两处用同一批行、同一顺序算出 `tokenize(...)`；两份复制品一旦漂移
+ * （排序、过滤方式不一致），下游「译文里的记号对不对得上原文」的校验就建立在错的前提上，而且
+ * 多行组才会暴露，单行组的测试用例照样全绿。
+ */
+export function linesOfGroup(lineNumbers: number[], byId: Map<number, PageLine>): PageLine[] {
+  return lineNumbers.map((n) => byId.get(n)).filter((l): l is PageLine => !!l);
+}
+
+/**
  * 组 + 行 → 边车块（spec §5）。**坐标全部在这里算，模型碰不到**——这是「模型出错也错不出版面
  * 错位」那条不变量的落点。
  *
@@ -65,7 +76,7 @@ export function tokenize(lines: PageLine[]): { request: string; source: string; 
 export function buildBlocks(page: number, lines: PageLine[], groups: ParsedGroup[]): Block[] {
   const byId = new Map(lines.map((l) => [l.n, l]));
   const resolved = groups
-    .map((g) => ({ g, ls: g.lines.map((n) => byId.get(n)).filter((l): l is PageLine => !!l) }))
+    .map((g) => ({ g, ls: linesOfGroup(g.lines, byId) }))
     .filter((r) => r.ls.length > 0)
     .sort((a, b) => Math.min(...a.g.lines) - Math.min(...b.g.lines));
 

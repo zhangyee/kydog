@@ -1,5 +1,5 @@
 import type { Block, PageLine, Term, TranslatedDoc, TranslateGroup } from '../../../../shared/zhSidecar';
-import { buildBlocks, tokenize } from './buildBlocks';
+import { buildBlocks, linesOfGroup, tokenize } from './buildBlocks';
 import { extractPageLines, type TextSource } from './extractPageLines';
 import { repairGroupGeometry } from './groupGeometry';
 import { GroupError, isTranslatable, parseLayout, type LayoutGroup, type ParsedGroup } from './layoutProtocol';
@@ -212,14 +212,13 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     // 阅读顺序 g1..gN，只活在这两次调用之间。source 用 tokenize 拼好——与边车里 buildBlocks
     // 写的 source / placeholders 出自同一个函数、同一批行（spec 2026-09-07 scripts §3.2）。
     const byId = new Map(lines.map((l) => [l.n, l]));
-    const linesOf = (g: LayoutGroup) => g.lines.map((n) => byId.get(n)).filter((l): l is PageLine => !!l);
     const req: TranslateGroup[] = [];
     const slot = new Map<number, string>();            // layout 组下标 → g<n>
     layout.value.forEach((g, i) => {
       if (!isTranslatable(g.kind)) return;
       const id = `g${req.length + 1}`;
       slot.set(i, id);
-      req.push({ id, kind: g.kind, source: tokenize(linesOf(g)).request });
+      req.push({ id, kind: g.kind, source: tokenize(linesOfGroup(g.lines, byId)).request });
     });
     let targets: Record<string, string> = {};
     // 整页一个可译组都没有（纯代码页、纯表格页）→ 第二步根本不发。
@@ -259,9 +258,10 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     if (first.ok) {
       const byId = new Map(head.lines.map((l) => [l.n, l]));
       const titleGroup = first.value.find((g) => g.kind === 'title');
-      // 与 source 同一条规则（tokenize().source）：文题进的是第二步的提示词，跟落盘的 source 该是同一个串。
+      // 与 source 同一条规则（tokenize().source）：文题进的是第二步的提示词，人读的标题里不该
+      // 混进 {vN} 记号，所以取的是去记号的明文 .source，不是发给模型的 .request。
       if (titleGroup) {
-        docTitle = tokenize(titleGroup.lines.map((n) => byId.get(n)).filter((l): l is PageLine => !!l)).source.trim() || undefined;
+        docTitle = tokenize(linesOfGroup(titleGroup.lines, byId)).source.trim() || undefined;
       }
     }
     await runPage(head.page, head.lines, docTitle, first);

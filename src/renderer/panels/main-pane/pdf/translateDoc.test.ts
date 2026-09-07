@@ -717,4 +717,38 @@ describe('脚标占位符（spec 2026-09-07 scripts §3.2 / §5.2）', () => {
     }));
     expect(got).toEqual([[{ id: 'g1', kind: 'text', source: 'p1l1 p1l2' }]]);
   });
+
+  it('docTitle 是去记号的明文，不是发给模型的记号串', async () => {
+    const gotTitles: (string | undefined)[] = [];
+    await translateDoc(base({
+      numPages: 1, getPage: async () => scriptPage(),
+      layoutPage: async () => ({ text: '1 | title', truncated: false }),
+      translateGroups: async ({ groups, docTitle }) => {
+        gotTitles.push(docTitle);
+        return { text: `${groups[0].id}\n节点 n{v1}\n%%`, truncated: false };
+      },
+    }));
+    // 第 1 页本身也走了这次翻译（它是唯一一页），传给它的 docTitle 就是它自己的标题——
+    // 断言的是「明文」这一点：不能是 'node n{v1}'。
+    expect(gotTitles).toEqual(['node ni']);
+  });
+
+  it('多行组、行号非升序：请求串与边车 source 出自同一批行、同一顺序（漂移会让记号错位）', async () => {
+    const got: { id: string; source: string }[][] = [];
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async () => scriptPage(1),
+      // 组内行号顺序 [2, 1]，与升序相反——drift 一旦发生（两处排序不一致），下面的还原断言就会不等。
+      layoutPage: async () => ({ text: '2,1 | text', truncated: false }),
+      translateGroups: async ({ groups }) => { got.push(groups); return { text: 'g1\n译文{v1}\n%%', truncated: false }; },
+    }));
+    const reqSource = got[0][0].source;
+    const block = doc!.blocks[0];
+    // 把请求串里的每个 {vN} 用边车 placeholders 换回原文，结果必须逐字等于边车块的 source——
+    // 这正是「两处对同一批行、同一顺序调 tokenize」这条不变量本身。
+    const restored = reqSource.replace(/\{(v\d+)\}/g, (m, id: string) => {
+      const p = block.placeholders?.find((ph) => ph.id === id);
+      return p ? p.text : m;
+    });
+    expect(restored).toBe(block.source);
+  });
 });
