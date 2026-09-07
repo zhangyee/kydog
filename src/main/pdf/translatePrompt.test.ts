@@ -51,6 +51,9 @@ describe('buildLayoutSystemPrompt（第一步：只分组分类）', () => {
     expect(p).toContain('5\t303,740,5,10,10\t4');
     expect(p).toMatch(/\n5 \| skip/);
   });
+  it('说明显式行号优先于范围（spec 2026-09-07 §8.2）', () => {
+    expect(p).toContain('If an id you list on its own also falls inside a range you wrote, the range is read as excluding it.');
+  });
   it('docTitle 缺省时没有 Context 段', () => {
     expect(p).not.toContain('## Context');
     expect(buildLayoutSystemPrompt({ docTitle: 'A Paper' })).toContain('The document is titled "A Paper"');

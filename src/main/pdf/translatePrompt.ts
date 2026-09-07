@@ -88,7 +88,8 @@ One group per line, in reading order (the order a human reads the page):
 <line ids> | <kind>
 
 Line ids are a comma-separated list of single ids and ranges, e.g. "1-4,9" or
-"7". Output nothing else: no translation, no explanation, no blank lines.
+"7". If an id you list on its own also falls inside a range you wrote, the range is read as excluding it.
+Output nothing else: no translation, no explanation, no blank lines.
 
 ## Example
 Input:
