@@ -127,7 +127,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the rest.
 What KyDog does today is less than a third of the full idea. These are already on my development plan:
 
 - [ ] **More skills** — extending along research → study → write → review. Today research has three, study one, review three; the write stage is still thin.
-- [ ] **PDF annotation** — highlighting and notes, plus Chinese translation and side-by-side bilingual reading.
+- [x] ~~**PDF annotation** — highlighting and notes, plus Chinese translation and side-by-side bilingual reading.~~
 - [ ] **Follow-up questions and citation commentary on documents** — ask about a selected passage right inside the Markdown editor, and get commentary on the references it cites.
 - [ ] **slowpaper: in-app browsing** — let the agent drive a browser inside the app, supporting CARSI (the Chinese education and research network's federated identity service) sign-in and reaching more literature sources that require browser interaction.
 - [ ] **A LaTeX editor** — an editing and compilation experience along the lines of Overleaf.
