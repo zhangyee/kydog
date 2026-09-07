@@ -31,3 +31,14 @@ export function parseTranslations(text: string, expectedIds: string[]): { target
   }
   return { targets, missing: expectedIds.filter((id) => !(id in targets)) };
 }
+
+/**
+ * 译文里出现了原文没有的 `\\` 或 `$`——模型把数学符号改写成了 LaTeX（`\\( v_n \\)`、`$x_i$`、`\\mathcal{S}`），
+ * 2512.03413.pdf 第 5 页实测：同一篇别的页都把 𝑣𝑛 原样抄回来，这一页一整份响应全走了 LaTeX 风格
+ * （spec 2026-09-07 §8.8）。判据是协议层的：契约要求数学符号逐字照抄，那译文就不可能多出这两个字符；
+ * 原文自己带（路径、转义、金额）时不判——只看「原文没有、译文有」。回违约的那个字符，没有则 undefined。
+ */
+export function introducedMarkup(source: string, target: string): '\\' | '$' | undefined {
+  for (const ch of ['\\', '$'] as const) if (target.includes(ch) && !source.includes(ch)) return ch;
+  return undefined;
+}

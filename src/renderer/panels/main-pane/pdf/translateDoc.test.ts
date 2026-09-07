@@ -376,6 +376,56 @@ describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
   });
 });
 
+describe('第二步译文多出原文没有的 \\ / $（spec 2026-09-07 §8.8）', () => {
+  it('只把违约的那几组再发一次，第二次干净就用第二次的；干净的组不重发', async () => {
+    const calls: string[][] = [];
+    let n = 0;
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async (p) => fakePage(p, 2),
+      layoutPage: async () => ({ text: '1 | text\n2 | text', truncated: false }),
+      translateGroups: async ({ groups }) => {
+        calls.push(groups.map((g) => g.id));
+        n++;
+        if (n === 1) return { text: 'g1\n甲 \\( v_n \\)\n%%\ng2\n乙\n%%', truncated: false };
+        return { text: 'g1\n甲 𝑣𝑛\n%%', truncated: false };
+      },
+    }));
+    expect(calls).toEqual([['g1', 'g2'], ['g1']]);
+    expect(doc!.failedPages).toBeUndefined();
+    expect(doc!.blocks.map((b) => b.target)).toEqual(['甲 𝑣𝑛', '乙']);
+  });
+
+  it('违约的就是全部 → 不补漏、整步重试；两次都这样 → 页失败，原因写明是 LaTeX', async () => {
+    const translateGroups = vi.fn(async () => ({ text: 'g1\n甲 $x_i$\n%%', truncated: false }));
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async (p) => fakePage(p, 1),
+      layoutPage: async () => ({ text: '1 | text', truncated: false }),
+      translateGroups,
+    }));
+    expect(translateGroups).toHaveBeenCalledTimes(2);
+    expect(doc!.blocks).toEqual([]);
+    expect(doc!.failedPages).toEqual([1]);
+    expect(doc!.failureReasons!['1']).toMatch(/^翻译：组 g1 的译文出现了原文没有的.*LaTeX.*；重试：/);
+  });
+
+  it('原文本身带反斜杠 → 译文带它不算违约、不重发', async () => {
+    const page = {
+      getTextContent: async () => ({
+        items: [{ str: 'escape as \\n', transform: [10, 0, 0, 10, 72, 300], width: 40, height: 10, hasEOL: true }],
+      }),
+      getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, 400 - y] }),
+    };
+    const translateGroups = vi.fn(async () => ({ text: 'g1\n转义为 \\n\n%%', truncated: false }));
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async () => page,
+      layoutPage: async () => ({ text: '1 | text', truncated: false }),
+      translateGroups,
+    }));
+    expect(translateGroups).toHaveBeenCalledTimes(1);
+    expect(doc!.blocks.map((b) => b.target)).toEqual(['转义为 \\n']);
+  });
+});
+
 describe('两步协议（spec 2026-09-07 §4）', () => {
   it('第二步只收到可译组，id 按阅读顺序 g1..gN，source 是 joinSource 拼好的整段', async () => {
     const got: unknown[] = [];

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GroupError } from './layoutProtocol';
-import { parseTranslations } from './translateProtocol';
+import { introducedMarkup, parseTranslations } from './translateProtocol';
 
 describe('parseTranslations（第二步：`<id>` + 译文 + `%%`）', () => {
   it('每组一个槽位，译文可跨多行，保留内部换行', () => {
@@ -29,5 +29,23 @@ describe('parseTranslations（第二步：`<id>` + 译文 + `%%`）', () => {
   });
   it('头行不是 id 形状（模型把译文当头）→ 抛 GroupError', () => {
     expect(() => parseTranslations('深度学习\n%%\n', ['g1'])).toThrow(GroupError);
+  });
+});
+
+describe('introducedMarkup（译文多出原文没有的 \\ / $ → 数学符号被改写成 LaTeX，spec 2026-09-07 §8.8）', () => {
+  it('原文是数学斜体字符、译文改成 \\( \\) → 回「\\」', () => {
+    expect(introducedMarkup('each node 𝑛𝑖 ∈ 𝑁', '每个节点 \\( n_i \\in N \\)')).toBe('\\');
+  });
+  it('译文用 $…$ → 回「$」', () => {
+    expect(introducedMarkup('node 𝑛𝑖', '节点 $n_i$')).toBe('$');
+  });
+  it('原文本身带反斜杠（路径 / 转义）→ 译文带它不算违约', () => {
+    expect(introducedMarkup('escape as \\n', '转义为 \\n')).toBeUndefined();
+  });
+  it('两个字符各自判：原文有 $ 没有 \\，译文多出 \\ 仍违约', () => {
+    expect(introducedMarkup('costs $5', '花 $5，即 \\( c \\)')).toBe('\\');
+  });
+  it('干净的译文 → undefined', () => {
+    expect(introducedMarkup('node 𝑛𝑖', '节点 𝑛𝑖')).toBeUndefined();
   });
 });

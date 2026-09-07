@@ -4,7 +4,7 @@ import { extractPageLines, type TextSource } from './extractPageLines';
 import { repairGroupGeometry } from './groupGeometry';
 import { GroupError, isTranslatable, parseLayout, type LayoutGroup, type ParsedGroup } from './layoutProtocol';
 import type { TextLine } from './textLines';
-import { parseTranslations } from './translateProtocol';
+import { introducedMarkup, parseTranslations } from './translateProtocol';
 
 /**
  * 一趟作业里同时「已发出、未落地」的页数上界——**也就是取消时的浪费上界**（invoke 没有取消
@@ -135,9 +135,18 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
       };
     }
     const { targets, missing } = parseTranslations(r.text, groups.map((g) => g.id));
-    if (missing.length === 0) return targets;
-    if (!repair || missing.length === groups.length) throw new GroupError(`组 ${missing.join(',')} 没有译文`);
-    return { ...targets, ...await runTranslate(page, groups.filter((g) => missing.includes(g.id)), docTitle, false) };
+    // 译文多出原文没有的 \\ / $：模型把数学符号改写成了 LaTeX（spec 2026-09-07 §8.8）。当缺组处置——
+    // 丢掉这份译文、只把这几组再发一次；补漏那趟仍如此就抛，走 twice 的整步重试。
+    const marked = groups.filter((g) => g.id in targets && introducedMarkup(g.source, targets[g.id]) !== undefined).map((g) => g.id);
+    for (const id of marked) delete targets[id];
+    const redo = groups.filter((g) => missing.includes(g.id) || marked.includes(g.id));
+    if (redo.length === 0) return targets;
+    const why = [
+      missing.length > 0 ? `组 ${missing.join(',')} 没有译文` : '',
+      marked.length > 0 ? `组 ${marked.join(',')} 的译文出现了原文没有的「\\」或「$」（数学符号被改写成了 LaTeX）` : '',
+    ].filter(Boolean).join('；');
+    if (!repair || redo.length === groups.length) throw new GroupError(why);
+    return { ...targets, ...await runTranslate(page, redo, docTitle, false) };
   };
 
   type Attempt<T> = { ok: true; value: T } | { ok: false; reason: string };

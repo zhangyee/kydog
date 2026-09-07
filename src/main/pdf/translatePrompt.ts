@@ -151,6 +151,9 @@ its text.
    content (such as "Here's the translation:").
 3. For content that should not be translated (proper nouns, code, mathematics,
    citation markers such as [12] or (Smith, 2020)), keep the original text.
+   Mathematical symbols and variables are copied character for character as
+   they appear in the source (𝑣𝑛 stays 𝑣𝑛, 𝜏′𝑖 stays 𝜏′𝑖): never rewrite
+   them as LaTeX, never add \\( \\), $ $, \\mathcal, _ or ^.
 4. Never emit a line that is exactly "%%" inside a translation.
 ${glossary}${contextOf(o.docTitle)}
 

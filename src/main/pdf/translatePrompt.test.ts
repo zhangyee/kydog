@@ -87,6 +87,12 @@ describe('buildTranslateSystemPrompt（第二步：按组翻译）', () => {
     expect(p).toContain('%%');
     expect(p).toContain('<group id>');
   });
+  it('数学符号逐字照抄、禁止改写成 LaTeX（2512.03413 第 5 页把 𝑣𝑛 写成了 \\( v_n \\)）', () => {
+    const p = buildTranslateSystemPrompt({ langOut: 'zh', groups });
+    expect(p).toMatch(/copied character for character/);
+    expect(p).toMatch(/never rewrite\s+them as LaTeX/);
+    expect(p).toContain('𝑣𝑛 stays 𝑣𝑛');
+  });
   it('命中术语才出现 Glossary 段（按 groups 的 source 匹配）', () => {
     const glossary = [{ source: 'attention head', target: 'a|b' }, { source: 'zzz', target: 'z' }];
     const p = buildTranslateSystemPrompt({ langOut: 'zh', groups, glossary });
