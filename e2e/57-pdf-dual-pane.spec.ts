@@ -293,12 +293,33 @@ async function enterDual(page: Page, pane: Locator) {
   const right = pane.locator('[data-pdf-right="1"]');
   await pane.locator('[data-testid^="pdf-scroll-"]').click({ position: { x: 5, y: 5 } });
   for (let i = 0; i < 25; i++) {
-    if (await right.count() > 0) return;
+    if (await right.count() > 0) { await settleLayers(pane); return; }
     await page.keyboard.press('l');
-    if (await right.count() > 0) return;
+    if (await right.count() > 0) { await settleLayers(pane); return; }
     await page.waitForTimeout(200);
   }
   throw new Error('按 L 没能进入双栏对照：译文边车迟迟没加载');
+}
+
+/**
+ * 等缩放双缓冲收敛成一层。
+ *
+ * 进对照会顺带做一次 fit-width 缩放，缩放走的是双缓冲：新层先在旧层下面画，全部页画好了整层
+ * 顶替（PdfFileTab 的 renderLayers / promote）。顶替发生的那一刻，stable 层**整棵子树被换掉**
+ * ——此前拿到的任何元素句柄都成了游离节点。于是紧跟在 enterDual 后面量几何的用例会随机踩空：
+ * `boundingBox()` 回 null（win32 实测），`getComputedStyle().fontSize` 回空串（darwin-arm64
+ * 实测）。本机顶替得快，这段窗口窄到从来没踩上过。
+ *
+ * 判据是协议层事实——两栏各自只剩一个 `[data-pdf-layer]`，也就是没有 incoming 层在飞——
+ * 不是等一个拍脑袋的毫秒数。
+ */
+async function settleLayers(pane: Locator) {
+  for (const side of ['left', 'right'] as const) {
+    await expect(
+      pane.locator(`[data-pdf-pane="${side}"] [data-pdf-layer]`),
+      `${side} 栏的缩放双缓冲应当已经顶替完、只剩 stable 一层`,
+    ).toHaveCount(1, { timeout: 15000 });
+  }
 }
 
 /** 从 `${page} / ${numPages} · ${zoomPct}%` 读数里取出百分比数字。 */
@@ -566,7 +587,11 @@ test('57-pdf-dual-pane: 字号测量必须等字体真的到位——先量后�
     // 晚一点交给页面代码）——不赌真实网络/磁盘加载会不会恰好落在某个时间点上，而是自己制造一段
     // "肯定还没到位"的窗口。实现如果按 spec 内部 await 这个调用，这段窗口内就不该已经测过；
     // 不 await 的话，会在窗口内就测完并把（可能用了回退字体量出来的）结果写进 state。
-    const DELAY_MS = 1500;
+    // 8000 而不是原来的 1500：enterDual 现在要等缩放双缓冲顶替完才返回（见 settleLayers），
+    // 顶替本身与字体加载无关、在慢机上要花掉一秒以上。窗口太窄的话，读到的就已经是量完的
+    // 字号，这条用例的前提（"此刻还没量"）自己先不成立了。延迟是人为钉死的，放宽它只影响
+    // 这条用例跑多久，不影响判据。
+    const DELAY_MS = 8000;
     await page.evaluate((delay) => {
       const orig = document.fonts.load.bind(document.fonts);
       document.fonts.load = (font: string, text?: string) =>
