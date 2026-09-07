@@ -27,20 +27,20 @@
 
 在 Codex 或 Claude Code 等通用编程智能体里装一堆文献 MCP，是很多研究者都尝试过的路。但编程智能体的使用场景是代码生成与项目开发，对话和工具调用都以生成结果为导向，并不适合一边查阅论文，一边验证突然涌现出来的新想法。而科研的日常恰恰是大量的检索、精读、核对与写作。于是，我根据自己日常使用的需求，开发了一套按学术文献场景重做的 harness 与智能体外壳。
 
-KyDog 用覆盖 18 个学术与科技文献来源的检索、下载与阅读 CLI，配上面向「研究 — 学习 — 写作 — 评审」四阶段的工作流 skill，把查文献这件事做成一条可复核的流水线：一条斜杠命令说清你要什么，智能体便多源并行检索、沿引用链反查经典、逐篇回源核验，报告里涉及的论文全部自动下载到项目的 `papers/` 目录 —— 论文 PDF 可直接在应用内打开，不必切去别的阅读器；选题、综述、事实核查等各种 skill 形成的报告，都以 Markdown 格式呈现，内置 WYSIWYG 所见即所得式的 Markdown 阅览和编辑交互，查、读、写、改都在同一个窗口里完成。
+KyDog 用覆盖 23 个学术与科技文献来源的检索、下载与阅读 CLI，配上面向「研究 — 学习 — 写作 — 评审」四阶段的工作流 skill，把查文献这件事做成一条可复核的流水线：一条斜杠命令说清你要什么，智能体便多源并行检索、沿引用链反查经典、逐篇回源核验，报告里涉及的论文全部自动下载到项目的 `papers/` 目录 —— 论文 PDF 可直接在应用内打开，不必切去别的阅读器；选题、综述、事实核查等各种 skill 形成的报告，都以 Markdown 格式呈现，内置 WYSIWYG 所见即所得式的 Markdown 阅览和编辑交互，查、读、写、改都在同一个窗口里完成。
 
 为了让智能体跨会话记得你是谁、在研究什么、习惯怎么写 —— 而不是每开一个新对话都从零解释一遍 —— KyDog 借鉴了 Openclaw 的工作区架构，用 `AGENTS.md` / `SOUL.md` / `USER.md` 三个文件承载系统提示词，并给智能体一个科研协作者人格。您可以手动修改这些文件，从而自定义出自己独特的科研助手。
 
 ## KyDog 能干什么？
 
-- **18 个文献源，一条 fastpaper 命令并行检索** —— arXiv、PubMed、PMC、Europe PMC、bioRxiv、medRxiv、Semantic Scholar、OpenAlex、Crossref、DBLP、CORE、OpenAIRE、DOAJ、HAL、Zenodo、Unpaywall、Google Scholar、百度学术<sup>[注 1]</sup>。CLI 随应用打包，不用另装。
+- **23 个文献源，一条 fastpaper 命令并行检索** —— arXiv、PubMed、PMC、Europe PMC、bioRxiv、medRxiv、OSF Preprints、Semantic Scholar、OpenAlex、Crossref、DataCite、DBLP、CORE、OpenAIRE、DOAJ、HAL、Zenodo、Unpaywall、INSPIRE-HEP、zbMATH Open、ERIC、OSTI.GOV、NASA NTRS<sup>[注 1]</sup>。CLI 随应用打包，不用另装。
 - **引文与论断可核验，通过 harness 严格控制 LLM 幻想作答** —— 每个 DOI 回源确认、每条论断指回原文，报告涉及的论文全部自动下载到 `papers/`。
 - **一条完整的研究工作流管线** —— 面向「研究 — 学习 — 写作 — 评审」四阶段的 skill，斜杠命令直接调用。更多 skill 正在打磨，敬请期待。
 - **主流大模型接入全覆盖** —— 20 个内置 LLM provider，以及任意 OpenAI 兼容端点（本地 Ollama / vLLM / 自有代理）。Claude Pro/Max 与 ChatGPT (Codex)、GitHub Copilot 订阅登录；Anthropic、OpenAI、DeepSeek、Google Gemini、OpenRouter、Mistral、Groq、Cerebras、xAI、ZAI、Kimi、MiniMax 等 API Key 接入；Azure OpenAI、Amazon Bedrock、Google Vertex AI 云接入。
 - **PDF 与 Markdown 就地读写** —— 内置 PDF 阅读器和所见即所得 Markdown 编辑器，不用在不同应用程序之间来回倒腾。
 - **本地优先** —— 项目就是你自己磁盘上的一个目录，检索到的论文和产出的报告都写在那里；会话与设置存在 `~/.kydog/`，凭据文件权限强制 `0600`。没有云端账号，不上传你的内容。
 
-> **[注 1]** Google Scholar、百度学术的访问受限于平台的 API 访问限制收紧，已不可用。更多学术源的访问，我将用 in-app browsing 方式重新实现。若您想更早看到这些功能，请[赞助支持本项目](#支持这个项目)。
+> **[注 1]** Google Scholar、百度学术因平台收紧 API 访问已不可用，自 v0.3.1 起从来源列表中移除。这两个源以及更多学术源的访问，我将用 in-app browsing 方式重新实现。若您想更早看到这些功能，请[赞助支持本项目](#支持这个项目)。
 
 ## 内置 skill
 
