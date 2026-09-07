@@ -51,18 +51,18 @@ describe('withPermit（全应用并发上界）', () => {
 });
 
 describe('fixture 分支', () => {
-  it('按页码依次消费，带上 stopReason，且同样过 semaphore', async () => {
+  it('两个入口按页码依次共用同一条队列、带上 stopReason，且同样过 semaphore', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs');
     const os = await import('node:os'); const path = await import('node:path');
     const dir = mkdtempSync(path.join(os.tmpdir(), 'kt-'));
     const f = path.join(dir, 'fx.json');
     writeFileSync(f, JSON.stringify({ 3: [{ text: 'A', stopReason: 'length' }, { text: 'B', stopReason: 'stop' }] }));
     process.env.KYDOG_TRANSLATE_FIXTURE = f;
-    const { translatePage } = await import('./pdfTranslatePage');
-    const base = { page: 3, providerId: 'anthropic' as const, modelId: 'm', runtimeRevision: 0, langOut: 'zh' as const, lines: [] };
-    expect(await translatePage(base)).toEqual({ text: 'A', truncated: true });
-    expect(await translatePage(base)).toEqual({ text: 'B', truncated: false });
-    await expect(translatePage(base)).rejects.toThrow();   // 耗尽即报错，不静默降级
+    const { layoutPage, translateGroups } = await import('./pdfTranslatePage');
+    const common = { page: 3, providerId: 'anthropic' as const, modelId: 'm', runtimeRevision: 0 };
+    expect(await layoutPage({ ...common, lines: [] })).toEqual({ text: 'A', truncated: true });
+    expect(await translateGroups({ ...common, langOut: 'zh', groups: [] })).toEqual({ text: 'B', truncated: false });
+    await expect(layoutPage({ ...common, lines: [] })).rejects.toThrow();   // 耗尽即报错，不静默降级
     delete process.env.KYDOG_TRANSLATE_FIXTURE;
   });
 });
@@ -73,16 +73,15 @@ describe('fixture 分支', () => {
  * fixture 能不碰上游的原因），所以只能在这里钉。
  */
 describe('runtimeRevision 失配（provider 配置在翻译途中变了）', () => {
-  const base = {
-    page: 1, providerId: 'anthropic' as const, modelId: 'm',
-    langOut: 'zh' as const, lines: [],
-  };
+  const base = { page: 1, providerId: 'anthropic' as const, modelId: 'm' };
   it('对不上 → llm.not_configured 中止整趟，且不去问模型', async () => {
     delete process.env.KYDOG_TRANSLATE_FIXTURE;   // 上面那条用例跑完已删，这里不依赖它的顺序
     reg.runtimeRevision = 3;
     reg.models = new Set(['anthropic/m']);        // 模型还在——被拒的理由只能是 revision
-    const { translatePage } = await import('./pdfTranslatePage');
-    await expect(translatePage({ ...base, runtimeRevision: 2 }))
+    const { layoutPage, translateGroups } = await import('./pdfTranslatePage');
+    await expect(layoutPage({ ...base, runtimeRevision: 2, lines: [] }))
+      .rejects.toMatchObject({ code: 'llm.not_configured' });
+    await expect(translateGroups({ ...base, runtimeRevision: 2, langOut: 'zh', groups: [] }))
       .rejects.toMatchObject({ code: 'llm.not_configured' });
   });
 
@@ -90,8 +89,10 @@ describe('runtimeRevision 失配（provider 配置在翻译途中变了）', () 
     delete process.env.KYDOG_TRANSLATE_FIXTURE;
     reg.runtimeRevision = 3;
     reg.models = new Set();
-    const { translatePage } = await import('./pdfTranslatePage');
-    await expect(translatePage({ ...base, runtimeRevision: 3 }))
+    const { layoutPage, translateGroups } = await import('./pdfTranslatePage');
+    await expect(layoutPage({ ...base, runtimeRevision: 3, lines: [] }))
+      .rejects.toMatchObject({ code: 'llm.not_configured' });
+    await expect(translateGroups({ ...base, runtimeRevision: 3, langOut: 'zh', groups: [] }))
       .rejects.toMatchObject({ code: 'llm.not_configured' });
   });
 });

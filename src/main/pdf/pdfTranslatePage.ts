@@ -1,15 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { KydogError } from '../../shared/errors';
-import type { PageLine, Term } from '../../shared/zhSidecar';
 import type { ProviderId } from '../../shared/types';
+import type { PageLine, Term } from '../../shared/zhSidecar';
+import type { RpcCall } from '../../shared/protocol';
 import { getProviderRegistry } from '../llm/providerRegistry';
-import { buildSystemPrompt, buildUserText, type TargetLang } from './translatePrompt';
+import { buildGroupsText, buildLayoutSystemPrompt, buildTranslateSystemPrompt, buildUserText } from './translatePrompt';
 
-export type TranslatePageArgs = {
-  page: number;
-  providerId: ProviderId; modelId: string; runtimeRevision: number;
-  langOut: TargetLang; docTitle?: string; glossary?: Term[]; lines: PageLine[];
-};
+// 两个入口的入参类型从 protocol.ts 现推，只此一份定义：字面结构写在那边（与其余 RPC 同样
+// 风格），这里不重复写第二份——从 pdfTranslatePage.ts 引类型会把主进程模块拖进 shared。
+export type LayoutPageArgs = Extract<RpcCall, { method: 'pdf.translation.layout' }>['args'];
+export type TranslateGroupsArgs = Extract<RpcCall, { method: 'pdf.translation.translate' }>['args'];
 
 /**
  * **全应用**同时在飞的上游请求上界。
@@ -56,25 +56,34 @@ function nextFixture(page: number): { text: string; truncated: boolean } {
   return { text: e.text, truncated: e.stopReason === 'length' };
 }
 
-/**
- * 翻一页。**只回原始文本与截断标志**——解析与三层校验在渲染层，e2e / 单测 / 生产因此走的是
- * 同一份纯函数。
- */
-export async function translatePage(args: TranslatePageArgs): Promise<{ text: string; truncated: boolean }> {
+/** 第一步：版面。只回原始文本与截断标志，解析在渲染层（spec 2026-09-07 §4.2）。 */
+export function layoutPage(a: LayoutPageArgs): Promise<{ text: string; truncated: boolean }> {
+  return callModel(a, buildLayoutSystemPrompt({ docTitle: a.docTitle }), buildUserText(a.lines));
+}
+/** 第二步：翻译。同上（§4.3）。 */
+export function translateGroups(a: TranslateGroupsArgs): Promise<{ text: string; truncated: boolean }> {
+  return callModel(a, buildTranslateSystemPrompt(a), buildGroupsText(a.groups));
+}
+
+/** semaphore、fixture、runtimeRevision、模型存在、stopReason 分派——两个入口共用这一处。 */
+async function callModel(
+  a: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number },
+  systemPrompt: string, userText: string,
+): Promise<{ text: string; truncated: boolean }> {
   // fixture 同样走 semaphore：否则 e2e 跑的并发路径与生产不是同一条。
   return withPermit(async () => {
-    if (process.env.KYDOG_TRANSLATE_FIXTURE) return nextFixture(args.page);
+    if (process.env.KYDOG_TRANSLATE_FIXTURE) return nextFixture(a.page);
 
     const reg = getProviderRegistry();
-    if (reg.runtimeRevision !== args.runtimeRevision) {
+    if (reg.runtimeRevision !== a.runtimeRevision) {
       throw new KydogError('llm.not_configured', 'provider 配置在翻译途中变了，请重新翻译');
     }
-    const model = reg.modelRuntime.getModel(args.providerId, args.modelId) as PiModel | undefined;
-    if (!model) throw new KydogError('llm.not_configured', `没有可用的模型 ${args.providerId}/${args.modelId}`);
+    const model = reg.modelRuntime.getModel(a.providerId, a.modelId) as PiModel | undefined;
+    if (!model) throw new KydogError('llm.not_configured', `没有可用的模型 ${a.providerId}/${a.modelId}`);
 
     const res = await reg.modelRuntime.completeSimple(model, {
-      systemPrompt: buildSystemPrompt(args),
-      messages: [{ role: 'user', content: [{ type: 'text', text: buildUserText(args.lines) }], timestamp: Date.now() }],
+      systemPrompt,
+      messages: [{ role: 'user', content: [{ type: 'text', text: userText }], timestamp: Date.now() }],
     }, {
       // 不传 temperature：pi 的每模型元数据里有 supportsTemperature（Claude Opus 4.7+ 拒绝
       // 非默认值），而翻译的确定性不是我们要保的不变量。
@@ -92,11 +101,25 @@ export async function translatePage(args: TranslatePageArgs): Promise<{ text: st
       case 'aborted':
       case 'pending':
       case 'toolUse':
-        throw new KydogError('llm.invalid', `翻译第 ${args.page} 页失败（stopReason=${res.stopReason}）：${res.errorMessage ?? ''}`);
+        throw new KydogError('llm.invalid', `翻译第 ${a.page} 页失败（stopReason=${res.stopReason}）：${res.errorMessage ?? ''}`);
       default: {
         const never: never = res.stopReason;      // 加了新值 tsc 会在这里红
         throw new KydogError('llm.invalid', `未知的 stopReason: ${String(never)}`);
       }
     }
   });
+}
+
+/**
+ * 过渡桩：Task 6 换线后连同 `pdf.translation.page` 一起删。行为与旧的单步 `translatePage`
+ * 等价（第一步的提示词 + 原始行文本），只为让 `PdfFileTab` 还调它时编译通过。
+ */
+export type TranslatePageArgs = {
+  page: number;
+  providerId: ProviderId; modelId: string; runtimeRevision: number;
+  langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; lines: PageLine[];
+};
+
+export function translatePageLegacy(args: TranslatePageArgs): Promise<{ text: string; truncated: boolean }> {
+  return callModel(args, buildLayoutSystemPrompt({ docTitle: args.docTitle }), buildUserText(args.lines));
 }

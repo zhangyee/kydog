@@ -8,7 +8,7 @@ import type {
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
 import type { PdfAnnotationsFile } from './pdfSidecar';
-import type { TranslatedDoc, PageLine, Term } from './zhSidecar';
+import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -100,6 +100,15 @@ export type RpcCall =
               // "Chinese" / "English"（translatePrompt.ts 的 LANG_NAME）。收成联合是
               // 为了让那张映射表少一条时 tsc 就红，别静默把代号喂给模型。
               langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; lines: PageLine[] };
+      result: { text: string; truncated: boolean } }
+  // 两步协议（spec 2026-09-07 §4）：第一步只分组分类，第二步按组逐个翻译。主进程仍无 job 状态。
+  | { method: 'pdf.translation.layout';
+      args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
+              docTitle?: string; lines: PageLine[] };
+      result: { text: string; truncated: boolean } }
+  | { method: 'pdf.translation.translate';
+      args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
+              langOut: 'zh' | 'en'; docTitle?: string; glossary?: Term[]; groups: TranslateGroup[] };
       result: { text: string; truncated: boolean } }
   | { method: 'pdf.translation.save'; args: { pdfPath: string; doc: TranslatedDoc }; result: void }
   // 删译文边车：ENOENT 当成功。渲染层删完走 loadTranslation 重探，doc 变 null 自然退出对照。

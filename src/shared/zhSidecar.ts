@@ -181,3 +181,9 @@ export type PageLine = {
   /** 墨迹顶 / 底（绝对 pt，含降部）。来自 pdf.js 的字体 ascent / descent；缺省 = 没度量（按 y / y + h）。 */
   inkTop?: number; inkBottom?: number;
 };
+
+/**
+ * 两步翻译协议第二步的入参形状（spec 2026-09-07 §4.3）：第一步版面产出的一个组，已经分好类、
+ * 行已按阅读顺序拼成原文。kind 只有这三种可译值——formula/table/code/skip 第一步就不会进翻译组。
+ */
+export type TranslateGroup = { id: string; kind: 'text' | 'title' | 'caption'; source: string };
