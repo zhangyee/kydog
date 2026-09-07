@@ -24,8 +24,9 @@ export async function launchKydog(opts: {
   fixture?: string;
   /**
    * 逐页翻译响应的 fixture 路径（→ `KYDOG_TRANSLATE_FIXTURE`）。设了它，主进程的
-   * `pdf.translation.page` 就从这份 JSON 里按页取响应，不碰上游模型——但仍走同一个 semaphore
-   * 与同一条并发路径（src/main/pdf/pdfTranslatePage.ts）。格式见 e2e/fixtures/translate/。
+   * `pdf.translation.layout` / `pdf.translation.translate`（两步协议，spec 2026-09-07 §4）就从
+   * 这份 JSON 里按页、按调用顺序取响应，不碰上游模型——但仍走同一个 semaphore 与同一条并发路径
+   * （src/main/pdf/pdfTranslatePage.ts）。格式见 e2e/fixtures/translate/。
    */
   translateFixture?: string;
   seed?: (kydogHome: string) => Promise<void>;

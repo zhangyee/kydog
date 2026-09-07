@@ -1,10 +1,11 @@
 {
   "1": [
-    { "text": "1 | text\n第一页的译文（这条被截断，内容不参与解析）", "stopReason": "length" },
-    { "text": "1 | text\n第一页上半的译文\n%%\n", "stopReason": "stop" },
-    { "text": "2 | text\n第一页下半的译文\n%%\n", "stopReason": "stop" }
+    { "text": "1 | text\n2 |", "stopReason": "length" },
+    { "text": "1 | text", "stopReason": "stop" },
+    { "text": "2 | text", "stopReason": "stop" },
+    { "text": "g1\n第一页上半的译文\n%%\ng2\n第一页下半的译文\n%%\n", "stopReason": "stop" }
   ],
-  "2": [{ "text": "1-2 | text\n第二页的译文\n%%\n", "stopReason": "stop" }],
-  "3": [{ "text": "1-2 | text\n第三页的译文\n%%\n", "stopReason": "stop" }],
-  "4": [{ "text": "1-2 | text\n第四页的译文\n%%\n", "stopReason": "stop" }]
+  "2": [{ "text": "1-2 | text", "stopReason": "stop" }, { "text": "g1\n第二页的译文\n%%\n", "stopReason": "stop" }],
+  "3": [{ "text": "1-2 | text", "stopReason": "stop" }, { "text": "g1\n第三页的译文\n%%\n", "stopReason": "stop" }],
+  "4": [{ "text": "1-2 | text", "stopReason": "stop" }, { "text": "g1\n第四页的译文\n%%\n", "stopReason": "stop" }]
 }
