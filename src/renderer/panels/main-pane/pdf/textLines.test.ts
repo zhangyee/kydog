@@ -72,3 +72,16 @@ describe('墨迹顶 / 底（pdf.js styles 的 ascent / descent）', () => {
     expect(mixed.inkBottom).toBeCloseTo(60 + 0.207 * 14, 6);
   });
 });
+
+describe('/Rotate 90 / 270：视口 y 只是 PDF x 的函数（回归 C-1）', () => {
+  // rotation-90 的替身：viewport y 完全不看 PDF y，只看 PDF x（真实 pdf.js 在 90°/270° 就是这样）。
+  const rot90 = { convertToViewportPoint: (x: number, y: number): [number, number] => [y, x] };
+  const styles = { f1: { ascent: 0.718, descent: -0.207 } };
+
+  it('墨迹高应与字身框高相等且 > 0——旧实现两点共用 bx，ty/dy 在这个视口下恒等，墨迹高塌成 0', () => {
+    const [l] = textLines([item('gypq', 40, 340, 40, true, 14, 'f1')], rot90, styles);
+    const emHeight = l.bottom - l.top;
+    expect(emHeight).toBeGreaterThan(0);
+    expect(l.inkBottom! - l.inkTop!).toBeCloseTo(emHeight, 6);
+  });
+});

@@ -42,10 +42,14 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?
       const st = it.fontName !== undefined ? styles?.[it.fontName] : undefined;
       let inkTop = top, inkBottom = bottom;
       if (st) {
-        const [, ty] = viewport.convertToViewportPoint(bx, by + st.ascent * it.height);
-        const [, dy] = viewport.convertToViewportPoint(bx, by + st.descent * it.height);
-        inkTop = Math.min(ty, dy);
-        inkBottom = Math.max(ty, dy);
+        // 与上面字身框的算法同构：两点各取一条对角线（一点用 x、另一点用 x + width），不共用
+        // 同一个 x。旋转 0/180 时视口 y 只是 PDF y 的函数，两种取法数值一样；旋转 90/270 时视口
+        // y 只是 PDF x 的函数，两点若共用 bx 会让 y 恒等、墨迹高塌成 0（回归 C-1）——这里退化
+        // 回跟字身框一样，用两个不同的 x 保证旋转 90/270 时也能撑开高度。
+        const [, py] = viewport.convertToViewportPoint(bx, by + st.descent * it.height);
+        const [, qy] = viewport.convertToViewportPoint(bx + it.width, by + st.ascent * it.height);
+        inkTop = Math.min(py, qy);
+        inkBottom = Math.max(py, qy);
       }
       if (!cur) cur = { top, bottom, items: [], inkTop, inkBottom, anyInk: !!st };
       else {
