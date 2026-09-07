@@ -1517,6 +1517,7 @@ test('59-pdf-translate: 两次都丢记号——页判失败、原因写「记�
     const projectPath = path.join(kydogHome, 'proj');
     const pdfPath = path.join(projectPath, PLAIN_REL);
     const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
     const pane = await openPdf(page, pdfPath);
     await pane.getByTestId('pdf-translate').click();
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
@@ -1525,7 +1526,27 @@ test('59-pdf-translate: 两次都丢记号——页判失败、原因写「记�
     expect(doc.failedPages).toEqual([1]);
     expect(doc.failureReasons!['1']).toMatch(/翻译：组 g1 的译文记号不对（g1: 丢 v1）；重试：/);
     expect(doc.blocks.filter((b) => b.page === 1), '失败页不产块').toEqual([]);
-    expect(doc.blocks.filter((b) => b.page === 2 && b.kind === 'text')[0].target).toBe('节点 n{v1}');
+    const p2Text = doc.blocks.find((b) => b.page === 2 && b.kind === 'text')!;
+    expect(p2Text.target).toBe('节点 n{v1}');
+
+    // 「不产块」只在今天等价于「右格没盖」——RightPage 判的是 target === undefined，没有块就没有
+    // target。这是当前实现的巧合，不是被断言钉住的事实：以后加一层「失败页整页变灰/提示条」之类
+    // 的渲染，上面几条边车断言不会有任何变化，这条用例照样全绿。判据只能取像素（同
+    // EMPTY_TARGET_FIXTURE 的理由）：失败页在 DOM 上没有任何痕迹（没有块就没有元素），而右格
+    // 那块 canvas 无论画的是原文、是涂白的空块、还是一整格纸色都一样在。
+    //
+    // 取样矩形借第 2 页那条 "node ni" 文本块的几何：seedScriptLine 把 extra 那一行以同样的坐标
+    // 写进了每一页（buildPagedPdf 对 extra 的处理在页循环内部，逐页原样重复），第 2 页正常成功、
+    // 它的块就是第 1 页那一行本来会长在的地方——第 1 页两次都判不合法，自己没有块可借，写死坐标
+    // 又会在排版一改时悄悄采空。块几何（buildBlocks 的 unionRect）取的是整行 items 的并集，最后
+    // 一项正是下标 "i"，所以这个矩形连脚标本身的墨迹也框进去了。
+    const inner = { x: p2Text.x + 1, y: p2Text.y + 1, w: p2Text.width - 2, h: p2Text.height - 2 };
+    const s = await waitSample(page, paneSel, inner, '两次都丢记号跑完之后');
+    expect(s.leftDark, '左格这一块里得真有原文墨迹').toBeGreaterThan(0);
+    // 右格是左格的 1:1 拷贝、第 1 页这一行没有块可填，所以逐像素相等——不是「差不多」。被涂白的
+    // 空块、或者失败页整页加一层遮罩，都会让右边这个数偏离左边。
+    expect(s.dark, `失败页右格应当与左格逐像素同样多的墨迹（原文原样保留）${JSON.stringify(s)}`)
+      .toBe(s.leftDark);
   } finally {
     await teardown(launched);
   }
