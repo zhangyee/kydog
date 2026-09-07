@@ -67,6 +67,12 @@ const PAGE2_TWICE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-page2-t
 // 只回第一组（缺组补漏只发那一组）；第 3 页译文自带换行（pre-line 照排）；第 4 页照常。配
 // seedTwoLines。
 const TWO_STEP_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-two-step.json');
+// 脚标（spec 2026-09-07-pdf-translation-scripts §8）：每页第 2 行是 "node n" + 下标 "i"。
+const SCRIPTS_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-scripts.json');
+// 第 1 页第一条译文丢了 {v1}，第二条带：只重发那一组，页不判失败。
+const SCRIPTS_RESEND_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-scripts-resend.json');
+// 第 1 页两条都丢：整步重试也救不回，页判失败、原因写「记号」。
+const SCRIPTS_FAIL_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-scripts-fail.json');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -158,6 +164,19 @@ async function seedTwoLines(home: string) {
   await fs.writeFile(
     path.join(projectPath, PLAIN_REL),
     buildPagedPdf(PAGES, PAGE_W, PAGE_H, { x: 40, y: 300, text: 'The second line of this page', size: 12 }),
+  );
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
+// 每页第 2 行带一个下标项（buildPagedPdf 的 extra.script：0.7 倍字号、Ts 下移）。行文本抽出来是 "node ni"，
+// Task 2 的 textLines.pdfjs 集成测试钉住了这种写法在真 pdf.js 下的切分。
+async function seedScriptLine(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  await fs.writeFile(
+    path.join(projectPath, PLAIN_REL),
+    buildPagedPdf(PAGES, PAGE_W, PAGE_H, { x: 40, y: 300, text: 'node n', size: 12, script: { text: 'i', kind: 'sub' } }),
   );
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
@@ -1431,6 +1450,82 @@ test('59-pdf-translate: 划分缺一行——只把那一行再发一次并合�
     const counts = await gateCounts(launched);
     expect(counts.done['pdf.translation.layout']).toBe(5);
     expect(counts.done['pdf.translation.translate']).toBe(4);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 脚标进占位符——边车 source 是明文、target 带 {v1}、placeholders 带 script；skip 块不带', async () => {
+  const launched = await launchKydog({ seed: seedScriptLine, translateFixture: SCRIPTS_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const doc = await readSidecar(sidecar);
+    expect(doc.failedPages).toBeUndefined();
+    const text = doc.blocks.find((b) => b.page === 1 && b.kind === 'text')!;
+    expect(text.source, '边车 source 是去记号的明文').toBe('node ni');
+    expect(text.target).toBe('节点 n{v1}');
+    expect(text.placeholders).toEqual([{ id: 'v1', kind: 'formula', text: 'i', script: 'sub' }]);
+    const skip = doc.blocks.find((b) => b.page === 1 && b.kind === 'skip')!;
+    expect('placeholders' in skip, '没有 target 的块不带 placeholders').toBe(false);
+    // 渲染出来：记号已还原，且那个字是 data-script=sub 的 span
+    const block = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="${text.id}"]`);
+    await expect(block).toHaveText('节点 ni');
+    await expect(block.locator('[data-script="sub"]')).toHaveText('i');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// 这一页只有一个可译组，「违约的就是全部」→ 不补漏、整步重试一次（与 LaTeX 改写同一条规则）；
+// 「只重发违约的那几组」由 translateDoc.test 的两组用例守（Task 7）。
+test('59-pdf-translate: 译文丢了记号——重试一次成功，页不判失败', async () => {
+  const launched = await launchKydog({ seed: seedScriptLine, translateFixture: SCRIPTS_RESEND_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const pane = await openPdf(page, pdfPath);
+    await installTranslateGate(launched, []);      // 只计数，不扣
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const doc = await readSidecar(sidecar);
+    expect(doc.failedPages, '重试之后这一页不该判失败').toBeUndefined();
+    expect(doc.blocks.find((b) => b.page === 1 && b.kind === 'text')!.target).toBe('节点 n{v1}');
+    // 版面 4 次；翻译 4 页 + 第 1 页整步重试 1 次 = 5 次
+    const counts = await gateCounts(launched);
+    expect(counts.done['pdf.translation.layout']).toBe(4);
+    expect(counts.done['pdf.translation.translate']).toBe(5);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('59-pdf-translate: 两次都丢记号——页判失败、原因写「记号」、右格保留原文', async () => {
+  const launched = await launchKydog({ seed: seedScriptLine, translateFixture: SCRIPTS_FAIL_FIXTURE });
+  try {
+    const { page, kydogHome } = launched;
+    const projectPath = path.join(kydogHome, 'proj');
+    const pdfPath = path.join(projectPath, PLAIN_REL);
+    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
+    const pane = await openPdf(page, pdfPath);
+    await pane.getByTestId('pdf-translate').click();
+    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await waitSidecar(sidecar);
+    const doc = await readSidecar(sidecar);
+    expect(doc.failedPages).toEqual([1]);
+    expect(doc.failureReasons!['1']).toMatch(/翻译：组 g1 的译文记号不对（g1: 丢 v1）；重试：/);
+    expect(doc.blocks.filter((b) => b.page === 1), '失败页不产块').toEqual([]);
+    expect(doc.blocks.filter((b) => b.page === 2 && b.kind === 'text')[0].target).toBe('节点 n{v1}');
   } finally {
     await teardown(launched);
   }

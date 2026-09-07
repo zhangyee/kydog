@@ -1,0 +1,6 @@
+{
+  "1": [{ "text": "1 | skip\n2 | text", "stopReason": "stop" }, { "text": "g1\n节点 n\n%%\n", "stopReason": "stop" }, { "text": "g1\n节点 n\n%%\n", "stopReason": "stop" }],
+  "2": [{ "text": "1 | skip\n2 | text", "stopReason": "stop" }, { "text": "g1\n节点 n{v1}\n%%\n", "stopReason": "stop" }],
+  "3": [{ "text": "1 | skip\n2 | text", "stopReason": "stop" }, { "text": "g1\n节点 n{v1}\n%%\n", "stopReason": "stop" }],
+  "4": [{ "text": "1 | skip\n2 | text", "stopReason": "stop" }, { "text": "g1\n节点 n{v1}\n%%\n", "stopReason": "stop" }]
+}
