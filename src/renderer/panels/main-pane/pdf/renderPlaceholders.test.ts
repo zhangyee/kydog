@@ -23,4 +23,16 @@ describe('splitPlaceholders', () => {
   it('开头和结尾的占位符不产生空文本段', () => {
     expect(splitPlaceholders('{v1}', ph)).toEqual([{ kind: 'citation', text: '[12]' }]);
   });
+  it('placeholder 带 script → 段落带 script；不带的段落没有这个键', () => {
+    const segs = splitPlaceholders('n{v1} 与 x{v2}', [
+      { id: 'v1', kind: 'formula', text: 'i', script: 'sub' },
+      { id: 'v2', kind: 'formula', text: '2', script: 'sup' },
+    ]);
+    expect(segs).toEqual([
+      { kind: 'text', text: 'n' },
+      { kind: 'formula', text: 'i', script: 'sub' },
+      { kind: 'text', text: ' 与 x' },
+      { kind: 'formula', text: '2', script: 'sup' },
+    ]);
+  });
 });

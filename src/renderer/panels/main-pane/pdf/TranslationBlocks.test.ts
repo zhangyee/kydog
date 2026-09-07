@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { beginFitRound, fitCacheDomain, fitCacheKey } from './TranslationBlocks';
+import type { Segment } from './renderPlaceholders';
+import { beginFitRound, fitCacheDomain, fitCacheKey, segStyle } from './TranslationBlocks';
 
 const FONT = '400 12px "Noto Serif SC"';
 const TEXT = '这是一段译文，长度与换行位置决定了字号能收到多少。';
 const W = 460;
 const H = 120;
+const seg = (t: string): Segment[] => [{ kind: 'text', text: t }];
 
 // fitCache 是模块级 Map，同一渲染进程内对所有已打开的 PDF tab 共享（应用支持多个 tab 同时挂载，
 // 见 uiStore.openFileTabs / MainPane 的「tab 打开期间始终挂载」）。
@@ -14,46 +16,53 @@ const H = 120;
 // 两条（不同译文 / 不同 bbox）正是原实现漏掉的那两维——它当时拿 block.id 当它们的身份代理。
 describe('fitCacheKey', () => {
   it('同 id、同 font，target 变了 → key 必须不同（agent 重新翻译同一份 PDF 的主路径）', () => {
-    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, '旧的译文。', W, H);
-    const b = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, '新的译文，比旧的长出不少内容。', W, H);
+    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg('旧的译文。'), W, H);
+    const b = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg('新的译文，比旧的长出不少内容。'), W, H);
     expect(a).not.toBe(b);
   });
 
   it('同 id、同 font、同 target，bbox 变了 → key 必须不同', () => {
-    const base = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H);
-    expect(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W + 40, H)).not.toBe(base);
-    expect(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H + 40)).not.toBe(base);
+    const base = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H);
+    expect(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W + 40, H)).not.toBe(base);
+    expect(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H + 40)).not.toBe(base);
   });
 
   it('六项入参完全相同 → 同一个 key（缓存还得能命中，不然每次渲染都重量一遍）', () => {
-    expect(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H))
-      .toBe(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H));
+    expect(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H))
+      .toBe(fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H));
   });
 
   it('block.id 相同，docKey 不同 → key 不同（block.id 按 spec 只保证文档内唯一）', () => {
-    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H);
-    const b = fitCacheKey('/b/other.pdf', 'p1-b01', FONT, TEXT, W, H);
+    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H);
+    const b = fitCacheKey('/b/other.pdf', 'p1-b01', FONT, seg(TEXT), W, H);
     expect(a).not.toBe(b);
   });
 
   it('docKey 相同，block.id 不同 → key 不同', () => {
-    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H);
-    const b = fitCacheKey('/a/paper.pdf', 'p1-b02', FONT, TEXT, W, H);
+    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H);
+    const b = fitCacheKey('/a/paper.pdf', 'p1-b02', FONT, seg(TEXT), W, H);
     expect(a).not.toBe(b);
   });
 
   it('docKey、block.id 相同，font 不同 → key 不同', () => {
-    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, TEXT, W, H);
-    const b = fitCacheKey('/a/paper.pdf', 'p1-b01', '600 14px "Noto Serif SC"', TEXT, W, H);
+    const a = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, seg(TEXT), W, H);
+    const b = fitCacheKey('/a/paper.pdf', 'p1-b01', '600 14px "Noto Serif SC"', seg(TEXT), W, H);
     expect(a).not.toBe(b);
   });
 
   // 拼串（`${a}|${b}|…`）的话，路径或译文里出现一个分隔符就能让两组不同的入参撞成同一个 key。
   // macOS 的文件名允许 `|`，译文更是任意文本。
   it('入参里带分隔符也不会把两组不同的输入撞成同一个 key', () => {
-    const a = fitCacheKey('/a/x|y.pdf', 'b01', FONT, TEXT, W, H);
-    const b = fitCacheKey('/a/x', 'y.pdf|b01', FONT, TEXT, W, H);
+    const a = fitCacheKey('/a/x|y.pdf', 'b01', FONT, seg(TEXT), W, H);
+    const b = fitCacheKey('/a/x', 'y.pdf|b01', FONT, seg(TEXT), W, H);
     expect(a).not.toBe(b);
+  });
+
+  it('同一串文字、脚标结构不同 → key 不同（带脚标排出来的高度不同）', () => {
+    const plain = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, [{ kind: 'text', text: '节点 ni' }], W, H);
+    const scripted = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, [{ kind: 'text', text: '节点 n' }, { kind: 'formula', text: 'i', script: 'sub' }], W, H);
+    const italic = fitCacheKey('/a/paper.pdf', 'p1-b01', FONT, [{ kind: 'text', text: '节点 n' }, { kind: 'formula', text: 'i' }], W, H);
+    expect(new Set([plain, scripted, italic]).size).toBe(3);
   });
 });
 
@@ -70,9 +79,9 @@ describe('fitCache 的代际淘汰', () => {
   it('一轮跑完只留本轮出现过的条目，命中过的带进新一代', () => {
     const doc = '/evict/paper.pdf';
     const domain = fitCacheDomain(doc, 1);
-    const kOld = fitCacheKey(doc, 'p1-b01', FONT, '第一代的译文。', W, H);
-    const kNew = fitCacheKey(doc, 'p1-b01', FONT, '第二代的译文，比第一代长出不少内容。', W, H);
-    const kKeep = fitCacheKey(doc, 'p1-b02', FONT, TEXT, W, H);
+    const kOld = fitCacheKey(doc, 'p1-b01', FONT, seg('第一代的译文。'), W, H);
+    const kNew = fitCacheKey(doc, 'p1-b01', FONT, seg('第二代的译文，比第一代长出不少内容。'), W, H);
+    const kKeep = fitCacheKey(doc, 'p1-b02', FONT, seg(TEXT), W, H);
 
     const g1 = beginFitRound(domain);
     g1.set(kOld, RATIO.old);
@@ -98,9 +107,9 @@ describe('fitCache 的代际淘汰', () => {
   it('淘汰只作用于本域：同文档的其它页、另一个打开中的文档都不动', () => {
     const doc = '/evict/isolation.pdf';
     const other = '/evict/other.pdf';
-    const kPage1 = fitCacheKey(doc, 'p1-b01', FONT, TEXT, W, H);
-    const kPage2 = fitCacheKey(doc, 'p2-b01', FONT, TEXT, W, H);
-    const kOtherDoc = fitCacheKey(other, 'p1-b01', FONT, TEXT, W, H);
+    const kPage1 = fitCacheKey(doc, 'p1-b01', FONT, seg(TEXT), W, H);
+    const kPage2 = fitCacheKey(doc, 'p2-b01', FONT, seg(TEXT), W, H);
+    const kOtherDoc = fitCacheKey(other, 'p1-b01', FONT, seg(TEXT), W, H);
 
     const p2 = beginFitRound(fitCacheDomain(doc, 2));
     p2.set(kPage2, RATIO.otherPage);
@@ -124,8 +133,8 @@ describe('fitCache 的代际淘汰', () => {
   it('中途作废的一轮不 commit，旧一代原样留着（不会被半代结果替掉）', () => {
     const doc = '/evict/aborted.pdf';
     const domain = fitCacheDomain(doc, 1);
-    const kA = fitCacheKey(doc, 'p1-b01', FONT, TEXT, W, H);
-    const kB = fitCacheKey(doc, 'p1-b02', FONT, TEXT, W, H);
+    const kA = fitCacheKey(doc, 'p1-b01', FONT, seg(TEXT), W, H);
+    const kB = fitCacheKey(doc, 'p1-b02', FONT, seg(TEXT), W, H);
     const g1 = beginFitRound(domain);
     g1.set(kA, RATIO.keep);
     g1.set(kB, RATIO.old);
@@ -142,11 +151,28 @@ describe('fitCache 的代际淘汰', () => {
   it('一页的块被整代删光 → 域跟着收掉，不留空表', () => {
     const doc = '/evict/emptied.pdf';
     const domain = fitCacheDomain(doc, 3);
-    const k = fitCacheKey(doc, 'p3-b01', FONT, TEXT, W, H);
+    const k = fitCacheKey(doc, 'p3-b01', FONT, seg(TEXT), W, H);
     const g1 = beginFitRound(domain);
     g1.set(k, RATIO.keep);
     g1.commit();
     beginFitRound(domain).commit(); // 新一代这一页一个带 target 的块都没有
     expect(beginFitRound(domain).get(k)).toBeUndefined();
+  });
+});
+
+describe('segStyle（spec 2026-09-07 scripts §6）', () => {
+  it('sub / sup：字号 0.73em、relative 偏移；不带 formula 的 italic', () => {
+    expect(segStyle({ kind: 'formula', text: 'i', script: 'sub' })).toEqual({ fontSize: '0.73em', position: 'relative', top: '0.15em' });
+    expect(segStyle({ kind: 'formula', text: '2', script: 'sup' })).toEqual({ fontSize: '0.73em', position: 'relative', top: '-0.36em' });
+  });
+  it('没有 script：kind 的样式照旧（formula 斜体、inline-code 等宽、text / citation 无样式）', () => {
+    expect(segStyle({ kind: 'formula', text: 'x' })).toEqual({ fontStyle: 'italic' });
+    expect(segStyle({ kind: 'inline-code', text: 'x' })).toEqual({ fontFamily: 'var(--font-mono)' });
+    expect(segStyle({ kind: 'text', text: 'x' })).toEqual({});
+    expect(segStyle({ kind: 'citation', text: '[1]' })).toEqual({});
+  });
+  it('inline-code 带 script：等宽保留，叠上脚标样式', () => {
+    expect(segStyle({ kind: 'inline-code', text: 'i', script: 'sub' }))
+      .toEqual({ fontFamily: 'var(--font-mono)', fontSize: '0.73em', position: 'relative', top: '0.15em' });
   });
 });

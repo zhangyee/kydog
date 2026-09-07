@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import type { Block } from '../../../../shared/zhSidecar';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import type { Block, PlaceholderScript } from '../../../../shared/zhSidecar';
 import { LINE_HEIGHT, blockFrame, glyphHeight } from './blockLayout';
 import { fitFontScale } from './fitFontScale';
 import { inkForBackground, toCss } from './inkForBackground';
@@ -72,8 +72,8 @@ export function beginFitRound(domain: string): FitRound {
 /**
  * 缓存 key 的构造。
  *
- * key 里必须带上**决定这个比例的那几个量本身**：measureText（真正被排版的那串字）、块的
- * bbox（`b.width` 是测量宿主的宽、`b.height` 是要装进去的高）、以及测量用的 font。这几项
+ * key 里必须带上**决定这个比例的那几个量本身**：segs（被排版的那串字连同每段的 kind / script）、
+ * 块的 bbox（`b.width` 是测量宿主的宽、`b.height` 是要装进去的高）、以及测量用的 font。这几项
  * 加上「同一个 measure 实现」就是 ratio 的全部输入，一项不落。
  *
  * 原先的 key 是 `docKey|blockId|font`——拿 `block.id` 当这些量的身份代理。这在本期的主工作流
@@ -89,34 +89,47 @@ export function beginFitRound(domain: string): FitRound {
  * 「不同的入参组合」撞成同一个 key。
  */
 export function fitCacheKey(
-  docKey: string, blockId: string, font: string, measureText: string, width: number, height: number,
+  docKey: string, blockId: string, font: string, segs: Segment[], width: number, height: number,
 ): string {
-  return JSON.stringify([docKey, blockId, font, width, height, measureText]);
+  // segs 按 [kind, script, text] 三元组进 key：同一串文字带不带脚标、脚标落在哪几个字上，排出来的高度都不同。
+  return JSON.stringify([docKey, blockId, font, width, height, segs.map((s) => [s.kind, s.script ?? '', s.text])]);
 }
 
 /**
- * 一个 segment 在排版上与普通正文的差别。**测量与渲染共用这一份**：measureFit 把它 Object.assign
- * 到宿主里的 span 上，下面的渲染把它当 React style 用。
+ * 一个 segment 在排版上与普通正文的差别。**测量与渲染共用这一份**：fillHost 把它 Object.assign
+ * 到宿主里的 span 上，渲染把它当 React style 用。分两份写过一次，代价是含 inline-code 的块量出来
+ * 的行数少于真正画出来的行数，「刚好装下」的比例一渲染就溢出成块内滚动条。
  *
- * 分成两份写过一次，代价是测量宿主用纯文本（`host.textContent = measureText`）、渲染却把同一
- * 串文本切成带 italic / 等宽字体的 span——等宽字体通常更宽，含 inline-code 的块量出来的行数
- * 少于真正画出来的行数，于是「刚好装下」的比例一渲染就溢出成块内滚动条。
+ * 脚标（spec 2026-09-07 scripts §6）：0.73em、`position: relative` 偏移——三个数是 2512.03413 全篇
+ * 223 处脚标的中位数（字号比 0.733，sub 位移 0.150em，sup 0.363em），与 TeX 默认相符。用 relative
+ * 而不是 vertical-align，是为了不撑高行框（§9 待实测，e2e/57 一条几何断言守）。脚标段**不加**
+ * formula 的 italic：数学斜体码位自带字形，脚注号、CO₂ 的 2 不该斜。
  *
- * 写成 Record 而不是 if/else 链还有个好处：Placeholder 加了新 kind，tsc 会逼这里补上。
+ * 写成 Record 而不是 if/else 链：Placeholder 加了新 kind / script，tsc 会逼这里补上。
  */
-const SEG_STYLE: Record<Segment['kind'], { fontStyle?: string; fontFamily?: string }> = {
+const KIND_STYLE: Record<Segment['kind'], CSSProperties> = {
   text: {},
   citation: {},
   formula: { fontStyle: 'italic' },
   'inline-code': { fontFamily: 'var(--font-mono)' },
 };
+const SCRIPT_STYLE: Record<PlaceholderScript, CSSProperties> = {
+  sub: { fontSize: '0.73em', position: 'relative', top: '0.15em' },
+  sup: { fontSize: '0.73em', position: 'relative', top: '-0.36em' },
+};
+
+export function segStyle(s: Segment): CSSProperties {
+  if (!s.script) return KIND_STYLE[s.kind];
+  const { fontStyle: _italic, ...kind } = KIND_STYLE[s.kind];
+  return { ...kind, ...SCRIPT_STYLE[s.script] };
+}
 
 /** 把 segments 按渲染时的同一套 span 结构填进测量宿主。 */
 function fillHost(host: HTMLElement, segs: Segment[]) {
   host.textContent = '';
   for (const s of segs) {
     const el = document.createElement('span');
-    Object.assign(el.style, SEG_STYLE[s.kind]);
+    Object.assign(el.style, segStyle(s));
     el.textContent = s.text;
     host.appendChild(el);
   }
@@ -163,12 +176,13 @@ async function awaitFonts(host: HTMLElement, weight: number, px: number, text: s
  * layer.scale 之下。
  */
 async function measureFit(
-  round: FitRound, docKey: string, b: Block, segs: Segment[], measureText: string, host: HTMLElement,
+  round: FitRound, docKey: string, b: Block, segs: Segment[], host: HTMLElement,
 ): Promise<number> {
+  const measureText = segs.map((s) => s.text).join('');
   const px = b.fontSize * SIZE_MUL(b.kind);
   const weight = WEIGHT(b.kind);
   const font = `${weight} ${px}px "Noto Serif SC"`;
-  const key = fitCacheKey(docKey, b.id, font, measureText, b.width, b.height);
+  const key = fitCacheKey(docKey, b.id, font, segs, b.width, b.height);
   const hit = round.get(key);
   if (hit !== undefined) return hit;
 
@@ -184,7 +198,7 @@ async function measureFit(
   // 错值写进 fitCache，正是这份缓存要消灭的「key 对但值错」。重填之后到 fitFontScale 之间全是
   // 同步的（fitFontScale 的二分本身是同步函数），写与量因此重新变回原子的。
   //
-  // 重填走的仍是 fillHost + SEG_STYLE，与渲染同一份 span 结构与字体栈——测量与渲染同源那条不能
+  // 重填走的仍是 fillHost + segStyle，与渲染同一份 span 结构与字体栈——测量与渲染同源那条不能
   // 因为这次修复而破掉。
   host.style.width = `${b.width}px`;
   host.style.fontWeight = String(weight);
@@ -262,8 +276,7 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page 
       for (const b of blocks) {
         if (b.target === undefined) continue;
         const segs = splitPlaceholders(b.target, b.placeholders ?? []);
-        const measureText = segs.map((s) => s.text).join('');
-        out[b.id] = await measureFit(round, docKey, b, segs, measureText, host);
+        out[b.id] = await measureFit(round, docKey, b, segs, host);
         if (!alive) return; // 换页/换文档中途作废：不把已经量到一半的结果落地
       }
       if (!alive) return;
@@ -335,10 +348,10 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page 
               overflowY: 'auto', userSelect: 'text', pointerEvents: 'auto',
             }}
           >
-            {/* 与测量宿主同一份 SEG_STYLE、同一套 span 结构（见 fillHost）——两边一分家，
+            {/* 与测量宿主同一份 segStyle、同一套 span 结构（见 fillHost）——两边一分家，
                 量出来的行数就不是真正画出来的行数。`white-space` 也必须同一个值——量出来的行数才是画出来的行数。 */}
             {splitPlaceholders(b.target, b.placeholders ?? []).map((s, i) => (
-              <span key={i} style={SEG_STYLE[s.kind]}>{s.text}</span>
+              <span key={i} style={segStyle(s)} data-script={s.script}>{s.text}</span>
             ))}
           </div>
         );
