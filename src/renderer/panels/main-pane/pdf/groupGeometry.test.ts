@@ -95,4 +95,16 @@ describe('checkGroupGeometry', () => {
     const plain = lines.map(({ inkTop: _a, inkBottom: _b, ...l }) => l);
     expect(() => checkGroupGeometry([{ lines: [1], kind: 'text', target: 'T' }, { lines: [2], kind: 'skip' }], plain)).not.toThrow();
   });
+
+  it('被查行是挂在基线下的算符字形：字身框中心落进 mask、墨迹中心在外 → 不抛（2512.03413 第 8 页）', () => {
+    // 组 {1}：墨迹底 374.0 + PAD 1.5 = 375.5。行 2 字身框 371.1–379.1（中心 375.1，在内），墨迹 378.6–383.9（中心 381.2，在外）。
+    const lines = [
+      { n: 1, x: 73, y: 352, w: 222, h: 20, size: 9, text: 'a', inkTop: 354.6, inkBottom: 374.0 },
+      { n: 2, x: 92, y: 371.1, w: 10.8, h: 8, size: 8, text: 'Ö', inkTop: 378.6, inkBottom: 383.9 },
+    ];
+    expect(() => checkGroupGeometry([{ lines: [1], kind: 'text' }, { lines: [2], kind: 'formula' }], lines)).not.toThrow();
+    // 反过来：墨迹中心在内（把行 2 的墨迹抬到 372–378，中心 375）→ 抛
+    const inside = [lines[0], { ...lines[1], inkTop: 372, inkBottom: 378 }];
+    expect(() => checkGroupGeometry([{ lines: [1], kind: 'text' }, { lines: [2], kind: 'formula' }], inside)).toThrow(/盖住了不属于它的行 2/);
+  });
 });

@@ -1,8 +1,6 @@
 import type { PageLine } from '../../../../shared/zhSidecar';
-import { containsCenter, inkRectOf, paddedRect, unionRect, type Rect } from './blockRect';
+import { containsCenter, inkRectOf, paddedRect, unionRect } from './blockRect';
 import { GroupError, isTranslatable, type ParsedGroup } from './layoutProtocol';
-
-const rectOf = (l: PageLine): Rect => ({ x: l.x, y: l.y, w: l.w, h: l.h });
 
 /**
  * 第三层校验（spec §2.4 b）：对每个**有 target** 的组，它实际填色的那个矩形
@@ -20,6 +18,10 @@ const rectOf = (l: PageLine): Rect => ({ x: l.x, y: l.y, w: l.w, h: l.h });
  * text / title / caption 组）」）。
  *
  * 保证的强度到「不会**整行地**盖住」为止，边缘擦碰仍可能——见 blockRect.containsCenter 的注释。
+ *
+ * mask 与被查行的中心必须同一口径（都是墨迹框，缺省退回字身框）：字体挂在基线下的大算符
+ * （ascent 很小、descent 很大，如 cmex 那类）字身框中心会落进上一段的 mask，但它的墨迹根本
+ * 不在那——两侧口径不一致就会误判（spec 2026-09-07 §8.3，2512.03413.pdf 第 8 页实测）。
  */
 export function checkGroupGeometry(groups: ParsedGroup[], lines: PageLine[]): void {
   const byId = new Map(lines.map((l) => [l.n, l]));
@@ -31,7 +33,7 @@ export function checkGroupGeometry(groups: ParsedGroup[], lines: PageLine[]): vo
     const mask = paddedRect(unionRect(rects));
     for (const l of lines) {
       if (own.has(l.n)) continue;
-      if (containsCenter(mask, rectOf(l))) {
+      if (containsCenter(mask, inkRectOf(l))) {
         throw new GroupError(`组（行 ${g.lines.join(',')}）的覆盖矩形盖住了不属于它的行 ${l.n}`);
       }
     }
