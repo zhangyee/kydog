@@ -29,3 +29,26 @@ describe('pageLines', () => {
     expect('inkTop' in out[1]).toBe(false);
   });
 });
+
+describe('脚标区间（spec 2026-09-07 scripts §2.3）', () => {
+  const T = (items: { x1: number; x2: number; str: string; script?: 'sub' | 'sup' }[]): TextLine => ({ y: 0, top: 90, bottom: 100, items });
+  it('区间是 text 的 code unit 偏移；没有脚标的行不写字段', () => {
+    const out = pageLines([
+      T([{ x1: 0, x2: 30, str: 'node n' }, { x1: 30, x2: 33, str: 'i', script: 'sub' }, { x1: 33, x2: 60, str: ' from' }]),
+      T([{ x1: 0, x2: 10, str: 'plain' }]),
+    ]);
+    expect(out[0].text).toBe('node ni from');
+    expect(out[0].scripts).toEqual([{ start: 6, end: 7, kind: 'sub' }]);
+    expect('scripts' in out[1]).toBe(false);
+  });
+  it('相邻同类脚标并成一个区间（10⁻³ 的 − 与 3）', () => {
+    const [l] = pageLines([T([{ x1: 0, x2: 10, str: '10' }, { x1: 10, x2: 13, str: '−', script: 'sup' }, { x1: 13, x2: 16, str: '3', script: 'sup' }])]);
+    expect(l.scripts).toEqual([{ start: 2, end: 4, kind: 'sup' }]);
+  });
+  it('相邻但不同类不并（τ′ᵢ）；中间隔着假空格也不并', () => {
+    const [a] = pageLines([T([{ x1: 0, x2: 5, str: 'τ' }, { x1: 5, x2: 7, str: '′', script: 'sup' }, { x1: 5, x2: 8, str: 'i', script: 'sub' }])]);
+    expect(a.scripts).toEqual([{ start: 1, end: 2, kind: 'sup' }, { start: 2, end: 3, kind: 'sub' }]);
+    const [b] = pageLines([T([{ x1: 0, x2: 5, str: 'v' }, { x1: 5, x2: 7, str: '1', script: 'sub' }, { x1: 7, x2: 8, str: ' ' }, { x1: 8, x2: 10, str: '2', script: 'sub' }])]);
+    expect(b.scripts).toEqual([{ start: 1, end: 2, kind: 'sub' }, { start: 3, end: 4, kind: 'sub' }]);
+  });
+});
