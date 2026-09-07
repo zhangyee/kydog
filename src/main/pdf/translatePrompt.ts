@@ -70,7 +70,9 @@ Group the lines into logical blocks and classify each block. Do NOT translate an
    an indented first line (its x is larger than the block's left edge): a new
    indent starts a new group. A boxed or monospace listing is one block. The
    running head is the short line at the very top of every page, usually the
-   paper title or the venue: it is skip. Never put lines from two different
+   paper title or the venue: it is skip. Author names, affiliations and e-mail
+   addresses on the title page are skip too: they are not prose, and their
+   column layout cannot be reproduced. Never put lines from two different
    columns in one group.
 4. kind is one of:
    text     body paragraph
@@ -79,7 +81,8 @@ Group the lines into logical blocks and classify each block. Do NOT translate an
    formula  displayed formula
    table    table body or cells
    code     source code, prompt template, JSON, command line, or any boxed / monospace listing
-   skip     running head, page number, footer, reference list entry
+   skip     running head, page number, footer, reference list entry, and the
+            author names / affiliations / e-mail lines on the title page
 ${contextOf(o.docTitle)}
 
 ## Output format

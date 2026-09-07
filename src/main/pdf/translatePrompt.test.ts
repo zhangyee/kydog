@@ -43,6 +43,10 @@ describe('buildLayoutSystemPrompt（第一步：只分组分类）', () => {
     expect(p).toContain('Running heads, page numbers and footers are lines');
     expect(p).toMatch(/never a\s+coordinate/);
     expect(p).toMatch(/boxed or monospace listing is one block/);
+    // 标题页的作者 / 单位 / 邮箱归 skip：它们不是散文，四栏网格也没法在译文里重排（Yee 2026-09-07 手测：
+    // 单步协议那一版把它们译成一段流水文，格式全乱）。规则句与 kind 表两处都要有。
+    expect(p).toMatch(/Author names, affiliations and e-mail\s+addresses on the title page are skip too/);
+    expect(p).toMatch(/author names \/ affiliations \/ e-mail lines on the title page/);
     expect(p).toMatch(/indented first line/);
   });
   it('输出格式是每组一行、没有译文；例子里有页码行归 skip', () => {
