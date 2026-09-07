@@ -1582,6 +1582,18 @@ test('57-pdf-dual-pane: 拖分隔线改两栏宽度，拖到最右右栏也不�
     expect(pinned.left + pinned.right + DIVIDER_PX, '两栏 + 分隔线应当铺满 wrapper')
       .toBeCloseTo(pinned.wrapWidth, 0);
 
+    // 双击分隔线 → 回到等宽（Yee 2026-09-07：拖过之后要能一下子回正中）。分隔线此刻钉在最右，
+    // 位置要重新量。判据是两栏宽之差与 paneWidths(wrapW, 0.5) 那个数，不是「分隔线大概在中间」。
+    const c3 = await dividerCenter(pane);
+    await page.mouse.dblclick(c3.x, c3.y);
+    await expect.poll(
+      async () => { const w = await paneBoxWidths(page, paneSel); return w ? Math.abs(w.left - w.right) : Infinity; },
+      { timeout: 5000, message: '双击分隔线之后两栏应当等宽' },
+    ).toBeLessThan(1);
+    const centered = (await paneBoxWidths(page, paneSel))!;
+    expect(centered.left, `等宽 = paneWidths(wrapW, 0.5).left ${JSON.stringify(centered)}`)
+      .toBeCloseTo(paneWidths(centered.wrapWidth, 0.5).left, 0);
+
     // 拖完滚一次：分隔线换了宽度，同步链路照旧（两个容器没被重建，监听也没被摘掉）。
     await setPaneScroll(page, paneSel, 'left', 'top', 240);
     await expect.poll(

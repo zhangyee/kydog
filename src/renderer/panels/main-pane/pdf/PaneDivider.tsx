@@ -12,9 +12,11 @@ import { DIVIDER_PX } from './splitPane';
  * 这里只把 clientX 交出去，比例的换算（clampSplit，含两侧的 MIN_PANE_PX 下限）在调用方——
  * 它才知道 wrapper 的矩形，而这个组件连自己在哪都不该关心。
  */
-export function PaneDivider({ onDragTo, onDragEnd }: {
+export function PaneDivider({ onDragTo, onDragEnd, onReset }: {
   onDragTo: (clientX: number) => void;
   onDragEnd: () => void;
+  /** 双击分隔线：回到两栏等宽（Yee 2026-09-07：拖过之后要能一下子回正中）。 */
+  onReset: () => void;
 }) {
   const [hover, setHover] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -50,6 +52,7 @@ export function PaneDivider({ onDragTo, onDragEnd }: {
       onPointerMove={onMove}
       onPointerUp={onUp}
       onPointerCancel={onCancel}
+      onDoubleClick={onReset}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
       style={{ flex: `0 0 ${DIVIDER_PX}px`, position: 'relative', cursor: 'col-resize', zIndex: 2 }}

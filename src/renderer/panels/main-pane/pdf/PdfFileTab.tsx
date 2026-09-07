@@ -1481,7 +1481,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         <OverlayScrollbar targetRef={scrollRef} axis="y" testId="pdf-thumb-y-left" />
         <OverlayScrollbar targetRef={scrollRef} axis="x" testId="pdf-thumb-x-left" />
       </div>
-      {dual && <PaneDivider onDragTo={onDividerDrag} onDragEnd={() => setDragging(false)} />}
+      {dual && (
+        <PaneDivider
+          onDragTo={onDividerDrag}
+          onDragEnd={() => setDragging(false)}
+          onReset={() => setSplit(0.5)}   // 双击回正中：拖过之后一下子恢复等宽（Yee 2026-09-07）
+        />
+      )}
       {dual && (
         // 右栏与进度浮层的共同父层：浮层是滚动容器的**兄弟**、absolute 居中，放进滚动容器里
         // 会跟着内容滚走。右栏宽度让 flex 收（`flex: 1`）而不是也写死像素：分隔线与左栏都是
