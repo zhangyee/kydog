@@ -1,4 +1,4 @@
-import type { Placeholder } from '../../../../shared/zhSidecar';
+import { PLACEHOLDER_TOKEN, type Placeholder } from '../../../../shared/zhSidecar';
 
 export type Segment = { kind: 'text' | Placeholder['kind']; text: string };
 
@@ -10,7 +10,7 @@ export function splitPlaceholders(target: string, placeholders: Placeholder[]): 
   const byId = new Map(placeholders.map((p) => [p.id, p]));
   const out: Segment[] = [];
   let last = 0;
-  for (const m of target.matchAll(/\{(v\d+)\}/g)) {
+  for (const m of target.matchAll(PLACEHOLDER_TOKEN)) {
     const p = byId.get(m[1]);
     if (!p) continue;                                   // 认不出：连同大括号一起留在文本里
     if (m.index > last) out.push({ kind: 'text', text: target.slice(last, m.index) });

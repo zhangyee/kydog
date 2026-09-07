@@ -1,4 +1,5 @@
 import { GroupError } from './layoutProtocol';
+import { PLACEHOLDER_TOKEN } from '../../../../shared/zhSidecar';
 
 /**
  * 第二步（翻译）的输出：每个可译组一个槽位——`<id>` 一行、译文若干行、`%%` 一行
@@ -41,4 +42,33 @@ export function parseTranslations(text: string, expectedIds: string[]): { target
 export function introducedMarkup(source: string, target: string): '\\' | '$' | undefined {
   for (const ch of ['\\', '$'] as const) if (target.includes(ch) && !source.includes(ch)) return ch;
   return undefined;
+}
+
+export type TokenViolation = { missing: string[]; dup: string[]; unknown: string[] };
+
+/**
+ * 每个 `{vN}` 在译文里恰出现一次（spec 2026-09-07 scripts §5.2）。精确计数，不看位置：实测里「左邻字符变了」
+ * 的全是脚注号挂在被译单词上——模型做对了，位置校验会误伤，所以不做。三者皆空回 undefined。
+ */
+export function tokenViolation(source: string, target: string): TokenViolation | undefined {
+  const count = (s: string) => {
+    const m = new Map<string, number>();
+    for (const x of s.matchAll(PLACEHOLDER_TOKEN)) m.set(x[1], (m.get(x[1]) ?? 0) + 1);
+    return m;
+  };
+  const src = count(source);
+  const tgt = count(target);
+  const missing = [...src.keys()].filter((id) => !tgt.has(id));
+  const dup = [...src.keys()].filter((id) => (tgt.get(id) ?? 0) > 1);
+  const unknown = [...tgt.keys()].filter((id) => !src.has(id));
+  return missing.length || dup.length || unknown.length ? { missing, dup, unknown } : undefined;
+}
+
+/** 失败原因里的那半句：`丢 v1,v2、多出 v9`。 */
+export function describeTokenViolation(v: TokenViolation): string {
+  return [
+    v.missing.length ? `丢 ${v.missing.join(',')}` : '',
+    v.dup.length ? `重复 ${v.dup.join(',')}` : '',
+    v.unknown.length ? `多出 ${v.unknown.join(',')}` : '',
+  ].filter(Boolean).join('、');
 }

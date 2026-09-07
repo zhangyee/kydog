@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GroupError } from './layoutProtocol';
-import { introducedMarkup, parseTranslations } from './translateProtocol';
+import { describeTokenViolation, introducedMarkup, parseTranslations, tokenViolation } from './translateProtocol';
 
 describe('parseTranslations（第二步：`<id>` + 译文 + `%%`）', () => {
   it('每组一个槽位，译文可跨多行，保留内部换行', () => {
@@ -47,5 +47,27 @@ describe('introducedMarkup（译文多出原文没有的 \\ / $ → 数学符号
   });
   it('干净的译文 → undefined', () => {
     expect(introducedMarkup('node 𝑛𝑖', '节点 𝑛𝑖')).toBeUndefined();
+  });
+});
+
+describe('tokenViolation（每个记号在译文里恰出现一次，spec 2026-09-07 scripts §5.2）', () => {
+  it('全对 → undefined（顺序可变、位置不查）', () => {
+    expect(tokenViolation('node n{v1} in V{v2}', '在 V{v2} 中的节点 n{v1}')).toBeUndefined();
+  });
+  it('丢了 → missing', () => {
+    expect(tokenViolation('for 𝑒{v1}. Next 𝑒{v2}', '接着 𝑒{v2}')).toEqual({ missing: ['v1'], dup: [], unknown: [] });
+  });
+  it('重复 → dup', () => {
+    expect(tokenViolation('n{v1}', 'n{v1} 与 n{v1}')).toEqual({ missing: [], dup: ['v1'], unknown: [] });
+  });
+  it('译文里多出原文没有的记号 → unknown', () => {
+    expect(tokenViolation('n{v1}', 'n{v1} 与 m{v9}')).toEqual({ missing: [], dup: [], unknown: ['v9'] });
+  });
+  it('没有记号的组永远不违约', () => {
+    expect(tokenViolation('plain', '平的')).toBeUndefined();
+  });
+  it('describeTokenViolation：三类各自成句、顿号分隔', () => {
+    expect(describeTokenViolation({ missing: ['v1', 'v2'], dup: [], unknown: ['v9'] })).toBe('丢 v1,v2、多出 v9');
+    expect(describeTokenViolation({ missing: [], dup: ['v3'], unknown: [] })).toBe('重复 v3');
   });
 });
