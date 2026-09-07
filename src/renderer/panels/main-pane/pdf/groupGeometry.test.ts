@@ -58,4 +58,19 @@ describe('checkGroupGeometry', () => {
       [{ lines: [1, 2], kind: 'table' }, ], lines,
     )).not.toThrow();
   });
+
+  it('mask 按墨迹矩形：字身框并集不含另一行中心、墨迹框并集含 → 抛', () => {
+    // 组 {1}：字身框 y 100–110；降部把墨迹底推到 118。第 2 行 y 116–126，中心 121。
+    // 字身框 + PAD 1.5 → 到 111.5，不含 121；墨迹框 + PAD → 到 119.5，仍不含；把降部再放大到 122
+    // 才含——这里就取 inkBottom 122 让它含，证明用的是 ink 而不是字身框。
+    const lines = [
+      { n: 1, x: 72, y: 100, w: 400, h: 10, size: 10, text: 'a', inkTop: 103, inkBottom: 122 },
+      { n: 2, x: 72, y: 116, w: 400, h: 10, size: 10, text: 'b' },
+    ];
+    expect(() => checkGroupGeometry([{ lines: [1], kind: 'text', target: 'T' }, { lines: [2], kind: 'skip' }], lines))
+      .toThrow(/盖住了不属于它的行 2/);
+    // 去掉度量 → 退回字身框 → 通过
+    const plain = lines.map(({ inkTop: _a, inkBottom: _b, ...l }) => l);
+    expect(() => checkGroupGeometry([{ lines: [1], kind: 'text', target: 'T' }, { lines: [2], kind: 'skip' }], plain)).not.toThrow();
+  });
 });

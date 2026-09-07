@@ -141,12 +141,15 @@ export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground,
 
     for (const b of blocks) {
       if (b.target === undefined) continue;   // 不翻译的块不盖：公式、表格、页眉页脚原样留着
+      // 纵向按墨迹矩形（含降部；老边车没有 ink 就退回字身框）——与 groupGeometry 用的是同一份口径。
+      const top = b.ink?.top ?? b.y;
+      const bottom = b.ink?.bottom ?? b.y + b.height;
       // 向外取整（floor 起点、ceil 尺寸），免得边缘留半像素没盖住
       ctx.fillRect(
         Math.floor((b.x - BLOCK_PAD) * S),
-        Math.floor((b.y - BLOCK_PAD) * S),
+        Math.floor((top - BLOCK_PAD) * S),
         Math.ceil((b.width + 2 * BLOCK_PAD) * S),
-        Math.ceil((b.height + 2 * BLOCK_PAD) * S),
+        Math.ceil((bottom - top + 2 * BLOCK_PAD) * S),
       );
     }
   }, [leftCanvas, blocks, size.w, onBackground, blank]);

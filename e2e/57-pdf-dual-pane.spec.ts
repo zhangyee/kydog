@@ -37,6 +37,12 @@ const TARGET_BLOCK = { x: 60, y: 200, w: 460, h: 120 };
 const TARGET_INK = { x: 80, y: 260, text: 'residue check', size: 14 };
 // 采样框：包住 TARGET_INK 的墨迹，且完全落在 TARGET_BLOCK 内部（不挨边，不吃 BLOCK_PAD 外扩）。
 const TARGET_SAMPLE = { x: 65, y: 235, w: 300, h: 40 };
+// 一行带降部的字：g / y / p / q 的尾巴在基线下 0.207 × 14 ≈ 2.9 pt（pdf.js 对 Helvetica 的度量：
+// ascent 0.718、descent −0.207，与 e2e 打包里 pdfjs-dist 同一份表）。块的字身框到基线为止，
+// 老盖子只外扩 1.5 pt，剩下 ~1.4 pt 的尖会露出来——这条用例就采那条带。
+const DESC_INK = { x: 80, y: 400, text: 'gypq gypq gypq', size: 14 };
+const DESC_BLOCK = { x: 78, y: 400 - 14, w: 120, h: 14 };                       // 字身框：基线 − 字高 → 基线
+const DESC_INKBOX = { top: 400 - 0.718 * 14, bottom: 400 + 0.207 * 14 };       // 墨迹框
 // 译文块字号 e2e（字体加载前后一致）要用的长文本：块高 120pt、字号 11、行高 1.5 → 一屏约
 // 7 行、每行约 41 个全角字符，纯文本装不下的门槛在 ~290 字左右。这里往上叠了好几倍余量，
 // 确保 fitFontScale 真的会二分收缩——只有触发收缩，「测量时用的是不是真字体」才会体现在
@@ -60,6 +66,10 @@ function buildSidecar(pdf: Buffer): string {
       width: TARGET_BLOCK.w, height: TARGET_BLOCK.h,
       fontSize: 11, kind: 'text', source: 'a body paragraph', target: LONG_ZH,
     });
+    blocks.push({
+      id: `b${p}-desc`, page: p, x: DESC_BLOCK.x, y: DESC_BLOCK.y, width: DESC_BLOCK.w, height: DESC_BLOCK.h,
+      fontSize: 14, kind: 'text', source: 'gypq gypq gypq', target: '降部', ink: DESC_INKBOX,
+    });
   }
   return JSON.stringify({
     version: 1,
@@ -74,7 +84,7 @@ async function seedAll(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
   await fs.mkdir(projectPath, { recursive: true });
-  const pdf = buildPagedPdf(PAGES, PAGE_W, PAGE_H, TARGET_INK);
+  const pdf = buildPagedPdf(PAGES, PAGE_W, PAGE_H, [TARGET_INK, DESC_INK]);
   await fs.writeFile(path.join(projectPath, PDF_REL), pdf);
   await fs.writeFile(path.join(projectPath, ZH_REL), buildSidecar(pdf));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
@@ -1672,6 +1682,44 @@ test('57-pdf-dual-pane: 覆盖式滚动条——没有槽、滚动时拇指出�
     expect(Math.abs(after.top - expected), `拖拽后 scrollTop=${after.top} 应等于反算 ${expected}`).toBeLessThan(1);
     await expect.poll(async () => (await paneScroll(page, paneSel, 'right'))!.top, { message: '右栏跟上' })
       .toBeCloseTo(after.top, 0);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 盖子按墨迹矩形——最后一行的降部不再从块底漏出来', async () => {
+  const launched = await launchKydog({ seed: seedAll });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', PDF_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+    await expect.poll(async () => page.evaluate(({ lsel, rsel }) => {
+      const l = document.querySelector(`${lsel} canvas`) as HTMLCanvasElement | null;
+      const r = document.querySelector(`${rsel} canvas[data-pdf-right]`) as HTMLCanvasElement | null;
+      return !!l && !!r && l.width > 0 && r.width === l.width;
+    }, { lsel: leftRowSel(paneSel, 1), rsel: rightRowSel(paneSel, 1) }), { timeout: 10000 }).toBe(true);
+
+    // 采样带：基线下 1.5–3 pt（老盖子的下沿到降部尖之间），x 取那行字的范围。
+    const band = { x: DESC_INK.x, y: DESC_INK.y + 1.5, w: DESC_BLOCK.w - 4, h: 1.5 };
+    const dark = await page.evaluate(({ lsel, rsel, band, pageW }) => {
+      const count = (c: HTMLCanvasElement) => {
+        const S = c.width / pageW;
+        const d = c.getContext('2d')!.getImageData(
+          Math.round(band.x * S), Math.round(band.y * S), Math.round(band.w * S), Math.max(1, Math.round(band.h * S)),
+        ).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] < 300) n++;
+        return n;
+      };
+      return {
+        left: count(document.querySelector(`${lsel} canvas`) as HTMLCanvasElement),
+        right: count(document.querySelector(`${rsel} canvas[data-pdf-right]`) as HTMLCanvasElement),
+      };
+    }, { lsel: leftRowSel(paneSel, 1), rsel: rightRowSel(paneSel, 1), band, pageW: PAGE_W });
+    expect(dark.left, '左格那条带里得真有降部墨迹，右格「盖住了」才谈得上').toBeGreaterThan(0);
+    expect(dark.right, `右格那条带不该再有降部尖 ${JSON.stringify(dark)}`).toBe(0);
   } finally {
     await teardown(launched);
   }
