@@ -18,12 +18,14 @@ export function pageLines(lines: TextLine[]): PageLine[] {
     if (l.items.length === 0) continue;       // 没有 item 的行没有几何可言，也没有文本可翻
     const x = l.items[0].x1;
     const x2 = l.items[l.items.length - 1].x2;
-    out.push({
+    const line: PageLine = {
       n: out.length + 1,
       x, y: l.top, w: x2 - x, h: l.bottom - l.top,
       size: l.bottom - l.top,
       text: l.items.map((i) => i.str).join(''),
-    });
+    };
+    if (l.inkTop !== undefined && l.inkBottom !== undefined) { line.inkTop = l.inkTop; line.inkBottom = l.inkBottom; }
+    out.push(line);
   }
   return out;
 }

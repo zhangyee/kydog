@@ -26,6 +26,11 @@ export type Block = {
   /** 缺省 = 不翻译这一块。这是「右栏要不要在这个矩形里盖掉原文」的唯一判据（spec §3.2）。 */
   target?: string;
   placeholders?: Placeholder[];
+  /**
+   * 墨迹矩形的纵向范围（绝对 pt，含降部）。盖子与几何校验用它；缺省时退回 `y / height`（字身框）。
+   * 由内置翻译按 pdf.js 的字体 ascent / descent 写（spec 2026-09-07 §2）；agent 不用写。
+   */
+  ink?: { top: number; bottom: number };
 };
 
 export type TranslatedDoc = {
@@ -89,6 +94,12 @@ function validateBlock(raw: unknown, i: number, file: string): Block {
       if (typeof q?.id !== 'string' || typeof q?.text !== 'string' || !PH_KINDS.has(q?.kind as string)) {
         return at(`的 placeholders 里有一条缺 id / kind / text，或 kind 不在 ${list(PH_KINDS)} 之内`);
       }
+    }
+  }
+  if (b.ink !== undefined) {
+    const k = b.ink as Record<string, unknown> | null;
+    if (!k || !num(k.top) || !num(k.bottom) || (k.top as number) > (k.bottom as number)) {
+      return at('的 ink 不是 { top, bottom } 两个数且 top ≤ bottom');
     }
   }
   return b as unknown as Block;
@@ -165,4 +176,8 @@ export function filterByGeometry(
  * `n` 是**不透明 id**，不是阅读顺序——它来自 pdf.js 的内容流顺序，而 PDF 不保证内容流等于语义
  * 阅读顺序（spec §2.3）。几何是 scale 1 的视口坐标。
  */
-export type PageLine = { n: number; x: number; y: number; w: number; h: number; size: number; text: string };
+export type PageLine = {
+  n: number; x: number; y: number; w: number; h: number; size: number; text: string;
+  /** 墨迹顶 / 底（绝对 pt，含降部）。来自 pdf.js 的字体 ascent / descent；缺省 = 没度量（按 y / y + h）。 */
+  inkTop?: number; inkBottom?: number;
+};

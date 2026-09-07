@@ -132,6 +132,10 @@ The same goes for `failureReasons` (page-number string → why that page failed)
 built-in translation only, not by you. If you carry it over it must be an object mapping integer
 page-number strings (≥ 1) to non-empty strings, otherwise the **whole file** is malformed.
 
+A block may also carry `ink` (`{ top, bottom }`, the vertical extent of its glyph ink, descenders
+included) — written by the built-in translation from pdf.js font metrics; you don't write it.
+Without it the right pane covers by `y / height`.
+
 ## Self-Maintenance
 
 Your workspace files: `~/.kydog/SOUL.md` (identity), `~/.kydog/USER.md`

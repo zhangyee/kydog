@@ -70,6 +70,20 @@ describe('validateTranslatedDoc', () => {
   });
 });
 
+describe('Block.ink 结构校验', () => {
+  const withInk = (ink: unknown) => ({ ...doc(), blocks: [{ ...doc().blocks[0], ink }] });
+  it('合法 → 原样带出', () => {
+    expect(validateTranslatedDoc(withInk({ top: 1, bottom: 2 }), 'f').blocks[0].ink).toEqual({ top: 1, bottom: 2 });
+  });
+  it('缺省照常通过（agent 写的边车没有它）', () => {
+    expect(validateTranslatedDoc(doc(), 'f').blocks[0].ink).toBeUndefined();
+  });
+  it('不是两个数 / top > bottom → 抛', () => {
+    expect(() => validateTranslatedDoc(withInk({ top: 'a', bottom: 2 }), 'f')).toThrow(/ink/);
+    expect(() => validateTranslatedDoc(withInk({ top: 3, bottom: 2 }), 'f')).toThrow(/ink/);
+  });
+});
+
 describe('filterByGeometry', () => {
   const sizes = [{ w: 595, h: 842 }, { w: 595, h: 842 }];
 

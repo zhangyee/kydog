@@ -48,4 +48,14 @@ describe('buildBlocks', () => {
   it('行号在这一页找不到的组被跳过（防御，正常不会发生）', () => {
     expect(buildBlocks(1, lines, [{ lines: [99], kind: 'text', target: 'x' }])).toEqual([]);
   });
+
+  it('块的 ink 取组内各行墨迹的并集；没有度量的行按字身框参与', () => {
+    const lines = [
+      { n: 1, x: 72, y: 100, w: 400, h: 10, size: 10, text: 'a', inkTop: 102.8, inkBottom: 112.2 },
+      { n: 2, x: 72, y: 112, w: 400, h: 10, size: 10, text: 'b' },
+    ];
+    const [b] = buildBlocks(1, lines, [{ lines: [1, 2], kind: 'text', target: 'T' }]);
+    expect(b.ink).toEqual({ top: 102.8, bottom: 122 });     // 第 2 行按 y + h = 122
+    expect(b.y).toBe(100); expect(b.height).toBe(22);        // 字身框并集不变
+  });
 });

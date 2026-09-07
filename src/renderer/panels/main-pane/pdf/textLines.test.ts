@@ -4,8 +4,8 @@ import { textLines, type TextItemLike } from './textLines';
 // 400 高的页、无旋转：视口 y = 400 − PDF y
 const viewport = { convertToViewportPoint: (x: number, y: number): [number, number] => [x, 400 - y] };
 
-function item(str: string, x: number, baseline: number, width: number, hasEOL = false, height = 14): TextItemLike {
-  return { str, transform: [14, 0, 0, 14, x, baseline], width, height, hasEOL };
+function item(str: string, x: number, baseline: number, width: number, hasEOL = false, height = 14, fontName?: string): TextItemLike {
+  return { str, transform: [14, 0, 0, 14, x, baseline], width, height, hasEOL, ...(fontName ? { fontName } : {}) };
 }
 
 describe('textLines', () => {
@@ -41,5 +41,34 @@ describe('textLines', () => {
 
   it('空输入返回空表', () => {
     expect(textLines([], viewport)).toEqual([]);
+  });
+});
+
+describe('墨迹顶 / 底（pdf.js styles 的 ascent / descent）', () => {
+  // Helvetica 在 pdf.js 里 ascent 0.718、descent −0.207（实测，e2e fixture 同一字体）
+  const styles = { f1: { ascent: 0.718, descent: -0.207 } };
+
+  it('有 styles → inkTop = 基线 − ascent·字高、inkBottom = 基线 + |descent|·字高；top / bottom / y 不变', () => {
+    const [l] = textLines([item('gypq', 40, 340, 40, true, 14, 'f1')], viewport, styles);
+    expect(l.top).toBeCloseTo(46);       // 400 − (340 + 14)：字身框不变
+    expect(l.bottom).toBeCloseTo(60);
+    expect(l.y).toBeCloseTo(56.5);
+    expect(l.inkTop).toBeCloseTo(60 - 0.718 * 14, 6);
+    expect(l.inkBottom).toBeCloseTo(60 + 0.207 * 14, 6);
+  });
+
+  it('一行里两种字号 → 墨迹顶取最小、底取最大', () => {
+    const [l] = textLines([item('a', 40, 340, 10, false, 10, 'f1'), item('B', 60, 340, 10, true, 14, 'f1')], viewport, styles);
+    expect(l.inkTop).toBeCloseTo(60 - 0.718 * 14, 6);
+    expect(l.inkBottom).toBeCloseTo(60 + 0.207 * 14, 6);
+  });
+
+  it('没有 styles、或该项的字体查不到 → 该项按字身框参与并集；整行都查不到时不给 ink 字段', () => {
+    const [noStyles] = textLines([item('x', 40, 340, 10, true, 14, 'f1')], viewport);
+    expect(noStyles.inkTop).toBeUndefined();
+    expect(noStyles.inkBottom).toBeUndefined();
+    const [mixed] = textLines([item('a', 40, 340, 10, false, 14, 'zz'), item('g', 60, 340, 10, true, 14, 'f1')], viewport, styles);
+    expect(mixed.inkTop).toBeCloseTo(Math.min(46, 60 - 0.718 * 14), 6);   // zz 按字身框 46
+    expect(mixed.inkBottom).toBeCloseTo(60 + 0.207 * 14, 6);
   });
 });

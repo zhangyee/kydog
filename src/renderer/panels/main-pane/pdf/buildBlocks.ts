@@ -1,5 +1,5 @@
 import type { Block, PageLine } from '../../../../shared/zhSidecar';
-import { unionRect } from './blockRect';
+import { inkRectOf, unionRect } from './blockRect';
 import type { ParsedGroup } from './parseGroups';
 
 /** 中位数，偶数取较小的那个——为的是确定性，不是统计上的讲究。 */
@@ -51,6 +51,8 @@ export function buildBlocks(page: number, lines: PageLine[], groups: ParsedGroup
     // target 缺省是「这一块不覆盖」的唯一判据，所以不可译的 kind 必须**不带这个键**，
     // 而不是带一个 undefined —— JSON.stringify 会把 undefined 的键去掉，但显式不写更清楚。
     if (g.target !== undefined) block.target = g.target;
+    const ink = unionRect(ls.map(inkRectOf));
+    block.ink = { top: ink.y, bottom: ink.y + ink.h };
     return block;
   });
 }

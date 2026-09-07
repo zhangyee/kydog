@@ -97,6 +97,9 @@ width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF
 同样只由内置翻译写的还有 `failureReasons`（页号字符串 → 该页失败原因），你也不用写；真要保留，
 它必须是「≥ 1 的整数页号字符串 → 非空字符串」的对象，否则**整份文件**会被判为格式错。
 
+块上还可能有 `ink`（`{ top, bottom }`，墨迹矩形的纵向范围，含降部），也是内置翻译按 pdf.js 的
+字体度量写的，你不用写；缺省时右栏按 `y / height` 盖。
+
 ## 自维护
 
 你的工作区文件：`~/.kydog/SOUL.md`（人格）、`~/.kydog/USER.md`（用户）、

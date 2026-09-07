@@ -1,9 +1,9 @@
 import type { PageLine } from '../../../../shared/zhSidecar';
 import { pageLines } from './pageLines';
-import { textLines, type TextItemLike, type TextLine, type ViewportLike } from './textLines';
+import { textLines, type FontStyles, type TextItemLike, type TextLine, type ViewportLike } from './textLines';
 
 export type TextSource = {
-  getTextContent(): Promise<{ items: unknown[] }>;
+  getTextContent(): Promise<{ items: unknown[]; styles?: FontStyles }>;
   getViewport(o: { scale: number }): ViewportLike;
 };
 
@@ -18,6 +18,6 @@ export type TextSource = {
 export async function extractPageLines(proxy: TextSource): Promise<{ lines: PageLine[]; text: TextLine[] }> {
   const content = await proxy.getTextContent();
   const items = content.items.filter((it): it is TextItemLike => typeof (it as { str?: unknown }).str === 'string');
-  const text = textLines(items, proxy.getViewport({ scale: 1 }));
+  const text = textLines(items, proxy.getViewport({ scale: 1 }), content.styles);
   return { lines: pageLines(text), text };
 }

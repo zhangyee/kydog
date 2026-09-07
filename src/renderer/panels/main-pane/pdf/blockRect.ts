@@ -46,3 +46,10 @@ export function containsCenter(r: Rect, of: Rect): boolean {
   const cy = of.y + of.h / 2;
   return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
 }
+
+/** 行的墨迹矩形：纵向用 pdf.js 度量算出的 inkTop / inkBottom，没有度量时退回字身框。盖子与几何校验都用它。 */
+export function inkRectOf(l: { x: number; y: number; w: number; h: number; inkTop?: number; inkBottom?: number }): Rect {
+  const top = l.inkTop ?? l.y;
+  const bottom = l.inkBottom ?? l.y + l.h;
+  return { x: l.x, y: top, w: l.w, h: bottom - top };
+}

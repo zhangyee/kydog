@@ -18,4 +18,14 @@ describe('pageLines', () => {
     const out = pageLines([L(90, 100, [[72, 100, 'a']]), L(110, 120, []), L(130, 140, [[72, 100, 'c']])]);
     expect(out.map((l) => [l.n, l.text])).toEqual([[1, 'a'], [2, 'c']]);
   });
+
+  it('带墨迹顶 / 底的行 → PageLine 带 inkTop / inkBottom；没有的行不带', () => {
+    const out = pageLines([
+      { y: 56.5, top: 46, bottom: 60, inkTop: 49.9, inkBottom: 62.9, items: [{ x1: 40, x2: 80, str: 'a' }] },
+      { y: 96.5, top: 86, bottom: 100, items: [{ x1: 40, x2: 80, str: 'b' }] },
+    ]);
+    expect(out[0].inkTop).toBeCloseTo(49.9);
+    expect(out[0].inkBottom).toBeCloseTo(62.9);
+    expect('inkTop' in out[1]).toBe(false);
+  });
 });
