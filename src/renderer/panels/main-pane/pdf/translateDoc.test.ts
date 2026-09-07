@@ -12,10 +12,18 @@ const fakePage = (n: number, count = 1) => ({
   getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, 400 - y] }),
 });
 
+/** 第一步的默认假实现：每行一个 text 组。 */
+const layoutOk = async ({ lines }: { lines: { n: number }[] }) =>
+  ({ text: lines.map((l) => `${l.n} | text`).join('\n'), truncated: false });
+/** 第二步的默认假实现：每组译文 `T<page>`。 */
+const translateOk = async ({ page, groups }: { page: number; groups: { id: string }[] }) =>
+  ({ text: groups.map((g) => `${g.id}\nT${page}\n%%`).join('\n'), truncated: false });
+
 const base = (over: Partial<Parameters<typeof translateDoc>[0]> = {}) => ({
   numPages: 3,
   getPage: async (n: number) => fakePage(n),
-  translatePage: async ({ page }: { page: number }) => ({ text: `1 | text\nT${page}\n%%\n`, truncated: false }),
+  layoutPage: layoutOk,
+  translateGroups: translateOk,
   onProgress: () => {},
   isCancelled: () => false,
   pdfName: 'p.pdf',
@@ -51,12 +59,15 @@ describe('translateDoc', () => {
   });
 
   it('全文档零行 → 抛错，一次调用都不发', async () => {
-    const translatePage = vi.fn();
+    const layoutPage = vi.fn();
+    const translateGroups = vi.fn();
     await expect(translateDoc(base({
       getPage: async () => ({ getTextContent: async () => ({ items: [] }), getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, y] }) }),
-      translatePage,
+      layoutPage,
+      translateGroups,
     }))).rejects.toThrow(/文本层/);
-    expect(translatePage).not.toHaveBeenCalled();
+    expect(layoutPage).not.toHaveBeenCalled();
+    expect(translateGroups).not.toHaveBeenCalled();
   });
 
   it('零行的页不发请求，非零的照发', async () => {
@@ -65,7 +76,7 @@ describe('translateDoc', () => {
       getPage: async (n: number) => (n === 2
         ? { getTextContent: async () => ({ items: [] }), getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, y] }) }
         : fakePage(n)),
-      translatePage: async ({ page }: { page: number }) => { seen.push(page); return { text: `1 | text\nT${page}\n%%\n`, truncated: false }; },
+      layoutPage: async (a) => { seen.push(a.page); return layoutOk(a); },
     }));
     expect(seen.sort()).toEqual([1, 3]);
   });
@@ -81,13 +92,13 @@ describe('translateDoc', () => {
     const progress: number[] = [];
     const doc = await translateDoc(base({
       numPages: 1,
-      translatePage: async () => {
-        if (first) { first = false; return { text: 'garbage', truncated: false }; }
-        return { text: '1 | text\nOK\n%%\n', truncated: false };
+      translateGroups: async (a) => {
+        if (first) { first = false; return { text: 'no header', truncated: false }; }
+        return translateOk(a);
       },
       onProgress: (p) => progress.push(p.failed),
     }));
-    expect(doc!.blocks[0].target).toBe('OK');
+    expect(doc!.blocks[0].target).toBe('T1');
     expect(progress.at(-1)).toBe(0);
   });
 
@@ -95,8 +106,7 @@ describe('translateDoc', () => {
     let last = 0;
     const doc = await translateDoc(base({
       numPages: 2,
-      translatePage: async ({ page }: { page: number }) =>
-        (page === 2 ? { text: 'garbage', truncated: false } : { text: '1 | text\nT1\n%%\n', truncated: false }),
+      translateGroups: async (a) => (a.page === 2 ? { text: 'no header', truncated: false } : translateOk(a)),
       onProgress: (p) => { last = p.failed; },
     }));
     expect(doc!.blocks.map((b) => b.page)).toEqual([1]);
@@ -104,6 +114,7 @@ describe('translateDoc', () => {
     // 计数只是 onProgress 上的瞬时读数；**能活过这趟作业的是边车里这份页号**（Notice 从 doc
     // 现读）。「第 2 页失败」这件事必须显式在这里，不能靠「哪几页没有块」反推——零行页同样没块。
     expect(doc!.failedPages).toEqual([2]);
+    expect(doc!.failureReasons!['2']).toMatch(/^翻译：/);
   });
 
   it('多页失败 → 页号升序，与并发完成次序无关', async () => {
@@ -111,10 +122,10 @@ describe('translateDoc', () => {
     // 微任务），断言写进边车的仍是 [2, 4]——同样的输入不该写出不同的文件。
     const doc = await translateDoc(base({
       numPages: 4,
-      translatePage: async ({ page }: { page: number }) => {
-        if (page === 2) { await Promise.resolve(); await Promise.resolve(); return { text: 'garbage', truncated: false }; }
-        if (page === 4) return { text: 'garbage', truncated: false };
-        return { text: `1 | text\nT${page}\n%%\n`, truncated: false };
+      translateGroups: async (a) => {
+        if (a.page === 2) { await Promise.resolve(); await Promise.resolve(); return { text: 'no header', truncated: false }; }
+        if (a.page === 4) return { text: 'no header', truncated: false };
+        return translateOk(a);
       },
     }));
     expect(doc!.failedPages).toEqual([2, 4]);
@@ -132,14 +143,11 @@ describe('translateDoc', () => {
     it('两次都失败 → 边车里有该页的两次报错文本；成功页没有条目', async () => {
       const doc = await translateDoc(base({
         numPages: 2,
-        translatePage: async ({ page }) => ({
-          text: page === 2 ? 'no bar here' : '1 | text\nT\n%%\n', truncated: false,
-        }),
+        translateGroups: async (a) => (a.page === 2 ? { text: 'no header', truncated: false } : translateOk(a)),
       }));
       expect(doc!.failedPages).toEqual([2]);
       expect(Object.keys(doc!.failureReasons!)).toEqual(['2']);
-      expect(doc!.failureReasons!['2']).toMatch(/组头缺少 "\|"/);
-      expect(doc!.failureReasons!['2']).toMatch(/；重试：/);
+      expect(doc!.failureReasons!['2']).toMatch(/^翻译：.*；重试：/);
     });
     it('一页都没失败 → 没有 failureReasons 这个键', async () => {
       const doc = await translateDoc(base());
@@ -148,17 +156,21 @@ describe('translateDoc', () => {
   });
 
   it('截断 → 对半拆重试，递归到单行', async () => {
-    const calls: number[] = [];
+    const layouts: number[][] = [];
+    const translates: number[] = [];
     const doc = await translateDoc(base({
       numPages: 1,
       getPage: async (n: number) => fakePage(n, 4),
-      translatePage: async ({ lines }: { lines: { n: number }[] }) => {
-        calls.push(lines.length);
-        if (lines.length > 1) return { text: '', truncated: true };
-        return { text: `${lines[0].n} | text\nT${lines[0].n}\n%%\n`, truncated: false };
+      layoutPage: async (a) => {
+        layouts.push(a.lines.map((l) => l.n));
+        if (a.lines.length > 2) return { text: '', truncated: true };
+        return layoutOk(a);
       },
+      translateGroups: async (a) => { translates.push(a.groups.length); return translateOk(a); },
     }));
-    expect(calls).toEqual([4, 2, 1, 1, 2, 1, 1]);
+    expect(layouts).toEqual([[1, 2, 3, 4], [1, 2], [3, 4]]);
+    // 第二步是对**合并后的整页**发的一次调用：拆分只发生在第一步内部。
+    expect(translates).toEqual([4]);
     expect(doc!.blocks).toHaveLength(4);
   });
 
@@ -166,36 +178,50 @@ describe('translateDoc', () => {
     let last = 0;
     const doc = await translateDoc(base({
       numPages: 1,
-      translatePage: async () => ({ text: '', truncated: true }),
+      layoutPage: async () => ({ text: '', truncated: true }),
       onProgress: (p) => { last = p.failed; },
     }));
     expect(doc!.blocks).toEqual([]);
     expect(last).toBe(1);
+    expect(doc!.failureReasons!['1']).toMatch(/^版面：/);
   });
 
   it('docTitle 从第 1 页传播到其余页，且第 1 页先单跑', async () => {
-    const titles: (string | undefined)[] = [];
+    const calls: { fn: 'layout' | 'translate'; page: number; docTitle?: string }[] = [];
     await translateDoc(base({
       numPages: 3,
-      translatePage: async ({ page, docTitle }: { page: number; docTitle?: string }) => {
-        titles.push(docTitle);
-        return page === 1 ? { text: '1 | title\n标题\n%%\n', truncated: false } : { text: '1 | text\nX\n%%\n', truncated: false };
+      layoutPage: async (a) => {
+        calls.push({ fn: 'layout', page: a.page, docTitle: a.docTitle });
+        return a.page === 1 ? { text: '1 | title', truncated: false } : layoutOk(a);
+      },
+      translateGroups: async (a) => {
+        calls.push({ fn: 'translate', page: a.page, docTitle: a.docTitle });
+        return translateOk(a);
       },
     }));
-    expect(titles[0]).toBeUndefined();
-    expect(titles.slice(1)).toEqual(['p1l1', 'p1l1']);
+    // 第 1 页的版面先于其它页的任何调用：文题要在第 1 页的**第二步**之前就确定。
+    expect(calls[0]).toEqual({ fn: 'layout', page: 1, docTitle: undefined });
+    // 第 1 页只跑一次版面：拿文题那趟的结果直接复用，不多付一次调用。
+    expect(calls.filter((c) => c.page === 1)).toEqual([
+      { fn: 'layout', page: 1, docTitle: undefined },
+      { fn: 'translate', page: 1, docTitle: 'p1l1' },
+    ]);
+    expect(calls.filter((c) => c.page !== 1).map((c) => c.docTitle)).toEqual(['p1l1', 'p1l1', 'p1l1', 'p1l1']);
   });
 
   it('并发不超过 PAGE_CONCURRENCY', async () => {
     let inFlight = 0; let peak = 0;
+    // 两个入口一起计 in-flight：界的是「一趟里已发出未落地的上游请求」，不分是哪一步。
+    const busy = async <T>(fn: () => Promise<T>): Promise<T> => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return fn();
+    };
     await translateDoc(base({
       numPages: 20,
-      translatePage: async ({ page }: { page: number }) => {
-        inFlight++; peak = Math.max(peak, inFlight);
-        await new Promise((r) => setTimeout(r, 1));
-        inFlight--;
-        return { text: `1 | text\nT${page}\n%%\n`, truncated: false };
-      },
+      layoutPage: (a) => busy(() => layoutOk(a)),
+      translateGroups: (a) => busy(() => translateOk(a)),
     }));
     // 断言 toBe 而不是 toBeLessThanOrEqual：<= 在实现完全串行（peak 恒为 1）时也绿，
     // 而「把 Promise.all 误改成串行 for」的用户可见后果是翻译慢 4 倍。peak 恒等于 4 是确定的
@@ -209,10 +235,10 @@ describe('translateDoc', () => {
     const doc = await translateDoc(base({
       numPages: 20,
       isCancelled: () => cancelled,
-      translatePage: async ({ page }: { page: number }) => {
-        seen.push(page);
+      layoutPage: async (a) => {
+        seen.push(a.page);
         if (seen.length >= 5) cancelled = true;
-        return { text: `1 | text\nT${page}\n%%\n`, truncated: false };
+        return layoutOk(a);
       },
     }));
     expect(doc).toBeNull();
@@ -224,13 +250,13 @@ describe('translateDoc', () => {
   });
 
   it('llm.not_configured 不重试，直接抛出中止整趟', async () => {
-    const translatePage = vi.fn(async () => {
+    const layoutPage = vi.fn(async () => {
       const e = new Error('没有可用的模型') as Error & { code?: string };
       e.code = 'llm.not_configured';
       throw e;
     });
-    await expect(translateDoc(base({ numPages: 3, translatePage }))).rejects.toThrow('没有可用的模型');
-    expect(translatePage).toHaveBeenCalledTimes(1);
+    await expect(translateDoc(base({ numPages: 3, layoutPage }))).rejects.toThrow('没有可用的模型');
+    expect(layoutPage).toHaveBeenCalledTimes(1);
   });
 
   it('第一次校验失败触发重试、第二次才遇到 llm.not_configured → 中止整趟，不计入 failed', async () => {
@@ -238,9 +264,9 @@ describe('translateDoc', () => {
     const progress: number[] = [];
     await expect(translateDoc(base({
       numPages: 1,
-      translatePage: async () => {
+      translateGroups: async () => {
         calls++;
-        if (calls === 1) return { text: 'garbage', truncated: false };
+        if (calls === 1) return { text: 'no header', truncated: false };
         const e = new Error('没有可用的模型') as Error & { code?: string };
         e.code = 'llm.not_configured';
         throw e;
@@ -257,18 +283,22 @@ describe('translateDoc', () => {
 describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
   it('只把缺的那几行再发一次，合并后成功、不计失败', async () => {
     const calls: number[][] = [];
+    const translates: string[][] = [];
     const doc = await translateDoc(base({
       numPages: 1,
       getPage: async (n: number) => fakePage(n, 3),
-      translatePage: async ({ lines }) => {
+      layoutPage: async ({ lines }) => {
         calls.push(lines.map((l) => l.n));
-        if (lines.length === 3) return { text: '1-2 | text\nT\n%%\n', truncated: false };   // 漏了 3
-        return { text: '3 | skip\n%%\n', truncated: false };
+        if (lines.length === 3) return { text: '1-2 | text', truncated: false };   // 漏了 3
+        return { text: '3 | skip', truncated: false };
       },
+      translateGroups: async (a) => { translates.push(a.groups.map((g) => g.id)); return translateOk(a); },
     }));
     expect(calls).toEqual([[1, 2, 3], [3]]);
     expect(doc!.failedPages).toBeUndefined();
-    expect(doc!.blocks.map((b) => [b.kind, b.target])).toEqual([['text', 'T'], ['skip', undefined]]);
+    expect(doc!.blocks.map((b) => [b.kind, b.target])).toEqual([['text', 'T1'], ['skip', undefined]]);
+    // 补漏只在第一步内部发生：第二步拿到的是合并后的整页，只发一次。
+    expect(translates).toEqual([['g1']]);
   });
 
   it('补漏那一趟又漏 → 整页重试（第三次调用收到整页）', async () => {
@@ -277,11 +307,11 @@ describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
     const doc = await translateDoc(base({
       numPages: 1,
       getPage: async (n: number) => fakePage(n, 3),
-      translatePage: async ({ lines }) => {
+      layoutPage: async ({ lines }) => {
         calls.push(lines.map((l) => l.n));
         if (lines.length === 3) {
           full++;
-          return { text: full === 1 ? '1-2 | text\nT\n%%\n' : '1-3 | text\nT\n%%\n', truncated: false };
+          return { text: full === 1 ? '1-2 | text' : '1-3 | text', truncated: false };
         }
         return { text: '', truncated: false };   // 补漏那趟什么都没回
       },
@@ -296,10 +326,10 @@ describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
     await translateDoc(base({
       numPages: 1,
       getPage: async (p: number) => fakePage(p, 2),
-      translatePage: async ({ lines }) => {
+      layoutPage: async ({ lines }) => {
         calls.push(lines.map((l) => l.n));
         n++;
-        return { text: n === 1 ? '' : '1-2 | text\nT\n%%\n', truncated: false };
+        return { text: n === 1 ? '' : '1-2 | text', truncated: false };
       },
     }));
     expect(calls).toEqual([[1, 2], [1, 2]]);
@@ -307,21 +337,114 @@ describe('划分缺行 → 补漏一次（spec 2026-09-06 §4.1）', () => {
 
   it('截断对半拆之后，两半各自补漏', async () => {
     const calls: number[][] = [];
+    const translates: string[][] = [];
     const doc = await translateDoc(base({
       numPages: 1,
       getPage: async (p: number) => fakePage(p, 4),
-      translatePage: async ({ lines }) => {
+      layoutPage: async ({ lines }) => {
         const ids = lines.map((l) => l.n);
         calls.push(ids);
         if (ids.length === 4) return { text: '', truncated: true };
-        if (ids.join() === '1,2') return { text: '1 | text\nA\n%%\n', truncated: false };   // 漏 2
-        if (ids.join() === '2') return { text: '2 | skip\n%%\n', truncated: false };
-        return { text: '3-4 | text\nB\n%%\n', truncated: false };
+        if (ids.join() === '1,2') return { text: '1 | text', truncated: false };   // 漏 2
+        if (ids.join() === '2') return { text: '2 | skip', truncated: false };
+        return { text: '3-4 | text', truncated: false };
       },
+      translateGroups: async (a) => { translates.push(a.groups.map((g) => g.id)); return translateOk(a); },
     }));
     expect(calls).toEqual([[1, 2, 3, 4], [1, 2], [2], [3, 4]]);
     expect(doc!.failedPages).toBeUndefined();
     expect(doc!.blocks.map((b) => b.kind)).toEqual(['text', 'skip', 'text']);
+    expect(translates).toEqual([['g1', 'g2']]);
+  });
+});
+
+describe('两步协议（spec 2026-09-07 §4）', () => {
+  it('第二步只收到可译组，id 按阅读顺序 g1..gN，source 是 joinSource 拼好的整段', async () => {
+    const got: unknown[] = [];
+    await translateDoc(base({
+      numPages: 1,
+      getPage: async (n) => fakePage(n, 4),
+      layoutPage: async () => ({ text: '1-2 | text\n3 | code\n4 | title', truncated: false }),
+      translateGroups: async ({ groups }) => { got.push(groups); return { text: 'g1\nA\n%%\ng2\nB\n%%', truncated: false }; },
+    }));
+    expect(got).toEqual([[
+      { id: 'g1', kind: 'text', source: 'p1l1 p1l2' },
+      { id: 'g2', kind: 'title', source: 'p1l4' },
+    ]]);
+  });
+
+  it('code 组不进第二步、边车里没有 target；整页只有不可译组 → 第二步不调', async () => {
+    const translateGroups = vi.fn();
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async (n) => fakePage(n, 2),
+      layoutPage: async () => ({ text: '1-2 | code', truncated: false }),
+      translateGroups,
+    }));
+    expect(translateGroups).not.toHaveBeenCalled();
+    expect(doc!.blocks.map((b) => [b.kind, b.target])).toEqual([['code', undefined]]);
+    expect(doc!.failedPages).toBeUndefined();
+  });
+
+  it('第二步失败只重跑第二步，第一步不重跑', async () => {
+    let layouts = 0; let translates = 0;
+    const doc = await translateDoc(base({
+      numPages: 1,
+      layoutPage: async (a) => { layouts++; return layoutOk(a); },
+      translateGroups: async (a) => { translates++; return translates === 1 ? { text: 'garbage', truncated: false } : translateOk(a); },
+    }));
+    expect(layouts).toBe(1);
+    expect(translates).toBe(2);
+    expect(doc!.failedPages).toBeUndefined();
+  });
+
+  it('第二步缺一组 → 只把缺的组再发一次并合并；补漏那趟再缺 → 整个第二步重试', async () => {
+    const calls: string[][] = [];
+    const doc = await translateDoc(base({
+      numPages: 1, getPage: async (n) => fakePage(n, 2),
+      layoutPage: async () => ({ text: '1 | text\n2 | text', truncated: false }),
+      translateGroups: async ({ groups }) => {
+        calls.push(groups.map((g) => g.id));
+        if (groups.length === 2) return { text: 'g1\nA\n%%', truncated: false };     // 漏 g2
+        return { text: 'g2\nB\n%%', truncated: false };
+      },
+    }));
+    expect(calls).toEqual([['g1', 'g2'], ['g2']]);
+    expect(doc!.blocks.map((b) => b.target)).toEqual(['A', 'B']);
+  });
+
+  it('第二步截断 → 对半拆组，各自再发', async () => {
+    const calls: string[][] = [];
+    await translateDoc(base({
+      numPages: 1, getPage: async (n) => fakePage(n, 4),
+      layoutPage: async () => ({ text: '1 | text\n2 | text\n3 | text\n4 | text', truncated: false }),
+      translateGroups: async ({ groups }) => {
+        calls.push(groups.map((g) => g.id));
+        if (groups.length === 4) return { text: '', truncated: true };
+        return { text: groups.map((g) => `${g.id}\nT\n%%`).join('\n'), truncated: false };
+      },
+    }));
+    expect(calls).toEqual([['g1', 'g2', 'g3', 'g4'], ['g1', 'g2'], ['g3', 'g4']]);
+  });
+
+  it('第一步失败的原因以「版面：」开头、第二步以「翻译：」开头', async () => {
+    const a = await translateDoc(base({ numPages: 1, layoutPage: async () => ({ text: 'nope', truncated: false }) }));
+    expect(a!.failureReasons!['1']).toMatch(/^版面：.*；重试：/);
+    const b = await translateDoc(base({ numPages: 1, translateGroups: async () => ({ text: 'nope', truncated: false }) }));
+    expect(b!.failureReasons!['1']).toMatch(/^翻译：.*；重试：/);
+  });
+
+  it('几何校验在第一步之后就跑：会盖住别人的组 → 该页失败，原因带「版面：」', async () => {
+    // 两步之后**译文还没回来**，layout 组一个都没有 target——几何校验若仍按「有没有 target」
+    // 判要不要查，整层校验就是静默死的（能编译、能全绿、盖字照发生）。这里的 {1,4} 组纵跨
+    // 四行，行 2 / 3 的中心落进它的覆盖矩形，必须在第一步之后当场被判失败。
+    const doc = await translateDoc(base({
+      numPages: 1,
+      getPage: async (n) => fakePage(n, 4),
+      layoutPage: async () => ({ text: '1,4 | text\n2 | text\n3 | text', truncated: false }),
+    }));
+    expect(doc!.blocks).toEqual([]);
+    expect(doc!.failedPages).toEqual([1]);
+    expect(doc!.failureReasons!['1']).toMatch(/^版面：.*盖住了不属于它的行/);
   });
 });
 
@@ -343,7 +466,7 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
     await translateDoc(base({
       numPages: 4, pages: [2, 3], base: BASE,
       getPage: async (n: number) => { got.push(n); return fakePage(n); },
-      translatePage: async ({ page }) => { translated.push(page); return { text: '1 | text\nT\n%%\n', truncated: false }; },
+      layoutPage: async (a) => { translated.push(a.page); return layoutOk(a); },
       onProgress: (p) => { if (p.phase === 'extract') extracts.push(p.total); },
     }));
     expect(got).toEqual([2, 3]);
@@ -354,8 +477,8 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
   it('合并：pages 之外的块逐字不变，failedPages / failureReasons 先删再并，source 是当前摘要', async () => {
     const doc = await translateDoc(base({
       numPages: 4, pages: [2, 3], base: BASE, glossary: BASE.glossary,
-      translatePage: async ({ page }) => ({
-        text: page === 3 ? 'no bar' : '1 | text\nNEW\n%%\n', truncated: false,   // 3 两次都失败
+      translateGroups: async ({ page }) => ({
+        text: page === 3 ? 'no header' : 'g1\nNEW\n%%', truncated: false,   // 3 两次都失败
       }),
     }));
     expect(doc!.blocks.map((b) => b.id)).toEqual(['p1-b01', 'p2-b01', 'p4-b01']);
@@ -363,7 +486,7 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
     expect(doc!.blocks[2]).toEqual(BASE.blocks[1]);
     expect(doc!.blocks[1].target).toBe('NEW');
     expect(doc!.failedPages).toEqual([3]);
-    expect(doc!.failureReasons).toEqual({ '3': expect.stringMatching(/组头缺少/) });
+    expect(doc!.failureReasons).toEqual({ '3': expect.stringMatching(/^翻译：组头不是 id/) });
     expect(doc!.source).toEqual({ sha256: 'ab', bytes: 1 });
     expect(doc!.glossary).toEqual(BASE.glossary);
   });
@@ -394,9 +517,10 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
     const titles: (string | undefined)[] = [];
     await translateDoc(base({
       numPages: 4, pages: [2], base: BASE,
-      translatePage: async ({ docTitle }) => { titles.push(docTitle); return { text: '1 | text\nT\n%%\n', truncated: false }; },
+      layoutPage: async (a) => { titles.push(a.docTitle); return layoutOk(a); },
+      translateGroups: async (a) => { titles.push(a.docTitle); return translateOk(a); },
     }));
-    expect(titles).toEqual(['My Title']);
+    expect(titles).toEqual(['My Title', 'My Title']);
   });
 
   it('给了 pages 没给 base → 抛', async () => {
@@ -404,12 +528,12 @@ describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
   });
 
   it('pages 里全是零行页（纯图页上点「重译本页」）→ 不发请求，底本原样返回、只盖上当前摘要', async () => {
-    const translatePage = vi.fn();
+    const layoutPage = vi.fn();
     const doc = await translateDoc(base({
-      numPages: 4, pages: [2], base: BASE, translatePage,
+      numPages: 4, pages: [2], base: BASE, layoutPage,
       getPage: async () => ({ getTextContent: async () => ({ items: [] }), getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, y] }) }),
     }));
-    expect(translatePage).not.toHaveBeenCalled();
+    expect(layoutPage).not.toHaveBeenCalled();
     expect(doc!.blocks).toEqual(BASE.blocks);
     expect(doc!.failedPages).toEqual(BASE.failedPages);
     expect(doc!.source).toEqual({ sha256: 'ab', bytes: 1 });

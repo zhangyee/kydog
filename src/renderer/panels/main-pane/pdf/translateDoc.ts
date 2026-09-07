@@ -1,9 +1,10 @@
-import type { Block, PageLine, Term, TranslatedDoc } from '../../../../shared/zhSidecar';
-import { buildBlocks } from './buildBlocks';
+import type { Block, PageLine, Term, TranslatedDoc, TranslateGroup } from '../../../../shared/zhSidecar';
+import { buildBlocks, joinSource } from './buildBlocks';
 import { extractPageLines, type TextSource } from './extractPageLines';
 import { checkGroupGeometry } from './groupGeometry';
-import { GroupError, partitionGroups, type ParsedGroup } from './parseGroups';
+import { GroupError, isTranslatable, parseLayout, type LayoutGroup, type ParsedGroup } from './layoutProtocol';
 import type { TextLine } from './textLines';
+import { parseTranslations } from './translateProtocol';
 
 /**
  * 一趟作业里同时「已发出、未落地」的页数上界——**也就是取消时的浪费上界**（invoke 没有取消
@@ -15,14 +16,20 @@ export const PAGE_CONCURRENCY = 4;
 export type TranslatePhase = 'extract' | 'translate' | 'finalize';
 export type JobProgress = { phase: TranslatePhase; done: number; total: number; failed: number };
 
-export type PageTranslator = (a: {
+/** 第一步（版面）：一页的行进去，`<ids> | <kind>` 的原始文本出来（spec 2026-09-07 §4.2）。 */
+export type LayoutFn = (a: {
   page: number; lines: PageLine[]; docTitle?: string;
+}) => Promise<{ text: string; truncated: boolean }>;
+/** 第二步（翻译）：可译组进去，每组一个 `%%` 槽位的原始文本出来（§4.3）。 */
+export type TranslateFn = (a: {
+  page: number; groups: TranslateGroup[]; docTitle?: string;
 }) => Promise<{ text: string; truncated: boolean }>;
 
 export type TranslateDocOptions = {
   numPages: number;
   getPage: (n: number) => Promise<TextSource>;
-  translatePage: PageTranslator;
+  layoutPage: LayoutFn;
+  translateGroups: TranslateFn;
   onProgress: (p: JobProgress) => void;
   isCancelled: () => boolean;
   /**
@@ -84,79 +91,134 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   const tick = () => o.onProgress({ phase: 'translate', done, total, failed: failedPages.length });
   // 中止信号：跟 isCancelled() 是两码事——isCancelled() 是「用户 / 调用方要求停」，aborted 是
   // 「某个 worker 已经因 llm.not_configured 在抛错路径上了」。Promise.all 一旦有一个 worker
-  // 拒绝就会 reject，但其余 ≤3 个 worker 的 translatePage 仍在飞（配置是在它们发出之后才丢的，
+  // 拒绝就会 reject，但其余 ≤3 个 worker 的上游请求仍在飞（配置是在它们发出之后才丢的，
   // 这是现实时序）——它们成功落地时如果不认这面旗子，会在调用方已经拿到 rejection 之后再
   // 触发一次 onProgress，也会在另一个 worker 已经在抛错路径上时继续派发新页。
   let aborted = false;
 
   /**
-   * 截断就对半拆重试，递归到单行。整页原样重试只会再截断一次，所以处置必须是拆（spec §2.4）。
+   * 第一步：版面。截断就对半拆行，递归到单行——整页原样重试只会再截断一次，所以处置必须是拆
+   * （spec §2.4）。
    *
-   * 划分只缺行时**先补漏一次**（spec 2026-09-06 §4.1）：缺哪几行由 partitionGroups 精确给出，
-   * 只把那几行再发一次让模型分组，并到后面。补漏那一趟（repair=false）再漏、或缺的就是全部
-   * （模型什么都没回）→ 抛 GroupError，走 runPage 现有的整页重试。几何校验在 runPage 对合并
-   * 后的整页做。
+   * 划分只缺行时**先补漏一次**（spec 2026-09-06 §4.1）：缺哪几行由 parseLayout 精确给出，只把
+   * 那几行再发一次让模型分组，并到后面。补漏那一趟（repair=false）再漏、或缺的就是全部（模型
+   * 什么都没回）→ 抛 GroupError，走 twice 的整步重试。几何校验在 runPage 对合并后的整页做。
    */
-  const runBatch = async (page: number, lines: PageLine[], docTitle?: string, repair = true): Promise<ParsedGroup[]> => {
-    const r = await o.translatePage({ page, lines, docTitle });
+  const runLayout = async (page: number, lines: PageLine[], docTitle?: string, repair = true): Promise<LayoutGroup[]> => {
+    const r = await o.layoutPage({ page, lines, docTitle });
     if (r.truncated) {
-      if (lines.length <= 1) throw new Error(`第 ${page} 页单行输出仍被截断`);
+      if (lines.length <= 1) throw new Error(`第 ${page} 页单行版面输出仍被截断`);
       const mid = Math.ceil(lines.length / 2);
       return [
-        ...await runBatch(page, lines.slice(0, mid), docTitle, repair),
-        ...await runBatch(page, lines.slice(mid), docTitle, repair),
+        ...await runLayout(page, lines.slice(0, mid), docTitle, repair),
+        ...await runLayout(page, lines.slice(mid), docTitle, repair),
       ];
     }
-    const { groups, missing } = partitionGroups(r.text, lines.map((l) => l.n));
+    const { groups, missing } = parseLayout(r.text, lines.map((l) => l.n));
     if (missing.length === 0) return groups;
-    if (!repair || missing.length === lines.length) {
-      throw new GroupError(`行 ${missing.join(',')} 没有出现在任何组里`);
-    }
-    const rest = lines.filter((l) => missing.includes(l.n));
-    return [...groups, ...await runBatch(page, rest, docTitle, false)];
+    if (!repair || missing.length === lines.length) throw new GroupError(`行 ${missing.join(',')} 没有出现在任何组里`);
+    return [...groups, ...await runLayout(page, lines.filter((l) => missing.includes(l.n)), docTitle, false)];
   };
 
   /**
-   * 一页：跑一次 → 失败重试一次 → 仍失败把**页号**记进 failedPages 并保留原文（该页不产块 →
-   * 右格不覆盖）。
-   * 几何校验放在拆分**合并之后**、对着整页的行做——拆开的两半各自校验挡不住「A 半的组盖住
-   * B 半的行」。
+   * 第二步：翻译。与第一步同构，只是拆的单位从行换成组：截断对半拆组、缺组补漏一次
+   * （spec 2026-09-07 §4.3）。
+   */
+  const runTranslate = async (page: number, groups: TranslateGroup[], docTitle?: string, repair = true): Promise<Record<string, string>> => {
+    const r = await o.translateGroups({ page, groups, docTitle });
+    if (r.truncated) {
+      if (groups.length <= 1) throw new Error(`第 ${page} 页单组译文仍被截断`);
+      const mid = Math.ceil(groups.length / 2);
+      return {
+        ...await runTranslate(page, groups.slice(0, mid), docTitle, repair),
+        ...await runTranslate(page, groups.slice(mid), docTitle, repair),
+      };
+    }
+    const { targets, missing } = parseTranslations(r.text, groups.map((g) => g.id));
+    if (missing.length === 0) return targets;
+    if (!repair || missing.length === groups.length) throw new GroupError(`组 ${missing.join(',')} 没有译文`);
+    return { ...targets, ...await runTranslate(page, groups.filter((g) => missing.includes(g.id)), docTitle, false) };
+  };
+
+  type Attempt<T> = { ok: true; value: T } | { ok: false; reason: string };
+
+  /**
+   * 跑一次，失败重试一次；两次都失败把原因（带步骤前缀）交给调用方。
    *
    * `llm.not_configured` 不重试：它是「没配模型 / 钉住的模型没了」，重试一百次也一样，而且要
-   * 中止整趟。按错误码分支，不匹配 message 字符串。
+   * 中止整趟。按错误码分支，不匹配 message 字符串。aborted 必须在 throw 之前落地：它是
+   * 「别的 worker 该收手了」的唯一信号源，迟一步落地就会被其余 worker 的检查点错过。
    */
-  const runPage = async (page: number, lines: PageLine[], docTitle?: string): Promise<void> => {
-    const attempt = async () => {
-      const groups = await runBatch(page, lines, docTitle);
-      checkGroupGeometry(groups, lines);
-      return groups;
-    };
+  const twice = async <T>(label: '版面' | '翻译', step: () => Promise<T>): Promise<Attempt<T>> => {
     try {
-      groupsOf.set(page, await attempt());
+      return { ok: true, value: await step() };
     } catch (e) {
-      // aborted 必须在 throw 之前落地：它是「别的 worker 该收手了」的唯一信号源，
-      // 迟一步落地就会被其余 worker 的检查点错过（见上面对 aborted 的注释）。
       if (isNotConfigured(e)) { aborted = true; throw e; }
       try {
-        groupsOf.set(page, await attempt());
+        return { ok: true, value: await step() };
       } catch (e2) {
         if (isNotConfigured(e2)) { aborted = true; throw e2; }
-        failedPages.push(page);
-        // 原因随页号一起落边车（spec 2026-09-06 §4.2）：以前这里只 push 页号，异常当场丢掉，
-        // 「为什么失败」在流水线里就地消失，事后从任何记录里都查不出来。
-        reasons[String(page)] = `${(e as Error).message}；重试：${(e2 as Error).message}`;
+        // 原因随页号一起落边车（spec 2026-09-06 §4.2），前缀说明是哪一步失的：以前这里只 push
+        // 页号，异常当场丢掉，「为什么失败」在流水线里就地消失，事后从任何记录里都查不出来。
+        return { ok: false, reason: `${label}：${(e as Error).message}；重试：${(e2 as Error).message}` };
       }
     }
-    // 这次 attempt 是在别的 worker 已经因 llm.not_configured 抛错之后才落地的——Promise.all
-    // 迟早会 reject，调用方大概率已经拿到那个 rejection，这次 done++/tick() 只是一次多余且
-    // 误导调用方的 onProgress，直接跳过（不影响 groupsOf：上面已经 set 过，只是不再计入进度）。
+  };
+
+  /**
+   * 一页 = 版面 → 几何 → 翻译（spec 2026-09-07 §4.4）。第二步失败只重试第二步，第一步结果保留
+   * ——版面已经校验过了，重跑它既多付一次调用，又可能换回一份更差的划分。
+   *
+   * 几何校验放在第一步拆分**合并之后**、对着整页的行做——拆开的两半各自校验挡不住「A 半的组
+   * 盖住 B 半的行」。
+   *
+   * 失败页记页号与原因、保留原文（该页不产块 → 右格不覆盖）。
+   *
+   * `precomputed`：第 1 页为了取文题先单跑过一次版面，把那次结果原样传进来复用，不再跑第二次。
+   */
+  const runPage = async (page: number, lines: PageLine[], docTitle?: string, precomputed?: Attempt<LayoutGroup[]>): Promise<void> => {
+    const fail = (reason: string) => { failedPages.push(page); reasons[String(page)] = reason; };
+    const layout = precomputed ?? await twice('版面', async () => {
+      const groups = await runLayout(page, lines, docTitle);
+      checkGroupGeometry(groups, lines);
+      return groups;
+    });
+    // 这一档与下面那档的 `if (aborted)`：这次尝试是在别的 worker 已经因 llm.not_configured
+    // 抛错之后才落地的——Promise.all 迟早会 reject，调用方大概率已经拿到那个 rejection，这次
+    // done++/tick() 只是一次多余且误导调用方的 onProgress，直接跳过。
+    if (!layout.ok) { fail(layout.reason); if (!aborted) { done++; tick(); } return; }
+
+    // 组 → 第二步的请求：只发可译的（code / formula / table / skip 不翻不盖，§4.3），id 按
+    // 阅读顺序 g1..gN，只活在这两次调用之间。source 用 joinSource 拼好——与边车里 buildBlocks
+    // 写的 source 同一条规则，模型这一步看到的就是最终会落盘的那个串。
+    const byId = new Map(lines.map((l) => [l.n, l.text]));
+    const req: TranslateGroup[] = [];
+    const slot = new Map<number, string>();            // layout 组下标 → g<n>
+    layout.value.forEach((g, i) => {
+      if (!isTranslatable(g.kind)) return;
+      const id = `g${req.length + 1}`;
+      slot.set(i, id);
+      req.push({ id, kind: g.kind, source: joinSource(g.lines.map((n) => byId.get(n) ?? '')) });
+    });
+    let targets: Record<string, string> = {};
+    // 整页一个可译组都没有（纯代码页、纯表格页）→ 第二步根本不发。
+    if (req.length > 0) {
+      const t = await twice('翻译', () => runTranslate(page, req, docTitle));
+      if (!t.ok) { fail(t.reason); if (!aborted) { done++; tick(); } return; }
+      targets = t.value;
+    }
+    const groups: ParsedGroup[] = layout.value.map((g, i) => {
+      const id = slot.get(i);
+      return id === undefined ? { ...g } : { ...g, target: targets[id] };
+    });
+    groupsOf.set(page, groups);
     if (aborted) return;
     done++;
     tick();
   };
 
   tick();
-  // 第 1 页先单跑，为的是拿到 docTitle 传给其余页（BabelDOC「注入全文第一个标题」的轻量版）。
+  // 第 1 页的版面先单跑，为的是拿到 docTitle 传给其余页（BabelDOC「注入全文第一个标题」的轻量版）。
   // 部分跑（pages）不单跑：文题从底本里现成的第一个 title 块取（第 1 页第一个 title 块就是
   // 文题），所有页平等地进 worker 池。
   let docTitle: string | undefined;
@@ -167,12 +229,21 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     const [head, ...others] = work;
     rest = others;
     if (o.isCancelled()) return null;
-    await runPage(head.page, head.lines);
-    const titleGroup = groupsOf.get(head.page)?.find((g) => g.kind === 'title');
-    if (titleGroup) {
+    // 第 1 页拆开跑：文题要在第 1 页**自己的第二步**之前就确定（它也该带着文题去翻），所以先
+    // 只跑版面拿 title 组，再把这份版面结果当 precomputed 交给 runPage——整页照常走，但版面
+    // 不多付一次调用。
+    const first = await twice('版面', async () => {
+      const groups = await runLayout(head.page, head.lines);
+      checkGroupGeometry(groups, head.lines);
+      return groups;
+    });
+    if (first.ok) {
       const byId = new Map(head.lines.map((l) => [l.n, l.text]));
-      docTitle = titleGroup.lines.map((n) => byId.get(n) ?? '').join(' ').trim() || undefined;
+      const titleGroup = first.value.find((g) => g.kind === 'title');
+      // 与 source 同一条规则（joinSource）：文题进的是第二步的提示词，跟落盘的 source 该是同一个串。
+      if (titleGroup) docTitle = joinSource(titleGroup.lines.map((n) => byId.get(n) ?? '')).trim() || undefined;
     }
+    await runPage(head.page, head.lines, docTitle, first);
   }
 
   let next = 0;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PageLine } from '../../../../shared/zhSidecar';
-import { GroupError } from './parseGroups';
+import { GroupError } from './layoutProtocol';
 import { checkGroupGeometry } from './groupGeometry';
 
 // 10 pt 行、行距 14：n 行的 y = 90 + (n-1)*14
@@ -52,7 +52,7 @@ describe('checkGroupGeometry', () => {
     expect(() => checkGroupGeometry(groups, lines)).toThrow(GroupError);
   });
 
-  it('没有 target 的组不参与校验（它压根不填色）', () => {
+  it('不可译 kind 的组不参与校验（它压根不填色）', () => {
     const lines = [line(1, 72, 200, 90), line(2, 320, 200, 90)];
     expect(() => checkGroupGeometry(
       [{ lines: [1, 2], kind: 'table' }, ], lines,

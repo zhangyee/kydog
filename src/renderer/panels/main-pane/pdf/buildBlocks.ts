@@ -1,6 +1,6 @@
 import type { Block, PageLine } from '../../../../shared/zhSidecar';
 import { inkRectOf, unionRect } from './blockRect';
-import type { ParsedGroup } from './parseGroups';
+import type { ParsedGroup } from './layoutProtocol';
 
 /** 中位数，偶数取较小的那个——为的是确定性，不是统计上的讲究。 */
 function median(ns: number[]): number {
@@ -12,9 +12,12 @@ function median(ns: number[]): number {
  * 行尾连字符 + 下一行以小写字母开头 → 去掉连字符直接连；否则用一个空格连。
  *
  * `source` 只进边车给人和 agent 看，不参与渲染，也不参与任何判定，所以这条规则不影响不变量。
- * 模型拿到的是**分行的原文**（prompt 里逐行给），译文由它自己接合，不依赖这里拼出来的串。
+ *
+ * 两步协议之后它还多了一个身份：第二步发给模型的 `TranslateGroup.source` 就是它拼出来的整段
+ * （spec 2026-09-07 §4.3）——模型不再看到分行的原文，接合规则必须只此一份，否则边车里的
+ * `source` 与模型实际读到的会是两个串。
  */
-function joinSource(texts: string[]): string {
+export function joinSource(texts: string[]): string {
   let out = '';
   for (const t of texts) {
     if (out === '') { out = t; continue; }
