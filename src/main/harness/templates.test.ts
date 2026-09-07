@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { harnessTemplates, type HarnessLocale } from './templates';
-import { BLOCK_KINDS, PLACEHOLDER_KINDS } from '../../shared/zhSidecar';
+import { BLOCK_KINDS, PLACEHOLDER_KINDS, PLACEHOLDER_SCRIPTS } from '../../shared/zhSidecar';
 
 describe('harnessTemplates', () => {
   for (const locale of ['zh', 'en'] as const) {
@@ -41,6 +41,9 @@ describe('harnessTemplates', () => {
       // 增删或换顺序都会让这个子串消失，同样是双向的。
       expect(md, 'AGENTS.md 的 placeholder kind 枚举与 PLACEHOLDER_KINDS 不一致')
         .toContain(PLACEHOLDER_KINDS.map((k) => `\`${k}\``).join(' / '));
+      // 脚标：placeholder 的 `script` 取值同样是行内枚举，同一拼法现推（spec 2026-09-07 scripts §4）
+      expect(md, 'AGENTS.md 的 placeholder script 枚举与 PLACEHOLDER_SCRIPTS 不一致')
+        .toContain(PLACEHOLDER_SCRIPTS.map((k) => `\`${k}\``).join(' / '));
       // 「只认这八个值 / exactly these eight values」里的数目也是这份契约的一部分：再加一个
       // kind 却不改它，agent 读到的是自相矛盾的两句话。数词表只列到手写得出的范围，超出即红
       // ——逼人回来同时改模板与这里，正是漂移守卫该有的效果。

@@ -71,17 +71,20 @@ width, height, fontSize, kind, source, target?, placeholders? }`，坐标是 PDF
 每条是 `{ id, kind, text }`，`kind` 只认 `formula` / `citation` / `inline-code`，
 `text` 是原文里那一小段的原样文本。在 `target` 里用 `{v1}`、`{v2}` 这样的 token
 占位，token 名要与对应 placeholder 的 `id` 一致——渲染时会把 token 换回 `text`。
+脚标（下标 / 上标）另加一个 `script` 字段：`"script": "sub"` 是下标、`"sup"` 是上标，只认 `sub` / `sup`；
+渲染时会按下标 / 上标排，不写就是普通行内文本。内置翻译会自己写它；你手写边车时可选。
 对不上任何 `id` 的 token 会原样留在译文里显示成 `{v1}`。举例：
 
 ```json
 {
   "id": "p3-b02", "page": 3, "x": 72, "y": 240, "width": 451, "height": 96,
   "fontSize": 10, "kind": "text",
-  "source": "As shown in Eq. (2), the loss decreases [12].",
-  "target": "如 {v1} 所示，损失随之下降 {v2}。",
+  "source": "As shown in Eq. (2), the loss 𝐿𝑖 decreases [12].",
+  "target": "如 {v1} 所示，损失 𝐿{v3} 随之下降 {v2}。",
   "placeholders": [
     { "id": "v1", "kind": "formula", "text": "Eq. (2)" },
-    { "id": "v2", "kind": "citation", "text": "[12]" }
+    { "id": "v2", "kind": "citation", "text": "[12]" },
+    { "id": "v3", "kind": "formula", "text": "𝑖", "script": "sub" }
   ]
 }
 ```

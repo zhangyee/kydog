@@ -11,9 +11,26 @@ export type Term = { source: string; target: string };
 export const BLOCK_KINDS = ['text', 'title', 'caption', 'formula', 'table', 'code', 'figure', 'skip'] as const;
 export const PLACEHOLDER_KINDS = ['formula', 'citation', 'inline-code'] as const;
 
+/** 脚标占位符的 `script` 取值。与 PLACEHOLDER_KINDS 同一套办法：类型、Set、报错串都从它现推，模板由 templates.test.ts 钉住。 */
+export const PLACEHOLDER_SCRIPTS = ['sub', 'sup'] as const;
+export type PlaceholderScript = (typeof PLACEHOLDER_SCRIPTS)[number];
+
+/**
+ * 译文里占位符 token 的形状。渲染层还原、记号化、协议层校验三处共用这一份，不各写一份正则。
+ * 带 g：`matchAll` / `replace` 都要它；`hasToken` 用 `search`（不看 lastIndex），别用 `test`。
+ */
+export const PLACEHOLDER_TOKEN = /\{(v\d+)\}/g;
+export const hasToken = (s: string): boolean => s.search(PLACEHOLDER_TOKEN) !== -1;
+
 export type BlockKind = (typeof BLOCK_KINDS)[number];
 
-export type Placeholder = { id: string; kind: (typeof PLACEHOLDER_KINDS)[number]; text: string };
+export type Placeholder = {
+  id: string;
+  kind: (typeof PLACEHOLDER_KINDS)[number];
+  text: string;
+  /** 脚标：渲染时按下标 / 上标排（spec 2026-09-07 scripts §4 / §6）。缺省 = 普通行内片段。 */
+  script?: PlaceholderScript;
+};
 
 export type Block = {
   id: string;
@@ -63,6 +80,7 @@ export type TranslatedDoc = {
 
 const KINDS = new Set<string>(BLOCK_KINDS);
 const PH_KINDS = new Set<string>(PLACEHOLDER_KINDS);
+const SCRIPTS = new Set<string>(PLACEHOLDER_SCRIPTS);
 // 报错时把合法取值一并列出来：边车的唯一写入方是 agent（契约写在 harness 模板的 AGENTS.md 里），
 // 而一条不认识的 kind 会让**整份文件**被拒（不是逐块降级——静默丢块比报错更难查）。错误信息里
 // 带上取值集合，agent 从错误本身就能自我修正，不必回头去猜契约。列表从 Set 现推，不手写第二份。
@@ -93,6 +111,9 @@ function validateBlock(raw: unknown, i: number, file: string): Block {
       const q = p as Record<string, unknown>;
       if (typeof q?.id !== 'string' || typeof q?.text !== 'string' || !PH_KINDS.has(q?.kind as string)) {
         return at(`的 placeholders 里有一条缺 id / kind / text，或 kind 不在 ${list(PH_KINDS)} 之内`);
+      }
+      if (q.script !== undefined && !SCRIPTS.has(q.script as string)) {
+        return at(`的 placeholders 里 ${String(q.id)} 的 script 不认识（${String(q.script)}），只认 ${list(SCRIPTS)}`);
       }
     }
   }
@@ -185,6 +206,11 @@ export type PageLine = {
   n: number; x: number; y: number; w: number; h: number; size: number; text: string;
   /** 墨迹顶 / 底（绝对 pt，含降部）。来自 pdf.js 的字体 ascent / descent；缺省 = 没度量（按 y / y + h）。 */
   inkTop?: number; inkBottom?: number;
+  /**
+   * 行文本里的脚标区间（`text` 的 code unit 偏移，升序、不重叠）。由 pageLines 从 LineItem.script 算出；
+   * 主进程不用（buildUserText 只发 text）。缺省 = 这一行没有脚标。（spec 2026-09-07 scripts §2.3）
+   */
+  scripts?: { start: number; end: number; kind: PlaceholderScript }[];
 };
 
 /**

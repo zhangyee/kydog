@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateTranslatedDoc, filterByGeometry, type Block } from './zhSidecar';
+import { validateTranslatedDoc, filterByGeometry, hasToken, PLACEHOLDER_TOKEN, type Block, type PageLine } from './zhSidecar';
 
 const block = (over: Partial<Block> = {}): Block => ({
   id: 'p1-b01', page: 1, x: 72, y: 100, width: 451, height: 62,
@@ -62,6 +62,26 @@ describe('validateTranslatedDoc', () => {
     const run = () => validateTranslatedDoc(d, 'f.json');
     expect(run).toThrowError(/placeholders/);
     expect(run).toThrowError(/formula \/ citation \/ inline-code/);
+  });
+
+  it('placeholder 带 script: sub / sup 通过；别的值 → 抛并列出取值（spec 2026-09-07 scripts §4）', () => {
+    const ok = doc({ blocks: [block({ target: 'n{v1}', placeholders: [{ id: 'v1', kind: 'formula', text: 'i', script: 'sub' }] })] });
+    expect(validateTranslatedDoc(ok, 'f.json').blocks[0].placeholders![0].script).toBe('sub');
+    const sup = doc({ blocks: [block({ target: 'x{v1}', placeholders: [{ id: 'v1', kind: 'formula', text: '2', script: 'sup' }] })] });
+    expect(validateTranslatedDoc(sup, 'f.json').blocks[0].placeholders![0].script).toBe('sup');
+    const bad = doc({ blocks: [block({ placeholders: [{ id: 'v1', kind: 'formula', text: 'i', script: 'under' as never }] })] });
+    expect(() => validateTranslatedDoc(bad, 'f.json')).toThrowError(/script.*under.*sub \/ sup/);
+  });
+
+  it('PageLine.scripts 与 PLACEHOLDER_TOKEN / hasToken 的形状', () => {
+    const line: PageLine = { n: 1, x: 0, y: 0, w: 10, h: 10, size: 10, text: 'node ni', scripts: [{ start: 6, end: 7, kind: 'sub' }] };
+    expect(line.scripts![0].kind).toBe('sub');
+    expect([...'a {v1} b {v12}'.matchAll(PLACEHOLDER_TOKEN)].map((m) => m[1])).toEqual(['v1', 'v12']);
+    expect(hasToken('见 {v3}')).toBe(true);
+    expect(hasToken('{ v3 }')).toBe(false);
+    // hasToken 不受 lastIndex 影响：连调两次结果一样（g 正则用 test 会翻车，这里钉住用的是 search）
+    expect(hasToken('{v1}')).toBe(true);
+    expect(hasToken('{v1}')).toBe(true);
   });
 
   it('source 摘要原样带出来', () => {

@@ -101,18 +101,24 @@ citation markers, inline code). Each one is `{ id, kind, text }`, where `kind`
 accepts only `formula` / `citation` / `inline-code` and `text` is the verbatim
 fragment from the source. Inside `target`, stand them in as `{v1}`, `{v2}`
 tokens whose names match the corresponding placeholder's `id` — rendering
-substitutes each token back with its `text`. A token matching no `id` is left
+substitutes each token back with its `text`.
+A subscript or superscript carries a `script` field as well: `"script": "sub"` for a
+subscript, `"sup"` for a superscript — only `sub` / `sup` are accepted. Rendering sets
+the fragment as one; leave the field out for ordinary inline text. The built-in
+translator writes it itself; it is optional when you write a sidecar by hand.
+A token matching no `id` is left
 in the translation literally, as `{v1}`. For example:
 
 ```json
 {
   "id": "p3-b02", "page": 3, "x": 72, "y": 240, "width": 451, "height": 96,
   "fontSize": 10, "kind": "text",
-  "source": "As shown in Eq. (2), the loss decreases [12].",
-  "target": "As shown in {v1}, the loss decreases {v2}.",
+  "source": "As shown in Eq. (2), the loss 𝐿𝑖 decreases [12].",
+  "target": "As shown in {v1}, the loss 𝐿{v3} decreases {v2}.",
   "placeholders": [
     { "id": "v1", "kind": "formula", "text": "Eq. (2)" },
-    { "id": "v2", "kind": "citation", "text": "[12]" }
+    { "id": "v2", "kind": "citation", "text": "[12]" },
+    { "id": "v3", "kind": "formula", "text": "𝑖", "script": "sub" }
   ]
 }
 ```

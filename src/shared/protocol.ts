@@ -97,8 +97,8 @@ export type RpcCall =
   // 两步协议（spec 2026-09-07 §4）：第一步只分组分类，第二步按组逐个翻译。主进程仍无 job 状态。
   | { method: 'pdf.translation.layout';
       args: { page: number; providerId: ProviderId; modelId: string; runtimeRevision: number;
-              // lines 里的 inkTop / inkBottom 主进程不用，只是复用 PageLine 这个形状（它同时
-              // 供渲染层的几何校验用）——buildUserText 拼提示词时不发它们，模型看不到这两个字段。
+              // lines 里的 inkTop / inkBottom / scripts 主进程不用，只是复用 PageLine 这个形状（它同时
+              // 供渲染层的几何校验与记号化用）——buildUserText 拼提示词时不发它们，模型看不到这些字段。
               docTitle?: string; lines: PageLine[] };
       result: { text: string; truncated: boolean } }
   | { method: 'pdf.translation.translate';
