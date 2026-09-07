@@ -33,23 +33,33 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?
   };
   for (const it of items) {
     if (it.str.length > 0) {
-      const bx = it.transform[4];
-      const by = it.transform[5];
-      const [ax, ay] = viewport.convertToViewportPoint(bx, by);
-      const [cx, cy] = viewport.convertToViewportPoint(bx + it.width, by + it.height);
-      const top = Math.min(ay, cy);
-      const bottom = Math.max(ay, cy);
+      // 项的框从它自己的 transform 推，不假设“水平”：[a, b, c, d, e, f] 里 (a, b) 是前进方向、
+      // (c, d) 是向上方向（都可能不是坐标轴方向——旋转 90°/270° 的项前进方向是 ±y）。四角
+      // = 基线原点 + 前进 × {0, width} + 向上 × {0, height}，各自过 convertToViewportPoint 再取
+      // min/max。水平文字下前进 = (1,0)、向上 = (0,1)，四角的 min/max 与老的对角两点写法逐位相同
+      // （spec 2026-09-07 §8.1）。
+      const [a, b, c, d, e, f] = it.transform;
+      const sa = Math.hypot(a, b) || 1;
+      const su = Math.hypot(c, d) || 1;
+      const adv: [number, number] = [a / sa, b / sa];
+      const up: [number, number] = [c / su, d / su];
+      const at = (along: number, rise: number): [number, number] => {
+        const [x, y] = viewport.convertToViewportPoint(e + adv[0] * along + up[0] * rise, f + adv[1] * along + up[1] * rise);
+        return [x, y];
+      };
+      const box = [at(0, 0), at(it.width, 0), at(0, it.height), at(it.width, it.height)];
+      const xs = box.map((p) => p[0]);
+      const ys = box.map((p) => p[1]);
+      const x1 = Math.min(...xs), x2 = Math.max(...xs);
+      const top = Math.min(...ys), bottom = Math.max(...ys);
       const st = it.fontName !== undefined ? styles?.[it.fontName] : undefined;
       let inkTop = top, inkBottom = bottom;
       if (st) {
-        // 与上面字身框的算法同构：两点各取一条对角线（一点用 x、另一点用 x + width），不共用
-        // 同一个 x。旋转 0/180 时视口 y 只是 PDF y 的函数，两种取法数值一样；旋转 90/270 时视口
-        // y 只是 PDF x 的函数，两点若共用 bx 会让 y 恒等、墨迹高塌成 0（回归 C-1）——这里退化
-        // 回跟字身框一样，用两个不同的 x 保证旋转 90/270 时也能撑开高度。
-        const [, py] = viewport.convertToViewportPoint(bx, by + st.descent * it.height);
-        const [, qy] = viewport.convertToViewportPoint(bx + it.width, by + st.ascent * it.height);
-        inkTop = Math.min(py, qy);
-        inkBottom = Math.max(py, qy);
+        // 墨迹框：把“向上”那一项换成 descent/ascent × height（descent 为负，落在基线下方）。
+        const inkBox = [at(0, st.descent * it.height), at(it.width, st.descent * it.height), at(0, st.ascent * it.height), at(it.width, st.ascent * it.height)];
+        const inkYs = inkBox.map((p) => p[1]);
+        inkTop = Math.min(...inkYs);
+        inkBottom = Math.max(...inkYs);
       }
       if (!cur) cur = { top, bottom, items: [], inkTop, inkBottom, anyInk: !!st };
       else {
@@ -57,7 +67,7 @@ export function textLines(items: TextItemLike[], viewport: ViewportLike, styles?
         cur.inkTop = Math.min(cur.inkTop, inkTop); cur.inkBottom = Math.max(cur.inkBottom, inkBottom);
         cur.anyInk = cur.anyInk || !!st;
       }
-      cur.items.push({ x1: Math.min(ax, cx), x2: Math.max(ax, cx), str: it.str });
+      cur.items.push({ x1, x2, str: it.str });
     }
     if (it.hasEOL) flush();
   }

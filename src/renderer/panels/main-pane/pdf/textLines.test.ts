@@ -73,6 +73,23 @@ describe('墨迹顶 / 底（pdf.js styles 的 ascent / descent）', () => {
   });
 });
 
+describe('旋转项的框从 transform 自己的前进 / 向上方向推（spec 2026-09-07 §8.1）', () => {
+  it('旋转 90° 的项（竖排 arXiv 印章）：框沿基线方向竖着走，不再横穿页面', () => {
+    // 2512.03413.pdf 第 1 页行 86 的真实数据：transform [0, 20, −20, 0, 32, 229.36]、width 333.3、height 20，
+    // 视口 [x, 792 − y]。按水平算会得到 x 32–365 × y 542–562 的横带；真实的框是 x 12–32 × y 229–563。
+    const vp = { convertToViewportPoint: (x: number, y: number): [number, number] => [x, 792 - y] };
+    const it: TextItemLike = { str: 'arXiv:2512.03413v1', transform: [0, 20, -20, 0, 32, 229.36], width: 333.3, height: 20, hasEOL: true, fontName: 'f1' };
+    const [l] = textLines([it], vp, { f1: { ascent: 0.683, descent: -0.217 } });
+    expect(l.items[0].x1).toBeCloseTo(12, 6);
+    expect(l.items[0].x2).toBeCloseTo(32, 6);
+    expect(l.top).toBeCloseTo(792 - (229.36 + 333.3), 6);
+    expect(l.bottom).toBeCloseTo(792 - 229.36, 6);
+    // 墨迹框在竖排下是 x 方向的收窄，纵向与字身框一致（降部伸向 −x）
+    expect(l.inkTop).toBeCloseTo(l.top, 6);
+    expect(l.inkBottom).toBeCloseTo(l.bottom, 6);
+  });
+});
+
 describe('/Rotate 90 / 270：视口 y 只是 PDF x 的函数（回归 C-1）', () => {
   // rotation-90 的替身：viewport y 完全不看 PDF y，只看 PDF x（真实 pdf.js 在 90°/270° 就是这样）。
   const rot90 = { convertToViewportPoint: (x: number, y: number): [number, number] => [y, x] };
