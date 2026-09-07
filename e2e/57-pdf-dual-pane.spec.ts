@@ -213,6 +213,56 @@ async function seedMono(home: string) {
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
+// 脚标渲染（spec 2026-09-07-pdf-translation-scripts §6 / §8 / §9）：s1 带一个下标、一个上标占位符，
+// s0 是同一串文字平排、同 bbox——两块的 data-fit 与 scrollHeight 相等，才说明 relative 偏移没撑高行框。
+//
+// s2 是「隔离比较」用的第三个块：target 跟 s1 逐字相同、placeholders 的 text 也不变，
+// 唯独去掉 script 字段，且 kind 从 formula 改成 citation（原因见下）。s1 与 s2 里那两个 span
+// 因此是同一个字符、同一块几何，唯一的差别就是 SCRIPT_STYLE 有没有生效——几何断言要比的是
+// s1 与 s2 的差值，不能直接比字体框边缘（原因见下面用例里的注释）。
+//
+// 为什么 kind 改成 citation 而不是照抄 formula：TranslationBlocks.tsx 的 segStyle() 只在
+// segment 带 script 时才会剥掉 formula 的 italic（脚标不该继承数学斜体，见该文件注释）——
+// 也就是说，若 s2 的占位符仍标 kind: formula 但不带 script，它会保留 italic，而 s1 里同一个
+// 字符（带 script）反而没有 italic。这样 s1 与 s2 就不止差 SCRIPT_STYLE 一个变量，还多出一个
+// italic 有没有的 confound，会把「s1 的 sup.top 该比 s2 更小」这条断言的方向搅乱（italic 触发
+// 的字体回退可能换成另一张度量表——实测就是这样翻车的，见下方用例的失败记录）。citation 的
+// KIND_STYLE 是空对象，跟 formula 剥完 italic 之后一样——s1 与 s2 的差距因此精确收敛成
+// 「SCRIPT_STYLE 加了没加」这一件事。不能用 kind: 'text'：Placeholder.kind 是协议层字段，
+// 合法取值只有 PLACEHOLDER_KINDS（zhSidecar.ts）里的 formula / citation / inline-code 三个，
+// 'text' 是 splitPlaceholders 给纯文本段落自己加的种类，不是边车能写的占位符 kind。
+const SCRIPT_REL = 'scripts.pdf';
+const SCRIPT_TEXT = '节点 ni 属于集合 X2';
+
+function buildScriptSidecar(pdf: Buffer): string {
+  const geom = { page: 1, x: 60, width: 460, height: 60, fontSize: 12, kind: 'text', source: 'node ni in set X2' };
+  return JSON.stringify({
+    version: 1,
+    pdf: SCRIPT_REL,
+    lang: { in: 'en', out: 'zh' },
+    source: { sha256: createHash('sha256').update(pdf).digest('hex'), bytes: pdf.byteLength },
+    blocks: [
+      { id: 's1', y: 200, ...geom, target: '节点 n{v1} 属于集合 X{v2}',
+        placeholders: [{ id: 'v1', kind: 'formula', text: 'i', script: 'sub' }, { id: 'v2', kind: 'formula', text: '2', script: 'sup' }] },
+      { id: 's0', y: 300, ...geom, target: SCRIPT_TEXT },
+      // 与 s1 唯一的差别是 SCRIPT_STYLE 没有生效（没有 script 字段；kind 改 citation 是为了
+      // 不多引入 italic 这个 confound——见上面的说明）。
+      { id: 's2', y: 400, ...geom, target: '节点 n{v1} 属于集合 X{v2}',
+        placeholders: [{ id: 'v1', kind: 'citation', text: 'i' }, { id: 'v2', kind: 'citation', text: '2' }] },
+    ],
+  }, null, 2);
+}
+
+async function seedScripts(home: string) {
+  await seedSettings(home);
+  const projectPath = path.join(home, 'proj');
+  await fs.mkdir(projectPath, { recursive: true });
+  const pdf = buildPagedPdf(1, PAGE_W, PAGE_H);
+  await fs.writeFile(path.join(projectPath, SCRIPT_REL), pdf);
+  await fs.writeFile(path.join(projectPath, `.${SCRIPT_REL}.zh.json`), buildScriptSidecar(pdf));
+  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+}
+
 // Notice 那六条分支里，原先只有「译文文件有误」与「版本不匹配」两条有用例。这两份 fixture 补
 // 上剩下两条**译文侧**的：几何越界被丢块（dropped > 0）、边车没写 source 摘要（version
 // unknown，spec §12 明确列出的一态）。两条都是「能用但要提示」，不像前两条那样禁用对照。
@@ -971,6 +1021,104 @@ test('57-pdf-dual-pane: 含 inline-code 的块，量的和画的是同一套排�
     // 唯一的判据：画出来的内容装得进块里。测量用 serif、渲染用 mono 时这里会明显超出。
     expect(box.scrollH, `含 inline-code 的块不该溢出：测量与渲染必须用同一套排版 ${JSON.stringify(box)}`)
       .toBeLessThanOrEqual(box.clientH + 1);
+  } finally {
+    await teardown(launched);
+  }
+});
+
+test('57-pdf-dual-pane: 脚标占位符按下标 / 上标排——字号更小、基线偏移，且不改行框高度', async () => {
+  const launched = await launchKydog({ seed: seedScripts });
+  try {
+    const { page, kydogHome } = launched;
+    const pdfPath = path.join(kydogHome, 'proj', SCRIPT_REL);
+    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    const pane = await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+
+    // 必须限到右栏 stable 层（rightRowSel 是本文件已有的 helper）：缩放双缓冲期间两层各渲染
+    // 一份同页的块，不限层这里就是 strict mode 命中两个（899990c 为此修过本文件两条用例）。
+    const s1 = page.locator(`${rightRowSel(paneSel, 1)} [data-translation-block="s1"]`);
+    const s0 = page.locator(`${rightRowSel(paneSel, 1)} [data-translation-block="s0"]`);
+    const s2 = page.locator(`${rightRowSel(paneSel, 1)} [data-translation-block="s2"]`);
+    await expect(s1).toHaveCount(1);
+    await expect(s1).toHaveText(SCRIPT_TEXT);
+    // 等三块的测量都落地（data-fit 只在 fits 落地后才挂）
+    await expect.poll(async () => s1.getAttribute('data-fit'), { timeout: 15000, message: 's1 字号测量' }).not.toBeNull();
+    await expect.poll(async () => s0.getAttribute('data-fit'), { timeout: 15000, message: 's0 字号测量' }).not.toBeNull();
+    await expect.poll(async () => s2.getAttribute('data-fit'), { timeout: 15000, message: 's2 字号测量' }).not.toBeNull();
+
+    // 为什么不直接比字体框边缘（sub.bottom > text.bottom、sup.top < text.top）：
+    // 正文是中文，实际落在 Noto Serif SC / Songti SC；脚标只有一个拉丁字符，走的是字体栈里
+    // 更靠前的 Source Serif 4——两边字形来自不同字体。但真正让「比边缘」这条路走不通的，
+    // 不止是字体不同源：实测发现（用 Range 对照过 Element 的 getBoundingClientRect，两者
+    // 数值一致，不是量法的问题）浏览器算一个 inline span 的行框边缘时，用的是它*自己*的
+    // font-size 乘无单位 line-height 再对半分——跟正文同一行但字号更小的 span，行框天然更矮，
+    // 上下两条边缘都会向基线方向收拢，收拢的量往往比 0.15em / 0.36em 这组位移本身还大。
+    // 于是脚标即使真被位移推开了，边缘也可能量不出来、甚至量出反方向——这正是这条断言之前
+    // 稳定翻车的地方（12pt 块下 sub.bottom 只比 text.bottom 低 0.297px，不过 0.5px 门槛；
+    // sup.top 反而比 text.top 还大，方向都不对），换成 s1/s2 隔离比较之后依然翻车，数值分毫
+    // 不差——说明问题不在「两块比较 vs 单块比较」，在「边缘」这个量本身。
+    //
+    // 而截图（.superpowers/sdd/2026-09-07-pdf-translation-scripts/scripts-render.png，人眼可查）
+    // 看得很清楚：上标「2」确实顶在正文字符的顶部附近，下标「i」
+    // 确实沉到正文下方——视觉上没有问题。能把这份视觉直觉转成断言的，是**行框中点**而不是
+    // 边缘：`position: relative; top: Xem` 是一次纯平移，对边缘和中点施加的是同一个像素位移；
+    // 而「字号变小→行框收拢」这个会污染判断的效应，边缘各自被推向基线（一个往下一个往上），
+    // 中点受到的净影响很小（本例中量出来只有 0.2px 量级）。换算下来 sub 中点差值约 1.55px、
+    // sup 中点差值约 -1.16px（下面 s2 是完全平排的对照组，中点差值恒为 0）——同一组数据，
+    // 边缘量出来是「过不了 0.5px 门槛、方向还错」，中点量出来是「方向对、留了一个多像素的
+    // 余量」，两者不是同一件事的两种写法，是中点排除了边缘量法自带的那份噪声。
+    //
+    // 隔离比较本身仍然保留：s2 与 s1 是同一段文字、同一块几何，placeholders 里唯独没有
+    // script 字段（kind 改成 citation 而不是照抄 formula——见上面 buildScriptSidecar 的注释,
+    // 否则会多引入 italic 这个 confound）。s1 与 s2 里对应位置的 span 因此是完全同源的字符，
+    // 唯一的差别就是 SCRIPT_STYLE 有没有生效；s2 的中点差值恒为 0，天然是一份「没有任何脚标
+    // 效应」的对照基线。
+    //
+    // 定位 span 用位置序号、不用 data-script：s2 的占位符没有 script 字段，渲染不出 data-script
+    // 属性。splitPlaceholders 的输出顺序是确定的——按 target 里 {vN} 出现的先后，先把前面的
+    // 纯文本段推进去，再推占位符段——s1 与 s2 的 target/placeholders 除 script 外逐字相同，
+    // 所以两块的 span 顺序也逐一对应：下标 0 是 v1 前的正文，下标 1 是 v1（sub 位），下标 2 是
+    // v1、v2 之间的正文，下标 3 是 v2（sup 位）。取 querySelectorAll('span') 的第 0/1/3 个。
+    const measure = (block: Locator) => block.evaluate((el) => {
+      const spans = Array.from(el.querySelectorAll('span'));
+      const center = (sp: Element) => {
+        const r = sp.getBoundingClientRect();
+        return (r.top + r.bottom) / 2;
+      };
+      return {
+        textCenter: center(spans[0]), subCenter: center(spans[1]), supCenter: center(spans[3]),
+        subPx: parseFloat(getComputedStyle(spans[1]).fontSize),
+        supPx: parseFloat(getComputedStyle(spans[3]).fontSize),
+      };
+    });
+    const geo1 = await measure(s1);
+    const geo2 = await measure(s2);
+
+    // 字号：0.73em 在 s1 上生效，s2 没有——同一个字符（'i' / '2'）s1 的字号应严格小于 s2 的。
+    // 证伪：把 SCRIPT_STYLE 改成 {} → s1 的 subPx/supPx 会等于 s2 的（同一字体同一字号），两条转红。
+    expect(geo1.subPx, '下标字号应小于同字符不带脚标的字号').toBeLessThan(geo2.subPx);
+    expect(geo1.supPx, '上标字号应小于同字符不带脚标的字号').toBeLessThan(geo2.supPx);
+
+    // 下标方向：s1 的「sub 中点相对正文中点的差值」应比 s2 的同一差值（恒为 0）更大——
+    // 中点更靠下才是下标该有的方向。证伪：SCRIPT_STYLE 改 {} 之后 s1 也退化成中点差值 0，
+    // 不再大于 s2 的 0，转红。
+    const subDelta1 = geo1.subCenter - geo1.textCenter;
+    const subDelta2 = geo2.subCenter - geo2.textCenter;
+    expect(subDelta1, `下标中点相对正文中点的差值应比不带脚标时更大（s1=${subDelta1}, s2=${subDelta2}）`)
+      .toBeGreaterThan(subDelta2);
+
+    // 上标方向：同理，s1 的「sup 中点相对正文中点的差值」应比 s2 的更小（更靠上）。
+    const supDelta1 = geo1.supCenter - geo1.textCenter;
+    const supDelta2 = geo2.supCenter - geo2.textCenter;
+    expect(supDelta1, `上标中点相对正文中点的差值应比不带脚标时更小（s1=${supDelta1}, s2=${supDelta2}）`)
+      .toBeLessThan(supDelta2);
+
+    // §9 待实测：relative 偏移不改行框——同文、同 bbox 的平排块，fit 与 scrollHeight 都相同。
+    expect(await s1.getAttribute('data-fit')).toBe(await s0.getAttribute('data-fit'));
+    const h1 = await s1.evaluate((el) => el.scrollHeight);
+    const h0 = await s0.evaluate((el) => el.scrollHeight);
+    expect(Math.abs(h1 - h0), `带脚标 ${h1} 与平排 ${h0} 的行框高度应相同`).toBeLessThanOrEqual(1);
   } finally {
     await teardown(launched);
   }

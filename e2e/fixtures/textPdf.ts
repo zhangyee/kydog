@@ -59,8 +59,10 @@ export function buildScriptPdf(): Buffer {
  * `patch`：在页面上再压一个纯色小矩形（视口坐标，y 向下）。57 用它把左上角那个采样点染成
  * 与其余七点不同的颜色，造出「八点取样取不到统一背景色」这条兜底路径——真实世界里落进这条
  * 路径的是扫描件与四边压着出血图的页，用一个角上的色块是最小的等价触发。
+ *
+ * `script`：在这行末尾接一个下标 / 上标项（0.7 倍字号、`Ts` 上升），57 / 59 的脚标用例用。
  */
-type Extra = { x: number; y: number; text: string; size?: number };
+type Extra = { x: number; y: number; text: string; size?: number; script?: { text: string; kind: 'sub' | 'sup' } };
 
 export function buildPagedPdf(
   count: number, w: number, h: number,
@@ -95,7 +97,14 @@ export function buildPagedPdf(
     }
     content += `BT /F1 24 Tf 40 ${h - 60} Td (Page ${i + 1}) Tj ET\n`;
     for (const e of Array.isArray(extra) ? extra : extra ? [extra] : []) {
-      content += `BT /F1 ${e.size ?? 14} Tf ${e.x} ${h - e.y} Td (${e.text}) Tj ET\n`;
+      const size = e.size ?? 14;
+      let ops = `BT /F1 ${size} Tf ${e.x} ${h - e.y} Td (${e.text}) Tj`;
+      if (e.script) {
+        // 脚标：字号 0.7 倍，用 Ts（文本上升）挪基线——Td 是相对行首的位移，会把脚标拉回行首与正文重叠
+        const rise = e.script.kind === 'sub' ? -0.15 * size : 0.36 * size;
+        ops += ` /F1 ${(0.7 * size).toFixed(2)} Tf ${rise.toFixed(2)} Ts (${e.script.text}) Tj 0 Ts`;
+      }
+      content += `${ops} ET\n`;
     }
     objs.push(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`);
   }
