@@ -82,7 +82,7 @@ the SHA-256 of that source PDF: leave it out and the user sees a "can't
 confirm the version" notice; get it wrong and the side-by-side view is
 disabled outright.
 
-`kind` accepts exactly these six values — don't invent others (anything else
+`kind` accepts exactly these seven values — don't invent others (anything else
 makes the **whole file** invalid: the user sees a "translation file is
 malformed" notice and the side-by-side button is disabled; the bad block is
 not simply skipped):
@@ -92,6 +92,7 @@ not simply skipped):
 - `caption` a figure/table caption (rendered at 0.9× the font size)
 - `formula` a formula
 - `table` a table
+- `code` source code, a prompt template, JSON, a command line, or any boxed / monospace listing (not translated, not covered — the original stays)
 - `skip` explicitly left alone
 
 `placeholders` keep fragments that must not be translated (inline formulas,

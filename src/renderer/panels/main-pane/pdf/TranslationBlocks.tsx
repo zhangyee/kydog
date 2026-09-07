@@ -307,7 +307,7 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page 
           position: 'absolute', visibility: 'hidden', pointerEvents: 'none',
           top: 0, left: 0, zoom: 1,
           fontFamily: 'var(--font-serif)', lineHeight: LINE_HEIGHT,
-          textAlign: 'justify', textJustify: 'inter-ideograph' as never,
+          textAlign: 'justify', textJustify: 'inter-ideograph' as never, whiteSpace: 'pre-line',
         }}
       />
       {blocks.map((b) => {
@@ -331,12 +331,12 @@ export function TranslationBlocks({ blocks, size, rasterScale, bg, docKey, page 
               fontSize: fontPt * rasterScale,
               fontWeight: WEIGHT(b.kind),
               fontFamily: 'var(--font-serif)', lineHeight: LINE_HEIGHT, color: ink,
-              textAlign: 'justify', textJustify: 'inter-ideograph' as never,
+              textAlign: 'justify', textJustify: 'inter-ideograph' as never, whiteSpace: 'pre-line',
               overflowY: 'auto', userSelect: 'text', pointerEvents: 'auto',
             }}
           >
             {/* 与测量宿主同一份 SEG_STYLE、同一套 span 结构（见 fillHost）——两边一分家，
-                量出来的行数就不是真正画出来的行数。 */}
+                量出来的行数就不是真正画出来的行数。`white-space` 也必须同一个值——量出来的行数才是画出来的行数。 */}
             {splitPlaceholders(b.target, b.placeholders ?? []).map((s, i) => (
               <span key={i} style={SEG_STYLE[s.kind]}>{s.text}</span>
             ))}

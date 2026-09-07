@@ -82,11 +82,12 @@ Group the lines into logical blocks, classify each block, and translate it.
    caption  figure or table caption
    formula  displayed formula
    table    table body or cells
+   code     source code, prompt template, JSON, command line, or any boxed / monospace listing — keep verbatim
    skip     running head, page number, footer, reference list entry
 
 ## Translation rules
 1. Every group whose kind is text, title or caption MUST have a non-empty
-   translation. Groups whose kind is formula, table or skip MUST have none.
+   translation. Groups whose kind is formula, table, code or skip MUST have none.
 2. Output only the translated content, without explanations or additional
    content (such as "Here's the translation:").
 3. Line breaks inside a group are layout artifacts: join the lines into flowing

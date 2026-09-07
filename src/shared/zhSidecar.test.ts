@@ -52,7 +52,7 @@ describe('validateTranslatedDoc', () => {
     const d = doc({ blocks: [block({ kind: 'paragraph' as unknown as Block['kind'] })] });
     const run = () => validateTranslatedDoc(d, 'f.json');
     expect(run).toThrowError(/kind 不认识（paragraph）/);
-    expect(run).toThrowError(/text \/ title \/ caption \/ formula \/ table \/ skip/);
+    expect(run).toThrowError(/text \/ title \/ caption \/ formula \/ table \/ code \/ skip/);
   });
 
   it('placeholder 的 kind 不认识 → 抛，且 message 列出全部合法取值', () => {

@@ -66,7 +66,7 @@ describe('parseGroups', () => {
    * 而不来这里表态就会红。从 BLOCK_KINDS 现推补集的写法守不住任何东西（那样永远相等）。
    */
   it('可译 / 不可译两张表合起来正好是 BLOCK_KINDS，且不相交', () => {
-    const NON_TRANSLATABLE = ['formula', 'table', 'skip'];   // 手写，故意不从 BLOCK_KINDS 现推
+    const NON_TRANSLATABLE = ['formula', 'table', 'code', 'skip'];   // 手写，故意不从 BLOCK_KINDS 现推
     expect(new Set([...TRANSLATABLE, ...NON_TRANSLATABLE]), '有 kind 没被这两张表覆盖到')
       .toEqual(new Set(BLOCK_KINDS));
     expect([...TRANSLATABLE].filter((k) => NON_TRANSLATABLE.includes(k)), '两张表有重叠').toEqual([]);
