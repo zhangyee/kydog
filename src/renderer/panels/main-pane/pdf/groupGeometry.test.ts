@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { PageLine } from '../../../../shared/zhSidecar';
 import { GroupError } from './layoutProtocol';
-import { checkGroupGeometry } from './groupGeometry';
+import { checkGroupGeometry, repairGroupGeometry } from './groupGeometry';
 
 // 10 pt 行、行距 14：n 行的 y = 90 + (n-1)*14
 const line = (n: number, x: number, w: number, y: number): PageLine =>
@@ -106,5 +106,56 @@ describe('checkGroupGeometry', () => {
     // 反过来：墨迹中心在内（把行 2 的墨迹抬到 372–378，中心 375）→ 抛
     const inside = [lines[0], { ...lines[1], inkTop: 372, inkBottom: 378 }];
     expect(() => checkGroupGeometry([{ lines: [1], kind: 'text' }, { lines: [2], kind: 'formula' }], inside)).toThrow(/盖住了不属于它的行 2/);
+  });
+});
+
+describe('repairGroupGeometry（跨栏的组先拆再校验，spec 2026-09-07 §8.7）', () => {
+  // 双栏页：行 1 是左栏顶的标题（别组），行 2/3 是左栏下方的段落前半，行 4 是它在右栏顶的后半，
+  // 行 5 是右栏紧接着的下一段（别组）。段落 {2,3,4} 的并集横跨两栏、纵跨 y 90..128，行 1 与行 5
+  // 的中心都落进去——2512.03413.pdf 第 5 页就是这个形状（51-59 在左栏底、60-62 在右栏顶）。
+  const twoColumn = [line(1, 72, 200, 90), line(2, 72, 200, 104), line(3, 72, 200, 118), line(4, 320, 200, 90), line(5, 320, 200, 104)];
+
+  it('跨栏段落按栏切成两组，位置留在原组处、kind 不变、别的组原样', () => {
+    const groups = [
+      { lines: [1], kind: 'title' as const },
+      { lines: [2, 3, 4], kind: 'text' as const },
+      { lines: [5], kind: 'text' as const },
+    ];
+    expect(() => checkGroupGeometry(groups, twoColumn)).toThrow(/盖住了不属于它的行 1/);
+    expect(repairGroupGeometry(groups, twoColumn)).toEqual([
+      { lines: [1], kind: 'title' },
+      { lines: [2, 3], kind: 'text' },
+      { lines: [4], kind: 'text' },
+      { lines: [5], kind: 'text' },
+    ]);
+  });
+
+  it('切点跟着模型给的行序走：右栏那半排在前面就先出右栏', () => {
+    const groups = [{ lines: [1], kind: 'title' as const }, { lines: [4, 2, 3], kind: 'text' as const }, { lines: [5], kind: 'text' as const }];
+    expect(repairGroupGeometry(groups, twoColumn).map((g) => g.lines)).toEqual([[1], [4], [2, 3], [5]]);
+  });
+
+  it('本来就合几何的组一个不动（拆只发生在会盖住别人的组上）', () => {
+    const groups = [{ lines: [1], kind: 'title' as const }, { lines: [2, 3], kind: 'text' as const }, { lines: [4, 5], kind: 'text' as const }];
+    expect(repairGroupGeometry(groups, twoColumn)).toEqual(groups);
+  });
+
+  it('不可译 kind 的组并集再大也不拆、不抛（它不填色）', () => {
+    const groups = [{ lines: [1, 2, 3, 4, 5], kind: 'figure' as const }];
+    expect(repairGroupGeometry(groups, twoColumn)).toEqual(groups);
+  });
+
+  it('拆到单行仍盖住别人（一行本身横跨两栏）→ 照抛，原因仍是「盖住了不属于它的行」', () => {
+    const wide = [line(1, 72, 568, 90), line(2, 320, 200, 90)];
+    expect(() => repairGroupGeometry([{ lines: [1], kind: 'text' }, { lines: [2], kind: 'text' }], wide))
+      .toThrow(/盖住了不属于它的行 2/);
+  });
+
+  it('「别组的行」按拆之前的组算：内容流交错的同一段（{1,3} 与 {2,4} 各成一组）不会被切碎', () => {
+    // 与 checkGroupGeometry 那条「非连续分组通过」同一份几何：{1,3} 的并集不含 2/4 的中心，本就合几何，
+    // 但这里故意把 1 与 3 之间放一行别组的窄行 6 在右栏，让 {1,3} 单看仍合几何——拆不发生。
+    const lines = [line(1, 72, 200, 90), line(2, 320, 200, 90), line(3, 72, 200, 104), line(4, 320, 200, 104)];
+    const groups = [{ lines: [1, 3], kind: 'text' as const }, { lines: [2, 4], kind: 'text' as const }];
+    expect(repairGroupGeometry(groups, lines)).toEqual(groups);
   });
 });

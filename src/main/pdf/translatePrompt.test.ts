@@ -59,6 +59,12 @@ describe('buildLayoutSystemPrompt（第一步：只分组分类）', () => {
     expect(p).toContain('5\t303,740,5,10,10\t4');
     expect(p).toMatch(/\n5 \| skip/);
   });
+  it('跨栏续段是两组：规则句点名，例子里左栏底的 6 与右栏顶的 7 各成一组（2512.03413 第 5 页）', () => {
+    expect(p).toMatch(/continues at the top\s+of the next column is two groups, one per column/);
+    expect(p).toContain('6\t72,660,220,12,10\t');
+    expect(p).toContain('7\t312,90,220,12,10\t');
+    expect(p).toContain('\n6 | text\n7 | text\n');
+  });
   it('说明显式行号优先于范围（spec 2026-09-07 §8.2）', () => {
     expect(p).toContain('If an id you list on its own also falls inside a range you wrote, the range is read as excluding it.');
   });

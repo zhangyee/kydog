@@ -1,7 +1,7 @@
 import type { Block, PageLine, Term, TranslatedDoc, TranslateGroup } from '../../../../shared/zhSidecar';
 import { buildBlocks, joinSource } from './buildBlocks';
 import { extractPageLines, type TextSource } from './extractPageLines';
-import { checkGroupGeometry } from './groupGeometry';
+import { repairGroupGeometry } from './groupGeometry';
 import { GroupError, isTranslatable, parseLayout, type LayoutGroup, type ParsedGroup } from './layoutProtocol';
 import type { TextLine } from './textLines';
 import { parseTranslations } from './translateProtocol';
@@ -170,7 +170,8 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
    * ——版面已经校验过了，重跑它既多付一次调用，又可能换回一份更差的划分。
    *
    * 几何校验放在第一步拆分**合并之后**、对着整页的行做——拆开的两半各自校验挡不住「A 半的组
-   * 盖住 B 半的行」。
+   * 盖住 B 半的行」。校验前先拆跨栏的组（repairGroupGeometry）：跨栏段落是几何上必然盖住别人
+   * 的组，拒绝换来的重试是同一份几何。
    *
    * 失败页记页号与原因、保留原文（该页不产块 → 右格不覆盖）。
    *
@@ -179,9 +180,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   const runPage = async (page: number, lines: PageLine[], docTitle?: string, precomputed?: Attempt<LayoutGroup[]>): Promise<void> => {
     const fail = (reason: string) => { failedPages.push(page); reasons[String(page)] = reason; };
     const layout = precomputed ?? await twice('版面', async () => {
-      const groups = await runLayout(page, lines, docTitle);
-      checkGroupGeometry(groups, lines);
-      return groups;
+      return repairGroupGeometry(await runLayout(page, lines, docTitle), lines);
     });
     // 这一档与下面那档的 `if (aborted)`：这次尝试是在别的 worker 已经因 llm.not_configured
     // 抛错之后才落地的——Promise.all 迟早会 reject，调用方大概率已经拿到那个 rejection，这次
@@ -238,9 +237,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     // 只跑版面拿 title 组，再把这份版面结果当 precomputed 交给 runPage——整页照常走，但版面
     // 不多付一次调用。
     const first = await twice('版面', async () => {
-      const groups = await runLayout(head.page, head.lines);
-      checkGroupGeometry(groups, head.lines);
-      return groups;
+      return repairGroupGeometry(await runLayout(head.page, head.lines), head.lines);
     });
     if (first.ok) {
       const byId = new Map(head.lines.map((l) => [l.n, l.text]));

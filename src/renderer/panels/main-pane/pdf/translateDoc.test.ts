@@ -451,18 +451,47 @@ describe('两步协议（spec 2026-09-07 §4）', () => {
     expect(b!.failureReasons!['1']).toMatch(/^翻译：.*；重试：/);
   });
 
-  it('几何校验在第一步之后就跑：会盖住别人的组 → 该页失败，原因带「版面：」', async () => {
+  it('几何校验在第一步之后就跑：拆也救不回的组 → 该页失败，原因带「版面：」', async () => {
     // 两步之后**译文还没回来**，layout 组一个都没有 target——几何校验若仍按「有没有 target」
-    // 判要不要查，整层校验就是静默死的（能编译、能全绿、盖字照发生）。这里的 {1,4} 组纵跨
-    // 四行，行 2 / 3 的中心落进它的覆盖矩形，必须在第一步之后当场被判失败。
+    // 判要不要查，整层校验就是静默死的（能编译、能全绿、盖字照发生）。这里行 1 是 30pt 的大字，
+    // 行 2 的中心落在它自己的字身框里——单独一行就盖住别人，repairGroupGeometry 拆无可拆，
+    // 必须在第一步之后当场被判失败。
+    const tallPage = {
+      getTextContent: async () => ({
+        items: [
+          { str: 'BIG', transform: [30, 0, 0, 30, 72, 300], width: 90, height: 30, hasEOL: true },
+          { str: 'small', transform: [10, 0, 0, 10, 72, 295], width: 40, height: 10, hasEOL: true },
+        ],
+      }),
+      getViewport: () => ({ convertToViewportPoint: (x: number, y: number) => [x, 400 - y] }),
+    };
+    const doc = await translateDoc(base({
+      numPages: 1,
+      getPage: async () => tallPage,
+      layoutPage: async () => ({ text: '1 | text\n2 | text', truncated: false }),
+    }));
+    expect(doc!.blocks).toEqual([]);
+    expect(doc!.failedPages).toEqual([1]);
+    expect(doc!.failureReasons!['1']).toMatch(/^版面：.*盖住了不属于它的行 2/);
+  });
+
+  it('跨行盖住别人的组先拆再过校验：{1,4} 拆成 {1} 与 {4}，该页成功、块按拆后的组出（spec 2026-09-07 §8.7）', async () => {
+    // 以前这一页被判失败（{1,4} 纵跨四行，行 2 / 3 的中心落进它的矩形）。拆分后四个块各占一行：
+    // 第二步收到的是拆后的四组、按模型给的组序 [1]、[4]、[2]、[3]；落盘的块由 buildBlocks 按最小
+    // 行号重编，所以是 1、2、3、4。
+    const seen: string[][] = [];
     const doc = await translateDoc(base({
       numPages: 1,
       getPage: async (n) => fakePage(n, 4),
       layoutPage: async () => ({ text: '1,4 | text\n2 | text\n3 | text', truncated: false }),
+      translateGroups: async ({ page, groups }) => {
+        seen.push(groups.map((g) => g.source));
+        return translateOk({ page, groups });
+      },
     }));
-    expect(doc!.blocks).toEqual([]);
-    expect(doc!.failedPages).toEqual([1]);
-    expect(doc!.failureReasons!['1']).toMatch(/^版面：.*盖住了不属于它的行/);
+    expect(doc!.failedPages).toBeUndefined();
+    expect(seen).toEqual([['p1l1', 'p1l4', 'p1l2', 'p1l3']]);
+    expect(doc!.blocks.map((b) => b.source)).toEqual(['p1l1', 'p1l2', 'p1l3', 'p1l4']);
   });
 });
 

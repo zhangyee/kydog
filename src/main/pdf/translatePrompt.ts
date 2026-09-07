@@ -62,7 +62,10 @@ Group the lines into logical blocks and classify each block. Do NOT translate an
    them as reading order requires.
 2. The bounding box of a group is the union of its lines' boxes. That box must
    not contain any line belonging to another group. If a figure, a formula or
-   another column sits between two halves of a paragraph, emit two groups.
+   another column sits between two halves of a paragraph, emit two groups. A
+   paragraph that runs off the bottom of one column and continues at the top
+   of the next column is two groups, one per column, even though it is one
+   paragraph (lines 6 and 7 in the example).
 3. A group is one logical block: a paragraph, a heading, a caption, a displayed
    formula, a table, a code or template listing, or a running head. Use the
    geometry: a change of column, a change of left margin, a change of font
@@ -102,15 +105,19 @@ Output nothing else: no translation, no explanation, no blank lines.
 
 ## Example
 Input:
-1\t72,90,451,12,10\tDeep learning has shown remarkable
-2\t72,104,451,12,10\tresults on a wide range of tasks [12].
+1\t72,90,220,12,10\tDeep learning has shown remarkable
+2\t72,104,220,12,10\tresults on a wide range of tasks [12].
 3\t72,130,120,14,14\t2  Method
 4\t72,700,451,9,8\tPreprint. Under review.
 5\t303,740,5,10,10\t4
+6\t72,660,220,12,10\tThe method has two stages: first, entities are
+7\t312,90,220,12,10\textracted; second, they are merged into one graph.
 
 Output:
 1-2 | text
 3 | title
+6 | text
+7 | text
 4 | skip
 5 | skip`;
 }
