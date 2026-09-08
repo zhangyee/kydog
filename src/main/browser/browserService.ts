@@ -171,6 +171,8 @@ export class BrowserService {
   private readonly cdpGone = new Set<string>();
   /** 正在进行的 agent 驱动窗口，一次一帧（可以同时有好几帧，各在各的标签上）。 */
   private readonly drivingFrames: DrivingFrame[] = [];
+  /** 「这个标签没了」的订阅者。见 `onTabDestroyed`。 */
+  private readonly tabGone = new Set<(tabId: string) => void>();
   private stage: Stage | null = null;
   private sessionWired = false;
 
@@ -659,6 +661,28 @@ export class BrowserService {
     try { if (!view.webContents.isDestroyed()) view.webContents.debugger.detach(); } catch { /* 已经断开 */ }
     try { this.win?.contentView.removeChildView(view); } catch { /* 窗口已经没了 */ }
     try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* 同上 */ }
+    // **最后一句**：上面那些清理必须先做完 —— 订阅者会在回调里回头问这个标签
+    // 还在不在，问到一个半拆的状态就成了「我看它还在」。
+    for (const fn of [...this.tabGone]) {
+      // 一个订阅者抛异常不能让别的订阅者收不到通知，更不能让 close() / disposeAll()
+      // 半路停下来（那会留下没有账本记录、却还在跑页面的 view）。
+      try { fn(id); } catch (err) { logger.warn('browser.tab', '标签销毁的订阅者抛了异常', { id, err: String(err) }); }
+    }
+  }
+
+  /**
+   * 订阅「这个标签没了」。**销毁是唯一的清除时机**，而 `destroyView` 有三个调用方
+   * （`close` / `disposeForRun` / `disposeAll`）—— 订阅者不该去逐个盯它们。
+   *
+   * 第一个订阅者是 `loginFlow`：它按标签存着「本轮已经填过一次凭据」和那次填充
+   * 的 webRequest 观测者，两样都只在标签销毁时清（见 `loginFlow.ts` 那张表）。
+   *
+   * **反过来的方向刻意没有**（本模块不 import loginFlow）：那会是一条 import 环，
+   * 而 `browserService` 是几乎所有浏览器模块的叶子。
+   */
+  onTabDestroyed(fn: (tabId: string) => void): () => void {
+    this.tabGone.add(fn);
+    return () => { this.tabGone.delete(fn); };
   }
 
   // ── 对外操作 ────────────────────────────────────────────────────────────
@@ -880,6 +904,33 @@ export class BrowserService {
     return v && !v.webContents.isDestroyed() ? v.webContents : null;
   }
 
+  /**
+   * 这个标签**此刻已提交**的 URL。`null` = 没有这个标签（或它已经销毁）。
+   *
+   * **与 `getState().tabs[].url` 不是一回事，别拿那个代替它。** 账本里那份靠
+   * `syncTabMeta` 在导航事件上更新，慢一拍；而 `loginFlow` 的 TOCTOU 重判问的是
+   * 「我马上要往里面写校园密码的**这个文档**是谁」—— 慢一拍的答案在这里等于没答。
+   *
+   * 页面刚没的那一刻连 `getURL()` 都会抛，所以走 `safeCall`（回空串：wc 还在、
+   * 只是这一刻问不出来，与「没有这个标签」是两件事）。
+   */
+  currentUrlOf(tabId: string): string | null {
+    const wc = this.webContentsOf(tabId);
+    if (!wc) return null;
+    return this.safeCall(() => wc.getURL(), '');
+  }
+
+  /**
+   * 这个标签的 `WebContents.id`。**webRequest 的归属判据就是它**：
+   * `OnBeforeRequestListenerDetails.webContentsId`（`electron.d.ts:21933`）与它相等
+   * 才算这个标签发出的请求。拿不到（标签已经没了）就 null —— 调用方不许去猜。
+   */
+  webContentsIdOf(tabId: string): number | null {
+    const wc = this.webContentsOf(tabId);
+    if (!wc) return null;
+    return this.safeCall<number | null>(() => wc.id, null);
+  }
+
   // ── 页内求值（隔离世界）───────────────────────────────────────────────────
 
   /**
@@ -973,8 +1024,13 @@ export class BrowserService {
    * `browser_read` 的正文与 `extract` 的抽取都走它 —— 那两条路此前直接拿
    * `webContentsOf()` 注脚本，崩过一次的标签上就是一次挂死，而它们**都在
    * `browser_act` / `browser_read` 这种 sequential 工具里**。
+   *
+   * `code` 收**拼装函数**那一档是给要带过期自检的注入用的（`loginFlow` 的填充脚本，
+   * 与 `interactExpression` 同一个道理）：到点时刻由 `evalOn` 算一次、两边共用 ——
+   * 调用方自己 `Date.now() + PAGE_EVAL_TIMEOUT_MS` 会与这里的定时器差开一小段，
+   * 守卫要么提前把好的求值废掉、要么晚到根本不挡。
    */
-  async evalInPage(tabId: string, code: string): Promise<unknown> {
+  async evalInPage(tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown> {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     BrowserService.assertRenderProcess(tabId, wc);

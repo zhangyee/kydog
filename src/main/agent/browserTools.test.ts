@@ -302,6 +302,37 @@ vi.mock('../browser/browserService', () => {
   };
 });
 
+/**
+ * `loginFlow` 的替身。真身要 electron 的 session（webRequestHub）与真页面 —— 它自己
+ * 有一整份单测（`loginFlow.test.ts`）。这里考的是**工具层到它的接线**：
+ * 参数怎么传下去、`submit` 的默认值、返回值里回显了什么、以及登录状态有没有挂到
+ * **每一个**工具结果的头部。
+ */
+const lf = vi.hoisted(() => ({
+  calls: [] as Array<{ tabId: string; opts: Record<string, unknown> }>,
+  notes: new Map<string, string>(),
+  fillImpl: (() => ({
+    entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth',
+    institutionName: '北京大学',
+    host: 'iaaa.pku.edu.cn',
+    field: 'input#user[name=userName]',
+    source: 'structure' as const,
+    submitted: false,
+    submitHow: null,
+    askedUser: false,
+  })) as () => unknown,
+}));
+
+vi.mock('../browser/loginFlow', () => ({
+  loginFlow: {
+    fill: (tabId: string, opts: Record<string, unknown>) => {
+      lf.calls.push({ tabId, opts });
+      return Promise.resolve(lf.fillImpl());
+    },
+    noteFor: (tabId: string) => lf.notes.get(tabId) ?? null,
+  },
+}));
+
 const snap = (over: Record<string, unknown> = {}) => ({
   snapshotId: 'snap_aaa', generation: 'gen-1', url: 'https://a.example/q', title: '结果页',
   nodes: [], collection: { truncated: false, returned: 0, totalKnown: 0 }, iframes: 0, ...over,
@@ -311,9 +342,16 @@ const node = (over: Record<string, unknown> = {}) => ({
 });
 
 type Exec = (id: string, params: unknown, signal?: AbortSignal) => Promise<{ content: { text?: string }[]; details?: unknown }>;
+const noopAskShared = { onOpened: () => {}, onClosed: () => {} };
+const makeTools = (over: Partial<Parameters<typeof createBrowserTools>[0]> = {}) => createBrowserTools({
+  currentRunId: () => 'run-1',
+  threadId: 'thread-1',
+  askShared: noopAskShared,
+  institution: { name: '北京大学', entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth' },
+  ...over,
+});
 const toolNamed = (name: string): { execute: Exec; description: string } =>
-  createBrowserTools({ currentRunId: () => 'run-1' })
-    .find((t) => t.name === name) as unknown as { execute: Exec; description: string };
+  makeTools().find((t) => t.name === name) as unknown as { execute: Exec; description: string };
 
 const bodyOf = (r: { content: { text?: string }[] }): string => r.content.map((c) => c.text ?? '').join('\n');
 
@@ -331,6 +369,8 @@ beforeEach(() => {
   bs.tabs = [{ id: 't1', url: 'https://a.example/q' }];
   bs.noTab = false;
   bs.evalThrows = null;
+  lf.calls.length = 0;
+  lf.notes.clear();
 });
 
 describe('六种动作真的接通到 browserService.dispatch（Task 4）', () => {
@@ -708,5 +748,172 @@ describe('browser_open 的收尾快照抛了，导航结论不许跟着一起丢
     const s = bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }));
     expect(s).toContain('snap_open');
     expect(s).not.toContain('取不到页面快照');
+  });
+});
+
+// ── browser_login（Task 7）──────────────────────────────────────────────────
+
+/**
+ * 工具层到 `loginFlow` 的接线。判据本身（域、TOCTOU、停手、观测者）在
+ * `loginFlow.test.ts` 与 `loginFill.test.ts` 里；这里守的是**参数怎么传下去、
+ * 默认值取哪一侧、返回值回显了什么**。
+ */
+const login = (params: Record<string, unknown> = {}, signal?: AbortSignal) =>
+  toolNamed('browser_login').execute('call-login', { tabId: 't1', ...params }, signal);
+
+describe('browser_login：参数原样传给 loginFlow', () => {
+  it('runId、tabId、usernameIndex、snapshotId 都传下去了', async () => {
+    await login({ usernameIndex: 3, snapshotId: 'snap_aaa' });
+    expect(lf.calls).toHaveLength(1);
+    expect(lf.calls[0].tabId).toBe('t1');
+    expect(lf.calls[0].opts.runId).toBe('run-1');
+    expect(lf.calls[0].opts.usernameIndex).toBe(3);
+    expect(lf.calls[0].opts.snapshotId).toBe('snap_aaa');
+  });
+
+  /**
+   * **不给 submit 就是不提交。** 两个方向的代价不对称：多提交一次会在有验证码的
+   * 页面上送出一次必然失败的登录，而「同一轮失败一次就停手」意味着那是本轮唯一的
+   * 机会（高校 IdP 还会为连续失败锁账号）；少提交一次只是让模型多点一下按钮。
+   */
+  it('submit 不给 → false', async () => {
+    await login();
+    expect(lf.calls[0].opts.submit).toBe(false);
+  });
+
+  it('submit 给 true → true；给 false → false', async () => {
+    await login({ submit: true });
+    expect(lf.calls[0].opts.submit).toBe(true);
+    await login({ submit: false });
+    expect(lf.calls[1].opts.submit).toBe(false);
+  });
+
+  it('ask 是一个函数（首次确认走它，不是 loginFlow 自己去发明一个挂起）', async () => {
+    await login();
+    expect(typeof lf.calls[0].opts.ask).toBe('function');
+  });
+
+  /** 与另外三个工具同一条规矩：`enqueue` 只增不减，标签不存在要在排队之前就拒。
+   *  而且这一条要排在问用户**之前** —— 一个写错的 tabId 不该先弹一个确认框。 */
+  it('标签不存在 → browser.no_tab，且一次都不去碰 loginFlow', async () => {
+    await expect(login({ tabId: 't_typo' })).rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(lf.calls).toEqual([]);
+  });
+});
+
+describe('browser_login 的返回值', () => {
+  it('回显当前的机构名与 entityID —— description 里那份是会话开始时的快照，会旧', async () => {
+    const s = bodyOf(await login());
+    expect(s).toContain('北京大学');
+    expect(s).toContain('https://iaaa.pku.edu.cn/idp/shibboleth');
+  });
+
+  it('回显实际选中的账号框，并要求模型看一眼对不对', async () => {
+    const s = bodyOf(await login());
+    expect(s).toContain('input#user[name=userName]');
+    expect(s).toContain('确认一下它是不是账号框');
+  });
+
+  it('没提交时说清「还没提交」，并指向头部那行作为成功判据', async () => {
+    const s = bodyOf(await login());
+    expect(s).toContain('没有提交');
+    expect(s).toContain('browser_act');
+    expect(s).toContain('唯一的成功判据');
+  });
+
+  /** 「请求提交」不等于「登录成功」—— 表单校验挡下来、密码错都会走到看起来正常的页面。 */
+  it('提交了也不许说成「登录成功」', async () => {
+    lf.fillImpl = () => ({
+      entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth', institutionName: '北京大学',
+      host: 'iaaa.pku.edu.cn', field: 'input#u', source: 'model', submitted: true,
+      submitHow: 'requestSubmit', askedUser: false,
+    });
+    const s = bodyOf(await login({ submit: true }));
+    expect(s).toContain('请求提交');
+    expect(s).toContain('不等于「登录成功」');
+    expect(s).toContain('SAML 断言回传');
+  });
+
+  it('刚问过用户的那一次会说出来（用户授权的是一次持久化）', async () => {
+    lf.fillImpl = () => ({
+      entityID: 'e', institutionName: '北京大学', host: 'sso.pku.edu.cn',
+      field: 'input#u', source: 'structure', submitted: false, submitHow: null, askedUser: true,
+    });
+    expect(bodyOf(await login())).toContain('已经记住');
+  });
+
+  it('模型指的框与结构规则找的框，说法不一样', async () => {
+    const auto = bodyOf(await login());
+    lf.fillImpl = () => ({
+      entityID: 'e', institutionName: '北京大学', host: 'h',
+      field: 'input#u', source: 'model', submitted: false, submitHow: null, askedUser: false,
+    });
+    const picked = bodyOf(await login());
+    expect(auto).toContain('按结构规则找到的');
+    expect(picked).toContain('你用 usernameIndex 指的');
+  });
+});
+
+/**
+ * spec §4.6 / Task 7 Step 1：登录状态挂在**标签**上，随后**每个**工具结果的头部
+ * 带出来。只挂在 `browser_login` 的返回值里是不够的 —— `submit: false`（验证码）
+ * 那条路上，断言回传发生在模型自己点完提交之后，那一刻 `browser_login` 早就返回了。
+ */
+describe('登录状态挂在每一个浏览器工具结果的头部', () => {
+  const HEAD = '已看到 SAML 断言回传';
+  // browser_read 会把页内求值的结果当正文用，默认那份替身回 null。
+  beforeEach(() => { bs.isolatedImpl = () => '正文'; });
+
+  it('browser_read 的头部带得出来', async () => {
+    lf.notes.set('t1', HEAD);
+    expect(bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }))).toContain(HEAD);
+  });
+
+  it('browser_act 的头部带得出来', async () => {
+    lf.notes.set('t1', HEAD);
+    expect(bodyOf(await act([{ kind: 'key', key: 'Enter' }]))).toContain(HEAD);
+  });
+
+  it('browser_open 的头部带得出来', async () => {
+    lf.notes.set('t1', HEAD);
+    expect(bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }))).toContain(HEAD);
+  });
+
+  it('带的是标签号 + 那句话，而不是把两个标签的状态混在一起', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q' }, { id: 't2', url: 'https://b.example/' }];
+    lf.notes.set('t2', HEAD);
+    const s = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }));
+    expect(s).toContain(`[t2] ${HEAD}`);
+    expect(s).not.toContain(`[t1] ${HEAD}`);
+  });
+
+  it('没有任何标签有登录状态时一个字都不加 —— 不给每次调用添噪声', async () => {
+    const s = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }));
+    expect(s).not.toContain('机构登录');
+  });
+});
+
+describe('browser_login 的说明（description）', () => {
+  const desc = (inst: { name: string; entityID: string } | null): string =>
+    (makeTools({ institution: inst }).find((t) => t.name === 'browser_login') as { description: string }).description;
+
+  it('机构名与 entityID 在里面（Task 9 的 skill 要靠它写登录 URL）', () => {
+    const d = desc({ name: '复旦大学', entityID: 'https://idp.fudan.edu.cn/idp/shibboleth' });
+    expect(d).toContain('复旦大学');
+    expect(d).toContain('https://idp.fudan.edu.cn/idp/shibboleth');
+  });
+
+  it('明说「同一轮失败一次就停手」—— 模型看到失败会本能地重试', () => {
+    expect(desc(null)).toContain('失败一次就停手');
+  });
+
+  it('明说成功判据是断言回传，不是页面文案也不是状态码', () => {
+    const d = desc(null);
+    expect(d).toContain('SAML 断言');
+    expect(d).toContain('不看页面文案');
+  });
+
+  it('明说密码模型自己看不到也拿不到', () => {
+    expect(desc(null)).toContain('你看不到也拿不到');
   });
 });

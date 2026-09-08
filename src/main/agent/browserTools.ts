@@ -13,6 +13,9 @@ import {
   compileExtractPlan, extractExpression, describeExtractResult, createBatchBudget, describeCollected,
   type ExtractResult, type ExtractRow, type BatchBudget,
 } from '../browser/extract';
+import { loginFlow } from '../browser/loginFlow';
+import { createLoginAsk } from './loginConfirm';
+import type { AskSharedState } from './askUserQuestionTool';
 
 type ToolContent = { type: string; [k: string]: unknown };
 type ToolResult = { content: ToolContent[]; details?: unknown };
@@ -31,6 +34,23 @@ function tabsLine(activeId?: string): string {
     const host = (() => { try { return new URL(t.url).host; } catch { return t.url || 'about:blank'; } })();
     return `[${t.id}]${t.id === cur ? '*' : ''} ${host}`;
   }).join(' · ');
+}
+
+/**
+ * 机构登录的状态，挂在**每个**浏览器工具结果的头部（spec §4.6 / Task 7 Step 1）。
+ *
+ * **不能只挂在 `browser_login` 的返回值里**：`submit: false`（验证码）是常态路径，
+ * 断言回传发生在模型自己点完提交之后，那一刻 `browser_login` 早就返回了 ——
+ * 不带出来的话，模型永远不知道自己登进去没有，只能去猜页面文案。
+ *
+ * 没有任何标签有登录状态时**一个字都不加**（回 null），免得给每次工具调用都添一行噪声。
+ */
+function loginLine(): string | null {
+  const notes = browserService.getState().tabs
+    .map((t) => ({ id: t.id, note: loginFlow.noteFor(t.id) }))
+    .filter((r): r is { id: string; note: string } => r.note !== null);
+  if (notes.length === 0) return null;
+  return '机构登录: ' + notes.map((r) => `[${r.id}] ${r.note}`).join(' · ');
 }
 
 /**
@@ -210,12 +230,84 @@ const READ_DESC = [
   '这个工具是给「我要读这篇文章说了什么」用的，不是给「我要这一页 20 条结果的链接」用的。',
 ].join('\n');
 
+// ── browser_login ───────────────────────────────────────────────────────────
+
+const LoginParams = Type.Object({
+  tabId: Type.String({ description: '机构登录页所在的标签' }),
+  submit: Type.Optional(Type.Boolean({
+    description: '填完是否立刻提交表单。**不给就是不提交**（只填，你自己再点提交）',
+  })),
+  usernameIndex: Type.Optional(Type.Number({
+    description: '快照里账号框的编号。不给就按结构规则找（同一个 form 里排在密码框之前的最后一个可见文本框）',
+  })),
+  snapshotId: Type.Optional(Type.String({ description: '给了 usernameIndex 就必须同时给产生它的 snapshotId' })),
+});
+
+/**
+ * `browser_login` 的说明。**机构名与 entityID 拼进去**（裁决 7b）——
+ * 不放的话模型压根不知道用户是哪所学校，写不出 CARSI 的登录 URL，整条路走不通。
+ *
+ * **只放机构名与 entityID，绝不放账号与密码。** entityID 是公开清单
+ * （`fsso.cnki.net/idp/list`）里的公开标识符，不是秘密；账号与密码则一个字都不进
+ * 模型上下文（密码连主进程之外都不出，见 `loginFlow.ts`）。
+ *
+ * **它是建会话那一刻的快照，用户中途改机构就陈旧了。** 处置写在下面那段文案里：
+ * 判据一侧永远不受影响（`loginFlow` 每次执行都重读设置，用的是**当前**的
+ * entityID），而这里这份只用于让模型写得出登录 URL；每一次调用的返回值（成功与
+ * 失败都算）都会回显**当前**的机构名与 entityID，模型据此自我纠正。陈旧的后果因此
+ * 只有一种：模型第一次导到了上一所学校的登录页，然后被 `browser.idp_host_mismatch`
+ * 响亮地拒掉并当场读到正确的 entityID —— 不会静默地把密码填错地方。
+ */
+function loginDesc(inst: { name: string; entityID: string } | null): string {
+  return [
+    '用设置里存的机构账号，在当前这个机构登录页上填入账号与密码（**密码由主进程直接填，你看不到也拿不到**）。',
+    '',
+    inst
+      ? `当前配置的机构：${inst.name}，entityID：${inst.entityID}`
+      : '设置里**还没有配置机构账号** —— 现在调这个工具只会失败，先让用户去设置里配。',
+    '（这一行是这次会话开始时的快照。用户中途换了学校它就旧了 ——'
+    + '**每次调用的返回值里都会回显当前的机构名与 entityID，以那个为准**。）',
+    '',
+    '几件必须知道的事：',
+    '- 只在**这个机构自己的**统一身份认证页上才填得成。第一次遇到一个新地址会停下来问用户一次；'
+    + '用户确认过的地址会被记住，之后不再问。',
+    '- **同一轮任务里失败一次就停手**：填过一次而没有看到登录成功的信号，再调只会被拒。'
+    + '高校的统一身份认证会锁定连续失败的账号，押的是用户自己的校园账号 —— 那时请交给用户自己登录。',
+    '- 成功与否**不看页面文案，也不看状态码**，只看协议事实：SAML 断言有没有回传给论文站。'
+    + '看到了以后，每个浏览器工具结果的头部都会有一行「机构登录: …已看到 SAML 断言回传」。',
+    '- 有验证码的页面用 `submit` 不给（默认不提交）：先填好账号密码，你再自己填验证码、点提交按钮。',
+    '- 账号框由你来指最准：先取一份快照，把账号框的编号用 `usernameIndex` + `snapshotId` 给我。'
+    + '不指我也会按结构规则找一个，并在返回值里回显实际选中的是哪个框 —— **看一眼它对不对**。',
+    '- 密码框我自己找，只认「此刻就是密码框」或「这个文档里曾经是」；多于一个就整条拒绝，不猜。',
+  ].join('\n');
+}
+
 // ── 工厂 ────────────────────────────────────────────────────────────────────
 
 /** run 上下文由 sessionFactory 闭包注入 —— pi 的 ctx 里只有 cwd，没有 KyDog 的 runId。 */
-export type BrowserToolDeps = { currentRunId: () => string | null };
+export type BrowserToolDeps = {
+  currentRunId: () => string | null;
+  /**
+   * `browser_login` 的首次确认要走**现成的** ask broker，这两个照
+   * `createAskUserQuestionTool` 的形态由 `sessionFactory` 注入
+   * （`threadId` 即 sessionId；`askShared` 是工具 → AgentService 的上行通道）。
+   *
+   * **必填，没有默认值。** 给个默认（比如「问不了就当用户同意」）等于把 spec §4.6
+   * 那道确认变成摆设，而且不会有任何一条用例红。
+   */
+  threadId: string;
+  askShared: AskSharedState;
+  /**
+   * 建会话那一刻的机构快照，**只用来拼 `browser_login` 的 description**
+   * （见 `loginDesc` 那段：为什么放、为什么陈旧了也不危险）。没配就是 null。
+   */
+  institution: { name: string; entityID: string } | null;
+};
 
-const withTabs = (body: string, tabId?: string): ToolResult => text(`${tabsLine(tabId)}\n\n${body}`);
+const withTabs = (body: string, tabId?: string): ToolResult => {
+  const login = loginLine();
+  return text(`${tabsLine(tabId)}${login ? `\n${login}` : ''}\n\n${body}`);
+};
 
 /** 排队之前先确认标签在。见 `browser_act` 那一处的注释：`enqueue` 只增不减。 */
 function assertTabExists(tabId: string): void {
@@ -325,7 +417,54 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     },
   };
 
-  return [openTool, actTool, readTool];
+  const ask = createLoginAsk(deps.threadId, deps.askShared);
+
+  const loginTool = {
+    name: 'browser_login',
+    label: '机构登录',
+    description: loginDesc(deps.institution),
+    promptSnippet: 'browser_login — 用设置里存的机构账号在机构登录页上登录（密码由主进程填）',
+    parameters: LoginParams,
+    executionMode: 'sequential' as const,
+    async execute(
+      toolCallId: string,
+      params: { tabId: string; submit?: boolean; usernameIndex?: number; snapshotId?: string },
+      signal?: AbortSignal,
+    ): Promise<ToolResult> {
+      // 与另外两个工具同一条规矩：标签存不存在在**排队之前**查（`enqueue` 只增不减），
+      // 而且这一条要排在问用户**之前** —— 一个写错的 tabId 不该先弹一个确认框给用户。
+      assertTabExists(params.tabId);
+      const r = await loginFlow.fill(params.tabId, {
+        runId: deps.currentRunId(),
+        // **不给就是不提交。** 两个方向的代价不对称：多提交一次会在有验证码的页面上
+        // 送出一次必然失败的登录，而「同一轮失败一次就停手」意味着那是本轮唯一的机会
+        // （高校 IdP 还会为连续失败锁账号）；少提交一次只是让你多点一下提交按钮。
+        submit: params.submit === true,
+        usernameIndex: params.usernameIndex,
+        snapshotId: params.snapshotId,
+        ask: (a) => ask(toolCallId, a, signal),
+      });
+      const parts = [
+        `已在 ${r.host} 填入「${r.institutionName}」的机构账号与密码。`,
+        // 每次调用都回显**当前**的机构 —— description 里那份是建会话时的快照，
+        // 用户中途换了学校就旧了（见 loginDesc 那段）。这一行是模型纠正它的唯一途径。
+        `当前机构：${r.institutionName}，entityID：${r.entityID}`,
+        `实际填的账号框：${r.field}（${r.source === 'model' ? '你用 usernameIndex 指的' : '按结构规则找到的'}）`
+        + ' —— **确认一下它是不是账号框**，不是的话别再调这个工具，先告诉用户。',
+      ];
+      if (r.askedUser) parts.push(`用户刚刚确认了 ${r.host} 是这所学校的登录页，已经记住，以后不再问。`);
+      parts.push(r.submitted
+        ? '已经请求提交这个表单。**「请求提交」不等于「登录成功」** —— 表单自带的校验可能把它挡下来，'
+          + '密码错也会走到一个看起来很正常的页面。等一下再取快照看，'
+          + '而真正的成功判据只有一个：工具结果头部出现「已看到 SAML 断言回传」。'
+        : '**没有提交**（你没给 submit: true）。页面上现在填好了账号与密码 —— '
+          + '有验证码就先填验证码，然后用 browser_act 点提交按钮。'
+          + '提交之后留意工具结果头部那行「机构登录: …」，它是唯一的成功判据。');
+      return { ...withTabs(parts.join('\n'), params.tabId), details: { tabId: params.tabId, submitted: r.submitted } };
+    },
+  };
+
+  return [openTool, actTool, readTool, loginTool];
 }
 
 /**

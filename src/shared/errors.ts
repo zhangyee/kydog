@@ -40,7 +40,15 @@ export type KydogErrorCode =
   // 动作引用的快照编号已失效。挡的不只是「编号不存在」—— 更危险的是编号还在、
   // 指向的元素变了：那样不报错，只是点错东西。所以编号绑 snapshotId + backendNodeId。
   | 'browser.stale_index'
-  // 当前标签的 origin 不是这条机构记录确认过的那个，拒绝填充凭据。
+  // **不在当前这一页填凭据。** 生产者是 `loginFlow`，六种成因共用它，因为
+  // 下一步完全一样：**先导到机构自己的统一身份认证页，再调一次**。
+  //  · 当前标签的 origin 不是这条机构记录确认过的那个（含用户拒绝确认那一次）；
+  //  · `checkLoginHost` 判「这一页不合格」的五种之四（非 https / 没有主机名 /
+  //    裸 IP / 内网名字 / 网址解析不了）；
+  //  · 悬挂期间页面跳走，填充前的 TOCTOU 重判没通过；
+  //  · 页面自己那道 origin 自检发现文档已经换了。
+  // 第五种 `entity-has-no-host` **不在这里**：那条机构记录永远自动登不了，
+  // 换一页再试一百次也一样，走 `settings.invalid`（下一步是改人工登录）。
   | 'browser.idp_host_mismatch'
   // elementFromPoint 命中的不是目标，被浮层挡住了（spec §4.2）。与 stale_index 分开：
   // 那条是编号指向的元素变了，这条是编号没错、点不着。
@@ -72,6 +80,9 @@ export type KydogErrorCode =
   | 'browser.wait_timeout'
   // 本轮 run 已经试过一次登录且失败，不再填（spec §4.6）。押的是用户的校园账号，
   // 高校 IdP 普遍锁定连续失败若干次的账号，而模型看到失败会本能地重试。
+  // 生产者是 `loginFlow`，判据是「本轮 run 名下、这个标签上存在一次**尚未观测到
+  // SAML 断言回传**的填充」——「失败」这件事本身没有别的协议层信号可用
+  // （密码错时多数 IdP 回 200 错误页或 302 回自己）。**处置是交给用户**，不是重试。
   | 'browser.login_attempted'
   // 钥匙串这一刻用不了：`isEncryptionAvailable()` 为 false（钥匙串被拒、Linux 上没有
   // 可用的 keyring），或者 `encryptString` 自己抛。**密码没有丢** —— 已经存下的那份

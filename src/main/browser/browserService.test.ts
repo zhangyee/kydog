@@ -53,8 +53,12 @@ const H = vi.hoisted(() => {
     }
   }
 
+  let nextWcId = 100;
   class FakeWebContents extends Emitter {
     readonly debugger = new FakeDebugger();
+    /** 真 WebContents 有的那个进程内唯一 id。`webRequest` 的
+     *  `details.webContentsId` 与它比对 —— 登录观测的归属判据就是这一个数。 */
+    readonly id = nextWcId++;
     destroyed = false;
     url = '';
     title = '';
@@ -2419,5 +2423,143 @@ describe('waitFor：等的是显式条件，超时只表示条件未达成', () 
     const p = svc.waitFor(id, { urlMatches: '/search' }, 8000);
     await vi.advanceTimersByTimeAsync(50);
     await expect(p).resolves.toBe(true);
+  });
+});
+
+// ── Task 7 要的三个出口 ─────────────────────────────────────────────────────
+
+/**
+ * `loginFlow` 靠这三个出口工作。它们各自都**没有别的东西会在掉线时报错**：
+ * 少了 `currentUrlOf` 就退回账本里那份慢一拍的 url（TOCTOU 重判判的是上一个页面）；
+ * 少了 `webContentsIdOf` 就没法给 webRequest 的观测定归属；
+ * 少了 `onTabDestroyed` 就永远没人摘掉那个观测者，也永远清不掉「本轮已经填过」。
+ */
+describe('currentUrlOf / webContentsIdOf / onTabDestroyed（Task 7）', () => {
+  it('currentUrlOf 问的是 wc.getURL()，不是账本里那份', async () => {
+    const { svc } = make();
+    const { wc } = await openTab(svc, 'https://a.example/');
+    const tabId = svc.getState().tabs[0].id;
+    // 页面自己跳走了：账本要等 did-navigate 才更新，而 getURL() 当场就变了。
+    wc.url = 'https://evil.example/login';
+    expect(svc.getState().tabs[0].url).toBe('https://a.example/');
+    expect(svc.currentUrlOf(tabId)).toBe('https://evil.example/login');
+  });
+
+  it('没有这个标签 → null（与「有标签但这一刻问不出 url」分得开）', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    expect(svc.currentUrlOf('t_nope')).toBe(null);
+  });
+
+  it('getURL 抛了（页面刚没）→ 空串，不是 null', async () => {
+    const { svc } = make();
+    const { wc } = await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    (wc as unknown as { getURL: () => string }).getURL = () => { throw new Error('gone'); };
+    expect(svc.currentUrlOf(tabId)).toBe('');
+  });
+
+  it('webContentsIdOf 回的就是那个 wc 的 id；标签没了回 null', async () => {
+    const { svc } = make();
+    const { wc } = await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    expect(svc.webContentsIdOf(tabId)).toBe(wc.id);
+    expect(svc.webContentsIdOf('t_nope')).toBe(null);
+  });
+
+  it('两个标签的 webContentsId 不同 —— 归属才分得开', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [a, b] = svc.getState().tabs.map((t) => t.id);
+    expect(svc.webContentsIdOf(a)).not.toBe(svc.webContentsIdOf(b));
+  });
+
+  it('close 会通知订阅者，带上那个标签 id', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    const gone: string[] = [];
+    svc.onTabDestroyed((id) => gone.push(id));
+    svc.close(tabId);
+    expect(gone).toEqual([tabId]);
+  });
+
+  it('disposeForRun 与 disposeAll 这两条销毁路径也通知', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/', 'run-1');
+    await openTab(svc, 'https://b.example/', null);
+    const ids = svc.getState().tabs.map((t) => t.id);
+    const gone: string[] = [];
+    svc.onTabDestroyed((id) => gone.push(id));
+    svc.disposeForRun('run-1');
+    expect(gone).toEqual([ids[0]]);
+    svc.disposeAll();
+    expect(gone).toEqual([ids[0], ids[1]]);
+  });
+
+  /** 订阅者会在回调里回头问「这个标签还在不在」，问到一个半拆的状态就成了「我看它还在」。 */
+  it('通知的时候标签已经从账本里摘干净了', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    let stillThere: boolean | null = null;
+    svc.onTabDestroyed(() => { stillThere = svc.getState().tabs.some((t) => t.id === tabId); });
+    svc.close(tabId);
+    expect(stillThere).toBe(false);
+  });
+
+  it('一个订阅者抛异常，别的照样收得到，销毁也不半路停下', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    const gone: string[] = [];
+    svc.onTabDestroyed(() => { throw new Error('订阅者炸了'); });
+    svc.onTabDestroyed((id) => gone.push(id));
+    svc.close(tabId);
+    expect(gone).toEqual([tabId]);
+    expect(logText()).toContain('标签销毁的订阅者抛了异常');
+  });
+
+  it('退订之后不再收到通知', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const ids = svc.getState().tabs.map((t) => t.id);
+    const gone: string[] = [];
+    const off = svc.onTabDestroyed((id) => gone.push(id));
+    svc.close(ids[0]);
+    off();
+    svc.close(ids[1]);
+    expect(gone).toEqual([ids[0]]);
+  });
+});
+
+/**
+ * `evalInPage` 收「拼装函数」那一档：到点时刻由 `evalOn` 算一次、两边共用。
+ * 调用方自己 `Date.now() + PAGE_EVAL_TIMEOUT_MS` 会与这里的定时器差开一小段，
+ * 守卫要么提前把好的求值废掉、要么晚到根本不挡。
+ */
+describe('evalInPage 也收拼装函数（Task 7 的填充脚本要带过期自检）', () => {
+  it('拿到的 notAfter 与主进程那道定时器同一个数', async () => {
+    const { svc } = make();
+    const { wc } = await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    wc.isolatedImpl = () => Promise.resolve('ok');
+    const before = Date.now();
+    await svc.evalInPage(tabId, (notAfter) => `NOTAFTER=${notAfter}`);
+    const seen = Number(/NOTAFTER=(\d+)/.exec(wc.isolated[wc.isolated.length - 1].code)![1]);
+    expect(seen).toBeGreaterThanOrEqual(before + PAGE_EVAL_TIMEOUT_MS);
+    expect(seen).toBeLessThanOrEqual(Date.now() + PAGE_EVAL_TIMEOUT_MS);
+  });
+
+  it('没有渲染进程时那道闸照样先拦下来，一个字都不注', async () => {
+    const { svc } = make();
+    const { wc } = await openTab(svc);
+    const tabId = svc.getState().tabs[0].id;
+    wc.osPid = 0;
+    const before = wc.isolated.length;
+    await expect(svc.evalInPage(tabId, () => 'X')).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(wc.isolated).toHaveLength(before);
   });
 });

@@ -44,7 +44,15 @@ export async function createSession(opts: {
   // 里的 disabledBuiltins：已开的 session 用的是开工那一刻的界面语言，之后用户在设置里
   // 切语言不会追着改正在跑的 session（spec §A.2）。ask_user_question 的回传文本要进
   // agent 上下文，必须跟这份快照走，不能各自现读 settings。
-  const locale = (await settingsService.get()).ui.locale;
+  const settings = await settingsService.get();
+  const locale = settings.ui.locale;
+  // `browser_login` 的 description 要拼进机构名与 entityID（裁决 7b）：不放的话
+  // 模型不知道用户是哪所学校，写不出 CARSI 的登录 URL。**只取这两个公开字段** ——
+  // 账号与密码一个字都不进模型上下文。陈旧问题（用户中途换学校）的处置见
+  // `browserTools.ts` 的 `loginDesc`：判据一侧每次执行都重读设置，这份快照只影响
+  // 「模型第一次往哪导」，而每次调用的返回值都会回显当前值。
+  const inst = settings.institution;
+  const institution = inst ? { name: inst.name, entityID: inst.entityID } : null;
 
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
   // sessionId 就是 threadId，fixture 里的工具必须用它注册 broker，
@@ -80,11 +88,18 @@ export async function createSession(opts: {
         readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
       }),
       createReadDocxTool(),
-      // 内置浏览器的三个工具。第四个 `browser_login` 是 Task 7 的，还不存在。
-      // 三个都声明了 `executionMode: 'sequential'`，名字要同步登记进
-      // askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES —— 漏登记不报错，
+      // 内置浏览器的四个工具。四个都声明了 `executionMode: 'sequential'`，名字要
+      // 同步登记进 askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES —— 漏登记不报错，
       // 只会让 UI 把一次串行批次画成并行组。守这条的是本文件的用例（两个方向）。
-      ...createBrowserTools({ currentRunId: opts.currentRunId ?? (() => null) }),
+      //
+      // `browser_login` 的确认框走的是**同一个** askShared / threadId：spec §4.6
+      // 那道确认要用现成的 ask broker，不新发明挂起机制。
+      ...createBrowserTools({
+        currentRunId: opts.currentRunId ?? (() => null),
+        threadId: opts.sessionId,
+        askShared: opts.askShared,
+        institution,
+      }),
     ],
   });
   return session as AnySession;

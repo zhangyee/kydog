@@ -24,6 +24,10 @@ const H = vi.hoisted(() => ({
   captured: null as { customTools?: Tool[] } | null,
   runIdCalls: 0,
   currentRunId: null as string | null,
+  settings: { ui: { locale: 'zh' }, institution: null } as {
+    ui: { locale: string };
+    institution: { name: string; entityID: string; username: string } | null;
+  },
 }));
 
 vi.mock('@earendil-works/pi-coding-agent', () => ({
@@ -46,11 +50,14 @@ vi.mock('../llm/providerRegistry', () => ({
 }));
 
 vi.mock('../settings/settingsService', () => ({
-  settingsService: { get: async () => ({ ui: { locale: 'zh' } }) },
+  settingsService: { get: async () => H.settings },
+  toInstitutionPublic: () => null,
 }));
 
 // createBrowserTools 会 import 它，而它 import 的是 electron 的 WebContentsView / session。
 vi.mock('../browser/browserService', () => ({ browserService: {} }));
+// 同理：loginFlow 的单例要 webRequestHub（electron session）与 institutionService（safeStorage）。
+vi.mock('../browser/loginFlow', () => ({ loginFlow: { noteFor: () => null } }));
 
 const { createSession } = await import('./sessionFactory');
 
@@ -76,24 +83,78 @@ async function build(): Promise<Tool[]> {
 beforeEach(() => {
   delete process.env.KYDOG_AGENT_FIXTURE;
   H.currentRunId = 'run-1';
+  H.settings = { ui: { locale: 'zh' }, institution: null };
 });
 
-describe('customTools 里有三个浏览器工具', () => {
-  it('browser_open / browser_act / browser_read 三个都在', async () => {
+describe('customTools 里有四个浏览器工具', () => {
+  it('browser_open / browser_act / browser_read / browser_login 四个都在', async () => {
     const names = (await build()).map((t) => t.name);
     expect(names).toContain('browser_open');
     expect(names).toContain('browser_act');
     expect(names).toContain('browser_read');
+    expect(names).toContain('browser_login');
   });
 
   it('本来就有的那个提问工具没被挤掉', async () => {
     expect((await build()).map((t) => t.name)).toContain(ASK_TOOL_NAME);
   });
 
-  it('三个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
+  it('四个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
     const browser = (await build()).filter((t) => t.name?.startsWith('browser_'));
-    expect(browser).toHaveLength(3);
+    expect(browser).toHaveLength(4);
     for (const t of browser) expect(t.executionMode).toBe('sequential');
+  });
+});
+
+/**
+ * 裁决 7b：`browser_login` 的 description 里要有**机构名与 entityID**。
+ *
+ * 不放的话模型压根不知道用户是哪所学校，Task 9 的 skill 写不出 CARSI 的登录 URL ——
+ * 而这条接线掉了**不会有任何别的东西报错**：工具照样注册、照样能调、只是模型永远
+ * 导不到正确的登录页。所以这里从**真正交给 pi 的那份** customTools 上断。
+ *
+ * 另一半同样要守：**账号与密码一个字都不许进 description**。
+ */
+describe('browser_login 的 description 带着机构名与 entityID（且只带这两个）', () => {
+  const descOf = async (): Promise<string> =>
+    (await build()).find((t) => t.name === 'browser_login')?.description ?? '';
+
+  it('配了机构：机构名与 entityID 都在里面', async () => {
+    H.settings = {
+      ui: { locale: 'zh' },
+      institution: { name: '北京大学', entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth', username: '2100011000' },
+    };
+    const d = await descOf();
+    expect(d).toContain('北京大学');
+    expect(d).toContain('https://iaaa.pku.edu.cn/idp/shibboleth');
+  });
+
+  it('账号绝不进 description —— 它是用户数据，不是公开标识符', async () => {
+    H.settings = {
+      ui: { locale: 'zh' },
+      institution: { name: '北京大学', entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth', username: '2100011000' },
+    };
+    expect(await descOf()).not.toContain('2100011000');
+  });
+
+  it('没配机构时说清「还没配」，而不是留一句空的「当前配置的机构：」', async () => {
+    const d = await descOf();
+    expect(d).toContain('还没有配置机构账号');
+  });
+
+  /**
+   * description 是**建会话那一刻**拼的，用户中途换学校它就旧了。这里钉住的是
+   * 「我们把这件事写出来了」—— 处置是让模型以每次调用返回值里回显的当前值为准
+   * （判据一侧从来不用这份快照，`loginFlow` 每次执行都重读设置）。
+   */
+  it('明说这是会话开始时的快照、以返回值回显的为准', async () => {
+    H.settings = {
+      ui: { locale: 'zh' },
+      institution: { name: '清华大学', entityID: 'https://id.tsinghua.edu.cn/idp', username: 'u1' },
+    };
+    const d = await descOf();
+    expect(d).toContain('快照');
+    expect(d).toMatch(/回显当前的机构名与 entityID/);
   });
 });
 
