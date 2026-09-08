@@ -461,23 +461,46 @@ export type BrowserTabsSnapshot = BrowserTabsCore;
  * 2026-09-07 侦察实测：Google Scholar 的 403 出现在「点提交按钮」之后，检索这件事发生在
  * browser_act 里；只给 open 补状态码等于把字段补在拿不到它的地方。
  *
- * 四种终态互不合并（照注释砍掉 download 那一支的话，打一个 PDF 直链就只剩 timeout，
- * 而 spec §4.4 要的正是这一支）：
- * - ok：导航提交成功。`httpStatusCode` 来自 did-navigate 的 httpResponseCode ——
+ * 终态互不合并（照注释砍掉 download 那一支的话，打一个 PDF 直链就只剩 timeout，
+ * 而 spec §4.4 要的正是这一支）。**timeout 只留给「我们没能收到任何事实」** ——
+ * 凡是我们其实知道发生了什么的路，都要有自己的终态，否则 agent 白等一个时限
+ * 还拿到一个错的分类：
+ * - ok：跨文档导航提交成功。`httpStatusCode` 来自 did-navigate 的 httpResponseCode ——
  *   **403 是一次成功的导航**，did-fail-load 不触发，只有这个字段看得见它。
+ * - ok_same_document：同文档导航（hash / pushState / SPA 路由）。它既不触发
+ *   did-navigate 也不触发 did-fail-load，从前整条路只能等满时限报 timeout。
+ *   **不并进 ok**：同文档没有 HTTP 响应（没有 httpStatusCode 可填），而且跨文档
+ *   意味着 DOM 全换、快照身份要重发号，同文档意味着 DOM 大体还在 —— 下游的快照
+ *   diff 要这个区别，合并就等于把它丢了。
  * - failed：did-fail-load。`errorCode` 是 number（Electron 的类型如此），不是字符串。
+ * - crashed：渲染进程没了。**不借用 ERR_FAILED(-2)**：借了之后「重开一次多半就好」
+ *   与「网络层拒绝、该换源」只能靠 errorDesc 里的中文前缀区分，那是拿文案当协议事实。
  * - download：导航变成了文件下载。一期一律取消下载，但**必须如实报成这个**，
  *   否则打一个 PDF 直链只会得到 timeout，agent 会据此误判源不可达并换源。
+ *   只有**与本次导航请求过的 URL 对得上**的下载才算（会话级的 will-download 本来
+ *   与某一次导航没有关联，一个广告 frame 拉起的下载会被模型当成论文 PDF）。
+ * - blocked：被 KyDog 自己的 URL 闸挡下（§5.1）。我们明确知道发生了什么。
+ *   `reason` 只能来自 urlGuard 的 verdict —— 它从不回显原串，含凭据的 URL 不进模型上下文。
+ * - superseded：这次观测被另一次导航接替了（用户在 agent 的 open 在途时点了刷新）。
+ *   **它的收尾绝不能 stop()**，那掐掉的是接替它的那一次导航；判断与动作一起放在
+ *   `NavigationTracker.onTimeout(stop)` 里，调用方没有记错的余地。
  * - timeout：到时限没有明确终态。**不许当成 failed** —— 一个是网络明确拒绝，
  *   一个是我们不知道。超时后主进程会 stop() 并作废这个 navigationId。
+ *   `abortObserved` 是唯一带出来的观测事实：主 frame 期间被 ERR_ABORTED 中断过 ——
+ *   单独看它不足以定论（下载接管、用户停止、被新导航取代都给这个码），但丢掉它，
+ *   工具就只会说「我们不知道发生了什么」。
  */
 export type NavigationObservation = {
   navigationId: string;
   outcome:
     | { kind: 'ok'; finalUrl: string; httpStatusCode: number }
+    | { kind: 'ok_same_document'; finalUrl: string }
     | { kind: 'failed'; errorCode: number; errorDesc: string }
+    | { kind: 'crashed'; reason: string }
     | { kind: 'download'; url: string; mimeType: string; filename: string; cancelled: 'policy' }
-    | { kind: 'timeout' };
+    | { kind: 'blocked'; reason: string }
+    | { kind: 'superseded' }
+    | { kind: 'timeout'; abortObserved: boolean };
 };
 
 /**
