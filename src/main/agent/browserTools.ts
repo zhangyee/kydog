@@ -32,9 +32,18 @@ function tabsLine(activeId?: string): string {
   }).join(' · ');
 }
 
-/** 导航结果说人话。每种终态措辞都不同，因为模型对它们的处置不同 ——
- *  尤其是「我们知道发生了什么」的那几种与 timeout 不能混为一谈。 */
-function describeNav(nav: NavigationObservation): string {
+/**
+ * 导航结果说人话。每种终态措辞都不同，因为模型对它们的处置不同 ——
+ * 尤其是「我们知道发生了什么」的那几种与 timeout 不能混为一谈。
+ *
+ * **这段文案是模型唯一读得到的东西**：把「被另一次导航接替了」说成「这个源不可用」，
+ * 模型就会去换源，而实际上源好好的。所以除了 failed，任何一条都不许出现
+ * 「打不开 / 源不可用 / 换个源」这类断言句（要提它，得放进「」里跟它划清界限），
+ * 而且每条都要带上自己那个终态的协议事实。守这条的是 browserTools.test.ts。
+ *
+ * 导出只为让上面那条能被直接钉住 —— 工具的 execute 之外没有别的调用方。
+ */
+export function describeNav(nav: NavigationObservation): string {
   const o = nav.outcome;
   switch (o.kind) {
     case 'ok':
@@ -49,18 +58,49 @@ function describeNav(nav: NavigationObservation): string {
     case 'failed':
       return `打不开：${o.errorDesc}（错误码 ${o.errorCode}）。这是网络层的明确拒绝。`;
     case 'crashed':
-      return `页面进程崩溃了（${o.reason}）。这不是网络层的拒绝，也不说明这个源不可用 —— 重开一次多半就好。`;
+      return `页面进程崩溃了（${o.reason}）。这不是网络层的拒绝，也不说明这个源有问题 —— 重开一次多半就好。`;
     case 'download':
       return `这个地址是一个文件（${o.mimeType}，${o.filename}），不是网页。`
         + '本期浏览器不下载文件，已按策略取消。'
         + '如果它是 arXiv / PMC / DOI，把标识符交给 fastpaper download；否则把链接报给用户。';
     case 'blocked':
-      return `这次导航被 KyDog 自己的网址闸拦下了：${o.reason}。**不是源不可用** —— 换一个公网地址再试。`;
+      return `这次导航被 KyDog 自己的网址闸拦下了：${o.reason}。这是我们这一侧的策略，**不是**这个源的问题 —— 换一个公网地址再试。`;
     case 'superseded':
-      return '这次导航在途中被另一次导航接替了（用户点了刷新，或者页面自己跳走了），本次没有结果。页面现在是什么状态由那一次决定 —— 要用就先重新看一眼，别拿这次的结论去推断。';
+      // 「或者页面自己跳走了」删掉了：页面自己跳走走的是 did-navigate，收敛到 ok，
+      // 永远到不了这条文案。写进去只会让模型把两件事混在一起推断页面状态。
+      return '这次导航在途中被另一次导航接替了（比如用户点了刷新），本次没有结果。页面现在是什么状态由接替的那一次决定 —— 要用就先重新看一眼，别拿这次的结论去推断。';
+    case 'cancelled':
+      return '这次导航还没有结果，承载它的标签就被关掉了（用户关的，或者这次任务的浏览器被回收了）。这不是这个源的问题 —— 还要继续就重新开一个标签。';
     case 'timeout':
-      return '到时限仍没有明确结果，已停止这次导航。**这与「打不开」不是一回事** —— 我们不知道发生了什么，别据此断定这个源不可用。'
+      return '到时限仍没有明确结果，已停止这次导航。**这与「打不开」不是一回事** —— 我们不知道发生了什么，别据此断定这个源有问题。'
         + (o.abortObserved ? '（期间主 frame 被中断过一次 ERR_ABORTED，但始终没有等到后续事实。）' : '');
+  }
+}
+
+/**
+ * 这次导航有没有落到一个**能取快照**的页面上。
+ *
+ * 写成穷尽 switch 而不是 `kind === 'ok'`：相等比较在 union 变长时会静默漏掉新
+ * 成员（`ok_same_document` 就是这么漏的 —— 同文档导航成功了却拿不到新快照，模型
+ * 收到「跳转成功」外加零内容，只能再空跑一轮），而穷尽 switch 会 TS2366 红出来
+ * 逼人表态。
+ *
+ * 同文档导航也要取快照：DOM 大体还在不等于视口坐标还在（hash 跳转会滚动页面），
+ * 而快照编号里的 x/y/w/h 是视口内的 CSS 像素。
+ */
+export function landedOnPage(o: NavigationObservation['outcome']): boolean {
+  switch (o.kind) {
+    case 'ok':
+    case 'ok_same_document':
+      return true;
+    case 'failed':
+    case 'crashed':
+    case 'download':
+    case 'blocked':
+    case 'superseded':
+    case 'cancelled':
+    case 'timeout':
+      return false;
   }
 }
 
@@ -155,7 +195,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       const parts = [describeNav(nav)];
       // 只有真的到了一个页面才取快照。拿不到内容的时候硬取，只会给一份空快照，
       // 让模型以为「这个页面什么都没有」——而事实是它压根没打开。
-      if (nav.outcome.kind === 'ok') {
+      if (landedOnPage(nav.outcome)) {
         const snap = await browserService.snapshot(tabId);
         const r = renderSnapshot(snap);
         parts.push('', `快照 ${snap.snapshotId} · ${snap.title}`, r.text);

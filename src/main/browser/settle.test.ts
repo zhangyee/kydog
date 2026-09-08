@@ -103,6 +103,71 @@ describe('导航观测：同文档导航是一个明确的成功终态', () => {
   });
 });
 
+// ── A（续）· 跨文档导航在途时到达的同文档事件属于**旧文档** ────────────────
+//
+// 失败序列（全在主 frame）：browser_open 打 publisher/article →
+// did-start-navigation(publisher/article, isSameDocument=false) → 新文档还没 commit，
+// 旧文档跑了一次 replaceState → did-navigate-in-page(old.example/list) →
+// 定论成 ok_same_document，地址是**旧页面**的、「文档换没换」的判断还是反的。
+// 随后真正的 did-navigate 被先到先得丢弃。
+//
+// 判据不是 URL 相等（点击发起的同文档导航根本没有已知目标），而是
+// did-start-navigation 自带的 isSameDocument —— 协议层现成的信号。
+describe('导航观测：跨文档导航在途时，同文档事件不定论', () => {
+  it('跨文档在途时到达的 did-navigate-in-page 不定论，真正的 did-navigate 照常收敛', () => {
+    const n = t('n1', 'https://publisher.example/article');
+    n.onDidStartNavigation('https://publisher.example/article', true, false);
+    n.onDidNavigateInPage('https://old.example/list?utm_source=x', true);
+    expect(n.observation()).toBeNull();
+    n.onDidNavigate('https://publisher.example/article', 200);
+    expect(n.observation()!.outcome).toEqual({
+      kind: 'ok', finalUrl: 'https://publisher.example/article', httpStatusCode: 200,
+    });
+  });
+
+  // 挡的是「跨文档在途」这个窗口，不是「同文档」这件事本身：目标就是 #sec2 那种
+  // 同文档导航时 isSameDocument 为 true，一个事件都不会被挡掉。
+  it('目标本身就是同文档导航时照常定论 —— 最常见的那条路不受影响', () => {
+    const n = t('n1', 'https://x.example/p#sec2');
+    n.onDidStartNavigation('https://x.example/p#sec2', true, true);
+    n.onDidNavigateInPage('https://x.example/p#sec2', true);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'ok_same_document' });
+  });
+
+  // 点击发起的同文档导航（站内路由）压根没有 did-start-navigation 先到的保证，
+  // 没观测到跨文档在途就不许拿它去挡 —— 那会把最常见的那条路重新推回超时。
+  it('没有观测到跨文档在途时，同文档事件照常定论', () => {
+    const n = t('n1', null);
+    n.onDidNavigateInPage('https://x.example/p#sec2', true);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'ok_same_document' });
+  });
+
+  it('子 frame 的跨文档 did-start-navigation 不构成「本次导航在途」', () => {
+    const n = t('n1', null);
+    n.onDidStartNavigation('https://ads.example/x', false, false);
+    n.onDidNavigateInPage('https://x.example/p#sec2', true);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'ok_same_document' });
+  });
+
+  // 旧文档可以连着改好几次 history —— 挡的是整个在途窗口，不是只挡第一次。
+  it('跨文档在途时旧文档连续多次同文档跳转都不定论', () => {
+    const n = t('n1', 'https://publisher.example/article');
+    n.onDidStartNavigation('https://publisher.example/article', true, false);
+    n.onDidNavigateInPage('https://old.example/list?p=1', true);
+    n.onDidNavigateInPage('https://old.example/list?p=2', true);
+    expect(n.observation()).toBeNull();
+  });
+
+  // 旧文档的 pushState 也不该把本次导航真正的失败盖掉。
+  it('跨文档在途时旧文档的同文档跳转之后，本次导航的失败仍然报得出来', () => {
+    const n = t('n1', 'https://publisher.example/article');
+    n.onDidStartNavigation('https://publisher.example/article', true, false);
+    n.onDidNavigateInPage('https://old.example/list', true);
+    n.onDidFailLoad(-105, 'ERR_NAME_NOT_RESOLVED', true);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'failed', errorCode: -105 });
+  });
+});
+
 // ── B · 被另一次导航取代 ───────────────────────────────────────────────────
 describe('导航观测：被取代的观测说得清，而且绝不 stop', () => {
   it('onSuperseded → superseded，不是 timeout', () => {
@@ -167,6 +232,52 @@ describe('导航观测：被取代的观测说得清，而且绝不 stop', () =>
   });
 });
 
+// ── B（续）· 「被取消」：标签在观测在途时被销毁 ─────────────────────────────
+//
+// 与「被取代」是同一个形状：我们**明确知道**发生了什么（标签被关了 / run 的浏览器
+// 被回收），却只能白等满一个时限，再给出「我们不知道发生了什么」这个错的四分类。
+// 语义上不复用 superseded —— 那是「被另一次导航接替了，页面状态由那一次决定」，
+// 而这里根本没有页面了。
+describe('导航观测：标签被销毁是一个明确的终态', () => {
+  it('onCancelled → cancelled，不是 timeout', () => {
+    const n = t();
+    n.onCancelled();
+    expect(n.observation()).toEqual({ navigationId: 'n1', outcome: { kind: 'cancelled' } });
+  });
+
+  it('被取消与被取代不是同一个 kind', () => {
+    const a = t(); a.onCancelled();
+    const b = t(); b.onSuperseded();
+    expect(a.observation()!.outcome.kind).not.toBe(b.observation()!.outcome.kind);
+  });
+
+  // webContents 已经销毁了，stop 无从谈起；更要紧的是它不该被当成「还要收尾」。
+  it('被取消之后的超时收尾不执行 stop', () => {
+    const n = t();
+    const s = stopSpy();
+    n.onCancelled();
+    n.onTimeout(s.fn);
+    expect(s.calls).toBe(0);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'cancelled' });
+  });
+
+  it('已定论的观测不会被 onCancelled 改写', () => {
+    const n = t();
+    n.onDidNavigate('https://a/', 200);
+    n.onCancelled();
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'ok' });
+  });
+
+  it('cancelled 也兑现 settledPromise —— 调用方不必等满时限', async () => {
+    const n = t();
+    let done = false;
+    void n.settledPromise.then(() => { done = true; });
+    n.onCancelled();
+    await n.settledPromise;
+    expect(done).toBe(true);
+  });
+});
+
 // ── C · 被我们自己的 URL 闸拦下 ────────────────────────────────────────────
 describe('导航观测：被 URL 闸拦下是一个明确的终态', () => {
   // 我们明确知道发生了什么：是我们自己按 §5.1 挡的。报 timeout 等于让 agent
@@ -176,8 +287,23 @@ describe('导航观测：被 URL 闸拦下是一个明确的终态', () => {
     expect(v.ok).toBe(false);
     if (v.ok) return;
     const n = t();
-    n.onBlocked(v);
+    n.onBlocked(v, true);
     expect(n.observation()!.outcome).toEqual({ kind: 'blocked', reason: v.reason });
+  });
+
+  // 广告 iframe 302 到内网地址被闸拦下，是**子 frame** 的事。让它替整页定论，
+  // 模型收到的是「不是源不可用，换一个公网地址再试」，而文章其实已经整篇在屏幕上了。
+  // did-fail-load / did-navigate-in-page / did-start-navigation 三条都有这个挡截，
+  // 这条不能只写在注释里指望调用方记得。
+  it('子 frame 被闸拦下不能替整页定论', () => {
+    const v = checkUrl('http://10.0.0.5/px');
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    const n = t('n1', 'https://publisher.example/article');
+    n.onBlocked(v, false);
+    expect(n.observation()).toBeNull();
+    n.onDidNavigate('https://publisher.example/article', 200);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'ok', httpStatusCode: 200 });
   });
 
   // 第二批的约定：含凭据的原始 URL 不进日志也不进模型上下文。这里只收 urlGuard
@@ -187,11 +313,23 @@ describe('导航观测：被 URL 闸拦下是一个明确的终态', () => {
     expect(v.ok).toBe(false);
     if (v.ok) return;
     const n = t();
-    n.onBlocked(v);
+    n.onBlocked(v, true);
     const dumped = JSON.stringify(n.observation());
     expect(dumped).not.toContain('SECRET');
     expect(dumped).not.toContain('secret-path');
     expect(dumped).toContain('10.0.0.1');
+  });
+
+  // 反方向也要守：闸装在每一条入口上，一次导航成了之后页面自己再发起的请求
+  // 照样会过 checkUrl。让迟到的 blocked 盖掉一个已经拿到的 ok，等于把一次
+  // 成功的导航报成「被我们自己挡下了」。
+  it('已定论的观测不会被 onBlocked 改写', () => {
+    const v = checkUrl('http://10.0.0.5/px');
+    if (v.ok) return;
+    const n = t();
+    n.onDidNavigate('https://publisher.example/article', 200);
+    n.onBlocked(v, true);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'ok' });
   });
 
   // preventDefault 之后主 frame 会收到 ERR_ABORTED。先到的 blocked 说得更清楚。
@@ -199,7 +337,7 @@ describe('导航观测：被 URL 闸拦下是一个明确的终态', () => {
     const v = checkUrl('http://127.0.0.1:8080/');
     if (v.ok) return;
     const n = t();
-    n.onBlocked(v);
+    n.onBlocked(v, true);
     n.onDidFailLoad(-3, 'ERR_ABORTED', true);
     expect(n.observation()!.outcome).toMatchObject({ kind: 'blocked' });
   });
@@ -272,7 +410,7 @@ describe('导航观测：变成下载', () => {
   // did-start-navigation 是主 frame 真正请求了哪个 URL 的协议事实。
   it('点击发起的导航靠 did-start-navigation 对上下载', () => {
     const n = t('n1', null);
-    n.onDidStartNavigation('https://x.example/paper.pdf', true);
+    n.onDidStartNavigation('https://x.example/paper.pdf', true, false);
     n.onWillDownload('https://x.example/paper.pdf', 'application/pdf', 'paper.pdf', ['https://x.example/paper.pdf']);
     expect(n.observation()!.outcome).toMatchObject({ kind: 'download', filename: 'paper.pdf' });
   });
@@ -281,7 +419,7 @@ describe('导航观测：变成下载', () => {
   // 导航到某个 URL，它自己拉起的下载就能冒充本次导航的终态。
   it('子 frame 的 did-start-navigation 不能让下载对上', () => {
     const n = t('n1', null);
-    n.onDidStartNavigation('https://ads.example/ad.pdf', false);
+    n.onDidStartNavigation('https://ads.example/ad.pdf', false, false);
     n.onWillDownload('https://ads.example/ad.pdf', 'application/pdf', 'ad.pdf', ['https://ads.example/ad.pdf']);
     expect(n.observation()).toBeNull();
   });
@@ -291,6 +429,24 @@ describe('导航观测：变成下载', () => {
   it('没有任何关联依据时下载不定论', () => {
     const n = t('n1', null);
     n.onWillDownload('https://x/f.pdf', 'application/pdf', 'f.pdf', ['https://x/f.pdf']);
+    expect(n.observation()).toBeNull();
+  });
+
+  // fragment 不上网 —— DownloadItem 的 getURL() / getURLChain() 一律不带它。
+  // 目标带 fragment 就永远对不上自己的下载，白等一个时限。去掉 fragment 是
+  // URL 标准定义的等价规范化的一部分，不是近似匹配。
+  it('目标带 fragment 时仍与自己的下载对得上', () => {
+    const n = t('n1', 'https://x.example/paper.pdf#page=3');
+    n.onWillDownload('https://x.example/paper.pdf', 'application/pdf', 'paper.pdf', ['https://x.example/paper.pdf']);
+    expect(n.observation()!.outcome).toMatchObject({ kind: 'download', filename: 'paper.pdf' });
+  });
+
+  // 同文档导航压根不发请求，它的 URL 不该进「本次导航请求过的 URL」——
+  // 否则一次 pushState 到 /f.pdf 就能让一个无关下载冒充本次导航的终态。
+  it('同文档的 did-start-navigation 不能让下载对上', () => {
+    const n = t('n1', null);
+    n.onDidStartNavigation('https://x.example/f.pdf', true, true);
+    n.onWillDownload('https://x.example/f.pdf', 'application/pdf', 'f.pdf', ['https://x.example/f.pdf']);
     expect(n.observation()).toBeNull();
   });
 
@@ -347,12 +503,23 @@ describe('导航观测：超时如实带上观测到的中断', () => {
     expect(n.observation()!.outcome).toEqual({ kind: 'timeout', abortObserved: false });
   });
 
-  // 子 frame 的 ERR_ABORTED 是常态（广告位被拦截扩展掐掉），它不是「本次导航被中断」。
-  // 第六批接线之前，browserService 还是「自己 stop 完再调 onTimeout()」那个形状。
-  // 不给 stop 也必须照样定论，否则过渡期里每一次超时都会挂着不返回。
-  it('不给 stop 回调也照样定论为 timeout', () => {
+  // 「该不该 stop」的判断收进了 onTimeout，那 stop 本身就必须是**必填**的：
+  // 可选参数会让「调用方忘了传」变成一次静默失效 —— 一次真超时的导航永远不被停止，
+  // 页面继续加载，而工具已经报了 timeout 让 agent 换源。这条约束靠类型守，
+  // 不靠注释：下面这行少一个参数就是 TS2554，`npx tsc --noEmit` 会红。
+  it('onTimeout 的 stop 是必填 —— 忘传是编译错误，不是静默失效', () => {
+    // 这个闭包**不执行**，它钉的是类型：@ts-expect-error 要求这一行真的编译错误，
+    // 参数一旦改回可选，`npx tsc --noEmit` 立刻红（TS2578：未使用的抑制注释）。
+    const forgetsStop = () => {
+      // @ts-expect-error onTimeout 的 stop 是必填参数
+      t().onTimeout();
+    };
+    expect(typeof forgetsStop).toBe('function');
+
     const n = t();
-    n.onTimeout();
+    const s = stopSpy();
+    n.onTimeout(s.fn);
+    expect(s.calls).toBe(1);
     expect(n.observation()!.outcome).toEqual({ kind: 'timeout', abortObserved: false });
   });
 
@@ -369,7 +536,7 @@ describe('导航观测：一个终态事件都不来', () => {
   it('只有 did-start-navigation：停在未定论，超时收尾报 timeout 并 stop 一次', () => {
     const n = t('n1', 'https://slow.example/');
     const s = stopSpy();
-    n.onDidStartNavigation('https://slow.example/', true);
+    n.onDidStartNavigation('https://slow.example/', true, false);
     expect(n.observation()).toBeNull();
     expect(n.settled).toBe(false);
     n.onTimeout(s.fn);
@@ -379,7 +546,7 @@ describe('导航观测：一个终态事件都不来', () => {
 
   it('全程只有子 frame 的事件：停在未定论', () => {
     const n = t('n1', 'https://slow.example/');
-    n.onDidStartNavigation('https://ads.example/', false);
+    n.onDidStartNavigation('https://ads.example/', false, false);
     n.onDidNavigateInPage('https://ads.example/#x', false);
     n.onDidFailLoad(-105, 'ERR_NAME_NOT_RESOLVED', false);
     expect(n.observation()).toBeNull();

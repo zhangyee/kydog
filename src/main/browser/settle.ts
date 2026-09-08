@@ -25,9 +25,17 @@ const ERR_ABORTED = -3;
 export type BlockedVerdict = Extract<UrlVerdict, { ok: false }>;
 
 /** WHATWG 规范化之后再比。主机大小写、默认端口这类差异是 URL 标准定义的**等价**，
- *  不是近似匹配；解析不了就原样比，不去猜。 */
+ *  不是近似匹配；解析不了就原样比，不去猜。
+ *
+ *  fragment 一并去掉：它**不上网**（URL 标准里 fragment 不参与请求身份），
+ *  `DownloadItem.getURL()` / `getURLChain()` 给的一律不带它。留着的话
+ *  `browser_open('…/paper.pdf#page=3')` 就永远对不上自己那个下载，白等一个时限。 */
 function canonical(raw: string): string {
-  try { return new URL(raw).toString(); } catch { return raw; }
+  try {
+    const u = new URL(raw);
+    u.hash = '';
+    return u.toString();
+  } catch { return raw; }
 }
 
 export class NavigationTracker {
@@ -44,6 +52,19 @@ export class NavigationTracker {
   /** 观测到过主 frame 的 ERR_ABORTED。它可能是「下载接管了」「用户停了」「被新导航
    *  取代了」的前兆 —— 单独看不足以定论，但超时收尾时要如实带上，不能丢掉。 */
   private abortSeen = false;
+  /**
+   * 主 frame 上有一次**跨文档**导航已经开始、还没提交（did-start-navigation 带
+   * `isSameDocument: false`，见 electron.d.ts 的 `WebContentsDidStartNavigationEventParams`）。
+   *
+   * 这个窗口里到达的 did-navigate-in-page 属于**旧文档**：新文档还没换上来，
+   * 旧页面自己的一次 pushState/replaceState 不是本次导航的结果。拿它定论会给出一个
+   * 指向旧地址的「成功」，而且「文档换没换」的判断还是反的 —— 下游快照 diff 正是
+   * 拿这个区别决定要不要重发号。
+   *
+   * **不清零**：跨文档导航提交了就已经定论（先到先得），没提交就说明本次导航还没有
+   * 结果，此时的同文档事件仍然属于旧文档。清零反而会重新打开那个窗口。
+   */
+  private crossDocumentPending = false;
 
   /**
    * @param targetUrl 这次导航要去哪。`browser_open` / reload / back / forward 都
@@ -65,15 +86,22 @@ export class NavigationTracker {
   }
 
   /**
-   * 主 frame 真正开始请求哪个 URL。**这个输入不定论**，只把 URL 记进关联集合 ——
-   * 点击发起的导航（browser_act 点 Scholar 的 [PDF]）构造时压根不知道要去哪，
-   * 没有它，那条路上的下载就永远对不上本次导航。
+   * 主 frame 真正开始导航到哪个 URL。**这个输入不定论**，它喂两件事：
    *
-   * 子 frame 的目标不进集合：否则一个广告 iframe 只要先导航到某个 URL，
-   * 它自己拉起的下载就能冒充本次导航的终态。
+   * 1. 关联集合。点击发起的导航（browser_act 点 Scholar 的 [PDF]）构造时压根不知道
+   *    要去哪，没有它，那条路上的下载就永远对不上本次导航。
+   *    只记**跨文档**的：同文档导航不发请求，把它的 URL 也记进「请求过的 URL」，
+   *    一次 pushState 就能让一个无关下载冒充本次导航的终态。
+   * 2. 「跨文档导航在途」这个窗口（见 crossDocumentPending）—— `isSameDocument`
+   *    是 Electron 在这个事件上现成给的协议事实，不取它，下游就只能靠猜。
+   *
+   * 子 frame 的两件都不算：否则一个广告 iframe 只要先导航一次，它自己拉起的下载
+   * 就能冒充终态，它的在途状态也会把整页的同文档导航挡在门外。
    */
-  onDidStartNavigation(url: string, isMainFrame: boolean): void {
+  onDidStartNavigation(url: string, isMainFrame: boolean, isSameDocument: boolean): void {
     if (!isMainFrame) return;
+    if (isSameDocument) return;
+    this.crossDocumentPending = true;
     this.requestedUrls.add(canonical(url));
   }
 
@@ -96,12 +124,14 @@ export class NavigationTracker {
    *
    * 子 frame 也会触发（回调带 isMainFrame），按 did-fail-load 那条的做法挡掉。
    *
-   * 已知的残余：本次跨文档导航还在途中时，当前页面自己的一次 pushState 也会落到
-   * 这里并被当成本次导航的结果。不拿「URL 要与目标一致」去过滤，是因为点击发起的
-   * 同文档导航根本没有已知目标，过滤会把最常见的那条路重新推回超时。
+   * 本次跨文档导航还在途中时到达的这个事件属于**旧文档**，不定论（见
+   * crossDocumentPending）。判据不是「URL 要与目标一致」—— 点击发起的同文档导航
+   * 根本没有已知目标，那样过滤会把最常见的那条路重新推回超时；判据是
+   * did-start-navigation 自带的 isSameDocument，协议层现成的信号。
    */
   onDidNavigateInPage(finalUrl: string, isMainFrame: boolean): void {
     if (!isMainFrame) return;
+    if (this.crossDocumentPending) return;
     this.set({ kind: 'ok_same_document', finalUrl });
   }
 
@@ -122,9 +152,11 @@ export class NavigationTracker {
    * 导航请求过的 URL 才定论；对不上就当没看见，让真正的终态自己来。
    *
    * `urlChain` 是 `DownloadItem.getURLChain()` —— 含重定向的完整链，`chain[0]` 是最初
-   * 请求的那个 URL，doi.org → 出版社 → PDF 这条路只有靠它才对得上。**要在 will-download
-   * 的同一个 tick 里取齐**：`event.preventDefault()` 之后 item 从下一个 tick 起就不可用
-   * （Electron 41 的 electron.d.ts 明写）。不给就只比 `url` 本身。
+   * 请求的那个 URL，doi.org → 出版社 → PDF 这条路只有靠它才对得上。不给就只比
+   * `url` 本身。（`getURL()` / `getURLChain()` / `getMimeType()` / `getFilename()`
+   * 没有「只能在 will-download 回调里用」的限制 —— electron.d.ts 把那句只挂在
+   * `setSavePath` / `savePath` / `setSaveDialogOptions` 上。同一个 tick 里取齐仍然
+   * 是好习惯，但别当成硬约束往别处推广。）
    */
   onWillDownload(url: string, mimeType: string, filename: string, urlChain: string[] = []): void {
     const seen = [url, ...urlChain].map(canonical);
@@ -140,8 +172,16 @@ export class NavigationTracker {
    * 「不知道发生了什么」这个错的四分类。
    *
    * 只收 verdict，理由由闸给：原始 URL 一个字都不进终态。
+   *
+   * `isMainFrame` 是**必填**，理由与 did-fail-load 那条一样：广告 iframe 302 到内网
+   * 地址被闸拦下是常态，让它替整页定论，模型收到的是「不是源不可用，换一个公网地址
+   * 再试」，而文章其实已经整篇加载在屏幕上了 —— agent 会据此换源。
+   * `will-navigate` / `will-redirect` 的 details 都带 isMainFrame（electron.d.ts 的
+   * `WebContentsWillNavigateEventParams` / `WebContentsWillRedirectEventParams`），
+   * 信号是现成的，不该推给调用方自觉。
    */
-  onBlocked(verdict: BlockedVerdict): void {
+  onBlocked(verdict: BlockedVerdict, isMainFrame: boolean): void {
+    if (!isMainFrame) return;
     this.set({ kind: 'blocked', reason: verdict.reason });
   }
 
@@ -157,17 +197,30 @@ export class NavigationTracker {
   }
 
   /**
+   * 承载这次观测的标签在途中被销毁了（用户关标签、run 结束回收浏览器、退出）。
+   *
+   * 与「被取代」是同一个形状：我们**明确知道**发生了什么，却只能白等满一个时限，
+   * 再给出「我们不知道发生了什么」这个错的四分类。语义上不复用 superseded ——
+   * 那是「被另一次导航接替了，页面状态由那一次决定」，而这里根本没有页面了：
+   * 模型对这两件事的处置不同（前者要重新看一眼，后者要重新开一个标签）。
+   */
+  onCancelled(): void {
+    this.set({ kind: 'cancelled' });
+  }
+
+  /**
    * 时限到了。**stop 交给它执行，调用方不要自己先 stop 再调这里** —— 该不该停取决于
    * 这次观测有没有已经被别的事实定论（尤其是被取代：那时 stop 掐掉的正是接替它的那次
    * 导航），把判断和动作放进同一步，调用方就没有记错的余地，定时器与事件之间那点竞态
    * 也一起消掉了。
    *
-   * 参数可选**只是为了让第六批接线之前的旧调用点还能编过**（那里现在是「自己 stop
-   * 完再调 onTimeout()」）。第六批必须改成把 `() => wc.stop()` 传进来。
+   * `stop` **必填**：可选的话，调用方忘了传就是一次静默失效 —— 一次真超时的导航
+   * 永远不被停止、页面继续加载，而工具已经报了 timeout 并让 agent 换源。约束要进
+   * 类型，不能只写在注释里指望调用方记得（忘传是 TS2554）。
    */
-  onTimeout(stop?: () => void): void {
+  onTimeout(stop: () => void): void {
     if (this.outcome !== null) return;
-    stop?.();
+    stop();
     // 只收到过 ERR_ABORTED、后续什么都没来 —— 那确实不知道发生了什么，不能硬凑成
     // failed。但「主 frame 被中断过一次」是观测到的事实，带上它，别让工具只会说
     // 「我们不知道发生了什么」。

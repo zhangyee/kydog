@@ -500,6 +500,9 @@ export type NavigationObservation = {
     | { kind: 'download'; url: string; mimeType: string; filename: string; cancelled: 'policy' }
     | { kind: 'blocked'; reason: string }
     | { kind: 'superseded' }
+    // 标签在观测在途时被销毁（关标签 / run 回收 / 退出）。与 superseded 分开：
+    // 那是「被另一次导航接替，页面状态由那一次决定」，这里根本没有页面了。
+    | { kind: 'cancelled' }
     | { kind: 'timeout'; abortObserved: boolean };
 };
 

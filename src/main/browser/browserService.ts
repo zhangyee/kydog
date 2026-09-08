@@ -290,12 +290,12 @@ export class BrowserService {
       new Promise<void>((r) => { timer = setTimeout(r, NAV_TIMEOUT_MS); }),
     ]);
     if (timer) clearTimeout(timer);
-    if (!tracker.settled) {
-      // 到点先停，再作废这次导航：不然工具已经按 timeout 换了源，
-      // 旧导航稍后还可能落进同一个标签，页面内容与 agent 以为的状态就对不上了。
-      try { wc.stop(); } catch { /* 已经没了 */ }
-      tracker.onTimeout();
-    }
+    // 到点了就收尾。**停不停由 tracker 判**：被取代的观测绝不能 stop（掐掉的正是
+    // 接替它的那一次导航），已经成了的也不该 stop（会打断还在加载的子资源）。
+    // 判断与动作在同一步，调用方没有记错的余地，「先看 settled 再动手」那点竞态
+    // 也一并消掉。停下来才作废这次导航：不然工具已经按 timeout 换了源，旧导航
+    // 稍后还可能落进同一个标签，页面内容与 agent 以为的状态就对不上了。
+    tracker.onTimeout(() => { try { wc.stop(); } catch { /* 已经没了 */ } });
     if (this.navs.get(tabId) === tracker) this.navs.delete(tabId);
     this.syncTabMeta(tabId);
     if (this.stage) this.applyViewport(tabId, this.stage.bounds);
