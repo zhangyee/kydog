@@ -346,6 +346,13 @@ export type RuntimeEvent =
   // agent 是否正在驱动某个标签。渲染层据此显示状态（指示灯 + 侧栏横幅）。
   // 注意**不做交互屏蔽**：webContents.setIgnoreInputEvents 在 Electron 41 上不存在
   // （2026-09-08 spike 实测），原生层也盖不住 DOM 遮罩。
+  //
+  // **本 topic 现在零发送方**，登记在 `eventLedger.test.ts` 的 `PENDING_EMITTER` 里。
+  // 信号在主进程是有的（`browserService.withAgentDriving` 里那对 `registry.setAgentActive`），
+  // 但 `setAgentActive` 刻意不推 revision、`toState()` 又会把 `isAgentActive` 抹掉，
+  // 所以现有的 `browser.tabsChanged` 广播带不出来。Task 8 要在 `markDriving` 与
+  // `withAgentDriving` 的 `finally` 两处补 `broadcaster.emit('browser.agentFocus', …)`，
+  // 并把这条从 `PENDING_EMITTER` 里划掉 —— 不划那份名单会红（它不许过期）。
   | { topic: 'browser.agentFocus'; payload: { tabId: string | null; active: boolean; action?: string } };
 
 /** select 的一个候选项。`id` 是要原样回传给 pi 的答案，label/description 是 provider 自己的措辞。 */
@@ -364,6 +371,54 @@ export type OAuthPromptPayload =
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];
+
+/**
+ * **事件 topic 的台账**，与 RPC 那套（`RPC_METHODS` + `handlers.ts` 的 registerHandler +
+ * `handlers.test.ts` 的穷尽性闸）一一对应。
+ *
+ * 为什么要有：往 `RuntimeEvent` 加一条 topic 而**没有任何地方发它**，不会编译报错、
+ * 不会有用例红 —— 订阅方照常订阅，指示灯永远不亮。这与「加了 RpcCall 却忘了注册
+ * handler」是同一类盲区，本批刚给 RPC 关掉，换个通道不能再开着。
+ *
+ * 三方对账在 `src/main/ipc/eventLedger.test.ts`：
+ *  · **声明**：下面这张表（漏一条在下面那行编译不过）；
+ *  · **已接**：扫 `src/main/**` 真实的 emit 调用点（`broadcaster.emit` / `emitRun` /
+ *    `{ topic: … }` 三种形态）；
+ *  · **待接**：那份用例里的 `PENDING_EMITTER`，每条都要写清楚谁来接。
+ */
+export const EVENT_TOPICS = [
+  'run.started',
+  'run.message_delta',
+  'run.thinking_delta',
+  'run.tool_call_start',
+  'run.tool_call_chunk',
+  'run.tool_call_end',
+  'run.parallel_group',
+  'run.message_end',
+  'run.ask_start',
+  'run.ask_end',
+  'run.resync',
+  'run.ended',
+  'oauth.auth',
+  'oauth.progress',
+  'oauth.prompt',
+  'oauth.promptCancel',
+  'oauth.success',
+  'oauth.error',
+  'thread.updated',
+  'fs.changed',
+  'file.changed',
+  'identity.changed',
+  'llm.listChanged',
+  'update.status',
+  'telemetry.status',
+  'browser.tabsChanged',
+  'browser.agentFocus',
+] as const satisfies readonly EventTopic[];
+
+// 漏一条就在这里编译不过（Exclude 剩下的那个不是 never）。
+const _allEventTopicsListed: Exclude<EventTopic, (typeof EVENT_TOPICS)[number]> extends never ? true : never = true;
+void _allEventTopicsListed;
 
 /**
  * 一轮 run 期间主进程发出的事件。主进程按发出顺序留一份（journal），渲染进程重载后

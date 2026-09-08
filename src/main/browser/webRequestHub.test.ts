@@ -138,6 +138,30 @@ describe('onBeforeRequest：多个订阅者共用底层那一个监听器', () =
     wr.fire('https://z/');
     expect(seen).toEqual(['https://z/']);
   });
+
+  /**
+   * **上面那条其实分不开有没有 `done` 闸**：两次 `onBeforeRequest` 传的是两个不同的
+   * 闭包，`subs.delete(别人)` 删一个不在集合里的元素本来就无害。
+   *
+   * 真正分得开的是**同一个函数引用**：订阅者只在 Set 里存一份，重新订阅之后，
+   * 第一个 `off()` 若照删不误，删掉的就是**重新订阅的那一份**。真实场景就是 Task 7 的
+   * 登录观测 —— 同一个具名观测函数拆了又装，而拆下来的旧 `off` 还在某个 finally 里。
+   */
+  it('同一个函数重新订阅之后，旧的 off 再调一次不许把新的那一份摘掉', () => {
+    const wr = makeWr();
+    const hub = createWebRequestHub(wr as never);
+    const seen: string[] = [];
+    const watcher = (d: { url: string }) => { seen.push(d.url); };
+
+    const off1 = hub.onBeforeRequest(watcher);
+    off1();
+    hub.onBeforeRequest(watcher);   // 同一个引用，重新装上
+    off1();                         // 旧的 off：它管的那一次早就退订了
+
+    expect(wr.current).not.toBeNull();
+    wr.fire('https://again/');
+    expect(seen).toEqual(['https://again/']);
+  });
 });
 
 /**

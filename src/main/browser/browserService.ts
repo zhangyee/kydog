@@ -179,8 +179,10 @@ export class BrowserService {
   attach(win: BrowserWindow): void {
     this.win = win;
     // 窗口销毁之后这个引用就是野的：下一次 createTab 会往一个已经析构的 contentView 上
-    // addChildView。这里只负责把引用清干净（那之后 createTab 报「还没装配到窗口上」），
-    // **要不要顺手 disposeAll 是 main.ts 那一侧的策略**，见报告给 Task 6 的清单。
+    // addChildView。这里只负责把引用清干净（那之后 createTab 报「还没装配到窗口上」）。
+    // **窗口这一路刻意不顺手 disposeAll**（裁决 2.3）：收摊统一在 `before-quit` 做一次
+    // （`mainWiring.ts` 的 `installBrowserQuitWiring`），`mainWiring.test.ts` 有一条专门
+    // 钉「窗口这一路一次都不 disposeAll」。
     win.once('closed', () => { if (this.win === win) this.win = null; });
     this.wireSession();
   }
@@ -768,8 +770,9 @@ export class BrowserService {
     if (gone.length) { this.applyLayout(); this.emit(); }
   }
 
-  /** 退出 / 窗口销毁时收摊。**幂等**：跑第二遍时账本已经空了，什么都不做。
-   *  目前没有调用方 —— main.ts 的接线属于 Task 6，见报告里的清单。 */
+  /** 退出时收摊。**幂等**：跑第二遍时账本已经空了，什么都不做。
+   *  唯一的调用方是 `mainWiring.ts` 挂在 `app.on('before-quit')` 上的那一处
+   *  （`main.ts` 顶层的 `installBrowserQuitWiring`）。窗口 `closed` 不走这里，见 `attach`。 */
   disposeAll(): void {
     const ids = this.registry.allIds();
     for (const id of ids) { this.registry.close(id); this.destroyView(id); }

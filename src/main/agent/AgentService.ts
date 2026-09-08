@@ -224,6 +224,17 @@ class AgentService {
   async dispose(threadId: string): Promise<void> {
     const bound = this.sessions.get(threadId);
     if (!bound) return;
+    // **session 一拆，本轮就再也不会 settle 了** —— `disposeForRun` 全仓只有
+    // `agent_settled` 一个触发点，而 `agent_settled` 由 pi 的 session 发。所以这里补最后
+    // 一次回收：不补的话，本轮开的标签带着一个永远等不到 settle 的 `ownerRunId`，
+    // 此后任何一轮的 `disposeForRun` 都命中不了它们，它们占着 MAX_TABS 的名额活到进程退出。
+    //
+    // 读的是 `bound.runId`，与 `agent_settled` / `currentRunIdFor` 同一个字段（见 Bound.runId）：
+    // 现算 `runs` 在 pi 的重试窗口里已经是 idle —— 而删线程（threadService.delete 无条件
+    // dispose）与切界面语言（localeSet → disposeAllSessions）两条真实入口都能落进那个窗口。
+    const abandonedRunId = bound.runId;
+    bound.runId = null;
+    if (abandonedRunId !== null) browserService.disposeForRun(abandonedRunId);
     // Adaptation B: fake has cleanup(), real has dispose()
     if (bound.session.cleanup) await bound.session.cleanup();
     else if (bound.session.dispose) bound.session.dispose();
@@ -461,9 +472,17 @@ class AgentService {
     });
   }
 
-  /** 有没有正在跑的 run。locale.set 靠它决定是否拒绝切换。 */
+  /**
+   * 有没有正在跑的 run。locale.set 靠它决定是否拒绝切换。
+   *
+   * **读 `bound.runId`，不是现算 `runs`** —— 与 `currentRunIdFor` / `agent_settled` 同一个
+   * 字段。`runs` 在 `agent_end` 就被置回 idle，而 pi 在那之后仍可能自动重试
+   * （`docs/extensions.md:560`）：拿 `runs` 当闸，用户在重试窗口里切语言会被放行，
+   * 而 locale.set 那段注释写明的前提正是「切换时没有 run 在跑」。
+   * `bound.runId` 恰好活在 `send()` 到 `agent_settled` 之间，就是那个前提本身。
+   */
   hasActiveRun(): boolean {
-    return [...this.runs.values()].some((s) => s.status === 'running');
+    return [...this.sessions.values()].some((b) => b.runId !== null);
   }
 
   /**

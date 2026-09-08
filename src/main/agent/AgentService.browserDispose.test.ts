@@ -184,3 +184,109 @@ describe('currentRunIdFor：浏览器工具给标签盖的戳', () => {
     expect(disposeForRun.mock.calls).toEqual([[stamped]]);
   });
 });
+
+/**
+ * **同一族的第三个洞。**
+ *
+ * `disposeForRun` 全仓只有 `agent_settled` 一个触发点，而 `agent_settled` 是 pi 的 session
+ * 发的 —— session 一拆，本轮就再也不会 settle。两条真实入口都能落进 pi 的重试窗口
+ * （`agent_end` 之后、`agent_settled` 之前，那一刻 `runs` 已经是 idle）：
+ *  · `threadService.delete` 无条件 `dispose(threadId)`；
+ *  · `localeSet` 通过 `disposeAllSessions()`。
+ * 不在 `dispose` 里补一次回收，那些标签的 `ownerRunId` 就再也没人 settle，
+ * 此后任何一轮的 `disposeForRun` 都命中不了，它们占着 MAX_TABS 的名额活到进程退出。
+ */
+describe('dispose(thread)：session 拆了，本轮标签在这里最后回收一次', () => {
+  it('pi 的重试窗口里 dispose（删线程 / 切语言都走这条）→ 回收的是本轮那个 runId', async () => {
+    const { fire } = attach('t1');
+    const { runId } = await agentService.send('t1', '/x', '你好');
+    fire({ type: 'agent_start' });
+    fire(AGENT_END);
+    // 这一刻现算 runId 是 'unknown'（runs 已回 idle）—— 正是前两个洞的那一步。
+    expect(agentService.getRunState('t1').status).toBe('idle');
+
+    await agentService.dispose('t1');
+    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+  });
+
+  it('run 正在飞时 dispose 也回收（abort 之后立刻删线程）', async () => {
+    attach('t1');
+    const { runId } = await agentService.send('t1', '/x', '你好');
+    await agentService.dispose('t1');
+    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+  });
+
+  it('回收用的戳与浏览器工具盖的是同一个值', async () => {
+    const { fire } = attach('t1');
+    await agentService.send('t1', '/x', '你好');
+    fire({ type: 'agent_start' });
+    const stamped = agentService.currentRunIdFor('t1');
+    fire(AGENT_END);
+    await agentService.dispose('t1');
+    expect(disposeForRun.mock.calls).toEqual([[stamped]]);
+  });
+
+  it('settled 已经回收过了，再 dispose 不重复回收', async () => {
+    const { fire } = attach('t1');
+    const { runId } = await agentService.send('t1', '/x', '你好');
+    fire({ type: 'agent_start' });
+    fire(AGENT_END);
+    fire({ type: 'agent_settled' });
+    await agentService.dispose('t1');
+    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+  });
+
+  it('没 send 过的 session dispose 一次都不调（不许拿 null 空跑一遍）', async () => {
+    attach('t1');
+    await agentService.dispose('t1');
+    expect(disposeForRun).not.toHaveBeenCalled();
+  });
+
+  it('没见过的 thread dispose：不抛也不回收', async () => {
+    await agentService.dispose('没见过的 thread');
+    expect(disposeForRun).not.toHaveBeenCalled();
+  });
+
+  it('disposeAllSessions（切界面语言那条路）：两条 thread 各回收各的', async () => {
+    const a = attach('t1');
+    attach('t2');
+    const ra = await agentService.send('t1', '/x', '甲');
+    const rb = await agentService.send('t2', '/x', '乙');
+    // t1 落在 pi 的重试窗口里（runs 已回 idle），t2 还在飞 —— 两种都要回收。
+    a.fire({ type: 'agent_start' });
+    a.fire(AGENT_END);
+
+    await agentService.disposeAllSessions();
+    expect([...disposeForRun.mock.calls].sort()).toEqual([[ra.runId], [rb.runId]].sort());
+  });
+});
+
+/**
+ * `locale.set` 那道闸（`localeSet.ts` 的 `deps.hasActiveRun()`）读的必须也是 `bound.runId`。
+ * 读现算的 `runs`，用户在 pi 自动重试期间切语言就会被放行 —— 而那段代码的注释写明
+ * 前提是「切换时没有 run 在跑」，此时 pi 手上那一轮还在飞。
+ */
+describe('hasActiveRun：闸读的是 bound.runId，不是现算的 runs', () => {
+  it('重试窗口里仍算「有 run 在飞」—— 那一刻 runs 已经是 idle', async () => {
+    const { fire } = attach('t1');
+    await agentService.send('t1', '/x', '你好');
+    fire({ type: 'agent_start' });
+    fire(AGENT_END);
+    expect(agentService.getRunState('t1').status).toBe('idle');
+    expect(agentService.hasActiveRun()).toBe(true);
+  });
+
+  it('settled 之后才算没有 —— 与回收是同一时刻', async () => {
+    const { fire } = attach('t1');
+    await agentService.send('t1', '/x', '你好');
+    fire({ type: 'agent_start' });
+    fire(AGENT_END);
+    fire({ type: 'agent_settled' });
+    expect(agentService.hasActiveRun()).toBe(false);
+  });
+
+  it('从没 send 过的 session 不算', () => {
+    attach('t1');
+    expect(agentService.hasActiveRun()).toBe(false);
+  });
+});

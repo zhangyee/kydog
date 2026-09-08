@@ -99,7 +99,9 @@ vi.mock('./browser/browserService', async () => {
       keep: (id: string) => { h.browser.push({ m: 'keep', args: id }); },
       activate: (id: string) => { h.browser.push({ m: 'activate', args: id }); },
       navControl: (id: string, action: string) => { h.browser.push({ m: 'navControl', args: { id, action } }); return Promise.resolve(); },
-      newEpoch: () => { h.browser.push({ m: 'newEpoch', args: undefined }); return reg.newEpoch(); },
+      // 记下**签发出去的那个值**：m2 那条用例要拿它和快照里的 epoch 比，
+      // 「两次不相等」挡不住顺序反了（反了也是两个不同的值）。
+      newEpoch: () => { const ep = reg.newEpoch(); h.browser.push({ m: 'newEpoch', args: ep }); return ep; },
       getState: () => { h.browser.push({ m: 'getState', args: undefined }); return reg.toState(); },
       syncView: (args: unknown) => { h.browser.push({ m: 'syncView', args }); },
       disposeForRun: () => {},
@@ -376,10 +378,25 @@ describe('browser.* 七条转发到 browserService 上对应的那一个', () =>
     ]);
   });
 
-  it('syncView 把整份舞台几何原样递下去', async () => {
-    const stage = { epoch: 3, visible: true, occluded: false, bounds: { x: 1, y: 2, width: 300, height: 400 } };
-    await call('browser.syncView', stage);
-    expect(h.browser).toEqual([{ m: 'syncView', args: stage }]);
+  /**
+   * **四种布尔组合各递一次。**
+   *
+   * `visible`（侧栏开没开）与 `occluded`（被浮层盖住）是两件事，协议注释专门写了
+   * 「别合成一个」。只用一组 fixture 的话，`toEqual(stage)` 挡不住「把某个布尔钉到
+   * fixture 那个值上」：handler 写成 `syncView({ ...args, visible: true })` 照样全绿，
+   * 而产品行为是用户收起侧栏之后，原生 WebContentsView 仍按最后一次几何盖在 UI 上。
+   * 两个 false / 两个 true 那两组之外还要有一真一假的两组 —— 否则把两个字段**对调**
+   * 也测不出来。bounds 每组不同，顺带钉住「递的是这一次的那份，不是上一次的」。
+   */
+  it('syncView 把整份舞台几何原样递下去 —— 两个布尔的四种组合都不许被钉死或对调', async () => {
+    const stages = [
+      { epoch: 3, visible: true, occluded: false, bounds: { x: 1, y: 2, width: 300, height: 400 } },
+      { epoch: 4, visible: false, occluded: false, bounds: { x: 5, y: 6, width: 301, height: 401 } },
+      { epoch: 5, visible: true, occluded: true, bounds: { x: 7, y: 8, width: 302, height: 402 } },
+      { epoch: 6, visible: false, occluded: true, bounds: { x: 9, y: 10, width: 303, height: 403 } },
+    ];
+    for (const stage of stages) await call('browser.syncView', stage);
+    expect(h.browser).toEqual(stages.map((args) => ({ m: 'syncView', args })));
   });
 });
 
@@ -391,10 +408,22 @@ describe('browser.* 七条转发到 browserService 上对应的那一个', () =>
  * 拿不到几何、一直不可见，直到下一次真实标签变更才恢复。
  */
 describe('browser.getState 顺带签发新 epoch', () => {
-  it('每调一次 epoch 就换一个，且返回的那一份带的就是新的', async () => {
+  it('每调一次都换一个 epoch', async () => {
     const a = await call('browser.getState') as { epoch: number };
     const b = await call('browser.getState') as { epoch: number };
     expect(b.epoch).toBeGreaterThan(a.epoch);
+  });
+
+  /**
+   * 上面那条只量「两次不相等」—— 顺序反了（先取快照、后签发）它照样绿，因为两次
+   * 拿到的仍是两个不同的值。真正要钉的是**返回的那一份带的就是这一次签发的那个**，
+   * 所以拿 `newEpoch()` 的返回值直接和快照里的 epoch 比。
+   */
+  it('返回的那一份带的就是这一次签发的那个 epoch，不是上一个', async () => {
+    const a = await call('browser.getState') as { epoch: number };
+    const b = await call('browser.getState') as { epoch: number };
+    const issued = h.browser.filter((c) => c.m === 'newEpoch').map((c) => c.args);
+    expect(issued).toEqual([a.epoch, b.epoch]);
   });
 
   it('签发排在取快照之前 —— 顺序反了返回的是上一个 epoch', async () => {

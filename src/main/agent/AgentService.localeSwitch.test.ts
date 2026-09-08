@@ -32,11 +32,14 @@ describe('AgentService locale-switch helpers', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
-  it('hasActiveRun：只有 running 算，idle 不算', () => {
+  // 判据是 session 上的 bound.runId（send() 铸出、agent_settled 清），不是现算 runs：
+  // runs 在 agent_end 就回 idle，而 pi 在那之后仍可能自动重试。
+  // 「重试窗口里也算有 run 在飞」那一条在 AgentService.browserDispose.test.ts。
+  it('hasActiveRun：有 bound.runId 才算，null 不算', () => {
     expect(agentService.hasActiveRun()).toBe(false);
-    (agentService as any).runs.set('t1', { status: 'idle' });
+    (agentService as any).sessions.set('t1', { ...makeFakeBound('t1'), runId: null });
     expect(agentService.hasActiveRun()).toBe(false);
-    (agentService as any).runs.set('t2', { status: 'running', runId: 'r1' });
+    (agentService as any).sessions.set('t2', { ...makeFakeBound('t2'), runId: 'r1' });
     expect(agentService.hasActiveRun()).toBe(true);
   });
 
