@@ -8,8 +8,13 @@ import { assertAllowedUrl, checkUrl } from './urlGuard';
 import { TabRegistry } from './tabRegistry';
 import { NavigationTracker } from './settle';
 import type { AxSnapshot } from './snapshot';
+import {
+  resolveTarget, assertTypeAllowed, keyEventsFor,
+  type DispatchAction, type TargetSpec, type WaitUntil,
+} from './actions';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
+import INTERACT_SOURCE from './injected/interact.js?raw';
 
 /**
  * 内置浏览器。主进程持有 WebContentsView —— **不是 `<webview>`**：
@@ -71,6 +76,42 @@ function logUrl(raw: string): string {
 
 /** walker 的返回值**就是**一份没有 snapshotId 的 AxSnapshot。 */
 type WalkerOutput = Omit<AxSnapshot, 'snapshotId'>;
+
+// ── 动作派发（spec §4.2）─────────────────────────────────────────────────────
+
+/** `interact.js` 认得的目标形态。与 `ResolvedTarget` 一一对应，只是不带快照坐标。 */
+type InteractTarget = { selector: string } | { nodeId: number };
+
+type InteractRequest =
+  | { op: 'measure' | 'focusSelect' | 'readValue'; target: InteractTarget }
+  | { op: 'select'; target: InteractTarget; value: string }
+  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number };
+
+/** `interact.js` 的返回值。它在网页里执行、类型系统管不到它，所以这里只声明形状。 */
+type InteractResult = { ok: boolean; reason?: string; [k: string]: unknown };
+
+/**
+ * 拼出注进隔离世界的那段代码。
+ *
+ * **参数直接拼进调用里，不走 `window.__kydogTarget` 这类全局**：那要两次注入
+ * （先设全局再执行），两次之间页面可以导航走 —— 第二次跑在新文档里读到的是上一次
+ * 留下的目标；而且同一个标签上两次派发会互相覆盖。
+ *
+ * `JSON.stringify` 是唯一的插值方式（照 `extractExpression` 那批定的规矩）：
+ * selector / value 都是字符串字面量，构造不出标识符逃逸。
+ */
+function interactExpression(req: InteractRequest): string {
+  return `(${INTERACT_SOURCE})(${JSON.stringify(req)})`;
+}
+
+/** 轮询周期。**它是等待的粒度，不是任何判据** —— 判据是「条件成立了没有」这个页面事实。
+ *
+ *  取 100ms 的依据是量过的成本：隔离世界一次求值的往返实测 **0.14–0.16ms**
+ *  （Electron 41.2.1，2026-09-08，50 次 8ms / 200 次 28ms）。按 100ms 一次，
+ *  撑满 `WAIT_MAX_MS` 的 30 秒也只有 300 次求值 ≈ 45ms 渲染进程时间，
+ *  而模型能感知的等待误差被压在 0.1 秒 —— 再密没有意义，再疏就开始把「等到了」
+ *  拖成肉眼可见的延迟。 */
+const WAIT_POLL_MS = 100;
 
 /**
  * 形状校验。walker 在页面里执行、类型系统管不到它，`as` 断言只是**声称**它长这样：
@@ -787,6 +828,272 @@ export class BrowserService {
   webContentsOf(tabId: string): WebContents | null {
     const v = this.views.get(tabId);
     return v && !v.webContents.isDestroyed() ? v.webContents : null;
+  }
+
+  // ── 动作派发（spec §4.2）──────────────────────────────────────────────────
+
+  /**
+   * 这个标签此刻发得了输入事件吗。**两道闸，判据都是协议层现成的事实。**
+   *
+   * 不闸住的代价实测有三种形状，没有一种会自己说出「这个标签还没法操作」
+   * （Electron 41.2.1，2026-09-08，全新的、还没 load 过任何页面的 WebContentsView，
+   * `getOSProcessId() === 0`，每个情形独立进程 + 独立 userData，3/3 复现）：
+   *
+   * | 命令 | pid=0 时 |
+   * | --- | --- |
+   * | `Input.dispatchMouseEvent`（pressed / released / moved / wheel） | reject `Internal error` |
+   * | `Input.insertText` | **永不 settle** —— 进程退出时才以 "target closed" reject |
+   * | `Input.dispatchKeyEvent` | resolve `{}`（静默无效） |
+   *
+   * 中间那一条会让一次 `browser_act`（sequential 工具）**永远不返回**；最后一条更糟：
+   * 回报「按下 Enter」而它一个字都没发到页面上。
+   * （`Emulation.setDeviceMetricsOverride` 在同样情形下是 **SIGSEGV**，见 applyViewport
+   * 那段 —— 那条更硬，但闸是同一道。）
+   */
+  private assertDispatchable(tabId: string, wc: WebContents): void {
+    if (!wc.debugger.isAttached()) {
+      throw new KydogError('browser.not_dispatchable',
+        `标签 ${tabId} 的调试通道已经断开（多半是 DevTools 打开把它顶掉了），现在发不了任何输入事件。`
+        + '这是 KyDog 这一侧的通道问题，与站点无关。');
+    }
+    if (wc.getOSProcessId() === 0) {
+      throw new KydogError('browser.not_dispatchable',
+        `标签 ${tabId} 还没有渲染进程 —— 页面从来没加载成功过，或者刚刚崩过。`
+        + '先用 browser_open 打开一个页面再操作。');
+    }
+  }
+
+  /** 把一段 `interact.js` 送进隔离世界。返回值形状不对就当场说清，绝不往下读 undefined。 */
+  private async interact(tabId: string, wc: WebContents, req: InteractRequest): Promise<InteractResult> {
+    let raw: unknown;
+    try {
+      raw = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code: interactExpression(req) }]);
+    } catch (err) {
+      throw new KydogError('browser.not_dispatchable',
+        `在标签 ${tabId} 的页面里执行定位脚本失败：${String(err)}。页面多半正在导航。`);
+    }
+    if (!raw || typeof raw !== 'object' || typeof (raw as { ok?: unknown }).ok !== 'boolean') {
+      throw new KydogError('browser.not_dispatchable',
+        `标签 ${tabId} 的页面没有回传定位结果 —— 多半是在派发中途导航走了。这一步没有发生。`);
+    }
+    return raw as InteractResult;
+  }
+
+  /** 报错时说得出「哪个目标」。selector 与编号两种说法不能混：处置不同。 */
+  private static describeTarget(action: DispatchAction): string {
+    const s = action as { selector?: string; index?: number; snapshotId?: string };
+    if (typeof s.selector === 'string') return `选择器 ${JSON.stringify(s.selector)}`;
+    return `编号 ${s.index}（来自快照 ${s.snapshotId}）`;
+  }
+
+  /**
+   * 把 `interact.js` 报的失败翻译成错误码。
+   *
+   * **每一种的处置都不同**，所以绝不能收敛成一句话：换选择器 / 重新取快照 /
+   * 先关掉浮层 / 换一个目标。收敛掉的那一刻，模型就只能靠猜。
+   */
+  private static interactError(r: InteractResult, action: DispatchAction): KydogError {
+    const where = BrowserService.describeTarget(action);
+    switch (r.reason) {
+      case 'not_found':
+        return new KydogError('browser.target_unusable',
+          `${where} 在当前页面上没有匹配。重新取一份快照看看页面现在长什么样，或者换一个选择器。`);
+      case 'bad_selector':
+        return new KydogError('browser.bad_action', `${where} 不是合法的 CSS 选择器。`);
+      case 'stale_node':
+        return new KydogError('browser.stale_index',
+          `${where} 指向的元素已经不在当前文档里了 —— 页面换过或那一段 DOM 被重建了。重新取一份快照再操作。`);
+      case 'not_visible':
+        return new KydogError('browser.target_unusable',
+          `${where} 在页面上折叠到了看不见的尺寸（${String(r.w)}×${String(r.h)}），点不到。`);
+      case 'offscreen':
+        return new KydogError('browser.target_unusable',
+          `${where} 滚进视野之后仍然落在视口外（坐标 ${String(r.x)},${String(r.y)}，视口 ${String(r.vw)}×${String(r.vh)}）`
+          + '—— 多半有一个自己就在视口外的滚动容器，或者 position:fixed 的祖先。');
+      case 'intercepted':
+        return new KydogError('browser.click_intercepted',
+          `${where} 那个位置上被 ${String(r.by)} 挡住了（cookie 横幅、授权对话框这类浮层会静默吃掉点击）。`
+          + '先把浮层关掉再点。');
+      case 'password':
+        return new KydogError('browser.password_field',
+          '不能往密码框里输入。机构登录用 browser_login（由主进程填），其他登录请交给用户');
+      case 'not_editable':
+        return new KydogError('browser.target_unusable',
+          `${where} 不是能打字的控件（${String(r.tag)}${r.type ? ` type=${String(r.type)}` : ''}）。`
+          + '往它上面打字不会有任何效果 —— 找真正的输入框。');
+      case 'not_select':
+        return new KydogError('browser.target_unusable',
+          `${where} 不是 <select>（是 ${String(r.tag)}）。select 动作只对下拉框有效。`);
+      case 'no_option':
+        return new KydogError('browser.target_unusable',
+          `${where} 这个下拉框里没有值为这一项的选项。它一共有 ${String(r.total)} 项，`
+          + `可选值：${JSON.stringify(r.options)}。（直接写一个不存在的值会把它变成「什么都没选」，所以这里拒绝。）`);
+      default:
+        return new KydogError('browser.target_unusable', `${where} 这一步没能执行：${String(r.reason)}`);
+    }
+  }
+
+  /**
+   * 执行一个动作，返回一句给模型看的说明。**真正碰页面的只有这里。**
+   *
+   * **不自己 enqueue**：调用方（`browser_act` 的整批）已经在队列里了，这里再排一次
+   * 会把自己排在自己后面 —— 死锁。新增任何别的调用方时，要在**外面**包 `enqueue`
+   * （与 `open` / `navControl` 同一条路），不要绕过队列直接调这里。
+   *
+   * 三件事（spec §4.2「点击之前有三件事，一件都不能省」）全在 `interact.js` 里做：
+   * 滚进视野 → 在派发那一刻重新量 → 命中检查。`snapshot` 参数只用来解析 `index`
+   * （`resolveTarget` 给的 x/y 是**快照当时**的，这里一个字都不用）。
+   */
+  async dispatch(tabId: string, action: DispatchAction, snapshot: AxSnapshot | null): Promise<string> {
+    const wc = this.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    this.assertDispatchable(tabId, wc);
+
+    if (action.kind === 'key') {
+      for (const ev of keyEventsFor(action.key)) {
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', ev);
+      }
+      return `按下 ${action.key}`;
+    }
+
+    if (action.kind === 'scroll') {
+      // **不发 `Input.dispatchMouseEvent` 的 mouseWheel。** 2026-09-08 实测
+      // （Electron 41.2.1）：那条命令**永不 ack、也一个像素都不滚**，五种组合逐一试过
+      // （view 隐藏 / view 可见但窗口隐藏 / 窗口也显示 × 禁不禁用硬件加速）；
+      // `Input.synthesizeScrollGesture` 会 ack（约 1030ms）但同样不滚。
+      // 隔离世界里的 scrollBy 是同步的、当场量得到，而且不挑可见性 ——
+      // 这也正是「侧栏开不开都一样」那条要求的。
+      const r = await this.interact(tabId, wc, {
+        op: 'scroll', direction: action.direction, ...(action.amount === undefined ? {} : { amount: action.amount }),
+      });
+      if (!r.ok) throw BrowserService.interactError(r, action);
+      const dir = action.direction === 'up' ? '上' : '下';
+      const where = r.container === 'document' ? '整页' : `内层滚动容器 ${String(r.container)}`;
+      // 「滚到底了」与「这次滚动没生效」必须分得开：前者是页面事实（scrollTop 已经
+      // 顶到 scrollHeight - clientHeight），后者是我们这一侧的问题。
+      const edge = action.direction === 'down' ? r.atEnd : r.atStart;
+      const tail = r.delta === 0
+        ? (edge ? `，一像素都没动 —— 已经到${action.direction === 'up' ? '顶' : '底'}了`
+          : '，但一像素都没动（这个容器滚不动，内容多半没有超出它）')
+        : '';
+      return `已把${where}向${dir}滚了 ${String(r.delta)} 像素（${String(r.before)} → ${String(r.after)}）${tail}`;
+    }
+
+    // 剩下四种都要目标。**密码硬闸第一道排在这里**：快照里 walker 已经判过它是
+    // 密码框的，连页面都不许碰（第二道在 interact.js 里，管 selector 定位那条路）。
+    const resolved = resolveTarget(action as TargetSpec, snapshot);
+    if (action.kind === 'type') assertTypeAllowed(resolved);
+    const target: InteractTarget = resolved.kind === 'selector'
+      ? { selector: resolved.selector } : { nodeId: resolved.nodeId };
+
+    if (action.kind === 'select') {
+      // 不派发任何鼠标事件，所以「三件事」不适用：赋值 + 派发 input/change 就是全部。
+      const r = await this.interact(tabId, wc, { op: 'select', target, value: action.value });
+      if (!r.ok) throw BrowserService.interactError(r, action);
+      const label = String(r.label ?? '');
+      return `已在下拉框里选中 ${label ? `「${label}」` : ''}（value=${JSON.stringify(r.value)}）`
+        + (r.changed === false ? '（它本来就是这个值）' : '');
+    }
+
+    // spec §4.2 的三件事：滚进视野 → 重新量 → 命中检查。缺一件都是「打偏了还不报错」。
+    const m = await this.interact(tabId, wc, { op: 'measure', target });
+    if (!m.ok) throw BrowserService.interactError(m, action);
+    // 第二道密码闸：selector 定位时快照那层看不出来，这里拿到的是活元素。
+    if (action.kind === 'type' && m.isPassword === true) {
+      throw BrowserService.interactError({ ok: false, reason: 'password' }, action);
+    }
+    // 「能不能打字」也要**在点下去之前**问。放到 focusSelect 之后就晚了：那时
+    // 这一下已经点出去了 —— 而 `type {selector:'#submit'}` 点的是提交按钮，
+    // 一次没人要求过的表单提交，然后才报「这个目标不能打字」。
+    if (action.kind === 'type' && m.editable === false) {
+      throw BrowserService.interactError(
+        { ok: false, reason: 'not_editable', tag: m.tag, type: '' }, action);
+    }
+    const x = Number(m.x);
+    const y = Number(m.y);
+    const label = String(m.label ?? '') || String(m.tag ?? '');
+
+    if (action.kind === 'hover') {
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
+      return `已把指针移到「${label}」上（${x},${y}）`;
+    }
+
+    // disabled 的控件在 Chromium 里**根本收不到 click**。发出去就是「什么都没发生
+    // 但回报成功」—— 最后一页那个 disabled 的「下一页」按钮正是这个形状，
+    // 一个 repeat×3 会把第一页抽三遍而且不报任何错。
+    if (m.disabled === true) {
+      throw new KydogError('browser.target_unusable',
+        `${BrowserService.describeTarget(action)}「${label}」是 disabled 的，点它不会有任何效果。`
+        + '（翻页控件到了最后一页就是这个样子。）');
+    }
+
+    const press = { x, y, button: 'left' as const, clickCount: 1 };
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...press });
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
+    if (action.kind === 'click') return `已点击「${label}」（${x},${y}）`;
+
+    // type：点一下是为了聚焦（很多站点的检索框要点开才展开），随后**必须全选** ——
+    // 实测 `Input.insertText` 是在光标处**插入**："旧内容" + "石墨烯" → "旧内容石墨烯"，
+    // 而光标落在哪取决于点到了哪个像素。同一个动作在同一个页面上能产出不同的串，
+    // 还不报错。全选之后 insertText 替换选区（实测 "旧内容" → "量子计算"）。
+    const f = await this.interact(tabId, wc, { op: 'focusSelect', target });
+    if (!f.ok) throw BrowserService.interactError(f, action);
+    await wc.debugger.sendCommand('Input.insertText', { text: action.text });
+    // 打完把框里**真正**变成什么读回来：`Input.insertText` 在焦点不是可编辑元素时
+    // **ack 0ms 而什么都不做**（实测 body / button / readonly / disabled 四种都是）。
+    // 不读回来的话「打进去了」就是一句没有依据的话。
+    const v = await this.interact(tabId, wc, { op: 'readValue', target });
+    const now = v.ok && typeof v.value === 'string' ? `，框里现在是「${v.value}」` : '';
+    return `已在「${label}」里输入${now}`;
+  }
+
+  /**
+   * 等一个**显式条件**成立（spec §4.2 的第 3 条）。成立返回 true，到时限返回 false。
+   *
+   * 轮询在这里是**等待手段**，不是判定依据 —— 判定的是「条件成立了没有」这个页面
+   * 事实（`querySelector` 命中与否 / 当前 URL 含不含那一段），不是「一段时间没有
+   * mutation」那种时间阈值。超时**只表示条件未达成**，不表示别的。
+   *
+   * `urlMatches` 判的是**主进程手里的 `getURL()`**，不往页面里注脚本：这条件的典型
+   * 用法就是「等它跳到结果页」，而那一刻页面正在换文档 —— 脚本要么跑在旧文档上、
+   * 要么直接 reject。两边是同一个协议层事实，主进程这一份不挑时机。
+   */
+  async waitFor(tabId: string, until: WaitUntil, timeoutMs: number): Promise<boolean> {
+    if (!this.webContentsOf(tabId)) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    const probe = async (): Promise<boolean> => {
+      const wc = this.webContentsOf(tabId);
+      if (!wc) return false;
+      if ('urlMatches' in until) {
+        return this.safeCall(() => wc.getURL(), '').includes(until.urlMatches);
+      }
+      const code = `(() => !!document.querySelector(${JSON.stringify(until.selector)}))()`;
+      // 页面在轮询中途导航走了，脚本就 reject。那既不是「条件成立」也不是一次失败 ——
+      // 接着等就是了。
+      const present = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code }])
+        .then((v) => v === true, () => false);
+      return until.state === 'absent' ? !present : present;
+    };
+
+    let stopped = false;
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<false>((r) => { timer = setTimeout(() => r(false), timeoutMs); });
+    const loop = async (): Promise<boolean> => {
+      for (;;) {
+        // 先问一次再等：条件一开始就成立时不该白等一个轮询周期。
+        if (await probe()) return true;
+        if (stopped) return false;
+        await new Promise<void>((r) => setTimeout(r, WAIT_POLL_MS));
+        if (stopped) return false;
+      }
+    };
+    try {
+      // **时限罩在轮询外面**：一次挂住的求值（页面卡死时 `executeJavaScript` 可以
+      // 永远不 settle）不许把整轮 run 一起拖死 —— wait 是 sequential 工具里的一步。
+      return await Promise.race([loop(), deadline]);
+    } finally {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    }
   }
 }
 

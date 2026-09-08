@@ -189,6 +189,27 @@ describe('browser_act 的 schema 是模型看得到的那道闸', () => {
       type: 'number', minimum: 1, maximum: WAIT_MAX_MS, default: WAIT_DEFAULT_MS,
     });
   });
+
+  // 与 kind 同一个道理：裸字符串的话 `{kind:'scroll', direction:'left'}` 连 schema
+  // 都过得去，模型要等到主进程校验才知道没有这个方向。
+  it('direction 是 up / down 的字面量白名单', () => {
+    const d = props.direction as { anyOf?: { const: string }[]; type?: string };
+    expect(d.type).toBeUndefined();
+    expect(d.anyOf?.map((x) => x.const)).toEqual(['up', 'down']);
+  });
+
+  // 这一份 schema 九种动作共用，所以除了 kind **一个都不能是必填** ——
+  // direction 写成必填的话，click / type / key 每一个都要凑一个方向出来才过得了 schema。
+  it('九种动作共用一份参数对象，所以只有 kind 是必填', () => {
+    const required = (ActionSchema as unknown as { required?: string[] }).required ?? [];
+    expect(required).toEqual(['kind']);
+  });
+
+  // amount 不进 schema 的话，`Action` 类型上那个 `amount?` 模型根本用不到 ——
+  // 声明了一个谁都调不动的参数。
+  it('scroll 的 amount 在 schema 上，带下界', () => {
+    expect(props.amount).toMatchObject({ type: 'number', minimum: 1 });
+  });
 });
 
 // ── 接线层：browser_act / browser_read 的 execute 真的跑一遍 ──────────────────
@@ -217,6 +238,14 @@ const bs = vi.hoisted(() => ({
   isolatedImpl: (() => null) as (code: string) => unknown,
   snapshotImpl: (() => null) as () => unknown,
   noTab: false,
+  /** 每一次 dispatch 收到的东西（动作原样、以及当时传进去的快照）。 */
+  dispatched: [] as { tabId: string; action: { kind: string }; snapshot: unknown }[],
+  dispatchImpl: ((a: { kind: string }) => `派发了 ${a.kind}`) as (a: { kind: string }) => string,
+  waits: [] as { tabId: string; until: unknown; timeoutMs: number }[],
+  waitImpl: (() => true) as () => boolean,
+  /** 标签清单可变 —— 一批动作中途 target=_blank 会开出新标签。 */
+  tabs: [] as { id: string; url: string }[],
+  navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
 }));
 
 vi.mock('../browser/browserService', () => {
@@ -233,10 +262,24 @@ vi.mock('../browser/browserService', () => {
   return {
     WALKER_WORLD_ID: 31337,
     browserService: {
-      getState: () => ({ tabs: [{ id: 't1', url: 'https://a.example/q' }], activeTabId: 't1' }),
-      getSnapshot: () => bs.current,
+      getState: () => ({ tabs: bs.tabs, activeTabId: 't1' }),
+      getSnapshot: () => { bs.order.push('getSnapshot'); return bs.current; },
       snapshot: async () => { bs.order.push('snapshot'); return bs.snapshotImpl(); },
       webContentsOf: () => (bs.noTab ? null : wc),
+      dispatch: (tabId: string, action: { kind: string }, snapshot: unknown) => {
+        bs.order.push(`dispatch:${action.kind}`);
+        bs.dispatched.push({ tabId, action, snapshot });
+        return Promise.resolve(bs.dispatchImpl(action));
+      },
+      waitFor: (tabId: string, until: unknown, timeoutMs: number) => {
+        bs.order.push('waitFor');
+        bs.waits.push({ tabId, until, timeoutMs });
+        return Promise.resolve(bs.waitImpl());
+      },
+      open: (args: { url: string }) => {
+        bs.order.push(`open:${args.url}`);
+        return Promise.resolve({ tabId: 't1', nav: bs.navImpl() });
+      },
       enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
       withAgentDriving: <T>(tabId: string, runId: string | null, fn: () => Promise<T>) => {
         bs.order.push(`driving:${tabId}:${runId}`); return fn();
@@ -265,113 +308,178 @@ const act = (actions: unknown[], signal?: AbortSignal) =>
 
 beforeEach(() => {
   bs.order.length = 0; bs.isolated.length = 0; bs.mainWorld.length = 0; bs.cdp.length = 0;
+  bs.dispatched.length = 0; bs.waits.length = 0;
   bs.current = snap();
   bs.snapshotImpl = () => snap({ snapshotId: 'snap_bbb' });
   bs.isolatedImpl = () => null;
+  bs.dispatchImpl = (a) => `派发了 ${a.kind}`;
+  bs.waitImpl = () => true;
+  bs.tabs = [{ id: 't1', url: 'https://a.example/q' }];
   bs.noTab = false;
 });
 
-describe('未接通的动作：显式失败，绝不以成功措辞返回（C1）', () => {
-  // 计划原文写的是「browserTools.ts 先不提交 —— 动作派发是桩，Task 4 补完再一起提交」。
-  // 它提前进了库，于是 click / hover / type / select 算完目标就 `return "click → #12"`：
-  // 一次都没派发到页面，返回值却读起来是「做过了」。模型据此认为自己点过了，
-  // 接着对一个没变的页面继续操作，或者判定这个站点的检索入口坏了并换源，全程零错误。
-  const targeted = [
+describe('六种动作真的接通到 browserService.dispatch（Task 4）', () => {
+  // 这一批之前 click / type / hover / select / scroll / wait 一律抛「这个动作还没有
+  // 实现」。**接通之后最要紧的不是「能跑」，是「跑的是 dispatch 那条路」** ——
+  // 三件事（滚进视野 / 重新量坐标 / 命中检查）与两道闸（渲染进程、密码）全在那里，
+  // 谁在工具层另开一条 `wc.debugger.sendCommand` 的近路，那六样一件都不会发生，
+  // 而返回值照样读起来是「做过了」。
+  const six = [
     ['click', { kind: 'click', index: 1, snapshotId: 'snap_aaa' }],
     ['hover', { kind: 'hover', index: 1, snapshotId: 'snap_aaa' }],
     ['type', { kind: 'type', index: 1, snapshotId: 'snap_aaa', text: '量子计算' }],
     ['select', { kind: 'select', index: 1, snapshotId: 'snap_aaa', value: '2024' }],
+    ['scroll', { kind: 'scroll', direction: 'down' }],
+    ['key', { kind: 'key', key: 'Enter' }],
   ] as const;
 
-  for (const [kind, action] of targeted) {
-    it(`${kind} 报「还没有实现」并让整批停下，不回报「做过了」`, async () => {
+  for (const [kind, action] of six) {
+    it(`${kind} 走 dispatch，并把它说的那句话原样交给模型`, async () => {
       bs.current = snap({ nodes: [node()] });
+      bs.dispatchImpl = () => `【${kind} 的真实结果】`;
       const s = bodyOf(await act([action]));
-      expect(s).toContain('还没有实现');
-      expect(s).toContain('⚠');
-      // 桩的原形：`click → #7`。这个形状一旦回来，这条必红。
-      expect(s).not.toMatch(new RegExp(`${kind} → #?\\d`));
-      expect(s).not.toContain(`${kind} → `);
+      expect(bs.dispatched.map((d) => d.action.kind)).toEqual([kind]);
+      expect(bs.dispatched[0].tabId).toBe('t1');
+      expect(s).toContain(`【${kind} 的真实结果】`);
+      expect(s).not.toContain('⚠');
+      // 派发一条都不许绕过 dispatch 直接发 CDP。
+      expect(bs.cdp).toEqual([]);
     });
   }
 
-  // 措辞不许把「我们这一侧没做完」说成「这个源不行」—— 说错了模型就会去换源。
-  it('措辞明说是 KyDog 这一侧没接通，且明说换源没有用', async () => {
-    bs.current = snap({ nodes: [node()] });
-    const s = bodyOf(await act([{ kind: 'click', index: 1, snapshotId: 'snap_aaa' }]));
-    expect(s).toMatch(/KyDog 这一侧|我们这一侧/);
-    expect(s).toContain('换源没有用');
+  // dispatch 要在**当前**快照里解析 index。传 null 或传一份别的，编号会解析到
+  // 另一个元素上 —— 不报错，只是点错东西。
+  it('当前快照原样传给 dispatch —— index 只在那一份里解析', async () => {
+    const cur = snap({ snapshotId: 'snap_now', nodes: [node()] });
+    bs.current = cur;
+    await act([{ kind: 'click', index: 1, snapshotId: 'snap_now' }]);
+    expect(bs.dispatched[0].snapshot).toBe(cur);
   });
 
-  // C2：scroll / wait 被 validateBatch 放行、needsTarget 也说它们不需要目标，
-  // 而派发侧从前无条件 resolveTarget → 必抛，报的还是另一件事（「需要一个目标」）。
-  // skill 教的翻页剧本会停在 wait 那一步，模型去给 wait 加 selector，永远走不出去。
-  const untargeted = [
-    ['scroll', { kind: 'scroll', direction: 'down' }],
-    ['wait', { kind: 'wait', until: { selector: '.result' } }],
-  ] as const;
-
-  for (const [kind, action] of untargeted) {
-    it(`${kind} 报的是「还没有实现」，不是那句说的是另一件事的「需要一个目标」`, async () => {
-      const s = bodyOf(await act([action]));
-      expect(s).toContain('还没有实现');
-      expect(s).not.toContain('需要一个目标');
-      expect(s).not.toContain('snapshotId');
-    });
-  }
-
-  // 已经接通的两种照常跑：这条反过来钉住上面那些不是「整个工具都在抛」。
-  it('key 与 extract 照常执行 —— 不是整个工具都在抛', async () => {
-    bs.isolatedImpl = () => ({
-      rows: [{ t: '一篇论文' }],
-      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
-      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
-    });
+  it('dispatch 抛错：整批停在那里，前面几步的结果照常返回', async () => {
+    bs.current = snap({ nodes: [node()] });
+    let n = 0;
+    bs.dispatchImpl = (a) => {
+      if (++n === 2) throw new KydogError('browser.click_intercepted', '被 div.cookie-banner 挡住了');
+      return `做了 ${a.kind}`;
+    };
     const s = bodyOf(await act([
       { kind: 'key', key: 'Enter' },
-      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+      { kind: 'click', selector: '.next' },
+      { kind: 'key', key: 'Tab' },
     ]));
-    expect(s).toContain('按下 Enter');
-    expect(s).toContain('抽到 1 条');
-    expect(s).not.toContain('⚠');
-    expect(bs.cdp.map((c) => c.method)).toEqual(['Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+    expect(s).toContain('做了 key');
+    expect(s).toContain('⚠');
+    expect(s).toContain('被 div.cookie-banner 挡住了');
+    expect(bs.dispatched.length).toBe(2);            // 第三步没有执行
   });
 
-  // 工具描述是模型第一眼看到的契约。派发没接通而描述照旧说「典型的检索是 click →
-  // type → click」，模型只能靠撞一次错误才知道。
-  it('工具描述如实说清此刻只接通了哪两种', () => {
-    const d = toolNamed('browser_act').description;
-    expect(d).toContain('key');
-    expect(d).toContain('extract');
-    expect(d).toMatch(/只接通|还没有实现|还没实现/);
+  it('extract 不走 dispatch —— 它要整批预算，跑在工具层', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: 'x' }], rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.dispatched).toEqual([]);
   });
 });
 
-describe('密码硬闸：assertTypeAllowed 的唯一调用点（评审变异 M12）', () => {
-  // 删掉 browserTools 里那一句 `if (action.kind === 'type') assertTypeAllowed(target)`
-  // → 评审实测 2336/2336 全绿。actions.ts 里 assertTypeAllowed 本体有用例（M11 被杀），
-  // 但**没有人守它有没有被调用**。这一组就是那道守。
-  it('往密码框 type：报的是密码闸，不是「还没有实现」', async () => {
+describe('wait 走 waitFor：超时是「条件未达成」，不是「这个源不行」', () => {
+  it('until 解析之后交给 waitFor，默认时限是 WAIT_DEFAULT_MS', async () => {
+    const s = bodyOf(await act([{ kind: 'wait', until: { selector: '.result' } }]));
+    expect(bs.waits).toEqual([{ tabId: 't1', until: { selector: '.result', state: 'present' }, timeoutMs: WAIT_DEFAULT_MS }]);
+    expect(s).not.toContain('⚠');
+    // 等的是哪一件事要说准：把「出现」说成「消失」，模型据此推断的页面状态整个是反的。
+    expect(s).toContain('.result');
+    expect(s).toContain('出现');
+    expect(s).not.toContain('消失');
+  });
+
+  it('state=absent 的那句话说的是「消失」', async () => {
+    const s = bodyOf(await act([{ kind: 'wait', until: { selector: '.loading', state: 'absent' } }]));
+    expect(s).toContain('消失');
+    expect(s).not.toContain('出现');
+  });
+
+  it('模型给的 timeoutMs 原样传下去', async () => {
+    await act([{ kind: 'wait', until: { urlMatches: '/search' }, timeoutMs: 3000 }]);
+    expect(bs.waits[0]).toMatchObject({ until: { urlMatches: '/search' }, timeoutMs: 3000 });
+  });
+
+  // spec §4.2：「超时只表示条件未达成，不表示别的；它是一个动作失败，按出错即停处理」。
+  it('条件没达成 → 整批停下，并说清这只是条件没成立', async () => {
+    bs.waitImpl = () => false;
+    const s = bodyOf(await act([
+      { kind: 'wait', until: { selector: '.result' }, timeoutMs: 2000 },
+      { kind: 'key', key: 'Enter' },
+    ]));
+    expect(s).toContain('⚠');
+    expect(s).toContain('2000');
+    expect(s).toContain('.result');
+    // 说成「打不开 / 换个源」的话，模型会去换一个好好的源。
+    expect(s).not.toMatch(/打不开|源不可用|换源|换一个源/);
+    expect(bs.dispatched).toEqual([]);               // 后面那一步没有执行
+  });
+
+  // until 形态不合在**整批跑起来之前**就要拒（validateBatch 那一层），
+  // 不能等到轮询时才发现。
+  it('until 形态不合 → 根本不进队列', async () => {
+    await expect(act([{ kind: 'wait', until: {} }])).rejects.toThrow(/wait.until/);
+    expect(bs.order).toEqual([]);
+  });
+});
+
+describe('这一批里新开的标签必须列出来（spec §5.1）', () => {
+  // 不列的话：模型点了一下、返回值说「成功」，而内容出现在一个它不知道存在的标签里，
+  // 接下来它会对着旧标签继续操作 —— 一整轮检索都在一个没变的页面上跑。
+  it('动作中途开出来的标签，结果里点名带上 id 与地址', async () => {
+    bs.dispatchImpl = (a) => {
+      bs.tabs.push({ id: 'tab_new1', url: 'https://publisher.example/article/42' });
+      return `做了 ${a.kind}`;
+    };
+    const s = bodyOf(await act([{ kind: 'click', selector: 'a[target=_blank]' }]));
+    expect(s).toContain('tab_new1');
+    expect(s).toContain('https://publisher.example/article/42');
+    expect(s).toMatch(/新开|新标签/);
+  });
+
+  it('没开新标签就一个字都不提 —— 不许有假阳性', async () => {
+    const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
+    expect(s).not.toMatch(/新开|新标签/);
+  });
+});
+
+describe('密码硬闸在工具层这一侧的样子', () => {
+  // 闸本体与它的两道调用点都搬进了 `browserService.dispatch`（真正拿得到活元素的
+  // 那一层），由 browserService.test.ts 的两条用例守着：
+  // 「快照说它是密码框 → 一条 CDP 都不发」与「selector 定位的密码框 → 第二道在页面里拦」。
+  // 工具层这一侧要守的是**别把它咽掉**：报出来，而且模型给的那串文本一个字都不回显。
+  it('dispatch 报密码闸时，整批停下并如实转达', async () => {
     bs.current = snap({ nodes: [node({ isPassword: true, name: '密码' })] });
+    bs.dispatchImpl = () => {
+      throw new KydogError('browser.password_field',
+        '不能往密码框里输入。机构登录用 browser_login（由主进程填），其他登录请交给用户');
+    };
     const s = bodyOf(await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: 'hunter2' }]));
     expect(s).toContain('不能往密码框里输入');
     expect(s).toContain('browser_login');
-    // 顺序是刻意的：密码闸排在「还没有实现」前面，放在后面它就成了死代码。
-    expect(s).not.toContain('还没有实现');
+    expect(s).toContain('⚠');
   });
 
-  // 反过来钉住上一条不是空绿：同一条路上非密码框走到的是另一句话。
-  it('非密码框 type：走到的是「还没有实现」那一句', async () => {
-    bs.current = snap({ nodes: [node({ isPassword: false })] });
-    const s = bodyOf(await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: '量子计算' }]));
-    expect(s).toContain('还没有实现');
-    expect(s).not.toContain('不能往密码框里输入');
-  });
-
-  it('密码框那一批里，模型给的文本一个字都不回显', async () => {
+  it('那一批里模型给的文本一个字都不回显', async () => {
     bs.current = snap({ nodes: [node({ isPassword: true })] });
+    bs.dispatchImpl = () => { throw new KydogError('browser.password_field', '不能往密码框里输入。'); };
     const r = await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: 'hunter2' }]);
     expect(JSON.stringify(r)).not.toContain('hunter2');
+  });
+
+  // 工具描述是模型第一眼看到的契约。六种动作接通之后，那句「当前版本只接通了 key 与
+  // extract」必须跟着删 —— 留着它模型会绕开 click / type 去想别的办法。
+  it('工具描述不再说任何动作没实现', () => {
+    const d = toolNamed('browser_act').description;
+    expect(d).not.toMatch(/还没有实现|还没实现|只接通/);
+    expect(d).toContain('click');
+    expect(d).toContain('type');
   });
 });
 
@@ -431,7 +539,10 @@ describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
       fieldTruncation: { truncated: false, limit: 1000, columns: [] },
     });
     await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
-    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'snapshot']);
+    // `getSnapshot` 是取 `before` 那一份：**它也必须在队列里面**（最终复评 m4）。
+    // 取在队列外的话，这一批在队列里等的那段时间同一个标签上别人产生的新快照
+    // 会被算进「本批的页面变化」。
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'getSnapshot', 'snapshot']);
   });
 
   it('browser_read 也走同一条路', async () => {
@@ -478,5 +589,47 @@ describe('收尾快照抛了也要把已经抽到的数据交出来（I2）', ()
     // 「我没取到」与「页面没有变化」绝不许长得一样。
     expect(s).not.toContain('页面没有变化');
     expect((r.details as { snapshotId: string | null }).snapshotId).toBeNull();
+  });
+});
+
+describe('错的 tabId 不许先去占住队列（最终复评 m3）', () => {
+  // `enqueue` 无条件 `queues.set(tabId, …)`，而清理只在真标签的回收路径上 ——
+  // 模型手滑写错一个 tabId 每次留一个永不删除的条目。那行注释立的规矩是
+  // 「只增不减」不许发生。
+  it('browser_act：不存在的标签当场报 no_tab，一次 enqueue 都不发生', async () => {
+    await expect(toolNamed('browser_act').execute('c', { tabId: 't_typo', actions: [{ kind: 'key', key: 'Enter' }] }))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(bs.order).toEqual([]);
+  });
+
+  it('browser_read 同样', async () => {
+    await expect(toolNamed('browser_read').execute('c', { tabId: 't_typo' }))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(bs.order).toEqual([]);
+  });
+
+  it('真的存在的标签照常进队列 —— 上面两条不是空绿', async () => {
+    await act([{ kind: 'key', key: 'Enter' }]);
+    expect(bs.order[0]).toBe('enqueue:t1');
+  });
+});
+
+describe('browser_open 的收尾快照抛了，导航结论不许跟着一起丢（最终复评登记项）', () => {
+  // 与 browser_act 的 I2 是同一个失败形状：标签在这一刻已经没了就抛 browser.no_tab，
+  // 把**已经拿到的导航结论**一起丢光 —— 而 describeNav 那句话（尤其 timeout /
+  // superseded / blocked 几条）是模型唯一读得到的协议事实。
+  it('快照失败时，导航那句话照常返回，并说清这是「没看到」', async () => {
+    bs.snapshotImpl = () => { throw new KydogError('browser.no_tab', '没有这个标签页：t1'); };
+    const s = bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }));
+    expect(s).toContain('https://a.example/q');
+    expect(s).toContain('取不到页面快照');
+    expect(s).toContain('没看到');
+  });
+
+  it('快照正常时照常带快照 —— 上一条不是空绿', async () => {
+    bs.snapshotImpl = () => snap({ snapshotId: 'snap_open', title: '结果页' });
+    const s = bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }));
+    expect(s).toContain('snap_open');
+    expect(s).not.toContain('取不到页面快照');
   });
 });

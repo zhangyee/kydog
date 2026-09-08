@@ -56,6 +56,16 @@ export function needsTarget(a: { kind: string }): boolean {
   return TARGETED_SET.has(a.kind);
 }
 
+/**
+ * 派发侧真正要碰页面的那几种。
+ *
+ * `repeat` 在 `flattenActions` 里就展开没了；`extract` 跑在工具层（它要整批预算）；
+ * `wait` 走 `browserService.waitFor`。剩下这六种才是 `dispatch` 的输入。
+ * 写成 `Exclude` 而不是手写联合：`Action` 加了新成员时，派发侧要么处理它、
+ * 要么在这里显式排除，两边不会静默漂开。
+ */
+export type DispatchAction = Exclude<Action, { kind: 'repeat' | 'extract' | 'wait' }>;
+
 export type FlatStep = {
   action: Exclude<Action, { kind: 'repeat' }>;
   /** 出错时如实说清停在哪 —— 「第 3 轮第 2 个动作」比「第 6 步」有用得多。 */
@@ -131,6 +141,49 @@ export function parseWaitUntil(until: unknown): WaitUntil {
   return { selector: u.selector, state };
 }
 
+/**
+ * 动作自己的形状：**缺了它非有不可的那个字段就当场拒**。
+ *
+ * 与 `targetProblem`（目标怎么定位）是两件事。TypeBox 那层挡不住这些 ——
+ * `text` / `value` / `direction` 在 schema 上都是 `Optional`，因为九种动作共用一份
+ * 参数对象，没法逐种要求。于是 `{kind:'type', selector:'#q'}` 一路走到派发，
+ * `Input.insertText` 收到 `undefined`；`{kind:'scroll'}` 走到派发时**没有方向**，
+ * 派发侧只能替模型挑一个 —— 那就是替它编一件它没说过的事。
+ *
+ * **必须在整批跑起来之前**：网页不可回滚，前 k-1 个动作已经生效之后再报
+ * 「第 k 个动作少了个字段」，代价是一次撤不回来的半成品操作。
+ */
+function validateShape(a: Action, where: string): void {
+  const p = (msg: string) => bad(`${where}${a.kind}：${msg}`);
+  if (a.kind === 'type') {
+    // 空串没有定义好的语义：`Input.insertText('')` 的行为本项目没有量过，而「清空」
+    // 也不是这一期的九种动作之一。fail-closed —— 不在真页面上试出一个不确定的结果。
+    if (typeof a.text !== 'string' || a.text === '') {
+      throw p(`要打进去的 text 必须是非空字符串，收到 ${JSON.stringify(a.text)}`);
+    }
+  }
+  if (a.kind === 'select') {
+    if (typeof a.value !== 'string') {
+      throw p(`要选的 value 必须是字符串（与 <option value> 精确相等），收到 ${JSON.stringify(a.value)}`);
+    }
+  }
+  if (a.kind === 'scroll') {
+    if (a.direction !== 'up' && a.direction !== 'down') {
+      throw p(`direction 只能是 up 或 down，收到 ${JSON.stringify(a.direction)}`);
+    }
+    const amt: unknown = a.amount;
+    if (amt !== undefined && (typeof amt !== 'number' || !Number.isFinite(amt) || amt <= 0)) {
+      throw p(`amount 是要滚多少 CSS 像素，必须是正的有限数（不给就滚一屏），收到 ${JSON.stringify(amt)}`);
+    }
+  }
+  if (a.kind === 'key') {
+    // 键名从前要等到派发那一刻才查 —— 那时前面几个动作已经生效了。
+    if (typeof a.key !== 'string' || !KEYS[a.key]) {
+      throw p(`不认识的按键 ${JSON.stringify(a.key)}，只支持：${Object.keys(KEYS).join(' / ')}`);
+    }
+  }
+}
+
 function validateWait(a: Extract<Action, { kind: 'wait' }>): void {
   parseWaitUntil(a.until);
   const ms: unknown = a.timeoutMs;
@@ -155,6 +208,7 @@ export function validateBatch(actions: Action[]): void {
       const problem = targetProblem(a);
       if (problem !== null) throw bad(`${a.kind}：${problem}`);
     }
+    validateShape(a, '');
     if (a.kind === 'wait') validateWait(a);
     if (!isRepeat(a)) { steps += 1; continue; }
     const t = a.times;
@@ -173,6 +227,7 @@ export function validateBatch(actions: Action[]): void {
         const problem = targetProblem(inner);
         if (problem !== null) throw bad(`repeat 里的 ${inner.kind}：${problem}`);
       }
+      validateShape(inner, 'repeat 里的 ');
       if (inner.kind === 'wait') validateWait(inner);
     }
     // **乘 times**。丢掉这个乘数的话，10 轮 × 10 个动作只算 10 步、校验放行，

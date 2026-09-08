@@ -374,3 +374,63 @@ describe('assertTypeAllowed：密码框硬闸', () => {
     expect(() => assertTypeAllowed({ kind: 'selector', selector: 'input[type=password]' })).not.toThrow();
   });
 });
+
+// ── 动作自己的形状：派发之前就要查清楚 ────────────────────────────────────────
+//
+// **这一层管的是「这个动作缺了它非有不可的东西」**，与 targetProblem 管的目标形状
+// 是两回事。不查的话：`{kind:'type', selector:'#q'}` 一路走到派发，`Input.insertText`
+// 收到 `undefined`；`{kind:'scroll'}` 没有 direction，派发侧只能替模型挑一个方向 ——
+// 那就是替它编一件它没说过的事。
+//
+// 而且**必须在整批跑起来之前**：网页不可回滚，前 k-1 个动作已经生效之后再报
+// 「第 k 个动作少了个字段」，代价是一次没法撤销的半成品操作。
+describe('动作形状：缺了非有不可的字段，在校验期就拒', () => {
+  const rejects = (a: unknown, ...must: string[]) => {
+    try {
+      validateBatch([a as Action]);
+      expect.unreachable('应当抛出');
+    } catch (e) {
+      expect((e as KydogError).code).toBe('browser.bad_action');
+      for (const m of must) expect((e as KydogError).message).toContain(m);
+    }
+  };
+
+  it('type 缺 text → 说清缺的是 text，不是别的', () => rejects({ kind: 'type', selector: '#q' }, 'type', 'text'));
+  it('type 的 text 不是字符串 → 拒', () => rejects({ kind: 'type', selector: '#q', text: 42 }, 'text'));
+  // 空串没有定义好的语义（insertText('') 的行为本项目没有量过），而「清空」也不是
+  // 这一期的动作之一。fail-closed：说清楚，不要在页面上试出一个不确定的结果。
+  it('type 的 text 是空串 → 拒', () => rejects({ kind: 'type', selector: '#q', text: '' }, 'text'));
+
+  it('select 缺 value → 说清缺的是 value', () => rejects({ kind: 'select', selector: '#y' }, 'select', 'value'));
+  it('select 的 value 不是字符串 → 拒', () => rejects({ kind: 'select', selector: '#y', value: 2024 }, 'value'));
+
+  // schema 那层 direction 是裸 String，validateBatch 从前一个字都不查 ——
+  // `{kind:'scroll'}` 与 `{kind:'scroll', direction:'sideways'}` 都能一路走到派发。
+  it('scroll 缺 direction → 拒', () => rejects({ kind: 'scroll' }, 'scroll', 'direction'));
+  it('scroll 的 direction 不是 up/down → 拒，并点名收到的是什么', () =>
+    rejects({ kind: 'scroll', direction: 'sideways' }, 'direction', 'sideways'));
+  it('scroll 的 amount 必须是正的有限数', () => {
+    rejects({ kind: 'scroll', direction: 'down', amount: 0 }, 'amount');
+    rejects({ kind: 'scroll', direction: 'down', amount: -100 }, 'amount');
+    rejects({ kind: 'scroll', direction: 'down', amount: Number.NaN }, 'amount');
+    rejects({ kind: 'scroll', direction: 'down', amount: '300' }, 'amount');
+  });
+  it('scroll 不给 amount 放行 —— 默认滚一屏', () => {
+    expect(() => validateBatch([{ kind: 'scroll', direction: 'down' } as Action])).not.toThrow();
+    expect(() => validateBatch([{ kind: 'scroll', direction: 'up', amount: 300 } as Action])).not.toThrow();
+  });
+
+  // 键名不认识的时候，从前要等到派发那一刻才报 —— 那时前面的动作已经生效了。
+  it('key 缺 key / 键名不认识 → 校验期就拒，并列出支持的键', () => {
+    rejects({ kind: 'key' }, 'key');
+    rejects({ kind: 'key', key: 'F13' }, 'F13', 'Enter');
+  });
+
+  // repeat 里的动作走的是另一段代码。只在外层查的话，剧本里最常见的
+  // `repeat[click, wait, extract]` 形状一个都查不到。
+  it('repeat 里的动作同样要查', () => {
+    rejects({ kind: 'repeat', times: 2, actions: [{ kind: 'type', selector: '#q' }] }, 'text');
+    rejects({ kind: 'repeat', times: 2, actions: [{ kind: 'scroll' }] }, 'direction');
+    rejects({ kind: 'repeat', times: 2, actions: [{ kind: 'key', key: 'F13' }] }, 'F13');
+  });
+});

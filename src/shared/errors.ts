@@ -45,6 +45,21 @@ export type KydogErrorCode =
   // elementFromPoint 命中的不是目标，被浮层挡住了（spec §4.2）。与 stale_index 分开：
   // 那条是编号指向的元素变了，这条是编号没错、点不着。
   | 'browser.click_intercepted'
+  // ── 下面三条是 spec §9.1 那份清单之外新加的，各自对应模型完全不同的下一步 ──
+  // 目标在当前页面上不可操作：选择器没有匹配 / 折叠到看不见 / 滚进视野后仍在视口外 /
+  // 不是能打字的控件 / disabled / <select> 里没有这个值。**处置是「换目标」**。
+  // 不能拿 bad_action 顶（动作本身没毛病），也不能拿 stale_index 顶
+  // （那条说的是「重新取快照」，而选择器无匹配再取一百次快照也一样）。
+  | 'browser.target_unusable'
+  // 这个标签这一刻发不了输入事件：没有渲染进程（页面从没加载过 / 刚崩过），
+  // 或者 CDP 被顶掉了。**处置是「先把页面打开」**，与目标无关。
+  // 单列一条是因为不闸住的代价实测有三种、且都不报错：mouse 事件 reject 一句
+  // 内容为「Internal error」的话、`Input.insertText` **永不 settle**（整轮 run 挂死）、
+  // `Input.dispatchKeyEvent` 照常 resolve（于是回报「按下 Enter」而它一个字都没发出去）。
+  | 'browser.not_dispatchable'
+  // wait 到时限条件仍未达成。spec §4.2：「超时只表示条件未达成，不表示别的」——
+  // 所以它不能与 failed / timeout 那些导航终态共用措辞，也不是 bad_action。
+  | 'browser.wait_timeout'
   // 本轮 run 已经试过一次登录且失败，不再填（spec §4.6）。押的是用户的校园账号，
   // 高校 IdP 普遍锁定连续失败若干次的账号，而模型看到失败会本能地重试。
   | 'browser.login_attempted'

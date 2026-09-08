@@ -5,9 +5,9 @@ import type { NavigationObservation } from '../../shared/types';
 import { browserService, WALKER_WORLD_ID } from '../browser/browserService';
 import { renderDiff, renderSnapshot, wrapPageContent, type AxSnapshot } from '../browser/snapshot';
 import {
-  validateBatch, flattenActions, resolveTarget, assertTypeAllowed, keyEventsFor, needsTarget,
+  validateBatch, flattenActions, parseWaitUntil,
   ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS,
-  type Action, type TargetSpec, type FlatStep,
+  type Action, type FlatStep, type WaitUntil,
 } from '../browser/actions';
 import {
   compileExtractPlan, extractExpression, describeExtractResult, createBatchBudget, describeCollected,
@@ -149,7 +149,14 @@ export const ActionSchema = Type.Object({
   text: Type.Optional(Type.String()),
   value: Type.Optional(Type.String()),
   key: Type.Optional(Type.String({ description: 'Enter / Tab / Escape / ArrowDown …' })),
-  direction: Type.Optional(Type.String()),
+  // 与 kind 同一个道理：写成裸字符串的话 `{kind:'scroll'}` 与
+  // `{kind:'scroll', direction:'left'}` 连 schema 都过得去，模型要等到主进程校验
+  // 才知道自己写的方向不存在 —— 而在此之前它已经按自己以为的语义排好了整批剧本。
+  direction: Type.Optional(Type.Union([Type.Literal('up'), Type.Literal('down')], { description: 'scroll 的方向' })),
+  amount: Type.Optional(Type.Number({
+    minimum: 1,
+    description: 'scroll 滚多少 CSS 像素。不给就滚一屏（按页面自己的视口高度算）',
+  })),
   selectors: Type.Optional(Type.Record(Type.String(), Type.String())),
   until: Type.Optional(Type.Any()),
   // 上下界照 spec §5.5 落在 schema 上。没有上限的话，一个 sequential 工具能把
@@ -182,10 +189,11 @@ const ACT_DESC = [
   '',
   '注意 **Enter 不一定能提交表单**，很多站点要点提交按钮。',
   '',
-  // 这一行随 Task 4 补完动作派发一起删掉。留着它是因为另一头更贵：
-  // 契约里写着 click / type 而派发侧还没接通时，模型只能靠撞一次错误才知道。
-  '**当前版本只接通了 key 与 extract**：click / type / hover / select / scroll / wait 会明确报'
-  + '「还没有实现」并让这一批停在那里 —— 那是 KyDog 这一侧没做完，不是站点的问题，换源没有用。',
+  '几件与你的预期可能不同的事：',
+  '- click 之前会自动把元素滚进视野并做一次命中检查；被 cookie 横幅之类的浮层挡住会明确报出来，',
+  '  不会静默点空。disabled 的控件也会明确报 —— 翻页到最后一页就是这个样子。',
+  '- type 会**先清空**目标框再输入（点进去 → 全选 → 输入），返回值里会写清框里最后是什么。',
+  '- JS 驱动的检索与翻页**不产生导航**，click 之后必须跟一个 wait，否则你会在旧内容上继续抽。',
 ].join('\n');
 
 // ── browser_read ────────────────────────────────────────────────────────────
@@ -206,6 +214,13 @@ export type BrowserToolDeps = { currentRunId: () => string | null };
 
 const withTabs = (body: string, tabId?: string): ToolResult => text(`${tabsLine(tabId)}\n\n${body}`);
 
+/** 排队之前先确认标签在。见 `browser_act` 那一处的注释：`enqueue` 只增不减。 */
+function assertTabExists(tabId: string): void {
+  if (!browserService.getState().tabs.some((t) => t.id === tabId)) {
+    throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+  }
+}
+
 export function createBrowserTools(deps: BrowserToolDeps) {
   const openTool = {
     name: 'browser_open',
@@ -221,10 +236,21 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       const parts = [describeNav(nav)];
       // 只有真的到了一个页面才取快照。拿不到内容的时候硬取，只会给一份空快照，
       // 让模型以为「这个页面什么都没有」——而事实是它压根没打开。
+      //
+      // **快照要接住**，与 browser_act 那一处是同一个失败形状：标签在这一刻已经没了
+      // （用户关了它、或 disposeForRun 抢在前面）就抛 browser.no_tab，把**已经拿到的
+      // 导航结论一起丢掉** —— 而 describeNav 那句话（尤其 timeout / superseded /
+      // blocked 几条）是模型唯一读得到的协议事实。
       if (landedOnPage(nav.outcome)) {
-        const snap = await browserService.snapshot(tabId);
-        const r = renderSnapshot(snap);
-        parts.push('', `快照 ${snap.snapshotId} · ${snap.title}`, r.text);
+        try {
+          const snap = await browserService.snapshot(tabId);
+          const r = renderSnapshot(snap);
+          parts.push('', `快照 ${snap.snapshotId} · ${snap.title}`, r.text);
+        } catch (err) {
+          const why = err instanceof KydogError ? err.message : String(err);
+          parts.push('', `导航结论如上，但取不到页面快照：${why}。`
+            + '这是**没看到**，不要据此断定页面是空的。');
+        }
       }
       return { ...withTabs(parts.join('\n'), tabId), details: { tabId, nav } };
     },
@@ -238,7 +264,11 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     parameters: ActParams,
     executionMode: 'sequential' as const,
     async execute(_id: string, params: { tabId: string; actions: Action[] }, signal?: AbortSignal): Promise<ToolResult> {
-      const before: AxSnapshot | null = browserService.getSnapshot(params.tabId);
+      // 标签存不存在也在排队**之前**查：`enqueue` 无条件往 `queues` 里塞一个键，
+      // 而清理只在真标签的回收路径上 —— 模型手滑写错一个 tabId 就留一个永不删除的
+      // 条目（那行注释立的规矩是「只增不减」不许发生）。顺带把错误提前到一句
+      // 「没有这个标签页」，而不是让整批跑到派发时才逐条报错。
+      assertTabExists(params.tabId);
       // 校验在排队**之前**：形状不对的一批不该先去占住这个标签的队列。
       validateBatch(params.actions);
       const steps = flattenActions(params.actions);
@@ -251,7 +281,11 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       //    `window.open` 新标签会被 `setWindowOpenHandler` 判成用户的，`disposeForRun`
       //    永不回收它，一轮长检索下来标签只增不减。
       return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
-        params.tabId, deps.currentRunId(), () => runBatch(params.tabId, steps, before, signal),
+        params.tabId, deps.currentRunId(),
+        // **`before` 快照取在队列里面**：这一批在队列里等的那段时间，同一个标签上
+        // 另一次操作可能产生新快照，拿队列外那一份去 diff 就会把别人的改动算进
+        // 这一批的「页面变化」。
+        () => runBatch(params.tabId, browserService.getSnapshot(params.tabId), steps, signal),
       ));
     },
   };
@@ -267,6 +301,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       // 与 browser_act 同一条路（enqueue + withAgentDriving）：读正文本身不导航，
       // 但它必须与同一个标签上在途的导航串起来 —— 否则读到的是上一页的正文，
       // 而返回值里没有任何东西说得出这件事。
+      assertTabExists(params.tabId);
       return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
         params.tabId, deps.currentRunId(), async () => {
           const wc = browserService.webContentsOf(params.tabId);
@@ -296,8 +331,12 @@ export function createBrowserTools(deps: BrowserToolDeps) {
  * browserTools.test.ts 才好把它整条钉住。
  */
 async function runBatch(
-  tabId: string, steps: FlatStep[], before: AxSnapshot | null, signal?: AbortSignal,
+  tabId: string, before: AxSnapshot | null, steps: FlatStep[], signal?: AbortSignal,
 ): Promise<ToolResult> {
+  // spec §5.1：**这一批里新开的标签必须列出来**。不列的话模型点了一下、返回值说
+  // 「成功」，而内容出现在一个它不知道存在的标签里 —— 接下来它会对着旧标签继续操作，
+  // 一整轮检索都在一个没变的页面上跑。判据是两次标签清单的差集，协议层现成的事实。
+  const tabsBefore = new Set(browserService.getState().tabs.map((t) => t.id));
   const rows: string[] = [];
   const collected: ExtractRow[] = [];
   // 预算跨步骤累计：`collected` 一把 JSON.stringify 进工具结果，而一批允许 60 个
@@ -333,6 +372,12 @@ async function runBatch(
   // 出错即停，但**已经抽到的数据全部返回** —— 翻到最后一页时 click 找不到「下一页」
   // 是预期行为，前几轮的结果不该跟着一起丢。
   if (stoppedAt) parts.push('', `⚠ ${stoppedAt}`, '（此前的动作已经生效，网页不可回滚）');
+  const opened = browserService.getState().tabs.filter((t) => !tabsBefore.has(t.id));
+  if (opened.length) {
+    parts.push('', `这一批里新开了 ${opened.length} 个标签页（多半是 target=_blank 的链接）：`
+      + opened.map((t) => `[${t.id}] ${t.url}`).join(' · ')
+      + '。要操作它里面的内容，把 tabId 换成它。');
+  }
   // 预算把后面的行全丢光时（收下 0 条）也要说出口，不然那句话跟着数据块一起没了。
   const batch = budget.report();
   if (collected.length || batch.truncated) {
@@ -353,66 +398,55 @@ async function runBatch(
   };
 }
 
-/**
- * 动作派发还没接通的那几种。
- *
- * **绝不以成功措辞返回。** 计划里 `browserTools.ts` 本来是「等 Task 4 补完动作派发
- * 再一起提交」的，那时的 `default` 分支算完目标就 `return \`click → #12\``——
- * 一次都没派发到页面，而返回值读起来是「做过了」。工具一旦先于 Task 4 注册进
- * `sessionFactory`（Task 6 Step 8 不依赖 Task 4），agent 点「搜索」按钮会收到
- * 「第 1 个动作：click → #12」外加「页面没有变化。」，于是判定这个站点的检索入口坏了
- * 并换源，全程零错误。这正是 `actions.ts` 白名单 docblock 逐字描述的失败模式。
- *
- * 措辞里不许出现「打不开 / 这个源不行」那类断言：这是**我们这一侧还没做**，
- * 与站点无关，说错了模型就会去换源。
- */
-function notImplemented(kind: string): KydogError {
-  return new KydogError('browser.bad_action',
-    `${kind} 这个动作还没有实现 —— KyDog 这一侧的动作派发尚未接通，它一个字都没有发到页面上。`
-    + '这与站点无关，换源没有用；这一批到此为止，请改用已经能用的动作（key / extract）或换一条路。');
+/** `wait` 等的是哪一件事，说人话。超时那句话要靠它说清楚「没成立的是哪个条件」。 */
+function describeWaitUntil(until: WaitUntil): string {
+  return 'urlMatches' in until
+    ? `地址里出现 ${JSON.stringify(until.urlMatches)}`
+    : `选择器 ${JSON.stringify(until.selector)} 在页面上${until.state === 'absent' ? '消失' : '出现'}`;
 }
 
-/** 执行一个动作，返回一句给模型看的说明。真正碰页面的部分都在这里。 */
+/**
+ * 执行一个动作，返回一句给模型看的说明。
+ *
+ * **真正碰页面的部分不在这里**，在 `browserService.dispatch` —— spec §4.2 的三件事
+ * （滚进视野 / 在派发那一刻重新量坐标 / 命中检查）与两道闸（渲染进程、密码框）都在那里。
+ * 这一层只做两件它自己的事：`extract` 要整批预算（跨步骤累计，dispatch 看不到），
+ * `wait` 要把「条件未达成」翻译成一次动作失败。
+ */
 async function runStep(
-  tabId: string, action: Action, collected: ExtractRow[], budget: BatchBudget,
+  tabId: string, action: FlatStep['action'], collected: ExtractRow[], budget: BatchBudget,
 ): Promise<string> {
-  const wc = browserService.webContentsOf(tabId);
-  if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
-
-  switch (action.kind) {
-    case 'key': {
-      for (const ev of keyEventsFor(action.key)) {
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', ev);
-      }
-      return `按下 ${action.key}`;
-    }
-    case 'extract': {
-      const plan = compileExtractPlan(action.selectors);
-      // 跑在 walker 那个**隔离世界**里，不是主世界：页面覆写 `document.querySelectorAll`
-      // 骗得到主世界、骗不到这里（2026-09-08 spike 实测）。抽取结果是结构化的、
-      // 模型会当事实用 —— 一份伪造的「20 条论文」比一份伪造的快照更难被察觉。
-      const res = await wc.executeJavaScriptInIsolatedWorld(
-        WALKER_WORLD_ID, [{ code: extractExpression(plan) }],
-      ) as ExtractResult;
-      // 按整批预算收行。收不下的如实报出来 —— 静默丢行与静默截断是同一个毛病。
-      const kept = budget.admit(res.rows, collected);
-      return describeExtractResult(res, res.rows.length - kept);
-    }
-    default: {
-      // **`needsTarget` 与派发侧必须对上。** `scroll` / `wait` 被 validateBatch 放行、
-      // `needsTarget` 也说它们不需要目标，而这里无条件 `resolveTarget` 就必抛，
-      // 报的还是另一件事（「这个动作需要一个目标：要么给 selector…」）——
-      // 于是 skill 教的翻页剧本 `[click 下一页, wait {selector:'.result'}, extract]`
-      // 停在第 2 步，模型去给 wait 加 selector，而 wait 的 selector 在 `until` 里，
-      // 怎么加都不对，永远走不出去。`actions.ts:48-51` 逐字写着「派发那一侧要先问这个」。
-      if (needsTarget(action)) {
-        const target = resolveTarget(action as TargetSpec, browserService.getSnapshot(tabId));
-        // **密码硬闸排在「还没实现」前面，这是刻意的。** 它是 `assertTypeAllowed` 的
-        // 唯一调用点：放在后面就成了死代码，Task 4 补派发的人不会知道要把它接回来。
-        // 而对模型来说「不许往密码框打字」也比「这个动作还没实现」更该先说。
-        if (action.kind === 'type') assertTypeAllowed(target);
-      }
-      throw notImplemented(action.kind);
-    }
+  if (action.kind === 'extract') {
+    const wc = browserService.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    const plan = compileExtractPlan(action.selectors);
+    // 跑在 walker 那个**隔离世界**里，不是主世界：页面覆写 `document.querySelectorAll`
+    // 骗得到主世界、骗不到这里（2026-09-08 spike 实测）。抽取结果是结构化的、
+    // 模型会当事实用 —— 一份伪造的「20 条论文」比一份伪造的快照更难被察觉。
+    const res = await wc.executeJavaScriptInIsolatedWorld(
+      WALKER_WORLD_ID, [{ code: extractExpression(plan) }],
+    ) as ExtractResult;
+    // 按整批预算收行。收不下的如实报出来 —— 静默丢行与静默截断是同一个毛病。
+    const kept = budget.admit(res.rows, collected);
+    return describeExtractResult(res, res.rows.length - kept);
   }
+
+  if (action.kind === 'wait') {
+    // `until` 的形态在 validateBatch 里已经查过一遍（整批跑起来之前）。这里再解析一次
+    // 是因为**类型上它是 unknown**：解析结果才是 waitFor 认得的那个判据。
+    const until = parseWaitUntil(action.until);
+    const timeoutMs = action.timeoutMs ?? WAIT_DEFAULT_MS;
+    const ok = await browserService.waitFor(tabId, until, timeoutMs);
+    if (ok) return `等到了：${describeWaitUntil(until)}`;
+    // spec §4.2：「超时只表示条件未达成，不表示别的；它是一个动作失败，按出错即停处理」。
+    // 措辞不许把它说成页面或站点的问题 —— 说错了模型会去换一个好好的源。
+    throw new KydogError('browser.wait_timeout',
+      `等了 ${timeoutMs} 毫秒，条件仍未达成（等的是：${describeWaitUntil(until)}）。`
+      + '这只说明这个条件没有成立 —— 它不是页面出错，也不是站点的问题。'
+      + '要么条件写得不对，要么这一步本来就没有触发页面变化。');
+  }
+
+  // 其余六种（click / type / hover / select / scroll / key）全部走同一个入口。
+  // `getSnapshot` 只用来解析 `index`：坐标由 dispatch 在派发那一刻重新量。
+  return browserService.dispatch(tabId, action, browserService.getSnapshot(tabId));
 }

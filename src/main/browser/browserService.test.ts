@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
+import INTERACT_SOURCE from './injected/interact.js?raw';
 import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
+import type { AxSnapshot } from './snapshot';
 
 /**
  * browserService 的替身测试。
@@ -1491,15 +1493,22 @@ describe('常驻密码登记（E3b）', () => {
   });
 });
 
-// ── extract 的密码判据必须与 walker 逐条一致（最终评审 C3）──────────────────
+// ── 密码判据三方差分：walker ↔ extract ↔ interact ──────────────────────────
 //
 // extract.ts 从前只有一条判据（此刻 IDL type === 'password'），而它的注释明写「与
 // walker 用的是同一个协议层判据」——那句话是假的：walker 有四条。这条差分用例是
-// 两边不再漂移的唯一保障（照 D8 那条裁决的办法：不物理共享，用差分用例守）。
+// 三边不再漂移的唯一保障（照 D8 那条裁决的办法：不物理共享，用差分用例守）。
 //
-// **两边各跑在自己的世界里**：让 walker 先跑就等于替 extract 把 world.pw 填好，
+// **interact.js 是第三方**（Task 4 新增）：它是 `type` 动作的第二道密码闸 ——
+// selector 定位时快照那一层压根看不出目标是不是密码框，只有拿到活元素的它能判。
+// 判据写窄一条，`type {selector:'#pwd'}` 就能绕过整条硬闸。
+//
+// **三边各跑在自己的世界里**：让 walker 先跑就等于替另外两边把 world.pw 填好，
 // 那样这组用例会全绿而什么都没考到（walker 判 hit 时会 world.pw.add）。
-describe('extract ↔ walker 的密码判据差分', () => {
+//
+// 每一条都带**期望值**（不只是「三边相等」）：只断言相等的话，三边一起漂到
+// 「全都不算密码框」也照样绿 —— 那正是这条用例要挡的事故本身。
+describe('walker ↔ extract ↔ interact 的密码判据三方差分', () => {
   type PwWorld = World & { __kydogWorld?: { pw: WeakSet<object> } };
 
   /** walker 侧的裁决：元素可见且命中选择器，看它有没有被打上 isPassword。 */
@@ -1524,29 +1533,42 @@ describe('extract ↔ walker 的密码判据差分', () => {
     return build(w, doc, class {}).rows[0].v === null;
   };
 
-  /** 两边都要读得到 value：walker 读 IDL `el.value`，extract 读 `getAttribute('value')`。 */
+  /** interact 侧的裁决：`readValue` 被拒成 password 就是「判成密码框」。 */
+  const interactSays = (node: FakeEl, pre?: (w: PwWorld, r: FakeRoot) => void): boolean => {
+    const w = newWorld() as PwWorld;
+    const root = new FakeRoot([node]);
+    pre?.(w, root);
+    const doc = { querySelector: (s: string) => (s === 'target' ? node : null) };
+    const build = new Function('window', 'document', `return (${INTERACT_SOURCE});`) as
+      (win: unknown, d: unknown) => (req: unknown) => { ok: boolean; reason?: string };
+    const r = build(w, doc)({ op: 'readValue', target: { selector: 'target' } });
+    return r.ok === false && r.reason === 'password';
+  };
+
+  /** 三边都要读得到 value：walker 读 IDL `el.value`，extract 读 `getAttribute('value')`，
+   *  interact 读 IDL `el.value`。 */
   const box = (tagName: string, init: Partial<FakeEl> = {}) =>
     el(tagName, { interactive: true, value: 'hunter2', ...init,
       attrs: { value: 'hunter2', ...(init.attrs ?? {}) } });
 
-  const cases: Array<[string, FakeEl, ((w: PwWorld, r: FakeRoot) => void)?]> = [
-    ['判据 1 · 此刻就是 password', box('INPUT', { type: 'password' })],
-    ['判据 1 · 大写 PASSWORD', box('INPUT', { type: 'PASSWORD' })],
-    ['判据 3 · autocomplete=current-password 的 text', box('INPUT', { type: 'text', attrs: { autocomplete: 'Section-Blue CURRENT-PASSWORD' } })],
-    ['判据 3 · new-password', box('INPUT', { type: 'text', attrs: { autocomplete: 'new-password' } })],
-    ['判据 4 · name 里带 password', box('INPUT', { type: 'text', attrs: { name: 'password' } })],
-    ['判据 4 · id 里带 pwd', box('INPUT', { type: 'text', attrs: { id: 'user_pwd' } })],
-    ['判据 4 · textarea 也算', box('TEXTAREA', { attrs: { name: 'j_passwd' } })],
-    ['不算 · 普通检索框', box('INPUT', { type: 'text', attrs: { name: 'q' } })],
-    ['不算 · autocomplete=username', box('INPUT', { type: 'text', attrs: { autocomplete: 'username' } })],
-    ['不算 · submit 按钮（装不下用户打进去的文本）', box('INPUT', { type: 'submit', attrs: { name: 'passwordSubmit' } })],
-    ['不算 · <a name=password-reset>', box('A', { attrs: { name: 'password-reset' } })],
+  const cases: Array<[string, FakeEl, boolean]> = [
+    ['判据 1 · 此刻就是 password', box('INPUT', { type: 'password' }), true],
+    ['判据 1 · 大写 PASSWORD', box('INPUT', { type: 'PASSWORD' }), true],
+    ['判据 3 · autocomplete=current-password 的 text', box('INPUT', { type: 'text', attrs: { autocomplete: 'Section-Blue CURRENT-PASSWORD' } }), true],
+    ['判据 3 · new-password', box('INPUT', { type: 'text', attrs: { autocomplete: 'new-password' } }), true],
+    ['判据 4 · name 里带 password', box('INPUT', { type: 'text', attrs: { name: 'password' } }), true],
+    ['判据 4 · id 里带 pwd', box('INPUT', { type: 'text', attrs: { id: 'user_pwd' } }), true],
+    ['判据 4 · textarea 也算', box('TEXTAREA', { attrs: { name: 'j_passwd' } }), true],
+    ['不算 · 普通检索框', box('INPUT', { type: 'text', attrs: { name: 'q' } }), false],
+    ['不算 · autocomplete=username', box('INPUT', { type: 'text', attrs: { autocomplete: 'username' } }), false],
+    ['不算 · submit 按钮（装不下用户打进去的文本）', box('INPUT', { type: 'submit', attrs: { name: 'passwordSubmit' } }), false],
+    ['不算 · <a name=password-reset>', box('A', { attrs: { name: 'password-reset' } }), false],
   ];
 
-  for (const [label, node, pre] of cases) {
-    it(`${label}：两边裁决相等`, () => {
-      expect(`${label}: extract=${extractSays(node, pre)}`)
-        .toBe(`${label}: extract=${walkerSays(node, pre)}`);
+  for (const [label, node, expected] of cases) {
+    it(`${label}：三边裁决相等，且都等于期望值`, () => {
+      expect({ walker: walkerSays(node), extract: extractSays(node), interact: interactSays(node) })
+        .toEqual({ walker: expected, extract: expected, interact: expected });
     });
   }
 
@@ -1559,14 +1581,461 @@ describe('extract ↔ walker 的密码判据差分', () => {
       runRegistrar(w, r);                                  // dom-ready 时还是 password 态
       (r.kids[0] as FakeEl).type = 'text';                 // 站点点了「显示密码」
     };
-    const a = mk(); const b = mk();
+    // 三个各自新建：flip 会把 type 改成 text，同一个元素跑第二遍时
+    // runRegistrar 已经看不到 password 态了 —— 那样测的就不是判据 2。
+    const a = mk(); const b = mk(); const c = mk();
     expect(walkerSays(a, flip)).toBe(true);
     expect(extractSays(b, flip)).toBe(true);
+    expect(interactSays(c, flip)).toBe(true);
   });
 
-  it('判据 2′ · 同一个元素没有那份记忆时两边都放行 —— 上一条不是空绿', () => {
+  it('判据 2′ · 同一个元素没有那份记忆时三边都放行 —— 上一条不是空绿', () => {
     const node = box('INPUT', { type: 'text', attrs: { name: 'q', value: 'hunter2' } });
     expect(walkerSays(node)).toBe(false);
     expect(extractSays(node)).toBe(false);
+    expect(interactSays(node)).toBe(false);
+  });
+});
+
+// ── §G 动作派发（Task 4）────────────────────────────────────────────────────
+//
+// **两道闸的依据是实测，不是推理**（Electron 41.2.1，2026-09-08，show:false +
+// 独立 userData，每个情形一个独立进程，3/3 复现）。一个全新的、还没 load 过任何页面的
+// WebContentsView（`getOSProcessId() === 0`）上发命令：
+//
+// | 命令 | 结果 |
+// | --- | --- |
+// | `Input.dispatchMouseEvent`（pressed/released/moved/wheel 四种） | reject `Internal error` |
+// | `Input.insertText` | **永不 settle** —— 进程退出时才以 "target closed" reject |
+// | `Input.dispatchKeyEvent` | resolve `{}`（静默无效） |
+//
+// 三种失败形状各不相同、没有一种会自己说出「这个标签还没法操作」：insertText 那种
+// 直接把一次 sequential 的工具调用挂死，key 那种更糟 —— 回报「按下 Enter」而它
+// 一个字都没发到页面上。所以派发之前必须自己问 `getOSProcessId()`。
+//
+// mouseWheel 另有一条：**在有渲染进程的活页面上它也永不 ack、一个像素都不滚**
+// （五种组合逐一试过：view 隐藏 / view 可见但窗口隐藏 / 窗口也显示 × 禁不禁用硬件加速；
+// `Input.synthesizeScrollGesture` 会 ack 约 1030ms 但同样不滚）。所以 scroll 走隔离世界。
+
+/** 从注进去的那段代码里认出这一次的 op —— 源码本身不含 `"op":"` 这个串。 */
+const opOf = (code: string): string | null => /"op":"(\w+)"/.exec(code)?.[1] ?? null;
+
+const inputCmds = (wc: ReturnType<typeof wcOf>) =>
+  wc.debugger.sent.filter((c) => c.method.startsWith('Input.'));
+
+/** 起一个可派发的标签：有渲染进程、CDP 在。 */
+async function dispatchableTab(svc: Svc) {
+  const { wc } = await openTab(svc);
+  const id = svc.getState().tabs[0].id;
+  wc.debugger.sent.length = 0;
+  return { id, wc };
+}
+
+const okMeasure = (over: Record<string, unknown> = {}) => ({
+  ok: true, x: 111, y: 222, isPassword: false, editable: true, disabled: false,
+  tag: 'button', label: '搜索', ...over,
+});
+
+describe('dispatch：派发之前的两道闸（实测得来）', () => {
+  it('标签不在 → no_tab', async () => {
+    const { svc } = make();
+    await expect(svc.dispatch('nope', { kind: 'click', selector: '#a' }, null))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+  });
+
+  it('没有渲染进程（osPid=0）→ not_dispatchable，且一条 CDP 都不发', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;                                  // 页面崩了之后它就回到 0
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(inputCmds(wc)).toEqual([]);
+    expect(wc.isolated).toEqual([]);
+  });
+
+  // insertText 在 pid=0 时**永不 settle**：不闸住的话这一次 browser_act 永远不返回。
+  it('type 在没有渲染进程时也拦住 —— insertText 那条实测永不 settle', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;
+    await expect(svc.dispatch(id, { kind: 'type', selector: '#q', text: '石墨烯' }, null))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  // dispatchKeyEvent 在 pid=0 时 resolve {} —— 不闸住就会回报「按下 Enter」，
+  // 而它一个字都没发到页面上。这是「以成功措辞返回一件没发生的事」。
+  it('key 也走这道闸：pid=0 时报错，而不是回报「按下 Enter」', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;
+    await expect(svc.dispatch(id, { kind: 'key', key: 'Enter' }, null))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  // **断言要落到「是哪一道闸挡的」**：只断言 not_dispatchable 的话，去掉这道闸
+  // 也照样绿 —— 后面 `interact` 的形状校验会用**同一个码**兜住（脚本没回结果）。
+  // 那是空绿：闸没了，而我们已经往一个 CDP 断掉的标签里注了一次脚本。
+  it('CDP 断开（DevTools 顶掉了 attach）→ not_dispatchable，脚本也一次都不注', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.debugger.detach();
+    const p = svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    await expect(p).rejects.toThrow(/调试通道/);
+    expect(inputCmds(wc)).toEqual([]);
+    expect(wc.isolated).toEqual([]);
+  });
+
+  // 世界 id 错了不会报任何错，只会静默失效：`world.ids` 是另一个（空的）对象，
+  // 于是每个 nodeId 都反查不到（报「这个编号找不到了」而它就在页面上），
+  // 而密码记忆 `world.pw` 也整份看不见 —— 判据 2 当场失效。
+  it('定位脚本注进的是 walker 那个隔离世界，主世界一次都不碰', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    expect(wc.isolated.map((r) => r.worldId)).toEqual([WALKER_WORLD_ID]);
+  });
+
+  // dispatch **不自己 enqueue**：调用方（browser_act 的整批）已经在队列里了，
+  // 里面再排一次就是把自己排在自己后面 —— 死锁，而且是「工具永远不返回」那种。
+  it('在队列里调 dispatch 不许死锁', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    await expect(svc.enqueue(id, () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null)))
+      .resolves.toContain('已点击');
+  });
+
+  it('闸都过了才真的发 —— 上面几条不是「整个 dispatch 都在抛」', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#a' }, null)).resolves.toContain('搜索');
+    expect(inputCmds(wc).map((c) => c.method)).toEqual(['Input.dispatchMouseEvent', 'Input.dispatchMouseEvent']);
+  });
+});
+
+describe('dispatch · click：坐标是这一刻量的，命中检查不放水', () => {
+  it('坐标用重量到的那份，不是快照里那份', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({ x: 640, y: 400 }));
+    const stale: AxSnapshot = {
+      snapshotId: 's1', generation: 'g', url: 'https://a/', title: 'T', iframes: 0,
+      collection: { truncated: false, returned: 1, totalKnown: 1 },
+      // 快照当时它在 (10,10) 20×20 —— 中心 (20,20)。派发必须用 interact 回的 (640,400)。
+      nodes: [{ index: 1, nodeId: 5, role: 'button', name: '搜索', x: 10, y: 10, w: 20, h: 20 }],
+    };
+    await svc.dispatch(id, { kind: 'click', index: 1, snapshotId: 's1' }, stale);
+    const pts = inputCmds(wc).map((c) => `${c.params.x},${c.params.y}`);
+    expect(pts).toEqual(['640,400', '640,400']);
+  });
+
+  it('先按下再松开，button 与 clickCount 齐全', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    expect(inputCmds(wc).map((c) => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+    for (const c of inputCmds(wc)) {
+      expect(c.params.button).toBe('left');
+      expect(c.params.clickCount).toBe(1);
+    }
+  });
+
+  it('被浮层挡住 → click_intercepted，消息里带上是谁挡的，且不发鼠标事件', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'intercepted', by: 'div.cookie-banner', x: 1, y: 2 });
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+      .rejects.toMatchObject({ code: 'browser.click_intercepted', message: expect.stringContaining('div.cookie-banner') });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  // 三种失败的处置完全不同：换选择器 / 重新取快照 / 换目标。报成同一件事就等于没报。
+  it('选择器无匹配 → target_unusable，不是 stale_index', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'not_found' });
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#gone' }, null))
+      .rejects.toMatchObject({ code: 'browser.target_unusable', message: expect.stringContaining('#gone') });
+  });
+
+  it('编号指向的元素已经不在了 → stale_index，让模型去重新取快照', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'stale_node' });
+    const snapshot: AxSnapshot = {
+      snapshotId: 's1', generation: 'g', url: 'https://a/', title: 'T', iframes: 0,
+      collection: { truncated: false, returned: 1, totalKnown: 1 },
+      nodes: [{ index: 1, nodeId: 5, role: 'button', name: '搜索', x: 1, y: 1, w: 10, h: 10 }],
+    };
+    await expect(svc.dispatch(id, { kind: 'click', index: 1, snapshotId: 's1' }, snapshot))
+      .rejects.toMatchObject({ code: 'browser.stale_index' });
+  });
+
+  it('滚进视野之后仍在视口外 → target_unusable，不是「被 null 挡住」', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'offscreen', x: 5, y: 4000, vw: 1280, vh: 800 });
+    const p = svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.target_unusable' });
+    await expect(p).rejects.toThrow(/视口/);
+  });
+
+  // Chromium 里 disabled 的控件根本收不到 click。发出去就是「什么都没发生但回报成功」——
+  // 最后一页的「下一页」按钮正是这个形状（repeat×3 把第一页抽三遍）。
+  it('目标是 disabled 的控件 → 拒，且一条鼠标事件都不发', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({ disabled: true, label: '下一页' }));
+    await expect(svc.dispatch(id, { kind: 'click', selector: '.next' }, null))
+      .rejects.toMatchObject({ code: 'browser.target_unusable', message: expect.stringContaining('disabled') });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  it('页面在派发中途导航走了（脚本没回结果）→ 明确报出来，不去读 undefined', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(undefined);
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+  });
+});
+
+describe('dispatch · type：两道密码闸 + 打完读回来', () => {
+  const pwSnapshot: AxSnapshot = {
+    snapshotId: 's1', generation: 'g', url: 'https://idp/', title: '登录', iframes: 0,
+    collection: { truncated: false, returned: 1, totalKnown: 1 },
+    nodes: [{ index: 1, nodeId: 9, role: 'textbox', name: '密码', x: 1, y: 1, w: 100, h: 20, isPassword: true }],
+  };
+
+  // 第一道：快照里 walker 已经判过它是密码框。这一道拦在**碰页面之前**。
+  it('快照说它是密码框 → password_field，一条 CDP 都不发，文本一个字不回显', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    const p = svc.dispatch(id, { kind: 'type', index: 1, snapshotId: 's1', text: 'hunter2' }, pwSnapshot);
+    await expect(p).rejects.toMatchObject({ code: 'browser.password_field' });
+    await expect(p).rejects.toThrow(/browser_login/);
+    expect(inputCmds(wc)).toEqual([]);
+    expect(wc.isolated).toEqual([]);
+    expect(JSON.stringify(H.logs)).not.toContain('hunter2');
+  });
+
+  // 第二道：selector 定位时快照那层压根看不出来。interact 在活元素上按 walker 的
+  // 四条判据再判一次 —— 而且是在 focus 之前。
+  it('selector 定位的密码框 → 第二道闸在页面里拦住，insertText 一次都不发', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => Promise.resolve(
+      opOf(code) === 'measure' ? okMeasure({ isPassword: true, tag: 'input', label: '密码' })
+        : { ok: false, reason: 'password' },
+    );
+    const p = svc.dispatch(id, { kind: 'type', selector: '#pwd', text: 'hunter2' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.password_field' });
+    // **一条输入事件都不许发**，不只是 insertText：这道闸排在「点一下聚焦」**之前**，
+    // 所以连点都不许点。只断言 insertText 没发的话，把这道闸删掉照样绿 ——
+    // interact.js 里 focusSelect 那一道会兜住，而那时密码框已经被点过一次了
+    // （站点在 focus 上挂的脚本已经跑了）。
+    expect(inputCmds(wc)).toEqual([]);
+    expect(JSON.stringify(H.logs)).not.toContain('hunter2');
+  });
+
+  it('正常输入：click 聚焦 → 全选 → insertText → 把框里现在是什么读回来', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    const seen: string[] = [];
+    wc.isolatedImpl = (code) => {
+      const op = opOf(code)!;
+      seen.push(op);
+      if (op === 'measure') return Promise.resolve(okMeasure({ tag: 'input', label: '检索词' }));
+      if (op === 'focusSelect') return Promise.resolve({ ok: true, focused: true, selected: true });
+      return Promise.resolve({ ok: true, value: '石墨烯' });
+    };
+    const line = await svc.dispatch(id, { kind: 'type', selector: '#q', text: '石墨烯' }, null);
+    expect(seen).toEqual(['measure', 'focusSelect', 'readValue']);
+    expect(inputCmds(wc).map((c) => c.method)).toEqual([
+      'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.insertText',
+    ]);
+    expect(inputCmds(wc)[2].params.text).toBe('石墨烯');
+    expect(line).toContain('石墨烯');
+    expect(line).toContain('检索词');
+  });
+
+  // insertText 打到非可编辑元素上实测是 **ack 0ms 而什么都不做**（body / button /
+  // readonly / disabled 四种都是）。不拦的话回报的是一次没发生的输入。
+  // 「能不能打字」必须在**点下去之前**问：`type {selector:'#submit'}` 的那一下
+  // 点的是提交按钮 —— 先点再报「不能打字」，等于替模型做了一次它没要求过的提交。
+  it('目标不是能打字的控件 → 拒，而且一条输入事件都不发（连点都不点）', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => Promise.resolve(
+      opOf(code) === 'measure' ? okMeasure({ tag: 'button', editable: false })
+        : { ok: false, reason: 'not_editable', tag: 'button', type: '' },
+    );
+    await expect(svc.dispatch(id, { kind: 'type', selector: '#btn', text: 'x' }, null))
+      .rejects.toMatchObject({ code: 'browser.target_unusable' });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  // 反过来钉住上一条不是空绿：同一个目标换成 click 就该照常点。
+  it('同一个按钮用 click 照常点 —— 上一条拦的是 type 不是所有动作', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({ tag: 'button', editable: false }));
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#btn' }, null)).resolves.toContain('已点击');
+    expect(inputCmds(wc).length).toBe(2);
+  });
+});
+
+describe('dispatch · hover / select / scroll', () => {
+  it('hover 发的是 mouseMoved，就一条', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({ x: 30, y: 40 }));
+    await svc.dispatch(id, { kind: 'hover', selector: '#a' }, null);
+    expect(inputCmds(wc).map((c) => `${c.method}:${String(c.params.type)}`)).toEqual(['Input.dispatchMouseEvent:mouseMoved']);
+    expect(inputCmds(wc)[0].params.x).toBe(30);
+  });
+
+  it('select 走隔离世界赋值，不发任何输入事件', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: true, value: '2024', label: '2024 年', changed: true });
+    const line = await svc.dispatch(id, { kind: 'select', selector: '#year', value: '2024' }, null);
+    expect(inputCmds(wc)).toEqual([]);
+    expect(line).toContain('2024 年');
+  });
+
+  // `el.value = '不存在'` 会把 select 变成「什么都没选」，下一步提交出去就是一次空筛选。
+  it('select 的值不在选项里 → 拒，并把可选值列给模型', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'no_option', options: ['2024', '2023'], total: 2 });
+    const p = svc.dispatch(id, { kind: 'select', selector: '#year', value: '1999' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.target_unusable' });
+    await expect(p).rejects.toThrow(/2024/);
+  });
+
+  // mouseWheel 实测永不 ack、一个像素都不滚（五种组合）。所以这条路必须走隔离世界。
+  it('scroll 不发 mouseWheel —— 那条实测既不 ack 也不滚', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({
+      ok: true, container: 'document', before: 0, after: 800, delta: 800, atStart: false, atEnd: false, step: 800,
+    });
+    const line = await svc.dispatch(id, { kind: 'scroll', direction: 'down' }, null);
+    expect(inputCmds(wc)).toEqual([]);
+    expect(wc.isolated.length).toBe(1);
+    expect(line).toContain('800');
+  });
+
+  it('滚到底了要说出口 —— 与「滚了但页面没动」分得开', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({
+      ok: true, container: 'document', before: 4200, after: 4200, delta: 0, atStart: false, atEnd: true, step: 800,
+    });
+    expect(await svc.dispatch(id, { kind: 'scroll', direction: 'down' }, null)).toMatch(/到底/);
+  });
+});
+
+// ── §H waitFor ─────────────────────────────────────────────────────────────
+//
+// spec §4.2：轮询在这里是**等待手段**不是判定依据 —— 判定的是「条件成立了没有」
+// 这个页面事实。超时只表示条件未达成，不表示别的。
+
+describe('waitFor：等的是显式条件，超时只表示条件未达成', () => {
+  it('条件一开始就成立 → 立刻回 true，不空等一个轮询周期', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(true);
+    const p = svc.waitFor(id, { selector: '.result', state: 'present' }, 8000);
+    await flush();
+    await expect(p).resolves.toBe(true);
+    expect(wc.isolated.length).toBe(1);
+  });
+
+  it('第三次轮询才成立 → true', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    let n = 0;
+    wc.isolatedImpl = () => Promise.resolve(++n >= 3);
+    const p = svc.waitFor(id, { selector: '.result', state: 'present' }, 8000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBe(true);
+    expect(n).toBe(3);
+  });
+
+  it('到时限仍未成立 → false', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(false);
+    const p = svc.waitFor(id, { selector: '.result', state: 'present' }, 1000);
+    await vi.advanceTimersByTimeAsync(1200);
+    await expect(p).resolves.toBe(false);
+  });
+
+  it('state=absent 等的是「不见了」', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    let n = 0;
+    wc.isolatedImpl = () => Promise.resolve(++n < 2);   // 头一次还在，之后不见了
+    const p = svc.waitFor(id, { selector: '.loading', state: 'absent' }, 8000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBe(true);
+  });
+
+  // urlMatches 判的是主进程手里的那个 URL：`wait {urlMatches}` 的典型用法正是
+  // 「等它跳到结果页」—— 那一刻页面正在换文档，隔离世界里的脚本要么跑在旧文档上、
+  // 要么直接 reject。主进程的 getURL() 是同一个协议层事实，而且不挑时机。
+  it('urlMatches 用主进程的 getURL，不往正在导航的页面里注脚本', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.url = 'https://a.example/home';
+    const p = svc.waitFor(id, { urlMatches: '/search' }, 8000);
+    await vi.advanceTimersByTimeAsync(300);
+    wc.url = 'https://a.example/search?q=x';
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(p).resolves.toBe(true);
+    expect(wc.isolated).toEqual([]);
+  });
+
+  // 页面在轮询中途导航走了，脚本就 reject。那不是「条件不成立」的反面，
+  // 更不是一次失败 —— 接着等就是了。
+  it('隔离世界求值失败当成「还没成立」，继续等，不当成失败', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    let n = 0;
+    wc.isolatedImpl = () => (++n < 3 ? Promise.reject(new Error('页面导航中')) : Promise.resolve(true));
+    const p = svc.waitFor(id, { selector: '.r', state: 'present' }, 8000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBe(true);
+  });
+
+  // 一次挂住的求值不许把时限拖死：wait 是 sequential 工具里的一步，挂住就是整轮 run 挂住。
+  it('求值永不返回时，时限照样到点', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => new Promise(() => {});
+    const p = svc.waitFor(id, { selector: '.r', state: 'present' }, 1000);
+    await vi.advanceTimersByTimeAsync(1200);
+    await expect(p).resolves.toBe(false);
+  });
+
+  it('标签没了 → no_tab', async () => {
+    const { svc } = make();
+    await expect(svc.waitFor('nope', { selector: '.r', state: 'present' }, 100))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
   });
 });
