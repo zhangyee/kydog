@@ -110,6 +110,44 @@ export class SettingsService {
     await this.withLock(async (cur) => ({ next: { ...cur, institution: normalized }, result: undefined }));
   }
 
+  /**
+   * 记下「这个 entityID 的登录页就是这个 origin」。**刻意收两个标量而不是整条记录。**
+   *
+   * confirmedLogin 的设值只发生在「问过用户之后」，而问这一下要花好几秒。如果这里
+   * 收整条记录，2b 唯一写得出来的调用就是：
+   *
+   * ```ts
+   * const cur = await settingsService.get();            // 锁外，弹框之前的快照
+   * // …弹确认对话框，用户想了十秒…
+   * await settingsService.setInstitution({ ...cur.institution!, confirmedLogin });
+   * ```
+   *
+   * 这十秒里用户在设置页把学校从北大改成了清华，上面那行随后把**整条旧记录**原样写回：
+   * name / entityID / username / passwordEnc 全退回北大那份。sanitizeInstitution 一句话都
+   * 不会说 —— 它比的是同一个对象内部的 entityID，当然相符。用户看到的现象是「刚改的
+   * 学校自己变回去了」，零错误。
+   *
+   * 所以 read-modify-write 必须在锁内做，而且这里只允许改 confirmedLogin 这一个字段。
+   * 锁内读到的记录不是当初问用户的那条（改了学校，或整条被删了）→ **放弃这次确认并返回
+   * false**，不去猜用户的意思：代价只是下次多问一次，而猜错就是把清华的密码填进北大的
+   * 统一身份认证页。
+   *
+   * 反过来的方向（把一次确认作废）不走这里，走 setInstitution 的 `confirmedLogin: null`。
+   */
+  async confirmLogin(entityID: string, origin: string): Promise<boolean> {
+    return this.withLock<boolean>(async (cur) => {
+      const inst = cur.institution;
+      if (inst === null || inst.entityID !== entityID) return { result: false };
+      const next = sanitizeInstitution({ ...inst, confirmedLogin: { entityID, origin } });
+      // 空 origin 之类会被 sanitize 悄悄抹成 null，那就成了「记录里没有确认」——
+      // 与「确认失败」在调用方眼里长得一样。宁可当场报错。
+      if (next === null || next.confirmedLogin === null) {
+        throw new KydogError('settings.invalid', '登录确认缺少 entityID 或 origin，无法记录');
+      }
+      return { next: { ...cur, institution: next }, result: true };
+    });
+  }
+
   /** telemetry 只能由 telemetryService 经此方法改，故不在 SettingsPatch 中
    *  —— 与 updates 同样的约定。 */
   async setTelemetry(t: SettingsFile['telemetry']): Promise<void> {
@@ -120,6 +158,15 @@ export class SettingsService {
     await this.withLock(async () => ({ next: defaultSettings(), result: undefined }));
   }
 
+  /**
+   * 队列 + 文件锁里做一次 read-modify-write。回调拿到的 `current` 是**锁内刚从磁盘读回来**
+   * 的那一份，不是 cache —— 这正是它存在的理由。
+   *
+   * **注意：经它写 institution 会跳过 sanitizeInstitution。** `next` 是什么就落什么盘，
+   * 于是「写路径与读路径共用同一个判据」这条不变式只在 setInstitution / confirmLogin
+   * 这两个入口上成立。要动 institution 就走那两个，别在这里手拼一条记录：读路径会因为
+   * name / entityID / username 缺一个而把整条丢回 null，现象是「保存成功、重启后消失」。
+   */
   async withLock<T>(
     fn: (current: SettingsFile) => Promise<{ next?: SettingsFile; result: T }>,
   ): Promise<T> {

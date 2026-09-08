@@ -409,6 +409,14 @@ export type BrowserTabInfo = {
   canGoForward: boolean;
 };
 
+/** 标签栏那三个字段的唯一出处。BrowserState 与 BrowserTabsSnapshot 都从这里派生，
+ *  但**两者互不派生** —— 理由见 BrowserTabsSnapshot 末尾那段。 */
+type BrowserTabsCore = {
+  revision: number;
+  tabs: BrowserTabInfo[];
+  activeTabId: string | null;
+};
+
 /**
  * 主进程持有的浏览器全量状态。**事件带全量而不是增量**：标签最多十几条，
  * 代价可忽略，换来的是渲染层不需要自己维护一致性。
@@ -418,7 +426,7 @@ export type BrowserTabInfo = {
  * `epoch` 由主进程在每次渲染进程 bootstrap 时签发，用于丢弃过期的 syncView 上报 ——
  * 刻意不用渲染层自己数的计数器：组件重载后本地计数从同一个初值重新开始，分不出新旧。
  */
-export type BrowserState = BrowserTabsSnapshot & { epoch: number };
+export type BrowserState = BrowserTabsCore & { epoch: number };
 
 /**
  * `browser.tabsChanged` 广播的载荷。**刻意不含 epoch**，所以它不能直接复用 BrowserState。
@@ -430,14 +438,23 @@ export type BrowserState = BrowserTabsSnapshot & { epoch: number };
  *
  * 类型挡住的是**读**：渲染层拿到的载荷上没有 epoch 这个字段，写 `payload.epoch` 编译不过。
  * 挡不住的是**写**：`emit('browser.tabsChanged', state)` 传一个 BrowserState 变量在结构
- * 类型下照样通过（超额属性检查只管对象字面量），epoch 会跟着上线。所以广播那一处**必须
- * 显式投影**（`const { epoch: _, ...snapshot } = state`），不许把整份 state 丢进去。
+ * 类型下照样通过（超额属性检查只管对象字面量），epoch 会跟着上线。
+ *
+ * **所以广播那一处必须显式投影**，这是当下唯一成立的要求，没有别的东西替它把关：
+ *
+ * ```ts
+ * const { epoch: _epoch, ...snapshot } = this.registry.toState();
+ * broadcaster.emit('browser.tabsChanged', snapshot);
+ * ```
+ *
+ * 把「写」这一侧也焊死要等到那次投影落地之后：那时给本类型加 `epoch?: never`，
+ * 传整份 BrowserState 就编译不过了。**它成立的前提是 BrowserState 不再从本类型
+ * 交叉派生**（现在两者各自从 BrowserTabsCore 派生，正是为此留的口子）。交叉派生时
+ * 加 `epoch?: never` 得到的是 `never & number = never`，整个 BrowserState 塌成 never：
+ * tsc 会在 tabRegistry / browserTools 一带报一屏 "reduced to 'never'"，而真正该报错的
+ * 那行 emit 反而一声不吭。
  */
-export type BrowserTabsSnapshot = {
-  revision: number;
-  tabs: BrowserTabInfo[];
-  activeTabId: string | null;
-};
+export type BrowserTabsSnapshot = BrowserTabsCore;
 
 /**
  * 一次主 frame 导航的观测结果。**任何可能引发导航的操作都要带它**，不只是 browser.open ——

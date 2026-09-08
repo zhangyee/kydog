@@ -74,6 +74,12 @@ export function ensureSettingsFile(): void {
  *
  * 顺序是「先备份、后覆盖」，备份失败就**不覆盖**：留着一份读不懂的文件，也好过既读不懂
  * 又没了。两次写都走 atomicWriteWith0600Async —— 备份里同样有明文密钥，权限不能松。
+ *
+ * **已知限制：备份是「按 utf8 读进来再写出去」，不是 rename，所以不是逐字节复制。**
+ * 原文里若有非法 UTF-8 序列（`reason: 'not-json'` 最可能的成因就是被外部工具写坏），
+ * 那些字节在 `loadSettings` 的 readFile 那一步就已经变成 U+FFFD，用户没法再从备份里
+ * 逐字节捞回 `sk-…`。这是选用 atomicWrite 而非 fs.rename 的代价，不是疏漏：rename 会
+ * 把原路径整个搬走，而这条路径的前提是「原件在备份成功之前必须原地不动」。
  */
 async function quarantineUnreadableSettings(raw: string, parsed: Extract<ParsedSettings, { kind: 'unreadable' }>): Promise<void> {
   // 文件名里不能有冒号：Windows 上建不出来。ISO8601 的 : 与 . 一并换成 -。

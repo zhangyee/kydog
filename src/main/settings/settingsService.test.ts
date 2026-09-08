@@ -197,6 +197,54 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect((await svc.get()).institution?.confirmedLogin).toBeNull();
   });
 
+  // ── confirmLogin()：read-modify-write 必须发生在锁内 ──
+  //
+  // setInstitution 收的是整条记录，于是「记下这次确认」唯一写得出来的调用是
+  //   const cur = await svc.get();                                   // 锁外，弹框之前的快照
+  //   await svc.setInstitution({ ...cur.institution!, confirmedLogin });
+  // 而弹框到用户点确认之间有好几秒 —— 这几秒里用户在设置页把学校从北大改成清华，
+  // 上面那行就把整条旧记录（name / entityID / username / passwordEnc）原样写回去了。
+  // sanitizeInstitution 一句话都不会说：它比的是同一个对象内部的 entityID，当然相符。
+  const THU = {
+    name: '清华大学', entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth',
+    username: '2021012345', passwordEnc: 'ENC-THU', confirmedLogin: null,
+  };
+
+  it('confirmLogin(): 确认对话框开着的十秒里用户改了学校 —— 确认作废，旧记录不会被写回去', async () => {
+    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await svc.get();                       // 2b 在锁外拿到的那份快照（北大）
+    await svc.setInstitution(THU);         // 用户这十秒里改成了清华
+
+    expect(await svc.confirmLogin(PKU, 'https://iaaa.pku.edu.cn')).toBe(false);
+
+    const got = await svc.get();
+    expect(got.institution).toEqual(THU);  // 清华那条一个字段都没退回北大
+    const rawOnDisk = readFileSync(path.join(dir, 'kydog.json'), 'utf8');
+    expect(rawOnDisk).not.toContain('2100012345');            // 北大学号
+    expect(rawOnDisk).not.toContain('ENC-FROM-SAFESTORAGE');  // 北大那份密文
+  });
+
+  it('confirmLogin(): entityID 相符时记在当前那条记录上，且只动 confirmedLogin 一个字段', async () => {
+    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    expect(await svc.confirmLogin(PKU, 'https://iaaa.pku.edu.cn')).toBe(true);
+
+    const expected = { ...RECORD, confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' } };
+    expect((await svc.get()).institution).toEqual(expected);
+    // 落盘的形状读路径认得出来 —— 否则下次启动这次确认就白问了
+    expect((await new SettingsService().get()).institution).toEqual(expected);
+  });
+
+  it('confirmLogin(): 没有机构记录时是 no-op，不会凭空造一条', async () => {
+    expect(await svc.confirmLogin(PKU, 'https://iaaa.pku.edu.cn')).toBe(false);
+    expect((await svc.get()).institution).toBeNull();
+  });
+
+  it('confirmLogin(): origin 为空当场被拒，不落一个 confirmedLogin: null 冒充「确认过」', async () => {
+    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await expect(svc.confirmLogin(PKU, '')).rejects.toMatchObject({ code: 'settings.invalid' });
+    expect((await svc.get()).institution?.confirmedLogin).toBeNull();
+  });
+
   // ── D：ui.browserWidth 的写路径也要走同一个 sanitize ──
   // 渲染层拖拽时算错一次 → browserWidth: 0 当场进 cache 与磁盘 → 同一次会话里
   // scale = W/1280 = 0，页面渲染塌掉；重启后 sanitize 又把它拉回默认，于是现象是

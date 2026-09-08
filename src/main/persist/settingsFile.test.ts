@@ -6,6 +6,28 @@ import * as paths from './paths';
 import type { SettingsFile } from '../../shared/types';
 import { ensureSettingsFile, loadSettings, defaultSettings, parseAndMigrateSettings, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from './settingsFile';
 
+/**
+ * 「备份失败就不覆盖原件」那道护栏没法用真文件系统触发：备份与覆盖写的是同一个目录，
+ * 目录只读的话两次都失败，分不出「哪一次失败」。所以在模块边界上按目标路径挑一次让它抛。
+ *
+ * 默认 `failWhen` 为 null，一律穿透到真实实现 —— 本文件其余用例（备份内容逐字节相等、
+ * 0600 权限）测的仍然是真的那一个写。**不用 vi.fn 包**：afterEach 里的 restoreAllMocks
+ * 会把 vi.fn 的实现一并抹掉，那样穿透会静默变成「什么都不写」。
+ */
+const aw = vi.hoisted(() => ({ failWhen: null as ((target: string) => boolean) | null }));
+vi.mock('./atomicWrite', async (orig) => {
+  const actual = await orig<typeof import('./atomicWrite')>();
+  return {
+    ...actual,
+    atomicWriteWith0600Async: async (target: string, data: string) => {
+      if (aw.failWhen?.(target)) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), { code: 'EACCES' });
+      }
+      return actual.atomicWriteWith0600Async(target, data);
+    },
+  };
+});
+
 /** 只给「这份原文应当被认出来」的用例用。认不出来当场炸，免得断言写在一个
  *  判别联合的错误分支上还全绿。 */
 function migrated(raw: string): SettingsFile {
@@ -406,10 +428,16 @@ describe('loadSettings 遇到认不出来的文件：备份原件 + 起一份新
     vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(path.join(dir, 'kydog.json'));
     vi.spyOn(paths, 'LOCK_PATH', 'get').mockReturnValue(path.join(dir, '.kydog.json.lock'));
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    aw.failWhen = null;
   });
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+  afterEach(() => {
+    aw.failWhen = null;
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
 
   const backups = () => readdirSync(dir).filter((f) => f.startsWith('kydog.json.unreadable-'));
+  const errorLines = () => errSpy.mock.calls.map((c) => String(c[0])).join('\n');
 
   it('v10 文件：原文一字不改地进备份，磁盘上换成默认设置，返回默认设置', async () => {
     const raw = JSON.stringify(richSettings({ schemaVersion: 10 }), null, 2);
@@ -456,6 +484,49 @@ describe('loadSettings 遇到认不出来的文件：备份原件 + 起一份新
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(richSettings()));
     await loadSettings();
     expect(backups()).toEqual([]);
+  });
+
+  // ── 两条护栏：任何一次写失败都不许让「读不懂」升级成「读不懂而且没了」 ──
+  //
+  // 磁盘满 / ~/.kydog 只读 / 外置盘被拔掉时备份写不成。少了下面这条 return，代码会
+  // 继续往下把那份装着 API key、research presets、机构账号的 kydog.json 换成默认设置：
+  // 备份不存在，原件也没了，不可逆。删掉 quarantineUnreadableSettings 里备份失败那个
+  // return，这条用例必须红。
+  it('备份写失败：原件一字不动、不留半份备份，日志说明白是备份失败', async () => {
+    const file = path.join(dir, 'kydog.json');
+    const raw = JSON.stringify(richSettings({ schemaVersion: 10 }), null, 2);
+    await fsp.writeFile(file, raw);
+    aw.failWhen = (t) => t.startsWith(`${file}.unreadable-`);
+
+    // 调用方仍然拿到一份默认设置（本次会话能起来），但磁盘上什么都没被换掉
+    const got = await loadSettings();
+    expect(got.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+
+    // (a) 原件逐字节未变 —— 读不懂但还在，用户能自己把 sk- 与机构账号捞回来
+    expect(readFileSync(file, 'utf8')).toBe(raw);
+    // (b) 连 atomicWrite 的临时文件都不该留下（前缀过滤把 .tmp.<uuid> 一并罩住）
+    expect(backups()).toEqual([]);
+    // (c) 日志分得出「没备份成」和「备份了但没换成默认」，否则事后无从判断原件还在不在
+    expect(errorLines()).toContain('backup failed');
+  });
+
+  it('备份成功但写默认失败：备份与原件都留着，且不谎报「已从默认设置起步」', async () => {
+    const file = path.join(dir, 'kydog.json');
+    const raw = JSON.stringify(richSettings({ schemaVersion: 10 }), null, 2);
+    await fsp.writeFile(file, raw);
+    aw.failWhen = (t) => t === file;
+
+    const got = await loadSettings();
+    expect(got.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+
+    const names = backups();
+    expect(names.length).toBe(1);
+    expect(readFileSync(path.join(dir, names[0]), 'utf8')).toBe(raw);
+    // 原件没被换掉 —— 后果只是下次启动会再备份一份，比「换了但没备份」轻得多
+    expect(readFileSync(file, 'utf8')).toBe(raw);
+    expect(errorLines()).toContain('could not write defaults');
+    // 那句「已备份，从默认设置起步」这时是假的：默认设置压根没落盘
+    expect(errorLines()).not.toContain('starting from defaults');
   });
 });
 

@@ -75,6 +75,9 @@ vi.mock('./harness/manifest', () => ({
   discardCorruptManifest: async () => {},
 }));
 vi.mock('./ui/viewState', () => ({ viewStateStore: { get: () => null, set: () => {} } }));
+// locale.set 那条出口要走真正注册的 handler，而 localeSet 的 listSkills 接的是
+// skillsService.listUnlocked() —— 它会 mkdir 真实的 ~/.kydog/skills 并读整棵树。
+vi.mock('./skills/skillsService', () => ({ skillsService: { listUnlocked: async () => [] } }));
 
 import { registerAllHandlers } from './handlers';
 import { defaultSettings } from './persist/settingsFile';
@@ -126,10 +129,16 @@ describe('密文不过河', () => {
     expect(JSON.stringify(h.settings)).toContain(SENTINEL);
   });
 
+  // 四条出口一条都不能少。locale.set 从前只有类型闸没有行为断言 —— 哪天有人顺手把
+  // LocaleSetResult.settings 也换成 SettingsFileForRenderer「统一」一下，这条出口就
+  // 同时失去了类型闸和用例闸，而它回的同样是整份 settings。
+  // 传 locale: 'zh' 走的是 localeSet 的 unchanged 分支（h.settings 本来就是 zh）：
+  // 不碰 skill 树、不 dispose session，测的正是返回值那一次投影。
   for (const [method, args] of [
     ['app.bootstrap', undefined],
     ['settings.get', undefined],
     ['settings.update', { ui: { theme: 'sepia' } }],
+    ['locale.set', { locale: 'zh' }],
   ] as const) {
     it(`${method} 的返回里没有密文`, async () => {
       const out = await invoke(method, args);
