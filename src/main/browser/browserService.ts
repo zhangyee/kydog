@@ -5,6 +5,7 @@ import type { BrowserState, NavigationObservation, RectDip } from '../../shared/
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { assertAllowedUrl, checkUrl } from './urlGuard';
+import { BROWSER_PARTITION } from './partition';
 import { TabRegistry } from './tabRegistry';
 import { NavigationTracker } from './settle';
 import type { AxSnapshot } from './snapshot';
@@ -24,9 +25,9 @@ import INTERACT_SOURCE from './injected/interact.js?raw';
  * 渲染层只画一块空「舞台」div 并上报它的几何，网页由主进程定位过去。
  */
 
-/** 浏览器自己的 cookie 罐子，与 KyDog 主窗口完全隔开。持久化是刻意的：
- *  用户登录一次机构，之后 agent 都能用同一个会话。 */
-const PARTITION = 'persist:kydog-browser';
+/** 浏览器自己的 cookie 罐子。**常量搬去了 `partition.ts`** —— `webRequestHub`
+ *  要绑同一个 session，而它不该为一个字符串把整个本模块拖进依赖图。 */
+const PARTITION = BROWSER_PARTITION;
 
 /** 页面永远以这个逻辑宽度渲染。见 §2.3：不固定的话，侧栏一窄网页就切移动版，
  *  DOM 结构与可交互项全变，上一轮的快照编号整批作废。 */

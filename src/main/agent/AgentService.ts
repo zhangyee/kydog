@@ -11,6 +11,7 @@ import { ASK_TOOL_NAME, type AskOutcome, type AskQuestion } from '../../shared/a
 import { isParallelBatch, toolCallsOf } from './askSequentialTools';
 import type { AskSharedState } from './askUserQuestionTool';
 import { settingsService } from '../settings/settingsService';
+import { browserService } from '../browser/browserService';
 import { resolveProviderDefault } from '../llm/resolveProvider';
 import { threadService } from '../thread/threadService';
 import type { Message, ProviderId } from '../../shared/types';
@@ -42,6 +43,21 @@ export type Bound = {
    * 免得同一轮既出现在 history 里又出现在 buffer 里。
    */
   runStartIndex: number | null;
+  /**
+   * 这条 session 此刻在为**哪一轮 KyDog run** 服务。`send()` 铸出 runId 时写，
+   * `agent_settled` 收尾时清。
+   *
+   * **不能用 `runs` 现算代替**，两处都栽在同一件事上：
+   *  · `agent_settled` 不带任何载荷（`agent-session.d.ts` 的 `{ type:"agent_settled" }`），
+   *    而它在 `_runAgentPrompt` 的 `finally` 里发（`agent-session.js:755`），**排在最后
+   *    一次 `agent_end` 之后** —— 那时 `runs` 早被下面 agent_end 分支置回 idle，
+   *    现算得到 `'unknown'`，`disposeForRun('unknown')` 一个标签都命中不了，
+   *    不抛不红，只是永远不回收。
+   *  · pi 在 `agent_end` 之后仍可能自动重试（`docs/extensions.md:560`，
+   *    `_handlePostAgentRun` → `agent.continue()`）。那一段 `runs` 也是 idle，
+   *    而重试里新开的标签仍属于同一轮 KyDog run。
+   */
+  runId: string | null;
   staleAfterRun?: boolean;
 };
 
@@ -123,6 +139,8 @@ class AgentService {
       providerId,
       modelId,
       askShared,
+      // 取值函数，不是值：session 造出来这一刻还没有任何 run 在飞。
+      currentRunId: () => this.currentRunIdFor(threadId),
     });
     const bound: Bound = {
       session, cwd: projectPath, threadId,
@@ -132,6 +150,7 @@ class AgentService {
       askArgs: new Map(),
       runJournal: [],
       runStartIndex: null,
+      runId: null,
     };
     this.sessions.set(threadId, bound);
     this.subscribe(bound);
@@ -179,6 +198,9 @@ class AgentService {
     if (current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
     const runId = randomUUID();
     this.runs.set(threadId, transition(current, { kind: 'send', runId }));
+    // 本轮的 runId 记在 bound 上。**浏览器那两侧都读它**（盖戳的 currentRunIdFor、
+    // 回收的 agent_settled），理由见 Bound.runId 那段注释。
+    bound.runId = runId;
     void bound.session.prompt(content).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
@@ -212,6 +234,20 @@ class AgentService {
   private currentRunId(threadId: string): string {
     const s = this.runs.get(threadId);
     return s?.status === 'running' ? s.runId : 'unknown';
+  }
+
+  /**
+   * 浏览器工具给新标签盖的那个戳（`ownerRunId`）。没有 run 在飞就是 `null` ——
+   * 那时开的标签是用户的，回合结束不该被回收。
+   *
+   * **读 `bound.runId`，不是现算 `runs`**：pi 在 `agent_end` 之后仍可能自动重试
+   * （`docs/extensions.md:560`），那一段 `runs` 已经是 idle，现算会得到 `null`，
+   * 于是重试里新开的标签被记成用户的、`agent_settled` 永不回收它们 ——
+   * 「标签只增不减直到撞满上限」的另一条路。它与 `disposeForRun` 读的是同一个字段，
+   * 盖戳与回收因此不可能对不上。
+   */
+  currentRunIdFor(threadId: string): string | null {
+    return this.sessions.get(threadId)?.runId ?? null;
   }
 
   private async markStaleOrDispose(bound: Bound): Promise<void> {
@@ -406,6 +442,17 @@ class AgentService {
           if (bound.staleAfterRun) {
             void this.dispose(threadId);
           }
+          return;
+        }
+        case 'agent_settled': {
+          // **挂在这里，不是 agent_end** —— pi 在 agent_end 之后仍可能自动重试
+          // （docs/extensions.md:560），那时标签还属于同一轮 KyDog run。
+          // 回收用 bound.runId 而不是上面那个现算的 runId：这一刻 runs 已被
+          // agent_end 置回 idle，现算是 `'unknown'`，拿它去比 ownerRunId 一个都
+          // 命中不了 —— 不抛、不红，只是永远不回收（见 Bound.runId）。
+          const settledRunId = bound.runId;
+          bound.runId = null;
+          if (settledRunId !== null) browserService.disposeForRun(settledRunId);
           return;
         }
         default:

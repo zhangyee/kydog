@@ -25,6 +25,8 @@ import { startIdentityWatcher } from './harness/identityService';
 import { initUpdateService } from './update/assemble';
 import { assembleTelemetry } from './telemetry/assemble';
 import { broadcaster } from './ipc/broadcaster';
+import { browserService } from './browser/browserService';
+import { installBrowserWindowWiring, installBrowserQuitWiring } from './browser/mainWiring';
 import iconDataUrl from '../../assets/icons/icon.png?inline';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -73,6 +75,11 @@ async function createWindow() {
     } catch { /* ignore malformed url */ }
     return { action: 'deny' };
   });
+  // 内置浏览器装配到这个窗口上：网页由主进程持有的 WebContentsView 承载，
+  // 渲染层只画一块空「舞台」div 并上报几何。同时挂上「渲染层重载 / 渲染进程没了
+  // 就先把网页藏起来」——那两个时刻拿不到可靠的最后一次 syncView。
+  // 三处接线为什么拆在那个模块里，见 mainWiring.ts。
+  installBrowserWindowWiring(mainWindow, browserService);
   mainWindow.webContents.on('will-navigate', (e, targetUrl) => {
     let target: URL;
     try { target = new URL(targetUrl); } catch { e.preventDefault(); return; }
@@ -203,6 +210,10 @@ app.on('ready', async () => {
     app.quit();
   }
 });
+
+// 内置浏览器的标签退出时一并收摊。挂在 before-quit（不是窗口 `closed`）：
+// 那里只清窗口引用，收摊统一在这里做一次，`disposeAll` 本身幂等。
+installBrowserQuitWiring(app, browserService);
 
 app.on('window-all-closed', () => { app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });

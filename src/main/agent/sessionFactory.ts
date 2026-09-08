@@ -3,6 +3,7 @@ import { createFixtureSession } from './fixtureProvider';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { createReadPdfFigureTool } from './readPdfFigureTool';
 import { createReadDocxTool } from './readDocxTool';
+import { createBrowserTools } from './browserTools';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { settingsService } from '../settings/settingsService';
 import { KydogError } from '../../shared/errors';
@@ -25,6 +26,19 @@ export async function createSession(opts: {
   providerId: ProviderId;
   modelId: string;
   askShared: AskSharedState;
+  /**
+   * 这条 thread 此刻在为哪一轮 run 服务 —— 浏览器工具给新标签盖的戳（`ownerRunId`）。
+   *
+   * **由调用方注入一个取值函数，不是在这里 import `agentService`**：后者是一条
+   * import 环（`AgentService` → `sessionFactory` → `AgentService`）。形态照
+   * `askShared` —— 同样是 `AgentService` 造好了交进来的 run 上下文。
+   *
+   * **必须是函数不是值**：session 造出来那一刻还没有 run 在飞，取一次快照进去，
+   * 之后每一轮开的标签都会盖上同一个（空的）戳，回合结束一个都回收不掉。
+   *
+   * 可选：fixture / 用例那条路不接浏览器，缺省当作「没有 run 在飞」。
+   */
+  currentRunId?: () => string | null;
 }): Promise<AnySession> {
   // locale 在这里（session 构造时）快照一次，理由与写法同下面 createKydogResourceLoader
   // 里的 disabledBuiltins：已开的 session 用的是开工那一刻的界面语言，之后用户在设置里
@@ -66,6 +80,11 @@ export async function createSession(opts: {
         readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
       }),
       createReadDocxTool(),
+      // 内置浏览器的三个工具。第四个 `browser_login` 是 Task 7 的，还不存在。
+      // 三个都声明了 `executionMode: 'sequential'`，名字要同步登记进
+      // askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES —— 漏登记不报错，
+      // 只会让 UI 把一次串行批次画成并行组。守这条的是本文件的用例（两个方向）。
+      ...createBrowserTools({ currentRunId: opts.currentRunId ?? (() => null) }),
     ],
   });
   return session as AnySession;

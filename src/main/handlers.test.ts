@@ -18,6 +18,9 @@ const h = vi.hoisted(() => ({
   telemetry: { state: 'enabled', decidedAt: '2026-08-05T00:00:00.000Z' } as TelemetrySettings,
   synced: [] as TelemetrySettings[],
   settings: {} as SettingsFile,
+  /** 浏览器与机构两条新路上，handler 到底转发了什么。 */
+  browser: [] as Array<{ m: string; args: unknown }>,
+  institution: [] as Array<{ m: string; args: unknown }>,
 }));
 
 vi.mock('electron', () => ({
@@ -75,6 +78,44 @@ vi.mock('./harness/manifest', () => ({
   discardCorruptManifest: async () => {},
 }));
 vi.mock('./ui/viewState', () => ({ viewStateStore: { get: () => null, set: () => {} } }));
+
+/**
+ * 浏览器与机构两个服务替身掉：真的那两个 import 的是 electron 的
+ * `WebContentsView` / `session` / `safeStorage`，在这个文件的 electron 替身里
+ * 一个都没有 —— 不替身掉，整份 handlers.ts 连加载都加载不了。
+ *
+ * **`newEpoch` / `getState` 例外，接的是真的 `TabRegistry`**（那个模块是纯记账、
+ * 不碰 electron）：`browser.getState` 顺带签发新 epoch 这条接线，只有让它去动
+ * 一个真账本，「epoch 推了、revision 也推了」才不是在测替身自己。
+ */
+vi.mock('./browser/browserService', async () => {
+  const { TabRegistry } = await import('./browser/tabRegistry');
+  const reg = new TabRegistry();
+  return {
+    browserService: {
+      _registry: reg,
+      open: (args: unknown) => { h.browser.push({ m: 'open', args }); return Promise.resolve({ tabId: 'tab-1', nav: null }); },
+      close: (id: string) => { h.browser.push({ m: 'close', args: id }); },
+      keep: (id: string) => { h.browser.push({ m: 'keep', args: id }); },
+      activate: (id: string) => { h.browser.push({ m: 'activate', args: id }); },
+      navControl: (id: string, action: string) => { h.browser.push({ m: 'navControl', args: { id, action } }); return Promise.resolve(); },
+      newEpoch: () => { h.browser.push({ m: 'newEpoch', args: undefined }); return reg.newEpoch(); },
+      getState: () => { h.browser.push({ m: 'getState', args: undefined }); return reg.toState(); },
+      syncView: (args: unknown) => { h.browser.push({ m: 'syncView', args }); },
+      disposeForRun: () => {},
+    },
+  };
+});
+
+vi.mock('./institution/institutionService', () => ({
+  institutionService: {
+    get: async () => { h.institution.push({ m: 'get', args: undefined }); return { name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth', username: '2100012345', hasPassword: true, confirmedLogin: null }; },
+    save: async (args: unknown) => { h.institution.push({ m: 'save', args }); return { name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth', username: '2100012345', hasPassword: true, confirmedLogin: null }; },
+    clear: async () => { h.institution.push({ m: 'clear', args: undefined }); },
+    reveal: async () => { h.institution.push({ m: 'reveal', args: undefined }); return { password: 'hunter2' }; },
+    listIdps: async (args: unknown) => { h.institution.push({ m: 'listIdps', args }); return { entries: [], fetchedAt: '2026-09-08T00:00:00.000Z', stale: false }; },
+  },
+}));
 // locale.set 那条出口要走真正注册的 handler，而 localeSet 的 listSkills 接的是
 // skillsService.listUnlocked() —— 它会 mkdir 真实的 ~/.kydog/skills 并读整棵树。
 vi.mock('./skills/skillsService', () => ({ skillsService: { listUnlocked: async () => [] } }));
@@ -113,8 +154,17 @@ beforeEach(() => {
   h.telemetry = { state: 'enabled', decidedAt: '2026-08-05T00:00:00.000Z' };
   h.synced = [];
   h.settings = settingsWithSecret();
+  h.browser = [];
+  h.institution = [];
   registerAllHandlers();
 });
+
+/** 任意一条 RPC，返回值不收窄 —— 上面那个 invoke 的返回类型是给遥测那组用的。 */
+function call(method: RpcMethod, args?: unknown): Promise<unknown> {
+  const fn = h.captured[method];
+  if (!fn) throw new Error(`${method} 未注册`);
+  return Promise.resolve(fn(args));
+}
 
 /**
  * protocol.ts 上写着「密码只会 渲染层 → 主进程 单向流动，连密文也不回传」。
@@ -247,12 +297,9 @@ describe('onboarding 完成后同步遥测状态', () => {
  * 所以每一条 RPC 都得有个交代：要么注册了，要么明确写在下面这份名单里。
  */
 const PENDING_REGISTRATION: RpcMethod[] = [
-  // 计划内：Task 6 Step 5（渲染层侧栏那条路）。
-  'browser.open', 'browser.close', 'browser.keep', 'browser.activate',
-  'browser.navControl', 'browser.getState', 'browser.syncView',
-  // 计划内：Task 5 / Task 6（机构设置页那条路）。
-  'institution.get', 'institution.save', 'institution.clear',
-  'institution.revealPassword', 'institution.listIdps',
+  // 空的。Task 6 把 browser.* 七条与 institution.* 五条都接上了。
+  // 这份名单留着不删：往 RpcCall 加一条而不注册 handler 仍然不会编译报错，
+  // 下一次「先加协议、后接线」的批次仍要在这里交代自己。
 ];
 
 describe('每一条 RPC 都有交代：注册了，或明确登记成「尚未接线」', () => {
@@ -277,5 +324,139 @@ describe('每一条 RPC 都有交代：注册了，或明确登记成「尚未�
   // 上面三条合起来才是穷尽的：没有这一条，一份「什么都没注册」的空表也能全绿。
   it('确实注册到了东西 —— 钉住上面几条不是空绿', () => {
     expect(Object.keys(h.captured).length).toBe(RPC_METHODS.length - PENDING_REGISTRATION.length);
+  });
+});
+
+/**
+ * **浏览器七条：接错了不会编译报错，只会「悄悄不工作」。**
+ *
+ * 这一层全是转发，所以要守的正是转发本身：调的是不是那个方法、参数有没有对调、
+ * 有没有把渲染层发来的东西整个递下去。上面那三条穷尽性断言只管「注册了没有」，
+ * 管不了「注册的那个函数干的是不是这件事」——
+ * `registerHandler('browser.close', (a) => browserService.keep(a.tabId))` 照样全绿。
+ */
+describe('browser.* 七条转发到 browserService 上对应的那一个', () => {
+  it('open 只递协议上写明的 url / tabId', async () => {
+    await call('browser.open', { url: 'https://x.example/p', tabId: 't7' });
+    expect(h.browser).toEqual([{ m: 'open', args: { url: 'https://x.example/p', tabId: 't7' } }]);
+  });
+
+  /**
+   * `BrowserService.open` 还收一个 `ownerRunId` —— 「这个标签属于哪一轮 run、
+   * 回合结束回收它」的记账字段。渲染层在类型上给不出它，但**类型挡不住运行时**：
+   * 把 args 整个递下去的话，一条伪造的 RPC 就能开出一个「属于某轮 run」的标签，
+   * 而那一轮 settle 时它会被连页面一起收走 —— 用户的页面无声消失。
+   */
+  it('open 不认渲染层塞进来的 ownerRunId —— 这条路开的标签永远是用户的', async () => {
+    await call('browser.open', { url: 'https://x.example/p', ownerRunId: 'run-伪造' });
+    expect(h.browser[0].args).toEqual({ url: 'https://x.example/p', tabId: undefined });
+    expect(JSON.stringify(h.browser)).not.toContain('run-伪造');
+  });
+
+  it('close / keep / activate 各调各的，参数是 tabId', async () => {
+    await call('browser.close', { tabId: 't1' });
+    await call('browser.keep', { tabId: 't2' });
+    await call('browser.activate', { tabId: 't3' });
+    expect(h.browser).toEqual([
+      { m: 'close', args: 't1' },
+      { m: 'keep', args: 't2' },
+      { m: 'activate', args: 't3' },
+    ]);
+  });
+
+  it('navControl 把 action 原样带下去（四个动作都试一遍）', async () => {
+    for (const action of ['back', 'forward', 'reload', 'stop'] as const) {
+      await call('browser.navControl', { tabId: 't1', action });
+    }
+    expect(h.browser).toEqual([
+      { m: 'navControl', args: { id: 't1', action: 'back' } },
+      { m: 'navControl', args: { id: 't1', action: 'forward' } },
+      { m: 'navControl', args: { id: 't1', action: 'reload' } },
+      { m: 'navControl', args: { id: 't1', action: 'stop' } },
+    ]);
+  });
+
+  it('syncView 把整份舞台几何原样递下去', async () => {
+    const stage = { epoch: 3, visible: true, occluded: false, bounds: { x: 1, y: 2, width: 300, height: 400 } };
+    await call('browser.syncView', stage);
+    expect(h.browser).toEqual([{ m: 'syncView', args: stage }]);
+  });
+});
+
+/**
+ * **`browser.getState` 顺带签发新 epoch。**
+ *
+ * 协议上没有第二条 RPC 能给渲染层新 epoch。漏了这一下不会有任何报错：
+ * 渲染层拿着旧 epoch 上报 bounds → 主进程一律判过期丢弃 → 侧栏里那块网页永远
+ * 拿不到几何、一直不可见，直到下一次真实标签变更才恢复。
+ */
+describe('browser.getState 顺带签发新 epoch', () => {
+  it('每调一次 epoch 就换一个，且返回的那一份带的就是新的', async () => {
+    const a = await call('browser.getState') as { epoch: number };
+    const b = await call('browser.getState') as { epoch: number };
+    expect(b.epoch).toBeGreaterThan(a.epoch);
+  });
+
+  it('签发排在取快照之前 —— 顺序反了返回的是上一个 epoch', async () => {
+    await call('browser.getState');
+    expect(h.browser.map((c) => c.m)).toEqual(['newEpoch', 'getState']);
+  });
+
+  /**
+   * epoch 变了 revision 必须跟着变（tabRegistry 那条注释说的就是这件事）：
+   * 渲染层按 revision 去旧，同 revision 的那一帧会被整帧丢掉、继续用旧 epoch。
+   * 这里接的是真的 TabRegistry，所以这条断言真的在量那件事。
+   */
+  it('epoch 推进时 revision 也推进', async () => {
+    const a = await call('browser.getState') as { epoch: number; revision: number };
+    const b = await call('browser.getState') as { epoch: number; revision: number };
+    expect(b.revision).toBeGreaterThan(a.revision);
+  });
+});
+
+/**
+ * 机构五条。`institution.revealPassword` 对应的方法叫 `reveal()` —— 名字对不上
+ * 是继承的，照名字猜就会写成 `institutionService.revealPassword()`（运行时才炸）。
+ */
+describe('institution.* 五条转发到 institutionService 上对应的那一个', () => {
+  it('五条各调各的，revealPassword 走的是 reveal()', async () => {
+    await call('institution.get');
+    await call('institution.clear');
+    await call('institution.revealPassword');
+    expect(h.institution.map((c) => c.m)).toEqual(['get', 'clear', 'reveal']);
+  });
+
+  /**
+   * save 的 args 要原样到底。少递一个 `password`，界面上是「保存成功」而密码
+   * 根本没换 —— 用户下次登录才发现，且没有任何错误可查。
+   */
+  it('save 原样递整份 args（含 password 与 confirmedLogin 那两档）', async () => {
+    const args = {
+      name: '北京大学', entityID: PKU, username: '2100012345',
+      password: 'hunter2', confirmedLogin: null,
+    };
+    await call('institution.save', args);
+    expect(h.institution).toEqual([{ m: 'save', args }]);
+  });
+
+  it('listIdps 把 refresh 带下去；不给 args 也不炸（当作不刷新）', async () => {
+    await call('institution.listIdps', { refresh: true });
+    await call('institution.listIdps', undefined);
+    expect(h.institution).toEqual([
+      { m: 'listIdps', args: { refresh: true } },
+      { m: 'listIdps', args: { refresh: undefined } },
+    ]);
+  });
+
+  it('revealPassword 是明文唯一的出口，其余四条的返回里没有密码', async () => {
+    expect(await call('institution.revealPassword')).toEqual({ password: 'hunter2' });
+    for (const [m, args] of [
+      ['institution.get', undefined],
+      ['institution.save', { name: 'x', entityID: 'https://a/b', username: 'u', password: 'hunter2' }],
+      ['institution.clear', undefined],
+      ['institution.listIdps', undefined],
+    ] as const) {
+      expect(JSON.stringify(await call(m, args) ?? null), m).not.toContain('hunter2');
+    }
   });
 });

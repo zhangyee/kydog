@@ -15,6 +15,8 @@ import { skillsService } from './skills/skillsService';
 import { withSkillTree } from './skills/skillTreeLock';
 import { createLocaleSet } from './skills/localeSet';
 import { agentService } from './agent/AgentService';
+import { browserService } from './browser/browserService';
+import { institutionService } from './institution/institutionService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
 import { renderPageToPng } from './pdf/pdfRaster';
@@ -102,6 +104,42 @@ export function registerAllHandlers(): void {
   registerHandler('settings.update', async (args) => toRendererSettings(await settingsService.update(args)));
   registerHandler('research.get', () => researchService.get());
   registerHandler('research.save', (args) => researchService.save(args));
+
+  // ── 内置浏览器（侧栏那条路）──
+  // 这七条与 agent 那三个工具动的是**同一个** browserService。跨路的并发由
+  // browserService 自己的按标签串行队列收口（见那里的 `enqueue`）——
+  // 这一层不许自己再造一条路。
+  //
+  // `open` 显式投影而不是把 args 整个递进去：`BrowserService.open` 还收一个
+  // `ownerRunId`，那是「这个标签属于哪一轮 run、回合结束回收它」的记账字段。
+  // 类型上渲染层给不出它，但类型挡不住运行时 —— 渲染层发来的东西一律当输入看，
+  // 只取协议上写明的那两个字段。**从这条路开的标签永远是用户的。**
+  registerHandler('browser.open', (args) => browserService.open({ url: args.url, tabId: args.tabId }));
+  registerHandler('browser.close', (args) => { browserService.close(args.tabId); });
+  registerHandler('browser.keep', (args) => { browserService.keep(args.tabId); });
+  registerHandler('browser.activate', (args) => { browserService.activate(args.tabId); });
+  registerHandler('browser.navControl', (args) => browserService.navControl(args.tabId, args.action));
+  // **顺带签发一个新 epoch。** 协议上没有第二条 RPC 能给渲染层新 epoch，而
+  // 没有 epoch 渲染层的 syncView 全部会被判过期丢掉 —— 侧栏里那块网页永远拿不到
+  // bounds、一直不可见，直到下一次真实标签变更才恢复。恢复顺序是「先订阅、
+  // 后 getState、按 revision 去旧」，所以签发必须排在返回快照**之前**：
+  // 返回的这一份自己就带着新 epoch。
+  registerHandler('browser.getState', () => {
+    browserService.newEpoch();
+    return browserService.getState();
+  });
+  registerHandler('browser.syncView', (args) => { browserService.syncView(args); });
+
+  // ── CARSI 机构账号 ──
+  // 密码只往一个方向流：`get` / `save` 回的都是 InstitutionPublic（只有 hasPassword
+  // 一个比特），明文只在 `revealPassword` 这一条显式往返上回一次。
+  // **别在这里开第五条出口** —— 回整份 settings 的那四条已经收窄成 toRendererSettings。
+  registerHandler('institution.get', () => institutionService.get());
+  registerHandler('institution.save', (args) => institutionService.save(args));
+  registerHandler('institution.clear', () => institutionService.clear());
+  // RPC 叫 revealPassword，服务上的方法叫 `reveal()` —— 名字对不上是继承的，别照名字猜。
+  registerHandler('institution.revealPassword', () => institutionService.reveal());
+  registerHandler('institution.listIdps', (args) => institutionService.listIdps({ refresh: args?.refresh }));
 
   registerHandler('update.getStatus', () => getUpdateService().getStatus());
   registerHandler('update.check', () => getUpdateService().check());
