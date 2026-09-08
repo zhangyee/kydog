@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { describeNav, landedOnPage } from './browserTools';
+import { describeNav, landedOnPage, ActionSchema } from './browserTools';
+import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import type { NavigationObservation } from '../../shared/types';
 
 type Outcome = NavigationObservation['outcome'];
@@ -166,5 +167,24 @@ describe('取不取快照：ok_same_document 也是「到了一个页面」', ()
     for (const k of ['failed', 'crashed', 'download', 'blocked', 'superseded', 'cancelled', 'timeout'] as const) {
       expect(landedOnPage(SAMPLES[k])).toBe(false);
     }
+  });
+});
+
+// spec §5.5：上限要落在 **TypeBox schema** 上，模型绕不过去。schema 这一层没有任何
+// 别的东西会在退化时报错 —— 改回 Type.String() / Type.Number() 编译照样过，单测也照样
+// 全绿，而模型第一眼看到的契约就此松掉。
+describe('browser_act 的 schema 是模型看得到的那道闸', () => {
+  const props = (ActionSchema as unknown as { properties: Record<string, Record<string, unknown>> }).properties;
+
+  it('kind 是九种动作的字面量白名单，不是裸字符串', () => {
+    const kind = props.kind as { anyOf?: { const: string }[]; type?: string };
+    expect(kind.type).toBeUndefined();
+    expect(kind.anyOf?.map((x) => x.const)).toEqual([...ACTION_KINDS]);
+  });
+
+  it('timeoutMs 带上下界与默认值，与主进程校验同一组数', () => {
+    expect(props.timeoutMs).toMatchObject({
+      type: 'number', minimum: 1, maximum: WAIT_MAX_MS, default: WAIT_DEFAULT_MS,
+    });
   });
 });

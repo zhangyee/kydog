@@ -6,6 +6,7 @@ import { browserService, WALKER_WORLD_ID } from '../browser/browserService';
 import { renderDiff, renderSnapshot, wrapPageContent, type AxSnapshot } from '../browser/snapshot';
 import {
   validateBatch, flattenActions, resolveTarget, assertTypeAllowed, keyEventsFor,
+  ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS,
   type Action,
 } from '../browser/actions';
 import {
@@ -129,8 +130,21 @@ const TargetProps = {
   snapshotId: Type.Optional(Type.String()),
 };
 
-const ActionSchema = Type.Object({
-  kind: Type.String({ description: 'click / type / key / scroll / hover / select / extract / wait / repeat' }),
+/**
+ * `kind` 落**字面量白名单**，不是 `Type.String()`。schema 这一层是模型第一眼看到的
+ * 契约：写成裸字符串的话，`{kind:'navigate'}` 连 schema 都过得去，模型要等到
+ * 主进程校验才知道没有这个动作 —— 而在此之前它已经按自己以为的语义排好了整批剧本。
+ * 取值与 `ACTION_KINDS`（spec §4.1 的九种）同一个出处，两边不会漂。
+ */
+const KindSchema = Type.Union(
+  ACTION_KINDS.map((k) => Type.Literal(k)),
+  { description: ACTION_KINDS.join(' / ') },
+);
+
+/** 导出只为让上面那两条能被直接钉住 —— schema 是模型看到的契约，
+ *  而它没有任何别的东西会在退化时报错（改回 `Type.String()` 编译照样过）。 */
+export const ActionSchema = Type.Object({
+  kind: KindSchema,
   ...TargetProps,
   text: Type.Optional(Type.String()),
   value: Type.Optional(Type.String()),
@@ -138,7 +152,14 @@ const ActionSchema = Type.Object({
   direction: Type.Optional(Type.String()),
   selectors: Type.Optional(Type.Record(Type.String(), Type.String())),
   until: Type.Optional(Type.Any()),
-  timeoutMs: Type.Optional(Type.Number()),
+  // 上下界照 spec §5.5 落在 schema 上。没有上限的话，一个 sequential 工具能把
+  // 整轮 run 卡满自定的时限（实测 600000 一路通过），用户只看到「操作网页」转圈。
+  timeoutMs: Type.Optional(Type.Number({
+    minimum: 1,
+    maximum: WAIT_MAX_MS,
+    default: WAIT_DEFAULT_MS,
+    description: `wait 的时限，毫秒。不给就是 ${WAIT_DEFAULT_MS}，上限 ${WAIT_MAX_MS}`,
+  })),
   times: Type.Optional(Type.Number()),
   actions: Type.Optional(Type.Array(Type.Any())),
 });
