@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { describeNav, landedOnPage, ActionSchema } from './browserTools';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describeNav, landedOnPage, ActionSchema, createBrowserTools } from './browserTools';
 import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
+import { MAX_BATCH_CHARS } from '../browser/extract';
+import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
 
 type Outcome = NavigationObservation['outcome'];
@@ -186,5 +188,295 @@ describe('browser_act 的 schema 是模型看得到的那道闸', () => {
     expect(props.timeoutMs).toMatchObject({
       type: 'number', minimum: 1, maximum: WAIT_MAX_MS, default: WAIT_DEFAULT_MS,
     });
+  });
+});
+
+// ── 接线层：browser_act / browser_read 的 execute 真的跑一遍 ──────────────────
+//
+// **这一段补的是最终评审的 C4。** 在它之前，这个文件只覆盖 describeNav / landedOnPage
+// / TypeBox schema 三样纯文本的东西，**没有任何一条用例调用过 createBrowserTools 返回
+// 的工具**。评审的 13 次变异里 11 条死在各批自己的纯模块里，2 条活的全部落在这里：
+//
+//  · M12 —— 删掉 `assertTypeAllowed` 的唯一调用点 → 2336/2336 全绿（密码硬闸整条失效）
+//  · M13 —— extract 退回主世界 + 绕过整批预算 → 2336/2336 全绿、lint exit 0 无警告
+//
+// 所以下面这些断言全部针对**接线**，不重复各批纯模块自己已经钉住的东西。
+// 隔离世界这一条在替身里只能钉住「调的是哪个入口」；「隔离世界真的骗不到」要靠
+// e2e（见 e2e-requirements.md 的 E-1）。
+
+const WORLD_ID = 31337;
+
+const bs = vi.hoisted(() => ({
+  /** enqueue / withAgentDriving / snapshot / 每一步派发的实际先后。 */
+  order: [] as string[],
+  isolated: [] as { worldId: number; code: string }[],
+  mainWorld: [] as string[],
+  cdp: [] as { method: string; params: unknown }[],
+  current: null as unknown,
+  /** 隔离世界里那段代码的返回值由用例摆布（extract / browser_read 共用）。 */
+  isolatedImpl: (() => null) as (code: string) => unknown,
+  snapshotImpl: (() => null) as () => unknown,
+  noTab: false,
+}));
+
+vi.mock('../browser/browserService', () => {
+  const wc = {
+    executeJavaScript: (code: string) => { bs.mainWorld.push(code); return Promise.resolve('主世界'); },
+    executeJavaScriptInIsolatedWorld: (worldId: number, scripts: { code: string }[]) => {
+      bs.isolated.push({ worldId, code: scripts[0].code });
+      return Promise.resolve(bs.isolatedImpl(scripts[0].code));
+    },
+    debugger: {
+      sendCommand: (method: string, params: unknown) => { bs.cdp.push({ method, params }); return Promise.resolve(); },
+    },
+  };
+  return {
+    WALKER_WORLD_ID: 31337,
+    browserService: {
+      getState: () => ({ tabs: [{ id: 't1', url: 'https://a.example/q' }], activeTabId: 't1' }),
+      getSnapshot: () => bs.current,
+      snapshot: async () => { bs.order.push('snapshot'); return bs.snapshotImpl(); },
+      webContentsOf: () => (bs.noTab ? null : wc),
+      enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
+      withAgentDriving: <T>(tabId: string, runId: string | null, fn: () => Promise<T>) => {
+        bs.order.push(`driving:${tabId}:${runId}`); return fn();
+      },
+    },
+  };
+});
+
+const snap = (over: Record<string, unknown> = {}) => ({
+  snapshotId: 'snap_aaa', generation: 'gen-1', url: 'https://a.example/q', title: '结果页',
+  nodes: [], collection: { truncated: false, returned: 0, totalKnown: 0 }, iframes: 0, ...over,
+});
+const node = (over: Record<string, unknown> = {}) => ({
+  index: 1, nodeId: 7, role: 'textbox', name: '检索框', x: 10, y: 20, w: 200, h: 30, ...over,
+});
+
+type Exec = (id: string, params: unknown, signal?: AbortSignal) => Promise<{ content: { text?: string }[]; details?: unknown }>;
+const toolNamed = (name: string): { execute: Exec; description: string } =>
+  createBrowserTools({ currentRunId: () => 'run-1' })
+    .find((t) => t.name === name) as unknown as { execute: Exec; description: string };
+
+const bodyOf = (r: { content: { text?: string }[] }): string => r.content.map((c) => c.text ?? '').join('\n');
+
+const act = (actions: unknown[], signal?: AbortSignal) =>
+  toolNamed('browser_act').execute('call-1', { tabId: 't1', actions }, signal);
+
+beforeEach(() => {
+  bs.order.length = 0; bs.isolated.length = 0; bs.mainWorld.length = 0; bs.cdp.length = 0;
+  bs.current = snap();
+  bs.snapshotImpl = () => snap({ snapshotId: 'snap_bbb' });
+  bs.isolatedImpl = () => null;
+  bs.noTab = false;
+});
+
+describe('未接通的动作：显式失败，绝不以成功措辞返回（C1）', () => {
+  // 计划原文写的是「browserTools.ts 先不提交 —— 动作派发是桩，Task 4 补完再一起提交」。
+  // 它提前进了库，于是 click / hover / type / select 算完目标就 `return "click → #12"`：
+  // 一次都没派发到页面，返回值却读起来是「做过了」。模型据此认为自己点过了，
+  // 接着对一个没变的页面继续操作，或者判定这个站点的检索入口坏了并换源，全程零错误。
+  const targeted = [
+    ['click', { kind: 'click', index: 1, snapshotId: 'snap_aaa' }],
+    ['hover', { kind: 'hover', index: 1, snapshotId: 'snap_aaa' }],
+    ['type', { kind: 'type', index: 1, snapshotId: 'snap_aaa', text: '量子计算' }],
+    ['select', { kind: 'select', index: 1, snapshotId: 'snap_aaa', value: '2024' }],
+  ] as const;
+
+  for (const [kind, action] of targeted) {
+    it(`${kind} 报「还没有实现」并让整批停下，不回报「做过了」`, async () => {
+      bs.current = snap({ nodes: [node()] });
+      const s = bodyOf(await act([action]));
+      expect(s).toContain('还没有实现');
+      expect(s).toContain('⚠');
+      // 桩的原形：`click → #7`。这个形状一旦回来，这条必红。
+      expect(s).not.toMatch(new RegExp(`${kind} → #?\\d`));
+      expect(s).not.toContain(`${kind} → `);
+    });
+  }
+
+  // 措辞不许把「我们这一侧没做完」说成「这个源不行」—— 说错了模型就会去换源。
+  it('措辞明说是 KyDog 这一侧没接通，且明说换源没有用', async () => {
+    bs.current = snap({ nodes: [node()] });
+    const s = bodyOf(await act([{ kind: 'click', index: 1, snapshotId: 'snap_aaa' }]));
+    expect(s).toMatch(/KyDog 这一侧|我们这一侧/);
+    expect(s).toContain('换源没有用');
+  });
+
+  // C2：scroll / wait 被 validateBatch 放行、needsTarget 也说它们不需要目标，
+  // 而派发侧从前无条件 resolveTarget → 必抛，报的还是另一件事（「需要一个目标」）。
+  // skill 教的翻页剧本会停在 wait 那一步，模型去给 wait 加 selector，永远走不出去。
+  const untargeted = [
+    ['scroll', { kind: 'scroll', direction: 'down' }],
+    ['wait', { kind: 'wait', until: { selector: '.result' } }],
+  ] as const;
+
+  for (const [kind, action] of untargeted) {
+    it(`${kind} 报的是「还没有实现」，不是那句说的是另一件事的「需要一个目标」`, async () => {
+      const s = bodyOf(await act([action]));
+      expect(s).toContain('还没有实现');
+      expect(s).not.toContain('需要一个目标');
+      expect(s).not.toContain('snapshotId');
+    });
+  }
+
+  // 已经接通的两种照常跑：这条反过来钉住上面那些不是「整个工具都在抛」。
+  it('key 与 extract 照常执行 —— 不是整个工具都在抛', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: '一篇论文' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    const s = bodyOf(await act([
+      { kind: 'key', key: 'Enter' },
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+    ]));
+    expect(s).toContain('按下 Enter');
+    expect(s).toContain('抽到 1 条');
+    expect(s).not.toContain('⚠');
+    expect(bs.cdp.map((c) => c.method)).toEqual(['Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+  });
+
+  // 工具描述是模型第一眼看到的契约。派发没接通而描述照旧说「典型的检索是 click →
+  // type → click」，模型只能靠撞一次错误才知道。
+  it('工具描述如实说清此刻只接通了哪两种', () => {
+    const d = toolNamed('browser_act').description;
+    expect(d).toContain('key');
+    expect(d).toContain('extract');
+    expect(d).toMatch(/只接通|还没有实现|还没实现/);
+  });
+});
+
+describe('密码硬闸：assertTypeAllowed 的唯一调用点（评审变异 M12）', () => {
+  // 删掉 browserTools 里那一句 `if (action.kind === 'type') assertTypeAllowed(target)`
+  // → 评审实测 2336/2336 全绿。actions.ts 里 assertTypeAllowed 本体有用例（M11 被杀），
+  // 但**没有人守它有没有被调用**。这一组就是那道守。
+  it('往密码框 type：报的是密码闸，不是「还没有实现」', async () => {
+    bs.current = snap({ nodes: [node({ isPassword: true, name: '密码' })] });
+    const s = bodyOf(await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: 'hunter2' }]));
+    expect(s).toContain('不能往密码框里输入');
+    expect(s).toContain('browser_login');
+    // 顺序是刻意的：密码闸排在「还没有实现」前面，放在后面它就成了死代码。
+    expect(s).not.toContain('还没有实现');
+  });
+
+  // 反过来钉住上一条不是空绿：同一条路上非密码框走到的是另一句话。
+  it('非密码框 type：走到的是「还没有实现」那一句', async () => {
+    bs.current = snap({ nodes: [node({ isPassword: false })] });
+    const s = bodyOf(await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: '量子计算' }]));
+    expect(s).toContain('还没有实现');
+    expect(s).not.toContain('不能往密码框里输入');
+  });
+
+  it('密码框那一批里，模型给的文本一个字都不回显', async () => {
+    bs.current = snap({ nodes: [node({ isPassword: true })] });
+    const r = await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: 'hunter2' }]);
+    expect(JSON.stringify(r)).not.toContain('hunter2');
+  });
+});
+
+describe('extract 的接线：隔离世界 + 整批预算（评审变异 M13）', () => {
+  const rowsOf = (n: number, chars: number) => ({
+    rows: Array.from({ length: n }, (_, i) => ({ t: `${i}`.padEnd(chars, 'x') })),
+    rowTruncation: { truncated: false, returned: n, totalKnown: n },
+    fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+  });
+
+  // 把 executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, …) 改回 wc.executeJavaScript(…)
+  // → 评审实测三条 gate 零信号。替身这一层钉得住「调的是哪个入口、世界 id 是哪个」；
+  // 「隔离世界真的骗不到页面覆写」要靠 e2e（E-1 第一条断言）。
+  it('抽取走隔离世界，世界 id 就是 walker 那个，主世界一次都不碰', async () => {
+    bs.isolatedImpl = () => rowsOf(1, 10);
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.isolated.length).toBe(1);
+    expect(bs.isolated[0].worldId).toBe(WORLD_ID);
+    expect(bs.mainWorld).toEqual([]);
+  });
+
+  // M13 的另一半：把 `budget.admit(res.rows, collected)` 换成 `collected.push(...res.rows)`
+  // → 一样零信号。E-1 原来的断言写法（覆写 querySelectorAll 看抽到真结构还是伪造结构）
+  // 拦不住这一条，所以它必须在这里守住。
+  it('整批预算跨步骤累计，超了要如实回报而不是照单全收', async () => {
+    // 每步 40 行 × 约 1000 字符 ≈ 4 万字符，两步就超过 MAX_BATCH_CHARS。
+    bs.isolatedImpl = () => rowsOf(40, 1000);
+    const s = bodyOf(await act([
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+    ]));
+    expect(s).toContain(`累计超过整批 ${MAX_BATCH_CHARS} 字符的预算`);
+    expect(s).toContain('这是截断，不是「只抽到这么多」');
+    // 「共抽到 80 条 / 收下的少于 80」这两个数都要是真的。
+    expect(s).toContain('共抽到 80 条');
+    const kept = Number(/抽到 (\d+) 条（这一批/.exec(s)![1]);
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(80);
+  });
+
+  it('没超预算时一个字都不提预算 —— 截断回报不许有假阳性', async () => {
+    bs.isolatedImpl = () => rowsOf(2, 10);
+    const s = bodyOf(await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]));
+    expect(s).toContain('抽到 2 条：');
+    expect(s).not.toContain('预算');
+  });
+});
+
+describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
+  // browserService.ts 的两处 docblock 逐字写着这两个「公开是给 Task 4 的……不要另开
+  // 一条路」。不走的后果：(a) 整批期间 isAgentActive 恒为 false → 动作触发的
+  // window.open 新标签被判成用户的 → disposeForRun 永不回收；(b) 与渲染层的
+  // browser.navControl / browser.open 在同一标签上不串行。
+  it('排队与驱动窗口都套在整批外面，派发与收尾快照都在里面', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [], rowTruncation: { truncated: false, returned: 0, totalKnown: 0 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'snapshot']);
+  });
+
+  it('browser_read 也走同一条路', async () => {
+    bs.isolatedImpl = () => '正文';
+    await toolNamed('browser_read').execute('call-2', { tabId: 't1' });
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1']);
+  });
+
+  // 形状不对的一批不该先去占住这个标签的队列。
+  it('批次校验在排队之前 —— 不认识的动作根本进不了队列', async () => {
+    await expect(act([{ kind: 'navigate', url: 'https://evil.example/' }])).rejects.toThrow(/不认识的动作/);
+    expect(bs.order).toEqual([]);
+  });
+});
+
+describe('browser_read 走隔离世界（I3）', () => {
+  // 与 extract 当初搬进隔离世界的理由一字不差：页面覆写 document.querySelector /
+  // innerText 骗得到主世界。整页正文同样是模型当事实用的东西。
+  it('读正文用的是隔离世界，不是主世界', async () => {
+    bs.isolatedImpl = () => '正文';
+    const s = bodyOf(await toolNamed('browser_read').execute('call-2', { tabId: 't1' }));
+    expect(bs.mainWorld).toEqual([]);
+    expect(bs.isolated.map((r) => r.worldId)).toEqual([WORLD_ID]);
+    expect(s).toContain('正文');
+  });
+});
+
+describe('收尾快照抛了也要把已经抽到的数据交出来（I2）', () => {
+  // 标签在这一刻已经没了（用户关了侧栏那个标签、或 disposeForRun 抢在前面）就抛
+  // browser.no_tab。快照在 try 之外的时候，这一批**已经抽到的数据全部跟着丢掉** ——
+  // 与 ACT_DESC 承诺的「出错即停但已抽到的数据全部返回」正好相反。
+  it('抽到的数据照常返回，并说清页面此刻什么样这次说不出来', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: '一篇论文' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    bs.snapshotImpl = () => { throw new KydogError('browser.no_tab', '没有这个标签页：t1'); };
+    const r = await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    const s = bodyOf(r);
+    expect(s).toContain('一篇论文');
+    expect(s).toContain('抽到 1 条');
+    expect(s).toContain('取不到收尾快照');
+    // 「我没取到」与「页面没有变化」绝不许长得一样。
+    expect(s).not.toContain('页面没有变化');
+    expect((r.details as { snapshotId: string | null }).snapshotId).toBeNull();
   });
 });

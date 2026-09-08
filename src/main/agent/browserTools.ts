@@ -5,9 +5,9 @@ import type { NavigationObservation } from '../../shared/types';
 import { browserService, WALKER_WORLD_ID } from '../browser/browserService';
 import { renderDiff, renderSnapshot, wrapPageContent, type AxSnapshot } from '../browser/snapshot';
 import {
-  validateBatch, flattenActions, resolveTarget, assertTypeAllowed, keyEventsFor,
+  validateBatch, flattenActions, resolveTarget, assertTypeAllowed, keyEventsFor, needsTarget,
   ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS,
-  type Action,
+  type Action, type TargetSpec, type FlatStep,
 } from '../browser/actions';
 import {
   compileExtractPlan, extractExpression, describeExtractResult, createBatchBudget, describeCollected,
@@ -181,6 +181,11 @@ const ACT_DESC = [
   '定位两种：已探明的剧本用 selector；探索时用 index，且必须带产生它的 snapshotId。',
   '',
   '注意 **Enter 不一定能提交表单**，很多站点要点提交按钮。',
+  '',
+  // 这一行随 Task 4 补完动作派发一起删掉。留着它是因为另一头更贵：
+  // 契约里写着 click / type 而派发侧还没接通时，模型只能靠撞一次错误才知道。
+  '**当前版本只接通了 key 与 extract**：click / type / hover / select / scroll / wait 会明确报'
+  + '「还没有实现」并让这一批停在那里 —— 那是 KyDog 这一侧没做完，不是站点的问题，换源没有用。',
 ].join('\n');
 
 // ── browser_read ────────────────────────────────────────────────────────────
@@ -199,9 +204,9 @@ const READ_DESC = [
 /** run 上下文由 sessionFactory 闭包注入 —— pi 的 ctx 里只有 cwd，没有 KyDog 的 runId。 */
 export type BrowserToolDeps = { currentRunId: () => string | null };
 
-export function createBrowserTools(deps: BrowserToolDeps) {
-  const withTabs = (body: string, tabId?: string) => text(`${tabsLine(tabId)}\n\n${body}`);
+const withTabs = (body: string, tabId?: string): ToolResult => text(`${tabsLine(tabId)}\n\n${body}`);
 
+export function createBrowserTools(deps: BrowserToolDeps) {
   const openTool = {
     name: 'browser_open',
     label: '打开网页',
@@ -234,42 +239,20 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     executionMode: 'sequential' as const,
     async execute(_id: string, params: { tabId: string; actions: Action[] }, signal?: AbortSignal): Promise<ToolResult> {
       const before: AxSnapshot | null = browserService.getSnapshot(params.tabId);
+      // 校验在排队**之前**：形状不对的一批不该先去占住这个标签的队列。
       validateBatch(params.actions);
       const steps = flattenActions(params.actions);
 
-      const rows: string[] = [];
-      const collected: ExtractRow[] = [];
-      // 预算跨步骤累计：`collected` 一把 JSON.stringify 进工具结果，而一批允许 60 个
-      // 动作 / repeat 10 轮 —— 逐格与逐次的上限都拦不住这一头。
-      const budget = createBatchBudget();
-      let stoppedAt: string | null = null;
-
-      for (const step of steps) {
-        if (signal?.aborted) { stoppedAt = `${step.label}：用户中止`; break; }
-        try {
-          const line = await runStep(params.tabId, step.action, collected, budget);
-          rows.push(`${step.label}：${line}`);
-        } catch (err) {
-          const msg = err instanceof KydogError ? err.message : String(err);
-          stoppedAt = `${step.label}失败：${msg}`;
-          break;
-        }
-      }
-
-      const after = await browserService.snapshot(params.tabId);
-      const diff = renderDiff(before, after);
-      const parts = [...rows];
-      // 出错即停，但**已经抽到的数据全部返回** —— 翻到最后一页时 click 找不到「下一页」
-      // 是预期行为，前几轮的结果不该跟着一起丢。
-      if (stoppedAt) parts.push('', `⚠ ${stoppedAt}`, '（此前的动作已经生效，网页不可回滚）');
-      // 预算把后面的行全丢光时（收下 0 条）也要说出口，不然那句话跟着数据块一起没了。
-      const batch = budget.report();
-      if (collected.length || batch.truncated) {
-        parts.push('', describeCollected(batch));
-        if (collected.length) parts.push(wrapPageContent(JSON.stringify(collected, null, 1)));
-      }
-      parts.push('', `── 页面变化（快照 ${after.snapshotId}）──`, diff.text);
-      return { ...withTabs(parts.join('\n'), params.tabId), details: { snapshotId: after.snapshotId, stopped: stoppedAt } };
+      // 整批走 `enqueue` + `withAgentDriving`，与 `browser_open` 同一条路
+      // （`browserService.ts` 那两处「不要另开一条路」说的就是这里）：
+      //  · enqueue —— 渲染层的 browser.navControl / browser.open 走的是另一条路，
+      //    两条同时动一个标签时一次导航的事件会被另一次调用消费掉；
+      //  · withAgentDriving —— 整批期间 `isAgentActive` 必须为 true，否则动作触发的
+      //    `window.open` 新标签会被 `setWindowOpenHandler` 判成用户的，`disposeForRun`
+      //    永不回收它，一轮长检索下来标签只增不减。
+      return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
+        params.tabId, deps.currentRunId(), () => runBatch(params.tabId, steps, before, signal),
+      ));
     },
   };
 
@@ -281,17 +264,112 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     parameters: ReadParams,
     executionMode: 'sequential' as const,
     async execute(_id: string, params: { tabId: string }): Promise<ToolResult> {
-      const wc = browserService.webContentsOf(params.tabId);
-      if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${params.tabId}`);
-      const body = await wc.executeJavaScript(
-        '(() => { const m = document.querySelector("main,article"); '
-        + 'return (m || document.body).innerText.slice(0, 20000); })()',
-      ) as string;
-      return withTabs(wrapPageContent(body), params.tabId);
+      // 与 browser_act 同一条路（enqueue + withAgentDriving）：读正文本身不导航，
+      // 但它必须与同一个标签上在途的导航串起来 —— 否则读到的是上一页的正文，
+      // 而返回值里没有任何东西说得出这件事。
+      return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
+        params.tabId, deps.currentRunId(), async () => {
+          const wc = browserService.webContentsOf(params.tabId);
+          if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${params.tabId}`);
+          // **隔离世界，不是主世界。** 理由与 extract 那一处一字不差：页面覆写
+          // `document.querySelector` / `innerText` 骗得到主世界、骗不到这里
+          // （2026-09-08 spike 实测）。这里返回的整页正文同样是模型当事实用的东西 ——
+          // 页面只要覆写一个取值器就能决定模型读到哪一段。
+          const body = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{
+            code: '(() => { const m = document.querySelector("main,article"); '
+              + 'return (m || document.body).innerText.slice(0, 20000); })()',
+          }]) as string;
+          return withTabs(wrapPageContent(body), params.tabId);
+        },
+      ));
     },
   };
 
   return [openTool, actTool, readTool];
+}
+
+/**
+ * 跑完一批动作并拼出返回值。整个身体都在 `enqueue` + `withAgentDriving` 里面。
+ *
+ * 拆成模块级函数只为一件事：`browser_act` 的接线（排队、驱动窗口、收尾快照、预算）
+ * 是这个文件里**唯一没有被任何用例碰过**的那一层（最终评审的 C4），拆出来之后
+ * browserTools.test.ts 才好把它整条钉住。
+ */
+async function runBatch(
+  tabId: string, steps: FlatStep[], before: AxSnapshot | null, signal?: AbortSignal,
+): Promise<ToolResult> {
+  const rows: string[] = [];
+  const collected: ExtractRow[] = [];
+  // 预算跨步骤累计：`collected` 一把 JSON.stringify 进工具结果，而一批允许 60 个
+  // 动作 / repeat 10 轮 —— 逐格与逐次的上限都拦不住这一头。
+  const budget = createBatchBudget();
+  let stoppedAt: string | null = null;
+
+  for (const step of steps) {
+    if (signal?.aborted) { stoppedAt = `${step.label}：用户中止`; break; }
+    try {
+      const line = await runStep(tabId, step.action, collected, budget);
+      rows.push(`${step.label}：${line}`);
+    } catch (err) {
+      const msg = err instanceof KydogError ? err.message : String(err);
+      stoppedAt = `${step.label}失败：${msg}`;
+      break;
+    }
+  }
+
+  // **收尾快照要接住。** 它在 try 之外的时候，标签在这一刻已经没了（用户关了侧栏那个
+  // 标签、或 disposeForRun 抢在前面）就抛 browser.no_tab，把这一批**已经抽到的数据
+  // 一起丢光** —— 与 ACT_DESC 和下面那句注释承诺的「出错即停但已抽到的数据全部返回」
+  // 正好相反。
+  let after: AxSnapshot | null = null;
+  let snapshotFailed: string | null = null;
+  try {
+    after = await browserService.snapshot(tabId);
+  } catch (err) {
+    snapshotFailed = err instanceof KydogError ? err.message : String(err);
+  }
+
+  const parts = [...rows];
+  // 出错即停，但**已经抽到的数据全部返回** —— 翻到最后一页时 click 找不到「下一页」
+  // 是预期行为，前几轮的结果不该跟着一起丢。
+  if (stoppedAt) parts.push('', `⚠ ${stoppedAt}`, '（此前的动作已经生效，网页不可回滚）');
+  // 预算把后面的行全丢光时（收下 0 条）也要说出口，不然那句话跟着数据块一起没了。
+  const batch = budget.report();
+  if (collected.length || batch.truncated) {
+    parts.push('', describeCollected(batch));
+    if (collected.length) parts.push(wrapPageContent(JSON.stringify(collected, null, 1)));
+  }
+  if (after) {
+    parts.push('', `── 页面变化（快照 ${after.snapshotId}）──`, renderDiff(before, after).text);
+  } else {
+    // 「我没取到」与「页面没有变化」绝不许长得一样。
+    parts.push('', '── 页面变化 ──',
+      `取不到收尾快照：${snapshotFailed}。上面是这一批实际做到的部分；`
+      + '页面此刻什么样这一次说不出来 —— 这是**没看到**，**不要**据此断定它没变。');
+  }
+  return {
+    ...withTabs(parts.join('\n'), tabId),
+    details: { snapshotId: after?.snapshotId ?? null, stopped: stoppedAt, snapshotFailed },
+  };
+}
+
+/**
+ * 动作派发还没接通的那几种。
+ *
+ * **绝不以成功措辞返回。** 计划里 `browserTools.ts` 本来是「等 Task 4 补完动作派发
+ * 再一起提交」的，那时的 `default` 分支算完目标就 `return \`click → #12\``——
+ * 一次都没派发到页面，而返回值读起来是「做过了」。工具一旦先于 Task 4 注册进
+ * `sessionFactory`（Task 6 Step 8 不依赖 Task 4），agent 点「搜索」按钮会收到
+ * 「第 1 个动作：click → #12」外加「页面没有变化。」，于是判定这个站点的检索入口坏了
+ * 并换源，全程零错误。这正是 `actions.ts` 白名单 docblock 逐字描述的失败模式。
+ *
+ * 措辞里不许出现「打不开 / 这个源不行」那类断言：这是**我们这一侧还没做**，
+ * 与站点无关，说错了模型就会去换源。
+ */
+function notImplemented(kind: string): KydogError {
+  return new KydogError('browser.bad_action',
+    `${kind} 这个动作还没有实现 —— KyDog 这一侧的动作派发尚未接通，它一个字都没有发到页面上。`
+    + '这与站点无关，换源没有用；这一批到此为止，请改用已经能用的动作（key / extract）或换一条路。');
 }
 
 /** 执行一个动作，返回一句给模型看的说明。真正碰页面的部分都在这里。 */
@@ -321,9 +399,20 @@ async function runStep(
       return describeExtractResult(res, res.rows.length - kept);
     }
     default: {
-      const target = resolveTarget(action as never, browserService.getSnapshot(tabId));
-      if (action.kind === 'type') assertTypeAllowed(target);
-      return `${action.kind} → ${target.kind === 'selector' ? target.selector : `#${target.nodeId}`}`;
+      // **`needsTarget` 与派发侧必须对上。** `scroll` / `wait` 被 validateBatch 放行、
+      // `needsTarget` 也说它们不需要目标，而这里无条件 `resolveTarget` 就必抛，
+      // 报的还是另一件事（「这个动作需要一个目标：要么给 selector…」）——
+      // 于是 skill 教的翻页剧本 `[click 下一页, wait {selector:'.result'}, extract]`
+      // 停在第 2 步，模型去给 wait 加 selector，而 wait 的 selector 在 `until` 里，
+      // 怎么加都不对，永远走不出去。`actions.ts:48-51` 逐字写着「派发那一侧要先问这个」。
+      if (needsTarget(action)) {
+        const target = resolveTarget(action as TargetSpec, browserService.getSnapshot(tabId));
+        // **密码硬闸排在「还没实现」前面，这是刻意的。** 它是 `assertTypeAllowed` 的
+        // 唯一调用点：放在后面就成了死代码，Task 4 补派发的人不会知道要把它接回来。
+        // 而对模型来说「不许往密码框打字」也比「这个动作还没实现」更该先说。
+        if (action.kind === 'type') assertTypeAllowed(target);
+      }
+      throw notImplemented(action.kind);
     }
   }
 }
