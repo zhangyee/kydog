@@ -152,8 +152,9 @@ export class TabRegistry {
     this.touch();
   }
 
-  /** 回收本轮 agent 开的标签，返回要销毁的 id。**挂在 agent_settled 上，不是 agent_end** ——
-   *  pi 在 agent_end 之后仍可能自动重试，那时标签还属于同一轮 KyDog run。 */
+  /** 回收本轮 agent 开的标签，返回要销毁的 id。命不中就是空数组（**幂等**，第二遍什么都不做）。
+   *  什么时候该调它，由 `browserService.disposeForRun` 那段注释统一说明（三个触发点，
+   *  其中正常收尾挂的是 `agent_settled` 而不是 `agent_end`）。 */
   disposeForRun(runId: string): string[] {
     const doomed = this.tabs.filter((t) => t.ownerRunId === runId).map((t) => t.id);
     for (const id of doomed) this.removeAt(this.indexOf(id));

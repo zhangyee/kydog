@@ -762,8 +762,14 @@ export class BrowserService {
     } catch { return null; }
   }
 
-  /** **挂在 agent_settled 上，不是 agent_end** —— pi 在 agent_end 之后仍可能自动重试，
-   *  那时标签还属于同一轮 KyDog run。 */
+  /** 回收某一轮 agent 开的标签。**三个触发点**，都在 `AgentService` 里、都读同一个
+   *  `bound.runId`（见那段注释），一轮 run 从哪个出口结束就由哪一处收尾：
+   *   · `agent_settled` —— 正常收尾。**挂在它上面，不是 `agent_end`**：pi 在 agent_end
+   *     之后仍可能自动重试，那时标签还属于同一轮 KyDog run；
+   *   · `send()` 的 catch —— `prompt()` reject（没配 key / OAuth 过期…）时 pi 不补发
+   *     `agent_settled`，本轮在那里就地落地；
+   *   · `dispose()` —— session 一拆就永远等不到 settle，最后回收一次。
+   *  **幂等**：标签已被摘走时 `doomed` 为空，直接返回。 */
   disposeForRun(runId: string): void {
     const gone = this.registry.disposeForRun(runId);
     for (const id of gone) this.destroyView(id);

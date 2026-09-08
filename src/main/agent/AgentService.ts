@@ -44,8 +44,14 @@ export type Bound = {
    */
   runStartIndex: number | null;
   /**
-   * 这条 session 此刻在为**哪一轮 KyDog run** 服务。`send()` 铸出 runId 时写，
-   * `agent_settled` 收尾时清。
+   * 这条 session 此刻在为**哪一轮 KyDog run** 服务。**唯一的写入点**是 `send()` 铸出
+   * runId 那一下（另一处是造 bound 时的初始 null）；**清除点有三个**，每一个都顺带把
+   * 本轮的标签回收掉，三处同形：
+   *  · `agent_settled` 分支 —— pi 正常收尾；
+   *  · `send()` 的 catch —— `prompt()` reject，pi 不会补发 `agent_settled`；
+   *  · `dispose()` —— session 一拆就永远等不到 settle 了。
+   * 少一个出口，这个字段就会**留在那里**：`hasActiveRun()` 从此恒为真（切界面语言永久
+   * 被拒）、`currentRunIdFor` 继续拿死掉的 runId 盖戳、那些标签再也没人回收。
    *
    * **不能用 `runs` 现算代替**，两处都栽在同一件事上：
    *  · `agent_settled` 不带任何载荷（`agent-session.d.ts` 的 `{ type:"agent_settled" }`），
@@ -206,6 +212,19 @@ class AgentService {
       this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
       broadcaster.emit('run.ended', { threadId, runId, reason: 'error', errorMessage: msg });
       logger.error('agent', 'prompt failed', { threadId, err: msg });
+      // **本轮在这里落地**：pi 的 `agent_settled` 只在 `_runAgentPrompt` 的 finally 里发
+      // （`agent-session.js:755`），而 `prompt()` 的 catch（`:792`）排在它被 await 之前就
+      // throw 了 —— 没选模型 / OAuth 过期 / 没有 API key / 压缩失败 /
+      // `before_agent_start` 扩展抛错，这几条都是「reject 了但从没 settle 过」。
+      // 不清的话 `hasActiveRun()` 永远为真，用户此后切界面语言一律被拒（见 Bound.runId）。
+      //
+      // 相等判断不能省：reject 迟到时 `bound.runId` 可能已经是下一轮的了，
+      // 无条件置 null 会把新那一轮的戳抹掉。字段还是本轮的，才轮得到这里收尾 ——
+      // 顺带回收本轮的标签，与另外两个出口同形（settled 已经来过时这一支不会进）。
+      if (bound.runId === runId) {
+        bound.runId = null;
+        browserService.disposeForRun(runId);
+      }
     });
     return { runId };
   }
@@ -224,8 +243,8 @@ class AgentService {
   async dispose(threadId: string): Promise<void> {
     const bound = this.sessions.get(threadId);
     if (!bound) return;
-    // **session 一拆，本轮就再也不会 settle 了** —— `disposeForRun` 全仓只有
-    // `agent_settled` 一个触发点，而 `agent_settled` 由 pi 的 session 发。所以这里补最后
+    // **session 一拆，本轮就再也不会 settle 了** —— `agent_settled` 由 pi 的 session 发
+    // （`_runAgentPrompt` 的 finally），session 没了就没人发。所以这里补最后
     // 一次回收：不补的话，本轮开的标签带着一个永远等不到 settle 的 `ownerRunId`，
     // 此后任何一轮的 `disposeForRun` 都命中不了它们，它们占着 MAX_TABS 的名额活到进程退出。
     //
@@ -479,7 +498,9 @@ class AgentService {
    * 字段。`runs` 在 `agent_end` 就被置回 idle，而 pi 在那之后仍可能自动重试
    * （`docs/extensions.md:560`）：拿 `runs` 当闸，用户在重试窗口里切语言会被放行，
    * 而 locale.set 那段注释写明的前提正是「切换时没有 run 在跑」。
-   * `bound.runId` 恰好活在 `send()` 到 `agent_settled` 之间，就是那个前提本身。
+   * `bound.runId` 恰好活在 `send()` 到本轮落地之间（三个出口，见 `Bound.runId`），
+   * 就是那个前提本身 —— 其中 `send()` 的 catch 那个出口是必需的：`prompt()` reject
+   * （没配 key / OAuth 过期）时 pi 不发 `agent_settled`，漏了它这道闸就再也开不回来。
    */
   hasActiveRun(): boolean {
     return [...this.sessions.values()].some((b) => b.runId !== null);

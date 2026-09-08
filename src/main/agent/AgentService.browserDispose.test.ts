@@ -8,6 +8,7 @@ vi.mock('../browser/browserService', () => ({
 
 import { agentService } from './AgentService';
 import { browserService } from '../browser/browserService';
+import { logger } from '../log';
 
 type Listener = (evt: { type: string; [k: string]: unknown }) => void;
 
@@ -18,7 +19,12 @@ const disposeForRun = browserService.disposeForRun as unknown as ReturnType<type
  * map 里塞 bound。**runs 故意不预置**：本文件考的正是 runId 从 `send()` 铸出来之后
  * 一路活到 `agent_settled` 这条链。
  */
-function attach(threadId: string) {
+function attach(threadId: string, opts: {
+  /** 默认立刻 resolve。传一个会 reject / 迟迟不落地的，用来考 send() 的错误出口。 */
+  prompt?: () => Promise<void>;
+  /** 传了才有 cleanup（AgentService 优先用它、否则回退 dispose）。用来撑开 await 窗口。 */
+  cleanup?: () => Promise<void>;
+} = {}) {
   let listener: Listener = () => undefined;
   const bound = {
     threadId, providerId: 'anthropic', modelId: 'm', cwd: '/x',
@@ -29,7 +35,8 @@ function attach(threadId: string) {
     runStartIndex: null,
     runId: null as string | null,
     session: {
-      prompt: vi.fn(async () => {}),
+      prompt: vi.fn(opts.prompt ?? (async () => {})),
+      cleanup: opts.cleanup,
       abort: vi.fn(),
       dispose: vi.fn(),
       subscribe: (l: Listener) => { listener = l; return () => undefined; },
@@ -43,6 +50,9 @@ function attach(threadId: string) {
 
 /** 一次正常收尾的 agent_end（pi 的载荷形状）。 */
 const AGENT_END = { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'endTurn' }] };
+
+/** 把挂在 promise 上的 catch 回调放出来跑完（宏任务一轮，微任务队列必然清空）。 */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   (agentService as any).sessions.clear();
@@ -247,6 +257,23 @@ describe('dispose(thread)：session 拆了，本轮标签在这里最后回收�
     expect(disposeForRun).not.toHaveBeenCalled();
   });
 
+  /**
+   * `dispose` 里那句 `bound.runId = null` 防的就是这一格：它排在
+   * `await bound.session.cleanup()` **之前**，所以 cleanup 还没落地、订阅还挂着的那段时间里
+   * 打进来的 `agent_settled` 读到的已经是 null，不会再回收第二次。
+   * （账本层本来就幂等，所以这是一道防御线；没有这条用例它零守护。）
+   */
+  it('cleanup 那个 await 窗口里 settled 打进来 → 只回收一次，不重复', async () => {
+    let finishCleanup!: () => void;
+    const { fire } = attach('t1', { cleanup: () => new Promise<void>((res) => { finishCleanup = res; }) });
+    const { runId } = await agentService.send('t1', '/x', '你好');
+    const pending = agentService.dispose('t1');
+    fire({ type: 'agent_settled' });
+    finishCleanup();
+    await pending;
+    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+  });
+
   it('disposeAllSessions（切界面语言那条路）：两条 thread 各回收各的', async () => {
     const a = attach('t1');
     attach('t2');
@@ -288,5 +315,60 @@ describe('hasActiveRun：闸读的是 bound.runId，不是现算的 runs', () =>
   it('从没 send 过的 session 不算', () => {
     attach('t1');
     expect(agentService.hasActiveRun()).toBe(false);
+  });
+});
+
+/**
+ * **同一族的第四个洞：`prompt()` 一 reject，`bound.runId` 就再也没人清。**
+ *
+ * pi 那侧不会兜底：`agent_settled` 唯一的发出点是 `_emitAgentSettled()`，只在
+ * `_runAgentPrompt` 的 `finally` 里调（`agent-session.js:755`），而 `prompt()` 的 catch
+ * （`:792`）排在 `_runAgentPrompt` 被 await 之前 —— 没选模型（`:844`）、OAuth 凭据过期
+ * （`:851`）、没有 API key（`:856`）、压缩失败（`:861`）、`before_agent_start` 扩展抛错
+ * （`:884`）这几条路径都是「reject 了但 session 从没 settle 过」。
+ * **不是边角**：首次运行没配好 key、token 过期都是日常路径。
+ *
+ * 所以本轮必须在 `send()` 的 catch 里就地落地，与另外两个出口（`agent_settled`、
+ * `dispose`）同形：清掉戳、回收本轮的标签。漏了这一手，`hasActiveRun()` 会永远为真，
+ * 用户此后在设置里切界面语言一律被拒（提示「有任务正在运行」而根本没有任务在跑），
+ * 只能靠重发一条 / 删线程 / 重启应用恢复。
+ */
+describe('send() 的 prompt reject：pi 不补发 agent_settled，本轮在这里落地', () => {
+  beforeEach(() => { vi.spyOn(logger, 'error').mockImplementation(() => undefined); });
+
+  it('reject 之后闸开得回来 —— 否则切界面语言从此永久被拒', async () => {
+    const { bound } = attach('t1', { prompt: async () => { throw new Error('no API key'); } });
+    await agentService.send('t1', '/x', '你好');
+    await flush();
+    // KyDog 这一侧已经判定这轮结束了（界面上是一条错误、没有转圈）……
+    expect(agentService.getRunState('t1').status).toBe('error');
+    // ……那么闸与戳就必须跟着落地。
+    expect(bound.runId).toBeNull();
+    expect(agentService.hasActiveRun()).toBe(false);
+    expect(agentService.currentRunIdFor('t1')).toBeNull();
+  });
+
+  it('本轮的标签在这里回收 —— settled 永远不会来，这是最后一次机会', async () => {
+    attach('t1', { prompt: async () => { throw new Error('OAuth 凭据已过期'); } });
+    const { runId } = await agentService.send('t1', '/x', '你好');
+    await flush();
+    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+  });
+
+  it('迟到的 reject 只清自己那一轮，不许把下一轮的戳一起抹掉', async () => {
+    const rejects: Array<(e: Error) => void> = [];
+    const { fire } = attach('t1', { prompt: () => new Promise<void>((_, rj) => { rejects.push(rj); }) });
+    const first = await agentService.send('t1', '/x', '甲');
+    fire({ type: 'agent_start' });
+    fire(AGENT_END);
+    fire({ type: 'agent_settled' });                             // 第一轮正常收尾，标签已回收
+    const second = await agentService.send('t1', '/x', '乙');     // 新一轮盖上新戳
+    expect(second.runId).not.toBe(first.runId);
+
+    rejects[0](new Error('迟到的 reject'));                       // 第一轮那条 promise 现在才落地
+    await flush();
+    expect(agentService.currentRunIdFor('t1')).toBe(second.runId);
+    expect(agentService.hasActiveRun()).toBe(true);
+    expect(disposeForRun.mock.calls).toEqual([[first.runId]]);    // 没顺手把第二轮的标签也收了
   });
 });
