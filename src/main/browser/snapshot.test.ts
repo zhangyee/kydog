@@ -293,6 +293,108 @@ describe('两层截断分开如实回报，数不出来的总数不编', () => {
   it('没有 iframe 时不多这一句', () => {
     expect(renderSnapshot(snap([n(1, 1, 'button', '搜索')])).text).not.toContain('iframe');
   });
+
+  // 非空快照上的 iframe 附注一条用例都没有 —— 把附注改成「只在空快照时给」全绿。
+  // 而 §F 那条 CNKI 恰恰是非空的：300 条无关链接 + 检索区在 iframe 里。
+  it('快照非空时也要说 iframe：内容在框里这件事跟采到几条链接无关', () => {
+    const links = Array.from({ length: 3 }, (_, i) => n(i + 1, i + 1, 'link', `链接 ${i}`));
+    const r = renderSnapshot(snap(links, 's1', { iframes: 2 }));
+    expect(r.text).toContain('iframe');
+    expect(r.text).toContain('未穿透');
+  });
+
+  it('diff 里页面有 iframe 时也说一句', () => {
+    const prev = snap([n(1, 100, 'button', '搜索')], 's1', { iframes: 1 });
+    const next = snap([n(1, 100, 'button', '搜索'), n(2, 101, 'link', '结果')], 's2', { iframes: 1 });
+    expect(renderDiff(prev, next).text).toContain('iframe');
+  });
+
+  // §C 点名禁止「把一层的数字冒充另一层」。walker 的上限用例只断言了 limit，
+  // 没有一条断言 limitValue —— 把 limitValue 恒设成 MAX_NODES 全绿，而模型会读到
+  // 「最多判断 300 个候选元素」，真实上限是另一个数。
+  it('采集层的上限值照实印出来，不同层印不同的数', () => {
+    const one = renderSnapshot(snap([n(1, 1, 'link', 'x')], 's1',
+      { collection: { truncated: true, returned: 1, limit: 'nodes', limitValue: 300 } }));
+    expect(one.text).toContain('最多 300 条');
+    const two = renderSnapshot(snap([n(1, 1, 'link', 'x')], 's1',
+      { collection: { truncated: true, returned: 1, limit: 'walked', limitValue: 80_000 } }));
+    expect(two.text).toContain('80000');
+    expect(two.text).not.toContain('300');
+  });
+
+  // c.limit 来自**页面里执行**的 walker，类型系统管不到它。walker 一漂移，
+  // 主进程渲染快照时就 TypeError —— 模型的唯一眼睛在这里整个瞎掉。
+  it('walker 报回一个没见过的上限名，渲染不许抛异常', () => {
+    const bad = { truncated: true, returned: 1, limit: 'frobnicated', limitValue: 42 } as unknown as AxSnapshot['collection'];
+    const r = renderSnapshot(snap([n(1, 1, 'link', 'x')], 's1', { collection: bad }));
+    expect(r.text).toContain('采集');
+    expect(r.text).toContain('42');
+  });
+
+  // 撞了输出上限但遍历走完了：候选总数是数得出来的，那就该给。
+  it('输出撞上限但总数数得出来时，说出总数而不是「无从得知」', () => {
+    const nodes = Array.from({ length: 3 }, (_, i) => n(i + 1, i + 1, 'link', `第 ${i} 条`));
+    const r = renderSnapshot(snap(nodes, 's1',
+      { collection: { truncated: true, returned: 3, limit: 'nodes', limitValue: 300, totalKnown: 917 } }));
+    expect(r.text).toContain('917');
+    expect(r.text).not.toContain('无从得知');
+  });
+});
+
+describe('显示层与 diff 的边界', () => {
+  // 恰好等于上限时没有用例 —— `total > limit` 改成 `>=` 全绿，而那会输出
+  // 「…… 还有 0 条未显示」这种自相矛盾的话。
+  it('条数恰好等于显示上限：不算截断，也不多那句「还有 0 条」', () => {
+    const nodes = Array.from({ length: 5 }, (_, i) => n(i + 1, i + 1, 'link', `第 ${i} 条`));
+    const r = renderSnapshot(snap(nodes), 5);
+    expect(r).toMatchObject({ returned: 5, total: 5, truncated: false });
+    expect(r.text).not.toContain('未显示');
+  });
+
+  // 重号的前提检查只有 prev 一侧有用例：把 `!before || !after` 改成 `!before` 全绿。
+  // next 里出现重号时 new Map 只留最后一个，removed 会凭空多出一条。
+  it('next 里出现重复 nodeId 时同样退回全量', () => {
+    const prev = snap([n(1, 7, 'button', '甲')], 's1');
+    const next = snap([n(1, 7, 'button', '甲'), n(2, 7, 'button', '乙')], 's2');
+    const r = renderDiff(prev, next);
+    expect(r.text).toContain('重复的元素编号');
+    expect(r.text).toContain('[2] button "乙"');
+  });
+
+  // changed() 里的 isPassword 项：值两边都空（没有 value 键）时，
+  // 「这个框从此刻起是密码框了」是唯一还在变的事实。
+  it('值两边都空、只有 isPassword 翻转：算变化', () => {
+    const prev = snap([n(1, 100, 'textbox', '口令')]);
+    const next = snap([n(1, 100, 'textbox', '口令', { isPassword: true })], 's2');
+    const r = renderDiff(prev, next);
+    expect(r.text).not.toContain('没有变化');
+    expect(r.text).toContain('密码框');
+  });
+
+  // I4：changed() 比的是**截断后**的串。两条只在第 160 字之后不同的检索式会被判成
+  // 「没有变化」—— 那是**看不出来**，不是**没变**，两者不许长得一样。
+  it('比对的值被截断过时，「没有变化」要带上「之后的改动看不出来」', () => {
+    const long = `${'石'.repeat(160)}…[截断，原长 200 字符]`;
+    const prev = snap([n(1, 100, 'textbox', '检索式', { value: long, valueTruncated: true })]);
+    const next = snap([n(1, 100, 'textbox', '检索式', { value: long, valueTruncated: true })], 's2');
+    const r = renderDiff(prev, next);
+    expect(r.text).toContain('没有变化');
+    expect(r.text).toContain('截断');
+    expect(r.text).toContain('看不出');
+  });
+
+  it('没有截断过的元素时，不多这句噪声', () => {
+    const prev = snap([n(1, 100, 'textbox', '检索式', { value: '石墨烯' })]);
+    const next = snap([n(1, 100, 'textbox', '检索式', { value: '石墨烯' })], 's2');
+    expect(renderDiff(prev, next).text).not.toContain('看不出');
+  });
+
+  // 截断记号是给模型读的：它必须原样出现在渲染结果里，不许被再截一次或吞掉。
+  it('截断记号原样进渲染，原长看得见', () => {
+    const long = `${'石'.repeat(160)}…[截断，原长 200 字符]`;
+    const r = renderSnapshot(snap([n(1, 100, 'textbox', '检索式', { value: long, valueTruncated: true })]));
+    expect(r.text).toContain('原长 200 字符');
+  });
 });
 
 // ── walker.js 的替身 DOM ──────────────────────────────────────────────────────
@@ -336,7 +438,16 @@ class FakeEl {
 
 class FakeRoot {
   constructor(readonly kids: FakeEl[]) {}
-  querySelectorAll(): FakeEl[] { return flatten(this.kids); }
+
+  // walker 只用两个选择器直接查这个根：`'*'`（遍历）与 `'iframe,frame'`（数框）。
+  // 这两个简单到可以照 DOM 语义精确实现，不必重写 CSS 引擎 —— 其余的匹配仍然走
+  // FakeEl.matches()，由用例用 `interactive` 显式声明。
+  querySelectorAll(sel: string): FakeEl[] {
+    const all = flatten(this.kids);
+    if (sel === '*') return all;
+    const tags = sel.split(',').map((t) => t.trim().toUpperCase());
+    return all.filter((e) => tags.indexOf(e.tagName.toUpperCase()) !== -1);
+  }
 }
 
 /** 文档序展开，**不进 shadow 树** —— 与 querySelectorAll 的语义一致。 */
@@ -468,6 +579,85 @@ describe('walker：密码判据基于持久事实，不是此刻的 type', () =>
     expect(out.nodes[0].isPassword).toBeUndefined();
     expect(out.nodes[0].value).toBe('石墨烯');
   });
+
+  // 判据 4 的名字正则会误伤 <input type=submit name=passwordSubmit value=登录>：
+  // 提交按钮的 value 是它**唯一的可见标签**（nameOf 不取 value），当密码值抹掉之后
+  // 渲染成 `[N] submit "" (密码框，值不显示)`，模型看不见按钮上写的是什么。
+  // 判据 3/4 只对**装得下用户打进去的文本**的控件成立。
+  it('名字里带 password 的提交按钮不算密码框，按钮上的字照常看得见', () => {
+    const out = runWalker(newWorld(), [
+      input({ type: 'submit', value: '登录', attrs: { name: 'passwordSubmit' } }),
+    ]);
+    expect(out.nodes[0].isPassword).toBeUndefined();
+    expect(out.nodes[0].value).toBe('登录');
+  });
+
+  // ── I2 收窄 ───────────────────────────────────────────────────────────────
+  // 密码记忆原来只在 collect() 里登记，而 collect 只处理**当次可见且采到**的元素。
+  // 多步登录 / 折叠面板里的密码框首次快照时正是 display:none 的：等它显形，
+  // 站点已经把 type 改成 text 了，明文照样进快照。遍历见过它就该登记。
+  it('首次快照时是隐藏的 password 框，显形后已改成 text：明文仍然不进快照', () => {
+    const win = newWorld();
+    // 故意不给 name / id / autocomplete —— 这条只能靠「遍历见过它是 password」站住。
+    const pw = input({ type: 'password', value: 'hunter2', style: HIDDEN });
+    const first = runWalker(win, [pw]);
+    expect(first.nodes.length).toBe(0);            // 这一次它压根没被采到
+
+    pw.style = { visibility: 'visible', display: 'block', opacity: '1' };
+    pw.type = 'text';
+    const second = runWalker(win, [pw]);
+    expect(second.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(second)).not.toContain('hunter2');
+  });
+
+  // 同一条边界的另一面：撞了 MAX_NODES 之后遍历不中止，所以排在 300 条之后的
+  // 密码框照样被登记。
+  it('排在输出上限之后的 password 框也被记住', () => {
+    const win = newWorld();
+    const links = Array.from({ length: 400 }, (_, i) => el('A', { interactive: true, innerText: `链接 ${i}` }));
+    const pw = input({ type: 'password', value: 'hunter2' });
+    runWalker(win, [...links, pw]);
+
+    pw.type = 'text';
+    const second = runWalker(win, [pw]);
+    expect(second.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(second)).not.toContain('hunter2');
+  });
+});
+
+// ── I4 ────────────────────────────────────────────────────────────────────────
+// 160 字的静默截断在本批之前无害（value 采了不用）。本批第一次让它进渲染与 diff
+// 判据：agent 往高级检索框打一条 200 字的检索式 → 快照回显前 160 字、没有任何记号
+// → 模型无从判断落进去的是全串还是被站点截了。
+describe('walker：超长文本带截断记号，记号里带原长', () => {
+  const LONG = '石'.repeat(200);
+
+  it('value 超长：带记号、带原长，并把「被截了」这个事实单独报出来', () => {
+    const out = runWalker(newWorld(), [input({ value: LONG, attrs: { 'aria-label': '检索式' } })]);
+    expect(out.nodes[0].value).toContain('…[截断，原长 200 字符]');
+    expect(out.nodes[0].value!.startsWith('石'.repeat(160))).toBe(true);
+    expect(out.nodes[0].valueTruncated).toBe(true);
+  });
+
+  it('name 走同一条路径，一并带记号', () => {
+    const out = runWalker(newWorld(), [el('A', { interactive: true, innerText: LONG })]);
+    expect(out.nodes[0].name).toContain('…[截断，原长 200 字符]');
+    expect(out.nodes[0].nameTruncated).toBe(true);
+  });
+
+  it('没超长的照旧，一个记号都不多', () => {
+    const out = runWalker(newWorld(), [input({ value: '石墨烯', attrs: { 'aria-label': '检索式' } })]);
+    expect(out.nodes[0].value).toBe('石墨烯');
+    expect(out.nodes[0].valueTruncated).toBeUndefined();
+    expect(out.nodes[0].nameTruncated).toBeUndefined();
+  });
+
+  // 原长本身是协议层事实：200 字变 240 字，记号里的数就变了，diff 抓得住。
+  it('只有截断之后那一段变了、原长也变了：diff 认得出来', () => {
+    const a = runWalker(newWorld(), [input({ value: '石'.repeat(200), attrs: { 'aria-label': 'q' } })]);
+    const b = runWalker(newWorld(), [input({ value: '石'.repeat(240), attrs: { 'aria-label': 'q' } })]);
+    expect(a.nodes[0].value).not.toBe(b.nodes[0].value);
+  });
 });
 
 describe('walker：采集缺口与截断回报', () => {
@@ -497,32 +687,61 @@ describe('walker：采集缺口与截断回报', () => {
     expect(out.collection).toEqual({ truncated: false, returned: 1, totalKnown: 2 });
   });
 
-  it('输出撞上限：说清是哪一道，且总数数不出来就不给这个键', () => {
+  // 撞 MAX_NODES 只是「不再往 nodes 里写」，**遍历不中止** —— 所以候选总数照样数得完，
+  // 这时 totalKnown 就该给。给不出来的只有「连走都没走完」那一种。
+  it('输出撞上限：说清是哪一道、上限值是那一层自己的数，且遍历走完了就照样给总数', () => {
     const many = Array.from({ length: 400 }, (_, i) => el('A', { interactive: true, innerText: `第 ${i} 条` }));
     const out = runWalker(newWorld(), many);
     expect(out.nodes.length).toBe(300);
     expect(out.collection.truncated).toBe(true);
     expect(out.collection.limit).toBe('nodes');
-    expect('totalKnown' in out.collection).toBe(false);
+    // 上限值必须是**这一层自己**的数。恒填另一层的数（把 300 冒充成遍历上限、
+    // 或反过来）在这条之前没有任何用例抓得住。
+    expect(out.collection.limitValue).toBe(300);
+    expect(out.collection.totalKnown).toBe(400);
   });
 
-  // 遍历本身也要有上界：凑够 300 条可见元素之前先走完上万个不可见元素，
-  // 每个都要 getBoundingClientRect + getComputedStyle，采集脚本会把渲染进程卡住数秒。
-  it('可见性判断撞上限（一大堆不可见的候选）：同样如实回报', () => {
-    const hidden = Array.from({ length: 2100 }, () => el('A', { interactive: true, style: HIDDEN }));
-    const out = runWalker(newWorld(), hidden);
-    expect(out.nodes.length).toBe(0);
-    expect(out.collection.truncated).toBe(true);
-    expect(out.collection.limit).toBe('examined');
-    expect('totalKnown' in out.collection).toBe(false);
+  // ── C1 验收 ───────────────────────────────────────────────────────────────
+  // 页面结构 = display:none 的巨型菜单在**前** + 检索框与搜索按钮在**后**（文档序）。
+  // 只截「输出」不截「遍历」的老实现慢但采得到；把可见性判断也设成 2000 条上限、
+  // 撞到就整轮中止之后，同一页返回 nodes: []。**页首的隐藏元素不许饿死页尾的真控件。**
+  it('页首两万个不可见元素，不许让页尾的检索框消失', () => {
+    const menu = Array.from({ length: 20_000 }, (_, i) =>
+      el('A', { interactive: true, innerText: `菜单 ${i}`, style: HIDDEN }));
+    const out = runWalker(newWorld(), [
+      ...menu,
+      input({ attrs: { placeholder: '检索' } }),
+      el('BUTTON', { interactive: true, innerText: '搜索' }),
+    ]);
+    expect(out.nodes.map((x) => x.name)).toEqual(['检索', '搜索']);
+    expect(out.collection.truncated).toBe(false);
+    expect(out.collection.totalKnown).toBe(20_002);
   });
 
-  it('遍历撞上限（几万个节点的大目录页）：不静默停手', () => {
-    const junk = Array.from({ length: 25_001 }, () => el('SPAN'));
+  it('遍历撞上限（八万个节点的大目录页）：不静默停手，上限值是遍历那一层的数', () => {
+    const junk = Array.from({ length: 80_001 }, () => el('SPAN'));
     const out = runWalker(newWorld(), junk);
     expect(out.collection.truncated).toBe(true);
     expect(out.collection.limit).toBe('walked');
+    expect(out.collection.limitValue).toBe(80_000);
+    // 走都没走完，本页候选总数就是数不出来 —— 不填 0，也不拿 returned 冒充。
     expect('totalKnown' in out.collection).toBe(false);
+  });
+
+  // ── I1 ────────────────────────────────────────────────────────────────────
+  // 需求书 §F 那条 CNKI：检索区在 iframe 里，而页首先有一长串链接把 MAX_NODES 撑爆。
+  // 撞上限就整轮中止的实现里 iframes 停在半路（实测 0），renderSnapshot 的 iframe
+  // 附注挂在 iframes > 0 上 → 一个字都不提 iframe。
+  it('输出撞上限之后，iframe 照样数得准', () => {
+    const links = Array.from({ length: 400 }, (_, i) => el('A', { interactive: true, innerText: `链接 ${i}` }));
+    const out = runWalker(newWorld(), [...links, el('IFRAME'), el('IFRAME')]);
+    expect(out.collection.limit).toBe('nodes');
+    expect(out.iframes).toBe(2);
+  });
+
+  it('shadow 树里的 iframe 也数得到', () => {
+    const host = el('DIV', { shadowRoot: new FakeRoot([el('IFRAME'), el('SPAN')]) });
+    expect(runWalker(newWorld(), [el('IFRAME'), host]).iframes).toBe(2);
   });
 
   it('disabled 与 value 都采出来（渲染层要用）', () => {

@@ -27,6 +27,16 @@ export type AxNode = {
   value?: string;
   disabled?: boolean;
   /**
+   * `name` / `value` 超过 walker 的文本上限、被截断过了吗。
+   *
+   * 截断本身在串里带记号（`…[截断，原长 N 字符]`，照 extract 那批的规矩），
+   * 所以「200 字变 240 字」diff 认得出来。**认不出来的是「只在截断点之后不同、
+   * 原长又恰好一样」**：那时 `changed()` 比的两个串完全相等，输出「页面没有变化。」
+   * —— 而那是**看不出来**，不是**没变**。这两个字段就是让下游能把这句话说清楚。
+   */
+  nameTruncated?: boolean;
+  valueTruncated?: boolean;
+  /**
    * 这个框是不是用来收密码的（判据见 walker 里那段注释：不是「此刻 type 等于什么」）。
    *
    * **它必须在类型里**：`actions.ts` 的密码硬闸读的就是它。不进类型的话，walker 改个名
@@ -50,18 +60,27 @@ export type AxCollection = {
   /** 真正写进 `nodes` 的条数 */
   returned: number;
   /**
-   * 撞的是哪一道上限：`nodes` = 输出条数，`examined` = 可见性判断（强制 layout 的那步），
-   * `walked` = 遍历。没截断时**不给**这个键。
+   * 撞的是哪一道上限：`nodes` = 写进快照的条数，`walked` = 遍历本身。
+   * 没截断时**不给**这个键；两道都撞到时报 `walked`（走都没走完是更严重的那一条）。
+   *
+   * **不要假设这个联合是穷尽的**：值来自页面里执行的 walker，类型系统管不到它。
+   * 渲染时按未知值也不许抛异常处理（见 `limitPhrase`）。
    */
-  limit?: 'nodes' | 'examined' | 'walked';
-  /** 撞到的那道上限的数值。没截断时不给。 */
+  limit?: 'nodes' | 'walked';
+  /**
+   * 撞到的那道上限的**数值**。没截断时不给。
+   *
+   * 必须是 `limit` 那一层自己的数：一层的数字冒充另一层，模型会读到
+   * 「最多判断 300 个候选元素」而真实上限是别的数（§C 点名禁止的那件事）。
+   */
   limitValue?: number;
   /**
    * 本页可交互候选元素的总数（含 shadow 树、不含 iframe，也含不可见因而没进 `nodes` 的）。
    *
-   * **只有把候选走完才数得出** —— 任何一道上限被撞到就根本不给这个键：
-   * 不填 0，也不拿 `returned` 冒充。（这条规矩与 extract 那批的
-   * `fieldTruncation` 一致：数不出来的数就不要编一个。）
+   * **只有把候选走完才数得出**。写满 `nodes` 上限**不影响**它：walker 撞到那道闸只是
+   * 不再往 `nodes` 里写，遍历照走 —— 所以这时它照样是真数。只有遍历自己停在半路
+   * （`limit === 'walked'`）才根本不给这个键：不填 0，也不拿 `returned` 冒充。
+   * （这条规矩与 extract 那批的 `fieldTruncation` 一致：数不出来的数就不要编一个。）
    */
   totalKnown?: number;
 };
@@ -87,6 +106,12 @@ export type AxSnapshot = {
    * 本页数到的 iframe / frame 个数。**本期不穿透**（拍板），但这件事要说出来：
    * 不说的话，「页面没渲染出来」「被拦截页挡住」「内容在 iframe 里」在模型眼里
    * 长得一模一样，它没有依据判断该换源还是该交给人。
+   *
+   * **不受采集上限影响**：walker 用一次独立的 `querySelectorAll('iframe,frame')` 数，
+   * 顶层文档那一次在遍历开始之前就跑完了。早先是在遍历循环里逐个比对 tag，
+   * 撞上限提前停手就只数到半路（实测：400 个链接在前、2 个 iframe 在后 → 0）。
+   * 唯一还数不全的情形是 `collection.limit === 'walked'`：遍历停在半路，
+   * 没走到的 shadow 树里可能还有框 —— 那时整份快照本来就只覆盖了页面前一段。
    */
   iframes: number;
 };
@@ -127,9 +152,25 @@ const line = (n: AxNode): string => {
 
 const LIMIT_WORD: Record<NonNullable<AxCollection['limit']>, string> = {
   nodes: '一份快照最多 %d 条',
-  examined: '最多判断 %d 个候选元素是否可见',
   walked: '最多遍历 %d 个元素',
 };
+
+/**
+ * 把「撞的是哪一道闸、那道闸多大」说成一句话。
+ *
+ * **不许假设 `limit` 一定在表里**：它来自页面里执行的 walker，类型系统管不到它
+ * （`AxCollection` 是我们照 walker 现状写的一份声明，不是它的编译期约束）。
+ * walker 一漂移，`LIMIT_WORD[c.limit].replace(...)` 就是主进程渲染快照时抛
+ * TypeError —— 模型的唯一眼睛在这里整个瞎掉，而这本来只该是一句话不好看。
+ * 认不出来的名字就把原样报出去：说不清是哪道闸，好过什么都说不出来。
+ */
+function limitPhrase(c: AxCollection): string {
+  const value = c.limitValue !== undefined ? String(c.limitValue) : '未知';
+  if (c.limit === undefined) return '上限';
+  const tpl: string | undefined = Object.prototype.hasOwnProperty.call(LIMIT_WORD, c.limit)
+    ? LIMIT_WORD[c.limit] : undefined;
+  return tpl ? tpl.replace('%d', value) : `上限 ${c.limit} = ${value}`;
+}
 
 /**
  * 采集层的附注。**它说的不是显示层那件事** —— 「这份快照只显示了 120 条」和
@@ -139,9 +180,19 @@ function collectionNotes(s: AxSnapshot): string[] {
   const notes: string[] = [];
   const c = s.collection;
   if (c.truncated) {
-    const how = c.limit ? LIMIT_WORD[c.limit].replace('%d', String(c.limitValue ?? '')) : '上限';
-    notes.push(`⚠ 采集时已截断（${how}）：这份快照里的 ${c.returned} 条**不是本页的全部**，`
-      + '页面上还有没采到的元素，而且总数无从得知 —— 找不到某个控件时不要断定它不存在。');
+    const how = limitPhrase(c);
+    const tail = c.limit === 'walked'
+      // 遍历停在半路：采集按**文档序**走，丢的是页面**后面**那一段，不是随机几条。
+      // 这是模型判断「该换个更小的页面还是交给人」的依据。
+      ? '采集按文档序走，页面后面那一段一个元素都没走到'
+      : '页面上还有没采到的元素';
+    notes.push(c.totalKnown !== undefined
+      // 撞 nodes 上限只是不再往快照里写，候选照样走完了 —— 总数是真数得出来的，
+      // 那就说出来：模型知道「本页共 917 个候选、这里只有 300 个」才知道要不要换词。
+      ? `⚠ 采集时已截断（${how}）：本页共 ${c.totalKnown} 个可交互候选元素，`
+        + `这份快照只有 ${c.returned} 条 —— 找不到某个控件时不要断定它不存在。`
+      : `⚠ 采集时已截断（${how}）：这份快照里的 ${c.returned} 条**不是本页的全部**，`
+        + `${tail}，而且总数无从得知 —— 找不到某个控件时不要断定它不存在。`);
   } else if (c.totalKnown !== undefined && c.totalKnown > c.returned) {
     notes.push(`（本页共 ${c.totalKnown} 个可交互候选元素，其中 ${c.returned} 个当前可见，已全部列在上面。）`);
   }
@@ -194,7 +245,9 @@ const shownValue = (n: AxNode) => (n.isPassword ? '（密码框，值不显示�
  */
 const changed = (a: AxNode, b: AxNode) =>
   a.role !== b.role || a.name !== b.name
-  || a.value !== b.value || a.disabled !== b.disabled || a.isPassword !== b.isPassword;
+  || a.value !== b.value || a.disabled !== b.disabled || a.isPassword !== b.isPassword
+  // 「刚才被截过、现在没有」本身就是一次变化（原长跌回上限以内）。
+  || a.nameTruncated !== b.nameTruncated || a.valueTruncated !== b.valueTruncated;
 
 function describeChange(old: AxNode, n: AxNode): string {
   const extra: string[] = [];
@@ -282,6 +335,14 @@ export function renderDiff(prev: AxSnapshot | null, next: AxSnapshot, limit = DE
   }
   if (next.iframes > 0) {
     notes.push(`⚠ 本页有 ${next.iframes} 个 iframe，**未穿透**：里面的变化不会出现在这里。`);
+  }
+  // 被截断过的文本只比了截断后那一段。记号里的原长能让「200 字变 240 字」现形，
+  // 但两条**只在截断点之后**不同、原长又恰好一样的检索式比不出来 —— 那时输出的
+  // 「页面没有变化。」说的是**看不出来**，不是**没变**。这两件事不许长得一样。
+  const cut = [...prev.nodes, ...next.nodes].filter((x) => x.nameTruncated || x.valueTruncated);
+  if (cut.length > 0) {
+    notes.push('⚠ 有元素的名字或值超过上限被截断过（截断记号里带原长）：这里只比对了截断后的那一段，'
+      + '之后的改动看不出来 ——「没有变化」在这些元素上只说明前面那段没变。');
   }
 
   if (lines.length === 0) {
