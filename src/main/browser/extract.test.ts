@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseFieldSpec, compileExtractPlan, extractExpression, describeExtractResult,
-  MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, FIELD_TRUNCATED_MARK,
-  type ExtractPlan, type ExtractResult,
+  createBatchBudget, describeCollected, fieldTruncatedMark,
+  MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS,
+  type ExtractPlan, type ExtractResult, type ExtractRow,
 } from './extract';
 import { KydogError } from '../../shared/errors';
 
@@ -100,6 +101,15 @@ describe('compileExtractPlan', () => {
     expect(() => compileExtractPlan({ item: 'form', p: 'input[type=password]@value' })).toThrow(KydogError);
     expect(() => compileExtractPlan({ item: 'form', p: "input[ type = 'password' ]@value" })).toThrow(KydogError);
   });
+
+  // CSS 的大小写标志（`i` / `s`）写在 `]` 前面。漏了它只是少一句说得清的错
+  // （页面层判据照样把值变成 null），但既然这层的职责就是「话说清楚」，就别留半句。
+  it('带 CSS 大小写标志的 [type="password" i] / [type=password s] 也当场报错', () => {
+    for (const s of ['input[type="password" i]@value', "input[type='password' i]@value",
+      'input[type=password i]@value', 'input[type=password s]@value']) {
+      expect(() => compileExtractPlan({ item: 'form', p: s }), s).toThrow(KydogError);
+    }
+  });
 });
 
 // ── 页面表达式：用一份最小 DOM 替身把生成的代码真的跑一遍 ────────────────────
@@ -119,14 +129,27 @@ class FakeEl {
     return Object.prototype.hasOwnProperty.call(this.kids, sel) ? this.kids[sel] : null;
   }
 
+  // HTML 文档里 getAttribute 会把 qualifiedName ASCII 小写化（DOM §4.9）——
+  // 替身照这个语义来，否则 `@VALUE` 这类大小写变形在替身里会「碰巧」读不到，
+  // 用例就成了摆设（它要考的正是判据有没有跟着归一）。
   getAttribute(name: string): string | null {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    const key = name.toLowerCase();
+    return Object.prototype.hasOwnProperty.call(this.attrs, key) ? this.attrs[key] : null;
   }
 }
 
-/** 替身里的 <input>。`type` 就是 HTMLInputElement 的 IDL 属性，与判据用的是同一个。 */
+/**
+ * 替身里的 <input>。`type` 与 `hidden` 都是 IDL 属性，与判据用的是同一个：
+ * `type` 已经被浏览器归一（`TYPE="HIDDEN"` → `'hidden'`、未知 type → `'text'`），
+ * `hidden` 是全局 `hidden` 内容属性的 IDL 映射（`<input hidden>` → true）。
+ */
 class FakeInput extends FakeEl {
-  constructor(readonly type: string, attrs: Record<string, string> = {}, innerText = '') {
+  constructor(
+    readonly type: string,
+    attrs: Record<string, string> = {},
+    innerText = '',
+    readonly hidden: boolean | string = false,
+  ) {
     super(attrs, innerText);
   }
 }
@@ -169,10 +192,52 @@ describe('页面表达式 · 密码卫生：判据落在拿到真实元素的那
     expect(r.rows).toEqual([{ saml: null, rs: null, csrf: null }]);
   });
 
+  // 属性名大小写：HTML 文档里 `getAttribute` 会把名字 ASCII 小写化（DOM §4.9），
+  // 所以 `@VALUE` 与 `@value` 在页面上是同一件事 —— 判据必须跟着归一，
+  // 否则末尾多按一次 Shift 就把整条闸绕过去了，SAML 断言原样进模型上下文。
+  it('hidden input 的 @VALUE / @Value（大小写变形）同样取不到', () => {
+    const plan = compileExtractPlan({
+      item: 'form',
+      saml: 'input[name=SAMLResponse]@VALUE',
+      rs: 'input[name=RelayState]@Value',
+      csrf: 'input[name=csrf_token]@vAlUe',
+    });
+    const r = runExpression(plan, [row({
+      'input[name=SAMLResponse]': new FakeInput('hidden', { value: '<签名断言>' }),
+      'input[name=RelayState]': new FakeInput('hidden', { value: 'ss:mem:abc' }),
+      'input[name=csrf_token]': new FakeInput('hidden', { value: 'tok-123' }),
+    })]);
+    expect(r.rows).toEqual([{ saml: null, rs: null, csrf: null }]);
+  });
+
+  // `<input hidden name=csrf_token value=…>` 的 IDL `type` 是 'text'，看 type 看不出来。
+  // 判据要看 `hidden` 这个 IDL 属性本身 —— 同样是协议层事实，不是「名字像 token」。
+  it('带全局 hidden 属性的 input（type 仍是 text）的 @value 也取不到', () => {
+    const plan = compileExtractPlan({ item: 'form', t: 'input[name=csrf_token]@value' });
+    const el = new FakeInput('text', { value: 'S3', name: 'csrf_token' }, '', true);
+    const r = runExpression(plan, [row({ 'input[name=csrf_token]': el })]);
+    expect(r.rows).toEqual([{ t: null }]);
+  });
+
   it('普通 input 的 @value 正常 —— 这条守的是别把闸修成一刀切', () => {
     const plan = compileExtractPlan({ item: 'form', q: 'input.q@value' });
     const r = runExpression(plan, [row({ 'input.q': new FakeInput('text', { value: '量子计算' }) })]);
     expect(r.rows).toEqual([{ q: '量子计算' }]);
+  });
+
+  // 归一大小写只该放宽拦截，不该顺手把正常读法也拦了。
+  it('普通 input 的 @VALUE（大写）照样读得到 —— 归一只收紧 hidden，不误伤', () => {
+    const plan = compileExtractPlan({ item: 'form', q: 'input.q@VALUE' });
+    const r = runExpression(plan, [row({ 'input.q': new FakeInput('text', { value: '量子计算' }) })]);
+    expect(r.rows).toEqual([{ q: '量子计算' }]);
+  });
+
+  it('七种常见 input type 的 @value 全部正常，未知 type 归一成 text 也正常', () => {
+    for (const t of ['text', 'search', 'email', 'number', 'url', 'date', '']) {
+      const plan = compileExtractPlan({ item: 'form', q: 'input.q@value' });
+      const r = runExpression(plan, [row({ 'input.q': new FakeInput(t, { value: `v-${t}` }) })]);
+      expect(r.rows, `type=${JSON.stringify(t)}`).toEqual([{ q: `v-${t}` }]);
+    }
   });
 
   it('非 input 元素的 @value 正常（<option value> 这类）', () => {
@@ -227,31 +292,111 @@ describe('页面表达式 · 行数上限只有一份，且截断显式回报', 
 });
 
 describe('页面表达式 · 单字段长度上限', () => {
-  it('超长文本被截断、打上记号，列名进 fieldTruncation.columns', () => {
+  // 「丢了 5 个字符」和「丢了 50 万个」在模型眼里必须长得不一样，否则它没法判断
+  // 该不该把选择器收窄再抽一次。原长在 clip 里就是 v.length，页面上真数得出来。
+  it('超长文本被截断、记号里带上原长，列名进 fieldTruncation.columns', () => {
     const plan = compileExtractPlan({ item: 'body', abs: 'div' });
     const r = runExpression(plan, [row({ div: new FakeEl({}, 'x'.repeat(1500)) })]);
-    expect(r.rows[0].abs).toBe('x'.repeat(1000) + FIELD_TRUNCATED_MARK);
-    expect(r.fieldTruncation).toEqual({ truncated: true, limit: 1000, columns: ['abs'] });
+    expect(r.rows[0].abs).toBe('x'.repeat(1000) + fieldTruncatedMark(1500));
+    expect(r.rows[0].abs).toContain('1500');
+    expect(r.fieldTruncation).toEqual({ truncated: true, limit: 1000, columns: ['abs'], maxOriginal: 1500 });
   });
 
   // 一个被截断的 href 就是一个打不开的链接 —— 那必须逐格看得见，不能只有汇总。
-  it('属性值同样受限，截断后末尾带记号', () => {
+  it('属性值同样受限，截断后末尾带记号与原长', () => {
     const plan = compileExtractPlan({ item: '.r', pdf: 'a@href' });
     const long = 'https://example.org/?q=' + 'y'.repeat(2000);
     const r = runExpression(plan, [row({ a: new FakeEl({ href: long }) })]);
-    expect(r.rows[0].pdf).toBe(long.slice(0, 1000) + FIELD_TRUNCATED_MARK);
+    expect(r.rows[0].pdf).toBe(long.slice(0, 1000) + fieldTruncatedMark(long.length));
     expect(r.fieldTruncation.columns).toEqual(['pdf']);
+    expect(r.fieldTruncation.maxOriginal).toBe(long.length);
   });
 
-  it('没超上限的字段一个字符都不动', () => {
+  it('多格被截时 maxOriginal 取最大的那一格原长', () => {
+    const plan = compileExtractPlan({ item: '.r', a: 'p.a', b: 'p.b' });
+    const r = runExpression(plan, [row({
+      'p.a': new FakeEl({}, 'x'.repeat(1200)),
+      'p.b': new FakeEl({}, 'y'.repeat(9000)),
+    })]);
+    expect(r.fieldTruncation.columns).toEqual(['a', 'b']);
+    expect(r.fieldTruncation.maxOriginal).toBe(9000);
+  });
+
+  it('没超上限的字段一个字符都不动，也不编一个 maxOriginal 出来', () => {
     const plan = compileExtractPlan({ item: '.r', title: 'h3' });
     const r = runExpression(plan, [row({ h3: new FakeEl({}, '一个正常长度的标题') })]);
     expect(r.rows[0].title).toBe('一个正常长度的标题');
     expect(r.fieldTruncation).toEqual({ truncated: false, limit: 1000, columns: [] });
+    expect(Object.prototype.hasOwnProperty.call(r.fieldTruncation, 'maxOriginal')).toBe(false);
   });
 
   it('MAX_FIELD_CHARS 就是 1000 —— 上面几条把这个数字硬写死了', () => {
     expect(MAX_FIELD_CHARS).toBe(1000);
+  });
+});
+
+// ── 整批字符预算 ────────────────────────────────────────────────────────────
+//
+// 单字段上限管一格、行数上限管一次 extract，而 browser_act 一批允许 60 个动作
+// （repeat 10 轮），`collected` 跨步骤累加后一把 JSON.stringify 进工具结果：
+// 10 × 50 行 × 16 字段 × 1000 字符 = 800 万字符，平铺 60 步是 4800 万。
+// 预算跨步骤累计，超了按行截断并如实回报 —— 已经抽到的仍然返回。
+
+describe('整批字符预算：跨步骤累计，超了按行截断并回报', () => {
+  const cell = (n: number) => ({ a: 'x'.repeat(n) });
+  const many = (count: number, n: number): ExtractRow[] => Array.from({ length: count }, () => cell(n));
+
+  it('预算内的行全收，报告说没截断', () => {
+    const budget = createBatchBudget(1000);
+    const out: ExtractRow[] = [];
+    expect(budget.admit(many(3, 10), out)).toBe(3);
+    expect(out).toHaveLength(3);
+    expect(budget.report()).toEqual({ truncated: false, returned: 3, totalKnown: 3, limit: 1000 });
+  });
+
+  it('跨步骤累计：前几步吃掉预算，后面的步骤一行都收不进来', () => {
+    const budget = createBatchBudget(1000);
+    const out: ExtractRow[] = [];
+    // 每行 JSON 是 {"a":"<n 个 x>"}，长度 8+n，再加 1 个分隔符 → n=100 时 109。
+    expect(budget.admit(many(5, 100), out)).toBe(5); // 545
+    expect(budget.admit(many(10, 100), out)).toBe(4); // 到 981，第 5 行会到 1090 > 1000
+    expect(budget.admit(many(3, 100), out)).toBe(0); // 预算已尽，后面的步骤全丢
+    expect(out).toHaveLength(9);
+    expect(budget.report()).toEqual({ truncated: true, returned: 9, totalKnown: 18, limit: 1000 });
+  });
+
+  it('已经抽到的数据仍然返回 —— 截断只砍尾巴，不砍前面的行', () => {
+    const budget = createBatchBudget(1000);
+    const out: ExtractRow[] = [];
+    budget.admit([{ a: '第一条' }, ...many(20, 200)], out);
+    expect(out[0]).toEqual({ a: '第一条' });
+    expect(out.length).toBeGreaterThan(1);
+  });
+
+  // 5 万是硬写的：常量改大改小这条都得跟着红。
+  // 每行 JSON 长 1006（8 + 998），加分隔符 1007 → 49×1007=49343 收得下，50×1007=50350 收不下。
+  it('默认预算下：1006 字符一行的行，收到第 49 行为止', () => {
+    const budget = createBatchBudget();
+    const out: ExtractRow[] = [];
+    expect(budget.admit(many(200, 998), out)).toBe(49);
+    expect(budget.report()).toEqual({ truncated: true, returned: 49, totalKnown: 200, limit: MAX_BATCH_CHARS });
+  });
+
+  it('MAX_BATCH_CHARS 就是 50000 —— 上面那条把这个数字硬写死了', () => {
+    expect(MAX_BATCH_CHARS).toBe(50_000);
+  });
+
+  it('describeCollected：没截断时和从前一模一样，一个字都不提预算', () => {
+    expect(describeCollected({ truncated: false, returned: 7, totalKnown: 7, limit: MAX_BATCH_CHARS }))
+      .toBe('抽到 7 条：');
+  });
+
+  it('describeCollected：截断时报出抽到多少、收进多少、预算是多少', () => {
+    const line = describeCollected({ truncated: true, returned: 49, totalKnown: 200, limit: 50_000 });
+    expect(line).toContain('49');
+    expect(line).toContain('200');
+    expect(line).toContain('50000');
+    expect(line).toContain('截断');
   });
 });
 
@@ -278,14 +423,30 @@ describe('describeExtractResult：截断说人话，不让模型把上限当成�
     expect(line).toBe('抽到 2 条');
   });
 
-  it('字段被截断时点名是哪一列', () => {
+  it('字段被截断时点名是哪一列，并说出最长那一格本应多长', () => {
     const line = describeExtractResult({
       ...base,
       rows: [{}],
       rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
-      fieldTruncation: { truncated: true, limit: MAX_FIELD_CHARS, columns: ['abs'] },
+      fieldTruncation: { truncated: true, limit: MAX_FIELD_CHARS, columns: ['abs'], maxOriginal: 523400 },
     });
     expect(line).toContain('abs');
-    expect(line).toContain(FIELD_TRUNCATED_MARK);
+    expect(line).toContain('523400');
+  });
+
+  // 这一步抽到了 50 条、但整批预算只收得下 12 条时，模型必须知道另外 38 条去哪了。
+  it('被整批预算丢掉的行数说出口', () => {
+    const line = describeExtractResult({
+      ...base,
+      rows: Array.from({ length: 50 }, () => ({})),
+      rowTruncation: { truncated: false, returned: 50, totalKnown: 50 },
+    }, 38);
+    expect(line).toContain('38');
+    expect(line).toContain('预算');
+  });
+
+  it('没被预算丢掉行时一个字都不提预算', () => {
+    const line = describeExtractResult({ ...base, rows: [{}], rowTruncation: { truncated: false, returned: 1, totalKnown: 1 } }, 0);
+    expect(line).toBe('抽到 1 条');
   });
 });

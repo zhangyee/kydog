@@ -9,7 +9,8 @@ import {
   type Action,
 } from '../browser/actions';
 import {
-  compileExtractPlan, extractExpression, describeExtractResult, type ExtractResult,
+  compileExtractPlan, extractExpression, describeExtractResult, createBatchBudget, describeCollected,
+  type ExtractResult, type ExtractRow, type BatchBudget,
 } from '../browser/extract';
 
 type ToolContent = { type: string; [k: string]: unknown };
@@ -165,13 +166,16 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       const steps = flattenActions(params.actions);
 
       const rows: string[] = [];
-      const collected: unknown[] = [];
+      const collected: ExtractRow[] = [];
+      // 预算跨步骤累计：`collected` 一把 JSON.stringify 进工具结果，而一批允许 60 个
+      // 动作 / repeat 10 轮 —— 逐格与逐次的上限都拦不住这一头。
+      const budget = createBatchBudget();
       let stoppedAt: string | null = null;
 
       for (const step of steps) {
         if (signal?.aborted) { stoppedAt = `${step.label}：用户中止`; break; }
         try {
-          const line = await runStep(params.tabId, step.action, collected);
+          const line = await runStep(params.tabId, step.action, collected, budget);
           rows.push(`${step.label}：${line}`);
         } catch (err) {
           const msg = err instanceof KydogError ? err.message : String(err);
@@ -186,8 +190,11 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       // 出错即停，但**已经抽到的数据全部返回** —— 翻到最后一页时 click 找不到「下一页」
       // 是预期行为，前几轮的结果不该跟着一起丢。
       if (stoppedAt) parts.push('', `⚠ ${stoppedAt}`, '（此前的动作已经生效，网页不可回滚）');
-      if (collected.length) {
-        parts.push('', `抽到 ${collected.length} 条：`, wrapPageContent(JSON.stringify(collected, null, 1)));
+      // 预算把后面的行全丢光时（收下 0 条）也要说出口，不然那句话跟着数据块一起没了。
+      const batch = budget.report();
+      if (collected.length || batch.truncated) {
+        parts.push('', describeCollected(batch));
+        if (collected.length) parts.push(wrapPageContent(JSON.stringify(collected, null, 1)));
       }
       parts.push('', `── 页面变化（快照 ${after.snapshotId}）──`, diff.text);
       return { ...withTabs(parts.join('\n'), params.tabId), details: { snapshotId: after.snapshotId, stopped: stoppedAt } };
@@ -216,7 +223,9 @@ export function createBrowserTools(deps: BrowserToolDeps) {
 }
 
 /** 执行一个动作，返回一句给模型看的说明。真正碰页面的部分都在这里。 */
-async function runStep(tabId: string, action: Action, collected: unknown[]): Promise<string> {
+async function runStep(
+  tabId: string, action: Action, collected: ExtractRow[], budget: BatchBudget,
+): Promise<string> {
   const wc = browserService.webContentsOf(tabId);
   if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
 
@@ -235,8 +244,9 @@ async function runStep(tabId: string, action: Action, collected: unknown[]): Pro
       const res = await wc.executeJavaScriptInIsolatedWorld(
         WALKER_WORLD_ID, [{ code: extractExpression(plan) }],
       ) as ExtractResult;
-      collected.push(...res.rows);
-      return describeExtractResult(res);
+      // 按整批预算收行。收不下的如实报出来 —— 静默丢行与静默截断是同一个毛病。
+      const kept = budget.admit(res.rows, collected);
+      return describeExtractResult(res, res.rows.length - kept);
     }
     default: {
       const target = resolveTarget(action as never, browserService.getSnapshot(tabId));

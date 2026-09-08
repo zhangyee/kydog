@@ -39,11 +39,16 @@ export type ExtractResult = {
    */
   rowTruncation: { truncated: boolean; returned: number; totalKnown: number };
   /**
-   * 单字段长度的截断回报。**这里没有 `totalKnown`**：「本应多长」只逐格存在，
-   * 凑不出一个能对应它的总量，spec 也写明数不出来就不要编一个。
-   * `columns` 是被截过的列名（去重）；具体是哪一格，看值末尾的 `FIELD_TRUNCATED_MARK`。
+   * 单字段长度的截断回报。这里没有 `totalKnown`（「所有格子本应多长」凑不出一个
+   * 能对应它的总量，数不出来就不要编），但**逐格的原长是数得出来的** —— `clip` 里
+   * `v.length` 就在手上。所以：
+   * - `maxOriginal`：被截各格原长的**最大值**，只在真的截过时才有；
+   * - 具体哪一格丢了多少，看值末尾的 `fieldTruncatedMark(原长)`。
+   *
+   * 少了这个数，模型看到一条带截断记号的摘要，无从判断丢了 5 个字符还是 50 万个，
+   * 也就无从决定该不该把选择器收窄再抽一次。
    */
-  fieldTruncation: { truncated: boolean; limit: number; columns: string[] };
+  fieldTruncation: { truncated: boolean; limit: number; columns: string[]; maxOriginal?: number };
 };
 
 /** 容量保护，不参与语义判断。 */
@@ -63,16 +68,37 @@ export const MAX_ROWS = 50;
  * 正文 —— 也被压到 50×1000 = 5 万字符，与 `browser_read` 的 2 万字符同一个量级，
  * 不至于一次调用打爆上下文窗口。
  *
- * 注意它管的是**一格**：16 个字段全写宽仍能拼出 80 万字符。真要防那一头得再加一个
- * 总量预算，本期没做（见 task-2c 报告的顾虑一节）。
+ * 注意它管的是**一格**：16 个字段全写宽仍能拼出 80 万字符，一批 60 个动作更多。
+ * 那一头由 `MAX_BATCH_CHARS` 挡（见下）。
  */
 export const MAX_FIELD_CHARS = 1000;
 
 /**
- * 被截断的格子末尾带这个记号。列一级的 `fieldTruncation` 说不出「哪一格」，
- * 而一个被截断的 href 就是一个打不开的链接 —— 那必须逐格看得见。
+ * 一次 `browser_act` 调用里，所有 extract 步骤加起来最多往工具结果里放多少字符。
+ *
+ * 为什么还要这一层：`MAX_FIELD_CHARS` 管一格、`MAX_ROWS` 管一次 extract，而
+ * `validateBatch` 允许 60 个动作 / `repeat` 10 轮，抽到的行**跨步骤累加**后一把
+ * `JSON.stringify` 进工具结果 —— 10 × 50 行 × 16 字段 × 1000 字符 = 800 万字符，
+ * 平铺 60 步是 4800 万。「一次调用打爆上下文窗口」这个失败场景在批一级仍然成立，
+ * 只是从「一步就爆」变成「十步才爆」。
+ *
+ * 5 万的依据：
+ * - 与 `browser_read` 的 2 万字符同一量级，放宽到 2.5 倍是因为一批可以有多步；
+ * - 最坏情况是中文正文，1 字符 ≈ 1 token，5 万字符 ≈ 5 万 token —— 已经是一次
+ *   工具结果的合理上限（约占 200k 窗口的四分之一），再大就不是「截断保护」了；
+ * - 真实检索一步 20 条 × 400 字符 ≈ 8 千字符，5 万够连抽六步不碰上限。
  */
-export const FIELD_TRUNCATED_MARK = '…[截断]';
+export const MAX_BATCH_CHARS = 50_000;
+
+/**
+ * 被截断的格子末尾带这个记号，**并带上这一格截断前的原长**。列一级的
+ * `fieldTruncation` 说不出「哪一格」，而一个被截断的 href 就是一个打不开的链接 ——
+ * 那必须逐格看得见；原长同理：丢 5 个字符和丢 50 万个，模型的处置完全不同。
+ */
+const FIELD_MARK_HEAD = '…[截断，原长 ';
+const FIELD_MARK_TAIL = ' 字符]';
+export const fieldTruncatedMark = (originalLength: number): string =>
+  `${FIELD_MARK_HEAD}${originalLength}${FIELD_MARK_TAIL}`;
 
 const bad = (msg: string) => new KydogError('browser.bad_action', msg);
 
@@ -84,8 +110,11 @@ const ATTR_RE = /^[A-Za-z][A-Za-z0-9_:-]*$/;
  * 那里拿得到真实元素。这里只把「明写 [type=password]」这一种挡在前面，为的是给
  * 一句说得清的错，而不是让模型收到一列 null 再去猜页面结构。
  * 绕过它太容易（`form > *:nth-child(3)@value` 一样选中密码框），所以它只管话说清楚。
+ *
+ * 末尾的 `[is]` 是 CSS 属性选择器的大小写标志（`[type="password" i]`）—— 漏了它
+ * 只是少一句说得清的错（页面层判据照样把值变成 null），但这一层的职责就是把话说清楚。
  */
-const PASSWORD_LITERAL_RE = /\[\s*type\s*=\s*["']?password["']?\s*\]/i;
+const PASSWORD_LITERAL_RE = /\[\s*type\s*=\s*["']?password["']?\s*(?:[is]\s*)?\]/i;
 
 export function parseFieldSpec(raw: string): FieldSpec {
   if (typeof raw !== 'string' || raw.trim() === '') throw bad('选择器不能为空');
@@ -167,10 +196,18 @@ export function compileExtractPlan(selectors: Record<string, string>): ExtractPl
  *    **密码框上一个属性都不读**，不只是 `@value`：`@name` / `@placeholder` 这类确实
  *    不含密码，但一期 agent 本来就不许碰密码框（`actions.ts` 挡住往里打字），放开
  *    它换不来任何用处，却要逐个属性论证「这个不会漏」。fail-closed 更便宜。
- * 2. `@value`：只在**非 hidden**的 input 上读。SAML HTTP-POST 绑定那一步 IdP 渲染的
+ * 2. `@value`：只在**用户看得见的** input 上读。SAML HTTP-POST 绑定那一步 IdP 渲染的
  *    就是 `<input type="hidden" name="SAMLResponse" value="<签名断言>">`，
  *    `getAttribute('value')` 一字不差拿得到这份 bearer 断言；CSRF token 同理。
- *    非 input 元素（`<option value>` 这类）不受这条限制。
+ *    「看不见」有两种协议层写法，两种都算：IDL `type === 'hidden'`，以及全局
+ *    `hidden` 内容属性（`<input hidden name=csrf_token value=…>` 的 IDL `type`
+ *    是 `'text'`，只看 type 看不出来）。非 input 元素（`<option value>` 这类）不受限。
+ *
+ *    属性名在这里**归一大小写**：HTML 文档里 `getAttribute` 会把 qualifiedName
+ *    ASCII 小写化（DOM §4.9），`@VALUE` 与 `@value` 在页面上是同一件事，判据不跟着
+ *    归一就等于末尾多按一次 Shift 即可绕过。归一放在这里而**不是** `parseFieldSpec`：
+ *    SVG 元素不在 HTML 命名空间，`getAttribute('viewBox')` 不小写化，在解析层把 attr
+ *    整个小写化会把 `@viewBox` 这类打坏。
  * 3. 两处容量上限（行数、单字段长度）与它们的截断回报。
  *
  * 插值一律走 `JSON.stringify`：selector / attr / 字段名三处都是字符串字面量，
@@ -189,17 +226,21 @@ export function extractExpression(plan: ExtractPlan): string {
   return `(() => {
   const MAX_ROWS = ${MAX_ROWS};
   const MAX_CHARS = ${MAX_FIELD_CHARS};
-  const MARK = ${lit(FIELD_TRUNCATED_MARK)};
+  const MARK_HEAD = ${lit(FIELD_MARK_HEAD)};
+  const MARK_TAIL = ${lit(FIELD_MARK_TAIL)};
   const columns = [];
+  let maxOriginal = 0;
   const readable = (t, attr) => {
     if (t instanceof HTMLInputElement && t.type === 'password') return false;
-    if (attr === 'value' && t instanceof HTMLInputElement && t.type === 'hidden') return false;
+    const a = String(attr).toLowerCase();
+    if (a === 'value' && t instanceof HTMLInputElement && (t.type === 'hidden' || t.hidden)) return false;
     return true;
   };
   const clip = (v, name) => {
     if (typeof v !== 'string' || v.length <= MAX_CHARS) return v;
     if (columns.indexOf(name) === -1) columns.push(name);
-    return v.slice(0, MAX_CHARS) + MARK;
+    if (v.length > maxOriginal) maxOriginal = v.length;
+    return v.slice(0, MAX_CHARS) + MARK_HEAD + v.length + MARK_TAIL;
   };
   const all = document.querySelectorAll(${lit(plan.item)});
   const rows = [];
@@ -209,16 +250,77 @@ export function extractExpression(plan: ExtractPlan): string {
 ${fields}
     rows.push(row);
   }
+  const fieldTruncation = { truncated: columns.length > 0, limit: MAX_CHARS, columns: columns };
+  if (columns.length > 0) fieldTruncation.maxOriginal = maxOriginal;
   return {
     rows: rows,
     rowTruncation: { truncated: all.length > rows.length, returned: rows.length, totalKnown: all.length },
-    fieldTruncation: { truncated: columns.length > 0, limit: MAX_CHARS, columns: columns },
+    fieldTruncation: fieldTruncation,
   };
 })()`;
 }
 
-/** 给模型看的一句话。截断必须说出口 —— 不说的话「上限」和「这个源的总量」长得一样。 */
-export function describeExtractResult(r: ExtractResult): string {
+/**
+ * 整批预算的截断回报。形状与 `rowTruncation` 一样（`{ truncated, returned, totalKnown }`，
+ * spec §5.5），多一个 `limit` 说明是哪条上限在起作用 —— 别再发明一套新形状。
+ * 这里的 `totalKnown` 是**这一批各步抽到的行数之和**（数得出来的真数），
+ * 不是「页面上一共有多少条」—— 那个数在逐步的 `rowTruncation` 里。
+ */
+export type BatchTruncation = { truncated: boolean; returned: number; totalKnown: number; limit: number };
+
+export type BatchBudget = {
+  /** 把一步抽到的行按预算收进 `out`，返回**实际收下**的行数。 */
+  admit(rows: ExtractRow[], out: ExtractRow[]): number;
+  report(): BatchTruncation;
+};
+
+/**
+ * 一次 `browser_act` 调用一个预算，**跨步骤累计**（`collected` 就是跨步骤累加的）。
+ *
+ * 语义是按行截断：预算一旦装不下某一行，从那一行起后面的全丢（包括后面几步抽到的），
+ * 而**已经收下的行照常返回** —— `browser_act` 对模型的承诺就是「出错即停但已抽到的
+ * 数据全部返回」，预算用尽不该比出错更狠。
+ *
+ * 计量取 `JSON.stringify(row).length`（+1 是数组里的分隔符）：工具结果里那份是
+ * indent=1 的美化输出，比这个数略大（每个字段几个空格），所以预算控的是量级
+ * —— 4800 万 → 5 万 —— 不是逐字节封顶。回报里的行数则是精确计数。
+ */
+export function createBatchBudget(limit: number = MAX_BATCH_CHARS): BatchBudget {
+  let used = 0;
+  let offered = 0;
+  let kept = 0;
+  let exhausted = false;
+  return {
+    admit(rows, out) {
+      let accepted = 0;
+      for (const r of rows) {
+        offered += 1;
+        if (exhausted) continue;
+        const cost = JSON.stringify(r).length + 1;
+        if (used + cost > limit) { exhausted = true; continue; }
+        used += cost;
+        kept += 1;
+        accepted += 1;
+        out.push(r);
+      }
+      return accepted;
+    },
+    report: () => ({ truncated: offered > kept, returned: kept, totalKnown: offered, limit }),
+  };
+}
+
+/** 一批结束时汇总那一行。没截断时与从前逐字相同，一个字都不提预算。 */
+export function describeCollected(t: BatchTruncation): string {
+  if (!t.truncated) return `抽到 ${t.returned} 条：`;
+  return `抽到 ${t.returned} 条（这一批各步共抽到 ${t.totalKnown} 条，累计超过整批 ${t.limit} 字符的预算，`
+    + `其余 ${t.totalKnown - t.returned} 条没有收进来 —— 这是截断，不是「只抽到这么多」）：`;
+}
+
+/**
+ * 给模型看的一句话。截断必须说出口 —— 不说的话「上限」和「这个源的总量」长得一样。
+ * `budgetDropped` 是这一步里被整批预算挡在外面的行数（`collected` 收不下的那些）。
+ */
+export function describeExtractResult(r: ExtractResult, budgetDropped = 0): string {
   let line = `抽到 ${r.rows.length} 条`;
   if (r.rowTruncation.truncated) {
     line += `（页面上共 ${r.rowTruncation.totalKnown} 条，按上限只返回前 ${r.rowTruncation.returned} 条`
@@ -226,7 +328,12 @@ export function describeExtractResult(r: ExtractResult): string {
   }
   if (r.fieldTruncation.truncated) {
     line += `；字段 ${r.fieldTruncation.columns.join(' / ')} 超过 ${r.fieldTruncation.limit} 字符已截断`
-      + `，被截的格子末尾带 ${FIELD_TRUNCATED_MARK}`;
+      + `，被截的格子末尾带${FIELD_MARK_HEAD}<原长>${FIELD_MARK_TAIL}`
+      + `（最长的一格原有 ${r.fieldTruncation.maxOriginal} 字符）`;
+  }
+  if (budgetDropped > 0) {
+    line += `；其中 ${budgetDropped} 条没有收进结果 —— 整批字符预算已用尽`
+      + '（此前收下的仍然在，要接着抽就把字段收窄或分几次调用）';
   }
   return line;
 }
