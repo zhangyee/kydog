@@ -32,7 +32,8 @@ function tabsLine(activeId?: string): string {
   }).join(' · ');
 }
 
-/** 导航结果说人话。三种终态措辞不同，因为模型对它们的处置不同。 */
+/** 导航结果说人话。每种终态措辞都不同，因为模型对它们的处置不同 ——
+ *  尤其是「我们知道发生了什么」的那几种与 timeout 不能混为一谈。 */
 function describeNav(nav: NavigationObservation): string {
   const o = nav.outcome;
   switch (o.kind) {
@@ -42,14 +43,24 @@ function describeNav(nav: NavigationObservation): string {
         // 说清状态码，让 skill 的换源规则有协议层依据，而不是去猜页面文案。
         ? `已打开 ${o.finalUrl}，但服务器返回 HTTP ${o.httpStatusCode} —— 页面到了，内容多半是拦截页或错误页。`
         : `已打开 ${o.finalUrl}（HTTP ${o.httpStatusCode}）。`;
+    case 'ok_same_document':
+      // 同文档导航（hash / pushState / 站内路由）没有 HTTP 响应，文档也没换。
+      return `已在同一个文档内跳转到 ${o.finalUrl}（没有新的 HTTP 响应）。页面没有整体换掉，内容多半是脚本改出来的。`;
     case 'failed':
       return `打不开：${o.errorDesc}（错误码 ${o.errorCode}）。这是网络层的明确拒绝。`;
+    case 'crashed':
+      return `页面进程崩溃了（${o.reason}）。这不是网络层的拒绝，也不说明这个源不可用 —— 重开一次多半就好。`;
     case 'download':
       return `这个地址是一个文件（${o.mimeType}，${o.filename}），不是网页。`
         + '本期浏览器不下载文件，已按策略取消。'
         + '如果它是 arXiv / PMC / DOI，把标识符交给 fastpaper download；否则把链接报给用户。';
+    case 'blocked':
+      return `这次导航被 KyDog 自己的网址闸拦下了：${o.reason}。**不是源不可用** —— 换一个公网地址再试。`;
+    case 'superseded':
+      return '这次导航在途中被另一次导航接替了（用户点了刷新，或者页面自己跳走了），本次没有结果。页面现在是什么状态由那一次决定 —— 要用就先重新看一眼，别拿这次的结论去推断。';
     case 'timeout':
-      return '到时限仍没有明确结果，已停止这次导航。**这与「打不开」不是一回事** —— 我们不知道发生了什么，别据此断定这个源不可用。';
+      return '到时限仍没有明确结果，已停止这次导航。**这与「打不开」不是一回事** —— 我们不知道发生了什么，别据此断定这个源不可用。'
+        + (o.abortObserved ? '（期间主 frame 被中断过一次 ERR_ABORTED，但始终没有等到后续事实。）' : '');
   }
 }
 
