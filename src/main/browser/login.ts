@@ -35,8 +35,18 @@ export type LoginHostDecision =
    * **必须用当时的 URL 重新跑一次 `checkLoginHost`**，只有拿到 `fill` 才可以填。
    */
   | { kind: 'confirm-then-fill'; host: string; origin: string }
-  /** 不填，也不问。`reason` 会进模型上下文与日志，所以不含原始 URL。 */
-  | { kind: 'refuse'; reason: string };
+  /**
+   * 不填，也不问。`reason` 会进模型上下文与日志，所以不含原始 URL，是给人看的中文。
+   *
+   * `why` 是给下游分流用的判别值 —— 字面量联合，与 `checkLoginHost` 里实际的六个
+   * `refuse` 分支一一对应，别多也别少。之所以不用 `KydogErrorCode`：理由的分类
+   * 属于登录模块，错误码属于协议层，「字面量 → 错误码」的映射留给调用方自己做。
+   */
+  | {
+      kind: 'refuse';
+      reason: string;
+      why: 'not-https' | 'no-host' | 'bare-ip' | 'local-host' | 'entity-has-no-host' | 'unparsable';
+    };
 
 /** IPv6 字面量在 URL 里带方括号，WHATWG 解析后 hostname 仍保留它们。 */
 function isIpLiteral(host: string): boolean {
@@ -106,26 +116,34 @@ export function checkLoginHost(args: {
   // 拒绝理由里一律不回显 currentUrl：它可能整条带着凭据，而 reason 会进
   // KydogError.message（→ 模型上下文）与日志（→ 落盘）。
   let cur: URL;
-  try { cur = new URL(currentUrl); } catch { return { kind: 'refuse', reason: '当前标签的网址无法解析' }; }
+  try { cur = new URL(currentUrl); } catch { return { kind: 'refuse', reason: '当前标签的网址无法解析', why: 'unparsable' }; }
 
   const host = normalizeHost(cur.hostname);
-  if (host === '') return { kind: 'refuse', reason: '当前标签没有主机名' };
+  if (host === '') return { kind: 'refuse', reason: '当前标签没有主机名', why: 'no-host' };
 
   // 校园密码只走 https。这一档压在 confirmedLogin 前面 —— 否则一条脏的
   // http origin 就能把「已确认」变成放行 http 的通行证。
   if (cur.protocol !== 'https:') {
-    return { kind: 'refuse', reason: `当前标签是 ${cur.protocol.replace(':', '')}，机构登录只在 https 上填` };
+    return {
+      kind: 'refuse',
+      reason: `当前标签是 ${cur.protocol.replace(':', '')}，机构登录只在 https 上填`,
+      why: 'not-https',
+    };
   }
 
   // 学校的登录页不会是一个 IP 或本机名字。这一档同样压在 confirmedLogin 前面。
   if (isIpLiteral(host)) {
-    return { kind: 'refuse', reason: `当前标签是 IP 地址（${host}），不是机构的登录页` };
+    return { kind: 'refuse', reason: `当前标签是 IP 地址（${host}），不是机构的登录页`, why: 'bare-ip' };
   }
   // 内网名字直接复用 urlGuard 那份后缀表 —— 同一件事不许有第二份，会漂。
   // 但**不能整个调 checkUrl**：那道闸放行公网 IP（`http://8.8.8.8/` 是 ok 的），
   // 而登录页判据要连公网裸 IP 一起拒，所以上面那条 isIpLiteral 是额外加的。
   if (isLocalHostname(host)) {
-    return { kind: 'refuse', reason: `当前标签是本机或内网地址（${host}），不是机构的登录页` };
+    return {
+      kind: 'refuse',
+      reason: `当前标签是本机或内网地址（${host}），不是机构的登录页`,
+      why: 'local-host',
+    };
   }
 
   const entityHost = hostOfEntityID(entityID);
@@ -136,6 +154,7 @@ export function checkLoginHost(args: {
     return {
       kind: 'refuse',
       reason: '这个机构的 entityID 是 URN 或格式不合，无法据此判断登录页，请手动登录',
+      why: 'entity-has-no-host',
     };
   }
 
@@ -197,9 +216,10 @@ export function isSamlAssertionPost(req: UploadedRequest, entityID: string): boo
   if (targetHost === '' || targetHost === idpHost) return false;
 
   // 分块要先拼起来再判：`SAMLResponse=` 可能正好跨在两块中间。
-  const body = (req.uploadData ?? [])
-    .map((d) => (d.bytes ? d.bytes.toString('utf8') : ''))
-    .join('');
+  // 拼的是 Buffer 不是字符串 —— 逐块先各自 toString('utf8') 再 join 的话，跨块的
+  // 多字节字符会在两侧各解出一个 U+FFFD（ASCII 的 `&`/`SAMLResponse=` 不受影响，
+  // 所以这里不是漏判，但拼字节才是正确的做法）。
+  const body = Buffer.concat((req.uploadData ?? []).map((d) => d.bytes ?? Buffer.alloc(0))).toString('utf8');
   // 按参数边界匹配，不用 includes —— `XSAMLResponse=` 会假阳。
   return /(^|&)SAMLResponse=/.test(body);
 }

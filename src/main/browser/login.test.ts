@@ -174,6 +174,48 @@ describe('checkLoginHost：直接拒绝（不给确认机会）', () => {
   });
 });
 
+describe('checkLoginHost：refuse 带一个可分流的判别值 why', () => {
+  // reason 是给人看的中文，不能让下游 match 它来分流。why 是字面量联合，
+  // 要和 checkLoginHost 里实际的 refuse 分支一一对应 —— 六个分支，六个取值。
+  const refuseWhy = (args: Parameters<typeof checkLoginHost>[0]) => {
+    const r = checkLoginHost(args);
+    expect(r.kind).toBe('refuse');
+    if (r.kind !== 'refuse') throw new Error('unreachable');
+    return r.why;
+  };
+
+  it('当前标签的网址无法解析 → unparsable', () => {
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://svc:秘密密码@[bad/', confirmedLogin: null }))
+      .toBe('unparsable');
+  });
+
+  it('当前标签没有主机名 → no-host', () => {
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://./', confirmedLogin: null })).toBe('no-host');
+  });
+
+  it('非 https → not-https', () => {
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogin: null }))
+      .toBe('not-https');
+  });
+
+  it('裸 IP → bare-ip', () => {
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://8.8.8.8/', confirmedLogin: null })).toBe('bare-ip');
+  });
+
+  it('内网名字 → local-host', () => {
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://localhost/', confirmedLogin: null }))
+      .toBe('local-host');
+  });
+
+  it('entityID 是 URN，没有 host 可比 → entity-has-no-host', () => {
+    expect(refuseWhy({
+      entityID: 'urn:mace:ac.uk:sdss.ac.uk:provider:identity:dur.ac.uk',
+      currentUrl: 'https://sso.dur.ac.uk/',
+      confirmedLogin: null,
+    })).toBe('entity-has-no-host');
+  });
+});
+
 describe('checkLoginHost：返回形状让漏判确认的调用方编译不过', () => {
   // 老形状是 { ok: true; needsConfirm: boolean; host: string }，调用方写
   // `if (check.ok) await fillPassword()` 完全合法、编译通过、用例全绿 ——
