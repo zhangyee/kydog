@@ -158,6 +158,24 @@ describe('导航观测：跨文档导航在途时，同文档事件不定论', (
     expect(n.observation()).toBeNull();
   });
 
+  // 上面几条用的都是简化序列（只有 did-navigate-in-page）。**真实的 pushState 必然
+  // 先发一个同文档的 did-start-navigation**，再发 did-navigate-in-page —— 少了这一步，
+  // 「crossDocumentPending 不清零」这个不变式就没有任何用例钉住：把同文档那一支改成
+  // 顺手清零，上面几条照样全绿，而它正是「旧文档的 replaceState 冒充本次导航结果」
+  // 那条 Critical 的守卫。守卫本身没人守，等于那条 Critical 随时可以悄悄回来。
+  it('跨文档在途时，旧文档一次完整的 pushState（同文档 did-start-navigation + did-navigate-in-page）仍不定论', () => {
+    const n = t('n1', 'https://publisher.example/article');
+    n.onDidStartNavigation('https://publisher.example/article', true, false);
+    n.onDidStartNavigation('https://old.example/list?p=2', true, true);
+    n.onDidNavigateInPage('https://old.example/list?p=2', true);
+    expect(n.observation()).toBeNull();
+    // 而本次跨文档导航自己的结果照常收敛，指向的是新地址不是旧文档那个
+    n.onDidNavigate('https://publisher.example/article', 200);
+    expect(n.observation()!.outcome).toEqual({
+      kind: 'ok', finalUrl: 'https://publisher.example/article', httpStatusCode: 200,
+    });
+  });
+
   // 旧文档的 pushState 也不该把本次导航真正的失败盖掉。
   it('跨文档在途时旧文档的同文档跳转之后，本次导航的失败仍然报得出来', () => {
     const n = t('n1', 'https://publisher.example/article');
