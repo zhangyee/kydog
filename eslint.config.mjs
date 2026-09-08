@@ -18,6 +18,16 @@ export default [
   },
   js.configs.recommended,
   {
+    // 注入网页执行的脚本：它跑在浏览器里、不是 Node，也不是模块 ——
+    // 整份源码被 ?raw 原样送进 executeJavaScriptInIsolatedWorld。
+    files: ['src/main/browser/injected/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'script',
+      globals: { ...globals.browser },
+    },
+  },
+  {
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
