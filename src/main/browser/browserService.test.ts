@@ -460,6 +460,27 @@ describe('侧栏没打开时照样下发 1280（§B）', () => {
     expect(seq).toEqual(['cdp', 'walker']);
   });
 
+  // 上面那条断的是「发出顺序」——`sendCommand` 本身是**同步**把 'cdp' 推进 seq 的，
+  // 收尾那句改成 await 还是 void 顺序都不变，所以它区分不了两者（复审 M16）。
+  // 这里换一条真的区分先后的用例：override 落地之前，walker 压根不许被执行。
+  // 背景标签的第一次快照、以及不经过 navigate() 的调用方（Task 4 的动作派发）
+  // 走的都是这一句 —— 比 navigate() 收尾那句更承重。
+  it('snapshot() 收尾必须 await 视口：override 落地之前 walker 不许先跑', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    const id = svc.getState().tabs[0].id;
+    wc.isolatedImpl = () => Promise.resolve(walkerOut());
+    let land!: () => void;
+    wc.debugger.respond = () => new Promise((r) => { land = () => r({}); });
+    const p = svc.snapshot(id);
+    await flush();
+    expect(wc.isolated.length).toBe(0);   // CDP 命令还没落地，walker 不许先跑
+    land();
+    await p;
+    expect(wc.isolated.length).toBe(1);
+  });
+
   // navigate() 收尾那一发是防御纵深（snapshot() 里那句也在守），但它是**唯一**
   // 保证「open 返回时视口已经落地」的一句：调用方拿到导航结论之后未必立刻取快照，
   // 中间任何一次读几何（Task 4 的动作派发按快照坐标点击）都要求它已经落定。
@@ -745,6 +766,9 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
   // （Electron 41.2.1）主 frame 被拦时，两条由同一个 throttle 发出、
   // `will-frame-navigate` **先发**且 `preventDefault()` 之后 `will-navigate` 根本不发 ——
   // 它是唯一走得到的那条。这条不定论，被拦的主 frame 导航就要跑满 20 秒报 timeout。
+  // **不许只 `await p`**：关联/定论一断，这种写法不是明确地红，而是等满 vitest 的
+  // 默认超时，报出来的是「测试超时」而不是「被拦的主 frame 导航没有定论」（见下面两条
+  // reload/back 用例同样的写法与理由）。改成显式的 done 标志。
   it('主 frame 的 will-frame-navigate 被拦 → 当场 blocked，不必等满时限', async () => {
     vi.useFakeTimers();
     const { svc } = make();
@@ -757,9 +781,13 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
       preventDefault: () => { prevented += 1; },
       url: 'http://169.254.169.254/latest/meta-data/', isMainFrame: true,
     });
-    const r = await p;
+    let done = false;
+    let outcome: unknown;
+    void p.then((r) => { outcome = r.nav.outcome; done = true; });
+    await flush();
+    expect(done).toBe(true);          // 一秒都没推进就定论了，不必等满时限
     expect(prevented).toBe(1);
-    expect(r.nav.outcome).toMatchObject({ kind: 'blocked' });
+    expect(outcome).toMatchObject({ kind: 'blocked' });
     expect(H.logs.filter((l) => l.msg === '被 URL 闸拦下').length).toBe(1);
   });
 
@@ -1388,6 +1416,22 @@ describe('常驻密码登记（E3b）', () => {
     expect(JSON.stringify(out)).not.toContain('hunter2');
   });
 
+  // 上面那条插的是容器（panel），考的是 rememberTree 对子树的递归
+  // （node.getElementsByTagName('input')）。这一条插的是密码框自己 —— 考的是
+  // rememberTree 对「新增节点自己」这一步（remember(node) 那一行）：
+  // addedNodes 里的元素本身就是 <input type=password>，没有子节点可递归。
+  it('常驻观察 · dom-ready 之后插入一个 password 框（元素本身，不是容器）：也要登记得住', () => {
+    const win = newWorld();
+    const root = new FakeRoot([]);
+    runRegistrar(win, root);          // dom-ready：这一屏还没有密码框
+    const box = pwInput({ type: 'password' });
+    new DomStage(win, root).insert(root, box).deliver();
+    expect(worldPwOf(win).has(box)).toBe(true);
+    const out = runWalker(win, root);
+    expect(out.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('hunter2');
+  });
+
   it('常驻观察 · 登记的观察范围就是与 Chromium 的那份契约', () => {
     const win = newWorld();
     const root = new FakeRoot([]);
@@ -1401,6 +1445,26 @@ describe('常驻密码登记（E3b）', () => {
       childList: true, subtree: true,
       attributes: true, attributeFilter: ['type'], attributeOldValue: true,
     });
+  });
+
+  // 上面那条只断言了「注册时带没带 subtree」这份契约，没有一条行为用例真的
+  // 让 subtree 派上用场 —— 之前两条 childList 用例插入的都是 observedRoot 的
+  // **直接**子节点（parent === root），不需要 subtree 也收得到投递。
+  // 这才是多步登录第二屏的真实形状：第二屏的密码框插在一个早就在页面里的深层
+  // 容器（<div id=app><div class=step2>…</div></div>）下面，不是直接挂在 body 上。
+  it('常驻观察 · 密码框插在深层容器里（多步登录第二屏的真实形状），subtree 接得住', () => {
+    const win = newWorld();
+    const step2 = el('DIV', {});
+    const app = el('DIV', { kids: [step2] });
+    const root = new FakeRoot([app]);
+    runRegistrar(win, root);          // dom-ready：第二屏还没出现
+    const box = pwInput({ type: 'password' });
+    // 插入点是 step2，不是 observedRoot（root）本身 —— 没有 subtree 就收不到这条记录
+    new DomStage(win, root).insert(step2, box).deliver();
+    expect(worldPwOf(win).has(box)).toBe(true);
+    const out = runWalker(win, root);
+    expect(out.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('hunter2');
   });
 
   it('常驻观察 · 同一个文档里登记跑第二次，观察器不许装第二个', () => {
