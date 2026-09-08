@@ -174,6 +174,111 @@ export type RpcCall =
   | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult };
 
 export type RpcMethod = RpcCall['method'];
+
+/**
+ * `RpcCall` 的方法名的**运行时**清单。
+ *
+ * 为什么需要它：`dispatcher.ts` 的 `handlers[method] = …` 是运行时填表 ——
+ * 往 `RpcCall` 加一条而**不注册 handler 不会编译报错、不会有用例红**，只在运行时
+ * 回一句 `no handler for …`。本分支一次把这条盲区从 0 条放大到 12 条
+ * （`browser.*` 七条 + `institution.*` 五条，都是计划内的 Task 6 Step 5 / Step 8），
+ * 所以必须先把「有没有人管这一条」变成可检查的事实。
+ *
+ * 两道闸配套：
+ *  · 下面的 `_allRpcMethodsListed` —— 加了 RpcCall 却没往这里加，`tsc` 就红；
+ *  · `handlers.test.ts` 的注册穷尽性用例 —— 每一条要么注册了 handler，要么明确
+ *    登记在那份「尚未接线」名单里，两头都得对得上。
+ */
+export const RPC_METHODS = [
+  'app.bootstrap',
+  'settings.get',
+  'settings.update',
+  'research.get',
+  'research.save',
+  'browser.open',
+  'browser.close',
+  'browser.keep',
+  'browser.activate',
+  'browser.navControl',
+  'browser.getState',
+  'browser.syncView',
+  'institution.get',
+  'institution.save',
+  'institution.clear',
+  'institution.revealPassword',
+  'institution.listIdps',
+  'project.open',
+  'project.list',
+  'project.close',
+  'project.readDir',
+  'thread.create',
+  'thread.list',
+  'thread.delete',
+  'thread.rename',
+  'thread.loadHistory',
+  'thread.send',
+  'thread.abort',
+  'project.openInOS',
+  'project.update',
+  'thread.update',
+  'locale.set',
+  'skill.getSyncHealth',
+  'skill.list',
+  'skill.setEnabled',
+  'skill.pickFolder',
+  'skill.previewFromFolder',
+  'skill.previewFromUrl',
+  'skill.commitFromPreview',
+  'skill.uninstall',
+  'skill.openInOS',
+  'tool.list',
+  'tool.addExternal',
+  'tool.removeExternal',
+  'llm.list',
+  'llm.configure',
+  'llm.remove',
+  'llm.removeCustom',
+  'llm.setDefault',
+  'llm.setThreadOverride',
+  'llm.testConnection',
+  'llm.login',
+  'llm.loginCancel',
+  'llm.loginPromptReply',
+  'llm.logout',
+  'dialog.pickFile',
+  'file.readText',
+  'file.readBytes',
+  'file.readBytesWithin',
+  'file.writeText',
+  'pdf.renderPage',
+  'pdf.annotations.load',
+  'pdf.annotations.save',
+  'pdf.translation.load',
+  'pdf.translation.resolveModel',
+  'pdf.translation.layout',
+  'pdf.translation.translate',
+  'pdf.translation.save',
+  'pdf.translation.delete',
+  'update.getStatus',
+  'update.check',
+  'update.setAutoCheck',
+  'update.dismissBanner',
+  'update.openDownload',
+  'update.restartAndInstall',
+  'telemetry.getStatus',
+  'telemetry.setEnabled',
+  'telemetry.deleteMyData',
+  'ui.saveViewState',
+  'window.setTitleBarOverlay',
+  'onboarding.complete',
+  'ask.submit',
+  'ask.cancel',
+  'onboarding.resume',
+] as const satisfies readonly RpcMethod[];
+
+// 漏一条就在这里编译不过（Exclude 剩下的那个不是 never）。
+const _allRpcMethodsListed: Exclude<RpcMethod, (typeof RPC_METHODS)[number]> extends never ? true : never = true;
+void _allRpcMethodsListed;
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];
 export type RpcResult<M extends RpcMethod> = Extract<RpcCall, { method: M }>['result'];
 

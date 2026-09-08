@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { RpcMethod } from '../shared/protocol';
+import { RPC_METHODS, type RpcMethod } from '../shared/protocol';
 import type { TelemetryService, TelemetrySettings } from './telemetry/telemetryService';
 
 // 替身五个模块就能干净 import handlers.ts：electron（模块加载期就会被读）、
@@ -233,5 +233,49 @@ describe('onboarding 完成后同步遥测状态', () => {
     await invoke('onboarding.resume');
     expect(h.calls).toEqual([]);
     expect(h.synced).toEqual([]);
+  });
+});
+
+/**
+ * **注册穷尽性闸（最终评审 I5）。**
+ *
+ * `dispatcher.ts` 的 `handlers[method] = …` 是运行时填表：往 `RpcCall` 加一条而不注册
+ * handler **不会编译报错、不会有任何用例红**，只在运行时回一句 `no handler for …`。
+ * 这条盲区不是本分支引入的，但本分支一次把它从 0 条放大到 12 条 ——
+ * Task 6 漏注册一两条不会有任何东西提醒。
+ *
+ * 所以每一条 RPC 都得有个交代：要么注册了，要么明确写在下面这份名单里。
+ */
+const PENDING_REGISTRATION: RpcMethod[] = [
+  // 计划内：Task 6 Step 5（渲染层侧栏那条路）。
+  'browser.open', 'browser.close', 'browser.keep', 'browser.activate',
+  'browser.navControl', 'browser.getState', 'browser.syncView',
+  // 计划内：Task 5 / Task 6（机构设置页那条路）。
+  'institution.get', 'institution.save', 'institution.clear',
+  'institution.revealPassword', 'institution.listIdps',
+];
+
+describe('每一条 RPC 都有交代：注册了，或明确登记成「尚未接线」', () => {
+  it('协议里没有一条是「谁都没管、也没人知道」的', () => {
+    const registered = new Set(Object.keys(h.captured));
+    const pending = new Set<string>(PENDING_REGISTRATION);
+    // 加了一条 RpcCall、既没注册 handler 也没写进上面的名单 → 这里红。
+    expect(RPC_METHODS.filter((m) => !registered.has(m) && !pending.has(m))).toEqual([]);
+  });
+
+  it('「尚未接线」名单不许过期 —— 接上了就要从名单里划掉', () => {
+    const registered = new Set(Object.keys(h.captured));
+    // Task 6 把 browser.* 注册上却忘了删这里 → 这里红，名单不会烂在库里。
+    expect(PENDING_REGISTRATION.filter((m) => registered.has(m))).toEqual([]);
+  });
+
+  it('注册的都是协议里真有的方法，没有拼错的名字', () => {
+    const known = new Set<string>(RPC_METHODS);
+    expect(Object.keys(h.captured).filter((m) => !known.has(m))).toEqual([]);
+  });
+
+  // 上面三条合起来才是穷尽的：没有这一条，一份「什么都没注册」的空表也能全绿。
+  it('确实注册到了东西 —— 钉住上面几条不是空绿', () => {
+    expect(Object.keys(h.captured).length).toBe(RPC_METHODS.length - PENDING_REGISTRATION.length);
   });
 });
