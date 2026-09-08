@@ -5,7 +5,8 @@ import type { AxSnapshot } from './snapshot';
 import { KydogError } from '../../shared/errors';
 
 const snap: AxSnapshot = {
-  snapshotId: 's1', url: 'https://x/', title: 'T',
+  snapshotId: 's1', generation: 'world-A', url: 'https://x/', title: 'T',
+  collection: { truncated: false, returned: 3, totalKnown: 3 }, iframes: 0,
   nodes: [
     { index: 1, nodeId: 100, role: 'textbox', name: '搜索', x: 10, y: 10, w: 200, h: 20 },
     { index: 2, nodeId: 101, role: 'button', name: '提交', x: 10, y: 40, w: 60, h: 20 },

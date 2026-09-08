@@ -7,7 +7,7 @@ import { logger } from '../log';
 import { assertAllowedUrl, checkUrl } from './urlGuard';
 import { TabRegistry } from './tabRegistry';
 import { NavigationTracker } from './settle';
-import type { AxSnapshot, AxNode } from './snapshot';
+import type { AxSnapshot } from './snapshot';
 import WALKER_SOURCE from './injected/walker.js?raw';
 
 /**
@@ -341,17 +341,19 @@ export class BrowserService {
    * window 上，页面既读不到也伪造不了。
    *
    * 每次都发一个新的 snapshotId —— 动作里的 `index` 必须带上它，只在那一份里解析。
+   *
+   * walker 报回来的**一个字段都不能丢**：`generation` 是 diff 判定「这两批号可不可比」
+   * 的唯一依据（丢了它，跨文档的快照会被逐条配对成假话），`collection` / `iframes`
+   * 是截断与未穿透的显式回报（spec §5.5，丢了它模型会以为没采到的东西不存在）。
+   * 这里除了补一个 snapshotId，原样透传。
    */
   async snapshot(tabId: string): Promise<AxSnapshot> {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
-    const raw = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code: WALKER_SOURCE }]) as {
-      url: string; title: string; nodes: AxNode[]; total: number; truncated: boolean;
-    };
-    const snap: AxSnapshot = {
-      snapshotId: `snap_${randomUUID().slice(0, 8)}`,
-      url: raw.url, title: raw.title, nodes: raw.nodes,
-    };
+    const raw = await wc.executeJavaScriptInIsolatedWorld(
+      WALKER_WORLD_ID, [{ code: WALKER_SOURCE }],
+    ) as Omit<AxSnapshot, 'snapshotId'>;
+    const snap: AxSnapshot = { snapshotId: `snap_${randomUUID().slice(0, 8)}`, ...raw };
     this.snapshots.set(tabId, snap);
     return snap;
   }
