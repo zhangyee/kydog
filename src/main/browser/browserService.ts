@@ -174,7 +174,14 @@ export class BrowserService {
   enqueue<T>(tabId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.queues.get(tabId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    // 队尾吞掉异常，否则一次失败会让这个标签的队列永久卡住。
+    // **队尾这一句同时做两件事，别把因果记反：**
+    //  · 它把 rejection 吞掉 —— 于是存进 `queues` 的 `prev` **永不 reject**，
+    //    一次失败不会让这个标签的队列卡住。挡住卡死的是这一句，不是上面的
+    //    `prev.then(fn, fn)`；正因为 `prev` 永不 reject，那里的第二个 `fn` 在当前
+    //    接线下**不可达**（去掉它是等价变异，一条用例都不红）。两者是防御纵深。
+    //  · 队列里存的不再是一个已经 rejected 的 promise。调用方（弹窗那条路、
+    //    以及将来任何 `void enqueue(...)`）可能一个 handler 都不挂，那就是一次
+    //    未处理 rejection，Node ≥15 直接上抛成 uncaughtException。
     this.queues.set(tabId, next.then(() => {}, () => {}));
     return next;
   }
@@ -308,13 +315,17 @@ export class BrowserService {
    * 浏览器的能力与侧栏的可见性完全解耦（§B，项目负责人拍板）：
    * `setDeviceMetricsOverride` 设的是**渲染**视口，与这个 view 在屏幕上多大、
    * 可不可见是两回事；stage 的 bounds 只决定「给人看的那一块在哪」。
-   * 不下发的话，新建的 view 从没被给过 bounds，walker 里每个元素的
-   * `getBoundingClientRect()` 都是 0×0、被 `visible()` 全部滤掉，工具返回
-   * 「这一份快照里没有可交互元素」—— 模型判定这个源是空页面并换源，全程没有任何错误。
-   * （2026-09-08 实测：零 bounds / setVisible(false) / 从没 setBounds 三种情形下，
-   * 加了 override 之后 innerWidth / clientWidth 都是 1280，50% 宽的元素量到 640，
-   * walker 采到的节点几何与一个正常可见的 view 逐字相同；不加则 clientWidth = 0、
-   * 百分比宽的元素全部塌成 0。数据见 task-2f-report.md §B3。）
+   * 不下发的话，新建的 view 从没被给过 bounds、`clientWidth` 是 0，**百分比 / 弹性
+   * 布局的元素塌到 min-content**（实测 50% 宽的 button 量到 16×36、40% 宽的 input 量到
+   * 8×30），被 walker 的 `visible()` 滤掉；**固定 px 宽的元素不受影响**（120px 的 div
+   * 照样是 120×20、照样被采到）。真实站点的检索框、按钮绝大多数属于前一类，所以
+   * 一份快照下来基本是空的，工具返回「这一份快照里没有可交互元素」—— 模型判定这个源
+   * 是空页面并换源，全程没有任何错误。
+   * （需求书 §B1 写的是「每个元素的 rect 都是 0×0」，**实测比那个窄**，见上；
+   * 结论不变。2026-09-08 实测：零 bounds / setVisible(false) / 从没 setBounds /
+   * 压根没加进窗口四种情形下，加了 override 之后 innerWidth / clientWidth 都是 1280，
+   * 50% 宽的元素量到 640，walker 采到的节点几何与一个正常可见的 view 逐字相同。
+   * 数据见 task-2f-report.md §B3，评审独立复现过一次。）
    *
    * **返回 promise，且永不 reject**：调用方要么 `void` 掉（布局那条路），要么 await
    * （取快照之前那条路 —— walker 量的就是这个视口，两件事必须有先后）。
@@ -446,6 +457,16 @@ export class BrowserService {
     // 只落下一个 ERR_ABORTED、再等满 20 秒报「不知道发生了什么」。
     // `isMainFrame` 从 details 上取 —— 广告 iframe 302 到内网地址被拦是常态，
     // 让它替整页定论，模型会以为文章没打开而换源（状态机自己挡，但别传死 true）。
+    //
+    // **三条共用一个 handler，不去重 —— 因为实测根本没有重复。** electron.d.ts:17079
+    // 只说 `will-frame-navigate` 主 frame 也发，看上去与 `will-navigate` 在主 frame 上
+    // 重叠、会报两遍；2026-09-08 实测（Electron 41.2.1，页面改 location 与真的点 <a>
+    // 各一次）**不是那样**：两条由同一个 NavigationThrottle 发出，
+    // `will-frame-navigate` **先发**，它一旦 `preventDefault()`，throttle 当场 CANCEL，
+    // `will-navigate` **根本不发**。被拦的主 frame 导航只会走到这里一次。
+    // 反过来说：**这条 handler 不能只挂给子 frame** —— 主 frame 被拦时它是唯一
+    // 走得到的那条，把主 frame 那份挪去 `will-navigate` 等于 `onBlocked` 永远收不到，
+    // 那次导航要跑满 20 秒才报 timeout。数据见 task-2f-report.md 的「修复记」。
     const guardNav = (
       e: { preventDefault: () => void }, url: string, isMainFrame: boolean,
     ) => {

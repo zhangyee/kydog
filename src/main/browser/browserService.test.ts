@@ -244,8 +244,11 @@ describe('enqueue：同一个标签排队，跨标签并行', () => {
   // 队尾那句 `.then(() => {}, () => {})` 真正挡住的是**这个**：队列里存着的是一个
   // 已经 rejected 的 promise，而调用方（弹窗那条路、以及将来任何 `void enqueue(...)`）
   // 有可能一个 handler 都不挂 —— 那就是一次未处理 rejection，Node ≥15 直接上抛成
-  // uncaughtException，主进程弹框退出。（顺带说明：光看「队列会不会卡住」是测不出它的，
-  // `prev.then(fn, fn)` 两侧都调 fn，rejected 的队尾照样往下走。）
+  // uncaughtException，主进程弹框退出。
+  // 顺带把因果说清楚（上一条用例的名字容易读反）：**让队列继续往下走的也是队尾这一句**
+  // —— 它把 rejection 吞掉，于是存进 `queues` 的 `prev` 永不 reject。正因为如此，
+  // `prev.then(fn, fn)` 的第二个 `fn` 在当前接线下**不可达**（把它去掉是等价变异，
+  // 一条都不红）。两者是防御纵深，不是「第二个 fn 在挡卡死」。
   it('调用方一个 handler 都不挂时，失败也不许冒成未处理 rejection', async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (e: unknown) => unhandled.push(e);
@@ -258,6 +261,25 @@ describe('enqueue：同一个标签排队，跨标签并行', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+
+  // 标签销毁时 `destroyView` 要把它的队列条目一起删掉，否则 `queues` 只增不减
+  // （上限 16 个标签，反复开关是常态，每个死标签都留一个 promise）。
+  // 从外面看得见的后果是这条：**同一个 tabId 上的新调用会挂在死标签那条队列后面。**
+  // 关标签时队首那次导航正卡着（20 秒时限）的话，队列条目就是一个永远不 settle 的
+  // promise —— 不删的话此后这个 id 上的每一次 enqueue 都永远轮不到。
+  it('关标签时把它的队列条目也清掉，别让新调用挂在死标签的队尾', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const id = svc.getState().tabs[0].id;
+    void svc.enqueue(id, () => new Promise<void>(() => { /* 永不结束：在途的那次导航 */ }));
+    await flush();
+    svc.close(id);
+    let ran = false;
+    const after = svc.enqueue(id, async () => { ran = true; return '轮得到'; });
+    await flush();
+    expect(ran).toBe(true);
+    await expect(after).resolves.toBe('轮得到');
   });
 
   it('open 与 navControl 都走队列：前一次没结束，后一次不许动这个标签', async () => {
@@ -436,6 +458,28 @@ describe('侧栏没打开时照样下发 1280（§B）', () => {
     };
     await svc.snapshot(svc.getState().tabs[0].id);
     expect(seq).toEqual(['cdp', 'walker']);
+  });
+
+  // navigate() 收尾那一发是防御纵深（snapshot() 里那句也在守），但它是**唯一**
+  // 保证「open 返回时视口已经落地」的一句：调用方拿到导航结论之后未必立刻取快照，
+  // 中间任何一次读几何（Task 4 的动作派发按快照坐标点击）都要求它已经落定。
+  it('navigate 收尾要 await 视口：override 还在路上时 open 不许先返回', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/' });
+    await flush();
+    const wc = wcOf();
+    wc.osPid = 4321;
+    let land!: () => void;
+    wc.debugger.respond = () => new Promise((r) => { land = () => r({}); });
+    wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    let done = false;
+    void p.then(() => { done = true; });
+    await flush();
+    expect(overrides(wc).length).toBeGreaterThan(0);   // 发出去了
+    expect(done).toBe(false);                          // 但还没落地，不许返回
+    land();
+    await p;
+    expect(done).toBe(true);
   });
 
   it('侧栏有几何时按几何算 scale，宽度恒 1280', async () => {
@@ -696,6 +740,29 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
     expect(r.nav.outcome).toMatchObject({ kind: 'ok' });
   });
 
+  // **`will-frame-navigate` 这一条也必须去定论。** 第五批的交接清单写的是「不要在
+  // will-frame-navigate 上调 onBlocked」，那条清单是错的：2026-09-08 实测
+  // （Electron 41.2.1）主 frame 被拦时，两条由同一个 throttle 发出、
+  // `will-frame-navigate` **先发**且 `preventDefault()` 之后 `will-navigate` 根本不发 ——
+  // 它是唯一走得到的那条。这条不定论，被拦的主 frame 导航就要跑满 20 秒报 timeout。
+  it('主 frame 的 will-frame-navigate 被拦 → 当场 blocked，不必等满时限', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    const p = svc.open({ url: 'https://a.example/next', tabId: svc.getState().tabs[0].id });
+    await flush();
+    let prevented = 0;
+    wc.fire('will-frame-navigate', {
+      preventDefault: () => { prevented += 1; },
+      url: 'http://169.254.169.254/latest/meta-data/', isMainFrame: true,
+    });
+    const r = await p;
+    expect(prevented).toBe(1);
+    expect(r.nav.outcome).toMatchObject({ kind: 'blocked' });
+    expect(H.logs.filter((l) => l.msg === '被 URL 闸拦下').length).toBe(1);
+  });
+
   it('同文档导航 → ok_same_document，并且作废快照编号', async () => {
     const { svc } = make();
     await openTab(svc);
@@ -815,7 +882,13 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
     expect(r.nav.outcome).toEqual({ kind: 'crashed', reason: 'oom' });
   });
 
+  // navControl 返回 void，拿不到 observation —— 所以断言落在**它有没有当场定论**上：
+  // 假时钟下不推进一秒，那次 navControl 就必须已经 settle（关联成 download 才会这样），
+  // 而且 tracker 不会去 stop（onTimeout 在已定论时直接返回）。
+  // **不许只 `await p`**：关联一断，那种写法不是明确地红，而是等满 vitest 的默认超时，
+  // 报出来的还是「测试超时」而不是「下载没对上」。
   it('reload 的目标 URL 进关联集合：直链 PDF 的下载对得上', async () => {
+    vi.useFakeTimers();
     const { svc } = make();
     await openTab(svc, 'https://files.example/paper.pdf');
     const wc = wcOf();
@@ -824,11 +897,18 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
     const p = svc.navControl(id, 'reload');
     await flush();
     expect(wc.reloadCalls).toBe(1);
+    const stopsBefore = wc.stopCalls;
     fireDownload('https://files.example/paper.pdf', wc);
+    let done = false;
+    void p.then(() => { done = true; });
+    await flush();
+    expect(done).toBe(true);                    // 一秒都没推进就定论了
+    expect(wc.stopCalls).toBe(stopsBefore);     // 定论成 download，不该再去 stop
     await p;
   });
 
   it('back 的目标取的是历史里上一条', async () => {
+    vi.useFakeTimers();
     const { svc } = make();
     await openTab(svc, 'https://cur.example/');
     const wc = wcOf();
@@ -836,7 +916,13 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
     const p = svc.navControl(id, 'back');
     await flush();
     expect(wc.historyIndex).toBe(0);
+    const stopsBefore = wc.stopCalls;
     fireDownload('https://prev.example/', wc);       // 与 back 的目标对得上
+    let done = false;
+    void p.then(() => { done = true; });
+    await flush();
+    expect(done).toBe(true);
+    expect(wc.stopCalls).toBe(stopsBefore);
     await p;
   });
 });
@@ -1039,8 +1125,106 @@ const el = (tagName: string, init: Partial<FakeEl> = {}) => new FakeEl(tagName, 
 const pwInput = (init: Partial<FakeEl> = {}) =>
   new FakeEl('INPUT', { interactive: true, type: 'password', value: 'hunter2', ...init });
 
-type World = { crypto: Crypto; getComputedStyle: (e: FakeEl) => FakeStyle };
-const newWorld = (): World => ({ crypto: globalThis.crypto, getComputedStyle: (e: FakeEl) => e.style });
+/** MutationObserver 的记录。字段名与形状照 DOM 规范，脚本读哪几个就给哪几个。 */
+type MoRecord = {
+  type: 'attributes' | 'childList';
+  target?: FakeEl;
+  attributeName?: string;
+  oldValue?: string | null;
+  addedNodes?: FakeEl[];
+};
+type MoOptions = {
+  childList?: boolean; subtree?: boolean;
+  attributes?: boolean; attributeFilter?: string[]; attributeOldValue?: boolean;
+};
+type FakeObserver = { cb: (records: MoRecord[]) => void; target: unknown; options: MoOptions | null };
+
+type World = {
+  crypto: Crypto;
+  getComputedStyle: (e: FakeEl) => FakeStyle;
+  MutationObserver: new (cb: (records: MoRecord[]) => void) => { observe(t: unknown, o: MoOptions): void };
+  /** 这个世界里装起来的观察器，按装的顺序。用例扮演 Chromium 时往这里投递记录。 */
+  __observers: FakeObserver[];
+};
+
+/**
+ * 替身世界。**`MutationObserver` 挂在这个 window 上**（不是 node 的全局）——
+ * 脚本注进的是页面的隔离世界，「这个世界有没有 MutationObserver」是那个 window 的
+ * 事实。脚本读裸全局的话这里塞什么都看不见，常驻观察那半边就一条用例都覆盖不到。
+ */
+const newWorld = (): World => {
+  const observers: FakeObserver[] = [];
+  class FakeMutationObserver {
+    private readonly rec: FakeObserver;
+    constructor(cb: (records: MoRecord[]) => void) {
+      this.rec = { cb, target: null, options: null };
+      observers.push(this.rec);
+    }
+    observe(target: unknown, options: MoOptions): void { this.rec.target = target; this.rec.options = options; }
+    disconnect(): void { this.rec.options = null; }
+  }
+  return {
+    crypto: globalThis.crypto,
+    getComputedStyle: (e: FakeEl) => e.style,
+    MutationObserver: FakeMutationObserver,
+    __observers: observers,
+  };
+};
+
+const worldPwOf = (win: World) =>
+  (win as World & { __kydogWorld: { pw: WeakSet<object> } }).__kydogWorld.pw;
+
+/**
+ * 扮演 Chromium 投递变动记录。**一个任务里的若干处改动攒成一批一起投递**，
+ * 投递时元素身上已经是**改完之后**的状态 —— MutationObserver 的回调是微任务批处理，
+ * 规范如此，而这正是「只看元素当下的 type」会漏掉的那种情形。
+ *
+ * 投递按每个观察器自己登记的 `options` 过滤，不按用例的心愿：
+ * 没登记 `attributeOldValue` 的，记录里的 `oldValue` 就是 `null`（规范如此）；
+ * 没登记 `subtree` 的收不到嵌套改动；一个观察器都没装的，什么都收不到。
+ */
+class DomStage {
+  private readonly pending: Array<MoRecord & { parent?: unknown }> = [];
+  constructor(private readonly win: World, private readonly observedRoot: unknown) {}
+
+  insert(parent: FakeRoot | FakeEl, node: FakeEl): this {
+    (parent as { kids: FakeEl[] }).kids.push(node);
+    this.pending.push({ type: 'childList', addedNodes: [node], parent });
+    return this;
+  }
+
+  setType(node: FakeEl, next: string): this {
+    const old = node.type ?? null;
+    node.type = next;
+    this.pending.push({ type: 'attributes', attributeName: 'type', target: node, oldValue: old });
+    return this;
+  }
+
+  deliver(): this {
+    const batch = this.pending.splice(0);
+    for (const o of this.win.__observers) {
+      const opt = o.options;
+      if (!opt) continue;
+      const out: MoRecord[] = [];
+      for (const r of batch) {
+        if (r.type === 'childList') {
+          if (!opt.childList) continue;
+          if (r.parent !== this.observedRoot && !opt.subtree) continue;
+          out.push({ type: 'childList', addedNodes: r.addedNodes });
+          continue;
+        }
+        if (!opt.attributes) continue;
+        if (opt.attributeFilter && opt.attributeFilter.indexOf(r.attributeName!) === -1) continue;
+        out.push({
+          type: 'attributes', attributeName: r.attributeName, target: r.target,
+          oldValue: opt.attributeOldValue ? r.oldValue : null,
+        });
+      }
+      if (out.length) o.cb(out);
+    }
+    return this;
+  }
+}
 
 function docOf(root: FakeRoot) {
   return Object.assign(root, {
@@ -1057,7 +1241,7 @@ function runWalker(win: object, root: FakeRoot) {
 
 function runRegistrar(win: object, root: FakeRoot) {
   const run = new Function('window', 'document', `const __out =\n${PW_REGISTRAR_SOURCE}\nreturn __out;`);
-  return run(win, docOf(root)) as { registered: boolean; scanned: number };
+  return run(win, docOf(root)) as { registered: boolean; scanned: number; observing: boolean };
 }
 
 describe('常驻密码登记（E3b）', () => {
@@ -1167,6 +1351,68 @@ describe('常驻密码登记（E3b）', () => {
     const run = wc.isolated.find((r) => r.code === PW_REGISTRAR_SOURCE);
     expect(run).toBeDefined();
     expect(run!.worldId).toBe(WALKER_WORLD_ID);
+  });
+
+  // ── 常驻观察器（登记跑完之后页面还在动的那半边）────────────────────────────
+
+  it('常驻观察 · 插入与改 type 落在同一个任务里：记录一起到，也要登记得住', () => {
+    const win = newWorld();
+    const root = new FakeRoot([]);
+    runRegistrar(win, root);          // dom-ready：这一屏上一个 input 都还没有
+    // 多步登录的第二屏：密码框插进来，站点在**同一个任务里**顺手把 type 改成 text
+    // （「显示密码」默认打开的那种）。回调是微任务批处理，两条记录一起到，
+    // 而那一刻元素当下的 type 已经是 text —— 只看当下就漏了，得看记录里的旧值。
+    const box = pwInput({ type: 'password' });
+    new DomStage(win, root).insert(root, box).setType(box, 'text').deliver();
+    expect(worldPwOf(win).has(box)).toBe(true);
+    // 端到端：随后的快照里明文不许出现
+    const out = runWalker(win, root);
+    expect(out.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('hunter2');
+  });
+
+  it('常驻观察 · 后插入的是一整块子树，密码框在里面：也要递归登记', () => {
+    const win = newWorld();
+    const root = new FakeRoot([]);
+    runRegistrar(win, root);
+    // 折叠面板 / 第二屏是整块插进来的，addedNodes 里只有那个容器，
+    // 密码框是它的后代 —— 只 remember 容器本身等于一个都没记。
+    const box = pwInput({ type: 'password' });
+    const panel = el('DIV', { kids: [el('LABEL'), box] });
+    new DomStage(win, root).insert(root, panel).deliver();
+    expect(worldPwOf(win).has(box)).toBe(true);
+    // 之后站点再把 type 改掉，快照里也不会有明文
+    box.type = 'text';
+    const out = runWalker(win, root);
+    expect(out.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('hunter2');
+  });
+
+  it('常驻观察 · 登记的观察范围就是与 Chromium 的那份契约', () => {
+    const win = newWorld();
+    const root = new FakeRoot([]);
+    const out = runRegistrar(win, root);
+    expect(out.observing).toBe(true);
+    expect(win.__observers.length).toBe(1);
+    expect(win.__observers[0].target).toBe(root);
+    // 少一样都会让上面两条漏：没有 attributeOldValue 就看不到「此前是 password」，
+    // 没有 subtree 就收不到嵌套插入，没有 attributeFilter 就是白收一堆无关记录。
+    expect(win.__observers[0].options).toEqual({
+      childList: true, subtree: true,
+      attributes: true, attributeFilter: ['type'], attributeOldValue: true,
+    });
+  });
+
+  it('常驻观察 · 同一个文档里登记跑第二次，观察器不许装第二个', () => {
+    const win = newWorld();
+    const root = new FakeRoot([]);
+    runRegistrar(win, root);
+    runRegistrar(win, root);          // 子 frame 的 dom-ready 也会把主进程那条监听器打起来
+    expect(win.__observers.length).toBe(1);
+    // 而且第一个仍然是活的
+    const box = pwInput({ type: 'password' });
+    new DomStage(win, root).insert(root, box).setType(box, 'text').deliver();
+    expect(worldPwOf(win).has(box)).toBe(true);
   });
 
   it('登记脚本执行失败只记一条日志，不掀翻任何一次工具调用', async () => {

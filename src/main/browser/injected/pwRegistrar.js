@@ -89,8 +89,14 @@
   //    **一个文档只装一个**：dom-ready 在同一个文档里可能不止来一次
   //    （子 frame 的 dom-ready 也会把主进程那条监听器打起来），装重了每次改动
   //    都要多跑一遍回调。
-  if (!world.pwObserver && typeof MutationObserver === 'function') {
-    world.pwObserver = new MutationObserver((records) => {
+  //
+  //    **MutationObserver 从 `W` 上取，不读裸全局**：脚本注进的是页面的那个隔离世界，
+  //    「有没有 MutationObserver」是那个 window 的事实。读裸全局在真浏览器里碰巧也对
+  //    （作用域链兜到同一个 window），但它把这一整段变成测不到的：替身 window 里塞
+  //    什么都看不见，观察器压根建不起来，改坏了一条用例都不会红。
+  const MO = W.MutationObserver;
+  if (!world.pwObserver && typeof MO === 'function') {
+    world.pwObserver = new MO((records) => {
       for (const r of records) {
         if (r.type === 'attributes') {
           // `oldValue === 'password'` 是**协议层事实**：这一刻我们亲眼看到它此前
