@@ -152,7 +152,7 @@ export type TelemetryStatus = {
 };
 
 export type SettingsFile = {
-  schemaVersion: 8;
+  schemaVersion: 9;
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
@@ -163,6 +163,12 @@ export type SettingsFile = {
      *  新加入的 project 无需任何人替它写一条记录就是展开的，而「从没见过」
      *  与「用户收起过」两件事也不会挤在同一个集合里彼此冒充。 */
     collapsedProjects: string[];
+    /** 浏览器侧栏是否打开。它与 inspectorCollapsed 是两件事：两者共用右栏那块地，
+     *  但各记各的状态与宽度 —— 关掉浏览器时 Inspector 要回到用户上次留下的样子。 */
+    browserOpen: boolean;
+    /** 浏览器侧栏宽度。下限 320：页面按固定 1280 逻辑视口渲染，再窄就只能靠更小的
+     *  scale 硬压，人眼已经读不了了。 */
+    browserWidth: number;
   };
   llm: {
     auth: AuthBlob;
@@ -184,11 +190,37 @@ export type SettingsFile = {
     /** 已忽略横幅的不透明发布标识；仅做相等比较，不解析。 */
     dismissedCandidateId: string | null;
   };
+  /**
+   * CARSI 机构账号。**只能由 institutionService 经专用方法改，故不在 SettingsPatch 中**
+   * —— 与 updates / telemetry / onboarding 同一条约定。这道闸挡的是具体的东西：
+   * 允许渲染层用 settings.update 写它，就等于开了一条把**明文密码**直接塞进
+   * passwordEnc 字段的路，绕过 safeStorage 且不会报错。
+   *
+   * null = 没配过。passwordEnc 是 safeStorage 密文的 base64；渲染层解不开它
+   * （解密只能在主进程），要看明文得显式走 institution.revealPassword。
+   */
+  institution: InstitutionRecord | null;
   /** 四态而非布尔：「已请求删除但尚未收到耐久确认」必须是可落盘的状态，
    *  否则进程在删本地 ID 与写盘之间崩溃时，重启会生成新 ID 重新上报。
    *  只能由 telemetryService 改（见 telemetry/telemetryService.ts），故不在 SettingsPatch 中。 */
   telemetry: { state: TelemetryState; decidedAt: string | null };
   onboarding: { completedAt: string | null };
+};
+
+/**
+ * 渲染层看得到的那份 settings。**它与 SettingsFile 的唯一区别就是没有 `passwordEnc`。**
+ *
+ * app.bootstrap / settings.get / settings.update / locale.set 四条都回整份 settings。
+ * 它们直接回 SettingsFile 的时候，protocol.ts 上那句「密码只会 渲染层 → 主进程 单向流动，
+ * 连密文也不回传」是假的：每次启动主进程就把 institution.passwordEnc 交给了 useSettingsStore，
+ * 而 institution.revealPassword 那道「显式往返」的设计意图正是不让它自动过去。
+ *
+ * 靠调用点自觉删字段守不住（四条路、任何一条新增都会漏），所以改成类型说了算：
+ * InstitutionRecord 不能赋给 InstitutionPublic（少一个 hasPassword），主进程收口处
+ * 必须过一次 toRendererSettings。
+ */
+export type SettingsFileForRenderer = Omit<SettingsFile, 'institution'> & {
+  institution: InstitutionPublic;
 };
 
 /** settings.update 专用 patch：排除 schemaVersion、onboarding、updates 与 telemetry（spec §7）。
@@ -254,7 +286,8 @@ export type CenterViewState = {
 export type BootstrapState = {
   projects: Project[];
   threads: Thread[];
-  settings: SettingsFile;
+  /** 不是 SettingsFile：这份是发给渲染层的，密文不过河。见 SettingsFileForRenderer。 */
+  settings: SettingsFileForRenderer;
   appVersion: string;
   systemLocale: 'zh' | 'en';
   identity: Identity;
@@ -355,4 +388,166 @@ export type UpdateStatus = {
   bannerDismissed: boolean;
   autoCheck: boolean;
   currentVersion: string;
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 内置浏览器（slowpaper 一期）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 一块矩形，单位是 DIP（与 BrowserWindow 的坐标系一致），不是设备像素。 */
+export type RectDip = { x: number; y: number; width: number; height: number };
+
+export type BrowserTabInfo = {
+  id: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  /** 'agent' = 本轮 run 开的，run settle 时会被回收；'user' = 用户的，常驻。 */
+  owner: 'agent' | 'user';
+  canGoBack: boolean;
+  canGoForward: boolean;
+};
+
+/**
+ * 主进程持有的浏览器全量状态。**事件带全量而不是增量**：标签最多十几条，
+ * 代价可忽略，换来的是渲染层不需要自己维护一致性。
+ *
+ * `revision` 单调递增，渲染层据此丢弃迟到的旧帧（重载后「先订阅、后 getState」
+ * 会同时收到事件与快照，靠它去旧）。
+ * `epoch` 由主进程在每次渲染进程 bootstrap 时签发，用于丢弃过期的 syncView 上报 ——
+ * 刻意不用渲染层自己数的计数器：组件重载后本地计数从同一个初值重新开始，分不出新旧。
+ */
+export type BrowserState = BrowserTabsSnapshot & { epoch: number };
+
+/**
+ * `browser.tabsChanged` 广播的载荷。**刻意不含 epoch**，所以它不能直接复用 BrowserState。
+ *
+ * epoch 这道闸的全部意义在于「只有 getState 的调用方才知道自己的代号」。广播里带上它
+ * 就等于把代号发给了所有人：主进程在新 renderer bootstrap 时签发 epoch=7，而正在被替换掉的
+ * **旧** renderer 的 ResizeObserver 还没拆，它收到这条广播拿到 7，用 7 上报**旧布局**的
+ * bounds，主进程判定为当前 epoch 并接受 → 原生 WebContentsView 定位到旧几何，全程不报错。
+ *
+ * 类型挡住的是**读**：渲染层拿到的载荷上没有 epoch 这个字段，写 `payload.epoch` 编译不过。
+ * 挡不住的是**写**：`emit('browser.tabsChanged', state)` 传一个 BrowserState 变量在结构
+ * 类型下照样通过（超额属性检查只管对象字面量），epoch 会跟着上线。所以广播那一处**必须
+ * 显式投影**（`const { epoch: _, ...snapshot } = state`），不许把整份 state 丢进去。
+ */
+export type BrowserTabsSnapshot = {
+  revision: number;
+  tabs: BrowserTabInfo[];
+  activeTabId: string | null;
+};
+
+/**
+ * 一次主 frame 导航的观测结果。**任何可能引发导航的操作都要带它**，不只是 browser.open ——
+ * 2026-09-07 侦察实测：Google Scholar 的 403 出现在「点提交按钮」之后，检索这件事发生在
+ * browser_act 里；只给 open 补状态码等于把字段补在拿不到它的地方。
+ *
+ * 四种终态互不合并（照注释砍掉 download 那一支的话，打一个 PDF 直链就只剩 timeout，
+ * 而 spec §4.4 要的正是这一支）：
+ * - ok：导航提交成功。`httpStatusCode` 来自 did-navigate 的 httpResponseCode ——
+ *   **403 是一次成功的导航**，did-fail-load 不触发，只有这个字段看得见它。
+ * - failed：did-fail-load。`errorCode` 是 number（Electron 的类型如此），不是字符串。
+ * - download：导航变成了文件下载。一期一律取消下载，但**必须如实报成这个**，
+ *   否则打一个 PDF 直链只会得到 timeout，agent 会据此误判源不可达并换源。
+ * - timeout：到时限没有明确终态。**不许当成 failed** —— 一个是网络明确拒绝，
+ *   一个是我们不知道。超时后主进程会 stop() 并作废这个 navigationId。
+ */
+export type NavigationObservation = {
+  navigationId: string;
+  outcome:
+    | { kind: 'ok'; finalUrl: string; httpStatusCode: number }
+    | { kind: 'failed'; errorCode: number; errorDesc: string }
+    | { kind: 'download'; url: string; mimeType: string; filename: string; cancelled: 'policy' }
+    | { kind: 'timeout' };
+};
+
+/**
+ * CARSI 机构清单里的一条。
+ *
+ * **名字与 entityID 都不是唯一键**（2026-09-08 实测 CNKI 那份清单）：1064 个机构里
+ * 只有 938 个不同 entityID、936 个不同 host —— `https://passport.escience.cn/idp/shibboleth`
+ * 一个 entityID 就被 127 个中科院所共用，它们走同一套认证，机构名只是 SP 显示用的标签。
+ *
+ * 所以选中项要**两个一起存**：登录只需要 entityID，名字是给用户看的。
+ */
+export type IdpEntry = {
+  name: string;
+  entityID: string;
+  /**
+   * 清单原文里 entityID 前面那个标志（`"1|https://…"` 的 `1`）。实测 federation=2 那份
+   * 是 "1"×1045 / "0"×19，**含义未知**；federation=1 那份是裸 entityID，没有这个前缀。
+   *
+   * 一期不拿它过滤（猜错会让用户在列表里找不到自己的学校且不报错），但也不在解析层丢掉 ——
+   * 源接口给的字节是协议层事实，丢在上游下游就再也拿不回来。
+   *
+   * `null` = 源里确实没有前缀；`undefined` = 解析层还没把它带上来（Task 2g 之前的过渡态，
+   * 别拿它当「没有」用）。
+   */
+  flag?: string | null;
+};
+
+/**
+ * 用户在首次填充前确认过的那个真实登录页。
+ *
+ * **两个字段缺一不可，它们各挡一件事**：
+ *
+ * - `entityID` —— 确认是**对着某一所学校**做的。不绑定的话，用户先配北大（确认过
+ *   iaaa.pku.edu.cn）、后来改选清华并换成清华的学号密码，判据里 confirmedLogin 那一支
+ *   直接 return、entityID 根本不参与 → 主进程会把清华账号密码填进北大的统一身份认证页。
+ *   与所在记录的 `entityID` 不符即作废（读写两条路径都当场把它归 null）。
+ * - `origin` —— 连 scheme 一起记，形状就是 `new URL(u).origin`（`scheme://host[:port]`）。
+ *   只记 host 的话，同一个 Wi-Fi 上应答 `http://iaaa.pku.edu.cn/` 就绕过去了 ——
+ *   urlGuard 明确放行 http。
+ *
+ * 为什么需要「确认」这一步：实测北大的 entityID 是 idp.pku.edu.cn，登录表单却在
+ * iaaa.pku.edu.cn（IdP 又跳了一次到学校的统一身份认证），严格按 entityID 的 host
+ * 比对会在北大直接拒绝填充。
+ */
+export type ConfirmedLogin = {
+  entityID: string;
+  origin: string;
+};
+
+/** 落盘形状。只在主进程内部流转 —— 渲染层拿到的是 InstitutionPublic。 */
+export type InstitutionRecord = {
+  name: string;
+  entityID: string;
+  username: string;
+  /** safeStorage 密文的 base64。空串表示「配了机构与账号，但还没设密码」。 */
+  passwordEnc: string;
+  confirmedLogin: ConfirmedLogin | null;
+};
+
+/**
+ * 机构账号里**可以给渲染层看的部分**。密码只会 渲染层 → 主进程 单向流动，
+ * 永远不回传（连密文也不回）—— 渲染层没有任何用得上它的地方。
+ *
+ * 这不只是 institution.get 的返回类型：app.bootstrap / settings.get / settings.update /
+ * locale.set 四条也各回一份 SettingsFile，`InstitutionRecord` 放不进那个形状里，
+ * 于是主进程收口处必须转换（见 SettingsFileForRenderer）。
+ */
+export type InstitutionPublic = {
+  name: string;
+  entityID: string;
+  username: string;
+  hasPassword: boolean;
+  confirmedLogin: ConfirmedLogin | null;
+} | null;
+
+export type InstitutionSaveArgs = {
+  name: string;
+  entityID: string;
+  username: string;
+  /** 省略 = 不改动已存的密码；null = 清除；字符串 = 设为新值。 */
+  password?: string | null;
+  /**
+   * 省略 = 保留已确认的登录页（前提是 entityID 没变；变了无论如何都作废）；
+   * `null` = 显式作废，下次填充前重新问一次。
+   *
+   * **只有清除这一档，没有「设成某个值」**：一次确认只能由 browser_login 在真的问过用户
+   * 之后经 setInstitution 写下。设置页能凭空指定一个 origin 的话，这道确认就成了摆设。
+   */
+  confirmedLogin?: null;
 };

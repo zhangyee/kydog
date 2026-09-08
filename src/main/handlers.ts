@@ -5,7 +5,7 @@ import { sinkFor } from './ipc/broadcaster';
 import { viewStateStore } from './ui/viewState';
 import { TITLE_BAR_HEIGHT } from './windowChrome';
 import { oauthCoordinator } from './llm/oauth';
-import { settingsService } from './settings/settingsService';
+import { settingsService, toRendererSettings } from './settings/settingsService';
 import { researchService } from './research/researchService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
@@ -70,7 +70,8 @@ export function registerAllHandlers(): void {
       await deleteManifest(); // stale manifest：completed 为准（spec §8）
     }
     return {
-      settings, projects, threads,
+      // 不是原样的 settings：密文不过河，见 toRendererSettings
+      settings: toRendererSettings(settings), projects, threads,
       appVersion: app.getVersion(),
       systemLocale: mapSystemLocale(app.getLocale()),
       identity, onboardingRecovery,
@@ -97,8 +98,8 @@ export function registerAllHandlers(): void {
 
   registerHandler('ui.saveViewState', (args) => { viewStateStore.set(args.state); });
 
-  registerHandler('settings.get', () => settingsService.get());
-  registerHandler('settings.update', (args) => settingsService.update(args));
+  registerHandler('settings.get', async () => toRendererSettings(await settingsService.get()));
+  registerHandler('settings.update', async (args) => toRendererSettings(await settingsService.update(args)));
   registerHandler('research.get', () => researchService.get());
   registerHandler('research.save', (args) => researchService.save(args));
 
@@ -157,7 +158,10 @@ export function registerAllHandlers(): void {
 
   // 整个事务在一把 skillTreeLock 里跑完：dispose session → 换树 → 提交 locale。
   // 期间任何 skill 读写入口都排在后面，不会看到半换的树。
-  registerHandler('locale.set', (args) => withSkillTree(() => localeSet(args.locale)));
+  registerHandler('locale.set', async (args) => {
+    const r = await withSkillTree(() => localeSet(args.locale));
+    return { ...r, settings: toRendererSettings(r.settings) };
+  });
 
   registerHandler('skill.getSyncHealth', () => skillSyncStateHolder.getHealth());
 

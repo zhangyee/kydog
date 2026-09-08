@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   onboardingOk: true,
   telemetry: { state: 'enabled', decidedAt: '2026-08-05T00:00:00.000Z' } as TelemetrySettings,
   synced: [] as TelemetrySettings[],
+  settings: {} as SettingsFile,
 }));
 
 vi.mock('electron', () => ({
@@ -54,17 +55,48 @@ vi.mock('./harness/onboardingService', () => ({
     resume: async () => (h.onboardingOk ? { ok: true } : { ok: false, code: 'manifest-corrupt', message: '' }),
   },
 }));
-vi.mock('./settings/settingsService', () => ({
-  settingsService: { get: async () => ({ telemetry: h.telemetry }) },
+// toRendererSettings 用**真的那一个** —— 替身一个「看起来会删字段」的假货，
+// 这组用例就退化成在测自己写的替身。
+vi.mock('./settings/settingsService', async (orig) => ({
+  ...(await orig<typeof import('./settings/settingsService')>()),
+  settingsService: {
+    get: async () => ({ ...h.settings, telemetry: h.telemetry }),
+    update: async () => ({ ...h.settings, telemetry: h.telemetry }),
+  },
 }));
 
+// app.bootstrap 会去读这几样真实磁盘状态，测密文出口时全部替身掉。
+vi.mock('./project/projectService', () => ({ projectService: { list: async () => [] } }));
+vi.mock('./thread/threadService', () => ({ threadService: { listAll: async () => [] } }));
+vi.mock('./harness/identityService', () => ({ getIdentity: async () => ({ userName: '老张', agentName: 'KyDog' }) }));
+vi.mock('./harness/manifest', () => ({
+  readManifest: async () => ({ status: 'none' }),
+  deleteManifest: async () => {},
+  discardCorruptManifest: async () => {},
+}));
+vi.mock('./ui/viewState', () => ({ viewStateStore: { get: () => null, set: () => {} } }));
+
 import { registerAllHandlers } from './handlers';
-import type { TelemetryStatus } from '../shared/types';
+import { defaultSettings } from './persist/settingsFile';
+import type { SettingsFile, TelemetryStatus } from '../shared/types';
 
 function invoke(method: RpcMethod, args?: unknown) {
   const fn = h.captured[method];
   if (!fn) throw new Error(`${method} 未注册`);
   return fn(args) as Promise<TelemetryStatus> | TelemetryStatus;
+}
+
+const SENTINEL = 'SENTINEL-CIPHERTEXT';
+const PKU = 'https://idp.pku.edu.cn/idp/shibboleth';
+
+function settingsWithSecret(): SettingsFile {
+  const s = defaultSettings();
+  s.institution = {
+    name: '北京大学', entityID: PKU, username: '2100012345',
+    passwordEnc: SENTINEL,
+    confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+  };
+  return s;
 }
 
 beforeEach(() => {
@@ -77,7 +109,42 @@ beforeEach(() => {
   h.onboardingOk = true;
   h.telemetry = { state: 'enabled', decidedAt: '2026-08-05T00:00:00.000Z' };
   h.synced = [];
+  h.settings = settingsWithSecret();
   registerAllHandlers();
+});
+
+/**
+ * protocol.ts 上写着「密码只会 渲染层 → 主进程 单向流动，连密文也不回传」。
+ * 那句话以前是假的：institution.get 那条窄接口是装饰性的，真正的出口在这三条老 RPC 上 ——
+ * 它们回整份 SettingsFile，每次启动就把 passwordEnc 交给 useSettingsStore。
+ *
+ * 现在由类型挡着（SettingsFileForRenderer 里没有 passwordEnc，主进程收口处必须转换），
+ * 这几条用例守的是「转换真的发生了」。
+ */
+describe('密文不过河', () => {
+  it('哨兵确实在源里 —— 少了这条，下面几句 not.toContain 什么都证明不了', () => {
+    expect(JSON.stringify(h.settings)).toContain(SENTINEL);
+  });
+
+  for (const [method, args] of [
+    ['app.bootstrap', undefined],
+    ['settings.get', undefined],
+    ['settings.update', { ui: { theme: 'sepia' } }],
+  ] as const) {
+    it(`${method} 的返回里没有密文`, async () => {
+      const out = await invoke(method, args);
+      expect(JSON.stringify(out), method).not.toContain(SENTINEL);
+    });
+  }
+
+  it('该过河的照常过河：机构名 / 学号 / hasPassword', async () => {
+    const out = await invoke('settings.get') as unknown as { institution: unknown };
+    expect(out.institution).toEqual({
+      name: '北京大学', entityID: PKU, username: '2100012345',
+      hasPassword: true,
+      confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+    });
+  });
 });
 
 describe('telemetry IPC 接线', () => {

@@ -4,6 +4,8 @@ import type {
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   CenterViewState,
   TelemetryStatus,
+  BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, IdpEntry, InstitutionPublic, InstitutionSaveArgs,
+  SettingsFileForRenderer,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
@@ -12,12 +14,44 @@ import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar'
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
-  | { method: 'settings.get'; args: undefined; result: SettingsFile }
+  // 回的是 SettingsFileForRenderer 而不是 SettingsFile：整份 SettingsFile 里有
+  // institution.passwordEnc，这条与 app.bootstrap 才是密文真正的出口（institution.get
+  // 那条窄接口拦不住它们）。收口在主进程的 toRendererSettings。
+  | { method: 'settings.get'; args: undefined; result: SettingsFileForRenderer }
   // args 是 SettingsUpdateArgs 而不是 SettingsPatch：`ui.locale` 被抠掉了，语言只能走
   // 下面的 locale.set。见 types.ts 的 SettingsUpdateArgs。
-  | { method: 'settings.update'; args: SettingsUpdateArgs; result: SettingsFile }
+  | { method: 'settings.update'; args: SettingsUpdateArgs; result: SettingsFileForRenderer }
   | { method: 'research.get'; args: undefined; result: SettingsFile['research'] }
   | { method: 'research.save'; args: SettingsFile['research']; result: SettingsFile['research'] }
+  // ── 内置浏览器 ──
+  // 给 tabId 就在那个标签里导航（同一个源的连续详情页复用一个标签），不给就新开。
+  | { method: 'browser.open'; args: { url: string; tabId?: string }; result: { tabId: string; nav: NavigationObservation } }
+  | { method: 'browser.close'; args: { tabId: string }; result: void }
+  // 把 agent 开的标签转成用户的（ownerRunId → null），此后不会被回合结束的回收清掉。
+  | { method: 'browser.keep'; args: { tabId: string }; result: void }
+  | { method: 'browser.activate'; args: { tabId: string }; result: void }
+  | { method: 'browser.navControl'; args: { tabId: string; action: 'back' | 'forward' | 'reload' | 'stop' }; result: void }
+  // 渲染进程重载后重建镜像的全量起点。只有 browser.tabsChanged 事件是不够的：
+  // 重载后若标签没有新变化就再也收不到事件，browserStore 会一直是空的。
+  // 恢复顺序是「先订阅、后 getState、按 revision 去旧」。
+  | { method: 'browser.getState'; args: undefined; result: BrowserState }
+  // 渲染层上报舞台几何。不带 tabId —— 只有活动标签可见，主进程知道是哪个。
+  // visible 与 occluded 是两件事：侧栏关闭（visible=false）不是「被浮层盖住」的同义词。
+  | { method: 'browser.syncView'; args: { epoch: number; visible: boolean; occluded: boolean; bounds: RectDip }; result: void }
+  // ── CARSI 机构账号 ──
+  // 密码只会 渲染层 → 主进程 单向流动：get 返回的 InstitutionPublic 里只有 hasPassword，
+  // 连密文也不回传。渲染层没有任何用得上它的地方。
+  // 这条窄接口**不是**唯一出口：上面四条回整份 settings 的 RPC 同样得收窄，见
+  // SettingsFileForRenderer —— 密文以前正是从那里每次启动都过河的。
+  | { method: 'institution.get'; args: undefined; result: InstitutionPublic }
+  | { method: 'institution.save'; args: InstitutionSaveArgs; result: InstitutionPublic }
+  | { method: 'institution.clear'; args: undefined; result: void }
+  // 「显示密码」。密文在渲染层解不开（safeStorage 只在主进程可用），所以眼睛图标
+  // 必须走一次往返。这与研究密钥那栏的显隐开关在用户眼里没有区别，只是多一次 RPC。
+  | { method: 'institution.revealPassword'; args: undefined; result: { password: string } }
+  // 机构清单来自 SP 自己的接口（CNKI 是 fsso.cnki.net/idp/list?federation=2）。
+  // 每个 SP 一份，不存在全局 CARSI 清单。
+  | { method: 'institution.listIdps'; args: { refresh?: boolean }; result: IdpEntry[] }
   | { method: 'project.open'; args: undefined; result: Project }
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }
@@ -46,7 +80,7 @@ export type RpcCall =
   // 所以 args 只给目标语言，settings / skills / sync 三样结果一次带回。
   // outcome 是判别联合而不是一个 SkillSyncHealth：业务拒绝与同步失败必须分开，
   // 前者压根没碰 skill 树，渲染层不该拿它去写同步状态。见 types.ts 的 LocaleSetOutcome。
-  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFile; skills: SkillEntry[]; outcome: LocaleSetOutcome } }
+  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFileForRenderer; skills: SkillEntry[]; outcome: LocaleSetOutcome } }
   | { method: 'skill.getSyncHealth'; args: undefined; result: SkillSyncHealth }
   | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
   | { method: 'skill.setEnabled'; args: { name: string; enabled: boolean }; result: SkillEntry[] }
@@ -160,7 +194,9 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
   | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
-  | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[] } }
+  // browserTabId 是 CARSI / 人机验证的交接口：带上它，渲染层就展开浏览器侧栏并切到那个标签。
+  // 刻意不靠「ask 发生时正好有 agent 焦点标签」去推断 —— 那是拿时间相关性当事实。
+  | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[]; browserTabId?: string } }
   | { topic: 'run.ask_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; outcome: AskOutcome } }
   // 「把你手上关于这一轮的东西全扔了，接下来我重放一遍」。只在 thread.loadHistory 里
   // 发给发起调用的那个窗口，紧跟其后的就是本轮 journal。它不进 journal —— 它是重放的
@@ -193,7 +229,15 @@ export type RuntimeEvent =
   // 主进程会在渲染层没发起任何调用的时候改遥测状态：启动时那次「重试未完成的删除」
   // 是 fire-and-forget，窗口开出来时它可能还在飞。没有这条广播，隐私面板就只能
   // 停在它进来那一刻的快照上 —— 删除其实已经完成了，界面却还说「尚未完成」。
-  | { topic: 'telemetry.status'; payload: TelemetryStatus };
+  | { topic: 'telemetry.status'; payload: TelemetryStatus }
+  // 带全量清单而不是 opened/updated/closed 三条增量：标签最多十几条，代价可忽略，
+  // 换来的是渲染层不必自己维护一致性 —— 与下面 agentFocus 一条事件承担两个用途同理。
+  // 载荷刻意不是 BrowserState —— 广播里不带 epoch，理由见 types.ts 的 BrowserTabsSnapshot。
+  | { topic: 'browser.tabsChanged'; payload: BrowserTabsSnapshot }
+  // agent 是否正在驱动某个标签。渲染层据此显示状态（指示灯 + 侧栏横幅）。
+  // 注意**不做交互屏蔽**：webContents.setIgnoreInputEvents 在 Electron 41 上不存在
+  // （2026-09-08 spike 实测），原生层也盖不住 DOM 遮罩。
+  | { topic: 'browser.agentFocus'; payload: { tabId: string | null; active: boolean; action?: string } };
 
 /** select 的一个候选项。`id` 是要原样回传给 pi 的答案，label/description 是 provider 自己的措辞。 */
 export type OAuthPromptOption = { id: string; label: string; description?: string };
