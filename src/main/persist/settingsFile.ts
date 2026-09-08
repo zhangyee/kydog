@@ -136,9 +136,15 @@ export async function loadSettings(): Promise<SettingsFile> {
   return defaultSettings();
 }
 
-export async function saveSettings(value: SettingsFile): Promise<void> {
-  await atomicWriteWith0600Async(paths.SETTINGS_FILE, JSON.stringify(value, null, 2));
-}
+/**
+ * **这里刻意没有一个「写整份 settings」的导出口。**
+ *
+ * 从前有一个 `saveSettings(value)`：零调用方，而且是一条**绕过 `withLock` 与
+ * `sanitizeInstitution`** 的写口。本分支把 `sanitizeInstitution` 立成了机构密码落盘
+ * 前的唯一净化点（`passwordEnc` 就是从这里过的），它正好绕过去 —— 谁顺手用它写一次，
+ * 净化与文件锁两样一起丢，而且不报错。落盘一律走
+ * `settingsService.update()`（内部 `withLock` + sanitize）。
+ */
 
 function sanitizeLocale(v: unknown): 'zh' | 'en' { return v === 'en' ? 'en' : 'zh'; }
 
