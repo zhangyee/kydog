@@ -389,6 +389,21 @@ describe('显示层与 diff 的边界', () => {
     expect(renderDiff(prev, next).text).not.toContain('看不出');
   });
 
+  // I-d：这条不变式只被 `next` 侧守着 —— [...prev.nodes, ...next.nodes] 改成
+  // [...next.nodes] 之前 70 条全绿。失败场景：上一份快照里有个被截断的检索框，
+  // 这一次它从页面上消失了（进 removed，不在 next.nodes 里），附注就不该消失。
+  it('被截断的元素这一次从页面上消失了：附注仍然要在（只靠 next 侧守不住）', () => {
+    const long = `${'石'.repeat(160)}…[截断，原长 200 字符]`;
+    const prev = snap([
+      n(1, 100, 'textbox', '检索式', { value: long, valueTruncated: true }),
+      n(2, 101, 'button', '搜索'),
+    ]);
+    const next = snap([n(1, 101, 'button', '搜索')], 's2');
+    const r = renderDiff(prev, next);
+    expect(r.text).toContain('- textbox "检索式"');
+    expect(r.text).toContain('看不出');
+  });
+
   // 截断记号是给模型读的：它必须原样出现在渲染结果里，不许被再截一次或吞掉。
   it('截断记号原样进渲染，原长看得见', () => {
     const long = `${'石'.repeat(160)}…[截断，原长 200 字符]`;
@@ -623,6 +638,22 @@ describe('walker：密码判据基于持久事实，不是此刻的 type', () =>
     expect(second.nodes[0].isPassword).toBe(true);
     expect(JSON.stringify(second)).not.toContain('hunter2');
   });
+
+  // I-c：XHTML 文档下浏览器给的 tagName 是小写 'input'（HTML 文档给大写 'INPUT'）。
+  // rememberIfPassword 为了省 toLowerCase() 的开销直接比对 el.tagName，
+  // 两个大小写都要比一次 —— 去掉小写分支就是明文泄漏，且此前没有任何用例守着。
+  it('XHTML 文档（tagName 为小写 input）：隐藏的 password 框依然被登记', () => {
+    const win = newWorld();
+    const pw = new FakeEl('input', { type: 'password', value: 'hunter2', interactive: true, style: HIDDEN });
+    const first = runWalker(win, [pw]);
+    expect(first.nodes.length).toBe(0); // 隐藏，没被采到 —— 只有 rememberIfPassword 走过它
+
+    pw.style = { visibility: 'visible', display: 'block', opacity: '1' };
+    pw.type = 'text';
+    const second = runWalker(win, [pw]);
+    expect(second.nodes[0].isPassword).toBe(true);
+    expect(JSON.stringify(second)).not.toContain('hunter2');
+  });
 });
 
 // ── I4 ────────────────────────────────────────────────────────────────────────
@@ -725,6 +756,22 @@ describe('walker：采集缺口与截断回报', () => {
     expect(out.collection.limit).toBe('walked');
     expect(out.collection.limitValue).toBe(80_000);
     // 走都没走完，本页候选总数就是数不出来 —— 不填 0，也不拿 returned 冒充。
+    expect('totalKnown' in out.collection).toBe(false);
+  });
+
+  // I-b：两道闸都撞到时该报哪一道，此前没有任何用例造出「两道同时撞」的页面 ——
+  // `if (walkTruncated)` 改成 `if (walkTruncated && !nodesTruncated)` 之前 70 条
+  // 全绿。真实场景：页面前 300 个可见控件之后还有 8 万个元素，模型如果读到
+  // 「一份快照最多 300 条」会以为整页都走过了、只是显示不下，不会去换检索词；
+  // 实际上页面后半段一个元素都没走到。
+  it('两道上限同时撞到：报更严重的 walked，不冒充成 nodes', () => {
+    const links = Array.from({ length: 400 }, (_, i) => el('A', { interactive: true, innerText: `链接 ${i}` }));
+    const junk = Array.from({ length: 80_001 }, () => el('SPAN'));
+    const out = runWalker(newWorld(), [...links, ...junk]);
+    expect(out.collection.truncated).toBe(true);
+    expect(out.collection.limit).toBe('walked');
+    expect(out.collection.limitValue).toBe(80_000);
+    // 走都没走完，本页候选总数就是数不出来 —— 即便 nodes 那道早就撞满了。
     expect('totalKnown' in out.collection).toBe(false);
   });
 
