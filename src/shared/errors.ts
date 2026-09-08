@@ -81,11 +81,20 @@ export type KydogErrorCode =
 export class KydogError extends Error {
   readonly code: KydogErrorCode;
   readonly cause?: unknown;
-  constructor(code: KydogErrorCode, message: string, cause?: unknown) {
+  /**
+   * `browser.page_no_result` 专用的判别值 —— 它有四种成因（见上面那条注释），
+   * 但只有「页面自己回 expired」说得出「没有发生」，撞时限那一条只说得出
+   * 「结果未知」。两者共用一个错误码、消息又都是给模型看的散文，散文会改写、
+   * 会被复述成别的措辞——**判别语义的必须是这个字段，不是消息里有没有某几个词**。
+   * 其余错误码不用它，恒为 undefined。
+   */
+  readonly outcome?: 'unknown' | 'none';
+  constructor(code: KydogErrorCode, message: string, cause?: unknown, outcome?: 'unknown' | 'none') {
     super(message);
     this.name = 'KydogError';
     this.code = code;
     this.cause = cause;
+    this.outcome = outcome;
   }
 }
 

@@ -1907,18 +1907,27 @@ describe('取快照与页内求值：没有渲染进程时一个字都不注', (
   // 页面 7.8 秒真的滚了 800 像素（3/3 复现）。所以这条消息**不许说「这一步没有
   // 发生」**：模型据此重试，两次都会落地，`select` 那条还会把 change 派发两遍
   // （学术站点上 change 就是「立刻重新检索」）。
-  it('时限那条错不说「没有发生」，如实说结果未知、重试前先看页面', async () => {
+  // 复审 N2：上一版只用三个字面量守这句消息（不含「没有发生」/ 含「不知道」/
+  // 含「快照」），变异 M8 把结尾改写成「…不过实际上它并未生效，直接重试即可，
+  // 不必先取一份快照」——三个字面量全部满足，语义却被改回了 F2 抓的那句谎话。
+  // 所以判据挪到结构上：`outcome` 是撞时限这条路径**唯一**的赋值来源（'unknown'，
+  // 见 errors.ts 的字段注释），散文再怎么改写都动不了它；散文本身则钉住这句消息
+  // 里真正带着「下一步该做什么」的那半句原话，不是可以被同义词绕开的散碎关键词。
+  it('时限那条错不说「没有发生」，如实说结果未知、重试前先看页面（outcome 字段是判据）', async () => {
     vi.useFakeTimers();
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
     wc.isolatedImpl = () => new Promise(() => {});
     const p = svc.dispatch(id, { kind: 'scroll', direction: 'down' }, null);
-    const settled = p.then(() => '', (e: Error) => e.message);
+    const settled = p.then(() => null, (e: Error & { code?: string; outcome?: string }) => e);
     await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS + 100);
-    const msg = await settled;
-    expect(msg).not.toContain('没有发生');
-    expect(msg).toMatch(/不知道/);
-    expect(msg).toMatch(/快照/);
+    const err = await settled;
+    expect(err?.code).toBe('browser.page_no_result');
+    // 结构判据：这条路径必须、且只能是 'unknown'。散文改写不了这个值。
+    expect(err?.outcome).toBe('unknown');
+    expect(err?.message).not.toContain('没有发生');
+    // 带走的那半句指令必须原样在——这才是 M8 想绕开的那句话。
+    expect(err?.message).toContain('别按「它没做」去重试');
   });
 
   // 页面那一侧的自检要认**同一个到点时刻**：主进程的定时器与注进去的 notAfter
@@ -1941,14 +1950,40 @@ describe('取快照与页内求值：没有渲染进程时一个字都不注', (
 
   // 守卫真的挡下来的时候（页面赶在主进程定时器之前把 expired 送回来），
   // 那才是唯一一种说得出「什么都没做」的情形 —— 它与撞时限那条不是一回事。
-  it('页面回 expired → page_no_result，且这一条才说得出「什么都没做」', async () => {
+  // `scroll` 不派发任何 CDP 输入事件（见 dispatch 里的注释），所以这一条路径上
+  // 「什么都没做」是真的；`type` 上不是，见下一条。
+  it('页面回 expired → page_no_result，outcome=none，且这一条才说得出「什么都没做」', async () => {
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
     wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'expired' });
     const err = await svc.dispatch(id, { kind: 'scroll', direction: 'down' }, null)
-      .then(() => null, (e: Error & { code?: string }) => e);
+      .then(() => null, (e: Error & { code?: string; outcome?: string }) => e);
     expect(err?.code).toBe('browser.page_no_result');
+    expect(err?.outcome).toBe('none');
     expect(err?.message).toContain('什么都没做');
+  });
+
+  // 复审 N1：`type` 的 focusSelect 排在两条 `Input.dispatchMouseEvent` 之后
+  // （点击已经真的发出去了——探针实证，见 interactError 的 `priorInputDispatched`
+  // 注释）。这时如果 focusSelect 撞上 expired，「它按约定什么都没做」对**这一步**
+  // 成立，但对**这个动作**是假话：点击已经落地，页面可能已经因此变了样。
+  it('type 在点击之后、focusSelect 才撞 expired —— 不许说「它按约定什么都没做」', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => Promise.resolve(
+      opOf(code) === 'measure' ? okMeasure({ tag: 'input', label: '检索词' })
+        : { ok: false, reason: 'expired' },
+    );
+    const err = await svc.dispatch(id, { kind: 'type', selector: '#q', text: '石墨烯' }, null)
+      .then(() => null, (e: Error & { code?: string; outcome?: string }) => e);
+    // 先坐实前提：点击真的已经发出去了，这正是措辞必须不同的依据。
+    expect(inputCmds(wc).map((c) => c.method))
+      .toEqual(['Input.dispatchMouseEvent', 'Input.dispatchMouseEvent']);
+    expect(inputCmds(wc).map((c) => c.method)).not.toContain('Input.insertText');
+    expect(err?.code).toBe('browser.page_no_result');
+    expect(err?.outcome).toBe('none');
+    expect(err?.message).not.toContain('它按约定什么都没做');
+    expect(err?.message).toContain('点击已经发出去了');
   });
 
   it('evalInPage 对没有渲染进程的标签当场报错，不注入', async () => {

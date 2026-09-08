@@ -947,7 +947,8 @@ export class BrowserService {
         + '它要么正被自己的脚本占着主线程，要么已经不回话了。'
         + '**这一步到底生效了没有，我们不知道**：这次求值取消不掉，页面回过神来还会执行它'
         + '（写页面的那条路带着同一个时限自检，过期就自己不做，但卡在到点那一刻的窗口里仍可能已经落地）。'
-        + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。')), PAGE_EVAL_TIMEOUT_MS);
+        + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。',
+        undefined, 'unknown')), PAGE_EVAL_TIMEOUT_MS);
     });
     return Promise.race([
       wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
@@ -1043,8 +1044,16 @@ export class BrowserService {
    *
    * **每一种的处置都不同**，所以绝不能收敛成一句话：换选择器 / 重新取快照 /
    * 先关掉浮层 / 换一个目标。收敛掉的那一刻，模型就只能靠猜。
+   *
+   * `priorInputDispatched`：这次 `interact()` 调用之前，这一个动作**有没有已经
+   * 往页面发过 CDP 输入事件**（`type` 的 `focusSelect` 排在两条 `Input.dispatchMouseEvent`
+   * 之后——探针实证：那两条命令是真的先发出去了）。`expired` 那句「它按约定什么
+   * 都没做」对 `measure`/`select`/`scroll`（各自都是这个动作的第一次求值）成立，
+   * 但对排在点击之后的 `focusSelect` 不成立——不能一句话覆盖两种情形。
    */
-  private static interactError(r: InteractResult, action: DispatchAction): KydogError {
+  private static interactError(
+    r: InteractResult, action: DispatchAction, ctx: { priorInputDispatched?: boolean } = {},
+  ): KydogError {
     const where = BrowserService.describeTarget(action);
     switch (r.reason) {
       case 'not_found':
@@ -1099,11 +1108,19 @@ export class BrowserService {
           `scroll 的方向只能是 up 或 down，收到 ${JSON.stringify(r.direction)}。`);
       case 'expired':
         // 页面赶在主进程那道定时器之前把 `expired` 送回来了（页面回魂得早，或者
-        // 主进程自己被卡了一下）。**这是唯一一种说得出「什么都没做」的情形** ——
-        // 撞时限那一条只说得出「不知道」，两者不许共用措辞（见 `evalOn` 的实测表）。
+        // 主进程自己被卡了一下）——**这次求值**本身确实什么都没做，撞时限那一条
+        // （outcome:'unknown'）才说不出这句话，两者不许共用措辞（见 `evalOn` 的实测表）。
+        // 但「这次求值什么都没做」不等于「这个动作什么都没做」：`type` 的
+        // `focusSelect` 排在两条 `Input.dispatchMouseEvent` 之后，点击已经真的
+        // 发出去了——这种情形下不能说「它按约定什么都没做」（探针实证过，见上）。
         return new KydogError('browser.page_no_result',
-          `${where} 这一步到达页面的时候已经过了这次求值的时限，它按约定什么都没做。`
-          + '页面多半正被自己的脚本占着主线程 —— 等一下重试，或者先取一份快照看它现在什么样。');
+          ctx.priorInputDispatched === true
+            ? `${where} 点击已经发出去了，但随后这一步（对焦并全选）到达页面的时候已经过了`
+              + '这次求值的时限，没有做到——**点击本身不受这个影响，页面可能已经因为它变了样**'
+              + '（展开了面板、弹出了下拉之类）。别假设页面还停在点击之前：先取一份快照看看现在什么样。'
+            : `${where} 这一步到达页面的时候已经过了这次求值的时限，它按约定什么都没做。`
+              + '页面多半正被自己的脚本占着主线程 —— 等一下重试，或者先取一份快照看它现在什么样。',
+          undefined, 'none');
       default:
         return new KydogError('browser.target_unusable', `${where} 这一步没能执行：${String(r.reason)}`);
     }
@@ -1220,7 +1237,9 @@ export class BrowserService {
     // 而光标落在哪取决于点到了哪个像素。同一个动作在同一个页面上能产出不同的串，
     // 还不报错。全选之后 insertText 替换选区（实测 "旧内容" → "量子计算"）。
     const f = await this.interact(tabId, wc, { op: 'focusSelect', target });
-    if (!f.ok) throw BrowserService.interactError(f, action);
+    // 到这里两条 `Input.dispatchMouseEvent` 已经真的发出去了（见上两行）——
+    // `expired` 那句「什么都没做」对这一次求值不成立，见 `interactError` 的判据。
+    if (!f.ok) throw BrowserService.interactError(f, action, { priorInputDispatched: true });
     // **`focusSelect` 报回来的事实必须读。** 它在页面里算出「焦点到底在不在目标上」
     // 与「这一下有没有真的清空」，这里拿到手就丢的话，紧接着的 insertText 是一次
     // 没有依据的输入 —— 而返回值仍然会说「已在「X」里输入」。
