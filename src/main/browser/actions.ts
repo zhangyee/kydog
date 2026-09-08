@@ -194,6 +194,10 @@ export function validateBatch(actions: Action[]): void {
  * 非 repeat 动作的编号数的是**请求里的位置**，不是展开后的步数：报错时给一个
  * 请求里根本不存在的序号，用户与模型都对不上号（而同一批里其余 label 说的
  * 都是「第几轮第几个」）。
+ *
+ * repeat 块自己展开出来的 label 也带上它在请求里的位置（「第 2 个动作的第 1 轮
+ * 第 1 个动作」）——只写「第几轮第几个」的话，一批里两个 repeat 块各自的第一步
+ * 都叫「第 1 轮第 1 个动作」，停在第三块时报错分不出是哪一块。
  */
 export function flattenActions(actions: Action[]): FlatStep[] {
   const out: FlatStep[] = [];
@@ -204,7 +208,10 @@ export function flattenActions(actions: Action[]): FlatStep[] {
     }
     for (let round = 1; round <= a.times; round++) {
       a.actions.forEach((inner, j) => {
-        out.push({ action: inner as FlatStep['action'], label: `第 ${round} 轮第 ${j + 1} 个动作` });
+        out.push({
+          action: inner as FlatStep['action'],
+          label: `第 ${i + 1} 个动作的第 ${round} 轮第 ${j + 1} 个动作`,
+        });
       });
     }
   });

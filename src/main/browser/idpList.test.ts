@@ -105,6 +105,28 @@ describe('parseIdpList：吃下 CARSI 清单的两种真实格式', () => {
     expect(r.entries).toEqual([{ name: 'Z 大学', entityID: 'urn:mace:z|w', flag: null }]);
   });
 
+  // 字符类只认 "0" 与 "1" 这两个字面值，不是「随便一个数字」。用别的数字开头
+  // （2|、9|）探这个边界 —— 上面那条「开头是别的数字或字母」的用例名虽然提到了
+  // 数字，实际只喂了字母 u，正则一旦被放宽成 \d 或 . 都不会被这条抓住。
+  // 这里没被剥掉前缀的话，"2|https://..." 整个既不是 http(s) 网址也不是 URN，
+  // 应当落进 skipped 而不是被当成已知格式剥掉、静默收进 entries。
+  it('标志前缀只认 0/1，开头是别的数字（2、9）时不当前缀剥', () => {
+    const r = parseIdpList(JSON.stringify([
+      { 'W 大学': '2|https://idp.w.edu/shibboleth' },
+      { 'V 大学': '9|https://idp.v.edu/shibboleth' },
+      { '清华大学': '1|https://idp.tsinghua.edu.cn/idp/shibboleth' },
+    ]));
+    expect(r.entries).toEqual([
+      { name: '清华大学', entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth', flag: '1' },
+    ]);
+    expect(r.skipped.map((s) => s.name)).toEqual(['W 大学', 'V 大学']);
+    // raw 里那个没被认成标志的 "2|" / "9|" 还完整留着 —— 证明确实没剥
+    expect(r.skipped.map((s) => s.raw)).toEqual([
+      '2|https://idp.w.edu/shibboleth',
+      '9|https://idp.v.edu/shibboleth',
+    ]);
+  });
+
   // 标志是源接口给的**协议层事实**。spec §4.6 说的是「一期不拿它过滤」，
   // 不是「不保留它」—— 丢在解析层，下游就再也拿不回来。
   it('标志原样保留，两种格式分别是 "1" / "0" / null', () => {
@@ -114,6 +136,13 @@ describe('parseIdpList：吃下 CARSI 清单的两种真实格式', () => {
       { C: 'https://c.edu.cn/idp/shibboleth' },
     ]));
     expect(r.entries.map((e) => e.flag)).toEqual(['1', '0', null]);
+  });
+
+  // URL 那条路 WHATWG 解析器自己会裁掉空白，裁不裁得住测不出来；URN 不经过 URL
+  // 解析器，尾部空白会原样活下来，后续与 IdP 侧精确匹配对不上，登录失败又无从解释。
+  it('entityID 两侧空白被裁掉（URN 不会被 URL 解析器顺手裁掉，得靠这里）', () => {
+    const r = parseIdpList(JSON.stringify([{ 'X 大学': '1|urn:mace:x.edu:idp ' }]));
+    expect(r.entries).toEqual([{ name: 'X 大学', entityID: 'urn:mace:x.edu:idp', flag: '1' }]);
   });
 
   it('机构名两侧空白被裁掉，空名跳过', () => {

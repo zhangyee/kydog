@@ -147,6 +147,13 @@ describe('TabRegistry：isAgentActive 是账本里的状态事实', () => {
 });
 
 describe('TabRegistry：上限是兜底不是方案', () => {
+  // 现有用例全部拿 MAX_TABS 这个符号做算术，边界行为守住了，数值本身没有 ——
+  // 16 改成 17 照样全绿。这个数的 JSDoc 自己写着「经常撞上限说明设计没生效，
+  // 回去改那两条设计，不是抬高这个数」，抬高它不该无声无息。
+  it('MAX_TABS 就是 16', () => {
+    expect(MAX_TABS).toBe(16);
+  });
+
   it(`到 ${MAX_TABS} 个之后再开报 too_many_tabs`, () => {
     const r = mk();
     for (let i = 0; i < MAX_TABS; i++) add(r, `t${i}`);

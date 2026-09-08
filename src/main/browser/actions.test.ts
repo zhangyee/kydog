@@ -51,6 +51,22 @@ describe('keyEventsFor：Enter 必须带 text', () => {
   it('不认识的键名报错，而不是静默发一个空事件', () => {
     expect(() => keyEventsFor('Meh')).toThrow(KydogError);
   });
+
+  // 上面几条只覆盖了 7 个键，KEYS 表里另外 6 个（ArrowLeft/ArrowRight/Home/End/
+  // PageUp/PageDown）一个都没测过 —— 合并冲突或重排这张表时掉一行不会被抓住。
+  // 翻页是 slowpaper 检索最常用的动作之一，PageDown 尤其不能悄悄消失。
+  it('13 个键全部认识，都能解析出成对的 keyDown/keyUp', () => {
+    const ALL_KEYS = [
+      'Enter', 'Tab', 'Escape', 'Backspace', 'Delete',
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      'Home', 'End', 'PageUp', 'PageDown',
+    ];
+    for (const k of ALL_KEYS) {
+      const evs = keyEventsFor(k);
+      expect(evs.map((e) => e.type), k).toEqual(['keyDown', 'keyUp']);
+      expect(evs.every((e) => e.key === k), k).toBe(true);
+    }
+  });
 });
 
 describe('resolveTarget：index 必须绑当前快照', () => {
@@ -152,9 +168,9 @@ describe('flattenActions：repeat 展开时保住「第几轮第几步」', () =
   it('repeat 展开成 times 份，label 说清是第几轮第几步', () => {
     const steps = flattenActions([{ kind: 'repeat', times: 3, actions: [A('x', 1), A('y', 2)] } as Action]);
     expect(steps).toHaveLength(6);
-    expect(steps[0].label).toBe('第 1 轮第 1 个动作');
-    expect(steps[3].label).toBe('第 2 轮第 2 个动作');
-    expect(steps[5].label).toBe('第 3 轮第 2 个动作');
+    expect(steps[0].label).toBe('第 1 个动作的第 1 轮第 1 个动作');
+    expect(steps[3].label).toBe('第 1 个动作的第 2 轮第 2 个动作');
+    expect(steps[5].label).toBe('第 1 个动作的第 3 轮第 2 个动作');
   });
 
   it('repeat 前后的动作与 repeat 混排时顺序正确', () => {
@@ -173,13 +189,31 @@ describe('flattenActions：repeat 展开时保住「第几轮第几步」', () =
     ]);
     expect(steps).toHaveLength(7);
     expect(steps[6].label).toBe('第 2 个动作');
-    expect(steps[0].label).toBe('第 1 轮第 1 个动作');
+    expect(steps[0].label).toBe('第 1 个动作的第 1 轮第 1 个动作');
   });
 
   it('repeat 在中间时，它后面那个动作的编号也照请求里的位置数', () => {
     const steps = flattenActions([A('pre', 0), { kind: 'repeat', times: 2, actions: [A('in', 1)] } as Action, A('post', 9)]);
     expect(steps.map((s) => s.label))
-      .toEqual(['第 1 个动作', '第 1 轮第 1 个动作', '第 2 轮第 1 个动作', '第 3 个动作']);
+      .toEqual(['第 1 个动作', '第 2 个动作的第 1 轮第 1 个动作', '第 2 个动作的第 2 轮第 1 个动作', '第 3 个动作']);
+  });
+
+  // 两个 repeat 块各自展开出「第 1 轮第 1 个动作」，label 不带 repeat 块自己在请求里
+  // 的位置就会撞车：停在第 3 步时报「第 1 轮第 1 个动作失败」，跟第 1 步的 label
+  // 一模一样，模型分不出是哪一块出的问题，很可能去改对的那一块再撞一次。
+  it('两个 repeat 块的 label 不撞车，各自带上自己在请求里的位置', () => {
+    const steps = flattenActions([
+      { kind: 'repeat', times: 2, actions: [A('a', 1)] } as Action,
+      { kind: 'repeat', times: 2, actions: [A('b', 2)] } as Action,
+    ]);
+    const labels = steps.map((s) => s.label);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).toEqual([
+      '第 1 个动作的第 1 轮第 1 个动作',
+      '第 1 个动作的第 2 轮第 1 个动作',
+      '第 2 个动作的第 1 轮第 1 个动作',
+      '第 2 个动作的第 2 轮第 1 个动作',
+    ]);
   });
 });
 
