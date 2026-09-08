@@ -119,6 +119,9 @@ describe('compileExtractPlan', () => {
 // 这正好对应本批的判据 —— 要考的是**拿到元素之后**怎么处置，与选择器怎么写无关。
 
 class FakeEl {
+  /** 密码判据的第一道就是 tagName（与 walker 逐字一致），替身必须给得出来。 */
+  readonly tagName: string = '';
+
   constructor(
     readonly attrs: Record<string, string> = {},
     readonly innerText = '',
@@ -144,6 +147,8 @@ class FakeEl {
  * `hidden` 是全局 `hidden` 内容属性的 IDL 映射（`<input hidden>` → true）。
  */
 class FakeInput extends FakeEl {
+  override readonly tagName = 'INPUT';
+
   constructor(
     readonly type: string,
     attrs: Record<string, string> = {},
@@ -154,16 +159,108 @@ class FakeInput extends FakeEl {
   }
 }
 
-function runExpression(plan: ExtractPlan, items: FakeEl[]): ExtractResult {
+/** 替身里的 <textarea>。walker 的判据 3/4 对它也成立（`holdsText` 恒为真）。 */
+class FakeTextarea extends FakeEl {
+  override readonly tagName = 'TEXTAREA';
+  readonly type = 'textarea';
+}
+
+/**
+ * `window` 是判据 2 的入口：`window.__kydogWorld.pw` 是 walker / pwRegistrar 记下的
+ * 那份 WeakSet，extract 与它们跑在同一个隔离世界里。用例可以塞一个自己的世界进来，
+ * 扮演「这个元素**曾经**是 password」。不塞就是「这个文档还没有过任何登记」。
+ */
+function runExpression(
+  plan: ExtractPlan, items: FakeEl[], win: { __kydogWorld?: { pw: WeakSet<object> } } = {},
+): ExtractResult {
   const doc = { querySelectorAll: () => items };
   const build = new Function(
-    'document', 'HTMLInputElement', `return (${extractExpression(plan)});`,
-  ) as (d: unknown, i: unknown) => ExtractResult;
-  return build(doc, FakeInput);
+    'window', 'document', 'HTMLInputElement', `return (${extractExpression(plan)});`,
+  ) as (w: unknown, d: unknown, i: unknown) => ExtractResult;
+  return build(win, doc, FakeInput);
 }
 
 /** 一条结果：容器里挂着若干按选择器登记的子元素。 */
 const row = (kids: Record<string, FakeEl>) => new FakeEl({}, '', kids);
+
+describe('页面表达式 · 密码判据补齐到与 walker 一致（最终评审 C3）', () => {
+  // 从前这里只有一条判据（此刻 IDL type === 'password'），而 extract.ts 的注释明写
+  // 「与 walker 用的是同一个协议层判据」—— 那句话是假的。评审实测的三种态里
+  // walker 都判 isPassword，extract 都返回 "hunter2"。
+  //
+  // 半径：读的是 getAttribute('value')（内容属性），漏的是**服务端渲染进 value= 的
+  // 那一份**（校验失败重渲染表单、把提交的密码填回去），不是实时击键。
+  const plan = () => compileExtractPlan({
+    item: 'form', v: 'input@value', n: 'input@name', ph: 'input@placeholder',
+  });
+
+  it('A · 站点点「显示密码」把 type 改成 text：world.pw 记得，值不出去（判据 2）', () => {
+    const box = new FakeInput('text', { value: 'hunter2', name: 'j_pass', id: 'input-42' });
+    // walker / pwRegistrar 在这个文档里见过它是 password 态，记在隔离世界的 WeakSet 里
+    const win = { __kydogWorld: { pw: new WeakSet<object>([box]) } };
+    const r = runExpression(plan(), [row({ input: box })], win);
+    expect(r.rows).toEqual([{ v: null, n: null, ph: null }]);
+    expect(JSON.stringify(r)).not.toContain('hunter2');
+  });
+
+  it("A′ · 同一个元素、没有那份记忆时值真的会出去 —— 钉住上一条不是空绿", () => {
+    const box = new FakeInput('text', { value: 'hunter2', name: 'q', id: 'kw' });
+    const r = runExpression(plan(), [row({ input: box })]);
+    expect(r.rows[0].v).toBe('hunter2');
+  });
+
+  it('B · <input type=text autocomplete=current-password value=…>（判据 3）', () => {
+    const box = new FakeInput('text', { value: 'hunter2', autocomplete: 'Section-Blue CURRENT-PASSWORD' });
+    const r = runExpression(plan(), [row({ input: box })]);
+    expect(r.rows).toEqual([{ v: null, n: null, ph: null }]);
+  });
+
+  it('B′ · new-password 也算，而 autocomplete=off / username 不算', () => {
+    const nw = new FakeInput('text', { value: 'hunter2', autocomplete: 'new-password' });
+    expect(runExpression(plan(), [row({ input: nw })]).rows[0].v).toBeNull();
+    const user = new FakeInput('text', { value: 'yee', autocomplete: 'username' });
+    expect(runExpression(plan(), [row({ input: user })]).rows[0].v).toBe('yee');
+  });
+
+  it('C · <input type=text name=password value=…>（判据 4，name / id 都看）', () => {
+    const byName = new FakeInput('text', { value: 'hunter2', name: 'password' });
+    expect(runExpression(plan(), [row({ input: byName })]).rows[0].v).toBeNull();
+    const byId = new FakeInput('text', { value: 'hunter2', id: 'user_pwd' });
+    expect(runExpression(plan(), [row({ input: byId })]).rows[0].v).toBeNull();
+    const passwd = new FakeInput('text', { value: 'hunter2', name: 'j_passwd' });
+    expect(runExpression(plan(), [row({ input: passwd })]).rows[0].v).toBeNull();
+  });
+
+  // 判据 3/4 只对**装得下用户打进去的文本**的控件成立（walker 的 PW_VALUE_TYPES）。
+  // 放开的话 `<input type=submit name=passwordSubmit value=登录>` 那颗按钮上印的字
+  // 也会被抹掉，而那是它唯一的可见标签。
+  it('判据 3/4 只管装得下文本的控件：submit 按钮的 value 照读', () => {
+    const btn = new FakeInput('submit', { value: '登录', name: 'passwordSubmit' });
+    expect(runExpression(plan(), [row({ input: btn })]).rows[0].v).toBe('登录');
+  });
+
+  it('textarea 也吃判据 3/4 —— 与 walker 的 holdsText 一致', () => {
+    const ta = new FakeTextarea({ value: 'hunter2', name: 'pwd_hint' });
+    const r = runExpression(compileExtractPlan({ item: 'form', v: 'textarea@value' }), [row({ textarea: ta })]);
+    expect(r.rows[0].v).toBeNull();
+  });
+
+  // 判据 1/3/4 只对表单控件成立：放开到任意元素只会让 <a name="password-reset">
+  // 这种被标成密码框，白白把正常字段抹成 null。
+  it('不是表单控件的元素不受密码判据约束', () => {
+    const link = new FakeEl({ name: 'password-reset', href: 'https://a.example/reset' });
+    const r = runExpression(compileExtractPlan({ item: '.r', h: 'a@href' }), [row({ a: link })]);
+    expect(r.rows[0].h).toBe('https://a.example/reset');
+  });
+
+  // 这个文档还没有过任何登记时 window.__kydogWorld 是 undefined —— 判据 2 要能
+  // 缺席而不炸（炸了就是整个 extract 抛 SyntaxError/TypeError，一列都抽不到）。
+  it('隔离世界里还没有那份记忆时，其余三条判据照常成立', () => {
+    const box = new FakeInput('password', { value: 'hunter2' });
+    const r = runExpression(plan(), [row({ input: box })], {});
+    expect(r.rows).toEqual([{ v: null, n: null, ph: null }]);
+  });
+});
 
 describe('页面表达式 · 密码卫生：判据落在拿到真实元素的那一刻', () => {
   // 这条是本批的核心：选择器里没有半个 password 字样，编译层无从判断，

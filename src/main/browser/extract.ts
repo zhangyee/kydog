@@ -191,11 +191,27 @@ export function compileExtractPlan(selectors: Record<string, string>): ExtractPl
  * 三件事落在这里而不是解析层，理由是同一条：**选择器是模型给的字符串，它到底选中
  * 什么元素只有页面知道**。按选择器文本猜就是启发式 proxy，而且绕过方法一大把。
  *
- * 1. 密码框：`t instanceof HTMLInputElement && t.type === 'password'` → 这个字段返回
- *    null。与 walker（`injected/walker.js`）用的是同一个协议层判据。
+ * 1. 密码框：`isPasswordField(t)` → 这个字段返回 null。判据与 walker
+ *    （`injected/walker.js` 的 `isPasswordField`）**四条逐条一致**，两边漂移由
+ *    `browserService.test.ts` 的差分用例守着（同一个元素喂给两边，裁决必须相等）。
  *    **密码框上一个属性都不读**，不只是 `@value`：`@name` / `@placeholder` 这类确实
  *    不含密码，但一期 agent 本来就不许碰密码框（`actions.ts` 挡住往里打字），放开
  *    它换不来任何用处，却要逐个属性论证「这个不会漏」。fail-closed 更便宜。
+ *
+ *    **这里从前只有第 1 条**（此刻 IDL `type === 'password'`），而注释写的是「与
+ *    walker 用的是同一个判据」—— 那句话当时是假的。实测过的三种漏法：站点点
+ *    「显示密码」把 type 改成 text（判据 2）、`<input type=text
+ *    autocomplete=current-password value=…>`（判据 3）、`<input type=text
+ *    name=password value=…>`（判据 4），三种 walker 都判 isPassword，extract 都返回
+ *    `"hunter2"`。半径是**服务端渲染进 `value=` 内容属性**的那一份（校验失败重渲染
+ *    表单、把提交的密码填回去，老 IdP 真实存在的写法）—— 这里读的是
+ *    `getAttribute('value')`，不是用户此刻敲进去的 IDL 值；实时值那条出口在 walker
+ *    的 `el.value` 上，它的四条判据一直是全的。
+ *
+ *    判据 2 读的是 `window.__kydogWorld.pw` —— walker 与常驻登记 pwRegistrar 记下的
+ *    **同一份** WeakSet，就在同一个隔离世界里。这里只读不写：登记是那两边的职责。
+ *    共同边界（walker 那份 docblock 已经登记过，这里不许写窄）：`tagName` / `type`
+ *    都是页面能在元素上遮蔽的自有属性，四条里唯一遮蔽不了的是隔离世界的 `world.pw`。
  * 2. `@value`：只在**用户看得见的** input 上读。SAML HTTP-POST 绑定那一步 IdP 渲染的
  *    就是 `<input type="hidden" name="SAMLResponse" value="<签名断言>">`，
  *    `getAttribute('value')` 一字不差拿得到这份 bearer 断言；CSRF token 同理。
@@ -230,8 +246,29 @@ export function extractExpression(plan: ExtractPlan): string {
   const MARK_TAIL = ${lit(FIELD_MARK_TAIL)};
   const columns = [];
   let maxOriginal = 0;
+  // ── 密码判据：与 walker 的 isPasswordField **逐条一致**（四条，任一成立即算）──
+  // 差分用例（browserService.test.ts）把同一个元素喂给两边，裁决必须相等。
+  // 三个常量的取值也照抄 walker，改了一边不改另一边会被那条用例抓住。
+  const PW_NAME_RE = /(password|passwd|pwd)/i;
+  const PW_AUTOCOMPLETE = ['current-password', 'new-password'];
+  const PW_VALUE_TYPES = ['', 'text', 'password', 'search', 'tel', 'url', 'email', 'number'];
+  // 判据 2 的那份记忆。extract 与 walker / pwRegistrar 跑在同一个隔离世界里，
+  // 拿到的就是同一个 WeakSet；只读，不登记。
+  const world = window.__kydogWorld;
+  const isPasswordField = (t) => {
+    if (world && world.pw && world.pw.has(t)) return true;
+    const tag = t.tagName ? String(t.tagName).toLowerCase() : '';
+    if (tag !== 'input' && tag !== 'textarea') return false;
+    const type = typeof t.type === 'string' ? t.type.toLowerCase() : '';
+    if (type === 'password') return true;
+    const holdsText = tag === 'textarea' || PW_VALUE_TYPES.indexOf(type) !== -1;
+    if (!holdsText || typeof t.getAttribute !== 'function') return false;
+    const tokens = (t.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
+    for (const a of PW_AUTOCOMPLETE) if (tokens.indexOf(a) !== -1) return true;
+    return PW_NAME_RE.test((t.getAttribute('name') || '') + ' ' + (t.getAttribute('id') || ''));
+  };
   const readable = (t, attr) => {
-    if (t instanceof HTMLInputElement && t.type === 'password') return false;
+    if (isPasswordField(t)) return false;
     const a = String(attr).toLowerCase();
     if (a === 'value' && t instanceof HTMLInputElement && (t.type === 'hidden' || t.hidden)) return false;
     return true;

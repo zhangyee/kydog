@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
+import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
 
 /**
  * browserService 的替身测试。
@@ -1487,5 +1488,85 @@ describe('常驻密码登记（E3b）', () => {
     wc.fire('dom-ready');
     await flush();
     expect(logText()).toContain('密码登记没能装上');
+  });
+});
+
+// ── extract 的密码判据必须与 walker 逐条一致（最终评审 C3）──────────────────
+//
+// extract.ts 从前只有一条判据（此刻 IDL type === 'password'），而它的注释明写「与
+// walker 用的是同一个协议层判据」——那句话是假的：walker 有四条。这条差分用例是
+// 两边不再漂移的唯一保障（照 D8 那条裁决的办法：不物理共享，用差分用例守）。
+//
+// **两边各跑在自己的世界里**：让 walker 先跑就等于替 extract 把 world.pw 填好，
+// 那样这组用例会全绿而什么都没考到（walker 判 hit 时会 world.pw.add）。
+describe('extract ↔ walker 的密码判据差分', () => {
+  type PwWorld = World & { __kydogWorld?: { pw: WeakSet<object> } };
+
+  /** walker 侧的裁决：元素可见且命中选择器，看它有没有被打上 isPassword。 */
+  const walkerSays = (node: FakeEl, pre?: (w: PwWorld, r: FakeRoot) => void): boolean => {
+    const w = newWorld() as PwWorld;
+    const root = new FakeRoot([node]);
+    pre?.(w, root);
+    const out = runWalker(w, root);
+    return out.nodes.some((n) => n.isPassword === true);
+  };
+
+  /** extract 侧的裁决：@value 被抹成 null 就是「判成密码框」。 */
+  const extractSays = (node: FakeEl, pre?: (w: PwWorld, r: FakeRoot) => void): boolean => {
+    const w = newWorld() as PwWorld;
+    const root = new FakeRoot([node]);
+    pre?.(w, root);
+    const plan = compileExtractPlan({ item: '.row', v: 'target@value' });
+    const doc = { querySelectorAll: () => [{ querySelector: (s: string) => (s === 'target' ? node : null) }] };
+    const build = new Function('window', 'document', 'HTMLInputElement',
+      `return (${extractExpression(plan)});`) as (w: unknown, d: unknown, i: unknown) => ExtractResult;
+    // HTMLInputElement 只参与 hidden/value 那一条判据（另有用例），这里给一个够不着的类
+    return build(w, doc, class {}).rows[0].v === null;
+  };
+
+  /** 两边都要读得到 value：walker 读 IDL `el.value`，extract 读 `getAttribute('value')`。 */
+  const box = (tagName: string, init: Partial<FakeEl> = {}) =>
+    el(tagName, { interactive: true, value: 'hunter2', ...init,
+      attrs: { value: 'hunter2', ...(init.attrs ?? {}) } });
+
+  const cases: Array<[string, FakeEl, ((w: PwWorld, r: FakeRoot) => void)?]> = [
+    ['判据 1 · 此刻就是 password', box('INPUT', { type: 'password' })],
+    ['判据 1 · 大写 PASSWORD', box('INPUT', { type: 'PASSWORD' })],
+    ['判据 3 · autocomplete=current-password 的 text', box('INPUT', { type: 'text', attrs: { autocomplete: 'Section-Blue CURRENT-PASSWORD' } })],
+    ['判据 3 · new-password', box('INPUT', { type: 'text', attrs: { autocomplete: 'new-password' } })],
+    ['判据 4 · name 里带 password', box('INPUT', { type: 'text', attrs: { name: 'password' } })],
+    ['判据 4 · id 里带 pwd', box('INPUT', { type: 'text', attrs: { id: 'user_pwd' } })],
+    ['判据 4 · textarea 也算', box('TEXTAREA', { attrs: { name: 'j_passwd' } })],
+    ['不算 · 普通检索框', box('INPUT', { type: 'text', attrs: { name: 'q' } })],
+    ['不算 · autocomplete=username', box('INPUT', { type: 'text', attrs: { autocomplete: 'username' } })],
+    ['不算 · submit 按钮（装不下用户打进去的文本）', box('INPUT', { type: 'submit', attrs: { name: 'passwordSubmit' } })],
+    ['不算 · <a name=password-reset>', box('A', { attrs: { name: 'password-reset' } })],
+  ];
+
+  for (const [label, node, pre] of cases) {
+    it(`${label}：两边裁决相等`, () => {
+      expect(`${label}: extract=${extractSays(node, pre)}`)
+        .toBe(`${label}: extract=${walkerSays(node, pre)}`);
+    });
+  }
+
+  // 判据 2 单独一条：它不是元素身上的属性，而是隔离世界里那份记忆。
+  // 评审实测的场景 A —— 站点点「显示密码」把 type 改成 text，walker 判 isPassword，
+  // 而 extract 从前返回 "hunter2"。
+  it('判据 2 · 曾经是 password（world.pw 记忆）：两边裁决相等，且都判成密码框', () => {
+    const mk = () => box('INPUT', { type: 'password' });
+    const flip = (w: PwWorld, r: FakeRoot) => {
+      runRegistrar(w, r);                                  // dom-ready 时还是 password 态
+      (r.kids[0] as FakeEl).type = 'text';                 // 站点点了「显示密码」
+    };
+    const a = mk(); const b = mk();
+    expect(walkerSays(a, flip)).toBe(true);
+    expect(extractSays(b, flip)).toBe(true);
+  });
+
+  it('判据 2′ · 同一个元素没有那份记忆时两边都放行 —— 上一条不是空绿', () => {
+    const node = box('INPUT', { type: 'text', attrs: { name: 'q', value: 'hunter2' } });
+    expect(walkerSays(node)).toBe(false);
+    expect(extractSays(node)).toBe(false);
   });
 });
