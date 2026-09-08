@@ -238,6 +238,8 @@ const bs = vi.hoisted(() => ({
   isolatedImpl: (() => null) as (code: string) => unknown,
   snapshotImpl: (() => null) as () => unknown,
   noTab: false,
+  /** `evalInPage` 抛什么（没有渲染进程 / 撞时限）。null 就是照常求值。 */
+  evalThrows: null as Error | null,
   /** 每一次 dispatch 收到的东西（动作原样、以及当时传进去的快照）。 */
   dispatched: [] as { tabId: string; action: { kind: string }; snapshot: unknown }[],
   dispatchImpl: ((a: { kind: string }) => `派发了 ${a.kind}`) as (a: { kind: string }) => string,
@@ -265,7 +267,19 @@ vi.mock('../browser/browserService', () => {
       getState: () => ({ tabs: bs.tabs, activeTabId: 't1' }),
       getSnapshot: () => { bs.order.push('getSnapshot'); return bs.current; },
       snapshot: async () => { bs.order.push('snapshot'); return bs.snapshotImpl(); },
-      webContentsOf: () => (bs.noTab ? null : wc),
+      webContentsOf: () => { bs.order.push('webContentsOf'); return bs.noTab ? null : wc; },
+      /**
+       * 两道保护齐全的页内求值入口（没有渲染进程就不注入 + 罩时限）。
+       * 工具层拿 `webContentsOf()` 自己注脚本的那条路**必须没有调用方**：
+       * 崩过一次的标签上那是一次挂死，而 browser_read / browser_act 都是
+       * sequential 工具 —— 挂住就是整轮 run 永远不返回。
+       */
+      evalInPage: (_tabId: string, code: string) => {
+        bs.order.push('evalInPage');
+        if (bs.evalThrows) return Promise.reject(bs.evalThrows);
+        bs.isolated.push({ worldId: 31337, code });
+        return Promise.resolve(bs.isolatedImpl(code));
+      },
       dispatch: (tabId: string, action: { kind: string }, snapshot: unknown) => {
         bs.order.push(`dispatch:${action.kind}`);
         bs.dispatched.push({ tabId, action, snapshot });
@@ -316,6 +330,7 @@ beforeEach(() => {
   bs.waitImpl = () => true;
   bs.tabs = [{ id: 't1', url: 'https://a.example/q' }];
   bs.noTab = false;
+  bs.evalThrows = null;
 });
 
 describe('六种动作真的接通到 browserService.dispatch（Task 4）', () => {
@@ -481,6 +496,15 @@ describe('密码硬闸在工具层这一侧的样子', () => {
     expect(d).toContain('click');
     expect(d).toContain('type');
   });
+
+  // 「type 会先清空目标框」这句话对 date / time / month / week / datetime-local
+  // **是假的**（实测：insertText 对分段选择器完全无效，先清空反而把原值抹了）。
+  // 描述是模型唯一读得到的契约，说了做不到的事，模型就会照着排剧本。
+  it('描述里「先清空」这句话必须把做不到的那一类说清楚', () => {
+    const d = toolNamed('browser_act').description;
+    expect(d).toContain('先清空');
+    expect(d).toMatch(/date|日期/);
+  });
 });
 
 describe('extract 的接线：隔离世界 + 整批预算（评审变异 M13）', () => {
@@ -542,13 +566,13 @@ describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
     // `getSnapshot` 是取 `before` 那一份：**它也必须在队列里面**（最终复评 m4）。
     // 取在队列外的话，这一批在队列里等的那段时间同一个标签上别人产生的新快照
     // 会被算进「本批的页面变化」。
-    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'getSnapshot', 'snapshot']);
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'getSnapshot', 'evalInPage', 'snapshot']);
   });
 
   it('browser_read 也走同一条路', async () => {
     bs.isolatedImpl = () => '正文';
     await toolNamed('browser_read').execute('call-2', { tabId: 't1' });
-    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1']);
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'evalInPage']);
   });
 
   // 形状不对的一批不该先去占住这个标签的队列。
@@ -567,6 +591,59 @@ describe('browser_read 走隔离世界（I3）', () => {
     expect(bs.mainWorld).toEqual([]);
     expect(bs.isolated.map((r) => r.worldId)).toEqual([WORLD_ID]);
     expect(s).toContain('正文');
+  });
+});
+
+// ── 页内求值必须走带闸的那个入口（C1）──────────────────────────────────────
+//
+// 实测：渲染进程崩过一次之后 `getOSProcessId()` 回 0，而 `isAttached()` 仍是 true、
+// `isDestroyed()` 是 false —— `webContentsOf()` 照常回一个非 null 的 wc，
+// 而在它上面求值**永不 settle**（3 秒内无任何结果）。browser_read 与 extract
+// 都在 sequential 工具里，挂住就是整轮 run 永远不返回，`signal` 也救不回来
+// （它只在步骤之间查）。所以这两条路都不许自己拿 wc 注脚本。
+describe('页内求值走 evalInPage，不自己拿 webContents 注脚本', () => {
+  it('browser_read 不碰 webContentsOf，走的是带闸的入口', async () => {
+    bs.isolatedImpl = () => '正文';
+    await toolNamed('browser_read').execute('c', { tabId: 't1' });
+    expect(bs.order).toContain('evalInPage');
+    expect(bs.order).not.toContain('webContentsOf');
+  });
+
+  it('extract 不碰 webContentsOf，走的是带闸的入口', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: '一篇论文' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.order).toContain('evalInPage');
+    expect(bs.order).not.toContain('webContentsOf');
+  });
+
+  it('标签没有渲染进程时 browser_read 当场报错，不挂住', async () => {
+    bs.evalThrows = new KydogError('browser.not_dispatchable', '标签 t1 还没有渲染进程');
+    await expect(toolNamed('browser_read').execute('c', { tabId: 't1' }))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+  });
+
+  // 一批里前面几步抽到的东西不该跟着这一条一起丢 —— 与「出错即停但已抽到的数据
+  // 全部返回」是同一条承诺。
+  it('extract 撞上求值失败：这一批停在那里，前面抽到的照常返回', async () => {
+    let n = 0;
+    bs.isolatedImpl = () => {
+      if (++n === 2) throw new KydogError('browser.page_no_result', '页面没有回应这次求值');
+      return {
+        rows: [{ t: '第一步抽到的' }],
+        rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+        fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+      };
+    };
+    const s = bodyOf(await act([
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+    ]));
+    expect(s).toContain('第一步抽到的');
+    expect(s).toContain('页面没有回应这次求值');
   });
 });
 

@@ -84,6 +84,14 @@
       try { el = D.querySelector(t.selector); } catch { return { ok: false, reason: 'bad_selector' }; }
       return el ? { el } : { ok: false, reason: 'not_found' };
     }
+    // **号必须是数字，这一条要 fail-closed。** 不查的话：`world.ids.get(el)` 未命中
+    // 回 undefined，而 `undefined === undefined` 对**第一个没发过号的元素**恒成立 ——
+    // 于是 `{}` 或 `{nodeId: undefined}` 这种目标会 ok:true 地指向一个**任意的错元素**
+    // 并报成功（实测：发号表里只有 #b 有号时，target={} 回 `{ok:true,tag:'button'}`）。
+    // 那正是 spec §4.2 点名最危险的那个形状：不报错，只是点错东西。
+    // 这一层是纵深 —— `resolveTarget` 保证号取自快照节点，但 `isWalkerOutput` 只查
+    // `Array.isArray(o.nodes)`、不查每个节点的形状，缺号的节点一路放行。
+    if (typeof t.nodeId !== 'number') return { ok: false, reason: 'stale_node' };
     // 号只在**本文档**内有效。世界没了（文档换过）就是「这批号已经作废」，
     // 与「页面上没有这个元素」不是一回事：前者要重新取快照，后者要换目标。
     if (!world || !world.ids) return { ok: false, reason: 'stale_node' };
@@ -146,6 +154,24 @@
     return tag + (id ? `#${id}` : '') + (!id && cls ? `.${cls}` : '');
   };
 
+  /**
+   * 分段选择器。**装得下用户输入，但 `Input.insertText` 对它们完全无效** ——
+   * 2026-09-09 实测（Electron 41.2.1，真页面，先点一下再发命令）：
+   *
+   * | 做法 | date 框（原值 2020-01-01） |
+   * | --- | --- |
+   * | 点 → `insertText('2024-02-03')` | 仍是 `2020-01-01`（一个字都没进去） |
+   * | 点 → `value=''` → `insertText(…)` | 变成 `''`（**把原值抹了，还是没打进去**） |
+   * | 点 → 逐个 `keyDown` '2','0','2','4' | `2024-01-01`（只改到当前那个分段） |
+   *
+   * 所以 `type` 对它们**在碰之前就拒**：静默无效已经是「以成功措辞返回一件没发生
+   * 的事」，而「先清空再打空」更糟 —— 它把用户原本填好的年份抹掉了，网页不可回滚。
+   * 按键那条路能改分段，但分段顺序与本地化格式我们没有依据去拼，这一期不做。
+   */
+  const SEGMENTED_TYPES = ['date', 'time', 'month', 'week', 'datetime-local'];
+  const typeOf = (el) => (typeof el.type === 'string' ? el.type.toLowerCase() : '');
+  const segmentedOf = (el) => tagOf(el) === 'input' && SEGMENTED_TYPES.indexOf(typeOf(el)) !== -1;
+
   /** 能不能往里打字。协议层事实（元素类型 + disabled / readOnly），不是「看起来像」。 */
   const editableOf = (el) => {
     const tag = tagOf(el);
@@ -189,8 +215,14 @@
       ok: true, x, y,
       isPassword: isPasswordField(el),
       editable: editableOf(el),
+      // 分段选择器要在**点下去之前**就问得到（见 SEGMENTED_TYPES 那段实测）：
+      // 放到 focusSelect 才判就晚了 —— 那时这一下已经点出去了。
+      segmented: segmentedOf(el),
       disabled: el.disabled === true,
       tag: tagOf(el),
+      // 只是控件的类型名（text / date / …），报错时说得出「是哪一类控件」。
+      // 它不是值，也不受密码判据影响 —— 密码框在上面几道闸就退了。
+      type: typeOf(el),
       label: labelOf(el),
     };
   };
@@ -205,6 +237,13 @@
     // （view 隐藏 / view 可见但窗口隐藏 / 窗口也显示 × 禁不禁用硬件加速）；
     // `Input.synthesizeScrollGesture` 会 ack（约 1030ms）但同样不滚。
     // 隔离世界里的 scrollBy 是同步的、当场量得到，而且不挑可见性。
+    // **方向也 fail-closed。** 这份代码是独立注入的一份，`validateBatch` 与
+    // TypeBox 那两道拦不到直接调它的路；而 `=== 'up' ? -1 : 1` 会把任何写错的方向
+    // 都当成「往下」——「我说往左，它往下滚了还报成功」正是这个文件其余每一处
+    // 都在避免的形状。
+    if (req.direction !== 'up' && req.direction !== 'down') {
+      return { ok: false, reason: 'bad_direction', direction: String(req.direction) };
+    }
     const dir = req.direction === 'up' ? -1 : 1;
     // 落点取视口中心，与「用户把光标放在页面中间滚」一致。
     const cx = Math.round((W.innerWidth || 0) / 2);
@@ -212,6 +251,15 @@
     // **滚的是滚动链上的那个容器**，不是永远滚 document：学术站点的结果区大量是
     // 内层 overflow:auto，滚 document 是一像素都不动而返回值说「滚过了」。
     // 判据是 CSS 的 overflow + 有没有可滚余量，都是页面事实。
+    //
+    // ── 余量为什么是 `> 1` 而不是 `> 0`（这个 1 的出处）───────────────────────
+    // `scrollTop` 是 double，而 `scrollHeight` / `clientHeight` 是**四舍五入的整数**。
+    // 2026-09-09 实测（Electron 41.2.1，1280×800，deviceScaleFactor 0，
+    // scale ∈ {1, 0.6266, 0.35} 三种结果一致）：
+    //   内容 200.6px / 视口 200px  → scrollHeight−clientHeight 报 **1**，滚到底 scrollTop=0.5
+    //   内容 200.5px / 视口 200.5px（真滚不动）→ 报 0
+    // 也就是「报出来的 1px 余量」可能只是 0.5px 的真余量 —— 那是舍入噪声，不是
+    // 可以滚的东西。挑中它当滚动目标，delta 恒 0，而真正该滚的 document 一动不动。
     const scrollable = (e) => {
       if (!e || e.nodeType !== 1) return false;
       let st = null;
@@ -241,6 +289,13 @@
       ok: true, container: box ? describe(box) : 'document',
       before: Math.round(before), after: Math.round(after),
       delta: Math.round(after - before),
+      // ── `max - 1` 里那个 1 的出处（与上面 `> 1` 同源）─────────────────────
+      // 同一批实测：内容 1000.6px / 视口 200.4px 的容器，`scrollHeight−clientHeight`
+      // 报 **801**，而真的滚到底时 `scrollTop` 停在 **800** —— 差 1。没有这 1px 容差，
+      // 「已经到底了」永远报不出来，模型只会收到「滚了 0 像素、这个容器滚不动」，
+      // 而这两句话的处置正好相反（停止翻页 vs 换一个滚动目标）。
+      // **顶端不留容差**：往上滚会被夹到正好 0（实测 6 种容器都是），所以 `<= 0`
+      // 是判据本身，不是近似 —— 两头不对称是因为事实不对称。
       atStart: after <= 0, atEnd: after >= max - 1,
       step: Math.round(step),
     };
@@ -258,28 +313,62 @@
     if (!editableOf(el)) {
       return { ok: false, reason: 'not_editable', tag: tagOf(el), type: typeof el.type === 'string' ? el.type : '' };
     }
+    // 分段选择器（date / time / …）：insertText 对它们完全无效，见 SEGMENTED_TYPES
+    // 那段实测。**在 focus 之前就退**，一个字都不许改。
+    if (segmentedOf(el)) {
+      return { ok: false, reason: 'no_text_input', tag: tagOf(el), type: typeOf(el) };
+    }
     try { el.focus(); } catch { /* 有的替身没有它 */ }
-    // **全选之后再 insertText 才是「把检索词打进去」。** 实测：点在一个有内容的
-    // 输入框中间之后 selectionStart/End 落在光标处，insertText 是**插入**不是替换
-    // （"旧内容" + "石墨烯" → "旧内容石墨烯"）。插在哪取决于点到了哪个像素 ——
-    // 同一个动作在同一个页面上能产出不同的串，而且不报错。全选之后 insertText
-    // 替换选区（实测 "旧内容" → "量子计算"）。
+
+    // ── 「先清空」这一步要么真的发生，要么当场说没发生 ──────────────────────
+    //
+    // 实测：点在一个有内容的输入框中间之后，insertText 是**插入**不是替换
+    // （"旧内容" + "石墨烯" → "旧内容石墨烯"；`type=number` 的 "2020" + "2024"
+    // → "20202024"），插在哪取决于点到了哪个像素 —— 同一个动作在同一个页面上
+    // 能产出不同的串，而且不报错。全选之后 insertText 替换整个选区。
+    //
+    // **判据是选区这个页面事实，不是「select() 有没有抛」**（实测：它在 7 种类型上
+    // 都不抛）。选区在真 DOM 上有三种形态，逐个量过：
+    //
+    // | 类型 | selectionStart/End | `String(getSelection())` | insertText 之后 |
+    // | --- | --- | --- | --- |
+    // | ''/text/search/tel/url/password + textarea | `[0, len]` | = len | 替换 |
+    // | email / number | **恒 null** | **= len** | **替换**（真的选中了） |
+    // | date/time/month/week/datetime-local | 恒 null | 0 | 原样不动（上面已拒） |
+    //
+    // 所以只认 `selectionStart !== selectionEnd` 是不够的：它会把 email / number
+    // 这两种**本来能用**的框误判成没清空。第二支只取选区的**长度**，从不读它的
+    // 内容 —— 密码框在上面那道闸就退了，这里也不给自己开读明文的口子。
     let selected = false;
+    const len = typeof el.value === 'string' ? el.value.length : null;
     if (typeof el.select === 'function') {
-      try { el.select(); selected = true; } catch { selected = false; }
+      try { el.select(); } catch { /* 不抛也不选的那些，下面按事实判 */ }
+      if (typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number' && len !== null) {
+        selected = el.selectionStart === 0 && el.selectionEnd === len && len > 0;
+      } else if (len !== null) {
+        let n = 0;
+        try { n = String(W.getSelection() || '').length; } catch { n = 0; }
+        selected = n === len && len > 0;
+      }
     } else {
-      // contenteditable 没有 select()：用 Range 选中它的全部内容（实测同样是替换）。
+      // contenteditable 没有 select()：用 Range 选中它的全部内容（实测同样是替换，
+      // 而且 Range 装上之后选区**不再是折叠的** —— 那就是这一支的事实判据）。
       try {
         const range = D.createRange();
         range.selectNodeContents(el);
         const sel = W.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
-        selected = true;
+        selected = sel.isCollapsed === false;
       } catch { selected = false; }
     }
+    // 本来就是空的框不需要清 —— 「下一次 insertText 会替换掉整份内容」照样成立。
+    // 与 selected 分开报：两者的依据不同，混成一个字段就分不出「没选中」与「没内容」，
+    // 而调用方对这两件事的处置是一样的、对「都不成立」的处置才是停手。
+    const emptyBefore = len === 0
+      || (len === null && String(el.innerText || el.textContent || '') === '');
     const active = D.activeElement;
-    return { ok: true, focused: active === el || containsDeep(el, active), selected };
+    return { ok: true, focused: active === el || containsDeep(el, active), selected, emptyBefore };
   }
 
   if (op === 'readValue') {
@@ -306,11 +395,29 @@
     // 变成「什么都没选」（value 变空串），而下一步提交出去的就是一次空筛选 ——
     // 不报错，只是结果是错的。
     if (opts.indexOf(String(req.value)) === -1) {
-      const MAX_OPTS = 20;
+      // **截断必须显式回报**（spec §5.5 + 前几批立的 `{truncated, returned, totalKnown}`）。
+      // 只给一个已经切过的数组 + total，等于让模型自己做减法才知道被截了 ——
+      // 一个 35 项的下拉框，它看到 20 个候选值都不匹配，就会以为要的那项不存在。
+      //
+      // 按**字符**收而不是按项数：下拉框的 value 是年份 / 学科代码这类短串。
+      // 1000 字符的依据与 extract 的 `MAX_FIELD_CHARS` 是同一个数、同一件事
+      // （一格给模型看的文本预算）：1950–2026 这类整段年份表（77 项 × 5 字符
+      // ≈ 385 字符）一项都不会少，而上千项的省市 / 期刊表也撑不爆一条错误消息。
+      // 这里数得出总数，所以 `totalKnown` 给得出来 —— 数不出来时才不给这个键。
+      const MAX_OPT_CHARS = 1000;
+      const shown = [];
+      let used = 0;
+      for (let i = 0; i < opts.length; i++) {
+        used += opts[i].length + 3;      // JSON 里每项的固定开销：两个引号 + 一个逗号
+        if (used > MAX_OPT_CHARS) break;
+        shown.push(opts[i]);
+      }
       return {
         ok: false, reason: 'no_option',
-        options: opts.slice(0, MAX_OPTS),
-        total: opts.length,
+        options: shown,
+        truncated: shown.length < opts.length,
+        returned: shown.length,
+        totalKnown: opts.length,
       };
     }
     const before = String(el.value);

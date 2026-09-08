@@ -2,7 +2,7 @@
 import { Type } from 'typebox';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
-import { browserService, WALKER_WORLD_ID } from '../browser/browserService';
+import { browserService } from '../browser/browserService';
 import { renderDiff, renderSnapshot, wrapPageContent, type AxSnapshot } from '../browser/snapshot';
 import {
   validateBatch, flattenActions, parseWaitUntil,
@@ -193,6 +193,9 @@ const ACT_DESC = [
   '- click 之前会自动把元素滚进视野并做一次命中检查；被 cookie 横幅之类的浮层挡住会明确报出来，',
   '  不会静默点空。disabled 的控件也会明确报 —— 翻页到最后一页就是这个样子。',
   '- type 会**先清空**目标框再输入（点进去 → 全选 → 输入），返回值里会写清框里最后是什么。',
+  '  清不掉就明确报错、一个字都不打 —— 不会变成「追加在原有内容后面」。',
+  '  date / time / month / week / datetime-local 这类**分段选择器**打不进去（实测：',
+  '  文本插入对它们完全无效），会明确报错；这一期没有设置它们的动作，改用页面上其他入口。',
   '- JS 驱动的检索与翻页**不产生导航**，click 之后必须跟一个 wait，否则你会在旧内容上继续抽。',
 ].join('\n');
 
@@ -304,16 +307,18 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       assertTabExists(params.tabId);
       return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
         params.tabId, deps.currentRunId(), async () => {
-          const wc = browserService.webContentsOf(params.tabId);
-          if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${params.tabId}`);
           // **隔离世界，不是主世界。** 理由与 extract 那一处一字不差：页面覆写
           // `document.querySelector` / `innerText` 骗得到主世界、骗不到这里
           // （2026-09-08 spike 实测）。这里返回的整页正文同样是模型当事实用的东西 ——
           // 页面只要覆写一个取值器就能决定模型读到哪一段。
-          const body = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{
-            code: '(() => { const m = document.querySelector("main,article"); '
-              + 'return (m || document.body).innerText.slice(0, 20000); })()',
-          }]) as string;
+          //
+          // **走 `evalInPage` 而不是自己拿 `webContentsOf()` 注**：崩过一次的标签上
+          // `getOSProcessId()` 回 0 而 `isDestroyed()` 仍是 false，那时求值**永不
+          // settle**（实测 3 秒内无任何结果）—— 而这是个 sequential 工具，
+          // 挂住就是整轮 run 永远不返回。那个入口自带 pid 闸与单次求值时限。
+          const body = await browserService.evalInPage(params.tabId,
+            '(() => { const m = document.querySelector("main,article"); '
+            + 'return (m || document.body).innerText.slice(0, 20000); })()') as string;
           return withTabs(wrapPageContent(body), params.tabId);
         },
       ));
@@ -417,15 +422,14 @@ async function runStep(
   tabId: string, action: FlatStep['action'], collected: ExtractRow[], budget: BatchBudget,
 ): Promise<string> {
   if (action.kind === 'extract') {
-    const wc = browserService.webContentsOf(tabId);
-    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     const plan = compileExtractPlan(action.selectors);
     // 跑在 walker 那个**隔离世界**里，不是主世界：页面覆写 `document.querySelectorAll`
     // 骗得到主世界、骗不到这里（2026-09-08 spike 实测）。抽取结果是结构化的、
     // 模型会当事实用 —— 一份伪造的「20 条论文」比一份伪造的快照更难被察觉。
-    const res = await wc.executeJavaScriptInIsolatedWorld(
-      WALKER_WORLD_ID, [{ code: extractExpression(plan) }],
-    ) as ExtractResult;
+    //
+    // 与 `browser_read` 同一个理由走 `evalInPage`：崩过一次的标签上求值永不 settle，
+    // 而 extract 是这一批里唯一**不经过 `dispatch`** 的动作 —— 那道 pid 闸够不着它。
+    const res = await browserService.evalInPage(tabId, extractExpression(plan)) as ExtractResult;
     // 按整批预算收行。收不下的如实报出来 —— 静默丢行与静默截断是同一个毛病。
     const kept = budget.admit(res.rows, collected);
     return describeExtractResult(res, res.rows.length - kept);

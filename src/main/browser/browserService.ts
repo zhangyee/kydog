@@ -114,6 +114,28 @@ function interactExpression(req: InteractRequest): string {
 const WAIT_POLL_MS = 100;
 
 /**
+ * **单次页内求值的时限。**
+ *
+ * 它是兜底，不是性能策略：已知的两种「永不 settle」由 `hasRenderProcess` 那道谓词
+ * 在注入之前挡掉（见它的实测表），这道时限兜的是**没量到的第三种**。
+ *
+ * 两头夹出来的数：
+ *
+ * · **下界 = 量过的最贵一次求值。** 我们注进页面最重的东西是 walker，它自己按
+ *   「阻塞渲染进程 0.1 秒」定了 `MAX_WALKED = 8 万`（见 walker.js 那段预算）。
+ *   本批复量（Electron 41.2.1，2026-09-09，主进程侧计时、含 IPC 往返）：
+ *   2 万节点 8–23ms、8 万 33–42ms、**20 万节点封顶 101ms**。空载往返 200 次
+ *   中位 0.086ms、最大 0.38ms。
+ * · **它同时是「页面主线程可以卡多久」的上界**：求值排在页面自己的同步任务后面 ——
+ *   实测忙循环 200 / 1000 / 3000ms 分别把一次求值推迟到 192 / 988 / 2988ms，
+ *   一比一。所以时限定得太紧，等于把「页面正忙」误报成「页面死了」。
+ * · **上界 = `NAV_TIMEOUT_MS`。** 一次导航我们最多等 20 秒，一次求值没有道理比
+ *   整次导航还久 —— 直接引用同一个常量，两者不会漂开。相对实测最贵的那次
+ *   （101ms）留了约 200 倍余量。
+ */
+export const PAGE_EVAL_TIMEOUT_MS = NAV_TIMEOUT_MS;
+
+/**
  * 形状校验。walker 在页面里执行、类型系统管不到它，`as` 断言只是**声称**它长这样：
  * 页面在取快照那一刻导航走了，`executeJavaScriptInIsolatedWorld` 可能给回 undefined，
  * 之后 `renderSnapshot` 读 `s.nodes.length` 才抛 TypeError —— 那时错的位置离原因已经很远。
@@ -588,7 +610,9 @@ export class BrowserService {
   private registerPasswordFields(tabId: string): void {
     const wc = this.webContentsOf(tabId);
     if (!wc) return;
-    void wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code: PW_REGISTRAR_SOURCE }])
+    // 走 evalOn 是为了那道时限：不罩的话，一次永不 settle 的求值留下一个永远挂着的
+    // promise（`.catch` 也不会跑），而这条路每个 dom-ready 都走一次。
+    void this.evalOn(wc, tabId, PW_REGISTRAR_SOURCE)
       .catch((err: unknown) => {
         logger.warn('browser.password', '密码登记没能装上', { tabId, err: String(err) });
       });
@@ -766,17 +790,29 @@ export class BrowserService {
    * 是截断与未穿透的显式回报（spec §5.5，丢了它模型会以为没采到的东西不存在）。
    * 这里除了补一个 snapshotId，原样透传。
    *
-   * **采集失败不抛**：页面在取快照那一刻导航走了、渲染进程崩了，
-   * `executeJavaScriptInIsolatedWorld` 就 reject。抛出去的话，`browser_open`
+   * **采集失败不抛**：页面在取快照那一刻导航走了，`executeJavaScriptInIsolatedWorld`
+   * 就 reject（实测：同源导航中 6ms、跨进程导航中 41ms 照常 resolve，真换掉文档
+   * 那一下才 reject）。抛出去的话，`browser_open`
    * 连已经拿到的导航结论（HTTP 403 这种）都一起丢，`browser_act` 更是把这一批
    * 已经抽到的数据全部丢掉，模型只看到一条 "Script failed to execute"。
    * 所以退回一份**显式标注没采全**的空快照：`truncated: true` + `returned: 0`
    * 是这一刻唯一为真的采集事实，渲染层会照它说出「这份快照里的 0 条不是本页的全部…
    * 找不到某个控件时不要断定它不存在」——「我没采到」与「页面上没有」从此不许长得一样。
+   *
+   * **渲染进程崩了走的是另一条路**：那一种 `executeJavaScriptInIsolatedWorld`
+   * 不 reject，是**永不 settle**（实测，见 `hasRenderProcess`）—— 所以那一种要在
+   * 注入之前就被 pid 谓词挡掉，靠 catch 是接不住的。这里两道都在：先问 pid，
+   * 再罩时限。
    */
   async snapshot(tabId: string): Promise<AxSnapshot> {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    // 没有渲染进程就**一个字都不注**：那时求值永不 settle，而 `browser_act` 的
+    // 收尾快照就在这条路上 —— 挂在这里等于整轮 run 永远不返回（闸挡住了 CDP
+    // 那一侧，这里曾经是剩下的唯一出口）。
+    if (!BrowserService.hasRenderProcess(wc)) {
+      return this.failedSnapshot(tabId, wc, '这个标签还没有渲染进程（页面没加载成功过，或者刚崩过）');
+    }
     // 先把视口坐实再采集：walker 报的 x/y/w/h 是**视口内**的 CSS 像素，
     // 而 `visible()` 按 rect 判可见 —— 视口还是 0×0 的那一刻采集，整页会被判成
     // 「没有可交互元素」（§B）。导航那条路已经 await 过一次，这里是第二道：
@@ -784,7 +820,7 @@ export class BrowserService {
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
     let raw: unknown;
     try {
-      raw = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code: WALKER_SOURCE }]);
+      raw = await this.evalOn(wc, tabId, WALKER_SOURCE);
     } catch (err) {
       return this.failedSnapshot(tabId, wc, `采集脚本没能执行：${String(err)}`);
     }
@@ -830,6 +866,76 @@ export class BrowserService {
     return v && !v.webContents.isDestroyed() ? v.webContents : null;
   }
 
+  // ── 页内求值（隔离世界）───────────────────────────────────────────────────
+
+  /**
+   * 这个标签此刻有渲染进程吗。**`getOSProcessId()` 是协议层现成的事实**：没有渲染
+   * 进程时它是 0，页面崩过一次之后也回到 0。
+   *
+   * 它同时是 CDP 输入与**页内求值**的前提，实测（Electron 41.2.1，2026-09-09，
+   * 每个情形独立进程 + 独立 userData）：
+   *
+   * | 情形 | `executeJavaScriptInIsolatedWorld(31337, '1+1')` |
+   * | --- | --- |
+   * | 全新的、从没 load 过页面的 view | **3000ms 内永不 settle** |
+   * | `forcefullyCrashRenderer()` 之后 | **永不 settle** |
+   * | 同源 / 跨进程导航进行中 | 照常 resolve（6ms / 41ms） |
+   *
+   * **崩溃之后 `debugger.isAttached()` 仍是 true、`isDestroyed()` 是 false**，
+   * `render-process-gone` 只记日志不回收 view —— 所以 `webContentsOf()` 照常回一个
+   * 非 null 的 wc，而「这个标签能不能问」这件事**只有 pid 说得出来**。
+   * （`assertDispatchable` 那道 `isAttached()` 管的是另一件事：CDP 通道。
+   * 页内求值不走 CDP，DevTools 顶掉 attach 之后它照样能跑，所以那一条不在这里。）
+   */
+  private static hasRenderProcess(wc: WebContents): boolean {
+    return wc.getOSProcessId() !== 0;
+  }
+
+  /** 没有渲染进程就当场说清楚。措辞与处置：**先把页面打开**。 */
+  private static assertRenderProcess(tabId: string, wc: WebContents): void {
+    if (BrowserService.hasRenderProcess(wc)) return;
+    throw new KydogError('browser.not_dispatchable',
+      `标签 ${tabId} 还没有渲染进程 —— 页面从来没加载成功过，或者刚刚崩过。`
+      + '先用 browser_open 打开一个页面再操作。');
+  }
+
+  /**
+   * 在隔离世界里求值，**罩一个时限**。所有页内求值都要走它。
+   *
+   * 时限的理由见 `PAGE_EVAL_TIMEOUT_MS`：pid 那道谓词挡住已知的两种永不 settle，
+   * 这里兜住没量到的第三种。到点后 reject 一条**说得出「我们没等到」的错**，
+   * 而不是让一次 sequential 的工具调用永远不返回。
+   *
+   * 时限到点**不取消**那次求值（Electron 没有这个 API）—— 它可能稍后自己回来，
+   * 那时没有人再等它，值被丢掉。这一步不会有副作用：注进去的都是纯读取的表达式。
+   */
+  private evalOn(wc: WebContents, tabId: string, code: string): Promise<unknown> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_res, rej) => {
+      timer = setTimeout(() => rej(new KydogError('browser.page_no_result',
+        `标签 ${tabId} 的页面在 ${PAGE_EVAL_TIMEOUT_MS} 毫秒内没有回应这次求值 —— `
+        + '它要么正被自己的脚本占着主线程，要么已经不回话了。这一步没有发生，可以重试。')), PAGE_EVAL_TIMEOUT_MS);
+    });
+    return Promise.race([
+      wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code }]),
+      deadline,
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+  }
+
+  /**
+   * 给工具层用的页内求值：**两道保护齐全**（没有渲染进程就不注入、注了就罩时限）。
+   *
+   * `browser_read` 的正文与 `extract` 的抽取都走它 —— 那两条路此前直接拿
+   * `webContentsOf()` 注脚本，崩过一次的标签上就是一次挂死，而它们**都在
+   * `browser_act` / `browser_read` 这种 sequential 工具里**。
+   */
+  async evalInPage(tabId: string, code: string): Promise<unknown> {
+    const wc = this.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    BrowserService.assertRenderProcess(tabId, wc);
+    return this.evalOn(wc, tabId, code);
+  }
+
   // ── 动作派发（spec §4.2）──────────────────────────────────────────────────
 
   /**
@@ -856,25 +962,35 @@ export class BrowserService {
         `标签 ${tabId} 的调试通道已经断开（多半是 DevTools 打开把它顶掉了），现在发不了任何输入事件。`
         + '这是 KyDog 这一侧的通道问题，与站点无关。');
     }
-    if (wc.getOSProcessId() === 0) {
-      throw new KydogError('browser.not_dispatchable',
-        `标签 ${tabId} 还没有渲染进程 —— 页面从来没加载成功过，或者刚刚崩过。`
-        + '先用 browser_open 打开一个页面再操作。');
-    }
+    // 第二条与页内求值那道谓词**是同一个判据**，提出去共用：崩溃之后 pid 回 0
+    // 而 isAttached() 仍是 true —— 只有它挡得住（见 hasRenderProcess 的实测表）。
+    BrowserService.assertRenderProcess(tabId, wc);
   }
 
-  /** 把一段 `interact.js` 送进隔离世界。返回值形状不对就当场说清，绝不往下读 undefined。 */
+  /**
+   * 把一段 `interact.js` 送进隔离世界。返回值形状不对就当场说清，绝不往下读 undefined。
+   *
+   * 三种失败共用 `browser.page_no_result`，**不是 `not_dispatchable`**：它们的处置
+   * 是「等一下重试 / 重新取一份快照」，而 `not_dispatchable` 的处置是「先把页面
+   * 打开」。两件事一度共用一个码，代价有两头 —— 模型收到它会去重开页面（白白丢掉
+   * 当前页面状态），而闸那一侧的用例也断不准（把闸删掉之后，这里会用同一个码把它兜住，
+   * 用例照样绿）。
+   */
   private async interact(tabId: string, wc: WebContents, req: InteractRequest): Promise<InteractResult> {
     let raw: unknown;
     try {
-      raw = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code: interactExpression(req) }]);
+      raw = await this.evalOn(wc, tabId, interactExpression(req));
     } catch (err) {
-      throw new KydogError('browser.not_dispatchable',
-        `在标签 ${tabId} 的页面里执行定位脚本失败：${String(err)}。页面多半正在导航。`);
+      // 时限那一条自己就是 page_no_result，原样放行（它的消息说得更准）。
+      if (err instanceof KydogError) throw err;
+      throw new KydogError('browser.page_no_result',
+        `在标签 ${tabId} 的页面里执行定位脚本失败：${String(err)}。页面多半正在导航 —— `
+        + '等一下重试，或者重新取一份快照再操作。');
     }
     if (!raw || typeof raw !== 'object' || typeof (raw as { ok?: unknown }).ok !== 'boolean') {
-      throw new KydogError('browser.not_dispatchable',
-        `标签 ${tabId} 的页面没有回传定位结果 —— 多半是在派发中途导航走了。这一步没有发生。`);
+      throw new KydogError('browser.page_no_result',
+        `标签 ${tabId} 的页面没有回传定位结果 —— 多半是在派发中途导航走了。这一步没有发生，`
+        + '重新取一份快照再操作。');
     }
     return raw as InteractResult;
   }
@@ -921,13 +1037,30 @@ export class BrowserService {
         return new KydogError('browser.target_unusable',
           `${where} 不是能打字的控件（${String(r.tag)}${r.type ? ` type=${String(r.type)}` : ''}）。`
           + '往它上面打字不会有任何效果 —— 找真正的输入框。');
+      case 'no_text_input':
+        // 与 not_editable 分开：那条的下一步是「找真正的输入框」，而这条的目标
+        // **就是**那个日期框 —— 它只是收不了文本插入。说成同一件事会让模型
+        // 满页去找一个不存在的「真正的年份输入框」。
+        return new KydogError('browser.target_unusable',
+          `${where} 是 ${String(r.type)} 这类分段选择器。实测 insertText 对它完全无效：`
+          + '打进去一个字都不会进，而先清空再打会把它原本的值抹掉。'
+          + '所以这里拒绝 —— 这一期没有设置这类控件的动作，改用页面上的其他入口（下拉框走 select）。');
       case 'not_select':
         return new KydogError('browser.target_unusable',
           `${where} 不是 <select>（是 ${String(r.tag)}）。select 动作只对下拉框有效。`);
       case 'no_option':
         return new KydogError('browser.target_unusable',
-          `${where} 这个下拉框里没有值为这一项的选项。它一共有 ${String(r.total)} 项，`
-          + `可选值：${JSON.stringify(r.options)}。（直接写一个不存在的值会把它变成「什么都没选」，所以这里拒绝。）`);
+          `${where} 这个下拉框里没有值为这一项的选项。它一共有 ${String(r.totalKnown)} 项，`
+          + `可选值：${JSON.stringify(r.options)}`
+          // 截断必须显式说出口（spec §5.5）：不说的话，模型看完这几项都不匹配，
+          // 就会以为自己要的那个不存在。
+          + (r.truncated === true
+            ? `（这里只列出前 ${String(r.returned)} 项，**其余的没有列出来** —— 别据此断定你要的值不存在）`
+            : '')
+          + '。（直接写一个不存在的值会把它变成「什么都没选」，所以这里拒绝。）');
+      case 'bad_direction':
+        return new KydogError('browser.bad_action',
+          `scroll 的方向只能是 up 或 down，收到 ${JSON.stringify(r.direction)}。`);
       default:
         return new KydogError('browser.target_unusable', `${where} 这一步没能执行：${String(r.reason)}`);
     }
@@ -1009,6 +1142,13 @@ export class BrowserService {
       throw BrowserService.interactError(
         { ok: false, reason: 'not_editable', tag: m.tag, type: '' }, action);
     }
+    // 分段选择器（date / time / month / week / datetime-local）同样要**在点下去
+    // 之前**拒：实测 `Input.insertText` 对它们完全无效，而「先清空再打」会把用户
+    // 原本填好的年份抹掉 —— 网页不可回滚。（详见 interact.js 的 SEGMENTED_TYPES。）
+    if (action.kind === 'type' && m.segmented === true) {
+      throw BrowserService.interactError(
+        { ok: false, reason: 'no_text_input', tag: m.tag, type: m.type }, action);
+    }
     const x = Number(m.x);
     const y = Number(m.y);
     const label = String(m.label ?? '') || String(m.tag ?? '');
@@ -1038,11 +1178,41 @@ export class BrowserService {
     // 还不报错。全选之后 insertText 替换选区（实测 "旧内容" → "量子计算"）。
     const f = await this.interact(tabId, wc, { op: 'focusSelect', target });
     if (!f.ok) throw BrowserService.interactError(f, action);
+    // **`focusSelect` 报回来的事实必须读。** 它在页面里算出「焦点到底在不在目标上」
+    // 与「这一下有没有真的清空」，这里拿到手就丢的话，紧接着的 insertText 是一次
+    // 没有依据的输入 —— 而返回值仍然会说「已在「X」里输入」。
+    if (f.focused !== true) {
+      // 焦点没落在目标上时，insertText 打进的是**当时真正持有焦点的那个元素**
+      // （多半是上一个动作留下的框）。那是往一个谁也没指定的地方写字。
+      throw new KydogError('browser.target_unusable',
+        `${BrowserService.describeTarget(action)}「${label}」点过之后焦点并没有落在它身上，`
+        + '这时候打字会打进当时真正持有焦点的那个元素里。这一步没有发生 —— '
+        + '多半有一个浮层抢走了焦点，或者这个控件根本不接受键盘焦点。');
+    }
+    if (f.selected !== true && f.emptyBefore !== true) {
+      // 「先清空」没有发生：insertText 会**插在光标处**，最终的串取决于点到了哪个
+      // 像素（实测 "旧内容" + "石墨烯" → "旧内容石墨烯"；年份框 2020 + 2024 →
+      // "20202024"）。同一个动作在同一个页面上产出不同的结果，还不报错 ——
+      // 所以这里 fail-closed，一个字都不打。
+      throw new KydogError('browser.target_unusable',
+        `${BrowserService.describeTarget(action)}「${label}」里原有的内容没能清空（既没被全选，框也不是空的）。`
+        + '这时候打字是**追加**不是替换，最终的内容取决于光标落在哪 —— 所以这一步没有发生。');
+    }
     await wc.debugger.sendCommand('Input.insertText', { text: action.text });
     // 打完把框里**真正**变成什么读回来：`Input.insertText` 在焦点不是可编辑元素时
     // **ack 0ms 而什么都不做**（实测 body / button / readonly / disabled 四种都是）。
     // 不读回来的话「打进去了」就是一句没有依据的话。
     const v = await this.interact(tabId, wc, { op: 'readValue', target });
+    // 打完之后框里是空的，而我们打的是非空文本 —— 那这一次 insertText 什么都没做。
+    // （`text: ''` 在 validateBatch 就被拒了，所以「空」只可能是没打进去：站点在
+    // input 事件里把它清了，或者这个控件根本收不了文本插入。）
+    // 不判这一条的话，返回值会变成「已在「起始年」里输入，框里现在是「」」——
+    // 一句读起来像成功的话。
+    if (v.ok && v.value === '' && action.text !== '') {
+      throw new KydogError('browser.target_unusable',
+        `${BrowserService.describeTarget(action)}「${label}」打完之后框里是空的 —— `
+        + '这一次输入没有生效（站点可能在 input 事件里清空了它，或者这个控件收不了文本插入）。');
+    }
     const now = v.ok && typeof v.value === 'string' ? `，框里现在是「${v.value}」` : '';
     return `已在「${label}」里输入${now}`;
   }
@@ -1059,19 +1229,39 @@ export class BrowserService {
    * 要么直接 reject。两边是同一个协议层事实，主进程这一份不挑时机。
    */
   async waitFor(tabId: string, until: WaitUntil, timeoutMs: number): Promise<boolean> {
-    if (!this.webContentsOf(tabId)) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
-    const probe = async (): Promise<boolean> => {
+    const wc0 = this.webContentsOf(tabId);
+    if (!wc0) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    // selector 那一支要往页面里注脚本，所以先问一次「这个标签问得了吗」：没有渲染
+    // 进程时求值**永不 settle**（实测），轮询会一次次注进去、一个都不回来，最后烧满
+    // 时限报「条件未达成」—— 而真相是「这个标签压根问不了」。urlMatches 不进页面，
+    // 不受这道闸管（它读的是主进程手里的 getURL()）。
+    if (!('urlMatches' in until)) BrowserService.assertRenderProcess(tabId, wc0);
+
+    /** 'yes' / 'no' 是页面给的答案，'unknown' 是**没问出来** —— 三者不许合并。 */
+    type Answer = 'yes' | 'no' | 'unknown';
+    const probe = async (): Promise<Answer> => {
       const wc = this.webContentsOf(tabId);
-      if (!wc) return false;
+      if (!wc) return 'unknown';
       if ('urlMatches' in until) {
-        return this.safeCall(() => wc.getURL(), '').includes(until.urlMatches);
+        return this.safeCall(() => wc.getURL(), '').includes(until.urlMatches) ? 'yes' : 'no';
       }
-      const code = `(() => !!document.querySelector(${JSON.stringify(until.selector)}))()`;
-      // 页面在轮询中途导航走了，脚本就 reject。那既不是「条件成立」也不是一次失败 ——
-      // 接着等就是了。
-      const present = await wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code }])
-        .then((v) => v === true, () => false);
-      return until.state === 'absent' ? !present : present;
+      // 语法错的选择器在页面里抛 DOMException。**它当场就判得出来**，不该被当成
+      // 「条件还没成立」去烧满 8–30 秒 —— 动作那一侧早就分开报了（bad_selector）。
+      const code = `(() => { try { return !!document.querySelector(${JSON.stringify(until.selector)}); }`
+        + ' catch { return \'bad_selector\'; } })()';
+      const raw = await this.evalOn(wc, tabId, code).then((v) => v, () => 'unknown');
+      if (raw === 'bad_selector') {
+        throw new KydogError('browser.bad_action',
+          `wait 的选择器 ${JSON.stringify(until.selector)} 不是合法的 CSS 选择器 —— `
+          + '这是写法的问题，等多久都不会成立。');
+      }
+      // 页面在轮询中途导航走了，脚本就 reject。**那既不是「元素在」也不是
+      // 「元素不在」，是没问出来** —— 接着等就是了。把它当成「不在」的话，
+      // `state: 'absent'` 会立刻取反成「等到了：它消失了」，而我们一次都没问出结果。
+      const present: Answer = raw === true ? 'yes' : raw === false ? 'no' : 'unknown';
+      if (present === 'unknown') return 'unknown';
+      const want = until.state === 'absent' ? 'no' : 'yes';
+      return present === want ? 'yes' : 'no';
     };
 
     let stopped = false;
@@ -1080,7 +1270,7 @@ export class BrowserService {
     const loop = async (): Promise<boolean> => {
       for (;;) {
         // 先问一次再等：条件一开始就成立时不该白等一个轮询周期。
-        if (await probe()) return true;
+        if (await probe() === 'yes') return true;
         if (stopped) return false;
         await new Promise<void>((r) => setTimeout(r, WAIT_POLL_MS));
         if (stopped) return false;

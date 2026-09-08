@@ -178,7 +178,12 @@ function validateShape(a: Action, where: string): void {
   }
   if (a.kind === 'key') {
     // 键名从前要等到派发那一刻才查 —— 那时前面几个动作已经生效了。
-    if (typeof a.key !== 'string' || !KEYS[a.key]) {
+    // **`hasOwnProperty` 不能省**：`KEYS[k]` 走原型链，`constructor` / `toString` /
+    // `valueOf` / `hasOwnProperty` 在任何对象上都是真值，白名单就不是白名单了。
+    // 实测：那几个名字一路通过校验，`keyEventsFor` 也不抛，发出去的事件里
+    // `code` 与 `windowsVirtualKeyCode` 双双是 undefined（JSON 里直接消失），
+    // 而返回值是一句「按下 constructor」—— 一个不存在的键，报的是成功。
+    if (typeof a.key !== 'string' || !hasKey(a.key)) {
       throw p(`不认识的按键 ${JSON.stringify(a.key)}，只支持：${Object.keys(KEYS).join(' / ')}`);
     }
   }
@@ -369,8 +374,13 @@ export function assertTypeAllowed(target: ResolvedTarget): void {
   }
 }
 
+/** 白名单查表。**只认自有属性** —— 理由见 validateShape 里那段。 */
+function hasKey(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(KEYS, key);
+}
+
 export function keyEventsFor(key: string): KeyEvent[] {
-  const spec = KEYS[key];
+  const spec = hasKey(key) ? KEYS[key] : undefined;
   if (!spec) {
     throw bad(`不认识的按键 ${JSON.stringify(key)}，只支持：${Object.keys(KEYS).join(' / ')}`);
   }

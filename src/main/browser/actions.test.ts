@@ -52,6 +52,28 @@ describe('keyEventsFor：Enter 必须带 text', () => {
     expect(() => keyEventsFor('Meh')).toThrow(KydogError);
   });
 
+  // `KEYS[a.key]` 走原型链：`constructor` / `toString` / `valueOf` / `hasOwnProperty`
+  // 这些名字在**任何**对象上都是真值，于是白名单不是白名单 —— 实测它们
+  // `validateBatch` 一路通过、`keyEventsFor` 也不抛，发出去的事件里 `code` 与
+  // `windowsVirtualKeyCode` 双双是 undefined（JSON 里直接消失），
+  // 而 dispatch 回一句「按下 constructor」：一个不存在的键，报的是成功。
+  const PROTO_KEYS = ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'];
+
+  it.each(PROTO_KEYS)('原型链上的名字 %s 不是合法键名', (k) => {
+    expect(() => keyEventsFor(k)).toThrow(KydogError);
+  });
+
+  it.each(PROTO_KEYS)('原型链上的名字 %s 在批次校验那一层就被拒', (k) => {
+    expect(() => validateBatch([{ kind: 'key', key: k } as never])).toThrow(/不认识的按键/);
+  });
+
+  // 错误消息里那句「只支持这 13 个」不能与实际判据脱节。
+  it('错误消息列出的就是表里那 13 个键', () => {
+    const msg = (() => { try { keyEventsFor('Meh'); } catch (e) { return (e as Error).message; } return ''; })();
+    for (const k of ['Enter', 'PageDown']) expect(msg).toContain(k);
+    for (const k of PROTO_KEYS) expect(msg).not.toContain(k);
+  });
+
   // 上面几条只覆盖了 7 个键，KEYS 表里另外 6 个（ArrowLeft/ArrowRight/Home/End/
   // PageUp/PageDown）一个都没测过 —— 合并冲突或重排这张表时掉一行不会被抓住。
   // 翻页是 slowpaper 检索最常用的动作之一，PageDown 尤其不能悄悄消失。

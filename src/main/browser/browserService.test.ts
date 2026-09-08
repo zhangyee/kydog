@@ -170,7 +170,7 @@ vi.mock('../ipc/broadcaster', () => ({
   broadcaster: { emit: (topic: string, payload: unknown) => H.emitted.push({ topic, payload }) },
 }));
 
-const { BrowserService, WALKER_WORLD_ID } = await import('./browserService');
+const { BrowserService, WALKER_WORLD_ID, PAGE_EVAL_TIMEOUT_MS } = await import('./browserService');
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
 
@@ -1797,12 +1797,129 @@ describe('dispatch · click：坐标是这一刻量的，命中检查不放水',
     expect(inputCmds(wc)).toEqual([]);
   });
 
-  it('页面在派发中途导航走了（脚本没回结果）→ 明确报出来，不去读 undefined', async () => {
+  // 处置完全不同：这一条是「等一下重试 / 重新取快照」，而 not_dispatchable 是
+  // 「先把页面打开」。共用一个码的话，模型收到它只能去重开页面 —— 白白丢掉当前
+  // 页面状态，而真实原因只是页面正在导航。
+  it('页面在派发中途导航走了（脚本没回结果）→ page_no_result，不是 not_dispatchable', async () => {
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
     wc.isolatedImpl = () => Promise.resolve(undefined);
+    const p = svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.page_no_result' });
+    await expect(p).rejects.toThrow(/重新取|再试|导航/);
+  });
+
+  it('脚本求值直接 reject（页面换文档了）→ 同样是 page_no_result', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.reject(new Error('Script failed to execute'));
     await expect(svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
-      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+      .rejects.toMatchObject({ code: 'browser.page_no_result' });
+  });
+
+  // 两个码的**消息**也不许长得一样：这一期渲染层还没有 browser.* 的错误码路由，
+  // 模型分流靠的就是这两段文本。
+  it('两条错误的下一步说的不是同一件事', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;
+    const gate = await svc.dispatch(id, { kind: 'click', selector: '#a' }, null).catch((e: Error) => e.message);
+    wc.osPid = 4321;
+    wc.isolatedImpl = () => Promise.resolve(undefined);
+    const nav = await svc.dispatch(id, { kind: 'click', selector: '#a' }, null).catch((e: Error) => e.message);
+    expect(gate).toMatch(/browser_open/);          // 先把页面打开
+    expect(nav).not.toMatch(/browser_open/);       // 重开页面正是这里**不该**做的事
+  });
+});
+
+// ── §G2 隔离世界求值的两道保护（C1）────────────────────────────────────────
+//
+// **实测（Electron 41.2.1，2026-09-09，独立进程 + 独立 userData）：**
+//
+// | 情形 | `executeJavaScriptInIsolatedWorld(31337, '1+1')` |
+// | --- | --- |
+// | 全新的、从没 load 过页面的 view（pid=0） | **3000ms 内永不 settle** |
+// | `forcefullyCrashRenderer()` 之后 | **永不 settle** |
+// | 页面主线程被同步忙循环占住 K 毫秒 | 推迟 K 毫秒后照常 resolve（200/1000/3000 → 192/988/2988ms） |
+// | 空载 200 次往返 | 中位 0.086ms，最大 0.38ms |
+//
+// 崩溃之后：`getOSProcessId()` 回 0，而 **`debugger.isAttached()` 仍是 true**、
+// `isDestroyed()` 是 false，`render-process-gone` 只记日志不回收 view —— 所以
+// `webContentsOf()` 照常回一个非 null 的 wc，取快照那条路会一头撞进永不 settle。
+// **`isAttached()` 挡不住这一种**，只有 pid 挡得住。
+describe('取快照与页内求值：没有渲染进程时一个字都不注', () => {
+  it('pid=0 时 snapshot 不注入脚本，退一份显式标注未采全的空快照', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;                                   // 页面崩过一次之后就是这样
+    wc.isolated.length = 0;
+    const snap = await svc.snapshot(id);
+    // **载荷断言是这一条**：注进去就等于一次永不 settle。
+    expect(wc.isolated).toEqual([]);
+    expect(snap.nodes).toEqual([]);
+    expect(snap.collection).toMatchObject({ truncated: true, returned: 0 });
+    expect(snap.collection.totalKnown).toBeUndefined();   // 数不出来的数不要编一个
+  });
+
+  it('pid 回来了就照常采集 —— 上一条不是把 snapshot 整个关掉了', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(walkerOut());
+    const snap = await svc.snapshot(id);
+    expect(wc.isolated.length).toBeGreaterThan(0);
+    expect(snap.collection.truncated).toBe(false);
+  });
+
+  // 已知的两种 pid=0 由上面那道谓词挡掉；这一条兜的是**没量到的第三种**。
+  // 时限的下界来自量过的成本：我们注进去最重的东西是 walker，20 万节点的页面上
+  // 实测封顶 101ms（它自己按「阻塞渲染进程 0.1 秒」定了 MAX_WALKED=8 万）。
+  it('求值永不 settle 时，snapshot 在时限到点后退空快照，而不是挂死', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => new Promise(() => {});
+    const p = svc.snapshot(id);
+    await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS + 100);
+    const snap = await p;
+    expect(snap.nodes).toEqual([]);
+    expect(snap.collection.truncated).toBe(true);
+  });
+
+  // 这正是 C1 的失败序列：闸把 CDP 那一侧堵死之后，剩下的唯一出口就是这里。
+  // browser_act 是 sequential 工具，挂在这里等于整轮 run 永远不返回。
+  it('求值永不 settle 时，dispatch 在时限到点后报错，而不是挂死', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => new Promise(() => {});
+    const p = svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    const settled = p.then(() => 'resolved', (e: Error & { code?: string }) => e.code);
+    await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS - 10);
+    expect(await Promise.race([settled, Promise.resolve('still-pending')])).toBe('still-pending');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await settled).toBe('browser.page_no_result');
+  });
+
+  it('evalInPage 对没有渲染进程的标签当场报错，不注入', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;
+    wc.isolated.length = 0;
+    await expect(svc.evalInPage(id, '1+1')).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(wc.isolated).toEqual([]);
+  });
+
+  it('evalInPage 对不存在的标签报 no_tab', async () => {
+    const { svc } = make();
+    await expect(svc.evalInPage('nope', '1+1')).rejects.toMatchObject({ code: 'browser.no_tab' });
+  });
+
+  it('evalInPage 正常时原样把页面的返回值给回来', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve('正文');
+    await expect(svc.evalInPage(id, 'x')).resolves.toBe('正文');
+    expect(wc.isolated.map((r) => r.worldId)).toEqual([WALKER_WORLD_ID]);
   });
 });
 
@@ -1881,6 +1998,80 @@ describe('dispatch · type：两道密码闸 + 打完读回来', () => {
     expect(inputCmds(wc)).toEqual([]);
   });
 
+  // ── `focusSelect` 回的两个事实必须被读（评审 R01：两个字段一个都没人看）──
+  //
+  // 它们各自对应一种「以成功措辞返回一件没发生的事」：
+  //  · focused 为假 → insertText 打进的是**当时真正持有焦点的那个元素**
+  //    （上一个动作留下的框），返回值仍然说「已在「X」里输入」。
+  //  · 既没选中也不是空框 → 「先清空」没有发生，insertText 是**追加**
+  //    （实测：type=number 的框原有 2020、不全选就打 2024 → "20202024"）。
+  it('focusSelect 说焦点没落在目标上 → 停手，insertText 一次都不发', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => Promise.resolve(
+      opOf(code) === 'measure' ? okMeasure({ tag: 'input', label: '检索词' })
+        : { ok: true, focused: false, selected: true, emptyBefore: false },
+    );
+    await expect(svc.dispatch(id, { kind: 'type', selector: '#q', text: '石墨烯' }, null))
+      .rejects.toMatchObject({ code: 'browser.target_unusable' });
+    expect(inputCmds(wc).map((c) => c.method)).not.toContain('Input.insertText');
+  });
+
+  it('focusSelect 说没选中、框也不是空的 → 停手（不许变成追加）', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => Promise.resolve(
+      opOf(code) === 'measure' ? okMeasure({ tag: 'input', label: '年份' })
+        : { ok: true, focused: true, selected: false, emptyBefore: false },
+    );
+    const p = svc.dispatch(id, { kind: 'type', selector: '#year', text: '2024' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.target_unusable' });
+    await expect(p).rejects.toThrow(/清空|追加/);
+    expect(inputCmds(wc).map((c) => c.method)).not.toContain('Input.insertText');
+  });
+
+  // 空框本来就不需要清 —— 上一条拦的是「该清没清」，不是「所有 selected=false」。
+  it('本来就是空框（selected 假、emptyBefore 真）→ 照常打', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => {
+      const op = opOf(code);
+      if (op === 'measure') return Promise.resolve(okMeasure({ tag: 'input', label: '检索词' }));
+      if (op === 'focusSelect') return Promise.resolve({ ok: true, focused: true, selected: false, emptyBefore: true });
+      return Promise.resolve({ ok: true, value: '石墨烯' });
+    };
+    await expect(svc.dispatch(id, { kind: 'type', selector: '#q', text: '石墨烯' }, null))
+      .resolves.toContain('石墨烯');
+    expect(inputCmds(wc).map((c) => c.method)).toContain('Input.insertText');
+  });
+
+  // 分段选择器（date/time/month/week/datetime-local）：实测 insertText 对它们
+  // **完全无效**，而「先清空再打」会把用户原本填好的年份抹掉。所以在点下去之前就拒。
+  it('目标是 date 一类的分段选择器 → 拒，且连点都不点', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({ tag: 'input', segmented: true, label: '起始年' }));
+    const p = svc.dispatch(id, { kind: 'type', selector: '#from', text: '2024' }, null);
+    await expect(p).rejects.toMatchObject({ code: 'browser.target_unusable' });
+    await expect(p).rejects.toThrow(/分段|insertText/);
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  // 打完读回来是空的，而我们打的是非空文本 —— 那这一次 insertText 什么都没做。
+  // （`text: ''` 在 validateBatch 就被拒了，所以「空」只可能是没打进去。）
+  it('打完之后框里是空的 → 报失败，不许回报「已经输入」', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = (code) => {
+      const op = opOf(code);
+      if (op === 'measure') return Promise.resolve(okMeasure({ tag: 'input', label: '检索词' }));
+      if (op === 'focusSelect') return Promise.resolve({ ok: true, focused: true, selected: true, emptyBefore: false });
+      return Promise.resolve({ ok: true, value: '' });
+    };
+    await expect(svc.dispatch(id, { kind: 'type', selector: '#q', text: '石墨烯' }, null))
+      .rejects.toMatchObject({ code: 'browser.target_unusable' });
+  });
+
   // 反过来钉住上一条不是空绿：同一个目标换成 click 就该照常点。
   it('同一个按钮用 click 照常点 —— 上一条拦的是 type 不是所有动作', async () => {
     const { svc } = make();
@@ -1914,10 +2105,30 @@ describe('dispatch · hover / select / scroll', () => {
   it('select 的值不在选项里 → 拒，并把可选值列给模型', async () => {
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
-    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'no_option', options: ['2024', '2023'], total: 2 });
+    wc.isolatedImpl = () => Promise.resolve({
+      ok: false, reason: 'no_option', options: ['2024', '2023'],
+      truncated: false, returned: 2, totalKnown: 2,
+    });
     const p = svc.dispatch(id, { kind: 'select', selector: '#year', value: '1999' }, null);
     await expect(p).rejects.toMatchObject({ code: 'browser.target_unusable' });
     await expect(p).rejects.toThrow(/2024/);
+    // 没截断的时候不许平白说「还有没列出来的」—— 那会让模型去猜一个不存在的余量。
+    await expect(p).rejects.not.toThrow(/没有列出来/);
+  });
+
+  // spec §5.5：截断**必须显式说出口**。只把切过的数组丢给模型，它看完这几项都不
+  // 匹配就会以为自己要的那个值不存在 —— 而它可能正在没列出来的那 380 项里。
+  it('可选值被截断时，消息里明说「其余的没有列出来」并给出总数', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({
+      ok: false, reason: 'no_option', options: ['2024', '2023'],
+      truncated: true, returned: 2, totalKnown: 400,
+    });
+    const p = svc.dispatch(id, { kind: 'select', selector: '#j', value: 'x' }, null);
+    await expect(p).rejects.toThrow(/没有列出来/);
+    await expect(p).rejects.toThrow(/400/);
+    await expect(p).rejects.toThrow(/前 2 项/);
   });
 
   // mouseWheel 实测永不 ack、一个像素都不滚（五种组合）。所以这条路必须走隔离世界。
@@ -2037,5 +2248,72 @@ describe('waitFor：等的是显式条件，超时只表示条件未达成', () 
     const { svc } = make();
     await expect(svc.waitFor('nope', { selector: '.r', state: 'present' }, 100))
       .rejects.toMatchObject({ code: 'browser.no_tab' });
+  });
+
+  // ── 求值失败是「问不出来」，不是任何一个方向的答案（评审 R14 存活）────────
+  //
+  // 把 reject 当成「元素不在」的话，`state: 'absent'` 会立刻取反成 **true** ——
+  // 「等到了：.loading 消失了」，而我们其实一次都没问出结果。这是「以成功措辞
+  // 返回一件没发生的事」的教科书形状，而且它在 present 那一侧看不出来。
+  it('等「消失」时求值一直失败 → 到时限报 false，绝不回报「等到了」', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.reject(new Error('页面正在导航'));
+    const p = svc.waitFor(id, { selector: '.loading', state: 'absent' }, 1000);
+    await vi.advanceTimersByTimeAsync(1200);
+    await expect(p).resolves.toBe(false);
+  });
+
+  it('等「消失」时求值失败几次之后页面回话了 → 按页面说的算', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    let n = 0;
+    wc.isolatedImpl = () => (++n < 3 ? Promise.reject(new Error('导航中')) : Promise.resolve(false));
+    const p = svc.waitFor(id, { selector: '.loading', state: 'absent' }, 8000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBe(true);
+    expect(n).toBe(3);
+  });
+
+  // 选择器语法错是**当场就判得出来**的事（querySelector 在页面里抛 DOMException），
+  // 而现在它被当成「条件还没成立」，烧满 8–30 秒之后报 wait_timeout，
+  // 附赠一句「要么条件写得不对，要么这一步没触发页面变化」—— 把一个确定的语法错
+  // 说成了一件要猜的事。动作那一侧早就分开报了（bad_selector），wait 这侧也要。
+  it('选择器语法错 → 立刻报 bad_action，不烧满时限', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve('bad_selector');
+    const p = svc.waitFor(id, { selector: 'a[[', state: 'present' }, 30_000);
+    const settled = p.then(() => 'resolved', (e: Error & { code?: string }) => e.code);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await settled).toBe('browser.bad_action');
+    expect(wc.isolated.length).toBe(1);
+  });
+
+  // 没有渲染进程时页内求值**永不 settle**（实测）。轮询会一次次注进去、
+  // 一个都不回来，然后烧满时限报「条件未达成」—— 而真相是「这个标签压根问不了」。
+  it('没有渲染进程 → 当场报 not_dispatchable，不注入也不空等', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;
+    wc.isolated.length = 0;
+    await expect(svc.waitFor(id, { selector: '.r', state: 'present' }, 8000))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(wc.isolated).toEqual([]);
+  });
+
+  // urlMatches 判的是主进程手里的 getURL()，不进页面 —— 那道闸不该拦它。
+  it('urlMatches 不受渲染进程那道闸影响（它压根不进页面）', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.osPid = 0;
+    wc.url = 'https://a.example/search?q=x';
+    const p = svc.waitFor(id, { urlMatches: '/search' }, 8000);
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(p).resolves.toBe(true);
   });
 });

@@ -57,6 +57,13 @@ export type KydogErrorCode =
   // 内容为「Internal error」的话、`Input.insertText` **永不 settle**（整轮 run 挂死）、
   // `Input.dispatchKeyEvent` 照常 resolve（于是回报「按下 Enter」而它一个字都没发出去）。
   | 'browser.not_dispatchable'
+  // 往页面里注的那段脚本**没有拿回可用的结果**：求值 reject 了、回来的东西不成形状、
+  // 或者撞了单次求值的时限。**处置是「等一下重试 / 重新取一份快照」**，
+  // 与 not_dispatchable（「先把页面打开」）正相反 —— 这两件事一度共用一个码，
+  // 于是模型收到它只会去重开页面，白白丢掉当前页面状态，而真实原因多半只是
+  // 页面正在换文档。码分开之后，`assertDispatchable` 那道闸的用例也才断得准
+  // （删掉闸不会再被这一条用同一个码兜住）。
+  | 'browser.page_no_result'
   // wait 到时限条件仍未达成。spec §4.2：「超时只表示条件未达成，不表示别的」——
   // 所以它不能与 failed / timeout 那些导航终态共用措辞，也不是 bad_action。
   | 'browser.wait_timeout'
