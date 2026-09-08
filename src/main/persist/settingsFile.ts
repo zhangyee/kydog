@@ -199,7 +199,7 @@ export type InstitutionCheck =
  * 而不是补一个空串：一条 name/entityID 为空的记录在设置页上看起来像「配过了」，
  * 但 browser_login 的域判据会在运行时才失败，那时用户已经不记得自己填过什么。
  *
- * **写路径共用这一个函数**（settingsService.setInstitution / .updateInstitution）：
+ * **写路径共用这一个函数**（settingsService.updateInstitution / .confirmLogin）：
  * 读路径会丢掉的记录，写的时候就该被拒，不然就是「保存成功、重启后消失」。
  *
  * **passwordEnc 分三档，中间那档以前不存在：**

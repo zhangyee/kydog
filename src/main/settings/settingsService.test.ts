@@ -123,7 +123,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   };
 
   it('update(): patch 混入 institution 被过滤 —— 已有记录一个字段都不许被改', async () => {
-    await svc.setInstitution(RECORD);
+    await svc.updateInstitution(() => RECORD);
     await svc.update({
       ui: { theme: 'sepia' as const },
       institution: {
@@ -151,7 +151,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
 
   // ── C：密文不出主进程 ──
   it('toRendererSettings(): 密文不过河，hasPassword 过河', async () => {
-    await svc.setInstitution({ ...RECORD, passwordEnc: 'SENTINEL-CIPHERTEXT' });
+    await svc.updateInstitution(() => ({ ...RECORD, passwordEnc: 'SENTINEL-CIPHERTEXT' }));
     const full = await svc.get();
     // 反证：哨兵确实在源里。少了这一条，下面那句 not.toContain 什么都证明不了。
     expect(JSON.stringify(full)).toContain('SENTINEL-CIPHERTEXT');
@@ -166,20 +166,20 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
 
   it('toRendererSettings(): 还没设密码时 hasPassword 为 false；没配过机构时是 null', async () => {
-    await svc.setInstitution({ ...RECORD, passwordEnc: '' });
+    await svc.updateInstitution(() => ({ ...RECORD, passwordEnc: '' }));
     expect(toRendererSettings(await svc.get()).institution?.hasPassword).toBe(false);
-    await svc.setInstitution(null);
+    await svc.clearInstitution();
     expect(toRendererSettings(await svc.get()).institution).toBeNull();
   });
 
   // ── D：写路径不许比读路径宽 ──
-  it('setInstitution(): 缺 name / entityID / username 的记录当场被拒，不是落盘后重启消失', async () => {
+  it('updateInstitution(): 缺 name / entityID / username 的记录当场被拒，不是落盘后重启消失', async () => {
     for (const bad of [
       { ...RECORD, name: '' },
       { ...RECORD, entityID: '' },
       { ...RECORD, username: '' },
     ]) {
-      await expect(svc.setInstitution(bad)).rejects.toMatchObject({ code: 'settings.invalid' });
+      await expect(svc.updateInstitution(() => bad)).rejects.toMatchObject({ code: 'settings.invalid' });
     }
     expect((await svc.get()).institution).toBeNull();
   });
@@ -188,11 +188,11 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   // safeStorage.encryptString 回的是 Buffer，忘了 .toString('base64') 直接往下塞 →
   // typeof 不是 string → 落盘 passwordEnc: '' → 界面显示「未设置密码」，全程零错误。
   // 两条路现在对齐了：读路径丢掉的记录，写路径当场拒。
-  it('setInstitution(): passwordEnc 不是字符串（忘了 toString(base64)）当场被拒，不静默变成空串', async () => {
+  it('updateInstitution(): passwordEnc 不是字符串（忘了 toString(base64)）当场被拒，不静默变成空串', async () => {
     const buf = Buffer.from('ENC-BYTES');
     for (const bad of [buf, { type: 'Buffer', data: [1, 2, 3] }, 42, null, undefined, ['x']]) {
       await expect(
-        svc.setInstitution({ ...RECORD, passwordEnc: bad as never }),
+        svc.updateInstitution(() => ({ ...RECORD, passwordEnc: bad as never })),
         JSON.stringify(bad) ?? 'undefined',
       ).rejects.toMatchObject({ code: 'settings.invalid' });
     }
@@ -201,16 +201,16 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
 
   // 报错要说对是哪一档：从前无论什么原因，写路径都只会说「缺少机构名 / entityID / 用户名」，
   // 而那句话对着一个忘了 base64 的 Buffer 完全是误导。
-  it('setInstitution(): 拒绝的理由说的是 passwordEnc 本身，不是「缺少机构名 / entityID / 用户名」', async () => {
-    await expect(svc.setInstitution({ ...RECORD, passwordEnc: Buffer.from('x') as never }))
+  it('updateInstitution(): 拒绝的理由说的是 passwordEnc 本身，不是「缺少机构名 / entityID / 用户名」', async () => {
+    await expect(svc.updateInstitution(() => ({ ...RECORD, passwordEnc: Buffer.from('x') as never })))
       .rejects.toThrow(/passwordEnc/);
-    await expect(svc.setInstitution({ ...RECORD, name: '' }))
+    await expect(svc.updateInstitution(() => ({ ...RECORD, name: '' })))
       .rejects.toThrow(/机构名/);
   });
 
   // ── updateInstitution()：institutionService.save 的写口，read-modify-write 在锁内 ──
   it('updateInstitution(): 回调拿到的是锁内读回来的当前记录，返回值就是落盘的那一份', async () => {
-    await svc.setInstitution(RECORD);
+    await svc.updateInstitution(() => RECORD);
     const seen: unknown[] = [];
     const out = await svc.updateInstitution((cur) => {
       seen.push(cur);
@@ -222,7 +222,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
 
   it('updateInstitution(): 回调抛错 → 整次不写盘，锁照常放开（下一次调用还能拿到锁）', async () => {
-    await svc.setInstitution(RECORD);
+    await svc.updateInstitution(() => RECORD);
     await expect(svc.updateInstitution(() => { throw new Error('nope'); })).rejects.toThrow('nope');
     expect((await svc.get()).institution).toEqual(RECORD);
     // 锁真的放开了：否则这一句会卡到 proper-lockfile 重试用尽
@@ -241,7 +241,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   // 那条 JSDoc 写清楚的路。这里钉住的是：两次并发保存之后，磁盘上是完整的一条，
   // 而不是一条丢了密文的。
   it('updateInstitution(): 并发保存串行发生，沿用旧密文的那一次不会读到半路的状态', async () => {
-    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
     await Promise.all([
       svc.updateInstitution((cur) => ({ ...cur!, username: 'A' })),
       svc.updateInstitution((cur) => ({ ...cur!, name: 'B' })),
@@ -251,24 +251,24 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect([got?.username, got?.name]).toEqual(['A', 'B']);
   });
 
-  it('setInstitution(): 落盘的是读路径认得出来的形状 —— 存进去什么，重启后就还是什么', async () => {
-    await svc.setInstitution(RECORD);
+  it('updateInstitution(): 落盘的是读路径认得出来的形状 —— 存进去什么，重启后就还是什么', async () => {
+    await svc.updateInstitution(() => RECORD);
     const reread = await new SettingsService().get();
     expect(reread.institution).toEqual(RECORD);
   });
 
-  it('setInstitution(): confirmedLogin 与 entityID 不符时当场作废，与读路径同一个判据', async () => {
-    await svc.setInstitution({
+  it('updateInstitution(): confirmedLogin 与 entityID 不符时当场作废，与读路径同一个判据', async () => {
+    await svc.updateInstitution(() => ({
       ...RECORD, entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth',
-    });
+    }));
     expect((await svc.get()).institution?.confirmedLogin).toBeNull();
   });
 
   // ── confirmLogin()：read-modify-write 必须发生在锁内 ──
   //
-  // setInstitution 收的是整条记录，于是「记下这次确认」唯一写得出来的调用是
+  // 写口收的是整条记录，于是「记下这次确认」唯一写得出来的调用是
   //   const cur = await svc.get();                                   // 锁外，弹框之前的快照
-  //   await svc.setInstitution({ ...cur.institution!, confirmedLogin });
+  //   await svc.updateInstitution(() => ({ ...cur.institution!, confirmedLogin }));
   // 而弹框到用户点确认之间有好几秒 —— 这几秒里用户在设置页把学校从北大改成清华，
   // 上面那行就把整条旧记录（name / entityID / username / passwordEnc）原样写回去了。
   // sanitizeInstitution 一句话都不会说：它比的是同一个对象内部的 entityID，当然相符。
@@ -278,9 +278,9 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   };
 
   it('confirmLogin(): 确认对话框开着的十秒里用户改了学校 —— 确认作废，旧记录不会被写回去', async () => {
-    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
     await svc.get();                       // 2b 在锁外拿到的那份快照（北大）
-    await svc.setInstitution(THU);         // 用户这十秒里改成了清华
+    await svc.updateInstitution(() => THU);         // 用户这十秒里改成了清华
 
     expect(await svc.confirmLogin(PKU, 'https://iaaa.pku.edu.cn')).toBe(false);
 
@@ -292,7 +292,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
 
   it('confirmLogin(): entityID 相符时记在当前那条记录上，且只动 confirmedLogin 一个字段', async () => {
-    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
     expect(await svc.confirmLogin(PKU, 'https://iaaa.pku.edu.cn')).toBe(true);
 
     const expected = { ...RECORD, confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' } };
@@ -307,7 +307,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
 
   it('confirmLogin(): origin 为空当场被拒，不落一个 confirmedLogin: null 冒充「确认过」', async () => {
-    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
     await expect(svc.confirmLogin(PKU, '')).rejects.toMatchObject({ code: 'settings.invalid' });
     expect((await svc.get()).institution?.confirmedLogin).toBeNull();
   });

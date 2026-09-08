@@ -19,6 +19,8 @@ type InstitutionRecord = NonNullable<SettingsFile['institution']>;
  * 1. 密码只往一个方向流。落盘的永远是 `safeStorage` 密文的 base64；出得去的只有
  *    `InstitutionPublic`（`hasPassword` 一个比特），明文只在 `reveal()` 这一条显式
  *    往返上回一次。密文与明文都不进日志。
+ *    **落盘记录只由这个模块写**：`settingsService` 那一侧收记录的口只剩
+ *    `updateInstitution`（`clearInstitution` 只清不写），本模块之外没有别的写口。
  * 2. **钥匙串不可用就拒绝，不静默退回明文**（spec §4.6）。判据是「这一次要不要加密」，
  *    不是「钥匙串好不好」—— 不碰密码的保存（改学校、改学号、清密码）没有明文风险，
  *    一刀切拒绝只会让用户连学校都改不了。
@@ -291,7 +293,9 @@ export class InstitutionService {
     // `isEncryptionAvailable()` 为 true 也不代表这一次加密就成得了：Electron 的
     // encryptString 自己会抛（那两步之间还隔着一次系统调用）。抛出来的原始错误里
     // **可能带上下文，而这一条上下文就在密码旁边** —— 所以只留 cause，不记日志、
-    // 不把 message 拼进去。用户要做的事与「钥匙串不可用」是同一件，所以同一个码。
+    // 不把 message 拼进去。
+    // 与「钥匙串不可用」同一个码：两者都是「钥匙串这一刻不行」，**修好之后重来有用**，
+    // 而且都没有丢掉任何已经存下的密码。真正必须分开的是 reveal 那一侧的「密文解不开」。
     try {
       // `.toString('base64')` 不能省：encryptString 回的是 Buffer，直接往下塞会被
       // checkInstitution 判定整条不合格（从前是静默变成空串，界面显示「未设置密码」，
@@ -299,12 +303,13 @@ export class InstitutionService {
       return Buffer.from(this.safe.encryptString(password)).toString('base64');
     } catch (err) {
       throw new KydogError('settings.secure_storage_unavailable',
-        '系统钥匙串没能加密这个密码，没有保存 —— 不会退回明文存盘。', err);
+        '系统钥匙串没能加密这个密码，没有保存 —— 不会退回明文存盘。'
+        + '请先让系统钥匙串恢复可用，再设一次密码；已经存下的密码没有受影响。', err);
     }
   }
 
   async clear(): Promise<void> {
-    await this.settings.setInstitution(null);
+    await this.settings.clearInstitution();
   }
 
   /**
@@ -312,8 +317,14 @@ export class InstitutionService {
    *
    * 没配过机构 → `settings.invalid`（不是回空串：那会把「没配过」说成「没有密码」）。
    * 配了但没设密码 → 回空串，且根本不去解密。
-   * 钥匙串不可用 / 密文解不开 → `settings.secure_storage_unavailable`，两者同码是因为
-   * 用户要做的事同一件（见 errors.ts 那条注释）。
+   * 钥匙串这一刻不可用 → `settings.secure_storage_unavailable`：**密码还在**，
+   * 修好钥匙串就照常取得出来。
+   * 密文解不开 → `settings.stored_password_unreadable`：**密码永久失效**，修钥匙串
+   * 没有用，只能重新填一次。
+   *
+   * 两者刻意**不共用一个码**：判据是「重试有没有用」，与本仓库对 `institution.idp_list_*`
+   * 那一对用的是同一条规矩。合成一条的代价很具体 —— `hasPassword` 在两种情形下都还是
+   * true，界面只能按码分支，于是「有一个密码、但它已经取不出来了」这个状态说不出来。
    */
   async reveal(): Promise<{ password: string }> {
     const inst = (await this.settings.get()).institution;
@@ -323,15 +334,17 @@ export class InstitutionService {
     if (inst.passwordEnc === '') return { password: '' };
     if (!this.safe.isEncryptionAvailable()) {
       throw new KydogError('settings.secure_storage_unavailable',
-        '系统钥匙串当前不可用，取不出已保存的密码');
+        '系统钥匙串当前不可用，取不出已保存的密码 —— 密码还在，'
+        + '让系统钥匙串恢复可用之后再试一次就行，不用重新填。');
     }
     try {
       return { password: this.safe.decryptString(Buffer.from(inst.passwordEnc, 'base64')) };
     } catch (err) {
       // 原始错误只进 cause（serializeError 只往渲染层送 code + message），不进日志 ——
       // 解密失败的异常里可能带上下文，而这一条上下文就在密码旁边。
-      throw new KydogError('settings.secure_storage_unavailable',
-        '已保存的密码解不开 —— 多半是换了机器，或者钥匙串里的条目被删了。请重新填一次密码。', err);
+      throw new KydogError('settings.stored_password_unreadable',
+        '已保存的密码解不开了 —— 多半是换了机器，或者钥匙串里的条目被删了。'
+        + '修钥匙串对这一份没有用，请到设置里重新填一次密码。', err);
     }
   }
 

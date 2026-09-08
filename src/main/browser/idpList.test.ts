@@ -190,8 +190,10 @@ describe('parseIdpList：「读不懂」不能与「这个源一个机构都没�
 });
 
 describe('parseIdpList：同名与上限', () => {
-  // 同名不同 entityID 在设置页的下拉里就是两行一模一样的文字。用户选错一条，
-  // 登录在 IdP 那边失败，界面无从解释 —— 至少要让调用方能区分。
+  // 造出来的输入。**实测 2026-09-09 的真实清单里重名是 0 条**（1064 条 / 938 个
+  // entityID，不唯一的是 ID 不是名字）—— 这一条守的是「真出现时报得出来」，
+  // 不是「今天存在重名」。真出现同名不同 entityID 时，下拉里就是两行一模一样的文字，
+  // 用户选错一条会在 IdP 那边登录失败而界面无从解释。
   it('同名不同 entityID 报出来，调用方能据此消歧', () => {
     const r = parseIdpList(JSON.stringify([
       { 同名大学: '1|https://a.edu.cn/idp/shibboleth' },
@@ -207,6 +209,10 @@ describe('parseIdpList：同名与上限', () => {
     expect(r.ambiguousNames).toEqual([]);
   });
 
+  // 这一条才是真实清单里实际发生的形状：127 个不同的中科院所共用
+  // https://passport.escience.cn/idp/shibboleth。它不是歧义 —— 选哪一条登录都走
+  // 同一套认证；代价只在反方向：光有 entityID 认不出用户当初选的是哪一家，
+  // 所以选中项必须把名字一起存下来（见 types.ts 的 IdpEntry）。
   it('多个机构共用一个 entityID 不算歧义 —— 歧义是同名，不是同 ID', () => {
     const e = 'https://passport.escience.cn/idp/shibboleth';
     const r = parseIdpList(JSON.stringify([{ 中国科学院大学: `1|${e}` }, { 中国科学院物理研究所: `1|${e}` }]));

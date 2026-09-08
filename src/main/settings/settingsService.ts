@@ -41,7 +41,7 @@ export function toRendererSettings(s: SettingsFile): SettingsFileForRenderer {
 }
 
 /**
- * 落盘前的最后一道判据，两个写口（`setInstitution` / `updateInstitution`）共用。
+ * 落盘前的最后一道判据，写口（`updateInstitution`）与 `confirmLogin` 共用。
  * **消息里带上真实原因** —— 从前无论什么原因都只说「缺少机构名 / entityID / 用户名」，
  * 于是「密文忘了 toString('base64')」这种事在界面上会被说成一句完全无关的话。
  */
@@ -96,7 +96,7 @@ export class SettingsService {
         skills: { ...cur.skills, ...(patch.skills ?? {}) },
         tools: { ...cur.tools, ...(patch.tools ?? {}) },
         research: { ...cur.research, ...(patch.research ?? {}) },
-        // 只能由 institutionService 经 setInstitution 改。允许走 patch 就等于开了一条
+        // 只能由 institutionService 经 updateInstitution 改。允许走 patch 就等于开了一条
         // 把明文密码直接写进 passwordEnc 的路 —— 绕过 safeStorage，且不会报错。
         institution: cur.institution,
         updates: cur.updates,     // 只能由更新服务改（spec §7）
@@ -108,27 +108,37 @@ export class SettingsService {
   }
 
   /**
-   * 机构账号只能由 institutionService 经此方法改 —— 与 telemetry / updates 同样的约定。
+   * 把机构账号整条抹掉。**只清，不写** —— 收不下任何记录，所以它开不出一条
+   * 「凭空塞一个 passwordEnc」的路。
    *
-   * **写路径与读路径共用 sanitizeInstitution**，两头对齐的方式是「写入时就拒绝」而不是
-   * 「读取时容忍半条」。理由是读路径那条注释本来就成立：一条 name/entityID 为空的记录
-   * 在设置页上看起来像「配过了」，而 browser_login 的判据要到运行时才失败。所以宁可
-   * 当场报错，也不要「保存成功、界面显示已选中、重启后整条消失且没有任何提示」——
-   * 那正是设置页分步保存（选了学校还没填学号就切走）会踩到的路。
+   * 从前这里是 `setInstitution(v: SettingsFile['institution'])`：它照单全收任何字符串
+   * 当 `passwordEnc`，既不问钥匙串、也无从分辨密文与明文（持久化层没有 safeStorage，
+   * 而按字节形状去猜是启发式，不是判据）。真正那道闸只可能住在
+   * `institutionService.nextPasswordEnc`（加密与「要不要加密」在同一处）。
+   * 当时唯一的非测试调用方就是 `institutionService.clear()`，传的是 `null` ——
+   * 于是把它收成「只清」：**要落一条记录只剩 `updateInstitution` 一个口**，
+   * 而那个口的调用方只有 `institutionService.save`。
    *
-   * 落盘的是 sanitize 之后的值，不是入参：这样「存进去什么、重启后读回什么」是同一件事。
-   * confirmedLogin 与 entityID 不符时在这里就作废，不留到读路径去。
+   * 这道收窄减少的是「有人绕开 institutionService 手拼一条记录」的表面积，
+   * 它**不等于**「明文写不进来」—— `updateInstitution` 照样收得下任何字符串。
    */
-  async setInstitution(v: SettingsFile['institution']): Promise<void> {
-    const normalized = v === null ? null : requireValidInstitution(v);
-    await this.withLock(async (cur) => ({ next: { ...cur, institution: normalized }, result: undefined }));
+  async clearInstitution(): Promise<void> {
+    await this.withLock(async (cur) => ({ next: { ...cur, institution: null }, result: undefined }));
   }
 
   /**
    * **锁内**对机构记录做一次 read-modify-write，落盘前过 `checkInstitution`。
-   * `institutionService.save` 唯一的写口。
+   * **落一条机构记录唯一的口**，而它唯一的非测试调用方是 `institutionService.save`
+   * （抹掉整条走 `clearInstitution`）。
    *
-   * 为什么不能让调用方自己 `get()` → 拼一条 → `setInstitution()`：那两步之间没有锁。
+   * **写路径与读路径共用 `checkInstitution`**，两头对齐的方式是「写入时就拒绝」而不是
+   * 「读取时容忍半条」。理由是读路径那条注释本来就成立：一条 name/entityID 为空的记录
+   * 在设置页上看起来像「配过了」，而 browser_login 的判据要到运行时才失败。所以宁可
+   * 当场报错，也不要「保存成功、界面显示已选中、重启后整条消失且没有任何提示」。
+   * 落盘的是判据归一之后的值，不是回调的返回值：这样「存进去什么、重启后读回什么」
+   * 是同一件事；confirmedLogin 与 entityID 不符时在这里就作废，不留到读路径去。
+   *
+   * 为什么不能让调用方自己 `get()` → 拼一条 → 写回：那两步之间没有锁。
    * `institution.save` 的语义里「密码省略 = 沿用已存的那份密文」「confirmedLogin 省略 =
    * 保留」——**两样都要读旧记录**。锁外读到的旧记录与真正落盘的那一刻之间隔着一次
    * await，同一条 `confirmLogin` 的 JSDoc 里已经把这条路的后果写清楚了（用户在这中间
@@ -156,7 +166,7 @@ export class SettingsService {
    * ```ts
    * const cur = await settingsService.get();            // 锁外，弹框之前的快照
    * // …弹确认对话框，用户想了十秒…
-   * await settingsService.setInstitution({ ...cur.institution!, confirmedLogin });
+   * await settingsService.updateInstitution(() => ({ ...cur.institution!, confirmedLogin }));
    * ```
    *
    * 这十秒里用户在设置页把学校从北大改成了清华，上面那行随后把**整条旧记录**原样写回：
@@ -169,7 +179,7 @@ export class SettingsService {
    * false**，不去猜用户的意思：代价只是下次多问一次，而猜错就是把清华的密码填进北大的
    * 统一身份认证页。
    *
-   * 反过来的方向（把一次确认作废）不走这里，走 setInstitution 的 `confirmedLogin: null`。
+   * 反过来的方向（把一次确认作废）不走这里，走 `institution.save` 的 `confirmedLogin: null`。
    */
   async confirmLogin(entityID: string, origin: string): Promise<boolean> {
     return this.withLock<boolean>(async (cur) => {
@@ -200,7 +210,7 @@ export class SettingsService {
    * 的那一份，不是 cache —— 这正是它存在的理由。
    *
    * **注意：经它写 institution 会跳过 sanitizeInstitution。** `next` 是什么就落什么盘，
-   * 于是「写路径与读路径共用同一个判据」这条不变式只在 setInstitution / confirmLogin
+   * 于是「写路径与读路径共用同一个判据」这条不变式只在 updateInstitution / confirmLogin
    * 这两个入口上成立。要动 institution 就走那两个，别在这里手拼一条记录：读路径会因为
    * name / entityID / username 缺一个而把整条丢回 null，现象是「保存成功、重启后消失」。
    */

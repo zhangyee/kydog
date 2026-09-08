@@ -509,11 +509,15 @@ export type NavigationObservation = {
 /**
  * CARSI 机构清单里的一条。
  *
- * **名字与 entityID 都不是唯一键**（2026-09-08 实测 CNKI 那份清单）：1064 个机构里
- * 只有 938 个不同 entityID、936 个不同 host —— `https://passport.escience.cn/idp/shibboleth`
- * 一个 entityID 就被 127 个中科院所共用，它们走同一套认证，机构名只是 SP 显示用的标签。
+ * **名字与 entityID 都不是唯一键**（2026-09-08 实测、2026-09-09 复测 CNKI 那份清单）：
+ * 1064 个机构里只有 938 个不同 entityID、936 个不同 host ——
+ * `https://passport.escience.cn/idp/shibboleth` 一个 entityID 就被 127 个中科院所共用，
+ * 它们走同一套认证，机构名只是 SP 显示用的标签。
  *
- * 所以选中项要**两个一起存**：登录只需要 entityID，名字是给用户看的。
+ * 所以选中项要**两个一起存**：登录只需要 entityID，名字是给用户看的。理由是
+ * **entityID → 名字是一对多**，光有 entityID 反查不出用户当初选的是哪一家
+ *（那 127 个所会全部匹配）。这与「同名要消歧」是相反的方向：实测这份快照里
+ * 重名为 0 条（`parseIdpList` 的 `ambiguousNames`），今天没有两行一样的文字。
  */
 export type IdpEntry = {
   name: string;
@@ -613,7 +617,9 @@ export type InstitutionSaveArgs = {
    * `null` = 显式作废，下次填充前重新问一次。
    *
    * **只有清除这一档，没有「设成某个值」**：一次确认只能由 browser_login 在真的问过用户
-   * 之后经 setInstitution 写下。设置页能凭空指定一个 origin 的话，这道确认就成了摆设。
+   * 之后经 `settingsService.confirmLogin(entityID, origin)` 写下 —— 那是一次锁内的
+   * read-modify-write，记录已改或已删时会放弃这次确认。设置页能凭空指定一个 origin 的话，
+   * 这道确认就成了摆设。
    */
   confirmedLogin?: null;
 };

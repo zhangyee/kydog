@@ -73,13 +73,22 @@ export type KydogErrorCode =
   // 本轮 run 已经试过一次登录且失败，不再填（spec §4.6）。押的是用户的校园账号，
   // 高校 IdP 普遍锁定连续失败若干次的账号，而模型看到失败会本能地重试。
   | 'browser.login_attempted'
-  // 密码取不出来 / 存不进去，因为 safeStorage 这一侧不成立。两种成因共用它：
-  // ① `isEncryptionAvailable()` 为 false（钥匙串被拒、Linux 上没有可用的 keyring）；
-  // ② 密文解不开（换了机器、钥匙串条目被删）。
-  // 合成一条是因为**用户要做的事同一件**：修好钥匙串，或者重新填一次密码。
+  // 钥匙串这一刻用不了：`isEncryptionAvailable()` 为 false（钥匙串被拒、Linux 上没有
+  // 可用的 keyring），或者 `encryptString` 自己抛。**密码没有丢** —— 已经存下的那份
+  // 还在，让钥匙串恢复可用就照常取得出来；这一次没存进去的，修好之后再设一次即可。
+  // **处置是「修钥匙串」，重试有用。**
   // **保存时不静默退回明文** —— 那会让「我以为它加密了」和「它其实是明文」在界面上
   // 长得一样（spec §4.6）。落点是 institutionService.save / .reveal。
   | 'settings.secure_storage_unavailable'
+  // 已经存下的那份密文解不开了（换了机器、钥匙串条目被删）。**密码永久失效，
+  // 修钥匙串没有用，只能重新填一次。处置与上一条正相反，所以不共用一个码。**
+  //
+  // 判据与本文件里 institution.idp_list_* 那一对是同一条：**重试有没有用**。
+  // 共用一个码的具体后果：`hasPassword` 在两种情形下都还是 true（`passwordEnc !== ''`），
+  // 于是「有一个密码、但它已经取不出来了」这个状态在界面上无法表达 —— 渲染层只能按
+  // 码分支（措辞不是判据），用户看到的是「密码已设置」配着一句「钥匙串当前不可用」，
+  // 而钥匙串其实是好的。落点是 institutionService.reveal。
+  | 'settings.stored_password_unreadable'
   // ── CARSI 机构清单 ──
   // 字节拿到了，但读不成一份清单：不是合法 JSON / 不是数组 / 读到 N 条一条都没留下 /
   // 按响应自己声明的 charset 解不出来 / 超过字节上限。**处置是「这个源现在给不了清单」，

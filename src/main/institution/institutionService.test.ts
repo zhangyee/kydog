@@ -194,11 +194,38 @@ describe('safeStorage 不可用', () => {
     await expect(svc.reveal()).rejects.toMatchObject({ code: 'settings.secure_storage_unavailable' });
   });
 
-  it('密文解不开（换机器 / 条目被删）也走同一个码 —— 用户要做的事是同一件：重设密码', async () => {
+  // 「钥匙串这一刻用不了」与「这份密文永久解不开了」**不是同一件事**：前者修好钥匙串
+  // 密码照常可用，后者修钥匙串一点用都没有，只能重新填一次。两者共用一个码时，渲染层
+  // 按码分支就分不出来（措辞不能当判据），而 hasPassword 在两种情形下都还是 true ——
+  // 于是「有一个密码、但它已经取不出来了」这个状态在界面上根本表达不出来。
+  //
+  // 判据与本仓库对 idpList 那两个码用的是同一条：**重试有没有用**。
+  it('密文解不开 → settings.stored_password_unreadable，与「钥匙串不可用」不是同一个码', async () => {
     const svc = makeService({ available: true });
     await svc.save({ ...BASE, password: 'SECRET' });
     safe.decryptThrows = true;
-    await expect(svc.reveal()).rejects.toMatchObject({ code: 'settings.secure_storage_unavailable' });
+    await expect(svc.reveal()).rejects.toMatchObject({ code: 'settings.stored_password_unreadable' });
+  });
+
+  // 这一条守的是**两个码不许塌回一个**，而不是某一句措辞：同一份记录、同一个 reveal()，
+  // 只换成因，拿到的必须是两个不同的码与两句不同的话。
+  it('同一份记录：钥匙串不可用与密文解不开拿到的是两个不同的码、两句不同的话', async () => {
+    const ok = makeService({ available: true });
+    await ok.save({ ...BASE, password: 'SECRET' });
+
+    const broken = makeService({ available: false });
+    const a = await broken.reveal().then(() => null, (e: KydogError) => e);
+
+    const undecipherable = makeService({ available: true });
+    safe.decryptThrows = true;
+    const b = await undecipherable.reveal().then(() => null, (e: KydogError) => e);
+
+    expect(a).toBeInstanceOf(KydogError);
+    expect(b).toBeInstanceOf(KydogError);
+    expect(a!.code).not.toBe(b!.code);
+    expect(a!.message).not.toBe(b!.message);
+    // 两种情形下密码都还在记录里 —— 界面要靠码才说得清哪一种。
+    expect((await undecipherable.get())?.hasPassword).toBe(true);
   });
 });
 
@@ -660,6 +687,68 @@ describe('listIdps：抓到 / 没抓到 / 读不懂是三件不同的事', () =>
     expect((await makeService({ fetch: f.fn }).listIdps({ refresh: true })).entries).toHaveLength(1);
   });
 
+  /**
+   * 上面两条喂的都是 `new Response(new Uint8Array(body))` —— 实测这种构造**只产生一块**，
+   * 于是它们验的其实是「这一块太大」，从来没验过「累计跨过上限」。而实测 2026-09-09 的
+   * 真实响应头是 `transfer-encoding: chunked`、没有 content-length：**分块才是生产常态**，
+   * 一份超大响应会以几十上百块到达，每块都远小于上限。上限只有累计才拦得住它。
+   *
+   * 载荷第一块是完整的合法 JSON，其余块全是空白（`JSON.parse` 吃尾随空白）——
+   * 所以「上限没生效」等于「整份读完并成功解析」，这一条会以「本该抛却拿到了结果」红出来，
+   * 而不是被同一个 `idp_list_invalid` 兜住（M9 那一类）。
+   */
+  function chunkedJson(chunkSize: number, chunkCount: number): { fn: typeof fetch; pulled: () => number } {
+    const head = Buffer.from('[{"北京大学":"1|https://idp.pku.edu.cn/idp/shibboleth"}]', 'utf8');
+    let pulled = 0;
+    const fn = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (pulled >= chunkCount) { c.close(); return; }
+        const piece = pulled === 0
+          ? Buffer.concat([head, Buffer.alloc(chunkSize - head.byteLength, 0x20)])
+          : Buffer.alloc(chunkSize, 0x20);
+        pulled += 1;
+        c.enqueue(new Uint8Array(piece));
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    return { fn, pulled: () => pulled };
+  }
+
+  const CHUNK = 64 * 1024;
+  /** 累计刚跨过上限所需的块数 —— 从上限算出来的，不是拍的。 */
+  const CHUNKS_TO_CROSS = Math.floor(MAX_IDP_LIST_BYTES / CHUNK) + 1;
+
+  it('分块响应：每块都在上限之内、累计超上限 → 照样被拒（上限是累计的，不是按单块算的）', async () => {
+    expect(CHUNK).toBeLessThan(MAX_IDP_LIST_BYTES);        // 前提：没有一块自己超限
+    const available = CHUNKS_TO_CROSS * 4;                 // 备足了块，够读也读不完
+    const s = chunkedJson(CHUNK, available);
+    const svc = makeService({ fetch: s.fn });
+    try { await svc.listIdps({ refresh: true }); expect.unreachable('应当抛出'); }
+    catch (e) {
+      expect((e as KydogError).code).toBe('institution.idp_list_invalid');
+      expect((e as Error).message).toContain(String(MAX_IDP_LIST_BYTES));
+    }
+    // 真的分了多块，「累计」才谈得上：按单块判定的实现在这里一次都不会触发。
+    expect(s.pulled()).toBeGreaterThan(1);
+    // 而且是边读边数：跨过上限就停，不是先把整份物化再回头看。
+    expect(s.pulled()).toBeLessThan(available);
+    expect(existsSync(path.join(dir, 'idp-list.json'))).toBe(false);
+  });
+
+  // 反面，两件事一起守：分块本身不是拒绝的理由；跨块拼接不许损坏字节
+  //（把一个多字节汉字切在两块之间 —— 拼错一个字节，机构名就不是「北京大学」了）。
+  it('分块响应：累计在上限之内时照常读完，且跨块拼接不损坏多字节字符', async () => {
+    const body = Buffer.from('[{"北京大学":"1|https://idp.pku.edu.cn/idp/shibboleth"}]', 'utf8');
+    const midOfHanzi = body.indexOf(Buffer.from('京', 'utf8')) + 1;   // 落在「京」三个字节的中间
+    expect(midOfHanzi).toBeGreaterThan(0);
+    const pieces = [body.subarray(0, midOfHanzi), body.subarray(midOfHanzi, midOfHanzi + 5), body.subarray(midOfHanzi + 5)];
+    let i = 0;
+    const fn = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(c) { if (i >= pieces.length) { c.close(); return; } c.enqueue(new Uint8Array(pieces[i++])); },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    const r = await makeService({ fetch: fn }).listIdps({ refresh: true });
+    expect(r.entries).toEqual([{ name: '北京大学', entityID: PKU, flag: '1' }]);
+  });
+
   // 实测 2026-09-09：真实响应 76,565 字节 / 1064 条。上限得比它宽得多才不误伤。
   it('实测量级（1064 条、约 76KB）远在上限之内', async () => {
     const many = Array.from({ length: 1064 }, (_, i) => ({ [`机构${i}`]: `1|https://idp${i}.edu.cn/idp/shibboleth` }));
@@ -668,5 +757,64 @@ describe('listIdps：抓到 / 没抓到 / 读不懂是三件不同的事', () =>
     const f = fetchOnce(() => new Response(new Uint8Array(body), { status: 200, headers: { 'content-type': 'application/json' } }));
     const r = await makeService({ fetch: f.fn }).listIdps({ refresh: true });
     expect(r.entries).toHaveLength(1064);
+  });
+});
+
+// ── 幂等、并发、拒绝之后 ──────────────────────────────────────────────────────
+//
+// 这三样行为本来就是对的，但一条用例都没有 —— 而它们全都属于「坏掉也不报错」那一类：
+// 锁泄漏是挂死、锁外读旧记录是密码被悄悄抹成空。
+
+describe('幂等与并发', () => {
+  it('clear() 幂等：没配置过时不抛，连调两次也不抛，磁盘上都是 null', async () => {
+    const svc = makeService();
+    await expect(svc.clear()).resolves.toBeUndefined();      // 从来没配置过
+    await svc.save({ ...BASE, password: 'SECRET' });
+    await svc.clear();
+    await svc.clear();
+    expect(await svc.get()).toBeNull();
+    expect(JSON.parse(settingsOnDisk()).institution).toBeNull();
+    expect(settingsOnDisk()).not.toContain('SECRET');
+  });
+
+  // 两次 save 按调用顺序串行（settingsService 的进程内队列 + 文件锁），后一次赢，
+  // 而且赢的那一次的密文真的落了盘 —— 不是「两次都写了，密码却是前一次的」。
+  it('并发两次 save 被串起来，最后一次的学号与密码都是它自己的', async () => {
+    const svc = makeService();
+    await Promise.all([
+      svc.save({ ...BASE, password: 'FIRST' }),
+      svc.save({ ...BASE, username: '2100099999', password: 'SECOND' }),
+    ]);
+    expect((await svc.get())?.username).toBe('2100099999');
+    expect(await svc.reveal()).toEqual({ password: 'SECOND' });
+  });
+
+  /**
+   * 「密码省略 = 沿用已存的密文」这条语义要读旧记录，而读必须在**锁内**。
+   *
+   * 锁外读的实现在这条用例上会输：改学号那一次在改密码那一次落盘之前就把旧记录
+   * （`passwordEnc: ''`）读进了手里，随后原样写回 —— 用户刚设的密码被抹掉，全程零错误。
+   */
+  it('并发「设密码」与「只改学号」：省略 password 的那次读到的是锁内的记录，密码不被抹掉', async () => {
+    const svc = makeService();
+    await svc.save({ ...BASE });                              // 先建一条还没有密码的记录
+    await Promise.all([
+      svc.save({ ...BASE, password: 'SECRET' }),              // 设密码
+      svc.save({ ...BASE, username: '2100099999' }),          // 只改学号，password 省略
+    ]);
+    expect((await svc.get())?.username).toBe('2100099999');
+    expect((await svc.get())?.hasPassword).toBe(true);
+    expect(await svc.reveal()).toEqual({ password: 'SECRET' });
+  });
+
+  // 「钥匙串不可用」是在锁内的回调里抛的。锁没释放的话这条不会断言失败，
+  // 而是整条用例挂到 vitest 的超时 —— 那正是它要挡的现象。
+  it('被钥匙串拒掉一次之后锁照常释放，后续保存不会挂死', async () => {
+    const svc = makeService({ available: false });
+    await expect(svc.save({ ...BASE, password: 'p' })).rejects.toThrow();
+    safe.available = true;
+    await svc.save({ ...BASE, password: 'SECRET' });
+    expect((await svc.get())?.hasPassword).toBe(true);
+    expect(await svc.reveal()).toEqual({ password: 'SECRET' });
   });
 });
