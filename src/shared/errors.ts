@@ -73,9 +73,24 @@ export type KydogErrorCode =
   // 本轮 run 已经试过一次登录且失败，不再填（spec §4.6）。押的是用户的校园账号，
   // 高校 IdP 普遍锁定连续失败若干次的账号，而模型看到失败会本能地重试。
   | 'browser.login_attempted'
-  // safeStorage 不可用（钥匙串被拒等）。**不静默退回明文** —— 那会让「我以为它加密了」
-  // 和「它其实是明文」在界面上长得一样。
+  // 密码取不出来 / 存不进去，因为 safeStorage 这一侧不成立。两种成因共用它：
+  // ① `isEncryptionAvailable()` 为 false（钥匙串被拒、Linux 上没有可用的 keyring）；
+  // ② 密文解不开（换了机器、钥匙串条目被删）。
+  // 合成一条是因为**用户要做的事同一件**：修好钥匙串，或者重新填一次密码。
+  // **保存时不静默退回明文** —— 那会让「我以为它加密了」和「它其实是明文」在界面上
+  // 长得一样（spec §4.6）。落点是 institutionService.save / .reveal。
   | 'settings.secure_storage_unavailable'
+  // ── CARSI 机构清单 ──
+  // 字节拿到了，但读不成一份清单：不是合法 JSON / 不是数组 / 读到 N 条一条都没留下 /
+  // 按响应自己声明的 charset 解不出来 / 超过字节上限。**处置是「这个源现在给不了清单」，
+  // 重试一百次也一样。**
+  // 从前借 `skill.invalid`（连消息都是「机构清单不是合法 JSON」），渲染层要把它与
+  // 技能包解析失败分开时会撞车 —— 两者在界面上要说的话完全不同。
+  | 'institution.idp_list_invalid'
+  // 压根没拿到字节：网络错、撞 deadline、HTTP 非 2xx。**处置是「重试 / 用落盘的旧清单」**，
+  // 与 idp_list_invalid 正相反。两件事共用一个码的话，界面只说得出一句「机构清单出错」，
+  // 而其中一件重试有用、另一件重试无用。
+  | 'institution.idp_list_unavailable'
   | 'unknown';
 
 export class KydogError extends Error {

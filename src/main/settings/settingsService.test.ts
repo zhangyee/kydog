@@ -184,6 +184,73 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect((await svc.get()).institution).toBeNull();
   });
 
+  // 从前只有三个标识字段会被拒，passwordEnc 那一档是**静默降级成空串**：
+  // safeStorage.encryptString 回的是 Buffer，忘了 .toString('base64') 直接往下塞 →
+  // typeof 不是 string → 落盘 passwordEnc: '' → 界面显示「未设置密码」，全程零错误。
+  // 两条路现在对齐了：读路径丢掉的记录，写路径当场拒。
+  it('setInstitution(): passwordEnc 不是字符串（忘了 toString(base64)）当场被拒，不静默变成空串', async () => {
+    const buf = Buffer.from('ENC-BYTES');
+    for (const bad of [buf, { type: 'Buffer', data: [1, 2, 3] }, 42, null, undefined, ['x']]) {
+      await expect(
+        svc.setInstitution({ ...RECORD, passwordEnc: bad as never }),
+        JSON.stringify(bad) ?? 'undefined',
+      ).rejects.toMatchObject({ code: 'settings.invalid' });
+    }
+    expect((await svc.get()).institution).toBeNull();
+  });
+
+  // 报错要说对是哪一档：从前无论什么原因，写路径都只会说「缺少机构名 / entityID / 用户名」，
+  // 而那句话对着一个忘了 base64 的 Buffer 完全是误导。
+  it('setInstitution(): 拒绝的理由说的是 passwordEnc 本身，不是「缺少机构名 / entityID / 用户名」', async () => {
+    await expect(svc.setInstitution({ ...RECORD, passwordEnc: Buffer.from('x') as never }))
+      .rejects.toThrow(/passwordEnc/);
+    await expect(svc.setInstitution({ ...RECORD, name: '' }))
+      .rejects.toThrow(/机构名/);
+  });
+
+  // ── updateInstitution()：institutionService.save 的写口，read-modify-write 在锁内 ──
+  it('updateInstitution(): 回调拿到的是锁内读回来的当前记录，返回值就是落盘的那一份', async () => {
+    await svc.setInstitution(RECORD);
+    const seen: unknown[] = [];
+    const out = await svc.updateInstitution((cur) => {
+      seen.push(cur);
+      return { ...cur!, username: '2100099999' };
+    });
+    expect(seen).toEqual([RECORD]);
+    expect(out).toEqual({ ...RECORD, username: '2100099999' });
+    expect((await new SettingsService().get()).institution).toEqual(out);
+  });
+
+  it('updateInstitution(): 回调抛错 → 整次不写盘，锁照常放开（下一次调用还能拿到锁）', async () => {
+    await svc.setInstitution(RECORD);
+    await expect(svc.updateInstitution(() => { throw new Error('nope'); })).rejects.toThrow('nope');
+    expect((await svc.get()).institution).toEqual(RECORD);
+    // 锁真的放开了：否则这一句会卡到 proper-lockfile 重试用尽
+    expect(await svc.updateInstitution(() => null)).toBeNull();
+  });
+
+  it('updateInstitution(): 落盘前同样过 checkInstitution —— 不是一条绕开判据的写口', async () => {
+    await expect(svc.updateInstitution(() => ({ ...RECORD, passwordEnc: Buffer.from('x') as never })))
+      .rejects.toMatchObject({ code: 'settings.invalid' });
+    await expect(svc.updateInstitution(() => ({ ...RECORD, username: '' })))
+      .rejects.toMatchObject({ code: 'settings.invalid' });
+    expect((await svc.get()).institution).toBeNull();
+  });
+
+  // 「密码省略 = 沿用已存的密文」这条语义要求读旧记录；锁外读就会撞上 confirmLogin
+  // 那条 JSDoc 写清楚的路。这里钉住的是：两次并发保存之后，磁盘上是完整的一条，
+  // 而不是一条丢了密文的。
+  it('updateInstitution(): 并发保存串行发生，沿用旧密文的那一次不会读到半路的状态', async () => {
+    await svc.setInstitution({ ...RECORD, confirmedLogin: null });
+    await Promise.all([
+      svc.updateInstitution((cur) => ({ ...cur!, username: 'A' })),
+      svc.updateInstitution((cur) => ({ ...cur!, name: 'B' })),
+    ]);
+    const got = (await new SettingsService().get()).institution;
+    expect(got?.passwordEnc).toBe('ENC-FROM-SAFESTORAGE');
+    expect([got?.username, got?.name]).toEqual(['A', 'B']);
+  });
+
   it('setInstitution(): 落盘的是读路径认得出来的形状 —— 存进去什么，重启后就还是什么', async () => {
     await svc.setInstitution(RECORD);
     const reread = await new SettingsService().get();

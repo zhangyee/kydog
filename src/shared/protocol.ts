@@ -4,7 +4,7 @@ import type {
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   CenterViewState,
   TelemetryStatus,
-  BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, IdpEntry, InstitutionPublic, InstitutionSaveArgs,
+  BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
   SettingsFileForRenderer,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
@@ -51,7 +51,11 @@ export type RpcCall =
   | { method: 'institution.revealPassword'; args: undefined; result: { password: string } }
   // 机构清单来自 SP 自己的接口（CNKI 是 fsso.cnki.net/idp/list?federation=2）。
   // 每个 SP 一份，不存在全局 CARSI 清单。
-  | { method: 'institution.listIdps'; args: { refresh?: boolean }; result: IdpEntry[] }
+  //
+  // result **不是**裸 `IdpEntry[]`：抓不到时服务会回落到落盘的旧清单，而一份空数组在
+  // 设置页上等于「这个 SP 一个机构都没有」—— 与「我没抓到」长得一样。所以连同
+  // 「哪天抓的」「是不是回落的」一起回（见 types.ts 的 IdpListPublic）。
+  | { method: 'institution.listIdps'; args: { refresh?: boolean }; result: IdpListPublic }
   | { method: 'project.open'; args: undefined; result: Project }
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }

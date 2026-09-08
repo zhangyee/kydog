@@ -76,12 +76,12 @@ describe('parseIdpList：吃下 CARSI 清单的两种真实格式', () => {
 
   // 断言的是**码**不是「抛了就行」：仓库里同批用例都断言 KydogError.code，
   // 渲染层也按 code 分支。只写 toThrow() 的话，换成一个裸 Error 照样全绿。
-  it('整份不是数组 / 不是 JSON → 抛 KydogError，码是 skill.invalid', () => {
+  it('整份不是数组 / 不是 JSON → 抛 KydogError，码是 institution.idp_list_invalid', () => {
     for (const bad of ['{}', 'null', 'not json', '"x"', '123']) {
       try { parseIdpList(bad); expect.unreachable(`应当抛出：${bad}`); }
       catch (e) {
         expect(e, bad).toBeInstanceOf(KydogError);
-        expect((e as KydogError).code, bad).toBe('skill.invalid');
+        expect((e as KydogError).code, bad).toBe('institution.idp_list_invalid');
       }
     }
   });
@@ -166,7 +166,7 @@ describe('parseIdpList：「读不懂」不能与「这个源一个机构都没�
     try { parseIdpList(raw); expect.unreachable('应当抛出'); }
     catch (e) {
       expect(e).toBeInstanceOf(KydogError);
-      expect((e as KydogError).code).toBe('skill.invalid');
+      expect((e as KydogError).code).toBe('institution.idp_list_invalid');
       expect((e as Error).message).toContain('2');
     }
   });

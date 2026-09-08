@@ -3,11 +3,28 @@ import { lock } from 'proper-lockfile';
 import * as paths from '../persist/paths';
 import {
   defaultSettings, loadSettings, ensureSettingsFile,
-  sanitizeBrowserWidth, sanitizeInstitution, CURRENT_SCHEMA_VERSION,
+  sanitizeBrowserWidth, sanitizeInstitution, checkInstitution, CURRENT_SCHEMA_VERSION,
 } from '../persist/settingsFile';
 import { atomicWriteWith0600Async } from '../persist/atomicWrite';
 import { KydogError } from '../../shared/errors';
-import type { SettingsFile, SettingsFileForRenderer, SettingsPatch } from '../../shared/types';
+import type { InstitutionPublic, SettingsFile, SettingsFileForRenderer, SettingsPatch } from '../../shared/types';
+
+/**
+ * 落盘记录 → 渲染层可见的那份。**唯一一处做这件事的地方**：`toRendererSettings` 与
+ * `institutionService.get/save` 都调它，不各写一遍 —— 两份投影漂开的时候，漏掉的
+ * 那一份就是密文的出口，而 tsc 不会说话（两边都是「少一个字段的对象字面量」，各自合法）。
+ */
+export function toInstitutionPublic(inst: SettingsFile['institution']): InstitutionPublic {
+  if (inst === null) return null;
+  return {
+    name: inst.name,
+    entityID: inst.entityID,
+    username: inst.username,
+    // 只回「有没有」这一个比特。空串 = 配了机构与账号但还没设密码。
+    hasPassword: inst.passwordEnc !== '',
+    confirmedLogin: inst.confirmedLogin,
+  };
+}
 
 /**
  * 主进程 → 渲染层那道收口。**唯一的作用是把 passwordEnc 留在这一侧。**
@@ -20,18 +37,18 @@ import type { SettingsFile, SettingsFileForRenderer, SettingsPatch } from '../..
  * InstitutionRecord 赋不进 InstitutionPublic（少一个 hasPassword），漏了转换 tsc 就红。
  */
 export function toRendererSettings(s: SettingsFile): SettingsFileForRenderer {
-  const inst = s.institution;
-  return {
-    ...s,
-    institution: inst === null ? null : {
-      name: inst.name,
-      entityID: inst.entityID,
-      username: inst.username,
-      // 只回「有没有」这一个比特。空串 = 配了机构与账号但还没设密码。
-      hasPassword: inst.passwordEnc !== '',
-      confirmedLogin: inst.confirmedLogin,
-    },
-  };
+  return { ...s, institution: toInstitutionPublic(s.institution) };
+}
+
+/**
+ * 落盘前的最后一道判据，两个写口（`setInstitution` / `updateInstitution`）共用。
+ * **消息里带上真实原因** —— 从前无论什么原因都只说「缺少机构名 / entityID / 用户名」，
+ * 于是「密文忘了 toString('base64')」这种事在界面上会被说成一句完全无关的话。
+ */
+function requireValidInstitution(v: NonNullable<SettingsFile['institution']>): NonNullable<SettingsFile['institution']> {
+  const c = checkInstitution(v);
+  if (!c.ok) throw new KydogError('settings.invalid', `机构账号无法保存：${c.why}`);
+  return c.record;
 }
 
 // In-process serialization: all operations are serialized through this chain
@@ -103,11 +120,31 @@ export class SettingsService {
    * confirmedLogin 与 entityID 不符时在这里就作废，不留到读路径去。
    */
   async setInstitution(v: SettingsFile['institution']): Promise<void> {
-    const normalized = v === null ? null : sanitizeInstitution(v);
-    if (v !== null && normalized === null) {
-      throw new KydogError('settings.invalid', '机构账号缺少机构名 / entityID / 用户名，无法保存');
-    }
+    const normalized = v === null ? null : requireValidInstitution(v);
     await this.withLock(async (cur) => ({ next: { ...cur, institution: normalized }, result: undefined }));
+  }
+
+  /**
+   * **锁内**对机构记录做一次 read-modify-write，落盘前过 `checkInstitution`。
+   * `institutionService.save` 唯一的写口。
+   *
+   * 为什么不能让调用方自己 `get()` → 拼一条 → `setInstitution()`：那两步之间没有锁。
+   * `institution.save` 的语义里「密码省略 = 沿用已存的那份密文」「confirmedLogin 省略 =
+   * 保留」——**两样都要读旧记录**。锁外读到的旧记录与真正落盘的那一刻之间隔着一次
+   * await，同一条 `confirmLogin` 的 JSDoc 里已经把这条路的后果写清楚了（用户在这中间
+   * 改了学校，随后整条旧记录被原样写回，零错误）。所以读与写必须在同一把锁里。
+   *
+   * 回调是**同步**的：加密是同步调用，锁内不需要也不应该再 await 任何东西。回调抛错
+   * 就整次不写盘（锁照常释放），于是「钥匙串不可用」是一次干净的拒绝，不会留下半条记录。
+   */
+  async updateInstitution(
+    fn: (current: SettingsFile['institution']) => SettingsFile['institution'],
+  ): Promise<SettingsFile['institution']> {
+    return this.withLock<SettingsFile['institution']>(async (cur) => {
+      const desired = fn(cur.institution);
+      const normalized = desired === null ? null : requireValidInstitution(desired);
+      return { next: { ...cur, institution: normalized }, result: normalized };
+    });
   }
 
   /**

@@ -2,15 +2,18 @@ import { KydogError } from '../../shared/errors';
 import type { IdpEntry } from '../../shared/types';
 
 /**
- * CARSI 机构清单的解析。纯函数 —— 抓取在 browserService 里做。
+ * CARSI 机构清单的解析。**纯函数，只吃已经解成字符串的文本** —— 抓取与按 charset
+ * 解码在 `main/institution/institutionService.ts`（`fetchIdpList` / `decodeByCharset`）。
+ * 这条分工是有意的：字节怎么变成字符是协议层的事（响应头说了算），这里不该再猜一次。
  *
  * 每个 SP 自带一份清单，**不存在一份全局 CARSI 清单**。CNKI 的接口是
  * `GET https://fsso.cnki.net/idp/list?federation=2`，返回
  * `[{"<机构名>":"<值>"}, …]`。
  *
- * 实测（2026-09-08，1064 条）有两种值格式，且两种都要吃下：
- * - `federation=2`：`"<标志>|<entityID>"`，标志实测是 "1"×1045 / "0"×19
- * - `federation=1`：裸 entityID，没有前缀，且**可能是 URN 不是 URL**
+ * 实测（2026-09-08 首测，2026-09-09 复测同样的数）有两种值格式，且两种都要吃下：
+ * - `federation=2`：`"<标志>|<entityID>"`，1064 条 / 938 个不同 entityID，
+ *   标志是 "1"×1045 / "0"×19，另有 2 条缺冒号的坏 entityID（`https//…`）
+ * - `federation=1`：裸 entityID，没有前缀，且**可能是 URN 不是 URL**（90 条）
  */
 
 export type SkippedIdp = { name: string; raw: string; reason: string };
@@ -58,10 +61,10 @@ function isUsableEntityId(v: string): boolean {
 export function parseIdpList(raw: string): IdpListResult {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); }
-  catch { throw new KydogError('skill.invalid', '机构清单不是合法 JSON'); }
+  catch { throw new KydogError('institution.idp_list_invalid', '机构清单不是合法 JSON'); }
   // 整份形状不对要抛错，不能返回空清单：空清单在界面上等于「这个 SP 一个机构都没有」，
   // 而真相是我们没读懂它 —— 两件事不能长得一样。
-  if (!Array.isArray(parsed)) throw new KydogError('skill.invalid', '机构清单不是数组');
+  if (!Array.isArray(parsed)) throw new KydogError('institution.idp_list_invalid', '机构清单不是数组');
 
   const entries: IdpEntry[] = [];
   const skipped: SkippedIdp[] = [];
@@ -123,7 +126,7 @@ export function parseIdpList(raw: string): IdpListResult {
   const seen = entries.length + skipped.length + dropped.entries + dropped.skipped;
   if (seen > 0 && entries.length === 0) {
     const why = skipped.slice(0, 3).map((x) => x.reason).join('；');
-    throw new KydogError('skill.invalid',
+    throw new KydogError('institution.idp_list_invalid',
       `机构清单读到 ${seen} 条，一条都没能用上 —— 多半是这个接口换了值的形状。${why ? `前几条的原因：${why}` : ''}`);
   }
 

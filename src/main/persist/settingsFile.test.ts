@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as paths from './paths';
 import type { SettingsFile } from '../../shared/types';
-import { ensureSettingsFile, loadSettings, defaultSettings, parseAndMigrateSettings, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from './settingsFile';
+import { ensureSettingsFile, loadSettings, defaultSettings, parseAndMigrateSettings, checkInstitution, sanitizeInstitution, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from './settingsFile';
 
 /**
  * 「备份失败就不覆盖原件」那道护栏没法用真文件系统触发：备份与覆盖写的是同一个目录，
@@ -724,5 +724,43 @@ describe('v9：机构账号只兜形状不动值', () => {
   it('配了机构与账号但还没设密码 → passwordEnc 为空串，不是 null', () => {
     const got = withInst({ name: 'n', entityID: 'e', username: 'u' }).institution;
     expect(got).toEqual({ name: 'n', entityID: 'e', username: 'u', passwordEnc: '', confirmedLogin: null });
+  });
+
+  // passwordEnc 分三档，中间那档以前不存在（非字符串一律被改写成空串）。
+  // 代价很具体：safeStorage.encryptString 回的是 Buffer，忘了 .toString('base64')
+  // 直接落盘 → 界面显示「未设置密码」，全程零错误。三个标识字段缺失会整条丢，
+  // 唯独密码这一档静默降级 —— 现在对齐了。
+  it('有 passwordEnc 这个键但不是字符串 → 整条丢回 null，不改写成空串', () => {
+    for (const bad of [{ type: 'Buffer', data: [1, 2, 3] }, 42, null, ['x'], true]) {
+      const got = withInst({ name: 'n', entityID: 'e', username: 'u', passwordEnc: bad }).institution;
+      expect(got, JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  // 反证：没有这一句，上面那条也能被一个「passwordEnc 一律判死」的实现骗过去。
+  it('是字符串就原样收下，空串也算 —— 「还没设密码」是合法状态', () => {
+    expect(withInst({ name: 'n', entityID: 'e', username: 'u', passwordEnc: '' }).institution?.passwordEnc).toBe('');
+    expect(withInst({ name: 'n', entityID: 'e', username: 'u', passwordEnc: 'B64==' }).institution?.passwordEnc).toBe('B64==');
+  });
+
+  // 读路径只要「行不行」，写路径要把「为什么不行」原样说给用户 —— 判据只有一个，
+  // 所以两边不可能漂。
+  it('checkInstitution 说得出为什么不行，且与 sanitizeInstitution 的判决一致', () => {
+    const cases: Array<[unknown, RegExp]> = [
+      [{ entityID: 'e', username: 'u' }, /机构名/],
+      [{ name: 'n', entityID: 'e', username: 'u', passwordEnc: Buffer.from('x') }, /passwordEnc/],
+      [{ name: 'n', entityID: 'e', username: 'u', passwordEnc: null }, /null/],
+      ['不是对象', /不是一个对象/],
+    ];
+    for (const [v, why] of cases) {
+      const r = checkInstitution(v);
+      expect(r.ok, JSON.stringify(v)).toBe(false);
+      expect(r.ok === false && r.why, JSON.stringify(v)).toMatch(why);
+      expect(sanitizeInstitution(v), JSON.stringify(v)).toBeNull();
+    }
+    const good = { name: 'n', entityID: 'e', username: 'u', passwordEnc: 'B64==' };
+    const r = checkInstitution(good);
+    expect(r.ok).toBe(true);
+    expect(r.ok === true && r.record).toEqual(sanitizeInstitution(good));
   });
 });

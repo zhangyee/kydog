@@ -532,6 +532,29 @@ export type IdpEntry = {
 };
 
 /**
+ * `institution.listIdps` 的返回。**光有 `entries` 不够。**
+ *
+ * fsso.cnki.net 抓不到时会回落到落盘的上一次清单；而一份空的 `entries` 在设置页上
+ * 等于「这个 SP 一个机构都没有」—— 「我没抓到」与「它真的没有」长得一模一样。
+ * 所以每次都要说清楚**这份东西是哪来的、什么时候的**：
+ *
+ * - `entries`：这一次真正拿给用户看的那份。
+ * - `fetchedAt`：**这份 entries 是什么时候抓的**（ISO 8601 字符串）。回落时是旧清单
+ *   落盘时记下的那个时刻，**不是这次调用的时间** —— 它描述的是数据，不是调用。
+ * - `stale`：`true` = `entries` 来自磁盘（这次没去抓，或者抓了没成）；
+ *   `false` = 就是这次抓回来的。
+ *
+ * 注意 `stale: true` 有两种成因（没去抓 / 抓了没成），本类型不区分它们：设置页对两者
+ * 要做的事一样（把 `fetchedAt` 摆出来，给一个「刷新」按钮）。真正必须分开的是
+ * 「抓不到」与「读不懂」，那两件事分在两个错误码上（见 errors.ts 的 institution.idp_list_*）。
+ */
+export type IdpListPublic = {
+  entries: IdpEntry[];
+  fetchedAt: string;
+  stale: boolean;
+};
+
+/**
  * 用户在首次填充前确认过的那个真实登录页。
  *
  * **两个字段缺一不可，它们各挡一件事**：

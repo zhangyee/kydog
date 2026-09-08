@@ -183,24 +183,63 @@ function sanitizeConfirmedLogin(v: unknown, entityID: string): ConfirmedLogin | 
 }
 
 /**
+ * `checkInstitution` 的结果。**「为什么不行」必须能带出来**：读路径只需要「行不行」
+ * （不行就整条丢），写路径要把原因原样说给用户 —— 从前写路径无论什么原因都只会说
+ * 「缺少机构名 / entityID / 用户名」，而 passwordEnc 那一档的真实原因完全不是这个。
+ *
+ * 判据只有这一个函数（`sanitizeInstitution` 是它的薄包装），所以「读路径会丢的记录、
+ * 写路径就该拒」这条不变式不可能漂：两边问的是同一个人。
+ */
+export type InstitutionCheck =
+  | { ok: true; record: NonNullable<SettingsFile['institution']> }
+  | { ok: false; why: string };
+
+/**
  * 机构账号只兜形状，不动值。三个标识字段缺一不可 —— 缺了就整条丢回 null，
  * 而不是补一个空串：一条 name/entityID 为空的记录在设置页上看起来像「配过了」，
  * 但 browser_login 的域判据会在运行时才失败，那时用户已经不记得自己填过什么。
  *
- * **写路径共用这一个函数**（settingsService.setInstitution）：读路径会丢掉的记录，
- * 写的时候就该被拒，不然就是「保存成功、重启后消失」。
+ * **写路径共用这一个函数**（settingsService.setInstitution / .updateInstitution）：
+ * 读路径会丢掉的记录，写的时候就该被拒，不然就是「保存成功、重启后消失」。
+ *
+ * **passwordEnc 分三档，中间那档以前不存在：**
+ * - 没有这个键 → `''`。「配了机构与账号，但还没设密码」是一个合法状态。
+ * - 有这个键但不是字符串 → **整条不合格**。以前这一档被静默改写成 `''`，代价很具体：
+ *   `safeStorage.encryptString` 回的是 **Buffer**，实现者忘了 `.toString('base64')`
+ *   直接往下塞 → `typeof === 'string'` 为 false → 落盘 `passwordEnc: ''` →
+ *   界面显示「未设置密码」，**全程没有任何错误**。三个标识字段缺失会抛，唯独密码这一档
+ *   静默降级，两条路对不齐；现在对齐了。
+ * - 是字符串（含 `''`）→ 原样收下。这里不校验它是不是合法 base64：那要解密才知道，
+ *   而解密只在 institutionService.reveal 那一刻发生，解不开时它抛
+ *   `settings.secure_storage_unavailable`。在这里假装校验过反而是编一个事实。
  */
-export function sanitizeInstitution(v: unknown): SettingsFile['institution'] {
-  if (!isPlainObject(v)) return null;
+export function checkInstitution(v: unknown): InstitutionCheck {
+  if (!isPlainObject(v)) return { ok: false, why: '不是一个对象' };
   const o = v as Record<string, unknown>;
   const str = (k: string) => (typeof o[k] === 'string' ? (o[k] as string) : null);
   const name = str('name'), entityID = str('entityID'), username = str('username');
-  if (!name || !entityID || !username) return null;
+  if (!name || !entityID || !username) return { ok: false, why: '缺少机构名 / entityID / 用户名' };
+  if ('passwordEnc' in o && typeof o.passwordEnc !== 'string') {
+    return {
+      ok: false,
+      why: `passwordEnc 不是字符串（收到 ${o.passwordEnc === null ? 'null' : typeof o.passwordEnc}）`
+        + ` —— safeStorage.encryptString 回的是 Buffer，落盘前必须 .toString('base64')`,
+    };
+  }
   return {
-    name, entityID, username,
-    passwordEnc: typeof o.passwordEnc === 'string' ? o.passwordEnc : '',
-    confirmedLogin: sanitizeConfirmedLogin(o.confirmedLogin, entityID),
+    ok: true,
+    record: {
+      name, entityID, username,
+      passwordEnc: typeof o.passwordEnc === 'string' ? o.passwordEnc : '',
+      confirmedLogin: sanitizeConfirmedLogin(o.confirmedLogin, entityID),
+    },
   };
+}
+
+/** 读路径用的薄包装：不合格就整条 null。要知道**为什么**不合格就用 checkInstitution。 */
+export function sanitizeInstitution(v: unknown): SettingsFile['institution'] {
+  const r = checkInstitution(v);
+  return r.ok ? r.record : null;
 }
 
 function sanitizeUpdates(v: unknown): SettingsFile['updates'] {
