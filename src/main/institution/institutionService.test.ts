@@ -35,7 +35,7 @@ vi.mock('../log', () => ({
 }));
 
 const {
-  InstitutionService, decodeByCharset, IDP_LIST_URL, MAX_IDP_LIST_BYTES,
+  InstitutionService, decodeByCharset, IDP_LIST_URL, MAX_IDP_LIST_BYTES, REVEAL_NEXT_STEP,
 } = await import('./institutionService');
 
 // ── 假 safeStorage ────────────────────────────────────────────────────────────
@@ -207,9 +207,18 @@ describe('safeStorage 不可用', () => {
     await expect(svc.reveal()).rejects.toMatchObject({ code: 'settings.stored_password_unreadable' });
   });
 
-  // 这一条守的是**两个码不许塌回一个**，而不是某一句措辞：同一份记录、同一个 reveal()，
-  // 只换成因，拿到的必须是两个不同的码与两句不同的话。
-  it('同一份记录：钥匙串不可用与密文解不开拿到的是两个不同的码、两句不同的话', async () => {
+  // 这一条守的是**两个码各自说对了下一步**。
+  //
+  // 上一版只断「两个码不相等 + 两句话不相等」，那挡得住「都改成同一句废话」，却挡不住
+  // **把两句原文互换**（码不动）—— 实测互换之后全量绿。而互换的后果正是拆这两个码时
+  // 立案的那件事，只是方向反了：换了机器（密文永久失效）的用户被告知「不用重新填」，
+  // 钥匙串只是临时锁着的用户被告知「请重新填一次密码」。渲染层 `setError(e.message)`
+  // 把这句话原样给用户看，所以它不是给开发者看的散文。
+  //
+  // 改成断**语义记号**（`REVEAL_NEXT_STEP`，形状同这份用例里
+  // `toContain(String(MAX_IDP_LIST_BYTES))` 那条）：四个方向都断 —— 各自含自己那个记号、
+  // 且不含另一个。措辞怎么改都行，记号跑错了地方就红。
+  it('同一份记录：两个码不同，且各自那句话给出的下一步没有对调', async () => {
     const ok = makeService({ available: true });
     await ok.save({ ...BASE, password: 'SECRET' });
 
@@ -223,7 +232,17 @@ describe('safeStorage 不可用', () => {
     expect(a).toBeInstanceOf(KydogError);
     expect(b).toBeInstanceOf(KydogError);
     expect(a!.code).not.toBe(b!.code);
-    expect(a!.message).not.toBe(b!.message);
+
+    // 钥匙串不可用 = 密码还在，下一步是「再试一次」，**不许**打发用户去重新填。
+    expect(a!.code).toBe('settings.secure_storage_unavailable');
+    expect(a!.message).toContain(REVEAL_NEXT_STEP.retry);
+    expect(a!.message).not.toContain(REVEAL_NEXT_STEP.reenter);
+
+    // 密文解不开 = 密码永久失效，下一步是「重新填」，**不许**许诺重试有用。
+    expect(b!.code).toBe('settings.stored_password_unreadable');
+    expect(b!.message).toContain(REVEAL_NEXT_STEP.reenter);
+    expect(b!.message).not.toContain(REVEAL_NEXT_STEP.retry);
+
     // 两种情形下密码都还在记录里 —— 界面要靠码才说得清哪一种。
     expect((await undecipherable.get())?.hasPassword).toBe(true);
   });

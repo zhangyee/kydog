@@ -45,6 +45,9 @@ GET https://fsso.cnki.net/idp/list?federation=2     → application/json
    `https://passport.escience.cn/idp/shibboleth` 这**一个 entityID** 就被 **127 个中科院所**共用
    （它们走同一套认证，机构名只是 SP 显示用的标签）。所以选中项要**名字与 entityID 一起存**：
    登录只用 entityID，名字是给用户看的。按任何一个单独建索引都会丢东西。
+   **这几个数是 2026-09-09 直连端点重数的**（`curl` 拉 76,565 字节 → `JSON.parse` →
+   按 `|` 右边切出 entityID 分组）：1064 条 / 938 个不同 entityID / 重名 0 条 /
+   共享 entityID 的组**只有 1 个**、组内 **127** 个名字。§三表头原先写的 128 是错的，已改。
 2. **官方数据里有格式错的条目。** 实测 2 条缺冒号：`https//idp.xjut.edu.cn/idp/shibboleth`
    （新疆工业学院、广东金融学院）。解析要跳过并**留下可见的原因**，不许静默丢、更不许整份解析失败。
 3. **`标志` 字段含义未知。** 实测 `1` ×1045、`0` ×19，`0` 里既有 985 高校也有中科院所。
@@ -70,7 +73,7 @@ IdP 把 SAML 断言 **POST 回 SP 的 ACS 端点** → SP 种会话 cookie → �
 
 ## 三、IdP 登录页长什么样：变异很大（两个实测样本）
 
-|  | 北京大学 | 中科院（128 机构共用） |
+|  | 北京大学 | 中科院（127 机构共用） |
 | --- | --- | --- |
 | entityID host | `idp.pku.edu.cn` | `passport.escience.cn` |
 | **实际登录页 host** | **`iaaa.pku.edu.cn`** —— **不一样！** | `passport.escience.cn` —— 一样 |

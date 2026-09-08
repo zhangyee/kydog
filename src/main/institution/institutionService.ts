@@ -19,8 +19,13 @@ type InstitutionRecord = NonNullable<SettingsFile['institution']>;
  * 1. 密码只往一个方向流。落盘的永远是 `safeStorage` 密文的 base64；出得去的只有
  *    `InstitutionPublic`（`hasPassword` 一个比特），明文只在 `reveal()` 这一条显式
  *    往返上回一次。密文与明文都不进日志。
- *    **落盘记录只由这个模块写**：`settingsService` 那一侧收记录的口只剩
- *    `updateInstitution`（`clearInstitution` 只清不写），本模块之外没有别的写口。
+ *    **收一条机构记录的口只剩 `updateInstitution`**（`clearInstitution` 已收窄成只清不写），
+ *    它唯一的非测试调用方是本模块的 `save()`。**但这不是「只剩一个写口」** ——
+ *    `settingsService.withLock` 是 public 的，`next` 是什么就落什么盘，经它写 `institution`
+ *    会跳过 `checkInstitution`（它自己的 JSDoc 写着这条）。今天有三个模块 6 处在用它
+ *    （`update/assemble.ts` / `llm/kydogAuthBackend.ts` / `harness/onboardingService.ts` 各 2 处），
+ *    所以它收不成私有。别在那个形状里顺手拼一条机构记录：读路径缺 name/entityID/username
+ *    任一个就把整条丢回 null，现象是「保存成功、重启后消失」。
  * 2. **钥匙串不可用就拒绝，不静默退回明文**（spec §4.6）。判据是「这一次要不要加密」，
  *    不是「钥匙串好不好」—— 不碰密码的保存（改学校、改学号、清密码）没有明文风险，
  *    一刀切拒绝只会让用户连学校都改不了。
@@ -73,6 +78,32 @@ export const IDP_LIST_TIMEOUT_MS = 15_000;
  * 还宽约 11 倍。挡的是端点异常返回几十万条时整份响应物化进主进程内存。
  */
 export const MAX_IDP_LIST_BYTES = 4 * 1024 * 1024;
+
+/**
+ * `reveal()` 取不出密码时，那句话里**告诉用户的下一步**。两个记号，一个码一条。
+ *
+ * **这一层是判据，不是措辞。** 渲染层的既有形状是 `setError(String(e.message))`
+ * （`src/renderer/settings/` 下十余处），message 就是用户读到的那句话，而两个码的下一步
+ * **正相反**：`secure_storage_unavailable` = 密码还在、修好钥匙串再试一次；
+ * `stored_password_unreadable` = 这份密文永久失效、只能重新填一次。
+ *
+ * 两句对调不会在码上、类型上留下任何痕迹，后果却很具体：换了机器（密文永久失效）的用户
+ * 被告知「不用重新填」，去修钥匙串，修好也永远取不出来；钥匙串只是临时锁着的用户被告知
+ * 「请重新填一次密码」，白白重设一次校园统一身份认证的密码。**这正是拆这两个码时立案的
+ * 那对自相矛盾的提示，只是方向反了。**
+ *
+ * 所以两句各自必须**含自己那个记号、且不含另一个**（`institutionService.test.ts`
+ * 「各自说对了下一步」那条守，四个方向都断）。措辞随便改，改到记号跑错了地方就该红。
+ *
+ * **记号刻意不插值进消息**：插值会让「把这张表里两个值对调」这种改法连断言一起翻过去，
+ * 两处各自独立写成中文散文、由用例去比对，才是真的在守。
+ */
+export const REVEAL_NEXT_STEP = {
+  /** `settings.secure_storage_unavailable`：外部条件修好之后重来有用，已存的密码没丢。 */
+  retry: '再试一次',
+  /** `settings.stored_password_unreadable`：重试没有用，只能让用户重新输入一次。 */
+  reenter: '重新填',
+} as const;
 
 /** 落盘缓存的版本号。认不出来就当没有缓存 —— 半懂不懂地用比没有更糟。 */
 const IDP_CACHE_VERSION = 1;
@@ -325,6 +356,10 @@ export class InstitutionService {
    * 两者刻意**不共用一个码**：判据是「重试有没有用」，与本仓库对 `institution.idp_list_*`
    * 那一对用的是同一条规矩。合成一条的代价很具体 —— `hasPassword` 在两种情形下都还是
    * true，界面只能按码分支，于是「有一个密码、但它已经取不出来了」这个状态说不出来。
+   *
+   * 下面两句消息里的**下一步**由 `REVEAL_NEXT_STEP` 定契约：`retry` 那个记号只许出现在
+   * 「密码还在」那一句里，`reenter` 只许出现在「密文永久失效」那一句里。改措辞可以，
+   * 别把记号调过去 —— 调过去就是把用户支使到相反的方向上，而码看不出任何异常。
    */
   async reveal(): Promise<{ password: string }> {
     const inst = (await this.settings.get()).institution;
@@ -334,8 +369,8 @@ export class InstitutionService {
     if (inst.passwordEnc === '') return { password: '' };
     if (!this.safe.isEncryptionAvailable()) {
       throw new KydogError('settings.secure_storage_unavailable',
-        '系统钥匙串当前不可用，取不出已保存的密码 —— 密码还在，'
-        + '让系统钥匙串恢复可用之后再试一次就行，不用重新填。');
+        '系统钥匙串当前不可用，取不出已保存的密码 —— 密码还在，没有丢，'
+        + '让系统钥匙串恢复可用之后再试一次就行。');
     }
     try {
       return { password: this.safe.decryptString(Buffer.from(inst.passwordEnc, 'base64')) };

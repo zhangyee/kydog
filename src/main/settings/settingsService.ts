@@ -116,11 +116,13 @@ export class SettingsService {
    * 而按字节形状去猜是启发式，不是判据）。真正那道闸只可能住在
    * `institutionService.nextPasswordEnc`（加密与「要不要加密」在同一处）。
    * 当时唯一的非测试调用方就是 `institutionService.clear()`，传的是 `null` ——
-   * 于是把它收成「只清」：**要落一条记录只剩 `updateInstitution` 一个口**，
+   * 于是把它收成「只清」：**过判据的那个口只剩 `updateInstitution`**，
    * 而那个口的调用方只有 `institutionService.save`。
    *
    * 这道收窄减少的是「有人绕开 institutionService 手拼一条记录」的表面积，
-   * 它**不等于**「明文写不进来」—— `updateInstitution` 照样收得下任何字符串。
+   * 它**不等于**「明文写不进来」（`updateInstitution` 照样收得下任何字符串），
+   * 也**不等于**「只剩一个写口」—— 下面 `withLock` 是 public 的逃生口，经它写
+   * `institution` 会跳过 `checkInstitution`（见它自己的 JSDoc）。
    */
   async clearInstitution(): Promise<void> {
     await this.withLock(async (cur) => ({ next: { ...cur, institution: null }, result: undefined }));
@@ -128,8 +130,10 @@ export class SettingsService {
 
   /**
    * **锁内**对机构记录做一次 read-modify-write，落盘前过 `checkInstitution`。
-   * **落一条机构记录唯一的口**，而它唯一的非测试调用方是 `institutionService.save`
-   * （抹掉整条走 `clearInstitution`）。
+   * **落一条机构记录唯一一个过判据的口**，而它唯一的非测试调用方是
+   * `institutionService.save`（抹掉整条走 `clearInstitution`）。**不是唯一的写口** ——
+   * `withLock` 是 public 的逃生口，经它写 `institution` 会跳过下面这道
+   * `checkInstitution`（那条 JSDoc 里写着，本文件里就有）。
    *
    * **写路径与读路径共用 `checkInstitution`**，两头对齐的方式是「写入时就拒绝」而不是
    * 「读取时容忍半条」。理由是读路径那条注释本来就成立：一条 name/entityID 为空的记录

@@ -514,6 +514,15 @@ export type NavigationObservation = {
  * `https://passport.escience.cn/idp/shibboleth` 一个 entityID 就被 127 个中科院所共用，
  * 它们走同一套认证，机构名只是 SP 显示用的标签。
  *
+ * 「走同一套认证」不是统计推断，是**演绎**，依据在
+ * `src/skills/slowpaper/references/carsi.md` §二（标注实测）：SP 入口 URL 的形态是
+ * `…/Shibboleth.sso/Login?entityID=<entityID>&target=<…>`，**只有 entityID 上路**，
+ * 机构名一个字节都不离开本机 —— 于是那 127 条产生的是**逐字节相同**的 URL。
+ * 同文件 §三有那一组的实测样本（登录页 host `passport.escience.cn`、字段
+ * `j_username`/`j_password`、无验证码）。
+ * **这条演绎成立的前提是「登录 URL 只由 entityID 构造」**：拼 URL 时若把 `name` 也带上，
+ * 它当场就断了，而不会有任何东西报错。
+ *
  * 所以选中项要**两个一起存**：登录只需要 entityID，名字是给用户看的。理由是
  * **entityID → 名字是一对多**，光有 entityID 反查不出用户当初选的是哪一家
  *（那 127 个所会全部匹配）。这与「同名要消歧」是相反的方向：实测这份快照里
