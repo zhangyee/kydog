@@ -99,9 +99,13 @@ type InteractResult = { ok: boolean; reason?: string; [k: string]: unknown };
  *
  * `JSON.stringify` 是唯一的插值方式（照 `extractExpression` 那批定的规矩）：
  * selector / value 都是字符串字面量，构造不出标识符逃逸。
+ *
+ * `notAfter` 是**主进程那道时限的同一个到点时刻**（`evalOn` 算的，两边不许各算各的）：
+ * 注进去的这段是全仓唯一会**写页面**的一段，而时限到点取消不了它 —— 它自己认一次，
+ * 过期就在碰页面之前退出来（见 `interact.js` 顶上那段实测）。
  */
-function interactExpression(req: InteractRequest): string {
-  return `(${INTERACT_SOURCE})(${JSON.stringify(req)})`;
+function interactExpression(req: InteractRequest, notAfter: number): string {
+  return `(${INTERACT_SOURCE})(${JSON.stringify({ ...req, notAfter })})`;
 }
 
 /** 轮询周期。**它是等待的粒度，不是任何判据** —— 判据是「条件成立了没有」这个页面事实。
@@ -906,18 +910,48 @@ export class BrowserService {
    * 这里兜住没量到的第三种。到点后 reject 一条**说得出「我们没等到」的错**，
    * 而不是让一次 sequential 的工具调用永远不返回。
    *
-   * 时限到点**不取消**那次求值（Electron 没有这个 API）—— 它可能稍后自己回来，
-   * 那时没有人再等它，值被丢掉。这一步不会有副作用：注进去的都是纯读取的表达式。
+   * ── 时限到点之后那次求值怎么办 —— 量过的三条 ────────────────────────────
+   *
+   * **主进程这一侧取消不了它。** Electron 41.2.1 的
+   * `executeJavaScriptInIsolatedWorld(worldId, scripts, userGesture)` 没有 signal、
+   * 没有句柄、没有配套的 cancel（查了 `electron.d.ts` 的整个 `webContents` 面）。
+   * CDP 的 `Runtime.terminateExecution` 也不行，实测：主线程被占住时**这条命令自己
+   * 也进不去**（ack 要等 7.3 秒、等到忙循环结束才回来，那时早过了点），而且它落地
+   * 之后那次求值的 promise **永不 settle**；它还是「终止页面当前正在跑的 JS」这种
+   * 页面级的大锤，会打断站点自己的脚本。
+   *
+   * **被丢掉的那次稍后照常执行，而注进去的并不都是纯读取的。**
+   * 实测（Electron 41.2.1，2026-09-09，真页面 + 真 `window.scrollBy`，3/3 复现）：
+   * 页面忙循环 8 秒、时限 3 秒 → 主进程 3.00 秒报「没等到」，**页面 7.2–7.8 秒真的
+   * 滚了 800 像素**。`interact.js` 的 `scroll` / `select` / `focusSelect` 都写页面，
+   * `measure` 还调 `scrollIntoView()`。（`snapshot` 的 walker、`extract`、
+   * `browser_read` 的正文、`waitFor` 的 `querySelector` 这四条才是纯读取。）
+   *
+   * **页面那一侧认得出来。** 把同一个到点时刻拼进注入的代码里，页面回魂之后自己先
+   * 看一眼、过期就在碰页面之前退出来 —— 实测同一构造下 `scrollY` 停在 0（3/3），
+   * 而忙 4 秒、时限 20 秒的慢页面照常滚（**自检不误杀**）。写页面的只有
+   * `interactExpression` 那一条路，守卫就装在它上面。
+   *
+   * **但这仍然不是取消**：求值卡在到点那一刻的窗口里时，自检过了之后写照样会落地。
+   * 所以这条错说的是「结果未知」，**不是「没有发生」**——「没有发生」只有页面把
+   * `expired` 送回来的时候才成立（见 `interactError` 的那一格）。
    */
-  private evalOn(wc: WebContents, tabId: string, code: string): Promise<unknown> {
+  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown> {
+    // **一个到点时刻，两边共用。** 页面那道自检与这里的定时器各算各的话，守卫要么
+    // 提前把好的求值废掉、要么晚到根本不挡。
+    const notAfter = Date.now() + PAGE_EVAL_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<never>((_res, rej) => {
       timer = setTimeout(() => rej(new KydogError('browser.page_no_result',
         `标签 ${tabId} 的页面在 ${PAGE_EVAL_TIMEOUT_MS} 毫秒内没有回应这次求值 —— `
-        + '它要么正被自己的脚本占着主线程，要么已经不回话了。这一步没有发生，可以重试。')), PAGE_EVAL_TIMEOUT_MS);
+        + '它要么正被自己的脚本占着主线程，要么已经不回话了。'
+        + '**这一步到底生效了没有，我们不知道**：这次求值取消不掉，页面回过神来还会执行它'
+        + '（写页面的那条路带着同一个时限自检，过期就自己不做，但卡在到点那一刻的窗口里仍可能已经落地）。'
+        + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。')), PAGE_EVAL_TIMEOUT_MS);
     });
     return Promise.race([
-      wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, [{ code }]),
+      wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
+        [{ code: typeof code === 'string' ? code : code(notAfter) }]),
       deadline,
     ]).finally(() => { if (timer) clearTimeout(timer); });
   }
@@ -979,7 +1013,9 @@ export class BrowserService {
   private async interact(tabId: string, wc: WebContents, req: InteractRequest): Promise<InteractResult> {
     let raw: unknown;
     try {
-      raw = await this.evalOn(wc, tabId, interactExpression(req));
+      // 传的是**拼装函数**不是拼好的串：到点时刻由 `evalOn` 算，页面那道自检与
+      // 主进程那道定时器共用同一个数（漂开就等于守卫失效）。
+      raw = await this.evalOn(wc, tabId, (notAfter) => interactExpression(req, notAfter));
     } catch (err) {
       // 时限那一条自己就是 page_no_result，原样放行（它的消息说得更准）。
       if (err instanceof KydogError) throw err;
@@ -1061,6 +1097,13 @@ export class BrowserService {
       case 'bad_direction':
         return new KydogError('browser.bad_action',
           `scroll 的方向只能是 up 或 down，收到 ${JSON.stringify(r.direction)}。`);
+      case 'expired':
+        // 页面赶在主进程那道定时器之前把 `expired` 送回来了（页面回魂得早，或者
+        // 主进程自己被卡了一下）。**这是唯一一种说得出「什么都没做」的情形** ——
+        // 撞时限那一条只说得出「不知道」，两者不许共用措辞（见 `evalOn` 的实测表）。
+        return new KydogError('browser.page_no_result',
+          `${where} 这一步到达页面的时候已经过了这次求值的时限，它按约定什么都没做。`
+          + '页面多半正被自己的脚本占着主线程 —— 等一下重试，或者先取一份快照看它现在什么样。');
       default:
         return new KydogError('browser.target_unusable', `${where} 这一步没能执行：${String(r.reason)}`);
     }

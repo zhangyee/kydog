@@ -1900,6 +1900,57 @@ describe('取快照与页内求值：没有渲染进程时一个字都不注', (
     expect(await settled).toBe('browser.page_no_result');
   });
 
+  // ── 时限到点说的是「还没有发生」，不是「没有发生」（评审 F2）──────────────
+  //
+  // 时限到点**取消不了**那次求值（Electron 没有这个入口，见 evalOn 的实测表），
+  // 被丢掉的那一次稍后照常执行 —— 实测忙循环 8 秒的页面上，主进程 3.0 秒报「时限」、
+  // 页面 7.8 秒真的滚了 800 像素（3/3 复现）。所以这条消息**不许说「这一步没有
+  // 发生」**：模型据此重试，两次都会落地，`select` 那条还会把 change 派发两遍
+  // （学术站点上 change 就是「立刻重新检索」）。
+  it('时限那条错不说「没有发生」，如实说结果未知、重试前先看页面', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => new Promise(() => {});
+    const p = svc.dispatch(id, { kind: 'scroll', direction: 'down' }, null);
+    const settled = p.then(() => '', (e: Error) => e.message);
+    await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS + 100);
+    const msg = await settled;
+    expect(msg).not.toContain('没有发生');
+    expect(msg).toMatch(/不知道/);
+    expect(msg).toMatch(/快照/);
+  });
+
+  // 页面那一侧的自检要认**同一个到点时刻**：主进程的定时器与注进去的 notAfter
+  // 各算各的话，守卫要么提前把好的求值废掉、要么晚到根本不挡。
+  it('注进去的动作请求带 notAfter，且与主进程那道时限是同一个到点时刻', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    wc.isolated.length = 0;
+    const want = Date.now() + PAGE_EVAL_TIMEOUT_MS;
+    await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    expect(wc.isolated.length).toBeGreaterThan(0);
+    for (const s of wc.isolated) {
+      const m = /"notAfter":(\d+)/.exec(s.code);
+      expect(m).not.toBeNull();
+      expect(Number(m?.[1])).toBe(want);
+    }
+  });
+
+  // 守卫真的挡下来的时候（页面赶在主进程定时器之前把 expired 送回来），
+  // 那才是唯一一种说得出「什么都没做」的情形 —— 它与撞时限那条不是一回事。
+  it('页面回 expired → page_no_result，且这一条才说得出「什么都没做」', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve({ ok: false, reason: 'expired' });
+    const err = await svc.dispatch(id, { kind: 'scroll', direction: 'down' }, null)
+      .then(() => null, (e: Error & { code?: string }) => e);
+    expect(err?.code).toBe('browser.page_no_result');
+    expect(err?.message).toContain('什么都没做');
+  });
+
   it('evalInPage 对没有渲染进程的标签当场报错，不注入', async () => {
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
@@ -2252,15 +2303,33 @@ describe('waitFor：等的是显式条件，超时只表示条件未达成', () 
 
   // ── 求值失败是「问不出来」，不是任何一个方向的答案（评审 R14 存活）────────
   //
-  // 把 reject 当成「元素不在」的话，`state: 'absent'` 会立刻取反成 **true** ——
-  // 「等到了：.loading 消失了」，而我们其实一次都没问出结果。这是「以成功措辞
-  // 返回一件没发生的事」的教科书形状，而且它在 present 那一侧看不出来。
+  // 三态（yes / no / unknown）的**两个方向各有一条能红的用例**，缺一条就等于那一半
+  // 零覆盖：
+  //
+  // · reject → 「条件不成立」：`state: 'absent'` 立刻取反成 true（「等到了：
+  //   .loading 消失了」），而我们一次都没问出结果 —— 下面第一条守它。
+  // · reject → 「条件成立」：`state: 'present'` 立刻回报 true（「等到了：.result
+  //   出现了」），模型接着在一个从没验证过的页面上 extract —— 下面第二条守它。
+  //   20 秒那道单次求值时限 reject 走的也是同一支。
+  //
+  // 两条都是「以成功措辞返回一件没发生的事」，只是方向相反。**只补一侧的话，
+  // 另一侧的变异照样全绿**（这正是上一轮评审点名 R14 存活的原因）。
   it('等「消失」时求值一直失败 → 到时限报 false，绝不回报「等到了」', async () => {
     vi.useFakeTimers();
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
     wc.isolatedImpl = () => Promise.reject(new Error('页面正在导航'));
     const p = svc.waitFor(id, { selector: '.loading', state: 'absent' }, 1000);
+    await vi.advanceTimersByTimeAsync(1200);
+    await expect(p).resolves.toBe(false);
+  });
+
+  it('等「出现」时求值一直失败 → 到时限报 false，绝不回报「等到了」', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.reject(new Error('页面正在换文档'));
+    const p = svc.waitFor(id, { selector: '.result', state: 'present' }, 1000);
     await vi.advanceTimersByTimeAsync(1200);
     await expect(p).resolves.toBe(false);
   });

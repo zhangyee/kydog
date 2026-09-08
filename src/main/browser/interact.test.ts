@@ -861,3 +861,76 @@ describe('尺寸判据与 walker 对齐（改一处不改另一处必须红）',
     },
   );
 });
+
+// ── H · 过期自检（撞了主进程那道时限就自己不做）──────────────────────────────
+//
+// 主进程那道单次求值时限**取消不了**已经注进去的求值（Electron 没有这个入口）：
+// 页面被自己的脚本占住主线程时，那段代码排在忙循环后面，稍后照常执行。
+// 实测（Electron 41.2.1，2026-09-09，真页面 + 真 `window.scrollBy`，3/3 复现）：
+//
+// | 构造 | 主进程 | 页面 |
+// | --- | --- | --- |
+// | 忙循环 8s、时限 3s、**不带自检** | 3.00s 报时限 | **7.2–7.8s 真的滚了 800 像素** |
+// | 忙循环 8s、时限 3s、**带自检** | 3.00s 报时限 | 7.4–8.0s 返回 expired，**scrollY 仍是 0** |
+// | 忙循环 4s、时限 20s、带自检 | 3.09s 正常返回 | 照常滚 800 —— **自检不误杀慢页面** |
+//
+// 所以写页面的这条路（measure 的 scrollIntoView / focusSelect 的 focus+select /
+// select 的赋值与 change / scroll 的 scrollBy）必须带着同一个到点时刻自己认一次。
+// 判据是 `Date.now()`：隔离世界里的它页面覆写不到（与 walker 同一个世界，同一条依据）。
+describe('过期自检：撞了时限的那次求值，页面回魂之后一个字都不许写', () => {
+  const past = () => Date.now() - 1;
+  const future = () => Date.now() + 60_000;
+
+  it('scroll：过期就一个像素都不滚', () => {
+    const { call, win, scroller } = stage([]);
+    expect(call({ op: 'scroll', direction: 'down', notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(win.__scrolledBy).toEqual([]);
+    expect(scroller.scrollTop).toBe(0);
+  });
+
+  it('select：过期就不赋值、不派发 input/change', () => {
+    const s = new El('SELECT', {
+      sel: '#year', value: '2020',
+      options: [{ value: '2024', text: '2024 年' }, { value: '2020', text: '2020 年' }],
+    });
+    const { call } = stage([s]);
+    expect(call({ op: 'select', target: bySel('#year'), value: '2024', notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(s.value).toBe('2020');
+    expect(s.dispatched).toEqual([]);
+  });
+
+  it('focusSelect：过期就不 focus、不选中', () => {
+    const q = new El('INPUT', { sel: '#q', value: 'old', rect: rect(10, 10, 200, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q'), notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(q.focusCalls).toBe(0);
+  });
+
+  it('measure：过期就不把元素滚进视野', () => {
+    const q = new El('BUTTON', { sel: '#go', rect: rect(10, 4000, 80, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#go'), notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(q.scrollIntoViewCalls).toEqual([]);
+  });
+
+  // 自检不许误杀：还没到点的求值照常做完。忙但没超时的页面（实测 4 秒忙循环、
+  // 20 秒时限）走的正是这一条。
+  it('还没到点：照常执行', () => {
+    const { call, win } = stage([]);
+    expect(call({ op: 'scroll', direction: 'down', notAfter: future() }))
+      .toMatchObject({ ok: true, delta: 800 });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+
+  // 不带 notAfter 的调用方（interact.test 自己的其余用例、以及将来别的入口）
+  // 不受影响 —— 缺这个字段不等于「已经过期」。
+  it('不带 notAfter：照常执行', () => {
+    const { call, win } = stage([]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ ok: true, delta: 800 });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+});
