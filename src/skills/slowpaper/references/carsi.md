@@ -53,8 +53,14 @@ GET https://fsso.cnki.net/idp/list?federation=2     → application/json
 3. **`标志` 字段含义未知。** 实测 `1` ×1045、`0` ×19，`0` 里既有 985 高校也有中科院所。
    **不知道含义就不要拿它过滤** —— 猜错会让用户在列表里找不到自己的学校，且没有任何报错。
    一期把 0 和 1 都列出来。
-4. 机构名是中文原文，筛选要支持**汉字 / 拼音 / 首字母**（CNKI 页面自己就加载了 `Pinyin.js`
-   和 `opencc.js` 做纯前端过滤，`input#o` 的 placeholder 写着「支持汉字、拼音、首字母」）。
+4. 机构名是中文原文。**CNKI 自己的页面**加载了 `Pinyin.js` 与 `opencc.js` 做纯前端过滤，
+   `input#o` 的 placeholder 写着「支持汉字、拼音、首字母」—— **那是它的做法，不是我们的**。
+   设置页做的是**名字与 entityID 两个字段的子串匹配**（大小写不敏感）：真拼音要一张
+   汉字→拼音表（常用字上万条，是一份必须从真实来源拿的数据），而一期的硬约束是零新依赖，
+   凭记忆写一张表在这个仓库是明令禁止的。**代价说清楚**：敲 `beijing` 匹配不上「北京大学」
+   这个**名字**；不过学校的拼音／缩写通常就写在 entityID 里
+   （`idp.pku.edu.cn`、`idp.tsinghua.edu.cn`、`passport.escience.cn`），
+   所以 `pku` / `tsinghua` / `escience` 这类敲法自然命中，用户不必切输入法。
 
 ## 二、登录链路（实测）
 
@@ -104,8 +110,9 @@ IdP 把 SAML 断言 **POST 回 SP 的 ACS 端点** → SP 种会话 cookie → �
 
 ## 四、一期怎么做
 
-**设置页**：一个「机构」选择器 —— 拉 `fsso.cnki.net/idp/list?federation=2`，支持汉字/拼音/首字母
-筛选，选中后存 **`{ 机构名, entityID }`**（不存 host —— host 从 entityID 解析，且见上面第 1 条）。
+**设置页**：一个「机构」选择器 —— 拉 `fsso.cnki.net/idp/list?federation=2`，按**名字与 entityID
+的子串**筛选（**不是拼音检索**，理由与代价见 §一 第 4 条），选中后存 **`{ 机构名, entityID }`**
+（不存 host —— host 从 entityID 解析，且见上面第 1 条）。
 账号明文存，密码走 `safeStorage`。
 
 **登录**：agent 用 `browser_open` 打上面那个 `/Shibboleth.sso/Login?entityID=…` URL →
