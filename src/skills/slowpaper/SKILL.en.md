@@ -71,8 +71,8 @@ The two overlap. **Do not run both** — it saves duplicated work and cross-sour
 | Default | **Google Scholar** (widest coverage) |
 | Query terms are Chinese and the target is Chinese literature | **Go straight to Baidu Xueshu**, do not try Scholar first |
 
-When `browser_open` returns `failed` / `timeout`, or returns `ok` with an `httpStatusCode`
-of **403**, react per the table below.
+When the navigation verdict is `failed` / `timeout`, or the page arrived but the status code
+is **403**, react per the table below.
 
 **A 403 is a successful navigation, not a `failed`** — the page did arrive, it is just an
 interception page. Judge on the `HTTP 403` in the tool result (the navigation verdict line
@@ -165,5 +165,5 @@ things that belong on disk are the final artifacts the user asked for.
 | --- | --- |
 | `references/browser.md` | **Read this before touching anything.** How the four tools work together, how to write a batch, what stop-on-error means, when to hand over to the user |
 | `references/scholar.md` | When using Google Scholar — search playbook, result-page selectors, paging, the 403 fingerprint |
-| `references/xueshu.md` | When using Baidu Xueshu — the same, plus "JS-driven paging must be followed by a `wait`" |
+| `references/xueshu.md` | When using Baidu Xueshu — the same, plus "a JS-driven search submit must be followed by a `wait`" and "only page 1 this release, no paging" |
 | `references/carsi.md` | When you need an institutional (CARSI) account to reach a subscription database: how to call `browser_login`, the script for a CAPTCHA page, the one success test, and the next step for each of seven error codes |

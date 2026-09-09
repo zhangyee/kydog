@@ -58,7 +58,7 @@ slowpaper 存在的理由是 CLI 拿不到的三样东西：
 | 默认 | **Google Scholar**（覆盖面最广） |
 | 检索词是中文、目标是中文文献 | **直接走百度学术**，不必先试 Scholar |
 
-`browser_open` 返回 `failed` / `timeout`，或返回 `ok` 但 `httpStatusCode` 是 **403** 时按下表反应。
+导航结论是 `failed` / `timeout`，或者页面到了但状态码是 **403** 时，按下表反应。
 
 **403 是一次成功的导航，不是 `failed`** —— 页面确实到了，只是内容是拦截页。判据用工具
 结果里那句 `HTTP 403`（导航结论那一行会写「但服务器返回 HTTP 403」），不要去匹配拦截页的
@@ -137,5 +137,5 @@ slowpaper 存在的理由是 CLI 拿不到的三样东西：
 | --- | --- |
 | `references/browser.md` | **动手之前先读这份。** 四个工具怎么配合、批处理怎么写、出错即停是什么语义、什么时候交给人 |
 | `references/scholar.md` | 走 Google Scholar 时读：检索剧本、结果页选择器、翻页、403 指纹 |
-| `references/xueshu.md` | 走百度学术时读：同上，另加「JS 驱动的翻页必须跟 `wait`」 |
+| `references/xueshu.md` | 走百度学术时读：同上，另加「JS 驱动的检索提交必须跟 `wait`」与「本期只取第 1 页、不翻页」 |
 | `references/carsi.md` | 要用机构账号（CARSI）登录订阅库时读：`browser_login` 怎么调、验证码页的剧本、唯一的成功判据、七类错误码各自的下一步 |

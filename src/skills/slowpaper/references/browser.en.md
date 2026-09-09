@@ -184,6 +184,16 @@ the **stale DOM** — the result looks perfectly normal, the row count is right,
 is still the previous page's. A three-round `repeat` extracts the first page three times
 **without reporting any error at all**.
 
+**The closing snapshot is stale DOM too.** Once the last step of a batch has run, the tool
+takes that "── 页面变化 ──" section **immediately**, again without waiting — so after "I clicked
+something that navigates", that section is **most likely still the previous page**. **Do not
+conclude "the click did not land" and click again**: two searches in quick succession on Scholar
+is exactly the shape that falls into a 403. Whether the page actually changed is told by the
+`导航: [tab_…]` line at the head of the **next** tool result (a main-frame navigation is hung
+there as soon as it settles, **reported once and then cleared**); a source that produces no
+main-frame navigation (Baidu Xueshu's SPA search) has no such line, so the only tests are the
+explicit `wait` you supplied and the confirmation recipe in that source's reference.
+
 **So do not use `repeat` for paging.** Every round of a batch carries the same `wait`
 condition, while "we got to the next page" is a fact that differs page by page; one fixed
 condition cannot express it. Paging is **one call per page** — see each source's reference.
@@ -199,7 +209,8 @@ switch sources.
 
 **Best-effort in order, stop on error.** When action *k* fails, actions 1..*k*−1 **have
 already taken effect**, and the result says where it stopped, why, and what the page looks
-like now. **There is no batch rollback** — web pages are not rollback-able.
+like now (**that snapshot does not wait for navigation**, see the end of §5). **There is no
+batch rollback** — web pages are not rollback-able.
 
 **Everything already extracted comes back.** Reaching the last page means `click` cannot find
 "next page" and stops; that is expected behaviour, and the two pages already extracted are
@@ -211,7 +222,7 @@ Phrases in the result you must keep apart:
 | --- | --- |
 | `HTTP 403` (`ok` plus a status code) | The page **arrived**; the content is an interception page. See the source-switching table in `SKILL.md` |
 | 「已在同一个文档内跳转到 …（没有新的 HTTP 响应）」 | In-site routing or a hash jump. **This branch has no status code** — do not look for an `HTTP 4xx` on it, and the page was not replaced wholesale |
-| "打不开：… (error code N)" | An explicit refusal at the network layer |
+| 「打不开：…（错误码 N）」 | An explicit refusal at the network layer |
 | "到时限仍没有明确结果" | **We do not know what happened.** Do not conclude the source has a problem |
 | "这次导航在途中被另一次导航接替了" | What the page looks like now is decided by the navigation that took over — **look again** |
 | "这个地址是一个文件（…），不是网页" | The navigation turned into a download and was cancelled by policy |
@@ -220,6 +231,7 @@ Phrases in the result you must keep apart:
 | 「这次导航还没有结果，承载它的标签就被关掉了」 | The user closed it, or this round's browser was reclaimed. **Not the source's problem** — open a new tab if you want to carry on |
 | "取不到收尾快照 / 取不到页面快照" | This is **not seeing**; do **not** conclude the page is empty or unchanged |
 | "这一批里新开了 N 个标签页" | Popped by `target=_blank`. To operate on their content, switch `tabId` to them |
+| The header line `导航: [tab_…] 已打开 …` | **Since the last report**, a main-frame navigation settled on this tab (most likely the navigating click in your previous batch). **This is where a 403 shows up** — it is reported once and then cleared |
 
 ---
 
@@ -310,9 +322,10 @@ viewport is restored to a 1280 logical width before your next action anyway.
 - **`date` / `time` / `month` / `week` / `datetime-local` segmented pickers cannot be typed
   into** and report explicitly. This release has no action that sets them; use another entry
   point on the page.
-- **Chinese query terms go in via text insertion and produce no `keydown`.** If a site relies
-  on `keydown` to flip its submit button from disabled to enabled, the button may not become
-  usable after Chinese text is typed — take a snapshot and look before clicking.
+- **`type` always goes in as text insertion and produces no `keydown`** — Chinese and English
+  take the same path, with **no branch on character class**. If a site relies on `keydown` to
+  flip its submit button from disabled to enabled, **any** text may leave the button unusable —
+  take a snapshot and look before clicking.
 - **Operations on one tab are serialized.** Do not fire two `browser_act` calls at one tab to
   "go faster".
 - **The browser works the same whether the sidebar is open or closed.** You do not need the

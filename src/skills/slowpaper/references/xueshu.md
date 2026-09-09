@@ -36,19 +36,31 @@ browser_act({ tabId: "<上一步的 tabId>", actions: [
 
 **那个 `wait` 不是保险，是必需的。** 这个源的检索**不产生主 frame 导航**（SPA 换的是路由），所以工具层没有任何导航终态可等；不显式等结果条目出现，紧接着的 `extract` 就在旧 DOM 上跑，抽到的是上一页 —— **而且不报任何错**。
 
-`type` 带 `selector` 时会先聚焦该元素，不必额外加一个 `click`。
+**收尾快照也不等。** 一批跑完最后一步就立刻取「── 页面变化 ──」（`references/browser.md`
+§五末尾）。这个源不产生主 frame 导航，所以那一段的新旧完全取决于上面那个 `wait`：
+等到了就是真换了；超时就是条件没成立，按「出错即停」处理 —— **不要**因为「页面变化」
+看起来没动就再点一次提交。
 
-**侦察时 Enter 没能提交**（Scholar 也一样）—— 但那多半是侦察工具发按键的方式问题（CDP 的
-`keyDown` 不带 `text` 就不产生 `keypress`，而 Chromium 的表单隐式提交发生在 `keypress`），
-**待重验**，别当成站点事实。
+`type` 带 `selector` 时会先聚焦该元素，不必额外加一个 `click`。**它还会先全选清空**：
+清不掉就明确报错、一个字都不打（不会追加在原有内容后面）—— 中途复用一个已经有内容的框时
+可能撞上 `browser.target_unusable`，那不是选择器写错了。
 
-点发送按钮 `.send-btn` 是确定可行的那条路。它在输入框有内容之前 class 是 `send-btn disable`，
-有内容后变成 `send-btn` —— 这个变化可当「可以提交了」的判据，也是 `wait` 动作的好条件。
-注意它**在无障碍树里不出现**，只能用 `selector`。
+**侦察时 Enter 没能提交**（Scholar 也一样）—— 那是侦察工具发按键的方式问题（CDP 的
+`keyDown` 不带 `text` 就不产生 `keypress`，而 Chromium 的表单隐式提交发生在 `keypress`）。
+本项目的按键表已经给 `Enter` 带上了 `text`，**这条结论已经作废**，别再当成开放问题背着。
+不过这个源的首页**没有 `<form>`**，隐式提交本来就无从谈起：提交仍然要点 `.send-btn`。
 
-**中文检索词还有一层**：`type` 对 ASCII 走按键事件、对 CJK 走 `insertText`，后者不产生
-`keydown`。「有内容后按钮变可用」靠哪种事件触发，重验时要确认 —— 如果它监听 `keydown`，
-中文词打进去按钮可能不会变可用。
+点发送按钮 `.send-btn` 是首选的那条路，**但本次侦察它没跑通**（见上「侦察状态」——
+两段剧本的提交步骤本次都没成功过），别当成已验证的一步。它在输入框有内容之前 class 是
+`send-btn disable`，有内容后变成 `send-btn` —— 这个变化可当「可以提交了」的判据，
+也是 `wait` 动作的好条件。侦察用的另一套工具链里它**没有出现在无障碍树里**；本项目 walker
+的纳入集更宽（带 `role` / `onclick` / `tabindex` 的 `div` 也进快照），**别预设快照里一定
+没有它** —— 但剧本本来就一律用 `selector`，这一条与它在不在快照里无关。
+
+**`type` 一律走文本插入（`Input.insertText`），不产生 `keydown`，也不按字符类分支** ——
+中文检索词与英文检索词走的是**同一条路**，没有「英文是安全路径」这回事。
+「有内容后按钮变可用」如果靠 `keydown` 触发，那么**任何**检索词打进去按钮都可能不会变可用；
+重验时要确认，遇到按钮没变可用就先取一眼快照再点。
 
 ### 剧本：高级检索（部分已探明）
 
@@ -57,11 +69,19 @@ browser_act({ tabId: "<上一步的 tabId>", actions: [
 ```jsonc
 browser_act({ tabId: "<上一步的 tabId>", actions: [
   { "kind": "click", "selector": "<「高级检索」按钮，见下方说明>" },
+  { "kind": "wait",  "until": { "selector": "#advanced-search-all", "state": "present" } },
   { "kind": "type",  "selector": "#advanced-search-all",    "text": "<全部检索词>" },
   { "kind": "type",  "selector": "#advanced-search-author", "text": "<作者>" },
-  { "kind": "click", "selector": "<「确认」按钮，见下方说明>" }
+  { "kind": "click", "selector": "<「确认」按钮，见下方说明>" },
+  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } }
 ]})
 ```
+
+**这两个 `wait` 与首页剧本里那个是同一条规则**（这个源的 `click` 不产生主 frame 导航，
+所以每一次 `click` 之后都要自己给条件）。少了第一个，`type` 会与「打开对话框」那一下同时
+解析目标 —— 那一刻 `#advanced-search-all` 还不存在，报的是
+`browser.target_unusable`「在当前页面上没有匹配」，而选择器本身是对的，照着去换选择器就是
+在死路上打转。少了第二个，紧接着的 `extract` 在旧 DOM 上跑。
 
 **两段剧本的提交步骤本次都从未成功过**（提交后 403 + 人机验证，见下）。输入框的选择器是从
 首页 DOM 上读下来的、真实存在；提交后能不能到结果页没有被验证。
@@ -91,7 +111,12 @@ document.title === '百度安全验证'
 
 挂起期间**不要读页面**，也不要替用户点任何东西。
 
-判据用 `browser_open` 返回的 `httpStatusCode`；是否可交互看快照里有没有可点的验证控件。
+判据用工具结果里那句 `HTTP 403`（导航结论那一行会写「但服务器返回 HTTP 403」）；
+**没有一个叫 `httpStatusCode` 的字段给你读** —— 状态码只以这句散文的形式出现。
+是否可交互看快照里有没有可点的验证控件。
+
+**检索提交之后才 403 的那一次**（可达性表：首页 200、搜索才 403）不在那一批的返回值里 ——
+它挂在**下一次**工具结果**头部**那行 `导航: [tab_…]`，只报一次、报过就清。
 
 ## 页面上有哪些控件（实测，读的是首页 DOM）
 
@@ -164,8 +189,10 @@ textarea.atomic-textarea-box.search-input     无 name、无 id
 （页内走 `querySelector`），**没有 `:contains()` / `:has-text()` 这类按文本匹配的写法**。
 于是两条路都是死的：写 `div.page.n:contains("下一页")` 会被判成非法选择器
 （「不是合法的 CSS 选择器」，`browser.bad_action`）；写裸 `div.page.n` 取到的是**第一个**、
-也就是「上一页」，点下去是**往回翻**。这些控件还全是没有 `href`、没有 role 的 `div`，
-无障碍树里不出现，`index` 定位对它们同样不可用。
+也就是「上一页」，点下去是**往回翻**。这些控件还全是没有 `href`、没有 role 的 `div`；
+侦察用的另一套工具链里它们没有进无障碍树，本项目 walker 的纳入集更宽
+（`[role]` / `[onclick]` / `[tabindex]` 都收），进不进快照要看实际页面 ——
+**但剧本里本来就不写 `index`**（编号换一次会话就漂），所以那条路一样不是出路。
 **要开翻页，先得对着真站点量出一个只命中「下一页」的 CSS 表达** —— 见「补齐程序」第 3 条。
 
 抽第 1 页，抽完这一次就结束这个源：

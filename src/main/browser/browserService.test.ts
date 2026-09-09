@@ -1271,6 +1271,57 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
   });
 });
 
+describe('没有人在等的那次导航：状态码要接住，不能掉在 `?.` 上（I-2）', () => {
+  // 为什么要有这一组：`navigate()`（browser_open / back / forward / reload）会为自己那次
+  // 导航挂一个 tracker，`did-navigate` 落进它、结论由 browser_open 报出去。而
+  // `browser_act` 的点击**不挂 tracker、也不等** —— 于是「点了检索按钮 → 结果页 403」
+  // 这一次导航的状态码，协议层明明收到了，却在 `this.navs.get(id)?.` 那个 `?.` 上被丢掉。
+  // Google Scholar 的 403 恰恰只在检索提交之后出现（scholar.md 的可达性表：首页 200、
+  // 搜索才 403），所以这条路上没有状态码 = skill 的换源规则没有任何判据。
+
+  it('没有 tracker 在等时，did-navigate 的地址与状态码被记下来', async () => {
+    const { svc } = make();
+    await openTab(svc);                       // 这一次有 tracker，落进它、不进这个槽
+    const id = svc.getState().tabs[0].id;
+    expect(svc.takeUnreportedNav(id)).toBeNull();
+
+    // 模型点了提交按钮（dispatch 不挂 tracker），结果页 403。
+    wcOf().fire('did-navigate', {}, 'https://scholar.google.com/scholar?q=x', 403);
+    expect(svc.takeUnreportedNav(id)).toEqual({
+      url: 'https://scholar.google.com/scholar?q=x', httpStatusCode: 403,
+    });
+  });
+
+  it('取一次就清掉 —— 同一次导航不会每轮工具结果都报一遍', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const id = svc.getState().tabs[0].id;
+    wcOf().fire('did-navigate', {}, 'https://a.example/next', 200);
+    expect(svc.takeUnreportedNav(id)).not.toBeNull();
+    expect(svc.takeUnreportedNav(id)).toBeNull();
+  });
+
+  it('有 tracker 在等的那次不进这个槽（否则 browser_open 会把自己的导航报两遍）', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/' });
+    await flush();
+    wcOf().fire('did-navigate', {}, 'https://a.example/', 200);
+    await p;
+    const id = svc.getState().tabs[0].id;
+    expect(svc.takeUnreportedNav(id)).toBeNull();
+  });
+
+  it('标签关掉之后不留下一条永远没人取的记录', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const id = svc.getState().tabs[0].id;
+    wcOf().fire('did-navigate', {}, 'https://a.example/next', 200);
+    svc.close(id);
+    expect(svc.takeUnreportedNav(id)).toBeNull();
+  });
+});
+
 // ── §G 四条 ───────────────────────────────────────────────────────────────
 
 describe('权限 handler 与广播节流（§G）', () => {

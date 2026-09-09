@@ -229,12 +229,14 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
    中文加一个短句 = 英文加几十上百字符。超过 1024 时 `parseSkillFrontmatter`
    （`src/main/skills/parseSkillFrontmatter.ts:33`）返回 `ok:false`，那个 skill 在 en 树里
    降级成禁用行、**根本进不了 system prompt** —— 不报错、不崩，只是安静地不再被触发。
-   当前余量（2026-08-27 实测；peer-review 两行为 2026-09-02 实测）：
+   当前余量（2026-08-27 实测；peer-review 两行为 2026-09-02 实测；
+   `slowpaper` 为 2026-09-09 实测，同批复量其余各行不变）：
 
    | skill | 中文 | 英文 | 余量 |
    |---|---:|---:|---:|
    | `learning-deck` | 381 | 986 | **38** ← 最紧 |
    | `literature-review` | 278 | 980 | 44 |
+   | `slowpaper` | 347 | 963 | 61 |
    | `peer-review-response` | 264 | 937 | 87 |
    | `fact-check` | 253 | 929 | 95 |
    | `research-frontier` | 260 | 929 | 95 |

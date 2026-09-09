@@ -344,9 +344,35 @@ export type BrowserToolDeps = {
   institution: { name: string; entityID: string } | null;
 };
 
+/**
+ * 「上一次报告之后，这个标签上发生过一次没有人在等的主 frame 导航」，挂在**每个**
+ * 浏览器工具结果的头部。
+ *
+ * 与 `loginLine` 完全同一个理由：**这件事的到达时刻在造成它的那次工具调用返回之后**。
+ * `browser_act` 一步都不等 —— 点了检索的提交按钮就返回，结果页的 HTTP 状态码要晚一个
+ * 往返才落地。不挂出来的话，Google Scholar 那条最要紧的路上（首页 200、**搜索才 403**）
+ * 模型永远拿不到状态码，只能去猜拦截页的正文 —— 而 skill 明写着不许猜正文。
+ *
+ * `describeNav` 是措辞的**唯一出处**：这一行与 `browser_open` 那一行读起来必须是同一句话，
+ * 不然 skill 要为「403 长什么样」写两份判据。
+ *
+ * 没有未报的导航就**一个字都不加**（回 null），免得给每次工具调用添一行噪声。
+ */
+function navLine(): string | null {
+  const rows = browserService.getState().tabs
+    .map((t) => ({ id: t.id, nav: browserService.takeUnreportedNav(t.id) }))
+    .filter((r): r is { id: string; nav: { url: string; httpStatusCode: number } } => r.nav !== null);
+  if (rows.length === 0) return null;
+  return '导航: ' + rows.map((r) => `[${r.id}] ${describeNav({
+    navigationId: '',
+    outcome: { kind: 'ok', finalUrl: r.nav.url, httpStatusCode: r.nav.httpStatusCode },
+  })}`).join(' · ');
+}
+
 const withTabs = (body: string, tabId?: string): ToolResult => {
   const login = loginLine();
-  return text(`${tabsLine(tabId)}${login ? `\n${login}` : ''}\n\n${body}`);
+  const nav = navLine();
+  return text(`${tabsLine(tabId)}${login ? `\n${login}` : ''}${nav ? `\n${nav}` : ''}\n\n${body}`);
 };
 
 /** 排队之前先确认标签在。见 `browser_act` 那一处的注释：`enqueue` 只增不减。 */

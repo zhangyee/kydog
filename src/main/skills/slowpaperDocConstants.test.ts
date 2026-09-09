@@ -6,6 +6,11 @@ import { MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS } from '../brows
 import { DEFAULT_NODE_LIMIT } from '../browser/snapshot';
 import { MAX_TABS } from '../browser/tabRegistry';
 import { READ_MAX_CHARS } from '../agent/browserTools';
+import * as actionsNs from '../browser/actions';
+import * as extractNs from '../browser/extract';
+import * as snapshotNs from '../browser/snapshot';
+import * as tabRegistryNs from '../browser/tabRegistry';
+import * as browserToolsNs from '../agent/browserTools';
 
 /**
  * **slowpaper 文档里的常数、工具名、动作名、按键名与生产代码对账。**
@@ -26,59 +31,115 @@ import { READ_MAX_CHARS } from '../agent/browserTools';
 const SKILLS = path.resolve(__dirname, '..', '..', 'skills', 'slowpaper');
 const read = (rel: string): string => readFileSync(path.join(SKILLS, rel), 'utf-8');
 
-/** 一条对账：`zh`/`en` 各一条带**一个捕获组**的正则，捕获到的数必须等于 `value`。 */
-type Check = { what: string; value: number; file: string; zh: RegExp; en: RegExp };
+/**
+ * 一条对账：`zh`/`en` 各一条带**一个捕获组**的正则，捕获到的数必须等于 `value`。
+ *
+ * `constant` 是生产侧那个具名导出的名字。它不是给人看的标签 —— 下面「这张表自己的守卫」
+ * 拿它与模块的导出表对账，删掉一行就红。
+ */
+type Check = { constant: string; what: string; value: number; file: string; zh: RegExp; en: RegExp };
 
 const CHECKS: Check[] = [
   {
-    what: 'MAX_STEPS（一批展开后的步数上限）', value: MAX_STEPS, file: 'references/browser.md',
+    constant: 'MAX_STEPS', what: 'MAX_STEPS（一批展开后的步数上限）', value: MAX_STEPS, file: 'references/browser.md',
     zh: /展开后 ≤ (\d+) 步/g, en: /At most (\d+) steps after expansion/g,
   },
   {
-    what: 'MAX_REPEAT_TIMES（repeat.times 上限）', value: MAX_REPEAT_TIMES, file: 'references/browser.md',
+    constant: 'MAX_REPEAT_TIMES', what: 'MAX_REPEAT_TIMES（repeat.times 上限）', value: MAX_REPEAT_TIMES, file: 'references/browser.md',
     zh: /`(?:repeat\.)?times` ≤ (\d+)/g, en: /`(?:repeat\.)?times` ≤ (\d+)/g,
   },
   {
-    what: 'WAIT_DEFAULT_MS（wait 默认时限）', value: WAIT_DEFAULT_MS, file: 'references/browser.md',
+    constant: 'WAIT_DEFAULT_MS', what: 'WAIT_DEFAULT_MS（wait 默认时限）', value: WAIT_DEFAULT_MS, file: 'references/browser.md',
     zh: /`timeoutMs` 不写就是 \*\*(\d+)\*\*/g, en: /`timeoutMs` defaults to \*\*(\d+)\*\*/g,
   },
   {
-    what: 'WAIT_MAX_MS（wait 时限上限）', value: WAIT_MAX_MS, file: 'references/browser.md',
+    constant: 'WAIT_MAX_MS', what: 'WAIT_MAX_MS（wait 时限上限）', value: WAIT_MAX_MS, file: 'references/browser.md',
     zh: /上限 \*\*(\d+)\*\*/g, en: /capped at \*\*(\d+)\*\*/g,
   },
   {
-    what: 'MAX_FIELDS（extract 的字段数上限）', value: MAX_FIELDS, file: 'references/browser.md',
+    constant: 'MAX_FIELDS', what: 'MAX_FIELDS（extract 的字段数上限）', value: MAX_FIELDS, file: 'references/browser.md',
     zh: /最多 (\d+) 个字段/g, en: /At most (\d+) fields/g,
   },
   {
-    what: 'MAX_ROWS（单次 extract 的行数上限）', value: MAX_ROWS, file: 'references/browser.md',
+    constant: 'MAX_ROWS', what: 'MAX_ROWS（单次 extract 的行数上限）', value: MAX_ROWS, file: 'references/browser.md',
     zh: /最多 (\d+) 行/g, en: /At most (\d+) rows per/g,
   },
   {
-    what: 'MAX_FIELD_CHARS（单格字符上限）', value: MAX_FIELD_CHARS, file: 'references/browser.md',
+    constant: 'MAX_FIELD_CHARS', what: 'MAX_FIELD_CHARS（单格字符上限）', value: MAX_FIELD_CHARS, file: 'references/browser.md',
     zh: /单格最多 (\d+) 字符/g, en: /(\d+) characters per cell/g,
   },
   {
-    what: 'MAX_BATCH_CHARS（整批 extract 的字符预算）', value: MAX_BATCH_CHARS, file: 'references/browser.md',
+    constant: 'MAX_BATCH_CHARS', what: 'MAX_BATCH_CHARS（整批 extract 的字符预算）', value: MAX_BATCH_CHARS, file: 'references/browser.md',
     zh: /合计约 (\d+) 字符/g, en: /about \*\*(\d+)\s+characters for all/g,
   },
   {
-    what: 'DEFAULT_NODE_LIMIT（一份快照显示多少条）', value: DEFAULT_NODE_LIMIT, file: 'references/browser.md',
+    constant: 'DEFAULT_NODE_LIMIT', what: 'DEFAULT_NODE_LIMIT（一份快照显示多少条）', value: DEFAULT_NODE_LIMIT, file: 'references/browser.md',
     zh: /一次最多显示 (\d+) 条元素/g, en: /at most (\d+)\s+elements are displayed/g,
   },
   {
-    what: 'READ_MAX_CHARS（browser_read 的正文上限）', value: READ_MAX_CHARS, file: 'references/browser.md',
+    constant: 'READ_MAX_CHARS', what: 'READ_MAX_CHARS（browser_read 的正文上限）', value: READ_MAX_CHARS, file: 'references/browser.md',
     zh: /一次最多带回 (\d+) 字符/g, en: /brings back at most (\d+) characters/g,
   },
   {
-    what: 'MAX_TABS（标签数硬上限）', value: MAX_TABS, file: 'SKILL.md',
+    constant: 'MAX_TABS', what: 'MAX_TABS（标签数硬上限）', value: MAX_TABS, file: 'SKILL.md',
     zh: /工具硬上限是 (\d+)/g, en: /the tool's hard cap is (\d+)/g,
   },
   {
-    what: 'KEY_NAMES 的个数（「只认这 N 个名字」）', value: KEY_NAMES.length, file: 'references/browser.md',
+    constant: 'KEY_NAMES', what: 'KEY_NAMES 的个数（「只认这 N 个名字」）', value: KEY_NAMES.length, file: 'references/browser.md',
     zh: /只认这 (\d+) 个名字/g, en: /accepts only these (\d+) names/g,
   },
 ];
+
+/**
+ * **这张表自己的守卫。**
+ *
+ * 复审变异 M11：从 `CHECKS` 里删掉 `READ_MAX_CHARS` 那一行 → 210 个文件全绿（3079/3079），
+ * 只是总数从 3080 掉到 3079，要靠人盯计数才看得出来。被它守住的那条文档常数就此重新裸奔 ——
+ * **守卫自己没有人守**。
+ *
+ * 补法不是在这里再抄一份名单（那又是一份要维护的副本），而是**拿生产模块自己的导出表对账**：
+ * 这五个模块导出的每一个数值常量，就是「文档里写着、模型照抄」的那一批上限。事实来源是
+ * 模块的导出表，删掉 `CHECKS` 里的任何一行都会在这里红。
+ *
+ * 反过来也守：给这几个模块新加一个数值上限而不往文档与 `CHECKS` 里加一行，同样红 ——
+ * 那正是「模型不知道有这个上限」的形状。要么写进文档，要么把常量收回模块内部不导出。
+ */
+const NUMERIC_EXPORTS: Record<string, number> = Object.fromEntries(
+  [actionsNs, extractNs, snapshotNs, tabRegistryNs, browserToolsNs]
+    .flatMap((ns) => Object.entries(ns as Record<string, unknown>))
+    .filter((e): e is [string, number] => typeof e[1] === 'number'),
+);
+
+/** `KEY_NAMES` 守的是**个数**（「只认这 13 个名字」）。它是导出数组的长度、不是一个数值
+ *  导出，所以单列一行 —— 数字仍然来自生产代码，这里一个都不抄。 */
+const COUNTED_EXPORTS: Record<string, number> = { KEY_NAMES: KEY_NAMES.length };
+
+const GUARDED: Record<string, number> = { ...NUMERIC_EXPORTS, ...COUNTED_EXPORTS };
+
+describe('对账表自己也要有人守（复审变异 M11）', () => {
+  it('这五个模块导出的数值上限一个不落地解析出来了', () => {
+    // 解析垮了（改名、换导出方式）的话下面两条就成了空转 —— 先把它钉住。
+    expect(Object.keys(NUMERIC_EXPORTS).length,
+      '从生产模块里一个数值常量都没解析出来，下面两条对账就是空转').toBeGreaterThan(5);
+  });
+
+  it('生产侧每一个上限在 CHECKS 里都有人守', () => {
+    for (const [name, value] of Object.entries(GUARDED)) {
+      const row = CHECKS.find((c) => c.constant === name);
+      expect(row?.value,
+        `${name} 在 CHECKS 里没有人守（这一行被删了？），`
+        + '或者那一行接的不是它 —— 它在 slowpaper 文档里的那个数从此无人看管').toBe(value);
+    }
+  });
+
+  it('CHECKS 里没有守着一个已经不存在的常量的行', () => {
+    for (const c of CHECKS) {
+      expect(Object.keys(GUARDED),
+        `CHECKS 里的 ${c.constant} 不在生产侧的上限清单里 —— 常量改名或没了，这一行在空转`)
+        .toContain(c.constant);
+    }
+  });
+});
 
 /** `references/browser.md` → `references/browser.en.md`。 */
 const enVariant = (rel: string): string => rel.replace(/\.md$/, '.en.md');
@@ -168,6 +229,25 @@ describe('slowpaper 文档里的名字与生产代码对账', () => {
     }
   });
 
+  // I-2：`导航: [tab_…]` 那一行是「403 在 `browser_act` 的提交点击之后才到达」时**唯一**的
+  // 判据 —— Scholar 的可达性表写着首页 200、搜索才 403，而 `browser_act` 不等导航，
+  // 那次导航的状态码要晚一个往返才落地。与成功判据同一个形状：文档这一侧写的必须与
+  // `browserTools` 实发的前缀逐字相同，**改了代码那一侧也要红**（不然模型认不出那一行，
+  // 这条判据就只是文档里的一句空话）。
+  const NAV_LINE = '导航: ';
+  it('未报导航那一行的前缀与 browserTools 发出来的逐字相同', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'agent', 'browserTools.ts'), 'utf-8');
+    expect(src, 'browserTools.ts 不再发这一行了，文档里那条 403 判据就作废了').toContain(`'${NAV_LINE}'`);
+  });
+
+  it('那一行在讲 403 与旧 DOM 的六份文档里都在', () => {
+    for (const rel of ['references/browser.md', 'references/browser.en.md',
+      'references/scholar.md', 'references/scholar.en.md',
+      'references/xueshu.md', 'references/xueshu.en.md']) {
+      expect(read(rel), `${rel} 缺「403 在 browser_act 之后到达时看哪一行」那条判据`).toContain(NAV_LINE);
+    }
+  });
+
   // 七类错误码那张表是模型的分流依据。**编一个不存在的码**（或者代码那边改了名）不会
   // 有任何东西报错 —— 模型只会照着一条永远不会出现的行去等一个下一步。
   it('文档里提到的每一个错误码都真的在 KydogErrorCode 里', () => {
@@ -175,7 +255,11 @@ describe('slowpaper 文档里的名字与生产代码对账', () => {
     const declared = new Set([...errs.matchAll(/^ *\| '([a-z_]+\.[a-z_]+)'$/gm)].map((m) => m[1]));
     expect(declared.size, 'errors.ts 的码表没解析出来，这条用例就成了摆设').toBeGreaterThan(20);
     for (const rel of ['references/carsi.md', 'references/carsi.en.md',
-      'references/browser.md', 'references/browser.en.md', 'SKILL.md', 'SKILL.en.md']) {
+      'references/browser.md', 'references/browser.en.md', 'SKILL.md', 'SKILL.en.md',
+      // 源侧两份也进来：本批往它们里写进了 `browser.target_unusable` / `browser.bad_action`，
+      // 而错误码是模型的分流依据，编一个不存在的不会有任何东西报错。
+      'references/scholar.md', 'references/scholar.en.md',
+      'references/xueshu.md', 'references/xueshu.en.md']) {
       const mentioned = new Set([...read(rel).matchAll(/`((?:browser|settings|institution)\.[a-z_]+)`/g)]
         .map((m) => m[1])
         // `browser.md` 是文件名不是错误码 —— 两者形态一样，这里按扩展名摘掉。
@@ -213,6 +297,26 @@ describe('百度学术本期只取第 1 页（C-4 的降级）', () => {
       ['SKILL.en.md', /Baidu Xueshu has only page 1 this release/],
     ] as const) {
       expect(read(rel), `${rel} 里「百度学术本期只有第 1 页」那句话不见了`).toMatch(re);
+    }
+  });
+
+  // **N-1**：改一处忘了改指向它的那处。上一轮删掉了翻页那个没用的 `wait`
+  // （`div.page.active` 点击前就成立），却把 `SKILL.md` 索引行里「翻页必须跟 `wait`」留着了 ——
+  // agent 带着那个预期进 `xueshu.md`、正文里找不到条件就会**自己发明一个**，最顺手的正是
+  // 刚被删掉的那一个。所以索引行与正文要一起守：正反两头各一条，改哪一边都红。
+  it('SKILL 的索引行与 xueshu 正文一致：说的是检索提交，不是翻页（N-1）', () => {
+    for (const [rel, must, mustNot] of [
+      ['SKILL.md', [/检索提交必须跟/, /只取第 1 页/], /翻页必须跟/],
+      ['SKILL.en.md', [/search submit must be followed by/, /only page 1 this release/], /paging must be followed by/],
+    ] as const) {
+      // §六「往下读哪一份」那张表的行，不是 §三 预算表里顺带提到它的那一行。
+      const row = read(rel).split('\n').find((l) => l.startsWith('| `references/xueshu.md`'));
+      expect(row, `${rel} 里找不到指向 references/xueshu.md 的索引行`).toBeDefined();
+      for (const re of must) {
+        expect(row ?? '', `${rel} 的 xueshu 索引行不再与正文一致（缺 ${re.source}）`).toMatch(re);
+      }
+      expect(row ?? '', `${rel} 的索引行又要求「翻页必须跟 wait」了 —— 正文里本期根本不翻页，`
+        + 'agent 找不到那个条件就会自己发明一个（多半正是被删掉的 div.page.active）').not.toMatch(mustNot);
     }
   });
 

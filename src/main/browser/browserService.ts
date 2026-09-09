@@ -166,6 +166,21 @@ export class BrowserService {
   private readonly views = new Map<string, WebContentsView>();
   private readonly snapshots = new Map<string, AxSnapshot>();
   private readonly navs = new Map<string, NavigationTracker>();
+  /**
+   * **没有人在等的那次主 frame 导航。**
+   *
+   * `navigate()`（open / back / forward / reload）会为自己那次导航挂一个 tracker，
+   * `did-navigate` 落进它、结论由 `browser_open` 报出去。而 `browser_act` 的点击
+   * **不挂 tracker、也不等**（spec §4.2：一步都不等）—— 于是「点了检索按钮 →
+   * 结果页返回 403」这一次导航的状态码，协议层明明收到了，却在 `navs.get(id)?.`
+   * 那个 `?.` 上被丢掉，模型这一路拿不到任何状态码。而 Google Scholar 的 403
+   * **只在检索提交之后**出现（首页 200、搜索才 403），skill 的换源规则全建立在它上面。
+   *
+   * 所以这里把它接住：没有 tracker 在等的那次 did-navigate 记下来，由工具层在**下一次**
+   * 工具结果的头部报一次就清掉（`takeUnreportedNav`）。**不引入任何等待** ——
+   * `browser_act` 依旧一步都不等，只是不再把已经收到的事实扔掉。
+   */
+  private readonly unreportedNavs = new Map<string, { url: string; httpStatusCode: number }>();
   /** 每个标签一条串行队列。跨标签仍然并行。 */
   private readonly queues = new Map<string, Promise<unknown>>();
   /** CDP 已经不可用的标签（attach 失败，或者 DevTools 打开把我们顶掉了）。
@@ -634,7 +649,11 @@ export class BrowserService {
 
     wc.on('did-navigate', (_e, url, httpResponseCode) => {
       // 403 走的就是这条路：它是一次**成功**的导航，did-fail-load 不触发。
-      this.navs.get(id)?.onDidNavigate(url, httpResponseCode);
+      const tracker = this.navs.get(id);
+      if (tracker) tracker.onDidNavigate(url, httpResponseCode);
+      // 没有 tracker 在等 = 这次导航是页面自己或者一次点击发起的（dispatch 不挂 tracker）。
+      // 状态码只有这一个到达点，不记就永远没了 —— 见 `unreportedNavs` 的说明。
+      else this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
       this.snapshots.delete(id);   // 页面换了，旧快照的编号一律作废
       this.syncTabMeta(id);
     });
@@ -728,6 +747,7 @@ export class BrowserService {
     // 再报一个「我们不知道发生了什么」—— 而我们明确知道：标签被关了。
     this.navs.get(id)?.onCancelled();
     this.navs.delete(id);
+    this.unreportedNavs.delete(id);
     this.queues.delete(id);      // 否则 queues 只增不减
     this.cdpGone.delete(id);
     for (const f of this.drivingFrames) f.tabs.delete(id);
@@ -889,6 +909,19 @@ export class BrowserService {
   // ── 快照（供工具层用） ───────────────────────────────────────────────────
 
   getSnapshot(tabId: string): AxSnapshot | null { return this.snapshots.get(tabId) ?? null; }
+
+  /**
+   * 取走这个标签上「还没报给模型」的那次导航观测，**取完就清**。见 `unreportedNavs`。
+   *
+   * 清掉是判据的一部分：不清的话同一次导航会挂在之后每一次工具结果的头部，模型分不出
+   * 「又导航了一次」与「上次那条还在」。清了之后那一行的含义就是精确的 ——
+   * **上一次报告之后，这个标签上发生过一次没有人在等的主 frame 导航**。
+   */
+  takeUnreportedNav(tabId: string): { url: string; httpStatusCode: number } | null {
+    const v = this.unreportedNavs.get(tabId) ?? null;
+    this.unreportedNavs.delete(tabId);
+    return v;
+  }
 
   /**
    * 取一份新快照。walker 在**隔离世界**里跑：页面覆写 `document.querySelectorAll`

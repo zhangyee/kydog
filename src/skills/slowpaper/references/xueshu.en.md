@@ -46,22 +46,41 @@ main-frame navigation** (the SPA swaps a route), so the tool layer has no naviga
 wait for; without explicitly waiting for result items to appear, the `extract` right after it
 runs against the stale DOM and extracts the previous page — **and reports no error at all**.
 
+**The closing snapshot does not wait either.** Once the last step of a batch has run the tool
+takes the "── 页面变化 ──" section immediately (end of §5 in `references/browser.md`). This
+source produces no main-frame navigation, so whether that section is fresh depends entirely on
+the `wait` above: if it came true the page really did change; if it timed out the condition did
+not hold and it is handled under stop-on-error — **do not** click submit again just because the
+page-change section looks unmoved.
+
 When `type` carries a `selector` it focuses that element first; no extra `click` is needed.
+**It also selects-all and clears first**: if it cannot clear the box it reports an error and
+types nothing at all (it never appends to existing content) — reusing a box that already has
+content mid-flow can hit `browser.target_unusable`, and that is not a wrong selector.
 
-**Enter failed to submit during reconnaissance** (Scholar behaved the same) — but that is most
-likely a problem with how the reconnaissance tool sent the key (a CDP `keyDown` without `text`
-produces no `keypress`, and Chromium's implicit form submission happens on `keypress`).
-**Flagged for re-verification**; do not treat it as a fact about the site.
+**Enter failed to submit during reconnaissance** (Scholar behaved the same) — that was a problem
+with how the reconnaissance tool sent the key (a CDP `keyDown` without `text` produces no
+`keypress`, and Chromium's implicit form submission happens on `keypress`). This project's key
+table now gives `Enter` its `text`, so **that conclusion is void**; stop carrying it around as an
+open question. This source's home page has **no `<form>`** anyway, so implicit submission was
+never on the table: submitting still means clicking `.send-btn`.
 
-Clicking the send button `.send-btn` is the path known to work. Its class is `send-btn disable`
+Clicking the send button `.send-btn` is the preferred path, **but it was never made to work
+during reconnaissance** (see "Reconnaissance status" above — neither playbook's submit step
+succeeded this round), so do not treat it as a verified step. Its class is `send-btn disable`
 before the input has content and becomes `send-btn` once it does — that change can serve as a
-"ready to submit" test, and makes a good condition for a `wait` action. Note that it **does not
-appear in the accessibility tree**, so it can only be reached by `selector`.
+"ready to submit" test, and makes a good condition for a `wait` action. In the other toolchain
+used for reconnaissance it **did not appear in the accessibility tree**; this project's walker
+has a wider inclusion set (`div`s carrying `role` / `onclick` / `tabindex` do enter a snapshot),
+so **do not assume it is absent from the snapshot** — playbooks use `selector` regardless, so
+this makes no difference to them.
 
-**Chinese query terms add one more layer**: `type` uses key events for ASCII and `insertText`
-for CJK, and the latter produces no `keydown`. Which event type drives "the button becomes
-usable once there is content" must be confirmed during re-verification — if it listens for
-`keydown`, the button may not become usable after a Chinese term is typed in.
+**`type` always goes in as text insertion (`Input.insertText`), produces no `keydown`, and does
+not branch on character class** — Chinese and English query terms take **the same path**; there
+is no such thing as "English is the safe route". If "the button becomes usable once there is
+content" is driven by `keydown`, then **any** query term may leave the button unusable; confirm
+this during re-verification, and if the button does not become usable, take a snapshot before
+clicking.
 
 ### Playbook: advanced search (partly worked out)
 
@@ -70,11 +89,21 @@ Advanced search is a dialog; it has to be opened before it can be filled in:
 ```jsonc
 browser_act({ tabId: "<tabId from the previous step>", actions: [
   { "kind": "click", "selector": "<the 「高级检索」 button, see the note below>" },
+  { "kind": "wait",  "until": { "selector": "#advanced-search-all", "state": "present" } },
   { "kind": "type",  "selector": "#advanced-search-all",    "text": "<all of these terms>" },
   { "kind": "type",  "selector": "#advanced-search-author", "text": "<author>" },
-  { "kind": "click", "selector": "<the 「确认」 button, see the note below>" }
+  { "kind": "click", "selector": "<the 「确认」 button, see the note below>" },
+  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } }
 ]})
 ```
+
+**These two `wait`s are the same rule as the one in the home-page playbook** (this source's
+`click` produces no main-frame navigation, so every `click` must be followed by a condition you
+supply). Without the first one, the `type` resolves its target at the same moment as the
+"open the dialog" click — and at that moment `#advanced-search-all` does not exist yet, so what
+you get is `browser.target_unusable`「在当前页面上没有匹配」 even though the selector is
+correct; swapping selectors on that advice is going round in circles on a dead end. Without the
+second one, the `extract` right after it runs against the stale DOM.
 
 **Neither playbook's submit step has ever succeeded in this round** (submission gave 403 plus a
 human-verification page, see below). The input selectors were read off the home page DOM and do
@@ -108,8 +137,14 @@ reuse the same session.
 
 While suspended, **do not read the page** and do not click anything on the user's behalf.
 
-Judge on the `httpStatusCode` returned by `browser_open`; whether it is interactive is judged
-by whether the snapshot contains a clickable verification control.
+Judge on the `HTTP 403` phrase in the tool result (the navigation-conclusion line reads
+「但服务器返回 HTTP 403」); **there is no `httpStatusCode` field for you to read** — the status
+code only ever appears as that prose. Whether it is interactive is judged by whether the
+snapshot contains a clickable verification control.
+
+**A 403 that only arrives after the search is submitted** (see the reachability table: home
+page 200, search 403) is not in that batch's result — it is hung on the `导航: [tab_…]` line at
+the **head of the next** tool result, reported once and then cleared.
 
 ## What controls the page has (measured, read off the home page DOM)
 
@@ -195,9 +230,12 @@ page number is `div.page` and the current page is `div.page.active`, while "prev
 with **no `:contains()` / `:has-text()`-style text matching**. So both routes are dead ends:
 `div.page.n:contains("下一页")` is rejected as an invalid selector (「不是合法的 CSS 选择器」,
 `browser.bad_action`), while a bare `div.page.n` takes the **first** one — that is "previous
-page", so clicking it pages **backwards**. These controls are also all `div`s with no `href` and
-no role: they do not appear in the accessibility tree, so `index` targeting does not work for
-them either. **Opening paging requires first measuring, against the live site, a CSS expression
+page", so clicking it pages **backwards**. These controls are also all `div`s with no `href`
+and no role; in the other toolchain used for reconnaissance they did not enter the accessibility
+tree, while this project's walker has a wider inclusion set (`[role]` / `[onclick]` /
+`[tabindex]` are all taken in), so whether they enter a snapshot depends on the live page —
+**but playbooks never write `index`** (indices drift with every new session), so that route is
+no way out either. **Opening paging requires first measuring, against the live site, a CSS expression
 that matches only "next page"** — see step 3 of the completion procedure.
 
 Extract the first page; that one call ends this source:

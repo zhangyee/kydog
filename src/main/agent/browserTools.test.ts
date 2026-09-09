@@ -249,6 +249,8 @@ const bs = vi.hoisted(() => ({
   /** 标签清单可变 —— 一批动作中途 target=_blank 会开出新标签。 */
   tabs: [] as { id: string; url: string }[],
   navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
+  /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
+  unreported: new Map<string, { url: string; httpStatusCode: number }>(),
 }));
 
 vi.mock('../browser/browserService', () => {
@@ -267,6 +269,11 @@ vi.mock('../browser/browserService', () => {
     browserService: {
       getState: () => ({ tabs: bs.tabs, activeTabId: 't1' }),
       getSnapshot: () => { bs.order.push('getSnapshot'); return bs.current; },
+      takeUnreportedNav: (tabId: string) => {
+        const v = bs.unreported.get(tabId) ?? null;
+        bs.unreported.delete(tabId);
+        return v;
+      },
       snapshot: async () => { bs.order.push('snapshot'); return bs.snapshotImpl(); },
       webContentsOf: () => { bs.order.push('webContentsOf'); return bs.noTab ? null : wc; },
       /**
@@ -379,6 +386,7 @@ beforeEach(() => {
   bs.evalThrows = null;
   lf.calls.length = 0;
   lf.notes.clear();
+  bs.unreported.clear();
 });
 
 describe('六种动作真的接通到 browserService.dispatch（Task 4）', () => {
@@ -954,6 +962,46 @@ describe('登录状态挂在每一个浏览器工具结果的头部', () => {
   it('没有任何标签有登录状态时一个字都不加 —— 不给每次调用添噪声', async () => {
     const s = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }));
     expect(s).not.toContain('机构登录');
+  });
+});
+
+/**
+ * I-2：Scholar 的 403 只在**检索提交之后**到达（可达性表：首页 200、搜索才 403），
+ * 而 `browser_act` 一步都不等 —— 点了提交就返回，结果页的状态码要晚一个往返才落地。
+ * 与登录状态同一个形状：事实的到达时刻在**造成它的那次工具调用返回之后**，所以只能
+ * 挂在每个工具结果的头部。不挂出来，模型这一路永远拿不到状态码。
+ */
+describe('没人在等的那次导航挂在每一个浏览器工具结果的头部（I-2）', () => {
+  beforeEach(() => {
+    bs.isolatedImpl = () => read('正文');
+    bs.unreported.set('t1', { url: 'https://scholar.google.com/scholar?q=x', httpStatusCode: 403 });
+  });
+
+  it('browser_act 的头部带得出来，而且带的是 `HTTP 403` 这个字面', async () => {
+    const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
+    expect(s).toContain('导航: [t1]');
+    expect(s).toContain('HTTP 403');
+  });
+
+  it('browser_read 的头部也带得出来', async () => {
+    expect(bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }))).toContain('HTTP 403');
+  });
+
+  it('措辞与 browser_open 那条同一个出处（describeNav），不另写一套', async () => {
+    const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
+    expect(s).toContain(describeNav({
+      navigationId: '', outcome: { kind: 'ok', finalUrl: 'https://scholar.google.com/scholar?q=x', httpStatusCode: 403 },
+    }));
+  });
+
+  it('报过一次就清掉，不每轮重复', async () => {
+    await act([{ kind: 'key', key: 'Enter' }]);
+    expect(bodyOf(await act([{ kind: 'key', key: 'Enter' }]))).not.toContain('导航: ');
+  });
+
+  it('没有未报导航时一个字都不加', async () => {
+    bs.unreported.clear();
+    expect(bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }))).not.toContain('导航: ');
   });
 });
 

@@ -45,19 +45,23 @@ browser_act({ tabId: "<tabId from the previous step>", actions: [
 ```
 
 When `type` carries a `selector` it focuses that element first; no extra `click` is needed.
+**It also selects-all and clears first**: if it cannot clear the box it reports an error and
+types nothing at all (it never appends to existing content) — so reusing a box that already has
+content mid-flow can hit `browser.target_unusable`, and that is not a wrong selector.
 
 **Click the submit button here rather than pressing Enter.** During reconnaissance, pressing
 Enter in the input box **did not submit** — the live value was already the query and the
 element was focused, yet the page did nothing. Baidu Xueshu behaved the same.
 
-**But that is most likely the reconnaissance tool's problem, not site behaviour; flagged for
-re-verification.** Chromium's implicit form submission happens on `keypress`, and CDP's
-`dispatchKeyEvent` only produces a char event when it is a `keyDown` carrying `text: '\r'`;
-two unrelated sites "both" refusing to submit looks much more like a problem with how the key
-was sent. Scholar here is a real `<form>`, and in a real browser Enter necessarily submits.
+**That was the reconnaissance tool's problem, not site behaviour, and it has since been
+fixed.** Chromium's implicit form submission happens on `keypress`, and CDP's
+`dispatchKeyEvent` only produces a char event when it is a `keyDown` carrying `text`; this
+project's key table now gives `Enter` its `text` (`KEYS` in `actions.ts`). The old conclusion
+that "these two sites do not support Enter to submit" is **void** — stop carrying it around as
+an open question.
 
-**Check this one first** when re-verifying with our own tools. Until then, clicking the button
-is the path known to work.
+Even so the playbook still clicks the submit button: both routes work now, and clicking also
+holds for sites whose submit control is not a `type=submit`, so it is the sturdier one.
 
 Then extract results with the playbook under "How to page".
 
@@ -99,7 +103,15 @@ So when you meet it, do **not** call `ask_user_question` to bring the user in (t
 stare at it). The correct reaction is to **switch to Baidu Xueshu** per the rule in `SKILL.md`,
 and to note in the output that this round used Baidu Xueshu and that Scholar was unreachable.
 
-Judge on the `httpStatusCode` returned by `browser_open`; do not match strings in the body.
+Judge on the `HTTP 403` phrase in the tool result (the navigation-conclusion line reads
+「但服务器返回 HTTP 403」); do not match strings in the body. **There is no `httpStatusCode`
+field for you to read** — the status code only ever appears as that prose.
+
+**The 403 arrives after the search is submitted, so it is not in that batch's result** (see the
+reachability table above: the home page is 200 and only the search is 403, and `browser_act`
+does not wait for navigation). It is hung on the `导航: [tab_…] 已打开 …，但服务器返回 HTTP 403`
+line at the **head of the next** tool result, **reported once and then cleared** — so look at
+that line on the first call after submitting a search.
 
 ## What controls the page has (measured, read off the home page DOM)
 
@@ -191,6 +203,15 @@ with the same selectors as above:
 but `browser_act` does not wait for navigations.** A click dispatches two mouse events and
 returns (`browser.md` §5 rule 2). So "it navigates, therefore no `wait` is needed" is wrong,
 and after that click you **must confirm for yourself that the page really changed**.
+
+**The closing snapshot of that batch does not count.** Once the last step has run,
+`browser_act` takes the "── 页面变化 ──" section **immediately**, without waiting for the
+navigation (end of §5 in `references/browser.md`) — so after a paging click or a search submit
+that section is **most likely still the previous page**. **Never click again just because it
+looks unchanged**: Scholar is most sensitive to actions in quick succession, and that extra
+click is exactly the shape that falls into a 403. Whether the page actually changed is told by
+the `导航: [tab_…]` line at the head of the **next** tool result (a main-frame navigation is hung
+there as soon as it settles, reported once and then cleared).
 
 **How to confirm**: after extracting, compare this page's first `title` with the previous
 page's first one — **identical means the page has not changed yet**; do not record it as a new
