@@ -55,3 +55,4 @@ CI 里靠 `KYDOG_REQUIRE_SYMLINK=1` 反过来**禁止跳过**：能力缺失就�
 - **改了 `src/shared/zhSidecar.ts` 的 `BLOCK_KINDS` / `PLACEHOLDER_KINDS` / `PLACEHOLDER_SCRIPTS`** → 同步 `src/main/harness/templates/{zh,en}/AGENTS.md` 里那份契约（bullet 列表与「只认这 N 个值」的数目）。模板是 agent 写译文边车时唯一读得到的说明，一个不认识的值会让**整份文件**被拒。守这条的是 `templates.test.ts`（集合相等，两个方向都守）。
 - **改了 `src/main/browser/injected/walker.js` 的输出结构** → 同步 `src/main/browser/snapshot.ts` 的 `AxNode` 与 `renderDiff` 的判据，并跑 `npm test -- snapshot`。walker 在网页里执行、类型系统管不到它，两边漂移不会编译报错，只会让 diff 静默退化成全量。它是 `.js` 不是 `.ts`：整份源码被 `?raw` 原样注入浏览器。
 - **改了 `src/skills/` 的内容**（新增、删除、改 SKILL.md / references / assets）→ 跑 `sync-skill-docs` 审核中英文一致性。`builtinSkillsI18n.test.ts` 只校验双语文件**存在**，校验不了内容有没有同步；放弃 sha 账本之后，这套审核是内容一致性的唯一保障。
+- **改了 `src/skills/slowpaper/references/` 里的选择器** → 必须来自一次真实抓取，不许凭记忆写。跑不通的选择器不会报错，只会让 agent 拿到空结果并以为这个源没有这篇论文。

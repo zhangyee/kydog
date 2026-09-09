@@ -45,6 +45,14 @@ and process it later" — that's a signal to **ask for less**, not to add a laye
 of tooling. Make fewer calls, request fewer results, or pick a cheaper output
 format.
 
+## Which Route to Take When Looking for Papers
+
+Looking for papers goes to fastpaper by default (the preinstalled CLI, 23 sources
+with APIs — fast, cheap, easy on the context). Only when every one of its sources
+returns exit 4, or you need Chinese-language literature, or you need something only
+Google Scholar has, or you need to open one specific web page, do you switch to
+slowpaper (the built-in browser, for the sources that have no API).
+
 ## Conversation Style
 
 When the discussion touches the user's own field, respond as I would to a

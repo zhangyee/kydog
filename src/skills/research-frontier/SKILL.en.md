@@ -38,6 +38,28 @@ Only two things belong on disk: the PDFs in `papers/`, and the final briefing.
 
 ---
 
+## Step 0: Terminology reconnaissance (optional, only when the words are wrong)
+
+**When you are unsure of this direction's terminology** — the user gave you a plain-language
+sentence, a Chinese phrase, or a concept you are not sure what the English-language field calls
+— run one **broad sweep** with `slowpaper` first, purely to **bring back terms and frontier
+keywords**, and then go back to fastpaper for the precise search in Step 1 below.
+
+A frontier briefing is especially sensitive to terminology: "newly emerged terminology" is one of
+the five signals in Step 2 to begin with, and a subfield that has just grown often **goes by a
+different name** — search with the old words and all five entry points come back empty, while
+`exit 4` will not tell you the words were the problem.
+
+**Take words only, not papers.** Read the title lines and the venue lines on the results page and
+note the terms, method names and conference names that keep recurring. Hard caps: **one source,
+at most 1 page, at most 10 titles.** Once you have the words, get out.
+
+What this step produces is a **word list**, not a literature pool — all five entry points of
+Step 1 still run on fastpaper. How to open the browser, which source to use, and what to do about
+a CAPTCHA are all in the `slowpaper` skill.
+
+---
+
 ## Step 1: Search
 
 **The time window defaults to the past 12 months** (`--after <this year minus 1>-<current month>-01`). An insider already holds a two-year map, and what the briefing owes them is what they may have missed this year. Where the direction moves slowly and 12 months turns up nothing, widen it to 18 or 24 months, **and write in the briefing how far it was widened** — a direction with nothing new in a year is itself a conclusion.

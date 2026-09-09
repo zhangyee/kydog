@@ -28,6 +28,33 @@ So C must have an **entrance that does not go through citation chains**. See the
 
 ---
 
+## Step 0: Terminology reconnaissance (optional, only when the words are wrong)
+
+**When you are unsure of this direction's terminology** — the user gave you a plain-language
+sentence, a Chinese phrase, or a concept you are not sure what the English-language field calls
+— run one **broad sweep** with `slowpaper` first, purely to **bring back terms and frontier
+keywords**, and then go back to fastpaper for the precise search.
+
+What this step solves is "the keywords were wrong, fastpaper found nothing, and it will not tell
+you the words were the problem". `exit 4` says only that this source does not have it; it says
+nothing about whether your words are right.
+
+**Take words only, not papers.** Read the title lines and the venue lines on the results page and
+note the terms, method names and conference names that keep recurring; do **not** extract full
+text here and do **not** build a candidate pool here — that is A/B/C's job, and they do it
+better on fastpaper.
+
+Hard caps: **one source, at most 1 page, at most 10 titles.** Once you have the words, get out
+and go back to fastpaper.
+
+**It does not replace A.** The line above — "casting a wide net over topic terms first is a bad
+move" — still holds; what this step produces is a **word list**, not a literature pool.
+
+How to open the browser, which source to use, and what to do about a CAPTCHA are all in the
+`slowpaper` skill and are not repeated here.
+
+---
+
 ## A. Finding reviews
 
 ### Filter by publication type (most accurate)
