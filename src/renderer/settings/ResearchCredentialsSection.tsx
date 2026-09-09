@@ -3,6 +3,7 @@ import type { ResearchCustomVar, ResearchVarKind, SettingsFile } from '../../sha
 import { PRESET_RESEARCH_VARS } from '../../shared/researchVars';
 import { validateCustomVarName } from '../../shared/researchValidate';
 import { Card, BlockHeader, SubHeader, Divider, Btn, Empty, inputStyle, labelStyle, hintStyle } from './ui';
+import { InstitutionBlock } from './InstitutionBlock';
 
 type Research = SettingsFile['research'];
 
@@ -64,6 +65,15 @@ export function ResearchCredentialsSection() {
 
   return (
     <div style={{ padding: '24px 28px 36px', maxWidth: 840 }}>
+      {/*
+        机构账号排在最前，且**与下面两块分开**：预设与自定义都是「写进 agent 运行环境的
+        环境变量」，机构账号一个字都不进那个环境（密码只在主进程里解密、只由
+        `browser_login` 直接填进页面）。混在一起会让人以为它也是一条环境变量。
+      */}
+      <InstitutionBlock />
+
+      <div style={{ height: 28 }} />
+
       <BlockHeader>预设</BlockHeader>
       <Card>
         <SubHeader subtitle="明文存于 ~/.kydog/kydog.json::research；留空则沿用 KyDog 启动时的同名环境变量" />
