@@ -57,6 +57,16 @@ describe('browserStore · 按 revision 去旧', () => {
 describe('browserStore · epoch 与 revision 是两道独立的闸', () => {
   beforeEach(reset);
 
+  it('快照那条路也把 tabs / activeTabId 接上（不是只接 epoch）', () => {
+    // 第二轮变异 N5 是从这里活下来的：只断 epoch 的话，`applySnapshot` 把
+    // `activeTabId` 写成 `cur.activeTabId` 照样全绿 —— 而那意味着重载之后
+    // 侧栏永远选不中主进程说的那个活动标签。
+    S().applySnapshot({ revision: 1, epoch: 1, tabs: [tab('t1'), tab('t2')], activeTabId: 't2' });
+    expect(S().tabs.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(S().activeTabId).toBe('t2');
+    expect(S().revision).toBe(1);
+  });
+
   it('广播先到、快照后到且同 revision：tabs 不动，**epoch 照收**', () => {
     S().applyTabs({ revision: 7, tabs: [tab('t1')], activeTabId: 't1' });
     S().applySnapshot({ revision: 7, epoch: 3, tabs: [tab('t1')], activeTabId: 't1' });

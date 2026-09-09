@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { IdpEntry, IdpListPublic, InstitutionPublic, InstitutionSaveArgs } from '../../shared/types';
+import type { IdpEntry, IdpListPublic, InstitutionPublic } from '../../shared/types';
 import { confirm } from '../stores/confirmStore';
 import { filterIdps, idpRowKey } from './institutionFilter';
+import { buildSaveArgs, canSaveDraft, storedPasswordLost } from './institutionForm';
 import { Card, BlockHeader, SubHeader, Btn, inputStyle, labelStyle, hintStyle } from './ui';
 
 /**
@@ -89,8 +90,7 @@ export function InstitutionBlock() {
   const onSave = async () => {
     setBusy(true); setErr(null);
     try {
-      const args: InstitutionSaveArgs = { name, entityID, username };
-      if (pwTouched) args.password = password;
+      const args = buildSaveArgs({ name, entityID, username, password, pwTouched });
       hydrate(await window.kydog.invoke('institution.save', args));
       setSaved(true);
     } catch (e) {
@@ -130,21 +130,17 @@ export function InstitutionBlock() {
       setShown(true);
       setPwDead(false);
     } catch (e) {
-      const code = (e as Error & { code?: string }).code;
       // 唯一按码分支的地方：密文永久失效之后 `hasPassword` 还是 true，
-      // 「有一个密码、但取不出来了」只能靠这个记下来。措辞不是判据。
-      if (code === 'settings.stored_password_unreadable') setPwDead(true);
+      // 「有一个密码、但取不出来了」只能靠这个记下来。判据在 `institutionForm.ts`
+      // （有用例；留在这里的话「两个码对调」是一个三条 gate 全绿的改动，实测过）。
+      if (storedPasswordLost((e as Error & { code?: string }).code)) setPwDead(true);
       setErr(String((e as Error).message));
     }
   };
 
   if (loading) return null;
 
-  const dirty = name !== (inst?.name ?? '')
-    || entityID !== (inst?.entityID ?? '')
-    || username !== (inst?.username ?? '')
-    || pwTouched;
-  const canSave = name.trim() !== '' && entityID.trim() !== '' && username.trim() !== '' && dirty;
+  const canSave = canSaveDraft({ name, entityID, username, password, pwTouched }, inst);
 
   return (
     <>

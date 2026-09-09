@@ -246,11 +246,24 @@ describe('uiStore 浏览器侧栏', () => {
     expect(useUiStore.getState().browserOpen).toBe(false);
   });
 
-  it('开合浏览器不碰 Inspector 的收起状态', () => {
+  /**
+   * **每一步之后都断一次，不是只断来回一趟之后。**
+   * 只断「开了再关，Inspector 还是收着」是一条同码遮蔽的用例：`toggleBrowser` 里
+   * 顺手也翻一下 `inspectorCollapsed` 的话，翻两次正好翻回来，它照样绿
+   * （第二轮变异 N8 就是这么活下来的）。
+   */
+  it('开浏览器不碰 Inspector 的收起状态', () => {
     useUiStore.setState({ inspectorCollapsed: true });
     useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().inspectorCollapsed).toBe(true);
     useUiStore.getState().toggleBrowser();
     expect(useUiStore.getState().inspectorCollapsed).toBe(true);
+  });
+
+  it('Inspector 展开着的时候开浏览器，也不许把它顺手收起来', () => {
+    useUiStore.setState({ inspectorCollapsed: false });
+    useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().inspectorCollapsed).toBe(false);
   });
 
   it('两栏各记各的宽度，互不写对方', () => {
