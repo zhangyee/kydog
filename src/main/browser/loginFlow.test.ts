@@ -420,6 +420,28 @@ describe('spec §4.6：同一轮 run 内失败一次就停手', () => {
     expect(h.log.injected).toHaveLength(2);
   });
 
+  /**
+   * **`runId === null` 那一支同样 fail-closed。**
+   *
+   * 这不是一条理论路径：`AgentService.currentRunIdFor` 在「没见过的 thread」与
+   * 「本轮已经结束」两种情况下真的返回 `null`（`AgentService.browserDispose.test.ts`
+   * 就在断这个），而 `browserTools` 的 `currentRunId: () => this.currentRunIdFor(threadId)`
+   * 把它原样传下来。分不出轮次的时候押的仍然是同一个校园账号，所以按「同一轮」算 ——
+   * 同样只放一次过。
+   *
+   * 评审变异 M4（在 `assertNoPriorAttempt` 开头插一句 `if (runId === null) return;`）
+   * 在这条用例之前**存活**：2895 条全绿。那条路上模型可以在一轮里对同一个校园账号
+   * 无限次重填 —— 正是 spec §4.6 那道闸要挡的事，而它自己的 null 分支曾是全表唯一
+   * 没人守的一块。
+   */
+  it('分不出轮次（runId 为 null）也按同一轮算 —— 换个标签的第二次照样拒', async () => {
+    const h = harness();
+    await h.fillOn('t1', { runId: null });
+    const e = await errOf(h.fillOn('t2', { runId: null }));
+    expect(e.code).toBe('browser.login_attempted');
+    expect(h.log.injected).toHaveLength(1);
+  });
+
   it('t1 看到断言回传之后，同一轮 t2 照样可以填（那一次成了，不是「失败一次」）', async () => {
     const h = harness();
     await h.fill();

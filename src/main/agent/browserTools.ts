@@ -436,9 +436,15 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       assertTabExists(params.tabId);
       const r = await loginFlow.fill(params.tabId, {
         runId: deps.currentRunId(),
-        // **不给就是不提交。** 两个方向的代价不对称：多提交一次会在有验证码的页面上
-        // 送出一次必然失败的登录，而「同一轮失败一次就停手」意味着那是本轮唯一的机会
-        // （高校 IdP 还会为连续失败锁账号）；少提交一次只是让你多点一下提交按钮。
+        // **不给就是不提交 —— 这是一处对 spec 的有意偏离，别照 spec 改回来。**
+        //
+        // `spec §4.6` 白纸黑字写的是「`submit` 默认 `true`」，这里刻意用 `false`
+        // （控制者 2026-09-09 裁决：接受 `false`；报告 §12 有同一份登记）。理由：
+        // spec 自己在同一节写明「`submit: false`（验证码）是常态路径，不是边角情况」，
+        // 而两个方向的代价不对称 —— 多提交一次会在有验证码的页面上送出一次必然失败的
+        // 登录，而「同一轮失败一次就停手」意味着那是本轮唯一的机会（高校 IdP 还会为
+        // 连续失败锁账号）；少提交一次只是让用户多点一下提交按钮，随时补得回来。
+        // 所以 fail-safe 的方向是不提交。
         submit: params.submit === true,
         usernameIndex: params.usernameIndex,
         snapshotId: params.snapshotId,

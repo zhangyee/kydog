@@ -653,11 +653,24 @@ describe('回显只回属性，绝不回值', () => {
    * 抄进回执 → 工具结果 → 模型上下文 → transcript。评审 2026-09-09 用真 Chromium
    * 实测拿到了哨兵密码（3/3），这是本批第一条硬约束「密码永不进模型上下文」上的
    * 一条真实的路。
+   *
+   * **两个框各挂一个监听器，钉的是「任何写入之前」而不只是「密码写入之前」。**
+   * 只钉后者的话，把 `fieldDesc` 挪到 `put(user)` 之后、`put(pw)` 之前（评审变异
+   * M11）照样全绿 —— 而在那个位置，账号框自己的 `input`/`change` 监听器已经跑过了，
+   * 页面可以把**账号**抄进属性再随 `field` 出去。`LoginAsk` 的 `username` 明写
+   * 「只到用户屏幕为止，不进工具结果、不进模型上下文」，账号走这条路出去同样是破约。
    */
-  it('页面在密码框的 input 事件里把密码抄进账号框的属性 —— 回执里也不许出现它', () => {
+  it('两个框的 input 事件里各把值抄进账号框的属性 —— 密码与账号都不许出现在回执里', () => {
     const user = new FakeInput({ attrs: { id: 'u', name: 'user', placeholder: '学号' } });
     const pw = new FakeInput({ type: 'password' });
     const form = new FakeForm(); user.form = form; pw.form = form;
+    const recordUser = user.dispatchEvent.bind(user);
+    user.dispatchEvent = (e: { type: string }): void => {
+      recordUser(e);
+      // 账号框自己的监听器：把刚拿到的**账号**抄进它自己的属性（`put(user)` 里同步跑）。
+      // 用 id 而不是 placeholder —— 后面密码那个监听器会把 placeholder 盖掉。
+      if (e.type === 'input') { user.attrs.id = `X${user.raw}`; }
+    };
     const record = pw.dispatchEvent.bind(pw);
     pw.dispatchEvent = (e: { type: string }): void => {
       record(e);
@@ -667,12 +680,15 @@ describe('回显只回属性，绝不回值', () => {
     const { run } = stage([user, pw]);
     const r = run(REQ({ password: 'SENTINEL-PW-9f3a7c' }));
     expect(r.ok).toBe(true);
-    // 这一条守的是「这个场景真的发生了」—— 页面确实改到了那两个属性。
+    // 这两条守的是「这个场景真的发生了」—— 页面确实改到了 desc() 会读的那三个属性，
+    // 账号那一次发生在**密码写入之前**（所以它考的是更强的那条）。
+    expect(user.getAttribute('id')).toBe('Xu2100011000');
     expect(user.getAttribute('placeholder')).toBe('SENTINEL-PW-9f3a7c');
     expect(user.getAttribute('name')).toBe('XSENTINEL-PW-9f3a7c');
     // 而回执说的是**写之前**挑中的那个框：页面事后改成什么与它无关。
     expect(r.field).toBe('input#u[name=user]（提示文字：学号）');
     expect(JSON.stringify(r)).not.toContain('SENTINEL-PW-9f3a7c');
+    expect(JSON.stringify(r)).not.toContain('u2100011000');
   });
 
   /**
@@ -689,5 +705,25 @@ describe('回显只回属性，绝不回值', () => {
     expect(field).toContain('…[截断，原长 400 字符]');
     expect(field).not.toContain(long);
     expect(field.length).toBeLessThan(long.length);
+  });
+
+  /**
+   * **上界的「存在」与它的「值」是两件事。** 上面那条的输入是 400 字符，所以
+   * `(160, 400)` 区间里的任何值都能让它绿 —— 评审变异把 `MAX_ATTR` 改成 300 时
+   * 2895 条全绿，改成 16000 才红。这条贴着边界断，把 160 这个数本身钉住。
+   *
+   * 这个数的出处是 `walker.js` 的 `MAX_TEXT`：属性是页面文本、进的是同一个模型
+   * 上下文，所以刻意共用同一个上限（是仓库内一致性，不是量过的成本）。哪天要改，
+   * 两处一起改，并且改到这条用例上来。
+   */
+  it('上界正好是 160：160 字不截断，161 字截断', () => {
+    const fieldFor = (n: number): string => {
+      const user = new FakeInput({ attrs: { name: 'n'.repeat(n) } });
+      const pw = new FakeInput({ type: 'password' });
+      const form = new FakeForm(); user.form = form; pw.form = form;
+      return String(stage([user, pw]).run(REQ()).field);
+    };
+    expect(fieldFor(160)).toBe(`input[name=${'n'.repeat(160)}]`);
+    expect(fieldFor(161)).toBe(`input[name=${'n'.repeat(160)}…[截断，原长 161 字符]]`);
   });
 });
