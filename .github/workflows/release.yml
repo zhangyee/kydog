@@ -83,6 +83,12 @@ jobs:
           # 在流水线上一条都没跑，而那五条正是「三条 gate 拦不住、只有 e2e 守得住」的。
           # 现在它们真的跑：这一组在 CI 上从 1 条提到 9 条。
           # （打不了公网的机器仍可自己设 KYDOG_SKIP_LIVE_BROWSER=1 整组跳过。）
+          #
+          # **放出来的这 8 条在任何 runner 上一次都没跑过**：它们与那道假闸是同一个
+          # commit（`e045f25`）进来的，windows 与 intel 两个矩阵项都是首跑。本机全绿
+          # 不等于 runner 上全绿（窗口尺寸、字体、网络出口都不同）。
+          # **打 tag 之前先 workflow_dispatch 演练一次**，别让首跑撞在发版上。
+          # 演练不会误发版：下面 publish 那一步专门判了 ref 不是 tag 就不发。
           KYDOG_SKIP_PERF_BROWSER: '1'
       # always 而非 failure：flaky（retry 转绿）时 job 是成功态，failure() 不执行，
       # 而失败尝试的 trace 就留在 test-results 里（实证见 spec 事实基础）——不上传就随
