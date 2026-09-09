@@ -54,10 +54,30 @@ export async function createSession(opts: {
   const inst = settings.institution;
   const institution = inst ? { name: inst.name, entityID: inst.entityID } : null;
 
+  // 内置浏览器的四个工具。**造在分支之前，两条路用同一份** —— fixture 那条路要能
+  // 真的执行它们（`fixtureProvider` 的 `tool` 事件，形态照 `ask`：那一条一直就是
+  // 真调 `askUserQuestionTool.execute`）。造两次的话 e2e 走到的就不是产品那一份，
+  // 而「测的不是用户拿到的东西」正是这条路要避开的。
+  //
+  // 四个都声明了 `executionMode: 'sequential'`，名字要同步登记进
+  // askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES —— 漏登记不报错，
+  // 只会让 UI 把一次串行批次画成并行组。守这条的是本文件的用例（两个方向）。
+  //
+  // `browser_login` 的确认框走的是**同一个** askShared / threadId：spec §4.6
+  // 那道确认要用现成的 ask broker，不新发明挂起机制。
+  const browserTools = createBrowserTools({
+    currentRunId: opts.currentRunId ?? (() => null),
+    threadId: opts.sessionId,
+    askShared: opts.askShared,
+    institution,
+  });
+
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
   // sessionId 就是 threadId，fixture 里的工具必须用它注册 broker，
   // 否则 renderer 发来的 ask.submit / ask.cancel 会因 threadId 对不上被丢弃。
-  if (fixturePath) return createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale);
+  if (fixturePath) {
+    return createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale, browserTools);
+  }
 
   const pi = await import('@earendil-works/pi-coding-agent');
   const reg = getProviderRegistry();
@@ -88,18 +108,8 @@ export async function createSession(opts: {
         readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
       }),
       createReadDocxTool(),
-      // 内置浏览器的四个工具。四个都声明了 `executionMode: 'sequential'`，名字要
-      // 同步登记进 askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES —— 漏登记不报错，
-      // 只会让 UI 把一次串行批次画成并行组。守这条的是本文件的用例（两个方向）。
-      //
-      // `browser_login` 的确认框走的是**同一个** askShared / threadId：spec §4.6
-      // 那道确认要用现成的 ask broker，不新发明挂起机制。
-      ...createBrowserTools({
-        currentRunId: opts.currentRunId ?? (() => null),
-        threadId: opts.sessionId,
-        askShared: opts.askShared,
-        institution,
-      }),
+      // 内置浏览器的四个工具（上面造好的**同一份**，见那段注释）。
+      ...browserTools,
     ],
   });
   return session as AnySession;
