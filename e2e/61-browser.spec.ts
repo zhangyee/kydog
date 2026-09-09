@@ -342,6 +342,11 @@ type LoginConfirmSeen = {
  * 测这条路必然的代价。代价的边界由正路用例里那三条断言划出（见那里）。
  */
 async function confirmLoginPage(page: Page): Promise<LoginConfirmSeen> {
+  // **预算收在本文件里**：这个 helper 自己要等 30 秒，回到 `runTools` 还有一条
+  // 60 秒的 `expect.poll`（合计 ~90s）。用例的默认预算是 `playwright.config.ts` 的
+  // 60 秒 —— 装不下，先到的会是用例的墙（实测 58.9s 裸超时），下面那条诊断就永远
+  // 说不出口。所以进门自己抬，不靠调用方记得写 `test.setTimeout`。**只抬不降。**
+  if (test.info().timeout < 180_000) test.setTimeout(180_000);
   const composer = page.getByTestId('question-composer');
   const deadline = Date.now() + 30_000;
   let asked = false;
@@ -357,16 +362,13 @@ async function confirmLoginPage(page: Page): Promise<LoginConfirmSeen> {
   }
   // 两种正常情形都从这里出去。真卡住的话不在这里报 —— 交给 `runTools` 那条 60 秒的
   // `expect.poll`，它会说清「这一轮 run 卡住了」，比这里编一个原因准。
-  //
-  // **这句话有一个前提，别把它拆了**：两个调用方都 `test.setTimeout(180_000)`，
-  // 所以上面这 30 秒加那条 poll 的 60 秒（合计 ~90s）装得进用例预算。
+  // 这句话要成立，用例预算得装得下 30s + 60s —— 进门那一行已经自己抬到 180s 了。
   // 本机实测同一个 30s+60s 结构的两个分支（2026-09-09，临时探针）：
   //  · 180s 预算 → **1.5m** 红，Call Log 是「Timeout 60000ms exceeded while waiting on
   //    the predicate」—— poll 自己到点，那句话真说得出口；
-  //  · `playwright.config.ts` 的默认 60s 预算 → **58.9s** 红，Call Log 变成
-  //    「Test timeout of 60000ms exceeded」—— 先到的是用例的墙，poll 永远走不完。
-  // 所以谁把上面那两条 `test.setTimeout(180_000)` 拿掉、或者把这个 helper 挪进一条
-  // 没有它的用例，这里的诊断就退化成一条时间墙。要缩的话缩这 30 秒，别缩预算。
+  //  · 默认 60s 预算 → **58.9s** 红，Call Log 变成「Test timeout of 60000ms exceeded」
+  //    —— 先到的是用例的墙，poll 永远走不完。
+  // 要缩的话缩这 30 秒，别缩预算。
   if (!asked) return { asked: false, host: null };
   // 第一个选项就是「是，就在这里登录」——`loginConfirm.ts` **结构地**取 options[0]，
   // 这里按同一个顺序点，不写死文案。
@@ -973,30 +975,32 @@ test.describe('61-browser', () => {
    * 另外三条不是白写的（它们守的是「整条路还是那条路」，不是这道闸）：
    * 挡下的措辞、按键一个都没落地、`type` 后面那个动作压根没跑（出错即停）。
    *
-   * ## 判据 2 的那个几何前提，由**两条断言**守着 —— 都别删
+   * ## 判据 2 依赖的那句话，由**两条断言**守着 —— 都别删
    *
-   * 「闸没了 `measure` 会把它滚过来」这句话有两个前提：`measure` 此刻确实滚，
-   * 而且这个夹具的几何确实够得着。**「够得着」不是「密码框在首屏之外」** ——
-   * 那是充分不必要条件：`scrollIntoView({block:'center'})` 对已经在首屏里的元素
-   * 照样滚（复审实测：`DEFAULT_VIEWPORT_HEIGHT` 800→4000 时密码框在首屏内，
-   * 判据 2 仍然有效，`scrollY` 变成 1000）。真正的前提是
-   * **「从 `scrollY=0` 把它居中需要下滚」**，也就是
-   * `#kydog-pw` 的 `getBoundingClientRect().top - innerHeight / 2 > 0`。
-   * 这个前提**产品代码里没有任何东西守着**，一破就让判据 2 变成一条永远绿的死断言 ——
-   * 不报错，只是不再区分两道闸。触发面比「哪天 measure 不滚了」宽得多：夹具页面的几何、
-   * `helpers.ts` 的窗口尺寸、`DEFAULT_VIEWPORT_HEIGHT`，任一处动了都算
-   * （复审实测：删掉第一道闸、只把 bar 的 `top:3000px` 挪到 `top:100px`，
-   * 这一组 12 条一条不红）。
+   * 「闸没了 `measure` 会把它滚过来」拆开是两件事：
+   *  ① `scrollIntoView({block:'center'})` 落在这个夹具的密码框上时，**窗口**真的会滚；
+   *  ② `measure` 此刻确实在滚，而且这条路确实走到了 `measure`。
    *
-   * 两条断言分工，因为它们钉的不是同一件事：
-   *  · **注入之后当场读一次几何**（下面 `pwCenterDelta`）—— 直接量密码框**此刻的
-   *    有效位置**，`bar` 与密码框自己的行内样式都算进去了。复审 M-β 实测过一个只有
-   *    它接得住的变体：`bar` 仍留在 3000、只给 `#kydog-pw` 加 `top:-2960px`，
-   *    对照动作照样绿（它在另一个控件上），12 条一条不红。
-   *  · **第三轮的对照动作** —— 拿**同一个 bar 上**的一个**非密码**输入框走一次同样的
-   *    `type`，断言其后 `scrollY > 0`。它钉的是几何之外的那半件事：`measure` 真的滚、
-   *    页面真的滚得动、这条路真的走到了 `measure`。几何断言看不见这些。
-   *    同一手法在第一轮里已经用过一次（快照里那行「密码框，值不显示」的对照）。
+   * **① 直接量，不量它的近似。** 从前这里量的是 `#kydog-pw` 的
+   * `getBoundingClientRect().top - innerHeight / 2 > 0`（几何够不够得着），
+   * 而那只是①的**近似**：rect 是**文档坐标**，看不见「到底谁来滚」。复审实测过一个
+   * 绕过去的变体 —— 把密码框包进一个自身完全在首屏内的 `overflow:auto` 容器：
+   * rect 一点没变（几何断言绿）、`scrollIntoView` 去滚的是那个内层容器、
+   * `window.scrollY` 一动不动（判据 2 绿），第一道闸删掉这一组 12 条一条不红。
+   * 所以下面改成**注入之后当场真滚一次再滚回来**（`pwScrollsWindow`），断它 > 0。
+   * 这条不是近似，就是①本身：密码框自己的位置、中间多出来的滚动容器、页面整个滚不动、
+   * 视口比页面还高（`DEFAULT_VIEWPORT_HEIGHT`），任一处让①不成立都**当场红**。
+   * 注意①**不是**「密码框在首屏之外」—— 那是充分不必要条件：
+   * `scrollIntoView({block:'center'})` 对已经在首屏里的元素照样滚
+   * （复审实测：`DEFAULT_VIEWPORT_HEIGHT` 800→4000 时密码框在首屏内，判据 2 仍然有效）。
+   *
+   * **② 靠第三轮那条对照动作** —— 拿**同一个 bar 上**的一个**非密码**输入框走一次同样的
+   * `type`，断言其后 `scrollY > 0`。①那条探针自己调 `scrollIntoView`，看不见
+   * `measure` 改了没有（复审实测：`measure` 里删掉 `scrollIntoView` → 探针绿、对照动作红）。
+   * 同一手法在第一轮里已经用过一次（快照里那行「密码框，值不显示」的对照）。
+   *
+   * 这两条**产品代码里没有任何东西守着**，`npm test` 也跑不到 e2e：破了不报错，
+   * 只是让判据 2 悄悄变成一条永远绿的死断言。
    *
    * ## 为什么要跑三轮 run
    *
@@ -1025,9 +1029,11 @@ test.describe('61-browser', () => {
         const bar = document.createElement('div');
         // 3000 像素以下：闸在原位就够不着它，闸没了 measure 会把它滚到视口中央。
         // **三个控件都挂在这一个 bar 上**，共用这一个 top —— 对照动作因此与主判据
-        // 站在同一块地上：谁动了这个 top、让「从 scrollY=0 把它居中」不再需要下滚，
-        // 对照动作当场红（见下面第三轮）。只动密码框自己那一行的，由紧跟在注入后面
-        // 的那条几何断言接住。
+        // 站在同一块地上（它走的是同一条 resolveTarget → dispatch → measure）。
+        // 「这个夹具还够不够得着」不靠读这几行样式去推：紧跟在注入后面那条
+        // pwScrollsWindow 探针**真滚一次**量出来 —— bar 的 top、密码框自己那一行、
+        // 中间多出来的滚动容器、页面滚不动，全都一次接住。
+        // （这几行注入的是页面里的代码，整段在一个模板字符串里：别写反引号。）
         bar.style.cssText = 'position:absolute;left:0;top:3000px;width:600px;height:40px';
         bar.innerHTML =
           '<input id="kydog-pw" type="password" aria-label="KYDOG密码框"'
@@ -1048,22 +1054,37 @@ test.describe('61-browser', () => {
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
         '开工前页面必须还没滚过 —— 已经滚过的话下面那条判据就说不出话了').toBe(0);
 
-      // **判据 2 的几何前提，当场量一次**（上面 docblock「两条断言」的第一条）。
-      // `measure` 干的是 `scrollIntoView({block:'center'})`，所以前提不是
-      // 「密码框在首屏之外」（那是充分不必要条件），而是**「从 scrollY=0 把它居中
-      // 需要下滚」** —— 上一行刚断过 scrollY 是 0，所以这里的 rect.top 就是文档坐标。
-      // 这一条读的是密码框**此刻的有效位置**（bar 的 top 与它自己的行内样式都算进去），
-      // 第三轮那条对照动作看不见「只挪了密码框自己」这一种。
-      const pwCenterDelta = await inPage<number>(app, 'example.com',
-        '(() => { const r = document.getElementById("kydog-pw").getBoundingClientRect();'
-        + ' return Math.round(r.top - window.innerHeight / 2); })()');
-      expect(pwCenterDelta,
-        '第一道闸没了的话，measure 的 scrollIntoView({block:"center"}) 必须真把页面滚起来 ——'
-        + '前提是**从 scrollY=0 把密码框居中需要下滚**（rect.top - innerHeight/2 > 0）。'
-        + '这个数 ≤ 0 说明夹具的几何已经够不着了：判据 2（断 scrollY === 0）会变成一条'
-        + '永远绿的死断言，两道密码闸不再区分得开。改了 bar 的 top、密码框自己那一行的'
-        + `行内样式、helpers.ts 的窗口尺寸或 DEFAULT_VIEWPORT_HEIGHT 都可能是它（实测 ${pwCenterDelta}）`)
+      // **判据 2 依赖的那句话，当场量它本身**（上面 docblock 的①）—— 不量它的近似。
+      // 直接拿密码框真滚一次 `scrollIntoView({block:'center'})`、读 `window.scrollY`、
+      // 再滚回 0。从前这里量的是 `rect.top - innerHeight/2 > 0`，那只是「窗口会被滚起来」
+      // 的近似：rect 是文档坐标，看不见「谁来滚」——密码框与 document 之间插一个自身
+      // 在首屏内的 `overflow:auto` 容器就绕过去了（复审实测，12 条一条不红）。
+      // 找元素用的是**快照那一行的同一个身份**（可及名「KYDOG密码框」），不是 id：
+      // 免得探针量的与 `type` 真去碰的不是同一个元素。
+      const PW_PROBE_MISSING = -1_000_000;
+      const pwScrollsWindow = await inPage<number>(app, 'example.com', `(() => {
+        const el = document.querySelector('input[aria-label="KYDOG密码框"]');
+        if (!el) return ${PW_PROBE_MISSING};
+        el.scrollIntoView({ block: 'center' });
+        const moved = window.scrollY;
+        window.scrollTo(0, 0);
+        return moved;
+      })()`);
+      expect(pwScrollsWindow,
+        '第一道闸没了的话，measure 的 scrollIntoView({block:"center"}) 必须真把**窗口**滚起来 ——'
+        + '这一行就是拿密码框自己当场滚了一次量出来的（量完已经滚回 0）。这个数不 > 0 说明'
+        + '那句话已经不成立：判据 2（断 scrollY === 0）会变成一条永远绿的死断言，'
+        + '两道密码闸不再区分得开。四种成因，别只按第一种去查：① bar 的 top 或密码框自己'
+        + '那一行行内样式挪了，从 scrollY=0 把它居中不再需要下滚（注意不是「挪进首屏」：'
+        + '首屏内的元素照样会被居中滚）；② 密码框与 document 之间多了一个滚动容器，'
+        + '`scrollIntoView` 滚的是那个容器、不是窗口；③ 页面整个滚不动了（那个 5000 高的'
+        + '撑高块没了）；④ 视口比页面还高（helpers.ts 的窗口尺寸 / DEFAULT_VIEWPORT_HEIGHT）。'
+        + `${PW_PROBE_MISSING} 是哨兵：页面上压根找不到可及名叫「KYDOG密码框」的输入框，`
+        + `多半是上面注入的那份 DOM 改了（实测 ${pwScrollsWindow}）`)
         .toBeGreaterThan(0);
+      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
+        '上面那条探针滚完必须自己滚回 0（它末尾 window.scrollTo(0, 0) 了）——'
+        + '没回到 0 的话，下面判据 2 断的就不是「一个像素都没滚」了').toBe(0);
 
       // ── 第一轮：换一份真快照回来（这一步碰不到页面）──────────────────────
       const snapRes = await runTools(page, fixturePath, [{
@@ -1138,12 +1159,11 @@ test.describe('61-browser', () => {
 
       // ── 第三轮：**对照动作** —— 把判据 2 剩下那半个前提钉成一条会响的断言 ────
       // 判据 2 之所以能区分两道闸，靠的是「第一道闸没了的话 measure 真的会把它滚过来」。
-      // 这句话有两个前提，而**产品代码里没有任何东西守着它们**：几何够得着
-      // （「从 scrollY=0 把密码框居中需要下滚」—— 上面注入之后那条 pwCenterDelta 已经
-      // 当场量过），以及 measure 此刻确实滚、页面确实滚得动、这条路确实走到了 measure。
-      // 后面这半件事几何断言看不见，所以这里拿**同一个 bar 上**的一个**非密码**输入框
-      // 走一次同样的 `type`：它必须把页面滚起来。（实测：删掉第一道闸、只把上面那个
-      // bar 的 top:3000px 挪到 top:100px，这一组 12 条一条不红。）
+      // 这句话拆成两件事，而**产品代码里没有任何东西守着它们**：①「scrollIntoView 落在
+      // 这个密码框上时窗口真的会滚」—— 上面注入之后那条 `pwScrollsWindow` 已经真滚了
+      // 一次量过；② measure 此刻确实在滚、这条路确实走到了 measure。②那条探针看不见
+      // （它自己调 scrollIntoView），所以这里拿**同一个 bar 上**的一个**非密码**输入框
+      // 走一次同样的 `type`：它必须把页面滚起来。
       // 前提一破，这一条当场红，而不是让主判据悄悄失效。
       const ctl = await runTools(page, fixturePath, [{
         toolCallId: 'tc-plain',
@@ -1168,12 +1188,12 @@ test.describe('61-browser', () => {
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
         '**对照组**：同一个 bar 上的非密码输入框走同一条 `type`，页面必须被 measure 的 '
         + 'scrollIntoView 滚起来。它没滚，说明上面判据 2（断 scrollY === 0）已经不再'
-        + '区分得开两道密码闸 —— 三种可能：① `interact.js` 的 measure 不真滚了'
-        + '（或者页面整个滚不动了）；② 几何变了（bar 的 top、页面高、helpers.ts 的窗口尺寸、'
-        + 'DEFAULT_VIEWPORT_HEIGHT 任一处），「从 scrollY=0 把它居中」不再需要下滚'
-        + '（注意不是「挪进首屏」：首屏内的元素照样会被居中滚）；③ 这个对照动作自己就没跑成，'
-        + '那这条说的根本不是前两件事。分辨③看下面那条判据，它排在后面、这条先红就跑不到：'
-        + '把这一条临时停掉再跑一次即可。前两种情形下，判据 2 是一条永远绿的死断言')
+        + '区分得开两道密码闸 —— 两种可能：① `interact.js` 的 measure 不真滚了'
+        + '（或者这条路压根没走到 measure）；② 这个对照动作自己就没跑成，那这条说的'
+        + '根本不是第一件事。「几何/滚动容器变了」不会红在这里 —— 那一类由上面注入之后'
+        + '那条 `pwScrollsWindow` 探针先接住（它真滚了一次）。分辨②看下面那条判据，'
+        + '它排在后面、这条先红就跑不到：把这一条临时停掉再跑一次即可。'
+        + '第一种情形下，判据 2 是一条永远绿的死断言')
         .toBeGreaterThan(0);
       expect(ctlOut.text, '对照动作必须真的打进去了（`browserService` 的 type 成功文案）——'
         + '它自己没跑成的话，上面那条 scrollY 说的就不是 measure 或几何的事。'
@@ -1199,22 +1219,31 @@ test.describe('61-browser', () => {
    * 密码卫生：这一整轮渲染层收到的**所有**字节里都不许出现密码。断言写成布尔比较，
    * 失败信息里一个字符都不带 —— 别让一条红用例把密码打进 CI 日志。
    *
-   * ## 这条用例在**两种**学校上都要跑得过 —— 别拿同域当「配置正确」
+   * ## 这条用例在**两种**学校上都要跑得过 —— 而且分流键不许是配置
    *
-   * `checkLoginHost` 那份判据表里第 1 条与第 3 条**都是正常判据**：登录页 host ===
-   * entityID 的 host → 直接填；不同 → 问一次并记住（`confirm-then-fill`）。
+   * `checkLoginHost` 那份判据表里第 1 条与第 3 条**都是正常判据**：**当前标签的** host
+   * === entityID 的 host → 直接填；不同 → 问一次并记住（`confirm-then-fill`）。
    * 「entityID 在 `idp.x.edu.cn`、登录页在 `passport.x.edu.cn`」是产品**明确支持**的
-   * 形态，不是 `KYDOG_CARSI_LOGIN_URL` 配错了。所以下面按 `entityHost === loginHost`
-   * **分流**，两条一等路径各断各的，而不是假定其一。
+   * 形态，不是 `KYDOG_CARSI_LOGIN_URL` 配错了。
+   *
+   * **分流按 `seen.asked` 走，不按 `entityHost === loginHost` 走。** 产品判的是「填的
+   * 那一刻标签实际在哪」，而 `KYDOG_CARSI_LOGIN_URL` 只是 `openTab` 的起点：CAS / WAYF
+   * 前置（`sso.x.edu.cn` 302 到 `idp.x.edu.cn`）是 CARSI 里的常见形态，`openTab` 到
+   * `browser_login` 之间那几秒足够 302 链跑完 —— 那时配置跨域而标签同域，拿配置去猜
+   * 产品走了哪一支就会猜反，红在一条产品完全正确的路上。协议层事实就在手边：
+   * `seen.asked`（UI 那一侧看到的「这一轮到底问没问」）。`sameHost` 只用来把失败信息
+   * 说得更准，**不当分流键**。
    *
    * 要守的安全属性**不是**「填的 host == entityID 的 host」，而是
    * **「凭据落在了用户实际看到并确认过的那个 host 上」**。它拆成三条：
-   *  · **共同判据**：填进去的 host === 填的那一刻标签实际所在的 host。两条路各有各的
-   *    **独立**证人（见下面 `witnessHost`）。
-   *  · **同域**：这一轮不该问 —— 问了就说明标签在 open 与 fill 之间跳走了。
-   *  · **跨域**：这一轮必须问，而且**那道确认里点名的 host 与最终填进去的是同一个** ——
-   *    它守的正是 `checkLoginHost` docblock 里那条「返回值不能跨越挂起使用」：
-   *    人在确认框上停留的几秒到几十秒里，页面完全可以自己跳到别处去。
+   *  · **共同判据**：凭据只许落在**协议层允许的那一个 / 那两个 host** 上，证人与产品
+   *    自己回显的 `r.host` 相互独立（见下面 `allowedHosts`）。它守的是「`r.host` 报的是
+   *    **实际填充那一页**的 host，不是配置、也不是 entityID」。
+   *    `checkLoginHost` 那条「返回值不能跨越挂起使用」**不归这条守** —— 这条 e2e
+   *    自己不导航，造不出那个前提；守它的是 `loginFlow.test.ts:311-355` 那四条，
+   *    每次 `npm test` 都跑。
+   *  · **问过了**：产品的回显里必须有「用户刚刚确认了」—— 两个证人对得上。
+   *  · **没问**：产品的回显里也不该有「用户刚刚确认了」—— 同上，另一个方向。
    */
   test('CARSI 正路：确认之后填入凭据，随后的工具结果头部出现「已看到 SAML 断言回传」', async () => {
     test.skip(!CARSI_ON, CARSI_SKIP_REASON);
@@ -1226,25 +1255,35 @@ test.describe('61-browser', () => {
         name: c.name, entityID: c.entityID, username: c.username, password: c.password,
       }), CARSI);
 
-      // 分流用：**它只决定走下面哪一支，不当判据**（拿 loginUrl 去比填进去的 host
-      // 才是拿配置对配置 —— 理由见 `hostOfHttpUrl` 的注释）。
       const entityHost = hostOfHttpUrl(CARSI.entityID);
       const loginHost = hostOfHttpUrl(CARSI.loginUrl);
       expect(entityHost, 'KYDOG_CARSI_ENTITY_ID 必须是带 host 的 http(s) entityID —— '
         + 'URN 形式的 entityID 上 checkLoginHost 直接拒填（why: entity-has-no-host），'
         + '这条路根本走不到，先把环境变量配对').toBeTruthy();
       expect(loginHost, 'KYDOG_CARSI_LOGIN_URL 必须是一个解析得出 host 的 http(s) 网址 —— '
-        + '下面靠它与 entityID 的 host 比一次来分流同域 / 跨域两条路。'
+        + 'openTab 打的就是它，解析不出 host 说明环境变量配错了。'
         + '（顺带：checkLoginHost 对非 https 直接拒填，why: not-https）').toBeTruthy();
-      /** 同域（`checkLoginHost` 第 1 条）还是跨域（第 3 条）。**两条都是正常形态。** */
+      /**
+       * **纯措辞用**：配置上这两个 host 同不同。它**不是**分流键 —— 产品按「填的那一刻
+       * 标签实际在哪」分支，而 loginUrl 只是 openTab 的起点（302/CAS 前置一跳，两者就
+       * 不一样了）。拿它分流会在合法学校上红在一条产品完全正确的路上。
+       */
       const sameHost = entityHost === loginHost;
 
       const opened = await openTab(page, CARSI.loginUrl);
-      let seen: LoginConfirmSeen = { asked: false, host: null };
+      // **别写成 `let seen = { asked: false, host: null }`**：那个初值会让「没问过」
+      // 那一支分辨不出「真的没问」与「duringRun 回调压根没跑」（接线断了照样绿）。
+      // 用盒子而不是裸 `let` 是因为 TS 的控制流分析看不见闭包里的赋值，
+      // 裸 `let x: T | null = null` 在读的地方会被窄化成 `never`。
+      const box: { seen: LoginConfirmSeen | null } = { seen: null };
       const res = await runTools(page, fixturePath, [
         { toolCallId: 'tc-login', name: 'browser_login', args: { tabId: opened.tabId, submit: true } },
         { toolCallId: 'tc-after', name: 'browser_read', args: { tabId: opened.tabId }, afterMs: 20_000 },
-      ], async (p) => { seen = await confirmLoginPage(p); });
+      ], async (p) => { box.seen = await confirmLoginPage(p); });
+      expect(box.seen, 'confirmLoginPage 一次都没跑过 —— runTools 的 duringRun 接线断了'
+        + '（这一轮到底问没问，下面全靠它；没有它就只剩产品自己的回显一个证人）')
+        .not.toBeNull();
+      const seen = box.seen!;
 
       const login = res.get('tc-login')!;
       expect(login.status, `browser_login 应当成功，结果开头：${login.text.slice(0, 300)}`).toBe('ok');
@@ -1258,45 +1297,63 @@ test.describe('61-browser', () => {
         + `从**实际填充的那个页面**上现读）。结果开头：${login.text.slice(0, 300)}`).toBeTruthy();
 
       // **共同判据**：填进去的 host === 填的那一刻标签实际所在的 host。
-      // 两条路各有各的**独立**证人 —— 都不是「用配置对配置」：
-      //  · 同域：`checkLoginHost` 只在「当前 host === entityHost」时才走 `fill` 那一支，
-      //    所以「填成功了、而且没问」本身就是「那一刻标签在 entityHost 上」的协议层事实；
-      //    证人是 entityHost（配套的「没问过」那条断言在下面）。
-      //  · 跨域：走 `confirm-then-fill`，**用户屏幕上那道确认点名的就是那一刻的 host**；
-      //    证人是我们从那道题的「是」项里读回来的 host，与产品自己回显的 r.host 相互独立。
-      const witnessHost = sameHost ? entityHost : seen.host;
-      expect(witnessHost, sameHost
-        ? 'entityHost 上面已经断过非空，走不到这里'
-        : '跨域这一支必须弹出过那道确认，而且要能从「是」那一项里读出它点名的 host'
-          + `（\`确认 X 是本校的登录页\`，见 loginConfirm.ts）。asked=${seen.asked} —— `
-          + 'asked 为 false 说明 checkLoginHost 在跨域时没问就填了（那是产品的洞）；'
-          + 'asked 为 true 而 host 读不出来，多半是那句 description 的措辞改了，'
-          + '把这里的正则跟着改').toBeTruthy();
-      expect(filledHost, '**凭据必须落在用户实际看到并确认过的那个 host 上。**'
-        + `这一轮实际填在了「${filledHost}」，而填的那一刻标签应当在「${witnessHost}」上`
-        + (sameHost
-          ? '（同域配置：checkLoginHost 只在当前 host === entityID 的 host 时才直接填）。'
-            + '两者不等就说明 browser_login 把账号密码填到了一个没人确认过的域上'
-          : '（跨域配置：那是给用户看的那道确认里点名的 host）。两者不等就是'
-            + '**确认与实际填充之间被掉了包** —— checkLoginHost 的 docblock 写死了'
-            + '「返回值不能跨越挂起使用」：人在确认框上停留的那几十秒里页面可以自己跳走，'
-            + '填之前必须拿当时的 URL 再判一次'))
-        .toBe(witnessHost);
+      // 证人按**产品实际走了哪一支**分流（协议层事实 `seen.asked`），不按配置分流 ——
+      // 两支各有各的、与产品回显的 `r.host` **相互独立**的证人：
+      //  · **问过了** → 证人是那道确认里点名的 host：**用户屏幕上的事实**。
+      //  · **没问** → `checkLoginHost` 只有两条 `fill` 出口（`login.ts:161` 与 `:165-169`）。
+      //    第 2 条要 `confirmedLogin` 非 null，而 `helpers.ts` 每次 `mkdtemp` 一个
+      //    **新 HOME**：机构记录是这一轮刚 `institution.save` 进去的，`confirmedLogin`
+      //    开工必为 null，而这一轮又没确认过任何东西（asked=false）也写不进去。
+      //    **所以在这条用例里**「填成功了、而且没问」只可能是第 1 条
+      //    `host === entityHost` —— 证人是 entityHost。
+      //    **这个前提别拆**：谁把这条用例改成复用 HOME、或者提前种一条 confirmedLogin，
+      //    这一支的证人就不再成立（`login.ts` 第 2 条出口在 host ≠ entityHost 时
+      //    也直接填、也不问）。
+      const witnessHost = seen.asked ? seen.host : entityHost;
+      expect(witnessHost, seen.asked
+        ? '问过了，就必须能从「是」那一项里读出它点名的 host'
+          + '（`确认 X 是本校的登录页`，见 loginConfirm.ts）——'
+          + 'host 读不出来多半是那句 description 的措辞改了，把这里的正则跟着改'
+        : 'entityHost 上面已经断过非空，走不到这里').toBeTruthy();
+      // 问过了的那一支，证人是**两个**而不是一个：人在确认框上停留的那段时间里页面可以
+      // 自己跳走，`loginFlow` 在填之前会拿当时的 URL **再判一次**（TOCTOU 重判）——
+      // 跳到了 entityHost 的话重判走的是第 1 条出口，于是凭据落在 entityHost 上而不是
+      // 确认点名的那个，`askedUser` 仍然为真（`loginFlow.test.ts:348` 就断言这一次
+      // **填成功**）。那是产品有单测坐实的正确行为，不许在这里判它掉包。
+      // 所以判据写成「落在协议层允许的那一个/那两个 host 上」——它正好就是
+      // `checkLoginHost` 在这条用例里可能走的全部 `fill` 出口（第 2 条被新 HOME 排除），
+      // 落到第三个 host 上照样当场红。
+      const allowedHosts = seen.asked && witnessHost !== entityHost
+        ? [witnessHost, entityHost] : [witnessHost];
+      expect(allowedHosts, '**凭据必须落在协议层允许的 host 上。**'
+        + `这一轮实际填在了「${filledHost}」`
+        + (seen.asked
+          ? `，允许的是「${witnessHost}」（那道确认里点名的、给用户看过的 host）`
+            + `或「${entityHost}」（entityID 的 host —— 确认期间页面跳过去了、重判走第 1 条出口）。`
+            + '都不是就说明 browser_login 把账号密码填到了一个既没人确认过、也不是 entityID 的域上'
+          : `，而这一轮没问，允许的只有「${entityHost}」：checkLoginHost 只在当前 host === `
+            + 'entityID 的 host 时才不问就填，而这条用例的新 HOME 里 confirmedLogin 必为 null、'
+            + '走不到第 2 条出口。不等就说明凭据填到了一个没人确认过的域上')
+        + `（配置上 loginUrl 与 entityID ${sameHost ? '同域' : '跨域'}）`)
+        .toContain(filledHost);
 
-      // **分支判据**：这一轮该不该问。`r.askedUser` 为真才有「用户刚刚确认了」这一句
-      //（`browserTools.ts`），它是「走没走跨域确认」的直接事实。
-      if (sameHost) {
-        expect(login.text, '同域配置（KYDOG_CARSI_LOGIN_URL 与 KYDOG_CARSI_ENTITY_ID 同一个 host）'
-          + '不该走到跨域确认那一支：checkLoginHost 返回 fill、根本不问。出现「用户刚刚确认了」'
-          + '就说明标签在 open 与 fill 之间跳到了别的 host 上，而那道本该由人看的确认'
-          + '被 confirmLoginPage 自己点掉了').not.toContain('用户刚刚确认了');
-        expect(seen.asked, '同上，从 UI 那一侧再看一眼：同域这一轮不该弹出那道是非题')
-          .toBe(false);
+      // **两个证人对不对得上**：`r.askedUser` 为真才有「用户刚刚确认了」这一句
+      //（`browserTools.ts`），它是产品那一侧「走没走跨域确认」的直接事实；
+      // `seen.asked` 是 UI 那一侧的。两边不一致就是接线出了问题。
+      // 这里**不**断言「该不该问」——「该不该」由填的那一刻标签在哪决定，
+      // 而那一刻的 host 这条用例观测不到（配置里的 loginUrl 不是它）。
+      if (seen.asked) {
+        expect(login.text, 'UI 上确实弹出过那道确认并被点了「是」，产品的回显里却没有'
+          + '「用户刚刚确认了」—— 两个证人对不上，多半是 browserTools 的 askedUser 那一路断了。'
+          + '（这里只问「有没有问过」；host 对不对由上面那条 filledHost === witnessHost 守。）'
+          + (sameHost ? '顺带：配置上是同域却问了，说明标签在 open 与 fill 之间跳走过。' : ''))
+          .toContain('用户刚刚确认了');
       } else {
-        expect(login.text, '跨域配置（entityID 与登录页不同 host —— checkLoginHost 第 3 条，'
-          + '产品明确支持的形态）必须问过一次，而且回显的正是刚才那道确认里的 host。'
-          + '这一句不在，说明凭据是在没有任何人确认的情况下填进一个非 entityID 的域的')
-          .toContain(`用户刚刚确认了 ${filledHost}`);
+        expect(login.text, 'UI 上一次都没弹出那道确认，产品的回显里却有「用户刚刚确认了」——'
+          + '两个证人对不上：要么这一轮真问了而 confirmLoginPage 没看见（那它替谁点的「是」？），'
+          + '要么 askedUser 被误置成真。凭据填在哪由上面那条 filledHost === witnessHost 守'
+          + (sameHost ? '' : '。顺带：配置上是跨域却没问，说明标签在 open 与 fill 之间已经跳到 entityID 的 host 上了'))
+          .not.toContain('用户刚刚确认了');
       }
       expect(login.text, '结果里要回显当前机构（description 里那份是建会话时的快照，这一行才是当前值）')
         .toContain(`当前机构：${CARSI.name}`);
