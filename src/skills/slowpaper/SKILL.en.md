@@ -1,6 +1,6 @@
 ---
 name: slowpaper
-description: Find papers through KyDog's built-in browser on academic sources that have no API. Four cases — fastpaper returns exit 4 from every source; you need Chinese-language coverage; you need something only Google Scholar has (web-wide coverage, the "all versions" cluster, citation counts, theses and grey literature); you need to open one specific web page and see what it says. Institutional (CARSI) login into subscription databases also goes through here. It covers Google Scholar and Baidu Xueshu, and the output is search results and links — this release downloads no files. Use it when the user says fastpaper found nothing, try another way, is there Chinese literature on this, what does this page say, or log in with my university account. The default is still fastpaper — a source that is reachable, returns static HTML and needs no session should not be searched with a browser.
+description: Find papers through KyDog's built-in browser on academic sources that have no API. Five cases — fastpaper returns exit 4 from every source; you need Chinese-language coverage; you need something only Google Scholar has (web-wide coverage, the "all versions" cluster, citation counts, theses and grey literature); you need to open one specific web page and see what it says; you are unsure what terms a field uses and want one broad sweep for them first. Institutional (CARSI) login into subscription databases also goes through here. It covers Google Scholar and Baidu Xueshu, and the output is search results and links — this release downloads no files. Use it when the user says fastpaper found nothing, try another way, is there Chinese literature on this, what does this page say, or log in with my university account. The default is still fastpaper — a source that is reachable, returns static HTML and needs no session should not be searched with a browser.
 ---
 
 # slowpaper
@@ -18,7 +18,7 @@ and `references/carsi.md` covers institutional login.
 
 **The default is `fastpaper`** — 23 sources with APIs, fast, cheap, easy on the context.
 
-Open the browser only in these four cases:
+Open the browser only in these five cases:
 
 1. **fastpaper returns `exit 4` repeatedly** — every source still says "nothing" after you
    have switched sources and rephrased the query
@@ -29,6 +29,11 @@ Open the browser only in these four cases:
    citation counts, theses and grey literature
 4. **You need to look at one specific web page** — the user handed you a link, or you need
    to read a paper's landing page
+5. **Terminology reconnaissance** — when you are unsure what terms a field uses, run one
+   broad sweep **before any search begins**, **taking words only, not papers**. This is the
+   "Step 0" in `literature-review` and `research-frontier`. Its caps are separate and hard:
+   **one source, at most 1 page, at most 10 titles**; the product is a word list, not a
+   candidate pool, and you leave as soon as you have the words
 
 ### The test — reachable + static HTML + no session needed → that is fastpaper's job
 
@@ -50,6 +55,11 @@ each carrying a snapshot back, while `fastpaper search` is one command and one b
 and switch query terms first — `exit 4` means "this source really does not have it",
 not "this paper does not exist".
 
+**Case 5 (terminology reconnaissance) does not conflict with that**: it runs **before any
+fastpaper search**, and its reason is "I am not sure which terms this field uses", not
+"fastpaper searched once and found nothing". Opening the browser to look for new words
+*after* a search is exactly what the ban above covers — go back to fastpaper and rephrase.
+
 ---
 
 ## 2. Scholar or Baidu Xueshu, one of the two
@@ -65,8 +75,8 @@ When `browser_open` returns `failed` / `timeout`, or returns `ok` with an `httpS
 of **403**, react per the table below.
 
 **A 403 is a successful navigation, not a `failed`** — the page did arrive, it is just an
-interception page. Judge on `httpStatusCode`, a protocol fact; do not match strings in the
-interception page's body text.
+interception page. Judge on the `HTTP 403` in the tool result (the navigation verdict line
+reads 「但服务器返回 HTTP 403」); do not match strings in the interception page's body text.
 
 | Source | Interception (measured 2026-09-07) | Reaction |
 | --- | --- | --- |
@@ -156,4 +166,4 @@ things that belong on disk are the final artifacts the user asked for.
 | `references/browser.md` | **Read this before touching anything.** How the four tools work together, how to write a batch, what stop-on-error means, when to hand over to the user |
 | `references/scholar.md` | When using Google Scholar — search playbook, result-page selectors, paging, the 403 fingerprint |
 | `references/xueshu.md` | When using Baidu Xueshu — the same, plus "JS-driven paging must be followed by a `wait`" |
-| `references/carsi.md` | When you need an institutional account to reach a subscription database |
+| `references/carsi.md` | When you need an institutional (CARSI) account to reach a subscription database: how to call `browser_login`, the script for a CAPTCHA page, the one success test, and the next step for each of seven error codes |

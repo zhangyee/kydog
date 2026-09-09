@@ -167,25 +167,41 @@ textarea.atomic-textarea-box.search-input     无 name、无 id
 1. 无障碍树里它们不出现 —— 快照里找不到，`index` 定位对它们**不可用**，只能用 `selector`
 2. 「下一页」要用文本定位，比如 `div.page.n` 里取 `innerText` 含「下一页」的那个
 
-翻页 + 抽取的 `repeat` 剧本：
+翻页 + 抽取的剧本。**一页一次 `browser_act`，不要写进 `repeat`** —— 一批里每一轮的等待条件
+都是同一个，而「翻到了第几页」逐页不同（`references/browser.md` §五）。
+
+抽当前这一页：
 
 ```jsonc
-{ "kind": "repeat", "times": 3, "actions": [
-  { "kind": "extract", "selectors": {
-      "item": "div.paper-wrap.result",
-      "title": "h3.paper-title a",
-      "detail": "h3.paper-title a@href",
-      "info": "div.paper-info",
-      "sources": "div.paper-source a@href"
-  }},
-  { "kind": "click", "selector": "<「下一页」，见上>" },
-  { "kind": "wait",  "until": { "selector": "div.page.active", "state": "present" } }
-]}
+{ "kind": "extract", "selectors": {
+    "item": "div.paper-wrap.result",
+    "title": "h3.paper-title a",
+    "detail": "h3.paper-title a@href",
+    "info": "div.paper-info",
+    "sources": "div.paper-source a@href"
+}}
 ```
 
-**`click` 之后那个 `wait` 同样是必需的**，理由同上：翻页也是 JS 驱动、不产生导航。少了它，`repeat` 三轮会把**第一页抽三遍**，返回值看起来一切正常。
+翻下一页，**单独一次调用**；翻完之后**再发一次调用**用上面那份选择器抽：
 
-翻到最后一页时 `click` 会因无匹配而停 —— 预期行为，前几轮抽到的数据照常返回。
+```jsonc
+{ "kind": "click", "selector": "<「下一页」，见上>" }
+```
+
+**这里的翻页是 JS 驱动、不产生导航**，而 `browser_act` 本来也不等任何东西 ——
+点击之后**必须自己确认页面真的换了**。
+
+**「等当前页标记出现」这种条件在这里没有用**：`div.page.active` 是**当前页**的标记，
+**点击之前就已经成立**，而 `wait` 是先探一次再等 —— 它会立刻回「等到了」，一毫秒都没等
+（`references/browser.md` §五）。写上去只会让剧本看起来更严谨。
+
+**怎么确认**：抽完之后拿这一页的第一条 `title` 与上一页的第一条比一眼 ——
+**一模一样就是页面还没换**，别把它当成新的一页记下来，也别接着往下翻。
+那正是「把第一页抽三遍、返回值一切正常」的样子。
+（一个「点击前不成立、翻页后成立」的等待条件本期还没有实测过，见「补齐程序」。）
+
+翻到最后一页时那次 `click` 会因无匹配而报错 —— 预期行为，之前每一页抽到的数据早已经在
+各自那次调用的返回值里。
 
 ## 全文入口怎么处理：报告，不下载
 
@@ -221,6 +237,8 @@ textarea.atomic-textarea-box.search-input     无 name、无 id
    标题、作者/年/来源、被引数、全文/文献传递入口各自的选择器，以及翻页控件的形态。顺便试
    「旧版入口」那条路
 2. **验证**：用本项目的 `browser_act` 的 `extract` 动作把每一条选择器真跑一遍，跑不通的改掉，
-   并把整段检索 + 翻页写成一个能一次跑通的剧本
+   并把整段检索 + 翻页写成一个能一次跑通的剧本。**翻页这一步要一并采出一个「点击前不成立、
+   翻页后成立」的等待条件**（`div.page.active` 那种「当前页」标记不行，理由见上）——
+   在此之前只能靠上面那条「比一眼第一条标题」
 
 第 2 步不能省：两套工具看到的 DOM 不一定一样。

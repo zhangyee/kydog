@@ -59,7 +59,7 @@ was sent. Scholar here is a real `<form>`, and in a real browser Enter necessari
 **Check this one first** when re-verifying with our own tools. Until then, clicking the button
 is the path known to work.
 
-Then extract results with the `repeat` playbook under "How to page".
+Then extract results with the playbook under "How to page".
 
 **Never write `index` into a playbook.** Snapshot indices are a product of "this one opening
 of this page" and drift with every new session; `index` is for exploration only (you clicking
@@ -163,29 +163,44 @@ Target "next page" with **`#gs_n a:has(.gs_ico_nav_next)`** — measured to matc
 element, and **independent of interface language**. Do not match on the words 「下一页」:
 with `hl=en` it is `Next`.
 
-The `repeat` playbook for paging and extracting:
+The playbook for paging and extracting. **One `browser_act` per page; do not put it inside a
+`repeat`** — every round of a batch carries the same wait condition, while "which page we got
+to" differs page by page (`references/browser.md` §5).
+
+Extract the current page:
 
 ```jsonc
-{ "kind": "repeat", "times": 3, "actions": [
-  { "kind": "extract", "selectors": {
-      "item": ".gs_r.gs_or.gs_scl",
-      "title": "h3.gs_rt a",
-      "page": "h3.gs_rt a@href",
-      "pdf": "div.gs_ggs .gs_or_ggsm a@href",
-      "meta": "div.gs_a",
-      "cited": ".gs_fl a.gs_or_cited"
-  }},
-  { "kind": "click", "selector": "#gs_n a:has(.gs_ico_nav_next)" }
-]}
+{ "kind": "extract", "selectors": {
+    "item": ".gs_r.gs_or.gs_scl",
+    "title": "h3.gs_rt a",
+    "page": "h3.gs_rt a@href",
+    "pdf": "div.gs_ggs .gs_or_ggsm a@href",
+    "meta": "div.gs_a",
+    "cited": ".gs_fl a.gs_or_cited"
+}}
 ```
 
-Scholar's paging uses **real links and goes through a main-frame navigation**, so no explicit
-`wait` is needed here — the tool layer waits for that navigation's outcome.
-**Baidu Xueshu is not like this** (SPA paging produces no navigation, so a `click` must be
-followed by a `wait`); the two sources' playbooks cannot copy each other on this point.
+Turning to the next page is **its own call**; afterwards send **another call** that extracts
+with the same selectors as above:
 
-On the last page the `click` stops because nothing matches — expected behaviour, and the data
-extracted in the earlier rounds still comes back.
+```jsonc
+{ "kind": "click", "selector": "#gs_n a:has(.gs_ico_nav_next)" }
+```
+
+**Scholar's paging really is a real link and really does go through a main-frame navigation —
+but `browser_act` does not wait for navigations.** A click dispatches two mouse events and
+returns (`browser.md` §5 rule 2). So "it navigates, therefore no `wait` is needed" is wrong,
+and after that click you **must confirm for yourself that the page really changed**.
+
+**How to confirm**: after extracting, compare this page's first `title` with the previous
+page's first one — **identical means the page has not changed yet**; do not record it as a new
+page and do not page on. That is exactly the shape of "extracting the first page three times
+while every result looks normal".
+(A condition that is false before the click and true after paging has not been measured this
+release — see "Completion procedure".)
+
+On the last page that `click` errors out because nothing matches — expected behaviour, and the
+data from every earlier page is already in that page's own tool result.
 
 **Do not page too far.** Scholar is far more sensitive to rapid consecutive paging than to a
 single search, and falling into a 403 mid-way costs you the whole round in a source switch.
@@ -227,7 +242,11 @@ Step 1 (reconnaissance) is done; **step 2 has not been done yet**:
 
 2. **Verification**: once the substrate is built, run every selector above for real through
    this project's `browser_act` `extract` action, fix the ones that do not work, and join
-   "open the home page → search → page and extract" into one playbook that runs end to end
+   "open the home page → search → page and extract" into one playbook that runs end to end.
+   **The paging step must also come back with a condition that is false before the click and
+   true after paging** (the page/offset segment of the result page's address is the most
+   promising one; `urlMatches` tests the address the main process holds and never enters the
+   page) — until then the only check is "compare the first title", above
 
 This step cannot be skipped: two toolchains do not necessarily see the same DOM (login state,
 UA, and whether a proxy is in play can each make Scholar return a different version of the

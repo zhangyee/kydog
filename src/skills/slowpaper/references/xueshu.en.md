@@ -201,28 +201,47 @@ the playbook:
 2. "Next page" must be targeted by text, e.g. whichever `div.page.n` has `innerText`
    containing 「下一页」
 
-The `repeat` playbook for paging and extracting:
+The playbook for paging and extracting. **One `browser_act` per page; do not put it inside a
+`repeat`** — every round of a batch carries the same wait condition, while "which page we got
+to" differs page by page (`references/browser.md` §5).
+
+Extract the current page:
 
 ```jsonc
-{ "kind": "repeat", "times": 3, "actions": [
-  { "kind": "extract", "selectors": {
-      "item": "div.paper-wrap.result",
-      "title": "h3.paper-title a",
-      "detail": "h3.paper-title a@href",
-      "info": "div.paper-info",
-      "sources": "div.paper-source a@href"
-  }},
-  { "kind": "click", "selector": "<「下一页」, see above>" },
-  { "kind": "wait",  "until": { "selector": "div.page.active", "state": "present" } }
-]}
+{ "kind": "extract", "selectors": {
+    "item": "div.paper-wrap.result",
+    "title": "h3.paper-title a",
+    "detail": "h3.paper-title a@href",
+    "info": "div.paper-info",
+    "sources": "div.paper-source a@href"
+}}
 ```
 
-**That `wait` after the `click` is likewise required**, for the same reason as above: paging is
-JS-driven too and produces no navigation. Without it, three `repeat` rounds will extract **the
-first page three times**, and the result will look entirely normal.
+Turning to the next page is **its own call**; afterwards send **another call** that extracts
+with the same selectors as above:
 
-On the last page the `click` stops because nothing matches — expected behaviour, and the data
-extracted in the earlier rounds still comes back.
+```jsonc
+{ "kind": "click", "selector": "<「下一页」, see above>" }
+```
+
+**Paging here is JS-driven and produces no navigation**, and `browser_act` does not wait for
+anything anyway — after the click you **must confirm for yourself that the page really
+changed**.
+
+**"Wait for the current-page marker to appear" is useless here**: `div.page.active` marks the
+**current** page and **already holds before the click**, while `wait` probes once before it
+waits — it returns "condition met" instantly, having waited not one millisecond
+(`references/browser.md` §5). Writing it in only makes the script look more rigorous.
+
+**How to confirm**: after extracting, compare this page's first `title` with the previous
+page's first one — **identical means the page has not changed yet**; do not record it as a new
+page and do not page on. That is exactly the shape of "extracting the first page three times
+while every result looks normal".
+(A condition that is false before the click and true after paging has not been measured this
+release — see "Completion procedure".)
+
+On the last page that `click` errors out because nothing matches — expected behaviour, and the
+data from every earlier page is already in that page's own tool result.
 
 ## What to do with full-text entry points: report, do not download
 
@@ -267,6 +286,9 @@ ones the user can simply open.
    form of the paging control. Try the 「旧版入口」 path while you are there
 2. **Verification**: run every selector for real through this project's `browser_act` `extract`
    action, fix the ones that do not work, and write the whole search-and-page flow as one
-   playbook that runs end to end
+   playbook that runs end to end. **The paging step must also come back with a condition that
+   is false before the click and true after paging** (a "current page" marker like
+   `div.page.active` will not do, for the reason above) — until then the only check is
+   "compare the first title", above
 
 Step 2 cannot be skipped: two toolchains do not necessarily see the same DOM.

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { describeNav, landedOnPage, ActionSchema, createBrowserTools } from './browserTools';
+import { describeNav, landedOnPage, ActionSchema, createBrowserTools, READ_MAX_CHARS } from './browserTools';
 import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import { MAX_BATCH_CHARS } from '../browser/extract';
+import { PAGE_CONTENT_OPEN } from '../browser/snapshot';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
 
@@ -341,6 +342,13 @@ const node = (over: Record<string, unknown> = {}) => ({
   index: 1, nodeId: 7, role: 'textbox', name: '检索框', x: 10, y: 20, w: 200, h: 30, ...over,
 });
 
+/**
+ * `browser_read` 那段页内表达式的返回值。**形状是 `{text, total}`**：`total` 是截断
+ * **之前**的正文长度，主进程靠它算出 `{truncated, returned, totalKnown}`。
+ * `total` 不给就默认「没截断」——用例要造截断得自己把它写大。
+ */
+const read = (text: string, total?: number) => ({ text, total: total ?? text.length });
+
 type Exec = (id: string, params: unknown, signal?: AbortSignal) => Promise<{ content: { text?: string }[]; details?: unknown }>;
 const noopAskShared = { onOpened: () => {}, onClosed: () => {} };
 const makeTools = (over: Partial<Parameters<typeof createBrowserTools>[0]> = {}) => createBrowserTools({
@@ -610,7 +618,7 @@ describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
   });
 
   it('browser_read 也走同一条路', async () => {
-    bs.isolatedImpl = () => '正文';
+    bs.isolatedImpl = () => read('正文');
     await toolNamed('browser_read').execute('call-2', { tabId: 't1' });
     expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'evalInPage']);
   });
@@ -626,11 +634,67 @@ describe('browser_read 走隔离世界（I3）', () => {
   // 与 extract 当初搬进隔离世界的理由一字不差：页面覆写 document.querySelector /
   // innerText 骗得到主世界。整页正文同样是模型当事实用的东西。
   it('读正文用的是隔离世界，不是主世界', async () => {
-    bs.isolatedImpl = () => '正文';
+    bs.isolatedImpl = () => read('正文');
     const s = bodyOf(await toolNamed('browser_read').execute('call-2', { tabId: 't1' }));
     expect(bs.mainWorld).toEqual([]);
     expect(bs.isolated.map((r) => r.worldId)).toEqual([WORLD_ID]);
     expect(s).toContain('正文');
+  });
+});
+
+/**
+ * **`browser_read` 的截断必须显式回报**（spec §5.5，Task 9 评审的裁决 A）。
+ *
+ * 在这之前它是 `.slice(0, 20000)` 之后直接把字符串塞进边界标记里 —— 一篇长论文的
+ * 正文在两万字符处**戛然而止，返回值里一个字都不提**。模型读到的「文章到此为止」
+ * 与「我只给了你前两万字」长得一模一样，而这两件事的下一步完全不同（一个是可以
+ * 开始写摘要，一个是必须换 `extract` 按章节取）。
+ *
+ * 形状照仓库里已有的那一套：`{truncated, returned, totalKnown?}`。这里 `totalKnown`
+ * **数得出来**（截断之前的 `innerText.length` 就在页内那段表达式手上），所以必须给；
+ * 数不出来才不给这个键（`extract` 的 `fieldTruncation` 就是那一种）。
+ */
+describe('browser_read 的截断显式回报（裁决 A）', () => {
+  const readBody = () => toolNamed('browser_read').execute('c', { tabId: 't1' }).then(bodyOf);
+
+  it('没截断的时候一个字都不加 —— 不给每次调用添噪声', async () => {
+    bs.isolatedImpl = () => read('短短一篇正文');
+    const s = await readBody();
+    expect(s).toContain('短短一篇正文');
+    expect(s).not.toContain('已截断');
+  });
+
+  it('截断了就说清：截了多少、本页共多少、上限是多少', async () => {
+    bs.isolatedImpl = () => read('前两万字'.repeat(1), 87654);
+    const s = await readBody();
+    expect(s).toContain('正文已截断');
+    expect(s).toContain('87654');            // totalKnown：本页正文的真长度
+    expect(s).toContain(String(READ_MAX_CHARS)); // 上限
+  });
+
+  it('截断附注在边界标记**外面** —— 它是我们说的话，不是页面内容', async () => {
+    bs.isolatedImpl = () => read('正文开头', 99999);
+    const s = await readBody();
+    const note = s.indexOf('正文已截断');
+    const open = s.indexOf(PAGE_CONTENT_OPEN);
+    expect(note).toBeGreaterThanOrEqual(0);
+    expect(open).toBeGreaterThanOrEqual(0);
+    expect(note).toBeLessThan(open);
+  });
+
+  it('上限只有一份 —— 注入的表达式里那个数就是 READ_MAX_CHARS', async () => {
+    bs.isolatedImpl = () => read('正文');
+    await readBody();
+    const code = bs.isolated.map((r) => r.code).join('\n');
+    expect(code).toContain(String(READ_MAX_CHARS));
+  });
+
+  it('页面回了个不认识的形状：明确报错，不把它当正文交出去', async () => {
+    // 从前这里回的就是一个裸字符串。**退回裸字符串必须红** —— 那时 total 无从得知，
+    // 而「不知道有没有截断」被当成「没有截断」正是这条缺陷本身。
+    bs.isolatedImpl = () => '一段裸字符串';
+    await expect(toolNamed('browser_read').execute('c', { tabId: 't1' }))
+      .rejects.toMatchObject({ code: 'browser.page_no_result' });
   });
 });
 
@@ -643,7 +707,7 @@ describe('browser_read 走隔离世界（I3）', () => {
 // （它只在步骤之间查）。所以这两条路都不许自己拿 wc 注脚本。
 describe('页内求值走 evalInPage，不自己拿 webContents 注脚本', () => {
   it('browser_read 不碰 webContentsOf，走的是带闸的入口', async () => {
-    bs.isolatedImpl = () => '正文';
+    bs.isolatedImpl = () => read('正文');
     await toolNamed('browser_read').execute('c', { tabId: 't1' });
     expect(bs.order).toContain('evalInPage');
     expect(bs.order).not.toContain('webContentsOf');
@@ -862,7 +926,7 @@ describe('browser_login 的返回值', () => {
 describe('登录状态挂在每一个浏览器工具结果的头部', () => {
   const HEAD = '已看到 SAML 断言回传';
   // browser_read 会把页内求值的结果当正文用，默认那份替身回 null。
-  beforeEach(() => { bs.isolatedImpl = () => '正文'; });
+  beforeEach(() => { bs.isolatedImpl = () => read('正文'); });
 
   it('browser_read 的头部带得出来', async () => {
     lf.notes.set('t1', HEAD);

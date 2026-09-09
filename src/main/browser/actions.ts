@@ -361,6 +361,15 @@ const KEYS: Record<string, { code: string; vk: number; text?: string }> = {
 };
 
 /**
+ * 白名单里的按键名，按表里的顺序。
+ *
+ * **导出只为一个读者**：`slowpaperDocConstants.test.ts` —— skill 文档里逐字列着这 13 个
+ * 名字与「只认这 13 个」那个数，而文档里的名字与计数没有编译器管。这里给它一个**唯一出处**，
+ * 免得那边再抄一份（抄一份就等于让测试对着自己的副本打勾）。
+ */
+export const KEY_NAMES: readonly string[] = Object.freeze(Object.keys(KEYS));
+
+/**
  * 密码框硬闸：模型的 `type` 动作一律不许打进 `input[type="password"]`。
  *
  * 判据是元素类型这个**协议层事实**，不是「name 里有没有 password 字样」那种猜。

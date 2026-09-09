@@ -223,11 +223,51 @@ const ACT_DESC = [
 
 const ReadParams = Type.Object({ tabId: Type.String() });
 
+/**
+ * 一次 `browser_read` 最多带回多少字符的正文。
+ *
+ * 依据与 `extract` 的 `MAX_BATCH_CHARS` 同一条：最坏情况是中文正文，1 字符 ≈ 1 token，
+ * 两万字符已经占掉一次工具结果的合理份额。
+ *
+ * **导出是给两个读者用的**：注入页面的那段表达式（`READ_EXPR`，只有一份，别在别处
+ * 再硬写一个数），以及 `slowpaperDocConstants.test.ts`（skill 文档里写的那个数与它对账）。
+ */
+export const READ_MAX_CHARS = 20_000;
+
+/**
+ * 注入页面的那段表达式。**回的是 `{text, total}`，不是裸字符串** ——
+ * `total` 是截断**之前**的正文长度，主进程靠它算出 `{truncated, returned, totalKnown}`。
+ *
+ * 从前这里是 `.innerText.slice(0, 20000)` 直接回字符串：一篇长论文的正文在两万字符处
+ * 戛然而止，而返回值一个字都不提。**「文章到此为止」与「我只给了你前两万字」在模型眼里
+ * 长得一模一样**，可两者的下一步完全不同（一个可以开始写摘要，一个必须改用 `extract`
+ * 按章节取）。spec §5.5 那条「截断一律显式回报」在这里从前是个例外，现在不是了。
+ *
+ * `total` 在页内**数得出来**（`slice` 之前的 `length` 就在手上），所以 `totalKnown`
+ * 必须给 —— 「数不出来才不给这个键」说的是 `extract` 的 `fieldTruncation` 那一种。
+ */
+const READ_EXPR = '(() => { const m = document.querySelector("main,article"); '
+  + 'const t = (m || document.body).innerText; '
+  // 不是字符串就回 null，让主进程那一侧明确报出来。**别 `String(t)` 兜底** ——
+  // 那会把一份 `undefined` 变成正文里四个字母的 "undefined"，模型读到的是一篇
+  // 「内容为 undefined」的文章，而不是「这次没读到」。
+  + `return typeof t === 'string' ? { text: t.slice(0, ${READ_MAX_CHARS}), total: t.length } : null; })()`;
+
+/** 截断说人话。**放在边界标记外面** —— 这是我们说的话，不是页面内容。 */
+function describeReadTruncation(returned: number, total: number): string | null {
+  if (total <= returned) return null;
+  return `⚠ 正文已截断：本页正文共 ${total} 字符，这里只有开头的 ${returned} 字符`
+    + `（一次最多 ${READ_MAX_CHARS}）。**后面那一段不在下面这个框里** —— `
+    + '不要据此断定文章到此为止。要后半部分就用 browser_act 的 extract 按章节选择器取。';
+}
+
 const READ_DESC = [
   '读当前页面的正文文本。',
   '',
   '结构化抽取**不在这里** —— 那是 browser_act 的 extract 动作（它能取 href，正文抽取取不到）。',
   '这个工具是给「我要读这篇文章说了什么」用的，不是给「我要这一页 20 条结果的链接」用的。',
+  '',
+  `一次最多带回 ${READ_MAX_CHARS} 字符；超出会**明确说出来**（截了多少、本页共多少）。`,
 ].join('\n');
 
 // ── browser_login ───────────────────────────────────────────────────────────
@@ -409,10 +449,22 @@ export function createBrowserTools(deps: BrowserToolDeps) {
           // `getOSProcessId()` 回 0 而 `isDestroyed()` 仍是 false，那时求值**永不
           // settle**（实测 3 秒内无任何结果）—— 而这是个 sequential 工具，
           // 挂住就是整轮 run 永远不返回。那个入口自带 pid 闸与单次求值时限。
-          const body = await browserService.evalInPage(params.tabId,
-            '(() => { const m = document.querySelector("main,article"); '
-            + 'return (m || document.body).innerText.slice(0, 20000); })()') as string;
-          return withTabs(wrapPageContent(body), params.tabId);
+          const raw = await browserService.evalInPage(params.tabId, READ_EXPR);
+          const r = raw as { text?: unknown; total?: unknown } | null;
+          // **形状不对就明确报错，不静默把它当正文交出去。** 退回裸字符串（这个工具
+          // 从前的形态）时 `total` 无从得知，而「不知道有没有截断」被当成「没有截断」
+          // 正是这条缺陷本身 —— 那不是一句不好看的话，是模型据以判断文章完没完的依据。
+          if (!r || typeof r !== 'object' || typeof r.text !== 'string' || typeof r.total !== 'number') {
+            throw new KydogError('browser.page_no_result',
+              '读正文这一步没有拿到认得出的结果 —— **这一页的正文这次说不出来**（不是「这一页没有正文」）。'
+              + '多半是求值中途页面导航走了，先取一份快照看页面现在什么样，再决定要不要重来。',
+              undefined, 'unknown');
+          }
+          const note = describeReadTruncation(r.text.length, r.total);
+          return withTabs(
+            (note ? `${note}\n\n` : '') + wrapPageContent(r.text),
+            params.tabId,
+          );
         },
         '读网页正文',
       ));
