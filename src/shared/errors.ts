@@ -122,6 +122,12 @@ export class KydogError extends Error {
    * 「结果未知」。两者共用一个错误码、消息又都是给模型看的散文，散文会改写、
    * 会被复述成别的措辞——**判别语义的必须是这个字段，不是消息里有没有某几个词**。
    * 其余错误码不用它，恒为 undefined。
+   *
+   * **现状如实登记：目前只有生产方在写它，还没有生产读者**（读它的只有用例）。
+   * 它也**过不了 IPC** —— `SerializedError` 只带 `code` + `message`，所以渲染层
+   * 拿不到它；真去按它分支时 tsc 会当场红（那个属性不在 `SerializedError` 上），
+   * 不会静默出错。写在这里是为了让「以后要分这两件事就读这个字段、别去 match 散文」
+   * 这条约定有个落点 —— 别把它当成一道已经接上负载的闸。
    */
   readonly outcome?: 'unknown' | 'none';
   constructor(code: KydogErrorCode, message: string, cause?: unknown, outcome?: 'unknown' | 'none') {

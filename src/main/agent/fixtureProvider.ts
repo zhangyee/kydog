@@ -125,6 +125,11 @@ export async function createFixtureSession(
           // `browser_act` → `browserService.enqueue` → `withAgentDriving` →
           // `dispatch` / `evalInPage` 整条路一步不少。事件顺序也照真实 pi：
           // 先 tool_execution_start（AgentService 靠它建工具卡），再 end。
+          //
+          // **「没有捷径」也意味着「有真实副作用」**：`browser_open` 真打公网，
+          // `browser_login` 真用设置里那份校园账号提交一次登录、且本轮只有一次机会。
+          // 副作用清单写在 `e2e/fixtures/fixture.types.ts` 的 `tool` 那段 docblock 里
+          // （那是写剧本的人唯一会读的地方），改这里也去看一眼。
           emitRaw(listeners, {
             type: 'tool_execution_start',
             toolCallId: evt.toolCallId,

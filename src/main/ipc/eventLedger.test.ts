@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { EVENT_TOPICS, type EventTopic } from '../../shared/protocol';
+import { stripComments } from '../../test-support/stripComments';
 
 /**
  * **事件 topic 的三方对账**，照 RPC 那一套（`RPC_METHODS` / `registerHandler` /
@@ -25,46 +26,6 @@ import { EVENT_TOPICS, type EventTopic } from '../../shared/protocol';
 const MAIN_DIR = path.resolve(__dirname, '..');
 
 /**
- * 去掉注释再匹配。**这一步是必需的**：仓里到处是形如
- * 「Task 8 要补 `broadcaster.emit('browser.agentFocus', …)`」的说明性注释，
- * 不去掉的话，一句注释就能把「零发送方」伪装成「已经有人发了」。
- *
- * 逐字符走一遍，认得字符串/模板串/正则以外的 `//` 与 `/* *\/`。宁可少认（把代码当注释
- * 吃掉 → 少扫到一个发送方 → 那条 topic 变成「没人发也没登记」→ 红），
- * 不可多认（多认就是假绿）。
- */
-function stripComments(src: string): string {
-  let out = '';
-  let i = 0;
-  let quote: string | null = null;
-  while (i < src.length) {
-    const c = src[i];
-    const next = src[i + 1];
-    if (quote) {
-      out += c;
-      if (c === '\\') { out += next ?? ''; i += 2; continue; }
-      if (c === quote) quote = null;
-      i += 1;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === '`') { quote = c; out += c; i += 1; continue; }
-    if (c === '/' && next === '/') {
-      while (i < src.length && src[i] !== '\n') i += 1;
-      continue;
-    }
-    if (c === '/' && next === '*') {
-      i += 2;
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
-    }
-    out += c;
-    i += 1;
-  }
-  return out;
-}
-
-/**
  * 一份源码里所有「把某个字面量 topic 交出去发」的地方。三种形态是全仓仅有的三种
  * （2026-09-09 逐条核过 `broadcaster.emit(` / `emitRun(` / `topic:` 的每一处）：
  *  · `broadcaster.emit('x', …)`
@@ -79,7 +40,10 @@ function emittedTopicsIn(src: string): string[] {
   const patterns = [
     /\bbroadcaster\.emit\(\s*(['"`])([\w.]+)\1/g,
     /\bemitRun\(\s*[A-Za-z_$][\w$]*\s*,\s*(['"`])([\w.]+)\1/g,
-    /\btopic:\s*(['"`])([\w.]+)\1/g,
+    // **必须带上 `replay({`**：只写 `topic:` 的话，任何一个带 topic 字面量的对象
+    // （一个类型夹具、一个过滤谓词 `{ topic: 'browser.agentFocus' }`）都会被算成
+    // 发送方 —— 那正好把「零发送方」伪装成「已接」，是这张台账要挡的事故本身。
+    /\breplay\(\s*\{\s*topic:\s*(['"`])([\w.]+)\1/g,
   ];
   for (const re of patterns) {
     for (const m of code.matchAll(re)) found.push(m[2]);
@@ -176,5 +140,17 @@ describe('扫描器：注释里的 emit 不算发送方', () => {
   it('字符串里的 // 不会被当成注释开头（不许把后面的代码一起吃掉）', () => {
     const src = "log('https://x/'); broadcaster.emit('fs.changed', p);";
     expect(emittedTopicsIn(src)).toEqual(['fs.changed']);
+  });
+
+  /**
+   * **m5**：第三条正则从前只写 `topic:`，于是**任何**带 topic 字面量的对象都算发送方 ——
+   * 一个类型夹具、一个过滤谓词写成 `{ topic: 'browser.agentFocus' }` 就能把
+   * 「零发送方」伪装成「已接」，而那正是这张台账要挡的事故本身。收紧成
+   * 「必须是 `replay({ topic: … }`」之后，下面第二条才是假的。
+   */
+  it('只有真的 replay({ topic }) 算发送方，光有 topic 字面量的对象不算', () => {
+    expect(emittedTopicsIn("replay({ topic: 'run.resync', payload });")).toEqual(['run.resync']);
+    expect(emittedTopicsIn("const want = { topic: 'browser.agentFocus' };")).toEqual([]);
+    expect(emittedTopicsIn("if (e.topic === 'run.started') return;")).toEqual([]);
   });
 });

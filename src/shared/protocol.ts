@@ -192,8 +192,8 @@ export type RpcMethod = RpcCall['method'];
  *
  * 为什么需要它：`dispatcher.ts` 的 `handlers[method] = …` 是运行时填表 ——
  * 往 `RpcCall` 加一条而**不注册 handler 不会编译报错、不会有用例红**，只在运行时
- * 回一句 `no handler for …`。本分支一次把这条盲区从 0 条放大到 12 条
- * （`browser.*` 七条 + `institution.*` 五条，都是计划内的 Task 6 Step 5 / Step 8），
+ * 回一句 `no handler for …`。本分支一次把这条盲区从 0 条放大到 13 条
+ * （`browser.*` 八条 + `institution.*` 五条，都是计划内的 Task 6 Step 5 / Step 8 / Task 8），
  * 所以必须先把「有没有人管这一条」变成可检查的事实。
  *
  * 两道闸配套：

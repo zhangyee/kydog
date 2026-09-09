@@ -86,7 +86,11 @@ export const MAX_FIELD_CHARS = 1000;
  * - 与 `browser_read` 的 2 万字符同一量级，放宽到 2.5 倍是因为一批可以有多步；
  * - 最坏情况是中文正文，1 字符 ≈ 1 token，5 万字符 ≈ 5 万 token —— 已经是一次
  *   工具结果的合理上限（约占 200k 窗口的四分之一），再大就不是「截断保护」了；
- * - 真实检索一步 20 条 × 400 字符 ≈ 8 千字符，5 万够连抽六步不碰上限。
+ * - 「真实检索一步 20 条 × 400 字符 ≈ 8 千字符，5 万够连抽六步不碰上限」这句
+ *   **被实测证伪了，别照它估**（deferred D19）：那个「一行 400 字符」的前提本身不成立。
+ *   实测的那一次是 6 步 × 20 条 × 5 字段 → **120 条里有 113 条被截**。真实的学术条目
+ *   （标题 + 作者 + 摘要片段 + 来源 + href）一行远不止 400 字符。所以这个预算控的是
+ *   **量级**（4800 万 → 5 万），不是「够抽几步」。
  */
 export const MAX_BATCH_CHARS = 50_000;
 
@@ -369,8 +373,11 @@ export function describeExtractResult(r: ExtractResult, budgetDropped = 0): stri
       + `（最长的一格原有 ${r.fieldTruncation.maxOriginal} 字符）`;
   }
   if (budgetDropped > 0) {
-    line += `；其中 ${budgetDropped} 条没有收进结果 —— 整批字符预算已用尽`
-      + '（此前收下的仍然在，要接着抽就把字段收窄或分几次调用）';
+    // **减法在这里做完**（deferred D20）：头一句 `抽到 N 条` 说的是**页面上抽到的**，
+    // 而真正收进结果的是 `N - budgetDropped`。不把差算出来的话，模型要自己减 ——
+    // 而它下一步要判的正是「我手上有几条」。
+    line += `；其中 ${budgetDropped} 条没有收进结果（实际收下 ${r.rows.length - budgetDropped} 条）`
+      + ' —— 整批字符预算已用尽（此前收下的仍然在，要接着抽就把字段收窄或分几次调用）';
   }
   return line;
 }

@@ -606,6 +606,48 @@ describe('extract 的接线：隔离世界 + 整批预算（评审变异 M13）'
     expect(s).toContain('抽到 2 条：');
     expect(s).not.toContain('预算');
   });
+
+  /**
+   * **实发字节这一维**（终评 tools 面 I2）。
+   *
+   * 上面两条守的是**预算的行为**（丢了几行、话术对不对）；它们守不住
+   * **拼装出来到底多少字节** —— 预算按 **compact** JSON 记账，而工具结果实发的是
+   * `JSON.stringify(collected, null, 1)` 的美化输出（deferred D18，最坏 1.40x）。
+   * 评审变异实测：把 `null, 1` 改成 `null, 8` → tsc 0 / lint 0 / `npm test` **全绿**。
+   *
+   * **e2e 那条（E-1b）也接不住这一刀**：本轮实测过 —— 它的夹具每行是一个 1000 字符的
+   * 大 blob，缩进只加在键与括号上，摊到那种行上几乎不动，改成 8 之后 e2e 照样绿。
+   * 所以这一条刻意用**多字段短值**的行（D18 那个最坏形状），让缩进的膨胀真的显出来。
+   *
+   * 上界的依据：预算按 compact 记 `MAX_BATCH_CHARS`，indent=1 的最坏膨胀 1.40x
+   * → 7 万；余下给头部（标签行 / 逐步话术）与收尾快照。**这不是逐字节封顶**，
+   * 它守的是量级：任何让实发翻倍的改动（换 indent、把别的段落塞进数据块）都会在这里红。
+   */
+  it('工具结果实发的字符数落在说得出依据的上界内（多字段短值那种最坏行）', async () => {
+    // 16 个短字段：compact 下一行约 100 字符，indent=1 会给每个键各加一行缩进 ——
+    // 这正是 D18 量到 1.40x 的形状。
+    const wide = (n: number) => ({
+      rows: Array.from({ length: n }, (_, i) => Object.fromEntries(
+        Array.from({ length: 16 }, (_, k) => [`f${k}`, `r${i}c${k}`]),
+      )),
+      rowTruncation: { truncated: false, returned: n, totalKnown: n },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    bs.isolatedImpl = () => wide(50);
+    const r = await act(Array.from({ length: 12 },
+      () => ({ kind: 'extract', selectors: { item: '.r', f0: 'h3' } })));
+    const emitted = bodyOf(r);
+    // 先确认这一批真把预算撑爆了 —— 没撑爆的话下面那条上界是白给的
+    expect(emitted, '这一批没有触发整批预算截断，下面那条上界就没在守任何东西')
+      .toContain(`累计超过整批 ${MAX_BATCH_CHARS} 字符的预算`);
+    const CEILING = Math.round(MAX_BATCH_CHARS * 1.4) + 10_000;
+    expect(emitted.length,
+      `这一次工具结果实发 ${emitted.length} 字符，超过上界 ${CEILING}。`
+      + `预算按 compact JSON 记 ${MAX_BATCH_CHARS}，实发是 indent=1 的美化输出`
+      + '（最坏 1.40x），余下 10000 给头部与收尾快照 —— 超出就说明实发与记账的比例变了'
+      + '（换了 indent？把别的段落塞进数据块了？）。这一维只有这条用例在守：'
+      + '预算的行为断言与 e2e 的 E-1b 都接不住它。').toBeLessThan(CEILING);
+  });
 });
 
 describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {

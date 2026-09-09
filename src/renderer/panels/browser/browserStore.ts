@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { BrowserState, BrowserTabInfo, BrowserTabsSnapshot } from '../../../shared/types';
+import type { EventPayload } from '../../../shared/protocol';
 
 /**
  * 内置浏览器在渲染层的镜像。**主进程才是真相** —— 这里只存它广播过来的东西，
@@ -30,8 +31,14 @@ import type { BrowserState, BrowserTabInfo, BrowserTabsSnapshot } from '../../..
  * 是协议层事实，不是「猜它应该更大」），tabs 认 revision。两道闸互不干涉。
  */
 
-/** agent 焦点广播的载荷。形状与 `RuntimeEvent` 里那条一致。 */
-export type AgentFocusPayload = { tabId: string | null; active: boolean; action?: string };
+/**
+ * agent 焦点广播的载荷。**直接取协议里那一条，不再手抄一份**。
+ *
+ * 手抄的那份挡得住改名/改类型（`browserBridge.ts` 那一行会红），挡不住主进程
+ * **加字段** —— 渲染层静默忽略，无害但也是一份会漂的真相。协议是单一出处，
+ * 取它零成本。
+ */
+export type AgentFocusPayload = EventPayload<'browser.agentFocus'>;
 
 /**
  * 「还没拿到过 epoch」。主进程的 epoch 从 0 起、第一次 `newEpoch()` 给的是 1，

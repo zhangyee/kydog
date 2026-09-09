@@ -104,6 +104,7 @@ vi.mock('./browser/browserService', async () => {
       newEpoch: () => { const ep = reg.newEpoch(); h.browser.push({ m: 'newEpoch', args: ep }); return ep; },
       getState: () => { h.browser.push({ m: 'getState', args: undefined }); return reg.toState(); },
       syncView: (args: unknown) => { h.browser.push({ m: 'syncView', args }); },
+      setViewportMode: (id: string, mode: string) => { h.browser.push({ m: 'setViewportMode', args: { id, mode } }); },
       disposeForRun: () => {},
     },
   };
@@ -330,14 +331,14 @@ describe('每一条 RPC 都有交代：注册了，或明确登记成「尚未�
 });
 
 /**
- * **浏览器七条：接错了不会编译报错，只会「悄悄不工作」。**
+ * **浏览器八条：接错了不会编译报错，只会「悄悄不工作」。**
  *
  * 这一层全是转发，所以要守的正是转发本身：调的是不是那个方法、参数有没有对调、
  * 有没有把渲染层发来的东西整个递下去。上面那三条穷尽性断言只管「注册了没有」，
  * 管不了「注册的那个函数干的是不是这件事」——
  * `registerHandler('browser.close', (a) => browserService.keep(a.tabId))` 照样全绿。
  */
-describe('browser.* 七条转发到 browserService 上对应的那一个', () => {
+describe('browser.* 八条转发到 browserService 上对应的那一个', () => {
   it('open 只递协议上写明的 url / tabId', async () => {
     await call('browser.open', { url: 'https://x.example/p', tabId: 't7' });
     expect(h.browser).toEqual([{ m: 'open', args: { url: 'https://x.example/p', tabId: 't7' } }]);
@@ -397,6 +398,27 @@ describe('browser.* 七条转发到 browserService 上对应的那一个', () =>
     ];
     for (const stage of stages) await call('browser.syncView', stage);
     expect(h.browser).toEqual(stages.map((args) => ({ m: 'syncView', args })));
+  });
+
+  /**
+   * **第八条**（Task 8 的视口档位）。它一度只有上面那三条穷尽性断言管着 ——
+   * 也就是只管「注册了没有」。评审变异实测：把它接成
+   * `registerHandler('browser.setViewportMode', a => browserService.activate(a.tabId))`
+   * → tsc 0 / lint 0 / `handlers.test.ts` 与 `BrowserSidebar.test.tsx` **全绿**。
+   * 产品行为是：用户点「1:1 / 适配」开关，主进程什么都没改，
+   * `browser.tabsChanged` 广播回来的 `viewportMode` 还是旧值，开关**自己弹回去**，
+   * 全程零报错。
+   *
+   * **两个档位各来一次**：只试一个的话，把 mode 钉死成字面量
+   * （`setViewportMode(a.tabId, 'fit')`）照样全绿。
+   */
+  it('setViewportMode 把 tabId 与档位分别带下去，两个档位都不许被钉死', async () => {
+    await call('browser.setViewportMode', { tabId: 't1', mode: 'oneToOne' });
+    await call('browser.setViewportMode', { tabId: 't2', mode: 'fit' });
+    expect(h.browser).toEqual([
+      { m: 'setViewportMode', args: { id: 't1', mode: 'oneToOne' } },
+      { m: 'setViewportMode', args: { id: 't2', mode: 'fit' } },
+    ]);
   });
 });
 
