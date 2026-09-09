@@ -8,6 +8,7 @@ import { useUpdateStore } from './stores/updateStore';
 import { applyRunEvent } from './runEvents';
 import { restoreViewState, installViewStateSync } from './viewState';
 import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
+import { useBrowserStore } from './panels/browser/browserStore';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
@@ -29,6 +30,8 @@ export async function bootstrap(): Promise<void> {
     workspaceCollapsed: state.settings.ui.workspaceCollapsed,
     inspectorCollapsed: state.settings.ui.inspectorCollapsed,
     collapsedProjects: new Set(state.settings.ui.collapsedProjects.filter((p) => knownProjects.has(p))),
+    browserOpen: state.settings.ui.browserOpen,
+    browserWidth: state.settings.ui.browserWidth,
     settingsTabOpen: noProvider,
     settingsTab: 'provider',
     activeCenterTab: noProvider ? 'settings' : 'thread',
@@ -46,6 +49,8 @@ export async function bootstrap(): Promise<void> {
       && s.readingFontSize === prev.readingFontSize
       && s.workspaceCollapsed === prev.workspaceCollapsed
       && s.inspectorCollapsed === prev.inspectorCollapsed
+      && s.browserOpen === prev.browserOpen
+      && s.browserWidth === prev.browserWidth
       // Set 每次改动都换新引用，比引用就够了，不必逐元素比
       && s.collapsedProjects === prev.collapsedProjects
     ) return;
@@ -57,11 +62,31 @@ export async function bootstrap(): Promise<void> {
         inspectorCollapsed: s.inspectorCollapsed,
         readingFontSize: s.readingFontSize,
         collapsedProjects: [...s.collapsedProjects],
+        browserOpen: s.browserOpen,
+        browserWidth: s.browserWidth,
       },
     }).catch((err) => console.error('persist ui failed', err));
   });
 
   setupEventBridge();
+
+  // ── 内置浏览器：**先订阅、后 getState、按 revision 去旧** ──
+  //
+  // 顺序不能反，而且这一句必须排在 `setupEventBridge()` 之后。
+  //  · 先 getState 再订阅：两者之间到达的 `browser.tabsChanged` 没人接，界面停在
+  //    一份稍旧的清单上，直到下一次真实变更；
+  //  · 只订阅不 getState：渲染进程重载后若标签一直没有新变化，就再也收不到任何东西，
+  //    `browserStore` 会一直是空的（spec §7 的 S4「重载后标签仍在」按那样的协议
+  //    根本无法成立）。而且 **epoch 只从这一条 RPC 来** —— 拿不到它，`useStageBounds`
+  //    上报的每一次 syncView 都会被主进程判为过期，侧栏里那块网页永远不可见。
+  //
+  // 先订阅则可能先收到比快照**新**的帧，那一侧由 `applySnapshot` 的 revision 闸去旧
+  // （epoch 走的是另一道闸，理由见 browserStore 的文件头注释）。
+  //
+  // 不 await：它只影响侧栏，不该把整个启动流程挡在一次 IPC 后面。
+  void window.kydog.invoke('browser.getState')
+    .then((st) => useBrowserStore.getState().applySnapshot(st))
+    .catch((err) => console.error('browser.getState failed', err));
 
   // 排在 setupEventBridge 之后，不在前面：主进程那次后台目录刷新是 fire-and-forget 的，
   // 先读清单再订阅的话，落在这两步之间的 llm.listChanged 就没人接——清单会一直停在
@@ -109,6 +134,15 @@ function setupEventBridge(): void {
   // 主进程后台拉完 pi.dev 的模型目录后推的整份快照。渲染层自己没有别的办法知道它落地了。
   window.kydog.on('llm.listChanged', (r) => {
     useLlmStore.getState().setSnapshot(r);
+  });
+  // 标签清单：全量一帧，**不含 epoch**（广播里刻意不带，见 BrowserTabsSnapshot）。
+  window.kydog.on('browser.tabsChanged', (p) => {
+    useBrowserStore.getState().applyTabs(p);
+  });
+  // agent 在驱动哪个标签。单独一条 topic 而不是搭标签广播的顺风车 ——
+  // `setAgentActive` 刻意不推 revision、`toState()` 又把它抹掉，那条广播带不出来。
+  window.kydog.on('browser.agentFocus', (p) => {
+    useBrowserStore.getState().applyAgentFocus(p);
   });
 }
 

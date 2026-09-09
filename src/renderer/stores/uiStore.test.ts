@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useUiStore } from './uiStore';
+import { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
 
 function reset() {
   useUiStore.setState({ openFileTabs: [], activeFileTabId: null, activeCenterTab: 'thread' });
@@ -215,5 +216,65 @@ describe('uiStore markFileChanged', () => {
     useUiStore.getState().markFileChanged('/p/a.md');
     useUiStore.getState().markFileChanged('/p/a.md');
     expect(useUiStore.getState().openFileTabs[0].reloadNonce).toBe(2);
+  });
+});
+
+/**
+ * 浏览器侧栏与 Inspector 共用右栏那块地，但**各记各的状态与宽度**。
+ * 混起来的具体后果：用户平时把 Inspector 收着，开一次浏览器再关掉，
+ * Inspector 就自己展开了 —— 一次没人要求过的状态改动。
+ */
+describe('uiStore 浏览器侧栏', () => {
+  beforeEach(() => {
+    useUiStore.setState({
+      browserOpen: false, browserWidth: DEFAULT_BROWSER_WIDTH, inspectorCollapsed: false, inspectorWidth: 280,
+    });
+  });
+
+  it('toggleBrowser 开合', () => {
+    useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().browserOpen).toBe(true);
+    useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().browserOpen).toBe(false);
+  });
+
+  it('closeBrowser 只关不开', () => {
+    useUiStore.setState({ browserOpen: true });
+    useUiStore.getState().closeBrowser();
+    expect(useUiStore.getState().browserOpen).toBe(false);
+    useUiStore.getState().closeBrowser();
+    expect(useUiStore.getState().browserOpen).toBe(false);
+  });
+
+  it('开合浏览器不碰 Inspector 的收起状态', () => {
+    useUiStore.setState({ inspectorCollapsed: true });
+    useUiStore.getState().toggleBrowser();
+    useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().inspectorCollapsed).toBe(true);
+  });
+
+  it('两栏各记各的宽度，互不写对方', () => {
+    useUiStore.getState().setBrowserWidth(700);
+    expect(useUiStore.getState().browserWidth).toBe(700);
+    expect(useUiStore.getState().inspectorWidth).toBe(280);
+    useUiStore.getState().setInspectorWidth(300);
+    expect(useUiStore.getState().browserWidth).toBe(700);
+  });
+
+  /**
+   * **拖拽时当场钳**，与另外两栏那句 `Math.max(0, w)` 不同：这个宽度会立刻经
+   * `browser.syncView` 变成原生 WebContentsView 的 bounds，非法值当场就生效；
+   * 落盘那一侧的 `sanitizeBrowserWidth` 是 fire-and-forget 的，赶不上。
+   */
+  it('宽度当场钳到下限（不等落盘往返把它拉回来）', () => {
+    useUiStore.getState().setBrowserWidth(10);
+    expect(useUiStore.getState().browserWidth).toBe(MIN_BROWSER_WIDTH);
+    useUiStore.getState().setBrowserWidth(-9999);
+    expect(useUiStore.getState().browserWidth).toBe(MIN_BROWSER_WIDTH);
+  });
+
+  it('另外两栏没有这道下限 —— 别顺手把它们也改了', () => {
+    useUiStore.getState().setInspectorWidth(10);
+    expect(useUiStore.getState().inspectorWidth).toBe(10);
   });
 });

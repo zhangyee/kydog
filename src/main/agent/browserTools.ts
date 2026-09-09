@@ -381,6 +381,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         // 另一次操作可能产生新快照，拿队列外那一份去 diff 就会把别人的改动算进
         // 这一批的「页面变化」。
         () => runBatch(params.tabId, browserService.getSnapshot(params.tabId), steps, signal),
+        '操作网页',
       ));
     },
   };
@@ -413,6 +414,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
             + 'return (m || document.body).innerText.slice(0, 20000); })()') as string;
           return withTabs(wrapPageContent(body), params.tabId);
         },
+        '读网页正文',
       ));
     },
   };
@@ -448,7 +450,9 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         submit: params.submit === true,
         usernameIndex: params.usernameIndex,
         snapshotId: params.snapshotId,
-        ask: (a) => ask(toolCallId, a, signal),
+        // 标签 id 在这里绑上：`LoginAsk` 那个口子刻意只描述「问什么」，
+        // 不该知道 toolCallId / tabId 这些调用现场的东西。
+        ask: (a) => ask(toolCallId, { ...a, tabId: params.tabId }, signal),
       });
       const parts = [
         `已在 ${r.host} 填入「${r.institutionName}」的机构账号与密码。`,

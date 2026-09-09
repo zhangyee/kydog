@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { FsNode, ReadingFontSize, SkillSyncHealth, ThemeName } from '../../shared/types';
 import { fileTitle, isHtmlPath, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
+import { clampBrowserWidth } from '../panels/browser/stage';
+import { DEFAULT_BROWSER_WIDTH } from '../../shared/types';
 
 export type FileTab = {
   id: string;                  // = 文件绝对路径（天然唯一键）
@@ -24,6 +26,13 @@ type UiState = {
   inspectorCollapsed: boolean;
   workspaceWidth: number;
   inspectorWidth: number;
+  /**
+   * 浏览器侧栏开着吗。**与 `inspectorCollapsed` 是两件事**：两者共用右栏那块地，
+   * 但各记各的状态与宽度 —— 关掉浏览器时 Inspector 要回到用户上次留下的样子
+   * （收着的仍然收着），而不是被浏览器的开关顺手掰开。
+   */
+  browserOpen: boolean;
+  browserWidth: number;
   userMenuOpen: boolean;
   /** 内置 skill 同步的健康度。null = 还没问过主进程，与「问过、答的是 skipped」不是一回事。
    *  UI 一律读这个显式状态，不许从「skill 列表是空的」反推 —— 空列表在 skipped 与 failed
@@ -65,8 +74,11 @@ type UiState = {
   setReadingFontSize: (s: ReadingFontSize) => void;
   toggleWorkspace: () => void;
   toggleInspector: () => void;
+  toggleBrowser: () => void;
+  closeBrowser: () => void;
   setWorkspaceWidth: (w: number) => void;
   setInspectorWidth: (w: number) => void;
+  setBrowserWidth: (w: number) => void;
   openSettings: (tab?: SettingsTabId) => void;
   closeSettings: () => void;
   showThreadTab: () => void;
@@ -84,6 +96,8 @@ export const useUiStore = create<UiState>((set) => ({
   inspectorCollapsed: false,
   workspaceWidth: 260,
   inspectorWidth: 280,
+  browserOpen: false,
+  browserWidth: DEFAULT_BROWSER_WIDTH,
   userMenuOpen: false,
   skillSyncHealth: null,
   setSkillSyncHealth: (h) => set({ skillSyncHealth: h }),
@@ -161,8 +175,14 @@ export const useUiStore = create<UiState>((set) => ({
   setReadingFontSize: (s) => set({ readingFontSize: s }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
+  toggleBrowser: () => set((s) => ({ browserOpen: !s.browserOpen })),
+  closeBrowser: () => set({ browserOpen: false }),
   setWorkspaceWidth: (w) => set({ workspaceWidth: Math.max(0, w) }),
   setInspectorWidth: (w) => set({ inspectorWidth: Math.max(0, w) }),
+  // **拖拽时当场钳**，与另外两栏那句 `Math.max(0, w)` 不同：这个宽度会立刻经
+  // `browser.syncView` 变成原生 WebContentsView 的 bounds，非法值当场就生效了；
+  // 而落盘那一侧的 `sanitizeBrowserWidth` 是 fire-and-forget 的，赶不上。
+  setBrowserWidth: (w) => set({ browserWidth: clampBrowserWidth(w) }),
   openSettings: (tab = 'provider') => set({
     settingsTabOpen: true,
     settingsTab: tab,

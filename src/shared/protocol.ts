@@ -347,12 +347,15 @@ export type RuntimeEvent =
   // 注意**不做交互屏蔽**：webContents.setIgnoreInputEvents 在 Electron 41 上不存在
   // （2026-09-08 spike 实测），原生层也盖不住 DOM 遮罩。
   //
-  // **本 topic 现在零发送方**，登记在 `eventLedger.test.ts` 的 `PENDING_EMITTER` 里。
-  // 信号在主进程是有的（`browserService.withAgentDriving` 里那对 `registry.setAgentActive`），
+  // **发送点是 `browserService.emitAgentFocus`**，由 `markDriving` 与
+  // `withAgentDriving` 的 `finally` 各调一次（Task 8 接上，`PENDING_EMITTER` 已清空）。
+  // 它为什么必须自成一条 topic：信号在主进程本来就有（那对 `registry.setAgentActive`），
   // 但 `setAgentActive` 刻意不推 revision、`toState()` 又会把 `isAgentActive` 抹掉，
-  // 所以现有的 `browser.tabsChanged` 广播带不出来。Task 8 要在 `markDriving` 与
-  // `withAgentDriving` 的 `finally` 两处补 `broadcaster.emit('browser.agentFocus', …)`，
-  // 并把这条从 `PENDING_EMITTER` 里划掉 —— 不划那份名单会红（它不许过期）。
+  // 所以 `browser.tabsChanged` 广播在类型上和运行时都带不出来。
+  //
+  // **渲染层按集合语义消费**（`browserStore.applyAgentFocus`）：嵌套驱动时同一个标签
+  // 会收到两次 `active: true` 只收到一次 `false`，当计数器用会卡住不灭。
+  // `tabId: null` 保留给「一次把全部清掉」，今天没有发送方走这一支。
   | { topic: 'browser.agentFocus'; payload: { tabId: string | null; active: boolean; action?: string } };
 
 /** select 的一个候选项。`id` 是要原样回传给 pi 的答案，label/description 是 provider 自己的措辞。 */

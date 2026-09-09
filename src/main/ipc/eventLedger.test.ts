@@ -9,8 +9,9 @@ import { EVENT_TOPICS, type EventTopic } from '../../shared/protocol';
  *
  * 要关的盲区：往 `RuntimeEvent` 加一条 topic 而**没有任何地方发它**，`tsc` 不响、
  * `lint` 不响、用例全绿 —— 渲染层照常订阅，那盏灯永远不亮。`browser.agentFocus`
- * 现在就是这个状态（Task 6 声明、Task 8 才接），本批之前它唯一的记录在一份
- * **被 .gitignore 忽略的**交接报告里。
+ * 一度就是这个状态（Task 6 声明、Task 8 接上），本台账立起来之前它唯一的记录在一份
+ * **被 .gitignore 忽略的**交接报告里。**它现在已经有发送方**（`browserService`
+ * 的 `emitAgentFocus`），所以下面的 `PENDING_EMITTER` 是空的。
  *
  * 三份台账：
  *  · **声明** = `EVENT_TOPICS`（漏一条在 protocol.ts 里编译不过）；
@@ -107,13 +108,13 @@ const SENDERS = new Set(EMITTED);
  * 接上之后必须从这里划掉 —— 下面第二条用例守着这份名单不许过期。
  */
 const PENDING_EMITTER: EventTopic[] = [
-  // Task 8（渲染层侧栏）：信号在主进程里是有的 —— `browserService.withAgentDriving`
-  // 里那对 `registry.setAgentActive(id, true/false)`，但 `setAgentActive` 刻意不推
-  // revision、`toState()` 又把 `isAgentActive` 抹掉，所以现有的 browser.tabsChanged
-  // 广播带不出来。要在 `markDriving` 与 `withAgentDriving` 的 `finally` 两处补
-  // `broadcaster.emit('browser.agentFocus', …)`。不补的话，标签条指示灯与侧栏横幅
-  // 订阅了也永远不亮，而且编译过、lint 过、用例全绿。
-  'browser.agentFocus',
+  // 空的 —— 每一条 topic 都真的有地方发它。
+  //
+  // 最后从这里划掉的是 `browser.agentFocus`（Task 8）：发送点是 `browserService`
+  // 的 `emitAgentFocus`，由 `markDriving` 与 `withAgentDriving` 的 `finally` 各调一次。
+  // 那条信号在主进程本来就有（`registry.setAgentActive` 那一对），但 `setAgentActive`
+  // 刻意不推 revision、`toState()` 又把 `isAgentActive` 抹掉，所以 `browser.tabsChanged`
+  // 广播带不出来 —— 这正是它必须自成一条 topic 的原因。
 ];
 
 describe('事件 topic 三方对账：声明 / 已接 / 待接', () => {
@@ -124,7 +125,9 @@ describe('事件 topic 三方对账：声明 / 已接 / 待接', () => {
   });
 
   it('「待接」名单不许过期 —— 接上了就要划掉', () => {
-    // Task 8 补上 emit 却忘了删这一行 → 这里红，名单不会烂在库里。
+    // 补上 emit 却忘了从名单里删掉 → 这里红，名单不会烂在库里。
+    // （Task 8 接 `browser.agentFocus` 时正是这条与上一条配成一对：
+    //  只补 emit 不划名单红这条，只划名单不补 emit 红上一条。）
     expect(PENDING_EMITTER.filter((t) => SENDERS.has(t))).toEqual([]);
   });
 

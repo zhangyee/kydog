@@ -9,7 +9,16 @@ import { ASK_TOOL_NAME, type AskOutcome, type AskQuestion } from '../../shared/a
  * 和 activeMessageId），工具只管调，不 import AgentService，避免循环依赖。
  */
 export type AskSharedState = {
-  onOpened(toolCallId: string, questions: AskQuestion[]): void;
+  /**
+   * `browserTabId` 是**人机交接口**（spec §4.5）：带上它，渲染层就展开浏览器侧栏
+   * 并切到那个标签，让用户看着页面回答（CARSI 的验证码、人机验证都靠它）。
+   *
+   * 刻意**不在渲染层用「ask 发生时正好有 agent 焦点标签」去推断** —— 那是拿时间
+   * 相关性当事实：`browser.agentFocus` 的熄灯信号与 `run.ask_start` 之间没有任何
+   * 顺序保证，而 `browser_login` 的确认恰好发生在**进队列之前**（此刻还没有
+   * 任何驱动帧握着那个标签，那个推断会推出 null）。
+   */
+  onOpened(toolCallId: string, questions: AskQuestion[], browserTabId?: string): void;
   onClosed(toolCallId: string, outcome: AskOutcome): void;
 };
 
@@ -31,6 +40,11 @@ const QuestionSchema = Type.Object({
 const ParamsSchema = Type.Object({
   // 题数没有布局约束：UI 一题一屏、靠 cursor 翻页，加题只是多翻几屏。
   questions: Type.Array(QuestionSchema, { minItems: 1, maxItems: 10 }),
+  // 问的是「屏幕上这一页」时带上它，界面会展开浏览器侧栏并切到这个标签。
+  // 值只能抄自浏览器工具结果头部那行「标签页: [tab_xxx] …」，不要自己编。
+  browserTabId: Type.Optional(Type.String({
+    description: '这道题是关于内置浏览器某个标签上的页面时，填那个标签的 id（tab_xxx）',
+  })),
 });
 
 // 导出给 systemPrompt.ts：KyDog 走自定义系统提示词后，pi 不再渲染工具的
@@ -73,8 +87,14 @@ export function createAskUserQuestionTool(
 
       // 2. 先注册 pending，3. 再通知 UI。顺序不能反：否则 UI 打开时 broker
       //    还没准备好，用户手快提交会被当成迟到消息丢弃。
+      // 形状不对就当没给（**不抛**）：模型多写一个字段不该把整道题毙掉，而这个字段
+      // 只影响界面切不切标签。真伪由渲染层按自己那份标签镜像判 —— 编一个不存在的
+      // id 过来，那边找不到就只展开侧栏、不切标签。
+      const raw = (params as { browserTabId?: unknown })?.browserTabId;
+      const browserTabId = typeof raw === 'string' && raw.trim() !== '' ? raw : undefined;
+
       const pending = broker.ask(threadId, toolCallId, questions, signal);
-      shared.onOpened(toolCallId, questions);
+      shared.onOpened(toolCallId, questions, browserTabId);
 
       const outcome = await pending;
       shared.onClosed(toolCallId, outcome);

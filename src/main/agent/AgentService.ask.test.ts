@@ -81,6 +81,22 @@ describe('AgentService 的 ask_user_question 事件分派', () => {
     expect(bound.askOpened.has('tc1')).toBe(true);
   });
 
+  /**
+   * 人机交接口（spec §4.5）。**不带的时候连这个键都不该出现** —— 一个值为
+   * `undefined` 的键会原样进 run journal，重放时那一帧的形状与直播时不一样。
+   */
+  it('onOpened 给了 browserTabId 就带进 run.ask_start', async () => {
+    const { askShared } = await setup();
+    askShared.onOpened('tc1', QUESTIONS, 'tab_abc12345');
+    expect(emitted('run.ask_start')[0][1]).toMatchObject({ browserTabId: 'tab_abc12345' });
+  });
+
+  it('没给 browserTabId 时载荷里根本没有这个键', async () => {
+    const { askShared } = await setup();
+    askShared.onOpened('tc1', QUESTIONS);
+    expect('browserTabId' in (emitted('run.ask_start')[0][1] as object)).toBe(false);
+  });
+
   it('工具的 onClosed 发 run.ask_end', async () => {
     const { askShared } = await setup();
     askShared.onOpened('tc1', QUESTIONS);

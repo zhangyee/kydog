@@ -18,17 +18,17 @@ type Probe = (args: {
 
 function harness(opts: { probe?: Probe } = {}) {
   const broker = new QuestionBroker();
-  const opened: Array<{ toolCallId: string; questions: AskQuestion[] }> = [];
+  const opened: Array<{ toolCallId: string; questions: AskQuestion[]; browserTabId?: string }> = [];
   const closed: Array<{ toolCallId: string; outcome: AskOutcome }> = [];
   const order: string[] = [];
   const shared = {
-    onOpened: (toolCallId: string, questions: AskQuestion[]) => {
+    onOpened: (toolCallId: string, questions: AskQuestion[], browserTabId?: string) => {
       order.push('onOpened');
       // **顺序不能反**：UI 打开时 broker 必须已经准备好，否则用户手快提交会被
       // 当成迟到消息丢弃。验证它的探针由用例注入 —— 探针本身会**结束**这次提问，
       // 所以不能挂在每一条用例上（也不许写成一句不动真格的恒真断言，见下面那条）。
       opts.probe?.({ broker, order, toolCallId, questions });
-      opened.push({ toolCallId, questions });
+      opened.push({ toolCallId, questions, browserTabId });
     },
     onClosed: (toolCallId: string, outcome: AskOutcome) => { order.push('onClosed'); closed.push({ toolCallId, outcome }); },
   };
@@ -36,7 +36,9 @@ function harness(opts: { probe?: Probe } = {}) {
   return { broker, shared, opened, closed, order, ask };
 }
 
-const ARGS = { host: 'iaaa.pku.edu.cn', username: 'u2100011000', institutionName: '北京大学' };
+const ARGS = {
+  tabId: 'tab_abc12345', host: 'iaaa.pku.edu.cn', username: 'u2100011000', institutionName: '北京大学',
+};
 
 /** 拿到 UI 那一侧看到的题目（`onOpened` 是同步调的，所以此时已经有了）。 */
 async function askAndAnswer(pick: 'yes' | 'no' | 'cancel' | 'skip'): Promise<{ ok: boolean; q: AskQuestion }> {
@@ -169,5 +171,31 @@ describe('与 ask broker 的接线', () => {
     const q = h.opened[0].questions[0];
     h.broker.submit('thread-1', 'call-1', [{ questionId: q.id, kind: 'answered', optionIds: [q.options[1].id] }]);
     expect(await p).toBe(false);
+  });
+});
+
+/**
+ * `browserTabId` 是人机交接口（spec §4.5）：确认框问的是「你看这一页是不是你学校的
+ * 登录页」，用户看不到那一页就无从判断。所以标签 id 必须跟着 `run.ask_start` 过河。
+ *
+ * 这里断的是**同一个字符串真的到了 UI 那一侧**，不是「有这么个字段」——
+ * 后者在把 `args.tabId` 写成 `args.host` 的变异下照样绿。
+ */
+describe('标签 id 透传给 UI', () => {
+  it('onOpened 收到的 browserTabId 就是调用方给的那个 tabId', async () => {
+    const h = harness();
+    const p = h.ask('call-1', { ...ARGS, tabId: 'tab_deadbeef' });
+    expect(h.opened[0].browserTabId).toBe('tab_deadbeef');
+    h.broker.cancel('thread-1', 'call-1');
+    await p;
+  });
+
+  it('它与 host 不是同一个值 —— 拿错字段传过去这里会红', async () => {
+    const h = harness();
+    const p = h.ask('call-1', ARGS);
+    expect(h.opened[0].browserTabId).not.toBe(ARGS.host);
+    expect(h.opened[0].browserTabId).toBe(ARGS.tabId);
+    h.broker.cancel('thread-1', 'call-1');
+    await p;
   });
 });

@@ -54,8 +54,10 @@ export const WALKER_WORLD_ID = 31337;
 
 type Stage = { epoch: number; visible: boolean; occluded: boolean; bounds: RectDip };
 
-/** 一次 agent 驱动的窗口：哪一轮 run，以及它期间标过的标签。 */
-type DrivingFrame = { runId: string; tabs: Set<string> };
+/** 一次 agent 驱动的窗口：哪一轮 run，它期间标过的标签，以及给人看的动作名。
+ *  `action` 存在帧上而不是当参数逐层传：期间页面弹出来的新标签属于**同一次**动作，
+ *  它们的 `markDriving` 拿到的必须是同一个字符串，不是 undefined。 */
+type DrivingFrame = { runId: string; tabs: Set<string>; action?: string };
 
 /**
  * 日志里的网址：只留 origin + pathname。
@@ -272,13 +274,15 @@ export class BrowserService {
    *
    * 公开是给 Task 4 用的：`browser_act` 的 execute 要把整批动作包进来。
    */
-  async withAgentDriving<T>(tabId: string, runId: string | null, fn: () => Promise<T>): Promise<T> {
+  async withAgentDriving<T>(
+    tabId: string, runId: string | null, fn: () => Promise<T>, action?: string,
+  ): Promise<T> {
     if (runId === null) return fn();   // 用户自己的操作，不置位
     // **一次驱动一帧，各清各的。** 队列是按标签串的，所以两次 agent 驱动的操作
     // 完全可以同时在两个标签上跑；共用一个 Set + 一个 drivingRunId 的话，
     // 先结束的那一次会把另一次的标志一起清掉，而它还在跑 —— 那一刻页面弹出来的
     // 新标签就会被判成用户的，回合结束不回收。
-    const frame: DrivingFrame = { runId, tabs: new Set<string>() };
+    const frame: DrivingFrame = { runId, tabs: new Set<string>(), action };
     this.drivingFrames.push(frame);
     this.markDriving(frame, tabId);
     try {
@@ -290,6 +294,17 @@ export class BrowserService {
         // 还有别的驱动帧握着这个标签就别清 —— 清了就等于替它宣布结束。
         if (this.drivingFrames.some((f) => f.tabs.has(id))) continue;
         if (this.registry.has(id)) this.registry.setAgentActive(id, false);
+        // 熄灯放在 `has` 判断**外面**：这一句要与上面的 `markDriving` 严格配对，
+        // 别再多一个「有没有」的条件去决定发不发。
+        //
+        // **驱动期间标签被销毁的那一支走不到这里**（实测，`browserService.test.ts`
+        // 「驱动期间标签被销毁」那条钉住）：`destroyView` 里有一句
+        // `for (const f of this.drivingFrames) f.tabs.delete(id)`，标签早在收尾之前
+        // 就从帧里摘掉了，这个循环压根不会遍历到它。**那一支的清除信号是
+        // `browser.tabsChanged` 里它已经不在** —— 渲染层的 `applyAgentFocus` 表
+        // 按标签清单剪枝，两者合起来才穷尽。别为它在 `destroyView` 里再开第三个
+        // 发送点：那会让「谁在发这条 topic」重新散开。
+        this.emitAgentFocus(id, false);
       }
     }
   }
@@ -317,6 +332,23 @@ export class BrowserService {
     if (!this.registry.has(tabId)) return;
     this.registry.setAgentActive(tabId, true);
     frame.tabs.add(tabId);
+    this.emitAgentFocus(tabId, true, frame.action);
+  }
+
+  /**
+   * `browser.agentFocus` 的**唯一发送点**（`markDriving` 与 `withAgentDriving` 的
+   * `finally` 各调一次，见 `EVENT_TOPICS` 的三方对账）。
+   *
+   * 为什么要单开一条广播而不搭 `browser.tabsChanged` 的顺风车：`setAgentActive`
+   * **刻意不推 revision**（推一帧内容相同的状态出去，会让渲染层「按 revision 去旧」
+   * 退化成「永远接受最新一帧」），而 `toState()` 又把 `isAgentActive` 整个抹掉 ——
+   * 那条广播在类型上和运行时都带不出这个信号。
+   *
+   * **渲染层那一侧是一个集合，不是计数器**：嵌套驱动时（帧 A、帧 B 先后标住同一个
+   * 标签）会发两次 `true` 只发一次 `false`，集合语义下收敛正确，计数器语义下不会。
+   */
+  private emitAgentFocus(tabId: string, active: boolean, action?: string): void {
+    broadcaster.emit('browser.agentFocus', { tabId, active, action });
   }
 
   // ── 状态与几何 ──────────────────────────────────────────────────────────
@@ -702,6 +734,7 @@ export class BrowserService {
       // 目标 URL 传的是**已经规范化**的那份：它进下载的关联集合，
       // 一个 PDF 直链要靠它才能被认成本次导航的终态。
       () => this.navigate(tabId, (wc) => wc.loadURL(url), url),
+      '打开网页',
     ));
     return { tabId, nav };
   }

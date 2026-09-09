@@ -112,3 +112,38 @@ describe('createAskUserQuestionTool', () => {
     expect(s.properties.questions.items.properties.options.maxItems).toBe(8);
   });
 });
+
+/**
+ * `browserTabId` 是人机交接口（spec §4.5）：带上它，渲染层就展开浏览器侧栏并切到
+ * 那个标签，用户看着页面回答。**刻意不让渲染层去推断**「ask 发生时正好有 agent
+ * 焦点标签」—— 那是拿时间相关性当事实。
+ *
+ * 形状不对时**不抛**：模型多写一个字段不该把整道题毙掉，那个字段只影响界面切不切标签。
+ */
+describe('createAskUserQuestionTool · browserTabId 透传', () => {
+  const withTab = (browserTabId: unknown) => ({ ...params, browserTabId });
+
+  it('给了合法字符串就原样传给 onOpened（第三个参数）', async () => {
+    const { broker, onOpened, tool } = make();
+    onOpened.mockImplementation((toolCallId: string) => broker.cancel('t1', toolCallId));
+    await tool.execute('tc1', withTab('tab_abc12345'), undefined, undefined, {} as never);
+    expect(onOpened.mock.calls[0][2]).toBe('tab_abc12345');
+  });
+
+  it('没给就是 undefined —— 不许自己编一个', async () => {
+    const { broker, onOpened, tool } = make();
+    onOpened.mockImplementation((toolCallId: string) => broker.cancel('t1', toolCallId));
+    await tool.execute('tc1', params, undefined, undefined, {} as never);
+    expect(onOpened.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it('形状不对（非字符串 / 空串 / 全空格）当没给，且这道题照常问得出去', async () => {
+    for (const bad of [42, null, {}, '', '   ', ['tab_x']]) {
+      const { broker, onOpened, tool } = make();
+      onOpened.mockImplementation((toolCallId: string) => broker.cancel('t1', toolCallId));
+      const r = await tool.execute('tc1', withTab(bad), undefined, undefined, {} as never);
+      expect(onOpened.mock.calls[0][2], JSON.stringify(bad)).toBeUndefined();
+      expect(r.details, JSON.stringify(bad)).toMatchObject({ kind: 'cancelled' });
+    }
+  });
+});

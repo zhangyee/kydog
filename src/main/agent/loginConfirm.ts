@@ -15,6 +15,14 @@ import type { AskSharedState } from './askUserQuestionTool';
  */
 
 export type LoginConfirmArgs = {
+  /**
+   * 这道题问的是哪个标签上的页面。**透传进 `run.ask_start`**，渲染层据此展开侧栏
+   * 并切过去 —— 用户要看着那一页才判断得了「这是不是我学校的登录页」。
+   *
+   * 必填（不是可选）：`browser_login` 的 execute 手上一定有它，写成可选就等于
+   * 允许「忘了带」，而忘了带的表现是确认框问一个用户看不见的页面。
+   */
+  tabId: string;
   /** 要在上面填凭据的那个 host。**给用户看的核心事实就是它。** */
   host: string;
   /**
@@ -65,7 +73,7 @@ export function createLoginAsk(
     const yesId = questions[0].options[0].id;
 
     const pending = broker.ask(threadId, toolCallId, questions, signal);
-    shared.onOpened(toolCallId, questions);
+    shared.onOpened(toolCallId, questions, args.tabId);
     const outcome = await pending;
     shared.onClosed(toolCallId, outcome);
 

@@ -31,6 +31,8 @@ export type NavIconName =
   | 'circle-plus'
   | 'arrow-up'
   | 'arrow-right'
+  | 'arrow-left'
+  | 'globe'
   | 'check'
   | 'grip-vertical'
   | 'mouse-pointer-2'
@@ -197,6 +199,12 @@ const ICONS: Record<NavIconName, IconSpec> = {
   },
   'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
   'arrow-right': { paths: ['M5 12h14', 'm12 5 7 7-7 7'] },
+  'arrow-left': { paths: ['M19 12H5', 'm12 19-7-7 7-7'] },
+  // Lucide 的 globe：一个圆 + 一条赤道 + 一条经线（那条 arc 的两半镜像对称）。
+  'globe': {
+    paths: ['M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20', 'M2 12h20'],
+    circles: [{ cx: 12, cy: 12, r: 10 }],
+  },
   'check': { paths: ['M20 6 9 17l-5-5'] },
   'grip-vertical': {
     circles: [

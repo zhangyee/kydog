@@ -84,7 +84,7 @@ export type LoginBrowserPort = {
   webContentsIdOf(tabId: string): number | null;
   getSnapshot(tabId: string): AxSnapshot | null;
   enqueue<T>(tabId: string, fn: () => Promise<T>): Promise<T>;
-  withAgentDriving<T>(tabId: string, runId: string | null, fn: () => Promise<T>): Promise<T>;
+  withAgentDriving<T>(tabId: string, runId: string | null, fn: () => Promise<T>, action?: string): Promise<T>;
   evalInPage(tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown>;
   onTabDestroyed(fn: (tabId: string) => void): () => void;
 };
@@ -450,7 +450,7 @@ export class LoginFlow {
     }
 
     return this.ports.browser.enqueue(tabId, () => this.ports.browser.withAgentDriving(
-      tabId, opts.runId, () => this.fillInQueue(tabId, opts, askedUser),
+      tabId, opts.runId, () => this.fillInQueue(tabId, opts, askedUser), '机构登录',
     ));
   }
 
@@ -608,7 +608,7 @@ export const loginFlow = new LoginFlow({
     webContentsIdOf: (tabId) => browserService.webContentsIdOf(tabId),
     getSnapshot: (tabId) => browserService.getSnapshot(tabId),
     enqueue: (tabId, fn) => browserService.enqueue(tabId, fn),
-    withAgentDriving: (tabId, runId, fn) => browserService.withAgentDriving(tabId, runId, fn),
+    withAgentDriving: (tabId, runId, fn, action) => browserService.withAgentDriving(tabId, runId, fn, action),
     evalInPage: (tabId, code) => browserService.evalInPage(tabId, code),
     onTabDestroyed: (fn) => browserService.onTabDestroyed(fn),
   },

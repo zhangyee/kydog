@@ -3,12 +3,13 @@ import { promises as fsp, statSync, chmodSync, mkdirSync, writeFileSync, existsS
 import { atomicWriteWith0600Async } from './atomicWrite';
 import * as paths from './paths';
 import type { ConfirmedLogin, SettingsFile, TelemetryState } from '../../shared/types';
+import { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
 import { logger } from '../log';
 
-/** 浏览器侧栏的默认宽度与下限。下限不是拍脑袋的：页面按固定 1280 逻辑视口渲染，
- *  320px 时 scale 已经是 0.25，再窄人眼读不了。 */
-export const MIN_BROWSER_WIDTH = 320;
-export const DEFAULT_BROWSER_WIDTH = 560;
+/** 浏览器侧栏的默认宽度与下限。**真源在 `shared/types.ts`** —— 渲染层拖拽时也要用
+ *  同一个下限当场钳一次，而它 import 不了本模块（这里有 node:fs 与 electron 的路径）。
+ *  这里原样转出去，让既有调用方与用例不必改 import。 */
+export { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
 
 /** 当前 schema 版本。判据、迁移与日志里的「支持范围」都从这里取，别再各写一个字面量 ——
  *  上一次 bump 时判据留在了 v8，v9 文件因此被判成「v1 或更旧」。 */

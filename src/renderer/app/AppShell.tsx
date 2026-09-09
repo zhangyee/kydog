@@ -9,6 +9,7 @@ import { ConfirmHost } from './ConfirmHost';
 import { WorkspacePanel } from '../panels/workspace/WorkspacePanel';
 import { MainPane } from '../panels/main-pane/MainPane';
 import { InspectorPanel } from '../panels/inspector/InspectorPanel';
+import { BrowserSidebar } from '../panels/browser/BrowserSidebar';
 import { useThreadsStore } from '../stores/threadsStore';
 import { useUiStore } from '../stores/uiStore';
 import { useUnreadStore } from '../panels/workspace/unreadStore';
@@ -66,7 +67,8 @@ export function AppShell() {
         <ThreeColumnLayout
           left={<ErrorBoundary fallbackLabel="工作区出错"><WorkspacePanel /></ErrorBoundary>}
           center={<ErrorBoundary fallbackLabel="主内容区出错"><MainPane /></ErrorBoundary>}
-          right={<ErrorBoundary fallbackLabel="检视区出错"><InspectorPanel /></ErrorBoundary>}
+          inspector={<ErrorBoundary fallbackLabel="检视区出错"><InspectorPanel /></ErrorBoundary>}
+          browser={<ErrorBoundary fallbackLabel="浏览器侧栏出错"><BrowserSidebar /></ErrorBoundary>}
         />
       </div>
       <ConfirmHost />

@@ -109,7 +109,7 @@ class AgentService {
     // 只有工具知道 pending 何时真正就绪，所以事件必须由它触发，不能挂在
     // pi 的 tool_execution_start 上（那时还没校验、没分配 id、broker 也没注册）。
     const askShared: AskSharedState = {
-      onOpened: (toolCallId: string, questions: AskQuestion[]) => {
+      onOpened: (toolCallId: string, questions: AskQuestion[], browserTabId?: string) => {
         const b = this.sessions.get(threadId);
         const messageId = b?.activeMessageId;
         if (!b || !messageId) {
@@ -123,6 +123,9 @@ class AgentService {
         b.askOpened.add(toolCallId);
         emitRun(b, 'run.ask_start', {
           threadId, runId: this.currentRunId(threadId), messageId, toolCallId, questions,
+          // 只在真有值时带上这个键：`undefined` 会原样进 journal，重放时与
+          // 「工具压根没给」长得一样倒是没差，但序列化出去的是一个多余的 null 位。
+          ...(browserTabId === undefined ? {} : { browserTabId }),
         });
       },
       onClosed: (toolCallId: string, outcome: AskOutcome) => {

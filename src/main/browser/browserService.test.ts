@@ -660,6 +660,132 @@ describe('_blank 新标签要走完整的一条路（§C）', () => {
   });
 });
 
+// ── browser.agentFocus：两个发送点（Task 8）──────────────────────────────
+
+/** 只取 agentFocus 那一路，`browser.tabsChanged` 与它是两条独立的广播。 */
+const focuses = () => H.emitted
+  .filter((e) => e.topic === 'browser.agentFocus')
+  .map((e) => e.payload as { tabId: string | null; active: boolean; action?: string });
+
+describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各一处', () => {
+  it('agent 驱动一次操作：开始发 active:true（带动作名），结束发 active:false', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    await flush();
+    const id = svc.getState().tabs[0].id;
+    // 结束之前只有 true 那一半 —— 拿完整序列断言的话，「一次都没发」与
+    // 「发了但没配对」在收尾之后长得一样。
+    expect(focuses()).toEqual([{ tabId: id, active: true, action: '打开网页' }]);
+
+    const wc = wcOf();
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    await p;
+    expect(focuses()).toEqual([
+      { tabId: id, active: true, action: '打开网页' },
+      { tabId: id, active: false, action: undefined },
+    ]);
+  });
+
+  it('用户自己的操作（runId=null）一条都不发 —— 那盏灯说的是「agent 在动」', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/', null);
+    expect(focuses()).toEqual([]);
+    // 但标签清单那条广播照发，两者不是一回事
+    expect(H.emitted.some((e) => e.topic === 'browser.tabsChanged')).toBe(true);
+  });
+
+  it('驱动期间弹出来的新标签也各发一次，动作名与源标签同一个', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    await flush();
+    const srcId = svc.getState().tabs[0].id;
+    wcOf().windowOpenHandler!({ url: 'https://popup.example/p' });
+    await flush();
+    const popupId = svc.getState().tabs[1].id;
+    expect(focuses()).toEqual([
+      { tabId: srcId, active: true, action: '打开网页' },
+      { tabId: popupId, active: true, action: '打开网页' },
+    ]);
+
+    const wc = wcOf(0);
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    await p;
+    // 收尾时两个都要熄：只熄源标签的话，弹窗上那盏灯永远亮着。
+    expect(focuses().filter((f) => !f.active).map((f) => f.tabId).sort())
+      .toEqual([popupId, srcId].sort());
+  });
+
+  /**
+   * **这一条钉的是一个缝，不是一个愿望。**
+   *
+   * `destroyView` 里有一句 `for (const f of this.drivingFrames) f.tabs.delete(id)`，
+   * 所以驱动期间被销毁的标签在收尾时**已经不在帧里**，`withAgentDriving` 的 finally
+   * 遍历不到它 —— 这条 topic 对它发不出熄灯信号。
+   *
+   * 那么渲染层靠什么清？靠 `browser.tabsChanged`：`close()` 紧接着就发一帧，
+   * 里面已经没有这个标签，`browserStore` 按清单给 agent 焦点表剪枝
+   *（`browserStore.test.ts`「标签没了就把它的驱动记录一起剪掉」那条）。
+   *
+   * 把它写成用例而不是注释，是因为反过来的写法（「照样发 active:false」）我先写了一遍、
+   * 跑出来是红的 —— 一句没实测的注释在这里会变成下一批的前提。
+   */
+  it('驱动期间标签被销毁：熄灯信号发不出来（清除靠 tabsChanged 里它已经不在）', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    await flush();
+    const id = svc.getState().tabs[0].id;
+    expect(focuses()).toEqual([{ tabId: id, active: true, action: '打开网页' }]);
+
+    svc.close(id);
+    const wc = wcOf();
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    await p.catch(() => {});
+
+    expect(focuses().some((f) => f.tabId === id && !f.active)).toBe(false);
+    // 清除信号确实在另一条 topic 上：最后一帧标签清单里没有它。
+    const lastTabs = H.emitted.filter((e) => e.topic === 'browser.tabsChanged').at(-1)!
+      .payload as { tabs: Array<{ id: string }> };
+    expect(lastTabs.tabs.map((t) => t.id)).not.toContain(id);
+  });
+
+  it('两帧握着同一个标签：先结束的那一帧不许发 active:false', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/', null);
+    const id = svc.getState().tabs[0].id;
+    H.emitted.length = 0;
+
+    let releaseInner!: () => void;
+    const inner = svc.withAgentDriving(id, 'run-B', () => new Promise<void>((r) => { releaseInner = r; }), '内层');
+    let releaseOuter!: () => void;
+    const outer = svc.withAgentDriving(id, 'run-A', () => new Promise<void>((r) => { releaseOuter = r; }), '外层');
+    await flush();
+    expect(focuses()).toEqual([
+      { tabId: id, active: true, action: '内层' },
+      { tabId: id, active: true, action: '外层' },
+    ]);
+
+    releaseInner(); await inner; await flush();
+    // 外层还握着 —— 这时熄灯就是替它宣布结束
+    expect(focuses().some((f) => !f.active)).toBe(false);
+
+    releaseOuter(); await outer; await flush();
+    expect(focuses().at(-1)).toEqual({ tabId: id, active: false, action: undefined });
+  });
+
+  it('agentFocus 不推 revision：亮灯灭灯不该让渲染层以为标签清单变了', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/', null);
+    const id = svc.getState().tabs[0].id;
+    const revBefore = svc.getState().revision;
+    await svc.withAgentDriving(id, 'run-1', async () => {}, '操作网页');
+    expect(svc.getState().revision).toBe(revBefore);
+    expect(focuses().length).toBe(2);
+  });
+});
+
 // ── §E1 广播不许带 epoch ──────────────────────────────────────────────────
 
 describe('browser.tabsChanged 的载荷不含 epoch（§E1）', () => {

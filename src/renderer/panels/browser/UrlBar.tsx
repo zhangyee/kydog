@@ -1,0 +1,115 @@
+import { useEffect, useRef, useState } from 'react';
+import type { BrowserTabInfo } from '../../../shared/types';
+import { IconButton, NavIcon } from '../../shared';
+
+type Props = {
+  tab: BrowserTabInfo | null;
+  /** 提交一条网址。`newTab` 为真时开新标签，否则在当前标签里导航。 */
+  onGo: (url: string, newTab: boolean) => void;
+  onNav: (action: 'back' | 'forward' | 'reload' | 'stop') => void;
+};
+
+/**
+ * 地址栏。
+ *
+ * **不在这里判网址合不合法。** 判据在主进程的 `urlGuard`（拒内网、拒裸 IP、拒
+ * 非 http(s)、拒 userinfo），渲染层再写一份就是第二份会漂的规则，而且它必然更松
+ * ——用户看到的是「这里过了、那里拒了」。这里只做一件纯粹的补全：一个不带 scheme
+ * 的串补上 `https://`，因为用户敲的就是 `www.cnki.net`。补完照样交给主进程判。
+ */
+export function normalizeTyped(raw: string): string {
+  const s = raw.trim();
+  if (s === '') return '';
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s) ? s : `https://${s}`;
+}
+
+export function UrlBar({ tab, onGo, onNav }: Props) {
+  const [draft, setDraft] = useState('');
+  const [newTab, setNewTab] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // 没在编辑时，输入框跟着真实网址走（导航、agent 操作、后退都会改它）。
+  // 正在编辑就别动 —— 用户打了一半被一次后台导航冲掉是很难受的。
+  useEffect(() => {
+    if (!editing && !newTab) setDraft(tab?.url ?? '');
+  }, [tab?.url, editing, newTab]);
+
+  // 切标签时退出「开新标签」态：那个模式是针对某一次输入的，不该跨标签留着。
+  useEffect(() => { setNewTab(false); }, [tab?.id]);
+
+  const submit = () => {
+    const url = normalizeTyped(draft);
+    if (url === '') return;
+    onGo(url, newTab || tab === null);
+    setNewTab(false);
+    setEditing(false);
+    inputRef.current?.blur();
+  };
+
+  return (
+    <div
+      className="flex items-center gap-0.5 shrink-0"
+      style={{ padding: '4px 6px', borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}
+    >
+      <IconButton
+        size={22} testId="browser-back" tooltip="后退"
+        disabled={!tab?.canGoBack} onClick={() => onNav('back')}
+      ><NavIcon name="arrow-left" size={13} /></IconButton>
+      <IconButton
+        size={22} testId="browser-forward" tooltip="前进"
+        disabled={!tab?.canGoForward} onClick={() => onNav('forward')}
+      ><NavIcon name="arrow-right" size={13} /></IconButton>
+      {/*
+        载入中显示「停止」，否则显示「重新载入」—— 两个动作共用一个位置，因为它们
+        在任何一刻只有一个说得通。判据是协议层的 `loading`，不是计时器。
+      */}
+      <IconButton
+        size={22}
+        testId={tab?.loading ? 'browser-stop' : 'browser-reload'}
+        tooltip={tab?.loading ? '停止' : '重新载入'}
+        disabled={tab === null}
+        onClick={() => onNav(tab?.loading ? 'stop' : 'reload')}
+      ><NavIcon name={tab?.loading ? 'x' : 'rotate-cw'} size={13} /></IconButton>
+
+      <input
+        ref={inputRef}
+        data-testid="browser-url"
+        value={draft}
+        spellCheck={false}
+        placeholder={newTab ? '新标签页的网址' : '输入网址'}
+        onFocus={() => setEditing(true)}
+        onBlur={() => setEditing(false)}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+          if (e.key === 'Escape') { setDraft(tab?.url ?? ''); setNewTab(false); inputRef.current?.blur(); }
+        }}
+        className="font-mono flex-1 min-w-0"
+        style={{
+          background: 'var(--color-paper)',
+          border: `0.5px solid ${newTab ? 'var(--color-accent)' : 'var(--color-ink-hair)'}`,
+          borderRadius: 4,
+          padding: '3px 8px',
+          fontSize: 11,
+          color: 'var(--color-ink)',
+          margin: '0 4px',
+        }}
+      />
+
+      {/*
+        新标签。**不是「立刻开一个空白页」** —— `browser.open` 必须带一条过得了
+        URL 闸的网址（about:blank 过不了，闸只放行 http(s)），所以这里做的是
+        「下一次回车开在新标签里」，把输入框清空并聚焦。
+      */}
+      <IconButton
+        size={22} testId="browser-new-tab" tooltip="在新标签页打开" active={newTab}
+        onClick={() => {
+          setNewTab(true);
+          setDraft('');
+          inputRef.current?.focus();
+        }}
+      ><span style={{ fontSize: 14, lineHeight: 1 }}>+</span></IconButton>
+    </div>
+  );
+}

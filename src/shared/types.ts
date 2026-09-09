@@ -398,6 +398,20 @@ export type UpdateStatus = {
 /** 一块矩形，单位是 DIP（与 BrowserWindow 的坐标系一致），不是设备像素。 */
 export type RectDip = { x: number; y: number; width: number; height: number };
 
+/**
+ * 浏览器侧栏的宽度下限与默认值。**放在 shared 是因为两个进程都要用同一个数**：
+ * 主进程 `settingsFile.sanitizeBrowserWidth` 落盘前钳一次，渲染层拖拽时也要当场钳
+ * （不钳的话拖出去的那一帧会以非法宽度上报 `syncView`，主进程照单全收把网页定位过去，
+ * 直到下一次落盘往返才被拉回来）。两边各写一个字面量就是两份会漂的真相。
+ *
+ * **320 不是一个钳位点。** spec §2.3 原来的依据（Chromium zoom 下限 0.25 × 1280）
+ * 在改用 `Emulation.setDeviceMetricsOverride` 之后**已经不成立** —— 技术上可以更窄。
+ * 现在它只剩一条经验依据：`scale` 到 0.25 时页面上的字已经读不了。
+ * spec 明写这个数「需要重新拍」，**在项目负责人重新拍之前不要自己改**。
+ */
+export const MIN_BROWSER_WIDTH = 320;
+export const DEFAULT_BROWSER_WIDTH = 560;
+
 export type BrowserTabInfo = {
   id: string;
   url: string;
