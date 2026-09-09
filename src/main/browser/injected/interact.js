@@ -209,6 +209,15 @@
   /**
    * 三件事：滚进视野 → 重新量 → 命中检查。四种失败各有各的名字，
    * 因为模型的下一步完全不同（换目标 / 先关浮层 / 重新取快照）。
+   *
+   * **第一件事「真的滚」是一条 e2e 判据的地基 —— 要改它先看这里。**
+   * `e2e/61-browser.spec.ts` 那条「走真的 type：…整批在碰页面之前就被挡下」靠
+   * 「页面一个像素都没滚」区分密码框上那**两道措辞逐字相同**的闸：第一道
+   * （`actions.ts` 的 `assertTypeAllowed`）在 dispatch 调 interact **之前**，
+   * 第二道（`browserService.ts` 里 `m.isPassword`）在这个 measure 回来**之后**。
+   * 下面这行改成「算滚动偏移而不真滚」之类的做法，那条判据会**静默失效**
+   * （永远绿、不报错，只是不再区分两道闸）。同一条用例里有一个非密码输入框的
+   * 对照动作断言 `scrollY > 0`，真改了它会先红 —— 别把那条对照当成多余的删掉。
    */
   const measure = (el) => {
     try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch { /* 有的替身没有它 */ }

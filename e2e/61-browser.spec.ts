@@ -267,6 +267,26 @@ const CARSI_ON = process.env.KYDOG_CARSI_E2E === '1' && CARSI_READY;
 const CARSI_FAILURE_ON = process.env.KYDOG_CARSI_FAILURE_E2E === '1'
   && CARSI_IDENTITY_READY && (process.env.KYDOG_CARSI_BAD_PASSWORD ?? '') !== '';
 
+/**
+ * entityID 的 host，规则与 `login.ts` 的 `hostOfEntityID` 逐字相同（小写、剥掉根标签的
+ * 尾点；URN / 非 http(s) / 空主机一律 `null`）。e2e 不 import 主进程模块，所以这里现算
+ * 一份并在失败信息里点名出处 —— 与 `LOGICAL_WIDTH` / `PAGE_CONTENT_CLOSE` 同一处理。
+ *
+ * 为什么正路那条要拿**它**去比，而不是 `KYDOG_CARSI_LOGIN_URL` 的 host：
+ * `checkLoginHost` 判「这确实是本校的登录页」用的就是 entityID 的 host，
+ * 而 `browser_login` 回显的 `r.host` 是**填之前现读的标签地址**。拿 loginUrl 的 host 去比
+ * 等于拿配置对配置 —— 用例自己就是 `openTab(page, CARSI.loginUrl)` 打开的这个标签，
+ * 没跳转时两边必然相等：`KYDOG_CARSI_LOGIN_URL` 配成一个与 entityID 不同域的地址时，
+ * 确认框被 `confirmLoginPage` 自己点掉、凭据填进陌生域，那条断言照样绿。
+ */
+function hostOfEntityID(entityID: string): string | null {
+  let u: URL;
+  try { u = new URL(entityID); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  const h = u.hostname.toLowerCase().replace(/\.+$/, '');
+  return h === '' ? null : h;
+}
+
 const CARSI_SKIP_REASON =
   'CARSI 正路默认不跑：要 KYDOG_CARSI_E2E=1 外加 KYDOG_CARSI_NAME / _ENTITY_ID / '
   + '_USERNAME / _PASSWORD / _LOGIN_URL 五个凭据变量（临时 HOME 里没有它们就一定跑不了）。'
@@ -281,18 +301,44 @@ const CARSI_FAILURE_SKIP_REASON =
 /**
  * 首次确认那道是非题（`loginConfirm.ts`）：走的是现成的 ask broker，UI 与提问工具同一套。
  *
+ * **「问了」与「没问」两种情形都要走得通，而且都不许靠等满时限来分辨。**
+ * `checkLoginHost`（`login.ts`）在**当前标签的 host === entityID 的 host** 时直接返回
+ * `fill`，**根本不问** —— 也就是说配置正确的时候这道是非题压根不出现。从前这里硬等
+ * 30 秒 `question-composer`，于是这条正路用例**只在「`KYDOG_CARSI_LOGIN_URL` 指到了
+ * 另一个域」的错误配置下才跑得过**：哪天拿真凭据按正确配置跑它，会挂在那 30 秒上，
+ * 红在一个与产品完全无关的理由上。（这条用例一次都没跑过，第一次跑就会踩。）
+ *
+ * 所以这里在两件事之间轮询，谁先到听谁的：是非题出现了 → 点「是」；这一轮 run 已经
+ * 收场了 → 说明根本没问，直接返回。**答不答得上不能靠猜**：那道是非题会把整轮 run
+ * 悬挂住（走的是跨进程的 ask broker），不答就永远不结束。
+ *
  * **这里替用户点了「是」，于是 `checkLoginHost` 那道域确认在这条用例上不设防** ——
- * 测这条路必然的代价（不点就永远挂着）。代价的边界由正路用例里那条 host 回显断言划出：
- * `KYDOG_CARSI_LOGIN_URL` 配错时当场红，而不是等密码已经填进一个陌生页面才发现。
+ * 测这条路必然的代价。代价的边界由正路用例里那两条断言划出：填进去的 host 必须是
+ * **entityID 的 host**，而且结果里不许出现「用户刚刚确认了」（`r.askedUser`）。
  */
 async function confirmLoginPage(page: Page): Promise<void> {
-  await expect(page.getByTestId('question-composer')).toBeVisible({ timeout: 30_000 });
+  const composer = page.getByTestId('question-composer');
+  const deadline = Date.now() + 30_000;
+  let asked = false;
+  while (Date.now() < deadline) {
+    if (await composer.isVisible()) { asked = true; break; }
+    // `runTools` 在**建 thread 之前**就把收集器挂上了，所以这里读得到；
+    // `ended` 非 null 就是这一轮已经收场 —— 没问过，没什么可确认的。
+    const ended = await page.evaluate(
+      () => (window as unknown as { __kydogRun?: { ended: unknown } }).__kydogRun?.ended ?? null,
+    );
+    if (ended !== null) break;
+    await page.waitForTimeout(200);
+  }
+  // 两种正常情形都从这里出去。真卡住的话不在这里报 —— `runTools` 那条 60 秒的
+  // `expect.poll` 会说清「这一轮 run 卡住了」，比这里编一个原因准。
+  if (!asked) return;
   // 第一个选项就是「是，就在这里登录」——`loginConfirm.ts` **结构地**取 options[0]，
   // 这里按同一个顺序点，不写死文案。
   await page.getByTestId('ask-option-q0o0').click();
   const submit = page.getByTestId('ask-submit');
   if (await submit.count()) await submit.click();
-  await expect(page.getByTestId('question-composer')).toHaveCount(0, { timeout: 10_000 });
+  await expect(composer).toHaveCount(0, { timeout: 10_000 });
 }
 
 // **跳过不许是静默的。** `test.skip(cond, reason)` 把原因记成注解，可 list reporter
@@ -888,13 +934,29 @@ test.describe('61-browser', () => {
    * 另外三条不是白写的（它们守的是「整条路还是那条路」，不是这道闸）：
    * 挡下的措辞、按键一个都没落地、`type` 后面那个动作压根没跑（出错即停）。
    *
-   * ## 为什么要跑两轮 run
+   * ## 判据 2 的那个几何前提，由**第三轮的对照动作**守着 —— 别删它
+   *
+   * 「闸没了 `measure` 会把它滚过来」这句话有两个前提：`measure` 此刻确实滚，
+   * 而且这个夹具的几何确实够得着（密码框在首屏之外）。两个前提**产品代码里
+   * 没有任何东西守着**，一破就让判据 2 变成一条永远绿的死断言 —— 不报错，
+   * 只是不再区分两道闸。触发面比「哪天 measure 不滚了」宽得多：夹具页面的几何、
+   * `helpers.ts` 的窗口尺寸、`DEFAULT_VIEWPORT_HEIGHT`，任一处动了都算
+   * （复审实测：删掉第一道闸、只把 bar 的 `top:3000px` 挪到 `top:100px`，
+   * 这一组 12 条一条不红）。
+   *
+   * 所以第三轮拿**同一个 bar 上**的一个**非密码**输入框走一次同样的 `type`，
+   * 断言其后 `scrollY > 0`。三个控件共用同一个 `top`，前提一破这条对照当场红。
+   * 同一手法在第一轮里已经用过一次（快照里那行「密码框，值不显示」的对照）。
+   *
+   * ## 为什么要跑三轮 run
    *
    * `type` 要 `index` + `snapshotId`，而这两样都是**页面上现铸的**（walker 在隔离世界
    * 发号、快照 id 由 `browserService` 现给），剧本却要在建 thread 之前就写好。
    * 所以第一轮先用一个**碰不到页面的动作**（`extract` 一个匹配不到的选择器，走隔离世界、
    * 不经 `dispatch`）换回收尾快照，从里面读出编号与快照 id；第二轮才拿它们去 `type`。
    * 中间不许有任何东西滚页面 —— 第一轮之后也断一次 `scrollY === 0`。
+   * 第三轮是上面那条对照动作，**必须排在四条判据之后**：它会把页面滚起来、
+   * 也会在页面上落下一次 click，放在前面会把判据 2 与判据 4 一起污染。
    */
   test('走真的 type：拿真快照里的编号打进密码框，整批在碰页面之前就被挡下', async () => {
     const { launched, fixturePath } = await launchWithAgent();
@@ -912,11 +974,15 @@ test.describe('61-browser', () => {
         }, true);
         const bar = document.createElement('div');
         // 3000 像素以下：闸在原位就够不着它，闸没了 measure 会把它滚到视口中央。
-        bar.style.cssText = 'position:absolute;left:0;top:3000px;width:400px;height:40px';
+        // **三个控件都挂在这一个 bar 上**，共用这一个 top —— 对照动作因此与主判据
+        // 站在同一块地上：谁把这个 top 挪进首屏，对照动作当场红（见下面第三轮）。
+        bar.style.cssText = 'position:absolute;left:0;top:3000px;width:600px;height:40px';
         bar.innerHTML =
           '<input id="kydog-pw" type="password" aria-label="KYDOG密码框"'
           + ' style="position:absolute;left:0;width:200px;height:30px">'
-          + '<button id="kydog-marker" style="position:absolute;left:220px;width:100px;height:30px">标记</button>';
+          + '<button id="kydog-marker" style="position:absolute;left:220px;width:100px;height:30px">标记</button>'
+          + '<input id="kydog-plain" type="text" aria-label="KYDOG对照框"'
+          + ' style="position:absolute;left:340px;width:200px;height:30px">';
         document.body.appendChild(bar);
         const pw = document.getElementById('kydog-pw');
         for (const t of ['keydown', 'beforeinput', 'input', 'textInput']) {
@@ -982,8 +1048,12 @@ test.describe('61-browser', () => {
       //    3000 像素以下的密码框滚到视口中央）。
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
         '第一道密码闸排在 dispatch 调 interact **之前** —— 它在原位时，这一批连 measure '
-        + '都不会发出去，页面不该被滚动一个像素。滚了就说明挡下它的是第二道闸'
-        + '（measure 回来的 isPassword），而第一道已经不在了').toBe(0);
+        + '都不会发出去，页面不该被滚动一个像素。滚了有两种可能，别只按第一种去查：'
+        + '① 挡下它的是第二道闸（measure 回来的 isPassword），第一道已经不在了；'
+        + '② 第一道还在，但**出错即停**坏了 —— 第 2 个动作（click #kydog-marker，'
+        + '同样在 3000 像素以下）自己的 measure 把页面滚了。分辨的办法是下面第 4 条判据'
+        + '（整批是不是真停在第 1 个动作上），但它排在这一条后面、这条先红就跑不到：'
+        + '把这一条临时停掉再跑一次，第 4 条自己红就是②').toBe(0);
 
       // 3) 一个按键都不许落到那个框里，值也不许变。
       const evs = await inPage<string[]>(app, 'example.com', 'window.__kydogPwEvents');
@@ -996,6 +1066,41 @@ test.describe('61-browser', () => {
       const clicks = await inPage<string[]>(app, 'example.com', 'window.__kydogClicks');
       expect(clicks, `整批必须停在第 1 个动作上，页面却收到了点击：${clicks.join(' / ')}`).toEqual([]);
       expect(out.text, '第 2 个动作不该有任何执行痕迹').not.toContain('已点击');
+
+      // ── 第三轮：**对照动作** —— 把判据 2 的那个几何前提钉成一条会响的断言 ────
+      // 判据 2 之所以能区分两道闸，靠的是「第一道闸没了的话 measure 真的会把它滚过来」。
+      // 这句话有两个前提，而**产品代码里没有任何东西守着它们**：measure 此刻确实滚，
+      // 以及这个夹具的几何确实够得着（密码框在首屏之外）。任一处一变，判据 2 就成了
+      // 一条永远绿的死断言 —— 不报错，只是不再区分两道闸。（实测：删掉第一道闸、
+      // 只把上面那个 bar 的 top:3000px 挪到 top:100px，这一组 12 条一条不红。）
+      // 所以这里拿**同一个 bar 上**的一个**非密码**输入框走一次同样的 `type`：
+      // 它必须把页面滚起来。前提一破，这一条当场红，而不是让主判据悄悄失效。
+      const ctl = await runTools(page, fixturePath, [{
+        toolCallId: 'tc-plain',
+        name: 'browser_act',
+        args: {
+          tabId: opened.tabId,
+          // 用 selector 定位：第二轮的收尾快照已经把第一轮那份编号作废了，而 `type`
+          // 走的仍是同一条路（resolveTarget → dispatch → interact 的 measure）——
+          // 与密码那次的唯一差别就是它不是密码框。
+          actions: [{ kind: 'type', selector: '#kydog-plain', text: 'kydog-e2e-对照' }],
+        },
+      }]);
+      const ctlOut = ctl.get('tc-plain')!;
+      expect(ctlOut.status, '对照动作应当成功 —— 它不是密码框，两道闸都不该拦它。'
+        + `结果开头：${ctlOut.text.slice(0, 400)}`).toBe('ok');
+      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
+        '**对照组**：同一个 bar 上的非密码输入框走同一条 `type`，页面必须被 measure 的 '
+        + 'scrollIntoView 滚起来。它没滚，说明上面判据 2（断 scrollY === 0）已经不再'
+        + '区分得开两道密码闸 —— 三种可能：① `interact.js` 的 measure 不真滚了；'
+        + '② 几何变了（bar 的 top、页面高、helpers.ts 的窗口尺寸、DEFAULT_VIEWPORT_HEIGHT '
+        + '任一处），把密码框挪进了首屏；③ 这个对照动作自己就没跑成，那这条说的根本不是'
+        + '前两件事。分辨③看下面那条判据，它排在后面、这条先红就跑不到：'
+        + '把这一条临时停掉再跑一次即可。前两种情形下，判据 2 是一条永远绿的死断言')
+        .toBeGreaterThan(0);
+      expect(ctlOut.text, '对照动作必须真的打进去了（`browserService` 的 type 成功文案）——'
+        + '它自己没跑成的话，上面那条 scrollY 说的就不是 measure 或几何的事。'
+        + `结果：${ctlOut.text.slice(0, 500)}`).toContain('已在「KYDOG对照框」里输入');
     } finally {
       await teardown(launched);
     }
@@ -1035,14 +1140,26 @@ test.describe('61-browser', () => {
 
       const login = res.get('tc-login')!;
       expect(login.status, `browser_login 应当成功，结果开头：${login.text.slice(0, 300)}`).toBe('ok');
-      // **填进去的必须是配的那个 host。** `confirmLoginPage` 替用户把「这一页是不是
-      // 你学校的登录页」那道确认自动点了「是」—— 这是测这条路必然的代价（不点就永远挂着），
-      // 但代价不能是「配错 URL 时密码已经填进了一个陌生页面才发现」。这一条是那道确认的
-      // 便宜替身：`KYDOG_CARSI_LOGIN_URL` 与实际填充的页面不是同一个 host 时当场红。
-      const loginHost = new URL(CARSI.loginUrl).host;
-      expect(login.text, `凭据必须填在 ${loginHost} 上（KYDOG_CARSI_LOGIN_URL 的 host）——`
-        + '结果里回显的不是它，就说明这一轮把账号密码填到了别的域上，'
-        + '而给用户的那道域确认被用例自己点掉了').toContain(`已在 ${loginHost} 填入`);
+      // **填进去的必须是 entityID 那个 host，而且这一轮压根没走跨域确认。**
+      // `confirmLoginPage` 替用户把「这一页是不是你学校的登录页」那道确认点了「是」——
+      // 测这条路必然的代价（不点就永远挂着），但代价不能是「配错 URL 时密码已经填进了
+      // 一个陌生页面才发现」。下面两条一起划出这个代价的边界，**都不拿 loginUrl 去比**
+      // （理由见 `hostOfEntityID` 的注释：那是拿配置对配置，配错时照样绿）。
+      const idpHost = hostOfEntityID(CARSI.entityID);
+      expect(idpHost, 'KYDOG_CARSI_ENTITY_ID 必须是带 host 的 http(s) entityID —— '
+        + 'URN 形式的 entityID 上 checkLoginHost 直接拒填（why: entity-has-no-host），'
+        + '这条路根本走不到，先把环境变量配对').toBeTruthy();
+      expect(login.text, `凭据必须填在 ${idpHost} 上 —— 那是 KYDOG_CARSI_ENTITY_ID 的 host，`
+        + '也正是 checkLoginHost 判「这确实是本校登录页」用的那个值。'
+        + '结果里回显的不是它，就说明这一轮把账号密码填到了别的域上'
+        + '（要么 KYDOG_CARSI_LOGIN_URL 指错了，要么 open 与 fill 之间页面跳走了），'
+        + '而给用户的那道域确认被用例自己点掉了').toContain(`已在 ${idpHost} 填入`);
+      // `r.askedUser` 为真才有这一句（`browserTools.ts`）。它是「这一次走了跨域确认」
+      // 的**直接事实** —— 配置正确时 checkLoginHost 返回 fill、根本不问，
+      // 所以这一句一旦出现，就是 confirmLoginPage 替用户点掉了一道本该由人看的确认。
+      expect(login.text, '这一轮不该走到跨域确认那一支：出现「用户刚刚确认了」就说明当前标签的 host '
+        + '与 entityID 的 host 不同，而那道本该由人看的确认被 confirmLoginPage 自己点掉了')
+        .not.toContain('用户刚刚确认了');
       expect(login.text, '结果里要回显当前机构（description 里那份是建会话时的快照，这一行才是当前值）')
         .toContain(`当前机构：${CARSI.name}`);
       expect(login.text, 'submit: true 时要说清「请求提交 ≠ 登录成功」').toContain('已经请求提交这个表单');
@@ -1115,12 +1232,30 @@ test.describe('61-browser', () => {
 
 /**
  * spec §8.2 第 4 条。**这一条不在 KYDOG_SKIP_LIVE_BROWSER 的门后**：它要的不是
- * 一个能打开的源，恰恰相反 —— 一个必然解析不了的名字（`.invalid` 是 RFC 2606 保留的
- * 顶级域，永远不该被解析出来）。断网也照样成立，所以发版流水线上也该跑。
+ * 一个能打开的源，恰恰相反 —— 一个**必然打不开、而且打不开这件事在 URL 层就定了**
+ * 的地址。断网也照样成立，所以发版流水线上也该跑。
  *
  * 判据是**四分的终态本身**（spec §4.4）：`failed` 带真实的 `errorCode` / `errorDesc`，
  * 不是 `timeout`。两者对模型的处置完全相反 —— 「打不开」可以换源，「不知道发生了什么」
  * 不许据此断定源有问题。
+ *
+ * ## 为什么地址里有个 `:19` —— 那是这条用例不再看 DNS 脸色的原因，别删
+ *
+ * 从前这里只有 `https://….invalid/`，失败要**过一次本机 DNS**：`.invalid` 的 NXDOMAIN
+ * 偶尔会走很久，超过 `NAV_TIMEOUT_MS`(20s) 时**终态本身就变成 `timeout`**，红在下面
+ * 第一条硬判据上（复审实测复现过一次：`本次导航耗时 20022ms`）。而这条用例是
+ * `KYDOG_SKIP_LIVE_BROWSER=1` 之后仅剩的一条 —— 它一红，发版流水线就被一次与产品
+ * 无关的 DNS 抖动阻断。
+ *
+ * 端口 19（chargen）在 Chromium 的受限端口表里，请求在**主机解析之前**就被拒。
+ * 本机实测（Electron 41，2026-09-09）：`https://kydog-e2e-nonexistent.invalid:19/`
+ * 连开三次都是 `failed` / `-312` / `ERR_UNSAFE_PORT`，**64–81ms**；把主机换成一个
+ * 解析得通的 `example.com:19` 结果逐字相同（65ms）—— 主机名根本没被用上，
+ * 也就没有任何 DNS 参与。`urlGuard` 不看端口（它管的是内网地址），照旧放行。
+ *
+ * 主机名仍然留成 `.invalid`（RFC 2606 保留的顶级域）：万一哪天端口这道判据不在了，
+ * 也绝不会真去连某个人的 19 端口。而「端口闸没了」不会被这条冗余悄悄盖过去 ——
+ * 下面两条断言钉的是 `ERR_UNSAFE_PORT` 本身，退回主机解析那条路会当场红。
  *
  * ## 为什么这里**没有**一条「耗时 < N 毫秒」的断言 —— 别再把它加回来
  *
@@ -1131,29 +1266,31 @@ test.describe('61-browser', () => {
  *     「判定必须基于协议层事实，不靠启发式 proxy（时间窗 / 阈值 / 近似 / 聚类）」——
  *     「它不是超时」这件事，`outcome.kind === 'failed'`（而不是 `'timeout'`）已经**直接**
  *     说了。proxy 与它 proxy 的事实同时在场时，留事实、删 proxy。
- *  2. **它有真 flake，而这条用例是 `KYDOG_SKIP_LIVE_BROWSER=1` 之后仅剩的一条**
- *     （10 跳 1 跑）。评审本机复现过一次：`Received: 16010` —— `.invalid` 的 NXDOMAIN
- *     走本机解析器偶尔要十几秒，那一次三条终态判据**全过**，红的只有时限那条。
- *     它一红，发版流水线就被一次与产品无关的 DNS 抖动阻断，而 61 这一组在 CI 上
- *     再没有第二条能提供信号。把上界从 15000 抬到 18000 只是把概率调小，性质不变。
+ *  2. **它有真 flake**（见上一节），而抬阈值只是把概率调小、性质不变。真正的修法是把
+ *     失败源换成一个不过 DNS 的 —— 已经换了，所以那条 proxy 更没有理由回来。
  *
- * 耗时**仍然采集**并写进三条断言的失败信息（诊断价值别丢：真变成 20 秒左右时，
- * 那三条里红的那一条会自己把这个数报出来），只是不 `expect` 它。
+ * 耗时**仍然采集**并写进三条断言的失败信息（诊断价值别丢），只是不 `expect` 它。
  */
 test('61-browser: 打不开的地址回 failed + 真实 errorCode，不是 timeout', async () => {
   const launched = await launchKydog();
   const { page } = launched;
   try {
     const t0 = Date.now();
-    const r = await openTab(page, 'https://kydog-e2e-nonexistent.invalid/');
+    // `.invalid`（RFC 2606）+ 受限端口 19（chargen）：两条独立的「永远打不开」，
+    // 而**起作用的是后者** —— 它在主机解析之前就定了，所以这条用例不过 DNS。
+    const r = await openTab(page, 'https://kydog-e2e-nonexistent.invalid:19/');
     // 耗时只进失败信息，**不是判据**（理由见 docblock：它是时间窗 proxy，而
     // outcome.kind 已经把同一件事说成了协议层事实）。
     const took = `（本次导航耗时 ${Date.now() - t0}ms；走到 timeout 那一支要 20 秒 = NAV_TIMEOUT_MS）`;
     const o = r.nav.outcome;
-    expect(o.kind, `解析不了的名字必须回 failed，实际是 ${o.kind}${took}`).toBe('failed');
+    expect(o.kind, `打不开的地址必须回 failed，实际是 ${o.kind}${took}`).toBe('failed');
     if (o.kind !== 'failed') return;  // 类型收窄，上面那条已经保证了
-    expect(o.errorCode, `errorCode 必须是 Chromium 真给的那个负数网络错误码${took}`).toBeLessThan(0);
-    expect(o.errorDesc, `errorDesc 必须是 Chromium 真给的那个名字（ERR_…）${took}`).toMatch(/^ERR_/);
+    // 下面两条既是 spec §4.4 要的「真实的 errorCode / errorDesc」，也是**这条用例
+    // 不再依赖 DNS 的自守判据**：不是 ERR_UNSAFE_PORT(-312) 就说明失败不再来自 URL 层的
+    // 端口闸，而是退回了主机解析那条路 —— 20 秒那段 flake 会跟着回来，而且是静默的。
+    expect(o.errorCode, `errorCode 必须是 Chromium 真给的 -312（ERR_UNSAFE_PORT）${took}`).toBe(-312);
+    expect(o.errorDesc, `errorDesc 必须是 Chromium 真给的那个名字 ERR_UNSAFE_PORT${took}`)
+      .toBe('ERR_UNSAFE_PORT');
   } finally {
     await teardown(launched);
   }
