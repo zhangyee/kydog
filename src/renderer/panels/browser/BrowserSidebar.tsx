@@ -89,6 +89,10 @@ export function BrowserSidebar() {
           if (active === null) return;
           call(window.kydog.invoke('browser.navControl', { tabId: active.id, action }));
         }}
+        onViewportMode={(mode) => {
+          if (active === null) return;
+          call(window.kydog.invoke('browser.setViewportMode', { tabId: active.id, mode }));
+        }}
       />
 
       {/*

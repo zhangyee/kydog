@@ -662,6 +662,137 @@ describe('_blank 新标签要走完整的一条路（§C）', () => {
 
 // ── browser.agentFocus：两个发送点（Task 8）──────────────────────────────
 
+// ── §4.6 「1:1 / 适配」开关 ─────────────────────────────────────────────────
+
+describe('逻辑视口的档位：1:1 / 适配', () => {
+  /** 侧栏 640 宽的舞台。适配档下 scale = 640/1280 = 0.5。 */
+  const withStage = async (svc: Svc) => { svc.syncView({ ...STAGE, epoch: svc.getState().epoch }); await flush(); };
+
+  it('默认是「适配」：逻辑视口 1280，整幅按 W/1280 缩进侧栏', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    await withStage(svc);
+    expect(overrides(wc).at(-1)!.params).toEqual({
+      width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
+    });
+  });
+
+  it('按到 1:1：逻辑视口就是侧栏这么宽、scale 恒 1（页面不被缩小）', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    await withStage(svc);
+    const id = svc.getState().tabs[0].id;
+
+    svc.setViewportMode(id, 'oneToOne');
+    await flush();
+    expect(overrides(wc).at(-1)!.params).toEqual({
+      width: 640, height: 900, deviceScaleFactor: 0, mobile: false, scale: 1,
+    });
+  });
+
+  it('新的档位随 browser.tabsChanged 回到渲染层（开关照着主进程画，不自己记一份）', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const id = svc.getState().tabs[0].id;
+    H.emitted.length = 0;
+
+    svc.setViewportMode(id, 'oneToOne');
+    const frame = H.emitted.filter((e) => e.topic === 'browser.tabsChanged').at(-1);
+    expect(frame).toBeDefined();
+    expect((frame!.payload as { tabs: Array<{ viewportMode: string }> }).tabs[0].viewportMode).toBe('oneToOne');
+    expect(svc.getState().tabs[0].viewportMode).toBe('oneToOne');
+  });
+
+  it('档位按标签各记各的：换一个标签不受影响', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [t1, t2] = svc.getState().tabs.map((t) => t.id);
+    svc.setViewportMode(t1, 'oneToOne');
+    expect(svc.getState().tabs.find((t) => t.id === t1)!.viewportMode).toBe('oneToOne');
+    expect(svc.getState().tabs.find((t) => t.id === t2)!.viewportMode).toBe('fit');
+  });
+
+  it('没有这个标签 → browser.no_tab（静默放过的话，按了开关什么都不发生）', () => {
+    const { svc } = make();
+    expect(() => svc.setViewportMode('nope', 'oneToOne')).toThrowError(expect.objectContaining({ code: 'browser.no_tab' }));
+  });
+
+  it('还没有渲染进程时一个 CDP 命令都不许发 —— 新路径走的是同一道 pid 闸', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/' });
+    await flush();
+    const wc = wcOf();
+    expect(wc.getOSProcessId()).toBe(0);
+    const before = wc.debugger.sent.length;
+
+    svc.setViewportMode(svc.getState().tabs[0].id, 'oneToOne');
+    await flush();
+    expect(wc.debugger.sent.length).toBe(before);   // 一个字都没发
+
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    await p;
+  });
+});
+
+describe('「按回去」不指望用户记得：agent 的下一次动作之前恢复成 W/1280', () => {
+  it('markDriving 把档位恢复成 fit，并且广播出去', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const id = svc.getState().tabs[0].id;
+    svc.setViewportMode(id, 'oneToOne');
+    expect(svc.getState().tabs[0].viewportMode).toBe('oneToOne');
+
+    await svc.withAgentDriving(id, 'run-1', async () => {
+      // **在 fn 之前就已经恢复**：取快照的那一步 await 的 applyViewport 算出来的
+      // 必然是 1280 那一档，不靠时间窗。
+      expect(svc.getState().tabs[0].viewportMode).toBe('fit');
+    });
+    expect(svc.getState().tabs[0].viewportMode).toBe('fit');
+  });
+
+  it('恢复之后页面真的回到 1280 逻辑宽', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const id = svc.getState().tabs[0].id;
+    svc.setViewportMode(id, 'oneToOne');
+    await flush();
+    expect(overrides(wc).at(-1)!.params.width).toBe(640);
+
+    await svc.withAgentDriving(id, 'run-1', async () => {});
+    await flush();
+    expect(overrides(wc).at(-1)!.params).toEqual({
+      width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
+    });
+  });
+
+  it('**对照组**：本来就是 fit 时不白推一帧 revision（那会让「按 revision 去旧」退化）', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const id = svc.getState().tabs[0].id;
+    const before = svc.getState().revision;
+    await svc.withAgentDriving(id, 'run-1', async () => {});
+    expect(svc.getState().revision).toBe(before);
+  });
+
+  it('驱动期间弹出来的新标签也过这条路（markDriving 是唯一时机）', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/', 'run-1');
+    const t1 = svc.getState().tabs[0].id;
+    svc.setViewportMode(t1, 'oneToOne');
+
+    await svc.withAgentDriving(t1, 'run-1', async () => {
+      expect(svc.getState().tabs[0].viewportMode).toBe('fit');
+    });
+  });
+});
+
 /** 只取 agentFocus 那一路，`browser.tabsChanged` 与它是两条独立的广播。 */
 const focuses = () => H.emitted
   .filter((e) => e.topic === 'browser.agentFocus')

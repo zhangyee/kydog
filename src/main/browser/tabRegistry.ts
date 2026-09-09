@@ -1,5 +1,5 @@
 import { KydogError } from '../../shared/errors';
-import type { BrowserState, BrowserTabInfo } from '../../shared/types';
+import type { BrowserState, BrowserTabInfo, ViewportMode } from '../../shared/types';
 
 /**
  * 标签账本。**纯记账，不碰 WebContentsView** —— 真正的 view 由 browserService
@@ -81,6 +81,9 @@ export class TabRegistry {
       id, url: opts.url, title: '', loading: true,
       owner: opts.ownerRunId ? 'agent' : 'user',
       canGoBack: false, canGoForward: false,
+      // 新标签一律从「适配」起步。**不继承别的标签的档位**：1:1 是用户对着某一页
+      // 按下的一次性动作（看清那一个验证码），不是一个偏好设置。
+      viewportMode: 'fit',
       ownerRunId: opts.ownerRunId,
       isAgentActive: false,
     };
@@ -133,6 +136,26 @@ export class TabRegistry {
   }
 
   isAgentActiveOf(id: string): boolean { return this.require(id).isAgentActive; }
+
+  /**
+   * 「1:1 / 适配」。**与 `setAgentActive` 相反，这一条要推 revision** ——
+   * 它进 `BrowserState`（`BrowserTabInfo.viewportMode`），渲染层照着画开关，
+   * 而 agent 会在 `markDriving` 里把它恢复成 `fit`：不推的话那一次恢复渲染层收不到，
+   * 开关会停在 1:1 上，而页面已经回到 1280 了。
+   *
+   * 没有实际改动就不推（与 `update` 同一条规矩）：推一帧内容相同的状态出去，
+   * 会让渲染层「按 revision 去旧」退化成「永远接受最新一帧」。
+   */
+  setViewportMode(id: string, mode: ViewportMode): void {
+    const t = this.require(id);
+    if (t.viewportMode === mode) return;
+    t.viewportMode = mode;
+    this.touch();
+  }
+
+  /** **不抛**：`applyViewport` 会对还留在 views 里、账本已经没有的标签问一次
+   *  （`close` 先摘账本再销毁 view），那时按默认档处理就对了。 */
+  viewportModeOf(id: string): ViewportMode { return this.get(id)?.viewportMode ?? 'fit'; }
 
   activate(id: string): void {
     this.require(id);

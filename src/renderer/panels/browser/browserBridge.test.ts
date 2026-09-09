@@ -5,7 +5,7 @@ import type { EventPayload, EventTopic } from '../../../shared/protocol';
 
 const tab = (id: string): BrowserTabInfo => ({
   id, url: `https://${id}.example/`, title: id, loading: false,
-  owner: 'user', canGoBack: false, canGoForward: false,
+  owner: 'user', canGoBack: false, canGoForward: false, viewportMode: 'fit',
 });
 
 const STATE: BrowserState = { revision: 4, epoch: 2, tabs: [tab('t1')], activeTabId: 't1' };

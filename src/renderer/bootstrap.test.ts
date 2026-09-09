@@ -67,6 +67,7 @@ const STATE = {
   tabs: [{
     id: 't1', url: 'https://example.org/', title: '例子',
     loading: false, owner: 'user' as const, canGoBack: false, canGoForward: false,
+    viewportMode: 'fit' as const,
   }],
 };
 

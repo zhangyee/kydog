@@ -129,6 +129,7 @@ export function registerAllHandlers(): void {
     return browserService.getState();
   });
   registerHandler('browser.syncView', (args) => { browserService.syncView(args); });
+  registerHandler('browser.setViewportMode', (args) => { browserService.setViewportMode(args.tabId, args.mode); });
 
   // ── CARSI 机构账号 ──
   // 密码只往一个方向流：`get` / `save` 回的都是 InstitutionPublic（只有 hasPassword

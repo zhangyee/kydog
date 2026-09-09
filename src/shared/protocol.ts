@@ -4,7 +4,7 @@ import type {
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   CenterViewState,
   TelemetryStatus,
-  BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
+  BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, ViewportMode, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
   SettingsFileForRenderer,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
@@ -38,6 +38,14 @@ export type RpcCall =
   // 渲染层上报舞台几何。不带 tabId —— 只有活动标签可见，主进程知道是哪个。
   // visible 与 occluded 是两件事：侧栏关闭（visible=false）不是「被浮层盖住」的同义词。
   | { method: 'browser.syncView'; args: { epoch: number; visible: boolean; occluded: boolean; bounds: RectDip }; result: void }
+  // 「1:1 / 适配」开关（spec §4.6）。**按标签**，所以不能并进 syncView ——
+  // 那条刻意不带 tabId（「只有活动标签可见，主进程知道是哪个」），而这个状态
+  // 每个标签各记一份，切标签时的语义会说不清。
+  //
+  // 只送一个意向过去，**主进程才是真相**：新的模式随 `browser.tabsChanged` 广播
+  // 回来（`BrowserTabInfo.viewportMode`），渲染层照着画开关。渲染层自己记一份的话，
+  // agent 在 `markDriving` 里把它恢复成 fit 时，开关会停在错的位置上。
+  | { method: 'browser.setViewportMode'; args: { tabId: string; mode: ViewportMode }; result: void }
   // ── CARSI 机构账号 ──
   // 密码只会 渲染层 → 主进程 单向流动：get 返回的 InstitutionPublic 里只有 hasPassword，
   // 连密文也不回传。渲染层没有任何用得上它的地方。
@@ -206,6 +214,7 @@ export const RPC_METHODS = [
   'browser.navControl',
   'browser.getState',
   'browser.syncView',
+  'browser.setViewportMode',
   'institution.get',
   'institution.save',
   'institution.clear',

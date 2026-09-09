@@ -1,7 +1,7 @@
 import { BrowserWindow, WebContentsView, session, type WebContents, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
-import type { BrowserState, NavigationObservation, RectDip } from '../../shared/types';
+import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { assertAllowedUrl, checkUrl } from './urlGuard';
@@ -330,6 +330,10 @@ export class BrowserService {
 
   private markDriving(frame: DrivingFrame, tabId: string): void {
     if (!this.registry.has(tabId)) return;
+    // **agent 对这个标签的下一次动作从这里开始**（`setAgentActive(true)` 的唯一
+    // 调用点，`withAgentDriving` 的入口与驱动期间新开标签那一支都过它），
+    // 所以「按回去这件事不能指望用户记得」那条规则（spec §4.6）的挂点就在这里。
+    this.restoreFitViewport(tabId);
     this.registry.setAgentActive(tabId, true);
     frame.tabs.add(tabId);
     this.emitAgentFocus(tabId, true, frame.action);
@@ -349,6 +353,37 @@ export class BrowserService {
    */
   private emitAgentFocus(tabId: string, active: boolean, action?: string): void {
     broadcaster.emit('browser.agentFocus', { tabId, active, action });
+  }
+
+  // ── 逻辑视口的档位（spec §4.6 的「1:1 / 适配」）────────────────────────────
+
+  /**
+   * 用户按了侧栏那个开关。**状态按标签存在主进程**，渲染层只送一个意向过来。
+   *
+   * 没有这个标签就抛 `browser.no_tab`（`registry.setViewportMode` 里的 `require`）：
+   * 静默放过的话，用户按了开关什么都不发生、也没有任何提示。
+   */
+  setViewportMode(tabId: string, mode: ViewportMode): void {
+    this.registry.setViewportMode(tabId, mode);
+    this.emit();
+    // **走 applyViewport，不自己发 CDP** —— 那里有「没有渲染进程就一个字都不发」
+    // 那道 `getOSProcessId() === 0` 的闸，绕开它就是主进程 SIGSEGV。
+    void this.applyViewport(tabId, this.stage?.bounds ?? null);
+  }
+
+  /**
+   * 把这个标签的逻辑视口恢复成 `W/1280`。
+   *
+   * **顺序的保证不在这里的那个 `void`**：状态在这一句就同步改回 `fit` 了，而 agent
+   * 取快照前那两处（`navigate` 收尾、`snapshot` 开头）本来就 `await applyViewport`，
+   * 它们算出来的必然是恢复之后的档位。这里这一发只是让**用户眼前**那一页立刻回到
+   * 1280，不必等到 agent 的下一次快照。
+   */
+  private restoreFitViewport(tabId: string): void {
+    if (this.registry.viewportModeOf(tabId) === 'fit') return;
+    this.registry.setViewportMode(tabId, 'fit');
+    this.emit();
+    void this.applyViewport(tabId, this.stage?.bounds ?? null);
   }
 
   // ── 状态与几何 ──────────────────────────────────────────────────────────
@@ -450,7 +485,13 @@ export class BrowserService {
     // 页面崩过一次之后它也回到 0，所以这道闸同时挡住了「对着已死的 target 发命令」。
     if (wc.getOSProcessId() === 0) return Promise.resolve();
     const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
-    const scale = w / LOGICAL_WIDTH;
+    // **档位（spec §4.6）**：`fit` 是逻辑视口恒 1280、整幅缩进侧栏；`oneToOne` 是
+    // 逻辑视口就是侧栏这么宽、`scale` 恒 1 —— 页面不被缩小，人看得清验证码。
+    // 代价是页面按一个窄视口布局，agent 手上那份 1280 坐标系的快照当场对不上，
+    // 所以 `markDriving` 会在 agent 的下一次动作之前把它恢复。
+    // 侧栏没打开（`bounds` 为 null）时两档算出来是同一件事，不必分支。
+    const logicalWidth = this.registry.viewportModeOf(tabId) === 'oneToOne' ? w : LOGICAL_WIDTH;
+    const scale = w / logicalWidth;
     const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
     try {
       // **rejection 必须接住**：sendCommand 返回的是 promise，外面的 try/catch 只挡
@@ -461,7 +502,7 @@ export class BrowserService {
       // **崩溃那一种够不着**：上面那道 pid 闸在发出去之前就让开了 —— 实测那不是
       // 一个 reject，是段错误，`.catch` 接不住（见 task-2f-report.md §B3）。
       return dbg.sendCommand('Emulation.setDeviceMetricsOverride', {
-        width: LOGICAL_WIDTH, height, deviceScaleFactor: 0, mobile: false, scale,
+        width: logicalWidth, height, deviceScaleFactor: 0, mobile: false, scale,
       }).then(() => {}, (err: unknown) => {
         logger.warn('browser.viewport', '设置逻辑视口失败', { tabId, err: String(err) });
       });

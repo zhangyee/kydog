@@ -263,10 +263,40 @@ describe('TabRegistry：revision 与 epoch', () => {
     const r = mk(); add(r, 't1', 'run-1'); r.setAgentActive('t1', true);
     const tab = r.toState().tabs[0] as Record<string, unknown>;
     expect(Object.keys(tab).sort()).toEqual(
-      ['canGoBack', 'canGoForward', 'id', 'loading', 'owner', 'title', 'url'],
+      ['canGoBack', 'canGoForward', 'id', 'loading', 'owner', 'title', 'url', 'viewportMode'],
     );
     expect('ownerRunId' in tab).toBe(false);
     expect('isAgentActive' in tab).toBe(false);
+  });
+});
+
+describe('TabRegistry：逻辑视口的档位', () => {
+  it('新标签一律从「适配」起步，不继承别的标签', () => {
+    const r = mk(); add(r, 't1'); r.setViewportMode('t1', 'oneToOne');
+    add(r, 't2');
+    expect(r.viewportModeOf('t1')).toBe('oneToOne');
+    expect(r.viewportModeOf('t2')).toBe('fit');
+  });
+
+  it('改了档位要推 revision —— 渲染层照着它画开关，收不到就会停在错的位置上', () => {
+    const r = mk(); add(r, 't1');
+    const before = r.toState().revision;
+    r.setViewportMode('t1', 'oneToOne');
+    expect(r.toState().revision).toBeGreaterThan(before);
+    expect(r.toState().tabs[0].viewportMode).toBe('oneToOne');
+  });
+
+  it('档位没变就不推 revision（否则「按 revision 去旧」退化成「永远接受最新一帧」）', () => {
+    const r = mk(); add(r, 't1'); r.setViewportMode('t1', 'oneToOne');
+    const before = r.toState().revision;
+    r.setViewportMode('t1', 'oneToOne');
+    expect(r.toState().revision).toBe(before);
+  });
+
+  it('setViewportMode 对不存在的标签抛 no_tab；viewportModeOf 则回默认档不抛', () => {
+    const r = mk();
+    expect(() => r.setViewportMode('nope', 'oneToOne')).toThrow(KydogError);
+    expect(r.viewportModeOf('nope')).toBe('fit');
   });
 });
 

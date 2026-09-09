@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BrowserTabInfo } from '../../../shared/types';
+import type { BrowserTabInfo, ViewportMode } from '../../../shared/types';
 import { IconButton, NavIcon } from '../../shared';
 
 type Props = {
@@ -7,6 +7,9 @@ type Props = {
   /** 提交一条网址。`newTab` 为真时开新标签，否则在当前标签里导航。 */
   onGo: (url: string, newTab: boolean) => void;
   onNav: (action: 'back' | 'forward' | 'reload' | 'stop') => void;
+  /** 「1:1 / 适配」开关（spec §4.6）。**送一个意向过去就完** —— 新的档位由主进程
+   *  随 `browser.tabsChanged` 广播回来，这里画的一直是主进程手上那份真相。 */
+  onViewportMode: (mode: ViewportMode) => void;
 };
 
 /**
@@ -23,7 +26,7 @@ export function normalizeTyped(raw: string): string {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s) ? s : `https://${s}`;
 }
 
-export function UrlBar({ tab, onGo, onNav }: Props) {
+export function UrlBar({ tab, onGo, onNav, onViewportMode }: Props) {
   const [draft, setDraft] = useState('');
   const [newTab, setNewTab] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -96,6 +99,24 @@ export function UrlBar({ tab, onGo, onNav }: Props) {
           margin: '0 4px',
         }}
       />
+
+      {/*
+        **「1:1 / 适配」**（spec §4.6）。侧栏窄的时候 CARSI 那一步的验证码在适配档下
+        常常看不清，而**不许自动抬 zoom** —— 那会让 agent 手上那份快照的坐标当场失效。
+        所以给人一个开关，自己按。
+
+        亮着 = 现在是 1:1。判据是 `tab.viewportMode`（主进程广播回来的），
+        **不是本地记一个 useState**：agent 下一次动作前主进程会把它恢复成适配档，
+        本地那一份会停在 1:1 上，而页面已经回到 1280 了。
+      */}
+      <IconButton
+        size={22}
+        testId="browser-viewport-mode"
+        tooltip={tab?.viewportMode === 'oneToOne' ? '缩回适配宽度' : '按侧栏宽度 1:1 显示（AI 下一次操作会自动切回）'}
+        active={tab?.viewportMode === 'oneToOne'}
+        disabled={tab === null}
+        onClick={() => onViewportMode(tab?.viewportMode === 'oneToOne' ? 'fit' : 'oneToOne')}
+      ><span className="font-mono" style={{ fontSize: 9, lineHeight: 1 }}>1:1</span></IconButton>
 
       {/*
         新标签。**不是「立刻开一个空白页」** —— `browser.open` 必须带一条过得了

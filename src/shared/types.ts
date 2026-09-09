@@ -412,6 +412,21 @@ export type RectDip = { x: number; y: number; width: number; height: number };
 export const MIN_BROWSER_WIDTH = 320;
 export const DEFAULT_BROWSER_WIDTH = 560;
 
+/**
+ * 这个标签按多宽渲染（spec §4.6 的「1:1 / 适配」开关）。
+ *
+ * - `fit`（默认）——**逻辑视口恒 1280**，整幅按 `侧栏宽 / 1280` 缩进侧栏。
+ *   agent 手上那份快照的坐标就活在这个 1280 的坐标系里。
+ * - `oneToOne` ——**逻辑视口就是侧栏这么宽、scale 恒 1**，页面不被缩小。
+ *   侧栏窄的时候 CARSI 那一步的验证码在 `fit` 下常常看不清，这一档是给人看的。
+ *
+ * **它是主进程手上的一个按标签的状态事实**，不是渲染层的一个显示偏好：只要它处在
+ * `oneToOne`，页面就不是 1280 逻辑宽，agent 那一侧的坐标当场对不上。所以它跟着
+ * `BrowserTabInfo` 广播给渲染层（开关的位置要照着主进程的真相画），
+ * 而**恢复由主进程自己做** —— 见 `browserService.markDriving`。
+ */
+export type ViewportMode = 'fit' | 'oneToOne';
+
 export type BrowserTabInfo = {
   id: string;
   url: string;
@@ -421,6 +436,8 @@ export type BrowserTabInfo = {
   owner: 'agent' | 'user';
   canGoBack: boolean;
   canGoForward: boolean;
+  /** 见 `ViewportMode`。**agent 对这个标签的下一次动作之前会被恢复成 `fit`。** */
+  viewportMode: ViewportMode;
 };
 
 /** 标签栏那三个字段的唯一出处。BrowserState 与 BrowserTabsSnapshot 都从这里派生，

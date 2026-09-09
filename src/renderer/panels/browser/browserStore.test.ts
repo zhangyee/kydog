@@ -10,7 +10,7 @@ function reset() {
 
 const tab = (id: string, patch: Partial<BrowserTabInfo> = {}): BrowserTabInfo => ({
   id, url: `https://${id}.example/`, title: id, loading: false,
-  owner: 'user', canGoBack: false, canGoForward: false, ...patch,
+  owner: 'user', canGoBack: false, canGoForward: false, viewportMode: 'fit', ...patch,
 });
 
 const S = () => useBrowserStore.getState();

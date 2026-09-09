@@ -38,6 +38,7 @@ vi.mock('./browserStore', async (importOriginal) => {
 
 const { BrowserSidebar } = await import('./BrowserSidebar');
 const { TabStrip } = await import('./TabStrip');
+const { UrlBar } = await import('./UrlBar');
 const { useBrowserStore } = await import('./browserStore');
 const { useConfirmStore } = await import('../../stores/confirmStore');
 const { useUiStore } = await import('../../stores/uiStore');
@@ -87,6 +88,7 @@ function tab(patch: Partial<{ id: string; url: string; title: string }> = {}) {
   return {
     id: 't1', url: 'https://example.org/', title: '',
     loading: false, owner: 'user' as const, canGoBack: false, canGoForward: false,
+    viewportMode: 'fit' as const,
     ...patch,
   };
 }
@@ -157,6 +159,21 @@ describe('BrowserSidebar：横幅与关标签的接线', () => {
     });
     const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
     expect(m.query('browser-agent-banner')).toBeNull();
+    m.unmount();
+  });
+
+  it('「1:1 / 适配」开关按下去，RPC 带的是当前活动标签的 id', () => {
+    useBrowserStore.setState({
+      epoch: 5, revision: 1, tabs: [tab(), tab({ id: 't2' })], activeTabId: 't2',
+    });
+    const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
+    const bar = findOneWhere(m.tree, (el) => el.type === UrlBar);
+    expect(bar.props.tab).toMatchObject({ id: 't2' });
+    (bar.props.onViewportMode as (mode: string) => void)('oneToOne');
+
+    expect(calls.filter((c) => c.method === 'browser.setViewportMode')).toEqual([
+      { method: 'browser.setViewportMode', args: { tabId: 't2', mode: 'oneToOne' } },
+    ]);
     m.unmount();
   });
 
