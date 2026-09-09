@@ -34,16 +34,28 @@ import type { InstitutionRecord, SettingsFile } from '../../shared/types';
  *
  * | | 在哪 |
  * | --- | --- |
- * | 写 W1 | `attachObserver()` —— 由 `fillInQueue` 在注入**之前**调。同一标签上已有
- * 记录时先 `off()` 再顶替（裁决 1 的第三个拆点）。 |
+ * | 写 W1 | `attachObserver()` 里唯一那处 `this.tabs.set` —— 由 `fillInQueue` 在注入
+ * **之前**调。 |
  * | 写 W2 | 观测者看见断言回传 → `assertionSeen = true` 并 `off()` 自己（拆点一）。 |
+ * | 写/清 W3 = C0 | `attachObserver()` 开头的顶替 `this.tabs.get(id)?.off()`（裁决 1 的
+ * 第三个拆点）：摘掉旧订阅，随后被 W1 的 `.set` 覆盖 —— **不 delete**，所以它不是
+ * 一次真的清除，那条记录的「本轮填过」立刻由新的一条接上。 |
  * | 清 C1 | 标签销毁 → `forget()`（拆点二，走 `browserService.onTabDestroyed`）。 |
  * | 清 C2 | 页面回报「一个字都没写」（`wrote !== true`）→ `forget()`。这一条不是
  * 拆点，是**回滚**：什么都没发生的一次调用不该占掉本轮唯一的那次机会。 |
- * | 清 C3 | `_resetForTest()`（只有用例走这条）。 |
+ * | 清 C3 | `fillInQueue` 的 catch 里 → `forget()`，**只对 `browser.no_tab` /
+ * `browser.not_dispatchable`**：`evalInPage` 这两道闸在真正调
+ * `executeJavaScriptInIsolatedWorld` **之前**抛，说得出「一个字节都没注进去」。
+ * 其余错误（撞时限那条 `page_no_result` 只说得出「结果未知」）一律留着记录。 |
+ * | 清 C4 | `_resetForTest()`（只有用例走这条）。 |
+ *
+ * 编号与 `task-7-report.md` §5 那张表一一对应（早先代码这张表漏了 C3，而报告里有，
+ * 于是同一个标号在两处指不同的东西 —— 下一批照代码接线会以为「注入之前抛错不回滚」）。
  *
  * 读者只有两个：`assertNoPriorAttempt()`（判「停手」）与 `noteFor()`（工具结果
- * 头部那句话）。**两个读的是同一张表**，不许有第二份。
+ * 头部那句话）。**两个读的是同一张表**，不许有第二份 —— 但注意两个读法不同：
+ * `noteFor` 问的是「**这个标签**现在什么状态」，`assertNoPriorAttempt` 问的是
+ * 「**本轮名下**有没有填过」，后者按 runId 聚合、跨标签（见它自己那段）。
  */
 type TabLogin = {
   /** 这次填充属于哪一轮 run。「停手」只在同一轮内成立。 */
@@ -154,7 +166,6 @@ type LoginFillReply = {
   origin?: unknown;
   tag?: unknown;
   type?: unknown;
-  detail?: unknown;
 };
 
 // ── 判据 → 错误码 ───────────────────────────────────────────────────────────
@@ -232,6 +243,14 @@ function fillFailureError(r: LoginFillReply): KydogError {
       return new KydogError('browser.target_unusable',
         '按结构规则找不到账号框：同一个 <form> 里、排在密码框**之前**、可见、没禁用的文本框一个都没有，'
         + '一个字都没填。先取一份快照，把账号框的编号用 usernameIndex 指给我。');
+    case 'username_needs_index':
+      // 整页没有 <form>：那时「同一个 form」这条判据两边都是 null，退化成没有约束，
+      // 页面顶部的站内搜索框与登录框一样合格。**不猜**，让模型指一个。
+      return new KydogError('browser.target_unusable',
+        '这一页的密码框不在任何 <form> 里，结构规则没法确定哪个文本框是账号框'
+        + '（这种页上站内搜索框与账号框一样合格，猜错就是把学号写进搜索框、'
+        + '再提交一次账号为空的登录），所以一个字都没填。'
+        + '先取一份快照，把账号框的编号用 usernameIndex 指给我。');
     case 'no_form':
       return new KydogError('browser.target_unusable',
         '密码框不在任何 <form> 里，没法提交表单，所以一个字都没填。'
@@ -245,8 +264,11 @@ function fillFailureError(r: LoginFillReply): KydogError {
         '账号已经写进去了，但立刻回读发现值不是我们写的那个 —— 站点把它改回去了（readonly，或者有脚本在盯着）。'
         + '**页面已经被写过，不可回滚**：先取一份快照看现在什么样，别假设它还是原样。');
     case 'submit_failed':
+      // **不带页面那句错误文本。** 它是在密码已经写进页面**之后**读到的字符串
+      // （`desc()` 那条同一类），带出来就是又开一条「页面 → 模型上下文」的路；
+      // 而模型的下一步与那句话无关。
       return new KydogError('browser.page_no_result',
-        `账号和密码都填进去了，但请求提交表单时页面抛了错：${String(r.detail)}。`
+        '账号和密码都填进去了，但请求提交表单那一下页面抛了错。'
         + '**凭据已经在页面上了**，别重填 —— 取一份快照，自己点页面上的提交控件。');
     default:
       return new KydogError('browser.page_no_result',
@@ -339,20 +361,32 @@ export class LoginFlow {
   /**
    * spec §4.6：**同一轮 run 内登录失败一次就停手。**
    *
-   * 判据 = 「本轮 run 名下存在一次尚未观测到断言回传的填充」。刻意**不做**按 runId
-   * 增长的表：这个仓库的 runId 那一族已经出过五个洞，全是「状态字段有多个读者、
-   * 写入点与清除点没对全」。这张表按标签存，清除点只有标签销毁（与页面自报
-   * 「什么都没写」时的回滚）。
+   * 判据 = 「**本轮 run 名下**存在一次尚未观测到断言回传的填充」—— 作用域是 run，
+   * 不是标签。**表按标签存、查的时候按 runId 聚合**，两件事分开：存按标签才有干净
+   * 的清除点（标签销毁），查按 run 才是 spec 要的那道闸。
+   *
+   * **只查「这个标签」是不够的**（早先就是那样）：`browser_open` 不给 tabId 就新开
+   * 一个标签，标签数没有上限，所以模型收到 `browser.login_attempted` 之后开个新标签
+   * 再调一次就照填不误 —— 评审实测一轮里对同一个校园账号连试六次，一次都没被拒。
+   * 押的是用户本人的统一身份认证账号，而高校 IdP 普遍锁定连续失败的账号。
+   *
+   * 刻意**不做**按 runId 增长的表：这个仓库的 runId 那一族已经出过五个洞，全是
+   * 「状态字段有多个读者、写入点与清除点没对全」。
+   *
+   * `runId` 为 `null`（不在任何一轮里）时按「同一轮」算，也就是同样只放一次过。
+   * 那时我们**分不出轮次**，而分不出的时候押的仍然是同一个校园账号 —— fail-closed。
    */
-  private assertNoPriorAttempt(tabId: string, runId: string | null): void {
-    const rec = this.tabs.get(tabId);
-    if (!rec || rec.assertionSeen) return;
-    if (rec.runId !== runId) return;
-    throw new KydogError('browser.login_attempted',
-      '本轮已经在这个标签上填过一次机构凭据，而我们没有看到断言回传 —— 那一次多半没成。'
-      + '**不再填第二次**：高校的统一身份认证普遍会锁定连续失败的账号，'
-      + '押的是用户自己的校园账号。请把这一步交给用户：让他自己在这个内置浏览器里登录，'
-      + '或者到设置里核对一下机构账号与密码。');
+  private assertNoPriorAttempt(runId: string | null): void {
+    for (const rec of this.tabs.values()) {
+      if (rec.assertionSeen) continue;
+      if (rec.runId !== runId) continue;
+      // 措辞里**不提「在这个标签上」**：那等于替模型点出「换个标签就行」。
+      throw new KydogError('browser.login_attempted',
+        '本轮已经填过一次机构凭据，而我们没有看到断言回传 —— 那一次多半没成。'
+        + '**本轮不再填第二次**（换一个标签页也一样）：高校的统一身份认证普遍会锁定'
+        + '连续失败的账号，押的是用户自己的校园账号。请把这一步交给用户：'
+        + '让他自己在这个内置浏览器里登录，或者到设置里核对一下机构账号与密码。');
+    }
   }
 
   private async requireInstitution(): Promise<Inst> {
@@ -382,7 +416,7 @@ export class LoginFlow {
    */
   async fill(tabId: string, opts: LoginFillOptions): Promise<LoginFillOutcome> {
     this.ensureDestroyHook();
-    this.assertNoPriorAttempt(tabId, opts.runId);
+    this.assertNoPriorAttempt(opts.runId);
 
     const inst = await this.requireInstitution();
     const before = checkLoginHost({
@@ -424,9 +458,13 @@ export class LoginFlow {
   private async fillInQueue(
     tabId: string, opts: LoginFillOptions, askedUser: boolean,
   ): Promise<LoginFillOutcome> {
-    // 排队等待期间同一个标签上可能已经填过一次（两次 browser_login 排在一起），
-    // 而队列外那一判是在排队**之前**做的。这一判才是权威的那一次。
-    this.assertNoPriorAttempt(tabId, opts.runId);
+    // 排队等待期间本轮可能已经填过一次（两次 browser_login 排在同一个标签的队列里，
+    // 或者另一个标签上那一次先落地），而队列外那一判是在排队**之前**做的 ——
+    // 那时表里还没有记录。**这一判才是权威的那一次。**
+    //
+    // 守它的用例是「两次 fill 排在同一个标签的队列里 —— 后一次在队列内被拒」
+    // （`loginFlow.test.ts`）。评审 R21 变异（整句删掉）在补这条用例之前存活。
+    this.assertNoPriorAttempt(opts.runId);
 
     // 机构记录**锁外重读**：确认框上悬挂的那几十秒里用户可能换了学校 / 改了密码。
     // 拿队列外那份快照去填，就是把新学校的判据配上旧学校的账号。

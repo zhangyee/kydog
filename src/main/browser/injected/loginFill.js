@@ -160,7 +160,9 @@
     // 主进程只校验两件事（spec §4.6 的原话）：与密码框同一个 form、且是文本类 input。
     // **`form` 都为 null 也算「同一个」** —— 页面把登录框放在 <form> 外面（fetch 提交）
     // 是常见写法，那时没有任何 form 事实可比，这一条就退化成不设防；真正兜住它的是
-    // 上一层的 origin 判据与用户那次确认。这是刻意留的边界，不是漏判。
+    // 上一层的 origin 判据与用户那次确认，**加上「这个框是模型自己指的」**。
+    // 这是刻意留的边界，不是漏判 —— 但它**只在这一支**成立：下面结构规则那一支没有
+    // 「模型自己指的」这一条兜底，所以那里整页无 form 时直接拒（见 else 里那段）。
     if ((user.form || null) !== form) return fail('username_not_same_form');
     if (!isTexty(user)) return fail('username_not_text', { tag: tagOf(user), type: typeOf(user) });
     if (user.disabled === true) return fail('username_disabled');
@@ -171,6 +173,16 @@
     // 而放宽成「取最近的一个」就会在「密码 + 验证码」这种版式上选中验证码框 ——
     // 那是把账号写进验证码栏，站点收到的是一次必然失败的登录，而高校 IdP 会为
     // 连续失败锁账号。选不出来就明确报错，让模型用 usernameIndex 指一个。
+    //
+    // **密码框不在任何 <form> 里时，这一支整条 fail-closed。** 那时
+    // `(el.form || null) !== form` 两边都是 null，「同一个 form」不再是任何约束 ——
+    // 页面顶部的站内搜索框与登录框在这条判据下一样合格。评审实测（2026-09-09）：
+    // 这种页上结构规则会挑中 `#search`、`ok: true` 返回，账号写进搜索框，随后
+    // 提交出去的是一次**账号为空**的登录 —— 而「一轮只有一次机会」意味着那是本轮
+    // 唯一的机会。**不猜**：让模型取一份快照、用 usernameIndex 指一个。
+    // 模型指的那一支保留这条边界（那里有模型的显式选择兜底，见上面
+    // `username_not_same_form` 那一句上面那段）。
+    if (!form) return fail('username_needs_index');
     const at = inputs.indexOf(pw);
     for (let i = at - 1; i >= 0; i--) {
       const el = inputs[i];
@@ -182,6 +194,40 @@
     }
     if (!user) return fail('no_username');
   }
+
+  // ── 回显「实际选中了哪个字段」（spec §4.6）：**在写之前算** ────────────────
+  //
+  // **只回属性，绝不回 value。** 模型要能看出我们填的是不是它以为的那个框，
+  // 而框里此刻装的就是账号 —— 回值等于把它送进模型上下文。
+  //
+  // **算在 put() 之前，不是之后**，这一条是硬的：`put()` 里的 `fire(el, 'input')`
+  // **同步**跑页面自己的监听器，而那一刻密码已经在页面的 DOM 里了。一个被 XSS 或
+  // 本身敌意的登录页只要在密码框的 input 监听器里
+  // `user.setAttribute('placeholder', this.value)`，写完之后再读 `desc()` 就把密码
+  // 原样抄进回执 → 工具结果 → 模型上下文 → transcript（评审 2026-09-09 实测拿到了
+  // 哨兵密码）。`id` / `name` / `placeholder` 全是页面随时改得动的属性，所以唯一
+  // 说得清的时刻是**页面还没跑过任何一行代码**的此刻。顺带这也更正确：回执要说的是
+  // 「我挑中了哪个框」，不是「页面事后把它改成了什么」。
+  //
+  // 每个属性再套一道长度上界：它们是页面文本，进的是模型上下文，与 walker 的
+  // `MAX_TEXT` 同一件事，所以用同一个数；截断带记号，不静默（spec §5.5）。
+  const MAX_ATTR = 160;
+  const desc = (el) => {
+    const bits = [tagOf(el)];
+    const g = (n) => {
+      let v = '';
+      try { v = typeof el.getAttribute === 'function' ? (el.getAttribute(n) || '') : ''; } catch { v = ''; }
+      return v.length > MAX_ATTR ? `${v.slice(0, MAX_ATTR)}…[截断，原长 ${v.length} 字符]` : v;
+    };
+    const id = g('id');
+    const name = g('name');
+    const ph = g('placeholder');
+    if (id) bits.push('#' + id);
+    if (name) bits.push('[name=' + name + ']');
+    if (ph) bits.push('（提示文字：' + ph + '）');
+    return bits.join('');
+  };
+  const fieldDesc = desc(user);
 
   // ── 提交路径要在**写之前**探明 ───────────────────────────────────────────
   //
@@ -247,34 +293,22 @@
       if (submitPlan.how === 'requestSubmit') form.requestSubmit(submitPlan.btn || undefined);
       else submitPlan.btn.click();
       submitted = true;
-    } catch (err) {
+    } catch {
       // 值已经填进去了，提交这一下没成 —— 必须与「什么都没做」分开报。
-      return { ok: false, reason: 'submit_failed', wrote: true, detail: String(err && err.message ? err.message : err) };
+      //
+      // **不把那个错误的文本带回去。** 这是「写值之后才读页面」的第二处（第一处是
+      // 上面的 `desc()`）：此刻密码已经在页面的 DOM 里，而 err 的 message 是页面
+      // 影响得到的字符串，带回去就是又开一条「页面 → 回执 → 模型上下文」的路。
+      // 模型的下一步与错误文本无关（取快照、自己点提交），所以它没有存在的理由。
+      return { ok: false, reason: 'submit_failed', wrote: true };
     }
   }
-
-  // ── 回显「实际选中了哪个字段」（spec §4.6）────────────────────────────────
-  //
-  // **只回属性，绝不回 value。** 模型要能看出我们填的是不是它以为的那个框，
-  // 而框里此刻装的就是账号 —— 回值等于把它送进模型上下文。
-  const desc = (el) => {
-    const bits = [tagOf(el)];
-    const g = (n) => {
-      try { return typeof el.getAttribute === 'function' ? (el.getAttribute(n) || '') : ''; } catch { return ''; }
-    };
-    const id = g('id');
-    const name = g('name');
-    const ph = g('placeholder');
-    if (id) bits.push('#' + id);
-    if (name) bits.push('[name=' + name + ']');
-    if (ph) bits.push('（提示文字：' + ph + '）');
-    return bits.join('');
-  };
 
   return {
     ok: true,
     wrote: true,
-    field: desc(user),
+    // 写之前算好的那一份（见上面那段：写之后再读就是一条把密码送进模型上下文的路）。
+    field: fieldDesc,
     source: source,
     submitted: submitted,
     submitHow: submitPlan ? submitPlan.how : null,

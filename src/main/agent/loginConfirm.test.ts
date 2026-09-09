@@ -3,6 +3,11 @@ import { createLoginAsk } from './loginConfirm';
 import { QuestionBroker } from './questionBroker';
 import type { AskOutcome, AskQuestion } from '../../shared/askQuestion';
 
+/** `onOpened` 那一刻的探针（考「broker 已经准备好了吗」）。 */
+type Probe = (args: {
+  broker: QuestionBroker; order: string[]; toolCallId: string; questions: AskQuestion[];
+}) => void;
+
 /**
  * `browser_login` 的首次确认（spec §4.6 第 2 条）。
  *
@@ -11,7 +16,7 @@ import type { AskOutcome, AskQuestion } from '../../shared/askQuestion';
  * 注册顺序、「没表态不等于同意」、以及账号只到用户屏幕为止。
  */
 
-function harness() {
+function harness(opts: { probe?: Probe } = {}) {
   const broker = new QuestionBroker();
   const opened: Array<{ toolCallId: string; questions: AskQuestion[] }> = [];
   const closed: Array<{ toolCallId: string; outcome: AskOutcome }> = [];
@@ -20,8 +25,9 @@ function harness() {
     onOpened: (toolCallId: string, questions: AskQuestion[]) => {
       order.push('onOpened');
       // **顺序不能反**：UI 打开时 broker 必须已经准备好，否则用户手快提交会被
-      // 当成迟到消息丢弃。这里就地验证 pending 已经在了。
-      order.push(broker.cancel('nope', 'nope') === false ? 'brokerAlive' : 'x');
+      // 当成迟到消息丢弃。验证它的探针由用例注入 —— 探针本身会**结束**这次提问，
+      // 所以不能挂在每一条用例上（也不许写成一句不动真格的恒真断言，见下面那条）。
+      opts.probe?.({ broker, order, toolCallId, questions });
       opened.push({ toolCallId, questions });
     },
     onClosed: (toolCallId: string, outcome: AskOutcome) => { order.push('onClosed'); closed.push({ toolCallId, outcome }); },
@@ -108,15 +114,32 @@ describe('只有明确点了「是」才算确认', () => {
 });
 
 describe('与 ask broker 的接线', () => {
-  /** 与 askUserQuestionTool 一字不差：先注册 pending，再通知 UI。 */
+  /**
+   * 与 askUserQuestionTool 一字不差：先注册 pending，再通知 UI。
+   *
+   * **探针必须对真的那个 thread / toolCallId 动作。** 早先这里是
+   * `broker.cancel('nope', 'nope') === false`：`'nope'` 这个 thread 永远不在
+   * `pending` 里，所以它**无论 broker 注册没注册都回 false** —— 一句恒真的断言。
+   * 评审 I2 实测：把 `loginConfirm.ts` 里 `broker.ask` 与 `shared.onOpened` 两句
+   * 对调，2884 条全绿。守法照兄弟文件 `askUserQuestionTool.test.ts:27`：在 `onOpened`
+   * 里往**真的那个** pending 上 `submit` 并断它被收下（顺序反了就会被丢弃）。
+   */
   it('先 broker.ask 注册，再 onOpened 通知 UI', async () => {
-    const h = harness();
+    const h = harness({
+      probe: ({ broker, order, toolCallId, questions }) => {
+        const q = questions[0];
+        const taken = broker.submit('thread-1', toolCallId, [
+          { questionId: q.id, kind: 'answered', optionIds: [q.options[0].id] },
+        ]);
+        order.push(taken ? 'brokerAlive' : 'brokerNotReady');
+      },
+    });
     const p = h.ask('call-1', ARGS);
     expect(h.order.slice(0, 2)).toEqual(['onOpened', 'brokerAlive']);
-    const q = h.opened[0].questions[0];
-    h.broker.submit('thread-1', 'call-1', [{ questionId: q.id, kind: 'answered', optionIds: [q.options[0].id] }]);
-    await p;
-    expect(h.order).toContain('onClosed');
+    // 这一发提交是在 UI「打开」的同一瞬打进去的（用户手快）。它必须被收下并
+    // 一路走通 —— 顺序反了的话它落在注册之前，会被当成迟到消息丢弃。
+    expect(await p).toBe(true);
+    expect(h.order).toEqual(['onOpened', 'brokerAlive', 'onClosed']);
   });
 
   it('onClosed 拿到的是真实的 outcome（UI 那一侧靠它收掉卡片）', async () => {

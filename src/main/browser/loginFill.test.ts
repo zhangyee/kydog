@@ -43,6 +43,18 @@ class FakeInput {
   getAttribute(n: string): string | null {
     return Object.prototype.hasOwnProperty.call(this.attrs, n) ? this.attrs[n] : null;
   }
+
+  /**
+   * `name` / `id` 在真 DOM 里是**反射 content attribute 的 IDL 属性**（缺席时回空串），
+   * 所以替身也必须有 —— 与 `attrs` 同源，不许是第二份事实。
+   *
+   * **少了它们，判据的一整个维度就没人守。** 评审 I5 实测：往密码框判据里加回
+   * 「名字里带 pass/pwd 就算密码框」这种启发式（变异 R33），在补上这两个属性之前
+   * **2884 条全绿** —— 因为 `el.name` / `el.id` 在替身里恒为 undefined，任何读 IDL
+   * 属性的启发式都命不中。而「判据只有两条协议层事实」正是本批最要紧的设计决定。
+   */
+  get name(): string { return this.getAttribute('name') ?? ''; }
+  get id(): string { return this.getAttribute('id') ?? ''; }
   getClientRects(): unknown[] { return this.laidOut ? [{}] : []; }
   focus(): void { this.focusCalls += 1; }
   dispatchEvent(e: { type: string }): void { this.events.push(e.type); }
@@ -231,14 +243,21 @@ describe('密码框的判据只有两条协议事实，且必须恰好一个', (
    * 进**哪一个**框」，宽一点就会把一个只是名字里带 pwd 的框数进来，于是整条被
    * many_passwords 拒掉 —— 而页面上其实只有一个真密码框。
    */
-  it('名字里带 password 但从来不是密码框的，不算密码框', () => {
+  it('即使 name 就叫 password、id 就叫 pwd、autocomplete 写着 current-password，也不算密码框', () => {
     const user = new FakeInput({ attrs: { name: 'userName' } });
-    const hint = new FakeInput({ type: 'text', attrs: { name: 'passwordHint', autocomplete: 'current-password' } });
+    const hint = new FakeInput({
+      type: 'text',
+      attrs: { name: 'password', id: 'pwd', autocomplete: 'current-password' },
+    });
     const pw = new FakeInput({ type: 'password' });
     const form = new FakeForm();
     user.form = form; hint.form = form; pw.form = form;
+    // **替身真的有这两个 IDL 属性**才考得住读 IDL 属性的启发式（评审 I5 / 变异 R33）。
+    expect(hint.name).toBe('password');
+    expect(hint.id).toBe('pwd');
     const { run } = stage([user, hint, pw]);
     const r = run(REQ());
+    // 判据放宽的话它会被数成第二个密码框 → many_passwords，整条拒掉。
     expect(r.ok).toBe(true);
     expect(pw.raw).toBe('p@ss');
     // 账号进的是排在密码框之前**最近的**那个可填文本框。
@@ -387,12 +406,50 @@ describe('没给 usernameIndex 时的结构规则', () => {
     expect(run(REQ()).reason).toBe('no_username');
   });
 
-  it('都在 <form> 外面（form 都是 null）时算「同一个」—— 这是刻意留的边界', () => {
-    const user = new FakeInput();
+  /**
+   * **密码框不在任何 `<form>` 里时，这一支整条 fail-closed。**
+   *
+   * 那时 `(el.form || null) !== form` 两边都是 null，「同一个 form」不再是任何约束
+   * —— 页面顶部的站内搜索框与账号框一样合格。评审实测（2026-09-09，真 Chromium）：
+   * 早先这里会挑中 `#search`、`ok: true` 返回，账号写进搜索框、提交出去的是一次
+   * **账号为空**的登录，而「一轮只有一次机会」意味着那是本轮唯一的机会。
+   * 注释当时写的是「选不出来就明确报错」—— 行为与注释相反，这里让行为跟上注释。
+   */
+  it('密码框不在任何 <form> 里 → username_needs_index，不猜，一个字都不写', () => {
+    const search = new FakeInput({ attrs: { id: 'search', placeholder: '站内搜索' } });
+    const acct = new FakeInput({ attrs: { id: 'acct', placeholder: '学号' } });
     const pw = new FakeInput({ type: 'password' });
-    const { run } = stage([user, pw]);
-    expect(run(REQ()).ok).toBe(true);
-    expect(user.raw).toBe('u2100011000');
+    const { run } = stage([search, acct, pw]);
+    expect(run(REQ())).toEqual({ ok: false, reason: 'username_needs_index', wrote: false });
+    expect(search.raw).toBe('');
+    expect(acct.raw).toBe('');
+    expect(pw.raw).toBe('');
+  });
+
+  /** 评审构造的 weak2.html：搜索框排在密码框之前，真正的学号框排在它之后。 */
+  it('无 form 页上无关框恰好排在密码框之前，也照样拒（这正是被实测选错的那张页）', () => {
+    const search = new FakeInput({ attrs: { id: 'search', placeholder: '站内搜索' } });
+    const pw = new FakeInput({ type: 'password' });
+    const acct = new FakeInput({ attrs: { id: 'acct', placeholder: '学号' } });
+    const { run } = stage([search, pw, acct]);
+    expect(run(REQ()).reason).toBe('username_needs_index');
+    expect(search.raw).toBe('');
+    expect(pw.raw).toBe('');
+  });
+
+  /**
+   * 模型指的那一支**保留**这条边界（`form` 都为 null 也算「同一个」）：那里有模型的
+   * 显式选择兜底，而结构规则那一支是我们自己在猜。两支的判据不同是刻意的。
+   */
+  it('无 form 页上模型用 usernameIndex 指了就填得成', () => {
+    const acct = new FakeInput({ attrs: { id: 'acct' } });
+    const pw = new FakeInput({ type: 'password' });
+    const { run } = stage([acct, pw], { ids: [[acct, 7]] });
+    const r = run(REQ({ usernameNodeId: 7 }));
+    expect(r.ok).toBe(true);
+    expect(r.source).toBe('model');
+    expect(acct.raw).toBe('u2100011000');
+    expect(pw.raw).toBe('p@ss');
   });
 });
 
@@ -535,10 +592,16 @@ describe('提交：探路排在写值之前，两者都没有就明确报错', (
     expect(pw.raw).toBe('');
   });
 
+  /**
+   * 用模型指的那一支来考它：无 form 页上结构规则更早就拒了
+   * （`username_needs_index`，见上面那组），到不了这道提交探路。
+   */
   it('密码框不在任何 form 里而又要提交 → no_form，且一个字都没写', () => {
     const user = new FakeInput(); const pw = new FakeInput({ type: 'password' });
-    const { run } = stage([user, pw]);
-    expect(run(REQ({ submit: true }))).toEqual({ ok: false, reason: 'no_form', wrote: false });
+    const { run } = stage([user, pw], { ids: [[user, 9]] });
+    expect(run(REQ({ submit: true, usernameNodeId: 9 })))
+      .toEqual({ ok: false, reason: 'no_form', wrote: false });
+    expect(user.raw).toBe('');
     expect(pw.raw).toBe('');
   });
 
@@ -551,6 +614,10 @@ describe('提交：探路排在写值之前，两者都没有就明确报错', (
     expect(r.reason).toBe('submit_failed');
     expect(r.wrote).toBe(true);
     expect(pw.raw).toBe('p@ss');
+    // **页面抛的那句话不进回执。** 这是「写值之后才读页面」的第二处（第一处是
+    // `field`）：此刻密码已经在页面的 DOM 里，err.message 是页面影响得到的字符串。
+    expect(r.detail).toBeUndefined();
+    expect(JSON.stringify(r)).not.toContain('表单校验没过');
   });
 });
 
@@ -575,5 +642,52 @@ describe('回显只回属性，绝不回值', () => {
     const form = new FakeForm(); user.form = form; pw.form = form;
     const { run } = stage([user, pw]);
     expect(JSON.stringify(run(REQ({ password: 'SECRET-PW' })))).not.toContain('SECRET-PW');
+  });
+
+  /**
+   * **回显必须在写值之前算出来。**
+   *
+   * `put()` 里的 `fire(el, 'input')` 会**同步**跑页面自己的监听器，而那一刻密码已经
+   * 在页面的 DOM 里。一个被 XSS 或本身敌意的登录页只要在密码框的 input 监听器里把
+   * `this.value` 抄进账号框的 `placeholder` / `name`，写完再读 `desc()` 就把密码原样
+   * 抄进回执 → 工具结果 → 模型上下文 → transcript。评审 2026-09-09 用真 Chromium
+   * 实测拿到了哨兵密码（3/3），这是本批第一条硬约束「密码永不进模型上下文」上的
+   * 一条真实的路。
+   */
+  it('页面在密码框的 input 事件里把密码抄进账号框的属性 —— 回执里也不许出现它', () => {
+    const user = new FakeInput({ attrs: { id: 'u', name: 'user', placeholder: '学号' } });
+    const pw = new FakeInput({ type: 'password' });
+    const form = new FakeForm(); user.form = form; pw.form = form;
+    const record = pw.dispatchEvent.bind(pw);
+    pw.dispatchEvent = (e: { type: string }): void => {
+      record(e);
+      // 页面的监听器（同步跑在 fire() 里）：把刚拿到的密码抄进账号框的属性。
+      if (e.type === 'input') { user.attrs.placeholder = pw.raw; user.attrs.name = `X${pw.raw}`; }
+    };
+    const { run } = stage([user, pw]);
+    const r = run(REQ({ password: 'SENTINEL-PW-9f3a7c' }));
+    expect(r.ok).toBe(true);
+    // 这一条守的是「这个场景真的发生了」—— 页面确实改到了那两个属性。
+    expect(user.getAttribute('placeholder')).toBe('SENTINEL-PW-9f3a7c');
+    expect(user.getAttribute('name')).toBe('XSENTINEL-PW-9f3a7c');
+    // 而回执说的是**写之前**挑中的那个框：页面事后改成什么与它无关。
+    expect(r.field).toBe('input#u[name=user]（提示文字：学号）');
+    expect(JSON.stringify(r)).not.toContain('SENTINEL-PW-9f3a7c');
+  });
+
+  /**
+   * 属性是页面文本，进的是模型上下文 —— 与 walker 的 `MAX_TEXT` 同一件事，
+   * 所以同一个上限（160）、同一个截断记号，不静默（spec §5.5）。
+   */
+  it('超长属性截断并带记号（原长写出来）', () => {
+    const long = 'n'.repeat(400);
+    const user = new FakeInput({ attrs: { name: long } });
+    const pw = new FakeInput({ type: 'password' });
+    const form = new FakeForm(); user.form = form; pw.form = form;
+    const { run } = stage([user, pw]);
+    const field = String(run(REQ()).field);
+    expect(field).toContain('…[截断，原长 400 字符]');
+    expect(field).not.toContain(long);
+    expect(field.length).toBeLessThan(long.length);
   });
 });

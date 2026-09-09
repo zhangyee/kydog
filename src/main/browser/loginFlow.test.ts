@@ -47,6 +47,8 @@ function harness(over: {
   password?: string;
   reply?: Reply | (() => Reply | Promise<Reply>);
   evalThrows?: unknown;
+  /** 第一次 `reveal()` 挂住不返回，直到用例调 `releaseReveal()`（考队列内那一判）。 */
+  holdReveal?: boolean;
 } = {}) {
   const wr: WebRequestPort & { current: unknown; sets: number } = {
     current: null,
@@ -72,6 +74,11 @@ function harness(over: {
     confirmLoginResult: over.confirmLoginResult ?? true,
   };
 
+  /** 每个标签一条队列，照真身。 */
+  const queues = new Map<string, Promise<unknown>>();
+  let holdNextReveal = over.holdReveal === true;
+  let revealGate: (() => void) | null = null;
+
   const log = {
     order: [] as string[],
     injected: [] as string[],
@@ -86,7 +93,17 @@ function harness(over: {
       currentUrlOf: () => state.url,
       webContentsIdOf: () => state.webContentsId,
       getSnapshot: () => over.snapshot ?? null,
-      enqueue: (tabId, fn) => { log.order.push(`enqueue:${tabId}`); return fn(); },
+      enqueue: (tabId, fn) => {
+        log.order.push(`enqueue:${tabId}`);
+        // **照真身 `browserService.enqueue` 真的按标签串行**（队尾那一句把 rejection
+        // 吞掉，于是一次失败不会卡住这个标签的队列）。早先这里是 `return fn()`
+        // 立刻执行 —— 那样两次填充在队列里根本重叠不起来，`fillInQueue` 开头那道
+        // 「队列内的 assertNoPriorAttempt」就永远走不到（评审 I4：整句删掉全绿）。
+        const prev = queues.get(tabId) ?? Promise.resolve();
+        const next = prev.then(fn, fn);
+        queues.set(tabId, next.then(() => {}, () => {}));
+        return next;
+      },
       withAgentDriving: (tabId, runId, fn) => { log.order.push(`driving:${tabId}:${String(runId)}`); return fn(); },
       evalInPage: async (_tabId, code) => {
         log.order.push('evalInPage');
@@ -113,7 +130,15 @@ function harness(over: {
       },
     },
     institution: {
-      reveal: async () => { log.reveals += 1; log.order.push('reveal'); return { password: state.password }; },
+      reveal: async () => {
+        log.reveals += 1;
+        log.order.push('reveal');
+        if (holdNextReveal) {
+          holdNextReveal = false;
+          await new Promise<void>((res) => { revealGate = res; });
+        }
+        return { password: state.password };
+      },
     },
     hub: () => hub,
   };
@@ -131,6 +156,10 @@ function harness(over: {
     setAsk: (v: boolean) => { askAnswer = v; },
     fill: (opts: Partial<Parameters<LoginFlow['fill']>[1]> = {}) =>
       flow.fill('t1', { runId: 'run-1', submit: false, ask, ...opts }),
+    /** 同一个 flow、换一个标签 —— 「停手」的作用域是 run，考的就是这个。 */
+    fillOn: (tabId: string, opts: Partial<Parameters<LoginFlow['fill']>[1]> = {}) =>
+      flow.fill(tabId, { runId: 'run-1', submit: false, ask, ...opts }),
+    releaseReveal: () => { revealGate?.(); },
     destroy: (tabId: string) => { for (const h of log.destroyHooks) h(tabId); },
   };
 }
@@ -354,6 +383,71 @@ describe('spec §4.6：同一轮 run 内失败一次就停手', () => {
     expect(e.code).toBe('browser.login_attempted');
     expect(h.log.asked).toEqual([]);
     expect(h.log.confirmed).toEqual([]);
+  });
+
+  /**
+   * **作用域是 run，不是标签。**
+   *
+   * `browser_open` 的 `tabId` 是可选的，不给就新开一个标签，而标签数没有上限 ——
+   * 只查「这个标签」的话，模型收到 `browser.login_attempted` 之后开个新标签再调
+   * `browser_login` 就照填不误。评审实测：同一轮里六个标签各调一次，**六次全部
+   * 注入成功，一次都没被拒**。押的是用户本人的校园统一身份认证账号，而高校 IdP
+   * 普遍锁定连续失败的账号 —— spec §4.6 那道闸防的就是这件事。
+   */
+  it('一轮里换一个标签再调也拒 —— 本轮名下任一标签填过就停手', async () => {
+    const h = harness();
+    await h.fill();
+    const e = await errOf(h.fillOn('t2'));
+    expect(e.code).toBe('browser.login_attempted');
+    expect(h.log.injected).toHaveLength(1);
+  });
+
+  /** 措辞里点出「在这个标签上」等于替模型指出绕法。 */
+  it('拒的那句话说的是「本轮」，不提「这个标签」', async () => {
+    const h = harness();
+    await h.fill();
+    const e = await errOf(h.fillOn('t2'));
+    expect(e.message).toContain('本轮');
+    expect(e.message).toContain('换一个标签页也一样');
+    expect(e.message).not.toContain('这个标签');
+  });
+
+  /** 判据是 `runId` 相等，不是「表里有东西」—— 上一轮留下的记录不该挡住新一轮。 */
+  it('别的轮次名下的标签不算数', async () => {
+    const h = harness();
+    await h.fill();
+    await h.fillOn('t2', { runId: 'run-2' });
+    expect(h.log.injected).toHaveLength(2);
+  });
+
+  it('t1 看到断言回传之后，同一轮 t2 照样可以填（那一次成了，不是「失败一次」）', async () => {
+    const h = harness();
+    await h.fill();
+    h.fire(req());
+    await h.fillOn('t2');
+    expect(h.log.injected).toHaveLength(2);
+  });
+
+  /**
+   * 队列内那一次 `assertNoPriorAttempt`（`fillInQueue` 开头）**才是权威的那一次**：
+   * 队列外那一判在排队**之前**做，那时表里还可能什么都没有。
+   *
+   * 造法：第一次填在 `reveal` 上挂住（此刻还没 `attachObserver`，表是空的），这时
+   * 发起第二次 —— 它的队列外那一判必然放行，只能靠队列内那一判拦下来。
+   * 评审 R21（把队列内那一句整条删掉）在这条用例之前**存活**：2884 条全绿。
+   */
+  it('两次 fill 排在同一个标签的队列里 —— 后一次在队列内被拒', async () => {
+    const h = harness({ holdReveal: true });
+    const first = h.fill();
+    for (let i = 0; i < 50 && !h.log.order.includes('reveal'); i++) await Promise.resolve();
+    expect(h.log.order).toContain('reveal');
+    // 第一次卡在取密码那一步：观测者还没挂，表里一条记录都没有。
+    expect(h.flow.noteFor('t1')).toBeNull();
+    const second = errOf(h.fill());
+    h.releaseReveal();
+    await first;
+    expect(await second).toHaveProperty('code', 'browser.login_attempted');
+    expect(h.log.injected).toHaveLength(1);
   });
 
   it('换一轮 run 就放行 —— 这条状态只在同一轮内成立', async () => {
@@ -634,7 +728,8 @@ describe('密码只有一个出口', () => {
     const reasons = [
       'expired', 'origin_changed', 'no_password', 'many_passwords', 'stale_username_index',
       'username_not_same_form', 'username_not_text', 'username_disabled', 'no_username',
-      'no_form', 'no_submit', 'write_rejected', 'submit_failed', '某个没见过的值',
+      'username_needs_index', 'no_form', 'no_submit', 'write_rejected', 'submit_failed',
+      '某个没见过的值',
     ];
     for (const reason of reasons) {
       const h = harness({ reply: { ok: false, wrote: false, reason, detail: 'd', count: 2 } });
@@ -664,6 +759,7 @@ describe('页面回报的失败：每一种的下一步都不同', () => {
     ['username_not_text', 'browser.target_unusable'],
     ['username_disabled', 'browser.target_unusable'],
     ['no_username', 'browser.target_unusable'],
+    ['username_needs_index', 'browser.target_unusable'],
     ['no_form', 'browser.target_unusable'],
     ['no_submit', 'browser.target_unusable'],
     ['write_rejected', 'browser.target_unusable'],
@@ -694,10 +790,23 @@ describe('页面回报的失败：每一种的下一步都不同', () => {
 
   /** 每一条都要说清「填了没有」—— 模型据此决定要不要重取快照。 */
   it('说得出「一个字都没填」的那些，消息里真的这么说了', async () => {
-    for (const reason of ['no_password', 'no_username', 'no_submit', 'no_form', 'username_disabled']) {
+    for (const reason of ['no_password', 'no_username', 'username_needs_index', 'no_submit', 'no_form', 'username_disabled']) {
       const h = harness({ reply: { ok: false, wrote: false, reason } });
       expect((await errOf(h.fill())).message).toContain('一个字都没填');
     }
+  });
+
+  /**
+   * `submit_failed` 是**写值之后**才产生的（密码那时已经在页面的 DOM 里），所以
+   * 页面在那一刻能影响到的任何字符串都不许进错误消息 —— 与 `field` 那条
+   * （回显在写之前算）是同一类出口。
+   */
+  it('页面多回一个 detail 字段也进不了错误消息', async () => {
+    const h = harness({ reply: { ok: false, wrote: true, reason: 'submit_failed', detail: 'PAGE-TEXT-SENTINEL' } });
+    const e = await errOf(h.fill());
+    expect(e.code).toBe('browser.page_no_result');
+    expect(e.message).not.toContain('PAGE-TEXT-SENTINEL');
+    expect(e.message).toContain('凭据已经在页面上了');
   });
 
   it('已经写进页面的那些，明说「不可回滚 / 凭据已经在页面上」', async () => {
