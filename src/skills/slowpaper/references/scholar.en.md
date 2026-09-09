@@ -53,15 +53,19 @@ content mid-flow can hit `browser.target_unusable`, and that is not a wrong sele
 Enter in the input box **did not submit** — the live value was already the query and the
 element was focused, yet the page did nothing. Baidu Xueshu behaved the same.
 
-**That was the reconnaissance tool's problem, not site behaviour, and it has since been
-fixed.** Chromium's implicit form submission happens on `keypress`, and CDP's
-`dispatchKeyEvent` only produces a char event when it is a `keyDown` carrying `text`; this
-project's key table now gives `Enter` its `text` (`KEYS` in `actions.ts`). The old conclusion
-that "these two sites do not support Enter to submit" is **void** — stop carrying it around as
-an open question.
+**There is a candidate explanation, but it has never been re-verified.** Chromium's implicit
+form submission happens on `keypress`, and CDP's `dispatchKeyEvent` only produces a char event
+when it is a `keyDown` carrying `text`; this project's key table gives `Enter` its `text`
+(`KEYS` in `actions.ts`) — so **that negative observation may have been the reconnaissance
+tool's problem**. But "these two sites really do submit under this project's `key` action" has
+**never been measured by this project**, so it remains an open question, not a conclusion.
 
-Even so the playbook still clicks the submit button: both routes work now, and clicking also
-holds for sites whose submit control is not a `type=submit`, so it is the sturdier one.
+**Until it is re-verified, always click the submit button.** Clicking also holds for sites
+whose submit control is not a `type=submit`, and it is the only route measured to work. If the
+Enter route is in fact still dead, `browser_act` reports no error and waits for no navigation,
+and the `extract` that follows runs against the home page's DOM — the return value looks
+entirely normal with a row count of 0. The page reports nothing, and you will think you
+searched.
 
 Then extract results with the playbook under "How to page".
 

@@ -12,11 +12,13 @@ import type { FixtureFile } from '../../../e2e/fixtures/fixture.types';
  * 这套机制的接线只有一处：`sessionFactory.ts` 把 `createBrowserTools()` 的返回值
  * 作为**第五个实参**交给 `createFixtureSession`。评审的 N1 把那个实参删掉之后：
  * `npx tsc --noEmit` 绿、`npm run lint` 绿、`npm test` **一条不红** —— 只有
- * `e2e/61-browser.spec.ts` 里那几条会红，而它们在发版流水线上被
- * `KYDOG_SKIP_LIVE_BROWSER=1` **整组跳过**（那一组要打真源，机房 IP 会被当机器人）。
- * 也就是说 `fixtureProvider` 的 `tool` 分支与这处接线在 CI 上**零覆盖**。
+ * `e2e/61-browser.spec.ts` 里那几条会红，而它们在发版流水线上一度被
+ * `KYDOG_SKIP_LIVE_BROWSER=1` **整组跳过**（那道闸的理由后来被查出是假的，已撤掉：
+ * 那一组打的是 example.com 一族，不是 Scholar）。
+ * 也就是说 `fixtureProvider` 的 `tool` 分支与这处接线在 CI 上曾经**零覆盖**。
  *
- * 所以这里补的不是「同一件事的第二笔账」——CI 上那第一笔账是空的。
+ * 所以这里补的不是「同一件事的第二笔账」——CI 上那第一笔账当时是空的。
+ * 现在两笔都在，而单测这一笔不挑网络。
  *
  * ## 为什么工具是假的
  *

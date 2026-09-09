@@ -70,12 +70,20 @@ jobs:
       - run: npx playwright install chromium
       - run: npm run e2e
         env:
-          # 内置浏览器那一组（e2e/61）要打真源：urlGuard 只放行公网 http/https，
-          # 起不了本地夹具服务器。而 runner 是机房 IP，真源随时会当它是机器人 ——
-          # 让发版流水线被外部因素间歇阻断不划算（spec §8.2）。跳过**不是静默的**：
-          # 跳过原因带在用例上，Playwright 的报告里逐条看得见。
-          # 代价：那一组只在开发机上跑过，别把「CI 绿」当成「内置浏览器这块没问题」。
-          KYDOG_SKIP_LIVE_BROWSER: '1'
+          # **只跳性能那一条**（e2e/61 的「十二万节点 < 1500ms」）：判据是时间，
+          # 而慢 runner（共享 CPU、被别的 job 挤兑）上是真 flake，红了也说明不了
+          # 「内置浏览器坏了」。跳过**不是静默的**：原因带在用例上，Playwright
+          # 的报告里逐条看得见。
+          #
+          # **这里从前设的是 `KYDOG_SKIP_LIVE_BROWSER: '1'`，理由是假的**：写的是
+          # 「runner 是机房 IP，Google Scholar 会当它是机器人」，而被它跳掉的 8 条
+          # **一条都不打 Scholar** —— 9 条非 CARSI 的用例打的全是
+          # example.com/.org/.net（IANA 保留域，受控内容靠打开后注入 DOM 拿到），
+          # 两条 CARSI 另有各自的 opt-in 闸。代价是 `e2e-requirements.md` 的五条防线
+          # 在流水线上一条都没跑，而那五条正是「三条 gate 拦不住、只有 e2e 守得住」的。
+          # 现在它们真的跑：这一组在 CI 上从 1 条提到 9 条。
+          # （打不了公网的机器仍可自己设 KYDOG_SKIP_LIVE_BROWSER=1 整组跳过。）
+          KYDOG_SKIP_PERF_BROWSER: '1'
       # always 而非 failure：flaky（retry 转绿）时 job 是成功态，failure() 不执行，
       # 而失败尝试的 trace 就留在 test-results 里（实证见 spec 事实基础）——不上传就随
       # runner 销毁。全绿时这里只有一个 .last-run.json，成本可忽略。

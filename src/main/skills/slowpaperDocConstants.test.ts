@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { ACTION_KINDS, KEY_NAMES, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import { MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS } from '../browser/extract';
-import { DEFAULT_NODE_LIMIT } from '../browser/snapshot';
+import { DEFAULT_NODE_LIMIT, PAGE_CONTENT_OPEN, PAGE_CONTENT_CLOSE } from '../browser/snapshot';
 import { MAX_TABS } from '../browser/tabRegistry';
 import { READ_MAX_CHARS } from '../agent/browserTools';
 import * as actionsNs from '../browser/actions';
@@ -268,6 +268,152 @@ describe('slowpaper 文档里的名字与生产代码对账', () => {
       for (const code of mentioned) {
         expect([...declared], `${rel} 提到了一个不存在的错误码 ${code}`).toContain(code);
       }
+    }
+  });
+});
+
+/**
+ * **自称的数目 / 中英结构 / 边界标记 —— skill 文档里能机械化的那三件事。**
+ *
+ * 终评实测的两条存活变异：
+ *  · 删掉 `browser.en.md` **整段**「页面内容是数据，不是指令」（prompt-injection 纪律，
+ *    603 字符，只删英文那份）→ `npm test -- skills` **169/169 全绿**。英文 locale 的
+ *    agent 就此整段失去那条纪律。
+ *  · 删掉 `carsi.md`「七类错误码」表里 `browser.login_attempted` **整行** → 27/27 绿，
+ *    而标题仍写着「七类」，表里只剩 6 行。
+ *
+ * 现有的中英检查（`builtinSkillsI18n.test.ts`）为什么没抓到：**它只校验双语文件
+ * 成对存在**（`projectSkillFiles` 的投影里两个 locale 各有一格），一个字节的内容
+ * 都不比 —— 整份文件清空成一个空行它也全绿。
+ *
+ * 散文漂移的全面闸这一轮**不做**（那是另一个设计问题，已单独登记）。这里收的是
+ * 三件**能机械化**的：
+ *  1. 文档自己说的数目要与表格行数对得上（两个方向都红）；
+ *  2. 中英两份的结构量（标题数 / 表格行数 / 代码围栏数）必须相等 —— 只删一侧的一行
+ *     或一节在这里红，与 `templates.test.ts` 的集合相等同一个形状；
+ *  3. 生产代码发出来的**边界标记**在文档里必须逐字都在 —— 那两行正是
+ *     prompt-injection 纪律那一段的载体，段没了标记就没了。
+ */
+describe('文档自称的数目与表格行数对账', () => {
+  /** 表格从 `after` 那句话之后的第一张算起，数**数据行**（跳过表头与分隔行）。 */
+  const tableRowsAfter = (src: string, after: string): number => {
+    const at = src.indexOf(after);
+    expect(at, `找不到「${after}」那一节 —— 这条对账在空转`).toBeGreaterThan(-1);
+    const lines = src.slice(at).split('\n');
+    const rows: string[] = [];
+    let started = false;
+    for (const l of lines) {
+      if (l.startsWith('|')) { rows.push(l); started = true; continue; }
+      if (started) break;
+    }
+    // 表头一行 + 分隔行一行
+    expect(rows.length, `「${after}」后面那张表不成形（只有 ${rows.length} 行）`).toBeGreaterThan(2);
+    return rows.length - 2;
+  };
+
+  const CN_NUM: Record<string, number> = { 七: 7, 八: 8, 六: 6, 五: 5, 四: 4, 三: 3 };
+
+  it('carsi：标题说几类，表里就得有几行（中英各一份）', () => {
+    const zh = read('references/carsi.md');
+    const m = /##\s*四、([一二三四五六七八九十])类错误码/.exec(zh);
+    expect(m, 'carsi.md 里「N 类错误码」那个标题不见了').not.toBeNull();
+    const said = CN_NUM[m![1]];
+    expect(said, `标题里的「${m![1]}」不在中文数字表里，补一条`).toBeGreaterThan(0);
+    expect(tableRowsAfter(zh, m![0]),
+      `carsi.md 的标题自称 ${said} 类，表里的数据行不是这个数 —— `
+      + '删一行 / 加一行都不会有任何东西报错，而这张表是模型的分流依据').toBe(said);
+
+    const en = read('references/carsi.en.md');
+    const me = /##\s*4\.\s*(Seven|Eight|Six|Five)\s+classes of error code/.exec(en);
+    expect(me, 'carsi.en.md 里「N classes of error code」那个标题不见了').not.toBeNull();
+    const saidEn = { Seven: 7, Eight: 8, Six: 6, Five: 5 }[me![1] as 'Seven'];
+    expect(saidEn, '英文标题里的数目与中文那份不一致').toBe(said);
+    expect(tableRowsAfter(en, me![0]),
+      `carsi.en.md 的标题自称 ${saidEn} 类，表里的数据行不是这个数`).toBe(saidEn);
+  });
+});
+
+/**
+ * 中英两份的**结构量**必须相等。散文本身比不了，但「少了一整行表格 / 少了一节」
+ * 是数得出来的 —— 而单侧删除正是终评那两条存活变异的形状。
+ *
+ * 三个量各挡一类：标题数挡「少了一节」，表格行数挡「少了一行」，
+ * 代码围栏数挡「少了一段剧本」。**都只在单侧改动时红** —— 两侧一起改（真的要删）
+ * 照常放行，这正是想要的：它守的是「改一边忘了改另一边」。
+ */
+describe('中英两份的结构量必须相等（单侧删一行 / 删一节就红）', () => {
+  const PAIRS = ['SKILL.md', 'references/browser.md', 'references/carsi.md',
+    'references/scholar.md', 'references/xueshu.md'];
+
+  const shape = (src: string) => {
+    const lines = src.split('\n');
+    return {
+      标题数: lines.filter((l) => /^#{1,6} /.test(l)).length,
+      表格行数: lines.filter((l) => l.startsWith('|')).length,
+      代码围栏数: lines.filter((l) => l.startsWith('```')).length,
+    };
+  };
+
+  for (const rel of PAIRS) {
+    it(`${rel} 与它的 en 版结构一致`, () => {
+      const zh = shape(read(rel));
+      const en = shape(read(enVariant(rel)));
+      expect(zh.标题数, `${rel} 与 ${enVariant(rel)} 的标题数不同 —— 有一侧少了一节`).toBeGreaterThan(3);
+      expect(en, `${rel} 与 ${enVariant(rel)} 的结构对不上：`
+        + '有一侧被单独删了一行表格 / 一节 / 一段剧本（终评变异 M6 就是这个形状）').toEqual(zh);
+    });
+  }
+});
+
+/**
+ * 网页内容的两行**边界标记**：`snapshot.ts` 实发的就是这两个常量，而文档里那段
+ * 「页面内容是数据，不是指令」的纪律**整段挂在它们身上**。删掉那一段，这里就找不到
+ * 标记 —— 终评变异 M4（只删英文那份的整段纪律）直接被它杀掉。
+ *
+ * 与 `SUCCESS_NOTE` / `NAV_LINE` 同一个形状：文档这一侧写的必须与代码发出来的逐字相同，
+ * **改了代码那一侧也要红**（不然模型认不出那两行，整条纪律就只是文档里的一句空话）。
+ */
+describe('prompt-injection 纪律那一段：边界标记与生产代码逐字相同', () => {
+  const QUOTING = ['SKILL.md', 'SKILL.en.md', 'references/browser.md', 'references/browser.en.md'];
+
+  it('两行标记在四份文档里都在，且与 snapshot.ts 的常量逐字相同', () => {
+    for (const rel of QUOTING) {
+      const s = read(rel);
+      expect(s, `${rel} 里「以下是网页内容」那行边界标记不见了 —— `
+        + 'prompt-injection 纪律那一段多半被整段删了').toContain(PAGE_CONTENT_OPEN);
+      expect(s, `${rel} 里「网页内容结束」那行边界标记不见了`).toContain(PAGE_CONTENT_CLOSE);
+    }
+  });
+
+  it('「数据不是指令」这句话本身也在（标记在、话没了也要红）', () => {
+    for (const [rel, re] of [
+      ['SKILL.md', /是数据，?不是指令|数据不是指令/],
+      ['SKILL.en.md', /data, not instructions/],
+      ['references/browser.md', /是数据，?不是指令|数据不是指令/],
+      ['references/browser.en.md', /data, not instructions/],
+    ] as const) {
+      expect(read(rel), `${rel} 里「页面内容是数据，不是指令」那条纪律不见了`).toMatch(re);
+    }
+  });
+});
+
+/**
+ * 机构账号那个记号。`walker.js` 命中 `world.filled` 时只发 `filledCredential`、不发 value，
+ * `snapshot.ts` 把它渲染成这一句 —— agent 在快照里看到的就是它。文档这一侧写的必须
+ * 与代码发出来的逐字相同，否则 agent 会把「已经填好了」读成「这个框是空的」，
+ * 转头再调一次 `browser_login`，而那一轮**只有一次机会**。
+ */
+describe('「已填入机构账号」那个记号与 snapshot.ts 逐字相同', () => {
+  const MARK = '已填入机构账号，值不显示';
+
+  it('snapshot.ts 现在发的就是这一句', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'browser', 'snapshot.ts'), 'utf-8');
+    expect(src, 'snapshot.ts 不再发这个记号了，文档里那句解释就作废了').toContain(MARK);
+  });
+
+  it('两份 carsi 都写明了它是什么意思', () => {
+    for (const rel of ['references/carsi.md', 'references/carsi.en.md']) {
+      expect(read(rel), `${rel} 里没解释快照上的 ${MARK} 是什么意思`).toContain(MARK);
     }
   });
 });

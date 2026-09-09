@@ -15,9 +15,10 @@ import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, ty
  * 只能来自真正的公网。受控的页面内容因此靠「先打开一个真页面，再往它里面注入」
  * 拿到（每条用例自己注入自己要的那点 DOM）。
  *
- * 发版流水线上 runner 是机房 IP，真源随时会当它是机器人；所以 `KYDOG_SKIP_LIVE_BROWSER=1`
- * 跳过整组，**跳过原因带在用例上**（照 `src/test-support/symlinkCapability.ts` 的
- * 现成做法，不是静默绿）。本机默认跑。
+ * 打不了公网的机器（断网、出口被墙）可以用 `KYDOG_SKIP_LIVE_BROWSER=1` 跳过整组，
+ * **跳过原因带在用例上**（照 `src/test-support/symlinkCapability.ts` 的现成做法，
+ * 不是静默绿）。**发版流水线不设它** —— 那里只跳性能那一条
+ * （`KYDOG_SKIP_PERF_BROWSER`，见下面两个常量上的说明）。本机默认全跑。
  *
  * ## 断言为什么全在主进程里做
  *
@@ -46,11 +47,40 @@ import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, ty
  * 里展开看到的是同一份字节）—— E-1b 要量的正是「真实工具结果的字节数」。
  */
 
+/**
+ * **整组跳过：只在「打不了公网」时用。**
+ *
+ * 这一组要打真源（`urlGuard` 只放行公网 http/https，起不了本地夹具服务器），
+ * 所以断网 / 出口被墙的机器上会红一批。这个开关是给那种机器的逃生口。
+ *
+ * **它不是发版流水线的开关。** 从前 `release.yml` 上一直设着它，理由写的是
+ * 「runner 是机房 IP，Google Scholar 对机房 IP 几乎必弹 robot check」——
+ * 那句话对被它跳掉的用例**一条都不成立**：这一组里没有任何一条访问 Google Scholar
+ * 或百度学术，9 条非 CARSI 的用例打的全是 `example.com/.org/.net`（IANA 保留域，
+ * 由 ICANN 托管，不对 CI runner 做机器人判定；受控的页面内容靠打开后往里注入拿到），
+ * 两条 CARSI 用例另有 `CARSI_ON` / `CARSI_FAILURE_ON` 的 opt-in 闸，这道闸对它们是多余的。
+ * 代价是 `e2e-requirements.md` 的五条防线（E-1a/E-1b/E-2/E-3/E-4）在流水线上**一条都没跑**，
+ * 而那五条正是各批评审逐条论证过「三条 gate 拦不住、只有 e2e 守得住」的那五条。
+ * 现在流水线只留下面那道 `KYDOG_SKIP_PERF_BROWSER`。
+ */
 const SKIP_LIVE = process.env.KYDOG_SKIP_LIVE_BROWSER === '1';
 const SKIP_REASON =
   'KYDOG_SKIP_LIVE_BROWSER=1：这一组要打真源。内置浏览器的 urlGuard 只放行公网 http/https，'
-  + '起不了本地夹具服务器；而发版流水线的 runner 是机房 IP，真源会把它当机器人。'
-  + '本机默认跑 —— 不跑就等于这一批一行都没验过。';
+  + '起不了本地夹具服务器，所以打不了公网的机器（断网、出口被墙）跑不了这一组。'
+  + '**发版流水线不设这个开关** —— 那里只跳性能那一条（KYDOG_SKIP_PERF_BROWSER）。'
+  + '不跑就等于这一批一行都没验过。';
+
+/**
+ * **只跳性能断言那一条**（E-3，十二万节点 < 1500ms）。
+ *
+ * 它与这一组里其它用例不同：判据是**时间**，而慢 runner（共享 CPU、被别的 job 挤兑）
+ * 上真有 flake 风险，红了也说明不了「内置浏览器坏了」。所以它单独留在闸后，
+ * 而不是把整组一起跳掉。上界 1500ms 的依据与三个实测数写在那条用例的 docblock 里。
+ */
+const SKIP_PERF = process.env.KYDOG_SKIP_PERF_BROWSER === '1';
+const PERF_SKIP_REASON =
+  'KYDOG_SKIP_PERF_BROWSER=1：这一条断的是采集耗时（12 万节点 < 1500ms）。'
+  + '慢 runner 上是真 flake，而且红了也说明不了「内置浏览器坏了」—— 发版流水线上只跳这一条。';
 
 /** 逻辑视口宽（`browserService.ts` 的 `LOGICAL_WIDTH`）。两边各写一个字面量就是两份会漂的真相，
  *  但 e2e 不能 import 主进程模块，所以这里写死并在断言的失败信息里点名出处。 */
@@ -426,6 +456,7 @@ async function confirmLoginPage(page: Page): Promise<LoginConfirmSeen> {
 // 所以这里再往运行输出里写一行：谁看日志谁就看得到这一组为什么没跑。
 // （不写死条数：这一组还在长，一个会漂的数字比没有数字更糟。）
 if (SKIP_LIVE) console.warn(`\n[61-browser] describe 里的用例整组跳过：${SKIP_REASON}\n`);
+if (!SKIP_LIVE && SKIP_PERF) console.warn(`\n[61-browser] 性能那一条跳过：${PERF_SKIP_REASON}\n`);
 
 test.describe('61-browser', () => {
   test.skip(SKIP_LIVE, SKIP_REASON);
@@ -658,6 +689,7 @@ test.describe('61-browser', () => {
    * 1500ms ≈ 6 倍余量：它要抓的是原始失败场景里「阻塞数秒」那一档，不是几十毫秒的抖动。
    */
   test('十二万节点的大页面：采集脚本必须在 1.5 秒内返回', async () => {
+    test.skip(SKIP_PERF, PERF_SKIP_REASON);
     test.setTimeout(120_000);
     const launched = await launchKydog();
     const { app, page } = launched;
@@ -1222,7 +1254,9 @@ test.describe('61-browser', () => {
         + '被调了几次）还分得开，但这条探针与判据 2b 的几何前提说不出话了，'
         + '这条用例的说明与实现已经对不上，回来重做；'
         + "reason='stale_node' 说明发号表反查不到这个号（文档换过了）；'not_visible' / "
-        + "'offscreen' / 'intercepted' 说明上面注入的那份夹具几何变了").toBe(true);
+        + "'offscreen' / 'intercepted' 说明上面注入的那份夹具几何变了；'expired' 说明这次求值"
+        + '撞了 `notAfter` 自检 —— 但这条探针的 `interactExpr` **本来就不带 `notAfter`**'
+        + '（见它的 docblock），出现它就是调用约定被改过了，先去看那个辅助函数').toBe(true);
       expect(probeMeasure.isPassword, 'measure 回报这个元素不是密码框 —— 那第二道闸'
         + '（`browserService` 判 `m.isPassword`）也不会触发，这条用例测的就不再是密码框').toBe(true);
 
@@ -1241,10 +1275,13 @@ test.describe('61-browser', () => {
       // **对照组：那个记号真的数得到 `measure`。** 上面这一次探针正是一次 `measure`，
       // 它必须被记到。数不到的话下面「这一轮 measure 一次都没被调用」就是一条白给的断言
       // ——它会恒真，而恒真的断言什么都不守。
-      expect(await measureCalls(), '刚刚那一次探针调的就是 interact.js 的 measure，'
-        + '记号却一次都没数到 —— 那说明记号没装到 measure 真正用的那个 '
-        + 'Element.prototype 上（隔离世界不对？measure 改成不走 scrollIntoView 了？），'
-        + '下面判据 2a 会变成一条恒真的死断言').toBe(1);
+      const probeCalls = await measureCalls();
+      expect(probeCalls, `刚刚那一次探针调的就是 interact.js 的 measure，记号数到的却是 ${probeCalls} 次。`
+        + '**0 次**说明记号没装到 measure 真正用的那个 Element.prototype 上'
+        + '（隔离世界不对？measure 改成不走 scrollIntoView 了？）—— 下面判据 2a 会变成一条'
+        + '恒真的死断言。**多于 1 次**说明这一段里还有别的东西在调 measure'
+        + '（重跑的那次 walker？夹具自己的脚本？），那 2a 数出来的次数就不再只属于 `type` 那一批，'
+        + '它同样说不清').toBe(1);
 
       // 探针滚过的这一下要自己还回去 —— 下面判据 2b 断的是「一个像素都没滚」。
       await inPage(app, 'example.com', 'window.scrollTo(0, 0)');
@@ -1339,13 +1376,16 @@ test.describe('61-browser', () => {
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
         '**对照组**：同一个 bar 上的非密码输入框走同一条 `type`，页面必须被 measure 的 '
         + 'scrollIntoView 滚起来。它没滚，说明上面判据 2b（断 scrollY === 0）已经不再'
-        + '区分得开两道密码闸 —— 两种可能：① 这条路压根没走到 measure（`measure` 自己'
-        + '不真滚了的话，两轮之间那条 `pwScrollsWindow` 探针会先红：它调的就是真 measure）；'
-        + '② 这个对照动作自己就没跑成，那这条说的'
-        + '根本不是第一件事。「几何/滚动容器变了」不会红在这里 —— 那一类由两轮之间'
-        + '那条 `pwScrollsWindow` 探针先接住（它真滚了一次）。分辨②看下面那条判据，'
+        + '区分得开两道密码闸 —— 三种可能：① 这条路压根没走到 measure；'
+        + '② 这个对照动作自己就没跑成，那这条说的根本不是第一件事；'
+        + '③ **产品路独有的那两样出了问题** —— 它比两轮之间那条探针多了 `notAfter`'
+        + '（单次求值时限，撞上就 `expired`、一个像素都不滚）与 `selector` 解析'
+        + '（探针走的是 nodeId）。**这两样探针身上没有，所以「探针绿、这条红」是它们的'
+        + '正常表现，别据此断定探针会先红。**'
+        + '「measure 自己不真滚了」「几何/滚动容器变了」这两类才由那条 `pwScrollsWindow` '
+        + '探针先接住（它调的就是真 measure、也真滚了一次）。分辨②看下面那条判据，'
         + '它排在后面、这条先红就跑不到：把这一条临时停掉再跑一次即可。'
-        + '第一种情形下，判据 2b 是一条永远绿的死断言')
+        + '①③ 两种情形下，判据 2b 都是一条永远绿的死断言')
         .toBeGreaterThan(0);
       expect(await measureCalls(), '**对照组**：同一条 `type` 走非密码框时，`measure` 必须真的'
         + '被调过。这个数是 0 说明这条路压根没走到 measure —— 那上面判据 2a（断 measure '
@@ -1596,9 +1636,9 @@ test.describe('61-browser', () => {
  *
  * 从前这里只有 `https://….invalid/`，失败要**过一次本机 DNS**：`.invalid` 的 NXDOMAIN
  * 偶尔会走很久，超过 `NAV_TIMEOUT_MS`(20s) 时**终态本身就变成 `timeout`**，红在下面
- * 第一条硬判据上（复审实测复现过一次：`本次导航耗时 20022ms`）。而这条用例是
- * `KYDOG_SKIP_LIVE_BROWSER=1` 之后仅剩的一条 —— 它一红，发版流水线就被一次与产品
- * 无关的 DNS 抖动阻断。
+ * 第一条硬判据上（复审实测复现过一次：`本次导航耗时 20022ms`）。这条用例一度是
+ * `KYDOG_SKIP_LIVE_BROWSER=1` 之后仅剩的一条（那道闸已经从发版流水线上撤掉，
+ * 现在那里跑 9 条），一次与产品无关的 DNS 抖动就能阻断整条流水线。
  *
  * 端口 19（chargen）在 Chromium 的受限端口表里，请求在**主机解析之前**就被拒。
  * 本机实测（Electron 41，2026-09-09）：`https://kydog-e2e-nonexistent.invalid:19/`
