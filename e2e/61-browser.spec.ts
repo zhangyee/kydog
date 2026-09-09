@@ -67,8 +67,25 @@ const WALKER_SOURCE = readFileSync(
   path.resolve(__dirname, '../src/main/browser/injected/walker.js'), 'utf8',
 );
 
+/**
+ * 派发脚本的**生产源码本身**。`browserService` 用 `?raw` 注入的就是这一份字节。
+ *
+ * 调用约定照抄 `browserService.ts` 的 `interactExpression`（e2e 不能 import 主进程模块，
+ * 见文件头）：整份源码是**一个箭头函数表达式**，拼成 `(<源码>)(<请求 JSON>)`。
+ * 不带 `notAfter` = 不设时限 —— `interact.js` 那条自检只在它是数字时生效。
+ */
+const INTERACT_SOURCE = readFileSync(
+  path.resolve(__dirname, '../src/main/browser/injected/interact.js'), 'utf8',
+);
+const interactExpr = (req: Record<string, unknown>): string =>
+  `(${INTERACT_SOURCE})(${JSON.stringify(req)})`;
+
 /** walker 报回来的一行（`walker.js` 的 `collect`）。 */
-type WalkerNode = { index: number; nodeId: number; role: string; name: string; w: number; h: number };
+type WalkerNode = {
+  index: number; nodeId: number; role: string; name: string; w: number; h: number;
+  /** `walker.js` 只在判成密码框时**才写**这个键（缺席 = 不是密码框）。 */
+  isPassword?: boolean;
+};
 type WalkerResult = { generation: string; url: string; title: string; nodes: WalkerNode[] };
 
 /**
@@ -85,6 +102,28 @@ async function inPage<T>(app: ElectronApplication, needle: string, expr: string)
     if (hits.length !== 1) return { ok: false as const, urls: all.map((w) => w.getURL()) };
     return { ok: true as const, value: (await hits[0].executeJavaScript(a.expr)) as unknown };
   }, { needle, expr });
+  if (!r.ok) {
+    throw new Error(`主进程里没有唯一一个 URL 含「${needle}」的 webContents，实际有：${JSON.stringify(r.urls)}`);
+  }
+  return r.value as T;
+}
+
+/**
+ * 在那个页面的**隔离世界**（`WALKER_WORLD_ID`）里求值 —— 产品自己跑 `walker.js` /
+ * `interact.js` 的那个世界。发号表 `__kydogWorld.ids` 与密码记忆 `__kydogWorld.pw`
+ * 都挂在那里，主世界（`inPage`）看不见它们，所以「按编号认元素」这条路只有这里走得通。
+ *
+ * 世界是跟着文档走的、跨调用保留：连着两次调用看到的是同一张发号表。
+ * 认 webContents 的规矩与 `inPage` 逐字相同（认不到唯一一个就抛，别静默挑第一个）。
+ */
+async function inWorld<T>(app: ElectronApplication, needle: string, expr: string): Promise<T> {
+  const r = await app.evaluate(async ({ webContents }, a) => {
+    const all = webContents.getAllWebContents().filter((w) => !w.isDestroyed());
+    const hits = all.filter((w) => w.getURL().includes(a.needle));
+    if (hits.length !== 1) return { ok: false as const, urls: all.map((w) => w.getURL()) };
+    const value = await hits[0].executeJavaScriptInIsolatedWorld(a.world, [{ code: a.expr }]);
+    return { ok: true as const, value: value as unknown };
+  }, { needle, expr, world: WALKER_WORLD_ID });
   if (!r.ok) {
     throw new Error(`主进程里没有唯一一个 URL 含「${needle}」的 webContents，实际有：${JSON.stringify(r.urls)}`);
   }
@@ -956,7 +995,7 @@ test.describe('61-browser', () => {
    * 十一条一条不红、`npm test` 只红 1 条替身、lint 只有一条不阻断的 warning。
    * 这条用例就是补这个洞的。
    *
-   * ## 判据为什么是「页面一个像素都没滚」——这不是凑数，是这道闸的定义
+   * ## 判据是「这一轮 `measure` 一次都没被调用」——这不是凑数，是这道闸的定义
    *
    * 密码框上有**两道**闸，措辞逐字相同（`interactError` 的 `'password'` 分支与
    * `assertTypeAllowed` 抛的是同一句话）：
@@ -968,39 +1007,63 @@ test.describe('61-browser', () => {
    *    `el.scrollIntoView({block:'center'})`。
    *
    * 所以第一道被删掉时，「被挡下」「没有按键落地」「第二个动作没跑」这三条**照样成立**
-   * （第二道接住了）—— 唯一变的是**页面被滚了一次**。密码框故意放在 3000 像素以下、
-   * 页面高 5000：闸在原位 → `scrollY` 恒 0；闸没了 → `scrollIntoView` 把它滚到视口中央。
-   * 这是协议层的页面事实，不是时间窗或阈值那类 proxy。
+   * （第二道接住了）—— 唯一变的是**`measure` 被发了出去**，页面被它滚了一次。
+   *
+   * 判据分两条，**2a 是主判据**：
+   *  · **2a**：这一轮 `measure` 一次都没被调用。这是协议层事实本身 ——「整批在碰页面
+   *    之前就停了」。记号是隔离世界里 `Element.prototype.scrollIntoView` 上的一个
+   *    透传计数器（`measure` 是 `interact.js` 里唯一调它的地方，`walker.js` 一次都不调；
+   *    世界是隔离的，所以网页自己的脚本再怎么滚也数不进来）。
+   *  · **2b**：`window.scrollY` 仍是 0。这是同一件事的**残迹**，接得住 `measure` 以外的
+   *    路径。密码框故意放在 3000 像素以下、页面高 5000：闸在原位 → `scrollY` 恒 0；
+   *    闸没了 → `scrollIntoView` 把它滚到视口中央。
+   *
+   * **为什么不能只有 2b**：残迹是可以被抹掉的。在第二道闸抛错之前顺手
+   * `window.scrollTo(0, 0)`（一句很像样的 UX 收尾）——第一道闸删掉之后，
+   * 这一组 12 条一条不红（实测）。而「调没调过」抹不掉。
+   * 这正是项目原则那句：需要拿 proxy 才能得出结论时，回到源头把信号留住。
    *
    * 另外三条不是白写的（它们守的是「整条路还是那条路」，不是这道闸）：
    * 挡下的措辞、按键一个都没落地、`type` 后面那个动作压根没跑（出错即停）。
    *
-   * ## 判据 2 依赖的那句话，由**两条断言**守着 —— 都别删
+   * ## 判据 2b 依赖的那句话，由**两条断言**守着 —— 都别删
    *
-   * 「闸没了 `measure` 会把它滚过来」拆开是两件事：
+   * 2a 不依赖任何几何（调没调过与页面长什么样无关）；2b 依赖的是
+   * 「闸没了 `measure` 会把它滚过来」，拆开是两件事：
    *  ① `scrollIntoView({block:'center'})` 落在这个夹具的密码框上时，**窗口**真的会滚；
    *  ② `measure` 此刻确实在滚，而且这条路确实走到了 `measure`。
    *
-   * **① 直接量，不量它的近似。** 从前这里量的是 `#kydog-pw` 的
-   * `getBoundingClientRect().top - innerHeight / 2 > 0`（几何够不够得着），
-   * 而那只是①的**近似**：rect 是**文档坐标**，看不见「到底谁来滚」。复审实测过一个
-   * 绕过去的变体 —— 把密码框包进一个自身完全在首屏内的 `overflow:auto` 容器：
-   * rect 一点没变（几何断言绿）、`scrollIntoView` 去滚的是那个内层容器、
-   * `window.scrollY` 一动不动（判据 2 绿），第一道闸删掉这一组 12 条一条不红。
-   * 所以下面改成**注入之后当场真滚一次再滚回来**（`pwScrollsWindow`），断它 > 0。
-   * 这条不是近似，就是①本身：密码框自己的位置、中间多出来的滚动容器、页面整个滚不动、
-   * 视口比页面还高（`DEFAULT_VIEWPORT_HEIGHT`），任一处让①不成立都**当场红**。
+   * **① 直接量，不量它的近似 —— 而且量的必须是 `type` 会碰的那个元素。**
+   * 这一条栽过三次，每次都是「拿一个通常恰好一致的东西顶替手上已有的事实」：
+   *  · 最早量的是 `#kydog-pw` 的 `getBoundingClientRect().top - innerHeight/2 > 0`
+   *    （几何够不够得着）。rect 是**文档坐标**，看不见「到底谁来滚」——
+   *    把密码框包进一个自身完全在首屏内的 `overflow:auto` 容器：rect 一点没变、
+   *    `scrollIntoView` 去滚那个内层容器、`window.scrollY` 一动不动，12 条一条不红。
+   *  · 改成真滚一次之后，找元素用的是 `querySelector('input[aria-label="…"]')`。
+   *    那是**属性**选择器不是可及名（`walker.js` 的 `nameOf` 还认 `aria-labelledby` /
+   *    `alt` / `title` / `innerText`），也不经发号表 —— 多插一个用 `aria-labelledby`
+   *    取到同名、且在首屏内的诱饵密码框：探针绑真框（滚，绿）、`type` 按序号绑诱饵
+   *    （不用滚窗口，`scrollY` 恒 0，绿），又是 12 条一条不红。
+   *  · 现在走的是**同一条解析路径**：快照那一行的**序号** → 重跑生产源码 `walker.js`
+   *    拿到该节点的 `nodeId`（发号表是 WeakMap，跨调用同一个元素同一个号）→ 生产源码
+   *    `interact.js` 的 `{op:'measure'}`（`resolve` 反查发号表 → `scrollIntoView`）。
+   *    这正是 `type` 里 `resolveTarget → dispatch → interact` 走的那条，一个字不差。
+   *    「只有一个同名密码框」也不再是默认：快照文本里那种行**数出来断言正好一条**，
+   *    重跑 walker 里同名节点也断正好一个、且序号与快照对得上。
+   * 密码框自己的位置、中间多出来的滚动容器、页面整个滚不动、视口比页面还高
+   * （`DEFAULT_VIEWPORT_HEIGHT`），任一处让①不成立都**当场红**。
    * 注意①**不是**「密码框在首屏之外」—— 那是充分不必要条件：
    * `scrollIntoView({block:'center'})` 对已经在首屏里的元素照样滚
-   * （复审实测：`DEFAULT_VIEWPORT_HEIGHT` 800→4000 时密码框在首屏内，判据 2 仍然有效）。
+   * （复审实测：`DEFAULT_VIEWPORT_HEIGHT` 800→4000 时密码框在首屏内，判据 2b 仍然有效）。
    *
    * **② 靠第三轮那条对照动作** —— 拿**同一个 bar 上**的一个**非密码**输入框走一次同样的
-   * `type`，断言其后 `scrollY > 0`。①那条探针自己调 `scrollIntoView`，看不见
-   * `measure` 改了没有（复审实测：`measure` 里删掉 `scrollIntoView` → 探针绿、对照动作红）。
+   * `type`，断言其后 `scrollY > 0`。②里「这条路确实走到了 `measure`」只有它看得见：
+   * ①那条探针自己去调 `interact.js`，绕过了 `browserTools → dispatch` 那一段。
+   * （②的另一半「`measure` 此刻确实在滚」现在两条都接得住 —— 探针调的就是真 `measure`。）
    * 同一手法在第一轮里已经用过一次（快照里那行「密码框，值不显示」的对照）。
    *
    * 这两条**产品代码里没有任何东西守着**，`npm test` 也跑不到 e2e：破了不报错，
-   * 只是让判据 2 悄悄变成一条永远绿的死断言。
+   * 只是让判据 2b 悄悄变成一条永远绿的死断言。
    *
    * ## 为什么要跑三轮 run
    *
@@ -1009,8 +1072,9 @@ test.describe('61-browser', () => {
    * 所以第一轮先用一个**碰不到页面的动作**（`extract` 一个匹配不到的选择器，走隔离世界、
    * 不经 `dispatch`）换回收尾快照，从里面读出编号与快照 id；第二轮才拿它们去 `type`。
    * 中间不许有任何东西滚页面 —— 第一轮之后也断一次 `scrollY === 0`。
+   * ①那条探针**排在两轮之间**（它要用第一轮换回来的那个编号），滚完当场还原并断回 0。
    * 第三轮是上面那条对照动作，**必须排在四条判据之后**：它会把页面滚起来、
-   * 也会在页面上落下一次 click，放在前面会把判据 2 与判据 4 一起污染。
+   * 也会在页面上落下一次 click，放在前面会把判据 2a / 2b 与判据 4 一起污染。
    */
   test('走真的 type：拿真快照里的编号打进密码框，整批在碰页面之前就被挡下', async () => {
     const { launched, fixturePath } = await launchWithAgent();
@@ -1030,9 +1094,9 @@ test.describe('61-browser', () => {
         // 3000 像素以下：闸在原位就够不着它，闸没了 measure 会把它滚到视口中央。
         // **三个控件都挂在这一个 bar 上**，共用这一个 top —— 对照动作因此与主判据
         // 站在同一块地上（它走的是同一条 resolveTarget → dispatch → measure）。
-        // 「这个夹具还够不够得着」不靠读这几行样式去推：紧跟在注入后面那条
-        // pwScrollsWindow 探针**真滚一次**量出来 —— bar 的 top、密码框自己那一行、
-        // 中间多出来的滚动容器、页面滚不动，全都一次接住。
+        // 「这个夹具还够不够得着」不靠读这几行样式去推：第一轮快照之后那条
+        // pwScrollsWindow 探针**真滚一次**量出来（走的是 type 那条 resolve → measure）
+        // —— bar 的 top、密码框自己那一行、中间多出来的滚动容器、页面滚不动，全都一次接住。
         // （这几行注入的是页面里的代码，整段在一个模板字符串里：别写反引号。）
         bar.style.cssText = 'position:absolute;left:0;top:3000px;width:600px;height:40px';
         bar.innerHTML =
@@ -1054,38 +1118,6 @@ test.describe('61-browser', () => {
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
         '开工前页面必须还没滚过 —— 已经滚过的话下面那条判据就说不出话了').toBe(0);
 
-      // **判据 2 依赖的那句话，当场量它本身**（上面 docblock 的①）—— 不量它的近似。
-      // 直接拿密码框真滚一次 `scrollIntoView({block:'center'})`、读 `window.scrollY`、
-      // 再滚回 0。从前这里量的是 `rect.top - innerHeight/2 > 0`，那只是「窗口会被滚起来」
-      // 的近似：rect 是文档坐标，看不见「谁来滚」——密码框与 document 之间插一个自身
-      // 在首屏内的 `overflow:auto` 容器就绕过去了（复审实测，12 条一条不红）。
-      // 找元素用的是**快照那一行的同一个身份**（可及名「KYDOG密码框」），不是 id：
-      // 免得探针量的与 `type` 真去碰的不是同一个元素。
-      const PW_PROBE_MISSING = -1_000_000;
-      const pwScrollsWindow = await inPage<number>(app, 'example.com', `(() => {
-        const el = document.querySelector('input[aria-label="KYDOG密码框"]');
-        if (!el) return ${PW_PROBE_MISSING};
-        el.scrollIntoView({ block: 'center' });
-        const moved = window.scrollY;
-        window.scrollTo(0, 0);
-        return moved;
-      })()`);
-      expect(pwScrollsWindow,
-        '第一道闸没了的话，measure 的 scrollIntoView({block:"center"}) 必须真把**窗口**滚起来 ——'
-        + '这一行就是拿密码框自己当场滚了一次量出来的（量完已经滚回 0）。这个数不 > 0 说明'
-        + '那句话已经不成立：判据 2（断 scrollY === 0）会变成一条永远绿的死断言，'
-        + '两道密码闸不再区分得开。四种成因，别只按第一种去查：① bar 的 top 或密码框自己'
-        + '那一行行内样式挪了，从 scrollY=0 把它居中不再需要下滚（注意不是「挪进首屏」：'
-        + '首屏内的元素照样会被居中滚）；② 密码框与 document 之间多了一个滚动容器，'
-        + '`scrollIntoView` 滚的是那个容器、不是窗口；③ 页面整个滚不动了（那个 5000 高的'
-        + '撑高块没了）；④ 视口比页面还高（helpers.ts 的窗口尺寸 / DEFAULT_VIEWPORT_HEIGHT）。'
-        + `${PW_PROBE_MISSING} 是哨兵：页面上压根找不到可及名叫「KYDOG密码框」的输入框，`
-        + `多半是上面注入的那份 DOM 改了（实测 ${pwScrollsWindow}）`)
-        .toBeGreaterThan(0);
-      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
-        '上面那条探针滚完必须自己滚回 0（它末尾 window.scrollTo(0, 0) 了）——'
-        + '没回到 0 的话，下面判据 2 断的就不是「一个像素都没滚」了').toBe(0);
-
       // ── 第一轮：换一份真快照回来（这一步碰不到页面）──────────────────────
       const snapRes = await runTools(page, fixturePath, [{
         toolCallId: 'tc-snap',
@@ -1106,11 +1138,120 @@ test.describe('61-browser', () => {
         .toBeTruthy();
       // **对照组**：walker 自己必须已经把它判成密码框。这一行不在，下面那条就是白给的
       // ——它测的就不再是「密码框被挡下」，而是「一个普通输入框被挡下」。
-      const pwLine = snapOut.text.match(/\[(\d+)\] textbox "KYDOG密码框" \(密码框，值不显示\)/);
-      expect(pwLine, '快照里必须有那个密码框，而且 walker 已经把它标成「密码框，值不显示」——'
-        + `没标上的话第一道闸（判据就是快照里的 isPassword）根本不会触发。结果：${snapOut.text.slice(-1200)}`)
-        .toBeTruthy();
-      const pwIndex = Number(pwLine![1]);
+      //
+      // **数的是「有几条」，不是「有没有」。** `String.match` 不带 `/g` 时静默只回第一条，
+      // 而下面 `type` 吃的就是这第一条的序号 —— 页面上一旦出现第二个同名密码框，
+      // 「探针量的」与「`type` 去碰的」就可能不是同一个元素，而两边各自都还是绿的
+      // （复审 V-LABELLEDBY 实测：多一个用 `aria-labelledby` 取到同名的诱饵，
+      // 第一道闸删掉这一组 12 条一条不红）。所以「正好一条」是一条**会红的断言**，
+      // 不是一个默认。
+      const PW_SNAP_LINE = /\[(\d+)\] textbox "KYDOG密码框" \(密码框，值不显示\)/;
+      const pwLines = snapOut.text.match(new RegExp(PW_SNAP_LINE.source, 'g')) ?? [];
+      expect(pwLines.length, '快照里叫「KYDOG密码框」且被 walker 标成「密码框，值不显示」的行'
+        + `必须**正好一条**，实际 ${pwLines.length} 条。0 条：walker 没把它判成密码框（第一道闸`
+        + '的判据就是快照里的 isPassword，没标上根本不会触发），或者上面注入的那份 DOM 改了；'
+        + '≥2 条：下面 `type` 取的是第一条的序号，而探针按序号认到的可能是另一条 —— '
+        + `两道闸的区分当场作废。结果：${snapOut.text.slice(-1200)}`)
+        .toBe(1);
+      const pwIndex = Number(snapOut.text.match(PW_SNAP_LINE)![1]);
+
+      // ── **判据 2b 依赖的那句话，当场量它本身**（上面 docblock 的①）────────────
+      //
+      // 关键是**认元素的路必须与 `type` 是同一条**。`type` 走的是
+      // `resolveTarget`（快照里那一行的序号 → 该节点的 `nodeId`）→ `interact.js` 的
+      // `resolve`（发号表反查，走 open shadow root）→ `measure`。所以这里也走这条：
+      //  · 在**同一个隔离世界**里重跑一遍**生产源码** `walker.js` —— 发号表是 WeakMap、
+      //    跨调用保留，同一个元素两次拿到的是同一个 `nodeId`；
+      //  · 按名字取到那一个节点，**断言它的序号就是上面 `pwIndex`**（两次扫描对得上，
+      //    序号↔元素的对应关系没漂）；
+      //  · 拿它的 `nodeId` 调**生产源码** `interact.js` 的 `{op:'measure'}` —— 与
+      //    `browserService.dispatch` 在 `type` 里发的那一次逐字相同（含
+      //    `{block:'center', inline:'center'}`），不是另写一份 `scrollIntoView`。
+      //
+      // 从前这里是 `document.querySelector('input[aria-label="…"]')`：那是**属性**选择器，
+      // 不是可及名（`walker.js` 的 `nameOf` 还认 `aria-labelledby` / `alt` / `title` /
+      // `innerText`），也不经发号表 —— 「量的与碰的是同一个元素」只是恰好成立。
+      // 再往前是 `rect.top - innerHeight/2 > 0`，那连「谁来滚」都看不见。
+      // **`measure` 到底有没有被调用过 —— 这是协议层事实，`scrollY` 只是它的残迹。**
+      // 判据 2 从前只有 2b：看这一轮结束时 `scrollY` 是不是 0。那是「页面被碰过没有」的**残迹**，
+      // 不是那件事本身：闸删掉之后，只要有谁把滚动**还原**回去（比如在第二道闸抛错之前
+      // 顺手 `window.scrollTo(0, 0)`，一句很像样的 UX 收尾），残迹就没了 —— 实测这一组
+      // 12 条一条不红。所以这里直接数那件事本身。
+      //
+      // 记号装在**隔离世界**的 `Element.prototype.scrollIntoView` 上：`interact.js` 就跑在
+      // 那个世界里，而 `measure` 是它**唯一**调 `scrollIntoView` 的地方（`walker.js` 一次都
+      // 不调）—— 所以这个计数就是「`measure` 被调了几次」。原样透传，不改行为；装错了的话
+      // 下面第三轮那条对照动作（断 `scrollY > 0`）会当场红。**没有动任何产品代码，也没有
+      // 加测试专用入口**：与这条用例自己往页面里挂 `__kydogClicks` 监听器是同一类做法。
+      const measureCalls = async (): Promise<number> =>
+        inWorld<number>(app, 'example.com', 'window.__kydogMeasureSpy.n');
+      const resetMeasureCalls = async (): Promise<void> => {
+        await inWorld(app, 'example.com', `(() => {
+          const W = window;
+          if (!W.__kydogMeasureSpy) {
+            W.__kydogMeasureSpy = { n: 0 };
+            const orig = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function (...args) {
+              W.__kydogMeasureSpy.n += 1;
+              return orig.apply(this, args);
+            };
+          }
+          W.__kydogMeasureSpy.n = 0;
+          return true;
+        })()`);
+      };
+      await resetMeasureCalls();
+
+      const probeSnap = await inWorld<WalkerResult>(app, 'example.com', WALKER_SOURCE);
+      const probeHits = probeSnap.nodes.filter((n) => n.name === 'KYDOG密码框');
+      expect(probeHits.length, '在隔离世界里重跑 walker，叫「KYDOG密码框」的节点必须**正好一个**，'
+        + `实际 ${probeHits.length} 个。这一步与上面数快照文本那一条互为独立证人 ——`
+        + '对不上说明这两次扫描看到的页面已经不是同一个了').toBe(1);
+      const probeNode = probeHits[0];
+      expect(probeNode.index, `重跑 walker 给这个密码框的序号是 ${probeNode.index}，`
+        + `而 \`type\` 待会儿要用的是快照里的 ${pwIndex} —— 两次扫描的「序号↔元素」对不上，`
+        + '下面这条探针量的就不是 `type` 会去碰的那个元素了').toBe(pwIndex);
+      expect(probeNode.isPassword, '重跑 walker 时这个节点必须仍然被判成密码框 ——'
+        + '不是的话第一道闸（判据就是快照节点的 isPassword）根本不会触发').toBe(true);
+
+      const probeMeasure = await inWorld<{ ok: boolean; reason?: string; isPassword?: boolean }>(
+        app, 'example.com', interactExpr({ op: 'measure', target: { nodeId: probeNode.nodeId } }));
+      expect(probeMeasure.ok, '拿 `type` 会用的那个 nodeId 去调生产源码 interact.js 的 '
+        + `{op:'measure'}，它却没成功（reason=${probeMeasure.reason ?? '(无)'}）。`
+        + "reason='password' 说明密码闸被挪进了 `measure` 内部或它之前 —— 判据 2a（数 measure "
+        + '被调了几次）还分得开，但这条探针与判据 2b 的几何前提说不出话了，'
+        + '这条用例的说明与实现已经对不上，回来重做；'
+        + "reason='stale_node' 说明发号表反查不到这个号（文档换过了）；'not_visible' / "
+        + "'offscreen' / 'intercepted' 说明上面注入的那份夹具几何变了").toBe(true);
+      expect(probeMeasure.isPassword, 'measure 回报这个元素不是密码框 —— 那第二道闸'
+        + '（`browserService` 判 `m.isPassword`）也不会触发，这条用例测的就不再是密码框').toBe(true);
+
+      const pwScrollsWindow = await inPage<number>(app, 'example.com', 'window.scrollY');
+      expect(pwScrollsWindow,
+        '第一道闸没了的话，measure 必须真把**窗口**滚起来 —— 这一行就是拿 `type` 会碰的'
+        + '那个元素、走同一条 `resolve → measure` 当场滚了一次量出来的。这个数不 > 0 说明'
+        + '那句话已经不成立：判据 2b（断 scrollY === 0）会变成一条永远绿的死断言，'
+        + '两道密码闸不再区分得开。四种成因，别只按第一种去查：① bar 的 top 或密码框自己'
+        + '那一行行内样式挪了，从 scrollY=0 把它居中不再需要下滚（注意不是「挪进首屏」：'
+        + '首屏内的元素照样会被居中滚）；② 密码框与 document 之间多了一个滚动容器，'
+        + '`scrollIntoView` 滚的是那个容器、不是窗口；③ 页面整个滚不动了（页面高度塌了、'
+        + '或者 `body` 被固定住）；④ 视口比页面还高（helpers.ts 的窗口尺寸 / '
+        + `DEFAULT_VIEWPORT_HEIGHT）。也可能是 \`measure\` 自己不真滚了（实测 ${pwScrollsWindow}）`)
+        .toBeGreaterThan(0);
+      // **对照组：那个记号真的数得到 `measure`。** 上面这一次探针正是一次 `measure`，
+      // 它必须被记到。数不到的话下面「这一轮 measure 一次都没被调用」就是一条白给的断言
+      // ——它会恒真，而恒真的断言什么都不守。
+      expect(await measureCalls(), '刚刚那一次探针调的就是 interact.js 的 measure，'
+        + '记号却一次都没数到 —— 那说明记号没装到 measure 真正用的那个 '
+        + 'Element.prototype 上（隔离世界不对？measure 改成不走 scrollIntoView 了？），'
+        + '下面判据 2a 会变成一条恒真的死断言').toBe(1);
+
+      // 探针滚过的这一下要自己还回去 —— 下面判据 2b 断的是「一个像素都没滚」。
+      await inPage(app, 'example.com', 'window.scrollTo(0, 0)');
+      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
+        '上面那条探针滚完必须还原成 0；没回到 0 的话，下面判据 2b 断的就不是'
+        + '「一个像素都没滚」了').toBe(0);
+      await resetMeasureCalls();
 
       // ── 第二轮：拿真编号往密码框里打字 ────────────────────────────────────
       const res = await runTools(page, fixturePath, [{
@@ -1133,12 +1274,21 @@ test.describe('61-browser', () => {
         .toContain('不能往密码框里输入');
       expect(out.text, '挡下的是第 1 个动作').toContain('第 1 个动作失败');
 
-      // 2) **本条的判据**：闸在 `interact` 之前，所以页面一个像素都没滚。
-      //    第一道闸被删掉时只有这一条会红（`measure` 的 scrollIntoView 会把
-      //    3000 像素以下的密码框滚到视口中央）。
+      // 2a) **本条的主判据，协议层事实**：第一道闸排在 `dispatch` 调 `interact` 之前，
+      //     所以这一轮 `measure` 一次都不该被调用。它不是「页面此刻什么样」的残迹 ——
+      //     谁把滚动还原回去都改不了「调过没调过」这件事。
+      expect(await measureCalls(),
+        '第一道密码闸排在 dispatch 调 interact **之前** —— 它在原位时，这一批连一次 '
+        + '`measure` 都不该发出去。数到了说明第一道闸已经不在，挡下它的是第二道'
+        + '（measure 回来之后判 m.isPassword）；或者「出错即停」坏了，第 2 个动作'
+        + '（click #kydog-marker）自己的 measure 被发了出去 —— 分辨看下面第 4 条判据。'
+        + '注意这一条**不看 scrollY**：把页面滚回去改不了这个数').toBe(0);
+
+      // 2b) 同一件事的另一面：页面一个像素都没滚。它接得住 `measure` 以外的路径
+      //     （比如别处直接发了滚动），与 2a 互为独立证人 —— 两条都别删。
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
-        '第一道密码闸排在 dispatch 调 interact **之前** —— 它在原位时，这一批连 measure '
-        + '都不会发出去，页面不该被滚动一个像素。滚了有两种可能，别只按第一种去查：'
+        '这一批连一次 measure 都不该发出去（2a），页面自然也不该被滚动一个像素。'
+        + '2a 绿而这一条红，说明滚页面的不是 measure —— 别只按第一种去查：'
         + '① 挡下它的是第二道闸（measure 回来的 isPassword），第一道已经不在了；'
         + '② 第一道还在，但**出错即停**坏了 —— 第 2 个动作（click #kydog-marker，'
         + '同样在 3000 像素以下）自己的 measure 把页面滚了。分辨的办法是下面第 4 条判据'
@@ -1157,13 +1307,14 @@ test.describe('61-browser', () => {
       expect(clicks, `整批必须停在第 1 个动作上，页面却收到了点击：${clicks.join(' / ')}`).toEqual([]);
       expect(out.text, '第 2 个动作不该有任何执行痕迹').not.toContain('已点击');
 
-      // ── 第三轮：**对照动作** —— 把判据 2 剩下那半个前提钉成一条会响的断言 ────
-      // 判据 2 之所以能区分两道闸，靠的是「第一道闸没了的话 measure 真的会把它滚过来」。
-      // 这句话拆成两件事，而**产品代码里没有任何东西守着它们**：①「scrollIntoView 落在
-      // 这个密码框上时窗口真的会滚」—— 上面注入之后那条 `pwScrollsWindow` 已经真滚了
-      // 一次量过；② measure 此刻确实在滚、这条路确实走到了 measure。②那条探针看不见
-      // （它自己调 scrollIntoView），所以这里拿**同一个 bar 上**的一个**非密码**输入框
-      // 走一次同样的 `type`：它必须把页面滚起来。
+      // ── 第三轮：**对照动作** —— 把判据 2b 剩下那半个前提钉成一条会响的断言 ───
+      // 判据 2b 之所以能区分两道闸，靠的是「第一道闸没了的话 measure 真的会把它滚过来」。
+      // 这句话拆成两件事，而**产品代码里没有任何东西守着它们**：①「measure 落在
+      // 这个密码框上时窗口真的会滚」—— 两轮之间那条 `pwScrollsWindow` 已经拿 `type`
+      // 会碰的那个元素真滚了一次；② **这条路确实走到了 measure**。②那条探针看不见
+      // （它自己直接调 interact.js，绕过了 browserTools → dispatch 那一段），
+      // 所以这里拿**同一个 bar 上**的一个**非密码**输入框走一次同样的 `type`：
+      // 它必须把页面滚起来。
       // 前提一破，这一条当场红，而不是让主判据悄悄失效。
       const ctl = await runTools(page, fixturePath, [{
         toolCallId: 'tc-plain',
@@ -1187,13 +1338,20 @@ test.describe('61-browser', () => {
         + `结果开头：${ctlOut.text.slice(0, 400)}`).toBe('ok');
       expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
         '**对照组**：同一个 bar 上的非密码输入框走同一条 `type`，页面必须被 measure 的 '
-        + 'scrollIntoView 滚起来。它没滚，说明上面判据 2（断 scrollY === 0）已经不再'
-        + '区分得开两道密码闸 —— 两种可能：① `interact.js` 的 measure 不真滚了'
-        + '（或者这条路压根没走到 measure）；② 这个对照动作自己就没跑成，那这条说的'
-        + '根本不是第一件事。「几何/滚动容器变了」不会红在这里 —— 那一类由上面注入之后'
+        + 'scrollIntoView 滚起来。它没滚，说明上面判据 2b（断 scrollY === 0）已经不再'
+        + '区分得开两道密码闸 —— 两种可能：① 这条路压根没走到 measure（`measure` 自己'
+        + '不真滚了的话，两轮之间那条 `pwScrollsWindow` 探针会先红：它调的就是真 measure）；'
+        + '② 这个对照动作自己就没跑成，那这条说的'
+        + '根本不是第一件事。「几何/滚动容器变了」不会红在这里 —— 那一类由两轮之间'
         + '那条 `pwScrollsWindow` 探针先接住（它真滚了一次）。分辨②看下面那条判据，'
         + '它排在后面、这条先红就跑不到：把这一条临时停掉再跑一次即可。'
-        + '第一种情形下，判据 2 是一条永远绿的死断言')
+        + '第一种情形下，判据 2b 是一条永远绿的死断言')
+        .toBeGreaterThan(0);
+      expect(await measureCalls(), '**对照组**：同一条 `type` 走非密码框时，`measure` 必须真的'
+        + '被调过。这个数是 0 说明这条路压根没走到 measure —— 那上面判据 2a（断 measure '
+        + '一次都没被调用）就不是「闸挡住了」的证据，它对任何目标都恒真。'
+        + '（这一条与它下面那条 scrollY > 0 分工不同：这条问「走没走到 measure」，'
+        + '那条问「measure 走到了、页面也真被它滚了」。）')
         .toBeGreaterThan(0);
       expect(ctlOut.text, '对照动作必须真的打进去了（`browserService` 的 type 成功文案）——'
         + '它自己没跑成的话，上面那条 scrollY 说的就不是 measure 或几何的事。'
@@ -1345,13 +1503,13 @@ test.describe('61-browser', () => {
       if (seen.asked) {
         expect(login.text, 'UI 上确实弹出过那道确认并被点了「是」，产品的回显里却没有'
           + '「用户刚刚确认了」—— 两个证人对不上，多半是 browserTools 的 askedUser 那一路断了。'
-          + '（这里只问「有没有问过」；host 对不对由上面那条 filledHost === witnessHost 守。）'
+          + '（这里只问「有没有问过」；host 对不对由上面那条 allowedHosts 守。）'
           + (sameHost ? '顺带：配置上是同域却问了，说明标签在 open 与 fill 之间跳走过。' : ''))
           .toContain('用户刚刚确认了');
       } else {
         expect(login.text, 'UI 上一次都没弹出那道确认，产品的回显里却有「用户刚刚确认了」——'
           + '两个证人对不上：要么这一轮真问了而 confirmLoginPage 没看见（那它替谁点的「是」？），'
-          + '要么 askedUser 被误置成真。凭据填在哪由上面那条 filledHost === witnessHost 守'
+          + '要么 askedUser 被误置成真。凭据填在哪由上面那条 allowedHosts 守'
           + (sameHost ? '' : '。顺带：配置上是跨域却没问，说明标签在 open 与 fill 之间已经跳到 entityID 的 host 上了'))
           .not.toContain('用户刚刚确认了');
       }
