@@ -59,6 +59,8 @@ const LOGICAL_WIDTH = 1280;
 const DEFAULT_VIEWPORT_HEIGHT = 800;
 /** walker 跑的隔离世界号（`browserService.ts` 的 `WALKER_WORLD_ID`）。同上。 */
 const WALKER_WORLD_ID = 31337;
+/** 网页内容块的收尾标记（`snapshot.ts` 的 `PAGE_CONTENT_CLOSE`）。同上：写死并在失败信息里点名出处。 */
+const PAGE_CONTENT_CLOSE = '──── 网页内容结束 ────';
 
 /** 采集脚本的**生产源码本身**。`browserService` 用 `?raw` 注入的就是这一份字节。 */
 const WALKER_SOURCE = readFileSync(
@@ -239,7 +241,10 @@ const CARSI = {
   /** 本校统一身份认证页的完整地址（就是模型会导过去的那个）。 */
   loginUrl: process.env.KYDOG_CARSI_LOGIN_URL ?? '',
 };
-const CARSI_READY = Object.values(CARSI).every((v) => v !== '');
+/** 身份那四项（**不含真密码**）。反路那条只要这四项 —— 见 `CARSI_FAILURE_ON`。 */
+const CARSI_IDENTITY_READY = [CARSI.name, CARSI.entityID, CARSI.username, CARSI.loginUrl]
+  .every((v) => v !== '');
+const CARSI_READY = CARSI_IDENTITY_READY && CARSI.password !== '';
 
 /**
  * 正路那条：`KYDOG_CARSI_E2E=1` **且**五个凭据变量齐全才跑。
@@ -254,9 +259,13 @@ const CARSI_ON = process.env.KYDOG_CARSI_E2E === '1' && CARSI_READY;
  * 理由是这条用例的性质：**每跑一次就是一次故意的登录失败**，而高校 IdP 普遍锁定
  * 连续失败的账号 —— 押的是用户自己的校园账号。所以它不跟着 `KYDOG_CARSI_E2E` 走，
  * 必须再点一次头（还要另给一个明确写错的密码，不许由用例自己拿真密码拼一个）。
+ *
+ * **它要的是身份那四项，不含 `KYDOG_CARSI_PASSWORD`。** 这条用例内部对真密码零引用
+ * （种进设置的是 `KYDOG_CARSI_BAD_PASSWORD`），从前却把 `CARSI_READY` 整个当前提 ——
+ * 等于逼用户为一条一个字都不用真密码的用例把真密码放进环境。少一份暴露面就少一份。
  */
 const CARSI_FAILURE_ON = process.env.KYDOG_CARSI_FAILURE_E2E === '1'
-  && CARSI_READY && (process.env.KYDOG_CARSI_BAD_PASSWORD ?? '') !== '';
+  && CARSI_IDENTITY_READY && (process.env.KYDOG_CARSI_BAD_PASSWORD ?? '') !== '';
 
 const CARSI_SKIP_REASON =
   'CARSI 正路默认不跑：要 KYDOG_CARSI_E2E=1 外加 KYDOG_CARSI_NAME / _ENTITY_ID / '
@@ -264,10 +273,18 @@ const CARSI_SKIP_REASON =
   + '每跑一次都是一次真的机构登录。';
 const CARSI_FAILURE_SKIP_REASON =
   'CARSI 反路默认不跑，而且**与正路分开**开关：要 KYDOG_CARSI_FAILURE_E2E=1 外加'
-  + ' KYDOG_CARSI_BAD_PASSWORD。每跑一次就是一次故意的登录失败，而高校 IdP 普遍锁定'
+  + ' KYDOG_CARSI_BAD_PASSWORD，以及身份那四项（NAME / ENTITY_ID / USERNAME / LOGIN_URL）——'
+  + '**不含 KYDOG_CARSI_PASSWORD**，这条用例一个字都不用真密码。'
+  + '每跑一次就是一次故意的登录失败，而高校 IdP 普遍锁定'
   + '连续失败的账号 —— 押的是用户自己的校园账号。';
 
-/** 首次确认那道是非题（`loginConfirm.ts`）：走的是现成的 ask broker，UI 与提问工具同一套。 */
+/**
+ * 首次确认那道是非题（`loginConfirm.ts`）：走的是现成的 ask broker，UI 与提问工具同一套。
+ *
+ * **这里替用户点了「是」，于是 `checkLoginHost` 那道域确认在这条用例上不设防** ——
+ * 测这条路必然的代价（不点就永远挂着）。代价的边界由正路用例里那条 host 回显断言划出：
+ * `KYDOG_CARSI_LOGIN_URL` 配错时当场红，而不是等密码已经填进一个陌生页面才发现。
+ */
 async function confirmLoginPage(page: Page): Promise<void> {
   await expect(page.getByTestId('question-composer')).toBeVisible({ timeout: 30_000 });
   // 第一个选项就是「是，就在这里登录」——`loginConfirm.ts` **结构地**取 options[0]，
@@ -721,6 +738,32 @@ test.describe('61-browser', () => {
         + '超出这个数就说明整批预算没有落在收行那一步 —— 150 行全塞进来是 15 万字符量级。',
       ).toBeLessThan(80_000);
 
+      // 1b) **另一侧也要断。** 上界只说「不比 X 多」——一份在送往渲染层的路上被截掉一半的
+      //     结果同样满足它。评审的 N6 实测过这一刀：把 `AgentService.ts` 里
+      //     `extractToolResultText` 的 `.join('')` 改成 `.join('').slice(0, 5000)`，
+      //     三条 gate 与这条 e2e **一起全绿** —— 于是「预算把结果压住了」与
+      //     「结果在路上被压住了」长得一模一样，而后者对模型的后果正是 E-1b 要挡的那件事
+      //     （收到的比实际抽到的少，且看不出来）。两条判据把这个洞封上：
+      //
+      //     · **下界** —— 干净时实发 50600（2026-09-09 实测），45000 留够余量；
+      //     · **收尾那一段还在** —— 数据块的收尾标记（`PAGE_CONTENT_CLOSE`）排在那
+      //       ~5 万字符的 JSON **之后**，它后面还跟着「页面变化」那一段。两样都在，
+      //       才说明渲染层收到的是**整份**工具结果，不是它的前缀。
+      //       （**不是断言「以收尾标记结尾」**：`runBatch` 的收尾快照排在数据块之后，
+      //       工具结果的最后一段永远是「页面变化」。）
+      expect(out.text.length,
+        `这一次工具结果实发 ${out.text.length} 字符，比下界还少。干净时是 50600 ——`
+        + '少这么多不是预算的事，是这份结果在送到渲染层的路上被截断了'
+        + '（`AgentService` 的 `extractToolResultText` / `run.tool_call_chunk` 那一路）。',
+      ).toBeGreaterThan(45_000);
+      const closeAt = out.text.lastIndexOf(PAGE_CONTENT_CLOSE);
+      expect(closeAt, `工具结果里没有数据块的收尾标记「${PAGE_CONTENT_CLOSE}」`
+        + '（snapshot.ts 的 PAGE_CONTENT_CLOSE）—— 它排在那 ~5 万字符的 JSON 之后，'
+        + `缺了就说明这份结果是被截过的前缀。结果长 ${out.text.length} 字符。`).toBeGreaterThan(0);
+      expect(out.text.slice(closeAt),
+        '收尾标记之后还该有「页面变化」那一段（runBatch 的收尾快照排在数据块之后）——'
+        + '它不在就说明这份结果止步于数据块，后半截没送到。').toContain('── 页面变化');
+
       // 2) 截断必须说出口 —— 静默丢行会让「这个源只有 N 条」和「我只给你看了 N 条」长得一样。
       const m = out.text.match(/抽到 (\d+) 条（这一批各步共抽到 (\d+) 条，累计超过整批 (\d+) 字符的预算/);
       expect(m, '结果里必须有那句整批预算的截断说明（describeCollected 的截断分支）；'
@@ -817,6 +860,148 @@ test.describe('61-browser', () => {
   });
 
   /**
+   * `e2e-requirements.md` **E-4 的另一半：密码硬闸**。走真的 `browser_act` 的 `type`，
+   * 目标是**真快照里的编号**（不是 selector）—— 那正是第一道闸（`browserService.ts` 里
+   * `dispatch` 的 `assertTypeAllowed(resolved)`）唯一管得着的形态：它只在
+   * `resolved.kind === 'node' && isPassword` 时抛。
+   *
+   * 评审的 N4：删掉那一句（`assertTypeAllowed` 的**唯一调用点**）→ `61-browser`
+   * 十一条一条不红、`npm test` 只红 1 条替身、lint 只有一条不阻断的 warning。
+   * 这条用例就是补这个洞的。
+   *
+   * ## 判据为什么是「页面一个像素都没滚」——这不是凑数，是这道闸的定义
+   *
+   * 密码框上有**两道**闸，措辞逐字相同（`interactError` 的 `'password'` 分支与
+   * `assertTypeAllowed` 抛的是同一句话）：
+   *
+   *  · 第一道 = `assertTypeAllowed`，判据是**快照里那个节点** `isPassword`，
+   *    位置在 `dispatch` 调 `interact` **之前** —— 「连页面都不许碰」；
+   *  · 第二道 = `measure` 回来的 `m.isPassword`，判据是**活元素**，位置在
+   *    `interact({op:'measure'})` **之后**，而 `measure` 干的第一件事就是
+   *    `el.scrollIntoView({block:'center'})`。
+   *
+   * 所以第一道被删掉时，「被挡下」「没有按键落地」「第二个动作没跑」这三条**照样成立**
+   * （第二道接住了）—— 唯一变的是**页面被滚了一次**。密码框故意放在 3000 像素以下、
+   * 页面高 5000：闸在原位 → `scrollY` 恒 0；闸没了 → `scrollIntoView` 把它滚到视口中央。
+   * 这是协议层的页面事实，不是时间窗或阈值那类 proxy。
+   *
+   * 另外三条不是白写的（它们守的是「整条路还是那条路」，不是这道闸）：
+   * 挡下的措辞、按键一个都没落地、`type` 后面那个动作压根没跑（出错即停）。
+   *
+   * ## 为什么要跑两轮 run
+   *
+   * `type` 要 `index` + `snapshotId`，而这两样都是**页面上现铸的**（walker 在隔离世界
+   * 发号、快照 id 由 `browserService` 现给），剧本却要在建 thread 之前就写好。
+   * 所以第一轮先用一个**碰不到页面的动作**（`extract` 一个匹配不到的选择器，走隔离世界、
+   * 不经 `dispatch`）换回收尾快照，从里面读出编号与快照 id；第二轮才拿它们去 `type`。
+   * 中间不许有任何东西滚页面 —— 第一轮之后也断一次 `scrollY === 0`。
+   */
+  test('走真的 type：拿真快照里的编号打进密码框，整批在碰页面之前就被挡下', async () => {
+    const { launched, fixturePath } = await launchWithAgent();
+    const { app, page } = launched;
+    try {
+      // **不开侧栏**：理由与上面三条一样（1024 宽的窗口挂不下 560 的侧栏）。
+      const opened = await openTab(page, 'https://example.com/');
+
+      await inPage(app, 'example.com', `(() => {
+        const w = window;
+        w.__kydogPwEvents = [];
+        w.__kydogClicks = [];
+        document.addEventListener('click', (e) => {
+          w.__kydogClicks.push(e.target && e.target.id ? e.target.id : '(无 id)');
+        }, true);
+        const bar = document.createElement('div');
+        // 3000 像素以下：闸在原位就够不着它，闸没了 measure 会把它滚到视口中央。
+        bar.style.cssText = 'position:absolute;left:0;top:3000px;width:400px;height:40px';
+        bar.innerHTML =
+          '<input id="kydog-pw" type="password" aria-label="KYDOG密码框"'
+          + ' style="position:absolute;left:0;width:200px;height:30px">'
+          + '<button id="kydog-marker" style="position:absolute;left:220px;width:100px;height:30px">标记</button>';
+        document.body.appendChild(bar);
+        const pw = document.getElementById('kydog-pw');
+        for (const t of ['keydown', 'beforeinput', 'input', 'textInput']) {
+          pw.addEventListener(t, (e) => { w.__kydogPwEvents.push(e.type); }, true);
+        }
+        const tall = document.createElement('div');
+        tall.style.cssText = 'position:absolute;left:0;top:0;width:1px;height:5000px';
+        document.body.appendChild(tall);
+        return true;
+      })()`);
+      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
+        '开工前页面必须还没滚过 —— 已经滚过的话下面那条判据就说不出话了').toBe(0);
+
+      // ── 第一轮：换一份真快照回来（这一步碰不到页面）──────────────────────
+      const snapRes = await runTools(page, fixturePath, [{
+        toolCallId: 'tc-snap',
+        name: 'browser_act',
+        args: {
+          tabId: opened.tabId,
+          // 匹配不到任何东西的 extract：走隔离世界求值，不经 dispatch、不量坐标、不滚。
+          actions: [{ kind: 'extract', selectors: { item: '#kydog-no-such-thing', t: '.kydog-no-such-field' } }],
+        },
+      }]);
+      const snapOut = snapRes.get('tc-snap')!;
+      expect(snapOut.status, `第一轮应当成功，结果开头：${snapOut.text.slice(0, 400)}`).toBe('ok');
+      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
+        '取快照这一轮不该滚页面（extract 走隔离世界，不经 dispatch）').toBe(0);
+
+      const snapId = snapOut.text.match(/── 页面变化（快照 ([^）]+)）──/)?.[1];
+      expect(snapId, `第一轮的结果里应当有收尾快照的编号。结果开头：${snapOut.text.slice(0, 400)}`)
+        .toBeTruthy();
+      // **对照组**：walker 自己必须已经把它判成密码框。这一行不在，下面那条就是白给的
+      // ——它测的就不再是「密码框被挡下」，而是「一个普通输入框被挡下」。
+      const pwLine = snapOut.text.match(/\[(\d+)\] textbox "KYDOG密码框" \(密码框，值不显示\)/);
+      expect(pwLine, '快照里必须有那个密码框，而且 walker 已经把它标成「密码框，值不显示」——'
+        + `没标上的话第一道闸（判据就是快照里的 isPassword）根本不会触发。结果：${snapOut.text.slice(-1200)}`)
+        .toBeTruthy();
+      const pwIndex = Number(pwLine![1]);
+
+      // ── 第二轮：拿真编号往密码框里打字 ────────────────────────────────────
+      const res = await runTools(page, fixturePath, [{
+        toolCallId: 'tc-type',
+        name: 'browser_act',
+        args: {
+          tabId: opened.tabId,
+          actions: [
+            { kind: 'type', index: pwIndex, snapshotId: snapId, text: 'kydog-e2e-绝不该落地' },
+            // 第二个动作只为证明**整批**停在第一步（出错即停）。它一旦跑起来，
+            // 页面上会收到一次 click —— 下面那条判据看得见。
+            { kind: 'click', selector: '#kydog-marker' },
+          ],
+        },
+      }]);
+      const out = res.get('tc-type')!;
+
+      // 1) 挡下的措辞（这条在两道闸下都成立，是「路还是那条路」的佐证，不是本条的判据）
+      expect(out.text, '往密码框打字必须被挡下，而且说清楚该走哪条路')
+        .toContain('不能往密码框里输入');
+      expect(out.text, '挡下的是第 1 个动作').toContain('第 1 个动作失败');
+
+      // 2) **本条的判据**：闸在 `interact` 之前，所以页面一个像素都没滚。
+      //    第一道闸被删掉时只有这一条会红（`measure` 的 scrollIntoView 会把
+      //    3000 像素以下的密码框滚到视口中央）。
+      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
+        '第一道密码闸排在 dispatch 调 interact **之前** —— 它在原位时，这一批连 measure '
+        + '都不会发出去，页面不该被滚动一个像素。滚了就说明挡下它的是第二道闸'
+        + '（measure 回来的 isPassword），而第一道已经不在了').toBe(0);
+
+      // 3) 一个按键都不许落到那个框里，值也不许变。
+      const evs = await inPage<string[]>(app, 'example.com', 'window.__kydogPwEvents');
+      expect(evs, `密码框上收到了 ${evs.length} 个输入事件（${evs.join(' / ')}）—— 一个都不该有`)
+        .toEqual([]);
+      expect(await inPage<string>(app, 'example.com', 'document.getElementById("kydog-pw").value'),
+        '密码框的值必须还是空的').toBe('');
+
+      // 4) 出错即停：第二个动作压根没跑（跑了页面上会收到一次 click）。
+      const clicks = await inPage<string[]>(app, 'example.com', 'window.__kydogClicks');
+      expect(clicks, `整批必须停在第 1 个动作上，页面却收到了点击：${clicks.join(' / ')}`).toEqual([]);
+      expect(out.text, '第 2 个动作不该有任何执行痕迹').not.toContain('已点击');
+    } finally {
+      await teardown(launched);
+    }
+  });
+
+  /**
    * spec §8.2 **第 5 条**：CARSI 正路。**只写、不跑**（写它的人没有凭据）。
    *
    * 默认不跑靠两层，两层都是「缺了就一定跑不了」而不是「但愿没人开」：
@@ -850,6 +1035,14 @@ test.describe('61-browser', () => {
 
       const login = res.get('tc-login')!;
       expect(login.status, `browser_login 应当成功，结果开头：${login.text.slice(0, 300)}`).toBe('ok');
+      // **填进去的必须是配的那个 host。** `confirmLoginPage` 替用户把「这一页是不是
+      // 你学校的登录页」那道确认自动点了「是」—— 这是测这条路必然的代价（不点就永远挂着），
+      // 但代价不能是「配错 URL 时密码已经填进了一个陌生页面才发现」。这一条是那道确认的
+      // 便宜替身：`KYDOG_CARSI_LOGIN_URL` 与实际填充的页面不是同一个 host 时当场红。
+      const loginHost = new URL(CARSI.loginUrl).host;
+      expect(login.text, `凭据必须填在 ${loginHost} 上（KYDOG_CARSI_LOGIN_URL 的 host）——`
+        + '结果里回显的不是它，就说明这一轮把账号密码填到了别的域上，'
+        + '而给用户的那道域确认被用例自己点掉了').toContain(`已在 ${loginHost} 填入`);
       expect(login.text, '结果里要回显当前机构（description 里那份是建会话时的快照，这一行才是当前值）')
         .toContain(`当前机构：${CARSI.name}`);
       expect(login.text, 'submit: true 时要说清「请求提交 ≠ 登录成功」').toContain('已经请求提交这个表单');
@@ -927,8 +1120,25 @@ test.describe('61-browser', () => {
  *
  * 判据是**四分的终态本身**（spec §4.4）：`failed` 带真实的 `errorCode` / `errorDesc`，
  * 不是 `timeout`。两者对模型的处置完全相反 —— 「打不开」可以换源，「不知道发生了什么」
- * 不许据此断定源有问题。顺带把耗时钉住：真走到 `timeout` 那一支要 20 秒
- * （`NAV_TIMEOUT_MS`），所以「远早于 20 秒」是这条终态的独立佐证。
+ * 不许据此断定源有问题。
+ *
+ * ## 为什么这里**没有**一条「耗时 < N 毫秒」的断言 —— 别再把它加回来
+ *
+ * 从前有过一条 `expect(ms).toBeLessThan(15_000)`，理由是「真走到 timeout 那一支要
+ * 20 秒（`NAV_TIMEOUT_MS`），所以远早于它是这条终态的独立佐证」。**删掉了**，两个理由：
+ *
+ *  1. **它是一个时间窗 proxy，而它 proxy 的那个事实就在旁边。** CLAUDE.md 的原则写死了
+ *     「判定必须基于协议层事实，不靠启发式 proxy（时间窗 / 阈值 / 近似 / 聚类）」——
+ *     「它不是超时」这件事，`outcome.kind === 'failed'`（而不是 `'timeout'`）已经**直接**
+ *     说了。proxy 与它 proxy 的事实同时在场时，留事实、删 proxy。
+ *  2. **它有真 flake，而这条用例是 `KYDOG_SKIP_LIVE_BROWSER=1` 之后仅剩的一条**
+ *     （10 跳 1 跑）。评审本机复现过一次：`Received: 16010` —— `.invalid` 的 NXDOMAIN
+ *     走本机解析器偶尔要十几秒，那一次三条终态判据**全过**，红的只有时限那条。
+ *     它一红，发版流水线就被一次与产品无关的 DNS 抖动阻断，而 61 这一组在 CI 上
+ *     再没有第二条能提供信号。把上界从 15000 抬到 18000 只是把概率调小，性质不变。
+ *
+ * 耗时**仍然采集**并写进三条断言的失败信息（诊断价值别丢：真变成 20 秒左右时，
+ * 那三条里红的那一条会自己把这个数报出来），只是不 `expect` 它。
  */
 test('61-browser: 打不开的地址回 failed + 真实 errorCode，不是 timeout', async () => {
   const launched = await launchKydog();
@@ -936,14 +1146,14 @@ test('61-browser: 打不开的地址回 failed + 真实 errorCode，不是 timeo
   try {
     const t0 = Date.now();
     const r = await openTab(page, 'https://kydog-e2e-nonexistent.invalid/');
-    const ms = Date.now() - t0;
+    // 耗时只进失败信息，**不是判据**（理由见 docblock：它是时间窗 proxy，而
+    // outcome.kind 已经把同一件事说成了协议层事实）。
+    const took = `（本次导航耗时 ${Date.now() - t0}ms；走到 timeout 那一支要 20 秒 = NAV_TIMEOUT_MS）`;
     const o = r.nav.outcome;
-    expect(o.kind, `解析不了的名字必须回 failed，实际是 ${o.kind}`).toBe('failed');
+    expect(o.kind, `解析不了的名字必须回 failed，实际是 ${o.kind}${took}`).toBe('failed');
     if (o.kind !== 'failed') return;  // 类型收窄，上面那条已经保证了
-    expect(o.errorCode, 'errorCode 必须是 Chromium 真给的那个负数网络错误码').toBeLessThan(0);
-    expect(o.errorDesc, 'errorDesc 必须是 Chromium 真给的那个名字（ERR_…）').toMatch(/^ERR_/);
-    expect(ms, `本次导航耗时 ${ms}ms。走到 timeout 那一支要 20 秒（NAV_TIMEOUT_MS），`
-      + '远早于它才说明这是一次明确的网络层拒绝').toBeLessThan(15_000);
+    expect(o.errorCode, `errorCode 必须是 Chromium 真给的那个负数网络错误码${took}`).toBeLessThan(0);
+    expect(o.errorDesc, `errorDesc 必须是 Chromium 真给的那个名字（ERR_…）${took}`).toMatch(/^ERR_/);
   } finally {
     await teardown(launched);
   }
