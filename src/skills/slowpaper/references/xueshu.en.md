@@ -58,12 +58,14 @@ When `type` carries a `selector` it focuses that element first; no extra `click`
 types nothing at all (it never appends to existing content) — reusing a box that already has
 content mid-flow can hit `browser.target_unusable`, and that is not a wrong selector.
 
-**Enter failed to submit during reconnaissance** (Scholar behaved the same) — that was a problem
-with how the reconnaissance tool sent the key (a CDP `keyDown` without `text` produces no
-`keypress`, and Chromium's implicit form submission happens on `keypress`). This project's key
-table now gives `Enter` its `text`, so **that conclusion is void**; stop carrying it around as an
-open question. This source's home page has **no `<form>`** anyway, so implicit submission was
-never on the table: submitting still means clicking `.send-btn`.
+**Enter failed to submit during reconnaissance** (Scholar behaved the same). **There is a
+candidate explanation, but it has never been re-verified**: a CDP `keyDown` without `text`
+produces no `keypress`, Chromium's implicit form submission happens on `keypress`, and this
+project's key table does give `Enter` its `text` (`KEYS` in `actions.ts`) — so that negative
+observation may have been an artifact of the reconnaissance tool. But whether this site actually
+submits under this project's `key` action **has never been measured here**; it remains an open
+question, not a conclusion. This source's home page has **no `<form>`** anyway, so implicit
+submission was never on the table: explanation or not, submitting means clicking `.send-btn`.
 
 Clicking the send button `.send-btn` is the preferred path, **but it was never made to work
 during reconnaissance** (see "Reconnaissance status" above — neither playbook's submit step

@@ -324,7 +324,14 @@ describe('全仓只有 hub 一处碰 session.webRequest', () => {
   }
 
   /**
-   * 成员访问那一种（`xxx.webRequest`）。**注释与字符串字面量都要先剥掉**：
+   * **裸标识符**（`\bwebRequest\b`），不只是成员访问那一种（`xxx.webRequest`）——
+   * 只认成员访问会被**解构**绕过：`const { webRequest } = sess; webRequest.onBeforeRequest(f)`
+   * 实测能让整组 20/20 全绿（评审的 N5）。`webRequestHub` / `WebRequestHub` 不会误命中
+   * （`\b` 在 `webRequestH…` 处不成立、大写那份大小写不同），模块路径在字符串里、已被剥掉。
+   * **仍然绕得过的只剩动态取名**（`sess['webRequest']`、`sess[k]`）—— 那两种没法静态认，
+   * 已登记为残留。
+   *
+   * **注释与字符串字面量都要先剥掉**：
    * 约定本身就把被禁的写法原样引在注释里（`webRequestHub.ts` 顶部那段、
    * `loginFlow.ts` 的两句说明），而 hub 自己的日志作用域就叫
    * `'browser.webRequest'` —— 两者都不是挂点，算进去这条判据就永远对不上。
@@ -333,7 +340,7 @@ describe('全仓只有 hub 一处碰 session.webRequest', () => {
   const hits = (src: string) => [
     ...stripComments(src)
       .replace(/(['"`])(?:\\.|(?!\1)[\s\S])*?\1/g, "''")
-      .matchAll(/\.\s*webRequest\b/g),
+      .matchAll(/\bwebRequest\b/g),
   ].length;
 
   const FILES = walk(SRC);
@@ -345,7 +352,7 @@ describe('全仓只有 hub 一处碰 session.webRequest', () => {
 
   it('hub 自己有且只有那一处 —— 它是唯一的挂点', () => {
     expect(hits(readFileSync(HUB, 'utf8')),
-      'webRequestHub.ts 里 `.webRequest` 的出现次数变了：要么挂点搬走了（那下面那条就在空转），'
+      'webRequestHub.ts 里 `webRequest` 的出现次数变了：要么挂点搬走了（那下面那条就在空转），'
       + '要么这里自己多挂了一种事件（那也要有人守）').toBe(1);
   });
 
