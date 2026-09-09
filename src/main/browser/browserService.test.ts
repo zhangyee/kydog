@@ -715,6 +715,35 @@ describe('逻辑视口的档位：1:1 / 适配', () => {
     expect(svc.getState().tabs.find((t) => t.id === t2)!.viewportMode).toBe('fit');
   });
 
+  it('多标签不串：A 切 1:1 之后，后台 B 的逻辑视口仍按 B 自己的档位算，不是活动标签的', async () => {
+    // 复审 I-2：`applyViewport` 读的必须是**这个标签自己**的档位（tabId），不能读成
+    // 活动标签的 —— 否则用户为了看清一个验证码按下 1:1，后台那个 agent 正在用的标签
+    // 会一起离开 1280 坐标系，全程零错误。
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    const { wc: wcB } = await openTab(svc, 'https://b.example/');
+    const [t1, t2] = svc.getState().tabs.map((t) => t.id);
+    svc.activate(t1);   // 用户切回 A：A 是活动标签，B 留在后台
+    expect(svc.getState().activeTabId).toBe(t1);
+
+    await withStage(svc);
+    svc.setViewportMode(t1, 'oneToOne');
+    await flush();
+
+    // 触发一次全量重新布局（协议里本来就有的「再报一次舞台」，例如 ResizeObserver
+    // 回调、或用户拖动分栏手柄）—— applyLayout 对每一个标签都下发视口。
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+
+    // B 的档位记录本身没被碰过（这一半原有用例已经守了，这里重申一句作对照）。
+    expect(svc.getState().tabs.find((t) => t.id === t2)!.viewportMode).toBe('fit');
+    // B 是后台标签、档位仍是 fit：它的逻辑视口必须仍是 1280，不能因为 A 切了 1:1
+    // 就跟着变成 640/scale 1 —— 那是 agent 手上快照坐标系依赖的那条不变式。
+    expect(overrides(wcB).at(-1)!.params).toEqual({
+      width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
+    });
+  });
+
   it('没有这个标签 → browser.no_tab（静默放过的话，按了开关什么都不发生）', () => {
     const { svc } = make();
     expect(() => svc.setViewportMode('nope', 'oneToOne')).toThrowError(expect.objectContaining({ code: 'browser.no_tab' }));
@@ -789,6 +818,29 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
 
     await svc.withAgentDriving(t1, 'run-1', async () => {
       expect(svc.getState().tabs[0].viewportMode).toBe('fit');
+    });
+  });
+
+  it('多标签不串：agent 驱动的是后台标签 B 时，恢复动的是 B，不是活动标签 A', async () => {
+    // 复审 I-2：`markDriving` 里的恢复点必须按**被驱动的那个标签**找（`tabId` 这个
+    // 参数），不能拿「活动标签」顶替 —— 否则用户正盯着 A 的验证码（A 是 1:1），
+    // agent 一驱动后台的 B，会变成 A 被莫名其妙按回适配（验证码当场缩小），
+    // 而真正该恢复的 B 却没被恢复（agent 对 B 的快照坐标离开 1280），两头都错，
+    // 全程零错误。
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [t1, t2] = svc.getState().tabs.map((t) => t.id);
+    svc.activate(t1);   // 用户切回 A：A 是活动标签，用户正盯着它；B 在后台
+    expect(svc.getState().activeTabId).toBe(t1);
+
+    svc.setViewportMode(t1, 'oneToOne');   // 用户正盯着 A 的验证码
+    svc.setViewportMode(t2, 'oneToOne');   // B 之前也被按过 1:1（比如 agent 上一步之前）
+
+    await svc.withAgentDriving(t2, 'run-1', async () => {
+      // 被驱动的 B 恢复成 fit；活动标签 A 没有被驱动，不该被这一次恢复碰到。
+      expect(svc.getState().tabs.find((t) => t.id === t2)!.viewportMode).toBe('fit');
+      expect(svc.getState().tabs.find((t) => t.id === t1)!.viewportMode).toBe('oneToOne');
     });
   });
 });

@@ -29,6 +29,11 @@ function ensureBuffer(threadId: string, messageId: string): void {
  * `browser.activate` **不先查渲染层那份镜像**：标签在不在是主进程说了算，
  * 镜像只是它的一个副本，拿副本当判据就是在下游补 proxy。id 已经不存在时主进程回
  * `browser.no_tab` —— 那不是错，是「用户把那个标签关了」，侧栏照样展开，不刷日志。
+ *
+ * **已知的观感问题（登记，不修）**：`run.ask_start` 会被 `thread.loadHistory` 的
+ * journal 重放喂第二遍，这个函数会跟着再跑一次、侧栏无缘由展开一下。修法要一个
+ * 「这一帧是重放」的协议信号，今天没有 —— 为它现造一个就是在下游补 proxy，
+ * 这里选择不修。
  */
 function handOffToBrowser(tabId: string): void {
   useUiStore.setState({ browserOpen: true });
@@ -104,6 +109,8 @@ export function applyRunEvent(e: RunEvent): void {
       // buffer 还不存在，addAskBlock 会静默 no-op，整轮留痕就没了。
       ensureBuffer(p.threadId, p.messageId);
       useRunsStore.getState().addAskBlock(p.messageId, p.toolCallId, p.questions);
+      // journal 重放会把这一条再喂一遍：侧栏因此会跟着再展开一次，是已知的观感
+      // 问题，见 handOffToBrowser 文档注释，不修。
       if (p.browserTabId !== undefined) handOffToBrowser(p.browserTabId);
       return;
     }

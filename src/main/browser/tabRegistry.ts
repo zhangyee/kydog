@@ -153,8 +153,12 @@ export class TabRegistry {
     this.touch();
   }
 
-  /** **不抛**：`applyViewport` 会对还留在 views 里、账本已经没有的标签问一次
-   *  （`close` 先摘账本再销毁 view），那时按默认档处理就对了。 */
+  /** **不抛**：这是一个纯读取器，缺记录时给一个安全的默认档就够了，不必因为
+   *  竞态去抛异常。（复审 N-1：三条销毁路径 —— `close` / `disposeForRun` /
+   *  `disposeAll` —— 都是先摘账本、再摘 view、才 `applyLayout()`，所以「views
+   *  里还有、账本已经没有」这个组合走不到：`applyViewport` 自己那句
+   *  `this.views.get(tabId)` 会先行 return，问都问不到这里。这条 fail-open
+   *  没有已知能触达它的路径，纯粹是防御纵深，不是在防一个具体的坏时序。） */
   viewportModeOf(id: string): ViewportMode { return this.get(id)?.viewportMode ?? 'fit'; }
 
   activate(id: string): void {
