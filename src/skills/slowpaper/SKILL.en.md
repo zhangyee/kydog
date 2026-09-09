@@ -100,7 +100,7 @@ Every browser round trip moves page content into the context. Within one task:
 | Item | Cap |
 | --- | --- |
 | How many sources to try | **At most 2** (Scholar or Xueshu, plus one switch) |
-| How many pages per source | **At most 3** (both sources show 10 per page → about 30 records) |
+| How many pages per source | **At most 3** (10 per page → about 30 records). **Baidu Xueshu has only page 1 this release** — its paging control has no usable CSS target, so that source yields at most 10 records; see `references/xueshu.md` |
 | How many records into context | **At most 30**; when the user only wants "a few representative papers", 10 is enough |
 | How many tabs | **One tab per source, no more than 3 per task** (the tool's hard cap is 16 — that is a backstop, not a budget) |
 | `browser_read` full text | **At most 3 times**, and only on pages you genuinely need to read |

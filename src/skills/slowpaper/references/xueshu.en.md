@@ -184,28 +184,23 @@ journal's own site (`jme.biam.ac.cn/...`), the National Science and Technology L
 **Take all the `a`s and pick by domain**; do not take only the first — the one listed first is
 not necessarily the one that leads straight to a PDF.
 
-## How to page (measured)
+## How to page: not this release — first page only
 
-The paging control is `div.pagination-wrap > div.pagination`, containing:
+**This release takes only the first results page from this source** (10 items per page). Once
+you have extracted the first page you are done; do not try to page on.
 
-- `div.page` — a page number
-- `div.page.active` — the current page
-- `div.page.n` — "previous page" and "next page", **both using the same class**, separable only
-  by text
+**Why it is downgraded**: inside the paging control `div.pagination-wrap > div.pagination` a
+page number is `div.page` and the current page is `div.page.active`, while "previous page" and
+"next page" **share the same class `div.page.n`** and are separable only by text — while `browser_act`'s `selector` is **pure CSS** (a `querySelector` inside the page),
+with **no `:contains()` / `:has-text()`-style text matching**. So both routes are dead ends:
+`div.page.n:contains("下一页")` is rejected as an invalid selector (「不是合法的 CSS 选择器」,
+`browser.bad_action`), while a bare `div.page.n` takes the **first** one — that is "previous
+page", so clicking it pages **backwards**. These controls are also all `div`s with no `href` and
+no role: they do not appear in the accessibility tree, so `index` targeting does not work for
+them either. **Opening paging requires first measuring, against the live site, a CSS expression
+that matches only "next page"** — see step 3 of the completion procedure.
 
-**These are all `div`s with no `href` and no role.** Two consequences, both of which go into
-the playbook:
-
-1. They do not appear in the accessibility tree — they are not in the snapshot, so `index`
-   targeting **does not work** for them; only `selector` does
-2. "Next page" must be targeted by text, e.g. whichever `div.page.n` has `innerText`
-   containing 「下一页」
-
-The playbook for paging and extracting. **One `browser_act` per page; do not put it inside a
-`repeat`** — every round of a batch carries the same wait condition, while "which page we got
-to" differs page by page (`references/browser.md` §5).
-
-Extract the current page:
+Extract the first page; that one call ends this source:
 
 ```jsonc
 { "kind": "extract", "selectors": {
@@ -217,31 +212,10 @@ Extract the current page:
 }}
 ```
 
-Turning to the next page is **its own call**; afterwards send **another call** that extracts
-with the same selectors as above:
-
-```jsonc
-{ "kind": "click", "selector": "<「下一页」, see above>" }
-```
-
-**Paging here is JS-driven and produces no navigation**, and `browser_act` does not wait for
-anything anyway — after the click you **must confirm for yourself that the page really
-changed**.
-
-**"Wait for the current-page marker to appear" is useless here**: `div.page.active` marks the
-**current** page and **already holds before the click**, while `wait` probes once before it
-waits — it returns "condition met" instantly, having waited not one millisecond
-(`references/browser.md` §5). Writing it in only makes the script look more rigorous.
-
-**How to confirm**: after extracting, compare this page's first `title` with the previous
-page's first one — **identical means the page has not changed yet**; do not record it as a new
-page and do not page on. That is exactly the shape of "extracting the first page three times
-while every result looks normal".
-(A condition that is false before the click and true after paging has not been measured this
-release — see "Completion procedure".)
-
-On the last page that `click` errors out because nothing matches — expected behaviour, and the
-data from every earlier page is already in that page's own tool result.
+**So this source yields at most 10 items this release.** The "at most 3 pages per source" in
+`SKILL.md` §3 is the general cap; for Baidu Xueshu it is really only 1 page — a known limitation
+of this release, not a failed extraction. If you need more results, narrow the query and search
+again rather than making up the difference by paging.
 
 ## What to do with full-text entry points: report, do not download
 
@@ -285,10 +259,24 @@ ones the user can simply open.
    authors/year/venue, citation count, and full-text / document-delivery entry points, plus the
    form of the paging control. Try the 「旧版入口」 path while you are there
 2. **Verification**: run every selector for real through this project's `browser_act` `extract`
-   action, fix the ones that do not work, and write the whole search-and-page flow as one
-   playbook that runs end to end. **The paging step must also come back with a condition that
-   is false before the click and true after paging** (a "current page" marker like
-   `div.page.active` will not do, for the reason above) — until then the only check is
-   "compare the first title", above
+   action, fix the ones that do not work, and chain "open the home page → search → extract the
+   first page" into one playbook that runs end to end
+3. **Open paging** (the step downgraded this release, reason under "How to page"):
+   - First measure a **pure CSS expression that matches only "next page" and not "previous
+     page"**. The two share `div.page.n`, and `selector` goes through `querySelector` inside the
+     page with no text matching available — so the only handles are structural position
+     (something like `div.pagination > div.page.n:last-of-type`) or an attribute that appears on
+     only one of them. **Confirm on the live page that it matches exactly 1 element**; do not
+     write a guess into the playbook
+   - Then also come back with a **condition that is false before the click and true after
+     paging**. A "current page" marker like `div.page.active` **will not do** — it already holds
+     before the click, and `wait` probes once before it waits, so it returns "condition met"
+     instantly, having waited not one millisecond (`references/browser.md` §5). The direction
+     Scholar points at is worth trying here too: match the page-number/offset segment of the
+     results-page address with `urlMatches` (which tests the address held by the main process
+     and does not enter the page, see `references/scholar.md`) — **but whether this source's
+     address changes at all when paging was not measured this release**, so measure it
+   - Until that is done, "at most 3 pages per source" in `SKILL.md` §3 is really only 1 page for
+     this source
 
 Step 2 cannot be skipped: two toolchains do not necessarily see the same DOM.

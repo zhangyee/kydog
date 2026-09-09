@@ -187,3 +187,43 @@ describe('slowpaper 文档里的名字与生产代码对账', () => {
     }
   });
 });
+
+describe('百度学术本期只取第 1 页（C-4 的降级）', () => {
+  // **为什么要有这一条**：这个降级没有对应的生产常量可 import —— 它是「当前工具能力下
+  // 写不出那个 selector」这一**代码事实**的产物。上面那张 CHECKS 表守不到它：把「只取第 1 页」
+  // 改回「可以翻页」，全套用例照样全绿，而 agent 会拿到一条它写不出来的指令
+  // （`div.page.n` 上「上一页」与「下一页」共用 class，`selector` 又是纯 CSS）。
+  //
+  // 三条各守一头：**代码那一侧的前提**、**文档两侧的降级本身**、**降级理由指向的那个坑**。
+  // Task 10 对着真站点量出可用的 CSS 表达之后要开翻页 —— 那时这一整个 describe 跟着删，
+  // 是**刻意的**：让「重新开翻页」成为一个必须动测试的决定，而不是悄悄改一句文档。
+
+  it('前提仍成立：页内还是裸 `querySelector`，没有任何按文本匹配的写法', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'browser', 'injected', 'interact.js'), 'utf-8');
+    expect(src, 'interact.js 不再用 querySelector 解析 selector 了，降级的前提要重新判').toContain('querySelector(t.selector)');
+    // 有了文本匹配，「下一页」就写得出来，这条降级也就该撤销 —— 所以它红了是要人来看的信号。
+    expect(src, 'interact.js 里出现了文本匹配，百度学术的翻页降级该重新裁决了').not.toMatch(/:has-text|:contains\(/);
+  });
+
+  it('两份 xueshu 与两份 SKILL 都写明了「本期只有第 1 页」', () => {
+    for (const [rel, re] of [
+      ['references/xueshu.md', /本期只取结果页的第 1 页/],
+      ['references/xueshu.en.md', /takes only the first results page/],
+      ['SKILL.md', /百度学术本期只有第 1 页/],
+      ['SKILL.en.md', /Baidu Xueshu has only page 1 this release/],
+    ] as const) {
+      expect(read(rel), `${rel} 里「百度学术本期只有第 1 页」那句话不见了`).toMatch(re);
+    }
+  });
+
+  it('两份 xueshu 的剧本里没有任何按「下一页」定位的 selector', () => {
+    for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
+      const values = [...read(rel).matchAll(/"selector"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+      for (const v of values) {
+        // 纯 CSS 的 querySelector 认不出「下一页」这三个字：写进 selector 要么被判非法
+        // （`browser.bad_action`），要么退成裸 `div.page.n` 命中「上一页」往回翻。
+        expect(v, `${rel} 的剧本里又出现了一个按文本定位「下一页」的 selector：${v}`).not.toContain('下一页');
+      }
+    }
+  });
+});
