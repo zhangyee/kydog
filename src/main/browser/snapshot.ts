@@ -46,6 +46,23 @@ export type AxNode = {
    * 为 true 时 walker 一定不带 `value`；渲染层也**一个字都不显示**（第二道）。
    */
   isPassword?: boolean;
+  /**
+   * 这个框是 `browser_login` 在**这个文档里**填过机构账号的那一个。
+   *
+   * 判据是协议层事实：`loginFill.js` 把它写进隔离世界的 `world.filled`（就是那个
+   * 元素对象本身），walker 读同一份 WeakSet —— 不是「名字像账号框」这类猜测，
+   * 所以普通输入框一个都不受影响。
+   *
+   * **为什么要有它**：机构学号是凭据的另一半，`loginConfirm.ts` / `loginFlow.ts`
+   * 两处 JSDoc 承诺了它「不进工具结果、不进模型上下文」。而 `submit: false` 是
+   * 验证码页的常态路径，填完之后模型还要接着操作页面 —— 那几次快照 diff 会把
+   * 学号一路带进 transcript。
+   *
+   * 与 `isPassword` 分开而不是复用它：两者的下一步不同（密码框**不许打字**，
+   * 由 `actions.ts` 的硬闸挡着；账号框可以）。合成一个就是拿一个错的事实去驱动
+   * 一道真的闸。为 true 时 walker 一定不带 `value`，渲染层也不显示值（第二道）。
+   */
+  filledCredential?: boolean;
 };
 
 /**
@@ -141,11 +158,14 @@ const q = (s: string) => JSON.stringify(s);
  * 就只能重打一遍或者直接提交空串。
  *
  * 密码框只标身份、**不显示值**（walker 那侧压根不发 value，这里是第二道）。
+ * 填过机构账号的那个框同理 —— 但要**说出它已经填好了**，不能渲染成空：
+ * 空框读起来像「那次填充没生效」，而模型手里根本没有账号可以重填。
  */
 const line = (n: AxNode): string => {
   let s = `[${n.index}] ${n.role} ${q(n.name)}`;
   if (n.disabled) s += ' (已禁用)';
   if (n.isPassword) s += ' (密码框，值不显示)';
+  else if (n.filledCredential) s += ' (已填入机构账号，值不显示)';
   else if (n.value !== undefined) s += ` = ${q(n.value)}`;
   return s;
 };
@@ -234,8 +254,11 @@ export function renderSnapshot(s: AxSnapshot, limit = DEFAULT_NODE_LIMIT): Rende
   return finish(s.nodes.map(line), limit, '这份快照', notes);
 }
 
-/** 密码框的值前后都不出现 —— 变化本身可以报，值不行。 */
-const shownValue = (n: AxNode) => (n.isPassword ? '（密码框，值不显示）' : q(n.value ?? ''));
+/** 密码框与填过机构账号的框，值前后都不出现 —— 变化本身可以报，值不行。 */
+const shownValue = (n: AxNode) => (
+  n.isPassword ? '（密码框，值不显示）'
+    : n.filledCredential ? '（已填入机构账号，值不显示）'
+      : q(n.value ?? ''));
 
 /**
  * 变化的判据。坐标漂移不算变化 —— 模型用编号点击，报坐标只会把 diff 刷成噪声。
@@ -246,13 +269,16 @@ const shownValue = (n: AxNode) => (n.isPassword ? '（密码框，值不显示�
 const changed = (a: AxNode, b: AxNode) =>
   a.role !== b.role || a.name !== b.name
   || a.value !== b.value || a.disabled !== b.disabled || a.isPassword !== b.isPassword
+  // 「刚填进机构账号」本身是一次要报的变化（值不报，事实要报）。
+  || a.filledCredential !== b.filledCredential
   // 「刚才被截过、现在没有」本身就是一次变化（原长跌回上限以内）。
   || a.nameTruncated !== b.nameTruncated || a.valueTruncated !== b.valueTruncated;
 
 function describeChange(old: AxNode, n: AxNode): string {
   const extra: string[] = [];
   if (old.disabled !== n.disabled) extra.push(n.disabled ? '，现在已禁用' : '，现在可用了');
-  if (old.value !== n.value || old.isPassword !== n.isPassword) {
+  if (old.value !== n.value || old.isPassword !== n.isPassword
+    || old.filledCredential !== n.filledCredential) {
     extra.push(`，值 ${shownValue(old)} → ${shownValue(n)}`);
   }
   const tail = extra.join('');

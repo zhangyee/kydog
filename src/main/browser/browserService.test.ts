@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
 import INTERACT_SOURCE from './injected/interact.js?raw';
+import LOGIN_FILL_SOURCE from './injected/loginFill.js?raw';
 import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
 import type { AxSnapshot } from './snapshot';
 
@@ -1630,13 +1631,22 @@ function docOf(root: FakeRoot) {
 function runWalker(win: object, root: FakeRoot) {
   const run = new Function('window', 'document', 'location', `const __out =\n${WALKER_SOURCE}\nreturn __out;`);
   return run(win, docOf(root), { href: 'https://a.example/' }) as {
-    nodes: Array<{ name: string; value?: string; isPassword?: boolean }>;
+    nodes: Array<{ nodeId: number; name: string; value?: string; isPassword?: boolean; filledCredential?: boolean }>;
   };
 }
 
 function runRegistrar(win: object, root: FakeRoot) {
   const run = new Function('window', 'document', `const __out =\n${PW_REGISTRAR_SOURCE}\nreturn __out;`);
   return run(win, docOf(root)) as { registered: boolean; scanned: number; observing: boolean };
+}
+
+/** `injected/loginFill.js` 的**生产源码本身**，跑在与 walker / 登记同一个替身世界里。 */
+const LOGIN_ORIGIN = 'https://iaaa.example.edu';
+function runLoginFill(win: object, root: FakeRoot, req: Record<string, unknown>) {
+  Object.assign(win, { location: { origin: LOGIN_ORIGIN } });
+  const run = new Function('window', 'document', `return (${LOGIN_FILL_SOURCE});`) as
+    (w: unknown, d: unknown) => (r: Record<string, unknown>) => Record<string, unknown>;
+  return run(win, docOf(root))({ expectOrigin: LOGIN_ORIGIN, submit: false, ...req });
 }
 
 describe('常驻密码登记（E3b）', () => {
@@ -1857,6 +1867,76 @@ describe('常驻密码登记（E3b）', () => {
   });
 });
 
+// ── 机构账号：填进页面之后就不再进任何一份快照 ────────────────────────────────
+//
+// 泄的是凭据的另一半：`loginConfirm.ts` / `loginFlow.ts` 两处 JSDoc 承诺学号
+// 「不进工具结果、不进模型上下文」，而 walker 从前把它当普通 `value` 渲染进快照
+// （`submit: false` 的验证码页是 spec 说的常态路径：填完之后模型还要接着操作页面，
+// 那几次工具结果头部挂的快照 diff 里就有学号 → 进 transcript）。
+//
+// 三份生产源码跑在**同一个替身世界**里，与真页面上的次序一致：
+// 登记（dom-ready）→ walker 发号 → loginFill 填 → walker 再来一份。
+describe('机构账号填进页面之后不进快照（安全面 I-1）', () => {
+  const loginPage = () => {
+    const user = el('INPUT', { interactive: true, type: 'text', attrs: { name: 'userName' } });
+    const other = el('INPUT', { interactive: true, type: 'text', attrs: { name: 'q' }, value: '石墨烯' });
+    const pw = el('INPUT', { interactive: true, type: 'password' });
+    return { user, other, pw, root: new FakeRoot([user, other, pw]) };
+  };
+
+  it('填过的那个账号框：下一份快照只说「已填入」，一个字的学号都不带', () => {
+    const win = newWorld();
+    const { user, other, root } = loginPage();
+    runRegistrar(win, root);                      // dom-ready：世界与密码记忆建起来
+    const before = runWalker(win, root);          // 发号（loginFill 要拿编号定位）
+    const userNodeId = before.nodes[0].nodeId;
+
+    const rep = runLoginFill(win, root, {
+      usernameNodeId: userNodeId, username: '2100011000', password: 'p@ss',
+    });
+    expect(rep.ok, `填充没成功（${String(rep.reason)}），下面的断言就成了空转`).toBe(true);
+    // 真的填进页面了 —— 站点收到的是完整账号，抹的只是「拿回来给模型看」这条路
+    expect(user.value).toBe('2100011000');
+
+    const after = runWalker(win, root);
+    expect(JSON.stringify(after), '学号出现在快照里 —— 它会经工具结果进模型上下文与 transcript')
+      .not.toContain('2100011000');
+    expect(after.nodes[0].filledCredential).toBe(true);
+    expect(after.nodes[0].value).toBeUndefined();
+    // **不是把所有输入框一起抹掉**：旁边那个普通文本框的值照旧读得到
+    expect(after.nodes[1].value, 'agent 正常读页被这条改动打坏了').toBe('石墨烯');
+    expect(other.value).toBe('石墨烯');
+  });
+
+  it('反向对照：同一个框由页面自己填上同样的值，快照照样把它显示出来', () => {
+    // 钉住上一条不是空绿 —— 抹值的依据是「我们这一轮往里写过」这个协议层事实，
+    // 不是「这个框看起来像账号框」。页面自己填的那份**不该**被抹掉（那是页面内容）。
+    const win = newWorld();
+    const { user, root } = loginPage();
+    runRegistrar(win, root);
+    user.value = '2100011000';
+    const out = runWalker(win, root);
+    expect(out.nodes[0].value).toBe('2100011000');
+    expect(out.nodes[0].filledCredential).toBeUndefined();
+  });
+
+  it('世代一换就作废：新文档里那个框不再算「我们填过的」', () => {
+    // 登记跟着文档走（世界随文档重建）。跨文档还认的话，抹的就是另一个页面上
+    // 一个碰巧同址的框的真实内容 —— 与 nodeId 跨文档失效是同一条理由。
+    const win1 = newWorld();
+    const a = loginPage();
+    runRegistrar(win1, a.root);
+    const id = runWalker(win1, a.root).nodes[0].nodeId;
+    runLoginFill(win1, a.root, { usernameNodeId: id, username: '2100011000', password: 'p' });
+
+    const win2 = newWorld();                       // 导航之后：新文档、新隔离世界
+    runRegistrar(win2, a.root);
+    const after = runWalker(win2, a.root);
+    expect(after.nodes[0].filledCredential).toBeUndefined();
+    expect(after.nodes[0].value).toBe('2100011000');
+  });
+});
+
 // ── 密码判据三方差分：walker ↔ extract ↔ interact ──────────────────────────
 //
 // extract.ts 从前只有一条判据（此刻 IDL type === 'password'），而它的注释明写「与
@@ -1998,6 +2078,59 @@ async function dispatchableTab(svc: Svc) {
 const okMeasure = (over: Record<string, unknown> = {}) => ({
   ok: true, x: 111, y: 222, isPassword: false, editable: true, disabled: false,
   tag: 'button', label: '搜索', ...over,
+});
+
+/**
+ * **视口下发要先落地，再碰页面。**
+ *
+ * `dispatch` 是唯一一条「碰页面**且吃几何**」的路径：`interact.js` 的 measure 在
+ * 页面里 `getBoundingClientRect` 量 x/y，随后分三次独立 await 发
+ * `Input.dispatchMouseEvent`。而 `markDriving` → `restoreFitViewport` 只发了一个
+ * `void applyViewport`（CDP 命令在途）—— 用户刚按过 1:1 时，档位恢复成 1280 会重排，
+ * 量到的坐标不再复核。失败形态是**静默点错东西**。
+ *
+ * `snapshot()` / `navigate()` 早就 `await` 了同一句，各自还写了理由；这条用例守的是
+ * 第三条路上也有那一句。判据不是「命令发出去了没有」（`void` 的那一发也是同步进
+ * `sent` 的，那样钉不住任何东西），而是**它 settle 之前 dispatch 有没有去碰页面**。
+ */
+describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () => {
+  it('视口下发还在途中时，一个字都不往页面里注', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const id = svc.getState().tabs[0].id;
+    // 用户按 1:1 看验证码：逻辑视口 = 侧栏宽（640）
+    svc.setViewportMode(id, 'oneToOne');
+    await flush();
+    expect(overrides(wc).at(-1)!.params.width).toBe(640);
+
+    // 从这一刻起，视口命令**挂在途中**，由用例决定什么时候落地
+    let release: (() => void) | null = null;
+    wc.debugger.respond = () => (wc.debugger.sent.at(-1)!.method === 'Emulation.setDeviceMetricsOverride'
+      ? new Promise<unknown>((r) => { release = () => r({}); })
+      : Promise.resolve({}));
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    wc.isolated.length = 0;
+
+    // agent 的下一次动作：markDriving 把档位改回 fit 并 void 一发，随后进 dispatch
+    const done: string[] = [];
+    void svc.withAgentDriving(id, 'run-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+      .then(() => done.push('ok'), (e: unknown) => done.push(`err:${String(e)}`));
+    await flush();
+
+    expect(wc.isolated.length,
+      '视口命令还在途中，dispatch 就已经进页面量坐标了 —— 逻辑视口从 640 变 1280 会重排，'
+      + '量到的 x/y 不再复核，点击会静默打偏').toBe(0);
+    expect(overrides(wc).at(-1)!.params.width, '恢复的那一档必须是 1280').toBe(1280);
+
+    release!();
+    await flush();
+    expect(wc.isolated.length, '视口落地之后才该去量').toBeGreaterThan(0);
+    await flush();
+    expect(done).toEqual(['ok']);
+  });
 });
 
 describe('dispatch：派发之前的两道闸（实测得来）', () => {
@@ -2698,6 +2831,37 @@ describe('waitFor：等的是显式条件，超时只表示条件未达成', () 
     const { svc } = make();
     await expect(svc.waitFor('nope', { selector: '.r', state: 'present' }, 100))
       .rejects.toMatchObject({ code: 'browser.no_tab' });
+  });
+
+  /**
+   * **等待途中标签被销毁**（run 被取消后 `disposeForRun` 回收、用户手动关掉、
+   * 渲染进程崩掉）。入口那一道只判「开始等的那一刻」，这一条判的是循环里。
+   *
+   * 折进 'unknown' 的话轮询会一路空转到 30 秒，然后 `runStep` 输出
+   * `browser.wait_timeout`：「这只说明这个条件没有成立 —— 它不是页面出错，也不是
+   * 站点的问题。要么条件写得不对……」。那是**以一句关于页面的、确定的错结论，
+   * 掩盖一个我们明确知道的事实**（假绿 + 静默），与 `settle.ts` 的 `onCancelled`
+   * 立的规矩正相反。
+   *
+   * 断言里那个「只推进了 600ms，时限是 30 秒」是硬的：**它不是「报了 no_tab」而已，
+   * 是「当场就报」** —— 折回 'unknown' 的实现在这一刻还挂着，这条会等到超时红。
+   */
+  it('等待途中标签被销毁 → 当场报 no_tab，不烧满 30 秒再说「条件没成立」', async () => {
+    vi.useFakeTimers();
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(false);
+    const outcome: string[] = [];
+    const p = svc.waitFor(id, { selector: '.result', state: 'present' }, 30_000);
+    p.then((v) => outcome.push(`resolved:${v}`),
+      (e: { code?: string }) => outcome.push(`rejected:${String(e.code)}`));
+    await vi.advanceTimersByTimeAsync(300);       // 先真的轮询几次
+    expect(wc.isolated.length).toBeGreaterThan(1);
+    svc.close(id);                                 // 这一刻标签没了
+    await vi.advanceTimersByTimeAsync(300);        // 总共 600ms，离 30 秒还远
+    expect(outcome[0], '标签销毁 600ms 之后还没收场 —— 它在空转烧那 30 秒的时限，'
+      + '到点会报 wait_timeout（「不是页面出错，要么条件写得不对」），而真相是标签没了')
+      .toBe('rejected:browser.no_tab');
   });
 
   // ── 求值失败是「问不出来」，不是任何一个方向的答案（评审 R14 存活）────────

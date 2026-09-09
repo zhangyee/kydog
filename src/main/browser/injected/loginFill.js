@@ -281,6 +281,17 @@
     fire(el, 'change');
   };
 
+  // ── 登记账号框：让它的 value 不再进任何一份快照 ─────────────────────────────
+  //
+  // **写之前登记**，不是写之后：`put()` 里的 `fire(el, 'input')` 同步跑页面自己的
+  // 监听器，那一行里页面可以 `location = …`（新文档、新世界，这一份登记本来就作废）
+  // 或者当场触发一次别的求值。先登记的话，账号进 DOM 的那一刻它已经在名单上了。
+  //
+  // `world` 可能不存在（pwRegistrar 的 dom-ready 还没跑过、或者被页面整个换过 window
+  // 的病态情形）—— 那时 `world.pw` 那条判据也一样不在，是这份文件已经接受的同一个
+  // 边界：退化成「学号照旧进快照」，不退化成填不进去。
+  if (world && world.filled) world.filled.add(user);
+
   put(user, String(req.username));
   put(pw, String(req.password));
 

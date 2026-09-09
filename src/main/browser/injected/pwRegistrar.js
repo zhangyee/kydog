@@ -50,11 +50,15 @@
     return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
   };
 
+  // `filled` 是 loginFill.js 写、walker.js 读的那份「这一轮我们往里写过机构账号的框」
+  // 登记。这里不写它，但**必须把它建出来**：形状漂了就等于 loginFill 拿不到它，
+  // 学号会从下一份快照的 value 里出去（与上面 `gen` 是同一类失败）。
   const world = W.__kydogWorld || (W.__kydogWorld = {
     gen: randomId(),
     next: 1,
     ids: new WeakMap(),
     pw: new WeakSet(),
+    filled: new WeakSet(),
   });
 
   // 判据与 walker 的 `rememberIfPassword` 是**同一条**：此刻 IDL type 就是 password。

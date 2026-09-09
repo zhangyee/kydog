@@ -1314,6 +1314,15 @@ export class BrowserService {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     this.assertDispatchable(tabId, wc);
+    // **先把视口坐实再碰页面**，与 `snapshot()` / `navigate()` 那两句是同一件事。
+    //
+    // 这是唯一一条「碰页面**且吃几何**」的路径：`interact.js` 的 measure 在页面里
+    // `getBoundingClientRect` 量 x/y，随后分三次独立 await 发 `Input.dispatchMouseEvent`。
+    // 而 `withAgentDriving` 进来时 `restoreFitViewport` 只发了一个
+    // `void this.applyViewport(...)`（CDP 命令在途）—— 用户刚按过 1:1（逻辑视口 =
+    // 侧栏宽，比如 640）时，档位恢复成 1280 会重排，量到的坐标不再复核。
+    // 失败形态是**静默点错东西**（spec §4.2 点名最危险的那一个）。
+    await this.applyViewport(tabId, this.stage?.bounds ?? null);
 
     if (action.kind === 'key') {
       for (const ev of keyEventsFor(action.key)) {
@@ -1476,7 +1485,20 @@ export class BrowserService {
     type Answer = 'yes' | 'no' | 'unknown';
     const probe = async (): Promise<Answer> => {
       const wc = this.webContentsOf(tabId);
-      if (!wc) return 'unknown';
+      // **标签没了当场收场，不折进 'unknown'。**
+      //
+      // 「这个标签不存在了」是**现成的协议层事实**（run 被取消后 `disposeForRun`
+      // 回收、用户手动关掉、渲染进程崩掉），与「页面这一次没回话」是两件事。
+      // 折成同一件的话，轮询会一路空转到 timeoutMs（最长 30 秒），然后 `runStep`
+      // 把 false 翻译成 `browser.wait_timeout`，正文是「这只说明这个条件没有成立
+      // —— 它不是页面出错，也不是站点的问题。要么条件写得不对……」：一句**关于
+      // 页面的、确定的错结论**，而真相是这个标签根本不存在了。模型据此去改选择器
+      // 或换检索词，白烧一轮。
+      //
+      // 与 `settle.ts` 的 `onCancelled` 立的是同一条规矩（那里逐字写着：明确知道
+      // 发生了什么，就不许白等满一个时限再给出「我们不知道发生了什么」）。
+      // 入口那一道已经这么判了，这里只是把同一个判据补进循环内 —— 不引入任何时间窗。
+      if (!wc) throw new KydogError('browser.no_tab', `等待期间这个标签页没了：${tabId}`);
       if ('urlMatches' in until) {
         return this.safeCall(() => wc.getURL(), '').includes(until.urlMatches) ? 'yes' : 'no';
       }

@@ -26,8 +26,13 @@ export type LoginConfirmArgs = {
   /** 要在上面填凭据的那个 host。**给用户看的核心事实就是它。** */
   host: string;
   /**
-   * 要填的账号。**只到用户屏幕为止** —— 它不进工具结果、不进模型上下文
-   * （`browser_login` 的返回值里一个字都没有它）。
+   * 要填的账号。**我们这一侧一个字都不往外送**：`browser_login` 的返回值里没有它，
+   * 填进页面之后那个框的 value 也被抹掉（`loginFill.js` 把它登记进隔离世界的
+   * `world.filled`，walker 读到就只报 `filledCredential`，不报值）。
+   *
+   * **能保证的只到这里**：页面自己把学号显示出来（登录成功后的「欢迎，…」、
+   * 站点抄进另一个元素）是页面内容，模型本来就读得到，我们关不住 ——
+   * 别把这句话读成「学号绝不会出现在模型上下文里」。
    */
   username: string;
   institutionName: string;

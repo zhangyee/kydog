@@ -63,6 +63,7 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term</dt>` | 英文报告下 `original` 省掉，示例必须示范省掉它，否则模型照抄就排重复影子；见下「⑦ 术语对照的两个槽」 | 2026-08-28 |
 | `learning-deck/references/deck-json.md:107`（`glossary` 示例） | `"term": "马尔可夫链", "original": "Markov chain"` | **只写 `"term": "Markov chain"`，不写 `original`** | 同上；`original` 已改成可选字段，英文报告里两个槽只能填同一个词，示例必须示范省掉它 | 2026-08-28 |
 | `slowpaper/references/scholar.md:11` ↔ `.en.md:12` | 约 **49.1 万**条结果 | about **491,000** results | **同一个数的两种书写习惯**：中文按「万」分节，英文按千分位。照抄任一侧都会让另一侧读起来像机器翻译。这是本地化，不是漂移 | 2026-09-09 |
+| `slowpaper/references/carsi.md:103` ↔ `.en.md:126`（快照上那个记号） | `(已填入机构账号，值不显示)` | **原样保留中文串**，解释文字译成英文 | 它是 `snapshot.ts` 的 `line()` **实发的字面量**，与 locale 无关 —— agent 要在工具结果里逐字认出它。译过去就等于教 agent 去认一个永远不会出现的串。同一份文件里已有两处同款先例（`机构登录: ` 那一行、`实际填的账号框：…` 那句回显）。两侧都由 `slowpaperDocConstants.test.ts` 与 `snapshot.ts` 对账 | 2026-09-09 |
 | `slowpaper/references/scholar.md:128` ↔ `.en.md:144`（被引数那一格） | 文本「被引用次数：**7347**」 | 「被引用次数：**7347**」 / "Cited by **7347**" —— 同一个数出现**两次** | 这一格给的是要在页面上逐字认的文案，而 Scholar 的界面语言会变（`hl=en` 时是 "Cited by"）。英文侧把两种界面语言的原文**并列**给出，中文侧只给中文界面那一种；数字出现两次是并列的副产品，不是第二个值 | 2026-09-09 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。

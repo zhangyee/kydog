@@ -234,6 +234,28 @@ describe('渲染带上 disabled / value，diff 也把它们算作变化', () => 
     expect(r.text).not.toContain('hunter2');
     expect(r.text).not.toContain('old-secret');
   });
+
+  // ── 机构账号（`filledCredential`）：与密码框同一道第二闸 ────────────────────
+  //
+  // walker 那侧压根不发 value（`world.filled` 命中就只发这个标记），这里是第二道。
+  // 但**不许渲染成空**：空框读起来像「那次填充没生效」，而模型手里根本没有账号
+  // 可以重填 —— 它只会反复调 `browser_login`，而那一轮只有一次机会。
+  it('填过机构账号的框：说出「已填入」，学号一个字都不出现', () => {
+    const r = renderSnapshot(snap([n(1, 100, 'textbox', '学号',
+      { filledCredential: true, value: '2100011000' })]));
+    expect(r.text).not.toContain('2100011000');
+    expect(r.text).toContain('已填入机构账号');
+  });
+
+  it('刚填进去这件事本身算一次变化，而前后都不出现学号', () => {
+    const prev = snap([n(1, 100, 'textbox', '学号')]);
+    const next = snap([n(1, 100, 'textbox', '学号',
+      { filledCredential: true, value: '2100011000' })], 's2');
+    const r = renderDiff(prev, next);
+    expect(r.text).not.toContain('没有变化');
+    expect(r.text).not.toContain('2100011000');
+    expect(r.text).toContain('已填入机构账号');
+  });
 });
 
 describe('两层截断分开如实回报，数不出来的总数不编', () => {
@@ -369,6 +391,19 @@ describe('显示层与 diff 的边界', () => {
     const r = renderDiff(prev, next);
     expect(r.text).not.toContain('没有变化');
     expect(r.text).toContain('密码框');
+  });
+
+  // `filledCredential` 那一项同理，而且这里是**唯一**能考到它的形状：walker 在打上
+  // 这个标记时就不发 value 了，所以 `a.value !== b.value` 两边都是 undefined ——
+  // changed() 里少了这一项的话，「刚刚往这个框里填进了机构账号」会被读成
+  // 「页面没有变化。」，模型无从确认那一次 browser_login 落进去了没有
+  // （而它只有一次机会）。
+  it('值两边都空、只有 filledCredential 翻转：算变化', () => {
+    const prev = snap([n(1, 100, 'textbox', '学号')]);
+    const next = snap([n(1, 100, 'textbox', '学号', { filledCredential: true })], 's2');
+    const r = renderDiff(prev, next);
+    expect(r.text).not.toContain('没有变化');
+    expect(r.text).toContain('已填入机构账号');
   });
 
   // I4：changed() 比的是**截断后**的串。两条只在第 160 字之后不同的检索式会被判成

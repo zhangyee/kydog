@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { stripComments } from '../../test-support/stripComments';
 
 /**
  * `session.webRequest` 的单一分发点。
@@ -284,5 +287,87 @@ describe('browserWebRequestHub()：整个进程一个实例，绑在浏览器分
   it('绑的是浏览器那个持久分区，不是默认 session', () => {
     browserWebRequestHub();
     expect(H.fake.partitions).toEqual(['persist:kydog-browser']);
+  });
+});
+
+// ── 「不许绕过 hub 自己挂」这条约定的守门人 ──────────────────────────────────
+
+/**
+ * 上面所有用例守的都是 **hub 自己**：单例、幂等退订、异常不掀翻别人。
+ * 它们守不住的是**别人绕过它**：下一批加一个观测（下载归属、CSP 报告、统计……）
+ * 时写一句 `session.fromPartition(BROWSER_PARTITION).webRequest.onBeforeRequest(…)`
+ * 就把 hub 的 `dispatch` 顶掉了 —— `loginFlow` 的 SAML 断言回传观测从此一条请求
+ * 都收不到，机构登录退化成**永不确认**。
+ *
+ * **失败形态：静默。** `onBeforeRequest` 是「设置」不是「添加」，顶掉不报错；
+ * 三条 gate（tsc / lint / npm test）全绿，运行时零信号。这条约定在本轮之前
+ * **只写在 `webRequestHub.ts` 顶部的一段注释里**，没有 lint、没有用例。
+ *
+ * 判据是**全仓生产源码里 `.webRequest` 只许出现在这一个文件里**，与
+ * `eventLedger.test.ts` 的 topic 台账、`slowpaperDocConstants.test.ts` 的常数对账
+ * 同一个形状：去注释之后扫真实调用点，不手抄名单。
+ */
+describe('全仓只有 hub 一处碰 session.webRequest', () => {
+  const SRC = path.resolve(__dirname, '..', '..');
+  const HUB = path.join(SRC, 'main', 'browser', 'webRequestHub.ts');
+
+  function walk(dir: string): string[] {
+    const out: string[] = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { out.push(...walk(full)); continue; }
+      if (!/\.tsx?$/.test(e.name)) continue;
+      if (e.name.includes('.test.')) continue;     // 用例里的替身不算生产挂点
+      out.push(full);
+    }
+    return out;
+  }
+
+  /**
+   * 成员访问那一种（`xxx.webRequest`）。**注释与字符串字面量都要先剥掉**：
+   * 约定本身就把被禁的写法原样引在注释里（`webRequestHub.ts` 顶部那段、
+   * `loginFlow.ts` 的两句说明），而 hub 自己的日志作用域就叫
+   * `'browser.webRequest'` —— 两者都不是挂点，算进去这条判据就永远对不上。
+   * 挂点不可能藏在字符串里，所以剥掉它们只会让扫描器**少扫**（安全方向）。
+   */
+  const hits = (src: string) => [
+    ...stripComments(src)
+      .replace(/(['"`])(?:\\.|(?!\1)[\s\S])*?\1/g, "''")
+      .matchAll(/\.\s*webRequest\b/g),
+  ].length;
+
+  const FILES = walk(SRC);
+
+  it('扫描器真的扫到了东西 —— 钉住下面两条不是空绿', () => {
+    expect(FILES.length).toBeGreaterThan(50);
+    expect(FILES).toContain(HUB);
+  });
+
+  it('hub 自己有且只有那一处 —— 它是唯一的挂点', () => {
+    expect(hits(readFileSync(HUB, 'utf8')),
+      'webRequestHub.ts 里 `.webRequest` 的出现次数变了：要么挂点搬走了（那下面那条就在空转），'
+      + '要么这里自己多挂了一种事件（那也要有人守）').toBe(1);
+  });
+
+  it('除了 hub，生产源码里一处都不许有', () => {
+    const offenders = FILES
+      .filter((f) => f !== HUB)
+      .filter((f) => hits(readFileSync(f, 'utf8')) > 0)
+      .map((f) => path.relative(SRC, f));
+    expect(offenders,
+      '有模块绕过 hub 直接碰 session.webRequest。`onBeforeRequest` 是「设置」不是「添加」：'
+      + '后挂的会把 hub 顶掉且不报错，机构登录的 SAML 断言观测从此一条请求都收不到 —— '
+      + '三条 gate 全绿，运行时零信号。要观测就经 `browserWebRequestHub().onBeforeRequest(…)` 订阅。')
+      .toEqual([]);
+  });
+
+  // 注释里原样引着被禁的写法（`webRequestHub.ts` 顶部那段约定、`loginFlow.ts` 的
+  // 那两句说明）—— 不剥注释的话上面两条全是假的。
+  it('剥注释这一步不是摆设：注释里的 session.webRequest 不算挂点', () => {
+    expect(hits("// 不许自己去挂 session.webRequest\nconst a = 1;")).toBe(0);
+    expect(hits("/** 见 session.webRequest 那段 */\nconst a = 1;")).toBe(0);
+    // 日志作用域那种：串里的 `browser.webRequest` 不是挂点
+    expect(hits("logger.warn('browser.webRequest', 'x');")).toBe(0);
+    expect(hits('session.fromPartition(P).webRequest.onBeforeRequest(fn);')).toBe(1);
   });
 });

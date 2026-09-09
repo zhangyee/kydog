@@ -38,13 +38,16 @@
     return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
   };
 
-  // 世代、发号表、密码记忆放在同一个对象里：它们必须同生共死。拆成三个全局的话，
-  // 将来任何一个被单独重置或清理，另外两个立刻开始说谎。
+  // 世代、发号表、密码记忆、凭据登记放在同一个对象里：它们必须同生共死。拆成四个
+  // 全局的话，将来任何一个被单独重置或清理，另外三个立刻开始说谎。
+  //
+  // **形状与 pwRegistrar.js 那份逐字一致**（谁先跑谁建，另一个原样接手）。
   const world = W.__kydogWorld || (W.__kydogWorld = {
     gen: randomId(),
     next: 1,
     ids: new WeakMap(),
     pw: new WeakSet(),
+    filled: new WeakSet(),
   });
 
   const idOf = (el) => {
@@ -163,6 +166,14 @@
 
   const visible = (el, r) => {
     // 折叠到看不见的元素点不到，列出来只会占位置并诱导模型去点。
+    //
+    // **这个 2 是经验值，没有推导过，如实登记。** 同两份文件里别的数都交代了来历
+    // （`MAX_WALKED` 有五档量表、scroll 的两处 1px 容差有实测推导），只有它没有：
+    // 它替代的不是任何一个协议层事实，「多少像素算点得到」也没量过。方向是
+    // fail-closed（宁可少列一个 1.5px 的真控件），而且不静默 —— 被滤掉的元素仍然
+    // 计进 `collection.totalKnown`，快照附注会说「本页共 N 个候选，其中 M 个当前可见」。
+    // 要动它，连同 `interact.js` 的 `measure` 里那个一起动（`interact.test.ts` 有
+    // 一条两边一致的差分用例，但它守的是「两边相等」，不是「这个数对不对」）。
     if (r.width < 2 || r.height < 2) return false;
     if (r.bottom < 0 || r.right < 0) return false;
     const st = W.getComputedStyle(el);
@@ -326,6 +337,30 @@
     if (name.length > MAX_TEXT) node.nameTruncated = true;
     // 密码框的 value 一个字都不出去：它会经工具结果进模型上下文、进 transcript。
     if (isPasswordField(el)) node.isPassword = true;
+    // 我们这一轮往里写过机构账号的那个框，value 同样一个字都不出去。
+    //
+    // **判据是协议层事实，不是启发式**：`world.filled` 里躺着的就是 `loginFill.js`
+    // 刚刚 `put()` 过的**那一个元素对象**（隔离世界的 WeakSet，页面读不到也改不了），
+    // 不是「名字里带 user 的框」这类猜测 —— 所以普通输入框一个都不受影响，
+    // agent 正常读页照旧。
+    //
+    // 为什么必须抹：`browser_login(submit:false)` 是 spec 说的常态路径（验证码页），
+    // 填完之后模型接着 `browser_act` 填验证码、点提交，那几次工具结果头部挂的快照
+    // diff 里就有学号 → 进模型上下文与 transcript。而 `loginConfirm.ts` / `loginFlow.ts`
+    // 两处 JSDoc 承诺的正是「账号不进模型上下文」。
+    //
+    // **不抹成「空」**：空框读起来像「这次填充没生效」，模型会去重填 —— 而它手里
+    // 根本没有账号。所以给一个显式记号（`filledCredential`），由 `snapshot.ts` 渲染成
+    // 「已填入机构账号，值不显示」。
+    //
+    // ── 这条只关得住我们自己写进去的那一个框，边界如实登记 ────────────────
+    //  · 登记跟着**文档**走（世界随文档重建）：登录提交之后跳到的新页面上，
+    //    站点自己回显的学号（「欢迎，2100011000」）不在这份记忆里，也关不住 ——
+    //    那是页面自己的内容，模型本来就读得到。
+    //  · 站点把账号**抄到另一个元素**上（隐藏的镜像 input、一段提示文字）同理。
+    //  · `extract` 那条路不受影响也不需要改：它读的是 `getAttribute('value')`
+    //    内容属性，而 `loginFill` 走的是原型上的原生 setter（写 IDL 值，不动内容属性）。
+    else if (world.filled && world.filled.has(el)) node.filledCredential = true;
     else if ('value' in el && typeof el.value === 'string') {
       const v = clean(el.value);
       if (v) {

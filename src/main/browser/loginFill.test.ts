@@ -133,14 +133,18 @@ function stage(els: AnyEl[], opts: {
     HTMLTextAreaElement: class { },
     Event: Ev,
   };
+  let filled: WeakSet<object> | null = null;
   if (opts.world !== false) {
     const ids = new WeakMap<object, number>();
     for (const [el, id] of opts.ids ?? []) ids.set(el, id);
     const pw = new WeakSet<object>();
     for (const el of opts.pw ?? []) pw.add(el);
-    win.__kydogWorld = { gen: 'g1', next: 1, ids, pw };
+    // 形状与 `walker.js` / `pwRegistrar.js` 里那份一致 —— `filled` 是本文件写、
+    // walker 读的那份「这一轮往里写过机构账号的框」登记。
+    filled = new WeakSet<object>();
+    win.__kydogWorld = { gen: 'g1', next: 1, ids, pw, filled };
   }
-  return { run: build(win, doc), events };
+  return { run: build(win, doc), events, filled };
 }
 
 const REQ = (over: Req = {}): Req => ({
@@ -725,5 +729,70 @@ describe('回显只回属性，绝不回值', () => {
     };
     expect(fieldFor(160)).toBe(`input[name=${'n'.repeat(160)}]`);
     expect(fieldFor(161)).toBe(`input[name=${'n'.repeat(160)}…[截断，原长 161 字符]]`);
+  });
+});
+
+// ── 账号框的凭据登记 ────────────────────────────────────────────────────────
+
+/**
+ * 机构学号是凭据的另一半。填进页面之后，**下一份快照不许把它当普通 value 报出去**
+ * —— `submit: false`（验证码页）是常态路径，填完模型还要接着操作页面，那几次工具
+ * 结果头部挂的快照 diff 会把学号一路带进模型上下文与 transcript。
+ *
+ * 这一侧的职责只有一件：把**那个元素对象本身**登记进隔离世界的 `world.filled`。
+ * 抹值发生在 `walker.js`（读同一份 WeakSet），端到端那条在
+ * `browserService.test.ts` 的「机构账号填进页面之后不进快照」里。
+ */
+describe('填过的账号框要登记进隔离世界，让它的值不再进快照', () => {
+  const page = () => {
+    const user = new FakeInput({ attrs: { name: 'userName' } });
+    const pw = new FakeInput({ type: 'password' });
+    const form = new FakeForm();
+    user.form = form; pw.form = form;
+    return { user, pw };
+  };
+
+  it('填成功之后，账号框在 world.filled 里', () => {
+    const { user, pw } = page();
+    const { run, filled } = stage([user, pw]);
+    expect(run(REQ()).ok).toBe(true);
+    expect(filled!.has(user), '账号框没登记上 —— 学号会从下一份快照的 value 里出去').toBe(true);
+  });
+
+  /**
+   * **密码框不走这条路**：它的四条判据一直是全的（walker 自己就判得出来），
+   * 而 `world.filled` 说的是「我们这一轮往里写过机构账号」这件事。两件事分开，
+   * 免得下一个人以为改一处就够。
+   */
+  it('密码框不进这份登记 —— 两条判据各管各的', () => {
+    const { user, pw } = page();
+    const { run, filled } = stage([user, pw]);
+    run(REQ());
+    expect(filled!.has(user)).toBe(true);
+    expect(filled!.has(pw)).toBe(false);
+  });
+
+  /**
+   * 前置自检没过时**一个字都没写进页面**，也就没有要抹的东西 ——
+   * 登记必须跟着「真的写了」走，不然下一份快照会把一个页面自己的值报成
+   * 「已填入机构账号，值不显示」，那是把真内容藏起来。
+   */
+  it('origin 变了、一个字都没写：也不留下任何登记', () => {
+    const { user, pw } = page();
+    const { run, filled } = stage([user, pw], { origin: 'https://evil.example' });
+    expect(run(REQ()).ok).toBe(false);
+    expect(filled!.has(user)).toBe(false);
+  });
+
+  /**
+   * **世界不存在时的边界，如实登记**：退化成「学号照旧进快照」（与 `world.pw`
+   * 那条判据不在时是同一个边界），**不退化成填不进去**。真页面上 pwRegistrar
+   * 在 dom-ready 就把世界建好了，这条走不到；写在这里是为了让它不会变成一次崩溃。
+   */
+  it('隔离世界还没建起来：不抛，照常把凭据填进去', () => {
+    const { user, pw } = page();
+    const { run } = stage([user, pw], { world: false });
+    expect(run(REQ()).ok).toBe(true);
+    expect(user.raw).toBe('u2100011000');
   });
 });

@@ -120,7 +120,11 @@ export type LoginFlowPorts = {
  */
 export type LoginAsk = (args: {
   host: string;
-  /** 给用户看的账号。**只到这里为止** —— 不进工具结果、不进模型上下文。 */
+  /**
+   * 给用户看的账号。**我们这一侧不往外送** —— 不进工具结果，填进页面之后那个框的
+   * value 也被抹掉（见 `injected/loginFill.js` 的 `world.filled` 登记与
+   * `snapshot.ts` 的 `filledCredential`）。页面自己回显出来的另说，那关不住。
+   */
   username: string;
   institutionName: string;
 }) => Promise<boolean>;

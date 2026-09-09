@@ -123,6 +123,12 @@ now" or "it was one in this document"; more than one and it refuses the whole ca
 `usernameIndex` at a password box is rejected on the spot (`browser.password_field`) — do not
 get the two boxes the wrong way round.
 
+**After the fill, that box shows in the snapshot as `(已填入机构账号，值不显示)`** — that means
+it **is already filled**, not that it is empty. The institutional account is half of the
+credential, so the tool never hands it to you and you cannot retype it: when you see that
+marker, move on (CAPTCHA, submit) — do not guess the account and do not call `browser_login`
+again.
+
 ### Hard rule 5: the standard script for a CAPTCHA page
 
 CAPTCHAs are normal; these four steps:

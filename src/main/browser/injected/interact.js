@@ -224,6 +224,8 @@
     let r;
     try { r = el.getBoundingClientRect(); } catch { return { ok: false, reason: 'not_found' }; }
     // 与 walker 的 visible() 第一条同一个判据：折叠到看不见的元素点不到。
+    // **那个 2 是经验值、没有推导过**（出处与取舍写在 walker.js 那一处），
+    // 两边必须一起改 —— 差分用例守的是「两边相等」，不是「这个数对不对」。
     if (r.width < 2 || r.height < 2) return { ok: false, reason: 'not_visible', w: Math.round(r.width), h: Math.round(r.height) };
     const x = Math.round(r.left + r.width / 2);
     const y = Math.round(r.top + r.height / 2);
