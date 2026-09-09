@@ -69,6 +69,13 @@ jobs:
       # e2e 复用 make 刚产出的 .vite/build 与 out/ 打包成品（含 54 冒烟），不重复打包。
       - run: npx playwright install chromium
       - run: npm run e2e
+        env:
+          # 内置浏览器那一组（e2e/61）要打真源：urlGuard 只放行公网 http/https，
+          # 起不了本地夹具服务器。而 runner 是机房 IP，真源随时会当它是机器人 ——
+          # 让发版流水线被外部因素间歇阻断不划算（spec §8.2）。跳过**不是静默的**：
+          # 跳过原因带在用例上，Playwright 的报告里逐条看得见。
+          # 代价：那一组只在开发机上跑过，别把「CI 绿」当成「内置浏览器这块没问题」。
+          KYDOG_SKIP_LIVE_BROWSER: '1'
       # always 而非 failure：flaky（retry 转绿）时 job 是成功态，failure() 不执行，
       # 而失败尝试的 trace 就留在 test-results 里（实证见 spec 事实基础）——不上传就随
       # runner 销毁。全绿时这里只有一个 .last-run.json，成本可忽略。
