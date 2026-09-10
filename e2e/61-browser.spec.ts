@@ -3,6 +3,7 @@ import { readFileSync, promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp } from './helpers';
+import { MIN_MAIN_WIDTH } from '../src/renderer/app/rightPane';
 
 /**
  * 内置浏览器（slowpaper 一期）的 e2e。spec §8.2 + `e2e-requirements.md`。
@@ -460,6 +461,180 @@ if (!SKIP_LIVE && SKIP_PERF) console.warn(`\n[61-browser] 性能那一条跳过�
 
 test.describe('61-browser', () => {
   test.skip(SKIP_LIVE, SKIP_REASON);
+
+  // ── Task 7：真布局回归 ──────────────────────────────────────────────────
+  //
+  // 前六个任务把功能做完了。这三条守的是单测守不住的那两件事：「祖先对了但按钮被挤
+  // 出可视区」（单测断的是 DOM 结构，量不出几何）、「对话栏被挤到 composer 不可见」
+  // （单测不挂真窗口，量不出真实宽度）。都要真布局才量得到。
+
+  /**
+   * **本轮唯一一处真实回归风险。** 1024 宽窗口 + 侧栏（旧默认 560）会把中栏挤到
+   * `composer-input` 不可见、`fill()` 直接超时 —— `61-browser` 这一组因此此前一律
+   * 不敢开侧栏（见下面「打真的 extract / click / type」几条的开场注释：「1024 宽的
+   * 窗口里再挂一个 560 宽的侧栏会把中栏挤到 composer 不可见」）。`MIN_MAIN_WIDTH`
+   * 落地之后它必须不再成立：`rightPane.test.ts` 已经在单测层面钉死
+   * `browserWidthFor(null, 756) === 396`（1024 窗口的可用宽），这里在真窗口上验证
+   * 那个数字真的能让 composer 用起来。
+   *
+   * **需要先有一个线程、且线程里已有消息，`composer-input` 才会是「日常那一个」**：
+   * `MainPane` 没有 `currentThreadId` 时画的是 `<Welcome />`；刚新建、一条消息都没有的
+   * 线程走的是 `ThreadView` 里 `NewThreadEmptyState` 那条分支，它自己的首屏大输入框
+   * 带着 80px 的通栏留白（`padding: '64px 80px'`，给宽窗口设计的首屏排版），实测在
+   * 360 宽的对话栏下量到的宽只有 ~130——那是这块首屏留白的事，不是 `MIN_MAIN_WIDTH`
+   * 要守的那条回归。发一条消息切到 `messages.length > 0` 分支，才是 `spec §8.2` 那些
+   * `browser_act` 用例平时真正会用到的那个底部 Composer（`ThreadView.tsx:66-75`）。
+   * 这一点简报里的伪代码略掉了，这里照 `03-create-thread.spec.ts` 的现成做法起步
+   * （种一个项目、点「新建对话」），再补上「发一条消息切到日常输入框」这一步。
+   */
+  test('开着浏览器时 composer 仍然可见且填得进字', async () => {
+    const projectPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
+    await seedSamplePackage(projectPath);
+    const launched = await launchKydog({
+      seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
+    });
+    const { page } = launched;
+    try {
+      await page.getByTestId('new-thread').click();
+      const firstComposer = page.locator('[data-testid="composer-input"]');
+      await firstComposer.click();
+      await firstComposer.type('占个位，切到日常输入框');
+      await page.keyboard.press('Enter');
+      // `onSend` 先把用户消息乐观地写进本地 store 再发 RPC（`Composer.tsx` 的
+      // `onSend`）——`messages.length` 因此立刻变成 1，`ThreadView` 跟着从
+      // `NewThreadEmptyState` 切到 `MessageList` 分支，不需要等一轮真实的 run 跑完
+      // （后台那次 `thread.send` RPC 会不会成功，这条用例不关心）。
+      await expect(page.getByTestId('message-list'), '发完第一条消息应当切到 MessageList 分支')
+        .toBeVisible();
+
+      await openSidebar(page);
+      await openTab(page, 'https://example.com/');
+
+      // **协议层判据先来一条**：`browserWidthFor` 承诺的就是「对话栏（`[data-pane="main"]`）
+      // 不许比 MIN_MAIN_WIDTH 窄」——这是 `Math.min(want, available - MIN_MAIN_WIDTH)`
+      // 那一钳直接守的事实，不是靠 composer 的可视宽度去反推（那是**下游的 proxy**：
+      // 中栏够不够宽与 composer 具体量出来几像素之间还隔着一层 padding，数值会跟着
+      // `Composer.tsx` 的 padding 常量漂）。M14（去掉这一钳）在 e2e 窗口的夹具下会把
+      // 中栏从 360 压到 302——这条直接量协议层承诺的那个数，不靠 302 恰好还是否
+      // 大于某个凭经验选的阈值。
+      const mainBox = await page.locator('[data-pane="main"]').boundingBox();
+      expect(mainBox, '对话栏（[data-pane="main"]）必须在场').toBeTruthy();
+      expect(mainBox!.width, `对话栏宽度不许小于 MIN_MAIN_WIDTH（${MIN_MAIN_WIDTH}）——`
+        + `这正是 browserWidthFor 那一钳要保证的事，实际量到 ${mainBox!.width}`)
+        .toBeGreaterThanOrEqual(MIN_MAIN_WIDTH);
+
+      const input = page.locator('[data-testid="composer-input"]');
+      // **可见性与可写性要分开断言。** 只断 `toBeVisible()` 的话，一个宽度被挤到 0
+      // 但仍在 DOM 里的输入框照样算「可见」；只断 fill 的话，Playwright 会自己滚动到它、
+      // 把「用户看不见」这件事掩盖掉。两条一起才说得清「用户真的能用它」。
+      await expect(input, '开着浏览器时 composer 必须还看得见 —— 这正是 1024 窗口上栽过的地方')
+        .toBeVisible({ timeout: 10_000 });
+      const box = await input.boundingBox();
+      expect(box?.width ?? 0, 'composer 的可视宽度不能被挤成一条缝').toBeGreaterThan(200);
+      // `composer-input` 是 `contentEditable` 的 div（`ComposerEditor.tsx`），不是
+      // `<input>`/`<textarea>`——`toHaveValue` 只认表单控件，这里改用 `toHaveText`
+      // 断可见文本，判据不变（「真的填得进字」）。
+      await input.fill('kydog-e2e-窄模式还能打字');
+      await expect(input).toHaveText('kydog-e2e-窄模式还能打字');
+    } finally {
+      await teardown(launched);
+    }
+  });
+
+  /**
+   * Task 4 删掉了顶部那条单独的标题行（「浏览器 Browser」），标签条升顶、地址栏紧跟
+   * 在它下面。`BrowserSidebar.test.tsx` 在挂载层面已经守过「DOM 里没有这几个字」，
+   * 这里补的是真布局上的另一半：标签条真的排在地址栏**上面**（不是层叠、不是反过来）。
+   */
+  test('顶部只有两行：标签条在最上、地址栏在下，标题行不存在', async () => {
+    const launched = await launchKydog();
+    const { page } = launched;
+    try {
+      await openSidebar(page);
+      const tabstrip = page.getByTestId('browser-tabstrip');
+      const urlbar = page.getByTestId('browser-url');
+      await expect(tabstrip, '标签条必须在场').toBeVisible();
+      await expect(urlbar, '地址栏必须在场').toBeVisible();
+
+      const tabstripBox = await tabstrip.boundingBox();
+      const urlbarBox = await urlbar.boundingBox();
+      expect(tabstripBox, '标签条要有真实几何位置').toBeTruthy();
+      expect(urlbarBox, '地址栏要有真实几何位置').toBeTruthy();
+      expect(tabstripBox!.y, '标签条必须排在地址栏上面（升顶，不是标题行下面那一档）')
+        .toBeLessThan(urlbarBox!.y);
+
+      // 「浏览器 Browser」曾经是单独一行标题，Task 4 已经删掉——这里守的是它别回来。
+      const paneText = await page.locator('[data-pane="browser"]').innerText();
+      expect(paneText, '侧栏里不该再出现「浏览器 Browser」这行标题').not.toContain('浏览器 Browser');
+    } finally {
+      await teardown(launched);
+    }
+  });
+
+  /**
+   * `TabStrip.tsx` 的那句注释是这条用例的直接依据：**按钮必须在滚动容器外面** ——
+   * 放进去的失败形态是「标签开到第五个之后关不掉侧栏」，而单测断的是 DOM 祖先关系，
+   * 看不见「祖先对了但按钮被挤出可视区」这件事，只有真布局量得到。
+   *
+   * 判据分两段：
+   *  · **默认（未滚动）状态才是真正的判据** —— 这正是那句「标签开到第五个之后关不掉
+   *    侧栏」描述的坑本身：用户根本不用手动滚，按钮就已经被挤出侧栏可视区了。
+   *    这里用 `boundingBox()` 而不是先 `click()` 去量：`click()` 会让 Playwright
+   *    自己把元素滚进视野，「点得到」不等于「用户看得见」，会把这条坑悄悄盖过去。
+   *  · **滚到最右之后再量一次**（作为补充）——按钮本来就在滚动容器外面，滚动
+   *    标签条本该与它们的位置无关；这条钉住「滚动没有把它们带偏」。
+   * 最后真的点一下 `browser-close-pane`，确认点得到、点了侧栏真的关了。
+   */
+  test('标签多到需要横向滚动时，三个按钮仍然点得到', async () => {
+    const launched = await launchKydog();
+    const { page } = launched;
+    try {
+      await openSidebar(page);
+      for (let i = 0; i < 8; i++) {
+        await page.evaluate(() => window.kydog.invoke('browser.newTab'));
+      }
+      await expect.poll(
+        async () => (await page.evaluate(() => window.kydog.invoke('browser.getState'))).tabs.length,
+        { message: '连开 8 次 browser.newTab 之后标签数应当是 8' },
+      ).toBe(8);
+
+      const scroll = page.getByTestId('browser-tabscroll');
+      // 前提要立得住：8 个标签必须真的撑爆了 browser-tabscroll 的可视宽度，
+      // 不然下面「按钮仍看得见」这件事就没有被考到（标题就是「标签多到需要横向滚动时」）。
+      await expect.poll(
+        () => scroll.evaluate((el) => el.scrollWidth > el.clientWidth),
+        { message: '8 个标签应当已经超出 browser-tabscroll 的可视宽度' },
+      ).toBe(true);
+
+      const pane = page.locator('[data-pane="browser"]');
+      const paneBox = (await pane.boundingBox())!;
+      const buttonIds = ['browser-new-tab', 'browser-fullscreen', 'browser-close-pane'];
+
+      const assertButtonsInPane = async (when: string) => {
+        for (const id of buttonIds) {
+          const box = await page.getByTestId(id).boundingBox();
+          expect(box, `${when}：按钮 ${id} 应有真实几何位置（不在 DOM 里或被隐藏了）`).toBeTruthy();
+          expect(box!.x, `${when}：按钮 ${id} 的左边界必须在侧栏可视范围内`)
+            .toBeGreaterThanOrEqual(paneBox.x - 1);
+          expect(box!.x + box!.width, `${when}：按钮 ${id} 的右边界不能超出侧栏可视范围`)
+            .toBeLessThanOrEqual(paneBox.x + paneBox.width + 1);
+        }
+      };
+
+      await assertButtonsInPane('未滚动（默认状态，这是这条用例的主判据）');
+
+      // 把标签条滚到最右（模拟翻看最后打开的那个标签）——按钮不在这个滚动容器里，
+      // 位置不该跟着动。
+      await scroll.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+      await assertButtonsInPane('滚到最右之后');
+
+      // 真点得到，而且点了侧栏真的关了——不是「Playwright 帮你滚过去才点到」。
+      await page.getByTestId('browser-close-pane').click();
+      await expect(page.locator('[data-pane="browser"]')).toHaveCount(0);
+    } finally {
+      await teardown(launched);
+    }
+  });
 
   /**
    * spec §8.2 第 1 条（S1b 的回归）。**`setZoomFactor` 会失败的正是这里** ——
