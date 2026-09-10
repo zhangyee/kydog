@@ -26,6 +26,9 @@ export type RpcCall =
   // ── 内置浏览器 ──
   // 给 tabId 就在那个标签里导航（同一个源的连续详情页复用一个标签），不给就新开。
   | { method: 'browser.open'; args: { url: string; tabId?: string }; result: { tabId: string; nav: NavigationObservation } }
+  // 建一张**空白**标签，不导航。`browser.open` 第一句就是 `assertAllowedUrl(args.url)`，
+  // 空白页没有合法网址可传——分成两条路之后 URL 判据一个字都没放宽。
+  | { method: 'browser.newTab'; args: undefined; result: { tabId: string } }
   | { method: 'browser.close'; args: { tabId: string }; result: void }
   // 把 agent 开的标签转成用户的（ownerRunId → null），此后不会被回合结束的回收清掉。
   | { method: 'browser.keep'; args: { tabId: string }; result: void }
@@ -192,8 +195,8 @@ export type RpcMethod = RpcCall['method'];
  *
  * 为什么需要它：`dispatcher.ts` 的 `handlers[method] = …` 是运行时填表 ——
  * 往 `RpcCall` 加一条而**不注册 handler 不会编译报错、不会有用例红**，只在运行时
- * 回一句 `no handler for …`。本分支一次把这条盲区从 0 条放大到 13 条
- * （`browser.*` 八条 + `institution.*` 五条，都是计划内的 Task 6 Step 5 / Step 8 / Task 8），
+ * 回一句 `no handler for …`。本分支一次把这条盲区从 0 条放大到 14 条
+ * （`browser.*` 九条 + `institution.*` 五条，都是计划内的 Task 6 Step 5 / Step 8 / Task 8），
  * 所以必须先把「有没有人管这一条」变成可检查的事实。
  *
  * 两道闸配套：
@@ -208,6 +211,7 @@ export const RPC_METHODS = [
   'research.get',
   'research.save',
   'browser.open',
+  'browser.newTab',
   'browser.close',
   'browser.keep',
   'browser.activate',

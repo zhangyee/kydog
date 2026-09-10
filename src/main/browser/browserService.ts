@@ -780,6 +780,20 @@ export class BrowserService {
 
   // ── 对外操作 ────────────────────────────────────────────────────────────
 
+  /**
+   * 新建一张**空白**标签：只建 view、登记、切过去，**不导航**。
+   *
+   * 为什么不能走 `open()`：它第一句就是 `assertAllowedUrl(args.url)`，而空白页没有
+   * 合法网址可传（`about:blank` 过不了那道闸，也不该让它过）。分成两条路之后，
+   * 「开一张空标签」与「导航到某个网址」各自只做一件事，URL 判据一个字都没放宽。
+   */
+  openBlank(): { tabId: string } {
+    const tabId = this.createTab('', null);
+    this.registry.activate(tabId);
+    this.applyLayout();
+    return { tabId };
+  }
+
   async open(args: { url: string; tabId?: string; ownerRunId?: string | null }): Promise<{ tabId: string; nav: NavigationObservation }> {
     const url = assertAllowedUrl(args.url).toString();
     if (args.tabId && !this.registry.has(args.tabId)) {

@@ -109,7 +109,7 @@ export function registerAllHandlers(): void {
   registerHandler('research.save', (args) => researchService.save(args));
 
   // ── 内置浏览器（侧栏那条路）──
-  // 这七条与 agent 那三个工具动的是**同一个** browserService。跨路的并发由
+  // 这九条与 agent 那三个工具动的是**同一个** browserService。跨路的并发由
   // browserService 自己的按标签串行队列收口（见那里的 `enqueue`）——
   // 这一层不许自己再造一条路。
   //
@@ -118,6 +118,7 @@ export function registerAllHandlers(): void {
   // 类型上渲染层给不出它，但类型挡不住运行时 —— 渲染层发来的东西一律当输入看，
   // 只取协议上写明的那两个字段。**从这条路开的标签永远是用户的。**
   registerHandler('browser.open', (args) => browserService.open({ url: args.url, tabId: args.tabId }));
+  registerHandler('browser.newTab', () => browserService.openBlank());
   registerHandler('browser.close', (args) => { browserService.close(args.tabId); });
   registerHandler('browser.keep', (args) => { browserService.keep(args.tabId); });
   registerHandler('browser.activate', (args) => { browserService.activate(args.tabId); });

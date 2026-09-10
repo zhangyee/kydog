@@ -98,6 +98,7 @@ vi.mock('./browser/browserService', async () => {
     browserService: {
       _registry: reg,
       open: (args: unknown) => { h.browser.push({ m: 'open', args }); return Promise.resolve({ tabId: 'tab-1', nav: null }); },
+      openBlank: () => { h.browser.push({ m: 'openBlank', args: undefined }); return { tabId: 'tab-blank' }; },
       close: (id: string) => { h.browser.push({ m: 'close', args: id }); },
       keep: (id: string) => { h.browser.push({ m: 'keep', args: id }); },
       activate: (id: string) => { h.browser.push({ m: 'activate', args: id }); },
@@ -347,14 +348,14 @@ describe('每一条 RPC 都有交代：注册了，或明确登记成「尚未�
 });
 
 /**
- * **浏览器八条：接错了不会编译报错，只会「悄悄不工作」。**
+ * **浏览器九条：接错了不会编译报错，只会「悄悄不工作」。**
  *
  * 这一层全是转发，所以要守的正是转发本身：调的是不是那个方法、参数有没有对调、
  * 有没有把渲染层发来的东西整个递下去。上面那三条穷尽性断言只管「注册了没有」，
  * 管不了「注册的那个函数干的是不是这件事」——
  * `registerHandler('browser.close', (a) => browserService.keep(a.tabId))` 照样全绿。
  */
-describe('browser.* 八条转发到 browserService 上对应的那一个', () => {
+describe('browser.* 九条转发到 browserService 上对应的那一个', () => {
   it('open 只递协议上写明的 url / tabId', async () => {
     await call('browser.open', { url: 'https://x.example/p', tabId: 't7' });
     expect(h.browser).toEqual([{ m: 'open', args: { url: 'https://x.example/p', tabId: 't7' } }]);
@@ -435,6 +436,18 @@ describe('browser.* 八条转发到 browserService 上对应的那一个', () =>
       { m: 'setViewportMode', args: { id: 't1', mode: 'oneToOne' } },
       { m: 'setViewportMode', args: { id: 't2', mode: 'fit' } },
     ]);
+  });
+
+  /**
+   * **第九条**（Task 3 的空白标签）。`args: undefined` —— 与其余八条不同，这一条
+   * 没有任何东西可转发，唯一要守的是「调的是 `openBlank`，且返回值原样带回」。
+   * 接成 `() => ({ tabId: 'fake' })` 的话，穷尽性断言照样全绿：注册了、方法名没拼错、
+   * 数目也对 —— 只有这里才守得住「转发的是真的 `openBlank`」。
+   */
+  it('newTab 转发到 openBlank，tabId 原样带回', async () => {
+    const result = await call('browser.newTab');
+    expect(h.browser).toEqual([{ m: 'openBlank', args: undefined }]);
+    expect(result).toEqual({ tabId: 'tab-blank' });
   });
 });
 

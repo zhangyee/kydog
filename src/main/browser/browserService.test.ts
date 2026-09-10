@@ -310,6 +310,55 @@ describe('enqueue：同一个标签排队，跨标签并行', () => {
   });
 });
 
+// ── openBlank：新建一张空白标签，不经 URL 闸（Task 3） ──────────────────────
+
+describe('openBlank', () => {
+  /**
+   * **不经 `assertAllowedUrl`。** `createTab` 只建 view 并登记，导航是 `open()` 里另一步；
+   * 空白标签跳过导航那一步，那道闸根本轮不到 —— 所以这条路**不放宽任何 URL 判据**。
+   */
+  it('建出一张 url 为空的标签，并把它设成活动标签', () => {
+    const { svc } = make();
+    const { tabId } = svc.openBlank();
+    const s = svc.getState();
+    expect(s.tabs.find((t) => t.id === tabId)?.url).toBe('');
+    expect(s.activeTabId).toBe(tabId);
+  });
+
+  it('它是用户的标签，不会在 run 结束时被回收', () => {
+    const { svc } = make();
+    const { tabId } = svc.openBlank();
+    expect(svc.getState().tabs.find((t) => t.id === tabId)?.owner).toBe('user');
+  });
+
+  it('一次都没有发生导航', () => {
+    const { svc } = make();
+    svc.openBlank();
+    const wc = wcOf();
+    expect(wc.loadCalls).toEqual([]);
+  });
+
+  /**
+   * **实测（Task 3 Step 5）**：agent 对一张空白标签调 `browser_act` 会怎样。
+   * `dispatch` 走到 `assertDispatchable` → `assertRenderProcess`：`debugger.isAttached()`
+   * 在 `createTab` 里已经 attach 过，为 true；`getOSProcessId()` 从没被任何一次
+   * `loadURL` 置过非零值，仍是 0（与真实全新 `WebContentsView` 一致）。于是抛的是
+   * `browser.not_dispatchable`：「标签 x 还没有渲染进程 —— 页面从来没加载成功过，
+   * 或者刚刚崩过。先用 browser_open 打开一个页面再操作。」—— 这句话对空白标签**原样成立**
+   * （它确实「从来没加载成功过」），不是「没有这个标签」那种文不对题的错，不用改。
+   * `runBatch`（browserTools.ts）catch 住这个 `KydogError`，整批 ⚠ 停在这一步，
+   * 不会把它当成工具调用本身失败抛出去（钉住这一层的是 browserTools.test.ts
+   * 「dispatch 抛错：整批停在那里」那条既有用例，同一个错误处理路径，不需要为
+   * 空白标签这个新触发源单独再钉一条）。
+   */
+  it('对空白标签 dispatch 会撞上 not_dispatchable（页面从来没加载成功过），不是 no_tab', async () => {
+    const { svc } = make();
+    const { tabId } = svc.openBlank();
+    await expect(svc.dispatch(tabId, { kind: 'click', selector: '#a' }, null))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+  });
+});
+
 // ── §D 时限必须罩住 act ───────────────────────────────────────────────────
 
 describe('导航时限罩住 act 本身（§D）', () => {
