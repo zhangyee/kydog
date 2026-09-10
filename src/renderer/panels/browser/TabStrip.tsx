@@ -1,5 +1,5 @@
 import type { BrowserTabInfo } from '../../../shared/types';
-import { Tooltip } from '../../shared';
+import { IconButton, NavIcon, Tooltip } from '../../shared';
 
 type Props = {
   tabs: BrowserTabInfo[];
@@ -9,6 +9,11 @@ type Props = {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onKeep: (id: string) => void;
+  /** 是否处于全屏态（`useUiStore` 的 `browserFullscreen`）—— 决定按钮图标与提示文案。 */
+  fullscreen: boolean;
+  onNewTab: () => void;
+  onToggleFullscreen: () => void;
+  onClosePane: () => void;
 };
 
 /** 标签上显示的字：优先标题，其次 host，再不行就整条网址。 */
@@ -24,13 +29,21 @@ export function tabLabel(t: BrowserTabInfo): string {
  * 所以它们多一个「保留」——点了就转成用户的，此后不会被自动关掉。
  * 用户的标签没有这个按钮：它本来就不会被收走，摆一个不改变任何事的按钮更糟。
  */
-export function TabStrip({ tabs, activeTabId, agentTabs, onSelect, onClose, onKeep }: Props) {
+export function TabStrip({
+  tabs, activeTabId, agentTabs, onSelect, onClose, onKeep,
+  fullscreen, onNewTab, onToggleFullscreen, onClosePane,
+}: Props) {
   return (
     <div
       data-testid="browser-tabstrip"
-      className="ky-paper-deep flex shrink-0 overflow-x-auto"
+      className="ky-paper-deep flex shrink-0"
       style={{ height: 32, borderBottom: '0.5px solid var(--color-ink-hair)' }}
     >
+      {/*
+        **按钮必须在这一层外面。** 标签横向滚动时按钮不许跟着滚走 ——
+        放进去的失败形态是「标签开到第五个之后关不掉侧栏」，三条 gate 一条都不红。
+      */}
+      <div data-testid="browser-tabscroll" className="flex overflow-x-auto flex-1 min-w-0">
       {tabs.length === 0 && (
         <div
           className="font-serif italic flex items-center px-3"
@@ -107,6 +120,21 @@ export function TabStrip({ tabs, activeTabId, agentTabs, onSelect, onClose, onKe
           </div>
         );
       })}
+      </div>
+      <div className="flex items-center shrink-0" style={{ borderLeft: '0.5px solid var(--color-ink-hair)' }}>
+        <IconButton size={24} testId="browser-new-tab" tooltip="新建标签页" onClick={onNewTab}>
+          <NavIcon name="circle-plus" size={13} />
+        </IconButton>
+        <IconButton
+          size={24} testId="browser-fullscreen"
+          tooltip={fullscreen ? '退出全屏' : '全屏'}
+          active={fullscreen}
+          onClick={onToggleFullscreen}
+        ><NavIcon name={fullscreen ? 'minimize-2' : 'maximize-2'} size={13} /></IconButton>
+        <IconButton size={24} testId="browser-close-pane" tooltip="关闭浏览器" onClick={onClosePane}>
+          <NavIcon name="x" size={13} />
+        </IconButton>
+      </div>
     </div>
   );
 }

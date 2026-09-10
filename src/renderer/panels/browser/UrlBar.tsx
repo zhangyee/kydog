@@ -4,8 +4,8 @@ import { IconButton, NavIcon } from '../../shared';
 
 type Props = {
   tab: BrowserTabInfo | null;
-  /** 提交一条网址。`newTab` 为真时开新标签，否则在当前标签里导航。 */
-  onGo: (url: string, newTab: boolean) => void;
+  /** 提交一条网址：有活动标签就在它里面导航，没有就开一个新的。 */
+  onGo: (url: string) => void;
   onNav: (action: 'back' | 'forward' | 'reload' | 'stop') => void;
   /** 「1:1 / 适配」开关（spec §4.6）。**送一个意向过去就完** —— 新的档位由主进程
    *  随 `browser.tabsChanged` 广播回来，这里画的一直是主进程手上那份真相。 */
@@ -28,24 +28,19 @@ export function normalizeTyped(raw: string): string {
 
 export function UrlBar({ tab, onGo, onNav, onViewportMode }: Props) {
   const [draft, setDraft] = useState('');
-  const [newTab, setNewTab] = useState(false);
   const [editing, setEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // 没在编辑时，输入框跟着真实网址走（导航、agent 操作、后退都会改它）。
   // 正在编辑就别动 —— 用户打了一半被一次后台导航冲掉是很难受的。
   useEffect(() => {
-    if (!editing && !newTab) setDraft(tab?.url ?? '');
-  }, [tab?.url, editing, newTab]);
-
-  // 切标签时退出「开新标签」态：那个模式是针对某一次输入的，不该跨标签留着。
-  useEffect(() => { setNewTab(false); }, [tab?.id]);
+    if (!editing) setDraft(tab?.url ?? '');
+  }, [tab?.url, editing]);
 
   const submit = () => {
     const url = normalizeTyped(draft);
     if (url === '') return;
-    onGo(url, newTab || tab === null);
-    setNewTab(false);
+    onGo(url);
     setEditing(false);
     inputRef.current?.blur();
   };
@@ -80,18 +75,18 @@ export function UrlBar({ tab, onGo, onNav, onViewportMode }: Props) {
         data-testid="browser-url"
         value={draft}
         spellCheck={false}
-        placeholder={newTab ? '新标签页的网址' : '输入网址'}
+        placeholder="输入网址"
         onFocus={() => setEditing(true)}
         onBlur={() => setEditing(false)}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') { e.preventDefault(); submit(); }
-          if (e.key === 'Escape') { setDraft(tab?.url ?? ''); setNewTab(false); inputRef.current?.blur(); }
+          if (e.key === 'Escape') { setDraft(tab?.url ?? ''); inputRef.current?.blur(); }
         }}
         className="font-mono flex-1 min-w-0"
         style={{
           background: 'var(--color-paper)',
-          border: `0.5px solid ${newTab ? 'var(--color-accent)' : 'var(--color-ink-hair)'}`,
+          border: '0.5px solid var(--color-ink-hair)',
           borderRadius: 4,
           padding: '3px 8px',
           fontSize: 11,
@@ -117,20 +112,6 @@ export function UrlBar({ tab, onGo, onNav, onViewportMode }: Props) {
         disabled={tab === null}
         onClick={() => onViewportMode(tab?.viewportMode === 'oneToOne' ? 'fit' : 'oneToOne')}
       ><span className="font-mono" style={{ fontSize: 9, lineHeight: 1 }}>1:1</span></IconButton>
-
-      {/*
-        新标签。**不是「立刻开一个空白页」** —— `browser.open` 必须带一条过得了
-        URL 闸的网址（about:blank 过不了，闸只放行 http(s)），所以这里做的是
-        「下一次回车开在新标签里」，把输入框清空并聚焦。
-      */}
-      <IconButton
-        size={22} testId="browser-new-tab" tooltip="在新标签页打开" active={newTab}
-        onClick={() => {
-          setNewTab(true);
-          setDraft('');
-          inputRef.current?.focus();
-        }}
-      ><span style={{ fontSize: 14, lineHeight: 1 }}>+</span></IconButton>
     </div>
   );
 }

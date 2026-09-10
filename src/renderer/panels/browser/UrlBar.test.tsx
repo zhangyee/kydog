@@ -88,3 +88,14 @@ describe('「1:1 / 适配」开关', () => {
     expect(modes).toEqual([]);
   });
 });
+
+/**
+ * **Task 4**：新建标签只剩 `TabStrip` 右端那一个入口——地址栏里原来那个 `+`
+ * （「下一次回车开在新标签里」那套 `newTab` state）整个删掉了。
+ */
+describe('地址栏里那个 + 没了（新建标签只有一个入口）', () => {
+  it('挂载 UrlBar 找不到 browser-new-tab 这个节点', () => {
+    const { m } = make(tab());
+    expect(m.query('browser-new-tab')).toBeNull();
+  });
+});

@@ -20,6 +20,7 @@ export type NavIconName =
   | 'book-open-text'
   | 'dot'
   | 'minimize-2'
+  | 'maximize-2'
   | 'filter'
   | 'folder-plus'
   | 'more-horizontal'
@@ -149,6 +150,9 @@ const ICONS: Record<NavIconName, IconSpec> = {
   },
   'minimize-2': {
     paths: ['M4 14h6v6', 'M20 10h-6V4', 'm14 10 7-7', 'm3 21 7-7'],
+  },
+  'maximize-2': {
+    paths: ['M15 3h6v6', 'M9 21H3v-6', 'm21 3-7 7', 'm3 21 7-7'],
   },
   filter: {
     paths: ['M3 6h18', 'M7 12h10', 'M10 18h4'],

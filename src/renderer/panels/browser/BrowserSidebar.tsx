@@ -1,7 +1,6 @@
 import { useRef } from 'react';
 import { useUiStore } from '../../stores/uiStore';
 import { confirm } from '../../stores/confirmStore';
-import { PanelIcon } from '../../shared';
 import { useBrowserStore, agentBanner } from './browserStore';
 import { useStageBounds } from './useStageBounds';
 import { TabStrip, tabLabel } from './TabStrip';
@@ -49,28 +48,6 @@ export function BrowserSidebar() {
 
   return (
     <div className="ky-paper-deep h-full flex flex-col">
-      <div
-        className="flex items-center font-mono uppercase shrink-0"
-        style={{
-          padding: '10px 8px 8px 14px',
-          borderBottom: '0.5px solid var(--color-ink-hair-soft)',
-          fontSize: 10, fontWeight: 600,
-          color: 'var(--color-ink-faint)', letterSpacing: 1.2,
-        }}
-      >
-        <span className="flex-1">浏览器 Browser</span>
-        <button
-          type="button"
-          data-testid="browser-close-pane"
-          onClick={() => useUiStore.getState().closeBrowser()}
-          aria-label="收起浏览器"
-          className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[color:var(--color-hover-bg)]"
-          style={{ color: 'var(--color-ink-soft)' }}
-        >
-          <PanelIcon side="right" filled size={13} />
-        </button>
-      </div>
-
       <TabStrip
         tabs={tabs}
         activeTabId={activeTabId}
@@ -78,12 +55,16 @@ export function BrowserSidebar() {
         onSelect={(id) => call(window.kydog.invoke('browser.activate', { tabId: id }))}
         onClose={closeTab}
         onKeep={(id) => call(window.kydog.invoke('browser.keep', { tabId: id }))}
+        fullscreen={useUiStore((s) => s.browserFullscreen)}
+        onNewTab={() => call(window.kydog.invoke('browser.newTab'))}
+        onToggleFullscreen={() => useUiStore.getState().toggleBrowserFullscreen()}
+        onClosePane={() => useUiStore.getState().closeBrowser()}
       />
 
       <UrlBar
         tab={active}
-        onGo={(url, newTab) => call(window.kydog.invoke(
-          'browser.open', newTab || active === null ? { url } : { url, tabId: active.id },
+        onGo={(url) => call(window.kydog.invoke(
+          'browser.open', active === null ? { url } : { url, tabId: active.id },
         ))}
         onNav={(action) => {
           if (active === null) return;
@@ -126,7 +107,10 @@ export function BrowserSidebar() {
 
       {/*
         **舞台。** 空的、必须是空的 —— 网页由主进程盖在这块地上。
-        里面那句提示只在一个标签都没有时看得见（那时原生层什么都不画）。
+        里面那句提示在「一个标签都没有」或「当前标签还没有网址」时看得见
+        （两种情况原生层都什么都不画）—— 后者是空白标签（`browser.newTab`，
+        Task 3）的落点：它没有渲染进程，用户点了「+」看到的必须是这句话，
+        不能是一片空白。
       */}
       <div
         ref={stageRef}
@@ -134,7 +118,7 @@ export function BrowserSidebar() {
         className="flex-1 min-h-0 flex items-center justify-center"
         style={{ background: 'var(--color-paper)' }}
       >
-        {tabs.length === 0 && (
+        {(tabs.length === 0 || (active !== null && active.url === '')) && (
           <div
             className="font-serif italic"
             style={{ fontSize: 12, color: 'var(--color-ink-faint)', padding: '0 24px', textAlign: 'center' }}
