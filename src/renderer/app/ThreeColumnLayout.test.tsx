@@ -59,6 +59,12 @@ function handleTrack(tree: unknown): string {
   return cols.split(' ')[3];
 }
 
+/** `gridTemplateColumns` 的第三轨 = 中栏。全屏时它该是 `0px`，不再是 `1fr`。 */
+function centerTrack(tree: unknown): string {
+  const cols = (tree as { props: { style: { gridTemplateColumns: string } } }).props.style.gridTemplateColumns;
+  return cols.split(' ')[2];
+}
+
 beforeEach(() => {
   // 三个宽度**刻意互不相等**：相等的话「用错哪一份」这条断言就永远绿。
   useUiStore.setState({
@@ -68,6 +74,8 @@ beforeEach(() => {
     inspectorWidth: 333,
     browserOpen: false,
     browserWidth: 505,
+    browserFullscreen: false,
+    windowWidth: 1280,
   });
 });
 
@@ -127,5 +135,24 @@ describe('ThreeColumnLayout：右栏挂哪个节点、按哪一份宽度排版',
     (findAllByProp(m2.tree, 'side', 'right')[0].props.setWidth as (w: number) => void)(410);
     expect(useUiStore.getState().inspectorWidth).toBe(410);
     expect(useUiStore.getState().browserWidth).toBe(480);
+  });
+
+  /**
+   * `windowWidth: 1280`、`workspaceWidth: 261` → `availableForCenterAndRight` = 1011。
+   * 全屏时右栏吃满这整段：`rightPaneLayout` 回 `centerHidden: true`、`width: 1011`。
+   */
+  it('全屏时中栏那一格是 0px、右栏吃 1fr、把手不占位', () => {
+    useUiStore.setState({ browserOpen: true, browserFullscreen: true });
+    const m = mount(ThreeColumnLayout, props);
+    expect(centerTrack(m.tree)).toBe('0px');
+    expect(handleTrack(m.tree)).toBe('0px');
+    expect(rightTrack(m.tree)).toBe('1fr');
+  });
+
+  it('不全屏时中栏是 1fr、右栏是像素宽', () => {
+    useUiStore.setState({ browserOpen: true, browserFullscreen: false });
+    const m = mount(ThreeColumnLayout, props);
+    expect(centerTrack(m.tree)).toBe('1fr');
+    expect(rightTrack(m.tree)).toBe('505px');
   });
 });

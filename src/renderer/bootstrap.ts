@@ -97,6 +97,13 @@ export async function bootstrap(): Promise<void> {
     .then((h) => useUiStore.getState().setSkillSyncHealth(h))
     .catch((err) => console.error('skill.getSyncHealth failed', err));
 
+  // 布局要按窗口宽算 4:6 与对话栏下限（rightPane.ts）。装在这里而不是组件里：
+  // 组件那一层跑在 environment:'node' 的用例里，没有 window 也没有 ResizeObserver，
+  // 挂了会当场抛，而 ThreeColumnLayout.test.tsx 正靠真挂载组件守两条历史变异。
+  const syncWindowWidth = () => useUiStore.getState().setWindowWidth(window.innerWidth);
+  syncWindowWidth();
+  window.addEventListener('resize', syncWindowWidth);
+
   useSettingsStore.getState().setBootstrapped(true);
 }
 

@@ -125,10 +125,16 @@ describe('宽度：渲染层的钳位与主进程的 sanitize 同一处分界', 
     }
   });
 
-  it('落盘默认值本身也钳得住 —— 否则全新安装第一次开侧栏就是非法宽度', () => {
-    const d = defaultSettings().ui.browserWidth;
-    expect(clampBrowserWidth(d)).toBe(d);
-    expect(DEFAULT_BROWSER_WIDTH).toBe(d);
+  /**
+   * 落盘默认值本身是 `null`（未设定，见 `defaultSettings().ui.browserWidth`）——
+   * 那不是一个像素宽度，钳不上也没有意义。真正「全新安装第一次开侧栏该是多宽」
+   * 由渲染层的 `browserWidthFor` 现算 4:6，`DEFAULT_BROWSER_WIDTH` 仍是它在
+   * 别处（旧版本读到 null 时的降级、既有用例）当合法宽度用的那个常量，这里钉住
+   * 它本身也钳得住。
+   */
+  it('DEFAULT_BROWSER_WIDTH 本身也钳得住', () => {
+    expect(clampBrowserWidth(DEFAULT_BROWSER_WIDTH)).toBe(DEFAULT_BROWSER_WIDTH);
+    expect(defaultSettings().ui.browserWidth).toBeNull();
   });
 });
 

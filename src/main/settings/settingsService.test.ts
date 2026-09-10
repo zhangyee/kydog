@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
-import { ensureSettingsFile, DEFAULT_BROWSER_WIDTH, MIN_BROWSER_WIDTH } from '../persist/settingsFile';
+import { ensureSettingsFile, MIN_BROWSER_WIDTH } from '../persist/settingsFile';
 import { SettingsService, toRendererSettings } from './settingsService';
 
 describe('SettingsService (v2 + proper-lockfile)', () => {
@@ -400,15 +400,18 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
 
   // ── D：ui.browserWidth 的写路径也要走同一个 sanitize ──
   // 渲染层拖拽时算错一次 → browserWidth: 0 当场进 cache 与磁盘 → 同一次会话里
-  // scale = W/1280 = 0，页面渲染塌掉；重启后 sanitize 又把它拉回默认，于是现象是
+  // scale = W/1280 = 0，页面渲染塌掉；重启后 sanitize 又把它拉回来，于是现象是
   // 「重启就好了」，无法稳定复现。
-  it('update(): 非法 browserWidth 走与读路径同一个 sanitize，不进 cache 也不落盘', async () => {
+  //
+  // 拉回的是 `null`（未设定），不是 `DEFAULT_BROWSER_WIDTH`：编一个宽度出来就是
+  // 替用户做了个他没做过的决定，见 sanitizeBrowserWidth 的注释。
+  it('update(): 非法 browserWidth 走与读路径同一个 sanitize，回 null，不进 cache 也不落盘一个编出来的宽度', async () => {
     for (const bad of [0, -5, 100, 319, Number.NaN, 'wide']) {
       const got = await svc.update({ ui: { browserWidth: bad as number } });
-      expect(got.ui.browserWidth, String(bad)).toBe(DEFAULT_BROWSER_WIDTH);
-      expect((await svc.get()).ui.browserWidth, String(bad)).toBe(DEFAULT_BROWSER_WIDTH);
+      expect(got.ui.browserWidth, String(bad)).toBeNull();
+      expect((await svc.get()).ui.browserWidth, String(bad)).toBeNull();
       const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
-      expect(onDisk.ui.browserWidth, String(bad)).toBe(DEFAULT_BROWSER_WIDTH);
+      expect(onDisk.ui.browserWidth, String(bad)).toBeNull();
     }
   });
 

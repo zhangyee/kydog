@@ -167,8 +167,12 @@ export type SettingsFile = {
      *  但各记各的状态与宽度 —— 关掉浏览器时 Inspector 要回到用户上次留下的样子。 */
     browserOpen: boolean;
     /** 浏览器侧栏宽度。下限 320：页面按固定 1280 逻辑视口渲染，再窄就只能靠更小的
-     *  scale 硬压，人眼已经读不了了。 */
-    browserWidth: number;
+     *  scale 硬压，人眼已经读不了了。
+     *
+     *  `null` = **用户从没拖过**，由渲染层按当前窗口现算 4:6（见 `rightPane.ts` 的
+     *  `browserWidthFor`）。不编一个默认像素数出来：那等于替用户做了一个他没做过的
+     *  决定，而一旦落盘就再也分不清「4:6」是算出来的还是他真的拖成了这个数。 */
+    browserWidth: number | null;
   };
   llm: {
     auth: AuthBlob;

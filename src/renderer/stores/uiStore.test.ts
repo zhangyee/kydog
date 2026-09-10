@@ -228,6 +228,9 @@ describe('uiStore 浏览器侧栏', () => {
   beforeEach(() => {
     useUiStore.setState({
       browserOpen: false, browserWidth: DEFAULT_BROWSER_WIDTH, inspectorCollapsed: false, inspectorWidth: 280,
+      // 上限钳制那组用例靠这三个算 availableForCenterAndRight —— 显式钉住，
+      // 不依赖别的 describe 块留下的残余状态（1280 窗口、260 工作区 → 可用 1012）。
+      browserFullscreen: false, windowWidth: 1280, workspaceCollapsed: false, workspaceWidth: 260,
     });
   });
 
@@ -267,11 +270,13 @@ describe('uiStore 浏览器侧栏', () => {
   });
 
   it('两栏各记各的宽度，互不写对方', () => {
-    useUiStore.getState().setBrowserWidth(700);
-    expect(useUiStore.getState().browserWidth).toBe(700);
+    // 480：在默认 windowWidth(1280) / workspaceWidth(260) 下，上界钳到 652
+    // （见下面「宽度也钳到上限」那条），480 远低于它，不会被这条不相关的规则打岔。
+    useUiStore.getState().setBrowserWidth(480);
+    expect(useUiStore.getState().browserWidth).toBe(480);
     expect(useUiStore.getState().inspectorWidth).toBe(280);
     useUiStore.getState().setInspectorWidth(300);
-    expect(useUiStore.getState().browserWidth).toBe(700);
+    expect(useUiStore.getState().browserWidth).toBe(480);
   });
 
   /**
@@ -289,5 +294,42 @@ describe('uiStore 浏览器侧栏', () => {
   it('另外两栏没有这道下限 —— 别顺手把它们也改了', () => {
     useUiStore.getState().setInspectorWidth(10);
     expect(useUiStore.getState().inspectorWidth).toBe(10);
+  });
+
+  /**
+   * **拖拽也要停在上限上，不许拖完回弹。** `MIN_MAIN_WIDTH = 360` 意味着 1280 窗口
+   * （工作区 260）下浏览器最宽只能到 `1012 − 360 = 652`。不当场钳上界的话，用户拖到
+   * 700、松手后 `rightPaneLayout` 排版时又把它压回 652 —— 存的数（700）和排出来的
+   * 宽度（652）对不上，手感是「拖完自己弹回去了」。
+   */
+  it('宽度也当场钳到上限：拖到超过对话栏下限允许的最大值，存的就是那个上限本身', () => {
+    useUiStore.getState().setBrowserWidth(700);
+    expect(useUiStore.getState().browserWidth).toBe(652);
+  });
+
+  it('上限跟着窗口宽度走：窗口更窄时同一个拖拽目标被钳到更小的上限', () => {
+    useUiStore.setState({ windowWidth: 1024 });
+    // available = 1024-260-4-4 = 756，上限 = 756-360 = 396。
+    useUiStore.getState().setBrowserWidth(700);
+    expect(useUiStore.getState().browserWidth).toBe(396);
+  });
+
+  it('closeBrowser 顺手把全屏也关掉 —— 留着的话下次打开会直接是全屏', () => {
+    useUiStore.setState({ browserOpen: true, browserFullscreen: true });
+    useUiStore.getState().closeBrowser();
+    expect(useUiStore.getState().browserFullscreen).toBe(false);
+  });
+
+  it('toggleBrowserFullscreen 开合，且不碰 browserOpen', () => {
+    useUiStore.getState().toggleBrowserFullscreen();
+    expect(useUiStore.getState().browserFullscreen).toBe(true);
+    expect(useUiStore.getState().browserOpen).toBe(false);
+    useUiStore.getState().toggleBrowserFullscreen();
+    expect(useUiStore.getState().browserFullscreen).toBe(false);
+  });
+
+  it('setWindowWidth 直接写 windowWidth，供 bootstrap 的 resize 监听调用', () => {
+    useUiStore.getState().setWindowWidth(900);
+    expect(useUiStore.getState().windowWidth).toBe(900);
   });
 });

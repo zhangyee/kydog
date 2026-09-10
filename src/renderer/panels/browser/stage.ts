@@ -1,6 +1,7 @@
 import { MIN_BROWSER_WIDTH } from '../../../shared/types';
 import { NO_EPOCH } from './browserStore';
 import type { RectDip } from '../../../shared/types';
+import { MIN_MAIN_WIDTH } from '../../app/rightPane';
 
 /**
  * 「舞台」几何的纯算术。**从 `useStageBounds` 里抠出来，因为 hook 本身测不到**
@@ -61,10 +62,16 @@ export function sameReport(a: StageReport | null, b: StageReport): boolean {
  * 定位过去；要等到落盘往返（`settingsService.update` 的 `sanitizeBrowserWidth`）
  * 才被拉回来，而那条路是 fire-and-forget 的。下限的值与主进程用的是**同一个常量**
  * （`shared/types.ts`），两边各写一个字面量就是两份会漂的真相。
+ *
+ * `available` 不传时只钳下限（主进程的 `sanitizeBrowserWidth` 认得的范围，见下面那组
+ * 「同一处分界」用例）。传了就再钳一道上界 `available - MIN_MAIN_WIDTH` —— 这是
+ * `uiStore.setBrowserWidth` 拖拽时用的那一档：对话栏要留够 `MIN_MAIN_WIDTH`，
+ * 不钳上界的话用户拖过界、松手后排版（`rightPaneLayout`）把它压回去，手感是回弹了。
  */
-export function clampBrowserWidth(w: number): number {
+export function clampBrowserWidth(w: number, available?: number): number {
   if (!Number.isFinite(w)) return MIN_BROWSER_WIDTH;
-  return Math.max(MIN_BROWSER_WIDTH, Math.round(w));
+  const hi = available === undefined ? Number.POSITIVE_INFINITY : available - MIN_MAIN_WIDTH;
+  return Math.max(MIN_BROWSER_WIDTH, Math.min(Math.round(w), hi));
 }
 
 /**

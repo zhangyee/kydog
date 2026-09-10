@@ -99,6 +99,17 @@ describe('browserWidthFor', () => {
     expect(browserWidthFor(null, 340)).toBe(160);
     expect(browserWidthFor(null, 10)).toBeGreaterThan(0);
   });
+
+  /**
+   * 窄到两个下限都放不下时**不读 `saved`** —— 那时认用户存的宽度只会让对话栏更惨
+   * （saved=330 / available=500 认它则主栏只剩 170，按比例则 265）。
+   * 这是刻意的：哪天真要在窄窗口也尊重 saved，这条会红出来提醒改的人。
+   */
+  it('窄窗口那一支不理会记住的宽度：saved 传什么都一样', () => {
+    expect(browserWidthFor(100, 500)).toBe(235);
+    expect(browserWidthFor(700, 500)).toBe(235);
+    expect(browserWidthFor(null, 500)).toBe(235);
+  });
 });
 
 describe('availableForCenterAndRight', () => {

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { FsNode, ReadingFontSize, SkillSyncHealth, ThemeName } from '../../shared/types';
 import { fileTitle, isHtmlPath, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
 import { clampBrowserWidth } from '../panels/browser/stage';
-import { DEFAULT_BROWSER_WIDTH } from '../../shared/types';
+import { availableForCenterAndRight } from '../app/rightPane';
 
 export type FileTab = {
   id: string;                  // = 文件绝对路径（天然唯一键）
@@ -32,7 +32,21 @@ type UiState = {
    * （收着的仍然收着），而不是被浏览器的开关顺手掰开。
    */
   browserOpen: boolean;
-  browserWidth: number;
+  /** `null` = 用户从没拖过，排版按 4:6 现算，见 `rightPane.ts` 的 `browserWidthFor`。 */
+  browserWidth: number | null;
+  /**
+   * 全屏浏览器（中栏藏起来，右栏吃满可用宽度）。**不落盘** —— 见 `bootstrap.ts`
+   * 的持久化订阅：加进去就等于「退出时停在全屏，下次开应用看不见对话」，
+   * 用户会以为应用坏了。
+   */
+  browserFullscreen: boolean;
+  toggleBrowserFullscreen: () => void;
+  /**
+   * 窗口宽。**只由 `bootstrap.ts` 的 resize 监听维护**，组件里不量：组件那一层
+   * 跑在 `environment: 'node'` 的用例里，没有 `window` 也没有 `ResizeObserver`。
+   */
+  windowWidth: number;
+  setWindowWidth: (w: number) => void;
   userMenuOpen: boolean;
   /** 内置 skill 同步的健康度。null = 还没问过主进程，与「问过、答的是 skipped」不是一回事。
    *  UI 一律读这个显式状态，不许从「skill 列表是空的」反推 —— 空列表在 skipped 与 failed
@@ -97,7 +111,11 @@ export const useUiStore = create<UiState>((set) => ({
   workspaceWidth: 260,
   inspectorWidth: 280,
   browserOpen: false,
-  browserWidth: DEFAULT_BROWSER_WIDTH,
+  browserWidth: null,
+  browserFullscreen: false,
+  toggleBrowserFullscreen: () => set((s) => ({ browserFullscreen: !s.browserFullscreen })),
+  windowWidth: 1280,
+  setWindowWidth: (w) => set({ windowWidth: w }),
   userMenuOpen: false,
   skillSyncHealth: null,
   setSkillSyncHealth: (h) => set({ skillSyncHealth: h }),
@@ -176,13 +194,21 @@ export const useUiStore = create<UiState>((set) => ({
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
   toggleBrowser: () => set((s) => ({ browserOpen: !s.browserOpen })),
-  closeBrowser: () => set({ browserOpen: false }),
+  // 关掉浏览器时顺手清掉全屏 —— 留着的话下次打开会直接是全屏，而用户按的是「打开侧栏」。
+  closeBrowser: () => set({ browserOpen: false, browserFullscreen: false }),
   setWorkspaceWidth: (w) => set({ workspaceWidth: Math.max(0, w) }),
   setInspectorWidth: (w) => set({ inspectorWidth: Math.max(0, w) }),
   // **拖拽时当场钳**，与另外两栏那句 `Math.max(0, w)` 不同：这个宽度会立刻经
   // `browser.syncView` 变成原生 WebContentsView 的 bounds，非法值当场就生效了；
   // 而落盘那一侧的 `sanitizeBrowserWidth` 是 fire-and-forget 的，赶不上。
-  setBrowserWidth: (w) => set({ browserWidth: clampBrowserWidth(w) }),
+  //
+  // 上界同样当场钳，不等 `rightPaneLayout` 排版时再压：`MIN_MAIN_WIDTH = 360` 意味着
+  // 对话栏要留够地方，浏览器最宽只能到 `availableForCenterAndRight(...) - MIN_MAIN_WIDTH`。
+  // 不钳的话，用户拖到超出这个上界、松手后排版把它压回去 —— 存的数和排出来的宽度对不上，
+  // 手感是「拖完自己弹回去了」。
+  setBrowserWidth: (w) => set((s) => ({
+    browserWidth: clampBrowserWidth(w, availableForCenterAndRight(s.windowWidth, s.workspaceCollapsed, s.workspaceWidth)),
+  })),
   openSettings: (tab = 'provider') => set({
     settingsTabOpen: true,
     settingsTab: tab,

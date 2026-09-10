@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as paths from './paths';
 import type { SettingsFile } from '../../shared/types';
-import { ensureSettingsFile, loadSettings, readSettings, defaultSettings, parseAndMigrateSettings, checkInstitution, sanitizeInstitution, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from './settingsFile';
+import { ensureSettingsFile, loadSettings, readSettings, defaultSettings, parseAndMigrateSettings, checkInstitution, sanitizeInstitution, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH } from './settingsFile';
 
 /**
  * 「备份失败就不覆盖原件」那道护栏没法用真文件系统触发：备份与覆盖写的是同一个目录，
@@ -708,7 +708,9 @@ describe('v8 → v9：浏览器侧栏', () => {
     const got = migrated(v8);
     expect(got.schemaVersion).toBe(9);
     expect(got.ui.browserOpen).toBe(false);
-    expect(got.ui.browserWidth).toBe(DEFAULT_BROWSER_WIDTH);
+    // v8 文件里压根没有这个字段 —— 老用户真的从没设定过，哨兵语义下这就是 null，
+    // 由渲染层按 4:6 现算，不是回一个编出来的宽度。
+    expect(got.ui.browserWidth).toBeNull();
   });
 
   it('已存的 browserOpen/browserWidth 原样保留', () => {
@@ -724,10 +726,10 @@ describe('v8 → v9：浏览器侧栏', () => {
   // 坏值里**没有 NaN**：JSON.stringify(NaN) 是 null，从磁盘这条路根本送不进来，
   // 写进去只是把 null 测了两遍。真能送进 NaN 的是 settings.update（渲染层拖拽算错一次），
   // 那条路的用例在 settingsService.test.ts。
-  it('低于下限或形状不对的 browserWidth 拉回默认，不静默接受', () => {
+  it('低于下限或形状不对的 browserWidth 回 null，不静默接受也不编一个默认宽度', () => {
     for (const bad of [100, 319, -5, 0, 'wide', null]) {
       const raw = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), ui: { ...defaultSettings().ui, browserWidth: bad } });
-      expect(migrated(raw).ui.browserWidth).toBe(DEFAULT_BROWSER_WIDTH);
+      expect(migrated(raw).ui.browserWidth, `browserWidth=${String(bad)}`).toBeNull();
     }
     expect(migrated(JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), ui: { ...defaultSettings().ui, browserWidth: MIN_BROWSER_WIDTH } })).ui.browserWidth).toBe(MIN_BROWSER_WIDTH);
   });
@@ -736,6 +738,41 @@ describe('v8 → v9：浏览器侧栏', () => {
     for (const bad of ['yes', 1, {}, 'true']) {
       const raw = JSON.stringify({ ...JSON.parse(JSON.stringify(defaultSettings())), ui: { ...defaultSettings().ui, browserOpen: bad } });
       expect(migrated(raw).ui.browserOpen).toBe(false);
+    }
+  });
+});
+
+describe('browserWidth 的「未设定」哨兵', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-settings-'));
+    vi.spyOn(paths, 'ROOT', 'get').mockReturnValue(dir);
+    vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(path.join(dir, 'kydog.json'));
+    vi.spyOn(paths, 'LOCK_PATH', 'get').mockReturnValue(path.join(dir, '.kydog.json.lock'));
+  });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+  it('默认设置里是 null —— 表示从没拖过，由渲染层按 4:6 算', () => {
+    expect(defaultSettings().ui.browserWidth).toBeNull();
+  });
+
+  /**
+   * 老用户文件里存着 560（旧的 DEFAULT）。**那要当成「已设定」原样留着** ——
+   * 当成未设定的话，他们下次打开浏览器布局会自己跳一下，而他们什么都没做。
+   */
+  it('已经存着的数字原样保留，不被当成未设定', async () => {
+    ensureSettingsFile();
+    await fsp.writeFile(path.join(dir, 'kydog.json'),
+      JSON.stringify({ ...richSettings(), ui: { ...(richSettings().ui as object), browserWidth: 560 } }));
+    expect((await loadSettings()).ui.browserWidth).toBe(560);
+  });
+
+  it('低于下限的手改值、以及非数字，一律回 null（而不是回一个编出来的宽度）', async () => {
+    ensureSettingsFile();
+    for (const bad of [10, -5, 'wide', {}, NaN]) {
+      await fsp.writeFile(path.join(dir, 'kydog.json'),
+        JSON.stringify({ ...richSettings(), ui: { ...(richSettings().ui as object), browserWidth: bad } }));
+      expect((await loadSettings()).ui.browserWidth, `browserWidth=${String(bad)}`).toBeNull();
     }
   });
 });

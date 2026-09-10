@@ -3,6 +3,7 @@ import type { BootstrapState, SettingsFileForRenderer } from '../shared/types';
 import { bootstrap } from './bootstrap';
 import { useSettingsStore } from './stores/settingsStore';
 import { useBrowserStore } from './panels/browser/browserStore';
+import { useUiStore } from './stores/uiStore';
 
 /**
  * **`bootstrap.ts` 里那一行浏览器接线的守卫。**
@@ -78,6 +79,9 @@ type Listener = (payload: unknown) => void;
 /** 按发生次序记下来的「装配轨迹」：`on:<topic>` 与 `invoke:<method>`。 */
 let trace: string[] = [];
 let listeners: Map<string, Listener[]>;
+/** `window.addEventListener` 装的监听器，按事件名分桶 —— resize 那条就走这里，
+ *  与上面 `window.kydog.on` 的 `listeners`（IPC 广播）是两回事，不能共用一份。 */
+let windowListeners: Map<string, Array<() => void>>;
 
 function fire(topic: string, payload: unknown): void {
   const fns = listeners.get(topic) ?? [];
@@ -88,6 +92,7 @@ function fire(topic: string, payload: unknown): void {
 beforeEach(() => {
   trace = [];
   listeners = new Map();
+  windowListeners = new Map();
   useBrowserStore.setState(useBrowserStore.getInitialState());
   const replies: Record<string, unknown> = {
     'app.bootstrap': BOOT,
@@ -100,6 +105,8 @@ beforeEach(() => {
     'viewState.save': undefined,
   };
   (globalThis as unknown as { window: unknown }).window = {
+    // bootstrap.ts 拿它初始化 uiStore.windowWidth（见 syncWindowWidth）。
+    innerWidth: 1280,
     kydog: {
       invoke: (method: string) => {
         trace.push(`invoke:${method}`);
@@ -112,6 +119,11 @@ beforeEach(() => {
         listeners.set(topic, arr);
         return () => { listeners.set(topic, (listeners.get(topic) ?? []).filter((f) => f !== fn)); };
       },
+    },
+    addEventListener: (event: string, fn: () => void) => {
+      const arr = windowListeners.get(event) ?? [];
+      arr.push(fn);
+      windowListeners.set(event, arr);
     },
   };
 });
@@ -174,5 +186,44 @@ describe('bootstrap 真的把浏览器侧栏接上了', () => {
     expect(trace.indexOf('on:browser.tabsChanged')).toBeGreaterThan(-1);
     expect(trace.indexOf('on:browser.tabsChanged')).toBeLessThan(getState);
     expect(trace.indexOf('on:browser.agentFocus')).toBeLessThan(getState);
+  });
+});
+
+describe('bootstrap 装了窗口宽度的 resize 监听', () => {
+  /**
+   * `ThreeColumnLayout` 排版要用的 `windowWidth` 只能来自这里：组件那层跑在
+   * `environment: 'node'` 的用例里，没有 `window` 也没有 `ResizeObserver`，
+   * 量不了。守住「装没装、装完能不能用」，不是只守「调用过 addEventListener」——
+   * 后者哪怕监听器什么都不做也会绿。
+   */
+  it('启动时用 window.innerWidth 初始化，resize 后监听器真的把新宽度写回 store', async () => {
+    await bootstrap();
+    expect(useUiStore.getState().windowWidth).toBe(1280);
+
+    (globalThis as unknown as { window: { innerWidth: number } }).window.innerWidth = 900;
+    const fns = windowListeners.get('resize') ?? [];
+    expect(fns.length).toBeGreaterThan(0);
+    for (const fn of fns) fn();
+    expect(useUiStore.getState().windowWidth).toBe(900);
+  });
+});
+
+describe('browserFullscreen 不落盘', () => {
+  /**
+   * 全屏按设计**不落盘**（见 uiStore.ts 与 bootstrap.ts 的注释）：落了盘，退出时
+   * 停在全屏、下次开应用看不见对话，用户会以为坏了。这条不是断「订阅里没写这个
+   * 字段」（读源码就知道），而是断**可观测的行为**——改 browserFullscreen 一次，
+   * 一次 `settings.update` 都不该多出来。持久化订阅比较的字段集合里但凡漏加了
+   * browserFullscreen 三个字都不会让它红，加了才会。
+   */
+  it('改 browserFullscreen 不触发 settings.update', async () => {
+    await bootstrap();
+    await new Promise<void>((r) => { setTimeout(r, 0); });
+    const before = trace.filter((t) => t === 'invoke:settings.update').length;
+
+    useUiStore.getState().toggleBrowserFullscreen();
+    await new Promise<void>((r) => { setTimeout(r, 0); });
+
+    expect(trace.filter((t) => t === 'invoke:settings.update').length).toBe(before);
   });
 });

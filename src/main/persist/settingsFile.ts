@@ -3,7 +3,7 @@ import { promises as fsp, statSync, chmodSync, mkdirSync, writeFileSync, existsS
 import { atomicWriteWith0600Async } from './atomicWrite';
 import * as paths from './paths';
 import type { ConfirmedLogin, SettingsFile, TelemetryState } from '../../shared/types';
-import { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
+import { MIN_BROWSER_WIDTH } from '../../shared/types';
 import { logger } from '../log';
 
 /** 浏览器侧栏的默认宽度与下限。**真源在 `shared/types.ts`** —— 渲染层拖拽时也要用
@@ -15,11 +15,19 @@ export { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
  *  上一次 bump 时判据留在了 v8，v9 文件因此被判成「v1 或更旧」。 */
 export const CURRENT_SCHEMA_VERSION = 9;
 
-/** 写路径也要用它（settingsService.update），否则渲染层算错一次宽度就当场进 cache 与磁盘，
- *  而重启后这里又把它拉回默认 —— 现象是「重启就好了」，无法稳定复现。 */
-export function sanitizeBrowserWidth(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= MIN_BROWSER_WIDTH
-    ? Math.round(v) : DEFAULT_BROWSER_WIDTH;
+/**
+ * 写路径也要用它（settingsService.update），否则渲染层算错一次宽度就当场进 cache 与磁盘。
+ *
+ * `null` = **用户从没拖过**，由渲染层按当前窗口算 4:6（`rightPane.ts` 的 `browserWidthFor`）。
+ *
+ * **不需要升 schemaVersion**：旧文件里是数字，读出来照旧；新文件写 null，被旧版本读到时
+ * 它那份 sanitize 回 `DEFAULT_BROWSER_WIDTH`，降级安全。
+ *
+ * 坏值回 `null` 而不是回一个默认宽度：编一个宽度出来就等于替用户做了个他没做过的决定，
+ * 而 `null` 的意思恰好就是「他没做过决定」。
+ */
+export function sanitizeBrowserWidth(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= MIN_BROWSER_WIDTH ? Math.round(v) : null;
 }
 
 export function defaultSettings(): SettingsFile {
@@ -33,7 +41,9 @@ export function defaultSettings(): SettingsFile {
       readingFontSize: 'medium',
       collapsedProjects: [],
       browserOpen: false,
-      browserWidth: DEFAULT_BROWSER_WIDTH,
+      // null = 从没设定过，见 sanitizeBrowserWidth 的注释。DEFAULT_BROWSER_WIDTH
+      // 这个常量本身留着，供渲染层与用例里「一个合法宽度长什么样」的兜底用。
+      browserWidth: null,
     },
     llm: {
       auth: {},
@@ -358,7 +368,8 @@ function classifyVersion(v: unknown): 'known' | 'legacy' | 'unknown' {
  *  - v6→v7：新增 telemetry，一律置 undecided（老用户从未被询问）。
  *  - v7→v8：新增 ui.collapsedProjects，一律置空（老用户的 project 全是展开的）。
  *  - v8→v9：新增 ui.browserOpen / ui.browserWidth。浏览器侧栏默认关闭 —— 老用户升级后
- *    界面不该自己多出一栏；宽度取默认值，且低于 MIN_BROWSER_WIDTH 的手改值会被拉回默认。
+ *    界面不该自己多出一栏；宽度取 null（未设定，由渲染层现算 4:6），且低于
+ *    MIN_BROWSER_WIDTH 或形状不对的手改值同样回 null，见 sanitizeBrowserWidth。
  *    同时新增 institution；旧的 confirmedLoginHost 不做转换，见 sanitizeInstitution。
  *  - 版本认不出来：返回 unreadable，**不重置**（调用方负责留档）。 */
 export function parseAndMigrateSettings(raw: string): ParsedSettings {

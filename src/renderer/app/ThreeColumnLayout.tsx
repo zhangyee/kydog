@@ -1,6 +1,6 @@
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useUiStore } from '../stores/uiStore';
-import { rightPaneLayout } from './rightPane';
+import { rightPaneLayout, availableForCenterAndRight } from './rightPane';
 
 /**
  * `inspector` 与 `browser` 是**右栏那块地的两个占用者**，同一时刻只有一个在。
@@ -12,20 +12,17 @@ import { rightPaneLayout } from './rightPane';
 type Props = { left: ReactNode; center: ReactNode; inspector: ReactNode; browser: ReactNode };
 
 /**
- * `rightPaneLayout` 的 `browserFullscreen` 与 `availableWidth` 这一轮还没接线（那是
- * Task 2 的事）。**占位不用 `window.innerWidth`**：一是单测在 `node` 环境跑、没有
- * `window`，二是接一个真实宽度会让 `browserWidthFor` 的下限钳制提前生效，改掉现在
- * 「浏览器栏就是 `browserWidth` 本身」这个行为——那不是这一轮该碰的。用一个大到
- * 钳制不了任何现实宽度的占位值，两边都不动。
+ * 拖右边那条手柄时用的判据。**不在组件里挂 ref 去量根节点宽度** —— `windowWidth`
+ * 来自 `uiStore`（由 `bootstrap.ts` 的 resize 监听维护），组件本身不量任何东西：
+ * 这份 vitest 跑在 `environment: 'node'`，没有 `window` 也没有 `ResizeObserver`，
+ * 挂了就当场抛，而 `ThreeColumnLayout.test.tsx` 正靠真挂载组件守两条历史变异。
  */
-const PLACEHOLDER_AVAILABLE_WIDTH = 100_000;
-
 function readRightPaneState() {
   const s = useUiStore.getState();
   return {
-    browserOpen: s.browserOpen, browserWidth: s.browserWidth, browserFullscreen: false,
+    browserOpen: s.browserOpen, browserWidth: s.browserWidth, browserFullscreen: s.browserFullscreen,
     inspectorCollapsed: s.inspectorCollapsed, inspectorWidth: s.inspectorWidth,
-    availableWidth: PLACEHOLDER_AVAILABLE_WIDTH,
+    availableWidth: availableForCenterAndRight(s.windowWidth, s.workspaceCollapsed, s.workspaceWidth),
   };
 }
 
@@ -36,23 +33,24 @@ export function ThreeColumnLayout({ left, center, inspector, browser }: Props) {
   const insWidth = useUiStore((s) => s.inspectorWidth);
   const browserOpen = useUiStore((s) => s.browserOpen);
   const browserWidth = useUiStore((s) => s.browserWidth);
+  const browserFullscreen = useUiStore((s) => s.browserFullscreen);
+  const windowWidth = useUiStore((s) => s.windowWidth);
 
   // 归谁、多宽、收没收起、中栏藏没藏是**同一个判断**，整个在 rightPane.ts（那边有用例）——
   // 拆在这里的话，「浏览器开着却按 Inspector 的宽度排版」三条 gate 全绿，实测过。
-  // browserFullscreen 与 availableWidth 这一轮先占位，见 PLACEHOLDER_AVAILABLE_WIDTH 的注释——
-  // 真正接线是 Task 2。
   const right = rightPaneLayout({
-    browserOpen, browserWidth, browserFullscreen: false,
+    browserOpen, browserWidth, browserFullscreen,
     inspectorCollapsed: insCol, inspectorWidth: insWidth,
-    availableWidth: PLACEHOLDER_AVAILABLE_WIDTH,
+    availableWidth: availableForCenterAndRight(windowWidth, wsCol, wsWidth),
   });
 
   const cols = [
     wsCol ? '24px' : `${wsWidth}px`,
     wsCol ? '0px' : '4px',
-    '1fr',
-    right.collapsed ? '0px' : '4px',
-    right.collapsed ? '24px' : `${right.width}px`,
+    right.centerHidden ? '0px' : '1fr',
+    // 全屏时中栏是 0px，把手夹在两个格子之间没有意义、也拖不动。
+    right.centerHidden ? '0px' : (right.collapsed ? '0px' : '4px'),
+    right.centerHidden ? '1fr' : (right.collapsed ? '24px' : `${right.width}px`),
   ].join(' ');
 
   return (
