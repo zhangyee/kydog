@@ -551,20 +551,34 @@ test.describe('61-browser', () => {
     const { page } = launched;
     try {
       await openSidebar(page);
+      const pane = page.locator('[data-pane="browser"]');
       const tabstrip = page.getByTestId('browser-tabstrip');
       const urlbar = page.getByTestId('browser-url');
       await expect(tabstrip, '标签条必须在场').toBeVisible();
       await expect(urlbar, '地址栏必须在场').toBeVisible();
 
+      const paneBox = await pane.boundingBox();
       const tabstripBox = await tabstrip.boundingBox();
       const urlbarBox = await urlbar.boundingBox();
+      expect(paneBox, '浏览器面板要有真实几何位置').toBeTruthy();
       expect(tabstripBox, '标签条要有真实几何位置').toBeTruthy();
       expect(urlbarBox, '地址栏要有真实几何位置').toBeTruthy();
       expect(tabstripBox!.y, '标签条必须排在地址栏上面（升顶，不是标题行下面那一档）')
         .toBeLessThan(urlbarBox!.y);
 
-      // 「浏览器 Browser」曾经是单独一行标题，Task 4 已经删掉——这里守的是它别回来。
-      const paneText = await page.locator('[data-pane="browser"]').innerText();
+      // **结构判据，不是文本判据。** 下面那条文本判据只认「浏览器 Browser」这个
+      // 字面串，换个措辞（比如叫「网页」）加回一行标题，文本判据照样绿。这里断的是
+      // 标签条必须是浏览器面板（[data-pane="browser"]）里最靠上的那一块——它的顶边
+      // 要贴合面板自己的顶边（面板没有上边框/内边距，允许 1px 取整误差）。上面
+      // 不管塞进什么内容，都会把标签条往下推、这条判据就会红。
+      expect(Math.abs(tabstripBox!.y - paneBox!.y), '标签条必须是浏览器面板里最靠上的那一块——'
+        + `顶边应贴合面板顶边，实测标签条 y=${tabstripBox!.y}，面板 y=${paneBox!.y}`)
+        .toBeLessThanOrEqual(1);
+
+      // 「浏览器 Browser」曾经是单独一行标题，Task 4 已经删掉——这条文本判据挡的是
+      // 「这句话原样还在」，但**不是唯一判据**：换个措辞的标题行要靠上面那条结构
+      // 判据去挡。
+      const paneText = await pane.innerText();
       expect(paneText, '侧栏里不该再出现「浏览器 Browser」这行标题').not.toContain('浏览器 Browser');
     } finally {
       await teardown(launched);
@@ -576,14 +590,20 @@ test.describe('61-browser', () => {
    * 放进去的失败形态是「标签开到第五个之后关不掉侧栏」，而单测断的是 DOM 祖先关系，
    * 看不见「祖先对了但按钮被挤出可视区」这件事，只有真布局量得到。
    *
-   * 判据分两段：
-   *  · **默认（未滚动）状态才是真正的判据** —— 这正是那句「标签开到第五个之后关不掉
-   *    侧栏」描述的坑本身：用户根本不用手动滚，按钮就已经被挤出侧栏可视区了。
-   *    这里用 `boundingBox()` 而不是先 `click()` 去量：`click()` 会让 Playwright
-   *    自己把元素滚进视野，「点得到」不等于「用户看得见」，会把这条坑悄悄盖过去。
-   *  · **滚到最右之后再量一次**（作为补充）——按钮本来就在滚动容器外面，滚动
-   *    标签条本该与它们的位置无关；这条钉住「滚动没有把它们带偏」。
-   * 最后真的点一下 `browser-close-pane`，确认点得到、点了侧栏真的关了。
+   * 判据分三段，**前两段才是真正的判据**：
+   *  · **默认（未滚动）状态**——这正是那句「标签开到第五个之后关不掉侧栏」描述的
+   *    坑本身：用户根本不用手动滚，按钮就已经被挤出侧栏可视区了。这里用
+   *    `boundingBox()` 而不是先 `click()` 去量：`click()` 会让 Playwright 自己把
+   *    元素滚进视野，「点得到」不等于「用户看得见」，会把这条坑悄悄盖过去。
+   *  · **滚动真的发生了**——设置 `scrollLeft` 之后读回来确认它变了。如果
+   *    `overflow-x-auto` 被挪到了外层 `browser-tabstrip`，对 `browser-tabscroll`
+   *    赋值 `scrollLeft` 会变成静默无效操作，不报错、读回来还是 0；不确认这一条，
+   *    后面「滚到最右」状态下的按钮几何是在检查一次没有发生的滚动，抓不住这处
+   *    回归——只能碰运气，靠原生滚动条意外拦下点击、把用例憋红在别处。
+   *  · **滚到最右之后的按钮几何**（在滚动确认真的发生之后再量）——按钮本来就在
+   *    滚动容器外面，滚动标签条本该与它们的位置无关。
+   * 最后真的点一下 `browser-close-pane`，作为佐证（不是判据），确认点得到、点了
+   * 侧栏真的关了。
    */
   test('标签多到需要横向滚动时，三个按钮仍然点得到', async () => {
     const launched = await launchKydog();
@@ -623,12 +643,25 @@ test.describe('61-browser', () => {
 
       await assertButtonsInPane('未滚动（默认状态，这是这条用例的主判据）');
 
-      // 把标签条滚到最右（模拟翻看最后打开的那个标签）——按钮不在这个滚动容器里，
-      // 位置不该跟着动。
+      // 把标签条滚到最右（模拟翻看最后打开的那个标签）。
+      //
+      // **先确认滚动真的发生了。** 如果 `overflow-x-auto` 被挪到了外层
+      // `browser-tabstrip` 上，`browser-tabscroll` 自己就不再是滚动容器——这时对它
+      // 设置 `scrollLeft` 是静默无效操作：赋值不报错，读回来还是 0。不确认这一条，
+      // 下面「滚到最右」状态下量按钮几何就是在检查一次根本没发生的滚动，几何判据
+      // 抓不住这处回归（按钮本就在滚动容器外面，位置本来就不受影响）——用例最终会不会
+      // 红全看原生滚动条会不会意外拦下后面的点击，是一种碰运气的红，不是判据自己红的。
       await scroll.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+      const scrollLeftAfter = await scroll.evaluate((el) => el.scrollLeft);
+      expect(scrollLeftAfter, '设置 scrollLeft 之后应当真的发生了横向滚动——读回来仍是 0 说明 '
+        + 'browser-tabscroll 已经不是真正的滚动容器了（比如 overflow-x-auto 被挪到了别的元素上）')
+        .toBeGreaterThan(0);
+
+      // 滚动确认真的发生之后，再量按钮几何：按钮本不在这个滚动容器里，位置不该跟着动。
       await assertButtonsInPane('滚到最右之后');
 
-      // 真点得到，而且点了侧栏真的关了——不是「Playwright 帮你滚过去才点到」。
+      // 最后的佐证（不是判据）：真点得到，而且点了侧栏真的关了——判据是上面两条
+      // （滚动真的发生 + 滚到最右之后按钮几何仍在面板内），这一步不靠点击超不超时。
       await page.getByTestId('browser-close-pane').click();
       await expect(page.locator('[data-pane="browser"]')).toHaveCount(0);
     } finally {
