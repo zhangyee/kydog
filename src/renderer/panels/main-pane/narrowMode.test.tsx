@@ -116,6 +116,7 @@ const { ComposerActionsRow } = await import('./ComposerActionsRow');
 const { ThreadView } = await import('./ThreadView');
 const { ThreadBreadcrumb } = await import('./ThreadBreadcrumb');
 const { MessageList } = await import('./MessageList');
+const { NewThreadEmptyState } = await import('./NewThreadEmptyState');
 const { useUiStore } = await import('../../stores/uiStore');
 const { useThreadsStore } = await import('../../stores/threadsStore');
 const { useRunsStore } = await import('../../stores/runsStore');
@@ -200,5 +201,31 @@ describe('MessageList：正文左右边距跟着窄模式收窄', () => {
 
   it('浏览器关着 → 正文左右边距还是 48', () => {
     expect(messageListPadding(false)).toBe('32px 48px 80px');
+  });
+});
+
+/**
+ * I-2（终评发现）：新建对话首屏（`NewThreadEmptyState`）原先四样收窄清单里没有它，
+ * 但目标是「给对话栏腾出来的横向空间不被留白吃掉」——这个入口漏了，360px 对话栏里
+ * 横向 padding 80 两边吃掉 160，内容盒只剩 200。判据与另外三处逐字相同：
+ * `useUiStore((s) => s.browserOpen)`。
+ */
+describe('NewThreadEmptyState：首屏留白跟着窄模式收窄', () => {
+  function emptyStatePadding(browserOpen: boolean): string {
+    useUiStore.setState({ browserOpen });
+    useSkillsStore.setState({ skills: [] });
+    const m = mount(NewThreadEmptyState, { threadId: 't1' });
+    const outer = findByTestId(m.tree, 'new-thread-empty-state');
+    const inner = outer.props.children as { props: { style: { padding: string } } };
+    return inner.props.style.padding;
+  }
+
+  it('浏览器开着 → 首屏留白收到 20（先证明关着时是 80，堵住「整段留白被删掉」也能让这条绿）', () => {
+    expect(emptyStatePadding(false)).toBe('64px 80px');
+    expect(emptyStatePadding(true)).toBe('64px 20px');
+  });
+
+  it('浏览器关着 → 首屏留白还是 80', () => {
+    expect(emptyStatePadding(false)).toBe('64px 80px');
   });
 });
