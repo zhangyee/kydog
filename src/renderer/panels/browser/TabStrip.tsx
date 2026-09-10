@@ -13,7 +13,6 @@ type Props = {
   fullscreen: boolean;
   onNewTab: () => void;
   onToggleFullscreen: () => void;
-  onClosePane: () => void;
 };
 
 /** 标签上显示的字：优先标题，其次 host，再不行就整条网址。 */
@@ -31,7 +30,7 @@ export function tabLabel(t: BrowserTabInfo): string {
  */
 export function TabStrip({
   tabs, activeTabId, agentTabs, onSelect, onClose, onKeep,
-  fullscreen, onNewTab, onToggleFullscreen, onClosePane,
+  fullscreen, onNewTab, onToggleFullscreen,
 }: Props) {
   return (
     <div
@@ -40,8 +39,10 @@ export function TabStrip({
       style={{ height: 32, borderBottom: '0.5px solid var(--color-ink-hair)' }}
     >
       {/*
-        **按钮必须在这一层外面。** 标签横向滚动时按钮不许跟着滚走 ——
-        放进去的失败形态是「标签开到第五个之后关不掉侧栏」，三条 gate 一条都不红。
+        **全屏按钮必须在这一层外面。** 标签横向滚动时它不许跟着滚走 ——
+        放进去的失败形态是「标签开到第五个之后按不到全屏」，三条 gate 一条都不红。
+        `+`（新建标签）则**故意**放在这一层里面，跟在最后一个标签右边、随标签一起
+        滚（2026-09-10 手测之后的修订）—— 浏览器的通行做法，`+` 属于标签序列本身。
       */}
       <div data-testid="browser-tabscroll" className="flex overflow-x-auto flex-1 min-w-0">
       {tabs.length === 0 && (
@@ -120,20 +121,20 @@ export function TabStrip({
           </div>
         );
       })}
-      </div>
-      <div className="flex items-center shrink-0" style={{ borderLeft: '0.5px solid var(--color-ink-hair)' }}>
+      {/* `+`：跟在最后一个标签右边，随标签条一起横向滚动（见上面那条 docblock）。 */}
+      <div className="flex items-center shrink-0 h-full">
         <IconButton size={24} testId="browser-new-tab" tooltip="新建标签页" onClick={onNewTab}>
           <NavIcon name="circle-plus" size={13} />
         </IconButton>
+      </div>
+      </div>
+      <div className="flex items-center shrink-0" style={{ borderLeft: '0.5px solid var(--color-ink-hair)' }}>
         <IconButton
           size={24} testId="browser-fullscreen"
           tooltip={fullscreen ? '退出全屏' : '全屏'}
           active={fullscreen}
           onClick={onToggleFullscreen}
         ><NavIcon name={fullscreen ? 'minimize-2' : 'maximize-2'} size={13} /></IconButton>
-        <IconButton size={24} testId="browser-close-pane" tooltip="关闭浏览器" onClick={onClosePane}>
-          <NavIcon name="x" size={13} />
-        </IconButton>
       </div>
     </div>
   );

@@ -252,12 +252,13 @@ describe('BrowserSidebar：横幅与关标签的接线', () => {
 });
 
 /**
- * **顶部结构（Task 4）**：删标题行，标签条升顶，三个按钮固定在它右端。
+ * **顶部结构（Task 4，2026-09-10 手测之后修订）**：删标题行，标签条升顶。
  *
  * 这一组守的都是接线，不是排版本身（排版是下面 TabStrip 那组的事）：标题字样
- * 真的没了、`+` 走的是 `browser.newTab` 不是 `browser.open`、全屏/关闭两个按钮
- * 分别接的是 `toggleBrowserFullscreen` / `closeBrowser`、舞台提示的判据真的从
- * 「一个标签都没有」挪到了「当前标签没有网址」。
+ * 真的没了、`+` 走的是 `browser.newTab` 不是 `browser.open`、全屏按钮接的是
+ * `toggleBrowserFullscreen`、舞台提示的判据真的从「一个标签都没有」挪到了
+ * 「当前标签没有网址」。**关闭按钮已经拿掉**（标题栏地球图标永远可见，关侧栏
+ * 走它就够了）—— `TabStrip` 不再有 `onClosePane` 这个 prop。
  */
 describe('BrowserSidebar：顶部结构（Task 4）', () => {
   it('顶部没有标题行了：「浏览器 Browser」那几个字不在 DOM 里', () => {
@@ -280,7 +281,7 @@ describe('BrowserSidebar：顶部结构（Task 4）', () => {
     m.unmount();
   });
 
-  it('点全屏调 toggleBrowserFullscreen；点关闭调 closeBrowser', () => {
+  it('点全屏调 toggleBrowserFullscreen', () => {
     useBrowserStore.setState({ epoch: 5, revision: 1, tabs: [tab()], activeTabId: 't1' });
     const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
     const strip = findOneWhere(m.tree, (el) => el.type === TabStrip);
@@ -289,10 +290,6 @@ describe('BrowserSidebar：顶部结构（Task 4）', () => {
     expect(useUiStore.getState().browserFullscreen).toBe(false);
     (strip.props.onToggleFullscreen as () => void)();
     expect(useUiStore.getState().browserFullscreen).toBe(true);
-
-    expect(useUiStore.getState().browserOpen).toBe(true);
-    (strip.props.onClosePane as () => void)();
-    expect(useUiStore.getState().browserOpen).toBe(false);
     m.unmount();
   });
 
@@ -307,30 +304,34 @@ describe('BrowserSidebar：顶部结构（Task 4）', () => {
 });
 
 /**
- * **TabStrip：三个按钮在滚动容器外面**（Task 4，见组件里那条 docblock）。
+ * **TabStrip：全屏按钮在滚动容器外面，`+` 跟着标签一起滚**
+ * （Task 4，2026-09-10 手测之后修订；见组件里那条 docblock）。
  *
- * 这条守的是一个静默失效：`TabStrip` 原本整条 `overflow-x-auto`，三个按钮放进
- * 滚动容器**里面**的话，标签一多就跟着横向滚出可视区——现象是「标签开到第五个
- * 之后关不掉侧栏」，三条 gate 一条都不红。断言的是**祖先关系**，不是「按钮存在」：
- * 从每个按钮往上走到 `TabStrip` 根节点的路径上，不能出现 `browser-tabscroll` 那层。
+ * 判据含义变了：初稿是「三个按钮都在滚动容器外面」，现在只剩**全屏**必须在外面——
+ * 放进去的失败形态是「标签开到第五个之后按不到全屏」，三条 gate 一条都不红。
+ * `+` 则**故意**放进滚动容器、跟在最后一个标签右边，是浏览器的通行做法。
+ *
+ * 两条断言缺一不可（CLAUDE.md 「否定型断言要有正向前置」）：只写「全屏不在
+ * 里面」这一条否定，`+` 被误删或误放到别处时它照样为真——查找本身没坏，但
+ * 这条用例已经没守住「`+` 确实跟着滚」这件事，假绿会挂在别处。所以先用同一棵树
+ * 正向证明 `+` 确实在 `browser-tabscroll` 的祖先路径里，再断全屏不在。
  */
-describe('TabStrip：三个按钮在滚动容器外面（Task 4）', () => {
-  it('8 个标签时，new-tab / fullscreen / close-pane 三个节点的祖先里没有 browser-tabscroll', () => {
+describe('TabStrip：全屏在滚动容器外、+ 在里面（Task 4 修订）', () => {
+  it('8 个标签时，browser-new-tab 的祖先里有 browser-tabscroll，browser-fullscreen 的祖先里没有', () => {
     const tabs = Array.from({ length: 8 }, (_, i) => tab({ id: `t${i}` }));
     const m = mount(TabStrip, {
       tabs, activeTabId: 't0', agentTabs: new Map(),
       onSelect: () => {}, onClose: () => {}, onKeep: () => {},
-      fullscreen: false, onNewTab: () => {}, onToggleFullscreen: () => {}, onClosePane: () => {},
+      fullscreen: false, onNewTab: () => {}, onToggleFullscreen: () => {},
     });
 
-    // 先确认滚动容器真的在树上——否则下面「路径里没有它」这句断言对「它压根
-    // 就没被渲染」这种坏法也会成立，等于没守住任何东西。
-    expect(m.query('browser-tabscroll')).not.toBeNull();
+    // 正向前置：+ 真的在滚动容器里面——证明 pathToTestId 找 browser-tabscroll
+    // 这件事本身是好使的，下面「全屏不在里面」那条否定才不会是查找坏了的假绿。
+    const newTabPath = pathToTestId(m.tree, 'browser-new-tab');
+    expect(newTabPath.some((el) => el.props['data-testid'] === 'browser-tabscroll')).toBe(true);
 
-    for (const id of ['browser-new-tab', 'browser-fullscreen', 'browser-close-pane']) {
-      const path = pathToTestId(m.tree, id);
-      expect(path.some((el) => el.props['data-testid'] === 'browser-tabscroll')).toBe(false);
-    }
+    const fullscreenPath = pathToTestId(m.tree, 'browser-fullscreen');
+    expect(fullscreenPath.some((el) => el.props['data-testid'] === 'browser-tabscroll')).toBe(false);
     m.unmount();
   });
 });

@@ -58,7 +58,6 @@ export function BrowserSidebar() {
         fullscreen={useUiStore((s) => s.browserFullscreen)}
         onNewTab={() => call(window.kydog.invoke('browser.newTab'))}
         onToggleFullscreen={() => useUiStore.getState().toggleBrowserFullscreen()}
-        onClosePane={() => useUiStore.getState().closeBrowser()}
       />
 
       <UrlBar

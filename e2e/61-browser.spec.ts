@@ -586,26 +586,36 @@ test.describe('61-browser', () => {
   });
 
   /**
-   * `TabStrip.tsx` 的那句注释是这条用例的直接依据：**按钮必须在滚动容器外面** ——
-   * 放进去的失败形态是「标签开到第五个之后关不掉侧栏」，而单测断的是 DOM 祖先关系，
-   * 看不见「祖先对了但按钮被挤出可视区」这件事，只有真布局量得到。
+   * `TabStrip.tsx` 的那句 docblock 是这条用例的直接依据（2026-09-10 手测之后修订）：
+   * **全屏按钮必须在滚动容器外面**——放进去的失败形态是「标签开到第五个之后按不到
+   * 全屏」，而单测断的是 DOM 祖先关系，看不见「祖先对了但按钮被挤出可视区」这件事，
+   * 只有真布局量得到。`+`（新建标签）则**故意**放进了滚动容器，跟在最后一个标签
+   * 右边、随标签一起滚——这是浏览器的通行做法，不适用「按钮必须在外面」这条。
+   *
+   * **判据含义变了**：初稿是「三个按钮都在滚动容器外面仍点得到」，现在只剩
+   * **全屏**这一个还守这条几何判据；`+` 判据换成了「确实跟着滚动容器一起滚动」——
+   * 且这条是**正向**断言，不是「+ 不在外面」这种否定句：CLAUDE.md 的约定要求否定型
+   * 断言自带正向前置，而这里干脆整条换成正向——直接证明 `+` 确实在滚动容器里、
+   * 确实随它一起滚，`+` 被误删或误挪出滚动容器时这条会红，不会恒真地滑过去。
    *
    * 判据分三段，**前两段才是真正的判据**：
-   *  · **默认（未滚动）状态**——这正是那句「标签开到第五个之后关不掉侧栏」描述的
-   *    坑本身：用户根本不用手动滚，按钮就已经被挤出侧栏可视区了。这里用
+   *  · **`+` 确实随 `browser-tabscroll` 一起横向滚动**——滚动前后量它的真实几何
+   *    位置，滚动之后必须往左移（被滚动带进视野），不然它已经不在这个滚动容器里了。
+   *  · **全屏按钮的默认（未滚动）状态**——这正是那句「标签开到第五个之后按不到
+   *    全屏」描述的坑本身：用户根本不用手动滚，按钮就已经被挤出侧栏可视区了。这里用
    *    `boundingBox()` 而不是先 `click()` 去量：`click()` 会让 Playwright 自己把
    *    元素滚进视野，「点得到」不等于「用户看得见」，会把这条坑悄悄盖过去。
-   *  · **滚动真的发生了**——设置 `scrollLeft` 之后读回来确认它变了。如果
-   *    `overflow-x-auto` 被挪到了外层 `browser-tabstrip`，对 `browser-tabscroll`
-   *    赋值 `scrollLeft` 会变成静默无效操作，不报错、读回来还是 0；不确认这一条，
-   *    后面「滚到最右」状态下的按钮几何是在检查一次没有发生的滚动，抓不住这处
-   *    回归——只能碰运气，靠原生滚动条意外拦下点击、把用例憋红在别处。
-   *  · **滚到最右之后的按钮几何**（在滚动确认真的发生之后再量）——按钮本来就在
-   *    滚动容器外面，滚动标签条本该与它们的位置无关。
-   * 最后真的点一下 `browser-close-pane`，作为佐证（不是判据），确认点得到、点了
-   * 侧栏真的关了。
+   *  · **滚到最右之后全屏按钮的几何**（在滚动确认真的发生之后再量）——它本来就在
+   *    滚动容器外面，滚动标签条本该与它的位置无关。
+   * 中间那次 `scrollLeft` 赋值之后专门确认「滚动真的发生了」：如果 `overflow-x-auto`
+   * 被挪到了外层 `browser-tabstrip`，对 `browser-tabscroll` 赋值 `scrollLeft` 会变成
+   * 静默无效操作，不报错、读回来还是 0——不确认这一条，后面两段「滚动之后」的几何
+   * 都是在检查一次没有发生的滚动，抓不住这处回归。
+   *
+   * 末尾原本还有一次 `browser-close-pane` 的点击，作佐证用——按钮已经拿掉，落点
+   * 没了，直接去掉：几何判据（上面两条）本身就是这条用例的主判据，不靠佐证撑着。
    */
-  test('标签多到需要横向滚动时，三个按钮仍然点得到', async () => {
+  test('标签多到需要横向滚动时，全屏按钮仍然点得到，+ 确实跟着标签一起滚', async () => {
     const launched = await launchKydog();
     const { page } = launched;
     try {
@@ -620,7 +630,7 @@ test.describe('61-browser', () => {
 
       const scroll = page.getByTestId('browser-tabscroll');
       // 前提要立得住：8 个标签必须真的撑爆了 browser-tabscroll 的可视宽度，
-      // 不然下面「按钮仍看得见」这件事就没有被考到（标题就是「标签多到需要横向滚动时」）。
+      // 不然下面这些「滚动之后」的判据就没有被考到（标题就是「标签多到需要横向滚动时」）。
       await expect.poll(
         () => scroll.evaluate((el) => el.scrollWidth > el.clientWidth),
         { message: '8 个标签应当已经超出 browser-tabscroll 的可视宽度' },
@@ -628,42 +638,47 @@ test.describe('61-browser', () => {
 
       const pane = page.locator('[data-pane="browser"]');
       const paneBox = (await pane.boundingBox())!;
-      const buttonIds = ['browser-new-tab', 'browser-fullscreen', 'browser-close-pane'];
 
-      const assertButtonsInPane = async (when: string) => {
-        for (const id of buttonIds) {
-          const box = await page.getByTestId(id).boundingBox();
-          expect(box, `${when}：按钮 ${id} 应有真实几何位置（不在 DOM 里或被隐藏了）`).toBeTruthy();
-          expect(box!.x, `${when}：按钮 ${id} 的左边界必须在侧栏可视范围内`)
-            .toBeGreaterThanOrEqual(paneBox.x - 1);
-          expect(box!.x + box!.width, `${when}：按钮 ${id} 的右边界不能超出侧栏可视范围`)
-            .toBeLessThanOrEqual(paneBox.x + paneBox.width + 1);
-        }
+      const assertButtonInPane = async (id: string, when: string) => {
+        const box = await page.getByTestId(id).boundingBox();
+        expect(box, `${when}：按钮 ${id} 应有真实几何位置（不在 DOM 里或被隐藏了）`).toBeTruthy();
+        expect(box!.x, `${when}：按钮 ${id} 的左边界必须在侧栏可视范围内`)
+          .toBeGreaterThanOrEqual(paneBox.x - 1);
+        expect(box!.x + box!.width, `${when}：按钮 ${id} 的右边界不能超出侧栏可视范围`)
+          .toBeLessThanOrEqual(paneBox.x + paneBox.width + 1);
       };
 
-      await assertButtonsInPane('未滚动（默认状态，这是这条用例的主判据）');
+      await assertButtonInPane('browser-fullscreen', '未滚动（默认状态，这是这条用例的主判据之一）');
+
+      // 正向前置：+ 滚动前的真实几何位置——下面滚动之后要跟它比，证明 + 真的
+      // 随滚动容器移动了。先确认它有真实几何位置（不是被误删、不在 DOM 里）。
+      const newTabBefore = await page.getByTestId('browser-new-tab').boundingBox();
+      expect(newTabBefore, '+ 应有真实几何位置（不在 DOM 里或被隐藏了）').toBeTruthy();
 
       // 把标签条滚到最右（模拟翻看最后打开的那个标签）。
       //
       // **先确认滚动真的发生了。** 如果 `overflow-x-auto` 被挪到了外层
       // `browser-tabstrip` 上，`browser-tabscroll` 自己就不再是滚动容器——这时对它
       // 设置 `scrollLeft` 是静默无效操作：赋值不报错，读回来还是 0。不确认这一条，
-      // 下面「滚到最右」状态下量按钮几何就是在检查一次根本没发生的滚动，几何判据
-      // 抓不住这处回归（按钮本就在滚动容器外面，位置本来就不受影响）——用例最终会不会
-      // 红全看原生滚动条会不会意外拦下后面的点击，是一种碰运气的红，不是判据自己红的。
+      // 下面「滚到最右」状态下量到的几何都是在检查一次根本没发生的滚动，判据
+      // 抓不住这处回归——用例最终会不会红全看运气，不是判据自己红的。
       await scroll.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
       const scrollLeftAfter = await scroll.evaluate((el) => el.scrollLeft);
       expect(scrollLeftAfter, '设置 scrollLeft 之后应当真的发生了横向滚动——读回来仍是 0 说明 '
         + 'browser-tabscroll 已经不是真正的滚动容器了（比如 overflow-x-auto 被挪到了别的元素上）')
         .toBeGreaterThan(0);
 
-      // 滚动确认真的发生之后，再量按钮几何：按钮本不在这个滚动容器里，位置不该跟着动。
-      await assertButtonsInPane('滚到最右之后');
+      // 正向判据：+ 确实跟着滚动容器一起移动了——滚到最右之后它的 x 必须比滚动前
+      // 更靠左（被滚动带进视野）。它是滚动容器里最后一个节点，未滚动时大概率被
+      // 挤在可视区右边看不见，滚动之后应当出现在标签条的最右端。
+      const newTabAfter = await page.getByTestId('browser-new-tab').boundingBox();
+      expect(newTabAfter, '滚动之后 + 应仍有真实几何位置').toBeTruthy();
+      expect(newTabAfter!.x, '+ 应当随 browser-tabscroll 的横向滚动一起移动——'
+        + '滚到最右之后它的左边界应比滚动前更靠左，不然它已经不在这个滚动容器里了')
+        .toBeLessThan(newTabBefore!.x);
 
-      // 最后的佐证（不是判据）：真点得到，而且点了侧栏真的关了——判据是上面两条
-      // （滚动真的发生 + 滚到最右之后按钮几何仍在面板内），这一步不靠点击超不超时。
-      await page.getByTestId('browser-close-pane').click();
-      await expect(page.locator('[data-pane="browser"]')).toHaveCount(0);
+      // 滚动确认真的发生之后，再量全屏按钮几何：它不在这个滚动容器里，位置不该跟着动。
+      await assertButtonInPane('browser-fullscreen', '滚到最右之后');
     } finally {
       await teardown(launched);
     }
