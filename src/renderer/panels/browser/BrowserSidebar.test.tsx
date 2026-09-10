@@ -352,8 +352,15 @@ describe('TabStrip：三个按钮在滚动容器外面（Task 4）', () => {
  */
 describe('BrowserSidebar：onGo 的 tabId 路由（Task 4 修复轮 R1）', () => {
   it('有活动标签时，地址栏提交的网址：browser.open 带 tabId，等于活动标签的 id', () => {
+    // 活动标签必须**不是** tabs 数组的最后一个——否则「取 active（按 activeTabId
+    // 查到的那个标签对象）的 id」和「退化成取数组最后一个的 id」这两种写法在这份
+    // fixture 下会给出同一个值，这条断言就分不清代码走的是哪一种（复审实测踩过：
+    // 把实现悄悄换成 `tabs[tabs.length - 1] ?? null`，这里原本全绿）。这里复用的是
+    // 本文件已有的同形态 fixture（见上面「被驱动的是后台标签」那条：
+    // `tabs: [tab(), tab({ id: 't2' })], activeTabId: 't1'`）。整理 fixture 时别把
+    // 顺序「理顺」成 activeTabId 又指回最后一个，那样会悄悄退回只剩一个为真的原因。
     useBrowserStore.setState({
-      epoch: 5, revision: 1, tabs: [tab(), tab({ id: 't2' })], activeTabId: 't2',
+      epoch: 5, revision: 1, tabs: [tab(), tab({ id: 't2' })], activeTabId: 't1',
     });
     const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
     const bar = findOneWhere(m.tree, (el) => el.type === UrlBar);
@@ -363,7 +370,7 @@ describe('BrowserSidebar：onGo 的 tabId 路由（Task 4 修复轮 R1）', () =
     expect(opens).toHaveLength(1);
     const args = opens[0].args as Record<string, unknown>;
     expect(args.url).toBe('https://example.com/');
-    expect(args.tabId).toBe('t2');
+    expect(args.tabId).toBe('t1');
     m.unmount();
   });
 
