@@ -12,6 +12,7 @@ import { ComposerSlashMenu } from './ComposerSlashMenu';
 import { ComposerSendButton } from './ComposerSendButton';
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
 import { ComposerActionsRow } from './ComposerActionsRow';
+import { ErrorMarginalia } from './ErrorMarginalia';
 import { filterSkillEntries, dispatchInputKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
@@ -39,6 +40,11 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const [modelMenuRect, setModelMenuRect] = useState<DOMRect | null>(null);
   const [projectMenuRect, setProjectMenuRect] = useState<DOMRect | null>(null);
   const [menuForceClosed, setMenuForceClosed] = useState(false);
+  // thread.send 失败（比如这条对话原来用的模型已经不可用）以前只 console.error，
+  // 界面上什么反应都没有——用户看到的是发了消息就没下文。连同 threadId 一起记，
+  // 切走再切回来是另一条 thread 的事，不该继承上一条的失败。
+  const [sendFailure, setSendFailure] = useState<{ threadId: string; message: string } | null>(null);
+  const sendFailureMessage = sendFailure?.threadId === threadId ? sendFailure.message : null;
 
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const isRunning = runState?.status === 'running';
@@ -112,6 +118,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const onSend = async () => {
     const content = composedContent();
     if (!content || isRunning) return;
+    setSendFailure(null);
     useComposerDraftStore.getState().clearDraft(threadId);
     appendUser(threadId, {
       id: crypto.randomUUID(),
@@ -123,6 +130,8 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
       await window.kydog.invoke('thread.send', { threadId, content });
     } catch (err) {
       console.error('send failed', err);
+      const message = err instanceof Error ? err.message : String(err);
+      setSendFailure({ threadId, message });
     }
   };
 
@@ -237,6 +246,11 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
         style={{ backgroundColor: 'var(--paper-deep)', padding: '0 22px 14px' }}
       >
         <div style={{ maxWidth: 840, margin: '0 auto' }}>
+        {sendFailureMessage ? (
+          <div data-testid="composer-send-failure" style={{ marginBottom: 6 }}>
+            <ErrorMarginalia text={sendFailureMessage} />
+          </div>
+        ) : null}
         <div
           ref={editorWrapperRef}
           style={{

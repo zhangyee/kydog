@@ -5,7 +5,6 @@ import { createReadPdfFigureTool } from './readPdfFigureTool';
 import { createReadDocxTool } from './readDocxTool';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { settingsService } from '../settings/settingsService';
-import { KydogError } from '../../shared/errors';
 import type { ProviderId } from '../../shared/types';
 
 export type AnySession = {
@@ -17,6 +16,20 @@ export type AnySession = {
   readonly messages?: unknown[];
   readonly state?: { messages: unknown[] };
 };
+
+/**
+ * 「provider/model 已解析（配置里指向它），但当前 registry 里没有」——通常是上游把这个
+ * 模型从目录里撤了。与泛化的 KydogError('llm.invalid', …) 分开成独立类型，是因为
+ * 调用方（AgentService）要按**这一种**失败精确回退到「不建 session、直接读盘上的
+ * transcript」，别的失败必须照旧抛出去（见 AgentService.loadHistory 的注释）。
+ * 用 instanceof 判定，不靠 message 字符串——协议层事实应该是类型，不是文案。
+ */
+export class ModelUnavailableError extends Error {
+  constructor(public readonly providerId: ProviderId, public readonly modelId: string) {
+    super(`model not found: ${providerId}/${modelId}`);
+    this.name = 'ModelUnavailableError';
+  }
+}
 
 export async function createSession(opts: {
   cwd: string;
@@ -41,7 +54,7 @@ export async function createSession(opts: {
   const reg = getProviderRegistry();
   const model = reg.modelRuntime.getModel(opts.providerId, opts.modelId);
   if (!model) {
-    throw new KydogError('llm.invalid', `model not found: ${opts.providerId}/${opts.modelId}`);
+    throw new ModelUnavailableError(opts.providerId, opts.modelId);
   }
 
   const { createKydogResourceLoader } = await import('../skills/skillResourceLoader');
