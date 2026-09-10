@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { describeNav, landedOnPage, ActionSchema, createBrowserTools, READ_MAX_CHARS } from './browserTools';
+import { describeNav, landedOnPage, ActionSchema, createBrowserTools, READ_MAX_CHARS, TAB_TITLE_MAX } from './browserTools';
 import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import { MAX_BATCH_CHARS } from '../browser/extract';
 import { PAGE_CONTENT_OPEN } from '../browser/snapshot';
@@ -247,7 +247,7 @@ const bs = vi.hoisted(() => ({
   waits: [] as { tabId: string; until: unknown; timeoutMs: number }[],
   waitImpl: (() => true) as () => boolean,
   /** 标签清单可变 —— 一批动作中途 target=_blank 会开出新标签。 */
-  tabs: [] as { id: string; url: string }[],
+  tabs: [] as { id: string; url: string; title: string }[],
   navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
   /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
   unreported: new Map<string, { url: string; httpStatusCode: number }>(),
@@ -381,7 +381,7 @@ beforeEach(() => {
   bs.isolatedImpl = () => null;
   bs.dispatchImpl = (a) => `派发了 ${a.kind}`;
   bs.waitImpl = () => true;
-  bs.tabs = [{ id: 't1', url: 'https://a.example/q' }];
+  bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
   bs.noTab = false;
   bs.evalThrows = null;
   lf.calls.length = 0;
@@ -505,7 +505,7 @@ describe('这一批里新开的标签必须列出来（spec §5.1）', () => {
   // 接下来它会对着旧标签继续操作 —— 一整轮检索都在一个没变的页面上跑。
   it('动作中途开出来的标签，结果里点名带上 id 与地址', async () => {
     bs.dispatchImpl = (a) => {
-      bs.tabs.push({ id: 'tab_new1', url: 'https://publisher.example/article/42' });
+      bs.tabs.push({ id: 'tab_new1', url: 'https://publisher.example/article/42', title: '' });
       return `做了 ${a.kind}`;
     };
     const s = bodyOf(await act([{ kind: 'click', selector: 'a[target=_blank]' }]));
@@ -517,6 +517,77 @@ describe('这一批里新开的标签必须列出来（spec §5.1）', () => {
   it('没开新标签就一个字都不提 —— 不许有假阳性', async () => {
     const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
     expect(s).not.toMatch(/新开|新标签/);
+  });
+});
+
+describe('tabsLine 带标题', () => {
+  /**
+   * agent 要从这一行抄 `tabId`。只给 host 的话，两个同源标签长得一模一样 ——
+   * 它没法判断哪个是用户说的那一篇，只能挨个切过去看。
+   *
+   * 两个标签的 `tabId` 本来就不同 —— 光凭这一点，「输出里两条都能认出来」这句话
+   * 不能证明是标题起的作用，也可能只是 id 本来就不一样。把 id 抹成同一个占位符
+   * 之后：① 两条还剩的内容必须仍然不同（唯一还没抹掉的就是标题）；
+   * ② 再把标题也抹掉之后，两条必须变得一模一样（证明标题就是那个唯一的差异点）。
+   */
+  it('两个同源标签靠标题分得开', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://www.cnki.net/kns8/defaultresult/index', title: '面向遥感图像的语义分割综述' },
+      { id: 'tab_9f8e7d6c', url: 'https://www.cnki.net/kns8/defaultresult/index', title: '联邦学习在边缘计算中的应用综述' },
+    ];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const entries = header.replace(/^标签页: /, '').split(' · ');
+    expect(entries.length).toBe(2);
+
+    const idErased = entries.map((e) => e.replace(/^\[[^\]]*\]\*?/, '[X]'));
+    // 抹掉 id 之后两条依然不同 —— 剩下还能造成这个不同的只有标题。
+    expect(idErased[0]).not.toBe(idErased[1]);
+
+    const titleAlsoErased = idErased.map((e) => e.replace(/ — .*$/, ''));
+    // 连标题也抹掉之后两条变得完全一样（同 host、同没有 id）—— 证明刚才那处
+    // 不同就是标题，不是别的什么东西在悄悄帮忙分辨。
+    expect(titleAlsoErased[0]).toBe(titleAlsoErased[1]);
+
+    expect(header).toContain('面向遥感图像的语义分割综述');
+    expect(header).toContain('联邦学习在边缘计算中的应用综述');
+  });
+
+  it('标题过长按上限截断，并带省略号', async () => {
+    const longTitle = '基于图神经网络的分子性质预测方法研究进展与前沿综述专题深入探讨这一方向的若干关键问题'.slice(0, 200).padEnd(200, '补');
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: longTitle }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBeLessThanOrEqual(TAB_TITLE_MAX + 1);
+    expect(seg.endsWith('…')).toBe(true);
+  });
+
+  it('没有标题的标签退回只给 host，不留一个空的破折号', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).not.toContain(' — ');
+    expect(header).toContain('a.example');
+  });
+
+  // Task 3 落地的 browser.newTab：空白标签的 url 是空串，host 退化成 about:blank；
+  // 空白标签的 title 多半也是空串。两件事凑在一起不许拼出一个孤零零的破折号。
+  it('空白标签：host 退化成 about:blank，标题为空时同样不留破折号', async () => {
+    bs.tabs = [{ id: 't1', url: '', title: '' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('about:blank');
+    expect(header).not.toContain(' — ');
+    expect(header.trim().endsWith('—')).toBe(false);
+  });
+
+  // 既有行为不许被这次改动弄丢。
+  it('活动标签仍然带 *', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://a.example/q', title: '标题A' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('[t1]*');
+    expect(header).not.toContain('[t2]*');
   });
 });
 
@@ -994,7 +1065,7 @@ describe('登录状态挂在每一个浏览器工具结果的头部', () => {
   });
 
   it('带的是标签号 + 那句话，而不是把两个标签的状态混在一起', async () => {
-    bs.tabs = [{ id: 't1', url: 'https://a.example/q' }, { id: 't2', url: 'https://b.example/' }];
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }, { id: 't2', url: 'https://b.example/', title: '' }];
     lf.notes.set('t2', HEAD);
     const s = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }));
     expect(s).toContain(`[t2] ${HEAD}`);

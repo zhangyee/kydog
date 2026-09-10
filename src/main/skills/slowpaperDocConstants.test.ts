@@ -5,7 +5,7 @@ import { ACTION_KINDS, KEY_NAMES, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, 
 import { MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS } from '../browser/extract';
 import { DEFAULT_NODE_LIMIT, PAGE_CONTENT_OPEN, PAGE_CONTENT_CLOSE } from '../browser/snapshot';
 import { MAX_TABS } from '../browser/tabRegistry';
-import { READ_MAX_CHARS } from '../agent/browserTools';
+import { READ_MAX_CHARS, TAB_TITLE_MAX } from '../agent/browserTools';
 import * as actionsNs from '../browser/actions';
 import * as extractNs from '../browser/extract';
 import * as snapshotNs from '../browser/snapshot';
@@ -87,6 +87,10 @@ const CHECKS: Check[] = [
   {
     constant: 'KEY_NAMES', what: 'KEY_NAMES 的个数（「只认这 N 个名字」）', value: KEY_NAMES.length, file: 'references/browser.md',
     zh: /只认这 (\d+) 个名字/g, en: /accepts only these (\d+) names/g,
+  },
+  {
+    constant: 'TAB_TITLE_MAX', what: 'TAB_TITLE_MAX（标签清单里标题的截断上限）', value: TAB_TITLE_MAX, file: 'references/browser.md',
+    zh: /超过 (\d+) 字会截断/g, en: /truncated with an ellipsis past (\d+) characters/g,
   },
 ];
 

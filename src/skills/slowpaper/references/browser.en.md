@@ -7,12 +7,14 @@
 attached to the head of **every** browser tool result, and it is always current:
 
 ```
-标签页: [tab_1a2b3c4d] scholar.google.com · [tab_5e6f7a8b]* xueshu.baidu.com
+标签页: [tab_1a2b3c4d] www.cnki.net — 基于深度学习的图像分割综述 · [tab_5e6f7a8b]* www.cnki.net — 面向边缘计算的联邦学习方法
 ```
 
-The one marked `*` is what the user is looking at right now. **Always copy `tabId` from that
-line** (shaped `tab_` + 8 hex digits); do not invent one like `t1`. A wrong one gets you
-`browser.no_tab`.
+The one marked `*` is what the user is looking at right now. Each entry carries the tab's
+title after its host (truncated with an ellipsis past 40 characters; omitted entirely for a
+tab with no title) — two tabs on the same host look identical by host alone, and the title
+is what tells them apart. **Always copy `tabId` from that line** (shaped `tab_` + 8 hex
+digits); do not invent one like `t1`. A wrong one gets you `browser.no_tab`.
 
 ---
 

@@ -22,9 +22,15 @@ type ToolResult = { content: ToolContent[]; details?: unknown };
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 
+/** 标签标题在清单里的上限。整行会挂在**每个**浏览器工具结果头部，标签多时不能让它把结果撑爆。 */
+export const TAB_TITLE_MAX = 40;
+
 /**
  * 标签清单一行，挂在**每个**浏览器工具结果的头部。
  * 这样就不需要一个单独的 browser_tabs 工具 —— 清单总是准的，也不占一个工具位。
+ *
+ * 带上标题：agent 要从这一行**抄 tabId**，只给 host 的话，两个同源标签
+ * （比如都在 cnki.net 上）长得一模一样，它没法判断哪个是用户说的那一篇。
  */
 function tabsLine(activeId?: string): string {
   const s = browserService.getState();
@@ -32,7 +38,11 @@ function tabsLine(activeId?: string): string {
   const cur = activeId ?? s.activeTabId;
   return '标签页: ' + s.tabs.map((t) => {
     const host = (() => { try { return new URL(t.url).host; } catch { return t.url || 'about:blank'; } })();
-    return `[${t.id}]${t.id === cur ? '*' : ''} ${host}`;
+    // 标题是给人也是给模型分辨用的：两个同源标签只看 host 分不开。
+    // 没有标题就不加那一段 —— 空的破折号只是噪声（新开的空白标签常见这种情况）。
+    const title = t.title.trim();
+    const short = title.length > TAB_TITLE_MAX ? `${title.slice(0, TAB_TITLE_MAX)}…` : title;
+    return `[${t.id}]${t.id === cur ? '*' : ''} ${host}${short ? ` — ${short}` : ''}`;
   }).join(' · ');
 }
 
