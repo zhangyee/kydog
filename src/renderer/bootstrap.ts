@@ -20,6 +20,7 @@ export async function bootstrap(): Promise<void> {
   useSettingsStore.getState().setBootstrapMeta({
     systemLocale: state.systemLocale,
     onboardingRecovery: state.onboardingRecovery,
+    settingsHealth: state.settingsHealth,
   });
   const noProvider = state.settings.llm.defaultProvider === null;
   // 落盘的收起记录里，指向已被移除的 project 的那些留着也没人再读，

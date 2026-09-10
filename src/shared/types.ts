@@ -283,6 +283,23 @@ export type CenterViewState = {
   activeTab: 'thread' | 'file';
 };
 
+/**
+ * 设置文件这一次是怎么读出来的。**`ok` 之外都要让用户看得见** ——
+ * 「把原件留档」这件事只有用户看得见才算数：只写日志的话，用户看到的是
+ * 设置被清空了、外加目录里多出一个陌生文件名，没人会把两件事联系起来。
+ *
+ * 两档不是同一件事，下一步也不同：
+ *  · `quarantined` —— 原件**已经留档**（`backup` 是留档的文件名，只有文件名不带路径），
+ *    当前用的是一份全新的默认设置。用户要做的是去那份备份里把 key 抄回来。
+ *  · `unreadable` —— 原件**还在原地**，只是这一次没读出来（`why` 是 errno）。
+ *    此时**写盘已经被拒**（见 settingsService.withLock），改设置会失败。
+ *    用户要做的是解决占用/权限，而不是重填。
+ */
+export type SettingsHealth =
+  | { kind: 'ok' }
+  | { kind: 'quarantined'; backup: string }
+  | { kind: 'unreadable'; why: string };
+
 export type BootstrapState = {
   projects: Project[];
   threads: Thread[];
@@ -294,6 +311,8 @@ export type BootstrapState = {
   onboardingRecovery: OnboardingRecovery;
   /** 上一次渲染进程留下的中央区快照；null = 本次是冷启动（或还没人存过）。 */
   viewState: CenterViewState | null;
+  /** 设置文件这一次是怎么读出来的 —— `ok` 之外要在设置页横幅上说出来。 */
+  settingsHealth: SettingsHealth;
 };
 
 // ── Skills ──

@@ -19,6 +19,92 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
+  /**
+   * **一次读不出来，不许拿默认值把盘上那份盖掉。**
+   *
+   * 从前的形态：`loadSettings()` 读失败时静默回默认设置，`withLock` 分不出
+   * 「文件真的不在」与「文件还在、只是这一次没读出来」，于是照着默认设置往下写 ——
+   * 一次瞬时读失败（占用、权限抖动、EIO）+ 任何一次设置改动 = 机构密码密文与
+   * LLM API key 一起没了，**没有备份，界面上也没有提示**。
+   *
+   * 判据是**磁盘上的字节一个都没变**，不是「有没有抛」。只断言抛了的话，
+   * 「抛在写之前」与「先写了再抛」长得一模一样，而后者正是要挡的那件事。
+   */
+  it('withLock: 读盘失败（非 ENOENT）时拒绝写，磁盘上的字节一个都不变', async () => {
+    // 先落一份「有真东西可丢」的设置：API key + 机构密码密文。
+    await svc.withLock(async (cur) => ({
+      next: {
+        ...cur,
+        llm: { ...cur.llm, auth: { anthropic: { type: 'api_key' as const, key: 'sk-REAL-KEY' } } },
+      },
+      result: undefined,
+    }));
+    const file = path.join(dir, 'kydog.json');
+    const before = readFileSync(file, 'utf8');
+    expect(before, '前提：这份文件里得真有个 key，否则这条用例什么也没保住').toContain('sk-REAL-KEY');
+
+    // 让读盘失败，且**不是** ENOENT —— ENOENT 的意思是文件真的不在，那时写默认值是对的。
+    const { promises: fsp } = await import('node:fs');
+    const spy = vi.spyOn(fsp, 'readFile').mockRejectedValue(
+      Object.assign(new Error("EACCES: permission denied, open 'kydog.json'"), { code: 'EACCES' }),
+    );
+
+    // **不要用 `.rejects`**：它一红就把这条用例停在这里，后面那条字节断言根本跑不到 ——
+    // 于是「抛在写之前」与「先写了再抛」还是分不开。接住它，两条各断各的。
+    let thrown: unknown = null;
+    try {
+      await svc.withLock(async (cur) => ({
+        next: { ...cur, llm: { ...cur.llm, defaultProvider: 'anthropic' } },
+        result: undefined,
+      }));
+    } catch (e) { thrown = e; }
+    spy.mockRestore();
+
+    // 守门的是这一条。实测：把 withLock 里那道拒绝拿掉，它当场红（盘上那份被默认设置覆盖，
+    // `sk-REAL-KEY` 没了），而上面那条「抛没抛」也红 —— 两条各自独立会响。
+    expect(readFileSync(file, 'utf8'),
+      '读不出来的时候写盘 = 拿默认设置把 API key 和机构密码密文盖掉').toBe(before);
+    expect(thrown, '读不出来时这次改动必须失败，而且要让用户看得见').toMatchObject({
+      code: 'settings.write_failed',
+    });
+  });
+
+  /**
+   * 反面：ENOENT 是**文件真的不在**（外部删了它），那时按默认设置往下写是对的。
+   * 没有这一条的话，上面那条用「读失败就一律不写」也能绿 —— 而那会让
+   * 「文件被删掉之后再也写不进去」变成新的坏行为。
+   */
+  it('withLock: ENOENT 是文件真的不在，照常写得进去', async () => {
+    const file = path.join(dir, 'kydog.json');
+    rmSync(file, { force: true });
+    await svc.withLock(async (cur) => ({
+      next: { ...cur, llm: { ...cur.llm, defaultProvider: 'anthropic' } },
+      result: undefined,
+    }));
+    expect(JSON.parse(readFileSync(file, 'utf8')).llm.defaultProvider).toBe('anthropic');
+  });
+
+  /**
+   * `settingsHealth()` 是设置页横幅唯一的依据。**只带文件名不带路径** ——
+   * 路径里有用户名，而用户在自己的 `~/.kydog/` 里按文件名就找得到那份留档。
+   */
+  it('settingsHealth: 认不出来 → quarantined，且只带留档的文件名', async () => {
+    const file = path.join(dir, 'kydog.json');
+    writeFileSync(file, JSON.stringify({ schemaVersion: 999, llm: {} }));
+    await svc.get();
+    const h = svc.settingsHealth();
+    expect(h.kind).toBe('quarantined');
+    if (h.kind === 'quarantined') {
+      expect(h.backup.startsWith('kydog.json.unreadable-'), `实际是 ${h.backup}`).toBe(true);
+      expect(h.backup, '路径里有用户名，不该出现在界面上').not.toContain('/');
+    }
+  });
+
+  it('settingsHealth: 读得出来 → ok（首次运行的 absent 也算 ok，那是正常开局）', async () => {
+    await svc.get();
+    expect(svc.settingsHealth().kind).toBe('ok');
+  });
+
   it('withLock: 写 + 读回一致', async () => {
     await svc.withLock(async (cur) => {
       const next = { ...cur, llm: { ...cur.llm, defaultProvider: 'anthropic' } };

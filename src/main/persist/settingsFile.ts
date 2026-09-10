@@ -82,7 +82,13 @@ export function ensureSettingsFile(): void {
  * 逐字节捞回 `sk-…`。这是选用 atomicWrite 而非 fs.rename 的代价，不是疏漏：rename 会
  * 把原路径整个搬走，而这条路径的前提是「原件在备份成功之前必须原地不动」。
  */
-async function quarantineUnreadableSettings(raw: string, parsed: Extract<ParsedSettings, { kind: 'unreadable' }>): Promise<void> {
+/**
+ * 返回值说的是**磁盘上那份还要不要保**：
+ *  · `backedUp: true` —— 原文已经留档，盘上那份可以覆盖了。
+ *  · `backedUp: false` —— **备份没成，原件还在原地**。这时候写默认值就是把那份
+ *    「我们刚决定舍不得覆盖」的文件毁掉 —— 调用方必须按 `unreadable` 处置。
+ */
+async function quarantineUnreadableSettings(raw: string, parsed: Extract<ParsedSettings, { kind: 'unreadable' }>): Promise<{ backedUp: true; backup: string } | { backedUp: false }> {
   // 文件名里不能有冒号：Windows 上建不出来。ISO8601 的 : 与 . 一并换成 -。
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = `${paths.SETTINGS_FILE}.unreadable-${stamp}`;
@@ -92,7 +98,7 @@ async function quarantineUnreadableSettings(raw: string, parsed: Extract<ParsedS
     logger.error('persist.settingsFile', 'settings unreadable, and backup failed; leaving the file alone', {
       reason: parsed.reason, rawVersion: parsed.rawVersion, backup, err: String(err),
     });
-    return;
+    return { backedUp: false };
   }
   // 换掉原件，否则下一次启动会再判一次不可识别、再备份一份。
   try {
@@ -101,7 +107,8 @@ async function quarantineUnreadableSettings(raw: string, parsed: Extract<ParsedS
     logger.error('persist.settingsFile', 'settings unreadable; backed up but could not write defaults', {
       reason: parsed.reason, rawVersion: parsed.rawVersion, backup, err: String(err),
     });
-    return;
+    // 备份**成了**，只是没把原件换掉 —— 留档已经在，盘上那份可以覆盖。
+    return { backedUp: true, backup };
   }
   logger.error('persist.settingsFile', 'settings unreadable; original backed up, starting from defaults', {
     reason: parsed.reason,
@@ -111,16 +118,52 @@ async function quarantineUnreadableSettings(raw: string, parsed: Extract<ParsedS
     supported: `1..${CURRENT_SCHEMA_VERSION}`,
     backup,
   });
+  return { backedUp: true, backup };
 }
 
-/** 启动加载；不再需要 ENOENT fallback（init 已保证存在）。 */
-export async function loadSettings(): Promise<SettingsFile> {
+/**
+ * 一次读盘的**结果本身**，不只是那份设置。
+ *
+ * 分这四档是因为「拿到的是默认设置」有两种完全相反的成因，而**写路径必须分得开**：
+ *  · `absent` / `ok` / `quarantined` —— 磁盘上没有需要保住的东西了（文件真的不在、
+ *    读成功、或原件已经改名留档），此时按默认设置往下写是对的。
+ *  · `unreadable` —— **原件还在，只是这一次没读出来**（EACCES、EBUSY、EIO、EMFILE…）。
+ *    此时写盘就是拿默认值把一份好文件盖掉。里面有机构密码密文与 LLM API key，
+ *    而这条路**既没有备份也没有提示** —— 用户只会发现凭据不见了。
+ *
+ * 从前只有 `loadSettings()`，两种成因都回默认设置，`withLock` 分不出来照写不误。
+ * 这不是假想路径：`withLock` 每次写盘前都会 `loadSettings()` 一次（那正是它存在的
+ * 理由——拿锁内最新的磁盘状态），所以一次瞬时读失败 + 任何一次设置改动 = 覆盖。
+ */
+export type SettingsRead =
+  | { kind: 'ok'; settings: SettingsFile }
+  /** 文件真的不在（ENOENT）。`ensureSettingsFile` 之后仍然 ENOENT 只可能是外部删了它。 */
+  | { kind: 'absent'; settings: SettingsFile }
+  /** 认不出来：原件**已经改名留档**（`backup` 是留档的文件名），磁盘上那份可以覆盖了。 */
+  | { kind: 'quarantined'; settings: SettingsFile; backup: string }
+  /** 读不出来：**原件还在原地**。`why` 是 errno（`EACCES` 这类），不带路径也不带内容。 */
+  | { kind: 'unreadable'; settings: SettingsFile; why: string };
+
+/**
+ * 读盘并给出判据。**要写盘的调用方必须走这个，不能走 `loadSettings()`** ——
+ * 后者把四档压成一份设置，`unreadable` 与 `absent` 从返回值上看长得一模一样。
+ */
+export async function readSettings(): Promise<SettingsRead> {
   let raw: string;
   try {
     raw = await fsp.readFile(paths.SETTINGS_FILE, 'utf8');
   } catch (err) {
-    logger.warn('persist.settingsFile', 'load failed; returning defaults', { err: String(err) });
-    return defaultSettings();
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      logger.warn('persist.settingsFile', 'settings file absent; starting from defaults', {});
+      return { kind: 'absent', settings: defaultSettings() };
+    }
+    // **只把 errno 带出去**：`String(err)` 里有文件路径，而这个 why 要经 app.bootstrap
+    // 过河进渲染层。errno 足够说清「是权限还是占用」，路径对用户没有新信息。
+    logger.error('persist.settingsFile', 'settings unreadable; refusing to overwrite it', {
+      code: code ?? '(no errno)', err: String(err),
+    });
+    return { kind: 'unreadable', settings: defaultSettings(), why: code ?? 'unknown' };
   }
   if (POSIX) {
     try {
@@ -132,9 +175,20 @@ export async function loadSettings(): Promise<SettingsFile> {
     } catch { /* 忽略 */ }
   }
   const parsed = parseAndMigrateSettings(raw);
-  if (parsed.kind === 'ok') return parsed.settings;
-  await quarantineUnreadableSettings(raw, parsed);
-  return defaultSettings();
+  if (parsed.kind === 'ok') return { kind: 'ok', settings: parsed.settings };
+  const q = await quarantineUnreadableSettings(raw, parsed);
+  // **备份没成 = 原件还在原地**，此时和「读不出来」是同一件事：不许写。
+  // 少了这一支的话，「舍不得覆盖」那道护栏挡住的文件会被下一次 withLock 写掉。
+  if (!q.backedUp) return { kind: 'unreadable', settings: defaultSettings(), why: 'backup-failed' };
+  return { kind: 'quarantined', settings: defaultSettings(), backup: q.backup };
+}
+
+/**
+ * 只要那份设置的读路径。**写盘之前不要用它** —— 见 `readSettings` 那段：
+ * 它把「原件还在、只是没读出来」压成了和「文件真的不在」一样的返回值。
+ */
+export async function loadSettings(): Promise<SettingsFile> {
+  return (await readSettings()).settings;
 }
 
 /**

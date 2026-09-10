@@ -2,12 +2,13 @@
 import { lock } from 'proper-lockfile';
 import * as paths from '../persist/paths';
 import {
-  defaultSettings, loadSettings, ensureSettingsFile,
+  defaultSettings, readSettings, ensureSettingsFile,
   sanitizeBrowserWidth, sanitizeInstitution, checkInstitution, CURRENT_SCHEMA_VERSION,
 } from '../persist/settingsFile';
+import type { SettingsRead } from '../persist/settingsFile';
 import { atomicWriteWith0600Async } from '../persist/atomicWrite';
 import { KydogError } from '../../shared/errors';
-import type { InstitutionPublic, SettingsFile, SettingsFileForRenderer, SettingsPatch } from '../../shared/types';
+import type { InstitutionPublic, SettingsFile, SettingsFileForRenderer, SettingsHealth, SettingsPatch } from '../../shared/types';
 
 /**
  * 落盘记录 → 渲染层可见的那份。**唯一一处做这件事的地方**：`toRendererSettings` 与
@@ -73,13 +74,42 @@ const FILE_LOCK_OPTS = (): Parameters<typeof lock>[1] => ({
   stale: 10_000,
 });
 
+/**
+ * `SettingsRead` → 给渲染层看的那一档。
+ *
+ * `absent` 并进 `ok`：文件真的不在时按默认设置起步是**正常开局**（首次运行就是这样），
+ * 没有什么要告诉用户的。要告诉用户的是另外两种：东西被留档了，或者盘上那份读不出来。
+ *
+ * 备份**只带文件名不带路径** —— 路径里有用户名，而用户在自己的 `~/.kydog/` 里
+ * 按文件名就找得到。
+ */
+function toHealth(read: SettingsRead): SettingsHealth {
+  if (read.kind === 'quarantined') {
+    return { kind: 'quarantined', backup: read.backup.slice(read.backup.lastIndexOf('/') + 1) };
+  }
+  if (read.kind === 'unreadable') return { kind: 'unreadable', why: read.why };
+  return { kind: 'ok' };
+}
+
 export class SettingsService {
   private cache: SettingsFile | null = null;
+  private health: SettingsHealth = { kind: 'ok' };
 
   async get(): Promise<SettingsFile> {
-    if (!this.cache) this.cache = await loadSettings();
+    if (!this.cache) {
+      const read = await readSettings();
+      this.health = toHealth(read);
+      this.cache = read.settings;
+    }
     return this.cache;
   }
+
+  /**
+   * 上一次读盘的判据。`app.bootstrap` 拿它去点亮设置页的横幅 ——
+   * **不额外读一次盘**：多读一次就可能读到与当时不同的状态，横幅说的就不是
+   * 「你现在用的这份设置是怎么来的」了。
+   */
+  settingsHealth(): SettingsHealth { return this.health; }
 
   /** 兼容旧 callsites（settings.update IPC 等）；内部走 withLock 统一锁。 */
   async update(patch: SettingsPatch): Promise<SettingsFile> {
@@ -225,7 +255,20 @@ export class SettingsService {
       ensureSettingsFile();
       const release = await lock(paths.ROOT, FILE_LOCK_OPTS());
       try {
-        const current = await loadSettings();
+        // **读不出来就一个字都不写。** 这里拿的是锁内最新的磁盘状态，而读失败时
+        // `settings` 是一份默认设置 —— 照写就是拿默认值把一份好文件盖掉，里面有
+        // 机构密码密文与 LLM API key，既没备份也没提示（见 settingsFile 的 SettingsRead）。
+        // 宁可这一次改动失败：报错用户看得见，静默丢凭据看不见。
+        // 判据是 errno（EACCES / EBUSY / EIO…），不是「读回来的像不像默认设置」——
+        // 后者分不出「文件真的不在」和「文件还在、只是没读出来」。
+        const read = await readSettings();
+        this.health = toHealth(read);
+        if (read.kind === 'unreadable') {
+          throw new KydogError('settings.write_failed',
+            `设置文件这一次读不出来（${read.why}），为免把已有的设置和凭据覆盖掉，这次改动没有写盘。`
+            + '稍后再试一次；一直如此就检查一下 ~/.kydog/kydog.json 的权限与占用。');
+        }
+        const current = read.settings;
         const { next, result } = await fn(current);
         if (next && next !== current) {
           await atomicWriteWith0600Async(paths.SETTINGS_FILE, JSON.stringify(next, null, 2));

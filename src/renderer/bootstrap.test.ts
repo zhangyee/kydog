@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { BootstrapState, SettingsFileForRenderer } from '../shared/types';
 import { bootstrap } from './bootstrap';
+import { useSettingsStore } from './stores/settingsStore';
 import { useBrowserStore } from './panels/browser/browserStore';
 
 /**
@@ -52,6 +53,7 @@ const BOOT: BootstrapState = {
   projects: [],
   threads: [],
   settings: SETTINGS,
+  settingsHealth: { kind: 'ok' },
   appVersion: '0.0.0-test',
   systemLocale: 'zh',
   identity: { userName: '我', agentName: 'KyDog' },
@@ -115,6 +117,21 @@ beforeEach(() => {
 });
 
 afterEach(() => { delete (globalThis as unknown as Record<string, unknown>).window; });
+
+describe('bootstrap 把 settingsHealth 接进了 store', () => {
+  /**
+   * 设置页那条横幅唯一的数据源。这一段是**运行时填表**（`setBootstrapMeta` 里逐字段抄），
+   * 漏抄一个字段不会编译报错、也不会有别的用例红 —— 横幅从此永远不显示，
+   * 而它要说的正是「你的设置和凭据出事了」。
+   */
+  it('bootstrap 之后 store 里就是主进程给的那一档', async () => {
+    BOOT.settingsHealth = { kind: 'quarantined', backup: 'kydog.json.unreadable-X' };
+    await bootstrap();
+    expect(useSettingsStore.getState().settingsHealth)
+      .toEqual({ kind: 'quarantined', backup: 'kydog.json.unreadable-X' });
+    BOOT.settingsHealth = { kind: 'ok' };
+  });
+});
 
 describe('bootstrap 真的把浏览器侧栏接上了', () => {
   it('走了一次 browser.getState，epoch 与标签清单都进了 store', async () => {

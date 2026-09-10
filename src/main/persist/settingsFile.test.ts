@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as paths from './paths';
 import type { SettingsFile } from '../../shared/types';
-import { ensureSettingsFile, loadSettings, defaultSettings, parseAndMigrateSettings, checkInstitution, sanitizeInstitution, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from './settingsFile';
+import { ensureSettingsFile, loadSettings, readSettings, defaultSettings, parseAndMigrateSettings, checkInstitution, sanitizeInstitution, CURRENT_SCHEMA_VERSION, MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from './settingsFile';
 
 /**
  * 「备份失败就不覆盖原件」那道护栏没法用真文件系统触发：备份与覆盖写的是同一个目录，
@@ -60,6 +60,76 @@ describe('settingsFile v9', () => {
     vi.spyOn(paths, 'LOCK_PATH', 'get').mockReturnValue(path.join(dir, '.kydog.json.lock'));
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+  /**
+   * `readSettings` 存在的全部理由：**把「拿到默认设置」的两种相反成因分开**。
+   * 压成一份设置（`loadSettings`）的话，写路径分不出「文件真的不在」与
+   * 「文件还在、只是这一次没读出来」，后者照写就是拿默认值盖掉真设置。
+   */
+  describe('readSettings 的四档判据', () => {
+    it('读得出来 → ok，settings 是文件里那份', async () => {
+      ensureSettingsFile();
+      await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(richSettings()));
+      const r = await readSettings();
+      expect(r.kind).toBe('ok');
+      expect(r.settings.llm.auth).toMatchObject({ anthropic: { key: 'sk-REAL-KEY' } });
+    });
+
+    it('ENOENT → absent（文件真的不在，可以按默认设置往下写）', async () => {
+      const r = await readSettings();
+      expect(r.kind).toBe('absent');
+      expect(r.settings.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    });
+
+    it('认不出来 → quarantined（原件已改名留档，盘上那份可以覆盖）', async () => {
+      ensureSettingsFile();
+      await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify({ ...richSettings(), schemaVersion: 999 }));
+      const r = await readSettings();
+      expect(r.kind).toBe('quarantined');
+      // 留档真的发生了才算数 —— 只看 kind 的话，「没备份就说自己 quarantined」也能绿。
+      expect(readdirSync(dir).some((f) => f.startsWith('kydog.json.') && f !== 'kydog.json')).toBe(true);
+    });
+
+    it('EACCES → unreadable，且 why 只有 errno、不带路径', async () => {
+      ensureSettingsFile();
+      vi.spyOn(fsp, 'readFile').mockRejectedValue(
+        Object.assign(new Error("EACCES: permission denied, open '/Users/someone/.kydog/kydog.json'"), { code: 'EACCES' }),
+      );
+      const r = await readSettings();
+      expect(r.kind).toBe('unreadable');
+      // why 会经 app.bootstrap 过河进渲染层：errno 说得清「权限还是占用」，
+      // 路径对用户没有新信息，还会把用户名带进界面。
+      if (r.kind === 'unreadable') {
+        expect(r.why).toBe('EACCES');
+        expect(r.why).not.toContain('/');
+        expect(r.why).not.toContain('someone');
+      }
+    });
+
+    it('认不出来但**备份没成** → unreadable（原件还在原地，不许覆盖）', async () => {
+      ensureSettingsFile();
+      const original = JSON.stringify({ ...richSettings(), schemaVersion: 999 });
+      await fsp.writeFile(path.join(dir, 'kydog.json'), original);
+      // 只让备份那一次写失败 —— 覆盖原件那一次仍然是真的那个实现。
+      aw.failWhen = (t) => t.includes('.unreadable-');
+      const r = await readSettings();
+      aw.failWhen = null;
+      // 「舍不得覆盖」这道护栏挡住的文件，不能被下一次 withLock 写掉：
+      // 判成 quarantined 就等于告诉写路径「留档已经在了，随便覆盖」——而留档根本没成。
+      expect(r.kind).toBe('unreadable');
+      expect(readFileSync(path.join(dir, 'kydog.json'), 'utf8'),
+        '备份没成时原件必须原地不动').toBe(original);
+    });
+
+    it('errno 缺席（不是 ErrnoException）也算 unreadable，不会掉进 absent', async () => {
+      ensureSettingsFile();
+      vi.spyOn(fsp, 'readFile').mockRejectedValue(new Error('something odd'));
+      const r = await readSettings();
+      // 这一条挡的是「用 message 里有没有 ENOENT 去认」那种写法：
+      // 认不出来的错误必须往**保守**那一侧倒，而不是当成「文件不在」去覆盖。
+      expect(r.kind).toBe('unreadable');
+    });
+  });
 
   it('defaultSettings: schemaVersion=9 + 空 llm + readingFontSize=medium', () => {
     const d = defaultSettings();

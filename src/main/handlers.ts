@@ -79,6 +79,9 @@ export function registerAllHandlers(): void {
       identity, onboardingRecovery,
       // 只有渲染进程重载时这里才非空 —— 主进程内存里的东西，冷启动是干净的。
       viewState: viewStateStore.get(),
+      // 上一行 `settingsService.get()` 刚读过盘，这里拿的就是那一次的判据 ——
+      // 不重读，否则横幅说的可能不是「你现在用的这份设置是怎么来的」。
+      settingsHealth: settingsService.settingsHealth(),
     };
   });
 

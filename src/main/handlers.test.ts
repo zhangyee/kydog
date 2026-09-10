@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   canReachNetwork: false,
   state: 'enabled' as 'undecided' | 'enabled' | 'deleting' | 'disabled',
   installId: null as string | null,
+  settingsHealth: { kind: 'ok' } as { kind: string; backup?: string; why?: string },
   // onboarding → 遥测同步那条接线用：结果由用例摆布，同步进去的值记在 synced 里
   onboardingOk: true,
   telemetry: { state: 'enabled', decidedAt: '2026-08-05T00:00:00.000Z' } as TelemetrySettings,
@@ -65,6 +66,8 @@ vi.mock('./settings/settingsService', async (orig) => ({
   settingsService: {
     get: async () => ({ ...h.settings, telemetry: h.telemetry }),
     update: async () => ({ ...h.settings, telemetry: h.telemetry }),
+    // 由用例摆布：下面有一条专门断言「留档的文件名过河、但路径不过河」。
+    settingsHealth: () => h.settingsHealth,
   },
 }));
 
@@ -198,6 +201,19 @@ describe('密文不过河', () => {
       expect(JSON.stringify(out), method).not.toContain(SENTINEL);
     });
   }
+
+  /**
+   * 留档文件名要过河（用户得凭它去 `~/.kydog/` 里找那份备份），**但路径不能过河** ——
+   * 路径里有用户名，那是把一条本来不必出现在界面上的个人信息带出去。
+   */
+  it('settingsHealth 过河：留档文件名带得出去，路径与用户名带不出去', async () => {
+    h.settingsHealth = { kind: 'quarantined', backup: 'kydog.json.unreadable-2026-09-10T00-00-00-000Z' };
+    const out = await invoke('app.bootstrap') as unknown as { settingsHealth: { kind: string; backup: string } };
+    expect(out.settingsHealth.kind).toBe('quarantined');
+    expect(out.settingsHealth.backup).toBe('kydog.json.unreadable-2026-09-10T00-00-00-000Z');
+    expect(out.settingsHealth.backup, '文件名里不许有路径分隔符').not.toContain('/');
+    h.settingsHealth = { kind: 'ok' };
+  });
 
   it('该过河的照常过河：机构名 / 学号 / hasPassword', async () => {
     const out = await invoke('settings.get') as unknown as { institution: unknown };
