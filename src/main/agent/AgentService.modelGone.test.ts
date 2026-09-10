@@ -21,10 +21,21 @@ vi.mock('./resolveActive', () => ({
 // 把它钉到临时目录，绕开真实 ~/.kydog（sessionsDirFor/sessionFileFor 是 paths.ts 里
 // 算好的 const，vi.spyOn 只能换外部看到的 getter，换不了模块内部对同一个 const 的
 // 引用，实测验证过；模块级 vi.mock 才管用）。
-const pathsState = vi.hoisted(() => ({ sessionFile: '' }));
+//
+// 这个替身原来完全无视入参（`() => pathsState.sessionFile`）——生产代码里
+// `sessionFileFor(projectPath, threadId)` 两个参数就算传反了，替身也照样给出
+// 同一个文件，测不出来。现在改成记下每次调用收到的参数（按收到的顺序），
+// 供「实参顺序」那条用例断言；`sessionFile` 仍然决定返回值，不受影响。
+const pathsState = vi.hoisted(() => ({ sessionFile: '', calls: [] as Array<[string, string]> }));
 vi.mock('../persist/paths', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../persist/paths')>();
-  return { ...actual, sessionFileFor: () => pathsState.sessionFile };
+  return {
+    ...actual,
+    sessionFileFor: (projectPath: string, threadId: string) => {
+      pathsState.calls.push([projectPath, threadId]);
+      return pathsState.sessionFile;
+    },
+  };
 });
 
 vi.mock('./sessionFactory', async (importOriginal) => {
@@ -84,6 +95,7 @@ describe('AgentService — 模型从 registry 里消失后的历史回退', () =
     // 调用过 vi.restoreAllMocks()/mockReset()，这个 mock 会被清空成"什么都不返回"。
     // 每个用例开工前都重新钉一遍，别依赖它"一直是那个值"。
     (resolveActive as any).mockReset().mockResolvedValue({ providerId: 'anthropic', modelId: 'placeholder' });
+    pathsState.calls = [];
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -127,9 +139,29 @@ describe('AgentService — 模型从 registry 里消失后的历史回退', () =
     const threadId = 't-other-fail';
     await seedRealSession(threadId); // 盘上确实有内容——如果这条回退被错误地扩大到所有异常，
     // 底下这次调用会"成功"返回内容而不是 reject，从结果上就骗过了测试。
-    (createSession as any).mockRejectedValue(new Error('EACCES: permission denied'));
+    //
+    // 断身份而不是文案：只比 message 子串测不出"原始异常被换成了一个新对象"——
+    // 换一个文案凑巧相同的新 Error 照样能通过子串匹配，但 type/code 全丢了。
+    // toBe 要求 loadHistory 抛出来的就是同一个引用，任何"重新包一层"都会被这条
+    // 用例抓到，不只是"文案变了"这一种退化。
+    const originalErr = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    (createSession as any).mockRejectedValue(originalErr);
 
-    await expect(agentService.loadHistory(threadId, '/proj')).rejects.toThrow('EACCES: permission denied');
+    await expect(agentService.loadHistory(threadId, '/proj')).rejects.toBe(originalErr);
+  });
+
+  it('loadHistoryWithoutSession 按 (projectPath, threadId) 的顺序调用 sessionFileFor', async () => {
+    // sessionFileFor 的真实签名是 (projectPath, threadId)（src/main/persist/paths.ts）。
+    // 这里的替身完全按传入顺序记录、不做任何纠正或猜测，所以两个参数用两个
+    // 一眼能分清谁是谁的值：混进 threadId 的目录名一看就不像 projectPath，反之亦然。
+    const threadId = 't-arg-order-check';
+    const projectPath = '/proj/arg-order-check';
+    await seedRealSession(threadId);
+    (createSession as any).mockRejectedValue(new ModelUnavailableError('deepseek', 'gone-model'));
+
+    await agentService.loadHistory(threadId, projectPath);
+
+    expect(pathsState.calls).toEqual([[projectPath, threadId]]);
   });
 
   it('没有 session 文件（全新 thread）时回退返回空历史，不抛错', async () => {
@@ -164,5 +196,24 @@ describe('AgentService.send — 模型不在了时的提示文案', () => {
       expect(message).toContain('deepseek/deepseek-v4-flash-vision-exp');
       expect(message).toContain('切换模型');
     }
+  });
+
+  it('别的失败（不是模型不在了）原样抛出，不会被套成"切换模型"的提示', async () => {
+    // 正向前置，同一条用例里做，不靠隔壁一条反向对照：先证明"模型确实不在了"
+    // 这个条件下 send() 的判据真的命中、真的换成了提示——不然下面"没被套皮"
+    // 的断言有可能只是因为判据整体没生效（比如误改成永远不命中），不是因为
+    // 它精确地只在这一种失败下才转换。
+    (createSession as any).mockRejectedValue(new ModelUnavailableError('deepseek', 'model-gone'));
+    await expect(agentService.send('t-model-gone', '/proj', '你好')).rejects.toMatchObject({ code: 'llm.invalid' });
+
+    // 换一种失败——不是模型不在了，是别的（这里用一个带 code 的权限类错误模拟
+    // ensureSession 里 resolveActive/createSession 阶段可能冒出的真实故障）。
+    // 断身份而不是文案：toBe 要求 send() 抛出来的就是同一个引用；如果生产代码
+    // 把 instanceof 判据改成恒真（或范围改宽），这里会被错误地转换成
+    // KydogError('llm.invalid', ...)，不再是原来那个对象，toBe 立刻能抓到——
+    // 只做 message 子串匹配的话，换一种"文案凑巧一样"的新错误照样能骗过去。
+    const originalErr = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    (createSession as any).mockRejectedValue(originalErr);
+    await expect(agentService.send('t-other-fail', '/proj', '你好')).rejects.toBe(originalErr);
   });
 });
