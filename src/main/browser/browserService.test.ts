@@ -325,6 +325,23 @@ describe('openBlank', () => {
     expect(s.activeTabId).toBe(tabId);
   });
 
+  /**
+   * 上一条的「并把它设成活动标签」在空注册表上是**恒真**的：`TabRegistry.create()`
+   * 自己就有「账本里有标签就必须有活动标签」的规则（`activeId === null` 时新标签
+   * 无条件接活动位，见 `tabRegistry.ts` 的 `create()`），跟 `openBlank()` 里那句
+   * 显式 `this.registry.activate(tabId)` 有没有执行无关——删掉那一句，上一条用例
+   * 照样绿（已用变异验证）。这一条先垫一张标签把注册表填非空、活动标签是它，
+   * 再验证第二次 `openBlank()` 确实把活动标签**切过去**：这时「首标签自动激活」
+   * 那条规则不成立，能让断言成立的只剩 `openBlank()` 自己那句显式 activate。
+   */
+  it('注册表已有标签时，openBlank 仍会把活动标签切到新标签', () => {
+    const { svc } = make();
+    const { tabId: first } = svc.openBlank();
+    expect(svc.getState().activeTabId).toBe(first); // 前提：垫的这张已经是活动标签
+    const { tabId: second } = svc.openBlank();
+    expect(svc.getState().activeTabId).toBe(second);
+  });
+
   it('它是用户的标签，不会在 run 结束时被回收', () => {
     const { svc } = make();
     const { tabId } = svc.openBlank();
