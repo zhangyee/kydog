@@ -334,3 +334,50 @@ describe('TabStrip：三个按钮在滚动容器外面（Task 4）', () => {
     m.unmount();
   });
 });
+
+/**
+ * **`onGo` 的 tabId 路由（Task 4 修复轮 R1）**。
+ *
+ * `UrlBar` 的 `onGo` 签名从 `(url, newTab)` 收成 `(url)` 之后，「有活动标签就带
+ * `tabId`、没有就不带」这条判断全挪到了 `BrowserSidebar` 传给 `UrlBar` 的那个
+ * 闭包里（`:66-68`），而这段路由本身**没有任何用例守着**——评审实测把它退化成
+ * 恒不带 `tabId`（即恒 `{ url }`），全量仍然全绿。
+ *
+ * 两条缺一不可：只有「有活动标签」那条，「恒带 tabId」的退化也会绿；只有
+ * 「没有标签」那条，「恒不带」的退化也会绿。第二条特意用 `hasOwnProperty`
+ * 断「这个键不存在」，不是断「值是 undefined」——否则 `{ url, tabId:
+ * active?.id }` 这种没有活动标签时把 `tabId` 显式设成 `undefined`、但键还在
+ * 的退化会被 `toEqual` 之类的宽松比较放过（`toEqual` 视 `{a: undefined}` 与
+ * `{}` 相等，但键存不存在是这条要守的东西）。
+ */
+describe('BrowserSidebar：onGo 的 tabId 路由（Task 4 修复轮 R1）', () => {
+  it('有活动标签时，地址栏提交的网址：browser.open 带 tabId，等于活动标签的 id', () => {
+    useBrowserStore.setState({
+      epoch: 5, revision: 1, tabs: [tab(), tab({ id: 't2' })], activeTabId: 't2',
+    });
+    const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
+    const bar = findOneWhere(m.tree, (el) => el.type === UrlBar);
+    (bar.props.onGo as (url: string) => void)('https://example.com/');
+
+    const opens = calls.filter((c) => c.method === 'browser.open');
+    expect(opens).toHaveLength(1);
+    const args = opens[0].args as Record<string, unknown>;
+    expect(args.url).toBe('https://example.com/');
+    expect(args.tabId).toBe('t2');
+    m.unmount();
+  });
+
+  it('一个标签都没有时，地址栏提交的网址：browser.open 的参数里没有 tabId 这个键', () => {
+    useBrowserStore.setState({ epoch: 5, revision: 1, tabs: [], activeTabId: null });
+    const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
+    const bar = findOneWhere(m.tree, (el) => el.type === UrlBar);
+    (bar.props.onGo as (url: string) => void)('https://example.com/');
+
+    const opens = calls.filter((c) => c.method === 'browser.open');
+    expect(opens).toHaveLength(1);
+    const args = opens[0].args as Record<string, unknown>;
+    expect(args.url).toBe('https://example.com/');
+    expect(Object.prototype.hasOwnProperty.call(args, 'tabId')).toBe(false);
+    m.unmount();
+  });
+});
