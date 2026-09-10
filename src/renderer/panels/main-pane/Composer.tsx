@@ -56,6 +56,10 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const defaultModel = useLlmStore((s) => s.defaultModel);
   const allConfigured = useLlmStore((s) => s.configured);
   const openSettings = useUiStore((s) => s.openSettings);
+  // 窄模式判据用 browserOpen（协议层事实：浏览器侧栏开着），不是「对话栏宽度 <
+  // 某阈值」——后者是启发式 proxy（CLAUDE.md 开篇那条原则）。代价是把浏览器拖得
+  // 很窄、对话栏本身很宽时窄模式仍然生效——这是刻意取舍，不是没量准。
+  const narrow = useUiStore((s) => s.browserOpen);
   const override = thread?.modelOverride;
   const effectiveProviderId = override?.providerId ?? defaultProvider;
   const effectiveModelId =
@@ -234,7 +238,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
       />
       <div
         className="ky-paper-grain"
-        style={{ backgroundColor: 'var(--paper-deep)', padding: '0 22px 14px' }}
+        style={{ backgroundColor: 'var(--paper-deep)', padding: narrow ? '0 12px 14px' : '0 22px 14px' }}
       >
         <div style={{ maxWidth: 840, margin: '0 auto' }}>
         <div
@@ -286,28 +290,34 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             ) : undefined}
             right={
               <>
-                <button
-                  ref={modelPillRef}
-                  type="button"
-                  data-testid="model-pill"
-                  onClick={onModelPillClick}
-                  className="font-mono"
-                  style={{
-                    padding: '2px 10px',
-                    borderRadius: 999,
-                    border: '0.5px solid var(--color-ink-hair)',
-                    background: 'transparent',
-                    fontSize: 10,
-                    color: showBYOK ? 'var(--color-ink-faint)' : 'var(--color-ink)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {modelLabel}
-                  {!showBYOK ? ' ▾' : ''}
-                  {override ? (
-                    <span title="本 thread 已覆盖" style={{ marginLeft: 4, color: 'var(--color-ink-faint)' }}>ⓘ</span>
-                  ) : null}
-                </button>
+                {/* 模型 pill 是切模型的唯一入口。窄模式（浏览器侧栏开着）下把它收起来
+                    之后，用户必须先关浏览器侧栏才能换模型——这是产品已经确认接受的
+                    取舍，不是漏做的功能。别因为「窄模式下换不了模型」把这段当 bug
+                    修回去、加一个窄模式也显示 pill 的例外分支。 */}
+                {!narrow && (
+                  <button
+                    ref={modelPillRef}
+                    type="button"
+                    data-testid="model-pill"
+                    onClick={onModelPillClick}
+                    className="font-mono"
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: 999,
+                      border: '0.5px solid var(--color-ink-hair)',
+                      background: 'transparent',
+                      fontSize: 10,
+                      color: showBYOK ? 'var(--color-ink-faint)' : 'var(--color-ink)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {modelLabel}
+                    {!showBYOK ? ' ▾' : ''}
+                    {override ? (
+                      <span title="本 thread 已覆盖" style={{ marginLeft: 4, color: 'var(--color-ink-faint)' }}>ⓘ</span>
+                    ) : null}
+                  </button>
+                )}
                 {isRunning ? (
                   <ComposerSendButton variant="stop" onClick={onStop} />
                 ) : (

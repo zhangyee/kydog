@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
+import { useUiStore } from '../../stores/uiStore';
 import { MessageList } from './MessageList';
 import { Composer } from './Composer';
 import { NewThreadEmptyState } from './NewThreadEmptyState';
@@ -12,6 +13,9 @@ export function ThreadView({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId]);
   const initHistory = useThreadsStore((s) => s.initHistory);
   const askPending = useAskStore((s) => s.pendingByThread[threadId]);
+  // 窄模式判据与 Composer.tsx 一致：browserOpen（协议层事实），不是宽度阈值。
+  // 面包屑整行收起，为对话栏腾出横向空间。
+  const narrow = useUiStore((s) => s.browserOpen);
   // 失败连同 threadId 一起记：切走再切回来是另一条 thread 的事，不该继承上一条的错误。
   const [failure, setFailure] = useState<{ threadId: string; message: string } | null>(null);
   const error = failure?.threadId === threadId ? failure.message : null;
@@ -57,7 +61,7 @@ export function ThreadView({ threadId }: { threadId: string }) {
 
   return (
     <div className="h-full flex flex-col">
-      <ThreadBreadcrumb threadId={threadId} />
+      {!narrow && <ThreadBreadcrumb threadId={threadId} />}
       <div className="flex-1 min-h-0 flex flex-col">
         {messages.length === 0 ? (
           <NewThreadEmptyState threadId={threadId} />
