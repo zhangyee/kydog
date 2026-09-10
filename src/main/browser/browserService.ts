@@ -1243,7 +1243,11 @@ export class BrowserService {
       case 'offscreen':
         return new KydogError('browser.target_unusable',
           `${where} 滚进视野之后仍然落在视口外（坐标 ${String(r.x)},${String(r.y)}，视口 ${String(r.vw)}×${String(r.vh)}）`
-          + '—— 多半有一个自己就在视口外的滚动容器，或者 position:fixed 的祖先。');
+          + '—— 多半有一个自己就在视口外的滚动容器，或者 position:fixed 的祖先。'
+          // 站点的平滑滚动【不是】原因：`measure` 发的是 `behavior: 'instant'`，整条滚动链
+          // 都是瞬时的（实测见 injected/interact.js 的 measure 那段）。这句话是写给模型的，
+          // 免得它把「页面在动」当成成因去查——那条路 2026-09-10 之前确实是成因，现在不是了。
+          + '（页面开没开平滑滚动不影响：这一下是瞬时滚动。）');
       case 'intercepted':
         return new KydogError('browser.click_intercepted',
           `${where} 那个位置上被 ${String(r.by)} 挡住了（cookie 横幅、授权对话框这类浮层会静默吃掉点击）。`

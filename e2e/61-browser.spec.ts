@@ -1018,6 +1018,127 @@ test.describe('61-browser', () => {
   });
 
   /**
+   * **平滑滚动的站点上，动作路径照样落得到目标。**
+   *
+   * 2026-09-10 之前不成立：`measure` 的 `scrollIntoView` 不带 `behavior`，用的是
+   * `scroll-behavior` 的计算值 —— **站点说了算**。站点开了平滑滚动时那一下是动画，
+   * 而 `scrollIntoView` 不等动画结束就返回，紧接着量到的是动画还没开始的坐标，
+   * `measure` 报 `offscreen`，**重试也不自愈**（每次量到另一个中间态）。
+   * Scholar / 百度学术这类源都可能命中。修法是把 `behavior: 'instant'` 写死在
+   * `measure` 里，把「会不会平滑」从站点手里拿回来。
+   *
+   * **替身守不住这条**：`interact.test.ts` 的 `El` 只记下 `scrollIntoView` 收到的参数，
+   * 它不会动画、也没有视口 —— 参数对不对它守得住，「动画中途量坐标」它量不到。
+   * 所以这条必须在真浏览器里，且页面必须**真的开着**平滑滚动。
+   *
+   * 两条滚动链都考：外层文档（`html{scroll-behavior:smooth}`）与一个自己也开着
+   * 平滑滚动的内层 `overflow:auto` 容器 —— 实测 `behavior:'instant'` 把**整条链**
+   * 都压成瞬时，不是只压最外层。
+   */
+  test('站点开了平滑滚动：两条滚动链上的 type 都落到目标身上', async () => {
+    const { launched, fixturePath } = await launchWithAgent();
+    const { app, page } = launched;
+    try {
+      const opened = await openTab(page, 'https://example.com/');
+
+      await inPage(app, 'example.com', `(() => {
+        document.documentElement.style.scrollBehavior = 'smooth';
+        document.body.innerHTML = '';
+        // ① 外层链：文档自己滚，目标在 3000 像素以下。
+        const tall = document.createElement('div');
+        tall.style.cssText = 'position:relative;width:1px;height:6000px';
+        const far = document.createElement('input');
+        far.id = 'kydog-far';
+        far.type = 'text';
+        far.setAttribute('aria-label', 'KYDOG远框');
+        far.style.cssText = 'position:absolute;left:0;top:3000px;width:200px;height:30px';
+        tall.appendChild(far);
+        document.body.appendChild(tall);
+        // ② 内层链：容器自己在首屏内、自己也开着平滑滚动，目标在容器内容的深处。
+        const box = document.createElement('div');
+        box.id = 'kydog-box';
+        box.style.cssText = 'position:absolute;left:400px;top:100px;width:300px;height:400px;'
+          + 'overflow:auto;scroll-behavior:smooth';
+        const inner = document.createElement('div');
+        inner.style.cssText = 'position:relative;width:280px;height:5000px';
+        const deep = document.createElement('input');
+        deep.id = 'kydog-deep';
+        deep.type = 'text';
+        deep.setAttribute('aria-label', 'KYDOG深框');
+        deep.style.cssText = 'position:absolute;left:0;top:4000px;width:200px;height:30px';
+        inner.appendChild(deep);
+        box.appendChild(inner);
+        document.body.appendChild(box);
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        return true;
+      })()`);
+
+      // **这条断言是这个用例的地基。** 没有它，「夹具压根没把平滑滚动打开」与
+      // 「打开了、而我们把它压住了」长得一模一样 —— 那时这条用例永远绿，
+      // 而它本该证明的事情一件都没证明。
+      const css = await inPage<{ doc: string; box: string; scrollY: number; boxTop: number }>(
+        app, 'example.com', `(() => {
+          const box = document.getElementById('kydog-box');
+          return {
+            doc: getComputedStyle(document.documentElement).scrollBehavior,
+            box: getComputedStyle(box).scrollBehavior,
+            scrollY: window.scrollY, boxTop: box.scrollTop,
+          };
+        })()`);
+      expect(css.doc, '夹具必须真的把文档的平滑滚动打开 —— 否则这条用例什么也没考').toBe('smooth');
+      expect(css.box, '夹具必须真的把内层容器的平滑滚动打开').toBe('smooth');
+      expect(css.scrollY, '开考之前文档不能已经滚过').toBe(0);
+      expect(css.boxTop, '开考之前内层容器不能已经滚过').toBe(0);
+
+      const res = await runTools(page, fixturePath, [{
+        toolCallId: 'tc-smooth',
+        name: 'browser_act',
+        args: {
+          tabId: opened.tabId,
+          // **顺序有讲究**：内层那个容器在文档 y=100，把它带进视野会把外层文档又滚回
+          // 顶部。所以内层先做、外层后做，最后那两条几何断言量到的才都是「真的滚过」。
+          // 反过来写的话 `scrollY` 会落回 0，而那不是回归，是这条用例自己踩了顺序。
+          actions: [
+            { kind: 'type', selector: '#kydog-deep', text: 'kydog-e2e-内层' },
+            { kind: 'type', selector: '#kydog-far', text: 'kydog-e2e-外层' },
+          ],
+        },
+      }]);
+      const out = res.get('tc-smooth')!;
+      // **这条近乎恒真，别把它当成守门的那一条**：`runBatch` 把动作级失败写成正文里的
+      // 「⚠ 第 N 个动作失败：…」，**工具终态仍然是 `ok`** —— 只有工具级抛出（坏 tabId、
+      // 没有快照）才 `failed`。实测：拿掉 `behavior:'instant'` 之后这一条照样绿，
+      // 红的是下面那条 `not.toContain` 与再下面两条值断言。留着它是为了工具级出事时
+      // 能把正文摆出来，不是为了守本条回归。
+      expect(out.status,
+        `browser_act 工具级不该抛。实际结果开头：${out.text.slice(0, 500)}`).toBe('ok');
+      // 回归前这里逐字是：「⚠ 第 1 个动作失败：选择器 "#kydog-deep" 滚进视野之后仍然
+      // 落在视口外（坐标 504,4118，视口 1280×800）」——这条才是守门的。
+      expect(out.text,
+        '结果里不该出现 offscreen 那句诊断 —— 出现了就说明 measure 又在动画中途量坐标了')
+        .not.toContain('仍然落在视口外');
+
+      const after = await inPage<{ far: string; deep: string; scrollY: number; boxTop: number }>(
+        app, 'example.com', `(() => {
+          const box = document.getElementById('kydog-box');
+          return {
+            far: document.getElementById('kydog-far').value,
+            deep: document.getElementById('kydog-deep').value,
+            scrollY: window.scrollY, boxTop: box.scrollTop,
+          };
+        })()`);
+      expect(after.far, '外层那个框必须真的收到了字').toBe('kydog-e2e-外层');
+      expect(after.deep, '内层那个框必须真的收到了字').toBe('kydog-e2e-内层');
+      // 两条链各自都得真的动过 —— 只断言「打上了字」的话，一个不需要滚动就够得着的
+      // 夹具也能让这条绿，而「滚进视野」正是被测的那一件事。
+      expect(after.scrollY, '外层文档必须真的滚下去了（目标在 3000 像素以下）').toBeGreaterThan(1000);
+      expect(after.boxTop, '内层容器必须真的滚下去了（目标在容器内容 4000 像素处）').toBeGreaterThan(1000);
+    } finally {
+      await teardown(launched);
+    }
+  });
+
+  /**
    * `e2e-requirements.md` **E-4 的另一半：密码硬闸**。走真的 `browser_act` 的 `type`，
    * 目标是**真快照里的编号**（不是 selector）—— 那正是第一道闸（`browserService.ts` 里
    * `dispatch` 的 `assertTypeAllowed(resolved)`）唯一管得着的形态：它只在

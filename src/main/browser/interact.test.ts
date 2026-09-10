@@ -306,11 +306,22 @@ describe('目标解析', () => {
 // ── B · spec §4.2 的三件事 ─────────────────────────────────────────────────
 
 describe('点击之前的三件事，一件都不能省', () => {
-  it('① 滚进视野：用元素自己的 scrollIntoView，居中', () => {
+  it('① 滚进视野：用元素自己的 scrollIntoView，居中，且**瞬时**', () => {
     const q = new El('BUTTON', { sel: '#b', rect: rect(10, 10, 100, 40) });
     const { call } = stage([q]);
     call({ op: 'measure', target: bySel('#b') });
-    expect(q.scrollIntoViewCalls).toEqual([{ block: 'center', inline: 'center' }]);
+    // `behavior: 'instant'` 是判据的一部分，不是可有可无的美化参数：不写它就用
+    // `scroll-behavior` 的计算值，**站点说了算**。站点开了平滑滚动时这一下是动画，
+    // 而 `scrollIntoView` 不等动画结束就返回，紧接着量到的是动画还没开始的坐标 ——
+    // `measure` 报 `offscreen`，`click`/`type`/`hover` 在那种站点上碰不到需要滚动
+    // 才够得着的目标，而且**重试不自愈**。实测数据写在 `injected/interact.js` 的
+    // measure 那段 docblock 里。真页面上的回归由 `e2e/61-browser.spec.ts` 那条
+    // 「站点开了平滑滚动，type 照样落到目标身上」守着（替身量不到动画）。
+    expect(q.scrollIntoViewCalls,
+      "measure 的 scrollIntoView 必须带 behavior:'instant' —— 少了它，平滑滚动的站点上"
+      + '这一整条动作路径都会失败在 offscreen 上').toEqual([
+      { block: 'center', inline: 'center', behavior: 'instant' },
+    ]);
   });
 
   // 快照里的坐标是**快照当时**的。输入框展开一次、图片加载完一次就旧了，

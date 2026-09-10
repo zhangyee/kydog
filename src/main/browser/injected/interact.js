@@ -218,9 +218,33 @@
    * 下面这行改成「算滚动偏移而不真滚」之类的做法，那条判据会**静默失效**
    * （永远绿、不报错，只是不再区分两道闸）。同一条用例里有一个非密码输入框的
    * 对照动作断言 `scrollY > 0`，真改了它会先红 —— 别把那条对照当成多余的删掉。
+   *
+   * **`behavior: 'instant'` 不能去掉。** 不写它时用的是 `scroll-behavior` 的计算值，
+   * 也就是**站点说了算**：站点写 `scroll-behavior: smooth`（html 上或内层滚动容器上）
+   * 时这一下是动画，而 `scrollIntoView` **不等动画结束就返回**，紧接着那行
+   * `getBoundingClientRect()` 量到的是动画还没开始的坐标 —— 于是下面那道视口判据
+   * 报 `offscreen`，`click` / `type` / `hover` 在任何平滑滚动的站点上都碰不到需要
+   * 滚动才够得着的目标。**重试不自愈**：每次量到的都是另一个中间态。
+   *
+   * 实测（Electron 41.2.1，example.com 上注入夹具，2026-09-10）：
+   *  · 站点 `html{scroll-behavior:smooth}`、目标在文档 y=3000 —— 不带 `behavior`：
+   *    `scrollY` 0 → **0**，rect.top 3120，判成 `offscreen`；连调两次结果逐字相同。
+   *  · 同一页、带 `behavior:'instant'`：`scrollY` 0 → **2738**，rect.top 382，进视口。
+   *  · 内层 `overflow:auto` 且自己也 `scroll-behavior:smooth` 的容器：不带 `behavior`
+   *    容器 `scrollTop` 0 → **0**（rect.top 4100，视口外）；带 `instant` → **3818**
+   *    （rect.top 282，进视口）。**整条滚动链都被压成瞬时**，不只是最外层。
+   *
+   * 用 `instant` 而不是等 `scrollend`（Electron 41 上 `'onscrollend' in window` 为
+   * **true**，确实有这个事件）是因为：等事件要把这个同步函数改成异步，而「等多久」
+   * 除了事件本身没有别的协议层信号 —— 一旦滚动压根没发生（元素已在位）就没有
+   * `scrollend`，只能补一个超时兜底，那就是 CLAUDE.md 开篇禁的时间窗。
+   * `instant` 反过来把「会不会平滑」从站点手里拿回来，不需要等任何东西。
+   *
+   * **它没有换掉 `scrollIntoView` 这个调用**，所以那条 e2e 判据（数隔离世界里
+   * `Element.prototype.scrollIntoView` 被调了几次）照旧成立。
    */
   const measure = (el) => {
-    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch { /* 有的替身没有它 */ }
+    try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch { /* 有的替身没有它 */ }
     let r;
     try { r = el.getBoundingClientRect(); } catch { return { ok: false, reason: 'not_found' }; }
     // 与 walker 的 visible() 第一条同一个判据：折叠到看不见的元素点不到。
