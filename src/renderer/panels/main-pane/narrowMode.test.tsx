@@ -143,10 +143,22 @@ function findModelPill(tree: unknown) {
 }
 
 describe('Composer：模型 pill 收在窄模式里', () => {
-  it('浏览器开着 → 模型 pill 不渲染', () => {
+  // `findModelPill` 内层用的是 `queryByTestId`——找不到就返回 null，不抛错。
+  // 单独写「开着 → 不渲染」断言 `toBeNull()`，会有两个让它为真的原因：① pill 真的没
+  // 渲染（要守的）；② 查找本身坏了（比如 `data-testid="model-pill"` 被改名，
+  // `queryByTestId` 一样返回 null）。受控变异证实过：只改那个字符串，这条断言照样绿，
+  // 得靠隔壁「关着 → 在」那条独立用例才会红——假绿被反向对照兜住，不是被这条断言自己
+  // 拆穿。这里把「查找找得到」的前置断言收进同一条用例：先以关着渲染一次、断言找得到
+  // pill，再切成开着渲染、断言找不到——`data-testid` 被改名时，第一步就会红，不用等
+  // 隔壁那条。
+  it('浏览器开着 → 模型 pill 不渲染（先证明关着时查得到，堵住 queryByTestId 找不到就返回 null 的假绿）', () => {
+    useUiStore.setState({ browserOpen: false });
+    const closed = mount(Composer, { threadId: 't1' });
+    expect(findModelPill(closed.tree)).not.toBeNull();
+
     useUiStore.setState({ browserOpen: true });
-    const m = mount(Composer, { threadId: 't1' });
-    expect(findModelPill(m.tree)).toBeNull();
+    const opened = mount(Composer, { threadId: 't1' });
+    expect(findModelPill(opened.tree)).toBeNull();
   });
 
   it('浏览器关着 → 模型 pill 在（反向对照：没有这条，「pill 被彻底删掉」也会让上一条绿）', () => {
