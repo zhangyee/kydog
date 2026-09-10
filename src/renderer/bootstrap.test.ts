@@ -106,7 +106,10 @@ beforeEach(() => {
   };
   (globalThis as unknown as { window: unknown }).window = {
     // bootstrap.ts 拿它初始化 uiStore.windowWidth（见 syncWindowWidth）。
-    innerWidth: 1280,
+    // **刻意不等于 uiStore 里 windowWidth 的默认值（1280）**：评审 I-2 实测，两个数撞在一起时，
+    // 下面那条「初始化」断言删掉 bootstrap.ts 里的 syncWindowWidth() 调用也照样绿——
+    // 断的其实是 store 的默认值，不是同步这件事本身。
+    innerWidth: 1600,
     kydog: {
       invoke: (method: string) => {
         trace.push(`invoke:${method}`);
@@ -198,7 +201,7 @@ describe('bootstrap 装了窗口宽度的 resize 监听', () => {
    */
   it('启动时用 window.innerWidth 初始化，resize 后监听器真的把新宽度写回 store', async () => {
     await bootstrap();
-    expect(useUiStore.getState().windowWidth).toBe(1280);
+    expect(useUiStore.getState().windowWidth).toBe(1600);
 
     (globalThis as unknown as { window: { innerWidth: number } }).window.innerWidth = 900;
     const fns = windowListeners.get('resize') ?? [];

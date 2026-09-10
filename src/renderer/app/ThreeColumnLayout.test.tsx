@@ -155,4 +155,23 @@ describe('ThreeColumnLayout：右栏挂哪个节点、按哪一份宽度排版',
     expect(centerTrack(m.tree)).toBe('1fr');
     expect(rightTrack(m.tree)).toBe('505px');
   });
+
+  /**
+   * 评审 I-1：组件把 `browserWidth` 传给 `rightPaneLayout` 那一行，把 `null` 换成
+   * `browserWidth ?? 0` 之后 `tsc` 与全量测试仍然全绿——「没设定过时按 4:6 算」这条路
+   * 在**组件这一层**零覆盖（`rightPane.test.ts` 只守了 `browserWidthFor` 自己，
+   * 没守组件有没有把 `null` 原样递过去）。
+   *
+   * `windowWidth: 1280`、`workspaceWidth: 260`（左栏展开）→
+   * `availableForCenterAndRight(1280, false, 260)` = 1012 →
+   * `browserWidthFor(null, 1012)` = 607。
+   */
+  it('browserWidth 从没设定过（null）→ 按 4:6 现算，不是传 0', () => {
+    useUiStore.setState({
+      browserOpen: true, browserWidth: null, workspaceCollapsed: false,
+      workspaceWidth: 260, windowWidth: 1280,
+    });
+    const m = mount(ThreeColumnLayout, props);
+    expect(rightTrack(m.tree)).toBe('607px');
+  });
 });
