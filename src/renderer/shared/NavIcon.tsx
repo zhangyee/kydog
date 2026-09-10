@@ -30,6 +30,7 @@ export type NavIconName =
   | 'clock'
   | 'messages-square'
   | 'circle-plus'
+  | 'plus'
   | 'arrow-up'
   | 'arrow-right'
   | 'arrow-left'
@@ -201,6 +202,10 @@ const ICONS: Record<NavIconName, IconSpec> = {
     paths: ['M8 12h8', 'M12 8v8'],
     circles: [{ cx: 12, cy: 12, r: 10 }],
   },
+  // 裸加号（没有那个圈）。浏览器标签条上的「新建标签」用它 —— `circle-plus` 的圈
+  // 与那一行其余元素（标签、全屏）的线条语言不一致，而且圈占掉大半，里面的加号
+  // 只剩 8/24，视觉上比同尺寸的其他图标小一圈。
+  plus: { paths: ['M5 12h14', 'M12 5v14'] },
   'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
   'arrow-right': { paths: ['M5 12h14', 'm12 5 7 7-7 7'] },
   'arrow-left': { paths: ['M19 12H5', 'm12 19-7-7 7-7'] },

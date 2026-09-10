@@ -124,7 +124,7 @@ export function TabStrip({
       {/* `+`：跟在最后一个标签右边，随标签条一起横向滚动（见上面那条 docblock）。 */}
       <div className="flex items-center shrink-0 h-full">
         <IconButton size={24} testId="browser-new-tab" tooltip="新建标签页" onClick={onNewTab}>
-          <NavIcon name="circle-plus" size={13} />
+          <NavIcon name="plus" size={14} />
         </IconButton>
       </div>
       </div>
