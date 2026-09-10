@@ -650,10 +650,12 @@ test.describe('61-browser', () => {
 
       await assertButtonInPane('browser-fullscreen', '未滚动（默认状态，这是这条用例的主判据之一）');
 
-      // 正向前置：+ 滚动前的真实几何位置——下面滚动之后要跟它比，证明 + 真的
-      // 随滚动容器移动了。先确认它有真实几何位置（不是被误删、不在 DOM 里）。
+      // 正向前置：+ 滚动前的真实几何位置和容器的 scrollLeft——下面滚动之后都要
+      // 跟这两个比，证明 + 真的随滚动容器移动了（而不只是方向凑巧对了）。先确认
+      // + 有真实几何位置（不是被误删、不在 DOM 里）。
       const newTabBefore = await page.getByTestId('browser-new-tab').boundingBox();
       expect(newTabBefore, '+ 应有真实几何位置（不在 DOM 里或被隐藏了）').toBeTruthy();
+      const scrollLeftBefore = await scroll.evaluate((el) => el.scrollLeft);
 
       // 把标签条滚到最右（模拟翻看最后打开的那个标签）。
       //
@@ -668,14 +670,33 @@ test.describe('61-browser', () => {
         + 'browser-tabscroll 已经不是真正的滚动容器了（比如 overflow-x-auto 被挪到了别的元素上）')
         .toBeGreaterThan(0);
 
-      // 正向判据：+ 确实跟着滚动容器一起移动了——滚到最右之后它的 x 必须比滚动前
-      // 更靠左（被滚动带进视野）。它是滚动容器里最后一个节点，未滚动时大概率被
-      // 挤在可视区右边看不见，滚动之后应当出现在标签条的最右端。
+      // 正向判据：+ 确实跟着滚动容器一起移动了——不只是方向对（滚到最右之后它的 x
+      // 必须比滚动前更靠左），位移幅度还必须与容器的 scrollLeft 变化量相当。只判
+      // 方向会被「视觉钉死」类回归假绿：给 + 加 `position: sticky` 之后它的祖先
+      // 依然在 browser-tabscroll 里（结构判据照样通过），方向也没错（它会被子像素
+      // 取整噪声带动零点几像素），但幅度只有滚动量的千分之几——这正是这条判据要
+      // 抓住的场景。+ 是滚动容器里跟内容一起走的普通 flex 子元素，它在文档坐标系
+      // 里的位置不变，屏幕坐标 = 文档坐标 − scrollLeft，所以真的跟随滚动时位移应
+      // 精确等于 scrollLeft 的变化量（同一帧内的整数像素取整/子像素渲染噪声除外）。
+      // 容差实测：干净构建（`npm run package`）下连续跑 5 次，`xDelta` 与
+      // `scrollDelta` 均为 226、`Math.abs(xDelta - scrollDelta)` 每次都是 0px——
+      // 这条用例的几何在这台机器上没有可观测的子像素噪声。这里仍留 2px 余量（不
+      // 拍 0 容差，防未知环境下的 DPR/取整差异），离「视觉钉死」变异下应有的落差
+      // （226px 滚动量对应约 0.375px 位移，缺口约 225.6px）还差两个数量级，不会
+      // 把它放过。
       const newTabAfter = await page.getByTestId('browser-new-tab').boundingBox();
       expect(newTabAfter, '滚动之后 + 应仍有真实几何位置').toBeTruthy();
       expect(newTabAfter!.x, '+ 应当随 browser-tabscroll 的横向滚动一起移动——'
         + '滚到最右之后它的左边界应比滚动前更靠左，不然它已经不在这个滚动容器里了')
         .toBeLessThan(newTabBefore!.x);
+
+      const xDelta = newTabBefore!.x - newTabAfter!.x;
+      const scrollDelta = scrollLeftAfter - scrollLeftBefore;
+      const TOLERANCE_PX = 2;
+      expect(Math.abs(xDelta - scrollDelta), `+ 的位移（${xDelta}px）应当与容器 scrollLeft `
+        + `的变化量（${scrollDelta}px）相当——只判方向会被「视觉钉死」类回归假绿（+ 祖先仍在 `
+        + '滚动容器里、方向也不错，但幅度只有滚动量的千分之几）')
+        .toBeLessThanOrEqual(TOLERANCE_PX);
 
       // 滚动确认真的发生之后，再量全屏按钮几何：它不在这个滚动容器里，位置不该跟着动。
       await assertButtonInPane('browser-fullscreen', '滚到最右之后');
