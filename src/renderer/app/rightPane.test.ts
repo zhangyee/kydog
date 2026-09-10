@@ -136,6 +136,18 @@ describe('rightPaneLayout 全屏', () => {
     expect(rightPaneLayout(S()).centerHidden).toBe(false);
   });
 
+  /**
+   * 第九条假绿（M-2）：上面那条 `S()` 的默认夹具 `browserFullscreen` 恒为 `false`，
+   * 「关着 → centerHidden 假」这条断言分不清「关着那一支硬写死 false」与「它其实跟着
+   * browserFullscreen 走」——把关着那一支改成 `centerHidden: s.browserFullscreen`，
+   * 上面那条一样绿。这条把 browserFullscreen 显式翻成 true 单独钉住：
+   * 浏览器都关了，中栏不能藏，跟 browserFullscreen 是什么值无关（那是 C-1 的场景——
+   * 标题栏地球按钮关浏览器时若漏清 browserFullscreen，残留的 true 就靠这一支挡住）。
+   */
+  it('浏览器关着时 centerHidden 恒为假，哪怕 browserFullscreen 残留 true', () => {
+    expect(rightPaneLayout(S({ browserOpen: false, browserFullscreen: true })).centerHidden).toBe(false);
+  });
+
   /** 全屏是浏览器的事，不许把用户的 Inspector 收起状态掰了。 */
   it('全屏不改 inspectorCollapsed：关掉浏览器之后 Inspector 回原样', () => {
     const before = S({ inspectorCollapsed: true });

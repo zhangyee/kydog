@@ -193,7 +193,14 @@ export const useUiStore = create<UiState>((set) => ({
   setReadingFontSize: (s) => set({ readingFontSize: s }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
-  toggleBrowser: () => set((s) => ({ browserOpen: !s.browserOpen })),
+  // 关的那一支要跟 closeBrowser 对齐：顺手清掉全屏。标题栏地球按钮走的正是这条路
+  // （不是 closeBrowser）——漏了这句的话，开→全屏→用地球关→用地球再开，
+  // browserFullscreen 残留 true，rightPaneLayout 会把中栏判成 centerHidden，
+  // 对话栏 0px，而用户按的明明是「打开侧栏」。
+  toggleBrowser: () => set((s) => {
+    const browserOpen = !s.browserOpen;
+    return browserOpen ? { browserOpen } : { browserOpen, browserFullscreen: false };
+  }),
   // 关掉浏览器时顺手清掉全屏 —— 留着的话下次打开会直接是全屏，而用户按的是「打开侧栏」。
   closeBrowser: () => set({ browserOpen: false, browserFullscreen: false }),
   setWorkspaceWidth: (w) => set({ workspaceWidth: Math.max(0, w) }),

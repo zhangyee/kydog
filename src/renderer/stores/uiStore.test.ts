@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useUiStore } from './uiStore';
 import { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
+import { rightPaneLayout } from '../app/rightPane';
 
 function reset() {
   useUiStore.setState({ openFileTabs: [], activeFileTabId: null, activeCenterTab: 'thread' });
@@ -318,6 +319,46 @@ describe('uiStore 浏览器侧栏', () => {
     useUiStore.setState({ browserOpen: true, browserFullscreen: true });
     useUiStore.getState().closeBrowser();
     expect(useUiStore.getState().browserFullscreen).toBe(false);
+  });
+
+  /**
+   * C-1：标题栏地球按钮走的是 toggleBrowser，不是 closeBrowser。上面那条只守了
+   * closeBrowser 那一支，这条守 toggleBrowser 的关支必须做同一件事——两个入口
+   * 不能有一个漏了清全屏。
+   */
+  it('toggleBrowser 关的那一支也顺手把全屏关掉', () => {
+    useUiStore.setState({ browserOpen: true, browserFullscreen: true });
+    useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().browserOpen).toBe(false);
+    expect(useUiStore.getState().browserFullscreen).toBe(false);
+  });
+
+  /** toggleBrowser 开的那一支不该碰 browserFullscreen——它本来就是 false，不必被顺手翻动。 */
+  it('toggleBrowser 开的那一支不碰全屏状态', () => {
+    useUiStore.setState({ browserOpen: false, browserFullscreen: false });
+    useUiStore.getState().toggleBrowser();
+    expect(useUiStore.getState().browserOpen).toBe(true);
+    expect(useUiStore.getState().browserFullscreen).toBe(false);
+  });
+
+  /**
+   * C-1 的完整复现场景，端到端：开浏览器 → 全屏 → 用地球关掉 → 用地球再开，
+   * 中栏（对话栏）不能被判成 centerHidden——用户按的是「打开侧栏」，不是「全屏」。
+   * 改之前这条会在最后一步量到 centerHidden: true（对话栏 0px）。
+   */
+  it('开→全屏→toggle 关→toggle 开，centerHidden 仍为假', () => {
+    useUiStore.getState().toggleBrowser();
+    useUiStore.getState().toggleBrowserFullscreen();
+    useUiStore.getState().toggleBrowser();
+    useUiStore.getState().toggleBrowser();
+    const s = useUiStore.getState();
+    expect(s.browserOpen).toBe(true);
+    expect(s.browserFullscreen).toBe(false);
+    expect(rightPaneLayout({
+      browserOpen: s.browserOpen, browserWidth: s.browserWidth, browserFullscreen: s.browserFullscreen,
+      inspectorCollapsed: s.inspectorCollapsed, inspectorWidth: s.inspectorWidth,
+      availableWidth: 1012,
+    }).centerHidden).toBe(false);
   });
 
   it('toggleBrowserFullscreen 开合，且不碰 browserOpen', () => {
