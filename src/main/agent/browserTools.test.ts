@@ -569,6 +569,54 @@ describe('tabsLine 带标题', () => {
     expect(header).toContain('a.example');
   });
 
+  // 边界：`>` 而不是 `>=` —— 正好 40 字不截，41 字才截。评审批准前这两个点零覆盖。
+  it('标题正好 40 字：不截断，原样保留', async () => {
+    const title = '综述'.padEnd(40, '补');
+    expect(title.length).toBe(40);
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBe(40);
+    expect(seg.endsWith('…')).toBe(false);
+    expect(seg).toBe(title);
+  });
+
+  it('标题 41 字：截断到 40 字 + 省略号', async () => {
+    const title = '综述'.padEnd(41, '补');
+    expect(title.length).toBe(41);
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBe(41); // 40 个字 + 省略号
+    expect(seg.endsWith('…')).toBe(true);
+    expect(seg.slice(0, 40)).toBe(title.slice(0, 40));
+  });
+
+  it('标题前后带空白：不进清单', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '  知网首页  ' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg).toBe('知网首页');
+  });
+
+  // 全是空白的标题：trim 之后是空串，应当退回「没有标题」同一条路 —— 只给 host，不带破折号。
+  it('标题全是空白：等同没有标题，退回只给 host 不留破折号', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '   ' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).not.toContain(' — ');
+    expect(header).toContain('a.example');
+  });
+
+  // 混合情形：有标题、没有 url。「url 非空、标题为空」已有用例覆盖，这条补另一半。
+  it('标题非空、url 为空：host 退化成 about:blank，仍拼上标题', async () => {
+    bs.tabs = [{ id: 't1', url: '', title: '文献综述' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('about:blank — 文献综述');
+  });
+
   // Task 3 落地的 browser.newTab：空白标签的 url 是空串，host 退化成 about:blank；
   // 空白标签的 title 多半也是空串。两件事凑在一起不许拼出一个孤零零的破折号。
   it('空白标签：host 退化成 about:blank，标题为空时同样不留破折号', async () => {
