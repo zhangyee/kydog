@@ -374,6 +374,48 @@ describe('openBlank', () => {
     await expect(svc.dispatch(tabId, { kind: 'click', selector: '#a' }, null))
       .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
   });
+
+  /**
+   * I-1：空白标签从不导航，`create()` 把 `loading` 初始化成 true 之后没人会再翻回来 ——
+   * `syncTabMeta` 只挂在导航事件上（did-start-loading / did-stop-loading /
+   * page-title-updated / navigate()），这条路一个都不会触发。留着 true 就是
+   * 「载入灯永远转」：终评实测连开 8 个空白标签，8 个载入指示灯常亮，地址栏那个
+   * 位置被「停止」占死、用户点不到「重新载入」。这里显式翻回 false 字面成立 ——
+   * 这个标签确实没在加载任何东西。
+   */
+  it('loading 立即是 false —— 不会一直转，也不会把重新载入的位置占死', () => {
+    const { svc } = make();
+    const { tabId } = svc.openBlank();
+    expect(svc.getState().tabs.find((t) => t.id === tabId)?.loading).toBe(false);
+  });
+
+  /** 上一条只读 getState（内存里那份账本）；这条钉住它真的随 tabsChanged 广播出去了 —— 两个消费者（TabStrip 的载入灯、UrlBar 的停止/重新载入）都是订阅广播，不是轮询。 */
+  it('loading:false 随 browser.tabsChanged 广播出去，不是只改了内存', () => {
+    const { svc } = make();
+    const { tabId } = svc.openBlank();
+    const last = H.emitted.filter((e) => e.topic === 'browser.tabsChanged').at(-1);
+    expect(last).toBeDefined();
+    const tabs = (last!.payload as { tabs: Array<{ id: string; loading: boolean }> }).tabs;
+    expect(tabs.find((t) => t.id === tabId)?.loading).toBe(false);
+  });
+
+  /**
+   * M-1：`applyLayout()` 那句在这条路上零覆盖 —— 删掉它整套 189 条一条不红（评审
+   * 变异 N4）。现象是点了 `+`，账本上活动标签已经切到空白标签、渲染层画的是舞台
+   * 提示，但**上一个页面的原生 view 还盖在舞台上**（没人告诉它「你不再是活动标签
+   * 了，该让开」）。用真的舞台几何钉住 visible 分布：旧标签让开，新标签接过可见位。
+   */
+  it('建完之后真的走了一次 applyLayout：旧标签的原生 view 让开，新标签接过可见位', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    expect(H.views[0].visible).toBe(true); // 前提：旧标签此刻是活动标签、舞台可见
+
+    svc.openBlank();
+    expect(H.views[0].visible).toBe(false); // 活动位让给新标签，旧标签该让开
+    expect(H.views[1].visible).toBe(true);  // 新标签接过可见位
+  });
 });
 
 // ── §D 时限必须罩住 act ───────────────────────────────────────────────────

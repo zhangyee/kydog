@@ -790,7 +790,13 @@ export class BrowserService {
   openBlank(): { tabId: string } {
     const tabId = this.createTab('', null);
     this.registry.activate(tabId);
+    // `create()` 把 loading 初始化成 true——这条路从不导航，syncTabMeta 只挂在导航
+    // 事件上（did-start-loading / did-stop-loading / navigate()），那些事件永远不会来，
+    // 留着 true 就是「这个标签永远在转」：载入灯常亮，地址栏那个位置被「停止」占死，
+    // 重新载入点不到。这里翻回 false 字面成立——这个标签确实没在加载任何东西。
+    this.registry.update(tabId, { loading: false });
     this.applyLayout();
+    this.emit();
     return { tabId };
   }
 
