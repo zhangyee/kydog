@@ -11,6 +11,24 @@ import { rightPaneLayout } from './rightPane';
  */
 type Props = { left: ReactNode; center: ReactNode; inspector: ReactNode; browser: ReactNode };
 
+/**
+ * `rightPaneLayout` 的 `browserFullscreen` 与 `availableWidth` 这一轮还没接线（那是
+ * Task 2 的事）。**占位不用 `window.innerWidth`**：一是单测在 `node` 环境跑、没有
+ * `window`，二是接一个真实宽度会让 `browserWidthFor` 的下限钳制提前生效，改掉现在
+ * 「浏览器栏就是 `browserWidth` 本身」这个行为——那不是这一轮该碰的。用一个大到
+ * 钳制不了任何现实宽度的占位值，两边都不动。
+ */
+const PLACEHOLDER_AVAILABLE_WIDTH = 100_000;
+
+function readRightPaneState() {
+  const s = useUiStore.getState();
+  return {
+    browserOpen: s.browserOpen, browserWidth: s.browserWidth, browserFullscreen: false,
+    inspectorCollapsed: s.inspectorCollapsed, inspectorWidth: s.inspectorWidth,
+    availableWidth: PLACEHOLDER_AVAILABLE_WIDTH,
+  };
+}
+
 export function ThreeColumnLayout({ left, center, inspector, browser }: Props) {
   const wsCol = useUiStore((s) => s.workspaceCollapsed);
   const insCol = useUiStore((s) => s.inspectorCollapsed);
@@ -19,10 +37,14 @@ export function ThreeColumnLayout({ left, center, inspector, browser }: Props) {
   const browserOpen = useUiStore((s) => s.browserOpen);
   const browserWidth = useUiStore((s) => s.browserWidth);
 
-  // 归谁、多宽、收没收起是**同一个判断**，整个在 rightPane.ts（那边有用例）——
+  // 归谁、多宽、收没收起、中栏藏没藏是**同一个判断**，整个在 rightPane.ts（那边有用例）——
   // 拆在这里的话，「浏览器开着却按 Inspector 的宽度排版」三条 gate 全绿，实测过。
+  // browserFullscreen 与 availableWidth 这一轮先占位，见 PLACEHOLDER_AVAILABLE_WIDTH 的注释——
+  // 真正接线是 Task 2。
   const right = rightPaneLayout({
-    browserOpen, browserWidth, inspectorCollapsed: insCol, inspectorWidth: insWidth,
+    browserOpen, browserWidth, browserFullscreen: false,
+    inspectorCollapsed: insCol, inspectorWidth: insWidth,
+    availableWidth: PLACEHOLDER_AVAILABLE_WIDTH,
   });
 
   const cols = [
@@ -46,11 +68,11 @@ export function ThreeColumnLayout({ left, center, inspector, browser }: Props) {
       <DragHandle
         hidden={right.collapsed}
         side="right"
-        getStart={() => rightPaneLayout(useUiStore.getState()).width}
+        getStart={() => rightPaneLayout(readRightPaneState()).width}
         setWidth={(w) => {
           const s = useUiStore.getState();
           // 拖的是哪一栏，判据与上面排版用的是同一个函数，不在这里再写一遍。
-          if (rightPaneLayout(s).mode === 'browser') s.setBrowserWidth(w); else s.setInspectorWidth(w);
+          if (rightPaneLayout(readRightPaneState()).mode === 'browser') s.setBrowserWidth(w); else s.setInspectorWidth(w);
         }}
       />
       <aside
