@@ -87,6 +87,8 @@ export type LoginBrowserPort = {
   withAgentDriving<T>(tabId: string, runId: string | null, fn: () => Promise<T>, action?: string): Promise<T>;
   evalInPage(tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown>;
   onTabDestroyed(fn: (tabId: string) => void): () => void;
+  /** 见 `fillInQueue` 里那句调用的注释。 */
+  suppressConsoleForCredentials(tabId: string): void;
 };
 
 export type LoginSettingsPort = {
@@ -540,6 +542,11 @@ export class LoginFlow {
     // 立起来 —— 之后无论注入是成是败，都按 fail-closed 处理（见下面那段）。
     this.attachObserver({ tabId, entityID: inst.entityID, runId: opts.runId, webContentsId });
 
+    // **在注入之前**。密码是在 evalInPage 那一刻进页面的，页面脚本可以在我们抹掉
+    // 输入框的值之前读走它并 console.error 出来。放在之后就有一段听不见的窗口。
+    // 采集在主 frame 换到下一个文档时自动恢复（见 browserService 的 did-navigate）。
+    this.ports.browser.suppressConsoleForCredentials(tabId);
+
     let raw: unknown;
     try {
       raw = await this.ports.browser.evalInPage(tabId, (notAfter) => `(${LOGIN_FILL_SOURCE})(${JSON.stringify({
@@ -615,6 +622,7 @@ export const loginFlow = new LoginFlow({
     withAgentDriving: (tabId, runId, fn, action) => browserService.withAgentDriving(tabId, runId, fn, action),
     evalInPage: (tabId, code) => browserService.evalInPage(tabId, code),
     onTabDestroyed: (fn) => browserService.onTabDestroyed(fn),
+    suppressConsoleForCredentials: (tabId) => browserService.suppressConsoleForCredentials(tabId),
   },
   settings: {
     get: () => settingsService.get(),

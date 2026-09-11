@@ -105,6 +105,7 @@ function harness(over: {
         return next;
       },
       withAgentDriving: (tabId, runId, fn) => { log.order.push(`driving:${tabId}:${String(runId)}`); return fn(); },
+      suppressConsoleForCredentials: () => { log.order.push('suppressConsole'); },
       evalInPage: async (_tabId, code) => {
         log.order.push('evalInPage');
         log.injected.push(typeof code === 'string' ? code : code(Date.now() + 20_000));
@@ -213,14 +214,14 @@ describe('why → 错误码：按「下一步该做什么」分组，不新增�
 // ── 真正走一遍 ──────────────────────────────────────────────────────────────
 
 describe('entityID host 精确相等就直接填', () => {
-  it('走 enqueue + withAgentDriving，且顺序是 排队 → 驱动 → 取密码 → 注入', async () => {
+  it('走 enqueue + withAgentDriving，且顺序是 排队 → 驱动 → 取密码 → 关控制台 → 注入', async () => {
     const h = harness();
     const r = await h.fill();
     expect(r.host).toBe('iaaa.pku.edu.cn');
     expect(r.entityID).toBe(ENTITY);
     expect(r.institutionName).toBe('北京大学');
     expect(r.askedUser).toBe(false);
-    expect(h.log.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'reveal', 'evalInPage']);
+    expect(h.log.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'reveal', 'suppressConsole', 'evalInPage']);
     expect(h.log.asked).toEqual([]);
   });
 
@@ -240,6 +241,24 @@ describe('entityID host 精确相等就直接填', () => {
     expect(h.log.injected[0]).toContain('"submit":true');
     expect(r.submitted).toBe(true);
     expect(r.submitHow).toBe('requestSubmit');
+  });
+});
+
+describe('填凭据之前先关掉控制台采集（Task 4）', () => {
+  it('关采集排在注入之前 —— 密码是在注入那一刻才进页面的', async () => {
+    const h = harness();
+    await h.fill();
+    const off = h.log.order.indexOf('suppressConsole');
+    const inject = h.log.order.indexOf('evalInPage');
+    expect(off).toBeGreaterThanOrEqual(0);
+    expect(off).toBeLessThan(inject);
+  });
+
+  // 正向前置：证明这条断言看的是真的顺序，而不是「evalInPage 压根没发生」。
+  it('注入确实发生了 —— 上面那条比的是两件都发生过的事', async () => {
+    const h = harness();
+    await h.fill();
+    expect(h.log.order).toContain('evalInPage');
   });
 });
 

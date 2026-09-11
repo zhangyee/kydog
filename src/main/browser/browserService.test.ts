@@ -5,6 +5,7 @@ import INTERACT_SOURCE from './injected/interact.js?raw';
 import LOGIN_FILL_SOURCE from './injected/loginFill.js?raw';
 import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
 import type { AxSnapshot } from './snapshot';
+import { ZERO_CURSOR } from './consoleLog';
 
 /**
  * browserService 的替身测试。
@@ -3252,5 +3253,64 @@ describe('historyNav：没有历史就当场说，不去等满时限（Task 2）
     const { svc } = make();
     await openTab(svc);
     await expect(svc.historyNav('t404', 'back')).rejects.toMatchObject({ code: 'browser.no_tab' });
+  });
+});
+
+describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4）', () => {
+  const msg = (level: string, message: string) =>
+    ({ level, message, sourceId: 'https://a.example/x.js', lineNumber: 3 });
+
+  // 正向前置与否定断言合并进同一条：先证明「页面报的 error 真的收得到」，
+  // 再在同一条里对着 warning 断否定 —— 那样它的空结果说的是「这一档被滤掉了」，
+  // 不是「事件压根没接上」（CLAUDE.md：否定断言不能靠隔壁一条兜底）。
+  it('页面报的 error 收得到；同一份日志上 warning 不收', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    const c = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', 'boom'));
+    expect(svc.consoleSince(nav.tabId, c).lines.map((l) => l.text)).toEqual(['boom']);
+
+    const c2 = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('warning', 'careful'));
+    expect(svc.consoleSince(nav.tabId, c2).lines).toHaveLength(0);
+  });
+
+  it('填过凭据之后不再采内容，只数条数', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    const c = svc.consoleCursor(nav.tabId);
+    svc.suppressConsoleForCredentials(nav.tabId);
+    wc.fire('console-message', msg('error', 'pw=hunter2'));
+    const r = svc.consoleSince(nav.tabId, c);
+    expect(r.lines).toHaveLength(0);
+    expect(r.suppressed).toBe(1);
+    expect(JSON.stringify(r)).not.toContain('hunter2');
+  });
+
+  it('主 frame 换了文档之后恢复采集', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    svc.suppressConsoleForCredentials(nav.tabId);
+    wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
+    const c = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', '新页面的错'));
+    expect(svc.consoleSince(nav.tabId, c).lines).toHaveLength(1);
+  });
+
+  // 取游标是「记一个位置」，不是一次操作 —— 标签刚被关掉时抛错会把调用方
+  // 已经拿到的结果一起毁掉（与 runBatch 里收尾快照那处同一个失败形状）。
+  it('标签不存在时取游标回零游标、取报告回空报告，都不抛', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    expect(() => svc.consoleCursor('t404')).not.toThrow();
+    expect(svc.consoleSince('t404', svc.consoleCursor('t404')).lines).toHaveLength(0);
+  });
+
+  it('标签销毁之后那份缓冲也不在了 —— 新开的同名标签不许读到旧内容', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    wc.fire('console-message', msg('error', '旧标签的错'));
+    svc.close(nav.tabId);
+    expect(svc.consoleSince(nav.tabId, ZERO_CURSOR).lines).toHaveLength(0);
   });
 });

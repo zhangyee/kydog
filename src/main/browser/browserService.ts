@@ -16,6 +16,7 @@ import {
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
 import INTERACT_SOURCE from './injected/interact.js?raw';
+import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
 
 /**
  * 内置浏览器。主进程持有 WebContentsView —— **不是 `<webview>`**：
@@ -190,6 +191,11 @@ export class BrowserService {
   private readonly drivingFrames: DrivingFrame[] = [];
   /** 「这个标签没了」的订阅者。见 `onTabDestroyed`。 */
   private readonly tabGone = new Set<(tabId: string) => void>();
+  /**
+   * 每个标签一份控制台错误缓冲。**不是全局一份**：报告是按标签取的，混在一起
+   * 会把别的标签的错误算进这一次操作。随标签销毁一起清掉（见 destroyView）。
+   */
+  private consoles = new Map<string, TabConsoleLog>();
   private stage: Stage | null = null;
   private sessionWired = false;
 
@@ -556,6 +562,7 @@ export class BrowserService {
       },
     });
     this.views.set(id, view);
+    this.consoles.set(id, new TabConsoleLog());
     this.win.contentView.addChildView(view);
     view.setVisible(false);
     this.wireView(id, view);
@@ -655,6 +662,8 @@ export class BrowserService {
       // 状态码只有这一个到达点，不记就永远没了 —— 见 `unreportedNavs` 的说明。
       else this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
       this.snapshots.delete(id);   // 页面换了，旧快照的编号一律作废
+      // 主 frame 换了文档：凭据跟着旧文档走了，恢复采集。
+      this.consoles.get(id)?.resumeOnNewDocument();
       this.syncTabMeta(id);
     });
 
@@ -668,11 +677,22 @@ export class BrowserService {
       // hash 跳转会滚动页面、站内路由会换内容，而 resolveTarget 只在 snapshotId
       // 对不上时才报错 —— 不删就是「编号还在、指向的元素已经变了」：不报错，只是点错东西。
       this.snapshots.delete(id);
+      // 主 frame 换了文档：凭据跟着旧文档走了，恢复采集。
+      this.consoles.get(id)?.resumeOnNewDocument();
       this.syncTabMeta(id);
     });
 
     wc.on('did-fail-load', (_e, errorCode, errorDescription, _url, isMainFrame) => {
       this.navs.get(id)?.onDidFailLoad(errorCode, errorDescription, isMainFrame);
+    });
+
+    // **只收 error 那一档，由 TabConsoleLog 自己判**（这一层不重复一份判据）。
+    // 用 details 对象，不用后面那几个位置参数 —— 它们在 electron.d.ts 里
+    // 逐个标了 @deprecated。
+    wc.on('console-message', (details) => {
+      this.consoles.get(id)?.record(
+        details.level, details.message, details.sourceId, details.lineNumber,
+      );
     });
     wc.on('did-start-loading', () => this.syncTabMeta(id));
     wc.on('did-stop-loading', () => this.syncTabMeta(id));
@@ -750,6 +770,7 @@ export class BrowserService {
     this.unreportedNavs.delete(id);
     this.queues.delete(id);      // 否则 queues 只增不减
     this.cdpGone.delete(id);
+    this.consoles.delete(id);
     for (const f of this.drivingFrames) f.tabs.delete(id);
     try { if (!view.webContents.isDestroyed()) view.webContents.debugger.detach(); } catch { /* 已经断开 */ }
     try { this.win?.contentView.removeChildView(view); } catch { /* 窗口已经没了 */ }
@@ -909,6 +930,29 @@ export class BrowserService {
       return;
     }
     await this.enqueue(tabId, () => this.historyNav(tabId, action));
+  }
+
+  /**
+   * 「上一次报告到哪儿了」。**标签不存在时回零游标而不是抛** —— 取游标是记一个位置，
+   * 不是一次操作；抛的话调用方（browser_act）连已经做到的部分都交不出去
+   * （与 runBatch 里收尾快照那处同一个失败形状）。
+   */
+  consoleCursor(tabId: string): ConsoleCursor {
+    return this.consoles.get(tabId)?.cursor() ?? ZERO_CURSOR;
+  }
+
+  /** 同上：标签不存在就是一份空报告。 */
+  consoleSince(tabId: string, from: ConsoleCursor): ConsoleReport {
+    return this.consoles.get(tabId)?.since(from)
+      ?? { lines: [], omitted: 0, dropped: 0, suppressed: 0 };
+  }
+
+  /**
+   * 这个标签上填过凭据了：从此不再采集控制台**内容**，只数条数，
+   * 直到主 frame 换到下一个文档。唯一的调用方是 `loginFlow`，就在注入之前。
+   */
+  suppressConsoleForCredentials(tabId: string): void {
+    this.consoles.get(tabId)?.suppress();
   }
 
   /** 这次 back / forward / reload 要去哪。给 NavigationTracker 当下载的关联依据 ——

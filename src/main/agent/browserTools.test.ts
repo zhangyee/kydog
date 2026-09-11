@@ -259,6 +259,8 @@ const bs = vi.hoisted(() => ({
     navigationId: 'n2',
     outcome: { kind: 'ok', finalUrl: 'https://a.example/prev', httpStatusCode: 200 },
   })) as () => unknown,
+  /** 控制台报告由用例摆布。默认什么都没有。 */
+  consoleImpl: (() => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 })) as () => unknown,
 }));
 
 vi.mock('../browser/browserService', () => {
@@ -315,6 +317,8 @@ vi.mock('../browser/browserService', () => {
         bs.historyCalls.push({ tabId, action });
         return Promise.resolve(bs.historyImpl());
       },
+      consoleCursor: () => ({ seq: 0, suppressed: 0, dropped: 0 }),
+      consoleSince: () => bs.consoleImpl(),
       enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
       withAgentDriving: <T>(tabId: string, runId: string | null, fn: () => Promise<T>) => {
         bs.order.push(`driving:${tabId}:${runId}`); return fn();
@@ -403,6 +407,8 @@ beforeEach(() => {
   bs.activeTabId = 't1';
   bs.noTab = false;
   bs.evalThrows = null;
+  // 不复位的话上一条用例摆的错误会渗进下一条，「没有错误就一个字都不加」那条会假红。
+  bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 });
   lf.calls.length = 0;
   lf.notes.clear();
   bs.unreported.clear();
@@ -1312,5 +1318,42 @@ describe('browser_act 里的后退 / 前进 / 重新加载（Task 2）', () => {
       { properties: { kind: { anyOf: Array<{ const: string }> } } })
       .properties.kind.anyOf.map((x) => x.const);
     expect(kinds).toEqual(expect.arrayContaining(['back', 'forward', 'reload']));
+  });
+});
+
+describe('页面报的错挂进工具结果（Task 4）', () => {
+  const withErrors = () => ({
+    lines: [{ seq: 1, text: 'Uncaught TypeError: t.submit is not a function', source: 'https://a/x.js:9' }],
+    omitted: 0, dropped: 0, suppressed: 0,
+  });
+
+  it('browser_act 的结果里带上这一批期间页面报的错；没有错误就一个字都不加', async () => {
+    bs.consoleImpl = withErrors;
+    const withErr = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(withErr).toContain('t.submit is not a function');
+
+    // 正向前置在上面：所以这里的「不出现」说的是「没有错误时那一段整个不出现」，
+    // 不是「这段渲染坏了」。
+    bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 });
+    const noErr = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(noErr).not.toContain('页面报的错');
+  });
+
+  it('browser_open 的结果里也带上这一批期间页面报的错', async () => {
+    bs.consoleImpl = withErrors;
+    const r = await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' });
+    expect(bodyOf(r)).toContain('t.submit is not a function');
+  });
+
+  it('页面的错误被边界标记框起来 —— 它是页面写的字', async () => {
+    bs.consoleImpl = withErrors;
+    expect(bodyOf(await act([{ kind: 'click', selector: '#go' }]))).toContain(PAGE_CONTENT_OPEN);
+  });
+
+  it('因为填过凭据而没采集时，这件事要说出来', async () => {
+    bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 4 });
+    const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(out).toContain('4');
+    expect(out).toContain('凭据');
   });
 });

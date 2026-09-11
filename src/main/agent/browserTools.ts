@@ -14,6 +14,7 @@ import {
   type ExtractResult, type ExtractRow, type BatchBudget,
 } from '../browser/extract';
 import { loginFlow } from '../browser/loginFlow';
+import { renderConsole, ZERO_CURSOR, type ConsoleCursor } from '../browser/consoleLog';
 import { createLoginAsk } from './loginConfirm';
 import type { AskSharedState } from './askUserQuestionTool';
 
@@ -419,6 +420,11 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     parameters: OpenParams,
     executionMode: 'sequential' as const,
     async execute(_id: string, params: { url: string; tabId?: string }): Promise<ToolResult> {
+      // 复用已有标签时要从**当前**位置起算；新开的标签之前什么都没有，从零起算。
+      // （新标签的 id 要等 open() 回来才知道，那时页面加载期间的错误已经发生了。）
+      const consoleFrom = params.tabId === undefined
+        ? ZERO_CURSOR
+        : browserService.consoleCursor(params.tabId);
       const { tabId, nav } = await browserService.open({
         url: params.url, tabId: params.tabId, ownerRunId: deps.currentRunId(),
       });
@@ -441,6 +447,8 @@ export function createBrowserTools(deps: BrowserToolDeps) {
             + '这是**没看到**，不要据此断定页面是空的。');
         }
       }
+      const con = renderConsole(browserService.consoleSince(tabId, consoleFrom));
+      if (con) parts.push('', con);
       return { ...withTabs(parts.join('\n'), tabId), details: { tabId, nav } };
     },
   };
@@ -473,8 +481,13 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         params.tabId, deps.currentRunId(),
         // **`before` 快照取在队列里面**：这一批在队列里等的那段时间，同一个标签上
         // 另一次操作可能产生新快照，拿队列外那一份去 diff 就会把别人的改动算进
-        // 这一批的「页面变化」。
-        () => runBatch(params.tabId, browserService.getSnapshot(params.tabId), steps, signal),
+        // 这一批的「页面变化」。控制台游标同一个理由，与 `before` 快照同一处取。
+        () => runBatch(
+          params.tabId,
+          browserService.getSnapshot(params.tabId),
+          browserService.consoleCursor(params.tabId),
+          steps, signal,
+        ),
         '操作网页',
       ));
     },
@@ -610,7 +623,8 @@ export function createBrowserTools(deps: BrowserToolDeps) {
  * browserTools.test.ts 才好把它整条钉住。
  */
 async function runBatch(
-  tabId: string, before: AxSnapshot | null, steps: FlatStep[], signal?: AbortSignal,
+  tabId: string, before: AxSnapshot | null, consoleFrom: ConsoleCursor,
+  steps: FlatStep[], signal?: AbortSignal,
 ): Promise<ToolResult> {
   // spec §5.1：**这一批里新开的标签必须列出来**。不列的话模型点了一下、返回值说
   // 「成功」，而内容出现在一个它不知道存在的标签里 —— 接下来它会对着旧标签继续操作，
@@ -663,6 +677,10 @@ async function runBatch(
     parts.push('', describeCollected(batch));
     if (collected.length) parts.push(wrapPageContent(JSON.stringify(collected, null, 1)));
   }
+  // 页面自己报的错。**放在「页面变化」之前** —— 它多半就是「点了没反应」的原因，
+  // 模型该先读到它再看 diff。
+  const con = renderConsole(browserService.consoleSince(tabId, consoleFrom));
+  if (con) parts.push('', con);
   if (after) {
     parts.push('', `── 页面变化（快照 ${after.snapshotId}）──`, renderDiff(before, after).text);
   } else {
