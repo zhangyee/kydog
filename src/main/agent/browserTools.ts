@@ -332,6 +332,20 @@ function loginDesc(inst: { name: string; entityID: string } | null): string {
   ].join('\n');
 }
 
+// ── browser_tabs ────────────────────────────────────────────────────────────
+
+const TabsParams = Type.Object({});
+
+const TABS_DESC = [
+  '列出内置浏览器里当前打开的所有标签页。不碰页面，没有任何副作用。',
+  '',
+  '**这里面也有用户自己打开的标签** —— 用户可能已经手动找到了要看的那一页，',
+  '那一页往往就是最重要的输入。要对某一页动手，把它的 tabId 抄进 browser_open /',
+  'browser_act / browser_read / browser_login。',
+  '',
+  '带 * 的那个是用户此刻正看着的标签。',
+].join('\n');
+
 // ── 工厂 ────────────────────────────────────────────────────────────────────
 
 /** run 上下文由 sessionFactory 闭包注入 —— pi 的 ctx 里只有 cwd，没有 KyDog 的 runId。 */
@@ -507,6 +521,25 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     },
   };
 
+  const tabsTool = {
+    name: 'browser_tabs',
+    label: '列出标签页',
+    description: TABS_DESC,
+    promptSnippet: 'browser_tabs — 列出内置浏览器当前打开的所有标签（含用户自己开的）',
+    // **不声明 executionMode。** 它不进队列、不碰页面，没有任何要串行的理由；
+    // 声明了就必须同步登记进 askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES
+    // （那份名单的双向比对会红）。
+    parameters: TabsParams,
+    async execute(): Promise<ToolResult> {
+      const s = browserService.getState();
+      const body = s.tabs.length === 0
+        ? '现在没有打开任何网页。要开就用 browser_open。'
+        : s.tabs.map((t) => `[${t.id}]${t.id === s.activeTabId ? '*' : ''} ${t.url}`
+          + (t.title.trim() ? ` — ${t.title.trim()}` : '')).join('\n');
+      return withTabs(body);
+    },
+  };
+
   const ask = createLoginAsk(deps.threadId, deps.askShared);
 
   const loginTool = {
@@ -562,7 +595,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     },
   };
 
-  return [openTool, actTool, readTool, loginTool];
+  return [openTool, tabsTool, actTool, readTool, loginTool];
 }
 
 /**

@@ -86,10 +86,11 @@ beforeEach(() => {
   H.settings = { ui: { locale: 'zh' }, institution: null };
 });
 
-describe('customTools 里有四个浏览器工具', () => {
-  it('browser_open / browser_act / browser_read / browser_login 四个都在', async () => {
+describe('customTools 里有五个浏览器工具', () => {
+  it('browser_open / browser_tabs / browser_act / browser_read / browser_login 五个都在', async () => {
     const names = (await build()).map((t) => t.name);
     expect(names).toContain('browser_open');
+    expect(names).toContain('browser_tabs');
     expect(names).toContain('browser_act');
     expect(names).toContain('browser_read');
     expect(names).toContain('browser_login');
@@ -99,10 +100,22 @@ describe('customTools 里有四个浏览器工具', () => {
     expect((await build()).map((t) => t.name)).toContain(ASK_TOOL_NAME);
   });
 
-  it('四个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
+  it('碰页面的四个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
     const browser = (await build()).filter((t) => t.name?.startsWith('browser_'));
-    expect(browser).toHaveLength(4);
-    for (const t of browser) expect(t.executionMode).toBe('sequential');
+    expect(browser).toHaveLength(5);
+    const seq = browser.filter((t) => t.executionMode === 'sequential').map((t) => t.name);
+    expect(seq.sort()).toEqual(['browser_act', 'browser_login', 'browser_open', 'browser_read']);
+  });
+
+  /**
+   * `browser_tabs` 只读 `browserService.getState()`，不进队列也不碰页面。
+   * 声明成 sequential 会把它排进 UI 的串行批次，白白让一次纯查询挡住别的工具；
+   * 而声明了却不登记进 SEQUENTIAL_TOOL_NAMES 则会让 UI 把串行批次画成并行组。
+   */
+  it('browser_tabs 不是 sequential，也不在那份名单里', async () => {
+    const t = (await build()).find((x) => x.name === 'browser_tabs');
+    expect(t?.executionMode).toBeUndefined();
+    expect(SEQUENTIAL_TOOL_NAMES.has('browser_tabs')).toBe(false);
   });
 });
 

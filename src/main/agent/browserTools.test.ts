@@ -248,6 +248,8 @@ const bs = vi.hoisted(() => ({
   waitImpl: (() => true) as () => boolean,
   /** 标签清单可变 —— 一批动作中途 target=_blank 会开出新标签。 */
   tabs: [] as { id: string; url: string; title: string }[],
+  /** 活动标签可配置。写死会让「标出用户正看着哪一个」这条断言在它恰好是首项时假绿。 */
+  activeTabId: 't1' as string | null,
   navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
   /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
   unreported: new Map<string, { url: string; httpStatusCode: number }>(),
@@ -267,7 +269,7 @@ vi.mock('../browser/browserService', () => {
   return {
     WALKER_WORLD_ID: 31337,
     browserService: {
-      getState: () => ({ tabs: bs.tabs, activeTabId: 't1' }),
+      getState: () => ({ tabs: bs.tabs, activeTabId: bs.activeTabId }),
       getSnapshot: () => { bs.order.push('getSnapshot'); return bs.current; },
       takeUnreportedNav: (tabId: string) => {
         const v = bs.unreported.get(tabId) ?? null;
@@ -382,6 +384,7 @@ beforeEach(() => {
   bs.dispatchImpl = (a) => `派发了 ${a.kind}`;
   bs.waitImpl = () => true;
   bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
+  bs.activeTabId = 't1';
   bs.noTab = false;
   bs.evalThrows = null;
   lf.calls.length = 0;
@@ -1188,5 +1191,68 @@ describe('browser_login 的说明（description）', () => {
 
   it('明说密码模型自己看不到也拿不到', () => {
     expect(desc(null)).toContain('你看不到也拿不到');
+  });
+});
+
+describe('browser_tabs：无副作用地列出当前所有标签（Task 1）', () => {
+  const listTabs = () => toolNamed('browser_tabs').execute('call-1', {});
+
+  it('列出用户手动开的标签 —— 这正是它存在的理由', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://scholar.google.com/', title: 'Google 学术' },
+      { id: 't9', url: 'https://xueshu.baidu.com/s?wd=x', title: '百度学术' },
+    ];
+    bs.activeTabId = 't9';
+    const out = bodyOf(await listTabs());
+    expect(out).toContain('t9');
+    expect(out).toContain('https://xueshu.baidu.com/s?wd=x');
+  });
+
+  it('给的是完整 URL，不是只有 host —— 同源两个标签只看 host 分不开', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://www.cnki.net/a', title: '甲' },
+      { id: 't2', url: 'https://www.cnki.net/b', title: '乙' },
+    ];
+    bs.activeTabId = 't1';
+    const out = bodyOf(await listTabs());
+    expect(out).toContain('https://www.cnki.net/a');
+    expect(out).toContain('https://www.cnki.net/b');
+  });
+
+  // 活动标签**既不是首项也不是末项**：写死 't1'、「总是取第一个」、「总是取最后一个」
+  // 这三种坏实现在首/末项上都照样绿。
+  it('标出用户正看着哪一个（活动标签取中间那个，避开首末项的巧合）', async () => {
+    bs.tabs = [
+      { id: 'ta', url: 'https://a.example/', title: 'A' },
+      { id: 'tb', url: 'https://b.example/', title: 'B' },
+      { id: 'tc', url: 'https://c.example/', title: 'C' },
+    ];
+    bs.activeTabId = 'tb';
+    const lineOf = (out: string, id: string) =>
+      out.split('\n').find((l) => l.startsWith(`[${id}]`)) ?? '';
+    expect(lineOf(bodyOf(await listTabs()), 'tb')).toContain('*');
+    // 正向前置：换一个活动标签，星号就换到那一行去 —— 否则「每一行都有星号」也能过。
+    bs.activeTabId = 'tc';
+    const out2 = bodyOf(await listTabs());
+    expect(lineOf(out2, 'tb')).not.toContain('*');
+    expect(lineOf(out2, 'tc')).toContain('*');
+  });
+
+  it('一个标签都没有时说清楚，不是空串也不报错', async () => {
+    bs.tabs = [];
+    bs.activeTabId = null;
+    expect(bodyOf(await listTabs())).toContain('没有打开任何网页');
+  });
+
+  it('不碰页面、不排队 —— 一次 enqueue / snapshot / dispatch 都不许有', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/', title: 'A' }];
+    bs.activeTabId = 't1';
+    bs.order.length = 0;
+    await listTabs();
+    expect(bs.order).toEqual([]);
+  });
+
+  it('说明里告诉模型：这里也有用户自己开的标签', () => {
+    expect(toolNamed('browser_tabs').description).toContain('用户');
   });
 });
