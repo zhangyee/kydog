@@ -78,6 +78,13 @@ export type KydogErrorCode =
   // wait 到时限条件仍未达成。spec §4.2：「超时只表示条件未达成，不表示别的」——
   // 所以它不能与 failed / timeout 那些导航终态共用措辞，也不是 bad_action。
   | 'browser.wait_timeout'
+  /**
+   * `back` / `forward` 要去的那一步历史不存在。**这不是失败，是一个事实**：
+   * `canGoBack()` / `canGoForward()` 说了没有。之所以做成错误而不是一句说明后继续跑，
+   * 是因为 browser_act 的语义是「出错即停」—— 后退没成而后面的动作照跑，
+   * 等于让模型在一个它以为已经离开的页面上继续操作，且不报任何错。
+   */
+  | 'browser.no_history'
   // 本轮 run 已经试过一次登录且失败，不再填（spec §4.6）。押的是用户的校园账号，
   // 高校 IdP 普遍锁定连续失败若干次的账号，而模型看到失败会本能地重试。
   // 生产者是 `loginFlow`，判据是「本轮 run 名下、这个标签上存在一次**尚未观测到

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   flattenActions, keyEventsFor, resolveTarget, validateBatch, assertTypeAllowed, needsTarget,
-  parseWaitUntil, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, WAIT_MAX_MS,
+  parseWaitUntil, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, WAIT_MAX_MS, ACTION_KINDS,
 } from './actions';
 import type { Action } from './actions';
 import type { AxSnapshot } from './snapshot';
@@ -454,5 +454,25 @@ describe('动作形状：缺了非有不可的字段，在校验期就拒', () =
     rejects({ kind: 'repeat', times: 2, actions: [{ kind: 'type', selector: '#q' }] }, 'text');
     rejects({ kind: 'repeat', times: 2, actions: [{ kind: 'scroll' }] }, 'direction');
     rejects({ kind: 'repeat', times: 2, actions: [{ kind: 'key', key: 'F13' }] }, 'F13');
+  });
+});
+
+describe('历史导航三种动作（Task 2）', () => {
+  it('back / forward / reload 都在白名单里', () => {
+    expect(ACTION_KINDS).toContain('back');
+    expect(ACTION_KINDS).toContain('forward');
+    expect(ACTION_KINDS).toContain('reload');
+  });
+
+  // 白名单是唯一的闸：不在里面的 kind 会被 validateBatch 当场拒掉。
+  it('三种都不需要目标 —— 给不给 selector 都过', () => {
+    expect(() => validateBatch([{ kind: 'back' } as never])).not.toThrow();
+    expect(() => validateBatch([{ kind: 'forward' } as never])).not.toThrow();
+    expect(() => validateBatch([{ kind: 'reload' } as never])).not.toThrow();
+  });
+
+  // 正向前置：证明这个闸确实还在守着别的名字，不是被整个放开了。
+  it('navigate 之类的名字仍然被拒 —— 白名单没有被放宽', () => {
+    expect(() => validateBatch([{ kind: 'navigate', url: 'https://evil/' } as never])).toThrow();
   });
 });

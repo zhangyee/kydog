@@ -50,11 +50,11 @@ times as much.
 
 ---
 
-## 2. `browser_act`'s nine actions
+## 2. `browser_act`'s twelve actions
 
-`click` · `type` · `key` · `scroll` · `hover` · `select` · `extract` · `wait` · `repeat`.
+`click` · `type` · `key` · `scroll` · `hover` · `select` · `extract` · `wait` · `repeat` · `back` · `forward` · `reload`.
 
-**Those nine and no others.** A `kind` that is not in the list (`navigate` / `submit` /
+**Those twelve and no others.** A `kind` that is not in the list (`navigate` / `submit` /
 `screenshot` …) is refused on the spot — do not lay out a whole batch on the assumption that
 some other verb exists.
 
@@ -69,6 +69,9 @@ some other verb exists.
 | `extract` | `selectors` (must contain `item`) | See §4 |
 | `wait` | `until`, optional `timeoutMs` | See §5 |
 | `repeat` | `times` + `actions` | `times` ≤ 10, **no nesting** |
+| `back` | none | Go back one step in history; without one, `browser.no_history` and the whole batch stops |
+| `forward` | none | Go forward one step in history; same `browser.no_history` when there isn't one |
+| `reload` | none | Reload the current tab; not gated by history, always possible |
 
 `key` accepts only these 13 names: `Enter` `Tab` `Escape` `Backspace` `Delete` `ArrowUp`
 `ArrowDown` `ArrowLeft` `ArrowRight` `Home` `End` `PageUp` `PageDown`. Anything else errors

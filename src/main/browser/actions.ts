@@ -22,6 +22,9 @@ export type Action =
   | { kind: 'scroll'; direction: 'up' | 'down'; amount?: number }
   | { kind: 'extract'; selectors: Record<string, string> }
   | { kind: 'wait'; until: WaitUntil; timeoutMs?: number }
+  | { kind: 'back' }
+  | { kind: 'forward' }
+  | { kind: 'reload' }
   | { kind: 'repeat'; times: number; actions: Action[] };
 
 /** 容量上限。资源保护，不参与任何语义判断 —— 挡的是「一个写错的剧本把上下文刷爆」。 */
@@ -35,13 +38,15 @@ export const MAX_STEPS = 60;
 export const WAIT_DEFAULT_MS = 8_000;
 export const WAIT_MAX_MS = 30_000;
 
-/** spec §4.1 的九种动作，一个不多。**白名单是必须的**：没有它，
+/** spec §4.1 的九种动作，加上 Task 2 补的 back / forward / reload 三种，一个不多。
+ *  **白名单是必须的**：没有它，
  *  `{kind:'navigate', url:'https://evil/'}` 一路通过校验、落到派发的 default 分支，
  *  只要带 selector 就会回报「navigate → #x」—— 模型得到一句「做过了」，
  *  实际什么都没发生。而 `{kind:'submit'}` 报的是「快照编号失效」，
  *  模型于是按错误提示去重取快照，永远走不出去。 */
 export const ACTION_KINDS = [
   'click', 'type', 'key', 'scroll', 'hover', 'select', 'extract', 'wait', 'repeat',
+  'back', 'forward', 'reload',
 ] as const;
 const KIND_SET: ReadonlySet<string> = new Set(ACTION_KINDS);
 
@@ -60,11 +65,14 @@ export function needsTarget(a: { kind: string }): boolean {
  * 派发侧真正要碰页面的那几种。
  *
  * `repeat` 在 `flattenActions` 里就展开没了；`extract` 跑在工具层（它要整批预算）；
- * `wait` 走 `browserService.waitFor`。剩下这六种才是 `dispatch` 的输入。
+ * `wait` 走 `browserService.waitFor`；`back` / `forward` / `reload` 走
+ * `browserService.historyNav`（要走 `navigate` 那条路才有导航观测，`dispatch` 给不了）。
+ * 剩下这六种才是 `dispatch` 的输入。
  * 写成 `Exclude` 而不是手写联合：`Action` 加了新成员时，派发侧要么处理它、
  * 要么在这里显式排除，两边不会静默漂开。
  */
-export type DispatchAction = Exclude<Action, { kind: 'repeat' | 'extract' | 'wait' }>;
+export type DispatchAction =
+  Exclude<Action, { kind: 'repeat' | 'extract' | 'wait' | 'back' | 'forward' | 'reload' }>;
 
 export type FlatStep = {
   action: Exclude<Action, { kind: 'repeat' }>;

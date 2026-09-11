@@ -253,6 +253,12 @@ const bs = vi.hoisted(() => ({
   navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
   /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
   unreported: new Map<string, { url: string; httpStatusCode: number }>(),
+  /** historyNav 收到了什么、回什么。null 表示「没有可去的历史」。 */
+  historyCalls: [] as Array<{ tabId: string; action: string }>,
+  historyImpl: (() => ({
+    navigationId: 'n2',
+    outcome: { kind: 'ok', finalUrl: 'https://a.example/prev', httpStatusCode: 200 },
+  })) as () => unknown,
 }));
 
 vi.mock('../browser/browserService', () => {
@@ -303,6 +309,11 @@ vi.mock('../browser/browserService', () => {
       open: (args: { url: string }) => {
         bs.order.push(`open:${args.url}`);
         return Promise.resolve({ tabId: 't1', nav: bs.navImpl() });
+      },
+      historyNav: (tabId: string, action: string) => {
+        bs.order.push(`historyNav:${action}`);
+        bs.historyCalls.push({ tabId, action });
+        return Promise.resolve(bs.historyImpl());
       },
       enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
       withAgentDriving: <T>(tabId: string, runId: string | null, fn: () => Promise<T>) => {
@@ -378,6 +389,11 @@ const act = (actions: unknown[], signal?: AbortSignal) =>
 beforeEach(() => {
   bs.order.length = 0; bs.isolated.length = 0; bs.mainWorld.length = 0; bs.cdp.length = 0;
   bs.dispatched.length = 0; bs.waits.length = 0;
+  bs.historyCalls.length = 0;
+  bs.historyImpl = () => ({
+    navigationId: 'n2',
+    outcome: { kind: 'ok', finalUrl: 'https://a.example/prev', httpStatusCode: 200 },
+  });
   bs.current = snap();
   bs.snapshotImpl = () => snap({ snapshotId: 'snap_bbb' });
   bs.isolatedImpl = () => null;
@@ -1254,5 +1270,47 @@ describe('browser_tabs：无副作用地列出当前所有标签（Task 1）', (
 
   it('说明里告诉模型：这里也有用户自己开的标签', () => {
     expect(toolNamed('browser_tabs').description).toContain('用户');
+  });
+});
+
+describe('browser_act 里的后退 / 前进 / 重新加载（Task 2）', () => {
+  it('三种都接通到 browserService.historyNav，动作名原样传下去', async () => {
+    await act([{ kind: 'back' }, { kind: 'forward' }, { kind: 'reload' }]);
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back', 'forward', 'reload']);
+    expect(bs.historyCalls[0].tabId).toBe('t1');
+  });
+
+  // 死锁那条：整批已经在 enqueue 里面了，historyNav 绝不能自己再排一次队。
+  it('整批只排一次队，历史导航跑在那一次里面', async () => {
+    bs.order.length = 0;
+    await act([{ kind: 'back' }]);
+    expect(bs.order.filter((o) => o.startsWith('enqueue:'))).toHaveLength(1);
+    expect(bs.order.indexOf('enqueue:t1')).toBeLessThan(bs.order.indexOf('historyNav:back'));
+  });
+
+  it('导航结论用 describeNav 的措辞回报 —— 与 browser_open 读起来是同一句话', async () => {
+    expect(bodyOf(await act([{ kind: 'back' }]))).toContain('https://a.example/prev');
+  });
+
+  it('没有可去的历史时整批停下，并说清是「没有这一步历史」', async () => {
+    bs.historyImpl = () => null;
+    const out = bodyOf(await act([{ kind: 'back' }, { kind: 'reload' }]));
+    expect(out).toContain('没有可以后退的历史');
+    // 出错即停：第二个动作一步都不许跑。
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back']);
+  });
+
+  // 正向前置：同一条用例里证明「有历史时后面的动作照跑」——
+  // 否则一个「back 之后永远停」的实现也照样绿。
+  it('有历史时后面的动作照跑', async () => {
+    await act([{ kind: 'back' }, { kind: 'reload' }]);
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back', 'reload']);
+  });
+
+  it('三种动作都进了模型看得到的 schema 白名单', () => {
+    const kinds = (ActionSchema as unknown as
+      { properties: { kind: { anyOf: Array<{ const: string }> } } })
+      .properties.kind.anyOf.map((x) => x.const);
+    expect(kinds).toEqual(expect.arrayContaining(['back', 'forward', 'reload']));
   });
 });

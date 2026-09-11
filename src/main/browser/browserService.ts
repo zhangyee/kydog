@@ -866,26 +866,49 @@ export class BrowserService {
   keep(tabId: string): void { this.registry.keep(tabId); this.emit(); }
   activate(tabId: string): void { this.registry.activate(tabId); this.applyLayout(); this.emit(); }
 
-  async navControl(tabId: string, action: 'back' | 'forward' | 'reload' | 'stop'): Promise<void> {
+  /**
+   * 历史导航（后退 / 前进 / 重新加载）。**不排队** —— 调用方必须已经在这个标签的
+   * 队列里（`browser_act` 的整批就在里面）。渲染层那条路走 `navControl`。
+   *
+   * **回 `null` 表示「没有可去的历史，一次导航都没有发起」。** `canGoBack()` /
+   * `canGoForward()` 是协议层现成的事实，**必须在发起之前问**：不问而让 `act` 空转的话，
+   * tracker 一个事件都收不到，要跑满 NAV_TIMEOUT_MS（20 秒）才回一个 timeout ——
+   * 调用方等 20 秒，拿到的还是一句「不知道发生了什么」，而我们本来就知道。
+   *
+   * **`stop` 不在这里**：它不是一次导航，也不消费任何导航事件。见 `navControl`。
+   */
+  async historyNav(
+    tabId: string, action: 'back' | 'forward' | 'reload',
+  ): Promise<NavigationObservation | null> {
     const view = this.views.get(tabId);
     if (!view) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     const wc = view.webContents;
+    const h = wc.navigationHistory;
+    if (action === 'back' && !h.canGoBack()) return null;
+    if (action === 'forward' && !h.canGoForward()) return null;
+    // 目标 URL 在导航发生**之前**算：goBack 之后 activeIndex 就变了。
+    // 算在这里（而不是排队之前）才是真的「之前」—— 队列里等的那段时间历史还会变。
+    const target = this.historyTarget(wc, action);
+    return this.navigate(tabId, (w) => {
+      const nh = w.navigationHistory;
+      if (action === 'back') nh.goBack();
+      else if (action === 'forward') nh.goForward();
+      else w.reload();
+    }, target);
+  }
+
+  async navControl(tabId: string, action: 'back' | 'forward' | 'reload' | 'stop'): Promise<void> {
+    const view = this.views.get(tabId);
+    if (!view) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     if (action === 'stop') {
       // **停止不排队。** 它不是一次导航，也不消费任何导航事件 —— 它要打断的正是
       // 队首那一次。排在后面的话，用户按下停止之后最长要等一个完整的 20 秒时限
       // 才轮到它执行，那时该停的早就停了：一个看起来没反应的按钮。
-      wc.stop();
+      view.webContents.stop();
       this.syncTabMeta(tabId);
       return;
     }
-    // 目标 URL 要在导航发生**之前**算：goBack 之后 activeIndex 就变了。
-    const target = this.historyTarget(wc, action);
-    await this.enqueue(tabId, () => this.navigate(tabId, (w) => {
-      const h = w.navigationHistory;
-      if (action === 'back' && h.canGoBack()) h.goBack();
-      else if (action === 'forward' && h.canGoForward()) h.goForward();
-      else if (action === 'reload') w.reload();
-    }, target));
+    await this.enqueue(tabId, () => this.historyNav(tabId, action));
   }
 
   /** 这次 back / forward / reload 要去哪。给 NavigationTracker 当下载的关联依据 ——

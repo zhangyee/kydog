@@ -3195,3 +3195,52 @@ describe('evalInPage 也收拼装函数（Task 7 的填充脚本要带过期自�
     expect(wc.isolated).toHaveLength(before);
   });
 });
+
+describe('historyNav：没有历史就当场说，不去等满时限（Task 2）', () => {
+  it('没有可后退的历史时回 null，一次导航都不发起', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    wc.historyIndex = 0;                          // canGoBack() → false
+    expect(await svc.historyNav(nav.tabId, 'back')).toBeNull();
+    expect(wc.historyIndex).toBe(0);              // goBack 一次都没调
+  });
+
+  // 正向前置：同一条用例里证明「有历史时它确实会动」——
+  // 否则一个永远 return null 的实现也照样绿。
+  it('有可后退的历史时真的调 goBack 并回一个导航结论', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    wc.historyIndex = 1;                          // canGoBack() → true
+    const p = svc.historyNav(nav.tabId, 'back');
+    await flush();
+    expect(wc.historyIndex).toBe(0);              // goBack 调过了
+    wc.fire('did-navigate', {}, 'https://prev.example/', 200);
+    expect(await p).not.toBeNull();
+  });
+
+  it('没有可前进的历史时同样回 null', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    // historyIndex 1 / entries 2 → canGoForward() 为 false
+    expect(await svc.historyNav(nav.tabId, 'forward')).toBeNull();
+    expect(wc.historyIndex).toBe(1);
+  });
+
+  // reload 不看历史 —— 没有 canReload 这回事，当前页永远可以重新加载。
+  it('reload 不受历史影响，永远发起', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    wc.historyIndex = 0;
+    const p = svc.historyNav(nav.tabId, 'reload');
+    await flush();
+    expect(wc.reloadCalls).toBe(1);
+    wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    expect(await p).not.toBeNull();
+  });
+
+  it('标签不存在就抛 browser.no_tab，不静默回 null', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    await expect(svc.historyNav('t404', 'back')).rejects.toMatchObject({ code: 'browser.no_tab' });
+  });
+});

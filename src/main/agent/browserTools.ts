@@ -227,6 +227,10 @@ const ACT_DESC = [
   '  date / time / month / week / datetime-local 这类**分段选择器**打不进去（实测：',
   '  文本插入对它们完全无效），会明确报错；这一期没有设置它们的动作，改用页面上其他入口。',
   '- JS 驱动的检索与翻页**不产生导航**，click 之后必须跟一个 wait，否则你会在旧内容上继续抽。',
+  '',
+  '- back / forward / reload 三种不需要目标：后退、前进、重新加载当前标签。',
+  '  **没有那一步历史时会明确报错并停下整批**，不会静默地什么都不做。',
+  '  要去一个新地址用 browser_open，不是 back。',
 ].join('\n');
 
 // ── browser_read ────────────────────────────────────────────────────────────
@@ -718,6 +722,22 @@ async function runStep(
       `等了 ${timeoutMs} 毫秒，条件仍未达成（等的是：${describeWaitUntil(until)}）。`
       + '这只说明这个条件没有成立 —— 它不是页面出错，也不是站点的问题。'
       + '要么条件写得不对，要么这一步本来就没有触发页面变化。');
+  }
+
+  if (action.kind === 'back' || action.kind === 'forward' || action.kind === 'reload') {
+    // **不走 navControl**：整批已经在 `enqueue(tabId, …)` 里面了，而 navControl 自己
+    // 也 enqueue 同一个 tabId —— 同标签重入会死锁。historyNav 是不排队的那一半。
+    const nav = await browserService.historyNav(tabId, action.kind);
+    // null = `canGoBack()` / `canGoForward()` 说没有这一步历史，一次导航都没发起。
+    // **不许静默继续**：后退没成而后面的动作照跑，等于让模型在一个它以为已经离开的
+    // 页面上继续操作，且不报任何错（spec §2.2）。
+    if (nav === null) {
+      throw new KydogError('browser.no_history',
+        `这个标签上没有可以${action.kind === 'back' ? '后退' : '前进'}的历史，这一步没有执行。`
+        + '这不是页面或站点的问题 —— 是这个标签的历史里确实没有那一步。'
+        + '要去别的地址就用 browser_open。');
+    }
+    return describeNav(nav);
   }
 
   // 其余六种（click / type / hover / select / scroll / key）全部走同一个入口。

@@ -46,11 +46,11 @@ browser_act({ tabId: "<同一个 tabId>", actions: [
 
 ---
 
-## 二、`browser_act` 的九种动作
+## 二、`browser_act` 的十二种动作
 
-`click` · `type` · `key` · `scroll` · `hover` · `select` · `extract` · `wait` · `repeat`。
+`click` · `type` · `key` · `scroll` · `hover` · `select` · `extract` · `wait` · `repeat` · `back` · `forward` · `reload`。
 
-**只有这九种。** 写一个不在表里的 `kind`（`navigate` / `submit` / `screenshot` …）会被当场
+**只有这十二种。** 写一个不在表里的 `kind`（`navigate` / `submit` / `screenshot` …）会被当场
 拒掉 —— 别按自己以为的语义排好整批剧本再发。
 
 | 动作 | 必须给的字段 | 说明 |
@@ -64,6 +64,9 @@ browser_act({ tabId: "<同一个 tabId>", actions: [
 | `extract` | `selectors`（必须含 `item`） | 见 §四 |
 | `wait` | `until`，`timeoutMs` 可选 | 见 §五 |
 | `repeat` | `times` + `actions` | `times` ≤ 10，**不许嵌套** |
+| `back` | 无 | 后退一步历史；没有可后退的历史会报 `browser.no_history` 并停下整批 |
+| `forward` | 无 | 前进一步历史；没有可前进的历史同样报 `browser.no_history` |
+| `reload` | 无 | 重新加载当前标签；不看历史，永远可以做 |
 
 `key` 只认这 13 个名字：`Enter` `Tab` `Escape` `Backspace` `Delete` `ArrowUp` `ArrowDown`
 `ArrowLeft` `ArrowRight` `Home` `End` `PageUp` `PageDown`。别的名字当场报错。
