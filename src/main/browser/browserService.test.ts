@@ -3287,21 +3287,37 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     expect(JSON.stringify(r)).not.toContain('hunter2');
   });
 
-  it('主 frame 换了文档之后恢复采集', async () => {
+  // 正向前置与否定断言合并进同一条：先证明「真正换文档（did-navigate）确实会
+  // 恢复采集」，再断 did-navigate-in-page（**同文档**导航：hash 跳转 / pushState /
+  // 站内路由，文档根本没换）不恢复 —— `loginFill.js` 填完密码不清空输入框，
+  // 明文一直留在 DOM 里直到真正的文档卸载；`submit:false`（验证码）那条路上，
+  // 这段窗口可以很长，期间任何一次站内路由都不该在密码还在 DOM 里时重新打开采集。
+  it('did-navigate 之后恢复采集；did-navigate-in-page（同文档导航）不恢复', async () => {
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
+
     svc.suppressConsoleForCredentials(nav.tabId);
     wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
-    const c = svc.consoleCursor(nav.tabId);
+    const c1 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '新页面的错'));
-    expect(svc.consoleSince(nav.tabId, c).lines).toHaveLength(1);
+    expect(svc.consoleSince(nav.tabId, c1).lines).toHaveLength(1);
+
+    svc.suppressConsoleForCredentials(nav.tabId);
+    wc.fire('did-navigate-in-page', {}, 'https://sp.example/after#sec', true);
+    const c2 = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', '同文档路由期间的错'));
+    expect(svc.consoleSince(nav.tabId, c2).lines).toHaveLength(0);
   });
 
   // 取游标是「记一个位置」，不是一次操作 —— 标签刚被关掉时抛错会把调用方
   // 已经拿到的结果一起毁掉（与 runBatch 里收尾快照那处同一个失败形状）。
+  // 正向前置在同一条里：先对一个真实存在的标签取游标，证明这条路径本身没坏，
+  // 再对不存在的标签断「不抛、回零游标 / 空报告」。
   it('标签不存在时取游标回零游标、取报告回空报告，都不抛', async () => {
     const { svc } = make();
-    await openTab(svc);
+    const { nav } = await openTab(svc);
+    expect(svc.consoleCursor(nav.tabId)).toEqual(ZERO_CURSOR);
+
     expect(() => svc.consoleCursor('t404')).not.toThrow();
     expect(svc.consoleSince('t404', svc.consoleCursor('t404')).lines).toHaveLength(0);
   });
@@ -3310,6 +3326,10 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
     wc.fire('console-message', msg('error', '旧标签的错'));
+    // 正向前置：销毁之前这条错误真的被采到了 —— 不然下面的「销毁之后回空」
+    // 也可能只是因为 record() 压根没接上（比如事件接线被打错），红的是别处。
+    expect(svc.consoleSince(nav.tabId, ZERO_CURSOR).lines.map((l) => l.text)).toEqual(['旧标签的错']);
+
     svc.close(nav.tabId);
     expect(svc.consoleSince(nav.tabId, ZERO_CURSOR).lines).toHaveLength(0);
   });

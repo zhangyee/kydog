@@ -261,6 +261,8 @@ const bs = vi.hoisted(() => ({
   })) as () => unknown,
   /** 控制台报告由用例摆布。默认什么都没有。 */
   consoleImpl: (() => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 })) as () => unknown,
+  /** `consoleCursor` 收到的每一个 tabId，按顺序 —— 用来断「取游标排在 open() 之前」。 */
+  consoleCursorCalls: [] as string[],
 }));
 
 vi.mock('../browser/browserService', () => {
@@ -317,7 +319,11 @@ vi.mock('../browser/browserService', () => {
         bs.historyCalls.push({ tabId, action });
         return Promise.resolve(bs.historyImpl());
       },
-      consoleCursor: () => ({ seq: 0, suppressed: 0, dropped: 0 }),
+      consoleCursor: (tabId: string) => {
+        bs.order.push(`consoleCursor:${tabId}`);
+        bs.consoleCursorCalls.push(tabId);
+        return { seq: 0, suppressed: 0, dropped: 0 };
+      },
       consoleSince: () => bs.consoleImpl(),
       enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
       withAgentDriving: <T>(tabId: string, runId: string | null, fn: () => Promise<T>) => {
@@ -409,6 +415,7 @@ beforeEach(() => {
   bs.evalThrows = null;
   // 不复位的话上一条用例摆的错误会渗进下一条，「没有错误就一个字都不加」那条会假红。
   bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 });
+  bs.consoleCursorCalls.length = 0;
   lf.calls.length = 0;
   lf.notes.clear();
   bs.unreported.clear();
@@ -808,7 +815,9 @@ describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
     // `getSnapshot` 是取 `before` 那一份：**它也必须在队列里面**（最终复评 m4）。
     // 取在队列外的话，这一批在队列里等的那段时间同一个标签上别人产生的新快照
     // 会被算进「本批的页面变化」。
-    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'getSnapshot', 'evalInPage', 'snapshot']);
+    expect(bs.order).toEqual([
+      'enqueue:t1', 'driving:t1:run-1', 'getSnapshot', 'consoleCursor:t1', 'evalInPage', 'snapshot',
+    ]);
   });
 
   it('browser_read 也走同一条路', async () => {
@@ -1343,6 +1352,18 @@ describe('页面报的错挂进工具结果（Task 4）', () => {
     bs.consoleImpl = withErrors;
     const r = await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' });
     expect(bodyOf(r)).toContain('t.submit is not a function');
+  });
+
+  // 复用已有标签那条分支：游标必须在 open() **之前**取（brief 的注释：新标签的 id
+  // 要等 open() 回来才知道，那时页面加载期间的错误已经发生了——复用标签同一个道理，
+  // 等 open() 落地再取就会把这次导航期间的错误一起漏掉）。
+  it('复用已有标签时，取游标排在 open() 之前', async () => {
+    await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q', tabId: 't1' });
+    expect(bs.consoleCursorCalls).toContain('t1');
+    const cursorAt = bs.order.indexOf('consoleCursor:t1');
+    const openAt = bs.order.indexOf('open:https://a.example/q');
+    expect(cursorAt).toBeGreaterThanOrEqual(0);
+    expect(cursorAt).toBeLessThan(openAt);
   });
 
   it('页面的错误被边界标记框起来 —— 它是页面写的字', async () => {

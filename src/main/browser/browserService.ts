@@ -677,8 +677,11 @@ export class BrowserService {
       // hash 跳转会滚动页面、站内路由会换内容，而 resolveTarget 只在 snapshotId
       // 对不上时才报错 —— 不删就是「编号还在、指向的元素已经变了」：不报错，只是点错东西。
       this.snapshots.delete(id);
-      // 主 frame 换了文档：凭据跟着旧文档走了，恢复采集。
-      this.consoles.get(id)?.resumeOnNewDocument();
+      // **不在这里恢复控制台采集**：这是同文档导航（hash 跳转 / pushState / 站内路由），
+      // 文档根本没有换 —— `loginFill.js` 填完密码不清空输入框，明文一直留在 DOM 里，
+      // 直到真正的文档卸载（`did-navigate`）。`submit: false`（验证码）那条路上，
+      // agent 填完就返回、用户手动填验证码那段窗口可以很长，期间任何一次站内路由
+      // 都不该在密码还在 DOM 里的时候重新打开全量采集。
       this.syncTabMeta(id);
     });
 
