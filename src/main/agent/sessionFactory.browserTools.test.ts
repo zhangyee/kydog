@@ -114,6 +114,9 @@ describe('customTools 里有五个浏览器工具', () => {
    */
   it('browser_tabs 不是 sequential，也不在那份名单里', async () => {
     const t = (await build()).find((x) => x.name === 'browser_tabs');
+    // **正向前置**：不先钉住「确实找到了」，下面两条在工具改名时会一起假绿 ——
+    // `.find()` 回 undefined，可选链让 `t?.executionMode` 仍然是 undefined。
+    expect(t?.name).toBe('browser_tabs');
     expect(t?.executionMode).toBeUndefined();
     expect(SEQUENTIAL_TOOL_NAMES.has('browser_tabs')).toBe(false);
   });
