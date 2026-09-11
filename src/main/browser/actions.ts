@@ -50,9 +50,10 @@ export const ACTION_KINDS = [
 ] as const;
 const KIND_SET: ReadonlySet<string> = new Set(ACTION_KINDS);
 
-/** 需要目标的四种。`key` / `scroll` / `extract` / `wait` / `repeat` 不需要 ——
- *  spec §4.1 里 `{kind:'scroll', direction:'down'}` 既没 selector 也没 index，
- *  让它走 resolveTarget 只会拿到一句说的是另一件事的错。**派发那一侧要先问这个**。 */
+/** 需要目标的四种。`key` / `scroll` / `extract` / `wait` / `repeat` /
+ *  `back` / `forward` / `reload` 不需要 —— spec §4.1 里 `{kind:'scroll', direction:'down'}`
+ *  既没 selector 也没 index，让它走 resolveTarget 只会拿到一句说的是另一件事的错。
+ *  **派发那一侧要先问这个**。 */
 export const TARGETED_KINDS = ['click', 'hover', 'type', 'select'] as const;
 export type TargetedAction = Extract<Action, { kind: (typeof TARGETED_KINDS)[number] }>;
 const TARGETED_SET: ReadonlySet<string> = new Set(TARGETED_KINDS);

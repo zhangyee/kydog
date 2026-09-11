@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { describeNav, landedOnPage, ActionSchema, createBrowserTools, READ_MAX_CHARS, TAB_TITLE_MAX } from './browserTools';
+import {
+  describeNav, landedOnPage, ActionSchema, createBrowserTools,
+  READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX, stripUrlUserinfo,
+} from './browserTools';
 import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import { MAX_BATCH_CHARS } from '../browser/extract';
 import { PAGE_CONTENT_OPEN } from '../browser/snapshot';
@@ -669,6 +672,45 @@ describe('tabsLine 带标题', () => {
     expect(header).toContain('[t1]*');
     expect(header).not.toContain('[t2]*');
   });
+
+  // ③ 终评发现：`tabsLine` 从前是 `activeId ?? s.activeTabId`，而 browser_act /
+  // browser_read / browser_login 传的是**被操作的那个标签**——三个工具都不调
+  // `activate`，所以 `*` 标的不是用户在看的标签，是假的。这条用例的 fixture 刻意
+  // 让「被操作的标签」（t1，act() 硬编码的 tabId）与「活动标签」（activeTabId）不同，
+  // 逼出这个区别：写死 tabId、或者恰好两者相等的用例，这条 bug 都测不出来。
+  it('静默操作一个非活动标签时，* 仍然标在活动标签上，不标被操作的那个（Task 3 裁决）', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://a.example/q', title: '标题A' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    bs.activeTabId = 't2';   // 用户此刻看着 t2；这次 act() 操作的是 t1（bs 里硬编码）
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('[t2]*');
+    expect(header).not.toContain('[t1]*');
+  });
+
+  it('browser_read 同理：* 标的是活动标签，不是被读的那个标签', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://a.example/q', title: '标题A' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    bs.activeTabId = 't2';
+    bs.isolatedImpl = () => ({ text: '正文', total: 2 });
+    const header = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' })).split('\n')[0];
+    expect(header).toContain('[t2]*');
+    expect(header).not.toContain('[t1]*');
+  });
+
+  it('browser_login 同理：* 标的是活动标签，不是被填的那个标签', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://iaaa.pku.edu.cn/', title: '登录页' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    bs.activeTabId = 't2';
+    const header = bodyOf(await toolNamed('browser_login').execute('call-login', { tabId: 't1' })).split('\n')[0];
+    expect(header).toContain('[t2]*');
+    expect(header).not.toContain('[t1]*');
+  });
 });
 
 describe('密码硬闸在工具层这一侧的样子', () => {
@@ -1286,6 +1328,100 @@ describe('browser_tabs：无副作用地列出当前所有标签（Task 1）', (
   it('说明里告诉模型：这里也有用户自己开的标签', () => {
     expect(toolNamed('browser_tabs').description).toContain('用户');
   });
+
+  it('说明里说清 * 标的是侧栏当前显示的那个标签', () => {
+    expect(toolNamed('browser_tabs').description).toContain('侧栏当前显示');
+  });
+
+  /**
+   * `withTabs` 会在 body **前面**先挂一行 `tabsLine()` 摘要（每个浏览器工具结果
+   * 共用的那一行），所以 `browser_tabs` 自己那份清单不在输出的第一行 —— 必须按
+   * `[id]` 前缀去找，不能简单取 `split('\n')[0]`（那样取到的是 tabsLine 那一行，
+   * 与 browser_tabs 自己的渲染是两套代码，会把这里的用例悄悄测成别的东西）。
+   */
+  const bodyLineOf = (out: string, id: string) =>
+    out.split('\n').find((l) => l.startsWith(`[${id}]`)) ?? '';
+
+  // ② 终评发现：browser_tabs 自己重写了一遍渲染，把 TAB_TITLE_MAX 那道闸绕开了——
+  // 标题来自 wc.getTitle()，页面完全可控、长度无上限，标签上限 16 个，一次
+  // browser_tabs 就能把结果撑爆。这里直接钉住 browser_tabs 自己的渲染，不是
+  // tabsLine 那一行（那边已经有一整组用例）。
+  it('标题超过 TAB_TITLE_MAX 时截断，且截断看得出来；没超就原样保留', async () => {
+    // 正向前置：短标题不截断、原样出现——下面「长标题被截断」说的才是
+    // 「触发了截断」，不是「整段渲染坏了」。
+    const shortTitle = '短标题';
+    bs.tabs = [{ id: 't1', url: 'https://a.example/', title: shortTitle }];
+    bs.activeTabId = 't1';
+    const shortLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(shortLine).toContain(shortTitle);
+    expect(shortLine).not.toContain('…');
+
+    const longTitle = '综'.repeat(TAB_TITLE_MAX + 60);
+    bs.tabs = [{ id: 't1', url: 'https://a.example/', title: longTitle }];
+    const longLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    const seg = longLine.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBe(TAB_TITLE_MAX + 1);   // TAB_TITLE_MAX 个字 + 省略号
+    expect(seg.endsWith('…')).toBe(true);
+  });
+
+  it('URL 超过 TAB_URL_MAX 时截断，且截断看得出来；没超就原样保留', async () => {
+    // 正向前置：短 URL 不截断、原样出现。
+    const shortUrl = 'https://a.example/short?q=1';
+    bs.tabs = [{ id: 't1', url: shortUrl, title: '' }];
+    bs.activeTabId = 't1';
+    const shortLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(shortLine).toContain(shortUrl);
+    expect(shortLine).not.toContain('…');
+
+    const longUrl = `https://a.example/?q=${'x'.repeat(TAB_URL_MAX + 60)}`;
+    bs.tabs = [{ id: 't1', url: longUrl, title: '' }];
+    const longLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(longLine).not.toContain(longUrl);
+    expect(longLine).toContain('…');
+    expect(longLine.length).toBeLessThan(longUrl.length);
+  });
+
+  // ⑤ 终评发现（纵深防御）：browser_tabs 把每个标签的完整 URL 交给模型（这条设计
+  // 不推翻——同源两个标签只看 host 分不开），但 URL 可能整条带着凭据。`login.ts`
+  // 那句「拒绝理由里一律不回显 currentUrl」立的就是这条规矩，这里补齐它。
+  it('URL 带 userinfo（账号:密码@host）时渲染前剥掉，不进模型上下文', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://svc:hunter2@idp.example/login', title: '' }];
+    bs.activeTabId = 't1';
+    const line = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(line).not.toContain('hunter2');
+    expect(line).not.toContain('svc:hunter2@');
+    // host 与 path 还在，只剥了 userinfo —— 不是整条 URL 被藏起来了。
+    expect(line).toContain('idp.example/login');
+  });
+
+  it('URL 解析不了（about:blank 之类）时原样回退，不报错、不整行消失', async () => {
+    bs.tabs = [{ id: 't1', url: 'about:blank', title: '' }];
+    bs.activeTabId = 't1';
+    const line = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(line).toContain('about:blank');
+  });
+});
+
+describe('stripUrlUserinfo：剥 userinfo，解析不了原样回退', () => {
+  it('带账号密码的 URL：只剥 userinfo，host / path / query 都还在', () => {
+    const stripped = stripUrlUserinfo('https://svc:hunter2@idp.example/login?x=1');
+    expect(stripped).not.toContain('hunter2');
+    expect(stripped).not.toContain('svc');
+    expect(stripped).toContain('idp.example');
+    expect(stripped).toContain('/login');
+    expect(stripped).toContain('x=1');
+  });
+
+  it('没有 userinfo 的 URL：原样返回', () => {
+    expect(stripUrlUserinfo('https://a.example/q?x=1')).toBe('https://a.example/q?x=1');
+  });
+
+  it('解析不了的串：原样返回，不抛', () => {
+    expect(stripUrlUserinfo('about:blank')).toBe('about:blank');
+    expect(stripUrlUserinfo('not a url')).toBe('not a url');
+    expect(stripUrlUserinfo('')).toBe('');
+  });
 });
 
 describe('browser_act 里的后退 / 前进 / 重新加载（Task 2）', () => {
@@ -1340,6 +1476,11 @@ describe('页面报的错挂进工具结果（Task 4）', () => {
     bs.consoleImpl = withErrors;
     const withErr = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
     expect(withErr).toContain('t.submit is not a function');
+    // 正向前置与否定断言要指向**同一个串**：下面断的是表头 '页面报的错' 不出现，
+    // 这里也要先证明它在有错误时真的会出现 —— 只断错误正文的话，表头一改名，
+    // 下面那条否定断言会恒真，而正向前置照样绿（CLAUDE.md：否定断言不能靠
+    // 「换个字符串」的隔壁前置兜底）。
+    expect(withErr).toContain('页面报的错');
 
     // 正向前置在上面：所以这里的「不出现」说的是「没有错误时那一段整个不出现」，
     // 不是「这段渲染坏了」。

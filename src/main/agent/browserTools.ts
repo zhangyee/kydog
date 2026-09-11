@@ -27,23 +27,64 @@ const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, te
 export const TAB_TITLE_MAX = 40;
 
 /**
- * 标签清单一行，挂在**每个**浏览器工具结果的头部。
- * 这样就不需要一个单独的 browser_tabs 工具 —— 清单总是准的，也不占一个工具位。
+ * `browser_tabs` 里每条完整 URL 的显示上限。
+ *
+ * URL 与标题同一个理由（见 `TAB_TITLE_MAX`）：页面完全可控、长度无上限（query
+ * string 可以任意长），标签上限 16 个，一次 `browser_tabs` 不截就能把结果撑爆。
+ * 比标题宽很多 —— 这里的 URL 要给模型当 `browser_open` 的参数抄、也要给用户核对，
+ * 截太短就失去意义；200 字符覆盖真实检索结果页地址的绝大多数长度，留了远超常见
+ * query string 的余量。
+ */
+export const TAB_URL_MAX = 200;
+
+/** 超出上限就截断并**明确**留下记号（`…`）——「不知道有没有截断」被当成「没有
+ *  截断」是本仓已经修过一次的缺陷形态（见 `describeReadTruncation`），这里不重犯。 */
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
+ * 剥掉一个 URL 的 userinfo 段（`https://user:密码@host/` 里 `user:密码` 那一截）。
+ *
+ * `browser_tabs` 要给模型完整 URL（§1.2：同源两个标签只看 host 分不开，这条设计
+ * 不推翻），但 URL 可能整条带着凭据 —— `login.ts` 那句「拒绝理由里一律不回显
+ * currentUrl」立的就是这条规矩，这里补上纵深防御。**解析不了就原样回退**：
+ * 那是 `about:blank` 之类，本来就没有 userinfo。
+ */
+export function stripUrlUserinfo(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (u.username === '' && u.password === '') return raw;
+    u.username = '';
+    u.password = '';
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * 标签清单一行，挂在**每个**浏览器工具结果的头部。清单总是准的，模型不必另外
+ * 调一次 `browser_tabs` 才知道有哪些标签（那个工具是给「先看一眼用户开的标签」
+ * 用的，见它自己的 description）。
  *
  * 带上标题：agent 要从这一行**抄 tabId**，只给 host 的话，两个同源标签
  * （比如都在 cnki.net 上）长得一模一样，它没法判断哪个是用户说的那一篇。
+ *
+ * **`*` 标的是 `s.activeTabId`（侧栏打开时用户会看到的那个），不是这次工具调用
+ * 操作的标签。** `browser_act` / `browser_read` / `browser_login` 静默操作用户没在
+ * 看的标签是常态（侧栏关着时 agent 照常干活），那时如果把 `*` 标成「被操作的标签」
+ * 就是在撒谎。措辞与这里的判据必须是同一件事，见 `TABS_DESC`。
  */
-function tabsLine(activeId?: string): string {
+function tabsLine(): string {
   const s = browserService.getState();
   if (s.tabs.length === 0) return '标签页: （无）';
-  const cur = activeId ?? s.activeTabId;
   return '标签页: ' + s.tabs.map((t) => {
     const host = (() => { try { return new URL(t.url).host; } catch { return t.url || 'about:blank'; } })();
     // 标题是给人也是给模型分辨用的：两个同源标签只看 host 分不开。
     // 没有标题就不加那一段 —— 空的破折号只是噪声（新开的空白标签常见这种情况）。
-    const title = t.title.trim();
-    const short = title.length > TAB_TITLE_MAX ? `${title.slice(0, TAB_TITLE_MAX)}…` : title;
-    return `[${t.id}]${t.id === cur ? '*' : ''} ${host}${short ? ` — ${short}` : ''}`;
+    const title = truncate(t.title.trim(), TAB_TITLE_MAX);
+    return `[${t.id}]${t.id === s.activeTabId ? '*' : ''} ${host}${title ? ` — ${title}` : ''}`;
   }).join(' · ');
 }
 
@@ -165,7 +206,8 @@ const TargetProps = {
  * `kind` 落**字面量白名单**，不是 `Type.String()`。schema 这一层是模型第一眼看到的
  * 契约：写成裸字符串的话，`{kind:'navigate'}` 连 schema 都过得去，模型要等到
  * 主进程校验才知道没有这个动作 —— 而在此之前它已经按自己以为的语义排好了整批剧本。
- * 取值与 `ACTION_KINDS`（spec §4.1 的九种）同一个出处，两边不会漂。
+ * 取值与 `ACTION_KINDS`（spec §4.1 的九种加 back/forward/reload 三种，合计十二种）
+ * 同一个出处，两边不会漂。
  */
 const KindSchema = Type.Union(
   ACTION_KINDS.map((k) => Type.Literal(k)),
@@ -348,7 +390,8 @@ const TABS_DESC = [
   '那一页往往就是最重要的输入。要对某一页动手，把它的 tabId 抄进 browser_open /',
   'browser_act / browser_read / browser_login。',
   '',
-  '带 * 的那个是用户此刻正看着的标签。',
+  '带 * 的是侧栏当前显示的那个标签（用户打开侧栏时看到的就是它）——',
+  '不是「用户此刻正看着」：侧栏关着的时候没有人在看，那时 agent 多半正在静默干活。',
 ].join('\n');
 
 // ── 工厂 ────────────────────────────────────────────────────────────────────
@@ -398,10 +441,10 @@ function navLine(): string | null {
   })}`).join(' · ');
 }
 
-const withTabs = (body: string, tabId?: string): ToolResult => {
+const withTabs = (body: string): ToolResult => {
   const login = loginLine();
   const nav = navLine();
-  return text(`${tabsLine(tabId)}${login ? `\n${login}` : ''}${nav ? `\n${nav}` : ''}\n\n${body}`);
+  return text(`${tabsLine()}${login ? `\n${login}` : ''}${nav ? `\n${nav}` : ''}\n\n${body}`);
 };
 
 /** 排队之前先确认标签在。见 `browser_act` 那一处的注释：`enqueue` 只增不减。 */
@@ -449,7 +492,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       }
       const con = renderConsole(browserService.consoleSince(tabId, consoleFrom));
       if (con) parts.push('', con);
-      return { ...withTabs(parts.join('\n'), tabId), details: { tabId, nav } };
+      return { ...withTabs(parts.join('\n')), details: { tabId, nav } };
     },
   };
 
@@ -528,10 +571,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
               undefined, 'unknown');
           }
           const note = describeReadTruncation(r.text.length, r.total);
-          return withTabs(
-            (note ? `${note}\n\n` : '') + wrapPageContent(r.text),
-            params.tabId,
-          );
+          return withTabs((note ? `${note}\n\n` : '') + wrapPageContent(r.text));
         },
         '读网页正文',
       ));
@@ -551,8 +591,12 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       const s = browserService.getState();
       const body = s.tabs.length === 0
         ? '现在没有打开任何网页。要开就用 browser_open。'
-        : s.tabs.map((t) => `[${t.id}]${t.id === s.activeTabId ? '*' : ''} ${t.url}`
-          + (t.title.trim() ? ` — ${t.title.trim()}` : '')).join('\n');
+        // URL 与标题各截各的上限（`TAB_URL_MAX` / `TAB_TITLE_MAX`，见它们自己的注释），
+        // 且渲染前剥掉 URL 的 userinfo 段（`stripUrlUserinfo`）——完整 URL 是刻意的
+        // （同源两个标签只看 host 分不开），但一条都不许带着凭据进模型上下文。
+        : s.tabs.map((t) => `[${t.id}]${t.id === s.activeTabId ? '*' : ''} `
+          + truncate(stripUrlUserinfo(t.url), TAB_URL_MAX)
+          + (t.title.trim() ? ` — ${truncate(t.title.trim(), TAB_TITLE_MAX)}` : '')).join('\n');
       return withTabs(body);
     },
   };
@@ -608,7 +652,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         : '**没有提交**（你没给 submit: true）。页面上现在填好了账号与密码 —— '
           + '有验证码就先填验证码，然后用 browser_act 点提交按钮。'
           + '提交之后留意工具结果头部那行「机构登录: …」，它是唯一的成功判据。');
-      return { ...withTabs(parts.join('\n'), params.tabId), details: { tabId: params.tabId, submitted: r.submitted } };
+      return { ...withTabs(parts.join('\n')), details: { tabId: params.tabId, submitted: r.submitted } };
     },
   };
 
@@ -690,7 +734,7 @@ async function runBatch(
       + '页面此刻什么样这一次说不出来 —— 这是**没看到**，**不要**据此断定它没变。');
   }
   return {
-    ...withTabs(parts.join('\n'), tabId),
+    ...withTabs(parts.join('\n')),
     details: { snapshotId: after?.snapshotId ?? null, stopped: stoppedAt, snapshotFailed },
   };
 }
