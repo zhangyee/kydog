@@ -784,27 +784,31 @@ describe('v9：机构账号只兜形状不动值', () => {
 
   it('没配过 → null；完整记录原样保留', () => {
     expect(withInst(undefined).institution).toBeNull();
-    const full = { name: '北京大学', entityID: PKU, username: '2100012345', passwordEnc: 'BASE64==', confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' } };
+    const full = { name: '北京大学', entityID: PKU, username: '2100012345', passwordEnc: 'BASE64==', confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }] };
     expect(withInst(full).institution).toEqual(full);
   });
 
-  // confirmedLogin 与 entityID 绑定：换了学校，上一次的确认必须当场作废。
-  // 不作废的话，判据里 confirmedLogin 那一支会直接 return，entityID 根本不参与 ——
+  // confirmedLogins 里每一条都与 entityID 绑定：换了学校，上一次的确认必须当场剔除。
+  // 不剔除的话，判据里那一支会直接命中，entityID 根本不参与 ——
   // 主进程会把清华的账号密码填进北大的统一身份认证页。
-  it('confirmedLogin.entityID 与记录的 entityID 不符 → 确认作废（回 null），其余字段保留', () => {
+  it('confirmedLogins 里 entityID 与记录的 entityID 不符的那条被剔除，其余字段保留', () => {
     const got = withInst({
       name: '清华大学', entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth',
       username: '2020010101', passwordEnc: 'X==',
-      confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+      confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }],
     }).institution;
-    expect(got?.confirmedLogin).toBeNull();
+    expect(got?.confirmedLogins).toEqual([]);
     expect(got?.username).toBe('2020010101');
   });
 
-  it('confirmedLogin 形状不对（缺 origin / 不是对象 / origin 不是字符串）→ 回 null', () => {
+  it('confirmedLogins 里形状不对的条目被剔掉，形状对的照样留着（缺 origin / 不是对象 / origin 不是字符串）', () => {
+    const good = { entityID: PKU, origin: 'https://good.pku.edu.cn' };
     for (const bad of [{ entityID: PKU }, { origin: 'https://a.b' }, 'iaaa.pku.edu.cn', 42, [], { entityID: PKU, origin: 5 }]) {
-      const got = withInst({ name: 'n', entityID: PKU, username: 'u', passwordEnc: '', confirmedLogin: bad }).institution;
-      expect(got?.confirmedLogin, JSON.stringify(bad)).toBeNull();
+      const got = withInst({
+        name: 'n', entityID: PKU, username: 'u', passwordEnc: '',
+        confirmedLogins: [good, bad],
+      }).institution;
+      expect(got?.confirmedLogins, JSON.stringify(bad)).toEqual([good]);
     }
   });
 
@@ -812,7 +816,7 @@ describe('v9：机构账号只兜形状不动值', () => {
   // 不是用户确认过的那个。少一次确认对话框的代价，换不来伪造一条安全事实。
   it('旧的 confirmedLoginHost（只有 host、没有 scheme）不被顺手转成 origin', () => {
     const got = withInst({ name: 'n', entityID: PKU, username: 'u', passwordEnc: '', confirmedLoginHost: 'iaaa.pku.edu.cn' }).institution;
-    expect(got?.confirmedLogin).toBeNull();
+    expect(got?.confirmedLogins).toEqual([]);
     expect(JSON.stringify(got)).not.toContain('iaaa.pku.edu.cn');
   });
 
@@ -830,7 +834,7 @@ describe('v9：机构账号只兜形状不动值', () => {
 
   it('配了机构与账号但还没设密码 → passwordEnc 为空串，不是 null', () => {
     const got = withInst({ name: 'n', entityID: 'e', username: 'u' }).institution;
-    expect(got).toEqual({ name: 'n', entityID: 'e', username: 'u', passwordEnc: '', confirmedLogin: null });
+    expect(got).toEqual({ name: 'n', entityID: 'e', username: 'u', passwordEnc: '', confirmedLogins: [] });
   });
 
   // passwordEnc 分三档，中间那档以前不存在（非字符串一律被改写成空串）。
@@ -869,5 +873,79 @@ describe('v9：机构账号只兜形状不动值', () => {
     const r = checkInstitution(good);
     expect(r.ok).toBe(true);
     expect(r.ok === true && r.record).toEqual(sanitizeInstitution(good));
+  });
+});
+
+describe('confirmedLogins：数组、去重、旧数据迁移（Task 5）', () => {
+  const ENTITY = 'https://idp.x.edu.cn/idp';
+  const base = { name: 'X 大学', entityID: ENTITY, username: 'u1', passwordEnc: '' };
+
+  it('收下多条', () => {
+    const r = sanitizeInstitution({
+      ...base,
+      confirmedLogins: [
+        { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
+        { entityID: ENTITY, origin: 'https://b.x.edu.cn' },
+      ],
+    });
+    expect(r?.confirmedLogins).toHaveLength(2);
+  });
+
+  it('entityID 不符的那条被剔掉，其余保留', () => {
+    const r = sanitizeInstitution({
+      ...base,
+      confirmedLogins: [
+        { entityID: 'https://idp.y.edu.cn/idp', origin: 'https://a.x.edu.cn' },
+        { entityID: ENTITY, origin: 'https://b.x.edu.cn' },
+      ],
+    });
+    expect(r?.confirmedLogins).toEqual([{ entityID: ENTITY, origin: 'https://b.x.edu.cn' }]);
+  });
+
+  it('完全相同的 origin 不留两份', () => {
+    const r = sanitizeInstitution({
+      ...base,
+      confirmedLogins: [
+        { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
+        { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
+      ],
+    });
+    expect(r?.confirmedLogins).toHaveLength(1);
+  });
+
+  // 旧文件里是单个对象。转过来是无损的（形状逐字相同），所以要转 ——
+  // 丢弃会让每个已配置机构的用户平白多确认一次。
+  it('旧的单条 confirmedLogin 迁移成一条的数组', () => {
+    const r = sanitizeInstitution({
+      ...base,
+      confirmedLogin: { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
+    });
+    expect(r?.confirmedLogins).toEqual([{ entityID: ENTITY, origin: 'https://a.x.edu.cn' }]);
+  });
+
+  it('旧的 confirmedLogin 为 null 时是空数组', () => {
+    expect(sanitizeInstitution({ ...base, confirmedLogin: null })?.confirmedLogins).toEqual([]);
+  });
+
+  // 新键存在但是脏数据时**不许回落到旧键** —— 那会让一条被判定为无效的新记录
+  // 被一条旧记录悄悄顶替，而两者可能指向不同的 origin。
+  it('新键存在但不是数组时就是空，不回落到旧键', () => {
+    const r = sanitizeInstitution({
+      ...base,
+      confirmedLogins: 'garbage',
+      confirmedLogin: { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
+    });
+    expect(r?.confirmedLogins).toEqual([]);
+  });
+
+  it('两个键都没有时是空数组，不是 undefined', () => {
+    expect(sanitizeInstitution(base)?.confirmedLogins).toEqual([]);
+  });
+
+  // 旧的 confirmedLoginHost（只有 host、没有 scheme）**仍然不做转换**：
+  // 补一个 https:// 是我们编的，不是用户确认过的那个 origin。
+  it('更早的 confirmedLoginHost 仍然一概不认', () => {
+    expect(sanitizeInstitution({ ...base, confirmedLoginHost: 'a.x.edu.cn' })?.confirmedLogins)
+      .toEqual([]);
   });
 });

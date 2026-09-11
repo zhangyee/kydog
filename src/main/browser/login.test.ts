@@ -13,22 +13,22 @@ describe('checkLoginHost：直接填只有两条路', () => {
     expect(checkLoginHost({
       entityID: PKU,
       currentUrl: 'https://idp.pku.edu.cn/idp/profile/SAML2/Redirect/SSO',
-      confirmedLogin: null,
+      confirmedLogins: [],
     })).toEqual({ kind: 'fill', host: 'idp.pku.edu.cn' });
   });
 
   it('大小写与尾点归一之后仍算精确相等', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://IDP.PKU.EDU.CN./x', confirmedLogin: null }))
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://IDP.PKU.EDU.CN./x', confirmedLogins: [] }))
       .toEqual({ kind: 'fill', host: 'idp.pku.edu.cn' });
   });
 
   it('entityID 那一侧带尾点也一样归一', () => {
-    expect(checkLoginHost({ entityID: 'https://idp.pku.edu.cn./idp/shibboleth', currentUrl: 'https://idp.pku.edu.cn/x', confirmedLogin: null }))
+    expect(checkLoginHost({ entityID: 'https://idp.pku.edu.cn./idp/shibboleth', currentUrl: 'https://idp.pku.edu.cn/x', confirmedLogins: [] }))
       .toEqual({ kind: 'fill', host: 'idp.pku.edu.cn' });
   });
 
   it('已确认的 origin 全等 → 直接填', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: CONFIRMED_IAAA }))
+    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [CONFIRMED_IAAA] }))
       .toEqual({ kind: 'fill', host: 'iaaa.pku.edu.cn' });
   });
 });
@@ -38,7 +38,7 @@ describe('checkLoginHost：删掉 eTLD+1 之后，其余一律先确认一次', 
   // 的兜底 —— 而那个兜底方向是 fail-open。这套机制的全部收益只是「第一次不用问
   // 用户」，而确认机制本来就存在，所以整套删掉，北大这条改成问一次。
   it('同一所学校的另一个子域也要确认一次', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: null }))
+    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [] }))
       .toEqual({ kind: 'confirm-then-fill', host: 'iaaa.pku.edu.cn', origin: 'https://iaaa.pku.edu.cn' });
   });
 
@@ -49,14 +49,14 @@ describe('checkLoginHost：删掉 eTLD+1 之后，其余一律先确认一次', 
     expect(checkLoginHost({
       entityID: 'https://idp.uct.ac.za/idp/shibboleth',
       currentUrl: 'https://login.evil.ac.za/',
-      confirmedLogin: null,
+      confirmedLogins: [],
     })).toEqual({ kind: 'confirm-then-fill', host: 'login.evil.ac.za', origin: 'https://login.evil.ac.za' });
   });
 
   it('跨域也只到「确认一次」，永远不直接填', () => {
     for (const u of ['https://evil.com/', 'https://idp.pku.edu.cn.evil.com/',
                      'https://pku.edu.cn.attacker.net/', 'https://evil.edu.cn/']) {
-      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogin: null }).kind, u)
+      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogins: [] }).kind, u)
         .toBe('confirm-then-fill');
     }
   });
@@ -66,13 +66,13 @@ describe('checkLoginHost：确认必须绑在 entityID 上', () => {
   // 用户先配北大（确认过 iaaa.pku.edu.cn），后来改选清华并换成清华的学号密码。
   // entityID 不参与判据的话，主进程会把清华账号密码填进北大的统一身份认证页。
   it('换成清华的 entityID 之后，北大那次确认作废', () => {
-    const r = checkLoginHost({ entityID: THU, currentUrl: IAAA, confirmedLogin: CONFIRMED_IAAA });
+    const r = checkLoginHost({ entityID: THU, currentUrl: IAAA, confirmedLogins: [CONFIRMED_IAAA] });
     expect(r.kind).toBe('confirm-then-fill');
   });
 
   it('origin 对得上但 entityID 对不上，一样不算确认过', () => {
     const wrongEntity: ConfirmedLogin = { entityID: THU, origin: 'https://iaaa.pku.edu.cn' };
-    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: wrongEntity }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [wrongEntity] }).kind)
       .toBe('confirm-then-fill');
   });
 });
@@ -82,35 +82,35 @@ describe('checkLoginHost：scheme 必须进判据', () => {
   // http://iaaa.pku.edu.cn/ 就能收走校园密码，而用户之前在 https 上做的那次确认
   // 反而把它一并放行了。
   it('非 https 一律拒绝，连确认的机会都不给', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogin: null }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogins: [] }).kind)
       .toBe('refuse');
   });
 
   it('entityID 自己那个 host 走 http 也不例外', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'http://idp.pku.edu.cn/', confirmedLogin: null }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'http://idp.pku.edu.cn/', confirmedLogins: [] }).kind)
       .toBe('refuse');
   });
 
   it('已确认过 https 的那个 host，它的 http 版本仍然被拒', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogin: CONFIRMED_IAAA }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogins: [CONFIRMED_IAAA] }).kind)
       .toBe('refuse');
   });
 
   // 落盘的 origin 只兜了「是个非空字符串」，值本身没人校验。
   it('落盘的 origin 记成 http（脏数据）→ https 页不算命中它', () => {
     const dirty: ConfirmedLogin = { entityID: PKU, origin: 'http://iaaa.pku.edu.cn' };
-    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: dirty }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [dirty] }).kind)
       .toBe('confirm-then-fill');
   });
 
   it('落盘的 origin 根本解析不了 → 当没确认过，不当崩', () => {
     const junk: ConfirmedLogin = { entityID: PKU, origin: 'iaaa.pku.edu.cn' };
-    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: junk }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [junk] }).kind)
       .toBe('confirm-then-fill');
   });
 
   it('端口也算 origin 的一部分', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://iaaa.pku.edu.cn:8443/x', confirmedLogin: CONFIRMED_IAAA }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://iaaa.pku.edu.cn:8443/x', confirmedLogins: [CONFIRMED_IAAA] }).kind)
       .toBe('confirm-then-fill');
   });
 });
@@ -118,28 +118,28 @@ describe('checkLoginHost：scheme 必须进判据', () => {
 describe('checkLoginHost：直接拒绝（不给确认机会）', () => {
   it('裸 IP —— 公网的那些也一样', () => {
     for (const u of ['https://127.0.0.1/', 'https://8.8.8.8/', 'https://[::1]/', 'https://[2001:db8::1]/']) {
-      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogin: null }).kind, u).toBe('refuse');
+      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogins: [] }).kind, u).toBe('refuse');
     }
   });
 
   it('localhost 一类的内网名字', () => {
     for (const u of ['https://localhost/', 'https://localhost./', 'https://foo.local/',
                      'https://nas.lan/', 'https://localhost.localdomain/']) {
-      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogin: null }).kind, u).toBe('refuse');
+      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogins: [] }).kind, u).toBe('refuse');
     }
   });
 
   it('currentUrl 为空 / 畸形 / 没有主机名', () => {
     for (const u of ['', '   ', 'not a url', 'https//idp.pku.edu.cn/', 'https://./']) {
-      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogin: null }).kind, u).toBe('refuse');
+      expect(checkLoginHost({ entityID: PKU, currentUrl: u, confirmedLogins: [] }).kind, u).toBe('refuse');
     }
   });
 
-  // 拒绝这一档要压在 confirmedLogin 前面：脏数据里存着 https://localhost 的话，
+  // 拒绝这一档要压在 confirmedLogins 前面：脏数据里存着 https://localhost 的话，
   // 「已确认」不能反过来把本机地址放行。
-  it('已确认过也拦得住 —— 本机地址优先于 confirmedLogin', () => {
+  it('已确认过也拦得住 —— 本机地址优先于 confirmedLogins', () => {
     const c: ConfirmedLogin = { entityID: PKU, origin: 'https://localhost' };
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://localhost/', confirmedLogin: c }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://localhost/', confirmedLogins: [c] }).kind)
       .toBe('refuse');
   });
 
@@ -150,7 +150,7 @@ describe('checkLoginHost：直接拒绝（不给确认机会）', () => {
     const r = checkLoginHost({
       entityID: 'urn:mace:ac.uk:sdss.ac.uk:provider:identity:dur.ac.uk',
       currentUrl: 'https://sso.dur.ac.uk/',
-      confirmedLogin: null,
+      confirmedLogins: [],
     });
     expect(r.kind).toBe('refuse');
     if (r.kind === 'refuse') expect(r.reason).toContain('URN');
@@ -158,14 +158,14 @@ describe('checkLoginHost：直接拒绝（不给确认机会）', () => {
 
   it('entityID 畸形或为空 → 拒绝', () => {
     // CARSI 官方清单里就有两条缺冒号的真实脏数据。
-    expect(checkLoginHost({ entityID: 'https//idp.xjut.edu.cn/idp/shibboleth', currentUrl: 'https://idp.xjut.edu.cn/', confirmedLogin: null }).kind)
+    expect(checkLoginHost({ entityID: 'https//idp.xjut.edu.cn/idp/shibboleth', currentUrl: 'https://idp.xjut.edu.cn/', confirmedLogins: [] }).kind)
       .toBe('refuse');
-    expect(checkLoginHost({ entityID: '', currentUrl: 'https://a.com/', confirmedLogin: null }).kind)
+    expect(checkLoginHost({ entityID: '', currentUrl: 'https://a.com/', confirmedLogins: [] }).kind)
       .toBe('refuse');
   });
 
   it('拒绝理由不回显 currentUrl 的原串', () => {
-    const r = checkLoginHost({ entityID: PKU, currentUrl: 'https://svc:秘密密码@[bad/', confirmedLogin: null });
+    const r = checkLoginHost({ entityID: PKU, currentUrl: 'https://svc:秘密密码@[bad/', confirmedLogins: [] });
     expect(r.kind).toBe('refuse');
     if (r.kind === 'refuse') {
       expect(r.reason).not.toContain('秘密密码');
@@ -185,25 +185,25 @@ describe('checkLoginHost：refuse 带一个可分流的判别值 why', () => {
   };
 
   it('当前标签的网址无法解析 → unparsable', () => {
-    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://svc:秘密密码@[bad/', confirmedLogin: null }))
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://svc:秘密密码@[bad/', confirmedLogins: [] }))
       .toBe('unparsable');
   });
 
   it('当前标签没有主机名 → no-host', () => {
-    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://./', confirmedLogin: null })).toBe('no-host');
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://./', confirmedLogins: [] })).toBe('no-host');
   });
 
   it('非 https → not-https', () => {
-    expect(refuseWhy({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogin: null }))
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'http://iaaa.pku.edu.cn/', confirmedLogins: [] }))
       .toBe('not-https');
   });
 
   it('裸 IP → bare-ip', () => {
-    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://8.8.8.8/', confirmedLogin: null })).toBe('bare-ip');
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://8.8.8.8/', confirmedLogins: [] })).toBe('bare-ip');
   });
 
   it('内网名字 → local-host', () => {
-    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://localhost/', confirmedLogin: null }))
+    expect(refuseWhy({ entityID: PKU, currentUrl: 'https://localhost/', confirmedLogins: [] }))
       .toBe('local-host');
   });
 
@@ -211,7 +211,7 @@ describe('checkLoginHost：refuse 带一个可分流的判别值 why', () => {
     expect(refuseWhy({
       entityID: 'urn:mace:ac.uk:sdss.ac.uk:provider:identity:dur.ac.uk',
       currentUrl: 'https://sso.dur.ac.uk/',
-      confirmedLogin: null,
+      confirmedLogins: [],
     })).toBe('entity-has-no-host');
   });
 });
@@ -221,7 +221,7 @@ describe('checkLoginHost：返回形状让漏判确认的调用方编译不过',
   // `if (check.ok) await fillPassword()` 完全合法、编译通过、用例全绿 ——
   // 而 spec §4.6 第 2 条那次用户确认就整条消失了。
   it('host 必须先按 kind 收窄才取得到', () => {
-    const d = checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: null });
+    const d = checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [] });
     // @ts-expect-error refuse 分支上没有 host，不收窄就取不到。返回形状要是被摊平
     // 回「一个布尔加一个 host」，这里就没有错误可抑制，npx tsc --noEmit 直接红。
     const leaked: string = d.host;
@@ -234,23 +234,93 @@ describe('checkLoginHost：确认框前后的 TOCTOU', () => {
   // 这次确认是一次工具执行中途的跨进程悬挂（ask broker：挂起 promise → 广播 →
   // UI → RPC 回来），人在框上停留几秒到几十秒是常态。返回值不能跨越挂起使用。
   it('确认后写回同一个 origin，再判就是 fill', () => {
-    const r = checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: null });
+    const r = checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [] });
     expect(r.kind).toBe('confirm-then-fill');
     if (r.kind !== 'confirm-then-fill') return;
     const written: ConfirmedLogin = { entityID: PKU, origin: r.origin };
-    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogin: written }))
+    expect(checkLoginHost({ entityID: PKU, currentUrl: IAAA, confirmedLogins: [written] }))
       .toEqual({ kind: 'fill', host: 'iaaa.pku.edu.cn' });
   });
 
   it('确认框还开着的时候页面自己跳走 → 重判不是 fill', () => {
     const written: ConfirmedLogin = { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' };
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://evil.com/idp/', confirmedLogin: written }).kind)
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://evil.com/idp/', confirmedLogins: [written] }).kind)
       .toBe('confirm-then-fill');
   });
 
   it('confirm-then-fill 带上被确认的那个 origin，且只有 origin —— 路径/查询/片段不进去', () => {
-    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://iaaa.pku.edu.cn:8443/login?next=a#f', confirmedLogin: null }))
+    expect(checkLoginHost({ entityID: PKU, currentUrl: 'https://iaaa.pku.edu.cn:8443/login?next=a#f', confirmedLogins: [] }))
       .toEqual({ kind: 'confirm-then-fill', host: 'iaaa.pku.edu.cn', origin: 'https://iaaa.pku.edu.cn:8443' });
+  });
+});
+
+describe('已确认的登录页可以有多个（Task 5）', () => {
+  const ENTITY = 'https://idp.x.edu.cn/idp/shibboleth';
+
+  // **列表里放两条、命中第二条。** 只放一条的话，「任意一条命中」与
+  // 「唯一那条命中」两种实现同样绿 —— 这正是本任务要修的那个 bug 的形状。
+  it('命中列表里的第二条也放行', () => {
+    const d = checkLoginHost({
+      entityID: ENTITY,
+      currentUrl: 'https://sso.x.edu.cn/login',
+      confirmedLogins: [
+        { entityID: ENTITY, origin: 'https://other.x.edu.cn' },
+        { entityID: ENTITY, origin: 'https://sso.x.edu.cn' },
+      ],
+    });
+    expect(d.kind).toBe('fill');
+  });
+
+  it('命中第一条同样放行', () => {
+    const d = checkLoginHost({
+      entityID: ENTITY,
+      currentUrl: 'https://other.x.edu.cn/login',
+      confirmedLogins: [
+        { entityID: ENTITY, origin: 'https://other.x.edu.cn' },
+        { entityID: ENTITY, origin: 'https://sso.x.edu.cn' },
+      ],
+    });
+    expect(d.kind).toBe('fill');
+  });
+
+  it('一条都不命中就还是要问一次', () => {
+    const d = checkLoginHost({
+      entityID: ENTITY,
+      currentUrl: 'https://another.x.edu.cn/login',
+      confirmedLogins: [
+        { entityID: ENTITY, origin: 'https://other.x.edu.cn' },
+        { entityID: ENTITY, origin: 'https://sso.x.edu.cn' },
+      ],
+    });
+    expect(d.kind).toBe('confirm-then-fill');
+  });
+
+  // 纵深防御：entityID 不符的条目不算数，哪怕 origin 一模一样。
+  it('entityID 不符的那条不算命中', () => {
+    const d = checkLoginHost({
+      entityID: ENTITY,
+      currentUrl: 'https://sso.x.edu.cn/login',
+      confirmedLogins: [{ entityID: 'https://idp.y.edu.cn/idp', origin: 'https://sso.x.edu.cn' }],
+    });
+    expect(d.kind).toBe('confirm-then-fill');
+  });
+
+  // 判据顺序：三档拒绝压在已确认列表前面。
+  it('列表里有一条 http origin 也不能让 http 页面过关', () => {
+    const d = checkLoginHost({
+      entityID: ENTITY,
+      currentUrl: 'http://sso.x.edu.cn/login',
+      confirmedLogins: [{ entityID: ENTITY, origin: 'http://sso.x.edu.cn' }],
+    });
+    expect(d.kind).toBe('refuse');
+    expect(d).toMatchObject({ why: 'not-https' });
+  });
+
+  it('空列表等同于从来没确认过', () => {
+    const d = checkLoginHost({
+      entityID: ENTITY, currentUrl: 'https://sso.x.edu.cn/login', confirmedLogins: [],
+    });
+    expect(d.kind).toBe('confirm-then-fill');
   });
 });
 

@@ -205,7 +205,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   const PKU = 'https://idp.pku.edu.cn/idp/shibboleth';
   const RECORD = {
     name: '北京大学', entityID: PKU, username: '2100012345',
-    passwordEnc: 'ENC-FROM-SAFESTORAGE', confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+    passwordEnc: 'ENC-FROM-SAFESTORAGE', confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }],
   };
 
   it('update(): patch 混入 institution 被过滤 —— 已有记录一个字段都不许被改', async () => {
@@ -214,7 +214,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
       ui: { theme: 'sepia' as const },
       institution: {
         name: '清华大学', entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth',
-        username: 'attacker', passwordEnc: 'PLAINTEXT-PASSWORD', confirmedLogin: null,
+        username: 'attacker', passwordEnc: 'PLAINTEXT-PASSWORD', confirmedLogins: [],
       },
     } as never);
 
@@ -229,7 +229,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
 
   it('update(): 没配过机构时 patch 也塞不进来一条', async () => {
     await svc.update({
-      institution: { name: 'n', entityID: 'e', username: 'u', passwordEnc: 'PLAINTEXT-PASSWORD', confirmedLogin: null },
+      institution: { name: 'n', entityID: 'e', username: 'u', passwordEnc: 'PLAINTEXT-PASSWORD', confirmedLogins: [] },
     } as never);
     expect((await svc.get()).institution).toBeNull();
     expect(readFileSync(path.join(dir, 'kydog.json'), 'utf8')).not.toContain('PLAINTEXT-PASSWORD');
@@ -246,7 +246,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect(JSON.stringify(view)).not.toContain('SENTINEL-CIPHERTEXT');
     expect(view.institution).toEqual({
       name: '北京大学', entityID: PKU, username: '2100012345',
-      hasPassword: true, confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+      hasPassword: true, confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }],
     });
     expect(Object.keys(view.institution ?? {})).not.toContain('passwordEnc');
   });
@@ -327,7 +327,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   // 那条 JSDoc 写清楚的路。这里钉住的是：两次并发保存之后，磁盘上是完整的一条，
   // 而不是一条丢了密文的。
   it('updateInstitution(): 并发保存串行发生，沿用旧密文的那一次不会读到半路的状态', async () => {
-    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogins: [] }));
     await Promise.all([
       svc.updateInstitution((cur) => ({ ...cur!, username: 'A' })),
       svc.updateInstitution((cur) => ({ ...cur!, name: 'B' })),
@@ -343,28 +343,28 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect(reread.institution).toEqual(RECORD);
   });
 
-  it('updateInstitution(): confirmedLogin 与 entityID 不符时当场作废，与读路径同一个判据', async () => {
+  it('updateInstitution(): confirmedLogins 里 entityID 不符的条目当场被剔除，与读路径同一个判据', async () => {
     await svc.updateInstitution(() => ({
       ...RECORD, entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth',
     }));
-    expect((await svc.get()).institution?.confirmedLogin).toBeNull();
+    expect((await svc.get()).institution?.confirmedLogins).toEqual([]);
   });
 
   // ── confirmLogin()：read-modify-write 必须发生在锁内 ──
   //
-  // 写口收的是整条记录，于是「记下这次确认」唯一写得出来的调用是
+  // 写口若收的是整条记录，于是「记下这次确认」唯一写得出来的调用是
   //   const cur = await svc.get();                                   // 锁外，弹框之前的快照
-  //   await svc.updateInstitution(() => ({ ...cur.institution!, confirmedLogin }));
+  //   await svc.updateInstitution(() => ({ ...cur.institution!, confirmedLogins }));
   // 而弹框到用户点确认之间有好几秒 —— 这几秒里用户在设置页把学校从北大改成清华，
   // 上面那行就把整条旧记录（name / entityID / username / passwordEnc）原样写回去了。
   // sanitizeInstitution 一句话都不会说：它比的是同一个对象内部的 entityID，当然相符。
   const THU = {
     name: '清华大学', entityID: 'https://idp.tsinghua.edu.cn/idp/shibboleth',
-    username: '2021012345', passwordEnc: 'ENC-THU', confirmedLogin: null,
+    username: '2021012345', passwordEnc: 'ENC-THU', confirmedLogins: [],
   };
 
   it('confirmLogin(): 确认对话框开着的十秒里用户改了学校 —— 确认作废，旧记录不会被写回去', async () => {
-    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogins: [] }));
     await svc.get();                       // 2b 在锁外拿到的那份快照（北大）
     await svc.updateInstitution(() => THU);         // 用户这十秒里改成了清华
 
@@ -377,11 +377,11 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect(rawOnDisk).not.toContain('ENC-FROM-SAFESTORAGE');  // 北大那份密文
   });
 
-  it('confirmLogin(): entityID 相符时记在当前那条记录上，且只动 confirmedLogin 一个字段', async () => {
-    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
+  it('confirmLogin(): entityID 相符时记在当前那条记录上，且只动 confirmedLogins 一个字段', async () => {
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogins: [] }));
     expect(await svc.confirmLogin(PKU, 'https://iaaa.pku.edu.cn')).toBe(true);
 
-    const expected = { ...RECORD, confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' } };
+    const expected = { ...RECORD, confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }] };
     expect((await svc.get()).institution).toEqual(expected);
     // 落盘的形状读路径认得出来 —— 否则下次启动这次确认就白问了
     expect((await new SettingsService().get()).institution).toEqual(expected);
@@ -392,10 +392,53 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect((await svc.get()).institution).toBeNull();
   });
 
-  it('confirmLogin(): origin 为空当场被拒，不落一个 confirmedLogin: null 冒充「确认过」', async () => {
-    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogin: null }));
+  it('confirmLogin(): origin 为空当场被拒，不落一个 confirmedLogins: [] 冒充「确认过」', async () => {
+    await svc.updateInstitution(() => ({ ...RECORD, confirmedLogins: [] }));
     await expect(svc.confirmLogin(PKU, '')).rejects.toMatchObject({ code: 'settings.invalid' });
-    expect((await svc.get()).institution?.confirmedLogin).toBeNull();
+    expect((await svc.get()).institution?.confirmedLogins).toEqual([]);
+  });
+
+  // ── confirmLogin()：追加而不是覆盖（Task 5）──
+  //
+  // 学校的登录流程可以在两个 origin 之间跳转（先到 sso.x.edu.cn、再被踢到
+  // idp.x.edu.cn）。若第二次确认覆盖第一条，下次流程从第一个 origin 开始又要问一次，
+  // 确认完又覆盖掉第二条 —— 来回问，没完。这是结构上成立的隐患，尚未观察到具体
+  // 哪所学校是这种流程。
+  const ENTITY = 'https://idp.x.edu.cn/idp';
+  const seed = () => svc.updateInstitution(() => ({
+    name: 'X 大学', entityID: ENTITY, username: 'u1', passwordEnc: '', confirmedLogins: [],
+  }));
+
+  it('confirmLogin 追加而不是覆盖：第二次确认另一个 origin，第一个还在', async () => {
+    await seed();
+    expect(await svc.confirmLogin(ENTITY, 'https://a.x.edu.cn')).toBe(true);
+    expect(await svc.confirmLogin(ENTITY, 'https://b.x.edu.cn')).toBe(true);
+    const inst = (await svc.get()).institution;
+    expect(inst?.confirmedLogins.map((c) => c.origin).sort())
+      .toEqual(['https://a.x.edu.cn', 'https://b.x.edu.cn']);
+  });
+
+  it('同一个 origin 确认两次只留一条', async () => {
+    await seed();
+    await svc.confirmLogin(ENTITY, 'https://a.x.edu.cn');
+    await svc.confirmLogin(ENTITY, 'https://a.x.edu.cn');
+    expect((await svc.get()).institution?.confirmedLogins).toHaveLength(1);
+  });
+
+  // 既有不变式：锁内读到的记录 entityID 已经变了就放弃这次确认，不去猜用户的意思。
+  it('entityID 已经变了就放弃这次确认并回 false，一条都不写', async () => {
+    await seed();
+    expect(await svc.confirmLogin('https://idp.y.edu.cn/idp', 'https://a.x.edu.cn')).toBe(false);
+    expect((await svc.get()).institution?.confirmedLogins).toEqual([]);
+  });
+
+  // 追加要落到**盘上**，不只是内存里那份。
+  it('追加的那一条重启之后还在', async () => {
+    await seed();
+    await svc.confirmLogin(ENTITY, 'https://a.x.edu.cn');
+    const again = new SettingsService();
+    expect((await again.get()).institution?.confirmedLogins)
+      .toEqual([{ entityID: ENTITY, origin: 'https://a.x.edu.cn' }]);
   });
 
   // ── D：ui.browserWidth 的写路径也要走同一个 sanitize ──

@@ -1864,12 +1864,12 @@ test.describe('61-browser', () => {
       // 两支各有各的、与产品回显的 `r.host` **相互独立**的证人：
       //  · **问过了** → 证人是那道确认里点名的 host：**用户屏幕上的事实**。
       //  · **没问** → `checkLoginHost` 只有两条 `fill` 出口（`login.ts:161` 与 `:165-169`）。
-      //    第 2 条要 `confirmedLogin` 非 null，而 `helpers.ts` 每次 `mkdtemp` 一个
-      //    **新 HOME**：机构记录是这一轮刚 `institution.save` 进去的，`confirmedLogin`
-      //    开工必为 null，而这一轮又没确认过任何东西（asked=false）也写不进去。
+      //    第 2 条要 `confirmedLogins` 非空，而 `helpers.ts` 每次 `mkdtemp` 一个
+      //    **新 HOME**：机构记录是这一轮刚 `institution.save` 进去的，`confirmedLogins`
+      //    开工必为空，而这一轮又没确认过任何东西（asked=false）也写不进去。
       //    **所以在这条用例里**「填成功了、而且没问」只可能是第 1 条
       //    `host === entityHost` —— 证人是 entityHost。
-      //    **这个前提别拆**：谁把这条用例改成复用 HOME、或者提前种一条 confirmedLogin，
+      //    **这个前提别拆**：谁把这条用例改成复用 HOME、或者提前种一条 confirmedLogins，
       //    这一支的证人就不再成立（`login.ts` 第 2 条出口在 host ≠ entityHost 时
       //    也直接填、也不问）。
       const witnessHost = seen.asked ? seen.host : entityHost;
@@ -1895,7 +1895,7 @@ test.describe('61-browser', () => {
             + `或「${entityHost}」（entityID 的 host —— 确认期间页面跳过去了、重判走第 1 条出口）。`
             + '都不是就说明 browser_login 把账号密码填到了一个既没人确认过、也不是 entityID 的域上'
           : `，而这一轮没问，允许的只有「${entityHost}」：checkLoginHost 只在当前 host === `
-            + 'entityID 的 host 时才不问就填，而这条用例的新 HOME 里 confirmedLogin 必为 null、'
+            + 'entityID 的 host 时才不问就填，而这条用例的新 HOME 里 confirmedLogins 必为空、'
             + '走不到第 2 条出口。不等就说明凭据填到了一个没人确认过的域上')
         + `（配置上 loginUrl 与 entityID ${sameHost ? '同域' : '跨域'}）`)
         .toContain(filledHost);

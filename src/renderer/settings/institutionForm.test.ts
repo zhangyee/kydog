@@ -9,7 +9,7 @@ const draft = (p: Partial<InstitutionDraft> = {}): InstitutionDraft => ({
 
 const saved: InstitutionPublic = {
   name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth',
-  username: 'u2100011000', hasPassword: true, confirmedLogin: null,
+  username: 'u2100011000', hasPassword: true, confirmedLogins: [],
 };
 
 /**
@@ -46,8 +46,8 @@ describe('buildSaveArgs：password 三档', () => {
     });
   });
 
-  it('不带 confirmedLogin —— 设置页没有「设成某个值」那一档', () => {
-    expect('confirmedLogin' in buildSaveArgs(draft())).toBe(false);
+  it('不带 confirmedLogins —— 设置页没有「设成某个值」那一档', () => {
+    expect('confirmedLogins' in buildSaveArgs(draft())).toBe(false);
   });
 });
 

@@ -65,7 +65,7 @@ function harness(over: {
     institution: over.institution === undefined
       ? {
         name: '北京大学', entityID: ENTITY, username: 'u2100011000',
-        passwordEnc: 'enc', confirmedLogin: null,
+        passwordEnc: 'enc', confirmedLogins: [],
       }
       : over.institution,
     url: over.url === undefined ? IDP_URL : over.url,
@@ -122,10 +122,17 @@ function harness(over: {
         log.confirmed.push({ entityID, origin });
         if (!state.confirmLoginResult) return false;
         // 照真身的语义落盘：`settingsService.confirmLogin` 是一次锁内的
-        // read-modify-write，写完之后 `get()` 读得到它。不演这一步的话，
+        // read-modify-write，写完之后 `get()` 读得到它，而且是**追加**不是覆盖
+        // （Task 5：学校的登录流程可以在两个 origin 之间跳转）。不演这一步的话，
         // 紧接着的 TOCTOU 重判会拿到一份「还没确认」的记录 —— 那是替身在骗人。
         if (state.institution && state.institution.entityID === entityID) {
-          state.institution = { ...state.institution, confirmedLogin: { entityID, origin } };
+          const already = state.institution.confirmedLogins.some((c) => c.origin === origin);
+          state.institution = {
+            ...state.institution,
+            confirmedLogins: already
+              ? state.institution.confirmedLogins
+              : [...state.institution.confirmedLogins, { entityID, origin }],
+          };
         }
         return true;
       },
@@ -311,7 +318,7 @@ describe('首次确认：在标签队列之外问，确认后才排队', () => {
       url: 'https://sso.pku.edu.cn/login',
       institution: {
         name: '北京大学', entityID: ENTITY, username: 'u', passwordEnc: 'e',
-        confirmedLogin: { entityID: ENTITY, origin: 'https://sso.pku.edu.cn' },
+        confirmedLogins: [{ entityID: ENTITY, origin: 'https://sso.pku.edu.cn' }],
       },
     });
     const r = await h.fill();
@@ -355,7 +362,7 @@ describe('TOCTOU：填充前拿当时的 URL 再判一次', () => {
     const askSwap = async () => {
       h.state.institution = {
         name: '清华大学', entityID: 'https://id.tsinghua.edu.cn/idp', username: 'q1',
-        passwordEnc: 'e', confirmedLogin: null,
+        passwordEnc: 'e', confirmedLogins: [],
       };
       return true;
     };

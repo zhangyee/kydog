@@ -259,7 +259,7 @@ describe('密文与明文都不往渲染层去', () => {
     expect(json).not.toContain('SECRET');
     expect(json).not.toContain(String(passwordEncOnDisk()));
     expect(Object.keys(pub ?? {})).not.toContain('passwordEnc');
-    expect(pub).toMatchObject({ ...BASE, hasPassword: true, confirmedLogin: null });
+    expect(pub).toMatchObject({ ...BASE, hasPassword: true, confirmedLogins: [] });
   });
 
   it('save 的返回值与 get 同形 —— 不是另开一条出口', async () => {
@@ -341,10 +341,10 @@ describe('债 1 在这一层的样子：加密这一步出岔子，绝不落一�
   // settingsFile.test.ts / settingsService.test.ts。
   it('把密文 Buffer 原样塞进落盘记录会被拒（settings.invalid），消息说的是 passwordEnc', async () => {
     await expect(settings.updateInstitution(() => ({
-      ...BASE, passwordEnc: fakeCipher('SECRET') as unknown as string, confirmedLogin: null,
+      ...BASE, passwordEnc: fakeCipher('SECRET') as unknown as string, confirmedLogins: [],
     }))).rejects.toMatchObject({ code: 'settings.invalid' });
     await expect(settings.updateInstitution(() => ({
-      ...BASE, passwordEnc: fakeCipher('SECRET') as unknown as string, confirmedLogin: null,
+      ...BASE, passwordEnc: fakeCipher('SECRET') as unknown as string, confirmedLogins: [],
     }))).rejects.toThrow(/passwordEnc/);
     expect(JSON.parse(settingsOnDisk()).institution).toBeNull();
   });
@@ -370,7 +370,7 @@ describe('债 1 在这一层的样子：加密这一步出岔子，绝不落一�
   });
 });
 
-// ── 标识字段与 confirmedLogin ────────────────────────────────────────────────
+// ── 标识字段与 confirmedLogins ───────────────────────────────────────────────
 
 describe('save：标识字段与已确认的登录页', () => {
   it('三个标识字段缺一 → settings.invalid，不落半条记录', async () => {
@@ -382,20 +382,20 @@ describe('save：标识字段与已确认的登录页', () => {
     expect(JSON.parse(settingsOnDisk()).institution).toBeNull();
   });
 
-  it('entityID 没变、confirmedLogin 省略 → 上一次的确认保留', async () => {
+  it('entityID 没变、confirmedLogins 省略 → 上一次的确认保留', async () => {
     const svc = makeService();
     await svc.save({ ...BASE, password: 'p' });
     expect(await settings.confirmLogin(PKU, IAAA)).toBe(true);
     await svc.save({ ...BASE, username: '2100099999' });
-    expect((await svc.get())?.confirmedLogin).toEqual({ entityID: PKU, origin: IAAA });
+    expect((await svc.get())?.confirmedLogins).toEqual([{ entityID: PKU, origin: IAAA }]);
   });
 
-  it('confirmedLogin: null → 显式作废，下次重新问', async () => {
+  it('confirmedLogins: [] → 显式作废，下次重新问', async () => {
     const svc = makeService();
     await svc.save({ ...BASE, password: 'p' });
     await settings.confirmLogin(PKU, IAAA);
-    await svc.save({ ...BASE, confirmedLogin: null });
-    expect((await svc.get())?.confirmedLogin).toBeNull();
+    await svc.save({ ...BASE, confirmedLogins: [] });
+    expect((await svc.get())?.confirmedLogins).toEqual([]);
   });
 
   // 换学校却留着上一所的确认，等于把新学校的账号密码填进旧学校的统一身份认证页。
@@ -404,7 +404,7 @@ describe('save：标识字段与已确认的登录页', () => {
     await svc.save({ ...BASE, password: 'p' });
     await settings.confirmLogin(PKU, IAAA);
     await svc.save({ name: '清华大学', entityID: THU, username: '2020010101' });
-    expect((await svc.get())?.confirmedLogin).toBeNull();
+    expect((await svc.get())?.confirmedLogins).toEqual([]);
     expect(JSON.stringify(await svc.get())).not.toContain('iaaa.pku.edu.cn');
   });
 

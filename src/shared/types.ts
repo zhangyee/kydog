@@ -627,9 +627,9 @@ export type IdpListPublic = {
  * **两个字段缺一不可，它们各挡一件事**：
  *
  * - `entityID` —— 确认是**对着某一所学校**做的。不绑定的话，用户先配北大（确认过
- *   iaaa.pku.edu.cn）、后来改选清华并换成清华的学号密码，判据里 confirmedLogin 那一支
- *   直接 return、entityID 根本不参与 → 主进程会把清华账号密码填进北大的统一身份认证页。
- *   与所在记录的 `entityID` 不符即作废（读写两条路径都当场把它归 null）。
+ *   iaaa.pku.edu.cn）、后来改选清华并换成清华的学号密码，判据里 confirmedLogins 那一支
+ *   直接命中、entityID 根本不参与 → 主进程会把清华账号密码填进北大的统一身份认证页。
+ *   与所在记录的 `entityID` 不符的条目即被剔除（读写两条路径都当场把它从数组里滤掉）。
  * - `origin` —— 连 scheme 一起记，形状就是 `new URL(u).origin`（`scheme://host[:port]`）。
  *   只记 host 的话，同一个 Wi-Fi 上应答 `http://iaaa.pku.edu.cn/` 就绕过去了 ——
  *   urlGuard 明确放行 http。
@@ -650,7 +650,15 @@ export type InstitutionRecord = {
   username: string;
   /** safeStorage 密文的 base64。空串表示「配了机构与账号，但还没设密码」。 */
   passwordEnc: string;
-  confirmedLogin: ConfirmedLogin | null;
+  /**
+   * 已确认的登录页，**可以有多个**。一所学校的登录流程可以在两个 origin 之间跳转；
+   * 只留一条的话，确认第二个会覆盖第一个，下次又问，来回没完。
+   *
+   * **没有上限，这是刻意的**：这个列表只能靠用户每次点一下「是」来增长，攻击者
+   * 无法自行追加；而任何「满了就淘汰最旧的」策略都会在 N 条之后原样重现上面那个
+   * 来回问的毛病。别把「没有上限」当成漏做。
+   */
+  confirmedLogins: ConfirmedLogin[];
 };
 
 /**
@@ -666,7 +674,7 @@ export type InstitutionPublic = {
   entityID: string;
   username: string;
   hasPassword: boolean;
-  confirmedLogin: ConfirmedLogin | null;
+  confirmedLogins: ConfirmedLogin[];
 } | null;
 
 export type InstitutionSaveArgs = {
@@ -676,13 +684,13 @@ export type InstitutionSaveArgs = {
   /** 省略 = 不改动已存的密码；null = 清除；字符串 = 设为新值。 */
   password?: string | null;
   /**
-   * 省略 = 保留已确认的登录页（前提是 entityID 没变；变了无论如何都作废）；
-   * `null` = 显式作废，下次填充前重新问一次。
+   * 省略 = 保留已确认的那些登录页（前提是 entityID 没变；变了无论如何都作废）；
+   * `[]` = 显式全部作废，下次填充前重新问一次。
    *
-   * **只有清除这一档，没有「设成某个值」**：一次确认只能由 browser_login 在真的问过用户
-   * 之后经 `settingsService.confirmLogin(entityID, origin)` 写下 —— 那是一次锁内的
+   * **只有清空这一档，没有「设成某个值」**：一次确认只能由 browser_login 在真的问过
+   * 用户之后经 `settingsService.confirmLogin(entityID, origin)` 追加 —— 那是一次锁内的
    * read-modify-write，记录已改或已删时会放弃这次确认。设置页能凭空指定一个 origin 的话，
    * 这道确认就成了摆设。
    */
-  confirmedLogin?: null;
+  confirmedLogins?: [];
 };

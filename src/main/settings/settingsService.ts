@@ -23,7 +23,7 @@ export function toInstitutionPublic(inst: SettingsFile['institution']): Institut
     username: inst.username,
     // 只回「有没有」这一个比特。空串 = 配了机构与账号但还没设密码。
     hasPassword: inst.passwordEnc !== '',
-    confirmedLogin: inst.confirmedLogin,
+    confirmedLogins: inst.confirmedLogins,
   };
 }
 
@@ -170,10 +170,10 @@ export class SettingsService {
    * 在设置页上看起来像「配过了」，而 browser_login 的判据要到运行时才失败。所以宁可
    * 当场报错，也不要「保存成功、界面显示已选中、重启后整条消失且没有任何提示」。
    * 落盘的是判据归一之后的值，不是回调的返回值：这样「存进去什么、重启后读回什么」
-   * 是同一件事；confirmedLogin 与 entityID 不符时在这里就作废，不留到读路径去。
+   * 是同一件事；confirmedLogins 里 entityID 不符的条目在这里就被剔除，不留到读路径去。
    *
    * 为什么不能让调用方自己 `get()` → 拼一条 → 写回：那两步之间没有锁。
-   * `institution.save` 的语义里「密码省略 = 沿用已存的那份密文」「confirmedLogin 省略 =
+   * `institution.save` 的语义里「密码省略 = 沿用已存的那份密文」「confirmedLogins 省略 =
    * 保留」——**两样都要读旧记录**。锁外读到的旧记录与真正落盘的那一刻之间隔着一次
    * await，同一条 `confirmLogin` 的 JSDoc 里已经把这条路的后果写清楚了（用户在这中间
    * 改了学校，随后整条旧记录被原样写回，零错误）。所以读与写必须在同一把锁里。
@@ -194,13 +194,13 @@ export class SettingsService {
   /**
    * 记下「这个 entityID 的登录页就是这个 origin」。**刻意收两个标量而不是整条记录。**
    *
-   * confirmedLogin 的设值只发生在「问过用户之后」，而问这一下要花好几秒。如果这里
+   * confirmedLogins 的追加只发生在「问过用户之后」，而问这一下要花好几秒。如果这里
    * 收整条记录，2b 唯一写得出来的调用就是：
    *
    * ```ts
    * const cur = await settingsService.get();            // 锁外，弹框之前的快照
    * // …弹确认对话框，用户想了十秒…
-   * await settingsService.updateInstitution(() => ({ ...cur.institution!, confirmedLogin }));
+   * await settingsService.updateInstitution(() => ({ ...cur.institution!, confirmedLogins }));
    * ```
    *
    * 这十秒里用户在设置页把学校从北大改成了清华，上面那行随后把**整条旧记录**原样写回：
@@ -208,21 +208,29 @@ export class SettingsService {
    * 不会说 —— 它比的是同一个对象内部的 entityID，当然相符。用户看到的现象是「刚改的
    * 学校自己变回去了」，零错误。
    *
-   * 所以 read-modify-write 必须在锁内做，而且这里只允许改 confirmedLogin 这一个字段。
+   * 所以 read-modify-write 必须在锁内做，而且这里只允许改 confirmedLogins 这一个字段。
    * 锁内读到的记录不是当初问用户的那条（改了学校，或整条被删了）→ **放弃这次确认并返回
    * false**，不去猜用户的意思：代价只是下次多问一次，而猜错就是把清华的密码填进北大的
    * 统一身份认证页。
    *
-   * 反过来的方向（把一次确认作废）不走这里，走 `institution.save` 的 `confirmedLogin: null`。
+   * 反过来的方向（把一次确认作废）不走这里，走 `institution.save` 的 `confirmedLogins: []`。
    */
   async confirmLogin(entityID: string, origin: string): Promise<boolean> {
     return this.withLock<boolean>(async (cur) => {
       const inst = cur.institution;
       if (inst === null || inst.entityID !== entityID) return { result: false };
-      const next = sanitizeInstitution({ ...inst, confirmedLogin: { entityID, origin } });
-      // 空 origin 之类会被 sanitize 悄悄抹成 null，那就成了「记录里没有确认」——
+      // **追加，不覆盖。** 覆盖的后果正是本次要修的那个毛病：学校的登录流程在两个
+      // origin 之间跳转时，两条确认互相覆盖，用户被来回问，没完。
+      // 已经有了就不动（`checkLoginHost` 那一侧比的是归一后的 origin，而这里收到的
+      // 已经是 `canonicalOrigin` 的产物，所以直接按字符串去重就够）。
+      const already = inst.confirmedLogins.some((c) => c.origin === origin);
+      const confirmedLogins = already
+        ? inst.confirmedLogins
+        : [...inst.confirmedLogins, { entityID, origin }];
+      const next = sanitizeInstitution({ ...inst, confirmedLogins });
+      // 空 origin 之类会被 sanitize 悄悄剔掉，那就成了「记录里没有这一条」——
       // 与「确认失败」在调用方眼里长得一样。宁可当场报错。
-      if (next === null || next.confirmedLogin === null) {
+      if (next === null || !next.confirmedLogins.some((c) => c.origin === origin)) {
         throw new KydogError('settings.invalid', '登录确认缺少 entityID 或 origin，无法记录');
       }
       return { next: { ...cur, institution: next }, result: true };

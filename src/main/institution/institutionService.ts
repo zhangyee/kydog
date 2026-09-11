@@ -30,7 +30,7 @@ type InstitutionRecord = NonNullable<SettingsFile['institution']>;
  *    不是「钥匙串好不好」—— 不碰密码的保存（改学校、改学号、清密码）没有明文风险，
  *    一刀切拒绝只会让用户连学校都改不了。
  * 3. 读旧记录与写新记录在**同一把锁**里（`settingsService.updateInstitution`）。
- *    「密码省略 = 沿用已存的密文」「confirmedLogin 省略 = 保留」两样都要读旧记录，
+ *    「密码省略 = 沿用已存的密文」「confirmedLogins 省略 = 保留」两样都要读旧记录，
  *    锁外读会撞上 `confirmLogin` 的 JSDoc 里写清楚的那条路：中间隔一次 await，
  *    整条旧记录被原样写回，零错误。
  */
@@ -298,10 +298,10 @@ export class InstitutionService {
       entityID: args.entityID,
       username: args.username,
       passwordEnc: this.nextPasswordEnc(args.password, current),
-      // 省略 = 保留（entityID 变了的话 checkInstitution 会当场把它归 null）；
-      // null = 显式作废。**没有「设成某个值」这一档** —— 一次确认只能由 browser_login
-      // 在真的问过用户之后经 settingsService.confirmLogin 写下。
-      confirmedLogin: args.confirmedLogin === null ? null : (current?.confirmedLogin ?? null),
+      // 省略 = 保留（entityID 变了的话 checkInstitution 会当场把不符的条目剔除）；
+      // [] = 显式全部作废。**没有「设成某个值」这一档** —— 一次确认只能由 browser_login
+      // 在真的问过用户之后经 settingsService.confirmLogin 追加。
+      confirmedLogins: args.confirmedLogins === undefined ? (current?.confirmedLogins ?? []) : [],
     }));
     return toInstitutionPublic(record);
   }

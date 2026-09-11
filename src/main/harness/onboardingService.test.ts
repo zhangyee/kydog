@@ -89,7 +89,7 @@ describe('onboarding.complete', () => {
     const inst = {
       name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth',
       username: '2100012345', passwordEnc: 'ENC==',
-      confirmedLogin: { entityID: 'https://idp.pku.edu.cn/idp/shibboleth', origin: 'https://iaaa.pku.edu.cn' },
+      confirmedLogins: [{ entityID: 'https://idp.pku.edu.cn/idp/shibboleth', origin: 'https://iaaa.pku.edu.cn' }],
     };
     const { state, svc } = makeWorld({ institution: inst });
     expect(await svc.complete(ARGS)).toEqual({ ok: true });

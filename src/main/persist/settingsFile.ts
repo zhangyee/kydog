@@ -226,25 +226,45 @@ function isPlainObject(v: unknown): boolean {
 }
 
 /** updates 逐字段兜形状 —— 某个字段类型不对就只把该字段回默认，不牵连另一个。 */
-/**
- * 已确认的登录页只在**同一个 entityID 下**有效。
- *
- * 不绑定的话：用户先配北大（确认过 iaaa.pku.edu.cn），后来改选清华并换成清华的学号密码 →
- * 判据里 confirmedLogin 那一支直接 return、entityID 根本不参与 → 主进程把清华账号密码
- * 填进北大的统一身份认证页。所以这里按记录自己的 entityID 复核一次：不符即作废。
- *
- * 只认 `{ entityID, origin }` 这一种形状。旧的 `confirmedLoginHost`（只有 host、没有
- * scheme）**不做转换** —— 补一个 https:// 是我们编的，不是用户确认过的那个 origin，
- * 而 urlGuard 放行 http，编错了就等于把同一个 Wi-Fi 上的应答也认下来。代价只是
- * 多问用户一次。
- */
-function sanitizeConfirmedLogin(v: unknown, entityID: string): ConfirmedLogin | null {
+/** 一条记录的形状与归属校验。形状不对或 entityID 不符就回 null。 */
+function oneConfirmedLogin(v: unknown, entityID: string): ConfirmedLogin | null {
   if (!isPlainObject(v)) return null;
   const o = v as Record<string, unknown>;
   if (typeof o.entityID !== 'string' || typeof o.origin !== 'string') return null;
   if (!o.entityID || !o.origin) return null;
   if (o.entityID !== entityID) return null;
   return { entityID: o.entityID, origin: o.origin };
+}
+
+/**
+ * 已确认的登录页只在**同一个 entityID 下**有效，而且**可以有多条**。
+ *
+ * 不绑定 entityID 的话：用户先配北大（确认过 iaaa.pku.edu.cn），后来改选清华并换成
+ * 清华的学号密码 → 判据里那一支直接放行、entityID 根本不参与 → 主进程把清华账号密码
+ * 填进北大的统一身份认证页。所以这里按记录自己的 entityID 复核一次：不符即剔除。
+ *
+ * **旧的单条 `confirmedLogin`（对象或 null）要迁移过来**，形状逐字相同、转换无损；
+ * 丢弃会让每个已配置机构的用户平白多确认一次。**但新键一旦存在就以它为准，
+ * 哪怕它是脏数据也不回落到旧键** —— 回落会让一条被判定为无效的新记录被一条旧记录
+ * 悄悄顶替，而两者可能指向不同的 origin。
+ *
+ * 更早的 `confirmedLoginHost`（只有 host、没有 scheme）**仍然一概不认**：
+ * 补一个 https:// 是我们编的，不是用户确认过的那个 origin，而 urlGuard 放行 http，
+ * 编错了就等于把同一个 Wi-Fi 上的应答也认下来。代价只是多问用户一次。
+ *
+ * **不设上限**，理由见 `InstitutionRecord.confirmedLogins` 的注释。
+ */
+function sanitizeConfirmedLogins(o: Record<string, unknown>, entityID: string): ConfirmedLogin[] {
+  const raw = 'confirmedLogins' in o ? o.confirmedLogins : o.confirmedLogin;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out: ConfirmedLogin[] = [];
+  for (const item of list) {
+    const one = oneConfirmedLogin(item, entityID);
+    if (one === null) continue;
+    if (out.some((x) => x.origin === one.origin)) continue;
+    out.push(one);
+  }
+  return out;
 }
 
 /**
@@ -296,7 +316,7 @@ export function checkInstitution(v: unknown): InstitutionCheck {
     record: {
       name, entityID, username,
       passwordEnc: typeof o.passwordEnc === 'string' ? o.passwordEnc : '',
-      confirmedLogin: sanitizeConfirmedLogin(o.confirmedLogin, entityID),
+      confirmedLogins: sanitizeConfirmedLogins(o, entityID),
     },
   };
 }

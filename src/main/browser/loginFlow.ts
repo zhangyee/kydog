@@ -428,7 +428,7 @@ export class LoginFlow {
     const before = checkLoginHost({
       entityID: inst.entityID,
       currentUrl: this.requireUrl(tabId),
-      confirmedLogin: inst.confirmedLogin,
+      confirmedLogins: inst.confirmedLogins,
     });
     if (before.kind === 'refuse') throw loginRefusalError(before);
 
@@ -478,10 +478,10 @@ export class LoginFlow {
 
     // ── TOCTOU 重判就是下面这一行 ────────────────────────────────────────
     // 拿的是**这一刻**的 URL（`wc.getURL()`，不是账本里那份 —— 账本靠导航事件更新，
-    // 慢一拍），配上**刚重读的** confirmedLogin。只有拿到 `fill` 才可以填。
+    // 慢一拍），配上**刚重读的** confirmedLogins。只有拿到 `fill` 才可以填。
     const url = this.requireUrl(tabId);
     const now = checkLoginHost({
-      entityID: inst.entityID, currentUrl: url, confirmedLogin: inst.confirmedLogin,
+      entityID: inst.entityID, currentUrl: url, confirmedLogins: inst.confirmedLogins,
     });
     if (now.kind === 'refuse') throw loginRefusalError(now);
     if (now.kind !== 'fill') {

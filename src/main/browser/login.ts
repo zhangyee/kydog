@@ -74,7 +74,7 @@ function canonicalOriginOf(raw: string): string | null {
  * 填凭据之前判断当前页面。判据按这个顺序：
  *
  * 1. 当前页 host 精确等于 entityID 的 host（归一后）→ 直接填。
- * 2. `confirmedLogin` 非 null、其 `entityID` 等于当前 entityID、且当前页 origin
+ * 2. `confirmedLogins` 里**有一条**，其 `entityID` 等于当前 entityID、且当前页 origin
  *    **全等**于它的 `origin` → 直接填。三个条件缺一不可。
  * 3. 其余 → 要求确认一次。
  * 4. 当前页非 https、没有主机名、是裸 IP、是 localhost 一类，或 entityID 没有
@@ -94,11 +94,11 @@ function canonicalOriginOf(raw: string): string | null {
  * refresh。调用方**必须在实际填充的那一刻拿当时的 URL 再判一次**：
  *
  * ```
- * const d = checkLoginHost({ entityID, currentUrl: tab.url, confirmedLogin });
+ * const d = checkLoginHost({ entityID, currentUrl: tab.url, confirmedLogins });
  * if (d.kind === 'confirm-then-fill') {
  *   if (!(await askUser(d.host))) return;
  *   await settingsService.confirmLogin(entityID, d.origin);   // 锁内，只收两个标量
- *   const again = checkLoginHost({ entityID, currentUrl: tab.url, confirmedLogin: ... });
+ *   const again = checkLoginHost({ entityID, currentUrl: tab.url, confirmedLogins: ... });
  *   if (again.kind !== 'fill') return;                        // 悬挂期间跳走了
  * }
  * ```
@@ -109,9 +109,9 @@ export function checkLoginHost(args: {
   entityID: string;
   /** 当前标签的完整 URL。**不是裸 host** —— scheme 与端口都要参与判据。 */
   currentUrl: string;
-  confirmedLogin: ConfirmedLogin | null;
+  confirmedLogins: ConfirmedLogin[];
 }): LoginHostDecision {
-  const { entityID, currentUrl, confirmedLogin } = args;
+  const { entityID, currentUrl, confirmedLogins } = args;
 
   // 拒绝理由里一律不回显 currentUrl：它可能整条带着凭据，而 reason 会进
   // KydogError.message（→ 模型上下文）与日志（→ 落盘）。
@@ -121,7 +121,7 @@ export function checkLoginHost(args: {
   const host = normalizeHost(cur.hostname);
   if (host === '') return { kind: 'refuse', reason: '当前标签没有主机名', why: 'no-host' };
 
-  // 校园密码只走 https。这一档压在 confirmedLogin 前面 —— 否则一条脏的
+  // 校园密码只走 https。这一档压在 confirmedLogins 前面 —— 否则一条脏的
   // http origin 就能把「已确认」变成放行 http 的通行证。
   if (cur.protocol !== 'https:') {
     return {
@@ -131,7 +131,7 @@ export function checkLoginHost(args: {
     };
   }
 
-  // 学校的登录页不会是一个 IP 或本机名字。这一档同样压在 confirmedLogin 前面。
+  // 学校的登录页不会是一个 IP 或本机名字。这一档同样压在 confirmedLogins 前面。
   if (isIpLiteral(host)) {
     return { kind: 'refuse', reason: `当前标签是 IP 地址（${host}），不是机构的登录页`, why: 'bare-ip' };
   }
@@ -161,11 +161,15 @@ export function checkLoginHost(args: {
   if (host === entityHost) return { kind: 'fill', host };
 
   const origin = canonicalOrigin(cur);
-  if (
-    confirmedLogin !== null
-    && confirmedLogin.entityID === entityID
-    && canonicalOriginOf(confirmedLogin.origin) === origin
-  ) {
+  // **任意一条命中**（不是「唯一那条」）。一所学校的登录流程可以在两个 origin 之间
+  // 跳转 —— 只留一条的话，确认第二个会覆盖第一个，下次又问，来回没完。
+  //
+  // 三个条件仍然缺一不可，尤其 `entityID` 必须显式参与：`sanitizeConfirmedLogins`
+  // 确实会作废不符的条目，但那是隐式契约，下一个人重构 sanitize 就没了；不校验的
+  // 后果是用户从北大改选清华之后，主进程把清华的账号密码填进北大的统一身份认证页。
+  if (confirmedLogins.some(
+    (c) => c.entityID === entityID && canonicalOriginOf(c.origin) === origin,
+  )) {
     return { kind: 'fill', host };
   }
 

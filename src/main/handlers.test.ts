@@ -116,8 +116,8 @@ vi.mock('./browser/browserService', async () => {
 
 vi.mock('./institution/institutionService', () => ({
   institutionService: {
-    get: async () => { h.institution.push({ m: 'get', args: undefined }); return { name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth', username: '2100012345', hasPassword: true, confirmedLogin: null }; },
-    save: async (args: unknown) => { h.institution.push({ m: 'save', args }); return { name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth', username: '2100012345', hasPassword: true, confirmedLogin: null }; },
+    get: async () => { h.institution.push({ m: 'get', args: undefined }); return { name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth', username: '2100012345', hasPassword: true, confirmedLogins: [] }; },
+    save: async (args: unknown) => { h.institution.push({ m: 'save', args }); return { name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth', username: '2100012345', hasPassword: true, confirmedLogins: [] }; },
     clear: async () => { h.institution.push({ m: 'clear', args: undefined }); },
     reveal: async () => { h.institution.push({ m: 'reveal', args: undefined }); return { password: 'hunter2' }; },
     listIdps: async (args: unknown) => { h.institution.push({ m: 'listIdps', args }); return { entries: [], fetchedAt: '2026-09-08T00:00:00.000Z', stale: false }; },
@@ -145,7 +145,7 @@ function settingsWithSecret(): SettingsFile {
   s.institution = {
     name: '北京大学', entityID: PKU, username: '2100012345',
     passwordEnc: SENTINEL,
-    confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+    confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }],
   };
   return s;
 }
@@ -221,7 +221,7 @@ describe('密文不过河', () => {
     expect(out.institution).toEqual({
       name: '北京大学', entityID: PKU, username: '2100012345',
       hasPassword: true,
-      confirmedLogin: { entityID: PKU, origin: 'https://iaaa.pku.edu.cn' },
+      confirmedLogins: [{ entityID: PKU, origin: 'https://iaaa.pku.edu.cn' }],
     });
   });
 });
@@ -510,10 +510,10 @@ describe('institution.* 五条转发到 institutionService 上对应的那一个
    * save 的 args 要原样到底。少递一个 `password`，界面上是「保存成功」而密码
    * 根本没换 —— 用户下次登录才发现，且没有任何错误可查。
    */
-  it('save 原样递整份 args（含 password 与 confirmedLogin 那两档）', async () => {
+  it('save 原样递整份 args（含 password 与 confirmedLogins 那两档）', async () => {
     const args = {
       name: '北京大学', entityID: PKU, username: '2100012345',
-      password: 'hunter2', confirmedLogin: null,
+      password: 'hunter2', confirmedLogins: [] as const,
     };
     await call('institution.save', args);
     expect(h.institution).toEqual([{ m: 'save', args }]);
