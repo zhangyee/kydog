@@ -3197,33 +3197,43 @@ describe('evalInPage 也收拼装函数（Task 7 的填充脚本要带过期自�
 });
 
 describe('historyNav：没有历史就当场说，不去等满时限（Task 2）', () => {
-  it('没有可后退的历史时回 null，一次导航都不发起', async () => {
-    const { svc } = make();
-    const { nav, wc } = await openTab(svc);
-    wc.historyIndex = 0;                          // canGoBack() → false
-    expect(await svc.historyNav(nav.tabId, 'back')).toBeNull();
-    expect(wc.historyIndex).toBe(0);              // goBack 一次都没调
-  });
-
-  // 正向前置：同一条用例里证明「有历史时它确实会动」——
-  // 否则一个永远 return null 的实现也照样绿。
-  it('有可后退的历史时真的调 goBack 并回一个导航结论', async () => {
+  // 正向前置与否定断言在**同一条**用例里（CLAUDE.md：否定型断言不能靠隔壁一条兜底）。
+  // `historyNav` 的状态机让这件事自然：先用一次 back 把 historyIndex 推到 0
+  // （这一步同时证明「有历史时它真的会调 goBack」），再对着同一个标签退到头之后
+  // 那次 back 断 null——这时的 null 说的是「没有那一步历史」，不是「实现压根没写」。
+  it('有可后退的历史时真的调 goBack；退到头之后回 null 且不再发起导航', async () => {
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
     wc.historyIndex = 1;                          // canGoBack() → true
+    // 正向前置（就在这一条里）：先证明它真的会动。
     const p = svc.historyNav(nav.tabId, 'back');
     await flush();
     expect(wc.historyIndex).toBe(0);              // goBack 调过了
     wc.fire('did-navigate', {}, 'https://prev.example/', 200);
     expect(await p).not.toBeNull();
+    // 现在退到头了（historyIndex 已经是 0）—— 否定断言在同一条用例里，
+    // 而上面刚证明过「有历史时它会动」，所以这里的 null 说的是「没有那一步历史」。
+    expect(await svc.historyNav(nav.tabId, 'back')).toBeNull();
+    expect(wc.historyIndex).toBe(0);              // goBack 没再被调
   });
 
-  it('没有可前进的历史时同样回 null', async () => {
+  // 同一个形状，方向反过来：默认夹具 historyIndex=1（entries 长度 2）时 canGoForward()
+  // 恒为 false，从前只测这一点，goForward() 写成 goBack()、或 canGoForward() 判据取反，
+  // 整套件都不会红——这里改成先把 historyIndex 推到 0（canGoForward() → true），
+  // 用一次 forward 把它推到头（entries.length - 1 = 1），断言 goForward() 确实调过
+  // （historyIndex 从 0 变 1，不是只看返回值非 null），再对着已经到头的历史断 null。
+  it('有可前进的历史时真的调 goForward；到头之后回 null 且不再发起导航', async () => {
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
-    // historyIndex 1 / entries 2 → canGoForward() 为 false
+    wc.historyIndex = 0;                          // canGoForward() → true（0 < 1）
+    const p = svc.historyNav(nav.tabId, 'forward');
+    await flush();
+    expect(wc.historyIndex).toBe(1);              // goForward 调过了，不是 goBack
+    wc.fire('did-navigate', {}, 'https://cur.example/', 200);
+    expect(await p).not.toBeNull();
+    // 现在到头了（historyIndex 已经是 entries.length - 1 = 1）。
     expect(await svc.historyNav(nav.tabId, 'forward')).toBeNull();
-    expect(wc.historyIndex).toBe(1);
+    expect(wc.historyIndex).toBe(1);              // goForward 没再被调
   });
 
   // reload 不看历史 —— 没有 canReload 这回事，当前页永远可以重新加载。

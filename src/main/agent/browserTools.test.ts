@@ -1292,19 +1292,19 @@ describe('browser_act 里的后退 / 前进 / 重新加载（Task 2）', () => {
     expect(bodyOf(await act([{ kind: 'back' }]))).toContain('https://a.example/prev');
   });
 
-  it('没有可去的历史时整批停下，并说清是「没有这一步历史」', async () => {
+  // 正向前置与否定断言在**同一条**用例里（CLAUDE.md：否定型断言不能靠隔壁一条兜底）：
+  // 先证明「有历史时 back 之后的动作照跑」——否则一个「back 之后永远停」的实现也
+  // 照样绿——再把 historyImpl 换成回 null，证明整批停在第一个动作。
+  it('有历史时后面的动作照跑；没有可去的历史时整批停下，并说清是「没有这一步历史」', async () => {
+    await act([{ kind: 'back' }, { kind: 'reload' }]);
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back', 'reload']);
+
+    bs.historyCalls.length = 0;
     bs.historyImpl = () => null;
     const out = bodyOf(await act([{ kind: 'back' }, { kind: 'reload' }]));
     expect(out).toContain('没有可以后退的历史');
     // 出错即停：第二个动作一步都不许跑。
     expect(bs.historyCalls.map((c) => c.action)).toEqual(['back']);
-  });
-
-  // 正向前置：同一条用例里证明「有历史时后面的动作照跑」——
-  // 否则一个「back 之后永远停」的实现也照样绿。
-  it('有历史时后面的动作照跑', async () => {
-    await act([{ kind: 'back' }, { kind: 'reload' }]);
-    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back', 'reload']);
   });
 
   it('三种动作都进了模型看得到的 schema 白名单', () => {
