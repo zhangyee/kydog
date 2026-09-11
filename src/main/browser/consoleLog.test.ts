@@ -48,7 +48,7 @@ describe('凭据窗口：填过凭据的文档，内容一个字都不采集', (
     // 正向前置：证明这个标签本来是会采的，suppress 之后的空结果说的
     // 才是「被挡住了」，不是「本来就不采」。
     err(log, '正常的错误');
-    log.suppress();
+    log.suppress('https://idp.example');
     err(log, 'password=hunter2 leaked to console');
     const r = log.since(c);
     expect(r.lines.map((l) => l.text)).toEqual(['正常的错误']);
@@ -57,13 +57,40 @@ describe('凭据窗口：填过凭据的文档，内容一个字都不采集', (
     expect(JSON.stringify(r)).not.toContain('hunter2');
   });
 
-  it('导航到新文档之后恢复采集 —— 凭据跟着旧文档一起走了', () => {
+  it('文档换到不同 origin 之后恢复采集 —— 凭据跟着旧文档一起走了', () => {
     const log = new TabConsoleLog();
-    log.suppress();
-    log.resumeOnNewDocument();
+    log.suppress('https://idp.example');
+    log.resumeIfOriginChanged('https://sp.example');
     const c = log.cursor();
     err(log, '新页面上的错误');
     expect(log.since(c).lines).toHaveLength(1);
+  });
+
+  // ④ 的核心判据：`back` 命中 bfcache 时恢复的是同一个文档对象，`did-navigate`
+  // 照发，但落定的 URL 仍是原先那个 origin —— 密码明文可能还在它的 DOM 里
+  // （`loginFill.js` 填完不清空），这时不该恢复。origin 解析不了同样不许恢复
+  // （fail-closed：不知道是不是同一个就当作还是）。
+  it('origin 没变（bfcache 命中同一份文档）不恢复；origin 解析不了同样不恢复', () => {
+    const log = new TabConsoleLog();
+    // 正向前置：同一个 log 实例上，origin 真的变了会恢复——先证明这一点，
+    // 下面两个「不恢复」说的才是「这个条件没有成立」，不是「恢复机制整个失灵了」。
+    log.suppress('https://idp.example');
+    log.resumeIfOriginChanged('https://sp.example');
+    const c0 = log.cursor();
+    err(log, '证明恢复机制本身没坏');
+    expect(log.since(c0).lines).toHaveLength(1);
+
+    log.suppress('https://idp.example');
+    log.resumeIfOriginChanged('https://idp.example');   // 同一个 origin：bfcache 命中
+    const c1 = log.cursor();
+    err(log, '同 origin 时不该采到');
+    expect(log.since(c1).lines).toHaveLength(0);
+
+    log.suppress('https://idp.example');
+    log.resumeIfOriginChanged(null);                    // 解析不了：fail-closed
+    const c2 = log.cursor();
+    err(log, 'origin 解析不了时也不该采到');
+    expect(log.since(c2).lines).toHaveLength(0);
   });
 });
 

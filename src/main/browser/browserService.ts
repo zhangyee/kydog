@@ -78,6 +78,18 @@ function logUrl(raw: string): string {
   }
 }
 
+/**
+ * `did-navigate` 落定的那个 URL 的 origin。**唯一的调用方是控制台采集的恢复判据**
+ * （见 `TabConsoleLog.resumeIfOriginChanged`）：新文档的 origin 与填凭据时那份不同
+ * 才恢复采集，`back` 命中 bfcache 时 URL 的 origin 不变，判据天然不恢复。
+ *
+ * 解析不了就回 `null`，调用方按 fail-closed 处理——不知道是不是同一个 origin
+ * 就当作还是，继续压着。
+ */
+function originOf(raw: string): string | null {
+  try { return new URL(raw).origin; } catch { return null; }
+}
+
 /** walker 的返回值**就是**一份没有 snapshotId 的 AxSnapshot。 */
 type WalkerOutput = Omit<AxSnapshot, 'snapshotId'>;
 
@@ -662,8 +674,10 @@ export class BrowserService {
       // 状态码只有这一个到达点，不记就永远没了 —— 见 `unreportedNavs` 的说明。
       else this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
       this.snapshots.delete(id);   // 页面换了，旧快照的编号一律作废
-      // 主 frame 换了文档：凭据跟着旧文档走了，恢复采集。
-      this.consoles.get(id)?.resumeOnNewDocument();
+      // 主 frame 换了文档：origin 不同才恢复采集 —— origin 相同（`back` 命中 bfcache，
+      // 恢复的是同一个文档对象）继续压着，密码明文可能还在它的 DOM 里。见
+      // `originOf` 与 `TabConsoleLog.resumeIfOriginChanged` 的说明。
+      this.consoles.get(id)?.resumeIfOriginChanged(originOf(url));
       this.syncTabMeta(id);
     });
 
@@ -951,11 +965,14 @@ export class BrowserService {
   }
 
   /**
-   * 这个标签上填过凭据了：从此不再采集控制台**内容**，只数条数，
-   * 直到主 frame 换到下一个文档。唯一的调用方是 `loginFlow`，就在注入之前。
+   * 这个标签上填过凭据了：从此不再采集控制台**内容**，只数条数，直到主 frame
+   * 换到一个**不同 origin** 的文档（origin 相同——比如 `back` 命中 bfcache——
+   * 继续压着，见 `TabConsoleLog.resumeIfOriginChanged`）。唯一的调用方是
+   * `loginFlow`，就在注入之前；`origin` 是那一刻页面的 origin（`loginFlow` 已经
+   * 解析过、与页面自检用的 `expectOrigin` 是同一个）。
    */
-  suppressConsoleForCredentials(tabId: string): void {
-    this.consoles.get(tabId)?.suppress();
+  suppressConsoleForCredentials(tabId: string, origin: string): void {
+    this.consoles.get(tabId)?.suppress(origin);
   }
 
   /** 这次 back / forward / reload 要去哪。给 NavigationTracker 当下载的关联依据 ——

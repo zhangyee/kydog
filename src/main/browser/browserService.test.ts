@@ -3279,7 +3279,7 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
     const c = svc.consoleCursor(nav.tabId);
-    svc.suppressConsoleForCredentials(nav.tabId);
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
     wc.fire('console-message', msg('error', 'pw=hunter2'));
     const r = svc.consoleSince(nav.tabId, c);
     expect(r.lines).toHaveLength(0);
@@ -3296,16 +3296,64 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
 
-    svc.suppressConsoleForCredentials(nav.tabId);
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
     wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
     const c1 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '新页面的错'));
     expect(svc.consoleSince(nav.tabId, c1).lines).toHaveLength(1);
 
-    svc.suppressConsoleForCredentials(nav.tabId);
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://sp.example');
     wc.fire('did-navigate-in-page', {}, 'https://sp.example/after#sec', true);
     const c2 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '同文档路由期间的错'));
+    expect(svc.consoleSince(nav.tabId, c2).lines).toHaveLength(0);
+  });
+
+  // ④ 的核心判据（终评发现，2026-09-11）：本轮新开的 `back` 命中 bfcache 时恢复的是
+  // **同一个文档对象** —— 密码明文还留在输入框里（`loginFill.js` 填完不清空），
+  // `did-navigate` 照发，但落定的 URL 仍是原先那个 origin。裁决是按 origin 比
+  // （协议层事实），不是「填过就永不恢复」——origin 没变就继续压着，origin 真的
+  // 变了才恢复；`navControl`/`historyNav` 走的也是同一条 `navigate()` → `did-navigate`
+  // 路径，这里直接用 `wc.fire('did-navigate', …)` 模拟即可，不必真的调 `back`。
+  //
+  // 正向前置与否定断言合并进同一条：先证明「origin 真的变了会恢复」——同一条用例
+  // 里再断「回到同一个 origin（bfcache 命中）不恢复」，这样后者说的才是「这个条件
+  // 没有成立」，不是「恢复机制整个失灵了」。
+  it('did-navigate 到不同 origin 才恢复；命中 bfcache 回到同一个 origin 不恢复', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc, 'https://idp.example/login');
+
+    // 正向前置：真的换了不同 origin 时会恢复。
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://idp.example');
+    wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
+    const c1 = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', '新页面的错'));
+    expect(svc.consoleSince(nav.tabId, c1).lines).toHaveLength(1);
+
+    // back 命中 bfcache：恢复的是同一个文档对象，did-navigate 照发，但落定的 URL
+    // 仍是原先那个 origin —— 不该恢复。
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://idp.example');
+    wc.fire('did-navigate', {}, 'https://idp.example/login', 200);
+    const c2 = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', '登录页残留的错'));
+    expect(svc.consoleSince(nav.tabId, c2).lines).toHaveLength(0);
+  });
+
+  it('did-navigate 的 URL 解析不了：fail-closed，不恢复', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+
+    // 正向前置：能解析的 URL、origin 真的变了会恢复。
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
+    wc.fire('did-navigate', {}, 'https://b.example/', 200);
+    const c1 = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', '正常错误'));
+    expect(svc.consoleSince(nav.tabId, c1).lines).toHaveLength(1);
+
+    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
+    wc.fire('did-navigate', {}, 'not a url', 200);
+    const c2 = svc.consoleCursor(nav.tabId);
+    wc.fire('console-message', msg('error', '解析不了的错'));
     expect(svc.consoleSince(nav.tabId, c2).lines).toHaveLength(0);
   });
 

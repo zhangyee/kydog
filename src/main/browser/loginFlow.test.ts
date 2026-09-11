@@ -86,6 +86,8 @@ function harness(over: {
     asked: [] as Array<{ host: string; username: string; institutionName: string }>,
     destroyHooks: [] as Array<(tabId: string) => void>,
     reveals: 0,
+    /** ④：`suppressConsoleForCredentials` 每次收到的 origin，按调用顺序。 */
+    suppressedOrigins: [] as string[],
   };
 
   const ports: LoginFlowPorts = {
@@ -105,7 +107,10 @@ function harness(over: {
         return next;
       },
       withAgentDriving: (tabId, runId, fn) => { log.order.push(`driving:${tabId}:${String(runId)}`); return fn(); },
-      suppressConsoleForCredentials: () => { log.order.push('suppressConsole'); },
+      suppressConsoleForCredentials: (_tabId, origin) => {
+        log.order.push('suppressConsole');
+        log.suppressedOrigins.push(origin);
+      },
       evalInPage: async (_tabId, code) => {
         log.order.push('evalInPage');
         log.injected.push(typeof code === 'string' ? code : code(Date.now() + 20_000));
@@ -240,6 +245,15 @@ describe('entityID host 精确相等就直接填', () => {
     expect(code).toContain('"username":"u2100011000"');
     expect(code).toContain(`"password":"${PW}"`);
     expect(code).toContain('"notAfter":');
+  });
+
+  // ④：关控制台采集时带的 origin 必须与页面自检用的 expectOrigin 是**同一个值**——
+  // 传错（比如传成 tabId，或传成账本里那份可能陈旧的 URL）会让 browserService 那侧
+  // 的恢复判据按错误的 origin 比对，`back` 命中 bfcache 时该压着的反而恢复了。
+  it('关采集时带的 origin 与注入那份 expectOrigin 逐字相同', async () => {
+    const h = harness();
+    await h.fill();
+    expect(h.log.suppressedOrigins).toEqual(['https://iaaa.pku.edu.cn']);
   });
 
   it('submit 原样传下去', async () => {

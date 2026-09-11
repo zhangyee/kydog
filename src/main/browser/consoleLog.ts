@@ -44,7 +44,12 @@ export class TabConsoleLog {
   private seq = 0;
   private suppressedCount = 0;
   private droppedCount = 0;
-  private suppressing = false;
+  /**
+   * `null` = 没在压着。非 `null` = 正在压着，值是**填凭据那一刻那份文档的 origin**。
+   *
+   * **不是布尔开关**：判据要按 origin 比，理由见 `resumeIfOriginChanged`。
+   */
+  private suppressedOrigin: string | null = null;
 
   /**
    * 喂一条控制台消息。
@@ -55,7 +60,7 @@ export class TabConsoleLog {
     if (level !== 'error') return;
     this.seq += 1;
     // **凭据窗口里只计数，一个字都不留。** 见 suppress() 的说明。
-    if (this.suppressing) { this.suppressedCount += 1; return; }
+    if (this.suppressedOrigin !== null) { this.suppressedCount += 1; return; }
     const raw = typeof message === 'string' ? message : String(message);
     const text = raw.length > CONSOLE_LINE_MAX ? `${raw.slice(0, CONSOLE_LINE_MAX)}…` : raw;
     const where = lineNumber > 0 ? `${sourceId}:${lineNumber}` : sourceId;
@@ -73,11 +78,34 @@ export class TabConsoleLog {
    * 而且拦不住页面先编码再打印（`btoa(pw)` 那一种）。不采集是零保留，
    * 对编码同样有效。代价是登录页那一小段窗口看不到控制台 —— 接受，
    * 而且**被挡下了几条会如实报出来**，不是静默的。
+   *
+   * `origin` 是**这一刻那份文档**的 origin（调用方已经解析过、保证是合法值 ——
+   * 它与 `loginFill.js` 那道页面自检比的是同一个 `expectOrigin`）。`resumeIfOriginChanged`
+   * 靠它判断「文档真的换了」还是「只是同一份文档又出现了一次」。
    */
-  suppress(): void { this.suppressing = true; }
+  suppress(origin: string): void { this.suppressedOrigin = origin; }
 
-  /** 主 frame 换了文档：凭据跟着旧文档一起走了，恢复采集。 */
-  resumeOnNewDocument(): void { this.suppressing = false; }
+  /**
+   * 主 frame 换了文档。**只有新文档的 origin 与压着的那个不同，才恢复采集。**
+   *
+   * 不是「换了文档就恢复」：`back` 命中 bfcache 时恢复的是**同一个文档对象**——
+   * `loginFill.js` 填完密码不清空输入框，明文还留在 DOM 里，`did-navigate` 照发，
+   * 但落定的 URL 仍是原先那个 origin。origin 按协议层事实比（不是时间窗、不是
+   * 「填过就永不恢复」那种一刀切），天然覆盖这种情形：只要活着的文档还在填凭据的
+   * 那个 origin 上，这里就不恢复；`back` 把登录页取回来时 `did-navigate` 带的 URL
+   * 仍是那个 origin，判据自然不恢复。真的导去了别处（哪怕同一个标签上继续用同一个
+   * 机构账号跑检索），origin 一变就立刻恢复 —— 采集不会因为「这个标签登录过」就
+   * 整段关掉。
+   *
+   * `origin` 解析不了传 `null`。**fail-closed**：不知道是不是同一个 origin 就当作
+   * 还是同一个，继续压着——好过在「不确定」的情况下猜一个恢复。
+   */
+  resumeIfOriginChanged(origin: string | null): void {
+    if (this.suppressedOrigin === null) return;
+    if (origin === null) return;
+    if (origin === this.suppressedOrigin) return;
+    this.suppressedOrigin = null;
+  }
 
   cursor(): ConsoleCursor {
     return { seq: this.seq, suppressed: this.suppressedCount, dropped: this.droppedCount };
