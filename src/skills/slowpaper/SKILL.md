@@ -7,7 +7,7 @@ description: 用 KyDog 内置浏览器去没有 API 的学术源找论文。五�
 
 浏览器是慢工具。这份文档回答的是**上一个问题**：这一步该不该开浏览器。
 
-真要开了，`references/browser.md` 讲四个工具怎么配合，`references/scholar.md`、
+真要开了，`references/browser.md` 讲五个工具怎么配合，`references/scholar.md`、
 `references/xueshu.md` 讲各自的源怎么操作，`references/carsi.md` 讲机构登录。
 
 ---
@@ -135,7 +135,7 @@ slowpaper 存在的理由是 CLI 拿不到的三样东西：
 
 | 文件 | 什么时候读 |
 | --- | --- |
-| `references/browser.md` | **动手之前先读这份。** 四个工具怎么配合、批处理怎么写、出错即停是什么语义、什么时候交给人 |
+| `references/browser.md` | **动手之前先读这份。** 五个工具怎么配合、批处理怎么写、出错即停是什么语义、什么时候交给人 |
 | `references/scholar.md` | 走 Google Scholar 时读：检索剧本、结果页选择器、翻页、403 指纹 |
 | `references/xueshu.md` | 走百度学术时读：同上，另加「JS 驱动的检索提交必须跟 `wait`」与「本期只取第 1 页、不翻页」 |
 | `references/carsi.md` | 要用机构账号（CARSI）登录订阅库时读：`browser_login` 怎么调、验证码页的剧本、唯一的成功判据、七类错误码各自的下一步 |

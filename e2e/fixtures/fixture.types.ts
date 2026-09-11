@@ -36,9 +36,10 @@ export type FixtureEvent =
        * 成「按名字找任意一个已注册的工具」。
        *
        * 找得到的名字取决于 `sessionFactory` 交给 fixture session 的那份工具清单 ——
-       * 目前是 `createBrowserTools()` 那四个（`browser_open` / `browser_act` /
-       * `browser_read` / `browser_login`），与非 fixture 分支交给 pi 的是**同一次
-       * 构造**。名字不在清单里时这一条按工具失败处理（`isError: true`），不静默跳过。
+       * 目前是 `createBrowserTools()` 那五个（`browser_open` / `browser_act` /
+       * `browser_read` / `browser_login` / `browser_tabs`），与非 fixture 分支交给
+       * pi 的是**同一次构造**。名字不在清单里时这一条按工具失败处理
+       * （`isError: true`），不静默跳过。
        *
        * ── 写 fixture 剧本不再是零副作用的事 ────────────────────────────────
        *

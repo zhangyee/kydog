@@ -5,7 +5,7 @@ import { ACTION_KINDS, KEY_NAMES, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, 
 import { MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS } from '../browser/extract';
 import { DEFAULT_NODE_LIMIT, PAGE_CONTENT_OPEN, PAGE_CONTENT_CLOSE } from '../browser/snapshot';
 import { MAX_TABS } from '../browser/tabRegistry';
-import { READ_MAX_CHARS, TAB_TITLE_MAX } from '../agent/browserTools';
+import { READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX } from '../agent/browserTools';
 import * as actionsNs from '../browser/actions';
 import * as extractNs from '../browser/extract';
 import * as snapshotNs from '../browser/snapshot';
@@ -92,6 +92,10 @@ const CHECKS: Check[] = [
     constant: 'TAB_TITLE_MAX', what: 'TAB_TITLE_MAX（标签清单里标题的截断上限）', value: TAB_TITLE_MAX, file: 'references/browser.md',
     zh: /超过 (\d+) 字会截断/g, en: /truncated with an ellipsis past (\d+) characters/g,
   },
+  {
+    constant: 'TAB_URL_MAX', what: 'TAB_URL_MAX（browser_tabs 里 URL 的截断上限）', value: TAB_URL_MAX, file: 'references/browser.md',
+    zh: /URL 超过 (\d+) 字符会截断/g, en: /URLs longer than (\d+) characters/g,
+  },
 ];
 
 /**
@@ -165,10 +169,24 @@ describe('slowpaper 文档里的常数与生产代码对账', () => {
   }
 });
 
+/**
+ * **五个真工具的事实来源，只此一份。**
+ *
+ * 与下面两条 `it` 共用同一份列表，不许各写各的：终评变异 3 实测过一次教训——把
+ * 「REAL 少了 `browser_tabs`」这个错误状态**只**灌进其中一条用例本地的常量里，
+ * 另一条用例（标题自称的数目）用的是它自己另一份硬编码 `REAL`，两条各测各的、
+ * 互不知道对方，那条错误状态在标题计数那条上永远测不出来。
+ *
+ * `DENIED` 是文档里**明写「没有这个」**的名字——目前只有 `browser_close`，
+ * 提到它是有意的，不算「多出来的工具」。
+ */
+const REAL_BROWSER_TOOLS = ['browser_open', 'browser_act', 'browser_read', 'browser_login', 'browser_tabs'];
+const DENIED_BROWSER_TOOLS = ['browser_close'];
+
 describe('slowpaper 文档里的名字与生产代码对账', () => {
   // 评审变异 M5：`key`→`keypress`、`wait`→`waitFor` 当时全绿。动作名是模型照抄的东西，
   // 写错一个就是整批被 TypeBox 拒掉，而文档不会告诉它错在哪。
-  it('九种动作名逐字同序（`browser.md` §二 那一行）', () => {
+  it('十二种动作名逐字同序（`browser.md` §二 那一行）', () => {
     const line = '`' + ACTION_KINDS.join('` · `') + '`';
     for (const rel of ['references/browser.md', 'references/browser.en.md']) {
       expect(read(rel), `${rel} 里那行动作清单与 ACTION_KINDS 不一致`).toContain(line);
@@ -194,21 +212,56 @@ describe('slowpaper 文档里的名字与生产代码对账', () => {
 
   // 评审变异 M2：`browser_read`→`browser_fetch` 当时全绿。工具名写错，模型调一个
   // 不存在的工具；而 skill 文档是它唯一的名字来源之一。
-  it('四个工具名都在，且没有第五个 `browser_*`', () => {
-    const REAL = ['browser_open', 'browser_act', 'browser_read', 'browser_login'];
-    // 文档里明写「没有这两个」的两个名字是**有意提到**的，不算多出来的工具。
-    const DENIED = ['browser_close', 'browser_tabs'];
+  //
+  // **终评发现（2026-09-11）**：`browser_tabs` 曾经被放在 `DENIED` 里——含义是
+  // 「文档里明写没有这个工具」，而 Task 1 的产物恰恰是加上它。那样放会把
+  // 「skill 文档明文否认 browser_tabs 存在」这句假话**钉住**，对账用例反而成了
+  // 帮凶。现在五个工具都是真的，`DENIED_BROWSER_TOOLS` 只留 `browser_close`
+  // （那个是真的没有）。
+  it('五个工具名都在，且没有第六个 `browser_*`', () => {
     for (const rel of ['references/browser.md', 'references/browser.en.md',
       'SKILL.md', 'SKILL.en.md', 'references/carsi.md', 'references/carsi.en.md']) {
       const s = read(rel);
       const mentioned = new Set([...s.matchAll(/browser_[a-z_]+/g)].map((m) => m[0]));
       for (const name of mentioned) {
-        expect([...REAL, ...DENIED], `${rel} 提到了一个不存在的工具 ${name}`).toContain(name);
+        expect([...REAL_BROWSER_TOOLS, ...DENIED_BROWSER_TOOLS], `${rel} 提到了一个不存在的工具 ${name}`)
+          .toContain(name);
       }
     }
-    // 四个都必须在 browser.md 的工具一览里出现 —— 少一个就是模型不知道有它。
+    // 五个都必须在 browser.md 的工具一览里出现 —— 少一个就是模型不知道有它。
     const overview = read('references/browser.md');
-    for (const name of REAL) expect(overview).toContain(name);
+    for (const name of REAL_BROWSER_TOOLS) expect(overview).toContain(name);
+  });
+
+  /**
+   * **上一条自己的缺口（终评变异 3 实测发现，2026-09-11）**：单独把 `browser_tabs` 从
+   * `REAL_BROWSER_TOOLS` 挪回 `DENIED_BROWSER_TOOLS` 重跑上一条用例，**不会红**——
+   * `mentioned` 那圈只要求「提到的名字在 REAL∪DENIED 里」，`browser_tabs` 挪去 DENIED
+   * 照样在并集里；「REAL 都在 overview 里出现」那圈只查 REAL 的成员，从不检查 DENIED
+   * 的成员是不是真的被文档**否认**了。于是「一个真实存在的工具被错误地归进 DENIED」
+   * 这类漂移，上一条测不出来——这正是这一轮 Critical 发现本身那句假话
+   * （`browser_tabs` 曾经就在 `DENIED` 里）会被钉住而不是被抓到的原因。
+   *
+   * 这一条补的就是这个缺口：**标题自称几个工具，`REAL_BROWSER_TOOLS` 就该有几个**——
+   * 与本文件里 `carsi.md`「N 类错误码」那条同一个形状（自称的数目与实际列表对账）。
+   * 两条用例共用**同一份**列表（见上面那个 const 的说明），挪错一个两条一起红，
+   * 不会出现「改一条漏了另一条」。
+   */
+  it('browser.md 标题自称几个工具，REAL_BROWSER_TOOLS 列表就该有几个', () => {
+    const CN_NUM: Record<string, number> = { 三: 3, 四: 4, 五: 5, 六: 6 };
+    const zh = read('references/browser.md');
+    const m = /^# 内置浏览器：([三四五六])个工具怎么配合/m.exec(zh);
+    expect(m, 'browser.md 标题「N 个工具怎么配合」不见了').not.toBeNull();
+    expect(CN_NUM[m![1]],
+      `browser.md 标题自称 ${m![1]} 个工具，REAL_BROWSER_TOOLS 列表却是 ${REAL_BROWSER_TOOLS.length} 个`)
+      .toBe(REAL_BROWSER_TOOLS.length);
+
+    const EN_NUM: Record<string, number> = { three: 3, four: 4, five: 5, six: 6 };
+    const en = read('references/browser.en.md');
+    const me = /how the (three|four|five|six) tools work together/.exec(en);
+    expect(me, 'browser.en.md 标题「how the N tools work together」不见了').not.toBeNull();
+    expect(EN_NUM[me![1]], 'browser.en.md 标题的数字与 REAL_BROWSER_TOOLS 列表对不上')
+      .toBe(REAL_BROWSER_TOOLS.length);
   });
 
   // browser_login 那条线的契约（Task 7 交下来的五条）各自的**判据字面量**。

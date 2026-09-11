@@ -8,7 +8,7 @@ description: Find papers through KyDog's built-in browser on academic sources th
 The browser is a slow tool. This document answers the question that comes **before** using it:
 should this step open a browser at all?
 
-Once it should, `references/browser.md` covers how the four tools work together,
+Once it should, `references/browser.md` covers how the five tools work together,
 `references/scholar.md` and `references/xueshu.md` cover how to operate each source,
 and `references/carsi.md` covers institutional login.
 
@@ -163,7 +163,7 @@ things that belong on disk are the final artifacts the user asked for.
 
 | File | When to read it |
 | --- | --- |
-| `references/browser.md` | **Read this before touching anything.** How the four tools work together, how to write a batch, what stop-on-error means, when to hand over to the user |
+| `references/browser.md` | **Read this before touching anything.** How the five tools work together, how to write a batch, what stop-on-error means, when to hand over to the user |
 | `references/scholar.md` | When using Google Scholar — search playbook, result-page selectors, paging, the 403 fingerprint |
 | `references/xueshu.md` | When using Baidu Xueshu — the same, plus "a JS-driven search submit must be followed by a `wait`" and "only page 1 this release, no paging" |
 | `references/carsi.md` | When you need an institutional (CARSI) account to reach a subscription database: how to call `browser_login`, the script for a CAPTCHA page, the one success test, and the next step for each of seven error codes |

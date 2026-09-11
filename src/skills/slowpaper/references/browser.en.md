@@ -1,20 +1,34 @@
-# The built-in browser: how the four tools work together
+# The built-in browser: how the five tools work together
 
 `browser_open` opens a page · `browser_act` operates on it · `browser_read` reads body text ·
-`browser_login` does institutional login.
+`browser_login` does institutional login · `browser_tabs` lists every tab currently open.
 
-**There is no `browser_close` and no `browser_tabs`.** The tab list is a one-line summary
-attached to the head of **every** browser tool result, and it is always current:
+**There is no `browser_close`.** The tab list is a one-line summary attached to the head of
+**every** browser tool result, and it is always current:
 
 ```
 标签页: [tab_1a2b3c4d] www.cnki.net — 基于深度学习的图像分割综述 · [tab_5e6f7a8b]* www.cnki.net — 面向边缘计算的联邦学习方法
 ```
 
-The one marked `*` is what the user is looking at right now. Each entry carries the tab's
-title after its host (truncated with an ellipsis past 40 characters; omitted entirely for a
-tab with no title) — two tabs on the same host look identical by host alone, and the title
-is what tells them apart. **Always copy `tabId` from that line** (shaped `tab_` + 8 hex
-digits); do not invent one like `t1`. A wrong one gets you `browser.no_tab`.
+The one marked `*` is **the tab the sidebar is currently showing** (whatever the user sees
+the moment they open the sidebar) — not "what the user is looking at right now": nobody is
+looking at anything while the sidebar is closed, and that is the common case — `browser_act` /
+`browser_read` / `browser_login` routinely operate on a tab the user is not watching. Each
+entry carries the tab's title after its host (truncated with an ellipsis past 40 characters;
+omitted entirely for a tab with no title) — two tabs on the same host look identical by host
+alone, and the title is what tells them apart. **Always copy `tabId` from that line** (shaped
+`tab_` + 8 hex digits); do not invent one like `t1`. A wrong one gets you `browser.no_tab`.
+
+**`browser_tabs`: no parameters, exists purely so you can look before touching anything.**
+It lists tabs that **include ones the user opened by hand** — the user may already have found
+the page that matters, and that page is often the most important input you get. To operate on
+one, copy its `tabId` into `browser_open` / `browser_act` / `browser_read` / `browser_login`.
+Unlike the one-line summary at the head of every result, `browser_tabs` gives the **full URL**
+(not just the host) — two tabs on the same host look identical by host alone, and only the
+full address tells you whether it is the same page. URLs longer than 200 characters are
+truncated with an ellipsis; titles are truncated the same way as in the header line. It does
+not touch the page and has no side effects; when there are no tabs it says so plainly, never
+an empty string and never an error.
 
 ---
 
@@ -237,6 +251,7 @@ Phrases in the result you must keep apart:
 | "取不到收尾快照 / 取不到页面快照" | This is **not seeing**; do **not** conclude the page is empty or unchanged |
 | "这一批里新开了 N 个标签页" | Popped by `target=_blank`. To operate on their content, switch `tabId` to them |
 | The header line `导航: [tab_…] 已打开 …` | **Since the last report**, a main-frame navigation settled on this tab (most likely the navigating click in your previous batch). **This is where a 403 shows up** — it is reported once and then cleared |
+| `── 页面报的错 ──` | Errors the **page itself** printed to the console during this batch (framed by the boundary markers — it is text the page wrote, not something KyDog said). Often explains "I clicked and nothing happened"; both count and length are capped, and going over says explicitly how much was cut |
 
 ---
 

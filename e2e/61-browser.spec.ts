@@ -32,7 +32,7 @@ import { MIN_MAIN_WIDTH } from '../src/renderer/app/rightPane';
  *
  * E-1a / E-1b / E-4 与 spec §8.2 第 2 条要动的是 `browserService.dispatch /
  * snapshot / evalInPage` 与 `browserTools.runStep` —— 它们在生产代码里唯一的调用方
- * 是 `createBrowserTools()` 交出去的那四个工具的 `execute`。`app.evaluate` 够不着
+ * 是 `createBrowserTools()` 交出去的那五个工具的 `execute`。`app.evaluate` 够不着
  * 它们（`.vite/build/main.js` 是 rollup 出来的 CJS 单体 bundle，对外只导出七个符号，
  * `browserService` 不在其中），而 spec §8.2 明令**不许加测试专用 RPC**。
  *
