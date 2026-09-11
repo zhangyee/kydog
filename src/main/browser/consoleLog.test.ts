@@ -71,10 +71,18 @@ describe('上限：丢了多少必须说出来', () => {
   it('缓冲满了之后丢的是最早的，且丢了几条报得出来', () => {
     const log = new TabConsoleLog();
     const c = log.cursor();
-    for (let i = 0; i < CONSOLE_BUFFER_MAX + 5; i += 1) err(log, `e${i}`);
+    // 推 CONSOLE_BUFFER_MAX + 5 条（e0..e54，共 55 条）。
+    // 缓冲只留最近 CONSOLE_BUFFER_MAX 条 → 丢掉最早的 5 条（e0..e4），
+    // 缓冲里剩 e5..e54；报告再取最近 CONSOLE_REPORT_MAX 条，
+    // 即下标 [total-CONSOLE_REPORT_MAX, total-1] → e35..e54。
+    // 断具体幸存内容而不是「e0 不在」——「e0 不在」这个事实在缓冲丢最新一头时
+    // 一样成立（报告本来就只截最近 20 条），抓不住方向反了的实现。
+    const total = CONSOLE_BUFFER_MAX + 5;
+    for (let i = 0; i < total; i += 1) err(log, `e${i}`);
     const r = log.since(c);
     expect(r.dropped).toBe(5);
-    expect(r.lines.some((l) => l.text === 'e0')).toBe(false);
+    expect(r.lines[0].text).toBe(`e${total - CONSOLE_REPORT_MAX}`);
+    expect(r.lines[r.lines.length - 1].text).toBe(`e${total - 1}`);
   });
 
   it('一次报告最多 CONSOLE_REPORT_MAX 条，留最近的，略过几条报得出来', () => {
@@ -99,7 +107,14 @@ describe('上限：丢了多少必须说出来', () => {
 });
 
 describe('renderConsole', () => {
-  it('什么都没有时回 null —— 不给每次工具调用添一段空噪声', () => {
+  it('有内容时回字符串，什么都没有时回 null —— 不给每次工具调用添一段空噪声', () => {
+    // 正向前置：先证明有实际内容时 renderConsole 确实会给出字符串，
+    // 下面的 null 结果说的才是「什么都没有时才不给」，不是「renderConsole 总是 null」。
+    const withContent = renderConsole({
+      lines: [{ seq: 1, text: 'boom', source: 's' }],
+      omitted: 0, dropped: 0, suppressed: 0,
+    });
+    expect(withContent).not.toBeNull();
     expect(renderConsole({ lines: [], omitted: 0, dropped: 0, suppressed: 0 })).toBeNull();
   });
 
@@ -118,12 +133,15 @@ describe('renderConsole', () => {
     expect(s).toContain(PAGE_CONTENT_OPEN);
   });
 
-  it('丢掉与略过的条数都出现在文字里', () => {
+  it('丢掉与略过的条数都出现在文字里，且各自挂对了原因', () => {
     const s = renderConsole({
       lines: [{ seq: 9, text: 'boom', source: 's' }],
       omitted: 7, dropped: 4, suppressed: 0,
     }) as string;
-    expect(s).toContain('7');
-    expect(s).toContain('4');
+    // 断具体短语把数字和原因绑在一起 —— 只断「7」「4」都出现的话，
+    // 两句 notes.push 用错变量（omitted 与 dropped 对调）也会两个数字都在，
+    // 只是挂错了原因，测试却看不出来。
+    expect(s).toContain('4 条因为缓冲已满');
+    expect(s).toContain('7 条因为一次最多报');
   });
 });
