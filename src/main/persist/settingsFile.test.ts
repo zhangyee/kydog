@@ -914,22 +914,28 @@ describe('confirmedLogins：数组、去重、旧数据迁移（Task 5）', () =
   });
 
   // 旧文件里是单个对象。转过来是无损的（形状逐字相同），所以要转 ——
-  // 丢弃会让每个已配置机构的用户平白多确认一次。
-  it('旧的单条 confirmedLogin 迁移成一条的数组', () => {
+  // 丢弃会让每个已配置机构的用户平白多确认一次。换个条件（旧键为 null）它就不在了。
+  it('旧的单条 confirmedLogin 迁移成一条的数组；为 null 时是空数组', () => {
     const r = sanitizeInstitution({
       ...base,
       confirmedLogin: { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
     });
     expect(r?.confirmedLogins).toEqual([{ entityID: ENTITY, origin: 'https://a.x.edu.cn' }]);
-  });
 
-  it('旧的 confirmedLogin 为 null 时是空数组', () => {
     expect(sanitizeInstitution({ ...base, confirmedLogin: null })?.confirmedLogins).toEqual([]);
   });
 
   // 新键存在但是脏数据时**不许回落到旧键** —— 那会让一条被判定为无效的新记录
   // 被一条旧记录悄悄顶替，而两者可能指向不同的 origin。
   it('新键存在但不是数组时就是空，不回落到旧键', () => {
+    // 正向前置：同一份旧键，单独出现时确实读得到——下面那句 `[]` 说的才是
+    // 「新键存在就不回落」，不是「旧键压根没读」。
+    const legacyOnly = sanitizeInstitution({
+      ...base,
+      confirmedLogin: { entityID: ENTITY, origin: 'https://a.x.edu.cn' },
+    });
+    expect(legacyOnly?.confirmedLogins).toEqual([{ entityID: ENTITY, origin: 'https://a.x.edu.cn' }]);
+
     const r = sanitizeInstitution({
       ...base,
       confirmedLogins: 'garbage',
