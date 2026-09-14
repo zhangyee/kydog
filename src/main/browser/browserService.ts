@@ -838,15 +838,18 @@ export class BrowserService {
     return { tabId };
   }
 
-  async open(args: { url: string; tabId?: string; ownerRunId?: string | null }): Promise<{ tabId: string; nav: NavigationObservation }> {
+  async open(args: { url: string; tabId?: string; ownerRunId?: string | null; activate?: boolean }): Promise<{ tabId: string; nav: NavigationObservation }> {
     const url = assertAllowedUrl(args.url).toString();
     if (args.tabId && !this.registry.has(args.tabId)) {
       throw new KydogError('browser.no_tab', `没有这个标签页：${args.tabId}`);
     }
     const tabId = args.tabId ?? this.createTab(url, args.ownerRunId ?? null);
-    // createTab 默认**不抢**活动标签（页面弹窗不许决定用户看什么）；
-    // browser_open 这条路是显式要求切过去的，所以这里补一句。
-    this.registry.activate(tabId);
+    // **默认不抢活动标签**，与 createTab 同一条规矩：活动标签是侧栏里用户看的那一页，由用户决定。
+    // agent 的 browser_open 从前在这里无条件切过去 —— 侧栏开着时用户正在看的页面被顶掉，那张标签
+    // 回合结束被收回后侧栏又跳到别处（2026-09-14 实测），与「能不打扰就不打扰」冲突。需要让用户看
+    // 某一页时有专门的交接口（ask_user_question 带 browserTabId → browser.activate）。只有用户自己
+    // 在地址栏开页面那条路（handlers 的 browser.open）显式传 true。
+    if (args.activate === true) this.registry.activate(tabId);
     this.applyLayout();
     const nav = await this.enqueue(tabId, () => this.withAgentDriving(
       tabId, args.ownerRunId ?? null,

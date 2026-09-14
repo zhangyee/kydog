@@ -3382,3 +3382,58 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     expect(svc.consoleSince(nav.tabId, ZERO_CURSOR).lines).toHaveLength(0);
   });
 });
+
+// ── open：默认不抢活动标签（2026-09-14） ─────────────────────────────────────
+
+describe('open：默认不抢活动标签，显式 activate: true 才切过去', () => {
+  /**
+   * agent 的 `browser_open` 从前会把标签设成活动标签：侧栏开着时，用户正在看的页面被 agent
+   * 的页面顶掉；那张标签在回合结束被收回后，侧栏又跳到别处（2026-09-14 实测）。这与「能不打扰
+   * 就不打扰」冲突。现在 `open` 默认不动活动标签，只有显式要求时才切 —— 用户在地址栏开页面
+   * 那条路（`handlers.ts` 的 `browser.open`）显式传 `activate: true`。
+   *
+   * 首标签那一步不算数：注册表空的时候新标签无条件接活动位（`tabRegistry.create` 的规则），
+   * 所以两条用例都先垫一张用户标签，再看后面的 `open` 各自有没有切过去。
+   */
+  async function openWith(svc: Svc, url: string, extra: { ownerRunId: string | null; activate?: boolean }) {
+    const p = svc.open({ url, ...extra });
+    await flush();
+    const wc = H.views[H.views.length - 1].webContents;
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, url, 200);
+    return (await p).tabId;
+  }
+
+  it('新开标签：没带 activate 不切走用户正在看的；显式 activate: true 才切过去', async () => {
+    const { svc } = make();
+    const userTab = await openWith(svc, 'https://user.example/', { ownerRunId: null, activate: true });
+    expect(svc.getState().activeTabId).toBe(userTab);   // 前提：用户那张是活动标签
+
+    await openWith(svc, 'https://agent.example/', { ownerRunId: 'run-1' });
+    expect(svc.getState().activeTabId).toBe(userTab);   // 没带 activate：不抢
+
+    // 同一条用例里的正向对照：只写上一句的话，「activate 整个被忽略、永远不切」也会让它绿。
+    const explicit = await openWith(svc, 'https://explicit.example/', { ownerRunId: null, activate: true });
+    expect(svc.getState().activeTabId).toBe(explicit);
+  });
+
+  it('在已有标签里导航：没带 activate 不切；显式 activate: true 才切', async () => {
+    const { svc } = make();
+    const userTab = await openWith(svc, 'https://user.example/', { ownerRunId: null, activate: true });
+    const agentTab = await openWith(svc, 'https://agent.example/', { ownerRunId: 'run-1' });
+    expect(svc.getState().activeTabId).toBe(userTab);   // 前提
+    const agentWc = H.views[1].webContents;
+
+    const quiet = svc.open({ url: 'https://agent.example/next', tabId: agentTab, ownerRunId: 'run-1' });
+    await flush();
+    agentWc.fire('did-navigate', {}, 'https://agent.example/next', 200);
+    await quiet;
+    expect(svc.getState().activeTabId).toBe(userTab);
+
+    const loud = svc.open({ url: 'https://agent.example/third', tabId: agentTab, ownerRunId: null, activate: true });
+    await flush();
+    agentWc.fire('did-navigate', {}, 'https://agent.example/third', 200);
+    await loud;
+    expect(svc.getState().activeTabId).toBe(agentTab);
+  });
+});

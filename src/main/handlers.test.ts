@@ -356,9 +356,12 @@ describe('每一条 RPC 都有交代：注册了，或明确登记成「尚未�
  * `registerHandler('browser.close', (a) => browserService.keep(a.tabId))` 照样全绿。
  */
 describe('browser.* 九条转发到 browserService 上对应的那一个', () => {
-  it('open 只递协议上写明的 url / tabId', async () => {
+  // `activate: true`：这条路是用户自己在地址栏开页面，要看的就是这一页，所以**显式**切过去。
+  // `BrowserService.open` 默认不抢活动标签（agent 的 browser_open 走默认，不打扰用户正在看的页面），
+  // 这里漏传的话，用户在地址栏里新开的页面不会显示出来。
+  it('open 递协议上写明的 url / tabId，并显式要求切过去（这是用户自己开的页面）', async () => {
     await call('browser.open', { url: 'https://x.example/p', tabId: 't7' });
-    expect(h.browser).toEqual([{ m: 'open', args: { url: 'https://x.example/p', tabId: 't7' } }]);
+    expect(h.browser).toEqual([{ m: 'open', args: { url: 'https://x.example/p', tabId: 't7', activate: true } }]);
   });
 
   /**
@@ -369,7 +372,7 @@ describe('browser.* 九条转发到 browserService 上对应的那一个', () =>
    */
   it('open 不认渲染层塞进来的 ownerRunId —— 这条路开的标签永远是用户的', async () => {
     await call('browser.open', { url: 'https://x.example/p', ownerRunId: 'run-伪造' });
-    expect(h.browser[0].args).toEqual({ url: 'https://x.example/p', tabId: undefined });
+    expect(h.browser[0].args).toEqual({ url: 'https://x.example/p', tabId: undefined, activate: true });
     expect(JSON.stringify(h.browser)).not.toContain('run-伪造');
   });
 

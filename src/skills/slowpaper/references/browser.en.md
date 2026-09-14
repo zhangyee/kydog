@@ -350,6 +350,14 @@ viewport is restored to a 1280 logical width before your next action anyway.
   "go faster".
 - **The browser works the same whether the sidebar is open or closed.** You do not need the
   user to open it first.
+- **Tabs you open are closed automatically when this turn ends** (to keep the tab count under
+  control), and so are tabs a page pops open while you are operating it. If the user should still be able to see it later, or
+  you need it next turn, ask the user to click 「保留」 (Keep) on that tab; otherwise open it again
+  next turn. **If a tab from an earlier turn is missing from the list, do not conclude the user
+  closed it** — it may have been reclaimed when that turn ended; if you cannot tell, say so.
+- **Opening a tab does not switch away from the page the user is looking at.** When the user needs
+  to look at a page, call `ask_user_question` with `browserTabId`; the interface opens the sidebar
+  and switches to that tab (see section 9).
 
 ---
 

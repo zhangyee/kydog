@@ -1519,3 +1519,57 @@ describe('页面报的错挂进工具结果（Task 4）', () => {
     expect(out).toContain('凭据');
   });
 });
+
+/**
+ * **回合结束会收回 agent 开的标签，模型必须知道**（2026-09-14 实测出来的）。
+ *
+ * 模型刚用 browser_open 开完标签，就对用户说「新标签留在 example.com 上，没有关闭」；
+ * 这一轮一结束，标签被 `disposeForRun` 收掉（spec 拍板的设计：agent 开的回合结束就关）。
+ * 用户问起，它看到标签没了、又不知道有自动收回这回事，就猜「是你手动关掉的」—— 错怪了用户。
+ * 根因：工具说明、返回值、skill 文档里都没有告诉它这件事。
+ */
+describe('回合结束会收回 agent 开的标签：模型要知道', () => {
+  it('browser_open 新开标签时结果里说清本轮结束会关、要留着就提醒用户点「保留」；复用已有标签时不说', async () => {
+    const opened = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
+    expect(opened).toContain('本轮新开的标签');
+    expect(opened).toContain('「保留」');
+
+    // 同一条用例里的反向对照：在已有标签里导航，没有新开标签，就不该挂这句。
+    const reused = bodyOf(await toolNamed('browser_open').execute('call-2', { url: 'https://a.example/q', tabId: 't1' }));
+    expect(reused).not.toContain('本轮新开的标签');
+  });
+
+  it('browser_act 这一批里弹出了新标签：同样说清它们会在本轮结束时被自动关掉', async () => {
+    bs.dispatchImpl = () => { bs.tabs.push({ id: 't9', url: 'https://pop.example/', title: '' }); return '点了'; };
+    const s = bodyOf(await act([{ kind: 'click', selector: '#x' }]));
+    expect(s).toContain('这一批里新开了 1 个标签页');
+    expect(s).toContain('本轮结束时被自动关掉');
+  });
+
+  it('工具说明：browser_open 说清本轮结束会关、提醒用户点「保留」；browser_tabs 说清标签不见了别断定是用户关的', () => {
+    const open = toolNamed('browser_open').description;
+    expect(open).toContain('这一轮结束时会被自动关掉');
+    expect(open).toContain('「保留」');
+    expect(toolNamed('browser_tabs').description).toContain('不要断定是用户关的');
+  });
+});
+
+/**
+ * **出错即停的那句提示，第一个动作就失败时不该说「此前的动作已经生效」**（2026-09-14 实测）。
+ *
+ * back 没有历史、整批第一个动作就停下时，结果里仍写「（此前的动作已经生效，网页不可回滚）」——
+ * 当时并没有「此前的动作」，这句话会让模型以为已经有东西落到了页面上。
+ */
+describe('出错即停：第一个动作就失败时不说「此前的动作已经生效」', () => {
+  it('第一个动作失败 → 不带那句；第二个动作失败（第一个已经生效）→ 带那句', async () => {
+    bs.historyImpl = () => null;
+
+    const firstFails = bodyOf(await act([{ kind: 'back' }]));
+    expect(firstFails).toContain('没有可以后退的历史');   // 这一批确实停在了第一个动作
+    expect(firstFails).not.toContain('此前的动作已经生效');
+
+    // 同一条用例里的正向对照：前面有动作生效了，这句话才成立，也才该出现。
+    const secondFails = bodyOf(await act([{ kind: 'key', key: 'Enter' }, { kind: 'back' }]));
+    expect(secondFails).toContain('此前的动作已经生效');
+  });
+});
