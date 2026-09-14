@@ -161,27 +161,33 @@ are more, and you must not read it as this source having nothing further.
 That is deliberate, not a broken selector.
 
 **A loop of pure actions is pointless.** A `repeat` that pages three times without extracting
-gets you nothing. But **do not put paging inside a `repeat` either** — the reason is in §5,
-under "one fixed condition cannot express 'we got to the next page'".
+gets you nothing. An ordinary link click waits for navigation to commit, so it can share a
+batch with extraction; SPA or dynamic content still needs an explicit condition that is false
+before the click and true afterwards. If no such per-page condition exists, use one call per
+page rather than letting a loop silently extract stale content.
 
 ---
 
-## 5. `wait`: `browser_act` never waits — every page change is yours to wait for
+## 5. `wait`: definite navigation is settled; page stability is still yours to wait for
 
-The tools **do not "wait for the page to settle" automatically**. There are exactly three
+The tools **do not "wait for the page to settle" automatically**. There are four
 rules:
 
-1. **Only `browser_open` waits** — it waits for that main-frame navigation's definite outcome
+1. **`browser_open` waits** — it waits for that main-frame navigation's definite outcome
    (one of the nine in §6), so you need no `wait` right after opening a page
-2. **`browser_act` waits for nothing.** A click dispatches two mouse events and returns,
-   **even when that click triggers a main-frame navigation**; and there is no wait between
-   one step of a batch and the next either
-3. **When you need to wait for something, you supply the condition explicitly**
+2. **Clicking an ordinary HTTP(S) link in the current frame does wait.** Before dispatching
+   the mouse input, the tool preserves the live target's default `<a href>` navigation intent,
+   waits for a definite main-frame outcome, and only then continues to the next batch step.
+   The navigation conclusion is returned with that click, not deferred to the next call
+3. **This does not mean every `browser_act` waits.** Form buttons, SPA transitions, timers,
+   and DOM updates after a request are outside that link guarantee. A late main-frame
+   navigation is reported once on the `导航: [tab_…]` line at the head of the next browser-tool result
+4. **For dynamic content, you supply the explicit condition to wait for**
 
-Rule 2 is the easiest thing in this document to remember backwards. "This source's paging is
-a real link and does navigate the main frame, so no wait is needed" — **wrong**: whether it
-navigates is the page's business, whether anything waits is the tool's, and `browser_act`
-does neither.
+The easy mistake is to confuse **navigation commit** with **page stability**. A definite
+navigation outcome for an ordinary link proves that the new document committed; it does not
+prove that later requests, spinners, or asynchronous DOM updates have finished. Use `wait`
+for the latter.
 
 ```jsonc
 { "kind": "wait", "until": { "selector": ".result", "state": "present" }, "timeoutMs": 8000 }
@@ -198,24 +204,26 @@ met" instantly and waits not one millisecond — the script looks fine and nothi
 waited for. Waiting on a "current page" marker, which **exists before the click**, is exactly
 that shape.
 
-**A missing `wait` is a class of silent error.** An `extract` right after a `click` extracts
-the **stale DOM** — the result looks perfectly normal, the row count is right, and the content
-is still the previous page's. A three-round `repeat` extracts the first page three times
-**without reporting any error at all**.
+**A missing `wait` is still a class of silent error.** An `extract` immediately after a
+non-link click or SPA update can read the **stale DOM**. Even after an ordinary link has
+committed its new document, asynchronous results may not exist yet. The result can look
+perfectly normal, with the right row count, while containing something other than the page
+you thought you were reading.
 
-**The closing snapshot is stale DOM too.** Once the last step of a batch has run, the tool
-takes that "── 页面变化 ──" section **immediately**, again without waiting — so after "I clicked
-something that navigates", that section is **most likely still the previous page**. **Do not
-conclude "the click did not land" and click again**: two searches in quick succession on Scholar
-is exactly the shape that falls into a 403. Whether the page actually changed is told by the
-`导航: [tab_…]` line at the head of the **next** tool result (a main-frame navigation is hung
-there as soon as it settles, **reported once and then cleared**); a source that produces no
-main-frame navigation (Baidu Xueshu's SPA search) has no such line, so the only tests are the
-explicit `wait` you supplied and the confirmation recipe in that source's reference.
+**The closing snapshot is not proof of "page stability" either.** For an ordinary link, the
+batch now waits for the navigation outcome before taking that snapshot, so it no longer reads
+the document from before commit; the new document's asynchronous content may still be moving.
+When a non-link action has no definite navigation fact, the snapshot is still taken immediately.
+Do not click again merely because it looks unchanged: two searches in quick succession on
+Scholar is exactly the shape that falls into a 403. First inspect the current action for a
+navigation conclusion; for a late main-frame navigation, inspect the `导航: [tab_…]` line at
+the head of the next result (**reported once and then cleared**). An SPA with no main-frame
+navigation can only be checked with your explicit `wait` and that source's confirmation recipe.
 
-**So do not use `repeat` for paging.** Every round of a batch carries the same `wait`
-condition, while "we got to the next page" is a fact that differs page by page; one fixed
-condition cannot express it. Paging is **one call per page** — see each source's reference.
+**Whether `repeat` can page depends on a reliable completion fact for every round.** An
+ordinary link itself waits for a navigation outcome, but one fixed `wait` condition may not
+distinguish page 2 from page 3. With no per-page condition, use one call per page — see each
+source's reference.
 
 **A timeout means only that this condition did not come true.** It does not mean the page
 failed, and it does not mean the source has a problem. It is one action failing, handled
@@ -228,7 +236,7 @@ switch sources.
 
 **Best-effort in order, stop on error.** When action *k* fails, actions 1..*k*−1 **have
 already taken effect**, and the result says where it stopped, why, and what the page looks
-like now (**that snapshot does not wait for navigation**, see the end of §5). **There is no
+like now (**the snapshot is not a page-stability test**, see the end of §5). **There is no
 batch rollback** — web pages are not rollback-able.
 
 **Everything already extracted comes back.** Reaching the last page means `click` cannot find
@@ -326,8 +334,8 @@ While suspended: **do not read the page** (the user may be typing a password) an
 anything for them. Continue only after they answer.
 
 **The user may press the 1:1 button on the sidebar** to magnify a CAPTCHA. That switch is for
-humans, **you do not need to manage it**, and you should not ask the user to press it — the
-viewport is restored to a 1280 logical width before your next action anyway.
+humans, **you do not need to manage it**, and you should not ask the user to press it — it is
+switched back to fit mode before your next action anyway.
 
 ---
 

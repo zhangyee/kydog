@@ -42,7 +42,7 @@ const H = vi.hoisted(() => {
     readonly sent: Array<{ method: string; params: Record<string, unknown> }> = [];
     attachThrows: Error | null = null;
     /** 默认成功。用例可以换成 rejected promise（§A 的三个触发点都是这个形状）。 */
-    respond: () => Promise<unknown> = () => Promise.resolve({});
+    respond: (method?: string, params?: Record<string, unknown>) => Promise<unknown> = () => Promise.resolve({});
     attach(): void {
       if (this.attachThrows) throw this.attachThrows;
       this.attached = true;
@@ -51,7 +51,7 @@ const H = vi.hoisted(() => {
     isAttached(): boolean { return this.attached; }
     sendCommand(method: string, params: Record<string, unknown>): Promise<unknown> {
       this.sent.push({ method, params });
-      return this.respond();
+      return this.respond(method, params);
     }
   }
 
@@ -78,6 +78,10 @@ const H = vi.hoisted(() => {
     readonly isolated: Array<{ worldId: number; code: string }> = [];
     isolatedImpl: (code: string) => Promise<unknown> = () => Promise.resolve(undefined);
     windowOpenHandler: ((d: { url: string }) => unknown) | null = null;
+    /** `setVisualZoomLevelLimits` 的每一次调用。真 API 走 Electron 内部 IPC 进渲染进程，
+     *  没有活的渲染进程时**永不 settle**（实测）；用例可以换成挂起的那种。 */
+    readonly zoomLimits: Array<[number, number]> = [];
+    zoomLimitsImpl: () => Promise<void> = () => Promise.resolve();
     historyIndex = 1;
     historyEntries: string[] = ['https://prev.example/', 'https://cur.example/'];
     readonly navigationHistory = {
@@ -98,6 +102,10 @@ const H = vi.hoisted(() => {
     reload(): void { this.reloadCalls += 1; }
     close(): void { this.closeCalls += 1; this.destroyed = true; }
     setWindowOpenHandler(fn: (d: { url: string }) => unknown): void { this.windowOpenHandler = fn; }
+    setVisualZoomLevelLimits(min: number, max: number): Promise<void> {
+      this.zoomLimits.push([min, max]);
+      return this.zoomLimitsImpl();
+    }
     loadURL(u: string): Promise<unknown> { this.loadCalls.push(u); this.url = u; return this.loadImpl(); }
     executeJavaScriptInIsolatedWorld(worldId: number, scripts: Array<{ code: string }>): Promise<unknown> {
       this.isolated.push({ worldId, code: scripts[0].code });
@@ -209,6 +217,9 @@ const logText = () => JSON.stringify(H.logs);
 
 const overrides = (wc: ReturnType<typeof wcOf>) =>
   wc.debugger.sent.filter((c) => c.method === 'Emulation.setDeviceMetricsOverride');
+
+const pageScales = (wc: ReturnType<typeof wcOf>) =>
+  wc.debugger.sent.filter((c) => c.method === 'Emulation.setPageScaleFactor').map((c) => c.params.pageScaleFactor);
 
 const STAGE = { epoch: 1, visible: true, occluded: false, bounds: { x: 10, y: 20, width: 640, height: 900 } };
 
@@ -778,7 +789,7 @@ describe('逻辑视口的档位：1:1 / 适配', () => {
   /** 侧栏 640 宽的舞台。适配档下 scale = 640/1280 = 0.5。 */
   const withStage = async (svc: Svc) => { svc.syncView({ ...STAGE, epoch: svc.getState().epoch }); await flush(); };
 
-  it('默认是「适配」：逻辑视口 1280，整幅按 W/1280 缩进侧栏', async () => {
+  it('默认是「适配」：逻辑视口 1280，整幅按 W/1280 缩进侧栏；不碰 page scale', async () => {
     const { svc } = make();
     await openTab(svc);
     const wc = wcOf();
@@ -786,20 +797,99 @@ describe('逻辑视口的档位：1:1 / 适配', () => {
     expect(overrides(wc).at(-1)!.params).toEqual({
       width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
     });
+    // 从没进过 1:1：Electron 默认禁用 pinch-zoom（limits 恒为 1），page scale 只可能是 1，
+    // 不必每次布局都往渲染进程多发两条。
+    expect(pageScales(wc)).toEqual([]);
+    expect(wc.zoomLimits).toEqual([]);
+
+    // 翻面：同一个标签按到 1:1，这两路才真的发出去 —— 上面两个空数组不是「查找坏了」。
+    svc.setViewportMode(svc.getState().tabs[0].id, 'oneToOne');
+    await flush();
+    expect(wc.zoomLimits).toEqual([[1, 2]]);
+    expect(pageScales(wc)).toEqual([2]);
   });
 
-  it('按到 1:1：逻辑视口就是侧栏这么宽、scale 恒 1（页面不被缩小）', async () => {
+  it('按到 1:1（窄舞台）：override 与适配档逐字相同，只把 page scale 放大到 1280/W', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    await withStage(svc);
+    const fitParams = overrides(wc).at(-1)!.params;
+    let landLimits!: () => void;
+    wc.zoomLimitsImpl = () => new Promise<void>((r) => { landLimits = r; });
+
+    svc.setViewportMode(svc.getState().tabs[0].id, 'oneToOne');
+    await flush();
+    // 排版（宽 1280、高 1800）与 agent 的适配档完全一致：页面不重排，快照坐标系不变。
+    // 1:1 就是 Chromium 自己的 pinch-zoom，横移、纵滚、点击映射全由它的 visual viewport 负责。
+    expect(overrides(wc).at(-1)!.params).toEqual(fitParams);
+    expect(overrides(wc).at(-1)!.params).not.toHaveProperty('viewport');
+    expect(wc.zoomLimits).toEqual([[1, 2]]);
+    // limits 还没落到渲染进程时发 page scale 会被 Chromium 夹回 1（实测）—— 必须等它。
+    expect(pageScales(wc), 'pinch-zoom 上限还没落地，page scale 不许先发').toEqual([]);
+    landLimits();
+    await flush();
+    expect(pageScales(wc)).toEqual([2]);
+  });
+
+  it('1:1 的 limits 还在途中就切回适配：晚到的那一条不许再把页面放大', async () => {
     const { svc } = make();
     await openTab(svc);
     const wc = wcOf();
     await withStage(svc);
     const id = svc.getState().tabs[0].id;
+    const lands: Array<() => void> = [];
+    wc.zoomLimitsImpl = () => new Promise<void>((r) => { lands.push(r); });
 
     svc.setViewportMode(id, 'oneToOne');
     await flush();
-    expect(overrides(wc).at(-1)!.params).toEqual({
-      width: 640, height: 900, deviceScaleFactor: 0, mobile: false, scale: 1,
+    svc.setViewportMode(id, 'fit');
+    await flush();
+    expect(pageScales(wc)).toEqual([1]);
+    expect(wc.zoomLimits).toEqual([[1, 2], [1, 1]]);
+
+    for (const land of lands) land();
+    await flush();
+    expect(pageScales(wc), '先发的 1:1 那条晚到了，也不能在适配档上把 page scale 改回 2').toEqual([1]);
+  });
+
+  it('1:1 下每个新文档（dom-ready）重新抬 limits、重设 page scale —— 跨站换渲染进程后两者都回默认（实测）', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    await withStage(svc);
+    svc.setViewportMode(svc.getState().tabs[0].id, 'oneToOne');
+    await flush();
+    expect(pageScales(wc)).toEqual([2]);
+
+    wc.fire('dom-ready');
+    await flush();
+    expect(wc.zoomLimits).toEqual([[1, 2], [1, 2]]);
+    expect(pageScales(wc)).toEqual([2, 2]);
+  });
+
+  it('舞台宽过 1280 的 1:1：按舞台宽铺满、scale 恒 1，不抬 pinch-zoom', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    const id = svc.getState().tabs[0].id;
+    svc.syncView({
+      ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, width: 1440 },
     });
+    await flush();
+    svc.setViewportMode(id, 'oneToOne');
+    await flush();
+    expect(overrides(wc).at(-1)!.params).toEqual({
+      width: 1440, height: 900, deviceScaleFactor: 0, mobile: false, scale: 1,
+    });
+    expect(wc.zoomLimits).toEqual([]);
+    expect(pageScales(wc)).toEqual([]);
+
+    // 翻面：同一个 1:1 标签舞台一窄（640），就回到 1280 排版 + page scale 2。
+    await withStage(svc);
+    expect(overrides(wc).at(-1)!.params).toMatchObject({ width: 1280, scale: 0.5 });
+    expect(wc.zoomLimits).toEqual([[1, 2]]);
+    expect(pageScales(wc)).toEqual([2]);
   });
 
   it('新的档位随 browser.tabsChanged 回到渲染层（开关照着主进程画，不自己记一份）', async () => {
@@ -852,6 +942,8 @@ describe('逻辑视口的档位：1:1 / 适配', () => {
     expect(overrides(wcB).at(-1)!.params).toEqual({
       width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
     });
+    expect(pageScales(wcB), '后台 B 是适配档，不许跟着 A 放大').toEqual([]);
+    expect(pageScales(wcOf(0)).at(-1), '翻面：A 自己确实放大了（重新布局时会再设一次，看最后一条）').toBe(2);
   });
 
   it('没有这个标签 → browser.no_tab（静默放过的话，按了开关什么都不发生）', () => {
@@ -893,7 +985,7 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
     expect(svc.getState().tabs[0].viewportMode).toBe('fit');
   });
 
-  it('恢复之后页面真的回到 1280 逻辑宽', async () => {
+  it('恢复之后页面真的回到适配：page scale 回 1、pinch-zoom 上限收回', async () => {
     const { svc } = make();
     await openTab(svc);
     const wc = wcOf();
@@ -902,13 +994,15 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
     const id = svc.getState().tabs[0].id;
     svc.setViewportMode(id, 'oneToOne');
     await flush();
-    expect(overrides(wc).at(-1)!.params.width).toBe(640);
+    expect(pageScales(wc).at(-1)).toBe(2);
 
     await svc.withAgentDriving(id, 'run-1', async () => {});
     await flush();
     expect(overrides(wc).at(-1)!.params).toEqual({
       width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
     });
+    expect(pageScales(wc).at(-1)).toBe(1);
+    expect(wc.zoomLimits.at(-1)).toEqual([1, 1]);
   });
 
   it('**对照组**：本来就是 fit 时不白推一帧 revision（那会让「按 revision 去旧」退化）', async () => {
@@ -1383,9 +1477,9 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
 
 describe('没有人在等的那次导航：状态码要接住，不能掉在 `?.` 上（I-2）', () => {
   // 为什么要有这一组：`navigate()`（browser_open / back / forward / reload）会为自己那次
-  // 导航挂一个 tracker，`did-navigate` 落进它、结论由 browser_open 报出去。而
-  // `browser_act` 的点击**不挂 tracker、也不等** —— 于是「点了检索按钮 → 结果页 403」
-  // 这一次导航的状态码，协议层明明收到了，却在 `this.navs.get(id)?.` 那个 `?.` 上被丢掉。
+  // 导航挂一个 tracker，`did-navigate` 落进它、结论由 browser_open 报出去。browser_act
+  // 也在输入前挂 tracker，但表单按钮或异步脚本触发的导航仍可能晚于 Input ACK；那时 tracker
+  // 已经按「没有明确导航事实」收掉，结果页 403 仍会落到没有等待者的分支。
   // Google Scholar 的 403 恰恰只在检索提交之后出现（scholar.md 的可达性表：首页 200、
   // 搜索才 403），所以这条路上没有状态码 = skill 的换源规则没有任何判据。
 
@@ -2189,14 +2283,68 @@ const okMeasure = (over: Record<string, unknown> = {}) => ({
   tag: 'button', label: '搜索', ...over,
 });
 
+describe('dispatchAndObserveNavigation：输入触发的导航与动作同批收尾', () => {
+  it('输入 ACK 时没有主 frame 导航事实就当场返回，不用时间窗猜', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    const result = await svc.dispatchAndObserveNavigation(
+      id, { kind: 'click', selector: '#recent' }, null,
+    );
+    expect(result.line).toContain('已点击');
+    expect(result.navigation).toBeNull();
+  });
+
+  it('派发前从活目标读到默认链接导航意图，就等 did-navigate 后返回', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({
+      label: 'recent', navigationUrl: 'https://example.org/recent',
+    }));
+
+    const done: string[] = [];
+    const p = svc.dispatchAndObserveNavigation(
+      id, { kind: 'click', selector: '#recent' }, null,
+    ).then((r) => { done.push('done'); return r; });
+    await flush();
+    expect(done).toEqual([]);
+
+    wc.url = 'https://example.org/recent';
+    wc.fire('did-navigate', {}, wc.url, 200);
+    const result = await p;
+    expect(result.line).toContain('recent');
+    expect(result.navigation?.outcome).toEqual({
+      kind: 'ok', finalUrl: 'https://example.org/recent', httpStatusCode: 200,
+    });
+  });
+
+  it('子 frame 的导航启动不会把整页动作挂进导航等待', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    wc.debugger.respond = () => {
+      const last = wc.debugger.sent.at(-1)!;
+      if (last.method === 'Input.dispatchMouseEvent' && last.params.type === 'mouseReleased') {
+        wc.fire('did-start-navigation', {
+          url: 'https://frame.example/ad', isMainFrame: false, isSameDocument: false,
+        });
+      }
+      return Promise.resolve({});
+    };
+    await expect(svc.dispatchAndObserveNavigation(
+      id, { kind: 'click', selector: '#recent' }, null,
+    )).resolves.toMatchObject({ navigation: null });
+  });
+});
+
 /**
  * **视口下发要先落地，再碰页面。**
  *
  * `dispatch` 是唯一一条「碰页面**且吃几何**」的路径：`interact.js` 的 measure 在
  * 页面里 `getBoundingClientRect` 量 x/y，随后分三次独立 await 发
  * `Input.dispatchMouseEvent`。而 `markDriving` → `restoreFitViewport` 只发了一个
- * `void applyViewport`（CDP 命令在途）—— 用户刚按过 1:1 时，档位恢复成 1280 会重排，
- * 量到的坐标不再复核。失败形态是**静默点错东西**。
+ * `void applyViewport`（CDP 命令在途）—— 用户刚按过 1:1 时，档位恢复成 fit 会改变
+ * 屏幕坐标映射，量到的坐标不再复核。失败形态是**静默点错东西**。
  *
  * `snapshot()` / `navigate()` 早就 `await` 了同一句，各自还写了理由；这条用例守的是
  * 第三条路上也有那一句。判据不是「命令发出去了没有」（`void` 的那一发也是同步进
@@ -2210,10 +2358,10 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
     svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
     await flush();
     const id = svc.getState().tabs[0].id;
-    // 用户按 1:1 看验证码：逻辑视口 = 侧栏宽（640）
+    // 用户按 1:1 看验证码：排版不变，page scale 放大到 1280/640
     svc.setViewportMode(id, 'oneToOne');
     await flush();
-    expect(overrides(wc).at(-1)!.params.width).toBe(640);
+    expect(pageScales(wc).at(-1)).toBe(2);
 
     // 从这一刻起，视口命令**挂在途中**，由用例决定什么时候落地
     let release: (() => void) | null = null;
@@ -2230,8 +2378,8 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
     await flush();
 
     expect(wc.isolated.length,
-      '视口命令还在途中，dispatch 就已经进页面量坐标了 —— 逻辑视口从 640 变 1280 会重排，'
-      + '量到的 x/y 不再复核，点击会静默打偏').toBe(0);
+      '视口命令还在途中，dispatch 就已经进页面量坐标了 —— page scale 还没回 1、'
+      + 'emulation scale 也还没坐实，点击会静默打偏').toBe(0);
     expect(overrides(wc).at(-1)!.params.width, '恢复的那一档必须是 1280').toBe(1280);
 
     release!();
@@ -2338,6 +2486,61 @@ describe('dispatch · click：坐标是这一刻量的，命中检查不放水',
     await svc.dispatch(id, { kind: 'click', index: 1, snapshotId: 's1' }, stale);
     const pts = inputCmds(wc).map((c) => `${c.params.x},${c.params.y}`);
     expect(pts).toEqual(['640,400', '640,400']);
+  });
+
+  // 2026-09-14 实测（Electron 41.2.1）：`Emulation.setDeviceMetricsOverride` 的 scale ≠ 1 时，
+  // `Input.dispatchMouseEvent` 的 x/y 在渲染进程里会**再被除以一次 scale**
+  // （Chromium InputHandler::ScaleFactor 只乘浏览器缩放与 pinch，不乘 emulation scale；
+  // 页面收到的 clientX = x / scale）。侧栏开着时 agent 的每一次点击都落在 (x/scale, y/scale)。
+  // 手测 A-2 那次 recent 链接一次都没被点到、白等 20 秒，就是这个。
+  it('侧栏开着时 CDP 坐标要乘上 emulation scale（不乘就落在 x/scale）', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure({ x: 640, y: 400 }));
+
+    // 侧栏没开：override 的 scale 是 1，CSS 坐标原样就是 CDP 坐标。
+    await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    expect(inputCmds(wc).map((c) => `${c.params.x},${c.params.y}`)).toEqual(['640,400', '640,400']);
+
+    // 侧栏 640 宽：scale = 0.5。
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.debugger.sent.length = 0;
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+      .resolves.toContain('（640,400）');   // 给模型看的仍是页面的 CSS 坐标
+    expect(inputCmds(wc).map((c) => `${c.params.x},${c.params.y}`)).toEqual(['320,200', '320,200']);
+
+    wc.debugger.sent.length = 0;
+    await svc.dispatch(id, { kind: 'hover', selector: '#a' }, null);
+    expect(inputCmds(wc).map((c) => `${String(c.params.type)} ${c.params.x},${c.params.y}`))
+      .toEqual(['mouseMoved 320,200']);
+  });
+
+  it('agent 这一批中途用户按了 1:1：dispatch 量坐标之前先恢复适配（page scale 回 1）', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const seq: string[] = [];
+    wc.isolatedImpl = () => { seq.push('measure'); return Promise.resolve(okMeasure({ x: 640, y: 400 })); };
+    const realRespond = wc.debugger.respond;
+    wc.debugger.respond = (method, params) => {
+      if (method === 'Emulation.setPageScaleFactor') seq.push(`pageScale ${String(params?.pageScaleFactor)}`);
+      return realRespond(method, params);
+    };
+
+    await svc.withAgentDriving(id, 'run-1', async () => {
+      svc.setViewportMode(id, 'oneToOne');   // markDriving 已经过了，用户这时才按
+      await flush();
+      expect(seq, '1:1 真的生效过（page scale 放大到 2），下面才有东西可恢复').toEqual(['pageScale 2']);
+      await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
+    });
+
+    expect(svc.getState().tabs[0].viewportMode).toBe('fit');
+    const measureAt = seq.indexOf('measure');
+    expect(seq.indexOf('pageScale 1'), '恢复成 page scale 1 这一条必须发过').toBeGreaterThan(0);
+    expect(seq.lastIndexOf('pageScale 1'), '而且落在量坐标之前').toBeLessThan(measureAt);
+    expect(inputCmds(wc).map((c) => `${c.params.x},${c.params.y}`)).toEqual(['320,200', '320,200']);
   });
 
   it('先按下再松开，button 与 clickCount 齐全', async () => {

@@ -111,11 +111,12 @@ Judge on the `HTTP 403` phrase in the tool result (the navigation-conclusion lin
 「但服务器返回 HTTP 403」); do not match strings in the body. **There is no `httpStatusCode`
 field for you to read** — the status code only ever appears as that prose.
 
-**The 403 arrives after the search is submitted, so it is not in that batch's result** (see the
-reachability table above: the home page is 200 and only the search is 403, and `browser_act`
-does not wait for navigation). It is hung on the `导航: [tab_…] 已打开 …，但服务器返回 HTTP 403`
-line at the **head of the next** tool result, **reported once and then cleared** — so look at
-that line on the first call after submitting a search.
+**The 403 arrives after the search is submitted.** Scholar's submit control is a form button,
+so it is outside the deterministic wait guarantee for an ordinary `<a href>` link. If the
+navigation fact arrives during this input, the submit action's own result contains `HTTP 403`;
+if it arrives late, it is hung on the `导航: [tab_…] 已打开 …，但服务器返回 HTTP 403` line at
+the **head of the next** browser-tool result, **reported once and then cleared**. Inspect the
+submit result first; if it is absent there, inspect the navigation line at the head of the next call.
 
 ## What controls the page has (measured, read off the home page DOM)
 
@@ -203,26 +204,24 @@ with the same selectors as above:
 { "kind": "click", "selector": "#gs_n a:has(.gs_ico_nav_next)" }
 ```
 
-**Scholar's paging really is a real link and really does go through a main-frame navigation —
-but `browser_act` does not wait for navigations.** A click dispatches two mouse events and
-returns (`browser.md` §5 rule 2). So "it navigates, therefore no `wait` is needed" is wrong,
-and after that click you **must confirm for yourself that the page really changed**.
+**Scholar paging is a real link in the current frame.** Before dispatching the mouse input,
+`browser_act` preserves its `<a href>` navigation intent and waits for a definite main-frame
+outcome. The paging click's own result should therefore contain both the click report and the
+navigation conclusion. You need no extra `wait` merely to let history commit.
 
-**The closing snapshot of that batch does not count.** Once the last step has run,
-`browser_act` takes the "── 页面变化 ──" section **immediately**, without waiting for the
-navigation (end of §5 in `references/browser.md`) — so after a paging click or a search submit
-that section is **most likely still the previous page**. **Never click again just because it
-looks unchanged**: Scholar is most sensitive to actions in quick succession, and that extra
-click is exactly the shape that falls into a 403. Whether the page actually changed is told by
-the `导航: [tab_…]` line at the head of the **next** tool result (a main-frame navigation is hung
-there as soon as it settles, reported once and then cleared).
+**A navigation outcome still does not prove that the result list is stable.** The batch's
+closing snapshot belongs to the newly committed document, but can still precede completion of
+asynchronous results. **Never click again just because it looks unchanged**: Scholar is most
+sensitive to actions in quick succession, and that extra click is exactly the shape that falls
+into a 403. The search submit button is not an ordinary link; for it, inspect both the current
+result and the `导航: [tab_…]` line at the head of the next result as described in the 403 section above.
 
 **How to confirm**: after extracting, compare this page's first `title` with the previous
 page's first one — **identical means the page has not changed yet**; do not record it as a new
 page and do not page on. That is exactly the shape of "extracting the first page three times
 while every result looks normal".
-(A condition that is false before the click and true after paging has not been measured this
-release — see "Completion procedure".)
+(A condition that is false before the click and true after paging, and proves the asynchronous
+list is stable, has not been measured this release — see "Completion procedure".)
 
 On the last page that `click` errors out because nothing matches — expected behaviour, and the
 data from every earlier page is already in that page's own tool result.

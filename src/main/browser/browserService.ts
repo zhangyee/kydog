@@ -90,6 +90,18 @@ function originOf(raw: string): string | null {
   try { return new URL(raw).origin; } catch { return null; }
 }
 
+/** 只有 fragment 改了才是明确的同文档候选；完全相同的 URL 可能触发一次重新加载。 */
+function isFragmentNavigation(from: string, to: string): boolean {
+  try {
+    const a = new URL(from);
+    const b = new URL(to);
+    const fragmentChanged = a.hash !== b.hash;
+    a.hash = '';
+    b.hash = '';
+    return fragmentChanged && a.toString() === b.toString();
+  } catch { return false; }
+}
+
 /** walker 的返回值**就是**一份没有 snapshotId 的 AxSnapshot。 */
 type WalkerOutput = Omit<AxSnapshot, 'snapshotId'>;
 
@@ -177,21 +189,34 @@ export class BrowserService {
   private win: BrowserWindow | null = null;
   private readonly registry = new TabRegistry();
   private readonly views = new Map<string, WebContentsView>();
+  /**
+   * 每个标签**已经落地**的 emulation scale（最近一次 `setDeviceMetricsOverride` 成功时带的那个）。
+   *
+   * 渲染进程会把 `Input.dispatchMouseEvent` 的 x/y **再除以它**：Chromium 的
+   * `InputHandler::ScaleFactor` 只乘浏览器缩放与 pinch，不乘 emulation scale，而页面收到的
+   * `clientX` = x / scale（2026-09-14 实测，Electron 41.2.1）。所以派发时要把 CSS 坐标乘回去。
+   * 侧栏没开时 scale 恒 1，看不出来 —— 手测 A-2 那次侧栏开着，recent 链接一次都没被点到。
+   */
+  private readonly emulationScales = new Map<string, number>();
+  /** 每次 `applyViewport` 递增。1:1 那条「抬上限 → 设 page scale」是异步的，晚到时靠它判断自己已被接替。 */
+  private readonly viewportGenerations = new Map<string, number>();
+  /** 这个标签上抬过 pinch-zoom 上限（进过 1:1）。回到适配时据此收回 page scale 与上限；没抬过就一条都不多发。 */
+  private readonly zoomLimitsRaised = new Set<string>();
   private readonly snapshots = new Map<string, AxSnapshot>();
   private readonly navs = new Map<string, NavigationTracker>();
   /**
    * **没有人在等的那次主 frame 导航。**
    *
    * `navigate()`（open / back / forward / reload）会为自己那次导航挂一个 tracker，
-   * `did-navigate` 落进它、结论由 `browser_open` 报出去。而 `browser_act` 的点击
-   * **不挂 tracker、也不等**（spec §4.2：一步都不等）—— 于是「点了检索按钮 →
-   * 结果页返回 403」这一次导航的状态码，协议层明明收到了，却在 `navs.get(id)?.`
-   * 那个 `?.` 上被丢掉，模型这一路拿不到任何状态码。而 Google Scholar 的 403
+   * `did-navigate` 落进它、结论由当前工具调用报出去。`browser_act` 现在也会在输入前
+   * 挂 tracker：输入 ACK 时已经观察到主 frame 启动的导航，同批等待明确终态。
+   * 但页面用定时器稍后发起的异步导航不会被一个猜测性的等待窗口捕获 —— 于是
+   * 「点了检索按钮 → 一会儿后结果页返回 403」这类晚到状态码仍要有精确出口。
    * **只在检索提交之后**出现（首页 200、搜索才 403），skill 的换源规则全建立在它上面。
    *
    * 所以这里把它接住：没有 tracker 在等的那次 did-navigate 记下来，由工具层在**下一次**
-   * 工具结果的头部报一次就清掉（`takeUnreportedNav`）。**不引入任何等待** ——
-   * `browser_act` 依旧一步都不等，只是不再把已经收到的事实扔掉。
+   * 工具结果的头部报一次就清掉（`takeUnreportedNav`）。这条是晚到导航的后备出口，
+   * 不负责同步点击导航；后者走 `dispatchAndObserveNavigation`。
    */
   private readonly unreportedNavs = new Map<string, { url: string; httpStatusCode: number }>();
   /** 每个标签一条串行队列。跨标签仍然并行。 */
@@ -469,6 +494,7 @@ export class BrowserService {
       // 但对原生层来说两者的处置相同 —— 让开。
       const show = !!st && st.visible && !st.occluded && isActive;
       view.setVisible(show);
+      // 原生 view 一律等于舞台。1:1 的放大与横移是 Chromium 的 page scale 在 view **内部**做的。
       if (st) view.setBounds(st.bounds);
       // **每一个标签都下发，不只活动的那个**：后台标签留着上一次的 scale / height 时，
       // agent 对它取的快照（坐标是视口内的 CSS 像素）与它实际的渲染尺寸对不上。
@@ -518,14 +544,26 @@ export class BrowserService {
     // 页面崩过一次之后它也回到 0，所以这道闸同时挡住了「对着已死的 target 发命令」。
     if (wc.getOSProcessId() === 0) return Promise.resolve();
     const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
-    // **档位（spec §4.6）**：`fit` 是逻辑视口恒 1280、整幅缩进侧栏；`oneToOne` 是
-    // 逻辑视口就是侧栏这么宽、`scale` 恒 1 —— 页面不被缩小，人看得清验证码。
-    // 代价是页面按一个窄视口布局，agent 手上那份 1280 坐标系的快照当场对不上，
-    // 所以 `markDriving` 会在 agent 的下一次动作之前把它恢复。
-    // 侧栏没打开（`bounds` 为 null）时两档算出来是同一件事，不必分支。
-    const logicalWidth = this.registry.viewportModeOf(tabId) === 'oneToOne' ? w : LOGICAL_WIDTH;
+    // **档位（spec §4.6）**。`fit`：排版恒 1280，整幅按 W/1280 缩进侧栏。
+    // `oneToOne` 窄舞台：override 与 `fit` **逐字相同**（排版、agent 的快照坐标系都不变），
+    // 另把 Chromium 自己的 pinch-zoom（page scale）放大到 1280/W —— 横移、纵滚、原生点击的
+    // 坐标映射全由它的 visual viewport 负责。舞台宽过 1280（全屏）时按舞台宽排版、scale 恒 1，
+    // 仍是桌面断点，用不着 pinch。侧栏没打开（`bounds` 为 null）时两档是同一件事。
+    //
+    // **不用 override 的 `viewport` 参数**：那是截图用的「强制可见区域」，Chromium 的根变换
+    // 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
+    // 纵向一滚就整片露白。
+    const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
+    const logicalWidth = oneToOne ? Math.max(LOGICAL_WIDTH, w) : LOGICAL_WIDTH;
     const scale = w / logicalWidth;
     const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
+    const pageScale = oneToOne ? logicalWidth / w : 1;
+    const generation = (this.viewportGenerations.get(tabId) ?? 0) + 1;
+    this.viewportGenerations.set(tabId, generation);
+    if (pageScale !== 1) this.zoomLimitsRaised.add(tabId);
+    const failed = (err: unknown) => {
+      logger.warn('browser.viewport', '设置逻辑视口失败', { tabId, err: String(err) });
+    };
     try {
       // **rejection 必须接住**：sendCommand 返回的是 promise，外面的 try/catch 只挡
       // 同步抛出。Node ≥15 把未处理 rejection 上抛成 uncaughtException —— 那是
@@ -536,13 +574,55 @@ export class BrowserService {
       // 一个 reject，是段错误，`.catch` 接不住（见 task-2f-report.md §B3）。
       return dbg.sendCommand('Emulation.setDeviceMetricsOverride', {
         width: logicalWidth, height, deviceScaleFactor: 0, mobile: false, scale,
-      }).then(() => {}, (err: unknown) => {
-        logger.warn('browser.viewport', '设置逻辑视口失败', { tabId, err: String(err) });
-      });
+      }).then(() => {
+        this.emulationScales.set(tabId, scale);
+        // 1:1 的放大**不进这个 promise**：它要先等 Electron 的内部 IPC，而那条 IPC 在渲染进程
+        // 换掉的窗口里永不 settle（实测）。await 它的是 agent 那几条路（快照、派发、导航收尾），
+        // 它们进来前 markDriving 已经恢复成适配，走的是下面收回的那一支。
+        if (pageScale !== 1) { void this.raisePageScale(tabId, wc, generation, pageScale); return undefined; }
+        // 适配档要**等 page scale 回 1 落地**：dispatch 紧接着要量坐标、按 emulation scale 派发。
+        // （只挂这一层 then：多一层就多一拍微任务，一批用例按拍数等 open 收尾。）
+        return this.zoomLimitsRaised.has(tabId) ? this.resetPageScale(tabId, wc, generation) : undefined;
+      }, failed);
     } catch (err) {
-      logger.warn('browser.viewport', '设置逻辑视口失败', { tabId, err: String(err) });
+      failed(err);
       return Promise.resolve();
     }
+  }
+
+  /**
+   * 1:1：先把 pinch-zoom 上限抬到 `pageScale`，再设 page scale。
+   *
+   * **顺序是硬的**：Electron 默认禁用 pinch-zoom（上限 1），上限没落到渲染进程之前发的
+   * `Emulation.setPageScaleFactor` 会被 Chromium 当场夹回 1。上限按渲染进程存 —— 跨站
+   * 导航换了进程之后它与 page scale 都回到默认（2026-09-14 实测），所以每个新文档
+   * （dom-ready → applyViewport）都重走一遍。
+   */
+  private async raisePageScale(tabId: string, wc: WebContents, generation: number, pageScale: number): Promise<void> {
+    try {
+      await wc.setVisualZoomLevelLimits(1, pageScale);
+      if (this.viewportGenerations.get(tabId) !== generation) return;   // 已被接替（切回适配、舞台变了）
+      if (wc.isDestroyed() || !wc.debugger.isAttached() || wc.getOSProcessId() === 0) return;
+      await wc.debugger.sendCommand('Emulation.setPageScaleFactor', { pageScaleFactor: pageScale });
+    } catch (err) {
+      logger.warn('browser.viewport', '1:1 的 page scale 没能设上', { tabId, err: String(err) });
+    }
+  }
+
+  /**
+   * 回到适配：page scale 回 1（等它落地），再收回 pinch-zoom 上限，适配档下人也捏不动。
+   * **永不 reject**，理由同 applyViewport（它的返回值就挂在那条 promise 上）。
+   */
+  private resetPageScale(tabId: string, wc: WebContents, generation: number): Promise<void> {
+    return wc.debugger.sendCommand('Emulation.setPageScaleFactor', { pageScaleFactor: 1 }).then(() => {
+      // 不 await：同样是 Electron 内部 IPC。page scale 已经是 1，上限收不收回不影响坐标。
+      void wc.setVisualZoomLevelLimits(1, 1).catch((err: unknown) => {
+        logger.warn('browser.viewport', '收回 pinch-zoom 上限失败', { tabId, err: String(err) });
+      });
+      if (this.viewportGenerations.get(tabId) === generation) this.zoomLimitsRaised.delete(tabId);
+    }, (err: unknown) => {
+      logger.warn('browser.viewport', '把 page scale 恢复成 1 失败', { tabId, err: String(err) });
+    });
   }
 
   /** CDP 这条路断了。同一个标签只记一条 —— 每次 applyViewport 都记一条会把日志刷爆。 */
@@ -650,7 +730,12 @@ export class BrowserService {
       e: { preventDefault: () => void }, url: string, isMainFrame: boolean,
     ) => {
       const v = checkUrl(url);
-      if (v.ok) return;
+      if (v.ok) {
+        // 浏览器进程已经接受导航意图；这条比 did-start-navigation 更早，输入 ACK
+        // 返回时用它判定「这次点击已触发主 frame 导航」，无需等一个猜测性的时间窗。
+        this.navs.get(id)?.onWillNavigate(url, isMainFrame);
+        return;
+      }
       e.preventDefault();
       this.navs.get(id)?.onBlocked(v, isMainFrame);
       logger.warn('browser.nav', '被 URL 闸拦下', { url: logUrl(url), reason: v.reason });
@@ -670,7 +755,7 @@ export class BrowserService {
       // 403 走的就是这条路：它是一次**成功**的导航，did-fail-load 不触发。
       const tracker = this.navs.get(id);
       if (tracker) tracker.onDidNavigate(url, httpResponseCode);
-      // 没有 tracker 在等 = 这次导航是页面自己或者一次点击发起的（dispatch 不挂 tracker）。
+      // 没有 tracker 在等 = 页面自己发起、或输入 ACK 之后才开始的异步导航。
       // 状态码只有这一个到达点，不记就永远没了 —— 见 `unreportedNavs` 的说明。
       else this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
       this.snapshots.delete(id);   // 页面换了，旧快照的编号一律作废
@@ -720,7 +805,8 @@ export class BrowserService {
       // 隔离世界跟着文档一起重置，上一份 WeakSet 已经不在了。
       this.registerPasswordFields(id);
       // 这是**新标签第一次真正拿到 1280** 的地方：新建时还没有渲染进程，
-      // applyViewport 只能让开（见那里的实测注释）。
+      // applyViewport 只能让开（见那里的实测注释）。1:1 档的 pinch-zoom 上限与 page scale
+      // 也在这里重设：新文档上两者都会回到默认（见 raisePageScale）。
       void this.applyViewport(id, this.stage?.bounds ?? null);
     });
 
@@ -735,7 +821,11 @@ export class BrowserService {
     // DevTools 一打开就会顶掉我们的 attach（同一个 target 只能有一个 debugger）。
     // 一个都不挂的话，之后每次 override 都静默失败 —— 而且是以未处理 rejection
     // 的形式炸掉主进程。挂上：记一条，后续 applyViewport 靠 isAttached() 自己让开。
-    wc.debugger.on('detach', (_e, reason) => this.cdpLost(id, `detach：${reason}`));
+    wc.debugger.on('detach', (_e, reason) => {
+      // 调试会话一断，Chromium 就撤掉它下发的 override —— 已落地的 emulation scale 不再成立。
+      this.emulationScales.delete(id);
+      this.cdpLost(id, `detach：${reason}`);
+    });
   }
 
   /**
@@ -780,6 +870,9 @@ export class BrowserService {
     if (!view) return;
     this.views.delete(id);
     this.snapshots.delete(id);
+    this.emulationScales.delete(id);
+    this.viewportGenerations.delete(id);
+    this.zoomLimitsRaised.delete(id);
     // 在途的观测当场定论。不这样的话 navigate() 还卡在 race 上白等满 20 秒，
     // 再报一个「我们不知道发生了什么」—— 而我们明确知道：标签被关了。
     this.navs.get(id)?.onCancelled();
@@ -877,9 +970,6 @@ export class BrowserService {
     this.navs.get(tabId)?.onSuperseded();
     const tracker = new NavigationTracker(randomUUID(), targetUrl);
     this.navs.set(tabId, tracker);
-
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<void>((r) => { timer = setTimeout(r, NAV_TIMEOUT_MS); });
     // **act 只负责触发，不等它返回。** `loadURL` 的 promise 要等 did-finish-load 才
     // resolve（electron.d.ts 明写），一个永不返回的 <script src> 就能让它永远挂着 ——
     // 时限罩在它**后面**等于没有时限，`browser_open` 这个工具调用会无限挂起。
@@ -887,6 +977,46 @@ export class BrowserService {
     try {
       void Promise.resolve(act(wc)).catch(() => { /* 结论以事件为准 */ });
     } catch { /* 同步抛出（goBack 之类）也一样，以事件为准 */ }
+    return this.finishNavigation(tabId, wc, tracker);
+  }
+
+  /**
+   * 点击/按键等页面输入的导航观测。tracker 必须在输入之前挂上。默认链接的导航意图
+   * 由 measure 从活目标上直接保留；JS 触发的导航则由主 frame 的 Electron 事件保留。
+   * 有任一明确事实就等待同一套终态；两者都没有才当场返回，不用事件恰好赶不赶得上
+   * CDP Input ACK 作为判据。晚到的异步导航仍由 unreportedNavs 在下一次工具调用上报。
+   */
+  async dispatchAndObserveNavigation(
+    tabId: string, action: DispatchAction, snapshot: AxSnapshot | null,
+  ): Promise<{ line: string; navigation: NavigationObservation | null }> {
+    const view = this.views.get(tabId);
+    if (!view) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    const wc = view.webContents;
+
+    this.navs.get(tabId)?.onSuperseded();
+    const tracker = new NavigationTracker(randomUUID(), null);
+    this.navs.set(tabId, tracker);
+    let line: string;
+    try {
+      line = await this.dispatch(tabId, action, snapshot);
+    } catch (err) {
+      if (this.navs.get(tabId) === tracker) this.navs.delete(tabId);
+      throw err;
+    }
+
+    if (!tracker.inputNavigationExpected && !tracker.mainFrameNavigationStarted && !tracker.settled) {
+      if (this.navs.get(tabId) === tracker) this.navs.delete(tabId);
+      return { line, navigation: null };
+    }
+    return { line, navigation: await this.finishNavigation(tabId, wc, tracker) };
+  }
+
+  /** 等一份已经挂好的导航观测落到协议终态；navigate 与输入派发共用唯一收尾。 */
+  private async finishNavigation(
+    tabId: string, wc: WebContents, tracker: NavigationTracker,
+  ): Promise<NavigationObservation> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((r) => { timer = setTimeout(r, NAV_TIMEOUT_MS); });
     await Promise.race([tracker.settledPromise, deadline]);
     if (timer) clearTimeout(timer);
     // 到点了就收尾。**停不停由 tracker 判**：被取代的观测绝不能 stop（掐掉的正是
@@ -1433,9 +1563,12 @@ export class BrowserService {
     // 这是唯一一条「碰页面**且吃几何**」的路径：`interact.js` 的 measure 在页面里
     // `getBoundingClientRect` 量 x/y，随后分三次独立 await 发 `Input.dispatchMouseEvent`。
     // 而 `withAgentDriving` 进来时 `restoreFitViewport` 只发了一个
-    // `void this.applyViewport(...)`（CDP 命令在途）—— 用户刚按过 1:1（逻辑视口 =
-    // 侧栏宽，比如 640）时，档位恢复成 1280 会重排，量到的坐标不再复核。
+    // `void this.applyViewport(...)`（CDP 命令在途）—— 用户刚按过 1:1 时，page scale 回 1
+    // 之前量到的坐标、按旧 emulation scale 换算的派发坐标都不作数。
     // 失败形态是**静默点错东西**（spec §4.2 点名最危险的那一个）。
+    //
+    // `markDriving` 只在整批入口恢复一次；人在这一批中途按了 1:1 的话，这一步之前再恢复一次。
+    this.restoreFitViewport(tabId);
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
 
     if (action.kind === 'key') {
@@ -1508,9 +1641,13 @@ export class BrowserService {
     const x = Number(m.x);
     const y = Number(m.y);
     const label = String(m.label ?? '') || String(m.tag ?? '');
+    // 派发用的坐标 = CSS 坐标 × 已落地的 emulation scale（见 `emulationScales`）。
+    // 给模型看的那句话里仍是 CSS 坐标 —— 那才是页面上的位置。
+    const k = this.emulationScales.get(tabId) ?? 1;
+    const at = { x: x * k, y: y * k };
 
     if (action.kind === 'hover') {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none' });
       return `已把指针移到「${label}」上（${x},${y}）`;
     }
 
@@ -1523,7 +1660,16 @@ export class BrowserService {
         + '（翻页控件到了最后一页就是这个样子。）');
     }
 
-    const press = { x, y, button: 'left' as const, clickCount: 1 };
+    // 活目标本身给出的默认导航意图，必须在鼠标派发前记到本次 tracker。Electron 的
+    // will/did-start 与 CDP Page 事件都可能晚于 Input ACK；拿事件到达速度作判据会让
+    // 同一个 recent 链接有时等导航、有时提前返回。链接事实不随调度顺序漂。
+    if (action.kind === 'click' && typeof m.navigationUrl === 'string') {
+      this.navs.get(tabId)?.onInputNavigationCandidate(
+        m.navigationUrl, isFragmentNavigation(wc.getURL(), m.navigationUrl),
+      );
+    }
+
+    const press = { ...at, button: 'left' as const, clickCount: 1 };
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...press });
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
     if (action.kind === 'click') return `已点击「${label}」（${x},${y}）`;

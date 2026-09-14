@@ -1,4 +1,5 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
+import type { WebContents } from 'electron';
 import { readFileSync, promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -769,6 +770,199 @@ test.describe('61-browser', () => {
   });
 
   /**
+   * **1:1 就是 Chromium 自己的 pinch-zoom（page scale）**，不是任何自制的裁剪或横移。
+   *
+   * 之前那条路（override 的 `viewport` 参数 + 自己搬 wheel、自己改鼠标坐标）在长页面上纵向
+   * 一滚就整片露白：那个参数是截图用的强制可见区域，Chromium 的根变换会把滚动量加回去
+   * （2026-09-14 spike：同样的滚动下可见区域白像素占比 0.17 → 1.0）。
+   *
+   * 判据全落在页面自己报的事实与像素上：
+   *  · 不重排 —— `innerWidth` 1280、桌面断点仍命中、按钮 rect 与适配档逐字相同；
+   *  · `visualViewport.scale` = 1280 / 舞台宽；
+   *  · 原生 wheel（`sendInputEvent`，与触控板同一条 RenderWidgetHost 输入路径）把 visual viewport
+   *    横移到 1280 右端，右侧按钮的绿色像素真的出现在可见区域，原生点击点得中它；
+   *  · 长页面纵向滚过上千像素，可见区域一个白像素都没有（夹具里唯一一块白在左上角，
+   *    先在适配档上证明探针认得出它）；
+   *  · 切回适配：scale 回 1，整幅 1280 重新压进舞台。
+   *
+   * `capturePage` 给的是整张仿真 surface（排版宽 1280），舞台上真正看得见的是它左上角舞台
+   * 那么大的一块 —— 采样只在那一块里做。标记都放在 1220 以左：页面若画经典滚动条，最右 15px
+   * 是滚动条不是内容。
+   */
+  test('1:1 是 Chromium 的 pinch-zoom：不重排、横移到右端点得中、长页纵滚不露白，切回适配复原', async () => {
+    const launched = await launchKydog();
+    const { app, page } = launched;
+    try {
+      await openSidebar(page);
+      const opened = await openTab(page, 'https://example.com/');
+      await expect.poll(
+        async () => (await viewport(app, 'example.com')).h,
+        { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
+      ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
+      await inPage(app, 'example.com', `(() => {
+        // 站点自己的样式整份拿掉：它给 div 加的透明度会把「白」混成非白，探针判据就不作数了。
+        document.querySelectorAll('style, link[rel="stylesheet"]').forEach((el) => el.remove());
+        document.documentElement.style.setProperty('background', 'rgb(17, 85, 153)', 'important');
+        document.body.style.cssText = 'margin:0;background:rgb(17,85,153)!important';
+        const style = document.createElement('style');
+        style.textContent = '.kydog-row{height:400px}'
+          + '.kydog-row:nth-child(odd){background:rgb(200,60,60)}'
+          + '.kydog-row:nth-child(even){background:rgb(60,60,200)}'
+          + '#kydog-white{position:absolute;left:0;top:0;width:200px;height:200px;background:rgb(255,255,255)}'
+          + '#kydog-edge{position:fixed;left:1180px;top:300px;width:40px;height:100px;background:rgb(255,0,255)}'
+          + '#kydog-right{position:fixed;left:1100px;top:80px;width:60px;height:40px;border:0;padding:0;background:rgb(0,255,0)}'
+          + '@media (max-width: 800px){#kydog-right{left:20px;top:160px}}';
+        document.head.appendChild(style);
+        let rows = '';
+        for (let i = 0; i < 30; i++) rows += '<div class="kydog-row"></div>';
+        document.body.innerHTML = rows
+          + '<div id="kydog-white"></div><div id="kydog-edge"></div><button id="kydog-right"></button>';
+        window.__kydogRightClicks = 0;
+        document.getElementById('kydog-right').onclick = () => { window.__kydogRightClicks += 1; };
+        return true;
+      })()`);
+
+      const isWhite = (p: number[]) => p[0] > 245 && p[1] > 245 && p[2] > 245;
+      // toBitmap 的字节序随平台（BGRA / RGBA）；绿与品红对 R/B 对称，判据不受影响。
+      // capturePage 是**显示器色彩空间**里的像素：macOS 上 sRGB 纯绿 (0,255,0) 实测读回来是
+      // (117,251,76)（Display P3），所以只要求主通道占优，不要求其余通道接近 0。
+      const isGreen = (p: number[]) => p[1] > 180 && p[0] < 140 && p[2] < 140;
+      const isMagenta = (p: number[]) => p[0] > 180 && p[2] > 180 && p[1] < 100;
+
+      /** 原生 view 的 bounds、可见区域里的白像素数、以及若干点（舞台内 DIP）的像素。 */
+      const shoot = (points: Array<{ x: number; y: number }>) => app.evaluate(async ({ BrowserWindow }, a) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        const view = win.contentView.children.find((v) => {
+          const wc = (v as unknown as { webContents?: { getURL(): string } }).webContents;
+          return wc?.getURL().includes('example.com');
+        }) as unknown as { webContents: WebContents; getBounds(): { x: number; y: number; width: number; height: number } };
+        const bounds = view.getBounds();
+        const image = await view.webContents.capturePage();
+        const size = image.getSize();
+        const bitmap = image.toBitmap();
+        const k = size.width / a.logical;
+        const visW = Math.min(size.width, Math.round(bounds.width * k));
+        const visH = Math.min(size.height, Math.round(bounds.height * k));
+        let white = 0;
+        for (let y = 0; y < visH; y += 2) {
+          for (let x = 0; x < visW; x += 2) {
+            const i = (y * size.width + x) * 4;
+            if (bitmap[i] > 245 && bitmap[i + 1] > 245 && bitmap[i + 2] > 245) white += 1;
+          }
+        }
+        const samples = a.points.map((pt) => {
+          const i = (Math.round(pt.y * k) * size.width + Math.round(pt.x * k)) * 4;
+          return Array.from(bitmap.subarray(i, i + 3));
+        });
+        return { bounds, size, white, samples };
+      }, { points, logical: LOGICAL_WIDTH });
+
+      /** 往 view 里发原生 wheel。Electron 注入的 delta 与页面收到的符号相反：负值 = 视口往右 / 往下。 */
+      const wheel = (deltaX: number, deltaY: number, times: number) => app.evaluate(async ({ BrowserWindow }, a) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        const view = win.contentView.children.find((v) => {
+          const wc = (v as unknown as { webContents?: { getURL(): string } }).webContents;
+          return wc?.getURL().includes('example.com');
+        }) as unknown as { webContents: WebContents };
+        view.webContents.focus();
+        for (let i = 0; i < a.times; i++) {
+          view.webContents.sendInputEvent({
+            type: 'mouseWheel', x: 100, y: 100, deltaX: a.deltaX, deltaY: a.deltaY,
+            hasPreciseScrollingDeltas: true, canScroll: true,
+          });
+          await new Promise((r) => setTimeout(r, 16));
+        }
+      }, { deltaX, deltaY, times });
+
+      const layout = () => inPage<{ innerWidth: number; desktop: boolean; left: number; top: number }>(
+        app, 'example.com', `(() => {
+          const r = document.getElementById('kydog-right').getBoundingClientRect();
+          return { innerWidth, desktop: matchMedia('(min-width: 1200px)').matches, left: r.left, top: r.top };
+        })()`);
+      const vv = () => inPage<{ scale: number; left: number; top: number; width: number; pageTop: number; scrollX: number }>(
+        app, 'example.com',
+        '({ scale: visualViewport.scale, left: visualViewport.offsetLeft, top: visualViewport.offsetTop,'
+        + ' width: visualViewport.width, pageTop: visualViewport.pageTop, scrollX })');
+      const modeOf = async () => {
+        const st = await page.evaluate(() => window.kydog.invoke('browser.getState'));
+        return st.tabs.find((t) => t.id === opened.tabId)?.viewportMode;
+      };
+
+      // ── 适配档：探针先证明自己认得出白，也看得见页面右侧 ──
+      const { bounds } = await shoot([]);
+      expect(bounds.width, '舞台必须窄于 1280，1:1 才需要横移').toBeLessThan(LOGICAL_WIDTH);
+      const e = bounds.width / LOGICAL_WIDTH;
+      const fitShot = await shoot([
+        { x: Math.round(1200 * e), y: Math.round(350 * e) },
+        { x: Math.round(100 * e), y: Math.round(100 * e) },
+      ]);
+      expect(isMagenta(fitShot.samples[0]), '适配档应当把整幅 1280 压进舞台：x=1200 处的标记看得见').toBe(true);
+      expect(isWhite(fitShot.samples[1]), '探针要认得出左上角那块白，否则下面「一个白像素都没有」是假绿').toBe(true);
+      expect(fitShot.white).toBeGreaterThan(0);
+      const before = await layout();
+      expect(before).toEqual({ innerWidth: LOGICAL_WIDTH, desktop: true, left: 1100, top: 80 });
+
+      // ── 1:1：只放大，不重排 ──
+      await page.getByTestId('browser-viewport-mode').click();
+      await expect.poll(modeOf, { message: '1:1 档位必须由主进程确认并广播回来' }).toBe('oneToOne');
+      await expect.poll(async () => (await vv()).scale, { message: 'page scale 应放大到 1280/舞台宽' })
+        .toBeCloseTo(LOGICAL_WIDTH / bounds.width, 2);
+      expect(await layout(), '1:1 只放大、不重排：断点与按钮位置与适配档逐字相同').toEqual(before);
+
+      // ── 横移到 1280 右端 ──
+      // wheel 的位移会被 page scale 折算（1:1 下一个 DIP 只走 1/scale 个 CSS 像素，实测），
+      // 所以不预先算要发几下：一批批发，直到页面自己报「到右端了」。批数上限只是基础设施预算。
+      const rightEdge = async () => { const v = await vv(); return v.left + v.width; };
+      for (let batch = 0; batch < 60 && (await rightEdge()) <= LOGICAL_WIDTH - 1; batch++) await wheel(-40, 0, 10);
+      expect(await rightEdge(), '原生横向 wheel 应当把 visual viewport 推到 1280 的右端').toBeGreaterThan(LOGICAL_WIDTH - 1);
+      const panned = await vv();
+      expect(panned.left, '动的是 visual viewport').toBeGreaterThan(0);
+      expect(panned.scrollX, '文档本身不宽于 1280，动的只是 visual viewport，不是页面 scrollX').toBe(0);
+
+      const btn = { x: Math.round(1130 - panned.left), y: Math.round(100 - panned.top) };
+      const edge = { x: Math.round(1200 - panned.left), y: Math.round(350 - panned.top) };
+      expect(btn.x >= 0 && btn.x < bounds.width, `横移之后按钮应当落在舞台里（x=${btn.x}）`).toBe(true);
+      const pannedShot = await shoot([btn, edge]);
+      const pannedFacts = JSON.stringify({ panned, btn, edge, bounds, size: pannedShot.size, samples: pannedShot.samples });
+      expect(isGreen(pannedShot.samples[0]), `右侧按钮的绿色像素真的出现在可见区域：${pannedFacts}`).toBe(true);
+      expect(isMagenta(pannedShot.samples[1]), `右侧标记也在它该在的位置：${pannedFacts}`).toBe(true);
+
+      await app.evaluate(({ BrowserWindow }, pt) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        const view = win.contentView.children.find((v) => {
+          const wc = (v as unknown as { webContents?: { getURL(): string } }).webContents;
+          return wc?.getURL().includes('example.com');
+        }) as unknown as { webContents: WebContents };
+        view.webContents.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        view.webContents.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+      }, btn);
+      await expect.poll(
+        () => inPage<number>(app, 'example.com', 'window.__kydogRightClicks'),
+        { message: '横移后看得见的按钮，原生点击要点得中（映射由 Chromium 的 visual viewport 负责）' },
+      ).toBe(1);
+
+      // ── 长页纵滚：途中可见区域不许露白 ──
+      const whites: number[] = [];
+      for (let round = 0; round < 6; round++) {
+        await wheel(0, -120, 10);
+        whites.push((await shoot([])).white);
+      }
+      expect((await vv()).pageTop, '纵向真的滚过了上千像素，否则「不露白」是白给的').toBeGreaterThan(1000);
+      expect(whites, '长页面纵滚途中，可见区域一个白像素都不许有').toEqual(whites.map(() => 0));
+
+      // ── 切回适配：复原 ──
+      await page.getByTestId('browser-viewport-mode').click();
+      await expect.poll(modeOf).toBe('fit');
+      await expect.poll(async () => (await vv()).scale, { message: '切回适配 page scale 必须回 1' }).toBe(1);
+      const backShot = await shoot([{ x: Math.round(1200 * e), y: Math.round(350 * e) }]);
+      expect(isMagenta(backShot.samples[0]), '切回适配：整幅 1280 重新压进舞台').toBe(true);
+      expect(await layout()).toEqual(before);
+    } finally {
+      await teardown(launched);
+    }
+  });
+
+  /**
    * spec §8.2 第 3 条。渲染层重载后：标签还在、URL 没变、**页面没有重新加载**。
    *
    * 「页面没重新加载」用页面里种的一个计数器验证 —— 只看标签清单的话，
@@ -1256,6 +1450,63 @@ test.describe('61-browser', () => {
         `落点 (${seen[0].x},${seen[0].y}) 必须在目标滚动之后的矩形 `
         + `[${rect.l},${rect.t}]–[${rect.r},${rect.b}] 里 —— 不在就是坐标没有在派发那一刻重新量`,
       ).toBe(true);
+    } finally {
+      await teardown(launched);
+    }
+  });
+
+  /**
+   * 手测 A-2 的原始失败链。两段：① 侧栏开着时 CDP 点击坐标没乘 emulation scale，链接根本
+   * 没被点到（2026-09-14 那次「到时限仍没有明确结果」就是它）；② 点击已经触发跨文档导航、
+   * browser_act 却先返回，紧接着 back 在历史提交前运行，错误地说没有历史。第一条工具结果
+   * 必须等到导航终态，第二条才能稳定后退到原页。
+   */
+  test('侧栏开着点链接：同次 browser_act 报目的页终态；紧接着 back 能回原页', async () => {
+    const { launched, fixturePath } = await launchWithAgent();
+    const { app, page } = launched;
+    try {
+      // A-2 的原始现场是**侧栏开着**：emulation scale = 舞台宽 / 1280 ≠ 1，而渲染进程会把
+      // CDP 输入坐标再除以一次 scale —— 派发不乘回去就点不到链接，白等 20 秒超时。侧栏不开时
+      // scale 恒 1，这条会为错误的理由变绿，所以先把舞台宽度钉住。
+      await openSidebar(page);
+      const opened = await openTab(page, 'https://example.com/');
+      await expect.poll(
+        async () => (await viewport(app, 'example.com')).h,
+        { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
+      ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
+      const stageWidth = await page.getByTestId('browser-stage').evaluate((el) => el.getBoundingClientRect().width);
+      expect(stageWidth, '舞台必须窄于 1280，emulation scale 才不是 1').toBeLessThan(LOGICAL_WIDTH);
+      // 链接放在离原点远的地方：坐标一旦没乘 scale，落点 (x/scale, y/scale) 会整个跑出页面，
+      // 而不是凑巧仍落在链接身上。
+      await inPage(app, 'example.com', `(() => {
+        document.body.innerHTML = '<a id="kydog-recent" href="https://example.org/" '
+          + 'style="position:absolute;left:600px;top:300px;display:block;width:120px;height:40px">recent</a>';
+        return true;
+      })()`);
+
+      const res = await runTools(page, fixturePath, [
+        {
+          toolCallId: 'tc-recent', name: 'browser_act',
+          args: { tabId: opened.tabId, actions: [{ kind: 'click', selector: '#kydog-recent' }] },
+        },
+        {
+          toolCallId: 'tc-back', name: 'browser_act',
+          args: { tabId: opened.tabId, actions: [{ kind: 'back' }] },
+        },
+      ]);
+
+      const click = res.get('tc-recent')!;
+      expect(click.status).toBe('ok');
+      expect(click.text, '点击这一次的结果本身必须报告目的页，不能推迟到下一次调用')
+        .toContain('https://example.org/');
+      expect(click.text).toContain('HTTP 200');
+
+      const back = res.get('tc-back')!;
+      expect(back.status).toBe('ok');
+      expect(back.text, '紧接着 back 必须看到刚提交的历史，而不是报「没有可以后退的历史」')
+        .not.toContain('没有可以后退的历史');
+      expect(back.text).toContain('https://example.com/');
+      expect(await inPage<string>(app, 'example.com', 'location.href')).toBe('https://example.com/');
     } finally {
       await teardown(launched);
     }

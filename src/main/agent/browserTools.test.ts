@@ -247,6 +247,7 @@ const bs = vi.hoisted(() => ({
   /** 每一次 dispatch 收到的东西（动作原样、以及当时传进去的快照）。 */
   dispatched: [] as { tabId: string; action: { kind: string }; snapshot: unknown }[],
   dispatchImpl: ((a: { kind: string }) => `派发了 ${a.kind}`) as (a: { kind: string }) => string,
+  dispatchNavImpl: (() => null) as () => NavigationObservation | null,
   waits: [] as { tabId: string; until: unknown; timeoutMs: number }[],
   waitImpl: (() => true) as () => boolean,
   /** 标签清单可变 —— 一批动作中途 target=_blank 会开出新标签。 */
@@ -307,6 +308,11 @@ vi.mock('../browser/browserService', () => {
         bs.order.push(`dispatch:${action.kind}`);
         bs.dispatched.push({ tabId, action, snapshot });
         return Promise.resolve(bs.dispatchImpl(action));
+      },
+      dispatchAndObserveNavigation: (tabId: string, action: { kind: string }, snapshot: unknown) => {
+        bs.order.push(`dispatch:${action.kind}`);
+        bs.dispatched.push({ tabId, action, snapshot });
+        return Promise.resolve({ line: bs.dispatchImpl(action), navigation: bs.dispatchNavImpl() });
       },
       waitFor: (tabId: string, until: unknown, timeoutMs: number) => {
         bs.order.push('waitFor');
@@ -411,6 +417,7 @@ beforeEach(() => {
   bs.snapshotImpl = () => snap({ snapshotId: 'snap_bbb' });
   bs.isolatedImpl = () => null;
   bs.dispatchImpl = (a) => `派发了 ${a.kind}`;
+  bs.dispatchNavImpl = () => null;
   bs.waitImpl = () => true;
   bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
   bs.activeTabId = 't1';
@@ -460,6 +467,19 @@ describe('六种动作真的接通到 browserService.dispatch（Task 4）', () =
     bs.current = cur;
     await act([{ kind: 'click', index: 1, snapshotId: 'snap_now' }]);
     expect(bs.dispatched[0].snapshot).toBe(cur);
+  });
+
+  it('点击触发的导航终态挂在同一个动作结果上，不推迟到下一次工具调用', async () => {
+    bs.current = snap({ nodes: [node()] });
+    bs.dispatchImpl = () => '已点击「recent」';
+    bs.dispatchNavImpl = () => ({
+      navigationId: 'click-nav',
+      outcome: { kind: 'ok', finalUrl: 'https://example.org/recent', httpStatusCode: 200 },
+    });
+    const s = bodyOf(await act([{ kind: 'click', index: 1, snapshotId: 'snap_aaa' }]));
+    expect(s).toContain('已点击「recent」');
+    expect(s).toContain('https://example.org/recent');
+    expect(s).toContain('200');
   });
 
   it('dispatch 抛错：整批停在那里，前面几步的结果照常返回', async () => {
@@ -1203,10 +1223,10 @@ describe('登录状态挂在每一个浏览器工具结果的头部', () => {
 });
 
 /**
- * I-2：Scholar 的 403 只在**检索提交之后**到达（可达性表：首页 200、搜索才 403），
- * 而 `browser_act` 一步都不等 —— 点了提交就返回，结果页的状态码要晚一个往返才落地。
- * 与登录状态同一个形状：事实的到达时刻在**造成它的那次工具调用返回之后**，所以只能
- * 挂在每个工具结果的头部。不挂出来，模型这一路永远拿不到状态码。
+ * I-2：Scholar 的 403 只在**检索提交之后**到达（可达性表：首页 200、搜索才 403）。
+ * 普通链接现在同批等导航；表单按钮或异步脚本触发的导航事实仍可能晚一个往返才落地。
+ * 与登录状态同一个形状：若事实晚于造成它的调用，就只能挂在后续工具结果的头部。
+ * 不挂出来，模型这一路仍可能永远拿不到状态码。
  */
 describe('没人在等的那次导航挂在每一个浏览器工具结果的头部（I-2）', () => {
   beforeEach(() => {

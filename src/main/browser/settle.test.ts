@@ -67,6 +67,40 @@ describe('导航观测：failed 与 timeout 不合并', () => {
 
 // ── A · 同页导航（hash / pushState）一个 did-navigate 都不来 ────────────────
 describe('导航观测：同文档导航是一个明确的成功终态', () => {
+  it('活目标上的默认链接意图在输入前留下事实，并按同/跨文档分别收敛', () => {
+    const cross = t();
+    expect(cross.inputNavigationExpected).toBe(false);
+    cross.onInputNavigationCandidate('https://x.example/next', false);
+    expect(cross.inputNavigationExpected).toBe(true);
+    expect(cross.mainFrameNavigationStarted).toBe(true);
+    cross.onDidNavigate('https://x.example/next', 200);
+    expect(cross.observation()?.outcome).toMatchObject({ kind: 'ok' });
+
+    const same = t();
+    same.onInputNavigationCandidate('https://x.example/p#sec2', true);
+    same.onDidNavigateInPage('https://x.example/p#sec2', true);
+    expect(same.observation()?.outcome).toMatchObject({ kind: 'ok_same_document' });
+  });
+
+  it('主 frame 的导航启动会留下明确事实；子 frame 不会冒充', () => {
+    const n = t();
+    expect(n.mainFrameNavigationStarted).toBe(false);
+    n.onDidStartNavigation('https://frame.example/', false, false);
+    expect(n.mainFrameNavigationStarted).toBe(false);
+    n.onDidStartNavigation('https://x.example/p#sec2', true, true);
+    expect(n.mainFrameNavigationStarted).toBe(true);
+  });
+
+  it('will-navigate 在 did-start 之前就留下主 frame 导航事实；子 frame 不会冒充', () => {
+    const n = t();
+    n.onWillNavigate('https://frame.example/', false);
+    expect(n.mainFrameNavigationStarted).toBe(false);
+    n.onWillNavigate('https://x.example/next', true);
+    expect(n.mainFrameNavigationStarted).toBe(true);
+    n.onWillDownload('https://x.example/next', 'application/pdf', 'next.pdf');
+    expect(n.observation()?.outcome).toMatchObject({ kind: 'download', filename: 'next.pdf' });
+  });
+
   // 同文档导航既不触发 did-navigate 也不触发 did-fail-load。没有这个输入，
   // browser_open('https://x/p#sec2') 会跑满整个超时窗口再报 timeout ——
   // 而那次导航其实瞬间就成了。SPA 路由跳转（CNKI 站内大量如此）同样落这条。

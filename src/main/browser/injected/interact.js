@@ -191,6 +191,27 @@
   const typeOf = (el) => (typeof el.type === 'string' ? el.type.toLowerCase() : '');
   const segmentedOf = (el) => tagOf(el) === 'input' && SEGMENTED_TYPES.indexOf(typeOf(el)) !== -1;
 
+  /**
+   * 当前 frame 的默认链接导航意图。沿 parentNode / shadow host 精确找 `<a href>`；
+   * `_blank` 等新 browsing context 不算当前主 frame，javascript/mailto 也不是浏览器
+   * 工具允许的页面导航。HTMLAnchorElement.href 给的是已经按 document.baseURI 解析后的绝对 URL。
+   */
+  const navigationUrlOf = (el) => {
+    let node = el;
+    while (node) {
+      if (tagOf(node) === 'a') {
+        const target = typeof node.getAttribute === 'function'
+          ? String(node.getAttribute('target') || '').toLowerCase() : '';
+        if (target !== '' && target !== '_self') return null;
+        const href = typeof node.href === 'string' ? node.href : '';
+        if (/^https?:\/\//i.test(href)) return href;
+        return null;
+      }
+      node = node.parentNode || node.host || null;
+    }
+    return null;
+  };
+
   /** 能不能往里打字。协议层事实（元素类型 + disabled / readOnly），不是「看起来像」。 */
   const editableOf = (el) => {
     const tag = tagOf(el);
@@ -278,6 +299,7 @@
       // 它不是值，也不受密码判据影响 —— 密码框在上面几道闸就退了。
       type: typeOf(el),
       label: labelOf(el),
+      navigationUrl: navigationUrlOf(el),
     };
   };
 

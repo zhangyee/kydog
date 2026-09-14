@@ -47,6 +47,8 @@ class El {
   shadowRoot: Root | null = null;
   style: Record<string, string> = { overflowY: 'visible' };
   rect: Rect = rect(0, 0, 100, 20);
+  /** 真正的 HTMLAnchorElement.href 是浏览器按 baseURI 解析后的绝对 URL。 */
+  href?: string;
   type?: string;
   value?: string;
   /** 有选择 API 的那些类型上它是数字（真 DOM 里 input[type=text] 一建出来就是 0），
@@ -239,6 +241,25 @@ describe('目标解析', () => {
     const q = new El('INPUT', { sel: '#q', rect: rect(10, 10, 200, 30) });
     const { call } = stage([q]);
     expect(call({ op: 'measure', target: bySel('#q') }).ok).toBe(true);
+  });
+
+  it('measure 保留当前 frame 的默认链接导航意图；_blank 明确不算', () => {
+    const current = new El('A', {
+      sel: '#recent', href: 'https://example.org/recent', rect: rect(10, 10, 100, 30),
+    });
+    const child = new El('SPAN', { sel: '#recent-label', rect: rect(10, 10, 100, 30) });
+    child.parent = current;
+    current.kids = [child];
+    const external = new El('A', {
+      sel: '#external', href: 'https://example.org/new-tab', attrs: { target: '_blank' },
+      rect: rect(10, 60, 100, 30),
+    });
+    const { call } = stage([current, external]);
+
+    expect(call({ op: 'measure', target: bySel('#recent-label') }))
+      .toMatchObject({ ok: true, navigationUrl: 'https://example.org/recent' });
+    expect(call({ op: 'measure', target: bySel('#external') }))
+      .toMatchObject({ ok: true, navigationUrl: null });
   });
 
   it('selector 无匹配 → not_found', () => {

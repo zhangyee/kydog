@@ -427,10 +427,10 @@ export type BrowserToolDeps = {
  * 「上一次报告之后，这个标签上发生过一次没有人在等的主 frame 导航」，挂在**每个**
  * 浏览器工具结果的头部。
  *
- * 与 `loginLine` 完全同一个理由：**这件事的到达时刻在造成它的那次工具调用返回之后**。
- * `browser_act` 一步都不等 —— 点了检索的提交按钮就返回，结果页的 HTTP 状态码要晚一个
+ * 与 `loginLine` 完全同一个理由：**有些导航事实到达在造成它的那次工具调用返回之后**。
+ * 普通当前页链接现在会同批等终态；表单按钮、SPA 或定时器触发的晚到导航仍可能晚一个
  * 往返才落地。不挂出来的话，Google Scholar 那条最要紧的路上（首页 200、**搜索才 403**）
- * 模型永远拿不到状态码，只能去猜拦截页的正文 —— 而 skill 明写着不许猜正文。
+ * 模型仍可能拿不到状态码，只能去猜拦截页的正文 —— 而 skill 明写着不许猜正文。
  *
  * `describeNav` 是措辞的**唯一出处**：这一行与 `browser_open` 那一行读起来必须是同一句话，
  * 不然 skill 要为「403 长什么样」写两份判据。
@@ -825,5 +825,10 @@ async function runStep(
 
   // 其余六种（click / type / hover / select / scroll / key）全部走同一个入口。
   // `getSnapshot` 只用来解析 `index`：坐标由 dispatch 在派发那一刻重新量。
-  return browserService.dispatch(tabId, action, browserService.getSnapshot(tabId));
+  // tracker 在输入**之前**挂上；普通链接从活目标保留导航意图，其余输入若观察到主 frame
+  // 导航事实也走同一终态。这样「点 recent → 立刻 back」不会在历史尚未提交时抢跑。
+  const result = await browserService.dispatchAndObserveNavigation(
+    tabId, action, browserService.getSnapshot(tabId),
+  );
+  return result.navigation === null ? result.line : `${result.line}\n${describeNav(result.navigation)}`;
 }

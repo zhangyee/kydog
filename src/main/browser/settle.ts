@@ -40,6 +40,10 @@ function canonical(raw: string): string {
 
 export class NavigationTracker {
   private outcome: NavigationObservation['outcome'] | null = null;
+  /** 输入 ACK 返回前是否已经收到过主 frame 的导航意图/启动事实（同文档也算）。 */
+  private mainFrameStartSeen = false;
+  /** 派发前从活 DOM 目标上读到的主 frame 默认导航意图。 */
+  private inputNavigationCandidate = false;
   private resolveSettled!: () => void;
   /** 定论时兑现。调用方 await 它而不是轮询 —— 轮询的粒度是又一个时间窗。 */
   readonly settledPromise: Promise<void> = new Promise((r) => { this.resolveSettled = r; });
@@ -76,6 +80,33 @@ export class NavigationTracker {
   }
 
   get settled(): boolean { return this.outcome !== null; }
+  get mainFrameNavigationStarted(): boolean { return this.mainFrameStartSeen; }
+  get inputNavigationExpected(): boolean { return this.inputNavigationCandidate; }
+
+  /**
+   * 点击目标本身（或其祖先）是当前 frame 的 http(s) 链接。这个信号在派发鼠标之前
+   * 从活 DOM 读出，不与 Electron/CDP 导航事件的到达先后赛跑。它是「浏览器默认动作
+   * 有导航意图」，不是终态；真正成功、被拦、下载或超时仍由后续协议事件定论。
+   */
+  onInputNavigationCandidate(url: string, isSameDocument: boolean): void {
+    this.inputNavigationCandidate = true;
+    this.mainFrameStartSeen = true;
+    if (isSameDocument) return;
+    this.crossDocumentPending = true;
+    this.requestedUrls.add(canonical(url));
+  }
+
+  /**
+   * Electron 的 will-frame-navigate / will-navigate：浏览器进程已经接受了主 frame
+   * 的跨文档导航意图。它比 did-start-navigation 更早，正好用来在 Input ACK 边界
+   * 判定「这次输入是否已经触发导航」；URL 同时进入下载关联集合。
+   */
+  onWillNavigate(url: string, isMainFrame: boolean): void {
+    if (!isMainFrame) return;
+    this.mainFrameStartSeen = true;
+    this.crossDocumentPending = true;
+    this.requestedUrls.add(canonical(url));
+  }
 
   private set(o: NavigationObservation['outcome']): void {
     // 先到先得。已经定论之后到达的事件一律丢弃 —— 迟到的 did-navigate 覆盖掉
@@ -100,6 +131,7 @@ export class NavigationTracker {
    */
   onDidStartNavigation(url: string, isMainFrame: boolean, isSameDocument: boolean): void {
     if (!isMainFrame) return;
+    this.mainFrameStartSeen = true;
     if (isSameDocument) return;
     this.crossDocumentPending = true;
     this.requestedUrls.add(canonical(url));

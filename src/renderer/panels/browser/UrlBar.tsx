@@ -107,7 +107,7 @@ export function UrlBar({ tab, onGo, onNav, onViewportMode }: Props) {
       <IconButton
         size={22}
         testId="browser-viewport-mode"
-        tooltip={tab?.viewportMode === 'oneToOne' ? '缩回适配宽度' : '按侧栏宽度 1:1 显示（AI 下一次操作会自动切回）'}
+        tooltip={tab?.viewportMode === 'oneToOne' ? '缩回适配宽度' : '按 1280px 原始宽度 1:1 显示（可用触控板双指横移；AI 下一次操作会自动切回）'}
         active={tab?.viewportMode === 'oneToOne'}
         disabled={tab === null}
         onClick={() => onViewportMode(tab?.viewportMode === 'oneToOne' ? 'fit' : 'oneToOne')}
