@@ -547,14 +547,19 @@ export class BrowserService {
     // **档位（spec §4.6）**。`fit`：排版恒 1280，整幅按 W/1280 缩进侧栏。
     // `oneToOne` 窄舞台：override 与 `fit` **逐字相同**（排版、agent 的快照坐标系都不变），
     // 另把 Chromium 自己的 pinch-zoom（page scale）放大到 1280/W —— 横移、纵滚、原生点击的
-    // 坐标映射全由它的 visual viewport 负责。舞台宽过 1280（全屏）时按舞台宽排版、scale 恒 1，
-    // 仍是桌面断点，用不着 pinch。侧栏没打开（`bounds` 为 null）时两档是同一件事。
+    // 坐标映射全由它的 visual viewport 负责。侧栏没打开（`bounds` 为 null）时两档是同一件事。
+    //
+    // **舞台宽过 1280（全屏）时两档都按舞台宽排版、scale 恒 1，适配档不放大。** Chromium 按
+    // override 的宽高开画布、再把 scale 当变换画进去：scale > 1 时画布（1280 × H/scale）比舞台小，
+    // 放大的内容溢出被裁、画布外什么都不画 —— 2026-09-14 手测全屏退回适配时右侧与底部露白、
+    // 顶栏被裁，截图量得网页区域 / 舞台 = 0.875 ≈ 1/1.14，两个方向一致。往宽里排版一般不换版式；
+    // 固定 1280 要防的是变窄切移动版。
     //
     // **不用 override 的 `viewport` 参数**：那是截图用的「强制可见区域」，Chromium 的根变换
     // 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
     // 纵向一滚就整片露白。
     const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
-    const logicalWidth = oneToOne ? Math.max(LOGICAL_WIDTH, w) : LOGICAL_WIDTH;
+    const logicalWidth = Math.max(LOGICAL_WIDTH, w);
     const scale = w / logicalWidth;
     const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
     const pageScale = oneToOne ? logicalWidth / w : 1;

@@ -892,6 +892,27 @@ describe('逻辑视口的档位：1:1 / 适配', () => {
     expect(pageScales(wc)).toEqual([2]);
   });
 
+  // 2026-09-14 手测：全屏后舞台宽过 1280，从 1:1 退回适配，网页被放大 1.14 倍、右侧与底部露出空白、
+  // 顶栏被裁。Chromium 按「override 宽 × 高」开画布、再把 scale 当变换画进去 —— scale > 1 时画布
+  // 比舞台小，放大的内容溢出被裁，画布外什么都不画（截图量得网页区域 / 舞台 = 0.875 ≈ 1/1.14，两个方向都是）。
+  it('舞台宽过 1280 的适配档：按舞台宽排版、scale 1，不放大', async () => {
+    const { svc } = make();
+    await openTab(svc);
+    const wc = wcOf();
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, width: 1440 } });
+    await flush();
+    expect(svc.getState().tabs[0].viewportMode).toBe('fit');
+    expect(overrides(wc).at(-1)!.params).toEqual({
+      width: 1440, height: 900, deviceScaleFactor: 0, mobile: false, scale: 1,
+    });
+
+    // 翻面：同一个适配档，舞台一窄（640）就回到 1280 排版、整幅缩小。
+    await withStage(svc);
+    expect(overrides(wc).at(-1)!.params).toEqual({
+      width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
+    });
+  });
+
   it('新的档位随 browser.tabsChanged 回到渲染层（开关照着主进程画，不自己记一份）', async () => {
     const { svc } = make();
     await openTab(svc);
