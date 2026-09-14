@@ -50,6 +50,15 @@ export type AssistantBlock =
       // 不同 message 的 toolCall 永不共享，即使时间上紧挨着。
       parallelGroupId?: string;
     }
+  /**
+   * 这一轮以错误结束（provider 拒了请求、网络断了……），`text` 是错误原文。
+   *
+   * **它是这一轮回复自己的事实**，不是整条对话的状态：pi 把 `stopReason: 'error'` 与
+   * `errorMessage` 记在这一轮的 assistant 消息上。所以它跟文字、工具一样是一个块 ——
+   * 一个字都没输出就失败时，这一轮也照样成条；重启后从 transcript 归一化出来的，
+   * 与实时看到的是同一样东西。
+   */
+  | { kind: 'error'; text: string }
   | AskBlock;
 
 export type Message =

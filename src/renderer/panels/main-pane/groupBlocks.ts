@@ -7,7 +7,8 @@ export type ProcessBlock =
 export type Group =
   | { kind: 'text'; block: Extract<AssistantBlock, { kind: 'text' }> }
   | { kind: 'process'; blocks: ProcessBlock[] }
-  | { kind: 'ask'; block: AskBlock };
+  | { kind: 'ask'; block: AskBlock }
+  | { kind: 'error'; block: Extract<AssistantBlock, { kind: 'error' }> };
 
 export function groupBlocks(blocks: AssistantBlock[]): Group[] {
   const out: Group[] = [];
@@ -26,6 +27,10 @@ export function groupBlocks(blocks: AssistantBlock[]): Group[] {
       // 问答是一张整幅卡片，不属于工具/思考那条过程流。
       flush();
       out.push({ kind: 'ask', block: b });
+    } else if (b.kind === 'error') {
+      // 错误是这一轮的收场，不属于工具/思考那条过程流。
+      flush();
+      out.push({ kind: 'error', block: b });
     } else {
       buf.push(b);
     }

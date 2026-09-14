@@ -108,6 +108,12 @@ export function normalizePiMessages(messages: PiMessage[], idPrefix = 'm'): Mess
           });
         }
       }
+      // 这一轮以错误结束：pi 把原文记在这条消息上，带出来成为这一轮里的一个 error 块，
+      // 排在已经输出的内容之后。**一个字都没输出也要成条** —— 否则 flushAssistant 会把
+      // 空的这一轮当成「没东西」丢掉，重启之后界面上连出过错的迹象都没有。
+      if (m.stopReason === 'error') {
+        pendingBlocks.push({ kind: 'error', text: m.errorMessage ?? 'unknown' });
+      }
     }
     // toolResult messages are consumed above; skip emitting them as top-level messages
   }

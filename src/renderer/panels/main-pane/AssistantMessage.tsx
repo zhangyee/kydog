@@ -6,7 +6,6 @@ import { ProcessGroup } from './ProcessGroup';
 import { QuestionRecapCard } from './QuestionRecapCard';
 import { ErrorMarginalia } from './ErrorMarginalia';
 import { FileCard } from './FileCard';
-import { useRunsStore } from '../../stores/runsStore';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useIdentityStore } from '../../stores/identityStore';
 import { groupBlocks } from './groupBlocks';
@@ -33,7 +32,6 @@ type Props = {
 };
 
 export function AssistantMessage({ threadId, messageId, blocks, settled, createdAt }: Props) {
-  const runState = useRunsStore((s) => s.runStateByThread[threadId]);
   const projectPath = useThreadsStore((s) => {
     const t = Object.values(s.threadsByProject).flat().find((x) => x.id === threadId);
     return t?.projectPath ?? null;
@@ -82,6 +80,12 @@ export function AssistantMessage({ threadId, messageId, blocks, settled, created
           if (g.kind === 'text') {
             return <MarkdownBlock key={`tx-${i}`} content={g.block.text} />;
           }
+          // 错误是**这一轮自己的块**，只在带着它的这一条里显示。别改回读线程级的
+          // runState：那是「这条对话最近一次运行出错了没有」，会把之前每一条正常回复
+          // 都挂上同一行红字；而一个字都没输出就失败的那一轮，连回复组件都不会有。
+          if (g.kind === 'error') {
+            return <ErrorMarginalia key={`err-${i}`} text={g.block.text} />;
+          }
           // 新增 Group 变体而忘了在这里处理时，这一行会编译不过。
           const exhaustive: never = g;
           return exhaustive;
@@ -93,7 +97,6 @@ export function AssistantMessage({ threadId, messageId, blocks, settled, created
             ))}
           </div>
         )}
-        {runState?.status === 'error' && <ErrorMarginalia text={runState.error} />}
       </div>
     </div>
   );

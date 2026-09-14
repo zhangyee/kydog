@@ -458,7 +458,16 @@ class AgentService {
           }
           // Flush the run's accumulated buffer as one assistant message
           const messageId = bound.activeMessageId;
-          if (messageId) emitRun(bound, 'run.message_end', { threadId, runId, messageId });
+          // 错误原文跟着这一轮的 message_end 走：渲染层把这一轮落进历史的那一刻就要知道
+          // 它出错了，而 run.ended 排在后面才到。判据是 reason（来自 stopReason），不是
+          // 原文在不在 —— pi 没给原文时也要让这一轮显示出「出错了」。
+          // **只在出错时带这个键**：journal 按原样重放这份 payload。
+          if (messageId) {
+            emitRun(bound, 'run.message_end', {
+              threadId, runId, messageId,
+              ...(reason === 'error' ? { errorMessage: errorMessage ?? 'unknown' } : {}),
+            });
+          }
           bound.activeMessageId = null;
           // tool_execution_end 是正常的清理点；run 异常退出时它可能不发，
           // 所以这里兜一次底，免得条目跨轮残留。

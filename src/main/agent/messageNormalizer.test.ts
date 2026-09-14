@@ -450,3 +450,45 @@ describe('normalizePiMessages — ask_user_question', () => {
     expect(block.status).toBe('ok');
   });
 });
+
+/**
+ * 以错误结束的一轮（2026-09-14 修的 bug）。
+ *
+ * provider 在模型说出第一个字之前就拒了请求（实测：DeepSeek 回 402 余额不足），pi 在
+ * transcript 里记下一条 content 为空、stopReason 为 'error'、带 errorMessage 的 assistant。
+ * 以前这里只看 content：空 content 让 flushAssistant 当成「没东西」直接丢掉 —— 重启之后
+ * 这一轮在界面上什么都不剩，连出过错的迹象都没有。「出错」是这一轮回复自己的事实，
+ * pi 已经记在这条消息上，归一化必须把它带出来。
+ */
+describe('normalizePiMessages — 以错误结束的一轮', () => {
+  it('一个字都没输出就失败：仍然产出一条回复，只含一个带错误原文的 error 块', () => {
+    const input: PiMessage[] = [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant', content: [], stopReason: 'error',
+        errorMessage: '402: {"message":"Insufficient Balance"}', timestamp: 1,
+      },
+    ];
+    const out = normalizePiMessages(input);
+    expect(out).toHaveLength(2);
+    expect(out[1]).toMatchObject({
+      role: 'assistant',
+      blocks: [{ kind: 'error', text: '402: {"message":"Insufficient Balance"}' }],
+    });
+  });
+
+  it('输出了一段之后才失败：error 块排在已经输出的内容之后', () => {
+    const input: PiMessage[] = [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant', content: [{ type: 'text', text: '我先看看' }], stopReason: 'error',
+        errorMessage: 'socket hang up', timestamp: 1,
+      },
+    ];
+    const out = normalizePiMessages(input);
+    expect(out[1]).toMatchObject({
+      role: 'assistant',
+      blocks: [{ kind: 'text', text: '我先看看' }, { kind: 'error', text: 'socket hang up' }],
+    });
+  });
+});

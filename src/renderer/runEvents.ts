@@ -122,6 +122,13 @@ export function applyRunEvent(e: RunEvent): void {
     }
     case 'run.message_end': {
       const p = e.payload;
+      // 这一轮以错误结束：错误原文是这一轮的一个块，排在已经输出的内容之后。
+      // **先 ensureBuffer**：一个字都没输出就失败时本轮从没建过 buffer，不建的话下面
+      // takeBuffer 拿到 null，这一轮连同错误原文一起被丢掉。
+      if (p.errorMessage !== undefined) {
+        ensureBuffer(p.threadId, p.messageId);
+        useRunsStore.getState().addErrorBlock(p.messageId, p.errorMessage);
+      }
       const blocks = useRunsStore.getState().takeBuffer(p.messageId);
       if (!blocks) return;
       useThreadsStore.setState((s) => ({

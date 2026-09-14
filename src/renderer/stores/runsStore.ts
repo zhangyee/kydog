@@ -30,6 +30,7 @@ type RunsState = {
   markParallelGroup: (messageId: string, toolCallIds: string[], parallelGroupId: string) => void;
   addAskBlock: (messageId: string, toolCallId: string, questions: AskQuestion[]) => void;
   finalizeAskBlock: (messageId: string, toolCallId: string, outcome: AskOutcome) => void;
+  addErrorBlock: (messageId: string, text: string) => void;
   takeBuffer: (messageId: string) => AssistantBlock[] | null;
   dropBuffersForThread: (threadId: string) => void;
 };
@@ -169,6 +170,20 @@ export const useRunsStore = create<RunsState>((set, get) => ({
           : { kind: 'ask' as const, toolCallId: b.toolCallId, questions: b.questions, status: outcome.kind };
       });
       return { bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } } };
+    }),
+  // 与 appendDelta 同形：**先把在途的思考块收尾**。takeBuffer 只在最后一个块是思考时
+  // 才收尾，而 error 块排在它后面 —— 不在这里收的话，思考到一半就失败的那一轮，
+  // 思考块会永远停在 running、一直转圈。
+  addErrorBlock: (messageId, text) =>
+    set((s) => {
+      const buf = s.bufferByMessage[messageId];
+      if (!buf) return {};
+      const blocks = finalizeActiveThinking([...buf.blocks], s.activeThinkingStartByMessage[messageId], Date.now());
+      blocks.push({ kind: 'error', text });
+      return {
+        activeThinkingStartByMessage: { ...s.activeThinkingStartByMessage, [messageId]: undefined },
+        bufferByMessage: { ...s.bufferByMessage, [messageId]: { ...buf, blocks } },
+      };
     }),
   // run.resync 的落点：把这条 thread 手上的在途 block 全扔掉，交给紧随其后的 journal
   // 重放重建。journal 是本轮的全量事实，所以「先清空」比「想办法合并」既简单又准确。

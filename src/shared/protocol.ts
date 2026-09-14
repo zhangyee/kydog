@@ -315,7 +315,9 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
-  | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
+  // errorMessage：这一轮以错误结束时的原文，**只在真有值时带这个键**。渲染层据此在这一轮里
+  // 落一个 error 块 —— 一个字都没输出就失败时，这是这一轮唯一的内容。
+  | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string; errorMessage?: string } }
   // browserTabId 是 CARSI / 人机验证的交接口：带上它，渲染层就展开浏览器侧栏并切到那个标签。
   // 刻意不靠「ask 发生时正好有 agent 焦点标签」去推断 —— 那是拿时间相关性当事实。
   | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[]; browserTabId?: string } }
