@@ -31,7 +31,7 @@ function make(t: BrowserTabInfo | null) {
   const modes: ViewportMode[] = [];
   const m = mount(UrlBar, {
     tab: t,
-    onGo: () => {},
+    onGo: () => Promise.resolve(),
     onNav: () => {},
     onViewportMode: (mode: ViewportMode) => { modes.push(mode); },
   });
@@ -75,7 +75,7 @@ describe('「1:1 / 适配」开关', () => {
     // agent 的 markDriving 把它恢复成 fit，新一帧广播下来。
     m.rerender({
       tab: tab({ viewportMode: 'fit' }),
-      onGo: () => {}, onNav: () => {}, onViewportMode: () => {},
+      onGo: () => Promise.resolve(), onNav: () => {}, onViewportMode: () => {},
     });
     expect(m.find('browser-viewport-mode').props.active).toBe(false);
   });
@@ -97,5 +97,70 @@ describe('地址栏里那个 + 没了（新建标签只有一个入口）', () =
   it('挂载 UrlBar 找不到 browser-new-tab 这个节点', () => {
     const { m } = make(tab());
     expect(m.query('browser-new-tab')).toBeNull();
+  });
+});
+
+/**
+ * **回车之后地址栏不许闪空**（2026-09-14 手测）。
+ *
+ * 主进程的 `tab.url` 是**已提交**的地址：`did-navigate` 之前它还是旧的（`+` 开的空白标签是空串）。
+ * 回车那一刻 `editing` 翻回 false，输入框若立刻跟回 `tab.url`，刚打的网址就被冲掉、等页面提交才
+ * 重新出现 —— 用户以为没输进去。判据是**这次 `browser.open` 有没有结论**（它在导航落定、失败、
+ * 被拦、超时时才返回），不是计时器。
+ */
+describe('回车之后地址栏不闪空', () => {
+  function typeAndEnter(m: ReturnType<typeof mount>, text: string) {
+    const input = () => m.find('browser-url');
+    (input().props.onFocus as () => void)();
+    (input().props.onChange as (e: { target: { value: string } }) => void)({ target: { value: text } });
+    (input().props.onKeyDown as (e: { key: string; preventDefault: () => void }) => void)(
+      { key: 'Enter', preventDefault: () => {} },
+    );
+    (input().props.onBlur as () => void)();   // 真浏览器里 submit 的 blur() 会触发它
+  }
+
+  it('这次打开有结论之前一直显示提交的网址；有结论之后跟回主进程的真实网址', async () => {
+    let finish!: () => void;
+    const submitted: string[] = [];
+    const props = (t: BrowserTabInfo) => ({
+      tab: t,
+      onGo: (url: string) => { submitted.push(url); return new Promise<void>((r) => { finish = r; }); },
+      onNav: () => {}, onViewportMode: () => {},
+    });
+    const blank = tab({ url: '' });
+    const m = mount(UrlBar, props(blank));
+    const value = () => m.find('browser-url').props.value as string;
+
+    typeAndEnter(m, 'arxiv.org/list/cs.LG/recent');
+    expect(submitted).toEqual(['https://arxiv.org/list/cs.LG/recent']);
+    expect(value(), '导航还没提交（tab.url 仍是空串），刚打的网址不许被冲掉')
+      .toBe('https://arxiv.org/list/cs.LG/recent');
+
+    // 导航途中主进程照常广播（loading 翻成 true），url 仍是旧的。
+    m.rerender(props({ ...blank, loading: true }));
+    expect(value()).toBe('https://arxiv.org/list/cs.LG/recent');
+
+    // 翻面：这次打开有了结论（重定向到带参数的最终地址），输入框跟回主进程的真相。
+    m.rerender(props({ ...blank, url: 'https://arxiv.org/list/cs.LG/recent?skip=0', loading: false }));
+    finish();
+    await m.settle();
+    expect(value()).toBe('https://arxiv.org/list/cs.LG/recent?skip=0');
+  });
+
+  it('打开被拒（比如网址闸拦下）：有了结论就回到这个标签真实的网址', async () => {
+    let reject!: (e: Error) => void;
+    const m = mount(UrlBar, {
+      tab: tab({ url: 'https://example.org/' }),
+      onGo: () => new Promise<void>((_r, j) => { reject = j; }),
+      onNav: () => {}, onViewportMode: () => {},
+    });
+    const value = () => m.find('browser-url').props.value as string;
+
+    // 内网地址过不了主进程的网址闸，browser.open 会被拒。
+    typeAndEnter(m, '192.168.1.1/admin');
+    expect(value(), '结论出来之前显示的是刚提交的那个').toBe('https://192.168.1.1/admin');
+    reject(new Error('blocked'));
+    await m.settle();
+    expect(value()).toBe('https://example.org/');
   });
 });

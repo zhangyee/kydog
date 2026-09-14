@@ -3661,3 +3661,40 @@ describe('open：默认不抢活动标签，显式 activate: true 才切过去',
     expect(svc.getState().activeTabId).toBe(agentTab);
   });
 });
+
+/**
+ * **新标签在第一个文档提交之前，url 不许被冲成空串**（2026-09-14 录屏）。
+ *
+ * 没有任何标签时在地址栏回车：`createTab` 记下要打开的网址，随后 `did-start-loading` 触发
+ * `syncTabMeta`，而真 WebContents 在导航提交之前 `getURL()` 是空串 —— 那不是「网址为空」，是
+ * 「还没有提交」。直接拿它覆盖，标签 url 变成空串，地址栏回到占位符、标签名成了「空白页」，
+ * 直到页面提交才出现网址。（替身的 loadURL 会当场改 url，所以要手动把它拨回空串。）
+ */
+describe('syncTabMeta：还没提交任何文档时不丢建标签时记下的网址', () => {
+  it('getURL() 为空串时保留要打开的网址；提交之后跟回真实地址', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://a.example/x' });
+    await flush();
+    const wc = wcOf();
+    wc.url = '';                   // 真 WebContents：导航提交之前 getURL() 是空串
+    wc.title = '加载中';
+    wc.fire('did-start-loading');
+    const tab = () => svc.getState().tabs[0];
+    expect(tab().title, '同一次同步里其余字段照常更新 —— 证明 syncTabMeta 真的跑过').toBe('加载中');
+    expect(tab().url, '还没提交任何文档，url 不许被冲成空串').toBe('https://a.example/x');
+
+    // 翻面：提交之后跟回真实地址（这里是重定向后的那个）。
+    wc.url = 'https://a.example/y';
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, 'https://a.example/y', 200);
+    await p;
+    expect(tab().url).toBe('https://a.example/y');
+  });
+
+  it('空白标签（本来就没有网址）照样是空串', () => {
+    const { svc } = make();
+    const { tabId } = svc.openBlank();
+    wcOf().fire('did-start-loading');
+    expect(svc.getState().tabs.find((t) => t.id === tabId)!.url).toBe('');
+  });
+});

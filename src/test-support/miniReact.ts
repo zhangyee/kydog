@@ -44,6 +44,9 @@ export type FakeElement = {
   tagName: string;
   testId: string | undefined;
   getBoundingClientRect: () => FakeRect;
+  /** 空操作：没有真焦点可言。被测代码回车后会 `blur()`（地址栏），缺了它就在调用处 TypeError。 */
+  focus: () => void;
+  blur: () => void;
 };
 
 /** 元素树上的一个节点。React 的元素对象，只列这里用得到的字段。 */
@@ -237,6 +240,8 @@ function fakeElement(inst: Inst, tagName: string, testId: string | undefined): F
     tagName: tagName.toUpperCase(),
     testId,
     getBoundingClientRect: () => inst.rectOf(testId, tagName),
+    focus: () => {},
+    blur: () => {},
   };
   return el;
 }

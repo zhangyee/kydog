@@ -62,9 +62,13 @@ export function BrowserSidebar() {
 
       <UrlBar
         tab={active}
-        onGo={(url) => call(window.kydog.invoke(
-          'browser.open', active === null ? { url } : { url, tabId: active.id },
-        ))}
+        onGo={(url) => {
+          const opened = window.kydog.invoke(
+            'browser.open', active === null ? { url } : { url, tabId: active.id },
+          );
+          call(opened);
+          return opened;   // 地址栏要等它有结论，才把显示交回真实网址
+        }}
         onNav={(action) => {
           if (active === null) return;
           call(window.kydog.invoke('browser.navControl', { tabId: active.id, action }));

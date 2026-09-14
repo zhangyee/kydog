@@ -856,8 +856,13 @@ export class BrowserService {
     if (!view || view.webContents.isDestroyed() || !this.registry.has(id)) return;
     const wc = view.webContents;
     const before = this.registry.toState().revision;
+    // `getURL()` 是**已提交**的地址：一个文档都还没提交时它是空串 —— 那不是「网址为空」，是
+    // 「还没提交」。这时保留建标签时记下的要打开的网址，否则新标签一开始加载 url 就被冲成空串，
+    // 地址栏回到占位符、标签名成了「空白页」，直到页面提交才出现网址（2026-09-14 录屏）。
+    // 空白标签建的时候就是空串，不受影响。
+    const committedUrl = wc.getURL();
     this.registry.update(id, {
-      url: wc.getURL(),
+      ...(committedUrl === '' ? {} : { url: committedUrl }),
       title: wc.getTitle(),
       loading: wc.isLoading(),
       canGoBack: wc.navigationHistory.canGoBack(),
