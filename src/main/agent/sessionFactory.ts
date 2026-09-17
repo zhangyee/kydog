@@ -27,14 +27,14 @@ export async function createSession(opts: {
   modelId: string;
   askShared: AskSharedState;
   /**
-   * 这条 thread 此刻在为哪一轮 run 服务 —— 浏览器工具给新标签盖的戳（`ownerRunId`）。
+   * 这条 thread 此刻在为哪一轮 run 服务 —— 浏览器工具按轮记账用的戳（下载计数、机构登录的「本轮已填过一次」）；标签归属不读它，读 threadId。
    *
    * **由调用方注入一个取值函数，不是在这里 import `agentService`**：后者是一条
    * import 环（`AgentService` → `sessionFactory` → `AgentService`）。形态照
    * `askShared` —— 同样是 `AgentService` 造好了交进来的 run 上下文。
    *
    * **必须是函数不是值**：session 造出来那一刻还没有 run 在飞，取一次快照进去，
-   * 之后每一轮开的标签都会盖上同一个（空的）戳，回合结束一个都回收不掉。
+   * 之后每一轮的下载与登录都会记到同一个（空的）戳名下，按轮的上限与「本轮已填过」全部失效。
    *
    * 可选：fixture / 用例那条路不接浏览器，缺省当作「没有 run 在飞」。
    */

@@ -114,12 +114,15 @@ export function registerAllHandlers(): void {
   // 这一层不许自己再造一条路。
   //
   // `open` 显式投影而不是把 args 整个递进去：`BrowserService.open` 还收一个
-  // `ownerRunId`，那是「这个标签属于哪一轮 run、回合结束回收它」的记账字段。
+  // `ownerThreadId`，那是「这个标签属于哪个对话、受 agent 标签上限与对话删除管」的记账字段。
   // 类型上渲染层给不出它，但类型挡不住运行时 —— 渲染层发来的东西一律当输入看，
   // 只取协议上写明的那两个字段。**从这条路开的标签永远是用户的。**
   // 用户在地址栏开页面：要看的就是这一页，**显式**切过去。`open` 默认不抢活动标签 ——
   // agent 的 browser_open 走的是默认，不切走用户正在看的页面。
-  registerHandler('browser.open', (args) => browserService.open({ url: args.url, tabId: args.tabId, activate: true }));
+  // 返回值同样显式投影回协议上的 `{ tabId, nav }`：`evicted` 里带着主进程的归属记账（ownerThreadId），
+  // 不该随 RPC 上线（从这条路开的是用户标签，它本来也恒为空）。
+  registerHandler('browser.open', (args) => browserService.open({ url: args.url, tabId: args.tabId, activate: true })
+    .then(({ tabId, nav }) => ({ tabId, nav })));
   registerHandler('browser.newTab', () => browserService.openBlank());
   registerHandler('browser.close', (args) => { browserService.close(args.tabId); });
   registerHandler('browser.keep', (args) => { browserService.keep(args.tabId); });

@@ -12,6 +12,11 @@ vi.mock('./titleService', () => ({
 }));
 import { titleService } from './titleService';
 
+vi.mock('../browser/browserService', () => ({
+  browserService: { disposeForThread: vi.fn() },
+}));
+import { browserService } from '../browser/browserService';
+
 vi.mock('../agent/AgentService', () => ({
   agentService: {
     send: vi.fn().mockResolvedValue({ runId: 'r1' }),
@@ -119,5 +124,36 @@ describe('threadService.send → titleService trigger', () => {
     const t = await threadService.create({ projectPath: '/p', title: 'Pre-named' });
     await threadService.send({ threadId: t.id, content: 'Hi there' });
     expect(titleService.generateForThread).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 对话没了，它名下的 agent 标签一起关（spec 2026-09-17-browser-tab-lifecycle-design §2）。
+ * 标签跟对话走之后，这是 agent 标签除「到上限被挤掉」之外唯一的关闭时机。
+ */
+describe('threadService.delete 关掉这个对话的浏览器标签', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-thr-'));
+    vi.spyOn(paths, 'ROOT', 'get').mockReturnValue(dir);
+    vi.spyOn(paths, 'INDEX_FILE', 'get').mockReturnValue(path.join(dir, 'index.json'));
+    await saveIndex({
+      schemaVersion: 1,
+      projects: [{ path: '/x', addedAt: new Date().toISOString() }],
+      threads: [],
+    });
+    vi.mocked(browserService.disposeForThread).mockClear();
+  });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+  it('删哪个对话就关哪个对话的；不存在的对话报错且一个都不关', async () => {
+    const a = await threadService.create({ projectPath: '/x', title: 'a' });
+    await threadService.create({ projectPath: '/x', title: 'b' });
+
+    await expect(threadService.delete({ threadId: 'nope' })).rejects.toMatchObject({ code: 'thread.not_found' });
+    expect(browserService.disposeForThread).not.toHaveBeenCalled();
+
+    await threadService.delete({ threadId: a.id });
+    expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([[a.id]]);
   });
 });

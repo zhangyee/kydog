@@ -6,6 +6,7 @@ import LOGIN_FILL_SOURCE from './injected/loginFill.js?raw';
 import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
 import type { AxSnapshot } from './snapshot';
 import { ZERO_CURSOR } from './consoleLog';
+import { MAX_AGENT_TABS } from './tabRegistry';
 
 /**
  * browserService 的替身测试。
@@ -204,8 +205,8 @@ function make(): { svc: Svc; win: InstanceType<typeof H.FakeBrowserWindow> } {
 const wcOf = (i = 0) => H.views[i].webContents;
 
 /** 起一次 open 并把导航事件打进去，返回结果。 */
-async function openTab(svc: Svc, url = 'https://a.example/', ownerRunId: string | null = null) {
-  const p = svc.open({ url, ownerRunId });
+async function openTab(svc: Svc, url = 'https://a.example/', ownerThreadId: string | null = null) {
+  const p = svc.open({ url, ownerThreadId });
   await flush();
   const wc = H.views[H.views.length - 1].webContents;
   wc.osPid = 4321;                       // 导航提交了，渲染进程这时才有
@@ -696,9 +697,9 @@ describe('_blank 新标签要走完整的一条路（§C）', () => {
     expect(svc.getState().activeTabId).toBe(firstId);
   });
 
-  it('弹窗的归属按源标签当时的状态定：agent 在驱动就归这一轮 run', async () => {
+  it('弹窗的归属按源标签当时的状态定：agent 在驱动就归这个对话', async () => {
     const { svc } = make();
-    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    const p = svc.open({ url: 'https://a.example/', ownerThreadId: 'thread-1' });
     await flush();
     const wc = wcOf();
     // 这一刻 agent 正在驱动源标签（open 还没返回）
@@ -713,12 +714,12 @@ describe('_blank 新标签要走完整的一条路（§C）', () => {
     expect(svc.getState().tabs[2].owner).toBe('user');
   });
 
-  it('两轮 run 同时在跑：先结束的那一次不许清掉另一次的驱动标志', async () => {
+  it('两个对话同时在跑：先结束的那一次不许清掉另一次的驱动标志', async () => {
     const { svc } = make();
-    const pA = svc.open({ url: 'https://a.example/', ownerRunId: 'run-A' });
+    const pA = svc.open({ url: 'https://a.example/', ownerThreadId: 'thread-A' });
     await flush();
     const wcA = wcOf(0);
-    const pB = svc.open({ url: 'https://b.example/', ownerRunId: 'run-B' });
+    const pB = svc.open({ url: 'https://b.example/', ownerThreadId: 'thread-B' });
     await flush();
     const wcB = wcOf(1);
 
@@ -736,16 +737,16 @@ describe('_blank 新标签要走完整的一条路（§C）', () => {
     await pB;
   });
 
-  it('两轮同时在跑时，弹窗归**开它的那一轮**，不是恰好压在栈顶的那一轮', async () => {
+  it('两个对话同时在跑时，弹窗归**开它的那个对话**，不是恰好压在栈顶的那个', async () => {
     const { svc } = make();
-    const pA = svc.open({ url: 'https://a.example/', ownerRunId: 'run-A' });
+    const pA = svc.open({ url: 'https://a.example/', ownerThreadId: 'thread-A' });
     await flush();
     const wcA = wcOf(0);
-    const pB = svc.open({ url: 'https://b.example/', ownerRunId: 'run-B' });
+    const pB = svc.open({ url: 'https://b.example/', ownerThreadId: 'thread-B' });
     await flush();
     const wcB = wcOf(1);
 
-    // A 的标签弹出来的新标签归 run-A：归错的话 run-B settle 时会把它一起收走
+    // A 的标签弹出来的新标签归 thread-A：归错的话删掉 B 对话时会把它一起收走
     wcA.windowOpenHandler!({ url: 'https://popup.example/from-a' });
     await flush();
     const popupId = svc.getState().tabs.at(-1)!.id;
@@ -753,9 +754,9 @@ describe('_blank 新标签要走完整的一条路（§C）', () => {
     wcA.osPid = 4321; wcA.fire('did-navigate', {}, 'https://a.example/', 200); await pA;
     wcB.osPid = 4321; wcB.fire('did-navigate', {}, 'https://b.example/', 200); await pB;
 
-    svc.disposeForRun('run-B');
+    svc.disposeForThread('thread-B');
     expect(svc.getState().tabs.map((t) => t.id)).toContain(popupId);
-    svc.disposeForRun('run-A');
+    svc.disposeForThread('thread-A');
     expect(svc.getState().tabs.map((t) => t.id)).not.toContain(popupId);
   });
 
@@ -998,7 +999,7 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
     svc.setViewportMode(id, 'oneToOne');
     expect(svc.getState().tabs[0].viewportMode).toBe('oneToOne');
 
-    await svc.withAgentDriving(id, 'run-1', async () => {
+    await svc.withAgentDriving(id, 'thread-1', async () => {
       // **在 fn 之前就已经恢复**：取快照的那一步 await 的 applyViewport 算出来的
       // 必然是 1280 那一档，不靠时间窗。
       expect(svc.getState().tabs[0].viewportMode).toBe('fit');
@@ -1017,7 +1018,7 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
     await flush();
     expect(pageScales(wc).at(-1)).toBe(2);
 
-    await svc.withAgentDriving(id, 'run-1', async () => {});
+    await svc.withAgentDriving(id, 'thread-1', async () => {});
     await flush();
     expect(overrides(wc).at(-1)!.params).toEqual({
       width: 1280, height: 1800, deviceScaleFactor: 0, mobile: false, scale: 0.5,
@@ -1031,17 +1032,17 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
     await openTab(svc);
     const id = svc.getState().tabs[0].id;
     const before = svc.getState().revision;
-    await svc.withAgentDriving(id, 'run-1', async () => {});
+    await svc.withAgentDriving(id, 'thread-1', async () => {});
     expect(svc.getState().revision).toBe(before);
   });
 
   it('驱动期间弹出来的新标签也过这条路（markDriving 是唯一时机）', async () => {
     const { svc } = make();
-    await openTab(svc, 'https://a.example/', 'run-1');
+    await openTab(svc, 'https://a.example/', 'thread-1');
     const t1 = svc.getState().tabs[0].id;
     svc.setViewportMode(t1, 'oneToOne');
 
-    await svc.withAgentDriving(t1, 'run-1', async () => {
+    await svc.withAgentDriving(t1, 'thread-1', async () => {
       expect(svc.getState().tabs[0].viewportMode).toBe('fit');
     });
   });
@@ -1062,7 +1063,7 @@ describe('「按回去」不指望用户记得：agent 的下一次动作之前�
     svc.setViewportMode(t1, 'oneToOne');   // 用户正盯着 A 的验证码
     svc.setViewportMode(t2, 'oneToOne');   // B 之前也被按过 1:1（比如 agent 上一步之前）
 
-    await svc.withAgentDriving(t2, 'run-1', async () => {
+    await svc.withAgentDriving(t2, 'thread-1', async () => {
       // 被驱动的 B 恢复成 fit；活动标签 A 没有被驱动，不该被这一次恢复碰到。
       expect(svc.getState().tabs.find((t) => t.id === t2)!.viewportMode).toBe('fit');
       expect(svc.getState().tabs.find((t) => t.id === t1)!.viewportMode).toBe('oneToOne');
@@ -1078,7 +1079,7 @@ const focuses = () => H.emitted
 describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各一处', () => {
   it('agent 驱动一次操作：开始发 active:true（带动作名），结束发 active:false', async () => {
     const { svc } = make();
-    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    const p = svc.open({ url: 'https://a.example/', ownerThreadId: 'thread-1' });
     await flush();
     const id = svc.getState().tabs[0].id;
     // 结束之前只有 true 那一半 —— 拿完整序列断言的话，「一次都没发」与
@@ -1095,7 +1096,7 @@ describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各�
     ]);
   });
 
-  it('用户自己的操作（runId=null）一条都不发 —— 那盏灯说的是「agent 在动」', async () => {
+  it('用户自己的操作（threadId=null）一条都不发 —— 那盏灯说的是「agent 在动」', async () => {
     const { svc } = make();
     await openTab(svc, 'https://a.example/', null);
     expect(focuses()).toEqual([]);
@@ -1105,7 +1106,7 @@ describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各�
 
   it('驱动期间弹出来的新标签也各发一次，动作名与源标签同一个', async () => {
     const { svc } = make();
-    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    const p = svc.open({ url: 'https://a.example/', ownerThreadId: 'thread-1' });
     await flush();
     const srcId = svc.getState().tabs[0].id;
     wcOf().windowOpenHandler!({ url: 'https://popup.example/p' });
@@ -1141,7 +1142,7 @@ describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各�
    */
   it('驱动期间标签被销毁：熄灯信号发不出来（清除靠 tabsChanged 里它已经不在）', async () => {
     const { svc } = make();
-    const p = svc.open({ url: 'https://a.example/', ownerRunId: 'run-1' });
+    const p = svc.open({ url: 'https://a.example/', ownerThreadId: 'thread-1' });
     await flush();
     const id = svc.getState().tabs[0].id;
     expect(focuses()).toEqual([{ tabId: id, active: true, action: '打开网页' }]);
@@ -1166,9 +1167,9 @@ describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各�
     H.emitted.length = 0;
 
     let releaseInner!: () => void;
-    const inner = svc.withAgentDriving(id, 'run-B', () => new Promise<void>((r) => { releaseInner = r; }), '内层');
+    const inner = svc.withAgentDriving(id, 'thread-B', () => new Promise<void>((r) => { releaseInner = r; }), '内层');
     let releaseOuter!: () => void;
-    const outer = svc.withAgentDriving(id, 'run-A', () => new Promise<void>((r) => { releaseOuter = r; }), '外层');
+    const outer = svc.withAgentDriving(id, 'thread-A', () => new Promise<void>((r) => { releaseOuter = r; }), '外层');
     await flush();
     expect(focuses()).toEqual([
       { tabId: id, active: true, action: '内层' },
@@ -1188,7 +1189,7 @@ describe('browser.agentFocus：markDriving 与 withAgentDriving 的 finally 各�
     await openTab(svc, 'https://a.example/', null);
     const id = svc.getState().tabs[0].id;
     const revBefore = svc.getState().revision;
-    await svc.withAgentDriving(id, 'run-1', async () => {}, '操作网页');
+    await svc.withAgentDriving(id, 'thread-1', async () => {}, '操作网页');
     expect(svc.getState().revision).toBe(revBefore);
     expect(focuses().length).toBe(2);
   });
@@ -2394,7 +2395,7 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
 
     // agent 的下一次动作：markDriving 把档位改回 fit 并 void 一发，随后进 dispatch
     const done: string[] = [];
-    void svc.withAgentDriving(id, 'run-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+    void svc.withAgentDriving(id, 'thread-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
       .then(() => done.push('ok'), (e: unknown) => done.push(`err:${String(e)}`));
     await flush();
 
@@ -2550,7 +2551,7 @@ describe('dispatch · click：坐标是这一刻量的，命中检查不放水',
       return realRespond(method, params);
     };
 
-    await svc.withAgentDriving(id, 'run-1', async () => {
+    await svc.withAgentDriving(id, 'thread-1', async () => {
       svc.setViewportMode(id, 'oneToOne');   // markDriving 已经过了，用户这时才按
       await flush();
       expect(seq, '1:1 真的生效过（page scale 放大到 2），下面才有东西可恢复').toEqual(['pageScale 2']);
@@ -3167,7 +3168,7 @@ describe('waitFor：等的是显式条件，超时只表示条件未达成', () 
   });
 
   /**
-   * **等待途中标签被销毁**（run 被取消后 `disposeForRun` 回收、用户手动关掉、
+   * **等待途中标签被销毁**（对话被删后 `disposeForThread` 回收、到上限被挤掉、用户手动关掉、
    * 渲染进程崩掉）。入口那一道只判「开始等的那一刻」，这一条判的是循环里。
    *
    * 折进 'unknown' 的话轮询会一路空转到 30 秒，然后 `runStep` 输出
@@ -3342,14 +3343,14 @@ describe('currentUrlOf / webContentsIdOf / onTabDestroyed（Task 7）', () => {
     expect(gone).toEqual([tabId]);
   });
 
-  it('disposeForRun 与 disposeAll 这两条销毁路径也通知', async () => {
+  it('disposeForThread 与 disposeAll 这两条销毁路径也通知', async () => {
     const { svc } = make();
-    await openTab(svc, 'https://a.example/', 'run-1');
+    await openTab(svc, 'https://a.example/', 'thread-1');
     await openTab(svc, 'https://b.example/', null);
     const ids = svc.getState().tabs.map((t) => t.id);
     const gone: string[] = [];
     svc.onTabDestroyed((id) => gone.push(id));
-    svc.disposeForRun('run-1');
+    svc.disposeForThread('thread-1');
     expect(gone).toEqual([ids[0]]);
     svc.disposeAll();
     expect(gone).toEqual([ids[0], ids[1]]);
@@ -3619,7 +3620,7 @@ describe('open：默认不抢活动标签，显式 activate: true 才切过去',
    * 首标签那一步不算数：注册表空的时候新标签无条件接活动位（`tabRegistry.create` 的规则），
    * 所以两条用例都先垫一张用户标签，再看后面的 `open` 各自有没有切过去。
    */
-  async function openWith(svc: Svc, url: string, extra: { ownerRunId: string | null; activate?: boolean }) {
+  async function openWith(svc: Svc, url: string, extra: { ownerThreadId: string | null; activate?: boolean }) {
     const p = svc.open({ url, ...extra });
     await flush();
     const wc = H.views[H.views.length - 1].webContents;
@@ -3630,31 +3631,31 @@ describe('open：默认不抢活动标签，显式 activate: true 才切过去',
 
   it('新开标签：没带 activate 不切走用户正在看的；显式 activate: true 才切过去', async () => {
     const { svc } = make();
-    const userTab = await openWith(svc, 'https://user.example/', { ownerRunId: null, activate: true });
+    const userTab = await openWith(svc, 'https://user.example/', { ownerThreadId: null, activate: true });
     expect(svc.getState().activeTabId).toBe(userTab);   // 前提：用户那张是活动标签
 
-    await openWith(svc, 'https://agent.example/', { ownerRunId: 'run-1' });
+    await openWith(svc, 'https://agent.example/', { ownerThreadId: 'thread-1' });
     expect(svc.getState().activeTabId).toBe(userTab);   // 没带 activate：不抢
 
     // 同一条用例里的正向对照：只写上一句的话，「activate 整个被忽略、永远不切」也会让它绿。
-    const explicit = await openWith(svc, 'https://explicit.example/', { ownerRunId: null, activate: true });
+    const explicit = await openWith(svc, 'https://explicit.example/', { ownerThreadId: null, activate: true });
     expect(svc.getState().activeTabId).toBe(explicit);
   });
 
   it('在已有标签里导航：没带 activate 不切；显式 activate: true 才切', async () => {
     const { svc } = make();
-    const userTab = await openWith(svc, 'https://user.example/', { ownerRunId: null, activate: true });
-    const agentTab = await openWith(svc, 'https://agent.example/', { ownerRunId: 'run-1' });
+    const userTab = await openWith(svc, 'https://user.example/', { ownerThreadId: null, activate: true });
+    const agentTab = await openWith(svc, 'https://agent.example/', { ownerThreadId: 'thread-1' });
     expect(svc.getState().activeTabId).toBe(userTab);   // 前提
     const agentWc = H.views[1].webContents;
 
-    const quiet = svc.open({ url: 'https://agent.example/next', tabId: agentTab, ownerRunId: 'run-1' });
+    const quiet = svc.open({ url: 'https://agent.example/next', tabId: agentTab, ownerThreadId: 'thread-1' });
     await flush();
     agentWc.fire('did-navigate', {}, 'https://agent.example/next', 200);
     await quiet;
     expect(svc.getState().activeTabId).toBe(userTab);
 
-    const loud = svc.open({ url: 'https://agent.example/third', tabId: agentTab, ownerRunId: null, activate: true });
+    const loud = svc.open({ url: 'https://agent.example/third', tabId: agentTab, ownerThreadId: null, activate: true });
     await flush();
     agentWc.fire('did-navigate', {}, 'https://agent.example/third', 200);
     await loud;
@@ -3696,5 +3697,128 @@ describe('syncTabMeta：还没提交任何文档时不丢建标签时记下的�
     const { tabId } = svc.openBlank();
     wcOf().fire('did-start-loading');
     expect(svc.getState().tabs.find((t) => t.id === tabId)!.url).toBe('');
+  });
+});
+
+/**
+ * agent 标签跟对话走、全局最多 9 个（spec 2026-09-17-browser-tab-lifecycle-design）。
+ * 挑哪一个由账本钉（tabRegistry.test.ts）；这里钉的是**真的关掉了**：view 销毁、订阅者收到通知、
+ * `open` 如实带出被挤掉的是谁。
+ */
+describe('agent 标签到上限：挤掉最久没用的那个', () => {
+  /** 先垫一张用户标签占住活动位 —— 否则第一个 agent 标签会是活动标签，不可挤。 */
+  async function withUserTab(svc: Svc) {
+    const p = svc.open({ url: 'https://user.example/', ownerThreadId: null, activate: true });
+    await flush();
+    const wc = H.views[H.views.length - 1].webContents;
+    wc.osPid = 4321; wc.fire('did-navigate', {}, 'https://user.example/', 200);
+    return (await p).tabId;
+  }
+  const agentIds = (svc: Svc) => svc.getState().tabs.filter((t) => t.owner === 'agent').map((t) => t.id);
+
+  it('第 10 个挤掉最早那个：view 销毁、订阅者收到通知、open 带出它的归属与地址；用户标签不动', async () => {
+    const { svc } = make();
+    const userTab = await withUserTab(svc);
+    const firsts: string[] = [];
+    for (let i = 0; i < MAX_AGENT_TABS; i++) {
+      firsts.push((await openTab(svc, `https://a${i}.example/`, 'thread-A')).nav.tabId);
+    }
+    expect(agentIds(svc)).toHaveLength(MAX_AGENT_TABS);
+    const gone: string[] = [];
+    svc.onTabDestroyed((id) => gone.push(id));
+
+    const r = (await openTab(svc, 'https://b.example/', 'thread-B')).nav;
+
+    expect(r.evicted).toEqual([{ tabId: firsts[0], ownerThreadId: 'thread-A', url: 'https://a0.example/', title: '' }]);
+    expect(gone).toEqual([firsts[0]]);
+    expect(agentIds(svc)).toHaveLength(MAX_AGENT_TABS);
+    expect(agentIds(svc)).toContain(r.tabId);
+    expect(svc.getState().tabs.map((t) => t.id)).toContain(userTab);
+  });
+
+  it('还没到上限时一个都不挤', async () => {
+    const { svc } = make();
+    await withUserTab(svc);
+    for (let i = 0; i < MAX_AGENT_TABS - 1; i++) await openTab(svc, `https://a${i}.example/`, 'thread-A');
+    const r = (await openTab(svc, 'https://last.example/', 'thread-A')).nav;
+    expect(r.evicted).toEqual([]);
+    expect(agentIds(svc)).toHaveLength(MAX_AGENT_TABS);
+  });
+
+  it('agent 刚驱动过的那个不算最久没用：挤掉的是下一个', async () => {
+    const { svc } = make();
+    await withUserTab(svc);
+    const ids: string[] = [];
+    for (let i = 0; i < MAX_AGENT_TABS; i++) ids.push((await openTab(svc, `https://a${i}.example/`, 'thread-A')).nav.tabId);
+    await svc.withAgentDriving(ids[0], 'thread-A', async () => {});
+
+    const r = (await openTab(svc, 'https://b.example/', 'thread-A')).nav;
+
+    expect(r.evicted.map((e) => e.tabId)).toEqual([ids[1]]);
+    expect(agentIds(svc)).toContain(ids[0]);
+  });
+
+  it('全部正在被驱动 → too_many_tabs 且一个都不碰；其中一个跑完之后再开，挤掉的就是它', async () => {
+    const { svc } = make();
+    await withUserTab(svc);
+    const pending: Array<{ p: Promise<unknown>; wc: (typeof H.views)[number]['webContents']; url: string }> = [];
+    for (let i = 0; i < MAX_AGENT_TABS; i++) {
+      const url = `https://a${i}.example/`;
+      const p = svc.open({ url, ownerThreadId: 'thread-A' });
+      await flush();
+      pending.push({ p, wc: H.views[H.views.length - 1].webContents, url });
+    }
+    const before = svc.getState().tabs.map((t) => t.id);
+
+    await expect(svc.open({ url: 'https://b.example/', ownerThreadId: 'thread-B' }))
+      .rejects.toMatchObject({ code: 'browser.too_many_tabs' });
+    expect(svc.getState().tabs.map((t) => t.id)).toEqual(before);
+
+    // 正向对照：第一个跑完（熄灯）之后，同样的一次 open 就能挤掉它
+    const first = pending[0];
+    first.wc.osPid = 4321; first.wc.fire('did-navigate', {}, first.url, 200);
+    const firstId = ((await first.p) as { tabId: string }).tabId;
+    const r = (await openTab(svc, 'https://b.example/', 'thread-B')).nav;
+    expect(r.evicted.map((e) => e.tabId)).toEqual([firstId]);
+
+    for (const x of pending.slice(1)) { x.wc.osPid = 4321; x.wc.fire('did-navigate', {}, x.url, 200); await x.p; }
+  });
+
+  it('用户在地址栏开的标签不受上限管，也不会挤掉 agent 的', async () => {
+    const { svc } = make();
+    await withUserTab(svc);
+    for (let i = 0; i < MAX_AGENT_TABS; i++) await openTab(svc, `https://a${i}.example/`, 'thread-A');
+    const p = svc.open({ url: 'https://user2.example/', ownerThreadId: null, activate: true });
+    await flush();
+    const wc = H.views[H.views.length - 1].webContents;
+    wc.osPid = 4321; wc.fire('did-navigate', {}, 'https://user2.example/', 200);
+    const r = await p;
+    expect(r.evicted).toEqual([]);
+    expect(agentIds(svc)).toHaveLength(MAX_AGENT_TABS);
+  });
+});
+
+describe('按对话回收与可见范围', () => {
+  it('disposeForThread 只关这个对话的 agent 标签；endRun 一个标签都不关', async () => {
+    const { svc } = make();
+    const a = (await openTab(svc, 'https://a.example/', 'thread-A')).nav.tabId;
+    const b = (await openTab(svc, 'https://b.example/', 'thread-B')).nav.tabId;
+    const u = (await openTab(svc, 'https://u.example/', null)).nav.tabId;
+
+    svc.endRun('run-whatever');
+    expect(svc.getState().tabs.map((t) => t.id)).toEqual([a, b, u]);
+
+    svc.disposeForThread('thread-A');
+    expect(svc.getState().tabs.map((t) => t.id)).toEqual([b, u]);
+  });
+
+  it('stateVisibleTo：用户的 + 本对话的，别的对话的不列', async () => {
+    const { svc } = make();
+    const a = (await openTab(svc, 'https://a.example/', 'thread-A')).nav.tabId;
+    const b = (await openTab(svc, 'https://b.example/', 'thread-B')).nav.tabId;
+    const u = (await openTab(svc, 'https://u.example/', null)).nav.tabId;
+
+    expect(svc.stateVisibleTo('thread-A').tabs.map((t) => t.id)).toEqual([a, u]);
+    expect(svc.stateVisibleTo('thread-B').tabs.map((t) => t.id)).toEqual([b, u]);
   });
 });

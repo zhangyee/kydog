@@ -84,7 +84,8 @@ export type LoginBrowserPort = {
   webContentsIdOf(tabId: string): number | null;
   getSnapshot(tabId: string): AxSnapshot | null;
   enqueue<T>(tabId: string, fn: () => Promise<T>): Promise<T>;
-  withAgentDriving<T>(tabId: string, runId: string | null, fn: () => Promise<T>, action?: string): Promise<T>;
+  /** 第二个参数是**对话 id**（标签归属跟对话走），不是 runId —— 两个同为 `string | null`，传错不报错。 */
+  withAgentDriving<T>(tabId: string, threadId: string | null, fn: () => Promise<T>, action?: string): Promise<T>;
   evalInPage(tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown>;
   onTabDestroyed(fn: (tabId: string) => void): () => void;
   /** 见 `fillInQueue` 里那句调用的注释。`origin` 是那一刻页面的 origin —— 与页面
@@ -133,7 +134,10 @@ export type LoginAsk = (args: {
 }) => Promise<boolean>;
 
 export type LoginFillOptions = {
+  /** 「本轮已经填过一次」按它聚合。 */
   runId: string | null;
+  /** 哪个对话在驱动这个标签 —— 登录期间弹出来的标签归它。**不要拿 runId 顶替**。 */
+  threadId: string | null;
   /** 填完直接提交表单吗。**不给就是不提交** —— 见 browserTools 里那段说明。 */
   submit: boolean;
   /** 模型指定的账号框编号（来自某一份快照）。 */
@@ -313,7 +317,7 @@ export class LoginFlow {
    * **一条如实登记的理论假阳**：用户后来自己在同一个标签上又做了一次真的 SAML
    * 登录（去另一个 SP），那次断言回传会被记成我们这一次的成功。后果只是把
    * 「本轮有一次未观测到回传的填充」这条状态清掉 —— 不会导致再填一次密码，且
-   * `disposeForRun` 在回合结束时会带走 agent 名下的标签。**所以这里的拆点不是
+   * 标签销毁时（对话删除、到上限被挤掉、用户关掉）会走 `forget`。**所以这里的拆点不是
    * 完备的**，别照着写成「看见回传就一定是我们那一次」。
    */
   attachObserver(args: {
@@ -457,7 +461,7 @@ export class LoginFlow {
     }
 
     return this.ports.browser.enqueue(tabId, () => this.ports.browser.withAgentDriving(
-      tabId, opts.runId, () => this.fillInQueue(tabId, opts, askedUser), '机构登录',
+      tabId, opts.threadId, () => this.fillInQueue(tabId, opts, askedUser), '机构登录',
     ));
   }
 
@@ -622,7 +626,7 @@ export const loginFlow = new LoginFlow({
     webContentsIdOf: (tabId) => browserService.webContentsIdOf(tabId),
     getSnapshot: (tabId) => browserService.getSnapshot(tabId),
     enqueue: (tabId, fn) => browserService.enqueue(tabId, fn),
-    withAgentDriving: (tabId, runId, fn, action) => browserService.withAgentDriving(tabId, runId, fn, action),
+    withAgentDriving: (tabId, threadId, fn, action) => browserService.withAgentDriving(tabId, threadId, fn, action),
     evalInPage: (tabId, code) => browserService.evalInPage(tabId, code),
     onTabDestroyed: (fn) => browserService.onTabDestroyed(fn),
     suppressConsoleForCredentials: (tabId, origin) => browserService.suppressConsoleForCredentials(tabId, origin),

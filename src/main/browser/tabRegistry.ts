@@ -8,23 +8,45 @@ import type { BrowserState, BrowserTabInfo, ViewportMode } from '../../shared/ty
  */
 
 /** 上限是兜底，不是资源管理方案。真正控制数量的是两条设计：
- *  agent 开的在 run settle 时回收；同一个源的连续详情页复用一个标签。
+ *  agent 标签不超过 `MAX_AGENT_TABS`，满了挤掉最久没用的；同一个源的连续详情页复用一个标签。
  *  如果实际用起来经常撞上限，那是这两条没生效，回去改它们，不是抬高这个数。 */
 export const MAX_TABS = 16;
 
+/**
+ * 全局最多几个 **agent** 标签（Yee 2026-09-17 拍板取 9）。再开一个时挤掉最久没用的那个
+ * （`pickEvictee`）。见 spec `2026-09-17-browser-tab-lifecycle-design`。
+ *
+ * **全局，不是每个对话各 9 个**：标签的资源成本是全局的，而 `MAX_TABS` 本来就是全局上限 ——
+ * 每个对话各 9 个，两个对话就到 18，撞上 16 时报的是 `too_many_tabs`，等于拿报错代替回收。
+ * 全局 9 留出至少 7 个给用户自己的标签。
+ */
+export const MAX_AGENT_TABS = 9;
+
 type TabRecord = BrowserTabInfo & {
-  ownerRunId: string | null;
+  /**
+   * 哪个对话开的。**null = 用户的**：用户自己开的，或者 agent 开的被点过「保留」。
+   *
+   * 2026-09-17 之前这里是 `ownerRunId`，回合结束就回收。改成跟对话走的理由见 spec
+   * `2026-09-17-browser-tab-lifecycle-design` §1：用户正要看的标签在手底下消失、
+   * slowpaper「检索 → 用户挑 → 下一轮下载」每轮都得重搜。
+   */
+  ownerThreadId: string | null;
+  /**
+   * 最近一次被使用的**序号**（不是时间戳 —— 判「最久没用」只要先后，不要时间窗）。
+   * 三个时刻盖：建标签、agent 开始驱动它（`markUsed`）、它成为活动标签（`activate`）。
+   */
+  lastUsed: number;
   /**
    * agent 此刻正在驱动这个标签吗（spec §3 的 `Tab.isAgentActive`）。
    *
-   * **与 `ownerRunId` 是两件事**：那个说的是「谁开的、回合结束要不要收走」，
+   * **与 `ownerThreadId` 是两件事**：那个说的是「谁开的、归不归 agent 标签上限与对话删除管」，
    * 这个说的是「此刻是谁在操作」。spec §3 明写用户标签与 agent 标签不做能力隔离 ——
-   * agent 完全可以驱动一个 `ownerRunId === null` 的用户标签，那时两个字段就分开了。
+   * agent 完全可以驱动一个 `ownerThreadId === null` 的用户标签，那时两个字段就分开了。
    *
    * 它存在的理由是 spec §5.1：页面里的 `window.open` 被转成新标签时，**新标签的归属
    * 按源标签当时的状态定，这是状态事实、不是猜**。没有这个字段，调用方只能拿
-   * `ownerRunIdOf(源标签)` 当替身 —— 于是 agent 驱动用户标签弹出来的新标签
-   * `ownerRunId` 也是 null，`agent_settled` 时不回收，一轮长检索下来标签只增不减。
+   * `ownerThreadIdOf(源标签)` 当替身 —— 于是 agent 驱动用户标签弹出来的新标签
+   * `ownerThreadId` 也是 null，不受 agent 标签上限管，一轮长检索下来标签只增不减。
    */
   isAgentActive: boolean;
 };
@@ -34,6 +56,8 @@ export class TabRegistry {
   private activeId: string | null = null;
   private rev = 0;
   private ep = 0;
+  /** `lastUsed` 的发号器。单调递增，只比先后。 */
+  private useSeq = 0;
 
   private touch(): void { this.rev += 1; }
 
@@ -53,7 +77,7 @@ export class TabRegistry {
 
   has(id: string): boolean { return this.indexOf(id) !== -1; }
 
-  ownerRunIdOf(id: string): string | null { return this.require(id).ownerRunId; }
+  ownerThreadIdOf(id: string): string | null { return this.require(id).ownerThreadId; }
 
   /**
    * 建一条标签记录。
@@ -69,7 +93,7 @@ export class TabRegistry {
    * 第一个标签、以及关光之后新开的那个，无论 `activate` 给什么都会接上活动位，
    * 否则侧栏有标签却一个都不显示。
    */
-  create(id: string, opts: { ownerRunId: string | null; url: string; activate?: boolean }): TabRecord {
+  create(id: string, opts: { ownerThreadId: string | null; url: string; activate?: boolean }): TabRecord {
     // 重复 id 不能静默覆盖：那会让上一个 WebContentsView 失去引用而泄漏，
     // 而且泄漏的那个还在后台跑着页面。
     if (this.has(id)) throw new KydogError('browser.bad_action', `标签页 id 重复：${id}`);
@@ -79,13 +103,14 @@ export class TabRegistry {
     }
     const rec: TabRecord = {
       id, url: opts.url, title: '', loading: true,
-      owner: opts.ownerRunId ? 'agent' : 'user',
+      owner: opts.ownerThreadId ? 'agent' : 'user',
       canGoBack: false, canGoForward: false,
       // 新标签一律从「适配」起步。**不继承别的标签的档位**：1:1 是用户对着某一页
       // 按下的一次性动作（看清那一个验证码），不是一个偏好设置。
       viewportMode: 'fit',
-      ownerRunId: opts.ownerRunId,
+      ownerThreadId: opts.ownerThreadId,
       isAgentActive: false,
+      lastUsed: (this.useSeq += 1),
     };
     this.tabs.push(rec);
     if (opts.activate === true || this.activeId === null) this.activeId = id;
@@ -115,11 +140,11 @@ export class TabRegistry {
     this.touch();
   }
 
-  /** 用户点「保留」：agent 的标签转成自己的，此后不会被回合结束的回收带走。 */
+  /** 用户点「保留」：agent 的标签转成自己的，此后不会被上限挤掉，也不随对话删除被带走。 */
   keep(id: string): void {
     const t = this.require(id);
-    if (t.ownerRunId === null) return;
-    t.ownerRunId = null;
+    if (t.ownerThreadId === null) return;
+    t.ownerThreadId = null;
     t.owner = 'user';
     this.touch();
   }
@@ -154,7 +179,7 @@ export class TabRegistry {
   }
 
   /** **不抛**：这是一个纯读取器，缺记录时给一个安全的默认档就够了，不必因为
-   *  竞态去抛异常。（复审 N-1：三条销毁路径 —— `close` / `disposeForRun` /
+   *  竞态去抛异常。（复审 N-1：三条销毁路径 —— `close` / `disposeForThread` /
    *  `disposeAll` —— 都是先摘账本、再摘 view、才 `applyLayout()`，所以「views
    *  里还有、账本已经没有」这个组合走不到：`applyViewport` 自己那句
    *  `this.views.get(tabId)` 会先行 return，问都问不到这里。这条 fail-open
@@ -162,7 +187,9 @@ export class TabRegistry {
   viewportModeOf(id: string): ViewportMode { return this.get(id)?.viewportMode ?? 'fit'; }
 
   activate(id: string): void {
-    this.require(id);
+    // 被激活就算用过 —— 用户点它、或者 ask_user_question 把它交给用户看。
+    // **放在「已经是活动标签」那句之前**：再点一次当前标签也是在用它。
+    this.require(id).lastUsed = (this.useSeq += 1);
     if (this.activeId === id) return;
     this.activeId = id;
     this.touch();
@@ -179,11 +206,41 @@ export class TabRegistry {
     this.touch();
   }
 
-  /** 回收本轮 agent 开的标签，返回要销毁的 id。命不中就是空数组（**幂等**，第二遍什么都不做）。
-   *  什么时候该调它，由 `browserService.disposeForRun` 那段注释统一说明（三个触发点，
-   *  其中正常收尾挂的是 `agent_settled` 而不是 `agent_end`）。 */
-  disposeForRun(runId: string): string[] {
-    const doomed = this.tabs.filter((t) => t.ownerRunId === runId).map((t) => t.id);
+  /**
+   * agent 开始驱动它：记一次「用过」。**不推 revision**（`lastUsed` 不进 `BrowserState`），
+   * 与 `setAgentActive` 同一条规矩。
+   */
+  markUsed(id: string): void {
+    this.require(id).lastUsed = (this.useSeq += 1);
+  }
+
+  /** 现在有几个 agent 标签（点过「保留」的算用户的，不计）。 */
+  agentTabCount(): number {
+    return this.tabs.filter((t) => t.ownerThreadId !== null).length;
+  }
+
+  /**
+   * agent 标签满了时挑哪一个挤掉：**`lastUsed` 最小的 agent 标签**。没有可挑的回 null。
+   *
+   * 两类不挑（spec §3）：
+   * - **此刻正被 agent 驱动的** —— 包括弹出新标签的那个源标签，挤掉它等于砸了正在跑的那一批
+   * - **活动标签** —— 侧栏显示的就是它，用户可能正看着；`ask_user_question` 交给用户的也是它
+   *
+   * 跨对话按同一个先后挑：A 对话闲着的标签可能被 B 对话挤掉，这是全局上限的本意。
+   */
+  pickEvictee(): string | null {
+    let best: TabRecord | null = null;
+    for (const t of this.tabs) {
+      if (t.ownerThreadId === null || t.isAgentActive || t.id === this.activeId) continue;
+      if (best === null || t.lastUsed < best.lastUsed) best = t;
+    }
+    return best?.id ?? null;
+  }
+
+  /** 对话被删除（或随项目关闭被带走）时，回收它名下的 agent 标签，返回要销毁的 id。
+   *  命不中就是空数组（**幂等**，第二遍什么都不做）。调用方见 `browserService.disposeForThread`。 */
+  disposeForThread(threadId: string): string[] {
+    const doomed = this.tabs.filter((t) => t.ownerThreadId === threadId).map((t) => t.id);
     for (const id of doomed) this.removeAt(this.indexOf(id));
     if (doomed.length) this.touch();
     return doomed;
@@ -208,10 +265,10 @@ export class TabRegistry {
       revision: this.rev,
       epoch: this.ep,
       activeTabId: this.activeId,
-      // 深拷贝一层并抹掉**所有**主进程记账字段（ownerRunId / isAgentActive）：
+      // 深拷贝一层并抹掉**所有**主进程记账字段（ownerThreadId / isAgentActive / lastUsed）：
       // 渲染层只该看到 owner。它们不是「顺手没带」—— 带上就等于让主进程的记账
       // 随每一次 browser.tabsChanged 广播上线。
-      tabs: this.tabs.map(({ ownerRunId: _run, isAgentActive: _drive, ...pub }) => ({ ...pub })),
+      tabs: this.tabs.map(({ ownerThreadId: _thread, isAgentActive: _drive, lastUsed: _used, ...pub }) => ({ ...pub })),
     };
   }
 }

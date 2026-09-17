@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { loadIndex, saveIndex } from '../persist/indexFile';
 import { sessionFileFor } from '../persist/paths';
 import { agentService } from '../agent/AgentService';
+import { browserService } from '../browser/browserService';
 import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import type { AskAnswer } from '../../shared/askQuestion';
@@ -43,6 +44,10 @@ export class ThreadService {
     const thread = idx.threads.find((t) => t.id === threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${threadId} not found`);
     await agentService.dispose(threadId);
+    // 对话没了，它名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
+    // **排在 dispose 之后**：先把在飞的那一轮停下，再关它可能正在驱动的标签。
+    // 不挂在 agentService.dispose 里 —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
+    browserService.disposeForThread(threadId);
     idx.threads = idx.threads.filter((t) => t.id !== threadId);
     await saveIndex(idx);
     await fs.rm(sessionFileFor(thread.projectPath, threadId), { force: true });

@@ -24,7 +24,8 @@ export function tabLabel(t: BrowserTabInfo): string {
 /**
  * 浏览器侧栏的标签条。
  *
- * **`owner === 'agent'` 的标签会在本轮 run 结束时被主进程回收**（spec §3），
+ * **`owner === 'agent'` 的标签会被主进程自动关掉**：agent 标签超过 9 个时最久没用的那个、
+ * 以及开它的对话被删除时（spec 2026-09-17-browser-tab-lifecycle-design）。
  * 所以它们多一个「保留」——点了就转成用户的，此后不会被自动关掉。
  * 用户的标签没有这个按钮：它本来就不会被收走，摆一个不改变任何事的按钮更糟。
  */
@@ -74,8 +75,8 @@ export function TabStrip({
             {/*
               agent 操作指示灯（spec §4.7）。**只显示、不屏蔽** —— `setIgnoreInputEvents`
               在 Electron 41 上根本不存在（2026-09-08 spike 实测），原生层也盖不住 DOM 遮罩。
-              它与下面那个 owner 徽标是两件事：这个说「此刻谁在动它」，那个说「回合结束会不会
-              被收走」，agent 完全可以驱动一个用户的标签。
+              它与下面那个 owner 徽标是两件事：这个说「此刻谁在动它」，那个说「会不会被自动
+              关掉」，agent 完全可以驱动一个用户的标签。
             */}
             {driving && (
               <Tooltip content={`AI 正在操作这个标签${agentTabs.get(t.id) ? `：${agentTabs.get(t.id)}` : ''}`}>
@@ -106,7 +107,7 @@ export function TabStrip({
                 data-testid={`browser-tab-keep-${t.id}`}
                 onClick={(e) => { e.stopPropagation(); onKeep(t.id); }}
                 className="font-mono shrink-0 rounded hover:bg-[color:var(--color-hover-bg)]"
-                title="转成我自己的标签，回合结束不会被自动关掉"
+                title="转成我自己的标签，不会被自动关掉"
                 style={{ fontSize: 9.5, padding: '1px 4px', color: 'var(--color-ink-faint)' }}
               >保留</button>
             )}

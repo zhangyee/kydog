@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { ACTION_KINDS, KEY_NAMES, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import { MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS } from '../browser/extract';
 import { DEFAULT_NODE_LIMIT, PAGE_CONTENT_OPEN, PAGE_CONTENT_CLOSE } from '../browser/snapshot';
-import { MAX_TABS } from '../browser/tabRegistry';
+import { MAX_TABS, MAX_AGENT_TABS } from '../browser/tabRegistry';
 import { READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX } from '../agent/browserTools';
 import * as actionsNs from '../browser/actions';
 import * as extractNs from '../browser/extract';
@@ -83,6 +83,11 @@ const CHECKS: Check[] = [
   {
     constant: 'MAX_TABS', what: 'MAX_TABS（标签数硬上限）', value: MAX_TABS, file: 'SKILL.md',
     zh: /工具硬上限是 (\d+)/g, en: /the tool's hard cap is (\d+)/g,
+  },
+  {
+    constant: 'MAX_AGENT_TABS', what: 'MAX_AGENT_TABS（agent 标签全局上限，满了挤掉最久没用的）', value: MAX_AGENT_TABS,
+    file: 'references/browser.md',
+    zh: /agent 开的标签全局最多 (\d+) 个/g, en: /at most (\d+) agent-opened\s+tabs/g,
   },
   {
     constant: 'KEY_NAMES', what: 'KEY_NAMES 的个数（「只认这 N 个名字」）', value: KEY_NAMES.length, file: 'references/browser.md',

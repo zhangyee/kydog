@@ -257,6 +257,12 @@ const bs = vi.hoisted(() => ({
   navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
   /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
   unreported: new Map<string, { url: string; httpStatusCode: number }>(),
+  /** 标签归哪个对话。没登记 = 用户的（null）。`stateVisibleTo` 的替身照它过滤。 */
+  owners: new Map<string, string>(),
+  /** `open` 返回的「被上限挤掉的标签」。 */
+  evicted: [] as { tabId: string; ownerThreadId: string; url: string; title: string }[],
+  /** `open` 收到的参数，按顺序。 */
+  openArgs: [] as Record<string, unknown>[],
   /** historyNav 收到了什么、回什么。null 表示「没有可去的历史」。 */
   historyCalls: [] as Array<{ tabId: string; action: string }>,
   historyImpl: (() => ({
@@ -284,6 +290,10 @@ vi.mock('../browser/browserService', () => {
     WALKER_WORLD_ID: 31337,
     browserService: {
       getState: () => ({ tabs: bs.tabs, activeTabId: bs.activeTabId }),
+      stateVisibleTo: (threadId: string) => ({
+        tabs: bs.tabs.filter((t) => { const o = bs.owners.get(t.id); return o === undefined || o === threadId; }),
+        activeTabId: bs.activeTabId,
+      }),
       getSnapshot: () => { bs.order.push('getSnapshot'); return bs.current; },
       takeUnreportedNav: (tabId: string) => {
         const v = bs.unreported.get(tabId) ?? null;
@@ -321,7 +331,8 @@ vi.mock('../browser/browserService', () => {
       },
       open: (args: { url: string }) => {
         bs.order.push(`open:${args.url}`);
-        return Promise.resolve({ tabId: 't1', nav: bs.navImpl() });
+        bs.openArgs.push(args);
+        return Promise.resolve({ tabId: 't1', nav: bs.navImpl(), evicted: bs.evicted });
       },
       historyNav: (tabId: string, action: string) => {
         bs.order.push(`historyNav:${action}`);
@@ -335,8 +346,8 @@ vi.mock('../browser/browserService', () => {
       },
       consoleSince: () => bs.consoleImpl(),
       enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
-      withAgentDriving: <T>(tabId: string, runId: string | null, fn: () => Promise<T>) => {
-        bs.order.push(`driving:${tabId}:${runId}`); return fn();
+      withAgentDriving: <T>(tabId: string, threadId: string | null, fn: () => Promise<T>) => {
+        bs.order.push(`driving:${tabId}:${threadId}`); return fn();
       },
     },
   };
@@ -422,6 +433,9 @@ beforeEach(() => {
   bs.waitImpl = () => true;
   bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
   bs.activeTabId = 't1';
+  bs.owners.clear();
+  bs.evicted = [];
+  bs.openArgs.length = 0;
   bs.noTab = false;
   bs.evalThrows = null;
   // 不复位的话上一条用例摆的错误会渗进下一条，「没有错误就一个字都不加」那条会假红。
@@ -867,7 +881,7 @@ describe('extract 的接线：隔离世界 + 整批预算（评审变异 M13）'
 describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
   // browserService.ts 的两处 docblock 逐字写着这两个「公开是给 Task 4 的……不要另开
   // 一条路」。不走的后果：(a) 整批期间 isAgentActive 恒为 false → 动作触发的
-  // window.open 新标签被判成用户的 → disposeForRun 永不回收；(b) 与渲染层的
+  // window.open 新标签被判成用户的 → 不受 agent 标签上限管；(b) 与渲染层的
   // browser.navControl / browser.open 在同一标签上不串行。
   it('排队与驱动窗口都套在整批外面，派发与收尾快照都在里面', async () => {
     bs.isolatedImpl = () => ({
@@ -879,14 +893,14 @@ describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
     // 取在队列外的话，这一批在队列里等的那段时间同一个标签上别人产生的新快照
     // 会被算进「本批的页面变化」。
     expect(bs.order).toEqual([
-      'enqueue:t1', 'driving:t1:run-1', 'getSnapshot', 'consoleCursor:t1', 'evalInPage', 'snapshot',
+      'enqueue:t1', 'driving:t1:thread-1', 'getSnapshot', 'consoleCursor:t1', 'evalInPage', 'snapshot',
     ]);
   });
 
   it('browser_read 也走同一条路', async () => {
     bs.isolatedImpl = () => read('正文');
     await toolNamed('browser_read').execute('call-2', { tabId: 't1' });
-    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'evalInPage']);
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:thread-1', 'evalInPage']);
   });
 
   // 形状不对的一批不该先去占住这个标签的队列。
@@ -1018,7 +1032,7 @@ describe('页内求值走 evalInPage，不自己拿 webContents 注脚本', () =
 });
 
 describe('收尾快照抛了也要把已经抽到的数据交出来（I2）', () => {
-  // 标签在这一刻已经没了（用户关了侧栏那个标签、或 disposeForRun 抢在前面）就抛
+  // 标签在这一刻已经没了（用户关了侧栏那个标签、或它被 agent 标签上限挤掉）就抛
   // browser.no_tab。快照在 try 之外的时候，这一批**已经抽到的数据全部跟着丢掉** ——
   // 与 ACT_DESC 承诺的「出错即停但已抽到的数据全部返回」正好相反。
   it('抽到的数据照常返回，并说清页面此刻什么样这次说不出来', async () => {
@@ -1092,11 +1106,13 @@ const login = (params: Record<string, unknown> = {}, signal?: AbortSignal) =>
   toolNamed('browser_login').execute('call-login', { tabId: 't1', ...params }, signal);
 
 describe('browser_login：参数原样传给 loginFlow', () => {
-  it('runId、tabId、usernameIndex、snapshotId 都传下去了', async () => {
+  it('runId、threadId、tabId、usernameIndex、snapshotId 都传下去了', async () => {
     await login({ usernameIndex: 3, snapshotId: 'snap_aaa' });
     expect(lf.calls).toHaveLength(1);
     expect(lf.calls[0].tabId).toBe('t1');
     expect(lf.calls[0].opts.runId).toBe('run-1');
+    // 驱动（标签归属）跟对话走 —— 两个值不同，传反了这两行至少红一行
+    expect(lf.calls[0].opts.threadId).toBe('thread-1');
     expect(lf.calls[0].opts.usernameIndex).toBe(3);
     expect(lf.calls[0].opts.snapshotId).toBe('snap_aaa');
   });
@@ -1542,36 +1558,112 @@ describe('页面报的错挂进工具结果（Task 4）', () => {
 });
 
 /**
- * **回合结束会收回 agent 开的标签，模型必须知道**（2026-09-14 实测出来的）。
+ * **agent 标签跟对话走，模型要知道的**（spec 2026-09-17-browser-tab-lifecycle-design）。
  *
- * 模型刚用 browser_open 开完标签，就对用户说「新标签留在 example.com 上，没有关闭」；
- * 这一轮一结束，标签被 `disposeForRun` 收掉（spec 拍板的设计：agent 开的回合结束就关）。
- * 用户问起，它看到标签没了、又不知道有自动收回这回事，就猜「是你手动关掉的」—— 错怪了用户。
- * 根因：工具说明、返回值、skill 文档里都没有告诉它这件事。
+ * 2026-09-14 那次实测的教训仍然成立：不告诉模型标签的寿命，它就会对用户说错话、错怪用户。
+ * 2026-09-17 起规则变了：跨回合一直在、全局最多 9 个挤掉最久没用的、对话删除时一起关 ——
+ * 旧的「本轮结束会关、提醒用户点保留」那句每条回复都被模型复述一遍，已经删掉。
  */
-describe('回合结束会收回 agent 开的标签：模型要知道', () => {
-  it('browser_open 新开标签时结果里说清本轮结束会关、要留着就提醒用户点「保留」；复用已有标签时不说', async () => {
+describe('agent 标签跟对话走：模型要知道的', () => {
+  it('browser_open 新开标签：结果里不再说「本轮结束会关」；归属用的是 threadId 不是 runId', async () => {
     const opened = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
-    expect(opened).toContain('本轮新开的标签');
-    expect(opened).toContain('「保留」');
-
-    // 同一条用例里的反向对照：在已有标签里导航，没有新开标签，就不该挂这句。
-    const reused = bodyOf(await toolNamed('browser_open').execute('call-2', { url: 'https://a.example/q', tabId: 't1' }));
-    expect(reused).not.toContain('本轮新开的标签');
+    expect(opened).toContain('已打开 https://a.example/q');
+    expect(opened).not.toContain('本轮');
+    expect(opened).not.toContain('「保留」');
+    expect(bs.openArgs[0]).toMatchObject({ ownerThreadId: 'thread-1' });
+    expect(bs.openArgs[0]).not.toHaveProperty('ownerRunId');
   });
 
-  it('browser_act 这一批里弹出了新标签：同样说清它们会在本轮结束时被自动关掉', async () => {
+  it('挤掉了本对话的标签就说出来，别的对话的不提', async () => {
+    bs.evicted = [
+      { tabId: 't7', ownerThreadId: 'thread-1', url: 'https://old.example/p', title: '' },
+      { tabId: 't8', ownerThreadId: 'thread-other', url: 'https://theirs.example/p', title: '' },
+    ];
+    const withMine = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
+    expect(withMine).toContain('关掉了最久没用的');
+    expect(withMine).toContain('[t7] https://old.example/p');
+    expect(withMine).not.toContain('t8');
+
+    bs.evicted = [{ tabId: 't8', ownerThreadId: 'thread-other', url: 'https://theirs.example/p', title: '' }];
+    const onlyTheirs = bodyOf(await toolNamed('browser_open').execute('call-2', { url: 'https://a.example/q' }));
+    expect(onlyTheirs).not.toContain('关掉了最久没用的');
+  });
+
+  it('browser_act 这一批里弹出了新标签：列出来，但不再说「本轮结束时被自动关掉」', async () => {
     bs.dispatchImpl = () => { bs.tabs.push({ id: 't9', url: 'https://pop.example/', title: '' }); return '点了'; };
     const s = bodyOf(await act([{ kind: 'click', selector: '#x' }]));
     expect(s).toContain('这一批里新开了 1 个标签页');
-    expect(s).toContain('本轮结束时被自动关掉');
+    expect(s).not.toContain('本轮结束');
   });
 
-  it('工具说明：browser_open 说清本轮结束会关、提醒用户点「保留」；browser_tabs 说清标签不见了别断定是用户关的', () => {
+  it('工具说明：browser_open 说清跨回合在、上限 9、不必提醒保留；browser_tabs 说清只列本对话的、不见了别断定是用户关的', () => {
     const open = toolNamed('browser_open').description;
-    expect(open).toContain('这一轮结束时会被自动关掉');
-    expect(open).toContain('「保留」');
-    expect(toolNamed('browser_tabs').description).toContain('不要断定是用户关的');
+    expect(open).toContain('跨回合一直在');
+    expect(open).toContain('最多 9 个');
+    expect(open).toContain('不必提醒用户点「保留」');
+    expect(open).not.toContain('这一轮结束时会被自动关掉');
+    const tabs = toolNamed('browser_tabs').description;
+    expect(tabs).toContain('别的对话开的不在这里');
+    expect(tabs).toContain('不要断定是用户关的');
+  });
+
+  it('标签不存在时，报错里说清可能是被上限挤掉了', async () => {
+    const e = await toolNamed('browser_read').execute('call-1', { tabId: 'gone' }).then(() => null, (x: unknown) => x);
+    expect((e as { code?: string }).code).toBe('browser.no_tab');
+    expect(String((e as Error).message)).toContain('超过 9 个');
+  });
+});
+
+/**
+ * **别的对话开的标签不进清单**（Yee 2026-09-17 拍板）。头部三行、`browser_tabs`、
+ * 「这一批里新开了」都按对话过滤。
+ */
+describe('别的对话的标签不进这个对话的清单', () => {
+  beforeEach(() => {
+    bs.tabs = [
+      { id: 't1', url: 'https://mine.example/', title: '' },
+      { id: 't2', url: 'https://theirs.example/', title: '' },
+      { id: 't3', url: 'https://user.example/', title: '' },
+    ];
+    bs.owners.set('t1', 'thread-1');
+    bs.owners.set('t2', 'thread-other');
+  });
+
+  it('browser_tabs 与头部那行：本对话的与用户的在，别的对话的不在', async () => {
+    const out = bodyOf(await toolNamed('browser_tabs').execute('call-1', {}));
+    const header = out.split('\n')[0];
+    expect(header).toContain('[t1]');
+    expect(header).toContain('[t3]');
+    expect(header).not.toContain('[t2]');
+    expect(out).toContain('https://user.example/');
+    expect(out).not.toContain('theirs.example');
+  });
+
+  /** `takeUnreportedNav` 报过就清 —— 不先过滤的话，这个对话会把别的对话标签上的晚到导航吃掉。 */
+  it('导航那一行只取本对话看得见的标签，别的对话标签上的未报告导航原样留着', async () => {
+    bs.unreported.set('t1', { url: 'https://mine.example/next', httpStatusCode: 200 });
+    bs.unreported.set('t2', { url: 'https://theirs.example/next', httpStatusCode: 403 });
+
+    const out = bodyOf(await toolNamed('browser_tabs').execute('call-1', {}));
+
+    expect(out).toContain('导航: [t1]');
+    expect(out).not.toContain('[t2] 已打开');
+    expect(bs.unreported.has('t1')).toBe(false);
+    expect(bs.unreported.has('t2')).toBe(true);
+  });
+
+  it('这一批里别的对话恰好开了标签：不算进「这一批里新开了」；本对话弹出的照样列', async () => {
+    bs.dispatchImpl = () => {
+      bs.tabs.push({ id: 't8', url: 'https://theirs-new.example/', title: '' });
+      bs.owners.set('t8', 'thread-other');
+      bs.tabs.push({ id: 't9', url: 'https://mine-pop.example/', title: '' });
+      bs.owners.set('t9', 'thread-1');
+      return '点了';
+    };
+    const out = bodyOf(await act([{ kind: 'click', selector: '#x' }]));
+    expect(out).toContain('这一批里新开了 1 个标签页');
+    expect(out).toContain('[t9] https://mine-pop.example/');
+    expect(out).not.toContain('theirs-new.example');
   });
 });
 

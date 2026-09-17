@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.mock('../ipc/broadcaster', () => ({ broadcaster: { emit: vi.fn() } }));
 // 替身掉整个 browserService：真的那一个 import 的是 electron 的 WebContentsView / session。
 vi.mock('../browser/browserService', () => ({
-  browserService: { disposeForRun: vi.fn() },
+  browserService: { endRun: vi.fn() },
 }));
 
 import { agentService } from './AgentService';
@@ -12,7 +12,7 @@ import { logger } from '../log';
 
 type Listener = (evt: { type: string; [k: string]: unknown }) => void;
 
-const disposeForRun = browserService.disposeForRun as unknown as ReturnType<typeof vi.fn>;
+const endRun = browserService.endRun as unknown as ReturnType<typeof vi.fn>;
 
 /**
  * 造一个假 session 并挂上订阅。手法照 AgentService.parallel.test.ts —— 直接往私有
@@ -57,9 +57,17 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 beforeEach(() => {
   (agentService as any).sessions.clear();
   (agentService as any).runs.clear();
-  disposeForRun.mockClear();
+  endRun.mockClear();
 });
 afterEach(() => { vi.restoreAllMocks(); });
+
+/*
+ * 2026-09-17 起**标签跟对话走、不跟回合走**（spec 2026-09-17-browser-tab-lifecycle-design），
+ * 回合结束不再关任何标签 —— 这里原先回收标签的那个调用换成了 `endRun`，只清本轮的下载计数。
+ * 下面这一族用例钉的「三个出口读同一个 `bound.runId`」照样成立：`endRun` 的下载计数、
+ * `loginFlow` 的「本轮已填过一次」、`hasActiveRun` 的闸，读的都是它。关标签的时机
+ * （对话删除、到上限挤掉）不在 AgentService 里。
+ */
 
 /**
  * **这一条是本批最容易「悄悄不工作」的地方。**
@@ -67,11 +75,11 @@ afterEach(() => { vi.restoreAllMocks(); });
  * `agent_settled` 不带任何载荷（`agent-session.d.ts`：`{ type: "agent_settled" }`），
  * 而它在 `_runAgentPrompt` 的 `finally` 里发（`agent-session.js:755`），**严格排在
  * 最后一次 `agent_end` 之后**。KyDog 的 `agent_end` 分支已经把 `runs` 置回 idle，
- * 所以这一刻现算 runId 会算成 `'unknown'` —— `disposeForRun('unknown')` 拿它去比
- * `ownerRunId` 一个都命中不了：**不抛、不红、什么都不回收**，标签只增不减直到撞满上限。
+ * 所以这一刻现算 runId 会算成 `'unknown'` —— `endRun('unknown')` 一条计数都清不到：
+ * **不抛、不红**，本轮的下载计数永远留在表里。
  */
-describe('agent_settled → 回收本轮 agent 开的标签', () => {
-  it('回收用的是 send() 铸出来的那个 runId，不是 agent_end 之后现算的 unknown', async () => {
+describe('agent_settled → 结束本轮', () => {
+  it('结束用的是 send() 铸出来的那个 runId，不是 agent_end 之后现算的 unknown', async () => {
     const { fire } = attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
@@ -80,19 +88,19 @@ describe('agent_settled → 回收本轮 agent 开的标签', () => {
     expect(agentService.getRunState('t1').status).toBe('idle');
 
     fire({ type: 'agent_settled' });
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
     expect(runId).not.toBe('unknown');
   });
 
-  it('agent_end 还不回收 —— pi 在它之后仍可能自动重试', async () => {
+  it('agent_end 还不结束 —— pi 在它之后仍可能自动重试', async () => {
     const { fire } = attach('t1');
     await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
     fire(AGENT_END);
-    expect(disposeForRun).not.toHaveBeenCalled();
+    expect(endRun).not.toHaveBeenCalled();
   });
 
-  it('自动重试：agent_end → 再一轮 agent_start/agent_end → settled，回收的仍是同一个 runId', async () => {
+  it('自动重试：agent_end → 再一轮 agent_start/agent_end → settled，结束的仍是同一个 runId', async () => {
     const { fire } = attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
@@ -101,35 +109,35 @@ describe('agent_settled → 回收本轮 agent 开的标签', () => {
     fire({ type: 'agent_start' });
     fire(AGENT_END);
     fire({ type: 'agent_settled' });
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
-  it('abort 收尾也回收 —— pi 的 finally 照发 agent_settled', async () => {
+  it('abort 收尾也结束本轮 —— pi 的 finally 照发 agent_settled', async () => {
     const { fire } = attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
     fire({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] });
     fire({ type: 'agent_settled' });
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
   it('没 send 过就收到 settled → 一次都不调（不许拿 unknown / null 去空跑一遍）', () => {
     const { fire } = attach('t1');
     fire({ type: 'agent_settled' });
-    expect(disposeForRun).not.toHaveBeenCalled();
+    expect(endRun).not.toHaveBeenCalled();
   });
 
-  it('settled 来第二次不再回收 —— 本轮 runId 已经作废', async () => {
+  it('settled 来第二次不再结束一次 —— 本轮 runId 已经作废', async () => {
     const { fire } = attach('t1');
     await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
     fire(AGENT_END);
     fire({ type: 'agent_settled' });
     fire({ type: 'agent_settled' });
-    expect(disposeForRun).toHaveBeenCalledTimes(1);
+    expect(endRun).toHaveBeenCalledTimes(1);
   });
 
-  it('两条 thread 各回收各的', async () => {
+  it('两条 thread 各结束各的', async () => {
     const a = attach('t1');
     const b = attach('t2');
     const ra = await agentService.send('t1', '/x', '甲');
@@ -139,30 +147,30 @@ describe('agent_settled → 回收本轮 agent 开的标签', () => {
     a.fire({ type: 'agent_start' });
     a.fire(AGENT_END);
     a.fire({ type: 'agent_settled' });
-    expect(disposeForRun.mock.calls).toEqual([[ra.runId]]);
+    expect(endRun.mock.calls).toEqual([[ra.runId]]);
 
     b.fire({ type: 'agent_start' });
     b.fire(AGENT_END);
     b.fire({ type: 'agent_settled' });
-    expect(disposeForRun.mock.calls).toEqual([[ra.runId], [rb.runId]]);
+    expect(endRun.mock.calls).toEqual([[ra.runId], [rb.runId]]);
   });
 });
 
 /**
- * `currentRunIdFor` 是浏览器工具给新标签盖的那个戳（`ownerRunId`）。它与上面的
- * `disposeForRun` **必须读同一个事实**，否则开标签用 A、回收用 B，回收永远命中不了。
+ * `currentRunIdFor` 是浏览器工具拿来记账的那个戳（下载计数、`loginFlow` 的「本轮已填过」）。
+ * 它与上面的 `endRun` **必须读同一个事实**，否则记账用 A、清账用 B，清账永远命中不了。
  *
  * 所以它读的是 `bound.runId` 而不是现算 `runs` —— pi 自动重试那一段 `runs` 已经是
- * idle，现算会得到 `null`，那期间新开的标签会被记成**用户的**，回合结束永不回收。
+ * idle，现算会得到 `null`，那期间的下载与登录会被记到「不在任何一轮里」名下。
  */
-describe('currentRunIdFor：浏览器工具给标签盖的戳', () => {
+describe('currentRunIdFor：浏览器工具记账用的戳', () => {
   it('run 在飞时 = send() 铸出的 runId', async () => {
     attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     expect(agentService.currentRunIdFor('t1')).toBe(runId);
   });
 
-  it('agent_end 之后（pi 的重试窗口）仍是同一个 runId —— 这段时间开的标签也归本轮', async () => {
+  it('agent_end 之后（pi 的重试窗口）仍是同一个 runId —— 这段时间的记账也归本轮', async () => {
     const { fire } = attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
@@ -171,7 +179,7 @@ describe('currentRunIdFor：浏览器工具给标签盖的戳', () => {
     expect(agentService.currentRunIdFor('t1')).toBe(runId);
   });
 
-  it('settled 之后回 null —— 此后开的标签是用户的', async () => {
+  it('settled 之后回 null —— 此后不在任何一轮里', async () => {
     const { fire } = attach('t1');
     await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
@@ -184,30 +192,30 @@ describe('currentRunIdFor：浏览器工具给标签盖的戳', () => {
     expect(agentService.currentRunIdFor('没见过的 thread')).toBeNull();
   });
 
-  it('开标签的戳与回收的判据是同一个值', async () => {
+  it('记账的戳与结束本轮的判据是同一个值', async () => {
     const { fire } = attach('t1');
     await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
     const stamped = agentService.currentRunIdFor('t1');
     fire(AGENT_END);
     fire({ type: 'agent_settled' });
-    expect(disposeForRun.mock.calls).toEqual([[stamped]]);
+    expect(endRun.mock.calls).toEqual([[stamped]]);
   });
 });
 
 /**
  * **同一族的第三个洞。**
  *
- * `disposeForRun` 全仓只有 `agent_settled` 一个触发点，而 `agent_settled` 是 pi 的 session
+ * `endRun` 的正常触发点是 `agent_settled`，而 `agent_settled` 是 pi 的 session
  * 发的 —— session 一拆，本轮就再也不会 settle。两条真实入口都能落进 pi 的重试窗口
  * （`agent_end` 之后、`agent_settled` 之前，那一刻 `runs` 已经是 idle）：
  *  · `threadService.delete` 无条件 `dispose(threadId)`；
  *  · `localeSet` 通过 `disposeAllSessions()`。
- * 不在 `dispose` 里补一次回收，那些标签的 `ownerRunId` 就再也没人 settle，
- * 此后任何一轮的 `disposeForRun` 都命中不了，它们占着 MAX_TABS 的名额活到进程退出。
+ * 不在 `dispose` 里补一次，`bound.runId` 就留在那里、本轮的计数再也没人清。
+ * **`dispose` 不关标签**：切语言也走这条，那不是「对话没了」（关标签挂在 `threadService.delete`）。
  */
-describe('dispose(thread)：session 拆了，本轮标签在这里最后回收一次', () => {
-  it('pi 的重试窗口里 dispose（删线程 / 切语言都走这条）→ 回收的是本轮那个 runId', async () => {
+describe('dispose(thread)：session 拆了，本轮在这里最后结束一次', () => {
+  it('pi 的重试窗口里 dispose（删线程 / 切语言都走这条）→ 结束的是本轮那个 runId', async () => {
     const { fire } = attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
@@ -216,54 +224,54 @@ describe('dispose(thread)：session 拆了，本轮标签在这里最后回收�
     expect(agentService.getRunState('t1').status).toBe('idle');
 
     await agentService.dispose('t1');
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
-  it('run 正在飞时 dispose 也回收（abort 之后立刻删线程）', async () => {
+  it('run 正在飞时 dispose 也结束本轮（abort 之后立刻删线程）', async () => {
     attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     await agentService.dispose('t1');
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
-  it('回收用的戳与浏览器工具盖的是同一个值', async () => {
+  it('结束用的戳与浏览器工具记账的是同一个值', async () => {
     const { fire } = attach('t1');
     await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
     const stamped = agentService.currentRunIdFor('t1');
     fire(AGENT_END);
     await agentService.dispose('t1');
-    expect(disposeForRun.mock.calls).toEqual([[stamped]]);
+    expect(endRun.mock.calls).toEqual([[stamped]]);
   });
 
-  it('settled 已经回收过了，再 dispose 不重复回收', async () => {
+  it('settled 已经结束过了，再 dispose 不重复结束', async () => {
     const { fire } = attach('t1');
     const { runId } = await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
     fire(AGENT_END);
     fire({ type: 'agent_settled' });
     await agentService.dispose('t1');
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
   it('没 send 过的 session dispose 一次都不调（不许拿 null 空跑一遍）', async () => {
     attach('t1');
     await agentService.dispose('t1');
-    expect(disposeForRun).not.toHaveBeenCalled();
+    expect(endRun).not.toHaveBeenCalled();
   });
 
-  it('没见过的 thread dispose：不抛也不回收', async () => {
+  it('没见过的 thread dispose：不抛也不结束任何一轮', async () => {
     await agentService.dispose('没见过的 thread');
-    expect(disposeForRun).not.toHaveBeenCalled();
+    expect(endRun).not.toHaveBeenCalled();
   });
 
   /**
    * `dispose` 里那句 `bound.runId = null` 防的就是这一格：它排在
    * `await bound.session.cleanup()` **之前**，所以 cleanup 还没落地、订阅还挂着的那段时间里
-   * 打进来的 `agent_settled` 读到的已经是 null，不会再回收第二次。
+   * 打进来的 `agent_settled` 读到的已经是 null，不会再结束第二次。
    * （账本层本来就幂等，所以这是一道防御线；没有这条用例它零守护。）
    */
-  it('cleanup 那个 await 窗口里 settled 打进来 → 只回收一次，不重复', async () => {
+  it('cleanup 那个 await 窗口里 settled 打进来 → 只结束一次，不重复', async () => {
     let finishCleanup!: () => void;
     const { fire } = attach('t1', { cleanup: () => new Promise<void>((res) => { finishCleanup = res; }) });
     const { runId } = await agentService.send('t1', '/x', '你好');
@@ -271,20 +279,20 @@ describe('dispose(thread)：session 拆了，本轮标签在这里最后回收�
     fire({ type: 'agent_settled' });
     finishCleanup();
     await pending;
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
-  it('disposeAllSessions（切界面语言那条路）：两条 thread 各回收各的', async () => {
+  it('disposeAllSessions（切界面语言那条路）：两条 thread 各结束各的', async () => {
     const a = attach('t1');
     attach('t2');
     const ra = await agentService.send('t1', '/x', '甲');
     const rb = await agentService.send('t2', '/x', '乙');
-    // t1 落在 pi 的重试窗口里（runs 已回 idle），t2 还在飞 —— 两种都要回收。
+    // t1 落在 pi 的重试窗口里（runs 已回 idle），t2 还在飞 —— 两种都要结束。
     a.fire({ type: 'agent_start' });
     a.fire(AGENT_END);
 
     await agentService.disposeAllSessions();
-    expect([...disposeForRun.mock.calls].sort()).toEqual([[ra.runId], [rb.runId]].sort());
+    expect([...endRun.mock.calls].sort()).toEqual([[ra.runId], [rb.runId]].sort());
   });
 });
 
@@ -303,7 +311,7 @@ describe('hasActiveRun：闸读的是 bound.runId，不是现算的 runs', () =>
     expect(agentService.hasActiveRun()).toBe(true);
   });
 
-  it('settled 之后才算没有 —— 与回收是同一时刻', async () => {
+  it('settled 之后才算没有 —— 与结束本轮是同一时刻', async () => {
     const { fire } = attach('t1');
     await agentService.send('t1', '/x', '你好');
     fire({ type: 'agent_start' });
@@ -329,7 +337,7 @@ describe('hasActiveRun：闸读的是 bound.runId，不是现算的 runs', () =>
  * **不是边角**：首次运行没配好 key、token 过期都是日常路径。
  *
  * 所以本轮必须在 `send()` 的 catch 里就地落地，与另外两个出口（`agent_settled`、
- * `dispose`）同形：清掉戳、回收本轮的标签。漏了这一手，`hasActiveRun()` 会永远为真，
+ * `dispose`）同形：清掉戳、结束本轮。漏了这一手，`hasActiveRun()` 会永远为真，
  * 用户此后在设置里切界面语言一律被拒（提示「有任务正在运行」而根本没有任务在跑），
  * 只能靠重发一条 / 删线程 / 重启应用恢复。
  */
@@ -348,11 +356,11 @@ describe('send() 的 prompt reject：pi 不补发 agent_settled，本轮在这�
     expect(agentService.currentRunIdFor('t1')).toBeNull();
   });
 
-  it('本轮的标签在这里回收 —— settled 永远不会来，这是最后一次机会', async () => {
+  it('本轮在这里结束 —— settled 永远不会来，这是最后一次机会', async () => {
     attach('t1', { prompt: async () => { throw new Error('OAuth 凭据已过期'); } });
     const { runId } = await agentService.send('t1', '/x', '你好');
     await flush();
-    expect(disposeForRun.mock.calls).toEqual([[runId]]);
+    expect(endRun.mock.calls).toEqual([[runId]]);
   });
 
   it('迟到的 reject 只清自己那一轮，不许把下一轮的戳一起抹掉', async () => {
@@ -361,7 +369,7 @@ describe('send() 的 prompt reject：pi 不补发 agent_settled，本轮在这�
     const first = await agentService.send('t1', '/x', '甲');
     fire({ type: 'agent_start' });
     fire(AGENT_END);
-    fire({ type: 'agent_settled' });                             // 第一轮正常收尾，标签已回收
+    fire({ type: 'agent_settled' });                             // 第一轮正常收尾，已经结束
     const second = await agentService.send('t1', '/x', '乙');     // 新一轮盖上新戳
     expect(second.runId).not.toBe(first.runId);
 
@@ -369,6 +377,6 @@ describe('send() 的 prompt reject：pi 不补发 agent_settled，本轮在这�
     await flush();
     expect(agentService.currentRunIdFor('t1')).toBe(second.runId);
     expect(agentService.hasActiveRun()).toBe(true);
-    expect(disposeForRun.mock.calls).toEqual([[first.runId]]);    // 没顺手把第二轮的标签也收了
+    expect(endRun.mock.calls).toEqual([[first.runId]]);    // 没顺手把第二轮也结束了
   });
 });

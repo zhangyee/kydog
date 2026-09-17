@@ -45,23 +45,25 @@ export type Bound = {
   runStartIndex: number | null;
   /**
    * 这条 session 此刻在为**哪一轮 KyDog run** 服务。**唯一的写入点**是 `send()` 铸出
-   * runId 那一下（另一处是造 bound 时的初始 null）；**清除点有三个**，每一个都顺带把
-   * 本轮的标签回收掉，三处同形：
+   * runId 那一下（另一处是造 bound 时的初始 null）；**清除点有三个**，每一个都顺带调
+   * `browserService.endRun`（清本轮的下载计数），三处同形：
    *  · `agent_settled` 分支 —— pi 正常收尾；
    *  · `send()` 的 catch —— `prompt()` reject，pi 不会补发 `agent_settled`；
    *  · `dispose()` —— session 一拆就永远等不到 settle 了。
    * 少一个出口，这个字段就会**留在那里**：`hasActiveRun()` 从此恒为真（切界面语言永久
-   * 被拒）、`currentRunIdFor` 继续拿死掉的 runId 盖戳、那些标签再也没人回收。
+   * 被拒）、`currentRunIdFor` 继续拿死掉的 runId 记账、本轮的下载计数再也没人清。
+   *
+   * （2026-09-17 之前这三个出口还会**关掉本轮 agent 开的标签**。现在标签跟对话走，
+   * 关标签挂在 `threadService.delete` 上，见 spec `2026-09-17-browser-tab-lifecycle-design`。）
    *
    * **不能用 `runs` 现算代替**，两处都栽在同一件事上：
    *  · `agent_settled` 不带任何载荷（`agent-session.d.ts` 的 `{ type:"agent_settled" }`），
    *    而它在 `_runAgentPrompt` 的 `finally` 里发（`agent-session.js:755`），**排在最后
    *    一次 `agent_end` 之后** —— 那时 `runs` 早被下面 agent_end 分支置回 idle，
-   *    现算得到 `'unknown'`，`disposeForRun('unknown')` 一个标签都命中不了，
-   *    不抛不红，只是永远不回收。
+   *    现算得到 `'unknown'`，`endRun('unknown')` 一条计数都清不到，不抛不红。
    *  · pi 在 `agent_end` 之后仍可能自动重试（`docs/extensions.md:560`，
    *    `_handlePostAgentRun` → `agent.continue()`）。那一段 `runs` 也是 idle，
-   *    而重试里新开的标签仍属于同一轮 KyDog run。
+   *    而重试仍属于同一轮 KyDog run。
    */
   runId: string | null;
   staleAfterRun?: boolean;
@@ -223,10 +225,10 @@ class AgentService {
       //
       // 相等判断不能省：reject 迟到时 `bound.runId` 可能已经是下一轮的了，
       // 无条件置 null 会把新那一轮的戳抹掉。字段还是本轮的，才轮得到这里收尾 ——
-      // 顺带回收本轮的标签，与另外两个出口同形（settled 已经来过时这一支不会进）。
+      // 顺带结束本轮，与另外两个出口同形（settled 已经来过时这一支不会进）。
       if (bound.runId === runId) {
         bound.runId = null;
-        browserService.disposeForRun(runId);
+        browserService.endRun(runId);
       }
     });
     return { runId };
@@ -248,15 +250,17 @@ class AgentService {
     if (!bound) return;
     // **session 一拆，本轮就再也不会 settle 了** —— `agent_settled` 由 pi 的 session 发
     // （`_runAgentPrompt` 的 finally），session 没了就没人发。所以这里补最后
-    // 一次回收：不补的话，本轮开的标签带着一个永远等不到 settle 的 `ownerRunId`，
-    // 此后任何一轮的 `disposeForRun` 都命中不了它们，它们占着 MAX_TABS 的名额活到进程退出。
+    // 一次结束：不补的话 `bound.runId` 留在那里，本轮的下载计数再也没人清。
+    //
+    // **这里不关标签。** 切界面语言（disposeAllSessions）与换 provider（markStaleOrDispose）
+    // 也走 dispose，那不是「对话没了」。关标签只挂在 threadService.delete / projectService.close。
     //
     // 读的是 `bound.runId`，与 `agent_settled` / `currentRunIdFor` 同一个字段（见 Bound.runId）：
     // 现算 `runs` 在 pi 的重试窗口里已经是 idle —— 而删线程（threadService.delete 无条件
     // dispose）与切界面语言（localeSet → disposeAllSessions）两条真实入口都能落进那个窗口。
     const abandonedRunId = bound.runId;
     bound.runId = null;
-    if (abandonedRunId !== null) browserService.disposeForRun(abandonedRunId);
+    if (abandonedRunId !== null) browserService.endRun(abandonedRunId);
     // Adaptation B: fake has cleanup(), real has dispose()
     if (bound.session.cleanup) await bound.session.cleanup();
     else if (bound.session.dispose) bound.session.dispose();
@@ -270,14 +274,13 @@ class AgentService {
   }
 
   /**
-   * 浏览器工具给新标签盖的那个戳（`ownerRunId`）。没有 run 在飞就是 `null` ——
-   * 那时开的标签是用户的，回合结束不该被回收。
+   * 浏览器工具**按轮记账**用的那个戳：`browser_download` 每轮 10 个的计数、`loginFlow` 的
+   * 「本轮已经填过一次」。没有 run 在飞就是 `null`。**标签归属不读它**（标签跟对话走，读 threadId）。
    *
    * **读 `bound.runId`，不是现算 `runs`**：pi 在 `agent_end` 之后仍可能自动重试
    * （`docs/extensions.md:560`），那一段 `runs` 已经是 idle，现算会得到 `null`，
-   * 于是重试里新开的标签被记成用户的、`agent_settled` 永不回收它们 ——
-   * 「标签只增不减直到撞满上限」的另一条路。它与 `disposeForRun` 读的是同一个字段，
-   * 盖戳与回收因此不可能对不上。
+   * 于是重试里的下载与登录被记到「不在任何一轮里」名下。它与 `endRun` 读的是同一个字段，
+   * 记账与清账因此不可能对不上。
    */
   currentRunIdFor(threadId: string): string | null {
     return this.sessions.get(threadId)?.runId ?? null;
@@ -488,13 +491,12 @@ class AgentService {
         }
         case 'agent_settled': {
           // **挂在这里，不是 agent_end** —— pi 在 agent_end 之后仍可能自动重试
-          // （docs/extensions.md:560），那时标签还属于同一轮 KyDog run。
-          // 回收用 bound.runId 而不是上面那个现算的 runId：这一刻 runs 已被
-          // agent_end 置回 idle，现算是 `'unknown'`，拿它去比 ownerRunId 一个都
-          // 命中不了 —— 不抛、不红，只是永远不回收（见 Bound.runId）。
+          // （docs/extensions.md:560），那时还属于同一轮 KyDog run。
+          // 用 bound.runId 而不是上面那个现算的 runId：这一刻 runs 已被
+          // agent_end 置回 idle，现算是 `'unknown'` —— 不抛、不红，只是永远清不到（见 Bound.runId）。
           const settledRunId = bound.runId;
           bound.runId = null;
-          if (settledRunId !== null) browserService.disposeForRun(settledRunId);
+          if (settledRunId !== null) browserService.endRun(settledRunId);
           return;
         }
         default:

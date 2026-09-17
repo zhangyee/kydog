@@ -30,7 +30,7 @@ export type RpcCall =
   // 空白页没有合法网址可传——分成两条路之后 URL 判据一个字都没放宽。
   | { method: 'browser.newTab'; args: undefined; result: { tabId: string } }
   | { method: 'browser.close'; args: { tabId: string }; result: void }
-  // 把 agent 开的标签转成用户的（ownerRunId → null），此后不会被回合结束的回收清掉。
+  // 把 agent 开的标签转成用户的（ownerThreadId → null），此后不会被 agent 标签上限挤掉，也不随对话删除被关。
   | { method: 'browser.keep'; args: { tabId: string }; result: void }
   | { method: 'browser.activate'; args: { tabId: string }; result: void }
   | { method: 'browser.navControl'; args: { tabId: string; action: 'back' | 'forward' | 'reload' | 'stop' }; result: void }

@@ -75,9 +75,12 @@ export function stripUrlUserinfo(raw: string): string {
  * 操作的标签。** `browser_act` / `browser_read` / `browser_login` 静默操作用户没在
  * 看的标签是常态（侧栏关着时 agent 照常干活），那时如果把 `*` 标成「被操作的标签」
  * 就是在撒谎。措辞与这里的判据必须是同一件事，见 `TABS_DESC`。
+ *
+ * **只列这个对话看得见的**（`stateVisibleTo`：用户的 + 本对话开的）—— 别的对话的标签
+ * 对这个任务没有意义，却每次工具调用都占上下文（Yee 2026-09-17 拍板）。
  */
-function tabsLine(): string {
-  const s = browserService.getState();
+function tabsLine(threadId: string): string {
+  const s = browserService.stateVisibleTo(threadId);
   if (s.tabs.length === 0) return '标签页: （无）';
   return '标签页: ' + s.tabs.map((t) => {
     const host = (() => { try { return new URL(t.url).host; } catch { return t.url || 'about:blank'; } })();
@@ -97,8 +100,8 @@ function tabsLine(): string {
  *
  * 没有任何标签有登录状态时**一个字都不加**（回 null），免得给每次工具调用都添一行噪声。
  */
-function loginLine(): string | null {
-  const notes = browserService.getState().tabs
+function loginLine(threadId: string): string | null {
+  const notes = browserService.stateVisibleTo(threadId).tabs
     .map((t) => ({ id: t.id, note: loginFlow.noteFor(t.id) }))
     .filter((r): r is { id: string; note: string } => r.note !== null);
   if (notes.length === 0) return null;
@@ -193,9 +196,9 @@ const OPEN_DESC = [
   '返回的快照里每个元素带一个编号。那个编号**只在这一份快照里有效**，',
   '页面一变就全部作废；browser_act 里用它必须同时带上 snapshotId。',
   '',
-  '**不带 tabId 新开的标签属于这一轮任务，这一轮结束时会被自动关掉**（为了控制标签数量）。',
-  '要让用户之后还能看、或者下一轮接着用，就提醒用户点那个标签上的「保留」按钮；',
-  '否则下一轮要用就重新打开，别指望上一轮的 tabId 还在。',
+  '**不带 tabId 新开的标签属于这个对话，跨回合一直在**，下一轮可以接着用同一个 tabId。',
+  `agent 开的标签全局最多 ${MAX_AGENT_TABS} 个，再开时关掉最久没用的那个（会在结果里说）；`,
+  '对话被删除时它名下的标签一起关掉。**不必提醒用户点「保留」**。',
 ].join('\n');
 
 // ── browser_act ─────────────────────────────────────────────────────────────
@@ -397,8 +400,10 @@ const TABS_DESC = [
   '带 * 的是侧栏当前显示的那个标签（用户打开侧栏时看到的就是它）——',
   '不是「用户此刻正看着」：侧栏关着的时候没有人在看，那时 agent 多半正在静默干活。',
   '',
-  '上一轮你开的标签如果不在清单里了，可能是那一轮结束时被自动关掉了（用户没点「保留」），',
-  '也可能是用户自己关的 —— 分不清就如实说分不清，**不要断定是用户关的**。',
+  '**只列用户的标签和这个对话开的标签**，别的对话开的不在这里。',
+  '',
+  `你开过的标签如果不在清单里了，可能是用户关的，也可能是 agent 标签超过 ${MAX_AGENT_TABS} 个时它最久没用、`,
+  '被关掉了 —— 分不清就如实说分不清，**不要断定是用户关的**。',
 ].join('\n');
 
 // ── 工厂 ────────────────────────────────────────────────────────────────────
@@ -406,6 +411,7 @@ const TABS_DESC = [
 /** run 上下文由 sessionFactory 闭包注入 —— pi 的 ctx 里只有 cwd，没有 KyDog 的 runId。 */
 import path from 'node:path';
 import { MAX_DOWNLOADS_PER_RUN, MAX_DOWNLOAD_BYTES } from '../browser/download';
+import { MAX_AGENT_TABS } from '../browser/tabRegistry';
 
 export type BrowserToolDeps = {
   currentRunId: () => string | null;
@@ -442,8 +448,10 @@ export type BrowserToolDeps = {
  *
  * 没有未报的导航就**一个字都不加**（回 null），免得给每次工具调用添一行噪声。
  */
-function navLine(): string | null {
-  const rows = browserService.getState().tabs
+function navLine(threadId: string): string | null {
+  // **先按对话过滤，再取**：`takeUnreportedNav` 报过就清，不过滤的话这个对话会把
+  // 别的对话标签上的晚到导航吃掉，那边再也看不到它。
+  const rows = browserService.stateVisibleTo(threadId).tabs
     .map((t) => ({ id: t.id, nav: browserService.takeUnreportedNav(t.id) }))
     .filter((r): r is { id: string; nav: { url: string; httpStatusCode: number } } => r.nav !== null);
   if (rows.length === 0) return null;
@@ -453,16 +461,19 @@ function navLine(): string | null {
   })}`).join(' · ');
 }
 
-const withTabs = (body: string): ToolResult => {
-  const login = loginLine();
-  const nav = navLine();
-  return text(`${tabsLine()}${login ? `\n${login}` : ''}${nav ? `\n${nav}` : ''}\n\n${body}`);
+const withTabsFor = (threadId: string, body: string): ToolResult => {
+  const login = loginLine(threadId);
+  const nav = navLine(threadId);
+  return text(`${tabsLine(threadId)}${login ? `\n${login}` : ''}${nav ? `\n${nav}` : ''}\n\n${body}`);
 };
 
 /** 排队之前先确认标签在。见 `browser_act` 那一处的注释：`enqueue` 只增不减。 */
 function assertTabExists(tabId: string): void {
   if (!browserService.getState().tabs.some((t) => t.id === tabId)) {
-    throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    // 说清两种常见成因 —— 标签跟对话走之后，「不见了」多半是其中之一，而不是它从没存在过。
+    throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}。`
+      + `可能是用户关掉了，也可能是 agent 开的标签超过 ${MAX_AGENT_TABS} 个时它是最久没用的那个、被关掉了`
+      + '——分不清就如实说分不清。要接着用就重新 browser_open。');
   }
 }
 
@@ -478,6 +489,8 @@ const DownloadParams = {
 };
 
 export function createBrowserTools(deps: BrowserToolDeps) {
+  /** 头部那几行只列这个对话看得见的标签（见 `tabsLine`）。 */
+  const withTabs = (body: string): ToolResult => withTabsFor(deps.threadId, body);
   const openTool = {
     name: 'browser_open',
     label: '打开网页',
@@ -491,22 +504,23 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       const consoleFrom = params.tabId === undefined
         ? ZERO_CURSOR
         : browserService.consoleCursor(params.tabId);
-      const { tabId, nav } = await browserService.open({
-        url: params.url, tabId: params.tabId, ownerRunId: deps.currentRunId(),
+      const { tabId, nav, evicted } = await browserService.open({
+        url: params.url, tabId: params.tabId, ownerThreadId: deps.threadId,
       });
       const parts = [describeNav(nav)];
-      // **本轮新开的标签，本轮结束就被收回**（spec §3：agent 开的回合结束就关）。在开出来的这一刻
-      // 就说清 —— 2026-09-14 实测，不说的话模型会告诉用户「标签留着、没有关闭」，一轮结束标签没了，
-      // 它又猜是用户关的。判据是这次调用有没有带 tabId：不带就是新开，这是我们自己发起的事实。
-      if (params.tabId === undefined) {
-        parts.push(`这是本轮新开的标签（[${tabId}]），本轮结束时会被自动关掉。`
-          + '要留着给用户看、或者下一轮接着用，请提醒用户点标签上的「保留」。');
+      // 新开标签挤掉了**本对话**的标签时当场说出来，模型不必等下次撞 no_tab 才知道。
+      // 挤掉的是别的对话的就不说 —— 那个标签本来就不在这个对话的清单里（spec 2026-09-17 §3）。
+      const mine = evicted.filter((e) => e.ownerThreadId === deps.threadId);
+      if (mine.length) {
+        parts.push(`为了不超过 ${MAX_AGENT_TABS} 个 agent 标签，关掉了最久没用的：`
+          + mine.map((e) => `[${e.tabId}] ${truncate(stripUrlUserinfo(e.url), TAB_URL_MAX)}`).join(' · ')
+          + '。要再用就重新打开。');
       }
       // 只有真的到了一个页面才取快照。拿不到内容的时候硬取，只会给一份空快照，
       // 让模型以为「这个页面什么都没有」——而事实是它压根没打开。
       //
       // **快照要接住**，与 browser_act 那一处是同一个失败形状：标签在这一刻已经没了
-      // （用户关了它、或 disposeForRun 抢在前面）就抛 browser.no_tab，把**已经拿到的
+      // （用户关了它、或它被上限挤掉）就抛 browser.no_tab，把**已经拿到的
       // 导航结论一起丢掉** —— 而 describeNav 那句话（尤其 timeout / superseded /
       // blocked 几条）是模型唯一读得到的协议事实。
       if (landedOnPage(nav.outcome)) {
@@ -548,14 +562,15 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       //  · enqueue —— 渲染层的 browser.navControl / browser.open 走的是另一条路，
       //    两条同时动一个标签时一次导航的事件会被另一次调用消费掉；
       //  · withAgentDriving —— 整批期间 `isAgentActive` 必须为 true，否则动作触发的
-      //    `window.open` 新标签会被 `setWindowOpenHandler` 判成用户的，`disposeForRun`
-      //    永不回收它，一轮长检索下来标签只增不减。
+      //    `window.open` 新标签会被 `setWindowOpenHandler` 判成用户的，不受 agent 标签上限管，
+      //    一轮长检索下来标签只增不减。
       return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
-        params.tabId, deps.currentRunId(),
+        params.tabId, deps.threadId,
         // **`before` 快照取在队列里面**：这一批在队列里等的那段时间，同一个标签上
         // 另一次操作可能产生新快照，拿队列外那一份去 diff 就会把别人的改动算进
         // 这一批的「页面变化」。控制台游标同一个理由，与 `before` 快照同一处取。
         () => runBatch(
+          deps.threadId,
           params.tabId,
           browserService.getSnapshot(params.tabId),
           browserService.consoleCursor(params.tabId),
@@ -579,7 +594,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       // 而返回值里没有任何东西说得出这件事。
       assertTabExists(params.tabId);
       return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
-        params.tabId, deps.currentRunId(), async () => {
+        params.tabId, deps.threadId, async () => {
           // **隔离世界，不是主世界。** 理由与 extract 那一处一字不差：页面覆写
           // `document.querySelector` / `innerText` 骗得到主世界、骗不到这里
           // （2026-09-08 spike 实测）。这里返回的整页正文同样是模型当事实用的东西 ——
@@ -618,7 +633,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     // （那份名单的双向比对会红）。
     parameters: TabsParams,
     async execute(): Promise<ToolResult> {
-      const s = browserService.getState();
+      const s = browserService.stateVisibleTo(deps.threadId);
       const body = s.tabs.length === 0
         ? '现在没有打开任何网页。要开就用 browser_open。'
         // URL 与标题各截各的上限（`TAB_URL_MAX` / `TAB_TITLE_MAX`，见它们自己的注释），
@@ -650,6 +665,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       assertTabExists(params.tabId);
       const r = await loginFlow.fill(params.tabId, {
         runId: deps.currentRunId(),
+        threadId: deps.threadId,
         // **不给就是不提交 —— 这是一处对 spec 的有意偏离，别照 spec 改回来。**
         //
         // `spec §4.6` 白纸黑字写的是「`submit` 默认 `true`」，这里刻意用 `false`
@@ -743,13 +759,14 @@ export function createBrowserTools(deps: BrowserToolDeps) {
  * browserTools.test.ts 才好把它整条钉住。
  */
 async function runBatch(
-  tabId: string, before: AxSnapshot | null, consoleFrom: ConsoleCursor,
+  threadId: string, tabId: string, before: AxSnapshot | null, consoleFrom: ConsoleCursor,
   steps: FlatStep[], signal?: AbortSignal,
 ): Promise<ToolResult> {
+  const withTabs = (body: string): ToolResult => withTabsFor(threadId, body);
   // spec §5.1：**这一批里新开的标签必须列出来**。不列的话模型点了一下、返回值说
   // 「成功」，而内容出现在一个它不知道存在的标签里 —— 接下来它会对着旧标签继续操作，
   // 一整轮检索都在一个没变的页面上跑。判据是两次标签清单的差集，协议层现成的事实。
-  const tabsBefore = new Set(browserService.getState().tabs.map((t) => t.id));
+  const tabsBefore = new Set(browserService.stateVisibleTo(threadId).tabs.map((t) => t.id));
   const rows: string[] = [];
   const collected: ExtractRow[] = [];
   // 预算跨步骤累计：`collected` 一把 JSON.stringify 进工具结果，而一批允许 60 个
@@ -770,7 +787,7 @@ async function runBatch(
   }
 
   // **收尾快照要接住。** 它在 try 之外的时候，标签在这一刻已经没了（用户关了侧栏那个
-  // 标签、或 disposeForRun 抢在前面）就抛 browser.no_tab，把这一批**已经抽到的数据
+  // 标签、或它被上限挤掉）就抛 browser.no_tab，把这一批**已经抽到的数据
   // 一起丢光** —— 与 ACT_DESC 和下面那句注释承诺的「出错即停但已抽到的数据全部返回」
   // 正好相反。
   let after: AxSnapshot | null = null;
@@ -790,13 +807,11 @@ async function runBatch(
     parts.push('', `⚠ ${stoppedAt}`);
     if (rows.length > 0) parts.push('（此前的动作已经生效，网页不可回滚）');
   }
-  const opened = browserService.getState().tabs.filter((t) => !tabsBefore.has(t.id));
+  const opened = browserService.stateVisibleTo(threadId).tabs.filter((t) => !tabsBefore.has(t.id));
   if (opened.length) {
     parts.push('', `这一批里新开了 ${opened.length} 个标签页（多半是 target=_blank 的链接）：`
       + opened.map((t) => `[${t.id}] ${t.url}`).join(' · ')
-      + '。要操作它里面的内容，把 tabId 换成它。'
-      // 与 browser_open 新开标签那句同一个事实：本轮开出来的标签（含页面弹出的）本轮结束就被收回。
-      + '它们同样会在本轮结束时被自动关掉（用户点过「保留」的除外）。');
+      + '。要操作它里面的内容，把 tabId 换成它。');
   }
   // 预算把后面的行全丢光时（收下 0 条）也要说出口，不然那句话跟着数据块一起没了。
   const batch = budget.report();

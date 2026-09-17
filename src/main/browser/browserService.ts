@@ -6,7 +6,7 @@ import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 import { assertAllowedUrl, checkUrl } from './urlGuard';
 import { BROWSER_PARTITION } from './partition';
-import { TabRegistry } from './tabRegistry';
+import { TabRegistry, MAX_AGENT_TABS } from './tabRegistry';
 import { NavigationTracker } from './settle';
 import type { AxSnapshot } from './snapshot';
 import {
@@ -61,10 +61,13 @@ export const WALKER_WORLD_ID = 31337;
 
 type Stage = { epoch: number; visible: boolean; occluded: boolean; bounds: RectDip };
 
-/** 一次 agent 驱动的窗口：哪一轮 run，它期间标过的标签，以及给人看的动作名。
+/** 一次 agent 驱动的窗口：哪个对话在驱动，它期间标过的标签，以及给人看的动作名。
  *  `action` 存在帧上而不是当参数逐层传：期间页面弹出来的新标签属于**同一次**动作，
  *  它们的 `markDriving` 拿到的必须是同一个字符串，不是 undefined。 */
-type DrivingFrame = { runId: string; tabs: Set<string>; action?: string };
+type DrivingFrame = { threadId: string; tabs: Set<string>; action?: string };
+
+/** agent 标签到上限时被挤掉的那一个。带着归属与地址，工具层据此决定要不要告诉模型、怎么说。 */
+export type EvictedTab = { tabId: string; ownerThreadId: string; url: string; title: string };
 
 /**
  * 日志里的网址：只留 origin + pathname。
@@ -247,7 +250,7 @@ export class BrowserService {
    */
   private readonly pendingDownloads = new Map<string, PendingDownload>();
 
-  /** 每轮 run 已经下载了几个（spec §5 的上限）。`disposeForRun` 里清掉。 */
+  /** 每轮 run 已经下载了几个（spec §5 的上限）。`endRun` 里清掉。 */
   private readonly downloadCounts = new Map<string, number>();
   /** CDP 已经不可用的标签（attach 失败，或者 DevTools 打开把我们顶掉了）。
    *  只用来「同一件事只记一条日志」，判据本身走 `debugger.isAttached()`。 */
@@ -361,24 +364,23 @@ export class BrowserService {
   /**
    * 把一次 agent 驱动的操作圈起来：开始前置 `isAgentActive`，**结束时无论成败都清**。
    *
-   * 漏了清的后果不是「少标一次」，是**卡在 true**：`disposeForRun(runId)` 只按
-   * `ownerRunId === runId` 匹配，一个标签被标成某个已经 settle 过的 run，之后
-   * 再没有任何一次回收会命中它 —— 徽标永远显示 agent、侧栏永远挂着「保留」按钮。
+   * 漏了清的后果不是「少标一次」，是**卡在 true**：`pickEvictee` 永远不挑正被驱动的标签，
+   * 一个卡在 true 的标签就再也不会被上限挤掉 —— 徽标永远显示 agent 在动它，名额永远占着。
    *
    * 窗口内**新建的标签**（页面 `window.open` 转成的新标签）一并标上并一起清：
-   * 不标的话 t1 → t2 → t3 这条链上 t3 会被判成用户的，`agent_settled` 不回收。
+   * 不标的话 t1 → t2 → t3 这条链上 t3 会被判成用户的，不受 agent 标签上限与对话删除管。
    *
    * 公开是给 Task 4 用的：`browser_act` 的 execute 要把整批动作包进来。
    */
   async withAgentDriving<T>(
-    tabId: string, runId: string | null, fn: () => Promise<T>, action?: string,
+    tabId: string, threadId: string | null, fn: () => Promise<T>, action?: string,
   ): Promise<T> {
-    if (runId === null) return fn();   // 用户自己的操作，不置位
+    if (threadId === null) return fn();   // 用户自己的操作，不置位
     // **一次驱动一帧，各清各的。** 队列是按标签串的，所以两次 agent 驱动的操作
     // 完全可以同时在两个标签上跑；共用一个 Set + 一个 drivingRunId 的话，
     // 先结束的那一次会把另一次的标志一起清掉，而它还在跑 —— 那一刻页面弹出来的
-    // 新标签就会被判成用户的，回合结束不回收。
-    const frame: DrivingFrame = { runId, tabs: new Set<string>(), action };
+    // 新标签就会被判成用户的，不受 agent 标签上限管。
+    const frame: DrivingFrame = { threadId, tabs: new Set<string>(), action };
     this.drivingFrames.push(frame);
     this.markDriving(frame, tabId);
     try {
@@ -406,20 +408,20 @@ export class BrowserService {
   }
 
   /**
-   * 这个标签此刻归哪一轮 run 在驱动。**按标签找，不是拿「最新那一帧」顶替** ——
-   * 两次驱动同时在跑时，A 的标签弹出来的新标签必须归 A，不能归恰好压在栈顶的 B，
-   * 否则 B settle 时会把 A 的页面一起收走（那是「用户的页面无声消失」那条）。
+   * 这个标签此刻归哪个对话在驱动。**按标签找，不是拿「最新那一帧」顶替** ——
+   * 两个对话同时在跑时，A 的标签弹出来的新标签必须归 A，不能归恰好压在栈顶的 B，
+   * 否则删掉 B 对话时会把 A 的页面一起收走（那是「用户的页面无声消失」那条）。
    */
-  private drivingRunIdOf(tabId: string): string | null {
+  private drivingThreadIdOf(tabId: string): string | null {
     for (let i = this.drivingFrames.length - 1; i >= 0; i--) {
-      if (this.drivingFrames[i].tabs.has(tabId)) return this.drivingFrames[i].runId;
+      if (this.drivingFrames[i].tabs.has(tabId)) return this.drivingFrames[i].threadId;
     }
     return null;
   }
 
-  private frameOf(runId: string): DrivingFrame | null {
+  private frameOf(threadId: string): DrivingFrame | null {
     for (let i = this.drivingFrames.length - 1; i >= 0; i--) {
-      if (this.drivingFrames[i].runId === runId) return this.drivingFrames[i];
+      if (this.drivingFrames[i].threadId === threadId) return this.drivingFrames[i];
     }
     return null;
   }
@@ -431,6 +433,8 @@ export class BrowserService {
     // 所以「按回去这件事不能指望用户记得」那条规则（spec §4.6）的挂点就在这里。
     this.restoreFitViewport(tabId);
     this.registry.setAgentActive(tabId, true);
+    // agent 用了它一次：agent 标签到上限时，它不再是「最久没用」的那个。
+    this.registry.markUsed(tabId);
     frame.tabs.add(tabId);
     this.emitAgentFocus(tabId, true, frame.action);
   }
@@ -677,10 +681,12 @@ export class BrowserService {
 
   // ── 标签生命周期 ────────────────────────────────────────────────────────
 
-  private createTab(url: string, ownerRunId: string | null): string {
+  private createTab(url: string, ownerThreadId: string | null): { id: string; evicted: EvictedTab[] } {
     if (!this.win) throw new KydogError('browser.no_tab', '浏览器还没有装配到窗口上');
+    // agent 标签满了先腾位置，**在建新标签之前** —— 之后再挤的话，新标签自己就成了候选之一。
+    const evicted = ownerThreadId === null ? [] : this.evictForAgentTab();
     const id = `tab_${randomUUID().slice(0, 8)}`;
-    this.registry.create(id, { ownerRunId, url });
+    this.registry.create(id, { ownerThreadId, url });
 
     const view = new WebContentsView({
       webPreferences: {
@@ -708,11 +714,38 @@ export class BrowserService {
     // 真正让新标签拿到 1280 的是 dom-ready 与取快照前那两次。
     void this.applyViewport(id, this.stage?.bounds ?? null);
     // agent 驱动期间页面弹出来的标签也归 agent（spec §5.1：按源标签当时的状态定），
-    // 并且**加进开它那一轮自己的帧**：那一轮结束时连它一起清、一起回收。
-    const frame = ownerRunId === null ? null : this.frameOf(ownerRunId);
+    // 并且**加进开它的那个对话自己的帧**：那一次驱动结束时连它一起熄灯。
+    const frame = ownerThreadId === null ? null : this.frameOf(ownerThreadId);
     if (frame) this.markDriving(frame, id);
     this.emit();
-    return id;
+    return { id, evicted };
+  }
+
+  /**
+   * agent 标签已经 `MAX_AGENT_TABS` 个时，关掉最久没用的那个（spec
+   * `2026-09-17-browser-tab-lifecycle-design` §2、§3）。挑哪个由账本的 `pickEvictee` 定。
+   *
+   * 一个都挑不出来（全在被驱动、或者是活动标签）就报 `too_many_tabs`，**不去碰那些标签** ——
+   * 挤掉正在跑的那一批、或者用户正看着的页面，比开不出新标签糟得多。
+   */
+  private evictForAgentTab(): EvictedTab[] {
+    const out: EvictedTab[] = [];
+    while (this.registry.agentTabCount() >= MAX_AGENT_TABS) {
+      const victim = this.registry.pickEvictee();
+      if (victim === null) {
+        throw new KydogError('browser.too_many_tabs',
+          `agent 开的标签已经有 ${MAX_AGENT_TABS} 个，而且每一个都正在被操作、或者正显示在侧栏里，`
+          + '腾不出位置。把一个已有标签的 tabId 传给 browser_open，在它里面打开，不要再新开。');
+      }
+      const rec = this.registry.get(victim)!;
+      out.push({ tabId: victim, ownerThreadId: rec.ownerThreadId!, url: rec.url, title: rec.title });
+      logger.info('browser.tab', 'agent 标签到上限，关掉最久没用的那个', { tabId: victim, url: logUrl(rec.url) });
+      // 与 close / disposeForThread 同一个顺序：先摘账本、再摘 view，布局在最后。
+      this.registry.close(victim);
+      this.destroyView(victim);
+    }
+    if (out.length) this.applyLayout();
+    return out;
   }
 
   private wireView(id: string, view: WebContentsView): void {
@@ -731,11 +764,11 @@ export class BrowserService {
       }
       let newId: string;
       try {
-        // 归属**按源标签当时的状态定**（spec §5.1），不是拿 ownerRunId 当替身：
-        // agent 驱动一个用户标签时弹出来的新标签也归这一轮 run，回合结束要一起回收。
+        // 归属**按源标签当时的状态定**（spec §5.1），不是拿 ownerThreadId 当替身：
+        // agent 驱动一个用户标签时弹出来的新标签也归这个对话，受 agent 标签上限管。
         // 这一句必须留在 try 里：`isAgentActiveOf` 在标签已被回收时抛 no_tab，
         // 而 handler 里抛出去会变成 Electron 的未捕获错误。
-        newId = this.createTab(url, this.registry.isAgentActiveOf(id) ? this.drivingRunIdOf(id) : null);
+        newId = this.createTab(url, this.registry.isAgentActiveOf(id) ? this.drivingThreadIdOf(id) : null).id;
       } catch (err) {
         // 撞上标签上限时不能把异常抛回 Electron 的 handler。如实记一条，链接不开。
         logger.warn('browser.popup', '新标签打开失败', { url: logUrl(url), err: String(err) });
@@ -943,8 +976,8 @@ export class BrowserService {
   }
 
   /**
-   * 订阅「这个标签没了」。**销毁是唯一的清除时机**，而 `destroyView` 有三个调用方
-   * （`close` / `disposeForRun` / `disposeAll`）—— 订阅者不该去逐个盯它们。
+   * 订阅「这个标签没了」。**销毁是唯一的清除时机**，而 `destroyView` 有四个调用方
+   * （`close` / `disposeForThread` / `evictForAgentTab` / `disposeAll`）—— 订阅者不该去逐个盯它们。
    *
    * 第一个订阅者是 `loginFlow`：它按标签存着「本轮已经填过一次凭据」和那次填充
    * 的 webRequest 观测者，两样都只在标签销毁时清（见 `loginFlow.ts` 那张表）。
@@ -967,7 +1000,7 @@ export class BrowserService {
    * 「开一张空标签」与「导航到某个网址」各自只做一件事，URL 判据一个字都没放宽。
    */
   openBlank(): { tabId: string } {
-    const tabId = this.createTab('', null);
+    const { id: tabId } = this.createTab('', null);
     this.registry.activate(tabId);
     // `create()` 把 loading 初始化成 true——这条路从不导航，syncTabMeta 只挂在导航
     // 事件上（did-start-loading / did-stop-loading / navigate()），那些事件永远不会来，
@@ -979,27 +1012,28 @@ export class BrowserService {
     return { tabId };
   }
 
-  async open(args: { url: string; tabId?: string; ownerRunId?: string | null; activate?: boolean }): Promise<{ tabId: string; nav: NavigationObservation }> {
+  async open(args: { url: string; tabId?: string; ownerThreadId?: string | null; activate?: boolean }): Promise<{ tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }> {
     const url = assertAllowedUrl(args.url).toString();
     if (args.tabId && !this.registry.has(args.tabId)) {
       throw new KydogError('browser.no_tab', `没有这个标签页：${args.tabId}`);
     }
-    const tabId = args.tabId ?? this.createTab(url, args.ownerRunId ?? null);
+    const created = args.tabId ? null : this.createTab(url, args.ownerThreadId ?? null);
+    const tabId = args.tabId ?? created!.id;
     // **默认不抢活动标签**，与 createTab 同一条规矩：活动标签是侧栏里用户看的那一页，由用户决定。
     // agent 的 browser_open 从前在这里无条件切过去 —— 侧栏开着时用户正在看的页面被顶掉，那张标签
-    // 回合结束被收回后侧栏又跳到别处（2026-09-14 实测），与「能不打扰就不打扰」冲突。需要让用户看
+    // 被收回后侧栏又跳到别处（2026-09-14 实测），与「能不打扰就不打扰」冲突。需要让用户看
     // 某一页时有专门的交接口（ask_user_question 带 browserTabId → browser.activate）。只有用户自己
     // 在地址栏开页面那条路（handlers 的 browser.open）显式传 true。
     if (args.activate === true) this.registry.activate(tabId);
     this.applyLayout();
     const nav = await this.enqueue(tabId, () => this.withAgentDriving(
-      tabId, args.ownerRunId ?? null,
+      tabId, args.ownerThreadId ?? null,
       // 目标 URL 传的是**已经规范化**的那份：它进下载的关联集合，
       // 一个 PDF 直链要靠它才能被认成本次导航的终态。
       () => this.navigate(tabId, (wc) => wc.loadURL(url), url),
       '打开网页',
     ));
-    return { tabId, nav };
+    return { tabId, nav, evicted: created?.evicted ?? [] };
   }
 
   /** 所有会引发主 frame 导航的操作都经过这里 —— 观测结果要挂在**每一次**这样的操作上，
@@ -1168,19 +1202,43 @@ export class BrowserService {
     } catch { return null; }
   }
 
-  /** 回收某一轮 agent 开的标签。**三个触发点**，都在 `AgentService` 里、都读同一个
-   *  `bound.runId`（见那段注释），一轮 run 从哪个出口结束就由哪一处收尾：
+  /** 一轮 run 结束：清掉它的下载计数（`MAX_DOWNLOADS_PER_RUN` 按轮算）。**不关任何标签** ——
+   *  标签跟对话走，不跟回合走（spec `2026-09-17-browser-tab-lifecycle-design`）。
+   *  **三个触发点**，都在 `AgentService` 里、都读同一个 `bound.runId`：
    *   · `agent_settled` —— 正常收尾。**挂在它上面，不是 `agent_end`**：pi 在 agent_end
-   *     之后仍可能自动重试，那时标签还属于同一轮 KyDog run；
+   *     之后仍可能自动重试，那时还属于同一轮 KyDog run；
    *   · `send()` 的 catch —— `prompt()` reject（没配 key / OAuth 过期…）时 pi 不补发
    *     `agent_settled`，本轮在那里就地落地；
-   *   · `dispose()` —— session 一拆就永远等不到 settle，最后回收一次。
-   *  **幂等**：标签已被摘走时 `doomed` 为空，直接返回。 */
-  disposeForRun(runId: string): void {
+   *   · `dispose()` —— session 一拆就永远等不到 settle。
+   *  **幂等**。 */
+  endRun(runId: string): void {
     this.downloadCounts.delete(runId);
-    const gone = this.registry.disposeForRun(runId);
+  }
+
+  /** 对话没了：关掉它名下的 agent 标签（点过「保留」的已经是用户的，不在其中）。
+   *  **两个调用方**：`threadService.delete` 与 `projectService.close`（关项目会带走它的对话）。
+   *  **不挂在 `AgentService.dispose` 上** —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
+   *  **幂等**：标签已被摘走时 `gone` 为空，直接返回。 */
+  disposeForThread(threadId: string): void {
+    const gone = this.registry.disposeForThread(threadId);
     for (const id of gone) this.destroyView(id);
     if (gone.length) { this.applyLayout(); this.emit(); }
+  }
+
+  /**
+   * 这个对话**看得见**的标签：用户的，加上它自己开的 agent 标签。别的对话开的不列
+   * （Yee 2026-09-17 拍板）—— 对这个对话的任务没有意义，却每次工具调用都占上下文。
+   * `activeTabId` 原样给：活动标签是别的对话的时候，清单里就没有 `*`，这是实情。
+   */
+  stateVisibleTo(threadId: string): BrowserState {
+    const s = this.registry.toState();
+    return {
+      ...s,
+      tabs: s.tabs.filter((t) => {
+        const owner = this.registry.ownerThreadIdOf(t.id);
+        return owner === null || owner === threadId;
+      }),
+    };
   }
 
   /** 退出时收摊。**幂等**：跑第二遍时账本已经空了，什么都不做。
@@ -1907,8 +1965,8 @@ export class BrowserService {
       const wc = this.webContentsOf(tabId);
       // **标签没了当场收场，不折进 'unknown'。**
       //
-      // 「这个标签不存在了」是**现成的协议层事实**（run 被取消后 `disposeForRun`
-      // 回收、用户手动关掉、渲染进程崩掉），与「页面这一次没回话」是两件事。
+      // 「这个标签不存在了」是**现成的协议层事实**（对话被删后 `disposeForThread`
+      // 回收、agent 标签到上限被挤掉、用户手动关掉、渲染进程崩掉），与「页面这一次没回话」是两件事。
       // 折成同一件的话，轮询会一路空转到 timeoutMs（最长 30 秒），然后 `runStep`
       // 把 false 翻译成 `browser.wait_timeout`，正文是「这只说明这个条件没有成立
       // —— 它不是页面出错，也不是站点的问题。要么条件写得不对……」：一句**关于

@@ -106,7 +106,7 @@ function harness(over: {
         queues.set(tabId, next.then(() => {}, () => {}));
         return next;
       },
-      withAgentDriving: (tabId, runId, fn) => { log.order.push(`driving:${tabId}:${String(runId)}`); return fn(); },
+      withAgentDriving: (tabId, threadId, fn) => { log.order.push(`driving:${tabId}:${String(threadId)}`); return fn(); },
       suppressConsoleForCredentials: (_tabId, origin) => {
         log.order.push('suppressConsole');
         log.suppressedOrigins.push(origin);
@@ -168,10 +168,10 @@ function harness(over: {
     flow, log, state, fire, wr,
     setAsk: (v: boolean) => { askAnswer = v; },
     fill: (opts: Partial<Parameters<LoginFlow['fill']>[1]> = {}) =>
-      flow.fill('t1', { runId: 'run-1', submit: false, ask, ...opts }),
+      flow.fill('t1', { runId: 'run-1', threadId: 'thread-1', submit: false, ask, ...opts }),
     /** 同一个 flow、换一个标签 —— 「停手」的作用域是 run，考的就是这个。 */
     fillOn: (tabId: string, opts: Partial<Parameters<LoginFlow['fill']>[1]> = {}) =>
-      flow.fill(tabId, { runId: 'run-1', submit: false, ask, ...opts }),
+      flow.fill(tabId, { runId: 'run-1', threadId: 'thread-1', submit: false, ask, ...opts }),
     releaseReveal: () => { revealGate?.(); },
     destroy: (tabId: string) => { for (const h of log.destroyHooks) h(tabId); },
   };
@@ -233,8 +233,20 @@ describe('entityID host 精确相等就直接填', () => {
     expect(r.entityID).toBe(ENTITY);
     expect(r.institutionName).toBe('北京大学');
     expect(r.askedUser).toBe(false);
-    expect(h.log.order).toEqual(['enqueue:t1', 'driving:t1:run-1', 'reveal', 'suppressConsole', 'evalInPage']);
+    expect(h.log.order).toEqual(['enqueue:t1', 'driving:t1:thread-1', 'reveal', 'suppressConsole', 'evalInPage']);
     expect(h.log.asked).toEqual([]);
+  });
+
+  /**
+   * **驱动传的是对话 id，不是 runId**（2026-09-17 标签跟对话走之后）。两个都是 `string | null`，
+   * 传错了编译照样过：登录页弹出来的标签会被记到一个叫 runId 的「对话」名下，
+   * 删掉真正的那个对话时收不走它。换一组值，确认驱动跟着 threadId 走、不跟 runId 走。
+   */
+  it('驱动用的是 threadId：runId 与 threadId 各换一个值，驱动那一行只跟 threadId 变', async () => {
+    const h = harness();
+    await h.fill({ runId: 'run-9', threadId: 'thread-9' });
+    expect(h.log.order).toContain('driving:t1:thread-9');
+    expect(h.log.order.some((x) => x.includes('run-9'))).toBe(false);
   });
 
   it('注进去的那一份带着 expectOrigin、账号、密码与 notAfter', async () => {
@@ -354,7 +366,7 @@ describe('TOCTOU：填充前拿当时的 URL 再判一次', () => {
     // 用户在确认框上停留时页面自己跳去了别处。
     const orig = h.state;
     const askJump = async () => { orig.url = 'https://evil.example/login'; return true; };
-    const e = await errOf(h.flow.fill('t1', { runId: 'run-1', submit: false, ask: askJump }));
+    const e = await errOf(h.flow.fill('t1', { runId: 'run-1', threadId: 'thread-1', submit: false, ask: askJump }));
     expect(e.code).toBe('browser.idp_host_mismatch');
     expect(h.log.injected).toEqual([]);
     expect(h.log.reveals).toBe(0);
@@ -365,7 +377,7 @@ describe('TOCTOU：填充前拿当时的 URL 再判一次', () => {
   it('悬挂期间页面跳到一个 http 地址 → 走 refuse 那条，同样一个字都不填', async () => {
     const h = harness({ url: 'https://sso.pku.edu.cn/login' });
     const askJump = async () => { h.state.url = 'http://iaaa.pku.edu.cn/'; return true; };
-    const e = await errOf(h.flow.fill('t1', { runId: 'run-1', submit: false, ask: askJump }));
+    const e = await errOf(h.flow.fill('t1', { runId: 'run-1', threadId: 'thread-1', submit: false, ask: askJump }));
     expect(e.code).toBe('browser.idp_host_mismatch');
     expect(e.message).toContain('https');
     expect(h.log.injected).toEqual([]);
@@ -380,7 +392,7 @@ describe('TOCTOU：填充前拿当时的 URL 再判一次', () => {
       };
       return true;
     };
-    const e = await errOf(h.flow.fill('t1', { runId: 'run-1', submit: false, ask: askSwap }));
+    const e = await errOf(h.flow.fill('t1', { runId: 'run-1', threadId: 'thread-1', submit: false, ask: askSwap }));
     expect(e.code).toBe('browser.idp_host_mismatch');
     expect(h.log.injected).toEqual([]);
   });
@@ -388,7 +400,7 @@ describe('TOCTOU：填充前拿当时的 URL 再判一次', () => {
   it('页面那道 origin 自检用的是**重判那一刻**的 URL，不是队列外那一份', async () => {
     const h = harness({ url: 'https://sso.pku.edu.cn/login' });
     const askJump = async () => { h.state.url = IDP_URL; return true; };
-    await h.flow.fill('t1', { runId: 'run-1', submit: false, ask: askJump });
+    await h.flow.fill('t1', { runId: 'run-1', threadId: 'thread-1', submit: false, ask: askJump });
     expect(h.log.injected[0]).toContain('"expectOrigin":"https://iaaa.pku.edu.cn"');
     expect(h.log.injected[0]).not.toContain('sso.pku.edu.cn');
   });

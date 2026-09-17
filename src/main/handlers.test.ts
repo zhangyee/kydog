@@ -109,7 +109,7 @@ vi.mock('./browser/browserService', async () => {
       getState: () => { h.browser.push({ m: 'getState', args: undefined }); return reg.toState(); },
       syncView: (args: unknown) => { h.browser.push({ m: 'syncView', args }); },
       setViewportMode: (id: string, mode: string) => { h.browser.push({ m: 'setViewportMode', args: { id, mode } }); },
-      disposeForRun: () => {},
+      disposeForThread: () => {},
     },
   };
 });
@@ -365,15 +365,15 @@ describe('browser.* 九条转发到 browserService 上对应的那一个', () =>
   });
 
   /**
-   * `BrowserService.open` 还收一个 `ownerRunId` —— 「这个标签属于哪一轮 run、
-   * 回合结束回收它」的记账字段。渲染层在类型上给不出它，但**类型挡不住运行时**：
-   * 把 args 整个递下去的话，一条伪造的 RPC 就能开出一个「属于某轮 run」的标签，
-   * 而那一轮 settle 时它会被连页面一起收走 —— 用户的页面无声消失。
+   * `BrowserService.open` 还收一个 `ownerThreadId` —— 「这个标签属于哪个对话」的记账字段。
+   * 渲染层在类型上给不出它，但**类型挡不住运行时**：把 args 整个递下去的话，一条伪造的
+   * RPC 就能开出一个「属于某个对话」的标签，它会被 agent 标签上限挤掉、随那个对话删除被收走 ——
+   * 用户的页面无声消失。
    */
-  it('open 不认渲染层塞进来的 ownerRunId —— 这条路开的标签永远是用户的', async () => {
-    await call('browser.open', { url: 'https://x.example/p', ownerRunId: 'run-伪造' });
+  it('open 不认渲染层塞进来的 ownerThreadId —— 这条路开的标签永远是用户的', async () => {
+    await call('browser.open', { url: 'https://x.example/p', ownerThreadId: 'thread-伪造' });
     expect(h.browser[0].args).toEqual({ url: 'https://x.example/p', tabId: undefined, activate: true });
-    expect(JSON.stringify(h.browser)).not.toContain('run-伪造');
+    expect(JSON.stringify(h.browser)).not.toContain('thread-伪造');
   });
 
   it('close / keep / activate 各调各的，参数是 tabId', async () => {

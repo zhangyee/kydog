@@ -6,6 +6,7 @@ import { loadIndex, saveIndex } from '../persist/indexFile';
 import { KydogError } from '../../shared/errors';
 import type { Project, FsNode } from '../../shared/types';
 import { fileWatcherService } from './fileWatcher';
+import { browserService } from '../browser/browserService';
 
 export class ProjectService {
   async list(): Promise<Project[]> {
@@ -43,6 +44,8 @@ export class ProjectService {
   async close({ projectPath }: { projectPath: string }): Promise<void> {
     const idx = await loadIndex();
     idx.projects = idx.projects.filter((p) => p.path !== projectPath);
+    // 被带走的对话，它们名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
+    for (const t of idx.threads) if (t.projectPath === projectPath) browserService.disposeForThread(t.id);
     idx.threads = idx.threads.filter((t) => t.projectPath !== projectPath);
     await saveIndex(idx);
     await fileWatcherService.stop(projectPath);
