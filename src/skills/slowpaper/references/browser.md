@@ -1,7 +1,7 @@
-# 内置浏览器：五个工具怎么配合
+# 内置浏览器：六个工具怎么配合
 
 `browser_open` 开页 · `browser_act` 操作 · `browser_read` 读正文 · `browser_login` 机构登录 ·
-`browser_tabs` 列出当前所有标签。
+`browser_tabs` 列出当前所有标签 · `browser_download` 下载 PDF。
 
 **没有 `browser_close`。** 标签清单以一行摘要挂在**每个**浏览器工具结果的头部，总是准的：
 
@@ -317,8 +317,10 @@ Enter 什么都不会发生 —— 而那时页面没报错，你会以为搜过
 **不自己填账号密码。** `type` 打进密码框会被直接拒绝（`browser.password_field`）。
 机构登录调 `browser_login`；其余登录交给人。
 
-**不下载文件。** 这一期页面触发的下载一律取消，抽到的直链**原样报给用户**。
-指向 arXiv / PMC / DOI 的，把标识符交给 `fastpaper download`。
+**下载走 `browser_download`，不靠页面自己触发。** 页面自发拉起的下载仍然一律取消 ——
+放行的只有你**自己点名 URL** 的那一次，所以「下载了什么」永远追得回到一次工具调用。
+指向 arXiv / PMC / DOI 的仍然优先交给 `fastpaper download`（按标识符路由，比浏览器省）；
+其余的裸 PDF 直链用 `browser_download`，因为**它们在浏览器会话之外一律取不到**。
 
 **不建目录、不写脚本、不落中间文件。** 结果多了就把检索收窄、把条数调小，
 不要「先存下来再处理」。

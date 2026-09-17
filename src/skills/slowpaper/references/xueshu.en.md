@@ -1,127 +1,27 @@
-# Baidu Xueshu (百度学术)
+# Baidu Xueshu · operations card
 
 A discovery layer for mixed Chinese/English search: good Chinese coverage, uneven result
-quality, wired into document delivery. **It has no official API.**
+quality, wired into document delivery. **No official API.**
+
+> **Reconnaissance: measured on the live site 2026-09-16** (Chromium, viewport width 1280,
+> the same width as KyDog's emulation). Every selector below was counted against the real DOM.
+> **Not yet verified end to end through this project's `browser_act`** — that would also cover
+> the walker's isolated-world execution, `extract`'s `item` alignment, and our own
+> `type` / `click` hit-testing and auto-scroll. Where the page disagrees, trust the page.
 
 ---
 
-## Reconnaissance status
+## ① Reachability and the interception fingerprint
 
-**Reconnoitred 2026-09-08; the results-page structure was captured.** One gap remains:
-**submitting a search interactively from the home page was never made to work** (Enter did not
-trigger submission, and clicking `.send-btn` had no effect), so the search playbook below is
-unverified. The results page itself is a real page that was opened, and all selectors were read
-off its DOM.
+| Endpoint | 2026-09-16 | 2026-09-08 (first release) |
+| --- | --- | --- |
+| `https://xueshu.baidu.com/` (home) | **200**, renders normally | 200 |
+| The results page after submitting a search | **200**, 10 results, **no CAPTCHA** | **403**, human-verification page |
 
-One correction: the first path tried was `/s?wd=...` (the old-version path), which returned
-403 plus a human-verification page; **the new results page is at
-`/ndscholar/browse/search?wd=...`**. Going through page interaction cannot hit the wrong
-endpoint — constructing URLs can. That is exactly where the "everything through interaction"
-rule comes from.
+**Both states are real**; which one you get depends on the network egress and session of the
+moment. Do not write "it did not intercept me this time" as "this source does not intercept".
 
----
-
-## Mode of operation: interactive
-
-**Everything is done on the page.** For this source especially: the home page has **no `<form>`
-element at all** (measured), search is entirely JS-driven, and there was never a form URL to
-construct.
-
-One `browser_act` call carries a string of actions, and once worked out, `selector` targeting
-makes it a playbook you can copy verbatim.
-
-### Playbook: search from the home page (partly worked out)
-
-```jsonc
-browser_open({ url: "https://xueshu.baidu.com/" })
-browser_act({ tabId: "<tabId from the previous step>", actions: [
-  { "kind": "type",  "selector": "textarea.search-input", "text": "<query>" },
-  { "kind": "click", "selector": ".send-btn" },
-  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } }
-]})
-```
-
-**That `wait` is not a safety margin, it is required.** This source's search produces **no
-main-frame navigation** (the SPA swaps a route), so the tool layer has no navigation outcome to
-wait for; without explicitly waiting for result items to appear, the `extract` right after it
-runs against the stale DOM and extracts the previous page — **and reports no error at all**.
-
-**The closing snapshot does not wait either.** Once the last step of a batch has run the tool
-takes the "── 页面变化 ──" section immediately (end of §5 in `references/browser.md`). This
-source produces no main-frame navigation, so whether that section is fresh depends entirely on
-the `wait` above: if it came true the page really did change; if it timed out the condition did
-not hold and it is handled under stop-on-error — **do not** click submit again just because the
-page-change section looks unmoved.
-
-When `type` carries a `selector` it focuses that element first; no extra `click` is needed.
-**It also selects-all and clears first**: if it cannot clear the box it reports an error and
-types nothing at all (it never appends to existing content) — reusing a box that already has
-content mid-flow can hit `browser.target_unusable`, and that is not a wrong selector.
-
-**Enter failed to submit during reconnaissance** (Scholar behaved the same). **There is a
-candidate explanation, but it has never been re-verified**: a CDP `keyDown` without `text`
-produces no `keypress`, Chromium's implicit form submission happens on `keypress`, and this
-project's key table does give `Enter` its `text` (`KEYS` in `actions.ts`) — so that negative
-observation may have been an artifact of the reconnaissance tool. But whether this site actually
-submits under this project's `key` action **has never been measured here**; it remains an open
-question, not a conclusion. This source's home page has **no `<form>`** anyway, so implicit
-submission was never on the table: explanation or not, submitting means clicking `.send-btn`.
-
-Clicking the send button `.send-btn` is the preferred path, **but it was never made to work
-during reconnaissance** (see "Reconnaissance status" above — neither playbook's submit step
-succeeded this round), so do not treat it as a verified step. Its class is `send-btn disable`
-before the input has content and becomes `send-btn` once it does — that change can serve as a
-"ready to submit" test, and makes a good condition for a `wait` action. In the other toolchain
-used for reconnaissance it **did not appear in the accessibility tree**; this project's walker
-has a wider inclusion set (`div`s carrying `role` / `onclick` / `tabindex` do enter a snapshot),
-so **do not assume it is absent from the snapshot** — playbooks use `selector` regardless, so
-this makes no difference to them.
-
-**`type` always goes in as text insertion (`Input.insertText`), produces no `keydown`, and does
-not branch on character class** — Chinese and English query terms take **the same path**; there
-is no such thing as "English is the safe route". If "the button becomes usable once there is
-content" is driven by `keydown`, then **any** query term may leave the button unusable; confirm
-this during re-verification, and if the button does not become usable, take a snapshot before
-clicking.
-
-### Playbook: advanced search (partly worked out)
-
-Advanced search is a dialog; it has to be opened before it can be filled in:
-
-```jsonc
-browser_act({ tabId: "<tabId from the previous step>", actions: [
-  { "kind": "click", "selector": "<the 「高级检索」 button, see the note below>" },
-  { "kind": "wait",  "until": { "selector": "#advanced-search-all", "state": "present" } },
-  { "kind": "type",  "selector": "#advanced-search-all",    "text": "<all of these terms>" },
-  { "kind": "type",  "selector": "#advanced-search-author", "text": "<author>" },
-  { "kind": "click", "selector": "<the 「确认」 button, see the note below>" },
-  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } }
-]})
-```
-
-**These two `wait`s are the same rule as the one in the home-page playbook** (this source's
-`click` produces no main-frame navigation, so every `click` must be followed by a condition you
-supply). Without the first one, the `type` resolves its target at the same moment as the
-"open the dialog" click — and at that moment `#advanced-search-all` does not exist yet, so what
-you get is `browser.target_unusable`「在当前页面上没有匹配」 even though the selector is
-correct; swapping selectors on that advice is going round in circles on a dead end. Without the
-second one, the `extract` right after it runs against the stale DOM.
-
-**Neither playbook's submit step has ever succeeded in this round** (submission gave 403 plus a
-human-verification page, see below). The input selectors were read off the home page DOM and do
-really exist; whether submitting reaches a results page was not verified.
-
-**Never write `index` into a playbook.** Snapshot indices drift with every new session;
-`index` is for exploration only and is always replaced by `selector` once worked out.
-
-## Reachability (measured)
-
-| Endpoint | Result |
-| --- | --- |
-| `https://xueshu.baidu.com/` (home page) | **200**, renders normally, title 「百度学术 - 保持学习的态度」 |
-| The search endpoint | **403**, human-verification page |
-
-## Interception-page fingerprint (measured)
+Interception fingerprint (measured 2026-09-08):
 
 ```
 HTTP 403
@@ -129,194 +29,254 @@ document.title === '百度安全验证'
 body contains 「校验失败，请再试一次」 and 「请依次点击…」
 ```
 
-**This is an interactive click-to-select CAPTCHA and a human can solve it** — unlike Google
-Scholar's static hard wall.
+**This is a click-to-select CAPTCHA a human can solve** — unlike Google Scholar's static wall.
+So call `ask_user_question` and hand it over (with `browserTabId`; the sidebar expands to that
+tab). Once they clear it the cookie lands in the persistent partition and later searches reuse
+the session. While it is pending, **do not read the page** and do not click anything for them.
 
-So the correct reaction is to **hand it to the user with `ask_user_question`** (carrying
-`browserTabId`, which makes the sidebar expand to that tab) and prompt them to complete the
-verification. Once they do, the cookie lands in the persistent partition and later searches
-reuse the same session.
+Judge on the `HTTP 403` in the tool result (the navigation verdict line reads
+「但服务器返回 HTTP 403」); **there is no `httpStatusCode` field to read**. Whether it is
+interactive is answered by whether the snapshot holds a clickable verification control.
 
-While suspended, **do not read the page** and do not click anything on the user's behalf.
-
-Judge on the `HTTP 403` phrase in the tool result (the navigation-conclusion line reads
-「但服务器返回 HTTP 403」); **there is no `httpStatusCode` field for you to read** — the status
-code only ever appears as that prose. Whether it is interactive is judged by whether the
-snapshot contains a clickable verification control.
-
-**A 403 that only arrives after the search is submitted** (see the reachability table: home
-page 200, search 403) is not in that batch's result — it is hung on the `导航: [tab_…]` line at
-the **head of the next** tool result, reported once and then cleared.
-
-## What controls the page has (measured, read off the home page DOM)
-
-**The main search box is a `<textarea>`, not an `<input>`**:
-
-```
-textarea.atomic-textarea-box.search-input     no name, no id
-```
-
-It can only be recognised by class, or by role / position in the snapshot. **Do not look for it
-as `input[name=...]`.**
-
-**Advanced search is a dialog**: click the 「高级检索」 button to open it, then fill the fields
-one by one. The field ids are semantic and stable:
-
-| id | Meaning | Notes |
-| --- | --- | --- |
-| `#advanced-search-all` | contains all of these terms | |
-| `#advanced-search-precise` | exact match | placeholder text 「多个检索词以，分隔」 |
-| `#advanced-search-or` | contains any of these terms | as above |
-| `#advanced-search-not` | without these terms | as above |
-| `#advanced-search-author` | author | |
-| `#advanced-search-affs` | affiliation | |
-| `#advanced-search-publication` | journal | |
-| `#advanced-search-year-start` / `#advanced-search-year-end` | year range | |
-
-The dialog also has three `input.ant-radio-input` radio options whose **meaning was not
-confirmed in this round**; look at a snapshot before using them.
-
-The submit button reads 「确认」 and cancel reads 「取消」. **Neither of those, nor the
-「高级检索」 button, has an id**; their classes are a string of
-`atomic-button atomic-md atomic-button-primary …` combinations — targeting by button text is
-more stable in a playbook than by class (the classes are generated by a component library and
-change with redesigns). Exactly how to write them will be settled against a real snapshot when
-the reconnaissance is completed.
-
-**An authorisation dialog may pop up on the page**: this round saw 「继续使用」 / 「取消授权」
-buttons in the home page DOM. It was never actually triggered; handle it against the snapshot's
-real content when you meet it, and do not assume it always appears.
-
-The home page navigation includes a 「旧版入口」 (old-version entry) item, apparently leading to
-the classic results page; this round did not locate its element form (it is not an `<a>`) and
-never opened it. It is worth trying first when completing the reconnaissance — classic pages
-are usually easier to extract than a new SPA.
-
-## How to extract the results page (measured)
-
-Results page URL shape `https://xueshu.baidu.com/ndscholar/browse/search?wd=<query>`,
-**10 per page**.
-
-Item container: `div.paper-wrap.result` (the full class is `paper-wrap result xpath-log`).
-
-The internal structure of one item:
-
-| Field | Selector | Notes |
-| --- | --- | --- |
-| Title | `h3.paper-title a` | The text is the title |
-| Detail page | `h3.paper-title a@href` | Shaped `/usercenter/paper/show?paperid=<id>` |
-| Abstract snippet | `div.paper-abstract` | Matched terms are wrapped in `<em>`; taking `innerText` is enough |
-| Type | `div.paper-info span.paper-type` | 「期刊」 / 「学位」 / 「会议」 etc. |
-| The whole metadata line | `div.paper-info` | Shaped `期刊 梁彤祥， 刘娟， 王晨 - 《材料工程》 - 被引量：33 - 2014年` |
-| Citation count | `div.paper-info a[href*="refpaper"]` | The number only; 「被引量：」 is in a sibling span |
-| Journal | `div.paper-info a[href*="/usercenter/data/journal"]` | |
-| Authors | `div.paper-info a[href*="wd=author"]` | Several |
-| **Full-text entry points** | `div.paper-source a@href` | **Several**; this is the key to getting full text |
-
-`div.paper-source` is this source's most valuable block — it lists side by side where the same
-paper can be found in various places. One item was measured carrying, at the same time: the
-journal's own site (`jme.biam.ac.cn/...`), the National Science and Technology Library
-(`nstl.gov.cn`), iAcademic, Wanfang (`d.wanfangdata.com.cn`) and CNKI (`cnki.com.cn`).
-
-**Take all the `a`s and pick by domain**; do not take only the first — the one listed first is
-not necessarily the one that leads straight to a PDF.
-
-## How to page: not this release — first page only
-
-**This release takes only the first results page from this source** (10 items per page). Once
-you have extracted the first page you are done; do not try to page on.
-
-**Why it is downgraded**: inside the paging control `div.pagination-wrap > div.pagination` a
-page number is `div.page` and the current page is `div.page.active`, while "previous page" and
-"next page" **share the same class `div.page.n`** and are separable only by text — while `browser_act`'s `selector` is **pure CSS** (a `querySelector` inside the page),
-with **no `:contains()` / `:has-text()`-style text matching**. So both routes are dead ends:
-`div.page.n:contains("下一页")` is rejected as an invalid selector (「不是合法的 CSS 选择器」,
-`browser.bad_action`), while a bare `div.page.n` takes the **first** one — that is "previous
-page", so clicking it pages **backwards**. These controls are also all `div`s with no `href`
-and no role; in the other toolchain used for reconnaissance they did not enter the accessibility
-tree, while this project's walker has a wider inclusion set (`[role]` / `[onclick]` /
-`[tabindex]` are all taken in), so whether they enter a snapshot depends on the live page —
-**but playbooks never write `index`** (indices drift with every new session), so that route is
-no way out either. **Opening paging requires first measuring, against the live site, a CSS expression
-that matches only "next page"** — see step 3 of the completion procedure.
-
-Extract the first page; that one call ends this source:
-
-```jsonc
-{ "kind": "extract", "selectors": {
-    "item": "div.paper-wrap.result",
-    "title": "h3.paper-title a",
-    "detail": "h3.paper-title a@href",
-    "info": "div.paper-info",
-    "sources": "div.paper-source a@href"
-}}
-```
-
-**So this source yields at most 10 items this release.** The "at most 3 pages per source" in
-`SKILL.md` §3 is the general cap; for Baidu Xueshu it is really only 1 page — a known limitation
-of this release, not a failed extraction. If you need more results, narrow the query and search
-again rather than making up the difference by paging.
-
-## What to do with full-text entry points: report, do not download
-
-**This release only searches this source, it does not fetch full text.** The browser has no
-download tool, and downloads the page triggers itself are refused outright.
-
-`div.paper-source a@href` gives a set of **external site** entry points, not direct PDF links.
-The domains observed were `nstl.gov.cn` / `d.wanfangdata.com.cn` / `cnki.com.cn` /
-`iacademic.info` and journals' own sites. **Report that set of links verbatim** and let the user
-pick one to open.
-
-Most of those sites need an institutional subscription — **institutional (CARSI) login is in
-this release**, see `references/carsi.md`. But **this release still downloads nothing after
-logging in**: even with subscription access you only report the link to the user; the download
-channel is next release's work.
-
-The left-hand filter panel has a 「获取方式 → 免费下载」 (free download) facet — 4679 items under
-that search, as measured. **Filter on it first**, so the links you report are more likely to be
-ones the user can simply open.
-
-## When you must hand over to a human
-
-- **403 plus the 「百度安全验证」 click-to-select CAPTCHA** — the main scenario, see above
-- Features that need a login (favourites, document delivery requests, and so on)
-- Otherwise follow the handover rules in `references/browser.md`
-
-## Known limitations
-
-- No official API; the act of searching gets 403 plus human verification for an egress judged
-  to be automated
-- Result quality is uneven; the same paper may appear as several duplicate records
-- Many items go through document delivery rather than a direct link, so not getting a PDF is
-  normal, not a fault
+**The 403 that only arrives after the search is submitted is not in that batch's return
+value** — the submit is a click on a `div`, not a plain link, so it carries no navigation
+wait guarantee. It shows up in the **header** of the **next** tool result, on the
+`导航: [tab_…]` line — reported once, then cleared.
 
 ---
 
-## Completion procedure
+## ② What controls the page has
 
-1. **Reconnaissance**: search once interactively in a real browser (clearing a CAPTCHA by hand
-   if needed), open the results page, and read out the selectors for the item container, title,
-   authors/year/venue, citation count, and full-text / document-delivery entry points, plus the
-   form of the paging control. Try the 「旧版入口」 path while you are there
-2. **Verification**: run every selector for real through this project's `browser_act` `extract`
-   action, fix the ones that do not work, and chain "open the home page → search → extract the
-   first page" into one playbook that runs end to end
-3. **Open paging** (the step downgraded this release, reason under "How to page"):
-   - First measure a **pure CSS expression that matches only "next page" and not "previous
-     page"**. The two share `div.page.n`, and `selector` goes through `querySelector` inside the
-     page with no text matching available — so the only handles are structural position
-     (something like `div.pagination > div.page.n:last-of-type`) or an attribute that appears on
-     only one of them. **Confirm on the live page that it matches exactly 1 element**; do not
-     write a guess into the playbook
-   - Then also come back with a **condition that is false before the click and true after
-     paging**. A "current page" marker like `div.page.active` **will not do** — it already holds
-     before the click, and `wait` probes once before it waits, so it returns "condition met"
-     instantly, having waited not one millisecond (`references/browser.md` §5). The direction
-     Scholar points at is worth trying here too: match the page-number/offset segment of the
-     results-page address with `urlMatches` (which tests the address held by the main process
-     and does not enter the page, see `references/scholar.md`) — **but whether this source's
-     address changes at all when paging was not measured this release**, so measure it
-   - Until that is done, "at most 3 pages per source" in `SKILL.md` §3 is really only 1 page for
-     this source
+**The home page has no `<form>` element at all** (measured: `document.forms.length === 0`);
+search is entirely JS-driven, so there was never a form URL to construct.
 
-Step 2 cannot be skipped: two toolchains do not necessarily see the same DOM.
+| Control | Selector | Measured |
+| --- | --- | --- |
+| Main search box | `textarea.search-input` | **A `<textarea>`, not an `<input>`**, with no `name` and no `id`. Do not look for `input[name=…]` |
+| Submit button | `.send-btn` | Class is `send-btn disable` while empty, becomes `send-btn` once there is content |
+| Advanced-search opener | `div.advanced-search.advance-toggle-btn` | Labelled **「高级搜索」** on the page. See the warning in ③ — this route is not recommended |
+
+**The button does not need a `keydown` to become usable.** Measured: dispatching a single
+`input` event flips `.send-btn` out of `disable` — and KyDog's `type` uses `Input.insertText`
+(which fires `beforeinput` + `input`, a superset of that), so **any query text will enable it**.
+There is no Chinese/English branch.
+
+**Do not expect Enter to work.** With no `<form>` on the page there is no implicit submission;
+always click `.send-btn`.
+
+---
+
+## ③ Action · search
+
+### Playbook: search from the home page (measured working 2026-09-16)
+
+```jsonc
+browser_open({ url: "https://xueshu.baidu.com/" })
+browser_act({ tabId: "<tabId from the previous step>", actions: [
+  { "kind": "type",  "selector": "textarea.search-input", "text": "<query>" },
+  { "kind": "click", "selector": ".send-btn" },
+  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } },
+  { "kind": "extract", "selectors": {
+      "item":    "div.paper-wrap.result",
+      "title":   "h3.paper-title a",
+      "detail":  "h3.paper-title a@href",
+      "type":    "div.paper-info span.paper-type",
+      "info":    "div.paper-info",
+      "summary": "div.paper-abstract",
+      "sources": "div.paper-source a@href"
+  }}
+]})
+```
+
+**That `wait` is not belt-and-braces, it is required.** The submit clicks a `div`, not an
+`<a href>`, so it gets none of the navigation guarantee plain links carry. Without an explicit
+wait for result items, the `extract` right after it runs against the home page's DOM and
+returns 0 rows — **and reports no error at all**. The closing snapshot is the same story: it is
+taken immediately after the last step, so whether it is fresh depends entirely on this `wait`.
+A timeout is a failed action (stop-on-error); **do not** click submit again because the page
+diff looks unchanged.
+
+`type` with a `selector` focuses the element first, so no extra `click` is needed. **It also
+selects-all and clears first**: if it cannot clear, it errors and types nothing — so reusing a
+box that already has content can hit `browser.target_unusable`, which is not a bad selector.
+
+### Field search: put the syntax straight into the main box
+
+**Do not open the advanced-search dialog.** This source's field syntax works in the main box:
+
+```
+author:(何恺明) 图像
+```
+
+Measured 2026-09-16: 4 results, every author matched. One round trip, none of the dialog's
+traps. (Corroboration: every author name on a results page links to `search?wd=author%3A%28…%29`.)
+
+> ⚠ **The advanced-search dialog does not work under this tool. Do not try it.** Three
+> measured reasons:
+> ① the results page carries **two elements with the id `#advanced-search-all`**, so which one
+> `querySelector` returns is undefined;
+> ② opening and closing the dialog **does not change whether those elements exist**, while
+> `wait`'s `state` is only `present` / `absent`, tests `document.querySelector` truthiness and
+> **ignores visibility** — so "click to open the dialog, then wait for it to appear" is
+> guaranteed to be a no-op (the condition already holds before the click, and `wait` probes
+> once first, so it returns "arrived" immediately);
+> ③ the dialog's submit button `.button-group button.atomic-button-primary.operate-btn` is
+> labelled **「高级检索」** while the opener is 「高级搜索」 — the two names are easy to swap.
+
+### Paging (measured working 2026-09-16)
+
+| Control | Selector | Measured |
+| --- | --- | --- |
+| Next page | `div.pagination > div.page.n:last-child` | **Matches exactly 1** |
+| Previous page | `div.pagination > div.page.n:first-child` | Matches exactly 1 — **never write a bare `div.page.n`**, that returns "previous" and pages backwards |
+
+The paging controls are `div`s with no `href` and no role, so they **may be absent from the
+accessibility tree** — only `selector` can reach them.
+
+**Use the offset in the address as the wait condition**: after clicking next, the URL becomes
+`…&pn=10`; page 3 is `pn=20` (`pn = (page − 1) × 10`). It differs per page and does not hold
+before the click, which is exactly the shape `wait` needs; `urlMatches` is judged against the
+main process's own address and never enters the page.
+
+One page per `browser_act`, **never inside a `repeat`** — every round of a batch shares one
+wait condition, while "which page am I on" differs per page.
+
+```jsonc
+// Turn to page 2 and extract it (for page 3, swap pn=10 for pn=20)
+browser_act({ tabId: "<the same tabId>", actions: [
+  { "kind": "click", "selector": "div.pagination > div.page.n:last-child" },
+  { "kind": "wait",  "until": { "urlMatches": "pn=10" } },
+  { "kind": "extract", "selectors": { "item": "div.paper-wrap.result", "title": "h3.paper-title a",
+      "detail": "h3.paper-title a@href", "info": "div.paper-info", "sources": "div.paper-source a@href" }}
+]})
+```
+
+On the last page that `click` errors because nothing matches or the control is disabled —
+expected behaviour, and every earlier page's rows are already in their own call's return value.
+
+### Result-page fields (hit counts measured 2026-09-16)
+
+Results page URL is `https://xueshu.baidu.com/ndscholar/browse/search?wd=<query>`,
+**10 per page**. Item container: `div.paper-wrap.result` (full class
+`paper-wrap result xpath-log`).
+
+| Field | Selector | Hits |
+| --- | --- | --- |
+| Title | `h3.paper-title a` | 10/10 |
+| Detail page | `h3.paper-title a@href` | 10/10, absolute, carries `&site=xueshu_se` |
+| Abstract snippet | `div.paper-abstract` | 10/10. Matched terms are wrapped in `<em>`; take the text |
+| Type | `div.paper-info span.paper-type` | 10/10. 期刊 (journal) / 学位 (thesis) / 会议 (conference) / 专利 (patent) … |
+| Authors | `div.paper-info a[href*="wd=author"]` | 10/10, several |
+| Whole metadata line | `div.paper-info` | Reads like `期刊 李颖，李秀宇，卢兆林，... - 《计算机工程与设计》 - 被引量：0 - 2022年` |
+| **Full-text entries** | `div.paper-source a@href` | **9/10**, several. See ⑥ |
+
+> ⚠ **Journal name, citation count and year have no selector of their own — read them out of
+> the `div.paper-info` line.** The new SPA renders them as **`<span>`s with no class**. The two
+> selectors from the first release — `div.paper-info a[href*="refpaper"]` (citations) and
+> `div.paper-info a[href*="/usercenter/data/journal"]` (journal) — measure **0/10** on the new
+> page; they are leftovers from the old one. Using them raises no error, it just leaves those
+> two cells permanently empty.
+
+---
+
+## ④ Action · getting access
+
+**Public, no login.** Neither searching nor reading a detail page needs an account.
+
+The only thing that blocks you is the click-to-select CAPTCHA in ①, and that is anti-bot
+defence, not an access right — hand it to a human rather than hunting for a login.
+
+Logins exist for favourites, subscriptions and document-delivery requests; none of this
+card's four actions needs them.
+
+---
+
+## ⑤ Action · detail page
+
+The abstract on a results page is only a snippet. **The full abstract and the keywords exist
+only on the detail page.**
+
+```jsonc
+browser_open({ url: "<the detail value extracted from the results page>" })  // /usercenter/paper/show?paperid=…
+browser_read({ tabId: "<tabId from the previous step>" })
+```
+
+Measured 2026-09-16:
+
+- `/usercenter/paper/show?paperid=…` **redirects to**
+  `/ndscholar/browse/detail?paperid=…&site=xueshu_se`. Either address works; open whichever
+  you extracted
+- The whole page body is **1839 characters** — one `browser_read` takes all of it, well under
+  its 20000-character cap
+- The page carries: full abstract, keywords, authors, year, journal, read count, all sources,
+  and similar articles
+
+> ⚠ **Do not use the `.abstract` selector on a detail page.** It measures **9 hits**, all of
+> them abstracts of the "similar articles", and this paper's own abstract is not among them.
+> What comes back looks like abstracts and is somebody else's — with no error. For this
+> paper's abstract use `browser_read`, not `extract`.
+
+---
+
+## ⑥ Action · getting the full text
+
+**This release downloads nothing.** The browser has no download tool, and downloads the page
+triggers itself are cancelled outright.
+
+**Extract full-text entries on the results page only**: `div.paper-source a@href` (9/10
+measured). It lists, side by side, where the same paper can be reached — measured domains
+include `nstl.gov.cn` (National Science and Technology Library), `qikan.cqvip.com` (VIP),
+`d.wanfangdata.com.cn` (Wanfang), `cnki.com.cn` (CNKI), publisher sites, and iAcademic.
+
+**Take every `a` and pick by domain**; do not take only the first — the one listed first is
+not necessarily the one with a reachable PDF.
+
+> ⚠ **Do not open a detail page in order to get full-text entries.** There those sources are
+> **`div`s with no `href`** (`.all-version-item`), and the only real `<a>` inside `.source-wrap`
+> is 文献互助 (document delivery). The trip returns no links.
+
+Most of these sites need an institutional subscription — but **open one and look before you
+talk about logging in** (`SKILL.md` §2): on a campus network or a VPN the user already has
+access. For a federated login see `references/carsi.md`; **this release still does
+not download** after a login, it only reports links.
+
+The left-hand facet panel `div.filters-wrap` has 获取方式 → 免费下载 ("access → free download";
+834 records on the query measured 2026-09-16, alongside 登录查看 "sign in to view" at 707).
+Filtering with it makes the links you report more likely to open for the user.
+
+> ⚠ **There is no selector you can hard-code for it.** Each `div.filter-field` in the panel is
+> distinguished only by **position** (获取方式 was 4th on that query, but which fields exist and
+> in what order varies with the query), the `div.filter-field-content` items differ only by
+> their counts, and CSS has no text matching. So this is one of the few places you **must use a
+> snapshot `index` + `snapshotId`**: take a snapshot, confirm which block is 获取方式, and click
+> it inside that snapshot. If it is not in the snapshot, **skip it** — filtering is an
+> optimization, not a requirement, and two extra round trips are not worth it.
+
+For anything pointing at **arXiv / PMC / DOI**, hand the identifier to `fastpaper download` —
+it routes by identifier and is far cheaper than the browser.
+
+---
+
+## ⑦ When you must hand over to a human
+
+- **403 plus the 百度安全验证 click-to-select CAPTCHA** — the main case, see ①
+- Site features that need a login (favourites, document delivery)
+- External sites you land on that demand payment, terms acceptance, or personal details
+
+Call `ask_user_question` **with `browserTabId`**; the UI opens the sidebar and switches to
+that tab.
+
+---
+
+## ⑧ Known limits
+
+- No official API; the search action draws a 403 plus human verification on egresses judged
+  to be automated (it did not this time, which does not mean it will not)
+- Result quality is uneven and **the same paper can appear as several records** — normalize
+  titles and merge within one search
+- Many records go through document delivery rather than a direct link; no PDF is normal, not
+  a fault
+- Journal / citations / year exist only inside the whole metadata line (see ③)
+- The advanced-search dialog is unusable under this tool (see ③); use main-box field syntax
+- The home page's navigation has a 旧版入口 ("classic entry") item, untried; if you try it,
+  locate it from the snapshot of the moment rather than guessing a selector into a playbook

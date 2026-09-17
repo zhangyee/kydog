@@ -1,7 +1,8 @@
-# The built-in browser: how the five tools work together
+# The built-in browser: how the six tools work together
 
 `browser_open` opens a page · `browser_act` operates on it · `browser_read` reads body text ·
-`browser_login` does institutional login · `browser_tabs` lists every tab currently open.
+`browser_login` does institutional login · `browser_tabs` lists every tab currently open ·
+`browser_download` downloads a PDF.
 
 **There is no `browser_close`.** The tab list is a one-line summary attached to the head of
 **every** browser tool result, and it is always current:
@@ -383,9 +384,12 @@ but they too are produced by the page, and the same rule applies.
 (`browser.password_field`). Institutional login goes through `browser_login`; every other
 login goes to the user.
 
-**Download nothing.** In this release, downloads a page triggers are all cancelled, and any
-direct link you extract is **reported verbatim** to the user. Where it points at
-arXiv / PMC / DOI, hand the identifier to `fastpaper download`.
+**Downloads go through `browser_download`, never through the page.** Downloads a page
+triggers itself are still cancelled outright — the only thing allowed through is the one URL
+**you named yourself**, so "what got downloaded" always traces back to one tool call.
+Where a link points at arXiv / PMC / DOI, still prefer `fastpaper download` (it routes by
+identifier and is cheaper than the browser); for bare PDF links use `browser_download`,
+because **those cannot be fetched outside the browser session at all**.
 
 **No directories, no scripts, no intermediate files on disk.** When results pile up, narrow
 the search and lower the count — do not "save it first and process it later".

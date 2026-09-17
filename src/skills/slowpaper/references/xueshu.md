@@ -1,104 +1,24 @@
-# 百度学术
+# 百度学术 · 操作卡片
 
 中英文混合检索的发现层，中文覆盖好、结果质量参差，对接文献传递。**没有官方 API**。
 
----
-
-## 侦察状态
-
-**2026-09-08 侦察，结果页结构已采到。** 仍有一处缺口：**从首页交互提交搜索这一步没跑通**
-（Enter 不触发提交，`.send-btn` 点击也没生效），下面的检索剧本因此是未验证的。结果页本身
-是打开的真实页面，选择器都从它的 DOM 上读下来。
-
-一处修正：我最初打的是 `/s?wd=...`（旧版路径），返回 403 + 人机验证；**新版结果页在
-`/ndscholar/browse/search?wd=...`**。走页面交互不会走错端点，拼 URL 才会 —— 这正是「一切走
-交互」这条规矩的由来。
+> **侦察状态：2026-09-16 真站点实测**（Chromium，视口宽 1280，与 KyDog 的 emulation 同宽）。
+> 下面每一条选择器都在真 DOM 上数过命中数。
+> **未经本项目 `browser_act` 端到端验证** —— 覆盖不到 walker 的隔离世界执行、`extract` 的
+> `item` 对齐、我们自己 `type` / `click` 的命中检查与自动滚动。跑不通时以页面为准，别硬套。
 
 ---
 
-## 操作方式：交互式
+## ① 可达性与拦截页指纹
 
-**一切操作都在页面上做。** 对这个源尤其如此 —— 首页**没有任何 `<form>` 元素**（实测），检索
-完全由 JS 驱动，本来就没有可拼的表单 URL。
+| 端点 | 2026-09-16 | 2026-09-08（一期） |
+| --- | --- | --- |
+| `https://xueshu.baidu.com/`（首页） | **200**，正常渲染 | 200 |
+| 检索提交后的结果页 | **200**，10 条结果，**没有验证码** | **403**，人机验证页 |
 
-`browser_act` 一次调用装一串动作，探明之后用 `selector` 定位就是一段可以照抄的剧本。
+**两种状态都真实存在，取决于这一刻的网络出口与会话。** 别把「这次没撞上」写成「这个源不会拦」。
 
-### 剧本：首页检索（部分已探明）
-
-```jsonc
-browser_open({ url: "https://xueshu.baidu.com/" })
-browser_act({ tabId: "<上一步的 tabId>", actions: [
-  { "kind": "type",  "selector": "textarea.search-input", "text": "<检索词>" },
-  { "kind": "click", "selector": ".send-btn" },
-  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } }
-]})
-```
-
-**那个 `wait` 不是保险，是必需的。** 这个源的检索**不产生主 frame 导航**（SPA 换的是路由），所以工具层没有任何导航终态可等；不显式等结果条目出现，紧接着的 `extract` 就在旧 DOM 上跑，抽到的是上一页 —— **而且不报任何错**。
-
-**收尾快照也不等。** 一批跑完最后一步就立刻取「── 页面变化 ──」（`references/browser.md`
-§五末尾）。这个源不产生主 frame 导航，所以那一段的新旧完全取决于上面那个 `wait`：
-等到了就是真换了；超时就是条件没成立，按「出错即停」处理 —— **不要**因为「页面变化」
-看起来没动就再点一次提交。
-
-`type` 带 `selector` 时会先聚焦该元素，不必额外加一个 `click`。**它还会先全选清空**：
-清不掉就明确报错、一个字都不打（不会追加在原有内容后面）—— 中途复用一个已经有内容的框时
-可能撞上 `browser.target_unusable`，那不是选择器写错了。
-
-**侦察时 Enter 没能提交**（Scholar 也一样）。**有一条候选解释，但它没有被复验过**：CDP 的
-`keyDown` 不带 `text` 就不产生 `keypress`，而 Chromium 的表单隐式提交发生在 `keypress`，
-而本项目的按键表已经给 `Enter` 带上了 `text`（`actions.ts` 的 `KEYS`）—— 所以那次否定观测
-有可能只是侦察工具的问题。但「这个站点在本项目的 `key` 动作下真的会提交」**本项目一次都没
-量过**，它仍然是开放问题，不是结论。不过这个源的首页**没有 `<form>`**，隐式提交本来就无从
-谈起：那条解释成不成立都一样，提交要点 `.send-btn`。
-
-点发送按钮 `.send-btn` 是首选的那条路，**但本次侦察它没跑通**（见上「侦察状态」——
-两段剧本的提交步骤本次都没成功过），别当成已验证的一步。它在输入框有内容之前 class 是
-`send-btn disable`，有内容后变成 `send-btn` —— 这个变化可当「可以提交了」的判据，
-也是 `wait` 动作的好条件。侦察用的另一套工具链里它**没有出现在无障碍树里**；本项目 walker
-的纳入集更宽（带 `role` / `onclick` / `tabindex` 的 `div` 也进快照），**别预设快照里一定
-没有它** —— 但剧本本来就一律用 `selector`，这一条与它在不在快照里无关。
-
-**`type` 一律走文本插入（`Input.insertText`），不产生 `keydown`，也不按字符类分支** ——
-中文检索词与英文检索词走的是**同一条路**，没有「英文是安全路径」这回事。
-「有内容后按钮变可用」如果靠 `keydown` 触发，那么**任何**检索词打进去按钮都可能不会变可用；
-重验时要确认，遇到按钮没变可用就先取一眼快照再点。
-
-### 剧本：高级检索（部分已探明）
-
-高级检索是个对话框，要先点开再填：
-
-```jsonc
-browser_act({ tabId: "<上一步的 tabId>", actions: [
-  { "kind": "click", "selector": "<「高级检索」按钮，见下方说明>" },
-  { "kind": "wait",  "until": { "selector": "#advanced-search-all", "state": "present" } },
-  { "kind": "type",  "selector": "#advanced-search-all",    "text": "<全部检索词>" },
-  { "kind": "type",  "selector": "#advanced-search-author", "text": "<作者>" },
-  { "kind": "click", "selector": "<「确认」按钮，见下方说明>" },
-  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } }
-]})
-```
-
-**这两个 `wait` 与首页剧本里那个是同一条规则**（这个源的 `click` 不产生主 frame 导航，
-所以每一次 `click` 之后都要自己给条件）。少了第一个，`type` 会与「打开对话框」那一下同时
-解析目标 —— 那一刻 `#advanced-search-all` 还不存在，报的是
-`browser.target_unusable`「在当前页面上没有匹配」，而选择器本身是对的，照着去换选择器就是
-在死路上打转。少了第二个，紧接着的 `extract` 在旧 DOM 上跑。
-
-**两段剧本的提交步骤本次都从未成功过**（提交后 403 + 人机验证，见下）。输入框的选择器是从
-首页 DOM 上读下来的、真实存在；提交后能不能到结果页没有被验证。
-
-**不要在剧本里写 `index`。** 快照编号换一次会话就漂；`index` 只在探索期用，探明后一律换成
-`selector`。
-
-## 可达性（实测）
-
-| 端点 | 结果 |
-| --- | --- |
-| `https://xueshu.baidu.com/`（首页） | **200**，正常渲染，标题「百度学术 - 保持学习的态度」 |
-| 搜索端点 | **403**，人机验证页 |
-
-## 拦截页指纹（实测）
+拦截页指纹（2026-09-08 实测）：
 
 ```
 HTTP 403
@@ -106,159 +26,217 @@ document.title === '百度安全验证'
 正文含「校验失败，请再试一次」与「请依次点击…」
 ```
 
-**这是可交互的点选验证码，人能解开** —— 与 Google Scholar 的静态硬拦不同。
-
-所以正确反应是**调 `ask_user_question` 交给用户**（带上 `browserTabId`，侧栏会自动展开到这个
-标签），提示他完成验证。用户点完，cookie 落进持久 partition，后续检索复用同一个会话。
-
-挂起期间**不要读页面**，也不要替用户点任何东西。
+**这是可交互的点选验证码，人能解开** —— 与 Google Scholar 的静态硬拦不同。反应是调
+`ask_user_question` 交给用户（带上 `browserTabId`，侧栏会展开到这个标签）。用户点完，
+cookie 落进持久 partition，后续检索复用同一个会话。挂起期间**不要读页面**，也不要替用户点。
 
 判据用工具结果里那句 `HTTP 403`（导航结论那一行会写「但服务器返回 HTTP 403」）；
-**没有一个叫 `httpStatusCode` 的字段给你读** —— 状态码只以这句散文的形式出现。
-是否可交互看快照里有没有可点的验证控件。
+**没有一个叫 `httpStatusCode` 的字段给你读**。是否可交互看快照里有没有可点的验证控件。
 
-**检索提交之后才 403 的那一次**（可达性表：首页 200、搜索才 403）不在那一批的返回值里 ——
-它挂在**下一次**工具结果**头部**那行 `导航: [tab_…]`，只报一次、报过就清。
-
-## 页面上有哪些控件（实测，读的是首页 DOM）
-
-**主搜索框是 `<textarea>`，不是 `<input>`**：
-
-```
-textarea.atomic-textarea-box.search-input     无 name、无 id
-```
-
-只能靠 class、或快照里的 role / 位置认出来。**不要按 `input[name=...]` 找它**。
-
-**高级检索是一个对话框**：先点「高级检索」按钮打开，再逐个填字段。字段 id 语义化且稳定：
-
-| id | 含义 | 备注 |
-| --- | --- | --- |
-| `#advanced-search-all` | 包含全部检索词 | |
-| `#advanced-search-precise` | 精确匹配 | 占位文字「多个检索词以，分隔」 |
-| `#advanced-search-or` | 包含任一检索词 | 同上 |
-| `#advanced-search-not` | 不含检索词 | 同上 |
-| `#advanced-search-author` | 作者 | |
-| `#advanced-search-affs` | 机构 | |
-| `#advanced-search-publication` | 期刊 | |
-| `#advanced-search-year-start` / `#advanced-search-year-end` | 年份区间 | |
-
-对话框里还有三个 `input.ant-radio-input` 单选项，**本次没确认它们的含义**，用之前要先看快照。
-
-提交按钮文案是「确认」，取消是「取消」。**这两个按钮和「高级检索」按钮都没有 id**，class 是
-一串 `atomic-button atomic-md atomic-button-primary …` 的组合 —— 剧本里用文案定位比用 class
-稳（class 是组件库生成的，改版会变）。具体怎么写等补齐侦察时按实际快照定。
-
-**页面上可能弹授权对话框**：本次在首页 DOM 里见到「继续使用」/「取消授权」两个按钮。没有实际
-触发过，遇到时按快照实际内容处理，不要预设它一定出现。
-
-首页导航里有一项**「旧版入口」**，疑似通向经典结果页；本次没定位到它的元素形态（不是 `<a>`），
-也没点开过。补齐侦察时值得先试它 —— 经典页面通常比新版 SPA 更好抽。
-
-## 结果页怎么抽（实测）
-
-结果页 URL 形态 `https://xueshu.baidu.com/ndscholar/browse/search?wd=<检索词>`，**每页 10 条**。
-
-条目容器：`div.paper-wrap.result`（完整 class 是 `paper-wrap result xpath-log`）。
-
-一条的内部结构：
-
-| 字段 | 选择器 | 说明 |
-| --- | --- | --- |
-| 标题 | `h3.paper-title a` | 文本即标题 |
-| 详情页 | `h3.paper-title a@href` | 形如 `/usercenter/paper/show?paperid=<id>` |
-| 摘要片段 | `div.paper-abstract` | 命中词被 `<em>` 包着，取 `innerText` 即可 |
-| 类型 | `div.paper-info span.paper-type` | 「期刊」/「学位」/「会议」等 |
-| 元信息整行 | `div.paper-info` | 形如 `期刊 梁彤祥， 刘娟， 王晨 - 《材料工程》 - 被引量：33 - 2014年` |
-| 被引量 | `div.paper-info a[href*="refpaper"]` | 只有数字；「被引量：」在同级 span 里 |
-| 期刊 | `div.paper-info a[href*="/usercenter/data/journal"]` | |
-| 作者 | `div.paper-info a[href*="wd=author"]` | 多个 |
-| **全文入口** | `div.paper-source a@href` | **多个**，这是拿全文的关键 |
-
-`div.paper-source` 是这个源最有价值的一块 —— 它把同一篇论文在各处的入口并排列出来。实测一条
-里同时有：期刊官网（`jme.biam.ac.cn/...`）、国家科技图书文献中心（`nstl.gov.cn`）、iAcademic、
-万方（`d.wanfangdata.com.cn`）、知网（`cnki.com.cn`）。
-
-**取全部 `a` 再按域名挑**，不要只取第一个 —— 排在前面的不一定是能直接下到 PDF 的那个。
-
-## 怎么翻页：本期不翻，只取第 1 页
-
-**这个源本期只取结果页的第 1 页**（每页 10 条）。抽完第 1 页就收工，不要试图翻页。
-
-**为什么降级**：翻页控件 `div.pagination-wrap > div.pagination` 里，页码是 `div.page`、
-当前页是 `div.page.active`，而「上一页」与「下一页」**共用同一个 class `div.page.n`**，
-只能靠文本区分；而 `browser_act` 的 `selector` 是**纯 CSS**
-（页内走 `querySelector`），**没有 `:contains()` / `:has-text()` 这类按文本匹配的写法**。
-于是两条路都是死的：写 `div.page.n:contains("下一页")` 会被判成非法选择器
-（「不是合法的 CSS 选择器」，`browser.bad_action`）；写裸 `div.page.n` 取到的是**第一个**、
-也就是「上一页」，点下去是**往回翻**。这些控件还全是没有 `href`、没有 role 的 `div`；
-侦察用的另一套工具链里它们没有进无障碍树，本项目 walker 的纳入集更宽
-（`[role]` / `[onclick]` / `[tabindex]` 都收），进不进快照要看实际页面 ——
-**但剧本里本来就不写 `index`**（编号换一次会话就漂），所以那条路一样不是出路。
-**要开翻页，先得对着真站点量出一个只命中「下一页」的 CSS 表达** —— 见「补齐程序」第 3 条。
-
-抽第 1 页，抽完这一次就结束这个源：
-
-```jsonc
-{ "kind": "extract", "selectors": {
-    "item": "div.paper-wrap.result",
-    "title": "h3.paper-title a",
-    "detail": "h3.paper-title a@href",
-    "info": "div.paper-info",
-    "sources": "div.paper-source a@href"
-}}
-```
-
-**所以这个源本期最多给到 10 条。** `SKILL.md` §三 的「一个源最多 3 页」是通用上限，
-在百度学术这里实际只有 1 页 —— 这是本期的已知局限，不是抽漏了。要更多结果就收窄检索词
-重搜一次，别拿翻页去凑数。
-
-## 全文入口怎么处理：报告，不下载
-
-**这个源在本期只做检索，不取全文。** 浏览器没有下载工具，页面自己触发的下载也会被一律拒绝。
-
-`div.paper-source a@href` 给的是一组**外部站点**入口，不是 PDF 直链。实测见到的域名有
-`nstl.gov.cn` / `d.wanfangdata.com.cn` / `cnki.com.cn` / `iacademic.info` / 期刊官网。
-**把这组链接原样报给用户**，让他自己挑一个去开。
-
-这些站点大多需要机构订阅 —— **机构账号（CARSI）登录本期就有**，见 `references/carsi.md`。
-但**登录之后本期仍然不下载**：拿到订阅访问权也只是把链接报给用户，下载通道是下一期的事。
-
-左侧筛选面板有「获取方式 → 免费下载」一项（实测那次检索下有 4679 条）。**先按它筛**，报出去
-的链接才更可能是用户点开就能看的。
-
-## 什么时候必须交给人
-
-- **403 + 「百度安全验证」点选验证码** —— 这是主要场景，见上
-- 需要登录的功能（收藏、文献互助等）
-- 其余按 `references/browser.md` 的交接规则
-
-## 已知局限
-
-- 无官方 API；检索动作对被判定为自动化的出口 403 + 人机验证
-- 结果质量参差，同一篇论文可能有多条重复记录
-- 很多条目走文献传递而非直链，拿不到 PDF 是常态，不是故障
+**检索提交之后才 403 的那一次不在那一批的返回值里** —— 提交走的是 `div` 上的点击，不是普通
+链接，没有导航等待保证。它挂在**下一次**工具结果**头部**那行 `导航: [tab_…]`，只报一次、
+报过就清。
 
 ---
 
-## 补齐程序
+## ② 页面上有哪些控件
 
-1. **侦察**：在真实浏览器里交互式搜一次（必要时人工过一次验证码），打开结果页，读出条目容器、
-   标题、作者/年/来源、被引数、全文/文献传递入口各自的选择器，以及翻页控件的形态。顺便试
-   「旧版入口」那条路
-2. **验证**：用本项目的 `browser_act` 的 `extract` 动作把每一条选择器真跑一遍，跑不通的改掉，
-   并把「开首页 → 检索 → 抽第 1 页」连成一个能一次跑通的剧本
-3. **开翻页**（本期降级掉的那一步，理由见「怎么翻页」）：
-   - 先量出一个**只命中「下一页」、不命中「上一页」的纯 CSS 表达**。两者共用 `div.page.n`，
-     而 `selector` 走页内的 `querySelector`、没有文本匹配可用 —— 只能从结构位置
-     （`div.pagination > div.page.n:last-of-type` 之类）或只出现在其中一个上的属性下手，
-     **必须在真页面上实测确认它精确命中 1 个**，别照猜的写进剧本
-   - 再一并采出一个**「点击前不成立、翻页后成立」的等待条件**。`div.page.active` 那种
-     「当前页」标记**不行** —— 它点击前就已经成立，而 `wait` 是先探一次再等，会立刻回
-     「等到了」、一毫秒都没等（`references/browser.md` §五）。Scholar 那边指的方向值得
-     在这里也试一次：结果页地址里表示页码/偏移的那一段用 `urlMatches` 判
-     （它判的是主进程手里的地址、不进页面，见 `references/scholar.md`）——
-     **但这个源换页时地址变不变，本期没测过**，得实测
-   - 这一步做完之前，`SKILL.md` §三 的「一个源最多 3 页」在这个源上实际只有 1 页
+**首页没有任何 `<form>` 元素**（实测 `document.forms.length === 0`），检索完全由 JS 驱动 ——
+本来就没有可拼的表单 URL。
 
-第 2 步不能省：两套工具看到的 DOM 不一定一样。
+| 控件 | 选择器 | 实测 |
+| --- | --- | --- |
+| 主搜索框 | `textarea.search-input` | **是 `<textarea>` 不是 `<input>`**，无 `name`、无 `id`。别按 `input[name=…]` 找它 |
+| 提交按钮 | `.send-btn` | 空框时 class 是 `send-btn disable`，有内容后变 `send-btn` |
+| 高级检索入口 | `div.advanced-search.advance-toggle-btn` | 页面上的**文案是「高级搜索」**。见 ③ 的警告，这条路不推荐 |
+
+**按钮变可用不依赖 `keydown`。** 实测只派发一个 `input` 事件，`.send-btn` 就从 `disable`
+变可用 —— 而 KyDog 的 `type` 走 `Input.insertText`（发 `beforeinput` + `input`，是这个的超集），
+所以**任何检索词打进去按钮都会变可用**，中英文没有分支。
+
+**别指望 Enter。** 首页没有 `<form>`，隐式提交无从谈起；提交一律点 `.send-btn`。
+
+---
+
+## ③ 动作 · 搜索
+
+### 剧本：首页检索（2026-09-16 实测跑通）
+
+```jsonc
+browser_open({ url: "https://xueshu.baidu.com/" })
+browser_act({ tabId: "<上一步的 tabId>", actions: [
+  { "kind": "type",  "selector": "textarea.search-input", "text": "<检索词>" },
+  { "kind": "click", "selector": ".send-btn" },
+  { "kind": "wait",  "until": { "selector": "div.paper-wrap.result", "state": "present" } },
+  { "kind": "extract", "selectors": {
+      "item":    "div.paper-wrap.result",
+      "title":   "h3.paper-title a",
+      "detail":  "h3.paper-title a@href",
+      "type":    "div.paper-info span.paper-type",
+      "info":    "div.paper-info",
+      "summary": "div.paper-abstract",
+      "sources": "div.paper-source a@href"
+  }}
+]})
+```
+
+**那个 `wait` 不是保险，是必需的。** 提交点的是 `div` 不是 `<a href>`，拿不到普通链接那条
+导航等待保证；不显式等结果条目出现，紧接着的 `extract` 就在首页 DOM 上跑，抽到 0 条 ——
+**而且不报任何错**。收尾快照同理：它在最后一步之后立刻取，新旧完全取决于这个 `wait`。
+超时就按「出错即停」处理，**不要**因为「页面变化」看起来没动就再点一次提交。
+
+`type` 带 `selector` 时会先聚焦该元素，不必额外加一个 `click`。**它还会先全选清空**：
+清不掉就明确报错、一个字都不打 —— 中途复用一个已经有内容的框时可能撞上
+`browser.target_unusable`，那不是选择器写错了。
+
+### 字段检索：语法直接打进主搜索框
+
+**不要去开高级检索对话框。** 这个源的字段语法在主搜索框里直接生效：
+
+```
+author:(何恺明) 图像
+```
+
+2026-09-16 实测：4 条结果，作者全部命中。一次往返，没有对话框的任何坑。
+（旁证：结果页上每个作者名的链接就是 `search?wd=author%3A%28…%29`。）
+
+> ⚠ **高级检索对话框这条路在本工具下走不通，别试。** 三个实测理由：
+> ① 结果页上 **`#advanced-search-all` 有两个同 id 元素**，`querySelector` 命中的是哪一个不定；
+> ② 对话框开 / 合时这些元素的**存在性不变**，而 `wait` 的 `state` 只有 `present` / `absent`、
+> 判的是 `document.querySelector` 真假、**不看可见性** —— 所以「点开对话框再等它出现」那一步
+> 必然是空转（条件点击前就成立，`wait` 先探一次就立刻返回「等到了」）；
+> ③ 对话框的提交按钮 `.button-group button.atomic-button-primary.operate-btn` 文案是
+> **「高级检索」**（入口那个才叫「高级搜索」）—— 两个名字反着，容易定位错。
+
+### 怎么翻页（2026-09-16 实测可用）
+
+| 控件 | 选择器 | 实测 |
+| --- | --- | --- |
+| 下一页 | `div.pagination > div.page.n:last-child` | **精确命中 1 个** |
+| 上一页 | `div.pagination > div.page.n:first-child` | 精确命中 1 个 —— **别写裸 `div.page.n`**，那会取到「上一页」，点下去往回翻 |
+
+翻页控件是没有 `href`、没有 role 的 `div`，**无障碍树里可能没有** —— 只能用 `selector`。
+
+**等待条件用地址里的偏移量**：点「下一页」后 URL 变成 `…&pn=10`，第 3 页是 `pn=20`
+（`pn = (页码 − 1) × 10`）。它逐页不同、点击前不成立，正是 `wait` 要的形状；
+`urlMatches` 判的是主进程手里的地址、不进页面。
+
+一页一次 `browser_act`，**不要写进 `repeat`** —— 一批里每一轮的等待条件都是同一个，
+而「翻到了第几页」逐页不同。
+
+```jsonc
+// 翻到第 2 页并抽它（第 3 页把 pn=10 换成 pn=20）
+browser_act({ tabId: "<同一个 tabId>", actions: [
+  { "kind": "click", "selector": "div.pagination > div.page.n:last-child" },
+  { "kind": "wait",  "until": { "urlMatches": "pn=10" } },
+  { "kind": "extract", "selectors": { "item": "div.paper-wrap.result", "title": "h3.paper-title a",
+      "detail": "h3.paper-title a@href", "info": "div.paper-info", "sources": "div.paper-source a@href" }}
+]})
+```
+
+翻到最后一页时那次 `click` 会因无匹配或控件禁用而报错 —— 预期行为，之前每一页抽到的数据
+早已经在各自那次调用的返回值里。
+
+### 结果页的字段（2026-09-16 实测命中数）
+
+结果页 URL 形态 `https://xueshu.baidu.com/ndscholar/browse/search?wd=<检索词>`，**每页 10 条**。
+条目容器 `div.paper-wrap.result`（完整 class 是 `paper-wrap result xpath-log`）。
+
+| 字段 | 选择器 | 命中 |
+| --- | --- | --- |
+| 标题 | `h3.paper-title a` | 10/10 |
+| 详情页 | `h3.paper-title a@href` | 10/10，绝对地址，带 `&site=xueshu_se` |
+| 摘要片段 | `div.paper-abstract` | 10/10。命中词被 `<em>` 包着，取文本即可 |
+| 类型 | `div.paper-info span.paper-type` | 10/10。「期刊」/「学位」/「会议」/「专利」等 |
+| 作者 | `div.paper-info a[href*="wd=author"]` | 10/10，多个 |
+| 元信息整行 | `div.paper-info` | 形如 `期刊 李颖，李秀宇，卢兆林，... - 《计算机工程与设计》 - 被引量：0 - 2022年` |
+| **全文入口** | `div.paper-source a@href` | **9/10**，多个。见 ⑥ |
+
+> ⚠ **期刊名、被引量、年份没有独立的选择器，只能从 `div.paper-info` 整行文本里读。**
+> 新版 SPA 把它们渲染成**无 class 的 `<span>`**。一期文档里那两条
+> —— `div.paper-info a[href*="refpaper"]`（被引量）与
+> `div.paper-info a[href*="/usercenter/data/journal"]`（期刊）—— 在新版上实测 **0/10**，
+> 它们是旧版页面的遗留。照着写不会报错，只会让这两格永远是空。
+
+---
+
+## ④ 动作 · 取得访问权
+
+**公开，不需要登录。** 检索与看详情页都不要账号。
+
+唯一会拦住的是 ① 那个点选验证码，那是反爬不是权限 —— 交给人，不要去找登录入口。
+
+需要登录的是收藏、订阅、文献互助这类功能；本卡片的四个动作都用不到它们。
+
+---
+
+## ⑤ 动作 · 详情页
+
+结果页的摘要只是片段。**完整摘要与关键词只有详情页有。**
+
+```jsonc
+browser_open({ url: "<结果页抽到的 detail 值>" })   // /usercenter/paper/show?paperid=…
+browser_read({ tabId: "<上一步的 tabId>" })
+```
+
+实测（2026-09-16）：
+
+- `/usercenter/paper/show?paperid=…` 会**跳到** `/ndscholar/browse/detail?paperid=…&site=xueshu_se`。
+  两个地址都能用，抽到什么就打什么
+- 整页正文 **1839 字符**，`browser_read` 一次拿完，远低于它 20000 字符的上限
+- 页面上有：完整摘要、关键词、作者、年份、期刊、阅读量、全部来源、相似文献
+
+> ⚠ **别在详情页上用 `.abstract` 这个选择器。** 它实测命中 **9 个**，全是「相似文献」的摘要，
+> 本篇的摘要不在里面。抽出来一片看着像摘要的东西，其实是别的论文的 —— 不报错。
+> 要本篇的摘要就用 `browser_read`，别用 `extract`。
+
+---
+
+## ⑥ 动作 · 取全文
+
+**本期不下载任何文件。** 浏览器没有下载工具，页面自己触发的下载也会被一律取消。
+
+**全文入口只在结果页抽**：`div.paper-source a@href`（实测 9/10）。它把同一篇论文在各处的
+入口并排列出来 —— 实测见到 `nstl.gov.cn`（国家科技图书文献中心）、`qikan.cqvip.com`（维普）、
+`d.wanfangdata.com.cn`（万方）、`cnki.com.cn`（知网）、期刊官网、iAcademic。
+
+**取全部 `a` 再按域名挑**，不要只取第一个 —— 排在前面的不一定是能直接下到 PDF 的那个。
+
+> ⚠ **不要为了拿全文入口去开详情页。** 详情页上那些来源是**没有 `href` 的 `div`**
+> （`.all-version-item`），`.source-wrap` 里唯一的真 `<a>` 是「文献互助」。进去一趟拿不到链接。
+
+这些站点大多需要机构订阅 —— 但**先打开看一眼**再谈登录（`SKILL.md` §二）：用户在校内网或
+挂着 VPN 时本来就有权。真要联邦登录见 `references/carsi.md`；**登录之后本期仍然
+不下载**，只把链接报给用户。
+
+左侧筛选面板 `div.filters-wrap` 里有「获取方式 → 免费下载」（2026-09-16 实测那次检索下 834 条，
+同组还有「登录查看」707 条）。按它筛过，报出去的链接才更可能是用户点开就能看的。
+
+> ⚠ **这一项没有可写死的选择器。** 面板里每个 `div.filter-field` 只靠**位置**区分（那次检索下
+> 「获取方式」排第 4，而字段的有无与顺序随检索词变），条目 `div.filter-field-content` 之间
+> 除了计数没有任何差异，CSS 又没有文本匹配。所以这是少数几个**必须走快照 `index` +
+> `snapshotId`** 的地方：先取一份快照确认哪一块是「获取方式」，就在那份快照里点它。
+> 快照里找不到就**跳过** —— 筛选是优化不是必需，为它多花两次往返不划算。
+
+指向 **arXiv / PMC / DOI** 的，把标识符交给 `fastpaper download` —— 按标识符路由，比浏览器省。
+
+---
+
+## ⑦ 什么时候必须交给人
+
+- **403 +「百度安全验证」点选验证码** —— 主要场景，见 ①
+- 需要登录的站内功能（收藏、文献互助等）
+- 跳出去的外部站点要求付费、接受条款、填个人信息
+
+调 `ask_user_question` 时**带上 `browserTabId`**，界面会展开侧栏并切到那个标签。
+
+---
+
+## ⑧ 已知局限
+
+- 无官方 API；检索动作对被判定为自动化的出口会 403 + 人机验证（本次没撞上，不等于不会）
+- 结果质量参差，**同一篇论文可能有多条重复记录** —— 同一次检索内按标题归一化并掉
+- 很多条目走文献传递而非直链，拿不到 PDF 是常态，不是故障
+- 期刊 / 被引量 / 年份只有整行文本，没有独立字段（见 ③）
+- 高级检索对话框在本工具下不可用（见 ③），字段限定走主搜索框语法
+- 首页导航里有一项「旧版入口」，没试过；要试先按当时的快照定位，别照猜的写进剧本

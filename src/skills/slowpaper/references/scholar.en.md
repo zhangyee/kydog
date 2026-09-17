@@ -1,133 +1,75 @@
-# Google Scholar
+# Google Scholar · operations card
 
-A discovery layer; it does not host full text. The widest coverage of all: preprints, theses,
-patents and grey literature, with an "all versions" cluster and direct PDF links.
-**It has no official API** — one of the reasons it has to go through a browser.
+A discovery layer; it does not host full text. The widest coverage there is: preprints,
+theses, patents and grey literature, with an "all versions" cluster and direct PDF links.
+**No official API** — one of the reasons it has to go through a browser.
 
----
-
-## Reconnaissance status
-
-**Reconnaissance completed 2026-09-08.** Every selector below was read off the DOM of a real
-results page (query `flow matching generative models`, about 491,000 results, 10 per page).
-
-**A hard 403 wall was hit and reproduced along the way**: on the first network egress, search
-was 403 across the board and recovered after changing IP. That is not this source's normal
-state, but it is a state you **will really run into and must be able to recognise** —
-fingerprint below.
+> **Reconnaissance: measured on the live site 2026-09-16** (Chromium, viewport width 1280,
+> the same width as KyDog's emulation). Every selector below was counted against the real DOM
+> and paging was clicked through once.
+> **Not yet verified end to end through this project's `browser_act`** — that would also cover
+> the walker's isolated-world execution, `extract`'s `item` alignment, and our own
+> `type` / `click` hit-testing and auto-scroll.
 
 ---
 
-## Mode of operation: interactive
+## ① Reachability and the interception fingerprint
 
-**Everything is done on the page**: find the control, click it, type, submit. Do not construct
-search URLs to bypass the page.
+Reachability **depends on the network egress**, and all three states have been measured:
 
-The reason is not fastidiousness:
-
-- Constructing URLs means maintaining a parameter contract per source, and parameters change
-  and grow signatures; when one breaks it does not error, it just returns nothing
-- The page may have no constructible URL at all (when search is JS-driven)
-- Interaction follows the site's real user path
-
-**Interaction is not expensive.** One `browser_act` call carries a string of actions, and once
-worked out, `selector` targeting makes it a playbook you can copy verbatim — with no snapshot
-needed at all.
-
-### Playbook: search from the home page
-
-```jsonc
-browser_open({ url: "https://scholar.google.com/" })
-browser_act({ tabId: "<tabId from the previous step>", actions: [
-  { "kind": "type",  "selector": "input[name=\"q\"]", "text": "<query>" },
-  { "kind": "click", "selector": "#gs_hdr_tsb" }
-]})
-```
-
-When `type` carries a `selector` it focuses that element first; no extra `click` is needed.
-**It also selects-all and clears first**: if it cannot clear the box it reports an error and
-types nothing at all (it never appends to existing content) — so reusing a box that already has
-content mid-flow can hit `browser.target_unusable`, and that is not a wrong selector.
-
-**Click the submit button here rather than pressing Enter.** During reconnaissance, pressing
-Enter in the input box **did not submit** — the live value was already the query and the
-element was focused, yet the page did nothing. Baidu Xueshu behaved the same.
-
-**There is a candidate explanation, but it has never been re-verified.** Chromium's implicit
-form submission happens on `keypress`, and CDP's `dispatchKeyEvent` only produces a char event
-when it is a `keyDown` carrying `text`; this project's key table gives `Enter` its `text`
-(`KEYS` in `actions.ts`) — so **that negative observation may have been the reconnaissance
-tool's problem**. But "these two sites really do submit under this project's `key` action" has
-**never been measured by this project**, so it remains an open question, not a conclusion.
-
-**Until it is re-verified, always click the submit button.** Clicking also holds for sites
-whose submit control is not a `type=submit`, and it is the only route measured to work. If the
-Enter route is in fact still dead, `browser_act` reports no error and waits for no navigation,
-and the `extract` that follows runs against the home page's DOM — the return value looks
-entirely normal with a row count of 0. The page reports nothing, and you will think you
-searched.
-
-Then extract results with the playbook under "How to page".
-
-**Never write `index` into a playbook.** Snapshot indices are a product of "this one opening
-of this page" and drift with every new session; `index` is for exploration only (you clicking
-while looking at a snapshot), and once worked out it is always replaced by `selector`.
-
-## Reachability (measured)
-
-Reachability **depends on the network egress**, and both states were measured:
-
-| | Home page | Search |
+| Egress | Home | Search |
 | --- | --- | --- |
-| Egress A (judged automated) | **200**, renders normally | **403** static interception page |
-| Egress B (after changing IP) | **200** | **200**, normal results page |
+| 2026-09-16, this run | **200** | **200**, normal results page, 10 items |
+| Egress B (first release, after changing IP) | 200 | 200 |
+| Egress A (first release, judged automated) | **200**, renders normally | **403** static interception page |
 
-Three further things were checked on egress A, all with the same conclusion: **opening the home
-page first and submitting from its form, switching to Chrome, and switching to Safari while
-signed in to a Google account were all still 403**. Therefore
+**A 200 on the home page does not imply a 200 on search.** The 403 blocks the search action
+itself. Three further things were checked on egress A, all with the same result: opening the
+home page and submitting from the form, switching to Chrome, and switching to Safari while
+signed in to a Google account were **all 403**. So
 
-- What is blocked is the act of searching itself, regardless of how it is initiated — do not
-  waste turns slowing down or imitating a human
-- **Signing in to a Google account does not unblock it** — do not treat "have the user log in"
-  as a solution
+- do not waste turns slowing down or imitating a human
+- **signing in to Google does not fix it** — do not treat "have the user log in" as a solution
 
-## Interception-page fingerprint (measured)
+Interception fingerprint (measured):
 
 ```
 HTTP 403
 document.title === 'Sorry...'
 body contains "your computer or network may be sending automated queries"
-no <form>, no reCAPTCHA, not a single element with an id
+no <form>, no reCAPTCHA, no element with an id at all
 ```
 
-**This is a hard wall, and a human cannot solve it either** — there is nothing interactive on
-the page, and the only way out is a different network egress.
+**This is a hard wall a human cannot clear either** — there is nothing interactive on the page,
+and the only way out is a different network egress. So do **not** call `ask_user_question`
+(the user could only stare at it too). The correct reaction is to **switch to Baidu Xueshu**
+per `SKILL.md` §3, and to note in the output that this round used Baidu Xueshu and that
+Scholar was unreachable.
 
-So when you meet it, do **not** call `ask_user_question` to bring the user in (they could only
-stare at it). The correct reaction is to **switch to Baidu Xueshu** per the rule in `SKILL.md`,
-and to note in the output that this round used Baidu Xueshu and that Scholar was unreachable.
+Judge on the `HTTP 403` in the tool result (the navigation verdict line reads
+「但服务器返回 HTTP 403」); do not match body strings. **There is no `httpStatusCode` field
+to read.**
 
-Judge on the `HTTP 403` phrase in the tool result (the navigation-conclusion line reads
-「但服务器返回 HTTP 403」); do not match strings in the body. **There is no `httpStatusCode`
-field for you to read** — the status code only ever appears as that prose.
+**The 403 appears after the search is submitted.** Scholar's submit control is a form button,
+so it does not get the definite wait that plain `<a href>` links do: if the navigation fact
+lands during that action, the submit's own return value carries `HTTP 403`; if it lands later,
+it hangs on the **header** of the **next** browser tool result, on the line
+`导航: [tab_…] 已打开 …，但服务器返回 HTTP 403` — **reported once, then cleared**.
 
-**The 403 arrives after the search is submitted.** Scholar's submit control is a form button,
-so it is outside the deterministic wait guarantee for an ordinary `<a href>` link. If the
-navigation fact arrives during this input, the submit action's own result contains `HTTP 403`;
-if it arrives late, it is hung on the `导航: [tab_…] 已打开 …，但服务器返回 HTTP 403` line at
-the **head of the next** browser-tool result, **reported once and then cleared**. Inspect the
-submit result first; if it is absent there, inspect the navigation line at the head of the next call.
+---
 
-## What controls the page has (measured, read off the home page DOM)
+## ② What controls the page has
 
-The home page has two usable search entry points, both real `<form>`s:
+The home page has two usable search entries, both real `<form>`s.
 
-**① The home-page search box** (simple search)
+**① Home search box** (simple search)
 
-- Input `input[name="q"]` (id `gs_hdr_tsi` on the home page)
-- Submit button `input[name="btnG"]` (id `gs_hdr_tsb`), or press Enter in the input
+| Control | Selector |
+| --- | --- |
+| Input | `input[name="q"]` (id `gs_hdr_tsi` on the home page) |
+| Submit | `#gs_hdr_tsb` (i.e. `input[name="btnG"]`) |
 
-**② The advanced search form** (fields on the page, filled in one by one, interactively)
+**② Advanced search form** (fields on the page, filled one by one, interactively)
 
 | Field name | What it is on the page |
 | --- | --- |
@@ -135,144 +77,185 @@ The home page has two usable search entry points, both real `<form>`s:
 | `as_epq` | with the exact phrase |
 | `as_oq` | with at least one of the words |
 | `as_eq` | without the words |
-| `as_occt` | where the words occur, single choice: `any` (anywhere in the article) / `title` (in the title of the article) |
+| `as_occt` | where the words occur, radio: `any` (anywhere in the article) / `title` (in the title) |
 | `as_sauthors` | authored by |
 | `as_publication` | published in |
 | `as_ylo` / `as_yhi` | year from / to |
 
 The field names were read off the page's form and are used directly as selectors in a playbook
-(`input[name="as_sauthors"]` and the like) — they are **not** for constructing URLs.
+(`input[name="as_sauthors"]` and so on) — **they are not for constructing URLs**.
 
-## How to extract the results page (measured)
+> ⚠ **The interface language follows the browser** (`hl=zh-CN` this run). So **never locate a
+> control by its label text** — "下一页" is `Next` under `hl=en`. The paging selector below does
+> not depend on language, and that is deliberate.
 
-Results page URL shape `https://scholar.google.com/scholar?q=<query>&hl=<lang>&as_sdt=0,5`,
-**10 per page**.
+---
 
-Item container: `.gs_r.gs_or.gs_scl`.
+## ③ Action · search
+
+### Playbook: search from the home page (measured working 2026-09-16)
+
+```jsonc
+browser_open({ url: "https://scholar.google.com/" })
+browser_act({ tabId: "<tabId from the previous step>", actions: [
+  { "kind": "type",  "selector": "input[name=\"q\"]", "text": "<query>" },
+  { "kind": "click", "selector": "#gs_hdr_tsb" },
+  { "kind": "extract", "selectors": {
+      "item":   ".gs_r.gs_or.gs_scl",
+      "title":  "h3.gs_rt a",
+      "page":   "h3.gs_rt a@href",
+      "pdf":    "div.gs_ggs .gs_or_ggsm a@href",
+      "meta":   "div.gs_a",
+      "cited":  ".gs_fl a.gs_or_cited",
+      "digest": "div.gs_rs"
+  }}
+]})
+```
+
+`type` with a `selector` focuses the element first, so no extra `click` is needed. **It also
+selects-all and clears first**: if it cannot clear, it errors and types nothing — so reusing a
+box that already has content can hit `browser.target_unusable`, which is not a bad selector.
+
+**Click the submit button; do not rely on Enter.** In the first release's reconnaissance,
+pressing Enter in the input did not submit (same on Baidu Xueshu). There is a candidate
+explanation (CDP's `keyDown` only produces a char event when it carries `text`, and this
+project's key table does give `Enter` a `text`), **but this project has never measured it** —
+until it is re-verified, always click the button. Clicking also works on sites whose submit
+control is not a `type=submit`, and it is the only path measured to work.
+
+**Do not click again right after submitting.** Scholar is most sensitive to rapid repeated
+actions, and that extra click is exactly the shape of falling into a 403. After submitting,
+first look for a navigation verdict in this return value; if there is none, check the
+`导航: [tab_…]` line in the header of the next call.
+
+**Never write `index` into a playbook.** Snapshot indices are a product of this one page view
+and drift with the session; `index` is for exploration only (clicking what you see in a
+snapshot), and once explored it always becomes a `selector`.
+
+### Result-page fields (hit counts measured 2026-09-16)
+
+Results page URL is `https://scholar.google.com/scholar?q=<terms>&hl=<lang>&as_sdt=0,5`,
+**10 per page**. Item container `.gs_r.gs_or.gs_scl` (10/10 measured).
 
 | Field | Selector | Notes |
 | --- | --- | --- |
-| Title | `h3.gs_rt a` | |
-| Paper page | `h3.gs_rt a@href` | The publisher's or preprint server's landing page, e.g. `arxiv.org/abs/2210.02747` |
-| **Direct PDF link** | `div.gs_ggs .gs_or_ggsm a@href` | The block on the right. **Not every item has one** |
-| PDF source label | `div.gs_ggs .gs_or_ggsm a` | Text shaped `[PDF] arxiv.org`, `[PDF] iclr.cc`, `[PDF] openreview.net` |
-| Authors/venue/year | `div.gs_a` | One whole line, shaped `Y Lipman, RTQ Chen… - arXiv…` |
+| Title | `h3.gs_rt a` | 10/10 |
+| Paper page | `h3.gs_rt a@href` | The publisher's or preprint's landing page, e.g. `arxiv.org/abs/2210.02747` |
+| **Direct PDF link** | `div.gs_ggs .gs_or_ggsm a@href` | The block on the right, 10/10 this run. **Not every record has one**, and it correlates strongly with the query |
+| PDF source label | `div.gs_ggs .gs_or_ggsm a` | Text like `[PDF] arxiv.org`, `[PDF] openreview.net` |
+| Authors/venue/year | `div.gs_a` | One whole line, like `Y Lipman, RTQ Chen… - arXiv…` |
 | Abstract snippet | `div.gs_rs` | |
-| Citation count | `.gs_fl a.gs_or_cited` | Text 「被引用次数：7347」 / "Cited by 7347"; the href is `/scholar?cites=<clusterId>` |
-| All versions | `.gs_fl a[href*="cluster="]` | Text 「所有 N 个版本」 / "All N versions" |
+| Citation count | `.gs_fl a.gs_or_cited` | 10/10. Text like 「被引用次数：7347」; href is `/scholar?cites=<clusterId>` |
+| All versions | `.gs_fl a[href*="cluster="]` | Text like 「所有 N 个版本」 |
 | Related articles | `.gs_fl a[href*="related:"]` | |
-| HTML version | `.gs_fl a.gs_or_nvi` | Only present when there is a cache |
+| Cached HTML | `.gs_fl a.gs_or_nvi` | Only when a cache exists |
 
-**The direct PDF link is the most valuable cell this source has** — it points straight at where
-an open copy lives. All 10 items in this search had one, but **that correlates strongly with
-the query and must not be taken as normal**: not extracting one means this item has no open
-copy. This release only reports it, it does not fetch it (see below).
+The 「保存」 and 「引用」 anchors inside `.gs_fl` have `javascript:void(0)` hrefs — **they are
+not links, do not take their href**.
 
-The "save" and "cite" `a`s inside `.gs_fl` have `javascript:void(0)` hrefs — **they are not
-links, do not take their hrefs**.
+### Paging (measured working 2026-09-16)
 
-## How to page (measured)
+The paging strip is `#gs_n` and contains **real `<a href>`s**. The current page is a `<b>` with
+no link.
 
-The paging area is `#gs_n`, and inside it are **real `<a href>`s** (unlike Baidu Xueshu, where
-they are all `div`s with no role). The current page is a `<b>` with no link.
+Use **`#gs_n a:has(.gs_ico_nav_next)`** for "next" — measured to match **exactly 1**, and it
+**does not depend on the interface language**. Do not match the label text.
 
-Target "next page" with **`#gs_n a:has(.gs_ico_nav_next)`** — measured to match exactly 1
-element, and **independent of interface language**. Do not match on the words 「下一页」:
-with `hl=en` it is `Next`.
+**Use the offset in the address as the wait condition**: that link's href is
+`/scholar?start=10&…`; after clicking, the URL becomes `start=10`, and page 3 is `start=20`
+(`start = (page − 1) × 10`). It differs per page and does not hold before the click, which is
+exactly the shape `wait` needs; `urlMatches` is judged against the main process's own address
+and never enters the page.
 
-The playbook for paging and extracting. **One `browser_act` per page; do not put it inside a
-`repeat`** — every round of a batch carries the same wait condition, while "which page we got
-to" differs page by page (`references/browser.md` §5).
-
-Extract the current page:
+One page per `browser_act`, **never inside a `repeat`** — every round of a batch shares one
+wait condition, while "which page am I on" differs per page.
 
 ```jsonc
-{ "kind": "extract", "selectors": {
-    "item": ".gs_r.gs_or.gs_scl",
-    "title": "h3.gs_rt a",
-    "page": "h3.gs_rt a@href",
-    "pdf": "div.gs_ggs .gs_or_ggsm a@href",
-    "meta": "div.gs_a",
-    "cited": ".gs_fl a.gs_or_cited"
-}}
+// Turn to page 2 and extract it (for page 3, swap start=10 for start=20)
+browser_act({ tabId: "<the same tabId>", actions: [
+  { "kind": "click", "selector": "#gs_n a:has(.gs_ico_nav_next)" },
+  { "kind": "wait",  "until": { "urlMatches": "start=10" } },
+  { "kind": "extract", "selectors": { "item": ".gs_r.gs_or.gs_scl", "title": "h3.gs_rt a",
+      "page": "h3.gs_rt a@href", "pdf": "div.gs_ggs .gs_or_ggsm a@href", "meta": "div.gs_a",
+      "cited": ".gs_fl a.gs_or_cited" }}
+]})
 ```
 
-Turning to the next page is **its own call**; afterwards send **another call** that extracts
-with the same selectors as above:
+The paging click is a plain link, so `browser_act` already waits for the main frame's definite
+navigation terminal state — the `wait` above is not there to wait for navigation, it is there
+to tell **page 2 from page 3** (a navigation terminal state cannot prove which page you landed on).
 
-```jsonc
-{ "kind": "click", "selector": "#gs_n a:has(.gs_ico_nav_next)" }
-```
+On the last page that `click` errors because nothing matches — expected behaviour, and every
+earlier page's rows are already in their own call's return value.
 
-**Scholar paging is a real link in the current frame.** Before dispatching the mouse input,
-`browser_act` preserves its `<a href>` navigation intent and waits for a definite main-frame
-outcome. The paging click's own result should therefore contain both the click report and the
-navigation conclusion. You need no extra `wait` merely to let history commit.
+**Do not page too far.** Scholar is far more sensitive to rapid repeated paging than to a
+single search, and falling into a 403 mid-way costs you the whole source.
 
-**A navigation outcome still does not prove that the result list is stable.** The batch's
-closing snapshot belongs to the newly committed document, but can still precede completion of
-asynchronous results. **Never click again just because it looks unchanged**: Scholar is most
-sensitive to actions in quick succession, and that extra click is exactly the shape that falls
-into a 403. The search submit button is not an ordinary link; for it, inspect both the current
-result and the `导航: [tab_…]` line at the head of the next result as described in the 403 section above.
+---
 
-**How to confirm**: after extracting, compare this page's first `title` with the previous
-page's first one — **identical means the page has not changed yet**; do not record it as a new
-page and do not page on. That is exactly the shape of "extracting the first page three times
-while every result looks normal".
-(A condition that is false before the click and true after paging, and proves the asynchronous
-list is stable, has not been measured this release — see "Completion procedure".)
+## ④ Action · getting access
 
-On the last page that `click` errors out because nothing matches — expected behaviour, and the
-data from every earlier page is already in that page's own tool result.
+**Public, no login.**
 
-**Do not page too far.** Scholar is far more sensitive to rapid consecutive paging than to a
-single search, and falling into a 403 mid-way costs you the whole round in a source switch.
+**A 403 is anti-bot defence, not an access problem.** Do not read it as "you must log in" —
+the first release measured that signing in to a Google account is still 403. Handling is in ①:
+switch source, do not call the user.
 
-## What to do with PDF links: report, do not download
+---
 
-**This release only searches this source, it does not fetch PDFs.** The browser has no download
-tool, and downloads the page triggers itself are refused outright.
+## ⑤ Action · detail page
 
-The direct links extracted from `div.gs_ggs .gs_or_ggsm a@href` were measured pointing at
-`arxiv.org/pdf/…`, `iclr.cc`, `neurips.cc` and `openreview.net`. **Report them verbatim** and
-do not try to fetch them.
+**This source has no detail page.** `h3.gs_rt a@href` points straight at the publisher's or
+preprint's landing page, with no Scholar-side intermediate page.
 
-One exception is worth doing on your own initiative: when a direct link or a landing page
+So "see the details" means opening that landing page (`browser_open` + `browser_read`), and
+that is **a different site** — which kind of source it is and whether it needs access rights
+gets judged again from `SKILL.md` §2.
+
+Two Scholar-side aggregate pages are worth knowing, to open only when needed; **both count
+against the paging budget**:
+
+- "All versions" `.gs_fl a[href*="cluster="]` — every copy of the same paper, useful when
+  hunting for an open one
+- "Cited by" `.gs_fl a.gs_or_cited` — the list of citing works; same page structure as a normal
+  results page
+
+---
+
+## ⑥ Action · getting the full text
+
+**This release downloads nothing.** The browser has no download tool, and downloads the page
+triggers itself are refused outright.
+
+`div.gs_ggs .gs_or_ggsm a@href` is this source's most valuable cell — it points straight at an
+open copy. Measured targets include `arxiv.org/pdf/…`, `iclr.cc`, `neurips.cc`,
+`openreview.net`. **Report it verbatim** to the user; do not try to fetch it. Extracting
+nothing means that record has no open copy, not that the selector is broken.
+
+One exception is worth doing on your own initiative: when the direct link or the paper page
 points at **arXiv / PMC / DOI**, hand the identifier to `fastpaper download` — it routes by
 identifier and is far cheaper than the browser. The browser's value ends at "found it".
 
 A bare PDF URL (`openreview.net/pdf?id=…` and the like) is not a shape fastpaper accepts, so
 **this release stops at the link**.
 
-## When you must hand over to a human
+---
 
-- **Not** for the 403 hard wall (see above — a human cannot solve it either; switch source)
-- Otherwise follow the handover rules in `references/browser.md`
+## ⑦ When you must hand over to a human
 
-## Known limitations
-
-- No official API; strong anti-scraping, and the act of searching is 403'd outright for an
-  egress judged to be automated
-- Usually needs a proxy from mainland China
-- Citation counts are Scholar's own measure and disagree with Web of Science / Scopus —
-  **do not report them as authoritative citation counts**
+- **Not for the 403 hard wall** — a human cannot clear it either; switch source (①)
+- Otherwise follow the hand-over rules in `references/browser.md`
 
 ---
 
-## Completion procedure
+## ⑧ Known limits
 
-Step 1 (reconnaissance) is done; **step 2 has not been done yet**:
-
-2. **Verification**: once the substrate is built, run every selector above for real through
-   this project's `browser_act` `extract` action, fix the ones that do not work, and join
-   "open the home page → search → page and extract" into one playbook that runs end to end.
-   **The paging step must also come back with a condition that is false before the click and
-   true after paging** (the page/offset segment of the result page's address is the most
-   promising one; `urlMatches` tests the address the main process holds and never enters the
-   page) — until then the only check is "compare the first title", above
-
-This step cannot be skipped: two toolchains do not necessarily see the same DOM (login state,
-UA, and whether a proxy is in play can each make Scholar return a different version of the
-page). **Until they have been run through our own tools, the selectors above are only
-candidates.**
+- No official API; strong anti-bot defence, and the search action draws an outright 403 on
+  egresses judged to be automated
+- Mainland China usually needs a proxy to reach it
+- Citation counts are Scholar's own measure and disagree with Web of Science / Scopus —
+  **do not report them as authoritative**
+- No detail page; the only metadata is the single `div.gs_a` line on the results page
+  (authors, venue and year crammed together, with no separate fields)
+- The interface language follows the browser, so **any selector that matches label text is
+  unreliable**

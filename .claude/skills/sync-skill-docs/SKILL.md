@@ -63,9 +63,10 @@ description: 审核 src/skills/ 下内置 skill 的漂移时使用——中英�
 | `learning-deck/assets/report-template.html:2093`（⑦ 术语表 `dt` 的两个槽） | `<dt id="g-xxx">中文<span class="en">English</span></dt>` | `<dt id="g-xxx">Term</dt>` | 英文报告下 `original` 省掉，示例必须示范省掉它，否则模型照抄就排重复影子；见下「⑦ 术语对照的两个槽」 | 2026-08-28 |
 | `learning-deck/references/deck-json.md:107`（`glossary` 示例） | `"term": "马尔可夫链", "original": "Markov chain"` | **只写 `"term": "Markov chain"`，不写 `original`** | 同上；`original` 已改成可选字段，英文报告里两个槽只能填同一个词，示例必须示范省掉它 | 2026-08-28 |
 | `slowpaper/references/scholar.md:11` ↔ `.en.md:12` | 约 **49.1 万**条结果 | about **491,000** results | **同一个数的两种书写习惯**：中文按「万」分节，英文按千分位。照抄任一侧都会让另一侧读起来像机器翻译。这是本地化，不是漂移 | 2026-09-09 |
+| `slowpaper/references/pubscholar.md` ↔ `.en.md`（可检索条数） | 约 **1.08 亿**条 | about **108 million** records | **同一个数的两种书写习惯**：中文按「亿」分节，英文按 million。与上一行 scholar 那条同一裁决 | 2026-09-16 |
 | `slowpaper/references/carsi.md:103` ↔ `.en.md:126`（快照上那个记号） | `(已填入机构账号，值不显示)` | **原样保留中文串**，解释文字译成英文 | 它是 `snapshot.ts` 的 `line()` **实发的字面量**，与 locale 无关 —— agent 要在工具结果里逐字认出它。译过去就等于教 agent 去认一个永远不会出现的串。同一份文件里已有两处同款先例（`机构登录: ` 那一行、`实际填的账号框：…` 那句回显）。两侧都由 `slowpaperDocConstants.test.ts` 与 `snapshot.ts` 对账 | 2026-09-09 |
 | `slowpaper/references/scholar.md:142` ↔ `.en.md:161`（被引数那一格） | 文本「被引用次数：**7347**」 | 「被引用次数：**7347**」 / "Cited by **7347**" —— 同一个数出现**两次** | 这一格给的是要在页面上逐字认的文案，而 Scholar 的界面语言会变（`hl=en` 时是 "Cited by"）。英文侧把两种界面语言的原文**并列**给出，中文侧只给中文界面那一种；数字出现两次是并列的副产品，不是第二个值 | 2026-09-09 |
-| `slowpaper/references/browser.md:302` ↔ `.en.md:363`（标签上那个按钮名） | 「保留」 | **原样保留中文串**，后面加注 `(Keep)` | 按钮上的字在 `TabStrip.tsx` 里**写死成中文**，界面切到英文也还是「保留」。译成 Keep 等于让模型叫用户去找一个界面上根本没有的按钮。与 `carsi.md` 那一行同类：模型要转述的是界面上**实际出现**的字面量。按钮一旦做了本地化，这一行就该撤掉、英文侧改成译名 | 2026-09-14 |
+| `slowpaper/references/browser.md:302` ↔ `.en.md:364`（标签上那个按钮名） | 「保留」 | **原样保留中文串**，后面加注 `(Keep)` | 按钮上的字在 `TabStrip.tsx` 里**写死成中文**，界面切到英文也还是「保留」。译成 Keep 等于让模型叫用户去找一个界面上根本没有的按钮。与 `carsi.md` 那一行同类：模型要转述的是界面上**实际出现**的字面量。按钮一旦做了本地化，这一行就该撤掉、英文侧改成译名 | 2026-09-14 |
 
 **字数预算**：单位从「字」换成「words」时数值必须一起换（约 0.6 word/字），不能照抄数字。
 这几条指令自己写明了意图——「写长了没人读，而且会不可避免地滑向综述」「价值在判定和证据链，
@@ -232,13 +233,20 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
    （`src/main/skills/parseSkillFrontmatter.ts:33`）返回 `ok:false`，那个 skill 在 en 树里
    降级成禁用行、**根本进不了 system prompt** —— 不报错、不崩，只是安静地不再被触发。
    当前余量（2026-08-27 实测；peer-review 两行为 2026-09-02 实测；
-   `slowpaper` 为 2026-09-09 实测，同批复量其余各行不变）：
+   `slowpaper` 为 2026-09-16 重量，同批复量其余各行不变）。
+
+   **2026-09-16 实测到一次真的降级**：slowpaper 的英文 description 里一个**半角 `: `**
+   让 YAML 判成嵌套 mapping，`parseFrontmatter` 直接抛 —— 那一刻 `npm test` 3323 条全绿，
+   而 slowpaper 在 en 树里已经是禁用行。守卫已补进
+   `src/main/skills/builtinSkillsI18n.test.ts`（真文件喂进 `parseSkillFrontmatter`，
+   同时挡住超长那一类），所以这张表现在有测试兜底；**但表里的数字仍要手工维护**，
+   它给的是「还能加多少字」的预算，测试只告诉你「已经超了」：
 
    | skill | 中文 | 英文 | 余量 |
    |---|---:|---:|---:|
-   | `learning-deck` | 381 | 986 | **38** ← 最紧 |
+   | `slowpaper` | 389 | 991 | **33** ← 最紧 |
+   | `learning-deck` | 381 | 986 | 38 |
    | `literature-review` | 278 | 980 | 44 |
-   | `slowpaper` | 347 | 963 | 61 |
    | `peer-review-response` | 264 | 937 | 87 |
    | `fact-check` | 253 | 929 | 95 |
    | `research-frontier` | 260 | 929 | 95 |

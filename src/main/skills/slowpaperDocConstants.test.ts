@@ -180,7 +180,8 @@ describe('slowpaper 文档里的常数与生产代码对账', () => {
  * `DENIED` 是文档里**明写「没有这个」**的名字——目前只有 `browser_close`，
  * 提到它是有意的，不算「多出来的工具」。
  */
-const REAL_BROWSER_TOOLS = ['browser_open', 'browser_act', 'browser_read', 'browser_login', 'browser_tabs'];
+const REAL_BROWSER_TOOLS = ['browser_open', 'browser_act', 'browser_read', 'browser_login', 'browser_tabs',
+  'browser_download'];
 const DENIED_BROWSER_TOOLS = ['browser_close'];
 
 describe('slowpaper 文档里的名字与生产代码对账', () => {
@@ -399,8 +400,13 @@ describe('文档自称的数目与表格行数对账', () => {
  * 照常放行，这正是想要的：它守的是「改一边忘了改另一边」。
  */
 describe('中英两份的结构量必须相等（单侧删一行 / 删一节就红）', () => {
+  // **加了一个源就在这里加一行。** 这条守的是「改了中文忘了改英文」——
+  // 漏登记等于这一对没人守，而少一整节 / 少一行表格恰恰是最容易漏的那种改动。
   const PAIRS = ['SKILL.md', 'references/browser.md', 'references/carsi.md',
-    'references/scholar.md', 'references/xueshu.md'];
+    'references/scholar.md', 'references/xueshu.md',
+    'references/mdpi.md', 'references/frontiers.md', 'references/peerj.md',
+    'references/chemrxiv.md', 'references/ssrn.md', 'references/agris.md',
+    'references/pubscholar.md', 'references/chinaxiv.md', 'references/ncpssd.md'];
 
   const shape = (src: string) => {
     const lines = src.split('\n');
@@ -474,63 +480,64 @@ describe('「已填入机构账号」那个记号与 snapshot.ts 逐字相同', 
     }
   });
 });
-
-describe('百度学术本期只取第 1 页（C-4 的降级）', () => {
-  // **为什么要有这一条**：这个降级没有对应的生产常量可 import —— 它是「当前工具能力下
-  // 写不出那个 selector」这一**代码事实**的产物。上面那张 CHECKS 表守不到它：把「只取第 1 页」
-  // 改回「可以翻页」，全套用例照样全绿，而 agent 会拿到一条它写不出来的指令
-  // （`div.page.n` 上「上一页」与「下一页」共用 class，`selector` 又是纯 CSS）。
+describe('百度学术的翻页：结构定位 + 地址偏移（2026-09-16 实测开通）', () => {
+  // **这一块的前身是「本期只取第 1 页」的降级守卫。** 那条降级的理由是「当前工具能力下写不出
+  // 『下一页』那个 selector」——「上一页」与「下一页」共用 `div.page.n`，而页内是纯 CSS 的
+  // `querySelector`，没有按文本匹配的写法。上一版在这里留了话：对着真站点量出可用的 CSS 表达
+  // 之后要开翻页，**那时这一整块跟着改**，让「重新开翻页」成为一个必须动测试的决定。
   //
-  // 三条各守一头：**代码那一侧的前提**、**文档两侧的降级本身**、**降级理由指向的那个坑**。
-  // Task 10 对着真站点量出可用的 CSS 表达之后要开翻页 —— 那时这一整个 describe 跟着删，
-  // 是**刻意的**：让「重新开翻页」成为一个必须动测试的决定，而不是悄悄改一句文档。
+  // 2026-09-16 量出来了（记录在 `docs/superpowers/specs/2026-09-16-slowpaper-source-layers-design.md`
+  // §1.2）：`div.pagination > div.page.n:last-child` 精确命中 1 个「下一页」，翻页后地址变成
+  // `&pn=10`（`pn = (页码 − 1) × 10`）。降级因此撤销。
+  //
+  // **但不能把这一块删空：降级没了，坑还在。** 裸 `div.page.n` 取到的是「上一页」，点下去
+  // 往回翻**而且不报错**；拿 `div.page.active` 当等待条件是点击前就成立的空转。四条 `it`
+  // 各守一头：代码那一侧的前提、选择器这一侧的坑、等待条件这一侧的坑、索引行与正文的一致。
 
   it('前提仍成立：页内还是裸 `querySelector`，没有任何按文本匹配的写法', () => {
     const src = readFileSync(path.resolve(__dirname, '..', 'browser', 'injected', 'interact.js'), 'utf-8');
-    expect(src, 'interact.js 不再用 querySelector 解析 selector 了，降级的前提要重新判').toContain('querySelector(t.selector)');
-    // 有了文本匹配，「下一页」就写得出来，这条降级也就该撤销 —— 所以它红了是要人来看的信号。
-    expect(src, 'interact.js 里出现了文本匹配，百度学术的翻页降级该重新裁决了').not.toMatch(/:has-text|:contains\(/);
+    expect(src, 'interact.js 不再用 querySelector 解析 selector 了，翻页选择器的写法要重新判').toContain('querySelector(t.selector)');
+    // 有了文本匹配，「下一页」就能按文案写 —— 那时结构定位不再是唯一出路，这一块值得重裁。
+    expect(src, 'interact.js 里出现了文本匹配，百度学术的翻页选择器该重新裁决了').not.toMatch(/:has-text|:contains\(/);
   });
 
-  it('两份 xueshu 与两份 SKILL 都写明了「本期只有第 1 页」', () => {
-    for (const [rel, re] of [
-      ['references/xueshu.md', /本期只取结果页的第 1 页/],
-      ['references/xueshu.en.md', /takes only the first results page/],
-      ['SKILL.md', /百度学术本期只有第 1 页/],
-      ['SKILL.en.md', /Baidu Xueshu has only page 1 this release/],
-    ] as const) {
-      expect(read(rel), `${rel} 里「百度学术本期只有第 1 页」那句话不见了`).toMatch(re);
-    }
-  });
-
-  // **N-1**：改一处忘了改指向它的那处。上一轮删掉了翻页那个没用的 `wait`
-  // （`div.page.active` 点击前就成立），却把 `SKILL.md` 索引行里「翻页必须跟 `wait`」留着了 ——
-  // agent 带着那个预期进 `xueshu.md`、正文里找不到条件就会**自己发明一个**，最顺手的正是
-  // 刚被删掉的那一个。所以索引行与正文要一起守：正反两头各一条，改哪一边都红。
-  it('SKILL 的索引行与 xueshu 正文一致：说的是检索提交，不是翻页（N-1）', () => {
-    for (const [rel, must, mustNot] of [
-      ['SKILL.md', [/检索提交必须跟/, /只取第 1 页/], /翻页必须跟/],
-      ['SKILL.en.md', [/search submit must be followed by/, /only page 1 this release/], /paging must be followed by/],
-    ] as const) {
-      // §六「往下读哪一份」那张表的行，不是 §三 预算表里顺带提到它的那一行。
-      const row = read(rel).split('\n').find((l) => l.startsWith('| `references/xueshu.md`'));
-      expect(row, `${rel} 里找不到指向 references/xueshu.md 的索引行`).toBeDefined();
-      for (const re of must) {
-        expect(row ?? '', `${rel} 的 xueshu 索引行不再与正文一致（缺 ${re.source}）`).toMatch(re);
-      }
-      expect(row ?? '', `${rel} 的索引行又要求「翻页必须跟 wait」了 —— 正文里本期根本不翻页，`
-        + 'agent 找不到那个条件就会自己发明一个（多半正是被删掉的 div.page.active）').not.toMatch(mustNot);
-    }
-  });
-
-  it('两份 xueshu 的剧本里没有任何按「下一页」定位的 selector', () => {
+  it('两份 xueshu 都用结构定位取「下一页」，且没有裸 `div.page.n`', () => {
+    const NEXT = 'div.pagination > div.page.n:last-child';
     for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
       const values = [...read(rel).matchAll(/"selector"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+      // 先证明这条查找本身是活的 —— 否则下面那两条否定断言在「一个 selector 都没抽到」时
+      // 会全部空转通过（CLAUDE.md：否定型断言要在同一条用例里先证明正向那一面）。
+      expect(values, `${rel} 的剧本里没有那条「下一页」选择器 ${NEXT}`).toContain(NEXT);
       for (const v of values) {
-        // 纯 CSS 的 querySelector 认不出「下一页」这三个字：写进 selector 要么被判非法
-        // （`browser.bad_action`），要么退成裸 `div.page.n` 命中「上一页」往回翻。
+        expect(v, `${rel} 的剧本里出现了裸 div.page.n —— 它命中的是「上一页」，点下去往回翻，而且不报错`)
+          .not.toMatch(/^div\.page\.n$/);
+        // 纯 CSS 的 querySelector 认不出「下一页」这三个字：写进 selector 会被判非法（`browser.bad_action`）。
         expect(v, `${rel} 的剧本里又出现了一个按文本定位「下一页」的 selector：${v}`).not.toContain('下一页');
       }
+    }
+  });
+
+  it('两份 xueshu 的翻页等待条件是地址里的 pn 偏移，不是「当前页」标记', () => {
+    for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
+      const s = read(rel);
+      expect(s, `${rel} 缺翻页的 urlMatches 等待条件（\`pn=\` 那一段）`).toMatch(/"urlMatches"\s*:\s*"pn=\d+"/);
+      // `div.page.active` 点击前就成立，而 wait 是先探一次再等 —— 它会立刻回「等到了」，
+      // 一毫秒都没等，紧接着的 extract 抽的还是上一页。
+      expect(s, `${rel} 又拿 div.page.active 当等待条件了 —— 那是点击前就成立的空转条件`)
+        .not.toMatch(/"until"[^}]*page\.active/);
+    }
+  });
+
+  it('两份 SKILL 的索引行不再宣称「只取第 1 页」', () => {
+    for (const [rel, mustNot] of [
+      ['SKILL.md', /只取第 1 页|只有第 1 页/],
+      ['SKILL.en.md', /only page 1|only the first results page/],
+    ] as const) {
+      // §七「往下读哪一份」那张表的行。先断它找得到，否则下面那条否定断言是空转。
+      const row = read(rel).split('\n').find((l) => l.startsWith('| `references/xueshu.md`'));
+      expect(row, `${rel} 里找不到指向 references/xueshu.md 的索引行`).toBeDefined();
+      expect(row ?? '', `${rel} 的索引行还写着「只取第 1 页」，而正文已经开了翻页 —— `
+        + 'agent 会带着「这个源只有 10 条」的预期进卡片，翻页那一节就白写了').not.toMatch(mustNot);
     }
   });
 });
