@@ -86,25 +86,28 @@ beforeEach(() => {
   H.settings = { ui: { locale: 'zh' }, institution: null };
 });
 
-describe('customTools 里有五个浏览器工具', () => {
-  it('browser_open / browser_tabs / browser_act / browser_read / browser_login 五个都在', async () => {
+describe('customTools 里有六个浏览器工具', () => {
+  it('browser_open / browser_tabs / browser_act / browser_read / browser_login / browser_download 六个都在', async () => {
     const names = (await build()).map((t) => t.name);
     expect(names).toContain('browser_open');
     expect(names).toContain('browser_tabs');
     expect(names).toContain('browser_act');
     expect(names).toContain('browser_read');
     expect(names).toContain('browser_login');
+    expect(names).toContain('browser_download');
   });
 
   it('本来就有的那个提问工具没被挤掉', async () => {
     expect((await build()).map((t) => t.name)).toContain(ASK_TOOL_NAME);
   });
 
-  it('碰页面的四个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
+  it('碰页面的五个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
     const browser = (await build()).filter((t) => t.name?.startsWith('browser_'));
-    expect(browser).toHaveLength(5);
+    expect(browser).toHaveLength(6);
     const seq = browser.filter((t) => t.executionMode === 'sequential').map((t) => t.name);
-    expect(seq.sort()).toEqual(['browser_act', 'browser_login', 'browser_open', 'browser_read']);
+    // `browser_download` 也串行：它用的是那个标签的 session，与同标签上的导航/输入
+    // 并行跑等于抢同一个 webContents。
+    expect(seq.sort()).toEqual(['browser_act', 'browser_download', 'browser_login', 'browser_open', 'browser_read']);
   });
 
   /**

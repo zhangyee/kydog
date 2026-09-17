@@ -392,6 +392,7 @@ type Exec = (id: string, params: unknown, signal?: AbortSignal) => Promise<{ con
 const noopAskShared = { onOpened: () => {}, onClosed: () => {} };
 const makeTools = (over: Partial<Parameters<typeof createBrowserTools>[0]> = {}) => createBrowserTools({
   currentRunId: () => 'run-1',
+  cwd: '/tmp/kydog-test-cwd',
   threadId: 'thread-1',
   askShared: noopAskShared,
   institution: { name: '北京大学', entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth' },

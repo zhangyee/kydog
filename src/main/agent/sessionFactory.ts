@@ -67,6 +67,7 @@ export async function createSession(opts: {
   // 那道确认要用现成的 ask broker，不新发明挂起机制。
   const browserTools = createBrowserTools({
     currentRunId: opts.currentRunId ?? (() => null),
+    cwd: opts.cwd,
     threadId: opts.sessionId,
     askShared: opts.askShared,
     institution,

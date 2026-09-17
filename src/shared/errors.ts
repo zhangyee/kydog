@@ -91,6 +91,20 @@ export type KydogErrorCode =
   // SAML 断言回传**的填充」——「失败」这件事本身没有别的协议层信号可用
   // （密码错时多数 IdP 回 200 错误页或 302 回自己）。**处置是交给用户**，不是重试。
   | 'browser.login_attempted'
+  // 下载没取到东西：HTTP 不是 2xx，或者 Electron 的 DownloadItem 以 cancelled / interrupted 收场。
+  // **与 `browser.download_not_pdf` 分开**：这一条是「没拿到字节」，那一条是「拿到了但不是 PDF」。
+  // 合并的话，模型分不出「换个入口再试」与「这个入口给的本来就不是文件」。
+  | 'browser.download_failed'
+  // 拿到字节了，但**文件头不是 `%PDF-`**。这是本期最要紧的一道闸：
+  // 2026-09-16 实测，会话外取 MDPI / PeerJ / ChemRxiv 的 PDF 直链，回的是 `text/html`、
+  // 5 KB 左右的 Cloudflare 拦截页。把它存成 `x.pdf` 再交给 `fastpaper read`，
+  // **文件在、大小不为零、后缀也对**，只有内容是拦截页 —— 一条静默的假绿。
+  // 所以判据是文件头的魔数，不是 content-type（那是站点说的），也不是「下载完成了」。
+  // **处置是不落盘**：判不过就把临时文件删掉，不留坏文件让下游去踩。
+  | 'browser.download_not_pdf'
+  // 超过单文件上限（spec §5）。带上实际大小与上限，别只说「太大了」——
+  // 模型要据此决定是换一个入口还是告诉用户自己下。
+  | 'browser.download_too_large'
   // 钥匙串这一刻用不了：`isEncryptionAvailable()` 为 false（钥匙串被拒、Linux 上没有
   // 可用的 keyring），或者 `encryptString` 自己抛。**密码没有丢** —— 已经存下的那份
   // 还在，让钥匙串恢复可用就照常取得出来；这一次没存进去的，修好之后再设一次即可。

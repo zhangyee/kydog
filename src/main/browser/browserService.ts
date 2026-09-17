@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView, session, type WebContents, type Session } from 'electron';
+import { BrowserWindow, WebContentsView, session, type WebContents, type Session, type DownloadItem } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
 import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
@@ -17,6 +17,12 @@ import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
 import INTERACT_SOURCE from './injected/interact.js?raw';
 import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
+import { promises as fsp } from 'node:fs';
+import path from 'node:path';
+import {
+  isAgentRequested, assertDownloadable, settleDownload, tmpDownloadPath,
+  MAX_DOWNLOADS_PER_RUN, DOWNLOAD_STALL_MS,
+} from './download';
 
 /**
  * 内置浏览器。主进程持有 WebContentsView —— **不是 `<webview>`**：
@@ -167,6 +173,16 @@ const WAIT_POLL_MS = 100;
  */
 export const PAGE_EVAL_TIMEOUT_MS = NAV_TIMEOUT_MS;
 
+/** agent 点过名、还没落定的一次下载（`browserService.pendingDownloads` 的值）。 */
+type PendingDownload = {
+  url: string; dir: string; filename?: string;
+  timer: NodeJS.Timeout;
+  /** 重置停滞计时器。每收到一次进度就调一次。 */
+  arm: () => void;
+  resolve: (v: { path: string; bytes: number; mimeType: string | null }) => void;
+  reject: (e: unknown) => void;
+};
+
 /**
  * 形状校验。walker 在页面里执行、类型系统管不到它，`as` 断言只是**声称**它长这样：
  * 页面在取快照那一刻导航走了，`executeJavaScriptInIsolatedWorld` 可能给回 undefined，
@@ -221,6 +237,18 @@ export class BrowserService {
   private readonly unreportedNavs = new Map<string, { url: string; httpStatusCode: number }>();
   /** 每个标签一条串行队列。跨标签仍然并行。 */
   private readonly queues = new Map<string, Promise<unknown>>();
+
+  /**
+   * agent 点过名、还没落定的下载请求，**按最初请求的 URL 索引**。
+   *
+   * 它是 `will-download` 那道闸的**放行名单**：只有 `getURLChain()[0]` 在这里的下载才落盘，
+   * 其余一律照旧取消并喂导航状态机（spec §3）。用 URL 而不是标签做键，是因为 session 级的
+   * `will-download` 拿到的第一手事实就是这条链，`tabId` 还要反查。
+   */
+  private readonly pendingDownloads = new Map<string, PendingDownload>();
+
+  /** 每轮 run 已经下载了几个（spec §5 的上限）。`disposeForRun` 里清掉。 */
+  private readonly downloadCounts = new Map<string, number>();
   /** CDP 已经不可用的标签（attach 失败，或者 DevTools 打开把我们顶掉了）。
    *  只用来「同一件事只记一条日志」，判据本身走 `debugger.isAttached()`。 */
   private readonly cdpGone = new Set<string>();
@@ -273,9 +301,19 @@ export class BrowserService {
     sess.setPermissionCheckHandler(() => false);
 
     sess.on('will-download', (event, item, wc) => {
-      event.preventDefault();
       const tabId = this.tabIdOf(wc);
       const url = item.getURL();
+      const chain = item.getURLChain();
+      // **放行只给 agent 自己点过名的那一个**（spec §3）。判据是 `chain[0]` —— 含重定向的
+      // 完整链的第一项，与导航那一侧认「这次下载算不算本次导航的终态」用的是同一个事实。
+      // 页面自发拉起的（广告 frame、站点埋点）走下面原来那条路：取消 + 喂状态机。
+      const pending = this.pendingDownloads.get(chain[0] ?? '');
+      if (pending && isAgentRequested(chain, new Set(this.pendingDownloads.keys()))) {
+        this.pendingDownloads.delete(chain[0]);
+        this.startAgentDownload(item, pending);
+        return;
+      }
+      event.preventDefault();
       if (tabId) {
         // `getURLChain()` 含重定向的完整链，`chain[0]` 是最初请求的那个 ——
         // doi.org → 出版社 → PDF 这条路只有靠它才能与本次导航对得上。
@@ -1139,6 +1177,7 @@ export class BrowserService {
    *   · `dispose()` —— session 一拆就永远等不到 settle，最后回收一次。
    *  **幂等**：标签已被摘走时 `doomed` 为空，直接返回。 */
   disposeForRun(runId: string): void {
+    this.downloadCounts.delete(runId);
     const gone = this.registry.disposeForRun(runId);
     for (const id of gone) this.destroyView(id);
     if (gone.length) { this.applyLayout(); this.emit(); }
@@ -1254,6 +1293,117 @@ export class BrowserService {
   /** 页面刚没的那一刻，连 getURL() 都会抛。 */
   private safeCall<T>(fn: () => T, fallback: T): T {
     try { return fn(); } catch { return fallback; }
+  }
+
+
+  // ── 下载（spec 2026-09-16-browser-download-design）─────────────────────────
+
+  /**
+   * 用**这个标签自己的 session** 取一个文件。
+   *
+   * 这是这个方法存在的全部理由：2026-09-16 实测，MDPI / PeerJ / ChemRxiv 的 PDF 直链在
+   * 会话之外一律 **403**（回的是 5 KB 左右的拦截页），`fastpaper download` 又**直接拒绝 URL**。
+   * 只有那个标签身上的 cookie / UA / Cloudflare 凭据取得到。
+   *
+   * 落盘之前与之后各有一道闸（spec §4）：状态与大小走 `assertDownloadable`，
+   * **内容走文件头魔数** `assertPdfContent` —— 判不过就把文件删掉，**不留坏文件**。
+   */
+  async download(args: {
+    tabId: string; url: string; dir: string; filename?: string; runId?: string | null;
+  }): Promise<{ path: string; bytes: number; mimeType: string | null }> {
+    const wc = this.webContentsOf(args.tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${args.tabId}`);
+    assertAllowedUrl(args.url);
+
+    const runKey = args.runId ?? '__no_run__';
+    const used = this.downloadCounts.get(runKey) ?? 0;
+    if (used >= MAX_DOWNLOADS_PER_RUN) {
+      throw new KydogError('browser.download_failed',
+        `这一轮已经下载了 ${used} 个文件，到上限了（${MAX_DOWNLOADS_PER_RUN}）。`
+        + '剩下的把链接报给用户。');
+    }
+
+    await fsp.mkdir(args.dir, { recursive: true });
+
+    const done = new Promise<{ path: string; bytes: number; mimeType: string | null }>((resolve, reject) => {
+      // **停滞超时，不是总时长**：收到进度就续命（`arm` 在 `startAgentDownload` 的
+      // `updated` 里被重新调用）。总时长上限会让 50 MB 的允许值与 60 秒的等待互相矛盾。
+      const entry: PendingDownload = {
+        url: args.url, dir: args.dir, filename: args.filename,
+        timer: null as unknown as NodeJS.Timeout, resolve, reject,
+        arm: () => {
+          clearTimeout(entry.timer);
+          entry.timer = setTimeout(() => {
+            this.pendingDownloads.delete(args.url);
+            reject(new KydogError('browser.download_failed',
+              `连续 ${DOWNLOAD_STALL_MS} 毫秒一个字节都没收到，放弃了。这只说明这一次卡住了，`
+              + '不说明这个地址取不到 —— 可以把链接报给用户。'));
+          }, DOWNLOAD_STALL_MS);
+        },
+      };
+      entry.arm();
+      this.pendingDownloads.set(args.url, entry);
+    });
+
+    wc.downloadURL(args.url);
+    const out = await done;
+    this.downloadCounts.set(runKey, used + 1);
+    return out;
+  }
+
+  /**
+   * `will-download` 认出这是 agent 点过名的那一次之后，接手它。
+   *
+   * **`setSavePath` 必须在这个 tick 里同步调用** —— Electron 的约定如此，异步之后再设就晚了，
+   * 它会弹系统保存框（e2e 里会挂死，产品里会打断用户）。
+   */
+  private startAgentDownload(item: DownloadItem, pending: PendingDownload): void {
+    const finish = (fn: () => void) => { clearTimeout(pending.timer); fn(); };
+    // 字节先落到同目录的临时文件，**判过之后才占最终名字**（`settleDownload`）。
+    // 直接写最终路径的话，一个同名的坏下载会先盖掉、再删掉原来那份好文件 —— 2026-09-17 手测撞到过。
+    let tmp: string;
+    try {
+      tmp = tmpDownloadPath(pending.dir);
+      // 大小闸在**开始写之前**判：`getTotalBytes()` 为 0 表示服务器没给 Content-Length，
+      // 那时判不了，交给落盘之后的内容闸去兜。
+      assertDownloadable({
+        url: pending.url, httpStatusCode: null, totalBytes: item.getTotalBytes(),
+      });
+      item.setSavePath(tmp);
+    } catch (err) {
+      item.cancel();
+      finish(() => pending.reject(err));
+      return;
+    }
+
+    // 有进度就把停滞计时器续上 —— 25 MB 的 PDF 在慢网上本来就要一分钟以上。
+    item.on('updated', () => pending.arm());
+
+    item.once('done', (_e, state) => {
+      void (async () => {
+        if (state !== 'completed') {
+          await fsp.rm(tmp, { force: true }).catch(() => {});
+          // **最常见的成因是这个标签的会话根本没被站点放行**（403 / 反爬），而不是网络抖动。
+          // 2026-09-16 实测：一个冷启动的浏览器 profile 打 MDPI，连文章页都回 `Access Denied`，
+          // 下载自然是 interrupted。不说清这一点，模型会去重试一个永远不会成功的地址。
+          finish(() => pending.reject(new KydogError('browser.download_failed',
+            `下载没有完成（状态：${state}）。这不是「不是 PDF」—— 是根本没取到字节。`
+            + '最常见的成因是**这个标签的会话没被站点放行**（反爬 / 403）：'
+            + '先确认这个标签上的页面本身打得开，打不开就先把那道验证过掉，再下载。')));
+          return;
+        }
+        try {
+          // 判不过时 `settleDownload` 自己删临时文件：**不留坏文件，也不碰别的文件**。
+          const r = await settleDownload({
+            tmpPath: tmp, dir: pending.dir, url: pending.url, filename: pending.filename, mimeType: item.getMimeType(),
+          });
+          logger.info('browser.download', '已下载', { path: r.path, bytes: r.bytes });
+          finish(() => pending.resolve({ path: r.path, bytes: r.bytes, mimeType: item.getMimeType() }));
+        } catch (err) {
+          finish(() => pending.reject(err));
+        }
+      })();
+    });
   }
 
   webContentsOf(tabId: string): WebContents | null {

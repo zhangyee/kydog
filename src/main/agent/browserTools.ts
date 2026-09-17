@@ -404,8 +404,13 @@ const TABS_DESC = [
 // ── 工厂 ────────────────────────────────────────────────────────────────────
 
 /** run 上下文由 sessionFactory 闭包注入 —— pi 的 ctx 里只有 cwd，没有 KyDog 的 runId。 */
+import path from 'node:path';
+import { MAX_DOWNLOADS_PER_RUN, MAX_DOWNLOAD_BYTES } from '../browser/download';
+
 export type BrowserToolDeps = {
   currentRunId: () => string | null;
+  /** 项目目录。下载落在它下面的 `papers/` —— 与 `fastpaper download` 的默认目录同一个地方。 */
+  cwd: string;
   /**
    * `browser_login` 的首次确认要走**现成的** ask broker，这两个照
    * `createAskUserQuestionTool` 的形态由 `sessionFactory` 注入
@@ -460,6 +465,17 @@ function assertTabExists(tabId: string): void {
     throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
   }
 }
+
+const DownloadParams = {
+  type: 'object' as const,
+  properties: {
+    tabId: { type: 'string' as const, description: '用哪个标签的会话去取。必给。' },
+    url: { type: 'string' as const, description: '要下载的地址，必须是你自己点名的。' },
+    filename: { type: 'string' as const, description: '可省。文件名提示，不给就从地址推。' },
+  },
+  required: ['tabId', 'url'] as const,
+  additionalProperties: false as const,
+};
 
 export function createBrowserTools(deps: BrowserToolDeps) {
   const openTool = {
@@ -670,7 +686,53 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     },
   };
 
-  return [openTool, tabsTool, actTool, readTool, loginTool];
+  const DOWNLOAD_DESC = [
+    '用**这个标签自己的会话**把一个 PDF 取到本地。',
+    '',
+    '**它存在的理由**：这些源的 PDF 直链在浏览器会话之外一律 403（回的是拦截页），',
+    '而 `fastpaper download` 只收裸标识符、**直接拒绝 URL**。只有那个标签身上的 cookie 取得到。',
+    '',
+    '- `tabId` 必给 —— **用哪个标签的会话**，这是这个工具的全部意义',
+    '- `url` 必给 —— 你自己点名的地址。页面自发拉起的下载一律不放行',
+    '- `filename` 可省 —— 不给就从地址推',
+    '',
+    `文件落到项目目录下的 \`papers/\`，与 \`fastpaper download\` 同一个地方，`,
+    '所以拿到路径之后可以直接 `fastpaper read papers/<文件名>`。',
+    '**同名文件不覆盖**，会另起名字（`x.pdf` 已在就存成 `x-2.pdf`）—— **以返回的路径为准**。',
+    '',
+    '**只收 PDF。** 落盘之后会验文件头（`%PDF-`）—— 验不过**不留文件**并报',
+    '`browser.download_not_pdf`，最常见的原因是这个地址在当前会话下回的是拦截页而不是文件。',
+    `一轮最多 ${MAX_DOWNLOADS_PER_RUN} 个，单个最大 ${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB。`,
+  ].join('\n');
+
+  const downloadTool = {
+    name: 'browser_download',
+    label: '下载文件',
+    description: DOWNLOAD_DESC,
+    promptSnippet: 'browser_download — 用这个标签的会话把一个 PDF 下载到 papers/',
+    parameters: DownloadParams,
+    executionMode: 'sequential' as const,
+    async execute(_id: string, params: { tabId: string; url: string; filename?: string }): Promise<ToolResult> {
+      assertTabExists(params.tabId);
+      const r = await browserService.download({
+        tabId: params.tabId,
+        url: params.url,
+        dir: path.join(deps.cwd, 'papers'),
+        filename: params.filename,
+        runId: deps.currentRunId(),
+      });
+      // **成功时只回路径。** 字节数、content-type、「文件头已验过」都是给程序判的，判过了就不必
+      // 再给模型 —— 2026-09-17 手测里模型把这几项原样复述进了给用户的回答。怎么读它写在工具描述
+      // 与 SKILL.md §五 里，不必每次重复。这几项仍在 `details` 里（给界面，不进模型上下文）。
+      const rel = path.relative(deps.cwd, r.path);
+      return {
+        ...withTabs(`已下载：\`${rel}\``),
+        details: { path: r.path, bytes: r.bytes, mimeType: r.mimeType },
+      };
+    },
+  };
+
+  return [openTool, tabsTool, actTool, readTool, loginTool, downloadTool];
 }
 
 /**
