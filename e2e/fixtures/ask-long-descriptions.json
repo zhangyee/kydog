@@ -1,0 +1,25 @@
+{
+  "events": [
+    { "type": "agent_start", "after_ms": 0 },
+    { "type": "message_start", "after_ms": 10, "messageId": "m1" },
+    { "type": "message_end", "after_ms": 10, "messageId": "m1", "toolCallIds": ["ask-1"], "toolNames": ["ask_user_question"] },
+    {
+      "type": "ask",
+      "after_ms": 10,
+      "toolCallId": "ask-1",
+      "questions": [
+        {
+          "question": "「国外研究现状」这一节要写哪一块？",
+          "header": "国外范围",
+          "options": [
+            { "label": "国际学界的整合医疗研究", "description": "即国际学界对整合型医疗（integrated care）、责任制医疗组织（ACO）、守门人与转诊制度、支付改革对基层能力影响的一般性研究，这是开题报告里最常见的写法。", "recommended": true },
+            { "label": "国际期刊上的全部相关研究", "description": "把上一节里的 4 篇英文文献移回来，国内外按发表语言分开写。好处是两边边界清楚，代价是上一节要删掉这几篇、重新核对一遍引用编号。" },
+            { "label": "国外学者研究中国的文献", "description": "国外学者直接研究中国医改、基层卫生的文献本身不多，但可以单独成一节；再用一般性国际研究把它接上，篇幅会比前两种都短。" },
+            { "label": "先不写这一节", "description": "等国内部分定稿、确认篇幅还剩多少之后再决定写哪一块，避免现在写了之后又整节删掉，白白花一轮检索与核验的工夫。" }
+          ]
+        }
+      ]
+    },
+    { "type": "agent_end", "after_ms": 10, "reason": "completed" }
+  ]
+}
