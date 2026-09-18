@@ -1,4 +1,4 @@
-import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { _electron as electron, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -174,4 +174,23 @@ export async function seedSamplePackage(projectPath: string) {
 export async function teardown(launched: LaunchedApp): Promise<void> {
   await launched.app.close();
   await fs.rm(launched.userDataDir, { recursive: true, force: true }).catch(() => {});
+}
+
+/**
+ * 点「新对话」并等它真的切过去，返回新对话的 id。
+ *
+ * `thread.create` 是异步 RPC：返回之前页面上还是上一个对话的输入框，这时填字会填进旧的那个，
+ * 切过去之后新输入框是空的、发送键一直禁用（CI 上见过 30s 超时）。判据是输入框所属的对话
+ * （Composer 根节点的 `data-thread-id`）换成了一个没见过的 id —— 不是等一个时间。
+ */
+export async function newThread(page: Page): Promise<string> {
+  const composer = page.locator('[data-thread-id]');
+  const before = (await composer.count()) > 0 ? await composer.first().getAttribute('data-thread-id') : null;
+  await page.getByTestId('new-thread').click();
+  let id: string | null = null;
+  await expect.poll(async () => {
+    id = (await composer.count()) === 1 ? await composer.getAttribute('data-thread-id') : null;
+    return id !== null && id !== before;
+  }, { message: `「新对话」之后输入框应当属于一个新对话（之前是 ${before}）` }).toBe(true);
+  return id!;
 }

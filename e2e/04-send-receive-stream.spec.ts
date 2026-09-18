@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import os from 'node:os';
 import { promises as fs } from 'node:fs';
-import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp } from './helpers';
+import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp, newThread } from './helpers';
 import type { FixtureEvent, FixtureFile } from './fixtures/fixture.types';
 
 /**
@@ -75,7 +75,7 @@ async function send(text: string): Promise<void> {
 test('04-send: fixture LLM streams text + bash tool card', async () => {
   const { page } = launched;
   const list = page.getByTestId('message-list');
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   await send('list files');
   await expect(list).toContainText('list files');
   await expect(list).toContainText('我来 ls 看看');
@@ -103,7 +103,7 @@ test('04-send: fixture LLM streams text + bash tool card', async () => {
 
 test('28-process-group: thinking 跑完后外层 ProcessGroup 收起，点击展开后内层 ThinkingBlock 仍可独立折叠', async () => {
   const { page } = launched;
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   await send('summarize your reasoning');
   await expect(page.getByTestId('message-list')).toContainText('我先看了下目录');
 
@@ -164,7 +164,7 @@ test('33-write-file-card: write 工具落盘 .md → 文件卡出现 → 单击�
 test('05-abort: Stop button transitions run state to idle and stops events', async () => {
   const { page } = launched;
   const list = page.getByTestId('message-list');
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   await send('think long');
   // 正向：这一轮真的在流（第一句 215ms 到；第二句要再等 2s）。
   await expect(list).toContainText('我正在思考很久');

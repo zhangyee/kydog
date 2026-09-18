@@ -2,7 +2,7 @@ import { test, expect, type ElectronApplication } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp } from './helpers';
+import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp, newThread } from './helpers';
 
 /** 递归列出 skill 树里的全部文件相对路径。 */
 async function listTree(root: string, rel = ''): Promise<string[]> {
@@ -95,7 +95,7 @@ test.afterAll(async () => {
 
 test('48-locale: 有任务在跑时切换被拒，界面停在旧语言并说明原因', async () => {
   const { page, kydogHome } = launched;
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   // 新建之后输入框会换一个实例，字可能填进正要卸载的那个（发送键就一直禁用）：填到字真的在
   // 当前这个输入框里为止（fill 是整体替换，重复无副作用）。
   const composer = page.getByTestId('composer-input');

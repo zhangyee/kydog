@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { launchKydog, teardown, seedSamplePackage, type LaunchedApp } from './helpers';
+import { launchKydog, teardown, seedSamplePackage, type LaunchedApp, newThread } from './helpers';
 import type { FixtureFile } from './fixtures/fixture.types';
 
 /**
@@ -94,7 +94,7 @@ async function readBodyText(page: Page): Promise<string> {
 
 /** 新建一个空对话，光标落进输入框。 */
 async function freshComposer(page: Page) {
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   const input = page.getByTestId('composer-input');
   await input.click();
   return input;
@@ -115,7 +115,7 @@ async function caretToFirstText(page: Page) {
 
 test('03-create-thread: clicking 新建对话 selects new thread and shows EmptyState', async () => {
   const { page } = launched;
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   await expect(page.getByTestId('chapter-literature-review')).toBeVisible();
   await expect(page.getByTestId('composer-input')).toBeVisible();
 });
@@ -209,7 +209,7 @@ test('27-composer: project pill switches the empty thread to another project', a
   const { page } = launched;
   const nameA = path.basename(projectA);
   const nameB = path.basename(projectB);
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   const pill = page.getByTestId('project-pill');
   await expect(pill).toContainText(nameA);
   await pill.click();

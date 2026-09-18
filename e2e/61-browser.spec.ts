@@ -6,7 +6,7 @@ import type { AddressInfo, Socket } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
-import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp } from './helpers';
+import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp, newThread } from './helpers';
 import { MIN_MAIN_WIDTH } from '../src/renderer/app/rightPane';
 import { BROWSER_PARTITION } from '../src/main/browser/partition';
 
@@ -287,7 +287,7 @@ async function runTools(
     window.kydog.on('run.ended', (p) => { box.ended = { reason: p.reason, errorMessage: p.errorMessage }; });
   });
 
-  await page.getByTestId('new-thread').click();
+  await newThread(page);
   // 新建之后输入框会换一个实例，字可能填进正要卸载的那个（发送键就一直禁用）：填到字真的在
   // 当前这个输入框里为止（fill 是整体替换，重复无副作用）。
   const composer = page.getByTestId('composer-input');
@@ -1426,7 +1426,11 @@ test.describe('61-browser · 一次启动：1:1', () => {
         const image = await view.webContents.capturePage();
         const size = image.getSize();
         const bitmap = image.toBitmap();
-        const k = size.width / a.logical;
+        // 舞台 DIP → 截图像素的倍率。capturePage 交回来的是两种形状之一，由 Chromium 当时手上是哪张
+        // surface 决定，本机与 CI 都见过：① 整张仿真 surface（排版宽 1280，舞台内容画在左上角舞台
+        // 那么大的一块里）；② 只有舞台那么大（CI arm64 实测 395×582）。两种下舞台坐标都按同一个像素比
+        // 落进图里，只是分母不同 —— 按图的实际宽认形状，不假定其一。
+        const k = size.width >= a.logical ? size.width / a.logical : size.width / bounds.width;
         const visW = Math.min(size.width, Math.round(bounds.width * k));
         const visH = Math.min(size.height, Math.round(bounds.height * k));
         let white = 0;

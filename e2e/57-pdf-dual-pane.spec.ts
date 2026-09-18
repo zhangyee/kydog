@@ -1306,8 +1306,11 @@ test.describe('57 · 启动二：分栏几何、滚动同步、覆盖式滚动�
     expect(c.w, '分隔线的命中区宽就是 DIVIDER_PX').toBeCloseTo(DIVIDER_PX, 1);
     const base = (await paneBoxWidths(page, paneSel))!;
 
-    // 一路拖到 wrapper 最右边：clampSplit 的上限（usable − MIN_PANE_PX）该把右栏钉在最小宽上。
-    const hugeX = base.wrapRight + 400;
+    // 一路拖过 wrapper 最右边：clampSplit 的上限（usable − MIN_PANE_PX）该把右栏钉在最小宽上。
+    // 终点留在窗口里（越过钉死点就够了）：拖到窗口外再松手，Windows runner 上实测会让同一次启动里
+    // 下一次拖分隔线整个失灵（下一条 1538 左栏一步都没动），macOS 上不会。
+    const viewportW = await page.evaluate(() => window.innerWidth);
+    const hugeX = Math.min(base.wrapRight + 100, viewportW - 2);
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
     await page.mouse.move(hugeX, c.y, { steps: 8 });
@@ -1372,10 +1375,10 @@ test.describe('57 · 启动二：分栏几何、滚动同步、覆盖式滚动�
         : `${hit?.tagName ?? null}.${hit?.className ?? ''}[${hit?.getAttribute('data-testid') ?? ''}]`;
     }, c), { message: '分隔线中心点应当命中分隔线本身' }).toBe('divider');
     const before = (await paneBoxWidths(page, paneSel))!;
-    const farLeft = before.wrapLeft - 400;
-    // 小步拖（每步不超过半个命中区）：Windows runner 上实测往左大步拖时分隔线只跟上第一步，
-    // 之后的 move 没再落到分隔线上（左栏停在第一步的位置，原因未查清，见 PaneDivider 的指针捕获）。
-    // 每步都留在 DIVIDER_PX 宽的命中区里，就与指针捕获是否生效无关，也更像真人拖动。
+    // 终点越过左栏的钉死点就够了，而且留在窗口里（理由见上一条 1732 的 hugeX）。
+    const farLeft = Math.max(before.wrapLeft - 100, 2);
+    // 小步拖（每步不超过半个命中区）：指针一直留在 DIVIDER_PX 宽的命中区里，更像真人拖动，
+    // 也不依赖指针捕获在合成输入下的表现。
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
     await page.mouse.move(farLeft, c.y, { steps: Math.ceil((c.x - farLeft) / (DIVIDER_PX / 2)) });

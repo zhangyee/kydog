@@ -77,6 +77,9 @@ test('52-md-external: 自己 ⌘S 写出去的回声不触发重建', async () =
   const { page } = launched;
   const editor = editorOf();
   await typeAtEnd(' 追加文字');
+  // 等这一 tab 真的记成「有未保存修改」再存：打完字立刻 ⌘S，保存可能赶在脏标记之前、什么都不写
+  // （Windows runner 上见过一次盘上还是上一版）。
+  await expect(page.getByTestId(`tab-dirty-${reportPath}`)).toBeVisible();
   await page.keyboard.press('ControlOrMeta+s');
   await expect.poll(() => fs.readFile(reportPath, 'utf8').catch(() => '')).toContain('追加文字');
 
