@@ -1,6 +1,0 @@
-{
-  "events": [
-    { "after_ms": 10, "type": "agent_start" },
-    { "after_ms": 10, "type": "agent_end", "reason": "error", "errorMessage": "402: Insufficient Balance (fixture)" }
-  ]
-}
