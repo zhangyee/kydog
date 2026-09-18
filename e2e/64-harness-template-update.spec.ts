@@ -256,3 +256,58 @@ test('64f 长期记忆页：Memory 三个标签灰掉占位；检视栏收着时
     await teardown(launched);
   }
 });
+
+test('64g 编辑过、关掉，再点「查看」是查看态；改过没存的：关掉先问、查看时提示「继续编辑」', async () => {
+  const soul = (await template('zh', 'SOUL.md')).replace('{{agentName}}', JSON.stringify('狗哥'));
+  const launched = await launchKydog({
+    seed: async (home) => { await fs.writeFile(path.join(home, '.kydog', 'SOUL.md'), soul); },
+  });
+  try {
+    const { page } = launched;
+    const card = page.getByTestId('harness-card-SOUL.md');
+    const editor = page.getByTestId('harness-editor');
+    await harnessChecked(page);
+    await page.getByTestId('nav-long-term-memory').click();
+
+    // 1) 你报的那条：卡片上点编辑 → 关掉 → 再点查看，出来的必须是查看态
+    await card.hover();
+    await page.getByTestId('harness-card-edit-SOUL.md').click();
+    await expect(editor).toBeVisible();
+    await page.getByTestId('harness-inspector-close').click();              // 没改过，直接关、不问
+    await expect(page.getByTestId('harness-inspector')).toHaveCount(0);
+    await card.hover();
+    await page.getByTestId('harness-card-view-SOUL.md').click();
+    await expect(page.getByTestId('harness-body')).toContainText('陌生不等于浅薄');
+    await expect(editor).toHaveCount(0);
+
+    // 2) 改过没存就关：先问；「继续编辑」什么都不动，「放弃修改」才关
+    await page.getByTestId('harness-edit').click();
+    await editor.fill(soul + '\n我加的一句\n');
+    await page.getByTestId('harness-inspector-close').click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('放弃未保存的修改');
+    await page.getByTestId('confirm-dialog-cancel').click();
+    await expect(editor).toHaveValue(soul + '\n我加的一句\n');
+    await page.getByTestId('harness-inspector-close').click();
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect(page.getByTestId('harness-inspector')).toHaveCount(0);
+    await expect(page.getByTestId('harness-dirty-SOUL.md')).toHaveCount(0);
+    expect(await fs.readFile(path.join(launched.kydogHome, '.kydog', 'SOUL.md'), 'utf8')).toBe(soul);
+
+    // 3) 改到一半去看别的，回来点查看：是查看态，但提示有没保存的修改，「继续编辑」接着改那一份
+    await card.hover();
+    await page.getByTestId('harness-card-edit-SOUL.md').click();
+    await editor.fill(soul + '\n改到一半\n');
+    await page.getByTestId('harness-card-open-USER.md').click();
+    await expect(page.getByTestId('harness-status')).toHaveText('文件不存在');
+    await expect(page.getByTestId('harness-dirty-SOUL.md')).toBeVisible();
+    await page.getByTestId('harness-card-open-SOUL.md').click();
+    await expect(editor).toHaveCount(0);
+    await expect(page.getByTestId('harness-pending-draft')).toBeVisible();
+    await expect(page.getByTestId('harness-body')).not.toContainText('改到一半');      // 查看态显示的是磁盘上的
+    await page.getByTestId('harness-edit').click();
+    await expect(page.getByTestId('harness-edit')).toHaveCount(0);
+    await expect(editor).toHaveValue(soul + '\n改到一半\n');
+  } finally {
+    await teardown(launched);
+  }
+});

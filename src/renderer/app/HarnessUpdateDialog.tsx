@@ -59,7 +59,7 @@ export function HarnessUpdateDialog({ onSettled }: { onSettled: (ok: boolean) =>
     setPhase({ kind: 'applying', files: phase.files });
     let results: HarnessApplyResult[];
     try {
-      results = (await window.kydog.invoke('harness.apply', { choices: picked })).results;
+      results = (await window.kydog.invoke('harness.apply', { choices: picked, source: 'startup-dialog' })).results;
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       results = picked.map(({ name }) => ({ name, outcome: 'failed', error }));

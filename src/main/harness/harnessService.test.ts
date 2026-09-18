@@ -8,6 +8,7 @@ import { templateSha } from './harnessAssess';
 import { harnessTemplate } from './templates';
 import { renderTemplate } from './seed';
 import { getIdentity } from './identityService';
+import { logger } from '../log';
 
 const OLD_AGENTS = '# AGENTS —— 旧版\n\n只有一节。\n';
 
@@ -64,7 +65,7 @@ describe('harnessService', () => {
   describe('apply：更新', () => {
     it('先备份再写：新文件等于当前模板渲染（名字保留），备份逐字等于旧内容，记录换成新模板', async () => {
       writeFileSync(f('USER.md'), '---\nname: "老张"\n---\n\n旧的 USER\n');
-      const { results } = await svc().apply([{ name: 'USER.md', choice: 'update' }]);
+      const { results } = await svc().apply([{ name: 'USER.md', choice: 'update' }], 'harness-page');
       expect(results).toEqual([{ name: 'USER.md', outcome: 'updated', backupName: 'USER.md.bak-2026-09-17' }]);
       expect(read('USER.md')).toBe(current('USER.md', { userName: '老张', agentName: 'KyDog' }));
       expect(read('USER.md.bak-2026-09-17')).toBe('---\nname: "老张"\n---\n\n旧的 USER\n');
@@ -76,7 +77,7 @@ describe('harnessService', () => {
       await seedOldAgents();
       writeFileSync(f('AGENTS.md.bak-2026-09-17'), 'first');
       writeFileSync(f('AGENTS.md.bak-2026-09-17-2'), 'second');
-      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }]);
+      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }], 'harness-page');
       expect(results[0]).toEqual({ name: 'AGENTS.md', outcome: 'updated', backupName: 'AGENTS.md.bak-2026-09-17-3' });
       expect(read('AGENTS.md.bak-2026-09-17')).toBe('first');
       expect(read('AGENTS.md.bak-2026-09-17-2')).toBe('second');
@@ -91,7 +92,7 @@ describe('harnessService', () => {
         if (String(src).endsWith('AGENTS.md')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
         return real(src, dest, mode);
       });
-      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }, { name: 'SOUL.md', choice: 'update' }]);
+      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }, { name: 'SOUL.md', choice: 'update' }], 'harness-page');
       expect(results[0]).toMatchObject({ name: 'AGENTS.md', outcome: 'failed' });
       expect((results[0] as { error: string }).error).toContain('EACCES');
       expect(read('AGENTS.md')).toBe(OLD_AGENTS);
@@ -104,7 +105,7 @@ describe('harnessService', () => {
     it('写新文件失败 → 原文件不变、备份仍在，报失败', async () => {
       await seedOldAgents();
       vi.spyOn(fsp, 'rename').mockRejectedValueOnce(Object.assign(new Error('EPERM: rename'), { code: 'EPERM' }));
-      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }]);
+      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }], 'harness-page');
       expect(results[0]).toMatchObject({ name: 'AGENTS.md', outcome: 'failed' });
       expect(read('AGENTS.md')).toBe(OLD_AGENTS);
       expect(read('AGENTS.md.bak-2026-09-17')).toBe(OLD_AGENTS);
@@ -114,19 +115,19 @@ describe('harnessService', () => {
 
     it('状态文件读不出来（不是不存在）→ 整批报错，不拿空状态写回去抹掉别的记录', async () => {
       await seedOldAgents();
-      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }]);
+      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }], 'harness-page');
       const before = readFileSync(path.join(dir, '.harness-state.json'), 'utf8');
       vi.spyOn(fsp, 'readFile').mockImplementation(async () => {
         throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
       });
-      await expect(svc().apply([{ name: 'SOUL.md', choice: 'keep' }])).rejects.toThrow('EBUSY');
+      await expect(svc().apply([{ name: 'SOUL.md', choice: 'keep' }], 'harness-page')).rejects.toThrow('EBUSY');
       vi.restoreAllMocks();
       expect(readFileSync(path.join(dir, '.harness-state.json'), 'utf8')).toBe(before);
     });
 
     it('文件不存在 → 创建：不备份，backupName 为 null', async () => {
       locale = 'en';
-      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }]);
+      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }], 'harness-page');
       expect(results[0]).toEqual({ name: 'AGENTS.md', outcome: 'updated', backupName: null });
       expect(read('AGENTS.md')).toBe(current('AGENTS.md'));
       expect(readdirSync(dir).filter((n) => n.includes('.bak-'))).toEqual([]);
@@ -137,7 +138,7 @@ describe('harnessService', () => {
   describe('apply：保持', () => {
     it('有记录 → 只写 keptTemplateSha，不碰文件；下次 status 为 kept', async () => {
       await seedOldAgents();
-      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }]);
+      const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }], 'harness-page');
       expect(results).toEqual([{ name: 'AGENTS.md', outcome: 'kept' }]);
       expect(read('AGENTS.md')).toBe(OLD_AGENTS);
       expect((await readHarnessState(dir)).files['AGENTS.md']).toEqual({
@@ -149,7 +150,7 @@ describe('harnessService', () => {
     it('老用户（无记录）→ 新建一条模板为 null 的记录；下次 kept + unknown', async () => {
       writeFileSync(f('AGENTS.md'), OLD_AGENTS);
       expect((await svc().status()).files[2]).toMatchObject({ template: 'available', edit: 'unknown' });
-      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }]);
+      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }], 'harness-page');
       expect((await readHarnessState(dir)).files['AGENTS.md']).toEqual({
         locale: null, template: null, keptTemplateSha: templateSha(harnessTemplate('zh', 'AGENTS.md')),
       });
@@ -158,7 +159,7 @@ describe('harnessService', () => {
 
     it('选过保持后切换界面语言 → 回到 available + localeDiffers', async () => {
       await seedOldAgents();
-      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }]);
+      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }], 'harness-page');
       locale = 'en';
       expect((await svc().status()).files[2]).toMatchObject({ template: 'available', localeDiffers: true, templateLocale: 'en' });
     });
@@ -205,12 +206,24 @@ describe('harnessService', () => {
     });
   });
 
+  it('更新 / 保持记下是从哪个入口点出来的（启动弹窗还是长期记忆页）；不认识的来源拒绝', async () => {
+    const info = vi.spyOn(logger, 'info');
+    await seedOldAgents();
+    writeFileSync(f('SOUL.md'), '---\nname: "狗哥"\n---\n\n旧 SOUL\n');
+    await svc().apply([{ name: 'AGENTS.md', choice: 'update' }], 'startup-dialog');
+    await svc().apply([{ name: 'SOUL.md', choice: 'keep' }], 'harness-page');
+    const logged = info.mock.calls.filter(([scope]) => scope === 'harness.update' || scope === 'harness.keep')
+      .map(([scope, , ctx]) => [scope, (ctx as { name: string }).name, (ctx as { source: string }).source]);
+    expect(logged).toEqual([['harness.update', 'AGENTS.md', 'startup-dialog'], ['harness.keep', 'SOUL.md', 'harness-page']]);
+    await expect(svc().apply([{ name: 'SOUL.md', choice: 'keep' }], 'somewhere' as 'harness-page')).rejects.toThrow();
+  });
+
   it('只认三个文件名：路径、别的名字一律拒绝（三个名字本身能过）', async () => {
     await expect(svc().read('AGENTS.md')).resolves.toBeDefined();
     for (const bad of ['../kydog.json', 'kydog.json', '/etc/passwd', 'AGENTS.md.bak-2026-09-17']) {
       await expect(svc().read(bad as 'AGENTS.md')).rejects.toThrow();
       await expect(svc().write({ name: bad as 'AGENTS.md', content: 'x', expected: null })).rejects.toThrow();
-      await expect(svc().apply([{ name: bad as 'AGENTS.md', choice: 'update' }])).rejects.toThrow();
+      await expect(svc().apply([{ name: bad as 'AGENTS.md', choice: 'update' }], 'harness-page')).rejects.toThrow();
     }
     expect(existsSync(path.join(dir, 'kydog.json'))).toBe(false);
   });

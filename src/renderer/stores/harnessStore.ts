@@ -10,7 +10,11 @@ export type HarnessDraft = { base: string | null; text: string };
 type HarnessState = {
   /** 在右侧检视栏里打开的是哪一份；null = 没打开（检视栏显示它平常的内容）。存组件外：离开长期记忆页再回来还开着。 */
   opened: HarnessFileName | null;
-  /** 有草稿 = 这一份处于编辑态。 */
+  /**
+   * 打开的那一份是在看还是在改。**与「有没有草稿」是两件事**：草稿离开页面、切到别的文件都留着（决策 10），
+   * 但点「查看」就该看到查看态 —— 拿「有草稿」当「在编辑」的话，编辑过一次、关掉再点查看，出来的还是编辑框。
+   */
+  mode: 'view' | 'edit';
   drafts: Partial<Record<HarnessFileName, HarnessDraft>>;
   /** 启动对话框改了文件就 +1，长期记忆页据此重新拉状态（它可能正开在对话框底下）。 */
   revision: number;
@@ -22,7 +26,8 @@ type HarnessState = {
   notes: Partial<Record<HarnessFileName, string>>;
   /** 有一个保存 / 更新在途。 */
   busy: boolean;
-  setOpened: (name: HarnessFileName | null) => void;
+  setOpened: (name: HarnessFileName | null, mode?: 'view' | 'edit') => void;
+  setMode: (mode: 'view' | 'edit') => void;
   setDraft: (name: HarnessFileName, draft: HarnessDraft) => void;
   clearDraft: (name: HarnessFileName) => void;
   bumpRevision: () => void;
@@ -40,6 +45,7 @@ type HarnessState = {
  */
 export const useHarnessStore = create<HarnessState>((set) => ({
   opened: null,
+  mode: 'view',
   drafts: {},
   revision: 0,
   statuses: null,
@@ -47,7 +53,8 @@ export const useHarnessStore = create<HarnessState>((set) => ({
   loadError: null,
   notes: {},
   busy: false,
-  setOpened: (name) => set({ opened: name }),
+  setOpened: (name, mode = 'view') => set({ opened: name, mode }),
+  setMode: (mode) => set({ mode }),
   setDraft: (name, draft) => set((s) => ({ drafts: { ...s.drafts, [name]: draft } })),
   clearDraft: (name) => set((s) => {
     if (!s.drafts[name]) return {};

@@ -2,7 +2,7 @@ import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsUpdateArgs, SkillSyncHealth, LocaleSetOutcome,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
-  HarnessFileName, HarnessFileStatus, HarnessChoice, HarnessApplyResult, HarnessReadResult, HarnessWriteResult,
+  HarnessFileName, HarnessFileStatus, HarnessChoice, HarnessApplySource, HarnessApplyResult, HarnessReadResult, HarnessWriteResult,
   CenterViewState,
   TelemetryStatus,
   BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, ViewportMode, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
@@ -193,7 +193,8 @@ export type RpcCall =
   // 参数只收三个文件名、不收路径 —— file.writeText 不校验路径，这块不借它。
   // status 有副作用：文件恰好等于当前模板时顺手补记状态（spec §3.2 R1）。
   | { method: 'harness.status'; args: undefined; result: { files: HarnessFileStatus[] } }
-  | { method: 'harness.apply'; args: { choices: HarnessChoice[] }; result: { results: HarnessApplyResult[] } }
+  // source 只进日志：主进程记下这次是从启动弹窗还是长期记忆页点出来的，事后查得到。
+  | { method: 'harness.apply'; args: { choices: HarnessChoice[]; source: HarnessApplySource }; result: { results: HarnessApplyResult[] } }
   | { method: 'harness.read'; args: { name: HarnessFileName }; result: HarnessReadResult }
   // 比较后写：磁盘现内容不等于 expected 就不写，把现内容带回去（null = 文件不存在）。
   | { method: 'harness.write'; args: { name: HarnessFileName; content: string; expected: string | null }; result: HarnessWriteResult };

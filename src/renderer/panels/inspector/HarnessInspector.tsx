@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import type { HarnessFileName } from '../../../shared/types';
 import { NavIcon } from '../../shared';
 import { HARNESS_FILE_ROLE, editStateLine, templateStateLabel } from '../../shared/harnessCopy';
-import { useHarnessStore } from '../../stores/harnessStore';
+import { useHarnessStore, isDraftDirty } from '../../stores/harnessStore';
 import { makeMarkdownComponents } from '../main-pane/markdownComponents';
 import { Btn, hintStyle } from '../../settings/ui';
 import { cancelHarnessEdit, closeHarness, refreshHarness, saveHarness, startHarnessEdit, updateHarness } from '../../settings/harnessActions';
@@ -24,12 +24,16 @@ export function HarnessInspector({ name }: { name: HarnessFileName }) {
   const status = useHarnessStore((s) => s.statuses?.find((x) => x.name === name) ?? null);
   const doc = useHarnessStore((s) => s.docs[name] ?? null);
   const draft = useHarnessStore((s) => s.drafts[name]);
+  const mode = useHarnessStore((s) => s.mode);
   const note = useHarnessStore((s) => s.notes[name] ?? null);
   const busy = useHarnessStore((s) => s.busy);
 
   useEffect(() => { void refreshHarness(); }, [name]);
 
   const exists = doc?.exists === true;
+  // 在不在改看 mode，不看「有没有草稿」：草稿会留着（离开页面、切去看别的），点「查看」时应当看到查看态。
+  const editing = mode === 'edit' && draft !== undefined;
+  const pendingDraft = !editing && draft !== undefined && isDraftDirty(draft);
   const explain = status && (status.template === 'available' || status.template === 'kept') ? editStateLine(status) : null;
 
   return (
@@ -46,7 +50,7 @@ export function HarnessInspector({ name }: { name: HarnessFileName }) {
             type="button"
             data-testid="harness-inspector-close"
             aria-label="关闭"
-            onClick={closeHarness}
+            onClick={() => void closeHarness()}
             className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[color:var(--color-hover-bg)]"
             style={{ color: 'var(--color-ink-soft)' }}
           ><NavIcon name="x" size={13} /></button>
@@ -67,16 +71,23 @@ export function HarnessInspector({ name }: { name: HarnessFileName }) {
               {status.template === 'missing' ? '创建' : '更新到新版'}
             </Btn>
           )}
-          {exists && draft === undefined && (
-            <Btn testId="harness-edit" variant="secondary" onClick={() => void startHarnessEdit(name)} disabled={busy}>编辑</Btn>
+          {exists && !editing && (
+            <Btn testId="harness-edit" variant="secondary" onClick={() => void startHarnessEdit(name)} disabled={busy}>
+              {pendingDraft ? '继续编辑' : '编辑'}
+            </Btn>
           )}
         </div>
+        {pendingDraft && (
+          <div data-testid="harness-pending-draft" className="font-sans" style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-accent)', paddingTop: 2 }}>
+            这份有没保存的修改，下面显示的是磁盘上现在的内容。
+          </div>
+        )}
         {note && (
           <div data-testid="harness-note" className="font-sans" style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--color-ink-soft)', paddingTop: 2 }}>{note}</div>
         )}
       </div>
 
-      {draft !== undefined ? (
+      {editing && draft !== undefined ? (
         <div className="flex-1 min-h-0 flex flex-col" style={{ padding: '10px 16px 14px', gap: 10 }}>
           <textarea
             data-testid="harness-editor"

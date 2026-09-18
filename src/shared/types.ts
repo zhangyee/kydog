@@ -291,6 +291,9 @@ export type HarnessFileStatus = {
   localeDiffers: boolean;
 };
 export type HarnessChoice = { name: HarnessFileName; choice: 'update' | 'keep' };
+/** 这次「更新 / 保持」是从哪个入口点出来的 —— 只为日志：事后要能回答「是谁让它更新的」。 */
+export type HarnessApplySource = 'startup-dialog' | 'harness-page';
+export const HARNESS_APPLY_SOURCES = ['startup-dialog', 'harness-page'] as const satisfies readonly HarnessApplySource[];
 export type HarnessApplyResult = { name: HarnessFileName } & (
   // backupName 只是文件名（在 ~/.kydog/ 下）；创建（原本不存在）时为 null。
   | { outcome: 'updated'; backupName: string | null }

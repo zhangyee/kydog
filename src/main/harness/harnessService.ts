@@ -11,8 +11,8 @@ import { readHarnessState, writeHarnessState, withHarnessLock, type HarnessState
 import { splitFrontmatter } from './frontmatter';
 import { logger } from '../log';
 import {
-  HARNESS_FILE_NAMES,
-  type HarnessApplyResult, type HarnessChoice, type HarnessFileName, type HarnessFileStatus,
+  HARNESS_FILE_NAMES, HARNESS_APPLY_SOURCES,
+  type HarnessApplyResult, type HarnessApplySource, type HarnessChoice, type HarnessFileName, type HarnessFileStatus,
   type HarnessReadResult, type HarnessWriteResult, type Identity,
 } from '../../shared/types';
 
@@ -86,7 +86,8 @@ export function createHarnessService(deps: HarnessServiceDeps) {
       });
     },
 
-    async apply(choices: HarnessChoice[]): Promise<{ results: HarnessApplyResult[] }> {
+    async apply(choices: HarnessChoice[], source: HarnessApplySource): Promise<{ results: HarnessApplyResult[] }> {
+      if (!(HARNESS_APPLY_SOURCES as readonly unknown[]).includes(source)) throw new Error(`不认识的来源：${String(source)}`);
       for (const c of choices) {
         assertName(c?.name);
         if (c.choice !== 'update' && c.choice !== 'keep') throw new Error(`不认识的选择：${String(c.choice)}`);
@@ -103,6 +104,7 @@ export function createHarnessService(deps: HarnessServiceDeps) {
             state.files[name] = { ...(prev ?? { locale: null, template: null }), keptTemplateSha: templateSha(tpl) };
             try {
               await writeHarnessState(state, deps.dir);
+              logger.info('harness.keep', 'kept', { name, source });
               results.push({ name, outcome: 'kept' });
             } catch (err) {
               if (prev) state.files[name] = prev; else delete state.files[name];
@@ -126,7 +128,7 @@ export function createHarnessService(deps: HarnessServiceDeps) {
           }
           state.files[name] = { locale, template: tpl, keptTemplateSha: null };
           await saveState(state, 'update');
-          logger.info('harness.update', 'updated', { name, locale, backupName });
+          logger.info('harness.update', 'updated', { name, locale, backupName, source });
           results.push({ name, outcome: 'updated', backupName });
         }
         return { results };

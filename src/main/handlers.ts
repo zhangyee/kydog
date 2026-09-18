@@ -103,7 +103,7 @@ export function registerAllHandlers(): void {
   });
 
   registerHandler('harness.status', () => harnessService.status());
-  registerHandler('harness.apply', (args) => harnessService.apply(args.choices));
+  registerHandler('harness.apply', (args) => harnessService.apply(args.choices, args.source));
   registerHandler('harness.read', (args) => harnessService.read(args.name));
   registerHandler('harness.write', (args) => harnessService.write(args));
 

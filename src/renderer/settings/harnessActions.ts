@@ -40,15 +40,33 @@ export async function openHarness(name: HarnessFileName, opts: { edit?: boolean 
   const ui = useUiStore.getState();
   if (ui.browserOpen) ui.closeBrowser();
   if (useUiStore.getState().inspectorCollapsed) ui.toggleInspector();
-  H().setOpened(name);
-  if (opts.edit && !H().drafts[name]) await startHarnessEdit(name);
+  if (opts.edit) {
+    H().setOpened(name, 'view');
+    await startHarnessEdit(name);
+    return;
+  }
+  // 「查看」一定是查看态。没改过的草稿顺手丢掉；改过的留着，查看态里提示「继续编辑」。
+  const draft = H().drafts[name];
+  if (draft && !isDraftDirty(draft)) H().clearDraft(name);
+  H().setOpened(name, 'view');
 }
 
-export function closeHarness(): void {
+/**
+ * 关掉检视栏里的这一份。在改而且改过 → 先问要不要放弃（取消 = 继续编辑，什么都不动）；
+ * 没改过的草稿直接丢掉。关掉之后再点「查看」，出来的是查看态。
+ */
+export async function closeHarness(): Promise<void> {
+  const name = H().opened;
+  if (!name) return;
+  const draft = H().drafts[name];
+  if (draft && isDraftDirty(draft) && !(await confirmDiscard(name))) return;
+  H().clearDraft(name);
   H().setOpened(null);
 }
 
+/** 进编辑态。已经有草稿（改到一半去看了别的）就接着改那一份，不拿磁盘内容盖掉它。 */
 export async function startHarnessEdit(name: HarnessFileName): Promise<void> {
+  if (H().drafts[name]) { H().setMode('edit'); return; }
   // 进编辑前重读一次：显示的那份可能已经旧了，拿它作 expected 只会平白冲突一次。
   try {
     const rd = await window.kydog.invoke('harness.read', { name });
@@ -56,20 +74,24 @@ export async function startHarnessEdit(name: HarnessFileName): Promise<void> {
     if (!rd.exists) return;
     H().setNote(name, null);
     H().setDraft(name, { base: rd.content, text: toTextareaNewlines(rd.content) });
+    if (H().opened === name) H().setMode('edit');
   } catch (err) {
     H().setNote(name, `读不出这份文件：${errText(err)}`);
   }
 }
 
+const confirmDiscard = (name: HarnessFileName) => confirm({
+  title: '放弃未保存的修改？',
+  message: `${name} 里还没保存的改动会丢掉，改回磁盘上现在的内容。`,
+  confirmLabel: '放弃修改',
+  cancelLabel: '继续编辑',
+});
+
 export async function cancelHarnessEdit(name: HarnessFileName): Promise<void> {
   const draft = H().drafts[name];
-  if (draft && isDraftDirty(draft) && !(await confirm({
-    title: '放弃未保存的修改？',
-    message: `${name} 里还没保存的改动会丢掉，改回磁盘上现在的内容。`,
-    confirmLabel: '放弃修改',
-    cancelLabel: '继续编辑',
-  }))) return;
+  if (draft && isDraftDirty(draft) && !(await confirmDiscard(name))) return;
   H().clearDraft(name);
+  if (H().opened === name) H().setMode('view');
   await refreshHarness();
 }
 
@@ -95,6 +117,7 @@ export async function saveHarness(name: HarnessFileName): Promise<void> {
       expected = r.diskContent;                    // 仍是比较后写：覆盖的是刚才看到的那一版，不是强写
     }
     H().clearDraft(name);
+    if (H().opened === name) H().setMode('view');
     H().setNote(name, '已保存，从下一个新对话开始生效');
     await refreshHarness();
   } catch (err) {
@@ -116,7 +139,7 @@ export async function updateHarness(name: HarnessFileName): Promise<void> {
   }))) return;
   H().setBusy(true);
   try {
-    const { results } = await window.kydog.invoke('harness.apply', { choices: [{ name, choice: 'update' }] });
+    const { results } = await window.kydog.invoke('harness.apply', { choices: [{ name, choice: 'update' }], source: 'harness-page' });
     const r = results[0];
     H().setNote(name, creating && r.outcome === 'failed' ? `创建失败：${r.error}` : applyResultLine(r, 'update'));
     await refreshHarness();
