@@ -104,7 +104,9 @@ describe('harnessService', () => {
 
     it('写新文件失败 → 原文件不变、备份仍在，报失败', async () => {
       await seedOldAgents();
-      vi.spyOn(fsp, 'rename').mockRejectedValueOnce(Object.assign(new Error('EPERM: rename'), { code: 'EPERM' }));
+      // 用一个不是「短暂锁」的 errno：EPERM / EACCES / EBUSY 在 Windows 上会被原子写入退避重试（atomicWrite.ts），
+      // 一次性的 EPERM 在那里第二次就写成了 —— 这条要的是「写盘真的失败」。
+      vi.spyOn(fsp, 'rename').mockRejectedValueOnce(Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }));
       const { results } = await svc().apply([{ name: 'AGENTS.md', choice: 'update' }], 'harness-page');
       expect(results[0]).toMatchObject({ name: 'AGENTS.md', outcome: 'failed' });
       expect(read('AGENTS.md')).toBe(OLD_AGENTS);
