@@ -27,20 +27,21 @@
 
 Bolting a pile of literature MCPs onto a general-purpose coding agent — Codex, Claude Code — is a road many researchers have tried. But coding agents are built for writing code and shipping projects; their conversations and tool calls are oriented toward producing a result, which is a poor fit for reading a paper and chasing down a new idea the moment it surfaces. Research, meanwhile, is mostly searching, close reading, cross-checking, and writing. So I built what my own daily work needed: a harness and agent shell rebuilt around academic literature.
 
-KyDog pairs a CLI that searches, downloads, and reads across 23 academic and scientific literature sources with workflow skills spanning four stages — research, study, write, review — turning literature work into a pipeline you can audit. One slash command states what you want; the agent searches multiple sources in parallel, traces classics back through citation chains, and verifies every paper against its source, downloading everything the report touches into the project's `papers/` directory. Those PDFs open directly inside the app, with no detour to another reader, and the reports the skills produce — topic assessments, reviews, fact-checks — all come out as Markdown, read and edited in a built-in WYSIWYG editor. Searching, reading, writing, and revising happen in one window.
+KyDog pairs a CLI that searches, downloads, and reads across 23 academic and scientific literature sources, plus slowpaper, which reaches sources with no API — Google Scholar, Baidu Xueshu and more — through a browser built into the app, with workflow skills spanning four stages — research, study, write, review — turning literature work into a pipeline you can audit. One slash command states what you want; the agent searches multiple sources in parallel, traces classics back through citation chains, and verifies every paper against its source, downloading everything the report touches into the project's `papers/` directory. Those PDFs open directly inside the app, with no detour to another reader, and the reports the skills produce — topic assessments, reviews, fact-checks — all come out as Markdown, read and edited in a built-in WYSIWYG editor. Searching, reading, writing, and revising happen in one window.
 
 So that the agent remembers across sessions who you are, what you're researching, and how you like to write — instead of you re-explaining from scratch in every new conversation — KyDog borrows Openclaw's workspace architecture: three files, `AGENTS.md`, `SOUL.md`, and `USER.md`, carry the system prompt and give the agent the persona of a research collaborator. Edit them by hand to shape a research assistant of your own.
 
 ## What can KyDog do?
 
 - **23 literature sources, searched in parallel by one fastpaper command** — arXiv, PubMed, PMC, Europe PMC, bioRxiv, medRxiv, OSF Preprints, Semantic Scholar, OpenAlex, Crossref, DataCite, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, INSPIRE-HEP, zbMATH Open, ERIC, OSTI.GOV, NASA NTRS<sup>[note 1]</sup>. The CLI ships with the app; nothing else to install.
+- **slowpaper: the agent searches sources with no API in a built-in browser** — two academic search engines, Google Scholar and Baidu Xueshu, plus nine open-access full-text sources: MDPI, Frontiers, PeerJ, ChemRxiv, SSRN, AGRIS, PubScholar, ChinaXiv, and the National Center for Philosophy and Social Sciences Documentation (NCPSSD). Chinese journals and theses, exhaustive cross-database searches, and side-by-side Chinese and international coverage are where it fills in what fastpaper can't reach. You can watch every step it takes in the browser sidebar, and it stops to let you solve a CAPTCHA when one appears. For which sources each tool covers, see [Literature sources](docs/literature-sources.md) (in Chinese).
 - **Citations and claims are verifiable — the harness holds the model to its sources** — every DOI confirmed against the source, every claim traced back to the original text, and every paper the report touches downloaded automatically into `papers/`.
 - **A complete research pipeline** — skills covering four stages, research → study → write → review, invoked by slash command. More are being worked on.
 - **Broad coverage of the major models** — 20 built-in LLM providers, plus any OpenAI-compatible endpoint (local Ollama / vLLM / your own proxy). Subscription sign-in for Claude Pro/Max, ChatGPT (Codex), and GitHub Copilot; API keys for Anthropic, OpenAI, DeepSeek, Google Gemini, OpenRouter, Mistral, Groq, Cerebras, xAI, ZAI, Kimi, MiniMax and more; cloud access via Azure OpenAI, Amazon Bedrock, Google Vertex AI.
 - **PDFs and Markdown, read and edited in place** — a built-in PDF reader and a WYSIWYG Markdown editor, so you stop shuffling between applications.
 - **Local-first** — a project is just a directory on your own disk; retrieved papers and generated reports are written there. Sessions and settings live in `~/.kydog/`, with credential files forced to `0600`. No cloud account, and none of your content is uploaded.
 
-> **[note 1]** Google Scholar and Baidu Xueshu were dropped from the source list in v0.3.1: both platforms have tightened API access and neither is reachable. I plan to reach them, and more sources, through in-app browsing instead. If you'd like to see that sooner, [sponsoring the project](#supporting-the-project) helps.
+> **[note 1]** Google Scholar and Baidu Xueshu were dropped from fastpaper's source list in v0.3.1 after both platforms tightened API access. slowpaper now reaches them through the built-in browser (see the slowpaper item above).
 
 ## Built-in skills
 
@@ -108,6 +109,7 @@ xattr -d com.apple.quarantine /Applications/KyDog.app
 
 1. Double-click the `.exe`. SmartScreen will warn you → click **More info** → **Run anyway**
 2. KyDog's shell tooling needs [Git for Windows](https://git-scm.com/download/win). If it isn't installed, KyDog prompts you on first launch — install Git, then restart KyDog
+3. Quit KyDog completely before installing a new version by hand. If the installer hangs on the extraction screen and running Setup again doesn't help, or KyDog won't start after installing: end every **KyDog.exe** and **Update.exe** in Task Manager, press Win+R, open `%LOCALAPPDATA%`, delete both the **SquirrelTemp** and **kydog** folders, then run Setup again with a normal double-click (not as administrator). Your data lives in `C:\Users\<you>\.kydog` and is not touched. Details: [Windows install troubleshooting](docs/windows-install-troubleshooting.md) (in Chinese)
 
 ### Building from source
 
@@ -129,7 +131,8 @@ What KyDog does today is less than a third of the full idea. These are already o
 - [ ] **More skills** — extending along research → study → write → review. Today research has three, study one, review three; the write stage is still thin.
 - [x] ~~**PDF annotation** — highlighting and notes, plus Chinese translation and side-by-side bilingual reading.~~
 - [ ] **Follow-up questions and citation commentary on documents** — ask about a selected passage right inside the Markdown editor, and get commentary on the references it cites.
-- [ ] **slowpaper: in-app browsing** — let the agent drive a browser inside the app, supporting CARSI (the Chinese education and research network's federated identity service) sign-in and reaching more literature sources that require browser interaction.
+- [x] ~~**slowpaper: in-app browsing** — let the agent drive a browser inside the app, reaching more literature sources that require browser interaction.~~
+- [ ] **CARSI sign-in** — sign in automatically with a university account through CARSI (the Chinese education and research network's federated identity service) to reach the literature databases your university subscribes to.
 - [ ] **A LaTeX editor** — an editing and compilation experience along the lines of Overleaf.
 
 Feature requests and feedback are welcome in [Issues](https://github.com/zhangyee/kydog/issues). [Sponsoring the project](#supporting-the-project) helps speed all of this up.
@@ -140,7 +143,7 @@ KyDog stands on the shoulders of these projects.
 
 **Architectural core**
 
-- **[Pi](https://github.com/earendil-works/pi)** — Mario Zechner. KyDog's agent loop is built directly on `pi-coding-agent`: LLM provider integration and credential management, the model catalogue, tool registration and execution, context management, and session persistence all come from it. On top of that, KyDog adds only its own tools (asking the user a question, reading figures out of a PDF, reading Word documents directly), skill loading and locale projection, and the desktop event plumbing.
+- **[Pi](https://github.com/earendil-works/pi)** — Mario Zechner. KyDog's agent loop is built directly on `pi-coding-agent`: LLM provider integration and credential management, the model catalogue, tool registration and execution, context management, and session persistence all come from it. On top of that, KyDog adds only its own tools (asking the user a question, driving the built-in browser, reading figures out of a PDF, reading Word documents directly), skill loading and locale projection, and the desktop event plumbing.
 - **[Electron](https://github.com/electron/electron)** — the desktop shell. The main process runs Node and handles agent sessions, file I/O, and CLI invocation; the renderer runs Chromium and handles the UI, the PDF reader, and the Markdown editor; the two talk only over the RPC and event channels funnelled through `src/shared/protocol.ts`. Cross-platform packaging goes through electron-forge, and updates through Electron's `autoUpdater` against update.electronjs.org.
 
 **Inspiration**
