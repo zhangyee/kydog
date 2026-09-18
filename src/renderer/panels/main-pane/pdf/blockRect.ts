@@ -1,5 +1,7 @@
 // 译文块的覆盖矩形：RightPage 用它填色，groupGeometry 用它校验。**必须是同一份。**
 
+import type { Block } from '../../../../shared/zhSidecar';
+
 export type Rect = { x: number; y: number; w: number; h: number };
 
 /**
@@ -11,6 +13,25 @@ export const BLOCK_PAD = 1.5;
 
 export function paddedRect(r: Rect): Rect {
   return { x: r.x - BLOCK_PAD, y: r.y - BLOCK_PAD, w: r.w + 2 * BLOCK_PAD, h: r.h + 2 * BLOCK_PAD };
+}
+
+/**
+ * 右格盖子在位图上的像素矩形：RightPage 在这里填页背景色，把原文盖掉。`S` = 位图像素 / pt。
+ *
+ * 纵向按**墨迹矩形**（含降部）：边车有 `ink` 就用它，老边车没有才退回字身框 `y / height`——与
+ * groupGeometry 校验用的是同一份口径（inkRectOf）。按字身框盖的话，块最后一行的降部（g / y / p / q
+ * 的尾巴）在基线之下、字身框之外，会从盖子底下漏出来。四周外扩 BLOCK_PAD，再向外取整（floor 起点、
+ * ceil 尺寸），免得边缘留半像素没盖住。
+ */
+export function coverRect(b: Pick<Block, 'x' | 'y' | 'width' | 'height' | 'ink'>, S: number): Rect {
+  const top = b.ink?.top ?? b.y;
+  const bottom = b.ink?.bottom ?? b.y + b.height;
+  return {
+    x: Math.floor((b.x - BLOCK_PAD) * S),
+    y: Math.floor((top - BLOCK_PAD) * S),
+    w: Math.ceil((b.width + 2 * BLOCK_PAD) * S),
+    h: Math.ceil((bottom - top + 2 * BLOCK_PAD) * S),
+  };
 }
 
 /**

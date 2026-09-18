@@ -223,6 +223,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   return (
     <div
       className="shrink-0"
+      data-thread-id={threadId}
       style={{ position: 'relative', marginTop: -COMPOSER_FADE_HEIGHT }}
     >
       {/* Gradient fade that overlays the last ~32px of MessageList so messages

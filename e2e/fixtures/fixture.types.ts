@@ -66,4 +66,24 @@ export type FixtureEvent =
     }
   | { after_ms: number; type: 'agent_end'; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string };
 
-export type FixtureFile = { events: FixtureEvent[] };
+/**
+ * 两种形状：
+ *  · `events` —— 一份剧本，每一轮不管用户发了什么都整份重放（老 fixture 都是这种）。
+ *  · `scripts` —— 按这一轮用户发的原文（trim 后逐字）挑剧本。让同一次启动里的几个流式
+ *    场景共用一份 fixture，不必每个场景冷启动一次应用。认不到名字就当场抛错并列出有哪些
+ *    剧本，**不回落**到任何一份 —— 静默回落会让用例在错的剧本上变绿。
+ */
+export type FixtureFile =
+  | { events: FixtureEvent[] }
+  | { scripts: Record<string, FixtureEvent[]> };
+
+/** 这一轮该放哪份剧本。纯函数，单测直接测它。 */
+export function pickFixtureEvents(file: FixtureFile, content: string): FixtureEvent[] {
+  if ('events' in file) return file.events;
+  const key = content.trim();
+  const events = file.scripts[key];
+  if (!events) {
+    throw new Error(`fixture 里没有名为「${key}」的剧本；有：${Object.keys(file.scripts).map((k) => `「${k}」`).join('、')}`);
+  }
+  return events;
+}

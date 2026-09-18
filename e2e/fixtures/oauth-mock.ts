@@ -12,17 +12,6 @@ export type OAuthFixture = {
   successAfterMs: number;
 };
 
-export const happyPath: OAuthFixture = {
-  onAuthAfterMs: 50,
-  url: 'https://example.test/oauth?code=fixture',
-  progressMessages: [
-    { afterMs: 100, text: '等待回调…' },
-    { afterMs: 200, text: '验证 token…' },
-  ],
-  expectsManualCode: false,
-  successAfterMs: 300,
-};
-
 // 照抄 pi openai-codex 的选项（含英文措辞）：UI 必须原样显示 provider 给的 label。
 export const selectPath: OAuthFixture = {
   selectBeforeAuth: {
@@ -37,12 +26,4 @@ export const selectPath: OAuthFixture = {
   progressMessages: [],
   expectsManualCode: false,
   successAfterMs: 999_999,    // never completes：选完之后停在授权页，方便断言
-};
-
-export const cancelPath: OAuthFixture = {
-  onAuthAfterMs: 50,
-  url: 'https://example.test/oauth?code=cancel',
-  progressMessages: [],
-  expectsManualCode: false,
-  successAfterMs: 999_999,    // never completes
 };

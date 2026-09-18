@@ -102,7 +102,7 @@ export function fitCacheKey(
  *
  * 脚标（spec 2026-09-07 scripts §6）：0.73em、`position: relative` 偏移——三个数是 2512.03413 全篇
  * 223 处脚标的中位数（字号比 0.733，sub 位移 0.150em，sup 0.363em），与 TeX 默认相符。用 relative
- * 而不是 vertical-align，是为了不撑高行框（§9 待实测，e2e/57 一条几何断言守）。脚标段**不加**
+ * 而不是 vertical-align，是为了不撑高行框（§9 待实测；三个数由 TranslationBlocks.test 钉住）。脚标段**不加**
  * formula 的 italic：数学斜体码位自带字形，脚注号、CO₂ 的 2 不该斜。
  *
  * 写成 Record 而不是 if/else 链：Placeholder 加了新 kind / script，tsc 会逼这里补上。

@@ -1,131 +1,110 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { launchKydog, teardown, seedSettings, seedProject } from './helpers';
+import { launchKydog, teardown, seedSettings, seedProject, type LaunchedApp } from './helpers';
 
-const REPORT_REL = 'report.md';
+/**
+ * 磁盘上的 markdown 被别人（agent）改了：干净 tab 静默跟上；有未保存修改就出横幅、确认才覆盖；
+ * 自己 ⌘S 的回声不算。串行共用一次启动、同一个文件；点取消那条会留下脏状态，放最后。
+ */
+test.describe.configure({ mode: 'serial' });
 
-async function seedAll(home: string) {
-  await seedSettings(home);
-  const projectPath = path.join(home, 'proj');
-  await fs.mkdir(projectPath, { recursive: true });
-  await fs.writeFile(path.join(projectPath, REPORT_REL), '# 初稿标题\n\n初稿正文。\n');
-  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
-}
+let launched: LaunchedApp;
+let reportPath = '';
 
-/** 打开 report.md 的编辑器 tab，返回编辑器 locator 与文件绝对路径。 */
-async function openReport(page: Page, kydogHome: string) {
-  const reportPath = path.join(kydogHome, 'proj', REPORT_REL);
-  await page.click('text=测试 Thread');
-  const fsRow = page.getByTestId(`fs-${reportPath}`);
-  await fsRow.waitFor();
-  await fsRow.dblclick();
-  const editor = page.locator('.kydog-md-editor .ProseMirror');
-  await editor.waitFor();
-  await expect(editor).toContainText('初稿标题');
-  return { editor, reportPath };
-}
-
-test('52-md-external: 干净 tab —— agent 改写文件后编辑器自动跟上', async () => {
-  const launched = await launchKydog({ seed: seedAll });
-  try {
-    const { page, kydogHome } = launched;
-    const { editor, reportPath } = await openReport(page, kydogHome);
-
-    // 模拟 agent 在对话里改写这份报告
-    await fs.writeFile(reportPath, '# 修订后标题\n\n修订后的正文。\n');
-
-    await expect(editor).toContainText('修订后标题', { timeout: 5000 });
-    await expect(editor).toContainText('修订后的正文');
-    await expect(editor).not.toContainText('初稿标题');
-    // 干净 tab 静默重载，不该弹横幅
-    await expect(page.locator('[data-testid="external-change-banner"]')).toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
+test.beforeAll(async () => {
+  launched = await launchKydog({
+    seed: async (home) => {
+      await seedSettings(home);
+      const projectPath = path.join(home, 'proj');
+      await fs.mkdir(projectPath, { recursive: true });
+      reportPath = path.join(projectPath, 'report.md');
+      await fs.writeFile(reportPath, '# 初稿标题\n\n初稿正文。\n');
+      await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
+    },
+  });
+  const { page } = launched;
+  await page.getByTestId('thread-thr-1').click();
+  await page.getByTestId(`fs-${reportPath}`).dblclick();
+  await expect(page.locator('.kydog-md-editor .ProseMirror')).toContainText('初稿标题');
 });
 
-test('52-md-external: 有未保存修改 —— 出横幅而不是覆盖，确认后才加载外部版本', async () => {
-  const launched = await launchKydog({ seed: seedAll });
-  try {
-    const { page, kydogHome } = launched;
-    const { editor, reportPath } = await openReport(page, kydogHome);
+test.afterAll(async () => { await teardown(launched); });
 
-    await editor.click();
-    await page.keyboard.press('ControlOrMeta+End');
-    await page.keyboard.type(' 我手写的一句');
-    await expect(editor).toContainText('我手写的一句');
+const editorOf = () => launched.page.locator('.kydog-md-editor .ProseMirror');
+const bannerOf = () => launched.page.getByTestId('external-change-banner');
 
-    await fs.writeFile(reportPath, '# 修订后标题\n\n修订后的正文。\n');
+async function typeAtEnd(text: string) {
+  const { page } = launched;
+  await editorOf().click();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.type(text);
+  await expect(editorOf()).toContainText(text);
+}
 
-    const banner = page.locator('[data-testid="external-change-banner"]');
-    await expect(banner).toBeVisible({ timeout: 5000 });
-    // 关键：本地未保存的修改没有被顶掉
-    await expect(editor).toContainText('我手写的一句');
-    await expect(editor).not.toContainText('修订后标题');
+test('52-md-external: 干净 tab 自动跟上外部改写；有未保存修改时出横幅，确认后才加载外部版本', async () => {
+  const { page } = launched;
+  const editor = editorOf();
+  const banner = bannerOf();
 
-    // 丢弃本地修改是破坏性操作，走统一确认框
-    await page.locator('[data-testid="external-change-reload"]').click();
-    await expect(page.locator('[data-testid="confirm-dialog"]')).toBeVisible();
-    await page.locator('[data-testid="confirm-dialog-confirm"]').click();
+  // 干净 tab：agent 改写 → 静默重载，不弹横幅（正向：下面脏了之后同一个横幅会出现）。
+  await fs.writeFile(reportPath, '# 修订后标题\n\n修订后的正文。\n');
+  await expect(editor).toContainText('修订后标题');
+  await expect(editor).toContainText('修订后的正文');
+  await expect(editor).not.toContainText('初稿标题');
+  await expect(banner).toHaveCount(0);
 
-    await expect(editor).toContainText('修订后标题');
-    await expect(editor).not.toContainText('我手写的一句');
-    await expect(banner).toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
+  // 有未保存修改：出横幅而不是覆盖。
+  await typeAtEnd(' 我手写的一句');
+  await fs.writeFile(reportPath, '# 第三版标题\n\n第三版正文。\n');
+  await expect(banner).toBeVisible();
+  await expect(editor).toContainText('我手写的一句');
+  await expect(editor).not.toContainText('第三版标题');
+
+  // 丢弃本地修改是破坏性操作，走统一确认框。
+  await page.getByTestId('external-change-reload').click();
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await page.getByTestId('confirm-dialog-confirm').click();
+  await expect(editor).toContainText('第三版标题');
+  await expect(editor).not.toContainText('我手写的一句');
+  await expect(banner).toHaveCount(0);
+});
+
+// ⌘S 自己写盘也会让 watcher 发 file.changed。那一条是回声，不是别人改的：拿新读到的内容跟
+// diskContent 逐字节比就能认出来。认错了编辑器会被重建，光标、选区、撤销栈全丢 —— 用 DOM 节点
+// 身份（打在编辑器节点上的记号）断言「没有重建」。
+test('52-md-external: 自己 ⌘S 写出去的回声不触发重建', async () => {
+  const { page } = launched;
+  const editor = editorOf();
+  await typeAtEnd(' 追加文字');
+  // 等这一 tab 真的记成「有未保存修改」再存：打完字立刻 ⌘S，保存可能赶在脏标记之前、什么都不写
+  // （Windows runner 上见过一次盘上还是上一版）。
+  await expect(page.getByTestId(`tab-dirty-${reportPath}`)).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect.poll(() => fs.readFile(reportPath, 'utf8').catch(() => '')).toContain('追加文字');
+
+  await editor.evaluate((el) => { el.setAttribute('data-echo-probe', '1'); });
+  // 要断的是「回声到了也什么都没发生」：等过 watcher 的 200ms debounce + 重读磁盘的一个来回。
+  // 没有协议事实可等，只能看一个观察窗。
+  await page.waitForTimeout(1500);
+  await expect(editor).toHaveAttribute('data-echo-probe', '1');
+  await expect(editor).toContainText('追加文字');
+  await expect(bannerOf()).toHaveCount(0);
+
+  // 正向：真是别人改的，编辑器就会重建，记号随旧节点一起没了 —— 证明上面那个「记号还在」有意义。
+  await fs.writeFile(reportPath, '# 第四版标题\n\n第四版正文。\n');
+  await expect(editor).toContainText('第四版标题');
+  await expect(page.locator('.kydog-md-editor [data-echo-probe]')).toHaveCount(0);
 });
 
 test('52-md-external: 横幅里点取消 —— 本地修改留着，横幅还在', async () => {
-  const launched = await launchKydog({ seed: seedAll });
-  try {
-    const { page, kydogHome } = launched;
-    const { editor, reportPath } = await openReport(page, kydogHome);
-
-    await editor.click();
-    await page.keyboard.press('ControlOrMeta+End');
-    await page.keyboard.type(' 我手写的一句');
-    await fs.writeFile(reportPath, '# 修订后标题\n\n修订后的正文。\n');
-
-    const banner = page.locator('[data-testid="external-change-banner"]');
-    await expect(banner).toBeVisible({ timeout: 5000 });
-    await page.locator('[data-testid="external-change-reload"]').click();
-    await page.locator('[data-testid="confirm-dialog-cancel"]').click();
-
-    await expect(editor).toContainText('我手写的一句');
-    await expect(banner).toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-// ⌘S 自己写盘也会让 watcher 发 file.changed。那一条是回声，不是别人改的：
-// 拿新读到的内容跟 diskContent 逐字节比就能认出来。认错了编辑器会被重建，
-// 光标、选区、撤销栈全丢 —— 这里用 DOM 节点身份直接断言「没有重建」。
-test('52-md-external: 自己 ⌘S 写出去的回声不触发重建', async () => {
-  const launched = await launchKydog({ seed: seedAll });
-  try {
-    const { page, kydogHome } = launched;
-    const { editor, reportPath } = await openReport(page, kydogHome);
-
-    await editor.click();
-    await page.keyboard.press('ControlOrMeta+End');
-    await page.keyboard.type(' 追加文字');
-    await page.keyboard.press('ControlOrMeta+s');
-    await expect.poll(async () => fs.readFile(reportPath, 'utf8').catch(() => ''), { timeout: 5000 })
-      .toContain('追加文字');
-
-    // 在当前编辑器 DOM 上做个记号；重建会换掉这个节点，记号就没了
-    await editor.evaluate((el) => { el.setAttribute('data-echo-probe', '1'); });
-
-    // 等过 watcher 的 200ms debounce + 重读磁盘的一个来回
-    await page.waitForTimeout(1500);
-
-    await expect(editor).toHaveAttribute('data-echo-probe', '1');
-    await expect(editor).toContainText('追加文字');
-    await expect(page.locator('[data-testid="external-change-banner"]')).toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
+  const { page } = launched;
+  await typeAtEnd(' 又写一句');
+  await fs.writeFile(reportPath, '# 第五版标题\n\n第五版正文。\n');
+  const banner = bannerOf();
+  await expect(banner).toBeVisible();
+  await page.getByTestId('external-change-reload').click();
+  await page.getByTestId('confirm-dialog-cancel').click();
+  await expect(editorOf()).toContainText('又写一句');
+  await expect(banner).toBeVisible();
 });

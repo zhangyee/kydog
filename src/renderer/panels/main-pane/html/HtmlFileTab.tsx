@@ -82,7 +82,8 @@ export function HtmlFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean
   // display:none 期间已经丢了 —— 那时候方向键就退化回「要先点一下」。
   // onLoad 那一路是给「srcDoc 刚设上、文档还没解析完」兜底：effect 跑在 React commit 之后、
   // iframe 文档就绪之前，那一刻聚焦的是还没被 srcDoc 顶替掉的初始文档。
-  // e2e/46-html-tab.spec.ts 的「方向键在节间跳转」与「（切走再切回）」两条守着这条链。
+  // e2e/46-html-tab.spec.ts 的「方向键在节间跳转」守首次打开这一路；切走再切回时两次 focus 都调到，
+  // 由 HtmlFileTab.test.tsx 守。
   const frameRef = useRef<HTMLIFrameElement>(null);
   const focusFrame = useCallback(() => {
     const el = frameRef.current;

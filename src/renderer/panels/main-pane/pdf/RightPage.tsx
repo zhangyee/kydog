@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { Block } from '../../../../shared/zhSidecar';
 import { pageBackground, type RGB } from './pageBackground';
 import { toCss } from './inkForBackground';
-import { BLOCK_PAD } from './blockRect';
+import { coverRect } from './blockRect';
 
 type Props = {
   /** 这一页 scale 1 的视口尺寸（pt）。右格的 CSS 尺寸按它算，与左格逐字段同源。 */
@@ -141,16 +141,9 @@ export function RightPage({ size, rasterScale, blocks, leftCanvas, onBackground,
 
     for (const b of blocks) {
       if (b.target === undefined) continue;   // 不翻译的块不盖：公式、表格、页眉页脚原样留着
-      // 纵向按墨迹矩形（含降部；老边车没有 ink 就退回字身框）——与 groupGeometry 用的是同一份口径。
-      const top = b.ink?.top ?? b.y;
-      const bottom = b.ink?.bottom ?? b.y + b.height;
-      // 向外取整（floor 起点、ceil 尺寸），免得边缘留半像素没盖住
-      ctx.fillRect(
-        Math.floor((b.x - BLOCK_PAD) * S),
-        Math.floor((top - BLOCK_PAD) * S),
-        Math.ceil((b.width + 2 * BLOCK_PAD) * S),
-        Math.ceil((bottom - top + 2 * BLOCK_PAD) * S),
-      );
+      // 纵向按墨迹矩形（含降部；老边车没有 ink 就退回字身框）、外扩、向外取整——见 coverRect。
+      const r = coverRect(b, S);
+      ctx.fillRect(r.x, r.y, r.w, r.h);
     }
   }, [leftCanvas, blocks, size.w, onBackground, blank]);
 

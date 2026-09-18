@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { launchKydog, teardown, seedSettings } from './helpers';
+import { launchKydog, teardown, seedSettings, type LaunchedApp } from './helpers';
 
 /** 打进产物的五个家族，键是 @font-face 的**注册名**（不是上游家族名）。 */
 const BUNDLED = [
@@ -10,10 +10,23 @@ const BUNDLED = [
   'IBM Plex Mono',             // 等宽拉丁
 ];
 
-const FONT_CDN = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.bunny\.net|use\.typekit\.net/;
+/**
+ * 串行共用一次启动。**顺序不能换**：第二条会按注册名显式 `document.fonts.load` Noto Sans SC 与
+ * 等宽栈，排在前面的话，第一条「这个家族有一片 loaded」对这两个家族就不再能证明是**字体栈**
+ * 把它们用上了——按名字直接加载也会让它变成 loaded，判据成了自证。
+ */
+test.describe.configure({ mode: 'serial' });
+
+let launched: LaunchedApp;
+
+test.beforeAll(async () => {
+  launched = await launchKydog({ seed: seedSettings });
+});
+
+test.afterAll(async () => { await teardown(launched); });
 
 /**
- * 字体全部随产物走：运行期不向任何字体 CDN 发请求，且三条字体栈的首选家族都真的被用上了。
+ * 三条字体栈的首选家族都来自产物、且真的被用上了。
  *
  * 这条守的是两件曾经同时出错的事：
  *
@@ -24,69 +37,59 @@ const FONT_CDN = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.bunny\.net|u
  *    注册成不带后缀的同名，于是名字「对上了」——字面完全正常，实际用的是联网拉的那份，打包的
  *    那份一次都没被加载过。
  *
- * 所以判据不能是「量宽度对照」：两份是同一套字面，度量几乎一致（32px 下同为 419.398px），那种
- * 测试在 bug 存在时恒绿——写过一版就是这么废的。这里用两个协议层事实：**有没有发出请求**，以及
- * **FontFace 的 status**（浏览器只把真正被排版用到的 face 置为 loaded）。
+ * 第 1 件（源码与产物 CSS 里没有任何字体 CDN 引用）是静态事实，由
+ * src/renderer/theme/fontStacks.test.ts 的「渲染层不引用任何字体 CDN」逐文件扫描守着，这里不再
+ * 为它重载页面、监听请求。这里只留运行期才看得到的第 2 件：
+ *
+ * 判据不能是「量宽度对照」：两份是同一套字面，度量几乎一致（32px 下同为 419.398px），那种
+ * 测试在 bug 存在时恒绿——写过一版就是这么废的。这里用协议层事实：**FontFace 的 status**
+ * （浏览器只把真正被排版用到的 face 置为 loaded）。
  */
-test('58-font-stack: 字体全部来自产物，运行期不向字体 CDN 发请求', async () => {
-  const launched = await launchKydog({ seed: seedSettings });
+test('58-font-stack: 三条字体栈的首选家族都来自产物，且真的被加载', async () => {
   const { page } = launched;
-  try {
-    const cdnRequests: string[] = [];
-    page.on('request', (r) => { if (FONT_CDN.test(r.url())) cdnRequests.push(r.url()); });
-
-    // 监听器挂在 launch 之后，首次加载的请求已经错过了——重载一次，让整个文档在监听下重跑。
-    await page.reload();
-    await page.waitForLoadState('domcontentloaded');
-
-    const loaded = await page.evaluate(async () => {
-      // 三条栈 × 拉丁/中文都真排一遍，逼浏览器去解析各自的首选家族：只 await fonts.ready 不够，
-      // 没被用到的 face 永远停在 unloaded。衬线额外排一次斜体（fontsource 的斜体是单独一份
-      // @import，漏掉会静默退化成合成假斜体）。
-      const cs = getComputedStyle(document.body);
-      const combos: [string, string, string][] = [
-        [cs.getPropertyValue('--font-serif'), 'Handgloves 123', 'normal'],
-        [cs.getPropertyValue('--font-serif'), 'Handgloves 123', 'italic'],
-        [cs.getPropertyValue('--font-serif'), '科研文献阅读', 'normal'],
-        [cs.getPropertyValue('--font-sans'), 'Handgloves 123', 'normal'],
-        [cs.getPropertyValue('--font-sans'), '设置项目线程', 'normal'],
-        [cs.getPropertyValue('--font-mono'), 'Handgloves 123', 'normal'],
-      ];
-      const made: HTMLElement[] = [];
-      for (const [family, text, style] of combos) {
-        const el = document.createElement('span');
-        el.textContent = text;
-        Object.assign(el.style, {
-          position: 'absolute', left: '0', top: '0', visibility: 'hidden',
-          fontSize: '32px', fontFamily: family, fontStyle: style,
-        });
-        document.body.appendChild(el);
-        made.push(el);
-      }
-      await document.fonts.ready;
-
-      const out: Record<string, string[]> = {};
-      document.fonts.forEach((f) => {
-        // 同一家族按 unicode-range 切成很多片，各片状态不同：收集全部，断言时看有没有一片 loaded
-        (out[f.family] ??= []).push(f.status);
+  const loaded = await page.evaluate(async () => {
+    // 三条栈 × 拉丁/中文都真排一遍，逼浏览器去解析各自的首选家族：只 await fonts.ready 不够，
+    // 没被用到的 face 永远停在 unloaded。衬线额外排一次斜体（fontsource 的斜体是单独一份
+    // @import，漏掉会静默退化成合成假斜体）。
+    const cs = getComputedStyle(document.body);
+    const combos: [string, string, string][] = [
+      [cs.getPropertyValue('--font-serif'), 'Handgloves 123', 'normal'],
+      [cs.getPropertyValue('--font-serif'), 'Handgloves 123', 'italic'],
+      [cs.getPropertyValue('--font-serif'), '科研文献阅读', 'normal'],
+      [cs.getPropertyValue('--font-sans'), 'Handgloves 123', 'normal'],
+      [cs.getPropertyValue('--font-sans'), '设置项目线程', 'normal'],
+      [cs.getPropertyValue('--font-mono'), 'Handgloves 123', 'normal'],
+    ];
+    const made: HTMLElement[] = [];
+    for (const [family, text, style] of combos) {
+      const el = document.createElement('span');
+      el.textContent = text;
+      Object.assign(el.style, {
+        position: 'absolute', left: '0', top: '0', visibility: 'hidden',
+        fontSize: '32px', fontFamily: family, fontStyle: style,
       });
-      for (const el of made) el.remove();
-      return out;
-    });
-
-    expect(cdnRequests, `重载期间向字体 CDN 发了请求：${cdnRequests.join(', ')}`).toEqual([]);
-
-    for (const family of BUNDLED) {
-      expect(loaded[family], `产物里没注册 '${family}'——fonts.css 的 @import 少了它`)
-        .toBeDefined();
-      expect(
-        loaded[family]?.includes('loaded'),
-        `'${family}' 一片都没被加载——说明没有任何字体栈写对了它的注册名（注意 fontsource 的`
-          + `可变包注册名带 Variable 后缀）。实际状态：${JSON.stringify(loaded[family])}`,
-      ).toBe(true);
+      document.body.appendChild(el);
+      made.push(el);
     }
-  } finally {
-    await teardown(launched);
+    await document.fonts.ready;
+
+    const out: Record<string, string[]> = {};
+    document.fonts.forEach((f) => {
+      // 同一家族按 unicode-range 切成很多片，各片状态不同：收集全部，断言时看有没有一片 loaded
+      (out[f.family] ??= []).push(f.status);
+    });
+    for (const el of made) el.remove();
+    return out;
+  });
+
+  for (const family of BUNDLED) {
+    expect(loaded[family], `产物里没注册 '${family}'——fonts.css 的 @import 少了它`)
+      .toBeDefined();
+    expect(
+      loaded[family]?.includes('loaded'),
+      `'${family}' 一片都没被加载——说明没有任何字体栈写对了它的注册名（注意 fontsource 的`
+        + `可变包注册名带 Variable 后缀）。实际状态：${JSON.stringify(loaded[family])}`,
+    ).toBe(true);
   }
 });
 
@@ -105,47 +108,42 @@ test('58-font-stack: 字体全部来自产物，运行期不向字体 CDN 发请
  * Noto Sans SC 不同，这条测试才不是自证。这样也与平台无关，Windows CI 上同样成立。
  */
 test('58-font-stack: 等宽里的中文用打包的 Noto Sans SC，不是系统默认', async () => {
-  const launched = await launchKydog({ seed: seedSettings });
   const { page } = launched;
-  try {
-    const px = await page.evaluate(async () => {
-      const TEXT = '未选中加载中';
-      const NOTO = '"Noto Sans SC Variable"';
-      const NONE = '"__no_such_family__"';   // 取不到 → 系统默认
-      const mono = getComputedStyle(document.body).getPropertyValue('--font-mono').trim();
+  const px = await page.evaluate(async () => {
+    const TEXT = '未选中加载中';
+    const NOTO = '"Noto Sans SC Variable"';
+    const NONE = '"__no_such_family__"';   // 取不到 → 系统默认
+    const mono = getComputedStyle(document.body).getPropertyValue('--font-mono').trim();
 
-      await Promise.all([mono, NOTO].map((f) => document.fonts.load(`400 32px ${f}`, TEXT)));
+    await Promise.all([mono, NOTO].map((f) => document.fonts.load(`400 32px ${f}`, TEXT)));
 
-      const draw = (family: string) => {
-        const c = document.createElement('canvas');
-        c.width = 220; c.height = 44;
-        const g = c.getContext('2d')!;
-        g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
-        g.fillStyle = '#000';
-        // 必须用 alphabetic 基线、把 y 固定住。textBaseline: 'top' 是相对**首选字体**的 ascent
-        // 定位的，而这里要比的两次渲染首选字体不同（等宽栈首选 IBM Plex Mono，对照组首选
-        // Noto Sans SC）：同样的中文字形会落在不同的垂直位置，像素于是恒不相等，这条断言就永远
-        // 红，且红的原因与被测的事情无关。基线定位与首选字体的度量无关，两次落点相同。
-        g.textBaseline = 'alphabetic';
-        g.font = `400 32px ${family}`;
-        g.fillText(TEXT, 0, 36);
-        return Array.from(g.getImageData(0, 0, c.width, c.height).data).join(',');
-      };
-      return { monoStack: draw(mono), noto: draw(NOTO), system: draw(NONE) };
-    });
+    const draw = (family: string) => {
+      const c = document.createElement('canvas');
+      c.width = 220; c.height = 44;
+      const g = c.getContext('2d')!;
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#000';
+      // 必须用 alphabetic 基线、把 y 固定住。textBaseline: 'top' 是相对**首选字体**的 ascent
+      // 定位的，而这里要比的两次渲染首选字体不同（等宽栈首选 IBM Plex Mono，对照组首选
+      // Noto Sans SC）：同样的中文字形会落在不同的垂直位置，像素于是恒不相等，这条断言就永远
+      // 红，且红的原因与被测的事情无关。基线定位与首选字体的度量无关，两次落点相同。
+      g.textBaseline = 'alphabetic';
+      g.font = `400 32px ${family}`;
+      g.fillText(TEXT, 0, 36);
+      return Array.from(g.getImageData(0, 0, c.width, c.height).data).join(',');
+    };
+    return { monoStack: draw(mono), noto: draw(NOTO), system: draw(NONE) };
+  });
 
-    expect(
-      px.noto === px.system,
-      '显式指定 Noto Sans SC Variable 画出来的像素与系统默认字体一模一样'
-        + '——说明这个家族没打进产物，下面那条断言会变成自证',
-    ).toBe(false);
+  expect(
+    px.noto === px.system,
+    '显式指定 Noto Sans SC Variable 画出来的像素与系统默认字体一模一样'
+      + '——说明这个家族没打进产物，下面那条断言会变成自证',
+  ).toBe(false);
 
-    expect(
-      px.monoStack === px.noto,
-      '等宽栈画中文得到的像素与 Noto Sans SC Variable 不同'
-        + '——说明 --font-mono 末尾没接上打包的中文家族，中文落到了系统默认',
-    ).toBe(true);
-  } finally {
-    await teardown(launched);
-  }
+  expect(
+    px.monoStack === px.noto,
+    '等宽栈画中文得到的像素与 Noto Sans SC Variable 不同'
+      + '——说明 --font-mono 末尾没接上打包的中文家族，中文落到了系统默认',
+  ).toBe(true);
 });

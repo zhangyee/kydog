@@ -135,6 +135,46 @@ export async function prefetchPageSizes(
 }
 
 /**
+ * 探一次译文边车、写进这个 tab 的译文桶：摘要校验版本、几何过滤越界块（spec §5）。
+ *
+ * `seq` 就是组件里那个 `translationSeq`：每次发起自增，落地前（成功、失败两条分支各一次）比一次，
+ * 失配就整趟作废、什么都不写。它挡的两件事见组件里 `translationSeq` 声明处的注释——其中「关 tab
+ * 之后落地」要和下面的 releaseTranslationBucket 配对：那边先把代号推走、再 drop。
+ *
+ * 抽成模块级函数，是为了让「在途的那趟落地时会不会把桶重建回来」离开 react-pdf 也测得到
+ * （PdfFileTab.loadTranslation.test.ts）。什么时候**该**探（翻译作业在跑时不探、bytes / sha
+ * 还没就绪时不探）仍由组件里的 loadTranslation 判。
+ */
+export async function loadTranslationSidecar(
+  seq: { current: number },
+  a: { tabId: string; pdfPath: string; bytes: Uint8Array; sha: string; sizes: PageSize[] | null },
+): Promise<void> {
+  const mySeq = ++seq.current;
+  try {
+    const { doc } = await window.kydog.invoke('pdf.translation.load', { pdfPath: a.pdfPath });
+    if (mySeq !== seq.current) return;
+    const st = usePdfTranslationStore.getState();
+    if (!doc) { st.setLoaded(a.tabId, null, 'unknown', 0); return; }
+    const version = checkVersion(doc, a.sha, a.bytes.byteLength);
+    const g = a.sizes ? filterByGeometry(doc.blocks, a.sizes) : { blocks: doc.blocks, dropped: 0 };
+    st.setLoaded(a.tabId, { ...doc, blocks: g.blocks }, version, g.dropped);
+  } catch (err) {
+    if (mySeq !== seq.current) return;
+    usePdfTranslationStore.getState().setLoadError(a.tabId, (err as Error).message);
+  }
+}
+
+/**
+ * 关 tab 释放译文桶。**先推代号、再 drop**：drop 是同步的，而在途的 loadTranslationSidecar 随后
+ * 才 resolve，它的 setLoaded / setLoadError 里有 `?? emptyTBucket()`——代号不推走，就会把桶（连同
+ * 整份 TranslatedDoc）原地重建回来，此后再没有人释放它（组件已经卸载，不会再有第二次 drop）。
+ */
+export function releaseTranslationBucket(seq: { current: number }, tabId: string): void {
+  seq.current += 1;
+  usePdfTranslationStore.getState().drop(tabId);
+}
+
+/**
  * 左栏一页挂载后的那一格：原页（`<Page>` + 标注层）。同时是这一页的挂载边界：React 的
  * mount / unmount 正好对应 pageLifecycle 的 acquire / release，effect 挂在这里最直接。
  *
@@ -412,25 +452,14 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     // 写的）——focus 重探每次切窗口都会发生，会把用户踢出刚进的对照（spec §9.2）。
     if (usePdfTranslationStore.getState().buckets[tab.id]?.job) return;
     if (!bytes || sha === null) return;
-    const mySeq = ++translationSeq.current;
     // 这一趟真的要去探边车了：无论探出什么（成功、mismatch、结构坏了……），都比一次旧作业
     // 留下的 translateError 更新——不清掉的话它会常驻并压住这里探出来的任何结果（Task 14
     // 审查发现：PdfAnnotationNotice 把 translateError 排在 loadError / mismatch 之前，见
     // startTranslation 头上关于清除时机的注释，这是另一个清除点，两处各管一类触发源：这里管
     // 「自动重探」，那边管「用户按下新动作」）。
     setTranslateError(null);
-    try {
-      const { doc } = await window.kydog.invoke('pdf.translation.load', { pdfPath: tab.path });
-      if (mySeq !== translationSeq.current) return;
-      const st = usePdfTranslationStore.getState();
-      if (!doc) { st.setLoaded(tab.id, null, 'unknown', 0); return; }
-      const version = checkVersion(doc, sha, bytes.byteLength);
-      const g = sizes ? filterByGeometry(doc.blocks, sizes) : { blocks: doc.blocks, dropped: 0 };
-      st.setLoaded(tab.id, { ...doc, blocks: g.blocks }, version, g.dropped);
-    } catch (err) {
-      if (mySeq !== translationSeq.current) return;
-      usePdfTranslationStore.getState().setLoadError(tab.id, (err as Error).message);
-    }
+    // 代号的自增与落地前的比对都在它里面（见模块级 loadTranslationSidecar）。
+    await loadTranslationSidecar(translationSeq, { tabId: tab.id, pdfPath: tab.path, bytes, sha, sizes });
   }, [bytes, sha, sizes, tab.id, tab.path]);
 
   useEffect(() => { void loadTranslation(); }, [loadTranslation]);
@@ -448,10 +477,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 自增代号那一步不能省：drop 是同步的，而在途的 loadTranslation 随后才 resolve，
   // 它的 setLoaded 会把桶原地重建回来（见 loadTranslation 头上的注释）。
   useEffect(() => () => {
-    translationSeq.current += 1;
-    // 在途的翻译作业同理：它的续体也会走 setJob，把桶原地重建回来（spec §9.1 第 2 条）。
+    // 在途的翻译作业与在途的边车加载同理：它的续体也会走 setJob，把桶原地重建回来（spec §9.1
+    // 第 2 条），所以作业代号也得赶在 drop 之前推走。
     jobSeq.current += 1;
-    usePdfTranslationStore.getState().drop(tab.id);
+    releaseTranslationBucket(translationSeq, tab.id);   // 推 translationSeq、再 drop
   }, [tab.id]);
 
   // 关 tab：先把草稿提交进 store、再把未落盘的改动冲掉，最后释放桶（spec §8.1）
@@ -1262,8 +1291,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 待实测（浏览器行为假设，不算关键决策；pageWindow.ts 空间上界那段注释里是同一个假设，两处
   // 都待验，判据相同）：tab 被 display:none 藏起来时 Chromium 同样会触发这个 ResizeObserver
   // 回调、且 clientHeight 读数为 0。仓库里目前没有覆盖它的用例——e2e/ 下没有「开两个 file tab、
-  // 切走再切回同一个 PDF tab」这条路径，唯一现成的切 tab 用例是 HTML 的
-  // （e2e/46-html-tab.spec.ts:579 附近）。判据：开两个 file tab、切到另一个 tab 让这个 PDF tab
+  // 切走再切回同一个 PDF tab」这条路径（HTML 那边切 tab 的焦点由 HtmlFileTab.test.tsx 守，
+  // 不走真布局，参考不了）。判据：开两个 file tab、切到另一个 tab 让这个 PDF tab
   // 变成 display:none，隐藏期间对它的滚动容器读 el.clientHeight 应为 0，且能观察到
   // ResizeObserver 回调确实又跑了一次。若假设成立，那是「没有视口」而不是「视口很小」，
   // computeWindow 的空间上界会让窗口退到只剩必保页；不成立（回调不触发，或 clientHeight 不是

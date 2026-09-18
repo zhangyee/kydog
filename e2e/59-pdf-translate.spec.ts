@@ -2,7 +2,7 @@ import { test, expect, type ElectronApplication, type Page, type Locator } from 
 import { promises as fs } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { launchKydog, seedSettings, seedProject, teardown, testIdSelector } from './helpers';
+import { launchKydog, seedSettings, seedProject, teardown, testIdSelector, type LaunchedApp } from './helpers';
 import { buildNoTextPdf, buildPagedPdf } from './fixtures/textPdf';
 import { RPC_CHANNEL } from '../src/shared/protocol';
 import type { TranslatedDoc } from '../src/shared/zhSidecar';
@@ -13,76 +13,58 @@ import type { TranslatedDoc } from '../src/shared/zhSidecar';
  * 逐页响应走 `KYDOG_TRANSLATE_FIXTURE`（launchKydog 的 translateFixture 选项）：主进程仍走
  * `pdfTranslatePage.ts` 那条同样的 semaphore 与并发路径，只是不碰上游模型。fixture 的形状是
  * `{ "<页码>": [{ text, stopReason }] }`，`text` 是 §6 那份 `%%` 协议的原样输出——解析与三层
- * 校验在渲染层，e2e 与生产因此跑的是同一份纯函数。
+ * 校验在渲染层，e2e 与生产因此跑的是同一份纯函数。响应**按页、按调用顺序出队**，队列在一次启动
+ * 里是全局的（不分 PDF、不分作业），取空当场报错——所以一次启动里跑几趟作业，fixture 就得按这几趟
+ * 真正消费的顺序拼好（见下面三个 fixture 常量的注释）。
  *
- * 本文件先由 Task 13 接线出五条（计划里的第 2 / 4 / 9 / 10 / 11 条），Task 14 又补了四条零回归；
- * Task 15 收尾，补上剩下的第 3 / 5 / 6 / 7 / 12 条与「finalize 阶段取消键禁用」这条缺口
- * （第 1 条「无边车 → 键可点 + tooltip 含『翻译』」不在这里重复：可点由下面第一条用例断言，
- * tooltip 文案由 `57-pdf-dual-pane` 的「翻译键六态」用例逐字断言过 `aria-label = 翻译 · L`；
- * 第 8 条 mismatch 走的是下面「重新翻译」那条用例的入口）。
- * Task 14 把第 9 条（对照中「重新翻译」键）从 mismatch 入口代替升级成走真正的 `pdf-retranslate`
- * 按钮（原来那条 mismatch 入口的用例留着不删——机制仍然一致，多测一条入口无害），并补了一条不
- * 在原始 13 条清单内的回归用例：从 active 态（`dual === true`）发起的重译一旦被取消，不该把
- * 用户踢出这个本来完好的对照视图（PdfFileTab 的 `wasDualRef` 修复，Task 14 审查发现的真 bug）。
+ * **三次启动，每次一个起点**（`docs/e2e-guide.md` §2：串行共用一次启动，每个说法仍是一条独立的
+ * `test()`；上一条的状态是下一条的起点）：
+ *   - A「首次翻译、作业停在半路」：无边车的 plain.pdf，闸门扣住第 1 页的版面请求——进双栏、右格空白、
+ *     边车重探、取消都在同一趟作业上看；最后换第二份 PDF（没有文本层 + 坏边车）看失败路径。
+ *   - B「从对照态出发」：有可用译文的 ok.pdf——确认框取消 / 确认、对照中取消重译、重译本页、
+ *     跑到底的全部重译、最后删除译文（删边车那步只能放最后）。
+ *   - D「跑完之后」：plain.pdf 一趟带失败页的翻译停在 finalize、放行跑完——然后看结果：像素、
+ *     「N 页翻译失败」的落点与寿命、重试失败页。
+ * 各段开头写了段内的顺序约束。
  *
- * Task 14 审查（Needs fixes）之后又补了两条零回归覆盖：
- *   - 没配模型时点翻译，`translateError` 要能在 Notice 上显示出来（本任务的头号要求，之前完全
- *     没有 e2e 钉住——上一版实现者验证过一次就删了 scratch 用例，`translateError` 这行 props
- *     去掉照样全绿）。
- *   - 一趟作业**跑完之后**，若有页失败，「N 页翻译失败」这条消息仍要可见——`job.failed` 在
- *     job 完成后整个变 null，用它判的话这条消息在用户最需要看到它的那一刻必然读不到。
+ * 流水线本身的分支（重试、截断对半拆、补漏、空译文判失败、脚标记号、两步协议、标题字号、页回收）
+ * 不在这里：它们是纯逻辑，由 `translateDoc.test` / `translateProtocol.test` / `layoutProtocol.test`
+ * / `buildBlocks.test` / `blockLayout.test` / `fitFontScale.test` / `pageLifecycle.test` 等单测守；
+ * 按 L 的放行判据由 `annotationKeys.test` 守，resolveModel 那句「没有可用的模型」由
+ * `pdfTranslationResolveModel.test` 守。这里只留单测证明不了的：渲染层与主进程真服务之间的往返、
+ * 盘上的边车、右格真画出来的像素与真实版面几何。
  *
  * 「哪几页失败」这个信号最终**收口进了边车**（`TranslatedDoc.failedPages`，跑翻译那一趟写）。
  * 在那之前它只从 `onProgress` 侧信道漏出一个瞬时数字、由渲染层的 store 存着，于是「这个数字
  * 该活多久」被迫成了一个下游问题：保留会在 agent 重写边车后显示陈旧计数，归零则让它撑不过一次
- * 切窗口（focus 重探）。落进边车之后它天然描述当前这份 doc，两难自己消失。守这件事的是下面
- * 三条用例：跑完仍显示、重译取消仍显示（doc 没变）、**切一次窗口之后仍显示**（重探从盘上读回
- * 真值——那条是这套修法的回归点）。
+ * 切窗口（focus 重探）。落进边车之后它天然描述当前这份 doc，两难自己消失。守这件事的是 D 段的
+ * 两条用例：跑完仍显示、**切一次窗口之后仍显示**（重探从盘上读回真值——那条是这套修法的回归点）。
  */
 
+// A：一趟作业，被取消在第 1 页的版面上；放行之后那条版面响应照常落地，runPage 随即在两步之间的
+// 取消检查点上早退（translateDoc「版面已回、第二步还没发」），只吃掉第 1 页的版面响应。第二份 PDF
+// 抽不出字，一条都不吃。
 const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
-// 页回收那条用例专用：16 页，见 seedManyPages。
-const RECYCLE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-16.json');
-// 页 2 的版面合法（`1 | text`），坏的是第二步：两条翻译响应都不是 id 头，parseTranslations
-// 两次都抛 GroupError（runPage 重试一次），页号 2 被记进 failedPages，其余三页正常成功——
-// 用来验证「1 页失败」这个信号真的落进了边车、并且活得够久。
-const ONE_FAIL_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-one-fails.json');
-// 页 1 版面合法，翻译第一条响应是空译文（`g1` 后面直接 `%%`，parseTranslations 判 GroupError），
-// 第二条合法：runPage 重试一次就成了，这一页最终**有译文**且不计入失败。
-const RETRY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-retry.json');
-// 页 1 两条响应都是空译文：重试也救不回来，这一页判失败、不产块 → 右格那一块保留原文。
-const EMPTY_TARGET_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-empty-target.json');
-// 页 1 第一条响应 stopReason=length（截断），随后两条是对半拆之后各半页的合法响应。
-const TRUNCATED_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-truncated.json');
-// 页 1 是单行 title：`1 | title` + 两字译文「首页」，用来钉住标题字号首尾半行距放到块外这条修复。
-const TITLE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-title.json');
-// 页 2 第一条响应漏了第 2 行（页码行），第二条只补那一行：用来验证补漏只再发缺的那几行，
-// 不整页重试（spec 2026-09-06 §4.1）。
-const REPAIR_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-repair.json');
-// 页 2 前两条不含 "|"（首趟判失败），第三条留给「重试失败页」发起的第二趟。
-const RETRY_FAILED_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-retry-failed.json');
-// 页 2 第二条响应留给「重译本页」发起的第二趟；首趟四页都是一条响应就成功。
-const PAGE2_TWICE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-page2-twice.json');
-// 两步协议专项（spec 2026-09-07 §4）：第 1 页整页 code（不翻不盖）；第 2 页版面分两组、翻译第一次
-// 只回第一组（缺组补漏只发那一组）；第 3 页译文自带换行（pre-line 照排）；第 4 页照常。配
-// seedTwoLines。
-const TWO_STEP_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-two-step.json');
-// 脚标（spec 2026-09-07-pdf-translation-scripts §8）：每页第 2 行是 "node n" + 下标 "i"。
-const SCRIPTS_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-scripts.json');
-// 第 1 页第一条译文丢了 {v1}，第二条带：只重发那一组，页不判失败。
-const SCRIPTS_RESEND_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-scripts-resend.json');
-// 第 1 页两条都丢：整步重试也救不回，页判失败、原因写「记号」。
-const SCRIPTS_FAIL_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-scripts-fail.json');
+// B：从对照态出发的三趟作业共用一份，按消费顺序拼接：
+//   ① 对照中发起、被取消的全部重译（同上，放行之后只落地第 1 页的版面）→ 第 1 页头一条（版面）；
+//   ② 重译第 2 页 → 第 2 页第一对（译文「第二页的译文」）；
+//   ③ 跑到底的全部重译 → 第 1 页余下那一对、第 2 页第二对、第 3、4 页各一对。
+const FROM_READY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-from-ready.json');
+// D：第 2 页版面合法（`1 | text`），坏的是第二步：前两条翻译响应都不是 id 头，parseTranslations
+// 两次都抛 GroupError（runPage 重试一次），页号 2 被记进 failedPages，其余三页正常成功——用来验证
+// 「1 页失败」这个信号真的落进了边车、并且活得够久。第一条被撑到 300+ 字（悬停原因那条量换行用）。
+// 第 2 页末尾那一对（版面 + 「第二页的译文（重试之后）」）留给「重试失败页」发起的第二趟。
+const FAIL_THEN_RETRY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-one-fails-then-retry.json');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
 // 4 页：fixture 逐页给响应，页数只要够「多页并发」这条路径成立即可。作业停在哪儿由下面的闸门
 // 决定，不由页数多少决定——所以这里没有必要堆页数去换时间窗口。
 const PAGES = 4;
-// 页回收那条用例的页数：见 seedManyPages 的注释。
-const RECYCLE_PAGES = 16;
 
 const PLAIN_REL = 'plain.pdf';          // 无边车 → 翻译键的动作是「跑流水线」
+const SCAN_REL = 'scan.pdf';            // A 段第二份：没有文本层 + 结构坏掉的边车（invalid 态）
+const SCAN_ZH_REL = '.scan.pdf.zh.json';
 const READY_REL = 'ok.pdf';             // 有可用译文 → 先进对照，再重新翻译
 const READY_ZH_REL = '.ok.pdf.zh.json';
 
@@ -98,6 +80,8 @@ const READY_BLOCK = { x: 60, y: 200, w: 460, h: 120 };
 // TranslatedDoc.Block（schema 不管上界，只有 filterByGeometry 管），留在磁盘上。
 const DROPPED_BLOCK_ID = 'seed-dropped';
 
+const LOAD = 'pdf.translation.load';
+
 async function seedPlain(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
@@ -108,86 +92,27 @@ async function seedPlain(home: string) {
 }
 
 /**
- * 页回收那条用例专用：页数多到**任何窗口都装不下**。
+ * A 段：plain.pdf（同 seedPlain）之外再放一份 scan.pdf——没有文本层（内容流里只有图形算子），
+ * 旁边摆一份结构坏掉的边车。
  *
- * PAGES(4) 不够：对照的 fit-width 是对着较窄那一栏算的，主面板越窄页面画得越小、一屏里挂得
- * 下的页越多。CI darwin-arm64 的主面板只有 474 px 宽，4 页全在渲染窗口里，一页都不该回收，
- * 于是「回收数 > 0」红了——那不是不变量 #8 坏了，是 fixture 在那个窗口下失去了区分力
- * （用例原本的注释已经预告了这一天）。16 页留出足够的余量，同时保住上界那条断言的意义。
+ * 两样凑在一起才测得到「确认框取消不该抹掉仍然成立的提示」：坏边车让翻译键处在 invalid 态（主键的
+ * 动作是「覆盖磁盘上那份坏文件」，要先过 confirm），没有文本层让任何一次真发起的翻译都在抽取阶段
+ * 失败、在 Notice 上留下一条「翻译失败：这份 PDF 没有文本层」。
  */
-async function seedManyPages(home: string) {
+async function seedFirstRun(home: string) {
   await seedSettings(home);
   const projectPath = path.join(home, 'proj');
   await fs.mkdir(projectPath, { recursive: true });
-  await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(RECYCLE_PAGES, PAGE_W, PAGE_H));
-  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
-}
-
-// 同 seedPlain，只是设置里不给默认模型：pdf.translation.resolveModel 在 startTranslation 的
-// 第一个 await 上就抛 llm.not_configured，不需要 translateFixture / 闸门——这条错误路径走不到
-// 任何一次 pdf.translation.layout / pdf.translation.translate 调用。
-async function seedNoModel(home: string) {
-  await seedSettings(home, { providerConfigured: false });
-  const projectPath = path.join(home, 'proj');
-  await fs.mkdir(projectPath, { recursive: true });
   await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(PAGES, PAGE_W, PAGE_H));
-  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
-}
-
-// 没配模型 **且** 边车结构坏掉：翻译键因此处在 invalid 态（主键的动作是「覆盖磁盘上那份坏文件」，
-// 要先过 confirm），而任何一次真发起的翻译都会在 resolveModel 上失败、在 Notice 上留下一条
-// 「翻译失败：没有可用的模型」。两者凑在一起才测得到「确认框取消不该抹掉仍然成立的提示」。
-async function seedInvalidNoModel(home: string) {
-  await seedSettings(home, { providerConfigured: false });
-  const projectPath = path.join(home, 'proj');
-  await fs.mkdir(projectPath, { recursive: true });
-  await fs.writeFile(path.join(projectPath, PLAIN_REL), buildPagedPdf(PAGES, PAGE_W, PAGE_H));
+  await fs.writeFile(path.join(projectPath, SCAN_REL), buildNoTextPdf(PAGES, PAGE_W, PAGE_H));
   // kind 不认识 → validateTranslatedDoc 拒整份文件 → pdf.translation.load 抛 → setLoadError。
-  await fs.writeFile(path.join(projectPath, `.${PLAIN_REL}.zh.json`), JSON.stringify({
-    version: 1, pdf: PLAIN_REL, lang: { in: 'en', out: 'zh' },
+  await fs.writeFile(path.join(projectPath, SCAN_ZH_REL), JSON.stringify({
+    version: 1, pdf: SCAN_REL, lang: { in: 'en', out: 'zh' },
     blocks: [{
       id: 'bad1', page: 1, x: 60, y: 200, width: 100, height: 20,
       fontSize: 11, kind: 'paragraph', source: 'a body paragraph', target: '译文',
     }],
   }, null, 2));
-  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
-}
-
-// 每页两行的变体：截断那条用例要的是「一页拆得开」——buildPagedPdf 默认每页只有一行页码，
-// 单行被截断时 runBatch 无处可拆（它会直接抛「单行输出仍被截断」，那是另一条路径）。
-// extra 那行放在 y = 300，与页码那行（y ≈ 43–60）离得足够远，两个组的覆盖矩形不会互相
-// 盖住对方的行——否则 checkGroupGeometry 会先把这一页判掉，测不到拆分本身。
-async function seedTwoLines(home: string) {
-  await seedSettings(home);
-  const projectPath = path.join(home, 'proj');
-  await fs.mkdir(projectPath, { recursive: true });
-  await fs.writeFile(
-    path.join(projectPath, PLAIN_REL),
-    buildPagedPdf(PAGES, PAGE_W, PAGE_H, { x: 40, y: 300, text: 'The second line of this page', size: 12 }),
-  );
-  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
-}
-
-// 每页第 2 行带一个下标项（buildPagedPdf 的 extra.script：0.7 倍字号、Ts 下移）。行文本抽出来是 "node ni"，
-// Task 2 的 textLines.pdfjs 集成测试钉住了这种写法在真 pdf.js 下的切分。
-async function seedScriptLine(home: string) {
-  await seedSettings(home);
-  const projectPath = path.join(home, 'proj');
-  await fs.mkdir(projectPath, { recursive: true });
-  await fs.writeFile(
-    path.join(projectPath, PLAIN_REL),
-    buildPagedPdf(PAGES, PAGE_W, PAGE_H, { x: 40, y: 300, text: 'node n', size: 12, script: { text: 'i', kind: 'sub' } }),
-  );
-  await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
-}
-
-// 没有文本层的 PDF（内容流里只有图形算子）。不给 translateFixture：抽取阶段就中止，走不到
-// 任何一次 pdf.translation.layout / pdf.translation.translate 调用。
-async function seedNoText(home: string) {
-  await seedSettings(home);
-  const projectPath = path.join(home, 'proj');
-  await fs.mkdir(projectPath, { recursive: true });
-  await fs.writeFile(path.join(projectPath, PLAIN_REL), buildNoTextPdf(PAGES, PAGE_W, PAGE_H));
   await seedProject(home, projectPath, [{ id: 'thr-1', title: '测试 Thread' }]);
 }
 
@@ -229,17 +154,17 @@ async function openPdf(page: Page, pdfPath: string): Promise<Locator> {
   return pane;
 }
 
-/** 按 L 进对照，同 57 的写法：判据是右格出没出来，不等一个拍脑袋的毫秒数。 */
+/**
+ * 按 L 进对照。判据是协议事实，不是反复按：翻译键报出 ready 态（`翻译对照 · L`：边车已加载、
+ * 摘要对得上、页尺寸就绪）之前按 L 什么都不会发生，之后按一次就进。原来的写法是每 200 ms 按一次
+ * 直到右格出来。
+ */
 async function enterDual(page: Page, pane: Locator) {
-  const right = pane.locator('[data-pdf-right="1"]');
+  await expect(pane.getByTestId('pdf-translate'), '等译文边车加载完（ready 态）再按 L')
+    .toHaveAttribute('aria-label', '翻译对照 · L');
   await pane.locator('[data-testid^="pdf-scroll-"]').click({ position: { x: 5, y: 5 } });
-  for (let i = 0; i < 25; i++) {
-    if (await right.count() > 0) return;
-    await page.keyboard.press('l');
-    if (await right.count() > 0) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error('按 L 没能进入双栏对照：译文边车迟迟没加载');
+  await page.keyboard.press('l');
+  await expect(pane.locator('[data-pdf-right="1"]').first(), '按 L 应当进入双栏对照').toBeVisible();
 }
 
 /**
@@ -256,7 +181,7 @@ async function confirmRetranslate(page: Page) {
 
 // ── 翻译闸门 ───────────────────────────────────────────────────────────────────
 //
-// 「作业进行中」的那几条断言（右格空白、取消、按 L、focus 重探）都要求作业**确定地**停在半路。
+// 「作业进行中」的那几条断言（右格空白、取消、focus 重探）都要求作业**确定地**停在半路。
 // fixture 的响应是从内存里取的，一趟 4 页跑完只要几十毫秒——靠堆页数去换一个时间窗口就是拿墙上
 // 时间当判据，用例会以「有时候没赶上」的形式红。
 //
@@ -270,6 +195,9 @@ async function confirmRetranslate(page: Page) {
 // 「Cannot redefine property」），包不上。主进程这一侧走 Playwright 的 `app.evaluate`，动的是
 // `ipcMain._invokeHandlers` 这张表——Electron 的内部字段，所以下面对它的形状做了显式校验：
 // 哪天它变了名字，用例会当场炸，而不是「什么都没扣住却全绿」。
+//
+// 一次启动只装一次（再装会在 handler 外面再包一层）；同一个进程里要再停一趟作业，用 rearmGate
+// 换扣哪几条、把闸门关回去。计数从装上那一刻起累计，不清零。
 //
 // 这是测试侧的注入，产品代码一行都不用改——同 57 给 document.fonts.load 包一层人为延迟的做法。
 type GateHost = { app: ElectronApplication };
@@ -297,6 +225,7 @@ async function installTranslateGate({ app }: GateHost, hold: string[] = ['pdf.tr
       _invokeHandlers?: Map<string, (...a: unknown[]) => unknown>;
     })._invokeHandlers;
     if (!(handlers instanceof Map)) return 'no-map';
+    if ((globalThis as GateGlobal).__kydogTranslateGate) return 'already-installed';
     const orig = handlers.get(arg.channel);
     if (!orig) return 'no-handler';
     const gate: Gate = { held: [], open: false, hold: arg.hold, started: {}, done: {} };
@@ -320,6 +249,18 @@ async function installTranslateGate({ app }: GateHost, hold: string[] = ['pdf.tr
   if (installed !== 'ok') throw new Error(`装不上翻译闸门：ipcMain 的 handler 表对不上（${installed}）`);
 }
 
+/** 同一次启动里再停一趟作业：换扣哪几条、把闸门关回去。上一趟扣住的必须已经放完。 */
+async function rearmGate({ app }: GateHost, hold: string[]) {
+  const ok = await app.evaluate((_electron, h) => {
+    const g = (globalThis as GateGlobal).__kydogTranslateGate;
+    if (!g || g.held.length > 0) return false;
+    g.hold = h;
+    g.open = false;
+    return true;
+  }, hold);
+  if (!ok) throw new Error('重新扣闸门失败：闸门没装上，或上一趟还有请求扣着没放');
+}
+
 /** 闸门看到的调用计数。方法名 → 次数；没被调过的方法不在表里（读的时候 `?? 0`）。 */
 function gateCounts({ app }: GateHost): Promise<{ started: Counts; done: Counts }> {
   return app.evaluate(() => {
@@ -340,7 +281,7 @@ function gateCounts({ app }: GateHost): Promise<{ started: Counts; done: Counts 
  * 返回，前面那条回复的续体（真要写盘 / 真要派发下一页的话就在那里发出）必定已经跑完。
  *
  * 借 `pdf.translation.load` 当 fence 是因为它无副作用、参数最简单（读一次边车，没有就返回
- * `{ doc: null }`）。
+ * `{ doc: null }`）。注意它自己也会被闸门记成一次 load。
  */
 async function fenceRendererIpc(page: Page, pdfPath: string) {
   await page.evaluate((p) => window.kydog.invoke('pdf.translation.load', { pdfPath: p }), pdfPath);
@@ -426,643 +367,11 @@ async function waitSample(page: Page, paneSel: string, box: typeof INK, label: s
   return (await sampleRight(page, paneSel, box))!;
 }
 
-/** 等第一页的版面请求发出来并被闸门扣住 —— 作业确定地停在半路的那一刻（闸门默认扣的是
- * `pdf.translation.layout`，见 installTranslateGate）。 */
-async function waitJobParked(host: GateHost) {
-  await expect.poll(
-    () => heldCount(host),
-    { timeout: 30000, message: '等作业跑到第一页的版面请求上（抽取完成）' },
-  ).toBeGreaterThan(0);
+/** 等作业跑到被扣住的那条请求上 —— 作业确定地停在半路的那一刻。默认扣的是第一页的版面请求
+ * （`pdf.translation.layout`，见 installTranslateGate）。 */
+async function waitJobParked(host: GateHost, message = '等作业跑到第一页的版面请求上（抽取完成）') {
+  await expect.poll(() => heldCount(host), { timeout: 30000, message }).toBeGreaterThan(0);
 }
-
-// 「右半边」是分栏改造之前的说法（那时两格在同一个滚动容器的同一行里）。现在浮层的父层就是
-// **右栏**那个容器的兄弟（PdfFileTab 里右栏与 TranslationProgress 的共同 relative 父层），
-// 措辞跟着 DOM 走。
-test('59-pdf-translate: 点翻译键立刻进双栏，右格是空白像素、右栏里有进度浮层', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-
-    // 二期起「没有译文」从禁用变成可点：动作是跑翻译流水线，不是进对照。
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await installTranslateGate(launched);
-    await pane.getByTestId('pdf-translate').click();
-
-    // 进对照与浮层是**点下去那一刻**发生的：startTranslation 在第一个 await 之前就 setDual +
-    // setJob，不等抽取跑完。
-    await expect(pane.getByTestId('pdf-translate-progress')).toBeVisible();
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-    // 「在右栏里」取几何，不取「元素在不在」：浮层是右栏容器的兄弟、absolute 居中（放进滚动
-    // 容器会跟着内容滚走），挂错父层的话它会居中在整个 wrapper 上，横向中心落到左栏里去。
-    const overlayIn = await page.evaluate((sel) => {
-      const o = document.querySelector(`${sel} [data-testid="pdf-translate-progress"]`);
-      const r = document.querySelector(`${sel} [data-pdf-pane="right"]`);
-      if (!o || !r) return null;
-      const ob = o.getBoundingClientRect();
-      const rb = r.getBoundingClientRect();
-      return { cx: ob.left + ob.width / 2, rl: rb.left, rr: rb.right };
-    }, paneSel);
-    expect(overlayIn, '应当同时量得到浮层与右栏').not.toBeNull();
-    expect(overlayIn!.cx, `进度浮层的横向中心应当落在右栏里 ${JSON.stringify(overlayIn)}`)
-      .toBeGreaterThan(overlayIn!.rl);
-    expect(overlayIn!.cx).toBeLessThan(overlayIn!.rr);
-
-    await waitJobParked(launched);
-
-    const s = await waitSample(page, paneSel, INK, '翻译进行中');
-    // 只断言「浮层在」是不够的：右格照常合成时那条也会绿。判据取像素本身。
-    expect(s.themePaper, '主题纸色不该正好是纯白——否则「空白」与「照常合成一张白页」区分不开')
-      .not.toEqual([255, 255, 255]);
-    expect(s.leftDark, '左格这一块里得真有原文墨迹，右格「空白」才谈得上是把东西藏住了')
-      .toBeGreaterThan(0);
-    expect(s.paper, `右格这一块应当逐像素都是主题纸色 ${JSON.stringify(s)}`).toBe(s.total);
-    expect(s.dark, '右格不该留下任何原文墨迹').toBe(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 取消退回单栏，磁盘上什么都没写', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await installTranslateGate(launched);
-    await pane.getByTestId('pdf-translate').click();
-    await waitJobParked(launched);
-
-    await pane.getByTestId('pdf-translate-cancel').click();
-    await expect(pane.locator('[data-pdf-right="1"]'), '取消要退回单栏').toHaveCount(0);
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
-
-    // 取消这一刻，被扣住的仍是第 1 页的版面请求：第二步要等第一步的响应解析完才知道发哪几个
-    // 可译组，这一步压根没有机会发出——这条断言只在**此刻**（还没放行）成立，落死在这里。
-    const parked = await gateCounts(launched);
-    expect(parked.started['pdf.translation.layout'], '取消那一刻只发出过第 1 页的版面请求').toBe(1);
-    expect(parked.started['pdf.translation.translate'] ?? 0, '被扣住的是版面，第二步根本没发出过')
-      .toBe(0);
-
-    // 放行被扣住的那条请求：它落地时代际已经失配，组装与写盘都不该再发生。不放行的话这条用例
-    // 只证明了「取消那一刻还没写盘」，证明不了「在途的请求跑完之后也不写」——而那正是 jobSeq
-    // 要挡的东西。
-    //
-    // 「此后什么都不发生」这件事以前等的是 1.5 秒墙上时间：等不够就假绿（Task 15 要摘掉的
-    // 就是这条）。改成两道确定的栅栏——① 主进程侧确认被扣住的那条请求真的跑完（回复已发出），
-    // ② 再走一次 fenceRendererIpc，保证那条回复的续体在渲染层也已经跑完（见该函数的注释）。
-    await releaseGate(launched);
-    await expect.poll(
-      async () => (await gateCounts(launched)).done['pdf.translation.layout'] ?? 0,
-      { timeout: 15000, message: '等被扣住的那条版面请求真的跑完' },
-    ).toBeGreaterThan(0);
-    await fenceRendererIpc(page, pdfPath);
-
-    const counts = await gateCounts(launched);
-    // 不再往下派页——worker 循环的取消检查点挡的是**页 2-4**，钉住的是这一半。放行之后第 1 页
-    // 自己会顺着 runPage 走完第二步（runPage 内部两步之间没有取消检查点，那是页内的事，不是
-    // worker 派发新页——上面 parked 那两条已经把「第二步没有被取消抢跑」钉在了正确的时刻），
-    // 所以这里只认 layout 的计数：`jobSeq.current += 1` 那行去掉之后，被放行的第一页落地时会
-    // 照常把其余三页派出去——而它们**先于**这条 fence 发出（同一条管道 FIFO），所以这里读到的
-    // 必然是 4。
-    expect(counts.started['pdf.translation.layout'], '取消之后不该再派新的页')
-      .toBe(1);
-    expect(counts.started['pdf.translation.save'] ?? 0, '取消之后不该发出任何写盘请求').toBe(0);
-    const exists = await fs.stat(sidecar).then(() => true, () => false);
-    expect(exists, `取消之后不该有译文边车：${sidecar}`).toBe(false);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 重新翻译——右格回到空白，旧译文块一并消失，跑完又都回来', async () => {
-  // 计划里的第 9 条是「对照中点『重新翻译』键」。那个键本身属于 Task 14（PdfToolbar），Task 13
-  // 落地时按钮还不存在，只有主键这一个入口——而 spec §1 明说「mismatch / invalid 那两档进不了
-  // 对照，它们的主键语义就是重新翻译，两个入口同一个动作」。所以这里走 mismatch 这个入口，被测
-  // 的东西一字不差：store 里留着上一版的 doc（连同它的块），此时发起一趟新作业，右格必须回到
-  // 空白、旧块必须一并消失。这条留着不删：机制与走真按钮的那条一致，多测一条入口无害；真正走
-  // `pdf-retranslate` 按钮、从 `dual === true` 发起的那条在下面（Task 14 补）。
-  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, READY_REL);
-    const zhPath = path.join(projectPath, READY_ZH_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    const blocks = page.locator(`${paneSel} [data-translation-block]`);
-
-    // ① 先证明「有东西可消失」：右格照常合成（INK 那一块里原文墨迹还在），译文块也真渲染出来了。
-    await enterDual(page, pane);
-    const before = await waitSample(page, paneSel, INK, '重译之前');
-    expect(before.leftDark, '左格这一块里得有原文墨迹').toBeGreaterThan(0);
-    expect(before.dark, '重译之前右格是照常合成的：这一块里应当有原文墨迹').toBeGreaterThan(0);
-    await expect(blocks.first(), '重译之前译文块是渲染出来的').toBeVisible();
-
-    // ② 把边车摘要改成对不上：下一次重探 checkVersion 判 mismatch，setLoaded 自动收 dual。
-    //    store 里那份 doc（连同块）仍在，主键的语义于是变成「重新翻译」。
-    const zh = JSON.parse(await fs.readFile(zhPath, 'utf8')) as { source: { sha256: string } };
-    zh.source.sha256 = 'f'.repeat(64);
-    await fs.writeFile(zhPath, JSON.stringify(zh, null, 2));
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await expect(pane.locator('[data-pdf-right="1"]')).toHaveCount(0);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    // ③ 重新翻译：右格回到空白，旧块一并消失。mismatch 态点主键会先覆盖磁盘上已有的一份边车，
-    //    走统一的 confirm() 确认框（Yee 拍板），这里先过一遍「确认」分支。
-    await installTranslateGate(launched);
-    await pane.getByTestId('pdf-translate').click();
-    await confirmRetranslate(page);
-    await waitJobParked(launched);
-    const during = await waitSample(page, paneSel, INK, '重译进行中');
-    expect(during.paper, `重译期间右格应当逐像素都是主题纸色 ${JSON.stringify(during)}`).toBe(during.total);
-    // 译文层若不整层关掉，这里会是「空白底图 + 上一版译文浮在上面」——store 里那份 doc 还在，
-    // 块照样有得渲染，所以这条不是恒真的。
-    await expect(blocks, '重译期间旧译文块必须一并消失').toHaveCount(0);
-
-    // ④ 放行 → 新边车落盘 → 走现有的 loadTranslation 重新加载 → 右格恢复合成、**新**块出现。
-    //
-    //    判据必须落在「是不是新那一版」上，不能只问「有没有块」：清掉 job 那一刻译文层就会重新
-    //    渲染，而 store 里此刻还是上一版的 doc——「有块」在没重新加载的情况下也成立（实测：把
-    //    「先清 job、再 loadTranslation」调换顺序，只问有没有块的写法照样全绿）。所以这里认块的
-    //    **id**：新的一版由 buildBlocks 按页与最小行号编号（p1-b01），旧的那条是 fixture 里写死
-    //    的 seed1，两者不可能混淆。这条因此真的钉住了那个顺序：反过来的话那趟加载会被 job 闸自己
-    //    挡掉，边车虽然落了盘，界面上却永远停在上一版。
-    await releaseGate(launched);
-    const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
-    await expect(fresh, '跑完之后应当渲染的是**新**这一版的译文块').toBeVisible({ timeout: 15000 });
-    // 这条**不**限 stable 层：toHaveCount(0) 不受 strict mode 影响（限层是为了双缓冲两层并存时
-    // 同一个块两份会 strict mode 违规，那只发生在单命中的断言上），限了反而更弱——残留在
-    // incoming 层上的旧块会被放过。否定断言要泛选。
-    await expect(
-      page.locator(`${paneSel} [data-translation-block="seed1"]`),
-      '上一版的块不该还留在那儿',
-    ).toHaveCount(0);
-    const after = await waitSample(page, paneSel, INK, '重译之后');
-    expect(after.paper, `跑完之后右格不该还是一片主题纸色 ${JSON.stringify(after)}`).toBeLessThan(after.total);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回到空白，跑完出现新块', async () => {
-  // 上面那条「重新翻译」用例走的是 mismatch 入口代替（Task 13 落地时按钮还不存在）：那时 dual
-  // 已经被 setLoaded 自动收掉，进入 startTranslation 时 wasDual 恒为 false，测不到 `dual ===
-  // true` 时发起作业这条路径——而那正是 wasDual 这条修复（Task 14）要保的地方。这里改走真正的
-  // pdf-retranslate 按钮，从 active 态（dual 已经是 true）发起。
-  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, READY_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    const blocks = page.locator(`${paneSel} [data-translation-block]`);
-
-    await enterDual(page, pane);
-    await expect(blocks.first(), '进对照后旧译文块可见').toBeVisible();
-    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
-    const retranslateBtn = pane.getByTestId('pdf-retranslate');
-    await expect(retranslateBtn, '「重新翻译」键只在 active 态渲染').toBeVisible();
-    await expect(retranslateBtn).toHaveAttribute('aria-label', '全部重译');
-
-    await installTranslateGate(launched);
-    await retranslateBtn.click();
-    await confirmRetranslate(page);
-    await waitJobParked(launched);
-
-    const during = await waitSample(page, paneSel, INK, '按「重新翻译」键之后进行中');
-    expect(during.paper, `重译期间右格应当逐像素都是主题纸色 ${JSON.stringify(during)}`).toBe(during.total);
-    // 译文层若不整层关掉，这里会是「空白底图 + 上一版译文浮在上面」——同上面 mismatch 那条用例
-    // 的判据，见其注释。
-    await expect(blocks, '重译期间旧译文块必须一并消失').toHaveCount(0);
-    // 仍在对照中，没有被踢出单栏——这条断言只有在从 dual === true 发起、且这一趟没出错时才成立，
-    // 单独放这里是因为它此刻还测不出 wasDual 的修复（成功路径压根不碰 setDual），真正测到修复的
-    // 是下面「被取消」那条用例。
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-
-    await releaseGate(launched);
-    const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
-    await expect(fresh, '跑完之后应当渲染的是新这一版的译文块').toBeVisible({ timeout: 15000 });
-    // 这条**不**限 stable 层：toHaveCount(0) 不受 strict mode 影响（限层是为了双缓冲两层并存时
-    // 同一个块两份会 strict mode 违规，那只发生在单命中的断言上），限了反而更弱——残留在
-    // incoming 层上的旧块会被放过。否定断言要泛选。
-    await expect(
-      page.locator(`${paneSel} [data-translation-block="seed1"]`),
-      '上一版的块不该还留在那儿',
-    ).toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把用户踢出对照（wasDual 修复）', async () => {
-  // 这才是真正钉住 wasDual 修复的用例：从 active 态（dual === true）发起重译，取消。修复前
-  // cancelTranslation 无条件 setDual(false)，会把用户踢出这个本来完好的对照视图——store 里
-  // 那份旧 doc 还在、右格本可以照常合成，退回单栏是纯粹的体验退化，不是任何数据一致性要求。
-  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, READY_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-
-    await enterDual(page, pane);
-    await installTranslateGate(launched);
-    await pane.getByTestId('pdf-retranslate').click();
-    await confirmRetranslate(page);
-    await waitJobParked(launched);
-
-    await pane.getByTestId('pdf-translate-cancel').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
-    await expect(pane.locator('[data-pdf-right="1"]').first(), '取消对照中的重译不该把用户踢出对照')
-      .toBeVisible();
-    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
-    await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在')
-      .toBeVisible();
-    // Minor #5（Task 14 审查发现）：`[data-pdf-right="1"]` 只是右格那块 canvas 本身，不管它画的
-    // 是内容还是一整格纸色都在——只断言它可见证明不了「对照视图还能用」，「留在 dual 但右格永久
-    // 空白」这种更糟的状态照样能让上面那几行绿。这里补上 store 里那份旧 doc（cancel 不动它）
-    // 应当重新渲染出来的具体那个块：job 收掉之后 `!translating` 重新为真，TranslationBlocks
-    // 才会渲染（见 RightPage 里的注释），能看到 seed1 就说明取消之后合成的确实是可用的旧译文，
-    // 不是空壳。
-    // 定位限死在 **stable 层**上：缩放走双缓冲，顶替完成之前 layers 有两份，同一个块在 DOM 里
-    // 就有两个（进对照那一下的 fit-width 提交在机器忙时能拖到这里还没顶替完）——不限层的话
-    // Playwright 会以 strict mode violation 间歇性地红在这一行，而那与本条要钉的东西无关。
-    // 取 stable 层不是放宽：它就是用户此刻真正看着的那一层（incoming 层压在它下面，zIndex 0）。
-    await expect(
-      page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`),
-      '取消之后旧译文块应当重新出现——右格是真的可用，不是空壳',
-    ).toBeVisible();
-
-    // 放行被扣住的那条请求：它落地时代际已经失配，不该再把 job / dual 写回去。
-    await releaseGate(launched);
-    await page.waitForTimeout(1000);
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 「重新翻译」确认框点取消——边车不变，没有发起任何翻译请求', async () => {
-  // 三个入口（invalid/mismatch 主键、active 态的 pdf-retranslate）共用 PdfFileTab 里同一处
-  // confirm() 调用（见 onToggleDual / onRetranslate 的注释），机制一致，这里只测一个入口的取消
-  // 分支就够——挑 active 态的 pdf-retranslate 键，因为它最常用、断言起来也最直接（旧块原样还在）。
-  //
-  // 断言要落在协议层事实上，不是「弹出过一次对话框」这类过程性动作：
-  //   ① 磁盘上的边车字节逐字节不变（不是只看 mtime）；
-  //   ② `pdf.translation.layout` / `pdf.translation.translate` / `pdf.translation.save` 一次都
-  //      没被调用过——装闸门直接读 started 计数，不靠等一段墙上时间去猜「后面没有再发生什么」；
-  //   ③ 界面原样留在对照中，旧译文块还在。
-  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, READY_REL);
-    const zhPath = path.join(projectPath, READY_ZH_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    const before = await fs.readFile(zhPath, 'utf8');
-
-    await enterDual(page, pane);
-    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`)).toBeVisible();
-
-    await installTranslateGate(launched);
-    await pane.getByTestId('pdf-retranslate').click();
-    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
-    await page.getByTestId('confirm-dialog-cancel').click();
-    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-
-    // 确认框已经关掉、点取消这一路 confirm() 的 promise 直接 resolve(false)，压根没有一条 IPC
-    // 请求发出过——不需要 fenceRendererIpc 那套栅栏（那是用来等一条**已经发出**的请求收尾）。
-    const counts = await gateCounts(launched);
-    expect(counts.started['pdf.translation.layout'] ?? 0, '取消之后不该发出任何版面请求').toBe(0);
-    expect(counts.started['pdf.translation.translate'] ?? 0, '取消之后不该发出任何翻译请求').toBe(0);
-    expect(counts.started['pdf.translation.save'] ?? 0, '取消之后不该发出任何写盘请求').toBe(0);
-    expect(await fs.readFile(zhPath, 'utf8'), '取消之后边车必须逐字节保持不变').toBe(before);
-
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
-    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
-    await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在').toBeVisible();
-    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`), '旧译文块原样还在')
-      .toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 翻译进行中，翻译键禁用、按 L 什么都不发生', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await installTranslateGate(launched);
-    await pane.getByTestId('pdf-translate').click();
-    await waitJobParked(launched);
-
-    await expect(pane.getByTestId('pdf-translate'), '翻译进行中翻译键禁用').toBeDisabled();
-    expect(await pane.locator('[data-pdf-right="1"]').count()).toBeGreaterThan(0);
-
-    // 键盘不经过 IconButton 的 disabled：L 自己要判一次同一份判据，判漏了就会在作业跑着的时候
-    // 把 dual 收掉（右格连同进度浮层一起消失，而作业还在花钱）。
-    await pane.locator('[data-testid^="pdf-scroll-"]').click({ position: { x: 5, y: 5 } });
-    await page.keyboard.press('l');
-    await page.waitForTimeout(500);
-
-    await expect(pane.getByTestId('pdf-translate-progress'), '按 L 不该把浮层收掉').toBeVisible();
-    // 用 > 0 而不是「与按之前相等」：双缓冲在作业期间可能正好多挂一层（进对照那次 fit-width
-    // 排了一次清晰层提交），右格的**份数**会随之变。要挡的是「被踢出对照」，那是 0。
-    expect(await pane.locator('[data-pdf-right="1"]').count(), '按 L 不该把用户踢出对照')
-      .toBeGreaterThan(0);
-    await expect(pane.getByTestId('pdf-translate')).toBeDisabled();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 翻译期间的边车重探不会把用户踢出对照', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-    await installTranslateGate(launched);
-
-    // ① 作业**启动前就已经在途**的那一趟 load。同一次 evaluate 里先发 focus、再点键：两件事
-    //    落在同一个任务里，RPC 绝无可能在中间 resolve，「启动作业时正好有一趟在途」因此是确定
-    //    的，不靠抢时间窗口。挡住它的是 startTranslation 里那句 translationSeq 自增——
-    //    loadTranslation 开头那道 job 闸只管**之后**发起的重探，挡不住已经在途的这趟；它落地时
-    //    盘上还没有边车，setLoaded(null) 会把 dual 收掉。
-    await page.evaluate((sel) => {
-      window.dispatchEvent(new Event('focus'));
-      (document.querySelector(sel) as HTMLElement).click();
-    }, testIdSelector('pdf-translate'));
-
-    await waitJobParked(launched);
-    await page.waitForTimeout(1000);   // 那趟在途的 load 只需一个 IPC 往返，1s 绰绰有余
-    await expect(pane.getByTestId('pdf-translate-progress')).toBeVisible();
-    expect(await pane.locator('[data-pdf-right="1"]').count(), '启动作业前在途的那趟加载不该收掉 dual')
-      .toBeGreaterThan(0);
-
-    // ② 翻译期间再触发一次 focus（真人切个窗口就会发生）：这次由 loadTranslation 开头的 job 闸
-    //    挡住，压根不发 RPC。
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.waitForTimeout(1000);
-    await expect(pane.getByTestId('pdf-translate-progress')).toBeVisible();
-    expect(await pane.locator('[data-pdf-right="1"]').count(), '翻译期间的 focus 重探不该收掉 dual')
-      .toBeGreaterThan(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 没配模型时点翻译——Notice 显示「翻译失败」，退回单栏', async () => {
-  // Task 14 审查发现的头号缺口：translateError 接上 Notice 是这个任务的硬要求，之前完全没有
-  // e2e 钉住——把 PdfFileTab 里 `<PdfAnnotationNotice translateError={translateError} />` 那行
-  // props 去掉，gate 全绿、57/59（去掉这条之前）也全绿，谁也不会发现。不需要 translateFixture /
-  // 闸门：resolveModel 在 startTranslation 的第一个 await 上就抛 llm.not_configured，走不到任何
-  // 一次 pdf.translation.layout / pdf.translation.translate 调用，是这条错误路径里最快、最不脆的
-  // 触发方式。
-  const launched = await launchKydog({ seed: seedNoModel });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const pane = await openPdf(page, pdfPath);
-
-    // 二期起「没有译文」从禁用变成可点：这条路径能走到，靠的正是这一点。
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-    await pane.getByTestId('pdf-translate').click();
-
-    // 进对照是点下去那一刻的事（startTranslation 在第一个 await 之前就 setDual），resolveModel
-    // 的 await 一拒绝，catch 分支的 `if (!wasDualRef.current) setDual(tab.id, false)` 就会把它
-    // 收掉——wasDualRef 在这条路径上是 false（进来之前不在对照中），所以这里断言的是退回单栏，
-    // 不是留在对照。
-    await expect(pane.getByTestId('pdf-notice'), 'Notice 应当显示 resolveModel 抛出的那句原话')
-      .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
-    await expect(pane.locator('[data-pdf-right="1"]'), '没配模型时翻译失败要退回单栏').toHaveCount(0);
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 覆盖确认框点取消——一条仍然成立的错误提示不该被顺手抹掉', async () => {
-  // 复审点名的一条：`onToggleDual` 里那句 `setTranslateError(null)` 原先排在 `confirm()`
-  // **之前**，于是「按翻译键 → 看到确认框 → 取消」会顺手清掉一条此刻仍然成立的提示（典型如
-  // 「没配模型」），而这一刻什么都没发生——用户按下取消，界面上唯一的线索却没了。
-  //
-  // 触发条件要两样东西同时成立：翻译键处在 invalid / mismatch（动作会覆盖磁盘上已有的边车，
-  // 因而先过 confirm），并且 Notice 上正挂着一条 translateError。seedInvalidNoModel 把两样
-  // 都造出来：坏边车给 invalid 态，没配模型让第一次确认过的翻译在 resolveModel 上失败。
-  const launched = await launchKydog({ seed: seedInvalidNoModel });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    // 先真发起一次并让它失败，把那条提示挂上去（invalid 态覆盖已有边车 → 先过确认框）。
-    await pane.getByTestId('pdf-translate').click();
-    await confirmRetranslate(page);
-    await expect(pane.getByTestId('pdf-notice'), '这一趟应当失败在 resolveModel 上')
-      .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
-
-    // 再按一次，这次在确认框上点取消：什么都没发生，提示就该原样还在。
-    await pane.getByTestId('pdf-translate').click();
-    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
-    await page.getByTestId('confirm-dialog-cancel').click();
-    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-
-    await expect(pane.getByTestId('pdf-notice'), '取消覆盖之后那条提示仍然成立，不该被清掉')
-      .toContainText('翻译失败：没有可用的模型，请先在设置里配置');
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——失败页号随边车落盘', async () => {
-  // Task 14 审查发现：Notice 原来判的是 `t?.job && t.job.failed > 0`，而作业完成后 job 整个变
-  // null——「这趟有几页失败」在跑完那一刻，也就是用户最需要看到它的时刻，必然读不到。最终修法是
-  // 让 translateDoc 把失败页号写进 doc.failedPages 一起落盘，Notice 从 store 里那份 doc 现读。
-  // 这里用 ONE_FAIL_FIXTURE 让第 2 页版面正常、翻译两次响应的头行都不是 `g<n>`（parseTranslations
-  // 两次都抛「组头不是 id」，runPage 重试一次后把页号 2 记下），其余三页正常——作业整体仍然成功
-  // 跑完、写盘、走 loadTranslation 重新加载，不需要闸门。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await pane.getByTestId('pdf-translate').click();
-    // 等作业真的跑完：进度浮层消失、job 清空、右格开始正常合成（成功页的译文块渲染出来）。
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
-
-    await expect(pane.getByTestId('pdf-notice'), '作业跑完之后这条消息仍应可见')
-      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
-    // 顺带钉住信号的落点：Notice 上那句话的来源是**边车里的页号**，不是内存里某个作业留下的
-    // 数字。页号而不是计数——计数是逐页信号的有损汇总，长度随时能推出来，反过来不行。
-    const saved = await readSidecar(path.join(kydogHome, 'proj', `.${PLAIN_REL}.zh.json`));
-    expect(saved.failedPages, '失败页号应当写进边车').toEqual([2]);
-    // 第 2 页版面正常、卡在第二步：两次响应的头行都不是 `g<n>`，parseTranslations 判「组头不是
-    // id」。前缀 `翻译：` 说明是第二步失的（`版面：` 是第一步的前缀，两者不该混）。
-    expect(saved.failureReasons?.['2'], '失败原因应当随页号一起落盘').toMatch(/^翻译：组头不是 id/);
-    // 悬停 Notice → Tooltip 里每页一行原因
-    await pane.getByTestId('pdf-notice').hover();
-    const tip = page.getByTestId('pdf-notice-reasons');
-    await expect(tip).toBeVisible();
-    await expect(tip).toContainText('第 2 页：');
-    await expect(tip).toContainText('组头不是 id');
-    // fixture 里第 2 页第一条响应文本被撑到 300+ 字符（模型输出原样被 JSON.stringify 回显进
-    // 原因串），真实场景下这类长原因会把没有 max-width / white-space: normal 的面板宽出窗口。
-    //
-    // 只断 getBoundingClientRect() 的 left/right 不够：容器有 overflow: visible（默认值），
-    // `max-width` 只钳容器**自己这个盒子**的宽度，`white-space: nowrap` 时那一整行文字仍会
-    // 照常画到盒子外面——盒子的 rect 依旧乖乖落在 max-width 之内，但真正画出来的字远远宽出去，
-    // 实测过：去掉 `white-space: normal` 之后 clientWidth 还是 520，scrollWidth 却蹿到 3323，
-    // 只断 rect 的话这条用例会假绿。scrollWidth 才是「有没有真的换行」的信号：换行成立时内容
-    // 撑不出容器本身的宽度，scrollWidth ≈ clientWidth；不换行则一整行文字的固有宽度全部计入
-    // scrollWidth，远超 clientWidth。
-    const rect = await tip.evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      return {
-        left: r.left, right: r.right, innerWidth: window.innerWidth,
-        scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
-      };
-    });
-    expect(rect.scrollWidth, `原因文本没有真的换行，撑出了容器本身 ${JSON.stringify(rect)}`)
-      .toBeLessThanOrEqual(rect.clientWidth + 1);   // +1 容小数像素舍入
-    expect(rect.left, `原因面板不该宽出视口左边 ${JSON.stringify(rect)}`).toBeGreaterThanOrEqual(0);
-    expect(rect.right, `原因面板不该宽出视口右边 ${JSON.stringify(rect)}`).toBeLessThanOrEqual(rect.innerWidth);
-    // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 重新翻译被取消——「N 页翻译失败」仍显示上一趟的计数，不被清成 0', async () => {
-  // 这条钉的不变量是「提示必须描述 store 里当前那份 doc」。取消 / 出错两个出口在 wasDual 为真时
-  // 保留旧 dual 与那份旧 doc 不变（wasDual 修复本身要保证的行为），画面上仍是原来那份带失败页的
-  // 旧译文——提示也就该原样留着。信号收口进边车之后这是白送的（doc 没换，doc.failedPages 自然
-  // 没变），但它历史上真的被破坏过一次（那一版在 startTranslation 开头无条件把计数清成 0），
-  // 所以这条用例留着守。
-  //
-  // 用 ONE_FAIL_FIXTURE 造出第一趟真实的失败页（同上面「跨 job 清空可读」那条），跑完确认 Notice
-  // 显示「1 页翻译失败」；再点「重新翻译」进第二趟作业，扣住它、取消，断言 Notice 仍显示同一句——
-  // 因为右格合成的仍是第一趟落盘的那份旧译文，doc 没变，计数不该变。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    // 第一趟：不装闸门，直接跑到底，落地 1 页失败。
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
-    await expect(pane.getByTestId('pdf-notice'), '第一趟跑完之后应显示 1 页失败')
-      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
-    // 此刻已经在对照中（第一趟成功就会进 active），「重新翻译」键应当可见。
-    const retranslateBtn = pane.getByTestId('pdf-retranslate');
-    await expect(retranslateBtn).toBeVisible();
-
-    // 第二趟：装闸门、发起、停在半路、取消——doc 没变，仍是第一趟落盘的那份。
-    await installTranslateGate(launched);
-    await retranslateBtn.click();
-    await confirmRetranslate(page);
-    await waitJobParked(launched);
-    await pane.getByTestId('pdf-translate-cancel').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
-
-    // 关键断言：取消之后 Notice 应当仍显示第一趟的失败计数，不该因为第二趟刚起步就被清成 0。
-    await expect(pane.getByTestId('pdf-notice'), '取消重译之后仍应显示上一趟真正跑完的失败计数')
-      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
-    // 顺带确认还在对照中——这不是本条的重点（wasDual 那条用例已经钉住），只是让上面那句断言的
-    // 前提（「右格合成的仍是旧译文」）不是空中楼阁。
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 切一次窗口（focus 重探）之后「N 页翻译失败」仍在——信号在边车里，不在内存里', async () => {
-  // **这条是「失败页信号收口到边车」那轮修复的回归点。**
-  //
-  // 收口之前，「哪几页失败」只从 onProgress 这条侧信道漏出一个瞬时数字、存在渲染层的 store 里，
-  // 而边车里一个字节都没记。于是「这个数字该活多久」变成一个下游问题，两种写法都是错的：
-  // 保留 → agent 只重写边车（PDF 没变、checkVersion 仍判 ok）时会挂着上一份的陈旧计数；
-  // 归零 → 这条提示撑不过一次切窗口，因为 loadTranslation 挂在 window 的 focus 上，真人 alt-tab
-  // 回来就会重探一次边车。这条用例守的是后者：跑完一趟带失败页的翻译，派发一次 focus，提示还得在。
-  //
-  // 判据全在协议层，没有等墙上时间：
-  //   ① 边车里确实有 failedPages（读盘，逐字节的事实）；
-  //   ② focus 真的触发了一次 pdf.translation.load（闸门的 started 计数，不是「大概会发生」）；
-  //   ③ 那次重探**已经落进渲染层的 store**——靠 fenceRendererIpc 这道栅栏：loadTranslation 在
-  //      focus 回调里同步发出 invoke，排在 fence 自己那条之前，同一条 FIFO 管道，所以 fence 一
-  //      返回，重探的续体（setLoaded）必定已经跑完。此后 Notice 上还有没有那句话，是确定的。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    // 一趟跑到底：第 2 页两次响应都不含 "|"，其余三页正常。
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await expect(page.locator(`${paneSel} [data-translation-block]`).first()).toBeVisible({ timeout: 20000 });
-    await expect(pane.getByTestId('pdf-notice'), '跑完之后应显示 1 页失败')
-      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
-    expect((await readSidecar(sidecar)).failedPages, '失败页号应当写进边车').toEqual([2]);
-
-    // 闸门只用来数 pdf.translation.* 的调用次数（hold 传空数组 = 一条都不扣，全部原样透传）。
-    await installTranslateGate(launched, []);
-    const before = (await gateCounts(launched)).started['pdf.translation.load'] ?? 0;
-
-    // 切一次窗口。真人 alt-tab 回来就是这个事件，spec §3.4 靠它重探边车（边车是点号开头的
-    // 文件，fileWatcher 跳过它，没有 file.changed 可用）。
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await fenceRendererIpc(page, pdfPath);
-
-    const after = (await gateCounts(launched)).started['pdf.translation.load'] ?? 0;
-    expect(after - before, 'focus 应当真的触发一次重探（另一次是 fence 自己）').toBe(2);
-
-    // 关键断言：重探回来之后提示仍在。信号在盘上，不是内存里某个数字的余额。
-    await expect(pane.getByTestId('pdf-notice'), '切一次窗口不该把「N 页翻译失败」抹掉')
-      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
-    // 顺带确认重探没有把用户踢出对照（setLoaded 的 dual 维持，与本条正交但同一条路径）。
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-// ── Task 15 补的六条 ───────────────────────────────────────────────────────────
-//
-// 前面那几条都把作业扣在半路上（闸门），验的是「跑的过程中界面对不对」。下面这几条相反：让
-// fixture 一路跑完，验**结果**——边车落盘的内容、以及右格上真正画出来的像素。渲染类断言一律
-// 取像素或磁盘，不取「元素在不在」：`[data-pdf-right="1"]` 那块 canvas 不管画的是内容还是一
-// 整格纸色都在，而译文块 div 只要 store 里有 doc 就渲染得出来，两者都证明不了画对了。
 
 /** 边车读回来。落盘是原子的（atomicWrite），所以只要文件在，内容就是完整的一份。 */
 async function readSidecar(file: string): Promise<TranslatedDoc> {
@@ -1104,455 +413,6 @@ async function paneLayout(page: Page, paneSel: string) {
   }, paneSel);
 }
 
-test('59-pdf-translate: 跑完之后边车落盘可解析，右格那一块的原文墨迹被译文块盖掉', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-
-    // ① 边车真的落了盘，而且是一份能解析、块 id 与 target 都对得上的 JSON。
-    await waitSidecar(sidecar);
-    const doc = await readSidecar(sidecar);
-    expect(doc.pdf, '边车记的是 PDF 的文件名').toBe(PLAIN_REL);
-    const b1 = doc.blocks.find((b) => b.id === 'p1-b01');
-    expect(b1?.target, 'fixture 给第 1 页的那句译文应当原样落进边车').toBe('第一页的译文');
-
-    // ② 译文块渲染出来了，文字就是边车里那句。
-    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toHaveText('第一页的译文');
-
-    // ③ 像素：右格这一块里的原文墨迹没了（RightPage 按页背景色把块矩形填平了），左格同一块里
-    //    还在。取样矩形直接用边车里那个块**自己的几何**内缩 1 pt，不写死坐标——写死的话 fixture
-    //    PDF 的排版一改就会悄悄采到块外面去，而块外面本来就是白纸，`dark === 0` 恒成立，这条
-    //    断言会退化成永远绿。内缩 1 pt 是为了避开 fillRect 的取整边界（实际覆盖区还要再外扩一个
-    //    BLOCK_PAD，所以内缩之后必然仍在覆盖区里）。
-    const inner = { x: b1!.x + 1, y: b1!.y + 1, w: b1!.width - 2, h: b1!.height - 2 };
-    const s = await waitSample(page, paneSel, inner, '跑完之后');
-    expect(s.leftDark, '左格这一块里得真有原文墨迹，右格「盖掉了」才谈得上').toBeGreaterThan(0);
-    expect(s.dark, `右格这一块不该还留着原文墨迹 ${JSON.stringify(s)}`).toBe(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 抽取完的页若不在渲染窗口内，当场还给 pdf.js（不变量 #8）', async () => {
-  // 抽取一趟会碰**每一页**，而窗口里只挂得下几页。不还回去的话，翻一份 200 页的论文 =
-  // 200 页 getTextContent() 的解析结果一直驻留到关 tab。lifecycle.sweep() 兜不住这条：翻译走的
-  // 是 pdf.getPage(n) 现取，那些页从来没 acquire 过、也不一定在 pageProxies 里。
-  //
-  // 探针 __kydogTranslateCleanedPages 只数**这条路上真的调了 cleanup() 的页**（取
-  // lifecycle.cleanedCount() 的差值），所以进对照本身引发的 sweep 清理不会混进来。
-  const launched = await launchKydog({ seed: seedManyPages, translateFixture: RECYCLE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const pdfPath = path.join(kydogHome, 'proj', PLAIN_REL);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 30000 });
-
-    const cleaned = await page.evaluate(() =>
-      (window as unknown as { __kydogTranslateCleanedPages?: number }).__kydogTranslateCleanedPages ?? 0);
-    // 上界：窗口里至少挂着当前这一页，所以不可能 RECYCLE_PAGES 页全清掉。这条同时是「fixture
-    // 还有区分力」的守卫——真到了窗口装得下全部页的那天，下面那条 > 0 会红，而不是悄悄变成
-    // 一条永远成立的断言。
-    expect(cleaned, `窗口外的页应当被还回去（本次 ${cleaned} 页）`).toBeGreaterThan(0);
-    expect(cleaned, '窗口里那几页不该被清').toBeLessThan(RECYCLE_PAGES);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 第一条响应违反校验、第二条合法——重试成功，不计入失败', async () => {
-  // spec §2.7：一页跑一次 → 失败重试一次 → 仍失败才记 failed。这里第 1 页版面合法，翻译第一条
-  // 响应是空译文（`g1` 后面直接 `%%`，parseTranslations 判 GroupError），第二条合法——最终
-  // 这一页**有译文**，且整趟作业零失败页。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: RETRY_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-
-    // 落盘的是**第二条**响应的译文：认这一句就等于认「重试真的发生过、而且用的是重试的结果」。
-    // 只断言「这一页有块」是不够的——那在「第一条就被当成合法译文」的实现下也成立。
-    const doc = await readSidecar(sidecar);
-    expect(doc.blocks.find((b) => b.id === 'p1-b01')?.target, '第 1 页落盘的应当是重试那一条的译文')
-      .toBe('第一页的译文（重试之后）');
-    expect(doc.blocks.filter((b) => b.page === 1), '第 1 页应当正好一个块').toHaveLength(1);
-
-    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`))
-      .toHaveText('第一页的译文（重试之后）');
-
-    // 不计入失败：四页全成功、版本匹配、没有丢块 → Notice 一条消息都没有（它只有一行，任何一
-    // 条成立都会渲染出这个节点）。所以「整个节点不存在」比「文案里没有『失败』二字」更严。
-    await expect(pane.getByTestId('pdf-notice'), '重试成功的页不该被记成失败页').toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 空译文两次都不合法——该页判失败，右格那一块仍是原文像素', async () => {
-  // 复审 P1-2 的反例：`g1` 后面直接 %% 解析成 target: ''，而 RightPage 判的是
-  // `target === undefined`——'' 不是 undefined，块矩形照盖、译文层没字，结果是**一块被涂白的
-  // 原文**。比不翻译糟得多，用户还看不出发生了什么。parseTranslations 因此把空译文判成
-  // GroupError，这一页（版面合法，翻译两次都失败）不产块 → 右格那一块原样保留原文。
-  //
-  // 判据只能取像素：失败页在 DOM 上没有任何痕迹（没有块就没有元素），而右格那块 canvas 无论
-  // 画的是原文、是涂白的空块、还是一整格纸色都一样在。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: EMPTY_TARGET_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-
-    const doc = await readSidecar(sidecar);
-
-    // 像素这条排在最前：它才是这条用例要钉的东西。取样矩形借第 2 页那个块的几何——每页版面完全
-    // 一样（buildPagedPdf 每页同一位置写一行页码），所以它就是第 1 页那一行**本来会被盖住**的
-    // 那个矩形。失败页自己没有块可借，而写死坐标会让这条断言在排版一改时悄悄采空。
-    const b2 = doc.blocks.find((b) => b.id === 'p2-b01');
-    expect(b2, '第 2 页应当正常成功，用它的几何当取样矩形').toBeTruthy();
-    const inner = { x: b2!.x + 1, y: b2!.y + 1, w: b2!.width - 2, h: b2!.height - 2 };
-    const s = await waitSample(page, paneSel, inner, '失败页跑完之后');
-    expect(s.leftDark, '左格这一块里得真有原文墨迹').toBeGreaterThan(0);
-    // 右格是左格的 1:1 拷贝、这一页没有块可填，所以逐像素相等——不是「差不多」。被涂白的空块
-    // 会让右边这个数掉到 0。
-    expect(s.dark, `失败页右格应当与左格逐像素同样多的墨迹（原文原样保留）${JSON.stringify(s)}`)
-      .toBe(s.leftDark);
-
-    // 上面那条的成因：这一页两次都判不合法，所以压根没有块。
-    expect(doc.blocks.filter((b) => b.page === 1), '第 1 页两次都不合法，不该产出任何块').toHaveLength(0);
-    await expect(pane.getByTestId('pdf-notice'), '这一页判失败，右栏保留原文')
-      .toContainText('1 页翻译失败（第 1 页），右栏保留原文');
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 输出被截断——对半拆重试，最终块数等于行数', async () => {
-  // spec §2.4：整页原样重试只会再截断一次，处置必须是**拆**。fixture 给第 1 页的第一步（版面）
-  // 四条响应：第一条 stopReason='length'（内容不参与解析），随后两条分别是拆开之后各半页
-  // （各一行）的合法版面响应；第二步（翻译）合并后一次发出、覆盖两个组。这一页有两行，所以最终
-  // 应当是两个块——每行一个。
-  const launched = await launchKydog({ seed: seedTwoLines, translateFixture: TRUNCATED_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await installTranslateGate(launched, []);      // 只计数，不扣
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-
-    const doc = await readSidecar(sidecar);
-    const p1 = doc.blocks.filter((b) => b.page === 1);
-    // 被截断的那一页：两行拆成两组，块数 = 行数。没拆的话第二次尝试拿到的是只覆盖第 1 行的
-    // 响应，parseLayout 的「不漏」检查会判整页无效 → 这一页一个块都没有。
-    expect(p1.map((b) => b.target), '截断的页应当拆成每行一个块，顺序按最小行号')
-      .toEqual(['第一页上半的译文', '第一页下半的译文']);
-    expect(p1.map((b) => b.id)).toEqual(['p1-b01', 'p1-b02']);
-    // 其余三页没被截断，一条响应覆盖两行 → 每页一个块。整份 5 个块，钉住「拆分只影响那一页」。
-    expect(doc.blocks, '四页一共 2 + 1 + 1 + 1 个块').toHaveLength(5);
-    await expect(pane.getByTestId('pdf-notice'), '截断被正确处置，没有失败页').toHaveCount(0);
-
-    // 拆出来的第二个块真的画在了下半页——只看边车的话，块画没画出来还是未知数。
-    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b02"]`))
-      .toHaveText('第一页下半的译文');
-
-    // 第一步的拆分只吃在第 1 页自己身上：4 页的版面基准是 4 次调用，第 1 页多付 2 次（截断 +
-    // 对半拆的两次）= 6 次；第二步不拆，仍是一页一次 = 4 次。
-    const counts = await gateCounts(launched);
-    expect(counts.done['pdf.translation.layout'], '第 1 页版面三次（截断 + 拆开两半），其余各一次')
-      .toBe(6);
-    expect(counts.done['pdf.translation.translate'], '拆分不影响第二步，仍是一页一次').toBe(4);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 没有文本层的 PDF——Notice 报「没有文本层」，仍是单栏几何', async () => {
-  // 抽取阶段每页零行 → translateDoc 的 `work.length === 0` 抛错中止（spec §4：「这页没字」与
-  // 「这页抽取失败」是两件事，前者整份为空就是扫描件）。键仍可点：能不能翻译是点下去之后才知道
-  // 的事，禁用它等于要求界面先猜一遍。
-  const launched = await launchKydog({ seed: seedNoText });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-    const before = await paneLayout(page, paneSel);
-    expect(before, '点之前就该量得到左栏').not.toBeNull();
-    expect(before!.rightPanes, '点之前是单栏').toBe(0);
-    expect(before!.leftW, '单栏时左栏就是 wrapper 那么宽').toBeCloseTo(before!.wrapW, 0);
-
-    await pane.getByTestId('pdf-translate').click();
-
-    await expect(pane.getByTestId('pdf-notice'), 'Notice 应当报出抽取阶段那句原话')
-      .toContainText('翻译失败：这份 PDF 没有文本层');
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0);
-
-    // 「仍是单栏」取版面几何，不取「那块 canvas 在不在」：留在双栏的话左栏只有 wrapper 的一半宽，
-    // 还多出一条分隔线和一个右栏容器。三条都断，任何一处没退干净都会红。
-    await expect.poll(
-      async () => (await paneLayout(page, paneSel))?.leftW,
-      { timeout: 10000, message: '等失败之后退回单栏' },
-    ).toBeCloseTo(before!.wrapW, 0);
-    const after = (await paneLayout(page, paneSel))!;
-    expect(after.leftW, `左栏应当仍铺满 wrapper ${JSON.stringify(after)}`).toBeCloseTo(after.wrapW, 0);
-    expect(after.rightPanes, '不该留下右栏').toBe(0);
-    expect(after.dividers, '不该留下分隔线').toBe(0);
-    // 顺带确认这条失败路径什么都没写盘。
-    expect(await fs.stat(sidecar).then(() => true, () => false), '抽取阶段就中止，不该有边车')
-      .toBe(false);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用，且那一档的三个数字都是真值', async () => {
-  // spec §9.3 的提交点：jobSeq 挡得住「写渲染层的 store」，挡不住一次**已经发出的 save**。
-  // 所以取消入口在进入 finalize 的那一刻关闭——否则会出现「取消了但边车落了盘」的中间态。
-  //
-  // finalize 只有一次 IPC 往返那么宽，靠时机去抓抓不住。把闸门改成扣 `pdf.translation.save`：
-  // 翻译整趟照常跑完，作业**确定地**停在「已经 setJob(finalize)、save 请求已发出未落地」这一刻。
-  //
-  // 这个「确定地停在 finalize」的落点也是全仓唯一能看住 M-1 的地方，所以顺带把那一档的读数一起
-  // 钉在这里：曾经硬写过一版 `{ done: 0, total: 1, failed: 0 }`，后果是保存那一刻进度条从 100%
-  // 打回 0%、「N 页失败」凭空消失，而当时没有任何断言会因此变红。fixture 因此选带失败页的那份
-  // （ONE_FAIL_FIXTURE，第 2 页两次响应都不含 "|"）——三个数字这才与那组硬写值**逐个**不同，
-  // 换成全成功的 fixture 只有 done/total 有区分力，failed 那位又回到零覆盖。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: ONE_FAIL_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
-
-    await installTranslateGate(launched, ['pdf.translation.save']);
-    await pane.getByTestId('pdf-translate').click();
-
-    await expect.poll(
-      () => heldCount(launched),
-      { timeout: 30000, message: '等作业跑到写盘请求上（进入 finalize）' },
-    ).toBeGreaterThan(0);
-
-    // 浮层还在，而且报的是 finalize 那一档的文案——不然下面那条 disabled 可能是别的原因。
-    const progress = pane.getByTestId('pdf-translate-progress');
-    await expect(progress).toBeVisible();
-    await expect(progress, 'finalize 那一档的三个数字都得是这一趟的真值：4 页全翻完、其中 1 页失败')
-      .toContainText('正在保存 · 4 / 4 · 1 页失败');
-    await expect(pane.getByTestId('pdf-translate-cancel'), 'finalize 之后不再给取消').toBeDisabled();
-
-    // 放行：这一趟照常写盘、重新加载，画面进对照。钉住「禁用的是取消，不是把作业卡死了」。
-    await releaseGate(launched);
-    await waitSidecar(sidecar);
-    await expect(progress).toHaveCount(0, { timeout: 20000 });
-    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toBeVisible({ timeout: 20000 });
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 单行标题块的译文字号不再被 1.5 倍行高压到 0.67——fit 恰为 1，div 上移四分之一字号', async () => {
-  // buildPagedPdf 每页那行「Page N」是 24 pt：行高 = 字高 = 24，块 h/fontSize = 1.00，正是边车里
-  // 30 个 title 块的中位数。原实现量的是 1.5 倍行框，一行就装不下，二分到 ≈ 0.67。
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: TITLE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const b = (await readSidecar(sidecar)).blocks.find((x) => x.id === 'p1-b01')!;
-    expect(b.kind).toBe('title');
-    expect(b.height / b.fontSize, '前提：单行块的高就是字高').toBeCloseTo(1, 1);
-
-    const block = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
-    await expect(block).toHaveText('首页');
-    // 测量是异步的（等字体）：data-fit 只在 fits 落地之后才挂上，先等它出现，再断值。量之前就断会
-    // 读到缺省的 1，改坏实现也照样绿。
-    await expect.poll(async () => block.getAttribute('data-fit'), { timeout: 15000, message: '等字号测量落地' }).not.toBeNull();
-    expect(await block.getAttribute('data-fit'), '单行标题的 fit 应恰为 1').toBe('1');
-
-    // 几何：rasterScale 取清晰层左格 canvas 的 CSS 宽 ÷ 页宽（协议层事实，同 57 的 stableCanvasWidth）。
-    const geo = await page.evaluate(({ sel }) => {
-      const canvas = document.querySelector(`${sel} [data-pdf-pane="left"] [data-pdf-layer="stable"] canvas`) as HTMLCanvasElement;
-      const el = document.querySelector(`${sel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`) as HTMLElement;
-      return { canvasW: parseFloat(canvas.style.width), top: parseFloat(el.style.top), height: parseFloat(el.style.height), font: parseFloat(el.style.fontSize) };
-    }, { sel: paneSel });
-    const rasterScale = geo.canvasW / PAGE_W;
-    expect(geo.font).toBeCloseTo(b.fontSize * rasterScale, 1);
-    expect(geo.top).toBeCloseTo((b.y - 0.25 * b.fontSize) * rasterScale, 1);
-    expect(geo.height).toBeCloseTo((b.height + 0.5 * b.fontSize) * rasterScale, 1);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 划分缺一行——只把那一行再发一次并合并，页不判失败', async () => {
-  const launched = await launchKydog({ seed: seedTwoLines, translateFixture: REPAIR_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const pane = await openPdf(page, pdfPath);
-    await installTranslateGate(launched, []);      // 只计数，不扣
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const doc = await readSidecar(sidecar);
-    expect(doc.failedPages, '补漏之后这一页不该判失败').toBeUndefined();
-    const p2 = doc.blocks.filter((b) => b.page === 2).map((b) => [b.kind, b.target]);
-    expect(p2, '第 2 页两行都有块：主组 text + 补漏那趟的 skip').toEqual([['text', '第二页的译文'], ['skip', undefined]]);
-    // 补漏只发生在第一步（版面）：4 页 + 1 次补漏 = 5 次，不是整页重试的 6 次。第二步只看
-    // 补漏之后合并好的组，一页一次，不受影响 = 4 次。
-    const counts = await gateCounts(launched);
-    expect(counts.done['pdf.translation.layout']).toBe(5);
-    expect(counts.done['pdf.translation.translate']).toBe(4);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 脚标进占位符——边车 source 是明文、target 带 {v1}、placeholders 带 script；skip 块不带', async () => {
-  const launched = await launchKydog({ seed: seedScriptLine, translateFixture: SCRIPTS_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const doc = await readSidecar(sidecar);
-    expect(doc.failedPages).toBeUndefined();
-    const text = doc.blocks.find((b) => b.page === 1 && b.kind === 'text')!;
-    expect(text.source, '边车 source 是去记号的明文').toBe('node ni');
-    expect(text.target).toBe('节点 n{v1}');
-    expect(text.placeholders).toEqual([{ id: 'v1', kind: 'formula', text: 'i', script: 'sub' }]);
-    const skip = doc.blocks.find((b) => b.page === 1 && b.kind === 'skip')!;
-    expect('placeholders' in skip, '没有 target 的块不带 placeholders').toBe(false);
-    // 渲染出来：记号已还原，且那个字是 data-script=sub 的 span
-    const block = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="${text.id}"]`);
-    await expect(block).toHaveText('节点 ni');
-    await expect(block.locator('[data-script="sub"]')).toHaveText('i');
-  } finally {
-    await teardown(launched);
-  }
-});
-
-// 这一页只有一个可译组，「违约的就是全部」→ 不补漏、整步重试一次（与 LaTeX 改写同一条规则）；
-// 「只重发违约的那几组」由 translateDoc.test 的两组用例守（Task 7）。
-test('59-pdf-translate: 译文丢了记号——重试一次成功，页不判失败', async () => {
-  const launched = await launchKydog({ seed: seedScriptLine, translateFixture: SCRIPTS_RESEND_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const pane = await openPdf(page, pdfPath);
-    await installTranslateGate(launched, []);      // 只计数，不扣
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const doc = await readSidecar(sidecar);
-    expect(doc.failedPages, '重试之后这一页不该判失败').toBeUndefined();
-    expect(doc.blocks.find((b) => b.page === 1 && b.kind === 'text')!.target).toBe('节点 n{v1}');
-    // 版面 4 次；翻译 4 页 + 第 1 页整步重试 1 次 = 5 次
-    const counts = await gateCounts(launched);
-    expect(counts.done['pdf.translation.layout']).toBe(4);
-    expect(counts.done['pdf.translation.translate']).toBe(5);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 两次都丢记号——页判失败、原因写「记号」、右格保留原文', async () => {
-  const launched = await launchKydog({ seed: seedScriptLine, translateFixture: SCRIPTS_FAIL_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const doc = await readSidecar(sidecar);
-    expect(doc.failedPages).toEqual([1]);
-    expect(doc.failureReasons!['1']).toMatch(/翻译：组 g1 的译文记号不对（g1: 丢 v1）；重试：/);
-    expect(doc.blocks.filter((b) => b.page === 1), '失败页不产块').toEqual([]);
-    const p2Text = doc.blocks.find((b) => b.page === 2 && b.kind === 'text')!;
-    expect(p2Text.target).toBe('节点 n{v1}');
-
-    // 「不产块」只在今天等价于「右格没盖」——RightPage 判的是 target === undefined，没有块就没有
-    // target。这是当前实现的巧合，不是被断言钉住的事实：以后加一层「失败页整页变灰/提示条」之类
-    // 的渲染，上面几条边车断言不会有任何变化，这条用例照样全绿。判据只能取像素（同
-    // EMPTY_TARGET_FIXTURE 的理由）：失败页在 DOM 上没有任何痕迹（没有块就没有元素），而右格
-    // 那块 canvas 无论画的是原文、是涂白的空块、还是一整格纸色都一样在。
-    //
-    // 取样矩形借第 2 页那条 "node ni" 文本块的几何：seedScriptLine 把 extra 那一行以同样的坐标
-    // 写进了每一页（buildPagedPdf 对 extra 的处理在页循环内部，逐页原样重复），第 2 页正常成功、
-    // 它的块就是第 1 页那一行本来会长在的地方——第 1 页两次都判不合法，自己没有块可借，写死坐标
-    // 又会在排版一改时悄悄采空。块几何（buildBlocks 的 unionRect）取的是整行 items 的并集，最后
-    // 一项正是下标 "i"，所以这个矩形连脚标本身的墨迹也框进去了。
-    const inner = { x: p2Text.x + 1, y: p2Text.y + 1, w: p2Text.width - 2, h: p2Text.height - 2 };
-    const s = await waitSample(page, paneSel, inner, '两次都丢记号跑完之后');
-    expect(s.leftDark, '左格这一块里得真有原文墨迹').toBeGreaterThan(0);
-    // 右格是左格的 1:1 拷贝、第 1 页这一行没有块可填，所以逐像素相等——不是「差不多」。被涂白的
-    // 空块、或者失败页整页加一层遮罩，都会让右边这个数偏离左边。
-    expect(s.dark, `失败页右格应当与左格逐像素同样多的墨迹（原文原样保留）${JSON.stringify(s)}`)
-      .toBe(s.leftDark);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-/** 把读数滚到第 n 页（左栏按内容高等分推一个起点，再 poll 读数）。 */
 /**
  * 把读数滚到第 n 页：把第 n 页那一行（两栏页行始终在 DOM，见 renderLayers 头上的注释）在
  * 视口里居中，靠 `getBoundingClientRect` 现量、不重算 unitLayout 的常量。
@@ -1583,21 +443,669 @@ function blocksOf(doc: TranslatedDoc, pages: number[]) {
   return doc.blocks.filter((b) => pages.includes(b.page));
 }
 
-test('59-pdf-translate: 「重试失败页」只重翻失败页，其它页的块逐字不变，键随失败页一起消失', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: RETRY_FAILED_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const pane = await openPdf(page, pdfPath);
-    await installTranslateGate(launched, []);
-    await pane.getByTestId('pdf-translate').click();
+// ═══ A 首次翻译：作业停在半路 ═══════════════════════════════════════════════════
+//
+// 段内顺序：一趟作业从第一条发起、停在第 1 页的版面上，前三条都看它（进双栏与右格空白 → 边车重探
+// → 取消）；取消那条放行闸门、作业收尾之后，最后一条才换第二份 PDF。边车重探那条数的是**全局**的
+// load 计数（闸门不分 PDF），所以必须在打开第二份 PDF 之前做完。
+
+test.describe('59-pdf-translate · A 首次翻译，作业停在半路', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  let launched: LaunchedApp;
+  let pdfPath = '';
+  let paneSel = '';
+  let pane: Locator;
+  /** 发起作业之前闸门记到的 load 次数——边车重探那条用它算「focus 真的发出了一趟」。 */
+  let loadsBeforeStart = 0;
+
+  test.beforeAll(async () => {
+    launched = await launchKydog({ seed: seedFirstRun, translateFixture: TRANSLATE_FIXTURE });
+    pdfPath = path.join(launched.kydogHome, 'proj', PLAIN_REL);
+    paneSel = testIdSelector(`file-pane-${pdfPath}`);
+  });
+  test.afterAll(async () => { await teardown(launched); });
+
+  // 「右半边」是分栏改造之前的说法（那时两格在同一个滚动容器的同一行里）。现在浮层的父层就是
+  // **右栏**那个容器的兄弟（PdfFileTab 里右栏与 TranslationProgress 的共同 relative 父层），
+  // 措辞跟着 DOM 走。
+  test('59-pdf-translate: 点翻译键立刻进双栏，右格是空白像素、右栏里有进度浮层', async () => {
+    const { page } = launched;
+    pane = await openPdf(page, pdfPath);
+
+    // 二期起「没有译文」从禁用变成可点：动作是跑翻译流水线，不是进对照。
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    await installTranslateGate(launched);
+    loadsBeforeStart = (await gateCounts(launched)).started[LOAD] ?? 0;
+    // 发起方式同时给下一条（边车重探）造好起点：同一次 evaluate 里先发 focus、再点键。两件事落在
+    // 同一个任务里，focus 发出的那趟 load 绝无可能在中间 resolve，「启动作业时正好有一趟在途」
+    // 因此是确定的，不靠抢时间窗口。对这一条而言它就是「点翻译键」。
+    await page.evaluate((sel) => {
+      window.dispatchEvent(new Event('focus'));
+      (document.querySelector(sel) as HTMLElement).click();
+    }, testIdSelector('pdf-translate'));
+
+    // 进对照与浮层是**点下去那一刻**发生的：startTranslation 在第一个 await 之前就 setDual +
+    // setJob，不等抽取跑完。
+    await expect(pane.getByTestId('pdf-translate-progress')).toBeVisible();
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+    // 「在右栏里」取几何，不取「元素在不在」：浮层是右栏容器的兄弟、absolute 居中（放进滚动
+    // 容器会跟着内容滚走），挂错父层的话它会居中在整个 wrapper 上，横向中心落到左栏里去。
+    const overlayIn = await page.evaluate((sel) => {
+      const o = document.querySelector(`${sel} [data-testid="pdf-translate-progress"]`);
+      const r = document.querySelector(`${sel} [data-pdf-pane="right"]`);
+      if (!o || !r) return null;
+      const ob = o.getBoundingClientRect();
+      const rb = r.getBoundingClientRect();
+      return { cx: ob.left + ob.width / 2, rl: rb.left, rr: rb.right };
+    }, paneSel);
+    expect(overlayIn, '应当同时量得到浮层与右栏').not.toBeNull();
+    expect(overlayIn!.cx, `进度浮层的横向中心应当落在右栏里 ${JSON.stringify(overlayIn)}`)
+      .toBeGreaterThan(overlayIn!.rl);
+    expect(overlayIn!.cx).toBeLessThan(overlayIn!.rr);
+
+    await waitJobParked(launched);
+    await expect(pane.getByTestId('pdf-translate'), '翻译进行中翻译键禁用').toBeDisabled();
+
+    const s = await waitSample(page, paneSel, INK, '翻译进行中');
+    // 只断言「浮层在」是不够的：右格照常合成时那条也会绿。判据取像素本身。
+    expect(s.themePaper, '主题纸色不该正好是纯白——否则「空白」与「照常合成一张白页」区分不开')
+      .not.toEqual([255, 255, 255]);
+    expect(s.leftDark, '左格这一块里得真有原文墨迹，右格「空白」才谈得上是把东西藏住了')
+      .toBeGreaterThan(0);
+    expect(s.paper, `右格这一块应当逐像素都是主题纸色 ${JSON.stringify(s)}`).toBe(s.total);
+    expect(s.dark, '右格不该留下任何原文墨迹').toBe(0);
+  });
+
+  test('59-pdf-translate: 翻译期间的边车重探不会把用户踢出对照', async () => {
+    const { page } = launched;
+    const progress = pane.getByTestId('pdf-translate-progress');
+
+    // ① 作业**启动前就已经在途**的那一趟 load（上一条发起作业时一并发出的 focus）。挡住它的是
+    //    startTranslation 里那句 translationSeq 自增——loadTranslation 开头那道 job 闸只管**之后**
+    //    发起的重探，挡不住已经在途的这趟；它落地时盘上还没有边车，setLoaded(null) 会把 dual 收掉。
+    //
+    //    原来这里等的是 1 秒墙上时间（「一个 IPC 往返绰绰有余」）：等不够就假绿。改成两道确定的
+    //    栅栏——主进程侧所有已发出的 load 都跑完（作业期间 job 闸不再发新的，所以这个差会收敛到 0），
+    //    再走一次 fenceRendererIpc，保证它们的续体在渲染层也已经跑完。
+    await expect.poll(async () => {
+      const c = await gateCounts(launched);
+      return (c.started[LOAD] ?? 0) - (c.done[LOAD] ?? 0);
+    }, { timeout: 15000, message: '等启动作业前在途的那趟 load 在主进程侧跑完' }).toBe(0);
+    const inFlight = (await gateCounts(launched)).started[LOAD] ?? 0;
+    // ≥ 而不是 ===：打开 PDF 时那几趟自动加载（sizes 落地会重跑一次）与装闸门撞在一起的话会多记一趟；
+    // 要证明的只是 focus 那一趟真的发出去了。
+    expect(inFlight - loadsBeforeStart, 'focus 应当真的发出了一趟 load（与点键同一个任务，启动作业时它在途）')
+      .toBeGreaterThanOrEqual(1);
+    await fenceRendererIpc(page, pdfPath);
+    await expect(progress).toBeVisible();
+    expect(await pane.locator('[data-pdf-right="1"]').count(), '启动作业前在途的那趟加载不该收掉 dual')
+      .toBeGreaterThan(0);
+
+    // ② 翻译期间再触发一次 focus（真人切个窗口就会发生）：这次由 loadTranslation 开头的 job 闸
+    //    挡住，压根不发 RPC——闸门的计数只多出 fence 自己那一次。上面 ① 就是同一条用例里的正向：
+    //    没有作业时 focus 确实会发一趟 load。原来这里也是等 1 秒。
+    const beforeFocus = (await gateCounts(launched)).started[LOAD] ?? 0;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await fenceRendererIpc(page, pdfPath);
+    const afterFocus = (await gateCounts(launched)).started[LOAD] ?? 0;
+    expect(afterFocus - beforeFocus, '翻译期间的 focus 不该发出 load（多出来的一次是 fence 自己）').toBe(1);
+    await expect(progress).toBeVisible();
+    expect(await pane.locator('[data-pdf-right="1"]').count(), '翻译期间的 focus 重探不该收掉 dual')
+      .toBeGreaterThan(0);
+  });
+
+  test('59-pdf-translate: 取消退回单栏，磁盘上什么都没写', async () => {
+    const { page } = launched;
+    const sidecar = path.join(path.dirname(pdfPath), `.${PLAIN_REL}.zh.json`);
+    const right = pane.locator('[data-pdf-right="1"]');
+    const progress = pane.getByTestId('pdf-translate-progress');
+
+    // 起点：前两条留下的那趟作业，停在第 1 页的版面请求上。下面「退回单栏」那两条否定断言的正向。
+    await expect(progress).toBeVisible();
+    await expect(right.first()).toBeVisible();
+
+    await pane.getByTestId('pdf-translate-cancel').click();
+    await expect(right, '取消要退回单栏').toHaveCount(0);
+    await expect(progress).toHaveCount(0);
+
+    // 取消这一刻，被扣住的仍是第 1 页的版面请求：第二步要等第一步的响应解析完才知道发哪几个
+    // 可译组，这一步压根没有机会发出——这条断言只在**此刻**（还没放行）成立，落死在这里。
+    const parked = await gateCounts(launched);
+    expect(parked.started['pdf.translation.layout'], '取消那一刻只发出过第 1 页的版面请求').toBe(1);
+    expect(parked.started['pdf.translation.translate'] ?? 0, '被扣住的是版面，第二步根本没发出过')
+      .toBe(0);
+
+    // 放行被扣住的那条请求：它落地时代际已经失配，组装与写盘都不该再发生。不放行的话这条用例
+    // 只证明了「取消那一刻还没写盘」，证明不了「在途的请求跑完之后也不写」——而那正是 jobSeq
+    // 要挡的东西。
+    //
+    // 「此后什么都不发生」这件事以前等的是 1.5 秒墙上时间：等不够就假绿（Task 15 要摘掉的
+    // 就是这条）。改成两道确定的栅栏——① 主进程侧确认被扣住的那条请求真的跑完（回复已发出），
+    // ② 再走一次 fenceRendererIpc，保证那条回复的续体在渲染层也已经跑完（见该函数的注释）。
+    await releaseGate(launched);
+    await expect.poll(
+      async () => (await gateCounts(launched)).done['pdf.translation.layout'] ?? 0,
+      { timeout: 15000, message: '等被扣住的那条版面请求真的跑完' },
+    ).toBeGreaterThan(0);
+    await fenceRendererIpc(page, pdfPath);
+
+    const counts = await gateCounts(launched);
+    // 不再往下派页——worker 循环的取消检查点挡的是**页 2-4**，钉住的是这一半。第 1 页自己放行之后
+    // 发不发第二步是 runPage 两步之间那道检查点的事（页内，不是 worker 派发新页），由
+    // translateDoc.test「版面已回、第二步还没发时取消」守，所以这里只认 layout 的计数：
+    // `jobSeq.current += 1` 那行去掉之后，被放行的第一页落地时会照常把其余三页派出去——而它们
+    // **先于**这条 fence 发出（同一条管道 FIFO），所以这里读到的必然是 4。
+    expect(counts.started['pdf.translation.layout'], '取消之后不该再派新的页')
+      .toBe(1);
+    expect(counts.started['pdf.translation.save'] ?? 0, '取消之后不该发出任何写盘请求').toBe(0);
+    const exists = await fs.stat(sidecar).then(() => true, () => false);
+    expect(exists, `取消之后不该有译文边车：${sidecar}`).toBe(false);
+  });
+
+  test('59-pdf-translate: 覆盖确认框点取消——一条仍然成立的错误提示不该被顺手抹掉', async () => {
+    // 复审点名的一条：`onToggleDual` 里那句 `setTranslateError(null)` 原先排在 `confirm()`
+    // **之前**，于是「按翻译键 → 看到确认框 → 取消」会顺手清掉一条此刻仍然成立的提示，而这一刻
+    // 什么都没发生——用户按下取消，界面上唯一的线索却没了。
+    //
+    // 触发条件要两样东西同时成立：翻译键处在 invalid / mismatch（动作会覆盖磁盘上已有的边车，
+    // 因而先过 confirm），并且 Notice 上正挂着一条 translateError。scan.pdf 把两样都造出来（见
+    // seedFirstRun）：坏边车给 invalid 态，没有文本层让第一次确认过的翻译在抽取阶段失败。
+    //
+    // 顺带收进来两条原本各自单独启动的说法：翻译失败要把 translateError 显示在 Notice 上并**退回
+    // 单栏**（原来借「没配模型」那条触发，要一份单独的设置、多一次启动），退回的是真的单栏**几何**
+    // （原「没有文本层」那条）。
+    const { page } = launched;
+    const scanPath = path.join(path.dirname(pdfPath), SCAN_REL);
+    const scanZh = path.join(path.dirname(pdfPath), SCAN_ZH_REL);
+    const scanSel = testIdSelector(`file-pane-${scanPath}`);
+    const zhBefore = await fs.readFile(scanZh, 'utf8');
+    const scan = await openPdf(page, scanPath);
+    const key = scan.getByTestId('pdf-translate');
+    const notice = scan.getByTestId('pdf-notice');
+    const right = scan.locator('[data-pdf-right="1"]');
+    const progress = scan.getByTestId('pdf-translate-progress');
+
+    // 前提：坏边车真的让这份 PDF 处在 invalid 态（主键可点、Notice 报的是边车有误，不是翻译失败）。
+    await expect(key).toBeEnabled();
+    await expect(notice).toContainText('译文文件有误');
+    const single = await paneLayout(page, scanSel);
+    expect(single, '点之前就该量得到左栏').not.toBeNull();
+    expect(single!.rightPanes, '点之前是单栏').toBe(0);
+    expect(single!.leftW, '单栏时左栏就是 wrapper 那么宽').toBeCloseTo(single!.wrapW, 0);
+
+    // 先真发起一次并让它失败，把那条提示挂上去（invalid 态覆盖已有边车 → 先过确认框）。
+    // 闸门扣住 resolveModel：作业停在「已进对照、还没开始抽取」这一刻——下面「退回单栏」那几条
+    // 否定断言的正向证明（同一条用例里）：它真的进过双栏，版面也真的变过。
+    await rearmGate(launched, ['pdf.translation.resolveModel']);
+    await key.click();
+    await confirmRetranslate(page);
+    await waitJobParked(launched, '等作业停在 resolveModel 上（已进对照、还没开始抽取）');
+    await expect(progress).toBeVisible();
+    await expect(right.first()).toBeVisible();
+    await expect.poll(async () => {
+      const l = await paneLayout(page, scanSel);
+      return !!l && l.rightPanes > 0 && l.dividers > 0 && l.leftW < l.wrapW - 1;
+    }, { timeout: 10000, message: '作业进行中应当是双栏版面（右栏 + 分隔线、左栏变窄）' }).toBe(true);
+
+    // 放行：抽取阶段每页零行 → translateDoc 的 `work.length === 0` 抛错中止（spec §4：「这页没字」
+    // 与「这页抽取失败」是两件事，前者整份为空就是扫描件）。进来之前不在对照中（wasDualRef 为
+    // false），catch 分支因此把 dual 收掉。
+    await releaseGate(launched);
+    await expect(notice, 'Notice 应当报出抽取阶段那句原话').toContainText('翻译失败：这份 PDF 没有文本层');
+    await expect(right, '翻译失败要退回单栏').toHaveCount(0);
+    await expect(progress).toHaveCount(0);
+    // 「仍是单栏」取版面几何，不取「那块 canvas 在不在」：留在双栏的话左栏只有 wrapper 的一半宽，
+    // 还多出一条分隔线和一个右栏容器。三条都断，任何一处没退干净都会红。
+    await expect.poll(
+      async () => (await paneLayout(page, scanSel))?.leftW,
+      { timeout: 10000, message: '等失败之后退回单栏' },
+    ).toBeCloseTo(single!.wrapW, 0);
+    const after = (await paneLayout(page, scanSel))!;
+    expect(after.leftW, `左栏应当仍铺满 wrapper ${JSON.stringify(after)}`).toBeCloseTo(after.wrapW, 0);
+    expect(after.rightPanes, '不该留下右栏').toBe(0);
+    expect(after.dividers, '不该留下分隔线').toBe(0);
+    // 顺带确认这条失败路径什么都没写盘：那份坏边车逐字节原样。
+    expect(await fs.readFile(scanZh, 'utf8'), '抽取阶段就中止，不该碰盘上的边车').toBe(zhBefore);
+
+    // 再按一次，这次在确认框上点取消：什么都没发生，提示就该原样还在。
+    await key.click();
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+    await page.getByTestId('confirm-dialog-cancel').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+    await expect(notice, '取消覆盖之后那条提示仍然成立，不该被清掉')
+      .toContainText('翻译失败：这份 PDF 没有文本层');
+  });
+});
+
+// ═══ B 从对照态出发 ═════════════════════════════════════════════════════════════
+//
+// 段内顺序（fixture 按这个顺序拼，见 FROM_READY_FIXTURE）：
+//   1. 确认框取消 → 再点确认，留下一趟停在第 1 页版面上的全部重译（正向证明）；
+//   2. 取消这趟、放行——只落地第 1 页的版面，吃掉第 1 页头一条响应；
+//   3. 重译第 2 页——必须在任何一趟全部重译跑完**之前**：越界块与 seed1 只活在种子边车里；
+//   4. 跑到底的全部重译；
+//   5. 删除译文——删了边车，只能放最后。
+// 全程不离开对照：进对照前的读数记在第 1 条，删除译文那条要拿它比「缩放还原」。
+
+test.describe('59-pdf-translate · B 从对照态出发', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  let launched: LaunchedApp;
+  let pdfPath = '';
+  let zhPath = '';
+  let paneSel = '';
+  let pane: Locator;
+  /** 进对照之前的读数（页码 · 缩放）。 */
+  let readoutBefore = '';
+
+  test.beforeAll(async () => {
+    launched = await launchKydog({ seed: seedReady, translateFixture: FROM_READY_FIXTURE });
+    pdfPath = path.join(launched.kydogHome, 'proj', READY_REL);
+    zhPath = path.join(launched.kydogHome, 'proj', READY_ZH_REL);
+    paneSel = testIdSelector(`file-pane-${pdfPath}`);
+  });
+  test.afterAll(async () => { await teardown(launched); });
+
+  /** 种子边车里那条块，限 stable 层（见「被取消」那条里关于双缓冲 strict mode 的注释）。 */
+  const seed1 = (page: Page) => page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="seed1"]`);
+
+  test('59-pdf-translate: 「重新翻译」确认框点取消——边车不变，没有发起任何翻译请求', async () => {
+    // 三个入口（invalid/mismatch 主键、active 态的 pdf-retranslate）共用 PdfFileTab 里同一处
+    // confirm() 调用（见 onToggleDual / onRetranslate 的注释），机制一致，这里只测一个入口的取消
+    // 分支就够——挑 active 态的 pdf-retranslate 键，因为它最常用、断言起来也最直接（旧块原样还在）。
+    //
+    // 断言要落在协议层事实上，不是「弹出过一次对话框」这类过程性动作：
+    //   ① 磁盘上的边车字节逐字节不变（不是只看 mtime）；
+    //   ② `pdf.translation.layout` / `pdf.translation.translate` / `pdf.translation.save` 一次都
+    //      没被调用过——装闸门直接读 started 计数，不靠等一段墙上时间去猜「后面没有再发生什么」；
+    //   ③ 界面原样留在对照中，旧译文块还在。
+    // 末尾点一次「确认」当同一条用例里的正向证明：计数器与浮层在真发起时确实会动。
+    const { page } = launched;
+    pane = await openPdf(page, pdfPath);
+    readoutBefore = (await pane.getByTestId('pdf-readout').textContent()) ?? '';
+    const before = await fs.readFile(zhPath, 'utf8');
+    const progress = pane.getByTestId('pdf-translate-progress');
+
+    await enterDual(page, pane);
+    await expect(seed1(page)).toBeVisible();
+
+    await installTranslateGate(launched);
+    await pane.getByTestId('pdf-retranslate').click();
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+    await page.getByTestId('confirm-dialog-cancel').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+    // 确认框已经关掉、点取消这一路 confirm() 的 promise 直接 resolve(false)，压根没有一条 IPC
+    // 请求发出过——不需要 fenceRendererIpc 那套栅栏（那是用来等一条**已经发出**的请求收尾）。
+    const counts = await gateCounts(launched);
+    expect(counts.started['pdf.translation.layout'] ?? 0, '取消之后不该发出任何版面请求').toBe(0);
+    expect(counts.started['pdf.translation.translate'] ?? 0, '取消之后不该发出任何翻译请求').toBe(0);
+    expect(counts.started['pdf.translation.save'] ?? 0, '取消之后不该发出任何写盘请求').toBe(0);
+    expect(await fs.readFile(zhPath, 'utf8'), '取消之后边车必须逐字节保持不变').toBe(before);
+
+    await expect(progress).toHaveCount(0);
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
+    await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在').toBeVisible();
+    await expect(seed1(page), '旧译文块原样还在').toBeVisible();
+
+    // 正向：同一个键、同一个确认框，这次点「确认」——版面请求真的发出、浮层真的出来。这趟作业停在
+    // 第 1 页的版面上，留给下一条去取消。
+    await pane.getByTestId('pdf-retranslate').click();
+    await confirmRetranslate(page);
+    await waitJobParked(launched);
+    expect((await gateCounts(launched)).started['pdf.translation.layout'], '点确认就发出第 1 页的版面请求')
+      .toBe(1);
+    await expect(progress).toBeVisible();
+  });
+
+  test('59-pdf-translate: 对照中发起的重新翻译被取消——不会把用户踢出对照（wasDual 修复）', async () => {
+    // 这才是真正钉住 wasDual 修复的用例：从 active 态（dual === true）发起重译，取消。修复前
+    // cancelTranslation 无条件 setDual(false)，会把用户踢出这个本来完好的对照视图——store 里
+    // 那份旧 doc 还在、右格本可以照常合成，退回单栏是纯粹的体验退化，不是任何数据一致性要求。
+    const { page } = launched;
+    const progress = pane.getByTestId('pdf-translate-progress');
+
+    // 起点：上一条从对照中发起、停在第 1 页版面上的那趟作业。也是下面浮层消失那条的正向。
+    await expect(progress).toBeVisible();
+
+    await pane.getByTestId('pdf-translate-cancel').click();
+    await expect(progress).toHaveCount(0);
+    await expect(pane.locator('[data-pdf-right="1"]').first(), '取消对照中的重译不该把用户踢出对照')
+      .toBeVisible();
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
+    await expect(pane.getByTestId('pdf-retranslate'), '仍是 active 态，「重新翻译」键还在')
+      .toBeVisible();
+    // Minor #5（Task 14 审查发现）：`[data-pdf-right="1"]` 只是右格那块 canvas 本身，不管它画的
+    // 是内容还是一整格纸色都在——只断言它可见证明不了「对照视图还能用」，「留在 dual 但右格永久
+    // 空白」这种更糟的状态照样能让上面那几行绿。这里补上 store 里那份旧 doc（cancel 不动它）
+    // 应当重新渲染出来的具体那个块：job 收掉之后 `!translating` 重新为真，TranslationBlocks
+    // 才会渲染（见 RightPage 里的注释），能看到 seed1 就说明取消之后合成的确实是可用的旧译文，
+    // 不是空壳。
+    // 定位限死在 **stable 层**上：缩放走双缓冲，顶替完成之前 layers 有两份，同一个块在 DOM 里
+    // 就有两个（进对照那一下的 fit-width 提交在机器忙时能拖到这里还没顶替完）——不限层的话
+    // Playwright 会以 strict mode violation 间歇性地红在这一行，而那与本条要钉的东西无关。
+    // 取 stable 层不是放宽：它就是用户此刻真正看着的那一层（incoming 层压在它下面，zIndex 0）。
+    await expect(seed1(page), '取消之后旧译文块应当重新出现——右格是真的可用，不是空壳').toBeVisible();
+
+    // 放行被扣住的那条请求：它落地时代际已经失配，不该再把 job / dual 写回去。
+    //
+    // 原来这里等的是 1 秒墙上时间。改成确定的栅栏（同 A 段取消那条）：主进程侧等被扣住的那条版面
+    // 请求真的跑完（回复已发出），再走一次 fenceRendererIpc 让它的续体在渲染层跑完——那条回复是
+    // 这趟作业最后一次落地：第 1 页在两步之间的检查点上早退，worker 也不再派页。
+    expect(await heldCount(launched), '上一条留下的那条版面请求此刻还扣着').toBe(1);
+    const c0 = await gateCounts(launched);
+    await releaseGate(launched);
+    await expect.poll(
+      async () => (await gateCounts(launched)).done['pdf.translation.layout'] ?? 0,
+      { timeout: 15000, message: '等被扣住的那条版面请求真的跑完' },
+    ).toBe(c0.started['pdf.translation.layout'] ?? 0);
+    await fenceRendererIpc(page, pdfPath);
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+    await expect(progress, '作废的那趟作业不该把进度写回来').toHaveCount(0);
+    await expect(seed1(page)).toBeVisible();
+  });
+
+  test('59-pdf-translate: 部分跑的 base 是盘上的原文——越界块不会被顺手从磁盘上抹掉（final review I-1）', async () => {
+    // 越界块（DROPPED_BLOCK_ID，见 seedReady 里那条种子边车）在内存里从来不存在：loadTranslation
+    // 用 filterByGeometry 把它滤掉才存进 store，Notice 显示「已跳过」、右格也画不出它。如果
+    // startTranslation 拿 store 里那份已过滤的 doc 当「重译本页」的 base，pages 之外的块会在
+    // 「原样带过来」那步直接漏掉这一条——合并结果整份落盘，等于把它从磁盘上永久抹掉（违反
+    // spec §8 不变量 #7）。这里重译与它无关的第 2 页，只测「pages 之外的块」这条合并路径，钉住
+    // base 必须来自重新探盘（pdf.translation.load），不是 store 里那份几何过滤后的内存副本。
+    const { page } = launched;
+
+    const before = await readSidecar(zhPath);
+    const droppedBefore = before.blocks.find((b) => b.id === DROPPED_BLOCK_ID);
+    expect(droppedBefore, '种子边车里那条越界块得先在盘上').toBeDefined();
+    // 它在内存里已经被几何过滤丢了：Notice 显示「已跳过」，右格也没有它的踪影——这是过滤
+    // 本身该有的样子，不是本条要钉的 bug；本条钉的是它在**磁盘**上活不活得下来。
+    await expect(pane.getByTestId('pdf-notice')).toContainText('1 条译文块超出页面范围，已跳过');
+    await expect(seed1(page), '同一份边车里的另一条块是渲染出来的（下面那条否定断言的正向）').toBeVisible();
+    await expect(page.locator(`${paneSel} [data-translation-block="${DROPPED_BLOCK_ID}"]`)).toHaveCount(0);
+
+    await scrollToPage(page, pane, paneSel, 2);
+    await pane.getByTestId('pdf-retranslate-page').click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('重译第 2 页');
+    await page.getByTestId('confirm-dialog-confirm').click();
     await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
+    await expect.poll(async () => (await readSidecar(zhPath)).blocks.find((b) => b.page === 2)?.target, { timeout: 15000 })
+      .toBe('第二页的译文');
+
+    // 关键断言：越界块必须仍在磁盘上，逐字相等——不是「还有条 id 一样的块」，是同一条块的每个
+    // 字段都没被重新生成或截断过。
+    const after = await readSidecar(zhPath);
+    const droppedAfter = after.blocks.find((b) => b.id === DROPPED_BLOCK_ID);
+    expect(droppedAfter, '越界块必须仍在磁盘上，一个字节都不能丢').toEqual(droppedBefore);
+    // 收尾：等这一趟跑完之后的重新加载落进界面，下一条从一个静止的对照态出发。
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p2-b01"]`))
+      .toHaveText('第二页的译文');
+  });
+
+  test('59-pdf-translate: 已在对照中点「重新翻译」键——右格回到空白，跑完出现新块', async () => {
+    // 从 active 态（dual 已经是 true）走真正的 pdf-retranslate 按钮发起：进入 startTranslation 时
+    // wasDual 为 true，这是 wasDual 这条修复（Task 14）要保的路径。
+    const { page } = launched;
+    const blocks = page.locator(`${paneSel} [data-translation-block]`);
+
+    // 取样在第 1 页：上一条滚到了第 2 页，先滚回来。
+    await scrollToPage(page, pane, paneSel, 1);
+    await expect(blocks.first(), '进对照后旧译文块可见').toBeVisible();
+    await expect(seed1(page), '上一版的块此刻在（下面「不该还留在那儿」的正向）').toBeVisible();
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '退出对照 · L');
+    const retranslateBtn = pane.getByTestId('pdf-retranslate');
+    await expect(retranslateBtn, '「重新翻译」键只在 active 态渲染').toBeVisible();
+    await expect(retranslateBtn).toHaveAttribute('aria-label', '全部重译');
+
+    // 先证明「有东西可消失」：右格照常合成（INK 那一块里原文墨迹还在）。
+    const before = await waitSample(page, paneSel, INK, '重译之前');
+    expect(before.leftDark, '左格这一块里得有原文墨迹').toBeGreaterThan(0);
+    expect(before.dark, '重译之前右格是照常合成的：这一块里应当有原文墨迹').toBeGreaterThan(0);
+
+    await rearmGate(launched, ['pdf.translation.layout']);
+    await retranslateBtn.click();
+    await confirmRetranslate(page);
+    await waitJobParked(launched);
+
+    const during = await waitSample(page, paneSel, INK, '按「重新翻译」键之后进行中');
+    expect(during.paper, `重译期间右格应当逐像素都是主题纸色 ${JSON.stringify(during)}`).toBe(during.total);
+    // 译文层若不整层关掉，这里会是「空白底图 + 上一版译文浮在上面」——store 里那份 doc 还在，
+    // 块照样有得渲染，所以这条不是恒真的。
+    await expect(blocks, '重译期间旧译文块必须一并消失').toHaveCount(0);
+    // 仍在对照中，没有被踢出单栏——这条断言只有在从 dual === true 发起、且这一趟没出错时才成立，
+    // 单独放这里是因为它此刻还测不出 wasDual 的修复（成功路径压根不碰 setDual），真正测到修复的
+    // 是上面「被取消」那条用例。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+
+    // 放行 → 新边车落盘 → 走现有的 loadTranslation 重新加载 → 右格恢复合成、**新**块出现。
+    //
+    // 判据必须落在「是不是新那一版」上，不能只问「有没有块」：清掉 job 那一刻译文层就会重新
+    // 渲染，而 store 里此刻还是上一版的 doc——「有块」在没重新加载的情况下也成立（实测：把
+    // 「先清 job、再 loadTranslation」调换顺序，只问有没有块的写法照样全绿）。所以这里认块的
+    // **id**：新的一版由 buildBlocks 按页与最小行号编号（p1-b01），旧的那条是 fixture 里写死
+    // 的 seed1，两者不可能混淆。这条因此真的钉住了那个顺序：反过来的话那趟加载会被 job 闸自己
+    // 挡掉，边车虽然落了盘，界面上却永远停在上一版。
+    await releaseGate(launched);
+    const fresh = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`);
+    await expect(fresh, '跑完之后应当渲染的是新这一版的译文块').toBeVisible({ timeout: 15000 });
+    // 这条**不**限 stable 层：toHaveCount(0) 不受 strict mode 影响（限层是为了双缓冲两层并存时
+    // 同一个块两份会 strict mode 违规，那只发生在单命中的断言上），限了反而更弱——残留在
+    // incoming 层上的旧块会被放过。否定断言要泛选。
+    await expect(
+      page.locator(`${paneSel} [data-translation-block="seed1"]`),
+      '上一版的块不该还留在那儿',
+    ).toHaveCount(0);
+    const after = await waitSample(page, paneSel, INK, '重译之后');
+    expect(after.paper, `跑完之后右格不该还是一片主题纸色 ${JSON.stringify(after)}`).toBeLessThan(after.total);
+  });
+
+  test('59-pdf-translate: 「删除译文」删掉边车、退回单栏、缩放还原、主键回到「翻译」；取消则什么都不动', async () => {
+    const { page } = launched;
+    // 读数里带着页码：进对照前记下的是第 1 页，比之前先回到第 1 页。
+    await scrollToPage(page, pane, paneSel, 1);
+    const del = pane.getByTestId('pdf-translate-delete');
+    await expect(del).toBeVisible();
+    // 下面几条「没了」的正向：此刻右栏、分隔线、「重新翻译」键都在。
+    await expect(pane.getByTestId('pdf-retranslate')).toBeVisible();
+    const dual = (await paneLayout(page, paneSel))!;
+    expect(dual.rightPanes, `此刻是双栏 ${JSON.stringify(dual)}`).toBeGreaterThan(0);
+    expect(dual.dividers).toBeGreaterThan(0);
+
+    // 取消：文件仍在、仍在对照
+    await del.click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('删除译文');
+    await page.getByTestId('confirm-dialog-cancel').click();
+    expect(await fs.stat(zhPath).then(() => true, () => false)).toBe(true);
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+
+    // 确认：文件没了 → 单栏几何 → 读数还原 → 主键回到「翻译 · L」
+    await del.click();
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect.poll(() => fs.stat(zhPath).then(() => true, () => false), { timeout: 10000 }).toBe(false);
+    await expect.poll(async () => (await paneLayout(page, paneSel))?.rightPanes, { timeout: 10000 }).toBe(0);
+    const layout = (await paneLayout(page, paneSel))!;
+    expect(layout.dividers).toBe(0);
+    expect(layout.leftW).toBeCloseTo(layout.wrapW, 0);
+    await expect(pane.getByTestId('pdf-readout')).toHaveText(readoutBefore);
+    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '翻译 · L');
+    await expect(pane.getByTestId('pdf-retranslate')).toHaveCount(0);
+  });
+});
+
+// ═══ D 跑完之后 ═══════════════════════════════════════════════════════════════
+//
+// 段内顺序：第一条发起唯一一趟完整翻译（第 2 页失败）、停在 finalize 再放行跑完；中间三条只读
+// 结果（像素、Notice、边车、focus 重探），不发起作业；最后一条「重试失败页」改写第 2 页，放最后。
+// 闸门在第一条装上、此后一直透传，计数从那一趟之前开始累计。
+
+test.describe('59-pdf-translate · D 跑完之后', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  let launched: LaunchedApp;
+  let pdfPath = '';
+  let sidecar = '';
+  let paneSel = '';
+  let pane: Locator;
+
+  test.beforeAll(async () => {
+    launched = await launchKydog({ seed: seedPlain, translateFixture: FAIL_THEN_RETRY_FIXTURE });
+    pdfPath = path.join(launched.kydogHome, 'proj', PLAIN_REL);
+    sidecar = path.join(launched.kydogHome, 'proj', `.${PLAIN_REL}.zh.json`);
+    paneSel = testIdSelector(`file-pane-${pdfPath}`);
+  });
+  test.afterAll(async () => { await teardown(launched); });
+
+  test('59-pdf-translate: finalize 阶段（正在写盘）取消键禁用，且那一档的三个数字都是真值', async () => {
+    // spec §9.3 的提交点：jobSeq 挡得住「写渲染层的 store」，挡不住一次**已经发出的 save**。
+    // 所以取消入口在进入 finalize 的那一刻关闭——否则会出现「取消了但边车落了盘」的中间态。
+    //
+    // finalize 只有一次 IPC 往返那么宽，靠时机去抓抓不住。把闸门改成扣 `pdf.translation.save`：
+    // 翻译整趟照常跑完，作业**确定地**停在「已经 setJob(finalize)、save 请求已发出未落地」这一刻。
+    //
+    // 这个「确定地停在 finalize」的落点也是全仓唯一能看住 M-1 的地方，所以顺带把那一档的读数一起
+    // 钉在这里：曾经硬写过一版 `{ done: 0, total: 1, failed: 0 }`，后果是保存那一刻进度条从 100%
+    // 打回 0%、「N 页失败」凭空消失，而当时没有任何断言会因此变红。fixture 因此选带失败页的那份
+    // （第 2 页两次响应都不是 id 头）——三个数字这才与那组硬写值**逐个**不同，换成全成功的 fixture
+    // 只有 done/total 有区分力，failed 那位又回到零覆盖。
+    const { page } = launched;
+    pane = await openPdf(page, pdfPath);
+    await expect(pane.getByTestId('pdf-translate')).toBeEnabled();
+
+    await installTranslateGate(launched, ['pdf.translation.save']);
+    await pane.getByTestId('pdf-translate').click();
+
+    await waitJobParked(launched, '等作业跑到写盘请求上（进入 finalize）');
+
+    // 浮层还在，而且报的是 finalize 那一档的文案——不然下面那条 disabled 可能是别的原因。
+    const progress = pane.getByTestId('pdf-translate-progress');
+    await expect(progress).toBeVisible();
+    await expect(progress, 'finalize 那一档的三个数字都得是这一趟的真值：4 页全翻完、其中 1 页失败')
+      .toContainText('正在保存 · 4 / 4 · 1 页失败');
+    await expect(pane.getByTestId('pdf-translate-cancel'), 'finalize 之后不再给取消').toBeDisabled();
+
+    // 放行：这一趟照常写盘、重新加载，画面进对照。钉住「禁用的是取消，不是把作业卡死了」。
+    await releaseGate(launched);
     await waitSidecar(sidecar);
+    await expect(progress).toHaveCount(0, { timeout: 20000 });
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toBeVisible({ timeout: 20000 });
+  });
+
+  // 渲染类断言一律取像素或磁盘，不取「元素在不在」：`[data-pdf-right="1"]` 那块 canvas 不管画的是
+  // 内容还是一整格纸色都在，而译文块 div 只要 store 里有 doc 就渲染得出来，两者都证明不了画对了。
+  // 边车本身解析得对不对（块 id、target）是 translateDoc / zhSidecar 的单测的事，这里只借它的几何。
+  test('59-pdf-translate: 跑完之后边车落盘可解析，右格那一块的原文墨迹被译文块盖掉', async () => {
+    const { page } = launched;
+    const b1 = (await readSidecar(sidecar)).blocks.find((b) => b.id === 'p1-b01');
+    expect(b1, '第 1 页应当有一个块，借它的几何当取样矩形').toBeDefined();
+
+    // 译文块渲染出来了，文字就是 fixture 给第 1 页的那句。
+    await expect(page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="p1-b01"]`)).toHaveText('第一页的译文');
+
+    // 像素：右格这一块里的原文墨迹没了（RightPage 按页背景色把块矩形填平了），左格同一块里
+    // 还在。取样矩形直接用边车里那个块**自己的几何**内缩 1 pt，不写死坐标——写死的话 fixture
+    // PDF 的排版一改就会悄悄采到块外面去，而块外面本来就是白纸，`dark === 0` 恒成立，这条
+    // 断言会退化成永远绿。内缩 1 pt 是为了避开 fillRect 的取整边界（实际覆盖区还要再外扩一个
+    // BLOCK_PAD，所以内缩之后必然仍在覆盖区里）。
+    const inner = { x: b1!.x + 1, y: b1!.y + 1, w: b1!.width - 2, h: b1!.height - 2 };
+    const s = await waitSample(page, paneSel, inner, '跑完之后');
+    expect(s.leftDark, '左格这一块里得真有原文墨迹，右格「盖掉了」才谈得上').toBeGreaterThan(0);
+    expect(s.dark, `右格这一块不该还留着原文墨迹 ${JSON.stringify(s)}`).toBe(0);
+  });
+
+  test('59-pdf-translate: 跑完之后仍能看到「N 页翻译失败」——失败页号随边车落盘', async () => {
+    // Task 14 审查发现：Notice 原来判的是 `t?.job && t.job.failed > 0`，而作业完成后 job 整个变
+    // null——「这趟有几页失败」在跑完那一刻，也就是用户最需要看到它的时刻，必然读不到。最终修法是
+    // 让 translateDoc 把失败页号写进 doc.failedPages 一起落盘，Notice 从 store 里那份 doc 现读。
+    // 第一条那趟：第 2 页版面正常、翻译两次响应的头行都不是 `g<n>`（parseTranslations 两次都抛
+    // 「组头不是 id」，runPage 重试一次后把页号 2 记下），其余三页正常——作业整体仍然成功跑完、
+    // 写盘、走 loadTranslation 重新加载。
+    const { page } = launched;
+    await expect(pane.getByTestId('pdf-notice'), '作业跑完之后这条消息仍应可见')
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
+    // 顺带钉住信号的落点：Notice 上那句话的来源是**边车里的页号**，不是内存里某个作业留下的
+    // 数字。页号而不是计数——计数是逐页信号的有损汇总，长度随时能推出来，反过来不行。
+    const saved = await readSidecar(sidecar);
+    expect(saved.failedPages, '失败页号应当写进边车').toEqual([2]);
+    // 第 2 页版面正常、卡在第二步：两次响应的头行都不是 `g<n>`，parseTranslations 判「组头不是
+    // id」。前缀 `翻译：` 说明是第二步失的（`版面：` 是第一步的前缀，两者不该混）。
+    expect(saved.failureReasons?.['2'], '失败原因应当随页号一起落盘').toMatch(/^翻译：组头不是 id/);
+    // 悬停 Notice → Tooltip 里每页一行原因
+    await pane.getByTestId('pdf-notice').hover();
+    const tip = page.getByTestId('pdf-notice-reasons');
+    await expect(tip).toBeVisible();
+    await expect(tip).toContainText('第 2 页：');
+    await expect(tip).toContainText('组头不是 id');
+    // fixture 里第 2 页第一条响应文本被撑到 300+ 字符（模型输出原样被 JSON.stringify 回显进
+    // 原因串），真实场景下这类长原因会把没有 max-width / white-space: normal 的面板宽出窗口。
+    //
+    // 只断 getBoundingClientRect() 的 left/right 不够：容器有 overflow: visible（默认值），
+    // `max-width` 只钳容器**自己这个盒子**的宽度，`white-space: nowrap` 时那一整行文字仍会
+    // 照常画到盒子外面——盒子的 rect 依旧乖乖落在 max-width 之内，但真正画出来的字远远宽出去，
+    // 实测过：去掉 `white-space: normal` 之后 clientWidth 还是 520，scrollWidth 却蹿到 3323，
+    // 只断 rect 的话这条用例会假绿。scrollWidth 才是「有没有真的换行」的信号：换行成立时内容
+    // 撑不出容器本身的宽度，scrollWidth ≈ clientWidth；不换行则一整行文字的固有宽度全部计入
+    // scrollWidth，远超 clientWidth。
+    const rect = await tip.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        left: r.left, right: r.right, innerWidth: window.innerWidth,
+        scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+      };
+    });
+    expect(rect.scrollWidth, `原因文本没有真的换行，撑出了容器本身 ${JSON.stringify(rect)}`)
+      .toBeLessThanOrEqual(rect.clientWidth + 1);   // +1 容小数像素舍入
+    expect(rect.left, `原因面板不该宽出视口左边 ${JSON.stringify(rect)}`).toBeGreaterThanOrEqual(0);
+    expect(rect.right, `原因面板不该宽出视口右边 ${JSON.stringify(rect)}`).toBeLessThanOrEqual(rect.innerWidth);
+    // 失败页不该把用户踢出双栏——它只是那一页保留原文，不是整趟作业失败。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+  });
+
+  test('59-pdf-translate: 切一次窗口（focus 重探）之后「N 页翻译失败」仍在——信号在边车里，不在内存里', async () => {
+    // **这条是「失败页信号收口到边车」那轮修复的回归点。**
+    //
+    // 收口之前，「哪几页失败」只从 onProgress 这条侧信道漏出一个瞬时数字、存在渲染层的 store 里，
+    // 而边车里一个字节都没记。于是「这个数字该活多久」变成一个下游问题，两种写法都是错的：
+    // 保留 → agent 只重写边车（PDF 没变、checkVersion 仍判 ok）时会挂着上一份的陈旧计数；
+    // 归零 → 这条提示撑不过一次切窗口，因为 loadTranslation 挂在 window 的 focus 上，真人 alt-tab
+    // 回来就会重探一次边车。这条用例守的是后者：跑完一趟带失败页的翻译，派发一次 focus，提示还得在。
+    //
+    // 判据全在协议层，没有等墙上时间：
+    //   ① 边车里确实有 failedPages（读盘，逐字节的事实）；
+    //   ② focus 真的触发了一次 pdf.translation.load（闸门的 started 计数，不是「大概会发生」）；
+    //   ③ 那次重探**已经落进渲染层的 store**——靠 fenceRendererIpc 这道栅栏：loadTranslation 在
+    //      focus 回调里同步发出 invoke，排在 fence 自己那条之前，同一条 FIFO 管道，所以 fence 一
+    //      返回，重探的续体（setLoaded）必定已经跑完。此后 Notice 上还有没有那句话，是确定的。
+    const { page } = launched;
+    await expect(pane.getByTestId('pdf-notice'), '跑完之后应显示 1 页失败')
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
+    expect((await readSidecar(sidecar)).failedPages, '失败页号应当写进边车').toEqual([2]);
+
+    // 闸门第一条就装上了、此后一条都不扣，这里只用它数 pdf.translation.* 的调用次数。
+    const before = (await gateCounts(launched)).started[LOAD] ?? 0;
+
+    // 切一次窗口。真人 alt-tab 回来就是这个事件，spec §3.4 靠它重探边车（边车是点号开头的
+    // 文件，fileWatcher 跳过它，没有 file.changed 可用）。
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await fenceRendererIpc(page, pdfPath);
+
+    const after = (await gateCounts(launched)).started[LOAD] ?? 0;
+    expect(after - before, 'focus 应当真的触发一次重探（另一次是 fence 自己）').toBe(2);
+
+    // 关键断言：重探回来之后提示仍在。信号在盘上，不是内存里某个数字的余额。
+    await expect(pane.getByTestId('pdf-notice'), '切一次窗口不该把「N 页翻译失败」抹掉')
+      .toContainText('1 页翻译失败（第 2 页），右栏保留原文');
+    // 顺带确认重探没有把用户踢出对照（setLoaded 的 dual 维持，与本条正交但同一条路径）。
+    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
+  });
+
+  test('59-pdf-translate: 「重试失败页」只重翻失败页，其它页的块逐字不变，键随失败页一起消失', async () => {
+    const { page } = launched;
     const before = await readSidecar(sidecar);
     expect(before.failedPages).toEqual([2]);
-    // 首趟：4 页版面各一次；翻译第 2 页两次（都不是 id 头）+ 其余三页各一次 = 5 次。
+    // 首趟：4 页版面各一次；翻译第 2 页两次（都不是 id 头）+ 其余三页各一次 = 5 次。闸门装在首趟
+    // 发起之前，中间几条只发过 load，所以这两个数就是首趟的。
     const firstRun = await gateCounts(launched);
     expect(firstRun.done['pdf.translation.layout']).toBe(4);
     expect(firstRun.done['pdf.translation.translate']).toBe(5);
@@ -1605,6 +1113,11 @@ test('59-pdf-translate: 「重试失败页」只重翻失败页，其它页的�
     const retry = pane.getByTestId('pdf-retry-failed');
     await expect(retry).toBeVisible();
     await expect(pane.getByTestId('pdf-retry-failed-count')).toHaveText('1');
+    // 下面「不弹确认」的正向：旁边那颗会覆盖译文的「重译本页」是要弹确认的（点取消，什么都不动）。
+    await pane.getByTestId('pdf-retranslate-page').click();
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+    await page.getByTestId('confirm-dialog-cancel').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
     await retry.click();
     // 不弹确认：什么都不覆盖
     await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
@@ -1620,175 +1133,5 @@ test('59-pdf-translate: 「重试失败页」只重翻失败页，其它页的�
     expect(secondRun.done['pdf.translation.translate']).toBe(6);
     await expect(retry, '没有失败页了，键消失').toHaveCount(0);
     await expect(pane.locator('[data-pdf-right="1"]').first(), '仍在对照中').toBeVisible();
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 「重译本页」只重翻读数那一页，确认框点名页号', async () => {
-  const launched = await launchKydog({ seed: seedPlain, translateFixture: PAGE2_TWICE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await installTranslateGate(launched, []);
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const before = await readSidecar(sidecar);
-
-    await scrollToPage(page, pane, paneSel, 2);
-    await pane.getByTestId('pdf-retranslate-page').click();
-    await expect(page.getByTestId('confirm-dialog')).toContainText('重译第 2 页');
-    await page.getByTestId('confirm-dialog-confirm').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await expect.poll(async () => (await readSidecar(sidecar)).blocks.find((b) => b.page === 2)?.target, { timeout: 15000 })
-      .toBe('第二页的译文（重译）');
-    const after = await readSidecar(sidecar);
-    expect(blocksOf(after, [1, 3, 4])).toEqual(blocksOf(before, [1, 3, 4]));
-    // 4 页首趟各一次，重译本页只多发第 2 页一次——两步各是这个数。
-    const counts = await gateCounts(launched);
-    expect(counts.done['pdf.translation.layout']).toBe(5);      // 4 + 1
-    expect(counts.done['pdf.translation.translate']).toBe(5);   // 4 + 1
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 部分跑的 base 是盘上的原文——越界块不会被顺手从磁盘上抹掉（final review I-1）', async () => {
-  // 越界块（DROPPED_BLOCK_ID，见 seedReady 里那条种子边车）在内存里从来不存在：loadTranslation
-  // 用 filterByGeometry 把它滤掉才存进 store，Notice 显示「已跳过」、右格也画不出它。如果
-  // startTranslation 拿 store 里那份已过滤的 doc 当「重译本页」的 base，pages 之外的块会在
-  // 「原样带过来」那步直接漏掉这一条——合并结果整份落盘，等于把它从磁盘上永久抹掉（违反
-  // spec §8 不变量 #7）。这里重译与它无关的第 2 页，只测「pages 之外的块」这条合并路径，钉住
-  // base 必须来自重新探盘（pdf.translation.load），不是 store 里那份几何过滤后的内存副本。
-  const launched = await launchKydog({ seed: seedReady, translateFixture: TRANSLATE_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, READY_REL);
-    const sidecar = path.join(projectPath, READY_ZH_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await enterDual(page, pane);
-
-    const before = await readSidecar(sidecar);
-    const droppedBefore = before.blocks.find((b) => b.id === DROPPED_BLOCK_ID);
-    expect(droppedBefore, '种子边车里那条越界块得先在盘上').toBeDefined();
-    // 它在内存里已经被几何过滤丢了：Notice 显示「已跳过」，右格也没有它的踪影——这是过滤
-    // 本身该有的样子，不是本条要钉的 bug；本条钉的是它在**磁盘**上活不活得下来。
-    await expect(pane.getByTestId('pdf-notice')).toContainText('1 条译文块超出页面范围，已跳过');
-    await expect(page.locator(`${paneSel} [data-translation-block="${DROPPED_BLOCK_ID}"]`)).toHaveCount(0);
-
-    await scrollToPage(page, pane, paneSel, 2);
-    await pane.getByTestId('pdf-retranslate-page').click();
-    await expect(page.getByTestId('confirm-dialog')).toContainText('重译第 2 页');
-    await page.getByTestId('confirm-dialog-confirm').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await expect.poll(async () => (await readSidecar(sidecar)).blocks.find((b) => b.page === 2)?.target, { timeout: 15000 })
-      .toBe('第二页的译文');
-
-    // 关键断言：越界块必须仍在磁盘上，逐字相等——不是「还有条 id 一样的块」，是同一条块的每个
-    // 字段都没被重新生成或截断过。
-    const after = await readSidecar(sidecar);
-    const droppedAfter = after.blocks.find((b) => b.id === DROPPED_BLOCK_ID);
-    expect(droppedAfter, '越界块必须仍在磁盘上，一个字节都不能丢').toEqual(droppedBefore);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 「删除译文」删掉边车、退回单栏、缩放还原、主键回到「翻译」；取消则什么都不动', async () => {
-  const launched = await launchKydog({ seed: seedReady });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, READY_REL);
-    const sidecar = path.join(projectPath, READY_ZH_REL);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    const readoutBefore = await pane.getByTestId('pdf-readout').textContent();
-    await enterDual(page, pane);
-    const del = pane.getByTestId('pdf-translate-delete');
-    await expect(del).toBeVisible();
-
-    // 取消：文件仍在、仍在对照
-    await del.click();
-    await expect(page.getByTestId('confirm-dialog')).toContainText('删除译文');
-    await page.getByTestId('confirm-dialog-cancel').click();
-    expect(await fs.stat(sidecar).then(() => true, () => false)).toBe(true);
-    await expect(pane.locator('[data-pdf-right="1"]').first()).toBeVisible();
-
-    // 确认：文件没了 → 单栏几何 → 读数还原 → 主键回到「翻译 · L」
-    await del.click();
-    await page.getByTestId('confirm-dialog-confirm').click();
-    await expect.poll(() => fs.stat(sidecar).then(() => true, () => false), { timeout: 10000 }).toBe(false);
-    await expect.poll(async () => (await paneLayout(page, paneSel))?.rightPanes, { timeout: 10000 }).toBe(0);
-    const layout = (await paneLayout(page, paneSel))!;
-    expect(layout.dividers).toBe(0);
-    expect(layout.leftW).toBeCloseTo(layout.wrapW, 0);
-    await expect(pane.getByTestId('pdf-readout')).toHaveText(readoutBefore!);
-    await expect(pane.getByTestId('pdf-translate')).toHaveAttribute('aria-label', '翻译 · L');
-    await expect(pane.getByTestId('pdf-retranslate')).toHaveCount(0);
-  } finally {
-    await teardown(launched);
-  }
-});
-
-test('59-pdf-translate: 两步协议——code 组不翻不盖、译文换行照排、第二步缺组只补那一组', async () => {
-  const launched = await launchKydog({ seed: seedTwoLines, translateFixture: TWO_STEP_FIXTURE });
-  try {
-    const { page, kydogHome } = launched;
-    const projectPath = path.join(kydogHome, 'proj');
-    const pdfPath = path.join(projectPath, PLAIN_REL);
-    const sidecar = path.join(projectPath, `.${PLAIN_REL}.zh.json`);
-    const paneSel = testIdSelector(`file-pane-${pdfPath}`);
-    const pane = await openPdf(page, pdfPath);
-    await installTranslateGate(launched, []);
-    await pane.getByTestId('pdf-translate').click();
-    await expect(pane.getByTestId('pdf-translate-progress')).toHaveCount(0, { timeout: 20000 });
-    await waitSidecar(sidecar);
-    const doc = await readSidecar(sidecar);
-    expect(doc.failedPages).toBeUndefined();
-
-    // ① code：第 1 页唯一的块 kind=code、没有 target；右格那块与左格逐字节相同且有墨迹（没被盖）。
-    const c = doc.blocks.filter((b) => b.page === 1);
-    expect(c.map((b) => [b.kind, b.target])).toEqual([['code', undefined]]);
-    const inner = { x: c[0].x + 1, y: c[0].y + 1, w: c[0].width - 2, h: c[0].height - 2 };
-    const s = await waitSample(page, paneSel, inner, 'code 块');
-    expect(s.leftDark).toBeGreaterThan(0);
-    expect(s.dark, 'code 块右格应保留原文（与左格同样多的墨迹）').toBe(s.leftDark);
-
-    // ② 第二步缺组只补那一组：第 2 页两块都有 target；translate 调用 = 3 页有可译组 + 1 次补漏 = 4。
-    expect(doc.blocks.filter((b) => b.page === 2).map((b) => b.target)).toEqual(['第二页上半', '第二页下半']);
-    const counts = await gateCounts(launched);
-    expect(counts.done['pdf.translation.layout']).toBe(4);
-    expect(counts.done['pdf.translation.translate']).toBe(4);
-
-    // ③ pre-line：第 3 页译文 "甲\n乙" 排成两行。判据取文字自己的行框数（Range.getClientRects：
-    //    一个行内文本每占一行就一个矩形），不取块 div 的 scrollHeight——内容比框矮时 scrollHeight
-    //    等于框高，量不出行数。默认 white-space 下换行折成空格、"甲 乙" 一行装得下 → 1 个矩形。
-    const p3 = doc.blocks.find((b) => b.page === 3)!;
-    expect(p3.target).toBe('甲\n乙');
-    // 每个有 target 的块都带 ink，且 ink.bottom 比字身框底更低（Helvetica descent 0.207）。
-    for (const b of doc.blocks.filter((x) => x.target !== undefined)) {
-      expect(b.ink, `${b.id} 应带 ink`).toBeDefined();
-      expect(b.ink!.bottom).toBeGreaterThan(b.y + b.height);
-    }
-    await scrollToPage(page, pane, paneSel, 3);      // 第 3 页的行要在渲染窗口里，块才会挂上
-    const block = page.locator(`${paneSel} [data-pdf-layer="stable"] [data-translation-block="${p3.id}"]`);
-    await expect.poll(async () => block.getAttribute('data-fit'), { timeout: 15000 }).not.toBeNull();
-    const lineBoxes = await block.evaluate((el) => {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      // 同一行的多个 span 会各给一个矩形，按 top 去重才是行数
-      return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
-    });
-    expect(lineBoxes, '译文里的换行应当排成两行').toBe(2);
-  } finally {
-    await teardown(launched);
-  }
+  });
 });

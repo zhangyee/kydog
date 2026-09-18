@@ -47,6 +47,12 @@ export type FakeElement = {
   /** 空操作：没有真焦点可言。被测代码回车后会 `blur()`（地址栏），缺了它就在调用处 TypeError。 */
   focus: () => void;
   blur: () => void;
+  /**
+   * **只有 `<iframe>` 有**（同真 DOM：别的元素上这个属性是 undefined）。焦点要真的进到 iframe
+   * 里面，光 `el.focus()` 不够，还得 `contentWindow.focus()` —— `HtmlFileTab` 在成品里漏过
+   * 这第二步。同样是空操作；要数调用次数就对它（和上面的 `focus`）`vi.spyOn`。
+   */
+  contentWindow?: { focus: () => void };
 };
 
 /** 元素树上的一个节点。React 的元素对象，只列这里用得到的字段。 */
@@ -243,6 +249,7 @@ function fakeElement(inst: Inst, tagName: string, testId: string | undefined): F
     focus: () => {},
     blur: () => {},
   };
+  if (el.tagName === 'IFRAME') el.contentWindow = { focus: () => {} };
   return el;
 }
 
