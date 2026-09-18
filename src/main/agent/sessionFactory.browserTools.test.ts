@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ASK_TOOL_NAME } from '../../shared/askQuestion';
 import { SEQUENTIAL_TOOL_NAMES } from './askSequentialTools';
+import { COUNT_LINE_PREFIX } from './charCountFileTools';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 /**
  * 浏览器工具真的进了 pi 的 `customTools` 吗？
@@ -37,6 +41,16 @@ vi.mock('@earendil-works/pi-coding-agent', () => ({
   },
   SessionManager: { open: () => ({}) },
   createReadToolDefinition: () => ({ name: 'read' }),
+  // 替身照 pi 的真实形态：execute 里调注入进来的 operations.writeFile。这样才分得出
+  // 「交给 pi 的是包过的版本」与「原样那份」—— 后者不经过我们的 writeFile，不会报字数。
+  createWriteToolDefinition: (_cwd: string, options: { operations: { writeFile: (p: string, c: string) => Promise<void> } }) => ({
+    name: 'write',
+    execute: async (_id: string, p: { path: string; content: string }) => {
+      await options.operations.writeFile(p.path, p.content);
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  }),
+  createEditToolDefinition: () => ({ name: 'edit', execute: async () => ({ content: [] }) }),
 }));
 
 vi.mock('../skills/skillResourceLoader', () => ({
@@ -99,6 +113,26 @@ describe('customTools 里有六个浏览器工具', () => {
 
   it('本来就有的那个提问工具没被挤掉', async () => {
     expect((await build()).map((t) => t.name)).toContain(ASK_TOOL_NAME);
+  });
+
+  // 报字数的 write / edit 靠「同名进 customTools」覆盖 pi 内置的那两个。这一行掉了不会有任何
+  // 报错 —— 模型照样有 write / edit，只是又回到拿 shell 数字数的老路上。
+  it('write / edit 各一个，是报字数的版本（包过一层，不是 pi 原样那份）', async () => {
+    const tools = await build();
+    const write = tools.filter((t) => t.name === 'write');
+    const edit = tools.filter((t) => t.name === 'edit');
+    expect(write).toHaveLength(1);
+    expect(edit).toHaveLength(1);
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-sf-'));
+    try {
+      const res = await (write[0].execute as (...a: unknown[]) => Promise<{ content: Array<{ text?: string }> }>)(
+        'tc', { path: path.join(dir, 'r.md'), content: '一二三' }, undefined, undefined, {},
+      );
+      expect(res.content[0]?.text).toBe('ok');
+      expect(res.content.some((c) => c.text?.includes(`${COUNT_LINE_PREFIX}全文 3`))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('碰页面的五个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {

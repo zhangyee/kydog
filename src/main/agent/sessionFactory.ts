@@ -3,6 +3,7 @@ import { createFixtureSession } from './fixtureProvider';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { createReadPdfFigureTool } from './readPdfFigureTool';
 import { createReadDocxTool } from './readDocxTool';
+import { createCharCountFileTools, type PiFileToolFactories } from './charCountFileTools';
 import { createBrowserTools } from './browserTools';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { settingsService } from '../settings/settingsService';
@@ -109,6 +110,9 @@ export async function createSession(opts: {
         readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
       }),
       createReadDocxTool(),
+      // 同名覆盖 pi 内置的 write / edit：行为不变，写完多报一行字数（见 charCountFileTools.ts）。
+      // pi 的注册表先放内置、再按名字放 customTools，同名的后者胜出。
+      ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd),
       // 内置浏览器的四个工具（上面造好的**同一份**，见那段注释）。
       ...browserTools,
     ],
