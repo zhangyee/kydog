@@ -7,6 +7,7 @@ import type { AxSnapshot } from './snapshot';
 import { institutionService } from '../institution/institutionService';
 import { settingsService } from '../settings/settingsService';
 import { KydogError } from '../../shared/errors';
+import { INSTITUTION_CLOSED_NOTE, INSTITUTION_LOGIN_OPEN } from '../../shared/features';
 import type { InstitutionRecord, SettingsFile } from '../../shared/types';
 
 /**
@@ -403,8 +404,9 @@ export class LoginFlow {
   private async requireInstitution(): Promise<Inst> {
     const inst = (await this.ports.settings.get()).institution;
     if (inst === null) {
-      throw new KydogError('settings.invalid',
-        '还没有配置机构账号 —— 请用户先到设置里选好学校、填上学号与密码，再用这个工具。');
+      throw new KydogError('settings.invalid', INSTITUTION_LOGIN_OPEN
+        ? '还没有配置机构账号 —— 请用户先到设置里选好学校、填上学号与密码，再用这个工具。'
+        : INSTITUTION_CLOSED_NOTE);
     }
     return inst;
   }

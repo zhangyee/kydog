@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ResearchCustomVar, ResearchVarKind, SettingsFile } from '../../shared/types';
 import { PRESET_RESEARCH_VARS } from '../../shared/researchVars';
 import { validateCustomVarName } from '../../shared/researchValidate';
+import { INSTITUTION_LOGIN_OPEN } from '../../shared/features';
 import { Card, BlockHeader, SubHeader, Divider, Btn, Empty, inputStyle, labelStyle, hintStyle } from './ui';
 import { InstitutionBlock } from './InstitutionBlock';
 
@@ -69,10 +70,14 @@ export function ResearchCredentialsSection() {
         机构账号排在最前，且**与下面两块分开**：预设与自定义都是「写进 agent 运行环境的
         环境变量」，机构账号一个字都不进那个环境（密码只在主进程里解密、只由
         `browser_login` 直接填进页面）。混在一起会让人以为它也是一条环境变量。
+        这一版不开放，见 `INSTITUTION_LOGIN_OPEN`。
       */}
-      <InstitutionBlock />
-
-      <div style={{ height: 28 }} />
+      {INSTITUTION_LOGIN_OPEN && (
+        <>
+          <InstitutionBlock />
+          <div style={{ height: 28 }} />
+        </>
+      )}
 
       <BlockHeader>预设</BlockHeader>
       <Card>

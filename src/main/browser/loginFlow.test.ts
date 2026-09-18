@@ -1,10 +1,19 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { OnBeforeRequestListenerDetails } from 'electron';
 import { LoginFlow, loginRefusalError, type LoginFlowPorts } from './loginFlow';
 import { createWebRequestHub, type WebRequestPort } from './webRequestHub';
 import { KydogError } from '../../shared/errors';
 import type { AxSnapshot } from './snapshot';
 import type { SettingsFile } from '../../shared/types';
+import { INSTITUTION_CLOSED_NOTE } from '../../shared/features';
+
+// 机构登录开关是编译期常量，这里换成取值函数，同一条用例里才翻得了面。
+const F = vi.hoisted(() => ({ institutionOpen: true }));
+vi.mock('../../shared/features', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../shared/features')>()),
+  get INSTITUTION_LOGIN_OPEN() { return F.institutionOpen; },
+}));
+beforeEach(() => { F.institutionOpen = true; });
 
 /**
  * `loginFlow` 的单测。**这是整个特性安全上最关键的一层** —— 它把用户的校园密码
@@ -718,6 +727,20 @@ describe('前置条件：没配机构 / 没设密码', () => {
     const e = await errOf(h.fill());
     expect(e.code).toBe('settings.invalid');
     expect(e.message).toContain('设置');
+    expect(h.log.reveals).toBe(0);
+  });
+
+  /** 开关关着时设置里没有那一项了，报错不能再把用户支过去。先在开着时证明那句话在。 */
+  it('压根没配机构、开关关着 → 仍是 settings.invalid，但改成交给用户自己登录', async () => {
+    const open = await errOf(harness({ institution: null }).fill());
+    expect(open.message).toContain('到设置里');
+
+    F.institutionOpen = false;
+    const h = harness({ institution: null });
+    const e = await errOf(h.fill());
+    expect(e.code).toBe('settings.invalid');
+    expect(e.message).not.toContain('到设置里');
+    expect(e.message).toBe(INSTITUTION_CLOSED_NOTE);
     expect(h.log.reveals).toBe(0);
   });
 

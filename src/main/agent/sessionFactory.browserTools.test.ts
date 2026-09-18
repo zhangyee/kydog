@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ASK_TOOL_NAME } from '../../shared/askQuestion';
+import { INSTITUTION_CLOSED_NOTE } from '../../shared/features';
 import { SEQUENTIAL_TOOL_NAMES } from './askSequentialTools';
 import { COUNT_LINE_PREFIX } from './charCountFileTools';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -32,6 +33,7 @@ const H = vi.hoisted(() => ({
     ui: { locale: string };
     institution: { name: string; entityID: string; username: string } | null;
   },
+  institutionOpen: true,
 }));
 
 vi.mock('@earendil-works/pi-coding-agent', () => ({
@@ -68,6 +70,12 @@ vi.mock('../settings/settingsService', () => ({
   toInstitutionPublic: () => null,
 }));
 
+// 机构登录开关是编译期常量，这里换成取值函数，同一条用例里才翻得了面。
+vi.mock('../../shared/features', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../shared/features')>()),
+  get INSTITUTION_LOGIN_OPEN() { return H.institutionOpen; },
+}));
+
 // createBrowserTools 会 import 它，而它 import 的是 electron 的 WebContentsView / session。
 vi.mock('../browser/browserService', () => ({ browserService: {} }));
 // 同理：loginFlow 的单例要 webRequestHub（electron session）与 institutionService（safeStorage）。
@@ -98,6 +106,7 @@ beforeEach(() => {
   delete process.env.KYDOG_AGENT_FIXTURE;
   H.currentRunId = 'run-1';
   H.settings = { ui: { locale: 'zh' }, institution: null };
+  H.institutionOpen = true;
 });
 
 describe('customTools 里有六个浏览器工具', () => {
@@ -193,6 +202,35 @@ describe('browser_login 的 description 带着机构名与 entityID（且只带�
   it('没配机构时说清「还没配」，而不是留一句空的「当前配置的机构：」', async () => {
     const d = await descOf();
     expect(d).toContain('还没有配置机构账号');
+  });
+
+  /**
+   * 开关关着时设置里已经没有「机构账号」那一块，说明再写「去设置里配」就是把用户支向
+   * 一个找不到的地方。先在开着时证明那句话在，同一条用例里再翻面断它不在。
+   */
+  it('开关关着：不再让用户去设置里配，改成交给用户自己登录', async () => {
+    const open = await descOf();
+    expect(open).toContain('去设置里配');
+    expect(open).not.toContain(INSTITUTION_CLOSED_NOTE);
+
+    H.institutionOpen = false;
+    const closed = await descOf();
+    expect(closed).not.toContain('去设置里配');
+    expect(closed).toContain(INSTITUTION_CLOSED_NOTE);
+  });
+
+  it('开关关着也不碍已经配好的机构：机构名与 entityID 照样在', async () => {
+    H.institutionOpen = false;
+    expect(await descOf()).toContain(INSTITUTION_CLOSED_NOTE);   // 没配机构时那句在
+
+    H.settings = {
+      ui: { locale: 'zh' },
+      institution: { name: '北京大学', entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth', username: '2100011000' },
+    };
+    const d = await descOf();
+    expect(d).toContain('北京大学');
+    expect(d).toContain('https://iaaa.pku.edu.cn/idp/shibboleth');
+    expect(d).not.toContain(INSTITUTION_CLOSED_NOTE);
   });
 
   /**

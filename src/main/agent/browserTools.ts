@@ -1,6 +1,7 @@
 // src/main/agent/browserTools.ts
 import { Type } from 'typebox';
 import { KydogError } from '../../shared/errors';
+import { INSTITUTION_CLOSED_NOTE, INSTITUTION_LOGIN_OPEN } from '../../shared/features';
 import type { NavigationObservation } from '../../shared/types';
 import { browserService } from '../browser/browserService';
 import { renderDiff, renderSnapshot, wrapPageContent, type AxSnapshot } from '../browser/snapshot';
@@ -369,7 +370,9 @@ function loginDesc(inst: { name: string; entityID: string } | null): string {
     '',
     inst
       ? `当前配置的机构：${inst.name}，entityID：${inst.entityID}`
-      : '设置里**还没有配置机构账号** —— 现在调这个工具只会失败，先让用户去设置里配。',
+      : INSTITUTION_LOGIN_OPEN
+        ? '设置里**还没有配置机构账号** —— 现在调这个工具只会失败，先让用户去设置里配。'
+        : INSTITUTION_CLOSED_NOTE,
     '（这一行是这次会话开始时的快照。用户中途换了学校它就旧了 ——'
     + '**每次调用的返回值里都会回显当前的机构名与 entityID，以那个为准**。）',
     '',

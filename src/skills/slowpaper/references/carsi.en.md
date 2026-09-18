@@ -14,8 +14,8 @@ that is material for the implementer, not a set of steps for you.
 ## 1. The whole path, once through
 
 1. **This assumes the user has already configured an institutional account in Settings.** If
-   they have not, `browser_login`'s own description says so — 「设置里**还没有配置机构账号**」
-   — and you should tell the user to configure it rather than calling the tool to see.
+   they have not, `browser_login`'s own description says so, along with what to tell the user
+   in that case — do what it says rather than calling the tool to see.
 2. `browser_open` the SP's login entry URL (how to build it is in §2); you land on the
    university's unified identity authentication page.
 3. **Look at the snapshot first**: does this page have a CAPTCHA, and which box is the username.
@@ -158,7 +158,7 @@ hand those to a person.
 | `browser.stale_index` | the index given in `usernameIndex` no longer resolves in the current document | take a fresh snapshot and call again with an index from it |
 | `browser.page_no_result` | **we do not know how far this step got** | **do not retry on the assumption that it did nothing** — take a snapshot and see what the page looks like now |
 | `browser.login_attempted` | this round already filled once and no assertion round trip was seen | **hand over to the user**; no more attempts this round (hard rule 3) |
-| `settings.invalid` | a Settings-side problem: no institution configured / no password set / the entityID is a URN and can never log in automatically | **hand over to the user** to fix it in Settings — another page, another hundred tries, same result |
+| `settings.invalid` | a Settings-side problem: no institution configured / no password set / the entityID is a URN and can never log in automatically | **hand over to the user**, passing on the next step the error message gives — another page, another hundred tries, same result |
 | `settings.secure_storage_unavailable` / `settings.stored_password_unreadable` | the first is "the keychain is unavailable right now" (**the password is not lost**); the second is "the stored ciphertext is permanently undecryptable" | **never merge these two**: for the first, have the user restore the keychain and try once more; for the second the keychain is irrelevant — the user has to enter the password again |
 
 `browser.password_field` is the eighth, and the easiest to bring on yourself: `usernameIndex`
