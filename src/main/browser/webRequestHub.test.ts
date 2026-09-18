@@ -33,6 +33,20 @@ const H = vi.hoisted(() => {
       this.current({ url }, (r) => responses.push(r));
       return responses;
     }
+
+    // 两种「只观测、不回调」的事件：签名同样是「设置」不是「添加」。
+    completedSets = 0;
+    completed: ((details: { url: string }) => void) | null = null;
+    onCompleted(listener: ((details: { url: string }) => void) | null): void {
+      this.completedSets += 1;
+      this.completed = listener;
+    }
+    errorSets = 0;
+    errored: ((details: { url: string }) => void) | null = null;
+    onErrorOccurred(listener: ((details: { url: string }) => void) | null): void {
+      this.errorSets += 1;
+      this.errored = listener;
+    }
   }
 
   const fake = { wr: new FakeWebRequest(), partitions: [] as string[] };
@@ -267,6 +281,50 @@ describe('放行：callback 恰好一次，且订阅者改不了判', () => {
  * 每人自己 `createWebRequestHub(session.fromPartition(...).webRequest)` 的话，
  * 两个 hub 各挂各的，后建的那个把先建的顶掉，回到原点且不报错。
  */
+/**
+ * spec 2026-09-17-browser-request-signal-design §3.1：请求结果（完成 / 出错）也走 hub。
+ * 这两种事件同样「每个 session 只能挂一个」，与 onBeforeRequest 各自独立。
+ */
+describe('onCompleted / onErrorOccurred：同样懒挂懒摘、多订阅者共用一个监听器', () => {
+  it('订阅之前底层一次都不设；两个订阅者都收得到、底层只挂一次；与 onBeforeRequest 互不相干', () => {
+    const wr = makeWr();
+    const hub = createWebRequestHub(wr as never);
+    expect(wr.completedSets).toBe(0);
+    const a: string[] = [];
+    const b: string[] = [];
+    hub.onCompleted((d) => a.push(d.url));
+    hub.onCompleted((d) => b.push(d.url));
+    expect(wr.completedSets).toBe(1);
+    expect(wr.sets, 'onBeforeRequest 不该被顺手挂上').toBe(0);
+    wr.completed?.({ url: 'https://a.org/x' });
+    expect(a).toEqual(['https://a.org/x']);
+    expect(b).toEqual(['https://a.org/x']);
+  });
+
+  it('全退订之后底层置 null；off 调两次是幂等的', () => {
+    const wr = makeWr();
+    const hub = createWebRequestHub(wr as never);
+    const off = hub.onErrorOccurred(() => {});
+    expect(wr.errored).not.toBeNull();
+    off();
+    off();
+    expect(wr.errored).toBeNull();
+    expect(wr.errorSets).toBe(2);
+  });
+
+  it('一个订阅者抛了，其余照收，日志里不带网址', () => {
+    const wr = makeWr();
+    const hub = createWebRequestHub(wr as never);
+    const got: string[] = [];
+    hub.onCompleted(() => { throw new Error('boom'); });
+    hub.onCompleted((d) => got.push(d.url));
+    wr.completed?.({ url: 'https://user:secret@a.org/x' });
+    expect(got).toEqual(['https://user:secret@a.org/x']);
+    expect(H.logs.length).toBeGreaterThan(0);
+    expect(JSON.stringify(H.logs)).not.toContain('secret');
+  });
+});
+
 describe('browserWebRequestHub()：整个进程一个实例，绑在浏览器分区上', () => {
   it('两次调用是同一个实例，底层 session 只取一次', () => {
     const a = browserWebRequestHub();

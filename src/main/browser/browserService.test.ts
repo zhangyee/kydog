@@ -136,7 +136,19 @@ const H = vi.hoisted(() => {
     };
   }
 
+  /** `session.webRequest` 的替身：每种事件只有一个槽位（与真的一样是「设置」不是「添加」）。
+   *  生产代码经 `browserWebRequestHub()` 挂上来，用例从这里直接把事件打进去。 */
+  class FakeWebRequest {
+    beforeRequest: ((d: unknown, cb: (r: unknown) => void) => void) | null = null;
+    completed: ((d: unknown) => void) | null = null;
+    errorOccurred: ((d: unknown) => void) | null = null;
+    onBeforeRequest(fn: typeof this.beforeRequest): void { this.beforeRequest = fn; }
+    onCompleted(fn: typeof this.completed): void { this.completed = fn; }
+    onErrorOccurred(fn: typeof this.errorOccurred): void { this.errorOccurred = fn; }
+  }
+
   class FakeSession extends Emitter {
+    readonly webRequest = new FakeWebRequest();
     permissionRequestHandler: ((wc: unknown, perm: string, cb: (ok: boolean) => void) => void) | null = null;
     permissionCheckHandler: (() => boolean) | null = null;
     permissionRequestSets = 0;
@@ -186,6 +198,8 @@ vi.mock('../ipc/broadcaster', () => ({
 }));
 
 const { BrowserService, WALKER_WORLD_ID, PAGE_EVAL_TIMEOUT_MS } = await import('./browserService');
+const { _resetSharedHubForTest } = await import('./webRequestHub');
+const { ZERO_REQUEST_CURSOR } = await import('./requestLog');
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
 
@@ -196,6 +210,8 @@ type Svc = InstanceType<typeof BrowserService>;
 
 function make(): { svc: Svc; win: InstanceType<typeof H.FakeBrowserWindow> } {
   H.reset();
+  // hub 是进程级单例、绑在第一次见到的那个 session 上；H.reset() 换了 session，它也得跟着换。
+  _resetSharedHubForTest();
   const svc = new BrowserService();
   const win = new H.FakeBrowserWindow();
   svc.attach(win as never);
@@ -3504,7 +3520,7 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
     const c = svc.consoleCursor(nav.tabId);
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://a.example');
     wc.fire('console-message', msg('error', 'pw=hunter2'));
     const r = svc.consoleSince(nav.tabId, c);
     expect(r.lines).toHaveLength(0);
@@ -3521,13 +3537,13 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { svc } = make();
     const { nav, wc } = await openTab(svc);
 
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://a.example');
     wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
     const c1 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '新页面的错'));
     expect(svc.consoleSince(nav.tabId, c1).lines).toHaveLength(1);
 
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://sp.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://sp.example');
     wc.fire('did-navigate-in-page', {}, 'https://sp.example/after#sec', true);
     const c2 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '同文档路由期间的错'));
@@ -3549,7 +3565,7 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { nav, wc } = await openTab(svc, 'https://idp.example/login');
 
     // 正向前置：真的换了不同 origin 时会恢复。
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://idp.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://idp.example');
     wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
     const c1 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '新页面的错'));
@@ -3557,7 +3573,7 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
 
     // back 命中 bfcache：恢复的是同一个文档对象，did-navigate 照发，但落定的 URL
     // 仍是原先那个 origin —— 不该恢复。
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://idp.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://idp.example');
     wc.fire('did-navigate', {}, 'https://idp.example/login', 200);
     const c2 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '登录页残留的错'));
@@ -3569,13 +3585,13 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
     const { nav, wc } = await openTab(svc);
 
     // 正向前置：能解析的 URL、origin 真的变了会恢复。
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://a.example');
     wc.fire('did-navigate', {}, 'https://b.example/', 200);
     const c1 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '正常错误'));
     expect(svc.consoleSince(nav.tabId, c1).lines).toHaveLength(1);
 
-    svc.suppressConsoleForCredentials(nav.tabId, 'https://a.example');
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://a.example');
     wc.fire('did-navigate', {}, 'not a url', 200);
     const c2 = svc.consoleCursor(nav.tabId);
     wc.fire('console-message', msg('error', '解析不了的错'));
@@ -3605,6 +3621,102 @@ describe('控制台错误：采集、随导航恢复、随标签销毁（Task 4�
 
     svc.close(nav.tabId);
     expect(svc.consoleSince(nav.tabId, ZERO_CURSOR).lines).toHaveLength(0);
+  });
+});
+
+// ── 这一步发出的请求（spec 2026-09-17-browser-request-signal-design） ──────────
+
+/**
+ * 从 session 那一侧把一条 webRequest 事件打进去。**槽位空着就当场抛** —— 用 `?.` 的话，
+ * 订阅没挂上时事件无声地丢掉，下面那些「没收到」的断言会一起假绿。
+ */
+function fireCompleted(d: { webContentsId?: number; url: string; statusCode: number; resourceType?: string; method?: string }): void {
+  const fn = H.getSess().webRequest.completed;
+  if (!fn) throw new Error('onCompleted 没挂上');
+  fn({ method: 'GET', resourceType: 'xhr', ...d });
+}
+function fireError(d: { webContentsId?: number; url: string; error: string; resourceType?: string; method?: string }): void {
+  const fn = H.getSess().webRequest.errorOccurred;
+  if (!fn) throw new Error('onErrorOccurred 没挂上');
+  fn({ method: 'GET', resourceType: 'xhr', ...d });
+}
+
+describe('请求记录：按 webContentsId 归到标签，只收 XHR / fetch', () => {
+  it('发它的那个标签收得到；别的标签、非 xhr、没有 webContentsId 的都不收', async () => {
+    const { svc } = make();
+    const a = await openTab(svc, 'https://a.example/');
+    const b = await openTab(svc, 'https://b.example/');
+    const ca = svc.requestCursor(a.nav.tabId);
+    const cb = svc.requestCursor(b.nav.tabId);
+
+    fireCompleted({ webContentsId: a.wc.id, url: 'https://a.example/api/search?q=secret', statusCode: 200 });
+    fireError({ webContentsId: a.wc.id, url: 'https://a.example/api/more', error: 'net::ERR_CONNECTION_RESET', method: 'POST' });
+    fireCompleted({ webContentsId: b.wc.id, url: 'https://b.example/api/b', statusCode: 403 });
+    fireCompleted({ webContentsId: a.wc.id, url: 'https://a.example/app.js', statusCode: 200, resourceType: 'script' });
+    fireCompleted({ url: 'https://a.example/sw', statusCode: 200 });
+
+    // 正向：a 的两条（一条成功、一条网络错误）都在，且查询串的值没带出来。
+    const ra = svc.requestsSince(a.nav.tabId, ca);
+    expect(ra.ok.map((l) => l.where)).toEqual(['a.example/api/search?q=…']);
+    expect(ra.failed.map((l) => `${l.method} ${l.where}`)).toEqual(['POST a.example/api/more']);
+    expect(JSON.stringify(ra)).not.toContain('secret');
+    // 否定：b 的那条、脚本、没有归属的都不在 a 里 —— total 恰好是上面那两条。
+    expect(ra.total).toBe(2);
+    // b 自己的那条在 b 里（同一轮事件，证明按 id 分得开，不是 b 那条丢了）。
+    expect(svc.requestsSince(b.nav.tabId, cb).failed.map((l) => l.where)).toEqual(['b.example/api/b']);
+    expect(svc.requestsSince(b.nav.tabId, cb).total).toBe(1);
+  });
+
+  it('填过凭据之后只数条数；did-navigate 到不同 origin 才恢复', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc, 'https://idp.example/login');
+
+    svc.suppressCaptureForCredentials(nav.tabId, 'https://idp.example');
+    const c1 = svc.requestCursor(nav.tabId);
+    fireCompleted({ webContentsId: wc.id, url: 'https://idp.example/sso?ticket=hunter2', statusCode: 302 });
+    const r1 = svc.requestsSince(nav.tabId, c1);
+    expect(r1.total).toBe(0);
+    expect(r1.suppressed).toBe(1);
+    expect(JSON.stringify(r1)).not.toContain('hunter2');
+
+    wc.fire('did-navigate', {}, 'https://sp.example/after', 200);
+    const c2 = svc.requestCursor(nav.tabId);
+    fireCompleted({ webContentsId: wc.id, url: 'https://sp.example/api', statusCode: 200 });
+    expect(svc.requestsSince(nav.tabId, c2).ok.map((l) => l.where)).toEqual(['sp.example/api']);
+  });
+
+  it('上次报告到哪：没报告过从当前位置起算，报过之后从终点起算；标签不存在回零游标', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    fireCompleted({ webContentsId: wc.id, url: 'https://a.example/old', statusCode: 200 });
+    // 没报告过：从当前位置起算 —— 不把报告开始之前的旧账翻出来。
+    const now = svc.requestCursor(nav.tabId);
+    expect(now.seq).toBeGreaterThan(0);
+    expect(svc.requestReportedCursor(nav.tabId)).toEqual(now);
+
+    svc.markRequestsReported(nav.tabId, now);
+    fireCompleted({ webContentsId: wc.id, url: 'https://a.example/late', statusCode: 200 });
+    // 报过之后：指针停在上次的终点，之后到的那条在它后面。
+    const from = svc.requestReportedCursor(nav.tabId);
+    expect(from).toEqual(now);
+    expect(svc.requestsSince(nav.tabId, from).ok.map((l) => l.where)).toEqual(['a.example/late']);
+
+    expect(svc.requestReportedCursor('t404')).toEqual(ZERO_REQUEST_CURSOR);
+    expect(() => svc.markRequestsReported('t404', now)).not.toThrow();
+  });
+
+  it('标签销毁之后那份缓冲也不在了；不存在的标签取游标回零、取报告回空，都不抛', async () => {
+    const { svc } = make();
+    const { nav, wc } = await openTab(svc);
+    fireCompleted({ webContentsId: wc.id, url: 'https://a.example/api', statusCode: 200 });
+    // 正向前置：销毁之前真的采到了。
+    expect(svc.requestsSince(nav.tabId, ZERO_REQUEST_CURSOR).total).toBe(1);
+
+    svc.close(nav.tabId);
+    expect(svc.requestsSince(nav.tabId, ZERO_REQUEST_CURSOR).total).toBe(0);
+    expect(svc.requestCursor(nav.tabId)).toEqual(ZERO_REQUEST_CURSOR);
+    // 已经关掉的标签上晚到的事件：没有标签可归，丢掉，不抛。
+    expect(() => fireCompleted({ webContentsId: wc.id, url: 'https://a.example/late', statusCode: 200 })).not.toThrow();
   });
 });
 

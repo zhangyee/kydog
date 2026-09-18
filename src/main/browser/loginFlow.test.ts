@@ -54,6 +54,9 @@ function harness(over: {
     current: null,
     sets: 0,
     onBeforeRequest(listener) { this.sets += 1; this.current = listener; },
+    // 登录观测只用 onBeforeRequest；另两种事件在这里用不上，替身留空实现。
+    onCompleted() {},
+    onErrorOccurred() {},
   };
   const hub = createWebRequestHub(wr);
   const fire = (d: OnBeforeRequestListenerDetails): void => {
@@ -86,7 +89,7 @@ function harness(over: {
     asked: [] as Array<{ host: string; username: string; institutionName: string }>,
     destroyHooks: [] as Array<(tabId: string) => void>,
     reveals: 0,
-    /** ④：`suppressConsoleForCredentials` 每次收到的 origin，按调用顺序。 */
+    /** ④：`suppressCaptureForCredentials` 每次收到的 origin，按调用顺序。 */
     suppressedOrigins: [] as string[],
   };
 
@@ -107,7 +110,7 @@ function harness(over: {
         return next;
       },
       withAgentDriving: (tabId, threadId, fn) => { log.order.push(`driving:${tabId}:${String(threadId)}`); return fn(); },
-      suppressConsoleForCredentials: (_tabId, origin) => {
+      suppressCaptureForCredentials: (_tabId, origin) => {
         log.order.push('suppressConsole');
         log.suppressedOrigins.push(origin);
       },

@@ -1,5 +1,5 @@
 import { session } from 'electron';
-import type { OnBeforeRequestListenerDetails } from 'electron';
+import type { OnBeforeRequestListenerDetails, OnCompletedListenerDetails, OnErrorOccurredListenerDetails } from 'electron';
 import { BROWSER_PARTITION } from './partition';
 import { logger } from '../log';
 
@@ -23,8 +23,9 @@ import { logger } from '../log';
  * xhr / font / media`（`electron.d.ts:21944`），把「拒一切非 http/https」的判据
  * 挪过来会把页面自己的 `wss://` 连接一并拒掉。
  *
- * 本批**没有生产订阅者**，这是有意的：第一个是 Task 7 的登录观测
- * （`isSamlAssertionPost` 要的 `url` / `method` / `uploadData` 全在 details 里）。
+ * 生产订阅者：`onBeforeRequest` 是登录观测（`isSamlAssertionPost` 要的 `url` / `method` /
+ * `uploadData` 全在 details 里）；`onCompleted` / `onErrorOccurred` 是 `browserService` 的请求记录
+ * （spec 2026-09-17-browser-request-signal-design）——这两种事件没有 callback，本来就只能观测。
  */
 
 /** 订阅者拿到的就是 Electron 原样的那份 details —— 不投影、不裁剪。 */
@@ -33,12 +34,17 @@ export type BeforeRequestSubscriber = (details: OnBeforeRequestListenerDetails) 
 /** 退订。**幂等**：调第二次不会波及后来的订阅者。 */
 export type Unsubscribe = () => void;
 
+export type CompletedSubscriber = (details: OnCompletedListenerDetails) => void;
+export type ErrorOccurredSubscriber = (details: OnErrorOccurredListenerDetails) => void;
+
 export type WebRequestHub = {
   onBeforeRequest(fn: BeforeRequestSubscriber): Unsubscribe;
+  onCompleted(fn: CompletedSubscriber): Unsubscribe;
+  onErrorOccurred(fn: ErrorOccurredSubscriber): Unsubscribe;
 };
 
 /**
- * `session.webRequest` 里我们用到的那一个方法。只声明用得上的，
+ * `session.webRequest` 里我们用到的那几个方法。只声明用得上的，
  * 免得替身要去实现 `onHeadersReceived` 一整族才编译得过。
  */
 export type WebRequestPort = {
@@ -47,7 +53,48 @@ export type WebRequestPort = {
       | ((details: OnBeforeRequestListenerDetails, callback: (response: { cancel?: boolean }) => void) => void)
       | null,
   ): void;
+  onCompleted(listener: ((details: OnCompletedListenerDetails) => void) | null): void;
+  onErrorOccurred(listener: ((details: OnErrorOccurredListenerDetails) => void) | null): void;
 };
+
+/**
+ * 一种「只观测、不回调」的事件：多个订阅者共用底层那一个监听器，懒挂懒摘，退订幂等，
+ * 一个订阅者抛了不影响别人 —— 与 `onBeforeRequest` 同一套规矩，只是没有放行这一步。
+ */
+function observerChannel<D>(
+  name: string,
+  set: (listener: ((details: D) => void) | null) => void,
+): (fn: (details: D) => void) => Unsubscribe {
+  const subs = new Set<(details: D) => void>();
+  let attached = false;
+  const dispatch = (details: D): void => {
+    for (const fn of [...subs]) {
+      try {
+        fn(details);
+      } catch (err) {
+        // 日志里只留错误本身：details.url 的 userinfo 里可能带凭据。
+        logger.warn('browser.webRequest', `${name} 订阅者抛了异常`, { err: String(err) });
+      }
+    }
+  };
+  const sync = (): void => {
+    const want = subs.size > 0;
+    if (want === attached) return;
+    attached = want;
+    set(want ? dispatch : null);
+  };
+  return (fn) => {
+    subs.add(fn);
+    sync();
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      subs.delete(fn);
+      sync();
+    };
+  };
+}
 
 export function createWebRequestHub(wr: WebRequestPort): WebRequestHub {
   const subs = new Set<BeforeRequestSubscriber>();
@@ -84,7 +131,12 @@ export function createWebRequestHub(wr: WebRequestPort): WebRequestHub {
     wr.onBeforeRequest(want ? dispatch : null);
   };
 
+  const onCompleted = observerChannel<OnCompletedListenerDetails>('onCompleted', (l) => wr.onCompleted(l));
+  const onErrorOccurred = observerChannel<OnErrorOccurredListenerDetails>('onErrorOccurred', (l) => wr.onErrorOccurred(l));
+
   return {
+    onCompleted,
+    onErrorOccurred,
     onBeforeRequest(fn: BeforeRequestSubscriber): Unsubscribe {
       subs.add(fn);
       sync();

@@ -17,6 +17,11 @@ import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
 import INTERACT_SOURCE from './injected/interact.js?raw';
 import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
+import {
+  TabRequestLog, ZERO_REQUEST_CURSOR,
+  type RequestCursor, type RequestOutcome, type RequestReport,
+} from './requestLog';
+import { browserWebRequestHub } from './webRequestHub';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import {
@@ -264,6 +269,11 @@ export class BrowserService {
    * 会把别的标签的错误算进这一次操作。随标签销毁一起清掉（见 destroyView）。
    */
   private consoles = new Map<string, TabConsoleLog>();
+  /**
+   * 每个标签一份 XHR / fetch 请求记录，与 `consoles` 同生同灭、同一个凭据开关。
+   * 事件从 session 级的 `webRequestHub` 来，按 `details.webContentsId` 归到标签（`recordRequest`）。
+   */
+  private requests = new Map<string, TabRequestLog>();
   private stage: Stage | null = null;
   private sessionWired = false;
 
@@ -325,6 +335,33 @@ export class BrowserService {
       }
       logger.info('browser.download', '按策略取消下载', { url: logUrl(url), tabId });
     });
+
+    // 请求记录（spec 2026-09-17-browser-request-signal-design）。**走 hub，不许自己去挂**
+    // `sess.webRequest`：每种事件只有一个槽位，后挂的静默顶掉先挂的（`webRequestHub.ts` 顶部）。
+    const hub = browserWebRequestHub();
+    hub.onCompleted((d) => { this.recordRequest(d, { kind: 'status', code: d.statusCode }); });
+    hub.onErrorOccurred((d) => { this.recordRequest(d, { kind: 'error', error: d.error }); });
+  }
+
+  /**
+   * 一条请求落定了：归到发它的那个标签。
+   *
+   * **只收 `xhr`**：2026-09-18 实测页面脚本发的 fetch 与 XHR 在这里都报成 `xhr`；脚本、图片、样式
+   * 这些资源请求与「页面接没接住一次提交」无关，数量又大（spec §5）。
+   * **归属只认 `webContentsId`**：缺的（service worker 之类）不猜是哪个标签发的，丢掉；
+   * 对不上任何现存标签的（标签刚关）同样丢掉。
+   */
+  private recordRequest(
+    d: { webContentsId?: number; resourceType: string; method: string; url: string },
+    outcome: RequestOutcome,
+  ): void {
+    if (d.resourceType !== 'xhr') return;
+    if (d.webContentsId === undefined) return;
+    for (const [id, v] of this.views) {
+      if (this.safeCall(() => v.webContents.id, null) !== d.webContentsId) continue;
+      this.requests.get(id)?.record(d.method, d.url, outcome);
+      return;
+    }
   }
 
   private tabIdOf(wc: WebContents | undefined): string | null {
@@ -704,6 +741,7 @@ export class BrowserService {
     });
     this.views.set(id, view);
     this.consoles.set(id, new TabConsoleLog());
+    this.requests.set(id, new TabRequestLog());
     this.win.contentView.addChildView(view);
     view.setVisible(false);
     this.wireView(id, view);
@@ -839,6 +877,7 @@ export class BrowserService {
       // 恢复的是同一个文档对象）继续压着，密码明文可能还在它的 DOM 里。见
       // `originOf` 与 `TabConsoleLog.resumeIfOriginChanged` 的说明。
       this.consoles.get(id)?.resumeIfOriginChanged(originOf(url));
+      this.requests.get(id)?.resumeIfOriginChanged(originOf(url));
       this.syncTabMeta(id);
     });
 
@@ -962,6 +1001,7 @@ export class BrowserService {
     this.queues.delete(id);      // 否则 queues 只增不减
     this.cdpGone.delete(id);
     this.consoles.delete(id);
+    this.requests.delete(id);
     for (const f of this.drivingFrames) f.tabs.delete(id);
     try { if (!view.webContents.isDestroyed()) view.webContents.debugger.detach(); } catch { /* 已经断开 */ }
     try { this.win?.contentView.removeChildView(view); } catch { /* 窗口已经没了 */ }
@@ -1179,15 +1219,43 @@ export class BrowserService {
       ?? { lines: [], omitted: 0, dropped: 0, suppressed: 0 };
   }
 
+  /** 请求记录的游标。与 `consoleCursor` 同一条规矩：标签不存在回零游标，不抛。 */
+  requestCursor(tabId: string): RequestCursor {
+    return this.requests.get(tabId)?.cursor() ?? ZERO_REQUEST_CURSOR;
+  }
+
+  /** 同上：标签不存在就是一份空报告。`upTo` 不给就取到最新。 */
+  requestsSince(tabId: string, from: RequestCursor, upTo?: RequestCursor): RequestReport {
+    return this.requests.get(tabId)?.since(from, upTo)
+      ?? { failed: [], ok: [], okOmitted: 0, failedOmitted: 0, dropped: 0, suppressed: 0, total: 0 };
+  }
+
   /**
-   * 这个标签上填过凭据了：从此不再采集控制台**内容**，只数条数，直到主 frame
+   * 这个标签上一次请求报告的终点。**还没报告过就回当前位置**：用户自己开的标签被 agent 第一次碰到时，
+   * 之前的那些请求与这次操作无关，不翻旧账。标签不存在回零游标，不抛。
+   */
+  requestReportedCursor(tabId: string): RequestCursor {
+    const log = this.requests.get(tabId);
+    return log?.reportedCursor() ?? log?.cursor() ?? ZERO_REQUEST_CURSOR;
+  }
+
+  /** 一次请求报告发出去了，记下它的终点（`TabRequestLog.markReported`）。标签不存在就什么都不做。 */
+  markRequestsReported(tabId: string, c: RequestCursor): void {
+    this.requests.get(tabId)?.markReported(c);
+  }
+
+  /**
+   * 这个标签上填过凭据了：从此不再采集控制台与请求记录的**内容**，只数条数，直到主 frame
    * 换到一个**不同 origin** 的文档（origin 相同——比如 `back` 命中 bfcache——
    * 继续压着，见 `TabConsoleLog.resumeIfOriginChanged`）。唯一的调用方是
    * `loginFlow`，就在注入之前；`origin` 是那一刻页面的 origin（`loginFlow` 已经
    * 解析过、与页面自检用的 `expectOrigin` 是同一个）。
+   *
+   * 请求记录一并压着：登录请求的地址本身可能带票据（spec 2026-09-17-browser-request-signal-design 决策 5）。
    */
-  suppressConsoleForCredentials(tabId: string, origin: string): void {
+  suppressCaptureForCredentials(tabId: string, origin: string): void {
     this.consoles.get(tabId)?.suppress(origin);
+    this.requests.get(tabId)?.suppress(origin);
   }
 
   /** 这次 back / forward / reload 要去哪。给 NavigationTracker 当下载的关联依据 ——

@@ -90,7 +90,7 @@ export type LoginBrowserPort = {
   onTabDestroyed(fn: (tabId: string) => void): () => void;
   /** 见 `fillInQueue` 里那句调用的注释。`origin` 是那一刻页面的 origin —— 与页面
    *  自检用的 `expectOrigin` 是同一个，恢复采集的判据要按它比，不是「填过就不恢复」。 */
-  suppressConsoleForCredentials(tabId: string, origin: string): void;
+  suppressCaptureForCredentials(tabId: string, origin: string): void;
 };
 
 export type LoginSettingsPort = {
@@ -549,10 +549,11 @@ export class LoginFlow {
 
     // **在注入之前**。密码是在 evalInPage 那一刻进页面的，页面脚本可以在我们抹掉
     // 输入框的值之前读走它并 console.error 出来。放在之后就有一段听不见的窗口。
+    // 请求记录同一个开关一起压：登录请求的地址本身可能带票据。
     // 采集在主 frame 换到一个不同 origin 的文档时自动恢复（见 browserService 的
     // did-navigate）——传的是 `expectOrigin`，与页面自检用的同一个值，`back` 命中
     // bfcache 落定的仍是这个 origin 时不会恢复。
-    this.ports.browser.suppressConsoleForCredentials(tabId, expectOrigin);
+    this.ports.browser.suppressCaptureForCredentials(tabId, expectOrigin);
 
     let raw: unknown;
     try {
@@ -629,7 +630,7 @@ export const loginFlow = new LoginFlow({
     withAgentDriving: (tabId, threadId, fn, action) => browserService.withAgentDriving(tabId, threadId, fn, action),
     evalInPage: (tabId, code) => browserService.evalInPage(tabId, code),
     onTabDestroyed: (fn) => browserService.onTabDestroyed(fn),
-    suppressConsoleForCredentials: (tabId, origin) => browserService.suppressConsoleForCredentials(tabId, origin),
+    suppressCaptureForCredentials: (tabId, origin) => browserService.suppressCaptureForCredentials(tabId, origin),
   },
   settings: {
     get: () => settingsService.get(),

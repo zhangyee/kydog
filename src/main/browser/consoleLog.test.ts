@@ -112,6 +112,27 @@ describe('上限：丢了多少必须说出来', () => {
     expect(r.lines[r.lines.length - 1].text).toBe(`e${total - 1}`);
   });
 
+  // 缓冲满了之后，每来一条新的就挤掉一条**游标之前**的旧条目。那一条本来就不在这次报告的范围里，
+  // 不许算成「更早的 N 条因为缓冲已满没能保留」—— 否则一个报错多的标签攒满 50 条之后，
+  // 每一次报告都会谎称丢了东西（requestLog 那边实测复现过同一个写法的这个错）。
+  it('被挤掉的是游标之前的旧条目时，不算进这次报告的 dropped', () => {
+    const log = new TabConsoleLog();
+    for (let i = 0; i < CONSOLE_BUFFER_MAX; i += 1) err(log, `old${i}`);
+    const c = log.cursor();
+    err(log, 'new');
+    const r = log.since(c);
+    expect(r.lines.map((l) => l.text)).toEqual(['new']);
+    expect(r.dropped).toBe(0);
+    expect(renderConsole(r)).not.toContain('缓冲已满');
+
+    // 正向前置在同一条里、指向同一个串：游标之后进了缓冲、又被挤掉的，照样计数、照样说出来。
+    const c2 = log.cursor();
+    for (let i = 0; i < CONSOLE_BUFFER_MAX + 2; i += 1) err(log, `b${i}`);
+    const r2 = log.since(c2);
+    expect(r2.dropped).toBe(2);
+    expect(renderConsole(r2)).toContain('更早的 2 条因为缓冲已满没能保留');
+  });
+
   it('一次报告最多 CONSOLE_REPORT_MAX 条，留最近的，略过几条报得出来', () => {
     const log = new TabConsoleLog();
     const c = log.cursor();

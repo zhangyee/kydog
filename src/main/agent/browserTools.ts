@@ -15,6 +15,7 @@ import {
 } from '../browser/extract';
 import { loginFlow } from '../browser/loginFlow';
 import { renderConsole, ZERO_CURSOR, type ConsoleCursor } from '../browser/consoleLog';
+import { renderRequests, ZERO_REQUEST_CURSOR, type RequestCursor } from '../browser/requestLog';
 import { createLoginAsk } from './loginConfirm';
 import type { AskSharedState } from './askUserQuestionTool';
 
@@ -504,6 +505,13 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       const consoleFrom = params.tabId === undefined
         ? ZERO_CURSOR
         : browserService.consoleCursor(params.tabId);
+      // 请求报告两个游标：上一次报告的终点（晚到的从这里起）与这一步开始的位置。新标签两个都是零。
+      const requestFrom = params.tabId === undefined
+        ? ZERO_REQUEST_CURSOR
+        : browserService.requestReportedCursor(params.tabId);
+      const requestStart = params.tabId === undefined
+        ? ZERO_REQUEST_CURSOR
+        : browserService.requestCursor(params.tabId);
       const { tabId, nav, evicted } = await browserService.open({
         url: params.url, tabId: params.tabId, ownerThreadId: deps.threadId,
       });
@@ -536,6 +544,9 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       }
       const con = renderConsole(browserService.consoleSince(tabId, consoleFrom));
       if (con) parts.push('', con);
+      // 打开网页不是一次输入：没有请求就整段不出现，不说「没有发出」。
+      const req = reportRequests(tabId, requestFrom, requestStart, false);
+      if (req) parts.push('', req);
       return { ...withTabs(parts.join('\n')), details: { tabId, nav } };
     },
   };
@@ -568,12 +579,13 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         params.tabId, deps.threadId,
         // **`before` 快照取在队列里面**：这一批在队列里等的那段时间，同一个标签上
         // 另一次操作可能产生新快照，拿队列外那一份去 diff 就会把别人的改动算进
-        // 这一批的「页面变化」。控制台游标同一个理由，与 `before` 快照同一处取。
+        // 这一批的「页面变化」。控制台与请求的游标同一个理由，与 `before` 快照同一处取。
         () => runBatch(
           deps.threadId,
           params.tabId,
           browserService.getSnapshot(params.tabId),
           browserService.consoleCursor(params.tabId),
+          { from: browserService.requestReportedCursor(params.tabId), start: browserService.requestCursor(params.tabId) },
           steps, signal,
         ),
         '操作网页',
@@ -760,7 +772,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
  */
 async function runBatch(
   threadId: string, tabId: string, before: AxSnapshot | null, consoleFrom: ConsoleCursor,
-  steps: FlatStep[], signal?: AbortSignal,
+  requests: { from: RequestCursor; start: RequestCursor }, steps: FlatStep[], signal?: AbortSignal,
 ): Promise<ToolResult> {
   const withTabs = (body: string): ToolResult => withTabsFor(threadId, body);
   // spec §5.1：**这一批里新开的标签必须列出来**。不列的话模型点了一下、返回值说
@@ -823,6 +835,12 @@ async function runBatch(
   // 模型该先读到它再看 diff。
   const con = renderConsole(browserService.consoleSince(tabId, consoleFrom));
   if (con) parts.push('', con);
+  // 这一批期间这个标签发出的 XHR / fetch（spec 2026-09-17-browser-request-signal-design）。
+  // 「点了没反应」时它分得开三件事：请求根本没发 / 发了被拒 / 发了、成功、只是渲染慢。
+  // 「没有发出」那句只在这一批里有点击或按键时说 —— 别的动作本来就不该发请求。
+  const hadInput = steps.some((s) => s.action.kind === 'click' || s.action.kind === 'key');
+  const req = reportRequests(tabId, requests.from, requests.start, hadInput);
+  if (req) parts.push('', req);
   if (after) {
     parts.push('', `── 页面变化（快照 ${after.snapshotId}）──`, renderDiff(before, after).text);
   } else {
@@ -835,6 +853,23 @@ async function runBatch(
     ...withTabs(parts.join('\n')),
     details: { snapshotId: after?.snapshotId ?? null, stopped: stoppedAt, snapshotFailed },
   };
+}
+
+/**
+ * 请求报告：这一步（`start` → 此刻）一块；上一次报告的终点到这一步开始之间晚到的（`from` → `start`）
+ * 另一块。报完把终点记下 —— 报告里那句「之后到的会出现在下一次 browser_act / browser_open 的结果里」
+ * 就靠这一句成立：下一次从这里起，晚到的落进它的「上一次返回之后」那一块。
+ */
+function reportRequests(
+  tabId: string, from: RequestCursor, start: RequestCursor, hadInput: boolean,
+): string | null {
+  const end = browserService.requestCursor(tabId);
+  const step = browserService.requestsSince(tabId, start, end);
+  const late = from.seq < start.seq || from.suppressed < start.suppressed
+    ? browserService.requestsSince(tabId, from, start)
+    : undefined;
+  browserService.markRequestsReported(tabId, end);
+  return renderRequests(step, { hadInput, late });
 }
 
 /** `wait` 等的是哪一件事，说人话。超时那句话要靠它说清楚「没成立的是哪个条件」。 */

@@ -17,8 +17,12 @@ export type ConsoleLine = { seq: number; text: string; source: string };
  * **做成对象而不是一个数字**：报告要能分别说出「因容量丢了几条」「因凭据窗口没采
  * 几条」，而这两样都**不在缓冲区里占位**（占位会把真正的错误挤掉）。所以三个单调
  * 计数器各存一份，报告取差值。这是计数，不是时间窗。
+ *
+ * `buffered` 是「到这一刻为止进过缓冲的条数」，不是丢了几条：挤出是先进先出，所以游标之后
+ * 进缓冲、又被挤掉的条数 = max(0, 已挤掉总数 − 游标时的 buffered)。直接拿「已挤掉总数」相减的话，
+ * 缓冲满了之后挤掉的全是游标**之前**的旧条目，也会被算成这次报告丢的。
  */
-export type ConsoleCursor = { seq: number; suppressed: number; dropped: number };
+export type ConsoleCursor = { seq: number; suppressed: number; buffered: number };
 
 export type ConsoleReport = {
   lines: ConsoleLine[];
@@ -37,12 +41,13 @@ export const CONSOLE_REPORT_MAX = 20;
 /** 单条最多多少字符。页面可以往 console.error 里塞一整份 HTML。 */
 export const CONSOLE_LINE_MAX = 200;
 
-export const ZERO_CURSOR: ConsoleCursor = { seq: 0, suppressed: 0, dropped: 0 };
+export const ZERO_CURSOR: ConsoleCursor = { seq: 0, suppressed: 0, buffered: 0 };
 
 export class TabConsoleLog {
   private buf: ConsoleLine[] = [];
   private seq = 0;
   private suppressedCount = 0;
+  private bufferedCount = 0;
   private droppedCount = 0;
   /**
    * `null` = 没在压着。非 `null` = 正在压着，值是**填凭据那一刻那份文档的 origin**。
@@ -65,6 +70,7 @@ export class TabConsoleLog {
     const text = raw.length > CONSOLE_LINE_MAX ? `${raw.slice(0, CONSOLE_LINE_MAX)}…` : raw;
     const where = lineNumber > 0 ? `${sourceId}:${lineNumber}` : sourceId;
     this.buf.push({ seq: this.seq, text, source: where });
+    this.bufferedCount += 1;
     while (this.buf.length > CONSOLE_BUFFER_MAX) {
       this.buf.shift();
       this.droppedCount += 1;
@@ -108,7 +114,7 @@ export class TabConsoleLog {
   }
 
   cursor(): ConsoleCursor {
-    return { seq: this.seq, suppressed: this.suppressedCount, dropped: this.droppedCount };
+    return { seq: this.seq, suppressed: this.suppressedCount, buffered: this.bufferedCount };
   }
 
   /** **不消费**：同一个游标取两次结果一样。谁报告谁自己记游标。 */
@@ -118,7 +124,7 @@ export class TabConsoleLog {
     return {
       lines,
       omitted: fresh.length - lines.length,
-      dropped: this.droppedCount - from.dropped,
+      dropped: Math.max(0, this.droppedCount - from.buffered),
       suppressed: this.suppressedCount - from.suppressed,
     };
   }

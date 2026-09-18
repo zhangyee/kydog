@@ -231,6 +231,11 @@ describe('browser_act 的 schema 是模型看得到的那道闸', () => {
 
 const WORLD_ID = 31337;
 
+/** 一份空的请求报告。要在 `bs` 之前 hoist —— `bs` 的默认值与每条用例前的复位都用它。 */
+const { EMPTY_REQUESTS } = vi.hoisted(() => ({
+  EMPTY_REQUESTS: { failed: [], ok: [], okOmitted: 0, failedOmitted: 0, dropped: 0, suppressed: 0, total: 0 },
+}));
+
 const bs = vi.hoisted(() => ({
   /** enqueue / withAgentDriving / snapshot / 每一步派发的实际先后。 */
   order: [] as string[],
@@ -273,6 +278,16 @@ const bs = vi.hoisted(() => ({
   consoleImpl: (() => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 })) as () => unknown,
   /** `consoleCursor` 收到的每一个 tabId，按顺序 —— 用来断「取游标排在 open() 之前」。 */
   consoleCursorCalls: [] as string[],
+  /** 请求报告由用例摆布，按收到的 `from` 分得开「上次返回之后」与「这一步」。默认什么都没有。 */
+  requestsImpl: ((_from: { seq: number }) => EMPTY_REQUESTS) as (from: { seq: number }) => unknown,
+  /** `requestsSince` 收到的参数，按顺序 —— 新开标签要从零游标起算。 */
+  requestsSinceCalls: [] as Array<{ tabId: string; from: unknown; upTo: unknown }>,
+  /** `requestCursor` 每调一次往前走 2：第一次是这一步开始（7），第二次是报告那一刻（9）。 */
+  reqSeq: 7,
+  /** 上一次报告的终点。 */
+  reqReported: { seq: 5, suppressed: 0, buffered: 5 },
+  /** `markRequestsReported` 收到的参数。 */
+  reqMarked: [] as Array<{ tabId: string; c: unknown }>,
 }));
 
 vi.mock('../browser/browserService', () => {
@@ -342,9 +357,24 @@ vi.mock('../browser/browserService', () => {
       consoleCursor: (tabId: string) => {
         bs.order.push(`consoleCursor:${tabId}`);
         bs.consoleCursorCalls.push(tabId);
-        return { seq: 0, suppressed: 0, dropped: 0 };
+        return { seq: 0, suppressed: 0, buffered: 0 };
       },
       consoleSince: () => bs.consoleImpl(),
+      requestCursor: (tabId: string) => {
+        bs.order.push(`requestCursor:${tabId}`);
+        const seq = bs.reqSeq;
+        bs.reqSeq += 2;
+        return { seq, suppressed: 0, buffered: seq };
+      },
+      requestReportedCursor: (tabId: string) => {
+        bs.order.push(`requestReportedCursor:${tabId}`);
+        return bs.reqReported;
+      },
+      markRequestsReported: (tabId: string, c: unknown) => { bs.reqMarked.push({ tabId, c }); },
+      requestsSince: (tabId: string, from: { seq: number }, upTo: unknown) => {
+        bs.requestsSinceCalls.push({ tabId, from, upTo });
+        return bs.requestsImpl(from);
+      },
       enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
       withAgentDriving: <T>(tabId: string, threadId: string | null, fn: () => Promise<T>) => {
         bs.order.push(`driving:${tabId}:${threadId}`); return fn();
@@ -441,6 +471,11 @@ beforeEach(() => {
   // 不复位的话上一条用例摆的错误会渗进下一条，「没有错误就一个字都不加」那条会假红。
   bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 });
   bs.consoleCursorCalls.length = 0;
+  bs.requestsImpl = () => EMPTY_REQUESTS;
+  bs.requestsSinceCalls.length = 0;
+  bs.reqSeq = 7;
+  bs.reqReported = { seq: 5, suppressed: 0, buffered: 5 };
+  bs.reqMarked.length = 0;
   lf.calls.length = 0;
   lf.notes.clear();
   bs.unreported.clear();
@@ -893,7 +928,8 @@ describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
     // 取在队列外的话，这一批在队列里等的那段时间同一个标签上别人产生的新快照
     // 会被算进「本批的页面变化」。
     expect(bs.order).toEqual([
-      'enqueue:t1', 'driving:t1:thread-1', 'getSnapshot', 'consoleCursor:t1', 'evalInPage', 'snapshot',
+      'enqueue:t1', 'driving:t1:thread-1', 'getSnapshot', 'consoleCursor:t1',
+      'requestReportedCursor:t1', 'requestCursor:t1', 'evalInPage', 'snapshot', 'requestCursor:t1',
     ]);
   });
 
@@ -1554,6 +1590,93 @@ describe('页面报的错挂进工具结果（Task 4）', () => {
     const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
     expect(out).toContain('4');
     expect(out).toContain('凭据');
+  });
+});
+
+/**
+ * 这一步发出的请求（spec 2026-09-17-browser-request-signal-design §3.3）。
+ *
+ * 第五、六组里模型点了提交、页面没变，分不清「请求没发」「接口拒了」「只是慢」，只能重试、
+ * 按 Enter、最后自己拼检索地址。这一段就是把「发没发、回了什么」交给它。
+ */
+describe('这一步发出的请求挂进工具结果', () => {
+  const HEAD = '── 这一步发出的请求（XHR / fetch）──';
+  const NONE = '没有发出任何 XHR / fetch 请求';
+  const withRequests = () => ({
+    failed: [{ seq: 9, method: 'GET', where: 'xueshu.baidu.com/search/api/search?wd=…', outcome: { kind: 'status', code: 403 } }],
+    ok: [{ seq: 8, method: 'GET', where: 'xueshu.baidu.com/usercenter/data/collect?cmd=…', outcome: { kind: 'status', code: 200 } }],
+    okOmitted: 0, failedOmitted: 0, dropped: 0, suppressed: 0, total: 2,
+  });
+
+  const at = (seq: number) => ({ seq, suppressed: 0, buffered: seq });
+
+  it('browser_act：报告在「页面报的错」之后、「页面变化」之前；这一步取的是开始到报告那一刻，报完记下终点', async () => {
+    bs.requestsImpl = (from) => (from.seq === 7 ? withRequests() : EMPTY_REQUESTS);
+    bs.consoleImpl = () => ({ lines: [{ seq: 1, text: 'boom', source: 'https://a/x.js:1' }], omitted: 0, dropped: 0, suppressed: 0 });
+    const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    const headAt = out.indexOf(HEAD);
+    expect(headAt).toBeGreaterThan(out.indexOf('页面报的错'));
+    expect(headAt).toBeLessThan(out.indexOf('── 页面变化'));
+    expect(out).toContain('GET xueshu.baidu.com/search/api/search?wd=… → 403');
+    expect(bs.requestsSinceCalls).toEqual([
+      { tabId: 't1', from: at(7), upTo: at(9) },   // 这一步：开始 → 报告那一刻
+      { tabId: 't1', from: at(5), upTo: at(7) },   // 上一次报告的终点 → 这一步开始
+    ]);
+    expect(bs.reqMarked).toEqual([{ tabId: 't1', c: at(9) }]);
+  });
+
+  // 百度学术那条路：上一步点完就返回了、那时检索请求还没发；它后来才到。下一次 browser_act 要把它报出来，
+  // 而且不能算成「这一步发出的」。
+  it('上一次返回之后才到的请求：单独成块、排在这一步前面；这一步点了却没发，照样说「没有发出」', async () => {
+    bs.requestsImpl = (from) => (from.seq === 5 ? withRequests() : EMPTY_REQUESTS);
+    const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    const lateAt = out.indexOf('上一次工具返回之后、这一步开始之前到的请求');
+    expect(lateAt).toBeGreaterThan(-1);
+    expect(out.indexOf('→ 403')).toBeGreaterThan(lateAt);
+    expect(out.indexOf(HEAD)).toBeGreaterThan(out.indexOf('→ 403'));
+    expect(out.slice(out.indexOf(HEAD))).toContain(NONE);
+  });
+
+  // 否定型断言的正向前置在同一条里、指向同一个串：先证明有请求时表头出现、「没有发出」不出现，
+  // 再断空报告下点击 / 按键说「没有发出」、滚动整段不出现。
+  it('「没有发出请求」只在点击 / 按键之后说；有请求时不说；别的动作什么都不报', async () => {
+    bs.requestsImpl = withRequests;
+    const withReq = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(withReq).toContain(HEAD);
+    expect(withReq).not.toContain(NONE);
+
+    bs.requestsImpl = () => EMPTY_REQUESTS;
+    expect(bodyOf(await act([{ kind: 'click', selector: '#go' }]))).toContain(NONE);
+    expect(bodyOf(await act([{ kind: 'key', key: 'Enter' }]))).toContain(NONE);
+    // repeat 里的点击也算：判据看的是展开之后的每一步。
+    expect(bodyOf(await act([{ kind: 'repeat', times: 1, actions: [{ kind: 'click', selector: '#next' }] }]))).toContain(NONE);
+    expect(bodyOf(await act([{ kind: 'scroll', direction: 'down' }]))).not.toContain(HEAD);
+  });
+
+  it('browser_open：新开标签从零游标起算，有请求就报；没有请求时整段不出现', async () => {
+    bs.requestsImpl = withRequests;
+    const opened = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
+    expect(opened).toContain(HEAD);
+    expect(opened).toContain('→ 403');
+    // 新标签没有「上一次」：只取一段，从零到报告那一刻；报完记下终点。
+    expect(bs.requestsSinceCalls).toEqual([{ tabId: 't1', from: at(0), upTo: at(7) }]);
+    expect(bs.reqMarked).toEqual([{ tabId: 't1', c: at(7) }]);
+
+    bs.requestsImpl = () => EMPTY_REQUESTS;
+    expect(bodyOf(await toolNamed('browser_open').execute('call-2', { url: 'https://a.example/q' }))).not.toContain(HEAD);
+  });
+
+  it('browser_open 复用已有标签：两个游标都排在 open() 之前取', async () => {
+    await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q', tabId: 't1' });
+    const openAt = bs.order.indexOf('open:https://a.example/q');
+    expect(bs.order.indexOf('requestReportedCursor:t1')).toBeGreaterThanOrEqual(0);
+    expect(bs.order.indexOf('requestReportedCursor:t1')).toBeLessThan(openAt);
+    expect(bs.order.indexOf('requestCursor:t1')).toBeGreaterThanOrEqual(0);
+    expect(bs.order.indexOf('requestCursor:t1')).toBeLessThan(openAt);
+    expect(bs.requestsSinceCalls).toEqual([
+      { tabId: 't1', from: at(7), upTo: at(9) },
+      { tabId: 't1', from: at(5), upTo: at(7) },
+    ]);
   });
 });
 
