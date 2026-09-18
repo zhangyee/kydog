@@ -198,6 +198,7 @@ vi.mock('../ipc/broadcaster', () => ({
 }));
 
 const { BrowserService, WALKER_WORLD_ID, PAGE_EVAL_TIMEOUT_MS } = await import('./browserService');
+const { installBrowserWindowWiring } = await import('./mainWiring');
 const { _resetSharedHubForTest } = await import('./webRequestHub');
 const { ZERO_REQUEST_CURSOR } = await import('./requestLog');
 
@@ -684,6 +685,67 @@ describe('侧栏没打开时照样下发 1280（§B）', () => {
     expect(H.views[0].visible).toBe(false);
     expect(overrides(wc).length).toBe(before + 1);
     expect(overrides(wc).at(-1)!.params.width).toBe(1280);
+  });
+});
+
+// ── 渲染层重载：藏起来，不重新加载（spec §8.2 第 3 条） ──────────────────────
+
+/**
+ * 渲染层重载时主进程这一侧只做一件事：`hideAll()`（`mainWiring.ts` 挂在主窗口的
+ * `did-start-navigation` 上，`mainWiring.test.ts` 钉着「挂上了」）。这里钉的是
+ * **这一路不碰网页本身**：一个「重载时把每个标签重新 loadURL / reload 一遍」的实现，
+ * 标签清单与 URL 照样全对，丢的却是登录会话与半填的表单。
+ *
+ * 走真的 `installBrowserWindowWiring` 装配、从主窗口的 webContents 把事件打进来，
+ * 不直接调 `hideAll` —— 接线与 `hideAll` 本身一起过。
+ * 守不住的是真 Chromium 里文档有没有被换掉（e2e 那条在页面里种计数器量的就是这个）；
+ * 这里能断的是「主进程有没有下过换文档的命令」。
+ */
+describe('渲染层重载：原生 view 全藏起来，一个标签都不重新加载', () => {
+  it('主窗口跨文档导航之后：标签与 URL 不变，没有 loadURL / reload / stop / close', async () => {
+    H.reset();
+    _resetSharedHubForTest();
+    const svc = new BrowserService();
+    const win = new H.FakeBrowserWindow();
+    const mainHandlers = new Map<string, Array<(d: unknown) => void>>();
+    Object.assign(win, {
+      webContents: {
+        on: (ev: string, fn: (d: unknown) => void) => { mainHandlers.set(ev, [...(mainHandlers.get(ev) ?? []), fn]); },
+      },
+    });
+    installBrowserWindowWiring(win as never, svc);
+
+    const a = await openTab(svc, 'https://a.example/');
+    const b = await openTab(svc, 'https://b.example/');
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    // 前提：计数器记得到加载（两次 open 各 loadURL 一次），而且重载之前确实有一个 view 在给人看。
+    expect(a.wc.loadCalls).toEqual(['https://a.example/']);
+    expect(b.wc.loadCalls).toEqual(['https://b.example/']);
+    expect(H.views.map((v) => v.visible)).toContain(true);
+    const tabsBefore = svc.getState().tabs.map((t) => ({ id: t.id, url: t.url }));
+    expect(tabsBefore.map((t) => t.url)).toEqual(['https://a.example/', 'https://b.example/']);
+
+    for (const fn of mainHandlers.get('did-start-navigation') ?? []) fn({ isMainFrame: true, isSameDocument: false });
+    await flush();
+
+    // 前提：这一路真的走到了 hideAll —— 否则下面那些「没发生」是白给的。
+    expect(H.views.map((v) => v.visible)).toEqual([false, false]);
+    for (const wc of [a.wc, b.wc]) {
+      expect(wc.loadCalls).toHaveLength(1);
+      expect(wc.reloadCalls).toBe(0);
+      expect(wc.stopCalls).toBe(0);
+      expect(wc.closeCalls).toBe(0);
+    }
+    expect(svc.getState().tabs.map((t) => ({ id: t.id, url: t.url }))).toEqual(tabsBefore);
+    expect(win.children).toHaveLength(2);
+
+    // 对照：用户真按一次重新载入，reload 计数是记得到的（上面那条 0 不是计数器坏了）。
+    const reloading = svc.navControl(tabsBefore[0].id, 'reload');
+    await flush();
+    expect(a.wc.reloadCalls).toBe(1);
+    a.wc.fire('did-navigate', {}, 'https://a.example/', 200);
+    await reloading;
   });
 });
 

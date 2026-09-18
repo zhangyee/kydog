@@ -141,3 +141,44 @@ describe('面包屑的回合数是一问一答算一次', () => {
     expect(turnCount(m)).toBe(2);
   });
 });
+
+/**
+ * 以错误结束的一轮，面包屑亮「错误」（`e2e/62-error-turn` 的那一半）。
+ *
+ * 错误原文落进对话那一半已经有单测：`AgentService.errorTurn` / `runEvents.errorTurn` /
+ * `AssistantMessage.errorBlock`。这里只钉面包屑：判据是线程级的 `run.ended` 带不带
+ * `reason: 'error'`，喂的仍是真的 `applyRunEvent`。
+ */
+describe('面包屑在这一轮以错误结束时亮「错误」', () => {
+  it('以错误结束 → run-status-error；下一轮正常结束或被中止 → 不亮，别的对话出错也不亮', () => {
+    applyRunEvent({ topic: 'run.started', payload: { threadId: TID, runId: RID } });
+    applyRunEvent({ topic: 'run.message_end', payload: { threadId: TID, runId: RID, messageId: MID, errorMessage: '402: Insufficient Balance' } });
+    applyRunEvent({ topic: 'run.ended', payload: { threadId: TID, runId: RID, reason: 'error', errorMessage: '402: Insufficient Balance' } });
+    const m = mount(ThreadBreadcrumb, { threadId: TID });
+    expect(m.query('run-status-error')).not.toBeNull();
+    expect(m.query('run-status-running')).toBeNull();
+
+    // 对照一：同一条对话的下一轮正常结束。只翻 reason 这一个字段。
+    applyRunEvent({ topic: 'run.started', payload: { threadId: TID, runId: 'run-2' } });
+    m.rerender({ threadId: TID });
+    expect(m.query('run-status-running')).not.toBeNull();
+    expect(m.query('run-status-error')).toBeNull();
+    applyRunEvent({ topic: 'run.message_end', payload: { threadId: TID, runId: 'run-2', messageId: 'thr-1:msg-2' } });
+    applyRunEvent({ topic: 'run.ended', payload: { threadId: TID, runId: 'run-2', reason: 'completed' } });
+    // 别的对话在同一时刻以错误结束：错误是那一条的事，不许串到这一条的面包屑上。
+    applyRunEvent({ topic: 'run.started', payload: { threadId: OTHER, runId: 'run-9' } });
+    applyRunEvent({ topic: 'run.ended', payload: { threadId: OTHER, runId: 'run-9', reason: 'error', errorMessage: 'socket hang up' } });
+    m.rerender({ threadId: TID });
+    expect(m.query('run-status-error')).toBeNull();
+    expect(m.query('run-status-running')).toBeNull();
+    // 查找本身没坏：同一个组件挂到出错的那一条上，照样亮。
+    m.rerender({ threadId: OTHER });
+    expect(m.query('run-status-error')).not.toBeNull();
+
+    // 对照二：用户中止（reason: 'aborted'）不是错误。
+    applyRunEvent({ topic: 'run.started', payload: { threadId: TID, runId: 'run-3' } });
+    applyRunEvent({ topic: 'run.ended', payload: { threadId: TID, runId: 'run-3', reason: 'aborted' } });
+    m.rerender({ threadId: TID });
+    expect(m.query('run-status-error')).toBeNull();
+  });
+});

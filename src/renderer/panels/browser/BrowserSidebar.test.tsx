@@ -268,6 +268,25 @@ describe('BrowserSidebar：顶部结构（Task 4）', () => {
     m.unmount();
   });
 
+  /**
+   * 上面那条是**文本**判据，只认「浏览器 Browser」这个字面串 —— 换个措辞加回一行标题，
+   * 它照样绿。这条是**结构**判据：根节点的头两个子元素依次是 `TabStrip`、`UrlBar`。
+   * 标签条前面塞进任何东西（不管写的是什么字），或者两者顺序反了，都会红。
+   *
+   * 根节点就是浏览器面板里的第一层：`ThreeColumnLayout` 的 `<aside data-pane="browser">`
+   * 与它之间只隔一个 `ErrorBoundary`，不另加任何内容。
+   * 守不住的是真排版（`flex-col` 真把它们竖着排、没有绝对定位的东西叠上来）——
+   * 那是真布局才量得到的事。
+   */
+  it('标签条是面板的第一个子元素，地址栏紧跟其后', () => {
+    useBrowserStore.setState({ epoch: 5, revision: 1, tabs: [tab()], activeTabId: 't1' });
+    const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
+    expect(isElement(m.tree)).toBe(true);
+    const kids = ([] as unknown[]).concat((m.tree as MiniElement).props.children).filter(isElement);
+    expect(kids.slice(0, 2).map((el) => el.type)).toEqual([TabStrip, UrlBar]);
+    m.unmount();
+  });
+
   it('点 + 走的是 browser.newTab，不是 browser.open', () => {
     useBrowserStore.setState({ epoch: 5, revision: 1, tabs: [tab()], activeTabId: 't1' });
     const m = mount(BrowserSidebar, {}, { rects: { 'browser-stage': STAGE } });
