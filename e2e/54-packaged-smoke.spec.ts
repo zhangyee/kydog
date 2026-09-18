@@ -243,7 +243,9 @@ test('54-packaged-smoke: 打包成品能启动、资源齐全、投影成功、�
 
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-smoke-home-'));
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-smoke-userdata-'));
-  await seedSettings(home); // onboarding 已完成态 → main.ts 启动流程会跑 skill 同步
+  // onboarding 已完成态 → main.ts 启动流程会跑 skill 同步。以 en 起：启动那一次投影（phase:'startup'，
+  // 不经过任何切换）要按 settings 的语言挑源 —— 「settings 说 en、磁盘是中文」正是它要挡住的不一致。
+  await seedSettings(home, { locale: 'en' });
 
   let child: ChildProcess | null = null;
   let browser: Browser | null = null;
@@ -263,11 +265,21 @@ test('54-packaged-smoke: 打包成品能启动、资源齐全、投影成功、�
     // 启动同步把内置 skill 从 process.resourcesPath/skills 投影到 ~/.kydog/skills。
     // 这是「应用真的读到了打包资源」的协议层落盘事实；skillSyncStateHolder 把失败
     // 收进 health 不阻断启动，所以三栏可见不能替代这条。
+    // 逐字节等于成品里的英文源：既证明读到了打包资源，也证明启动投影挑的是 en 这一格
+    // （落盘树只有单语言文件，SKILL.md 的内容就是源侧的 SKILL.en.md）。播种是异步的，轮询到位。
+    const landed = path.join(home, '.kydog', 'skills', 'fact-check', 'SKILL.md');
+    const enSource = await fs.readFile(path.join(resources, 'skills', 'fact-check', 'SKILL.en.md'), 'utf8');
     await expect
-      .poll(async () => existsSync(path.join(home, '.kydog', 'skills', 'fact-check', 'SKILL.md')), {
-        timeout: 15_000,
-      })
-      .toBe(true);
+      .poll(() => fs.readFile(landed, 'utf8').catch(() => ''), { timeout: 15_000 })
+      .toBe(enSource);
+
+    // —— 断言 5：打包后的图片资源在 file:// 下真能解码（原 40-sponsor）——
+    // 只断言可见没有意义：资源路径解析不到时 <img> 照样可见、只是裂图；naturalWidth 非 0 才算数。
+    await page.getByTestId('user-menu-trigger').click();
+    await page.getByTestId('menu-donate').click();
+    const qr = page.getByTestId('sponsor-qr');
+    await expect(qr).toBeVisible();
+    await expect.poll(() => qr.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
   } finally {
     await browser?.close().catch(() => {});
     if (child && !child.killed) {
