@@ -110,7 +110,7 @@ export function HarnessUpdateDialog({ onSettled }: { onSettled: (ok: boolean) =>
           <>
             <div className="font-sans" style={{ fontSize: 12.5, color: 'var(--color-ink-soft)', marginBottom: 14, lineHeight: 1.6 }}>
               KyDog 更新了下面这些文件的模板。选「更新」会先备份现有文件，再换成新模板；
-              选「保持」不动文件，这一版不再询问，以后可以在侧栏「长期记忆 → KyDog Harness」里查看和更新。
+              选「保持」不动文件，这一版不再询问，以后可以在侧栏「长期记忆 → Harness」里查看和更新。
             </div>
             <div className="flex flex-col" style={{ gap: 12, marginBottom: 18 }}>
               {files.map((f) => (

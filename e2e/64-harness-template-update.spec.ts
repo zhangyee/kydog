@@ -4,7 +4,7 @@ import path from 'node:path';
 import { launchKydog, teardown } from './helpers';
 
 /**
- * KyDog Harness：启动时的模板更新询问 + 长期记忆页的查看、编辑
+ * Harness：启动时的模板更新询问 + 长期记忆页的查看、编辑
  * （spec: docs/superpowers/specs/2026-09-17-harness-template-update-design.md §8.2）。
  *
  * 「对话框不在」一律先等 AppShell 根节点的 data-harness-check="done"：状态是异步查的，
@@ -233,6 +233,12 @@ test('64f 长期记忆页：Memory 三个标签灰掉占位；检视栏收着时
     const { page } = launched;
     await harnessChecked(page);
     await page.getByTestId('nav-long-term-memory').click();
+    // 与 Memory 对齐，上面那一节就叫 Harness，不叫 KyDog Harness
+    await expect(page.getByTestId('ltm-page')).toContainText('Harness · 每次新对话都读');
+    await expect(page.getByTestId('ltm-page')).not.toContainText('KyDog Harness');
+    // Memory 的标题与标签整体压淡；上面 Harness 那一节不淡（对照）
+    await expect(page.getByTestId('ltm-memory-head')).toHaveCSS('opacity', '0.5');
+    await expect(page.getByRole('region', { name: 'Harness' })).toHaveCSS('opacity', '1');
     for (const id of ['graph', 'daily', 'global']) {
       await expect(page.getByTestId(`ltm-memory-tab-${id}`)).toHaveAttribute('aria-disabled', 'true');
       await expect(page.getByTestId(`ltm-memory-tab-${id}`)).toHaveAttribute('title', '暂未开放');

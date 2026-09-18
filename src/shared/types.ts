@@ -273,7 +273,7 @@ export type OnboardingCompleteArgs = {
 export type OnboardingErrorCode = 'invalid-input' | 'model-missing' | 'seed-failed' | 'recovery-pending' | 'manifest-corrupt' | 'already-completed';
 export type OnboardingResult = { ok: true } | { ok: false; code: OnboardingErrorCode; message: string };
 
-// ── KyDog Harness（spec: docs/superpowers/specs/2026-09-17-harness-template-update-design.md）──
+// ── Harness（spec: docs/superpowers/specs/2026-09-17-harness-template-update-design.md）──
 // 渲染层只能点名这三份，不能给路径：主进程拿名字去 ~/.kydog/ 下找。
 export const HARNESS_FILE_NAMES = ['SOUL.md', 'USER.md', 'AGENTS.md'] as const;
 export type HarnessFileName = (typeof HARNESS_FILE_NAMES)[number];

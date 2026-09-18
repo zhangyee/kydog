@@ -188,7 +188,7 @@ export type RpcCall =
   | { method: 'ask.submit'; args: { threadId: string; toolCallId: string; answers: AskAnswer[] }; result: void }
   | { method: 'ask.cancel'; args: { threadId: string; toolCallId: string }; result: void }
   | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult }
-  // ── KyDog Harness：SOUL / USER / AGENTS 三份文件的模板更新与查看编辑 ──
+  // ── Harness：SOUL / USER / AGENTS 三份文件的模板更新与查看编辑 ──
   // spec: docs/superpowers/specs/2026-09-17-harness-template-update-design.md
   // 参数只收三个文件名、不收路径 —— file.writeText 不校验路径，这块不借它。
   // status 有副作用：文件恰好等于当前模板时顺手补记状态（spec §3.2 R1）。

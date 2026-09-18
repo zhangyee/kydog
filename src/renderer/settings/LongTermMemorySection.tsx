@@ -6,7 +6,7 @@ import { useHarnessStore, isDraftDirty } from '../stores/harnessStore';
 import { openHarness, refreshHarness, updateHarness } from './harnessActions';
 
 /**
- * 「长期记忆」页（spec §6.2，方案 B）：上面是 KyDog Harness 三张窄条卡，点开在右侧检视栏里看、改、更新；
+ * 「长期记忆」页（spec §6.2，方案 B）：上面是 Harness 三张窄条卡，点开在右侧检视栏里看、改、更新；
  * 下面是 Memory —— 这一版只占位。「memory」这个名字留给它，所以本页内部标识是 longTermMemory。
  */
 export function LongTermMemorySection() {
@@ -21,8 +21,8 @@ export function LongTermMemorySection() {
 
   return (
     <div data-testid="ltm-page" style={{ padding: '22px 28px 40px', display: 'flex', flexDirection: 'column', gap: 28 }}>
-      <section aria-label="KyDog Harness" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <SectionLabel right="点一张在右侧检视栏里打开">KyDog Harness · 每次新对话都读</SectionLabel>
+      <section aria-label="Harness" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <SectionLabel right="点一张在右侧检视栏里打开">Harness · 每次新对话都读</SectionLabel>
         {loadError && (
           <div data-testid="harness-load-error" className="font-sans" style={{ fontSize: 12, color: 'var(--color-accent)' }}>
             读不出这三份文件：{loadError}
@@ -160,21 +160,24 @@ function CardAction({ testId, icon, label, onClick }: { testId: string; icon: Na
 function MemoryPlaceholder() {
   return (
     <section data-testid="ltm-memory" aria-label="Memory" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <SectionLabel>Memory</SectionLabel>
-      <div role="tablist" className="flex font-sans" style={{ gap: 22, borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
-        {([['graph', '研究图谱'], ['daily', '每日记忆'], ['global', '全局记忆']] as const).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            data-testid={`ltm-memory-tab-${id}`}
-            aria-selected="false"
-            // 不用 disabled 属性（那样悬停提示不一定出得来），只标 aria-disabled、不接点击；与 NavPill 同一做法。
-            aria-disabled="true"
-            title="暂未开放"
-            style={{ fontSize: 13, padding: '0 0 8px', color: 'var(--color-ink-faint)', cursor: 'default' }}
-          >{label}</button>
-        ))}
+      {/* 标题与三个标签整体压淡，一眼看得出「还没开放」—— 与侧栏禁用项（NavPill 的 opacity 0.5）同一个灰法。 */}
+      <div data-testid="ltm-memory-head" style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: 0.5 }}>
+        <SectionLabel>Memory</SectionLabel>
+        <div role="tablist" className="flex font-sans" style={{ gap: 22, borderBottom: '0.5px solid var(--color-ink-hair-soft)' }}>
+          {([['graph', '研究图谱'], ['daily', '每日记忆'], ['global', '全局记忆']] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              data-testid={`ltm-memory-tab-${id}`}
+              aria-selected="false"
+              // 不用 disabled 属性（那样悬停提示不一定出得来），只标 aria-disabled、不接点击；与 NavPill 同一做法。
+              aria-disabled="true"
+              title="暂未开放"
+              style={{ fontSize: 13, padding: '0 0 8px', color: 'var(--color-ink-faint)', cursor: 'default' }}
+            >{label}</button>
+          ))}
+        </div>
       </div>
       <div
         className="font-serif italic"
