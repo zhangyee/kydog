@@ -69,111 +69,118 @@ export async function createFixtureSession(
       // 中止只作用于它那一轮。不复位的话，同一个对话里停过一次，之后每一轮的事件都会被
       // 下面的 `aborted` 判断整份吞掉 —— 真实 pi 那条路上没有这回事。
       aborted = false;
-      toolAbort = new AbortController();
-      // Accumulate tool chunks so tool_end can embed them in result
-      const toolChunks = new Map<string, string>();
-      // 必须用真实 threadId：broker 按 threadId 索引 pending，
-      // renderer 发来的 ask.submit / ask.cancel 带的就是它。
-      const askTool = createAskUserQuestionTool(threadId, askShared, locale);
-      for (const evt of events) {
-        if (aborted && evt.type !== 'agent_end') continue;
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, evt.after_ms);
-          cancelPendingWait = () => { clearTimeout(timer); resolve(); };
-        });
-        cancelPendingWait = null;
-        // abort 可能就发生在上面这次等待期间：定时器被提前短路唤醒，这条事件
-        // 本身也不该再送出去（agent_end 除外——UI 靠它把状态收回 idle）。
-        if (aborted && evt.type !== 'agent_end') continue;
+      try {
+        toolAbort = new AbortController();
+        // Accumulate tool chunks so tool_end can embed them in result
+        const toolChunks = new Map<string, string>();
+        // 必须用真实 threadId：broker 按 threadId 索引 pending，
+        // renderer 发来的 ask.submit / ask.cancel 带的就是它。
+        const askTool = createAskUserQuestionTool(threadId, askShared, locale);
+        for (const evt of events) {
+          if (aborted && evt.type !== 'agent_end') continue;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, evt.after_ms);
+            cancelPendingWait = () => { clearTimeout(timer); resolve(); };
+          });
+          cancelPendingWait = null;
+          // abort 可能就发生在上面这次等待期间：定时器被提前短路唤醒，这条事件
+          // 本身也不该再送出去（agent_end 除外——UI 靠它把状态收回 idle）。
+          if (aborted && evt.type !== 'agent_end') continue;
 
-        if (evt.type === 'ask') {
-          // 走真实的工具：校验、分配 id、注册 broker、挂起等 renderer。
-          // 先发 tool_execution_start（AgentService 靠它缓存 args），
-          // 再发 tool_execution_end（携带 details），与真实 pi 顺序一致。
-          emitRaw(listeners, {
-            type: 'tool_execution_start',
-            toolCallId: evt.toolCallId,
-            toolName: ASK_TOOL_NAME,
-            args: { questions: evt.questions },
-          });
-          let result: { content: unknown[]; details: unknown };
-          let isError = false;
-          try {
-            result = (await askTool.execute(
-              evt.toolCallId,
-              { questions: evt.questions },
-              undefined,
-              undefined,
-              {} as never,
-            )) as typeof result;
-          } catch (err) {
-            result = { content: [{ type: 'text', text: String(err) }], details: {} };
-            isError = true;
-          }
-          emitRaw(listeners, {
-            type: 'tool_execution_end',
-            toolCallId: evt.toolCallId,
-            toolName: ASK_TOOL_NAME,
-            result,
-            isError,
-          });
-          continue;
-        }
-
-        if (evt.type === 'tool') {
-          // 走真实的工具，**与上面 ask 那一条一字不差的形态** —— 那一条从来就是真调
-          // `askUserQuestionTool.execute`。这里只是把「只认识 ask 一种工具」补齐成
-          // 「按名字找 sessionFactory 交进来的任意一个」。
-          //
-          // **这条路上没有任何捷径**：`tools` 里的对象就是非 fixture 分支交给 pi 的
-          // 那一份（`sessionFactory` 里同一次 `createBrowserTools()`），所以
-          // `browser_act` → `browserService.enqueue` → `withAgentDriving` →
-          // `dispatch` / `evalInPage` 整条路一步不少。事件顺序也照真实 pi：
-          // 先 tool_execution_start（AgentService 靠它建工具卡），再 end。
-          //
-          // **「没有捷径」也意味着「有真实副作用」**：`browser_open` 真打公网，
-          // `browser_login` 真用设置里那份校园账号提交一次登录、且本轮只有一次机会。
-          // 副作用清单写在 `e2e/fixtures/fixture.types.ts` 的 `tool` 那段 docblock 里
-          // （那是写剧本的人唯一会读的地方），改这里也去看一眼。
-          emitRaw(listeners, {
-            type: 'tool_execution_start',
-            toolCallId: evt.toolCallId,
-            toolName: evt.name,
-            args: evt.args,
-          });
-          const tool = tools.find((t) => t.name === evt.name);
-          let result: { content: unknown[]; details?: unknown };
-          let isError = false;
-          if (!tool) {
-            // 名字打错了**不许**静默变成「这一步什么都没发生」：那样一条本该红的用例会绿。
-            result = { content: [{ type: 'text', text:
-              `fixture 里写的工具名 ${JSON.stringify(evt.name)} 没有注册。`
-              + `这条 session 上注册着：${tools.map((t) => t.name).join(' / ') || '（一个都没有）'}` }] };
-            isError = true;
-          } else {
+          if (evt.type === 'ask') {
+            // 走真实的工具：校验、分配 id、注册 broker、挂起等 renderer。
+            // 先发 tool_execution_start（AgentService 靠它缓存 args），
+            // 再发 tool_execution_end（携带 details），与真实 pi 顺序一致。
+            emitRaw(listeners, {
+              type: 'tool_execution_start',
+              toolCallId: evt.toolCallId,
+              toolName: ASK_TOOL_NAME,
+              args: { questions: evt.questions },
+            });
+            let result: { content: unknown[]; details: unknown };
+            let isError = false;
             try {
-              result = await tool.execute(evt.toolCallId, evt.args as never, toolAbort?.signal);
+              result = (await askTool.execute(
+                evt.toolCallId,
+                { questions: evt.questions },
+                undefined,
+                undefined,
+                {} as never,
+              )) as typeof result;
             } catch (err) {
-              result = { content: [{ type: 'text', text: String(err) }] };
+              result = { content: [{ type: 'text', text: String(err) }], details: {} };
               isError = true;
             }
+            emitRaw(listeners, {
+              type: 'tool_execution_end',
+              toolCallId: evt.toolCallId,
+              toolName: ASK_TOOL_NAME,
+              result,
+              isError,
+            });
+            continue;
           }
-          emitRaw(listeners, {
-            type: 'tool_execution_end',
-            toolCallId: evt.toolCallId,
-            toolName: evt.name,
-            result,
-            isError,
-          });
-          continue;
-        }
 
-        // Accumulate chunks before emitting
-        if (evt.type === 'tool_chunk') {
-          toolChunks.set(evt.toolCallId, (toolChunks.get(evt.toolCallId) ?? '') + evt.chunk);
+          if (evt.type === 'tool') {
+            // 走真实的工具，**与上面 ask 那一条一字不差的形态** —— 那一条从来就是真调
+            // `askUserQuestionTool.execute`。这里只是把「只认识 ask 一种工具」补齐成
+            // 「按名字找 sessionFactory 交进来的任意一个」。
+            //
+            // **这条路上没有任何捷径**：`tools` 里的对象就是非 fixture 分支交给 pi 的
+            // 那一份（`sessionFactory` 里同一次 `createBrowserTools()`），所以
+            // `browser_act` → `browserService.enqueue` → `withAgentDriving` →
+            // `dispatch` / `evalInPage` 整条路一步不少。事件顺序也照真实 pi：
+            // 先 tool_execution_start（AgentService 靠它建工具卡），再 end。
+            //
+            // **「没有捷径」也意味着「有真实副作用」**：`browser_open` 真打公网，
+            // `browser_login` 真用设置里那份校园账号提交一次登录、且本轮只有一次机会。
+            // 副作用清单写在 `e2e/fixtures/fixture.types.ts` 的 `tool` 那段 docblock 里
+            // （那是写剧本的人唯一会读的地方），改这里也去看一眼。
+            emitRaw(listeners, {
+              type: 'tool_execution_start',
+              toolCallId: evt.toolCallId,
+              toolName: evt.name,
+              args: evt.args,
+            });
+            const tool = tools.find((t) => t.name === evt.name);
+            let result: { content: unknown[]; details?: unknown };
+            let isError = false;
+            if (!tool) {
+              // 名字打错了**不许**静默变成「这一步什么都没发生」：那样一条本该红的用例会绿。
+              result = { content: [{ type: 'text', text:
+                `fixture 里写的工具名 ${JSON.stringify(evt.name)} 没有注册。`
+                + `这条 session 上注册着：${tools.map((t) => t.name).join(' / ') || '（一个都没有）'}` }] };
+              isError = true;
+            } else {
+              try {
+                result = await tool.execute(evt.toolCallId, evt.args as never, toolAbort?.signal);
+              } catch (err) {
+                result = { content: [{ type: 'text', text: String(err) }] };
+                isError = true;
+              }
+            }
+            emitRaw(listeners, {
+              type: 'tool_execution_end',
+              toolCallId: evt.toolCallId,
+              toolName: evt.name,
+              result,
+              isError,
+            });
+            continue;
+          }
+
+          // Accumulate chunks before emitting
+          if (evt.type === 'tool_chunk') {
+            toolChunks.set(evt.toolCallId, (toolChunks.get(evt.toolCallId) ?? '') + evt.chunk);
+          }
+          emit(listeners, evt, aborted, toolChunks);
+          if (evt.type === 'agent_end') break;
         }
-        emit(listeners, evt, aborted, toolChunks);
-        if (evt.type === 'agent_end') break;
+      } finally {
+        // 照 pi：`_runAgentPrompt` 的 finally 里最后发 `agent_settled`（出错、中止都发）。AgentService
+        // 靠它清掉本轮的 runId —— 不发的话 `hasActiveRun()` 在 fixture 下跑过一轮就恒为真，
+        // 之后切界面语言一律被拒，而真实 pi 那条路上没有这回事。
+        emitRaw(listeners, { type: 'agent_settled' });
       }
     },
   };

@@ -70,6 +70,19 @@ describe('createFixtureSession × scripts', () => {
     expect(textsOf(events)).toEqual(['甲的回复']);
   });
 
+  it('每一轮都以 agent_settled 收尾（照 pi 的 finally），正常跑完与中止都发', async () => {
+    const { session, events } = await sessionOf({ scripts: { 快: say('快的那句'), 慢: say('慢的那句', 10_000) } });
+    await session.prompt('快');
+    expect(events.map((e) => e.type).slice(-2)).toEqual(['agent_end', 'agent_settled']);
+
+    const slow = session.prompt('慢');
+    await new Promise((r) => setTimeout(r, 20));
+    session.abort();
+    await slow;
+    expect(events.filter((e) => e.type === 'agent_settled')).toHaveLength(2);
+    expect(events.at(-1)?.type).toBe('agent_settled');
+  });
+
   it('中止只作用于那一轮：停过之后下一轮的事件照常送出', async () => {
     const { session, events } = await sessionOf({ scripts: { 慢: say('慢的那句', 10_000), 快: say('快的那句') } });
     const slow = session.prompt('慢');
