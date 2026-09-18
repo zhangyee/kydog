@@ -48,7 +48,12 @@ test.afterAll(async () => {
 /** 新建 thread、发这一条的剧本名，等到提问态 composer 出现。 */
 async function askUntilPending(page: Page, script: string) {
   await page.locator('[data-testid="new-thread"]').click();
-  await page.locator('[data-testid="composer-input"]').fill(script);
+  // 等新对话真的挂上（空状态卡片出现）再填：否则字可能填进上一个对话那个正要卸载的输入框，
+  // 新输入框是空的、发送键一直禁用（CI Intel 实测过一次 30s 超时）。填到字真的在当前输入框里再发
+  // （fill 是整体替换，重复无副作用）。
+  await expect(page.getByTestId('chapter-literature-review')).toBeVisible();
+  const input = page.locator('[data-testid="composer-input"]');
+  await expect.poll(async () => { await input.fill(script); return input.textContent(); }).toBe(script);
   await page.locator('[data-testid="send-button"]').click();
   await expect(page.locator('[data-testid="question-composer"]')).toBeVisible({ timeout: 10_000 });
 }

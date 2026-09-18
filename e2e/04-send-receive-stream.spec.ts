@@ -65,7 +65,10 @@ test.afterAll(async () => {
 
 async function send(text: string): Promise<void> {
   const { page } = launched;
-  await page.getByTestId('composer-input').fill(text);
+  const input = page.getByTestId('composer-input');
+  // 切对话 / 新建之后输入框会换一个实例，字可能填进正要卸载的那个（发送键就一直禁用，CI 上见过）。
+  // fill 是整体替换、重复无副作用：填到字真的在当前这个输入框里为止，再发。
+  await expect.poll(async () => { await input.fill(text); return input.textContent(); }).toBe(text);
   await page.getByTestId('send-button').click();
 }
 

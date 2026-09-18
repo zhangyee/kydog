@@ -288,7 +288,10 @@ async function runTools(
   });
 
   await page.getByTestId('new-thread').click();
-  await page.getByTestId('composer-input').fill('按剧本跑一次浏览器工具');
+  // 新建之后输入框会换一个实例，字可能填进正要卸载的那个（发送键就一直禁用）：填到字真的在
+  // 当前这个输入框里为止（fill 是整体替换，重复无副作用）。
+  const composer = page.getByTestId('composer-input');
+  await expect.poll(async () => { await composer.fill('按剧本跑一次浏览器工具'); return composer.textContent(); }).toBe('按剧本跑一次浏览器工具');
   await page.getByTestId('send-button').click();
   if (duringRun) await duringRun(page);
 
