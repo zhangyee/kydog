@@ -1,5 +1,8 @@
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
+/** description 的长度上限。超过它，这个 skill 在对应语言树里降级成禁用行、进不了 system prompt。 */
+export const DESCRIPTION_MAX = 1024;
+
 export type ParseResult =
   | { ok: true; name: string; description: string }
   | { ok: false; reason: string };
@@ -30,6 +33,6 @@ export async function parseSkillFrontmatter(content: string): Promise<ParseResul
   if (name.length > 64) return { ok: false, reason: 'name 超过 64 字符' };
   if (!NAME_RE.test(name)) return { ok: false, reason: 'name 含不允许的字符（只允许 a-z 0-9 -，且不以 - 开头/结尾）' };
   if (!description) return { ok: false, reason: 'frontmatter 缺 description 或为空' };
-  if (description.length > 1024) return { ok: false, reason: 'description 超过 1024 字符' };
+  if (description.length > DESCRIPTION_MAX) return { ok: false, reason: `description 超过 ${String(DESCRIPTION_MAX)} 字符` };
   return { ok: true, name, description };
 }
