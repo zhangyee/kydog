@@ -33,6 +33,26 @@ export function templateStateLabel(s: Pick<HarnessFileStatus, 'template' | 'loca
   }
 }
 
+/** 卡片右侧那一格放不下整句，用短的；完整说法在检视栏里。 */
+export function templateStateShort(s: Pick<HarnessFileStatus, 'template' | 'localeDiffers' | 'templateLocale'>): string {
+  switch (s.template) {
+    case 'latest': return '已是最新';
+    case 'missing': return '文件不存在';
+    case 'kept': return '选过保持';
+    case 'available': return s.localeDiffers ? `有${LOCALE_NAME[s.templateLocale]}` : '有新版本';
+  }
+}
+
+/**
+ * 卡片上角色名后面那一小段：SOUL / USER 是头部里的称呼；AGENTS 没有称呼，取正文前三个二级标题 ——
+ * 从文件本身读出来，模板改了章节这里跟着变，不在界面上写死一份目录。
+ */
+export function harnessSubtitle(frontmatterName: string | null, body: string): string {
+  if (frontmatterName) return `称呼 ${frontmatterName}`;
+  const heads = [...body.matchAll(/^##\s+(.+?)\s*$/gm)].slice(0, 3).map((m) => m[1]);
+  return heads.join(' · ');
+}
+
 export function applyResultLine(r: HarnessApplyResult, choice: HarnessChoice['choice']): string {
   if (r.outcome === 'kept') return '已保持，这一版不再询问';
   if (r.outcome === 'updated') return r.backupName ? `已更新，旧文件备份为 ~/.kydog/${r.backupName}` : '已创建';

@@ -31,7 +31,7 @@ export function SettingsPane() {
   const subtitle = activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
     : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
     : activeSection === 'research' ? '填写后立即生效，无需新建对话'
-    : activeSection === 'longTermMemory' ? 'KyDog 每次新对话开始时读的三份文件：人格、关于你、操作手册'
+    : activeSection === 'longTermMemory' ? 'KyDog 每次新对话开始时读的三份文件，和研究过程里沉淀下来的记忆'
     : activeSection === 'about' ? null
     : activeSection === 'donate' ? null
     : '预留页面';
@@ -56,7 +56,8 @@ export function SettingsPane() {
             {subtitle}
           </div>
         )}
-        <div style={{ marginTop: subtitle !== null ? 14 : 32 }}>
+        {/* 长期记忆不是一个「设置」，页头不挂版本号（方案 B 的页面骨架）。 */}
+        {activeSection !== 'longTermMemory' && <div style={{ marginTop: subtitle !== null ? 14 : 32 }}>
           {/* 兜底串写死等于「拿不到版本时安静地报一个错的版本」——用户据此判断要不要更新，
               报错比不报更坏。appVersion 由 bootstrap 从主进程的 app.getVersion() 灌入，
               空只可能出现在 bootstrap 之前；那一瞬不显示，好过显示一个假的。 */}
@@ -69,7 +70,7 @@ export function SettingsPane() {
               v{appVersion}
             </span>
           )}
-        </div>
+        </div>}
       </div>
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto ky-scroll">

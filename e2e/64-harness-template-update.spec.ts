@@ -35,11 +35,13 @@ async function harnessChecked(page: Page) {
   await expect(page.locator('[data-harness-check="done"]')).toHaveCount(1, { timeout: 10_000 });
 }
 
+/** 长期记忆页 → 点那张卡 → 它在右侧检视栏里打开（方案 B）。 */
 async function openHarness(page: Page, name: 'SOUL.md' | 'USER.md' | 'AGENTS.md') {
   await page.getByTestId('nav-long-term-memory').click();
-  await expect(page.getByTestId('harness-panel')).toBeVisible();
-  await page.getByTestId(`harness-file-${name}`).click();
-  await expect(page.getByTestId(`harness-file-${name}`)).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('ltm-page')).toBeVisible();
+  await page.getByTestId(`harness-card-open-${name}`).click();
+  await expect(page.getByTestId(`harness-card-${name}`)).toHaveAttribute('data-opened', 'true');
+  await expect(page.getByTestId('harness-inspector')).toBeVisible();
 }
 
 test('64a 更新：旧模板写的 AGENTS.md → 启动就问 → 选更新 → 新文件逐字等于当前模板、备份逐字等于旧文件 → 重启不再问', async () => {
@@ -96,6 +98,8 @@ test('64b 保持：选保持 → 文件不动 → 重启不再问 → 长期记�
     await harnessChecked(page);
     await expect(page.getByTestId('harness-update-dialog')).toHaveCount(0);
 
+    await page.getByTestId('nav-long-term-memory').click();
+    await expect(page.getByTestId('harness-card-status-AGENTS.md')).toHaveText('选过保持');
     await openHarness(page, 'AGENTS.md');
     await expect(page.getByTestId('harness-status')).toHaveText('有新版本（你选过保持）');
     await expect(page.getByTestId('harness-body')).toContainText('只有这一节。');
@@ -149,23 +153,26 @@ test('64d 编辑 SOUL.md：原样保存（字节一致、头部 name 完好）�
   try {
     const { page } = launched;
     await harnessChecked(page);
-    await openHarness(page, 'SOUL.md');
+    await page.getByTestId('nav-long-term-memory').click();
+    await expect(page.getByTestId('harness-card-status-SOUL.md')).toHaveText('已是最新');
+    // 卡片悬停才出操作：悬停前「编辑」不可见，悬停后可见（同一个按钮）。
+    // 必须在点卡片之前断：点过之后焦点留在卡片里，focus-within 也会让操作一直显示（给键盘用的）。
+    await expect(page.getByTestId('harness-card-edit-SOUL.md')).toBeHidden();
+    await page.getByTestId('harness-card-SOUL.md').hover();
+    await page.getByTestId('harness-card-edit-SOUL.md').click();
+    await expect(page.getByTestId('harness-inspector')).toBeVisible();
     await expect(page.getByTestId('harness-status')).toHaveText('已是最新');
     await expect(page.getByTestId('harness-frontmatter-name')).toHaveText('称呼：狗哥');
-    // 头部不当正文渲染
-    await expect(page.getByTestId('harness-body')).toContainText('陌生不等于浅薄');
-    await expect(page.getByTestId('harness-body')).not.toContainText('name:');
-
-    await page.getByTestId('harness-edit').click();
     const editor = page.getByTestId('harness-editor');
     await expect(editor).toHaveValue(soul);                                // 整份原样，含头部
     const mine = soul.replace('## 语气', '## 语气\n\n- 回答里多用比喻。\n');
     await editor.fill(mine);
     await expect(page.getByTestId('harness-dirty-SOUL.md')).toBeVisible();
 
-    // 离开这一页（设置页换到「技能和工具」，长期记忆那一节整个卸载）再回来
+    // 离开这一页（设置页换到「技能和工具」，长期记忆页卸载、检视栏回到平常的内容）再回来
     await page.getByTestId('nav-skills').click();
-    await expect(page.getByTestId('harness-panel')).toHaveCount(0);
+    await expect(page.getByTestId('ltm-page')).toHaveCount(0);
+    await expect(page.getByTestId('harness-inspector')).toHaveCount(0);
     await page.getByTestId('nav-long-term-memory').click();
     await expect(page.getByTestId('harness-editor')).toHaveValue(mine);
     expect(await fs.readFile(file, 'utf8')).toBe(soul);                    // 还没存
@@ -175,6 +182,8 @@ test('64d 编辑 SOUL.md：原样保存（字节一致、头部 name 完好）�
     expect(await fs.readFile(file, 'utf8')).toBe(mine);
     await expect(page.getByTestId('harness-frontmatter-name')).toHaveText('称呼：狗哥');
     await expect(page.getByTestId('harness-body')).toContainText('回答里多用比喻');
+    await expect(page.getByTestId('harness-body')).toContainText('陌生不等于浅薄');
+    await expect(page.getByTestId('harness-body')).not.toContainText('name:');      // 头部不当正文渲染
     await expect(page.getByTestId('harness-dirty-SOUL.md')).toHaveCount(0);
   } finally {
     await teardown(launched);
@@ -218,16 +227,25 @@ test('64e 保存冲突：编辑期间磁盘被改 → 保存弹确认；返回�
   }
 });
 
-test('64f 长期记忆页：Memory 子标签灰掉占位，KyDog Harness 默认选中', async () => {
+test('64f 长期记忆页：Memory 三个标签灰掉占位；检视栏收着时点卡片会展开它', async () => {
   const launched = await launchKydog();
   try {
     const { page } = launched;
     await harnessChecked(page);
     await page.getByTestId('nav-long-term-memory').click();
-    await expect(page.getByTestId('ltm-tab-harness')).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByTestId('ltm-tab-memory')).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByTestId('ltm-tab-memory')).toHaveAttribute('title', '暂未开放');
-    await expect(page.getByTestId('harness-panel')).toBeVisible();
+    for (const id of ['graph', 'daily', 'global']) {
+      await expect(page.getByTestId(`ltm-memory-tab-${id}`)).toHaveAttribute('aria-disabled', 'true');
+      await expect(page.getByTestId(`ltm-memory-tab-${id}`)).toHaveAttribute('title', '暂未开放');
+    }
+    // 先把检视栏收起来：收着的时候看不到 harness 检视
+    await page.getByTestId('collapse-inspector').click();
+    await expect(page.getByTestId('harness-inspector')).toHaveCount(0);
+    await page.getByTestId('harness-card-open-USER.md').click();
+    await expect(page.getByTestId('harness-inspector')).toBeVisible();
+    await expect(page.getByTestId('harness-status')).toHaveText('文件不存在');
+    await page.getByTestId('harness-inspector-close').click();
+    await expect(page.getByTestId('harness-inspector')).toHaveCount(0);
+    await expect(page.getByTestId('harness-card-USER.md')).toHaveAttribute('data-opened', 'false');
   } finally {
     await teardown(launched);
   }

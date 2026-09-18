@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useHarnessStore, isDraftDirty, toTextareaNewlines } from './harnessStore';
-import { editStateLine, templateStateLabel, applyResultLine } from '../shared/harnessCopy';
+import { editStateLine, templateStateLabel, templateStateShort, harnessSubtitle, applyResultLine } from '../shared/harnessCopy';
 
 describe('harnessStore', () => {
-  beforeEach(() => useHarnessStore.setState({ active: 'SOUL.md', drafts: {}, revision: 0 }));
+  beforeEach(() => useHarnessStore.setState({ opened: null, drafts: {}, revision: 0, notes: {} }));
 
   it('草稿按文件名各存各的；清掉一份不动另一份', () => {
     const s = useHarnessStore.getState();
@@ -11,6 +11,14 @@ describe('harnessStore', () => {
     s.setDraft('USER.md', { base: 'u', text: 'u' });
     s.clearDraft('AGENTS.md');
     expect(useHarnessStore.getState().drafts).toEqual({ 'USER.md': { base: 'u', text: 'u' } });
+  });
+
+  it('结果文案按文件各存各的；置 null 只清那一份', () => {
+    const s = useHarnessStore.getState();
+    s.setNote('AGENTS.md', '已保存');
+    s.setNote('SOUL.md', '已更新');
+    s.setNote('AGENTS.md', null);
+    expect(useHarnessStore.getState().notes).toEqual({ 'SOUL.md': '已更新' });
   });
 
   it('CRLF 文件一打开不算改过；改了一个字才算', () => {
@@ -36,6 +44,20 @@ describe('harnessCopy', () => {
     expect(templateStateLabel({ template: 'available', localeDiffers: true, templateLocale: 'zh' })).toBe('有新版本（中文版）');
     expect(templateStateLabel({ template: 'available', localeDiffers: false, templateLocale: 'zh' })).toBe('有新版本');
     expect(templateStateLabel({ template: 'kept', localeDiffers: false, templateLocale: 'zh' })).toBe('有新版本（你选过保持）');
+  });
+
+  it('卡片短状态：四种各不相同；语言换了带版本名', () => {
+    const base = { localeDiffers: false, templateLocale: 'zh' as const };
+    const labels = (['latest', 'available', 'kept', 'missing'] as const).map((template) => templateStateShort({ ...base, template }));
+    expect(new Set(labels).size).toBe(4);
+    expect(templateStateShort({ template: 'available', localeDiffers: true, templateLocale: 'en' })).toBe('有英文版');
+  });
+
+  it('卡片副标题：有称呼用称呼；没有称呼取正文前三个二级标题（不取一级、不取三级）', () => {
+    expect(harnessSubtitle('Dr. Zhang', '## 不该出现')).toBe('称呼 Dr. Zhang');
+    const body = '# AGENTS —— 操作手册\n\n## 核验纪律\n\n- x\n\n### 细则\n\n## 用工具的方式\n\n## 找论文走哪条路\n\n## 第四节\n';
+    expect(harnessSubtitle(null, body)).toBe('核验纪律 · 用工具的方式 · 找论文走哪条路');
+    expect(harnessSubtitle(null, '没有标题的正文')).toBe('');
   });
 
   it('结果文案：备份路径拼在 ~/.kydog/ 下；失败按选的是哪个动作说', () => {
