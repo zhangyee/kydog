@@ -73,9 +73,7 @@ browser_act({ tabId: "<上一步的 tabId>", actions: [
       "title":   "h3.paper-title a",
       "detail":  "h3.paper-title a@href",
       "type":    "div.paper-info span.paper-type",
-      "info":    "div.paper-info",
-      "summary": "div.paper-abstract",
-      "sources": "div.paper-source a@href"
+      "info":    "div.paper-info"
   }}
 ]})
 ```
@@ -83,11 +81,93 @@ browser_act({ tabId: "<上一步的 tabId>", actions: [
 **那个 `wait` 不是保险，是必需的。** 提交点的是 `div` 不是 `<a href>`，拿不到普通链接那条
 导航等待保证；不显式等结果条目出现，紧接着的 `extract` 就在首页 DOM 上跑，抽到 0 条 ——
 **而且不报任何错**。收尾快照同理：它在最后一步之后立刻取，新旧完全取决于这个 `wait`。
-超时就按「出错即停」处理，**不要**因为「页面变化」看起来没动就再点一次提交。
+超时就按「出错即停」处理，**不要**因为「页面变化」看起来没动就再点一次提交 —— 见下面「提交没反应」。
+
+**剧本只抽判断相关用得上的字段**（`SKILL.md` §四）。摘要、全文入口在「结果页的字段」那张表里，挑中了再抽；
+全文入口只在结果页上有，详情页上没有（⑥）。
 
 `type` 带 `selector` 时会先聚焦该元素，不必额外加一个 `click`。**它还会先全选清空**：
 清不掉就明确报错、一个字都不打 —— 中途复用一个已经有内容的框时可能撞上
 `browser.target_unusable`，那不是选择器写错了。
+
+`browser_open` 首页那次的快照常常是空的（「这一份快照里没有可交互元素」）—— 首页由脚本渲染，
+取快照时还没画出来。**不影响按选择器操作**，直接跑上面这一批；别为了拿编号去 `reload`。
+
+### 提交没反应（2026-09-17 验收第五、六组实测）
+
+**症状**：`已点击「div」（…）`，后面的 `wait` 超时，地址没变。连点两次、再按 Enter，都一样。
+
+**先看工具结果里「这一步发出的请求」那一段**（`browser.md` §六）。检索接口是
+`xueshu.baidu.com/search/api/search?wd=…`。2026-09-18 实测一次成功的检索共发出 7 条 XHR：除了检索接口，
+还有 4 条站内杂项（未读消息、网盘列表、收藏判断等）和 `banti.baidu.com` 的两条 POST。这些杂项成功的时候也在，
+**有它们不说明检索发出去了**，只认检索接口那一条：
+
+| 请求那一段 | 怎么办 |
+| --- | --- |
+| 「没有发出任何」，或者有请求、但没有检索接口那一条 | 点击没被接住，检索没发。走下面的「交给用户」 |
+| 检索接口 4xx / 5xx / 网络错误 | 站点拒了。按 `SKILL.md`「打不开的时候」那张表处理 |
+| 检索接口 200 | 结果在路上。同一个选择器再 `wait` 一次，**不点提交**；还等不到，走「交给用户」 |
+
+**已知的事实**：
+
+- 同一个标签里，用户**手动点一下就出结果**。
+- 同样的「输入 + 点提交」在全新的会话里实测次次成功：侧栏开或关、1:1 或适配、输入与点击放在同一批，
+  点击都落在 `.send-btn` 上，检索请求照常发出。
+- 所以问题出在这个会话在站点那边的状态上，**具体原因还没查清**，不是选择器写错了。
+
+**交给用户**：
+
+1. 不再点第二次，不按 Enter（首页没有 `<form>`，Enter 本来就不提交），不 `reload` 重来。
+2. 调 `ask_user_question`，**带上 `browserTabId`**：「检索词已经填好，请点一下搜索框右侧的蓝色箭头」，
+   选项给「点好了」和「跳过百度学术」。等他回答时不读页面、不点任何东西。
+3. 答「点好了」：从首页剧本的 `wait` 那一步接着做，结果条目出现再 `extract`。答「跳过」：换源，并在回复里写明。
+
+**不要拼地址兜底。** 旧版 `/s?wd=…` 2026-09-17 实测会返回 200、也抽得到结果，但第六组里模型自己报告：拼在地址上的
+类型筛选参数（`filter=sc_type…`）被源端**静默忽略** —— 看起来成功，筛选其实没生效。
+
+### 改词再检索：在结果页上（2026-09-17 实测跑通）
+
+检索过一次之后，这个标签就停在结果页上。**首页剧本在这里有两处不成立：**
+
+| 控件 | 首页 | 结果页 |
+| --- | --- | --- |
+| 检索框 | `textarea.search-input` | **`input.search-input`**（命中 1）；`textarea.search-input` 在这里是 **0 个** |
+| 提交 | `.send-btn` | `.send-btn`（命中 1，照样点它） |
+
+> ⚠ **别写裸 `.search-input`。** 它先命中外层的 `div.atomic-input-wrapper`，`type` 会报
+> 「不是能打字的控件（div）」。
+
+**等待条件也要换。** 点提交之后的实测时间线：约 0.2 秒地址先变成新检索词，**旧的 10 条原样留在
+页面上**；约 0.25 秒结果区出现加载转圈 `.ant-spin-spinning`；约 1 秒新结果换上、转圈消失。所以：
+
+- 等 `div.paper-wrap.result` 出现 —— 点击前就成立，一毫秒都没等；
+- 等 `urlMatches` 新检索词 —— 地址变了、结果还是旧的。**紧跟着的 `extract` 抽到的是上一次那 10 条，
+  而且不报错**（实测复现过；2026-09-17 第一组验收里也真的发生了）。
+
+要等的是转圈：**先等它出现，再等它消失**。空闲时页面上是 0 个，只有点了提交才出现。
+实测改词 7 次（含重复用过的检索词），次次抽到的都是新结果。
+
+```jsonc
+browser_act({ tabId: "<同一个 tabId>", actions: [
+  { "kind": "type",  "selector": "input.search-input", "text": "<新检索词>" },
+  { "kind": "click", "selector": ".send-btn" },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "present" } },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "absent" } },
+  { "kind": "extract", "selectors": {
+      "item":    "div.paper-wrap.result",
+      "title":   "h3.paper-title a",
+      "detail":  "h3.paper-title a@href",
+      "type":    "div.paper-info span.paper-type",
+      "info":    "div.paper-info"
+  }}
+]})
+```
+
+两条别走的路（都是 2026-09-17 第一组验收里模型实际走过的）：
+
+- **重开首页不会清空结果。** 对这个标签再 `browser_open` 首页，页面会自己跳回上一次的结果页地址。
+- **拼 `/ndscholar/browse/search?wd=…` 也不行**（§② 已说：本来就没有可拼的表单 URL）。实测先被弹回首页，
+  过一会儿又异步渲染出那次检索的结果 —— 页面状态与工具结果对不上，后面每一步都会被它带偏。
 
 ### 字段检索：语法直接打进主搜索框
 
@@ -108,7 +188,7 @@ author:(何恺明) 图像
 > ③ 对话框的提交按钮 `.button-group button.atomic-button-primary.operate-btn` 文案是
 > **「高级检索」**（入口那个才叫「高级搜索」）—— 两个名字反着，容易定位错。
 
-### 怎么翻页（2026-09-16 实测可用）
+### 怎么翻页（2026-09-16 实测可用，2026-09-17 补全等待条件）
 
 | 控件 | 选择器 | 实测 |
 | --- | --- | --- |
@@ -117,9 +197,13 @@ author:(何恺明) 图像
 
 翻页控件是没有 `href`、没有 role 的 `div`，**无障碍树里可能没有** —— 只能用 `selector`。
 
-**等待条件用地址里的偏移量**：点「下一页」后 URL 变成 `…&pn=10`，第 3 页是 `pn=20`
-（`pn = (页码 − 1) × 10`）。它逐页不同、点击前不成立，正是 `wait` 要的形状；
+**等待条件分两段。** 点「下一页」后 URL 变成 `…&pn=10`，第 3 页是 `pn=20`
+（`pn = (页码 − 1) × 10`）—— 它逐页不同、点击前不成立，保证的是「翻到了第几页」；
 `urlMatches` 判的是主进程手里的地址、不进页面。
+
+**但地址先变、结果后换**，与上一节改词检索同一个机理：**只等 `pn` 就抽，抽到的还是上一页**
+（2026-09-17 实测：等到 `pn=10` 立刻抽，拿回来的是第 1 页那 10 条，不报错）。所以 `pn` 之后
+再跟「转圈出现 → 转圈消失」。
 
 一页一次 `browser_act`，**不要写进 `repeat`** —— 一批里每一轮的等待条件都是同一个，
 而「翻到了第几页」逐页不同。
@@ -129,8 +213,10 @@ author:(何恺明) 图像
 browser_act({ tabId: "<同一个 tabId>", actions: [
   { "kind": "click", "selector": "div.pagination > div.page.n:last-child" },
   { "kind": "wait",  "until": { "urlMatches": "pn=10" } },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "present" } },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "absent" } },
   { "kind": "extract", "selectors": { "item": "div.paper-wrap.result", "title": "h3.paper-title a",
-      "detail": "h3.paper-title a@href", "info": "div.paper-info", "sources": "div.paper-source a@href" }}
+      "detail": "h3.paper-title a@href", "info": "div.paper-info" }}
 ]})
 ```
 
@@ -194,9 +280,10 @@ browser_read({ tabId: "<上一步的 tabId>" })
 
 ## ⑥ 动作 · 取全文
 
-**本期不下载任何文件。** 浏览器没有下载工具，页面自己触发的下载也会被一律取消。
+**这个源不托管全文，它指出去哪儿取。** 取全文的通用规则在 `SKILL.md` §五；页面自己触发的
+下载仍然一律取消。
 
-**全文入口只在结果页抽**：`div.paper-source a@href`（实测 9/10）。它把同一篇论文在各处的
+**全文入口只在结果页抽**：`div.paper-source a@href`（实测 9/10）。详情页上没有，翻走了就得回来抽。它把同一篇论文在各处的
 入口并排列出来 —— 实测见到 `nstl.gov.cn`（国家科技图书文献中心）、`qikan.cqvip.com`（维普）、
 `d.wanfangdata.com.cn`（万方）、`cnki.com.cn`（知网）、期刊官网、iAcademic。
 

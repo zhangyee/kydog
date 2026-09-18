@@ -4,7 +4,7 @@
 > screened in by relevance for verification, <N6> into the conclusions. Full text: <D1> newly
 > obtained this round, plus the <D3> already in `papers/`, <N8> in all.**
 
-> [WRITING NOTE] The nine numbers are all different; do not smear one placeholder over them. When done, check once:
+> [WRITING NOTE] The nine numbers are all different; do not smear one placeholder over them. Check before you start writing:
 > **N3 ≥ N4 ≥ N5 ≥ N6**, **N8 = D1 + D3**, **N8 ≤ N5**. Anything that does not add up means you miscounted.
 >
 > **The download part must lay D1 and D3 out separately.** Write only "N8 full texts obtained" and the

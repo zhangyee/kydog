@@ -12,9 +12,8 @@ The deliverable is one Markdown report in the project root, plus the PDFs in `pa
 ## Before starting
 
 1. `date +%F` — the report filename needs it, and you cannot guess today's date correctly on your own.
-2. **read fastpaper's SKILL.md** (it is in `<available_skills>`). Its search syntax differs by source and its filter support differs by source; guessing flags from memory silently returns wrong results. Do not run `which fastpaper` to confirm it is there — KyDog bundles and ships it and injects the PATH, so it is definitely there; if it really is not, the error from the first search command is more accurate than probing.
-3. If `<available_skills>` holds other literature search tools (slowpaper, for instance), use them as well, and note in the report which conclusions came from which source. For now there is usually only fastpaper.
-4. If the user threw in only one line (nothing after `/research-ideation`, or just five or six words), use ordinary conversation first to find out what they want to do, in which discipline, and at what stage (topic not chosen yet / a preliminary idea in hand / already under way). **Do not use ask_user_question for this step** — it is an open question, and turning it into a multiple-choice one only boxes them in.
+2. **Pick sources, and read the SKILL.md of each search tool you will use** (they are in `<available_skills>`). Following AGENTS.md's "Looking for Papers", decide where the literature sits — fastpaper, slowpaper, often both; the discipline and direction cannot be settled until Step 1's nine questions are answered. fastpaper's search syntax differs by source and its filter support differs by source; guessing flags from memory silently returns wrong results. Do not run `which fastpaper` to confirm it is there — KyDog bundles and ships it and injects the PATH, so it is definitely there; if it really is not, the error from the first search command is more accurate than probing.
+3. If the user threw in only one line (nothing after `/research-ideation`, or just five or six words), use ordinary conversation first to find out what they want to do, in which discipline, and at what stage (topic not chosen yet / a preliminary idea in hand / already under way). **Do not use ask_user_question for this step** — it is an open question, and turning it into a multiple-choice one only boxes them in.
 
 ## How to run the search commands
 
@@ -97,7 +96,7 @@ Pull three axes out of the nine answers: **object/phenomenon terms**, **method/t
 
 **How to run them: one at a time, triage on the default table format, and fetch full fields with `fastpaper get <id>` for the ones that look worth it.** Do not write loops or write to disk in order to "search it all in one go" — 12–20 table outputs (about 1.8k characters each) is an amount you can read through, and the same number of json ones is not.
 
-Choose sources by discipline (fastpaper's `sources --capabilities` is live; run it once when unsure). Deduplicate across sources by DOI.
+Choose sources by discipline and by where the literature sits (AGENTS.md's "Looking for Papers"; fastpaper's `sources --capabilities` is live; run it once when unsure). Deduplicate across sources by DOI.
 
 **Keep count while searching**: how many queries each source ran, how many hits, how many remain after deduplication, how many were screened through into verification. The report's very first line is that funnel, and **the nine numbers are all different**:
 
@@ -138,6 +137,8 @@ Every paper and every claim in the map must point back to a real source. This st
 - Not found → delete it from the map
 - Found but not matching what you wrote → correct it to the source result, or delete it
 - **The two sources contradict each other** (OpenAlex says 2023, Europe PMC says 2024, for instance) → present both side by side with a note, do not pick one on your own authority. This is AGENTS.md's verification discipline verbatim, and the only honest handling
+
+**Literature with no identifier** (most Chinese journal articles and theses, found on Baidu Xueshu or Scholar) cannot be traced back with `fastpaper get`, so "not found → delete it" does not apply to it — that is a gap in the source's coverage, not a paper that does not exist: existence rests on the record in the source that found it, the map marks it "confirmed only by 〈source〉" and puts it on the unverified checklist, and no DOI is made up; where you saw only the record or an abstract snippet, say what it studied, not what it concluded.
 
 **Claims**: every conclusion written into the map as fact (a number, an effect size, the direction of a conclusion) must point to a specific location in a specific paper.
 

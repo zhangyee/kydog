@@ -24,7 +24,7 @@ When one specific claim in the review is genuinely undecided ("the author says X
 
 1. `date +%F`
 2. `ls papers/` — the manuscript and related papers may already be there.
-3. **read fastpaper's SKILL.md** (it is in `<available_skills>`) — needed for literature coverage and citation spot-checks.
+3. **Pick sources, and read the SKILL.md of each search tool you will use** (in `<available_skills>`) — needed for literature coverage and citation spot-checks. Per AGENTS.md's "Looking for Papers", decide where the manuscript's literature sits: for a manuscript in Chinese, or one that studies something in China, fastpaper and slowpaper are often both needed.
 4. Get the manuscript. Three forms: a Markdown file in the project, a PDF in `papers/` (read section by section with `fastpaper read`), or text the user pasted.
 5. **Full text is a hard requirement.** A review cannot be done from the abstract alone — method details, statistical reporting, and the limitations the authors themselves admit all live in the body. If the full text cannot be obtained, stop and ask the user; do not quietly substitute the abstract.
 6. When the user is a formally invited referee, say once: many journals restrict the use of AI in reviewing; KyDog runs locally and the manuscript never leaves this machine, but whether to use it, and whose judgment the review is signed with, is the user's own decision. Once is enough.

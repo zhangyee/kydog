@@ -32,7 +32,7 @@
 - **Disposition**: <revise / defer (name what it is stuck on) / reject (give a verifiable reason) / voided (say why)>
 - **Change to**: <required when dispositioned "revise": text ready to paste into the manuscript (in its language), or an operation concrete enough to execute; what cannot be fixed gets an honest softening, not packaging as "done">
 - **Reason**: <one sentence>
-- **Basis**: <full source-verified reference for methodological points; judgments checked only against an abstract carry `[abstract only]`; the obvious may go without>
+- **Basis**: <full source-verified reference for methodological points; judgments checked only against an abstract carry `[abstract only]`, those checked only as far as the record carry `[record only]`; the obvious may go without>
 
 ### Comment 2 (Minor): …
 
@@ -48,5 +48,6 @@
 ## 4. References cited in this plan
 
 > [WRITING NOTE] Every paper cited in the comments and fixes: Author (year), Full Title, DOI.
+> Papers with no DOI (Chinese journal articles, theses): give the journal with year, volume and issue, or the degree-granting institution; never make up a DOI.
 > All verified at the source — citing in the body without listing here makes the plan sloppy.
 > If none were cited, write "no external literature was cited in this plan".

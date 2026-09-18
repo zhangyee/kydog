@@ -22,7 +22,7 @@ The deliverable is **a 900–1500 word Markdown briefing**, and the reader is an
 ## Before starting
 
 1. `date +%F` — both the time window and the filename need it.
-2. **read fastpaper's SKILL.md** (it is in `<available_skills>`). Syntax and filter support differ by source, and guessing flags silently returns wrong results.
+2. **Pick sources, and read the SKILL.md of each search tool you will use** (they are in `<available_skills>`). Following AGENTS.md's "Looking for Papers", decide where this round's literature sits — fastpaper, slowpaper, often both; it cannot be settled until step 4 has confirmed the direction. fastpaper's syntax and filter support differ by source, and guessing flags silently returns wrong results.
 3. `ls papers/` — the papers may already be sitting there.
 4. **Confirm the direction is specific enough**. A grain like "applications of artificial intelligence in medicine" produces no frontier — everything happens in a year, and saying so says nothing. Where it is too broad, use ordinary conversation to ask the user to narrow it to a direction one sentence can describe.
 
@@ -108,7 +108,7 @@ CRISPR AND CITED:[50000 TO *]  →  1 result
 
 Generalizing: **for any filter written into a query string, run it once more with an extreme value to verify it really took effect** (pushing the threshold very high should return zero results). Such conditions are parsed at the source end, invisible to fastpaper's validation layer, and getting one wrong raises no error. Two calls buy away a whole class of silent errors.
 
-**What does not exist**: download counts (none of the 18 sources provide them), year-by-year publication-volume trends (`search` does not return a total hit count), clinical trial registries (ClinicalTrials.gov is not among the sources). Do not pass off another metric in their place, and do not write vague phrases like "has attracted wide attention".
+**What does not exist**: download counts (none of fastpaper's sources provide them), year-by-year publication-volume trends (`search` does not return a total hit count), clinical trial registries (ClinicalTrials.gov is not among the sources). Do not pass off another metric in their place, and do not write vague phrases like "has attracted wide attention".
 
 ---
 
@@ -144,7 +144,7 @@ How: pick the authors recurring across the search results, and pull each one's c
 fastpaper search pubmed "<subject>" --author "<Surname Initials>" --sort date -n 10
 ```
 
-`--author` is available on `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal`; `semantic` `dblp` `scholar` `xueshu` `biorxiv` `medrxiv` do not support it, but they raise an explicit error (`Error: semantic does not support --author`) rather than failing silently — those sources put the person's name into the query string.
+`--author` is available on `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal`; `semantic` `dblp` `biorxiv` `medrxiv` do not support it, but they raise an explicit error (`Error: semantic does not support --author`) rather than failing silently — those sources put the person's name into the query string.
 
 **What gets written is a trajectory, not a paper list.** Pick 2–4 waypoints that let a reader see what they went from and to:
 
@@ -177,6 +177,8 @@ The defining feature of a frontier is that **there is no consensus yet**. If eve
 **A short deliverable does not mean verification can be loose.** A fabricated frontier briefing directly affects someone's decision about where to put their effort.
 
 **Existence + metadata**: `fastpaper get <id>` for every paper, comparing title, year, first author. Not found means delete it; where two sources contradict each other, present both side by side, do not pick one on your own authority.
+
+**Literature with no identifier** (most Chinese journal articles and theses) cannot be traced back with `fastpaper get`, so "not found means delete it" does not apply to it: existence rests on the record in the source that found it, the briefing marks it "confirmed only by 〈source〉", and no DOI is made up; where you saw only the record or an abstract snippet, say what it studied, not what it concluded.
 
 **Claims**: every concrete number, effect size, and direction of conclusion in the briefing must point to the source text. `fastpaper read papers/<file>.pdf --section results --max-length 4000` goes back to the exact section.
 

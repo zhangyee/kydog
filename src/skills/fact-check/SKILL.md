@@ -23,7 +23,7 @@ description: 对一条具体断言做文献核验：先把它拆成可判定的�
 
 1. `date +%F`
 2. `ls papers/` —— 相关论文可能已经有了。
-3. **read fastpaper 的 SKILL.md**（在 `<available_skills>` 里）。
+3. **定源，read 用得上的检索工具的 SKILL.md**（在 `<available_skills>` 里）。按 AGENTS.md「找论文」看要找的证据落在哪 —— fastpaper、slowpaper，常常两个都要；第 1 步把断言拆成子命题之后才定得下来。
 
 ## 怎么跑检索命令
 

@@ -21,7 +21,7 @@
 > **Never report the total file count of the `papers/` directory.** That directory holds papers left over from other projects,
 > which mean nothing to this review, and reporting it only makes the reader think you read the entire directory.
 >
-> Check once: **N3 ≥ N4 ≥ N5 ≥ N6**, **N8 = D1 + D3**, **N8 ≤ N5**.
+> Check before you start writing: **N3 ≥ N4 ≥ N5 ≥ N6**, **N8 = D1 + D3**, **N8 ≤ N5**.
 
 ---
 
@@ -202,6 +202,6 @@ The <D3> already in `papers/` and actually read this round, plus the <D1> newly 
 - Sources covered: <list>. Not covered: <list>, so <some category> (engineering conferences, trial registries, patents,
   non-English literature and so on) may have been missed.
 - "Not found" means only that it was not found under the sources and queries above.
-- Citation data is available only from `semantic` and `openalex`; **no download-count data** — not one of the 18 sources provides it.
+- Citation counts are taken from <OpenAlex / Semantic Scholar>, and each vendor measures differently; **no download-count data** — not one of fastpaper's sources provides it.
   Every other judgment of "importance" in this report is a proxy and has been marked as such. There is no impact factor.
 - The newest existing review stops at <year>; this review extends past it to <date>.

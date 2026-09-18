@@ -17,7 +17,7 @@ The prose goes first so that you can select from the top of the file down to the
 ## Before starting
 
 1. `date +%F` — the file name needs it.
-2. **read fastpaper's SKILL.md** (it is in `<available_skills>`). Search syntax and filter support differ from source to source, and guessing a flag from memory silently gets you wrong results.
+2. **Pick sources, and read the SKILL.md of each search tool you will use** (they are in `<available_skills>`). Following AGENTS.md's "Looking for Papers", decide where this round's literature sits — fastpaper, slowpaper, often both; it cannot be settled until step 4 has confirmed the topic. fastpaper's search syntax and filter support differ from source to source, and guessing a flag from memory silently gets you wrong results.
 3. `ls papers/` — there may already be papers on hand.
 4. **Confirm the topic.** Did the user give a one-sentence topic, a direction, or a paper? If a paper, first `fastpaper get <id>` to fetch it and use its title, abstract and reference list as the starting point for searching. If the topic is too broad ("applications of artificial intelligence in medicine"), ask in ordinary conversation which layer they want covered, do not pick one yourself.
 
@@ -129,7 +129,10 @@ How many queries were run per source, how many hits, how many left after dedupli
 > sources N1 → queries N2 → hits N3 → after dedup N4 → **selected for verification N5** → into the prose N6;
 > full texts = **newly downloaded this round D1** (the difference between the two `ls papers/` runs in step 4) + **already in `papers/` D3** = N8
 
-Check once when you are done: `N3 ≥ N4 ≥ N5 ≥ N6`, `N8 = D1 + D3`, `N8 ≤ N5`.
+Check **before you start writing**: `N3 ≥ N4 ≥ N5 ≥ N6`, `N8 = D1 + D3`, `N8 ≤ N5`. The numbers are in the
+conversation, where you recorded them as you searched; if they do not add up, go back and recount before writing.
+**Do not write them into the file first and then grep the file to check** — a number appears in several places in
+the report, and missing one leaves it contradicting itself.
 
 ---
 
@@ -157,6 +160,12 @@ Every paper and every claim in the map has to point back to a real source. A fab
 - Not findable → delete it
 - Does not match what you wrote → correct it to the source, or delete it
 - **The two sources contradict each other** → present both side by side with a note, do not pick one on your own authority
+
+**Literature with no identifier** (most Chinese journal articles and theses, found on Baidu Xueshu or Scholar) cannot be traced back with `fastpaper get`, so "not findable → delete it" does not apply to it — that is a gap in the source's coverage, not a paper that does not exist:
+
+- Existence rests on the source that found it: the record on its results page (title, authors, venue, year) is the evidence. If the title was truncated on the results page, open the detail page to complete it; if you cannot, say "title truncated"
+- Mark it in the report as "confirmed only by 〈source〉", and put it on the unverified checklist; its reference-list entry carries no DOI, and **not one may be made up**
+- It may go into the body. But where you saw only the record or an abstract snippet, the body says what it studied, not what it concluded
 
 **Claims**: every concrete conclusion written into the prose (a number, a method, the direction of a finding) has to point to the original text. `fastpaper read papers/<file>.pdf --section results --max-length 4000` pins down the section and compares against the original. Read only the sections you need.
 
@@ -192,6 +201,8 @@ Requirements for the prose part:
 
 **Citation format**: within the prose use 「作者 等（年份）」 or (Author et al., year), following the language of the prose; the reference list at the end goes in alphabetical order by first author, each entry with a complete bibliographic record and a DOI.
 
+**Settle the reference list before you start writing.** Decide which papers the prose will cite; that list is the reference list — get the prose and the list right in one pass, rather than checking author names against the file afterwards.
+
 **These must not appear**: the `[abstract only]` mark, "this report", "we searched", cross-references to sections ("see section two"), any meta-information. The prose is going to be pasted into someone else's paper, and anything like that has to be deleted by hand.
 
 **End on the gaps.** The function of a review chapter is to make room for your own work — the final paragraph has to say how far the existing work goes and what is still missing. That paragraph is often the most cited one in the whole piece.
@@ -215,8 +226,8 @@ This section is allowed judgment and speculation, but **every judgment has to ha
 
 ## Honesty boundaries
 
-- **"Most downloaded" cannot be had.** Not one of fastpaper's 18 sources provides download counts, only citation counts. Do not pass off another metric as it, and do not say vague things like "widely noticed".
-- **Citation counts exist only on `semantic` and `openalex`**; any other judgment of "importance" is a proxy, and if you use one, mark it. There is no impact factor.
+- **"Most downloaded" cannot be had.** Not one of fastpaper's sources provides download counts, only citation counts. Do not pass off another metric as it, and do not say vague things like "widely noticed".
+- **Only some sources carry citation counts** (which ones: the `citations` column of `fastpaper sources --capabilities`). Take OpenAlex / Semantic Scholar's per AGENTS.md's "Looking for Papers" and say whose count it is; any other judgment of "importance" is a proxy, and if you use one, mark it. There is no impact factor.
 - **Not found ≠ does not exist.** State on which sources and with which terms it was not found.
 - **Not a single id may be invented.** Every DOI in the prose and in the reference list must have been confirmed back at the source with `fastpaper get`. If you cannot, do not write that entry — the prose gets copied into a paper verbatim, and one fake DOI is an academic incident.
 - **Pure Markdown only, no HTML tags.** KyDog's renderer is ReactMarkdown + remark-gfm with no rehype-raw, so things like `<details>` show up verbatim.

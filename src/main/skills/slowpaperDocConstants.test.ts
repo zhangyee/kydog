@@ -546,3 +546,70 @@ describe('百度学术的翻页：结构定位 + 地址偏移（2026-09-16 实�
     }
   });
 });
+
+/** 卡片里的 ```jsonc 剧本块，按 `browser_act(` 切成一次次调用。 */
+const jsoncCalls = (src: string): string[][] =>
+  [...src.matchAll(/```jsonc\n([\s\S]*?)```/g)].map((m) => m[1].split('browser_act(').slice(1));
+
+/**
+ * 百度学术「地址先变、结果后换」（2026-09-17 在 KyDog IAB 里实测）：点提交 / 下一页之后约 0.2 秒
+ * 地址就变了，**旧的 10 条原样留在页面上**，约 1 秒后才换上新结果。只等地址（或只等结果条目出现）
+ * 就抽，抽到的是上一次那 10 条，**而且不报错** —— 第一组验收里真的发生了，翻页的旧剧本也实测复现。
+ * 能区分新旧的是结果区的加载转圈：空闲时 0 个，点了才出现。
+ */
+describe('百度学术：结果页上的检索与翻页，抽取前必须等转圈出现再消失', () => {
+  for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
+    it(`${rel}：结果页上的每一次调用都先等转圈出现、再等它消失，然后才抽`, () => {
+      const onResults = jsoncCalls(read(rel)).flat().filter((c) => c.includes('"extract"')
+        && (c.includes('"input.search-input"') || c.includes('"urlMatches"')));
+      // 先证明挑得出这两段（改词再检索、翻页）—— 挑出 0 段时下面的循环一条都不跑，照样绿。
+      expect(onResults.length, `${rel} 里没挑出结果页上的检索 / 翻页调用`).toBeGreaterThanOrEqual(2);
+      for (const c of onResults) {
+        const present = c.indexOf('".ant-spin-spinning", "state": "present"');
+        const absent = c.indexOf('".ant-spin-spinning", "state": "absent"');
+        expect(present, `这次调用没等转圈出现 —— 地址变了结果还是旧的：\n${c}`).toBeGreaterThan(-1);
+        expect(absent, `这次调用没在转圈出现之后等它消失：\n${c}`).toBeGreaterThan(present);
+        expect(c.indexOf('"extract"'), `extract 排在转圈消失之前：\n${c}`).toBeGreaterThan(absent);
+      }
+    });
+
+    it(`${rel}：结果页的检索框写 input.search-input，不写裸 .search-input`, () => {
+      const values = [...read(rel).matchAll(/"selector"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+      expect(values, `${rel} 的剧本里没有结果页那个检索框`).toContain('input.search-input');
+      expect(values, `${rel} 出现了裸 .search-input —— 它先命中外层 div，type 会报「不是能打字的控件」`)
+        .not.toContain('.search-input');
+    });
+  }
+});
+
+/**
+ * NCPSSD（2026-09-17 读站点脚本并在 IAB 实测）：`Basicsearch()` 先清空检索框，再 `window.open`
+ * 把结果开在**新标签**里。所以提交那一批只能等「框被清空」，在原标签上等结果列表永远等不到；
+ * 翻页地址不变、没有加载提示，可等的是「上一页」控件上的 `data-page`。
+ */
+describe('NCPSSD：提交等框被清空、结果去新标签里抽，翻页等页码控件', () => {
+  for (const rel of ['references/ncpssd.md', 'references/ncpssd.en.md']) {
+    it(`${rel}：提交那次调用等的是框被清空，结果列表在另一次调用里等`, () => {
+      const calls = jsoncCalls(read(rel)).flat();
+      const submit = calls.filter((c) => c.includes('"#text_search"'));
+      const onResults = calls.filter((c) => c.includes('"div.julei-list"'));
+      // 正向前提：两类调用都挑得出来（否则下面那条「提交那次里没有 div.julei-list」是空转）。
+      expect(submit.length, `${rel} 里没挑出提交那次调用`).toBeGreaterThanOrEqual(1);
+      expect(onResults.length, `${rel} 里没挑出在结果页上等 / 抽的调用`).toBeGreaterThanOrEqual(1);
+      for (const c of submit) {
+        expect(c, `提交那次调用没等「检索框被清空」：\n${c}`).toContain('#text_search:placeholder-shown');
+        expect(c, `提交那次调用在原标签上等结果列表 —— 结果在新标签里，永远等不到：\n${c}`)
+          .not.toContain('"div.julei-list"');
+      }
+    });
+
+    it(`${rel}：翻页等「上一页」的 data-page，不等地址`, () => {
+      const paging = jsoncCalls(read(rel)).flat().filter((c) => c.includes('"a.layui-laypage-next"'));
+      expect(paging.length, `${rel} 里没挑出翻页调用`).toBeGreaterThanOrEqual(1);
+      for (const c of paging) {
+        expect(c, `翻页调用没等页码控件：\n${c}`).toContain('a.layui-laypage-prev[data-page=');
+        expect(c, `翻页调用等了地址 —— 这个站翻页前后地址一样：\n${c}`).not.toContain('"urlMatches"');
+      }
+    });
+  }
+});

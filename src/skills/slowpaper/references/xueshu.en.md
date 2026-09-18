@@ -81,9 +81,7 @@ browser_act({ tabId: "<tabId from the previous step>", actions: [
       "title":   "h3.paper-title a",
       "detail":  "h3.paper-title a@href",
       "type":    "div.paper-info span.paper-type",
-      "info":    "div.paper-info",
-      "summary": "div.paper-abstract",
-      "sources": "div.paper-source a@href"
+      "info":    "div.paper-info"
   }}
 ]})
 ```
@@ -94,11 +92,114 @@ wait for result items, the `extract` right after it runs against the home page's
 returns 0 rows — **and reports no error at all**. The closing snapshot is the same story: it is
 taken immediately after the last step, so whether it is fresh depends entirely on this `wait`.
 A timeout is a failed action (stop-on-error); **do not** click submit again because the page
-diff looks unchanged.
+diff looks unchanged — see "Submit does nothing" below.
+
+**The playbook extracts only the fields you need to judge relevance** (`SKILL.md` §4). Abstracts and
+full-text entries are in the "Result-page fields" table — extract them once you have picked papers.
+Full-text entries exist only on the results page, not on the detail page (⑥).
 
 `type` with a `selector` focuses the element first, so no extra `click` is needed. **It also
 selects-all and clears first**: if it cannot clear, it errors and types nothing — so reusing a
 box that already has content can hit `browser.target_unusable`, which is not a bad selector.
+
+The snapshot from `browser_open` on the home page is often empty (「（这一份快照里没有可交互元素）」,
+"no interactive elements in this snapshot") — the home page is script-rendered and has not painted yet when the snapshot is
+taken. **It does not affect selector-based actions**: run the batch above as is; do not `reload`
+just to get indices.
+
+### Submit does nothing (measured in acceptance groups 5 and 6, 2026-09-17)
+
+**Symptom**: `已点击「div」（…）`, then the `wait` times out and the address does not change. Clicking
+twice more and pressing Enter made no difference.
+
+**First read the "requests sent" section of the tool result** (`browser.md` §6). The search endpoint
+is `xueshu.baidu.com/search/api/search?wd=…`. Measured on 2026-09-18, one successful search sent 7 XHRs:
+besides the search endpoint, 4 on-site odds and ends (unread messages, cloud-drive list, favourite checks
+and so on) and two POSTs to `banti.baidu.com`. Those extras are there on success too, so **their presence
+does not mean the search went out**. Only the search endpoint counts:
+
+| The request section | What to do |
+| --- | --- |
+| 「没有发出任何」, or there are requests but none to the search endpoint | The click was not picked up and the search was never sent. Go to "Hand it to the user" below |
+| The search endpoint 4xx / 5xx / network error | The site refused it. Follow the table under "When it will not open" in `SKILL.md` |
+| The search endpoint 200 | Results are on their way. `wait` once more on the same selector, **without clicking submit**; if they still don't come, go to "Hand it to the user" |
+
+**What is known**:
+
+- In the same tab, **one manual click by the user brought up results**.
+- The same "type + click submit" measured successful every time in a fresh session: sidebar open or
+  closed, 1:1 or fit, typing and clicking in the same batch — the click lands on `.send-btn` and the
+  search request goes out as usual.
+- So the problem lies in this session's state on the site's side, **and the exact cause has not been
+  found yet**; it is not a wrong selector.
+
+**Hand it to the user**:
+
+1. Do not click a second time, do not press Enter (the home page has no `<form>`, so Enter never
+   submits anyway), do not `reload` and start over.
+2. Call `ask_user_question` **with `browserTabId`**: "The search terms are filled in — please click the
+   blue arrow at the right of the search box", offering "done" and "skip Baidu Xueshu". While waiting
+   for the answer, do not read the page or click anything.
+3. On "done": continue from the `wait` step of the home-page playbook and `extract` once result items
+   appear. On "skip": switch source and say so in your reply.
+
+**Do not fall back to building the URL yourself.** The legacy `/s?wd=…` measured on 2026-09-17 returns
+200 and results can be extracted, but in group 6 the model itself reported that the type filter appended to the
+address (`filter=sc_type…`) was **silently ignored** by the site — it looks like success while the filter
+never took effect.
+
+### Searching again with new terms: on the results page (measured working 2026-09-17)
+
+After one search the tab sits on the results page. **Two parts of the home-page playbook do not
+hold there:**
+
+| Control | Home page | Results page |
+| --- | --- | --- |
+| Search box | `textarea.search-input` | **`input.search-input`** (1 match); `textarea.search-input` has **0** matches here |
+| Submit | `.send-btn` | `.send-btn` (1 match; still click it) |
+
+> ⚠ **Never write a bare `.search-input`.** It first matches the outer `div.atomic-input-wrapper`,
+> and `type` reports 「不是能打字的控件（div）」 ("not a control you can type into").
+
+**The wait condition has to change too.** Measured timeline after clicking submit: at about 0.2 s
+the address changes to the new query first, **while the old 10 rows stay on the page**; at about
+0.25 s a loading spinner `.ant-spin-spinning` appears over the results; at about 1 s the new
+results replace the old ones and the spinner goes away. So:
+
+- waiting for `div.paper-wrap.result` to appear — it already holds before the click, so it waits
+  not one millisecond;
+- waiting for `urlMatches` on the new query — the address has changed but the results are still
+  the old ones. **The `extract` right after it returns the previous 10 rows, and reports no error**
+  (reproduced by measurement; it also really happened in the 2026-09-17 group-one acceptance run).
+
+Wait on the spinner instead: **first for it to appear, then for it to disappear**. It has 0
+matches when the page is idle and only appears after submit. Measured over 7 re-searches
+(including queries already used before), every one extracted the new results.
+
+```jsonc
+browser_act({ tabId: "<the same tabId>", actions: [
+  { "kind": "type",  "selector": "input.search-input", "text": "<new query>" },
+  { "kind": "click", "selector": ".send-btn" },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "present" } },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "absent" } },
+  { "kind": "extract", "selectors": {
+      "item":    "div.paper-wrap.result",
+      "title":   "h3.paper-title a",
+      "detail":  "h3.paper-title a@href",
+      "type":    "div.paper-info span.paper-type",
+      "info":    "div.paper-info"
+  }}
+]})
+```
+
+Two routes not to take (both were actually taken by the model in the 2026-09-17 group-one run):
+
+- **Reopening the home page does not clear the results.** `browser_open` the home page on this tab
+  again and the page jumps back to the previous results address by itself.
+- **Constructing `/ndscholar/browse/search?wd=…` does not work either** (§2 already says there is no
+  form URL to construct). Measured: it first bounces back to the home page, then a moment later
+  renders that search's results asynchronously — the page state and the tool result disagree, and
+  every step after that is led astray.
 
 ### Field search: put the syntax straight into the main box
 
@@ -123,7 +224,7 @@ traps. (Corroboration: every author name on a results page links to `search?wd=a
 > ③ the dialog's submit button `.button-group button.atomic-button-primary.operate-btn` is
 > labelled **「高级检索」** while the opener is 「高级搜索」 — the two names are easy to swap.
 
-### Paging (measured working 2026-09-16)
+### Paging (measured working 2026-09-16; wait condition completed 2026-09-17)
 
 | Control | Selector | Measured |
 | --- | --- | --- |
@@ -133,10 +234,15 @@ traps. (Corroboration: every author name on a results page links to `search?wd=a
 The paging controls are `div`s with no `href` and no role, so they **may be absent from the
 accessibility tree** — only `selector` can reach them.
 
-**Use the offset in the address as the wait condition**: after clicking next, the URL becomes
-`…&pn=10`; page 3 is `pn=20` (`pn = (page − 1) × 10`). It differs per page and does not hold
-before the click, which is exactly the shape `wait` needs; `urlMatches` is judged against the
-main process's own address and never enters the page.
+**The wait condition has two parts.** After clicking next, the URL becomes `…&pn=10`; page 3 is
+`pn=20` (`pn = (page − 1) × 10`) — it differs per page and does not hold before the click, so it
+guarantees "which page we turned to"; `urlMatches` is judged against the main process's own
+address and never enters the page.
+
+**But the address changes first and the results are replaced later**, the same mechanism as
+re-searching in the previous section: **extract right after `pn` and you get the previous page**
+(measured 2026-09-17: extracting as soon as `pn=10` held returned page 1's 10 rows, with no error).
+So after `pn`, wait for "spinner appears → spinner disappears".
 
 One page per `browser_act`, **never inside a `repeat`** — every round of a batch shares one
 wait condition, while "which page am I on" differs per page.
@@ -146,8 +252,10 @@ wait condition, while "which page am I on" differs per page.
 browser_act({ tabId: "<the same tabId>", actions: [
   { "kind": "click", "selector": "div.pagination > div.page.n:last-child" },
   { "kind": "wait",  "until": { "urlMatches": "pn=10" } },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "present" } },
+  { "kind": "wait",  "until": { "selector": ".ant-spin-spinning", "state": "absent" } },
   { "kind": "extract", "selectors": { "item": "div.paper-wrap.result", "title": "h3.paper-title a",
-      "detail": "h3.paper-title a@href", "info": "div.paper-info", "sources": "div.paper-source a@href" }}
+      "detail": "h3.paper-title a@href", "info": "div.paper-info" }}
 ]})
 ```
 
@@ -220,10 +328,11 @@ Measured 2026-09-16:
 
 ## ⑥ Action · getting the full text
 
-**This release downloads nothing.** The browser has no download tool, and downloads the page
-triggers itself are cancelled outright.
+**This source hosts no full text; it points at where to get it.** The general rules for getting
+full text live in `SKILL.md` §5; downloads the page triggers itself are still cancelled outright.
 
-**Extract full-text entries on the results page only**: `div.paper-source a@href` (9/10
+**Extract full-text entries on the results page only** (the detail page does not have them; once you
+page away you have to come back for them): `div.paper-source a@href` (9/10
 measured). It lists, side by side, where the same paper can be reached — measured domains
 include `nstl.gov.cn` (National Science and Technology Library), `qikan.cqvip.com` (VIP),
 `d.wanfangdata.com.cn` (Wanfang), `cnki.com.cn` (CNKI), publisher sites, and iAcademic.

@@ -261,6 +261,26 @@ Phrases in the result you must keep apart:
 | "这一批里新开了 N 个标签页" | Popped by `target=_blank`. To operate on their content, switch `tabId` to them |
 | The header line `导航: [tab_…] 已打开 …` | **Since the last report**, a main-frame navigation settled on this tab (most likely the navigating click in your previous batch). **This is where a 403 shows up** — it is reported once and then cleared |
 | `── 页面报的错 ──` | Errors the **page itself** printed to the console during this batch (framed by the boundary markers — it is text the page wrote, not something KyDog said). Often explains "I clicked and nothing happened"; both count and length are capped, and going over says explicitly how much was cut |
+| `── 这一步发出的请求（XHR / fetch）──` | The XHR / fetch requests the **page's scripts** sent from this tab during this batch: method, host and path (every parameter value replaced by `…`), status code or network error. Failures come first; past the cap only a count is given. **Whole-page navigations are not here** — read the navigation outcome for those. When the batch had a click or key press and nothing was sent, it says so outright (「截至这一步返回…没有发出任何」) |
+| `── 上一次工具返回之后、这一步开始之前到的请求（XHR / fetch）──` | Requests that arrived after the previous `browser_act` / `browser_open` returned, placed before the "this step" block. When a step returns right after its click, the search request often arrives late and lands in this block of the next call |
+
+**You clicked submit and the page did not change: read "the requests sent" section first.** This only
+holds for sites whose submit goes through XHR / fetch — the card names the search endpoint's path (Baidu
+Xueshu's home page is one). Where submit is a whole-page navigation (Google Scholar), an empty request
+section is normal; read the navigation outcome as the card says.
+
+**The table assumes the batch already waited after the click** (on the card's `wait`, until it timed
+out). In a step that returns right after the click, 「没有发出」 only means "not yet": the search request
+often arrives a few hundred milliseconds later and shows up in the next result's "after the previous
+tool returned" block. Measured on Baidu Xueshu, 2026-09-18: re-searching on the results page with a
+click and no wait, that step reported 「没有发出」; the next call, 3 seconds later, had the search
+endpoint in that block, at 200.
+
+| The request section | What happened | What to do |
+| --- | --- | --- |
+| 「没有发出任何 XHR / fetch 请求」, or there are requests but none to the search endpoint the card names | The page never picked up the click; the search request was **never sent**. The problem is on our side, not the source's | Don't click again, don't press Enter, don't build a URL. Hand it to the user with `browserTabId` (see §9) and say so plainly in your reply |
+| The search endpoint failed (4xx / 5xx / network error) | The request went out and the site refused it | Follow the table under "When it will not open" in `SKILL.md` |
+| The search endpoint succeeded (2xx) | The request went out and came back; the results just haven't rendered | Wait once more on the card's wait condition; **do not submit again** |
 
 ---
 

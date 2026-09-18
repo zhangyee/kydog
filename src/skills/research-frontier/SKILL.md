@@ -22,7 +22,7 @@ description: 针对一个具体研究方向，查最近一年出了什么新工�
 ## 开工前
 
 1. `date +%F` —— 时间窗和文件名都要用。
-2. **read fastpaper 的 SKILL.md**（在 `<available_skills>` 里）。各源语法和 filter 支持不同，猜 flag 会静默拿到错结果。
+2. **定源，read 用得上的检索工具的 SKILL.md**（在 `<available_skills>` 里）。按 AGENTS.md「找论文」看这一轮要的文献落在哪 —— fastpaper、slowpaper，常常两个都要；方向要等第 4 步确认了才定得下来。fastpaper 各源语法和 filter 支持不同，猜 flag 会静默拿到错结果。
 3. `ls papers/` —— 可能已有现成的论文。
 4. **确认方向够具体**。"人工智能在医学中的应用"这种粒度做不出前沿——一年里什么都在发生，说了等于没说。太宽就用普通对话请用户收窄到一个能被一句话描述的方向。
 
@@ -103,7 +103,7 @@ CRISPR AND CITED:[50000 TO *]  →  1 条
 
 推而广之：**任何写进 query 字符串的过滤条件，用一个极端值再跑一次验证它真的生效**（阈值拉到极高应该返回零条）。这类条件由源端解析，fastpaper 的校验层看不到，写错不会报错。两次调用换掉一整类静默错误。
 
-**没有的东西**：下载量（18 个源都不提供）、发文量逐年趋势（`search` 不返回总命中数）、临床试验注册库（ClinicalTrials.gov 不在源里）。不要用别的指标冒充，也不要写"广受关注"这种含糊话。
+**没有的东西**：下载量（fastpaper 的源都不提供）、发文量逐年趋势（`search` 不返回总命中数）、临床试验注册库（ClinicalTrials.gov 不在源里）。不要用别的指标冒充，也不要写"广受关注"这种含糊话。
 
 ---
 
@@ -139,7 +139,7 @@ CRISPR AND CITED:[50000 TO *]  →  1 条
 fastpaper search pubmed "<主题>" --author "<姓 名首字母>" --sort date -n 10
 ```
 
-`--author` 在 `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal` 上可用；`semantic` `dblp` `scholar` `xueshu` `biorxiv` `medrxiv` 不支持，但会明确报错（`Error: semantic does not support --author`），不会静默失败——那几个源把人名写进 query 字符串。
+`--author` 在 `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal` 上可用；`semantic` `dblp` `biorxiv` `medrxiv` 不支持，但会明确报错（`Error: semantic does not support --author`），不会静默失败——那几个源把人名写进 query 字符串。
 
 **要写的是轨迹，不是论文列表。** 挑 2–4 个节点，让人看出他们从什么做到什么：
 
@@ -172,6 +172,8 @@ fastpaper search pubmed "<主题>" --author "<姓 名首字母>" --sort date -n 
 **产物短不等于核验可以松。** 一份编造出来的前沿简报会直接影响别人的投入决策。
 
 **存在性 + 元数据**：每篇 `fastpaper get <id>`，比对标题、年份、第一作者。查不到就删掉；两个源打架就并列呈现，不擅自挑一个。
+
+**没有标识符的文献**（多数中文期刊论文、学位论文）`fastpaper get` 回不了源，「查不到就删」对它们不适用：存在性以找到它的那个源的题录为准，简报里标「仅〈源名〉单源确认」，不补编 DOI；只看到题录或摘要片段的，只写它研究了什么，不写它得出了什么。
 
 **论断**：简报里的每个具体数字、效应量、结论方向都要能指到原文。`fastpaper read papers/<file>.pdf --section results --max-length 4000` 定段回原文。
 

@@ -27,13 +27,20 @@ The first three all rely on search to **discover** literature, and all write fil
 ## Before starting
 
 1. `ls papers/` — the paper the user named may already be in there.
-2. **Get the paper**: is it a DOI / arXiv id / PMID, or a filename in `papers/`? For an id, run `fastpaper get <id>` first to confirm which paper it is, then `fastpaper download <id> -d papers/`.
+2. **Get the paper**: look at what the user gave and take the matching route (read the SKILL.md of whichever search tool you use, in `<available_skills>`):
+
+   | The user gave | How to get it |
+   |---|---|
+   | A DOI / arXiv id / PMID / PMC id | `fastpaper get <id>` first to confirm which paper it is, then `fastpaper download <id> -d papers/` |
+   | A filename in `papers/` | `fastpaper read` it directly |
+   | A web link (a publisher landing page, an institutional repository, a preprint page) | Open it in the built-in browser and `browser_download` the PDF link on the page (slowpaper §5). No downloads from subscription databases reached through an institutional login — just report the link to the user |
+   | Only a title (a Chinese journal article or thesis, no DOI) | Search Baidu Xueshu to confirm which paper it is (volume per slowpaper's representative tier), then look for the full-text entry on its detail page |
 
 ## Full text is a hard requirement
 
 **Without the full text this cannot be done.** The abstract has no method details, no experimental conditions, none of the limitations the authors admit — and those are exactly where the writing material comes from.
 
-When a download fails, **read the exit code first**: `4` = this source simply does not have it, so switching sources is the only move that means anything; `2` = the command was written wrong; `1` = something else. For anything other than `4`, go by the judgment given in fastpaper's error.
+When a download fails, **read the exit code first**: `4` = this source simply does not have it, so switching sources is the only move that means anything; `2` = the command was written wrong; `1` = something else. For anything other than `4`, go by the judgment given in fastpaper's error — when it says a real browser is needed to get through (a publisher's bot challenge), open that paper's landing page in the built-in browser and `browser_download` the PDF link on the page.
 
 If the full text is finally out of reach, **stop and ask the user** (`ask_user_question` must be called on its own): you download it into `papers/` by hand and I continue / write the passage from the abstract alone and mark it as such / switch to another paper.
 
