@@ -30,10 +30,13 @@ function annotateCitations(node: ReactNode): ReactNode {
  * citations: true  —— 对话消息用，把正文里的 [1] 标成引用上标。
  * citations: false —— 关于页等散文用，方括号数字保持原样。
  * softBreaks: true —— 段落内的单个换行照原样断行（CommonMark 默认折叠成空格）。
+ * compact: true —— 窄栏用（检视栏里的 harness 文件）：标题降几号、间距收紧，不让一级标题占掉半屏。
  */
-export function makeMarkdownComponents(opts: { citations: boolean; softBreaks?: boolean }): Components {
+export function makeMarkdownComponents(opts: { citations: boolean; softBreaks?: boolean; compact?: boolean }): Components {
   const inline = opts.citations ? annotateCitations : (node: ReactNode) => node;
-  const heading = { h1: { fontSize: 26, margin: '28px 0 12px' }, h2: { fontSize: 22, margin: '36px 0 10px' }, h3: { fontSize: 16, margin: '20px 0 8px' } };
+  const heading = opts.compact
+    ? { h1: { fontSize: 18, margin: '4px 0 10px' }, h2: { fontSize: 16, margin: '22px 0 8px' }, h3: { fontSize: 14, margin: '16px 0 6px' } }
+    : { h1: { fontSize: 26, margin: '28px 0 12px' }, h2: { fontSize: 22, margin: '36px 0 10px' }, h3: { fontSize: 16, margin: '20px 0 8px' } };
   // pre-line 只挂 p / li，不挂容器：块与块之间也夹着换行文本节点，
   // 挂在容器上会把段落间距、列表项间距一起撑开。
   const soft: CSSProperties = opts.softBreaks ? { whiteSpace: 'pre-line' } : {};

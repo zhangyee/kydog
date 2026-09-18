@@ -6,4 +6,5 @@ export const SETTINGS_PAGE_LABELS: Record<SettingsTabId, string> = {
   about: '关于',
   skills: '技能和工具',
   research: '文献检索密钥',
+  longTermMemory: '长期记忆',
 };

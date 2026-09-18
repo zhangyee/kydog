@@ -273,6 +273,38 @@ export type OnboardingCompleteArgs = {
 export type OnboardingErrorCode = 'invalid-input' | 'model-missing' | 'seed-failed' | 'recovery-pending' | 'manifest-corrupt' | 'already-completed';
 export type OnboardingResult = { ok: true } | { ok: false; code: OnboardingErrorCode; message: string };
 
+// ── Harness（spec: docs/superpowers/specs/2026-09-17-harness-template-update-design.md）──
+// 渲染层只能点名这三份，不能给路径：主进程拿名字去 ~/.kydog/ 下找。
+export const HARNESS_FILE_NAMES = ['SOUL.md', 'USER.md', 'AGENTS.md'] as const;
+export type HarnessFileName = (typeof HARNESS_FILE_NAMES)[number];
+/** 相对当前界面语言的当前模板而言（spec §3.2）。 */
+export type HarnessTemplateState = 'latest' | 'available' | 'kept' | 'missing';
+/** 写入之后改没改过：只对 available / kept 有意义，供界面说明「更新会不会丢东西」。 */
+export type HarnessEditState = 'unchanged' | 'edited' | 'unknown';
+export type HarnessFileStatus = {
+  name: HarnessFileName;
+  template: HarnessTemplateState;
+  edit: HarnessEditState | null;
+  /** 当前模板的语言（= 界面语言），「新模板是英文版 / 中文版」那句用。 */
+  templateLocale: 'zh' | 'en';
+  /** 写入时用的模板与当前界面语言不同。 */
+  localeDiffers: boolean;
+};
+export type HarnessChoice = { name: HarnessFileName; choice: 'update' | 'keep' };
+/** 这次「更新 / 保持」是从哪个入口点出来的 —— 只为日志：事后要能回答「是谁让它更新的」。 */
+export type HarnessApplySource = 'startup-dialog' | 'harness-page';
+export const HARNESS_APPLY_SOURCES = ['startup-dialog', 'harness-page'] as const satisfies readonly HarnessApplySource[];
+export type HarnessApplyResult = { name: HarnessFileName } & (
+  // backupName 只是文件名（在 ~/.kydog/ 下）；创建（原本不存在）时为 null。
+  | { outcome: 'updated'; backupName: string | null }
+  | { outcome: 'kept' }
+  | { outcome: 'failed'; error: string });
+export type HarnessReadResult =
+  | { exists: false }
+  | { exists: true; content: string; frontmatterName: string | null; body: string };
+/** diskContent 为 null = 文件已不存在。 */
+export type HarnessWriteResult = { ok: true } | { ok: false; diskContent: string | null };
+
 export type IndexFile = {
   schemaVersion: 1;
   projects: Project[];

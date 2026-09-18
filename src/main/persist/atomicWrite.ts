@@ -6,12 +6,17 @@ import path from 'node:path';
 const POSIX = process.platform !== 'win32';
 const MODE = 0o600;
 
-/** 兼容旧 callsites（index.json 等其他文件继续用，行为不变）。 */
+/** 兼容旧 callsites（index.json 等其他文件继续用，行为不变）。失败时删掉临时文件，与 atomicWriteBytes 一致。 */
 export async function atomicWrite(target: string, data: string): Promise<void> {
   await fsp.mkdir(path.dirname(target), { recursive: true });
   const tmp = `${target}.tmp.${randomUUID()}`;
-  await fsp.writeFile(tmp, data, 'utf8');
-  await fsp.rename(tmp, target);
+  try {
+    await fsp.writeFile(tmp, data, 'utf8');
+    await fsp.rename(tmp, target);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 /** 二进制版。PNG 之类的产物用它：tmp + rename，写一半崩掉不会留下截断的文件，
