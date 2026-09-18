@@ -16,7 +16,7 @@ export type FileTab = {
   reloadNonce: number;         // 外部改动计数；仅 html 消费，用来触发重读
 };
 
-export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills' | 'research';
+export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills' | 'research' | 'longTermMemory';
 type CenterTabKind = 'thread' | 'settings' | 'file';
 
 type UiState = {

@@ -78,6 +78,12 @@ test('37b-identity: USER.md 含空格称呼在消息列表完整显示', async (
   });
   try {
     const { page } = launched;
+    // 这份自定义 USER.md 没有 harness 状态记录、又不等于当前模板 → 启动时会问要不要更新
+    // （harness 模板更新 spec §3.2 R4）。正是一个改过 USER.md 的老用户第一次启动看到的；
+    // 这条测的是称呼显示，不在这里选，点「稍后再说」—— 什么都不记，文件原样不动。
+    await expect(page.getByTestId('harness-update-row-USER.md')).toBeVisible();
+    await page.getByTestId('harness-update-later').click();
+    await expect(page.getByTestId('harness-update-dialog')).toHaveCount(0);
     // 打开已有线程 + 发消息：交互序列对齐 04-send-receive-stream.spec.ts 现行写法。
     await page.getByTestId(`thread-${threadId}`).click();
     await page.locator('[data-testid="composer-input"]').fill('hi');

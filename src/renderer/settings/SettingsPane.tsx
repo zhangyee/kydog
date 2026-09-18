@@ -9,6 +9,7 @@ import { AddProviderPage } from './AddProviderPage';
 import { ProviderDetailPane } from './ProviderDetailPane';
 import { AboutSection } from './AboutSection';
 import { SponsorSection } from './SponsorSection';
+import { LongTermMemorySection } from './LongTermMemorySection';
 
 export function SettingsPane() {
   const activeSection = useUiStore((s) => s.settingsTab);
@@ -30,6 +31,7 @@ export function SettingsPane() {
   const subtitle = activeSection === 'provider' ? '登录订阅或填入 API Key 以选择默认模型'
     : activeSection === 'skills' ? '管理你的 skill 与捆绑工具'
     : activeSection === 'research' ? '填写后立即生效，无需新建对话'
+    : activeSection === 'longTermMemory' ? 'KyDog 每次新对话开始时读的三份文件：人格、关于你、操作手册'
     : activeSection === 'about' ? null
     : activeSection === 'donate' ? null
     : '预留页面';
@@ -84,6 +86,8 @@ export function SettingsPane() {
           <SkillsAndToolsSection />
         ) : activeSection === 'research' ? (
           <ResearchCredentialsSection />
+        ) : activeSection === 'longTermMemory' ? (
+          <LongTermMemorySection />
         ) : activeSection === 'about' ? (
           <AboutSection />
         ) : activeSection === 'donate' ? (
