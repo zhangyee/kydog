@@ -1,7 +1,7 @@
 import { sidecarPath } from '../../../../shared/pdfSidecar';
 import { Tooltip } from '../../../shared';
 import { usePdfAnnotationStore } from './pdfAnnotationStore';
-import { usePdfTranslationStore } from './pdfTranslationStore';
+import { usePdfTranslationStore, type TBucket } from './pdfTranslationStore';
 import { pdfSaveScheduler } from './saveScheduler';
 
 const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
@@ -27,14 +27,18 @@ const HAIRLINE = '0.5px solid var(--color-ink-hair-soft)';
  * 它是「刚刚这一次动作」的直接失败反馈（常见如 llm.not_configured——首次使用没配模型），比边车
  * 文件本身状态的静态描述更紧迫，且没有它翻译失败就是一次双栏闪回单栏、全程零提示的死状态。
  * spec §8.2 / §8.3（标注）、Task 8 / Task 14（译文）。
+ *
+ * 抽成纯函数是为了让这条优先级链离开 DOM 也测得到（PdfAnnotationNotice.test.ts）；返回 null =
+ * 这一行不显示。
  */
-export function PdfAnnotationNotice(
-  { tabId, pdfPath, translateError }: { tabId: string; pdfPath: string; translateError: string | null },
-) {
-  const loadError = usePdfAnnotationStore((s) => s.buckets[tabId]?.loadError ?? null);
-  const saveError = usePdfAnnotationStore((s) => s.buckets[tabId]?.saveError ?? null);
-  const t = usePdfTranslationStore((s) => s.buckets[tabId]);
-
+export function noticeText(a: {
+  pdfPath: string;
+  loadError: string | null;
+  saveError: string | null;
+  translateError: string | null;
+  t: TBucket | undefined;
+}): { text: string; isFailedPages: boolean } | null {
+  const { pdfPath, loadError, saveError, translateError, t } = a;
   let text: string | null = null;
   // 第 8 条分支自己置位，showReasons 判它而不是回头从 text 里抠子串——text 是给人看的文案，
   // 不是给代码分支用的 tag，靠 includes('页翻译失败') 反推「当前渲染的是第几条」是在拿渲染结果
@@ -52,7 +56,20 @@ export function PdfAnnotationNotice(
     const pages = t.doc.failedPages;
     text = `${pages.length} 页翻译失败（第 ${pages.join('、')} 页），右栏保留原文`;
   }
-  if (!text) return null;
+  return text ? { text, isFailedPages } : null;
+}
+
+/** 胶囊上方的那一行提示。显示哪一条、文案是什么，见上面的 noticeText。 */
+export function PdfAnnotationNotice(
+  { tabId, pdfPath, translateError }: { tabId: string; pdfPath: string; translateError: string | null },
+) {
+  const loadError = usePdfAnnotationStore((s) => s.buckets[tabId]?.loadError ?? null);
+  const saveError = usePdfAnnotationStore((s) => s.buckets[tabId]?.saveError ?? null);
+  const t = usePdfTranslationStore((s) => s.buckets[tabId]);
+
+  const notice = noticeText({ pdfPath, loadError, saveError, translateError, t });
+  if (!notice) return null;
+  const { text, isFailedPages } = notice;
 
   const reasons = t?.doc?.failureReasons;
   const failed = t?.doc?.failedPages ?? [];

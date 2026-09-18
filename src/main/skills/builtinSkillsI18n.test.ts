@@ -137,3 +137,64 @@ describe('内置 skill 的 frontmatter 能被生产代码解析', () => {
     expect(bad).toEqual([]);
   });
 });
+
+/**
+ * **learning-deck 的 ④-ANCHOR：文档里拿去当 `edit` oldText 的那一行，必须逐字、且只一次地
+ * 落在同一语言的模板里。**
+ *
+ * `SKILL.md` 第 3 步与 `references/layout.md` 让模型逐章 `edit`，oldText 就是模板里那一行
+ * `<!-- ④-ANCHOR … ⟨待填⟩ -->`。pi 的 edit 要求 oldText 在文件里**恰好匹配一处**
+ * （`edit-diff.js`：零处是 not found，多处是 must be unique）—— 文档与模板任何一边改了措辞、
+ * 或者 en 模板忘了跟着翻，模型的每一次插章都当场报错。配对校验（上面）只看文件在不在，看不见这个。
+ *
+ * 读的是**投影**选中的那份源（`projectSkillFiles`，与落盘同一个判据），不是自己拼 `.en.` 后缀。
+ * 这条原本是 e2e 48 在落盘树上断的；落盘树逐字节等于投影选中的源，由那边的内容层比对与
+ * `localeProjection.test.ts` 守着，所以锚点本身在源侧断就够了。
+ *
+ * ⚠️ 不要顺手加「en 树里没有汉字」：`⟨待填⟩` 是刻意保留的哨兵串（见 sync-skill-docs）。
+ */
+describe('learning-deck 的 ④-ANCHOR 与模板逐字对得上', () => {
+  const SKILL = 'learning-deck';
+  const TEMPLATE = 'assets/report-template.html';
+  /** 这两份文档里点名了锚点行。 */
+  const DOCS = ['SKILL.md', 'references/layout.md'];
+  const ANCHOR_RE = /<!-- ④-ANCHOR [^\n]*? -->/g;
+
+  function reader(locale: (typeof SKILL_LOCALES)[number]): (rel: string) => string {
+    const proj = projectSkillFiles(listSkillSourceFiles(SRC_ROOT, SKILL), locale);
+    return (rel) => {
+      const src = proj.get(rel);
+      if (src === undefined) throw new Error(`${SKILL}/${rel} 在 ${locale} 下没有来源`);
+      return readFileSync(path.join(SRC_ROOT, SKILL, src), 'utf-8');
+    };
+  }
+
+  it.each(SKILL_LOCALES)('%s：两份文档点名的是同一行，它在模板里恰好出现一次', (locale) => {
+    const read = reader(locale);
+    const quoted = new Set<string>();
+    for (const doc of DOCS) {
+      const hits = read(doc).match(ANCHOR_RE) ?? [];
+      // 先证明真的抽到了：抽不到时下面的「恰好一次」会对着空集合空转
+      expect(hits.length, `${locale} 的 ${doc} 里没找到 ④-ANCHOR 行`).toBeGreaterThan(0);
+      for (const h of hits) quoted.add(h);
+    }
+    expect([...quoted], `${locale} 下两份文档点名的锚点行不一致`).toHaveLength(1);
+
+    const [anchor] = [...quoted];
+    const tpl = read(TEMPLATE);
+    expect(tpl.split(anchor).length - 1, `${locale} 模板里 ${anchor} 的出现次数`).toBe(1);
+  });
+
+  it('en 模板是英文那一份：英文锚点、lang="en"；中文措辞只在 zh 模板里', () => {
+    const zh = reader('zh')(TEMPLATE);
+    const en = reader('en')(TEMPLATE);
+    // 正向：中文措辞与 zh 的 lang 在 zh 模板里查得到 —— 下面对 en 的否定不是查找坏了
+    expect(zh).toContain('<!-- ④-ANCHOR 知识点章节插在这一行之前 ⟨待填⟩ -->');
+    expect(zh).toContain('<html lang="zh">');
+
+    expect(en).toContain('<!-- ④-ANCHOR insert concept chapters before this line ⟨待填⟩ -->');
+    expect(en).toContain('<html lang="en">');
+    expect(en).not.toContain('知识点章节插在这一行之前');
+    expect(en).not.toContain('<html lang="zh">');
+  });
+});

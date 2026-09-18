@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 // __dirname 是 src/renderer/theme/，向上三层是仓库根，node_modules 挂在那儿。
@@ -81,6 +81,63 @@ describe('字体栈与打包进来的字体', () => {
     for (let i = 1; i < THEMES.length; i += 1) {
       expect(stacks[i], `${THEMES[i]}.css 的字体栈与 ${THEMES[0]}.css 不一致`).toBe(stacks[0]);
     }
+  });
+});
+
+/**
+ * 字体只随产物走，不从任何字体 CDN 拉（原先由 e2e/58-font-stack 在运行期数请求守着）。
+ *
+ * 曾经 index.html 里有一个 Google Fonts 的 <link>：离线时观感与在线时不同、每次启动都向第三方
+ * 发一次请求，而且远端那份恰好注册成与主题里同名的家族，把打包进来的那份静默顶掉（见上面
+ * 「每个打包进来的字体族」那条的来由）。
+ *
+ * 这里改成静态扫：渲染层能把一个 URL 送进页面的源头只有这几处 —— 入口 index.html、渲染层
+ * 源码（CSS 的 @import / url()，TS/TSX 里动态插 <link>、拼 CSS 串、new FontFace），以及
+ * fonts.css 用 @import 引进来的那几份 fontsource CSS。测试文件不进产物，不扫。
+ *
+ * 守不住的：运行期从别处**拼**出来的 URL（域名被拆成几段字符串再拼起来）。那种写法本身就
+ * 不该出现，这里不为它加判据。
+ */
+describe('渲染层不引用任何字体 CDN', () => {
+  /** 常见的字体 CDN 域名。e2e/58 那张表（前四项）之外补了几个同类的，包括国内镜像。 */
+  const FONT_CDN = /fonts\.googleapis\.(?:com|cn)|fonts\.gstatic\.(?:com|cn)|fonts\.bunny\.net|(?:use|p)\.typekit\.net|fast\.fonts\.net|fonts\.cdnfonts\.com|fonts\.loli\.net/g;
+
+  const fontCdnHits = (text: string): string[] => [...text.matchAll(FONT_CDN)].map((m) => m[0]);
+
+  /** 渲染层源码：src/renderer 下所有 .css / .html / .ts / .tsx，去掉测试文件。 */
+  function rendererSources(dir: string): string[] {
+    const out: string[] = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) out.push(...rendererSources(p));
+      else if (/\.(css|html|tsx?)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(p);
+    }
+    return out;
+  }
+
+  it('index.html、渲染层源码与 fonts.css 引进来的 fontsource CSS 里都没有字体 CDN 域名', () => {
+    // 正向对照：扫描器本身认得出一条真的 CDN 引用（index.html 当年那一行的样子）。正则写坏了
+    // （比如点号没转义错成别的、g 标志丢了让 matchAll 抛），下面那条「一个都没有」会假绿。
+    expect(fontCdnHits(
+      '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">'
+      + '\n@font-face { src: url(https://fonts.gstatic.com/s/inter/v12/x.woff2); }',
+    )).toEqual(['fonts.googleapis.com', 'fonts.gstatic.com']);
+
+    const files = [
+      path.join(ROOT_DIR, 'index.html'),
+      ...rendererSources(path.join(ROOT_DIR, 'src', 'renderer')),
+      ...importedFontCssPaths(),
+    ];
+    // 文件清单本身也要证明是对的：真扫到了入口、主题 CSS 和 node_modules 里的 fontsource，
+    // 而不是一个空列表让下面那条断言无事可做。
+    const rel = files.map((p) => path.relative(ROOT_DIR, p).split(path.sep).join('/'));
+    expect(rel).toContain('index.html');
+    expect(rel).toContain('src/renderer/theme/fonts.css');
+    expect(rel).toContain('src/renderer/panels/main-pane/html/reportTheme.ts');
+    expect(rel.some((p) => p.startsWith('node_modules/@fontsource'))).toBe(true);
+
+    const hits = files.flatMap((p) => fontCdnHits(read(p)).map((h) => `${path.relative(ROOT_DIR, p)}: ${h}`));
+    expect(hits, '渲染层引用了字体 CDN——字体要随产物打包（fonts.css 的 @import），不联网拉').toEqual([]);
   });
 });
 

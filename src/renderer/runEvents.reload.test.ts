@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { applyRunEvent } from './runEvents';
 import { useRunsStore } from './stores/runsStore';
 import { useThreadsStore } from './stores/threadsStore';
+import { useAskStore } from './stores/askStore';
+import type { AskQuestion } from '../shared/askQuestion';
 import type { RunEvent } from '../shared/protocol';
 import type { AssistantBlock } from '../shared/types';
 
@@ -155,6 +157,50 @@ describe('tool_call 事件的归属靠 messageId，不靠猜', () => {
 
     expect(toolBlocks(older).map((b) => b.id)).toEqual(['t1']);
     expect(toolBlocks(MID)).toEqual([]);
+  });
+});
+
+/**
+ * 与上面 tool_call 那条同形，换成提问：留痕 buffer 只由 text / thinking 的 delta 创建过，
+ * 模型这一轮完全可以不写开场白、张口就发 ask。取消路径最险 —— terminate 让 loop 早停，
+ * 第二轮永不到来，buffer 自始至终不存在，整轮在消息流里什么都不剩。
+ */
+describe('提问的留痕同样靠 messageId 归位，不靠之前有没有 delta', () => {
+  beforeEach(() => {
+    resetStores();
+    useAskStore.setState({ pendingByThread: {}, draftByThread: {} });
+  });
+
+  const ASK_ID = 'ask-1';
+  const QUESTIONS: AskQuestion[] = [{
+    id: 'q0', question: '这次改动落在哪个分支上？', header: '分支',
+    options: [
+      { id: 'q0o0', label: '当前 worktree', description: '继续留在这个隔离分支上。' },
+      { id: 'q0o1', label: '新开一个 worktree', description: '跟当前改动完全隔离。' },
+    ],
+  }];
+
+  it('这一轮没有开场白直接提问、随即被取消：本轮收尾后历史里留着那张 cancelled 卡片', () => {
+    applyRunEvent(started());
+    // 前提：这一轮一个 delta 都没有，buffer 还不存在
+    expect(useRunsStore.getState().bufferByMessage[MID]).toBeUndefined();
+
+    applyRunEvent({ topic: 'run.ask_start', payload: { threadId: TID, runId: RID, messageId: MID, toolCallId: ASK_ID, questions: QUESTIONS } });
+    // 提问态 composer 的数据源开了
+    expect(useAskStore.getState().pendingByThread[TID]?.toolCallId).toBe(ASK_ID);
+
+    applyRunEvent({ topic: 'run.ask_end', payload: { threadId: TID, runId: RID, messageId: MID, toolCallId: ASK_ID, outcome: { kind: 'cancelled' } } });
+    expect(useAskStore.getState().pendingByThread[TID]).toBeUndefined();
+
+    applyRunEvent({ topic: 'run.message_end', payload: { threadId: TID, runId: RID, messageId: MID } });
+    applyRunEvent({ topic: 'run.ended', payload: { threadId: TID, runId: RID, reason: 'completed' } });
+
+    const history = useThreadsStore.getState().historyByThread[TID];
+    expect(history).toHaveLength(1);
+    const msg = history[0];
+    if (msg.role !== 'assistant') throw new Error('expected assistant message');
+    expect(msg.id).toBe(MID);
+    expect(msg.blocks).toEqual([{ kind: 'ask', toolCallId: ASK_ID, questions: QUESTIONS, status: 'cancelled' }]);
   });
 });
 

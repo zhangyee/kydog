@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { BootstrapState, SettingsFileForRenderer } from '../shared/types';
+import type { BootstrapState, SettingsFileForRenderer, UpdateStatus } from '../shared/types';
 import { bootstrap } from './bootstrap';
 import { useSettingsStore } from './stores/settingsStore';
 import { useBrowserStore } from './panels/browser/browserStore';
 import { useUiStore } from './stores/uiStore';
+import { useUpdateStore, shouldShowBanner } from './stores/updateStore';
 
 /**
  * **`bootstrap.ts` 里那一行浏览器接线的守卫。**
@@ -74,10 +75,22 @@ const STATE = {
   }],
 };
 
+/** `update.getStatus` 的回复：没有可用更新。形状必须是真的 `UpdateStatus` ——
+ *  `shouldShowBanner` 判的是 `update.kind`，形状不对时它读到 undefined，会把「没有更新」判成要挂横幅。 */
+const UPDATE_IDLE: UpdateStatus = {
+  check: { phase: 'never' },
+  update: { kind: 'none' },
+  bannerDismissed: false,
+  autoCheck: true,
+  currentVersion: '0.0.0-test',
+};
+
 type Listener = (payload: unknown) => void;
 
 /** 按发生次序记下来的「装配轨迹」：`on:<topic>` 与 `invoke:<method>`。 */
 let trace: string[] = [];
+/** 每一次 invoke 连同参数。`trace` 只记方法名，看负载要从这里取。 */
+let calls: Array<{ method: string; args: unknown }> = [];
 let listeners: Map<string, Listener[]>;
 /** `window.addEventListener` 装的监听器，按事件名分桶 —— resize 那条就走这里，
  *  与上面 `window.kydog.on` 的 `listeners`（IPC 广播）是两回事，不能共用一份。 */
@@ -91,6 +104,7 @@ function fire(topic: string, payload: unknown): void {
 
 beforeEach(() => {
   trace = [];
+  calls = [];
   listeners = new Map();
   windowListeners = new Map();
   useBrowserStore.setState(useBrowserStore.getInitialState());
@@ -98,7 +112,7 @@ beforeEach(() => {
     'app.bootstrap': BOOT,
     'browser.getState': STATE,
     'llm.list': { catalog: [], configured: [], customProviders: [], defaultProvider: null, defaultModel: null },
-    'update.getStatus': { check: { state: 'idle' }, update: { state: 'none' }, bannerDismissed: false, autoCheck: true, currentVersion: '0.0.0-test' },
+    'update.getStatus': UPDATE_IDLE,
     'skill.list': [],
     'skill.getSyncHealth': { state: 'ok', installedOrUpgraded: [], userSkills: [] },
     'settings.update': SETTINGS,
@@ -111,8 +125,9 @@ beforeEach(() => {
     // 断的其实是 store 的默认值，不是同步这件事本身。
     innerWidth: 1600,
     kydog: {
-      invoke: (method: string) => {
+      invoke: (method: string, args?: unknown) => {
         trace.push(`invoke:${method}`);
+        calls.push({ method, args });
         return Promise.resolve(replies[method]);
       },
       on: (topic: string, fn: Listener) => {
@@ -228,5 +243,114 @@ describe('browserFullscreen 不落盘', () => {
     await new Promise<void>((r) => { setTimeout(r, 0); });
 
     expect(trace.filter((t) => t === 'invoke:settings.update').length).toBe(before);
+  });
+});
+
+/** 一拍宏任务：订阅里的 `settings.update` 与启动时那几次 invoke 都是 fire-and-forget。 */
+const settle = () => new Promise<void>((r) => { setTimeout(r, 0); });
+
+/** 从某一刻起发出去的全部 `settings.update` 负载。 */
+function settingsUpdatesSince(from: number): Array<{ ui: Record<string, unknown> }> {
+  return calls.slice(from)
+    .filter((c) => c.method === 'settings.update')
+    .map((c) => c.args as { ui: Record<string, unknown> });
+}
+
+describe('改主题时 settings.update 不捎带 locale', () => {
+  /**
+   * 回归：bootstrap 的持久化订阅曾把 `locale: 'zh'` 硬编码进 ui 负载，en 用户改一次主题，
+   * 重启就被打回中文。locale 只走 `locale.set`（它还要换 skill 树），这条订阅一个字都不该碰它 ——
+   * 主进程那边按 `{ ...cur.ui, ...patch.ui }` 合并，负载里没有这个键，盘上的 locale 就原样留着。
+   *
+   * 断的是**键不在**，而不是「值等于 en」：透传启动时读到的值也不对（与菜单里切语言那条路赛跑）。
+   */
+  it('负载里带着新主题（找到的就是这一次），但没有 locale 这个键', async () => {
+    await bootstrap();
+    await settle();
+    const from = calls.length;
+
+    useUiStore.getState().setTheme('midnight');
+    await settle();
+
+    const sent = settingsUpdatesSince(from);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const args of sent) {
+      // 正向：这份负载确实是改主题发出去的那一份，查找本身没坏
+      expect(args.ui.theme).toBe('midnight');
+      expect(args.ui).not.toHaveProperty('locale');
+    }
+  });
+
+  it('重启那一半：settings 里的主题在启动时进了 uiStore', async () => {
+    // 刻意不等于 uiStore 的默认主题（vellum）与 SETTINGS 里那份（也是 vellum）
+    useUiStore.setState({ theme: 'vellum' });
+    const orig = BOOT.settings;
+    BOOT.settings = { ...SETTINGS, ui: { ...SETTINGS.ui, theme: 'midnight' } };
+    try {
+      await bootstrap();
+    } finally {
+      BOOT.settings = orig;
+    }
+    expect(useUiStore.getState().theme).toBe('midnight');
+  });
+});
+
+describe('阅读字号跨重启保留', () => {
+  /**
+   * 「关 app 重开后档位不丢」拆成两半：启动时从 settings 灌进 uiStore，改档位时经
+   * `settings.update` 写回。持久化订阅比较的字段集合里漏了 readingFontSize，改字号就
+   * 一次都不写盘 —— 当场界面照变，重启才打回原档。
+   */
+  it('启动时 settings 里的档位进了 uiStore', async () => {
+    // 刻意不等于 uiStore 的默认档（medium）：撞在一起时删掉 bootstrap 那一行照样绿
+    useUiStore.setState({ readingFontSize: 'medium' });
+    const orig = BOOT.settings;
+    BOOT.settings = { ...SETTINGS, ui: { ...SETTINGS.ui, readingFontSize: 'small' } };
+    try {
+      await bootstrap();
+    } finally {
+      BOOT.settings = orig;
+    }
+    expect(useUiStore.getState().readingFontSize).toBe('small');
+  });
+
+  it('改档位触发 settings.update，负载里是新档位', async () => {
+    await bootstrap();
+    await settle();
+    expect(useUiStore.getState().readingFontSize).toBe('medium');
+    const from = calls.length;
+
+    useUiStore.getState().setReadingFontSize('large');
+    await settle();
+
+    const sent = settingsUpdatesSince(from);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const args of sent) expect(args.ui.readingFontSize).toBe('large');
+  });
+});
+
+describe('update.status 广播接进了 updateStore', () => {
+  /**
+   * 更新横幅唯一的数据源。自动检查、「立即检查」都只在主进程里改状态，渲染层靠这条广播
+   * 跟上；只接了启动时那次 `update.getStatus` 的话，横幅永远停在启动那一刻。
+   */
+  it('主进程推一帧「有更新」，store 就是那一帧，横幅判据随之翻成要显示', async () => {
+    useUpdateStore.setState({ status: null });
+    await bootstrap();
+    await settle();
+    // 先证明启动那次 getStatus 已经落地、且与下面那帧不同 —— 否则「等于推来的那帧」
+    // 可能只是 getStatus 的回复恰好长得一样。
+    expect(useUpdateStore.getState().status).toEqual(UPDATE_IDLE);
+    expect(shouldShowBanner(useUpdateStore.getState().status)).toBe(false);
+
+    const pushed: UpdateStatus = {
+      ...UPDATE_IDLE,
+      check: { phase: 'ok' },
+      update: { kind: 'available', candidateId: 'c1', label: 'KyDog 9.9.9' },
+    };
+    fire('update.status', pushed);
+
+    expect(useUpdateStore.getState().status).toEqual(pushed);
+    expect(shouldShowBanner(useUpdateStore.getState().status)).toBe(true);
   });
 });

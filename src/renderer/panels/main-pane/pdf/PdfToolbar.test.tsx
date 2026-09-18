@@ -1,0 +1,119 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mount } from '../../../../test-support/miniReact';
+import type { TranslatedDoc } from '../../../../shared/zhSidecar';
+
+/**
+ * **工具栏翻译键的文案与可按性**（原先由 e2e/57「翻译键六态」与「Notice——几何越界丢块、
+ * 没写源摘要…都不禁用对照」守着）。
+ *
+ * 真挂载一遍 PdfToolbar（miniReact），读 `pdf-translate` 那颗 IconButton 收到的 `tooltip` 与
+ * `disabled` —— 断言的是**组件接线之后**按钮拿到了什么，不是 TRANSLATE_TIP 这张表自己长什么样：
+ * 表对了、组件却接错了态（比如拿 `translateBucket` 之外的东西推态）也会在这里红。
+ *
+ * 守不住的：IconButton 把 tooltip 写成 `aria-label` 那一步（子组件在 miniReact 里不展开）。
+ *
+ * 桶走 store 的 action 建，与 PdfFileTab 的 loadTranslation 写桶是同一条路：
+ *  - none：`pdf.translation.load` 对 ENOENT 回 `{ doc: null }` → setLoaded(null)；
+ *  - invalid：边车 JSON 坏了，主进程抛 → setLoadError；
+ *  - mismatch：摘要对不上 → setLoaded(doc, 'mismatch')；
+ *  - ready：摘要对得上 → setLoaded(doc, 'ok')。
+ * 四个都先 setLayoutReady(true)：页尺寸没预取完时一律是 pending（禁用），那是另一态。
+ */
+
+vi.mock('react', async (importOriginal) => {
+  const real = await importOriginal<typeof import('react')>();
+  const mini = await import('../../../../test-support/miniReact');
+  return { ...real, ...mini.reactHooks } as unknown as typeof real;
+});
+
+// 同 narrowMode.test.tsx：两个 store 只把 React 订阅那一层换成直读，getState / setState 用真身。
+vi.mock('./pdfTranslationStore', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./pdfTranslationStore')>();
+  const real = mod.usePdfTranslationStore;
+  const hook = ((sel?: (s: unknown) => unknown) => (sel ? sel(real.getState()) : real.getState())) as unknown as typeof real;
+  Object.assign(hook, real);
+  return { ...mod, usePdfTranslationStore: hook };
+});
+
+vi.mock('./pdfAnnotationStore', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./pdfAnnotationStore')>();
+  const real = mod.usePdfAnnotationStore;
+  const hook = ((sel?: (s: unknown) => unknown) => (sel ? sel(real.getState()) : real.getState())) as unknown as typeof real;
+  Object.assign(hook, real);
+  return { ...mod, usePdfAnnotationStore: hook };
+});
+
+const { PdfToolbar } = await import('./PdfToolbar');
+const { usePdfTranslationStore } = await import('./pdfTranslationStore');
+
+const T = '/proj/paper.pdf';
+const st = () => usePdfTranslationStore.getState();
+
+function zh(source?: { sha256: string; bytes: number }): TranslatedDoc {
+  return {
+    version: 1, pdf: 'paper.pdf', lang: { in: 'en', out: 'zh' }, source,
+    blocks: [{ id: 'ok1', page: 1, x: 60, y: 200, width: 460, height: 120, fontSize: 11, kind: 'text', source: 'a', target: '甲' }],
+  };
+}
+
+/** 挂一次工具栏，取翻译键收到的两个 prop。 */
+function translateKey(): { tooltip: unknown; disabled: unknown } {
+  const m = mount(PdfToolbar, {
+    tabId: T, pageLabel: '1 / 1', zoomPct: 100,
+    onToggleDual: () => {}, onRetranslate: () => {}, onRetranslatePage: () => {}, onRetryFailed: () => {}, onDelete: () => {},
+  });
+  const btn = m.find('pdf-translate');
+  return { tooltip: btn.props.tooltip, disabled: btn.props.disabled };
+}
+
+beforeEach(() => {
+  usePdfTranslationStore.setState({ buckets: {} });
+});
+
+describe('翻译键：四种边车状态各自的文案，全都可按（e2e/57「翻译键六态」）', () => {
+  it('页尺寸还没预取完（pending）→ 禁用：下面几条的 disabled === false 因此不是 prop 缺席撞出来的', () => {
+    st().setLoaded(T, zh({ sha256: 'aa', bytes: 10 }), 'ok', 0);
+    expect(translateKey()).toEqual({ tooltip: '翻译对照 · 正在准备页面', disabled: true });
+    // 同一个桶，页尺寸到位 → 可按
+    st().setLayoutReady(T, true);
+    expect(translateKey()).toEqual({ tooltip: '翻译对照 · L', disabled: false });
+  });
+
+  it('没有译文（none）→「翻译 · L」', () => {
+    st().setLayoutReady(T, true);
+    st().setLoaded(T, null, 'unknown', 0);
+    expect(translateKey()).toEqual({ tooltip: '翻译 · L', disabled: false });
+  });
+
+  it('边车结构坏了（invalid）→「重新翻译 · L」', () => {
+    st().setLayoutReady(T, true);
+    st().setLoadError(T, 'Unexpected token b in JSON at position 1');
+    expect(translateKey()).toEqual({ tooltip: '重新翻译 · L', disabled: false });
+  });
+
+  it('摘要对不上当前 PDF（mismatch）→「重新翻译 · L」', () => {
+    st().setLayoutReady(T, true);
+    st().setLoaded(T, zh({ sha256: '0'.repeat(64), bytes: 1 }), 'mismatch', 0);
+    expect(translateKey()).toEqual({ tooltip: '重新翻译 · L', disabled: false });
+  });
+
+  it('摘要对得上（ready）→「翻译对照 · L」', () => {
+    st().setLayoutReady(T, true);
+    st().setLoaded(T, zh({ sha256: 'aa', bytes: 10 }), 'ok', 0);
+    expect(translateKey()).toEqual({ tooltip: '翻译对照 · L', disabled: false });
+  });
+});
+
+describe('翻译键：Notice 那两条「能用但要提示」不禁用对照（e2e/57「Notice——…都不禁用对照」）', () => {
+  it('几何越界丢了块（dropped > 0，摘要对得上）→ 仍是「翻译对照 · L」、可按', () => {
+    st().setLayoutReady(T, true);
+    st().setLoaded(T, zh({ sha256: 'aa', bytes: 10 }), 'ok', 1);
+    expect(translateKey()).toEqual({ tooltip: '翻译对照 · L', disabled: false });
+  });
+
+  it('边车没写源摘要（version unknown）→ 仍是「翻译对照 · L」、可按', () => {
+    st().setLayoutReady(T, true);
+    st().setLoaded(T, zh(), 'unknown', 0);
+    expect(translateKey()).toEqual({ tooltip: '翻译对照 · L', disabled: false });
+  });
+});

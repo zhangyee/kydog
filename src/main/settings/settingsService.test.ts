@@ -167,6 +167,14 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect(result.onboarding.completedAt).toBe(before.onboarding.completedAt);
   });
 
+  it('update(): ui 是局部合并 —— 只改主题时 locale 与其余 ui 字段原样留着（落盘也是）', async () => {
+    await svc.update({ ui: { locale: 'en', readingFontSize: 'large' } });
+    const result = await svc.update({ ui: { theme: 'midnight' } });
+    expect(result.ui).toMatchObject({ theme: 'midnight', locale: 'en', readingFontSize: 'large' });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.ui).toMatchObject({ theme: 'midnight', locale: 'en', readingFontSize: 'large' });
+  });
+
   it('update(): patch 混入 updates 被过滤（守住不变式，spec §7）', async () => {
     await svc.withLock(async (cur) => ({
       next: { ...cur, updates: { autoCheck: false, dismissedCandidateId: 'keep-me' } },

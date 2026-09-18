@@ -200,9 +200,14 @@ describe('ABOUT_DOCS / ABOUT_LICENSES', () => {
     //   通常每天至多一次 —— 频率是省流量的约定而不是承诺（写日期失败 / 时钟回拨 /
     //     同日删除后继续参与都会再发一次）。说死成「每天至多一次」就是一句实现兑现
     //     不了的话，而这份文档的全部价值就是它每一句都当真。
+    //   kydog-analytics.yeezhang.im —— 数据发往哪里。收集方的真实域名，用户要能拿它去
+    //     对照抓包、配防火墙；只说「发给开发者」等于没说。
+    //   本数据库永不执行 Time Travel 恢复 —— 运维承诺原句。它是 Time Travel 那一节唯一的
+    //     实质内容：只交代「有恢复窗口」而不承诺不用它，删除就只是一句空话。
     for (const must of [
       'Cloudflare', '180 天', '7 至 30 天', 'Time Travel', '纯随机', '默认为勾选',
       '关于 → 隐私与统计', '~/.kydog/install-id', '~/.kydog/last-beacon', '通常每天至多一次',
+      'kydog-analytics.yeezhang.im', '本数据库永不执行 Time Travel 恢复',
     ]) {
       expect(ABOUT_PRIVACY, `隐私说明缺少必须披露的内容：${must}`).toContain(must);
     }
