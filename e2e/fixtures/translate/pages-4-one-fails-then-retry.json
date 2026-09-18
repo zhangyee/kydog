@@ -3,7 +3,9 @@
   "2": [
     { "text": "1 | text", "stopReason": "stop" },
     { "text": "占位内容用来把这条测试响应的原始文本撑到三百字以上，好让悬停提示里的原因串真的宽到能撑爆容器，这段话本身没有实际意义，只是重复用来凑字数：本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、本句仅用于把响应文本撑长、这条响应故意不是 id 头，parseTranslations 会抛 GroupError（第一次尝试）", "stopReason": "stop" },
-    { "text": "这条同样不是 id 头，重试一次仍失败（第二次尝试）", "stopReason": "stop" }
+    { "text": "这条同样不是 id 头，重试一次仍失败（第二次尝试）", "stopReason": "stop" },
+    { "text": "1 | text", "stopReason": "stop" },
+    { "text": "g1\n第二页的译文（重试之后）\n%%\n", "stopReason": "stop" }
   ],
   "3": [{ "text": "1 | text", "stopReason": "stop" }, { "text": "g1\n第三页的译文\n%%\n", "stopReason": "stop" }],
   "4": [{ "text": "1 | text", "stopReason": "stop" }, { "text": "g1\n第四页的译文\n%%\n", "stopReason": "stop" }]

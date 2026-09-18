@@ -1291,8 +1291,8 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // 待实测（浏览器行为假设，不算关键决策；pageWindow.ts 空间上界那段注释里是同一个假设，两处
   // 都待验，判据相同）：tab 被 display:none 藏起来时 Chromium 同样会触发这个 ResizeObserver
   // 回调、且 clientHeight 读数为 0。仓库里目前没有覆盖它的用例——e2e/ 下没有「开两个 file tab、
-  // 切走再切回同一个 PDF tab」这条路径，唯一现成的切 tab 用例是 HTML 的
-  // （e2e/46-html-tab.spec.ts:579 附近）。判据：开两个 file tab、切到另一个 tab 让这个 PDF tab
+  // 切走再切回同一个 PDF tab」这条路径（HTML 那边切 tab 的焦点由 HtmlFileTab.test.tsx 守，
+  // 不走真布局，参考不了）。判据：开两个 file tab、切到另一个 tab 让这个 PDF tab
   // 变成 display:none，隐藏期间对它的滚动容器读 el.clientHeight 应为 0，且能观察到
   // ResizeObserver 回调确实又跑了一次。若假设成立，那是「没有视口」而不是「视口很小」，
   // computeWindow 的空间上界会让窗口退到只剩必保页；不成立（回调不触发，或 clientHeight 不是

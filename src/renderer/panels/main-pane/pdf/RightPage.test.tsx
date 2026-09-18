@@ -23,7 +23,7 @@ const { coverRect } = await import('./blockRect');
 
 const SIZE = { w: 595, h: 842 };
 const BASELINE = 400;
-/** 同 e2e/57 的 DESC_BLOCK：一行带降部的字，边车里写了墨迹框。 */
+/** 一行带降部的字，边车里写了墨迹框（原 e2e/57 的 DESC_BLOCK，那条 e2e 已并进这里的单测）。 */
 const DESC: Block = {
   id: 'desc', page: 1, x: 78, y: BASELINE - 14, width: 120, height: 14, fontSize: 14, kind: 'text',
   source: 'gypq gypq gypq', target: '降部', ink: { top: BASELINE - 0.718 * 14, bottom: BASELINE + 0.207 * 14 },
