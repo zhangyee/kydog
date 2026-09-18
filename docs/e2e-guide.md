@@ -63,6 +63,11 @@ e2e 只用来证明单测证明不了的事：
 - **悬停出按钮要反复施加**：单发 `hover()` 没有到达回执，CI 上丢过。放进 poll，锚定按钮的 computed
   `pointer-events`（范例：`18-projects-sidebar-actions` 的 `reveal`）。
 - **沙箱 iframe 的键盘**：一次启动里只有第一次按键可靠送达，要多按先在 frame 里真点一下武装投递（`46-html-tab` 文件头 ⚠️）。
+- **新建对话要等它真的切过去**：`thread.create` 返回之前页面上还是上一个对话的输入框，这时填字会填进旧的那个。
+  用 `helpers.ts` 的 `newThread()`（等输入框根节点的 `data-thread-id` 换成新的）。
+- **⌘S 之前先等脏标记**（`tab-dirty-<路径>`）：打完字立刻保存，可能赶在编辑器记下修改之前。
+- **拖动用小步**：每步不超过命中区的一半，指针一直留在被拖的元素上，不依赖合成输入下的指针捕获
+  （Windows runner 上大步拖分隔线只跟上了第一步）。
 - **一个定位器可能命中多个**：开过的 tab 编辑器仍挂在 DOM 里（用 `locator('visible=true')`）；按 URL 认 webContents 要唯一。
 - **否定断言在同一条 `test()` 里要有正向证明**（CLAUDE.md）。合并成串行以后，上一条 `test()` 里的正向不算。
 - **夹具字段逐个翻面**（CLAUDE.md）。
@@ -73,5 +78,9 @@ e2e 只用来证明单测证明不了的事：
 2. 翻面：把被测行为改坏一次，确认它红；改回来。
 3. 新 spec，或改了环境相关的东西：打 tag 之前 `gh workflow run release.yml --ref <分支>` 在三个平台演练一遍
    （演练不会发版：release job 只认 tag push）。
-4. CI 红了：先下载 `e2e-test-results-*` artifact 看 trace 与报错里的实际数值，在本机钉成同样的环境复现；
-   复现不了就不下结论。只有已证实的纯基建抖动（如打 dmg 时 `hdiutil detach` 失败）才 `gh run rerun --failed`。
+4. CI 红了：先下载 `e2e-test-results-*` artifact 看报错里的实际数值与页面快照（`error-context.md`），在本机
+   钉成同样的环境复现；复现不了就不下结论。失败信息里带上实际数值与现场（宽度、命中的元素、截图尺寸），
+   下一轮就能直接定位。只有已证实的纯基建抖动（打 dmg 时 `hdiutil detach` 失败、GitHub 下载 504）才
+   `gh run rerun --failed`。
+5. 只在某个平台上、重试才过的红，先查是不是产品问题：Windows 上保存偶尔「无法写入」就是这么查出来的
+   （目标被别的进程短暂占用时 rename 失败，已在 `atomicWrite.ts` 里退避重试）。
