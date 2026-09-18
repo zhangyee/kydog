@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import type { AskLocale } from './askAnswers';
 import { ASK_TOOL_NAME } from '../../shared/askQuestion';
-import type { FixtureFile, FixtureEvent } from '../../../e2e/fixtures/fixture.types';
+import { pickFixtureEvents, type FixtureFile, type FixtureEvent } from '../../../e2e/fixtures/fixture.types';
 
 export type FakeSessionListener = (event: { type: string; [k: string]: unknown }) => void;
 
@@ -63,14 +63,19 @@ export async function createFixtureSession(
     subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
     abort() { aborted = true; cancelPendingWait?.(); toolAbort?.abort(); },
     async cleanup() { listeners.clear(); },
-    async prompt() {
+    async prompt(content) {
+      // 先挑剧本：认不到就在发出任何事件之前抛（AgentService 那边按这一轮出错收口）。
+      const events = pickFixtureEvents(file, content);
+      // 中止只作用于它那一轮。不复位的话，同一个对话里停过一次，之后每一轮的事件都会被
+      // 下面的 `aborted` 判断整份吞掉 —— 真实 pi 那条路上没有这回事。
+      aborted = false;
       toolAbort = new AbortController();
       // Accumulate tool chunks so tool_end can embed them in result
       const toolChunks = new Map<string, string>();
       // 必须用真实 threadId：broker 按 threadId 索引 pending，
       // renderer 发来的 ask.submit / ask.cancel 带的就是它。
       const askTool = createAskUserQuestionTool(threadId, askShared, locale);
-      for (const evt of file.events) {
+      for (const evt of events) {
         if (aborted && evt.type !== 'agent_end') continue;
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, evt.after_ms);
