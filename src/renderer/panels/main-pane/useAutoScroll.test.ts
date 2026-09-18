@@ -60,11 +60,17 @@ function scroller(opts: { scrollHeight: number; clientHeight: number }) {
     away: () => el.scrollHeight - el.clientHeight - el.scrollTop,
     /** 内容长高（流式输出、工具输出展开……）。 */
     grow: (px: number) => { el.scrollHeight += px; },
-    /**
-     * 用户滚到某处：改位置并派发 scroll。浏览器里 scroll 事件是下一帧才派发的，
-     * 这里合成一步 ——「改了位置、事件还没到就先渲染了一次」那条已知竞态不在这份用例的范围里。
-     */
+    /** 内容变矮（折叠处理过程……）：浏览器会把超出新上界的 scrollTop 夹下来，这里照做。 */
+    shrink: (px: number) => { el.scrollHeight -= px; el.scrollTop = Math.min(el.scrollTop, el.scrollHeight - el.clientHeight); },
+    /** 用户滚到某处：改位置并**当场**派发 scroll。 */
     userScrollTo: (v: number) => { el.scrollTop = v; for (const fn of listeners) fn(); },
+    /**
+     * 用户滚到某处，但 scroll 事件**还没派发**。浏览器里 scroll 事件是下一帧才到的，
+     * 这中间流式输出完全可能先提交一次渲染 —— 下面「竞态」那几条用例就停在这一步。
+     */
+    scrollWithoutEvent: (v: number) => { el.scrollTop = v; },
+    /** 补派那次迟到的 scroll 事件。 */
+    flushScrollEvent: () => { for (const fn of listeners) fn(); },
     listeners: () => listeners.size,
   };
 }
@@ -141,6 +147,62 @@ describe('createStickyScroll：贴底跟随的判定', () => {
 });
 
 /**
+ * 已知竞态：scrollTop 被改了（用户第一下滚轮、程序赋值），scroll 事件要到下一帧才派发；这中间
+ * 流式输出提交了一次渲染，afterRender 若还拿旧的 sticky 判，就把用户刚滚走的位置拉回底部
+ * （e2e/29 在 CI 上稳定复现过：期望 scrollTop 0，实际被拉回 476）。
+ * 判据是协议层事实：scrollTop 与状态机自己上一次写入 / 观察到的不一样 = 有人动过它。
+ */
+describe('createStickyScroll：scroll 事件还没到时先渲染了一次', () => {
+  it('第一下滚动的事件还没到、先来了一次渲染：按改后的位置判定，不拉回底部', () => {
+    const s = scroller({ scrollHeight: 1000, clientHeight: 400 });
+    const ctl = createStickyScroll();
+    ctl.jumpToBottom(s.el);
+    expect(ctl.sticky).toBe(true);
+
+    s.scrollWithoutEvent(0);   // 用户翻到顶，事件还在路上
+    s.grow(300);               // 同一帧里流式输出提交了一次渲染
+    ctl.afterRender(s.el);
+    expect(s.el.scrollTop).toBe(0);
+    expect(ctl.sticky).toBe(false);
+
+    // 迟到的事件随后到：结论不变，之后继续长高也不动它
+    s.flushScrollEvent();
+    ctl.onScroll(s.el);
+    s.grow(300);
+    ctl.afterRender(s.el);
+    expect(s.el.scrollTop).toBe(0);
+  });
+
+  it('位置动了但仍在阈值内、同一帧内容又长高：按长高之前的内容判定，照旧跟随', () => {
+    const s = scroller({ scrollHeight: 1000, clientHeight: 400 });
+    const ctl = createStickyScroll();
+    ctl.jumpToBottom(s.el);
+    s.scrollWithoutEvent(s.el.scrollTop - 10);   // 只往上挪了 10 px，离底 10 < 阈值
+    s.grow(500);
+    // 前提：按长高之后的内容看已经离底很远 —— 用它判的话会误判成翻走
+    expect(s.away()).toBeGreaterThan(STICKY_THRESHOLD_PX);
+    ctl.afterRender(s.el);
+    expect(s.away()).toBe(0);
+    expect(ctl.sticky).toBe(true);
+  });
+
+  it('内容变矮、浏览器把 scrollTop 夹下来：这不是用户翻走，照旧跟随', () => {
+    const s = scroller({ scrollHeight: 1000, clientHeight: 400 });
+    const ctl = createStickyScroll();
+    ctl.jumpToBottom(s.el);
+    const top = s.el.scrollTop;
+    s.shrink(300);
+    // 前提：位置确实被夹动了（否则下面测不到「位置变了」那条分支）
+    expect(s.el.scrollTop).toBe(top - 300);
+    ctl.afterRender(s.el);
+    expect(ctl.sticky).toBe(true);
+    s.grow(200);
+    ctl.afterRender(s.el);
+    expect(s.away()).toBe(0);
+  });
+});
+
+/**
  * 接线那一半：真的跑 `useAutoScroll`，看 React 的几个时机有没有接到状态机上 ——
  * scroll 事件 → 反推 sticky，每次渲染后 → 贴底才跟随，tailSignal / threadId 变了 → 跳底。
  *
@@ -200,6 +262,16 @@ describe('useAutoScroll：React 的时机接到状态机上', () => {
     s.grow(300);
     m.rerender({ tail: 2, threadId: 't1' });
     expect(s.away()).toBe(0);
+  });
+
+  it('滚动事件还没到时先重渲染了一次（流式输出）：不把刚滚走的位置拉回底部', () => {
+    const s = scroller({ scrollHeight: 2000, clientHeight: 400 });
+    const m = mountHook(s, { tail: 1, threadId: 't1' });
+    expect(s.away()).toBe(0);
+    s.scrollWithoutEvent(0);
+    s.grow(300);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(s.el.scrollTop).toBe(0);
   });
 
   it('换 thread → free-read 里也跳底', () => {
