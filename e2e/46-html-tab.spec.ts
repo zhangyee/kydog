@@ -474,15 +474,24 @@ test.describe('46-html-tab 真模板', () => {
 
   const templateFrame = () => launched.page.frameLocator(testIdSelector(`html-frame-${templatePath}`));
 
-  /** 瞬移回文档顶。behavior: 'instant' 是必须的：html 上写了 scroll-behavior: smooth，'auto' 在这份文档里等同 smooth。 */
+  /**
+   * 瞬移回文档开头。behavior: 'instant' 是必须的：html 上写了 scroll-behavior: smooth，'auto' 在这份文档里等同 smooth。
+   *
+   * 落点**不断言 === 0**：html 上是 scroll-snap-type: y proximity，滚到 0 之后会被吸到最近的吸附点
+   * （CI 三平台实测停在 10；本机常常赶在吸附落地之前就读到 0，所以本机绿、CI 红）。两个调用方要的
+   * 都只是「在文档开头」，判据取页面自己的布局：还没到第二节 #primer 的起点。
+   */
   async function scrollToTop() {
     const frame = templateFrame();
     await frame.locator('body').evaluate((el) => {
       el.ownerDocument.defaultView!.scrollTo({ top: 0, behavior: 'instant' });
     });
-    await expect
-      .poll(() => frame.locator('body').evaluate((el) => el.ownerDocument.defaultView!.scrollY))
-      .toBe(0);
+    await expect.poll(() => frame.locator('body').evaluate((el) => {
+      const doc = el.ownerDocument;
+      const win = doc.defaultView!;
+      const primerTop = doc.querySelector('#primer')!.getBoundingClientRect().top + win.scrollY;
+      return win.scrollY < primerTop ? 'top' : JSON.stringify({ scrollY: win.scrollY, primerTop });
+    })).toBe('top');
   }
 
   // 这条**取代了 v4 那条「顶部进度条随滚动变宽」**：进度条 v5 整个删掉了

@@ -1358,20 +1358,37 @@ test.describe('57 · 启动二：分栏几何、滚动同步、覆盖式滚动�
     const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
     await pinchTo(page, pdfPath, startPct, 200);
 
-    // 把分隔线往左拖 150 px：两栏从此不等宽，而**内容**宽两栏仍逐字段相同（同一份 sizes ×
-    // 同一个 layer.scale）。这正是「不等宽时 scrollLeft 原样相等」这条约定要面对的局面。
+    // 把分隔线一路拖到 wrapper 最左边之外：clampSplit 把左栏钉在 MIN_PANE_PX，两栏从此不等宽，
+    // 而**内容**宽两栏仍逐字段相同（同一份 sizes × 同一个 layer.scale）。这正是「不等宽时
+    // scrollLeft 原样相等」这条约定要面对的局面。拖到钉死的终点、而不是「往左拖 150」：
+    // 后者落点取决于 wrapper 宽（1024 窗口下本来就会被下限截住，余量只有二三十 px），
+    // 拖到钉死处则 DOM 必须逐像素等于纯函数的结果，与窗口多宽无关（同 1732 的判据）。
     const c = await dividerCenter(pane);
+    // 按下之前先确认这个点上真的是分隔线：上面刚滚过纵向，覆盖式滚动条的拇指会浮现约 1 s，
+    // 它贴着左栏右缘。按在拇指上拖的就是滚动条，不是分隔线。
+    await expect.poll(() => page.evaluate(({ x, y }) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit?.closest('[data-testid="pdf-pane-divider"]') ? 'divider'
+        : `${hit?.tagName ?? null}.${hit?.className ?? ''}[${hit?.getAttribute('data-testid') ?? ''}]`;
+    }, c), { message: '分隔线中心点应当命中分隔线本身' }).toBe('divider');
+    const before = (await paneBoxWidths(page, paneSel))!;
+    const farLeft = before.wrapLeft - 400;
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
-    await page.mouse.move(c.x - 150, c.y, { steps: 6 });
+    await page.mouse.move(farLeft, c.y, { steps: 8 });
     await page.mouse.up();
+    const want = paneWidths(before.wrapWidth, clampSplit(farLeft, before.wrapLeft, before.wrapWidth));
     await expect.poll(
       async () => {
         const w = await paneBoxWidths(page, paneSel);
-        return w ? w.right - w.left : 0;
+        return w ? Math.round(w.left) : null;
       },
-      { timeout: 5000, message: '等分隔线拖动落地：右栏应当比左栏宽出约 300' },
-    ).toBeGreaterThan(200);
+      { timeout: 5000, message: `等分隔线拖到最左落地：左栏应当钉在 ${JSON.stringify(want)}（拖之前 ${JSON.stringify(before)}）` },
+    ).toBe(Math.round(want.left));
+    const unequal = (await paneBoxWidths(page, paneSel))!;
+    expect(unequal.right, `右栏宽应当就是 paneWidths(clampSplit(…)) 算出来的那个数 ${JSON.stringify(unequal)}`)
+      .toBeCloseTo(want.right, 0);
+    expect(unequal.right - unequal.left, '两栏确实不等宽，窄的是左栏').toBeGreaterThan(0);
 
     // 两栏都得有得横向滚
     await expect.poll(
@@ -1423,10 +1440,10 @@ test.describe('57 · 启动二：分栏几何、滚动同步、覆盖式滚动�
     const FOCAL = { x: 40, y: 120 };  // 贴着宽栏左边缘取焦点：那里离宽栏自己的滚动上界最远
     const readout = pane.getByTestId('pdf-readout');
 
-    // 起点是上一条留下的状态：缩放 200% 附近、分隔线往左拖过 150（左栏窄、右栏宽，可视宽差约
-    // 300）、窄栏横向滚到头、纵向在文档开头。前提逐个重新断一遍，不白信上一条。
+    // 起点是上一条留下的状态：缩放 200% 附近、分隔线拖到了最左（左栏钉在 MIN_PANE_PX、右栏宽，
+    // 两栏宽由上一条逐像素断过）、窄栏横向滚到头、纵向在文档开头。前提逐个重新断一遍，不白信上一条。
     const widths = (await paneBoxWidths(page, paneSel))!;
-    expect(widths.right - widths.left, `两栏应当已经不等宽 ${JSON.stringify(widths)}`).toBeGreaterThan(200);
+    expect(widths.right - widths.left, `两栏应当已经不等宽 ${JSON.stringify(widths)}`).toBeGreaterThan(0);
 
     // 窄栏滚到自己的上界，宽栏被夹在自己的上界上 —— 两栏 scrollLeft 从此不等（上一条已经做过，
     // 已在上界上时这一句什么都不改变）
