@@ -97,6 +97,7 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     if (h.kind === 'quarantined') {
       expect(h.backup.startsWith('kydog.json.unreadable-'), `实际是 ${h.backup}`).toBe(true);
       expect(h.backup, '路径里有用户名，不该出现在界面上').not.toContain('/');
+      expect(h.backup, 'Windows 的路径分隔符是反斜杠').not.toContain('\\');
     }
   });
 

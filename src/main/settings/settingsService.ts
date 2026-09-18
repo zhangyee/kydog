@@ -1,4 +1,5 @@
 // src/main/settings/settingsService.ts
+import path from 'node:path';
 import { lock } from 'proper-lockfile';
 import * as paths from '../persist/paths';
 import {
@@ -85,7 +86,7 @@ const FILE_LOCK_OPTS = (): Parameters<typeof lock>[1] => ({
  */
 function toHealth(read: SettingsRead): SettingsHealth {
   if (read.kind === 'quarantined') {
-    return { kind: 'quarantined', backup: read.backup.slice(read.backup.lastIndexOf('/') + 1) };
+    return { kind: 'quarantined', backup: path.basename(read.backup) };
   }
   if (read.kind === 'unreadable') return { kind: 'unreadable', why: read.why };
   return { kind: 'ok' };
