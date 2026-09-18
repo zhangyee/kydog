@@ -28,6 +28,7 @@ import { getUpdateService, openDownloadPage } from './update/assemble';
 import { getTelemetryService, telemetryStatus } from './telemetry/assemble';
 import { getIdentity } from './harness/identityService';
 import { onboardingService } from './harness/onboardingService';
+import { harnessService } from './harness/harnessService';
 import { readManifest, deleteManifest, discardCorruptManifest } from './harness/manifest';
 import { mapSystemLocale } from './harness/locale';
 import { logger } from './log';
@@ -100,6 +101,11 @@ export function registerAllHandlers(): void {
     if (result.ok) await syncTelemetryFromSettings();
     return result;
   });
+
+  registerHandler('harness.status', () => harnessService.status());
+  registerHandler('harness.apply', (args) => harnessService.apply(args.choices));
+  registerHandler('harness.read', (args) => harnessService.read(args.name));
+  registerHandler('harness.write', (args) => harnessService.write(args));
 
   registerHandler('ui.saveViewState', (args) => { viewStateStore.set(args.state); });
 

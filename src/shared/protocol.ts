@@ -2,6 +2,7 @@ import type {
   BootstrapState, Project, Thread, Message, FsNode, SettingsFile, SettingsUpdateArgs, SkillSyncHealth, LocaleSetOutcome,
   SkillEntry, ToolEntry, SkillPreview, SkillCommitArgs, SkillCommitResult,
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
+  HarnessFileName, HarnessFileStatus, HarnessChoice, HarnessApplyResult, HarnessReadResult, HarnessWriteResult,
   CenterViewState,
   TelemetryStatus,
   BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, ViewportMode, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
@@ -186,7 +187,16 @@ export type RpcCall =
   | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
   | { method: 'ask.submit'; args: { threadId: string; toolCallId: string; answers: AskAnswer[] }; result: void }
   | { method: 'ask.cancel'; args: { threadId: string; toolCallId: string }; result: void }
-  | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult };
+  | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult }
+  // ── KyDog Harness：SOUL / USER / AGENTS 三份文件的模板更新与查看编辑 ──
+  // spec: docs/superpowers/specs/2026-09-17-harness-template-update-design.md
+  // 参数只收三个文件名、不收路径 —— file.writeText 不校验路径，这块不借它。
+  // status 有副作用：文件恰好等于当前模板时顺手补记状态（spec §3.2 R1）。
+  | { method: 'harness.status'; args: undefined; result: { files: HarnessFileStatus[] } }
+  | { method: 'harness.apply'; args: { choices: HarnessChoice[] }; result: { results: HarnessApplyResult[] } }
+  | { method: 'harness.read'; args: { name: HarnessFileName }; result: HarnessReadResult }
+  // 比较后写：磁盘现内容不等于 expected 就不写，把现内容带回去（null = 文件不存在）。
+  | { method: 'harness.write'; args: { name: HarnessFileName; content: string; expected: string | null }; result: HarnessWriteResult };
 
 export type RpcMethod = RpcCall['method'];
 
@@ -291,6 +301,10 @@ export const RPC_METHODS = [
   'ask.submit',
   'ask.cancel',
   'onboarding.resume',
+  'harness.status',
+  'harness.apply',
+  'harness.read',
+  'harness.write',
 ] as const satisfies readonly RpcMethod[];
 
 // 漏一条就在这里编译不过（Exclude 剩下的那个不是 never）。

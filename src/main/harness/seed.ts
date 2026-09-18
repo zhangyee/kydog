@@ -1,7 +1,9 @@
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import * as paths from '../persist/paths';
-import { harnessTemplates, type HarnessLocale } from './templates';
+import { harnessTemplate, type HarnessLocale } from './templates';
+import { readHarnessState, writeHarnessState, withHarnessLock } from './harnessState';
+import { HARNESS_FILE_NAMES, type HarnessFileName } from '../../shared/types';
 import { logger } from '../log';
 
 export type SeedInput = { locale: HarnessLocale; userName: string; agentName: string };
@@ -19,21 +21,31 @@ export function renderTemplate(tpl: string, names: { userName: string; agentName
 }
 
 export async function seedHarnessFiles(input: SeedInput, dir: string = paths.ROOT): Promise<SeedOutcome> {
-  const t = harnessTemplates(input.locale);
-  const files: Array<[string, string]> = [
-    ['SOUL.md', renderTemplate(t.soul, input)],
-    ['USER.md', renderTemplate(t.user, input)],
-    ['AGENTS.md', renderTemplate(t.agents, input)],
-  ];
-  const created: string[] = [];
-  const skipped: string[] = [];
-  for (const [name, content] of files) {
+  const files: Array<[HarnessFileName, string]> = HARNESS_FILE_NAMES.map((name) => [name, harnessTemplate(input.locale, name)]);
+  const created: HarnessFileName[] = [];
+  const skipped: HarnessFileName[] = [];
+  for (const [name, tpl] of files) {
     try {
-      await fsp.writeFile(path.join(dir, name), content, { encoding: 'utf8', flag: 'wx' });
+      await fsp.writeFile(path.join(dir, name), renderTemplate(tpl, input), { encoding: 'utf8', flag: 'wx' });
       created.push(name);
     } catch (err) {
       if ((err as { code?: string }).code === 'EEXIST') { skipped.push(name); continue; }
       throw err;
+    }
+  }
+  // 只为这次创建的记「写入时用的模板」（spec §3.3）；EEXIST 跳过的交给启动判定的 R1 / R4。
+  // 记不进去不让引导失败：文件已经等于当前模板，R1 下次会补记。
+  if (created.length > 0) {
+    try {
+      await withHarnessLock(async () => {
+        const s = await readHarnessState(dir);
+        for (const [name, tpl] of files) {
+          if (created.includes(name)) s.files[name] = { locale: input.locale, template: tpl, keptTemplateSha: null };
+        }
+        await writeHarnessState(s, dir);
+      });
+    } catch (err) {
+      logger.warn('harness.seed', 'record state failed', { err: String(err) });
     }
   }
   logger.info('harness.seed', 'seeded', { created, skipped, locale: input.locale });

@@ -4,6 +4,7 @@ import agentsZh from './templates/zh/AGENTS.md?raw';
 import soulEn from './templates/en/SOUL.md?raw';
 import userEn from './templates/en/USER.md?raw';
 import agentsEn from './templates/en/AGENTS.md?raw';
+import type { HarnessFileName } from '../../shared/types';
 
 export type HarnessLocale = 'zh' | 'en';
 export type HarnessTemplates = { soul: string; user: string; agents: string };
@@ -22,4 +23,11 @@ const TEMPLATES: Record<HarnessLocale, HarnessTemplates> = {
 
 export function harnessTemplates(locale: HarnessLocale): HarnessTemplates {
   return TEMPLATES[locale];
+}
+
+const KEY: Record<HarnessFileName, keyof HarnessTemplates> = { 'SOUL.md': 'soul', 'USER.md': 'user', 'AGENTS.md': 'agents' };
+
+/** 按落盘文件名取模板原文（占位符未替换）。 */
+export function harnessTemplate(locale: HarnessLocale, name: HarnessFileName): string {
+  return TEMPLATES[locale][KEY[name]];
 }
