@@ -69,10 +69,16 @@ export async function launchKydog(opts: {
     // 是 dpr 1，同一份 PDF 在两边画进 canvas 的像素数差一倍——凡是逐像素采样的判据（降部
     // 那条带、块内溢出）在开发机上采得到、在 CI 上就落进不足一个像素的亚像素里被抗锯齿抹平。
     // 判据本身没问题，是量它的分辨率被环境偷偷改了。钉住之后两边量的是同一张位图。
+    // -AppleShowScrollBars Always（仅 macOS）：把滚动条钉成常驻，理由同上。系统设置默认
+    // 「按鼠标或触控板自动」：有触控板的开发机是浮动滚动条（宽 0），CI 的 macOS runner 没有
+    // 触控板，画的是 15px 常驻滚动条（Windows 一直是常驻的）。凡是量到页面右缘的判据，两边
+    // 差的就是这一条滚动条 —— v0.4.0 的 tag run 上 61-browser 的 1:1 那条在 CI 停在 1275.11、
+    // 本机到 1280，就是它。这是 NSUserDefaults 的参数域，只作用于被启动的这个进程，不碰系统设置。
     args: [
       '.vite/build/main.js',
       '--force-prefers-no-reduced-motion',
       '--force-device-scale-factor=1',
+      ...(process.platform === 'darwin' ? ['-AppleShowScrollBars', 'Always'] : []),
       `--user-data-dir=${userDataDir}`,
     ],
     env,

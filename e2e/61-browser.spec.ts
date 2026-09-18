@@ -803,6 +803,9 @@ test.describe('61-browser', () => {
         // 站点自己的样式整份拿掉：它给 div 加的透明度会把「白」混成非白，探针判据就不作数了。
         document.querySelectorAll('style, link[rel="stylesheet"]').forEach((el) => el.remove());
         document.documentElement.style.setProperty('background', 'rgb(17, 85, 153)', 'important');
+        // 常驻滚动条（Windows、没有触控板的 macOS）的轨道是浅灰、每个通道 > 245，会被下面的
+        // 探针当成「白」。染成与底色同色，「夹具里唯一一块白在左上角」这个前提才在所有环境成立。
+        document.documentElement.style.setProperty('scrollbar-color', 'rgb(40, 40, 40) rgb(17, 85, 153)', 'important');
         document.body.style.cssText = 'margin:0;background:rgb(17,85,153)!important';
         const style = document.createElement('style');
         style.textContent = '.kydog-row{height:400px}'
@@ -857,6 +860,30 @@ test.describe('61-browser', () => {
         return { bounds, size, white, samples };
       }, { points, logical: LOGICAL_WIDTH });
 
+      type Shot = Awaited<ReturnType<typeof shoot>>;
+      /**
+       * 断像素一律**轮询到成立**，单次截图不下结论。`capturePage` 拿到的是合成器最近交出的那一帧，
+       * 不是主线程此刻的状态：切档、横移之后页面自己报的 scale / offset 已经到位，那一帧可能还是旧的
+       * （实测切回适配后 12ms 截到的仍是 1:1 下的行底色，127ms 才换过来）；页面刚载入时还可能一帧
+       * 都没有，`capturePage` 直接抛 UnknownVizError（v0.4.0 tag run 的 CI 上撞过）。
+       * `expect.poll` 只重试断言、不重试回调里的异常，所以截图的异常在这里接住、算作这一轮还没成立。
+       * 返回成立那一帧；超时则把最后一次采到的东西（或最后那个异常）带进失败信息。
+       */
+      const shootUntil = async (
+        points: Array<{ x: number; y: number }>,
+        ok: (s: Shot) => boolean,
+        message: string,
+      ): Promise<Shot> => {
+        let last: Shot | null = null;
+        await expect.poll(async () => {
+          let shot: Shot;
+          try { shot = await shoot(points); } catch (err) { return { ok: false, last: String(err) }; }
+          last = shot;
+          return { ok: ok(shot), last: { size: shot.size, white: shot.white, samples: shot.samples } };
+        }, { message }).toMatchObject({ ok: true });
+        return last as unknown as Shot;
+      };
+
       /** 往 view 里发原生 wheel。Electron 注入的 delta 与页面收到的符号相反：负值 = 视口往右 / 往下。 */
       const wheel = (deltaX: number, deltaY: number, times: number) => app.evaluate(async ({ BrowserWindow }, a) => {
         const win = BrowserWindow.getAllWindows()[0];
@@ -889,13 +916,13 @@ test.describe('61-browser', () => {
       };
 
       // ── 适配档：探针先证明自己认得出白，也看得见页面右侧 ──
-      const { bounds } = await shoot([]);
+      const { bounds } = await shootUntil([], () => true, '内置浏览器的 view 应当交出第一帧');
       expect(bounds.width, '舞台必须窄于 1280，1:1 才需要横移').toBeLessThan(LOGICAL_WIDTH);
       const e = bounds.width / LOGICAL_WIDTH;
-      const fitShot = await shoot([
+      const fitShot = await shootUntil([
         { x: Math.round(1200 * e), y: Math.round(350 * e) },
         { x: Math.round(100 * e), y: Math.round(100 * e) },
-      ]);
+      ], (sh) => isMagenta(sh.samples[0]) && isWhite(sh.samples[1]), '适配档那一帧应当画出右缘标记与左上角的白');
       expect(isMagenta(fitShot.samples[0]), '适配档应当把整幅 1280 压进舞台：x=1200 处的标记看得见').toBe(true);
       expect(isWhite(fitShot.samples[1]), '探针要认得出左上角那块白，否则下面「一个白像素都没有」是假绿').toBe(true);
       expect(fitShot.white).toBeGreaterThan(0);
@@ -912,9 +939,15 @@ test.describe('61-browser', () => {
       // ── 横移到 1280 右端 ──
       // wheel 的位移会被 page scale 折算（1:1 下一个 DIP 只走 1/scale 个 CSS 像素，实测），
       // 所以不预先算要发几下：一批批发，直到页面自己报「到右端了」。批数上限只是基础设施预算。
-      const rightEdge = async () => { const v = await vv(); return v.left + v.width; };
-      for (let batch = 0; batch < 60 && (await rightEdge()) <= LOGICAL_WIDTH - 1; batch++) await wheel(-40, 0, 10);
-      expect(await rightEdge(), '原生横向 wheel 应当把 visual viewport 推到 1280 的右端').toBeGreaterThan(LOGICAL_WIDTH - 1);
+      //
+      // 右缘要**连 visual viewport 自己的滚动条一起算**：`visualViewport.width` 不含滚动条，
+      // 常驻滚动条（Windows、没有触控板的 macOS，含 CI runner）在 1:1 下占 15 个仿真像素，
+      // `offsetLeft + width` 到头也只到 1280 − 15·舞台宽/1280（v0.4.0 tag run 上 CI 停在
+      // 1275.11，本机 -AppleShowScrollBars Always 复现出同一个数）。含滚动条的可见宽度 =
+      // 布局宽 / page scale，浮动滚动条下两种算法相等。
+      const rightEdge = async () => { const v = await vv(); return v.left + LOGICAL_WIDTH / v.scale; };
+      for (let batch = 0; batch < 60 && (await rightEdge()) < LOGICAL_WIDTH - 0.5; batch++) await wheel(-40, 0, 10);
+      expect(await rightEdge(), '原生横向 wheel 应当把 visual viewport 推到 1280 的右端').toBeCloseTo(LOGICAL_WIDTH, 0);
       const panned = await vv();
       expect(panned.left, '动的是 visual viewport').toBeGreaterThan(0);
       expect(panned.scrollX, '文档本身不宽于 1280，动的只是 visual viewport，不是页面 scrollX').toBe(0);
@@ -922,7 +955,10 @@ test.describe('61-browser', () => {
       const btn = { x: Math.round(1130 - panned.left), y: Math.round(100 - panned.top) };
       const edge = { x: Math.round(1200 - panned.left), y: Math.round(350 - panned.top) };
       expect(btn.x >= 0 && btn.x < bounds.width, `横移之后按钮应当落在舞台里（x=${btn.x}）`).toBe(true);
-      const pannedShot = await shoot([btn, edge]);
+      const pannedShot = await shootUntil(
+        [btn, edge], (sh) => isGreen(sh.samples[0]) && isMagenta(sh.samples[1]),
+        `横移之后那一帧应当画出右侧按钮与标记：${JSON.stringify({ panned, btn, edge, bounds })}`,
+      );
       const pannedFacts = JSON.stringify({ panned, btn, edge, bounds, size: pannedShot.size, samples: pannedShot.samples });
       expect(isGreen(pannedShot.samples[0]), `右侧按钮的绿色像素真的出现在可见区域：${pannedFacts}`).toBe(true);
       expect(isMagenta(pannedShot.samples[1]), `右侧标记也在它该在的位置：${pannedFacts}`).toBe(true);
@@ -954,8 +990,10 @@ test.describe('61-browser', () => {
       await page.getByTestId('browser-viewport-mode').click();
       await expect.poll(modeOf).toBe('fit');
       await expect.poll(async () => (await vv()).scale, { message: '切回适配 page scale 必须回 1' }).toBe(1);
-      const backShot = await shoot([{ x: Math.round(1200 * e), y: Math.round(350 * e) }]);
-      expect(isMagenta(backShot.samples[0]), '切回适配：整幅 1280 重新压进舞台').toBe(true);
+      await shootUntil(
+        [{ x: Math.round(1200 * e), y: Math.round(350 * e) }], (sh) => isMagenta(sh.samples[0]),
+        '切回适配：整幅 1280 重新压进舞台',
+      );
       expect(await layout()).toEqual(before);
     } finally {
       await teardown(launched);
