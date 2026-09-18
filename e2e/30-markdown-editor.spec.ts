@@ -94,6 +94,9 @@ test('30-markdown-editor: 双击打开 → 编辑 → ⌘S 保存往返', async 
   await editor.click();
   await page.keyboard.press('ControlOrMeta+End');
   await page.keyboard.type(' 追加文字');
+  // 等这一 tab 真的记成「有未保存修改」再存：打完字立刻 ⌘S，保存可能赶在脏标记之前、什么都不写
+  // （Windows runner 上见过盘上还是原文）。
+  await expect(page.getByTestId(`tab-dirty-${at('notes.md')}`)).toBeVisible();
   await page.keyboard.press('ControlOrMeta+s');
   await expect.poll(() => fs.readFile(at('notes.md'), 'utf8').catch(() => '')).toContain('追加文字');
 });

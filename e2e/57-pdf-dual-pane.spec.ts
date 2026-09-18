@@ -1346,18 +1346,44 @@ test.describe('57 · 启动二：分栏几何、滚动同步、覆盖式滚动�
       .toBeCloseTo(paneWidths(centered.wrapWidth, 0.5).left, 0);
   });
 
+});
+
+// 两栏不等宽那两条单独一次启动。它们接在启动二那几条（滚动同步、拖覆盖式滚动条拇指、拖分隔线
+// 与双击回正中）后面时，Windows runner 上往左拖分隔线一步都不动（三轮演练都是左栏停在 234，
+// macOS 两个 runner 都正常）；单独启动时（合并前就是这样）Windows 上是过的。前面哪一步留下了
+// 什么状态没在 Windows 上查清，先按已证实能过的条件跑。
+test.describe('57 · 启动三：两栏不等宽', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  let launched: LaunchedApp;
+  let page: Page;
+  let pdfPath = '';
+  let paneSel = '';
+  let pane: Locator;
+
+  test.beforeAll(async () => {
+    launched = await launchKydog({ seed: seedWith(writePaper) });
+    page = launched.page;
+    pdfPath = path.join(launched.kydogHome, 'proj', PDF_REL);
+    paneSel = testIdSelector(`file-pane-${pdfPath}`);
+    pane = page.getByTestId(`file-pane-${pdfPath}`);
+    await openPdf(page, pdfPath);
+    await enterDual(page, pane);
+  });
+
+  test.afterAll(async () => { await teardown(launched); });
+
   test('57-pdf-dual-pane: 两栏不等宽时内容左边缘仍对齐——窄栏滚到头，宽栏停在自己的上界', async () => {
-    // 起点：上一条双击回了等宽，缩放在 200% 附近，纵向停在拖拇指拖出来的位置。
-    // 纵向先回文档开头：下一条接着这条的状态，量的是第 1 页 canvas 上的内容坐标，第 1 页得在挂载
-    // 窗口里。放在横向拉开差距**之前**做，免得之后再动纵向时两栏带着不等的 scrollLeft 互写。
+    // 起点：刚进对照，两栏等宽。纵向先回文档开头（刚进来本来就在；下一条接着这条的状态，量的是
+    // 第 1 页 canvas 上的内容坐标，第 1 页得在挂载窗口里）。放在横向拉开差距**之前**做，免得之后
+    // 再动纵向时两栏带着不等的 scrollLeft 互写。
     await setPaneScroll(page, paneSel, 'left', 'top', 0);
     await expect.poll(
       async () => (await paneScroll(page, paneSel, 'right'))?.top,
       { timeout: 5000, message: '右栏应当跟回文档开头' },
     ).toBe(0);
 
-    // 捏到 200%：横向得先有得滚才谈得上「左边缘对齐」。起点本来就在 200% 附近（滚动同步那条捏的），
-    // 这里照样捏一次，不白信前面几条留下的缩放；真正的前提由下面那个 maxLeft 断。
+    // 捏到 200%：横向得先有得滚才谈得上「左边缘对齐」。真正的前提由下面那个 maxLeft 断。
     const startPct = readoutPct((await pane.getByTestId('pdf-readout').textContent())!);
     await pinchTo(page, pdfPath, startPct, 200);
 
