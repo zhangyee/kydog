@@ -40,14 +40,18 @@ function parse(raw: string): HarnessState | null {
   return { schemaVersion: 1, files };
 }
 
-/** 读不到 → 没有记录；结构不合 → 改名成 .bad、按没有记录处理（与 manifest 同一套做法）。 */
+/**
+ * 不存在 → 没有记录；结构不合 → 改名成 .bad、按没有记录处理（与 manifest 同一套做法）。
+ * 其余读错误（权限、被占用）**抛出去**，不当成「没有记录」：调用方下一步多半要写回，
+ * 拿一份空状态写回去，就把别的文件的记录（包括用户选过的「保持」）一起抹掉了。
+ */
 export async function readHarnessState(dir: string = paths.ROOT): Promise<HarnessState> {
   const file = path.join(dir, HARNESS_STATE_FILE);
   let raw: string;
   try { raw = await fsp.readFile(file, 'utf8'); }
   catch (err) {
-    if ((err as { code?: string }).code !== 'ENOENT') logger.warn('harness.state', 'read failed', { err: String(err) });
-    return empty();
+    if ((err as { code?: string }).code === 'ENOENT') return empty();
+    throw err;
   }
   const s = parse(raw);
   if (s) return s;

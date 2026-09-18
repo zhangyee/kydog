@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readHarnessState, writeHarnessState, withHarnessLock, HARNESS_STATE_FILE } from './harnessState';
@@ -40,6 +40,16 @@ describe('harnessState', () => {
     expect(await readHarnessState(dir)).toEqual({ schemaVersion: 1, files: {} });
     expect(existsSync(file())).toBe(false);
     expect(readFileSync(file() + '.bad', 'utf8')).toBe(raw);
+  });
+
+  it('不存在之外的读错误 → 抛出，不当成没有记录（否则下一次写回会抹掉别的记录）；文件在、读得出时照常', async () => {
+    const s = { schemaVersion: 1 as const, files: { 'AGENTS.md': { locale: null, template: null, keptTemplateSha: 'k'.repeat(64) } } };
+    await writeHarnessState(s, dir);
+    expect(await readHarnessState(dir)).toEqual(s);
+    rmSync(file());
+    mkdirSync(file());                                 // 读一个目录 → EISDIR
+    await expect(readHarnessState(dir)).rejects.toThrow();
+    expect(existsSync(file() + '.bad')).toBe(false);   // 不是「结构不合」，不改名
   });
 
   it('withHarnessLock：前一个没完，后一个不开始；前一个完了，后一个接着跑，两次改动都落盘', async () => {

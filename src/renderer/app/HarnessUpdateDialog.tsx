@@ -15,10 +15,11 @@ type Phase =
  * 启动时问一次：哪几份 harness 文件的模板更新了，逐份选「更新」或「保持」（spec §4 / §6.1）。
  *
  * 状态由这里挂载时主动去查，不等主进程推送 —— 推送会有「主进程先发、界面还没订阅」的竞态。
- * 查询落定（要问、不用问、查失败）就调 onSettled：AppShell 据此在根节点挂 data-harness-check，
- * e2e 断「对话框不在」之前先等它，不然查询还没回来断言就通过了。
+ * 查询落定就调 onSettled（查成了 ok = true，查失败 false）：AppShell 据此在根节点挂
+ * data-harness-check="done" | "failed"。e2e 断「对话框不在」之前先等 done —— 不等的话查询还没回来
+ * 断言就通过了；查失败也记成 done 的话，「状态坏了所以没弹框」会被当成「不用问」。
  */
-export function HarnessUpdateDialog({ onSettled }: { onSettled: () => void }) {
+export function HarnessUpdateDialog({ onSettled }: { onSettled: (ok: boolean) => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'checking' });
   const [choices, setChoices] = useState<Partial<Record<HarnessFileName, HarnessChoice['choice']>>>({});
 
@@ -29,12 +30,14 @@ export function HarnessUpdateDialog({ onSettled }: { onSettled: () => void }) {
         if (!alive) return;
         const available = files.filter((f) => f.template === 'available');
         setPhase(available.length > 0 ? { kind: 'asking', files: available } : { kind: 'idle' });
+        onSettled(true);
       })
       .catch((err) => {
         console.error('harness.status failed', err);
-        if (alive) setPhase({ kind: 'idle' });
-      })
-      .finally(() => { if (alive) onSettled(); });
+        if (!alive) return;
+        setPhase({ kind: 'idle' });
+        onSettled(false);
+      });
     return () => { alive = false; };
   }, [onSettled]);
 
@@ -94,8 +97,9 @@ export function HarnessUpdateDialog({ onSettled }: { onSettled: () => void }) {
           <div className="flex flex-col gap-2" style={{ marginBottom: 18 }}>
             {phase.results.map((r) => (
               <div key={r.name} data-testid={`harness-update-result-${r.name}`} className="font-sans" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-                <span className="font-mono" style={{ color: 'var(--color-ink)' }}>{r.name}</span>
-                <span style={{ color: 'var(--color-ink-soft)', marginLeft: 10 }}>{applyResultLine(r, phase.choices[r.name] ?? 'update')}</span>
+                {/* 文件名与结果分两行：结果里的备份路径长，同一行会在日期的连字符处折断 */}
+                <div className="font-mono" style={{ color: 'var(--color-ink)' }}>{r.name}</div>
+                <div style={{ color: 'var(--color-ink-soft)' }}>{applyResultLine(r, phase.choices[r.name] ?? 'update')}</div>
               </div>
             ))}
             <div className="font-serif italic" style={{ fontSize: 11.5, color: 'var(--color-ink-faint)', lineHeight: 1.6 }}>

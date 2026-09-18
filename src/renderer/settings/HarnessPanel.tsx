@@ -207,6 +207,8 @@ export function HarnessPanel() {
               data-testid="harness-editor"
               value={draft.text}
               onChange={(e) => setDraft(active, { ...draft, text: e.target.value })}
+              // 保存途中不许再打字：写成功后草稿整份清掉，这段时间打进去的字会跟着没了。
+              readOnly={busy}
               spellCheck={false}
               className="font-mono ky-scroll"
               style={{

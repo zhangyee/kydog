@@ -81,7 +81,7 @@ describe('seedHarnessFiles', () => {
   });
 
   it('状态写不进去不让播种失败（R1 下次会补记）', async () => {
-    mkdirSync(path.join(dir, HARNESS_STATE_FILE));   // 占住文件名：rename 到一个目录上必失败
+    mkdirSync(path.join(dir, HARNESS_STATE_FILE));   // 占住文件名：状态读不出、也写不进
     const r = await seedHarnessFiles({ locale: 'zh', userName: 'u', agentName: 'a' }, dir);
     expect(r.created.sort()).toEqual(['AGENTS.md', 'SOUL.md', 'USER.md']);
   });

@@ -28,10 +28,10 @@ export function AppShell() {
     return `${t.title} · ${t.projectPath.split(/[\\/]/).pop() ?? ''}`;
   });
 
-  // 启动时的模板更新询问查完了没有（spec §4）。挂在根节点上给 e2e 当正向记号：
+  // 启动时的模板更新询问查完了没有、查成了没有（spec §4）。挂在根节点上给 e2e 当正向记号：
   // 断「对话框不在」之前先等 done，不然查询还没回来，断言就已经通过了。
-  const [harnessChecked, setHarnessChecked] = useState(false);
-  const markHarnessChecked = useCallback(() => setHarnessChecked(true), []);
+  const [harnessCheck, setHarnessCheck] = useState<'pending' | 'done' | 'failed'>('pending');
+  const onHarnessChecked = useCallback((ok: boolean) => setHarnessCheck(ok ? 'done' : 'failed'), []);
 
   // ⌘N → new thread, ⌘O → open project folder. 聚焦输入框时不拦截。
   useEffect(() => {
@@ -64,7 +64,7 @@ export function AppShell() {
   }, []);
 
   return (
-    <div className="h-full flex flex-col" data-harness-check={harnessChecked ? 'done' : 'pending'}>
+    <div className="h-full flex flex-col" data-harness-check={harnessCheck}>
       <ThemeApplier />
       <ReadingFontSizeApplier />
       <TitleBar title={currentTitle} />
@@ -77,7 +77,7 @@ export function AppShell() {
           browser={<ErrorBoundary fallbackLabel="浏览器侧栏出错"><BrowserSidebar /></ErrorBoundary>}
         />
       </div>
-      <HarnessUpdateDialog onSettled={markHarnessChecked} />
+      <HarnessUpdateDialog onSettled={onHarnessChecked} />
       <ConfirmHost />
     </div>
   );

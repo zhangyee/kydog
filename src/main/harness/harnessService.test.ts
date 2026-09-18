@@ -108,6 +108,20 @@ describe('harnessService', () => {
       expect(results[0]).toMatchObject({ name: 'AGENTS.md', outcome: 'failed' });
       expect(read('AGENTS.md')).toBe(OLD_AGENTS);
       expect(read('AGENTS.md.bak-2026-09-17')).toBe(OLD_AGENTS);
+      // 写失败不留半截临时文件在 ~/.kydog/ 里（目录里只剩原文件与备份）
+      expect(readdirSync(dir).filter((n) => n.startsWith('AGENTS.md')).sort()).toEqual(['AGENTS.md', 'AGENTS.md.bak-2026-09-17']);
+    });
+
+    it('状态文件读不出来（不是不存在）→ 整批报错，不拿空状态写回去抹掉别的记录', async () => {
+      await seedOldAgents();
+      await svc().apply([{ name: 'AGENTS.md', choice: 'keep' }]);
+      const before = readFileSync(path.join(dir, '.harness-state.json'), 'utf8');
+      vi.spyOn(fsp, 'readFile').mockImplementation(async () => {
+        throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+      });
+      await expect(svc().apply([{ name: 'SOUL.md', choice: 'keep' }])).rejects.toThrow('EBUSY');
+      vi.restoreAllMocks();
+      expect(readFileSync(path.join(dir, '.harness-state.json'), 'utf8')).toBe(before);
     });
 
     it('文件不存在 → 创建：不备份，backupName 为 null', async () => {
