@@ -9,11 +9,22 @@ export function ThreadBreadcrumb({ threadId }: Props) {
   );
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
   const runState = useRunsStore((s) => s.runStateByThread[threadId]);
+  // 还在跑的这一轮不在历史里：它的块在 buffer 里，要等 run.message_end（agent_end 才发）
+  // 才挪进 historyByThread。只数历史，计数就在整轮运行期间停着不动。
+  // 挪的那一下是先 takeBuffer 再追加历史，同一条消息不会两边同时在。
+  const inFlightTools = useRunsStore((s) =>
+    Object.values(s.bufferByMessage).reduce(
+      (acc, buf) => acc + (buf.threadId === threadId ? buf.blocks.filter((b) => b.kind === 'tool_call').length : 0),
+      0,
+    ),
+  );
 
   if (!thread) return null;
   const projectName = thread.projectPath.split(/[\\/]/).pop() ?? thread.projectPath;
-  const turns = messages.length;
-  const tools = messages.reduce(
+  // 一问一答算一回合：数用户发出的消息。用户那条一发出就进历史，助手那条要等本轮结束，
+  // 数全部消息的话运行中是 1、结束一下跳成 2。
+  const turns = messages.filter((m) => m.role === 'user').length;
+  const tools = inFlightTools + messages.reduce(
     (acc, m) =>
       acc + (m.role === 'assistant' ? m.blocks.filter((b) => b.kind === 'tool_call').length : 0),
     0,

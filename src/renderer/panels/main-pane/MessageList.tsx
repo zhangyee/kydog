@@ -3,6 +3,7 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useIdentityStore } from '../../stores/identityStore';
 import { useAskStore } from '../../stores/askStore';
+import { useUiStore } from '../../stores/uiStore';
 import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
@@ -14,6 +15,9 @@ export function MessageList({ threadId }: { threadId: string }) {
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
   const askPending = useAskStore((s) => s.pendingByThread[threadId]);
+  // 窄模式判据与 Composer.tsx 一致：browserOpen（协议层事实），不是宽度阈值。
+  // 正文左右边距跟着收窄，给对话栏腾出来的横向空间不被留白吃掉。
+  const narrow = useUiStore((s) => s.browserOpen);
 
   const userName = useIdentityStore((s) => s.userName);
 
@@ -38,7 +42,7 @@ export function MessageList({ threadId }: { threadId: string }) {
 
   return (
     <div ref={scrollRef} className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="message-list">
-      <div style={{ maxWidth: 840, margin: '0 auto', padding: '32px 48px 80px' }}>
+      <div style={{ maxWidth: 840, margin: '0 auto', padding: narrow ? '32px 20px 80px' : '32px 48px 80px' }}>
         <ThreadHeader threadId={threadId} />
         {messages.map((m) =>
           m.role === 'user'

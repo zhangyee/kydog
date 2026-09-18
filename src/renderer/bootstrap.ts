@@ -8,6 +8,8 @@ import { useUpdateStore } from './stores/updateStore';
 import { applyRunEvent } from './runEvents';
 import { restoreViewState, installViewStateSync } from './viewState';
 import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
+import { useBrowserStore } from './panels/browser/browserStore';
+import { installBrowserBridge } from './panels/browser/browserBridge';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
@@ -18,6 +20,7 @@ export async function bootstrap(): Promise<void> {
   useSettingsStore.getState().setBootstrapMeta({
     systemLocale: state.systemLocale,
     onboardingRecovery: state.onboardingRecovery,
+    settingsHealth: state.settingsHealth,
   });
   const noProvider = state.settings.llm.defaultProvider === null;
   // 落盘的收起记录里，指向已被移除的 project 的那些留着也没人再读，
@@ -29,6 +32,8 @@ export async function bootstrap(): Promise<void> {
     workspaceCollapsed: state.settings.ui.workspaceCollapsed,
     inspectorCollapsed: state.settings.ui.inspectorCollapsed,
     collapsedProjects: new Set(state.settings.ui.collapsedProjects.filter((p) => knownProjects.has(p))),
+    browserOpen: state.settings.ui.browserOpen,
+    browserWidth: state.settings.ui.browserWidth,
     settingsTabOpen: noProvider,
     settingsTab: 'provider',
     activeCenterTab: noProvider ? 'settings' : 'thread',
@@ -46,6 +51,8 @@ export async function bootstrap(): Promise<void> {
       && s.readingFontSize === prev.readingFontSize
       && s.workspaceCollapsed === prev.workspaceCollapsed
       && s.inspectorCollapsed === prev.inspectorCollapsed
+      && s.browserOpen === prev.browserOpen
+      && s.browserWidth === prev.browserWidth
       // Set 每次改动都换新引用，比引用就够了，不必逐元素比
       && s.collapsedProjects === prev.collapsedProjects
     ) return;
@@ -57,11 +64,18 @@ export async function bootstrap(): Promise<void> {
         inspectorCollapsed: s.inspectorCollapsed,
         readingFontSize: s.readingFontSize,
         collapsedProjects: [...s.collapsedProjects],
+        browserOpen: s.browserOpen,
+        browserWidth: s.browserWidth,
       },
     }).catch((err) => console.error('persist ui failed', err));
   });
 
   setupEventBridge();
+
+  // 内置浏览器的两条订阅 + 恢复协议（先订阅 → getState → 按 revision 去旧）。
+  // **顺序与「接哪两条」都在那个模块里**，理由与它自己的用例见 browserBridge.ts ——
+  // 这几句放在 bootstrap 里的话，接反了三条 gate 全绿（实测）。
+  installBrowserBridge(window.kydog, useBrowserStore.getState());
 
   // 排在 setupEventBridge 之后，不在前面：主进程那次后台目录刷新是 fire-and-forget 的，
   // 先读清单再订阅的话，落在这两步之间的 llm.listChanged 就没人接——清单会一直停在
@@ -82,6 +96,13 @@ export async function bootstrap(): Promise<void> {
   void window.kydog.invoke('skill.getSyncHealth')
     .then((h) => useUiStore.getState().setSkillSyncHealth(h))
     .catch((err) => console.error('skill.getSyncHealth failed', err));
+
+  // 布局要按窗口宽算 4:6 与对话栏下限（rightPane.ts）。装在这里而不是组件里：
+  // 组件那一层跑在 environment:'node' 的用例里，没有 window 也没有 ResizeObserver，
+  // 挂了会当场抛，而 ThreeColumnLayout.test.tsx 正靠真挂载组件守两条历史变异。
+  const syncWindowWidth = () => useUiStore.getState().setWindowWidth(window.innerWidth);
+  syncWindowWidth();
+  window.addEventListener('resize', syncWindowWidth);
 
   useSettingsStore.getState().setBootstrapped(true);
 }
@@ -110,6 +131,8 @@ function setupEventBridge(): void {
   window.kydog.on('llm.listChanged', (r) => {
     useLlmStore.getState().setSnapshot(r);
   });
+  // 两条 browser.* 不在这里接 —— 它们与 browser.getState 是一套有顺序的恢复协议，
+  // 整套在 panels/browser/browserBridge.ts（那边有用例守着顺序）。
 }
 
 function isWithin(dir: string, root: string): boolean {

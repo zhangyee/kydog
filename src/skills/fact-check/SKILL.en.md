@@ -23,7 +23,7 @@ The input is **one claim to be decided**, and the output is **one verdict**. Thi
 
 1. `date +%F`
 2. `ls papers/` — the relevant papers may already be there.
-3. **read fastpaper's SKILL.md** (it is in `<available_skills>`).
+3. **Pick sources, and read the SKILL.md of each search tool you will use** (they are in `<available_skills>`). Following AGENTS.md's "Looking for Papers", decide where the evidence sits — fastpaper, slowpaper, often both; it cannot be settled until Step 1 has split the claim into sub-claims.
 
 ## How to run the search commands
 

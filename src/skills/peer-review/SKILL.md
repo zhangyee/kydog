@@ -33,7 +33,7 @@ description: 投稿前把自己的稿子过一遍同行评审，并逐条指导�
 
 1. `date +%F`；`ls papers/`。
 2. **read 本 skill 的 `references/review-kernel.md`**。评审内核——中性映射、整体判断、逐条 pass、严重度判据、意见五要素、编号规则——全在里面，本文不重复。**凭记忆评审必然退化**，这是硬规矩。（内核与 `/peer-review-response` 共用，两份拷贝逐字节相同，单测钉死；改内核两边一起改。）
-3. 涉及文献核验时 **read fastpaper 的 SKILL.md**。
+3. 涉及文献核验或漏引检索时**定源**：按 AGENTS.md「找论文」看稿件的文献落在哪，read 用得上的检索工具的 SKILL.md（在 `<available_skills>` 里）。中文稿件、或研究对象在国内的，fastpaper 与 slowpaper 常常两个都要。
 4. **会话隔离**：如果当前会话刚参与过这份稿子的写作，先提醒用户**新开会话**再跑评审——刚写过的上下文挑不出自己的毛病。新会话本身就是干净的评审环境，不需要别的仪式。
 
 落盘纪律与 `/peer-review-response` 相同：只写最终那份报告，不建目录、不写脚本、不落中间文件。

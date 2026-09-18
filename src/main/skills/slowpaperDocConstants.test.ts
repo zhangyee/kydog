@@ -1,0 +1,615 @@
+import { describe, it, expect } from 'vitest';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { ACTION_KINDS, KEY_NAMES, MAX_REPEAT_TIMES, MAX_STEPS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
+import { MAX_FIELDS, MAX_ROWS, MAX_FIELD_CHARS, MAX_BATCH_CHARS } from '../browser/extract';
+import { DEFAULT_NODE_LIMIT, PAGE_CONTENT_OPEN, PAGE_CONTENT_CLOSE } from '../browser/snapshot';
+import { MAX_TABS, MAX_AGENT_TABS } from '../browser/tabRegistry';
+import { READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX } from '../agent/browserTools';
+import * as actionsNs from '../browser/actions';
+import * as extractNs from '../browser/extract';
+import * as snapshotNs from '../browser/snapshot';
+import * as tabRegistryNs from '../browser/tabRegistry';
+import * as browserToolsNs from '../agent/browserTools';
+
+/**
+ * **slowpaper 文档里的常数、工具名、动作名、按键名与生产代码对账。**
+ *
+ * 为什么要有这一条：这个 skill 的产物是**给模型读的说明书**，没有编译器、没有别的用例
+ * 拦着它。Task 9 评审独立做了 8 条变异，`60 步 → 600 步`、`browser_read → browser_fetch`、
+ * `key → keypress`、`13 个 → 12 个`、`50 行 → 500 行` **五条全部存活**（3057 全绿）——
+ * 文档正文里的每一个数值与名字当时一个都没人看守。这条用例就是那五类变异的守卫。
+ *
+ * 两个方向都要守，缺一个都不算数：
+ *  · **值不对要红** —— 捕获到的那个数与常量不等；
+ *  · **句子没了也要红** —— 一条正则一次都匹配不上就报「这句话不见了」。
+ *    （只断「值对」的话，把整句删掉反而全绿：没有匹配 = 没有断言。）
+ *
+ * 事实来源一律是 `import` 进来的生产常量，**不在这里再抄一份数字**。
+ */
+
+const SKILLS = path.resolve(__dirname, '..', '..', 'skills', 'slowpaper');
+const read = (rel: string): string => readFileSync(path.join(SKILLS, rel), 'utf-8');
+
+/**
+ * 一条对账：`zh`/`en` 各一条带**一个捕获组**的正则，捕获到的数必须等于 `value`。
+ *
+ * `constant` 是生产侧那个具名导出的名字。它不是给人看的标签 —— 下面「这张表自己的守卫」
+ * 拿它与模块的导出表对账，删掉一行就红。
+ */
+type Check = { constant: string; what: string; value: number; file: string; zh: RegExp; en: RegExp };
+
+const CHECKS: Check[] = [
+  {
+    constant: 'MAX_STEPS', what: 'MAX_STEPS（一批展开后的步数上限）', value: MAX_STEPS, file: 'references/browser.md',
+    zh: /展开后 ≤ (\d+) 步/g, en: /At most (\d+) steps after expansion/g,
+  },
+  {
+    constant: 'MAX_REPEAT_TIMES', what: 'MAX_REPEAT_TIMES（repeat.times 上限）', value: MAX_REPEAT_TIMES, file: 'references/browser.md',
+    zh: /`(?:repeat\.)?times` ≤ (\d+)/g, en: /`(?:repeat\.)?times` ≤ (\d+)/g,
+  },
+  {
+    constant: 'WAIT_DEFAULT_MS', what: 'WAIT_DEFAULT_MS（wait 默认时限）', value: WAIT_DEFAULT_MS, file: 'references/browser.md',
+    zh: /`timeoutMs` 不写就是 \*\*(\d+)\*\*/g, en: /`timeoutMs` defaults to \*\*(\d+)\*\*/g,
+  },
+  {
+    constant: 'WAIT_MAX_MS', what: 'WAIT_MAX_MS（wait 时限上限）', value: WAIT_MAX_MS, file: 'references/browser.md',
+    zh: /上限 \*\*(\d+)\*\*/g, en: /capped at \*\*(\d+)\*\*/g,
+  },
+  {
+    constant: 'MAX_FIELDS', what: 'MAX_FIELDS（extract 的字段数上限）', value: MAX_FIELDS, file: 'references/browser.md',
+    zh: /最多 (\d+) 个字段/g, en: /At most (\d+) fields/g,
+  },
+  {
+    constant: 'MAX_ROWS', what: 'MAX_ROWS（单次 extract 的行数上限）', value: MAX_ROWS, file: 'references/browser.md',
+    zh: /最多 (\d+) 行/g, en: /At most (\d+) rows per/g,
+  },
+  {
+    constant: 'MAX_FIELD_CHARS', what: 'MAX_FIELD_CHARS（单格字符上限）', value: MAX_FIELD_CHARS, file: 'references/browser.md',
+    zh: /单格最多 (\d+) 字符/g, en: /(\d+) characters per cell/g,
+  },
+  {
+    constant: 'MAX_BATCH_CHARS', what: 'MAX_BATCH_CHARS（整批 extract 的字符预算）', value: MAX_BATCH_CHARS, file: 'references/browser.md',
+    zh: /合计约 (\d+) 字符/g, en: /about \*\*(\d+)\s+characters for all/g,
+  },
+  {
+    constant: 'DEFAULT_NODE_LIMIT', what: 'DEFAULT_NODE_LIMIT（一份快照显示多少条）', value: DEFAULT_NODE_LIMIT, file: 'references/browser.md',
+    zh: /一次最多显示 (\d+) 条元素/g, en: /at most (\d+)\s+elements are displayed/g,
+  },
+  {
+    constant: 'READ_MAX_CHARS', what: 'READ_MAX_CHARS（browser_read 的正文上限）', value: READ_MAX_CHARS, file: 'references/browser.md',
+    zh: /一次最多带回 (\d+) 字符/g, en: /brings back at most (\d+) characters/g,
+  },
+  {
+    constant: 'MAX_TABS', what: 'MAX_TABS（标签数硬上限）', value: MAX_TABS, file: 'SKILL.md',
+    zh: /工具硬上限是 (\d+)/g, en: /the tool's hard cap is (\d+)/g,
+  },
+  {
+    constant: 'MAX_AGENT_TABS', what: 'MAX_AGENT_TABS（agent 标签全局上限，满了挤掉最久没用的）', value: MAX_AGENT_TABS,
+    file: 'references/browser.md',
+    zh: /agent 开的标签全局最多 (\d+) 个/g, en: /at most (\d+) agent-opened\s+tabs/g,
+  },
+  {
+    constant: 'KEY_NAMES', what: 'KEY_NAMES 的个数（「只认这 N 个名字」）', value: KEY_NAMES.length, file: 'references/browser.md',
+    zh: /只认这 (\d+) 个名字/g, en: /accepts only these (\d+) names/g,
+  },
+  {
+    constant: 'TAB_TITLE_MAX', what: 'TAB_TITLE_MAX（标签清单里标题的截断上限）', value: TAB_TITLE_MAX, file: 'references/browser.md',
+    zh: /超过 (\d+) 字会截断/g, en: /truncated with an ellipsis past (\d+) characters/g,
+  },
+  {
+    constant: 'TAB_URL_MAX', what: 'TAB_URL_MAX（browser_tabs 里 URL 的截断上限）', value: TAB_URL_MAX, file: 'references/browser.md',
+    zh: /URL 超过 (\d+) 字符会截断/g, en: /URLs longer than (\d+) characters/g,
+  },
+];
+
+/**
+ * **这张表自己的守卫。**
+ *
+ * 复审变异 M11：从 `CHECKS` 里删掉 `READ_MAX_CHARS` 那一行 → 210 个文件全绿（3079/3079），
+ * 只是总数从 3080 掉到 3079，要靠人盯计数才看得出来。被它守住的那条文档常数就此重新裸奔 ——
+ * **守卫自己没有人守**。
+ *
+ * 补法不是在这里再抄一份名单（那又是一份要维护的副本），而是**拿生产模块自己的导出表对账**：
+ * 这五个模块导出的每一个数值常量，就是「文档里写着、模型照抄」的那一批上限。事实来源是
+ * 模块的导出表，删掉 `CHECKS` 里的任何一行都会在这里红。
+ *
+ * 反过来也守：给这几个模块新加一个数值上限而不往文档与 `CHECKS` 里加一行，同样红 ——
+ * 那正是「模型不知道有这个上限」的形状。要么写进文档，要么把常量收回模块内部不导出。
+ */
+const NUMERIC_EXPORTS: Record<string, number> = Object.fromEntries(
+  [actionsNs, extractNs, snapshotNs, tabRegistryNs, browserToolsNs]
+    .flatMap((ns) => Object.entries(ns as Record<string, unknown>))
+    .filter((e): e is [string, number] => typeof e[1] === 'number'),
+);
+
+/** `KEY_NAMES` 守的是**个数**（「只认这 13 个名字」）。它是导出数组的长度、不是一个数值
+ *  导出，所以单列一行 —— 数字仍然来自生产代码，这里一个都不抄。 */
+const COUNTED_EXPORTS: Record<string, number> = { KEY_NAMES: KEY_NAMES.length };
+
+const GUARDED: Record<string, number> = { ...NUMERIC_EXPORTS, ...COUNTED_EXPORTS };
+
+describe('对账表自己也要有人守（复审变异 M11）', () => {
+  it('这五个模块导出的数值上限一个不落地解析出来了', () => {
+    // 解析垮了（改名、换导出方式）的话下面两条就成了空转 —— 先把它钉住。
+    expect(Object.keys(NUMERIC_EXPORTS).length,
+      '从生产模块里一个数值常量都没解析出来，下面两条对账就是空转').toBeGreaterThan(5);
+  });
+
+  it('生产侧每一个上限在 CHECKS 里都有人守', () => {
+    for (const [name, value] of Object.entries(GUARDED)) {
+      const row = CHECKS.find((c) => c.constant === name);
+      expect(row?.value,
+        `${name} 在 CHECKS 里没有人守（这一行被删了？），`
+        + '或者那一行接的不是它 —— 它在 slowpaper 文档里的那个数从此无人看管').toBe(value);
+    }
+  });
+
+  it('CHECKS 里没有守着一个已经不存在的常量的行', () => {
+    for (const c of CHECKS) {
+      expect(Object.keys(GUARDED),
+        `CHECKS 里的 ${c.constant} 不在生产侧的上限清单里 —— 常量改名或没了，这一行在空转`)
+        .toContain(c.constant);
+    }
+  });
+});
+
+/** `references/browser.md` → `references/browser.en.md`。 */
+const enVariant = (rel: string): string => rel.replace(/\.md$/, '.en.md');
+
+describe('slowpaper 文档里的常数与生产代码对账', () => {
+  for (const c of CHECKS) {
+    it(`${c.what} = ${c.value}`, () => {
+      for (const [locale, rel, re] of [
+        ['zh', c.file, c.zh], ['en', enVariant(c.file), c.en],
+      ] as const) {
+        const found = [...read(rel).matchAll(re)].map((m) => m[1]);
+        // 句子整段消失也要红 —— 没有匹配就是没有断言。
+        expect(found.length, `${rel}（${locale}）里找不到「${c.what}」那句话`).toBeGreaterThan(0);
+        for (const got of found) {
+          expect(got, `${rel}（${locale}）写的是 ${got}，生产代码是 ${c.value}`).toBe(String(c.value));
+        }
+      }
+    });
+  }
+});
+
+/**
+ * **五个真工具的事实来源，只此一份。**
+ *
+ * 与下面两条 `it` 共用同一份列表，不许各写各的：终评变异 3 实测过一次教训——把
+ * 「REAL 少了 `browser_tabs`」这个错误状态**只**灌进其中一条用例本地的常量里，
+ * 另一条用例（标题自称的数目）用的是它自己另一份硬编码 `REAL`，两条各测各的、
+ * 互不知道对方，那条错误状态在标题计数那条上永远测不出来。
+ *
+ * `DENIED` 是文档里**明写「没有这个」**的名字——目前只有 `browser_close`，
+ * 提到它是有意的，不算「多出来的工具」。
+ */
+const REAL_BROWSER_TOOLS = ['browser_open', 'browser_act', 'browser_read', 'browser_login', 'browser_tabs',
+  'browser_download'];
+const DENIED_BROWSER_TOOLS = ['browser_close'];
+
+describe('slowpaper 文档里的名字与生产代码对账', () => {
+  // 评审变异 M5：`key`→`keypress`、`wait`→`waitFor` 当时全绿。动作名是模型照抄的东西，
+  // 写错一个就是整批被 TypeBox 拒掉，而文档不会告诉它错在哪。
+  it('十二种动作名逐字同序（`browser.md` §二 那一行）', () => {
+    const line = '`' + ACTION_KINDS.join('` · `') + '`';
+    for (const rel of ['references/browser.md', 'references/browser.en.md']) {
+      expect(read(rel), `${rel} 里那行动作清单与 ACTION_KINDS 不一致`).toContain(line);
+    }
+  });
+
+  // 评审变异 M7：「只认这 13 个」改成 12 当时全绿（个数由上面那张表守）；
+  // 这里守的是**名字本身**：少写一个、拼错一个，模型就会用一个当场报错的键名。
+  it('13 个按键名逐字同序', () => {
+    const names = KEY_NAMES.map((k) => `\`${k}\``);
+    for (const rel of ['references/browser.md', 'references/browser.en.md']) {
+      const s = read(rel);
+      // 按顺序逐个往后找：顺序错、少一个、拼错一个都会在这里断掉。
+      let at = s.indexOf('`Enter`');
+      expect(at, `${rel} 里找不到按键白名单`).toBeGreaterThan(-1);
+      for (const n of names) {
+        const next = s.indexOf(n, at);
+        expect(next, `${rel} 的按键白名单里按顺序找不到 ${n}`).toBeGreaterThanOrEqual(at);
+        at = next + n.length;
+      }
+    }
+  });
+
+  // 评审变异 M2：`browser_read`→`browser_fetch` 当时全绿。工具名写错，模型调一个
+  // 不存在的工具；而 skill 文档是它唯一的名字来源之一。
+  //
+  // **终评发现（2026-09-11）**：`browser_tabs` 曾经被放在 `DENIED` 里——含义是
+  // 「文档里明写没有这个工具」，而 Task 1 的产物恰恰是加上它。那样放会把
+  // 「skill 文档明文否认 browser_tabs 存在」这句假话**钉住**，对账用例反而成了
+  // 帮凶。现在五个工具都是真的，`DENIED_BROWSER_TOOLS` 只留 `browser_close`
+  // （那个是真的没有）。
+  it('五个工具名都在，且没有第六个 `browser_*`', () => {
+    for (const rel of ['references/browser.md', 'references/browser.en.md',
+      'SKILL.md', 'SKILL.en.md', 'references/carsi.md', 'references/carsi.en.md']) {
+      const s = read(rel);
+      const mentioned = new Set([...s.matchAll(/browser_[a-z_]+/g)].map((m) => m[0]));
+      for (const name of mentioned) {
+        expect([...REAL_BROWSER_TOOLS, ...DENIED_BROWSER_TOOLS], `${rel} 提到了一个不存在的工具 ${name}`)
+          .toContain(name);
+      }
+    }
+    // 五个都必须在 browser.md 的工具一览里出现 —— 少一个就是模型不知道有它。
+    const overview = read('references/browser.md');
+    for (const name of REAL_BROWSER_TOOLS) expect(overview).toContain(name);
+  });
+
+  /**
+   * **上一条自己的缺口（终评变异 3 实测发现，2026-09-11）**：单独把 `browser_tabs` 从
+   * `REAL_BROWSER_TOOLS` 挪回 `DENIED_BROWSER_TOOLS` 重跑上一条用例，**不会红**——
+   * `mentioned` 那圈只要求「提到的名字在 REAL∪DENIED 里」，`browser_tabs` 挪去 DENIED
+   * 照样在并集里；「REAL 都在 overview 里出现」那圈只查 REAL 的成员，从不检查 DENIED
+   * 的成员是不是真的被文档**否认**了。于是「一个真实存在的工具被错误地归进 DENIED」
+   * 这类漂移，上一条测不出来——这正是这一轮 Critical 发现本身那句假话
+   * （`browser_tabs` 曾经就在 `DENIED` 里）会被钉住而不是被抓到的原因。
+   *
+   * 这一条补的就是这个缺口：**标题自称几个工具，`REAL_BROWSER_TOOLS` 就该有几个**——
+   * 与本文件里 `carsi.md`「N 类错误码」那条同一个形状（自称的数目与实际列表对账）。
+   * 两条用例共用**同一份**列表（见上面那个 const 的说明），挪错一个两条一起红，
+   * 不会出现「改一条漏了另一条」。
+   */
+  it('browser.md 标题自称几个工具，REAL_BROWSER_TOOLS 列表就该有几个', () => {
+    const CN_NUM: Record<string, number> = { 三: 3, 四: 4, 五: 5, 六: 6 };
+    const zh = read('references/browser.md');
+    const m = /^# 内置浏览器：([三四五六])个工具怎么配合/m.exec(zh);
+    expect(m, 'browser.md 标题「N 个工具怎么配合」不见了').not.toBeNull();
+    expect(CN_NUM[m![1]],
+      `browser.md 标题自称 ${m![1]} 个工具，REAL_BROWSER_TOOLS 列表却是 ${REAL_BROWSER_TOOLS.length} 个`)
+      .toBe(REAL_BROWSER_TOOLS.length);
+
+    const EN_NUM: Record<string, number> = { three: 3, four: 4, five: 5, six: 6 };
+    const en = read('references/browser.en.md');
+    const me = /how the (three|four|five|six) tools work together/.exec(en);
+    expect(me, 'browser.en.md 标题「how the N tools work together」不见了').not.toBeNull();
+    expect(EN_NUM[me![1]], 'browser.en.md 标题的数字与 REAL_BROWSER_TOOLS 列表对不上')
+      .toBe(REAL_BROWSER_TOOLS.length);
+  });
+
+  // browser_login 那条线的契约（Task 7 交下来的五条）各自的**判据字面量**。
+  // 它们不是散文，是模型要在工具结果里逐字认出来的串 —— 改写或译过去就等于判据作废。
+  //
+  // **成功判据那句话两头都要对**：文档这一侧写的必须与 `loginFlow.noteFor` 里那句原文
+  // 逐字相同。只断文档里有这句话的话，改了代码那一侧文档照样全绿 —— 而模型读的是代码
+  // 发出来的那一句，认不出就永远不知道自己登进去没有。
+  const SUCCESS_NOTE = '已看到 SAML 断言回传';
+  it('成功判据那句原文与 loginFlow 发出来的逐字相同', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'browser', 'loginFlow.ts'), 'utf-8');
+    expect(src, `loginFlow.ts 不再发这句话了，文档里那条唯一的成功判据就作废了`).toContain(SUCCESS_NOTE);
+  });
+
+  it('机构登录的判据字面量在四份文档里都在', () => {
+    for (const rel of ['references/carsi.md', 'references/carsi.en.md',
+      'references/browser.md', 'references/browser.en.md']) {
+      const s = read(rel);
+      expect(s, `${rel} 缺唯一的成功判据那句原文`).toContain(SUCCESS_NOTE);
+      expect(s, `${rel} 缺「一轮一次机会」的错误码`).toContain('browser.login_attempted');
+      expect(s, `${rel} 缺「submit 不给就是不提交」`).toMatch(/submit: true|submit` 不给|Omitting `submit`/);
+    }
+  });
+
+  // I-2：`导航: [tab_…]` 那一行是「403 在 `browser_act` 的提交动作返回之后才到达」时**唯一**的
+  // 判据 —— Scholar 的可达性表写着首页 200、搜索才 403；普通链接虽已同批等待，表单提交或
+  // 异步脚本触发的导航仍可能晚一个往返才落地。与成功判据同一个形状：文档这一侧写的必须与
+  // `browserTools` 实发的前缀逐字相同，**改了代码那一侧也要红**（不然模型认不出那一行，
+  // 这条判据就只是文档里的一句空话）。
+  const NAV_LINE = '导航: ';
+  it('未报导航那一行的前缀与 browserTools 发出来的逐字相同', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'agent', 'browserTools.ts'), 'utf-8');
+    expect(src, 'browserTools.ts 不再发这一行了，文档里那条 403 判据就作废了').toContain(`'${NAV_LINE}'`);
+  });
+
+  it('那一行在讲 403 与旧 DOM 的六份文档里都在', () => {
+    for (const rel of ['references/browser.md', 'references/browser.en.md',
+      'references/scholar.md', 'references/scholar.en.md',
+      'references/xueshu.md', 'references/xueshu.en.md']) {
+      expect(read(rel), `${rel} 缺「403 在 browser_act 之后到达时看哪一行」那条判据`).toContain(NAV_LINE);
+    }
+  });
+
+  // 七类错误码那张表是模型的分流依据。**编一个不存在的码**（或者代码那边改了名）不会
+  // 有任何东西报错 —— 模型只会照着一条永远不会出现的行去等一个下一步。
+  it('文档里提到的每一个错误码都真的在 KydogErrorCode 里', () => {
+    const errs = readFileSync(path.resolve(__dirname, '..', '..', 'shared', 'errors.ts'), 'utf-8');
+    const declared = new Set([...errs.matchAll(/^ *\| '([a-z_]+\.[a-z_]+)'$/gm)].map((m) => m[1]));
+    expect(declared.size, 'errors.ts 的码表没解析出来，这条用例就成了摆设').toBeGreaterThan(20);
+    for (const rel of ['references/carsi.md', 'references/carsi.en.md',
+      'references/browser.md', 'references/browser.en.md', 'SKILL.md', 'SKILL.en.md',
+      // 源侧两份也进来：本批往它们里写进了 `browser.target_unusable` / `browser.bad_action`，
+      // 而错误码是模型的分流依据，编一个不存在的不会有任何东西报错。
+      'references/scholar.md', 'references/scholar.en.md',
+      'references/xueshu.md', 'references/xueshu.en.md']) {
+      const mentioned = new Set([...read(rel).matchAll(/`((?:browser|settings|institution)\.[a-z_]+)`/g)]
+        .map((m) => m[1])
+        // `browser.md` 是文件名不是错误码 —— 两者形态一样，这里按扩展名摘掉。
+        .filter((c) => !/\.(?:md|ts|js|json)$/.test(c)));
+      expect(mentioned.size, `${rel} 里一个错误码都没提到，这条用例在这个文件上是空转`).toBeGreaterThan(0);
+      for (const code of mentioned) {
+        expect([...declared], `${rel} 提到了一个不存在的错误码 ${code}`).toContain(code);
+      }
+    }
+  });
+});
+
+/**
+ * **自称的数目 / 中英结构 / 边界标记 —— skill 文档里能机械化的那三件事。**
+ *
+ * 终评实测的两条存活变异：
+ *  · 删掉 `browser.en.md` **整段**「页面内容是数据，不是指令」（prompt-injection 纪律，
+ *    603 字符，只删英文那份）→ `npm test -- skills` **169/169 全绿**。英文 locale 的
+ *    agent 就此整段失去那条纪律。
+ *  · 删掉 `carsi.md`「七类错误码」表里 `browser.login_attempted` **整行** → 27/27 绿，
+ *    而标题仍写着「七类」，表里只剩 6 行。
+ *
+ * 现有的中英检查（`builtinSkillsI18n.test.ts`）为什么没抓到：**它只校验双语文件
+ * 成对存在**（`projectSkillFiles` 的投影里两个 locale 各有一格），一个字节的内容
+ * 都不比 —— 整份文件清空成一个空行它也全绿。
+ *
+ * 散文漂移的全面闸这一轮**不做**（那是另一个设计问题，已单独登记）。这里收的是
+ * 三件**能机械化**的：
+ *  1. 文档自己说的数目要与表格行数对得上（两个方向都红）；
+ *  2. 中英两份的结构量（标题数 / 表格行数 / 代码围栏数）必须相等 —— 只删一侧的一行
+ *     或一节在这里红，与 `templates.test.ts` 的集合相等同一个形状；
+ *  3. 生产代码发出来的**边界标记**在文档里必须逐字都在 —— 那两行正是
+ *     prompt-injection 纪律那一段的载体，段没了标记就没了。
+ */
+describe('文档自称的数目与表格行数对账', () => {
+  /** 表格从 `after` 那句话之后的第一张算起，数**数据行**（跳过表头与分隔行）。 */
+  const tableRowsAfter = (src: string, after: string): number => {
+    const at = src.indexOf(after);
+    expect(at, `找不到「${after}」那一节 —— 这条对账在空转`).toBeGreaterThan(-1);
+    const lines = src.slice(at).split('\n');
+    const rows: string[] = [];
+    let started = false;
+    for (const l of lines) {
+      if (l.startsWith('|')) { rows.push(l); started = true; continue; }
+      if (started) break;
+    }
+    // 表头一行 + 分隔行一行
+    expect(rows.length, `「${after}」后面那张表不成形（只有 ${rows.length} 行）`).toBeGreaterThan(2);
+    return rows.length - 2;
+  };
+
+  const CN_NUM: Record<string, number> = { 七: 7, 八: 8, 六: 6, 五: 5, 四: 4, 三: 3 };
+
+  it('carsi：标题说几类，表里就得有几行（中英各一份）', () => {
+    const zh = read('references/carsi.md');
+    const m = /##\s*四、([一二三四五六七八九十])类错误码/.exec(zh);
+    expect(m, 'carsi.md 里「N 类错误码」那个标题不见了').not.toBeNull();
+    const said = CN_NUM[m![1]];
+    expect(said, `标题里的「${m![1]}」不在中文数字表里，补一条`).toBeGreaterThan(0);
+    expect(tableRowsAfter(zh, m![0]),
+      `carsi.md 的标题自称 ${said} 类，表里的数据行不是这个数 —— `
+      + '删一行 / 加一行都不会有任何东西报错，而这张表是模型的分流依据').toBe(said);
+
+    const en = read('references/carsi.en.md');
+    const me = /##\s*4\.\s*(Seven|Eight|Six|Five)\s+classes of error code/.exec(en);
+    expect(me, 'carsi.en.md 里「N classes of error code」那个标题不见了').not.toBeNull();
+    const saidEn = { Seven: 7, Eight: 8, Six: 6, Five: 5 }[me![1] as 'Seven'];
+    expect(saidEn, '英文标题里的数目与中文那份不一致').toBe(said);
+    expect(tableRowsAfter(en, me![0]),
+      `carsi.en.md 的标题自称 ${saidEn} 类，表里的数据行不是这个数`).toBe(saidEn);
+  });
+});
+
+/**
+ * 中英两份的**结构量**必须相等。散文本身比不了，但「少了一整行表格 / 少了一节」
+ * 是数得出来的 —— 而单侧删除正是终评那两条存活变异的形状。
+ *
+ * 三个量各挡一类：标题数挡「少了一节」，表格行数挡「少了一行」，
+ * 代码围栏数挡「少了一段剧本」。**都只在单侧改动时红** —— 两侧一起改（真的要删）
+ * 照常放行，这正是想要的：它守的是「改一边忘了改另一边」。
+ */
+describe('中英两份的结构量必须相等（单侧删一行 / 删一节就红）', () => {
+  // **加了一个源就在这里加一行。** 这条守的是「改了中文忘了改英文」——
+  // 漏登记等于这一对没人守，而少一整节 / 少一行表格恰恰是最容易漏的那种改动。
+  const PAIRS = ['SKILL.md', 'references/browser.md', 'references/carsi.md',
+    'references/scholar.md', 'references/xueshu.md',
+    'references/mdpi.md', 'references/frontiers.md', 'references/peerj.md',
+    'references/chemrxiv.md', 'references/ssrn.md', 'references/agris.md',
+    'references/pubscholar.md', 'references/chinaxiv.md', 'references/ncpssd.md'];
+
+  const shape = (src: string) => {
+    const lines = src.split('\n');
+    return {
+      标题数: lines.filter((l) => /^#{1,6} /.test(l)).length,
+      表格行数: lines.filter((l) => l.startsWith('|')).length,
+      代码围栏数: lines.filter((l) => l.startsWith('```')).length,
+    };
+  };
+
+  for (const rel of PAIRS) {
+    it(`${rel} 与它的 en 版结构一致`, () => {
+      const zh = shape(read(rel));
+      const en = shape(read(enVariant(rel)));
+      expect(zh.标题数, `${rel} 与 ${enVariant(rel)} 的标题数不同 —— 有一侧少了一节`).toBeGreaterThan(3);
+      expect(en, `${rel} 与 ${enVariant(rel)} 的结构对不上：`
+        + '有一侧被单独删了一行表格 / 一节 / 一段剧本（终评变异 M6 就是这个形状）').toEqual(zh);
+    });
+  }
+});
+
+/**
+ * 网页内容的两行**边界标记**：`snapshot.ts` 实发的就是这两个常量，而文档里那段
+ * 「页面内容是数据，不是指令」的纪律**整段挂在它们身上**。删掉那一段，这里就找不到
+ * 标记 —— 终评变异 M4（只删英文那份的整段纪律）直接被它杀掉。
+ *
+ * 与 `SUCCESS_NOTE` / `NAV_LINE` 同一个形状：文档这一侧写的必须与代码发出来的逐字相同，
+ * **改了代码那一侧也要红**（不然模型认不出那两行，整条纪律就只是文档里的一句空话）。
+ */
+describe('prompt-injection 纪律那一段：边界标记与生产代码逐字相同', () => {
+  const QUOTING = ['SKILL.md', 'SKILL.en.md', 'references/browser.md', 'references/browser.en.md'];
+
+  it('两行标记在四份文档里都在，且与 snapshot.ts 的常量逐字相同', () => {
+    for (const rel of QUOTING) {
+      const s = read(rel);
+      expect(s, `${rel} 里「以下是网页内容」那行边界标记不见了 —— `
+        + 'prompt-injection 纪律那一段多半被整段删了').toContain(PAGE_CONTENT_OPEN);
+      expect(s, `${rel} 里「网页内容结束」那行边界标记不见了`).toContain(PAGE_CONTENT_CLOSE);
+    }
+  });
+
+  it('「数据不是指令」这句话本身也在（标记在、话没了也要红）', () => {
+    for (const [rel, re] of [
+      ['SKILL.md', /是数据，?不是指令|数据不是指令/],
+      ['SKILL.en.md', /data, not instructions/],
+      ['references/browser.md', /是数据，?不是指令|数据不是指令/],
+      ['references/browser.en.md', /data, not instructions/],
+    ] as const) {
+      expect(read(rel), `${rel} 里「页面内容是数据，不是指令」那条纪律不见了`).toMatch(re);
+    }
+  });
+});
+
+/**
+ * 机构账号那个记号。`walker.js` 命中 `world.filled` 时只发 `filledCredential`、不发 value，
+ * `snapshot.ts` 把它渲染成这一句 —— agent 在快照里看到的就是它。文档这一侧写的必须
+ * 与代码发出来的逐字相同，否则 agent 会把「已经填好了」读成「这个框是空的」，
+ * 转头再调一次 `browser_login`，而那一轮**只有一次机会**。
+ */
+describe('「已填入机构账号」那个记号与 snapshot.ts 逐字相同', () => {
+  const MARK = '已填入机构账号，值不显示';
+
+  it('snapshot.ts 现在发的就是这一句', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'browser', 'snapshot.ts'), 'utf-8');
+    expect(src, 'snapshot.ts 不再发这个记号了，文档里那句解释就作废了').toContain(MARK);
+  });
+
+  it('两份 carsi 都写明了它是什么意思', () => {
+    for (const rel of ['references/carsi.md', 'references/carsi.en.md']) {
+      expect(read(rel), `${rel} 里没解释快照上的 ${MARK} 是什么意思`).toContain(MARK);
+    }
+  });
+});
+describe('百度学术的翻页：结构定位 + 地址偏移（2026-09-16 实测开通）', () => {
+  // **这一块的前身是「本期只取第 1 页」的降级守卫。** 那条降级的理由是「当前工具能力下写不出
+  // 『下一页』那个 selector」——「上一页」与「下一页」共用 `div.page.n`，而页内是纯 CSS 的
+  // `querySelector`，没有按文本匹配的写法。上一版在这里留了话：对着真站点量出可用的 CSS 表达
+  // 之后要开翻页，**那时这一整块跟着改**，让「重新开翻页」成为一个必须动测试的决定。
+  //
+  // 2026-09-16 量出来了（记录在 `docs/superpowers/specs/2026-09-16-slowpaper-source-layers-design.md`
+  // §1.2）：`div.pagination > div.page.n:last-child` 精确命中 1 个「下一页」，翻页后地址变成
+  // `&pn=10`（`pn = (页码 − 1) × 10`）。降级因此撤销。
+  //
+  // **但不能把这一块删空：降级没了，坑还在。** 裸 `div.page.n` 取到的是「上一页」，点下去
+  // 往回翻**而且不报错**；拿 `div.page.active` 当等待条件是点击前就成立的空转。四条 `it`
+  // 各守一头：代码那一侧的前提、选择器这一侧的坑、等待条件这一侧的坑、索引行与正文的一致。
+
+  it('前提仍成立：页内还是裸 `querySelector`，没有任何按文本匹配的写法', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', 'browser', 'injected', 'interact.js'), 'utf-8');
+    expect(src, 'interact.js 不再用 querySelector 解析 selector 了，翻页选择器的写法要重新判').toContain('querySelector(t.selector)');
+    // 有了文本匹配，「下一页」就能按文案写 —— 那时结构定位不再是唯一出路，这一块值得重裁。
+    expect(src, 'interact.js 里出现了文本匹配，百度学术的翻页选择器该重新裁决了').not.toMatch(/:has-text|:contains\(/);
+  });
+
+  it('两份 xueshu 都用结构定位取「下一页」，且没有裸 `div.page.n`', () => {
+    const NEXT = 'div.pagination > div.page.n:last-child';
+    for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
+      const values = [...read(rel).matchAll(/"selector"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+      // 先证明这条查找本身是活的 —— 否则下面那两条否定断言在「一个 selector 都没抽到」时
+      // 会全部空转通过（CLAUDE.md：否定型断言要在同一条用例里先证明正向那一面）。
+      expect(values, `${rel} 的剧本里没有那条「下一页」选择器 ${NEXT}`).toContain(NEXT);
+      for (const v of values) {
+        expect(v, `${rel} 的剧本里出现了裸 div.page.n —— 它命中的是「上一页」，点下去往回翻，而且不报错`)
+          .not.toMatch(/^div\.page\.n$/);
+        // 纯 CSS 的 querySelector 认不出「下一页」这三个字：写进 selector 会被判非法（`browser.bad_action`）。
+        expect(v, `${rel} 的剧本里又出现了一个按文本定位「下一页」的 selector：${v}`).not.toContain('下一页');
+      }
+    }
+  });
+
+  it('两份 xueshu 的翻页等待条件是地址里的 pn 偏移，不是「当前页」标记', () => {
+    for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
+      const s = read(rel);
+      expect(s, `${rel} 缺翻页的 urlMatches 等待条件（\`pn=\` 那一段）`).toMatch(/"urlMatches"\s*:\s*"pn=\d+"/);
+      // `div.page.active` 点击前就成立，而 wait 是先探一次再等 —— 它会立刻回「等到了」，
+      // 一毫秒都没等，紧接着的 extract 抽的还是上一页。
+      expect(s, `${rel} 又拿 div.page.active 当等待条件了 —— 那是点击前就成立的空转条件`)
+        .not.toMatch(/"until"[^}]*page\.active/);
+    }
+  });
+
+  it('两份 SKILL 的索引行不再宣称「只取第 1 页」', () => {
+    for (const [rel, mustNot] of [
+      ['SKILL.md', /只取第 1 页|只有第 1 页/],
+      ['SKILL.en.md', /only page 1|only the first results page/],
+    ] as const) {
+      // §七「往下读哪一份」那张表的行。先断它找得到，否则下面那条否定断言是空转。
+      const row = read(rel).split('\n').find((l) => l.startsWith('| `references/xueshu.md`'));
+      expect(row, `${rel} 里找不到指向 references/xueshu.md 的索引行`).toBeDefined();
+      expect(row ?? '', `${rel} 的索引行还写着「只取第 1 页」，而正文已经开了翻页 —— `
+        + 'agent 会带着「这个源只有 10 条」的预期进卡片，翻页那一节就白写了').not.toMatch(mustNot);
+    }
+  });
+});
+
+/** 卡片里的 ```jsonc 剧本块，按 `browser_act(` 切成一次次调用。 */
+const jsoncCalls = (src: string): string[][] =>
+  [...src.matchAll(/```jsonc\n([\s\S]*?)```/g)].map((m) => m[1].split('browser_act(').slice(1));
+
+/**
+ * 百度学术「地址先变、结果后换」（2026-09-17 在 KyDog IAB 里实测）：点提交 / 下一页之后约 0.2 秒
+ * 地址就变了，**旧的 10 条原样留在页面上**，约 1 秒后才换上新结果。只等地址（或只等结果条目出现）
+ * 就抽，抽到的是上一次那 10 条，**而且不报错** —— 第一组验收里真的发生了，翻页的旧剧本也实测复现。
+ * 能区分新旧的是结果区的加载转圈：空闲时 0 个，点了才出现。
+ */
+describe('百度学术：结果页上的检索与翻页，抽取前必须等转圈出现再消失', () => {
+  for (const rel of ['references/xueshu.md', 'references/xueshu.en.md']) {
+    it(`${rel}：结果页上的每一次调用都先等转圈出现、再等它消失，然后才抽`, () => {
+      const onResults = jsoncCalls(read(rel)).flat().filter((c) => c.includes('"extract"')
+        && (c.includes('"input.search-input"') || c.includes('"urlMatches"')));
+      // 先证明挑得出这两段（改词再检索、翻页）—— 挑出 0 段时下面的循环一条都不跑，照样绿。
+      expect(onResults.length, `${rel} 里没挑出结果页上的检索 / 翻页调用`).toBeGreaterThanOrEqual(2);
+      for (const c of onResults) {
+        const present = c.indexOf('".ant-spin-spinning", "state": "present"');
+        const absent = c.indexOf('".ant-spin-spinning", "state": "absent"');
+        expect(present, `这次调用没等转圈出现 —— 地址变了结果还是旧的：\n${c}`).toBeGreaterThan(-1);
+        expect(absent, `这次调用没在转圈出现之后等它消失：\n${c}`).toBeGreaterThan(present);
+        expect(c.indexOf('"extract"'), `extract 排在转圈消失之前：\n${c}`).toBeGreaterThan(absent);
+      }
+    });
+
+    it(`${rel}：结果页的检索框写 input.search-input，不写裸 .search-input`, () => {
+      const values = [...read(rel).matchAll(/"selector"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+      expect(values, `${rel} 的剧本里没有结果页那个检索框`).toContain('input.search-input');
+      expect(values, `${rel} 出现了裸 .search-input —— 它先命中外层 div，type 会报「不是能打字的控件」`)
+        .not.toContain('.search-input');
+    });
+  }
+});
+
+/**
+ * NCPSSD（2026-09-17 读站点脚本并在 IAB 实测）：`Basicsearch()` 先清空检索框，再 `window.open`
+ * 把结果开在**新标签**里。所以提交那一批只能等「框被清空」，在原标签上等结果列表永远等不到；
+ * 翻页地址不变、没有加载提示，可等的是「上一页」控件上的 `data-page`。
+ */
+describe('NCPSSD：提交等框被清空、结果去新标签里抽，翻页等页码控件', () => {
+  for (const rel of ['references/ncpssd.md', 'references/ncpssd.en.md']) {
+    it(`${rel}：提交那次调用等的是框被清空，结果列表在另一次调用里等`, () => {
+      const calls = jsoncCalls(read(rel)).flat();
+      const submit = calls.filter((c) => c.includes('"#text_search"'));
+      const onResults = calls.filter((c) => c.includes('"div.julei-list"'));
+      // 正向前提：两类调用都挑得出来（否则下面那条「提交那次里没有 div.julei-list」是空转）。
+      expect(submit.length, `${rel} 里没挑出提交那次调用`).toBeGreaterThanOrEqual(1);
+      expect(onResults.length, `${rel} 里没挑出在结果页上等 / 抽的调用`).toBeGreaterThanOrEqual(1);
+      for (const c of submit) {
+        expect(c, `提交那次调用没等「检索框被清空」：\n${c}`).toContain('#text_search:placeholder-shown');
+        expect(c, `提交那次调用在原标签上等结果列表 —— 结果在新标签里，永远等不到：\n${c}`)
+          .not.toContain('"div.julei-list"');
+      }
+    });
+
+    it(`${rel}：翻页等「上一页」的 data-page，不等地址`, () => {
+      const paging = jsoncCalls(read(rel)).flat().filter((c) => c.includes('"a.layui-laypage-next"'));
+      expect(paging.length, `${rel} 里没挑出翻页调用`).toBeGreaterThanOrEqual(1);
+      for (const c of paging) {
+        expect(c, `翻页调用没等页码控件：\n${c}`).toContain('a.layui-laypage-prev[data-page=');
+        expect(c, `翻页调用等了地址 —— 这个站翻页前后地址一样：\n${c}`).not.toContain('"urlMatches"');
+      }
+    });
+  }
+});

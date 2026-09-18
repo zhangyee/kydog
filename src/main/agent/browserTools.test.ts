@@ -1,0 +1,1811 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  describeNav, landedOnPage, ActionSchema, createBrowserTools,
+  READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX, stripUrlUserinfo,
+} from './browserTools';
+import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
+import { MAX_BATCH_CHARS } from '../browser/extract';
+import { PAGE_CONTENT_OPEN } from '../browser/snapshot';
+import { KydogError } from '../../shared/errors';
+import type { NavigationObservation } from '../../shared/types';
+
+type Outcome = NavigationObservation['outcome'];
+const say = (outcome: Outcome): string => describeNav({ navigationId: 'n1', outcome });
+
+/**
+ * 每个终态各一个样本。加了新 kind 而不往这里加一条，下面几条穷尽性断言会红 ——
+ * 文案是模型**唯一**读得到的东西，不能再出现「整个 commit 只有文案、零覆盖」。
+ */
+const SAMPLES = {
+  ok: { kind: 'ok', finalUrl: 'https://x.example/p', httpStatusCode: 200 },
+  ok403: { kind: 'ok', finalUrl: 'https://scholar.google.com/scholar?q=x', httpStatusCode: 403 },
+  ok_same_document: { kind: 'ok_same_document', finalUrl: 'https://x.example/p#sec2' },
+  failed: { kind: 'failed', errorCode: -105, errorDesc: 'ERR_NAME_NOT_RESOLVED' },
+  crashed: { kind: 'crashed', reason: 'oom' },
+  download: { kind: 'download', url: 'https://x/f.pdf', mimeType: 'application/pdf', filename: '2210.02747.pdf', cancelled: 'policy' },
+  blocked: { kind: 'blocked', reason: '不允许访问本机与内网地址：10.0.0.5' },
+  superseded: { kind: 'superseded' },
+  cancelled: { kind: 'cancelled' },
+  timeout: { kind: 'timeout', abortObserved: false },
+  timeoutAborted: { kind: 'timeout', abortObserved: true },
+} as const satisfies Record<string, Outcome>;
+
+const ALL_KINDS: Outcome['kind'][] = [
+  'ok', 'ok_same_document', 'failed', 'crashed', 'download', 'blocked', 'superseded', 'cancelled', 'timeout',
+];
+
+/**
+ * 「这个源不行、换一个」这类**断言句**。
+ *
+ * 「」里的提及不算断言 —— timeout 那条正是在说「这与『打不开』不是一回事」，
+ * 先把引号里的内容去掉再判，判的才是这句话有没有把它**说成**失败。
+ */
+const stripQuoted = (s: string): string => s.replace(/「[^」]*」/g, '');
+const CLAIMS_SOURCE_DEAD = /打不开|源不可用|源不可达|换一个源|换个源|换源/;
+
+describe('导航结果文案：只有 failed 才能把它说成「打不开」', () => {
+  // 评审者的变异：把 superseded 的文案换成「打不开：这个源不可用，换一个源再试。」
+  // → 45 条全绿。被接替的导航被说成源不可用，agent 就会去换源，而源好好的。
+  // blocked（我们自己挡的）、cancelled（标签被关了）、crashed（进程崩了）
+  // 、timeout（不知道发生了什么）同理 —— 这几种我们都明确知道发生了什么。
+  const mustNotBlameSource = ['ok', 'ok_same_document', 'crashed', 'download', 'blocked', 'superseded', 'cancelled', 'timeout'] as const;
+  for (const kind of mustNotBlameSource) {
+    it(`${kind} 的文案不把结论说成「这个源不可用」`, () => {
+      const s = stripQuoted(say(SAMPLES[kind]));
+      expect(s).not.toMatch(CLAIMS_SOURCE_DEAD);
+    });
+  }
+
+  it('failed 是唯一一个明说打不开的 —— 它确实是网络层的明确拒绝', () => {
+    const s = say(SAMPLES.failed);
+    expect(s).toMatch(/打不开/);
+    expect(s).toContain('ERR_NAME_NOT_RESOLVED');
+    expect(s).toContain('-105');
+  });
+});
+
+describe('导航结果文案：每条都带上自己那个终态的协议事实', () => {
+  // 带上各自的事实，等于让「拿一句通用的失败文案顶替」这种改法必然红。
+  it('ok 带最终地址与状态码', () => {
+    expect(say(SAMPLES.ok)).toContain('https://x.example/p');
+    expect(say(SAMPLES.ok)).toContain('200');
+  });
+
+  // 403 是一次**成功**的导航：页面到了，只是内容多半是拦截页。说清状态码，
+  // 让 skill 的换源规则有协议层依据，而不是去猜页面文案。
+  it('403 说清「页面到了」而不是「打不开」', () => {
+    const s = say(SAMPLES.ok403);
+    expect(s).toContain('403');
+    expect(stripQuoted(s)).not.toMatch(CLAIMS_SOURCE_DEAD);
+  });
+
+  // 跨文档 DOM 全换、快照身份要重发号；同文档 DOM 大体还在。下游快照 diff 要
+  // 这个区别，文案里也必须说得出来，不能与跨文档那条撞成一句话。
+  it('ok_same_document 说明文档没换、没有新的 HTTP 响应', () => {
+    const s = say(SAMPLES.ok_same_document);
+    expect(s).toContain('https://x.example/p#sec2');
+    expect(s).toMatch(/同一个文档|同文档/);
+    expect(s).toMatch(/没有新的 HTTP 响应|没有整体换/);
+  });
+
+  it('crashed 带上崩溃原因，并说明这不是网络层的拒绝', () => {
+    const s = say(SAMPLES.crashed);
+    expect(s).toContain('oom');
+    expect(s).toMatch(/崩溃/);
+    expect(s).toMatch(/重开|再试一次|重试/);
+  });
+
+  it('download 带上文件类型与文件名，并说明这不是网页', () => {
+    const s = say(SAMPLES.download);
+    expect(s).toContain('application/pdf');
+    expect(s).toContain('2210.02747.pdf');
+    expect(s).toMatch(/不是网页/);
+  });
+
+  // 变异「把 blocked 换成一句通用的失败文案」→ 闸给的理由就没了。理由是模型判断
+  // 「该换一个公网地址」还是「该换源」的唯一依据。
+  it('blocked 带上闸给的理由，并说清是我们这一侧挡的', () => {
+    const s = say(SAMPLES.blocked);
+    expect(s).toContain('不允许访问本机与内网地址：10.0.0.5');
+    expect(s).toMatch(/KyDog|我们这一侧|网址闸/);
+  });
+
+  it('superseded 说的是「被另一次导航接替」，不是失败', () => {
+    const s = say(SAMPLES.superseded);
+    expect(s).toMatch(/接替|取代/);
+    expect(s).toMatch(/本次没有结果|没有结果/);
+  });
+
+  // 接线清单第 8 项：onSuperseded 只在 navigate() 里换 tracker 之前调。页面自己
+  // 跳走走的是 did-navigate、收敛到 ok，永远到不了这条文案 —— 写进去只会让模型
+  // 把两件事混在一起推断页面状态。
+  it('superseded 不提「页面自己跳走了」—— 那条路根本到不了这里', () => {
+    expect(say(SAMPLES.superseded)).not.toContain('页面自己跳走');
+  });
+
+  it('cancelled 说的是标签被关掉了，不是源的问题', () => {
+    const s = say(SAMPLES.cancelled);
+    expect(s).toMatch(/标签/);
+    expect(s).toMatch(/关掉|关闭|回收/);
+  });
+
+  it('timeout 明说我们不知道发生了什么', () => {
+    const s = say(SAMPLES.timeout);
+    expect(s).toMatch(/不知道发生了什么/);
+  });
+
+  // 观测到的 ERR_ABORTED 是协议事实，收尾时要如实带上，不能丢掉；
+  // 没观测到就不许凭空说有。
+  it('timeout 把观测到的 ERR_ABORTED 如实说出来，没观测到就不说', () => {
+    expect(say(SAMPLES.timeoutAborted)).toContain('ERR_ABORTED');
+    expect(say(SAMPLES.timeout)).not.toContain('ERR_ABORTED');
+  });
+});
+
+describe('导航结果文案：每个终态各说各的', () => {
+  // 模型对这几种的处置各不相同（重开 / 换公网地址 / 重新看一眼 / 重开标签 /
+  // 别断定源不可用）。两条文案撞成一句，模型就分不出该做哪件事。
+  it('九个终态的文案两两不同', () => {
+    const texts = ALL_KINDS.map((k) => say(k === 'timeout' ? SAMPLES.timeout : SAMPLES[k as Exclude<typeof k, 'timeout'>]));
+    expect(new Set(texts).size).toBe(ALL_KINDS.length);
+  });
+
+  it('每个终态都给得出一句非空文案', () => {
+    for (const k of ALL_KINDS) {
+      const s = say(k === 'timeout' ? SAMPLES.timeout : SAMPLES[k as Exclude<typeof k, 'timeout'>]);
+      expect(s.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('取不取快照：ok_same_document 也是「到了一个页面」', () => {
+  // browser_open 从前判的是 `kind === 'ok'`，同文档导航（SPA 路由、CNKI 站内）
+  // 成功了却拿不到新快照：模型收到「跳转成功」外加零内容，只能再空跑一轮拿 diff。
+  it('两种成功都要取快照', () => {
+    expect(landedOnPage(SAMPLES.ok)).toBe(true);
+    expect(landedOnPage(SAMPLES.ok403)).toBe(true);
+    expect(landedOnPage(SAMPLES.ok_same_document)).toBe(true);
+  });
+
+  // 拿不到内容的时候硬取只会给一份空快照，让模型以为「这个页面什么都没有」，
+  // 而事实是它压根没打开。
+  it('其余终态一律不取', () => {
+    for (const k of ['failed', 'crashed', 'download', 'blocked', 'superseded', 'cancelled', 'timeout'] as const) {
+      expect(landedOnPage(SAMPLES[k])).toBe(false);
+    }
+  });
+});
+
+// spec §5.5：上限要落在 **TypeBox schema** 上，模型绕不过去。schema 这一层没有任何
+// 别的东西会在退化时报错 —— 改回 Type.String() / Type.Number() 编译照样过，单测也照样
+// 全绿，而模型第一眼看到的契约就此松掉。
+describe('browser_act 的 schema 是模型看得到的那道闸', () => {
+  const props = (ActionSchema as unknown as { properties: Record<string, Record<string, unknown>> }).properties;
+
+  it('kind 是九种动作的字面量白名单，不是裸字符串', () => {
+    const kind = props.kind as { anyOf?: { const: string }[]; type?: string };
+    expect(kind.type).toBeUndefined();
+    expect(kind.anyOf?.map((x) => x.const)).toEqual([...ACTION_KINDS]);
+  });
+
+  it('timeoutMs 带上下界与默认值，与主进程校验同一组数', () => {
+    expect(props.timeoutMs).toMatchObject({
+      type: 'number', minimum: 1, maximum: WAIT_MAX_MS, default: WAIT_DEFAULT_MS,
+    });
+  });
+
+  // 与 kind 同一个道理：裸字符串的话 `{kind:'scroll', direction:'left'}` 连 schema
+  // 都过得去，模型要等到主进程校验才知道没有这个方向。
+  it('direction 是 up / down 的字面量白名单', () => {
+    const d = props.direction as { anyOf?: { const: string }[]; type?: string };
+    expect(d.type).toBeUndefined();
+    expect(d.anyOf?.map((x) => x.const)).toEqual(['up', 'down']);
+  });
+
+  // 这一份 schema 九种动作共用，所以除了 kind **一个都不能是必填** ——
+  // direction 写成必填的话，click / type / key 每一个都要凑一个方向出来才过得了 schema。
+  it('九种动作共用一份参数对象，所以只有 kind 是必填', () => {
+    const required = (ActionSchema as unknown as { required?: string[] }).required ?? [];
+    expect(required).toEqual(['kind']);
+  });
+
+  // amount 不进 schema 的话，`Action` 类型上那个 `amount?` 模型根本用不到 ——
+  // 声明了一个谁都调不动的参数。
+  it('scroll 的 amount 在 schema 上，带下界', () => {
+    expect(props.amount).toMatchObject({ type: 'number', minimum: 1 });
+  });
+});
+
+// ── 接线层：browser_act / browser_read 的 execute 真的跑一遍 ──────────────────
+//
+// **这一段补的是最终评审的 C4。** 在它之前，这个文件只覆盖 describeNav / landedOnPage
+// / TypeBox schema 三样纯文本的东西，**没有任何一条用例调用过 createBrowserTools 返回
+// 的工具**。评审的 13 次变异里 11 条死在各批自己的纯模块里，2 条活的全部落在这里：
+//
+//  · M12 —— 删掉 `assertTypeAllowed` 的唯一调用点 → 2336/2336 全绿（密码硬闸整条失效）
+//  · M13 —— extract 退回主世界 + 绕过整批预算 → 2336/2336 全绿、lint exit 0 无警告
+//
+// 所以下面这些断言全部针对**接线**，不重复各批纯模块自己已经钉住的东西。
+// 隔离世界这一条在替身里只能钉住「调的是哪个入口」；「隔离世界真的骗不到」要靠
+// e2e（见 e2e-requirements.md 的 E-1）。
+
+const WORLD_ID = 31337;
+
+/** 一份空的请求报告。要在 `bs` 之前 hoist —— `bs` 的默认值与每条用例前的复位都用它。 */
+const { EMPTY_REQUESTS } = vi.hoisted(() => ({
+  EMPTY_REQUESTS: { failed: [], ok: [], okOmitted: 0, failedOmitted: 0, dropped: 0, suppressed: 0, total: 0 },
+}));
+
+const bs = vi.hoisted(() => ({
+  /** enqueue / withAgentDriving / snapshot / 每一步派发的实际先后。 */
+  order: [] as string[],
+  isolated: [] as { worldId: number; code: string }[],
+  mainWorld: [] as string[],
+  cdp: [] as { method: string; params: unknown }[],
+  current: null as unknown,
+  /** 隔离世界里那段代码的返回值由用例摆布（extract / browser_read 共用）。 */
+  isolatedImpl: (() => null) as (code: string) => unknown,
+  snapshotImpl: (() => null) as () => unknown,
+  noTab: false,
+  /** `evalInPage` 抛什么（没有渲染进程 / 撞时限）。null 就是照常求值。 */
+  evalThrows: null as Error | null,
+  /** 每一次 dispatch 收到的东西（动作原样、以及当时传进去的快照）。 */
+  dispatched: [] as { tabId: string; action: { kind: string }; snapshot: unknown }[],
+  dispatchImpl: ((a: { kind: string }) => `派发了 ${a.kind}`) as (a: { kind: string }) => string,
+  dispatchNavImpl: (() => null) as () => NavigationObservation | null,
+  waits: [] as { tabId: string; until: unknown; timeoutMs: number }[],
+  waitImpl: (() => true) as () => boolean,
+  /** 标签清单可变 —— 一批动作中途 target=_blank 会开出新标签。 */
+  tabs: [] as { id: string; url: string; title: string }[],
+  /** 活动标签可配置。写死会让「标出用户正看着哪一个」这条断言在它恰好是首项时假绿。 */
+  activeTabId: 't1' as string | null,
+  navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
+  /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
+  unreported: new Map<string, { url: string; httpStatusCode: number }>(),
+  /** 标签归哪个对话。没登记 = 用户的（null）。`stateVisibleTo` 的替身照它过滤。 */
+  owners: new Map<string, string>(),
+  /** `open` 返回的「被上限挤掉的标签」。 */
+  evicted: [] as { tabId: string; ownerThreadId: string; url: string; title: string }[],
+  /** `open` 收到的参数，按顺序。 */
+  openArgs: [] as Record<string, unknown>[],
+  /** historyNav 收到了什么、回什么。null 表示「没有可去的历史」。 */
+  historyCalls: [] as Array<{ tabId: string; action: string }>,
+  historyImpl: (() => ({
+    navigationId: 'n2',
+    outcome: { kind: 'ok', finalUrl: 'https://a.example/prev', httpStatusCode: 200 },
+  })) as () => unknown,
+  /** 控制台报告由用例摆布。默认什么都没有。 */
+  consoleImpl: (() => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 })) as () => unknown,
+  /** `consoleCursor` 收到的每一个 tabId，按顺序 —— 用来断「取游标排在 open() 之前」。 */
+  consoleCursorCalls: [] as string[],
+  /** 请求报告由用例摆布，按收到的 `from` 分得开「上次返回之后」与「这一步」。默认什么都没有。 */
+  requestsImpl: ((_from: { seq: number }) => EMPTY_REQUESTS) as (from: { seq: number }) => unknown,
+  /** `requestsSince` 收到的参数，按顺序 —— 新开标签要从零游标起算。 */
+  requestsSinceCalls: [] as Array<{ tabId: string; from: unknown; upTo: unknown }>,
+  /** `requestCursor` 每调一次往前走 2：第一次是这一步开始（7），第二次是报告那一刻（9）。 */
+  reqSeq: 7,
+  /** 上一次报告的终点。 */
+  reqReported: { seq: 5, suppressed: 0, buffered: 5 },
+  /** `markRequestsReported` 收到的参数。 */
+  reqMarked: [] as Array<{ tabId: string; c: unknown }>,
+}));
+
+vi.mock('../browser/browserService', () => {
+  const wc = {
+    executeJavaScript: (code: string) => { bs.mainWorld.push(code); return Promise.resolve('主世界'); },
+    executeJavaScriptInIsolatedWorld: (worldId: number, scripts: { code: string }[]) => {
+      bs.isolated.push({ worldId, code: scripts[0].code });
+      return Promise.resolve(bs.isolatedImpl(scripts[0].code));
+    },
+    debugger: {
+      sendCommand: (method: string, params: unknown) => { bs.cdp.push({ method, params }); return Promise.resolve(); },
+    },
+  };
+  return {
+    WALKER_WORLD_ID: 31337,
+    browserService: {
+      getState: () => ({ tabs: bs.tabs, activeTabId: bs.activeTabId }),
+      stateVisibleTo: (threadId: string) => ({
+        tabs: bs.tabs.filter((t) => { const o = bs.owners.get(t.id); return o === undefined || o === threadId; }),
+        activeTabId: bs.activeTabId,
+      }),
+      getSnapshot: () => { bs.order.push('getSnapshot'); return bs.current; },
+      takeUnreportedNav: (tabId: string) => {
+        const v = bs.unreported.get(tabId) ?? null;
+        bs.unreported.delete(tabId);
+        return v;
+      },
+      snapshot: async () => { bs.order.push('snapshot'); return bs.snapshotImpl(); },
+      webContentsOf: () => { bs.order.push('webContentsOf'); return bs.noTab ? null : wc; },
+      /**
+       * 两道保护齐全的页内求值入口（没有渲染进程就不注入 + 罩时限）。
+       * 工具层拿 `webContentsOf()` 自己注脚本的那条路**必须没有调用方**：
+       * 崩过一次的标签上那是一次挂死，而 browser_read / browser_act 都是
+       * sequential 工具 —— 挂住就是整轮 run 永远不返回。
+       */
+      evalInPage: (_tabId: string, code: string) => {
+        bs.order.push('evalInPage');
+        if (bs.evalThrows) return Promise.reject(bs.evalThrows);
+        bs.isolated.push({ worldId: 31337, code });
+        return Promise.resolve(bs.isolatedImpl(code));
+      },
+      dispatch: (tabId: string, action: { kind: string }, snapshot: unknown) => {
+        bs.order.push(`dispatch:${action.kind}`);
+        bs.dispatched.push({ tabId, action, snapshot });
+        return Promise.resolve(bs.dispatchImpl(action));
+      },
+      dispatchAndObserveNavigation: (tabId: string, action: { kind: string }, snapshot: unknown) => {
+        bs.order.push(`dispatch:${action.kind}`);
+        bs.dispatched.push({ tabId, action, snapshot });
+        return Promise.resolve({ line: bs.dispatchImpl(action), navigation: bs.dispatchNavImpl() });
+      },
+      waitFor: (tabId: string, until: unknown, timeoutMs: number) => {
+        bs.order.push('waitFor');
+        bs.waits.push({ tabId, until, timeoutMs });
+        return Promise.resolve(bs.waitImpl());
+      },
+      open: (args: { url: string }) => {
+        bs.order.push(`open:${args.url}`);
+        bs.openArgs.push(args);
+        return Promise.resolve({ tabId: 't1', nav: bs.navImpl(), evicted: bs.evicted });
+      },
+      historyNav: (tabId: string, action: string) => {
+        bs.order.push(`historyNav:${action}`);
+        bs.historyCalls.push({ tabId, action });
+        return Promise.resolve(bs.historyImpl());
+      },
+      consoleCursor: (tabId: string) => {
+        bs.order.push(`consoleCursor:${tabId}`);
+        bs.consoleCursorCalls.push(tabId);
+        return { seq: 0, suppressed: 0, buffered: 0 };
+      },
+      consoleSince: () => bs.consoleImpl(),
+      requestCursor: (tabId: string) => {
+        bs.order.push(`requestCursor:${tabId}`);
+        const seq = bs.reqSeq;
+        bs.reqSeq += 2;
+        return { seq, suppressed: 0, buffered: seq };
+      },
+      requestReportedCursor: (tabId: string) => {
+        bs.order.push(`requestReportedCursor:${tabId}`);
+        return bs.reqReported;
+      },
+      markRequestsReported: (tabId: string, c: unknown) => { bs.reqMarked.push({ tabId, c }); },
+      requestsSince: (tabId: string, from: { seq: number }, upTo: unknown) => {
+        bs.requestsSinceCalls.push({ tabId, from, upTo });
+        return bs.requestsImpl(from);
+      },
+      enqueue: <T>(tabId: string, fn: () => Promise<T>) => { bs.order.push(`enqueue:${tabId}`); return fn(); },
+      withAgentDriving: <T>(tabId: string, threadId: string | null, fn: () => Promise<T>) => {
+        bs.order.push(`driving:${tabId}:${threadId}`); return fn();
+      },
+    },
+  };
+});
+
+/**
+ * `loginFlow` 的替身。真身要 electron 的 session（webRequestHub）与真页面 —— 它自己
+ * 有一整份单测（`loginFlow.test.ts`）。这里考的是**工具层到它的接线**：
+ * 参数怎么传下去、`submit` 的默认值、返回值里回显了什么、以及登录状态有没有挂到
+ * **每一个**工具结果的头部。
+ */
+const lf = vi.hoisted(() => ({
+  calls: [] as Array<{ tabId: string; opts: Record<string, unknown> }>,
+  notes: new Map<string, string>(),
+  fillImpl: (() => ({
+    entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth',
+    institutionName: '北京大学',
+    host: 'iaaa.pku.edu.cn',
+    field: 'input#user[name=userName]',
+    source: 'structure' as const,
+    submitted: false,
+    submitHow: null,
+    askedUser: false,
+  })) as () => unknown,
+}));
+
+vi.mock('../browser/loginFlow', () => ({
+  loginFlow: {
+    fill: (tabId: string, opts: Record<string, unknown>) => {
+      lf.calls.push({ tabId, opts });
+      return Promise.resolve(lf.fillImpl());
+    },
+    noteFor: (tabId: string) => lf.notes.get(tabId) ?? null,
+  },
+}));
+
+const snap = (over: Record<string, unknown> = {}) => ({
+  snapshotId: 'snap_aaa', generation: 'gen-1', url: 'https://a.example/q', title: '结果页',
+  nodes: [], collection: { truncated: false, returned: 0, totalKnown: 0 }, iframes: 0, ...over,
+});
+const node = (over: Record<string, unknown> = {}) => ({
+  index: 1, nodeId: 7, role: 'textbox', name: '检索框', x: 10, y: 20, w: 200, h: 30, ...over,
+});
+
+/**
+ * `browser_read` 那段页内表达式的返回值。**形状是 `{text, total}`**：`total` 是截断
+ * **之前**的正文长度，主进程靠它算出 `{truncated, returned, totalKnown}`。
+ * `total` 不给就默认「没截断」——用例要造截断得自己把它写大。
+ */
+const read = (text: string, total?: number) => ({ text, total: total ?? text.length });
+
+type Exec = (id: string, params: unknown, signal?: AbortSignal) => Promise<{ content: { text?: string }[]; details?: unknown }>;
+const noopAskShared = { onOpened: () => {}, onClosed: () => {} };
+const makeTools = (over: Partial<Parameters<typeof createBrowserTools>[0]> = {}) => createBrowserTools({
+  currentRunId: () => 'run-1',
+  cwd: '/tmp/kydog-test-cwd',
+  threadId: 'thread-1',
+  askShared: noopAskShared,
+  institution: { name: '北京大学', entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth' },
+  ...over,
+});
+const toolNamed = (name: string): { execute: Exec; description: string } =>
+  makeTools().find((t) => t.name === name) as unknown as { execute: Exec; description: string };
+
+const bodyOf = (r: { content: { text?: string }[] }): string => r.content.map((c) => c.text ?? '').join('\n');
+
+const act = (actions: unknown[], signal?: AbortSignal) =>
+  toolNamed('browser_act').execute('call-1', { tabId: 't1', actions }, signal);
+
+beforeEach(() => {
+  bs.order.length = 0; bs.isolated.length = 0; bs.mainWorld.length = 0; bs.cdp.length = 0;
+  bs.dispatched.length = 0; bs.waits.length = 0;
+  bs.historyCalls.length = 0;
+  bs.historyImpl = () => ({
+    navigationId: 'n2',
+    outcome: { kind: 'ok', finalUrl: 'https://a.example/prev', httpStatusCode: 200 },
+  });
+  bs.current = snap();
+  bs.snapshotImpl = () => snap({ snapshotId: 'snap_bbb' });
+  bs.isolatedImpl = () => null;
+  bs.dispatchImpl = (a) => `派发了 ${a.kind}`;
+  bs.dispatchNavImpl = () => null;
+  bs.waitImpl = () => true;
+  bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
+  bs.activeTabId = 't1';
+  bs.owners.clear();
+  bs.evicted = [];
+  bs.openArgs.length = 0;
+  bs.noTab = false;
+  bs.evalThrows = null;
+  // 不复位的话上一条用例摆的错误会渗进下一条，「没有错误就一个字都不加」那条会假红。
+  bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 });
+  bs.consoleCursorCalls.length = 0;
+  bs.requestsImpl = () => EMPTY_REQUESTS;
+  bs.requestsSinceCalls.length = 0;
+  bs.reqSeq = 7;
+  bs.reqReported = { seq: 5, suppressed: 0, buffered: 5 };
+  bs.reqMarked.length = 0;
+  lf.calls.length = 0;
+  lf.notes.clear();
+  bs.unreported.clear();
+});
+
+describe('六种动作真的接通到 browserService.dispatch（Task 4）', () => {
+  // 这一批之前 click / type / hover / select / scroll / wait 一律抛「这个动作还没有
+  // 实现」。**接通之后最要紧的不是「能跑」，是「跑的是 dispatch 那条路」** ——
+  // 三件事（滚进视野 / 重新量坐标 / 命中检查）与两道闸（渲染进程、密码）全在那里，
+  // 谁在工具层另开一条 `wc.debugger.sendCommand` 的近路，那六样一件都不会发生，
+  // 而返回值照样读起来是「做过了」。
+  const six = [
+    ['click', { kind: 'click', index: 1, snapshotId: 'snap_aaa' }],
+    ['hover', { kind: 'hover', index: 1, snapshotId: 'snap_aaa' }],
+    ['type', { kind: 'type', index: 1, snapshotId: 'snap_aaa', text: '量子计算' }],
+    ['select', { kind: 'select', index: 1, snapshotId: 'snap_aaa', value: '2024' }],
+    ['scroll', { kind: 'scroll', direction: 'down' }],
+    ['key', { kind: 'key', key: 'Enter' }],
+  ] as const;
+
+  for (const [kind, action] of six) {
+    it(`${kind} 走 dispatch，并把它说的那句话原样交给模型`, async () => {
+      bs.current = snap({ nodes: [node()] });
+      bs.dispatchImpl = () => `【${kind} 的真实结果】`;
+      const s = bodyOf(await act([action]));
+      expect(bs.dispatched.map((d) => d.action.kind)).toEqual([kind]);
+      expect(bs.dispatched[0].tabId).toBe('t1');
+      expect(s).toContain(`【${kind} 的真实结果】`);
+      expect(s).not.toContain('⚠');
+      // 派发一条都不许绕过 dispatch 直接发 CDP。
+      expect(bs.cdp).toEqual([]);
+    });
+  }
+
+  // dispatch 要在**当前**快照里解析 index。传 null 或传一份别的，编号会解析到
+  // 另一个元素上 —— 不报错，只是点错东西。
+  it('当前快照原样传给 dispatch —— index 只在那一份里解析', async () => {
+    const cur = snap({ snapshotId: 'snap_now', nodes: [node()] });
+    bs.current = cur;
+    await act([{ kind: 'click', index: 1, snapshotId: 'snap_now' }]);
+    expect(bs.dispatched[0].snapshot).toBe(cur);
+  });
+
+  it('点击触发的导航终态挂在同一个动作结果上，不推迟到下一次工具调用', async () => {
+    bs.current = snap({ nodes: [node()] });
+    bs.dispatchImpl = () => '已点击「recent」';
+    bs.dispatchNavImpl = () => ({
+      navigationId: 'click-nav',
+      outcome: { kind: 'ok', finalUrl: 'https://example.org/recent', httpStatusCode: 200 },
+    });
+    const s = bodyOf(await act([{ kind: 'click', index: 1, snapshotId: 'snap_aaa' }]));
+    expect(s).toContain('已点击「recent」');
+    expect(s).toContain('https://example.org/recent');
+    expect(s).toContain('200');
+  });
+
+  it('dispatch 抛错：整批停在那里，前面几步的结果照常返回', async () => {
+    bs.current = snap({ nodes: [node()] });
+    let n = 0;
+    bs.dispatchImpl = (a) => {
+      if (++n === 2) throw new KydogError('browser.click_intercepted', '被 div.cookie-banner 挡住了');
+      return `做了 ${a.kind}`;
+    };
+    const s = bodyOf(await act([
+      { kind: 'key', key: 'Enter' },
+      { kind: 'click', selector: '.next' },
+      { kind: 'key', key: 'Tab' },
+    ]));
+    expect(s).toContain('做了 key');
+    expect(s).toContain('⚠');
+    expect(s).toContain('被 div.cookie-banner 挡住了');
+    expect(bs.dispatched.length).toBe(2);            // 第三步没有执行
+  });
+
+  it('extract 不走 dispatch —— 它要整批预算，跑在工具层', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: 'x' }], rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.dispatched).toEqual([]);
+  });
+});
+
+describe('wait 走 waitFor：超时是「条件未达成」，不是「这个源不行」', () => {
+  it('until 解析之后交给 waitFor，默认时限是 WAIT_DEFAULT_MS', async () => {
+    const s = bodyOf(await act([{ kind: 'wait', until: { selector: '.result' } }]));
+    expect(bs.waits).toEqual([{ tabId: 't1', until: { selector: '.result', state: 'present' }, timeoutMs: WAIT_DEFAULT_MS }]);
+    expect(s).not.toContain('⚠');
+    // 等的是哪一件事要说准：把「出现」说成「消失」，模型据此推断的页面状态整个是反的。
+    expect(s).toContain('.result');
+    expect(s).toContain('出现');
+    expect(s).not.toContain('消失');
+  });
+
+  it('state=absent 的那句话说的是「消失」', async () => {
+    const s = bodyOf(await act([{ kind: 'wait', until: { selector: '.loading', state: 'absent' } }]));
+    expect(s).toContain('消失');
+    expect(s).not.toContain('出现');
+  });
+
+  it('模型给的 timeoutMs 原样传下去', async () => {
+    await act([{ kind: 'wait', until: { urlMatches: '/search' }, timeoutMs: 3000 }]);
+    expect(bs.waits[0]).toMatchObject({ until: { urlMatches: '/search' }, timeoutMs: 3000 });
+  });
+
+  // spec §4.2：「超时只表示条件未达成，不表示别的；它是一个动作失败，按出错即停处理」。
+  it('条件没达成 → 整批停下，并说清这只是条件没成立', async () => {
+    bs.waitImpl = () => false;
+    const s = bodyOf(await act([
+      { kind: 'wait', until: { selector: '.result' }, timeoutMs: 2000 },
+      { kind: 'key', key: 'Enter' },
+    ]));
+    expect(s).toContain('⚠');
+    expect(s).toContain('2000');
+    expect(s).toContain('.result');
+    // 说成「打不开 / 换个源」的话，模型会去换一个好好的源。
+    expect(s).not.toMatch(/打不开|源不可用|换源|换一个源/);
+    expect(bs.dispatched).toEqual([]);               // 后面那一步没有执行
+  });
+
+  // until 形态不合在**整批跑起来之前**就要拒（validateBatch 那一层），
+  // 不能等到轮询时才发现。
+  it('until 形态不合 → 根本不进队列', async () => {
+    await expect(act([{ kind: 'wait', until: {} }])).rejects.toThrow(/wait.until/);
+    expect(bs.order).toEqual([]);
+  });
+});
+
+describe('这一批里新开的标签必须列出来（spec §5.1）', () => {
+  // 不列的话：模型点了一下、返回值说「成功」，而内容出现在一个它不知道存在的标签里，
+  // 接下来它会对着旧标签继续操作 —— 一整轮检索都在一个没变的页面上跑。
+  it('动作中途开出来的标签，结果里点名带上 id 与地址', async () => {
+    bs.dispatchImpl = (a) => {
+      bs.tabs.push({ id: 'tab_new1', url: 'https://publisher.example/article/42', title: '' });
+      return `做了 ${a.kind}`;
+    };
+    const s = bodyOf(await act([{ kind: 'click', selector: 'a[target=_blank]' }]));
+    expect(s).toContain('tab_new1');
+    expect(s).toContain('https://publisher.example/article/42');
+    expect(s).toMatch(/新开|新标签/);
+  });
+
+  it('没开新标签就一个字都不提 —— 不许有假阳性', async () => {
+    const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
+    expect(s).not.toMatch(/新开|新标签/);
+  });
+});
+
+describe('tabsLine 带标题', () => {
+  /**
+   * agent 要从这一行抄 `tabId`。只给 host 的话，两个同源标签长得一模一样 ——
+   * 它没法判断哪个是用户说的那一篇，只能挨个切过去看。
+   *
+   * 两个标签的 `tabId` 本来就不同 —— 光凭这一点，「输出里两条都能认出来」这句话
+   * 不能证明是标题起的作用，也可能只是 id 本来就不一样。把 id 抹成同一个占位符
+   * 之后：① 两条还剩的内容必须仍然不同（唯一还没抹掉的就是标题）；
+   * ② 再把标题也抹掉之后，两条必须变得一模一样（证明标题就是那个唯一的差异点）。
+   */
+  it('两个同源标签靠标题分得开', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://www.cnki.net/kns8/defaultresult/index', title: '面向遥感图像的语义分割综述' },
+      { id: 'tab_9f8e7d6c', url: 'https://www.cnki.net/kns8/defaultresult/index', title: '联邦学习在边缘计算中的应用综述' },
+    ];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const entries = header.replace(/^标签页: /, '').split(' · ');
+    expect(entries.length).toBe(2);
+
+    const idErased = entries.map((e) => e.replace(/^\[[^\]]*\]\*?/, '[X]'));
+    // 抹掉 id 之后两条依然不同 —— 剩下还能造成这个不同的只有标题。
+    expect(idErased[0]).not.toBe(idErased[1]);
+
+    const titleAlsoErased = idErased.map((e) => e.replace(/ — .*$/, ''));
+    // 连标题也抹掉之后两条变得完全一样（同 host、同没有 id）—— 证明刚才那处
+    // 不同就是标题，不是别的什么东西在悄悄帮忙分辨。
+    expect(titleAlsoErased[0]).toBe(titleAlsoErased[1]);
+
+    expect(header).toContain('面向遥感图像的语义分割综述');
+    expect(header).toContain('联邦学习在边缘计算中的应用综述');
+  });
+
+  it('标题过长按上限截断，并带省略号', async () => {
+    const longTitle = '基于图神经网络的分子性质预测方法研究进展与前沿综述专题深入探讨这一方向的若干关键问题'.slice(0, 200).padEnd(200, '补');
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: longTitle }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBeLessThanOrEqual(TAB_TITLE_MAX + 1);
+    expect(seg.endsWith('…')).toBe(true);
+  });
+
+  it('没有标题的标签退回只给 host，不留一个空的破折号', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).not.toContain(' — ');
+    expect(header).toContain('a.example');
+  });
+
+  // 边界：`>` 而不是 `>=` —— 正好 40 字不截，41 字才截。评审批准前这两个点零覆盖。
+  it('标题正好 40 字：不截断，原样保留', async () => {
+    const title = '综述'.padEnd(40, '补');
+    expect(title.length).toBe(40);
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBe(40);
+    expect(seg.endsWith('…')).toBe(false);
+    expect(seg).toBe(title);
+  });
+
+  it('标题 41 字：截断到 40 字 + 省略号', async () => {
+    const title = '综述'.padEnd(41, '补');
+    expect(title.length).toBe(41);
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBe(41); // 40 个字 + 省略号
+    expect(seg.endsWith('…')).toBe(true);
+    expect(seg.slice(0, 40)).toBe(title.slice(0, 40));
+  });
+
+  it('标题前后带空白：不进清单', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '  知网首页  ' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    const seg = header.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg).toBe('知网首页');
+  });
+
+  // 全是空白的标题：trim 之后是空串，应当退回「没有标题」同一条路 —— 只给 host，不带破折号。
+  it('标题全是空白：等同没有标题，退回只给 host 不留破折号', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '   ' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).not.toContain(' — ');
+    expect(header).toContain('a.example');
+  });
+
+  // 混合情形：有标题、没有 url。「url 非空、标题为空」已有用例覆盖，这条补另一半。
+  it('标题非空、url 为空：host 退化成 about:blank，仍拼上标题', async () => {
+    bs.tabs = [{ id: 't1', url: '', title: '文献综述' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('about:blank — 文献综述');
+  });
+
+  // Task 3 落地的 browser.newTab：空白标签的 url 是空串，host 退化成 about:blank；
+  // 空白标签的 title 多半也是空串。两件事凑在一起不许拼出一个孤零零的破折号。
+  it('空白标签：host 退化成 about:blank，标题为空时同样不留破折号', async () => {
+    bs.tabs = [{ id: 't1', url: '', title: '' }];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('about:blank');
+    expect(header).not.toContain(' — ');
+    expect(header.trim().endsWith('—')).toBe(false);
+  });
+
+  // 既有行为不许被这次改动弄丢。
+  it('活动标签仍然带 *', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://a.example/q', title: '标题A' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('[t1]*');
+    expect(header).not.toContain('[t2]*');
+  });
+
+  // ③ 终评发现：`tabsLine` 从前是 `activeId ?? s.activeTabId`，而 browser_act /
+  // browser_read / browser_login 传的是**被操作的那个标签**——三个工具都不调
+  // `activate`，所以 `*` 标的不是用户在看的标签，是假的。这条用例的 fixture 刻意
+  // 让「被操作的标签」（t1，act() 硬编码的 tabId）与「活动标签」（activeTabId）不同，
+  // 逼出这个区别：写死 tabId、或者恰好两者相等的用例，这条 bug 都测不出来。
+  it('静默操作一个非活动标签时，* 仍然标在活动标签上，不标被操作的那个（Task 3 裁决）', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://a.example/q', title: '标题A' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    bs.activeTabId = 't2';   // 用户此刻看着 t2；这次 act() 操作的是 t1（bs 里硬编码）
+    const header = bodyOf(await act([{ kind: 'key', key: 'Enter' }])).split('\n')[0];
+    expect(header).toContain('[t2]*');
+    expect(header).not.toContain('[t1]*');
+  });
+
+  it('browser_read 同理：* 标的是活动标签，不是被读的那个标签', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://a.example/q', title: '标题A' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    bs.activeTabId = 't2';
+    bs.isolatedImpl = () => ({ text: '正文', total: 2 });
+    const header = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' })).split('\n')[0];
+    expect(header).toContain('[t2]*');
+    expect(header).not.toContain('[t1]*');
+  });
+
+  it('browser_login 同理：* 标的是活动标签，不是被填的那个标签', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://iaaa.pku.edu.cn/', title: '登录页' },
+      { id: 't2', url: 'https://b.example/', title: '标题B' },
+    ];
+    bs.activeTabId = 't2';
+    const header = bodyOf(await toolNamed('browser_login').execute('call-login', { tabId: 't1' })).split('\n')[0];
+    expect(header).toContain('[t2]*');
+    expect(header).not.toContain('[t1]*');
+  });
+});
+
+describe('密码硬闸在工具层这一侧的样子', () => {
+  // 闸本体与它的两道调用点都搬进了 `browserService.dispatch`（真正拿得到活元素的
+  // 那一层），由 browserService.test.ts 的两条用例守着：
+  // 「快照说它是密码框 → 一条 CDP 都不发」与「selector 定位的密码框 → 第二道在页面里拦」。
+  // 工具层这一侧要守的是**别把它咽掉**：报出来，而且模型给的那串文本一个字都不回显。
+  it('dispatch 报密码闸时，整批停下并如实转达', async () => {
+    bs.current = snap({ nodes: [node({ isPassword: true, name: '密码' })] });
+    bs.dispatchImpl = () => {
+      throw new KydogError('browser.password_field',
+        '不能往密码框里输入。机构登录用 browser_login（由主进程填），其他登录请交给用户');
+    };
+    const s = bodyOf(await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: 'hunter2' }]));
+    expect(s).toContain('不能往密码框里输入');
+    expect(s).toContain('browser_login');
+    expect(s).toContain('⚠');
+  });
+
+  it('那一批里模型给的文本一个字都不回显', async () => {
+    bs.current = snap({ nodes: [node({ isPassword: true })] });
+    bs.dispatchImpl = () => { throw new KydogError('browser.password_field', '不能往密码框里输入。'); };
+    const r = await act([{ kind: 'type', index: 1, snapshotId: 'snap_aaa', text: 'hunter2' }]);
+    expect(JSON.stringify(r)).not.toContain('hunter2');
+  });
+
+  // 工具描述是模型第一眼看到的契约。六种动作接通之后，那句「当前版本只接通了 key 与
+  // extract」必须跟着删 —— 留着它模型会绕开 click / type 去想别的办法。
+  it('工具描述不再说任何动作没实现', () => {
+    const d = toolNamed('browser_act').description;
+    expect(d).not.toMatch(/还没有实现|还没实现|只接通/);
+    expect(d).toContain('click');
+    expect(d).toContain('type');
+  });
+
+  // 「type 会先清空目标框」这句话对 date / time / month / week / datetime-local
+  // **是假的**（实测：insertText 对分段选择器完全无效，先清空反而把原值抹了）。
+  // 描述是模型唯一读得到的契约，说了做不到的事，模型就会照着排剧本。
+  it('描述里「先清空」这句话必须把做不到的那一类说清楚', () => {
+    const d = toolNamed('browser_act').description;
+    expect(d).toContain('先清空');
+    expect(d).toMatch(/date|日期/);
+  });
+});
+
+describe('extract 的接线：隔离世界 + 整批预算（评审变异 M13）', () => {
+  const rowsOf = (n: number, chars: number) => ({
+    rows: Array.from({ length: n }, (_, i) => ({ t: `${i}`.padEnd(chars, 'x') })),
+    rowTruncation: { truncated: false, returned: n, totalKnown: n },
+    fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+  });
+
+  // 把 executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID, …) 改回 wc.executeJavaScript(…)
+  // → 评审实测三条 gate 零信号。替身这一层钉得住「调的是哪个入口、世界 id 是哪个」；
+  // 「隔离世界真的骗不到页面覆写」要靠 e2e（E-1 第一条断言）。
+  it('抽取走隔离世界，世界 id 就是 walker 那个，主世界一次都不碰', async () => {
+    bs.isolatedImpl = () => rowsOf(1, 10);
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.isolated.length).toBe(1);
+    expect(bs.isolated[0].worldId).toBe(WORLD_ID);
+    expect(bs.mainWorld).toEqual([]);
+  });
+
+  // M13 的另一半：把 `budget.admit(res.rows, collected)` 换成 `collected.push(...res.rows)`
+  // → 一样零信号。E-1 原来的断言写法（覆写 querySelectorAll 看抽到真结构还是伪造结构）
+  // 拦不住这一条，所以它必须在这里守住。
+  it('整批预算跨步骤累计，超了要如实回报而不是照单全收', async () => {
+    // 每步 40 行 × 约 1000 字符 ≈ 4 万字符，两步就超过 MAX_BATCH_CHARS。
+    bs.isolatedImpl = () => rowsOf(40, 1000);
+    const s = bodyOf(await act([
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+    ]));
+    expect(s).toContain(`累计超过整批 ${MAX_BATCH_CHARS} 字符的预算`);
+    expect(s).toContain('这是截断，不是「只抽到这么多」');
+    // 「共抽到 80 条 / 收下的少于 80」这两个数都要是真的。
+    expect(s).toContain('共抽到 80 条');
+    const kept = Number(/抽到 (\d+) 条（这一批/.exec(s)![1]);
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(80);
+  });
+
+  it('没超预算时一个字都不提预算 —— 截断回报不许有假阳性', async () => {
+    bs.isolatedImpl = () => rowsOf(2, 10);
+    const s = bodyOf(await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]));
+    expect(s).toContain('抽到 2 条：');
+    expect(s).not.toContain('预算');
+  });
+
+  /**
+   * **实发字节这一维**（终评 tools 面 I2）。
+   *
+   * 上面两条守的是**预算的行为**（丢了几行、话术对不对）；它们守不住
+   * **拼装出来到底多少字节** —— 预算按 **compact** JSON 记账，而工具结果实发的是
+   * `JSON.stringify(collected, null, 1)` 的美化输出（deferred D18，最坏 1.40x）。
+   * 评审变异实测：把 `null, 1` 改成 `null, 8` → tsc 0 / lint 0 / `npm test` **全绿**。
+   *
+   * **e2e 那条（E-1b）也接不住这一刀**：本轮实测过 —— 它的夹具每行是一个 1000 字符的
+   * 大 blob，缩进只加在键与括号上，摊到那种行上几乎不动，改成 8 之后 e2e 照样绿。
+   * 所以这一条刻意用**多字段短值**的行（D18 那个最坏形状），让缩进的膨胀真的显出来。
+   *
+   * 上界的依据：预算按 compact 记 `MAX_BATCH_CHARS`，indent=1 的最坏膨胀 1.40x
+   * → 7 万；余下给头部（标签行 / 逐步话术）与收尾快照。**这不是逐字节封顶**，
+   * 它守的是量级：任何让实发翻倍的改动（换 indent、把别的段落塞进数据块）都会在这里红。
+   */
+  it('工具结果实发的字符数落在说得出依据的上界内（多字段短值那种最坏行）', async () => {
+    // 16 个短字段：compact 下一行约 100 字符，indent=1 会给每个键各加一行缩进 ——
+    // 这正是 D18 量到 1.40x 的形状。
+    const wide = (n: number) => ({
+      rows: Array.from({ length: n }, (_, i) => Object.fromEntries(
+        Array.from({ length: 16 }, (_, k) => [`f${k}`, `r${i}c${k}`]),
+      )),
+      rowTruncation: { truncated: false, returned: n, totalKnown: n },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    bs.isolatedImpl = () => wide(50);
+    const r = await act(Array.from({ length: 12 },
+      () => ({ kind: 'extract', selectors: { item: '.r', f0: 'h3' } })));
+    const emitted = bodyOf(r);
+    // 先确认这一批真把预算撑爆了 —— 没撑爆的话下面那条上界是白给的
+    expect(emitted, '这一批没有触发整批预算截断，下面那条上界就没在守任何东西')
+      .toContain(`累计超过整批 ${MAX_BATCH_CHARS} 字符的预算`);
+    const CEILING = Math.round(MAX_BATCH_CHARS * 1.4) + 10_000;
+    expect(emitted.length,
+      `这一次工具结果实发 ${emitted.length} 字符，超过上界 ${CEILING}。`
+      + `预算按 compact JSON 记 ${MAX_BATCH_CHARS}，实发是 indent=1 的美化输出`
+      + '（最坏 1.40x），余下 10000 给头部与收尾快照 —— 超出就说明实发与记账的比例变了'
+      + '（换了 indent？把别的段落塞进数据块了？）。这一维只有这条用例在守：'
+      + '预算的行为断言与 e2e 的 E-1b 都接不住它。').toBeLessThan(CEILING);
+  });
+});
+
+describe('browser_act 的整批走 enqueue + withAgentDriving（I1）', () => {
+  // browserService.ts 的两处 docblock 逐字写着这两个「公开是给 Task 4 的……不要另开
+  // 一条路」。不走的后果：(a) 整批期间 isAgentActive 恒为 false → 动作触发的
+  // window.open 新标签被判成用户的 → 不受 agent 标签上限管；(b) 与渲染层的
+  // browser.navControl / browser.open 在同一标签上不串行。
+  it('排队与驱动窗口都套在整批外面，派发与收尾快照都在里面', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [], rowTruncation: { truncated: false, returned: 0, totalKnown: 0 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    // `getSnapshot` 是取 `before` 那一份：**它也必须在队列里面**（最终复评 m4）。
+    // 取在队列外的话，这一批在队列里等的那段时间同一个标签上别人产生的新快照
+    // 会被算进「本批的页面变化」。
+    expect(bs.order).toEqual([
+      'enqueue:t1', 'driving:t1:thread-1', 'getSnapshot', 'consoleCursor:t1',
+      'requestReportedCursor:t1', 'requestCursor:t1', 'evalInPage', 'snapshot', 'requestCursor:t1',
+    ]);
+  });
+
+  it('browser_read 也走同一条路', async () => {
+    bs.isolatedImpl = () => read('正文');
+    await toolNamed('browser_read').execute('call-2', { tabId: 't1' });
+    expect(bs.order).toEqual(['enqueue:t1', 'driving:t1:thread-1', 'evalInPage']);
+  });
+
+  // 形状不对的一批不该先去占住这个标签的队列。
+  it('批次校验在排队之前 —— 不认识的动作根本进不了队列', async () => {
+    await expect(act([{ kind: 'navigate', url: 'https://evil.example/' }])).rejects.toThrow(/不认识的动作/);
+    expect(bs.order).toEqual([]);
+  });
+});
+
+describe('browser_read 走隔离世界（I3）', () => {
+  // 与 extract 当初搬进隔离世界的理由一字不差：页面覆写 document.querySelector /
+  // innerText 骗得到主世界。整页正文同样是模型当事实用的东西。
+  it('读正文用的是隔离世界，不是主世界', async () => {
+    bs.isolatedImpl = () => read('正文');
+    const s = bodyOf(await toolNamed('browser_read').execute('call-2', { tabId: 't1' }));
+    expect(bs.mainWorld).toEqual([]);
+    expect(bs.isolated.map((r) => r.worldId)).toEqual([WORLD_ID]);
+    expect(s).toContain('正文');
+  });
+});
+
+/**
+ * **`browser_read` 的截断必须显式回报**（spec §5.5，Task 9 评审的裁决 A）。
+ *
+ * 在这之前它是 `.slice(0, 20000)` 之后直接把字符串塞进边界标记里 —— 一篇长论文的
+ * 正文在两万字符处**戛然而止，返回值里一个字都不提**。模型读到的「文章到此为止」
+ * 与「我只给了你前两万字」长得一模一样，而这两件事的下一步完全不同（一个是可以
+ * 开始写摘要，一个是必须换 `extract` 按章节取）。
+ *
+ * 形状照仓库里已有的那一套：`{truncated, returned, totalKnown?}`。这里 `totalKnown`
+ * **数得出来**（截断之前的 `innerText.length` 就在页内那段表达式手上），所以必须给；
+ * 数不出来才不给这个键（`extract` 的 `fieldTruncation` 就是那一种）。
+ */
+describe('browser_read 的截断显式回报（裁决 A）', () => {
+  const readBody = () => toolNamed('browser_read').execute('c', { tabId: 't1' }).then(bodyOf);
+
+  it('没截断的时候一个字都不加 —— 不给每次调用添噪声', async () => {
+    bs.isolatedImpl = () => read('短短一篇正文');
+    const s = await readBody();
+    expect(s).toContain('短短一篇正文');
+    expect(s).not.toContain('已截断');
+  });
+
+  it('截断了就说清：截了多少、本页共多少、上限是多少', async () => {
+    bs.isolatedImpl = () => read('前两万字'.repeat(1), 87654);
+    const s = await readBody();
+    expect(s).toContain('正文已截断');
+    expect(s).toContain('87654');            // totalKnown：本页正文的真长度
+    expect(s).toContain(String(READ_MAX_CHARS)); // 上限
+  });
+
+  it('截断附注在边界标记**外面** —— 它是我们说的话，不是页面内容', async () => {
+    bs.isolatedImpl = () => read('正文开头', 99999);
+    const s = await readBody();
+    const note = s.indexOf('正文已截断');
+    const open = s.indexOf(PAGE_CONTENT_OPEN);
+    expect(note).toBeGreaterThanOrEqual(0);
+    expect(open).toBeGreaterThanOrEqual(0);
+    expect(note).toBeLessThan(open);
+  });
+
+  it('上限只有一份 —— 注入的表达式里那个数就是 READ_MAX_CHARS', async () => {
+    bs.isolatedImpl = () => read('正文');
+    await readBody();
+    const code = bs.isolated.map((r) => r.code).join('\n');
+    expect(code).toContain(String(READ_MAX_CHARS));
+  });
+
+  it('页面回了个不认识的形状：明确报错，不把它当正文交出去', async () => {
+    // 从前这里回的就是一个裸字符串。**退回裸字符串必须红** —— 那时 total 无从得知，
+    // 而「不知道有没有截断」被当成「没有截断」正是这条缺陷本身。
+    bs.isolatedImpl = () => '一段裸字符串';
+    await expect(toolNamed('browser_read').execute('c', { tabId: 't1' }))
+      .rejects.toMatchObject({ code: 'browser.page_no_result' });
+  });
+});
+
+// ── 页内求值必须走带闸的那个入口（C1）──────────────────────────────────────
+//
+// 实测：渲染进程崩过一次之后 `getOSProcessId()` 回 0，而 `isAttached()` 仍是 true、
+// `isDestroyed()` 是 false —— `webContentsOf()` 照常回一个非 null 的 wc，
+// 而在它上面求值**永不 settle**（3 秒内无任何结果）。browser_read 与 extract
+// 都在 sequential 工具里，挂住就是整轮 run 永远不返回，`signal` 也救不回来
+// （它只在步骤之间查）。所以这两条路都不许自己拿 wc 注脚本。
+describe('页内求值走 evalInPage，不自己拿 webContents 注脚本', () => {
+  it('browser_read 不碰 webContentsOf，走的是带闸的入口', async () => {
+    bs.isolatedImpl = () => read('正文');
+    await toolNamed('browser_read').execute('c', { tabId: 't1' });
+    expect(bs.order).toContain('evalInPage');
+    expect(bs.order).not.toContain('webContentsOf');
+  });
+
+  it('extract 不碰 webContentsOf，走的是带闸的入口', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: '一篇论文' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    expect(bs.order).toContain('evalInPage');
+    expect(bs.order).not.toContain('webContentsOf');
+  });
+
+  it('标签没有渲染进程时 browser_read 当场报错，不挂住', async () => {
+    bs.evalThrows = new KydogError('browser.not_dispatchable', '标签 t1 还没有渲染进程');
+    await expect(toolNamed('browser_read').execute('c', { tabId: 't1' }))
+      .rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+  });
+
+  // 一批里前面几步抽到的东西不该跟着这一条一起丢 —— 与「出错即停但已抽到的数据
+  // 全部返回」是同一条承诺。
+  it('extract 撞上求值失败：这一批停在那里，前面抽到的照常返回', async () => {
+    let n = 0;
+    bs.isolatedImpl = () => {
+      if (++n === 2) throw new KydogError('browser.page_no_result', '页面没有回应这次求值');
+      return {
+        rows: [{ t: '第一步抽到的' }],
+        rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+        fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+      };
+    };
+    const s = bodyOf(await act([
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+      { kind: 'extract', selectors: { item: '.r', t: 'h3' } },
+    ]));
+    expect(s).toContain('第一步抽到的');
+    expect(s).toContain('页面没有回应这次求值');
+  });
+});
+
+describe('收尾快照抛了也要把已经抽到的数据交出来（I2）', () => {
+  // 标签在这一刻已经没了（用户关了侧栏那个标签、或它被 agent 标签上限挤掉）就抛
+  // browser.no_tab。快照在 try 之外的时候，这一批**已经抽到的数据全部跟着丢掉** ——
+  // 与 ACT_DESC 承诺的「出错即停但已抽到的数据全部返回」正好相反。
+  it('抽到的数据照常返回，并说清页面此刻什么样这次说不出来', async () => {
+    bs.isolatedImpl = () => ({
+      rows: [{ t: '一篇论文' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] },
+    });
+    bs.snapshotImpl = () => { throw new KydogError('browser.no_tab', '没有这个标签页：t1'); };
+    const r = await act([{ kind: 'extract', selectors: { item: '.r', t: 'h3' } }]);
+    const s = bodyOf(r);
+    expect(s).toContain('一篇论文');
+    expect(s).toContain('抽到 1 条');
+    expect(s).toContain('取不到收尾快照');
+    // 「我没取到」与「页面没有变化」绝不许长得一样。
+    expect(s).not.toContain('页面没有变化');
+    expect((r.details as { snapshotId: string | null }).snapshotId).toBeNull();
+  });
+});
+
+describe('错的 tabId 不许先去占住队列（最终复评 m3）', () => {
+  // `enqueue` 无条件 `queues.set(tabId, …)`，而清理只在真标签的回收路径上 ——
+  // 模型手滑写错一个 tabId 每次留一个永不删除的条目。那行注释立的规矩是
+  // 「只增不减」不许发生。
+  it('browser_act：不存在的标签当场报 no_tab，一次 enqueue 都不发生', async () => {
+    await expect(toolNamed('browser_act').execute('c', { tabId: 't_typo', actions: [{ kind: 'key', key: 'Enter' }] }))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(bs.order).toEqual([]);
+  });
+
+  it('browser_read 同样', async () => {
+    await expect(toolNamed('browser_read').execute('c', { tabId: 't_typo' }))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(bs.order).toEqual([]);
+  });
+
+  it('真的存在的标签照常进队列 —— 上面两条不是空绿', async () => {
+    await act([{ kind: 'key', key: 'Enter' }]);
+    expect(bs.order[0]).toBe('enqueue:t1');
+  });
+});
+
+describe('browser_open 的收尾快照抛了，导航结论不许跟着一起丢（最终复评登记项）', () => {
+  // 与 browser_act 的 I2 是同一个失败形状：标签在这一刻已经没了就抛 browser.no_tab，
+  // 把**已经拿到的导航结论**一起丢光 —— 而 describeNav 那句话（尤其 timeout /
+  // superseded / blocked 几条）是模型唯一读得到的协议事实。
+  it('快照失败时，导航那句话照常返回，并说清这是「没看到」', async () => {
+    bs.snapshotImpl = () => { throw new KydogError('browser.no_tab', '没有这个标签页：t1'); };
+    const s = bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }));
+    expect(s).toContain('https://a.example/q');
+    expect(s).toContain('取不到页面快照');
+    expect(s).toContain('没看到');
+  });
+
+  it('快照正常时照常带快照 —— 上一条不是空绿', async () => {
+    bs.snapshotImpl = () => snap({ snapshotId: 'snap_open', title: '结果页' });
+    const s = bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }));
+    expect(s).toContain('snap_open');
+    expect(s).not.toContain('取不到页面快照');
+  });
+});
+
+// ── browser_login（Task 7）──────────────────────────────────────────────────
+
+/**
+ * 工具层到 `loginFlow` 的接线。判据本身（域、TOCTOU、停手、观测者）在
+ * `loginFlow.test.ts` 与 `loginFill.test.ts` 里；这里守的是**参数怎么传下去、
+ * 默认值取哪一侧、返回值回显了什么**。
+ */
+const login = (params: Record<string, unknown> = {}, signal?: AbortSignal) =>
+  toolNamed('browser_login').execute('call-login', { tabId: 't1', ...params }, signal);
+
+describe('browser_login：参数原样传给 loginFlow', () => {
+  it('runId、threadId、tabId、usernameIndex、snapshotId 都传下去了', async () => {
+    await login({ usernameIndex: 3, snapshotId: 'snap_aaa' });
+    expect(lf.calls).toHaveLength(1);
+    expect(lf.calls[0].tabId).toBe('t1');
+    expect(lf.calls[0].opts.runId).toBe('run-1');
+    // 驱动（标签归属）跟对话走 —— 两个值不同，传反了这两行至少红一行
+    expect(lf.calls[0].opts.threadId).toBe('thread-1');
+    expect(lf.calls[0].opts.usernameIndex).toBe(3);
+    expect(lf.calls[0].opts.snapshotId).toBe('snap_aaa');
+  });
+
+  /**
+   * **不给 submit 就是不提交。** 两个方向的代价不对称：多提交一次会在有验证码的
+   * 页面上送出一次必然失败的登录，而「同一轮失败一次就停手」意味着那是本轮唯一的
+   * 机会（高校 IdP 还会为连续失败锁账号）；少提交一次只是让模型多点一下按钮。
+   */
+  it('submit 不给 → false', async () => {
+    await login();
+    expect(lf.calls[0].opts.submit).toBe(false);
+  });
+
+  it('submit 给 true → true；给 false → false', async () => {
+    await login({ submit: true });
+    expect(lf.calls[0].opts.submit).toBe(true);
+    await login({ submit: false });
+    expect(lf.calls[1].opts.submit).toBe(false);
+  });
+
+  it('ask 是一个函数（首次确认走它，不是 loginFlow 自己去发明一个挂起）', async () => {
+    await login();
+    expect(typeof lf.calls[0].opts.ask).toBe('function');
+  });
+
+  /** 与另外三个工具同一条规矩：`enqueue` 只增不减，标签不存在要在排队之前就拒。
+   *  而且这一条要排在问用户**之前** —— 一个写错的 tabId 不该先弹一个确认框。 */
+  it('标签不存在 → browser.no_tab，且一次都不去碰 loginFlow', async () => {
+    await expect(login({ tabId: 't_typo' })).rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(lf.calls).toEqual([]);
+  });
+});
+
+describe('browser_login 的返回值', () => {
+  it('回显当前的机构名与 entityID —— description 里那份是会话开始时的快照，会旧', async () => {
+    const s = bodyOf(await login());
+    expect(s).toContain('北京大学');
+    expect(s).toContain('https://iaaa.pku.edu.cn/idp/shibboleth');
+  });
+
+  it('回显实际选中的账号框，并要求模型看一眼对不对', async () => {
+    const s = bodyOf(await login());
+    expect(s).toContain('input#user[name=userName]');
+    expect(s).toContain('确认一下它是不是账号框');
+  });
+
+  it('没提交时说清「还没提交」，并指向头部那行作为成功判据', async () => {
+    const s = bodyOf(await login());
+    expect(s).toContain('没有提交');
+    expect(s).toContain('browser_act');
+    expect(s).toContain('唯一的成功判据');
+  });
+
+  /** 「请求提交」不等于「登录成功」—— 表单校验挡下来、密码错都会走到看起来正常的页面。 */
+  it('提交了也不许说成「登录成功」', async () => {
+    lf.fillImpl = () => ({
+      entityID: 'https://iaaa.pku.edu.cn/idp/shibboleth', institutionName: '北京大学',
+      host: 'iaaa.pku.edu.cn', field: 'input#u', source: 'model', submitted: true,
+      submitHow: 'requestSubmit', askedUser: false,
+    });
+    const s = bodyOf(await login({ submit: true }));
+    expect(s).toContain('请求提交');
+    expect(s).toContain('不等于「登录成功」');
+    expect(s).toContain('SAML 断言回传');
+  });
+
+  it('刚问过用户的那一次会说出来（用户授权的是一次持久化）', async () => {
+    lf.fillImpl = () => ({
+      entityID: 'e', institutionName: '北京大学', host: 'sso.pku.edu.cn',
+      field: 'input#u', source: 'structure', submitted: false, submitHow: null, askedUser: true,
+    });
+    expect(bodyOf(await login())).toContain('已经记住');
+  });
+
+  it('模型指的框与结构规则找的框，说法不一样', async () => {
+    const auto = bodyOf(await login());
+    lf.fillImpl = () => ({
+      entityID: 'e', institutionName: '北京大学', host: 'h',
+      field: 'input#u', source: 'model', submitted: false, submitHow: null, askedUser: false,
+    });
+    const picked = bodyOf(await login());
+    expect(auto).toContain('按结构规则找到的');
+    expect(picked).toContain('你用 usernameIndex 指的');
+  });
+});
+
+/**
+ * spec §4.6 / Task 7 Step 1：登录状态挂在**标签**上，随后**每个**工具结果的头部
+ * 带出来。只挂在 `browser_login` 的返回值里是不够的 —— `submit: false`（验证码）
+ * 那条路上，断言回传发生在模型自己点完提交之后，那一刻 `browser_login` 早就返回了。
+ */
+describe('登录状态挂在每一个浏览器工具结果的头部', () => {
+  const HEAD = '已看到 SAML 断言回传';
+  // browser_read 会把页内求值的结果当正文用，默认那份替身回 null。
+  beforeEach(() => { bs.isolatedImpl = () => read('正文'); });
+
+  it('browser_read 的头部带得出来', async () => {
+    lf.notes.set('t1', HEAD);
+    expect(bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }))).toContain(HEAD);
+  });
+
+  it('browser_act 的头部带得出来', async () => {
+    lf.notes.set('t1', HEAD);
+    expect(bodyOf(await act([{ kind: 'key', key: 'Enter' }]))).toContain(HEAD);
+  });
+
+  it('browser_open 的头部带得出来', async () => {
+    lf.notes.set('t1', HEAD);
+    expect(bodyOf(await toolNamed('browser_open').execute('c', { url: 'https://a.example/q' }))).toContain(HEAD);
+  });
+
+  it('带的是标签号 + 那句话，而不是把两个标签的状态混在一起', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/q', title: '' }, { id: 't2', url: 'https://b.example/', title: '' }];
+    lf.notes.set('t2', HEAD);
+    const s = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }));
+    expect(s).toContain(`[t2] ${HEAD}`);
+    expect(s).not.toContain(`[t1] ${HEAD}`);
+  });
+
+  it('没有任何标签有登录状态时一个字都不加 —— 不给每次调用添噪声', async () => {
+    const s = bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }));
+    expect(s).not.toContain('机构登录');
+  });
+});
+
+/**
+ * I-2：Scholar 的 403 只在**检索提交之后**到达（可达性表：首页 200、搜索才 403）。
+ * 普通链接现在同批等导航；表单按钮或异步脚本触发的导航事实仍可能晚一个往返才落地。
+ * 与登录状态同一个形状：若事实晚于造成它的调用，就只能挂在后续工具结果的头部。
+ * 不挂出来，模型这一路仍可能永远拿不到状态码。
+ */
+describe('没人在等的那次导航挂在每一个浏览器工具结果的头部（I-2）', () => {
+  beforeEach(() => {
+    bs.isolatedImpl = () => read('正文');
+    bs.unreported.set('t1', { url: 'https://scholar.google.com/scholar?q=x', httpStatusCode: 403 });
+  });
+
+  it('browser_act 的头部带得出来，而且带的是 `HTTP 403` 这个字面', async () => {
+    const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
+    expect(s).toContain('导航: [t1]');
+    expect(s).toContain('HTTP 403');
+  });
+
+  it('browser_read 的头部也带得出来', async () => {
+    expect(bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }))).toContain('HTTP 403');
+  });
+
+  it('措辞与 browser_open 那条同一个出处（describeNav），不另写一套', async () => {
+    const s = bodyOf(await act([{ kind: 'key', key: 'Enter' }]));
+    expect(s).toContain(describeNav({
+      navigationId: '', outcome: { kind: 'ok', finalUrl: 'https://scholar.google.com/scholar?q=x', httpStatusCode: 403 },
+    }));
+  });
+
+  it('报过一次就清掉，不每轮重复', async () => {
+    await act([{ kind: 'key', key: 'Enter' }]);
+    expect(bodyOf(await act([{ kind: 'key', key: 'Enter' }]))).not.toContain('导航: ');
+  });
+
+  it('没有未报导航时一个字都不加', async () => {
+    bs.unreported.clear();
+    expect(bodyOf(await toolNamed('browser_read').execute('c', { tabId: 't1' }))).not.toContain('导航: ');
+  });
+});
+
+describe('browser_login 的说明（description）', () => {
+  const desc = (inst: { name: string; entityID: string } | null): string =>
+    (makeTools({ institution: inst }).find((t) => t.name === 'browser_login') as { description: string }).description;
+
+  it('机构名与 entityID 在里面（Task 9 的 skill 要靠它写登录 URL）', () => {
+    const d = desc({ name: '复旦大学', entityID: 'https://idp.fudan.edu.cn/idp/shibboleth' });
+    expect(d).toContain('复旦大学');
+    expect(d).toContain('https://idp.fudan.edu.cn/idp/shibboleth');
+  });
+
+  it('明说「同一轮失败一次就停手」—— 模型看到失败会本能地重试', () => {
+    expect(desc(null)).toContain('失败一次就停手');
+  });
+
+  it('明说成功判据是断言回传，不是页面文案也不是状态码', () => {
+    const d = desc(null);
+    expect(d).toContain('SAML 断言');
+    expect(d).toContain('不看页面文案');
+  });
+
+  it('明说密码模型自己看不到也拿不到', () => {
+    expect(desc(null)).toContain('你看不到也拿不到');
+  });
+});
+
+describe('browser_tabs：无副作用地列出当前所有标签（Task 1）', () => {
+  const listTabs = () => toolNamed('browser_tabs').execute('call-1', {});
+
+  it('列出用户手动开的标签 —— 这正是它存在的理由', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://scholar.google.com/', title: 'Google 学术' },
+      { id: 't9', url: 'https://xueshu.baidu.com/s?wd=x', title: '百度学术' },
+    ];
+    bs.activeTabId = 't9';
+    const out = bodyOf(await listTabs());
+    expect(out).toContain('t9');
+    expect(out).toContain('https://xueshu.baidu.com/s?wd=x');
+  });
+
+  it('给的是完整 URL，不是只有 host —— 同源两个标签只看 host 分不开', async () => {
+    bs.tabs = [
+      { id: 't1', url: 'https://www.cnki.net/a', title: '甲' },
+      { id: 't2', url: 'https://www.cnki.net/b', title: '乙' },
+    ];
+    bs.activeTabId = 't1';
+    const out = bodyOf(await listTabs());
+    expect(out).toContain('https://www.cnki.net/a');
+    expect(out).toContain('https://www.cnki.net/b');
+  });
+
+  // 活动标签**既不是首项也不是末项**：写死 't1'、「总是取第一个」、「总是取最后一个」
+  // 这三种坏实现在首/末项上都照样绿。
+  it('标出用户正看着哪一个（活动标签取中间那个，避开首末项的巧合）', async () => {
+    bs.tabs = [
+      { id: 'ta', url: 'https://a.example/', title: 'A' },
+      { id: 'tb', url: 'https://b.example/', title: 'B' },
+      { id: 'tc', url: 'https://c.example/', title: 'C' },
+    ];
+    bs.activeTabId = 'tb';
+    const lineOf = (out: string, id: string) =>
+      out.split('\n').find((l) => l.startsWith(`[${id}]`)) ?? '';
+    expect(lineOf(bodyOf(await listTabs()), 'tb')).toContain('*');
+    // 正向前置：换一个活动标签，星号就换到那一行去 —— 否则「每一行都有星号」也能过。
+    bs.activeTabId = 'tc';
+    const out2 = bodyOf(await listTabs());
+    expect(lineOf(out2, 'tb')).not.toContain('*');
+    expect(lineOf(out2, 'tc')).toContain('*');
+  });
+
+  it('一个标签都没有时说清楚，不是空串也不报错', async () => {
+    bs.tabs = [];
+    bs.activeTabId = null;
+    expect(bodyOf(await listTabs())).toContain('没有打开任何网页');
+  });
+
+  it('不碰页面、不排队 —— 一次 enqueue / snapshot / dispatch 都不许有', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://a.example/', title: 'A' }];
+    bs.activeTabId = 't1';
+    bs.order.length = 0;
+    await listTabs();
+    expect(bs.order).toEqual([]);
+  });
+
+  it('说明里告诉模型：这里也有用户自己开的标签', () => {
+    expect(toolNamed('browser_tabs').description).toContain('用户');
+  });
+
+  it('说明里说清 * 标的是侧栏当前显示的那个标签', () => {
+    expect(toolNamed('browser_tabs').description).toContain('侧栏当前显示');
+  });
+
+  /**
+   * `withTabs` 会在 body **前面**先挂一行 `tabsLine()` 摘要（每个浏览器工具结果
+   * 共用的那一行），所以 `browser_tabs` 自己那份清单不在输出的第一行 —— 必须按
+   * `[id]` 前缀去找，不能简单取 `split('\n')[0]`（那样取到的是 tabsLine 那一行，
+   * 与 browser_tabs 自己的渲染是两套代码，会把这里的用例悄悄测成别的东西）。
+   */
+  const bodyLineOf = (out: string, id: string) =>
+    out.split('\n').find((l) => l.startsWith(`[${id}]`)) ?? '';
+
+  // ② 终评发现：browser_tabs 自己重写了一遍渲染，把 TAB_TITLE_MAX 那道闸绕开了——
+  // 标题来自 wc.getTitle()，页面完全可控、长度无上限，标签上限 16 个，一次
+  // browser_tabs 就能把结果撑爆。这里直接钉住 browser_tabs 自己的渲染，不是
+  // tabsLine 那一行（那边已经有一整组用例）。
+  it('标题超过 TAB_TITLE_MAX 时截断，且截断看得出来；没超就原样保留', async () => {
+    // 正向前置：短标题不截断、原样出现——下面「长标题被截断」说的才是
+    // 「触发了截断」，不是「整段渲染坏了」。
+    const shortTitle = '短标题';
+    bs.tabs = [{ id: 't1', url: 'https://a.example/', title: shortTitle }];
+    bs.activeTabId = 't1';
+    const shortLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(shortLine).toContain(shortTitle);
+    expect(shortLine).not.toContain('…');
+
+    const longTitle = '综'.repeat(TAB_TITLE_MAX + 60);
+    bs.tabs = [{ id: 't1', url: 'https://a.example/', title: longTitle }];
+    const longLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    const seg = longLine.split(' — ')[1];
+    expect(seg).toBeDefined();
+    expect(seg.length).toBe(TAB_TITLE_MAX + 1);   // TAB_TITLE_MAX 个字 + 省略号
+    expect(seg.endsWith('…')).toBe(true);
+  });
+
+  it('URL 超过 TAB_URL_MAX 时截断，且截断看得出来；没超就原样保留', async () => {
+    // 正向前置：短 URL 不截断、原样出现。
+    const shortUrl = 'https://a.example/short?q=1';
+    bs.tabs = [{ id: 't1', url: shortUrl, title: '' }];
+    bs.activeTabId = 't1';
+    const shortLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(shortLine).toContain(shortUrl);
+    expect(shortLine).not.toContain('…');
+
+    const longUrl = `https://a.example/?q=${'x'.repeat(TAB_URL_MAX + 60)}`;
+    bs.tabs = [{ id: 't1', url: longUrl, title: '' }];
+    const longLine = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(longLine).not.toContain(longUrl);
+    expect(longLine).toContain('…');
+    expect(longLine.length).toBeLessThan(longUrl.length);
+  });
+
+  // ⑤ 终评发现（纵深防御）：browser_tabs 把每个标签的完整 URL 交给模型（这条设计
+  // 不推翻——同源两个标签只看 host 分不开），但 URL 可能整条带着凭据。`login.ts`
+  // 那句「拒绝理由里一律不回显 currentUrl」立的就是这条规矩，这里补齐它。
+  it('URL 带 userinfo（账号:密码@host）时渲染前剥掉，不进模型上下文', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://svc:hunter2@idp.example/login', title: '' }];
+    bs.activeTabId = 't1';
+    const line = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(line).not.toContain('hunter2');
+    expect(line).not.toContain('svc:hunter2@');
+    // host 与 path 还在，只剥了 userinfo —— 不是整条 URL 被藏起来了。
+    expect(line).toContain('idp.example/login');
+  });
+
+  it('URL 解析不了（about:blank 之类）时原样回退，不报错、不整行消失', async () => {
+    bs.tabs = [{ id: 't1', url: 'about:blank', title: '' }];
+    bs.activeTabId = 't1';
+    const line = bodyLineOf(bodyOf(await listTabs()), 't1');
+    expect(line).toContain('about:blank');
+  });
+});
+
+describe('stripUrlUserinfo：剥 userinfo，解析不了原样回退', () => {
+  it('带账号密码的 URL：只剥 userinfo，host / path / query 都还在', () => {
+    const stripped = stripUrlUserinfo('https://svc:hunter2@idp.example/login?x=1');
+    expect(stripped).not.toContain('hunter2');
+    expect(stripped).not.toContain('svc');
+    expect(stripped).toContain('idp.example');
+    expect(stripped).toContain('/login');
+    expect(stripped).toContain('x=1');
+  });
+
+  it('没有 userinfo 的 URL：原样返回', () => {
+    expect(stripUrlUserinfo('https://a.example/q?x=1')).toBe('https://a.example/q?x=1');
+  });
+
+  it('解析不了的串：原样返回，不抛', () => {
+    expect(stripUrlUserinfo('about:blank')).toBe('about:blank');
+    expect(stripUrlUserinfo('not a url')).toBe('not a url');
+    expect(stripUrlUserinfo('')).toBe('');
+  });
+});
+
+describe('browser_act 里的后退 / 前进 / 重新加载（Task 2）', () => {
+  it('三种都接通到 browserService.historyNav，动作名原样传下去', async () => {
+    await act([{ kind: 'back' }, { kind: 'forward' }, { kind: 'reload' }]);
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back', 'forward', 'reload']);
+    expect(bs.historyCalls[0].tabId).toBe('t1');
+  });
+
+  // 死锁那条：整批已经在 enqueue 里面了，historyNav 绝不能自己再排一次队。
+  it('整批只排一次队，历史导航跑在那一次里面', async () => {
+    bs.order.length = 0;
+    await act([{ kind: 'back' }]);
+    expect(bs.order.filter((o) => o.startsWith('enqueue:'))).toHaveLength(1);
+    expect(bs.order.indexOf('enqueue:t1')).toBeLessThan(bs.order.indexOf('historyNav:back'));
+  });
+
+  it('导航结论用 describeNav 的措辞回报 —— 与 browser_open 读起来是同一句话', async () => {
+    expect(bodyOf(await act([{ kind: 'back' }]))).toContain('https://a.example/prev');
+  });
+
+  // 正向前置与否定断言在**同一条**用例里（CLAUDE.md：否定型断言不能靠隔壁一条兜底）：
+  // 先证明「有历史时 back 之后的动作照跑」——否则一个「back 之后永远停」的实现也
+  // 照样绿——再把 historyImpl 换成回 null，证明整批停在第一个动作。
+  it('有历史时后面的动作照跑；没有可去的历史时整批停下，并说清是「没有这一步历史」', async () => {
+    await act([{ kind: 'back' }, { kind: 'reload' }]);
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back', 'reload']);
+
+    bs.historyCalls.length = 0;
+    bs.historyImpl = () => null;
+    const out = bodyOf(await act([{ kind: 'back' }, { kind: 'reload' }]));
+    expect(out).toContain('没有可以后退的历史');
+    // 出错即停：第二个动作一步都不许跑。
+    expect(bs.historyCalls.map((c) => c.action)).toEqual(['back']);
+  });
+
+  it('三种动作都进了模型看得到的 schema 白名单', () => {
+    const kinds = (ActionSchema as unknown as
+      { properties: { kind: { anyOf: Array<{ const: string }> } } })
+      .properties.kind.anyOf.map((x) => x.const);
+    expect(kinds).toEqual(expect.arrayContaining(['back', 'forward', 'reload']));
+  });
+});
+
+describe('页面报的错挂进工具结果（Task 4）', () => {
+  const withErrors = () => ({
+    lines: [{ seq: 1, text: 'Uncaught TypeError: t.submit is not a function', source: 'https://a/x.js:9' }],
+    omitted: 0, dropped: 0, suppressed: 0,
+  });
+
+  it('browser_act 的结果里带上这一批期间页面报的错；没有错误就一个字都不加', async () => {
+    bs.consoleImpl = withErrors;
+    const withErr = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(withErr).toContain('t.submit is not a function');
+    // 正向前置与否定断言要指向**同一个串**：下面断的是表头 '页面报的错' 不出现，
+    // 这里也要先证明它在有错误时真的会出现 —— 只断错误正文的话，表头一改名，
+    // 下面那条否定断言会恒真，而正向前置照样绿（CLAUDE.md：否定断言不能靠
+    // 「换个字符串」的隔壁前置兜底）。
+    expect(withErr).toContain('页面报的错');
+
+    // 正向前置在上面：所以这里的「不出现」说的是「没有错误时那一段整个不出现」，
+    // 不是「这段渲染坏了」。
+    bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 0 });
+    const noErr = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(noErr).not.toContain('页面报的错');
+  });
+
+  it('browser_open 的结果里也带上这一批期间页面报的错', async () => {
+    bs.consoleImpl = withErrors;
+    const r = await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' });
+    expect(bodyOf(r)).toContain('t.submit is not a function');
+  });
+
+  // 复用已有标签那条分支：游标必须在 open() **之前**取（brief 的注释：新标签的 id
+  // 要等 open() 回来才知道，那时页面加载期间的错误已经发生了——复用标签同一个道理，
+  // 等 open() 落地再取就会把这次导航期间的错误一起漏掉）。
+  it('复用已有标签时，取游标排在 open() 之前', async () => {
+    await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q', tabId: 't1' });
+    expect(bs.consoleCursorCalls).toContain('t1');
+    const cursorAt = bs.order.indexOf('consoleCursor:t1');
+    const openAt = bs.order.indexOf('open:https://a.example/q');
+    expect(cursorAt).toBeGreaterThanOrEqual(0);
+    expect(cursorAt).toBeLessThan(openAt);
+  });
+
+  it('页面的错误被边界标记框起来 —— 它是页面写的字', async () => {
+    bs.consoleImpl = withErrors;
+    expect(bodyOf(await act([{ kind: 'click', selector: '#go' }]))).toContain(PAGE_CONTENT_OPEN);
+  });
+
+  it('因为填过凭据而没采集时，这件事要说出来', async () => {
+    bs.consoleImpl = () => ({ lines: [], omitted: 0, dropped: 0, suppressed: 4 });
+    const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(out).toContain('4');
+    expect(out).toContain('凭据');
+  });
+});
+
+/**
+ * 这一步发出的请求（spec 2026-09-17-browser-request-signal-design §3.3）。
+ *
+ * 第五、六组里模型点了提交、页面没变，分不清「请求没发」「接口拒了」「只是慢」，只能重试、
+ * 按 Enter、最后自己拼检索地址。这一段就是把「发没发、回了什么」交给它。
+ */
+describe('这一步发出的请求挂进工具结果', () => {
+  const HEAD = '── 这一步发出的请求（XHR / fetch）──';
+  const NONE = '没有发出任何 XHR / fetch 请求';
+  const withRequests = () => ({
+    failed: [{ seq: 9, method: 'GET', where: 'xueshu.baidu.com/search/api/search?wd=…', outcome: { kind: 'status', code: 403 } }],
+    ok: [{ seq: 8, method: 'GET', where: 'xueshu.baidu.com/usercenter/data/collect?cmd=…', outcome: { kind: 'status', code: 200 } }],
+    okOmitted: 0, failedOmitted: 0, dropped: 0, suppressed: 0, total: 2,
+  });
+
+  const at = (seq: number) => ({ seq, suppressed: 0, buffered: seq });
+
+  it('browser_act：报告在「页面报的错」之后、「页面变化」之前；这一步取的是开始到报告那一刻，报完记下终点', async () => {
+    bs.requestsImpl = (from) => (from.seq === 7 ? withRequests() : EMPTY_REQUESTS);
+    bs.consoleImpl = () => ({ lines: [{ seq: 1, text: 'boom', source: 'https://a/x.js:1' }], omitted: 0, dropped: 0, suppressed: 0 });
+    const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    const headAt = out.indexOf(HEAD);
+    expect(headAt).toBeGreaterThan(out.indexOf('页面报的错'));
+    expect(headAt).toBeLessThan(out.indexOf('── 页面变化'));
+    expect(out).toContain('GET xueshu.baidu.com/search/api/search?wd=… → 403');
+    expect(bs.requestsSinceCalls).toEqual([
+      { tabId: 't1', from: at(7), upTo: at(9) },   // 这一步：开始 → 报告那一刻
+      { tabId: 't1', from: at(5), upTo: at(7) },   // 上一次报告的终点 → 这一步开始
+    ]);
+    expect(bs.reqMarked).toEqual([{ tabId: 't1', c: at(9) }]);
+  });
+
+  // 百度学术那条路：上一步点完就返回了、那时检索请求还没发；它后来才到。下一次 browser_act 要把它报出来，
+  // 而且不能算成「这一步发出的」。
+  it('上一次返回之后才到的请求：单独成块、排在这一步前面；这一步点了却没发，照样说「没有发出」', async () => {
+    bs.requestsImpl = (from) => (from.seq === 5 ? withRequests() : EMPTY_REQUESTS);
+    const out = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    const lateAt = out.indexOf('上一次工具返回之后、这一步开始之前到的请求');
+    expect(lateAt).toBeGreaterThan(-1);
+    expect(out.indexOf('→ 403')).toBeGreaterThan(lateAt);
+    expect(out.indexOf(HEAD)).toBeGreaterThan(out.indexOf('→ 403'));
+    expect(out.slice(out.indexOf(HEAD))).toContain(NONE);
+  });
+
+  // 否定型断言的正向前置在同一条里、指向同一个串：先证明有请求时表头出现、「没有发出」不出现，
+  // 再断空报告下点击 / 按键说「没有发出」、滚动整段不出现。
+  it('「没有发出请求」只在点击 / 按键之后说；有请求时不说；别的动作什么都不报', async () => {
+    bs.requestsImpl = withRequests;
+    const withReq = bodyOf(await act([{ kind: 'click', selector: '#go' }]));
+    expect(withReq).toContain(HEAD);
+    expect(withReq).not.toContain(NONE);
+
+    bs.requestsImpl = () => EMPTY_REQUESTS;
+    expect(bodyOf(await act([{ kind: 'click', selector: '#go' }]))).toContain(NONE);
+    expect(bodyOf(await act([{ kind: 'key', key: 'Enter' }]))).toContain(NONE);
+    // repeat 里的点击也算：判据看的是展开之后的每一步。
+    expect(bodyOf(await act([{ kind: 'repeat', times: 1, actions: [{ kind: 'click', selector: '#next' }] }]))).toContain(NONE);
+    expect(bodyOf(await act([{ kind: 'scroll', direction: 'down' }]))).not.toContain(HEAD);
+  });
+
+  it('browser_open：新开标签从零游标起算，有请求就报；没有请求时整段不出现', async () => {
+    bs.requestsImpl = withRequests;
+    const opened = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
+    expect(opened).toContain(HEAD);
+    expect(opened).toContain('→ 403');
+    // 新标签没有「上一次」：只取一段，从零到报告那一刻；报完记下终点。
+    expect(bs.requestsSinceCalls).toEqual([{ tabId: 't1', from: at(0), upTo: at(7) }]);
+    expect(bs.reqMarked).toEqual([{ tabId: 't1', c: at(7) }]);
+
+    bs.requestsImpl = () => EMPTY_REQUESTS;
+    expect(bodyOf(await toolNamed('browser_open').execute('call-2', { url: 'https://a.example/q' }))).not.toContain(HEAD);
+  });
+
+  it('browser_open 复用已有标签：两个游标都排在 open() 之前取', async () => {
+    await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q', tabId: 't1' });
+    const openAt = bs.order.indexOf('open:https://a.example/q');
+    expect(bs.order.indexOf('requestReportedCursor:t1')).toBeGreaterThanOrEqual(0);
+    expect(bs.order.indexOf('requestReportedCursor:t1')).toBeLessThan(openAt);
+    expect(bs.order.indexOf('requestCursor:t1')).toBeGreaterThanOrEqual(0);
+    expect(bs.order.indexOf('requestCursor:t1')).toBeLessThan(openAt);
+    expect(bs.requestsSinceCalls).toEqual([
+      { tabId: 't1', from: at(7), upTo: at(9) },
+      { tabId: 't1', from: at(5), upTo: at(7) },
+    ]);
+  });
+});
+
+/**
+ * **agent 标签跟对话走，模型要知道的**（spec 2026-09-17-browser-tab-lifecycle-design）。
+ *
+ * 2026-09-14 那次实测的教训仍然成立：不告诉模型标签的寿命，它就会对用户说错话、错怪用户。
+ * 2026-09-17 起规则变了：跨回合一直在、全局最多 9 个挤掉最久没用的、对话删除时一起关 ——
+ * 旧的「本轮结束会关、提醒用户点保留」那句每条回复都被模型复述一遍，已经删掉。
+ */
+describe('agent 标签跟对话走：模型要知道的', () => {
+  it('browser_open 新开标签：结果里不再说「本轮结束会关」；归属用的是 threadId 不是 runId', async () => {
+    const opened = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
+    expect(opened).toContain('已打开 https://a.example/q');
+    expect(opened).not.toContain('本轮');
+    expect(opened).not.toContain('「保留」');
+    expect(bs.openArgs[0]).toMatchObject({ ownerThreadId: 'thread-1' });
+    expect(bs.openArgs[0]).not.toHaveProperty('ownerRunId');
+  });
+
+  it('挤掉了本对话的标签就说出来，别的对话的不提', async () => {
+    bs.evicted = [
+      { tabId: 't7', ownerThreadId: 'thread-1', url: 'https://old.example/p', title: '' },
+      { tabId: 't8', ownerThreadId: 'thread-other', url: 'https://theirs.example/p', title: '' },
+    ];
+    const withMine = bodyOf(await toolNamed('browser_open').execute('call-1', { url: 'https://a.example/q' }));
+    expect(withMine).toContain('关掉了最久没用的');
+    expect(withMine).toContain('[t7] https://old.example/p');
+    expect(withMine).not.toContain('t8');
+
+    bs.evicted = [{ tabId: 't8', ownerThreadId: 'thread-other', url: 'https://theirs.example/p', title: '' }];
+    const onlyTheirs = bodyOf(await toolNamed('browser_open').execute('call-2', { url: 'https://a.example/q' }));
+    expect(onlyTheirs).not.toContain('关掉了最久没用的');
+  });
+
+  it('browser_act 这一批里弹出了新标签：列出来，但不再说「本轮结束时被自动关掉」', async () => {
+    bs.dispatchImpl = () => { bs.tabs.push({ id: 't9', url: 'https://pop.example/', title: '' }); return '点了'; };
+    const s = bodyOf(await act([{ kind: 'click', selector: '#x' }]));
+    expect(s).toContain('这一批里新开了 1 个标签页');
+    expect(s).not.toContain('本轮结束');
+  });
+
+  it('工具说明：browser_open 说清跨回合在、上限 9、不必提醒保留；browser_tabs 说清只列本对话的、不见了别断定是用户关的', () => {
+    const open = toolNamed('browser_open').description;
+    expect(open).toContain('跨回合一直在');
+    expect(open).toContain('最多 9 个');
+    expect(open).toContain('不必提醒用户点「保留」');
+    expect(open).not.toContain('这一轮结束时会被自动关掉');
+    const tabs = toolNamed('browser_tabs').description;
+    expect(tabs).toContain('别的对话开的不在这里');
+    expect(tabs).toContain('不要断定是用户关的');
+  });
+
+  it('标签不存在时，报错里说清可能是被上限挤掉了', async () => {
+    const e = await toolNamed('browser_read').execute('call-1', { tabId: 'gone' }).then(() => null, (x: unknown) => x);
+    expect((e as { code?: string }).code).toBe('browser.no_tab');
+    expect(String((e as Error).message)).toContain('超过 9 个');
+  });
+});
+
+/**
+ * **别的对话开的标签不进清单**（Yee 2026-09-17 拍板）。头部三行、`browser_tabs`、
+ * 「这一批里新开了」都按对话过滤。
+ */
+describe('别的对话的标签不进这个对话的清单', () => {
+  beforeEach(() => {
+    bs.tabs = [
+      { id: 't1', url: 'https://mine.example/', title: '' },
+      { id: 't2', url: 'https://theirs.example/', title: '' },
+      { id: 't3', url: 'https://user.example/', title: '' },
+    ];
+    bs.owners.set('t1', 'thread-1');
+    bs.owners.set('t2', 'thread-other');
+  });
+
+  it('browser_tabs 与头部那行：本对话的与用户的在，别的对话的不在', async () => {
+    const out = bodyOf(await toolNamed('browser_tabs').execute('call-1', {}));
+    const header = out.split('\n')[0];
+    expect(header).toContain('[t1]');
+    expect(header).toContain('[t3]');
+    expect(header).not.toContain('[t2]');
+    expect(out).toContain('https://user.example/');
+    expect(out).not.toContain('theirs.example');
+  });
+
+  /** `takeUnreportedNav` 报过就清 —— 不先过滤的话，这个对话会把别的对话标签上的晚到导航吃掉。 */
+  it('导航那一行只取本对话看得见的标签，别的对话标签上的未报告导航原样留着', async () => {
+    bs.unreported.set('t1', { url: 'https://mine.example/next', httpStatusCode: 200 });
+    bs.unreported.set('t2', { url: 'https://theirs.example/next', httpStatusCode: 403 });
+
+    const out = bodyOf(await toolNamed('browser_tabs').execute('call-1', {}));
+
+    expect(out).toContain('导航: [t1]');
+    expect(out).not.toContain('[t2] 已打开');
+    expect(bs.unreported.has('t1')).toBe(false);
+    expect(bs.unreported.has('t2')).toBe(true);
+  });
+
+  it('这一批里别的对话恰好开了标签：不算进「这一批里新开了」；本对话弹出的照样列', async () => {
+    bs.dispatchImpl = () => {
+      bs.tabs.push({ id: 't8', url: 'https://theirs-new.example/', title: '' });
+      bs.owners.set('t8', 'thread-other');
+      bs.tabs.push({ id: 't9', url: 'https://mine-pop.example/', title: '' });
+      bs.owners.set('t9', 'thread-1');
+      return '点了';
+    };
+    const out = bodyOf(await act([{ kind: 'click', selector: '#x' }]));
+    expect(out).toContain('这一批里新开了 1 个标签页');
+    expect(out).toContain('[t9] https://mine-pop.example/');
+    expect(out).not.toContain('theirs-new.example');
+  });
+});
+
+/**
+ * **出错即停的那句提示，第一个动作就失败时不该说「此前的动作已经生效」**（2026-09-14 实测）。
+ *
+ * back 没有历史、整批第一个动作就停下时，结果里仍写「（此前的动作已经生效，网页不可回滚）」——
+ * 当时并没有「此前的动作」，这句话会让模型以为已经有东西落到了页面上。
+ */
+describe('出错即停：第一个动作就失败时不说「此前的动作已经生效」', () => {
+  it('第一个动作失败 → 不带那句；第二个动作失败（第一个已经生效）→ 带那句', async () => {
+    bs.historyImpl = () => null;
+
+    const firstFails = bodyOf(await act([{ kind: 'back' }]));
+    expect(firstFails).toContain('没有可以后退的历史');   // 这一批确实停在了第一个动作
+    expect(firstFails).not.toContain('此前的动作已经生效');
+
+    // 同一条用例里的正向对照：前面有动作生效了，这句话才成立，也才该出现。
+    const secondFails = bodyOf(await act([{ kind: 'key', key: 'Enter' }, { kind: 'back' }]));
+    expect(secondFails).toContain('此前的动作已经生效');
+  });
+});

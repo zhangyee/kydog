@@ -53,7 +53,7 @@ wanting to write the paper into your own related work is `/paper-summary`. If yo
 ## Before starting
 
 1. `date +%F` — the report's file name needs it, and you cannot guess today's date.
-2. **read fastpaper's SKILL.md** (it is in `<available_skills>`). Search syntax and filter support differ from source to source, and guessing a flag from memory silently gets you wrong results.
+2. **Pick sources, and read the SKILL.md of each search tool you will use** (they are in `<available_skills>`). Following AGENTS.md's "Looking for Papers", decide where this round's literature sits — fastpaper, slowpaper, often both; it cannot be settled until step 4 has confirmed the direction. fastpaper's search syntax and filter support differ from source to source, and guessing a flag from memory silently gets you wrong results.
 3. `ls papers/` — the paper they want to ask about, or the review that ought to be read, may already be in there.
 4. **Confirm the direction is not boundless.** A grain like "applications of artificial intelligence in medicine" cannot produce a self-study report — the knowledge map spreads into a web touching everything a little, and every concept gets three sentences. If it is too broad, ask in ordinary conversation for it to be narrowed to a topic, method or concept that one sentence can describe. **Do not use `ask_user_question` for this step** — it is an open question, and turning it into multiple choice only constrains them.
 

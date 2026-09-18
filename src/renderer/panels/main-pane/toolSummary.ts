@@ -16,6 +16,20 @@ export function groupToolLabel(tool: ToolBlock): string {
   return toolLabel(tool);
 }
 
+/** 展开了、但工具还没返回时，输出区的位置上显示这句。 */
+export const RUNNING_OUTPUT_PLACEHOLDER = '运行中，结果回来后显示在这里';
+
+/**
+ * 能不能展开：有输出，或者有命令。
+ *
+ * 命令在工具开始那一刻就随 `run.tool_call_start` 到了，输出要等工具结束才一次性发过来
+ * （AgentService 不转发 tool_execution_update）。只看输出的话，跑着的工具点不开 ——
+ * 一批并行调用全显示成同一个命令头，哪条卡住了看不出来。
+ */
+export function toolExpandable(tool: ToolBlock): boolean {
+  return tool.chunks.length > 0 || !!tool.command;
+}
+
 export function toolStatusLabel(status: ToolBlock['status']): string {
   switch (status) {
     case 'running':

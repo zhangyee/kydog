@@ -3,6 +3,7 @@ import { useRunsStore } from './stores/runsStore';
 import { useThreadsStore } from './stores/threadsStore';
 import { useAskStore } from './stores/askStore';
 import { useUnreadStore } from './panels/workspace/unreadStore';
+import { useUiStore } from './stores/uiStore';
 
 /**
  * 本轮的 buffer 还不存在就先建出来。
@@ -15,6 +16,31 @@ function ensureBuffer(threadId: string, messageId: string): void {
   if (!useRunsStore.getState().bufferByMessage[messageId]) {
     useRunsStore.getState().startMessageBuffer(threadId, messageId);
   }
+}
+
+/**
+ * 人机交接：把浏览器侧栏展开并切到那个标签（spec §4.5）。
+ *
+ * **只在 `run.ask_start` 真的带了 `browserTabId` 时才做。** 刻意不去推断
+ * 「ask 发生时正好有 agent 焦点标签」—— 那是拿时间相关性当事实，而且推不出来：
+ * `browser_login` 的首次确认发生在**进标签队列之前**，那一刻还没有任何驱动帧
+ * 握着它，推断的结果是 null。
+ *
+ * `browser.activate` **不先查渲染层那份镜像**：标签在不在是主进程说了算，
+ * 镜像只是它的一个副本，拿副本当判据就是在下游补 proxy。id 已经不存在时主进程回
+ * `browser.no_tab` —— 那不是错，是「用户把那个标签关了」，侧栏照样展开，不刷日志。
+ *
+ * **已知的观感问题（登记，不修）**：`run.ask_start` 会被 `thread.loadHistory` 的
+ * journal 重放喂第二遍，这个函数会跟着再跑一次、侧栏无缘由展开一下。修法要一个
+ * 「这一帧是重放」的协议信号，今天没有 —— 为它现造一个就是在下游补 proxy，
+ * 这里选择不修。
+ */
+function handOffToBrowser(tabId: string): void {
+  useUiStore.setState({ browserOpen: true });
+  void window.kydog.invoke('browser.activate', { tabId }).catch((err: unknown) => {
+    if ((err as { code?: string })?.code === 'browser.no_tab') return;
+    console.error('browser.activate failed', err);
+  });
 }
 
 /**
@@ -83,6 +109,9 @@ export function applyRunEvent(e: RunEvent): void {
       // buffer 还不存在，addAskBlock 会静默 no-op，整轮留痕就没了。
       ensureBuffer(p.threadId, p.messageId);
       useRunsStore.getState().addAskBlock(p.messageId, p.toolCallId, p.questions);
+      // journal 重放会把这一条再喂一遍：侧栏因此会跟着再展开一次，是已知的观感
+      // 问题，见 handOffToBrowser 文档注释，不修。
+      if (p.browserTabId !== undefined) handOffToBrowser(p.browserTabId);
       return;
     }
     case 'run.ask_end': {
@@ -93,6 +122,13 @@ export function applyRunEvent(e: RunEvent): void {
     }
     case 'run.message_end': {
       const p = e.payload;
+      // 这一轮以错误结束：错误原文是这一轮的一个块，排在已经输出的内容之后。
+      // **先 ensureBuffer**：一个字都没输出就失败时本轮从没建过 buffer，不建的话下面
+      // takeBuffer 拿到 null，这一轮连同错误原文一起被丢掉。
+      if (p.errorMessage !== undefined) {
+        ensureBuffer(p.threadId, p.messageId);
+        useRunsStore.getState().addErrorBlock(p.messageId, p.errorMessage);
+      }
       const blocks = useRunsStore.getState().takeBuffer(p.messageId);
       if (!blocks) return;
       useThreadsStore.setState((s) => ({

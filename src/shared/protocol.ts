@@ -4,6 +4,8 @@ import type {
   ProviderId, CustomProvider, Identity, OnboardingCompleteArgs, OnboardingResult, UpdateStatus,
   CenterViewState,
   TelemetryStatus,
+  BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, ViewportMode, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
+  SettingsFileForRenderer,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
@@ -12,12 +14,59 @@ import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar'
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
-  | { method: 'settings.get'; args: undefined; result: SettingsFile }
+  // 回的是 SettingsFileForRenderer 而不是 SettingsFile：整份 SettingsFile 里有
+  // institution.passwordEnc，这条与 app.bootstrap 才是密文真正的出口（institution.get
+  // 那条窄接口拦不住它们）。收口在主进程的 toRendererSettings。
+  | { method: 'settings.get'; args: undefined; result: SettingsFileForRenderer }
   // args 是 SettingsUpdateArgs 而不是 SettingsPatch：`ui.locale` 被抠掉了，语言只能走
   // 下面的 locale.set。见 types.ts 的 SettingsUpdateArgs。
-  | { method: 'settings.update'; args: SettingsUpdateArgs; result: SettingsFile }
+  | { method: 'settings.update'; args: SettingsUpdateArgs; result: SettingsFileForRenderer }
   | { method: 'research.get'; args: undefined; result: SettingsFile['research'] }
   | { method: 'research.save'; args: SettingsFile['research']; result: SettingsFile['research'] }
+  // ── 内置浏览器 ──
+  // 给 tabId 就在那个标签里导航（同一个源的连续详情页复用一个标签），不给就新开。
+  | { method: 'browser.open'; args: { url: string; tabId?: string }; result: { tabId: string; nav: NavigationObservation } }
+  // 建一张**空白**标签，不导航。`browser.open` 第一句就是 `assertAllowedUrl(args.url)`，
+  // 空白页没有合法网址可传——分成两条路之后 URL 判据一个字都没放宽。
+  | { method: 'browser.newTab'; args: undefined; result: { tabId: string } }
+  | { method: 'browser.close'; args: { tabId: string }; result: void }
+  // 把 agent 开的标签转成用户的（ownerThreadId → null），此后不会被 agent 标签上限挤掉，也不随对话删除被关。
+  | { method: 'browser.keep'; args: { tabId: string }; result: void }
+  | { method: 'browser.activate'; args: { tabId: string }; result: void }
+  | { method: 'browser.navControl'; args: { tabId: string; action: 'back' | 'forward' | 'reload' | 'stop' }; result: void }
+  // 渲染进程重载后重建镜像的全量起点。只有 browser.tabsChanged 事件是不够的：
+  // 重载后若标签没有新变化就再也收不到事件，browserStore 会一直是空的。
+  // 恢复顺序是「先订阅、后 getState、按 revision 去旧」。
+  | { method: 'browser.getState'; args: undefined; result: BrowserState }
+  // 渲染层上报舞台几何。不带 tabId —— 只有活动标签可见，主进程知道是哪个。
+  // visible 与 occluded 是两件事：侧栏关闭（visible=false）不是「被浮层盖住」的同义词。
+  | { method: 'browser.syncView'; args: { epoch: number; visible: boolean; occluded: boolean; bounds: RectDip }; result: void }
+  // 「1:1 / 适配」开关（spec §4.6）。**按标签**，所以不能并进 syncView ——
+  // 那条刻意不带 tabId（「只有活动标签可见，主进程知道是哪个」），而这个状态
+  // 每个标签各记一份，切标签时的语义会说不清。
+  //
+  // 只送一个意向过去，**主进程才是真相**：新的模式随 `browser.tabsChanged` 广播
+  // 回来（`BrowserTabInfo.viewportMode`），渲染层照着画开关。渲染层自己记一份的话，
+  // agent 在 `markDriving` 里把它恢复成 fit 时，开关会停在错的位置上。
+  | { method: 'browser.setViewportMode'; args: { tabId: string; mode: ViewportMode }; result: void }
+  // ── CARSI 机构账号 ──
+  // 密码只会 渲染层 → 主进程 单向流动：get 返回的 InstitutionPublic 里只有 hasPassword，
+  // 连密文也不回传。渲染层没有任何用得上它的地方。
+  // 这条窄接口**不是**唯一出口：上面四条回整份 settings 的 RPC 同样得收窄，见
+  // SettingsFileForRenderer —— 密文以前正是从那里每次启动都过河的。
+  | { method: 'institution.get'; args: undefined; result: InstitutionPublic }
+  | { method: 'institution.save'; args: InstitutionSaveArgs; result: InstitutionPublic }
+  | { method: 'institution.clear'; args: undefined; result: void }
+  // 「显示密码」。密文在渲染层解不开（safeStorage 只在主进程可用），所以眼睛图标
+  // 必须走一次往返。这与研究密钥那栏的显隐开关在用户眼里没有区别，只是多一次 RPC。
+  | { method: 'institution.revealPassword'; args: undefined; result: { password: string } }
+  // 机构清单来自 SP 自己的接口（CNKI 是 fsso.cnki.net/idp/list?federation=2）。
+  // 每个 SP 一份，不存在全局 CARSI 清单。
+  //
+  // result **不是**裸 `IdpEntry[]`：抓不到时服务会回落到落盘的旧清单，而一份空数组在
+  // 设置页上等于「这个 SP 一个机构都没有」—— 与「我没抓到」长得一样。所以连同
+  // 「哪天抓的」「是不是回落的」一起回（见 types.ts 的 IdpListPublic）。
+  | { method: 'institution.listIdps'; args: { refresh?: boolean }; result: IdpListPublic }
   | { method: 'project.open'; args: undefined; result: Project }
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }
@@ -46,7 +95,7 @@ export type RpcCall =
   // 所以 args 只给目标语言，settings / skills / sync 三样结果一次带回。
   // outcome 是判别联合而不是一个 SkillSyncHealth：业务拒绝与同步失败必须分开，
   // 前者压根没碰 skill 树，渲染层不该拿它去写同步状态。见 types.ts 的 LocaleSetOutcome。
-  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFile; skills: SkillEntry[]; outcome: LocaleSetOutcome } }
+  | { method: 'locale.set'; args: { locale: SettingsFile['ui']['locale'] }; result: { settings: SettingsFileForRenderer; skills: SkillEntry[]; outcome: LocaleSetOutcome } }
   | { method: 'skill.getSyncHealth'; args: undefined; result: SkillSyncHealth }
   | { method: 'skill.list'; args: undefined; result: SkillEntry[] }
   | { method: 'skill.setEnabled'; args: { name: string; enabled: boolean }; result: SkillEntry[] }
@@ -140,6 +189,113 @@ export type RpcCall =
   | { method: 'onboarding.resume'; args: undefined; result: OnboardingResult };
 
 export type RpcMethod = RpcCall['method'];
+
+/**
+ * `RpcCall` 的方法名的**运行时**清单。
+ *
+ * 为什么需要它：`dispatcher.ts` 的 `handlers[method] = …` 是运行时填表 ——
+ * 往 `RpcCall` 加一条而**不注册 handler 不会编译报错、不会有用例红**，只在运行时
+ * 回一句 `no handler for …`。本分支一次把这条盲区从 0 条放大到 14 条
+ * （`browser.*` 九条 + `institution.*` 五条，都是计划内的 Task 6 Step 5 / Step 8 / Task 8），
+ * 所以必须先把「有没有人管这一条」变成可检查的事实。
+ *
+ * 两道闸配套：
+ *  · 下面的 `_allRpcMethodsListed` —— 加了 RpcCall 却没往这里加，`tsc` 就红；
+ *  · `handlers.test.ts` 的注册穷尽性用例 —— 每一条要么注册了 handler，要么明确
+ *    登记在那份「尚未接线」名单里，两头都得对得上。
+ */
+export const RPC_METHODS = [
+  'app.bootstrap',
+  'settings.get',
+  'settings.update',
+  'research.get',
+  'research.save',
+  'browser.open',
+  'browser.newTab',
+  'browser.close',
+  'browser.keep',
+  'browser.activate',
+  'browser.navControl',
+  'browser.getState',
+  'browser.syncView',
+  'browser.setViewportMode',
+  'institution.get',
+  'institution.save',
+  'institution.clear',
+  'institution.revealPassword',
+  'institution.listIdps',
+  'project.open',
+  'project.list',
+  'project.close',
+  'project.readDir',
+  'thread.create',
+  'thread.list',
+  'thread.delete',
+  'thread.rename',
+  'thread.loadHistory',
+  'thread.send',
+  'thread.abort',
+  'project.openInOS',
+  'project.update',
+  'thread.update',
+  'locale.set',
+  'skill.getSyncHealth',
+  'skill.list',
+  'skill.setEnabled',
+  'skill.pickFolder',
+  'skill.previewFromFolder',
+  'skill.previewFromUrl',
+  'skill.commitFromPreview',
+  'skill.uninstall',
+  'skill.openInOS',
+  'tool.list',
+  'tool.addExternal',
+  'tool.removeExternal',
+  'llm.list',
+  'llm.configure',
+  'llm.remove',
+  'llm.removeCustom',
+  'llm.setDefault',
+  'llm.setThreadOverride',
+  'llm.testConnection',
+  'llm.login',
+  'llm.loginCancel',
+  'llm.loginPromptReply',
+  'llm.logout',
+  'dialog.pickFile',
+  'file.readText',
+  'file.readBytes',
+  'file.readBytesWithin',
+  'file.writeText',
+  'pdf.renderPage',
+  'pdf.annotations.load',
+  'pdf.annotations.save',
+  'pdf.translation.load',
+  'pdf.translation.resolveModel',
+  'pdf.translation.layout',
+  'pdf.translation.translate',
+  'pdf.translation.save',
+  'pdf.translation.delete',
+  'update.getStatus',
+  'update.check',
+  'update.setAutoCheck',
+  'update.dismissBanner',
+  'update.openDownload',
+  'update.restartAndInstall',
+  'telemetry.getStatus',
+  'telemetry.setEnabled',
+  'telemetry.deleteMyData',
+  'ui.saveViewState',
+  'window.setTitleBarOverlay',
+  'onboarding.complete',
+  'ask.submit',
+  'ask.cancel',
+  'onboarding.resume',
+] as const satisfies readonly RpcMethod[];
+
+// 漏一条就在这里编译不过（Exclude 剩下的那个不是 never）。
+const _allRpcMethodsListed: Exclude<RpcMethod, (typeof RPC_METHODS)[number]> extends never ? true : never = true;
+void _allRpcMethodsListed;
 export type RpcArgs<M extends RpcMethod> = Extract<RpcCall, { method: M }>['args'];
 export type RpcResult<M extends RpcMethod> = Extract<RpcCall, { method: M }>['result'];
 
@@ -159,8 +315,12 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
-  | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string } }
-  | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[] } }
+  // errorMessage：这一轮以错误结束时的原文，**只在真有值时带这个键**。渲染层据此在这一轮里
+  // 落一个 error 块 —— 一个字都没输出就失败时，这是这一轮唯一的内容。
+  | { topic: 'run.message_end'; payload: { threadId: string; runId: string; messageId: string; errorMessage?: string } }
+  // browserTabId 是 CARSI / 人机验证的交接口：带上它，渲染层就展开浏览器侧栏并切到那个标签。
+  // 刻意不靠「ask 发生时正好有 agent 焦点标签」去推断 —— 那是拿时间相关性当事实。
+  | { topic: 'run.ask_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; questions: AskQuestion[]; browserTabId?: string } }
   | { topic: 'run.ask_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; outcome: AskOutcome } }
   // 「把你手上关于这一轮的东西全扔了，接下来我重放一遍」。只在 thread.loadHistory 里
   // 发给发起调用的那个窗口，紧跟其后的就是本轮 journal。它不进 journal —— 它是重放的
@@ -193,7 +353,25 @@ export type RuntimeEvent =
   // 主进程会在渲染层没发起任何调用的时候改遥测状态：启动时那次「重试未完成的删除」
   // 是 fire-and-forget，窗口开出来时它可能还在飞。没有这条广播，隐私面板就只能
   // 停在它进来那一刻的快照上 —— 删除其实已经完成了，界面却还说「尚未完成」。
-  | { topic: 'telemetry.status'; payload: TelemetryStatus };
+  | { topic: 'telemetry.status'; payload: TelemetryStatus }
+  // 带全量清单而不是 opened/updated/closed 三条增量：标签最多十几条，代价可忽略，
+  // 换来的是渲染层不必自己维护一致性 —— 与下面 agentFocus 一条事件承担两个用途同理。
+  // 载荷刻意不是 BrowserState —— 广播里不带 epoch，理由见 types.ts 的 BrowserTabsSnapshot。
+  | { topic: 'browser.tabsChanged'; payload: BrowserTabsSnapshot }
+  // agent 是否正在驱动某个标签。渲染层据此显示状态（指示灯 + 侧栏横幅）。
+  // 注意**不做交互屏蔽**：webContents.setIgnoreInputEvents 在 Electron 41 上不存在
+  // （2026-09-08 spike 实测），原生层也盖不住 DOM 遮罩。
+  //
+  // **发送点是 `browserService.emitAgentFocus`**，由 `markDriving` 与
+  // `withAgentDriving` 的 `finally` 各调一次（Task 8 接上，`PENDING_EMITTER` 已清空）。
+  // 它为什么必须自成一条 topic：信号在主进程本来就有（那对 `registry.setAgentActive`），
+  // 但 `setAgentActive` 刻意不推 revision、`toState()` 又会把 `isAgentActive` 抹掉，
+  // 所以 `browser.tabsChanged` 广播在类型上和运行时都带不出来。
+  //
+  // **渲染层按集合语义消费**（`browserStore.applyAgentFocus`）：嵌套驱动时同一个标签
+  // 会收到两次 `active: true` 只收到一次 `false`，当计数器用会卡住不灭。
+  // `tabId: null` 保留给「一次把全部清掉」，今天没有发送方走这一支。
+  | { topic: 'browser.agentFocus'; payload: { tabId: string | null; active: boolean; action?: string } };
 
 /** select 的一个候选项。`id` 是要原样回传给 pi 的答案，label/description 是 provider 自己的措辞。 */
 export type OAuthPromptOption = { id: string; label: string; description?: string };
@@ -211,6 +389,54 @@ export type OAuthPromptPayload =
 
 export type EventTopic = RuntimeEvent['topic'];
 export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: T }>['payload'];
+
+/**
+ * **事件 topic 的台账**，与 RPC 那套（`RPC_METHODS` + `handlers.ts` 的 registerHandler +
+ * `handlers.test.ts` 的穷尽性闸）一一对应。
+ *
+ * 为什么要有：往 `RuntimeEvent` 加一条 topic 而**没有任何地方发它**，不会编译报错、
+ * 不会有用例红 —— 订阅方照常订阅，指示灯永远不亮。这与「加了 RpcCall 却忘了注册
+ * handler」是同一类盲区，本批刚给 RPC 关掉，换个通道不能再开着。
+ *
+ * 三方对账在 `src/main/ipc/eventLedger.test.ts`：
+ *  · **声明**：下面这张表（漏一条在下面那行编译不过）；
+ *  · **已接**：扫 `src/main/**` 真实的 emit 调用点（`broadcaster.emit` / `emitRun` /
+ *    `{ topic: … }` 三种形态）；
+ *  · **待接**：那份用例里的 `PENDING_EMITTER`，每条都要写清楚谁来接。
+ */
+export const EVENT_TOPICS = [
+  'run.started',
+  'run.message_delta',
+  'run.thinking_delta',
+  'run.tool_call_start',
+  'run.tool_call_chunk',
+  'run.tool_call_end',
+  'run.parallel_group',
+  'run.message_end',
+  'run.ask_start',
+  'run.ask_end',
+  'run.resync',
+  'run.ended',
+  'oauth.auth',
+  'oauth.progress',
+  'oauth.prompt',
+  'oauth.promptCancel',
+  'oauth.success',
+  'oauth.error',
+  'thread.updated',
+  'fs.changed',
+  'file.changed',
+  'identity.changed',
+  'llm.listChanged',
+  'update.status',
+  'telemetry.status',
+  'browser.tabsChanged',
+  'browser.agentFocus',
+] as const satisfies readonly EventTopic[];
+
+// 漏一条就在这里编译不过（Exclude 剩下的那个不是 never）。
+const _allEventTopicsListed: Exclude<EventTopic, (typeof EVENT_TOPICS)[number]> extends never ? true : never = true;
+void _allEventTopicsListed;
 
 /**
  * 一轮 run 期间主进程发出的事件。主进程按发出顺序留一份（journal），渲染进程重载后

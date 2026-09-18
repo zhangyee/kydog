@@ -9,6 +9,8 @@ const fixture = path.resolve('e2e/fixtures/ask-user-question.json');
 const noPreambleFixture = path.resolve('e2e/fixtures/ask-no-preamble.json');
 // 单题 8 个选项：锁住「选项上限为什么是 8」的推导——数字键 1..8 选项，第 9 位留给「其他」。
 const eightOptionsFixture = path.resolve('e2e/fixtures/ask-eight-options.json');
+// 单题 4 个选项，每条说明都长到要换两三行（schema 不限 description 长度，模型真会这么写）。
+const longDescriptionsFixture = path.resolve('e2e/fixtures/ask-long-descriptions.json');
 
 async function launchWithProject(fixturePath = fixture): Promise<LaunchedApp> {
   const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
@@ -227,6 +229,55 @@ test('43-ask: 8 个选项全部渲染，数字键 8 选中第 8 项、9 聚焦�
     await page.keyboard.press('9');
     await expect(customInput).toBeFocused();
     await expect(page.locator('[data-testid="ask-option-q0o7"]')).toHaveAttribute('data-selected', 'true');
+  } finally {
+    await teardown(launched);
+  }
+});
+
+// 选项说明长到要换行时，这一行必须跟着长高。2026-09-17 第一组验收实测：行高写死 32px，
+// 多行说明以行中线为轴上下溢出，压到相邻选项上，整张卡片的字叠成一团。
+//
+// 判据是几何，不是「元素存在」：说明整块落在自己那一行的框里，且行与行不重叠。
+// 这两条在说明**没有换行**时恒成立 —— 所以同一条用例里先证明它真的换成了多行，
+// 夹具哪天被改短、窗口哪天变宽，这条会红在前提上，而不是空转着绿。
+test('43-ask: 选项说明换成多行时行跟着长高，不压到相邻选项', async () => {
+  const launched = await launchWithProject(longDescriptionsFixture);
+  const page = launched.page;
+  try {
+    await askUntilPending(page);
+    const spec = JSON.parse(await fs.readFile(longDescriptionsFixture, 'utf8')) as {
+      events: Array<{ type: string; questions?: Array<{ options: Array<{ description: string }> }> }>;
+    };
+    const options = spec.events.find((e) => e.type === 'ask')!.questions![0].options;
+
+    const rowBoxes: Array<{ y: number; height: number }> = [];
+    for (let i = 0; i < options.length; i += 1) {
+      const row = page.getByTestId(`ask-option-q0o${i}`);
+      await expect(row).toBeVisible();
+      const desc = row.getByText(options[i].description, { exact: true });
+      await expect(desc).toBeVisible();
+
+      // 前提：说明真的排成了多行（数的是文字自己的行盒，不靠 line-height 推算）。
+      const lines = await desc.evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+      });
+      expect(lines, `第 ${i + 1} 项的说明只排了 ${lines} 行 —— 没换行时下面两条恒成立，这条用例就测不到它要测的`)
+        .toBeGreaterThanOrEqual(2);
+
+      const r = (await row.boundingBox())!;
+      const d = (await desc.boundingBox())!;
+      expect(d.y, `第 ${i + 1} 项的说明顶端溢出了自己那一行（说明 y=${d.y}，行 y=${r.y}）`)
+        .toBeGreaterThanOrEqual(r.y - 0.5);
+      expect(d.y + d.height, `第 ${i + 1} 项的说明底端溢出了自己那一行（说明底=${d.y + d.height}，行底=${r.y + r.height}）`)
+        .toBeLessThanOrEqual(r.y + r.height + 0.5);
+      rowBoxes.push(r);
+    }
+    for (let i = 1; i < rowBoxes.length; i += 1) {
+      expect(rowBoxes[i].y, `第 ${i + 1} 行压到了第 ${i} 行上`)
+        .toBeGreaterThanOrEqual(rowBoxes[i - 1].y + rowBoxes[i - 1].height - 0.5);
+    }
   } finally {
     await teardown(launched);
   }

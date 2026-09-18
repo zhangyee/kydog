@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { parseSkillFrontmatter } from './parseSkillFrontmatter';
 import { listBuiltinSkills, listSkillSourceFiles } from './builtinSkills';
 import { projectSkillFiles, SKILL_LOCALES, DEFAULT_SKILL_LOCALE } from './localeProjection';
 
@@ -89,5 +91,49 @@ describe('内置 skill 的双语配对', () => {
     const violations = findViolations();
     const dead = EXEMPT.filter((prefix) => !violations.some((v) => v.id.startsWith(prefix)));
     expect(dead).toEqual([]);
+  });
+});
+
+/**
+ * **每一份内置 skill 的 frontmatter 都必须能被生产代码解析。**
+ *
+ * 上面两条只管「文件在不在」。**内容坏掉的那一类它们一条都看不见** ——
+ * `parseSkillFrontmatter` 返回 `ok:false` 时，`enumerateSkills` 把这个 skill 渲染成
+ * **禁用行**：不报错、不崩，只是它再也进不了 system prompt、再也不会被触发。
+ *
+ * 2026-09-16 实测到过一次：`slowpaper/SKILL.en.md` 的 description 是无引号 plain scalar
+ * 且含半角 `: `（`three kinds of source: academic …`），YAML 判成嵌套 mapping、
+ * `parseFrontmatter` 当场抛 —— 而那一刻 `npm test` **3323 条全绿**。中文文案用全角「：」
+ * 天然免疫，所以这个坑只砸在 en 侧，正是最不容易被人看到的那一侧。
+ * （`parseSkillFrontmatter.ts` 的注释早就写明了这是最容易踩的一种，只是没人拿真文件跑过。）
+ *
+ * 两类失败都由这一条挡住：**YAML 解析不了**，以及 **description 超过 1024 字符**。
+ * 事实来源是 `parseSkillFrontmatter` 本身，这里不抄一份长度上限。
+ */
+describe('内置 skill 的 frontmatter 能被生产代码解析', () => {
+  it('每一份 SKILL.md 与 SKILL.en.md 都 ok:true，且中英两份的 name 相同', async () => {
+    const bad: string[] = [];
+    let parsed = 0;
+    const skills = listBuiltinSkills(SRC_ROOT);
+    for (const name of skills) {
+      const names: string[] = [];
+      for (const rel of ['SKILL.md', 'SKILL.en.md']) {
+        const file = path.join(SRC_ROOT, name, rel);
+        // 缺文件是上面那条配对用例的职责，这里不重复报。
+        if (!existsSync(file)) continue;
+        const r = await parseSkillFrontmatter(readFileSync(file, 'utf-8'));
+        parsed += 1;
+        if (!r.ok) { bad.push(`${name}/${rel}：${r.reason}`); continue; }
+        names.push(r.name);
+      }
+      if (names.length === 2 && names[0] !== names[1]) {
+        bad.push(`${name}：中英两份的 name 不一致（${names[0]} / ${names[1]}）`);
+      }
+    }
+    // **先证明这一圈真的读到了文件。** 否则 skill 树没被扫到时（路径改了、
+    // listBuiltinSkills 退化成空）下面那条断言会空转全绿 —— 而它挡的正是「静默」。
+    expect(skills.length, '一个内置 skill 都没扫到，这条用例在空转').toBeGreaterThan(0);
+    expect(parsed, '一份 SKILL.md 都没解析到，这条用例在空转').toBeGreaterThanOrEqual(skills.length);
+    expect(bad).toEqual([]);
   });
 });

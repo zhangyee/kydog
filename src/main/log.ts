@@ -52,6 +52,10 @@ export function createLogSink(file: string, maxSize: number) {
       }).catch(() => {});
       return queue;
     },
+    /** 等到此刻为止排进队列的每一笔都写完。写盘错误已在队列里吞掉，所以它永不 reject。 */
+    flush(): Promise<void> {
+      return queue;
+    },
   };
 }
 
@@ -69,6 +73,18 @@ function emit(level: Level, scope: string, msg: string, ctx?: unknown) {
   });
   console[level === 'debug' ? 'log' : level](line);
   void sink.write(line);
+}
+
+/**
+ * 等到此刻为止 logger 排进队列的每一笔都落盘。
+ *
+ * logger 本身即发即走、不返回 promise —— 刻意不改它的返回类型：那会让所有
+ * `vi.spyOn(logger, …).mockImplementation(() => {})` 的类型一起不匹配。这个函数给
+ * 「需要确知某一行已经落盘」的地方用，目前只有 `log.realHome.test.ts`：不等的话它读文件时
+ * 那一笔还没写完，判不了写到了哪里。
+ */
+export function flushLog(): Promise<void> {
+  return sink.flush();
 }
 
 export const logger = {

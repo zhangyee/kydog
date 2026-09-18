@@ -2,6 +2,8 @@ import { useState, type CSSProperties, type Ref } from 'react';
 import type { AskOption } from '../../../shared/askQuestion';
 
 const ROW_HEIGHT = 32;
+/** 单行文字的行高。选项行顶端对齐之后，靠它与上下内边距把单行选项仍然凑成 ROW_HEIGHT。 */
+const LINE_HEIGHT = 20;
 
 /**
  * 三档背景，层次不能混：什么都没有 < hover(paper-edge 0.935) < 选中(hover-bg 0.92)。
@@ -56,6 +58,23 @@ function Lead({ multiSelect, index, selected }: { multiSelect: boolean; index: n
   );
 }
 
+/**
+ * 选项行不能沿用 rowStyle 的定高：`description` 在 schema 里不限长，模型真会写两三行，
+ * 定高 32 + 居中时多出来的行以中线为轴上下溢出，压到相邻选项上（2026-09-17 第一组验收实测）。
+ * 所以这一行**最少** ROW_HEIGHT、跟着说明长高，并改成顶端对齐 —— 序号、标签、徽标
+ * 留在第一行，不随说明的行数漂到中间去。单行时 (32 − 20) / 2 = 6 的上下内边距让它
+ * 与改之前一样高。
+ */
+function optionRowStyle(selected: boolean, hovered: boolean): CSSProperties {
+  return {
+    ...rowStyle(selected, hovered),
+    alignItems: 'flex-start',
+    height: 'auto',
+    minHeight: ROW_HEIGHT,
+    padding: `${(ROW_HEIGHT - LINE_HEIGHT) / 2}px 8px`,
+  };
+}
+
 export function QuestionOptionRow({
   option, index, multiSelect, selected, onSelect,
 }: {
@@ -74,13 +93,26 @@ export function QuestionOptionRow({
       onClick={onSelect}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={rowStyle(selected, hovered)}
+      style={optionRowStyle(selected, hovered)}
     >
-      <Lead multiSelect={multiSelect} index={index} selected={selected} />
-      <span style={{ fontSize: 13, color: 'var(--color-ink)' }}>{option.label}</span>
+      <span style={{ display: 'flex', alignItems: 'center', height: LINE_HEIGHT, flexShrink: 0 }}>
+        <Lead multiSelect={multiSelect} index={index} selected={selected} />
+      </span>
+      {/* 标签不参与压缩，说明去让位。标签本该是 1–5 个词；真写长了也只占到一半宽，
+          多出的截断，完整文字留在 title 里 —— 否则它会把说明挤成一条竖线，或者冲出卡片。 */}
+      <span
+        title={option.label}
+        style={{
+          flexShrink: 0, maxWidth: '50%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontSize: 13, lineHeight: `${LINE_HEIGHT}px`, color: 'var(--color-ink)',
+        }}
+      >
+        {option.label}
+      </span>
       {option.recommended && (
         <span
           style={{
+            flexShrink: 0, marginTop: 2,
             fontSize: 10, padding: '1px 6px', borderRadius: 999,
             background: 'var(--color-paper-deep)', color: 'var(--color-ink-soft)',
           }}
@@ -88,7 +120,9 @@ export function QuestionOptionRow({
           推荐
         </span>
       )}
-      <span style={{ flex: 1, fontSize: 12, color: 'var(--color-ink-soft)' }}>{option.description}</span>
+      <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: `${LINE_HEIGHT}px`, color: 'var(--color-ink-soft)' }}>
+        {option.description}
+      </span>
     </button>
   );
 }

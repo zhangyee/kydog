@@ -1,0 +1,968 @@
+import { describe, it, expect } from 'vitest';
+import INTERACT_SOURCE from './injected/interact.js?raw';
+import WALKER_SOURCE from './injected/walker.js?raw';
+
+/**
+ * `injected/interact.js` 的单测。
+ *
+ * 照 walker / pwRegistrar 那套办法：这段代码在**网页里**执行、类型系统管不到它，
+ * 所以用 `new Function` 把源码**真的跑起来**，配一套替身 DOM。替身考得住的是判据本身
+ * （滚不滚、量的是哪一刻的坐标、命中检查放不放行、密码闸拦不拦），
+ * 「隔离世界真的骗不到页面覆写」那一条要靠 e2e。
+ */
+
+// ── 替身 DOM ────────────────────────────────────────────────────────────────
+
+type Rect = { left: number; top: number; width: number; height: number; right: number; bottom: number };
+
+const rect = (left: number, top: number, width: number, height: number): Rect =>
+  ({ left, top, width, height, right: left + width, bottom: top + height });
+
+type ElInit = Partial<Omit<El, 'tagName'>>;
+
+/**
+ * `select()` 在真 DOM 上有**三种**形态。本批实测（Electron 41.2.1，真页面，
+ * 每种 input 逐个跑 `focus(); select()` 再经 CDP `Input.insertText` 打一次）：
+ *
+ * | 类型 | select() | selectionStart/End | getSelection() 长度 | insertText 之后 |
+ * | --- | --- | --- | --- | --- |
+ * | ''/text/search/tel/url/password + textarea | 选中 | `[0, len]` | = len | **替换** |
+ * | email / number | **选中** | **恒 null** | = len | **替换** |
+ * | date/time/month/week/datetime-local | **什么都没选** | 恒 null | 0 | **原样不动** |
+ *
+ * 替身必须把这三种都演出来，否则「新判据认不认得出没选中」这件事根本考不到 ——
+ * 每个 input 都装一个「调了就算选中」的 select()，等于替身替实现把结论说了。
+ */
+const SEL_API_TYPES = ['', 'text', 'search', 'tel', 'url', 'password'];
+const SEL_NO_API_TYPES = ['email', 'number'];
+/** 分段选择器：装得下用户输入，但 `Input.insertText` 对它们完全无效（实测，见上表）。 */
+export const SEGMENTED_TYPES = ['date', 'time', 'month', 'week', 'datetime-local'];
+
+class El {
+  /** 替身的选择器：`doc.querySelector(sel)` 按它精确匹配。 */
+  sel = '';
+  attrs: Record<string, string> = {};
+  kids: El[] = [];
+  parent: El | Root | null = null;
+  shadowRoot: Root | null = null;
+  style: Record<string, string> = { overflowY: 'visible' };
+  rect: Rect = rect(0, 0, 100, 20);
+  /** 真正的 HTMLAnchorElement.href 是浏览器按 baseURI 解析后的绝对 URL。 */
+  href?: string;
+  type?: string;
+  value?: string;
+  /** 有选择 API 的那些类型上它是数字（真 DOM 里 input[type=text] 一建出来就是 0），
+   *  email / number / date 一族恒为 null。`select()` 按类型改写它。 */
+  selectionStart: number | null = null;
+  selectionEnd: number | null = null;
+  options?: Array<{ value: string; text: string }>;
+  disabled?: boolean;
+  readOnly?: boolean;
+  isContentEditable?: boolean;
+  className = '';
+  /** 真 DOM 里元素恒为 1。滚动链往上走会经过 ShadowRoot(11) / document(9)，
+   *  实现按这个数早退，替身不给就等于把那道早退测空了。 */
+  nodeType = 1;
+  /** 命中检查用：elementFromPoint 只在这些元素里挑（按数组顺序，后面的更靠上）。 */
+  hittable = true;
+  /** 真 DOM 会把写进来的值**夹到 [0, 真实最大滚动量]**。
+   *  不夹的话「已经到底」那条用例考的就不是实现，是替身的算术。
+   *
+   *  而真实最大滚动量**不等于** `scrollHeight - clientHeight`：后者是四舍五入的
+   *  整数，实测（内容 1000.6px / 视口 200.4px）报 801 而滚到底停在 **800**。
+   *  要演这个 1px 差就设 `maxScrollTop`。 */
+  maxScrollTop: number | null = null;
+  private _scrollTop = 0;
+  get scrollTop(): number { return this._scrollTop; }
+  set scrollTop(v: number) {
+    const max = this.maxScrollTop ?? Math.max(0, this.scrollHeight - this.clientHeight);
+    this._scrollTop = Math.max(0, Math.min(v, Math.max(0, max)));
+  }
+  scrollHeight = 100;
+  clientHeight = 100;
+  // ── 观测点 ──
+  scrollIntoViewCalls: unknown[] = [];
+  focusCalls = 0;
+  selectCalls = 0;
+  dispatched: Array<{ type: string; bubbles: boolean }> = [];
+
+  constructor(readonly tagName: string, init: ElInit = {}) {
+    // scrollTop 最后设：它的 setter 要读 scrollHeight / clientHeight 才夹得对，
+    // 而 Object.assign 按键顺序来 —— 先设 scrollTop 会被默认尺寸夹成 0。
+    const { scrollTop, ...rest } = init;
+    Object.assign(this, rest);
+    if (scrollTop !== undefined) this.scrollTop = scrollTop;
+    const t = tagName.toUpperCase();
+    if (t === 'INPUT' || t === 'TEXTAREA') {
+      // 真 DOM 里 input / textarea 的 value 恒是字符串（没写 value 属性就是空串）。
+      if (typeof this.value !== 'string') this.value = '';
+      const type = t === 'TEXTAREA' ? '' : String(this.type ?? '').toLowerCase();
+      const hasSelApi = t === 'TEXTAREA' || SEL_API_TYPES.includes(type);
+      if (hasSelApi) { this.selectionStart = 0; this.selectionEnd = 0; }
+      this.select = () => {
+        this.selectCalls += 1;
+        if (SEGMENTED_TYPES.includes(type)) return;      // 不抛，也什么都不选
+        const len = String(this.value ?? '').length;
+        if (hasSelApi) { this.selectionStart = 0; this.selectionEnd = len; }
+        docSel = String(this.value ?? '');                // getSelection() 读得到
+      };
+    }
+  }
+
+  get parentNode(): El | Root | null { return this.parent; }
+  getAttribute(name: string): string | null {
+    const k = name.toLowerCase();
+    return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
+  }
+  getBoundingClientRect(): Rect { return this.rect; }
+  scrollIntoView(opts: unknown): void { this.scrollIntoViewCalls.push(opts); }
+  focus(): void { this.focusCalls += 1; doc.activeElement = this; }
+  /** **只有 input / textarea 有 select()**（构造时按 tag 装上）。真 DOM 如此，
+   *  而 contenteditable 走的正是「没有 select() 就用 Range」那条分支 ——
+   *  替身给每个元素都装上，那条分支就一条用例都覆盖不到。 */
+  select?: () => void;
+  dispatchEvent(e: { type: string; bubbles: boolean }): void { this.dispatched.push(e); }
+  get innerText(): string { return this.attrs.__text ?? ''; }
+  get textContent(): string { return this.attrs.__text ?? ''; }
+}
+
+class Root {
+  readonly nodeType = 11;
+  constructor(public kids: El[], readonly host: El | null = null) {
+    for (const k of flat(kids)) if (!k.parent) k.parent = this;
+  }
+  querySelectorAll(sel: string): El[] {
+    if (sel !== '*') throw new Error(`替身只支持 '*'，收到 ${sel}`);
+    return this.kids.slice();
+  }
+  querySelector(s: string): El | null { return this.kids.find((e) => e.sel === s) ?? null; }
+  elementFromPoint(x: number, y: number): El | null { return topmost(this.kids, x, y); }
+}
+
+/** 文档一级的选区文本。真 DOM 里 `String(window.getSelection())` 读得到它 ——
+ *  input 上 select() 之后它就是框里的内容（实测），contenteditable 上由 Range 决定。 */
+let docSel = '';
+
+const flat = (els: El[]): El[] => els.flatMap((e) => [e, ...flat(e.kids)]);
+
+const topmost = (els: El[], x: number, y: number): El | null => {
+  let hit: El | null = null;
+  for (const e of els) {
+    if (!e.hittable) continue;
+    const r = e.rect;
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) hit = e;
+  }
+  return hit;
+};
+
+type Doc = {
+  activeElement: El | null;
+  scrollingElement: El;
+  documentElement: El;
+  querySelector(s: string): El | null;
+  querySelectorAll(s: string): El[];
+  elementFromPoint(x: number, y: number): El | null;
+  createRange(): { selectNodeContents(e: El): void };
+};
+
+let doc: Doc;
+
+type Win = {
+  innerWidth: number;
+  innerHeight: number;
+  scrollBy(x: number, y: number): void;
+  getComputedStyle(e: El): Record<string, string>;
+  getSelection(): {
+    removeAllRanges(): void; addRange(r: unknown): void;
+    isCollapsed: boolean; toString(): string;
+  };
+  __kydogWorld?: { ids: WeakMap<object, number>; pw: WeakSet<object> };
+  __scrolledBy: number[];
+  __rangeOn: El[];
+};
+
+type Req = Record<string, unknown>;
+type Res = Record<string, unknown>;
+
+const run = new Function('window', 'document', `return (${INTERACT_SOURCE});`) as
+  (w: unknown, d: unknown) => (req: Req) => Res;
+
+/** 建一个场景：元素列表 → window / document / 调用入口。 */
+function stage(els: El[], opts: { world?: boolean; badSelector?: string } = {}) {
+  docSel = '';
+  /** `createRange().selectNodeContents(el)` 记下的那个元素，`addRange` 时才生效 ——
+   *  真 DOM 也是这个顺序（建 Range 不改选区，装进 Selection 才改）。 */
+  let pendingRange: El | null = null;
+  const all = flat(els);
+  const root = new Root(els);
+  const scroller = new El('HTML', { scrollTop: 0, scrollHeight: 5000, clientHeight: 800 });
+  doc = {
+    activeElement: null,
+    scrollingElement: scroller,
+    documentElement: scroller,
+    querySelector: (s: string) => {
+      if (opts.badSelector !== undefined && s === opts.badSelector) throw new Error('SyntaxError');
+      return all.find((e) => e.sel === s) ?? null;
+    },
+    querySelectorAll: (s: string) => {
+      if (s !== '*') throw new Error(`替身只支持 '*'，收到 ${s}`);
+      return els.slice();
+    },
+    elementFromPoint: (x: number, y: number) => topmost(all.filter((e) => e.parent === root || e.parent === null || flat(els).includes(e)), x, y),
+    createRange: () => ({
+      selectNodeContents: (e: El) => { win.__rangeOn.push(e); pendingRange = e; },
+    }),
+  };
+  const win: Win = {
+    innerWidth: 1280,
+    innerHeight: 800,
+    scrollBy: (_x: number, y: number) => { win.__scrolledBy.push(y); scroller.scrollTop += y; },
+    getComputedStyle: (e: El) => e.style,
+    getSelection: () => ({
+      removeAllRanges: () => { docSel = ''; },
+      addRange: () => { docSel = pendingRange ? (pendingRange.innerText || '') : ''; },
+      get isCollapsed(): boolean { return docSel === ''; },
+      toString: () => docSel,
+    }),
+    __scrolledBy: [],
+    __rangeOn: [],
+  };
+  if (opts.world !== false) win.__kydogWorld = { ids: new WeakMap(), pw: new WeakSet() };
+  const call = (req: Req): Res => run(win, doc)(req);
+  return { win, doc, call, scroller, root };
+}
+
+const bySel = (sel: string) => ({ selector: sel });
+
+// ── A · 目标解析 ────────────────────────────────────────────────────────────
+
+describe('目标解析', () => {
+  it('selector 命中就用它', () => {
+    const q = new El('INPUT', { sel: '#q', rect: rect(10, 10, 200, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#q') }).ok).toBe(true);
+  });
+
+  it('measure 保留当前 frame 的默认链接导航意图；_blank 明确不算', () => {
+    const current = new El('A', {
+      sel: '#recent', href: 'https://example.org/recent', rect: rect(10, 10, 100, 30),
+    });
+    const child = new El('SPAN', { sel: '#recent-label', rect: rect(10, 10, 100, 30) });
+    child.parent = current;
+    current.kids = [child];
+    const external = new El('A', {
+      sel: '#external', href: 'https://example.org/new-tab', attrs: { target: '_blank' },
+      rect: rect(10, 60, 100, 30),
+    });
+    const { call } = stage([current, external]);
+
+    expect(call({ op: 'measure', target: bySel('#recent-label') }))
+      .toMatchObject({ ok: true, navigationUrl: 'https://example.org/recent' });
+    expect(call({ op: 'measure', target: bySel('#external') }))
+      .toMatchObject({ ok: true, navigationUrl: null });
+  });
+
+  it('selector 无匹配 → not_found', () => {
+    const { call } = stage([new El('INPUT', { sel: '#q' })]);
+    expect(call({ op: 'measure', target: bySel('#nope') })).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  // 语法错的选择器在页面里抛 DOMException。让它冒出去的话模型收到一句 SyntaxError，
+  // 于是去怀疑页面结构而不是自己的写法。
+  it('selector 语法错 → bad_selector，不把 DOMException 冒出去', () => {
+    const { call } = stage([new El('INPUT', { sel: '#q' })], { badSelector: 'a[[' });
+    expect(call({ op: 'measure', target: bySel('a[[') })).toMatchObject({ ok: false, reason: 'bad_selector' });
+  });
+
+  it('nodeId 反查得到发号表里的那个元素', () => {
+    const a = new El('A', { sel: '#a', rect: rect(0, 0, 50, 20) });
+    const b = new El('BUTTON', { sel: '#b', rect: rect(0, 40, 50, 20) });
+    const { call, win } = stage([a, b]);
+    win.__kydogWorld!.ids.set(a, 7);
+    win.__kydogWorld!.ids.set(b, 9);
+    expect(call({ op: 'measure', target: { nodeId: 9 } })).toMatchObject({ ok: true, tag: 'button' });
+  });
+
+  // walker 的 scan 递归进 open shadow root 发号。反查只查 document.querySelectorAll('*')
+  // 的话，组件库里真正的控件一律反查不到 —— 报出来是「这个编号找不到了」，而它就在页面上。
+  it('nodeId 反查要穿透 open shadow root —— walker 在那里也发号', () => {
+    const inner = new El('INPUT', { rect: rect(0, 0, 100, 30) });
+    const host = new El('SEARCH-BOX', { sel: '#host' });
+    host.shadowRoot = new Root([inner], host);
+    inner.parent = host.shadowRoot;
+    const { call, win } = stage([host]);
+    win.__kydogWorld!.ids.set(inner, 42);
+    expect(call({ op: 'measure', target: { nodeId: 42 } })).toMatchObject({ ok: true, tag: 'input' });
+  });
+
+  it('nodeId 反查不到 → stale_node（与 not_found 分开：这条要重新取快照）', () => {
+    const { call } = stage([new El('A', { sel: '#a' })]);
+    expect(call({ op: 'measure', target: { nodeId: 5 } })).toMatchObject({ ok: false, reason: 'stale_node' });
+  });
+
+  it('隔离世界的发号表整个不在（文档换过）→ stale_node', () => {
+    const { call } = stage([new El('A', { sel: '#a' })], { world: false });
+    expect(call({ op: 'measure', target: { nodeId: 1 } })).toMatchObject({ ok: false, reason: 'stale_node' });
+  });
+
+  // 号缺了或不是数字时**必须 fail-closed**。不查的话：`world.ids.get(el)` 未命中回
+  // undefined，而 `undefined === undefined` 对**第一个没发过号的元素**恒成立 ——
+  // 于是 `{}` / `{nodeId: undefined}` 会 ok:true 地指向一个任意的错元素并报成功
+  // （实测：发号表里只有 #b 有号时，`target={}` 回 `{ok:true, tag:'button'}`）。
+  // 那正是 spec §4.2 点名最危险的形状：不报错，只是点错东西。
+  it.each([
+    ['空对象', {}],
+    ['nodeId 是 undefined', { nodeId: undefined }],
+    ['nodeId 是字符串', { nodeId: '9' }],
+    ['nodeId 是 null', { nodeId: null }],
+  ])('目标里没有合法的 nodeId（%s）→ stale_node，绝不指向别的元素', (_label, target) => {
+    const a = new El('A', { sel: '#a', rect: rect(0, 0, 50, 20) });
+    const b = new El('BUTTON', { sel: '#b', rect: rect(0, 40, 50, 20) });
+    const { call, win } = stage([a, b]);
+    win.__kydogWorld!.ids.set(b, 9);          // 只有 b 有号，a 是「第一个没发过号的元素」
+    expect(call({ op: 'measure', target })).toMatchObject({ ok: false, reason: 'stale_node' });
+  });
+});
+
+// ── B · spec §4.2 的三件事 ─────────────────────────────────────────────────
+
+describe('点击之前的三件事，一件都不能省', () => {
+  it('① 滚进视野：用元素自己的 scrollIntoView，居中，且**瞬时**', () => {
+    const q = new El('BUTTON', { sel: '#b', rect: rect(10, 10, 100, 40) });
+    const { call } = stage([q]);
+    call({ op: 'measure', target: bySel('#b') });
+    // `behavior: 'instant'` 是判据的一部分，不是可有可无的美化参数：不写它就用
+    // `scroll-behavior` 的计算值，**站点说了算**。站点开了平滑滚动时这一下是动画，
+    // 而 `scrollIntoView` 不等动画结束就返回，紧接着量到的是动画还没开始的坐标 ——
+    // `measure` 报 `offscreen`，`click`/`type`/`hover` 在那种站点上碰不到需要滚动
+    // 才够得着的目标，而且**重试不自愈**。实测数据写在 `injected/interact.js` 的
+    // measure 那段 docblock 里。真页面上的回归由 `e2e/61-browser.spec.ts` 那条
+    // 「站点开了平滑滚动，type 照样落到目标身上」守着（替身量不到动画）。
+    expect(q.scrollIntoViewCalls,
+      "measure 的 scrollIntoView 必须带 behavior:'instant' —— 少了它，平滑滚动的站点上"
+      + '这一整条动作路径都会失败在 offscreen 上').toEqual([
+      { block: 'center', inline: 'center', behavior: 'instant' },
+    ]);
+  });
+
+  // 快照里的坐标是**快照当时**的。输入框展开一次、图片加载完一次就旧了，
+  // 而快照本身没变、stale_index 不会响。
+  it('② 坐标是这一刻量的 —— 元素动了就返回新坐标', () => {
+    const q = new El('BUTTON', { sel: '#b', rect: rect(10, 10, 100, 40) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#b') })).toMatchObject({ x: 60, y: 30 });
+    q.rect = rect(10, 500, 100, 40);
+    expect(call({ op: 'measure', target: bySel('#b') })).toMatchObject({ x: 60, y: 520 });
+  });
+
+  // 百度学术那个授权对话框、各家的 cookie 横幅都会**静默吃掉**点击。
+  it('③ 命中检查：浮层挡住 → intercepted，并说清是谁挡的', () => {
+    const q = new El('BUTTON', { sel: '#b', rect: rect(10, 10, 100, 40) });
+    const cover = new El('DIV', { rect: rect(0, 0, 1280, 400), className: 'cookie-banner' });
+    const { call } = stage([q, cover]);
+    const r = call({ op: 'measure', target: bySel('#b') });
+    expect(r).toMatchObject({ ok: false, reason: 'intercepted' });
+    expect(String(r.by)).toContain('cookie-banner');
+  });
+
+  it('目标的后代命中算放行 —— <button><span>搜索</span></button>', () => {
+    const span = new El('SPAN', { rect: rect(20, 20, 60, 20) });
+    const q = new El('BUTTON', { sel: '#b', rect: rect(10, 10, 100, 40), kids: [span] });
+    span.parent = q;
+    const { call } = stage([q, span]);
+    expect(call({ op: 'measure', target: bySel('#b') }).ok).toBe(true);
+  });
+
+  // 不穿透的话 elementFromPoint 命中的是**宿主**，于是每个组件库控件都被报成
+  // 「被浮层挡住」—— 把「点得到」误报成「点不到」，模型会去关一个不存在的浮层。
+  it('shadow 里的控件不许被误报成 intercepted', () => {
+    const inner = new El('INPUT', { rect: rect(10, 10, 100, 30) });
+    const host = new El('SEARCH-BOX', { sel: '#host', rect: rect(10, 10, 100, 30) });
+    host.shadowRoot = new Root([inner], host);
+    inner.parent = host.shadowRoot;
+    const { call, win } = stage([host]);
+    win.__kydogWorld!.ids.set(inner, 3);
+    // document.elementFromPoint 回的是宿主（替身里 host 才在文档树上）
+    expect(call({ op: 'measure', target: { nodeId: 3 } })).toMatchObject({ ok: true, tag: 'input' });
+  });
+
+  // 判据与 walker 的 visible() 第一条**同一个数**（`< 2`）：1×1 的元素在两边都算
+  // 看不见。写成 `<= 0` 的话，站点用 1×1 的透明 <a> 做埋点那种就会被判成可点。
+  it.each([[0, 0], [1, 1], [1, 30], [30, 1]])('折叠到看不见（%i×%i）→ not_visible，不是 intercepted', (w, h) => {
+    const q = new El('A', { sel: '#a', rect: rect(10, 10, w, h) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#a') })).toMatchObject({ ok: false, reason: 'not_visible' });
+  });
+
+  it('2×2 就算看得见 —— 上一条不是把所有小元素都拒了', () => {
+    const q = new El('A', { sel: '#a', rect: rect(10, 10, 2, 2) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#a') })).toMatchObject({ ok: true });
+  });
+
+  // 滚过之后仍在视口外（position:fixed 的祖先、内层容器自己在视口外）。
+  // 不单独判的话 elementFromPoint 回 null → 报成「被 null 挡住了」，说的是另一件事。
+  it('滚过之后仍在视口外 → offscreen，不是「被 null 挡住」', () => {
+    const q = new El('A', { sel: '#a', rect: rect(10, 5000, 100, 30) });
+    const { call } = stage([q]);
+    const r = call({ op: 'measure', target: bySel('#a') });
+    expect(r).toMatchObject({ ok: false, reason: 'offscreen' });
+    expect(String(r.reason)).not.toBe('intercepted');
+  });
+
+  // 视口**上方 / 左侧**的那一半（坐标为负）。注释里论证这道检查必须存在，
+  // 举的正是这个场景：position:fixed 的祖先把目标滚到了视口上面。
+  // 少了这一半，elementFromPoint 回 null → 报「那个位置上被 null 挡住了」，
+  // 模型会去关一个根本不存在的浮层。
+  it.each([
+    ['视口上方（y 为负）', rect(10, -80, 100, 30)],
+    ['视口左侧（x 为负）', rect(-200, 10, 100, 30)],
+    ['左上角两个都为负', rect(-200, -80, 100, 30)],
+  ])('%s → offscreen，不是 intercepted', (_label, r0) => {
+    const q = new El('A', { sel: '#a', rect: r0 });
+    const { call } = stage([q]);
+    const r = call({ op: 'measure', target: bySel('#a') });
+    expect(r).toMatchObject({ ok: false, reason: 'offscreen' });
+    expect(Number(r.x) < 0 || Number(r.y) < 0).toBe(true);
+  });
+
+  it('刚好贴着视口左上角（0,0）仍算在视口里 —— 上一条不是把边界一起拒了', () => {
+    const q = new El('A', { sel: '#a', rect: rect(-10, -10, 40, 40) });   // 中心正好 (10,10)
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#a') })).toMatchObject({ ok: true, x: 10, y: 10 });
+  });
+
+  // 右 / 下边界差一格：中心正好落在 x === innerWidth 时，那个坐标**不在视口里**
+  // （像素编号是 0..vw-1）。`>=` 松成 `>` 的话，这一下会派到视口外一个像素上，
+  // elementFromPoint 回 null，报出来又是「被 null 挡住了」。
+  it.each([
+    ['中心正好在 x = innerWidth', rect(1180, 380, 200, 40), 1280, 400],
+    ['中心正好在 y = innerHeight', rect(600, 700, 40, 200), 620, 800],
+  ])('%s → offscreen', (_label, r0, x, y) => {
+    const q = new El('A', { sel: '#a', rect: r0 });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#a') }))
+      .toMatchObject({ ok: false, reason: 'offscreen', x, y });
+  });
+
+  it('中心在 innerWidth - 1 / innerHeight - 1 上仍算在视口里', () => {
+    const q = new El('A', { sel: '#a', rect: rect(1179, 779, 200, 40), hittable: true });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#a') })).toMatchObject({ ok: true, x: 1279, y: 799 });
+  });
+});
+
+// ── C · type 之前的聚焦与全选 ───────────────────────────────────────────────
+
+describe('focusSelect：密码闸第二道 + 全选', () => {
+  it('密码框：报 password，而且 focus 一次都不许调', () => {
+    const p = new El('INPUT', { sel: '#p', type: 'password', value: 'hunter2' });
+    const { call } = stage([p]);
+    expect(call({ op: 'focusSelect', target: bySel('#p') })).toMatchObject({ ok: false, reason: 'password' });
+    expect(p.focusCalls).toBe(0);
+  });
+
+  // 判据与 walker 一致（四条），不是「此刻 type 等于 password」这一条。
+  it('曾经是密码框（world.pw 记着）：type 改成 text 也照样拦', () => {
+    const p = new El('INPUT', { sel: '#p', type: 'text', value: 'hunter2' });
+    const { call, win } = stage([p]);
+    win.__kydogWorld!.pw.add(p);
+    expect(call({ op: 'focusSelect', target: bySel('#p') })).toMatchObject({ ok: false, reason: 'password' });
+  });
+
+  // insertText 打到非可编辑元素上是**ack 0ms 而什么都不做**（实测：body / button /
+  // readonly / disabled 四种）。不拦的话「打进去了」就是一句没有依据的话。
+  const notEditable: Array<[string, El]> = [
+    ['button', new El('BUTTON', { sel: '#x' })],
+    ['readonly input', new El('INPUT', { sel: '#x', type: 'text', readOnly: true })],
+    ['disabled input', new El('INPUT', { sel: '#x', type: 'text', disabled: true })],
+    ['checkbox', new El('INPUT', { sel: '#x', type: 'checkbox' })],
+    ['普通 div', new El('DIV', { sel: '#x' })],
+  ];
+  for (const [label, node] of notEditable) {
+    it(`${label} 不是能打字的控件 → not_editable`, () => {
+      const { call } = stage([node]);
+      expect(call({ op: 'focusSelect', target: bySel('#x') })).toMatchObject({ ok: false, reason: 'not_editable' });
+    });
+  }
+
+  // 实测：点在有内容的框中间之后 insertText 是**插入**（"旧内容" + "石墨烯" →
+  // "旧内容石墨烯"），插在哪取决于点到了哪个像素。全选之后才是替换。
+  it('可编辑：focus 之后要全选 —— 否则 insertText 插在光标处', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: '旧内容' });
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q') })).toMatchObject({ ok: true, selected: true });
+    expect(q.focusCalls).toBe(1);
+    expect(q.selectCalls).toBe(1);
+  });
+
+  it('contenteditable 没有 select()：用 Range 选中它的全部内容', () => {
+    const ce = new El('DIV', { sel: '#ce', isContentEditable: true, attrs: { __text: '旧内容' } });
+    const { call, win } = stage([ce]);
+    expect(call({ op: 'focusSelect', target: bySel('#ce') })).toMatchObject({ ok: true, selected: true });
+    expect(win.__rangeOn).toEqual([ce]);
+  });
+});
+
+// ── C2 · 「先清空」必须是事实，不是「select() 没抛」──────────────────────────
+//
+// 实测（Electron 41.2.1，真页面）：`select()` 在 email / number / date / time /
+// month / week / datetime-local 上**都不抛**，但只有前两种真的选中了：
+//
+//   number  点中间→insertText'2024'（不全选）  → "20202024"   ← 追加
+//   number  点→select()→insertText'2024'       → "2024"       ← 真的替换了
+//   number  select() 之后 selectionStart/End    → null / null  ← API 说不出话
+//   number  select() 之后 getSelection() 长度   → 4 = value.length
+//   date    点→insertText'2024-02-03'          → "2020-01-01" ← 一个字都没进去
+//   date    点→value=''→insertText              → ""           ← 把原值抹了，还是没打进去
+//   date    点→逐个 keyDown '2','0','2','4'     → "2024-01-01" ← 只改到当前分段
+//
+// 所以：判据只认「选区这个页面事实」；`selectionStart !== selectionEnd` 一条不够
+// （会把 email/number 误判成没选中），而分段选择器要在**碰它之前**就拒掉
+// （清空 + 打一次空 = 把用户的年份抹了还报成功）。
+describe('focusSelect：先清空这件事要么真的发生，要么当场说没发生', () => {
+  it('selectionStart/End 报得出的类型：全选之后 selected 为真', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: '旧内容' });
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q') }))
+      .toMatchObject({ ok: true, selected: true, emptyBefore: false });
+    expect(q.selectionStart).toBe(0);
+    expect(q.selectionEnd).toBe(3);
+  });
+
+  // 这两种的 selectionStart 恒为 null，但选区**真的建立了**（实测 insertText 当场替换）。
+  // 只认 selectionStart 的判据会把它们误判成「没清空」，于是拒掉两种本来能用的框。
+  it.each(SEL_NO_API_TYPES)('%s：selectionStart 恒 null，但选区是真的 → selected 仍为真', (type) => {
+    const q = new El('INPUT', { sel: '#q', type, value: '2020' });
+    const { call } = stage([q]);
+    expect(q.selectionStart).toBe(null);
+    expect(call({ op: 'focusSelect', target: bySel('#q') })).toMatchObject({ ok: true, selected: true });
+  });
+
+  // insertText 对分段选择器**完全无效**（实测三行数据见上）。不拒的话这一步
+  // 要么静默无效、要么（先清空的话）把用户原本填好的年份抹掉，两种都以成功措辞返回。
+  it.each(SEGMENTED_TYPES)('%s 是分段选择器 → no_text_input，而且一个字都不许改', (type) => {
+    const q = new El('INPUT', { sel: '#q', type, value: '2020-01-01' });
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q') }))
+      .toMatchObject({ ok: false, reason: 'no_text_input', type });
+    expect(q.focusCalls).toBe(0);
+    expect(q.selectCalls).toBe(0);
+    expect(q.value).toBe('2020-01-01');
+  });
+
+  // 判据是选区，不是「select() 有没有抛」。站点把 select() 换成一个空函数
+  // （或者哪天又冒出第八种不选的类型），selected 必须跟着变成 false。
+  it('select() 不抛但什么都没选中 → selected 为假（不许因为「没抛」就报真）', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: '旧内容' });
+    q.select = () => { q.selectCalls += 1; };          // 调了，但选区没动
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q') }))
+      .toMatchObject({ ok: true, selected: false, emptyBefore: false });
+  });
+
+  // 本来就是空的框不需要清 —— 「下一次 insertText 会替换掉整份内容」照样成立。
+  // 与 selected 分开报：两者的依据不同，混成一个字段就分不出「没选中」和「没内容」。
+  it('本来就是空框：selected 为假但 emptyBefore 为真', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: '' });
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q') }))
+      .toMatchObject({ ok: true, selected: false, emptyBefore: true });
+  });
+
+  it('contenteditable 的 Range 装不上 → selected 为假，不许当成选中了', () => {
+    const ce = new El('DIV', { sel: '#ce', isContentEditable: true, attrs: { __text: '旧内容' } });
+    const { call, doc: d } = stage([ce]);
+    d.createRange = () => { throw new Error('Range 装不上'); };
+    expect(call({ op: 'focusSelect', target: bySel('#ce') }))
+      .toMatchObject({ ok: true, selected: false, emptyBefore: false });
+  });
+
+  it('measure 也要报出分段选择器 —— dispatch 在点下去之前就要问得到', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'date', value: '2020-01-01', rect: rect(0, 0, 200, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#q') }))
+      .toMatchObject({ ok: true, editable: true, segmented: true });
+  });
+
+  it('普通文本框的 segmented 是假 —— 上一条不是把所有输入框都标上了', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: 'x', rect: rect(0, 0, 200, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#q') }))
+      .toMatchObject({ ok: true, editable: true, segmented: false });
+  });
+});
+
+// ── D · 打完读回来 ──────────────────────────────────────────────────────────
+
+describe('readValue：打完之后框里到底是什么', () => {
+  it('把当前值读回来', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: '石墨烯' });
+    const { call } = stage([q]);
+    expect(call({ op: 'readValue', target: bySel('#q') })).toMatchObject({ ok: true, value: '石墨烯' });
+  });
+
+  it('密码框一个字都不回', () => {
+    const p = new El('INPUT', { sel: '#p', type: 'password', value: 'hunter2' });
+    const { call } = stage([p]);
+    const r = call({ op: 'readValue', target: bySel('#p') });
+    expect(r).toMatchObject({ ok: false, reason: 'password' });
+    expect(JSON.stringify(r)).not.toContain('hunter2');
+  });
+
+  it('超长的值截断并带原长', () => {
+    const q = new El('INPUT', { sel: '#q', type: 'text', value: 'x'.repeat(500) });
+    const { call } = stage([q]);
+    const r = call({ op: 'readValue', target: bySel('#q') });
+    expect(r.truncated).toBe(true);
+    expect(r.length).toBe(500);
+    expect(String(r.value).length).toBeLessThan(500);
+  });
+});
+
+// ── E · select ──────────────────────────────────────────────────────────────
+
+describe('select：值必须真的在选项里', () => {
+  const mk = () => new El('SELECT', {
+    sel: '#year', value: '',
+    options: [{ value: '2024', text: '2024 年' }, { value: '2023', text: '2023 年' }],
+  });
+
+  it('不是 <select> → not_select', () => {
+    const { call } = stage([new El('INPUT', { sel: '#year' })]);
+    expect(call({ op: 'select', target: bySel('#year'), value: '2024' })).toMatchObject({ ok: false, reason: 'not_select' });
+  });
+
+  // `el.value = '不存在'` 会把 select 变成「什么都没选」（value 变空串），
+  // 下一步提交出去就是一次空筛选 —— 不报错，只是结果是错的。
+  it('值不在选项里 → no_option，并列出可选值，且一个字都不写进去', () => {
+    const s = mk();
+    const { call } = stage([s]);
+    const r = call({ op: 'select', target: bySel('#year'), value: '1999' });
+    expect(r).toMatchObject({ ok: false, reason: 'no_option', totalKnown: 2 });
+    expect(r.options).toEqual(['2024', '2023']);
+    expect(s.value).toBe('');
+  });
+
+  // spec §5.5：**截断必须显式回报**，不许让模型自己拿 options.length 与 total 做减法。
+  // 失败场景：35 项的下拉框，模型看到 20 个候选值都不匹配，以为它要的那个不存在。
+  it('可选值太多时截断，并把截断本身显式报出来（truncated / returned / totalKnown）', () => {
+    const many = Array.from({ length: 400 }, (_, i) => ({ value: `code-${1000 + i}`, text: `第 ${i} 项` }));
+    const s = new El('SELECT', { sel: '#big', value: '', options: many });
+    const { call } = stage([s]);
+    const r = call({ op: 'select', target: bySel('#big'), value: 'nope' });
+    expect(r).toMatchObject({ ok: false, reason: 'no_option', truncated: true, totalKnown: 400 });
+    expect(r.returned).toBe((r.options as string[]).length);
+    expect((r.options as string[]).length).toBeLessThan(400);
+    // 数得出来就要给 totalKnown —— 这一条与「数不出来就不给这个键」是同一条规矩的两面。
+    expect(r.totalKnown).toBe(400);
+  });
+
+  // 没截断的时候不许谎报截断（也不许把 truncated 这个键省掉 —— 省掉等于让模型去猜）。
+  it('可选值都列得下时 truncated 为假，returned 与 totalKnown 相等', () => {
+    const s = new El('SELECT', {
+      sel: '#year', value: '',
+      options: [{ value: '2024', text: '2024 年' }, { value: '2023', text: '2023 年' }],
+    });
+    const { call } = stage([s]);
+    expect(call({ op: 'select', target: bySel('#year'), value: '1999' }))
+      .toMatchObject({ ok: false, reason: 'no_option', truncated: false, returned: 2, totalKnown: 2 });
+  });
+
+  // 1950–2026 这类整段年份表（77 项）是学术站点最常见的形态，一项都不该少。
+  it('77 项的年份表一项都不截断', () => {
+    const years = Array.from({ length: 77 }, (_, i) => ({ value: String(1950 + i), text: String(1950 + i) }));
+    const s = new El('SELECT', { sel: '#y', value: '', options: years });
+    const { call } = stage([s]);
+    const r = call({ op: 'select', target: bySel('#y'), value: '1900' });
+    expect(r.truncated).toBe(false);
+    expect((r.options as string[]).length).toBe(77);
+  });
+
+  it('值在选项里：赋值，并派发会冒泡的 input + change', () => {
+    const s = mk();
+    const { call } = stage([s]);
+    expect(call({ op: 'select', target: bySel('#year'), value: '2023' }))
+      .toMatchObject({ ok: true, value: '2023', label: '2023 年', changed: true });
+    expect(s.value).toBe('2023');
+    expect(s.dispatched.map((e) => `${e.type}:${e.bubbles}`)).toEqual(['input:true', 'change:true']);
+  });
+});
+
+// ── F · scroll ──────────────────────────────────────────────────────────────
+
+describe('scroll：滚的是滚动链上的那个容器', () => {
+  it('没有内层容器就滚 document，默认一屏（视口高度）', () => {
+    const { call, win, scroller } = stage([]);
+    const r = call({ op: 'scroll', direction: 'down' });
+    expect(win.__scrolledBy).toEqual([800]);
+    expect(r).toMatchObject({ ok: true, container: 'document', before: 0, after: 800, delta: 800, step: 800 });
+    expect(scroller.scrollTop).toBe(800);
+  });
+
+  it('up 是负方向', () => {
+    const { call, win } = stage([]);
+    call({ op: 'scroll', direction: 'up' });
+    expect(win.__scrolledBy).toEqual([-800]);
+  });
+
+  it('给了 amount 就按 amount 滚', () => {
+    const { call, win } = stage([]);
+    call({ op: 'scroll', direction: 'down', amount: 120 });
+    expect(win.__scrolledBy).toEqual([120]);
+  });
+
+  // 学术站点的结果区大量是内层 overflow:auto。滚 document 是一像素都不动，
+  // 而返回值会说「滚过了」。
+  it('光标下有内层滚动容器就滚它，document 一动不动', () => {
+    const pane = new El('DIV', {
+      rect: rect(0, 0, 1280, 800), className: 'result-pane',
+      style: { overflowY: 'auto' }, scrollTop: 0, scrollHeight: 3000, clientHeight: 600,
+    });
+    const { call, win, scroller } = stage([pane]);
+    const r = call({ op: 'scroll', direction: 'down' });
+    expect(pane.scrollTop).toBe(600);
+    expect(win.__scrolledBy).toEqual([]);
+    expect(scroller.scrollTop).toBe(0);
+    expect(r).toMatchObject({ container: 'div.result-pane', delta: 600, step: 600 });
+  });
+
+  it('overflow 不是 auto/scroll 的祖先不算滚动容器', () => {
+    const pane = new El('DIV', {
+      rect: rect(0, 0, 1280, 800), className: 'plain',
+      style: { overflowY: 'visible' }, scrollTop: 0, scrollHeight: 3000, clientHeight: 600,
+    });
+    const { call, win } = stage([pane]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ container: 'document' });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+
+  // 「已经到底了」与「这次滚动没生效」在返回值里必须分得开。
+  it('已经到底：delta 是 0，并且说得出 atEnd', () => {
+    const pane = new El('DIV', {
+      rect: rect(0, 0, 1280, 800), className: 'pane',
+      style: { overflowY: 'auto' }, scrollTop: 400, scrollHeight: 1000, clientHeight: 600,
+    });
+    const { call } = stage([pane]);
+    const r = call({ op: 'scroll', direction: 'down' });
+    expect(r).toMatchObject({ atEnd: true, delta: 0, before: 400, after: 400 });
+  });
+
+  // overlay 已被 Chromium 废弃并等同 auto，但它在白名单里就该有人验证过。
+  it('overflow: overlay 也算滚动容器（白名单里的每一项都要有人试过）', () => {
+    const pane = new El('DIV', {
+      rect: rect(0, 0, 1280, 800), className: 'legacy',
+      style: { overflowY: 'overlay' }, scrollTop: 0, scrollHeight: 3000, clientHeight: 600,
+    });
+    const { call, win } = stage([pane]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ container: 'div.legacy' });
+    expect(win.__scrolledBy).toEqual([]);
+  });
+
+  it('overflow: scroll 也算', () => {
+    const pane = new El('DIV', {
+      rect: rect(0, 0, 1280, 800), className: 'sc',
+      style: { overflowY: 'scroll' }, scrollTop: 0, scrollHeight: 3000, clientHeight: 600,
+    });
+    const { call } = stage([pane]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ container: 'div.sc' });
+  });
+});
+
+// ── F2 · 滚动链与两条边界判据（评审的 R05 / R06 / R09 存活变异）─────────────
+//
+// 三个判定用的数都来自实测（Electron 41.2.1，1280×800，deviceScaleFactor 0，
+// scale ∈ {1, 0.6266, 0.35} 三种逐一量过，结果一致）：
+//
+// | 容器 | scrollHeight−clientHeight | 滚到底的 scrollTop | 残差 |
+// | --- | --- | --- | --- |
+// | 真能滚（内容 1000.6px / 视口 200.4px） | 801 | **800** | **1** |
+// | 只多出 0.6px 内容 | **1** | 0.5 | 0.5 |
+// | 内容与容器一样高（含分数高度） | 0 | 0 | 0 |
+//
+// 也就是：`scrollTop` 是 double，`scrollHeight` / `clientHeight` 是**四舍五入的
+// 整数**，所以（a）真滚到底时 `max - scrollTop` 会差到 1 —— `atEnd` 必须留 1px
+// 容差，否则「已经到底」永远报不出来；（b）报出来的 1px 余量可能只是 0.5px 的真余量，
+// 所以「有没有可滚余量」要 `> 1` 而不是 `> 0`。顶端不需要容差：往上滚会被夹到**正好 0**。
+describe('滚动链：判据是页面事实，两个 1 都有出处', () => {
+  const paneWith = (over: Partial<{ scrollTop: number; scrollHeight: number; clientHeight: number }>) =>
+    new El('DIV', {
+      rect: rect(0, 0, 1280, 800), className: 'wrap', style: { overflowY: 'auto' },
+      scrollHeight: 3000, clientHeight: 600, scrollTop: 0, ...over,
+    });
+
+  // 学术站点最常见的「筛选栏 + 结果区」布局：外面套一层 overflow:auto 但内容没超出。
+  // 挑中它当目标的话，scrollTop 赋值无效、delta 恒 0，而真正该滚的 document
+  // 一像素都没动 —— 模型据此判定「到底了」，一整轮翻页就此停住。
+  it('overflow:auto 但内容没超出 → 不算滚动容器，滚 document', () => {
+    const wrap = paneWith({ scrollHeight: 600, clientHeight: 600 });
+    const { call, win } = stage([wrap]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ container: 'document' });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+
+  // 报出来只多 1px 的余量，实测可能只有 0.5px 的真余量（见上表第二行）——
+  // 那是四舍五入的噪声，不是可以滚的东西。
+  it('只多出 1px（四舍五入噪声）→ 不算滚动容器', () => {
+    const wrap = paneWith({ scrollHeight: 601, clientHeight: 600 });
+    const { call, win } = stage([wrap]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ container: 'document' });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+
+  it('多出 2px 就算 —— 上一条不是把所有内层容器都排除了', () => {
+    const wrap = paneWith({ scrollHeight: 602, clientHeight: 600 });
+    const { call } = stage([wrap]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ container: 'div.wrap' });
+  });
+
+  // 真滚到底时 max - scrollTop 实测能差到 1（分数高度四舍五入）。没有这 1px 容差，
+  // 「已经到底了」（该停止翻页）就永远报不出来，模型只会看到「滚了 0 像素」
+  // 那句「这个容器滚不动」—— 两句话的处置完全相反。
+  it('滚到底只差 1px（分数高度四舍五入）→ atEnd 必须为真', () => {
+    // 实测那一行：max 报 801，而滚到底停在 800。
+    const wrap = paneWith({ scrollHeight: 1001, clientHeight: 200 });
+    wrap.maxScrollTop = 800;
+    wrap.scrollTop = 1e9;
+    const { call } = stage([wrap]);
+    const r = call({ op: 'scroll', direction: 'down' });
+    expect(r).toMatchObject({ before: 800, after: 800, delta: 0, atEnd: true });
+  });
+
+  it('离底还有 2px → atEnd 为假（容差只有 1px，不是「快到了就算到了」）', () => {
+    const wrap = paneWith({ scrollHeight: 1000, clientHeight: 200 });
+    wrap.maxScrollTop = 798;
+    wrap.scrollTop = 1e9;
+    const { call } = stage([wrap]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ after: 798, atEnd: false });
+  });
+
+  // 顶端不留容差：往上滚被夹到**正好 0**（实测），所以 `<= 0` 是判据不是近似。
+  it('滚到顶 → atStart 为真；还没到顶 → 为假', () => {
+    const wrap = paneWith({ scrollHeight: 3000, clientHeight: 600, scrollTop: 100 });
+    const { call } = stage([wrap]);
+    expect(call({ op: 'scroll', direction: 'up', amount: 100 })).toMatchObject({ after: 0, atStart: true });
+    const wrap2 = paneWith({ scrollHeight: 3000, clientHeight: 600, scrollTop: 500 });
+    const s2 = stage([wrap2]);
+    expect(s2.call({ op: 'scroll', direction: 'up', amount: 100 })).toMatchObject({ after: 400, atStart: false });
+  });
+
+  // 其余每一个分支都 fail-closed，这里也不许破例：`interact.js` 是**独立注入的
+  // 一份代码**，`validateBatch` 与 TypeBox 那两道拦不到直接调它的路。
+  it('方向不是 up / down → 当场报出来，绝不默认往下滚', () => {
+    const { call, win } = stage([]);
+    expect(call({ op: 'scroll', direction: 'left' })).toMatchObject({ ok: false, reason: 'bad_direction' });
+    expect(call({ op: 'scroll' })).toMatchObject({ ok: false, reason: 'bad_direction' });
+    expect(win.__scrolledBy).toEqual([]);
+  });
+});
+
+describe('不认识的 op', () => {
+  it('明确报出来，不当成成功', () => {
+    const { call } = stage([new El('A', { sel: '#a' })]);
+    expect(call({ op: 'teleport', target: bySel('#a') })).toMatchObject({ ok: false, reason: 'unknown_op' });
+  });
+});
+
+// ── G · 与 walker 的尺寸判据差分 ────────────────────────────────────────────
+//
+// `interact.js` 的 `measure` 与 `walker.js` 的 `visible()` 第一条是**刻意对齐**的
+// （注释明说「同一个判据」）。改一处不改另一处，会出现「快照采到了、派发说它看不见」
+// 这种两边各说各话的状态，而**编译与用例全绿** —— 密码判据做了三方差分，
+// 这条尺寸判据此前一条都没有。
+describe('尺寸判据与 walker 对齐（改一处不改另一处必须红）', () => {
+  const THRESHOLD = /r\.width\s*<\s*(\d+)\s*\|\|\s*r\.height\s*<\s*(\d+)/;
+
+  it('两份源码里的阈值逐字相同', () => {
+    const a = THRESHOLD.exec(INTERACT_SOURCE);
+    const b = THRESHOLD.exec(WALKER_SOURCE);
+    expect(a, 'interact.js 里找不到尺寸判据').not.toBeNull();
+    expect(b, 'walker.js 里找不到尺寸判据').not.toBeNull();
+    expect([a![1], a![2]]).toEqual([b![1], b![2]]);
+  });
+
+  // 差分不是只比字符串：阈值以下的那一格，两边给出的结论也必须一致。
+  it.each([[1, 1, false], [1, 30, false], [30, 1, false], [2, 2, true]])(
+    '%i×%i 的元素：interact 判可点 = %s，与 walker 的可见判定同向',
+    (w, h, pointable) => {
+      const q = new El('A', { sel: '#a', rect: rect(10, 10, w, h) });
+      const { call } = stage([q]);
+      expect(call({ op: 'measure', target: bySel('#a') }).ok).toBe(pointable);
+      const limit = Number(THRESHOLD.exec(WALKER_SOURCE)![1]);
+      expect(w >= limit && h >= limit).toBe(pointable);
+    },
+  );
+});
+
+// ── H · 过期自检（撞了主进程那道时限就自己不做）──────────────────────────────
+//
+// 主进程那道单次求值时限**取消不了**已经注进去的求值（Electron 没有这个入口）：
+// 页面被自己的脚本占住主线程时，那段代码排在忙循环后面，稍后照常执行。
+// 实测（Electron 41.2.1，2026-09-09，真页面 + 真 `window.scrollBy`，3/3 复现）：
+//
+// | 构造 | 主进程 | 页面 |
+// | --- | --- | --- |
+// | 忙循环 8s、时限 3s、**不带自检** | 3.00s 报时限 | **7.2–7.8s 真的滚了 800 像素** |
+// | 忙循环 8s、时限 3s、**带自检** | 3.00s 报时限 | 7.4–8.0s 返回 expired，**scrollY 仍是 0** |
+// | 忙循环 4s、时限 20s、带自检 | 3.09s 正常返回 | 照常滚 800 —— **自检不误杀慢页面** |
+//
+// 所以写页面的这条路（measure 的 scrollIntoView / focusSelect 的 focus+select /
+// select 的赋值与 change / scroll 的 scrollBy）必须带着同一个到点时刻自己认一次。
+// 判据是 `Date.now()`：隔离世界里的它页面覆写不到（与 walker 同一个世界，同一条依据）。
+describe('过期自检：撞了时限的那次求值，页面回魂之后一个字都不许写', () => {
+  const past = () => Date.now() - 1;
+  const future = () => Date.now() + 60_000;
+
+  it('scroll：过期就一个像素都不滚', () => {
+    const { call, win, scroller } = stage([]);
+    expect(call({ op: 'scroll', direction: 'down', notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(win.__scrolledBy).toEqual([]);
+    expect(scroller.scrollTop).toBe(0);
+  });
+
+  it('select：过期就不赋值、不派发 input/change', () => {
+    const s = new El('SELECT', {
+      sel: '#year', value: '2020',
+      options: [{ value: '2024', text: '2024 年' }, { value: '2020', text: '2020 年' }],
+    });
+    const { call } = stage([s]);
+    expect(call({ op: 'select', target: bySel('#year'), value: '2024', notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(s.value).toBe('2020');
+    expect(s.dispatched).toEqual([]);
+  });
+
+  it('focusSelect：过期就不 focus、不选中', () => {
+    const q = new El('INPUT', { sel: '#q', value: 'old', rect: rect(10, 10, 200, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'focusSelect', target: bySel('#q'), notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(q.focusCalls).toBe(0);
+  });
+
+  it('measure：过期就不把元素滚进视野', () => {
+    const q = new El('BUTTON', { sel: '#go', rect: rect(10, 4000, 80, 30) });
+    const { call } = stage([q]);
+    expect(call({ op: 'measure', target: bySel('#go'), notAfter: past() }))
+      .toEqual({ ok: false, reason: 'expired' });
+    expect(q.scrollIntoViewCalls).toEqual([]);
+  });
+
+  // 自检不许误杀：还没到点的求值照常做完。忙但没超时的页面（实测 4 秒忙循环、
+  // 20 秒时限）走的正是这一条。
+  it('还没到点：照常执行', () => {
+    const { call, win } = stage([]);
+    expect(call({ op: 'scroll', direction: 'down', notAfter: future() }))
+      .toMatchObject({ ok: true, delta: 800 });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+
+  // 不带 notAfter 的调用方（interact.test 自己的其余用例、以及将来别的入口）
+  // 不受影响 —— 缺这个字段不等于「已经过期」。
+  it('不带 notAfter：照常执行', () => {
+    const { call, win } = stage([]);
+    expect(call({ op: 'scroll', direction: 'down' })).toMatchObject({ ok: true, delta: 800 });
+    expect(win.__scrolledBy).toEqual([800]);
+  });
+});

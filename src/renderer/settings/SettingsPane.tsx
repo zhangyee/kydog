@@ -71,6 +71,7 @@ export function SettingsPane() {
       </div>
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto ky-scroll">
+        <SettingsHealthNotice />
         {activeSection === 'provider' ? (
           detailProviderId ? (
             <ProviderDetailPane />
@@ -91,6 +92,50 @@ export function SettingsPane() {
           <EmptySettingsPage title={SETTINGS_PAGE_LABELS[activeSection]} />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 设置文件这一次没能正常读出来时的横幅。**挂在所有分节之上**，不挂在某一节里 ——
+ * 它说的是整份设置文件的事，而用户进设置页多半是因为「我的东西不见了」，
+ * 不该要求他先猜对该点哪一节。
+ *
+ * 为什么非有不可：从前这两种情况在界面上**零提示**，只有一行日志外加目录里多出一个
+ * 陌生文件名。「把原件留档」这件事只有用户看得见才算数 —— 看不见的话，用户看到的
+ * 就是设置被清空了，没人会想到去 `~/.kydog/` 里翻那份备份。
+ *
+ * 两档措辞不同，因为**下一步不同**：留档了要去备份里抄回来；读不出来则不要重填
+ * （写盘已经被拒），要去解决占用或权限。按项目约定不用危险色。
+ */
+function SettingsHealthNotice() {
+  const health = useSettingsStore((s) => s.settingsHealth);
+  if (health.kind === 'ok') return null;
+  return (
+    <div
+      data-testid="settings-health-notice"
+      className="font-sans"
+      style={{
+        fontSize: 12, lineHeight: 1.7, color: 'var(--color-accent)',
+        padding: '14px 28px 0',
+      }}
+    >
+      {health.kind === 'quarantined' ? (
+        <>
+          上次启动时读不懂这份设置文件，已经把原件留档成
+          {' '}<span className="font-mono">{health.backup}</span>{' '}
+          （在 <span className="font-mono">~/.kydog/</span> 里），当前用的是一份全新的默认设置。
+          原来的 API key 与机构账号都还在那份留档里，可以从里面抄回来。
+        </>
+      ) : (
+        <>
+          这一次读不出磁盘上的设置文件（<span className="font-mono">{health.why}</span>），
+          界面上显示的是一份默认设置 —— <strong>你原来的设置并没有被改动</strong>。
+          为免覆盖，本次改动设置会失败。先看看
+          {' '}<span className="font-mono">~/.kydog/kydog.json</span>{' '}
+          是不是被别的程序占着或权限不对，再重启一次；不要在这里重填。
+        </>
+      )}
     </div>
   );
 }

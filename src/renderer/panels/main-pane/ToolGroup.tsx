@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import type { AssistantBlock } from '../../../shared/types';
 import { TOOL_STATUS_COLOR } from './toolStatus';
-import { groupStatusSummary, groupToolLabel, groupToolLabelSummary, toolStatusLabel } from './toolSummary';
+import {
+  groupStatusSummary, groupToolLabel, groupToolLabelSummary,
+  RUNNING_OUTPUT_PLACEHOLDER, toolExpandable, toolStatusLabel,
+} from './toolSummary';
 
 type ToolBlock = Extract<AssistantBlock, { kind: 'tool_call' }>;
 type Props = { tools: ToolBlock[] };
@@ -13,8 +16,8 @@ export function ToolGroup({ tools }: Props) {
   const labels = groupToolLabelSummary(tools);
   const summary = groupStatusSummary(tools);
 
-  function toggleTool(id: string, hasOutput: boolean) {
-    if (!hasOutput) return;
+  function toggleTool(id: string, expandable: boolean) {
+    if (!expandable) return;
     setExpandedTools((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
@@ -59,6 +62,8 @@ export function ToolGroup({ tools }: Props) {
         <div style={{ borderTop: '0.5px solid var(--color-ink-hair-soft)', background: 'var(--color-paper)' }}>
           {tools.map((t, i) => {
             const hasOutput = t.chunks.length > 0;
+            const expandable = toolExpandable(t);
+            const waiting = !hasOutput && t.status === 'running';
             const rowOpen = !!expandedTools[t.id];
             const label = groupToolLabel(t);
             const status = toolStatusLabel(t.status);
@@ -70,8 +75,8 @@ export function ToolGroup({ tools }: Props) {
               >
                 <button
                   type="button"
-                  onClick={() => toggleTool(t.id, hasOutput)}
-                  disabled={!hasOutput}
+                  onClick={() => toggleTool(t.id, expandable)}
+                  disabled={!expandable}
                   data-testid={`tool-toggle-${t.id}`}
                   className="w-full flex items-center gap-2 text-left disabled:cursor-default"
                   style={{
@@ -81,7 +86,7 @@ export function ToolGroup({ tools }: Props) {
                   aria-expanded={rowOpen}
                 >
                   <span className="w-3" style={{ color: 'var(--color-ink-faint)' }}>
-                    {hasOutput ? (rowOpen ? '▾' : '▸') : ''}
+                    {expandable ? (rowOpen ? '▾' : '▸') : ''}
                   </span>
                   <span
                     style={{ width: 6, height: 6, borderRadius: '50%', background: TOOL_STATUS_COLOR[t.status] }}
@@ -89,10 +94,10 @@ export function ToolGroup({ tools }: Props) {
                   <span style={{ color: 'var(--color-ink-soft)', fontSize: 10 }}>{label}</span>
                   <span className="truncate flex-1" style={{ fontWeight: 500 }}>{status}</span>
                   <span className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}>
-                    {hasOutput ? (rowOpen ? '收起' : '展开') : ''}
+                    {expandable ? (rowOpen ? '收起' : '展开') : ''}
                   </span>
                 </button>
-                {rowOpen && hasOutput && (
+                {rowOpen && expandable && (
                   <div style={{ borderTop: '0.5px solid var(--color-ink-hair-soft)', background: '#1f1a15' }}>
                     {t.command && (
                       <div
@@ -102,27 +107,37 @@ export function ToolGroup({ tools }: Props) {
                           color: '#d9cfbf',
                           fontSize: 10.5,
                           lineHeight: 1.45,
-                          borderBottom: '0.5px solid rgba(217, 207, 191, 0.12)',
+                          borderBottom: hasOutput || waiting ? '0.5px solid rgba(217, 207, 191, 0.12)' : 'none',
                           whiteSpace: 'pre-wrap',
                         }}
                       >
                         $ {t.command}
                       </div>
                     )}
-                    <pre
-                      className="font-mono"
-                      style={{
-                        margin: 0, padding: '8px 12px', background: '#1f1a15',
-                        color: '#d9cfbf', fontSize: 10.5, lineHeight: 1.55,
-                        whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto',
-                      }}
-                    >
-                      {t.chunks.map((c, idx) => (
-                        <span key={idx} data-stream={c.stream} style={{ color: c.stream === 'stderr' ? '#e0a48a' : '#d9cfbf' }}>
-                          {c.data}
-                        </span>
-                      ))}
-                    </pre>
+                    {waiting && (
+                      <div
+                        className="font-mono"
+                        style={{ padding: '8px 12px', color: 'rgba(217, 207, 191, 0.55)', fontSize: 10.5, lineHeight: 1.55 }}
+                      >
+                        {RUNNING_OUTPUT_PLACEHOLDER}
+                      </div>
+                    )}
+                    {hasOutput && (
+                      <pre
+                        className="font-mono"
+                        style={{
+                          margin: 0, padding: '8px 12px', background: '#1f1a15',
+                          color: '#d9cfbf', fontSize: 10.5, lineHeight: 1.55,
+                          whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto',
+                        }}
+                      >
+                        {t.chunks.map((c, idx) => (
+                          <span key={idx} data-stream={c.stream} style={{ color: c.stream === 'stderr' ? '#e0a48a' : '#d9cfbf' }}>
+                            {c.data}
+                          </span>
+                        ))}
+                      </pre>
+                    )}
                   </div>
                 )}
               </div>

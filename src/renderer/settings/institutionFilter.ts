@@ -1,0 +1,57 @@
+import type { IdpEntry } from '../../shared/types';
+
+/**
+ * 机构清单的筛选。**纯函数，为的是它能被单测钉住** —— 设置页那个组件在这个仓库里
+ * 测不到（vitest 跑 node 环境，没有 jsdom，也没有 React 测试库）。
+ *
+ * ## 匹配哪些字段
+ *
+ * 名字（汉字）**和 entityID** 两个都匹配，都是子串、大小写不敏感。
+ *
+ * 带上 entityID 不是顺手：实测清单里它长这样 ——
+ * `https://idp.tsinghua.edu.cn/idp/shibboleth`、`https://idp.pku.edu.cn/idp/shibboleth`、
+ * `https://passport.escience.cn/idp/shibboleth`。**学校的拼音／缩写本来就写在里面**，
+ * 于是「tsinghua」「pku」「escience」这些敲法自然能命中，用户不必切输入法。
+ *
+ * **这不是拼音检索。** 计划原文写的是「汉字/拼音/首字母筛选」，真正的拼音与首字母
+ * 需要一张汉字→拼音表（常用字量级上万条），那是一份要从真实来源拿的数据，
+ * 而本批的硬约束是零新依赖。所以这里做的是**能做到的那个子集**，并且照实说明：
+ * 敲「beijing」命中不了「北京大学」这一行的名字，但命中得了它的 `idp.pku.edu.cn`
+ * 里的 `pku`；敲「北京」命中名字。**已登记为与计划的偏离**，要真拼音得先引一份表。
+ *
+ * ## 排序
+ *
+ * 名字里命中的排在只有 entityID 命中的前面 —— 用户敲的东西出现在校名里，
+ * 比出现在一条网址里更可能是他要找的。组内保持清单原序（那是上游给的顺序，
+ * 我们没有比它更好的依据）。
+ *
+ * ## 不做重名消歧
+ *
+ * 实测 1064 条里**重名 0 条**（`parseIdpList` 的 `ambiguousNames`）。反过来倒是有
+ * 127 个中科院所共用同一个 entityID —— 那不是歧义（选哪条都通向同一套认证），
+ * 但它意味着**下拉的 React key 不能用 entityID**，也意味着选中后必须把 `name`
+ * 一起存下来：`entityID → 名字`是一对多，光有 entityID 反查不出用户选的是哪一家。
+ */
+export function filterIdps(entries: readonly IdpEntry[], query: string): IdpEntry[] {
+  const q = query.trim().toLowerCase();
+  if (q === '') return [...entries];
+  const byName: IdpEntry[] = [];
+  const byId: IdpEntry[] = [];
+  for (const e of entries) {
+    if (e.name.toLowerCase().includes(q)) byName.push(e);
+    else if (e.entityID.toLowerCase().includes(q)) byId.push(e);
+  }
+  return [...byName, ...byId];
+}
+
+/**
+ * 下拉每一行的 React key。
+ *
+ * **不能用 `entityID`**：实测一个 entityID 被 127 个中科院所共用，key 撞车会让 React
+ * 把一行的 fiber 复用到位置不同的另一行上。也不能只用 `name`：那是一份**活的**上游
+ * 数据，今天重名 0 不是协议保证。所以三样一起用，其中下标保证任何数据下都不重复。
+ * 行本身不持有任何本地 state，下标随筛选变化不会带来副作用。
+ */
+export function idpRowKey(e: IdpEntry, index: number): string {
+  return `${index} ${e.entityID} ${e.name}`;
+}

@@ -31,7 +31,7 @@
 - **Problem**: <one or two sentences, stating fact>
 - **Why it matters**: <what it means for the conclusion or the reader>
 - **Suggestion**: <executable>
-- **Basis**: <Author (year), Full Title, DOI — required for methodological points, verified at the source; the obvious may go without>
+- **Basis**: <Author (year), Full Title, DOI (with no DOI, give the journal with year, volume and issue, or the degree-granting institution; never make one up) — required for methodological points, verified at the source; judgments checked only against an abstract carry `[abstract only]`, those checked only as far as the record carry `[record only]`; the obvious may go without>
 
 ### Comment 2 …
 
@@ -64,4 +64,5 @@
 ## 6. References cited in this review
 
 > [WRITING NOTE] Every paper used to support a point in the review: Author (year), Full Title, DOI.
+> Papers with no DOI (Chinese journal articles, theses): give the journal with year, volume and issue, or the degree-granting institution; never make up a DOI.
 > All verified at the source — the authors must be able to check the referee's evidence. If none were cited, write "no external literature was cited in this review".

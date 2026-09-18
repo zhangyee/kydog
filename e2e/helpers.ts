@@ -113,7 +113,7 @@ export async function launchKydog(opts: {
 export async function seedSettings(kydogHome: string, opts: { providerConfigured?: boolean; onboardingCompleted?: boolean; locale?: 'zh' | 'en' } = {}) {
   await fs.mkdir(path.join(kydogHome, '.kydog'), { recursive: true });
   const v4 = {
-    schemaVersion: 4 as const,  // 故意留在 v4：让 e2e 每次都走一遍 v4 → v8 迁移
+    schemaVersion: 4 as const,  // 故意留在 v4：让 e2e 每次都走一遍 v4 → v9 迁移
     ui: {
       theme: 'vellum',
       locale: opts.locale ?? 'zh',

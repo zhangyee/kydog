@@ -6,6 +6,23 @@ import type { FixtureFile, FixtureEvent } from '../../../e2e/fixtures/fixture.ty
 
 export type FakeSessionListener = (event: { type: string; [k: string]: unknown }) => void;
 
+/**
+ * 一个已注册的 customTool，在 fixture 这一侧用得着的那部分。
+ *
+ * 形状照 pi 的工具定义（`browserTools.ts` 那四个的公共形态），但**只挑名字与
+ * `execute`**：fixture 不做 schema 校验、不看 description —— 它要做的事就是
+ * 「按名字把那次调用真的执行一遍」。
+ */
+export type FixtureTool = {
+  name: string;
+  execute: (
+    toolCallId: string,
+    args: never,
+    signal?: AbortSignal,
+    ...rest: never[]
+  ) => Promise<{ content: unknown[]; details?: unknown }>;
+};
+
 export type FakeAgentSession = {
   prompt: (content: string) => Promise<void>;
   abort: () => void;
@@ -14,11 +31,16 @@ export type FakeAgentSession = {
   state: { messages: unknown[] };
 };
 
+/**
+ * @param tools 这条 session 上**真的注册着**的工具（`sessionFactory` 交进来的那一份）。
+ *   `tool` 事件按名字在这里找。缺省空数组 —— 只发 text/bash/ask 的老 fixture 一个字都不用改。
+ */
 export async function createFixtureSession(
   fixturePath: string,
   askShared: AskSharedState,
   threadId: string,
   locale: AskLocale,
+  tools: readonly FixtureTool[] = [],
 ): Promise<FakeAgentSession> {
   const raw = await fs.readFile(fixturePath, 'utf8');
   const file = JSON.parse(raw) as FixtureFile;
@@ -30,13 +52,19 @@ export async function createFixtureSession(
   // 事件——这是协议层面的语义，不是"尽量快地停"，所以必须能短路当前正在
   // 等待的那一个定时器，而不是干等它自然到点。
   let cancelPendingWait: (() => void) | null = null;
+  // 工具的 `execute` 收到的那个 AbortSignal。**不是第二个真相**：唯一的写入点还是
+  // abort()，这里只是把同一次中止翻译成工具那一侧认得的形态。缺了它，一批 60 个动作的
+  // `browser_act`（`runBatch` 逐步查 `signal.aborted`）在 fixture 下按了停止也停不住，
+  // 而真实 pi 那条路上是停得住的 —— 两条路的语义不许在这里分叉。
+  let toolAbort: AbortController | null = null;
 
   return {
     state: { messages: [] },
     subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
-    abort() { aborted = true; cancelPendingWait?.(); },
+    abort() { aborted = true; cancelPendingWait?.(); toolAbort?.abort(); },
     async cleanup() { listeners.clear(); },
     async prompt() {
+      toolAbort = new AbortController();
       // Accumulate tool chunks so tool_end can embed them in result
       const toolChunks = new Map<string, string>();
       // 必须用真实 threadId：broker 按 threadId 索引 pending，
@@ -81,6 +109,54 @@ export async function createFixtureSession(
             type: 'tool_execution_end',
             toolCallId: evt.toolCallId,
             toolName: ASK_TOOL_NAME,
+            result,
+            isError,
+          });
+          continue;
+        }
+
+        if (evt.type === 'tool') {
+          // 走真实的工具，**与上面 ask 那一条一字不差的形态** —— 那一条从来就是真调
+          // `askUserQuestionTool.execute`。这里只是把「只认识 ask 一种工具」补齐成
+          // 「按名字找 sessionFactory 交进来的任意一个」。
+          //
+          // **这条路上没有任何捷径**：`tools` 里的对象就是非 fixture 分支交给 pi 的
+          // 那一份（`sessionFactory` 里同一次 `createBrowserTools()`），所以
+          // `browser_act` → `browserService.enqueue` → `withAgentDriving` →
+          // `dispatch` / `evalInPage` 整条路一步不少。事件顺序也照真实 pi：
+          // 先 tool_execution_start（AgentService 靠它建工具卡），再 end。
+          //
+          // **「没有捷径」也意味着「有真实副作用」**：`browser_open` 真打公网，
+          // `browser_login` 真用设置里那份校园账号提交一次登录、且本轮只有一次机会。
+          // 副作用清单写在 `e2e/fixtures/fixture.types.ts` 的 `tool` 那段 docblock 里
+          // （那是写剧本的人唯一会读的地方），改这里也去看一眼。
+          emitRaw(listeners, {
+            type: 'tool_execution_start',
+            toolCallId: evt.toolCallId,
+            toolName: evt.name,
+            args: evt.args,
+          });
+          const tool = tools.find((t) => t.name === evt.name);
+          let result: { content: unknown[]; details?: unknown };
+          let isError = false;
+          if (!tool) {
+            // 名字打错了**不许**静默变成「这一步什么都没发生」：那样一条本该红的用例会绿。
+            result = { content: [{ type: 'text', text:
+              `fixture 里写的工具名 ${JSON.stringify(evt.name)} 没有注册。`
+              + `这条 session 上注册着：${tools.map((t) => t.name).join(' / ') || '（一个都没有）'}` }] };
+            isError = true;
+          } else {
+            try {
+              result = await tool.execute(evt.toolCallId, evt.args as never, toolAbort?.signal);
+            } catch (err) {
+              result = { content: [{ type: 'text', text: String(err) }] };
+              isError = true;
+            }
+          }
+          emitRaw(listeners, {
+            type: 'tool_execution_end',
+            toolCallId: evt.toolCallId,
+            toolName: evt.name,
             result,
             isError,
           });
@@ -160,6 +236,7 @@ function toPiShape(evt: FixtureEvent, aborted: boolean, toolChunks: Map<string, 
       return null;
 
     case 'ask':
+    case 'tool':
       // prompt 循环里单独处理（要 await 真实工具），走不到这里；switch 要穷尽。
       return null;
 

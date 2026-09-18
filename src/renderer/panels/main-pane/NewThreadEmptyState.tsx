@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { KyLogo, KyMascot, ChapterCard } from '../../shared';
 import { useSkillsStore } from '../../stores/skillsStore';
+import { useUiStore } from '../../stores/uiStore';
 import { Composer } from './Composer';
 import { pickFeaturedSkills } from './skillMenuItems';
 
@@ -14,13 +15,19 @@ export function NewThreadEmptyState({ threadId }: Props) {
   const skills = useSkillsStore((s) => s.skills);
   const featured = useMemo(() => pickFeaturedSkills(skills), [skills]);
 
+  // 窄模式判据与 Composer.tsx / MessageList.tsx 一致：browserOpen（协议层事实），
+  // 不是宽度阈值。没跟这条的代价：360px 的对话栏里横向 padding 80 两边吃掉 160，
+  // 内容盒只剩 200 —— 这是新建对话首屏，最常见的入口，不能漏。20 与 MessageList
+  // 窄模式的横向 padding 取同一个数，不单独发明一档。
+  const narrow = useUiStore((s) => s.browserOpen);
+
   return (
-    <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto">
+    <div className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="new-thread-empty-state">
       <div
         style={{
           maxWidth: 840,
           margin: '0 auto',
-          padding: '64px 80px',
+          padding: narrow ? '64px 20px' : '64px 80px',
           textAlign: 'center',
         }}
       >

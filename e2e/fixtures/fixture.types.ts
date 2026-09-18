@@ -26,6 +26,44 @@ export type FixtureEvent =
         options: Array<{ label: string; description: string; recommended?: boolean }>;
       }>;
     }
+  | {
+      after_ms: number;
+      type: 'tool';
+      toolCallId: string;
+      /**
+       * 已注册的 customTool 的名字。**fixture 真去执行它** —— 与上面的 `ask` 同一个
+       * 机制（那一条真调 `askUserQuestionTool.execute`），只是把「只有 ask 一种」补齐
+       * 成「按名字找任意一个已注册的工具」。
+       *
+       * 找得到的名字取决于 `sessionFactory` 交给 fixture session 的那份工具清单 ——
+       * 目前是 `createBrowserTools()` 那五个（`browser_open` / `browser_act` /
+       * `browser_read` / `browser_login` / `browser_tabs`），与非 fixture 分支交给
+       * pi 的是**同一次构造**。名字不在清单里时这一条按工具失败处理
+       * （`isError: true`），不静默跳过。
+       *
+       * ── 写 fixture 剧本不再是零副作用的事 ────────────────────────────────
+       *
+       * 「真去执行」的另一半含义：**这些工具有真实的外部副作用，写在剧本里就等于
+       * 真的做一遍**。别的事件（`text_delta` / `tool_start` / `tool_end` …）都只是
+       * 把字节喂给渲染层，这一条不是。
+       *
+       *  · `browser_open` / `browser_act` **真的打公网**（内置浏览器的 urlGuard 只放行
+       *    公网 http/https，起不了本地夹具服务器 —— 见 `e2e/61-browser.spec.ts` 文件头）。
+       *  · `browser_login` **真的用设置里存着的校园统一身份认证账号密码往当前页提交
+       *    一次登录**。而它的语义是「同一轮任务里失败一次就停手」（`browser.login_attempted`），
+       *    高校 IdP 普遍锁定连续失败的账号 —— **押的是用户自己的校园账号，而且本轮
+       *    只有这一次机会**。
+       *
+       * 所以加用例之前先确认这条剧本打到的是不是该打的地方：URL 是不是受控的、
+       * 那一步会不会走到 `browser_login`、当前设置里有没有真凭据。
+       * **这段话必须留在这份 tracked 文件里** —— 它一度只登记在 `.superpowers/` 的
+       * 交接报告里，而那棵树被 `.gitignore` 挡在 git 之外，合并之后下一个人看不到
+       * （与 `eventLedger.test.ts` 开头点名的是同一个失败形状）。
+       */
+      name: string;
+      /** 原样交给工具的 `execute` —— 模型给的参数长什么样，这里就长什么样。 */
+      args: Record<string, unknown>;
+    }
   | { after_ms: number; type: 'agent_end'; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string };
 
 export type FixtureFile = { events: FixtureEvent[] };

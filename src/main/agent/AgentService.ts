@@ -11,6 +11,7 @@ import { ASK_TOOL_NAME, type AskOutcome, type AskQuestion } from '../../shared/a
 import { isParallelBatch, toolCallsOf } from './askSequentialTools';
 import type { AskSharedState } from './askUserQuestionTool';
 import { settingsService } from '../settings/settingsService';
+import { browserService } from '../browser/browserService';
 import { resolveProviderDefault } from '../llm/resolveProvider';
 import { threadService } from '../thread/threadService';
 import type { Message, ProviderId } from '../../shared/types';
@@ -42,6 +43,29 @@ export type Bound = {
    * 免得同一轮既出现在 history 里又出现在 buffer 里。
    */
   runStartIndex: number | null;
+  /**
+   * 这条 session 此刻在为**哪一轮 KyDog run** 服务。**唯一的写入点**是 `send()` 铸出
+   * runId 那一下（另一处是造 bound 时的初始 null）；**清除点有三个**，每一个都顺带调
+   * `browserService.endRun`（清本轮的下载计数），三处同形：
+   *  · `agent_settled` 分支 —— pi 正常收尾；
+   *  · `send()` 的 catch —— `prompt()` reject，pi 不会补发 `agent_settled`；
+   *  · `dispose()` —— session 一拆就永远等不到 settle 了。
+   * 少一个出口，这个字段就会**留在那里**：`hasActiveRun()` 从此恒为真（切界面语言永久
+   * 被拒）、`currentRunIdFor` 继续拿死掉的 runId 记账、本轮的下载计数再也没人清。
+   *
+   * （2026-09-17 之前这三个出口还会**关掉本轮 agent 开的标签**。现在标签跟对话走，
+   * 关标签挂在 `threadService.delete` 上，见 spec `2026-09-17-browser-tab-lifecycle-design`。）
+   *
+   * **不能用 `runs` 现算代替**，两处都栽在同一件事上：
+   *  · `agent_settled` 不带任何载荷（`agent-session.d.ts` 的 `{ type:"agent_settled" }`），
+   *    而它在 `_runAgentPrompt` 的 `finally` 里发（`agent-session.js:755`），**排在最后
+   *    一次 `agent_end` 之后** —— 那时 `runs` 早被下面 agent_end 分支置回 idle，
+   *    现算得到 `'unknown'`，`endRun('unknown')` 一条计数都清不到，不抛不红。
+   *  · pi 在 `agent_end` 之后仍可能自动重试（`docs/extensions.md:560`，
+   *    `_handlePostAgentRun` → `agent.continue()`）。那一段 `runs` 也是 idle，
+   *    而重试仍属于同一轮 KyDog run。
+   */
+  runId: string | null;
   staleAfterRun?: boolean;
 };
 
@@ -87,7 +111,7 @@ class AgentService {
     // 只有工具知道 pending 何时真正就绪，所以事件必须由它触发，不能挂在
     // pi 的 tool_execution_start 上（那时还没校验、没分配 id、broker 也没注册）。
     const askShared: AskSharedState = {
-      onOpened: (toolCallId: string, questions: AskQuestion[]) => {
+      onOpened: (toolCallId: string, questions: AskQuestion[], browserTabId?: string) => {
         const b = this.sessions.get(threadId);
         const messageId = b?.activeMessageId;
         if (!b || !messageId) {
@@ -101,6 +125,9 @@ class AgentService {
         b.askOpened.add(toolCallId);
         emitRun(b, 'run.ask_start', {
           threadId, runId: this.currentRunId(threadId), messageId, toolCallId, questions,
+          // 只在真有值时带上这个键：`undefined` 会原样进 journal，重放时与
+          // 「工具压根没给」长得一样倒是没差，但序列化出去的是一个多余的 null 位。
+          ...(browserTabId === undefined ? {} : { browserTabId }),
         });
       },
       onClosed: (toolCallId: string, outcome: AskOutcome) => {
@@ -123,6 +150,8 @@ class AgentService {
       providerId,
       modelId,
       askShared,
+      // 取值函数，不是值：session 造出来这一刻还没有任何 run 在飞。
+      currentRunId: () => this.currentRunIdFor(threadId),
     });
     const bound: Bound = {
       session, cwd: projectPath, threadId,
@@ -132,6 +161,7 @@ class AgentService {
       askArgs: new Map(),
       runJournal: [],
       runStartIndex: null,
+      runId: null,
     };
     this.sessions.set(threadId, bound);
     this.subscribe(bound);
@@ -179,11 +209,27 @@ class AgentService {
     if (current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
     const runId = randomUUID();
     this.runs.set(threadId, transition(current, { kind: 'send', runId }));
+    // 本轮的 runId 记在 bound 上。**浏览器那两侧都读它**（盖戳的 currentRunIdFor、
+    // 回收的 agent_settled），理由见 Bound.runId 那段注释。
+    bound.runId = runId;
     void bound.session.prompt(content).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
       broadcaster.emit('run.ended', { threadId, runId, reason: 'error', errorMessage: msg });
       logger.error('agent', 'prompt failed', { threadId, err: msg });
+      // **本轮在这里落地**：pi 的 `agent_settled` 只在 `_runAgentPrompt` 的 finally 里发
+      // （`agent-session.js:755`），而 `prompt()` 的 catch（`:792`）排在它被 await 之前就
+      // throw 了 —— 没选模型 / OAuth 过期 / 没有 API key / 压缩失败 /
+      // `before_agent_start` 扩展抛错，这几条都是「reject 了但从没 settle 过」。
+      // 不清的话 `hasActiveRun()` 永远为真，用户此后切界面语言一律被拒（见 Bound.runId）。
+      //
+      // 相等判断不能省：reject 迟到时 `bound.runId` 可能已经是下一轮的了，
+      // 无条件置 null 会把新那一轮的戳抹掉。字段还是本轮的，才轮得到这里收尾 ——
+      // 顺带结束本轮，与另外两个出口同形（settled 已经来过时这一支不会进）。
+      if (bound.runId === runId) {
+        bound.runId = null;
+        browserService.endRun(runId);
+      }
     });
     return { runId };
   }
@@ -202,6 +248,19 @@ class AgentService {
   async dispose(threadId: string): Promise<void> {
     const bound = this.sessions.get(threadId);
     if (!bound) return;
+    // **session 一拆，本轮就再也不会 settle 了** —— `agent_settled` 由 pi 的 session 发
+    // （`_runAgentPrompt` 的 finally），session 没了就没人发。所以这里补最后
+    // 一次结束：不补的话 `bound.runId` 留在那里，本轮的下载计数再也没人清。
+    //
+    // **这里不关标签。** 切界面语言（disposeAllSessions）与换 provider（markStaleOrDispose）
+    // 也走 dispose，那不是「对话没了」。关标签只挂在 threadService.delete / projectService.close。
+    //
+    // 读的是 `bound.runId`，与 `agent_settled` / `currentRunIdFor` 同一个字段（见 Bound.runId）：
+    // 现算 `runs` 在 pi 的重试窗口里已经是 idle —— 而删线程（threadService.delete 无条件
+    // dispose）与切界面语言（localeSet → disposeAllSessions）两条真实入口都能落进那个窗口。
+    const abandonedRunId = bound.runId;
+    bound.runId = null;
+    if (abandonedRunId !== null) browserService.endRun(abandonedRunId);
     // Adaptation B: fake has cleanup(), real has dispose()
     if (bound.session.cleanup) await bound.session.cleanup();
     else if (bound.session.dispose) bound.session.dispose();
@@ -212,6 +271,19 @@ class AgentService {
   private currentRunId(threadId: string): string {
     const s = this.runs.get(threadId);
     return s?.status === 'running' ? s.runId : 'unknown';
+  }
+
+  /**
+   * 浏览器工具**按轮记账**用的那个戳：`browser_download` 每轮 10 个的计数、`loginFlow` 的
+   * 「本轮已经填过一次」。没有 run 在飞就是 `null`。**标签归属不读它**（标签跟对话走，读 threadId）。
+   *
+   * **读 `bound.runId`，不是现算 `runs`**：pi 在 `agent_end` 之后仍可能自动重试
+   * （`docs/extensions.md:560`），那一段 `runs` 已经是 idle，现算会得到 `null`，
+   * 于是重试里的下载与登录被记到「不在任何一轮里」名下。它与 `endRun` 读的是同一个字段，
+   * 记账与清账因此不可能对不上。
+   */
+  currentRunIdFor(threadId: string): string | null {
+    return this.sessions.get(threadId)?.runId ?? null;
   }
 
   private async markStaleOrDispose(bound: Bound): Promise<void> {
@@ -389,7 +461,16 @@ class AgentService {
           }
           // Flush the run's accumulated buffer as one assistant message
           const messageId = bound.activeMessageId;
-          if (messageId) emitRun(bound, 'run.message_end', { threadId, runId, messageId });
+          // 错误原文跟着这一轮的 message_end 走：渲染层把这一轮落进历史的那一刻就要知道
+          // 它出错了，而 run.ended 排在后面才到。判据是 reason（来自 stopReason），不是
+          // 原文在不在 —— pi 没给原文时也要让这一轮显示出「出错了」。
+          // **只在出错时带这个键**：journal 按原样重放这份 payload。
+          if (messageId) {
+            emitRun(bound, 'run.message_end', {
+              threadId, runId, messageId,
+              ...(reason === 'error' ? { errorMessage: errorMessage ?? 'unknown' } : {}),
+            });
+          }
           bound.activeMessageId = null;
           // tool_execution_end 是正常的清理点；run 异常退出时它可能不发，
           // 所以这里兜一次底，免得条目跨轮残留。
@@ -408,15 +489,35 @@ class AgentService {
           }
           return;
         }
+        case 'agent_settled': {
+          // **挂在这里，不是 agent_end** —— pi 在 agent_end 之后仍可能自动重试
+          // （docs/extensions.md:560），那时还属于同一轮 KyDog run。
+          // 用 bound.runId 而不是上面那个现算的 runId：这一刻 runs 已被
+          // agent_end 置回 idle，现算是 `'unknown'` —— 不抛、不红，只是永远清不到（见 Bound.runId）。
+          const settledRunId = bound.runId;
+          bound.runId = null;
+          if (settledRunId !== null) browserService.endRun(settledRunId);
+          return;
+        }
         default:
           return;
       }
     });
   }
 
-  /** 有没有正在跑的 run。locale.set 靠它决定是否拒绝切换。 */
+  /**
+   * 有没有正在跑的 run。locale.set 靠它决定是否拒绝切换。
+   *
+   * **读 `bound.runId`，不是现算 `runs`** —— 与 `currentRunIdFor` / `agent_settled` 同一个
+   * 字段。`runs` 在 `agent_end` 就被置回 idle，而 pi 在那之后仍可能自动重试
+   * （`docs/extensions.md:560`）：拿 `runs` 当闸，用户在重试窗口里切语言会被放行，
+   * 而 locale.set 那段注释写明的前提正是「切换时没有 run 在跑」。
+   * `bound.runId` 恰好活在 `send()` 到本轮落地之间（三个出口，见 `Bound.runId`），
+   * 就是那个前提本身 —— 其中 `send()` 的 catch 那个出口是必需的：`prompt()` reject
+   * （没配 key / OAuth 过期）时 pi 不发 `agent_settled`，漏了它这道闸就再也开不回来。
+   */
   hasActiveRun(): boolean {
-    return [...this.runs.values()].some((s) => s.status === 'running');
+    return [...this.sessions.values()].some((b) => b.runId !== null);
   }
 
   /**

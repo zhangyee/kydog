@@ -20,6 +20,7 @@ export type NavIconName =
   | 'book-open-text'
   | 'dot'
   | 'minimize-2'
+  | 'maximize-2'
   | 'filter'
   | 'folder-plus'
   | 'more-horizontal'
@@ -29,8 +30,11 @@ export type NavIconName =
   | 'clock'
   | 'messages-square'
   | 'circle-plus'
+  | 'plus'
   | 'arrow-up'
   | 'arrow-right'
+  | 'arrow-left'
+  | 'globe'
   | 'check'
   | 'grip-vertical'
   | 'mouse-pointer-2'
@@ -148,6 +152,9 @@ const ICONS: Record<NavIconName, IconSpec> = {
   'minimize-2': {
     paths: ['M4 14h6v6', 'M20 10h-6V4', 'm14 10 7-7', 'm3 21 7-7'],
   },
+  'maximize-2': {
+    paths: ['M15 3h6v6', 'M9 21H3v-6', 'm21 3-7 7', 'm3 21 7-7'],
+  },
   filter: {
     paths: ['M3 6h18', 'M7 12h10', 'M10 18h4'],
   },
@@ -195,8 +202,18 @@ const ICONS: Record<NavIconName, IconSpec> = {
     paths: ['M8 12h8', 'M12 8v8'],
     circles: [{ cx: 12, cy: 12, r: 10 }],
   },
+  // 裸加号（没有那个圈）。浏览器标签条上的「新建标签」用它 —— `circle-plus` 的圈
+  // 与那一行其余元素（标签、全屏）的线条语言不一致，而且圈占掉大半，里面的加号
+  // 只剩 8/24，视觉上比同尺寸的其他图标小一圈。
+  plus: { paths: ['M5 12h14', 'M12 5v14'] },
   'arrow-up': { paths: ['m5 12 7-7 7 7', 'M12 19V5'] },
   'arrow-right': { paths: ['M5 12h14', 'm12 5 7 7-7 7'] },
+  'arrow-left': { paths: ['M19 12H5', 'm12 19-7-7 7-7'] },
+  // Lucide 的 globe：一个圆 + 一条赤道 + 一条经线（那条 arc 的两半镜像对称）。
+  'globe': {
+    paths: ['M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20', 'M2 12h20'],
+    circles: [{ cx: 12, cy: 12, r: 10 }],
+  },
   'check': { paths: ['M20 6 9 17l-5-5'] },
   'grip-vertical': {
     circles: [

@@ -1,23 +1,36 @@
 import { describe, it, expect } from 'vitest';
 import { createOnboardingService, type OnboardingDeps } from './onboardingService';
+import { defaultSettings } from '../persist/settingsFile';
 import type { SettingsFile, OnboardingCompleteArgs } from '../../shared/types';
 import type { SeedManifest, ManifestReadResult } from './manifest';
 
 const ARGS: OnboardingCompleteArgs = { locale: 'zh', theme: 'vellum', readingFontSize: 'medium', userName: '老张', agentName: 'KyDog', telemetryEnabled: false };
 
-function makeWorld(over: Partial<{ completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean; writeManifestFail: boolean; telemetry: SettingsFile['telemetry']; syncFail: boolean }> = {}) {
+type WorldOver = Partial<{
+  completedAt: string | null; model: boolean; manifest: ManifestReadResult; seedFail: boolean;
+  writeManifestFail: boolean; telemetry: SettingsFile['telemetry']; syncFail: boolean;
+  institution: SettingsFile['institution'];
+}>;
+
+/** 从 defaultSettings() 起手，不用 `as SettingsFile` 断言 —— 断言会让 SettingsFile
+ *  新增必填字段时这份 fixture 悄悄漏掉它，而 onboarding 走的是整份 settings。 */
+function makeSettings(over: WorldOver): SettingsFile {
+  const s = defaultSettings();
+  // 初始值必须与 ARGS 里的期望值不同，否则「向导写进去了」的断言证明不了任何东西。
+  s.ui.theme = 'porcelain';
+  s.ui.readingFontSize = 'small';
+  s.llm.defaultProvider = over.model === false ? null : 'anthropic';
+  s.llm.defaultModel = over.model === false ? null : 'm1';
+  s.institution = over.institution ?? null;
+  // 同上，可覆写：验证「落盘值来自 manifest」时初始值不能等于期望值。
+  s.telemetry = over.telemetry ?? { state: 'undecided', decidedAt: null };
+  s.onboarding = { completedAt: over.completedAt ?? null };
+  return s;
+}
+
+function makeWorld(over: WorldOver = {}) {
   const state = {
-    settings: {
-      schemaVersion: 8,
-      ui: { theme: 'porcelain', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'small', collapsedProjects: [] },
-      llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: over.model === false ? null : 'anthropic', defaultModel: over.model === false ? null : 'm1' },
-      skills: { disabledBuiltins: [] }, tools: { externalBins: [] },
-      research: { presets: {}, custom: [] },
-      updates: { autoCheck: true, dismissedCandidateId: null },
-      // 可覆写：验证「落盘值来自 manifest」时，初始值必须与期望值不同，否则断言证明不了任何东西。
-      telemetry: over.telemetry ?? { state: 'undecided', decidedAt: null },
-      onboarding: { completedAt: over.completedAt ?? null },
-    } as SettingsFile,
+    settings: makeSettings(over),
     manifest: over.manifest ?? { status: 'none' as const },
     written: null as SeedManifest | null,
     lastWritten: null as SeedManifest | null,   // 与 written 不同：成功后 manifest 会被删，这里留痕以便断言写进去的内容
@@ -68,6 +81,19 @@ describe('onboarding.complete', () => {
     expect(state.lastWritten).toMatchObject({ telemetryState: 'disabled', decidedAt: '2026-07-22T00:00:00.000Z' });
     expect(state.settings.telemetry).toEqual({ state: 'disabled', decidedAt: '2026-07-22T00:00:00.000Z' });
     expect(state.deleted).toBeGreaterThan(0);
+  });
+
+  // onboarding 组 next 的时候是整份重写 settings 的形状，机构账号不在它该动的范围里。
+  // 这条守的是「它没顺手把 institution 抹掉」——抹掉不会报错，用户只会发现学号密码没了。
+  it('走完向导后机构账号还在', async () => {
+    const inst = {
+      name: '北京大学', entityID: 'https://idp.pku.edu.cn/idp/shibboleth',
+      username: '2100012345', passwordEnc: 'ENC==',
+      confirmedLogins: [{ entityID: 'https://idp.pku.edu.cn/idp/shibboleth', origin: 'https://iaaa.pku.edu.cn' }],
+    };
+    const { state, svc } = makeWorld({ institution: inst });
+    expect(await svc.complete(ARGS)).toEqual({ ok: true });
+    expect(state.settings.institution).toEqual(inst);
   });
 
   it('勾了统计 → manifest 与 settings 都落 enabled', async () => {

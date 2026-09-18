@@ -33,7 +33,7 @@ When it is unclear which, ask — an open question, in plain conversation.
 
 1. `date +%F`; `ls papers/`.
 2. **read this skill's own `references/review-kernel.md`**. The review kernel — neutral mapping, overall judgment, itemized passes, severity criteria, the five elements of a concern, the numbering rules — all lives there; this file does not repeat it. **Reviewing from memory always degrades** — this is a hard rule. (The kernel is shared with `/peer-review-response`: two byte-for-byte identical copies, pinned by a unit test; change both together.)
-3. When literature needs verifying, **read fastpaper's SKILL.md**.
+3. When literature needs verifying or a missing-work search, **pick sources**: per AGENTS.md's "Looking for Papers", decide where the manuscript's literature sits and read the SKILL.md of each search tool you will use (in `<available_skills>`). For a manuscript in Chinese, or one that studies something in China, fastpaper and slowpaper are often both needed.
 4. **Session isolation**: if the current session just took part in writing this manuscript, first tell the user to **start a fresh session** for the review — a context that just wrote the text cannot find its own faults. A fresh session is itself a clean reviewing environment; no further ritual is needed.
 
 The disk discipline is the same as `/peer-review-response`: write only the final report — no directories, no scripts, no intermediate files.
