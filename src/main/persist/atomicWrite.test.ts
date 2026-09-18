@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { atomicWrite, atomicWriteBytes } from './atomicWrite';
+import { atomicWrite, atomicWriteBytes, renameWithRetry } from './atomicWrite';
 
 let dir: string;
 beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-')); });
@@ -88,5 +88,52 @@ describe('atomicWriteWith0600 (POSIX)', () => {
     atomicWriteWith0600Sync(target, '{"sync":true}');
     expect(statSync(target).mode & 0o777).toBe(0o600);
     rmSync(dir, { recursive: true });
+  });
+});
+
+describe('renameWithRetry', () => {
+  const errno = (code: string) => Object.assign(new Error(code), { code });
+  /** rename 的替身：前 n 次抛 code，之后成功；记下调用次数与每次等了多久。 */
+  function flaky(code: string, failures: number) {
+    const calls: string[] = [];
+    const waits: number[] = [];
+    let left = failures;
+    return {
+      calls, waits,
+      rename: async () => { calls.push('rename'); if (left-- > 0) throw errno(code); },
+      sleep: async (ms: number) => { waits.push(ms); },
+    };
+  }
+
+  it('Windows 上 EPERM / EACCES / EBUSY 是短暂锁：退避重试到成功', async () => {
+    for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+      const f = flaky(code, 2);
+      await renameWithRetry('a', 'b', { platform: 'win32', rename: f.rename, sleep: f.sleep });
+      expect(f.calls, code).toHaveLength(3);
+      expect(f.waits, code).toEqual([10, 25]);
+    }
+  });
+
+  it('同样的错误在非 Windows 上不重试，当场抛（正向对照：上一条同一个替身在 win32 上会重试）', async () => {
+    const f = flaky('EPERM', 1);
+    await expect(renameWithRetry('a', 'b', { platform: 'darwin', rename: f.rename, sleep: f.sleep }))
+      .rejects.toMatchObject({ code: 'EPERM' });
+    expect(f.calls).toHaveLength(1);
+    expect(f.waits).toEqual([]);
+  });
+
+  it('不认的 errno 在 Windows 上也不重试（ENOENT 这类不是锁）', async () => {
+    const f = flaky('ENOENT', 1);
+    await expect(renameWithRetry('a', 'b', { platform: 'win32', rename: f.rename, sleep: f.sleep }))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it('锁一直不放：退避预算用完就把最后那个错误原样抛出，不无限等', async () => {
+    const f = flaky('EBUSY', Infinity);
+    await expect(renameWithRetry('a', 'b', { platform: 'win32', rename: f.rename, sleep: f.sleep }))
+      .rejects.toMatchObject({ code: 'EBUSY' });
+    expect(f.waits).toEqual([10, 25, 50, 100, 200, 400, 800]);
+    expect(f.calls).toHaveLength(8);
   });
 });

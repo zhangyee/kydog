@@ -6,13 +6,48 @@ import path from 'node:path';
 const POSIX = process.platform !== 'win32';
 const MODE = 0o600;
 
+/**
+ * Windows 上 rename 覆盖一个**正被别的进程短暂打开**的目标（杀毒软件扫描刚写的文件、索引服务、
+ * 另一个读者）会报 EPERM / EACCES / EBUSY —— 这是 Windows 文件锁的已知行为，锁通常几十毫秒就放。
+ * 不重试的话用户按 ⌘S 偶尔就是「保存失败」（CI 的 Windows runner 上实测：markdown 保存第一次
+ * 报「无法写入」、紧接着再存就成）。只在 win32、只认这三个 errno 重试，其余错误原样抛；
+ * 退避总长约 1.6 s，与 graceful-fs 同一个思路，但不等到它那 60 s。
+ */
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_BACKOFF_MS = [10, 25, 50, 100, 200, 400, 800];
+
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  deps: {
+    platform?: NodeJS.Platform;
+    rename?: (a: string, b: string) => Promise<void>;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const platform = deps.platform ?? process.platform;
+  const rename = deps.rename ?? fsp.rename;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const retryable = platform === 'win32' && code !== undefined && RENAME_RETRY_CODES.has(code);
+      if (!retryable || attempt >= RENAME_BACKOFF_MS.length) throw err;
+      await sleep(RENAME_BACKOFF_MS[attempt]);
+    }
+  }
+}
+
 /** 兼容旧 callsites（index.json 等其他文件继续用，行为不变）。失败时删掉临时文件，与 atomicWriteBytes 一致。 */
 export async function atomicWrite(target: string, data: string): Promise<void> {
   await fsp.mkdir(path.dirname(target), { recursive: true });
   const tmp = `${target}.tmp.${randomUUID()}`;
   try {
     await fsp.writeFile(tmp, data, 'utf8');
-    await fsp.rename(tmp, target);
+    await renameWithRetry(tmp, target);
   } catch (err) {
     await fsp.rm(tmp, { force: true }).catch(() => {});
     throw err;
@@ -26,7 +61,7 @@ export async function atomicWriteBytes(target: string, data: Uint8Array): Promis
   const tmp = `${target}.tmp.${randomUUID()}`;
   try {
     await fsp.writeFile(tmp, data);
-    await fsp.rename(tmp, target);
+    await renameWithRetry(tmp, target);
   } catch (err) {
     await fsp.rm(tmp, { force: true }).catch(() => {});
     throw err;
@@ -38,7 +73,7 @@ export async function atomicWriteWith0600Async(target: string, data: string): Pr
   await fsp.mkdir(path.dirname(target), { recursive: true });
   const tmp = `${target}.tmp.${randomUUID()}`;
   await fsp.writeFile(tmp, data, POSIX ? { encoding: 'utf8', mode: MODE } : 'utf8');
-  await fsp.rename(tmp, target);
+  await renameWithRetry(tmp, target);
   if (POSIX) await fsp.chmod(target, MODE);
 }
 
