@@ -1,26 +1,66 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 import type { WebContents } from 'electron';
 import { readFileSync, promises as fsp } from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo, Socket } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { launchKydog, teardown, seedSettings, seedProject, seedSamplePackage, type LaunchedApp } from './helpers';
 import { MIN_MAIN_WIDTH } from '../src/renderer/app/rightPane';
+import { BROWSER_PARTITION } from '../src/main/browser/partition';
 
 /**
  * 内置浏览器（slowpaper 一期）的 e2e。spec §8.2 + `e2e-requirements.md`。
  *
- * ## 为什么这一组必须打真源
+ * ## 页面从哪来：本进程里起的一个 HTTPS 代理，不打公网
  *
  * `urlGuard` 只放行 **公网** http/https：`localhost`、`127.0.0.1`、私网段、
  * `.local` / `.internal` 全部拒绝（`urlGuard.ts` 的 `isLocalHostname` /
- * `isPrivateIPv4`）。所以**起不了本地夹具服务器** —— 内置浏览器里能打开的页面
- * 只能来自真正的公网。受控的页面内容因此靠「先打开一个真页面，再往它里面注入」
- * 拿到（每条用例自己注入自己要的那点 DOM）。
+ * `isPrivateIPv4`）。所以地址栏里只能是公网地址 —— 这里一律用 `example.com/.org/.net`
+ * （IANA 保留域）。**但请求出不了本机**：每次启动之后，把内置浏览器那个 session
+ * （`BROWSER_PARTITION`）的代理指到本文件自己起的一个本地代理（`startFixtureProxy`）。
+ * 它只接这三个 host 的 `CONNECT :443`，拿 `fixtures/61-browser/` 里那张自签证书就地终结 TLS，
+ * 回一页最小的 HTML；别的一律 403（浏览器那边就是 `ERR_TUNNEL_CONNECTION_FAILED`）。
+ * 这张证书只在这一个 session 上、只对这三个 host、只认这一张（`setCertificateVerifyProc`），
+ * 其余照旧交给 Chromium 自己判。受控的页面内容仍靠「打开之后往里注入」拿到
+ * （每条用例自己注入自己要的那点 DOM）。
  *
- * 打不了公网的机器（断网、出口被墙）可以用 `KYDOG_SKIP_LIVE_BROWSER=1` 跳过整组，
- * **跳过原因带在用例上**（照 `src/test-support/symlinkCapability.ts` 的现成做法，
- * 不是静默绿）。**发版流水线不设它** —— 那里只跳性能那一条
- * （`KYDOG_SKIP_PERF_BROWSER`，见下面两个常量上的说明）。本机默认全跑。
+ * **为什么是代理，不是 `session.protocol.handle('https')`**（2026-09-18 本机 Electron 41
+ * 同一次运行里并排量过，外加一次真公网对照）：
+ *  · 两者都保住了 `did-navigate` 报的 HTTP 200，也都保住了「example.com → example.org
+ *    换一个渲染进程」（OS pid 各不相同，与真公网一致）；
+ *  · 但 `protocol.handle` 截走的请求**完全不经过 `webRequest`**（`onBeforeRequest` /
+ *    `onCompleted` / `onErrorOccurred` 一条都收不到 —— 产品的请求记录与登录观测就此失明），
+ *    而且它截在 Chromium 的端口闸**之前**：`:19` 那条回的是 `ERR_FAILED`(-2) 而不是
+ *    `ERR_UNSAFE_PORT`(-312)；
+ *  · 走代理的话，请求仍是 Chromium 网络栈自己发出的真 HTTPS：主文档与页面里的 fetch 都在
+ *    `webRequest` 上看得见、状态码 200，`:19` 照旧是 -312（端口闸在代理之前）。
+ * 这张证书是测试夹具，只进这个 session，**不是**产品的证书策略；产品真实的 TLS 校验这一组本来就不考。
+ * 证书怎么生成的写在 `FIXTURE_TLS` 上。
+ *
+ * ## 启动怎么分：四次（CARSI 两条另算，默认跳过、不启动）
+ *
+ * 每次冷启动都是纯基础设施开销，所以同一种前提的说法共用一次启动
+ * （`test.describe.configure({ mode: 'serial' })`，照 `docs/e2e-guide.md` §2）。
+ * **串行意味着上一条的状态是下一条的起点**，顺序约束：
+ *  · **侧栏从没打开过**（接 agent）：整次启动一次都不开侧栏 —— E-2 那条断的就是「一次 syncView
+ *    都没发过」，所以它排第一，后面几条也不许开侧栏。性能那条（opt-in）排最后：它往自己的标签里
+ *    塞十二万个节点。
+ *  · **侧栏开着**（接 agent，`beforeAll` 就把侧栏打开）：点链接 → composer（**依赖上一条**：
+ *    它跑完一轮之后线程里才有消息，底部那个日常 Composer 才在）→ 拖宽度（从此侧栏变窄）→
+ *    标签多到横滚 → 渲染层重载（**必须最后**：它把渲染层整个换掉）。
+ *  · **1:1** 单独一次：它会切 page scale、横移 visual viewport，截整张仿真 surface 数像素。
+ *  · **密码闸** 单独一次：CLAUDE.md 那条约定点名要它原样、不与别的并。
+ *
+ * **每一步打开的 URL 各不相同**（路径里带着步骤名）：`inPage` / `inWorld` 按 URL 认 webContents、
+ * 要求**正好一个**，而同一次启动里前面步骤开的标签都还在。
+ *
+ * **从测试里调 `browser.getState` 不是只读的**：handler 每次先签发一个新 epoch 再回快照
+ * （`handlers.ts`），渲染层 store 里那个 epoch 随即作废，此后它上报的 `syncView` 全被主进程
+ * 当成过期丢掉，直到渲染层自己再调一次 getState（重载）。所以在「侧栏开着」那次启动里，
+ * **之后还要靠 syncView 改几何的步骤（拖宽度）之前，一次都别调它**；拖宽度之后的几步
+ * 不再依赖 syncView，照旧用它读状态。
  *
  * ## 断言为什么全在主进程里做
  *
@@ -31,7 +71,7 @@ import { MIN_MAIN_WIDTH } from '../src/renderer/app/rightPane';
  *
  * ## 工具那几条怎么走到（`KYDOG_AGENT_FIXTURE` 的 `tool` 事件）
  *
- * E-1a / E-1b / E-4 与 spec §8.2 第 2 条要动的是 `browserService.dispatch /
+ * E-1a / E-4 与「侧栏开着点链接」那条要动的是 `browserService.dispatch /
  * snapshot / evalInPage` 与 `browserTools.runStep` —— 它们在生产代码里唯一的调用方
  * 是 `createBrowserTools()` 交出去的那五个工具的 `execute`。`app.evaluate` 够不着
  * 它们（`.vite/build/main.js` 是 rollup 出来的 CJS 单体 bundle，对外只导出七个符号，
@@ -46,43 +86,22 @@ import { MIN_MAIN_WIDTH } from '../src/renderer/app/rightPane';
  * `KYDOG_E2E` 下注册的入口。**
  *
  * 工具结果从**渲染层**读回来（`run.tool_call_chunk` 是它的正常出口，与用户在工具卡
- * 里展开看到的是同一份字节）—— E-1b 要量的正是「真实工具结果的字节数」。
+ * 里展开看到的是同一份字节）。
  */
 
 /**
- * **整组跳过：只在「打不了公网」时用。**
- *
- * 这一组要打真源（`urlGuard` 只放行公网 http/https，起不了本地夹具服务器），
- * 所以断网 / 出口被墙的机器上会红一批。这个开关是给那种机器的逃生口。
- *
- * **它不是发版流水线的开关。** 从前 `release.yml` 上一直设着它，理由写的是
- * 「runner 是机房 IP，Google Scholar 对机房 IP 几乎必弹 robot check」——
- * 那句话对被它跳掉的用例**一条都不成立**：这一组里没有任何一条访问 Google Scholar
- * 或百度学术，9 条非 CARSI 的用例打的全是 `example.com/.org/.net`（IANA 保留域，
- * 由 ICANN 托管，不对 CI runner 做机器人判定；受控的页面内容靠打开后往里注入拿到），
- * 两条 CARSI 用例另有 `CARSI_ON` / `CARSI_FAILURE_ON` 的 opt-in 闸，这道闸对它们是多余的。
- * 代价是 `e2e-requirements.md` 的五条防线（E-1a/E-1b/E-2/E-3/E-4）在流水线上**一条都没跑**，
- * 而那五条正是各批评审逐条论证过「三条 gate 拦不住、只有 e2e 守得住」的那五条。
- * 现在流水线只留下面那道 `KYDOG_SKIP_PERF_BROWSER`。
- */
-const SKIP_LIVE = process.env.KYDOG_SKIP_LIVE_BROWSER === '1';
-const SKIP_REASON =
-  'KYDOG_SKIP_LIVE_BROWSER=1：这一组要打真源。内置浏览器的 urlGuard 只放行公网 http/https，'
-  + '起不了本地夹具服务器，所以打不了公网的机器（断网、出口被墙）跑不了这一组。'
-  + '**发版流水线不设这个开关** —— 那里只跳性能那一条（KYDOG_SKIP_PERF_BROWSER）。'
-  + '不跑就等于这一批一行都没验过。';
-
-/**
- * **只跳性能断言那一条**（E-3，十二万节点 < 1500ms）。
+ * **性能断言那一条（E-3，十二万节点 < 1500ms）默认不跑，要显式开：`KYDOG_PERF_BROWSER_E2E=1`。**
  *
  * 它与这一组里其它用例不同：判据是**时间**，而慢 runner（共享 CPU、被别的 job 挤兑）
- * 上真有 flake 风险，红了也说明不了「内置浏览器坏了」。所以它单独留在闸后，
- * 而不是把整组一起跳掉。上界 1500ms 的依据与三个实测数写在那条用例的 docblock 里。
+ * 上真有 flake 风险，红了也说明不了「内置浏览器坏了」。发版流水线本来就跳它；本机也只在
+ * 改了 walker 的遍历、想量一次采集成本时才有意义。所以从「默认跑、设开关跳」改成「默认不跑、
+ * 设开关才跑」。它排在「侧栏从没打开过」那次启动的最后，不为它多一次冷启动。
+ * 上界 1500ms 的依据与三个实测数写在那条用例的 docblock 里。
  */
-const SKIP_PERF = process.env.KYDOG_SKIP_PERF_BROWSER === '1';
+const PERF_ON = process.env.KYDOG_PERF_BROWSER_E2E === '1';
 const PERF_SKIP_REASON =
-  'KYDOG_SKIP_PERF_BROWSER=1：这一条断的是采集耗时（12 万节点 < 1500ms）。'
-  + '慢 runner 上是真 flake，而且红了也说明不了「内置浏览器坏了」—— 发版流水线上只跳这一条。';
+  '性能那一条默认不跑（断的是采集耗时：12 万节点 < 1500ms，慢 runner 上是真 flake，'
+  + '红了也说明不了「内置浏览器坏了」）。要跑就设 KYDOG_PERF_BROWSER_E2E=1。';
 
 /** 逻辑视口宽（`browserService.ts` 的 `LOGICAL_WIDTH`）。两边各写一个字面量就是两份会漂的真相，
  *  但 e2e 不能 import 主进程模块，所以这里写死并在断言的失败信息里点名出处。 */
@@ -91,8 +110,6 @@ const LOGICAL_WIDTH = 1280;
 const DEFAULT_VIEWPORT_HEIGHT = 800;
 /** walker 跑的隔离世界号（`browserService.ts` 的 `WALKER_WORLD_ID`）。同上。 */
 const WALKER_WORLD_ID = 31337;
-/** 网页内容块的收尾标记（`snapshot.ts` 的 `PAGE_CONTENT_CLOSE`）。同上：写死并在失败信息里点名出处。 */
-const PAGE_CONTENT_CLOSE = '──── 网页内容结束 ────';
 
 /** 采集脚本的**生产源码本身**。`browserService` 用 `?raw` 注入的就是这一份字节。 */
 const WALKER_SOURCE = readFileSync(
@@ -244,8 +261,7 @@ type ToolOutcome = { text: string; status: 'ok' | 'failed' };
  * 写好剧本、建 thread、发一句，等这一轮跑完，把每次工具调用的结果收回来。
  *
  * 结果读的是**渲染层收到的 `run.tool_call_chunk`** —— 那是工具结果对用户的正常出口
- * （工具卡展开看到的就是这一份字节），不是为测试另开的窗口。E-1b 要量的
- * 「真实工具结果的字节数」量的就是它。
+ * （工具卡展开看到的就是这一份字节），不是为测试另开的窗口。
  *
  * `duringRun` 在发出去之后、等收场之前跑：`browser_login` 那道首次确认是一次**跨进程
  * 悬挂**（走的是现成的 ask broker），不在这中间答一下，这一轮永远不会结束。
@@ -299,6 +315,127 @@ async function runTools(
   return out;
 }
 
+// ── 离线：内置浏览器的页面由本进程里的 HTTPS 代理提供（理由见文件头）──────────────
+
+/** 代理只放行这三个 host（`:443`）。别的 host 一律 403，浏览器那边就是连不上 —— 出不了本机。 */
+const FIXTURE_HOSTS = ['example.com', 'example.org', 'example.net'];
+
+/**
+ * 代理终结 TLS 用的自签证书（SAN = 上面三个 host，有效期一百年）。**只是测试夹具**：
+ * 只进内置浏览器那一个 session，而且 `setCertificateVerifyProc` 只在「host 在名单里 **且**
+ * 递上来的正是这一张」时放行，其余照旧交给 Chromium 自己判。
+ *
+ * 重新生成（LibreSSL / OpenSSL 都行）：
+ *   openssl req -x509 -newkey rsa:2048 -nodes -days 36500 \
+ *     -keyout e2e/fixtures/61-browser/tls-key.pem -out e2e/fixtures/61-browser/tls-cert.pem \
+ *     -subj "/CN=KyDog e2e fixture (example.com)" \
+ *     -addext "subjectAltName=DNS:example.com,DNS:example.org,DNS:example.net"
+ */
+const FIXTURE_TLS = {
+  key: readFileSync(path.resolve(__dirname, 'fixtures/61-browser/tls-key.pem')),
+  cert: readFileSync(path.resolve(__dirname, 'fixtures/61-browser/tls-cert.pem')),
+};
+
+/** 每个路径都回同一种最小页面。页面里写着 host 与路径，出了事看快照就知道是哪一步的标签。 */
+function fixturePage(host: string, pathname: string): string {
+  const where = `${host}${pathname}`.replace(/[<>&"]/g, '');
+  return '<!doctype html><html><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    + '<title>Example Domain</title></head>'
+    + `<body><div><h1>Example Domain</h1><p>KyDog e2e 本地夹具页：${where}</p></div></body></html>`;
+}
+
+type FixtureProxy = { port: number; close(): Promise<void> };
+
+/**
+ * 起一个只认 `FIXTURE_HOSTS` 的 HTTPS 代理（监听 127.0.0.1 的随机端口）。
+ *
+ * `CONNECT host:443` → 回 200，把这条隧道包成 TLS 服务端（`FIXTURE_TLS`，只谈 http/1.1），
+ * 交给一个不监听端口的 http 服务器回 `fixturePage`。`/favicon.ico` 回 404（Chromium 会自己要）。
+ * 明文的代理请求与名单外的 host 一律 403。
+ */
+async function startFixtureProxy(): Promise<FixtureProxy> {
+  const origin = http.createServer((req, res) => {
+    const host = (req.headers.host ?? '').replace(/:\d+$/, '');
+    const pathname = (req.url ?? '/').split('?')[0];
+    if (pathname === '/favicon.ico') { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(fixturePage(host, pathname));
+  });
+  origin.on('clientError', (_err, s) => { s.destroy(); });
+  const proxy = http.createServer((_req, res) => { res.writeHead(403); res.end(); });
+  const sockets = new Set<Socket>();
+  proxy.on('connection', (s: Socket) => {
+    sockets.add(s);
+    s.on('close', () => sockets.delete(s));
+  });
+  proxy.on('clientError', (_err, s) => { s.destroy(); });
+  proxy.on('connect', (req: http.IncomingMessage, socket: Socket, head: Buffer) => {
+    // 应用关掉时隧道会被对端掐断（ECONNRESET）—— 那不是用例的事，别让它变成未处理的 error。
+    socket.on('error', () => {});
+    const m = /^([^:]+):(\d+)$/.exec(req.url ?? '');
+    if (!m || !FIXTURE_HOSTS.includes(m[1].toLowerCase()) || m[2] !== '443') {
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      return;
+    }
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length) socket.unshift(head);
+    origin.emit('connection', new tls.TLSSocket(socket, {
+      isServer: true, key: FIXTURE_TLS.key, cert: FIXTURE_TLS.cert, ALPNProtocols: ['http/1.1'],
+    }));
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', () => resolve()));
+  return {
+    port: (proxy.address() as AddressInfo).port,
+    close: () => new Promise<void>((resolve) => {
+      for (const s of sockets) s.destroy();
+      proxy.close(() => resolve());
+    }),
+  };
+}
+
+/**
+ * 把内置浏览器那个 session 的流量全部指到本地代理，并只为夹具证书放行。
+ *
+ * 在**任何标签打开之前**调（`fromPartition` 拿到的就是产品稍后建 view 用的同一个 session）。
+ * 装完当场问 session 一句「https://example.com/ 走哪」：答的必须是这个代理 —— 这是
+ * 「页面确实来自本地」的协议层事实，不靠看页面长得像不像。
+ */
+async function routeBrowserThroughFixtureProxy(app: ElectronApplication, port: number): Promise<void> {
+  const resolved = await app.evaluate(async ({ session }, a) => {
+    const ses = session.fromPartition(a.partition);
+    await ses.setProxy({ proxyRules: `http://127.0.0.1:${a.port}` });
+    const flat = (pem: string) => pem.replace(/\s+/g, '');
+    const want = flat(a.cert);
+    ses.setCertificateVerifyProc((req, cb) => {
+      cb(a.hosts.includes(req.hostname) && flat(req.certificate.data) === want ? 0 : -3);
+    });
+    return ses.resolveProxy('https://example.com/');
+  }, { partition: BROWSER_PARTITION, port, hosts: FIXTURE_HOSTS, cert: FIXTURE_TLS.cert.toString('utf8') });
+  expect(resolved, `内置浏览器的 session（${BROWSER_PARTITION}）必须走本地夹具代理，`
+    + '否则这一组就又在打公网了').toBe(`PROXY 127.0.0.1:${port}`);
+}
+
+/** 一次离线启动：代理 + 应用（`agent: true` 时接得上 agent，见 `launchWithAgent`）。 */
+type OfflineApp = { launched: LaunchedApp; fixturePath: string; close(): Promise<void> };
+
+async function launchOffline(opts: { agent?: boolean } = {}): Promise<OfflineApp> {
+  const proxy = await startFixtureProxy();
+  let launched: LaunchedApp | null = null;
+  try {
+    let fixturePath = '';
+    if (opts.agent) ({ launched, fixturePath } = await launchWithAgent());
+    else launched = await launchKydog();
+    await routeBrowserThroughFixtureProxy(launched.app, proxy.port);
+    const app = launched;
+    return { launched: app, fixturePath, close: async () => { await teardown(app); await proxy.close(); } };
+  } catch (err) {
+    if (launched) await teardown(launched);
+    await proxy.close();
+    throw err;
+  }
+}
+
 // ── CARSI 那两条（spec §8.2 第 5、6 条）────────────────────────────────────────
 
 /**
@@ -347,7 +484,7 @@ const CARSI_FAILURE_ON = process.env.KYDOG_CARSI_FAILURE_E2E === '1'
  * 都从这里过一遍 —— 两边各写一套归一就是两份会漂的真相。
  *
  * e2e 不 import 主进程模块，所以这里现算一份并在失败信息里点名出处。
- * **但它与 `LOGICAL_WIDTH` / `DEFAULT_VIEWPORT_HEIGHT` / `PAGE_CONTENT_CLOSE`
+ * **但它与 `LOGICAL_WIDTH` / `DEFAULT_VIEWPORT_HEIGHT`
  * 那几份复制常量不是一回事**：那几份由每次 `npm run e2e` 必跑的用例守着，漂了当场红；
  * 这一份只服务 CARSI 那两条，**要有真凭据才武装得起来**，平时一次都跑不到。
  * 真正接住「产品侧改了归一规则」的是第一道：`login.test.ts` 有两条专门守归一的用例
@@ -455,26 +592,466 @@ async function confirmLoginPage(page: Page): Promise<LoginConfirmSeen> {
 
 // **跳过不许是静默的。** `test.skip(cond, reason)` 把原因记成注解，可 list reporter
 // 只画一个 `-`，原因要点开 HTML / JSON 报告才看得见 —— 而流水线上没人会去点。
-// 所以这里再往运行输出里写一行：谁看日志谁就看得到这一组为什么没跑。
-// （不写死条数：这一组还在长，一个会漂的数字比没有数字更糟。）
-if (SKIP_LIVE) console.warn(`\n[61-browser] describe 里的用例整组跳过：${SKIP_REASON}\n`);
-if (!SKIP_LIVE && SKIP_PERF) console.warn(`\n[61-browser] 性能那一条跳过：${PERF_SKIP_REASON}\n`);
+// 所以这里再往运行输出里写一行：谁看日志谁就看得到这一条为什么没跑。
+if (!PERF_ON) console.warn(`\n[61-browser] 性能那一条跳过：${PERF_SKIP_REASON}\n`);
 
-test.describe('61-browser', () => {
-  test.skip(SKIP_LIVE, SKIP_REASON);
+// ══ 一次启动：侧栏从没打开过 ═══════════════════════════════════════════════════
+//
+// 整次启动一次都不开侧栏（E-2 排第一，它断的就是「一次 syncView 都没发过」）。
+// 接 agent：E-1a 与平滑滚动两条走真工具。
+test.describe('61-browser · 一次启动：侧栏从没打开过', () => {
+  test.describe.configure({ mode: 'serial' });
+  let env: OfflineApp;
+  test.beforeAll(async () => { env = await launchOffline({ agent: true }); });
+  test.afterAll(async () => { await env?.close(); });
+
+  /**
+   * `e2e-requirements.md` E-2：**侧栏没打开时，浏览器行为与打开时一致**
+   * （项目负责人裁决：「没开侧栏也按开过侧栏操作。它打不打开，都是一样。」）
+   *
+   * 这条依赖的浏览器行为此前只有 Task 2f 的一次性脚本量过（`task-2f-report.md` §B3），
+   * 从来没有进过回归网，而项目有明确约定：浏览器行为的断言不许以肯定句下结论、
+   * 要真的量。这条用例就是那次量本身。
+   *
+   * 判据取的正是 `applyViewport` 那段注释里实测过的失败形态：**百分比宽度的元素**
+   * 在没有 bounds 时会塌到 min-content（50% 宽的 button 量到 16px），进而被 walker 的
+   * `visible()` 滤掉，快照变成一片空白。所以断言 50% 宽的元素量到 640。
+   * 只断言 `innerWidth === 1280` 是不够的 —— 那个数在布局塌掉时照样成立。
+   */
+  test('侧栏从没打开过：页面照样按 1280 逻辑宽布局，百分比宽度的元素不塌', async () => {
+    const { app, page } = env.launched;
+    // **一次 syncView 都不发**：侧栏根本没挂上来。
+    await expect(page.locator('[data-pane="browser"]')).toHaveCount(0);
+    await expect(page.getByTestId('browser-stage')).toHaveCount(0);
+
+    await openTab(page, 'https://example.com/no-sidebar-layout/');
+
+    const vp = await viewport(app, 'example.com/no-sidebar-layout/');
+    expect(vp.w, '侧栏没打开时逻辑视口宽仍必须是 1280').toBe(LOGICAL_WIDTH);
+    expect(vp.h, '侧栏没打开时逻辑视口高是 DEFAULT_VIEWPORT_HEIGHT').toBe(DEFAULT_VIEWPORT_HEIGHT);
+
+    const rect = await inPage<{ w: number; h: number }>(app, 'example.com/no-sidebar-layout/', `(() => {
+      const d = document.createElement('div');
+      d.style.cssText = 'position:absolute;left:0;top:0;width:50%;height:40px';
+      document.body.appendChild(d);
+      const r = d.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height) };
+    })()`);
+    expect(rect.w, '50% 宽的元素必须量到 640（塌成 min-content 的话 walker 会把整页滤空）')
+      .toBe(LOGICAL_WIDTH / 2);
+    expect(rect.h, '高度也必须是真的，不是 0').toBe(40);
+  });
+
+  /**
+   * `e2e-requirements.md` **E-1a**：extract 必须跑在隔离世界 —— 这一条走的是
+   * **真的 `browser_act` 工具**（`runStep` 的 extract 分支 → `browserService.evalInPage`），
+   * 不是自己指定世界号注一份脚本。
+   *
+   * 它守的是**真页面上生产代码到底被骗到没有**，顺带也就量了那件浏览器事实本身
+   * （「隔离世界里看得到真结构」—— 2026-09-08 spike 量过一次）：对照组证明主世界被骗到了，
+   * 正题证明走隔离世界的产品路径没被骗到。从前另有一条自己指定世界号、在两个世界里各跑一次
+   * walker 的用例专守那件事实，与这一条重合，已删。
+   *
+   * **2026-09-09 重新量过那次变异**（把 `browserService.evalOn` 的
+   * `executeJavaScriptInIsolatedWorld` 改回 `executeJavaScript`）：`tsc` 干净、
+   * `lint` exit 0 **且一条警告都没有**（`WALKER_WORLD_ID` 别处还在用），
+   * 而 `npm test` **红了 50 条**（`browserService.test.ts` 上一轮补的那批替身用例）。
+   * 所以 `e2e-requirements.md` 里「三条 gate 全拦不住」那句话**现在已经不成立** ——
+   * 它记的是那批替身用例补上之前的状态。
+   *
+   * 那这条 e2e 还守什么：替身只知道我们**调了哪个入口**，不知道那个入口在真 Chromium 里
+   * **真的**骗不到。这一条量的是后者，而且量的是整条产品路径（工具 → browserService →
+   * 真页面）。同一次变异下它给出的红是：工具结果里出现了「KYDOG伪造论文」。
+   *
+   * 骗局的形状是关键：伪造行**故意不匹配真选择器**（class 是 `kydog-fake-row`，
+   * 而抽取的 item 是 `.kydog-row`），只有被覆写的 `document.querySelectorAll`
+   * 才会把它交出来。所以：
+   *  · 隔离世界（正确）→ 只看得到两条真行，伪造行**根本不会出现**；
+   *  · 主世界（回退）→ 只看得到伪造那一行。
+   * 两种结果没有任何重叠，判据不靠字数也不靠顺序。
+   *
+   * 对照组照旧在用例内部：覆写必须**真的装上了**（主世界那一次只看得到伪造行），
+   * 否则下面那条是白给的。
+   */
+  test('走真的 extract 工具：页面覆写 querySelectorAll 骗不到它，抽到的是真结构', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    // **不开侧栏**：这一次启动整个不开（E-2 那条已经量过「开不开都一样」）。
+    const opened = await openTab(page, 'https://example.com/e1a-extract/');
+
+    await inPage(app, 'example.com/e1a-extract/', `(() => {
+      const mk = (cls, id, title) => {
+        const row = document.createElement('div');
+        row.className = cls; row.id = id;
+        row.style.cssText = 'position:relative;width:400px;height:30px';
+        const t = document.createElement('span');
+        t.className = 'kydog-t'; t.textContent = title;
+        row.appendChild(t);
+        document.body.appendChild(row);
+        return row;
+      };
+      mk('kydog-row', 'r1', 'KYDOG真论文一');
+      mk('kydog-row', 'r2', 'KYDOG真论文二');
+      // 伪造行不带 kydog-row —— 真的 querySelectorAll('.kydog-row') 永远选不到它。
+      const fake = mk('kydog-fake-row', 'rf', 'KYDOG伪造论文');
+      const rigged = [fake];
+      const patched = function () { return rigged; };
+      document.querySelectorAll = patched;
+      Document.prototype.querySelectorAll = patched;
+      return true;
+    })()`);
+
+    // 对照组：覆写真的生效了。这三行与 extractExpression 的核心逐字同形
+    // （`document.querySelectorAll(item)` → 每个 `el.querySelector(field)`）。
+    const fooled = await inPage<string[]>(app, 'example.com/e1a-extract/', `(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('.kydog-row')) {
+        const t = el.querySelector('.kydog-t');
+        out.push(t ? (t.innerText || '').trim() : null);
+      }
+      return out;
+    })()`);
+    expect(fooled, '主世界跑同一份选择器必须被骗到（只看得到伪造行）；没被骗到说明覆写压根没装上，'
+      + '下面那条就是白给的').toEqual(['KYDOG伪造论文']);
+
+    const res = await runTools(page, fixturePath, [{
+      toolCallId: 'tc-extract',
+      name: 'browser_act',
+      args: {
+        tabId: opened.tabId,
+        actions: [{ kind: 'extract', selectors: { item: '.kydog-row', title: '.kydog-t' } }],
+      },
+    }]);
+    const out = res.get('tc-extract')!;
+    expect(out.status, `browser_act 应当成功，实际结果：${out.text.slice(0, 400)}`).toBe('ok');
+    expect(out.text, 'extract 必须看到真结构（真论文一）').toContain('KYDOG真论文一');
+    expect(out.text, 'extract 必须看到真结构（真论文二）').toContain('KYDOG真论文二');
+    expect(out.text, '伪造行只有被覆写的 document.querySelectorAll 才交得出来 —— '
+      + '它出现在工具结果里，就是 extract 跑在主世界上了').not.toContain('KYDOG伪造论文');
+    expect(out.text, '两条真行都该收下').toContain('抽到 2 条');
+  });
+
+  /**
+   * **平滑滚动的站点上，动作路径照样落得到目标。**
+   *
+   * 2026-09-10 之前不成立：`measure` 的 `scrollIntoView` 不带 `behavior`，用的是
+   * `scroll-behavior` 的计算值 —— **站点说了算**。站点开了平滑滚动时那一下是动画，
+   * 而 `scrollIntoView` 不等动画结束就返回，紧接着量到的是动画还没开始的坐标，
+   * `measure` 报 `offscreen`，**重试也不自愈**（每次量到另一个中间态）。
+   * Scholar / 百度学术这类源都可能命中。修法是把 `behavior: 'instant'` 写死在
+   * `measure` 里，把「会不会平滑」从站点手里拿回来。
+   *
+   * **替身守不住这条**：`interact.test.ts` 的 `El` 只记下 `scrollIntoView` 收到的参数，
+   * 它不会动画、也没有视口 —— 参数对不对它守得住，「动画中途量坐标」它量不到。
+   * 所以这条必须在真浏览器里，且页面必须**真的开着**平滑滚动。
+   *
+   * 两条滚动链都考：外层文档（`html{scroll-behavior:smooth}`）与一个自己也开着
+   * 平滑滚动的内层 `overflow:auto` 容器 —— 实测 `behavior:'instant'` 把**整条链**
+   * 都压成瞬时，不是只压最外层。
+   */
+  test('站点开了平滑滚动：两条滚动链上的 type 都落到目标身上', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    const opened = await openTab(page, 'https://example.com/smooth-scroll/');
+
+    await inPage(app, 'example.com/smooth-scroll/', `(() => {
+      document.documentElement.style.scrollBehavior = 'smooth';
+      document.body.innerHTML = '';
+      // ① 外层链：文档自己滚，目标在 3000 像素以下。
+      const tall = document.createElement('div');
+      tall.style.cssText = 'position:relative;width:1px;height:6000px';
+      const far = document.createElement('input');
+      far.id = 'kydog-far';
+      far.type = 'text';
+      far.setAttribute('aria-label', 'KYDOG远框');
+      far.style.cssText = 'position:absolute;left:0;top:3000px;width:200px;height:30px';
+      tall.appendChild(far);
+      document.body.appendChild(tall);
+      // ② 内层链：容器自己在首屏内、自己也开着平滑滚动，目标在容器内容的深处。
+      const box = document.createElement('div');
+      box.id = 'kydog-box';
+      box.style.cssText = 'position:absolute;left:400px;top:100px;width:300px;height:400px;'
+        + 'overflow:auto;scroll-behavior:smooth';
+      const inner = document.createElement('div');
+      inner.style.cssText = 'position:relative;width:280px;height:5000px';
+      const deep = document.createElement('input');
+      deep.id = 'kydog-deep';
+      deep.type = 'text';
+      deep.setAttribute('aria-label', 'KYDOG深框');
+      deep.style.cssText = 'position:absolute;left:0;top:4000px;width:200px;height:30px';
+      inner.appendChild(deep);
+      box.appendChild(inner);
+      document.body.appendChild(box);
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      return true;
+    })()`);
+
+    // **这条断言是这个用例的地基。** 没有它，「夹具压根没把平滑滚动打开」与
+    // 「打开了、而我们把它压住了」长得一模一样 —— 那时这条用例永远绿，
+    // 而它本该证明的事情一件都没证明。
+    const css = await inPage<{ doc: string; box: string; scrollY: number; boxTop: number }>(
+      app, 'example.com/smooth-scroll/', `(() => {
+        const box = document.getElementById('kydog-box');
+        return {
+          doc: getComputedStyle(document.documentElement).scrollBehavior,
+          box: getComputedStyle(box).scrollBehavior,
+          scrollY: window.scrollY, boxTop: box.scrollTop,
+        };
+      })()`);
+    expect(css.doc, '夹具必须真的把文档的平滑滚动打开 —— 否则这条用例什么也没考').toBe('smooth');
+    expect(css.box, '夹具必须真的把内层容器的平滑滚动打开').toBe('smooth');
+    expect(css.scrollY, '开考之前文档不能已经滚过').toBe(0);
+    expect(css.boxTop, '开考之前内层容器不能已经滚过').toBe(0);
+
+    const res = await runTools(page, fixturePath, [{
+      toolCallId: 'tc-smooth',
+      name: 'browser_act',
+      args: {
+        tabId: opened.tabId,
+        // **顺序有讲究**：内层那个容器在文档 y=100，把它带进视野会把外层文档又滚回
+        // 顶部。所以内层先做、外层后做，最后那两条几何断言量到的才都是「真的滚过」。
+        // 反过来写的话 `scrollY` 会落回 0，而那不是回归，是这条用例自己踩了顺序。
+        actions: [
+          { kind: 'type', selector: '#kydog-deep', text: 'kydog-e2e-内层' },
+          { kind: 'type', selector: '#kydog-far', text: 'kydog-e2e-外层' },
+        ],
+      },
+    }]);
+    const out = res.get('tc-smooth')!;
+    // **这条近乎恒真，别把它当成守门的那一条**：`runBatch` 把动作级失败写成正文里的
+    // 「⚠ 第 N 个动作失败：…」，**工具终态仍然是 `ok`** —— 只有工具级抛出（坏 tabId、
+    // 没有快照）才 `failed`。实测：拿掉 `behavior:'instant'` 之后这一条照样绿，
+    // 红的是下面那条 `not.toContain` 与再下面两条值断言。留着它是为了工具级出事时
+    // 能把正文摆出来，不是为了守本条回归。
+    expect(out.status,
+      `browser_act 工具级不该抛。实际结果开头：${out.text.slice(0, 500)}`).toBe('ok');
+    // 回归前这里逐字是：「⚠ 第 1 个动作失败：选择器 "#kydog-deep" 滚进视野之后仍然
+    // 落在视口外（坐标 504,4118，视口 1280×800）」——这条才是守门的。
+    expect(out.text,
+      '结果里不该出现 offscreen 那句诊断 —— 出现了就说明 measure 又在动画中途量坐标了')
+      .not.toContain('仍然落在视口外');
+
+    const after = await inPage<{ far: string; deep: string; scrollY: number; boxTop: number }>(
+      app, 'example.com/smooth-scroll/', `(() => {
+        const box = document.getElementById('kydog-box');
+        return {
+          far: document.getElementById('kydog-far').value,
+          deep: document.getElementById('kydog-deep').value,
+          scrollY: window.scrollY, boxTop: box.scrollTop,
+        };
+      })()`);
+    expect(after.far, '外层那个框必须真的收到了字').toBe('kydog-e2e-外层');
+    expect(after.deep, '内层那个框必须真的收到了字').toBe('kydog-e2e-内层');
+    // 两条链各自都得真的动过 —— 只断言「打上了字」的话，一个不需要滚动就够得着的
+    // 夹具也能让这条绿，而「滚进视野」正是被测的那一件事。
+    expect(after.scrollY, '外层文档必须真的滚下去了（目标在 3000 像素以下）').toBeGreaterThan(1000);
+    expect(after.boxTop, '内层容器必须真的滚下去了（目标在容器内容 4000 像素处）').toBeGreaterThan(1000);
+  });
+
+  /**
+   * spec §8.2 第 4 条。它要的不是一个能打开的源，恰恰相反 —— 一个**必然打不开、
+   * 而且打不开这件事在 URL 层就定了**的地址。断网也照样成立。
+   *
+   * **走本地夹具代理之后照旧**：端口闸在代理之前，请求根本到不了代理
+   * （2026-09-18 实测仍是 `-312`；换成 `protocol.handle('https')` 的话它截在端口闸之前，
+   * 这里会变成 `ERR_FAILED`(-2) —— 文件头「为什么是代理」那一节的理由之一）。
+   *
+   * 判据是**四分的终态本身**（spec §4.4）：`failed` 带真实的 `errorCode` / `errorDesc`，
+   * 不是 `timeout`。两者对模型的处置完全相反 —— 「打不开」可以换源，「不知道发生了什么」
+   * 不许据此断定源有问题。
+   *
+   * ## 为什么地址里有个 `:19` —— 那是这条用例不再看 DNS 脸色的原因，别删
+   *
+   * 从前这里只有 `https://….invalid/`，失败要**过一次本机 DNS**：`.invalid` 的 NXDOMAIN
+   * 偶尔会走很久，超过 `NAV_TIMEOUT_MS`(20s) 时**终态本身就变成 `timeout`**，红在下面
+   * 第一条硬判据上（复审实测复现过一次：`本次导航耗时 20022ms`）。一次与产品无关的
+   * DNS 抖动就能阻断整条流水线。
+   *
+   * 端口 19（chargen）在 Chromium 的受限端口表里，请求在**主机解析之前**就被拒。
+   * 本机实测（Electron 41，2026-09-09）：`https://kydog-e2e-nonexistent.invalid:19/`
+   * 连开三次都是 `failed` / `-312` / `ERR_UNSAFE_PORT`，**64–81ms**；把主机换成一个
+   * 解析得通的 `example.com:19` 结果逐字相同（65ms）—— 主机名根本没被用上，
+   * 也就没有任何 DNS 参与。`urlGuard` 不看端口（它管的是内网地址），照旧放行。
+   *
+   * 主机名仍然留成 `.invalid`（RFC 2606 保留的顶级域）：万一哪天端口这道判据不在了，
+   * 也绝不会真去连某个人的 19 端口。而「端口闸没了」不会被这条冗余悄悄盖过去 ——
+   * 下面两条断言钉的是 `ERR_UNSAFE_PORT` 本身，退回主机解析那条路会当场红。
+   *
+   * ## 为什么这里**没有**一条「耗时 < N 毫秒」的断言 —— 别再把它加回来
+   *
+   * 从前有过一条 `expect(ms).toBeLessThan(15_000)`，理由是「真走到 timeout 那一支要
+   * 20 秒（`NAV_TIMEOUT_MS`），所以远早于它是这条终态的独立佐证」。**删掉了**，两个理由：
+   *
+   *  1. **它是一个时间窗 proxy，而它 proxy 的那个事实就在旁边。** CLAUDE.md 的原则写死了
+   *     「判定必须基于协议层事实，不靠启发式 proxy（时间窗 / 阈值 / 近似 / 聚类）」——
+   *     「它不是超时」这件事，`outcome.kind === 'failed'`（而不是 `'timeout'`）已经**直接**
+   *     说了。proxy 与它 proxy 的事实同时在场时，留事实、删 proxy。
+   *  2. **它有真 flake**（见上一节），而抬阈值只是把概率调小、性质不变。真正的修法是把
+   *     失败源换成一个不过 DNS 的 —— 已经换了，所以那条 proxy 更没有理由回来。
+   *
+   * 耗时**仍然采集**并写进三条断言的失败信息（诊断价值别丢），只是不 `expect` 它。
+   */
+  test('61-browser: 打不开的地址回 failed + 真实 errorCode，不是 timeout', async () => {
+    const { page } = env.launched;
+    const t0 = Date.now();
+    // `.invalid`（RFC 2606）+ 受限端口 19（chargen）：两条独立的「永远打不开」，
+    // 而**起作用的是后者** —— 它在主机解析之前就定了，所以这条用例不过 DNS。
+    const r = await openTab(page, 'https://kydog-e2e-nonexistent.invalid:19/');
+    // 耗时只进失败信息，**不是判据**（理由见 docblock：它是时间窗 proxy，而
+    // outcome.kind 已经把同一件事说成了协议层事实）。
+    const took = `（本次导航耗时 ${Date.now() - t0}ms；走到 timeout 那一支要 20 秒 = NAV_TIMEOUT_MS）`;
+    const o = r.nav.outcome;
+    expect(o.kind, `打不开的地址必须回 failed，实际是 ${o.kind}${took}`).toBe('failed');
+    if (o.kind !== 'failed') return;  // 类型收窄，上面那条已经保证了
+    // 下面两条既是 spec §4.4 要的「真实的 errorCode / errorDesc」，也是**这条用例
+    // 不再依赖 DNS 的自守判据**：不是 ERR_UNSAFE_PORT(-312) 就说明失败不再来自 URL 层的
+    // 端口闸，而是退回了主机解析那条路 —— 20 秒那段 flake 会跟着回来，而且是静默的。
+    expect(o.errorCode, `errorCode 必须是 Chromium 真给的 -312（ERR_UNSAFE_PORT）${took}`).toBe(-312);
+    expect(o.errorDesc, `errorDesc 必须是 Chromium 真给的那个名字 ERR_UNSAFE_PORT${took}`)
+      .toBe('ERR_UNSAFE_PORT');
+  });
+
+  /**
+   * `e2e-requirements.md` E-3：**大页面上的采集成本**。
+   *
+   * 第四批把遍历改成了 `document.querySelectorAll('*')`（为了找到 shadow 宿主）。
+   * 上界（`MAX_WALKED = 80000`）加在「其后每个元素的工作量」上，而**物化 NodeList
+   * 那一步本身没有上界**，实现者明确登记「未在真实大页面上实测过」。
+   * 原始失败场景：几万节点的大目录页把渲染进程阻塞数秒，而执行侧没有超时，
+   * `browser_open` 只能干等。
+   *
+   * 这里造的是 walker 自己 docblock 里那份成本表的**最坏形态**：全 `<input>`
+   * （遍历里那次密码登记每个元素都走到底）且 `visibility:hidden`
+   * （rect 早退那条路走不到，`getComputedStyle` 每个都真跑）。节点数取 12 万，
+   * 越过 `MAX_WALKED` 那道闸 —— 闸后面还有 4 万个节点只参与物化、不参与遍历，
+   * 量的正是「物化那一步有没有上界」这件事。
+   *
+   * 上界 1500ms 的依据（**这三个数是 2026-09-09 在本条用例里实测的**，不是估的）：
+   *  · 现在这样（MAX_WALKED = 80000 那道闸在）：**251ms**
+   *  · 把两道闸都拆掉、12 万个元素每个都量 rect + style：**301ms**
+   *  · Task 2f 用 CDP 单量 walker 本体：95.6ms（10 万节点）/ 105.6ms（20 万节点）
+   * 这里的数比 2f 大，多出来的是 `executeJavaScriptInIsolatedWorld` 这一次
+   * 主进程 ↔ 渲染进程往返 —— 计时刻意罩着它，因为 `browser_open` 真正要干等的就是这一段。
+   * 1500ms ≈ 6 倍余量：它要抓的是原始失败场景里「阻塞数秒」那一档，不是几十毫秒的抖动。
+   *
+   * **默认不跑**（`KYDOG_PERF_BROWSER_E2E=1` 才跑，理由见 `PERF_ON`）。排在这次启动的最后：
+   * 它在自己的标签里塞十二万个节点，排前面会拖慢后面每一条。计时只罩着对这一个标签的那一次
+   * `executeJavaScriptInIsolatedWorld`，同一次启动里别的标签都闲着。
+   */
+  test('十二万节点的大页面：采集脚本必须在 1.5 秒内返回', async () => {
+    test.skip(!PERF_ON, PERF_SKIP_REASON);
+    test.setTimeout(120_000);
+    const { app, page } = env.launched;
+    await openTab(page, 'https://example.com/perf-120k/');
+
+    const built = await inPage<number>(app, 'example.com/perf-120k/', `(() => {
+      const box = document.createElement('div');
+      box.style.cssText = 'visibility:hidden';
+      box.innerHTML = new Array(120000).fill('<input type="text">').join('');
+      document.body.appendChild(box);
+      // 先结算一次 layout，别把建树的账算到采集头上。
+      void document.body.offsetHeight;
+      return document.querySelectorAll('*').length;
+    })()`);
+    expect(built, '大页面没造出来的话下面那个耗时不说明任何事').toBeGreaterThan(120_000);
+
+    const timed = await app.evaluate(async ({ webContents }, a) => {
+      const wc = webContents.getAllWebContents()
+        .filter((w) => !w.isDestroyed() && w.getURL().includes('example.com/perf-120k/'));
+      if (wc.length !== 1) throw new Error('找不到唯一一个内置浏览器的 webContents');
+      const t0 = Date.now();
+      const r = await wc[0].executeJavaScriptInIsolatedWorld(a.world, [{ code: a.src }]);
+      return { ms: Date.now() - t0, result: r as unknown };
+    }, { world: WALKER_WORLD_ID, src: WALKER_SOURCE });
+
+    const res = timed.result as WalkerResult & { collection: { truncated: boolean; limit?: string } };
+    expect(
+      timed.ms,
+      `采集 ${built} 个节点的页面花了 ${timed.ms}ms。慢的是隔离世界里那段 walker（含 `
+      + `querySelectorAll('*') 物化整棵树 + MAX_WALKED 之内每个元素的 rect/style），`
+      + '不是主进程也不是 IPC —— 计时只罩着 executeJavaScriptInIsolatedWorld 这一次调用。',
+    ).toBeLessThan(1500);
+    expect(res.collection.limit, '12 万节点必须撞到 MAX_WALKED 那道闸；没撞到说明这一页没造对')
+      .toBe('walked');
+  });
+});
+
+// ══ 一次启动：侧栏开着 ═════════════════════════════════════════════════════════
+//
+// `beforeAll` 就把侧栏打开，之后谁都不再去点那个开关。顺序约束见文件头：composer 那条
+// 依赖点链接那条跑完的线程；拖宽度之后侧栏一直是窄的；渲染层重载必须最后。
+test.describe('61-browser · 一次启动：侧栏开着', () => {
+  test.describe.configure({ mode: 'serial' });
+  let env: OfflineApp;
+  test.beforeAll(async () => {
+    env = await launchOffline({ agent: true });
+    await openSidebar(env.launched.page);
+  });
+  test.afterAll(async () => { await env?.close(); });
+
+  /**
+   * 手测 A-2 的原始失败链。两段：① 侧栏开着时 CDP 点击坐标没乘 emulation scale，链接根本
+   * 没被点到（2026-09-14 那次「到时限仍没有明确结果」就是它）；② 点击已经触发跨文档导航、
+   * browser_act 却先返回，紧接着 back 在历史提交前运行，错误地说没有历史。第一条工具结果
+   * 必须等到导航终态，第二条才能稳定后退到原页。
+   */
+  test('侧栏开着点链接：同次 browser_act 报目的页终态；紧接着 back 能回原页', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    // A-2 的原始现场是**侧栏开着**：emulation scale = 舞台宽 / 1280 ≠ 1，而渲染进程会把
+    // CDP 输入坐标再除以一次 scale —— 派发不乘回去就点不到链接，白等 20 秒超时。侧栏不开时
+    // scale 恒 1，这条会为错误的理由变绿，所以先把舞台宽度钉住（侧栏由 beforeAll 打开）。
+    await expect(page.getByTestId('browser-stage'), '这次启动的侧栏应当已经开着（beforeAll）').toBeVisible();
+    const opened = await openTab(page, 'https://example.com/click-link/');
+    await expect.poll(
+      async () => (await viewport(app, 'example.com/click-link/')).h,
+      { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
+    ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
+    const stageWidth = await page.getByTestId('browser-stage').evaluate((el) => el.getBoundingClientRect().width);
+    expect(stageWidth, '舞台必须窄于 1280，emulation scale 才不是 1').toBeLessThan(LOGICAL_WIDTH);
+    // 链接放在离原点远的地方：坐标一旦没乘 scale，落点 (x/scale, y/scale) 会整个跑出页面，
+    // 而不是凑巧仍落在链接身上。
+    await inPage(app, 'example.com/click-link/', `(() => {
+      document.body.innerHTML = '<a id="kydog-recent" href="https://example.org/click-target/" '
+        + 'style="position:absolute;left:600px;top:300px;display:block;width:120px;height:40px">recent</a>';
+      return true;
+    })()`);
+
+    const res = await runTools(page, fixturePath, [
+      {
+        toolCallId: 'tc-recent', name: 'browser_act',
+        args: { tabId: opened.tabId, actions: [{ kind: 'click', selector: '#kydog-recent' }] },
+      },
+      {
+        toolCallId: 'tc-back', name: 'browser_act',
+        args: { tabId: opened.tabId, actions: [{ kind: 'back' }] },
+      },
+    ]);
+
+    const click = res.get('tc-recent')!;
+    expect(click.status).toBe('ok');
+    expect(click.text, '点击这一次的结果本身必须报告目的页，不能推迟到下一次调用')
+      .toContain('https://example.org/click-target/');
+    expect(click.text).toContain('HTTP 200');
+
+    const back = res.get('tc-back')!;
+    expect(back.status).toBe('ok');
+    expect(back.text, '紧接着 back 必须看到刚提交的历史，而不是报「没有可以后退的历史」')
+      .not.toContain('没有可以后退的历史');
+    expect(back.text).toContain('https://example.com/click-link/');
+    expect(await inPage<string>(app, 'example.com/click-link/', 'location.href')).toBe('https://example.com/click-link/');
+  });
 
   // ── Task 7：真布局回归 ──────────────────────────────────────────────────
   //
-  // 前六个任务把功能做完了。这三条守的是单测守不住的那两件事：「祖先对了但按钮被挤
+  // 前六个任务把功能做完了。这几条守的是单测守不住的那两件事：「祖先对了但按钮被挤
   // 出可视区」（单测断的是 DOM 结构，量不出几何）、「对话栏被挤到 composer 不可见」
   // （单测不挂真窗口，量不出真实宽度）。都要真布局才量得到。
 
   /**
    * **本轮唯一一处真实回归风险。** 1024 宽窗口 + 侧栏（旧默认 560）会把中栏挤到
    * `composer-input` 不可见、`fill()` 直接超时 —— `61-browser` 这一组因此此前一律
-   * 不敢开侧栏（见下面「打真的 extract / click / type」几条的开场注释：「1024 宽的
-   * 窗口里再挂一个 560 宽的侧栏会把中栏挤到 composer 不可见」）。`MIN_MAIN_WIDTH`
-   * 落地之后它必须不再成立：`rightPane.test.ts` 已经在单测层面钉死
+   * 不敢开侧栏。`MIN_MAIN_WIDTH` 落地之后它必须不再成立：`rightPane.test.ts` 已经在单测层面钉死
    * `browserWidthFor(null, 756) === 396`（1024 窗口的可用宽），这里在真窗口上验证
    * 那个数字真的能让 composer 用起来。
    *
@@ -483,107 +1060,120 @@ test.describe('61-browser', () => {
    * 线程走的是 `ThreadView` 里 `NewThreadEmptyState` 那条分支，它自己的首屏大输入框
    * 带着 80px 的通栏留白（`padding: '64px 80px'`，给宽窗口设计的首屏排版），实测在
    * 360 宽的对话栏下量到的宽只有 ~130——那是这块首屏留白的事，不是 `MIN_MAIN_WIDTH`
-   * 要守的那条回归。发一条消息切到 `messages.length > 0` 分支，才是 `spec §8.2` 那些
-   * `browser_act` 用例平时真正会用到的那个底部 Composer（`ThreadView.tsx:66-75`）。
-   * 这一点简报里的伪代码略掉了，这里照 `03-create-thread.spec.ts` 的现成做法起步
-   * （种一个项目、点「新建对话」），再补上「发一条消息切到日常输入框」这一步。
+   * 要守的那条回归。`messages.length > 0` 分支里那个底部 Composer（`ThreadView.tsx:66-75`）
+   * 才是 `browser_act` 用例平时真正会用到的。
+   *
+   * **起点是上一条（点链接）留下的现场**：它建了线程、跑完了一轮（有夹具剧本，不打真上游），
+   * 侧栏开着、那个标签还在。从前这条自己起一次应用、不带剧本地发一句话切到日常输入框
+   * —— 那一句会拿假 key 真打上游 API；现在这一步由上一条的真工具回合顶上了。
    */
   test('开着浏览器时 composer 仍然可见且填得进字', async () => {
-    const projectPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
-    await seedSamplePackage(projectPath);
-    const launched = await launchKydog({
-      seed: async (home) => { await seedSettings(home); await seedProject(home, projectPath); },
-    });
-    const { page } = launched;
-    try {
-      await page.getByTestId('new-thread').click();
-      const firstComposer = page.locator('[data-testid="composer-input"]');
-      await firstComposer.click();
-      await firstComposer.type('占个位，切到日常输入框');
-      await page.keyboard.press('Enter');
-      // `onSend` 先把用户消息乐观地写进本地 store 再发 RPC（`Composer.tsx` 的
-      // `onSend`）——`messages.length` 因此立刻变成 1，`ThreadView` 跟着从
-      // `NewThreadEmptyState` 切到 `MessageList` 分支，不需要等一轮真实的 run 跑完
-      // （后台那次 `thread.send` RPC 会不会成功，这条用例不关心）。
-      await expect(page.getByTestId('message-list'), '发完第一条消息应当切到 MessageList 分支')
-        .toBeVisible();
+    const { page } = env.launched;
+    await expect(page.getByTestId('message-list'), '起点是上一条跑完一轮的线程：应当已经在 MessageList 分支'
+      + '（单独跑这一条的话没有这个现场，连同上一条一起跑）').toBeVisible();
+    await expect(page.getByTestId('browser-stage'), '侧栏应当开着（beforeAll）').toBeVisible();
+    // 上一条那个标签还开着、是活动标签（地址栏显示的就是它）。**别改成从测试里调
+    // `browser.getState` 去数**：那条 RPC 每调一次就签发一个新 epoch（`handlers.ts`），
+    // 渲染层手上那个随即作废，下一条拖宽度时的 syncView 会被主进程全部丢掉（实测红过）。
+    await expect(page.getByTestId('browser-url'), '侧栏里应当还开着上一条那个标签')
+      .toHaveValue('https://example.com/click-link/');
 
-      await openSidebar(page);
-      await openTab(page, 'https://example.com/');
+    // **协议层判据先来一条**：`browserWidthFor` 承诺的就是「对话栏（`[data-pane="main"]`）
+    // 不许比 MIN_MAIN_WIDTH 窄」——这是 `Math.min(want, available - MIN_MAIN_WIDTH)`
+    // 那一钳直接守的事实，不是靠 composer 的可视宽度去反推（那是**下游的 proxy**：
+    // 中栏够不够宽与 composer 具体量出来几像素之间还隔着一层 padding，数值会跟着
+    // `Composer.tsx` 的 padding 常量漂）。M14（去掉这一钳）在 e2e 窗口的夹具下会把
+    // 中栏从 360 压到 302——这条直接量协议层承诺的那个数，不靠 302 恰好还是否
+    // 大于某个凭经验选的阈值。
+    const mainBox = await page.locator('[data-pane="main"]').boundingBox();
+    expect(mainBox, '对话栏（[data-pane="main"]）必须在场').toBeTruthy();
+    expect(mainBox!.width, `对话栏宽度不许小于 MIN_MAIN_WIDTH（${MIN_MAIN_WIDTH}）——`
+      + `这正是 browserWidthFor 那一钳要保证的事，实际量到 ${mainBox!.width}`)
+      .toBeGreaterThanOrEqual(MIN_MAIN_WIDTH);
 
-      // **协议层判据先来一条**：`browserWidthFor` 承诺的就是「对话栏（`[data-pane="main"]`）
-      // 不许比 MIN_MAIN_WIDTH 窄」——这是 `Math.min(want, available - MIN_MAIN_WIDTH)`
-      // 那一钳直接守的事实，不是靠 composer 的可视宽度去反推（那是**下游的 proxy**：
-      // 中栏够不够宽与 composer 具体量出来几像素之间还隔着一层 padding，数值会跟着
-      // `Composer.tsx` 的 padding 常量漂）。M14（去掉这一钳）在 e2e 窗口的夹具下会把
-      // 中栏从 360 压到 302——这条直接量协议层承诺的那个数，不靠 302 恰好还是否
-      // 大于某个凭经验选的阈值。
-      const mainBox = await page.locator('[data-pane="main"]').boundingBox();
-      expect(mainBox, '对话栏（[data-pane="main"]）必须在场').toBeTruthy();
-      expect(mainBox!.width, `对话栏宽度不许小于 MIN_MAIN_WIDTH（${MIN_MAIN_WIDTH}）——`
-        + `这正是 browserWidthFor 那一钳要保证的事，实际量到 ${mainBox!.width}`)
-        .toBeGreaterThanOrEqual(MIN_MAIN_WIDTH);
-
-      const input = page.locator('[data-testid="composer-input"]');
-      // **可见性与可写性要分开断言。** 只断 `toBeVisible()` 的话，一个宽度被挤到 0
-      // 但仍在 DOM 里的输入框照样算「可见」；只断 fill 的话，Playwright 会自己滚动到它、
-      // 把「用户看不见」这件事掩盖掉。两条一起才说得清「用户真的能用它」。
-      await expect(input, '开着浏览器时 composer 必须还看得见 —— 这正是 1024 窗口上栽过的地方')
-        .toBeVisible({ timeout: 10_000 });
-      const box = await input.boundingBox();
-      expect(box?.width ?? 0, 'composer 的可视宽度不能被挤成一条缝').toBeGreaterThan(200);
-      // `composer-input` 是 `contentEditable` 的 div（`ComposerEditor.tsx`），不是
-      // `<input>`/`<textarea>`——`toHaveValue` 只认表单控件，这里改用 `toHaveText`
-      // 断可见文本，判据不变（「真的填得进字」）。
-      await input.fill('kydog-e2e-窄模式还能打字');
-      await expect(input).toHaveText('kydog-e2e-窄模式还能打字');
-    } finally {
-      await teardown(launched);
-    }
+    const input = page.locator('[data-testid="composer-input"]');
+    // **可见性与可写性要分开断言。** 只断 `toBeVisible()` 的话，一个宽度被挤到 0
+    // 但仍在 DOM 里的输入框照样算「可见」；只断 fill 的话，Playwright 会自己滚动到它、
+    // 把「用户看不见」这件事掩盖掉。两条一起才说得清「用户真的能用它」。
+    await expect(input, '开着浏览器时 composer 必须还看得见 —— 这正是 1024 窗口上栽过的地方')
+      .toBeVisible({ timeout: 10_000 });
+    const box = await input.boundingBox();
+    expect(box?.width ?? 0, 'composer 的可视宽度不能被挤成一条缝').toBeGreaterThan(200);
+    // `composer-input` 是 `contentEditable` 的 div（`ComposerEditor.tsx`），不是
+    // `<input>`/`<textarea>`——`toHaveValue` 只认表单控件，这里改用 `toHaveText`
+    // 断可见文本，判据不变（「真的填得进字」）。
+    await input.fill('kydog-e2e-窄模式还能打字');
+    await expect(input).toHaveText('kydog-e2e-窄模式还能打字');
   });
 
   /**
-   * Task 4 删掉了顶部那条单独的标题行（「浏览器 Browser」），标签条升顶、地址栏紧跟
-   * 在它下面。`BrowserSidebar.test.tsx` 在挂载层面已经守过「DOM 里没有这几个字」，
-   * 这里补的是真布局上的另一半：标签条真的排在地址栏**上面**（不是层叠、不是反过来）。
+   * spec §8.2 第 1 条（S1b 的回归）。**`setZoomFactor` 会失败的正是这里** ——
+   * 它按 host 存在 session 的 HostZoomMap 里，跨 host 导航就没了。
+   *
+   * 两件事一起断言，缺一条都会变成一条不会红的用例：
+   *  · **几何真的变了** —— 拖动之后逻辑视口高必须跟着变（`height = bounds.height / scale`，
+   *    而 `scale = 侧栏宽 / 1280`）。不断言这一条的话，「拖拽根本没生效」与
+   *    「宽度被正确钉住」长得一模一样，`innerWidth` 恒 1280 是白给的。
+   *  · **逻辑宽一动不动** —— 拖动后、以及跨 host 再导航一次之后，都还是 1280。
+   *
+   * 跨 host 这一半**没有**并进「侧栏开着点链接」那条（它也跨 host）：那条的 click 与 back 在同一轮里
+   * 紧挨着（它守的正是这个竞态），中途量不到 example.org 上的视口；等 back 回到 example.com 再量
+   * 又是假绿 —— HostZoomMap 替 example.com 存着的缩放一回来，照样量到 1280。
    */
-  test('顶部只有两行：标签条在最上、地址栏在下，标题行不存在', async () => {
-    const launched = await launchKydog();
-    const { page } = launched;
-    try {
-      await openSidebar(page);
-      const pane = page.locator('[data-pane="browser"]');
-      const tabstrip = page.getByTestId('browser-tabstrip');
-      const urlbar = page.getByTestId('browser-url');
-      await expect(tabstrip, '标签条必须在场').toBeVisible();
-      await expect(urlbar, '地址栏必须在场').toBeVisible();
+  test('拖动侧栏宽度、跨 host 再导航一次，逻辑视口宽恒为 1280', async () => {
+    const { app, page } = env.launched;
+    await expect(page.getByTestId('browser-stage'), '这次启动的侧栏应当已经开着（beforeAll）').toBeVisible();
+    const opened = await openTab(page, 'https://example.com/drag-width/');
 
-      const paneBox = await pane.boundingBox();
-      const tabstripBox = await tabstrip.boundingBox();
-      const urlbarBox = await urlbar.boundingBox();
-      expect(paneBox, '浏览器面板要有真实几何位置').toBeTruthy();
-      expect(tabstripBox, '标签条要有真实几何位置').toBeTruthy();
-      expect(urlbarBox, '地址栏要有真实几何位置').toBeTruthy();
-      expect(tabstripBox!.y, '标签条必须排在地址栏上面（升顶，不是标题行下面那一档）')
-        .toBeLessThan(urlbarBox!.y);
+    // 侧栏的几何落到页面上（逻辑高不再是「没有舞台」那一档的 800）之后再取基线。
+    await expect.poll(
+      async () => (await viewport(app, 'example.com/drag-width/')).h,
+      { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
+    ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
+    const before = await viewport(app, 'example.com/drag-width/');
+    expect(before.w, '侧栏刚打开时逻辑宽就该是 1280').toBe(LOGICAL_WIDTH);
 
-      // **结构判据，不是文本判据。** 下面那条文本判据只认「浏览器 Browser」这个
-      // 字面串，换个措辞（比如叫「网页」）加回一行标题，文本判据照样绿。这里断的是
-      // 标签条必须是浏览器面板（[data-pane="browser"]）里最靠上的那一块——它的顶边
-      // 要贴合面板自己的顶边（面板没有上边框/内边距，允许 1px 取整误差）。上面
-      // 不管塞进什么内容，都会把标签条往下推、这条判据就会红。
-      expect(Math.abs(tabstripBox!.y - paneBox!.y), '标签条必须是浏览器面板里最靠上的那一块——'
-        + `顶边应贴合面板顶边，实测标签条 y=${tabstripBox!.y}，面板 y=${paneBox!.y}`)
-        .toBeLessThanOrEqual(1);
+    // 右侧分栏手柄往右拖 = 把侧栏拖窄（ThreeColumnLayout 的 `side === 'right'`：
+    // `setWidth(startW - dx)`）。默认 560，拖 120 之后约 440，仍在 MIN_BROWSER_WIDTH(320) 之上。
+    const paneWidth = async () => (await page.locator('[data-pane="browser"]').boundingBox())!.width;
+    const paneBefore = await paneWidth();
+    const handle = page.getByTestId('resize-right');
+    const box = (await handle.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2, { steps: 12 });
+    await page.mouse.up();
 
-      // 「浏览器 Browser」曾经是单独一行标题，Task 4 已经删掉——这条文本判据挡的是
-      // 「这句话原样还在」，但**不是唯一判据**：换个措辞的标题行要靠上面那条结构
-      // 判据去挡。
-      const paneText = await pane.innerText();
-      expect(paneText, '侧栏里不该再出现「浏览器 Browser」这行标题').not.toContain('浏览器 Browser');
-    } finally {
-      await teardown(launched);
-    }
+    // 侧栏真的窄了（DOM 侧的事实），再看页面侧。
+    await expect.poll(
+      paneWidth,
+      { message: '拖动之后侧栏应该真的变窄了；没变的话下面那条 1280 是白给的' },
+    ).toBeLessThan(paneBefore - 60);
+
+    await expect.poll(
+      async () => (await viewport(app, 'example.com/drag-width/')).h,
+      { message: '侧栏变窄 → scale 变小 → 逻辑视口高必须跟着变大；不变说明这次拖拽压根没下发到页面' },
+    ).not.toBe(before.h);
+
+    const afterDrag = await viewport(app, 'example.com/drag-width/');
+    expect(afterDrag.w, '拖动侧栏宽度之后逻辑视口宽仍必须是 1280').toBe(LOGICAL_WIDTH);
+
+    // 跨 host 再导航一次 —— setZoomFactor 那条路正是死在这里。同一个标签（按 tabId 认，
+    // 这次启动里前面几步开的标签都还在，别拿 `tabs[0]`）。
+    const rendererPid = (needle: string) => app.evaluate(({ webContents }, n) => webContents.getAllWebContents()
+      .filter((w) => !w.isDestroyed() && w.getURL().includes(n)).map((w) => w.getOSProcessId()), needle);
+    const pidBefore = await rendererPid('example.com/drag-width/');
+    await openTab(page, 'https://example.org/drag-width-cross-host/', opened.tabId);
+    // **前提：这次跨 host 真的换了渲染进程**（跨站导航在真公网上就是这样，本地夹具代理没把它改掉 ——
+    // 文件头那一节实测过）。它不成立的话，下面两条量的只是「同一个进程里换了个 URL」。
+    const pidAfter = await rendererPid('example.org/drag-width-cross-host/');
+    expect(pidBefore.length === 1 && pidAfter.length === 1 && pidAfter[0] !== pidBefore[0],
+      `跨 host 导航应当换一个渲染进程（导航前 ${JSON.stringify(pidBefore)}，导航后 ${JSON.stringify(pidAfter)}）`)
+      .toBe(true);
+    const afterNav = await viewport(app, 'example.org/drag-width-cross-host/');
+    expect(afterNav.w, '跨 host 导航之后逻辑视口宽仍必须是 1280（HostZoomMap 那条路会死在这里）')
+      .toBe(LOGICAL_WIDTH);
+    expect(afterNav.h, '跨 host 之后侧栏几何还是刚才那一份，逻辑高应当与导航前一致').toBe(afterDrag.h);
   });
 
   /**
@@ -617,158 +1207,137 @@ test.describe('61-browser', () => {
    * 没了，直接去掉：几何判据（上面两条）本身就是这条用例的主判据，不靠佐证撑着。
    */
   test('标签多到需要横向滚动时，全屏按钮仍然点得到，+ 确实跟着标签一起滚', async () => {
-    const launched = await launchKydog();
-    const { page } = launched;
-    try {
-      await openSidebar(page);
-      for (let i = 0; i < 8; i++) {
-        await page.evaluate(() => window.kydog.invoke('browser.newTab'));
-      }
-      await expect.poll(
-        async () => (await page.evaluate(() => window.kydog.invoke('browser.getState'))).tabs.length,
-        { message: '连开 8 次 browser.newTab 之后标签数应当是 8' },
-      ).toBe(8);
-
-      const scroll = page.getByTestId('browser-tabscroll');
-      // 前提要立得住：8 个标签必须真的撑爆了 browser-tabscroll 的可视宽度，
-      // 不然下面这些「滚动之后」的判据就没有被考到（标题就是「标签多到需要横向滚动时」）。
-      await expect.poll(
-        () => scroll.evaluate((el) => el.scrollWidth > el.clientWidth),
-        { message: '8 个标签应当已经超出 browser-tabscroll 的可视宽度' },
-      ).toBe(true);
-
-      const pane = page.locator('[data-pane="browser"]');
-      const paneBox = (await pane.boundingBox())!;
-
-      const assertButtonInPane = async (id: string, when: string) => {
-        const box = await page.getByTestId(id).boundingBox();
-        expect(box, `${when}：按钮 ${id} 应有真实几何位置（不在 DOM 里或被隐藏了）`).toBeTruthy();
-        expect(box!.x, `${when}：按钮 ${id} 的左边界必须在侧栏可视范围内`)
-          .toBeGreaterThanOrEqual(paneBox.x - 1);
-        expect(box!.x + box!.width, `${when}：按钮 ${id} 的右边界不能超出侧栏可视范围`)
-          .toBeLessThanOrEqual(paneBox.x + paneBox.width + 1);
-      };
-
-      await assertButtonInPane('browser-fullscreen', '未滚动（默认状态，这是这条用例的主判据之一）');
-
-      // 正向前置：+ 滚动前的真实几何位置和容器的 scrollLeft——下面滚动之后都要
-      // 跟这两个比，证明 + 真的随滚动容器移动了（而不只是方向凑巧对了）。先确认
-      // + 有真实几何位置（不是被误删、不在 DOM 里）。
-      const newTabBefore = await page.getByTestId('browser-new-tab').boundingBox();
-      expect(newTabBefore, '+ 应有真实几何位置（不在 DOM 里或被隐藏了）').toBeTruthy();
-      const scrollLeftBefore = await scroll.evaluate((el) => el.scrollLeft);
-
-      // 把标签条滚到最右（模拟翻看最后打开的那个标签）。
-      //
-      // **先确认滚动真的发生了。** 如果 `overflow-x-auto` 被挪到了外层
-      // `browser-tabstrip` 上，`browser-tabscroll` 自己就不再是滚动容器——这时对它
-      // 设置 `scrollLeft` 是静默无效操作：赋值不报错，读回来还是 0。不确认这一条，
-      // 下面「滚到最右」状态下量到的几何都是在检查一次根本没发生的滚动，判据
-      // 抓不住这处回归——用例最终会不会红全看运气，不是判据自己红的。
-      await scroll.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-      const scrollLeftAfter = await scroll.evaluate((el) => el.scrollLeft);
-      expect(scrollLeftAfter, '设置 scrollLeft 之后应当真的发生了横向滚动——读回来仍是 0 说明 '
-        + 'browser-tabscroll 已经不是真正的滚动容器了（比如 overflow-x-auto 被挪到了别的元素上）')
-        .toBeGreaterThan(0);
-
-      // 正向判据：+ 确实跟着滚动容器一起移动了——不只是方向对（滚到最右之后它的 x
-      // 必须比滚动前更靠左），位移幅度还必须与容器的 scrollLeft 变化量相当。只判
-      // 方向会被「视觉钉死」类回归假绿：给 + 加 `position: sticky` 之后它的祖先
-      // 依然在 browser-tabscroll 里（结构判据照样通过），方向也没错（它会被子像素
-      // 取整噪声带动零点几像素），但幅度只有滚动量的千分之几——这正是这条判据要
-      // 抓住的场景。+ 是滚动容器里跟内容一起走的普通 flex 子元素，它在文档坐标系
-      // 里的位置不变，屏幕坐标 = 文档坐标 − scrollLeft，所以真的跟随滚动时位移应
-      // 精确等于 scrollLeft 的变化量（同一帧内的整数像素取整/子像素渲染噪声除外）。
-      // 容差实测：干净构建（`npm run package`）下连续跑 5 次，`xDelta` 与
-      // `scrollDelta` 均为 226、`Math.abs(xDelta - scrollDelta)` 每次都是 0px——
-      // 这条用例的几何在这台机器上没有可观测的子像素噪声。这里仍留 2px 余量（不
-      // 拍 0 容差，防未知环境下的 DPR/取整差异），离「视觉钉死」变异下应有的落差
-      // （226px 滚动量对应约 0.375px 位移，缺口约 225.6px）还差两个数量级，不会
-      // 把它放过。
-      const newTabAfter = await page.getByTestId('browser-new-tab').boundingBox();
-      expect(newTabAfter, '滚动之后 + 应仍有真实几何位置').toBeTruthy();
-      expect(newTabAfter!.x, '+ 应当随 browser-tabscroll 的横向滚动一起移动——'
-        + '滚到最右之后它的左边界应比滚动前更靠左，不然它已经不在这个滚动容器里了')
-        .toBeLessThan(newTabBefore!.x);
-
-      const xDelta = newTabBefore!.x - newTabAfter!.x;
-      const scrollDelta = scrollLeftAfter - scrollLeftBefore;
-      const TOLERANCE_PX = 2;
-      expect(Math.abs(xDelta - scrollDelta), `+ 的位移（${xDelta}px）应当与容器 scrollLeft `
-        + `的变化量（${scrollDelta}px）相当——只判方向会被「视觉钉死」类回归假绿（+ 祖先仍在 `
-        + '滚动容器里、方向也不错，但幅度只有滚动量的千分之几）')
-        .toBeLessThanOrEqual(TOLERANCE_PX);
-
-      // 滚动确认真的发生之后，再量全屏按钮几何：它不在这个滚动容器里，位置不该跟着动。
-      await assertButtonInPane('browser-fullscreen', '滚到最右之后');
-    } finally {
-      await teardown(launched);
+    const { page } = env.launched;
+    await expect(page.getByTestId('browser-stage'), '这次启动的侧栏应当已经开着（beforeAll）').toBeVisible();
+    // 前面几步开的标签都还在：数的是「比开之前多了 8 个」，不是总数。
+    const tabsBefore = (await page.evaluate(() => window.kydog.invoke('browser.getState'))).tabs.length;
+    for (let i = 0; i < 8; i++) {
+      await page.evaluate(() => window.kydog.invoke('browser.newTab'));
     }
+    await expect.poll(
+      async () => (await page.evaluate(() => window.kydog.invoke('browser.getState'))).tabs.length,
+      { message: `连开 8 次 browser.newTab 之后标签数应当是开之前的 ${tabsBefore} 个再加 8` },
+    ).toBe(tabsBefore + 8);
+
+    const scroll = page.getByTestId('browser-tabscroll');
+    // 前提要立得住：这些标签必须真的撑爆了 browser-tabscroll 的可视宽度，
+    // 不然下面这些「滚动之后」的判据就没有被考到（标题就是「标签多到需要横向滚动时」）。
+    await expect.poll(
+      () => scroll.evaluate((el) => el.scrollWidth > el.clientWidth),
+      { message: '这些标签应当已经超出 browser-tabscroll 的可视宽度' },
+    ).toBe(true);
+
+    const pane = page.locator('[data-pane="browser"]');
+    const paneBox = (await pane.boundingBox())!;
+
+    const assertButtonInPane = async (id: string, when: string) => {
+      const box = await page.getByTestId(id).boundingBox();
+      expect(box, `${when}：按钮 ${id} 应有真实几何位置（不在 DOM 里或被隐藏了）`).toBeTruthy();
+      expect(box!.x, `${when}：按钮 ${id} 的左边界必须在侧栏可视范围内`)
+        .toBeGreaterThanOrEqual(paneBox.x - 1);
+      expect(box!.x + box!.width, `${when}：按钮 ${id} 的右边界不能超出侧栏可视范围`)
+        .toBeLessThanOrEqual(paneBox.x + paneBox.width + 1);
+    };
+
+    await assertButtonInPane('browser-fullscreen', '未滚动（默认状态，这是这条用例的主判据之一）');
+
+    // 正向前置：+ 滚动前的真实几何位置和容器的 scrollLeft——下面滚动之后都要
+    // 跟这两个比，证明 + 真的随滚动容器移动了（而不只是方向凑巧对了）。先确认
+    // + 有真实几何位置（不是被误删、不在 DOM 里）。
+    const newTabBefore = await page.getByTestId('browser-new-tab').boundingBox();
+    expect(newTabBefore, '+ 应有真实几何位置（不在 DOM 里或被隐藏了）').toBeTruthy();
+    const scrollLeftBefore = await scroll.evaluate((el) => el.scrollLeft);
+
+    // 把标签条滚到最右（模拟翻看最后打开的那个标签）。
+    //
+    // **先确认滚动真的发生了。** 如果 `overflow-x-auto` 被挪到了外层
+    // `browser-tabstrip` 上，`browser-tabscroll` 自己就不再是滚动容器——这时对它
+    // 设置 `scrollLeft` 是静默无效操作：赋值不报错，读回来还是 0。不确认这一条，
+    // 下面「滚到最右」状态下量到的几何都是在检查一次根本没发生的滚动，判据
+    // 抓不住这处回归——用例最终会不会红全看运气，不是判据自己红的。
+    await scroll.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    const scrollLeftAfter = await scroll.evaluate((el) => el.scrollLeft);
+    expect(scrollLeftAfter, '设置 scrollLeft 之后应当真的发生了横向滚动——读回来仍是 0 说明 '
+      + 'browser-tabscroll 已经不是真正的滚动容器了（比如 overflow-x-auto 被挪到了别的元素上）')
+      .toBeGreaterThan(0);
+
+    // 正向判据：+ 确实跟着滚动容器一起移动了——不只是方向对（滚到最右之后它的 x
+    // 必须比滚动前更靠左），位移幅度还必须与容器的 scrollLeft 变化量相当。只判
+    // 方向会被「视觉钉死」类回归假绿：给 + 加 `position: sticky` 之后它的祖先
+    // 依然在 browser-tabscroll 里（结构判据照样通过），方向也没错（它会被子像素
+    // 取整噪声带动零点几像素），但幅度只有滚动量的千分之几——这正是这条判据要
+    // 抓住的场景。+ 是滚动容器里跟内容一起走的普通 flex 子元素，它在文档坐标系
+    // 里的位置不变，屏幕坐标 = 文档坐标 − scrollLeft，所以真的跟随滚动时位移应
+    // 精确等于 scrollLeft 的变化量（同一帧内的整数像素取整/子像素渲染噪声除外）。
+    // 容差实测：干净构建（`npm run package`）下连续跑 5 次，`xDelta` 与
+    // `scrollDelta` 均为 226、`Math.abs(xDelta - scrollDelta)` 每次都是 0px——
+    // 这条用例的几何在这台机器上没有可观测的子像素噪声。这里仍留 2px 余量（不
+    // 拍 0 容差，防未知环境下的 DPR/取整差异），离「视觉钉死」变异下应有的落差
+    // （226px 滚动量对应约 0.375px 位移，缺口约 225.6px）还差两个数量级，不会
+    // 把它放过。
+    const newTabAfter = await page.getByTestId('browser-new-tab').boundingBox();
+    expect(newTabAfter, '滚动之后 + 应仍有真实几何位置').toBeTruthy();
+    expect(newTabAfter!.x, '+ 应当随 browser-tabscroll 的横向滚动一起移动——'
+      + '滚到最右之后它的左边界应比滚动前更靠左，不然它已经不在这个滚动容器里了')
+      .toBeLessThan(newTabBefore!.x);
+
+    const xDelta = newTabBefore!.x - newTabAfter!.x;
+    const scrollDelta = scrollLeftAfter - scrollLeftBefore;
+    const TOLERANCE_PX = 2;
+    expect(Math.abs(xDelta - scrollDelta), `+ 的位移（${xDelta}px）应当与容器 scrollLeft `
+      + `的变化量（${scrollDelta}px）相当——只判方向会被「视觉钉死」类回归假绿（+ 祖先仍在 `
+      + '滚动容器里、方向也不错，但幅度只有滚动量的千分之几）')
+      .toBeLessThanOrEqual(TOLERANCE_PX);
+
+    // 滚动确认真的发生之后，再量全屏按钮几何：它不在这个滚动容器里，位置不该跟着动。
+    await assertButtonInPane('browser-fullscreen', '滚到最右之后');
   });
 
   /**
-   * spec §8.2 第 1 条（S1b 的回归）。**`setZoomFactor` 会失败的正是这里** ——
-   * 它按 host 存在 session 的 HostZoomMap 里，跨 host 导航就没了。
+   * spec §8.2 第 3 条。渲染层重载后：标签还在、URL 没变、**页面没有重新加载**。
    *
-   * 两件事一起断言，缺一条都会变成一条不会红的用例：
-   *  · **几何真的变了** —— 拖动之后逻辑视口高必须跟着变（`height = bounds.height / scale`，
-   *    而 `scale = 侧栏宽 / 1280`）。不断言这一条的话，「拖拽根本没生效」与
-   *    「宽度被正确钉住」长得一模一样，`innerWidth` 恒 1280 是白给的。
-   *  · **逻辑宽一动不动** —— 拖动后、以及跨 host 再导航一次之后，都还是 1280。
+   * 「页面没重新加载」用页面里种的一个计数器验证 —— 只看标签清单的话，
+   * 一个「重载时把每个标签重新 loadURL 一遍」的实现照样全绿，而那正好会丢掉
+   * 登录会话与半填的表单。
+   *
+   * 主进程那一侧「重载时只 `hideAll()`、从不重载页面」已由 `browserService.test.ts` 用替身钉住；
+   * 这一条留着，是因为它是**唯一**一处在真 Chromium 里证明「宿主渲染层整个重载之后，
+   * `WebContentsView` 里的文档连 JS 状态一起还在」的地方（2026-09-08 spike 量过的那件事），
+   * 外加渲染层重新向主进程要回标签清单那一趟真往返。它不为自己多一次启动：
+   * **排在这次启动的最后**，因为它把渲染层整个换掉了。
    */
-  test('拖动侧栏宽度、跨 host 再导航一次，逻辑视口宽恒为 1280', async () => {
-    const launched = await launchKydog();
-    const { app, page } = launched;
-    try {
-      await openSidebar(page);
-      await openTab(page, 'https://example.com/');
+  test('渲染层重载：标签仍在、URL 未变、页面没有重新加载', async () => {
+    const { app, page } = env.launched;
+    await expect(page.getByTestId('browser-stage'), '这次启动的侧栏应当已经开着（beforeAll）').toBeVisible();
+    const opened = await openTab(page, 'https://example.com/renderer-reload/');
+    const tabId = opened.tabId;
 
-      // 侧栏的几何落到页面上（逻辑高不再是「没有舞台」那一档的 800）之后再取基线。
-      await expect.poll(
-        async () => (await viewport(app, 'example.com')).h,
-        { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
-      ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
-      const before = await viewport(app, 'example.com');
-      expect(before.w, '侧栏刚打开时逻辑宽就该是 1280').toBe(LOGICAL_WIDTH);
+    // 页面里种一个只可能在「文档被换掉」时消失的东西。
+    const planted = await inPage<number>(app, 'example.com/renderer-reload/',
+      '(window.__kydogE2E = (window.__kydogE2E || 0) + 1)');
+    expect(planted).toBe(1);
 
-      // 右侧分栏手柄往右拖 = 把侧栏拖窄（ThreeColumnLayout 的 `side === 'right'`：
-      // `setWidth(startW - dx)`）。默认 560，拖 120 之后约 440，仍在 MIN_BROWSER_WIDTH(320) 之上。
-      const paneWidth = async () => (await page.locator('[data-pane="browser"]').boundingBox())!.width;
-      const paneBefore = await paneWidth();
-      const handle = page.getByTestId('resize-right');
-      const box = (await handle.boundingBox())!;
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2, { steps: 12 });
-      await page.mouse.up();
+    // 前面几步开的标签都还在：重载前后比的是**整份**清单（顺序与 id 逐个相同），不只是这一个。
+    const before = await page.evaluate(() => window.kydog.invoke('browser.getState'));
+    const idsBefore = before.tabs.map((t) => t.id);
+    expect(idsBefore, '刚打开的这个标签应当在清单里').toContain(tabId);
 
-      // 侧栏真的窄了（DOM 侧的事实），再看页面侧。
-      await expect.poll(
-        paneWidth,
-        { message: '拖动之后侧栏应该真的变窄了；没变的话下面那条 1280 是白给的' },
-      ).toBeLessThan(paneBefore - 60);
+    await page.reload();
+    await page.locator('[data-pane="workspace"], [data-testid="onboarding-root"]').first().waitFor();
 
-      await expect.poll(
-        async () => (await viewport(app, 'example.com')).h,
-        { message: '侧栏变窄 → scale 变小 → 逻辑视口高必须跟着变大；不变说明这次拖拽压根没下发到页面' },
-      ).not.toBe(before.h);
+    const st = await page.evaluate(() => window.kydog.invoke('browser.getState'));
+    expect(st.tabs.map((t) => t.id), '重载之后标签清单必须一模一样').toEqual(idsBefore);
+    expect(st.tabs.find((t) => t.id === tabId)?.url, '重载之后 URL 不许变')
+      .toBe('https://example.com/renderer-reload/');
 
-      const afterDrag = await viewport(app, 'example.com');
-      expect(afterDrag.w, '拖动侧栏宽度之后逻辑视口宽仍必须是 1280').toBe(LOGICAL_WIDTH);
-
-      // 跨 host 再导航一次 —— setZoomFactor 那条路正是死在这里。
-      const st = await page.evaluate(() => window.kydog.invoke('browser.getState'));
-      const tabId = st.tabs[0].id;
-      await openTab(page, 'https://example.org/', tabId);
-      const afterNav = await viewport(app, 'example.org');
-      expect(afterNav.w, '跨 host 导航之后逻辑视口宽仍必须是 1280（HostZoomMap 那条路会死在这里）')
-        .toBe(LOGICAL_WIDTH);
-      expect(afterNav.h, '跨 host 之后侧栏几何还是刚才那一份，逻辑高应当与导航前一致').toBe(afterDrag.h);
-    } finally {
-      await teardown(launched);
-    }
+    const after = await inPage<number>(app, 'example.com/renderer-reload/', 'window.__kydogE2E ?? null');
+    expect(after, '重载之后页面里种的计数器必须还在（还是 1）—— 变成 null 说明文档被重新加载了')
+      .toBe(1);
   });
+});
 
+// ══ 一次启动：1:1 ═══════════════════════════════════════════════════════════════
+test.describe('61-browser · 一次启动：1:1', () => {
   /**
    * **1:1 就是 Chromium 自己的 pinch-zoom（page scale）**，不是任何自制的裁剪或横移。
    *
@@ -790,17 +1359,20 @@ test.describe('61-browser', () => {
    * 是滚动条不是内容。
    */
   test('1:1 是 Chromium 的 pinch-zoom：不重排、横移到右端点得中、长页纵滚不露白，切回适配复原', async () => {
-    const launched = await launchKydog();
-    const { app, page } = launched;
+    const env = await launchOffline();
+    const { app, page } = env.launched;
+    /** 这一条那个标签的 URL。认 view / webContents 一律按它、而且要求**正好一个**。 */
+    const NEEDLE = 'example.com/one-to-one/';
     try {
       await openSidebar(page);
-      const opened = await openTab(page, 'https://example.com/');
+      const opened = await openTab(page, `https://${NEEDLE}`);
       await expect.poll(
-        async () => (await viewport(app, 'example.com')).h,
+        async () => (await viewport(app, NEEDLE)).h,
         { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
       ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
-      await inPage(app, 'example.com', `(() => {
-        // 站点自己的样式整份拿掉：它给 div 加的透明度会把「白」混成非白，探针判据就不作数了。
+      await inPage(app, NEEDLE, `(() => {
+        // 页面自己的样式整份拿掉（本地夹具页没有样式，这一行是防它哪天加了）：真 example.com
+        // 给 div 加过透明度，会把「白」混成非白，探针判据就不作数了。
         document.querySelectorAll('style, link[rel="stylesheet"]').forEach((el) => el.remove());
         document.documentElement.style.setProperty('background', 'rgb(17, 85, 153)', 'important');
         // 常驻滚动条（Windows、没有触控板的 macOS）的轨道是浅灰、每个通道 > 245，会被下面的
@@ -824,6 +1396,8 @@ test.describe('61-browser', () => {
         document.getElementById('kydog-right').onclick = () => { window.__kydogRightClicks += 1; };
         return true;
       })()`);
+      /** 夹具里一行 `.kydog-row` 的高（上面那段样式里的 400px）。行从文档顶端 y=0 开始排。 */
+      const ROW_H = 400;
 
       const isWhite = (p: number[]) => p[0] > 245 && p[1] > 245 && p[2] > 245;
       // toBitmap 的字节序随平台（BGRA / RGBA）；绿与品红对 R/B 对称，判据不受影响。
@@ -832,13 +1406,19 @@ test.describe('61-browser', () => {
       const isGreen = (p: number[]) => p[1] > 180 && p[0] < 140 && p[2] < 140;
       const isMagenta = (p: number[]) => p[0] > 180 && p[2] > 180 && p[1] < 100;
 
-      /** 原生 view 的 bounds、可见区域里的白像素数、以及若干点（舞台内 DIP）的像素。 */
-      const shoot = (points: Array<{ x: number; y: number }>) => app.evaluate(async ({ BrowserWindow }, a) => {
+      /**
+       * 原生 view 的 bounds、可见区域里的白像素数、若干点（舞台内 DIP）的像素，以及（给了 `columnX` 时）
+       * 那一列从上往下的颜色跳变位置（舞台内 DIP）—— 纵滚那一段拿它认「这一帧是哪个滚动位置画的」。
+       * 跳变只看「与上一个像素差多少」，不看是红是蓝，所以不受字节序影响。
+       */
+      const shoot = (points: Array<{ x: number; y: number }>, columnX: number | null = null) => app.evaluate(async ({ BrowserWindow }, a) => {
         const win = BrowserWindow.getAllWindows()[0];
-        const view = win.contentView.children.find((v) => {
+        const views = win.contentView.children.filter((v) => {
           const wc = (v as unknown as { webContents?: { getURL(): string } }).webContents;
-          return wc?.getURL().includes('example.com');
-        }) as unknown as { webContents: WebContents; getBounds(): { x: number; y: number; width: number; height: number } };
+          return wc?.getURL().includes(a.needle);
+        });
+        if (views.length !== 1) throw new Error(`宿主窗口里 URL 含「${a.needle}」的 view 应当正好一个，实际 ${views.length} 个`);
+        const view = views[0] as unknown as { webContents: WebContents; getBounds(): { x: number; y: number; width: number; height: number } };
         const bounds = view.getBounds();
         const image = await view.webContents.capturePage();
         const size = image.getSize();
@@ -857,8 +1437,21 @@ test.describe('61-browser', () => {
           const i = (Math.round(pt.y * k) * size.width + Math.round(pt.x * k)) * 4;
           return Array.from(bitmap.subarray(i, i + 3));
         });
-        return { bounds, size, white, samples };
-      }, { points, logical: LOGICAL_WIDTH });
+        const edges: number[] = [];
+        if (a.columnX !== null) {
+          const cx = Math.round(a.columnX * k);
+          for (let y = 1; y < visH && edges.length < 4; y++) {
+            const i = (y * size.width + cx) * 4;
+            const j = ((y - 1) * size.width + cx) * 4;
+            const d = Math.max(Math.abs(bitmap[i] - bitmap[j]), Math.abs(bitmap[i + 1] - bitmap[j + 1]),
+              Math.abs(bitmap[i + 2] - bitmap[j + 2]));
+            // 行界落在半个像素上时会有一个混色像素，跳变分两步走完：两步里大的那一步至少是全幅的一半，
+            // 所以门槛取 40（红蓝两行之间 R、B 各差 140）；紧挨着的第二步不重复记。
+            if (d > 40 && (edges.length === 0 || y / k - edges[edges.length - 1] > 4)) edges.push(y / k);
+          }
+        }
+        return { bounds, size, white, samples, edges };
+      }, { points, columnX, logical: LOGICAL_WIDTH, needle: NEEDLE });
 
       type Shot = Awaited<ReturnType<typeof shoot>>;
       /**
@@ -867,7 +1460,8 @@ test.describe('61-browser', () => {
        * （实测切回适配后 12ms 截到的仍是 1:1 下的行底色，127ms 才换过来）；页面刚载入时还可能一帧
        * 都没有，`capturePage` 直接抛 UnknownVizError（v0.4.0 tag run 的 CI 上撞过）。
        * `expect.poll` 只重试断言、不重试回调里的异常，所以截图的异常在这里接住、算作这一轮还没成立。
-       * 返回成立那一帧；超时则把最后一次采到的东西（或最后那个异常）带进失败信息。
+       * 返回成立那一帧；超时则把最后一次采到的东西（或最后那个异常）带进失败信息 —— 所以轮询的值
+       * 是一句话而不是对象：`toMatchObject` 的 diff 只列它点了名的键，旁边带着的诊断根本印不出来。
        */
       const shootUntil = async (
         points: Array<{ x: number; y: number }>,
@@ -877,20 +1471,23 @@ test.describe('61-browser', () => {
         let last: Shot | null = null;
         await expect.poll(async () => {
           let shot: Shot;
-          try { shot = await shoot(points); } catch (err) { return { ok: false, last: String(err) }; }
+          try { shot = await shoot(points); } catch (err) { return `截图抛了：${String(err)}`; }
           last = shot;
-          return { ok: ok(shot), last: { size: shot.size, white: shot.white, samples: shot.samples } };
-        }, { message }).toMatchObject({ ok: true });
+          return ok(shot) ? 'ok'
+            : `这一帧不成立：${JSON.stringify({ size: shot.size, white: shot.white, samples: shot.samples })}`;
+        }, { message }).toBe('ok');
         return last as unknown as Shot;
       };
 
       /** 往 view 里发原生 wheel。Electron 注入的 delta 与页面收到的符号相反：负值 = 视口往右 / 往下。 */
       const wheel = (deltaX: number, deltaY: number, times: number) => app.evaluate(async ({ BrowserWindow }, a) => {
         const win = BrowserWindow.getAllWindows()[0];
-        const view = win.contentView.children.find((v) => {
+        const views = win.contentView.children.filter((v) => {
           const wc = (v as unknown as { webContents?: { getURL(): string } }).webContents;
-          return wc?.getURL().includes('example.com');
-        }) as unknown as { webContents: WebContents };
+          return wc?.getURL().includes(a.needle);
+        });
+        if (views.length !== 1) throw new Error(`宿主窗口里 URL 含「${a.needle}」的 view 应当正好一个，实际 ${views.length} 个`);
+        const view = views[0] as unknown as { webContents: WebContents };
         view.webContents.focus();
         for (let i = 0; i < a.times; i++) {
           view.webContents.sendInputEvent({
@@ -899,20 +1496,36 @@ test.describe('61-browser', () => {
           });
           await new Promise((r) => setTimeout(r, 16));
         }
-      }, { deltaX, deltaY, times });
+      }, { deltaX, deltaY, times, needle: NEEDLE });
 
       const layout = () => inPage<{ innerWidth: number; desktop: boolean; left: number; top: number }>(
-        app, 'example.com', `(() => {
+        app, NEEDLE, `(() => {
           const r = document.getElementById('kydog-right').getBoundingClientRect();
           return { innerWidth, desktop: matchMedia('(min-width: 1200px)').matches, left: r.left, top: r.top };
         })()`);
       const vv = () => inPage<{ scale: number; left: number; top: number; width: number; pageTop: number; scrollX: number }>(
-        app, 'example.com',
+        app, NEEDLE,
         '({ scale: visualViewport.scale, left: visualViewport.offsetLeft, top: visualViewport.offsetTop,'
         + ' width: visualViewport.width, pageTop: visualViewport.pageTop, scrollX })');
       const modeOf = async () => {
         const st = await page.evaluate(() => window.kydog.invoke('browser.getState'));
         return st.tabs.find((t) => t.id === opened.tabId)?.viewportMode;
+      };
+      /**
+       * 点「1:1 / 适配」那个按钮。**先等它可点**（它只在没有活动标签时 disabled）：本机偶发过一次
+       * 「30 秒都找不到这个按钮」、原因没查清 —— 真撞上的话，这里在 5 秒内红，并把主进程那一刻的
+       * 浏览器状态（标签清单、活动标签、各自的档位）带进失败信息，别再只剩一个裸超时。
+       */
+      const clickViewportMode = async (when: string) => {
+        const btnMode = page.getByTestId('browser-viewport-mode');
+        try {
+          await expect(btnMode).toBeEnabled();
+        } catch (err) {
+          const st = await page.evaluate(() => window.kydog.invoke('browser.getState')).catch((e) => String(e));
+          throw new Error(`${when}：「1:1 / 适配」按钮没有在限时内出现并可点。`
+            + `此刻主进程的浏览器状态：${JSON.stringify(st)}\n${String(err)}`);
+        }
+        await btnMode.click();
       };
 
       // ── 适配档：探针先证明自己认得出白，也看得见页面右侧 ──
@@ -930,7 +1543,7 @@ test.describe('61-browser', () => {
       expect(before).toEqual({ innerWidth: LOGICAL_WIDTH, desktop: true, left: 1100, top: 80 });
 
       // ── 1:1：只放大，不重排 ──
-      await page.getByTestId('browser-viewport-mode').click();
+      await clickViewportMode('切到 1:1');
       await expect.poll(modeOf, { message: '1:1 档位必须由主进程确认并广播回来' }).toBe('oneToOne');
       await expect.poll(async () => (await vv()).scale, { message: 'page scale 应放大到 1280/舞台宽' })
         .toBeCloseTo(LOGICAL_WIDTH / bounds.width, 2);
@@ -963,31 +1576,62 @@ test.describe('61-browser', () => {
       expect(isGreen(pannedShot.samples[0]), `右侧按钮的绿色像素真的出现在可见区域：${pannedFacts}`).toBe(true);
       expect(isMagenta(pannedShot.samples[1]), `右侧标记也在它该在的位置：${pannedFacts}`).toBe(true);
 
-      await app.evaluate(({ BrowserWindow }, pt) => {
+      await app.evaluate(({ BrowserWindow }, a) => {
         const win = BrowserWindow.getAllWindows()[0];
-        const view = win.contentView.children.find((v) => {
+        const views = win.contentView.children.filter((v) => {
           const wc = (v as unknown as { webContents?: { getURL(): string } }).webContents;
-          return wc?.getURL().includes('example.com');
-        }) as unknown as { webContents: WebContents };
-        view.webContents.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-        view.webContents.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-      }, btn);
+          return wc?.getURL().includes(a.needle);
+        });
+        if (views.length !== 1) throw new Error(`宿主窗口里 URL 含「${a.needle}」的 view 应当正好一个，实际 ${views.length} 个`);
+        const view = views[0] as unknown as { webContents: WebContents };
+        view.webContents.sendInputEvent({ type: 'mouseDown', x: a.pt.x, y: a.pt.y, button: 'left', clickCount: 1 });
+        view.webContents.sendInputEvent({ type: 'mouseUp', x: a.pt.x, y: a.pt.y, button: 'left', clickCount: 1 });
+      }, { pt: btn, needle: NEEDLE });
       await expect.poll(
-        () => inPage<number>(app, 'example.com', 'window.__kydogRightClicks'),
+        () => inPage<number>(app, NEEDLE, 'window.__kydogRightClicks'),
         { message: '横移后看得见的按钮，原生点击要点得中（映射由 Chromium 的 visual viewport 负责）' },
       ).toBe(1);
 
       // ── 长页纵滚：途中可见区域不许露白 ──
+      //
+      // 每一轮 wheel 之后取的那一帧，必须**就是这个滚动位置画出来的**，才拿它数白像素。
+      // `capturePage` 可能交出旧帧（合成器还没换上来）、也可能直接抛（UnknownVizError）——
+      // 旧帧在这里只会**假绿**（它画的是更早的位置，那些位置本来就不白），所以要认出来、重截，
+      // 不能把它当成这一轮的证据。认法是协议层的两件事对得上：
+      //  · 截图前后页面报的 `visualViewport.pageTop` 相同（没在滚动中途截）；
+      //  · 这一帧里取样那一列**第一条行界**的位置 = 由 `pageTop` 算出来的那一条
+      //    （1:1 下一个舞台 DIP 就是一个 CSS 像素，行界在文档 y = 400 的整数倍处）。
+      // 认帧只决定「用哪一帧」，**白像素的判据一个字没松**：认出来的那一帧里一个白像素都不许有。
+      // 取样那一列在舞台左缘往里 20：横移到右端之后它落在文档 x≈(1280−舞台宽)+20，
+      // 离左上角那块白（x<200）和三个 fixed 标记（x≥1100）都远。
+      const COLUMN_X = 20;
+      expect(bounds.height, `舞台得高过一行（${ROW_H}）才保证每一帧里都有一条行界可认`).toBeGreaterThan(ROW_H + 10);
+      /** 这个滚动位置上，取样那一列从上往下第一条行界应落在哪（舞台内 DIP；贴着顶边 5 以内的不算，取下一条）。 */
+      const firstRowEdge = (pageTop: number) => {
+        const d = ROW_H - (pageTop % ROW_H);
+        return d < 5 ? d + ROW_H : d;
+      };
       const whites: number[] = [];
       for (let round = 0; round < 6; round++) {
         await wheel(0, -120, 10);
-        whites.push((await shoot([])).white);
+        let fresh: Shot | null = null;
+        await expect.poll(async () => {
+          const top0 = (await vv()).pageTop;
+          let shot: Shot;
+          try { shot = await shoot([], COLUMN_X); } catch (err) { return `截图抛了：${String(err)}`; }
+          const top1 = (await vv()).pageTop;
+          const want = firstRowEdge(top1);
+          const seen = shot.edges.find((y) => y >= 5) ?? null;
+          if (top0 === top1 && seen !== null && Math.abs(seen - want) <= 2) { fresh = shot; return 'fresh'; }
+          return `不是这个位置的帧：${JSON.stringify({ top0, top1, want, edges: shot.edges, white: shot.white })}`;
+        }, { message: `纵滚第 ${round + 1} 轮：应当截到「就是这个滚动位置」画出来的那一帧` }).toBe('fresh');
+        whites.push((fresh as unknown as Shot).white);
       }
       expect((await vv()).pageTop, '纵向真的滚过了上千像素，否则「不露白」是白给的').toBeGreaterThan(1000);
       expect(whites, '长页面纵滚途中，可见区域一个白像素都不许有').toEqual(whites.map(() => 0));
 
       // ── 切回适配：复原 ──
-      await page.getByTestId('browser-viewport-mode').click();
+      await clickViewportMode('切回适配');
       await expect.poll(modeOf).toBe('fit');
       await expect.poll(async () => (await vv()).scale, { message: '切回适配 page scale 必须回 1' }).toBe(1);
       await shootUntil(
@@ -996,681 +1640,15 @@ test.describe('61-browser', () => {
       );
       expect(await layout()).toEqual(before);
     } finally {
-      await teardown(launched);
+      await env.close();
     }
   });
+});
 
-  /**
-   * spec §8.2 第 3 条。渲染层重载后：标签还在、URL 没变、**页面没有重新加载**。
-   *
-   * 「页面没重新加载」用页面里种的一个计数器验证 —— 只看标签清单的话，
-   * 一个「重载时把每个标签重新 loadURL 一遍」的实现照样全绿，而那正好会丢掉
-   * 登录会话与半填的表单。
-   */
-  test('渲染层重载：标签仍在、URL 未变、页面没有重新加载', async () => {
-    const launched = await launchKydog();
-    const { app, page } = launched;
-    try {
-      await openSidebar(page);
-      const opened = await openTab(page, 'https://example.com/');
-      const tabId = opened.tabId;
-
-      // 页面里种一个只可能在「文档被换掉」时消失的东西。
-      const planted = await inPage<number>(app, 'example.com',
-        '(window.__kydogE2E = (window.__kydogE2E || 0) + 1)');
-      expect(planted).toBe(1);
-
-      await page.reload();
-      await page.locator('[data-pane="workspace"], [data-testid="onboarding-root"]').first().waitFor();
-
-      const st = await page.evaluate(() => window.kydog.invoke('browser.getState'));
-      expect(st.tabs.map((t) => t.id), '重载之后标签清单必须一模一样').toEqual([tabId]);
-      expect(st.tabs[0].url, '重载之后 URL 不许变').toBe('https://example.com/');
-
-      const after = await inPage<number>(app, 'example.com', 'window.__kydogE2E ?? null');
-      expect(after, '重载之后页面里种的计数器必须还在（还是 1）—— 变成 null 说明文档被重新加载了')
-        .toBe(1);
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * `e2e-requirements.md` E-2：**侧栏没打开时，浏览器行为与打开时一致**
-   * （项目负责人裁决：「没开侧栏也按开过侧栏操作。它打不打开，都是一样。」）
-   *
-   * 这条依赖的浏览器行为此前只有 Task 2f 的一次性脚本量过（`task-2f-report.md` §B3），
-   * 从来没有进过回归网，而项目有明确约定：浏览器行为的断言不许以肯定句下结论、
-   * 要真的量。这条用例就是那次量本身。
-   *
-   * 判据取的正是 `applyViewport` 那段注释里实测过的失败形态：**百分比宽度的元素**
-   * 在没有 bounds 时会塌到 min-content（50% 宽的 button 量到 16px），进而被 walker 的
-   * `visible()` 滤掉，快照变成一片空白。所以断言 50% 宽的元素量到 640。
-   * 只断言 `innerWidth === 1280` 是不够的 —— 那个数在布局塌掉时照样成立。
-   */
-  test('侧栏从没打开过：页面照样按 1280 逻辑宽布局，百分比宽度的元素不塌', async () => {
-    const launched = await launchKydog();
-    const { app, page } = launched;
-    try {
-      // **一次 syncView 都不发**：侧栏根本没挂上来。
-      await expect(page.locator('[data-pane="browser"]')).toHaveCount(0);
-      await expect(page.getByTestId('browser-stage')).toHaveCount(0);
-
-      await openTab(page, 'https://example.com/');
-
-      const vp = await viewport(app, 'example.com');
-      expect(vp.w, '侧栏没打开时逻辑视口宽仍必须是 1280').toBe(LOGICAL_WIDTH);
-      expect(vp.h, '侧栏没打开时逻辑视口高是 DEFAULT_VIEWPORT_HEIGHT').toBe(DEFAULT_VIEWPORT_HEIGHT);
-
-      const rect = await inPage<{ w: number; h: number }>(app, 'example.com', `(() => {
-        const d = document.createElement('div');
-        d.style.cssText = 'position:absolute;left:0;top:0;width:50%;height:40px';
-        document.body.appendChild(d);
-        const r = d.getBoundingClientRect();
-        return { w: Math.round(r.width), h: Math.round(r.height) };
-      })()`);
-      expect(rect.w, '50% 宽的元素必须量到 640（塌成 min-content 的话 walker 会把整页滤空）')
-        .toBe(LOGICAL_WIDTH / 2);
-      expect(rect.h, '高度也必须是真的，不是 0').toBe(40);
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * `e2e-requirements.md` E-1a 的**前提**：隔离世界真的骗不到。
-   *
-   * **先说清这条守的是什么、不守什么。** 它守的是「walker 跑在隔离世界里就看得到真结构」
-   * 这条 2026-09-08 spike 量过一次、此后从没进过回归网的浏览器事实（Chromium 升级
-   * 改了隔离世界语义的话，这条会红）。它**不**守
-   * 「`browserService.snapshot` 调的是 `executeJavaScriptInIsolatedWorld` 而不是
-   * `executeJavaScript`」—— 那个入口在 e2e 里够不到（见文件头），世界号是这条用例
-   * 自己指定的。那半由 `browserTools.test.ts` 的替身用例钉着。
-   *
-   * 两侧一起断言，否则这条用例是白给的：主世界那一次**必须真的被骗到**，
-   * 才说明覆写生效了；只跑隔离世界那一次的话，一个「覆写压根没装上」的环境也全绿。
-   */
-  test('页面覆写 document.querySelectorAll：主世界被骗到，隔离世界看到真结构', async () => {
-    const launched = await launchKydog();
-    const { app, page } = launched;
-    try {
-      await openTab(page, 'https://example.com/');
-
-      // 真链接与伪造链接都真的挂进 DOM（伪造那个要可见，否则它连主世界那一次都进不了
-      // 快照，「被骗到」就无从观察）。然后把 querySelectorAll 换成只回伪造那一个。
-      await inPage(app, 'example.com', `(() => {
-        const mk = (id, text) => {
-          const a = document.createElement('a');
-          a.id = id; a.href = 'https://example.net/' + id; a.textContent = text;
-          a.style.cssText = 'position:absolute;left:0;display:block;width:200px;height:40px';
-          document.body.appendChild(a);
-          return a;
-        };
-        mk('kydog-real', 'KYDOG真实链接');
-        const fake = mk('kydog-fake', 'KYDOG伪造的结果行');
-        const rigged = [fake];
-        const patched = function () { return rigged; };
-        document.querySelectorAll = patched;
-        Document.prototype.querySelectorAll = patched;
-        Element.prototype.querySelectorAll = patched;
-        return true;
-      })()`);
-
-      const run = await app.evaluate(async ({ webContents }, a) => {
-        const wc = webContents.getAllWebContents()
-          .filter((w) => !w.isDestroyed() && w.getURL().includes('example.com'));
-        if (wc.length !== 1) throw new Error('找不到唯一一个内置浏览器的 webContents');
-        const isolated = await wc[0].executeJavaScriptInIsolatedWorld(a.world, [{ code: a.src }]);
-        const main = await wc[0].executeJavaScript(a.src);
-        return { isolated, main } as { isolated: unknown; main: unknown };
-      }, { world: WALKER_WORLD_ID, src: WALKER_SOURCE });
-
-      const names = (r: unknown) => (r as WalkerResult).nodes.map((n) => n.name).join(' | ');
-      const mainNames = names(run.main);
-      const isoNames = names(run.isolated);
-
-      // 对照组：覆写确实生效了 —— 主世界只看得到伪造的那一行。
-      expect(mainNames, '主世界跑 walker 必须被覆写骗到（看到伪造行）；没被骗到说明覆写压根没装上，'
-        + '下面隔离世界那条就是白给的').toContain('KYDOG伪造的结果行');
-      expect(mainNames, '主世界被骗到时不该看得到真链接').not.toContain('KYDOG真实链接');
-
-      // 正题：同一份 walker 源码在隔离世界里看到的是真 DOM。
-      expect(isoNames, '隔离世界里 walker 必须看到真结构（真链接在）').toContain('KYDOG真实链接');
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * `e2e-requirements.md` E-3：**大页面上的采集成本**。
-   *
-   * 第四批把遍历改成了 `document.querySelectorAll('*')`（为了找到 shadow 宿主）。
-   * 上界（`MAX_WALKED = 80000`）加在「其后每个元素的工作量」上，而**物化 NodeList
-   * 那一步本身没有上界**，实现者明确登记「未在真实大页面上实测过」。
-   * 原始失败场景：几万节点的大目录页把渲染进程阻塞数秒，而执行侧没有超时，
-   * `browser_open` 只能干等。
-   *
-   * 这里造的是 walker 自己 docblock 里那份成本表的**最坏形态**：全 `<input>`
-   * （遍历里那次密码登记每个元素都走到底）且 `visibility:hidden`
-   * （rect 早退那条路走不到，`getComputedStyle` 每个都真跑）。节点数取 12 万，
-   * 越过 `MAX_WALKED` 那道闸 —— 闸后面还有 4 万个节点只参与物化、不参与遍历，
-   * 量的正是「物化那一步有没有上界」这件事。
-   *
-   * 上界 1500ms 的依据（**这三个数是 2026-09-09 在本条用例里实测的**，不是估的）：
-   *  · 现在这样（MAX_WALKED = 80000 那道闸在）：**251ms**
-   *  · 把两道闸都拆掉、12 万个元素每个都量 rect + style：**301ms**
-   *  · Task 2f 用 CDP 单量 walker 本体：95.6ms（10 万节点）/ 105.6ms（20 万节点）
-   * 这里的数比 2f 大，多出来的是 `executeJavaScriptInIsolatedWorld` 这一次
-   * 主进程 ↔ 渲染进程往返 —— 计时刻意罩着它，因为 `browser_open` 真正要干等的就是这一段。
-   * 1500ms ≈ 6 倍余量：它要抓的是原始失败场景里「阻塞数秒」那一档，不是几十毫秒的抖动。
-   */
-  test('十二万节点的大页面：采集脚本必须在 1.5 秒内返回', async () => {
-    test.skip(SKIP_PERF, PERF_SKIP_REASON);
-    test.setTimeout(120_000);
-    const launched = await launchKydog();
-    const { app, page } = launched;
-    try {
-      await openTab(page, 'https://example.com/');
-
-      const built = await inPage<number>(app, 'example.com', `(() => {
-        const box = document.createElement('div');
-        box.style.cssText = 'visibility:hidden';
-        box.innerHTML = new Array(120000).fill('<input type="text">').join('');
-        document.body.appendChild(box);
-        // 先结算一次 layout，别把建树的账算到采集头上。
-        void document.body.offsetHeight;
-        return document.querySelectorAll('*').length;
-      })()`);
-      expect(built, '大页面没造出来的话下面那个耗时不说明任何事').toBeGreaterThan(120_000);
-
-      const timed = await app.evaluate(async ({ webContents }, a) => {
-        const wc = webContents.getAllWebContents()
-          .filter((w) => !w.isDestroyed() && w.getURL().includes('example.com'));
-        if (wc.length !== 1) throw new Error('找不到唯一一个内置浏览器的 webContents');
-        const t0 = Date.now();
-        const r = await wc[0].executeJavaScriptInIsolatedWorld(a.world, [{ code: a.src }]);
-        return { ms: Date.now() - t0, result: r as unknown };
-      }, { world: WALKER_WORLD_ID, src: WALKER_SOURCE });
-
-      const res = timed.result as WalkerResult & { collection: { truncated: boolean; limit?: string } };
-      expect(
-        timed.ms,
-        `采集 ${built} 个节点的页面花了 ${timed.ms}ms。慢的是隔离世界里那段 walker（含 `
-        + `querySelectorAll('*') 物化整棵树 + MAX_WALKED 之内每个元素的 rect/style），`
-        + '不是主进程也不是 IPC —— 计时只罩着 executeJavaScriptInIsolatedWorld 这一次调用。',
-      ).toBeLessThan(1500);
-      expect(res.collection.limit, '12 万节点必须撞到 MAX_WALKED 那道闸；没撞到说明这一页没造对')
-        .toBe('walked');
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * `e2e-requirements.md` **E-1a**：extract 必须跑在隔离世界 —— 这一条走的是
-   * **真的 `browser_act` 工具**（`runStep` 的 extract 分支 → `browserService.evalInPage`），
-   * 不是自己指定世界号注一份脚本。
-   *
-   * 上面那条「主世界被骗到 / 隔离世界看到真结构」守的是浏览器事实；这一条守的是
-   * **真页面上生产代码到底被骗到没有**。
-   *
-   * **2026-09-09 重新量过那次变异**（把 `browserService.evalOn` 的
-   * `executeJavaScriptInIsolatedWorld` 改回 `executeJavaScript`）：`tsc` 干净、
-   * `lint` exit 0 **且一条警告都没有**（`WALKER_WORLD_ID` 别处还在用），
-   * 而 `npm test` **红了 50 条**（`browserService.test.ts` 上一轮补的那批替身用例）。
-   * 所以 `e2e-requirements.md` 里「三条 gate 全拦不住」那句话**现在已经不成立** ——
-   * 它记的是那批替身用例补上之前的状态。
-   *
-   * 那这条 e2e 还守什么：替身只知道我们**调了哪个入口**，不知道那个入口在真 Chromium 里
-   * **真的**骗不到。这一条量的是后者，而且量的是整条产品路径（工具 → browserService →
-   * 真页面）。同一次变异下它给出的红是：工具结果里出现了「KYDOG伪造论文」。
-   *
-   * 骗局的形状是关键：伪造行**故意不匹配真选择器**（class 是 `kydog-fake-row`，
-   * 而抽取的 item 是 `.kydog-row`），只有被覆写的 `document.querySelectorAll`
-   * 才会把它交出来。所以：
-   *  · 隔离世界（正确）→ 只看得到两条真行，伪造行**根本不会出现**；
-   *  · 主世界（回退）→ 只看得到伪造那一行。
-   * 两种结果没有任何重叠，判据不靠字数也不靠顺序。
-   *
-   * 对照组照旧在用例内部：覆写必须**真的装上了**（主世界那一次只看得到伪造行），
-   * 否则下面那条是白给的。
-   */
-  test('走真的 extract 工具：页面覆写 querySelectorAll 骗不到它，抽到的是真结构', async () => {
-    const { launched, fixturePath } = await launchWithAgent();
-    const { app, page } = launched;
-    try {
-      // **不开侧栏**：E-2 那条已经量过「开不开都一样」，而 1024 宽的窗口里再挂一个
-      // 560 宽的侧栏会把中栏挤到 composer 不可见 —— 那是窗口尺寸的事，不是被测行为。
-      const opened = await openTab(page, 'https://example.com/');
-
-      await inPage(app, 'example.com', `(() => {
-        const mk = (cls, id, title) => {
-          const row = document.createElement('div');
-          row.className = cls; row.id = id;
-          row.style.cssText = 'position:relative;width:400px;height:30px';
-          const t = document.createElement('span');
-          t.className = 'kydog-t'; t.textContent = title;
-          row.appendChild(t);
-          document.body.appendChild(row);
-          return row;
-        };
-        mk('kydog-row', 'r1', 'KYDOG真论文一');
-        mk('kydog-row', 'r2', 'KYDOG真论文二');
-        // 伪造行不带 kydog-row —— 真的 querySelectorAll('.kydog-row') 永远选不到它。
-        const fake = mk('kydog-fake-row', 'rf', 'KYDOG伪造论文');
-        const rigged = [fake];
-        const patched = function () { return rigged; };
-        document.querySelectorAll = patched;
-        Document.prototype.querySelectorAll = patched;
-        return true;
-      })()`);
-
-      // 对照组：覆写真的生效了。这三行与 extractExpression 的核心逐字同形
-      // （`document.querySelectorAll(item)` → 每个 `el.querySelector(field)`）。
-      const fooled = await inPage<string[]>(app, 'example.com', `(() => {
-        const out = [];
-        for (const el of document.querySelectorAll('.kydog-row')) {
-          const t = el.querySelector('.kydog-t');
-          out.push(t ? (t.innerText || '').trim() : null);
-        }
-        return out;
-      })()`);
-      expect(fooled, '主世界跑同一份选择器必须被骗到（只看得到伪造行）；没被骗到说明覆写压根没装上，'
-        + '下面那条就是白给的').toEqual(['KYDOG伪造论文']);
-
-      const res = await runTools(page, fixturePath, [{
-        toolCallId: 'tc-extract',
-        name: 'browser_act',
-        args: {
-          tabId: opened.tabId,
-          actions: [{ kind: 'extract', selectors: { item: '.kydog-row', title: '.kydog-t' } }],
-        },
-      }]);
-      const out = res.get('tc-extract')!;
-      expect(out.status, `browser_act 应当成功，实际结果：${out.text.slice(0, 400)}`).toBe('ok');
-      expect(out.text, 'extract 必须看到真结构（真论文一）').toContain('KYDOG真论文一');
-      expect(out.text, 'extract 必须看到真结构（真论文二）').toContain('KYDOG真论文二');
-      expect(out.text, '伪造行只有被覆写的 document.querySelectorAll 才交得出来 —— '
-        + '它出现在工具结果里，就是 extract 跑在主世界上了').not.toContain('KYDOG伪造论文');
-      expect(out.text, '两条真行都该收下').toContain('抽到 2 条');
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * `e2e-requirements.md` **E-1b**：整批字符预算必须真的落在收行那一步，
-   * **并且如实回报截断**。同样走真的 `browser_act`。
-   *
-   * 评审实测把 `budget.admit(res.rows, collected)` 换成 `collected.push(...res.rows)`：
-   * **三条 gate 零信号** —— `npm test` 全绿、`lint` exit 0 且一条警告都没有
-   * （比 E-1a 还静，因为没有任何标识符会因此变成未使用）。
-   *
-   * 剧本的算术（两个数都要说得出依据，不然这条断言只是个占位）：
-   *  · 每格正好 1000 字符（= `MAX_FIELD_CHARS`，不多不少：多一个字就会带上逐格截断
-   *    记号，把「整批预算」这件事混进另一条上限里）；
-   *  · 一行 compact 后是 `{"blob":"<1000>"}` = 1011 字符，预算按 +1 分隔符记 1012；
-   *  · 预算 `MAX_BATCH_CHARS` = 50000 → 收得下 49 行（49×1012 = 49588，第 50 行会越界）；
-   *  · `repeat` 跑 3 轮 × 每轮 `MAX_ROWS` = 50 行 → 一共**抽到 150 行、收下 49 行**。
-   *
-   * 字节数的上界 **80000** 的依据：预算按 compact JSON 记账（50000），而工具结果实发的是
-   * `JSON.stringify(collected, null, 1)`，最坏 1.40x（deferred D18/D21）→ 70000；
-   * 余下 10000 留给头部（标签清单）、那句截断说明与收尾快照的页面变化。
-   *
-   * **2026-09-09 在本条用例里实测的两个数**（别把 80000 当紧判据）：
-   *  · 现在这样 → **50600** 字符（实测 1.012x —— 这一批的格子是长字符串，
-   *    1.40x 那个最坏比例要很多个短字段才凑得出来）；
-   *  · 把 `budget.admit(res.rows, collected)` 换成 `collected.push(...res.rows)`
-   *    → **153390** 字符（150 行全塞进来），而且那句截断说明**跟着一起消失**。
-   *
-   * 数据故意放在 `data-blob` 属性上、格子本身 1×1 像素：这样 walker 的 `visible()`
-   * 会把它们滤掉，收尾快照不会被这 150 个节点撑大 —— 上面那个字节上界量的才是抽取结果本身。
-   */
-  test('走真的 extract 工具：整批字符预算把结果压在上界内，并如实回报截断', async () => {
-    const { launched, fixturePath } = await launchWithAgent();
-    const { app, page } = launched;
-    try {
-      // **不开侧栏**：E-2 那条已经量过「开不开都一样」，而 1024 宽的窗口里再挂一个
-      // 560 宽的侧栏会把中栏挤到 composer 不可见 —— 那是窗口尺寸的事，不是被测行为。
-      const opened = await openTab(page, 'https://example.com/');
-
-      const built = await inPage<number>(app, 'example.com', `(() => {
-        const blob = 'K'.repeat(1000);
-        const box = document.createElement('div');
-        let html = '';
-        for (let i = 0; i < 60; i++) {
-          html += '<div class="kydog-big" style="width:1px;height:1px;overflow:hidden">'
-            + '<span class="kydog-cell" data-blob="' + blob + '"></span></div>';
-        }
-        box.innerHTML = html;
-        document.body.appendChild(box);
-        return document.querySelectorAll('.kydog-big').length;
-      })()`);
-      expect(built, '这一页得有足够多的行，才撑得爆预算').toBe(60);
-
-      const res = await runTools(page, fixturePath, [{
-        toolCallId: 'tc-budget',
-        name: 'browser_act',
-        args: {
-          tabId: opened.tabId,
-          actions: [{
-            kind: 'repeat', times: 3,
-            actions: [{ kind: 'extract', selectors: { item: '.kydog-big', blob: '.kydog-cell@data-blob' } }],
-          }],
-        },
-      }]);
-      const out = res.get('tc-budget')!;
-      expect(out.status, `browser_act 应当成功，实际结果开头：${out.text.slice(0, 400)}`).toBe('ok');
-
-      // 1) 真实工具结果的字节数必须落在一个说得出依据的上界内（推导见 docblock）。
-      //    **这一条排在最前面**：它才是「预算真的落在收行那一步」的直接判据，
-      //    下面那句话术只是它的伴生物 —— 排在后面的话，一次退化的红会先报在话术上，
-      //    读起来像是文案问题。
-      expect(out.text.length,
-        `这一次工具结果实发 ${out.text.length} 字符。预算按 compact JSON 记 50000，`
-        + '实发是 indent=1 的美化输出（最坏 1.40x = 70000），余下 10000 给头部与收尾快照。'
-        + '超出这个数就说明整批预算没有落在收行那一步 —— 150 行全塞进来是 15 万字符量级。',
-      ).toBeLessThan(80_000);
-
-      // 1b) **另一侧也要断。** 上界只说「不比 X 多」——一份在送往渲染层的路上被截掉一半的
-      //     结果同样满足它。评审的 N6 实测过这一刀：把 `AgentService.ts` 里
-      //     `extractToolResultText` 的 `.join('')` 改成 `.join('').slice(0, 5000)`，
-      //     三条 gate 与这条 e2e **一起全绿** —— 于是「预算把结果压住了」与
-      //     「结果在路上被压住了」长得一模一样，而后者对模型的后果正是 E-1b 要挡的那件事
-      //     （收到的比实际抽到的少，且看不出来）。两条判据把这个洞封上：
-      //
-      //     · **下界** —— 干净时实发 50600（2026-09-09 实测），45000 留够余量；
-      //     · **收尾那一段还在** —— 数据块的收尾标记（`PAGE_CONTENT_CLOSE`）排在那
-      //       ~5 万字符的 JSON **之后**，它后面还跟着「页面变化」那一段。两样都在，
-      //       才说明渲染层收到的是**整份**工具结果，不是它的前缀。
-      //       （**不是断言「以收尾标记结尾」**：`runBatch` 的收尾快照排在数据块之后，
-      //       工具结果的最后一段永远是「页面变化」。）
-      expect(out.text.length,
-        `这一次工具结果实发 ${out.text.length} 字符，比下界还少。干净时是 50600 ——`
-        + '少这么多不是预算的事，是这份结果在送到渲染层的路上被截断了'
-        + '（`AgentService` 的 `extractToolResultText` / `run.tool_call_chunk` 那一路）。',
-      ).toBeGreaterThan(45_000);
-      const closeAt = out.text.lastIndexOf(PAGE_CONTENT_CLOSE);
-      expect(closeAt, `工具结果里没有数据块的收尾标记「${PAGE_CONTENT_CLOSE}」`
-        + '（snapshot.ts 的 PAGE_CONTENT_CLOSE）—— 它排在那 ~5 万字符的 JSON 之后，'
-        + `缺了就说明这份结果是被截过的前缀。结果长 ${out.text.length} 字符。`).toBeGreaterThan(0);
-      expect(out.text.slice(closeAt),
-        '收尾标记之后还该有「页面变化」那一段（runBatch 的收尾快照排在数据块之后）——'
-        + '它不在就说明这份结果止步于数据块，后半截没送到。').toContain('── 页面变化');
-
-      // 2) 截断必须说出口 —— 静默丢行会让「这个源只有 N 条」和「我只给你看了 N 条」长得一样。
-      const m = out.text.match(/抽到 (\d+) 条（这一批各步共抽到 (\d+) 条，累计超过整批 (\d+) 字符的预算/);
-      expect(m, '结果里必须有那句整批预算的截断说明（describeCollected 的截断分支）；'
-        + `没有就说明预算没起作用。结果开头：${out.text.slice(0, 400)}`).toBeTruthy();
-      const returned = Number(m![1]);
-      const totalKnown = Number(m![2]);
-      expect(Number(m![3]), '起作用的必须是 MAX_BATCH_CHARS').toBe(50_000);
-      expect(totalKnown, 'repeat 3 轮 × MAX_ROWS 50 行 = 这一批一共抽到 150 行').toBe(150);
-      expect(returned, `收下的行数必须严格少于抽到的（收下 ${returned} / 抽到 ${totalKnown}）`)
-        .toBeLessThan(totalKnown);
-      expect(returned, '每行 compact 后 1012 字符，50000 的预算收得下 49 行').toBe(49);
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * spec §8.2 **第 2 条**：点击不偏。此前只有替身（单测）覆盖过 —— 而「坐标算错了
-   * 点到隔壁」恰恰是替身证明不了、必须真 Chromium 才量得出来的那一类。
-   *
-   * 页面造成三个**紧挨着**的按钮（各 100×40，中间那个是目标），整排放在
-   * 3000 像素以下 —— 于是 spec §4.2 那三件事全都得真的发生：
-   *  1. **滚进视野**：不滚的话 `measure` 拿到的 rect 在视口外，直接 `offscreen` 失败；
-   *  2. **在派发那一刻重新量**：坐标必须是滚动之后的；
-   *  3. **命中检查**：`elementFromPoint` 命中的必须是目标本身。
-   *
-   * 判据是**真的哪个元素收到了这一下**（捕获期的 document 监听器记下 `event.target`），
-   * 不是工具结果里那句话 —— 那句话在点偏时照样会说「已点击」。
-   * 邻居紧挨着放，是为了让「差几十像素」这种错法真的落到别人身上。
-   */
-  test('走真的 click：滚进视野后落点在目标身上，不是紧挨着的邻居', async () => {
-    const { launched, fixturePath } = await launchWithAgent();
-    const { app, page } = launched;
-    try {
-      // **不开侧栏**：E-2 那条已经量过「开不开都一样」，而 1024 宽的窗口里再挂一个
-      // 560 宽的侧栏会把中栏挤到 composer 不可见 —— 那是窗口尺寸的事，不是被测行为。
-      const opened = await openTab(page, 'https://example.com/');
-
-      await inPage(app, 'example.com', `(() => {
-        const w = window;
-        w.__kydogClicks = [];
-        document.addEventListener('click', (e) => {
-          w.__kydogClicks.push({
-            id: e.target && e.target.id ? e.target.id : '(无 id)',
-            x: e.clientX, y: e.clientY,
-          });
-        }, true);
-        const bar = document.createElement('div');
-        bar.style.cssText = 'position:absolute;left:0;top:3000px;width:300px;height:40px';
-        bar.innerHTML =
-          '<button id="kydog-left"   style="position:absolute;left:0;width:100px;height:40px">左</button>'
-          + '<button id="kydog-hit"  style="position:absolute;left:100px;width:100px;height:40px">中</button>'
-          + '<button id="kydog-right" style="position:absolute;left:200px;width:100px;height:40px">右</button>';
-        document.body.appendChild(bar);
-        // 页面得真的高到需要滚 —— 否则「滚进视野」那一件事不会被考到。
-        const tall = document.createElement('div');
-        tall.style.cssText = 'position:absolute;left:0;top:0;width:1px;height:5000px';
-        document.body.appendChild(tall);
-        return true;
-      })()`);
-      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
-        '点之前页面必须还没滚过；已经滚过的话「滚进视野」这件事就没被考到').toBe(0);
-
-      const res = await runTools(page, fixturePath, [{
-        toolCallId: 'tc-click',
-        name: 'browser_act',
-        args: { tabId: opened.tabId, actions: [{ kind: 'click', selector: '#kydog-hit' }] },
-      }]);
-      const out = res.get('tc-click')!;
-      expect(out.status, `browser_act 应当成功，实际结果开头：${out.text.slice(0, 400)}`).toBe('ok');
-      expect(out.text, '结果里应当有那句「已点击」').toContain('已点击');
-
-      const seen = await inPage<Array<{ id: string; x: number; y: number }>>(
-        app, 'example.com', 'window.__kydogClicks');
-      expect(seen.length, `页面上应当只收到一次 click，实际收到 ${seen.length} 次`).toBe(1);
-      expect(seen[0].id, '收到这一下的必须是目标本身，不是紧挨着的左右邻居').toBe('kydog-hit');
-
-      expect(await inPage<number>(app, 'example.com', 'window.scrollY'),
-        '目标在 3000 像素以下 —— 点得到就说明真的滚进视野了').toBeGreaterThan(1000);
-
-      // 落点必须真的落在目标此刻的矩形里（这一步之后页面不再变，rect 是稳的）。
-      const rect = await inPage<{ l: number; t: number; r: number; b: number }>(app, 'example.com', `(() => {
-        const r = document.getElementById('kydog-hit').getBoundingClientRect();
-        return { l: r.left, t: r.top, r: r.right, b: r.bottom };
-      })()`);
-      expect(
-        seen[0].x >= rect.l && seen[0].x <= rect.r && seen[0].y >= rect.t && seen[0].y <= rect.b,
-        `落点 (${seen[0].x},${seen[0].y}) 必须在目标滚动之后的矩形 `
-        + `[${rect.l},${rect.t}]–[${rect.r},${rect.b}] 里 —— 不在就是坐标没有在派发那一刻重新量`,
-      ).toBe(true);
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * 手测 A-2 的原始失败链。两段：① 侧栏开着时 CDP 点击坐标没乘 emulation scale，链接根本
-   * 没被点到（2026-09-14 那次「到时限仍没有明确结果」就是它）；② 点击已经触发跨文档导航、
-   * browser_act 却先返回，紧接着 back 在历史提交前运行，错误地说没有历史。第一条工具结果
-   * 必须等到导航终态，第二条才能稳定后退到原页。
-   */
-  test('侧栏开着点链接：同次 browser_act 报目的页终态；紧接着 back 能回原页', async () => {
-    const { launched, fixturePath } = await launchWithAgent();
-    const { app, page } = launched;
-    try {
-      // A-2 的原始现场是**侧栏开着**：emulation scale = 舞台宽 / 1280 ≠ 1，而渲染进程会把
-      // CDP 输入坐标再除以一次 scale —— 派发不乘回去就点不到链接，白等 20 秒超时。侧栏不开时
-      // scale 恒 1，这条会为错误的理由变绿，所以先把舞台宽度钉住。
-      await openSidebar(page);
-      const opened = await openTab(page, 'https://example.com/');
-      await expect.poll(
-        async () => (await viewport(app, 'example.com')).h,
-        { message: '侧栏打开后 syncView 应当把舞台几何下发到页面上' },
-      ).not.toBe(DEFAULT_VIEWPORT_HEIGHT);
-      const stageWidth = await page.getByTestId('browser-stage').evaluate((el) => el.getBoundingClientRect().width);
-      expect(stageWidth, '舞台必须窄于 1280，emulation scale 才不是 1').toBeLessThan(LOGICAL_WIDTH);
-      // 链接放在离原点远的地方：坐标一旦没乘 scale，落点 (x/scale, y/scale) 会整个跑出页面，
-      // 而不是凑巧仍落在链接身上。
-      await inPage(app, 'example.com', `(() => {
-        document.body.innerHTML = '<a id="kydog-recent" href="https://example.org/" '
-          + 'style="position:absolute;left:600px;top:300px;display:block;width:120px;height:40px">recent</a>';
-        return true;
-      })()`);
-
-      const res = await runTools(page, fixturePath, [
-        {
-          toolCallId: 'tc-recent', name: 'browser_act',
-          args: { tabId: opened.tabId, actions: [{ kind: 'click', selector: '#kydog-recent' }] },
-        },
-        {
-          toolCallId: 'tc-back', name: 'browser_act',
-          args: { tabId: opened.tabId, actions: [{ kind: 'back' }] },
-        },
-      ]);
-
-      const click = res.get('tc-recent')!;
-      expect(click.status).toBe('ok');
-      expect(click.text, '点击这一次的结果本身必须报告目的页，不能推迟到下一次调用')
-        .toContain('https://example.org/');
-      expect(click.text).toContain('HTTP 200');
-
-      const back = res.get('tc-back')!;
-      expect(back.status).toBe('ok');
-      expect(back.text, '紧接着 back 必须看到刚提交的历史，而不是报「没有可以后退的历史」')
-        .not.toContain('没有可以后退的历史');
-      expect(back.text).toContain('https://example.com/');
-      expect(await inPage<string>(app, 'example.com', 'location.href')).toBe('https://example.com/');
-    } finally {
-      await teardown(launched);
-    }
-  });
-
-  /**
-   * **平滑滚动的站点上，动作路径照样落得到目标。**
-   *
-   * 2026-09-10 之前不成立：`measure` 的 `scrollIntoView` 不带 `behavior`，用的是
-   * `scroll-behavior` 的计算值 —— **站点说了算**。站点开了平滑滚动时那一下是动画，
-   * 而 `scrollIntoView` 不等动画结束就返回，紧接着量到的是动画还没开始的坐标，
-   * `measure` 报 `offscreen`，**重试也不自愈**（每次量到另一个中间态）。
-   * Scholar / 百度学术这类源都可能命中。修法是把 `behavior: 'instant'` 写死在
-   * `measure` 里，把「会不会平滑」从站点手里拿回来。
-   *
-   * **替身守不住这条**：`interact.test.ts` 的 `El` 只记下 `scrollIntoView` 收到的参数，
-   * 它不会动画、也没有视口 —— 参数对不对它守得住，「动画中途量坐标」它量不到。
-   * 所以这条必须在真浏览器里，且页面必须**真的开着**平滑滚动。
-   *
-   * 两条滚动链都考：外层文档（`html{scroll-behavior:smooth}`）与一个自己也开着
-   * 平滑滚动的内层 `overflow:auto` 容器 —— 实测 `behavior:'instant'` 把**整条链**
-   * 都压成瞬时，不是只压最外层。
-   */
-  test('站点开了平滑滚动：两条滚动链上的 type 都落到目标身上', async () => {
-    const { launched, fixturePath } = await launchWithAgent();
-    const { app, page } = launched;
-    try {
-      const opened = await openTab(page, 'https://example.com/');
-
-      await inPage(app, 'example.com', `(() => {
-        document.documentElement.style.scrollBehavior = 'smooth';
-        document.body.innerHTML = '';
-        // ① 外层链：文档自己滚，目标在 3000 像素以下。
-        const tall = document.createElement('div');
-        tall.style.cssText = 'position:relative;width:1px;height:6000px';
-        const far = document.createElement('input');
-        far.id = 'kydog-far';
-        far.type = 'text';
-        far.setAttribute('aria-label', 'KYDOG远框');
-        far.style.cssText = 'position:absolute;left:0;top:3000px;width:200px;height:30px';
-        tall.appendChild(far);
-        document.body.appendChild(tall);
-        // ② 内层链：容器自己在首屏内、自己也开着平滑滚动，目标在容器内容的深处。
-        const box = document.createElement('div');
-        box.id = 'kydog-box';
-        box.style.cssText = 'position:absolute;left:400px;top:100px;width:300px;height:400px;'
-          + 'overflow:auto;scroll-behavior:smooth';
-        const inner = document.createElement('div');
-        inner.style.cssText = 'position:relative;width:280px;height:5000px';
-        const deep = document.createElement('input');
-        deep.id = 'kydog-deep';
-        deep.type = 'text';
-        deep.setAttribute('aria-label', 'KYDOG深框');
-        deep.style.cssText = 'position:absolute;left:0;top:4000px;width:200px;height:30px';
-        inner.appendChild(deep);
-        box.appendChild(inner);
-        document.body.appendChild(box);
-        window.scrollTo({ top: 0, behavior: 'instant' });
-        return true;
-      })()`);
-
-      // **这条断言是这个用例的地基。** 没有它，「夹具压根没把平滑滚动打开」与
-      // 「打开了、而我们把它压住了」长得一模一样 —— 那时这条用例永远绿，
-      // 而它本该证明的事情一件都没证明。
-      const css = await inPage<{ doc: string; box: string; scrollY: number; boxTop: number }>(
-        app, 'example.com', `(() => {
-          const box = document.getElementById('kydog-box');
-          return {
-            doc: getComputedStyle(document.documentElement).scrollBehavior,
-            box: getComputedStyle(box).scrollBehavior,
-            scrollY: window.scrollY, boxTop: box.scrollTop,
-          };
-        })()`);
-      expect(css.doc, '夹具必须真的把文档的平滑滚动打开 —— 否则这条用例什么也没考').toBe('smooth');
-      expect(css.box, '夹具必须真的把内层容器的平滑滚动打开').toBe('smooth');
-      expect(css.scrollY, '开考之前文档不能已经滚过').toBe(0);
-      expect(css.boxTop, '开考之前内层容器不能已经滚过').toBe(0);
-
-      const res = await runTools(page, fixturePath, [{
-        toolCallId: 'tc-smooth',
-        name: 'browser_act',
-        args: {
-          tabId: opened.tabId,
-          // **顺序有讲究**：内层那个容器在文档 y=100，把它带进视野会把外层文档又滚回
-          // 顶部。所以内层先做、外层后做，最后那两条几何断言量到的才都是「真的滚过」。
-          // 反过来写的话 `scrollY` 会落回 0，而那不是回归，是这条用例自己踩了顺序。
-          actions: [
-            { kind: 'type', selector: '#kydog-deep', text: 'kydog-e2e-内层' },
-            { kind: 'type', selector: '#kydog-far', text: 'kydog-e2e-外层' },
-          ],
-        },
-      }]);
-      const out = res.get('tc-smooth')!;
-      // **这条近乎恒真，别把它当成守门的那一条**：`runBatch` 把动作级失败写成正文里的
-      // 「⚠ 第 N 个动作失败：…」，**工具终态仍然是 `ok`** —— 只有工具级抛出（坏 tabId、
-      // 没有快照）才 `failed`。实测：拿掉 `behavior:'instant'` 之后这一条照样绿，
-      // 红的是下面那条 `not.toContain` 与再下面两条值断言。留着它是为了工具级出事时
-      // 能把正文摆出来，不是为了守本条回归。
-      expect(out.status,
-        `browser_act 工具级不该抛。实际结果开头：${out.text.slice(0, 500)}`).toBe('ok');
-      // 回归前这里逐字是：「⚠ 第 1 个动作失败：选择器 "#kydog-deep" 滚进视野之后仍然
-      // 落在视口外（坐标 504,4118，视口 1280×800）」——这条才是守门的。
-      expect(out.text,
-        '结果里不该出现 offscreen 那句诊断 —— 出现了就说明 measure 又在动画中途量坐标了')
-        .not.toContain('仍然落在视口外');
-
-      const after = await inPage<{ far: string; deep: string; scrollY: number; boxTop: number }>(
-        app, 'example.com', `(() => {
-          const box = document.getElementById('kydog-box');
-          return {
-            far: document.getElementById('kydog-far').value,
-            deep: document.getElementById('kydog-deep').value,
-            scrollY: window.scrollY, boxTop: box.scrollTop,
-          };
-        })()`);
-      expect(after.far, '外层那个框必须真的收到了字').toBe('kydog-e2e-外层');
-      expect(after.deep, '内层那个框必须真的收到了字').toBe('kydog-e2e-内层');
-      // 两条链各自都得真的动过 —— 只断言「打上了字」的话，一个不需要滚动就够得着的
-      // 夹具也能让这条绿，而「滚进视野」正是被测的那一件事。
-      expect(after.scrollY, '外层文档必须真的滚下去了（目标在 3000 像素以下）').toBeGreaterThan(1000);
-      expect(after.boxTop, '内层容器必须真的滚下去了（目标在容器内容 4000 像素处）').toBeGreaterThan(1000);
-    } finally {
-      await teardown(launched);
-    }
-  });
-
+// ══ 一次启动：密码闸 ════════════════════════════════════════════════════════════
+//
+// CLAUDE.md 那条约定保护的用例：原样、单独一次启动，什么都不往里并。
+test.describe('61-browser · 一次启动：密码闸', () => {
   /**
    * `e2e-requirements.md` **E-4 的另一半：密码硬闸**。走真的 `browser_act` 的 `type`，
    * 目标是**真快照里的编号**（不是 selector）—— 那正是第一道闸（`browserService.ts` 里
@@ -1763,7 +1741,9 @@ test.describe('61-browser', () => {
    * 也会在页面上落下一次 click，放在前面会把判据 2a / 2b 与判据 4 一起污染。
    */
   test('走真的 type：拿真快照里的编号打进密码框，整批在碰页面之前就被挡下', async () => {
-    const { launched, fixturePath } = await launchWithAgent();
+    // 离线启动：页面由本地夹具代理提供（见文件头）。换成本地页面之后按 CLAUDE.md 那条约定重跑过，
+    // pwScrollsWindow / 探针计数 / 对照动作三条几何与路径前提照旧成立。
+    const { launched, fixturePath, close } = await launchOffline({ agent: true });
     const { app, page } = launched;
     try {
       // **不开侧栏**：理由与上面三条一样（1024 宽的窗口挂不下 560 的侧栏）。
@@ -2051,10 +2031,13 @@ test.describe('61-browser', () => {
         + '它自己没跑成的话，上面那条 scrollY 说的就不是 measure 或几何的事。'
         + `结果：${ctlOut.text.slice(0, 500)}`).toContain('已在「KYDOG对照框」里输入');
     } finally {
-      await teardown(launched);
+      await close();
     }
   });
+});
 
+// ══ CARSI 两条：真机构登录，走真网络（不经夹具代理），各自一次启动，默认跳过 ══════════
+test.describe('61-browser · CARSI（真机构登录，默认不跑）', () => {
   /**
    * spec §8.2 **第 5 条**：CARSI 正路。**只写、不跑**（写它的人没有凭据）。
    *
@@ -2275,70 +2258,4 @@ test.describe('61-browser', () => {
       await teardown(launched);
     }
   });
-});
-
-/**
- * spec §8.2 第 4 条。**这一条不在 KYDOG_SKIP_LIVE_BROWSER 的门后**：它要的不是
- * 一个能打开的源，恰恰相反 —— 一个**必然打不开、而且打不开这件事在 URL 层就定了**
- * 的地址。断网也照样成立，所以发版流水线上也该跑。
- *
- * 判据是**四分的终态本身**（spec §4.4）：`failed` 带真实的 `errorCode` / `errorDesc`，
- * 不是 `timeout`。两者对模型的处置完全相反 —— 「打不开」可以换源，「不知道发生了什么」
- * 不许据此断定源有问题。
- *
- * ## 为什么地址里有个 `:19` —— 那是这条用例不再看 DNS 脸色的原因，别删
- *
- * 从前这里只有 `https://….invalid/`，失败要**过一次本机 DNS**：`.invalid` 的 NXDOMAIN
- * 偶尔会走很久，超过 `NAV_TIMEOUT_MS`(20s) 时**终态本身就变成 `timeout`**，红在下面
- * 第一条硬判据上（复审实测复现过一次：`本次导航耗时 20022ms`）。这条用例一度是
- * `KYDOG_SKIP_LIVE_BROWSER=1` 之后仅剩的一条（那道闸已经从发版流水线上撤掉，
- * 现在那里跑 9 条），一次与产品无关的 DNS 抖动就能阻断整条流水线。
- *
- * 端口 19（chargen）在 Chromium 的受限端口表里，请求在**主机解析之前**就被拒。
- * 本机实测（Electron 41，2026-09-09）：`https://kydog-e2e-nonexistent.invalid:19/`
- * 连开三次都是 `failed` / `-312` / `ERR_UNSAFE_PORT`，**64–81ms**；把主机换成一个
- * 解析得通的 `example.com:19` 结果逐字相同（65ms）—— 主机名根本没被用上，
- * 也就没有任何 DNS 参与。`urlGuard` 不看端口（它管的是内网地址），照旧放行。
- *
- * 主机名仍然留成 `.invalid`（RFC 2606 保留的顶级域）：万一哪天端口这道判据不在了，
- * 也绝不会真去连某个人的 19 端口。而「端口闸没了」不会被这条冗余悄悄盖过去 ——
- * 下面两条断言钉的是 `ERR_UNSAFE_PORT` 本身，退回主机解析那条路会当场红。
- *
- * ## 为什么这里**没有**一条「耗时 < N 毫秒」的断言 —— 别再把它加回来
- *
- * 从前有过一条 `expect(ms).toBeLessThan(15_000)`，理由是「真走到 timeout 那一支要
- * 20 秒（`NAV_TIMEOUT_MS`），所以远早于它是这条终态的独立佐证」。**删掉了**，两个理由：
- *
- *  1. **它是一个时间窗 proxy，而它 proxy 的那个事实就在旁边。** CLAUDE.md 的原则写死了
- *     「判定必须基于协议层事实，不靠启发式 proxy（时间窗 / 阈值 / 近似 / 聚类）」——
- *     「它不是超时」这件事，`outcome.kind === 'failed'`（而不是 `'timeout'`）已经**直接**
- *     说了。proxy 与它 proxy 的事实同时在场时，留事实、删 proxy。
- *  2. **它有真 flake**（见上一节），而抬阈值只是把概率调小、性质不变。真正的修法是把
- *     失败源换成一个不过 DNS 的 —— 已经换了，所以那条 proxy 更没有理由回来。
- *
- * 耗时**仍然采集**并写进三条断言的失败信息（诊断价值别丢），只是不 `expect` 它。
- */
-test('61-browser: 打不开的地址回 failed + 真实 errorCode，不是 timeout', async () => {
-  const launched = await launchKydog();
-  const { page } = launched;
-  try {
-    const t0 = Date.now();
-    // `.invalid`（RFC 2606）+ 受限端口 19（chargen）：两条独立的「永远打不开」，
-    // 而**起作用的是后者** —— 它在主机解析之前就定了，所以这条用例不过 DNS。
-    const r = await openTab(page, 'https://kydog-e2e-nonexistent.invalid:19/');
-    // 耗时只进失败信息，**不是判据**（理由见 docblock：它是时间窗 proxy，而
-    // outcome.kind 已经把同一件事说成了协议层事实）。
-    const took = `（本次导航耗时 ${Date.now() - t0}ms；走到 timeout 那一支要 20 秒 = NAV_TIMEOUT_MS）`;
-    const o = r.nav.outcome;
-    expect(o.kind, `打不开的地址必须回 failed，实际是 ${o.kind}${took}`).toBe('failed');
-    if (o.kind !== 'failed') return;  // 类型收窄，上面那条已经保证了
-    // 下面两条既是 spec §4.4 要的「真实的 errorCode / errorDesc」，也是**这条用例
-    // 不再依赖 DNS 的自守判据**：不是 ERR_UNSAFE_PORT(-312) 就说明失败不再来自 URL 层的
-    // 端口闸，而是退回了主机解析那条路 —— 20 秒那段 flake 会跟着回来，而且是静默的。
-    expect(o.errorCode, `errorCode 必须是 Chromium 真给的 -312（ERR_UNSAFE_PORT）${took}`).toBe(-312);
-    expect(o.errorDesc, `errorDesc 必须是 Chromium 真给的那个名字 ERR_UNSAFE_PORT${took}`)
-      .toBe('ERR_UNSAFE_PORT');
-  } finally {
-    await teardown(launched);
-  }
 });

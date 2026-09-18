@@ -68,28 +68,12 @@ jobs:
       - run: npm run make
       # e2e 复用 make 刚产出的 .vite/build 与 out/ 打包成品（含 54 冒烟），不重复打包。
       - run: npx playwright install chromium
+      # 性能那一条（e2e/61 的「十二万节点 < 1500ms」）默认不跑：判据是时间，慢 runner 上是真
+      # flake，红了也说明不了「内置浏览器坏了」。要跑显式设 KYDOG_PERF_BROWSER_E2E=1。
+      # 内置浏览器那一组不打公网：页面由用例起的本地代理提供（61 文件头）。
+      # 新 spec、或改了与环境有关的东西：打 tag 之前先 workflow_dispatch 演练一次，
+      # 别让首跑撞在发版上（演练不会发版，见下面 release job 的闸）。写法见 docs/e2e-guide.md。
       - run: npm run e2e
-        env:
-          # **只跳性能那一条**（e2e/61 的「十二万节点 < 1500ms」）：判据是时间，
-          # 而慢 runner（共享 CPU、被别的 job 挤兑）上是真 flake，红了也说明不了
-          # 「内置浏览器坏了」。跳过**不是静默的**：原因带在用例上，Playwright
-          # 的报告里逐条看得见。
-          #
-          # **这里从前设的是 `KYDOG_SKIP_LIVE_BROWSER: '1'`，理由是假的**：写的是
-          # 「runner 是机房 IP，Google Scholar 会当它是机器人」，而被它跳掉的 8 条
-          # **一条都不打 Scholar** —— 9 条非 CARSI 的用例打的全是
-          # example.com/.org/.net（IANA 保留域，受控内容靠打开后注入 DOM 拿到），
-          # 两条 CARSI 另有各自的 opt-in 闸。代价是 `e2e-requirements.md` 的五条防线
-          # 在流水线上一条都没跑，而那五条正是「三条 gate 拦不住、只有 e2e 守得住」的。
-          # 现在它们真的跑：这一组在 CI 上从 1 条提到 9 条。
-          # （打不了公网的机器仍可自己设 KYDOG_SKIP_LIVE_BROWSER=1 整组跳过。）
-          #
-          # **放出来的这 8 条在任何 runner 上一次都没跑过**：它们与那道假闸是同一个
-          # commit（`e045f25`）进来的，windows 与 intel 两个矩阵项都是首跑。本机全绿
-          # 不等于 runner 上全绿（窗口尺寸、字体、网络出口都不同）。
-          # **打 tag 之前先 workflow_dispatch 演练一次**，别让首跑撞在发版上。
-          # 演练不会误发版：下面 publish 那一步专门判了 ref 不是 tag 就不发。
-          KYDOG_SKIP_PERF_BROWSER: '1'
       # always 而非 failure：flaky（retry 转绿）时 job 是成功态，failure() 不执行，
       # 而失败尝试的 trace 就留在 test-results 里（实证见 spec 事实基础）——不上传就随
       # runner 销毁。全绿时这里只有一个 .last-run.json，成本可忽略。

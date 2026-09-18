@@ -10,6 +10,7 @@
 
 - **跨进程的东西**（加 RPC 方法、加事件 topic、改渲染层与主进程的往返）→ `docs/architecture.md`
 - **LLM provider / model** → `docs/llm-architecture.md`。写 `settings.llm.*` 必须配合它 §5 的传播调用，漏了不报错、只在运行时静默用错
+- **写或改 e2e** → `docs/e2e-guide.md`：先判断是不是非 e2e 不可、一个功能区一次启动、开发机与 CI 的环境差、判据怎么写
 - **pi coding-agent SDK 用法** → 官方完整文档在 `node_modules/@earendil-works/pi-coding-agent/docs/`，示例在同包 `examples/sdk/`。别凭记忆猜 API（干净 checkout 需先 `npm install`）
 
 ## Commands
