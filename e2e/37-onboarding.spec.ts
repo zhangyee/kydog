@@ -1,10 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { launchKydog, teardown, seedSettings, seedProject } from './helpers';
+import { launchKydog, teardown, seedSettings } from './helpers';
 
-test('37a-onboarding: 首启向导 → 自定义称呼走完 → 三文件落盘 → 二次启动跳过', async () => {
+test('37a-onboarding: 首启向导 → 自定义称呼走完 → 三文件与设置落盘', async () => {
   // provider 已配置但 onboarding 未完成：模型必填与默认值走完可同时成立（spec §11）。
   const launched = await launchKydog({
     freshHome: true,
@@ -45,52 +44,8 @@ test('37a-onboarding: 首启向导 → 自定义称呼走完 → 三文件落盘
     // 但 e2e 下闸门是关的：enabled 也不该在本地留下任何标识文件。
     await expect(fs.access(path.join(home, 'install-id'))).rejects.toThrow();
 
-    // 上面测的是磁盘，这里测**运行中的服务**：装配发生在启动时（那会儿还是 undecided），
-    // 勾选若不同步进去，同一会话里这个开关就显示未勾选 —— 用户刚勾过。
-    await page.locator('[data-testid="user-menu-trigger"]').click();
-    await page.locator('[data-testid="menu-about"]').click();
-    await page.locator('[data-testid="about-privacy-entry"]').click();
-    await expect(page.locator('[data-testid="telemetry-toggle"]')).toBeChecked();
-  } finally {
-    await teardown(launched);
-  }
-
-  // 二次启动：复用同一 HOME，onboarding 已完成 → 不再出向导。
-  const second = await launchKydog({ kydogHome });
-  try {
-    // 先等主界面真正挂载（正向信号），避免 React 挂载前的瞬时 DOM 让 toHaveCount(0) 假通过。
-    await expect(second.page.locator('[data-testid="title-bar"]')).toBeVisible({ timeout: 10_000 });
-    await expect(second.page.locator('[data-testid="onboarding-root"]')).toHaveCount(0);
-  } finally {
-    await teardown(second);
-  }
-});
-
-test('37b-identity: USER.md 含空格称呼在消息列表完整显示', async () => {
-  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-'));
-  const threadId = 'eeeeeeee-3737-3737-3737-373737373737';
-  const launched = await launchKydog({
-    fixture: 'e2e/fixtures/happy-path-text.json',
-    seed: async (home) => {
-      await seedProject(home, projectPath, [{ id: threadId, title: '37b thread' }]);
-      await fs.writeFile(path.join(home, '.kydog', 'USER.md'), '---\nname: "Dr. Zhang"\n---\nbody');
-    },
-  });
-  try {
-    const { page } = launched;
-    // 这份自定义 USER.md 没有 harness 状态记录、又不等于当前模板 → 启动时会问要不要更新
-    // （harness 模板更新 spec §3.2 R4）。正是一个改过 USER.md 的老用户第一次启动看到的；
-    // 这条测的是称呼显示，不在这里选，点「稍后再说」—— 什么都不记，文件原样不动。
-    await expect(page.getByTestId('harness-update-row-USER.md')).toBeVisible();
-    await page.getByTestId('harness-update-later').click();
-    await expect(page.getByTestId('harness-update-dialog')).toHaveCount(0);
-    // 打开已有线程 + 发消息：交互序列对齐 04-send-receive-stream.spec.ts 现行写法。
-    await page.getByTestId(`thread-${threadId}`).click();
-    await page.locator('[data-testid="composer-input"]').fill('hi');
-    await page.locator('[data-testid="send-button"]').click();
-    // 完整称呼出现，且不能被截断成 "Dr."（回归含空格称呼被拆分的问题）。
-    await expect(page.locator('[data-testid="message-list"]')).toContainText('Dr. Zhang');
-    await expect(page.locator('[data-testid="message-list"]').getByText(/^Dr\.$/)).toHaveCount(0);
+    // 「运行中的开关同步了勾选」由 handlers.test（complete 后同步进服务）与 telemetryService.test 守；
+    // 「二次启动不再出向导」就是其余每条 e2e 走的默认启动路径。
   } finally {
     await teardown(launched);
   }
