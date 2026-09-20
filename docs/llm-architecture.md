@@ -65,11 +65,16 @@ KyDog 把 provider 分成四种 **kind**，决定它如何 auth、UI 用哪种�
 启动序列在 `src/main/main.ts` 的 ready 回调里，顺序有意义：
 
 ```
+installProxyDispatcher()   ← 出网路径：跟随系统代理（见下）。必须最早，ready 之后第一件事
 ensureSettingsFile()       ← 保证 ~/.kydog/kydog.json 存在 + 0600
 applyCloudEnv(providers)   ← 把 cloud cfg 同步进 process.env（必须早于下一步）
 initProviderRegistry(svc)  ← 全进程 singleton
 installDispatcher() / createWindow()
 ```
+
+**出网路径**：pi / pi-ai 的所有请求走主进程的全局 `fetch`，而 Node 的 fetch **既不认系统代理、也不认 `HTTP_PROXY` 环境变量**。`src/main/net/systemProxy.ts` 装一个 undici 全局 dispatcher 把这条补上：优先读 `HTTPS_PROXY` / `HTTP_PROXY`（显式意图，终端 / CI 场景），否则每个请求问一次 `session.resolveProxy(origin)`——也就是内置浏览器那套解析器（系统代理 + PAC + bypass）。
+
+所以「LLM 连不上但浏览器能开」这类报障，先看日志里 `scope=net` 那一行：`跟随系统代理设置` / `按环境变量出网` / `经系统代理出网`。位置为什么卡在 ready 的第一行、以及为什么不需要 `undici.install()`，那份文件的头注释里有实测记录。
 
 `ProviderRegistry` 是 main 进程与 pi 之间的唯一桥梁，持有一个 **`ModelRuntime`**（pi 0.80.8 起把 AuthStorage 与 ModelRegistry 合并成了这一个对象，凭据与模型目录同源）。构造它时有两个刻意的选项，改动前先看 `providerRegistry.ts` 里的成段注释：
 

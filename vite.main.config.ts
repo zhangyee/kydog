@@ -8,7 +8,7 @@ export default defineConfig({
       // EXTERNAL_RUNTIME_MODULES，否则打包成品里根本没有它——而开发机上 out/ 能上溯到
       // <repo>/node_modules，照样跑得起来，只有装到别的机器上才炸。
       // e2e/54 的断言 2b 直接读产物里残留的裸名对账，漏了会红。
-      external: ['@earendil-works/pi-coding-agent', 'electron'],
+      external: ['@earendil-works/pi-coding-agent', 'undici', 'electron'],
     },
   },
 });

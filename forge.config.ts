@@ -34,7 +34,7 @@ const vendorBins = Object.values(cliManifest.tools).map((cfg) =>
 // 这里按 package.json 的依赖边算出闭包，只放行闭包内的目录：renderer 侧那些 vite
 // 早已 bundle 进去的依赖（@fontsource / pdfjs-dist / canvas …，生产依赖全集 400+ MB）
 // 照旧挡在包外。
-const EXTERNAL_RUNTIME_MODULES = ['@earendil-works/pi-coding-agent'];
+const EXTERNAL_RUNTIME_MODULES = ['@earendil-works/pi-coding-agent', 'undici'];
 
 function resolveModuleDir(name: string, from: string): string | null {
   let dir = from;

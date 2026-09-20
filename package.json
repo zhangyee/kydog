@@ -88,6 +88,7 @@
     "remark-gfm": "^4.0.0",
     "tar": "^7.4.3",
     "typebox": "1.1.38",
+    "undici": "^8.10.2",
     "word-extractor": "^1.0.4",
     "zod": "^4.4.1",
     "zustand": "^5.0.0"

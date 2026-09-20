@@ -85,7 +85,12 @@ const H = vi.hoisted(() => {
 
   const errors: Array<{ scope: string; msg: string }> = [];
 
-  return { FakeWebContents, FakeBrowserWindow, app, appListeners, browser, errors };
+  /** 启动期的调用次序：只记那几个「谁先谁后有后果」的点。 */
+  const order: string[] = [];
+  /** installProxyDispatcher 收到的 deps，用来验它接的是不是 Chromium 那个解析器。 */
+  const proxyDeps: Array<{ resolveProxy: (url: string) => Promise<string> }> = [];
+
+  return { FakeWebContents, FakeBrowserWindow, app, appListeners, browser, errors, order, proxyDeps };
 });
 
 vi.mock('electron', () => ({
@@ -94,6 +99,8 @@ vi.mock('electron', () => ({
   dialog: { showMessageBoxSync: vi.fn(), showErrorBox: vi.fn() },
   nativeImage: { createFromDataURL: (u: string) => ({ dataUrl: u }) },
   shell: { openExternal: vi.fn() },
+  // 可辨认的返回值：用来断 main.ts 接的确实是 Chromium 的解析器，而不是别的什么东西。
+  session: { defaultSession: { resolveProxy: async (url: string) => `PROXY chromium-said:${url}` } },
 }));
 vi.mock('electron-squirrel-startup', () => ({ default: false }));
 
@@ -136,8 +143,15 @@ vi.mock('./persist/settingsFile', () => ({ ensureSettingsFile: vi.fn() }));
 vi.mock('./llm/cloudEnvSync', () => ({ applyCloudEnv: vi.fn() }));
 vi.mock('./research/researchEnv', () => ({ applyResearchEnv: vi.fn() }));
 vi.mock('./llm/providerRegistry', () => ({
-  initProviderRegistry: vi.fn(async () => {}),
+  initProviderRegistry: vi.fn(async () => { H.order.push('providerRegistry'); }),
   setCatalogRefreshedHook: vi.fn(),
+}));
+vi.mock('./net/systemProxy', () => ({
+  installProxyDispatcher: (deps: { resolveProxy: (url: string) => Promise<string> }) => {
+    H.order.push('proxy');
+    H.proxyDeps.push(deps);
+    return () => {};
+  },
 }));
 vi.mock('./llm/llmService', () => ({ llmService: { list: async () => ({}) } }));
 vi.mock('./project/projectService', () => ({ projectService: { initWatchers: async () => {} } }));
@@ -186,6 +200,29 @@ beforeAll(async () => {
 });
 
 afterAll(() => { vi.unstubAllGlobals(); rmSync(TMP, { recursive: true, force: true }); });
+
+/**
+ * **出网路径的守卫。** 失败形态是静默的：把 `installProxyDispatcher` 整行删掉、或者挪到
+ * `initProviderRegistry` 后面，`tsc` / `lint` / 其余用例全绿，而产品行为是主进程的请求
+ * （至少是启动最早那批）绕过系统代理直连出去——国内用户又退回「只有 Tun 模式才能用」。
+ * `systemProxy.test.ts` 守的是这个模块**自己**对不对，守不了 main.ts 到底调没调、排在哪。
+ */
+describe('main.ts 把出网路径接到了 Chromium 的代理解析器上', () => {
+  it('装了，而且排在 initProviderRegistry 之前', () => {
+    // 排序是有后果的：registry 构造完就会飞一次不 await 的后台目录刷新（见 llm-architecture §3），
+    // 那是启动后最早的一批请求；挪到它后面，那批就漏掉代理了。
+    expect(H.order).toContain('proxy');
+    expect(H.order).toContain('providerRegistry');
+    expect(H.order.indexOf('proxy')).toBeLessThan(H.order.indexOf('providerRegistry'));
+  });
+
+  it('传进去的 resolveProxy 就是 session.defaultSession.resolveProxy，不是别的', async () => {
+    expect(H.proxyDeps).toHaveLength(1);
+    // 接错对象（比如自己读环境变量、或者写死 DIRECT）时这里拿不到这个可辨认的返回值。
+    await expect(H.proxyDeps[0].resolveProxy('https://auth.openai.com'))
+      .resolves.toBe('PROXY chromium-said:https://auth.openai.com');
+  });
+});
 
 describe('main.ts 真的把内置浏览器装配起来了', () => {
   it('窗口造出来之后 attach 收到的就是这一个窗口', () => {

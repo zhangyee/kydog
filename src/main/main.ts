@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeImage, session, shell } from 'electron';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -26,6 +26,7 @@ import { initUpdateService } from './update/assemble';
 import { assembleTelemetry } from './telemetry/assemble';
 import { broadcaster } from './ipc/broadcaster';
 import { browserService } from './browser/browserService';
+import { installProxyDispatcher } from './net/systemProxy';
 import { installBrowserWindowWiring, installBrowserQuitWiring } from './browser/mainWiring';
 import iconDataUrl from '../../assets/icons/icon.png?inline';
 
@@ -119,6 +120,17 @@ async function createWindow() {
 
 app.on('ready', async () => {
   try {
+    // 让主进程的 HTTP 跟内置浏览器走同一条路：系统代理 / PAC / bypass 全由 Chromium 解析。
+    // 位置是硬的，两头都卡死：`session.resolveProxy` 在 ready 之前会抛「Session can only be
+    // received when app is ready」；而往后挪一点，`initProviderRegistry` 的后台目录刷新就先飞
+    // 出去了，那批请求会漏掉代理。放在 ready 的第一行最省心。细节见 net/systemProxy.ts。
+    try {
+      installProxyDispatcher({ resolveProxy: (url) => session.defaultSession.resolveProxy(url) });
+    } catch (err) {
+      // 出网配置永远不能打断启动：装不上就退回直连（和这次改动之前的行为一致）。
+      logger.warn('net', 'proxy dispatcher install failed; continuing direct', { err: String(err) });
+    }
+
     if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
       try {
         app.dock.setIcon(APP_ICON);
