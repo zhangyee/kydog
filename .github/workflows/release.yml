@@ -23,8 +23,8 @@ jobs:
           - { os: windows-latest, target: win32-x64,    requireSymlink: '1' }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with: { node-version: '22', cache: 'npm' }
       - name: Verify tag matches package.json version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -77,13 +77,13 @@ jobs:
       # always 而非 failure：flaky（retry 转绿）时 job 是成功态，failure() 不执行，
       # 而失败尝试的 trace 就留在 test-results 里（实证见 spec 事实基础）——不上传就随
       # runner 销毁。全绿时这里只有一个 .last-run.json，成本可忽略。
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-test-results-${{ matrix.target }}
           path: test-results/
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kydog-${{ matrix.target }}
           path: out/make/**/*
@@ -96,7 +96,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           # e2e 现场 artifact 不是发版资产，不许进 dist（trace.zip / error-context.md
@@ -108,7 +108,7 @@ jobs:
           cd dist
           find . -type f ! -name 'SHA256SUMS.txt' -exec shasum -a 256 {} + > SHA256SUMS.txt
           cat SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/**
           draft: true
