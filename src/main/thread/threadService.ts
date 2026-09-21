@@ -122,6 +122,10 @@ export class ThreadService {
       if (!idx.projects.find((p) => p.path === args.projectPath)) {
         throw new KydogError('project.not_found', `project ${args.projectPath} is not opened`);
       }
+      // 拆掉这条对话缓存的 session：工具的 cwd 与 transcript 的落盘目录都在建 session 那一刻
+      // 定死，只改 index 的话，send 会命中缓存、照旧在旧项目里跑。上面判空的 loadHistory
+      // 本身就会按旧项目建一份，所以这里不论之前开没开过都要拆。空对话不可能有一轮在飞。
+      await agentService.dispose(thread.id);
       const oldPath = sessionFileFor(thread.projectPath, thread.id);
       const newPath = sessionFileFor(args.projectPath, thread.id);
       await fs.rename(oldPath, newPath).catch(() =>
