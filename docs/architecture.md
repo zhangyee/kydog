@@ -47,8 +47,10 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 ## 用户消息里的结构（附件、批注、@ 引用）
 
-**发给模型的那段文字就是唯一事实**，不另存结构。输入框用 `src/shared/userTurn.ts` 的 `encodeUserTurn` 把附件、批注写成 `<kydog-attachments>` / `<kydog-comment>` 块接在正文后面、@ 引用写成行内 `<kydog-ref path="…"/>`，图片作为 pi 的图片块随 `thread.send` 的 `images` 走（`AgentService.send` → `session.prompt(text, { images })`）。历史显示（`UserMessage`）用同一个模块的 `decodeUserTurn` 解回来：刚发出的与重新载入的走同一段代码，所以不会对不上。解码只认严格格式，不合格的整条按正文原样显示。
+**发给模型的那段文字就是唯一事实**，不另存结构。输入框用 `src/shared/userTurn.ts` 的 `encodeUserTurn` 把附件、批注写成 `<kydog-attachments>` / `<kydog-comment>` 块接在正文后面、@ 引用写成行内 `<kydog-ref path="…"/>`，图片作为 pi 的图片块随 `thread.send` 的 `images` 走（`threadService.send` → `AgentService.send` → `session.prompt(text, { images })`）。`threadService.send` 这一跳还在对话仍叫「无标题」时触发起标题，交给 `titleService` 的是 `turnTitleSource` 解出来的纯文字（正文里的引用换成文件名；正文空就用第一条批注的引文、再没有就用第一个附件的名字），不是带标签的原文。历史显示（`UserMessage`）用同一个模块的 `decodeUserTurn` 解回来：刚发出的与重新载入的走同一段代码，所以不会对不上。解码只认严格格式，不合格的整条按正文原样显示。
+
+文件在不在磁盘上，看 preload 暴露的 `window.kydog.pathForFile`（`webUtils.getPathForFile`）：返回**空串就是不在磁盘上**（截图、从网页拖进来的图），这是 Electron 给的事实，不按文件名猜。判据收在 `attachments.ts` 的 `classifyFile`，粘贴、拖入、回形针三条入口共用（`composerIngest.ts`），粘贴先经 `routePaste` 分流：能发的图片一律读成图片块随消息走，有路径时再带上路径（在目标对话的项目内发相对路径，否则绝对路径），没路径的起名「截图 N」；其他文件有路径就按路径引用，没路径引用不了，托盘提示。
 
 能不能发图由 pi `Model.input` 决定：`llm.list` 的每个服务商带 `imageInputModelIds` 供输入框预先拦；主进程发送时按会话实际模型再判一次（`llm.imageUnsupported`）。
 
-@ 的项目文件列表来自主进程的 `project/fileIndex.ts`：一次只读一个目录地遍历，按项目缓存；`project.searchFiles` 查询、`rescan` 请求重扫（同一项目的重扫合并成一趟），扫完广播 `project.fileIndexUpdated`，渲染层记在 `fileIndexStore` 的版本号上，开着的 @ 列表据此重查。
+@ 的项目文件列表来自主进程的 `project/fileIndex.ts`：一次只读一个目录地遍历，按项目缓存，扫完时建好索引（`shared/fuzzyPath.ts` 的 `buildPathIndex`：每条路径的小写串、深度、空查询的前 50 名），每次查询只扫一趟取前 50、不整体排序 —— 查询跑在主进程上，不设文件数上限；`project.searchFiles` 查询、`rescan` 请求重扫（同一项目的重扫合并成一趟），扫完广播 `project.fileIndexUpdated`，渲染层记在 `fileIndexStore` 的版本号上，开着的 @ 列表据此重查。

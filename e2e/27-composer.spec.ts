@@ -341,8 +341,9 @@ test('@ 列表：Esc 关掉后不再弹回来、↵ 照常发送；没有匹配�
 test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {
   const { page } = launched;
   const threadId = await newThread(page);
-  // `27-composer: project pill switches...` 那条把一个空对话切去过 projectB；「新对话」按钮
-  // 本身固定拿 projects[0]（projectA），理论上不受影响，但核对一遍再切回去，不靠这个假设。
+  // 「新对话」建在当前项目（最近选中的对话所在的、刚换过去的项目 —— 65ff9d6 起不再固定拿 projects[0]）。
+  // 前面几条先后在 projectA / projectB 里起过对话，这个新对话落在哪个项目取决于用例的先后次序；
+  // 这条要的是 projectA（ch3.md 在那里），核对一遍、不是就切过去，不靠次序。
   const nameA = path.basename(projectA);
   const pill = page.getByTestId('project-pill');
   if (!(await pill.textContent())?.includes(nameA)) {
