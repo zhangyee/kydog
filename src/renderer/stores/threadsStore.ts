@@ -16,6 +16,7 @@ type ThreadsState = {
   setHistory: (threadId: string, messages: Message[]) => void;
   initHistory: (threadId: string, messages: Message[]) => void;
   appendUserMessage: (threadId: string, message: Message) => void;
+  removeMessage: (threadId: string, messageId: string) => void;
 };
 
 /**
@@ -111,6 +112,13 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
         [threadId]: [...(s.historyByThread[threadId] ?? []), message],
       },
     })),
+  /** 发送被拒时撤掉那条乐观写入的用户消息（spec §7）。 */
+  removeMessage: (threadId, messageId) =>
+    set((s) => {
+      const list = s.historyByThread[threadId];
+      if (!list) return {};
+      return { historyByThread: { ...s.historyByThread, [threadId]: list.filter((m) => m.id !== messageId) } };
+    }),
 }));
 
 export function getCurrentThread(state: ReturnType<typeof useThreadsStore.getState>): Thread | null {
