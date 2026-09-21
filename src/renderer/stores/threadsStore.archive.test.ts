@@ -32,6 +32,7 @@ describe('threadsStore：已归档的不进左栏', () => {
     s.setHistory('a', [M('m1')]);
     s.setHistory('b', [M('m2')]);
     expect(getCurrentThread(useThreadsStore.getState())?.id).toBe('a');
+    expect(useThreadsStore.getState().historyByThread.a).toEqual([M('m1')]);
 
     useThreadsStore.getState().upsertThread(T('a', { archivedAt: ARCHIVED }));
     const after = useThreadsStore.getState();
@@ -41,12 +42,16 @@ describe('threadsStore：已归档的不进左栏', () => {
     expect(after.historyByThread.b).toEqual([M('m2')]);
   });
 
-  it('归档的不是当前对话 → currentThreadId 不变', () => {
+  it('归档的不是当前对话 → currentThreadId 不变，但它的 history 一样丢掉', () => {
     const s = useThreadsStore.getState();
     s.hydrate([PROJECT], [T('a'), T('b')]);
     s.selectThread('a');
+    s.setHistory('b', [M('m2')]);
+    expect(useThreadsStore.getState().historyByThread.b).toEqual([M('m2')]);
+
     useThreadsStore.getState().upsertThread(T('b', { archivedAt: ARCHIVED }));
     expect(ids()).toEqual(['a']);
     expect(useThreadsStore.getState().currentThreadId).toBe('a');
+    expect(useThreadsStore.getState().historyByThread.b).toBeUndefined();
   });
 });
