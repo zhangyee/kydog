@@ -104,5 +104,10 @@ docs/scratch/
 test-results/
 playwright-report/
 
+# fixture session（e2e/fixtures/fixture.types.ts）在 fixture 文件旁边落一份 prompts.jsonl，
+# 记这一轮 agent 实际收到了什么；跑用到仓库内 fixture（如 e2e/48-locale-switch-skills）的 e2e
+# 会在 e2e/fixtures/ 下留下这些未跟踪文件。
+e2e/fixtures/*.prompts.jsonl
+
 # Stray bundled main.js sometimes dropped at repo root by electron-forge make
 /main.js

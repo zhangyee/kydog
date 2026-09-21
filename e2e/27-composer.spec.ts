@@ -359,6 +359,11 @@ test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 
   await page.getByTestId('md-comment-mode').click();
   await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'on');
   await selectText('并复现');
+  // selectText 只改 DOM selection；ProseMirror 要等异步的 selectionchange 才会把它同步进
+  // view.state.selection。等 Crepe 工具栏的 tooltip 插件打上 data-show="true"（选区非空 +
+  // 有焦点，节流约 200ms 后才打；评论模式下这个元素被 CSS 藏起来，但插件照样会打这个标记）
+  // 就是「ProseMirror 已经看到这个非空选区」的协议事实，不能一 selectText 完就立刻派发 mouseup。
+  await expect(page.locator('.milkdown-toolbar[data-show="true"]')).toHaveCount(1);
   await editor.dispatchEvent('mouseup');
   await expect(page.getByTestId('comment-box')).toBeVisible(); // 正向证明：这一下确实弹出过框
   await expect(page.locator('.milkdown-toolbar').locator('visible=true')).toHaveCount(0);
@@ -371,6 +376,9 @@ test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 
   // 光点胶囊测不出这个 bug——空选区不管来源过滤在不在都不会弹框。重新选一段非空的文字，
   // 但不派发 mouseup（那样才是「合法」触发的路径），再去点胶囊，才是这条判断真正要守的场景。
   await selectText('并复现');
+  // 同上：等 ProseMirror 真的同步到这个非空选区，再去点胶囊——否则点的时候 view.state.selection
+  // 可能还是上一次（或空的），这条判断就测不出「点胶囊会不会误开新框」。
+  await expect(page.locator('.milkdown-toolbar[data-show="true"]')).toHaveCount(1);
   await page.getByTestId('md-comment-mode').click();
   await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'off');
   // 如果来源过滤丢了，误触发的 openBoxFromSelection 是从 mouseup 里的 setTimeout(…, 0) 异步
