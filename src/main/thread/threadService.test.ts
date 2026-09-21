@@ -222,6 +222,7 @@ describe('threadService.archive / unarchive / delete（批量）', () => {
     vi.mocked(agentService.hasActiveRunFor).mockImplementation(() => false);
     await threadService.archive({ threadIds: ['a', 'b'] });
     expect((await byId()).get('b')!.archivedAt).toBeDefined();
+    expect(vi.mocked(agentService.dispose).mock.calls).toEqual([['a'], ['b']]);
   });
 
   it('有一个 id 不存在 → thread.not_found，archive 与 delete 都一个不改；去掉它再调 → 成功', async () => {
@@ -234,6 +235,7 @@ describe('threadService.archive / unarchive / delete（批量）', () => {
 
     await threadService.archive({ threadIds: ['a'] });
     expect((await byId()).get('a')!.archivedAt).toBeDefined();
+    expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([['a']]);
   });
 
   it('unarchive 摘掉 archivedAt；对没归档过的 id 原样返回（幂等）', async () => {
