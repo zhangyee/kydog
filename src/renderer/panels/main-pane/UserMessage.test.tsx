@@ -36,6 +36,9 @@ describe('UserMessage —— 按发出去的文字解回来显示', () => {
     expect(byType(m.tree, CommentCard)[0].props).toMatchObject({ file: 'notes/ch3.md', section: '3.2', quote: 'q', note: 'n', testId: 'user-comment-card' });
     expect(byTestId(m.tree, 'user-ref')[0].props['data-path']).toBe('refs/dpo.pdf');
 
+    // 反向对照前先证明同一个 testid 查找真的找得到：完整一轮的消息有附件行。
+    expect(byTestId(m.tree, 'user-attachments')).toHaveLength(1);
+
     const plain = mount(UserMessage, { name: 'Yee', content: '只有文字', projectPath: '/proj' });
     expect(byTestId(plain.tree, 'user-attachments')).toHaveLength(0);
     expect(byType(plain.tree, CommentCard)).toHaveLength(0);
@@ -59,6 +62,11 @@ describe('UserMessage —— 按发出去的文字解回来显示', () => {
   });
 
   it('格式不合格的消息：原样当正文显示（标签文字照原样出现）', () => {
+    // 反向对照前先证明同一个查找真的找得到：格式合格、带一条批注的消息。
+    const { text: okText } = encodeUserTurn({ body: '', attachments: [], comments: [{ file: 'a.md', quote: 'q', note: 'n' }] });
+    const ok = mount(UserMessage, { name: 'Y', content: okText, projectPath: '/p' });
+    expect(byType(ok.tree, CommentCard)).toHaveLength(1);
+
     const broken = 'x\n\n<kydog-comment file="a">oops';
     const m = mount(UserMessage, { name: 'Y', content: broken, projectPath: '/p' });
     expect(byType(m.tree, CommentCard)).toHaveLength(0);
