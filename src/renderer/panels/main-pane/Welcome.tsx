@@ -1,19 +1,15 @@
 import { KyLogo, KyMascot, NavIcon } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
-import { useUiStore } from '../../stores/uiStore';
-import { useUnreadStore } from '../workspace/unreadStore';
+import { startNewThreadInFocusedProject } from '../../newThread';
 import type { Project } from '../../../shared/types';
 
 export function Welcome() {
   const projects = useThreadsStore((s) => s.projects);
-  const showThreadTab = useUiStore((s) => s.showThreadTab);
 
   const onOpen = async (): Promise<Project | null> => {
     try {
       const project = await window.kydog.invoke('project.open');
-      useThreadsStore.setState((s) => ({
-        projects: [...s.projects.filter((p) => p.path !== project.path), project],
-      }));
+      useThreadsStore.getState().addProject(project);
       return project;
     } catch (err) {
       console.error('open project failed', err);
@@ -22,20 +18,10 @@ export function Welcome() {
   };
 
   const onNewThread = async () => {
-    let projectPath: string | undefined;
-    if (projects.length === 0) {
-      const picked = await onOpen();
-      if (!picked) return;
-      projectPath = picked.path;
-    } else {
-      projectPath = projects[0].path;
-    }
+    // 一个项目都没有时先打开一个；打开的那个就成了当前项目，新对话建在它里面。
+    if (projects.length === 0 && !(await onOpen())) return;
     try {
-      const thread = await window.kydog.invoke('thread.create', { projectPath });
-      useThreadsStore.getState().upsertThread(thread);
-      showThreadTab();
-      useThreadsStore.getState().selectThread(thread.id);
-      useUnreadStore.getState().markRead(thread.id);
+      await startNewThreadInFocusedProject();
     } catch (err) {
       console.error('create thread failed', err);
     }

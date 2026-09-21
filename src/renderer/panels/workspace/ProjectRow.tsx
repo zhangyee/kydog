@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type Ref } from 'react';
 import { NavIcon, IconButton, DropdownMenu, DropdownItem, DropdownDivider, isWindowBlur } from '../../shared';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
-import { useUnreadStore } from './unreadStore';
+import { startNewThread } from '../../newThread';
 import { confirm } from '../../stores/confirmStore';
 import type { Project } from '../../../shared/types';
 
@@ -20,9 +20,6 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const setProject = useThreadsStore((s) => s.setProject);
   const removeProject = useThreadsStore((s) => s.removeProject);
-  const showThreadTab = useUiStore((s) => s.showThreadTab);
-  const upsertThread = useThreadsStore((s) => s.upsertThread);
-  const selectThread = useThreadsStore((s) => s.selectThread);
 
   useEffect(() => {
     if (renaming) {
@@ -34,11 +31,7 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
 
   const onNewThread = async () => {
     try {
-      const t = await window.kydog.invoke('thread.create', { projectPath: project.path });
-      upsertThread(t);
-      showThreadTab();
-      selectThread(t.id);
-      useUnreadStore.getState().markRead(t.id);
+      await startNewThread(project.path);
     } catch (err) { console.error('new thread failed', err); }
   };
 

@@ -5,9 +5,22 @@ type ThreadsState = {
   projects: Project[];
   threadsByProject: Record<string, Thread[]>;
   currentThreadId: string | null;
+  /**
+   * 用户最近一次明确指向的项目 —— 「新对话」按钮 / ⌘N / 欢迎页把对话建在这里
+   * （读它走 newThreadProjectPath）。**只由明确动作写入，不按时间戳推测**：
+   *  · selectThread —— 选中一条对话（含重启后恢复选中）→ 它所在的项目；
+   *  · upsertThread —— 当前对话的 projectPath 变了（输入框的项目下拉）→ 新项目；
+   *  · addProject —— 打开项目 → 该项目；
+   *  · removeProject —— 关掉的正是它 → null。
+   * 只看「当前对话在哪个项目」不够：2026-09-21 刚打开 LLM、3 秒后点新对话，那一刻选中的
+   * 还是 cqcai 的对话。点项目行展开 / 折叠不算（常常只是看一眼）。
+   */
+  focusedProjectPath: string | null;
   historyByThread: Record<string, Message[]>;
   hydrate: (projects: Project[], threads: Thread[]) => void;
   selectThread: (threadId: string | null) => void;
+  /** 打开项目之后放进列表（已在就挪到末尾，同改动前各入口的写法），并让它成为当前项目。 */
+  addProject: (project: Project) => void;
   upsertThread: (thread: Thread) => void;
   removeThread: (threadId: string) => void;
   setProject: (project: Project) => void;
@@ -34,17 +47,38 @@ function bucketize(threads: Thread[]): Record<string, Thread[]> {
   return out;
 }
 
+function findThread(threadsByProject: Record<string, Thread[]>, threadId: string): Thread | undefined {
+  return Object.values(threadsByProject).flat().find((t) => t.id === threadId);
+}
+
 export const useThreadsStore = create<ThreadsState>((set) => ({
   projects: [],
   threadsByProject: {},
   currentThreadId: null,
+  focusedProjectPath: null,
   historyByThread: {},
   hydrate: (projects, threads) => set({ projects, threadsByProject: bucketize(threads) }),
-  selectThread: (threadId) => set({ currentThreadId: threadId }),
+  selectThread: (threadId) => set((s) => {
+    const thread = threadId ? findThread(s.threadsByProject, threadId) : undefined;
+    return thread
+      ? { currentThreadId: threadId, focusedProjectPath: thread.projectPath }
+      : { currentThreadId: threadId };
+  }),
+  addProject: (project) => set((s) => ({
+    projects: [...s.projects.filter((p) => p.path !== project.path), project],
+    focusedProjectPath: project.path,
+  })),
   upsertThread: (thread) => set((s) => {
+    const prev = findThread(s.threadsByProject, thread.id);
     const flat = Object.values(s.threadsByProject).flat().filter(t => t.id !== thread.id);
     flat.push(thread);
-    if (!thread.archivedAt) return { threadsByProject: bucketize(flat) };
+    if (!thread.archivedAt) {
+      // 只认「当前对话的项目变了」：标题生成之类把当前对话推回来时不许把焦点抢回去。
+      const moved = thread.id === s.currentThreadId && prev !== undefined && prev.projectPath !== thread.projectPath;
+      return moved
+        ? { threadsByProject: bucketize(flat), focusedProjectPath: thread.projectPath }
+        : { threadsByProject: bucketize(flat) };
+    }
     // 进来的是一个已归档的：它出桶（bucketize 滤掉）；其 history 一律丢掉（同 removeThread）；正开着的话主区回到 Welcome。
     const { [thread.id]: _drop, ...history } = s.historyByThread;
     return {
@@ -83,6 +117,7 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
       threadsByProject,
       historyByThread,
       currentThreadId: s.currentThreadId && removedThreadIds.has(s.currentThreadId) ? null : s.currentThreadId,
+      focusedProjectPath: s.focusedProjectPath === path ? null : s.focusedProjectPath,
     };
   }),
   setHistory: (threadId, messages) =>
@@ -115,5 +150,10 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
 
 export function getCurrentThread(state: ReturnType<typeof useThreadsStore.getState>): Thread | null {
   if (!state.currentThreadId) return null;
-  return Object.values(state.threadsByProject).flat().find((t) => t.id === state.currentThreadId) ?? null;
+  return findThread(state.threadsByProject, state.currentThreadId) ?? null;
+}
+
+/** 「新对话」建在哪个项目：当前项目（见 focusedProjectPath），没有就第一个项目；一个项目都没有是 null。 */
+export function newThreadProjectPath(state: ReturnType<typeof useThreadsStore.getState>): string | null {
+  return state.focusedProjectPath ?? state.projects[0]?.path ?? null;
 }

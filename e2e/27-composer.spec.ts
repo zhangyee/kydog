@@ -220,6 +220,10 @@ test('27-composer: project pill switches the empty thread to another project', a
   await other.click();
   await expect(page.getByTestId('project-menu')).toBeHidden();
   await expect(pill).toContainText(nameB);
+  // 换过项目之后再点「新对话」：建在刚换过去的 B 里。A 是第一个项目，上面那次新对话就落在 A ——
+  // 两次结果不同，说明看的是当前项目，不是写死的 projects[0]。
+  await newThread(page);
+  await expect(pill).toContainText(nameB);
 });
 
 test('23/24-llm: Composer 显示默认模型；pill 里切到另一家只改这个 thread', async () => {

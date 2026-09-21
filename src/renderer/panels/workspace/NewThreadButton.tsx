@@ -1,22 +1,13 @@
 import { useThreadsStore } from '../../stores/threadsStore';
-import { useUiStore } from '../../stores/uiStore';
-import { useUnreadStore } from './unreadStore';
+import { startNewThreadInFocusedProject } from '../../newThread';
 import { NavPill } from './NavPill';
 
 export function NewThreadButton() {
   const projects = useThreadsStore((s) => s.projects);
-  const upsert = useThreadsStore((s) => s.upsertThread);
-  const select = useThreadsStore((s) => s.selectThread);
-  const showThreadTab = useUiStore((s) => s.showThreadTab);
   const enabled = projects.length > 0;
   const onClick = async () => {
     if (!enabled) return;
-    const projectPath = projects[0].path;   // A2 简化：第一个 project；后续 phase 从树点击决定
-    const thread = await window.kydog.invoke('thread.create', { projectPath });
-    upsert(thread);
-    showThreadTab();
-    select(thread.id);
-    useUnreadStore.getState().markRead(thread.id);
+    await startNewThreadInFocusedProject();
   };
   return (
     <div style={{ padding: '10px 6px 0' }}>
