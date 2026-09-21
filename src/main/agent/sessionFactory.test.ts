@@ -6,7 +6,7 @@ import * as paths from '../persist/paths';
 import { ensureSettingsFile } from '../persist/settingsFile';
 import { settingsService } from '../settings/settingsService';
 import { _resetProviderRegistryForTest, initProviderRegistry } from '../llm/providerRegistry';
-import { createSession } from './sessionFactory';
+import { createSession, ModelUnavailableError } from './sessionFactory';
 
 /** 本文件只关心 session 怎么造出来，提问回调不参与——给个最小实现即可。 */
 const noopAskShared = { onOpened: () => {}, onClosed: () => {} };
@@ -51,7 +51,7 @@ describe('sessionFactory', () => {
     })).rejects.toThrow();
   });
 
-  it('真实路径：找不到 model → KydogError llm.invalid', async () => {
+  it('真实路径：找不到 model → ModelUnavailableError，带 providerId/modelId', async () => {
     delete process.env.KYDOG_AGENT_FIXTURE;
     await initProviderRegistry(settingsService);
     await expect(createSession({
@@ -59,5 +59,19 @@ describe('sessionFactory', () => {
       providerId: 'anthropic', modelId: 'unknown-model-xx',
       askShared: noopAskShared,
     })).rejects.toThrow(/model not found/);
+    // instanceof + 字段，不只是 message 字符串——AgentService 靠 instanceof 精确
+    // 区分「这一种」失败，见 sessionFactory.ts 里 ModelUnavailableError 的注释。
+    try {
+      await createSession({
+        cwd: dir, sessionId: 't1', sessionsDir: dir,
+        providerId: 'anthropic', modelId: 'unknown-model-xx',
+        askShared: noopAskShared,
+      });
+      expect.unreachable('应该抛错');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModelUnavailableError);
+      expect((err as ModelUnavailableError).providerId).toBe('anthropic');
+      expect((err as ModelUnavailableError).modelId).toBe('unknown-model-xx');
+    }
   });
 });

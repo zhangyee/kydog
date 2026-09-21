@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { sessionsDirFor } from '../persist/paths';
-import { createSession, type AnySession } from './sessionFactory';
+import { sessionsDirFor, sessionFileFor } from '../persist/paths';
+import { createSession, ModelUnavailableError, type AnySession } from './sessionFactory';
 import { transition, type RunState } from './runState';
 import { broadcaster, type EventSink } from '../ipc/broadcaster';
 import type { EventPayload, RunEvent, RunEventTopic } from '../../shared/protocol';
@@ -181,7 +181,18 @@ class AgentService {
    * 不经过 buffer。
    */
   async loadHistory(threadId: string, projectPath: string, replay?: EventSink): Promise<Message[]> {
-    const bound = await this.ensureSession(threadId, projectPath);
+    let bound: Bound;
+    try {
+      bound = await this.ensureSession(threadId, projectPath);
+    } catch (err) {
+      // 只对「provider/model 已解析、但 registry 里没有」这一种失败回退——通常是
+      // 上游把这个模型从目录里撤了。session 建不起来时本轮不可能有 run 在飞（run
+      // 靠 session 才跑得起来），所以不用管 journal 重放，直接读盘上的 transcript
+      // 就是完整答案。别的失败（磁盘、权限、transcript 损坏）照旧抛出去——把所有
+      // 异常都吞掉会把真故障变成「看起来是空对话」。
+      if (err instanceof ModelUnavailableError) return this.loadHistoryWithoutSession(threadId, projectPath);
+      throw err;
+    }
     const raw = piMessagesOf(bound);
     const state = this.runs.get(threadId);
     const startIndex = bound.runStartIndex;
@@ -203,8 +214,37 @@ class AgentService {
     return messages;
   }
 
+  /**
+   * ensureSession 因为 ModelUnavailableError 建不起 session 时的回退：不经过 pi 的
+   * in-memory transcript（piMessagesOf 读的是 bound.session.state.messages），
+   * 直接用 pi 自己的 SessionManager 从磁盘重建同一份数据。buildSessionContext()
+   * .messages 正是 pi 在正常建 session 时拿来初始化 state.messages 的那份东西
+   * （pi 的 agent-session.js：`this.agent.state.messages =
+   * this.sessionManager.buildSessionContext().messages`），所以两条路对同一份
+   * transcript 归一化的结果必须一致——钉在 AgentService.modelGone.test.ts 里
+   * 「两条路等价」那条用例上。
+   *
+   * 会话文件还不存在时 SessionManager.open 不抛错，buildSessionContext 给回空
+   * messages——与「全新 thread、从没发过消息」时 loadHistory 原本返回 [] 的行为一致。
+   */
+  private async loadHistoryWithoutSession(threadId: string, projectPath: string): Promise<Message[]> {
+    const pi = await import('@earendil-works/pi-coding-agent');
+    const manager = (pi as any).SessionManager.open(sessionFileFor(projectPath, threadId));
+    const { messages } = manager.buildSessionContext();
+    return normalizePiMessages(messages as PiMessage[], threadId);
+  }
+
   async send(threadId: string, projectPath: string, content: string): Promise<{ runId: string }> {
-    const bound = await this.ensureSession(threadId, projectPath);
+    let bound: Bound;
+    try {
+      bound = await this.ensureSession(threadId, projectPath);
+    } catch (err) {
+      // loadHistory 已经把「读历史」和「模型还在不在」解耦了；发新消息终究要起一轮
+      // 真的 run，绕不开这一步，所以这里仍然要 ensureSession，只是把技术性的
+      // "model not found: x/y" 换成说得清下一步的话。
+      if (err instanceof ModelUnavailableError) throw new KydogError('llm.invalid', modelUnavailableSendMessage(err));
+      throw err;
+    }
     const current = this.getRunState(threadId);
     if (current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
     const runId = randomUUID();
@@ -540,6 +580,15 @@ class AgentService {
       await this.dispose(bound.threadId);
     }
   }
+}
+
+/**
+ * send() 撞见 ModelUnavailableError 时给用户看的话：点名这条对话原来用的模型、
+ * 说清下一步去哪换（composer 里的模型选择器）。不用「model not found」这种只有
+ * 排障者看得懂的技术措辞——用户能做的唯一动作是切模型，话术要直接说到这一步。
+ */
+function modelUnavailableSendMessage(err: ModelUnavailableError): string {
+  return `这条对话原来使用的模型「${err.providerId}/${err.modelId}」已经不可用，请在输入框下方切换模型后重新发送。`;
 }
 
 function extractToolResultText(result: unknown): string {
