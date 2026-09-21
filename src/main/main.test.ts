@@ -154,7 +154,6 @@ vi.mock('./net/systemProxy', () => ({
   },
 }));
 vi.mock('./llm/llmService', () => ({ llmService: { list: async () => ({}) } }));
-vi.mock('./project/projectService', () => ({ projectService: { initWatchers: async () => {} } }));
 vi.mock('./project/fileWatcher', () => ({ fileWatcherService: { stopAll: async () => {} } }));
 vi.mock('./pdf/pdfRaster', () => ({ destroyRasterWindow: vi.fn() }));
 vi.mock('./harness/identityService', () => ({ startIdentityWatcher: vi.fn() }));

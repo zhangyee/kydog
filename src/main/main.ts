@@ -18,7 +18,6 @@ import { applyCloudEnv } from './llm/cloudEnvSync';
 import { applyResearchEnv } from './research/researchEnv';
 import { initProviderRegistry, setCatalogRefreshedHook } from './llm/providerRegistry';
 import { llmService } from './llm/llmService';
-import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
 import { destroyRasterWindow } from './pdf/pdfRaster';
 import { startIdentityWatcher } from './harness/identityService';
@@ -206,11 +205,6 @@ app.on('ready', async () => {
       logger.warn('telemetry', 'assemble failed; continuing without telemetry', { err: String(err) });
     }
     startIdentityWatcher((id) => broadcaster.emit('identity.changed', id));
-    try {
-      await projectService.initWatchers();
-    } catch (err) {
-      logger.warn('app', 'file watcher init failed', { err: String(err) });
-    }
     installAppMenu();
     await createWindow();
     logger.info('app', 'ready');
@@ -230,7 +224,7 @@ installBrowserQuitWiring(app, browserService);
 app.on('window-all-closed', () => { app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
 app.on('before-quit', () => {
-  void fileWatcherService.stopAll();
+  fileWatcherService.stopAll();
   // PDF 渲染窗口用完即毁，正常不会活到这里；退出时还在飞的那一个由这句收掉。
   destroyRasterWindow();
 });

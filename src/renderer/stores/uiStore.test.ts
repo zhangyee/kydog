@@ -115,23 +115,52 @@ describe('uiStore 文件 tab', () => {
     expect(tab.errorMessage).toBe('读失败');
   });
 
-  it('invalidateDir 删除单个缓存条目，其他不动', () => {
+  it('failDir：摘掉这一条缓存、记下错误、不再算在读；别的目录不动', () => {
     useUiStore.setState({
       dirCache: {
         '/p': [{ name: 'a', path: '/p/a', kind: 'file' }],
         '/p/sub': [{ name: 'b', path: '/p/sub/b', kind: 'file' }],
       },
+      dirPending: new Set(['/p/sub', '/p/other']),
+      dirErrors: {},
     });
-    useUiStore.getState().invalidateDir('/p/sub');
-    expect(useUiStore.getState().dirCache).toEqual({
-      '/p': [{ name: 'a', path: '/p/a', kind: 'file' }],
-    });
+    useUiStore.getState().failDir('/p/sub', 'cannot read /p/sub (ENOENT)');
+    const s = useUiStore.getState();
+    expect(s.dirCache).toEqual({ '/p': [{ name: 'a', path: '/p/a', kind: 'file' }] });
+    expect([...s.dirPending]).toEqual(['/p/other']);
+    expect(s.dirErrors).toEqual({ '/p/sub': 'cannot read /p/sub (ENOENT)' });
   });
 
-  it('invalidateDir 对不存在的 path 是 noop', () => {
-    useUiStore.setState({ dirCache: { '/p': [] } });
-    useUiStore.getState().invalidateDir('/missing');
-    expect(useUiStore.getState().dirCache).toEqual({ '/p': [] });
+  it('setDir 清掉在读标记与上一次的错误；retryDir 只清错误', () => {
+    useUiStore.setState({ dirCache: {}, dirPending: new Set(), dirErrors: {} });
+    const ui = useUiStore.getState();
+    ui.beginDirLoad('/p');
+    expect(useUiStore.getState().dirPending.has('/p')).toBe(true);
+    ui.failDir('/p', 'EPERM');
+    ui.retryDir('/p');
+    expect(useUiStore.getState().dirErrors).toEqual({});
+    ui.failDir('/p', 'EPERM');
+    ui.beginDirLoad('/p');
+    ui.setDir('/p', []);
+    const s = useUiStore.getState();
+    expect(s.dirCache).toEqual({ '/p': [] });
+    expect(s.dirPending.size).toBe(0);
+    expect(s.dirErrors).toEqual({});
+  });
+
+  it('dropDirsUnder 摘掉这个目录及其下的一切，前缀相同的兄弟目录不动', () => {
+    useUiStore.setState({
+      dirCache: { '/p': [], '/p/sub': [], '/p2': [], 'C:\\w': [], 'C:\\w\\x': [] },
+      dirPending: new Set(['/p/deep', '/p2/x']),
+      dirErrors: { '/p/bad': 'EPERM', '/p2/bad': 'EPERM' },
+    });
+    const ui = useUiStore.getState();
+    ui.dropDirsUnder('/p');
+    ui.dropDirsUnder('C:\\w');
+    const s = useUiStore.getState();
+    expect(Object.keys(s.dirCache).sort()).toEqual(['/p2']);
+    expect([...s.dirPending]).toEqual(['/p2/x']);
+    expect(s.dirErrors).toEqual({ '/p2/bad': 'EPERM' });
   });
 });
 

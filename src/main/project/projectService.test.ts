@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
 import { saveIndex, loadIndex } from '../persist/indexFile';
 
 vi.mock('electron', () => ({ dialog: {}, shell: {} }));
-vi.mock('./fileWatcher', () => ({ fileWatcherService: { start: vi.fn(), stop: vi.fn() } }));
 vi.mock('../browser/browserService', () => ({ browserService: { disposeForThread: vi.fn() } }));
 
 import { projectService } from './projectService';
@@ -42,5 +41,24 @@ describe('projectService.close 关掉被带走的对话的标签', () => {
 
     expect(vi.mocked(browserService.disposeForThread).mock.calls.map((c) => c[0]).sort()).toEqual(['t1', 't3']);
     expect((await loadIndex()).threads.map((t) => t.id)).toEqual(['t2']);
+  });
+});
+
+describe('projectService.readDir', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-readdir-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('不列点号开头的与 node_modules（与 watcher 判「列表动没动」是同一个谓词）', async () => {
+    writeFileSync(path.join(dir, 'a.md'), '');
+    writeFileSync(path.join(dir, '.paper.pdf.json'), '');
+    mkdirSync(path.join(dir, 'node_modules'));
+    mkdirSync(path.join(dir, 'data'));
+    const names = (await projectService.readDir({ path: dir })).map((n) => n.name);
+    expect(names).toEqual(['data', 'a.md']);
+  });
+
+  it('读不了时错误消息带 errno：文件树原样显示，用户截图就分得清是被删了还是没权限', async () => {
+    await expect(projectService.readDir({ path: path.join(dir, 'gone') })).rejects.toThrow(/\(ENOENT\)$/);
   });
 });

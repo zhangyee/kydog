@@ -16,6 +16,30 @@ export type FileTab = {
   reloadNonce: number;         // 外部改动计数；仅 html 消费，用来触发重读
 };
 
+/** 跟着磁盘走的标签：外部改动要重读。pdf 不在其中 —— 它在窗口重新拿到焦点时自己重探。
+ *  `markFileChanged` 与监听集合（watchSync.ts）共用这一个判据：声明了监听却不消费，或者
+ *  消费却没声明，都是静默失效。 */
+export const followsDisk = (t: FileTab): boolean => t.kind === 'html' || t.kind === 'md';
+
+function isWithin(dir: string, root: string): boolean {
+  if (dir === root) return true;
+  return dir.startsWith(root + '/') || dir.startsWith(root + '\\');
+}
+
+function omitKey<T>(rec: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in rec)) return rec;
+  const next = { ...rec };
+  delete next[key];
+  return next;
+}
+
+function withoutPending(pending: Set<string>, path: string): Set<string> {
+  if (!pending.has(path)) return pending;
+  const next = new Set(pending);
+  next.delete(path);
+  return next;
+}
+
 export type SettingsTabId = 'provider' | 'donate' | 'about' | 'skills' | 'research' | 'longTermMemory';
 type CenterTabKind = 'thread' | 'settings' | 'file';
 
@@ -78,6 +102,11 @@ type UiState = {
    *  两条都是拿启发式补上游丢掉的信号。落盘的是 settings.ui.collapsedProjects。 */
   collapsedProjects: Set<string>;
   dirCache: Record<string, FsNode[]>;
+  /** 正在读、还没进缓存的目录。它们也算「在看」：监听集合必须在读之前就包含它们
+   *  （见 watchSync.ts），否则读完到开始监听之间的变化没人知道。 */
+  dirPending: Set<string>;
+  /** 读失败的目录 → 错误原文。文件树据此把错误说出来，而不是永远停在「加载中」。 */
+  dirErrors: Record<string, string>;
   projectsGroupBy: 'project' | 'time';
   projectsSortBy: 'created' | 'updated';
   setProjectsGroupBy: (g: 'project' | 'time') => void;
@@ -97,8 +126,12 @@ type UiState = {
   closeSettings: () => void;
   showThreadTab: () => void;
   toggleUserMenu: () => void;
+  beginDirLoad: (path: string) => void;
   setDir: (path: string, nodes: FsNode[]) => void;
-  invalidateDir: (path: string) => void;
+  failDir: (path: string, message: string) => void;
+  retryDir: (path: string) => void;
+  /** 这个目录及其下的一切都不再看了（project 从侧栏移除时）。 */
+  dropDirsUnder: (root: string) => void;
   toggleDir: (path: string) => void;
   toggleProject: (path: string) => void;
 };
@@ -174,7 +207,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   // 比一次（滤掉自己 ⌘S 写出去的回声），并且在本地有未保存修改时改成提示而不是覆盖。
   // pdf tab 不消费这个计数。
   markFileChanged: (path) => set((s) => {
-    const watches = (t: FileTab) => t.path === path && (t.kind === 'html' || t.kind === 'md');
+    const watches = (t: FileTab) => t.path === path && followsDisk(t);
     if (!s.openFileTabs.some(watches)) return s;
     return {
       openFileTabs: s.openFileTabs.map((t) =>
@@ -184,6 +217,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   expandedDirs: new Set(),
   collapsedProjects: new Set<string>(),
   dirCache: {},
+  dirPending: new Set<string>(),
+  dirErrors: {},
   projectsGroupBy: 'project',
   projectsSortBy: 'updated',
   setProjectsGroupBy: (g) => set({ projectsGroupBy: g }),
@@ -227,12 +262,30 @@ export const useUiStore = create<UiState>((set, get) => ({
   closeSettings: () => set({ settingsTabOpen: false, activeCenterTab: 'thread', settingsDetailProviderId: null, settingsAddProviderOpen: false }),
   showThreadTab: () => set({ activeCenterTab: 'thread' }),
   toggleUserMenu: () => set((s) => ({ userMenuOpen: !s.userMenuOpen })),
-  setDir: (path, nodes) => set((s) => ({ dirCache: { ...s.dirCache, [path]: nodes } })),
-  invalidateDir: (path) => set((s) => {
-    if (!(path in s.dirCache)) return s;
-    const next = { ...s.dirCache };
-    delete next[path];
-    return { dirCache: next };
+  beginDirLoad: (path) => set((s) => {
+    if (s.dirPending.has(path)) return s;
+    return { dirPending: new Set(s.dirPending).add(path) };
+  }),
+  setDir: (path, nodes) => set((s) => ({
+    dirCache: { ...s.dirCache, [path]: nodes },
+    dirPending: withoutPending(s.dirPending, path),
+    dirErrors: omitKey(s.dirErrors, path),
+  })),
+  // 缓存一并摘掉：列表已经不可信了，留着只会让文件树继续显示一份过期的内容。
+  failDir: (path, message) => set((s) => ({
+    dirCache: omitKey(s.dirCache, path),
+    dirPending: withoutPending(s.dirPending, path),
+    dirErrors: { ...s.dirErrors, [path]: message },
+  })),
+  retryDir: (path) => set((s) => (path in s.dirErrors ? { dirErrors: omitKey(s.dirErrors, path) } : s)),
+  dropDirsUnder: (root) => set((s) => {
+    const keep = <T>(rec: Record<string, T>) =>
+      Object.fromEntries(Object.entries(rec).filter(([k]) => !isWithin(k, root)));
+    return {
+      dirCache: keep(s.dirCache),
+      dirPending: new Set([...s.dirPending].filter((d) => !isWithin(d, root))),
+      dirErrors: keep(s.dirErrors),
+    };
   }),
   toggleDir: (path) => set((s) => {
     const next = new Set(s.expandedDirs);

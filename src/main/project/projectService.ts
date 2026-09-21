@@ -5,19 +5,13 @@ import { promises as fs } from 'node:fs';
 import { loadIndex, saveIndex } from '../persist/indexFile';
 import { KydogError } from '../../shared/errors';
 import type { Project, FsNode } from '../../shared/types';
-import { fileWatcherService } from './fileWatcher';
+import { isListedName } from './listing';
 import { browserService } from '../browser/browserService';
 
 export class ProjectService {
   async list(): Promise<Project[]> {
     const idx = await loadIndex();
     return idx.projects;
-  }
-
-  /** Boot-time watcher attach for all persisted projects. */
-  async initWatchers(): Promise<void> {
-    const idx = await loadIndex();
-    for (const p of idx.projects) fileWatcherService.start(p.path);
   }
 
   async open(): Promise<Project> {
@@ -37,7 +31,6 @@ export class ProjectService {
       idx.projects.push(project);
       await saveIndex(idx);
     }
-    fileWatcherService.start(absPath);
     return project;
   }
 
@@ -48,14 +41,13 @@ export class ProjectService {
     for (const t of idx.threads) if (t.projectPath === projectPath) browserService.disposeForThread(t.id);
     idx.threads = idx.threads.filter((t) => t.projectPath !== projectPath);
     await saveIndex(idx);
-    await fileWatcherService.stop(projectPath);
   }
 
   async readDir({ path: dirPath }: { path: string }): Promise<FsNode[]> {
     try {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
       return entries
-        .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+        .filter((e) => isListedName(e.name))
         .map((e) => ({
           name: e.name,
           path: path.join(dirPath, e.name),
@@ -63,7 +55,9 @@ export class ProjectService {
         }))
         .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
     } catch (err) {
-      throw new KydogError('fs.read_failed', `cannot read ${dirPath}`, err);
+      // 文件树会把这句话原样显示出来：带上 errno，用户截图就能分清是被删了（ENOENT）还是没权限（EPERM）。
+      const code = (err as NodeJS.ErrnoException).code;
+      throw new KydogError('fs.read_failed', code ? `cannot read ${dirPath} (${code})` : `cannot read ${dirPath}`, err);
     }
   }
 

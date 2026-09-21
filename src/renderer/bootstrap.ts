@@ -10,6 +10,7 @@ import { restoreViewState, installViewStateSync } from './viewState';
 import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
 import { useBrowserStore } from './panels/browser/browserStore';
 import { installBrowserBridge } from './panels/browser/browserBridge';
+import { installWatchSync, loadDir } from './fsWatch';
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
@@ -38,6 +39,10 @@ export async function bootstrap(): Promise<void> {
     settingsTab: 'provider',
     activeCenterTab: noProvider ? 'settings' : 'thread',
   });
+
+  // 排在 restoreViewState 之前：它会把上次的文件标签开回来，而标签要先进监听集合、再去读盘
+  // （先声明、再读，见 fsWatch.ts）。装上时发的第一份还顺带替换掉重载前那一页声明的集合。
+  installWatchSync();
 
   // 渲染进程重载后接回原处。必须排在上面那次 setState 之后 —— 它会把 activeCenterTab
   // 重置掉。noProvider 时把 activeCenterTab 让给上面的强制设置页，只把 tab 开回来。
@@ -119,7 +124,8 @@ function setupEventBridge(): void {
     useThreadsStore.getState().upsertThread(p.thread);
   });
   window.kydog.on('fs.changed', (p) => {
-    void refreshCachedDirsUnder(p.projectPath);
+    // 只重读自己缓存着的：主进程按所有窗口声明的并集发，别的窗口在看的目录不归这里管。
+    if (p.dir in useUiStore.getState().dirCache) void loadDir(p.dir);
   });
   window.kydog.on('file.changed', (p) => {
     useUiStore.getState().markFileChanged(p.path);
@@ -133,22 +139,4 @@ function setupEventBridge(): void {
   });
   // 两条 browser.* 不在这里接 —— 它们与 browser.getState 是一套有顺序的恢复协议，
   // 整套在 panels/browser/browserBridge.ts（那边有用例守着顺序）。
-}
-
-function isWithin(dir: string, root: string): boolean {
-  if (dir === root) return true;
-  return dir.startsWith(root + '/') || dir.startsWith(root + '\\');
-}
-
-async function refreshCachedDirsUnder(projectPath: string): Promise<void> {
-  const dirs = Object.keys(useUiStore.getState().dirCache).filter((d) => isWithin(d, projectPath));
-  await Promise.all(dirs.map(async (dir) => {
-    try {
-      const nodes = await window.kydog.invoke('project.readDir', { path: dir });
-      useUiStore.getState().setDir(dir, nodes);
-    } catch (err) {
-      useUiStore.getState().invalidateDir(dir);
-      console.warn('fs.changed refresh failed', dir, err);
-    }
-  }));
 }

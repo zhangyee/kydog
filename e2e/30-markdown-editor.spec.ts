@@ -75,7 +75,7 @@ test('32-file-tree-fs-watch: 外部新写入文件 → FileTree 自动出现新�
   const report = at('research-report.md');
   await expect(page.getByTestId(`fs-${report}`)).toHaveCount(0);
   await fs.writeFile(report, '# report\n');
-  // chokidar awaitWriteFinish(200) + debounce(200) ≈ 400ms。
+  // 文件树缓存着这个目录 → 主进程 fs.watch 盯着它，debounce 200ms 后发 fs.changed。
   await expect(page.getByTestId(`fs-${report}`)).toBeVisible();
 });
 

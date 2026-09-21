@@ -9,6 +9,7 @@ import { settingsService, toRendererSettings } from './settings/settingsService'
 import { researchService } from './research/researchService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
+import { fileWatcherService } from './project/fileWatcher';
 import { threadService } from './thread/threadService';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
 import { skillsService } from './skills/skillsService';
@@ -55,6 +56,9 @@ const localeSet = createLocaleSet({
   readSettings: () => settingsService.get(),
   listSkills: () => skillsService.listUnlocked(),
 });
+
+/** 已经挂过 destroyed 监听的窗口（`fs.setWatched` 用），每个窗口只挂一次。 */
+const watchSenders = new Set<number>();
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -183,6 +187,19 @@ export function registerAllHandlers(): void {
   registerHandler('project.list', () => projectService.list());
   registerHandler('project.close', (args) => projectService.close(args));
   registerHandler('project.readDir', (args) => projectService.readDir(args));
+  // 按窗口分账：窗口没了就把它那份撤掉，不然它最后声明的那些目录会一直开着句柄。
+  // 同一个窗口重载不算「没了」—— 新页面启动时会先声明一份（空的也发），整份替换掉旧的。
+  registerHandler('fs.setWatched', (args, evt) => {
+    const id = evt.sender.id;
+    if (!watchSenders.has(id)) {
+      watchSenders.add(id);
+      evt.sender.once('destroyed', () => {
+        watchSenders.delete(id);
+        fileWatcherService.forget(id);
+      });
+    }
+    fileWatcherService.set(id, args);
+  });
   registerHandler('file.readText', (args) => fileService.readText(args));
   registerHandler('file.readBytes', (args) => fileService.readBytes(args));
   registerHandler('file.readBytesWithin', (args) => fileService.readBytesWithin(args));

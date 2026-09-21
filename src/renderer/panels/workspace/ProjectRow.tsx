@@ -79,6 +79,8 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
     try {
       await window.kydog.invoke('project.close', { projectPath: project.path });
       removeProject(project.path);
+      // 它的目录不再有人看：摘掉缓存，监听集合随之撤掉这些目录。
+      useUiStore.getState().dropDirsUnder(project.path);
     } catch (err) { console.error('remove failed', err); }
   };
 

@@ -117,6 +117,7 @@ beforeEach(() => {
     'skill.getSyncHealth': { state: 'ok', installedOrUpgraded: [], userSkills: [] },
     'settings.update': SETTINGS,
     'viewState.save': undefined,
+    'project.readDir': [],
   };
   (globalThis as unknown as { window: unknown }).window = {
     // bootstrap.ts 拿它初始化 uiStore.windowWidth（见 syncWindowWidth）。
@@ -352,5 +353,30 @@ describe('update.status 广播接进了 updateStore', () => {
 
     expect(useUpdateStore.getState().status).toEqual(pushed);
     expect(shouldShowBanner(useUpdateStore.getState().status)).toBe(true);
+  });
+});
+
+describe('文件监听接上了：声明集合、按目录重读', () => {
+  /**
+   * 主进程只盯渲染层声明过的目录（fs.setWatched）。bootstrap 不装 installWatchSync 的话，
+   * 主进程手上的集合永远是空的 —— 文件树不再跟着磁盘变，gate 三条照样全绿。
+   */
+  it('启动就发一份监听集合；fs.changed 只重读自己缓存着的那个目录', async () => {
+    useUiStore.setState({ dirCache: {}, dirPending: new Set(), dirErrors: {} });
+    await bootstrap();
+    await settle();
+    expect(calls.filter((c) => c.method === 'fs.setWatched').length).toBeGreaterThan(0);
+
+    useUiStore.getState().setDir('/p', []);
+    const reads = () => calls.filter((c) => c.method === 'project.readDir').map((c) => c.args);
+
+    fire('fs.changed', { dir: '/q' });
+    await settle();
+    expect(reads()).toEqual([]);
+
+    // 同一条广播、换成缓存着的目录就读 —— 上面没读不是因为监听器没接上。
+    fire('fs.changed', { dir: '/p' });
+    await settle();
+    expect(reads()).toEqual([{ path: '/p' }]);
   });
 });

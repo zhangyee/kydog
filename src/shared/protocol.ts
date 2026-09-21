@@ -72,6 +72,10 @@ export type RpcCall =
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }
   | { method: 'project.readDir'; args: { path: string }; result: FsNode[] }
+  // 整份替换发起窗口「此刻在看的东西」：dirs = 文件树缓存着列表的目录，files = 跟着磁盘走的
+  // 已打开文件（md / html 标签）。主进程只盯这些，不再整树监听 project —— 见 fileWatcher.ts。
+  // **要在读目录之前发**：两条 IPC 按序到达，句柄才会先于那次读开起来。
+  | { method: 'fs.setWatched'; args: { dirs: string[]; files: string[] }; result: void }
   | { method: 'thread.create'; args: { projectPath: string; title?: string }; result: Thread }
   | { method: 'thread.list'; args: { projectPath: string }; result: Thread[] }
   | { method: 'thread.delete'; args: { threadId: string }; result: void }
@@ -239,6 +243,7 @@ export const RPC_METHODS = [
   'project.list',
   'project.close',
   'project.readDir',
+  'fs.setWatched',
   'thread.create',
   'thread.list',
   'thread.delete',
@@ -351,10 +356,11 @@ export type RuntimeEvent =
   | { topic: 'oauth.success'; payload: { providerId: string } }
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }
-  | { topic: 'fs.changed'; payload: { projectPath: string } }
-  // fs.changed 是「项目结构变了」（增删文件/目录 → 刷文件树）；file.changed 是
-  // 「这个文件的内容变了」，带路径。两者语义不同，不要用前者代替后者 ——
-  // 拿项目级事件当文件级信号就是在下游补 proxy，而路径信号在 chokidar 回调里本来就有。
+  // fs.changed 是「这个目录的列表变了」（有条目出现、消失或改名 → 重读这一个目录）；
+  // file.changed 是「这个文件被动过」，带路径。两者语义不同，不要用前者代替后者 ——
+  // 拿目录级事件当文件级信号就是在下游补 proxy，而文件名在 fs.watch 的回调里本来就有。
+  // 两条都只对 fs.setWatched 声明过的东西发。
+  | { topic: 'fs.changed'; payload: { dir: string } }
   | { topic: 'file.changed'; payload: { path: string } }
   | { topic: 'identity.changed'; payload: Identity }
   // pi 的模型目录是两段式的：ModelRuntime.create() 先给内置那份静态清单，随后
