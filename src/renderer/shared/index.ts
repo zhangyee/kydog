@@ -14,3 +14,4 @@ export { IconButton } from './IconButton';
 export { ConfirmDialog } from './ConfirmDialog';
 export { MarqueeText } from './MarqueeText';
 export { DropdownMenu, DropdownSection, DropdownDivider, DropdownItem } from './DropdownMenu';
+export { ContextMenu } from './ContextMenu';

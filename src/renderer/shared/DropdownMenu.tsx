@@ -1,5 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from 'react';
 import { createPortal } from 'react-dom';
+
+/** 下拉菜单与右键菜单共用的面板样式（ContextMenu 也用它）。定位字段各自补。 */
+export const MENU_PANEL_STYLE: CSSProperties = {
+  background: 'var(--color-paper)',
+  border: '0.5px solid var(--color-ink-hair)',
+  borderRadius: 6,
+  boxShadow: '0 12px 32px rgba(50,35,20,0.18), 0 2px 6px rgba(50,35,20,0.10)',
+  padding: '4px 0',
+  fontFamily: 'var(--font-sans)',
+  zIndex: 1000,
+};
 
 type Align = 'left' | 'right';
 type Coords = { x: number; y: number; align: Align };
@@ -59,18 +70,12 @@ export function DropdownMenu({ trigger, align = 'right', width = 220, testId, ch
           data-testid={testId}
           role="menu"
           style={{
+            ...MENU_PANEL_STYLE,
             position: 'fixed',
             left: coords.align === 'left' ? coords.x : undefined,
             right: coords.align === 'right' ? window.innerWidth - coords.x : undefined,
             top: coords.y,
             width,
-            background: 'var(--color-paper)',
-            border: '0.5px solid var(--color-ink-hair)',
-            borderRadius: 6,
-            boxShadow: '0 12px 32px rgba(50,35,20,0.18), 0 2px 6px rgba(50,35,20,0.10)',
-            padding: '4px 0',
-            fontFamily: 'var(--font-sans)',
-            zIndex: 1000,
           }}
           onClick={() => setOpen(false)}
         >
@@ -106,26 +111,35 @@ type DropdownItemProps = {
   icon?: ReactNode;
   label: string;
   shortcut?: string;
+  /** 右侧的说明小字（例：「运行中」）。与 shortcut 占同一个位置，有 hint 时不显示 shortcut。 */
+  hint?: string;
   checked?: boolean;
   destructive?: boolean;
+  /** 禁用：不响应点击，也拦住冒泡，让外层面板别因为这一下关掉。 */
+  disabled?: boolean;
   onClick?: () => void;
   testId?: string;
 };
 
-export function DropdownItem({ icon, label, shortcut, checked, destructive, onClick, testId }: DropdownItemProps) {
+export function DropdownItem({ icon, label, shortcut, hint, checked, destructive, disabled, onClick, testId }: DropdownItemProps) {
   return (
     <button
       type="button"
       role="menuitem"
       data-testid={testId}
-      onClick={() => { onClick?.(); }}
-      className="w-full flex items-center text-left transition-colors hover:bg-[color:var(--color-hover-bg)]"
+      aria-disabled={disabled ? true : undefined}
+      onClick={(e) => {
+        if (disabled) { e.stopPropagation(); return; }
+        onClick?.();
+      }}
+      className={`w-full flex items-center text-left transition-colors${disabled ? '' : ' hover:bg-[color:var(--color-hover-bg)]'}`}
       style={{
         padding: '7px 12px',
         gap: 10,
         fontSize: 12.5,
         color: destructive ? 'var(--color-accent)' : 'var(--color-ink)',
-        cursor: 'pointer',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : undefined,
       }}
     >
       <span
@@ -136,8 +150,11 @@ export function DropdownItem({ icon, label, shortcut, checked, destructive, onCl
       </span>
       <span className="flex-1">{label}</span>
       {checked && <span style={{ color: 'var(--color-ink-soft)', fontSize: 12 }}>✓</span>}
-      {!checked && shortcut && (
-        <span className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}>{shortcut}</span>
+      {!checked && hint && (
+        <span data-testid="dropdown-item-hint" style={{ fontSize: 10.5, color: 'var(--color-ink-faint)' }}>{hint}</span>
+      )}
+      {!checked && !hint && shortcut && (
+        <span data-testid="dropdown-item-shortcut" className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}>{shortcut}</span>
       )}
     </button>
   );
