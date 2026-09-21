@@ -9,7 +9,7 @@ import type { FixtureFile, FixtureEvent } from './fixtures/fixture.types';
  * 输入框（contenteditable 里的 slash 菜单与 skill chip）、项目与模型 pill、技能开关、
  * 附件（粘贴截图 / 回形针）、@ 引用、md 评论（选区工具栏与评论模式两个入口）。
  * 串行共用一次启动：每条从「新建对话」起一个空 thread，互不依赖输入框里的残留；
- * 附件与评论四条互不依赖，都从 `newThread` 起；md 评论那条会开一个文件 tab，结束时关掉。
+ * 附件、@ 与评论几条互不依赖，都从 `newThread` 起；md 评论那条会开一个文件 tab，结束时关掉。
  * 技能开关那条改设置，放最后。
  *
  * 发送走 fixture（`ping` 剧本）—— 不设 fixture 就会拿假 key 真打上游 API。
@@ -28,7 +28,7 @@ async function prompts(): Promise<Array<{ content: string; images: Array<{ mimeT
   return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
-/** 剧本形状照 `ping`：agent_start → 一段文字 → agent_end。新增四条只是回复文字不同。 */
+/** 剧本形状照 `ping`：agent_start → 一段文字 → agent_end。新增几条只是回复文字不同。 */
 const reply = (delta: string): FixtureEvent[] => [
   { after_ms: 0, type: 'agent_start' },
   { after_ms: 0, type: 'message_start', messageId: 'm1' },
@@ -57,6 +57,8 @@ test.beforeAll(async () => {
       '看图': reply('看到了'),
       '看文件': reply('看到了'),
       '对比 <kydog-ref path="refs/dpo-2023.pdf"/> 的表 2': reply('对比完了'),
+      '看看@zzz': reply('看过了'),
+      '谢谢@所有人': reply('不客气'),
       '整理批注': reply('整理完了'),
     },
   };
@@ -308,6 +310,32 @@ test('@ 引用：打 @dpo → 列表里有它 → 回车成标签 → 发出的�
   await page.keyboard.type('的表 2');
   await page.keyboard.press('Enter');
   await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('对比 <kydog-ref path="refs/dpo-2023.pdf"/> 的表 2');
+});
+
+test('@ 列表：Esc 关掉后不再弹回来、↵ 照常发送；没有匹配时不按 Esc、↵ 也直接发送', async () => {
+  const { page } = launched;
+  await freshComposer(page);
+  const menu = page.getByTestId('mention-menu');
+  await page.keyboard.type('看看@zzz');
+  await expect(menu).toBeVisible();
+  // 这一次弹出会请求重扫：项目没索引过时先显示「正在索引项目文件…」，扫完广播后开着的列表自动重查。
+  await expect(menu).toContainText('没有匹配的文件');
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  // 「没弹回来」没有协议事实可等：回归的形态是松开 Esc 那一下 keyup 把同一个 @ 重新报上去，
+  // 列表要等一趟 project.searchFiles 往返（毫秒级）才重新渲染出来 —— 只能留一小段观察窗再看一次。
+  await page.waitForTimeout(300);
+  await expect(menu).toBeHidden();
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('看看@zzz');
+
+  // 不按 Esc：列表开着、查完且没有匹配时，↵ 不归列表管、照常发送（裁定 3 允许「谢谢@所有人」这种正文）。
+  // 另起一个空对话：上一个对话这时可能还在跑那一轮，运行中不让发。
+  await freshComposer(page);
+  await page.keyboard.type('谢谢@所有人');
+  await expect(menu).toContainText('没有匹配的文件');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('谢谢@所有人');
 });
 
 test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {

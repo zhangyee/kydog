@@ -97,6 +97,15 @@ export function mentionQueryAt(textBeforeCaret: string): { query: string; start:
 }
 
 /**
+ * 文本里从 `start`（一个 `@` 的位置）起的整个 @ 词：`@` 加上后面连续的非空白、非 @ 字符。
+ * 与光标停在词里的哪儿无关 —— ComposerEditor 用它认「还是不是 Esc 关掉的那个 @」：
+ * 词没变就还是它；接着打字、删字，词就变了。
+ */
+export function mentionTokenAt(text: string, start: number): string {
+  return /^@[^\s@]*/.exec(text.slice(start))?.[0] ?? '';
+}
+
+/**
  * 批注框的按键（spec §1.4）：只有 ⌘↵ / Ctrl↵ 添加；↵、⇧↵ 交给文本框换行；Esc 取消。
  * 输入法组字中一律不管：那一下 Esc 是撤销组字、↵ 是确认候选词，不该把写了一半的批注取消 / 交掉。
  */

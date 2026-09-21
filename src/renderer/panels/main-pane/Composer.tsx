@@ -150,6 +150,11 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
 
   // 光标处的 @ 比正文开头的 / 更具体：两者同时成立时 @ 赢。
   const slashMenuOpen = !mentionOpen && !menuForceClosed && skill === null && slashItems.length > 0;
+  // @ 列表查完了、索引也完了、确实没有匹配：列表里只剩一行「没有匹配的文件」，没有东西可插。
+  // 这时 ↵ 不归列表管、照常走发送 —— 裁定 3 允许「谢谢@所有人」这种正文，末尾是个没匹配上的 @词
+  // 也得能 ↵ 发出去。结果还没回来（!ready）或还没索引完时不放：列表还在加载，别把消息先发走了。
+  // Tab 不放（仍是空操作，免得焦点跳走）；Esc / ↑↓ 照旧归列表。
+  const mentionNoMatch = mentionOpen && mentionReady && mentionIndexed && mentionItems.length === 0;
 
   useEffect(() => {
     if (slashHighlight >= slashItems.length) setSlashHighlight(0);
@@ -246,7 +251,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
       metaKey: e.metaKey,
       ctrlKey: e.ctrlKey,
       isComposing: e.nativeEvent.isComposing,
-      slashMenuOpen: slashMenuOpen || mentionOpen,
+      slashMenuOpen: slashMenuOpen || (mentionOpen && !(mentionNoMatch && e.key === 'Enter')),
     });
     switch (action.kind) {
       case 'send':
@@ -273,7 +278,8 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
         break;
       case 'slash-close':
         e.preventDefault();
-        if (mentionOpen) setMentionQuery(null);
+        // 关 @ 列表要先让编辑器记住这个 @：松开 Esc 那一下 keyup 会再报一次光标处的 @（见 ComposerEditor）。
+        if (mentionOpen) { editorHandle.current?.dismissMention(); setMentionQuery(null); }
         else setMenuForceClosed(true);
         break;
       case 'ignore':

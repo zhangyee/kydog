@@ -56,6 +56,21 @@ function menu(tree: unknown) {
   return findAllWhere(tree as never, (el) => el.type === ComposerMentionMenu);
 }
 
+function keyEv(key: string, mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean; isComposing?: boolean } = {}) {
+  return {
+    key, shiftKey: mods.shiftKey ?? false, metaKey: mods.metaKey ?? false, ctrlKey: mods.ctrlKey ?? false,
+    nativeEvent: { isComposing: mods.isComposing ?? false }, preventDefault: vi.fn(),
+  };
+}
+/** 编辑器的 handle：miniReact 不展开 ComposerEditor，ref 由用例自己挂一个替身（React 19 的 ref 就在 props 上）。 */
+function installHandle(tree: unknown) {
+  const h = { focus: vi.fn(), rootEl: () => null, insertMention: vi.fn(), dismissMention: vi.fn() };
+  (editor(tree).props.ref as { current: unknown }).current = h;
+  return h;
+}
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+const sendCalls = () => invoke.mock.calls.filter((c) => c[0] === 'thread.send');
+
 let invoke: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   invoke = vi.fn().mockResolvedValue({ runId: 'r' });
@@ -133,5 +148,100 @@ describe('Composer —— @ 列表', () => {
     expect(menu(m.tree)).toHaveLength(1);
     expect(menu(m.tree)[0].props.items).toEqual([]);
     expect(menu(m.tree)[0].props.indexed).toBe(false);
+  });
+
+  it('↓/↑ 移动高亮（首尾回绕）；↵ / Tab 把高亮那一项交给编辑器插入；输入法组字中的 ↵ 不插', async () => {
+    invoke.mockResolvedValue({ items: [{ path: 'refs/a.pdf' }, { path: 'refs/b.pdf' }, { path: 'refs/c.pdf' }], indexed: true });
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('r');
+    await flush();
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+
+    const down = keyEv('ArrowDown');
+    editor(m.tree).props.onKeyDown(down);
+    expect(down.preventDefault).toHaveBeenCalled();
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
+    editor(m.tree).props.onKeyDown(keyEv('ArrowUp'));
+    editor(m.tree).props.onKeyDown(keyEv('ArrowUp'));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(2); // 0 再往上回绕到末项
+
+    const enter = keyEv('Enter');
+    editor(m.tree).props.onKeyDown(enter);
+    expect(enter.preventDefault).toHaveBeenCalled();
+    expect(h.insertMention).toHaveBeenCalledTimes(1);
+    expect(h.insertMention).toHaveBeenLastCalledWith('refs/c.pdf');
+    editor(m.tree).props.onKeyDown(keyEv('Tab'));
+    expect(h.insertMention).toHaveBeenCalledTimes(2);
+
+    // 组字中的 ↵ 是在确认候选词：不插（上面两次是正向证明，同一个 handle、同一份列表）。
+    editor(m.tree).props.onKeyDown(keyEv('Enter', { isComposing: true }));
+    expect(h.insertMention).toHaveBeenCalledTimes(2);
+  });
+
+  it('Esc：关掉列表，并告诉编辑器这个 @ 是被 Esc 关掉的（编辑器据此不在松开 Esc 时把它重新报上来）', async () => {
+    invoke.mockResolvedValue({ items: [{ path: 'refs/dpo-2023.pdf' }], indexed: true });
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('dpo');
+    await flush();
+    expect(menu(m.tree)).toHaveLength(1); // 正向：Esc 之前列表确实开着
+
+    const esc = keyEv('Escape');
+    editor(m.tree).props.onKeyDown(esc);
+    expect(esc.preventDefault).toHaveBeenCalled();
+    expect(h.dismissMention).toHaveBeenCalledTimes(1);
+    expect(menu(m.tree)).toHaveLength(0);
+    expect(h.insertMention).not.toHaveBeenCalled();
+    // 「松开 Esc 那一下不再报同一个 @」是编辑器在 DOM 上做的（文本节点 + @ 位置 + 整个 @ 词），
+    // 这一层测不到 —— 由 e2e/27-composer.spec.ts「@ 列表：Esc 关掉…」守。
+  });
+
+  it('列表查完且没有匹配：↵ 照常发送（「谢谢@所有人」）；结果没回来 / 没索引完时 ↵ 什么都不做；Tab 始终不发', async () => {
+    const pending: Array<(r: { items: { path: string }[]; indexed: boolean }) => void> = [];
+    invoke.mockImplementation((method: string) => (method === 'project.searchFiles'
+      ? new Promise((res) => { pending.push(res); })
+      : Promise.resolve({ runId: 'r' })));
+    const withBody = () => useComposerDraftStore.getState().setDraft('t1', { skill: null, body: '谢谢@所有人' });
+
+    // 正向：查完、索引完、没有匹配 —— 这一下 ↵ 发出去的就是正文原样。
+    withBody();
+    const m1 = mount(Composer, { threadId: 't1' });
+    editor(m1.tree).props.onMentionQuery('所有人');
+    await flush();
+    pending.shift()!({ items: [], indexed: true });
+    await flush();
+    expect(menu(m1.tree)[0].props).toMatchObject({ items: [], indexed: true }); // 列表开着，显示「没有匹配的文件」
+    const enter = keyEv('Enter');
+    editor(m1.tree).props.onKeyDown(enter);
+    expect(enter.preventDefault).toHaveBeenCalled();
+    expect(sendCalls()).toHaveLength(1);
+    expect(sendCalls()[0][1]).toMatchObject({ threadId: 't1', content: '谢谢@所有人' });
+
+    // 同一件事换三个条件：结果还没回来、回来了但没索引完、索引完了但按的是 Tab —— 都不发。
+    withBody();
+    const m2 = mount(Composer, { threadId: 't1' });
+    installHandle(m2.tree);
+    editor(m2.tree).props.onMentionQuery('所有人');
+    await flush();
+    editor(m2.tree).props.onKeyDown(keyEv('Enter'));
+    expect(sendCalls()).toHaveLength(1);
+    pending.shift()!({ items: [], indexed: false });
+    await flush();
+    expect(menu(m2.tree)[0].props).toMatchObject({ items: [], indexed: false });
+    editor(m2.tree).props.onKeyDown(keyEv('Enter'));
+    expect(sendCalls()).toHaveLength(1);
+    useFileIndexStore.getState().bump(PROJ);
+    m2.rerender({ threadId: 't1' });
+    await flush();
+    pending.shift()!({ items: [], indexed: true });
+    await flush();
+    const tab = keyEv('Tab');
+    editor(m2.tree).props.onKeyDown(tab);
+    expect(tab.preventDefault).toHaveBeenCalled(); // 焦点不跳走
+    expect(sendCalls()).toHaveLength(1);
+    // 同一个 m2，条件齐了再按 ↵：发出去（这一条证明上面三次「不发」不是因为 m2 本身发不出去）。
+    editor(m2.tree).props.onKeyDown(keyEv('Enter'));
+    expect(sendCalls()).toHaveLength(2);
   });
 });

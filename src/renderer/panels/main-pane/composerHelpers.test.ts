@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, dispatchCommentBoxKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, dispatchCommentBoxKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -145,6 +145,19 @@ describe('mentionQueryAt（裁定 3）', () => {
     expect(mentionQueryAt('@dp o')).toBeNull();
     expect(mentionQueryAt('@a@b')).toBeNull();
     expect(mentionQueryAt('no at here')).toBeNull();
+  });
+});
+
+describe('mentionTokenAt：认「还是不是 Esc 关掉的那个 @」用的整个 @ 词', () => {
+  it('从 @ 起到空白 / 下一个 @ / 结尾为止；与光标在词里的哪儿无关；接着打字词就变了', () => {
+    expect(mentionTokenAt('看看@zzz', 2)).toBe('@zzz');
+    expect(mentionTokenAt('看看@zzz 后面', 2)).toBe('@zzz');
+    expect(mentionTokenAt('@a@b', 0)).toBe('@a');
+    expect(mentionTokenAt('看看@', 2)).toBe('@');
+    // 同一个位置、打了一个字：词变了（ComposerEditor 据此忘掉被 Esc 关掉的那个 @，重新报）
+    expect(mentionTokenAt('看看@zzzz', 2)).not.toBe(mentionTokenAt('看看@zzz', 2));
+    // 位置上不是 @：空串（ComposerEditor 只拿 mentionQueryAt 给的 @ 位置来调，这里只是兜底）
+    expect(mentionTokenAt('看看@zzz', 0)).toBe('');
   });
 });
 

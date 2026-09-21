@@ -9,13 +9,15 @@ import {
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
 import { refTag, splitBody } from '../../../shared/userTurn';
-import { mentionQueryAt, routePaste } from './composerHelpers';
+import { mentionQueryAt, mentionTokenAt, routePaste } from './composerHelpers';
 import { fileTitle } from './markdown/fileTabHelpers';
 
 export type ComposerEditorHandle = {
   focus: () => void;
   rootEl: () => HTMLDivElement | null;
   insertMention: (path: string) => void;
+  /** 光标处的 @ 被 Esc 关掉了：记住它，之后不再报它，直到光标离开它或它的字变了。 */
+  dismissMention: () => void;
 };
 
 type Props = {
@@ -51,11 +53,28 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
   const onMentionRef = useRef(onMentionQuery); onMentionRef.current = onMentionQuery;
   const skillsRef = useRef(skills); skillsRef.current = skills;
-  const reportMention = () => { onMentionRef.current(caretMention(editorRef.current)?.query ?? null); };
+  // Esc 关掉的那个 @：文本节点 + `@` 在节点里的位置 + 当时的整个 @ 词。松开 Esc 的那一下 keyup
+  // 还会走 reportMention —— 不记住它，列表就立刻重新弹出来（而且算新的一次弹出、又请求一趟全项目
+  // 重扫）。光标离开这个 @（落到别处、失焦）或这个词变了（接着打字、删字）就忘掉它，照常报。
+  const dismissedRef = useRef<{ node: Text; start: number; token: string } | null>(null);
+  const reportMention = () => {
+    const hit = caretMention(editorRef.current);
+    const d = dismissedRef.current;
+    if (d && hit && hit.node === d.node && hit.start === d.start && mentionTokenAt(hit.node.data, hit.start) === d.token) {
+      onMentionRef.current(null);
+      return;
+    }
+    dismissedRef.current = null;
+    onMentionRef.current(hit?.query ?? null);
+  };
 
   useImperativeHandle(ref, () => ({
     focus: () => editorRef.current?.focus(),
     rootEl: () => editorRef.current,
+    dismissMention: () => {
+      const hit = caretMention(editorRef.current);
+      dismissedRef.current = hit ? { node: hit.node, start: hit.start, token: mentionTokenAt(hit.node.data, hit.start) } : null;
+    },
     insertMention: (path: string) => {
       const el = editorRef.current;
       const hit = caretMention(el);
@@ -134,7 +153,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         onKeyDown={onKeyDown}
         onKeyUp={reportMention}
         onMouseUp={reportMention}
-        onBlur={() => onMentionRef.current(null)}
+        onBlur={() => { dismissedRef.current = null; onMentionRef.current(null); }}
         onPaste={onPaste}
         className="font-serif w-full bg-transparent border-0 outline-none"
         style={{
