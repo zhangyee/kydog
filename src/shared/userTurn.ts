@@ -165,3 +165,23 @@ export function decodeUserTurn(text: string, imageCount: number): DecodedTurn {
   }
   return { bodyRaw: text, body: splitBody(text), attachments: [], comments: [] };
 }
+
+const fileNameOf = (p: string): string => p.split(/[\\/]/).pop() || p;
+
+/**
+ * 自动起对话标题用的纯文字（不是发给模型的原文）。只有批注或附件的消息，原文以结构块开头，
+ * 标题回落到「前 20 个字」时会变成 `<kydog-attachments>` / `<kydog-comment file=…`。
+ * 取正文（@ 引用换成文件名）；正文为空取第一条批注的引文；引文也空取第一个附件的名字
+ * （图片的名字、文件的文件名）；都没有就是空串（标题照旧留「无标题」）。
+ */
+export function turnTitleSource(text: string, imageCount: number): string {
+  const d = decodeUserTurn(text, imageCount);
+  const body = d.body.map((s) => (s.kind === 'text' ? s.text : fileNameOf(s.path))).join('').trim();
+  if (body !== '') return body;
+  const quote = d.comments[0]?.quote.trim() ?? '';
+  if (quote !== '') return quote;
+  const first = d.attachments[0];
+  if (!first) return '';
+  return first.kind === 'image' ? first.name : fileNameOf(first.path);
+}
+

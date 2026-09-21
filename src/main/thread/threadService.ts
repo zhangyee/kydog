@@ -6,6 +6,7 @@ import { agentService } from '../agent/AgentService';
 import { browserService } from '../browser/browserService';
 import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
+import { turnTitleSource } from '../../shared/userTurn';
 import type { AskAnswer } from '../../shared/askQuestion';
 import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
@@ -164,7 +165,8 @@ export class ThreadService {
     if (needsTitle) {
       // Dynamic import to break the circular dependency: titleService imports threadService.
       const { titleService } = await import('./titleService');
-      titleService.generateForThread(threadId, content);
+      // 起标题用纯文字，不用带结构块的原文：只有批注 / 附件的消息，标题会回落成 `<kydog-…` 开头的一串。
+      titleService.generateForThread(threadId, turnTitleSource(content, images?.length ?? 0));
     }
     return agentService.send(threadId, thread.projectPath, content, images ?? []);
   }

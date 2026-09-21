@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  encodeUserTurn, decodeUserTurn, refTag, splitBody, escapeXml, unescapeXml,
+  encodeUserTurn, decodeUserTurn, refTag, splitBody, escapeXml, unescapeXml, turnTitleSource,
   type TurnComment,
 } from './userTurn';
 
@@ -166,3 +166,33 @@ describe('userTurn：冻结样本（语法只许加、不许改 —— 见 CLAUD
     expect(d.comments).toEqual([{ file: 'notes/ch3.md', section: '3.2 偏好对齐方法', quote: '将 β 固定为 0.1', note: '取值依据？' }]);
   });
 });
+
+describe('turnTitleSource：自动起标题用的纯文字（F6）', () => {
+  const src = (input: Parameters<typeof encodeUserTurn>[0]) => {
+    const { text, images } = encodeUserTurn(input);
+    return turnTitleSource(text, images.length);
+  };
+
+  it('有正文就用正文：@ 引用换成文件名，结构块不参与；没有结构的正文原样', () => {
+    expect(turnTitleSource('Explain speculative decoding', 0)).toBe('Explain speculative decoding');
+    expect(src({ body: `对比 ${refTag('refs/dpo-2023.pdf')} 的表 2`, attachments: [FILE, IMG_A], comments: [C1] })).toBe('对比 dpo-2023.pdf 的表 2');
+    expect(src({ body: refTag('C:\\Users\\yee\\a.pdf'), attachments: [], comments: [] })).toBe('a.pdf');
+  });
+
+  it('正文为空：第一条批注的引文；再没有：第一个附件的名字（图片名 / 文件名）—— 不会是 <kydog- 开头的原文', () => {
+    const cases: Array<[Parameters<typeof encodeUserTurn>[0], string]> = [
+      [{ body: '', attachments: [FILE], comments: [C1, C2] }, '将 β 固定为 0.1'],
+      [{ body: '', attachments: [IMG_A, FILE], comments: [] }, '截图 1'],
+      [{ body: '', attachments: [FILE, IMG_A], comments: [] }, 'draft-v2.pdf'],
+    ];
+    for (const [input, want] of cases) {
+      const { text } = encodeUserTurn(input);
+      expect(text.startsWith('<kydog-')).toBe(true); // 正向：原文确实是标签开头 —— 这正是要避开的
+      expect(src(input)).toBe(want);
+      expect(src(input).startsWith('<kydog-')).toBe(false);
+    }
+    // 引文是空的就跳到附件（批注可以只选中一张没有说明文字的图，引文为空）。
+    expect(src({ body: '', attachments: [IMG_B], comments: [{ ...C2, quote: '' }] })).toBe('fig3.png');
+  });
+});
+
