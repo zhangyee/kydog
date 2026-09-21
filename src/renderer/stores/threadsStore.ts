@@ -18,9 +18,17 @@ type ThreadsState = {
   appendUserMessage: (threadId: string, message: Message) => void;
 };
 
+/**
+ * 渲染层 thread 集合的唯一入口：hydrate / upsertThread / removeThread 都经过这里。
+ * 已归档的（archivedAt 有值）在这一处滤掉，别的入口不必各记一遍
+ * （spec 2026-09-21-thread-archive-design §3.4）。
+ */
 function bucketize(threads: Thread[]): Record<string, Thread[]> {
   const out: Record<string, Thread[]> = {};
-  for (const t of threads) (out[t.projectPath] ??= []).push(t);
+  for (const t of threads) {
+    if (t.archivedAt) continue;
+    (out[t.projectPath] ??= []).push(t);
+  }
   for (const k of Object.keys(out)) out[k].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
   return out;
 }
@@ -35,7 +43,14 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
   upsertThread: (thread) => set((s) => {
     const flat = Object.values(s.threadsByProject).flat().filter(t => t.id !== thread.id);
     flat.push(thread);
-    return { threadsByProject: bucketize(flat) };
+    if (!thread.archivedAt) return { threadsByProject: bucketize(flat) };
+    // 进来的是一个已归档的：它出桶（bucketize 滤掉）；正开着的话主区回到 Welcome，同删除当前对话。
+    const { [thread.id]: _drop, ...history } = s.historyByThread;
+    return {
+      threadsByProject: bucketize(flat),
+      historyByThread: history,
+      currentThreadId: s.currentThreadId === thread.id ? null : s.currentThreadId,
+    };
   }),
   removeThread: (threadId) => set((s) => {
     const flat = Object.values(s.threadsByProject).flat().filter(t => t.id !== threadId);
