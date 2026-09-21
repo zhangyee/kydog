@@ -19,7 +19,6 @@ const schema = new Schema({
   },
 });
 const p = (...c: PmNode[]) => schema.node('paragraph', null, c);
-const h = (level: number, s: string) => schema.node('heading', { level }, [schema.text(s)]);
 const t = (s: string) => schema.text(s);
 /** 在文档里找一段文字的起止位置（测试辅助）。 */
 function find(doc: PmNode, needle: string): { from: number; to: number } {
