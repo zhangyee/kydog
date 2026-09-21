@@ -1,9 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { Crepe } from '@milkdown/crepe';
-import { nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
+import { editorViewCtx, nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
 import type { MilkdownPlugin } from '@milkdown/kit/ctx';
-import type { NodeViewConstructor } from '@milkdown/kit/prose/view';
+import { $prose } from '@milkdown/kit/utils';
+import type { EditorView, NodeViewConstructor } from '@milkdown/kit/prose/view';
 import katex from 'katex';
+import { commentMarksPlugin } from './commentMarks';
 import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 import './markdown-editor.css';
@@ -45,26 +47,35 @@ const mathInlineNodeViewPlugin: MilkdownPlugin = (ctx) => async () => {
   ]);
 };
 
-export type CrepeEditorHandle = { getMarkdown: () => string };
+/** 选区工具栏里评论键的图标（与 NavIcon 的 message-square-plus 同一套路径）。 */
+const COMMENT_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/><path d="M12 8v6"/><path d="M9 11h6"/></svg>';
+
+export type CrepeEditorHandle = { getMarkdown: () => string; getView: () => EditorView | null };
 
 type Props = {
   initialMarkdown: string;
   onChange: (markdown: string) => void;
   // 编辑器加载完成、内容稳定后回调，参数是 Crepe 序列化出的初始 markdown（脏判定基准）。
   onReady?: (initialMarkdown: string) => void;
+  /** 选区工具栏里点了「评论」。 */
+  onCommentClick?: () => void;
 };
 
 export const CrepeEditor = forwardRef<CrepeEditorHandle, Props>(
-  function CrepeEditor({ initialMarkdown, onChange, onReady }, ref) {
+  function CrepeEditor({ initialMarkdown, onChange, onReady, onCommentClick }, ref) {
     const rootRef = useRef<HTMLDivElement>(null);
     const crepeRef = useRef<Crepe | null>(null);
+    const viewRef = useRef<EditorView | null>(null);
     const onChangeRef = useRef(onChange);
     onChangeRef.current = onChange;
     const onReadyRef = useRef(onReady);
     onReadyRef.current = onReady;
+    const onCommentClickRef = useRef(onCommentClick);
+    onCommentClickRef.current = onCommentClick;
 
     useImperativeHandle(ref, () => ({
       getMarkdown: () => crepeRef.current?.getMarkdown() ?? '',
+      getView: () => viewRef.current,
     }), []);
 
     useEffect(() => {
@@ -85,8 +96,22 @@ export const CrepeEditor = forwardRef<CrepeEditorHandle, Props>(
           [Crepe.Feature.Table]: true,
           [Crepe.Feature.Latex]: true,
         },
+        featureConfigs: {
+          [Crepe.Feature.Toolbar]: {
+            // 末尾加一组，只有评论一颗（spec §2.1）。Crepe 的工具栏按钮没有禁用态，
+            // 没有对话时靠 CSS 变淡、点不动（裁定 5）。
+            buildToolbar: (builder) => {
+              builder.addGroup('kydog-comment', '批注').addItem('comment', {
+                icon: COMMENT_ICON_SVG,
+                active: () => false,
+                onRun: () => onCommentClickRef.current?.(),
+              });
+            },
+          },
+        },
       });
       crepe.editor.use(mathInlineNodeViewPlugin);
+      crepe.editor.use($prose(() => commentMarksPlugin()));
       // Crepe 内部已注册 listener 插件，直接用 crepe.on 取 markdownUpdated，无需引 @milkdown/plugin-listener。
       crepe.on((api) => {
         api.markdownUpdated((_, md, prevMd) => {
@@ -99,11 +124,14 @@ export const CrepeEditor = forwardRef<CrepeEditorHandle, Props>(
       const created = crepe.create();
       void created.then(() => {
         // 仍是当前实例才回调（避免 StrictMode 卸载后调用已销毁编辑器）。
-        if (crepeRef.current === crepe) onReadyRef.current?.(crepe.getMarkdown());
+        if (crepeRef.current !== crepe) return;
+        crepe.editor.action((ctx) => { viewRef.current = ctx.get(editorViewCtx); });
+        onReadyRef.current?.(crepe.getMarkdown());
       });
       return () => {
         void created.then(() => crepe.destroy());
         crepeRef.current = null;
+        viewRef.current = null;
       };
       // 仅挂载一次：initialMarkdown 故意不入依赖（编辑器一旦建立由 Crepe 自管内容）。
     }, []);

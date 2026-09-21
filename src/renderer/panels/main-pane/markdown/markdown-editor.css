@@ -78,3 +78,14 @@
   background: var(--color-hover-bg);
   color: var(--color-ink);
 }
+
+/* 被批注的句子：1px 虚下划线（spec §2.5）。 */
+.kydog-md-editor .kydog-comment-mark {
+  text-decoration: underline dashed var(--color-marginalia);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+/* 评论模式下隐藏 Crepe 的选区工具栏，免得与批注框叠在一起（spec §2.1）。 */
+.kydog-comment-mode .milkdown-toolbar { display: none !important; }
+/* 没有对话：工具栏里末尾那颗评论键变淡、点不动（裁定 5）。 */
+.kydog-no-thread .milkdown-toolbar > .toolbar-item:last-child { opacity: 0.35; pointer-events: none; }

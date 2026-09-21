@@ -1,12 +1,81 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
+import { useThreadsStore, getCurrentThread } from '../../../stores/threadsStore';
 import { confirm } from '../../../stores/confirmStore';
+import { useComposerDraftStore } from '../composerDraftStore';
+import { sectionAt, quoteOf } from './commentSource';
+import { addCommentMark, renameCommentMark, keepCommentMarks, commentMarkRanges, PENDING_COMMENT_ID } from './commentMarks';
+import { CommentBox } from './CommentBox';
+import { MdCapsule } from './MdCapsule';
 import { CrepeEditor, type CrepeEditorHandle } from './CrepeEditor';
 import { registerSaver, unregisterSaver } from './saveRegistry';
 
 export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const editorRef = useRef<CrepeEditorHandle>(null);
+  type BoxState = { threadId: string; threadTitle: string; quote: string; section?: string; anchor: { left: number; top: number; bottom: number } };
+  const [commentMode, setCommentMode] = useState(false);
+  const [box, setBox] = useState<BoxState | null>(null);
+  const boxRef = useRef<BoxState | null>(null);
+  boxRef.current = box;
+  const thread = useThreadsStore((s) => getCurrentThread(s));
+
+  // 对话没了（被关 / 被删）就退出评论模式：模式的前提是「有地方可去」。
+  useEffect(() => { if (!thread) setCommentMode(false); }, [thread]);
+
+  /** 两个入口共用：读当前选区，弹批注框，并先画一条待定下划线（裁定 7）。 */
+  const openBoxFromSelection = useCallback(() => {
+    if (boxRef.current) return;
+    const view = editorRef.current?.getView();
+    const target = getCurrentThread(useThreadsStore.getState());
+    if (!view || !target) return;
+    const { from, to, empty } = view.state.selection;
+    if (empty) return;
+    const start = view.coordsAtPos(from);
+    const end = view.coordsAtPos(to);
+    const next: BoxState = {
+      threadId: target.id, threadTitle: target.title,
+      quote: quoteOf(view.state.doc, from, to),
+      section: sectionAt(view.state.doc, from),
+      anchor: { left: start.left, top: start.top, bottom: end.bottom },
+    };
+    view.dispatch(addCommentMark(view.state.tr, PENDING_COMMENT_ID, from, to));
+    setBox(next);
+  }, []);
+
+  const closeBox = (note: string | null) => {
+    const current = boxRef.current;
+    const view = editorRef.current?.getView();
+    if (current && note !== null) {
+      const id = useComposerDraftStore.getState().addComment(current.threadId, {
+        absPath: tab.path, ...(current.section ? { section: current.section } : {}),
+        quote: current.quote, note: note.trim(), sourceTabId: tab.id,
+      });
+      view?.dispatch(renameCommentMark(view.state.tr, PENDING_COMMENT_ID, id));
+    } else if (view) {
+      const keep = new Set(commentMarkRanges(view.state).map((r) => r.id).filter((id) => id !== PENDING_COMMENT_ID));
+      view.dispatch(keepCommentMarks(view.state.tr, keep));
+    }
+    setBox(null);
+  };
+
+  // 批注被删 / 被发出后，对应的下划线跟着去掉（spec §2.5）。
+  useEffect(() => useComposerDraftStore.subscribe((s) => {
+    const view = editorRef.current?.getView();
+    if (!view) return;
+    const ids = new Set<string>([PENDING_COMMENT_ID]);
+    for (const d of Object.values(s.byThread)) for (const c of d?.comments ?? []) if (c.sourceTabId === tab.id) ids.add(c.id);
+    if (commentMarkRanges(view.state).every((r) => ids.has(r.id))) return;
+    view.dispatch(keepCommentMarks(view.state.tr, ids));
+  }), [tab.id]);
+
+  // 评论模式下 Esc（批注框没开时）退出模式。
+  useEffect(() => {
+    if (!isActive || !commentMode || box) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented) setCommentMode(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isActive, commentMode, box]);
   // 脏判定基准：编辑器加载后的序列化结果（而非磁盘原文字节）。
   // Crepe 会规范化语法（- → *、--- → ***、表格补空格等），拿磁盘字节比会"开档即脏"。
   const baselineRef = useRef<string | null>(null);
@@ -176,11 +245,18 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
           </button>
         </div>
       )}
-      <div className="flex-1 min-h-0">
+      <div
+        className={`flex-1 min-h-0 relative${commentMode ? ' kydog-comment-mode' : ''}${thread ? '' : ' kydog-no-thread'}`}
+        // 评论模式：松开鼠标、或松开 ⇧（键盘选区）时，选区非空就直接弹框。
+        // 推到下一拍再读：ProseMirror 在 selectionchange 上才更新选区，那一拍排在 mouseup 之后。
+        onMouseUp={() => { if (commentMode) setTimeout(openBoxFromSelection, 0); }}
+        onKeyUp={(e) => { if (commentMode && e.key === 'Shift') setTimeout(openBoxFromSelection, 0); }}
+      >
         <CrepeEditor
           key={editorGeneration}
           ref={editorRef}
           initialMarkdown={tab.diskContent ?? ''}
+          onCommentClick={openBoxFromSelection}
           onReady={(initialMd) => {
             baselineRef.current = initialMd;
             readyRef.current = true;
@@ -195,7 +271,14 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
             setFileTabDirty(tab.id, md !== baselineRef.current);
           }}
         />
+        <MdCapsule commentMode={commentMode} canComment={!!thread} onToggleComment={() => setCommentMode((v) => !v)} />
       </div>
+      {box ? (
+        <CommentBox
+          quote={box.quote} targetTitle={box.threadTitle} anchor={box.anchor}
+          onSubmit={(note) => closeBox(note)} onCancel={() => closeBox(null)}
+        />
+      ) : null}
     </div>
   );
 }
