@@ -5,10 +5,12 @@ import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useSkillsStore } from '../../stores/skillsStore';
+import { useFileIndexStore } from '../../stores/fileIndexStore';
 import { NavIcon, IconButton } from '../../shared';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { ComposerProjectMenu } from './ComposerProjectMenu';
 import { ComposerSlashMenu } from './ComposerSlashMenu';
+import { ComposerMentionMenu } from './ComposerMentionMenu';
 import { ComposerSendButton } from './ComposerSendButton';
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
 import { ComposerActionsRow } from './ComposerActionsRow';
@@ -105,7 +107,36 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     () => (skill !== null ? [] : filterSkillEntries(enabledSkills, body)),
     [skill, enabledSkills, body],
   );
-  const slashMenuOpen = !menuForceClosed && skill === null && slashItems.length > 0;
+
+  // @ 引用（Task 8）：光标处的查询词由 ComposerEditor 报上来；结果查 project.searchFiles。
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionItems, setMentionItems] = useState<string[]>([]);
+  const [mentionIndexed, setMentionIndexed] = useState(true);
+  const [mentionHighlight, setMentionHighlight] = useState(0);
+  const mentionSessionRef = useRef(false);
+  const mentionProject = thread?.projectPath ?? null;
+  const indexVersion = useFileIndexStore((s) => (mentionProject ? s.versionByProject[mentionProject] ?? 0 : 0));
+  const mentionOpen = mentionQuery !== null && mentionProject !== null;
+
+  useEffect(() => {
+    if (mentionQuery === null || !mentionProject) { mentionSessionRef.current = false; return; }
+    // 一次弹出只在第一次查询时请求重扫；之后的按键与索引更新都用手上最新的结果（spec §3.5）。
+    const rescan = !mentionSessionRef.current;
+    mentionSessionRef.current = true;
+    let cancelled = false;
+    void window.kydog.invoke('project.searchFiles', { projectPath: mentionProject, query: mentionQuery, rescan })
+      .then((r) => {
+        if (cancelled) return;
+        setMentionItems(r.items.map((i) => i.path));
+        setMentionIndexed(r.indexed);
+        setMentionHighlight(0);
+      })
+      .catch((err: unknown) => console.error('project.searchFiles failed', err));
+    return () => { cancelled = true; };
+  }, [mentionQuery, mentionProject, indexVersion]);
+
+  // 光标处的 @ 比正文开头的 / 更具体：两者同时成立时 @ 赢。
+  const slashMenuOpen = !mentionOpen && !menuForceClosed && skill === null && slashItems.length > 0;
 
   useEffect(() => {
     if (slashHighlight >= slashItems.length) setSlashHighlight(0);
@@ -202,7 +233,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
       metaKey: e.metaKey,
       ctrlKey: e.ctrlKey,
       isComposing: e.nativeEvent.isComposing,
-      slashMenuOpen,
+      slashMenuOpen: slashMenuOpen || mentionOpen,
     });
     switch (action.kind) {
       case 'send':
@@ -214,19 +245,23 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
         break;
       case 'slash-down':
         e.preventDefault();
-        setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i + 1) % slashItems.length));
+        if (mentionOpen) setMentionHighlight((i) => (mentionItems.length === 0 ? 0 : (i + 1) % mentionItems.length));
+        else setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i + 1) % slashItems.length));
         break;
       case 'slash-up':
         e.preventDefault();
-        setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i - 1 + slashItems.length) % slashItems.length));
+        if (mentionOpen) setMentionHighlight((i) => (mentionItems.length === 0 ? 0 : (i - 1 + mentionItems.length) % mentionItems.length));
+        else setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i - 1 + slashItems.length) % slashItems.length));
         break;
       case 'slash-commit':
         e.preventDefault();
-        commitSlash(slashHighlight);
+        if (mentionOpen) { const p = mentionItems[mentionHighlight]; if (p) editorHandle.current?.insertMention(p); }
+        else commitSlash(slashHighlight);
         break;
       case 'slash-close':
         e.preventDefault();
-        setMenuForceClosed(true);
+        if (mentionOpen) setMentionQuery(null);
+        else setMenuForceClosed(true);
         break;
       case 'ignore':
       default:
@@ -317,6 +352,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             onChange={onEditorChange}
             onKeyDown={onKeyDown}
             onPasteFiles={(files) => { void ingestFiles(threadId, files); }}
+            onMentionQuery={setMentionQuery}
           />
           <ComposerActionsRow
             large={large}
@@ -432,6 +468,14 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
           anchorRect={editorWrapperRef.current.getBoundingClientRect()}
           onHover={setSlashHighlight}
           onSelect={applySlashSelection}
+        />
+      ) : null}
+      {mentionOpen && editorWrapperRef.current ? (
+        <ComposerMentionMenu
+          items={mentionItems} indexed={mentionIndexed} highlightIndex={mentionHighlight}
+          anchorRect={editorWrapperRef.current.getBoundingClientRect()}
+          onHover={setMentionHighlight}
+          onSelect={(p) => editorHandle.current?.insertMention(p)}
         />
       ) : null}
     </div>

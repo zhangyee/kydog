@@ -8,11 +8,14 @@ import {
   type KeyboardEvent,
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
-import { routePaste } from './composerHelpers';
+import { refTag, splitBody } from '../../../shared/userTurn';
+import { mentionQueryAt, routePaste } from './composerHelpers';
+import { fileTitle } from './markdown/fileTabHelpers';
 
 export type ComposerEditorHandle = {
   focus: () => void;
   rootEl: () => HTMLDivElement | null;
+  insertMention: (path: string) => void;
 };
 
 type Props = {
@@ -25,12 +28,15 @@ type Props = {
   onChange: (skill: SkillEntry | null, body: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
   onPasteFiles: (files: File[]) => void;
+  /** 光标处的 @ 查询词变了就报一次；没有 @ 上下文时报 null（裁定 3）。 */
+  onMentionQuery: (query: string | null) => void;
 };
 
 const CHIP_ATTR = 'data-skill-chip-name';
+const REF_ATTR = 'data-ref-path';
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function ComposerEditor(
-  { skill, body, large, placeholder, skills, onChange, onKeyDown, onPasteFiles },
+  { skill, body, large, placeholder, skills, onChange, onKeyDown, onPasteFiles, onMentionQuery },
   ref,
 ) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -42,10 +48,36 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   // DOM listener) reads the current body, not the body captured at build time.
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
+  const onMentionRef = useRef(onMentionQuery); onMentionRef.current = onMentionQuery;
+  const skillsRef = useRef(skills); skillsRef.current = skills;
+  const reportMention = () => { onMentionRef.current(caretMention(editorRef.current)?.query ?? null); };
 
   useImperativeHandle(ref, () => ({
     focus: () => editorRef.current?.focus(),
     rootEl: () => editorRef.current,
+    insertMention: (path: string) => {
+      const el = editorRef.current;
+      const hit = caretMention(el);
+      if (!el || !hit) return;
+      const range = document.createRange();
+      range.setStart(hit.node, hit.start);
+      range.setEnd(hit.node, hit.end);
+      range.deleteContents();
+      const space = document.createTextNode(' ');
+      range.insertNode(space);
+      range.insertNode(buildRefChip(path));
+      const after = document.createRange();
+      after.setStart(space, 1);
+      after.collapse(true);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(after);
+      const parsed = parseEditor(el, skillsRef.current);
+      lastUserInput.current = { skillName: parsed.skill?.name ?? null, body: parsed.body };
+      onChangeRef.current(parsed.skill, parsed.body);
+      onMentionRef.current(null);
+    },
   }), []);
 
   useLayoutEffect(() => {
@@ -63,8 +95,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     if (skill) {
       el.appendChild(buildChipNode(skill, () => onChange(null, bodyRef.current)));
     }
-    if (body) {
-      el.appendChild(document.createTextNode(body));
+    for (const seg of splitBody(body)) {
+      el.appendChild(seg.kind === 'text' ? document.createTextNode(seg.text) : buildRefChip(seg.path));
     }
     lastUserInput.current = { skillName: desiredSkillName, body };
     placeCursorAtEnd(el);
@@ -78,6 +110,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       body: parsedBody,
     };
     onChange(parsedSkill, parsedBody);
+    reportMention();
   };
 
   const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
@@ -99,6 +132,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         suppressContentEditableWarning
         onInput={onInput}
         onKeyDown={onKeyDown}
+        onKeyUp={reportMention}
+        onMouseUp={reportMention}
+        onBlur={() => onMentionRef.current(null)}
         onPaste={onPaste}
         className="font-serif w-full bg-transparent border-0 outline-none"
         style={{
@@ -194,31 +230,59 @@ function buildChipNode(skill: SkillEntry, onRemove: () => void): HTMLElement {
   return span;
 }
 
-function parseEditor(
-  el: HTMLElement,
-  skills: readonly SkillEntry[],
-): { skill: SkillEntry | null; body: string } {
-  let parsedSkill: SkillEntry | null = null;
-  let parsedBody = '';
+function parseEditor(el: HTMLElement, skills: readonly SkillEntry[]): { skill: SkillEntry | null; body: string } {
+  const acc = { skill: null as SkillEntry | null, body: '' };
+  serializeChildren(el, skills, acc);
+  return acc;
+}
+
+function serializeChildren(el: Element, skills: readonly SkillEntry[], acc: { skill: SkillEntry | null; body: string }) {
   for (const node of Array.from(el.childNodes)) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const elem = node as Element;
-      const chipName = elem.getAttribute(CHIP_ATTR);
-      if (chipName) {
-        if (!parsedSkill) parsedSkill = skills.find((s) => s.name === chipName) ?? null;
-        continue;
-      }
-      if (elem.tagName === 'BR') {
-        parsedBody += '\n';
-        continue;
-      }
-      // Fallback for nested elements the browser may produce (e.g. <div> on Enter).
-      parsedBody += (elem as HTMLElement).innerText ?? elem.textContent ?? '';
-    } else if (node.nodeType === Node.TEXT_NODE) {
-      parsedBody += node.textContent ?? '';
+    if (node.nodeType === Node.TEXT_NODE) { acc.body += node.textContent ?? ''; continue; }
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+    const elem = node as HTMLElement;
+    const chipName = elem.getAttribute(CHIP_ATTR);
+    if (chipName) {
+      if (!acc.skill) acc.skill = skills.find((s) => s.name === chipName) ?? null;
+      continue;
     }
+    const refPath = elem.getAttribute(REF_ATTR);
+    if (refPath !== null) { acc.body += refTag(refPath); continue; }
+    if (elem.tagName === 'BR') { acc.body += '\n'; continue; }
+    if (elem.querySelector(`[${REF_ATTR}]`)) {
+      // 浏览器回车造出来的 <div> 里包着引用标签：逐个子节点走，别用 innerText 把标签压成文件名。
+      if (acc.body !== '' && !acc.body.endsWith('\n')) acc.body += '\n';
+      serializeChildren(elem, skills, acc);
+      continue;
+    }
+    // Fallback for nested elements the browser may produce (e.g. <div> on Enter).
+    acc.body += elem.innerText ?? elem.textContent ?? '';
   }
-  return { skill: parsedSkill, body: parsedBody };
+}
+
+function buildRefChip(path: string): HTMLElement {
+  const span = document.createElement('span');
+  span.setAttribute('contenteditable', 'false');
+  span.setAttribute('data-testid', 'ref-chip');
+  span.setAttribute(REF_ATTR, path);
+  span.title = path;
+  span.className = 'font-mono';
+  span.textContent = fileTitle(path);
+  Object.assign(span.style, {
+    display: 'inline-flex', alignItems: 'center', padding: '0 6px', margin: '0 1px',
+    background: 'var(--color-hover-bg)', color: 'var(--color-ink)', borderRadius: '3px',
+    fontSize: '12px', lineHeight: '1.4', whiteSpace: 'nowrap', verticalAlign: 'baseline', userSelect: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  return span;
+}
+
+function caretMention(root: HTMLElement | null): { node: Text; start: number; end: number; query: string } | null {
+  const sel = window.getSelection();
+  if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+  const node = sel.anchorNode;
+  if (!node || node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return null;
+  const m = mentionQueryAt((node as Text).data.slice(0, sel.anchorOffset));
+  return m ? { node: node as Text, start: m.start, end: sel.anchorOffset, query: m.query } : null;
 }
 
 function placeCursorAtEnd(el: HTMLElement) {

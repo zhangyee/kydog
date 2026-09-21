@@ -81,3 +81,13 @@ export function routePaste(text: string, files: readonly File[], pathForFile: (f
   if (files.length > 0) return { kind: 'files', files: [...files] };
   return { kind: 'none' };
 }
+
+/**
+ * 光标前那一段里，最后一个「@查询词」（裁定 3）。@ 前面必须是开头、空白，或不属于
+ * [A-Za-z0-9_.-] 的字符 —— 中文「对比@dpo」要能触发，`a@b.com` 不触发。查询词里不含空白与 @。
+ */
+export function mentionQueryAt(textBeforeCaret: string): { query: string; start: number } | null {
+  const m = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/.exec(textBeforeCaret);
+  if (!m) return null;
+  return { query: m[2], start: m.index + m[1].length };
+}

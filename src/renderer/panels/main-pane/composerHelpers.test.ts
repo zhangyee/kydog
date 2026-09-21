@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -115,5 +115,22 @@ describe('routePaste（裁定 2）', () => {
     expect(routePaste('1\t2', [shot], pathOf)).toEqual({ kind: 'text', text: '1\t2' });
     expect(routePaste('', [shot], pathOf)).toEqual({ kind: 'files', files: [shot] });
     expect(routePaste('', [], pathOf)).toEqual({ kind: 'none' });
+  });
+});
+
+describe('mentionQueryAt（裁定 3）', () => {
+  it('@ 在开头、空白后、或非 [A-Za-z0-9_.-] 的字符后：取到 @ 到光标之间的查询词', () => {
+    expect(mentionQueryAt('@')).toEqual({ query: '', start: 0 });
+    expect(mentionQueryAt('对比 @dp')).toEqual({ query: 'dp', start: 3 });
+    expect(mentionQueryAt('对比@dpo')).toEqual({ query: 'dpo', start: 2 });
+    expect(mentionQueryAt('(@refs/a')).toEqual({ query: 'refs/a', start: 1 });
+  });
+  it('邮箱、@ 之后已有空白、查询里又出现 @：都不算', () => {
+    expect(mentionQueryAt('mail @x')).toEqual({ query: 'x', start: 5 });
+    expect(mentionQueryAt('a@b.com')).toBeNull();
+    expect(mentionQueryAt('x.y@z')).toBeNull();
+    expect(mentionQueryAt('@dp o')).toBeNull();
+    expect(mentionQueryAt('@a@b')).toBeNull();
+    expect(mentionQueryAt('no at here')).toBeNull();
   });
 });
