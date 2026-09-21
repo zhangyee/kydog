@@ -253,7 +253,8 @@ class AgentService {
     // 一次结束：不补的话 `bound.runId` 留在那里，本轮的下载计数再也没人清。
     //
     // **这里不关标签。** 切界面语言（disposeAllSessions）与换 provider（markStaleOrDispose）
-    // 也走 dispose，那不是「对话没了」。关标签只挂在 threadService.delete / projectService.close。
+    // 也走 dispose，那不是「对话没了」。关标签只挂在
+    // threadService.delete / projectService.close / threadService.archive。
     //
     // 读的是 `bound.runId`，与 `agent_settled` / `currentRunIdFor` 同一个字段（见 Bound.runId）：
     // 现算 `runs` 在 pi 的重试窗口里已经是 idle —— 而删线程（threadService.delete 无条件
