@@ -135,6 +135,9 @@ describe('ThreadRow：点选', () => {
 
 describe('ThreadRow：右键', () => {
   it('右键没被选中的行 → 单行菜单、清空多选、不打开', () => {
+    // currentThreadId 故意设成不是 A：原先夹具里当前对话恰好就是 A，「不打开」这条断言
+    // 就算右键把 A 打开了也照样读到 'a'，抓不住回归（ContextMenu 面板上的点击冒泡到行上）。
+    useThreadsStore.setState({ currentThreadId: 'b' });
     useSidebarSelection.setState({ selectedIds: ['b', 'c'], anchorId: 'b' });
     const m = mount(ThreadRow, { thread: A, selection: ['b', 'c'], order: ORDER });
     const e = ev();
@@ -144,7 +147,13 @@ describe('ThreadRow：右键', () => {
     expect(m.find('thread-ctx-archive-a')).toBeDefined();
     expect(m.query('thread-ctx-batch-archive')).toBeNull();
     expect(useSidebarSelection.getState().selectedIds).toEqual([]);
-    expect(useThreadsStore.getState().currentThreadId).toBe('a');
+    expect(useThreadsStore.getState().currentThreadId).toBe('b');
+
+    // 正向：同一批选中里，被选中的行右键弹的才是批量菜单——证明上面的 null 不是查找本身坏了。
+    useSidebarSelection.setState({ selectedIds: ['b', 'c'], anchorId: 'b' });
+    const mb = mount(ThreadRow, { thread: B, selection: ['b', 'c'], order: ORDER });
+    (mb.tree as MiniElement).props.onContextMenu(ev());
+    expect(mb.find('thread-ctx-batch-archive')).toBeDefined();
   });
 
   it('多选态右键被选中的行 → 批量菜单写数量；点归档 → archiveThreads(那两个)、清空多选', () => {
@@ -152,6 +161,13 @@ describe('ThreadRow：右键', () => {
     const m = mount(ThreadRow, { thread: B, selection: ['b', 'c'], order: ORDER });
     (m.tree as MiniElement).props.onContextMenu(ev());
     expect(m.query('thread-ctx-archive-b')).toBeNull();
+    // 正向：同一行没在多选里时，右键出的是单行项——证明上面的 null 不是查找本身坏了。
+    const ma = mount(ThreadRow, { thread: A, selection: [], order: ORDER });
+    (ma.tree as MiniElement).props.onContextMenu(ev());
+    expect(ma.find('thread-ctx-archive-a')).toBeDefined();
+    // ma 右键的是没被选中的 A：会清空多选。批量测试要接着走，把选中集合复原。
+    useSidebarSelection.setState({ selectedIds: ['b', 'c'], anchorId: 'b' });
+
     const item = m.find('thread-ctx-batch-archive');
     expect(item.props.label).toBe('归档 2 个对话');
     expect(m.find('thread-ctx-batch-delete').props.label).toBe('删除 2 个对话…');

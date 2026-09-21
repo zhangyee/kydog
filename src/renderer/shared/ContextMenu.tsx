@@ -58,8 +58,13 @@ export function ContextMenu({ at, width = 200, testId, onClose, children }: Prop
       role="menu"
       data-testid={testId}
       style={{ ...MENU_PANEL_STYLE, position: 'fixed', left: pos.left, top: pos.top, width }}
-      onClick={onClose}
-      onContextMenu={(e) => e.preventDefault()}
+      // portal 只搬了 DOM 节点，不搬事件路径：React 的合成事件按**组件树**冒泡，不是渲染出来的
+      // DOM 树，所以这个面板在 React 树上仍是发起右键的那一行 <div> 的子节点。面板上任何一次
+      // 点击 / 右键 / 按下不拦住，都会接着冒泡到行上的 onClick / onContextMenu —— 点菜单项就变成
+      // 顺手点开了那一行（当前对话被换掉）、右键菜单里的空白处也会把行上的右键处理逻辑再跑一遍。
+      onClick={(e) => { e.stopPropagation(); onClose(); }}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      onMouseDown={(e) => e.stopPropagation()}
     >
       {children}
     </div>,
