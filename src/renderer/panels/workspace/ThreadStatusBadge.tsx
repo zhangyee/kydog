@@ -9,6 +9,7 @@ type Props = {
   threadId: string;
   pinned: boolean;
   hovered: boolean;
+  selected: boolean;
   onTogglePin: (e: MouseEvent) => void;
   togglePinAriaLabel: string;
   togglePinTestId: string;
@@ -20,12 +21,30 @@ export function ThreadStatusBadge(props: Props) {
   const hasUnread = useUnreadStore((s) => !!s.unreadByThread[props.threadId]);
 
   const slot = pickSlot({
+    selected: props.selected,
     hovered: props.hovered,
     pinned: props.pinned,
     isCurrent,
     runStatus,
     hasUnread,
   });
+
+  if (slot === 'check') {
+    return (
+      <span
+        className="w-4 h-4 inline-flex items-center justify-center shrink-0"
+        data-testid={`thread-status-selected-${props.threadId}`}
+        aria-label="已选中"
+      >
+        <span
+          className="inline-flex items-center justify-center"
+          style={{ width: 14, height: 14, borderRadius: '50%', background: 'var(--color-accent)', color: 'var(--color-paper)' }}
+        >
+          <NavIcon name="check" size={10} />
+        </span>
+      </span>
+    );
+  }
 
   if (slot === 'spinner') {
     return (
