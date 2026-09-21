@@ -157,7 +157,11 @@ describe('ThreadRow：右键', () => {
   });
 
   it('多选态右键被选中的行 → 批量菜单写数量；点归档 → archiveThreads(那两个)、清空多选', () => {
-    useSidebarSelection.setState({ selectedIds: ['b', 'c'], anchorId: 'b' });
+    // store 里的多选（selectedIds）故意比 selection prop 多一个 'a'：批量操作走的是
+    // ThreadRow 收到的 selection prop（可见顺序、按 order 算），不是直接掏 store 的全集——
+    // 后者会把收起的 project 底下那些也算进去。两个集合撞成一样的话，一个直接读 store
+    // 的实现也会让下面「归档 2 个 / [B, C]」这些断言照样绿，抓不住这个回归。
+    useSidebarSelection.setState({ selectedIds: ['a', 'b', 'c'], anchorId: 'b' });
     const m = mount(ThreadRow, { thread: B, selection: ['b', 'c'], order: ORDER });
     (m.tree as MiniElement).props.onContextMenu(ev());
     expect(m.query('thread-ctx-archive-b')).toBeNull();
@@ -166,7 +170,7 @@ describe('ThreadRow：右键', () => {
     (ma.tree as MiniElement).props.onContextMenu(ev());
     expect(ma.find('thread-ctx-archive-a')).toBeDefined();
     // ma 右键的是没被选中的 A：会清空多选。批量测试要接着走，把选中集合复原。
-    useSidebarSelection.setState({ selectedIds: ['b', 'c'], anchorId: 'b' });
+    useSidebarSelection.setState({ selectedIds: ['a', 'b', 'c'], anchorId: 'b' });
 
     const item = m.find('thread-ctx-batch-archive');
     expect(item.props.label).toBe('归档 2 个对话');
