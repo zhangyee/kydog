@@ -66,12 +66,18 @@ describe('archiveThreads', () => {
   });
 
   it('主进程回 thread.busy → 提示「有对话正在运行，没有归档」、无按钮，store 一条不动', async () => {
+    // 先用正常 reply 成功归档一次：证明这条提示本来是带 action 的，下面的 toBeUndefined
+    // 不是因为查找本身坏了（同一条用例内先正后反，同 CLAUDE.md 否定型断言约定）。
+    await archiveThreads([T('c')]);
+    expect(useToastStore.getState().toast!.action!.label).toBe('撤销');
+    expect(ids()).toEqual(['a', 'b']);
+
     reply = () => Promise.reject(Object.assign(new Error('busy'), { code: 'thread.busy' }));
     await archiveThreads([T('a'), T('b')]);
     const toast = useToastStore.getState().toast!;
     expect(toast.message).toBe('有对话正在运行，没有归档');
     expect(toast.action).toBeUndefined();
-    expect(ids()).toEqual(['a', 'b', 'c']);
+    expect(ids()).toEqual(['a', 'b']);
   });
 
   it('撤销失败 → 提示换成「撤销失败」', async () => {
