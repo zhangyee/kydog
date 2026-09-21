@@ -14,9 +14,7 @@ export function ProjectsHeaderActions() {
   const onAddProject = async () => {
     try {
       const p = await window.kydog.invoke('project.open');
-      useThreadsStore.setState((s) => ({
-        projects: [...s.projects.filter(x => x.path !== p.path), p],
-      }));
+      useThreadsStore.getState().addProject(p);
     } catch (err) {
       console.error('add-project failed', err);
     }

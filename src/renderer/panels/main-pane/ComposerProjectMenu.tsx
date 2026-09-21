@@ -45,9 +45,7 @@ export function ComposerProjectMenu({ threadId, currentProjectPath, anchorRect, 
   const onOpenOther = async () => {
     try {
       const project = await window.kydog.invoke('project.open');
-      useThreadsStore.setState((s) => ({
-        projects: [...s.projects.filter((p) => p.path !== project.path), project],
-      }));
+      useThreadsStore.getState().addProject(project);
       await applySwitch(project.path);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

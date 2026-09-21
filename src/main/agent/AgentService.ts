@@ -103,7 +103,19 @@ class AgentService {
 
   async ensureSession(threadId: string, projectPath: string): Promise<Bound> {
     const existing = this.sessions.get(threadId);
-    if (existing) return existing;
+    if (existing) {
+      // 缓存按 threadId 存，但一份 session 只对建它时的 cwd 有效（工具的 cwd、transcript
+      // 的落盘目录都在 createSession 那一刻定死）。projectPath 是调用方从 index 现读的，
+      // 对不上时返回旧的等于把它静默丢掉 —— 2026-09-21 的实例：新对话换了项目再发消息，
+      // 工具跑在旧项目里、transcript 写进旧项目的目录。换项目的入口（threadService.update）
+      // 会先 dispose；这里守的是它之外的路径。
+      if (existing.cwd === projectPath) return existing;
+      // 有一轮在飞时拆了就把它打断了。读 bound.runId 的理由见 Bound.runId。
+      if (existing.runId !== null) {
+        throw new KydogError('thread.busy', `thread ${threadId} is running in ${existing.cwd}`);
+      }
+      await this.dispose(threadId);
+    }
 
     const { resolveActive } = await import('./resolveActive');
     const { providerId, modelId } = await resolveActive(threadId, projectPath);

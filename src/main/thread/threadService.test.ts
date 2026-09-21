@@ -78,6 +78,20 @@ describe('threadService.update projectPath', () => {
     expect(got.projectPath).toBe('/b');
   });
 
+  it('换项目后拆掉这条对话缓存的 session；不换项目的更新不拆', async () => {
+    // session 的 cwd 与 transcript 目录在建的那一刻定死，只改 index 的话，缓存里那份仍按旧项目跑。
+    vi.spyOn(agentService, 'loadHistory').mockResolvedValue([]);
+    vi.mocked(agentService.dispose).mockClear();
+    const t = await threadService.create({ projectPath: '/a' });
+    await threadService.update({ threadId: t.id, projectPath: '/b' });
+    expect(vi.mocked(agentService.dispose).mock.calls).toEqual([[t.id]]);
+
+    vi.mocked(agentService.dispose).mockClear();
+    await threadService.update({ threadId: t.id, title: 'x' });
+    await threadService.update({ threadId: t.id, projectPath: '/b' });
+    expect(vi.mocked(agentService.dispose)).not.toHaveBeenCalled();
+  });
+
   it('rejects switch when thread has messages', async () => {
     vi.spyOn(agentService, 'loadHistory').mockResolvedValue([
       { id: 'm1', role: 'user', content: 'x', createdAt: new Date().toISOString() },

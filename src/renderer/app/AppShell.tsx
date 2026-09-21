@@ -13,7 +13,7 @@ import { InspectorPanel } from '../panels/inspector/InspectorPanel';
 import { BrowserSidebar } from '../panels/browser/BrowserSidebar';
 import { useThreadsStore } from '../stores/threadsStore';
 import { useUiStore } from '../stores/uiStore';
-import { useUnreadStore } from '../panels/workspace/unreadStore';
+import { startNewThreadInFocusedProject } from '../newThread';
 import { SETTINGS_PAGE_LABELS } from '../settings/settingsPages';
 
 export function AppShell() {
@@ -42,20 +42,11 @@ export function AppShell() {
       const key = e.key.toLowerCase();
       if (key === 'n') {
         e.preventDefault();
-        const { projects } = useThreadsStore.getState();
-        if (!projects.length) return;
-        void window.kydog.invoke('thread.create', { projectPath: projects[0].path }).then((thread) => {
-          useThreadsStore.getState().upsertThread(thread);
-          useUiStore.getState().showThreadTab();
-          useThreadsStore.getState().selectThread(thread.id);
-          useUnreadStore.getState().markRead(thread.id);
-        });
+        void startNewThreadInFocusedProject();
       } else if (key === 'o') {
         e.preventDefault();
         void window.kydog.invoke('project.open').then((p) => {
-          useThreadsStore.setState((s) => ({
-            projects: [...s.projects.filter((x) => x.path !== p.path), p],
-          }));
+          useThreadsStore.getState().addProject(p);
         }).catch((err) => console.error('open project failed', err));
       }
     };
