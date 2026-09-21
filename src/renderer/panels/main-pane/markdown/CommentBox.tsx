@@ -32,11 +32,20 @@ export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel }: P
   const [note, setNote] = useState('');
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const r = ref.current?.getBoundingClientRect();
     if (!r) return;
     setPos(placeCommentBox(anchor, { width: r.width, height: r.height }, { width: window.innerWidth, height: window.innerHeight }));
   }, [anchor]);
+  // 定位落地后再显式抢一次焦点（双保险）：`autoFocus` 在 React 挂载子节点那一刻就跑，早于
+  // 这个父组件的定位 effect；这段时间框还用 `visibility: hidden` 挡着的话，Chromium 直接
+  // 不给隐藏元素对焦——焦点留在 ProseMirror 里、选区还在，敲的字会把选中的原文吃掉，
+  // ⌘↵ / Esc 也传去了编辑器而不是这个框。改用 opacity 藏（见下面 style），对焦不受影响；
+  // 这里再补一次显式 focus，不依赖 autoFocus 的时序。
+  useLayoutEffect(() => {
+    if (pos) inputRef.current?.focus();
+  }, [pos]);
   const submitKey = window.kydog.platform === 'darwin' ? '⌘↵' : 'Ctrl+↵';
   return createPortal(
     <div
@@ -44,7 +53,7 @@ export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel }: P
       onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: 'fixed', left: pos?.left ?? anchor.left, top: pos?.top ?? anchor.bottom + 8,
-        visibility: pos ? 'visible' : 'hidden', width: 320, zIndex: 80, padding: 10,
+        opacity: pos ? 1 : 0, pointerEvents: pos ? 'auto' : 'none', width: 320, zIndex: 80, padding: 10,
         background: 'var(--color-paper)', border: '0.5px solid var(--color-ink-hair)', borderRadius: 6, boxShadow: PANEL_SHADOW,
         fontFamily: 'var(--font-sans)',
       }}
@@ -57,6 +66,7 @@ export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel }: P
         }}
       >{quote}</div>
       <textarea
+        ref={inputRef}
         data-testid="comment-box-input" autoFocus rows={3} value={note}
         placeholder="写下批注（可留空）"
         onChange={(e) => setNote(e.target.value)}

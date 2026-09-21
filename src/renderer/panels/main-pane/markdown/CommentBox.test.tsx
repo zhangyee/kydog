@@ -52,3 +52,31 @@ describe('CommentBox —— 按键', () => {
     expect(JSON.stringify(m.tree)).toContain('进「综述」的输入框 · ⌘↵');
   });
 });
+
+describe('CommentBox —— 定位与对焦（修复：visibility:hidden 挡住 autoFocus）', () => {
+  beforeEach(() => {
+    (globalThis as any).window = { kydog: { platform: 'darwin' }, innerWidth: 1000, innerHeight: 800 };
+    (globalThis as any).document = { body: {} };
+  });
+
+  it('定位算出来后用 opacity 而不是 visibility 藏；pos 一变就重新显式抢一次焦点（不止挂载那一刻）', () => {
+    const onSubmit = vi.fn(); const onCancel = vi.fn();
+    const m = mount(CommentBox, { quote: 'q', targetTitle: '综述', anchor: { left: 0, top: 0, bottom: 10 }, onSubmit, onCancel });
+    const box = () => findAllWhere(m.tree as never, (el) => el.props['data-testid'] === 'comment-box')[0];
+    const input = () => findAllWhere(m.tree as never, (el) => el.props['data-testid'] === 'comment-box-input')[0];
+
+    // 正向：定位落地后（miniReact 的假 rect 永远非 undefined，pos 在挂载时就已经算出来了）
+    // 用的是 opacity（可对焦），不是 visibility:hidden（Chromium 不给隐藏元素对焦，
+    // autoFocus 会落空，这正是发现 1 的根因）。
+    expect(box().props.style).toMatchObject({ opacity: 1, pointerEvents: 'auto' });
+    expect(box().props.style).not.toHaveProperty('visibility');
+
+    // 挂载时那次 focus() 已经调过了，这里再拿到同一个假元素装个 spy，换一个不同的锚点
+    // 逼 pos 重新算一遍（对象引用必换，见 placeCommentBox 每次都返回新对象），验证
+    // 「重新定位后再抢一次焦点」这条效果确实接在 [pos] 上，不是只在首次挂载那一刻抢过一次。
+    const fakeTextarea = input().props.ref.current;
+    const spy = vi.spyOn(fakeTextarea, 'focus');
+    m.rerender({ quote: 'q', targetTitle: '综述', anchor: { left: 400, top: 400, bottom: 420 }, onSubmit, onCancel });
+    expect(spy).toHaveBeenCalled();
+  });
+});

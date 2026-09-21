@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Selection, type Transaction } from '@milkdown/kit/prose/state';
 import { useUiStore, type FileTab } from '../../../stores/uiStore';
 import { useThreadsStore, getCurrentThread } from '../../../stores/threadsStore';
 import { confirm } from '../../../stores/confirmStore';
@@ -46,15 +47,29 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
   const closeBox = (note: string | null) => {
     const current = boxRef.current;
     const view = editorRef.current?.getView();
+    // 关框后把选区收回批注末尾、焦点还给编辑器（发现 3 的另一半）：不这样，ProseMirror 会
+    // 留着那个非空选区，下一次在包裹层上 mouseup（比如点胶囊退出评论模式）会被误判成
+    // 「又选了一段新文字」，把批注框重新弹出来。末尾位置读弹框那一刻记的 pending 装饰
+    // ——它随每个事务的 tr.mapping 映射过，比闭包里那个开框时的旧 to 准。
+    const collapseToPendingEnd = (tr: Transaction): Transaction => {
+      if (!view) return tr;
+      const pendingTo = commentMarkRanges(view.state).find((r) => r.id === PENDING_COMMENT_ID)?.to ?? view.state.selection.to;
+      const at = Math.min(Math.max(0, pendingTo), tr.doc.content.size);
+      return tr.setSelection(Selection.near(tr.doc.resolve(at)));
+    };
     if (current && note !== null) {
       const id = useComposerDraftStore.getState().addComment(current.threadId, {
         absPath: tab.path, ...(current.section ? { section: current.section } : {}),
         quote: current.quote, note: note.trim(), sourceTabId: tab.id,
       });
-      view?.dispatch(renameCommentMark(view.state.tr, PENDING_COMMENT_ID, id));
+      if (view) {
+        view.dispatch(collapseToPendingEnd(renameCommentMark(view.state.tr, PENDING_COMMENT_ID, id)));
+        view.focus();
+      }
     } else if (view) {
       const keep = new Set(commentMarkRanges(view.state).map((r) => r.id).filter((id) => id !== PENDING_COMMENT_ID));
-      view.dispatch(keepCommentMarks(view.state.tr, keep));
+      view.dispatch(collapseToPendingEnd(keepCommentMarks(view.state.tr, keep)));
+      view.focus();
     }
     setBox(null);
   };
@@ -249,8 +264,22 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
         className={`flex-1 min-h-0 relative${commentMode ? ' kydog-comment-mode' : ''}${thread ? '' : ' kydog-no-thread'}`}
         // 评论模式：松开鼠标、或松开 ⇧（键盘选区）时，选区非空就直接弹框。
         // 推到下一拍再读：ProseMirror 在 selectionchange 上才更新选区，那一拍排在 mouseup 之后。
-        onMouseUp={() => { if (commentMode) setTimeout(openBoxFromSelection, 0); }}
-        onKeyUp={(e) => { if (commentMode && e.key === 'Shift') setTimeout(openBoxFromSelection, 0); }}
+        // 只在事件真的发生在编辑器 DOM 里才排（发现 3）：这层包裹了编辑器本身也包了 MdCapsule，
+        // 点胶囊退出评论模式那一下也会在这层上冒泡出 mouseup —— commentMode 这时还没来得及
+        // 切掉（onClick 排在 onMouseUp 之后才跑），ProseMirror 留着的旧选区一旦非空就会被
+        // 误判成「又选了一段新文字」，重新弹出批注框。不判来源就是这个 bug 的根因。
+        onMouseUp={(e) => {
+          if (!commentMode) return;
+          const view = editorRef.current?.getView();
+          if (!view || !view.dom.contains(e.target as Node)) return;
+          setTimeout(openBoxFromSelection, 0);
+        }}
+        onKeyUp={(e) => {
+          if (!commentMode || e.key !== 'Shift') return;
+          const view = editorRef.current?.getView();
+          if (!view || !view.dom.contains(e.target as Node)) return;
+          setTimeout(openBoxFromSelection, 0);
+        }}
       >
         <CrepeEditor
           key={editorGeneration}
