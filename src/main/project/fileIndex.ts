@@ -3,6 +3,7 @@ import path from 'node:path';
 import { isListedName } from './listing';
 import { rankPaths } from '../../shared/fuzzyPath';
 import { broadcaster } from '../ipc/broadcaster';
+import { logger } from '../log';
 
 export type ReadDirFn = (dir: string) => Promise<Array<{ name: string; isDirectory: boolean }>>;
 
@@ -54,7 +55,10 @@ export function createFileIndex(deps: {
     if (e.scanning) return e.scanning;
     const entry = e;
     entry.scanning = walk(projectPath)
-      .then((files) => { entry.files = files; })
+      .then(
+        (files) => { entry.files = files; },
+        (err) => { logger.warn('project', 'file index scan failed', { projectPath, err: String(err) }); },
+      )
       .finally(() => { entry.scanning = null; deps.onUpdated(projectPath); });
     return entry.scanning;
   }

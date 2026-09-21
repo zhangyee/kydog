@@ -3,6 +3,7 @@ import path from 'node:path';
 import { walkProjectFiles, createFileIndex, type ReadDirFn } from './fileIndex';
 
 vi.mock('../ipc/broadcaster', () => ({ broadcaster: { emit: vi.fn() } }));
+vi.mock('../log', () => ({ logger: { warn: vi.fn() } }));
 
 const ROOT = path.join(path.sep, 'p');
 type E = { name: string; dir?: boolean };
@@ -78,5 +79,43 @@ describe('createFileIndex', () => {
     expect(walk).toHaveBeenCalledTimes(2);
     await index.rescan('/p');
     expect(index.search({ projectPath: '/p', query: '' }).items).toEqual([{ path: 'a.md' }, { path: 'b.md' }]);
+  });
+
+  it('walk 拒绝时：接住这个错误、log 它、保留之前的 files、还是调 onUpdated、之后可以再扫', async () => {
+    const walk = vi.fn()
+      .mockResolvedValueOnce(['a.md'])
+      .mockRejectedValueOnce(new Error('scan failed'))
+      .mockResolvedValueOnce(['a.md', 'c.md']);
+    const onUpdated = vi.fn();
+    const index = createFileIndex({ walk, onUpdated });
+
+    // 正向证明：第一趟成功
+    await index.rescan('/p');
+    expect(index.search({ projectPath: '/p', query: '' })).toEqual({
+      items: [{ path: 'a.md' }], indexed: true,
+    });
+    expect(walk).toHaveBeenCalledTimes(1);
+    expect(onUpdated).toHaveBeenCalledTimes(1);
+
+    // 第二趟拒绝
+    const failedPromise = index.rescan('/p');
+    expect(failedPromise).toBeDefined();
+    await expect(failedPromise).resolves.toBeUndefined();
+    expect(walk).toHaveBeenCalledTimes(2);
+
+    // 旧结果照样在
+    expect(index.search({ projectPath: '/p', query: '' })).toEqual({
+      items: [{ path: 'a.md' }], indexed: true,
+    });
+
+    // onUpdated 被调过（包括这次拒绝的）
+    expect(onUpdated).toHaveBeenCalledTimes(2);
+
+    // 第三趟可以开始
+    await index.rescan('/p');
+    expect(walk).toHaveBeenCalledTimes(3);
+    expect(index.search({ projectPath: '/p', query: '' })).toEqual({
+      items: [{ path: 'a.md' }, { path: 'c.md' }], indexed: true,
+    });
   });
 });
