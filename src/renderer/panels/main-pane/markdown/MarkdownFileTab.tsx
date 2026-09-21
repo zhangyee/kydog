@@ -19,6 +19,10 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
   const [box, setBox] = useState<BoxState | null>(null);
   const boxRef = useRef<BoxState | null>(null);
   boxRef.current = box;
+  // 批注框里写了一半的字。放在这里、不放框自己的 state：标签切走时框不渲染（见下面 `box && isActive`），
+  // 切回来重新挂上的框从这里接着写。开框、关框时清空。用 ref 不用 state：每敲一个字都让整个 md 标签
+  // （连同 Crepe 编辑器）重渲染一遍不值得，它只在框重新挂上那一刻被读一次。
+  const noteDraftRef = useRef('');
   const thread = useThreadsStore((s) => getCurrentThread(s));
 
   // 对话没了（被关 / 被删）就退出评论模式：模式的前提是「有地方可去」。
@@ -41,6 +45,7 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
       anchor: { left: start.left, top: start.top, bottom: end.bottom },
     };
     view.dispatch(addCommentMark(view.state.tr, PENDING_COMMENT_ID, from, to));
+    noteDraftRef.current = '';
     setBox(next);
   }, []);
 
@@ -71,6 +76,7 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
       view.dispatch(collapseToPendingEnd(keepCommentMarks(view.state.tr, keep)));
       view.focus();
     }
+    noteDraftRef.current = '';
     setBox(null);
   };
 
@@ -302,9 +308,14 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
         />
         <MdCapsule commentMode={commentMode} canComment={!!thread} onToggleComment={() => setCommentMode((v) => !v)} />
       </div>
-      {box ? (
+      {/* 只在本标签激活时渲染：框是挂在 document.body 上的 fixed portal，标签被 display:none 藏起来时
+          它不跟着藏，会浮在对话 / 别的标签上面（两个 md 标签还能各浮一个）。box 状态、待定下划线与
+          写了一半的字都留着，切回来原样出现。 */}
+      {box && isActive ? (
         <CommentBox
           quote={box.quote} targetTitle={box.threadTitle} anchor={box.anchor}
+          initialNote={noteDraftRef.current}
+          onNoteChange={(n) => { noteDraftRef.current = n; }}
           onSubmit={(note) => closeBox(note)} onCancel={() => closeBox(null)}
         />
       ) : null}

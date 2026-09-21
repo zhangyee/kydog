@@ -22,14 +22,20 @@ type Props = {
   anchor: { left: number; top: number; bottom: number };
   onSubmit: (note: string) => void;
   onCancel: () => void;
+  /**
+   * 写了一半的批注由调用方留着：md 标签切走时框不渲染（卸载），切回来重新挂上，从这里接着写。
+   * 框自己的 state 随卸载一起没，所以每次改字都报给 `onNoteChange`。
+   */
+  initialNote?: string;
+  onNoteChange?: (note: string) => void;
 };
 
 /**
  * 就地批注框（2A ①）。只有 取消 / Esc / 添加 能关掉它 —— 点编辑器别处不关，免得写了一半的批注
  * 丢掉（spec §2.2）。目标对话由调用方在弹框那一刻定下，写在说明行里。
  */
-export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel }: Props) {
-  const [note, setNote] = useState('');
+export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel, initialNote, onNoteChange }: Props) {
+  const [note, setNote] = useState(initialNote ?? '');
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -69,7 +75,7 @@ export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel }: P
         ref={inputRef}
         data-testid="comment-box-input" autoFocus rows={3} value={note}
         placeholder="写下批注（可留空）"
-        onChange={(e) => setNote(e.target.value)}
+        onChange={(e) => { setNote(e.target.value); onNoteChange?.(e.target.value); }}
         onInput={(e) => { const el = e.currentTarget; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 200)}px`; }}
         onKeyDown={(e) => {
           const k = dispatchCommentBoxKey({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, isComposing: e.nativeEvent.isComposing });

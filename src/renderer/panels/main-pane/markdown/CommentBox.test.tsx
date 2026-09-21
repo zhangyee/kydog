@@ -96,3 +96,28 @@ describe('CommentBox —— 定位与对焦（修复：visibility:hidden 挡住 
     expect(spy).toHaveBeenCalled();
   });
 });
+
+describe('CommentBox —— 写了一半的批注（F5：md 标签切走时框不渲染，切回来接着写）', () => {
+  beforeEach(() => {
+    (globalThis as any).window = { kydog: { platform: 'darwin' }, innerWidth: 1000, innerHeight: 800 };
+    (globalThis as any).document = { body: {} };
+  });
+  const base = { quote: 'q', targetTitle: '综述', anchor: { left: 0, top: 0, bottom: 10 }, onCancel: vi.fn() };
+  const input = (m: { tree: unknown }) => findAllWhere(m.tree as never, (el) => el.props['data-testid'] === 'comment-box-input')[0];
+
+  it('initialNote 是输入框的初值；每次改字都报给 onNoteChange；添加交出的是改过的字', () => {
+    // 对照：不给 initialNote 就是空的 —— 下面的「写了一半」确实来自这个 prop，不是别处的默认值。
+    const plain = mount(CommentBox, { ...base, onSubmit: vi.fn() });
+    expect(input(plain).props.value).toBe('');
+
+    const onNoteChange = vi.fn(); const onSubmit = vi.fn();
+    const m = mount(CommentBox, { ...base, onSubmit, initialNote: '写了一半', onNoteChange });
+    expect(input(m).props.value).toBe('写了一半');
+    input(m).props.onChange({ target: { value: '写了一半，补完' } });
+    expect(onNoteChange).toHaveBeenLastCalledWith('写了一半，补完');
+    expect(input(m).props.value).toBe('写了一半，补完');
+    input(m).props.onKeyDown({ key: 'Enter', metaKey: true, ctrlKey: false, nativeEvent: { isComposing: false }, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(onSubmit).toHaveBeenCalledWith('写了一半，补完');
+  });
+});
+

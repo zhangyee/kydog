@@ -382,6 +382,15 @@ test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 
   await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('comment-box-input');
   await expect(page.getByTestId('comment-box-input')).toHaveValue('取值依据？');
   await expect(editor).toContainText('将 β 固定为 0.1'); // 正向：选中的原文没被打字吃掉
+  // 写到一半切去对话再切回来：框是挂在 body 上的 fixed portal，md 标签被 display:none 藏起来时它得
+  // 跟着不渲染，不能浮在对话上（上面 toBeVisible 是它在的正向证明）；切回来原样出现，写了一半的字还在。
+  await page.getByTestId(`tab-${threadId}`).click();
+  await expect(page.getByTestId('composer-input')).toBeVisible();
+  await expect(page.getByTestId('comment-box')).toHaveCount(0);
+  await page.getByTestId(`tab-${mdPath}`).click();
+  await expect(page.getByTestId('comment-box')).toBeVisible();
+  await expect(page.getByTestId('comment-box-input')).toHaveValue('取值依据？');
+  await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('comment-box-input');
   await page.keyboard.press('ControlOrMeta+Enter');
   await expect(page.getByTestId('comment-box')).toHaveCount(0);
   await expect(page.getByTestId(`tab-badge-${threadId}`)).toHaveText('1');
