@@ -4,6 +4,12 @@ import { walkProjectFiles, createFileIndex, type ReadDirFn } from './fileIndex';
 
 vi.mock('../ipc/broadcaster', () => ({ broadcaster: { emit: vi.fn() } }));
 vi.mock('../log', () => ({ logger: { warn: vi.fn() } }));
+// 真实现包一层 spy：结果照旧由真排序给出，另外数得出「建索引几次、查询走的是哪条路」。
+vi.mock('../../shared/fuzzyPath', async (orig) => {
+  const real = await orig<typeof import('../../shared/fuzzyPath')>();
+  return { ...real, rankPaths: vi.fn(real.rankPaths), buildPathIndex: vi.fn(real.buildPathIndex), searchPathIndex: vi.fn(real.searchPathIndex) };
+});
+const fuzzy = await import('../../shared/fuzzyPath');
 
 const ROOT = path.join(path.sep, 'p');
 type E = { name: string; dir?: boolean };
@@ -117,5 +123,22 @@ describe('createFileIndex', () => {
     expect(index.search({ projectPath: '/p', query: '' })).toEqual({
       items: [{ path: 'a.md' }, { path: 'c.md' }], indexed: true,
     });
+  });
+
+  it('索引一趟扫完只建一次；之后每次查询走预建的索引，不再对全部路径重新排序（F3）', async () => {
+    vi.mocked(fuzzy.buildPathIndex).mockClear();
+    vi.mocked(fuzzy.searchPathIndex).mockClear();
+    vi.mocked(fuzzy.rankPaths).mockClear();
+    const index = createFileIndex({ walk: vi.fn().mockResolvedValue(['refs/dpo-2023.pdf', 'b.md', 'a.md']), onUpdated: () => {} });
+    await index.rescan('/p');
+    expect(fuzzy.buildPathIndex).toHaveBeenCalledTimes(1);
+    expect(fuzzy.buildPathIndex).toHaveBeenCalledWith(['refs/dpo-2023.pdf', 'b.md', 'a.md']);
+    expect(index.search({ projectPath: '/p', query: '' }).items).toEqual([{ path: 'a.md' }, { path: 'b.md' }, { path: 'refs/dpo-2023.pdf' }]);
+    expect(index.search({ projectPath: '/p', query: 'dpo' }).items).toEqual([{ path: 'refs/dpo-2023.pdf' }]);
+    expect(index.search({ projectPath: '/p', query: 'md' }).items).toEqual([{ path: 'a.md' }, { path: 'b.md' }]);
+    // 正向：三次查询确实都查了、都走了索引 —— 下面「没调 rankPaths」才不是因为根本没查。
+    expect(fuzzy.searchPathIndex).toHaveBeenCalledTimes(3);
+    expect(fuzzy.buildPathIndex).toHaveBeenCalledTimes(1);
+    expect(fuzzy.rankPaths).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { isListedName } from './listing';
-import { rankPaths } from '../../shared/fuzzyPath';
+import { buildPathIndex, searchPathIndex, type PathIndex } from '../../shared/fuzzyPath';
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
 
@@ -39,7 +39,11 @@ export async function walkProjectFiles(root: string, readDir: ReadDirFn = realRe
   return out;
 }
 
-type Entry = { files: string[] | null; scanning: Promise<void> | null };
+/**
+ * `index` 在一趟扫完时建好（每条路径的小写串、深度、空查询的前 50 名），查询只扫一遍、不整体排序：
+ * 查询跑在主进程上，100 万条路径时原来每次按键都要整体排序（空查询 2.7s），同 09-21 那次是一类卡死。
+ */
+type Entry = { index: PathIndex | null; scanning: Promise<void> | null };
 
 export function createFileIndex(deps: {
   walk?: (root: string) => Promise<string[]>;
@@ -51,12 +55,12 @@ export function createFileIndex(deps: {
   /** 同一项目同一时间只有一趟；进行中的再请求，拿到的就是那一趟。 */
   function rescan(projectPath: string): Promise<void> {
     let e = byProject.get(projectPath);
-    if (!e) { e = { files: null, scanning: null }; byProject.set(projectPath, e); }
+    if (!e) { e = { index: null, scanning: null }; byProject.set(projectPath, e); }
     if (e.scanning) return e.scanning;
     const entry = e;
     entry.scanning = walk(projectPath)
       .then(
-        (files) => { entry.files = files; },
+        (files) => { entry.index = buildPathIndex(files); },
         (err) => { logger.warn('project', 'file index scan failed', { projectPath, err: String(err) }); },
       )
       .finally(() => { entry.scanning = null; deps.onUpdated(projectPath); });
@@ -65,9 +69,9 @@ export function createFileIndex(deps: {
 
   function search(args: { projectPath: string; query: string; rescan?: boolean }): { items: { path: string }[]; indexed: boolean } {
     if (args.rescan) void rescan(args.projectPath);
-    const files = byProject.get(args.projectPath)?.files;
-    if (!files) return { items: [], indexed: false };
-    return { items: rankPaths(files, args.query).map((p) => ({ path: p })), indexed: true };
+    const index = byProject.get(args.projectPath)?.index;
+    if (!index) return { items: [], indexed: false };
+    return { items: searchPathIndex(index, args.query).map((p) => ({ path: p })), indexed: true };
   }
 
   return { search, rescan };
