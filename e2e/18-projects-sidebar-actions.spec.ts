@@ -203,6 +203,9 @@ test('18-projects-sidebar: pin project', async () => {
   // click 的 actionability 保证。
   await expect.poll(async () => (await readIndex()).projects.find((p: { path: string }) => p.path === dirB)?.pinned,
     { timeout: 15_000 }).toBe(true);
+  // 落盘先于渲染层重排：光落盘不代表 B 已经被挪到最前、A 的行都往下移了一格。
+  // 下一条测试要悬停 A 的行，位置得等这次重排真的发生。
+  await expect(page.getByTestId(`project-toggle-${nameB}`).getByLabel('已置顶')).toBeVisible();
 });
 
 test('34-thread-rename: 删除点取消则会话保留', async () => {
