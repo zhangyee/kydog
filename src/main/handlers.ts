@@ -219,6 +219,8 @@ export function registerAllHandlers(): void {
   registerHandler('thread.create', (args) => threadService.create(args));
   registerHandler('thread.list', (args) => threadService.list(args));
   registerHandler('thread.delete', (args) => threadService.delete(args));
+  registerHandler('thread.archive', (args) => threadService.archive(args));
+  registerHandler('thread.unarchive', (args) => threadService.unarchive(args));
   registerHandler('thread.rename', (args) => threadService.rename(args));
   registerHandler('thread.loadHistory', (args, evt) => threadService.loadHistory(args, sinkFor(evt.sender)));
   registerHandler('thread.send', (args) => threadService.send(args));

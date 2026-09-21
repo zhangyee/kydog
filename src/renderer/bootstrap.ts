@@ -46,7 +46,11 @@ export async function bootstrap(): Promise<void> {
 
   // 渲染进程重载后接回原处。必须排在上面那次 setState 之后 —— 它会把 activeCenterTab
   // 重置掉。noProvider 时把 activeCenterTab 让给上面的强制设置页，只把 tab 开回来。
-  restoreViewState(state.viewState, new Set(state.threads.map((t) => t.id)), noProvider);
+  // 已归档的（archivedAt 有值）不算「已知」：threadsStore.hydrate 的桶里已经把它们滤掉了
+  // （唯一过滤点，见 threadsStore.ts），这里是第二个读 state.threads 的地方，得照抄同一条
+  // 规则——否则记着的 thread 恰好是刚被归档的那个，重启后会把一个不在左栏里的会话选中。
+  const knownThreadIds = new Set(state.threads.filter((t) => !t.archivedAt).map((t) => t.id));
+  restoreViewState(state.viewState, knownThreadIds, noProvider);
   installViewStateSync();
 
   let prev = useUiStore.getState();

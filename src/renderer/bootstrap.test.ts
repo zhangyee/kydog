@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { BootstrapState, SettingsFileForRenderer, UpdateStatus } from '../shared/types';
+import type { BootstrapState, SettingsFileForRenderer, Thread, UpdateStatus } from '../shared/types';
 import { bootstrap } from './bootstrap';
 import { useSettingsStore } from './stores/settingsStore';
+import { useThreadsStore } from './stores/threadsStore';
 import { useBrowserStore } from './panels/browser/browserStore';
 import { useUiStore } from './stores/uiStore';
 import { useUpdateStore, shouldShowBanner } from './stores/updateStore';
@@ -244,6 +245,44 @@ describe('browserFullscreen 不落盘', () => {
     await new Promise<void>((r) => { setTimeout(r, 0); });
 
     expect(trace.filter((t) => t === 'invoke:settings.update').length).toBe(before);
+  });
+});
+
+describe('restoreViewState 的「已知 thread」集合滤掉已归档的', () => {
+  /**
+   * 回归：bootstrap 直接从 `state.threads` 建 `knownThreadIds` 给 `restoreViewState`，
+   * 那份列表是主进程给的原始全集，包含已归档的——threadsStore.hydrate 的桶已经把归档的
+   * 挡在外面了（唯一过滤点，见 threadsStore.ts 顶部注释），但 `knownThreadIds` 是第二个
+   * 读 `state.threads` 的地方，漏了同一条规则的话，viewState 记着的 thread 恰好是刚被
+   * 归档的那个时，重启会把一个左栏里根本看不见的会话选中。
+   */
+  it('viewState 指向的 thread 已归档就不选它；没归档的同一批里正常选中', async () => {
+    const origThreads = BOOT.threads;
+    const origViewState = BOOT.viewState;
+    const archived: Thread = {
+      id: 'thr-archived', projectPath: '/p', title: '已归档',
+      createdAt: '2026-09-01T00:00:00Z', lastActiveAt: '2026-09-01T00:00:00Z',
+      archivedAt: '2026-09-02T00:00:00Z',
+    };
+    const alive: Thread = {
+      id: 'thr-alive', projectPath: '/p', title: '还在',
+      createdAt: '2026-09-01T00:00:00Z', lastActiveAt: '2026-09-01T00:00:00Z',
+    };
+    BOOT.threads = [archived, alive];
+    try {
+      BOOT.viewState = { threadId: 'thr-archived', filePaths: [], activeFilePath: null, activeTab: 'thread' };
+      await bootstrap();
+      expect(useThreadsStore.getState().currentThreadId).toBeNull();
+
+      // 正向对照，同一批线程里：换成指向没被归档的那个，正常选中——证明上面的 null
+      // 不是 knownThreadIds 整个传丢了、或者随便指哪个都选不中。
+      BOOT.viewState = { threadId: 'thr-alive', filePaths: [], activeFilePath: null, activeTab: 'thread' };
+      await bootstrap();
+      expect(useThreadsStore.getState().currentThreadId).toBe('thr-alive');
+    } finally {
+      BOOT.threads = origThreads;
+      BOOT.viewState = origViewState;
+    }
   });
 });
 

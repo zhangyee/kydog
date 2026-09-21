@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { pickSlot } from './pickThreadStatus';
 
 const base = {
+  selected: false,
   hovered: false,
   pinned: false,
   isCurrent: false,
@@ -48,5 +49,12 @@ describe('pickSlot', () => {
   it("runStatus 'error' 在 sidebar 上视觉同 idle（不显示 spinner）", () => {
     expect(pickSlot({ ...base, runStatus: 'error' })).toBe('empty');
     expect(pickSlot({ ...base, runStatus: 'error', hasUnread: true })).toBe('unreadDot');
+  });
+
+  it('selected 优先级最高：盖过悬停的图钉键、转圈、未读点、图钉', () => {
+    expect(pickSlot({ ...base, selected: true })).toBe('check');
+    expect(pickSlot({ ...base, selected: true, hovered: true, runStatus: 'running', hasUnread: true, pinned: true })).toBe('check');
+    // 正向：同一组信号去掉 selected，回到原来的优先级
+    expect(pickSlot({ ...base, hovered: true, runStatus: 'running', hasUnread: true, pinned: true })).toBe('pinButton');
   });
 });

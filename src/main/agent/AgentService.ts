@@ -253,7 +253,8 @@ class AgentService {
     // 一次结束：不补的话 `bound.runId` 留在那里，本轮的下载计数再也没人清。
     //
     // **这里不关标签。** 切界面语言（disposeAllSessions）与换 provider（markStaleOrDispose）
-    // 也走 dispose，那不是「对话没了」。关标签只挂在 threadService.delete / projectService.close。
+    // 也走 dispose，那不是「对话没了」。关标签只挂在
+    // threadService.delete / projectService.close / threadService.archive。
     //
     // 读的是 `bound.runId`，与 `agent_settled` / `currentRunIdFor` 同一个字段（见 Bound.runId）：
     // 现算 `runs` 在 pi 的重试窗口里已经是 idle —— 而删线程（threadService.delete 无条件
@@ -518,6 +519,14 @@ class AgentService {
    */
   hasActiveRun(): boolean {
     return [...this.sessions.values()].some((b) => b.runId !== null);
+  }
+
+  /**
+   * 这个对话此刻有没有一轮在飞。读 `bound.runId`，与 `hasActiveRun()` 同一个字段（为什么不现算
+   * `runs`，见 `hasActiveRun()` 与 `Bound.runId` 的注释）。归档的闸靠它（threadService.archive）。
+   */
+  hasActiveRunFor(threadId: string): boolean {
+    return (this.sessions.get(threadId)?.runId ?? null) !== null;
   }
 
   /**

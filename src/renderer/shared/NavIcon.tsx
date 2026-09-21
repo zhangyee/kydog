@@ -46,7 +46,8 @@ export type NavIconName =
   | 'languages'
   | 'rotate-cw'
   | 'repeat-1'
-  | 'list-restart';
+  | 'list-restart'
+  | 'archive';
 
 type IconSpec = {
   paths?: string[];
@@ -255,6 +256,14 @@ const ICONS: Record<NavIconName, IconSpec> = {
   // 「重试失败页」：清单 + 回转箭头。
   'list-restart': {
     paths: ['M21 5H3', 'M7 12H3', 'M7 19H3', 'M12 18a5 5 0 0 0 9-3 4.5 4.5 0 0 0-4.5-4.5c-1.33 0-2.54.54-3.41 1.41L11 14', 'M11 10v4h4'],
+  },
+  // Lucide 的 archive。第一段是原图的 <rect x=2 y=3 width=20 height=5 rx=1> 换成的等价路径。
+  archive: {
+    paths: [
+      'M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z',
+      'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8',
+      'M10 12h4',
+    ],
   },
 };
 

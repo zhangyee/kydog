@@ -57,6 +57,14 @@ vi.mock('../../stores/uiStore', async (importOriginal) => {
   return { ...mod, useUiStore: hook };
 });
 
+vi.mock('../../stores/runsStore', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../stores/runsStore')>();
+  const real = mod.useRunsStore;
+  const hook = ((sel?: (s: unknown) => unknown) => (sel ? sel(real.getState()) : real.getState())) as unknown as typeof real;
+  Object.assign(hook, real);
+  return { ...mod, useRunsStore: hook };
+});
+
 const { ThreadRow } = await import('./ThreadRow');
 const { ProjectRow } = await import('./ProjectRow');
 const { useThreadsStore } = await import('../../stores/threadsStore');
@@ -89,6 +97,7 @@ beforeEach(() => {
   g.document = { hasFocus: () => windowFocused };
   g.window = {
     kydog: {
+      platform: 'darwin',
       invoke: (method: string, args: Record<string, unknown>) => {
         calls.push({ method, args });
         if (method === 'thread.update') return Promise.resolve({ ...THREAD, ...args, id: THREAD.id });
@@ -116,8 +125,8 @@ function blur(input: MiniElement): void {
 describe('ThreadRow：重命名框遇到窗口失焦', () => {
   const inputId = `thread-rename-input-${THREAD.id}`;
 
-  function renaming(): Mounted<{ thread: typeof THREAD }> {
-    const m = mount(ThreadRow, { thread: THREAD });
+  function renaming(): Mounted<{ thread: typeof THREAD; selection: string[]; order: string[] }> {
+    const m = mount(ThreadRow, { thread: THREAD, selection: [], order: [THREAD.id] });
     expect(m.query(inputId)).toBeNull();
     (m.find(`thread-rename-${THREAD.id}`).props.onClick as () => void)();
     return m;

@@ -21,13 +21,18 @@ export function ConfirmDialog({
   const confirmRef = useRef<HTMLButtonElement>(null);
 
   // Enter 交给被聚焦的确认按钮原生触发；焦点在「取消」上按 Enter 就不会误确认。
+  //
+  // 挂在**捕获**阶段并 preventDefault，同 ContextMenu 的注释：左栏多选的 Esc 监听在
+  // window 的冒泡阶段、跳过 defaultPrevented 的事件。两者都挂在 window 上，同阶段只按
+  // 注册先后执行、靠不住——批量删除的确认框开着时，第一下 Esc 只该关掉确认框，不该
+  // 连带清掉多选（点「取消」按钮不会清选中，Esc 不能不一致）。
   useEffect(() => {
     confirmRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [onCancel]);
 
   return createPortal(

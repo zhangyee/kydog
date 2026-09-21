@@ -7,6 +7,7 @@ import { ProjectsHeaderActions } from './ProjectsHeaderActions';
 import { ProjectRow } from './ProjectRow';
 import { ThreadRow } from './ThreadRow';
 import { applyProjectsView } from './projectsView';
+import { useSidebarSelection, visibleThreadOrder, effectiveSelection } from './sidebarSelection';
 
 export function ProjectsTree() {
   const projects = useThreadsStore((s) => s.projects);
@@ -19,6 +20,10 @@ export function ProjectsTree() {
   const sortBy = useUiStore((s) => s.projectsSortBy);
 
   const view = applyProjectsView({ projects, threadsByProject, groupBy, sortBy });
+  const selectedIds = useSidebarSelection((s) => s.selectedIds);
+  // 可见顺序与有效选中每次渲染现算，不另存（spec §2.2：收起项目下的行不算选中）。
+  const order = visibleThreadOrder(view, collapsed);
+  const selection = effectiveSelection(selectedIds, order);
 
   // 选中某个 thread 时把它所在的 project 展开一次。ref 记住「已经为这个 thread
   // 展开过了」，否则用户随后手动收起会被这个 effect 立刻顶回去（见 e2e/17）。
@@ -55,7 +60,7 @@ export function ProjectsTree() {
                 />
                 {open && (
                   <TreeChildren>
-                    {threads.map((t) => <ThreadRow key={t.id} thread={t} />)}
+                    {threads.map((t) => <ThreadRow key={t.id} thread={t} selection={selection} order={order} />)}
                     {threads.length === 0 && (
                       <div className="text-xs italic px-2.5 py-1" style={{ paddingLeft: 34, color: 'var(--color-ink-soft)' }}>
                         暂无对话
@@ -68,7 +73,7 @@ export function ProjectsTree() {
           })
         ) : (
           <div style={{ padding: '2px 6px' }}>
-            {view.threads.map((t) => <ThreadRow key={t.id} thread={t} />)}
+            {view.threads.map((t) => <ThreadRow key={t.id} thread={t} selection={selection} order={order} />)}
             {view.threads.length === 0 && (
               <div className="text-xs italic px-2.5 py-1" style={{ color: 'var(--color-ink-soft)' }}>
                 暂无对话

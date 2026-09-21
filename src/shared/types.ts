@@ -13,6 +13,11 @@ export type Thread = {
   lastActiveAt: string;
   pinned?: boolean;
   modelOverride?: { providerId: ProviderId; modelId: string };
+  /**
+   * 归档时间（ISO）。有值 = 已归档：左栏不显示，数据与会话文件都还在。这是「归档」唯一的协议层
+   * 事实，别再派生第二个（spec 2026-09-21-thread-archive-design §3.1）。
+   */
+  archivedAt?: string;
 };
 
 export type AskBlockBase = {

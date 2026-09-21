@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
@@ -22,6 +22,7 @@ vi.mock('../agent/AgentService', () => ({
     send: vi.fn().mockResolvedValue({ runId: 'r1' }),
     loadHistory: vi.fn().mockResolvedValue([]),
     dispose: vi.fn(),
+    hasActiveRunFor: vi.fn(() => false),
   },
 }));
 
@@ -150,10 +151,113 @@ describe('threadService.delete 关掉这个对话的浏览器标签', () => {
     const a = await threadService.create({ projectPath: '/x', title: 'a' });
     await threadService.create({ projectPath: '/x', title: 'b' });
 
-    await expect(threadService.delete({ threadId: 'nope' })).rejects.toMatchObject({ code: 'thread.not_found' });
+    await expect(threadService.delete({ threadIds: ['nope'] })).rejects.toMatchObject({ code: 'thread.not_found' });
     expect(browserService.disposeForThread).not.toHaveBeenCalled();
 
-    await threadService.delete({ threadId: a.id });
+    await threadService.delete({ threadIds: [a.id] });
     expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([[a.id]]);
+  });
+});
+
+/**
+ * 归档 / 撤销 / 批量删除（spec 2026-09-21-thread-archive-design §3.3）：先整批校验、再整批改、
+ * 一次写盘；校验不过就抛，index 一个字节不动。
+ *
+ * 夹具里四条对话的 lastActiveAt 各不相同 —— 「归档不动 lastActiveAt」要在它们不相等时才有意义。
+ */
+describe('threadService.archive / unarchive / delete（批量）', () => {
+  let dir: string;
+  const T = (id: string, lastActiveAt: string) => ({
+    id, projectPath: '/x', title: id, createdAt: '2026-09-01T00:00:00.000Z', lastActiveAt,
+  });
+  const readRaw = () => readFileSync(path.join(dir, 'index.json'), 'utf8');
+  const byId = async () => new Map((await threadService.listAll()).map((t) => [t.id, t]));
+  /** 会话文件重定向进临时目录：`paths.SESSIONS_DIR` 是模块加载时按真 home 算好的常量，不能碰真的 ~/.kydog。 */
+  const sessionFile = (id: string) => path.join(dir, 'sessions', `${id}.jsonl`);
+
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-thr-arc-'));
+    mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+    vi.spyOn(paths, 'ROOT', 'get').mockReturnValue(dir);
+    vi.spyOn(paths, 'INDEX_FILE', 'get').mockReturnValue(path.join(dir, 'index.json'));
+    vi.spyOn(paths, 'sessionFileFor').mockImplementation((_p, id) => sessionFile(id));
+    await saveIndex({
+      schemaVersion: 1,
+      projects: [{ path: '/x', addedAt: '2026-09-01T00:00:00.000Z' }],
+      threads: [
+        T('a', '2026-09-04T00:00:00.000Z'),
+        T('b', '2026-09-03T00:00:00.000Z'),
+        T('c', '2026-09-02T00:00:00.000Z'),
+        T('d', '2026-09-01T00:00:00.000Z'),
+      ],
+    });
+    vi.mocked(agentService.dispose).mockClear();
+    vi.mocked(browserService.disposeForThread).mockClear();
+    vi.mocked(agentService.hasActiveRunFor).mockImplementation(() => false);
+  });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+  it('三个一起归档：同一个 archivedAt、lastActiveAt 逐字不变；没点名的 d 一个字段都不动；只对这三个停 agent、关标签', async () => {
+    const before = await byId();
+    const { threads } = await threadService.archive({ threadIds: ['a', 'b', 'c'] });
+    expect(threads.map((t) => t.id)).toEqual(['a', 'b', 'c']);
+
+    const after = await byId();
+    const stamps = ['a', 'b', 'c'].map((id) => after.get(id)!.archivedAt);
+    expect(stamps[0]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(new Set(stamps).size).toBe(1);
+    for (const id of ['a', 'b', 'c']) expect(after.get(id)!.lastActiveAt).toBe(before.get(id)!.lastActiveAt);
+    expect(after.get('d')).toEqual(before.get('d'));
+    expect(vi.mocked(agentService.dispose).mock.calls).toEqual([['a'], ['b'], ['c']]);
+    expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([['a'], ['b'], ['c']]);
+  });
+
+  it('其中一个在飞 → thread.busy 整批拒绝、index 逐字不变；同一批换成都空闲 → 成功', async () => {
+    vi.mocked(agentService.hasActiveRunFor).mockImplementation((id) => id === 'b');
+    const raw0 = readRaw();
+    await expect(threadService.archive({ threadIds: ['a', 'b'] })).rejects.toMatchObject({ code: 'thread.busy' });
+    expect(readRaw()).toBe(raw0);
+    expect(agentService.dispose).not.toHaveBeenCalled();
+
+    vi.mocked(agentService.hasActiveRunFor).mockImplementation(() => false);
+    await threadService.archive({ threadIds: ['a', 'b'] });
+    expect((await byId()).get('b')!.archivedAt).toBeDefined();
+    expect(vi.mocked(agentService.dispose).mock.calls).toEqual([['a'], ['b']]);
+  });
+
+  it('有一个 id 不存在 → thread.not_found，archive 与 delete 都一个不改；去掉它再调 → 成功', async () => {
+    const raw0 = readRaw();
+    await expect(threadService.archive({ threadIds: ['a', 'nope'] })).rejects.toMatchObject({ code: 'thread.not_found' });
+    expect(readRaw()).toBe(raw0);
+    await expect(threadService.delete({ threadIds: ['a', 'nope'] })).rejects.toMatchObject({ code: 'thread.not_found' });
+    expect(readRaw()).toBe(raw0);
+    expect(browserService.disposeForThread).not.toHaveBeenCalled();
+
+    await threadService.archive({ threadIds: ['a'] });
+    expect((await byId()).get('a')!.archivedAt).toBeDefined();
+    expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([['a']]);
+  });
+
+  it('unarchive 摘掉 archivedAt；对没归档过的 id 原样返回（幂等）', async () => {
+    await threadService.archive({ threadIds: ['a'] });
+    expect((await byId()).get('a')!.archivedAt).toBeDefined();
+
+    const { threads } = await threadService.unarchive({ threadIds: ['a', 'd'] });
+    expect(threads.map((t) => t.id)).toEqual(['a', 'd']);
+    const after = await byId();
+    expect(after.get('a')).not.toHaveProperty('archivedAt');
+    expect(after.get('d')).not.toHaveProperty('archivedAt');
+    expect(after.get('a')!.lastActiveAt).toBe('2026-09-04T00:00:00.000Z');
+  });
+
+  it('delete 多个：一次摘掉、各自的会话文件删掉；没点名的 c、d 与 d 的文件都留着', async () => {
+    for (const id of ['a', 'b', 'd']) writeFileSync(sessionFile(id), '{}\n');
+    await threadService.delete({ threadIds: ['a', 'b'] });
+
+    expect([...(await byId()).keys()].sort()).toEqual(['c', 'd']);
+    expect(existsSync(sessionFile('a'))).toBe(false);
+    expect(existsSync(sessionFile('b'))).toBe(false);
+    expect(existsSync(sessionFile('d'))).toBe(true);
+    expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([['a'], ['b']]);
   });
 });

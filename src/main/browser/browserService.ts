@@ -1284,7 +1284,8 @@ export class BrowserService {
   }
 
   /** 对话没了：关掉它名下的 agent 标签（点过「保留」的已经是用户的，不在其中）。
-   *  **两个调用方**：`threadService.delete` 与 `projectService.close`（关项目会带走它的对话）。
+   *  **三个调用方**：`threadService.delete`、`projectService.close`（关项目会带走它的对话）、
+   *  `threadService.archive`（归档时标签跟着收起）。
    *  **不挂在 `AgentService.dispose` 上** —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
    *  **幂等**：标签已被摘走时 `gone` 为空，直接返回。 */
   disposeForThread(threadId: string): void {

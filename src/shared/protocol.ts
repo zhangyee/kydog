@@ -78,7 +78,9 @@ export type RpcCall =
   | { method: 'fs.setWatched'; args: { dirs: string[]; files: string[] }; result: void }
   | { method: 'thread.create'; args: { projectPath: string; title?: string }; result: Thread }
   | { method: 'thread.list'; args: { projectPath: string }; result: Thread[] }
-  | { method: 'thread.delete'; args: { threadId: string }; result: void }
+  | { method: 'thread.delete'; args: { threadIds: string[] }; result: void }
+  | { method: 'thread.archive'; args: { threadIds: string[] }; result: { threads: Thread[] } }
+  | { method: 'thread.unarchive'; args: { threadIds: string[] }; result: { threads: Thread[] } }
   | { method: 'thread.rename'; args: { threadId: string; title: string }; result: void }
   // 除了返回历史，这个调用还有一个副作用：如果该 thread 有 run 在飞，主进程会把本轮
   // 已经广播过的 run.* 事件**原样重放给发起调用的那个窗口**（见 AgentService.loadHistory）。
@@ -247,6 +249,8 @@ export const RPC_METHODS = [
   'thread.create',
   'thread.list',
   'thread.delete',
+  'thread.archive',
+  'thread.unarchive',
   'thread.rename',
   'thread.loadHistory',
   'thread.send',
