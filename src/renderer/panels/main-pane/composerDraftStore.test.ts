@@ -83,6 +83,13 @@ describe('composerDraftStore —— 附件与批注', () => {
     expect(S().byThread['t1']!.notice).toBeNull();
   });
 
+  it('clearComments 也清掉 notice', () => {
+    S().setNotice('t1', '批注清空');
+    expect(S().byThread['t1']!.notice).toBe('批注清空');
+    S().clearComments('t1');
+    expect(S().byThread['t1']!.notice).toBeNull();
+  });
+
   it('批注：addComment 返回 id，按 id 删；clearComments 只清批注', () => {
     const id = S().addComment('t1', { absPath: '/p/n.md', quote: 'q1', note: '', sourceTabId: '/p/n.md' });
     S().addComment('t1', { absPath: '/p/n.md', quote: 'q2', note: '', sourceTabId: '/p/n.md' });
@@ -107,6 +114,7 @@ describe('composerDraftStore —— 附件与批注', () => {
     expect(isDraftEmpty(EMPTY_DRAFT)).toBe(true);
     expect(isDraftEmpty({ ...EMPTY_DRAFT, body: '  ' })).toBe(true);
     expect(isDraftEmpty({ ...EMPTY_DRAFT, body: 'x' })).toBe(false);
+    expect(isDraftEmpty({ ...EMPTY_DRAFT, skill: SKILL })).toBe(false);
     expect(isDraftEmpty({ ...EMPTY_DRAFT, attachments: [{ id: 'a', kind: 'file', name: 'a', absPath: '/a' }] })).toBe(false);
     expect(isDraftEmpty({ ...EMPTY_DRAFT, comments: [{ id: 'c', absPath: '/a', quote: 'q', note: '', sourceTabId: 't' }] })).toBe(false);
   });

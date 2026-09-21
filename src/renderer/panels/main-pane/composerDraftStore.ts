@@ -90,7 +90,7 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => {
       return id;
     },
     removeComment: (threadId, id) => update(threadId, (d) => ({ ...d, comments: d.comments.filter((c) => c.id !== id), notice: null })),
-    clearComments: (threadId) => update(threadId, (d) => ({ ...d, comments: [] })),
+    clearComments: (threadId) => update(threadId, (d) => ({ ...d, comments: [], notice: null })),
     setNotice: (threadId, text) => update(threadId, (d) => ({ ...d, notice: text })),
     restoreDraft: (threadId, draft) =>
       set((s) => {
