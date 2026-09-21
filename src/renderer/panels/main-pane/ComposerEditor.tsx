@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
+import { routePaste } from './composerHelpers';
 
 export type ComposerEditorHandle = {
   focus: () => void;
@@ -23,12 +24,13 @@ type Props = {
   skills: readonly SkillEntry[];
   onChange: (skill: SkillEntry | null, body: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
+  onPasteFiles: (files: File[]) => void;
 };
 
 const CHIP_ATTR = 'data-skill-chip-name';
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function ComposerEditor(
-  { skill, body, large, placeholder, skills, onChange, onKeyDown },
+  { skill, body, large, placeholder, skills, onChange, onKeyDown, onPasteFiles },
   ref,
 ) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -79,10 +81,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   };
 
   const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
-    // Strip rich formatting on paste.
+    // 不收富文本；文件与文字的先后见 routePaste（裁定 2）。
     e.preventDefault();
-    const text = e.clipboardData.getData('text/plain');
-    if (text) document.execCommand('insertText', false, text);
+    const route = routePaste(e.clipboardData.getData('text/plain'), Array.from(e.clipboardData.files), window.kydog.pathForFile);
+    if (route.kind === 'text') document.execCommand('insertText', false, route.text);
+    else if (route.kind === 'files') onPasteFiles(route.files);
   };
 
   const isEmpty = !skill && body === '';

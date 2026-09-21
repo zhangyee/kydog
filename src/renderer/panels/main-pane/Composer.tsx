@@ -5,7 +5,7 @@ import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useSkillsStore } from '../../stores/skillsStore';
-import { NavIcon } from '../../shared';
+import { NavIcon, IconButton } from '../../shared';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { ComposerProjectMenu } from './ComposerProjectMenu';
 import { ComposerSlashMenu } from './ComposerSlashMenu';
@@ -16,6 +16,7 @@ import { ErrorMarginalia } from './ErrorMarginalia';
 import { filterSkillEntries, dispatchInputKey, imageInputBlocked } from './composerHelpers';
 import { encodeUserTurn, IMAGE_UNSUPPORTED_TEXT } from '../../../shared/userTurn';
 import { toMessagePath } from './attachments';
+import { ingestFiles } from './composerIngest';
 import { ComposerTray } from './ComposerTray';
 import type { SkillEntry } from '../../../shared/types';
 
@@ -33,6 +34,7 @@ const COMPOSER_FADE_HEIGHT = 32;
 
 export function Composer({ threadId, placeholder, large = false, prefill }: Props) {
   const editorHandle = useRef<ComposerEditorHandle>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // 未发送的输入存在组件外（见 composerDraftStore）：切文件 tab / 设置页 / 别的
   // thread 都会把这个组件卸载掉，留在组件 state 里的字会跟着一起没。
   const draft = useComposerDraftStore((s) => s.byThread[threadId]) ?? EMPTY_DRAFT;
@@ -314,32 +316,58 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             skills={enabledSkills}
             onChange={onEditorChange}
             onKeyDown={onKeyDown}
+            onPasteFiles={(files) => { void ingestFiles(threadId, files); }}
           />
           <ComposerActionsRow
             large={large}
-            left={large && isEmptyThread ? (
-              <button
-                ref={projectPillRef}
-                type="button"
-                data-testid="project-pill"
-                onClick={onProjectPillClick}
-                className="font-mono inline-flex items-center"
-                style={{
-                  padding: '2px 10px',
-                  borderRadius: 999,
-                  border: '0.5px solid var(--color-ink-hair)',
-                  background: 'transparent',
-                  fontSize: 10,
-                  color: 'var(--color-ink)',
-                  cursor: 'pointer',
-                  gap: 6,
-                }}
-              >
-                <NavIcon name="folder" size={11} />
-                <span>{projectName || 'Project'}</span>
-                <NavIcon name="chevron-down" size={10} />
-              </button>
-            ) : undefined}
+            left={(
+              <>
+                <IconButton
+                  size={22}
+                  tooltip="添加图片或文件"
+                  tooltipPlacement="top"
+                  testId="composer-attach"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <NavIcon name="paperclip" size={14} />
+                </IconButton>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  hidden
+                  data-testid="composer-file-input"
+                  onChange={(e) => {
+                    const files = Array.from(e.currentTarget.files ?? []);
+                    e.currentTarget.value = '';
+                    void ingestFiles(threadId, files);
+                  }}
+                />
+                {large && isEmptyThread ? (
+                  <button
+                    ref={projectPillRef}
+                    type="button"
+                    data-testid="project-pill"
+                    onClick={onProjectPillClick}
+                    className="font-mono inline-flex items-center"
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: 999,
+                      border: '0.5px solid var(--color-ink-hair)',
+                      background: 'transparent',
+                      fontSize: 10,
+                      color: 'var(--color-ink)',
+                      cursor: 'pointer',
+                      gap: 6,
+                    }}
+                  >
+                    <NavIcon name="folder" size={11} />
+                    <span>{projectName || 'Project'}</span>
+                    <NavIcon name="chevron-down" size={10} />
+                  </button>
+                ) : null}
+              </>
+            )}
             right={
               <>
                 {/* 模型 pill 是切模型的唯一入口。窄模式（浏览器侧栏开着）下把它收起来

@@ -66,3 +66,18 @@ export function imageInputBlocked(args: {
   if (!args.entry.modelIds.includes(args.modelId)) return false;
   return !args.entry.imageInputModelIds.includes(args.modelId);
 }
+
+export type PasteRoute = { kind: 'files'; files: File[] } | { kind: 'text'; text: string } | { kind: 'none' };
+
+/**
+ * 粘贴的分流（裁定 2）：带磁盘路径的文件 > 文字 > 无路径的图片。
+ * 表格软件会同时给文字和一张没有路径的渲染图 —— 文字赢；截图只有图 —— 图进托盘；
+ * 访达里复制的文件若 Chromium 给得出路径就按附件收，给不出就退化成插文件名文字。
+ */
+export function routePaste(text: string, files: readonly File[], pathForFile: (f: File) => string): PasteRoute {
+  const onDisk = files.filter((f) => pathForFile(f) !== '');
+  if (onDisk.length > 0) return { kind: 'files', files: onDisk };
+  if (text !== '') return { kind: 'text', text };
+  if (files.length > 0) return { kind: 'files', files: [...files] };
+  return { kind: 'none' };
+}

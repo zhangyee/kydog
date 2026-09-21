@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -99,5 +99,21 @@ describe('imageInputBlocked', () => {
     expect(imageInputBlocked({ hasImages: true, entry, modelId: 'gone' })).toBe(false);
     expect(imageInputBlocked({ hasImages: true, entry: undefined, modelId: 'txt' })).toBe(false);
     expect(imageInputBlocked({ hasImages: true, entry, modelId: null })).toBe(false);
+  });
+});
+
+describe('routePaste（裁定 2）', () => {
+  const f = (name: string, type: string) => ({ name, type }) as File;
+  const disk = new Map<File, string>();
+  const pathOf = (x: File) => disk.get(x) ?? '';
+
+  it('带磁盘路径的文件优先；否则文字；否则无路径的图片；都没有就什么也不做', () => {
+    const finder = f('a.pdf', 'application/pdf'); disk.set(finder, '/p/a.pdf');
+    const shot = f('image.png', 'image/png');
+    expect(routePaste('a.pdf', [finder], pathOf)).toEqual({ kind: 'files', files: [finder] });
+    // 表格软件：文字 + 一张没有路径的渲染图 → 文字赢
+    expect(routePaste('1\t2', [shot], pathOf)).toEqual({ kind: 'text', text: '1\t2' });
+    expect(routePaste('', [shot], pathOf)).toEqual({ kind: 'files', files: [shot] });
+    expect(routePaste('', [], pathOf)).toEqual({ kind: 'none' });
   });
 });
