@@ -20,6 +20,7 @@ import { encodeUserTurn, IMAGE_UNSUPPORTED_TEXT } from '../../../shared/userTurn
 import { toMessagePath } from './attachments';
 import { ingestFiles } from './composerIngest';
 import { ComposerTray } from './ComposerTray';
+import { ComposerCommentList } from './ComposerCommentList';
 import type { SkillEntry } from '../../../shared/types';
 
 type Props = {
@@ -354,6 +355,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             blockedHint={visionBlocked ? IMAGE_UNSUPPORTED_TEXT : null}
             onRemove={(id) => useComposerDraftStore.getState().removeAttachment(threadId, id)}
           />
+          <ComposerCommentList threadId={threadId} projectPath={thread?.projectPath ?? null} />
           <ComposerEditor
             ref={editorHandle}
             skill={skill}

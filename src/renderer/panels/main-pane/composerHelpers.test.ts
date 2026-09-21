@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, dispatchCommentBoxKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -132,5 +132,15 @@ describe('mentionQueryAt（裁定 3）', () => {
     expect(mentionQueryAt('@dp o')).toBeNull();
     expect(mentionQueryAt('@a@b')).toBeNull();
     expect(mentionQueryAt('no at here')).toBeNull();
+  });
+});
+
+describe('dispatchCommentBoxKey（spec §1.4：只有 ⌘↵ / Ctrl↵ 添加）', () => {
+  it('⌘↵ / Ctrl↵ 添加；↵ 与 ⇧↵ 交给文本框换行；Esc 取消', () => {
+    expect(dispatchCommentBoxKey({ key: 'Enter', metaKey: true, ctrlKey: false })).toBe('submit');
+    expect(dispatchCommentBoxKey({ key: 'Enter', metaKey: false, ctrlKey: true })).toBe('submit');
+    expect(dispatchCommentBoxKey({ key: 'Enter', metaKey: false, ctrlKey: false })).toBe('none');
+    expect(dispatchCommentBoxKey({ key: 'Escape', metaKey: false, ctrlKey: false })).toBe('cancel');
+    expect(dispatchCommentBoxKey({ key: 'a', metaKey: true, ctrlKey: false })).toBe('none');
   });
 });

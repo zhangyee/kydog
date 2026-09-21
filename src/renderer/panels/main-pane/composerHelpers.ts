@@ -91,3 +91,10 @@ export function mentionQueryAt(textBeforeCaret: string): { query: string; start:
   if (!m) return null;
   return { query: m[2], start: m.index + m[1].length };
 }
+
+/** 批注框的按键（spec §1.4）：只有 ⌘↵ / Ctrl↵ 添加；↵、⇧↵ 交给文本框换行；Esc 取消。 */
+export function dispatchCommentBoxKey(args: { key: string; metaKey: boolean; ctrlKey: boolean }): 'submit' | 'cancel' | 'none' {
+  if (args.key === 'Escape') return 'cancel';
+  if (args.key === 'Enter' && (args.metaKey || args.ctrlKey)) return 'submit';
+  return 'none';
+}

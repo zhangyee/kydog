@@ -1,7 +1,7 @@
 import { NavIcon, type NavIconName } from '../../shared';
 
 export type TabKind = 'thread' | 'md' | 'pdf' | 'html' | 'settings';
-export type TabItem = { id: string; kind: TabKind; title: string; dirty?: boolean };
+export type TabItem = { id: string; kind: TabKind; title: string; dirty?: boolean; badge?: number };
 
 type Props = {
   tabs: TabItem[];
@@ -55,6 +55,11 @@ export function TabStrip({ tabs, activeId, onSelect, onClose }: Props) {
               <NavIcon name={KIND_ICON[t.kind]} size={13} />
             </span>
             <span className="truncate" style={{ maxWidth: 180 }}>{t.title}</span>
+            {t.badge ? (
+              <span data-testid={`tab-badge-${t.id}`} className="font-mono" style={{ fontSize: 10, color: 'var(--color-ink-faint)' }}>
+                {t.badge}
+              </span>
+            ) : null}
             {t.dirty && (
               <span
                 data-testid={`tab-dirty-${t.id}`}
