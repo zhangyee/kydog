@@ -44,6 +44,12 @@ describe('userTurn：编码与解码互为逆运算', () => {
   });
 
   it('正文为空：整条就是结构块，解回来正文为空', () => {
+    // 正向证明：非空正文会给出非空 body
+    const withBody = encodeUserTurn({ body: 'x', attachments: [FILE], comments: [] });
+    const d1 = decodeUserTurn(withBody.text, 0);
+    expect(d1.body).toEqual([{ kind: 'text', text: 'x' }]);
+
+    // 负向断言：空正文给出空 body
     const { text } = encodeUserTurn({ body: '', attachments: [FILE], comments: [] });
     expect(text.startsWith('<kydog-attachments>\n')).toBe(true);
     const d = decodeUserTurn(text, 0);
@@ -53,6 +59,16 @@ describe('userTurn：编码与解码互为逆运算', () => {
   });
 
   it('没有附件也没有批注：文字就是正文本身', () => {
+    // 正向证明：有附件、图片和批注时它们会被返回
+    const { text: withAll, images: imagesWithAll } = encodeUserTurn({
+      body: 'test', attachments: [FILE, IMG_A], comments: [C1],
+    });
+    const d1 = decodeUserTurn(withAll, 1);
+    expect(imagesWithAll).toHaveLength(1);
+    expect(d1.attachments).toHaveLength(2);
+    expect(d1.comments).toHaveLength(1);
+
+    // 负向断言：没有它们时为空
     const { text, images } = encodeUserTurn({ body: 'hello', attachments: [], comments: [] });
     expect(text).toBe('hello');
     expect(images).toEqual([]);
