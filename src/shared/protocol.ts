@@ -6,7 +6,7 @@ import type {
   CenterViewState,
   TelemetryStatus,
   BrowserState, BrowserTabsSnapshot, NavigationObservation, RectDip, ViewportMode, IdpListPublic, InstitutionPublic, InstitutionSaveArgs,
-  SettingsFileForRenderer,
+  SettingsFileForRenderer, MessageImage,
 } from './types';
 import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
@@ -92,7 +92,7 @@ export type RpcCall =
   // 不重不漏 —— 这也是为什么重放不放在本调用的 result 里：那是另一条通道，跟事件流之间没有顺序保证。
   // 对应地，result 里的 messages **不含**这一轮 in-flight turn（它由重放的事件重建）。
   | { method: 'thread.loadHistory'; args: { threadId: string }; result: Message[] }
-  | { method: 'thread.send'; args: { threadId: string; content: string }; result: { runId: string } }
+  | { method: 'thread.send'; args: { threadId: string; content: string; images?: MessageImage[] }; result: { runId: string } }
   | { method: 'thread.abort'; args: { threadId: string }; result: void }
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }

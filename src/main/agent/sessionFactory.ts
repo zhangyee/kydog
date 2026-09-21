@@ -10,13 +10,18 @@ import { settingsService } from '../settings/settingsService';
 import type { ProviderId } from '../../shared/types';
 
 export type AnySession = {
-  prompt: (content: string) => Promise<void>;
+  prompt: (
+    content: string,
+    options?: { images?: Array<{ type: 'image'; data: string; mimeType: string }> },
+  ) => Promise<void>;
   abort: () => void | Promise<void>;
   subscribe: (listener: (event: { type: string; [k: string]: unknown }) => void) => () => void;
   cleanup?: () => Promise<void>;
   dispose?: () => void;
   readonly messages?: unknown[];
   readonly state?: { messages: unknown[] };
+  /** pi AgentSession 的当前模型。`input` 是能不能收图的唯一依据（spec §3.6）。 */
+  readonly model?: { readonly input?: readonly string[] };
 };
 
 /**

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createFixtureSession } from './fixtureProvider';
 import { pickFixtureEvents, type FixtureEvent, type FixtureFile } from '../../../e2e/fixtures/fixture.types';
+import { encodeUserTurn } from '../../shared/userTurn';
 
 /**
  * fixture 的 `scripts` 形状：同一次启动里按用户这一轮发的原文挑剧本，e2e 靠它让几个流式场景
@@ -49,6 +50,15 @@ describe('pickFixtureEvents', () => {
   it('挑不到就抛，并列出有哪些剧本（不回落到任何一份）', () => {
     const file: FixtureFile = { scripts: { 甲: say('甲'), 乙: say('乙') } };
     expect(() => pickFixtureEvents(file, '丙')).toThrow(/没有名为「丙」的剧本；有：「甲」、「乙」/);
+  });
+
+  it('scripts：带结构块的消息按正文挑剧本（结构块不参与匹配）', () => {
+    const one: FixtureEvent[] = [{ after_ms: 0, type: 'agent_start' }];
+    const file: FixtureFile = { scripts: { 看图: one } };
+    const { text } = encodeUserTurn({ body: '看图', attachments: [{ kind: 'image', name: '截图 1', data: 'A', mimeType: 'image/png' }], comments: [] });
+    expect(pickFixtureEvents(file, text, 1)).toBe(one);
+    expect(pickFixtureEvents(file, '看图')).toBe(one);
+    expect(() => pickFixtureEvents(file, text, 0)).toThrow(/没有名为/);
   });
 });
 

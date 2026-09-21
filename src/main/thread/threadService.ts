@@ -8,7 +8,7 @@ import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import type { AskAnswer } from '../../shared/askQuestion';
 import type { EventSink } from '../ipc/broadcaster';
-import type { Thread, Message, IndexFile } from '../../shared/types';
+import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
 
 export class ThreadService {
   async list({ projectPath }: { projectPath: string }): Promise<Thread[]> {
@@ -150,7 +150,7 @@ export class ThreadService {
     return agentService.loadHistory(threadId, thread.projectPath, replay);
   }
 
-  async send({ threadId, content }: { threadId: string; content: string }): Promise<{ runId: string }> {
+  async send({ threadId, content, images }: { threadId: string; content: string; images?: MessageImage[] }): Promise<{ runId: string }> {
     const idx = await loadIndex();
     const thread = idx.threads.find((t) => t.id === threadId);
     if (!thread) throw new KydogError('thread.not_found', `thread ${threadId} not found`);
@@ -162,7 +162,7 @@ export class ThreadService {
       const { titleService } = await import('./titleService');
       titleService.generateForThread(threadId, content);
     }
-    return agentService.send(threadId, thread.projectPath, content);
+    return agentService.send(threadId, thread.projectPath, content, images ?? []);
   }
 
   async abort({ threadId }: { threadId: string }): Promise<void> {

@@ -24,11 +24,12 @@ export type FixtureTool = {
 };
 
 export type FakeAgentSession = {
-  prompt: (content: string) => Promise<void>;
+  prompt: (content: string, options?: { images?: Array<{ type: 'image'; data: string; mimeType: string }> }) => Promise<void>;
   abort: () => void;
   subscribe: (listener: FakeSessionListener) => () => void;
   cleanup: () => Promise<void>;
   state: { messages: unknown[] };
+  model: { input: readonly string[] };
 };
 
 /**
@@ -60,12 +61,19 @@ export async function createFixtureSession(
 
   return {
     state: { messages: [] },
+    model: { input: file.modelInput ?? ['text', 'image'] },
     subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
     abort() { aborted = true; cancelPendingWait?.(); toolAbort?.abort(); },
     async cleanup() { listeners.clear(); },
-    async prompt(content) {
+    async prompt(content, options) {
+      const images = options?.images ?? [];
+      // e2e 断言「这一轮 agent 到底收到了什么」的唯一出口：先记下来再挑剧本（挑不到会抛）。
+      await fs.appendFile(
+        `${fixturePath}.prompts.jsonl`,
+        `${JSON.stringify({ content, images: images.map((i) => ({ mimeType: i.mimeType, length: i.data.length })) })}\n`,
+      );
       // 先挑剧本：认不到就在发出任何事件之前抛（AgentService 那边按这一轮出错收口）。
-      const events = pickFixtureEvents(file, content);
+      const events = pickFixtureEvents(file, content, images.length);
       // 中止只作用于它那一轮。不复位的话，同一个对话里停过一次，之后每一轮的事件都会被
       // 下面的 `aborted` 判断整份吞掉 —— 真实 pi 那条路上没有这回事。
       aborted = false;
