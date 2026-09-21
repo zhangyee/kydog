@@ -367,10 +367,22 @@ test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 
   // 退出评论模式改用点胶囊，不用第二下 Esc：点胶囊这一下也会在包裹层上冒泡出 mouseup，
   // 而 commentMode 这时还没来得及切掉（onClick 排在 onMouseUp 之后才跑）——这条用例守的
   // 正是「点胶囊退出不会把这次 mouseup 误判成又选中了一段新文字、重新弹框」
-  // （MarkdownFileTab.tsx「发现 3」，bec3aa6 修的那个 bug）。
+  // （MarkdownFileTab.tsx「发现 3」，bec3aa6 修的那个 bug）。取消框会把选区收拢成空的，
+  // 光点胶囊测不出这个 bug——空选区不管来源过滤在不在都不会弹框。重新选一段非空的文字，
+  // 但不派发 mouseup（那样才是「合法」触发的路径），再去点胶囊，才是这条判断真正要守的场景。
+  await selectText('并复现');
   await page.getByTestId('md-comment-mode').click();
   await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'off');
+  // 如果来源过滤丢了，误触发的 openBoxFromSelection 是从 mouseup 里的 setTimeout(…, 0) 异步
+  // 弹出的——这里没有协议事实可等，只能等一小段观察窗，确认点完之后确实什么都没发生。
+  await page.waitForTimeout(150);
   await expect(page.getByTestId('comment-box')).toHaveCount(0);
+
+  // Esc 退出评论模式（没有框开着时的那条路径）：再进一次模式，这次直接按 Esc，不经过批注框。
+  await page.getByTestId('md-comment-mode').click();
+  await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'on');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'off');
 
   // 回到对话：卡片在；发出去
   await page.getByTestId(`tab-${threadId}`).click();
