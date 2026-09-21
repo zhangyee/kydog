@@ -1,7 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-type Placement = 'top' | 'bottom' | 'left' | 'right';
+export type Placement = 'top' | 'bottom' | 'left' | 'right';
+
+/** 提示框与锚点之间留的缝。 */
+export const TOOLTIP_GAP = 6;
+
+type AnchorRect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
+
+/**
+ * 提示框贴在锚点哪一侧。定位点（fixed 的 left / top）落在锚点那条边外 GAP 处，transform 再把
+ * 提示框**整个**推到那一侧：top 要往上推满自身高度（-100%），left 要往左推满自身宽度（-100%）。
+ * 只推 -50% / 0 的话，提示框会从定位点往回伸，盖住锚点本身 —— top / left 以前就是这样。
+ */
+export function tooltipPosition(placement: Placement, r: AnchorRect): { x: number; y: number; transform: string } {
+  switch (placement) {
+    case 'bottom': return { x: r.left + r.width / 2, y: r.bottom + TOOLTIP_GAP, transform: 'translate(-50%, 0)' };
+    case 'top': return { x: r.left + r.width / 2, y: r.top - TOOLTIP_GAP, transform: 'translate(-50%, -100%)' };
+    case 'right': return { x: r.right + TOOLTIP_GAP, y: r.top + r.height / 2, transform: 'translate(0, -50%)' };
+    case 'left': return { x: r.left - TOOLTIP_GAP, y: r.top + r.height / 2, transform: 'translate(-100%, -50%)' };
+  }
+}
 
 type Props = {
   content: ReactNode;
@@ -12,7 +31,7 @@ type Props = {
 
 export function Tooltip({ content, placement = 'bottom', delayMs = 200, children }: Props) {
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ x: number; y: number } | null>(null);
+  const [coords, setCoords] = useState<{ x: number; y: number; transform: string } | null>(null);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -23,12 +42,7 @@ export function Tooltip({ content, placement = 'bottom', delayMs = 200, children
   const measure = () => {
     const el = wrapRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    const gap = 6;
-    if (placement === 'bottom') setCoords({ x: r.left + r.width / 2, y: r.bottom + gap });
-    else if (placement === 'top') setCoords({ x: r.left + r.width / 2, y: r.top - gap });
-    else if (placement === 'right') setCoords({ x: r.right + gap, y: r.top + r.height / 2 });
-    else setCoords({ x: r.left - gap, y: r.top + r.height / 2 });
+    setCoords(tooltipPosition(placement, el.getBoundingClientRect()));
   };
 
   const onEnter = () => {
@@ -59,7 +73,7 @@ export function Tooltip({ content, placement = 'bottom', delayMs = 200, children
             position: 'fixed',
             left: coords.x,
             top: coords.y,
-            transform: placement === 'bottom' || placement === 'top' ? 'translate(-50%, 0)' : 'translate(0, -50%)',
+            transform: coords.transform,
             zIndex: 1000,
             padding: '4px 8px',
             background: 'var(--color-ink)',
