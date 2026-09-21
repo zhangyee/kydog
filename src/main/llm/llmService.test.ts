@@ -88,4 +88,32 @@ describe('llmService', () => {
     expect(entry).toBeDefined();
     expect(entry!.modelIds).toContain('llama3.1:8b');
   });
+
+  it('list: imageInputModelIds 按 pi 的 Model.input 算 —— 能读图的进，只读文字的不进', async () => {
+    await llmService.configure({ providerId: 'anthropic', cfg: { kind: 'apiKey', apiKey: 'k' } });
+    await llmService.configure({ providerId: 'deepseek', cfg: { kind: 'apiKey', apiKey: 'k' } });
+    const list = await llmService.list();
+    const anthropic = list.configured.find((c) => c.providerId === 'anthropic')!;
+    const deepseek = list.configured.find((c) => c.providerId === 'deepseek')!;
+    expect(anthropic.imageInputModelIds).toContain('claude-sonnet-4-5');
+    // 反面先证明「它在模型列表里」，再断「它不在能读图的列表里」：
+    // 否则 deepseek-v4-flash 压根没列出来时这条也会绿。
+    expect(deepseek.modelIds).toContain('deepseek-v4-flash');
+    expect(deepseek.imageInputModelIds).not.toContain('deepseek-v4-flash');
+    expect(anthropic.imageInputModelIds.every((id) => anthropic.modelIds.includes(id))).toBe(true);
+  });
+
+  it('list: 自定义服务商按 models[].input 算，没写 input 的按 [\'text\']（与 providerRegistry 同一个缺省）', async () => {
+    await llmService.configure({
+      providerId: 'my-vl',
+      cfg: { kind: 'custom', provider: {
+        id: 'my-vl', displayName: 'VL', baseUrl: 'http://localhost:1/v1',
+        api: 'openai-completions', apiKey: 'k',
+        models: [{ id: 'vis', input: ['text', 'image'] }, { id: 'plain' }],
+      } },
+    });
+    const entry = (await llmService.list()).configured.find((c) => c.providerId === 'my-vl')!;
+    expect(entry.modelIds).toEqual(['vis', 'plain']);
+    expect(entry.imageInputModelIds).toEqual(['vis']);
+  });
 });

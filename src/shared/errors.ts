@@ -27,6 +27,8 @@ export type KydogErrorCode =
   // 这条要中止整趟翻译，llm.invalid 只让当前那一页记失败。渲染层按码分支，不匹配 message
   // 字符串——码是协议层的，字符串不是。
   | 'llm.not_configured'
+  // 这一轮带了图片，而这条会话实际用的模型（pi Model.input）不收图片。渲染层按码分支、不匹配文案。
+  | 'llm.imageUnsupported'
   // ── 内置浏览器 ──
   | 'browser.bad_url'
   // 动作批次本身不合法：空列表、repeat 嵌套、times 越界、展开后超步数上限、

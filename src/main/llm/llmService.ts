@@ -34,6 +34,8 @@ class LlmService {
         kind: 'custom',
         authStatus: { configured: true, source: 'stored', label: cp.apiKey === 'ollama' || cp.apiKey === 'lmstudio' ? '本地' : 'key' },
         modelIds: cp.models.map((m) => m.id),
+        // 缺省 ['text'] 与 providerRegistry.customProviderToPiConfig 同一个口径。
+        imageInputModelIds: cp.models.filter((m) => (m.input ?? ['text']).includes('image')).map((m) => m.id),
         defaultModel: cp.defaultModel ?? cp.models[0]?.id ?? null,
       });
     }
@@ -50,9 +52,10 @@ class LlmService {
     const cat = getCatalogEntry(id);
     const provOverride = settings.llm.providers[id];
     const all = (reg.modelRuntime as any).getModels?.() ?? [];
-    const modelIds = (all as Array<{ provider: string; id: string }>)
-      .filter((m) => m.provider === id)
-      .map((m) => m.id);
+    const own = (all as Array<{ provider: string; id: string; input?: readonly string[] }>)
+      .filter((m) => m.provider === id);
+    const modelIds = own.map((m) => m.id);
+    const imageInputModelIds = own.filter((m) => m.input?.includes('image') === true).map((m) => m.id);
     const defaultModel = provOverride?.defaultModel ?? cat?.defaultModel ?? modelIds[0] ?? null;
     let authStatus: LlmConfiguredEntry['authStatus'];
     if (cat?.kind === 'cloud' && cat.cloud?.cfgKind === 'vertex') {
@@ -67,6 +70,7 @@ class LlmService {
       kind: cat?.kind ?? 'apiKey',
       authStatus,
       modelIds,
+      imageInputModelIds,
       defaultModel,
     };
   }

@@ -503,6 +503,11 @@ export type LlmConfiguredEntry = {
   kind: 'oauth' | 'apiKey' | 'cloud' | 'custom';
   authStatus: { configured: boolean; source?: string; label?: string };
   modelIds: string[];
+  /**
+   * `modelIds` 里能收图片输入的那些（pi `Model.input` 含 `'image'`）。输入框按它预先拦下
+   * 「有图但当前模型不读图」的发送；主进程发送时再按会话实际的模型判一次（spec §3.6）。
+   */
+  imageInputModelIds: string[];
   defaultModel: string | null;
 };
 
