@@ -105,4 +105,33 @@ describe('Composer —— @ 列表', () => {
     expect(invoke.mock.calls.length).toBe(before + 1);
     expect(invoke).toHaveBeenLastCalledWith('project.searchFiles', { projectPath: PROJ, query: 'a', rescan: false });
   });
+
+  it('新一次弹出自己的第一条结果回来之前：不接着显示上一次 session 的旧结果（也不能提前判成「没有匹配」）', async () => {
+    invoke.mockResolvedValueOnce({ items: [{ path: 'refs/a.pdf' }], indexed: true });
+    const m = mount(Composer, { threadId: 't1' });
+    editor(m.tree).props.onMentionQuery('a');
+    await Promise.resolve(); await Promise.resolve();
+    // 正向：第一次 session 的结果确实渲染出来了 —— 后面「不渲染」的负向断言才立得住。
+    expect(menu(m.tree)).toHaveLength(1);
+    expect(menu(m.tree)[0].props.items).toEqual(['refs/a.pdf']);
+
+    editor(m.tree).props.onMentionQuery(null);
+    expect(menu(m.tree)).toHaveLength(0);
+
+    // 新一次弹出：query 变了、这次的 invoke 先不回（挂起）。
+    let resolveSecond!: (r: { items: { path: string }[]; indexed: boolean }) => void;
+    invoke.mockImplementationOnce(() => new Promise((res) => { resolveSecond = res; }));
+    editor(m.tree).props.onMentionQuery('b');
+    await Promise.resolve(); await Promise.resolve();
+    // 否定：自己的结果还没回来，列表不渲染 —— 不是继续显示上一次 session 的 'refs/a.pdf'。
+    expect(menu(m.tree)).toHaveLength(0);
+
+    // 结果回来了（未索引完，没有匹配）：列表这才渲染，且是这次自己的结果（indexed: false
+    // 触发「正在索引项目文件…」，不是把「没结果」误判成「没有匹配的文件」）。
+    resolveSecond({ items: [], indexed: false });
+    await Promise.resolve(); await Promise.resolve();
+    expect(menu(m.tree)).toHaveLength(1);
+    expect(menu(m.tree)[0].props.items).toEqual([]);
+    expect(menu(m.tree)[0].props.indexed).toBe(false);
+  });
 });

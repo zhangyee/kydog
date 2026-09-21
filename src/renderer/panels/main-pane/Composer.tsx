@@ -112,6 +112,10 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionItems, setMentionItems] = useState<string[]>([]);
   const [mentionIndexed, setMentionIndexed] = useState(true);
+  // 一次弹出（session）自己的第一条结果回来之前：不显示上一次 session 的旧结果，
+  // 也不能把「还没回来」误判成「查完了、没有匹配」（未索引完要显示的是「正在索引…」，
+  // 不是「没有匹配的文件」——两者用的是同一个初始 mentionIndexed=true，区分靠 ready）。
+  const [mentionReady, setMentionReady] = useState(false);
   const [mentionHighlight, setMentionHighlight] = useState(0);
   const mentionSessionRef = useRef(false);
   const mentionProject = thread?.projectPath ?? null;
@@ -121,8 +125,15 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   useEffect(() => {
     if (mentionQuery === null || !mentionProject) { mentionSessionRef.current = false; return; }
     // 一次弹出只在第一次查询时请求重扫；之后的按键与索引更新都用手上最新的结果（spec §3.5）。
-    const rescan = !mentionSessionRef.current;
+    const isNewSession = !mentionSessionRef.current;
+    const rescan = isNewSession;
     mentionSessionRef.current = true;
+    if (isNewSession) {
+      // 新一次弹出：同步清掉上一次 session 留下的旧列表，回到「还没就绪」，
+      // 列表因此在第一条结果回来之前不渲染（见下面 mentionOpen && mentionReady）。
+      setMentionItems([]);
+      setMentionReady(false);
+    }
     let cancelled = false;
     void window.kydog.invoke('project.searchFiles', { projectPath: mentionProject, query: mentionQuery, rescan })
       .then((r) => {
@@ -130,6 +141,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
         setMentionItems(r.items.map((i) => i.path));
         setMentionIndexed(r.indexed);
         setMentionHighlight(0);
+        setMentionReady(true);
       })
       .catch((err: unknown) => console.error('project.searchFiles failed', err));
     return () => { cancelled = true; };
@@ -470,7 +482,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
           onSelect={applySlashSelection}
         />
       ) : null}
-      {mentionOpen && editorWrapperRef.current ? (
+      {mentionOpen && mentionReady && editorWrapperRef.current ? (
         <ComposerMentionMenu
           items={mentionItems} indexed={mentionIndexed} highlightIndex={mentionHighlight}
           anchorRect={editorWrapperRef.current.getBoundingClientRect()}
