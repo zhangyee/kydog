@@ -34,7 +34,9 @@ describe('CommentBox —— 按键', () => {
     const input = () => findAllWhere(m.tree as never, (el) => el.props['data-testid'] === 'comment-box-input')[0];
     return { m, input, onSubmit, onCancel };
   }
-  const key = (k: string, meta = false) => ({ key: k, metaKey: meta, ctrlKey: false, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+  const key = (k: string, meta = false, isComposing = false) => ({
+    key: k, metaKey: meta, ctrlKey: false, nativeEvent: { isComposing }, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+  });
 
   it('⌘↵ 交出写好的批注；单按 ↵ 不交（交给文本框换行）', () => {
     const { input, onSubmit } = setup();
@@ -43,6 +45,20 @@ describe('CommentBox —— 按键', () => {
     expect(onSubmit).not.toHaveBeenCalled();
     input().props.onKeyDown(key('Enter', true));
     expect(onSubmit).toHaveBeenCalledWith('补一组对照');
+  });
+
+  it('输入法组字中的 Esc / ⌘↵ 交给输入法：不取消、不添加（CommentBox 真把 nativeEvent.isComposing 传下去了）', () => {
+    const { input, onSubmit, onCancel } = setup();
+    input().props.onChange({ target: { value: '补一组' } });
+    // 正向：不在组字时，同样的 Esc / ⌘↵ 确实会取消 / 添加。
+    input().props.onKeyDown(key('Escape'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    input().props.onKeyDown(key('Enter', true));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    input().props.onKeyDown(key('Escape', false, true));
+    input().props.onKeyDown(key('Enter', true, true));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
   it('Esc 取消；说明行写明进哪个对话、用哪个键', () => {

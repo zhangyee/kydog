@@ -72,7 +72,7 @@ export function CommentBox({ quote, targetTitle, anchor, onSubmit, onCancel }: P
         onChange={(e) => setNote(e.target.value)}
         onInput={(e) => { const el = e.currentTarget; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 200)}px`; }}
         onKeyDown={(e) => {
-          const k = dispatchCommentBoxKey({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey });
+          const k = dispatchCommentBoxKey({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, isComposing: e.nativeEvent.isComposing });
           if (k === 'submit') { e.preventDefault(); onSubmit(note); }
           else if (k === 'cancel') { e.preventDefault(); e.stopPropagation(); onCancel(); }
         }}

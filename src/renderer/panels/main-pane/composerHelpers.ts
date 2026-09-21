@@ -40,6 +40,10 @@ export function dispatchInputKey(args: {
   slashMenuOpen: boolean;
 }): KeyAction {
   if (args.slashMenuOpen) {
+    // 输入法组字中的键是输入法自己的：↵ 在确认候选词、Esc 在撤销组字、方向键在挑候选。
+    // 必须排在菜单接管之前 —— 否则 @ 列表开着时，确认拼音的那一下 ↵ 会被当成「插入高亮项」。
+    // 菜单没开时照旧走下面：⌘↵ 组字中也发送（by spec），只有裸 ↵ 被组字挡住。
+    if (args.isComposing) return { kind: 'ignore' };
     if (args.key === 'Enter' || args.key === 'Tab') return { kind: 'slash-commit' };
     if (args.key === 'ArrowDown') return { kind: 'slash-down' };
     if (args.key === 'ArrowUp') return { kind: 'slash-up' };
@@ -92,8 +96,12 @@ export function mentionQueryAt(textBeforeCaret: string): { query: string; start:
   return { query: m[2], start: m.index + m[1].length };
 }
 
-/** 批注框的按键（spec §1.4）：只有 ⌘↵ / Ctrl↵ 添加；↵、⇧↵ 交给文本框换行；Esc 取消。 */
-export function dispatchCommentBoxKey(args: { key: string; metaKey: boolean; ctrlKey: boolean }): 'submit' | 'cancel' | 'none' {
+/**
+ * 批注框的按键（spec §1.4）：只有 ⌘↵ / Ctrl↵ 添加；↵、⇧↵ 交给文本框换行；Esc 取消。
+ * 输入法组字中一律不管：那一下 Esc 是撤销组字、↵ 是确认候选词，不该把写了一半的批注取消 / 交掉。
+ */
+export function dispatchCommentBoxKey(args: { key: string; metaKey: boolean; ctrlKey: boolean; isComposing: boolean }): 'submit' | 'cancel' | 'none' {
+  if (args.isComposing) return 'none';
   if (args.key === 'Escape') return 'cancel';
   if (args.key === 'Enter' && (args.metaKey || args.ctrlKey)) return 'submit';
   return 'none';

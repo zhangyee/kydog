@@ -85,6 +85,19 @@ describe('dispatchInputKey', () => {
     expect(dispatchInputKey({ ...base, key: 'Enter', shiftKey: true, slashMenuOpen: true }))
       .toEqual({ kind: 'slash-commit' });
   });
+  it('输入法组字中：菜单开着也不接管按键（这一下 ↵ 是在确认候选词，Esc / 方向键是输入法自己的）', () => {
+    const cases: Array<[string, string]> = [
+      ['Enter', 'slash-commit'], ['Tab', 'slash-commit'], ['ArrowDown', 'slash-down'], ['ArrowUp', 'slash-up'], ['Escape', 'slash-close'],
+    ];
+    for (const [key, kind] of cases) {
+      // 正向：同一个键不在组字时，菜单确实接管它 —— 下面的 ignore 才说明是组字那一位起的作用。
+      expect(dispatchInputKey({ ...base, key, slashMenuOpen: true })).toEqual({ kind });
+      expect(dispatchInputKey({ ...base, key, slashMenuOpen: true, isComposing: true })).toEqual({ kind: 'ignore' });
+    }
+    // 菜单没开时 ⌘↵ 组字中照旧发送（上面那条 by spec 的规则不受影响）；菜单开着时组字优先。
+    expect(dispatchInputKey({ ...base, key: 'Enter', metaKey: true, isComposing: true })).toEqual({ kind: 'send' });
+    expect(dispatchInputKey({ ...base, key: 'Enter', metaKey: true, isComposing: true, slashMenuOpen: true })).toEqual({ kind: 'ignore' });
+  });
 });
 
 describe('imageInputBlocked', () => {
@@ -136,11 +149,20 @@ describe('mentionQueryAt（裁定 3）', () => {
 });
 
 describe('dispatchCommentBoxKey（spec §1.4：只有 ⌘↵ / Ctrl↵ 添加）', () => {
+  const k = { metaKey: false, ctrlKey: false, isComposing: false };
   it('⌘↵ / Ctrl↵ 添加；↵ 与 ⇧↵ 交给文本框换行；Esc 取消', () => {
-    expect(dispatchCommentBoxKey({ key: 'Enter', metaKey: true, ctrlKey: false })).toBe('submit');
-    expect(dispatchCommentBoxKey({ key: 'Enter', metaKey: false, ctrlKey: true })).toBe('submit');
-    expect(dispatchCommentBoxKey({ key: 'Enter', metaKey: false, ctrlKey: false })).toBe('none');
-    expect(dispatchCommentBoxKey({ key: 'Escape', metaKey: false, ctrlKey: false })).toBe('cancel');
-    expect(dispatchCommentBoxKey({ key: 'a', metaKey: true, ctrlKey: false })).toBe('none');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Enter', metaKey: true })).toBe('submit');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Enter', ctrlKey: true })).toBe('submit');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Enter' })).toBe('none');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Escape' })).toBe('cancel');
+    expect(dispatchCommentBoxKey({ ...k, key: 'a', metaKey: true })).toBe('none');
+  });
+  it('输入法组字中：Esc 与 ⌘↵ / Ctrl↵ 都交给输入法，不取消、不添加', () => {
+    // 正向：同样的键不在组字时确实会取消 / 添加 —— 下面的 none 才说明是组字那一位起的作用。
+    expect(dispatchCommentBoxKey({ ...k, key: 'Escape' })).toBe('cancel');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Enter', metaKey: true })).toBe('submit');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Escape', isComposing: true })).toBe('none');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Enter', metaKey: true, isComposing: true })).toBe('none');
+    expect(dispatchCommentBoxKey({ ...k, key: 'Enter', ctrlKey: true, isComposing: true })).toBe('none');
   });
 });
