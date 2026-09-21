@@ -44,3 +44,11 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 其余 `run.*` 事件都来自 `AgentService.subscribe()` 对 pi session 的订阅：`run.started` 来自 `agent_start`，两个 delta 来自 message 流，普通 `run.tool_call_*` 来自 `tool_execution_start` / `tool_execution_end`，`run.ended` 来自 `agent_end`。另有一个 `run.resync` 谁都不来自——它是上面那段重放的帧头，只在 `loadHistory` 里发给单个窗口，也不进 journal。
 
 其他非直觉点（为什么按 run 而不是按 pi message 合成 messageId、为什么并行判定要读 `message_end` 携带的 content）写在 `src/main/agent/AgentService.ts` 的注释里，改那块之前先读。
+
+## 用户消息里的结构（附件、批注、@ 引用）
+
+**发给模型的那段文字就是唯一事实**，不另存结构。输入框用 `src/shared/userTurn.ts` 的 `encodeUserTurn` 把附件、批注写成 `<kydog-attachments>` / `<kydog-comment>` 块接在正文后面、@ 引用写成行内 `<kydog-ref path="…"/>`，图片作为 pi 的图片块随 `thread.send` 的 `images` 走（`AgentService.send` → `session.prompt(text, { images })`）。历史显示（`UserMessage`）用同一个模块的 `decodeUserTurn` 解回来：刚发出的与重新载入的走同一段代码，所以不会对不上。解码只认严格格式，不合格的整条按正文原样显示。
+
+能不能发图由 pi `Model.input` 决定：`llm.list` 的每个服务商带 `imageInputModelIds` 供输入框预先拦；主进程发送时按会话实际模型再判一次（`llm.imageUnsupported`）。
+
+@ 的项目文件列表来自主进程的 `project/fileIndex.ts`：一次只读一个目录地遍历，按项目缓存；`project.searchFiles` 查询、`rescan` 请求重扫（同一项目的重扫合并成一趟），扫完广播 `project.fileIndexUpdated`，渲染层记在 `fileIndexStore` 的版本号上，开着的 @ 列表据此重查。

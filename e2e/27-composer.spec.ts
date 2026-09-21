@@ -3,11 +3,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { launchKydog, teardown, seedSamplePackage, type LaunchedApp, newThread } from './helpers';
-import type { FixtureFile } from './fixtures/fixture.types';
+import type { FixtureFile, FixtureEvent } from './fixtures/fixture.types';
 
 /**
- * 输入框（contenteditable 里的 slash 菜单与 skill chip）、项目与模型 pill、技能开关。
+ * 输入框（contenteditable 里的 slash 菜单与 skill chip）、项目与模型 pill、技能开关、
+ * 附件（粘贴截图 / 回形针）、@ 引用、md 评论（选区工具栏与评论模式两个入口）。
  * 串行共用一次启动：每条从「新建对话」起一个空 thread，互不依赖输入框里的残留；
+ * 附件与评论四条互不依赖，都从 `newThread` 起；md 评论那条会开一个文件 tab，结束时关掉。
  * 技能开关那条改设置，放最后。
  *
  * 发送走 fixture（`ping` 剧本）—— 不设 fixture 就会拿假 key 真打上游 API。
@@ -17,23 +19,45 @@ test.describe.configure({ mode: 'serial' });
 let launched: LaunchedApp;
 let projectA = '';
 let projectB = '';
+let outsideFile = '';
+let promptsFile = '';
+
+/** 读 fixture 记下的「这一轮 agent 到底收到了什么」——每条 prompt 一行 JSON（见 fixtureProvider.ts）。 */
+async function prompts(): Promise<Array<{ content: string; images: Array<{ mimeType: string; length: number }> }>> {
+  const raw = await fs.readFile(promptsFile, 'utf8').catch(() => '');
+  return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+}
+
+/** 剧本形状照 `ping`：agent_start → 一段文字 → agent_end。新增四条只是回复文字不同。 */
+const reply = (delta: string): FixtureEvent[] => [
+  { after_ms: 0, type: 'agent_start' },
+  { after_ms: 0, type: 'message_start', messageId: 'm1' },
+  { after_ms: 10, type: 'text_delta', messageId: 'm1', delta },
+  { after_ms: 0, type: 'message_end', messageId: 'm1' },
+  { after_ms: 0, type: 'agent_end', reason: 'completed' },
+];
 
 test.beforeAll(async () => {
   projectA = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-a-'));
   projectB = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-b-'));
   await seedSamplePackage(projectA);
   await seedSamplePackage(projectB);
+  await fs.mkdir(path.join(projectA, 'refs'), { recursive: true });
+  await fs.writeFile(path.join(projectA, 'refs', 'dpo-2023.pdf'), '%PDF-1.4\n');
+  await fs.writeFile(path.join(projectA, 'refs', 'draft.pdf'), '%PDF-1.4\n');
+  await fs.writeFile(path.join(projectA, 'ch3.md'), '# 第三章\n\n## 3.2 偏好对齐\n\n将 β 固定为 0.1，并复现。\n');
+  outsideFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-out-')), 'outside.pdf');
+  await fs.writeFile(outsideFile, '%PDF-1.4\n');
   const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-fx-'));
   const fixture = path.join(fixtureDir, 'composer.json');
+  promptsFile = `${fixture}.prompts.jsonl`;
   const script: FixtureFile = {
     scripts: {
-      ping: [
-        { after_ms: 0, type: 'agent_start' },
-        { after_ms: 0, type: 'message_start', messageId: 'm1' },
-        { after_ms: 10, type: 'text_delta', messageId: 'm1', delta: 'pong' },
-        { after_ms: 0, type: 'message_end', messageId: 'm1' },
-        { after_ms: 0, type: 'agent_end', reason: 'completed' },
-      ],
+      ping: reply('pong'),
+      '看图': reply('看到了'),
+      '看文件': reply('看到了'),
+      '对比 <kydog-ref path="refs/dpo-2023.pdf"/> 的表 2': reply('对比完了'),
+      '整理批注': reply('整理完了'),
     },
   };
   await fs.writeFile(fixture, JSON.stringify(script));
@@ -230,6 +254,137 @@ test('23/24-llm: Composer 显示默认模型；pill 里切到另一家只改这�
   await page.getByText('▸ OpenAI').click();
   await page.locator('text=gpt-4o').first().click();
   await expect(page.locator('text=/OpenAI · gpt-4o/')).toBeVisible();
+});
+
+test('附件：粘贴截图 → 托盘 → 发送 → agent 收到图片块 → 历史里缩略图真的解码了', async () => {
+  const { page } = launched;
+  const input = await freshComposer(page);
+  await input.evaluate(async (el) => {
+    const c = document.createElement('canvas'); c.width = 8; c.height = 6;
+    const g = c.getContext('2d')!; g.fillStyle = '#336699'; g.fillRect(0, 0, 8, 6);
+    const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), 'image/png'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'image.png', { type: 'image/png' }));
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  await expect(page.getByTestId('tray-item').filter({ hasText: '截图 1' })).toBeVisible();
+  await input.click();
+  await page.keyboard.type('看图');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).find((p) => p.content.startsWith('看图'))).toMatchObject({
+    images: [{ mimeType: 'image/png' }],
+  });
+  expect((await prompts()).find((p) => p.content.startsWith('看图'))!.content).toContain('<image n="1" name="截图 1"/>');
+  const thumb = page.getByTestId('message-list').getByTestId('attachment-thumb').last();
+  await expect.poll(() => thumb.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(8);
+});
+
+test('附件：回形针选文件 → 项目内发相对路径、项目外发绝对路径', async () => {
+  const { page } = launched;
+  await freshComposer(page);
+  await page.getByTestId('composer-file-input').setInputFiles([path.join(projectA, 'refs', 'draft.pdf'), outsideFile]);
+  await expect(page.getByTestId('tray-item').filter({ hasText: 'draft.pdf' })).toBeVisible();
+  await expect(page.getByTestId('tray-item').filter({ hasText: 'outside.pdf' })).toBeVisible();
+  await page.getByTestId('composer-input').click();
+  await page.keyboard.type('看文件');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).find((p) => p.content.startsWith('看文件'))?.content ?? '').toContain('<file path="refs/draft.pdf"/>');
+  const sent = (await prompts()).find((p) => p.content.startsWith('看文件'))!.content;
+  expect(sent).toContain(`<file path="${outsideFile.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"/>`);
+});
+
+test('@ 引用：打 @dpo → 列表里有它 → 回车成标签 → 发出的文字里是 kydog-ref', async () => {
+  const { page } = launched;
+  await freshComposer(page);
+  await page.keyboard.type('对比 @dpo');
+  const item = page.getByTestId('mention-item-refs/dpo-2023.pdf');
+  await expect(item).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('composer-input').getByTestId('ref-chip')).toHaveText('dpo-2023.pdf');
+  await page.keyboard.type('的表 2');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('对比 <kydog-ref path="refs/dpo-2023.pdf"/> 的表 2');
+});
+
+test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {
+  const { page } = launched;
+  const threadId = await newThread(page);
+  // `27-composer: project pill switches...` 那条把一个空对话切去过 projectB；「新对话」按钮
+  // 本身固定拿 projects[0]（projectA），理论上不受影响，但核对一遍再切回去，不靠这个假设。
+  const nameA = path.basename(projectA);
+  const pill = page.getByTestId('project-pill');
+  if (!(await pill.textContent())?.includes(nameA)) {
+    await pill.click();
+    await page.getByTestId(`project-item-${nameA}`).click();
+    await expect(page.getByTestId('project-menu')).toBeHidden();
+  }
+  await expect(pill).toContainText(nameA);
+
+  const mdPath = path.join(projectA, 'ch3.md');
+  await page.getByTestId(`fs-${mdPath}`).dblclick();
+  const editor = page.locator('.kydog-md-editor .ProseMirror').locator('visible=true');
+  await editor.waitFor();
+  const selectText = (text: string) => editor.evaluate((root, needle) => {
+    (root as HTMLElement).focus();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const i = n.textContent!.indexOf(needle);
+      if (i < 0) continue;
+      const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + needle.length);
+      const s = getSelection()!; s.removeAllRanges(); s.addRange(r);
+      return;
+    }
+    throw new Error(`not found: ${needle}`);
+  }, text);
+
+  // 入口一：选区工具栏
+  await selectText('将 β 固定为 0.1');
+  const toolbar = page.locator('.milkdown-toolbar').locator('visible=true');
+  await expect(toolbar).toBeVisible();
+  await toolbar.locator('.toolbar-item').last().dispatchEvent('pointerdown');
+  await expect(page.getByTestId('comment-box')).toBeVisible();
+  // 用真实按键而不是 locator.fill()：fill() 会直接 focus 目标元素，会掩盖掉「批注框没抢到
+  // 焦点、打字漏进 ProseMirror 把选中的原文吃掉」这一类真实 bug —— 只有键盘事件才如实反映
+  // 焦点到底落在哪。
+  await page.keyboard.type('取值依据？');
+  await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('comment-box-input');
+  await expect(page.getByTestId('comment-box-input')).toHaveValue('取值依据？');
+  await expect(editor).toContainText('将 β 固定为 0.1'); // 正向：选中的原文没被打字吃掉
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(page.getByTestId('comment-box')).toHaveCount(0);
+  await expect(page.getByTestId(`tab-badge-${threadId}`)).toHaveText('1');
+  await expect(editor.locator('.kydog-comment-mark')).toHaveText('将 β 固定为 0.1');
+
+  // 入口二：评论模式 —— 选中即弹框，选区工具栏不出
+  await page.getByTestId('md-comment-mode').click();
+  await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'on');
+  await selectText('并复现');
+  await editor.dispatchEvent('mouseup');
+  await expect(page.getByTestId('comment-box')).toBeVisible(); // 正向证明：这一下确实弹出过框
+  await expect(page.locator('.milkdown-toolbar').locator('visible=true')).toHaveCount(0);
+  await page.keyboard.press('Escape'); // 取消批注框
+  await expect(page.getByTestId('comment-box')).toHaveCount(0);
+  // 退出评论模式改用点胶囊，不用第二下 Esc：点胶囊这一下也会在包裹层上冒泡出 mouseup，
+  // 而 commentMode 这时还没来得及切掉（onClick 排在 onMouseUp 之后才跑）——这条用例守的
+  // 正是「点胶囊退出不会把这次 mouseup 误判成又选中了一段新文字、重新弹框」
+  // （MarkdownFileTab.tsx「发现 3」，bec3aa6 修的那个 bug）。
+  await page.getByTestId('md-comment-mode').click();
+  await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'off');
+  await expect(page.getByTestId('comment-box')).toHaveCount(0);
+
+  // 回到对话：卡片在；发出去
+  await page.getByTestId(`tab-${threadId}`).click();
+  await expect(page.getByTestId('composer-comment-card')).toHaveCount(1);
+  await page.getByTestId('composer-input').click();
+  await page.keyboard.type('整理批注');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).find((p) => p.content.startsWith('整理批注'))?.content ?? '').toContain('<quote>将 β 固定为 0.1</quote>');
+  const sent = (await prompts()).find((p) => p.content.startsWith('整理批注'))!.content;
+  expect(sent).toMatch(/<kydog-comment file="[^"]*ch3\.md" section="3\.2 偏好对齐">/);
+  await expect(page.getByTestId('message-list').getByTestId('user-comment-card')).toHaveCount(1);
+  await expect(page.getByTestId(`tab-badge-${threadId}`)).toHaveCount(0);
+  // 收尾：关掉 md tab，后面的用例（21-skills-page）从干净的 tab 条开始。
+  await page.getByTestId(`tab-close-${mdPath}`).click();
 });
 
 test('21-skills-page: toggling a built-in skill off persists to settings file', async () => {

@@ -60,6 +60,8 @@ KyDog 把 provider 分成四种 **kind**，决定它如何 auth、UI 用哪种�
 
 写盘走 `atomicWriteWith0600Async/Sync`：temp 文件出生即 0600（设 `mode` flag，不依赖 umask），rename 后再 idempotent `chmod` 一遍。
 
+渲染层看到的模型列表来自 `llm.list`（`LlmConfiguredEntry[]`，`src/main/llm/llmService.ts`）：每个已配置的 provider 一行，除了 `modelIds` 还带一个 `imageInputModelIds` 取自 pi `Model.input` 含 `'image'` 的模型；自定义服务商没写 `input` 的按 `['text']`，与 `providerRegistry.customProviderToPiConfig` 同一个缺省。输入框靠它预先拦下「有图但当前模型不读图」。
+
 ## 3. 运行时架构
 
 启动序列在 `src/main/main.ts` 的 ready 回调里，顺序有意义：
