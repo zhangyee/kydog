@@ -108,7 +108,9 @@ export async function createSession(opts: {
   const sessionFile = `${opts.sessionsDir}/${opts.sessionId}.jsonl`;
   const { session } = await (pi as any).createAgentSession({
     cwd: opts.cwd,
-    sessionManager: (pi as any).SessionManager.open(sessionFile),
+    // 第三个参数是 cwd：不给的话新文件的头取 process.cwd()（从 Finder 启动的打包版是 `/`），
+    // 旧文件取头里记的值。给了则两种都以项目目录为准；旧文件头里的 `/` 不改写。
+    sessionManager: (pi as any).SessionManager.open(sessionFile, undefined, opts.cwd),
     modelRuntime: reg.modelRuntime,
     model,
     resourceLoader,
