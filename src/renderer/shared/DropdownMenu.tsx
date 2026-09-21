@@ -77,7 +77,13 @@ export function DropdownMenu({ trigger, align = 'right', width = 220, testId, ch
             top: coords.y,
             width,
           }}
-          onClick={() => setOpen(false)}
+          // portal 只搬了 DOM 节点，不搬事件路径：同 ContextMenu.tsx 的注释——这个面板在
+          // React 树上仍是触发 trigger 那一行的子节点，面板上任何一次点击 / 右键 / 按下不拦
+          // 住，都会接着冒泡到行上的 onClick / onContextMenu（右键「…」菜单里再右键，会在
+          // 这一行上又弹出一个右键菜单）。
+          onClick={(e) => { e.stopPropagation(); setOpen(false); }}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onMouseDown={(e) => e.stopPropagation()}
         >
           {children}
         </div>,
