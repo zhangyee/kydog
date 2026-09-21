@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -9,6 +9,7 @@ import { launchKydog, teardown, seedSettings, seedSamplePackage, type LaunchedAp
  *
  * 串行共用一次启动（外加末尾那一次重启）：每一步都在前一步留下的状态上走 ——
  * A 被改名、B 被置顶、B 被「全部收起」后留着收起、t-x 被删 —— 最后一条重启后逐项核对。
+ * t-arc1..3 被归档（1 先归档再撤销，随后三条一起批量归档）。
  * 顺序不能打乱。
  */
 test.describe.configure({ mode: 'serial' });
@@ -48,6 +49,9 @@ test.beforeAll(async () => {
           t('t-long', dirA, LONG_TITLE, '2026-04-03'),
           t('t-short', dirA, '短', '2026-04-02'),
           t('t-x', dirA, 'doomed', '2026-04-01'),
+          t('t-arc1', dirA, 'arc-1', '2026-03-30'),
+          t('t-arc2', dirA, 'arc-2', '2026-03-29'),
+          t('t-arc3', dirA, 'arc-3', '2026-03-28'),
           t('t-b', dirB, 'thread-B', '2026-04-10'),
         ],
       }, null, 2));
@@ -73,6 +77,13 @@ async function reveal(row: Locator, action: Locator): Promise<void> {
     await row.hover();
     return action.evaluate((el) => getComputedStyle(el).pointerEvents);
   }).toBe('auto');
+}
+
+/** 打开某一行的「…」菜单（删除从行上的 × 挪进了这里）。 */
+async function openRowMenu(page: Page, id: string): Promise<void> {
+  const trigger = page.getByTestId(`thread-menu-trigger-${id}`);
+  await reveal(page.getByTestId(`thread-${id}`), trigger);
+  await trigger.click();
 }
 
 test('15-titlebar: defaults to KyDog and reflects selected thread title', async () => {
@@ -197,9 +208,8 @@ test('18-projects-sidebar: pin project', async () => {
 test('34-thread-rename: 删除点取消则会话保留', async () => {
   const { page } = launched;
   const row = page.getByTestId('thread-t-x');
-  const del = page.getByTestId('delete-thread-t-x');
-  await reveal(row, del);
-  await del.click();
+  await openRowMenu(page, 't-x');
+  await page.getByTestId('thread-delete-t-x').click();
   await expect(page.getByTestId('confirm-dialog')).toBeVisible();
   await page.getByTestId('confirm-dialog-cancel').click();
   await expect(page.getByTestId('confirm-dialog')).toBeHidden();
@@ -210,9 +220,8 @@ test('34-thread-rename: 删除点取消则会话保留', async () => {
 test('10-delete: removes thread from index', async () => {
   const { page } = launched;
   const row = page.getByTestId('thread-t-x');
-  const del = page.getByTestId('delete-thread-t-x');
-  await reveal(row, del);
-  await del.click();
+  await openRowMenu(page, 't-x');
+  await page.getByTestId('thread-delete-t-x').click();
   await expect(page.getByTestId('confirm-dialog')).toBeVisible();
   await page.getByTestId('confirm-dialog-confirm').click();
   await expect(row).toBeHidden();
@@ -220,6 +229,68 @@ test('10-delete: removes thread from index', async () => {
     .toEqual(expect.not.arrayContaining(['t-x']));
   // 正向：删的只是那一条。
   expect((await readIndex()).threads.map((t: { id: string }) => t.id)).toContain('t-long');
+});
+
+test('归档：行上一键归档 → 落盘带 archivedAt → 撤销回来', async () => {
+  const { page } = launched;
+  const row = page.getByTestId('thread-t-arc1');
+  const btn = page.getByTestId('archive-thread-t-arc1');
+  await expect(row).toBeVisible();
+  await reveal(row, btn);
+  await btn.click();
+
+  await expect(row).toHaveCount(0);
+  await expect.poll(async () => (await readIndex()).threads.find((t: { id: string }) => t.id === 't-arc1')?.archivedAt,
+    { timeout: 15_000 }).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  await expect(page.getByTestId('sidebar-toast')).toContainText('已归档「arc-1」');
+
+  await page.getByTestId('sidebar-toast-action').click();
+  await expect(row).toBeVisible();
+  // 对话还在 index 里、只是没有 archivedAt 了；找不到它返回 'missing'，免得「没了」被当成「没有 archivedAt」。
+  await expect.poll(async () => {
+    const t = (await readIndex()).threads.find((x: { id: string }) => x.id === 't-arc1');
+    return t ? 'archivedAt' in t : 'missing';
+  }, { timeout: 15_000 }).toBe(false);
+});
+
+test('右键归档：不打开被右键的那一行，当前对话不变（portal 里的点击不许冒泡到行上）', async () => {
+  const { page } = launched;
+  // 先让 t-a 成为当前对话（它的 tab 可见），再右键另一行 t-arc1 → 归档。
+  await page.getByTestId('thread-t-a').click();
+  await expect(page.getByTestId('tab-t-a')).toBeVisible();
+  const row = page.getByTestId('thread-t-arc1');
+  await row.click({ button: 'right' });
+  await page.getByTestId('thread-ctx-archive-t-arc1').click();
+  await expect(row).toHaveCount(0);
+  // 正向：归档确实发生了；当前对话仍是 t-a（右键那一行没被打开，主区没掉回欢迎页）。
+  await expect.poll(async () => Boolean((await readIndex()).threads.find((t: { id: string }) => t.id === 't-arc1')?.archivedAt),
+    { timeout: 15_000 }).toBe(true);
+  await expect(page.getByTestId('tab-t-a')).toBeVisible();
+  await expect(page.getByTestId('tab-t-arc1')).toHaveCount(0);
+  // 撤销回来，下一条还要用 t-arc1。
+  await page.getByTestId('sidebar-toast-action').click();
+  await expect(row).toBeVisible();
+});
+
+test('多选：单击 + ⇧ 单击连选三条，右键批量归档', async () => {
+  const { page } = launched;
+  const rows = ['t-arc1', 't-arc2', 't-arc3'].map((id) => page.getByTestId(`thread-${id}`));
+  await rows[0].click();
+  await rows[2].click({ modifiers: ['Shift'] });
+  // 中间那条被选中：证明是区间，不只是两端。
+  await expect(rows[1]).toHaveAttribute('data-selected', 'true');
+
+  await rows[1].click({ button: 'right' });
+  const item = page.getByTestId('thread-ctx-batch-archive');
+  await expect(item).toContainText('归档 3 个对话');
+  await item.click();
+
+  for (const r of rows) await expect(r).toHaveCount(0);
+  await expect.poll(async () => {
+    const idx = await readIndex();
+    return ['t-arc1', 't-arc2', 't-arc3', 't-a'].map((id) => Boolean(idx.threads.find((t: { id: string }) => t.id === id)?.archivedAt));
+  }, { timeout: 15_000 }).toEqual([true, true, true, false]);
+  await expect(page.getByTestId('thread-t-a')).toBeVisible();
 });
 
 test('07/50/53c/18-pin: 重启之后主题、置顶、收起、改名都在；视图不恢复', async () => {
@@ -248,6 +319,12 @@ test('07/50/53c/18-pin: 重启之后主题、置顶、收起、改名都在；�
   expect(order).toEqual([`project-toggle-${nameB}`, `project-toggle-${RENAMED_PROJECT}`]);
   // A 展开、改过名的 thread 在；B 仍收着，点开就回来。
   await expect(p2.getByTestId('thread-t-a')).toContainText('新名字');
+  // 归档的三条：重启后仍不在左栏（上一行证明了 A 展开着、列表确实渲染了）；
+  // 同时还在 index 里、带 archivedAt —— 没被删，只是藏起来。
+  for (const id of ['t-arc1', 't-arc2', 't-arc3']) await expect(p2.getByTestId(`thread-${id}`)).toHaveCount(0);
+  const idxAfter = await readIndex();
+  expect(['t-arc1', 't-arc2', 't-arc3'].map((id) => idxAfter.threads.find((t: { id: string }) => t.id === id)?.archivedAt))
+    .toEqual([expect.any(String), expect.any(String), expect.any(String)]);
   await expect(p2.getByTestId('thread-t-b')).toHaveCount(0);
   await p2.getByTestId(`project-toggle-${nameB}`).click();
   await expect(p2.getByTestId('thread-t-b')).toBeVisible();
