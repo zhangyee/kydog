@@ -13,7 +13,10 @@ import { ComposerSendButton } from './ComposerSendButton';
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
 import { ComposerActionsRow } from './ComposerActionsRow';
 import { ErrorMarginalia } from './ErrorMarginalia';
-import { filterSkillEntries, dispatchInputKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked } from './composerHelpers';
+import { encodeUserTurn, IMAGE_UNSUPPORTED_TEXT } from '../../../shared/userTurn';
+import { toMessagePath } from './attachments';
+import { ComposerTray } from './ComposerTray';
 import type { SkillEntry } from '../../../shared/types';
 
 type Props = {
@@ -32,7 +35,8 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const editorHandle = useRef<ComposerEditorHandle>(null);
   // 未发送的输入存在组件外（见 composerDraftStore）：切文件 tab / 设置页 / 别的
   // thread 都会把这个组件卸载掉，留在组件 state 里的字会跟着一起没。
-  const { skill, body } = useComposerDraftStore((s) => s.byThread[threadId]) ?? EMPTY_DRAFT;
+  const draft = useComposerDraftStore((s) => s.byThread[threadId]) ?? EMPTY_DRAFT;
+  const { skill, body, attachments, comments } = draft;
   const setDraft = useCallback((nextSkill: SkillEntry | null, nextBody: string) => {
     useComposerDraftStore.getState().setDraft(threadId, { skill: nextSkill, body: nextBody });
   }, [threadId]);
@@ -81,6 +85,14 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     ? `${allConfigured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId} · ${effectiveModelId}`
     : '选择模型';
 
+  const effectiveEntry = allConfigured.find((c) => c.providerId === effectiveProviderId);
+  const visionBlocked = imageInputBlocked({
+    hasImages: attachments.some((a) => a.kind === 'image'),
+    entry: effectiveEntry,
+    modelId: effectiveModelId,
+  });
+  const projectPath = thread?.projectPath ?? '';
+
   // Slash menu data: installed enabled skills.
   const skillEntries = useSkillsStore((s) => s.skills);
   const enabledSkills = useMemo(
@@ -119,21 +131,41 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     return b;
   };
 
+  /** 发给模型的文字与图片（spec §4）。路径在这一刻按对话的项目换算 —— 空对话可能刚换过项目。 */
+  const buildOutgoing = (d: typeof draft) => encodeUserTurn({
+    body: composedContent(),
+    attachments: d.attachments.map((a) => (a.kind === 'file'
+      ? { kind: 'file' as const, path: toMessagePath(a.absPath, projectPath) }
+      : { kind: 'image' as const, name: a.name, ...(a.absPath ? { path: toMessagePath(a.absPath, projectPath) } : {}), data: a.data, mimeType: a.mimeType })),
+    comments: d.comments.map((c) => ({
+      file: toMessagePath(c.absPath, projectPath),
+      ...(c.section ? { section: c.section } : {}),
+      quote: c.quote, note: c.note,
+    })),
+  });
+  const hasPayload = composedContent().length > 0 || attachments.length > 0 || comments.length > 0;
+  const canSend = hasPayload && !visionBlocked;
+
   const onSend = async () => {
-    const content = composedContent();
-    if (!content || isRunning) return;
+    if (isRunning || !canSend) return;
+    const snapshot = useComposerDraftStore.getState().byThread[threadId] ?? EMPTY_DRAFT;
+    const { text, images } = buildOutgoing(snapshot);
     setSendFailure(null);
     useComposerDraftStore.getState().clearDraft(threadId);
+    const messageId = crypto.randomUUID();
     appendUser(threadId, {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content,
-      createdAt: new Date().toISOString(),
+      id: messageId, role: 'user', content: text, createdAt: new Date().toISOString(),
+      ...(images.length > 0 ? { images } : {}),
     });
     try {
-      await window.kydog.invoke('thread.send', { threadId, content });
+      await window.kydog.invoke('thread.send', { threadId, content: text, ...(images.length > 0 ? { images } : {}) });
     } catch (err) {
+      // 被拒一定发生在交给 pi 之前（ensureSession / 正忙 / 不读图都在 prompt 之前抛），
+      // 这条消息没进会话：撤掉乐观写入的那条，把写好的东西原样放回（spec §7）。
+      // 交给 pi 之后的失败走 run.ended，不经过这里。
       console.error('send failed', err);
+      useThreadsStore.getState().removeMessage(threadId, messageId);
+      useComposerDraftStore.getState().restoreDraft(threadId, snapshot);
       const message = err instanceof Error ? err.message : String(err);
       setSendFailure({ threadId, message });
     }
@@ -227,8 +259,6 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     ? '运行中，可继续编辑下一条…'
     : (placeholder ?? (large ? '问一个研究问题，或拖入 PDF / 文件夹…' : '继续追问…'));
 
-  const canSend = composedContent().length > 0;
-
   return (
     <div
       className="shrink-0"
@@ -268,6 +298,13 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
               (large ? ', 0 8px 24px var(--color-card-shadow-strong)' : ''),
           }}
         >
+          <ComposerTray
+            attachments={attachments}
+            projectPath={thread?.projectPath ?? null}
+            notice={draft.notice}
+            blockedHint={visionBlocked ? IMAGE_UNSUPPORTED_TEXT : null}
+            onRemove={(id) => useComposerDraftStore.getState().removeAttachment(threadId, id)}
+          />
           <ComposerEditor
             ref={editorHandle}
             skill={skill}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -84,5 +84,20 @@ describe('dispatchInputKey', () => {
   it('Shift+Enter while slash menu open -> still slash-commit (menu wins)', () => {
     expect(dispatchInputKey({ ...base, key: 'Enter', shiftKey: true, slashMenuOpen: true }))
       .toEqual({ kind: 'slash-commit' });
+  });
+});
+
+describe('imageInputBlocked', () => {
+  const entry = { modelIds: ['vis', 'txt'], imageInputModelIds: ['vis'] };
+  it('只在「有图 + 认识这个模型 + 它不读图」时拦', () => {
+    expect(imageInputBlocked({ hasImages: true, entry, modelId: 'txt' })).toBe(true);
+    expect(imageInputBlocked({ hasImages: true, entry, modelId: 'vis' })).toBe(false);
+    expect(imageInputBlocked({ hasImages: false, entry, modelId: 'txt' })).toBe(false);
+  });
+  it('渲染层不认识当前模型：不拦，交给主进程（先证明认识时会拦）', () => {
+    expect(imageInputBlocked({ hasImages: true, entry, modelId: 'txt' })).toBe(true);
+    expect(imageInputBlocked({ hasImages: true, entry, modelId: 'gone' })).toBe(false);
+    expect(imageInputBlocked({ hasImages: true, entry: undefined, modelId: 'txt' })).toBe(false);
+    expect(imageInputBlocked({ hasImages: true, entry, modelId: null })).toBe(false);
   });
 });

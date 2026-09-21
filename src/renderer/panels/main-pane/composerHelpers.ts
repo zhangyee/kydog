@@ -52,3 +52,17 @@ export function dispatchInputKey(args: {
   if (args.shiftKey) return { kind: 'newline' };
   return { kind: 'send' };
 }
+
+/**
+ * 输入框预先拦「有图但当前模型不读图」（spec §3.6）。渲染层**不认识**当前模型时不拦 ——
+ * 交给主进程按会话实际的模型判，别在这里替它猜。
+ */
+export function imageInputBlocked(args: {
+  hasImages: boolean;
+  entry: { modelIds: string[]; imageInputModelIds: string[] } | undefined;
+  modelId: string | null;
+}): boolean {
+  if (!args.hasImages || !args.entry || !args.modelId) return false;
+  if (!args.entry.modelIds.includes(args.modelId)) return false;
+  return !args.entry.imageInputModelIds.includes(args.modelId);
+}
