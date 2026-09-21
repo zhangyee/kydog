@@ -74,7 +74,7 @@ export function ThreadRow({ thread }: Props) {
     const ok = await confirm({ title: `删除对话「${thread.title}」？`, confirmLabel: '删除' });
     if (!ok) return;
     try {
-      await window.kydog.invoke('thread.delete', { threadId: thread.id });
+      await window.kydog.invoke('thread.delete', { threadIds: [thread.id] });
       useUnreadStore.getState().clearOne(thread.id);
       useComposerDraftStore.getState().clearDraft(thread.id);
       remove(thread.id);

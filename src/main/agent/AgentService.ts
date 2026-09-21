@@ -521,6 +521,14 @@ class AgentService {
   }
 
   /**
+   * 这个对话此刻有没有一轮在飞。读 `bound.runId`，与 `hasActiveRun()` 同一个字段（为什么不现算
+   * `runs`，见 `hasActiveRun()` 与 `Bound.runId` 的注释）。归档的闸靠它（threadService.archive）。
+   */
+  hasActiveRunFor(threadId: string): boolean {
+    return (this.sessions.get(threadId)?.runId ?? null) !== null;
+  }
+
+  /**
    * 丢弃全部 session。
    *
    * 只在「已确认没有 run 在跑」之后调用，所以不需要 markStaleOrDispose 那套延后逻辑。

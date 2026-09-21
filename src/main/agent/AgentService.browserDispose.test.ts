@@ -380,3 +380,19 @@ describe('send() 的 prompt reject：pi 不补发 agent_settled，本轮在这�
     expect(endRun.mock.calls).toEqual([[first.runId]]);    // 没顺手把第二轮也结束了
   });
 });
+
+/**
+ * 归档的闸（spec 2026-09-21-thread-archive-design §2.6）：「这个对话有没有一轮在飞」读的是
+ * 它自己的 `bound.runId`，与 `hasActiveRun()` 同一个字段 —— pi 的重试窗口里 `runs` 已经是 idle。
+ */
+describe('hasActiveRunFor', () => {
+  it('读这个对话的 bound.runId；别的对话在飞不算，没有 session 算不在飞', () => {
+    const { bound } = attach('t1');
+    attach('t2');
+    expect(agentService.hasActiveRunFor('t1')).toBe(false);
+    bound.runId = 'r1';
+    expect(agentService.hasActiveRunFor('t1')).toBe(true);
+    expect(agentService.hasActiveRunFor('t2')).toBe(false);
+    expect(agentService.hasActiveRunFor('nope')).toBe(false);
+  });
+});
