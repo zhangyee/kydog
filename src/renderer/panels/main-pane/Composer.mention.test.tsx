@@ -339,6 +339,42 @@ describe('ComposerMentionMenu', () => {
     expect(p.onSelect).toHaveBeenLastCalledWith(file('refs/dpo-2023.pdf'));
   });
 
+  it('只画视口里的几行、上下占位撑开总高度；高亮挪到视口外时滚过去；同一份视图重渲染时行不重建、回调用的是最新的', () => {
+    (globalThis as any).window = { innerHeight: 800 };
+    const items = Array.from({ length: 1000 }, (_, i) => file(`f${String(i).padStart(4, '0')}.md`));
+    const p = props(items, true);
+    const m = mount(ComposerMentionMenu, p);
+    const rowCount = () => findAllWhere(m.tree, (el) => String(el.props['data-testid'] ?? '').startsWith('mention-item-')).length;
+    const heights = () => [m.find('mention-spacer-top').props.style.height, m.find('mention-spacer-bottom').props.style.height] as number[];
+    // 正向：第一屏的行在；否定：第 500 行不在 DOM 里
+    expect(m.query('mention-item-f0000.md')).not.toBeNull();
+    expect(m.query('mention-item-f0500.md')).toBeNull();
+    expect(rowCount()).toBe(16);
+    expect(heights()).toEqual([0, (1000 - 16) * 28]);
+
+    // 高亮挪到第 500 行：滚动区滚到让它整行露出来，那几行这才画出来
+    m.rerender({ ...p, highlightIndex: 500 });
+    const scroller = m.find('mention-scroll');
+    expect((scroller.props.ref as { current: { scrollTop: number } }).current.scrollTop).toBe(501 * 28 - 320);
+    expect(m.query('mention-item-f0500.md')).not.toBeNull();
+    expect(m.query('mention-item-f0000.md')).toBeNull();
+    const [top, bottom] = heights();
+    expect(top + rowCount() * 28 + bottom).toBe(1000 * 28);
+
+    // 用户自己滚（滚动事件）：按新的 scrollTop 画
+    scroller.props.onScroll({ currentTarget: { scrollTop: 0 } });
+    expect(m.query('mention-item-f0000.md')).not.toBeNull();
+
+    // 父组件用同一份视图重渲染（回调是新的）：行还是原来那几个元素，按下去调的是新回调
+    const before = m.find('mention-item-f0000.md');
+    const onSelect2 = vi.fn();
+    m.rerender({ ...p, highlightIndex: 500, onSelect: onSelect2 });
+    expect(m.find('mention-item-f0000.md')).toBe(before);
+    m.find('mention-item-f0000.md').props.onMouseDown({ preventDefault: vi.fn() });
+    expect(onSelect2).toHaveBeenCalledWith(items[0]);
+    expect(p.onSelect).not.toHaveBeenCalled();
+  });
+
   it('没有结果：还在查找 →「正在查找…」；读完 →「没有匹配的文件」', () => {
     (globalThis as any).window = { innerHeight: 800 };
     const pending = mount(ComposerMentionMenu, props([], false));
