@@ -4,11 +4,13 @@ import type { MilkdownPlugin } from '@milkdown/kit/ctx';
 import { $prose } from '@milkdown/kit/utils';
 import type { NodeViewConstructor } from '@milkdown/kit/prose/view';
 import { languages } from '@codemirror/language-data';
+import { linkSchema } from '@milkdown/kit/preset/commonmark';
 import katex from 'katex';
 import { commentMarksPlugin } from './commentMarks';
 import { appendToolbarTip, toolbarTipFor } from './toolbarTips';
 import { resolveImageSrc } from './imageSrc';
 import { imageBlockAltSchema } from './imageBlockAlt';
+import { isPrintableHref } from './printReadiness';
 import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 import './markdown-editor.css';
@@ -150,6 +152,23 @@ export function featureConfigsFor(opts: CrepeSetupOptions): CrepeFeatureConfig {
   return configs;
 }
 
+/**
+ * 打印模式的链接：只有 http(s) / mailto 留 href（PDF 里可点），其余只留文字（spec §2.5）。
+ * 在节点的 toDOM 上改、不在画好之后改 DOM：ProseMirror 会把它不认识的 DOM 改动还原回去。
+ */
+export const printLinkSchema = linkSchema.extendSchema((prev) => (ctx) => {
+  const base = prev(ctx);
+  return {
+    ...base,
+    // MarkSpec.toDOM 是 (mark, inline) 两个参数（prosemirror-model），inline 原样透传给原实现。
+    toDOM: (mark, inline) => {
+      const [tag, attrs] = base.toDOM!(mark, inline) as [string, Record<string, unknown>];
+      const href = String(attrs.href ?? '');
+      return [tag, { ...attrs, href: isPrintableHref(href) ? href : null }];
+    },
+  };
+});
+
 export function createCrepe(opts: CrepeSetupOptions): Crepe {
   const crepe = new Crepe({
     root: opts.root,
@@ -160,5 +179,6 @@ export function createCrepe(opts: CrepeSetupOptions): Crepe {
   crepe.editor.use(mathInlineNodeViewPlugin);
   crepe.editor.use(imageBlockAltSchema);
   if (opts.mode === 'edit') crepe.editor.use($prose(() => commentMarksPlugin()));
+  if (opts.mode === 'print') crepe.editor.use(printLinkSchema);
   return crepe;
 }

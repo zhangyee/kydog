@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>md print</title>
+  </head>
+  <body>
+    <!--
+      这一页不给人看：主进程开一个 show:false 的窗口加载它，把一份 md 用编辑器同一套 Crepe 画出来，
+      再 printToPDF（见 src/main/markdown/mdPdfExport.ts）。同步脚本排在模块之前的理由同 pdf-raster.html：
+      主进程 executeJavaScript 进来时模块可能还没跑完，等这个 promise 就是等一个真信号。
+    -->
+    <script>
+      window.__mdPrintReady = new Promise((resolve, reject) => {
+        window.__mdPrintResolve = resolve;
+        window.__mdPrintReject = reject;
+      });
+    </script>
+    <div id="md-print-root" class="kydog-md-editor kydog-md-print"></div>
+    <script type="module" src="./mdPrintPage.ts"></script>
+  </body>
+</html>
