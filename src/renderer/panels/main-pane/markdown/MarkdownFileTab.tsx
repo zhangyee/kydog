@@ -291,6 +291,7 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
           key={editorGeneration}
           ref={editorRef}
           initialMarkdown={tab.diskContent ?? ''}
+          mdPath={tab.path}
           onCommentClick={openBoxFromSelection}
           onReady={(initialMd) => {
             baselineRef.current = initialMd;
