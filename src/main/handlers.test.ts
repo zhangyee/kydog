@@ -26,10 +26,15 @@ const h = vi.hoisted(() => ({
 
 vi.mock('electron', () => ({
   app: { getVersion: () => '1.2.3', getLocale: () => 'zh-CN', isPackaged: true },
-  dialog: { showOpenDialog: vi.fn() },
+  dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
   ipcMain: { handle: vi.fn() },
-  shell: { openExternal: vi.fn() },
-  BrowserWindow: class {},
+  shell: { openExternal: vi.fn(), showItemInFolder: vi.fn() },
+  BrowserWindow: class { static fromWebContents() { return null; } },
+}));
+// md 导出 PDF 的主进程实现自己起窗口、读 settings —— 这里只测转发，替身掉整个模块。
+vi.mock('./markdown/mdPdfExport', () => ({
+  exportMarkdownPdf: vi.fn(async (a: { outPath: string }) => ({ pdfPath: a.outPath })),
+  destroyMdPrintWindow: vi.fn(),
 }));
 
 vi.mock('./ipc/dispatcher', () => ({
@@ -541,5 +546,43 @@ describe('institution.* 五条转发到 institutionService 上对应的那一个
     ] as const) {
       expect(JSON.stringify(await call(m, args) ?? null), m).not.toContain('hunter2');
     }
+  });
+});
+
+/**
+ * md 导出 PDF 的三条 RPC（spec docs/superpowers/specs/2026-09-22-md-export-pdf-design.md §3.1）。
+ * 这一层同样只测转发：真的窗口 / printToPDF 只有 Task 7 的 e2e 才能碰。
+ */
+describe('md 导出 PDF 的三条 RPC', () => {
+  const call = (m: string, args: unknown, evt: unknown = { sender: {} }) =>
+    (h.captured[m as RpcMethod] as unknown as (a: unknown, e: unknown) => unknown)(args, evt);
+
+  it('dialog.pickSavePath：把默认路径与过滤器交给存储框；选了回路径，取消回 null', async () => {
+    const { dialog } = await import('electron');
+    const show = vi.mocked(dialog.showSaveDialog);
+    show.mockResolvedValueOnce({ canceled: false, filePath: '/p/out.pdf' } as never);
+    const args = { defaultPath: '/p/ch3.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] };
+    expect(await call('dialog.pickSavePath', args)).toBe('/p/out.pdf');
+    expect(show).toHaveBeenLastCalledWith({ defaultPath: '/p/ch3.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    show.mockResolvedValueOnce({ canceled: true, filePath: '' } as never);
+    expect(await call('dialog.pickSavePath', args)).toBeNull();
+  });
+
+  it('markdown.exportPdf 转发给 exportMarkdownPdf，原样回结果', async () => {
+    const { exportMarkdownPdf } = await import('./markdown/mdPdfExport');
+    const args = { mdPath: '/p/a.md', markdown: '# x', outPath: '/p/a.pdf', options: { paper: 'a4', margin: 'standard', pageNumbers: true } };
+    expect(await call('markdown.exportPdf', args)).toEqual({ pdfPath: '/p/a.pdf' });
+    expect(vi.mocked(exportMarkdownPdf)).toHaveBeenLastCalledWith(args);
+  });
+
+  it('file.revealInFolder：绝对路径交给 shell；相对路径被拒、shell 不被调', async () => {
+    const { shell } = await import('electron');
+    const reveal = vi.mocked(shell.showItemInFolder);
+    reveal.mockClear();
+    await call('file.revealInFolder', { path: '/p/a.pdf' });
+    expect(reveal).toHaveBeenCalledWith('/p/a.pdf');   // 正向在前
+    reveal.mockClear();
+    expect(() => call('file.revealInFolder', { path: 'a.pdf' })).toThrow();
+    expect(reveal).not.toHaveBeenCalled();
   });
 });

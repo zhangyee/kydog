@@ -20,6 +20,7 @@ import { initProviderRegistry, setCatalogRefreshedHook } from './llm/providerReg
 import { llmService } from './llm/llmService';
 import { fileWatcherService } from './project/fileWatcher';
 import { destroyRasterWindow } from './pdf/pdfRaster';
+import { destroyMdPrintWindow } from './markdown/mdPdfExport';
 import { startIdentityWatcher } from './harness/identityService';
 import { initUpdateService } from './update/assemble';
 import { assembleTelemetry } from './telemetry/assemble';
@@ -229,4 +230,6 @@ app.on('before-quit', () => {
   fileWatcherService.stopAll();
   // PDF 渲染窗口用完即毁，正常不会活到这里；退出时还在飞的那一个由这句收掉。
   destroyRasterWindow();
+  // md 导出的打印窗口同理。
+  destroyMdPrintWindow();
 });

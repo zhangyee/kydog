@@ -1,5 +1,6 @@
 import os from 'node:os';
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import path from 'node:path';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { sinkFor } from './ipc/broadcaster';
 import { viewStateStore } from './ui/viewState';
@@ -21,6 +22,7 @@ import { institutionService } from './institution/institutionService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
 import { renderPageToPng } from './pdf/pdfRaster';
+import { exportMarkdownPdf } from './markdown/mdPdfExport';
 import { pdfAnnotations } from './pdf/pdfAnnotations';
 import { pdfTranslation } from './pdf/pdfTranslation';
 import { layoutPage, translateGroups } from './pdf/pdfTranslatePage';
@@ -33,6 +35,7 @@ import { harnessService } from './harness/harnessService';
 import { readManifest, deleteManifest, discardCorruptManifest } from './harness/manifest';
 import { mapSystemLocale } from './harness/locale';
 import { logger } from './log';
+import { KydogError } from '../shared/errors';
 import type { OnboardingRecovery } from '../shared/types';
 
 /** 把刚落盘的遥测选择推给运行中的服务。装配失败时 getTelemetryService() 会抛 ——
@@ -283,6 +286,22 @@ export function registerAllHandlers(): void {
     });
     if (r.canceled || r.filePaths.length === 0) return null;
     return r.filePaths[0];
+  });
+  // 存储框挂在发起的那个窗口上（macOS 是从标题栏滑下的 sheet）。按模块属性取 dialog.showSaveDialog、
+  // 不在 import 处解构：e2e 用 electronApp.evaluate 替换它，解构了就换不掉。
+  registerHandler('dialog.pickSavePath', async (args, evt) => {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    const opts = { defaultPath: args.defaultPath, filters: args.filters };
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    return r.canceled || !r.filePath ? null : r.filePath;
+  });
+  registerHandler('markdown.exportPdf', (args) => exportMarkdownPdf(args));
+  registerHandler('file.revealInFolder', (args) => {
+    const p = args?.path;
+    if (typeof p !== 'string' || p.length === 0 || p.includes('\0') || !path.isAbsolute(p)) {
+      throw new KydogError('fs.read_failed', `只能显示绝对路径：${String(p)}`);
+    }
+    shell.showItemInFolder(p);
   });
 
   // Windows 的窗口按钮是原生叠加层，颜色只能由主进程设；而主题色的真源在渲染层的
