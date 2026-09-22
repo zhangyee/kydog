@@ -10,6 +10,10 @@ import { CommentBox } from './CommentBox';
 import { MdCapsule } from './MdCapsule';
 import { CrepeEditor, type CrepeEditorHandle } from './CrepeEditor';
 import { registerSaver, unregisterSaver } from './saveRegistry';
+import { fileTitle } from './fileTabHelpers';
+import { defaultPdfPath } from '../../../../shared/mdExport';
+import { MdExportCard } from './MdExportCard';
+import { MdExportToast, type ExportToast } from './MdExportToast';
 
 export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -211,6 +215,52 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
     }
   };
 
+  const mdExport = useUiStore((s) => s.mdExport);
+  const setMdExport = useUiStore((s) => s.setMdExport);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportToast, setExportToast] = useState<ExportToast | null>(null);
+  const toastSeq = useRef(0);
+  const closeExportCard = useCallback(() => setExportOpen(false), []);
+  const dismissToast = useCallback(() => setExportToast(null), []);
+
+  /** spec §2.3：先选路径（取消就什么都不做），再导出；转圈只罩导出那一段。 */
+  const runExport = async () => {
+    setExportOpen(false);
+    // 每条提示一个新 id：MdExportToast 按 id 换 key，计时从头算（同 SidebarToast）
+    const nextId = () => { toastSeq.current += 1; return toastSeq.current; };
+    try {
+      const outPath = await window.kydog.invoke('dialog.pickSavePath', {
+        defaultPath: defaultPdfPath(tab.path), filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+      if (outPath === null) return;
+      setExporting(true);
+      // 导出编辑器当前内容（含未保存的改动，spec §1.7），不是磁盘上那份
+      const { pdfPath } = await window.kydog.invoke('markdown.exportPdf', {
+        mdPath: tab.path, markdown: editorRef.current?.getMarkdown() ?? '', outPath,
+        options: useUiStore.getState().mdExport,
+      });
+      setExportToast({ id: nextId(), kind: 'done', pdfPath, fileName: fileTitle(pdfPath) });
+    } catch (err) {
+      setExportToast({ id: nextId(), kind: 'failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  /** 同路径的 PDF 标签已开着就先关掉再开：PDF 标签一个生命周期只读一次字节（spec §2.4）。 */
+  const openExported = (pdfPath: string) => {
+    const ui = useUiStore.getState();
+    if (ui.openFileTabs.some((t) => t.id === pdfPath)) ui.closeFileTab(pdfPath);
+    ui.openFile(pdfPath);
+    setExportToast(null);
+  };
+  const revealExported = (pdfPath: string) => {
+    void window.kydog.invoke('file.revealInFolder', { path: pdfPath })
+      .catch((err: Error) => console.warn('reveal exported pdf failed', pdfPath, err));
+    setExportToast(null);
+  };
+
   if (tab.status === 'loading') {
     return (
       <div className="font-mono" style={{ padding: '14px 18px', fontSize: 12, color: 'var(--color-ink-soft)' }}>
@@ -307,7 +357,20 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
             setFileTabDirty(tab.id, md !== baselineRef.current);
           }}
         />
-        <MdCapsule commentMode={commentMode} canComment={!!thread} onToggleComment={() => setCommentMode((v) => !v)} />
+        <MdCapsule
+          commentMode={commentMode} canComment={!!thread} onToggleComment={() => setCommentMode((v) => !v)}
+          exportOpen={exportOpen} exporting={exporting} onToggleExport={() => setExportOpen((v) => !v)}
+          renderExportCard={(boundary) => (
+            <MdExportCard
+              fileName={tab.title} options={mdExport} onChange={setMdExport}
+              onExport={() => void runExport()} onClose={closeExportCard} boundary={boundary}
+            />
+          )}
+        />
+        <MdExportToast
+          toast={exportToast} platform={window.kydog.platform}
+          onOpen={openExported} onReveal={revealExported} onDismiss={dismissToast}
+        />
       </div>
       {/* 只在本标签激活时渲染：框是挂在 document.body 上的 fixed portal，标签被 display:none 藏起来时
           它不跟着藏，会浮在对话 / 别的标签上面（两个 md 标签还能各浮一个）。box 状态、待定下划线与

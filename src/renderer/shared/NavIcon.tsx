@@ -49,7 +49,8 @@ export type NavIconName =
   | 'list-restart'
   | 'archive'
   | 'paperclip'
-  | 'message-square-plus';
+  | 'message-square-plus'
+  | 'share';
 
 type IconSpec = {
   paths?: string[];
@@ -273,6 +274,10 @@ const ICONS: Record<NavIconName, IconSpec> = {
   // 评论键（选区工具栏 + 底部胶囊，spec §2.1）：带 + 的对话气泡。
   'message-square-plus': {
     paths: ['M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z', 'M12 8v6', 'M9 11h6'],
+  },
+  // md 导出 PDF 的分享键（胶囊「评论 | 分享」，spec 2026-09-22-md-export-pdf-design §2.1）：Lucide share。
+  share: {
+    paths: ['M12 2v13', 'm16 6-4-4-4 4', 'M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8'],
   },
 };
 
