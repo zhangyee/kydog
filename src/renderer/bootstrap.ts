@@ -5,7 +5,6 @@ import { useLlmStore } from './stores/llmStore';
 import { useSkillsStore } from './stores/skillsStore';
 import { useIdentityStore } from './stores/identityStore';
 import { useUpdateStore } from './stores/updateStore';
-import { useFileIndexStore } from './stores/fileIndexStore';
 import { applyRunEvent } from './runEvents';
 import { restoreViewState, installViewStateSync } from './viewState';
 import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
@@ -134,9 +133,6 @@ function setupEventBridge(): void {
   });
   window.kydog.on('file.changed', (p) => {
     useUiStore.getState().markFileChanged(p.path);
-  });
-  window.kydog.on('project.fileIndexUpdated', (p) => {
-    useFileIndexStore.getState().bump(p.projectPath);
   });
   window.kydog.on('identity.changed', (id) => {
     useIdentityStore.getState().setIdentity(id);

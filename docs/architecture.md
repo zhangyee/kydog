@@ -53,4 +53,4 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 能不能发图由 pi `Model.input` 决定：`llm.list` 的每个服务商带 `imageInputModelIds` 供输入框预先拦；主进程发送时按会话实际模型再判一次（`llm.imageUnsupported`）。
 
-@ 的项目文件列表来自主进程的 `project/fileIndex.ts`：一次只读一个目录地遍历，按项目缓存，扫完时建好索引（`shared/fuzzyPath.ts` 的 `buildPathIndex`：每条路径的小写串、深度、空查询的前 50 名），每次查询只扫一趟取前 50、不整体排序 —— 查询跑在主进程上，不设文件数上限；`project.searchFiles` 查询、`rescan` 请求重扫（同一项目的重扫合并成一趟），扫完广播 `project.fileIndexUpdated`，渲染层记在 `fileIndexStore` 的版本号上，开着的 @ 列表据此重查。
+@ 的项目文件列表没有主进程索引，也不另设 RPC / 事件：渲染层一次弹出 = 一个会话（`renderer/panels/main-pane/mentionSearch.ts`，纯逻辑、注入读目录的函数），复用文件树的 `project.readDir`（同一套 `isListedName` 过滤与排序）。查询词为空或含 `/` 时**逐级浏览**，只读那一个目录、按这一层的筛选词筛；否则**按名字找**：先出根目录这一层，同时从浅到深一层层往下读（整个会话同一时间只有一个 readDir 在飞），名字命中的文件随读随进、取前 50。读过的目录记在会话内存里，接着打字只在已读的内容里重筛，切到逐级浏览时暂停往下读。列表关掉就停：Composer 在查询词变回 null、换项目、卸载时 `dispose()`，内存随之丢掉。**不设文件数上限、不设时限、不跨会话缓存** —— 大目录只在用户开着列表等的时候才被读，下次弹出从头读，agent 刚写出的文件自然就在。

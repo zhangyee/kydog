@@ -72,7 +72,6 @@ export type RpcCall =
   | { method: 'project.list'; args: undefined; result: Project[] }
   | { method: 'project.close'; args: { projectPath: string }; result: void }
   | { method: 'project.readDir'; args: { path: string }; result: FsNode[] }
-  | { method: 'project.searchFiles'; args: { projectPath: string; query: string; rescan?: boolean }; result: { items: { path: string }[]; indexed: boolean } }
   // 整份替换发起窗口「此刻在看的东西」：dirs = 文件树缓存着列表的目录，files = 跟着磁盘走的
   // 已打开文件（md / html 标签）。主进程只盯这些，不再整树监听 project —— 见 fileWatcher.ts。
   // **要在读目录之前发**：两条 IPC 按序到达，句柄才会先于那次读开起来。
@@ -246,7 +245,6 @@ export const RPC_METHODS = [
   'project.list',
   'project.close',
   'project.readDir',
-  'project.searchFiles',
   'fs.setWatched',
   'thread.create',
   'thread.list',
@@ -368,7 +366,6 @@ export type RuntimeEvent =
   // 两条都只对 fs.setWatched 声明过的东西发。
   | { topic: 'fs.changed'; payload: { dir: string } }
   | { topic: 'file.changed'; payload: { path: string } }
-  | { topic: 'project.fileIndexUpdated'; payload: { projectPath: string } }
   | { topic: 'identity.changed'; payload: Identity }
   // pi 的模型目录是两段式的：ModelRuntime.create() 先给内置那份静态清单，随后
   // providerRegistry 起一次不 await 的后台 refresh() 去 pi.dev 拉远端目录（那次 await
@@ -454,7 +451,6 @@ export const EVENT_TOPICS = [
   'thread.updated',
   'fs.changed',
   'file.changed',
-  'project.fileIndexUpdated',
   'identity.changed',
   'llm.listChanged',
   'update.status',

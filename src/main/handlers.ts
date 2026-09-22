@@ -9,7 +9,6 @@ import { settingsService, toRendererSettings } from './settings/settingsService'
 import { researchService } from './research/researchService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
-import { fileIndex } from './project/fileIndex';
 import { fileWatcherService } from './project/fileWatcher';
 import { threadService } from './thread/threadService';
 import { skillSyncStateHolder } from './skills/skillSyncStateHolder';
@@ -188,7 +187,6 @@ export function registerAllHandlers(): void {
   registerHandler('project.list', () => projectService.list());
   registerHandler('project.close', (args) => projectService.close(args));
   registerHandler('project.readDir', (args) => projectService.readDir(args));
-  registerHandler('project.searchFiles', (args) => fileIndex.search(args));
   // 按窗口分账：窗口没了就把它那份撤掉，不然它最后声明的那些目录会一直开着句柄。
   // 同一个窗口重载不算「没了」—— 新页面启动时会先声明一份（空的也发），整份替换掉旧的。
   registerHandler('fs.setWatched', (args, evt) => {

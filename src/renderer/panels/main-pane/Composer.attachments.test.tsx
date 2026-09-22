@@ -25,7 +25,6 @@ vi.mock('../../stores/threadsStore', async (orig) => directRead(await orig<typeo
 vi.mock('../../stores/runsStore', async (orig) => directRead(await orig<typeof import('../../stores/runsStore')>(), 'useRunsStore'));
 vi.mock('../../stores/llmStore', async (orig) => directRead(await orig<typeof import('../../stores/llmStore')>(), 'useLlmStore'));
 vi.mock('../../stores/skillsStore', async (orig) => directRead(await orig<typeof import('../../stores/skillsStore')>(), 'useSkillsStore'));
-vi.mock('../../stores/fileIndexStore', async (orig) => directRead(await orig<typeof import('../../stores/fileIndexStore')>(), 'useFileIndexStore'));
 vi.mock('./composerDraftStore', async (orig) => directRead(await orig<typeof import('./composerDraftStore')>(), 'useComposerDraftStore'));
 
 const { Composer } = await import('./Composer');

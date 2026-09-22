@@ -111,14 +111,6 @@ vi.mock('./composerDraftStore', async (importOriginal) => {
   return { ...mod, useComposerDraftStore: hook };
 });
 
-vi.mock('../../stores/fileIndexStore', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('../../stores/fileIndexStore')>();
-  const real = mod.useFileIndexStore;
-  const hook = ((sel?: (s: unknown) => unknown) => (sel ? sel(real.getState()) : real.getState())) as unknown as typeof real;
-  Object.assign(hook, real);
-  return { ...mod, useFileIndexStore: hook };
-});
-
 const { Composer } = await import('./Composer');
 const { ComposerActionsRow } = await import('./ComposerActionsRow');
 const { ThreadView } = await import('./ThreadView');
@@ -133,7 +125,6 @@ const { useSkillsStore } = await import('../../stores/skillsStore');
 const { useAskStore } = await import('../../stores/askStore');
 const { useIdentityStore } = await import('../../stores/identityStore');
 const { useComposerDraftStore } = await import('./composerDraftStore');
-const { useFileIndexStore } = await import('../../stores/fileIndexStore');
 
 beforeEach(() => {
   useUiStore.setState(useUiStore.getInitialState());
@@ -144,7 +135,6 @@ beforeEach(() => {
   useAskStore.setState(useAskStore.getInitialState());
   useIdentityStore.setState(useIdentityStore.getInitialState());
   useComposerDraftStore.setState(useComposerDraftStore.getInitialState());
-  useFileIndexStore.setState(useFileIndexStore.getInitialState());
 });
 
 /** 模型 pill 在 `ComposerActionsRow` 的 `right` prop 里，见文件头注释。 */
