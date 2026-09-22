@@ -16,6 +16,11 @@ export type ComposerEditorHandle = {
   focus: () => void;
   rootEl: () => HTMLDivElement | null;
   insertMention: (path: string) => void;
+  /**
+   * 把光标处 `@` 之后到光标的查询词换成 `text`（@ 列表里选中文件夹 = 进入下一层，spec §3.5 v2），
+   * 光标放到替换后的末尾，照常报正文与新的查询词。不插标签。
+   */
+  replaceMentionQuery: (text: string) => void;
   /** 光标处的 @ 被 Esc 关掉了：记住它，之后不再报它，直到光标离开它或它的字变了。 */
   dismissMention: () => void;
 };
@@ -54,8 +59,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   const onMentionRef = useRef(onMentionQuery); onMentionRef.current = onMentionQuery;
   const skillsRef = useRef(skills); skillsRef.current = skills;
   // Esc 关掉的那个 @：文本节点 + `@` 在节点里的位置 + 当时的整个 @ 词。松开 Esc 的那一下 keyup
-  // 还会走 reportMention —— 不记住它，列表就立刻重新弹出来（而且算新的一次弹出、又请求一趟全项目
-  // 重扫）。光标离开这个 @（落到别处、失焦）或这个词变了（接着打字、删字）就忘掉它，照常报。
+  // 还会走 reportMention —— 不记住它，列表就立刻重新弹出来（而且算新的一次弹出、目录又从头读一遍）。
+  // 光标离开这个 @（落到别处、失焦）或这个词变了（接着打字、删字）就忘掉它，照常报。
   const dismissedRef = useRef<{ node: Text; start: number; token: string } | null>(null);
   const reportMention = () => {
     const hit = caretMention(editorRef.current);
@@ -96,6 +101,24 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       lastUserInput.current = { skillName: parsed.skill?.name ?? null, body: parsed.body };
       onChangeRef.current(parsed.skill, parsed.body);
       onMentionRef.current(null);
+    },
+    replaceMentionQuery: (text: string) => {
+      const el = editorRef.current;
+      const hit = caretMention(el);
+      if (!el || !hit) return;
+      // 就地改这个文本节点：`@` 与新的查询词必须留在同一个文本节点里，caretMention 才认得出它
+      // （插一个新文本节点的话，光标前那一段就没有 `@` 了，列表会当场关掉）。
+      hit.node.replaceData(hit.start + 1, hit.end - hit.start - 1, text);
+      const after = document.createRange();
+      after.setStart(hit.node, hit.start + 1 + text.length);
+      after.collapse(true);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(after);
+      const parsed = parseEditor(el, skillsRef.current);
+      lastUserInput.current = { skillName: parsed.skill?.name ?? null, body: parsed.body };
+      onChangeRef.current(parsed.skill, parsed.body);
+      reportMention();
     },
   }), []);
 

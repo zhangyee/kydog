@@ -126,6 +126,31 @@ async function freshComposer(page: Page) {
   return input;
 }
 
+/**
+ * 空对话落在 projectA（refs/ 与 ch3.md 在那里）。「新对话」建在当前项目（最近选中的对话所在的、刚换过去的
+ * 项目 —— 65ff9d6 起不再固定拿 projects[0]），前面几条先后在 projectA / projectB 里起过对话，新对话落在
+ * 哪个项目取决于用例的先后次序：核对一遍、不是就切过去，不靠次序。
+ */
+async function ensureProjectA(page: Page) {
+  const nameA = path.basename(projectA);
+  const pill = page.getByTestId('project-pill');
+  if (!(await pill.textContent())?.includes(nameA)) {
+    await pill.click();
+    await page.getByTestId(`project-item-${nameA}`).click();
+    await expect(page.getByTestId('project-menu')).toBeHidden();
+  }
+  await expect(pill).toContainText(nameA);
+}
+
+/** 新建一个落在 projectA 的空对话，光标落进输入框。 */
+async function freshComposerInA(page: Page) {
+  await newThread(page);
+  await ensureProjectA(page);
+  const input = page.getByTestId('composer-input');
+  await input.click();
+  return input;
+}
+
 /** 把光标放到输入框里第一个文本节点的开头。 */
 async function caretToFirstText(page: Page) {
   await page.getByTestId('composer-input').evaluate((el: HTMLElement) => {
@@ -299,9 +324,9 @@ test('附件：回形针选文件 → 项目内发相对路径、项目外发绝
   expect(sent).toContain(`<file path="${outsideFile.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"/>`);
 });
 
-test('@ 引用：打 @dpo → 列表里有它 → 回车成标签 → 发出的文字里是 kydog-ref', async () => {
+test('@ 引用：打 @dpo（按名字找，往下读到 refs/）→ 列表里有它 → 回车成标签 → 发出的文字里是 kydog-ref', async () => {
   const { page } = launched;
-  await freshComposer(page);
+  await freshComposerInA(page);
   await page.keyboard.type('对比 @dpo');
   const item = page.getByTestId('mention-item-refs/dpo-2023.pdf');
   await expect(item).toBeVisible();
@@ -318,12 +343,12 @@ test('@ 列表：Esc 关掉后不再弹回来、↵ 照常发送；没有匹配�
   const menu = page.getByTestId('mention-menu');
   await page.keyboard.type('看看@zzz');
   await expect(menu).toBeVisible();
-  // 这一次弹出会请求重扫：项目没索引过时先显示「正在索引项目文件…」，扫完广播后开着的列表自动重查。
+  // 按名字找：整棵树读完之前显示「正在查找…」，读完仍没有才是「没有匹配的文件」。
   await expect(menu).toContainText('没有匹配的文件');
   await page.keyboard.press('Escape');
   await expect(menu).toBeHidden();
   // 「没弹回来」没有协议事实可等：回归的形态是松开 Esc 那一下 keyup 把同一个 @ 重新报上去，
-  // 列表要等一趟 project.searchFiles 往返（毫秒级）才重新渲染出来 —— 只能留一小段观察窗再看一次。
+  // 那是新的一次弹出、要等根目录的一趟 project.readDir 往返（毫秒级）才渲染出来 —— 只能留一小段观察窗再看一次。
   await page.waitForTimeout(300);
   await expect(menu).toBeHidden();
   await page.keyboard.press('Enter');
@@ -338,20 +363,38 @@ test('@ 列表：Esc 关掉后不再弹回来、↵ 照常发送；没有匹配�
   await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('谢谢@所有人');
 });
 
+test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（输入框里变成 @refs/，不插标签）→ 列出这一层的文件 → 再 ↵ 才插标签', async () => {
+  const { page } = launched;
+  const input = await freshComposerInA(page);
+  await page.keyboard.type('@re');
+  // 根这一层的 refs（文件夹）与 README.md 都以 re 开头：同档、同深度，路径短的 refs 在前 —— 高亮默认在第一项。
+  const menu = page.getByTestId('mention-menu');
+  await expect(page.getByTestId('mention-dir-refs')).toBeVisible();
+  await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-dir-refs');
+  await expect(menu.getByTestId('mention-dir-refs')).toContainText('refs/');
+
+  await page.keyboard.press('Enter');
+  await expect.poll(() => readBodyText(page)).toBe('@refs/');
+  await expect(page.getByTestId('mention-item-refs/dpo-2023.pdf')).toBeVisible();
+  await expect(page.getByTestId('mention-item-refs/draft.pdf')).toBeVisible();
+  const chips = input.getByTestId('ref-chip');
+  // 选中文件夹不插标签（正向见下面：同一个输入框里选中文件就插出来了）
+  await expect(chips).toHaveCount(0);
+
+  // 逐级浏览这一层：readDir 的次序（按名字），dpo-2023.pdf 在 draft.pdf 前，高亮在它上面。
+  await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-item-refs/dpo-2023.pdf');
+  await page.keyboard.press('Enter');
+  await expect(chips).toHaveCount(1);
+  await expect(chips).toHaveText('dpo-2023.pdf');
+  await expect(chips).toHaveAttribute('title', 'refs/dpo-2023.pdf');
+  await expect(menu).toBeHidden();
+});
+
 test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {
   const { page } = launched;
   const threadId = await newThread(page);
-  // 「新对话」建在当前项目（最近选中的对话所在的、刚换过去的项目 —— 65ff9d6 起不再固定拿 projects[0]）。
-  // 前面几条先后在 projectA / projectB 里起过对话，这个新对话落在哪个项目取决于用例的先后次序；
-  // 这条要的是 projectA（ch3.md 在那里），核对一遍、不是就切过去，不靠次序。
-  const nameA = path.basename(projectA);
-  const pill = page.getByTestId('project-pill');
-  if (!(await pill.textContent())?.includes(nameA)) {
-    await pill.click();
-    await page.getByTestId(`project-item-${nameA}`).click();
-    await expect(page.getByTestId('project-menu')).toBeHidden();
-  }
-  await expect(pill).toContainText(nameA);
+  // 这条要的是 projectA（ch3.md 在那里）。
+  await ensureProjectA(page);
 
   const mdPath = path.join(projectA, 'ch3.md');
   await page.getByTestId(`fs-${mdPath}`).dblclick();

@@ -5,7 +5,6 @@ import { useRunsStore } from '../../stores/runsStore';
 import { useLlmStore } from '../../stores/llmStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useSkillsStore } from '../../stores/skillsStore';
-import { useFileIndexStore } from '../../stores/fileIndexStore';
 import { NavIcon, IconButton } from '../../shared';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { ComposerProjectMenu } from './ComposerProjectMenu';
@@ -21,6 +20,7 @@ import { toMessagePath } from './attachments';
 import { ingestFiles } from './composerIngest';
 import { ComposerTray } from './ComposerTray';
 import { ComposerCommentList } from './ComposerCommentList';
+import { createMentionSession, type MentionEntry, type MentionSession, type MentionView } from './mentionSearch';
 import type { SkillEntry } from '../../../shared/types';
 
 type Props = {
@@ -109,52 +109,63 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     [skill, enabledSkills, body],
   );
 
-  // @ 引用（Task 8）：光标处的查询词由 ComposerEditor 报上来；结果查 project.searchFiles。
+  // @ 引用（spec §3.5 v2）：光标处的查询词由 ComposerEditor 报上来；一次弹出 = 一个会话（mentionSearch），
+  // 列表开着才有，关掉 / 换项目 / 卸载就 dispose —— 往下读目录只在列表开着时进行。
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [mentionItems, setMentionItems] = useState<string[]>([]);
-  const [mentionIndexed, setMentionIndexed] = useState(true);
-  // 一次弹出（session）自己的第一条结果回来之前：不显示上一次 session 的旧结果，
-  // 也不能把「还没回来」误判成「查完了、没有匹配」（未索引完要显示的是「正在索引…」，
-  // 不是「没有匹配的文件」——两者用的是同一个初始 mentionIndexed=true，区分靠 ready）。
-  const [mentionReady, setMentionReady] = useState(false);
-  const [mentionHighlight, setMentionHighlight] = useState(0);
-  const mentionSessionRef = useRef(false);
+  // 这个会话报上来的最新视图；null = 它还没报过（列表不渲染，也就不会闪上一次弹出的结果）。
+  const [mentionView, setMentionView] = useState<MentionView | null>(null);
+  // 高亮的是哪一项（按 rel 认，不按下标）：按名字找的结果随读随进，前面插进更好的一条时高亮不换人。
+  // null = 第一项；换查询词时回到 null。
+  const [mentionPick, setMentionPick] = useState<string | null>(null);
+  const mentionSessionRef = useRef<MentionSession | null>(null);
   const mentionProject = thread?.projectPath ?? null;
-  const indexVersion = useFileIndexStore((s) => (mentionProject ? s.versionByProject[mentionProject] ?? 0 : 0));
   const mentionOpen = mentionQuery !== null && mentionProject !== null;
 
   useEffect(() => {
-    if (mentionQuery === null || !mentionProject) { mentionSessionRef.current = false; return; }
-    // 一次弹出只在第一次查询时请求重扫；之后的按键与索引更新都用手上最新的结果（spec §3.5）。
-    const isNewSession = !mentionSessionRef.current;
-    const rescan = isNewSession;
-    mentionSessionRef.current = true;
-    if (isNewSession) {
-      // 新一次弹出：同步清掉上一次 session 留下的旧列表，回到「还没就绪」，
-      // 列表因此在第一条结果回来之前不渲染（见下面 mentionOpen && mentionReady）。
-      setMentionItems([]);
-      setMentionReady(false);
-    }
-    let cancelled = false;
-    void window.kydog.invoke('project.searchFiles', { projectPath: mentionProject, query: mentionQuery, rescan })
-      .then((r) => {
-        if (cancelled) return;
-        setMentionItems(r.items.map((i) => i.path));
-        setMentionIndexed(r.indexed);
-        setMentionHighlight(0);
-        setMentionReady(true);
-      })
-      .catch((err: unknown) => console.error('project.searchFiles failed', err));
-    return () => { cancelled = true; };
-  }, [mentionQuery, mentionProject, indexVersion]);
+    if (!mentionOpen || mentionProject === null || mentionQuery === null) return;
+    const session = createMentionSession({
+      projectPath: mentionProject,
+      readDir: (path) => window.kydog.invoke('project.readDir', { path }),
+      onChange: setMentionView,
+    });
+    mentionSessionRef.current = session;
+    // 建会话时的查询词由这里交过去（弹出、换项目都走这里），之后接着打字走下面那个 effect ——
+    // 不靠两个 effect 的先后：换项目时下面那个可能先于这里跑，那时会话还没建。重复的 setQuery 会话自己忽略。
+    session.setQuery(mentionQuery);
+    setMentionPick(null);
+    return () => {
+      session.dispose();
+      mentionSessionRef.current = null;
+      setMentionView(null);
+    };
+  }, [mentionOpen, mentionProject]);
+
+  useEffect(() => {
+    if (mentionQuery === null) return;
+    mentionSessionRef.current?.setQuery(mentionQuery);
+    setMentionPick(null);
+  }, [mentionQuery]);
+
+  const mentionItems = mentionView?.items ?? [];
+  const mentionHighlight = Math.max(0, mentionPick === null ? 0 : mentionItems.findIndex((i) => i.rel === mentionPick));
+  const moveMentionHighlight = (delta: number) => {
+    const n = mentionItems.length;
+    if (n === 0) return;
+    setMentionPick(mentionItems[(mentionHighlight + delta + n) % n].rel);
+  };
+  /** 文件插成标签；文件夹进入下一层（把 `@查询词` 换成 `@<目录>/`），不插标签。 */
+  const commitMention = (item: MentionEntry) => {
+    if (item.kind === 'dir') editorHandle.current?.replaceMentionQuery(`${item.rel}/`);
+    else editorHandle.current?.insertMention(item.rel);
+  };
 
   // 光标处的 @ 比正文开头的 / 更具体：两者同时成立时 @ 赢。
   const slashMenuOpen = !mentionOpen && !menuForceClosed && skill === null && slashItems.length > 0;
-  // @ 列表查完了、索引也完了、确实没有匹配：列表里只剩一行「没有匹配的文件」，没有东西可插。
-  // 这时 ↵ 不归列表管、照常走发送 —— 裁定 3 允许「谢谢@所有人」这种正文，末尾是个没匹配上的 @词
-  // 也得能 ↵ 发出去。结果还没回来（!ready）或还没索引完时不放：列表还在加载，别把消息先发走了。
+  // 这一次的读取已经结束（逐级浏览读完这一层 / 按名字找读完整棵树）且一条都没有：列表里只剩
+  // 「没有匹配的文件」，没有东西可插。这时 ↵ 不归列表管、照常走发送 —— 裁定 3 允许「谢谢@所有人」
+  // 这种正文，末尾是个没匹配上的 @词也得能 ↵ 发出去。视图还没回来、或还在查找时不放：别把消息先发走了。
   // Tab 不放（仍是空操作，免得焦点跳走）；Esc / ↑↓ 照旧归列表。
-  const mentionNoMatch = mentionOpen && mentionReady && mentionIndexed && mentionItems.length === 0;
+  const mentionNoMatch = mentionOpen && mentionView !== null && mentionView.done && mentionView.items.length === 0;
 
   useEffect(() => {
     if (slashHighlight >= slashItems.length) setSlashHighlight(0);
@@ -263,17 +274,17 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
         break;
       case 'slash-down':
         e.preventDefault();
-        if (mentionOpen) setMentionHighlight((i) => (mentionItems.length === 0 ? 0 : (i + 1) % mentionItems.length));
+        if (mentionOpen) moveMentionHighlight(1);
         else setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i + 1) % slashItems.length));
         break;
       case 'slash-up':
         e.preventDefault();
-        if (mentionOpen) setMentionHighlight((i) => (mentionItems.length === 0 ? 0 : (i - 1 + mentionItems.length) % mentionItems.length));
+        if (mentionOpen) moveMentionHighlight(-1);
         else setSlashHighlight((i) => (slashItems.length === 0 ? 0 : (i - 1 + slashItems.length) % slashItems.length));
         break;
       case 'slash-commit':
         e.preventDefault();
-        if (mentionOpen) { const p = mentionItems[mentionHighlight]; if (p) editorHandle.current?.insertMention(p); }
+        if (mentionOpen) { const item = mentionItems[mentionHighlight]; if (item) commitMention(item); }
         else commitSlash(slashHighlight);
         break;
       case 'slash-close':
@@ -490,12 +501,12 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
           onSelect={applySlashSelection}
         />
       ) : null}
-      {mentionOpen && mentionReady && editorWrapperRef.current ? (
+      {mentionOpen && mentionView !== null && editorWrapperRef.current ? (
         <ComposerMentionMenu
-          items={mentionItems} indexed={mentionIndexed} highlightIndex={mentionHighlight}
+          items={mentionView.items} done={mentionView.done} highlightIndex={mentionHighlight}
           anchorRect={editorWrapperRef.current.getBoundingClientRect()}
-          onHover={setMentionHighlight}
-          onSelect={(p) => editorHandle.current?.insertMention(p)}
+          onHover={(i) => setMentionPick(mentionItems[i]?.rel ?? null)}
+          onSelect={commitMention}
         />
       ) : null}
     </div>
