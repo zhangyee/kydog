@@ -49,7 +49,7 @@ test.beforeAll(async () => {
   await fs.mkdir(path.join(projectA, 'Related Work'), { recursive: true });
   await fs.writeFile(path.join(projectA, 'Related Work', 'survey.md'), '# survey\n');
   await fs.writeFile(path.join(projectA, 'Related Work', 'notes.md'), '# notes\n');
-  // 空文件夹：进去之后列表仍开着，显示「没有匹配的文件」
+  // 空文件夹：进去之后列表里只有「文件夹本身」那一行（spec §3.5）
   await fs.mkdir(path.join(projectA, 'Empty Dir'), { recursive: true });
   await fs.writeFile(path.join(projectA, 'ch3.md'), '# 第三章\n\n## 3.2 偏好对齐\n\n将 β 固定为 0.1，并复现。\n');
   outsideFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-out-')), 'outside.pdf');
@@ -64,6 +64,7 @@ test.beforeAll(async () => {
       '看文件': reply('看到了'),
       '对比 <kydog-ref path="refs/dpo-2023.pdf"/> 的表 2': reply('对比完了'),
       '看 <kydog-ref path="Related Work/survey.md"/> 的结论': reply('看完了'),
+      '看 <kydog-ref path="Empty Dir/"/> 里有什么': reply('是空的'),
       '看看@zzz': reply('看过了'),
       '谢谢@所有人': reply('不客气'),
       '整理批注': reply('整理完了'),
@@ -370,7 +371,7 @@ test('@ 列表：Esc 关掉后不再弹回来、↵ 照常发送；没有匹配�
   await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('谢谢@所有人');
 });
 
-test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（输入框里变成 @refs/，不插标签）→ 列出这一层的文件 → 再 ↵ 才插标签', async () => {
+test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（输入框里变成 @refs/，不插标签）→ 首行是文件夹本身、默认高亮 → ↓ 到子项再 ↵ 才插那个文件', async () => {
   const { page } = launched;
   const input = await freshComposerInA(page);
   await page.keyboard.type('@re');
@@ -386,11 +387,17 @@ test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（
   await expect(page.getByTestId('mention-item-refs/dpo-2023.pdf')).toBeVisible();
   await expect(page.getByTestId('mention-item-refs/draft.pdf')).toBeVisible();
   const chips = input.getByTestId('ref-chip');
-  // 选中文件夹不插标签（正向见下面：同一个输入框里选中文件就插出来了）
+  // 选中文件夹是进入、不插标签（正向见下面：同一个输入框里选中文件就插出来了）
   await expect(chips).toHaveCount(0);
 
-  // 逐级浏览这一层：readDir 的次序（按名字），dpo-2023.pdf 在 draft.pdf 前，高亮在它上面。
-  await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-item-refs/dpo-2023.pdf');
+  // 进来之后首行是 refs 本身、高亮在它上面；↓ 挪到第一个子项（readDir 的次序：dpo-2023.pdf 在 draft.pdf 前）
+  const selfRow = page.getByTestId('mention-self-refs');
+  await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-self-refs');
+  await expect(selfRow).toContainText('引用整个文件夹');
+  await expect(selfRow).toHaveAttribute('data-highlighted', 'true');
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByTestId('mention-item-refs/dpo-2023.pdf')).toHaveAttribute('data-highlighted', 'true');
+  await expect(selfRow).toHaveAttribute('data-highlighted', 'false');
   await page.keyboard.press('Enter');
   await expect(chips).toHaveCount(1);
   await expect(chips).toHaveText('dpo-2023.pdf');
@@ -414,6 +421,7 @@ test('@ 列表：名字里有空格的文件夹 → ↵ 写成两侧引号 @"Rel
   const notes = page.getByTestId('mention-item-Related Work/notes.md');
   await expect(survey).toBeVisible();
   await expect(notes).toBeVisible();
+  await expect(page.getByTestId('mention-self-Related Work')).toBeVisible();
 
   // 光标停在收尾引号前：打的字落在引号里，列表按它筛（notes.md 上面在，这里被筛掉）
   await page.keyboard.type('su');
@@ -439,17 +447,43 @@ test('@ 列表：名字里有空格的文件夹 → ↵ 写成两侧引号 @"Rel
   await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('看 <kydog-ref path="Related Work/survey.md"/> 的结论');
 });
 
-test('@ 列表：进入一个空文件夹 → 列表还开着，显示「没有匹配的文件」', async () => {
+test('@ 列表：进入一个空文件夹 → 只有「文件夹本身」那一行（不出「没有匹配的文件」）→ ↵ 插成文件夹标签 Empty Dir/ → 发出的文字里是 kydog-ref path="Empty Dir/"', async () => {
   const { page } = launched;
-  await freshComposerInA(page);
+  const input = await freshComposerInA(page);
   await page.keyboard.type('看 @Emp');
   // 根这一层以 emp 开头的只有 Empty Dir；README.md 等名字里没有 e→m→p 这个子序列
   const menu = page.getByTestId('mention-menu');
   await expect(page.getByTestId('mention-dir-Empty Dir')).toBeVisible();
   await page.keyboard.press('Enter');
   await expect.poll(() => readBodyText(page)).toBe('看 @"Empty Dir/"');
-  await expect(menu).toBeVisible();
+  const selfRow = page.getByTestId('mention-self-Empty Dir');
+  await expect(selfRow).toBeVisible();
+  await expect(selfRow).toContainText('Empty Dir/');
+  await expect(selfRow).toContainText('引用整个文件夹');
+  await expect(selfRow).toHaveAttribute('data-highlighted', 'true');
+
+  // 状态行确实出得来：在 / 之后打一个筛选词（这一层里没有东西能中）→「没有匹配的文件」，文件夹本身那一行不在
+  await page.keyboard.type('zz');
+  await expect.poll(() => readBodyText(page)).toBe('看 @"Empty Dir/zz"');
   await expect(menu).toContainText('没有匹配的文件');
+  await expect(selfRow).toBeHidden();
+  // 删掉筛选词：回到文件夹本身那一行，没有状态行
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Backspace');
+  await expect.poll(() => readBodyText(page)).toBe('看 @"Empty Dir/"');
+  await expect(selfRow).toBeVisible();
+  await expect(menu).not.toContainText('没有匹配的文件');
+
+  await page.keyboard.press('Enter');
+  const chips = input.getByTestId('ref-chip');
+  await expect(chips).toHaveCount(1);
+  await expect(chips).toHaveAttribute('data-ref-path', 'Empty Dir/');
+  await expect(chips).toHaveAttribute('title', 'Empty Dir/');
+  await expect(chips).toHaveText('Empty Dir/');
+  await expect(menu).toBeHidden();
+  await page.keyboard.type('里有什么');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('看 <kydog-ref path="Empty Dir/"/> 里有什么');
 });
 
 test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {

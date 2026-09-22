@@ -17,7 +17,8 @@ const ROW = MENTION_ROW_HEIGHT;
 const ELLIPSIS = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } as const;
 
 /**
- * @ 列表（4A ③）。外观与定位照 ComposerSlashMenu。文件夹一行带文件夹图标与末尾的 `/`，选中是进入下一层。
+ * @ 列表（4A ③）。外观与定位照 ComposerSlashMenu。文件夹一行带文件夹图标与末尾的 `/`，选中是进入下一层；
+ * 进入一层后的首行是这个文件夹本身（右侧淡字「引用整个文件夹」），选中插文件夹标签。
  *
  * 条目数不设上限（逐级浏览一层可能就有成千上万条），但只画滚动视口里的行，上下用占位撑开（spec §3.5，
  * 算术在 mentionWindow.ts）。高亮一挪（↑↓、或随读随进的结果把它挤到别的位置）就把它滚进视野。
@@ -48,24 +49,40 @@ export function ComposerMentionMenu({ items, done, highlightIndex, anchorRect, o
     const i = start + k;
     const cut = item.rel.lastIndexOf('/');
     const isDir = item.kind === 'dir';
+    const common = {
+      type: 'button' as const,
+      'data-highlighted': i === safe,
+      onMouseEnter: () => handlers.current.onHover(i),
+      onMouseDown: (e: { preventDefault: () => void }) => { e.preventDefault(); handlers.current.onSelect(item); },
+      className: 'w-full text-left flex items-baseline',
+      style: {
+        gap: 8, height: ROW, boxSizing: 'border-box' as const, padding: '5px 14px', lineHeight: '18px', overflow: 'hidden', whiteSpace: 'nowrap' as const,
+        background: i === safe ? 'var(--color-hover-bg)' : 'transparent', border: 'none', cursor: 'pointer',
+      },
+    };
+    const folderIcon = (
+      <span style={{ alignSelf: 'center', display: 'inline-flex', flexShrink: 0, color: 'var(--color-ink-faint)' }}>
+        <NavIcon name="folder" size={12} />
+      </span>
+    );
+    if (item.self) {
+      // 进入一层后的首行：这个文件夹本身（spec §3.5），选中插文件夹标签
+      return (
+        <button key={`self:${item.rel}`} data-testid={`mention-self-${item.rel}`} title={`${item.rel}/`} {...common}>
+          {folderIcon}
+          <span className="font-mono" style={{ ...ELLIPSIS, flexShrink: 1, fontSize: 12, color: 'var(--color-ink)' }}>{item.name}/</span>
+          <span className="font-sans" style={{ ...ELLIPSIS, flexShrink: 0, marginLeft: 'auto', fontSize: 11, color: 'var(--color-ink-faint)' }}>引用整个文件夹</span>
+        </button>
+      );
+    }
     return (
       <button
-        key={`${item.kind}:${item.rel}`} type="button"
+        key={`${item.kind}:${item.rel}`}
         data-testid={isDir ? `mention-dir-${item.rel}` : `mention-item-${item.rel}`}
         title={item.rel}
-        onMouseEnter={() => handlers.current.onHover(i)}
-        onMouseDown={(e) => { e.preventDefault(); handlers.current.onSelect(item); }}
-        className="w-full text-left flex items-baseline"
-        style={{
-          gap: 8, height: ROW, boxSizing: 'border-box', padding: '5px 14px', lineHeight: '18px', overflow: 'hidden', whiteSpace: 'nowrap',
-          background: i === safe ? 'var(--color-hover-bg)' : 'transparent', border: 'none', cursor: 'pointer',
-        }}
+        {...common}
       >
-        {isDir ? (
-          <span style={{ alignSelf: 'center', display: 'inline-flex', flexShrink: 0, color: 'var(--color-ink-faint)' }}>
-            <NavIcon name="folder" size={12} />
-          </span>
-        ) : null}
+        {isDir ? folderIcon : null}
         {/* 宽度固定：名字与所在目录都可能很长，省略号截断；目录先让位（缩得快得多），名字尽量留全 */}
         <span className="font-mono" style={{ ...ELLIPSIS, flexShrink: 1, fontSize: 12, color: 'var(--color-ink)' }}>
           {item.name}{isDir ? '/' : ''}

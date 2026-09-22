@@ -12,7 +12,11 @@
  * 「列表开着」：Composer 在列表关掉时 `dispose()`，之后不再读、不再报。
  */
 
-export type MentionEntry = { rel: string; name: string; kind: 'file' | 'dir'; depth: number };
+/**
+ * 列表里的一行。`self: true` 是进入一层之后首行的「这个文件夹本身」（spec §3.5）：选中它插文件夹标签，
+ * 其余的文件夹选中是进入下一层。
+ */
+export type MentionEntry = { rel: string; name: string; kind: 'file' | 'dir'; depth: number; self?: true };
 export type MentionView = { mode: 'browse' | 'name'; items: MentionEntry[]; done: boolean };
 export type ReadDirFn = (absPath: string) => Promise<Array<{ name: string; path: string; kind: 'file' | 'dir' }>>;
 export type ParsedMentionQuery =
@@ -58,8 +62,12 @@ function tierOf(nameLower: string, leafLower: string): number {
 }
 
 type Item = { entry: MentionEntry; lower: string };
-/** 一个读过的目录：`items` 是 readDir 给的次序；`byKind` 是「文件夹在前、再按名字」，筛选时才算、算一次。 */
-type Listing = { items: Item[]; byKind: Item[] | null } | 'failed';
+/**
+ * 一个读过的目录：`items` 是 readDir 给的次序；`byKind` 是「文件夹在前、再按名字」，筛选时才算、算一次；
+ * `self` 是这个目录本身那一行（根目录没有）—— 只有读成功的目录才有 Listing，读失败是 'failed'，所以
+ * 「能不能引用这个文件夹」看的就是这一次 readDir 成没成，不预先猜。
+ */
+type Listing = { items: Item[]; byKind: Item[] | null; self: MentionEntry | null } | 'failed';
 type Ranked = { item: Item; tier: number };
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -133,12 +141,21 @@ export function createMentionSession(opts: {
       entry: { rel: parentRel === '' ? n.name : `${parentRel}/${n.name}`, name: n.name, kind: n.kind, depth },
       lower: n.name.toLowerCase(),
     }));
-    return { items, byKind: null };
+    const self: MentionEntry | null = parentRel === ''
+      ? null
+      : { rel: parentRel, name: parentRel.slice(parentRel.lastIndexOf('/') + 1), kind: 'dir', depth: depth - 1, self: true };
+    return { items, byKind: null, self };
   }
 
-  /** 逐级浏览：筛选词为空原样列出；否则按档分三桶，桶内沿用「文件夹在前、再按名字」的次序。 */
+  /**
+   * 逐级浏览：筛选词为空原样列出，进入的是一个子目录时首行是它本身（引用整个文件夹）；否则按档分三桶，
+   * 桶内沿用「文件夹在前、再按名字」的次序（在这一层里找东西，没有「本身」那一行）。
+   */
   function browseItems(listing: Exclude<Listing, 'failed'>, leaf: string): MentionEntry[] {
-    if (leaf === '') return listing.items.map((i) => i.entry);
+    if (leaf === '') {
+      const children = listing.items.map((i) => i.entry);
+      return listing.self ? [listing.self, ...children] : children;
+    }
     listing.byKind ??= [...listing.items].sort((a, b) => (a.entry.kind === b.entry.kind
       ? a.entry.name.localeCompare(b.entry.name)
       : a.entry.kind === 'dir' ? -1 : 1));

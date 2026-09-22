@@ -47,6 +47,9 @@ function fakeFs(dirs: Record<string, string[]>, opts: { manual?: boolean; fail?:
 
 const settle = () => new Promise<void>((r) => { setTimeout(r, 0); });
 const rels = (v: MentionView | undefined) => (v ? v.items.map((i) => i.rel) : null);
+/** 进入一层后列表首行的「文件夹本身」（spec §3.5）。 */
+const selfOf = (rel: string) => ({ rel, name: rel.slice(rel.lastIndexOf('/') + 1), kind: 'dir' as const, depth: rel.split('/').length - 1, self: true as const });
+const selfRows = (v: MentionView | undefined) => (v ? v.items.filter((i) => i.self === true).map((i) => i.rel) : null);
 
 function start(fs: ReturnType<typeof fakeFs>, opts: { projectPath?: string; limit?: number } = {}) {
   const views: MentionView[] = [];
@@ -117,7 +120,7 @@ describe('逐级浏览', () => {
     s.setQuery('lib/');
     await settle();
     // 正向：下面被筛掉的 zzz.md / pd.md 确实在这一层里
-    expect(rels(last())).toEqual(['zzz.md', 'xdp.md', 'dpb.md', 'D_P.md', 'ydp', 'pd.md', 'dpa.md', 'dp-notes'].map((n) => `lib/${n}`));
+    expect(rels(last())).toEqual(['lib', ...['zzz.md', 'xdp.md', 'dpb.md', 'D_P.md', 'ydp', 'pd.md', 'dpa.md', 'dp-notes'].map((n) => `lib/${n}`)]);
     s.setQuery('lib/dp');
     expect(rels(last())).toEqual(['dp-notes', 'dpa.md', 'dpb.md', 'ydp', 'xdp.md', 'D_P.md'].map((n) => `lib/${n}`));
     expect(last().done).toBe(true);
@@ -127,7 +130,7 @@ describe('逐级浏览', () => {
     expect(fs.calls).toEqual(['/proj/lib']);
   });
 
-  it('子目录：读 <项目>/<目录>，rel 带目录前缀、depth 按层数；同一会话里读过的目录不再读；空目录 → 空列表 + done', async () => {
+  it('子目录：读 <项目>/<目录>，rel 带目录前缀、depth 按层数；同一会话里读过的目录不再读；空目录 → 只剩文件夹本身那一行 + done', async () => {
     const fs = fakeFs({ '': ['refs/'], refs: ['dpo-2023.pdf', 'draft.pdf', 'old/'], 'refs/old': [] });
     const { s, last } = start(fs);
     s.setQuery('refs/');
@@ -136,6 +139,7 @@ describe('逐级浏览', () => {
     expect(last()).toEqual({
       mode: 'browse', done: true,
       items: [
+        selfOf('refs'),
         { rel: 'refs/dpo-2023.pdf', name: 'dpo-2023.pdf', kind: 'file', depth: 1 },
         { rel: 'refs/draft.pdf', name: 'draft.pdf', kind: 'file', depth: 1 },
         { rel: 'refs/old', name: 'old', kind: 'dir', depth: 1 },
@@ -145,7 +149,7 @@ describe('逐级浏览', () => {
     expect(rels(last())).toEqual(['refs/draft.pdf']);
     s.setQuery('refs/old/');
     await settle();
-    expect(last()).toEqual({ mode: 'browse', items: [], done: true });
+    expect(last()).toEqual({ mode: 'browse', items: [selfOf('refs/old')], done: true });
     // 'd' 在 old 里是「连续包含」：同档文件夹在前，但档比两个开头命中的文件低
     s.setQuery('refs/d');
     expect(rels(last())).toEqual(['refs/dpo-2023.pdf', 'refs/draft.pdf', 'refs/old']);
@@ -161,7 +165,7 @@ describe('逐级浏览', () => {
     s.setQuery('refs/');
     expect(last()).toEqual({ mode: 'browse', items: [], done: false });
     await fs.release();
-    expect(last()).toEqual({ mode: 'browse', items: [{ rel: 'refs/a.md', name: 'a.md', kind: 'file', depth: 1 }], done: true });
+    expect(last()).toEqual({ mode: 'browse', items: [selfOf('refs'), { rel: 'refs/a.md', name: 'a.md', kind: 'file', depth: 1 }], done: true });
   });
 
   it('读不了的目录 → 空列表 + done', async () => {
@@ -169,7 +173,7 @@ describe('逐级浏览', () => {
     const { s, last } = start(fs);
     s.setQuery('ok/');
     await settle();
-    expect(last()).toMatchObject({ items: [{ rel: 'ok/a.md' }], done: true }); // 正向：能读的目录照常出结果
+    expect(last()).toMatchObject({ items: [{ rel: 'ok', self: true }, { rel: 'ok/a.md' }], done: true }); // 正向：能读的目录照常出结果（首行是文件夹本身）
     s.setQuery('bad/');
     await settle();
     expect(fs.calls).toEqual(['/proj/ok', '/proj/bad']);
@@ -197,7 +201,7 @@ describe('逐级浏览', () => {
     s.setQuery('refs/');
     await settle();
     expect(fs.calls).toEqual(['C:\\proj/refs']);
-    expect(rels(last())).toEqual(['refs/dpo.pdf', 'refs/sub']);
+    expect(rels(last())).toEqual(['refs', 'refs/dpo.pdf', 'refs/sub']);
     // 按名字找：从根往下读，refs 已经读过、用内存里的；refs/sub 照样按 rel 拼
     s.setQuery('dpo');
     await settle();
@@ -212,6 +216,62 @@ describe('逐级浏览', () => {
   });
 });
 
+describe('文件夹本身那一行（spec §3.5：进去再 ↵ 就是引用整个文件夹）', () => {
+  it('进入一层、/ 之后的筛选词为空、这一层读成功：第一行是文件夹本身；打了筛选词就没有', async () => {
+    const fs = fakeFs({ papers: ['refs/'], 'papers/refs': ['a.md', 'sub/'] });
+    const { s, last } = start(fs);
+    s.setQuery('papers/refs/');
+    await settle();
+    expect(last()!.items[0]).toEqual(selfOf('papers/refs'));
+    expect(last()!.items[0]).toMatchObject({ name: 'refs', depth: 1 });
+    expect(selfRows(last())).toEqual(['papers/refs']);
+    s.setQuery('papers/refs/a');
+    expect(rels(last())).toEqual(['papers/refs/a.md']);
+    expect(selfRows(last())).toEqual([]);
+  });
+
+  it('根目录（@ 与 @" 都是空查询）没有这一行：根就是整个项目', async () => {
+    const fs = fakeFs({ '': ['refs/', 'a.md'], refs: ['x.md'] });
+    const { s, last } = start(fs);
+    // 正向：进了 refs 就有
+    s.setQuery('refs/');
+    await settle();
+    expect(selfRows(last())).toEqual(['refs']);
+    s.setQuery('');
+    await settle();
+    expect(rels(last())).toEqual(['refs', 'a.md']);
+    expect(selfRows(last())).toEqual([]);
+  });
+
+  it('这一层读失败（不存在、不是目录）没有这一行；读回来之前也不预先显示', async () => {
+    const fs = fakeFs({ ok: ['a.md'] }, { manual: true }); // 不在 dirs 里的路径（ok/a.md、nope）读的时候抛错
+    const { s, last } = start(fs);
+    s.setQuery('ok/');
+    await fs.release();
+    expect(selfRows(last())).toEqual(['ok']); // 正向
+    s.setQuery('ok/a.md/'); // 是文件，不是目录：读失败
+    expect(last()).toEqual({ mode: 'browse', items: [], done: false }); // 读回来之前：没有这一行
+    await fs.release();
+    expect(last()).toEqual({ mode: 'browse', items: [], done: true });
+    s.setQuery('nope/'); // 不存在
+    await fs.release();
+    expect(last()).toEqual({ mode: 'browse', items: [], done: true });
+  });
+
+  it('按名字找没有这一行（名字里命中的文件夹是用来进入的，不是它自己）', async () => {
+    const fs = fakeFs({ '': ['refs/'], refs: ['r.md'] });
+    const { s, last } = start(fs);
+    s.setQuery('refs/');
+    await settle();
+    expect(selfRows(last())).toEqual(['refs']); // 正向
+    s.setQuery('r');
+    await settle();
+    expect(rels(last())).toEqual(['refs', 'refs/r.md']);
+    expect(selfRows(last())).toEqual([]);
+    expect(last()!.items[0].self).toBeUndefined();
+  });
+});
+
 describe('rel 与读目录的路径', () => {
   it('打的 refs\\sub/：读 <项目>/refs/sub，rel 里没有 \\', async () => {
     const fs = fakeFs({ refs: ['sub/'], 'refs/sub': ['x.md'] });
@@ -219,7 +279,7 @@ describe('rel 与读目录的路径', () => {
     s.setQuery('refs\\sub/');
     await settle();
     expect(fs.calls).toEqual(['/proj/refs/sub']);
-    expect(last()).toEqual({ mode: 'browse', done: true, items: [{ rel: 'refs/sub/x.md', name: 'x.md', kind: 'file', depth: 2 }] });
+    expect(last()).toEqual({ mode: 'browse', done: true, items: [selfOf('refs/sub'), { rel: 'refs/sub/x.md', name: 'x.md', kind: 'file', depth: 2 }] });
   });
 
   it('rel 只由 readDir 给的名字拼出来，不看它给的 path 长什么样', async () => {
@@ -230,7 +290,7 @@ describe('rel 与读目录的路径', () => {
     const s = createMentionSession({ projectPath: '/proj', readDir, onChange: (v) => views.push(v) });
     s.setQuery('a b/');
     await settle();
-    expect(views[views.length - 1]).toEqual({ mode: 'browse', done: true, items: [{ rel: 'a b/c.md', name: 'c.md', kind: 'file', depth: 1 }] });
+    expect(views[views.length - 1]).toEqual({ mode: 'browse', done: true, items: [selfOf('a b'), { rel: 'a b/c.md', name: 'c.md', kind: 'file', depth: 1 }] });
     s.setQuery('');
     await settle();
     expect(rels(views[views.length - 1])).toEqual(['a b', 'r.md']);
@@ -301,7 +361,7 @@ describe('按名字找', () => {
     s.setQuery('many/');
     await settle();
     // 正向：第 51～60 个确实在这个目录里
-    expect(rels(last())).toHaveLength(60);
+    expect(rels(last())).toHaveLength(61); // 文件夹本身 + 60 个文件
     expect(rels(last())).toContain('many/f59.md');
     s.setQuery('f');
     await settle();
@@ -351,7 +411,7 @@ describe('按名字找', () => {
     expect(fs.calls).toEqual(['/proj', '/proj/a']);
     s.setQuery('a/'); // 要的正是在飞的这个：等它回来，不重复读
     await fs.release();
-    expect(last()).toMatchObject({ mode: 'browse', done: true, items: [{ rel: 'a/dp1.md' }] });
+    expect(last()).toMatchObject({ mode: 'browse', done: true, items: [{ rel: 'a', self: true }, { rel: 'a/dp1.md' }] });
     // 暂停：没有再往下读 b
     expect(fs.calls).toEqual(['/proj', '/proj/a']);
     expect(fs.pending).toHaveLength(0);
@@ -378,7 +438,7 @@ describe('按名字找', () => {
     await fs.release(); // a 回来 → 这才读 c（不是 BFS 的下一个 b）
     expect(fs.calls).toEqual(['/proj', '/proj/a', '/proj/c']);
     await fs.release();
-    expect(last()).toMatchObject({ mode: 'browse', done: true, items: [{ rel: 'c/dp3.md' }] });
+    expect(last()).toMatchObject({ mode: 'browse', done: true, items: [{ rel: 'c', self: true }, { rel: 'c/dp3.md' }] });
     s.setQuery('dp');
     await fs.release(); // b
     expect(last()).toMatchObject({ mode: 'name', done: true });

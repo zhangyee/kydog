@@ -174,11 +174,13 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     setMentionPick(mentionItems[(mentionHighlight + delta + n) % n].rel);
   };
   /**
-   * 文件插成标签；文件夹进入下一层（把 `@查询词` 换成 `@<目录>/`，名字里有空白或 @、或已在引号里时写成
+   * 进入一层后首行的「文件夹本身」插成文件夹标签：路径以 `/` 结尾，这一刻按会话里这次 readDir 给的类型写下
+   * （spec §3.5 文件夹标签）。文件插成标签；其余文件夹进入下一层（把 `@查询词` 换成 `@<目录>/`，名字里有空白或 @、或已在引号里时写成
    * 两侧引号 `@"<目录>/"`、光标停在收尾引号前），不插标签。写不出能解析回来的查询词（名字里有 `"` 或 `\`）
    * 就什么都不做，列表照旧开着。
    */
   const commitMention = (item: MentionEntry) => {
+    if (item.self) { editorHandle.current?.insertMention(`${item.rel}/`); return; }
     if (item.kind === 'file') { editorHandle.current?.insertMention(item.rel); return; }
     const edit = folderMentionEdit(item.rel, mentionQuoted);
     if (edit !== null) editorHandle.current?.replaceMentionQuery(edit);

@@ -47,7 +47,7 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 ## 用户消息里的结构（附件、批注、@ 引用）
 
-**发给模型的那段文字就是唯一事实**，不另存结构。输入框用 `src/shared/userTurn.ts` 的 `encodeUserTurn` 把附件、批注写成 `<kydog-attachments>` / `<kydog-comment>` 块接在正文后面、@ 引用写成行内 `<kydog-ref path="…"/>`，图片作为 pi 的图片块随 `thread.send` 的 `images` 走（`threadService.send` → `AgentService.send` → `session.prompt(text, { images })`）。`threadService.send` 这一跳还在对话仍叫「无标题」时触发起标题，交给 `titleService` 的是 `turnTitleSource` 解出来的纯文字（正文里的引用换成文件名；正文空就用第一条批注的引文、再没有就用第一个附件的名字），不是带标签的原文。历史显示（`UserMessage`）用同一个模块的 `decodeUserTurn` 解回来：刚发出的与重新载入的走同一段代码，所以不会对不上。解码只认严格格式，不合格的整条按正文原样显示。
+**发给模型的那段文字就是唯一事实**，不另存结构。输入框用 `src/shared/userTurn.ts` 的 `encodeUserTurn` 把附件、批注写成 `<kydog-attachments>` / `<kydog-comment>` 块接在正文后面、@ 引用写成行内 `<kydog-ref path="…"/>`（引用文件夹时路径以 `/` 结尾，在 @ 列表里选中那一刻按 `project.readDir` 给的类型写下，之后不再猜；标签上的名字输入框、历史、自动标题都走 `userTurn.ts` 的 `refLabel`），图片作为 pi 的图片块随 `thread.send` 的 `images` 走（`threadService.send` → `AgentService.send` → `session.prompt(text, { images })`）。`threadService.send` 这一跳还在对话仍叫「无标题」时触发起标题，交给 `titleService` 的是 `turnTitleSource` 解出来的纯文字（正文里的引用换成文件名；正文空就用第一条批注的引文、再没有就用第一个附件的名字），不是带标签的原文。历史显示（`UserMessage`）用同一个模块的 `decodeUserTurn` 解回来：刚发出的与重新载入的走同一段代码，所以不会对不上。解码只认严格格式，不合格的整条按正文原样显示。
 
 文件在不在磁盘上，看 preload 暴露的 `window.kydog.pathForFile`（`webUtils.getPathForFile`）：返回**空串就是不在磁盘上**（截图、从网页拖进来的图），这是 Electron 给的事实，不按文件名猜。判据收在 `attachments.ts` 的 `classifyFile`，粘贴、拖入、回形针三条入口共用（`composerIngest.ts`），粘贴先经 `routePaste` 分流：能发的图片一律读成图片块随消息走，有路径时再带上路径（在目标对话的项目内发相对路径，否则绝对路径），没路径的起名「截图 N」；其他文件有路径就按路径引用，没路径引用不了，托盘提示。
 

@@ -79,6 +79,8 @@ function menu(tree: unknown) {
 
 const file = (rel: string): MentionEntry => ({ rel, name: rel.slice(rel.lastIndexOf('/') + 1), kind: 'file', depth: rel.split('/').length - 1 });
 const dir = (rel: string): MentionEntry => ({ ...file(rel), kind: 'dir' });
+/** 进入一层后首行的「文件夹本身」。 */
+const self = (rel: string): MentionEntry => ({ ...dir(rel), self: true });
 const view = (items: MentionEntry[], done: boolean, mode: MentionView['mode'] = 'name'): MentionView => ({ mode, items, done });
 
 function keyEv(key: string, mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean; isComposing?: boolean } = {}) {
@@ -337,21 +339,66 @@ describe('Composer —— @ 列表的会话', () => {
     expect(menu(m.tree)).toHaveLength(1);
   });
 
-  it('进入一个空文件夹：列表还开着，显示读完、无结果（状态行「没有匹配的文件」）', () => {
+  it('进入一层后首行是文件夹本身、默认高亮：↵ / Tab / 单击插文件夹标签（路径带 /），不是再进一层；↓ 照常走到下面的文件与文件夹', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('refs/', false);
+    sessions[0].opts.onChange(view([self('refs'), dir('refs/old'), file('refs/a.pdf')], true, 'browse'));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('refs/');
+    expect(h.replaceMentionQuery).not.toHaveBeenCalled();
+    editor(m.tree).props.onKeyDown(keyEv('Tab'));
+    expect(h.insertMention).toHaveBeenCalledTimes(2);
+    menu(m.tree)[0].props.onSelect(self('refs'));
+    expect(h.insertMention).toHaveBeenCalledTimes(3);
+    expect(h.insertMention).toHaveBeenLastCalledWith('refs/');
+    // ↓ 到下面的文件夹：进入（正向对照：上面三次没有 replaceMentionQuery 不是因为它调不到）
+    editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: 'refs/old/', caret: 9 });
+    editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('refs/a.pdf');
+  });
+
+  it('文件夹本身和下面的条目同一次到：高亮钉在它上面，同一查询下再来的视图重排了子项也不挪走', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('refs/', false);
+    sessions[0].opts.onChange(view([], false, 'browse')); // 还没读回来
+    sessions[0].opts.onChange(view([self('refs'), file('refs/b.pdf'), file('refs/a.pdf')], true, 'browse'));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+    sessions[0].opts.onChange(view([self('refs'), file('refs/a.pdf'), file('refs/b.pdf')], true, 'browse'));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('refs/');
+  });
+
+  it('引号里进入的文件夹（@"Related Work/"）：文件夹本身插成 Related Work/（整段 @"…" 由编辑器一起换掉）', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('Related Work/', true);
+    sessions[0].opts.onChange(view([self('Related Work'), file('Related Work/survey.md')], true, 'browse'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('Related Work/');
+  });
+
+  it('进入一个空文件夹：列表还开着，只有文件夹本身那一行', () => {
     const m = mount(Composer, { threadId: 't1' });
     const h = installHandle(m.tree);
     // 编辑器真的会做的：写回查询词之后当场把新的查询词报上来（同一次按键里）
     h.replaceMentionQuery.mockImplementation(() => { editor(m.tree).props.onMentionQuery('Empty Dir/', true); });
-    fakeHooks.onSetQuery = (s, q) => { if (q === 'Empty Dir/') s.opts.onChange(view([], true, 'browse')); };
+    fakeHooks.onSetQuery = (s, q) => { if (q === 'Empty Dir/') s.opts.onChange(view([self('Empty Dir')], true, 'browse')); };
     editor(m.tree).props.onMentionQuery('Emp', false);
     sessions[0].opts.onChange(view([dir('Empty Dir')], true));
-    // 正向：进去之前列表里有这个文件夹
+    // 正向：进去之前列表里是这个文件夹（选中是进入）
     expect(menu(m.tree)[0].props.items).toEqual([dir('Empty Dir')]);
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
     expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: '"Empty Dir/"', caret: 11 });
     expect(sessions[0].setQuery).toHaveBeenLastCalledWith('Empty Dir/');
     expect(menu(m.tree)).toHaveLength(1);
-    expect(menu(m.tree)[0].props).toMatchObject({ items: [], done: true });
+    expect(menu(m.tree)[0].props).toMatchObject({ items: [self('Empty Dir')], done: true, highlightIndex: 0 });
   });
 
   it('Esc：关掉列表，并告诉编辑器这个 @ 是被 Esc 关掉的（编辑器据此不在松开 Esc 时把它重新报上来）', () => {
@@ -507,6 +554,24 @@ describe('ComposerMentionMenu', () => {
     const spans = findAllWhere(row, (el) => el.type === 'span' && el.props.className?.includes('font-mono'));
     expect(spans).toHaveLength(2);
     for (const sp of spans) expect(sp.props.style).toMatchObject({ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 });
+  });
+
+  it('文件夹本身那一行：testid 是 mention-self-<rel>，显示 <名字>/ 与右侧「引用整个文件夹」，悬停是 <rel>/；下面的子文件夹仍是 mention-dir-', () => {
+    (globalThis as any).window = { innerHeight: 800, innerWidth: 1200 };
+    const p = props([self('papers/refs'), dir('papers/refs/old')], true);
+    const m = mount(ComposerMentionMenu, p);
+    const row = m.find('mention-self-papers/refs');
+    expect(textOf(row)).toContain('refs/');
+    expect(textOf(row)).toContain('引用整个文件夹');
+    expect(textOf(row)).not.toContain('papers/');
+    expect(row.props.title).toBe('papers/refs/');
+    expect(row.props['data-highlighted']).toBe(true);
+    // 正向对照：子文件夹一行没有「引用整个文件夹」，testid 仍是 mention-dir-
+    const child = m.find('mention-dir-papers/refs/old');
+    expect(textOf(child)).not.toContain('引用整个文件夹');
+    expect(child.props['data-highlighted']).toBe(false);
+    row.props.onMouseDown({ preventDefault: vi.fn() });
+    expect(p.onSelect).toHaveBeenLastCalledWith(self('papers/refs'));
   });
 
   it('没有结果：还在查找 →「正在查找…」；读完 →「没有匹配的文件」', () => {
