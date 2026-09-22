@@ -126,10 +126,14 @@ export async function createSession(opts: {
       // autoResizeImages 显式给 true，不跟随 pi 的 settings（那个开关在 pi 的 settingsManager
       // 里、KyDog 没有暴露）：渲染页的像素上限是 2400 万，不 resize 会把请求撑爆。
       // 这份 read 定义只用于工具内部委托，不注册成一个对模型可见的工具。
+      // cwd 传进去：spec §2.3/§3.3 里项目内附件走的是相对路径，两个工具据此把它补成
+      // 绝对路径再校验（relpath-brief.md）。补全只做字符串拼接、不 normalize，
+      // `..` 段的检查不受影响，见 resolveAgainstCwd.ts。
       createReadPdfFigureTool({
         readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
+        cwd: opts.cwd,
       }),
-      createReadDocxTool(),
+      createReadDocxTool({ cwd: opts.cwd }),
       // 同名覆盖 pi 内置的 write / edit：行为不变，写完多报一行字数（见 charCountFileTools.ts）。
       // pi 的注册表先放内置、再按名字放 customTools，同名的后者胜出。
       ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd),

@@ -50,6 +50,28 @@ describe('read_docx 参数校验（全部 fs.read_failed，与 read_pdf_figure �
   });
 });
 
+describe('read_docx × 相对项目目录的路径（cwd）', () => {
+  it('给了 cwd：相对路径拼到 cwd 后面传给 extract；.. 段仍被拒；没给 cwd 时相对路径仍被拒', async () => {
+    const cwd = '/proj/xyz';
+    const calls: string[] = [];
+    const tool = createReadDocxTool({
+      extractDocx: async (p) => { calls.push(p); return 'x'; },
+      cwd,
+    });
+
+    // 正向前置：给了 cwd 时，相对路径确实能通过并落到 extract 手上，拼接前缀是 cwd。
+    await run(tool, { path: 'papers/a.docx' });
+    expect(calls).toEqual([`${cwd}/papers/a.docx`]);
+
+    // 同一条用例里再翻面：带 .. 段的相对路径，拼上 cwd 后仍然含 ..，照样被下游校验器拒绝。
+    expect(await codeOf(run(tool, { path: 'papers/../../etc/x.docx' }))).toBe('fs.read_failed');
+
+    // 再翻一面：没给 cwd 的工具实例，同一个相对路径依旧被拒——行为与改动前完全一致。
+    const toolNoCwd = createReadDocxTool({ extractDocx: async () => 'x' });
+    expect(await codeOf(run(toolNoCwd, { path: 'papers/a.docx' }))).toBe('fs.read_failed');
+  });
+});
+
 describe('read_docx 路由与输出', () => {
   it('.docx 走 docx 提取器、.doc 走 doc 提取器，扩展名大小写不敏感', async () => {
     const calls: string[] = [];
