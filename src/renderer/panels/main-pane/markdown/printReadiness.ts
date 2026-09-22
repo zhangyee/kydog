@@ -19,6 +19,22 @@ export function isKnownLanguage(name: string): boolean {
   return name !== '' && Object.prototype.hasOwnProperty.call(languageMap, name.toLowerCase());
 }
 
+/**
+ * 判据 3（spec §3.4 第 3 条，Task 4 复审实测后改写）：认得的语言不一定要求带 data-language——
+ * CodeMirror 只在加载出来的 `Language.name` 非空时才写这个属性（`@codemirror/language`
+ * dist/index.js:662，`EditorView.contentAttributes.compute` 那段 `lang && lang.name ? {...} : {}`）。
+ * `@codemirror/language-data` 里 Dockerfile / F# / OCaml / Pug / SML 五个加载后名字是空串——
+ * 按「认得就要有属性」数，这几种语言的代码块会一直等到 60s 上限（Task 4 复审用真实 load() 实测）。
+ * 还没 load() 完的语言故意当「要求」处理：宁可多等一轮 MutationObserver，也不要在名字还不知道
+ * 时就提前放行；打印页在 waitUntil 之前已经把用到的语言全部 load() 过一轮，真到判据这一步时
+ * 早就加载完毕，这个分支只在 isPrintReady 以外的场景（比如这里的单测）才会命中。
+ */
+export function expectsDataLanguage(name: string): boolean {
+  if (!isKnownLanguage(name)) return false;
+  const support = languageMap[name.toLowerCase()].support;
+  return support === undefined || support.language.name !== '';
+}
+
 export function languagesToLoad(doc: PmNode): LanguageDescription[] {
   const found = new Set<LanguageDescription>();
   for (const name of factsFromDoc(doc).codeLanguages) {
@@ -27,7 +43,7 @@ export function languagesToLoad(doc: PmNode): LanguageDescription[] {
   return [...found];
 }
 
-export type DocFacts = { codeLanguages: string[]; imageNodeSrcs: string[] };
+export type DocFacts = { codeLanguages: string[]; imageNodeSrcs: string[]; nonEmptyLatexBlocks: number };
 export type DomFacts = {
   placeholders: number;
   taggedCodeContents: number;
@@ -40,13 +56,24 @@ export type PrintFacts = DocFacts & DomFacts;
 export function factsFromDoc(doc: PmNode): DocFacts {
   const codeLanguages: string[] = [];
   const imageNodeSrcs: string[] = [];
+  let nonEmptyLatexBlocks = 0;
   doc.descendants((node) => {
-    if (node.type.name === 'code_block') codeLanguages.push(String(node.attrs.language ?? ''));
+    if (node.type.name === 'code_block') {
+      const language = String(node.attrs.language ?? '');
+      codeLanguages.push(language);
+      // 判据 4（spec §3.4 第 4 条，Task 4 复审实测后改写）：Crepe 只在内容非空时渲染公式预览
+      // （@milkdown/crepe src/feature/latex/index.ts:39，renderPreview 里
+      // `language.toLowerCase() === 'latex' && content.length > 0` 才 renderLatex）——
+      // 空公式块（`$$\n$$` 或空的 latex 语言代码块）没有 .preview，按「latex 语言就要有预览」
+      // 数会一直等到超时。这里只数非空的，供 isPrintReady 的第 4 条判据用；
+      // data-language 要不要挂（第 3 条判据）跟内容是否为空无关，仍然按 codeLanguages 全量数。
+      if (language.toLowerCase() === 'latex' && node.textContent.length > 0) nonEmptyLatexBlocks += 1;
+    }
     if ((node.type.name === 'image-block' || node.type.name === 'image')
       && typeof node.attrs.src === 'string' && node.attrs.src !== '') imageNodeSrcs.push(node.attrs.src);
     return true;
   });
-  return { codeLanguages, imageNodeSrcs };
+  return { codeLanguages, imageNodeSrcs, nonEmptyLatexBlocks };
 }
 
 type QueryRoot = { querySelectorAll: (sel: string) => ArrayLike<unknown> };
@@ -67,10 +94,11 @@ export function factsFromDom(root: QueryRoot): DomFacts {
 
 export function isPrintReady(f: PrintFacts): boolean {
   if (f.placeholders !== 0) return false;
-  const expectTagged = f.codeLanguages.filter(isKnownLanguage).length;
+  // 第 3 条：只有 expectsDataLanguage 为 true 的（认得且加载出的名字非空，或还没加载完）才数进去
+  const expectTagged = f.codeLanguages.filter(expectsDataLanguage).length;
   if (f.taggedCodeContents < expectTagged) return false;
-  const expectLatex = f.codeLanguages.filter((l) => l.toLowerCase() === 'latex').length;
-  if (f.latexPreviews < expectLatex) return false;
+  // 第 4 条：只有非空的 latex 块才要求 .preview（factsFromDoc 已经把空块排除在外）
+  if (f.latexPreviews < f.nonEmptyLatexBlocks) return false;
   // src 为空的图片节点不计：它永远不会有 img，计进去就只能等到超时（spec §3.4 第 5 条）
   if (f.imgs.length !== f.imageNodeSrcs.length) return false;
   return f.imgs.every((i) => i.complete);
