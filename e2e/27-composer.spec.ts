@@ -374,6 +374,30 @@ test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 
   await selectText('将 β 固定为 0.1');
   const toolbar = page.locator('.milkdown-toolbar').locator('visible=true');
   await expect(toolbar).toBeVisible();
+
+  // Issue 1：hover 提示。最后一颗是 KyDog 加的评论键（tooltip 就叫「评论」，功能整体
+  // 叫「评论追问」但按钮的 tip 不带「追问」二字）；第一颗是 Crepe 内置的加粗——按快捷键
+  // 文案区分平台，这里只断言前缀，不锁死 ⌘/Ctrl 那半截。
+  const lastItem = toolbar.locator('.toolbar-item').last();
+  await lastItem.hover();
+  const lastTip = lastItem.locator('.kydog-tb-tip');
+  await expect(lastTip).toBeVisible();
+  await expect(lastTip).toHaveText('评论');
+
+  const firstItem = toolbar.locator('.toolbar-item').first();
+  await firstItem.hover();
+  const firstTip = firstItem.locator('.kydog-tb-tip');
+  await expect(firstTip).toBeVisible();
+  await expect(firstTip).toHaveText(/^加粗/);
+
+  // Issue 2：评论图标不再被 Crepe「实心字形」那条 `.toolbar-item svg { fill: … }` 规则
+  // 整块染色——每个 path 自己 fill="none"，计算样式也该是 none（正向：反正 svg 本身的
+  // fill 不是 none，这里断言的是 path 层面被单独盖掉，不是巧合撞对了默认值）。
+  const commentPaths = lastItem.locator('svg path');
+  await expect(commentPaths).toHaveCount(3);
+  const pathFills = await commentPaths.evaluateAll((els) => els.map((el) => getComputedStyle(el).fill));
+  expect(pathFills.every((f) => f === 'none')).toBe(true);
+
   await toolbar.locator('.toolbar-item').last().dispatchEvent('pointerdown');
   await expect(page.getByTestId('comment-box')).toBeVisible();
   // 用真实按键而不是 locator.fill()：fill() 会直接 focus 目标元素，会掩盖掉「批注框没抢到
@@ -398,8 +422,16 @@ test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 
   await expect(editor.locator('.kydog-comment-mark')).toHaveText('将 β 固定为 0.1');
 
   // 入口二：评论模式 —— 选中即弹框，选区工具栏不出
-  await page.getByTestId('md-comment-mode').click();
+  // Issue 3：开着的胶囊要比默认淡背景更显眼（accent 强调色）。先记下关着时的计算背景，
+  // 开着后再比——同一条用例里翻一遍面，不能只断言其中一态（CLAUDE.md 否定断言的要求）。
+  const capsuleToggle = page.getByTestId('md-comment-mode');
+  const capsuleBgOff = await capsuleToggle.evaluate((el) => getComputedStyle(el).backgroundColor);
+  await capsuleToggle.click();
   await expect(page.getByTestId('md-capsule')).toHaveAttribute('data-comment-mode', 'on');
+  const capsuleBgOn = await capsuleToggle.evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(capsuleBgOn).not.toBe('transparent');
+  expect(capsuleBgOn).not.toBe('rgba(0, 0, 0, 0)'); // 浏览器把 CSS transparent 算出来的计算值
+  expect(capsuleBgOn).not.toBe(capsuleBgOff);
   await selectText('并复现');
   // selectText 只改 DOM selection；ProseMirror 要等异步的 selectionchange 才会把它同步进
   // view.state.selection。等 Crepe 工具栏的 tooltip 插件打上 data-show="true"（选区非空 +

@@ -11,8 +11,8 @@ export function MdCapsule({ commentMode, canComment, onToggleComment }: Props) {
   const button = (
     <IconButton
       size={28} tooltipPlacement="top" testId="md-comment-mode"
-      tooltip={canComment ? '评论模式' : '先打开一个对话'}
-      disabled={!canComment} active={commentMode} tone={commentMode ? 'ink' : 'default'}
+      tooltip={canComment ? '评论' : '先打开一个对话'}
+      disabled={!canComment} active={commentMode} activeVariant="accent" tone={commentMode ? 'ink' : 'default'}
       onClick={onToggleComment}
     >
       <NavIcon name="message-square-plus" size={15} />

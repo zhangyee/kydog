@@ -77,19 +77,19 @@ export function PdfToolbar({
         }}
       >
         <IconButton
-          size={28} tooltip="选择 · V" tooltipPlacement="top" active={tool === 'select'} disabled={!ready}
+          size={28} tooltip="选择 · V" tooltipPlacement="top" active={tool === 'select'} activeVariant="accent" disabled={!ready}
           tone={tool === 'select' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'select')} testId="pdf-tool-select"
         >
           <NavIcon name="mouse-pointer-2" size={15} />
         </IconButton>
         <IconButton
-          ref={highlightBtnRef} size={28} tooltip="高亮笔 · H" tooltipPlacement="top" active={tool === 'highlight'} disabled={!ready}
-          tone={tool === 'highlight' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'highlight')} testId="pdf-tool-highlight"
+          ref={highlightBtnRef} size={28} tooltip="高亮笔 · H" tooltipPlacement="top" active={tool === 'highlight'} activeVariant="accent"
+          disabled={!ready} tone={tool === 'highlight' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'highlight')} testId="pdf-tool-highlight"
         >
           <NavIcon name="highlighter" size={15} />
         </IconButton>
         <IconButton
-          ref={noteBtnRef} size={28} tooltip="文字注 · T" tooltipPlacement="top" active={tool === 'note'} disabled={!ready}
+          ref={noteBtnRef} size={28} tooltip="文字注 · T" tooltipPlacement="top" active={tool === 'note'} activeVariant="accent" disabled={!ready}
           tone={tool === 'note' ? 'ink' : 'default'} onClick={() => st().setTool(tabId, 'note')} testId="pdf-tool-note"
         >
           <NavIcon name="type" size={15} />
@@ -111,7 +111,7 @@ export function PdfToolbar({
         <IconButton
           size={28} tooltip={TRANSLATE_TIP[translateState]} tooltipPlacement="top"
           disabled={!canPressTranslate(translateBucket)}
-          active={translateState === 'active'}
+          active={translateState === 'active'} activeVariant="accent"
           tone={translateState === 'active' ? 'ink' : 'default'}
           onClick={onToggleDual} testId="pdf-translate"
         >
