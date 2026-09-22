@@ -35,8 +35,11 @@ type Props = {
   onChange: (skill: SkillEntry | null, body: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
   onPasteFiles: (files: File[]) => void;
-  /** 光标处的 @ 查询词变了就报一次；没有 @ 上下文时报 null（裁定 3）。 */
-  onMentionQuery: (query: string | null) => void;
+  /**
+   * 光标处的 @ 查询词变了就报一次；没有 @ 上下文时报 null（裁定 3）。引号写法（`@"…`）报的是去掉引号的
+   * 查询词，`quoted` 为 true（spec §3.5）。
+   */
+  onMentionQuery: (query: string | null, quoted: boolean) => void;
 };
 
 const CHIP_ATTR = 'data-skill-chip-name';
@@ -66,11 +69,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     const hit = caretMention(editorRef.current);
     const d = dismissedRef.current;
     if (d && hit && hit.node === d.node && hit.start === d.start && mentionTokenAt(hit.node.data, hit.start) === d.token) {
-      onMentionRef.current(null);
+      onMentionRef.current(null, false);
       return;
     }
     dismissedRef.current = null;
-    onMentionRef.current(hit?.query ?? null);
+    onMentionRef.current(hit?.query ?? null, hit?.quoted ?? false);
   };
 
   useImperativeHandle(ref, () => ({
@@ -84,9 +87,13 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       const el = editorRef.current;
       const hit = caretMention(el);
       if (!el || !hit) return;
+      // 引号写法整段一起换掉：光标后面若还有这个 @ 词收尾的 `"`，连它一起（不留半个引号在标签后面）；
+      // 没收尾时只换到光标 —— 光标后面的字不属于这个查询词。
+      const token = mentionTokenAt(hit.node.data, hit.start);
+      const closed = hit.quoted && token.length >= 3 && token.endsWith('"');
       const range = document.createRange();
       range.setStart(hit.node, hit.start);
-      range.setEnd(hit.node, hit.end);
+      range.setEnd(hit.node, closed ? hit.start + token.length : hit.end);
       range.deleteContents();
       const space = document.createTextNode(' ');
       range.insertNode(space);
@@ -100,7 +107,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       const parsed = parseEditor(el, skillsRef.current);
       lastUserInput.current = { skillName: parsed.skill?.name ?? null, body: parsed.body };
       onChangeRef.current(parsed.skill, parsed.body);
-      onMentionRef.current(null);
+      onMentionRef.current(null, false);
     },
     replaceMentionQuery: (text: string) => {
       const el = editorRef.current;
@@ -176,7 +183,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         onKeyDown={onKeyDown}
         onKeyUp={reportMention}
         onMouseUp={reportMention}
-        onBlur={() => { dismissedRef.current = null; onMentionRef.current(null); }}
+        onBlur={() => { dismissedRef.current = null; onMentionRef.current(null, false); }}
         onPaste={onPaste}
         className="font-serif w-full bg-transparent border-0 outline-none"
         style={{
@@ -318,13 +325,13 @@ function buildRefChip(path: string): HTMLElement {
   return span;
 }
 
-function caretMention(root: HTMLElement | null): { node: Text; start: number; end: number; query: string } | null {
+function caretMention(root: HTMLElement | null): { node: Text; start: number; end: number; query: string; quoted: boolean } | null {
   const sel = window.getSelection();
   if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
   const node = sel.anchorNode;
   if (!node || node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return null;
   const m = mentionQueryAt((node as Text).data.slice(0, sel.anchorOffset));
-  return m ? { node: node as Text, start: m.start, end: sel.anchorOffset, query: m.query } : null;
+  return m ? { node: node as Text, start: m.start, end: sel.anchorOffset, query: m.query, quoted: m.quoted } : null;
 }
 
 function placeCursorAtEnd(el: HTMLElement) {

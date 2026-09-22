@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, dispatchCommentBoxKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, folderMentionText, dispatchCommentBoxKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -133,13 +133,13 @@ describe('routePaste（裁定 2）', () => {
 
 describe('mentionQueryAt（裁定 3）', () => {
   it('@ 在开头、空白后、或非 [A-Za-z0-9_.-] 的字符后：取到 @ 到光标之间的查询词', () => {
-    expect(mentionQueryAt('@')).toEqual({ query: '', start: 0 });
-    expect(mentionQueryAt('对比 @dp')).toEqual({ query: 'dp', start: 3 });
-    expect(mentionQueryAt('对比@dpo')).toEqual({ query: 'dpo', start: 2 });
-    expect(mentionQueryAt('(@refs/a')).toEqual({ query: 'refs/a', start: 1 });
+    expect(mentionQueryAt('@')).toEqual({ query: '', start: 0, quoted: false });
+    expect(mentionQueryAt('对比 @dp')).toEqual({ query: 'dp', start: 3, quoted: false });
+    expect(mentionQueryAt('对比@dpo')).toEqual({ query: 'dpo', start: 2, quoted: false });
+    expect(mentionQueryAt('(@refs/a')).toEqual({ query: 'refs/a', start: 1, quoted: false });
   });
   it('邮箱、@ 之后已有空白、查询里又出现 @：都不算', () => {
-    expect(mentionQueryAt('mail @x')).toEqual({ query: 'x', start: 5 });
+    expect(mentionQueryAt('mail @x')).toEqual({ query: 'x', start: 5, quoted: false });
     expect(mentionQueryAt('a@b.com')).toBeNull();
     expect(mentionQueryAt('x.y@z')).toBeNull();
     expect(mentionQueryAt('@dp o')).toBeNull();
@@ -148,7 +148,57 @@ describe('mentionQueryAt（裁定 3）', () => {
   });
 });
 
+describe('mentionQueryAt —— 引号（名字里有空白或 @，spec §3.5）', () => {
+  it('@" 开头：查询词是引号之后到光标的文字（不含引号），允许空格与 @；只有 @" 时是空查询', () => {
+    expect(mentionQueryAt('@"')).toEqual({ query: '', start: 0, quoted: true });
+    expect(mentionQueryAt('@"a b')).toEqual({ query: 'a b', start: 0, quoted: true });
+    expect(mentionQueryAt('看 @"Related Work/x@y')).toEqual({ query: 'Related Work/x@y', start: 2, quoted: true });
+    expect(mentionQueryAt('对比@"a b')).toEqual({ query: 'a b', start: 2, quoted: true });
+  });
+  it('打出收尾的 " 就结束；@ 前面的边界同裁定 3；引号里不跨行', () => {
+    // 正向：同样的前缀、还没收尾时是 mention
+    expect(mentionQueryAt('@"a b')).not.toBeNull();
+    expect(mentionQueryAt('@"a b"')).toBeNull();
+    expect(mentionQueryAt('@"ab"')).toBeNull();
+    expect(mentionQueryAt('@"a b" 后面')).toBeNull();
+    expect(mentionQueryAt(' @"a')).not.toBeNull();
+    expect(mentionQueryAt('x@"a')).toBeNull();
+    expect(mentionQueryAt('@"a\nb')).toBeNull();
+  });
+  it('收尾之后另起一个 @：照常认', () => {
+    expect(mentionQueryAt('@"a b" @c')).toEqual({ query: 'c', start: 7, quoted: false });
+    expect(mentionQueryAt('@"a b" @"c d')).toEqual({ query: 'c d', start: 7, quoted: true });
+  });
+});
+
+describe('folderMentionText：选中文件夹时写回 @ 之后的文字（spec §3.5）', () => {
+  it('名字里有空白或 @ → 带引号；已经在引号里 → 往下哪一层都保持引号；否则不带', () => {
+    expect(folderMentionText('refs', false)).toBe('refs/');
+    expect(folderMentionText('Related Work', false)).toBe('"Related Work/');
+    expect(folderMentionText('a@b', false)).toBe('"a@b/');
+    expect(folderMentionText('tab\there', false)).toBe('"tab\there/');
+    expect(folderMentionText('Related Work/sub', true)).toBe('"Related Work/sub/');
+    expect(folderMentionText('sub', true)).toBe('"sub/');
+  });
+  it('写出来的文字解析不回同一个目录（名字里有 "）→ null，不写一个坏掉的查询词', () => {
+    // 正向：带 " 但不需要引号的名字照样写得出（@a"b/ 解析回来就是 a"b/）
+    expect(folderMentionText('a"b', false)).toBe('a"b/');
+    expect(folderMentionText('say "hi"', false)).toBeNull();
+    expect(folderMentionText('a"b', true)).toBeNull();
+    expect(folderMentionText('"x', false)).toBeNull();
+    expect(folderMentionText('line\nbreak', false)).toBeNull();
+  });
+});
+
 describe('mentionTokenAt：认「还是不是 Esc 关掉的那个 @」用的整个 @ 词', () => {
+  it('引号里的词：从 @" 到收尾的 "（含）或行尾为止，空格与 @ 都算在词里', () => {
+    expect(mentionTokenAt('@"a b', 0)).toBe('@"a b');
+    expect(mentionTokenAt('看 @"a b" 后面', 2)).toBe('@"a b"');
+    expect(mentionTokenAt('@"a@b c', 0)).toBe('@"a@b c');
+    expect(mentionTokenAt('@"a b\n下一行', 0)).toBe('@"a b');
+    // 在空格后面接着打字：词变了（不认引号的话两者都只是 '@"a'，Esc 关掉的列表就一直弹不回来）
+    expect(mentionTokenAt('@"a bc', 0)).not.toBe(mentionTokenAt('@"a b', 0));
+  });
   it('从 @ 起到空白 / 下一个 @ / 结尾为止；与光标在词里的哪儿无关；接着打字词就变了', () => {
     expect(mentionTokenAt('看看@zzz', 2)).toBe('@zzz');
     expect(mentionTokenAt('看看@zzz 后面', 2)).toBe('@zzz');

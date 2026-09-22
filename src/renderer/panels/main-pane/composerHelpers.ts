@@ -88,21 +88,40 @@ export function routePaste(text: string, files: readonly File[], pathForFile: (f
 
 /**
  * 光标前那一段里，最后一个「@查询词」（裁定 3）。@ 前面必须是开头、空白，或不属于
- * [A-Za-z0-9_.-] 的字符 —— 中文「对比@dpo」要能触发，`a@b.com` 不触发。查询词里不含空白与 @。
+ * [A-Za-z0-9_.-] 的字符 —— 中文「对比@dpo」要能触发，`a@b.com` 不触发。
+ *
+ * 两种写法（spec §3.5）：
+ * - 不带引号：查询词里不含空白与 @，也不以 `"` 开头；
+ * - `@"` 开头：查询词是引号之后到光标的文字（`query` 里不含引号），允许空格与 @，不跨行；
+ *   打出收尾的 `"` 就结束（返回 null）。名字里有空白或 @ 的路径只能这样写。
  */
-export function mentionQueryAt(textBeforeCaret: string): { query: string; start: number } | null {
-  const m = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/.exec(textBeforeCaret);
+export function mentionQueryAt(textBeforeCaret: string): { query: string; start: number; quoted: boolean } | null {
+  const q = /(^|[^A-Za-z0-9_.-])@"([^"\n\r]*)$/.exec(textBeforeCaret);
+  if (q) return { query: q[2], start: q.index + q[1].length, quoted: true };
+  const m = /(^|[^A-Za-z0-9_.-])@(?!")([^\s@]*)$/.exec(textBeforeCaret);
   if (!m) return null;
-  return { query: m[2], start: m.index + m[1].length };
+  return { query: m[2], start: m.index + m[1].length, quoted: false };
 }
 
 /**
- * 文本里从 `start`（一个 `@` 的位置）起的整个 @ 词：`@` 加上后面连续的非空白、非 @ 字符。
- * 与光标停在词里的哪儿无关 —— ComposerEditor 用它认「还是不是 Esc 关掉的那个 @」：
- * 词没变就还是它；接着打字、删字，词就变了。
+ * 文本里从 `start`（一个 `@` 的位置）起的整个 @ 词，与光标停在词里的哪儿无关 —— ComposerEditor 用它认
+ * 「还是不是 Esc 关掉的那个 @」：词没变就还是它；接着打字、删字，词就变了。
+ * 引号写法：`@"` 起到收尾的 `"`（含）或行尾；否则 `@` 加上后面连续的非空白、非 @ 字符。
  */
 export function mentionTokenAt(text: string, start: number): string {
-  return /^@[^\s@]*/.exec(text.slice(start))?.[0] ?? '';
+  const rest = text.slice(start);
+  return /^@"[^"\n\r]*"?/.exec(rest)?.[0] ?? /^@[^\s@]*/.exec(rest)?.[0] ?? '';
+}
+
+/**
+ * @ 列表里选中文件夹时，写回 `@` 之后的文字（进入下一层）：名字里有空白或 @、或者已经在引号里浏览，
+ * 写成 `"<rel>/`；否则 `<rel>/`。写出来的文字要能被 `mentionQueryAt` 原样解析回 `<rel>/` —— 名字里
+ * 有 `"` 时往往做不到，返回 null（不写一个坏掉的查询词；spec：这种文件夹不支持进入）。
+ */
+export function folderMentionText(rel: string, quoted: boolean): string | null {
+  const text = quoted || /[\s@]/.test(rel) ? `"${rel}/` : `${rel}/`;
+  const back = mentionQueryAt(`@${text}`);
+  return back !== null && back.query === `${rel}/` ? text : null;
 }
 
 /**

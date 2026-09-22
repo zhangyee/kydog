@@ -45,6 +45,9 @@ test.beforeAll(async () => {
   await fs.mkdir(path.join(projectA, 'refs'), { recursive: true });
   await fs.writeFile(path.join(projectA, 'refs', 'dpo-2023.pdf'), '%PDF-1.4\n');
   await fs.writeFile(path.join(projectA, 'refs', 'draft.pdf'), '%PDF-1.4\n');
+  // 名字里带空格的文件夹：@ 列表要用引号写法 @"Related Work/ 才进得去（spec §3.5）
+  await fs.mkdir(path.join(projectA, 'Related Work'), { recursive: true });
+  await fs.writeFile(path.join(projectA, 'Related Work', 'survey.md'), '# survey\n');
   await fs.writeFile(path.join(projectA, 'ch3.md'), '# 第三章\n\n## 3.2 偏好对齐\n\n将 β 固定为 0.1，并复现。\n');
   outsideFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-out-')), 'outside.pdf');
   await fs.writeFile(outsideFile, '%PDF-1.4\n');
@@ -57,6 +60,7 @@ test.beforeAll(async () => {
       '看图': reply('看到了'),
       '看文件': reply('看到了'),
       '对比 <kydog-ref path="refs/dpo-2023.pdf"/> 的表 2': reply('对比完了'),
+      '看 <kydog-ref path="Related Work/survey.md"/> 的结论': reply('看完了'),
       '看看@zzz': reply('看过了'),
       '谢谢@所有人': reply('不客气'),
       '整理批注': reply('整理完了'),
@@ -367,7 +371,7 @@ test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（
   const { page } = launched;
   const input = await freshComposerInA(page);
   await page.keyboard.type('@re');
-  // 根这一层的 refs（文件夹）与 README.md 都以 re 开头：同档、同深度，路径短的 refs 在前 —— 高亮默认在第一项。
+  // 根这一层的 refs（文件夹）、README.md、Related Work 都以 re 开头：同档、同深度，路径最短的 refs 在前 —— 高亮默认在第一项。
   const menu = page.getByTestId('mention-menu');
   await expect(page.getByTestId('mention-dir-refs')).toBeVisible();
   await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-dir-refs');
@@ -388,6 +392,30 @@ test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（
   await expect(chips).toHaveText('dpo-2023.pdf');
   await expect(chips).toHaveAttribute('title', 'refs/dpo-2023.pdf');
   await expect(menu).toBeHidden();
+});
+
+test('@ 列表：名字里有空格的文件夹 → ↵ 写成 @"Related Work/、列出里面的文件 → ↵ 成标签 → 发出的文字里是 kydog-ref', async () => {
+  const { page } = launched;
+  const input = await freshComposerInA(page);
+  await page.keyboard.type('看 @Rel');
+  // 根这一层以 rel 开头的只有 Related Work（README.md / refs 里没有 l），更深处也没有文件名命中 rel
+  const menu = page.getByTestId('mention-menu');
+  await expect(page.getByTestId('mention-dir-Related Work')).toBeVisible();
+  await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-dir-Related Work');
+
+  await page.keyboard.press('Enter');
+  // 不带引号的话 @ 词在空格处就断了，列表当场关掉、正文里留下一截死字
+  await expect.poll(() => readBodyText(page)).toBe('看 @"Related Work/');
+  await expect(page.getByTestId('mention-item-Related Work/survey.md')).toBeVisible();
+
+  await page.keyboard.press('Enter');
+  const chips = input.getByTestId('ref-chip');
+  await expect(chips).toHaveCount(1);
+  await expect(chips).toHaveAttribute('title', 'Related Work/survey.md');
+  await expect(menu).toBeHidden();
+  await page.keyboard.type('的结论');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('看 <kydog-ref path="Related Work/survey.md"/> 的结论');
 });
 
 test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {

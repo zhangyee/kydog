@@ -14,7 +14,7 @@ import { ComposerSendButton } from './ComposerSendButton';
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
 import { ComposerActionsRow } from './ComposerActionsRow';
 import { ErrorMarginalia } from './ErrorMarginalia';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, folderMentionText } from './composerHelpers';
 import { encodeUserTurn, IMAGE_UNSUPPORTED_TEXT } from '../../../shared/userTurn';
 import { toMessagePath } from './attachments';
 import { ingestFiles } from './composerIngest';
@@ -111,13 +111,27 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
 
   // @ 引用（spec §3.5 v2）：光标处的查询词由 ComposerEditor 报上来；一次弹出 = 一个会话（mentionSearch），
   // 列表开着才有，关掉 / 换项目 / 卸载就 dispose —— 往下读目录只在列表开着时进行。
+  // 查询词（引号写法已去掉引号，交给会话的就是它）与「这个 @ 是不是引号写法」（选中文件夹时要保持引号）。
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionQuoted, setMentionQuoted] = useState(false);
   // 这个会话报上来的最新视图；null = 它还没报过（列表不渲染，也就不会闪上一次弹出的结果）。
   const [mentionView, setMentionView] = useState<MentionView | null>(null);
   // 高亮的是哪一项（按 rel 认，不按下标）：按名字找的结果随读随进，前面插进更好的一条时高亮不换人。
-  // null = 第一项；换查询词时回到 null。
+  // 换查询词时清成 null，下一次有结果的视图回来就钉在它的第一项上（会话的 onChange）—— 不让 null 一直
+  // 代表「第一项」：更深处读到的更好结果插到最前面时，↵ 会选走一个用户没看着的。
   const [mentionPick, setMentionPick] = useState<string | null>(null);
   const mentionSessionRef = useRef<MentionSession | null>(null);
+  // 交给当前会话的最后一个查询词。换查询词时清高亮、交给会话，每个查询词对每个会话只做一次：
+  // 弹出时两个 effect 都会跑，第二次若再清一遍高亮，就会把会话当场报视图时刚钉上的那一项清掉。
+  const mentionSentRef = useRef<string | null>(null);
+  const handMentionQuery = (q: string) => {
+    const session = mentionSessionRef.current;
+    if (session === null || mentionSentRef.current === q) return;
+    mentionSentRef.current = q;
+    // 先清高亮再 setQuery：会话可能当场就报视图，那一次要能把高亮钉到新结果的第一项上。
+    setMentionPick(null);
+    session.setQuery(q);
+  };
   const mentionProject = thread?.projectPath ?? null;
   const mentionOpen = mentionQuery !== null && mentionProject !== null;
 
@@ -126,24 +140,27 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     const session = createMentionSession({
       projectPath: mentionProject,
       readDir: (path) => window.kydog.invoke('project.readDir', { path }),
-      onChange: setMentionView,
+      onChange: (v) => {
+        setMentionView(v);
+        const first = v.items[0];
+        if (first) setMentionPick((p) => p ?? first.rel);
+      },
     });
     mentionSessionRef.current = session;
-    // 建会话时的查询词由这里交过去（弹出、换项目都走这里），之后接着打字走下面那个 effect ——
-    // 不靠两个 effect 的先后：换项目时下面那个可能先于这里跑，那时会话还没建。重复的 setQuery 会话自己忽略。
-    session.setQuery(mentionQuery);
-    setMentionPick(null);
+    mentionSentRef.current = null;
+    // 建会话时的查询词由这里交过去：只换了项目时查询词没变，下面那个 effect（deps 只有查询词）不会再跑，
+    // 新会话就收不到查询词。
+    handMentionQuery(mentionQuery);
     return () => {
       session.dispose();
       mentionSessionRef.current = null;
+      mentionSentRef.current = null;
       setMentionView(null);
     };
   }, [mentionOpen, mentionProject]);
 
   useEffect(() => {
-    if (mentionQuery === null) return;
-    mentionSessionRef.current?.setQuery(mentionQuery);
-    setMentionPick(null);
+    if (mentionQuery !== null) handMentionQuery(mentionQuery);
   }, [mentionQuery]);
 
   const mentionItems = mentionView?.items ?? [];
@@ -153,10 +170,14 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     if (n === 0) return;
     setMentionPick(mentionItems[(mentionHighlight + delta + n) % n].rel);
   };
-  /** 文件插成标签；文件夹进入下一层（把 `@查询词` 换成 `@<目录>/`），不插标签。 */
+  /**
+   * 文件插成标签；文件夹进入下一层（把 `@查询词` 换成 `@<目录>/`，名字里有空白或 @、或已在引号里时写成
+   * `@"<目录>/`），不插标签。写不出能解析回来的查询词（名字里有 `"`）就什么都不做，列表照旧开着。
+   */
   const commitMention = (item: MentionEntry) => {
-    if (item.kind === 'dir') editorHandle.current?.replaceMentionQuery(`${item.rel}/`);
-    else editorHandle.current?.insertMention(item.rel);
+    if (item.kind === 'file') { editorHandle.current?.insertMention(item.rel); return; }
+    const text = folderMentionText(item.rel, mentionQuoted);
+    if (text !== null) editorHandle.current?.replaceMentionQuery(text);
   };
 
   // 光标处的 @ 比正文开头的 / 更具体：两者同时成立时 @ 赢。
@@ -383,7 +404,7 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
             onChange={onEditorChange}
             onKeyDown={onKeyDown}
             onPasteFiles={(files) => { void ingestFiles(threadId, files); }}
-            onMentionQuery={setMentionQuery}
+            onMentionQuery={(q, quoted) => { setMentionQuery(q); setMentionQuoted(quoted === true); }}
           />
           <ComposerActionsRow
             large={large}

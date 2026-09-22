@@ -30,6 +30,8 @@ type FakeSession = {
   dispose: ReturnType<typeof vi.fn>;
 };
 const sessions = vi.hoisted(() => [] as FakeSession[]);
+/** 用例可以让替身在 setQuery 里当场报视图（真会话读过的内容就是当场出结果）。 */
+const fakeHooks = vi.hoisted(() => ({ onSetQuery: null as null | ((s: FakeSession, q: string) => void) }));
 
 vi.mock('../../stores/uiStore', async (orig) => directRead(await orig<typeof import('../../stores/uiStore')>(), 'useUiStore'));
 vi.mock('../../stores/threadsStore', async (orig) => directRead(await orig<typeof import('../../stores/threadsStore')>(), 'useThreadsStore'));
@@ -40,7 +42,7 @@ vi.mock('./composerDraftStore', async (orig) => directRead(await orig<typeof imp
 vi.mock('./mentionSearch', async (orig) => ({
   ...(await orig<typeof import('./mentionSearch')>()),
   createMentionSession: (opts: FakeSession['opts']) => {
-    const s: FakeSession = { opts, setQuery: vi.fn(), dispose: vi.fn() };
+    const s: FakeSession = { opts, setQuery: vi.fn((q: string) => { fakeHooks.onSetQuery?.(s, q); }), dispose: vi.fn() };
     sessions.push(s);
     return s;
   },
@@ -95,6 +97,7 @@ const sendCalls = () => invoke.mock.calls.filter((c) => c[0] === 'thread.send');
 let invoke: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   sessions.length = 0;
+  fakeHooks.onSetQuery = null;
   invoke = vi.fn().mockResolvedValue({ runId: 'r' });
   (globalThis as any).window = { kydog: { invoke, on: () => () => {}, pathForFile: () => '', platform: 'darwin' }, innerHeight: 800, innerWidth: 1200 };
   useThreadsStore.setState({ threadsByProject: { [PROJ]: [THREAD] } as never, historyByThread: { t1: [{ id: 'm0', role: 'user', content: 'x', createdAt: 'x' }] } });
@@ -236,6 +239,84 @@ describe('Composer —— @ 列表的会话', () => {
     editor(m.tree).props.onMentionQuery('dp2');
     sessions[0].opts.onChange(view([file('b/dp2x.md'), file('a/dp2.md')], false));
     expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+  });
+
+  it('第一次出结果就钉住第一项：之后更好的结果插到前面，↵ 选的仍是用户一直看着的那一项', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('dp');
+    sessions[0].opts.onChange(view([], false));
+    sessions[0].opts.onChange(view([file('a/dp1.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+    sessions[0].opts.onChange(view([file('dp0.md'), file('a/dp1.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('a/dp1.md');
+  });
+
+  it('会话在 setQuery 里当场报视图（弹出、接着打字都一样）：高亮照样钉在那一次的第一项上，不被随后的重置清掉', () => {
+    fakeHooks.onSetQuery = (s, q) => {
+      if (q === 'dp') s.opts.onChange(view([file('a/dp1.md'), file('a/dp2.md')], false));
+      if (q === 'dp2') s.opts.onChange(view([file('a/dp2.md')], false));
+    };
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('dp');
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+    sessions[0].opts.onChange(view([file('dp0.md'), file('a/dp1.md'), file('a/dp2.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('a/dp1.md');
+
+    editor(m.tree).props.onMentionQuery('dp2');
+    sessions[0].opts.onChange(view([file('b/dp2x.md'), file('a/dp2.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('a/dp2.md');
+  });
+
+  it('名字里有空白或 @ 的文件夹写成 @"<rel>/；引号里往下哪一层都保持引号；会话收到去掉引号的查询词；名字里有 " 的进不去', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('Rel', false);
+    expect(sessions[0].setQuery).toHaveBeenLastCalledWith('Rel');
+    sessions[0].opts.onChange(view([dir('Related Work'), dir('refs')], false));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('"Related Work/');
+    // 对照：同一份列表里不需要引号的名字照旧不带
+    editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('refs/');
+
+    // 编辑器报上来引号里的查询词：会话收到的是去掉引号的文字
+    editor(m.tree).props.onMentionQuery('Related Work/', true);
+    expect(sessions[0].setQuery).toHaveBeenLastCalledWith('Related Work/');
+    sessions[0].opts.onChange(view([dir('Related Work/sub'), file('Related Work/a b.md'), dir('Related Work/say "hi"')], true, 'browse'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('"Related Work/sub/');
+    editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('Related Work/a b.md');
+
+    // 用户自己打了 @"、路径里没有空白：往下进一层照样保持引号（引号写法由编辑器报上来的 quoted 决定）
+    editor(m.tree).props.onMentionQuery('refs/', true);
+    sessions[0].opts.onChange(view([dir('refs/old')], true, 'browse'));
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('"refs/old/');
+    // 回到那一层（名字有 " 的那个文件夹在的地方）
+    editor(m.tree).props.onMentionQuery('Related Work/', true);
+    sessions[0].opts.onChange(view([dir('Related Work/sub'), file('Related Work/a b.md'), dir('Related Work/say "hi"')], true, 'browse'));
+    editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
+
+    // 名字里有 "：写不出能解析回来的查询词 —— ↵ 与点击都什么都不做，列表照旧开着
+    const replaced = h.replaceMentionQuery.mock.calls.length;
+    editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(2);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    menu(m.tree)[0].props.onSelect(dir('Related Work/say "hi"'));
+    expect(h.replaceMentionQuery.mock.calls.length).toBe(replaced);
+    expect(h.insertMention).toHaveBeenCalledTimes(1);
+    expect(menu(m.tree)).toHaveLength(1);
   });
 
   it('Esc：关掉列表，并告诉编辑器这个 @ 是被 Esc 关掉的（编辑器据此不在松开 Esc 时把它重新报上来）', () => {
