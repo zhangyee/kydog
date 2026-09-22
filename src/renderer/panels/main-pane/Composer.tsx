@@ -118,7 +118,8 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   const [mentionView, setMentionView] = useState<MentionView | null>(null);
   // 高亮的是哪一项（按 rel 认，不按下标）：按名字找的结果随读随进，前面插进更好的一条时高亮不换人。
   // 换查询词时清成 null，下一次有结果的视图回来就钉在它的第一项上（会话的 onChange）—— 不让 null 一直
-  // 代表「第一项」：更深处读到的更好结果插到最前面时，↵ 会选走一个用户没看着的。
+  // 代表「第一项」：更深处读到的更好结果插到最前面时，↵ 会选走一个用户没看着的。钉住的那项被挤出列表时
+  // 改钉到当时的第一项。
   const [mentionPick, setMentionPick] = useState<string | null>(null);
   const mentionSessionRef = useRef<MentionSession | null>(null);
   // 交给当前会话的最后一个查询词。换查询词时清高亮、交给会话，每个查询词对每个会话只做一次：
@@ -142,8 +143,10 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
       readDir: (path) => window.kydog.invoke('project.readDir', { path }),
       onChange: (v) => {
         setMentionView(v);
-        const first = v.items[0];
-        if (first) setMentionPick((p) => p ?? first.rel);
+        if (v.items.length === 0) return;
+        // 钉住的那一项还在就不动；不在了（第一次出结果，或被更好的结果挤出前 50）就钉到此刻真正高亮着的
+        // 第 0 项 —— 否则 pick 还叫着那个不在的名字，高亮落在「第 0 项」上，之后又会跟着第 0 项漂。
+        setMentionPick((p) => (p !== null && v.items.some((i) => i.rel === p) ? p : v.items[0].rel));
       },
     });
     mentionSessionRef.current = session;

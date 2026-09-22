@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, folderMentionText, dispatchCommentBoxKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, mentionReplaceEnd, folderMentionText, dispatchCommentBoxKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -188,26 +188,47 @@ describe('folderMentionText：选中文件夹时写回 @ 之后的文字（spec 
     expect(folderMentionText('"x', false)).toBeNull();
     expect(folderMentionText('line\nbreak', false)).toBeNull();
   });
+  it('名字里有 \\（POSIX 上合法）→ null：会话把逐级浏览里的 \\ 当分隔符，写进去会进到别的目录', () => {
+    // 正向：同样的名字去掉反斜杠写得出
+    expect(folderMentionText('ab', false)).toBe('ab/');
+    expect(folderMentionText('a\\b', false)).toBeNull();
+    expect(folderMentionText('a \\b', false)).toBeNull();
+  });
+});
+
+describe('mentionReplaceEnd：插标签时换到哪儿为止（spec §3.5：整段 @"… 一起换掉）', () => {
+  it('只在收尾的 " 紧挨着光标时连它一起换；光标后面别处的 " 不归这个 @ 词', () => {
+    // 光标在词尾：换到光标
+    expect(mentionReplaceEnd('请看 @"Rel', 8, true)).toBe(8);
+    // 正向：收尾的 " 就在光标上 —— 连它一起换，不在标签后面留半个引号
+    expect(mentionReplaceEnd('请看 @"Rel" 的结论', 8, true)).toBe(9);
+    // 否定：光标后面隔着字才有一个 "（那是正文里的引号）—— 只换到光标，后面的正文一个字不动
+    expect(mentionReplaceEnd('请看 @"Rel "这个" 的结论', 8, true)).toBe(8);
+    // 不带引号的写法：光标上的 " 是正文，不换
+    expect(mentionReplaceEnd('看 @ab"x', 5, false)).toBe(5);
+  });
 });
 
 describe('mentionTokenAt：认「还是不是 Esc 关掉的那个 @」用的整个 @ 词', () => {
-  it('引号里的词：从 @" 到收尾的 "（含）或行尾为止，空格与 @ 都算在词里', () => {
-    expect(mentionTokenAt('@"a b', 0)).toBe('@"a b');
-    expect(mentionTokenAt('看 @"a b" 后面', 2)).toBe('@"a b"');
-    expect(mentionTokenAt('@"a@b c', 0)).toBe('@"a@b c');
-    expect(mentionTokenAt('@"a b\n下一行', 0)).toBe('@"a b');
+  it('引号里的词：从 @" 到光标为止（引号词没有别的界 —— 光标后面的字、别处的 " 都不算），空格与 @ 都算在词里', () => {
+    expect(mentionTokenAt('@"a b', 0, 5)).toBe('@"a b');
+    expect(mentionTokenAt('@"a@b c', 0, 7)).toBe('@"a@b c');
     // 在空格后面接着打字：词变了（不认引号的话两者都只是 '@"a'，Esc 关掉的列表就一直弹不回来）
-    expect(mentionTokenAt('@"a bc', 0)).not.toBe(mentionTokenAt('@"a b', 0));
+    expect(mentionTokenAt('@"a bc', 0, 6)).not.toBe(mentionTokenAt('@"a b', 0, 5));
+    // 光标后面的正文（含一个无关的 "）增删改：词不变
+    expect(mentionTokenAt('请看 @"Rel "这个" 的结论', 3, 8)).toBe('@"Rel');
+    expect(mentionTokenAt('请看 @"Rel 这个 的结论', 3, 8)).toBe(mentionTokenAt('请看 @"Rel "这个" 的结论', 3, 8));
+    expect(mentionTokenAt('看 @"a b" 后面', 2, 7)).toBe('@"a b');
   });
   it('从 @ 起到空白 / 下一个 @ / 结尾为止；与光标在词里的哪儿无关；接着打字词就变了', () => {
-    expect(mentionTokenAt('看看@zzz', 2)).toBe('@zzz');
-    expect(mentionTokenAt('看看@zzz 后面', 2)).toBe('@zzz');
-    expect(mentionTokenAt('@a@b', 0)).toBe('@a');
-    expect(mentionTokenAt('看看@', 2)).toBe('@');
+    expect(mentionTokenAt('看看@zzz', 2, 6)).toBe('@zzz');
+    expect(mentionTokenAt('看看@zzz 后面', 2, 9)).toBe('@zzz');
+    expect(mentionTokenAt('@a@b', 0, 4)).toBe('@a');
+    expect(mentionTokenAt('看看@', 2, 3)).toBe('@');
     // 同一个位置、打了一个字：词变了（ComposerEditor 据此忘掉被 Esc 关掉的那个 @，重新报）
-    expect(mentionTokenAt('看看@zzzz', 2)).not.toBe(mentionTokenAt('看看@zzz', 2));
+    expect(mentionTokenAt('看看@zzzz', 2, 7)).not.toBe(mentionTokenAt('看看@zzz', 2, 6));
     // 位置上不是 @：空串（ComposerEditor 只拿 mentionQueryAt 给的 @ 位置来调，这里只是兜底）
-    expect(mentionTokenAt('看看@zzz', 0)).toBe('');
+    expect(mentionTokenAt('看看@zzz', 0, 6)).toBe('');
   });
 });
 

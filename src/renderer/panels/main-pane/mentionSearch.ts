@@ -25,14 +25,15 @@ export type MentionSession = { setQuery(q: string): void; dispose(): void };
 const DEFAULT_LIMIT = 50;
 
 /**
- * 查询词 → 模式。含 `..` 段、以 `/` `\` 或盘符开头的不列（只在项目内浏览）—— `..` 按 `/` 与 `\` 两种
- * 分隔都查一遍：Windows 上路径按 `\` 拼，`a\..\..` 这种段一样会越出项目。空段与 `.` 段不改变目录。
+ * 查询词 → 模式（只按 `/` 判：空、或含 `/` 是逐级浏览）。含 `..` 段、以 `/` `\` 或盘符开头的不列（只在
+ * 项目内浏览）—— `..` 按 `/` 与 `\` 两种分隔都查一遍。逐级浏览里打的 `\` 也当分隔符，统一成 `/`
+ * （Windows 上顺手打的 `refs\sub/`；否则 rel 里会混进 `\`）。空段与 `.` 段不改变目录。
  */
 export function parseMentionQuery(q: string): ParsedMentionQuery {
   if (/^[\\/]/.test(q) || /^[A-Za-z]:/.test(q)) return { mode: 'invalid' };
   if (q.split(/[\\/]/).includes('..')) return { mode: 'invalid' };
   if (q !== '' && !q.includes('/')) return { mode: 'name', leaf: q };
-  const segs = q.split('/');
+  const segs = q.split(/[\\/]/);
   const leaf = segs.pop() ?? '';
   return { mode: 'browse', dir: segs.filter((s) => s !== '' && s !== '.').join('/'), leaf };
 }

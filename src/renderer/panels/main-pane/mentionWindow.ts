@@ -6,6 +6,14 @@
 export const MENTION_ROW_HEIGHT = 28;
 export const MENTION_VIEWPORT_MAX = 320;
 export const MENTION_OVERSCAN = 4;
+/** 列表宽度固定：只画视口里的几行时，按内容定宽会随滚动一跳一跳（长名字 / 长路径省略号截断）。 */
+export const MENTION_MENU_WIDTH = 420;
+const MENTION_MENU_MARGIN = 12;
+
+/** 列表宽度：固定宽度，右边放不下时收到视口里（留一点边距）。 */
+export function mentionMenuWidth(anchorLeft: number, viewportWidth: number): number {
+  return Math.max(0, Math.min(MENTION_MENU_WIDTH, viewportWidth - anchorLeft - MENTION_MENU_MARGIN));
+}
 
 /** 列表滚动区的高度：条目撑不满时按条数，撑满了封顶。 */
 export function mentionViewportHeight(count: number, rowHeight = MENTION_ROW_HEIGHT, max = MENTION_VIEWPORT_MAX): number {

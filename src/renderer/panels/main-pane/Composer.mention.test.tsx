@@ -52,6 +52,7 @@ const { Composer } = await import('./Composer');
 const { ComposerEditor } = await import('./ComposerEditor');
 const { ComposerMentionMenu } = await import('./ComposerMentionMenu');
 const { NavIcon } = await import('../../shared');
+const { MENTION_MENU_WIDTH } = await import('./mentionWindow');
 const { useComposerDraftStore } = await import('./composerDraftStore');
 const { useThreadsStore } = await import('../../stores/threadsStore');
 const { useLlmStore } = await import('../../stores/llmStore');
@@ -254,6 +255,23 @@ describe('Composer —— @ 列表的会话', () => {
     expect(h.insertMention).toHaveBeenLastCalledWith('a/dp1.md');
   });
 
+  it('钉住的那一项被更好的结果挤出列表：改钉到此刻真正高亮着的那一项，之后不再漂', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    editor(m.tree).props.onMentionQuery('dp');
+    sessions[0].opts.onChange(view([file('z/dpA.md')], false));
+    // 正向：钉住的那项还在时跟着它走
+    sessions[0].opts.onChange(view([file('dpB.md'), file('z/dpA.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
+    // 挤出前 limit：高亮落在第 0 项，而且钉到它
+    sessions[0].opts.onChange(view([file('dpB.md'), file('dpC.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(0);
+    sessions[0].opts.onChange(view([file('dp.md'), file('dpB.md'), file('dpC.md')], false));
+    expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.insertMention).toHaveBeenLastCalledWith('dpB.md');
+  });
+
   it('会话在 setQuery 里当场报视图（弹出、接着打字都一样）：高亮照样钉在那一次的第一项上，不被随后的重置清掉', () => {
     fakeHooks.onSetQuery = (s, q) => {
       if (q === 'dp') s.opts.onChange(view([file('a/dp1.md'), file('a/dp2.md')], false));
@@ -454,6 +472,24 @@ describe('ComposerMentionMenu', () => {
     m.find('mention-item-f0000.md').props.onMouseDown({ preventDefault: vi.fn() });
     expect(onSelect2).toHaveBeenCalledWith(items[0]);
     expect(p.onSelect).not.toHaveBeenCalled();
+  });
+
+  it('宽度固定（不随画出来的是哪几行变），右边放不下时收进视口；长名字 / 长路径省略号截断，悬停看全路径', () => {
+    (globalThis as any).window = { innerHeight: 800, innerWidth: 1200 };
+    const at = (left: number) => ({ left, top: 500, width: 300, height: 40 }) as DOMRect;
+    const short = mount(ComposerMentionMenu, { ...props([file('a.md')], true), anchorRect: at(100) });
+    const long = mount(ComposerMentionMenu, { ...props([file(`${'很长的目录名/'.repeat(20)}x.md`)], true), anchorRect: at(100) });
+    expect(short.find('mention-menu').props.style.width).toBe(MENTION_MENU_WIDTH);
+    expect(long.find('mention-menu').props.style.width).toBe(MENTION_MENU_WIDTH);
+    expect(short.find('mention-menu').props.style.minWidth).toBeUndefined();
+    (globalThis as any).window = { innerHeight: 800, innerWidth: 400 };
+    const narrow = mount(ComposerMentionMenu, { ...props([file('a.md')], true), anchorRect: at(100) });
+    expect(narrow.find('mention-menu').props.style.width).toBe(400 - 100 - 12);
+    const row = long.find(`mention-item-${'很长的目录名/'.repeat(20)}x.md`);
+    expect(row.props.title).toBe(`${'很长的目录名/'.repeat(20)}x.md`);
+    const spans = findAllWhere(row, (el) => el.type === 'span' && el.props.className?.includes('font-mono'));
+    expect(spans).toHaveLength(2);
+    for (const sp of spans) expect(sp.props.style).toMatchObject({ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 });
   });
 
   it('没有结果：还在查找 →「正在查找…」；读完 →「没有匹配的文件」', () => {

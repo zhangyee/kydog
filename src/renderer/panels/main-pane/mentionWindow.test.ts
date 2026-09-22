@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { visibleRange, revealScrollTop, mentionViewportHeight } from './mentionWindow';
+import { visibleRange, revealScrollTop, mentionViewportHeight, mentionMenuWidth, MENTION_MENU_WIDTH } from './mentionWindow';
 
 /** @ 列表只画滚动视口里的那几行（spec §3.5）。固定行高下的纯算术。 */
 
@@ -43,6 +43,14 @@ describe('revealScrollTop', () => {
       const r = visibleRange({ scrollTop: top, viewportHeight: VIEW, rowHeight: ROW, count: 1000, overscan: 0 });
       expect(index >= r.start && index < r.end, `from=${from} index=${index}`).toBe(true);
     }
+  });
+});
+
+describe('mentionMenuWidth', () => {
+  it('固定宽度，不随内容变；右边放不下时收到视口里（留一点边距），再窄也不为负', () => {
+    expect(mentionMenuWidth(100, 1200)).toBe(MENTION_MENU_WIDTH);
+    expect(mentionMenuWidth(100, 400)).toBe(400 - 100 - 12);
+    expect(mentionMenuWidth(500, 400)).toBe(0);
   });
 });
 

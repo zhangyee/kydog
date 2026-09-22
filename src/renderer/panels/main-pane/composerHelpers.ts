@@ -1,4 +1,5 @@
 import type { SkillEntry } from '../../../shared/types';
+import { parseMentionQuery } from './mentionSearch';
 
 /**
  * Returns the skills that match a slash-command query.
@@ -104,24 +105,38 @@ export function mentionQueryAt(textBeforeCaret: string): { query: string; start:
 }
 
 /**
- * 文本里从 `start`（一个 `@` 的位置）起的整个 @ 词，与光标停在词里的哪儿无关 —— ComposerEditor 用它认
- * 「还是不是 Esc 关掉的那个 @」：词没变就还是它；接着打字、删字，词就变了。
- * 引号写法：`@"` 起到收尾的 `"`（含）或行尾；否则 `@` 加上后面连续的非空白、非 @ 字符。
+ * 文本里从 `start`（一个 `@` 的位置）起的 @ 词 —— ComposerEditor 用它认「还是不是 Esc 关掉的那个 @」：
+ * 词没变就还是它；接着打字、删字，词就变了。
+ * - 不带引号：`@` 加上后面连续的非空白、非 @ 字符，与光标停在词里的哪儿无关。
+ * - 引号写法：`@"` 起到光标（`caret`）为止。引号词里允许空格，除了光标没有别的界：往后找收尾的 `"`
+ *   会找到正文里一个无关的引号（`@"Rel "这个"`），那段正文一改，词就「变了」。
  */
-export function mentionTokenAt(text: string, start: number): string {
-  const rest = text.slice(start);
-  return /^@"[^"\n\r]*"?/.exec(rest)?.[0] ?? /^@[^\s@]*/.exec(rest)?.[0] ?? '';
+export function mentionTokenAt(text: string, start: number, caret: number): string {
+  if (text.startsWith('@"', start)) return text.slice(start, Math.max(start + 2, caret));
+  return /^@[^\s@]*/.exec(text.slice(start))?.[0] ?? '';
+}
+
+/**
+ * 插标签时从 `@` 换到哪儿为止（spec §3.5：整段 `@"…` 一起换掉）：引号写法里、收尾的 `"` 正好在光标上时
+ * 连它一起换（不在标签后面留半个引号）；否则只换到光标 —— 光标后面的字不属于这个查询词，哪怕再往后
+ * 有一个 `"`（那是正文里的引号：`请看 @"Rel| "这个" 的结论`）。
+ */
+export function mentionReplaceEnd(text: string, caret: number, quoted: boolean): number {
+  return quoted && text[caret] === '"' ? caret + 1 : caret;
 }
 
 /**
  * @ 列表里选中文件夹时，写回 `@` 之后的文字（进入下一层）：名字里有空白或 @、或者已经在引号里浏览，
- * 写成 `"<rel>/`；否则 `<rel>/`。写出来的文字要能被 `mentionQueryAt` 原样解析回 `<rel>/` —— 名字里
- * 有 `"` 时往往做不到，返回 null（不写一个坏掉的查询词；spec：这种文件夹不支持进入）。
+ * 写成 `"<rel>/`；否则 `<rel>/`。写出来的文字要走得通整条路：`mentionQueryAt` 解析回 `<rel>/`、会话的
+ * `parseMentionQuery` 再解析出目录 `<rel>` —— 名字里有 `"`（引号断掉）或 `\`（逐级浏览把它当分隔符）时
+ * 走不通，返回 null（不写一个坏掉的查询词；spec：这种文件夹不支持进入）。
  */
 export function folderMentionText(rel: string, quoted: boolean): string | null {
   const text = quoted || /[\s@]/.test(rel) ? `"${rel}/` : `${rel}/`;
   const back = mentionQueryAt(`@${text}`);
-  return back !== null && back.query === `${rel}/` ? text : null;
+  if (back === null || back.query !== `${rel}/`) return null;
+  const parsed = parseMentionQuery(back.query);
+  return parsed.mode === 'browse' && parsed.dir === rel && parsed.leaf === '' ? text : null;
 }
 
 /**

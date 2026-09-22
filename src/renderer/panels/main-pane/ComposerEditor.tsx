@@ -9,7 +9,7 @@ import {
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
 import { refTag, splitBody } from '../../../shared/userTurn';
-import { mentionQueryAt, mentionTokenAt, routePaste } from './composerHelpers';
+import { mentionQueryAt, mentionReplaceEnd, mentionTokenAt, routePaste } from './composerHelpers';
 import { fileTitle } from './markdown/fileTabHelpers';
 
 export type ComposerEditorHandle = {
@@ -68,7 +68,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   const reportMention = () => {
     const hit = caretMention(editorRef.current);
     const d = dismissedRef.current;
-    if (d && hit && hit.node === d.node && hit.start === d.start && mentionTokenAt(hit.node.data, hit.start) === d.token) {
+    if (d && hit && hit.node === d.node && hit.start === d.start && mentionTokenAt(hit.node.data, hit.start, hit.end) === d.token) {
       onMentionRef.current(null, false);
       return;
     }
@@ -81,19 +81,16 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     rootEl: () => editorRef.current,
     dismissMention: () => {
       const hit = caretMention(editorRef.current);
-      dismissedRef.current = hit ? { node: hit.node, start: hit.start, token: mentionTokenAt(hit.node.data, hit.start) } : null;
+      dismissedRef.current = hit ? { node: hit.node, start: hit.start, token: mentionTokenAt(hit.node.data, hit.start, hit.end) } : null;
     },
     insertMention: (path: string) => {
       const el = editorRef.current;
       const hit = caretMention(el);
       if (!el || !hit) return;
-      // 引号写法整段一起换掉：光标后面若还有这个 @ 词收尾的 `"`，连它一起（不留半个引号在标签后面）；
-      // 没收尾时只换到光标 —— 光标后面的字不属于这个查询词。
-      const token = mentionTokenAt(hit.node.data, hit.start);
-      const closed = hit.quoted && token.length >= 3 && token.endsWith('"');
+      // 从 @ 换到哪儿为止见 mentionReplaceEnd：收尾的 `"` 正好在光标上才连它一起换，否则只到光标。
       const range = document.createRange();
       range.setStart(hit.node, hit.start);
-      range.setEnd(hit.node, closed ? hit.start + token.length : hit.end);
+      range.setEnd(hit.node, mentionReplaceEnd(hit.node.data, hit.end, hit.quoted));
       range.deleteContents();
       const space = document.createTextNode(' ');
       range.insertNode(space);

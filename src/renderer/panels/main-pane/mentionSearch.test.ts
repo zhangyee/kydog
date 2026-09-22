@@ -68,6 +68,18 @@ describe('parseMentionQuery', () => {
     expect(parseMentionQuery('..x/')).toEqual({ mode: 'browse', dir: '..x', leaf: '' });
   });
 
+  it('逐级浏览里打的 \\ 也当分隔符（Windows 上顺手打的 refs\\sub/），统一成 /；按名字找不动', () => {
+    expect(parseMentionQuery('refs\\sub/')).toEqual({ mode: 'browse', dir: 'refs/sub', leaf: '' });
+    expect(parseMentionQuery('refs/a\\b')).toEqual({ mode: 'browse', dir: 'refs/a', leaf: 'b' });
+    expect(parseMentionQuery('a\\\\b/')).toEqual({ mode: 'browse', dir: 'a/b', leaf: '' });
+    // 不含 / 的仍是按名字找（模式只按 / 判，spec §3.5）
+    expect(parseMentionQuery('refs\\sub')).toEqual({ mode: 'name', leaf: 'refs\\sub' });
+    // 拒绝照旧：.. 段、以 \\ 开头、盘符
+    expect(parseMentionQuery('refs\\..\\x/')).toEqual({ mode: 'invalid' });
+    expect(parseMentionQuery('\\refs/')).toEqual({ mode: 'invalid' });
+    expect(parseMentionQuery('C:\\refs/')).toEqual({ mode: 'invalid' });
+  });
+
   it('含 .. 段、以 / 或 \\ 开头、以盘符开头 → 不列（只在项目内浏览）', () => {
     // 正向：同形状但合法的查询词都能解析（上一条用例之外，这里就地再证一次）
     expect(parseMentionQuery('x/y').mode).toBe('browse');
@@ -201,6 +213,15 @@ describe('逐级浏览', () => {
 });
 
 describe('rel 与读目录的路径', () => {
+  it('打的 refs\\sub/：读 <项目>/refs/sub，rel 里没有 \\', async () => {
+    const fs = fakeFs({ refs: ['sub/'], 'refs/sub': ['x.md'] });
+    const { s, last } = start(fs);
+    s.setQuery('refs\\sub/');
+    await settle();
+    expect(fs.calls).toEqual(['/proj/refs/sub']);
+    expect(last()).toEqual({ mode: 'browse', done: true, items: [{ rel: 'refs/sub/x.md', name: 'x.md', kind: 'file', depth: 2 }] });
+  });
+
   it('rel 只由 readDir 给的名字拼出来，不看它给的 path 长什么样', async () => {
     const readDir: ReadDirFn = async (abs) => (abs === '/proj'
       ? [{ name: 'a b', path: 'Z:\\不相干\\x', kind: 'dir' }, { name: 'r.md', path: '', kind: 'file' }]
