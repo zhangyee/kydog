@@ -56,7 +56,7 @@ function tierOf(nameLower: string, leafLower: string): number {
   return -1;
 }
 
-type Item = { entry: MentionEntry; lower: string; abs: string };
+type Item = { entry: MentionEntry; lower: string };
 /** 一个读过的目录：`items` 是 readDir 给的次序；`byKind` 是「文件夹在前、再按名字」，筛选时才算、算一次。 */
 type Listing = { items: Item[]; byKind: Item[] | null } | 'failed';
 type Ranked = { item: Item; tier: number };
@@ -76,7 +76,7 @@ function sameView(a: MentionView, b: MentionView): boolean {
 }
 
 export function createMentionSession(opts: {
-  /** 绝对路径；分隔符从它推（含 `\` 即 Windows）。 */
+  /** 项目的绝对路径。 */
   projectPath: string;
   readDir: ReadDirFn;
   onChange: (view: MentionView) => void;
@@ -84,18 +84,14 @@ export function createMentionSession(opts: {
 }): MentionSession {
   const { projectPath, readDir, onChange } = opts;
   const limit = opts.limit ?? DEFAULT_LIMIT;
-  const sep = projectPath.includes('\\') ? '\\' : '/';
-  const prefix = (projectPath.endsWith(sep) ? projectPath.slice(0, -1) : projectPath) + sep;
-  const absOf = (rel: string) => (rel === '' ? projectPath : prefix + rel.split('/').join(sep));
-  /** rel = readDir 给的绝对路径去掉「项目路径 + 分隔符」，统一用 `/`。 */
-  const relOf = (abs: string, parentRel: string, name: string) => (abs.startsWith(prefix)
-    ? abs.slice(prefix.length).split(sep).join('/')
-    : (parentRel === '' ? name : `${parentRel}/${name}`));
+  // 读目录的路径一律是「项目路径 + / + rel」：不从项目路径猜分隔符 —— Node 在 Windows 上也认 `/`，
+  // 主进程 readDir 再用 path.join 拼子项。rel 只由 readDir 给的名字拼出来（`父 rel/名字`）。
+  const absOf = (rel: string) => (rel === '' ? projectPath : `${projectPath}/${rel}`);
 
   const listings = new Map<string, Listing>();
   let inFlight = false;
-  // 按名字找的 BFS：队列里是待处理的目录，`head` 之前的都已处理（进了 pool、子目录进了队列）。
-  const queue: Array<{ rel: string; abs: string }> = [{ rel: '', abs: projectPath }];
+  // 按名字找的 BFS：队列里是待处理目录的 rel，`head` 之前的都已处理（进了 pool、子目录进了队列）。
+  const queue: string[] = [''];
   let head = 0;
   // 按名字找的候选：根这一层的全部条目 + 更深各层的文件。
   const pool: Item[] = [];
@@ -131,12 +127,11 @@ export function createMentionSession(opts: {
   }
 
   function toListing(nodes: Awaited<ReturnType<ReadDirFn>>, parentRel: string): Listing {
-    const items = nodes.map((n): Item => {
-      const rel = relOf(n.path, parentRel, n.name);
-      let depth = 0;
-      for (let j = rel.indexOf('/'); j !== -1; j = rel.indexOf('/', j + 1)) depth++;
-      return { entry: { rel, name: n.name, kind: n.kind, depth }, lower: n.name.toLowerCase(), abs: n.path };
-    });
+    const depth = parentRel === '' ? 0 : parentRel.split('/').length;
+    const items = nodes.map((n): Item => ({
+      entry: { rel: parentRel === '' ? n.name : `${parentRel}/${n.name}`, name: n.name, kind: n.kind, depth },
+      lower: n.name.toLowerCase(),
+    }));
     return { items, byKind: null };
   }
 
@@ -158,22 +153,22 @@ export function createMentionSession(opts: {
   /** 把已经读回来的、排在队首的目录依次处理掉（同步），直到碰上一个还没读的。 */
   function drainBfs() {
     while (head < queue.length) {
-      const listing = listings.get(queue[head].rel);
+      const listing = listings.get(queue[head]);
       if (listing === undefined) return;
       const isRoot = head === 0;
       head++;
       if (listing === 'failed') continue;
       for (const item of listing.items) {
-        if (item.entry.kind === 'dir') queue.push({ rel: item.entry.rel, abs: item.abs });
+        if (item.entry.kind === 'dir') queue.push(item.entry.rel);
         if (isRoot || item.entry.kind === 'file') { pool.push(item); consider(item); }
       }
     }
   }
 
-  function read(rel: string, abs: string) {
+  function read(rel: string) {
     inFlight = true;
     let p: ReturnType<ReadDirFn>;
-    try { p = readDir(abs); } catch (err) { p = Promise.reject(err); }
+    try { p = readDir(absOf(rel)); } catch (err) { p = Promise.reject(err); }
     p.then(
       (nodes) => { if (!disposed) listings.set(rel, toListing(nodes, rel)); },
       () => { if (!disposed) listings.set(rel, 'failed'); },
@@ -216,9 +211,9 @@ export function createMentionSession(opts: {
     if (disposed || parsed === null) return;
     if (parsed.mode === 'name') {
       drainBfs();
-      if (!inFlight && head < queue.length) read(queue[head].rel, queue[head].abs);
+      if (!inFlight && head < queue.length) read(queue[head]);
     } else if (parsed.mode === 'browse') {
-      if (!inFlight && !listings.has(parsed.dir)) read(parsed.dir, absOf(parsed.dir));
+      if (!inFlight && !listings.has(parsed.dir)) read(parsed.dir);
     }
     emit();
   }

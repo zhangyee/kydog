@@ -7,6 +7,8 @@ import { parseMentionQuery, createMentionSession, type MentionView, type ReadDir
  * - `manual: true` 时每次读都挂起，由用例 `release()` 一个个放行 —— 用来看「同一时间在飞几个」
  *   与「读到一半时换查询词」；否则在下一个微任务里就回来。
  * - 不在 `dirs` 里的目录、或列进 `fail` 的目录，读的时候抛错。
+ * - 会话按 `<项目>/<rel>`（`/` 拼接）来读；返回的 `path` 照操作系统的样子拼（`sep`，Windows 上是 `\`），
+ *   会话不该用它 —— rel 只由 readDir 给的名字拼出来。
  */
 function fakeFs(dirs: Record<string, string[]>, opts: { manual?: boolean; fail?: string[]; root?: string; sep?: string } = {}) {
   const root = opts.root ?? '/proj';
@@ -15,7 +17,7 @@ function fakeFs(dirs: Record<string, string[]>, opts: { manual?: boolean; fail?:
   const pending: Array<() => void> = [];
   let inFlight = 0;
   let maxInFlight = 0;
-  const relOf = (abs: string) => (abs === root ? '' : abs.slice(root.length + 1).split(sep).join('/'));
+  const relOf = (abs: string) => (abs === root ? '' : abs.slice(root.length + 1));
   const readDir: ReadDirFn = (abs) => {
     calls.push(abs);
     inFlight += 1;
@@ -27,7 +29,7 @@ function fakeFs(dirs: Record<string, string[]>, opts: { manual?: boolean; fail?:
       return dirs[rel].map((n) => {
         const isDir = n.endsWith('/');
         const name = isDir ? n.slice(0, -1) : n;
-        return { name, path: `${abs}${sep}${name}`, kind: isDir ? 'dir' as const : 'file' as const };
+        return { name, path: `${root}${sep}${(relOf(abs) ? `${relOf(abs)}/${name}` : name).split('/').join(sep)}`, kind: isDir ? 'dir' as const : 'file' as const };
       });
     };
     if (!opts.manual) return Promise.resolve().then(answer);
@@ -177,17 +179,17 @@ describe('逐级浏览', () => {
     expect(rels(last())).toEqual(['a.md']);
   });
 
-  it('Windows 项目：分隔符从项目路径推（含 \\），读 C:\\proj\\refs；rel 一律用 / 分隔', async () => {
+  it('Windows 项目：不猜分隔符，一律用 / 接在项目路径后面去读（Node 在 Windows 上认 /）；rel 用 / 分隔、由名字拼出', async () => {
     const fs = fakeFs({ '': ['refs/'], refs: ['dpo.pdf', 'sub/'], 'refs/sub': ['dpo-x.md'] }, { root: 'C:\\proj', sep: '\\' });
     const { s, last } = start(fs, { projectPath: 'C:\\proj' });
     s.setQuery('refs/');
     await settle();
-    expect(fs.calls).toEqual(['C:\\proj\\refs']);
+    expect(fs.calls).toEqual(['C:\\proj/refs']);
     expect(rels(last())).toEqual(['refs/dpo.pdf', 'refs/sub']);
-    // 按名字找：从根往下读，refs 已经读过、用内存里的；refs/sub 用 readDir 给的绝对路径去读
+    // 按名字找：从根往下读，refs 已经读过、用内存里的；refs/sub 照样按 rel 拼
     s.setQuery('dpo');
     await settle();
-    expect(fs.calls).toEqual(['C:\\proj\\refs', 'C:\\proj', 'C:\\proj\\refs\\sub']);
+    expect(fs.calls).toEqual(['C:\\proj/refs', 'C:\\proj', 'C:\\proj/refs/sub']);
     expect(last()).toEqual({
       mode: 'name', done: true,
       items: [
@@ -195,6 +197,22 @@ describe('逐级浏览', () => {
         { rel: 'refs/sub/dpo-x.md', name: 'dpo-x.md', kind: 'file', depth: 2 },
       ],
     });
+  });
+});
+
+describe('rel 与读目录的路径', () => {
+  it('rel 只由 readDir 给的名字拼出来，不看它给的 path 长什么样', async () => {
+    const readDir: ReadDirFn = async (abs) => (abs === '/proj'
+      ? [{ name: 'a b', path: 'Z:\\不相干\\x', kind: 'dir' }, { name: 'r.md', path: '', kind: 'file' }]
+      : abs === '/proj/a b' ? [{ name: 'c.md', path: 'whatever', kind: 'file' }] : []);
+    const views: MentionView[] = [];
+    const s = createMentionSession({ projectPath: '/proj', readDir, onChange: (v) => views.push(v) });
+    s.setQuery('a b/');
+    await settle();
+    expect(views[views.length - 1]).toEqual({ mode: 'browse', done: true, items: [{ rel: 'a b/c.md', name: 'c.md', kind: 'file', depth: 1 }] });
+    s.setQuery('');
+    await settle();
+    expect(rels(views[views.length - 1])).toEqual(['a b', 'r.md']);
   });
 });
 
