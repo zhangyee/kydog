@@ -41,6 +41,8 @@ const SETTINGS: SettingsFileForRenderer = {
     collapsedProjects: [],
     browserOpen: true,
     browserWidth: 520,
+    // 非默认值：Step 7 那条用例靠它区分「真的灌进来了」与「store 默认值碰巧相等」。
+    mdExport: { paper: 'letter', margin: 'narrow', pageNumbers: false },
   },
   llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: 'anthropic', defaultModel: 'x' },
   skills: { disabledBuiltins: [] },
@@ -417,5 +419,25 @@ describe('文件监听接上了：声明集合、按目录重读', () => {
     fire('fs.changed', { dir: '/p' });
     await settle();
     expect(reads()).toEqual([{ path: '/p' }]);
+  });
+});
+
+describe('ui.mdExport 接进了 uiStore 并落盘', () => {
+  it('启动灌入设置里的值；改一项 → settings.update 带整份 mdExport', async () => {
+    // 本文件没有全局重置 uiStore 的 beforeEach；先归默认，确保下面的断言看到的是灌入的值，
+    // 不是上一条用例残留的巧合。
+    useUiStore.setState({ mdExport: { paper: 'a4', margin: 'standard', pageNumbers: true } });
+    await bootstrap();
+    await new Promise<void>((r) => { setTimeout(r, 0); });
+    // SETTINGS.ui.mdExport 是非默认值：相等说明真的是灌进来的，不是 store 初值碰巧一样
+    expect(useUiStore.getState().mdExport).toEqual({ paper: 'letter', margin: 'narrow', pageNumbers: false });
+
+    const before = calls.filter((c) => c.method === 'settings.update').length;
+    useUiStore.getState().setMdExport({ paper: 'a4' });
+    await new Promise<void>((r) => { setTimeout(r, 0); });
+    const updates = calls.filter((c) => c.method === 'settings.update');
+    expect(updates.length).toBe(before + 1);
+    expect((updates.at(-1)!.args as { ui: { mdExport: unknown } }).ui.mdExport)
+      .toEqual({ paper: 'a4', margin: 'narrow', pageNumbers: false });
   });
 });

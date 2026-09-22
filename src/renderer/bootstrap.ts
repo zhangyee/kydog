@@ -12,6 +12,15 @@ import { useBrowserStore } from './panels/browser/browserStore';
 import { installBrowserBridge } from './panels/browser/browserBridge';
 import { installWatchSync, loadDir } from './fsWatch';
 
+/**
+ * 上一次 bootstrap() 装的那条持久化订阅。生产环境 bootstrap() 一个进程只跑一次，
+ * 这个变量本可以不要；但不退订旧的就重复调用（本文件测试套件里反复 bootstrap()
+ * 是唯一真的这么做的地方）会让旧订阅一直活着——它比对用的 prev 快照永远停在
+ * 装订阅那一刻，之后任何一次状态变化都会被它判成「变了」再发一次 settings.update，
+ * N 次遗留订阅就把一次真实改动放大成 N 次重复落盘。
+ */
+let unsubscribeUiPersist: (() => void) | null = null;
+
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
   useThreadsStore.getState().hydrate(state.projects, state.threads);
@@ -35,6 +44,7 @@ export async function bootstrap(): Promise<void> {
     collapsedProjects: new Set(state.settings.ui.collapsedProjects.filter((p) => knownProjects.has(p))),
     browserOpen: state.settings.ui.browserOpen,
     browserWidth: state.settings.ui.browserWidth,
+    mdExport: state.settings.ui.mdExport,
     settingsTabOpen: noProvider,
     settingsTab: 'provider',
     activeCenterTab: noProvider ? 'settings' : 'thread',
@@ -54,7 +64,8 @@ export async function bootstrap(): Promise<void> {
   installViewStateSync();
 
   let prev = useUiStore.getState();
-  useUiStore.subscribe((s) => {
+  unsubscribeUiPersist?.();
+  unsubscribeUiPersist = useUiStore.subscribe((s) => {
     if (
       s.theme === prev.theme
       && s.readingFontSize === prev.readingFontSize
@@ -62,6 +73,7 @@ export async function bootstrap(): Promise<void> {
       && s.inspectorCollapsed === prev.inspectorCollapsed
       && s.browserOpen === prev.browserOpen
       && s.browserWidth === prev.browserWidth
+      && s.mdExport === prev.mdExport
       // Set 每次改动都换新引用，比引用就够了，不必逐元素比
       && s.collapsedProjects === prev.collapsedProjects
     ) return;
@@ -75,6 +87,7 @@ export async function bootstrap(): Promise<void> {
         collapsedProjects: [...s.collapsedProjects],
         browserOpen: s.browserOpen,
         browserWidth: s.browserWidth,
+        mdExport: s.mdExport,
       },
     }).catch((err) => console.error('persist ui failed', err));
   });

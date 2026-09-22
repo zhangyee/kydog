@@ -370,6 +370,26 @@ describe('settingsFile v9', () => {
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(bad));
     expect((await loadSettings()).research.presets).toEqual({});
   });
+
+  it('ui.mdExport：旧文件没有 → 默认；合法值原样；坏值逐项回默认；legacy 分支同样补上', () => {
+    const base = JSON.parse(JSON.stringify(defaultSettings()));
+    delete base.ui.mdExport;
+    const read = (ui: Record<string, unknown>, schemaVersion = 9) => {
+      const r = parseAndMigrateSettings(JSON.stringify({ ...base, schemaVersion, ui: { ...base.ui, ...ui } }));
+      if (r.kind !== 'ok') throw new Error(`读失败：${r.reason}`);
+      return r.settings.ui.mdExport;
+    };
+    // 正向：带非默认合法值的原样读出（证明不是一律吐默认）
+    expect(read({ mdExport: { paper: 'letter', margin: 'narrow', pageNumbers: false } }))
+      .toEqual({ paper: 'letter', margin: 'narrow', pageNumbers: false });
+    expect(read({})).toEqual({ paper: 'a4', margin: 'standard', pageNumbers: true });
+    expect(read({ mdExport: { paper: 'a3', margin: 'narrow', pageNumbers: 'no' } }))
+      .toEqual({ paper: 'a4', margin: 'narrow', pageNumbers: true });
+    // legacy（v1）分支：另一段 ui 拼装代码，也要补
+    expect(read({ mdExport: { paper: 'letter', margin: 'narrow', pageNumbers: false } }, 1))
+      .toEqual({ paper: 'letter', margin: 'narrow', pageNumbers: false });
+    expect(read({}, 1)).toEqual({ paper: 'a4', margin: 'standard', pageNumbers: true });
+  });
 });
 
 describe('settings v5 → v9 迁移', () => {
