@@ -32,11 +32,13 @@ const H = vi.hoisted(() => {
   class FakeWebContents {
     listeners: Record<string, Fn[]> = {};
     openedDevTools = 0;
+    /** 当前页地址：缺省是 dev-server；will-navigate 那组用例临时换成打包版的 file://。 */
+    url = 'http://localhost:5173/';
     on(event: string, fn: Fn) { (this.listeners[event] ??= []).push(fn); return this; }
     once(event: string, fn: Fn) { return this.on(event, fn); }
     setWindowOpenHandler(_fn: Fn) { /* main.ts 的外链策略，本文件不考 */ }
     openDevTools() { this.openedDevTools += 1; }
-    getURL() { return 'http://localhost:5173/'; }
+    getURL() { return this.url; }
     send() { /* 广播出口已替身 */ }
     isDestroyed() { return false; }
     fire(event: string, ...args: unknown[]) {
@@ -261,5 +263,39 @@ describe('main.ts 真的把内置浏览器装配起来了', () => {
     // 自己那个关文件监听 / 销毁 PDF 渲染窗口的回调）。
     for (const fn of H.appListeners['before-quit'] ?? []) fn();
     expect(H.browser.disposeAll).toBe(before + 1);
+  });
+});
+
+/**
+ * **主窗口导航守卫的接线。** 判定本身在 `navigationGuard.test.ts`；这里守的是 main.ts 真的把
+ * `will-navigate` 接到了它上面，并且按判定结果 `preventDefault` / 交给系统打开。旧写法按 origin
+ * 比，而任何 file:// 的 origin 都是 "null" —— 打包版里跳到任意本地 HTML 都会被放行，那个页面照样
+ * 拿到 preload 的 window.kydog。
+ */
+describe('main.ts 的 will-navigate 守卫', () => {
+  const APP = 'file:///app/.vite/renderer/main_window/index.html';
+
+  it('打包版：别的本地文件拦下且不交给系统；同一文档（只差 hash）放行；https 拦下并交给系统', async () => {
+    const { shell } = await import('electron');
+    const openExternal = vi.mocked(shell.openExternal);
+    openExternal.mockClear();
+    win.webContents.url = APP;
+    try {
+      const evil = { preventDefault: vi.fn() };
+      win.webContents.fire('will-navigate', evil, 'file:///etc/evil.html');
+      expect(evil.preventDefault).toHaveBeenCalledTimes(1);
+
+      const same = { preventDefault: vi.fn() };
+      win.webContents.fire('will-navigate', same, `${APP}#/settings`);
+      expect(same.preventDefault).not.toHaveBeenCalled();
+
+      const ext = { preventDefault: vi.fn() };
+      win.webContents.fire('will-navigate', ext, 'https://example.com/');
+      expect(ext.preventDefault).toHaveBeenCalledTimes(1);
+      // 只有 https 那一发交给了系统：evil 那一发（本地文件）没有。
+      expect(openExternal.mock.calls).toEqual([['https://example.com/']]);
+    } finally {
+      win.webContents.url = 'http://localhost:5173/';
+    }
   });
 });

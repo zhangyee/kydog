@@ -27,6 +27,7 @@ import { broadcaster } from './ipc/broadcaster';
 import { browserService } from './browser/browserService';
 import { installProxyDispatcher } from './net/systemProxy';
 import { installBrowserWindowWiring, installBrowserQuitWiring } from './browser/mainWiring';
+import { decideNavigation } from './navigationGuard';
 import iconDataUrl from '../../assets/icons/icon.png?inline';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -65,9 +66,10 @@ async function createWindow() {
     },
   });
   // Route all external links (target="_blank" + plain anchor navigations) through
-  // the OS default browser. Same-origin navigations (Vite HMR reload, in-app
-  // file:// loads) pass through. Non-http(s)/mailto schemes are silently denied
-  // to avoid handing arbitrary URIs to the OS.
+  // the OS default browser. Only the current document itself (packaged: the same
+  // file:// path) or the dev server's own origin may be navigated to in-window —
+  // see navigationGuard.ts. Non-http(s)/mailto schemes are silently denied to
+  // avoid handing arbitrary URIs to the OS.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url);
@@ -80,13 +82,13 @@ async function createWindow() {
   // 就先把网页藏起来」——那两个时刻拿不到可靠的最后一次 syncView。
   // 三处接线为什么拆在那个模块里，见 mainWiring.ts。
   installBrowserWindowWiring(mainWindow, browserService);
+  // 判定见 navigationGuard.ts：不能按 origin 比 —— 任何 file:// 的 origin 都是 "null"，
+  // 打包版里会放行跳到任意本地 HTML（那个页面照样拿到 preload 的 window.kydog）。
   mainWindow.webContents.on('will-navigate', (e, targetUrl) => {
-    let target: URL;
-    try { target = new URL(targetUrl); } catch { e.preventDefault(); return; }
-    const current = new URL(mainWindow.webContents.getURL());
-    if (target.origin === current.origin) return;
+    const decision = decideNavigation(mainWindow.webContents.getURL(), targetUrl);
+    if (decision.allow) return;
     e.preventDefault();
-    if (/^(https?|mailto):$/.test(target.protocol)) void shell.openExternal(targetUrl);
+    if (decision.openExternal) void shell.openExternal(targetUrl);
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
