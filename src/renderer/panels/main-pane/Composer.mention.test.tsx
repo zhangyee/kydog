@@ -197,7 +197,7 @@ describe('Composer —— @ 列表的会话', () => {
     expect(down.preventDefault).toHaveBeenCalled();
     expect(menu(m.tree)[0].props.highlightIndex).toBe(1);
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
-    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('refs/');
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: 'refs/', caret: 5 });
     expect(h.insertMention).toHaveBeenCalledTimes(1);
     editor(m.tree).props.onKeyDown(keyEv('Tab'));
     expect(h.replaceMentionQuery).toHaveBeenCalledTimes(2);
@@ -219,7 +219,7 @@ describe('Composer —— @ 列表的会话', () => {
 
     // 鼠标点：同一套分流
     menu(m.tree)[0].props.onSelect(dir('refs'));
-    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('refs/');
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: 'refs/', caret: 5 });
     menu(m.tree)[0].props.onSelect(file('refs/re.pdf'));
     expect(h.insertMention).toHaveBeenCalledTimes(3);
   });
@@ -293,25 +293,25 @@ describe('Composer —— @ 列表的会话', () => {
     expect(h.insertMention).toHaveBeenLastCalledWith('a/dp2.md');
   });
 
-  it('名字里有空白或 @ 的文件夹写成 @"<rel>/；引号里往下哪一层都保持引号；会话收到去掉引号的查询词；名字里有 " 的进不去', () => {
+  it('名字里有空白或 @ 的文件夹写成两侧引号 @"<rel>/"（光标在收尾引号前）；引号里往下哪一层都保持引号；会话收到去掉引号的查询词；名字里有 " 的进不去', () => {
     const m = mount(Composer, { threadId: 't1' });
     const h = installHandle(m.tree);
     editor(m.tree).props.onMentionQuery('Rel', false);
     expect(sessions[0].setQuery).toHaveBeenLastCalledWith('Rel');
     sessions[0].opts.onChange(view([dir('Related Work'), dir('refs')], false));
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
-    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('"Related Work/');
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: '"Related Work/"', caret: 14 });
     // 对照：同一份列表里不需要引号的名字照旧不带
     editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
-    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('refs/');
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: 'refs/', caret: 5 });
 
     // 编辑器报上来引号里的查询词：会话收到的是去掉引号的文字
     editor(m.tree).props.onMentionQuery('Related Work/', true);
     expect(sessions[0].setQuery).toHaveBeenLastCalledWith('Related Work/');
     sessions[0].opts.onChange(view([dir('Related Work/sub'), file('Related Work/a b.md'), dir('Related Work/say "hi"')], true, 'browse'));
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
-    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('"Related Work/sub/');
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: '"Related Work/sub/"', caret: 18 });
     editor(m.tree).props.onKeyDown(keyEv('ArrowDown'));
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
     expect(h.insertMention).toHaveBeenLastCalledWith('Related Work/a b.md');
@@ -320,7 +320,7 @@ describe('Composer —— @ 列表的会话', () => {
     editor(m.tree).props.onMentionQuery('refs/', true);
     sessions[0].opts.onChange(view([dir('refs/old')], true, 'browse'));
     editor(m.tree).props.onKeyDown(keyEv('Enter'));
-    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith('"refs/old/');
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: '"refs/old/"', caret: 10 });
     // 回到那一层（名字有 " 的那个文件夹在的地方）
     editor(m.tree).props.onMentionQuery('Related Work/', true);
     sessions[0].opts.onChange(view([dir('Related Work/sub'), file('Related Work/a b.md'), dir('Related Work/say "hi"')], true, 'browse'));
@@ -335,6 +335,23 @@ describe('Composer —— @ 列表的会话', () => {
     expect(h.replaceMentionQuery.mock.calls.length).toBe(replaced);
     expect(h.insertMention).toHaveBeenCalledTimes(1);
     expect(menu(m.tree)).toHaveLength(1);
+  });
+
+  it('进入一个空文件夹：列表还开着，显示读完、无结果（状态行「没有匹配的文件」）', () => {
+    const m = mount(Composer, { threadId: 't1' });
+    const h = installHandle(m.tree);
+    // 编辑器真的会做的：写回查询词之后当场把新的查询词报上来（同一次按键里）
+    h.replaceMentionQuery.mockImplementation(() => { editor(m.tree).props.onMentionQuery('Empty Dir/', true); });
+    fakeHooks.onSetQuery = (s, q) => { if (q === 'Empty Dir/') s.opts.onChange(view([], true, 'browse')); };
+    editor(m.tree).props.onMentionQuery('Emp', false);
+    sessions[0].opts.onChange(view([dir('Empty Dir')], true));
+    // 正向：进去之前列表里有这个文件夹
+    expect(menu(m.tree)[0].props.items).toEqual([dir('Empty Dir')]);
+    editor(m.tree).props.onKeyDown(keyEv('Enter'));
+    expect(h.replaceMentionQuery).toHaveBeenLastCalledWith({ text: '"Empty Dir/"', caret: 11 });
+    expect(sessions[0].setQuery).toHaveBeenLastCalledWith('Empty Dir/');
+    expect(menu(m.tree)).toHaveLength(1);
+    expect(menu(m.tree)[0].props).toMatchObject({ items: [], done: true });
   });
 
   it('Esc：关掉列表，并告诉编辑器这个 @ 是被 Esc 关掉的（编辑器据此不在松开 Esc 时把它重新报上来）', () => {

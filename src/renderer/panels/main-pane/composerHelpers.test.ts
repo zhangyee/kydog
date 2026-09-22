@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, mentionReplaceEnd, folderMentionText, dispatchCommentBoxKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, mentionReplaceEnd, folderMentionEdit, spliceMentionQuery, dispatchCommentBoxKey } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -171,28 +171,57 @@ describe('mentionQueryAt —— 引号（名字里有空白或 @，spec §3.5）
   });
 });
 
-describe('folderMentionText：选中文件夹时写回 @ 之后的文字（spec §3.5）', () => {
-  it('名字里有空白或 @ → 带引号；已经在引号里 → 往下哪一层都保持引号；否则不带', () => {
-    expect(folderMentionText('refs', false)).toBe('refs/');
-    expect(folderMentionText('Related Work', false)).toBe('"Related Work/');
-    expect(folderMentionText('a@b', false)).toBe('"a@b/');
-    expect(folderMentionText('tab\there', false)).toBe('"tab\there/');
-    expect(folderMentionText('Related Work/sub', true)).toBe('"Related Work/sub/');
-    expect(folderMentionText('sub', true)).toBe('"sub/');
+describe('folderMentionEdit：选中文件夹时写回 @ 之后的文字与光标落点（spec §3.5 两侧双引号）', () => {
+  it('名字里有空白或 @、或已在引号里 → 两侧引号 "<rel>/"，光标停在收尾引号之前；否则 <rel>/、光标在末尾', () => {
+    expect(folderMentionEdit('refs', false)).toEqual({ text: 'refs/', caret: 5 });
+    expect(folderMentionEdit('Related Work', false)).toEqual({ text: '"Related Work/"', caret: 14 });
+    expect(folderMentionEdit('a@b', false)).toEqual({ text: '"a@b/"', caret: 5 });
+    expect(folderMentionEdit('tab\there', false)).toEqual({ text: '"tab\there/"', caret: 10 });
+    expect(folderMentionEdit('Related Work/sub', true)).toEqual({ text: '"Related Work/sub/"', caret: 18 });
+    expect(folderMentionEdit('sub', true)).toEqual({ text: '"sub/"', caret: 5 });
   });
-  it('写出来的文字解析不回同一个目录（名字里有 "）→ null，不写一个坏掉的查询词', () => {
-    // 正向：带 " 但不需要引号的名字照样写得出（@a"b/ 解析回来就是 a"b/）
-    expect(folderMentionText('a"b', false)).toBe('a"b/');
-    expect(folderMentionText('say "hi"', false)).toBeNull();
-    expect(folderMentionText('a"b', true)).toBeNull();
-    expect(folderMentionText('"x', false)).toBeNull();
-    expect(folderMentionText('line\nbreak', false)).toBeNull();
+  it('光标前那段解析不回同一个目录（名字里有 " 或 \\、换行）→ null，不写一个坏掉的查询词', () => {
+    // 正向：带 " 但不需要引号的名字照样写得出（@a"b/ 解析回来就是 a"b/）；去掉反斜杠的名字写得出
+    expect(folderMentionEdit('a"b', false)).toEqual({ text: 'a"b/', caret: 4 });
+    expect(folderMentionEdit('ab', false)).toEqual({ text: 'ab/', caret: 3 });
+    expect(folderMentionEdit('say "hi"', false)).toBeNull();
+    expect(folderMentionEdit('a"b', true)).toBeNull();
+    expect(folderMentionEdit('"x', false)).toBeNull();
+    expect(folderMentionEdit('line\nbreak', false)).toBeNull();
+    expect(folderMentionEdit('a\\b', false)).toBeNull();
+    expect(folderMentionEdit('a \\b', false)).toBeNull();
   });
-  it('名字里有 \\（POSIX 上合法）→ null：会话把逐级浏览里的 \\ 当分隔符，写进去会进到别的目录', () => {
-    // 正向：同样的名字去掉反斜杠写得出
-    expect(folderMentionText('ab', false)).toBe('ab/');
-    expect(folderMentionText('a\\b', false)).toBeNull();
-    expect(folderMentionText('a \\b', false)).toBeNull();
+});
+
+describe('spliceMentionQuery：把光标处 @ 之后的查询词换成 edit，光标落到 edit.caret', () => {
+  const edit = (rel: string, quoted: boolean) => folderMentionEdit(rel, quoted)!;
+  it('不带引号的 @Rel 进 Related Work：写成两侧引号，光标在收尾引号前 —— 光标前那段仍是开着的引号词', () => {
+    const r = spliceMentionQuery('看 @Rel', { start: 2, caret: 6, quoted: false }, edit('Related Work', false));
+    expect(r).toEqual({ data: '看 @"Related Work/"', caret: 17 });
+    expect(r.data[r.caret]).toBe('"');
+    expect(mentionQueryAt(r.data.slice(0, r.caret))).toEqual({ query: 'Related Work/', start: 2, quoted: true });
+    // 光标移到收尾引号之后：不再是 @ 词，列表关掉
+    expect(mentionQueryAt(r.data)).toBeNull();
+  });
+  it('引号里再往下进一层：整段 "…"（收尾引号就在光标上）换成新的两侧引号，光标仍在收尾引号前', () => {
+    const r = spliceMentionQuery('看 @"Related Work/" 后面', { start: 2, caret: 17, quoted: true }, edit('Related Work/sub', true));
+    expect(r).toEqual({ data: '看 @"Related Work/sub/" 后面', caret: 21 });
+    expect(mentionQueryAt(r.data.slice(0, r.caret))).toEqual({ query: 'Related Work/sub/', start: 2, quoted: true });
+    // 光标上打的字落在引号里
+    const typed = r.data.slice(0, r.caret) + 'su' + r.data.slice(r.caret);
+    expect(typed).toBe('看 @"Related Work/sub/su" 后面');
+    expect(mentionQueryAt(typed.slice(0, r.caret + 2))).toEqual({ query: 'Related Work/sub/su', start: 2, quoted: true });
+  });
+  it('手打的 @"（还没有收尾引号）照样按引号词换；光标后面别处的 " 是正文，不动', () => {
+    expect(spliceMentionQuery('@"Rel', { start: 0, caret: 5, quoted: true }, edit('Related Work', true)))
+      .toEqual({ data: '@"Related Work/"', caret: 15 });
+    // 正向见上：收尾引号就在光标上时被换掉；这里光标后面隔着字才有 "，它和后面的正文原样留着
+    expect(spliceMentionQuery('请看 @"Rel "这个"', { start: 3, caret: 8, quoted: true }, edit('Related Work', true)))
+      .toEqual({ data: '请看 @"Related Work/" "这个"', caret: 18 });
+  });
+  it('不需要引号的一层：换成 <rel>/，光标在末尾', () => {
+    expect(spliceMentionQuery('看 @re 的', { start: 2, caret: 5, quoted: false }, edit('refs', false)))
+      .toEqual({ data: '看 @refs/ 的', caret: 8 });
   });
 });
 

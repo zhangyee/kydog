@@ -45,9 +45,12 @@ test.beforeAll(async () => {
   await fs.mkdir(path.join(projectA, 'refs'), { recursive: true });
   await fs.writeFile(path.join(projectA, 'refs', 'dpo-2023.pdf'), '%PDF-1.4\n');
   await fs.writeFile(path.join(projectA, 'refs', 'draft.pdf'), '%PDF-1.4\n');
-  // 名字里带空格的文件夹：@ 列表要用引号写法 @"Related Work/ 才进得去（spec §3.5）
+  // 名字里带空格的文件夹：@ 列表要用两侧引号 @"Related Work/" 才进得去（spec §3.5）；两个文件用来看筛选
   await fs.mkdir(path.join(projectA, 'Related Work'), { recursive: true });
   await fs.writeFile(path.join(projectA, 'Related Work', 'survey.md'), '# survey\n');
+  await fs.writeFile(path.join(projectA, 'Related Work', 'notes.md'), '# notes\n');
+  // 空文件夹：进去之后列表仍开着，显示「没有匹配的文件」
+  await fs.mkdir(path.join(projectA, 'Empty Dir'), { recursive: true });
   await fs.writeFile(path.join(projectA, 'ch3.md'), '# 第三章\n\n## 3.2 偏好对齐\n\n将 β 固定为 0.1，并复现。\n');
   outsideFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-out-')), 'outside.pdf');
   await fs.writeFile(outsideFile, '%PDF-1.4\n');
@@ -372,6 +375,7 @@ test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（
   const input = await freshComposerInA(page);
   await page.keyboard.type('@re');
   // 根这一层的 refs（文件夹）、README.md、Related Work 都以 re 开头：同档、同深度，路径最短的 refs 在前 —— 高亮默认在第一项。
+  // （Empty Dir 不中：r 后面没有 e。）
   const menu = page.getByTestId('mention-menu');
   await expect(page.getByTestId('mention-dir-refs')).toBeVisible();
   await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-dir-refs');
@@ -394,28 +398,58 @@ test('@ 列表：打 @re → 文件夹 refs 排第一 → ↵ 进入下一层（
   await expect(menu).toBeHidden();
 });
 
-test('@ 列表：名字里有空格的文件夹 → ↵ 写成 @"Related Work/、列出里面的文件 → ↵ 成标签 → 发出的文字里是 kydog-ref', async () => {
+test('@ 列表：名字里有空格的文件夹 → ↵ 写成两侧引号 @"Related Work/"、光标停在收尾引号前 → 接着打的字落在引号里并筛选 → ↵ 成标签（两侧引号一起换掉）→ 发出的文字里是 kydog-ref', async () => {
   const { page } = launched;
   const input = await freshComposerInA(page);
   await page.keyboard.type('看 @Rel');
-  // 根这一层以 rel 开头的只有 Related Work（README.md / refs 里没有 l），更深处也没有文件名命中 rel
+  // 根这一层以 rel 开头的只有 Related Work（README.md / refs / Empty Dir 里都没有这个子序列），更深处也没有文件名命中 rel
   const menu = page.getByTestId('mention-menu');
   await expect(page.getByTestId('mention-dir-Related Work')).toBeVisible();
   await expect(menu.locator('button').first()).toHaveAttribute('data-testid', 'mention-dir-Related Work');
 
   await page.keyboard.press('Enter');
   // 不带引号的话 @ 词在空格处就断了，列表当场关掉、正文里留下一截死字
-  await expect.poll(() => readBodyText(page)).toBe('看 @"Related Work/');
-  await expect(page.getByTestId('mention-item-Related Work/survey.md')).toBeVisible();
+  await expect.poll(() => readBodyText(page)).toBe('看 @"Related Work/"');
+  const survey = page.getByTestId('mention-item-Related Work/survey.md');
+  const notes = page.getByTestId('mention-item-Related Work/notes.md');
+  await expect(survey).toBeVisible();
+  await expect(notes).toBeVisible();
+
+  // 光标停在收尾引号前：打的字落在引号里，列表按它筛（notes.md 上面在，这里被筛掉）
+  await page.keyboard.type('su');
+  await expect.poll(() => readBodyText(page)).toBe('看 @"Related Work/su"');
+  await expect(survey).toBeVisible();
+  await expect(notes).toBeHidden();
+
+  // 光标移到收尾引号之后：不再是 @ 词，列表关掉；移回引号里又开
+  await page.keyboard.press('ArrowRight');
+  await expect(menu).toBeHidden();
+  await page.keyboard.press('ArrowLeft');
+  await expect(survey).toBeVisible();
 
   await page.keyboard.press('Enter');
   const chips = input.getByTestId('ref-chip');
   await expect(chips).toHaveCount(1);
   await expect(chips).toHaveAttribute('title', 'Related Work/survey.md');
   await expect(menu).toBeHidden();
+  // 整段 @"…" 连两侧引号一起换成了标签：正文里一个引号都不剩（上面几步里它确实带着引号）
+  expect(await readBodyText(page)).not.toContain('"');
   await page.keyboard.type('的结论');
   await page.keyboard.press('Enter');
   await expect.poll(async () => (await prompts()).map((p) => p.content)).toContain('看 <kydog-ref path="Related Work/survey.md"/> 的结论');
+});
+
+test('@ 列表：进入一个空文件夹 → 列表还开着，显示「没有匹配的文件」', async () => {
+  const { page } = launched;
+  await freshComposerInA(page);
+  await page.keyboard.type('看 @Emp');
+  // 根这一层以 emp 开头的只有 Empty Dir；README.md 等名字里没有 e→m→p 这个子序列
+  const menu = page.getByTestId('mention-menu');
+  await expect(page.getByTestId('mention-dir-Empty Dir')).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => readBodyText(page)).toBe('看 @"Empty Dir/"');
+  await expect(menu).toBeVisible();
+  await expect(menu).toContainText('没有匹配的文件');
 });
 
 test('md 评论：选区工具栏 → 批注框 → ⌘↵ → 标签计数 → 输入框里的卡片 → 发出去；再走一遍评论模式', async () => {

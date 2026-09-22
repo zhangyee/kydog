@@ -125,18 +125,36 @@ export function mentionReplaceEnd(text: string, caret: number, quoted: boolean):
   return quoted && text[caret] === '"' ? caret + 1 : caret;
 }
 
+/** 写回光标处 `@` 之后的文字：`text` 换掉原来的查询词，光标落在 `text` 里第 `caret` 个字符之前。 */
+export type MentionEdit = { text: string; caret: number };
+
 /**
- * @ 列表里选中文件夹时，写回 `@` 之后的文字（进入下一层）：名字里有空白或 @、或者已经在引号里浏览，
- * 写成 `"<rel>/`；否则 `<rel>/`。写出来的文字要走得通整条路：`mentionQueryAt` 解析回 `<rel>/`、会话的
- * `parseMentionQuery` 再解析出目录 `<rel>` —— 名字里有 `"`（引号断掉）或 `\`（逐级浏览把它当分隔符）时
- * 走不通，返回 null（不写一个坏掉的查询词；spec：这种文件夹不支持进入）。
+ * @ 列表里选中文件夹时写回 `@` 之后的文字（进入下一层，spec §3.5）：名字里有空白或 @、或者已经在引号里
+ * 浏览，写成两侧引号 `"<rel>/"`，**光标停在收尾引号之前**（与 macOS 终端补全 `cd "Related Work/"` 一致；
+ * 接着打的字都落在引号里）；否则 `<rel>/`、光标在末尾。
+ * 光标前那段要走得通整条路：`mentionQueryAt` 解析回 `<rel>/`、会话的 `parseMentionQuery` 再解析出目录
+ * `<rel>` —— 名字里有 `"`（引号断掉）或 `\`（逐级浏览把它当分隔符）时走不通，返回 null（不写一个坏掉的
+ * 查询词；spec：这种文件夹不支持进入）。
  */
-export function folderMentionText(rel: string, quoted: boolean): string | null {
-  const text = quoted || /[\s@]/.test(rel) ? `"${rel}/` : `${rel}/`;
-  const back = mentionQueryAt(`@${text}`);
+export function folderMentionEdit(rel: string, quoted: boolean): MentionEdit | null {
+  const edit = quoted || /[\s@]/.test(rel)
+    ? { text: `"${rel}/"`, caret: rel.length + 2 }
+    : { text: `${rel}/`, caret: rel.length + 1 };
+  const back = mentionQueryAt(`@${edit.text.slice(0, edit.caret)}`);
   if (back === null || back.query !== `${rel}/`) return null;
   const parsed = parseMentionQuery(back.query);
-  return parsed.mode === 'browse' && parsed.dir === rel && parsed.leaf === '' ? text : null;
+  return parsed.mode === 'browse' && parsed.dir === rel && parsed.leaf === '' ? edit : null;
+}
+
+/**
+ * 把光标处那个 @ 词（`@` 在 `start`，光标在 `caret`）的查询词换成 `edit`：从 `@` 之后换到
+ * `mentionReplaceEnd` —— 引号词里收尾的 `"` 正好在光标上时连它一起换（再往下进一层时整段 `"…"` 换成新的），
+ * 否则只换到光标。返回新的文字与光标位置。
+ */
+export function spliceMentionQuery(data: string, at: { start: number; caret: number; quoted: boolean }, edit: MentionEdit): { data: string; caret: number } {
+  const from = at.start + 1;
+  const to = mentionReplaceEnd(data, at.caret, at.quoted);
+  return { data: data.slice(0, from) + edit.text + data.slice(to), caret: from + edit.caret };
 }
 
 /**

@@ -9,7 +9,7 @@ import {
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
 import { refTag, splitBody } from '../../../shared/userTurn';
-import { mentionQueryAt, mentionReplaceEnd, mentionTokenAt, routePaste } from './composerHelpers';
+import { mentionQueryAt, mentionReplaceEnd, mentionTokenAt, routePaste, spliceMentionQuery, type MentionEdit } from './composerHelpers';
 import { fileTitle } from './markdown/fileTabHelpers';
 
 export type ComposerEditorHandle = {
@@ -17,10 +17,11 @@ export type ComposerEditorHandle = {
   rootEl: () => HTMLDivElement | null;
   insertMention: (path: string) => void;
   /**
-   * 把光标处 `@` 之后到光标的查询词换成 `text`（@ 列表里选中文件夹 = 进入下一层，spec §3.5 v2），
-   * 光标放到替换后的末尾，照常报正文与新的查询词。不插标签。
+   * 把光标处 `@` 之后的查询词换成 `edit.text`（@ 列表里选中文件夹 = 进入下一层，spec §3.5），光标落在
+   * `edit.caret`（两侧引号时停在收尾引号前），照常报正文与新的查询词。不插标签。换到哪儿为止与光标落点
+   * 都由 `spliceMentionQuery` 算。
    */
-  replaceMentionQuery: (text: string) => void;
+  replaceMentionQuery: (edit: MentionEdit) => void;
   /** 光标处的 @ 被 Esc 关掉了：记住它，之后不再报它，直到光标离开它或它的字变了。 */
   dismissMention: () => void;
 };
@@ -106,15 +107,16 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       onChangeRef.current(parsed.skill, parsed.body);
       onMentionRef.current(null, false);
     },
-    replaceMentionQuery: (text: string) => {
+    replaceMentionQuery: (edit: MentionEdit) => {
       const el = editorRef.current;
       const hit = caretMention(el);
       if (!el || !hit) return;
       // 就地改这个文本节点：`@` 与新的查询词必须留在同一个文本节点里，caretMention 才认得出它
       // （插一个新文本节点的话，光标前那一段就没有 `@` 了，列表会当场关掉）。
-      hit.node.replaceData(hit.start + 1, hit.end - hit.start - 1, text);
+      const next = spliceMentionQuery(hit.node.data, { start: hit.start, caret: hit.end, quoted: hit.quoted }, edit);
+      hit.node.data = next.data;
       const after = document.createRange();
-      after.setStart(hit.node, hit.start + 1 + text.length);
+      after.setStart(hit.node, next.caret);
       after.collapse(true);
       const sel = window.getSelection();
       sel?.removeAllRanges();

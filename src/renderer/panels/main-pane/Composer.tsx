@@ -14,7 +14,7 @@ import { ComposerSendButton } from './ComposerSendButton';
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
 import { ComposerActionsRow } from './ComposerActionsRow';
 import { ErrorMarginalia } from './ErrorMarginalia';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, folderMentionText } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, folderMentionEdit } from './composerHelpers';
 import { encodeUserTurn, IMAGE_UNSUPPORTED_TEXT } from '../../../shared/userTurn';
 import { toMessagePath } from './attachments';
 import { ingestFiles } from './composerIngest';
@@ -175,12 +175,13 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
   };
   /**
    * 文件插成标签；文件夹进入下一层（把 `@查询词` 换成 `@<目录>/`，名字里有空白或 @、或已在引号里时写成
-   * `@"<目录>/`），不插标签。写不出能解析回来的查询词（名字里有 `"`）就什么都不做，列表照旧开着。
+   * 两侧引号 `@"<目录>/"`、光标停在收尾引号前），不插标签。写不出能解析回来的查询词（名字里有 `"` 或 `\`）
+   * 就什么都不做，列表照旧开着。
    */
   const commitMention = (item: MentionEntry) => {
     if (item.kind === 'file') { editorHandle.current?.insertMention(item.rel); return; }
-    const text = folderMentionText(item.rel, mentionQuoted);
-    if (text !== null) editorHandle.current?.replaceMentionQuery(text);
+    const edit = folderMentionEdit(item.rel, mentionQuoted);
+    if (edit !== null) editorHandle.current?.replaceMentionQuery(edit);
   };
 
   // 光标处的 @ 比正文开头的 / 更具体：两者同时成立时 @ 赢。
