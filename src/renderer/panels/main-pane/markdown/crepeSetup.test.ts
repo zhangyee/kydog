@@ -38,3 +38,17 @@ describe('featureConfigsFor', () => {
     expect(print[F.Toolbar]).toBeUndefined();
   });
 });
+
+describe('featureConfigsFor 的图片地址', () => {
+  it('两种模式都按 md 所在目录解析相对路径；网络地址原样', async () => {
+    const root = {} as HTMLElement;
+    for (const opts of [
+      { mode: 'edit' as const, root, markdown: '', mdPath: '/p/sub/doc.md', platform: 'darwin', onCommentClick: () => {} },
+      { mode: 'print' as const, root, markdown: '', mdPath: '/p/sub/doc.md' },
+    ]) {
+      const proxy = featureConfigsFor(opts)[F.ImageBlock]?.proxyDomURL;
+      expect(await proxy?.('figs/a.png'), opts.mode).toBe('file:///p/sub/figs/a.png');
+      expect(await proxy?.('https://x.org/a.png'), opts.mode).toBe('https://x.org/a.png');
+    }
+  });
+});
