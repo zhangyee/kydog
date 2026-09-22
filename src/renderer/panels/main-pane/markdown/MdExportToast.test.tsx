@@ -74,6 +74,19 @@ describe('MdExportToastBody', () => {
     expect(p.onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  it('文字过长时省略、整句在 title 里（成功与失败都是）；两个动作键不被压缩', () => {
+    const long = { ...DONE, fileName: `${'很长的文件名'.repeat(20)}.pdf` };
+    const m = mount(MdExportToastBody, props(long));
+    const text = m.find('md-export-toast-text');
+    expect(text.props.children).toBe(`已导出 ${long.fileName}`);
+    expect(text.props.title).toBe(`已导出 ${long.fileName}`);
+    expect(text.props.style).toMatchObject({ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' });
+    for (const id of ['md-export-open', 'md-export-reveal']) expect(m.find(id).props.style, id).toMatchObject({ flexShrink: 0 });
+    // 盒子本身不超出这个标签：宽度随内容、封顶在标签宽（不是 left: 50% 剩下的半宽）
+    expect(m.find('md-export-toast').props.style).toMatchObject({ width: 'max-content', maxWidth: 'calc(100% - 32px)' });
+    expect(mount(MdExportToastBody, props(FAILED)).find('md-export-toast-text').props.title).toBe('导出失败：导出超时（60 秒）');
+  });
+
   it('Windows 文案', () => {
     expect(texts(mount(MdExportToastBody, props(DONE, { platform: 'win32' })).tree)).toContain('在资源管理器中显示');
   });

@@ -42,9 +42,10 @@ export function MdExportToastBody({ toast, platform, onOpen, onReveal, onDismiss
   const action = (testId: string, label: string, run: () => void) => (
     <button
       type="button" data-testid={testId} onClick={run} className="font-sans"
-      style={{ border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', fontSize: 12, fontWeight: 500, color: 'var(--color-accent)' }}
+      style={{ border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', fontSize: 12, fontWeight: 500, color: 'var(--color-accent)', flexShrink: 0 }}
     >{label}</button>
   );
+  const message = toast.kind === 'done' ? `已导出 ${toast.fileName}` : `导出失败：${toast.message}`;
 
   return (
     <div
@@ -52,19 +53,25 @@ export function MdExportToastBody({ toast, platform, onOpen, onReveal, onDismiss
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={{
         position: 'absolute', left: '50%', bottom: 16 + 38 + 10, transform: 'translateX(-50%)', zIndex: 6,
+        // 宽度随内容，但不超出这个标签（左右各留 16）：文件名或出错原因很长、窗格又窄时，省略的是文字，
+        // 两个动作键整颗留着（flexShrink: 0）。width: max-content 不能省：绝对定位的盒子按「包含块宽 − left」
+        // 收缩适配，left: 50% 时最多只有半个标签宽；max-width 的百分比按整个标签算。
+        width: 'max-content', maxWidth: 'calc(100% - 32px)',
         display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', borderRadius: 8, whiteSpace: 'nowrap',
         background: 'var(--color-paper)', border: '0.5px solid var(--color-ink-hair)', boxShadow: PANEL_SHADOW,
       }}
     >
+      {/* 省略掉的部分靠 title 悬停读全 */}
+      <span
+        data-testid="md-export-toast-text" title={message} className="font-sans"
+        style={{ fontSize: 12.5, color: 'var(--color-ink)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+      >{message}</span>
       {toast.kind === 'done' ? (
         <>
-          <span className="font-sans" style={{ fontSize: 12.5, color: 'var(--color-ink)' }}>{`已导出 ${toast.fileName}`}</span>
           {action('md-export-open', '打开', () => onOpen(toast.pdfPath))}
           {action('md-export-reveal', revealLabel(platform), () => onReveal(toast.pdfPath))}
         </>
-      ) : (
-        <span className="font-sans" style={{ fontSize: 12.5, color: 'var(--color-ink)' }}>{`导出失败：${toast.message}`}</span>
-      )}
+      ) : null}
     </div>
   );
 }

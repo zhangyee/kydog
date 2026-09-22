@@ -32,13 +32,24 @@ export function serializeImageBlockAlt(attrs: { ratio: number; alt: string }): s
 /**
  * 扩展后的块级图片节点。同 id 的 $nodeSchema 后注册的覆盖先注册的（@milkdown/utils 的 $node 会
  * 先滤掉同 id 的旧定义），所以 createCrepe 在 new Crepe() 之后 use 它即可 —— Crepe 自己的
- * Latex 特性改 codeBlockSchema 也是这个写法。parseMarkdown / toMarkdown 之外照原样。
+ * Latex 特性改 codeBlockSchema 也是这个写法。parseMarkdown / toMarkdown / parseDOM 之外照原样。
  */
 export const imageBlockAltSchema = imageBlockSchema.extendSchema((prev) => (ctx) => {
   const base = prev(ctx);
   return {
     ...base,
     attrs: { ...base.attrs, alt: { default: '', validate: 'string' } },
+    // 复制粘贴走的是 DOM：原 toDOM 把全部 attrs 铺成 img 的属性（alt 也就跟着出去了），原 parseDOM 只读回
+    // src / caption / ratio —— 不补这一条，编辑器里复制一张有说明文字的图再粘贴，说明文字就没了。
+    // 包一层而不是重写：src / caption / ratio 的取法、tag 选择器都照原规则。
+    parseDOM: base.parseDOM?.map((rule) => ({
+      ...rule,
+      getAttrs: (dom: HTMLElement) => {
+        const attrs = rule.getAttrs ? rule.getAttrs(dom) : rule.attrs;
+        if (attrs === false) return false;   // 原规则说不匹配
+        return { ...attrs, alt: dom.getAttribute('alt') ?? '' };
+      },
+    })),
     parseMarkdown: {
       match: base.parseMarkdown.match,
       runner: (state, node, type) => {
