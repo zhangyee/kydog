@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector, type LaunchedApp } from './helpers';
 import { inspectPdf, type PdfPage, type PdfReport } from './pdfInspect';
 
@@ -40,11 +41,36 @@ trailer
 // 8×8 的不透明纯色 PNG（RGB #3a6ea5）。断言用 naturalWidth === 8、PDF 里画了一张 8×8 的图认它。
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGOwyluKFTEMLQkAbOhTQQpargcAAAAASUVORK5CYII=';
 
+/** 纯色的 RGB PNG：IHDR + IDAT（每行前一个过滤字节 0，整体 deflate）+ IEND，每块带 CRC32。 */
+function solidPng(width: number, height: number, [r, g, b]: [number, number, number]): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;   // 每通道 8 位
+  ihdr[9] = 2;   // RGB；压缩 / 过滤 / 隔行三个字节都是 0
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x++) row.set([r, g, b], 1 + x * 3);
+  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return Buffer.concat([signature, chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+// 远宽于版心的图：守「宽图不被裁」（spec §2.5）。宽高比 4:1，打印时只可能左右被裁、高度总是整 400。
+const WIDE_PNG = { width: 1600, height: 400 };
+
 // 300 行、跨好几页的代码块，末行带标记：守「长代码块不被截断」。
 const LONG_CODE = Array.from({ length: 300 }, (_, i) => (i === 299 ? 'const LAST = "ZZ_LAST_LINE";' : `const line_${i + 1} = ${i + 1};`)).join('\n');
 // 一行远宽于版心、中间有空格可断的代码，行尾带标记：守「长行折行」与「折出来的行不计数」。
 const LONG_LINE = `const LONG = "${'x'.repeat(60)} ${Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ')} ZZ_LONG_TAIL";`;
-// python 块放在最后：打印窗口 800×600，它离视口最远，守「视口外的代码块也真的挂上 CodeMirror」。
+// python 块放在最后：打印窗口只有 600 高，它离视口最远，守「视口外的代码块也真的挂上 CodeMirror」。
 const EXPORT_MD = [
   '# 导出标题', '',
   '正文段落，带一个 [外链](https://example.org/x) 和一个 [相对链接](other.md)。', '',
@@ -52,6 +78,7 @@ const EXPORT_MD = [
   '```js', 'const a = 1;', LONG_LINE, 'const b = 2;', '```', '',
   '| 列 A | 列 B |', '|---|---|', '| 1 | 2 |', '',
   '![块级图](figs/a.png)', '',
+  '![宽图](figs/wide.png)', '',
   '$$', 'E=mc^2', '$$', '',
   '```python', 'def tail():', "    return 'ZZ_PY_TAIL'", '```', '',
 ].join('\n');
@@ -78,6 +105,7 @@ test.beforeAll(async () => {
       // md 导出 PDF（spec 2026-09-22-md-export-pdf-design §5）
       await fs.mkdir(path.join(proj, 'figs'), { recursive: true });
       await fs.writeFile(path.join(proj, 'figs', 'a.png'), Buffer.from(TINY_PNG_BASE64, 'base64'));
+      await fs.writeFile(path.join(proj, 'figs', 'wide.png'), solidPng(WIDE_PNG.width, WIDE_PNG.height, [0xa5, 0x6e, 0x3a]));
       await fs.writeFile(path.join(proj, 'export.md'), EXPORT_MD);
       await fs.writeFile(path.join(proj, 'images.md'), IMAGES_MD);
       await seedProject(home, proj, [{ id: 'thr-1', title: '测试 Thread' }]);
@@ -264,6 +292,31 @@ function rowWith(r: PdfReport, needle: string): string {
   return r.lines.find((l) => l.includes(needle)) ?? `<PDF 里没有含「${needle}」的行>`;
 }
 
+/**
+ * 宽图（WIDE_PNG）在这份 PDF 里的每一次绘制：嵌进去的像素宽、印在页上的宽（pt），以及那一页的版心宽
+ * （页宽 − 左右边距，pt）。按高度认它：夹具里另一张图是 8×8，而宽图被左右裁掉时高度仍是整 400。
+ */
+function wideDraws(r: PdfReport, marginPt: number): Array<{ width: number; drawnWidth: number; column: number }> {
+  return r.pages.flatMap((p) => p.images.filter((i) => i.height === WIDE_PNG.height)
+    .map((i) => ({ width: i.width, drawnWidth: i.drawn.width, column: Number((p.width - 2 * marginPt).toFixed(2)) })));
+}
+
+/**
+ * 宽图既没被裁、也印满了版心（spec §2.5）。
+ * - 嵌进去的是整张 1600 宽：打印窗口比版心宽时，Crepe 在图片 load 时按窗口里的块宽把高度写死，打印时宽度被
+ *   max-width 压回版心、高度不变，object-fit: cover 把左右裁掉，Skia 只嵌看得见的那一截（窗口 800、A4 标准、
+ *   常驻滚动条下是 1230×400，2026-09-22 探针实测）。
+ * - 印出来的宽 ≈ 版心宽：打印窗口里的常驻滚动条没藏掉（print.css）时块宽少 15px，图不被裁、但印窄一截
+ *   （A4 标准 440pt 对版心 452pt，同一探针）；窗口宽没跟着这次的纸张 / 边距走时差得更多。容差 1pt：
+ *   窗口宽取整到整像素、Chromium 的 A4 比名义纸宽略宽，两项加起来不到 1pt。
+ */
+function expectWideImageFillsColumn(r: PdfReport, marginPt: number): void {
+  const draws = wideDraws(r, marginPt);
+  expect(draws.map((d) => d.width), '宽图嵌进 PDF 的像素宽（被裁时小于 1600）').toEqual([WIDE_PNG.width]);
+  const [{ drawnWidth, column }] = draws;
+  expect(Math.abs(drawnWidth - column), `宽图印成 ${drawnWidth}pt，版心 ${column}pt`).toBeLessThan(1);
+}
+
 /** 一份 PDF 可以拿来和 PDF 标签对照的两个事实：页数、第 1 页的高宽比（两位小数：A4 是 1.41，Letter 是 1.29）。 */
 function onDisk(r: PdfReport): { pages: number; ratio: number } {
   return { pages: r.pages.length, ratio: Number((r.pages[0].height / r.pages[0].width).toFixed(2)) };
@@ -364,7 +417,9 @@ test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter
   // 5 页脚页码「— N —」
   expect(a4.text).toMatch(/—\s*2\s*—/);
   // 6 相对路径图片按 md 所在目录解析、画进了 PDF：这张 8×8（载不到时是坏图，不会画它）
-  expect(a4.pages.flatMap((p) => p.images)).toContainEqual({ width: 8, height: 8 });
+  expect(a4.pages.flatMap((p) => p.images)).toContainEqual(expect.objectContaining({ width: 8, height: 8 }));
+  //   远宽于版心的那张整张嵌进、印满版心宽（打印窗口开成这一次的版心宽）
+  expectWideImageFillsColumn(a4, 72);
   // 7 公式按 KaTeX 渲染：嵌入的字体里有 KaTeX 家族（只剩 TeX 原文时没有）
   expect(a4.fontNames.some((f) => f.startsWith('KaTeX_')), `嵌入字体：${a4.fontNames.join(', ')}`).toBe(true);
   // 8 超长行折行：行尾标记完整落在版心内（右边距 72pt）。.cm-content 不放开 flex / min-width 时它按最长行
@@ -414,6 +469,9 @@ test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter
     expect(p.height).toBeCloseTo(792, 0);
   }
   expect(leftEdge(letter.pages[0])).toBeCloseTo(36, 0);   // 窄边距 0.5in
+  // 换了纸张与边距，打印窗口的宽也跟着换：宽图照样整张、印满这一次的版心（540pt；窗口若还是 A4 标准的
+  // 602px，图不被裁、但只印 452pt 宽）
+  expectWideImageFillsColumn(letter, 36);
   // 否定：页码关了就读不出「— 2 —」。正向证明是第一次导出的第 5 条（同一条用例、同一个读法）；
   // 先证明确实有第 2 页可以缺页码
   expect(letter.pages.length).toBeGreaterThan(1);

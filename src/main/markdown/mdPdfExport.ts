@@ -13,7 +13,7 @@ import { KydogError } from '../../shared/errors';
 import type { MdExportOptions } from '../../shared/mdExport';
 import { logger } from '../log';
 import { settingsService } from '../settings/settingsService';
-import { printOptionsFor } from './printOptions';
+import { printableWidthPx, printOptionsFor } from './printOptions';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -72,12 +72,16 @@ function printPageLocation(): { url?: string; file?: string } {
 
 const abandoned = () => new KydogError('fs.write_failed', '导出已被放弃（超时）');
 
-async function createPrintWindow(onGone: (err: Error) => void, generation: number): Promise<BrowserWindow> {
+async function createPrintWindow(onGone: (err: Error) => void, generation: number, width: number): Promise<BrowserWindow> {
   if (windowGeneration !== generation) throw abandoned();
   const win = new BrowserWindow({
     show: false,
-    width: 800,
+    // 内容宽 = 这次导出的版心宽（printableWidthPx，spec §2.5）：块级图片在 load 时按当下的块宽写死高度，
+    // 窗口比版心宽的话打印时宽图被裁。useContentSize：width 量的是网页的宽，不含窗框（Windows 的窗框
+    // 会从 width 里再吃掉十几个像素）。页面自己的滚动条由 print.css 藏掉，理由在那边。
+    width,
     height: 600,
+    useContentSize: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -128,13 +132,17 @@ async function doExport(args: ExportPdfArgs, generation: number): Promise<{ pdfP
 
   let pdf: Buffer;
   try {
-    const win = await Promise.race([createPrintWindow(onGone, generation), gone]);
+    const win = await Promise.race([createPrintWindow(onGone, generation, printableWidthPx(args.options)), gone]);
     await Promise.race([win.webContents.executeJavaScript(code) as Promise<void>, gone]);
     pdf = await Promise.race([win.webContents.printToPDF(printOptionsFor(args.options)), gone]);
   } catch (err) {
     if (err instanceof KydogError) throw err;
     throw new KydogError('fs.write_failed', `打印页渲染失败：${String(err)}`, err);
   }
+  // printToPDF 恰在超时那一刻兑现时，这次导出已经被判了超时（用户看到「导出超时」、队列放行了下一次），
+  // 这里还写盘就是用户以为失败了、文件却换了；下一次导出写同一路径的话，还可能被这份旧的盖掉。
+  // 同 createPrintWindow 的做法：代号变了就是作废，不写。
+  if (windowGeneration !== generation) throw abandoned();
   try {
     await atomicWriteBytes(args.outPath, pdf);
   } catch (err) {
