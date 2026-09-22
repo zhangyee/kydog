@@ -6,7 +6,7 @@ import { ASK_TOOL_NAME, isAskOutcome, type AskQuestion } from '../../shared/askQ
 export type PiTextContent = { type: 'text'; text: string };
 export type PiThinkingContent = { type: 'thinking'; thinking: string };
 export type PiToolCall = { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> };
-export type PiImageContent = { type: 'image'; [k: string]: unknown };
+export type PiImageContent = { type: 'image'; data?: unknown; mimeType?: unknown; [k: string]: unknown };
 
 export type PiAssistantMessage = {
   role: 'assistant';
@@ -69,13 +69,18 @@ export function normalizePiMessages(messages: PiMessage[], idPrefix = 'm'): Mess
   for (const m of messages) {
     if (m.role === 'user') {
       flushAssistant();
-      const content = typeof m.content === 'string'
-        ? m.content
-        : (m.content as (PiTextContent | PiImageContent)[])
-            .filter((c): c is PiTextContent => c.type === 'text')
-            .map(c => c.text)
-            .join('');
-      out.push({ id: `${idPrefix}#${out.length}`, role: 'user', createdAt: new Date().toISOString(), content });
+      const parts: (PiTextContent | PiImageContent)[] = typeof m.content === 'string'
+        ? [{ type: 'text', text: m.content }]
+        : m.content;
+      const content = parts.filter((c): c is PiTextContent => c.type === 'text').map((c) => c.text).join('');
+      // 图片块按原顺序保留：`<image n=…>` 靠这个顺序对上是哪一张（userTurn.ts）。
+      const images = parts
+        .filter((c): c is PiImageContent => c.type === 'image' && typeof c.data === 'string' && typeof c.mimeType === 'string')
+        .map((c) => ({ data: c.data as string, mimeType: c.mimeType as string }));
+      out.push({
+        id: `${idPrefix}#${out.length}`, role: 'user', createdAt: new Date().toISOString(), content,
+        ...(images.length > 0 ? { images } : {}),
+      });
     } else if (m.role === 'assistant') {
       // 协议层并行：当且仅当本条 pi assistant message 的 content 里 ≥2 个 toolCall 时，
       // 它们共享同一个 parallelGroupId。跨 message 永不共享。

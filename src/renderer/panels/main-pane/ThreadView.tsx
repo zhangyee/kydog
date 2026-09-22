@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type DragEvent } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MessageList } from './MessageList';
@@ -8,6 +8,7 @@ import { ThreadBreadcrumb } from './ThreadBreadcrumb';
 import { QuestionComposer } from './QuestionComposer';
 import { useAskStore } from '../../stores/askStore';
 import { ErrorMarginalia } from './ErrorMarginalia';
+import { ingestFiles } from './composerIngest';
 
 export function ThreadView({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId]);
@@ -19,6 +20,11 @@ export function ThreadView({ threadId }: { threadId: string }) {
   // 失败连同 threadId 一起记：切走再切回来是另一条 thread 的事，不该继承上一条的错误。
   const [failure, setFailure] = useState<{ threadId: string; message: string } | null>(null);
   const error = failure?.threadId === threadId ? failure.message : null;
+
+  const [dragDepth, setDragDepth] = useState(0);
+  // 只有普通输入框在场时接：提问卡片在场时没有托盘可放（spec §3.1）。
+  const acceptsDrop = !askPending;
+  const isFileDrag = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
 
   useEffect(() => {
     // 失败后不自动重试：messages 仍是 undefined，不挡一下这个 effect 会被无限重跑。
@@ -60,7 +66,19 @@ export function ThreadView({ threadId }: { threadId: string }) {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div
+      className="h-full flex flex-col"
+      style={{ position: 'relative' }}
+      onDragEnter={(e) => { if (!acceptsDrop || !isFileDrag(e)) return; e.preventDefault(); setDragDepth((d) => d + 1); }}
+      onDragOver={(e) => { if (!acceptsDrop || !isFileDrag(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+      onDragLeave={(e) => { if (!acceptsDrop || !isFileDrag(e)) return; setDragDepth((d) => Math.max(0, d - 1)); }}
+      onDrop={(e) => {
+        if (!acceptsDrop || !isFileDrag(e)) return;
+        e.preventDefault();
+        setDragDepth(0);
+        void ingestFiles(threadId, Array.from(e.dataTransfer.files));
+      }}
+    >
       {!narrow && <ThreadBreadcrumb threadId={threadId} />}
       <div className="flex-1 min-h-0 flex flex-col">
         {messages.length === 0 ? (
@@ -74,6 +92,20 @@ export function ThreadView({ threadId }: { threadId: string }) {
           </>
         )}
       </div>
+      {dragDepth > 0 ? (
+        <div
+          data-testid="drop-overlay"
+          style={{
+            position: 'absolute', inset: 8, zIndex: 20, pointerEvents: 'none',
+            border: '1px dashed var(--color-ink-hair)', borderRadius: 8,
+            background: 'color-mix(in srgb, var(--color-paper) 86%, transparent)',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+          }}
+        >
+          <div className="font-serif" style={{ fontSize: 16, color: 'var(--color-ink)' }}>松开，添加到这条消息</div>
+          <div className="font-sans" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>图片直接发给模型 · 其他文件以路径引用</div>
+        </div>
+      ) : null}
     </div>
   );
 }

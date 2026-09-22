@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
 import { KydogError } from '../../shared/errors';
+import { resolveAgainstCwd } from './resolveAgainstCwd';
 
 export const READ_DOCX_TOOL_NAME = 'read_docx';
 
@@ -20,6 +21,12 @@ export type ReadDocxDeps = {
   extractDocx?: (filePath: string) => Promise<string>;
   /** 只为测试注入。默认走 word-extractor（.doc → 纯文本）。 */
   extractDoc?: (filePath: string) => Promise<string>;
+  /**
+   * 这条 session 的 cwd（项目目录），由 sessionFactory 传入 opts.cwd。
+   * 给了才会把非绝对路径按 cwd 补全，见 validatePath 与 resolveAgainstCwd 的注释。
+   * 不给（旧调用方 / 测试）时行为与改动前完全一致：相对路径照旧被拒。
+   */
+  cwd?: string;
 };
 
 async function defaultExtractDocx(filePath: string): Promise<string> {
@@ -48,24 +55,32 @@ async function defaultExtractDoc(filePath: string): Promise<string> {
   return parts.join('\n');
 }
 
-/** 路径规则与 pdfRaster.validateRenderArgs 同一套：绝对路径、无 NUL、无 .. 段。 */
-function validatePath(raw: unknown): { filePath: string; kind: 'docx' | 'doc' } {
+/**
+ * 路径规则与 pdfRaster.validateRenderArgs 同一套：绝对路径、无 NUL、无 .. 段。
+ *
+ * 给了 cwd 时，先用 resolveAgainstCwd 把非绝对路径按这条 session 的 cwd（项目目录）补全，
+ * 再交给下面这套校验——补全只做字符串拼接，不 normalize，`..` 段的检查照样能拦下越界的
+ * 相对路径。没给 cwd（旧调用方 / 测试）时 resolveAgainstCwd 原样返回，相对路径照旧被拒，
+ * 行为与改动前完全一致。
+ */
+function validatePath(raw: unknown, cwd?: string): { filePath: string; kind: 'docx' | 'doc' } {
   if (typeof raw !== 'string' || raw.length === 0) {
     throw new KydogError('fs.read_failed', 'read_docx 需要一个文件路径');
   }
   if (raw.includes('\u0000')) {
     throw new KydogError('fs.read_failed', '路径里不能含 NUL 字符');
   }
-  if (!path.isAbsolute(raw)) {
-    throw new KydogError('fs.read_failed', `路径必须是绝对路径：${raw}`);
+  const resolved = resolveAgainstCwd(raw, cwd) as string;
+  if (!path.isAbsolute(resolved)) {
+    throw new KydogError('fs.read_failed', `路径必须是绝对路径：${resolved}`);
   }
-  if (raw.split(/[\\/]/).includes('..')) {
-    throw new KydogError('fs.read_failed', `路径里不能含 .. 段：${raw}`);
+  if (resolved.split(/[\\/]/).includes('..')) {
+    throw new KydogError('fs.read_failed', `路径里不能含 .. 段：${resolved}`);
   }
-  const lower = raw.toLowerCase();
-  if (lower.endsWith('.docx')) return { filePath: raw, kind: 'docx' };
-  if (lower.endsWith('.doc')) return { filePath: raw, kind: 'doc' };
-  throw new KydogError('fs.read_failed', `只能读 .doc / .docx 文件：${raw}`);
+  const lower = resolved.toLowerCase();
+  if (lower.endsWith('.docx')) return { filePath: resolved, kind: 'docx' };
+  if (lower.endsWith('.doc')) return { filePath: resolved, kind: 'doc' };
+  throw new KydogError('fs.read_failed', `只能读 .doc / .docx 文件：${resolved}`);
 }
 
 function validateWindow(offset: unknown, maxLength: unknown): { offset: number; maxLength: number } {
@@ -92,7 +107,7 @@ function windowText(text: string, offset: number, maxLength: number): string {
 }
 
 const ParamsSchema = Type.Object({
-  path: Type.String({ description: 'Word 文档的绝对路径，须以 .doc 或 .docx 结尾' }),
+  path: Type.String({ description: '文件路径：绝对路径，或相对项目目录的路径，须以 .doc 或 .docx 结尾' }),
   offset: Type.Optional(Type.Integer({
     description: '从第几个字符开始读，默认 0。上一次结果被截断时，按提示里给的值续读',
   })),
@@ -127,7 +142,7 @@ export function createReadDocxTool(deps: ReadDocxDeps = {}) {
       _onUpdate?: unknown,
       _ctx?: unknown,
     ): Promise<{ content: ToolContent[] }> {
-      const { filePath, kind } = validatePath(params?.path);
+      const { filePath, kind } = validatePath(params?.path, deps.cwd);
       const { offset, maxLength } = validateWindow(params?.offset, params?.max_length);
       if (signal?.aborted) throw new KydogError('agent.aborted', 'Word 文档读取已中止');
 

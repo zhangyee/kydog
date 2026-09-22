@@ -20,6 +20,11 @@ export function MessageList({ threadId }: { threadId: string }) {
   const narrow = useUiStore((s) => s.browserOpen);
 
   const userName = useIdentityStore((s) => s.userName);
+  // 历史里的用户消息按发出去时所在的对话找项目路径，用来把附件/引用里的
+  // 相对路径解析成绝对路径去开（UserMessage 里 openerFor）。
+  const projectPath = useThreadsStore((s) =>
+    Object.values(s.threadsByProject).flat().find((t) => t.id === threadId)?.projectPath ?? null,
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +51,7 @@ export function MessageList({ threadId }: { threadId: string }) {
         <ThreadHeader threadId={threadId} />
         {messages.map((m) =>
           m.role === 'user'
-            ? <UserMessage key={m.id} name={userName} content={m.content} createdAt={m.createdAt} />
+            ? <UserMessage key={m.id} name={userName} content={m.content} images={m.images} createdAt={m.createdAt} projectPath={projectPath} />
             // history 里的消息按定义已经落定：主进程在 pi 的 agent_end 上发
             // run.message_end，bootstrap 收到才把 buffer 搬进这里。
             : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} settled createdAt={m.createdAt} />,

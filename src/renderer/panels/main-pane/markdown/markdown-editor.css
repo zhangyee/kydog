@@ -78,3 +78,55 @@
   background: var(--color-hover-bg);
   color: var(--color-ink);
 }
+
+/* 被批注的句子：1px 虚下划线（spec §2.5）。 */
+.kydog-md-editor .kydog-comment-mark {
+  text-decoration: underline dashed var(--color-marginalia);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+/* 评论模式下隐藏 Crepe 的选区工具栏，免得与批注框叠在一起（spec §2.1）。 */
+.kydog-comment-mode .milkdown-toolbar { display: none !important; }
+/* 没有对话：工具栏里末尾那颗评论键变淡、点不动（裁定 5）。 */
+.kydog-no-thread .milkdown-toolbar > .toolbar-item:last-child { opacity: 0.35; pointer-events: none; }
+
+/* 选区工具栏 hover 提示（Issue 1）。Crepe 的 .milkdown-toolbar 默认 overflow: hidden，
+   会把定位在按钮外面的提示裁掉，这里改成 visible；toolbar-item 需要 position: relative
+   给提示当定位上下文。 */
+.kydog-md-editor .milkdown-toolbar { overflow: visible; }
+.kydog-md-editor .toolbar-item { position: relative; }
+
+.kydog-md-editor .kydog-tb-tip {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  margin-bottom: 6px; /* 与按钮的 6px 缝，跟 Tooltip.tsx 的 TOOLTIP_GAP 一致 */
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1.4;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  white-space: nowrap;
+  pointer-events: none;
+  /* 不跟着 toolbar-item svg 的选择器走，也不参与按钮布局（button 是 flex 容器时
+     绝对定位的提示不占位，宽高由自身内容撑开）。 */
+  width: auto;
+  height: auto;
+  fill: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease, visibility 0.1s ease;
+  transition-delay: 0s;
+  z-index: 20;
+}
+
+/* ~200ms 悬停延迟：纯 CSS，靠 transition-delay 而不是 JS 计时器。 */
+.kydog-md-editor .toolbar-item:hover .kydog-tb-tip {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 200ms;
+}

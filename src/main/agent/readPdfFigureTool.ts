@@ -4,6 +4,7 @@ import {
   MAX_PAGE, MAX_SCALE, MIN_SCALE, renderPageToPng, validateRenderArgs,
 } from '../pdf/pdfRaster';
 import { KydogError } from '../../shared/errors';
+import { resolveAgainstCwd } from './resolveAgainstCwd';
 
 export const READ_PDF_FIGURE_TOOL_NAME = 'read_pdf_figure';
 
@@ -43,10 +44,16 @@ export type ReadPdfFigureDeps = {
   readTool: ReadToolLike;
   /** 只为测试注入。 */
   render?: typeof renderPageToPng;
+  /**
+   * 这条 session 的 cwd（项目目录），由 sessionFactory 传入 opts.cwd。
+   * 给了才会把非绝对路径按 cwd 补全，见 execute 里 resolveAgainstCwd 那一步的注释。
+   * 不给（旧调用方 / 测试）时行为与改动前完全一致：相对路径照旧被 validateRenderArgs 拒绝。
+   */
+  cwd?: string;
 };
 
 const ParamsSchema = Type.Object({
-  path: Type.String({ description: 'PDF 文件的绝对路径，必须以 .pdf 结尾' }),
+  path: Type.String({ description: '文件路径：绝对路径，或相对项目目录的路径，必须以 .pdf 结尾' }),
   page: Type.Optional(Type.Integer({
     description: `页码，从 1 开始，默认 1（插图 PDF 通常只有一页）。上限 ${MAX_PAGE}`,
   })),
@@ -96,8 +103,13 @@ export function createReadPdfFigureTool(deps: ReadPdfFigureDeps) {
       // 校验必须在最前面，不能留给 renderPageToPng 顺带做：下面的无 vision 分支根本走不到
       // 渲染，非法参数会拿到一句能力哨兵而不是契约规定的 KydogError。
       // 用的是 renderPageToPng 内部同一个函数（复用，不是复制），两个入口的判定不会漂移。
+      //
+      // resolveAgainstCwd 必须在 validateRenderArgs 之前、且只做字符串拼接——不能先
+      // normalize 再校验，否则 `..` 段会被吃掉，越界路径就检测不出来了（见该函数注释）。
+      // validateRenderArgs 本身不改：pdf.renderPage RPC（渲染层调）也用它，那一侧仍然
+      // 只收绝对路径，agent 工具在调它之前已按 session cwd 补全过相对路径。
       const args = validateRenderArgs({
-        path: params?.path,
+        path: resolveAgainstCwd(params?.path, deps.cwd) as string,
         page: params?.page ?? 1,
         scale: params?.scale,
       });

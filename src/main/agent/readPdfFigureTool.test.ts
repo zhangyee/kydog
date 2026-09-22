@@ -27,7 +27,7 @@ const WITHOUT_IMAGE: Content[] = [
 // 两个假货都必须写出参数类型：vi.fn(async () => …) 推出来是零参数元组，
 // 后面 mock.calls[0][n] 会被 tsc 判成 TS2493。
 // 也不要用 as never 把注入处的类型检查关掉 —— 那正是这里要顺带验的东西。
-function make(opts: { content?: Content[]; readThrows?: unknown } = {}) {
+function make(opts: { content?: Content[]; readThrows?: unknown; cwd?: string } = {}) {
   const render = vi.fn(async (_args: RenderPageArgs, _signal?: AbortSignal) => ({ pngPath: PNG }));
   const readTool = {
     execute: vi.fn(async (
@@ -41,7 +41,7 @@ function make(opts: { content?: Content[]; readThrows?: unknown } = {}) {
       return { content: opts.content ?? WITH_IMAGE };
     }),
   };
-  const tool = createReadPdfFigureTool({ render, readTool });
+  const tool = createReadPdfFigureTool({ render, readTool, cwd: opts.cwd });
   return { render, readTool, tool };
 }
 
@@ -127,5 +127,33 @@ describe('read_pdf_figure', () => {
     const { tool } = make({ readThrows: new Error('Operation aborted') });
     await expect(tool.execute('tc1', { path: PDF }, ac.signal, undefined, VISION))
       .rejects.toMatchObject({ name: 'KydogError', code: 'agent.aborted' });
+  });
+});
+
+describe('read_pdf_figure × 相对项目目录的路径（cwd）', () => {
+  it('给了 cwd：相对路径拼到 cwd 后面传给 render；.. 段仍被拒；没给 cwd 时相对路径仍被拒', async () => {
+    const cwd = '/proj/xyz';
+
+    // 正向前置：给了 cwd 时，相对路径确实能通过校验，render 收到拼接后的绝对路径
+    // （validateRenderArgs 在末尾会 path.normalize 一次，与其余用例的写法保持一致）。
+    const ok = make({ cwd });
+    await ok.tool.execute('tc1', { path: 'figs/a.pdf' }, undefined, undefined, VISION);
+    expect(ok.render.mock.calls[0][0]).toEqual({
+      path: path.normalize(`${cwd}/figs/a.pdf`), page: 1, scale: 2,
+    });
+
+    // 同一条用例里翻面：带 .. 段的相对路径，拼上 cwd 后仍然含 ..，被下游校验器拒绝。
+    const rejected = make({ cwd });
+    await expect(
+      rejected.tool.execute('tc1', { path: 'figs/../../etc/x.pdf' }, undefined, undefined, VISION),
+    ).rejects.toMatchObject({ name: 'KydogError', code: 'fs.read_failed' });
+    expect(rejected.render).not.toHaveBeenCalled();
+
+    // 再翻一面：没给 cwd 时，同一个相对路径依旧被拒——行为与改动前完全一致。
+    const noCwd = make();
+    await expect(
+      noCwd.tool.execute('tc1', { path: 'figs/a.pdf' }, undefined, undefined, VISION),
+    ).rejects.toMatchObject({ name: 'KydogError', code: 'fs.read_failed' });
+    expect(noCwd.render).not.toHaveBeenCalled();
   });
 });

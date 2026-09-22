@@ -66,8 +66,11 @@ export type AssistantBlock =
   | { kind: 'error'; text: string }
   | AskBlock;
 
+/** 用户消息里的一张图（base64，不带 data: 前缀），与 pi `ImageContent` 的 data / mimeType 同形。 */
+export type MessageImage = { data: string; mimeType: string };
+
 export type Message =
-  | { id: string; role: 'user'; createdAt: string; content: string }
+  | { id: string; role: 'user'; createdAt: string; content: string; images?: MessageImage[] }
   | { id: string; role: 'assistant'; createdAt: string; blocks: AssistantBlock[] };
 
 export type FsNode = { name: string; path: string; kind: 'file' | 'dir' };

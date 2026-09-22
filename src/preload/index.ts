@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import {
   RPC_CHANNEL, EVENT_CHANNEL,
   type RpcMethod, type RpcArgs, type RpcResult, type RpcResponse,
@@ -26,6 +26,11 @@ const bridge = {
     ipcRenderer.on(EVENT_CHANNEL, handler);
     return () => ipcRenderer.off(EVENT_CHANNEL, handler);
   },
+  /**
+   * 拖入 / 粘贴 / 回形针拿到的 File 在磁盘上的路径；**空串 = 磁盘上没有这个文件**（例如粘贴的截图）。
+   * Electron 32 起 `File.path` 已移除，只能走 webUtils（spec §3.2）。
+   */
+  pathForFile: (file: File): string => webUtils.getPathForFile(file),
 };
 
 contextBridge.exposeInMainWorld('kydog', bridge);

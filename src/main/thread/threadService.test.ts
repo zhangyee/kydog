@@ -6,6 +6,7 @@ import * as paths from '../persist/paths';
 import { saveIndex } from '../persist/indexFile';
 import { threadService } from './threadService';
 import { agentService } from '../agent/AgentService';
+import { encodeUserTurn, refTag } from '../../shared/userTurn';
 
 vi.mock('./titleService', () => ({
   titleService: { generateForThread: vi.fn() },
@@ -133,6 +134,31 @@ describe('threadService.send → titleService trigger', () => {
     await threadService.send({ threadId: t.id, content: 'Hi there' });
     expect(titleService.generateForThread).toHaveBeenCalledTimes(1);
     expect(titleService.generateForThread).toHaveBeenCalledWith(t.id, 'Hi there');
+  });
+
+  it('交给起标题的是纯文字：只有批注 / 只有附件的消息给引文 / 附件名，不是 <kydog- 开头的原文；发给 agent 的照旧是原文（F6）', async () => {
+    const t = await threadService.create({ projectPath: '/p' });
+    const commentOnly = encodeUserTurn({ body: '', attachments: [], comments: [{ file: 'ch3.md', section: '3.2 偏好对齐', quote: '将 β 固定为 0.1', note: '取值依据？' }] }).text;
+    const imageOnly = encodeUserTurn({ body: '', attachments: [{ kind: 'image', name: '截图 1', data: 'AAAA', mimeType: 'image/png' }], comments: [] });
+    const withRef = `对比 ${refTag('refs/dpo-2023.pdf')} 的表 2`;
+    // 正向：原文确实以标签开头 —— 下面「不是 <kydog- 开头」才有意义。
+    expect(commentOnly.startsWith('<kydog-comment')).toBe(true);
+    expect(imageOnly.text.startsWith('<kydog-attachments>')).toBe(true);
+
+    await threadService.send({ threadId: t.id, content: commentOnly });
+    expect(titleService.generateForThread).toHaveBeenLastCalledWith(t.id, '将 β 固定为 0.1');
+    expect(agentService.send).toHaveBeenLastCalledWith(t.id, '/p', commentOnly, []);
+
+    await threadService.send({ threadId: t.id, content: imageOnly.text, images: imageOnly.images });
+    expect(titleService.generateForThread).toHaveBeenLastCalledWith(t.id, '截图 1');
+    expect(agentService.send).toHaveBeenLastCalledWith(t.id, '/p', imageOnly.text, imageOnly.images);
+
+    await threadService.send({ threadId: t.id, content: withRef });
+    expect(titleService.generateForThread).toHaveBeenLastCalledWith(t.id, '对比 dpo-2023.pdf 的表 2');
+
+    for (const [, source] of (titleService.generateForThread as any).mock.calls as Array<[string, string]>) {
+      expect(source.startsWith('<kydog-')).toBe(false);
+    }
   });
 
   it('does not fire when thread already has a non-placeholder title', async () => {

@@ -492,3 +492,22 @@ describe('normalizePiMessages — 以错误结束的一轮', () => {
     });
   });
 });
+
+describe('normalizePiMessages —— 用户消息保留图片', () => {
+  it('图片块按原顺序进 images，文字块照旧拼成 content；纯文字消息不带 images 键', () => {
+    const out = normalizePiMessages([
+      { role: 'user', content: [
+        { type: 'text', text: 'a' },
+        { type: 'image', data: 'X', mimeType: 'image/png' },
+        { type: 'text', text: 'b' },
+        { type: 'image', data: 'Y', mimeType: 'image/jpeg' },
+      ] },
+      { role: 'user', content: 'plain' },
+    ] as PiMessage[], 't');
+    expect(out[0]).toMatchObject({ role: 'user', content: 'ab', images: [
+      { data: 'X', mimeType: 'image/png' }, { data: 'Y', mimeType: 'image/jpeg' },
+    ] });
+    expect(out[1]).toMatchObject({ role: 'user', content: 'plain' });
+    expect(out[1]).not.toHaveProperty('images');
+  });
+});

@@ -39,6 +39,9 @@ declare const MAIN_WINDOW_VITE_NAME: string;
  * 挡住的东西和理由：
  * - 非绝对路径：这个入口同时给 agent 用，agent 的 cwd 与主进程的 process.cwd() 不是
  *   一回事，相对路径会解析到别处。要就要说清楚是哪个文件。
+ *   agent 工具（read_pdf_figure）在调这个函数之前，已经按这条 session 的 cwd 把相对路径
+ *   补成绝对路径了（见 readPdfFigureTool.ts 与 resolveAgainstCwd.ts）；这个函数本身不改——
+ *   pdf.renderPage RPC（渲染层调）也用它，那一侧仍然只收绝对路径。
  * - `..` 段与 NUL：文件名可能直接来自论文附件包，那是外部输入。注意不能先 normalize
  *   再查 —— `/a/../../etc/x.pdf` 归一化后是 `/etc/x.pdf`，`..` 已经被吃掉了。
  * - 非 .pdf 后缀：这个工具只做 PDF，别的格式进来只会在 pdf.js 里炸得莫名其妙。

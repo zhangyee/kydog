@@ -66,21 +66,30 @@ export type FixtureEvent =
     }
   | { after_ms: number; type: 'agent_end'; reason: 'completed' | 'aborted' | 'error'; errorMessage?: string };
 
+import { decodeUserTurn } from '../../src/shared/userTurn';
+
+/** 假会话自称的模型能收什么输入；缺省 ['text', 'image']。 */
+type FixtureModel = { modelInput?: ('text' | 'image')[] };
+
 /**
  * 两种形状：
  *  · `events` —— 一份剧本，每一轮不管用户发了什么都整份重放（老 fixture 都是这种）。
- *  · `scripts` —— 按这一轮用户发的原文（trim 后逐字）挑剧本。让同一次启动里的几个流式
+ *  · `scripts` —— 按这一轮用户发的正文（去掉结构块、trim 后逐字）挑剧本。让同一次启动里的几个流式
  *    场景共用一份 fixture，不必每个场景冷启动一次应用。认不到名字就当场抛错并列出有哪些
  *    剧本，**不回落**到任何一份 —— 静默回落会让用例在错的剧本上变绿。
  */
 export type FixtureFile =
-  | { events: FixtureEvent[] }
-  | { scripts: Record<string, FixtureEvent[]> };
+  | ({ events: FixtureEvent[] } & FixtureModel)
+  | ({ scripts: Record<string, FixtureEvent[]> } & FixtureModel);
 
-/** 这一轮该放哪份剧本。纯函数，单测直接测它。 */
-export function pickFixtureEvents(file: FixtureFile, content: string): FixtureEvent[] {
+/**
+ * 这一轮该放哪份剧本。纯函数，单测直接测它。
+ * `scripts` 按**正文**挑（结构块不参与）：带附件 / 批注的消息，剧本名只写正文那句。
+ * 正文按 userTurn 的严格语法切出来 —— 图片数对不上时结构块不被承认，整条原文当 key。
+ */
+export function pickFixtureEvents(file: FixtureFile, content: string, imageCount = 0): FixtureEvent[] {
   if ('events' in file) return file.events;
-  const key = content.trim();
+  const key = decodeUserTurn(content, imageCount).bodyRaw.trim();
   const events = file.scripts[key];
   if (!events) {
     throw new Error(`fixture 里没有名为「${key}」的剧本；有：${Object.keys(file.scripts).map((k) => `「${k}」`).join('、')}`);

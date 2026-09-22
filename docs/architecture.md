@@ -44,3 +44,13 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 其余 `run.*` 事件都来自 `AgentService.subscribe()` 对 pi session 的订阅：`run.started` 来自 `agent_start`，两个 delta 来自 message 流，普通 `run.tool_call_*` 来自 `tool_execution_start` / `tool_execution_end`，`run.ended` 来自 `agent_end`。另有一个 `run.resync` 谁都不来自——它是上面那段重放的帧头，只在 `loadHistory` 里发给单个窗口，也不进 journal。
 
 其他非直觉点（为什么按 run 而不是按 pi message 合成 messageId、为什么并行判定要读 `message_end` 携带的 content）写在 `src/main/agent/AgentService.ts` 的注释里，改那块之前先读。
+
+## 用户消息里的结构（附件、批注、@ 引用）
+
+**发给模型的那段文字就是唯一事实**，不另存结构。输入框用 `src/shared/userTurn.ts` 的 `encodeUserTurn` 把附件、批注写成 `<kydog-attachments>` / `<kydog-comment>` 块接在正文后面、@ 引用写成行内 `<kydog-ref path="…"/>`（引用文件夹时路径以 `/` 结尾，在 @ 列表里选中那一刻按 `project.readDir` 给的类型写下，之后不再猜；标签上的名字输入框、历史、自动标题都走 `userTurn.ts` 的 `refLabel`），图片作为 pi 的图片块随 `thread.send` 的 `images` 走（`threadService.send` → `AgentService.send` → `session.prompt(text, { images })`）。`threadService.send` 这一跳还在对话仍叫「无标题」时触发起标题，交给 `titleService` 的是 `turnTitleSource` 解出来的纯文字（正文里的引用换成文件名；正文空就用第一条批注的引文、再没有就用第一个附件的名字），不是带标签的原文。历史显示（`UserMessage`）用同一个模块的 `decodeUserTurn` 解回来：刚发出的与重新载入的走同一段代码，所以不会对不上。解码只认严格格式，不合格的整条按正文原样显示。
+
+文件在不在磁盘上，看 preload 暴露的 `window.kydog.pathForFile`（`webUtils.getPathForFile`）：返回**空串就是不在磁盘上**（截图、从网页拖进来的图），这是 Electron 给的事实，不按文件名猜。判据收在 `attachments.ts` 的 `classifyFile`，粘贴、拖入、回形针三条入口共用（`composerIngest.ts`），粘贴先经 `routePaste` 分流：能发的图片一律读成图片块随消息走，有路径时再带上路径（在目标对话的项目内发相对路径，否则绝对路径），没路径的起名「截图 N」；其他文件有路径就按路径引用，没路径引用不了，托盘提示。
+
+能不能发图由 pi `Model.input` 决定：`llm.list` 的每个服务商带 `imageInputModelIds` 供输入框预先拦；主进程发送时按会话实际模型再判一次（`llm.imageUnsupported`）。
+
+@ 的项目文件列表没有主进程索引，也不另设 RPC / 事件：渲染层一次弹出 = 一个会话（`renderer/panels/main-pane/mentionSearch.ts`，纯逻辑、注入读目录的函数），复用文件树的 `project.readDir`（同一套 `isListedName` 过滤与排序）。查询词为空或含 `/` 时**逐级浏览**，只读那一个目录、按这一层的筛选词筛；否则**按名字找**：先出根目录这一层，同时从浅到深一层层往下读（整个会话同一时间只有一个 readDir 在飞），名字命中的文件随读随进、取前 50。读过的目录记在会话内存里，接着打字只在已读的内容里重筛，切到逐级浏览时暂停往下读。列表关掉就停：Composer 在查询词变回 null、换项目、卸载时 `dispose()`，内存随之丢掉。**不设文件数上限、不设时限、不跨会话缓存** —— 大目录只在用户开着列表等的时候才被读，下次弹出从头读，agent 刚写出的文件自然就在。

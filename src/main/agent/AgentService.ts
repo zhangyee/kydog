@@ -14,7 +14,8 @@ import { settingsService } from '../settings/settingsService';
 import { browserService } from '../browser/browserService';
 import { resolveProviderDefault } from '../llm/resolveProvider';
 import { threadService } from '../thread/threadService';
-import type { Message, ProviderId } from '../../shared/types';
+import type { Message, MessageImage, ProviderId } from '../../shared/types';
+import { IMAGE_UNSUPPORTED_TEXT } from '../../shared/userTurn';
 
 export type Bound = {
   session: AnySession;
@@ -246,7 +247,7 @@ class AgentService {
     return normalizePiMessages(messages as PiMessage[], threadId);
   }
 
-  async send(threadId: string, projectPath: string, content: string): Promise<{ runId: string }> {
+  async send(threadId: string, projectPath: string, content: string, images: MessageImage[] = []): Promise<{ runId: string }> {
     let bound: Bound;
     try {
       bound = await this.ensureSession(threadId, projectPath);
@@ -259,12 +260,21 @@ class AgentService {
     }
     const current = this.getRunState(threadId);
     if (current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
+    // 按这条 session **实际**用的模型判（pi Model.input），不按渲染层算出来的那个 ——
+    // 渲染层只是预先拦一道，它算错了这里兜住。拦在占用 run 之前，被拒不留痕迹。
+    if (images.length > 0 && bound.session.model?.input?.includes('image') !== true) {
+      throw new KydogError('llm.imageUnsupported', IMAGE_UNSUPPORTED_TEXT);
+    }
     const runId = randomUUID();
     this.runs.set(threadId, transition(current, { kind: 'send', runId }));
     // 本轮的 runId 记在 bound 上。**浏览器那两侧都读它**（盖戳的 currentRunIdFor、
     // 回收的 agent_settled），理由见 Bound.runId 那段注释。
     bound.runId = runId;
-    void bound.session.prompt(content).catch((err) => {
+    // 没图时调用形状与改动前完全一致（只传一个参数）。
+    const started = images.length > 0
+      ? bound.session.prompt(content, { images: images.map((i) => ({ type: 'image' as const, data: i.data, mimeType: i.mimeType })) })
+      : bound.session.prompt(content);
+    void started.catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
       broadcaster.emit('run.ended', { threadId, runId, reason: 'error', errorMessage: msg });

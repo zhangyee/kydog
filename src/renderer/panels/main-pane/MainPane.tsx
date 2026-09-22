@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useUnreadStore } from '../workspace/unreadStore';
+import { useComposerDraftStore } from './composerDraftStore';
 import { Welcome } from './Welcome';
 import { ThreadView } from './ThreadView';
 import { TabStrip, type TabItem } from './TabStrip';
@@ -32,6 +33,8 @@ export function MainPane() {
       ? Object.values(s.threadsByProject).flat().find((t) => t.id === currentThreadId)
       : null,
   );
+  // 对话标签上的待发批注数（2A ①）。只数批注：附件是在对话里当场加的，不需要提醒。
+  const pendingComments = useComposerDraftStore((s) => (currentThreadId ? s.byThread[currentThreadId]?.comments.length ?? 0 : 0));
 
   const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
 
@@ -47,7 +50,7 @@ export function MainPane() {
   const showSettings = !showFile && settingsTabOpen && (activeCenterTab === 'settings' || !thread);
 
   const tabs: TabItem[] = [];
-  if (thread) tabs.push({ id: thread.id, kind: 'thread', title: thread.title });
+  if (thread) tabs.push({ id: thread.id, kind: 'thread', title: thread.title, ...(pendingComments > 0 ? { badge: pendingComments } : {}) });
   if (settingsTabOpen) {
     tabs.push({ id: SETTINGS_TAB_ID, kind: 'settings', title: SETTINGS_PAGE_LABELS[settingsTab] });
   }
