@@ -8,9 +8,8 @@ import {
   type KeyboardEvent,
 } from 'react';
 import type { SkillEntry } from '../../../shared/types';
-import { refTag, splitBody } from '../../../shared/userTurn';
+import { refLabel, refTag, splitBody } from '../../../shared/userTurn';
 import { mentionQueryAt, mentionReplaceEnd, mentionTokenAt, routePaste, spliceMentionQuery, type MentionEdit } from './composerHelpers';
-import { fileTitle } from './markdown/fileTabHelpers';
 
 export type ComposerEditorHandle = {
   focus: () => void;
@@ -315,7 +314,7 @@ function buildRefChip(path: string): HTMLElement {
   span.setAttribute(REF_ATTR, path);
   span.title = path;
   span.className = 'font-mono';
-  span.textContent = fileTitle(path);
+  span.textContent = refLabel(path);
   Object.assign(span.style, {
     display: 'inline-flex', alignItems: 'center', padding: '0 6px', margin: '0 1px',
     background: 'var(--color-hover-bg)', color: 'var(--color-ink)', borderRadius: '3px',

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  encodeUserTurn, decodeUserTurn, refTag, splitBody, escapeXml, unescapeXml, turnTitleSource,
+  encodeUserTurn, decodeUserTurn, refTag, refLabel, splitBody, escapeXml, unescapeXml, turnTitleSource,
   type TurnComment,
 } from './userTurn';
 
@@ -167,6 +167,34 @@ describe('userTurn：冻结样本（语法只许加、不许改 —— 见 CLAUD
   });
 });
 
+describe('文件夹引用（spec §4.1：路径以 / 结尾；语法不变，只是 A 的一种取值）', () => {
+  it('正文里的文件夹引用来回一趟原样回来，与文件引用并存', () => {
+    const body = `看 ${refTag('Related Work/')} 和 ${refTag('papers/refs/')}，对照 ${refTag('refs/a.pdf')}`;
+    const { text } = encodeUserTurn({ body, attachments: [], comments: [] });
+    expect(text).toBe('看 <kydog-ref path="Related Work/"/> 和 <kydog-ref path="papers/refs/"/>，对照 <kydog-ref path="refs/a.pdf"/>');
+    expect(decodeUserTurn(text, 0).body).toEqual([
+      { kind: 'text', text: '看 ' },
+      { kind: 'ref', path: 'Related Work/' },
+      { kind: 'text', text: ' 和 ' },
+      { kind: 'ref', path: 'papers/refs/' },
+      { kind: 'text', text: '，对照 ' },
+      { kind: 'ref', path: 'refs/a.pdf' },
+    ]);
+    expect(splitBody(body)).toEqual(decodeUserTurn(text, 0).body);
+  });
+});
+
+describe('refLabel：引用标签上显示的名字（输入框、历史、自动标题共用）', () => {
+  it('文件是文件名；文件夹（路径以 / 结尾）是最后一段加 / —— 不是整条路径', () => {
+    expect(refLabel('refs/dpo-2023.pdf')).toBe('dpo-2023.pdf');
+    expect(refLabel('a.md')).toBe('a.md');
+    expect(refLabel('C:\\Users\\yee\\a.pdf')).toBe('a.pdf');
+    expect(refLabel('papers/refs/')).toBe('refs/');
+    expect(refLabel('Related Work/')).toBe('Related Work/');
+    expect(refLabel('Empty Dir/')).toBe('Empty Dir/');
+  });
+});
+
 describe('turnTitleSource：自动起标题用的纯文字（F6）', () => {
   const src = (input: Parameters<typeof encodeUserTurn>[0]) => {
     const { text, images } = encodeUserTurn(input);
@@ -177,6 +205,8 @@ describe('turnTitleSource：自动起标题用的纯文字（F6）', () => {
     expect(turnTitleSource('Explain speculative decoding', 0)).toBe('Explain speculative decoding');
     expect(src({ body: `对比 ${refTag('refs/dpo-2023.pdf')} 的表 2`, attachments: [FILE, IMG_A], comments: [C1] })).toBe('对比 dpo-2023.pdf 的表 2');
     expect(src({ body: refTag('C:\\Users\\yee\\a.pdf'), attachments: [], comments: [] })).toBe('a.pdf');
+    // 文件夹引用：最后一段加 /，与输入框里的标签一样（不是整条路径 papers/refs/）
+    expect(src({ body: `看 ${refTag('papers/refs/')} 的结论`, attachments: [], comments: [] })).toBe('看 refs/ 的结论');
   });
 
   it('正文为空：第一条批注的引文；再没有：第一个附件的名字（图片名 / 文件名）—— 不会是 <kydog- 开头的原文', () => {

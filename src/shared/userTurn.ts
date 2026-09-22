@@ -169,14 +169,24 @@ export function decodeUserTurn(text: string, imageCount: number): DecodedTurn {
 const fileNameOf = (p: string): string => p.split(/[\\/]/).pop() || p;
 
 /**
+ * 引用标签上显示的名字（输入框的标签、历史里的标签、自动标题共用）：文件是文件名；文件夹 —— 路径以 `/`
+ * 结尾（spec §4.1，选中那一刻按 readDir 的类型写下）—— 是最后一段加 `/`（`papers/refs/` → `refs/`）。
+ */
+export function refLabel(p: string): string {
+  if (!p.endsWith('/')) return fileNameOf(p);
+  const dir = p.slice(0, -1);
+  return `${dir.split(/[\\/]/).pop() || dir}/`;
+}
+
+/**
  * 自动起对话标题用的纯文字（不是发给模型的原文）。只有批注或附件的消息，原文以结构块开头，
  * 标题回落到「前 20 个字」时会变成 `<kydog-attachments>` / `<kydog-comment file=…`。
- * 取正文（@ 引用换成文件名）；正文为空取第一条批注的引文；引文也空取第一个附件的名字
+ * 取正文（@ 引用换成标签上的名字：文件名，文件夹是最后一段加 /）；正文为空取第一条批注的引文；引文也空取第一个附件的名字
  * （图片的名字、文件的文件名）；都没有就是空串（标题照旧留「无标题」）。
  */
 export function turnTitleSource(text: string, imageCount: number): string {
   const d = decodeUserTurn(text, imageCount);
-  const body = d.body.map((s) => (s.kind === 'text' ? s.text : fileNameOf(s.path))).join('').trim();
+  const body = d.body.map((s) => (s.kind === 'text' ? s.text : refLabel(s.path))).join('').trim();
   if (body !== '') return body;
   const quote = d.comments[0]?.quote.trim() ?? '';
   if (quote !== '') return quote;

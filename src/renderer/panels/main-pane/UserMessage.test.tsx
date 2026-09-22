@@ -61,6 +61,19 @@ describe('UserMessage —— 按发出去的文字解回来显示', () => {
     expect(csv.props.onClick).toBeUndefined();
   });
 
+  it('正文里的文件夹引用：标签是最后一段加 /、悬停是相对路径，不可点；同一条里的 pdf 引用照常可点', () => {
+    const { text } = encodeUserTurn({ body: `看 ${refTag('papers/refs/')} 和 ${refTag('papers/a.pdf')}`, attachments: [], comments: [] });
+    const m = mount(UserMessage, { name: 'Y', content: text, projectPath: '/proj' });
+    const [folder, pdf] = byTestId(m.tree, 'user-ref');
+    // 正向：pdf 引用可点、点了按项目解析去开
+    expect(pdf.props.children).toBe('a.pdf');
+    (pdf.props.onClick as () => void)();
+    expect(openFile).toHaveBeenCalledWith('/proj/papers/a.pdf');
+    expect(folder.props).toMatchObject({ 'data-path': 'papers/refs/', title: 'papers/refs/', children: 'refs/' });
+    expect(folder.props.onClick).toBeUndefined();
+    expect(folder.props.style.cursor).toBe('default');
+  });
+
   it('格式不合格的消息：原样当正文显示（标签文字照原样出现）', () => {
     // 反向对照前先证明同一个查找真的找得到：格式合格、带一条批注的消息。
     const { text: okText } = encodeUserTurn({ body: '', attachments: [], comments: [{ file: 'a.md', quote: 'q', note: 'n' }] });

@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import { MessageMeta, fmtTime } from '../../shared';
 import type { MessageImage } from '../../../shared/types';
-import { decodeUserTurn, type TurnFile, type TurnImage } from '../../../shared/userTurn';
+import { decodeUserTurn, refLabel, type TurnFile, type TurnImage } from '../../../shared/userTurn';
 import { useUiStore } from '../../stores/uiStore';
 import { ImageChip, FileChip } from './AttachmentChips';
 import { CommentCard } from './CommentCard';
@@ -18,7 +18,7 @@ export function UserMessage({ name, content, images = [], createdAt, projectPath
   const turn = decodeUserTurn(content, images.length);
   const imageMeta = new Map(turn.attachments.filter((a): a is TurnImage => a.kind === 'image').map((a) => [a.n, a]));
   const files = turn.attachments.filter((a): a is TurnFile => a.kind === 'file');
-  // 与文件树双击同一个判据：只有 md / pdf / html 开得成 tab。
+  // 与文件树双击同一个判据：只有 md / pdf / html 开得成 tab（文件夹引用 `…/` 因此不可点，与文件树里点文件夹一致）。
   const openerFor = (p: string): (() => void) | undefined => {
     const abs = resolveAgainst(projectPath, p);
     if (!abs || !(isMarkdownPath(abs) || isPdfPath(abs) || isHtmlPath(abs))) return undefined;
@@ -62,7 +62,7 @@ export function UserMessage({ name, content, images = [], createdAt, projectPath
                   onClick={openerFor(seg.path)}
                   className="font-mono"
                   style={{ padding: '0 6px', margin: '0 1px', borderRadius: 3, background: 'var(--color-hover-bg)', fontSize: '0.85em', cursor: openerFor(seg.path) ? 'pointer' : 'default' }}
-                >{fileTitle(seg.path)}</span>
+                >{refLabel(seg.path)}</span>
               )))}
           </div>
         ) : null}
