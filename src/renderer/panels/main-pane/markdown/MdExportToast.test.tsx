@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { findAllWhere, mount } from '../../../../test-support/miniReact';
+import type { ExportToast } from './MdExportToast';
 
 vi.mock('react', async (importOriginal) => {
   const real = await importOriginal<typeof import('react')>();
@@ -9,7 +10,6 @@ vi.mock('react', async (importOriginal) => {
 
 const { MdExportToast, MdExportToastBody, revealLabel } = await import('./MdExportToast');
 const { TOAST_MS } = await import('../../workspace/SidebarToast');
-type ExportToast = Parameters<typeof MdExportToast>[0]['toast'];
 
 const DONE = { id: 1, kind: 'done' as const, pdfPath: '/p/ch3.pdf', fileName: 'ch3.pdf' };
 const FAILED = { id: 2, kind: 'failed' as const, message: '导出超时（60 秒）' };

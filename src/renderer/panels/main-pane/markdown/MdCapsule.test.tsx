@@ -63,5 +63,11 @@ describe('MdCapsule', () => {
     expect(busy.query('md-export-spinner')).not.toBeNull();
     expect(findAllWhere(busy.tree as never, (el) => el.type === Tooltip && el.props.content === '正在导出…')).toHaveLength(1);
     expect(busy.query('fake-card')).toBeNull();
+
+    // 翻面：canComment 不影响分享键（spec「分享键不依赖是否有对话」）——上面 open/closed/busy
+    // 三条用的都是 canComment: true，这里把它翻成 false 再核一遍非导出中的状态，分享键该是
+    // 什么样还是什么样，不会被评论那边「没对话就禁用」的规则带偏。
+    const noThread = mount(MdCapsule, { ...props, canComment: false, exportOpen: false, exporting: false });
+    expect(share(noThread.tree).props).toMatchObject({ disabled: false, tooltip: '导出 PDF' });
   });
 });
