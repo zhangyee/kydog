@@ -53,7 +53,7 @@ describe('sessionFactory', () => {
 
   it('真实路径：找不到 model → ModelUnavailableError，带 providerId/modelId', async () => {
     delete process.env.KYDOG_AGENT_FIXTURE;
-    await initProviderRegistry(settingsService);
+    await initProviderRegistry(settingsService, '0.0.0-test');
     await expect(createSession({
       cwd: dir, sessionId: 't1', sessionsDir: dir,
       providerId: 'anthropic', modelId: 'unknown-model-xx',

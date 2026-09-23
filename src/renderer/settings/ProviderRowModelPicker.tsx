@@ -17,7 +17,7 @@ export function ProviderRowModelPicker({
   emptyLabel?: string;
 }) {
   const entry = useLlmStore((s) => s.configured.find((c) => c.providerId === providerId));
-  const options = entry?.modelIds ?? [];
+  const options = entry?.models ?? [];
   return (
     <select
       value={value ?? ''}
@@ -36,7 +36,9 @@ export function ProviderRowModelPicker({
     >
       <option value="">{options.length ? '选择模型…' : emptyLabel}</option>
       {options.map((m) => (
-        <option key={m} value={m}>{m}</option>
+        // 名字后面缀 id（两者相同就只有一个）：同一个系列的相邻两代名字只差一个小版本号，
+        // 光看名字容易选错；这个下拉是纯文本，只能挤在一行里。
+        <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>
       ))}
     </select>
   );

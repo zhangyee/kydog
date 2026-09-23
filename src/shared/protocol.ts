@@ -506,17 +506,28 @@ void _allRunTopicsListed;
 export const RPC_CHANNEL = 'kydog:rpc' as const;
 export const EVENT_CHANNEL = 'kydog:event' as const;
 
+export type LlmModelEntry = {
+  id: string;
+  /** 目录里给的展示名（pi `Model.name`），没有就是 id 本身。 */
+  name: string;
+  /**
+   * 能收图片输入（pi `Model.input` 含 `'image'`）。输入框按它预先拦下「有图但当前模型
+   * 不读图」的发送；主进程发送时再按会话实际的模型判一次（spec §3.6）。
+   */
+  image: boolean;
+};
+
 export type LlmConfiguredEntry = {
   providerId: ProviderId;
   displayName: string;
   kind: 'oauth' | 'apiKey' | 'cloud' | 'custom';
   authStatus: { configured: boolean; source?: string; label?: string };
-  modelIds: string[];
   /**
-   * `modelIds` 里能收图片输入的那些（pi `Model.input` 含 `'image'`）。输入框按它预先拦下
-   * 「有图但当前模型不读图」的发送；主进程发送时再按会话实际的模型判一次（spec §3.6）。
+   * 这个 provider 现在可选的模型，**不含已经退役的 id**：远端目录是按 provider 整份给的，
+   * 拉到过就以它为准（见 `llmService.entryFor`）。id、名字、能不能读图都来自同一条记录，
+   * 不拆成几个按 id 对齐的平行数组 —— 拆了名字就在这一步丢了，下游只能显示 id。
    */
-  imageInputModelIds: string[];
+  models: LlmModelEntry[];
   defaultModel: string | null;
 };
 

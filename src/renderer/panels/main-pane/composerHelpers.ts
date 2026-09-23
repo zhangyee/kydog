@@ -64,12 +64,30 @@ export function dispatchInputKey(args: {
  */
 export function imageInputBlocked(args: {
   hasImages: boolean;
-  entry: { modelIds: string[]; imageInputModelIds: string[] } | undefined;
+  entry: { models: ReadonlyArray<{ id: string; image: boolean }> } | undefined;
   modelId: string | null;
 }): boolean {
   if (!args.hasImages || !args.entry || !args.modelId) return false;
-  if (!args.entry.modelIds.includes(args.modelId)) return false;
-  return !args.entry.imageInputModelIds.includes(args.modelId);
+  const model = args.entry.models.find((m) => m.id === args.modelId);
+  if (!model) return false;
+  return !model.image;
+}
+
+/**
+ * 胶囊与选单上的模型文字。目录里有名字就显示名字，**名字与 id 不同才把 id 缀在后面**
+ * —— `deepseek-v4-flash` 与 `deepseek-flash` 只差一代，光看名字（"V4 Flash" / "V4.1 Flash"）
+ * 也容易看混，两个都摆出来才认得出；自定义 provider 不填 name 时两者相同，就不重复一遍。
+ *
+ * 清单里找不到这个 id（会话钉着一个已经退役的模型）时按 id 显示 —— 钉着什么就显示什么，
+ * 别在这里替它编一个名字。
+ */
+export function modelLabelParts(
+  models: ReadonlyArray<{ id: string; name: string }> | undefined,
+  modelId: string,
+): { name: string; id: string | null } {
+  const model = models?.find((m) => m.id === modelId);
+  if (!model) return { name: modelId, id: null };
+  return { name: model.name, id: model.name === model.id ? null : model.id };
 }
 
 export type PasteRoute = { kind: 'files'; files: File[] } | { kind: 'text'; text: string } | { kind: 'none' };

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 import { useLlmStore } from '../../stores/llmStore';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { modelLabelParts } from './composerHelpers';
 
 export function ComposerModelMenu({ threadId, anchorRect, onClose }: {
   threadId: string;
@@ -44,7 +45,7 @@ export function ComposerModelMenu({ threadId, anchorRect, onClose }: {
     onClose();
   };
 
-  const eligible = llm.configured.filter((c) => c.authStatus.configured && c.modelIds.length > 0);
+  const eligible = llm.configured.filter((c) => c.authStatus.configured && c.models.length > 0);
   const effectiveProviderId = override?.providerId ?? llm.defaultProvider;
   const effectiveModelId = override?.modelId
     ?? llm.defaultModel
@@ -73,7 +74,21 @@ export function ComposerModelMenu({ threadId, anchorRect, onClose }: {
           <div className="font-mono uppercase" style={{ fontSize: 9, color: 'var(--color-ink-faint)', letterSpacing: 1 }}>当前默认</div>
           <div className="font-serif" style={{ fontSize: 12 }}>
             ● {llm.configured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId}
-            <span className="font-mono" style={{ color: 'var(--color-ink-soft)', marginLeft: 6 }}>{effectiveModelId}</span>
+            {(() => {
+              // 钉着的模型已经退役时清单里找不到它，parts 退回 id —— 胶囊显示什么这里就显示什么。
+              const parts = modelLabelParts(
+                llm.configured.find((c) => c.providerId === effectiveProviderId)?.models,
+                effectiveModelId,
+              );
+              return (
+                <>
+                  <span style={{ marginLeft: 6 }}>{parts.name}</span>
+                  {parts.id ? (
+                    <span className="font-mono" style={{ color: 'var(--color-ink-faint)', fontSize: 10, marginLeft: 6 }}>{parts.id}</span>
+                  ) : null}
+                </>
+              );
+            })()}
           </div>
         </div>
       ) : null}
@@ -89,13 +104,17 @@ export function ComposerModelMenu({ threadId, anchorRect, onClose }: {
             <summary className="font-serif" style={{ fontSize: 12, cursor: 'pointer', listStyle: 'none', padding: '4px 0' }}>
               ▸ {c.displayName}
             </summary>
-            {c.modelIds.map((m) => {
-              const isCurrent = c.providerId === effectiveProviderId && m === effectiveModelId;
+            {c.models.map((m) => {
+              const isCurrent = c.providerId === effectiveProviderId && m.id === effectiveModelId;
               return (
-                <div key={m}
-                  onClick={() => void setOverride(c.providerId, m)}
-                  style={{ padding: '4px 0 4px 16px', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 11, color: isCurrent ? 'var(--color-ink)' : 'var(--color-ink-soft)' }}>
-                  {m} {isCurrent ? '●' : ''}
+                <div key={m.id}
+                  onClick={() => void setOverride(c.providerId, m.id)}
+                  style={{ padding: '4px 0 4px 16px', cursor: 'pointer', fontSize: 11, color: isCurrent ? 'var(--color-ink)' : 'var(--color-ink-soft)' }}>
+                  <span className="font-serif">{m.name}</span>
+                  {m.name === m.id ? null : (
+                    <span className="font-mono" style={{ color: 'var(--color-ink-faint)', fontSize: 10, marginLeft: 6 }}>{m.id}</span>
+                  )}
+                  {isCurrent ? ' ●' : ''}
                 </div>
               );
             })}

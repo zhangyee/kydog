@@ -288,11 +288,14 @@ test('27-composer: project pill switches the empty thread to another project', a
 test('23/24-llm: Composer 显示默认模型；pill 里切到另一家只改这个 thread', async () => {
   const { page } = launched;
   await page.getByTestId('thread-t-24').click();
-  await expect(page.locator('text=/Anthropic · claude-sonnet-4-5/')).toBeVisible();
-  await page.locator('text=/Anthropic · /').click();
+  // 胶囊与选单显示的是模型**名**（目录里的 `name`），不是 id —— 相邻两代的 id 只差一个
+  // 版本号，光看 id 认不出谁是谁。id 仍然在选单行里，所以下面按 id 点得中。
+  const pill = page.getByTestId('model-pill');
+  await expect(pill).toContainText('Anthropic · Claude Sonnet 4.5');
+  await pill.click();
   await page.getByText('▸ OpenAI').click();
   await page.locator('text=gpt-4o').first().click();
-  await expect(page.locator('text=/OpenAI · gpt-4o/')).toBeVisible();
+  await expect(pill).toContainText('OpenAI · GPT-4o');
 });
 
 test('附件：粘贴截图 → 托盘 → 发送 → agent 收到图片块 → 历史里缩略图真的解码了', async () => {

@@ -47,6 +47,11 @@ export async function launchKydog(opts: {
     USERPROFILE: kydogHome,
     KYDOG_LOG: 'warn',
     KYDOG_E2E: '1',
+    // pi 自己的断网开关。不设的话启动时那次后台目录刷新会真去 pi.dev 拉一份**当天的**模型
+    // 清单，而退役模型是按这份清单过滤掉的（`KydogModelsStore.liveModelIds`）——夹具里写死
+    // 的 claude-sonnet-4-5 / gpt-4o 哪天在上游下架，这些用例就在一台联网的机器上红、在断网
+    // 的机器上绿。单测的 vitest.config.ts 出于同样的理由也设了它。
+    PI_OFFLINE: '1',
     ...(opts.env ?? {}),
   };
   if (opts.fixture) env.KYDOG_AGENT_FIXTURE = opts.fixture;

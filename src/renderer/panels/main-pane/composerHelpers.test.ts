@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, mentionReplaceEnd, folderMentionEdit, spliceMentionQuery, dispatchCommentBoxKey } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, routePaste, mentionQueryAt, mentionTokenAt, mentionReplaceEnd, folderMentionEdit, spliceMentionQuery, dispatchCommentBoxKey, modelLabelParts } from './composerHelpers';
 import type { SkillEntry } from '../../../shared/types';
 
 const SKILLS: SkillEntry[] = [
@@ -101,7 +101,7 @@ describe('dispatchInputKey', () => {
 });
 
 describe('imageInputBlocked', () => {
-  const entry = { modelIds: ['vis', 'txt'], imageInputModelIds: ['vis'] };
+  const entry = { models: [{ id: 'vis', name: 'Vis', image: true }, { id: 'txt', name: 'Txt', image: false }] };
   it('只在「有图 + 认识这个模型 + 它不读图」时拦', () => {
     expect(imageInputBlocked({ hasImages: true, entry, modelId: 'txt' })).toBe(true);
     expect(imageInputBlocked({ hasImages: true, entry, modelId: 'vis' })).toBe(false);
@@ -112,6 +112,23 @@ describe('imageInputBlocked', () => {
     expect(imageInputBlocked({ hasImages: true, entry, modelId: 'gone' })).toBe(false);
     expect(imageInputBlocked({ hasImages: true, entry: undefined, modelId: 'txt' })).toBe(false);
     expect(imageInputBlocked({ hasImages: true, entry, modelId: null })).toBe(false);
+  });
+});
+
+describe('modelLabelParts', () => {
+  const models = [
+    { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash' },
+    { id: 'my-model', name: 'my-model' },
+  ];
+  it('名字与 id 不同 → 两个都给；相同 → 只给一个', () => {
+    expect(modelLabelParts(models, 'deepseek-flash')).toEqual({ name: 'DeepSeek V4.1 Flash', id: 'deepseek-flash' });
+    expect(modelLabelParts(models, 'my-model')).toEqual({ name: 'my-model', id: null });
+  });
+  it('清单里没有这个 id（钉着已退役的模型）→ 按 id 显示，不编名字', () => {
+    expect(modelLabelParts(models, 'deepseek-v4-flash')).toEqual({ name: 'deepseek-v4-flash', id: null });
+    expect(modelLabelParts(undefined, 'deepseek-v4-flash')).toEqual({ name: 'deepseek-v4-flash', id: null });
+    // 正向对照：同一份清单里在售的那个仍然给得出名字 —— 上面两条不是因为函数整个坏了。
+    expect(modelLabelParts(models, 'deepseek-flash').name).toBe('DeepSeek V4.1 Flash');
   });
 });
 

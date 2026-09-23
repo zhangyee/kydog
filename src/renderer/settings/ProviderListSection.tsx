@@ -66,7 +66,7 @@ export function ProviderListSection({ onAdd }: { onAdd: () => void }) {
                   {c.displayName}
                 </div>
                 <div className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>
-                  {c.kind} · {c.authStatus.label ?? (c.authStatus.configured ? 'ok' : '未配置')} · {c.modelIds.length} 个模型
+                  {c.kind} · {c.authStatus.label ?? (c.authStatus.configured ? 'ok' : '未配置')} · {c.models.length} 个模型
                 </div>
               </div>
               <ProviderRowModelPicker

@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { SettingsFile, ProviderId, CustomProvider, ProviderOverride } from '../../shared/types';
 import { SettingsService } from '../settings/settingsService';
 import { KydogCredentialStore } from './kydogAuthBackend';
+import { KydogModelsStore } from './kydogModelsStore';
 import { kydogAgentDir } from '../skills/skillResourceLoader';
 import { logger } from '../log';
 
@@ -24,13 +25,17 @@ type AnyModelRuntime = {
   [k: string]: unknown;
 };
 
-export function buildModelRuntimeOptions(svc: SettingsService): {
+export function buildModelRuntimeOptions(svc: SettingsService, modelsStore: KydogModelsStore): {
   credentials: KydogCredentialStore;
   modelsPath: string;
+  modelsStore: KydogModelsStore;
   allowModelNetwork: boolean;
 } {
   return {
     credentials: new KydogCredentialStore(svc),
+    // 远端目录的缓存也由 KyDog 自己拿着 —— 既是为了显式落在 <ROOT>/agent（同上一条），
+    // 也因为 llmService 要读它来过滤退役的模型 id（见 KydogModelsStore 的 docblock）。
+    modelsStore,
     // 不传会默认到 ~/.pi/agent/models.json，并往那儿写 models-store.json —— 等于把
     // f96afc7 拆掉的 .pi 耦合重建出来（model-runtime.js:59,63）。
     modelsPath: path.join(kydogAgentDir(), 'models.json'),
@@ -67,14 +72,27 @@ export class ProviderRegistry {
    * 存在的唯一理由。tsc / lint 都守不住这条，只能靠这句话与 review。
    */
   runtimeRevision = 0;
-  private constructor(modelRuntime: AnyModelRuntime) {
+  private constructor(modelRuntime: AnyModelRuntime, private readonly modelsStore: KydogModelsStore) {
     this.modelRuntime = modelRuntime;
   }
 
-  static async build(svc: SettingsService): Promise<ProviderRegistry> {
+  /**
+   * @param appVersion 盖在远端目录缓存上的写入者版本（`KydogModelsStore.liveModelIds` 第 2 条）。
+   *   这个模块本身不认识 electron（单测直接 import 它），所以由调用方把 `app.getVersion()` 传进来。
+   */
+  static async build(svc: SettingsService, appVersion: string): Promise<ProviderRegistry> {
     const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
-    return new ProviderRegistry(await ProviderRegistry.buildModelRuntime(pi, settings, svc));
+    const store = new KydogModelsStore(path.join(kydogAgentDir(), 'models-store.json'), appVersion);
+    return new ProviderRegistry(await ProviderRegistry.buildModelRuntime(pi, settings, svc, store), store);
+  }
+
+  /**
+   * 远端目录给的这个 provider 的在售模型 id；从没拉到过是 `undefined`（此时不许过滤）。
+   * `llmService.entryFor` 用它把 pi 内置静态目录里已经退役的 id 挡在选单之外。
+   */
+  liveModelIds(providerId: string): Promise<ReadonlySet<string> | undefined> {
+    return this.modelsStore.liveModelIds(providerId);
   }
 
   async refreshAfterProviderChange(
@@ -84,7 +102,7 @@ export class ProviderRegistry {
   ): Promise<void> {
     const pi = await import('@earendil-works/pi-coding-agent');
     const settings = await svc.get();
-    this.modelRuntime = await ProviderRegistry.buildModelRuntime(pi, settings, svc);
+    this.modelRuntime = await ProviderRegistry.buildModelRuntime(pi, settings, svc, this.modelsStore);
     this.runtimeRevision += 1;
     this.startCatalogRefresh();
     await agent.invalidateSessionsForProviders(changedIds);
@@ -114,8 +132,9 @@ export class ProviderRegistry {
     pi: typeof import('@earendil-works/pi-coding-agent'),
     settings: SettingsFile,
     svc: SettingsService,
+    modelsStore: KydogModelsStore,
   ): Promise<AnyModelRuntime> {
-    const rt = await (pi as any).ModelRuntime.create(buildModelRuntimeOptions(svc)) as AnyModelRuntime;
+    const rt = await (pi as any).ModelRuntime.create(buildModelRuntimeOptions(svc, modelsStore)) as AnyModelRuntime;
     for (const cp of settings.llm.customProviders) {
       rt.registerProvider(cp.id, customProviderToPiConfig(cp));
     }
@@ -165,8 +184,8 @@ export function getProviderRegistry(): ProviderRegistry {
   if (!_instance) throw new Error('ProviderRegistry not initialized; call initProviderRegistry first');
   return _instance;
 }
-export async function initProviderRegistry(svc: SettingsService): Promise<ProviderRegistry> {
-  _instance = await ProviderRegistry.build(svc);
+export async function initProviderRegistry(svc: SettingsService, appVersion: string): Promise<ProviderRegistry> {
+  _instance = await ProviderRegistry.build(svc, appVersion);
   // 先落位再起刷新，顺序不能反：刷新完成的钩子会回头走 getProviderRegistry()。
   _instance.startCatalogRefresh();
   return _instance;

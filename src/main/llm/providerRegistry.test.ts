@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { KydogModelsStore } from './kydogModelsStore';
 import * as paths from '../persist/paths';
 import { ensureSettingsFile } from '../persist/settingsFile';
 import { SettingsService } from '../settings/settingsService';
@@ -28,7 +29,7 @@ describe('ProviderRegistry', () => {
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
   it('build: 空 settings → registry 可用', async () => {
-    const reg = await ProviderRegistry.build(svc);
+    const reg = await ProviderRegistry.build(svc, '0.0.0-test');
     expect(reg.modelRuntime).toBeDefined();
   });
 
@@ -41,13 +42,13 @@ describe('ProviderRegistry', () => {
         models: [{ id: 'llama3.1:8b' }],
       }],
     } });
-    const reg = await ProviderRegistry.build(svc);
+    const reg = await ProviderRegistry.build(svc, '0.0.0-test');
     const found = reg.modelRuntime.getModel('ollama-x', 'llama3.1:8b');
     expect(found).toBeDefined();
   });
 
   it('refreshAfterProviderChange: 重建 modelRuntime', async () => {
-    const reg = await ProviderRegistry.build(svc);
+    const reg = await ProviderRegistry.build(svc, '0.0.0-test');
     const before = reg.modelRuntime;
     await svc.update({ llm: {
       ...(await svc.get()).llm,
@@ -66,9 +67,13 @@ describe('ProviderRegistry', () => {
   // 守 f96afc7 的成果：不传 modelsPath 时 pi 默认写 ~/.pi/agent/models-store.json，
   // 等于把刚拆掉的耦合重建出来。选项抽成纯函数才能确定性地断言，不依赖真实 home。
   it('modelsPath 落在 <ROOT>/agent 下，不碰 ~/.pi', () => {
-    const opts = buildModelRuntimeOptions(svc);
+    const store = new KydogModelsStore(path.join(dir, 'agent', 'models-store.json'), '0.0.0-test');
+    const opts = buildModelRuntimeOptions(svc, store);
     expect(opts.modelsPath).toBe(path.join(dir, 'agent', 'models.json'));
     expect(opts.modelsPath.split(path.sep)).not.toContain('.pi');
+    // 远端目录缓存也必须是传进去的那一个：pi 自己 new 一个 FileModelsStore 的话，它落在
+    // pi 的 getAgentDir() 下，而且 llmService 读不到 —— 退役模型的过滤就静默失效。
+    expect(opts.modelsStore).toBe(store);
   });
 
   // 后台刷新用的就是 `refresh()` 这个调用形状，而不是 `refresh({ allowNetwork: true })`。
@@ -82,7 +87,7 @@ describe('ProviderRegistry', () => {
       ...(await svc.get()).llm,
       auth: { anthropic: { type: 'api_key', key: 'sk-test-not-real' } },
     } });
-    const reg = await ProviderRegistry.build(svc);
+    const reg = await ProviderRegistry.build(svc, '0.0.0-test');
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
     );
@@ -138,7 +143,7 @@ describe('ProviderRegistry', () => {
     it('网络黑洞时 build 仍然立刻返回', async () => {
       mockPi(fakeRuntime());
       const outcome = await Promise.race([
-        ProviderRegistry.build(svc).then(() => 'returned'),
+        ProviderRegistry.build(svc, '0.0.0-test').then(() => 'returned'),
         new Promise<string>((r) => { setTimeout(() => r('被网络挂住了'), 1_000).unref?.(); }),
       ]);
       expect(outcome).toBe('returned');
@@ -150,7 +155,7 @@ describe('ProviderRegistry', () => {
     it('刷新照旧发生，且排在 provider 注册之后（否则看不到自定义 provider）', async () => {
       const rt = fakeRuntime();
       mockPi(rt);
-      await initProviderRegistry(svc);
+      await initProviderRegistry(svc, '0.0.0-test');
       expect(rt.refresh).toHaveBeenCalledTimes(1);
       // 不带参数 —— 上一条测试证明了这正是让 PI_OFFLINE 继续生效的调用形状。
       expect(rt.refresh).toHaveBeenCalledWith();
@@ -165,7 +170,7 @@ describe('ProviderRegistry', () => {
       mockPi(fakeRuntime());
       const hook = vi.fn();
       setCatalogRefreshedHook(hook);
-      await initProviderRegistry(svc);
+      await initProviderRegistry(svc, '0.0.0-test');
       await flush();
       expect(hook).toHaveBeenCalledTimes(1);
     });
@@ -179,7 +184,7 @@ describe('ProviderRegistry', () => {
       setCatalogRefreshedHook(() => {
         try { reachable = !!getProviderRegistry(); } catch { reachable = false; }
       });
-      await initProviderRegistry(svc);
+      await initProviderRegistry(svc, '0.0.0-test');
       await flush();
       expect(reachable).toBe(true);
     });
@@ -189,7 +194,7 @@ describe('ProviderRegistry', () => {
       mockPi(fakeRuntime(vi.fn().mockRejectedValue(new Error('boom'))));
       const hook = vi.fn();
       setCatalogRefreshedHook(hook);
-      await initProviderRegistry(svc);
+      await initProviderRegistry(svc, '0.0.0-test');
       await flush();
       await flush();
       expect(hook).not.toHaveBeenCalled();
@@ -201,7 +206,7 @@ describe('ProviderRegistry', () => {
       process.on('unhandledRejection', unhandled);
       try {
         mockPi(fakeRuntime(vi.fn().mockRejectedValue(new Error('boom'))));
-        await expect(initProviderRegistry(svc)).resolves.toBeDefined();
+        await expect(initProviderRegistry(svc, '0.0.0-test')).resolves.toBeDefined();
         await flush();
         await flush();
       } finally {

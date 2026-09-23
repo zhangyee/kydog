@@ -174,7 +174,7 @@ app.on('ready', async () => {
         .then((r) => broadcaster.emit('llm.listChanged', r))
         .catch((err) => logger.warn('llm', 'catalog broadcast failed', { err: String(err) }));
     });
-    await initProviderRegistry(settingsService);
+    await initProviderRegistry(settingsService, app.getVersion());
 
     try {
       const settings = await settingsService.get();

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
@@ -21,7 +21,7 @@ describe('llmService', () => {
     await saveIndex({ schemaVersion: 1, projects: [{ path: dir, addedAt: new Date().toISOString() }], threads: [] });
     (settingsService as any).cache = null;
     _resetProviderRegistryForTest();
-    await initProviderRegistry(settingsService);
+    await initProviderRegistry(settingsService, '0.0.0-test');
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
@@ -86,21 +86,76 @@ describe('llmService', () => {
     const list = await llmService.list();
     const entry = list.configured.find((c) => c.providerId === 'ollama-local');
     expect(entry).toBeDefined();
-    expect(entry!.modelIds).toContain('llama3.1:8b');
+    expect(entry!.models.map((m) => m.id)).toContain('llama3.1:8b');
   });
 
-  it('list: imageInputModelIds 按 pi 的 Model.input 算 —— 能读图的进，只读文字的不进', async () => {
+  it('list: models[].image 按 pi 的 Model.input 算 —— 能读图的 true，只读文字的 false', async () => {
     await llmService.configure({ providerId: 'anthropic', cfg: { kind: 'apiKey', apiKey: 'k' } });
     await llmService.configure({ providerId: 'deepseek', cfg: { kind: 'apiKey', apiKey: 'k' } });
     const list = await llmService.list();
     const anthropic = list.configured.find((c) => c.providerId === 'anthropic')!;
     const deepseek = list.configured.find((c) => c.providerId === 'deepseek')!;
-    expect(anthropic.imageInputModelIds).toContain('claude-sonnet-4-5');
-    // 反面先证明「它在模型列表里」，再断「它不在能读图的列表里」：
-    // 否则 deepseek-v4-flash 压根没列出来时这条也会绿。
-    expect(deepseek.modelIds).toContain('deepseek-v4-flash');
-    expect(deepseek.imageInputModelIds).not.toContain('deepseek-v4-flash');
-    expect(anthropic.imageInputModelIds.every((id) => anthropic.modelIds.includes(id))).toBe(true);
+    expect(anthropic.models.find((m) => m.id === 'claude-sonnet-4-5')?.image).toBe(true);
+    // 先证明「它在模型列表里」，再断「它不读图」：否则 deepseek-v4-flash 压根没列出来时
+    // （远端目录已经把它下架了）这条也会绿。
+    const flash = deepseek.models.find((m) => m.id === 'deepseek-v4-flash');
+    expect(flash).toBeDefined();
+    expect(flash!.image).toBe(false);
+  });
+
+  /**
+   * 在 `<ROOT>/agent/models-store.json` 里种一份远端目录缓存（pi 与 KyDog 共用的那个文件），
+   * 然后重建 registry 让它生效。单测里 PI_OFFLINE=1，不会有网络刷新来改写它。
+   */
+  const seedCatalog = async (json: unknown) => {
+    mkdirSync(path.join(dir, 'agent'), { recursive: true });
+    writeFileSync(path.join(dir, 'agent', 'models-store.json'), JSON.stringify(json));
+    _resetProviderRegistryForTest();
+    await initProviderRegistry(settingsService, '0.0.0-test');
+  };
+  const cachedCatalog = (providerId: string, ids: string[], extra: Record<string, unknown> = {}) => ({
+    [providerId]: {
+      models: ids.map((id) => ({ id, name: id, provider: providerId, input: ['text'] })),
+      lastModified: Date.UTC(2026, 8, 23),
+      checkedAt: Date.UTC(2026, 8, 23),
+      kydogStampedWith: '0.0.0-test',
+      ...extra,
+    },
+  });
+
+  it('list: 远端目录拉到过之后，内置静态目录里多出来的 id 是退役的，不再列出来', async () => {
+    await llmService.configure({ providerId: 'deepseek', cfg: { kind: 'apiKey', apiKey: 'k' } });
+    // 先证明没有远端目录时它在：否则下面那条「不在」在任何情况下都绿（比如 id 改了名）。
+    const before = (await llmService.list()).configured.find((c) => c.providerId === 'deepseek')!;
+    expect(before.models.map((m) => m.id)).toContain('deepseek-v4-flash');
+
+    await seedCatalog(cachedCatalog('deepseek', ['deepseek-v4-pro']));
+    const after = (await llmService.list()).configured.find((c) => c.providerId === 'deepseek')!;
+    expect(after.models.map((m) => m.id)).toContain('deepseek-v4-pro');
+    expect(after.models.map((m) => m.id)).not.toContain('deepseek-v4-flash');
+  });
+
+  it('list: 缓存不是本版本 KyDog 写的 → 一个都不过滤', async () => {
+    await llmService.configure({ providerId: 'deepseek', cfg: { kind: 'apiKey', apiKey: 'k' } });
+    // 与上一条同一份缓存，只把写入者版本换掉 —— pi 可能已经把这份缓存当过期丢了，
+    // 照它过滤会把在售模型藏起来，而且是静默的。
+    await seedCatalog(cachedCatalog('deepseek', ['deepseek-v4-pro'], { kydogStampedWith: '9.9.9' }));
+    const entry = (await llmService.list()).configured.find((c) => c.providerId === 'deepseek')!;
+    expect(entry.models.map((m) => m.id)).toContain('deepseek-v4-flash');
+  });
+
+  it('list: 缓存里没有这个 provider 的条目 → 一个都不过滤', async () => {
+    await llmService.configure({ providerId: 'deepseek', cfg: { kind: 'apiKey', apiKey: 'k' } });
+    await seedCatalog(cachedCatalog('anthropic', ['claude-sonnet-4-5']));
+    const entry = (await llmService.list()).configured.find((c) => c.providerId === 'deepseek')!;
+    expect(entry.models.map((m) => m.id)).toContain('deepseek-v4-flash');
+  });
+
+  it('list: models[].name 来自目录，名字缺失才回落成 id', async () => {
+    await llmService.configure({ providerId: 'deepseek', cfg: { kind: 'apiKey', apiKey: 'k' } });
+    const deepseek = (await llmService.list()).configured.find((c) => c.providerId === 'deepseek')!;
+    // 名字与 id 不是同一个串 —— 拿掉 `name` 只剩 id 时这条会红（选单就只能显示 id 了）。
+    expect(deepseek.models.find((m) => m.id === 'deepseek-v4-flash')?.name).toBe('DeepSeek V4 Flash');
   });
 
   it('list: 自定义服务商按 models[].input 算，没写 input 的按 [\'text\']（与 providerRegistry 同一个缺省）', async () => {
@@ -113,7 +168,9 @@ describe('llmService', () => {
       } },
     });
     const entry = (await llmService.list()).configured.find((c) => c.providerId === 'my-vl')!;
-    expect(entry.modelIds).toEqual(['vis', 'plain']);
-    expect(entry.imageInputModelIds).toEqual(['vis']);
+    expect(entry.models).toEqual([
+      { id: 'vis', name: 'vis', image: true },
+      { id: 'plain', name: 'plain', image: false },
+    ]);
   });
 });

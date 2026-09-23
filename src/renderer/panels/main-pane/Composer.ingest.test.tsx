@@ -47,12 +47,12 @@ const { ingestFiles } = await import('./composerIngest');
 const PROJ = '/proj';
 const THREAD = { id: 't1', projectPath: PROJ, title: 'x', createdAt: 'x', lastActiveAt: 'x' };
 
-function entry(providerId: string, modelIds: string[], imageInputModelIds: string[]) {
-  return { providerId, displayName: providerId, kind: 'apiKey' as const, authStatus: { configured: true }, modelIds, imageInputModelIds, defaultModel: modelIds[0] };
+function entry(providerId: string, models: Array<{ id: string; name: string; image: boolean }>) {
+  return { providerId, displayName: providerId, kind: 'apiKey' as const, authStatus: { configured: true }, models, defaultModel: models[0]?.id };
 }
 function useModel(providerId: string, modelId: string, imageOk: boolean) {
   useLlmStore.setState({
-    configured: [entry(providerId, [modelId], imageOk ? [modelId] : [])] as never,
+    configured: [entry(providerId, [{ id: modelId, name: modelId, image: imageOk }])] as never,
     defaultProvider: providerId as never, defaultModel: modelId,
   });
 }

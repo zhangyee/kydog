@@ -14,7 +14,7 @@ import { ComposerSendButton } from './ComposerSendButton';
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor';
 import { ComposerActionsRow } from './ComposerActionsRow';
 import { ErrorMarginalia } from './ErrorMarginalia';
-import { filterSkillEntries, dispatchInputKey, imageInputBlocked, folderMentionEdit } from './composerHelpers';
+import { filterSkillEntries, dispatchInputKey, imageInputBlocked, folderMentionEdit, modelLabelParts } from './composerHelpers';
 import { encodeUserTurn, IMAGE_UNSUPPORTED_TEXT } from '../../../shared/userTurn';
 import { toMessagePath } from './attachments';
 import { ingestFiles } from './composerIngest';
@@ -82,15 +82,17 @@ export function Composer({ threadId, placeholder, large = false, prefill }: Prop
     ?? defaultModel
     ?? allConfigured.find((c) => c.providerId === effectiveProviderId)?.defaultModel
     ?? null;
-  const eligibleCount = allConfigured.filter((c) => c.authStatus.configured && c.modelIds.length > 0).length;
+  const eligibleCount = allConfigured.filter((c) => c.authStatus.configured && c.models.length > 0).length;
   const showBYOK = eligibleCount === 0;
+  const effectiveEntry = allConfigured.find((c) => c.providerId === effectiveProviderId);
+  const modelParts = effectiveModelId ? modelLabelParts(effectiveEntry?.models, effectiveModelId) : null;
   const modelLabel = showBYOK
     ? 'BYOK'
-    : effectiveProviderId && effectiveModelId
-    ? `${allConfigured.find((c) => c.providerId === effectiveProviderId)?.displayName ?? effectiveProviderId} · ${effectiveModelId}`
+    : effectiveProviderId && modelParts
+    // 胶囊只放名字，id 留给选单 —— 胶囊在窄模式下本来就紧，两个一起放会挤掉后面的按钮。
+    ? `${effectiveEntry?.displayName ?? effectiveProviderId} · ${modelParts.name}`
     : '选择模型';
 
-  const effectiveEntry = allConfigured.find((c) => c.providerId === effectiveProviderId);
   const visionBlocked = imageInputBlocked({
     hasImages: attachments.some((a) => a.kind === 'image'),
     entry: effectiveEntry,
