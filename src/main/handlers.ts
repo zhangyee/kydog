@@ -311,6 +311,9 @@ export function registerAllHandlers(): void {
     if (process.platform !== 'win32') return;
     BrowserWindow.fromWebContents(evt.sender)?.setTitleBarOverlay({ ...args, height: TITLE_BAR_HEIGHT });
   });
+  registerHandler('window.close', (_args, evt) => {
+    BrowserWindow.fromWebContents(evt.sender)?.close();
+  });
 
   if (process.env.KYDOG_E2E === '1') {
     ipcMain.handle('kydog:debug:envSnapshot', async () => {

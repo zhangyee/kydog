@@ -51,6 +51,15 @@ body::before {
 .ky-scroll:hover::-webkit-scrollbar-thumb { background: var(--color-ink-hair); }
 .ky-scroll::-webkit-scrollbar-track { background: transparent; }
 
+/* 主内容标签条：标签到可读下限后才横向溢出。保留一条很薄、可拖动的滚动条，
+   不让系统的常驻滚动条吃掉 34px 标签条的一大半高度。 */
+.ky-tab-scroll::-webkit-scrollbar { height: 4px; }
+.ky-tab-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-ink-hair);
+  border-radius: 2px;
+}
+.ky-tab-scroll::-webkit-scrollbar-track { background: transparent; }
+
 /* PDF 两栏用的：原生滚动条整个不画、不占位（spec 2026-09-06 §2），拇指由 OverlayScrollbar 自绘。
    与 .ky-scroll 分开——其余面板仍用占位式那套。 */
 .ky-scroll-overlay { scrollbar-width: none; }

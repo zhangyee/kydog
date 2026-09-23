@@ -266,6 +266,15 @@ describe('main.ts 真的把内置浏览器装配起来了', () => {
   });
 });
 
+describe('最后一个窗口关闭后的应用生命周期', () => {
+  it('darwin 不 quit；win32/linux quit', () => {
+    const before = H.app.quit.mock.calls.length;
+    for (const fn of H.appListeners['window-all-closed'] ?? []) fn();
+    const delta = H.app.quit.mock.calls.length - before;
+    expect(delta).toBe(process.platform === 'darwin' ? 0 : 1);
+  });
+});
+
 /**
  * **主窗口导航守卫的接线。** 判定本身在 `navigationGuard.test.ts`；这里守的是 main.ts 真的把
  * `will-navigate` 接到了它上面，并且按判定结果 `preventDefault` / 交给系统打开。旧写法按 origin

@@ -13,6 +13,15 @@ export const broadcaster = {
       }
     }
   },
+  /** 菜单快捷键属于当前焦点窗口，不能广播给其它主窗口或隐藏的打印/栅格窗口。 */
+  emitTo<T extends EventTopic>(sender: WebContents, topic: T, payload: EventPayload<T>): void {
+    if (sender.isDestroyed()) return;
+    try {
+      sender.send(EVENT_CHANNEL, { topic, payload });
+    } catch (err) {
+      logger.warn('ipc.broadcast', 'targeted send failed', { topic, err: String(err) });
+    }
+  },
 };
 
 /**

@@ -16,6 +16,7 @@ test.describe.configure({ mode: 'serial' });
 
 const LONG_TITLE = '会议纪要：关于下一阶段科研数据管线与多智能体协作流程的详细讨论与后续待办梳理';
 const RENAMED_PROJECT = '我的研究';
+const TAB_FILES = Array.from({ length: 7 }, (_, i) => `tab-${String(i + 1).padStart(2, '0')}-long-document-name.md`);
 
 let launched: LaunchedApp;
 let home = '';
@@ -36,6 +37,7 @@ test.beforeAll(async () => {
       await seedSettings(h);
       await seedSamplePackage(dirA);
       await seedSamplePackage(dirB);
+      await Promise.all(TAB_FILES.map((name) => fs.writeFile(path.join(dirA, name), `# ${name}\n`)));
       const t = (id: string, projectPath: string, title: string, lastActiveAt: string) =>
         ({ id, projectPath, title, createdAt: '2026-01-01', lastActiveAt });
       await fs.writeFile(path.join(h, '.kydog', 'index.json'), JSON.stringify({
@@ -94,13 +96,137 @@ test('15-titlebar: defaults to KyDog and reflects selected thread title', async 
   await expect(titleBar).toContainText('thread-A');
 });
 
+test('13-tab-strip: thread 固定可见；右侧文件先收窄、再滚动，并自动露出新标签', async () => {
+  const { page } = launched;
+  const strip = page.getByTestId('main-tabstrip');
+  const pinned = page.getByTestId('main-tabpinned');
+  const scroll = page.getByTestId('main-tabscroll');
+  const main = page.locator('[data-pane="main"]');
+  const threadTab = page.getByTestId('tab-t-a');
+  await expect(threadTab).toBeVisible();
+  await expect(pinned).toBeVisible();
+  await expect(scroll).toBeVisible();
+  await page.getByTestId(`fs-${path.join(dirA, TAB_FILES[0])}`).waitFor();
+
+  const initialThreadBox = await threadTab.boundingBox();
+  expect(initialThreadBox, '只有 thread 时标签应当有可量宽度').not.toBeNull();
+
+  // 第一层：先量一个文件的舒适宽度，再开第二个；只有右侧两个文件一起收窄，thread 宽度不动。
+  const firstPath = path.join(dirA, TAB_FILES[0]);
+  await page.getByTestId(`fs-${firstPath}`).dblclick();
+  const firstTab = page.getByTestId(`tab-${firstPath}`);
+  await expect(firstTab).toBeVisible();
+  const soloFileBox = await firstTab.boundingBox();
+  expect(soloFileBox, '第一个文件标签应当有可量宽度').not.toBeNull();
+
+  const secondPath = path.join(dirA, TAB_FILES[1]);
+  await page.getByTestId(`fs-${secondPath}`).dblclick();
+  const secondTab = page.getByTestId(`tab-${secondPath}`);
+  await expect(secondTab).toBeVisible();
+
+  const mainBox = await main.boundingBox();
+  const pinnedBox = await pinned.boundingBox();
+  const scrollBox = await scroll.boundingBox();
+  const threadAfterTwo = await threadTab.boundingBox();
+  const mediumFileBoxes = await Promise.all([firstTab.boundingBox(), secondTab.boundingBox()]);
+  expect(mainBox).not.toBeNull();
+  expect(pinnedBox).not.toBeNull();
+  expect(scrollBox).not.toBeNull();
+  expect(threadAfterTwo).not.toBeNull();
+  expect(mediumFileBoxes.every((box) => box !== null)).toBe(true);
+  expect(Math.abs(threadAfterTwo!.width - initialThreadBox!.width)).toBeLessThanOrEqual(1);
+  expect(mediumFileBoxes[0]!.width).toBeLessThan(soloFileBox!.width - 10);
+  for (const box of [threadAfterTwo, ...mediumFileBoxes]) {
+    expect(box!.x).toBeGreaterThanOrEqual(mainBox!.x - 1);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(mainBox!.x + mainBox!.width + 1);
+  }
+  expect(pinnedBox!.x + pinnedBox!.width).toBeLessThanOrEqual(scrollBox!.x + 1);
+
+  // 第二层：继续打开后，只有右侧区域产生横向滚动；最后新开的那一项自动在右边可见。
+  for (const name of TAB_FILES.slice(2)) {
+    const abs = path.join(dirA, name);
+    await page.getByTestId(`fs-${abs}`).dblclick();
+    await expect(page.getByTestId(`tab-${abs}`)).toHaveCount(1);
+  }
+  await expect.poll(async () => scroll.evaluate((el) => ({
+    overflow: el.scrollWidth > el.clientWidth,
+    moved: el.scrollLeft > 0,
+  })), { message: '标签总下限超过中栏后应有可滚动距离，且应自动滚到新活动项' })
+    .toEqual({ overflow: true, moved: true });
+
+  const lastPath = path.join(dirA, TAB_FILES.at(-1)!);
+  const lastBox = await page.getByTestId(`tab-${lastPath}`).boundingBox();
+  expect(lastBox).not.toBeNull();
+  expect(lastBox!.x).toBeGreaterThanOrEqual(scrollBox!.x - 1);
+  expect(lastBox!.x + lastBox!.width).toBeLessThanOrEqual(scrollBox!.x + scrollBox!.width + 1);
+
+  // 右侧已经滚到末尾，thread 的位置和宽度仍逐像素不变，也始终落在主栏内。
+  const threadAfterScroll = await threadTab.boundingBox();
+  expect(threadAfterScroll).not.toBeNull();
+  expect(Math.abs(threadAfterScroll!.x - initialThreadBox!.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(threadAfterScroll!.width - initialThreadBox!.width)).toBeLessThanOrEqual(1);
+  expect(threadAfterScroll!.x + threadAfterScroll!.width).toBeLessThanOrEqual(mainBox!.x + mainBox!.width + 1);
+
+  // 点击始终可见的 thread 不需要先回卷文件区；右侧保持用户刚才浏览到的位置。
+  const scrollLeftBeforeThread = await scroll.evaluate((el) => el.scrollLeft);
+  await page.getByTestId('thread-t-a').click();
+  await expect(page.getByTestId('thread-stats')).toBeVisible();
+  expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(scrollLeftBeforeThread);
+  const returnedThreadBox = await threadTab.boundingBox();
+  expect(returnedThreadBox).not.toBeNull();
+  expect(Math.abs(returnedThreadBox!.x - initialThreadBox!.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(returnedThreadBox!.width - initialThreadBox!.width)).toBeLessThanOrEqual(1);
+
+  // 外层本身不滚，证明 thread 没有靠“把整条带回左边”来冒充固定。
+  expect(await strip.evaluate((el) => ({ left: el.scrollLeft, overflow: el.scrollWidth > el.clientWidth })))
+    .toEqual({ left: 0, overflow: false });
+
+  // Playwright 的 page.keyboard 走 CDP，不经过 macOS 原生菜单 accelerator；这里验证我们
+  // 自己的边界：打包应用确实安装了带快捷键的菜单项，并从菜单 click 走完整 IPC 链路。
+  await page.getByTestId(`tab-${lastPath}`).click();
+  const menuInfo = await launched.app.evaluate(({ Menu }) => {
+    const file = Menu.getApplicationMenu()?.items.find((item) => item.label === 'File');
+    const close = file?.submenu?.items.find((item) => item.label === 'Close Tab');
+    return { accelerator: close?.accelerator ?? null, enabled: close?.enabled ?? false };
+  });
+  expect(menuInfo).toEqual({ accelerator: 'CommandOrControl+W', enabled: true });
+  await launched.app.evaluate(({ BrowserWindow, Menu }) => {
+    const file = Menu.getApplicationMenu()?.items.find((item) => item.label === 'File');
+    const close = file?.submenu?.items.find((item) => item.label === 'Close Tab');
+    // app.evaluate 本身可能让主窗口短暂失去 key 状态（macOS 焦点竞争，见 helpers/main.ts 注释）；
+    // 本 spec 一次启动只造一个可见主窗口，直接取它，别把瞬时焦点当产品判据。
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    if (!close || !mainWindow || typeof close.click !== 'function') throw new Error('Close Tab menu item unavailable');
+    close.click(close, mainWindow, {} as never);
+  });
+  await expect(page.getByTestId(`tab-${lastPath}`)).toHaveCount(0);
+  await expect(threadTab).toBeVisible();
+  await expect(page.getByTestId('title-bar')).toBeVisible();
+
+  // 恢复这个 serial spec 后续用例的原始状态：只留 thread tab。
+  for (const name of TAB_FILES.slice(0, -1).reverse()) {
+    const abs = path.join(dirA, name);
+    await page.getByTestId(`tab-close-${abs}`).evaluate((el: HTMLElement) => el.click());
+    await expect(page.getByTestId(`tab-${abs}`)).toHaveCount(0);
+  }
+});
+
 test('13-tab-strip: thread tab renders, breadcrumb stats visible, close deselects to Welcome', async () => {
   const { page } = launched;
   await expect(page.getByTestId('tab-t-a')).toBeVisible();
   await expect(page.getByTestId('thread-stats')).toBeVisible();
+  // 留一个后台文件 tab：这条只考 thread 关闭后的 Welcome；若 thread 是最后一项，新语义会关窗口。
+  const keepPath = path.join(dirA, TAB_FILES[0]);
+  await page.getByTestId(`fs-${keepPath}`).dblclick();
+  await expect(page.getByTestId(`tab-${keepPath}`)).toBeVisible();
+  await page.getByTestId('thread-t-a').click();
   await page.getByTestId('tab-close-t-a').click();
   await expect(page.getByTestId('tab-t-a')).toHaveCount(0);
   await expect(page.getByTestId('welcome-slogan')).toBeVisible();
+  // 清回只留 thread 的状态，供后面的串行用例继续使用。
+  await page.getByTestId('thread-t-a').click();
+  await page.getByTestId(`tab-close-${keepPath}`).click();
+  await expect(page.getByTestId(`tab-${keepPath}`)).toHaveCount(0);
 });
 
 test('17-project-tree-collapse: selected thread project still toggles closed', async () => {

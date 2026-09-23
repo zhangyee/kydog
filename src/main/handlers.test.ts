@@ -7,7 +7,7 @@ import type { TelemetryService, TelemetrySettings } from './telemetry/telemetryS
 // onboardingService + settingsService —— 这两个会去读写真实的 ~/.kydog。
 // 剩下的 service 单例都是惰性的，import 时不碰磁盘也不出网。
 const h = vi.hoisted(() => ({
-  captured: {} as Partial<Record<RpcMethod, (args: unknown) => unknown>>,
+  captured: {} as Partial<Record<RpcMethod, (args: unknown, evt?: { sender: unknown }) => unknown>>,
   calls: [] as string[],
   canBeacon: false,
   canReachNetwork: false,
@@ -22,6 +22,8 @@ const h = vi.hoisted(() => ({
   /** 浏览器与机构两条新路上，handler 到底转发了什么。 */
   browser: [] as Array<{ m: string; args: unknown }>,
   institution: [] as Array<{ m: string; args: unknown }>,
+  windowSender: { id: 'window-sender' } as unknown,
+  windowCloseCalls: 0,
 }));
 
 vi.mock('electron', () => ({
@@ -29,7 +31,11 @@ vi.mock('electron', () => ({
   dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
   ipcMain: { handle: vi.fn() },
   shell: { openExternal: vi.fn(), showItemInFolder: vi.fn() },
-  BrowserWindow: class { static fromWebContents() { return null; } },
+  BrowserWindow: class {
+    static fromWebContents(sender: unknown) {
+      return sender === h.windowSender ? { close: () => { h.windowCloseCalls += 1; } } : null;
+    }
+  },
 }));
 // md 导出 PDF 的主进程实现自己起窗口、读 settings —— 这里只测转发，替身掉整个模块。
 vi.mock('./markdown/mdPdfExport', () => ({
@@ -38,7 +44,7 @@ vi.mock('./markdown/mdPdfExport', () => ({
 }));
 
 vi.mock('./ipc/dispatcher', () => ({
-  registerHandler: (m: RpcMethod, fn: (args: unknown) => unknown) => { h.captured[m] = fn; },
+  registerHandler: (m: RpcMethod, fn: (args: unknown, evt?: { sender: unknown }) => unknown) => { h.captured[m] = fn; },
 }));
 
 vi.mock('./telemetry/assemble', () => ({
@@ -168,15 +174,27 @@ beforeEach(() => {
   h.settings = settingsWithSecret();
   h.browser = [];
   h.institution = [];
+  h.windowCloseCalls = 0;
   registerAllHandlers();
 });
 
 /** 任意一条 RPC，返回值不收窄 —— 上面那个 invoke 的返回类型是给遥测那组用的。 */
-function call(method: RpcMethod, args?: unknown): Promise<unknown> {
+function call(method: RpcMethod, args?: unknown, evt?: { sender: unknown }): Promise<unknown> {
   const fn = h.captured[method];
   if (!fn) throw new Error(`${method} 未注册`);
-  return Promise.resolve(fn(args));
+  return Promise.resolve(fn(args, evt));
 }
+
+describe('window.close 只关闭发起 RPC 的窗口', () => {
+  it('sender 能映射到窗口时关一次；不能映射时不误关别的窗口', async () => {
+    const method = 'window.close' as RpcMethod;
+    await call(method, undefined, { sender: h.windowSender });
+    expect(h.windowCloseCalls).toBe(1);
+
+    await call(method, undefined, { sender: { id: 'other' } });
+    expect(h.windowCloseCalls).toBe(1);
+  });
+});
 
 /**
  * protocol.ts 上写着「密码只会 渲染层 → 主进程 单向流动，连密文也不回传」。

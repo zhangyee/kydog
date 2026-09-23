@@ -195,6 +195,9 @@ export type RpcCall =
   // --color-titlebar-* token，而窗口创建时渲染进程还没起来，主进程手里没有它。
   // ThemeApplier 落完 data-theme 后调这条补上；非 win32 主进程侧直接 no-op。
   | { method: 'window.setTitleBarOverlay'; args: { color: string; symbolColor: string }; result: void }
+  // 关闭**发起调用的那个**主窗口。渲染层只在最后一个中央 tab 真正关掉（含脏文件确认完成）
+  // 之后才调用；不能用 app.quit，否则 macOS 的「关窗口但应用驻留」语义会被绕过。
+  | { method: 'window.close'; args: undefined; result: void }
   // ── Onboarding ──
   | { method: 'onboarding.complete'; args: OnboardingCompleteArgs; result: OnboardingResult }
   | { method: 'ask.submit'; args: { threadId: string; toolCallId: string; answers: AskAnswer[] }; result: void }
@@ -316,6 +319,7 @@ export const RPC_METHODS = [
   'telemetry.deleteMyData',
   'ui.saveViewState',
   'window.setTitleBarOverlay',
+  'window.close',
   'onboarding.complete',
   'ask.submit',
   'ask.cancel',
@@ -337,6 +341,9 @@ export type RpcResponse<M extends RpcMethod> =
   | { ok: false; error: SerializedError };
 
 export type RuntimeEvent =
+  // 应用菜单的 Close Tab 只知道「当前焦点窗口」，不知道渲染层此刻活动的是 thread、设置还是
+  // 文件。把意图原样送到那个窗口，具体关闭与未保存确认仍由 MainPane 的同一条路径处理。
+  | { topic: 'ui.closeActiveTab'; payload: undefined }
   | { topic: 'run.started'; payload: { threadId: string; runId: string } }
   | { topic: 'run.message_delta'; payload: { threadId: string; runId: string; messageId: string; delta: string } }
   | { topic: 'run.thinking_delta'; payload: { threadId: string; runId: string; messageId: string; delta: string } }
@@ -439,6 +446,7 @@ export type EventPayload<T extends EventTopic> = Extract<RuntimeEvent, { topic: 
  *  · **待接**：那份用例里的 `PENDING_EMITTER`，每条都要写清楚谁来接。
  */
 export const EVENT_TOPICS = [
+  'ui.closeActiveTab',
   'run.started',
   'run.message_delta',
   'run.thinking_delta',

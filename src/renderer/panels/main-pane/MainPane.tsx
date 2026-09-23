@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useUnreadStore } from '../workspace/unreadStore';
@@ -16,6 +16,19 @@ import { getSaver } from './markdown/saveRegistry';
 
 const SETTINGS_TAB_ID = '__settings__';
 
+/** 关完目标之后再读一次真 store；脏文件提示期间用户可能已经从侧栏打开了别的 tab。 */
+function hasVisibleCenterTabs(): boolean {
+  const ui = useUiStore.getState();
+  const threads = useThreadsStore.getState();
+  const hasThread = threads.currentThreadId !== null
+    && Object.values(threads.threadsByProject).flat().some((t) => t.id === threads.currentThreadId);
+  return hasThread || ui.settingsTabOpen || ui.openFileTabs.length > 0;
+}
+
+function closeWindowIfEmpty(): void {
+  if (!hasVisibleCenterTabs()) void window.kydog.invoke('window.close');
+}
+
 export function MainPane() {
   const currentThreadId = useThreadsStore((s) => s.currentThreadId);
   const select = useThreadsStore((s) => s.selectThread);
@@ -28,6 +41,8 @@ export function MainPane() {
   const activeFileTabId = useUiStore((s) => s.activeFileTabId);
   const focusFileTab = useUiStore((s) => s.focusFileTab);
   const closeFileTab = useUiStore((s) => s.closeFileTab);
+  const closeActiveTabRequests = useUiStore((s) => s.closeActiveTabRequests);
+  const consumeCloseActiveTabRequest = useUiStore((s) => s.consumeCloseActiveTabRequest);
   const thread = useThreadsStore((s) =>
     currentThreadId
       ? Object.values(s.threadsByProject).flat().find((t) => t.id === currentThreadId)
@@ -70,11 +85,35 @@ export function MainPane() {
     else nonFileContent = <Welcome />;
   }
 
-  const requestCloseFile = (id: string) => {
-    const tab = openFileTabs.find((t) => t.id === id);
-    if (tab?.dirty) setPendingCloseId(id);
-    else closeFileTab(id);
-  };
+  const requestCloseTab = useCallback((id: string) => {
+    if (id === SETTINGS_TAB_ID) {
+      closeSettings();
+      closeWindowIfEmpty();
+      return;
+    }
+    const file = useUiStore.getState().openFileTabs.find((t) => t.id === id);
+    if (file) {
+      if (file.dirty) {
+        setPendingCloseId(id);
+        return;
+      }
+      closeFileTab(id);
+      closeWindowIfEmpty();
+      return;
+    }
+    select(null);
+    if (useUiStore.getState().settingsTabOpen) {
+      useUiStore.getState().openSettings(useUiStore.getState().settingsTab);
+    }
+    closeWindowIfEmpty();
+  }, [closeFileTab, closeSettings, select]);
+
+  useEffect(() => {
+    if (closeActiveTabRequests <= 0) return;
+    consumeCloseActiveTabRequest();
+    if (activeId === null) closeWindowIfEmpty();
+    else requestCloseTab(activeId);
+  }, [activeId, closeActiveTabRequests, consumeCloseActiveTabRequest, requestCloseTab]);
 
   const pendingTab = pendingCloseId
     ? openFileTabs.find((t) => t.id === pendingCloseId) ?? null
@@ -100,16 +139,7 @@ export function MainPane() {
             useUnreadStore.getState().markRead(id);
           }}
           onClose={(id) => {
-            if (id === SETTINGS_TAB_ID) {
-              closeSettings();
-              return;
-            }
-            if (openFileTabs.some((t) => t.id === id)) {
-              requestCloseFile(id);
-              return;
-            }
-            select(null);
-            if (settingsTabOpen) useUiStore.getState().openSettings(useUiStore.getState().settingsTab);
+            requestCloseTab(id);
           }}
         />
       )}
@@ -142,13 +172,22 @@ export function MainPane() {
           onDiscard={() => {
             closeFileTab(pendingTab.id);
             setPendingCloseId(null);
+            closeWindowIfEmpty();
           }}
           onSave={() => {
             const saver = getSaver(pendingTab.id);
             const id = pendingTab.id;
             setPendingCloseId(null);
-            if (!saver) { closeFileTab(id); return; }
-            void saver().then((ok) => { if (ok) closeFileTab(id); });
+            if (!saver) {
+              closeFileTab(id);
+              closeWindowIfEmpty();
+              return;
+            }
+            void saver().then((ok) => {
+              if (!ok) return;
+              closeFileTab(id);
+              closeWindowIfEmpty();
+            });
           }}
         />
       )}

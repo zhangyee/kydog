@@ -39,6 +39,7 @@ function emittedTopicsIn(src: string): string[] {
   const found: string[] = [];
   const patterns = [
     /\bbroadcaster\.emit\(\s*(['"`])([\w.]+)\1/g,
+    /\bbroadcaster\.emitTo\(\s*[^,]+,\s*(['"`])([\w.]+)\1/g,
     /\bemitRun\(\s*[A-Za-z_$][\w$]*\s*,\s*(['"`])([\w.]+)\1/g,
     // **必须带上 `replay({`**：只写 `topic:` 的话，任何一个带 topic 字面量的对象
     // （一个类型夹具、一个过滤谓词 `{ topic: 'browser.agentFocus' }`）都会被算成
@@ -114,6 +115,12 @@ describe('事件 topic 三方对账：声明 / 已接 / 待接', () => {
     expect(SENDERS.has('browser.tabsChanged')).toBe(true);   // broadcaster.emit('x', …)
     expect(SENDERS.has('run.started')).toBe(true);           // emitRun(bound, 'x', …)
     expect(SENDERS.has('run.resync')).toBe(true);            // replay({ topic: 'x', … })
+  });
+
+  it('只发给一个窗口的 emitTo 也算真实发送方', () => {
+    expect(emittedTopicsIn("broadcaster.emitTo(sender, 'ui.closeActiveTab', undefined);")).toEqual([
+      'ui.closeActiveTab',
+    ]);
   });
 });
 

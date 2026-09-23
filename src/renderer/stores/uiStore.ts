@@ -89,6 +89,10 @@ type UiState = {
   settingsAddProviderOpen: boolean;
   openSettingsAddProvider: () => void;
   closeSettingsAddProvider: () => void;
+  /** 应用菜单送来的 Close Tab 意图。队列而不是时间窗：每一帧都是协议事实，由 MainPane 逐个消费。 */
+  closeActiveTabRequests: number;
+  requestCloseActiveTab: () => void;
+  consumeCloseActiveTabRequest: () => void;
   activeCenterTab: CenterTabKind;
   openFileTabs: FileTab[];
   activeFileTabId: string | null;
@@ -162,6 +166,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   settingsTab: 'provider',
   settingsDetailProviderId: null,
   settingsAddProviderOpen: false,
+  closeActiveTabRequests: 0,
+  requestCloseActiveTab: () => set((s) => ({ closeActiveTabRequests: s.closeActiveTabRequests + 1 })),
+  consumeCloseActiveTabRequest: () => set((s) => ({ closeActiveTabRequests: Math.max(0, s.closeActiveTabRequests - 1) })),
   activeCenterTab: 'thread',
   openFileTabs: [],
   activeFileTabId: null,

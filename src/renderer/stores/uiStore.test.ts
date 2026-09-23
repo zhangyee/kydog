@@ -164,6 +164,26 @@ describe('uiStore 文件 tab', () => {
   });
 });
 
+describe('uiStore 关闭活动 tab 请求', () => {
+  beforeEach(() => {
+    useUiStore.setState({ closeActiveTabRequests: 0 } as never);
+  });
+
+  it('每次请求都入队，消费一次只拿走一个', () => {
+    const state = useUiStore.getState() as typeof useUiStore extends { getState: () => infer S } ? S & {
+      closeActiveTabRequests: number;
+      requestCloseActiveTab: () => void;
+      consumeCloseActiveTabRequest: () => void;
+    } : never;
+    state.requestCloseActiveTab();
+    state.requestCloseActiveTab();
+    expect((useUiStore.getState() as typeof state).closeActiveTabRequests).toBe(2);
+
+    (useUiStore.getState() as typeof state).consumeCloseActiveTabRequest();
+    expect((useUiStore.getState() as typeof state).closeActiveTabRequests).toBe(1);
+  });
+});
+
 describe('uiStore project 收折', () => {
   beforeEach(() => { useUiStore.setState({ collapsedProjects: new Set<string>() }); });
 

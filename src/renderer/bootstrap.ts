@@ -130,6 +130,9 @@ export async function bootstrap(): Promise<void> {
 }
 
 function setupEventBridge(): void {
+  window.kydog.on('ui.closeActiveTab', () => {
+    useUiStore.getState().requestCloseActiveTab();
+  });
   // 全部 run.* 都汇到 applyRunEvent 一个口子：loadHistory 的 journal 重放走的也是它，
   // 直播与重放必须是同一段代码，否则重载后复原出来的 block 会慢慢跟直播的走偏。
   for (const topic of RUN_EVENT_TOPICS) {

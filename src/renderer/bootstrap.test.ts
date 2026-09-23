@@ -167,6 +167,20 @@ describe('bootstrap 把 settingsHealth 接进了 store', () => {
   });
 });
 
+describe('应用菜单的关闭 tab 请求', () => {
+  it('ui.closeActiveTab 每来一帧就在 uiStore 入队一次', async () => {
+    useUiStore.setState({ closeActiveTabRequests: 0 } as never);
+    await bootstrap();
+
+    fire('ui.closeActiveTab', undefined);
+    fire('ui.closeActiveTab', undefined);
+
+    expect((useUiStore.getState() as typeof useUiStore extends { getState: () => infer S }
+      ? S & { closeActiveTabRequests: number }
+      : never).closeActiveTabRequests).toBe(2);
+  });
+});
+
 describe('bootstrap 真的把浏览器侧栏接上了', () => {
   it('走了一次 browser.getState，epoch 与标签清单都进了 store', async () => {
     await bootstrap();

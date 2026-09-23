@@ -29,6 +29,7 @@ import { browserService } from './browser/browserService';
 import { installProxyDispatcher } from './net/systemProxy';
 import { installBrowserWindowWiring, installBrowserQuitWiring } from './browser/mainWiring';
 import { decideNavigation } from './navigationGuard';
+import { shouldQuitAfterAllWindowsClosed } from './windowLifecycle';
 import iconDataUrl from '../../assets/icons/icon.png?inline';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -224,7 +225,9 @@ app.on('ready', async () => {
 // 那里只清窗口引用，收摊统一在这里做一次，`disposeAll` 本身幂等。
 installBrowserQuitWiring(app, browserService);
 
-app.on('window-all-closed', () => { app.quit(); });
+app.on('window-all-closed', () => {
+  if (shouldQuitAfterAllWindowsClosed(process.platform)) app.quit();
+});
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
 app.on('before-quit', () => {
   fileWatcherService.stopAll();
