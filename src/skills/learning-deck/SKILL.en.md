@@ -101,7 +101,7 @@ fastpaper cite <DOI of some review> --direction outgoing  -n 20   # what a revie
 
 That last one takes the least effort: **a good review's reference list is a ready-made list of concepts**, and `cite --direction outgoing` pulls it out in one go.
 
-`--sort citations` is **only used on `semantic`**. Sorting by citations on `crossref` and `openalex` goes badly off topic (relevance weighting gets overridden and you get the whole discipline's giants back); `pubmed` errors out explicitly.
+`--sort citations` is **only used on `semantic`**. On other sources, sorting by citations goes badly off topic: relevance weighting gets overridden and you get the whole discipline's giants back.
 
 **This round only scans titles, it downloads nothing.** The output is a **2–3 layer candidate knowledge graph**:
 

@@ -68,16 +68,13 @@ Five entry points run in parallel, **none of them depending on another**:
 
 ```bash
 # 1. subject terms, past 12 months
-fastpaper search pubmed "<subject terms>" --after <this year minus 1>-<month>-01 -n 10
+fastpaper search <the index for this direction> "<subject terms>" --after <this year minus 1>-<month>-01 -n 10
 
 # 2. preprints — 6–18 months ahead of journals, the frontier's first scene
-#    biomedical preprints go through Europe PMC: SRC:PPR is every preprint server;
-#    add AND PUBLISHER:"bioRxiv" to narrow it to one
-fastpaper search arxiv "<subject>" --after <this year minus 1>-<month>-01 -n 8
-fastpaper search europepmc '<subject> AND SRC:PPR' --after <this year minus 1>-<month>-01 -n 8
+fastpaper search <a preprint source> "<subject>" --after <this year minus 1>-<month>-01 -n 8
 
 # 3. cross-disciplinary sources — this discipline's searches never see them
-fastpaper search arxiv "<subject>" --field <adjacent discipline category> --after <this year minus 1>-<month>-01 -n 8
+fastpaper search <the neighbouring discipline's source> "<subject>" --field <its category> --after <this year minus 1>-<month>-01 -n 8
 
 # 4. published recently yet already accruing citations = heating up (sort only on semantic)
 fastpaper search semantic "<subject>" --after <this year minus 1>-01-01 --sort citations -n 10
@@ -86,15 +83,12 @@ fastpaper search semantic "<subject>" --after <this year minus 1>-01-01 --sort c
 fastpaper cite <DOI of some recent paper> --direction incoming -n 20
 ```
 
-The third, cross-disciplinary entry point is the critical one: people bringing methods in from another field cite **their own side's** canon, which neither this discipline's vocabulary nor its citation network finds. From a biomedical direction go to `arxiv --field eess.SP / cs.LG`; from a CS direction go to `pubmed` `europepmc`.
+The third, cross-disciplinary entry point is the critical one: people bringing methods in from another field cite **their own side's** canon, which neither this discipline's vocabulary nor its citation network finds. From a biomedical direction go to the CS / signal-processing preprints; from a CS direction go to the biomedical indexes.
 
-**A direction in AI / ML gets one more entry point**: the Hugging Face Papers lists, where the community picks and
-upvotes papers every day. `fastpaper search huggingface --top <a week>` (compute the week with `date +%G-W%V`; a day
-`2026-09-18` or a month `2026-08` work too), and `--trending` is its own rolling hotness order, which mixes in papers
-that took off again years later; neither takes a query. **This is community attention, not citation impact** — it
-cannot stand in for entry point 4, upvotes may never be reported as impact, and the briefing must say which list it
-came from. Every entry is an arXiv paper: the abstract is already in the record (do not `get arxiv` them one by one —
-arXiv lets one request through every 3 seconds), and the `id` is the arXiv id for `fastpaper download <id>`.
+**A direction in AI / ML gets one more entry point**: the community attention lists, the kind where papers are picked
+and upvoted every day (which source that is in fastpaper, and how to ask for one day / week / month, is in its
+SKILL.md). **This is attention, not citation impact** — it cannot stand in for entry point 4, upvotes may never be
+reported as impact, and the briefing must say which list it came from.
 
 ### Three traps that must be avoided (all measured)
 
@@ -150,10 +144,10 @@ For a group producing continuously over years with a coherent body of results, t
 How: pick the authors recurring across the search results, and pull each one's continuous output.
 
 ```bash
-fastpaper search pubmed "<subject>" --author "<Surname Initials>" --sort date -n 10
+fastpaper search <the index for this direction> "<subject>" --author "<Surname Initials>" --sort date -n 10
 ```
 
-`--author` is available on `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal` `dblp` `inspire` `zbmath` `ads`; `semantic` `osf` `eric` `osti` `ntrs` `datacite` do not support it, but they raise an explicit error (`Error: semantic does not support --author`, which also lists the sources that do) rather than failing silently — those sources put the person's name into the query string.
+`--author` is not on every source; the ones without it raise an explicit error that lists the sources that do have it, so it never fails silently.
 
 **What gets written is a trajectory, not a paper list.** Pick 2–4 waypoints that let a reader see what they went from and to:
 
@@ -227,7 +221,7 @@ Filename rule: a DOI's `/` becomes `_`, while arXiv ids and PMC ids stay as they
 
 **This skill's full-text acquisition rate is inherently low, it is structural, and calls spent rescuing it are wasted.** Measured, one round of 9 downloads had 6 failures, and the failures were **all papers published that year** — PMC / Europe PMC / CORE take weeks to months to ingest full text, while a frontier briefing by definition searches the past 12 months, so the closer to today the less obtainable.
 
-**Switching sources essentially does not rescue it**: those 6 were each tried on `europepmc` and `core` with zero successes; searching their titles on `arxiv` for preprints hit nothing for five of them (preprints in clinical behavioral medicine live on medRxiv, which is now reachable only as `europepmc 'SRC:PPR AND PUBLISHER:"medRxiv"'` — found but not fetched: measured records carry `open_access` false and no `pdf_url`). `unpaywall` does not work either — for these papers it holds only landing pages, no direct PDF links. So:
+**Switching sources essentially does not rescue it**: those 6 were each tried on other aggregators with zero successes; searching their titles on the preprint sources hit nothing for five of them (preprints in clinical behavioral medicine live on medRxiv: measured, an aggregator finds them, but the records carry `open_access` false and no `pdf_url`, so the full text is out of reach). A DOI-to-open-copy resolver does not work either — for these papers it holds only landing pages, no direct PDF links. So:
 
 - **Read the exit code first.** `4` = the request was fine and this source simply does not have it (no such paper / no OA copy / `--grep` matched nothing), so switching source or switching id is the only move that means anything; `2` = the command was written wrong, fix the command; `1` = something else. **Do not retry indiscriminately on seeing a failure** — the exit code has already told you whether you should.
 - **For anything other than `4`, go by the judgment fastpaper gives.** Its download errors tell you which URL was tried and whether switching sources is worth it (for instance "Other resolvers usually hand back this same URL, so opening it yourself is more likely to help than retrying through another source"). **Copy its judgment, do not start a retry strategy of your own.**
@@ -236,7 +230,7 @@ Filename rule: a DOI's `/` becomes `_`, while arXiv ids and PMC ids stay as they
 
 So it is normal for this briefing to have **a great many claims backed by the abstract alone**; label them truthfully in the appendix, with no need to feel sheepish about how little full text there is — but that is no license to treat what the abstract says as verified against the full text.
 
-**Everything above is about journal papers.** It was learned on the ingestion lag at PMC / Europe PMC / CORE, and it does not hold for `arxiv`, `zenodo`, `hal` and `osf` — all ✓ for download, and a new paper has a PDF the same day. So: an undownloaded arXiv preprint is labeled `full text not fetched` in the appendix, not `no full text at source`, and its reason is written as "the abstract was judged sufficient" — it may not borrow the "structurally out of reach" line. **Biomedical preprints are a different case**: bioRxiv / medRxiv now come only through Europe PMC, where measured recent records carry `open_access` false and mostly no `pdf_url` (a few older ones do carry a biorxiv.org link), so they sit with the journal papers — not fetched there means `no full text at source`.
+**Everything above is about journal papers.** It was learned on the full-text ingestion lag at the open-access aggregators, and it does not hold for the preprint and repository sources — they are ✓ for download, and a new paper has a PDF the same day. So: an undownloaded preprint is labeled `full text not fetched` in the appendix, not `no full text at source`, and its reason is written as "the abstract was judged sufficient" — it may not borrow the "structurally out of reach" line. **Biomedical preprints (bioRxiv / medRxiv) are the exception**: measured, their recent records carry `open_access` false and mostly no `pdf_url`, so they sit with the journal papers — not fetched there means `no full text at source`.
 
 **Do not fabricate a successful download.**
 

@@ -63,17 +63,16 @@ AGENTS.md 的「用工具的方式」全部适用。多条检索式用多个并�
 
 ### 正面证据，按研究设计分层
 
-`pubmed` 和 `pmc` 的 `[pt]` 过滤实测有效（不存在的类型会报 `No results found`，互斥类型组合返回 0 条）：
+生医文献按**文献类型**逐层搜（Entrez 的 `[pt]`，写法见 fastpaper 的 SKILL.md）：
 
 ```bash
 fastpaper search pubmed "<子命题的词> AND meta-analysis[pt]" -n 8
-fastpaper search pubmed "<子命题的词> AND systematic review[pt]" -n 8
-fastpaper search pubmed "<子命题的词> AND randomized controlled trial[pt]" -n 8
+# 依次换成 systematic review[pt]、randomized controlled trial[pt]
 ```
 
 **从强到弱依次找，找到强的就不必往下挖**：meta 分析 / 系统综述 → 随机对照试验 → 前瞻队列 → 回顾性研究 → 病例报告 → 专家意见。
 
-非生医领域没有 `[pt]`，用其他信号判强度：多中心还是单中心、公开基准还是自建数据集、有没有独立复现、样本量、是不是预印本。
+非生医领域没有文献类型过滤，用其他信号判强度：多中心还是单中心、公开基准还是自建数据集、有没有独立复现、样本量、是不是预印本。
 
 ### 反证，专门去搜
 
@@ -82,7 +81,7 @@ fastpaper search pubmed "<子命题的词> AND randomized controlled trial[pt]" 
 ```bash
 # 否定词组 × 主题词
 fastpaper search pubmed "<主题> AND (\"no significant\" OR \"failed to\" OR \"did not improve\" OR \"no association\")" -n 8
-fastpaper search europepmc "<主题> AND (\"negative result\" OR \"could not replicate\")" -n 8
+fastpaper search <另一个原样透传 query 的源> "<主题> AND (\"negative result\" OR \"could not replicate\")" -n 8
 
 # 谁在后面反驳了它
 fastpaper cite <关键支持文献的DOI> --direction incoming -n 20
@@ -92,7 +91,7 @@ fastpaper cite <关键支持文献的DOI> --direction incoming -n 20
 
 ### 写进 query 的过滤条件要复验
 
-`[pt]` 由 pubmed 解析，不支持的会明确报错。但**别的写进 query 字符串的条件不一定**——`europepmc` 的 `CITED:>N` 就被静默忽略（要用区间形式 `CITED:[N TO *]` 才生效）。**任何写进 query 的过滤条件，用一个极端值再跑一次验证它真的生效**（阈值拉到极高应返回零条）。
+CLI 的 flag 不支持会明确报错，**写进 query 字符串的条件不一定**——有的源会静默忽略自己不认的写法，结果看着正常、其实一条都没过滤掉。**任何写进 query 的过滤条件，用一个极端值再跑一次验证它真的生效**（阈值拉到极高应返回零条）。
 
 ## 第 3 步：查撤稿
 
@@ -104,7 +103,7 @@ fastpaper search pubmed "<该论文的题名关键词> AND retracted publication
 
 命中就是被撤了。实测：Wakefield 1998 那篇能查出来，未撤稿的论文返回 `No results found`。
 
-**这个检查只在 `pubmed` / `pmc` 有效**，非生医领域的撤稿查不到——那时在报告里如实写明这一项没做，不要假装做过。
+**这个检查只对生物医学文献有效**，非生医领域的撤稿查不到——那时在报告里如实写明这一项没做，不要假装做过。
 
 ## 第 4 步：核对原文
 

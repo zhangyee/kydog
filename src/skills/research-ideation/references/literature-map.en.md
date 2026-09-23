@@ -33,19 +33,13 @@ Search the same subject from each of these four angles at least once; they hit d
 
 ### Choosing sources
 
-Go by discipline, do not send every query at the same source:
-
-| Discipline | Primary | Supplementary |
-|---|---|---|
-| Biomedical / clinical | `pubmed` `europepmc` `pmc` | `europepmc 'SRC:PPR'` (bioRxiv / medRxiv and other preprints) |
-| CS / AI | `arxiv` `dblp` `semantic` | `openalex`, `openreview` (submissions and decisions, rejected and withdrawn included) |
-| Astronomy / astrophysics | `ads` (needs the NASA ADS key filled in settings first) | `arxiv --field astro-ph`, `openalex` |
-| Interdisciplinary / unsure | `openalex` `crossref` `semantic` | `core` `doaj` |
-| Chinese-language literature | `xueshu` | serial and slow, do not hit it concurrently |
+**Do not send every query at the same source.** This document settles which *kind* of literature each box needs
+(this discipline’s index, a cross-discipline metadata index, preprints, Chinese-language work…); which source
+that turns into follows AGENTS.md’s "Looking for Papers" table and then fastpaper’s and slowpaper’s own
+SKILL.md — the source list and per-source capabilities are maintained there and not copied here.
+When unsure whether some source supports some filter, run `fastpaper sources --capabilities` once, do not guess.
 
 Across sources, **deduplicate by DOI**. Those without a DOI (preprints, conference papers) are compared on normalized titles, with the source noted in the map.
-
-`fastpaper sources --capabilities` is live; when unsure whether some source supports some filter, run it once, do not guess.
 
 ---
 
@@ -82,10 +76,10 @@ Studies that were done and did not pan out. **The hardest to search, the easiest
 
 Dedicated search tactics:
 
-- **Negation phrases × subject terms**: `"no significant"` `"failed to replicate"` `"null result"` `"negative result"` `"no association"` `"did not improve"`. These work directly on sources that pass the query through as is, such as `pubmed` / `europepmc` / `crossref`
+- **Negation phrases × subject terms**: `"no significant"` `"failed to replicate"` `"null result"` `"negative result"` `"no association"` `"did not improve"`. Write them straight into the query — they work on the sources that pass a query through as is (which ones do is in fastpaper's SKILL.md)
 - **Registered reports / preregistration**: `"registered report"` `"preregistered"` — such studies commit to publishing whatever the result, and their share of negative results is far higher than in ordinary literature
-- **Preprints**: `europepmc '<topic> AND SRC:PPR'` (bioRxiv / medRxiv and the rest) have not been through journals' publication-bias sieve
-- **Rejected submissions** (machine learning): on `openreview`, a `venue` reading `Submitted to <conference>` means it was not accepted, and the share of "the method did not work" among those is far higher than in the published literature; accepted ones read like `ICLR 2025 Poster`. It is search-only — single records and PDFs sit behind a bot challenge
+- **Preprints**: they have not been through journals' publication-bias sieve, so their share of negative results is naturally higher
+- **Rejected submissions** (machine learning): in the conference submission archive, a `venue` reading `Submitted to <conference>` means it was not accepted, and the share of "the method did not work" among those is far higher than in the published literature; accepted ones read like `ICLR 2025 Poster`
 - **Dig through limitations**: for those closest prior papers in box 6, `fastpaper read --section discussion` — authors often write in there "we tried X but were unable to …". This is the most reliable route to negative results
 - **Reverse citations**: `cite --direction incoming` to find those that cited a foundational paper yet reached the opposite conclusion
 

@@ -82,7 +82,7 @@ fastpaper cite <review DOI> --direction outgoing -n 30
 
 That gives you its reference list. **Intersect the reference lists of several reviews** — whatever several independent reviews cite over and over is the acknowledged classic of this topic.
 
-This route is far more reliable than sorting by citation count. Measured: `--sort citations` on `crossref` and `openalex` goes badly off topic — searching "wearable ECG myocardial infarction" returns INTERHEART, the ESC guidelines, UK Biobank, the giants of the whole discipline, unrelated to the topic. Only `semantic` held on to topical relevance. **"Highly cited" is a proxy, "cited over and over by the reviews of this topic" is the fact.**
+This route is far more reliable than sorting by citation count. Measured: on other sources, sorting by citations goes badly off topic — searching "wearable ECG myocardial infarction" returns INTERHEART, the ESC guidelines, UK Biobank, the giants of the whole discipline, unrelated to the topic. Only `semantic` held on to topical relevance. **"Highly cited" is a proxy, "cited over and over by the reviews of this topic" is the fact.**
 
 **But recognize its blind spot: citation chains can only find work connected to the existing canon.** The genuinely new entrants are often disconnected — people carrying a method in from another discipline cite the canon of their own side; a new subfield that switched terminology matches neither on keywords nor on citations; many preprints and industry papers never enter the citation network at all. So **stage C must not depend on citation chains**, it needs an entrance of its own.
 
@@ -95,8 +95,8 @@ Reviews have a cutoff date, and nobody has organized what came after it for you.
 **C1 (parallel to A, does not wait)** — three entrances, none of them depending on citation chains:
 
 1. The topic terms the user gave, past two years
-2. Preprints: `arxiv` and `europepmc '<topic> AND SRC:PPR'` (bioRxiv / medRxiv and the rest are all indexed by Europe PMC) — by definition they cannot be in any published review
-3. **Cross-discipline sources**: search `arxiv` for a biomedical topic too (`--field eess.SP` `cs.LG`), and search `pubmed` `europepmc` for a CS topic too. Measured effective — the same ECG topic finds 2025–2026 work on arxiv whose authors are signal-processing and machine-learning people citing the canon of their own side, and the citation network of the PubMed reviews contains none of them
+2. **Preprints** — by definition they cannot be in any published review (which source carries which preprint server, and how to filter by category, is in fastpaper's SKILL.md)
+3. **Cross-discipline sources**: search the sources of **another discipline** that may be working the same problem — a biomedical topic goes to CS / signal processing, a CS topic to the biomedical indexes. Measured effective: the same ECG topic finds 2025–2026 work among CS preprints whose authors are signal-processing and machine-learning people citing the canon of their own side, and the citation network of the biomedical reviews contains none of them
 
 **C2 (after A/B)**:
 - From the new papers read in C1 and B, pick out the **terms that never appeared in the reviews** and search again with them
@@ -110,7 +110,7 @@ Reviews have a cutoff date, and nobody has organized what came after it for you.
 
 ### D. Citation heat and gap filling
 
-**Total historical citations can be had directly**: the json from `openalex` / `semantic` carries a `citations` field. To sort by it, use `--sort citations` on `semantic` only, **do not use it that way on crossref / openalex**.
+**Total historical citations can be had directly**: the `citations` field in the result json (which sources fill it is in fastpaper's SKILL.md). To sort by it, use `--sort citations` **on `semantic` only**.
 
 **"Recent citation growth rate" cannot be computed, do not force it.** `cite` has no `--sort` and no date filter, it can only truncate; measured on one paper (280 citations in total), the share of citations from the past year came out at 28% / 43% / 56% under `-n 25 / 60 / 120` — **the distribution drifts with `-n`**, so what you compute is the parameter you typed, not the paper's heat.
 
@@ -161,7 +161,7 @@ Every paper and every claim in the map has to point back to a real source. A fab
 - Does not match what you wrote → correct it to the source, or delete it
 - **The two sources contradict each other** → present both side by side with a note, do not pick one on your own authority
 
-**Literature with no identifier** (most Chinese journal articles and theses, found on Baidu Xueshu or Scholar) cannot be traced back with `fastpaper get`, so "not findable → delete it" does not apply to it — that is a gap in the source's coverage, not a paper that does not exist:
+**Literature with no identifier** (most Chinese journal articles and theses) cannot be traced back with `fastpaper get`, so "not findable → delete it" does not apply to it — that is a gap in the source's coverage, not a paper that does not exist:
 
 - Existence rests on the source that found it: the record on its results page (title, authors, venue, year) is the evidence. If the title was truncated on the results page, open the detail page to complete it; if you cannot, say "title truncated"
 - Mark it in the report as "confirmed only by 〈source〉", and put it on the unverified checklist; its reference-list entry carries no DOI, and **not one may be made up**

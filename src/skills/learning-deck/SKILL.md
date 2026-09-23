@@ -101,7 +101,7 @@ fastpaper cite <某篇综述的DOI> --direction outgoing  -n 20   # 综述引的
 
 最后那条最省力：**一篇好综述的参考文献表就是一张现成的知识点清单**，而 `cite --direction outgoing` 一次就能把它拉出来。
 
-`--sort citations` **只在 `semantic` 上用**。在 `crossref` 和 `openalex` 上按引用排序会严重跑题（相关性权重被压过，返回的是整个学科的巨无霸）；`pubmed` 会明确报错。
+`--sort citations` **只在 `semantic` 上用**。别的源按引用排会严重跑题：相关性权重被压过，返回的是整个学科的巨无霸。
 
 **这一轮只扫标题，不下载。** 产出是一张 **2–3 层的候选知识图谱**：
 

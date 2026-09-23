@@ -63,17 +63,16 @@ Where the user already pinned it down in the command, do not ask.
 
 ### Positive evidence, stratified by study design
 
-The `[pt]` filter on `pubmed` and `pmc` is verified to work (a nonexistent type reports `No results found`, and mutually exclusive type combinations return 0 results):
+Search biomedical literature by **publication type**, layer by layer (Entrez's `[pt]`; for the syntax see fastpaper's SKILL.md):
 
 ```bash
 fastpaper search pubmed "<sub-claim terms> AND meta-analysis[pt]" -n 8
-fastpaper search pubmed "<sub-claim terms> AND systematic review[pt]" -n 8
-fastpaper search pubmed "<sub-claim terms> AND randomized controlled trial[pt]" -n 8
+# then the same with systematic review[pt] and randomized controlled trial[pt]
 ```
 
 **Work from strong to weak, and once something strong is found there is no need to dig further down**: meta-analysis / systematic review → randomized controlled trial → prospective cohort → retrospective study → case report → expert opinion.
 
-Outside biomedicine there is no `[pt]`; judge strength by other signals: multi-center or single-center, public benchmark or self-built dataset, whether there is independent replication, sample size, whether it is a preprint.
+Outside biomedicine there is no publication-type filter; judge strength by other signals: multi-center or single-center, public benchmark or self-built dataset, whether there is independent replication, sample size, whether it is a preprint.
 
 ### Counter-evidence, searched for deliberately
 
@@ -82,7 +81,7 @@ Supporting evidence jumps out on its own, counter-evidence does not — it has t
 ```bash
 # negation phrases × subject terms
 fastpaper search pubmed "<subject> AND (\"no significant\" OR \"failed to\" OR \"did not improve\" OR \"no association\")" -n 8
-fastpaper search europepmc "<subject> AND (\"negative result\" OR \"could not replicate\")" -n 8
+fastpaper search <another source that passes the query through> "<subject> AND (\"negative result\" OR \"could not replicate\")" -n 8
 
 # who refuted it afterward
 fastpaper cite <DOI of the key supporting paper> --direction incoming -n 20
@@ -92,7 +91,7 @@ fastpaper cite <DOI of the key supporting paper> --direction incoming -n 20
 
 ### Filters written into a query must be re-verified
 
-`[pt]` is parsed by pubmed, and an unsupported one raises an explicit error. But **other conditions written into the query string are not necessarily parsed** — `europepmc`'s `CITED:>N` is silently ignored (only the range form `CITED:[N TO *]` takes effect). **For any filter written into a query, run it once more with an extreme value to verify it really took effect** (pushing the threshold very high should return zero results).
+A CLI flag a source does not support raises an explicit error, but **conditions written into the query string are not necessarily parsed** — a source may silently ignore a form it does not recognize, and the results look fine while nothing was filtered at all. **For any filter written into a query, run it once more with an extreme value to verify it really took effect** (pushing the threshold very high should return zero results).
 
 ## Step 3: Check for retractions
 
@@ -104,7 +103,7 @@ fastpaper search pubmed "<title keywords of that paper> AND retracted publicatio
 
 A hit means it was retracted. Verified: the Wakefield 1998 paper does come up, and papers that were not retracted return `No results found`.
 
-**This check works only on `pubmed` / `pmc`**, and retractions outside biomedicine cannot be found — in that case write truthfully in the report that this item was not done, do not pretend it was.
+**This check works only on biomedical literature**, and retractions outside biomedicine cannot be found — in that case write truthfully in the report that this item was not done, do not pretend it was.
 
 ## Step 4: Check against the source text
 

@@ -59,7 +59,7 @@ How to open the browser, which source to use, and what to do about a CAPTCHA are
 
 ### Filter by publication type (most accurate)
 
-`pubmed` and `pmc` pass the query through verbatim, so their `[pt]` field is available:
+The biomedical indexes pass the query through verbatim, so their **publication type** field `[pt]` is available (which sources pass a query through, and how the fields are written, is in fastpaper's SKILL.md):
 
 ```bash
 fastpaper search pubmed "<topic> AND review[pt]" -n 10
@@ -78,7 +78,7 @@ review · survey · "a review of" · "advances in" · "progress in"
 perspective · commentary · "state of the art" · "current status" · outlook
 ```
 
-For the Chinese-language source (`xueshu`): 综述、述评、进展、研究现状、展望.
+For a Chinese-language source: 综述、述评、进展、研究现状、展望.
 
 ### Time window
 
@@ -108,20 +108,13 @@ In the report, note for each classic **how many reviews cite it in common**. Tha
 
 ### Why not use `--sort citations` to find the classics
 
-Measured (v0.3.3). The same query `wearable ECG myocardial infarction`, sorted by citations:
-
-| Source | Top few returned | Verdict |
-|---|---|---|
-| `crossref` | INTERHEART, the 2017 ESC guidelines, MADIT-II, the CARE trial | all off topic |
-| `openalex` | UK Biobank, heart-failure guidelines ×2, atrial-fibrillation guidelines | all off topic |
-| `semantic` | multi-lead MI classification, AI detection, wearable cardiac monitoring | held the topic |
-| `pubmed` | `Error: pubmed cannot sort by citations` | unsupported, errors out, never silent |
-
-When crossref and openalex sort by citations, the relevance weight gets overwhelmed and what comes back are the giants of **the whole discipline**. So:
+Measured (v0.3.3). With the same query `wearable ECG myocardial infarction` sorted by citations, most sources return
+INTERHEART, UK Biobank, the ESC guidelines — the giants of **the whole discipline**, unrelated to the topic, because
+the relevance weight gets overwhelmed. Only `semantic` held on to topical relevance. So:
 
 - **Use `--sort citations` on `semantic` only**, and as gap filling, not as the main route
-- **Never use it that way on crossref / openalex**
-- `pubmed` raises an explicit error, so there is nothing to worry about
+- Not that way on other sources. Those that do not support it raise an explicit error; those that drift do not —
+  **the second kind is what this rule guards against**
 
 ---
 
@@ -137,28 +130,23 @@ Three entrances, none of them going through citation chains:
 
 ```bash
 # 1. Topic terms, past two years
-fastpaper search pubmed "<the topic terms the user gave>" --after <this year minus 2>-01-01 -n 10
+fastpaper search <the index for this topic's discipline> "<the topic terms the user gave>" --after <this year minus 2>-01-01 -n 10
 
 # 2. Preprints — by definition they cannot appear in any published review
-#    no separate preprint source: bioRxiv / medRxiv are indexed by Europe PMC;
-#    add AND PUBLISHER:"bioRxiv" to narrow it to one of them
-fastpaper search europepmc '<topic> AND SRC:PPR' --after <this year minus 2>-01-01 -n 8
+fastpaper search <a preprint source> "<topic>" --after <this year minus 2>-01-01 -n 8
 
 # 3. Cross-discipline sources — a search inside this discipline never sees them
-fastpaper search arxiv "<topic>" --field eess.SP --after <this year minus 2>-01-01 -n 8
-fastpaper search arxiv "<topic>" --field cs.LG  --after <this year minus 2>-01-01 -n 8
+fastpaper search <the neighbouring discipline's source> "<topic>" --field <its category> --after <this year minus 2>-01-01 -n 8
 ```
 
-Item 3 is measured effective. Take a purely clinical topic (ECG + myocardial infarction detection) to arxiv:
+Item 3 is measured effective. Take a purely clinical topic (ECG + myocardial infarction detection) to CS's preprint source:
 
 ```
 [eess.SP] Self-Alignment Learning to Improve MI Detection from Single-lead ECG    2025
 [cs.LG]   ECGLight: Compute-Light Framework For Paper ECG Digitization and MI     2026
 ```
 
-The authors are signal-processing and machine-learning people citing the canon of their own side, and the citation network of the PubMed reviews contains none of them. **The reverse holds too**: a CS topic has to be searched on `pubmed` and `europepmc`, where there is a great deal of work doing clinical validation with the same methods.
-
-`dblp` finds essentially nothing on free-text searches like these (it is a bibliographic database), do not count on it.
+The authors are signal-processing and machine-learning people citing the canon of their own side, and the citation network of the biomedical reviews contains none of them. **The reverse holds too**: a CS topic has to be searched on the biomedical indexes, where there is a great deal of work doing clinical validation with the same methods.
 
 ### C2 — after A/B, search again with the new terms
 
@@ -196,15 +184,14 @@ quantities, and fastpaper's support for them is completely different.
 
 ### Total historical citations — can be had directly
 
-The json from `openalex` and `semantic` carries a `citations` field:
+It is the `citations` field in the result json (which sources fill it is in fastpaper's SKILL.md):
 
 ```bash
-fastpaper search openalex "<topic>" -n 8 --format json     # every record carries citations
 fastpaper get <DOI> --format json                          # total citations for one paper
 ```
 
 This is a protocol-level number, not an estimate. To sort by it, **use `--sort citations` on `semantic` only**
-(see the measured crossref/openalex drift under "Traps that must be avoided" below).
+(reason above).
 
 ### Recent citation growth rate — do not compute it with `cite`
 
@@ -241,24 +228,9 @@ do not write it as "the work whose citations are growing fastest" — the latter
 
 ## Traps that must be avoided
 
-### `CITED:>N` has no effect, use `CITED:[N TO *]`
+### Re-run any filter written into the query with an extreme value
 
-Measured, the `>` form is silently ignored by europepmc and raises no error — thresholds of 500 and 100000 return exactly the same results (the figures below were taken on v0.5.0; the behaviour was re-checked on v0.7.1 and is unchanged). Only the Lucene range form actually filters:
-
-```
-CRISPR AND CITED:>500          → 2 hits
-CRISPR AND CITED:>100000       → 2 hits   ← not filtered
-CRISPR AND CITED:[500 TO *]    → 2 hits
-CRISPR AND CITED:[100000 TO *] → 0 hits   ← filtered
-
-Incremental check: CITED:[0 TO *] 20 hits → [10000 TO *] 5 hits → [50000 TO *] 1 hit
-```
-
-**Use the range form.** It is the only way to filter by citation count at the search stage (`semantic --sort citations` can only sort, it cannot set a threshold).
-
-### General technique: re-run any filter written into the query with an extreme value
-
-The CLI's flags (`--year` `--after` `--author`) are validated by fastpaper and raise an explicit error where unsupported. But **field syntax written into the query string** (europepmc's `CITED:` `PUB_YEAR:` `OPEN_ACCESS:`, pubmed's `[pt]` `[mh]`, dblp's `year:`) is parsed at the source, and when written wrong or unsupported it mostly **returns unfiltered results silently**.
+The CLI's flags (`--year` `--after` `--author`) are validated by fastpaper and raise an explicit error where unsupported. But **field syntax written into the query string** is parsed at the source, and when written wrong or unrecognized by that source it mostly **returns unfiltered results silently** — measured: with the wrong threshold form, 500 and 100000 returned exactly the same results.
 
 So: **any filter condition written into a query, run it once more with an extreme value.**
 
@@ -279,18 +251,11 @@ A review is the easiest thing to take as a trustworthy source and copy straight 
 
 ---
 
-## Source quick reference
+## Choosing a source
 
-| Source | Publication-type filter | `--sort citations` | Good for |
-|---|---|---|---|
-| `pubmed` | `[pt]` ✓ most accurate | errors out (safe) | the entrance to biomedical reviews |
-| `europepmc` | no reliable way | ✓ | good full-text availability, `OPEN_ACCESS:y` |
-| `semantic` | none | ✓ **the only one that stays on topic** | filling in highly cited and cross-discipline work |
-| `openalex` | none | ✓ but **off topic** | citation chains (`cite`'s default DOI route) |
-| `crossref` | none | ✓ but **off topic** | completing bibliographic records |
-| `arxiv` | none | none | CS/physics preprints, use `--field` |
-| `ads` | none | ✓ **surest in astronomy** | astronomy and astrophysics; needs the NASA ADS key filled in settings first |
-| `europepmc 'SRC:PPR'` | `SRC:PPR` is the filter | ✓ (though preprints mostly have no citations yet) | biomedical preprints: bioRxiv / medRxiv and the rest, narrowed with `PUBLISHER:"bioRxiv"` |
-| `xueshu` | none | none | Chinese-language reviews, **serial and slow** |
+Which source carries what, which filters it takes, and how its query is written are **whatever fastpaper's and
+slowpaper's own SKILL.md say** — no second copy here, because a copy goes silently stale when upstream changes.
+Run `fastpaper sources --capabilities` once if you are unsure.
 
-`fastpaper sources --capabilities` is live, so run it once if you are unsure.
+This document only settles one thing: **which kind of literature** each stage needs (reviews / classics /
+preprints / cross-discipline / Chinese-language), and you pick the source for it from those two SKILL.md files.

@@ -53,7 +53,7 @@ B 和 `cite --direction incoming` 都建立在引用边上，所以它们**结�
 
 ### 用出版类型过滤（最准）
 
-`pubmed` 和 `pmc` 原样透传 query，它们的 `[pt]` 字段可用：
+生医索引原样透传 query，可以用它的**出版类型**字段 `[pt]`（哪些源透传 query、字段怎么写，见 fastpaper 的 SKILL.md）：
 
 ```bash
 fastpaper search pubmed "<主题> AND review[pt]" -n 10
@@ -72,7 +72,7 @@ review · survey · "a review of" · "advances in" · "progress in"
 perspective · commentary · "state of the art" · "current status" · outlook
 ```
 
-中文源（`xueshu`）用：综述、述评、进展、研究现状、展望。
+中文源用：综述、述评、进展、研究现状、展望。
 
 ### 时间窗
 
@@ -102,20 +102,12 @@ fastpaper cite <综述的DOI> --direction outgoing -n 30
 
 ### 为什么不用 `--sort citations` 找经典
 
-实测（v0.3.3）。同一条 query `wearable ECG myocardial infarction`，按引用排序：
-
-| 源 | 返回的前几条 | 判断 |
-|---|---|---|
-| `crossref` | INTERHEART、2017 ESC 指南、MADIT-II、CARE 试验 | 全部跑题 |
-| `openalex` | UK Biobank、心衰指南 ×2、房颤指南 | 全部跑题 |
-| `semantic` | 心梗多导联分类、AI 检测、可穿戴心脏监护 | 保住了主题 |
-| `pubmed` | `Error: pubmed cannot sort by citations` | 不支持，会报错，不会静默 |
-
-crossref 和 openalex 在按引用排序时，相关性权重被压过了，返回的是**整个学科**的巨无霸。所以：
+实测（v0.3.3）。同一条 query `wearable ECG myocardial infarction` 按引用排序，多数源返回的是
+INTERHEART、UK Biobank、ESC 指南这类**整个学科**的巨无霸——相关性权重被压过了，跟主题无关；
+只有 `semantic` 保住了主题相关性。所以：
 
 - **只在 `semantic` 上用 `--sort citations`**，而且是补漏，不是主路
-- **crossref / openalex 上绝不这么用**
-- `pubmed` 会明确报错，不用担心
+- 别的源上不这么用。不支持的会明确报错，跑题的不会——**后者才是要防的**
 
 ---
 
@@ -131,28 +123,23 @@ crossref 和 openalex 在按引用排序时，相关性权重被压过了，返�
 
 ```bash
 # 1. 主题词，近两年
-fastpaper search pubmed "<用户给的主题词>" --after <今年减2>-01-01 -n 10
+fastpaper search <本主题学科的索引> "<用户给的主题词>" --after <今年减2>-01-01 -n 10
 
 # 2. 预印本——按定义不可能出现在任何已发表的综述里
-#    生医预印本没有单独的源：bioRxiv / medRxiv 都由 Europe PMC 收录，
-#    只要其中一家就再加 AND PUBLISHER:"bioRxiv"
-fastpaper search europepmc '<主题> AND SRC:PPR' --after <今年减2>-01-01 -n 8
+fastpaper search <预印本源> "<主题>" --after <今年减2>-01-01 -n 8
 
 # 3. 跨学科源——本学科的检索永远看不到他们
-fastpaper search arxiv "<主题>" --field eess.SP --after <今年减2>-01-01 -n 8
-fastpaper search arxiv "<主题>" --field cs.LG  --after <今年减2>-01-01 -n 8
+fastpaper search <相邻学科的源> "<主题>" --field <相邻学科的类目> --after <今年减2>-01-01 -n 8
 ```
 
-第 3 条实测有效。拿一个纯临床主题（心电 + 心肌梗死检测）去 arxiv 搜：
+第 3 条实测有效。拿一个纯临床主题（心电 + 心肌梗死检测）去 CS 的预印本源搜：
 
 ```
 [eess.SP] Self-Alignment Learning to Improve MI Detection from Single-lead ECG    2025
 [cs.LG]   ECGLight: Compute-Light Framework For Paper ECG Digitization and MI     2026
 ```
 
-作者是信号处理和机器学习的人，引的是他们那边的正典，PubMed 综述的引用网里根本没有他们。**反过来同理**：CS 主题要去 `pubmed` `europepmc` 搜，那边有大量用同一方法做临床验证的工作。
-
-`dblp` 在这类自由文本检索上基本搜不到东西（它是题录库），别指望它。
+作者是信号处理和机器学习的人，引的是他们那边的正典，生医综述的引用网里根本没有他们。**反过来同理**：CS 主题要去生医索引搜，那边有大量用同一方法做临床验证的工作。
 
 ### C2 —— A/B 之后，用新词重搜
 
@@ -190,15 +177,13 @@ fastpaper 对它们的支持完全不同。
 
 ### 历史引用总数 —— 能直接拿
 
-`openalex` 和 `semantic` 的 json 里有 `citations` 字段：
+结果 json 里的 `citations` 字段就是（哪些源填它，见 fastpaper 的 SKILL.md）：
 
 ```bash
-fastpaper search openalex "<主题>" -n 8 --format json     # 结果里每条带 citations
 fastpaper get <DOI> --format json                          # 单篇的总引用数
 ```
 
-这是协议层数字，不是估算。要按它排序，**只在 `semantic` 上用 `--sort citations`**
-（见下面「必须避开的坑」里 crossref/openalex 跑题的实测）。
+这是协议层数字，不是估算。要按它排序，**只在 `semantic` 上用 `--sort citations`**（理由见上）。
 
 ### 近期引用增速 —— 不要用 `cite` 去算
 
@@ -235,24 +220,9 @@ CLI 校验过的 `--after` 加排序，不碰引用边的抽样，没有截断�
 
 ## 必须避开的坑
 
-### `CITED:>N` 不生效，要用 `CITED:[N TO *]`
+### 写在 query 里的过滤条件，换个极端值验一遍
 
-实测 `>` 形式被 europepmc 静默忽略、不报错——阈值 500 和 100000 返回完全相同的结果（下面这组数取自 v0.5.0，v0.7.1 上复验行为不变）。换成 Lucene 区间形式才真的过滤：
-
-```
-CRISPR AND CITED:>500          → 2 条
-CRISPR AND CITED:>100000       → 2 条   ← 没过滤
-CRISPR AND CITED:[500 TO *]    → 2 条
-CRISPR AND CITED:[100000 TO *] → 0 条   ← 过滤了
-
-递增验证：CITED:[0 TO *] 20 条 → [10000 TO *] 5 条 → [50000 TO *] 1 条
-```
-
-**用区间形式。** 这是唯一能在检索阶段按引用数筛的办法（`semantic --sort citations` 只能排序不能设阈值）。
-
-### 通用技术：写在 query 里的过滤条件，换个极端值验一遍
-
-CLI 的 flag（`--year` `--after` `--author`）由 fastpaper 校验，不支持会明确报错。但**写进 query 字符串的字段语法**（europepmc 的 `CITED:` `PUB_YEAR:` `OPEN_ACCESS:`、pubmed 的 `[pt]` `[mh]`、dblp 的 `year:`）是源端解析的，写错或不支持时多半**静默返回未过滤的结果**。
+CLI 的 flag（`--year` `--after` `--author`）由 fastpaper 校验，不支持会明确报错。但**写进 query 字符串的字段语法**是源端解析的，写错或这个源不认时多半**静默返回未过滤的结果**——实测碰到过：阈值写法不对时，500 和 100000 返回一模一样的结果。
 
 所以：**任何写进 query 的过滤条件，用一个极端值再跑一次。**
 
@@ -273,18 +243,10 @@ fastpaper search europepmc '<主题> AND PUB_YEAR:1800' -n 3     # 极端值，�
 
 ---
 
-## 各源速查
+## 选源
 
-| 源 | 出版类型过滤 | `--sort citations` | 适合 |
-|---|---|---|---|
-| `pubmed` | `[pt]` ✓ 最准 | 报错（安全） | 生医综述入口 |
-| `europepmc` | 无可靠办法 | ✓ | 全文可得性好，`OPEN_ACCESS:y` |
-| `semantic` | 无 | ✓ **唯一不跑题** | 补高引、跨学科 |
-| `openalex` | 无 | ✓ 但**跑题** | 引用链（`cite` 的默认 DOI 路由） |
-| `crossref` | 无 | ✓ 但**跑题** | 题录补全 |
-| `arxiv` | 无 | 无 | CS/物理预印本，用 `--field` |
-| `ads` | 无 | ✓ **天文领域最可靠** | 天文与天体物理，要先在设置里填 NASA ADS 密钥 |
-| `europepmc 'SRC:PPR'` | `SRC:PPR` 本身就是 | ✓（但预印本多半还没有引用） | 生医预印本：bioRxiv / medRxiv 等，`PUBLISHER:"bioRxiv"` 可再收窄 |
-| `xueshu` | 无 | 无 | 中文综述，**串行慢速** |
+哪个源收哪些文献、支持哪些 filter、query 怎么写，**以 fastpaper 与 slowpaper 自己的 SKILL.md 为准**，
+这里不另抄一份——抄件会在上游改动时静默过期。拿不准就跑一次 `fastpaper sources --capabilities`。
 
-`fastpaper sources --capabilities` 是活的，拿不准就跑一次。
+这份文档只管一件事：每个阶段要的是**哪一类文献**（综述 / 经典 / 预印本 / 跨学科 / 中文），
+按这个去那两份 SKILL.md 里挑源。
