@@ -3,6 +3,9 @@ import type { JobProgress } from './translateDoc';
 const LABEL: Record<JobProgress['phase'], string> = {
   extract: '正在抽取原文',
   translate: '正在翻译',
+  // 收尾重试：整轮跑完之后回头跑失败页（translateDoc 的 pageAttempts）。单独一档是因为进度
+  // 的分母换成了「这一轮要重试几页」——沿用「正在翻译」那一档的话，浮层会停在 N / N 不动。
+  retry: '正在重试失败页',
   finalize: '正在保存',
 };
 

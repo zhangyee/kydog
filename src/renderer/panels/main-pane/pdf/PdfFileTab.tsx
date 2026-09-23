@@ -23,7 +23,7 @@ import { PdfToolbar } from './PdfToolbar';
 import type { RGB } from './pageBackground';
 import { RightPage } from './RightPage';
 import { pdfSaveScheduler } from './saveScheduler';
-import { translateDoc } from './translateDoc';
+import { FULL_RUN_PAGE_ATTEMPTS, RETRY_FAILED_PAGE_ATTEMPTS, translateDoc } from './translateDoc';
 import { TranslationBlocks } from './TranslationBlocks';
 import { TranslationProgress } from './TranslationProgress';
 import { textLines, type TextItemLike, type TextLine } from './textLines';
@@ -779,7 +779,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
    *
    * 编排本身在 translateDoc（纯逻辑、可单测）；这里只负责把它接上 IPC、代际与 store。
    */
-  const startTranslation = useCallback(async (opts?: { pages?: number[] }) => {
+  const startTranslation = useCallback(async (opts?: { pages?: number[]; pageAttempts?: number }) => {
     if (!sizes || !bytes || sha === null || !numPages) return;
     // 守卫下沉到这里（Minor #4，Task 14 审查发现）：原来只有 onToggleDual 一个调用点在自己
     // 那边判过 canPressTranslate，onRetranslate 直接调这个函数、没经过那道判断——「重新翻译」
@@ -861,7 +861,10 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         }),
         onProgress: (p) => {
           if (my === jobSeq.current) usePdfTranslationStore.getState().setJob(tab.id, p);
+          // 'translate' 给的是「跑完一轮时的失败数」与全篇页数；'retry' 那几轮只更新失败数
+          // ——它的 total 是「这一轮重试几页」，拿它当 finalize 那档的分母会把总量说小。
           if (p.phase === 'translate') { lastFailed = p.failed; translated = p.total; }
+          else if (p.phase === 'retry') { lastFailed = p.failed; }
         },
         isCancelled: () => my !== jobSeq.current,
         // 抽取顺带把文本行交出来，标注层随后要吸附就不必再取一遍（spec §4）；同一时刻把这一页
@@ -894,6 +897,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         // base 必然非空——万一盘上此刻确实没有文件，上面已经抛出「译文文件已不存在」，走不到这里。
         pages: opts?.pages,
         base,
+        pageAttempts: opts?.pageAttempts,
       });
       if (my !== jobSeq.current) return;             // 取消 / 关 tab / 重新发起
       // 取消返回 null。上面那次代际比较已经把这条路挡掉了（isCancelled 与它是同一个谓词），
@@ -955,7 +959,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       confirmLabel: '全部重译',
     });
     if (!ok) return;
-    void startTranslation();
+    void startTranslation({ pageAttempts: FULL_RUN_PAGE_ATTEMPTS });
   }, [startTranslation]);
 
   // 「重译本页」：只翻读数那一页，覆盖它的块——覆盖写，走 confirm()（同全部重译）。
@@ -976,7 +980,12 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   const onRetryFailed = useCallback(() => {
     const failed = usePdfTranslationStore.getState().buckets[tab.id]?.doc?.failedPages;
     if (!failed?.length) return;
-    void startTranslation({ pages: [...new Set(failed)].sort((a, b) => a - b) });
+    // 每页最多三轮（RETRY_FAILED_PAGE_ATTEMPTS）：这个按钮就是专门为失败页来的，多试两轮
+    // 比让用户回头再点两次划算。
+    void startTranslation({
+      pages: [...new Set(failed)].sort((a, b) => a - b),
+      pageAttempts: RETRY_FAILED_PAGE_ATTEMPTS,
+    });
   }, [tab.id, startTranslation]);
 
   // 「删除译文」：删边车 → 走现有的 loadTranslation 重探，ENOENT → setLoaded(null) 收掉 dual →
@@ -1037,7 +1046,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
         });
         if (!ok) return;
         setTranslateError(null);
-        void startTranslation();
+        void startTranslation({ pageAttempts: FULL_RUN_PAGE_ATTEMPTS });
       })();
       return;
     }
@@ -1047,7 +1056,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
     setTranslateError(null);
     if (state === 'active') { st.setDual(tab.id, false); return; }
     if (state === 'ready') { enterDualFitWidth(); return; }
-    void startTranslation();           // none：从无到有，不是破坏性操作
+    void startTranslation({ pageAttempts: FULL_RUN_PAGE_ATTEMPTS });  // none：从无到有，不是破坏性操作
   }, [tab.id, sizes, enterDualFitWidth, startTranslation]);
 
   // 退出对照后把缩放还原回进入前——**唯一**的还原路径，显式退出（上面的 onToggleDual）与自动

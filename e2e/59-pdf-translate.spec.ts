@@ -50,9 +50,11 @@ const TRANSLATE_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4.json');
 //   ② 重译第 2 页 → 第 2 页第一对（译文「第二页的译文」）；
 //   ③ 跑到底的全部重译 → 第 1 页余下那一对、第 2 页第二对、第 3、4 页各一对。
 const FROM_READY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-from-ready.json');
-// D：第 2 页版面合法（`1 | text`），坏的是第二步：前两条翻译响应都不是 id 头，parseTranslations
-// 两次都抛 GroupError（runPage 重试一次），页号 2 被记进 failedPages，其余三页正常成功——用来验证
-// 「1 页失败」这个信号真的落进了边车、并且活得够久。第一条被撑到 300+ 字（悬停原因那条量换行用）。
+// D：第 2 页版面合法（`1 | text`），坏的是第二步。全文跑现在是**两轮**（translateDoc 的
+// FULL_RUN_PAGE_ATTEMPTS）：主轮两次翻译响应都不是 id 头（parseTranslations 两次都抛
+// GroupError），收尾重试那一轮整页重来（版面再一次 + 翻译一次）仍然不是 id 头，页号 2 才被记进
+// failedPages；其余三页正常成功——用来验证「1 页失败」这个信号真的落进了边车、并且活得够久。
+// **撑到 300+ 字的是收尾轮那一条**（悬停原因那条量换行用）：边车记的是最后一轮的原因。
 // 第 2 页末尾那一对（版面 + 「第二页的译文（重试之后）」）留给「重试失败页」发起的第二趟。
 const FAIL_THEN_RETRY_FIXTURE = path.resolve('e2e/fixtures/translate/pages-4-one-fails-then-retry.json');
 
@@ -1104,11 +1106,12 @@ test.describe('59-pdf-translate · D 跑完之后', () => {
     const { page } = launched;
     const before = await readSidecar(sidecar);
     expect(before.failedPages).toEqual([2]);
-    // 首趟：4 页版面各一次；翻译第 2 页两次（都不是 id 头）+ 其余三页各一次 = 5 次。闸门装在首趟
-    // 发起之前，中间几条只发过 load，所以这两个数就是首趟的。
+    // 首趟（两轮）：版面 4 页各一次 + 第 2 页在收尾轮整页重来一次 = 5；翻译第 2 页主轮两次
+    // + 收尾轮一次（收尾轮每步只发一次）+ 其余三页各一次 = 6。闸门装在首趟发起之前，中间几条
+    // 只发过 load，所以这两个数就是首趟的。
     const firstRun = await gateCounts(launched);
-    expect(firstRun.done['pdf.translation.layout']).toBe(4);
-    expect(firstRun.done['pdf.translation.translate']).toBe(5);
+    expect(firstRun.done['pdf.translation.layout']).toBe(5);
+    expect(firstRun.done['pdf.translation.translate']).toBe(6);
 
     const retry = pane.getByTestId('pdf-retry-failed');
     await expect(retry).toBeVisible();
@@ -1127,10 +1130,11 @@ test.describe('59-pdf-translate · D 跑完之后', () => {
     expect(after.failureReasons).toBeUndefined();
     expect(after.blocks.find((b) => b.page === 2)?.target).toBe('第二页的译文（重试之后）');
     expect(blocksOf(after, [1, 3, 4]), 'pages 之外的块逐字不变').toEqual(blocksOf(before, [1, 3, 4]));
-    // 重试失败页只重发第 2 页：版面 + 翻译各多一次。
+    // 重试失败页只重发第 2 页，而且第一轮就成了：版面 + 翻译各多一次（它最多跑三轮，
+    // RETRY_FAILED_PAGE_ATTEMPTS——成了就不再跑第二轮，所以只多这一次）。
     const secondRun = await gateCounts(launched);
-    expect(secondRun.done['pdf.translation.layout']).toBe(5);
-    expect(secondRun.done['pdf.translation.translate']).toBe(6);
+    expect(secondRun.done['pdf.translation.layout']).toBe(6);
+    expect(secondRun.done['pdf.translation.translate']).toBe(7);
     await expect(retry, '没有失败页了，键消失').toHaveCount(0);
     await expect(pane.locator('[data-pdf-right="1"]').first(), '仍在对照中').toBeVisible();
   });

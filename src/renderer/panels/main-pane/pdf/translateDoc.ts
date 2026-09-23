@@ -13,7 +13,18 @@ import { describeTokenViolation, introducedMarkup, parseTranslations, tokenViola
  */
 export const PAGE_CONCURRENCY = 4;
 
-export type TranslatePhase = 'extract' | 'translate' | 'finalize';
+/**
+ * 「翻译 / 全部重译」：主轮之后再跑一轮失败页。失败常常是限流或一次性的坏输出，而收尾那轮
+ * 与主轮之间隔着其余页的时间 —— 不用用户回头自己点。
+ */
+export const FULL_RUN_PAGE_ATTEMPTS = 2;
+/**
+ * 「重试失败页」：一次点击最多把每页试三轮。这个按钮本身就是用户在为失败页买单，多试两轮
+ * 比让他点三次划算。
+ */
+export const RETRY_FAILED_PAGE_ATTEMPTS = 3;
+
+export type TranslatePhase = 'extract' | 'translate' | 'retry' | 'finalize';
 export type JobProgress = { phase: TranslatePhase; done: number; total: number; failed: number };
 
 /** 第一步（版面）：一页的行进去，`<ids> | <kind>` 的原始文本出来（spec 2026-09-07 §4.2）。 */
@@ -50,6 +61,16 @@ export type TranslateDocOptions = {
   pages?: number[];
   /** 合并底本：pages 之外的块、术语表、docTitle 都从它来。 */
   base?: TranslatedDoc;
+  /**
+   * 一页在这一趟里最多跑几轮（含第一轮）。缺省 1 —— 跑一轮就收工，失败页留给调用方。
+   *
+   * **第 2 轮起是「收尾重试」**：等整轮跑完才回头跑失败页，中间隔着其余页的时间，这正是
+   * 限流与瞬时故障的恢复窗口；立刻重发那一次由步内的两次机会负责，已经付过了。所以重试轮
+   * 里每一步**只发一次**（`tries = 1`）：轮本身就是重试，再乘一次只是把钱翻倍。
+   *
+   * 一页最坏的调用数：一轮 4 次（版面 2 + 翻译 2），此后每轮 +2。
+   */
+  pageAttempts?: number;
 };
 
 const isNotConfigured = (e: unknown) => (e as { code?: string } | null)?.code === 'llm.not_configured';
@@ -59,13 +80,16 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   const pageList = o.pages ?? Array.from({ length: o.numPages }, (_, i) => i + 1);
   const concurrency = o.concurrency ?? PAGE_CONCURRENCY;
   /**
-   * 重试之后仍失败的页号。**记页号不记计数**：这份逐页信号要原样写进边车
+   * 仍失败的页 → 最后一次失败的原因。**记页号不记计数**：这份逐页信号要原样写进边车
    * （`TranslatedDoc.failedPages`），计数只是它的长度。以前这里只留一个 `failed` 数字，
    * 于是「哪几页失败」在流水线里就地丢掉，下游只能从 `onProgress` 这条侧信道漏出的瞬时数字
    * 里捞——一切关于它「活多久」的补丁都是那次丢信号的下游症状。
+   *
+   * 用 Map 而不是数组 + 对象，是因为重试轮要能**撤销**一次失败：重试成功的页当场 delete，
+   * 于是 `failures.size` 在整个重试过程中一直是真值（从 N 递减），不需要在轮首清空再重填
+   * ——那样会让浮层在一轮刚开始时报「0 页失败」。
    */
-  const failedPages: number[] = [];
-  const reasons: Record<string, string> = {};
+  const failures = new Map<number, string>();
 
   // ── 1. 抽取。不 catch：抽取失败与「这页没字」是两件事（spec §4），异常中止整趟。
   const perPage = new Map<number, PageLine[]>();
@@ -85,10 +109,11 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   }
 
   // ── 2. 翻译。
-  const total = work.length;
+  let phase: Extract<TranslatePhase, 'translate' | 'retry'> = 'translate';
+  let total = work.length;
   let done = 0;
   const groupsOf = new Map<number, ParsedGroup[]>();
-  const tick = () => o.onProgress({ phase: 'translate', done, total, failed: failedPages.length });
+  const tick = () => o.onProgress({ phase, done, total, failed: failures.size });
   // 中止信号：跟 isCancelled() 是两码事——isCancelled() 是「用户 / 调用方要求停」，aborted 是
   // 「某个 worker 已经因 llm.not_configured 在抛错路径上了」。Promise.all 一旦有一个 worker
   // 拒绝就会 reject，但其余 ≤3 个 worker 的上游请求仍在飞（配置是在它们发出之后才丢的，
@@ -159,26 +184,27 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   type Attempt<T> = { ok: true; value: T } | { ok: false; reason: string };
 
   /**
-   * 跑一次，失败重试一次；两次都失败把原因（带步骤前缀）交给调用方。
+   * 跑这一步，最多 `tries` 次；全失败把原因（带步骤前缀、按次序串起来）交给调用方。
+   * 第一轮 `tries = 2`（跑一次 + 立刻重试一次），收尾重试轮 `tries = 1`（见 `pageAttempts`）。
    *
    * `llm.not_configured` 不重试：它是「没配模型 / 钉住的模型没了」，重试一百次也一样，而且要
    * 中止整趟。按错误码分支，不匹配 message 字符串。aborted 必须在 throw 之前落地：它是
    * 「别的 worker 该收手了」的唯一信号源，迟一步落地就会被其余 worker 的检查点错过。
+   *
+   * 原因随页号一起落边车（spec 2026-09-06 §4.2），前缀说明是哪一步失的：以前这里只记页号，
+   * 异常当场丢掉，「为什么失败」在流水线里就地消失，事后从任何记录里都查不出来。
    */
-  const twice = async <T>(label: '版面' | '翻译', step: () => Promise<T>): Promise<Attempt<T>> => {
-    try {
-      return { ok: true, value: await step() };
-    } catch (e) {
-      if (isNotConfigured(e)) { aborted = true; throw e; }
+  const tryStep = async <T>(label: '版面' | '翻译', tries: number, step: () => Promise<T>): Promise<Attempt<T>> => {
+    const why: string[] = [];
+    for (let i = 0; i < tries; i++) {
       try {
         return { ok: true, value: await step() };
-      } catch (e2) {
-        if (isNotConfigured(e2)) { aborted = true; throw e2; }
-        // 原因随页号一起落边车（spec 2026-09-06 §4.2），前缀说明是哪一步失的：以前这里只 push
-        // 页号，异常当场丢掉，「为什么失败」在流水线里就地消失，事后从任何记录里都查不出来。
-        return { ok: false, reason: `${label}：${(e as Error).message}；重试：${(e2 as Error).message}` };
+      } catch (e) {
+        if (isNotConfigured(e)) { aborted = true; throw e; }
+        why.push((e as Error).message);
       }
     }
+    return { ok: false, reason: `${label}：${why.join('；重试：')}` };
   };
 
   /**
@@ -193,9 +219,9 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
    *
    * `precomputed`：第 1 页为了取文题先单跑过一次版面，把那次结果原样传进来复用，不再跑第二次。
    */
-  const runPage = async (page: number, lines: PageLine[], docTitle?: string, precomputed?: Attempt<LayoutGroup[]>): Promise<void> => {
-    const fail = (reason: string) => { failedPages.push(page); reasons[String(page)] = reason; };
-    const layout = precomputed ?? await twice('版面', async () => {
+  const runPage = async (page: number, lines: PageLine[], tries: number, docTitle?: string, precomputed?: Attempt<LayoutGroup[]>): Promise<void> => {
+    const fail = (reason: string) => { failures.set(page, reason); };
+    const layout = precomputed ?? await tryStep('版面', tries, async () => {
       return repairGroupGeometry(await runLayout(page, lines, docTitle), lines);
     });
     // 这一档与下面那档的 `if (aborted)`：这次尝试是在别的 worker 已经因 llm.not_configured
@@ -223,7 +249,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     let targets: Record<string, string> = {};
     // 整页一个可译组都没有（纯代码页、纯表格页）→ 第二步根本不发。
     if (req.length > 0) {
-      const t = await twice('翻译', () => runTranslate(page, req, docTitle));
+      const t = await tryStep('翻译', tries, () => runTranslate(page, req, docTitle));
       if (!t.ok) { fail(t.reason); if (!aborted) { done++; tick(); } return; }
       targets = t.value;
     }
@@ -232,6 +258,9 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
       return id === undefined ? { ...g } : { ...g, target: targets[id] };
     });
     groupsOf.set(page, groups);
+    // 这一页成了：撤掉它之前那次失败（收尾重试轮走到这里就是「救回来了」）。第一轮里它本来
+    // 就不在表上，delete 是空操作。
+    failures.delete(page);
     if (aborted) return;
     done++;
     tick();
@@ -252,7 +281,7 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
     // 第 1 页拆开跑：文题要在第 1 页**自己的第二步**之前就确定（它也该带着文题去翻），所以先
     // 只跑版面拿 title 组，再把这份版面结果当 precomputed 交给 runPage——整页照常走，但版面
     // 不多付一次调用。
-    const first = await twice('版面', async () => {
+    const first = await tryStep('版面', 2, async () => {
       return repairGroupGeometry(await runLayout(head.page, head.lines), head.lines);
     });
     if (first.ok) {
@@ -264,26 +293,46 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
         docTitle = tokenize(linesOfGroup(titleGroup.lines, byId)).source.trim() || undefined;
       }
     }
-    await runPage(head.page, head.lines, docTitle, first);
+    await runPage(head.page, head.lines, 2, docTitle, first);
   }
 
-  let next = 0;
   let cancelled = false;
-  const worker = async () => {
-    for (;;) {
-      // aborted 和 isCancelled() 都是「派发前的检查点」，处理方式一样：不再派发新页、正常
-      // return（不 throw）。这里把 cancelled 也一起置上是安全的——aborted 只会由抛错的那个
-      // worker 置位并且紧跟着 throw，那个 worker 自己的 promise 会 reject，Promise.all 因此
-      // 必然 reject，`await Promise.all(...)` 会直接抛出、跳过下面 `if (cancelled ...)
-      // return null` 那一行，cancelled 在这条路径上根本不会被读到，不会把「该 reject」错变成
-      // 「返回 null」。
-      if (aborted || o.isCancelled()) { cancelled = true; return; }
-      const i = next++;
-      if (i >= rest.length) return;
-      await runPage(rest[i].page, rest[i].lines, docTitle);
-    }
+  /** 一池 worker 把这批页跑完；`tries` 传给每一步（见 `tryStep`）。 */
+  const runPool = async (items: { page: number; lines: PageLine[] }[], tries: number): Promise<void> => {
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        // aborted 和 isCancelled() 都是「派发前的检查点」，处理方式一样：不再派发新页、正常
+        // return（不 throw）。这里把 cancelled 也一起置上是安全的——aborted 只会由抛错的那个
+        // worker 置位并且紧跟着 throw，那个 worker 自己的 promise 会 reject，Promise.all 因此
+        // 必然 reject，`await Promise.all(...)` 会直接抛出、跳过下面 `if (cancelled ...)
+        // return null` 那一行，cancelled 在这条路径上根本不会被读到，不会把「该 reject」错变成
+        // 「返回 null」。
+        if (aborted || o.isCancelled()) { cancelled = true; return; }
+        const i = next++;
+        if (i >= items.length) return;
+        await runPage(items[i].page, items[i].lines, tries, docTitle);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(items.length, 1)) }, worker));
   };
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(rest.length, 1)) }, worker));
+  await runPool(rest, 2);
+
+  // ── 2b. 收尾重试：整轮跑完才回头跑失败页（`pageAttempts`）。每一步只发一次——立刻重发
+  // 那一次第一轮已经付过了，这一轮买的是「隔了一段时间」。进度换成 'retry' 一档：不换的话
+  // 浮层会停在「正在翻译 · N / N」不动，看着像卡住。
+  for (let round = 2; round <= (o.pageAttempts ?? 1); round++) {
+    if (cancelled || aborted || o.isCancelled() || failures.size === 0) break;
+    const again = [...failures.keys()].sort((a, b) => a - b)
+      .map((page) => ({ page, lines: perPage.get(page) ?? [] }))
+      .filter((it) => it.lines.length > 0);
+    if (again.length === 0) break;
+    phase = 'retry';
+    done = 0;
+    total = again.length;
+    tick();
+    await runPool(again, 1);
+  }
   if (cancelled || o.isCancelled()) return null;
 
   // ── 3. 组装。失败的页没有 groups → 没有块 → 右格不覆盖 → 用户看到原文。
@@ -302,11 +351,11 @@ export async function translateDoc(o: TranslateDocOptions): Promise<TranslatedDo
   // 不由这一趟的调度巧合决定（否则同样的输入会写出不同的文件）。
   const failed = [
     ...(o.pages ? (o.base!.failedPages ?? []).filter((p) => !redo.has(p)) : []),
-    ...failedPages,
+    ...failures.keys(),
   ].sort((a, b) => a - b);
   const mergedReasons: Record<string, string> = {
     ...(o.pages ? Object.fromEntries(Object.entries(o.base!.failureReasons ?? {}).filter(([k]) => !redo.has(Number(k)))) : {}),
-    ...reasons,
+    ...Object.fromEntries([...failures].map(([page, reason]) => [String(page), reason])),
   };
   const doc: TranslatedDoc = {
     version: 1,

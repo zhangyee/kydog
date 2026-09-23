@@ -545,6 +545,149 @@ describe('两步协议（spec 2026-09-07 §4）', () => {
   });
 });
 
+describe('收尾重试（pageAttempts）', () => {
+  /** 第 n 次调用之前一直失败的假第二步；`calls` 记每次是哪一页。 */
+  const flakyTranslate = (failUntil: number, page: number, calls: number[]) =>
+    async (a: { page: number; groups: { id: string }[] }) => {
+      if (a.page !== page) return translateOk(a);
+      calls.push(a.page);
+      return calls.length <= failUntil ? { text: 'no header', truncated: false } : translateOk(a);
+    };
+
+  it('主轮失败的页在收尾轮被救回来 → 没有失败页；不开收尾轮的话同一份夹具就是失败的', async () => {
+    // 第 2 页前两次（主轮的两次机会）都坏，第三次好 —— 只有存在第二轮才可能拿到那第三次。
+    const phases: string[] = [];
+    const calls: number[] = [];
+    const doc = await translateDoc(base({
+      numPages: 2, pageAttempts: 2,
+      translateGroups: flakyTranslate(2, 2, calls),
+      onProgress: (p: { phase: string }) => phases.push(p.phase),
+    }));
+    expect(doc!.blocks.map((b) => [b.page, b.target])).toEqual([[1, 'T1'], [2, 'T2']]);
+    expect(doc!.failedPages).toBeUndefined();
+    expect(phases).toContain('retry');
+
+    // 反面：同一份夹具、只把 pageAttempts 去掉（缺省 1 轮）→ 第 2 页就是失败页。
+    const calls2: number[] = [];
+    const once = await translateDoc(base({ numPages: 2, translateGroups: flakyTranslate(2, 2, calls2) }));
+    expect(once!.failedPages).toEqual([2]);
+  });
+
+  it('收尾轮里每一步只发一次：一直失败的页，两轮共 3 次翻译、2 次版面', async () => {
+    const tr: number[] = [];
+    const lay: number[] = [];
+    const doc = await translateDoc(base({
+      numPages: 2, pageAttempts: 2,
+      layoutPage: async (a: { page: number; lines: { n: number }[] }) => { lay.push(a.page); return layoutOk(a); },
+      translateGroups: async (a: { page: number; groups: { id: string }[] }) => {
+        if (a.page !== 2) return translateOk(a);
+        tr.push(a.page);
+        return { text: 'no header', truncated: false };
+      },
+    }));
+    // 主轮 2 次（tryStep 的两次机会）+ 收尾轮 1 次。收尾轮也发 2 次的话这里就是 4。
+    expect(tr).toHaveLength(3);
+    // 版面：主轮一次就过，收尾轮整页重来又一次 —— 第二步失败不会让第一步在同一轮里重跑。
+    expect(lay.filter((n) => n === 2)).toHaveLength(2);
+    expect(doc!.failedPages).toEqual([2]);
+  });
+
+  it('pageAttempts = 3：最多三轮就收手，边车记最后一轮的原因', async () => {
+    const tr: number[] = [];
+    const doc = await translateDoc(base({
+      numPages: 2, pageAttempts: 3,
+      translateGroups: async (a: { page: number; groups: { id: string }[] }) => {
+        if (a.page !== 2) return translateOk(a);
+        tr.push(a.page);
+        return { text: 'no header', truncated: false };
+      },
+    }));
+    expect(tr).toHaveLength(4);                 // 2（主轮）+ 1 + 1
+    expect(doc!.failedPages).toEqual([2]);
+    // 最后一轮只发了一次，所以原因里没有「；重试：」那一段；主轮失败的原因才有。
+    expect(doc!.failureReasons!['2']).not.toMatch(/；重试：/);
+    const once = await translateDoc(base({
+      numPages: 2,
+      translateGroups: async (a: { page: number; groups: { id: string }[] }) =>
+        (a.page === 2 ? { text: 'no header', truncated: false } : translateOk(a)),
+    }));
+    expect(once!.failureReasons!['2']).toMatch(/；重试：/);
+  });
+
+  it('收尾轮的进度：phase 换成 retry，分母是这一轮要重试的页数，失败数随救回来递减', async () => {
+    const seen: { phase: string; done: number; total: number; failed: number }[] = [];
+    const calls: number[] = [];
+    await translateDoc(base({
+      numPages: 3, pageAttempts: 2,
+      // 第 2、3 页主轮都失败；收尾轮里第 2 页好了，第 3 页仍坏。
+      translateGroups: async (a: { page: number; groups: { id: string }[] }) => {
+        if (a.page === 1) return translateOk(a);
+        if (a.page === 3) return { text: 'no header', truncated: false };
+        calls.push(a.page);
+        return calls.length <= 2 ? { text: 'no header', truncated: false } : translateOk(a);
+      },
+      onProgress: (p: { phase: string; done: number; total: number; failed: number }) => seen.push({ ...p }),
+    }));
+    const retry = seen.filter((p) => p.phase === 'retry');
+    expect(retry.length).toBeGreaterThan(0);
+    expect(retry[0]).toEqual({ phase: 'retry', done: 0, total: 2, failed: 2 });  // 开轮时两页都还失败着
+    expect(retry.at(-1)!.failed).toBe(1);                                        // 第 2 页救回来了
+    expect(retry.at(-1)!.done).toBe(2);
+  });
+
+  it('取消在轮与轮之间生效：主轮跑完就取消 → 返回 null，收尾轮一次调用都不发', async () => {
+    let cancelled = false;
+    const tr: number[] = [];
+    const phases: string[] = [];
+    const doc = await translateDoc(base({
+      numPages: 2, pageAttempts: 3,
+      translateGroups: async (a: { page: number; groups: { id: string }[] }) => {
+        if (a.page !== 2) return translateOk(a);
+        tr.push(a.page);
+        return { text: 'no header', truncated: false };
+      },
+      isCancelled: () => cancelled,
+      onProgress: (p: { phase: string; done: number; total: number }) => {
+        phases.push(p.phase);
+        // 主轮最后一页落地时按下取消。
+        if (p.phase === 'translate' && p.done === p.total) cancelled = true;
+      },
+    }));
+    expect(doc).toBeNull();
+    expect(tr).toHaveLength(2);   // 只有主轮那两次；上一条用例证明不取消时会有第 3、第 4 次
+    // 轮与轮之间那道闸：取消之后连「正在重试失败页」这一帧都不该亮 —— 池子里的检查点只挡得住
+    // 派发，挡不住轮首那次 tick，用户会看见一个永远不动的重试浮层。
+    expect(phases).not.toContain('retry');
+    // 正向对照：不取消时同一份夹具确实会走到 retry（上面那条用例也断过）。
+    const phases2: string[] = [];
+    await translateDoc(base({
+      numPages: 2, pageAttempts: 3,
+      translateGroups: async (a: { page: number; groups: { id: string }[] }) =>
+        (a.page === 2 ? { text: 'no header', truncated: false } : translateOk(a)),
+      onProgress: (p: { phase: string }) => phases2.push(p.phase),
+    }));
+    expect(phases2).toContain('retry');
+  });
+
+  it('「重试失败页」那条路：部分跑 + 三轮，第三次成的页从边车的 failedPages 里消失', async () => {
+    const BASE2: TranslatedDoc = {
+      version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' },
+      source: { sha256: 'old', bytes: 1 },
+      failedPages: [2], failureReasons: { '2': '上一趟失败了' },
+      blocks: [{ id: 'p1-b01', page: 1, x: 72, y: 100, width: 40, height: 10, fontSize: 10, kind: 'text', source: 'p1l1', target: 'T1' }],
+    };
+    const calls: number[] = [];
+    const doc = await translateDoc(base({
+      numPages: 2, pages: [2], base: BASE2, pageAttempts: 3,
+      translateGroups: flakyTranslate(3, 2, calls),   // 前三次坏（主轮 2 次 + 第二轮 1 次），第四次好
+    }));
+    expect(calls).toHaveLength(4);
+    expect(doc!.blocks.map((b) => b.page)).toEqual([1, 2]);
+    expect(doc!.failedPages).toBeUndefined();
+    expect('failureReasons' in doc!).toBe(false);
+  });
+});
+
 describe('部分页：pages + base（spec 2026-09-06 §4.3）', () => {
   const BASE: TranslatedDoc = {
     version: 1, pdf: 'p.pdf', lang: { in: 'auto', out: 'zh' },
