@@ -407,6 +407,13 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
   // "加载 PDF 字节"那个 effect，只在 tab.status === 'loading' 时才 setBytes）。loadTranslation
   // 会在 sizes 到位、以及每次窗口 focus 时重跑（见下）——若每次都重算 sha256，开着 N 个 PDF、
   // alt-tab 回来一次就是 N 次对整份字节的全量哈希。算好存这里，loadTranslation 直接读，不再自己算。
+  // 例外：md 导出 PDF 后点「打开」，若同路径的 PDF 标签已开着，MarkdownFileTab.tsx 的
+  // openExported 会在同一次点击里 closeFileTab 再 openFile——MainPane 按 tab.id 挂 key，这仍是
+  // 同一个组件实例，但 props 换成一个全新的 tab 对象（status 回到 'loading'），下面「加载 PDF
+  // 字节」那个 effect 因此重跑，bytes 会再变一次（不经过 null，直接被新读出来的字节覆盖）。
+  // 上面「只会从 null 变成一份字节、此后不再变」说的是同一个 tab 对象在场的这段时间，不是这个
+  // 组件实例的整个生命周期——这不是把下面这个 effect 的依赖数组收窄成只跑一次的理由，
+  // 它必须继续依赖 `bytes` 本身（而不是比如换成一个「算过了」的 ref 标记）。
   const [sha, setSha] = useState<string | null>(null);
   useEffect(() => {
     if (!bytes) { setSha(null); return; }

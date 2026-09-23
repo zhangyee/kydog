@@ -10,6 +10,10 @@ import { CommentBox } from './CommentBox';
 import { MdCapsule } from './MdCapsule';
 import { CrepeEditor, type CrepeEditorHandle } from './CrepeEditor';
 import { registerSaver, unregisterSaver } from './saveRegistry';
+import { fileTitle } from './fileTabHelpers';
+import { defaultPdfPath } from '../../../../shared/mdExport';
+import { MdExportCard } from './MdExportCard';
+import { MdExportToast, type ExportToast } from './MdExportToast';
 
 export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boolean }) {
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -211,6 +215,65 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
     }
   };
 
+  const mdExport = useUiStore((s) => s.mdExport);
+  const setMdExport = useUiStore((s) => s.setMdExport);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportToast, setExportToast] = useState<ExportToast | null>(null);
+  const toastSeq = useRef(0);
+  const closeExportCard = useCallback(() => setExportOpen(false), []);
+  const dismissToast = useCallback(() => setExportToast(null), []);
+
+  // 标签切走时收起设置卡：卡片的 Esc / 点外面监听都挂在 window 的捕获阶段（MdExportCard.tsx），
+  // 标签不激活时它们不该继续挂着——不然切到别的标签、别处的 Esc（比如 WorkspacePanel.tsx 那个
+  // 退出搜索/详情的监听，挂在冒泡阶段、认 defaultPrevented）会被这个不可见标签的卡片先一步
+  // preventDefault 吞掉。
+  useEffect(() => { if (!isActive) setExportOpen(false); }, [isActive]);
+
+  /** spec §2.3：先选路径（取消就什么都不做），再导出；转圈只罩导出那一段。 */
+  const runExport = async () => {
+    setExportOpen(false);
+    // 每条提示一个新 id：MdExportToast 按 id 换 key，计时从头算（同 SidebarToast）
+    const nextId = () => { toastSeq.current += 1; return toastSeq.current; };
+    try {
+      const outPath = await window.kydog.invoke('dialog.pickSavePath', {
+        defaultPath: defaultPdfPath(tab.path), filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+      if (outPath === null) return;
+      setExporting(true);
+      // 导出编辑器当前内容（含未保存的改动，spec §1.7），不是磁盘上那份
+      const { pdfPath } = await window.kydog.invoke('markdown.exportPdf', {
+        mdPath: tab.path, markdown: editorRef.current?.getMarkdown() ?? '', outPath,
+        options: useUiStore.getState().mdExport,
+      });
+      setExportToast({ id: nextId(), kind: 'done', pdfPath, fileName: fileTitle(pdfPath) });
+    } catch (err) {
+      setExportToast({ id: nextId(), kind: 'failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  /**
+   * 同路径的 PDF 标签已开着就先关掉再开（spec §2.4）。机制：closeFileTab 与 openFile 在同一次
+   * 点击里调用，React 19 + zustand 会合成一次渲染；MainPane 按 `key={ft.id}` 挂载（MainPane.tsx），
+   * id 没变，`PdfFileTab` 组件实例并不会重新挂载。真正让新字节读进来的是 `PdfFileTab` 里「加载
+   * PDF 字节」那个 effect——它依赖 `tab.status`，这里重建出来的是一个全新的 tab 对象、
+   * status 回到 `'loading'`，effect 因此重跑；随后 `fileUrl` 变化的那个 effect（依赖 `[fileUrl]`）
+   * 再把上一份文档的分页 / 缓存 state 清掉（PdfFileTab.tsx「加载 PDF 字节」「换文件」两个 effect）。
+   */
+  const openExported = (pdfPath: string) => {
+    const ui = useUiStore.getState();
+    if (ui.openFileTabs.some((t) => t.id === pdfPath)) ui.closeFileTab(pdfPath);
+    ui.openFile(pdfPath);
+    setExportToast(null);
+  };
+  const revealExported = (pdfPath: string) => {
+    void window.kydog.invoke('file.revealInFolder', { path: pdfPath })
+      .catch((err: Error) => console.warn('reveal exported pdf failed', pdfPath, err));
+    setExportToast(null);
+  };
+
   if (tab.status === 'loading') {
     return (
       <div className="font-mono" style={{ padding: '14px 18px', fontSize: 12, color: 'var(--color-ink-soft)' }}>
@@ -291,6 +354,7 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
           key={editorGeneration}
           ref={editorRef}
           initialMarkdown={tab.diskContent ?? ''}
+          mdPath={tab.path}
           onCommentClick={openBoxFromSelection}
           onReady={(initialMd) => {
             baselineRef.current = initialMd;
@@ -306,7 +370,20 @@ export function MarkdownFileTab({ tab, isActive }: { tab: FileTab; isActive: boo
             setFileTabDirty(tab.id, md !== baselineRef.current);
           }}
         />
-        <MdCapsule commentMode={commentMode} canComment={!!thread} onToggleComment={() => setCommentMode((v) => !v)} />
+        <MdCapsule
+          commentMode={commentMode} canComment={!!thread} onToggleComment={() => setCommentMode((v) => !v)}
+          exportOpen={exportOpen} exporting={exporting} onToggleExport={() => setExportOpen((v) => !v)}
+          renderExportCard={(boundary) => (
+            <MdExportCard
+              fileName={tab.title} options={mdExport} onChange={setMdExport}
+              onExport={() => void runExport()} onClose={closeExportCard} boundary={boundary}
+            />
+          )}
+        />
+        <MdExportToast
+          toast={exportToast} platform={window.kydog.platform}
+          onOpen={openExported} onReveal={revealExported} onDismiss={dismissToast}
+        />
       </div>
       {/* 只在本标签激活时渲染：框是挂在 document.body 上的 fixed portal，标签被 display:none 藏起来时
           它不跟着藏，会浮在对话 / 别的标签上面（两个 md 标签还能各浮一个）。box 状态、待定下划线与

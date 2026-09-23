@@ -4,6 +4,7 @@ import { atomicWriteWith0600Async } from './atomicWrite';
 import * as paths from './paths';
 import type { ConfirmedLogin, SettingsFile, TelemetryState } from '../../shared/types';
 import { MIN_BROWSER_WIDTH } from '../../shared/types';
+import { DEFAULT_MD_EXPORT, sanitizeMdExport } from '../../shared/mdExport';
 import { logger } from '../log';
 
 /** 浏览器侧栏的默认宽度与下限。**真源在 `shared/types.ts`** —— 渲染层拖拽时也要用
@@ -44,6 +45,7 @@ export function defaultSettings(): SettingsFile {
       // null = 从没设定过，见 sanitizeBrowserWidth 的注释。DEFAULT_BROWSER_WIDTH
       // 这个常量本身留着，供渲染层与用例里「一个合法宽度长什么样」的兜底用。
       browserWidth: null,
+      mdExport: { ...DEFAULT_MD_EXPORT },
     },
     llm: {
       auth: {},
@@ -391,6 +393,7 @@ function classifyVersion(v: unknown): 'known' | 'legacy' | 'unknown' {
  *    界面不该自己多出一栏；宽度取 null（未设定，由渲染层现算 4:6），且低于
  *    MIN_BROWSER_WIDTH 或形状不对的手改值同样回 null，见 sanitizeBrowserWidth。
  *    同时新增 institution；旧的 confirmedLoginHost 不做转换，见 sanitizeInstitution。
+ *  - ui.mdExport：不升版本，缺了补默认、坏值逐项回默认（sanitizeMdExport）。
  *  - 版本认不出来：返回 unreadable，**不重置**（调用方负责留档）。 */
 export function parseAndMigrateSettings(raw: string): ParsedSettings {
   let parsed: any;
@@ -416,6 +419,7 @@ export function parseAndMigrateSettings(raw: string): ParsedSettings {
         collapsedProjects: sanitizeCollapsedProjects(parsed.ui?.collapsedProjects),
         browserOpen: parsed.ui?.browserOpen === true,
         browserWidth: sanitizeBrowserWidth(parsed.ui?.browserWidth),
+        mdExport: sanitizeMdExport(parsed.ui?.mdExport),
       },
       llm: {
         auth: parsed.llm?.auth ?? {},
@@ -456,6 +460,7 @@ export function parseAndMigrateSettings(raw: string): ParsedSettings {
       collapsedProjects: sanitizeCollapsedProjects(parsed.ui?.collapsedProjects),
       browserOpen: parsed.ui?.browserOpen === true,
       browserWidth: sanitizeBrowserWidth(parsed.ui?.browserWidth),
+      mdExport: sanitizeMdExport(parsed.ui?.mdExport),
     },
     llm: d.llm,
     skills: { ...d.skills, ...(parsed.skills ?? {}) },

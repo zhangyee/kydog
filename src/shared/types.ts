@@ -1,5 +1,6 @@
 import type { AskAnswer, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
+import type { MdExportOptions } from './mdExport';
 
 export type Identity = { userName: string; agentName: string };
 
@@ -190,6 +191,9 @@ export type SettingsFile = {
      *  `browserWidthFor`）。不编一个默认像素数出来：那等于替用户做了一个他没做过的
      *  决定，而一旦落盘就再也分不清「4:6」是算出来的还是他真的拖成了这个数。 */
     browserWidth: number | null;
+    /** md 导出 PDF 设置卡上次的选择（spec 2026-09-22-md-export-pdf-design §3.7）。所有 md 共用。
+     *  **没有升 schemaVersion**：照 browserWidth 的先例，读写两条路都过 sanitizeMdExport。 */
+    mdExport: MdExportOptions;
   };
   llm: {
     auth: AuthBlob;

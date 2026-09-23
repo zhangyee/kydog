@@ -474,6 +474,17 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
     expect((await svc.update({ ui: { theme: 'midnight' as const } })).ui.browserWidth).toBe(MIN_BROWSER_WIDTH);
   });
 
+  it('update(): mdExport 走与读路径同一个 sanitize；合法值落盘；不碰它的 patch 不改它', async () => {
+    const bad = await svc.update({ ui: { mdExport: { paper: 'a3', margin: 'narrow', pageNumbers: 1 } as never } });
+    expect(bad.ui.mdExport).toEqual({ paper: 'a4', margin: 'narrow', pageNumbers: true });
+    const good = { paper: 'letter' as const, margin: 'standard' as const, pageNumbers: false };
+    expect((await svc.update({ ui: { mdExport: good } })).ui.mdExport).toEqual(good);
+    expect((await svc.update({ ui: { theme: 'midnight' as const } })).ui.mdExport).toEqual(good);
+    // 断到盘上，不只是返回值
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'kydog.json'), 'utf8'));
+    expect(onDisk.ui.mdExport).toEqual(good);
+  });
+
   it('setTelemetry(): 落盘且只动 telemetry 一节', async () => {
     await svc.update({ ui: { theme: 'midnight' as const } });
     await svc.setTelemetry({ state: 'enabled', decidedAt: '2026-08-06T09:00:00.000Z' });

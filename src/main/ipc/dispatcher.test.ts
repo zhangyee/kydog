@@ -26,7 +26,7 @@ describe('dispatcher', () => {
   });
 
   it('routes to a registered handler and returns ok', async () => {
-    registerHandler('settings.get', async () => ({ schemaVersion: 9, ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'medium', collapsedProjects: [], browserOpen: false, browserWidth: 560 }, llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }, skills: { disabledBuiltins: [] }, tools: { externalBins: [] }, research: { presets: {}, custom: [] }, institution: null, updates: { autoCheck: true, dismissedCandidateId: null }, telemetry: { state: 'undecided', decidedAt: null }, onboarding: { completedAt: null } }));
+    registerHandler('settings.get', async () => ({ schemaVersion: 9, ui: { theme: 'vellum', locale: 'zh', workspaceCollapsed: false, inspectorCollapsed: false, readingFontSize: 'medium', collapsedProjects: [], browserOpen: false, browserWidth: 560, mdExport: { paper: 'a4', margin: 'standard', pageNumbers: true } }, llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null }, skills: { disabledBuiltins: [] }, tools: { externalBins: [] }, research: { presets: {}, custom: [] }, institution: null, updates: { autoCheck: true, dismissedCandidateId: null }, telemetry: { state: 'undecided', decidedAt: null }, onboarding: { completedAt: null } }));
     const invoke = handlers[RPC_CHANNEL];
     const result = await invoke(fakeEvt, { method: 'settings.get', args: undefined });
     expect(result).toMatchObject({ ok: true, data: { schemaVersion: 9 } });

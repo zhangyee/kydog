@@ -12,6 +12,7 @@ import type { AskAnswer, AskOutcome, AskQuestion } from './askQuestion';
 import type { SerializedError } from './errors';
 import type { PdfAnnotationsFile } from './pdfSidecar';
 import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar';
+import type { MdExportOptions } from './mdExport';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -128,6 +129,9 @@ export type RpcCall =
   | { method: 'llm.loginPromptReply'; args: { providerId: ProviderId; value: string }; result: void }
   | { method: 'llm.logout'; args: { providerId: ProviderId }; result: LlmListResult }
   | { method: 'dialog.pickFile'; args: { filters?: Array<{ name: string; extensions: string[] }> }; result: string | null }
+  // md 导出 PDF（spec docs/superpowers/specs/2026-09-22-md-export-pdf-design.md §3.1）。「选路径」与
+  // 「导出」分两条：转圈只罩渲染那一段；e2e 只替换存储框。存储框返回什么路径就写什么，不补后缀。
+  | { method: 'dialog.pickSavePath'; args: { defaultPath: string; filters: Array<{ name: string; extensions: string[] }> }; result: string | null }
   | { method: 'file.readText'; args: { path: string }; result: { content: string } }
   | { method: 'file.readBytes'; args: { path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
   // 比 file.readBytes 多一道 realpath 边界校验：path 的 realpath 必须落在 baseDir 的
@@ -135,6 +139,8 @@ export type RpcCall =
   // reportTheme.ts 的 inlineLocalImages 与 fileService.readBytesWithin 的注释。
   | { method: 'file.readBytesWithin'; args: { baseDir: string; path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
   | { method: 'file.writeText'; args: { path: string; content: string }; result: void }
+  | { method: 'file.revealInFolder'; args: { path: string }; result: void }
+  | { method: 'markdown.exportPdf'; args: { mdPath: string; markdown: string; outPath: string; options: MdExportOptions }; result: { pdfPath: string } }
   // 把 PDF 的一页画成 PNG（主进程借一个不显示的窗口跑 pdfjs，见 src/main/pdf/pdfRaster.ts）。
   // arXiv 源码包里的插图常常是 .pdf，嵌不进 HTML 报告，得先过一道渲染。
   | { method: 'pdf.renderPage'; args: { path: string; page: number; scale?: number }; result: { pngPath: string } }
@@ -283,10 +289,13 @@ export const RPC_METHODS = [
   'llm.loginPromptReply',
   'llm.logout',
   'dialog.pickFile',
+  'dialog.pickSavePath',
   'file.readText',
   'file.readBytes',
   'file.readBytesWithin',
   'file.writeText',
+  'file.revealInFolder',
+  'markdown.exportPdf',
   'pdf.renderPage',
   'pdf.annotations.load',
   'pdf.annotations.save',

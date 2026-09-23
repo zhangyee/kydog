@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { FsNode, ReadingFontSize, SkillSyncHealth, ThemeName } from '../../shared/types';
+import { DEFAULT_MD_EXPORT, type MdExportOptions } from '../../shared/mdExport';
 import { fileTitle, isHtmlPath, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
 import { clampBrowserWidth } from '../panels/browser/stage';
 import { availableForCenterAndRight } from '../app/rightPane';
@@ -58,6 +59,9 @@ type UiState = {
   browserOpen: boolean;
   /** `null` = 用户从没拖过，排版按 4:6 现算，见 `rightPane.ts` 的 `browserWidthFor`。 */
   browserWidth: number | null;
+  /** md 导出 PDF 设置卡的选择。启动时由 bootstrap 从设置灌入、变了就落盘（同 theme 等界面偏好）。 */
+  mdExport: MdExportOptions;
+  setMdExport: (patch: Partial<MdExportOptions>) => void;
   /**
    * 全屏浏览器（中栏藏起来，右栏吃满可用宽度）。**不落盘** —— 见 `bootstrap.ts`
    * 的持久化订阅：加进去就等于「退出时停在全屏，下次开应用看不见对话」，
@@ -145,6 +149,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   inspectorWidth: 280,
   browserOpen: false,
   browserWidth: null,
+  mdExport: { ...DEFAULT_MD_EXPORT },
+  setMdExport: (patch) => set((s) => ({ mdExport: { ...s.mdExport, ...patch } })),
   browserFullscreen: false,
   toggleBrowserFullscreen: () => set((s) => ({ browserFullscreen: !s.browserFullscreen })),
   windowWidth: 1280,

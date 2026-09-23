@@ -7,6 +7,7 @@ import {
   sanitizeBrowserWidth, sanitizeInstitution, checkInstitution, CURRENT_SCHEMA_VERSION,
 } from '../persist/settingsFile';
 import type { SettingsRead } from '../persist/settingsFile';
+import { sanitizeMdExport } from '../../shared/mdExport';
 import { atomicWriteWith0600Async } from '../persist/atomicWrite';
 import { KydogError } from '../../shared/errors';
 import type { InstitutionPublic, SettingsFile, SettingsFileForRenderer, SettingsHealth, SettingsPatch } from '../../shared/types';
@@ -122,7 +123,7 @@ export class SettingsService {
         // 算错一次（比如 0）就当场进 cache 与磁盘，同一次会话里 browserService 按
         // scale = W/1280 = 0 调 setDeviceMetricsOverride，页面渲染塌掉；重启后
         // parseAndMigrateSettings 又把它拉回默认 —— 现象是「重启就好了」，无法稳定复现。
-        ui: { ...ui, browserWidth: sanitizeBrowserWidth(ui.browserWidth) },
+        ui: { ...ui, browserWidth: sanitizeBrowserWidth(ui.browserWidth), mdExport: sanitizeMdExport(ui.mdExport) },
         llm: { ...cur.llm, ...(patch.llm ?? {}) },
         skills: { ...cur.skills, ...(patch.skills ?? {}) },
         tools: { ...cur.tools, ...(patch.tools ?? {}) },

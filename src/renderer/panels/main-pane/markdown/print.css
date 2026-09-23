@@ -1,0 +1,70 @@
+/* md 导出 PDF 的打印页专用（spec 2026-09-22-md-export-pdf-design §3.5）。
+   这个页面只为打印存在，所以不分 @media print：屏幕上看到的就是要印的。
+   代码块那一段是 2026-09-22 探针逐条实测过的写法，改之前先读 spec §4 的记录。 */
+
+html[data-theme] { --paper: #fff; }
+html, body { height: auto !important; margin: 0; background: #fff; }
+/* 窗口内容宽开成版心宽（mdPdfExport.ts 的 printableWidthPx），块级图片在 load 时按这个宽写死高度。
+   常驻滚动条（Windows 一直是；macOS 按系统设置，e2e 钉成常驻）会从里面再吃掉 15～17px，块宽就比版心窄，
+   宽图印出来比正文窄一截（2026-09-22 探针：A4 标准 602 → 587）。这一页不给人滚，藏掉不丢东西。 */
+html { scrollbar-width: none; }
+/* globals.css 的纸纹：position:fixed + z-index:1000，不关会印在每一页上 */
+body::before { display: none !important; }
+
+.kydog-md-print.kydog-md-editor { height: auto; overflow: visible; }
+.kydog-md-print .ProseMirror { padding: 0 !important; }
+
+/* 代码块：语言按钮 / 复制键不印；公式块只印渲染结果 */
+.kydog-md-print .milkdown-code-block .tools,
+.kydog-md-print .milkdown-code-block .preview-divider,
+.kydog-md-print .milkdown-code-block .preview-label { display: none !important; }
+.kydog-md-print .milkdown-code-block:has(.preview-panel .preview > *) .codemirror-host { display: none !important; }
+
+/* 不要试图把 .cm-scroller 改成 display:block：CodeMirror 基础主题是 display:flex !important 且选择器
+   更具体，覆盖不生效（实测）。下面这套在 flex 下成立：
+   - overflow 放开，否则分页推下去的行被滚动层按分页前的高度裁掉（实测末行 + 半行没了）；
+   - 行号栏是独立的一列、分页时与代码各自断开会错位，藏掉它，行号改用挂在逻辑行上的 CSS 计数器
+     （编号天然只在首个视觉行、折行不计数）；
+   - .cm-content 默认 flex-shrink:0，会按最长行撑到版心外（实测 2696px），放开才折得了行。 */
+.kydog-md-print .cm-editor,
+.kydog-md-print .cm-scroller { overflow: visible !important; height: auto !important; }
+.kydog-md-print .cm-gutters { display: none !important; }
+.kydog-md-print .cm-content {
+  counter-reset: kydog-line;
+  padding-left: 0 !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+}
+.kydog-md-print .cm-line {
+  counter-increment: kydog-line;
+  position: relative;
+  padding-left: 3.2em !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+}
+.kydog-md-print .cm-line::before {
+  content: counter(kydog-line);
+  position: absolute;
+  left: 0;
+  width: 2.4em;
+  text-align: right;
+  color: #7d8799; /* One Dark 行号栏的前景色，与编辑器里看到的一致 */
+}
+.kydog-md-print .cm-activeLine,
+.kydog-md-print .cm-activeLineGutter { background: transparent !important; }
+
+/* 分页：标题不落在页底；图片、公式块、表格行不从中间切开；代码块可以逐行跨页 */
+.kydog-md-print h1, .kydog-md-print h2, .kydog-md-print h3,
+.kydog-md-print h4, .kydog-md-print h5, .kydog-md-print h6 { break-after: avoid; }
+.kydog-md-print img,
+.kydog-md-print .milkdown-code-block:has(.preview-panel),
+.kydog-md-print tr { break-inside: avoid; }
+
+/* 表格按版心宽排；图片不超出版心。表格外层横向滚动容器（.table-wrapper，
+   node_modules/@milkdown/components/src/table-block/view/component.tsx）没有单独
+   加过 overflow 规则（table.css 没有）——查过的三份主题 CSS 都没设，默认值已经是
+   visible，没有可覆盖的对象，所以这里不补规则（brief 步骤 4 的决策）。 */
+.kydog-md-print table { width: 100%; }
+.kydog-md-print img { max-width: 100%; }
