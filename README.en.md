@@ -174,8 +174,24 @@ If KyDog saves you time, or you believe in where it's headed, a star helps.
 
 Sponsorship is welcome too. The QR code is a WeChat one, so it's only usable inside China — see [支持这个项目](README.md#支持这个项目) in the Chinese README.
 
-<!-- No star history chart: since 2026-06-30 GitHub limits the stargazers API to a repo's own
-     admins and collaborators, so any third-party chart service needs a token with contents
-     WRITE access (GitHub uses write to verify collaborator status; read-only is rejected).
-     Not worth it. The badge at the top gives the current count. Revisit if an approach
-     appears that doesn't require handing out write access. -->
+<!-- Star history chart is back (2026-09-23): after GitHub limited the stargazers API on
+     2026-06-30, a third-party chart needed a token with contents WRITE access, which was not
+     worth it. GitHub has since added /repos/{owner}/{repo}/stargazers/history (weekly buckets,
+     no usernames or avatars): any public repo works, the 40k-star ceiling is gone, and no token
+     is handed out. Both URLs measured returning 200 + image/svg+xml; light background #fff,
+     dark #0d1117 — hence the <picture>, or the chart is a white slab in GitHub's dark theme.
+
+     Below the rule, centered, as the closing image — same placement as the Chinese README, where
+     it also keeps the chart from being read as a sibling of the sponsor QR code. -->
+
+---
+
+<p align="center">
+  <a href="https://www.star-history.com/#zhangyee/kydog&Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zhangyee/kydog&type=Date&theme=dark">
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zhangyee/kydog&type=Date">
+      <img src="https://api.star-history.com/svg?repos=zhangyee/kydog&type=Date" alt="KyDog star history" width="760">
+    </picture>
+  </a>
+</p>

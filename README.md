@@ -172,11 +172,27 @@ KyDog 默认参与匿名使用统计（一个随机安装标识 + 应用版本 /
 
 如果 KyDog 帮你省下了时间，或者你认可它的目标与方向，欢迎给个 star。也欢迎赞助本项目的开发，你的鼓励与支持，是它继续做下去的全部理由。
 
-<!-- 不放 star 趋势图：GitHub 于 2026-06-30 起把 stargazers API 限制为仓库自己的
-     admin/collaborator，第三方服务要画历史曲线就得拿到一个带 contents write 的
-     token（GitHub 用写权限判定 collaborator，只读会被拒），不值得。顶部徽章给
-     的是当前星数，够用。等有不需要交出写权限的方案再考虑加回来。 -->
-
 <img src="src/renderer/assets/sponsor.jpg" alt="微信赞赏码" width="180">
 
 <sub>微信扫码赞助</sub>
+
+<!-- star 趋势图加回来了（2026-09-23）：GitHub 于 2026-06-30 限制 stargazers API 之后，第三方
+     服务要画曲线就得拿一个带 contents write 的 token，当时判定不值得。GitHub 后来补了
+     /repos/{owner}/{repo}/stargazers/history（按周聚合，不含用户名与头像），任何公开仓库都
+     画得出、4 万星上限也没了，不需要交出任何 token。实测两个地址都返回 200 + image/svg+xml，
+     浅色底 #fff、深色底 #0d1117——所以用 <picture> 跟随 GitHub 主题，不然深色下是一大块白。
+
+     排在分隔线之下、居中收尾：它与赞赏码性质不同（一张数据图、一个收款码），并排会被读成
+     并列的两件东西，而且 760 : 180 的宽度差上下相邻时是一次视觉跌落。 -->
+
+---
+
+<p align="center">
+  <a href="https://www.star-history.com/#zhangyee/kydog&Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zhangyee/kydog&type=Date&theme=dark">
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zhangyee/kydog&type=Date">
+      <img src="https://api.star-history.com/svg?repos=zhangyee/kydog&type=Date" alt="KyDog 的 star 趋势" width="760">
+    </picture>
+  </a>
+</p>
