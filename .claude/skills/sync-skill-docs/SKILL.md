@@ -273,6 +273,25 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
 | 产出物的文件类型与打开方式 | `src/renderer/panels/main-pane/` 的 tab 实现 | skill 说会产出 html/pdf/md 时，对应 tab 确实支持 |
 | 步骤里提到的工具能力 | pi 的工具集 | 别写 KyDog 没有的工具 |
 
+## Pass C — 分层：源知识不许上浮
+
+2026-09-23 Yee 拍板：**源相关的执行交给两份工具 skill（`fastpaper`、`slowpaper`），上层任务 skill
+只写"这一步要哪一类文献"和本工作流自己实测出来的裁决。** 上层再抄一份源清单，上游一改就静默过期
+（0.9.0 删掉 biorxiv / medrxiv 那次，5 个 skill、2 份文档、2 个 AGENTS 模板一起过期）。
+
+```bash
+# 上层 skill 里残留的源名（fastpaper / slowpaper 自己的目录除外）
+grep -rnE '`(arxiv|pubmed|pmc|europepmc|semantic|crossref|openalex|dblp|core|openaire|doaj|unpaywall|zenodo|hal|osf|inspire|zbmath|eric|osti|ntrs|datacite|huggingface|openreview|jstage|oapen|ads|xueshu)`' \
+  src/skills/*/SKILL*.md src/skills/*/references/*.md | grep -vE '^src/skills/(fastpaper|slowpaper)/'
+```
+
+**该删**：哪个源支持哪个 flag、某个源的 query 语法与上限、按学科枚举源的路由表、源的限速与错误码。
+**该留（但压到最短）**：本工作流实测出来、影响产物质量的裁决。裁决本身就是关于某一个源时，那个名字可以留
+——当前残留的 8 处全是「`--sort citations` 只在 `semantic` 上用」这一条。
+**例子命令**：示范一种技术时可以留一条具体命令；用来罗列源能力的命令组，删。
+
+路由表**只有一份**，在 `src/main/harness/templates/{zh,en}/AGENTS.md` 的「找论文」一节。
+
 ## 产出 → 批准 → 执行 → 提交
 
 1. **发现**：一张表，最严重的在前。每行：`file:line`、漂移类型（`双语` / `代码`）、
