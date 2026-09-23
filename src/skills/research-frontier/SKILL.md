@@ -66,9 +66,10 @@ AGENTS.md 的「用工具的方式」全部适用：一次 bash 一条 fastpaper
 fastpaper search pubmed "<主题词>" --after <今年减1>-<月>-01 -n 10
 
 # 2. 预印本——领先期刊 6–18 个月，前沿的第一现场
-fastpaper search arxiv   "<主题>" --after <今年减1>-<月>-01 -n 8
-fastpaper search biorxiv "<主题>" -n 8
-fastpaper search medrxiv "<主题>" -n 8
+#    生医预印本走 Europe PMC：SRC:PPR 是全部预印本服务器，
+#    只要 bioRxiv 一家就再加 AND PUBLISHER:"bioRxiv"
+fastpaper search arxiv "<主题>" --after <今年减1>-<月>-01 -n 8
+fastpaper search europepmc '<主题> AND SRC:PPR' --after <今年减1>-<月>-01 -n 8
 
 # 3. 跨学科源——本学科的检索永远看不到他们
 fastpaper search arxiv "<主题>" --field <相邻学科类目> --after <今年减1>-<月>-01 -n 8
@@ -81,6 +82,13 @@ fastpaper cite <近期某篇的DOI> --direction incoming -n 20
 ```
 
 第 3 条的跨学科入口很关键：从别的领域带方法进来的人，引的是**他们那边**的正典，用本学科的词和引用网都找不到。生医方向去 `arxiv --field eess.SP / cs.LG`，CS 方向去 `pubmed` `europepmc`。
+
+**方向落在 AI / ML 时多一条入口**：Hugging Face Papers 的榜单，社区每天挑论文、投票。
+`fastpaper search huggingface --top <某周>`（周号用 `date +%G-W%V` 算，也可以给某天 `2026-09-18` 或某月 `2026-08`），
+`--trending` 是它自己的实时热度序、会混进几年前又火起来的论文，两者都不带检索词。
+**它给的是社区关注度，不是引用影响力**——不能替上面第 4 条，简报里也不许把票数说成影响力，
+写的时候要指明是哪一期榜单。榜单每条都是 arXiv 论文，摘要已经在结果里（不要再逐条 `get arxiv`，
+arXiv 每 3 秒才放行一个请求），`id` 就是 arXiv id，直接 `fastpaper download <id>`。
 
 ### 三个必须避开的坑（都实测过）
 
@@ -139,7 +147,7 @@ CRISPR AND CITED:[50000 TO *]  →  1 条
 fastpaper search pubmed "<主题>" --author "<姓 名首字母>" --sort date -n 10
 ```
 
-`--author` 在 `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal` 上可用；`semantic` `dblp` `biorxiv` `medrxiv` 不支持，但会明确报错（`Error: semantic does not support --author`），不会静默失败——那几个源把人名写进 query 字符串。
+`--author` 在 `pubmed` `pmc` `europepmc` `crossref` `openalex` `arxiv` `core` `openaire` `doaj` `zenodo` `hal` `dblp` `inspire` `zbmath` `ads` 上可用；`semantic` `osf` `eric` `osti` `ntrs` `datacite` 不支持，但会明确报错（`Error: semantic does not support --author`，报错里还会列出支持它的源），不会静默失败——那几个源把人名写进 query 字符串。
 
 **要写的是轨迹，不是论文列表。** 挑 2–4 个节点，让人看出他们从什么做到什么：
 
@@ -213,7 +221,7 @@ fastpaper read papers/<file>.pdf --grep "limitation" --context 500 --max-matches
 
 **这个 skill 的全文获取率天然低，这是结构性的，别浪费调用去救。** 实测一轮 9 次下载 6 次失败，失败的**全是当年发表的论文**——PMC / Europe PMC / CORE 的全文入库有几周到几个月延迟，而前沿简报按定义搜最近 12 个月，越靠近今天越拿不到。
 
-**换源基本救不回来**：那 6 篇逐个试过 `europepmc` 和 `core`，零成功；题名去 `arxiv` 找预印本，五篇全无命中（临床行为医学的预印本在 medRxiv，而 medRxiv 自己封了 PDF 下载）。`unpaywall` 也不行——它对这些论文只有落地页没有 PDF 直链。所以：
+**换源基本救不回来**：那 6 篇逐个试过 `europepmc` 和 `core`，零成功；题名去 `arxiv` 找预印本，五篇全无命中（临床行为医学的预印本在 medRxiv，它现在只能从 `europepmc 'SRC:PPR AND PUBLISHER:"medRxiv"'` 检索，搜得到但拿不到全文——实测记录 `open_access` 为 false、没有 `pdf_url`）。`unpaywall` 也不行——它对这些论文只有落地页没有 PDF 直链。所以：
 
 - **先看退出码。** `4` = 请求没问题、这个源就是没有（没这篇 / 没 OA 副本 / `--grep` 无命中），换个源或换个 id 才有意义；`2` = 命令写错了，改命令；`1` = 别的问题。**不要看到失败就一律重试**——退出码已经告诉你该不该。
 - **`4` 之外，照 fastpaper 给的判断办。** 它的下载错误会告诉你试的是哪个 URL、以及值不值得换源（例如「Other resolvers usually hand back this same URL, so opening it yourself is more likely to help than retrying through another source」）。**照抄它的判断，别自己另起一套重试策略。**
@@ -222,7 +230,7 @@ fastpaper read papers/<file>.pdf --grep "limitation" --context 500 --max-matches
 
 因此这份简报**大量论断只有摘要支撑是正常的**，附录里如实标注即可，不必因为全文少而心虚——但也不能因此把摘要里的话当全文核验过。
 
-**上面这段说的是期刊论文。** 它是在 PMC / Europe PMC / CORE 的入库延迟上学到的，对预印本源不成立——`arxiv` `biorxiv` `zenodo` `hal` 的 download 都是 ✓，新论文当天就有 PDF。所以：没下载的预印本，附录里的标签是 `未取全文`，不是 `源无全文`，理由也要写成"判断摘要够用"，不能借用"结构性拿不到"那套说辞。
+**上面这段说的是期刊论文。** 它是在 PMC / Europe PMC / CORE 的入库延迟上学到的，对 `arxiv` `zenodo` `hal` `osf` 不成立——它们的 download 都是 ✓，新论文当天就有 PDF。所以：没下载的 arXiv 预印本，附录里的标签是 `未取全文`，不是 `源无全文`，理由也要写成"判断摘要够用"，不能借用"结构性拿不到"那套说辞。**生医预印本是另一回事**：bioRxiv / medRxiv 现在只能从 Europe PMC 拿，实测新记录 `open_access` 为 false、多数没有 `pdf_url`（少数老一点的记录带 biorxiv.org 的直链），所以它们跟期刊论文同属一类——拿不到就是 `源无全文`。
 
 **不要编造下载成功。**
 

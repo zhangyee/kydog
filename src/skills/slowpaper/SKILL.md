@@ -17,7 +17,7 @@ description: 用 KyDog 内置浏览器去没有 API 的学术源找论文、取�
 fastpaper 和这里**不分主次、不分先后**，两边装的是不同的源。按 AGENTS.md「找论文」那一节，
 看这一步要的文献落在哪、要做什么 —— 源定了，工具就定了。落到下面这五种，就是这里的活：
 
-1. **中文期刊、学位论文、国内会议** —— fastpaper 现在这 23 个来源里没有通用中文源（`scholar`
+1. **中文期刊、学位论文、国内会议** —— fastpaper 现在这 26 个来源里没有中文期刊源（`scholar`
    与 `xueshu` 在升到 0.8.1 那次上游同步里被移除），走百度学术
 2. **跨库查全** —— 学位论文与灰色文献、同一篇的「所有版本」聚合，走 Google Scholar
 3. **国内外对照、要查全的系统综述** —— 中外文献都要，Scholar 与百度学术双源（§三）
@@ -28,7 +28,7 @@ fastpaper 和这里**不分主次、不分先后**，两边装的是不同的源
 
 ### 浏览器不做 API 的活
 
-**fastpaper 已经接了 API 的库，不要开它们的网站去搜**（arXiv、PubMed、bioRxiv……）。
+**fastpaper 已经接了 API 的库，不要开它们的网站去搜**（arXiv、PubMed、Europe PMC……）。
 一次浏览器检索至少两次工具往返、每次带回一份快照，而 `fastpaper search` 是一条命令一段 JSON。
 
 **有标识符的论文交回 fastpaper。** 在这里找到的论文只要有 DOI / arXiv id / PMID，核验、

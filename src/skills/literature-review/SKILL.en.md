@@ -95,7 +95,7 @@ Reviews have a cutoff date, and nobody has organized what came after it for you.
 **C1 (parallel to A, does not wait)** — three entrances, none of them depending on citation chains:
 
 1. The topic terms the user gave, past two years
-2. Preprints `biorxiv` `medrxiv` `arxiv` — by definition they cannot be in any published review
+2. Preprints: `arxiv` and `europepmc '<topic> AND SRC:PPR'` (bioRxiv / medRxiv and the rest are all indexed by Europe PMC) — by definition they cannot be in any published review
 3. **Cross-discipline sources**: search `arxiv` for a biomedical topic too (`--field eess.SP` `cs.LG`), and search `pubmed` `europepmc` for a CS topic too. Measured effective — the same ECG topic finds 2025–2026 work on arxiv whose authors are signal-processing and machine-learning people citing the canon of their own side, and the citation network of the PubMed reviews contains none of them
 
 **C2 (after A/B)**:

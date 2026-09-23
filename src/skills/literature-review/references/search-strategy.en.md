@@ -140,8 +140,9 @@ Three entrances, none of them going through citation chains:
 fastpaper search pubmed "<the topic terms the user gave>" --after <this year minus 2>-01-01 -n 10
 
 # 2. Preprints — by definition they cannot appear in any published review
-fastpaper search biorxiv "<topic>" -n 8
-fastpaper search medrxiv "<topic>" -n 8
+#    no separate preprint source: bioRxiv / medRxiv are indexed by Europe PMC;
+#    add AND PUBLISHER:"bioRxiv" to narrow it to one of them
+fastpaper search europepmc '<topic> AND SRC:PPR' --after <this year minus 2>-01-01 -n 8
 
 # 3. Cross-discipline sources — a search inside this discipline never sees them
 fastpaper search arxiv "<topic>" --field eess.SP --after <this year minus 2>-01-01 -n 8
@@ -288,7 +289,8 @@ A review is the easiest thing to take as a trustworthy source and copy straight 
 | `openalex` | none | ✓ but **off topic** | citation chains (`cite`'s default DOI route) |
 | `crossref` | none | ✓ but **off topic** | completing bibliographic records |
 | `arxiv` | none | none | CS/physics preprints, use `--field` |
-| `biorxiv` `medrxiv` | none | none | biomedical preprints |
+| `ads` | none | ✓ **surest in astronomy** | astronomy and astrophysics; needs the NASA ADS key filled in settings first |
+| `europepmc 'SRC:PPR'` | `SRC:PPR` is the filter | ✓ (though preprints mostly have no citations yet) | biomedical preprints: bioRxiv / medRxiv and the rest, narrowed with `PUBLISHER:"bioRxiv"` |
 | `xueshu` | none | none | Chinese-language reviews, **serial and slow** |
 
 `fastpaper sources --capabilities` is live, so run it once if you are unsure.

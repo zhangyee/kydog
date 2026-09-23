@@ -71,7 +71,7 @@ format.
 ## Looking for Papers: Pick the Source, and the Tool Follows
 
 fastpaper and slowpaper have no primary and no fixed order; they hold different
-sources. Sources with an API live in **fastpaper** (the preinstalled CLI, 23 of them:
+sources. Sources with an API live in **fastpaper** (the preinstalled CLI, 26 of them:
 discipline databases and preprint servers, metadata indexes such as OpenAlex /
 Semantic Scholar / Crossref, and open-access aggregators). Sources without one live
 in **slowpaper** (the built-in browser): academic search engines (Google Scholar,

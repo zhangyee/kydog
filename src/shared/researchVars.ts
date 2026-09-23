@@ -11,7 +11,16 @@ export type PresetResearchVar = {
   note: string;
 };
 
-/** 预设项元数据的唯一真相。存储层只装值，不装这里的任何字段。 */
+/**
+ * 预设项元数据的唯一真相。存储层只装值，不装这里的任何字段。
+ *
+ * Hugging Face 的 `HF_TOKEN`（提高 huggingface 源的限额）**故意不在这里**：
+ * 它同时是 LLM provider `huggingface` 的 `envFallback`，因而落在
+ * `researchValidate.ts` 的 `RESERVED_ENV_NAMES` 里。从这一页写进去等于给
+ * 同一个环境变量开第二个真相来源，而在「模型与提供商」页完全看不见。
+ * huggingface 源匿名每 5 分钟 500 次，够用；要提额只能靠 KyDog 启动时
+ * 就已经在环境里的同名变量。
+ */
 export const PRESET_RESEARCH_VARS = [
   {
     name: 'NCBI_API_KEY',
@@ -40,6 +49,13 @@ export const PRESET_RESEARCH_VARS = [
     label: 'CORE',
     sources: 'core',
     note: '不填匿名请求基本被 429',
+  },
+  {
+    name: 'ADS_API_TOKEN',
+    kind: 'key',
+    label: 'NASA ADS',
+    sources: 'ads',
+    note: '必填。不填时 ads 直接退出、不发请求；每个 token 每天 5000 次',
   },
   {
     name: 'UNPAYWALL_EMAIL',

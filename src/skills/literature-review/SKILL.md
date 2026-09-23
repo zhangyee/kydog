@@ -95,7 +95,7 @@ fastpaper cite <综述的DOI> --direction outgoing -n 30
 **C1（与 A 并行，不等）**——三条入口，都不依赖引用链：
 
 1. 用户给的主题词，近两年
-2. 预印本 `biorxiv` `medrxiv` `arxiv` —— 按定义不可能进任何已发表的综述
+2. 预印本 `arxiv` 与 `europepmc '<主题> AND SRC:PPR'`（bioRxiv / medRxiv 等都由 Europe PMC 收）—— 按定义不可能进任何已发表的综述
 3. **跨学科源**：生医主题也去 `arxiv` 搜（`--field eess.SP` `cs.LG`），CS 主题也去 `pubmed` `europepmc` 搜。实测有效——同一个心电主题在 arxiv 上能搜到 2025–2026 年的工作，作者是信号处理和机器学习的人，引的是他们那边的正典，PubMed 综述的引用网里根本没有他们
 
 **C2（A/B 之后）**：

@@ -47,7 +47,7 @@ KyDog 不是编程智能体。用户在图形界面上看着你每一步，他�
 ## 找论文：先定源，工具跟着源走
 
 fastpaper 与 slowpaper 不分主次、不分先后，两边装的是不同的源。有 API 的源在 **fastpaper**
-（预装的 CLI，23 个：各学科数据库与预印本、OpenAlex / Semantic Scholar / Crossref 这类
+（预装的 CLI，26 个：各学科数据库与预印本、OpenAlex / Semantic Scholar / Crossref 这类
 元数据库、开放获取聚合库）；没有 API 的在 **slowpaper**（内置浏览器）：学术搜索引擎
 （Google Scholar、百度学术）、没有 API 的开放获取全文站、订阅库。
 

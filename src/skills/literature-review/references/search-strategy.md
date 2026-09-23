@@ -134,8 +134,9 @@ crossref 和 openalex 在按引用排序时，相关性权重被压过了，返�
 fastpaper search pubmed "<用户给的主题词>" --after <今年减2>-01-01 -n 10
 
 # 2. 预印本——按定义不可能出现在任何已发表的综述里
-fastpaper search biorxiv "<主题>" -n 8
-fastpaper search medrxiv "<主题>" -n 8
+#    生医预印本没有单独的源：bioRxiv / medRxiv 都由 Europe PMC 收录，
+#    只要其中一家就再加 AND PUBLISHER:"bioRxiv"
+fastpaper search europepmc '<主题> AND SRC:PPR' --after <今年减2>-01-01 -n 8
 
 # 3. 跨学科源——本学科的检索永远看不到他们
 fastpaper search arxiv "<主题>" --field eess.SP --after <今年减2>-01-01 -n 8
@@ -282,7 +283,8 @@ fastpaper search europepmc '<主题> AND PUB_YEAR:1800' -n 3     # 极端值，�
 | `openalex` | 无 | ✓ 但**跑题** | 引用链（`cite` 的默认 DOI 路由） |
 | `crossref` | 无 | ✓ 但**跑题** | 题录补全 |
 | `arxiv` | 无 | 无 | CS/物理预印本，用 `--field` |
-| `biorxiv` `medrxiv` | 无 | 无 | 生医预印本 |
+| `ads` | 无 | ✓ **天文领域最可靠** | 天文与天体物理，要先在设置里填 NASA ADS 密钥 |
+| `europepmc 'SRC:PPR'` | `SRC:PPR` 本身就是 | ✓（但预印本多半还没有引用） | 生医预印本：bioRxiv / medRxiv 等，`PUBLISHER:"bioRxiv"` 可再收窄 |
 | `xueshu` | 无 | 无 | 中文综述，**串行慢速** |
 
 `fastpaper sources --capabilities` 是活的，拿不准就跑一次。

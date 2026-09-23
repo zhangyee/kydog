@@ -37,8 +37,9 @@ Go by discipline, do not send every query at the same source:
 
 | Discipline | Primary | Supplementary |
 |---|---|---|
-| Biomedical / clinical | `pubmed` `europepmc` `pmc` | `medrxiv` `biorxiv` (preprints) |
-| CS / AI | `arxiv` `dblp` `semantic` | `openalex` |
+| Biomedical / clinical | `pubmed` `europepmc` `pmc` | `europepmc 'SRC:PPR'` (bioRxiv / medRxiv and other preprints) |
+| CS / AI | `arxiv` `dblp` `semantic` | `openalex`, `openreview` (submissions and decisions, rejected and withdrawn included) |
+| Astronomy / astrophysics | `ads` (needs the NASA ADS key filled in settings first) | `arxiv --field astro-ph`, `openalex` |
 | Interdisciplinary / unsure | `openalex` `crossref` `semantic` | `core` `doaj` |
 | Chinese-language literature | `xueshu` | serial and slow, do not hit it concurrently |
 
@@ -83,7 +84,8 @@ Dedicated search tactics:
 
 - **Negation phrases × subject terms**: `"no significant"` `"failed to replicate"` `"null result"` `"negative result"` `"no association"` `"did not improve"`. These work directly on sources that pass the query through as is, such as `pubmed` / `europepmc` / `crossref`
 - **Registered reports / preregistration**: `"registered report"` `"preregistered"` — such studies commit to publishing whatever the result, and their share of negative results is far higher than in ordinary literature
-- **Preprints**: `biorxiv` `medrxiv` have not been through journals' publication-bias sieve
+- **Preprints**: `europepmc '<topic> AND SRC:PPR'` (bioRxiv / medRxiv and the rest) have not been through journals' publication-bias sieve
+- **Rejected submissions** (machine learning): on `openreview`, a `venue` reading `Submitted to <conference>` means it was not accepted, and the share of "the method did not work" among those is far higher than in the published literature; accepted ones read like `ICLR 2025 Poster`. It is search-only — single records and PDFs sit behind a bot challenge
 - **Dig through limitations**: for those closest prior papers in box 6, `fastpaper read --section discussion` — authors often write in there "we tried X but were unable to …". This is the most reliable route to negative results
 - **Reverse citations**: `cite --direction incoming` to find those that cited a foundational paper yet reached the opposite conclusion
 

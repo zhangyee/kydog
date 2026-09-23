@@ -37,8 +37,9 @@
 
 | 学科 | 主选 | 补充 |
 |---|---|---|
-| 生医 / 临床 | `pubmed` `europepmc` `pmc` | `medrxiv` `biorxiv`（预印本） |
-| CS / AI | `arxiv` `dblp` `semantic` | `openalex` |
+| 生医 / 临床 | `pubmed` `europepmc` `pmc` | `europepmc 'SRC:PPR'`（bioRxiv / medRxiv 等预印本） |
+| CS / AI | `arxiv` `dblp` `semantic` | `openalex`、`openreview`（投稿与录用结果，被拒和撤稿的也在） |
+| 天文 / 天体物理 | `ads`（要先在设置里填 NASA ADS 密钥） | `arxiv --field astro-ph`、`openalex` |
 | 跨学科 / 找不准 | `openalex` `crossref` `semantic` | `core` `doaj` |
 | 中文文献 | `xueshu` | 串行慢速，别并发打 |
 
@@ -83,7 +84,8 @@
 
 - **否定词组 × 主题词**：`"no significant"` `"failed to replicate"` `"null result"` `"negative result"` `"no association"` `"did not improve"`。这些词在 `pubmed` / `europepmc` / `crossref` 这类原样透传 query 的源上直接可用
 - **注册报告 / 预注册**：`"registered report"` `"preregistered"` —— 这类研究承诺无论结果如何都发表，阴性结果比例远高于常规文献
-- **预印本**：`biorxiv` `medrxiv` 没过期刊的发表偏倚筛子
+- **预印本**：`europepmc '<主题> AND SRC:PPR'`（bioRxiv / medRxiv 等）没过期刊的发表偏倚筛子
+- **被拒的投稿**（机器学习方向）：`openreview` 的 `venue` 写着 `Submitted to <会议>` 就是没被录用，这批稿子里「方法没做出效果」的比例远高于已发表文献；录用的写成 `ICLR 2025 Poster` 这样。它只能检索，单篇和 PDF 都在反爬挑战后面
 - **翻 limitations**：第 6 箱那几篇最接近的前置论文，`fastpaper read --section discussion`，作者常在里面写"我们尝试了 X 但没能……"。这是找阴性结果最可靠的一条路
 - **反向引用**：`cite --direction incoming` 找引用了某篇奠基论文却得出相反结论的
 

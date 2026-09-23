@@ -33,7 +33,7 @@ KyDog follows Openclaw's workspace design and assembles the system prompt from t
 
 ## What can KyDog do?
 
-- **fastpaper: sources reached through APIs** — a command-line tool bundled with the app that searches, looks up metadata, traces citations, and downloads PDFs. It currently supports 23 sources: arXiv, PubMed, PMC, Europe PMC, bioRxiv, medRxiv, OSF Preprints, Semantic Scholar, OpenAlex, Crossref, DataCite, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, INSPIRE-HEP, zbMATH Open, ERIC, OSTI.GOV, NASA NTRS<sup>[note 1]</sup>.
+- **fastpaper: sources reached through APIs** — a command-line tool bundled with the app that searches, looks up metadata, traces citations, and downloads PDFs. It currently supports 26 sources: arXiv, PubMed, PMC, Europe PMC<sup>[note 2]</sup>, OSF Preprints, Semantic Scholar, OpenAlex, Crossref, DataCite, DBLP, CORE, OpenAIRE, DOAJ, HAL, Zenodo, Unpaywall, INSPIRE-HEP, zbMATH Open, ERIC, OSTI.GOV, NASA NTRS, Hugging Face Papers, OpenReview, J-STAGE, OAPEN, NASA ADS<sup>[note 1]</sup>.
 - **slowpaper: sources reached through the built-in browser** — the agent operates a browser built into the app to reach sources with no API. It currently supports 2 academic search engines (Google Scholar, Baidu Xueshu) and 9 open-access full-text sources (MDPI, Frontiers, PeerJ, ChemRxiv, SSRN, AGRIS, PubScholar, ChinaXiv, and the National Center for Philosophy and Social Sciences Documentation). When a CAPTCHA appears, the user solves it in the browser sidebar. For each tool's source list and what each source supports, see [Literature sources](docs/literature-sources.md) (in Chinese).
 - **Verifiable citations, with the harness constraining LLM hallucination** — fabricated references and misattributed claims are researchers' biggest concern about using LLMs for literature search and paper writing. KyDog constrains this at the harness level: every DOI written into a report is confirmed at its source, claims cite the original text, and anything that cannot be confirmed is left out.
 - **Research workflow skills** — covering four stages (research, study, write, review), invoked by slash command.
@@ -42,6 +42,8 @@ KyDog follows Openclaw's workspace design and assembles the system prompt from t
 - **Local-first** — a project is just a directory on your own disk; retrieved papers and generated reports are written there. Sessions and settings live in `~/.kydog/`, with credential files forced to `0600`. No account required; KyDog does not collect your files or conversations (conversations are sent to the model provider you configure).
 
 > **[note 1]** Google Scholar and Baidu Xueshu were dropped from fastpaper's source list in v0.3.1 after both platforms tightened API access. slowpaper now reaches them through the built-in browser (see the slowpaper item above).
+>
+> **[note 2]** bioRxiv and medRxiv are no longer separate sources: their API cannot search by keyword, so they are now searched through Europe PMC, which indexes nearly every preprint from both servers.
 
 ## Built-in skills
 

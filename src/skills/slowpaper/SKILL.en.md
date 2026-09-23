@@ -20,8 +20,8 @@ fastpaper and this skill have **no primary and no fixed order**; the two hold di
 Following AGENTS.md's "Looking for Papers", look at where this step's literature sits and what
 the step has to do — once the source is settled, so is the tool. These five land here:
 
-1. **Chinese journals, theses, domestic conferences** — fastpaper's current 23 sources include
-   no general Chinese source (`scholar` and `xueshu` were removed in the upstream sync that took
+1. **Chinese journals, theses, domestic conferences** — fastpaper's current 26 sources include
+   no Chinese journal source (`scholar` and `xueshu` were removed in the upstream sync that took
    it to 0.8.1); go to Baidu Xueshu
 2. **Cross-database recall** — theses and grey literature, the "all versions" cluster of one
    paper; go to Google Scholar
@@ -38,7 +38,7 @@ the step has to do — once the source is settled, so is the tool. These five la
 ### The browser does not do an API's job
 
 **Do not open the websites of databases fastpaper already reaches through an API**
-(arXiv, PubMed, bioRxiv…) to search them. One browser search costs at least two tool round
+(arXiv, PubMed, Europe PMC…) to search them. One browser search costs at least two tool round
 trips, each carrying a snapshot back, while `fastpaper search` is one command and one blob of JSON.
 
 **Hand papers with identifiers back to fastpaper.** Once a paper found here has a DOI /

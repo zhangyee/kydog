@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { PRESET_RESEARCH_VARS, PRESET_RESEARCH_VAR_NAMES } from './researchVars';
 
 describe('researchVars', () => {
-  it('6 个预设项，变量名唯一', () => {
-    expect(PRESET_RESEARCH_VARS).toHaveLength(6);
-    expect(PRESET_RESEARCH_VAR_NAMES.size).toBe(6);
+  it('7 个预设项，变量名唯一', () => {
+    expect(PRESET_RESEARCH_VARS).toHaveLength(7);
+    expect(PRESET_RESEARCH_VAR_NAMES.size).toBe(7);
   });
 
   it('每项都有非空 label / sources / note，kind 合法', () => {
@@ -17,12 +17,13 @@ describe('researchVars', () => {
     }
   });
 
-  it('6 个变量的顺序与 kind 都锁死', () => {
+  it('7 个变量的顺序与 kind 都锁死', () => {
     expect(PRESET_RESEARCH_VARS.map((v) => [v.name, v.kind])).toEqual([
       ['NCBI_API_KEY', 'key'],
       ['SEMANTIC_SCHOLAR_API_KEY', 'key'],
       ['OPENALEX_API_KEY', 'key'],
       ['CORE_API_KEY', 'key'],
+      ['ADS_API_TOKEN', 'key'],
       ['UNPAYWALL_EMAIL', 'email'],
       ['FASTPAPER_EMAIL', 'email'],
     ]);

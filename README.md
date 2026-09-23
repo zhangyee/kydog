@@ -33,7 +33,7 @@ KyDog 参考 Openclaw 的工作区设计，用三个文件组成系统提示词�
 
 ## KyDog 能干什么？
 
-- **fastpaper：通过 API 访问的源** —— 随应用打包的命令行工具，可以检索、查询元数据、追溯引用关系、下载 PDF。目前支持 23 个源：arXiv、PubMed、PMC、Europe PMC、bioRxiv、medRxiv、OSF Preprints、Semantic Scholar、OpenAlex、Crossref、DataCite、DBLP、CORE、OpenAIRE、DOAJ、HAL、Zenodo、Unpaywall、INSPIRE-HEP、zbMATH Open、ERIC、OSTI.GOV、NASA NTRS<sup>[注 1]</sup>。
+- **fastpaper：通过 API 访问的源** —— 随应用打包的命令行工具，可以检索、查询元数据、追溯引用关系、下载 PDF。目前支持 26 个源：arXiv、PubMed、PMC、Europe PMC<sup>[注 2]</sup>、OSF Preprints、Semantic Scholar、OpenAlex、Crossref、DataCite、DBLP、CORE、OpenAIRE、DOAJ、HAL、Zenodo、Unpaywall、INSPIRE-HEP、zbMATH Open、ERIC、OSTI.GOV、NASA NTRS、Hugging Face Papers、OpenReview、J-STAGE、OAPEN、NASA ADS<sup>[注 1]</sup>。
 - **slowpaper：通过内置浏览器访问的源** —— 智能体在应用内置浏览器中操作，访问没有 API 的源。目前支持 2 个学术搜索引擎（Google Scholar、百度学术）和 9 个开放获取全文源（MDPI、Frontiers、PeerJ、ChemRxiv、SSRN、AGRIS、PubScholar、ChinaXiv、国家哲学社会科学文献中心）。遇到验证码时，由用户在浏览器侧栏中完成验证。两个工具的源清单与各源能力见[文献源说明](docs/literature-sources.md)。
 - **引文可核验，用 harness 约束 LLM 幻觉** —— 编造文献、错误归因，是研究者对 LLM 用于文献检索与论文写作最大的顾虑。KyDog 在 harness 层约束这一点：写入报告的 DOI 都经过回源确认，论断标注原文出处，无法确认的内容不写入。
 - **研究工作流 skill** —— 覆盖研究、学习、写作、评审四个阶段，以斜杠命令调用。
@@ -42,6 +42,8 @@ KyDog 参考 Openclaw 的工作区设计，用三个文件组成系统提示词�
 - **本地优先** —— 项目就是你自己磁盘上的一个目录，检索到的论文和产出的报告都写在那里；会话与设置存在 `~/.kydog/`，凭据文件权限强制 `0600`。无需注册账号；KyDog 不收集你的文件与对话（对话内容会发送给你配置的模型服务商）。
 
 > **[注 1]** Google Scholar、百度学术因平台收紧 API 访问，自 v0.3.1 起从 fastpaper 的来源列表中移除，现在改由 slowpaper 在内置浏览器里访问（见上面 slowpaper 那一条）。
+>
+> **[注 2]** bioRxiv、medRxiv 不再是单独的源：它们的接口不支持按关键词检索，现在经 Europe PMC 检索（Europe PMC 收录了这两个服务器几乎全部预印本）。
 
 ## 内置 skill
 
