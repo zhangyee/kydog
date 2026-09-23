@@ -255,7 +255,7 @@ headings all follow」——**产物跟的是用户说话的语言，不是界�
    | `paper-summary` | 253 | 895 | 129 |
    | `peer-review` | 281 | 863 | 161 |
    | `research-ideation` | 227 | 770 | 254 |
-   | `fastpaper` | 304 | 454 | 570 |
+   | `fastpaper` | 418 | 688 | 336 |
 
    量法必须走生产代码那条路（`parseFrontmatter` + 长度校验），**不能用正则数**——
    无引号 plain scalar 里的半角 `: ` 会被 YAML 判成嵌套 mapping，正则看不出来。
