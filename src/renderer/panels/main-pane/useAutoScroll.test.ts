@@ -212,10 +212,13 @@ describe('createStickyScroll：scroll 事件还没到时先渲染了一次', () 
 describe('useAutoScroll：React 的时机接到状态机上', () => {
   type P = { tail: number; threadId: string };
 
+  /** 最近一次渲染里 hook 返回的东西（按钮靠它决定在不在场、点了调谁）。 */
+  let last: { following: boolean; jumpToBottom: () => void };
+
   function mountHook(s: ReturnType<typeof scroller>, props: P) {
     const ref = { current: s.el as unknown as HTMLElement };
     function Harness({ tail, threadId }: P) {
-      useAutoScroll(ref, tail, threadId);
+      last = useAutoScroll(ref, tail, threadId);
       return null;
     }
     return mount(Harness, props);
@@ -272,6 +275,69 @@ describe('useAutoScroll：React 的时机接到状态机上', () => {
     s.grow(300);
     m.rerender({ tail: 1, threadId: 't1' });
     expect(s.el.scrollTop).toBe(0);
+  });
+
+  it('滚动容器晚一点才出现（新对话先是空状态）：它一出现就挂上监听，翻走照样认', () => {
+    // 回归点：监听原来只在挂载时挂一次，而新建对话那一刻列表还不在（空状态），
+    // 于是那次 effect 空跑、再也不回来——用户之后怎么翻，状态机都不知道，按钮永远不出现。
+    const s = scroller({ scrollHeight: 2000, clientHeight: 400 });
+    const ref: { current: HTMLElement | null } = { current: null };
+    function Harness({ tail, threadId }: P) {
+      last = useAutoScroll(ref as { current: HTMLElement | null }, tail, threadId);
+      return null;
+    }
+    const m = mount(Harness, { tail: 1, threadId: 't1' });
+    expect(s.listeners()).toBe(0);          // 容器还不在，没什么可挂的
+
+    ref.current = s.el as unknown as HTMLElement;
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(s.listeners()).toBe(1);          // 一出现就挂上，且只挂一次
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(s.listeners()).toBe(1);
+
+    readAway(s);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(last.following).toBe(false);     // 监听真的在工作
+  });
+
+  it('返回的 following 跟着状态机走：贴底 true、翻走 false、跳底之后回到 true', () => {
+    const s = scroller({ scrollHeight: 2000, clientHeight: 400 });
+    const m = mountHook(s, { tail: 1, threadId: 't1' });
+    expect(last.following).toBe(true);
+
+    // 翻走：scroll 事件落地之后，下一次渲染读到的就是 false（按钮据此出现）
+    readAway(s);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(last.following).toBe(false);
+
+    // 只是内容又长高、用户没动：仍然不跟随，following 保持 false
+    s.grow(300);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(last.following).toBe(false);
+
+    // 用户自己滚回底部（scroll 事件）：不用点按钮也恢复跟随
+    s.userScrollTo(s.el.scrollHeight - s.el.clientHeight);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(last.following).toBe(true);
+  });
+
+  it('返回的 jumpToBottom：翻走状态下调它 → 跳底、following 回到 true、之后继续跟随', () => {
+    const s = scroller({ scrollHeight: 2000, clientHeight: 400 });
+    const m = mountHook(s, { tail: 1, threadId: 't1' });
+    readAway(s);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(last.following).toBe(false);
+    expect(s.el.scrollTop).toBe(0);
+
+    last.jumpToBottom();
+    expect(s.away()).toBe(0);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(last.following).toBe(true);
+
+    // 恢复跟随之后，内容再长高就跟到底（证明它恢复的是状态机本身，不只是那个布尔量）
+    s.grow(300);
+    m.rerender({ tail: 1, threadId: 't1' });
+    expect(s.away()).toBe(0);
   });
 
   it('换 thread → free-read 里也跳底', () => {

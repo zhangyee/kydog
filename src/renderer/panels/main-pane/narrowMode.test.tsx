@@ -37,8 +37,9 @@ vi.mock('react', async (importOriginal) => {
 });
 
 // useAutoScroll 挂在 scrollRef 上的 effect 需要真实 DOM 的 addEventListener，
-// miniReact 的假元素没有这个方法。这份用例不测滚动行为，整个换成 no-op。
-vi.mock('./useAutoScroll', () => ({ useAutoScroll: () => {} }));
+// miniReact 的假元素没有这个方法。这份用例不测滚动行为，整个换成 no-op；返回值要给全，
+// ThreadView 会解构它（following 决定「跳到最新」按钮在不在场，这里一律当作贴底 = 不在场）。
+vi.mock('./useAutoScroll', () => ({ useAutoScroll: () => ({ following: true, jumpToBottom: () => {} }) }));
 
 // 下面几个 store 都是同一套替身：**只把 React 订阅那一层换成直读**，
 // getState / setState / subscribe 全用真身——`beforeEach` 里 setState 摆的
@@ -189,7 +190,7 @@ describe('MessageList：正文左右边距跟着窄模式收窄', () => {
   function messageListPadding(browserOpen: boolean): string {
     useUiStore.setState({ browserOpen });
     useThreadsStore.setState({ historyByThread: { t1: [] } });
-    const m = mount(MessageList, { threadId: 't1' });
+    const m = mount(MessageList, { threadId: 't1', scrollRef: { current: null } });
     const outer = findByTestId(m.tree, 'message-list');
     const inner = outer.props.children as { props: { style: { padding: string } } };
     return inner.props.style.padding;

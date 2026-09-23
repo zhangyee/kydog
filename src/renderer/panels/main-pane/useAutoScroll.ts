@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 
 export const STICKY_THRESHOLD_PX = 64;
@@ -69,41 +69,90 @@ export function createStickyScroll() {
 
 export type StickyScroll = ReturnType<typeof createStickyScroll>;
 
+export type AutoScroll = {
+  /** 现在是否跟随最新。false = 用户翻上去了，新内容不会把他拽回来。 */
+  following: boolean;
+  /** 跳到最新并恢复跟随（输入框上方那颗箭头按的就是它）。 */
+  jumpToBottom: () => void;
+};
+
+/**
+ * @param jumpSignal 变化一次就**无条件**跳底一次。今天只数「用户自己发出的消息」——
+ *   按了发送就该看到它落在最新。**助手的输出不进这个数**：它靠 `afterRender` 跟随，
+ *   贴着底时照样跟，翻走了就一动不动。以前这里连 assistant 的 text block 一起数，于是
+ *   skill 跑长活时每落一段新文字就把正在往回翻的人弹到底部。
+ */
 export function useAutoScroll(
   scrollRef: RefObject<HTMLElement | null>,
-  tailSignal: number,
+  jumpSignal: number,
   threadId: string,
-): void {
+): AutoScroll {
   // 惰性初始化，只建一次：之后每次渲染拿到的都是同一个实例
   const [sticky] = useState(createStickyScroll);
+  // 状态机的判定在 React 之外，按钮要按它显示/隐藏，所以每次改完同步一份进来。
+  // 值没变时 setState 会被 React 直接丢掉，不会多一次渲染（afterRender 每渲染都跑，
+  // 靠的就是这一点，不然就是自激）。
+  const [following, setFollowing] = useState(true);
+  const sync = useCallback(() => { setFollowing(sticky.sticky); }, [sticky]);
 
-  // 监听用户/程序滚动：每次滚动后从位置反推 sticky
+  /** 当前挂着 scroll 监听的那个元素，以及挂上去的那个函数。 */
+  const listening = useRef<{ el: HTMLElement; onScroll: () => void } | null>(null);
+
+  // 每次渲染后：先确认监听挂在**现在**这个滚动容器上，再跟随（无 deps useEffect 每次渲染都跑）。
+  //
+  // **监听不能只在挂载时挂一次**：滚动容器不一定那时就在。新建的对话先渲染的是空状态，
+  // 消息列表要等第一条消息才出现 —— 挂载时 `scrollRef.current` 是 null，一个只跑一次的
+  // effect 就此再也不会回来，之后用户怎么翻都没人告诉状态机，「跳到最新」那颗按钮永远不出现
+  // （2026-09-23 实测，e2e 27-composer 那条用例逮到的就是它）。
+  // 判据同状态机那套：拿「记着的」和「现在的」比 —— 不一样就重挂。
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => sticky.onScroll(el);
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
-  }, [scrollRef, sticky]);
-
-  // 每次渲染后：若 sticky 则跟随到底（无 deps useEffect 每次渲染都跑）
-  useEffect(() => {
-    const el = scrollRef.current;
+    const prev = listening.current;
+    if (prev?.el !== el) {
+      if (prev) prev.el.removeEventListener('scroll', prev.onScroll);
+      if (el) {
+        const onScroll = () => { sticky.onScroll(el); sync(); };
+        el.addEventListener('scroll', onScroll, { passive: true });
+        listening.current = { el, onScroll };
+      } else {
+        listening.current = null;
+      }
+    }
     if (!el) return;
     sticky.afterRender(el);
+    sync();
   });
 
-  // tailSignal 变化（新 text block / 新 user message）→ 强制跳底
+  // 卸载时摘掉监听。挂/摘不在同一个 effect 里：上面那个每次渲染都跑，把 cleanup 写在它身上
+  // 等于每渲染一次就摘一次挂一次。
+  useEffect(() => () => {
+    const prev = listening.current;
+    if (prev) prev.el.removeEventListener('scroll', prev.onScroll);
+    listening.current = null;
+  }, []);
+
+  // jumpSignal 变化（用户发出新消息）→ 强制跳底
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     sticky.jumpToBottom(el);
-  }, [tailSignal, scrollRef, sticky]);
+    sync();
+  }, [jumpSignal, scrollRef, sticky, sync]);
 
   // threadId 变化 → 强制跳底（MainPane 不给 ThreadView 加 key，组件不会重挂）
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     sticky.jumpToBottom(el);
-  }, [threadId, scrollRef, sticky]);
+    sync();
+  }, [threadId, scrollRef, sticky, sync]);
+
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    sticky.jumpToBottom(el);
+    sync();
+  }, [scrollRef, sticky, sync]);
+
+  return { following, jumpToBottom };
 }

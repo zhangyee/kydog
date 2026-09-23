@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import type { RefObject } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useIdentityStore } from '../../stores/identityStore';
@@ -8,9 +8,12 @@ import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
 import { StreamingIndicator } from './StreamingIndicator';
-import { useAutoScroll } from './useAutoScroll';
 
-export function MessageList({ threadId }: { threadId: string }) {
+/**
+ * @param scrollRef 滚动容器。**由 `ThreadView` 拿着**：跟随状态要同时喂给它上方的
+ *   「跳到最新」按钮，而那颗按钮浮在输入框上，不在这棵树里。
+ */
+export function MessageList({ threadId, scrollRef }: { threadId: string; scrollRef: RefObject<HTMLDivElement | null> }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
@@ -25,25 +28,6 @@ export function MessageList({ threadId }: { threadId: string }) {
   const projectPath = useThreadsStore((s) =>
     Object.values(s.threadsByProject).flat().find((t) => t.id === threadId)?.projectPath ?? null,
   );
-
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // tailSignal：thread 内所有 assistant text block 总数 + user message 总数
-  // 新 text block 落地 → +1（override 跳底）；user message 发送 → +1（override 跳底）
-  // 已有 text block 上追加 delta 不变（runsStore 就地拼接，不新建 block）
-  const tailSignal = useMemo(() => {
-    let n = 0;
-    for (const m of messages) {
-      if (m.role === 'user') n += 1;
-      else for (const b of m.blocks) if (b.kind === 'text') n += 1;
-    }
-    for (const [, buf] of liveBuffers) {
-      for (const b of buf.blocks) if (b.kind === 'text') n += 1;
-    }
-    return n;
-  }, [messages, liveBuffers]);
-
-  useAutoScroll(scrollRef, tailSignal, threadId);
 
   return (
     <div ref={scrollRef} className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="message-list">

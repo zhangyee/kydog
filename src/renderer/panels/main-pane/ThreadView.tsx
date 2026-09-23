@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MessageList } from './MessageList';
@@ -9,6 +9,8 @@ import { QuestionComposer } from './QuestionComposer';
 import { useAskStore } from '../../stores/askStore';
 import { ErrorMarginalia } from './ErrorMarginalia';
 import { ingestFiles } from './composerIngest';
+import { JumpToLatest } from './JumpToLatest';
+import { useAutoScroll } from './useAutoScroll';
 
 export function ThreadView({ threadId }: { threadId: string }) {
   const messages = useThreadsStore((s) => s.historyByThread[threadId]);
@@ -20,6 +22,14 @@ export function ThreadView({ threadId }: { threadId: string }) {
   // 失败连同 threadId 一起记：切走再切回来是另一条 thread 的事，不该继承上一条的错误。
   const [failure, setFailure] = useState<{ threadId: string; message: string } | null>(null);
   const error = failure?.threadId === threadId ? failure.message : null;
+
+  // 滚动容器与「是否跟随最新」都在这一层：MessageList 要用前者，输入框上那颗
+  // 「跳到最新」要用后者，两者是兄弟。
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // 跳底只由「用户自己发出的消息」触发（见 useAutoScroll 的 jumpSignal）。助手的输出
+  // 不在这个数里：贴着底时 afterRender 照样跟随，翻走了就不打扰。
+  const userTurns = useMemo(() => (messages ?? []).filter((m) => m.role === 'user').length, [messages]);
+  const { following, jumpToBottom } = useAutoScroll(scrollRef, userTurns, threadId);
 
   const [dragDepth, setDragDepth] = useState(0);
   // 只有普通输入框在场时接：提问卡片在场时没有托盘可放（spec §3.1）。
@@ -85,10 +95,14 @@ export function ThreadView({ threadId }: { threadId: string }) {
           <NewThreadEmptyState threadId={threadId} />
         ) : (
           <>
-            <MessageList threadId={threadId} />
-            {/* 整体替换而非叠加：模型 pill、发送按钮、slash 菜单一并消失，
-                提问期间不存在第二条输入路径。 */}
-            {askPending ? <QuestionComposer threadId={threadId} /> : <Composer threadId={threadId} />}
+            <MessageList threadId={threadId} scrollRef={scrollRef} />
+            <div className="shrink-0" style={{ position: 'relative' }}>
+              {/* 没贴底才出现：它自己在不在场就是「你不在最新处」这条信息。 */}
+              {!following && <JumpToLatest onClick={jumpToBottom} />}
+              {/* 整体替换而非叠加：模型 pill、发送按钮、slash 菜单一并消失，
+                  提问期间不存在第二条输入路径。 */}
+              {askPending ? <QuestionComposer threadId={threadId} /> : <Composer threadId={threadId} />}
+            </div>
           </>
         )}
       </div>

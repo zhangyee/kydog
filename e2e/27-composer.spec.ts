@@ -28,6 +28,9 @@ async function prompts(): Promise<Array<{ content: string; images: Array<{ mimeT
   return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
+/** 撑出可滚动高度用的长正文（120 行）。 */
+const LONG_BODY = Array.from({ length: 120 }, (_, i) => `第 ${i + 1} 行：占位正文`).join('\n');
+
 /** 剧本形状照 `ping`：agent_start → 一段文字 → agent_end。新增几条只是回复文字不同。 */
 const reply = (delta: string): FixtureEvent[] => [
   { after_ms: 0, type: 'agent_start' },
@@ -68,6 +71,18 @@ test.beforeAll(async () => {
       '看看@zzz': reply('看过了'),
       '谢谢@所有人': reply('不客气'),
       '整理批注': reply('整理完了'),
+      // 跟随测试：先一段够长的正文（撑出可滚动高度），中间夹一个工具把后面的文字挤成**新的
+      // text block**（旧实现正是在这一刻跳底），再隔 2.5 秒把它吐出来 —— 留出翻到顶的时间。
+      '跟随测试': [
+        { after_ms: 0, type: 'agent_start' },
+        { after_ms: 0, type: 'message_start', messageId: 'm1' },
+        { after_ms: 10, type: 'text_delta', messageId: 'm1', delta: LONG_BODY },
+        { after_ms: 0, type: 'tool_start', toolCallId: 'f1', name: 'bash', command: 'true' },
+        { after_ms: 0, type: 'tool_end', toolCallId: 'f1', status: 'ok', exitCode: 0 },
+        { after_ms: 2500, type: 'text_delta', messageId: 'm1', delta: '\n\nTAIL_MARKER 后来的一段' },
+        { after_ms: 0, type: 'message_end', messageId: 'm1', toolCallIds: ['f1'] },
+        { after_ms: 0, type: 'agent_end', reason: 'completed' },
+      ],
     },
   };
   await fs.writeFile(fixture, JSON.stringify(script));
@@ -296,6 +311,41 @@ test('23/24-llm: Composer 显示默认模型；pill 里切到另一家只改这�
   await page.getByText('▸ OpenAI').click();
   await page.locator('text=gpt-4o').first().click();
   await expect(pill).toContainText('OpenAI · GPT-4o');
+});
+
+test('27-composer: 翻上去看历史时，新输出不再把人拽回底部；「跳到最新」按了才回去', async () => {
+  const { page } = launched;
+  await freshComposer(page);
+  await page.keyboard.type('跟随测试');
+  await page.keyboard.press('Enter');
+  const list = page.getByTestId('message-list');
+  const scrollTop = () => list.evaluate((el) => el.scrollTop);
+  const away = () => list.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+
+  // 第一段落地、内容真的撑出了可滚动高度（不然下面「翻上去」无从谈起）
+  await expect.poll(() => list.evaluate((el) => el.scrollHeight - el.clientHeight), { timeout: 10000 })
+    .toBeGreaterThan(400);
+  // 钉在底部再开始：正文是异步长高的（markdown 渲染完才到最终高度），跟随那一步可能落在
+  // 长高之前，位置未必就在底。这一条测的是「翻走之后」的行为，起点得先确定下来。
+  await list.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(away).toBeLessThan(64);
+  await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);   // 贴底时按钮不在
+
+  // 真的用滚轮往回翻（用户就是这么做的；程序赋值在位置本来就相同时连 scroll 事件都不发）
+  await list.hover();
+  await page.mouse.wheel(0, -1500);
+  await expect(page.getByTestId('jump-to-latest')).toBeVisible();
+  const parked = await scrollTop();
+  expect(parked, '滚轮真的把位置挪上去了').toBeLessThan(600);
+
+  // 后来的那一段（新的 text block）落地：位置一动不动 —— 这条就是「翻着翻着被弹回底部」的回归点
+  await expect(list).toContainText('TAIL_MARKER', { timeout: 10000 });
+  expect(await scrollTop(), '新输出不该动用户的位置').toBe(parked);
+
+  // 点按钮才回到最新，按钮随之消失
+  await page.getByTestId('jump-to-latest').click();
+  await expect.poll(away).toBeLessThan(64);
+  await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
 });
 
 test('附件：粘贴截图 → 托盘 → 发送 → agent 收到图片块 → 历史里缩略图真的解码了', async () => {
