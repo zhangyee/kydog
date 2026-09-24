@@ -4,15 +4,15 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { launchKydog, seedProject, teardown, testIdSelector, type LaunchedApp } from './helpers';
 import { buildPagedPdf } from './fixtures/textPdf';
-import { ZOOM_SENSITIVITY } from '../src/renderer/panels/main-pane/pdf/zoomSensitivity';
+import { wheelZoomSensitivity } from '../src/renderer/panels/main-pane/pdf/pdfPointerInteraction';
 // splitPane.ts 整个文件都是纯算（两个常量 + 三个纯函数，无 import），所以连函数一起拿过来用：
 // 拖分隔线那条用例要断的是「DOM 与这两个纯函数逐像素一致」，照抄一份公式到测试里等于把被测的
 // 算法抄了两遍，抄错了两边一起错。
 import { clampSplit, DIVIDER_PX, paneWidths } from '../src/renderer/panels/main-pane/pdf/splitPane';
-// contrast() 是纯函数（luminance 算术，见文件内注释），不依赖 DOM——同 ZOOM_SENSITIVITY /
+// contrast() 是纯函数（luminance 算术，见文件内注释），不依赖 DOM——同 wheelZoomSensitivity /
 // splitPane 一样可以直接从组件目录 import 到 Node 端的 e2e 文件，不会拖入 react-pdf /
 // pdf.js worker 的副作用
-// （那两个文件都没有其他 import；inkForBackground.ts 只 import 了 pageBackground.ts 的一个类型）。
+// （这些文件没有运行时外部依赖；inkForBackground.ts 只 import 了 pageBackground.ts 的一个类型）。
 import { contrast } from '../src/renderer/panels/main-pane/pdf/inkForBackground';
 import type { RGB } from '../src/renderer/panels/main-pane/pdf/pageBackground';
 // 同上，纯函数直接从组件目录 import。LEAD 用来把「块 div 与块矩形同坐标系」那条断言的期望值
@@ -357,11 +357,11 @@ async function stableLayerZoom(page: Page, paneSel: string): Promise<number | nu
 
 /**
  * 发一次 ctrl+wheel 把缩放捏到 `toPct`%。deltaY 按 onWheel 里那个乘法公式
- * （`targetScale.current * (1 - deltaY * ZOOM_SENSITIVITY)`）从当前读数反推，
- * ZOOM_SENSITIVITY 从 zoomSensitivity.ts import，不照抄字面量。
+ * （`targetScale.current * (1 - deltaY * wheelZoomSensitivity(platform))`）从当前读数反推。
  */
 async function pinchTo(page: Page, pdfPath: string, fromPct: number, toPct: number) {
-  const deltaY = (1 - toPct / fromPct) / ZOOM_SENSITIVITY;
+  const platform = await page.evaluate(() => window.kydog.platform);
+  const deltaY = (1 - toPct / fromPct) / wheelZoomSensitivity(platform);
   await page.evaluate(({ sel, deltaY }) => {
     const el = document.querySelector(sel) as HTMLElement;
     const r = el.getBoundingClientRect();
@@ -1012,7 +1012,8 @@ async function pinchOnPane(
   page: Page, paneSel: string, which: 'left' | 'right',
   fromPct: number, toPct: number, fx: number, fy: number,
 ) {
-  const deltaY = (1 - toPct / fromPct) / ZOOM_SENSITIVITY;
+  const platform = await page.evaluate(() => window.kydog.platform);
+  const deltaY = (1 - toPct / fromPct) / wheelZoomSensitivity(platform);
   await page.evaluate(({ sel, which, deltaY, fx, fy }) => {
     const el = document.querySelector(`${sel} [data-pdf-pane="${which}"]`) as HTMLElement;
     const r = el.getBoundingClientRect();

@@ -31,7 +31,7 @@ import { mostVisiblePage } from './pageReadout';
 import { unitLayout, PAGE_GAP, PAGE_PAD, type PageSize } from './pageLayout';
 import { computeWindow, sameWindow, type WindowResult } from './pageWindow';
 import { createPageLifecycle, type Cleanable, type PageLifecycle } from './pageLifecycle';
-import { ZOOM_SENSITIVITY } from './zoomSensitivity';
+import { canStartPan, wheelZoomFactor } from './pdfPointerInteraction';
 
 // pdf.js worker —— Vite 的 new URL 资产模式在 dev(http) 与 packaged(file://) 下均能解析
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -1240,7 +1240,7 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       // wheel 事件会把累积器推到远离区间的地方，反向捏合要先「绕回来」才看得见变化。
       targetScale.current = Math.min(
         MAX_SCALE,
-        Math.max(MIN_SCALE, targetScale.current * (1 - e.deltaY * ZOOM_SENSITIVITY)),
+        Math.max(MIN_SCALE, targetScale.current * wheelZoomFactor(e.deltaY, window.kydog.platform)),
       );
       // 手势中：每帧更新一次 CSS zoom，瞬时无闪
       if (rafRef.current == null) {
@@ -1260,6 +1260,53 @@ export function PdfFileTab({ tab }: { tab: FileTab }) {
       // commitTimer / promoteTimer 的清理不在这里——见 scheduleCommit 下面那个不设门的 effect。
     };
   }, [tab.status, requestScale, scheduleRecompute]);
+
+  useEffect(() => {
+    if (tab.status !== 'ready') return;
+    const panes = [scrollRef.current, rightRef.current].filter((pane): pane is HTMLDivElement => !!pane);
+    const cleanups = panes.map((pane) => {
+      let start: { pointerId: number; x: number; y: number } | null = null;
+      const onDown = (e: PointerEvent) => {
+        const target = e.target as Element;
+        const tool = usePdfAnnotationStore.getState().buckets[tab.id]?.tool ?? 'select';
+        const interactive = !!target.closest('button, textarea, input, [data-annotation-id], [data-testid^="pdf-thumb-"]');
+        if (!canStartPan(window.kydog.platform, e.pointerType, e.button, tool,
+          pane.scrollWidth, pane.clientWidth, visualScaleRef.current > 1, interactive)) return;
+        e.preventDefault();
+        pane.setPointerCapture(e.pointerId);
+        start = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+        pane.style.cursor = 'grabbing';
+        pane.style.userSelect = 'none';
+      };
+      const onMove = (e: PointerEvent) => {
+        if (!start || e.pointerId !== start.pointerId) return;
+        pane.scrollLeft -= e.clientX - start.x;
+        pane.scrollTop -= e.clientY - start.y;
+        start.x = e.clientX;
+        start.y = e.clientY;
+      };
+      const onEnd = (e: PointerEvent) => {
+        if (!start || e.pointerId !== start.pointerId) return;
+        if (pane.hasPointerCapture(e.pointerId)) pane.releasePointerCapture(e.pointerId);
+        start = null;
+        pane.style.cursor = '';
+        pane.style.userSelect = '';
+      };
+      pane.addEventListener('pointerdown', onDown);
+      pane.addEventListener('pointermove', onMove);
+      pane.addEventListener('pointerup', onEnd);
+      pane.addEventListener('pointercancel', onEnd);
+      return () => {
+        pane.removeEventListener('pointerdown', onDown);
+        pane.removeEventListener('pointermove', onMove);
+        pane.removeEventListener('pointerup', onEnd);
+        pane.removeEventListener('pointercancel', onEnd);
+        pane.style.cursor = '';
+        pane.style.userSelect = '';
+      };
+    });
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [tab.id, tab.status, dual]);
 
   /**
    * 两栏滚动同步（spec v8 §3.1）。回声锁与「同值不写」在 scrollSync.ts，这里只负责把两个真
