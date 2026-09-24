@@ -67,8 +67,10 @@ function waitUntil(root: HTMLElement, ready: () => boolean): Promise<void> {
 async function renderForPrint(p: MdPrintPayload): Promise<void> {
   if (p.pageNumbers) {
     const style = document.createElement('style');
+    // macOS CI 的 Chromium 页边距盒把 sans-serif 整段漏印（静态文字也没了）；
+    // 同一打印窗口里 serif 的静态文字、counter(page) 和破折号都已实测能印。
     style.textContent = '@page { @bottom-center { content: "— " counter(page) " —"; '
-      + 'font-size: 8px; font-family: sans-serif; color: #8a8a8a; } }';
+      + 'font: 8px serif; color: #8a8a8a; } }';
     document.head.append(style);
   }
   const html = document.documentElement;
