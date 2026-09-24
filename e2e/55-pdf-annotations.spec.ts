@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { launchKydog, seedSettings, seedProject, teardown, testIdSelector, type LaunchedApp } from './helpers';
 import { buildTextPdf } from './fixtures/textPdf';
+import { wheelZoomSensitivity } from '../src/renderer/panels/main-pane/pdf/pdfPointerInteraction';
 
 /**
  * PDF 标注：高亮落盘、撤销重做删除、文字注落盘与关 tab 重开、文字注挪位改宽、150% 缩放下坐标
@@ -250,7 +251,7 @@ test('55-pdf-annotations: 150% 缩放下坐标一致，顶替后标注仍在，�
   const stable = pane.locator('[data-pdf-layer="stable"]');
   await expect(stable).not.toHaveAttribute('data-pdf-promote-reason');
 
-  await pinch(page, pdfPath, -66.67);
+  await pinch(page, pdfPath, (1 - 1.5) / wheelZoomSensitivity(process.platform));
   await expect(pane.getByTestId('pdf-readout')).toContainText('150%');
   // 走条件顶替还是 PROMOTE_TIMEOUT 兜底这里不分（那是 56 的事），所以两个值都收；等待上限盖过
   // 4 s 的兜底计时器。

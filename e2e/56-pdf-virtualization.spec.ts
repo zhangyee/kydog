@@ -5,6 +5,7 @@ import { launchKydog, seedSettings, seedProject, teardown, testIdSelector, type 
 import { buildPagedPdf } from './fixtures/textPdf';
 import { COLUMN_BUDGET_PX } from '../src/renderer/panels/main-pane/pdf/pageWindow';
 import { PAGE_GAP, PAGE_PAD } from '../src/renderer/panels/main-pane/pdf/pageLayout';
+import { wheelZoomSensitivity } from '../src/renderer/panels/main-pane/pdf/pdfPointerInteraction';
 
 // 这套用例专用的 fixture 尺寸：4800 × 500 pt。55 那份 300 × 400 的两行正文撑不起来——
 // - 页面积 2.4e6 pt² 让像素预算 4.8e7 反解出的栅格上界 sqrt(4.8e7 / 2.4e6) / dpr = 4.47 / dpr
@@ -86,16 +87,17 @@ async function openPdf(page: Page, pdfPath: string): Promise<Locator> {
 
 /** 在滚动视口上连打几发 ctrl+wheel，把 targetScale 顶到 MAX_SCALE（每发 ×2.5，三发就够）。 */
 async function pinchToMax(page: Page, pdfPath: string) {
-  await page.evaluate((sel) => {
+  const deltaY = (1 - 2.5) / wheelZoomSensitivity(process.platform);
+  await page.evaluate(({ sel, deltaY }) => {
     const el = document.querySelector(sel) as HTMLElement;
     const r = el.getBoundingClientRect();
     for (let i = 0; i < 3; i++) {
       el.dispatchEvent(new WheelEvent('wheel', {
-        ctrlKey: true, deltaY: -200,
+        ctrlKey: true, deltaY,
         clientX: r.left + 40, clientY: r.top + 40, bubbles: true, cancelable: true,
       }));
     }
-  }, testIdSelector(`pdf-scroll-${pdfPath}`));
+  }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), deltaY });
 }
 
 /**
@@ -103,14 +105,15 @@ async function pinchToMax(page: Page, pdfPath: string) {
  * 这是下面那条回归用例的判据，所以取样必须发生在帧与帧之间，不能等手势结束再看。
  */
 async function pinchFrameByFrame(page: Page, pdfPath: string, visiblePage: number, frames: number) {
-  return page.evaluate(async ({ sel, visiblePage, frames }) => {
+  const deltaY = (1 - 1.06) / wheelZoomSensitivity(process.platform);
+  return page.evaluate(async ({ sel, visiblePage, frames, deltaY }) => {
     const el = document.querySelector(sel) as HTMLElement;
     const r = el.getBoundingClientRect();
     const blank: number[] = [];
     const mounted: string[] = [];
     for (let i = 0; i < frames; i++) {
       el.dispatchEvent(new WheelEvent('wheel', {
-        ctrlKey: true, deltaY: -8, clientX: r.left + 40, clientY: r.top + 40, bubbles: true, cancelable: true,
+        ctrlKey: true, deltaY, clientX: r.left + 40, clientY: r.top + 40, bubbles: true, cancelable: true,
       }));
       await new Promise((res) => requestAnimationFrame(() => res(null)));
       // 在这个 tab 自己的滚动视口里找层：同一次启动里还开着别的 PDF tab（藏着的也挂在 DOM 里）。
@@ -120,7 +123,7 @@ async function pinchFrameByFrame(page: Page, pdfPath: string, visiblePage: numbe
         .map((e) => (e as HTMLElement).dataset.pdfPage).join(','));
     }
     return { blank, mounted };
-  }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), visiblePage, frames });
+  }, { sel: testIdSelector(`pdf-scroll-${pdfPath}`), visiblePage, frames, deltaY });
 }
 
 test('56-pdf-virtualization: 长文档只挂载窗口内的页，未挂载的行照样占住位置', async () => {
