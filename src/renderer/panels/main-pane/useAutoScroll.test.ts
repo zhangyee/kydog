@@ -46,7 +46,9 @@ describe('isNearBottom', () => {
 function scroller(opts: { scrollHeight: number; clientHeight: number }) {
   const listeners = new Set<() => void>();
   let top = 0;
+  const content = {} as Element;
   const el = {
+    firstElementChild: content,
     scrollHeight: opts.scrollHeight,
     clientHeight: opts.clientHeight,
     get scrollTop() { return top; },
@@ -56,6 +58,7 @@ function scroller(opts: { scrollHeight: number; clientHeight: number }) {
   };
   return {
     el,
+    content,
     /** 离底还有多远。0 = 贴底。 */
     away: () => el.scrollHeight - el.clientHeight - el.scrollTop,
     /** 内容长高（流式输出、工具输出展开……）。 */
@@ -247,6 +250,33 @@ describe('useAutoScroll：React 的时机接到状态机上', () => {
     s.grow(300);
     m.rerender({ tail: 1, threadId: 't1' });
     expect(s.el.scrollTop).toBe(0);
+  });
+
+  it('内容在子组件里长高、父组件没有重渲染：仍跟到底', () => {
+    const observed: Element[] = [];
+    let notifyResize: (() => void) | undefined;
+    class FakeResizeObserver {
+      constructor(private readonly callback: (entries: unknown[], observer: unknown) => void) {
+        notifyResize = () => this.callback([], this as unknown as ResizeObserver);
+      }
+      observe(target: Element) { observed.push(target); }
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    try {
+      const s = scroller({ scrollHeight: 2000, clientHeight: 400 });
+      const m = mountHook(s, { tail: 1, threadId: 't1' });
+      expect(s.away()).toBe(0);
+      expect(observed).toContain(s.content);
+
+      s.grow(300); // MessageList 自己更新；ThreadView 不重渲染
+      expect(s.away()).toBe(300);
+      notifyResize?.();
+      expect(s.away()).toBe(0);
+      m.unmount();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('tailSignal 变了（新 text block / 新 user message）→ free-read 里也跳底；只重渲染、tailSignal 没变就不跳', () => {

@@ -346,6 +346,16 @@ test('27-composer: 翻上去看历史时，新输出不再把人拽回底部；�
   await page.getByTestId('jump-to-latest').click();
   await expect.poll(away).toBeLessThan(64);
   await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+
+  // 内容子树独自长高（流式 buffer 正是这样更新 MessageList，ThreadView 不重渲染）：
+  // 不碰鼠标、不派 scroll，新内容也应当继续被跟到；按钮不应凭旧 following 状态消失。
+  await list.evaluate((el) => {
+    const spacer = document.createElement('div');
+    spacer.style.height = '300px';
+    el.firstElementChild?.append(spacer);
+  });
+  await expect.poll(away).toBeLessThan(64);
+  await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
 });
 
 test('附件：粘贴截图 → 托盘 → 发送 → agent 收到图片块 → 历史里缩略图真的解码了', async () => {

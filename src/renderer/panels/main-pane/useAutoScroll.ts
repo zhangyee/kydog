@@ -97,6 +97,8 @@ export function useAutoScroll(
 
   /** 当前挂着 scroll 监听的那个元素，以及挂上去的那个函数。 */
   const listening = useRef<{ el: HTMLElement; onScroll: () => void } | null>(null);
+  /** MessageList 可独自重渲染；盯它的内容高度，父层没渲染时也要兑现跟随。 */
+  const observing = useRef<{ el: HTMLElement; content: Element; observer: ResizeObserver } | null>(null);
 
   // 每次渲染后：先确认监听挂在**现在**这个滚动容器上，再跟随（无 deps useEffect 每次渲染都跑）。
   //
@@ -118,6 +120,21 @@ export function useAutoScroll(
         listening.current = null;
       }
     }
+    const content = el?.firstElementChild;
+    const previousObserver = observing.current;
+    if (previousObserver?.el !== el || previousObserver?.content !== content) {
+      previousObserver?.observer.disconnect();
+      observing.current = null;
+      if (el && content && typeof ResizeObserver !== 'undefined') {
+        const observer = new ResizeObserver(() => {
+          if (observing.current?.content !== content || scrollRef.current !== el) return;
+          sticky.afterRender(el);
+          sync();
+        });
+        observing.current = { el, content, observer };
+        observer.observe(content);
+      }
+    }
     if (!el) return;
     sticky.afterRender(el);
     sync();
@@ -129,6 +146,8 @@ export function useAutoScroll(
     const prev = listening.current;
     if (prev) prev.el.removeEventListener('scroll', prev.onScroll);
     listening.current = null;
+    observing.current?.observer.disconnect();
+    observing.current = null;
   }, []);
 
   // jumpSignal 变化（用户发出新消息）→ 强制跳底
