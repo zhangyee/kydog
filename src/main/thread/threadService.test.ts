@@ -51,6 +51,13 @@ describe('threadService.update modelOverride', () => {
     got = (await threadService.listAll()).find((x) => x.id === t.id)!;
     expect(got.modelOverride).toBeUndefined();
   });
+
+  it('同时新建多条对话时，索引保留每一条', async () => {
+    const created = await Promise.all(Array.from({ length: 12 }, () => threadService.create({ projectPath: '/x' })));
+    const ids = new Set((await threadService.listAll()).map((t) => t.id));
+    expect(ids.size).toBe(created.length);
+    for (const t of created) expect(ids.has(t.id)).toBe(true);
+  });
 });
 
 describe('threadService.update projectPath', () => {

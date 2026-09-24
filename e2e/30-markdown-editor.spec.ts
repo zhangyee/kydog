@@ -339,7 +339,9 @@ function shownPdf(pdfPath: string): Promise<{ pages: number; ratio: number } | n
 
 type ExportRecord = { defaultPaths: string[]; revealed: string[] };
 
-test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter / 窄 / 页码关；PDF 标签开着时重导出，「打开」看到新的那份', async () => {
+// Playwright 要求第一个参数是解构的 fixture；这条用例使用 beforeAll 创建的 Electron。
+// eslint-disable-next-line no-empty-pattern
+test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter / 窄 / 页码关；PDF 标签开着时重导出，「打开」看到新的那份', async ({}, testInfo) => {
   const { page, app, kydogHome } = launched;
   const mdPath = at('export.md');
   const editor = await openMd('export.md');
@@ -415,6 +417,17 @@ test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter
   //   标准边距 1in = 72pt：正文从版心左缘起排（编辑区的 88px 内边距没清掉的话这里多出 66pt）
   expect(leftEdge(a4.pages[0])).toBeCloseTo(72, 0);
   // 5 页脚页码「— N —」
+  if (!/—\s*2\s*—/.test(a4.text)) {
+    // CI 上曾只缺整段页脚；把原件留在失败产物里，才能分清生成与文字提取哪一层出了问题。
+    await testInfo.attach('a4-export.pdf', { path: out1, contentType: 'application/pdf' });
+    await testInfo.attach('a4-footer-items.json', {
+      body: Buffer.from(JSON.stringify(a4.pages.map((p) => ({
+        height: p.height,
+        bottomItems: p.items.filter((item) => item.y < 72),
+      })), null, 2)),
+      contentType: 'application/json',
+    });
+  }
   expect(a4.text).toMatch(/—\s*2\s*—/);
   // 6 相对路径图片按 md 所在目录解析、画进了 PDF：这张 8×8（载不到时是坏图，不会画它）
   expect(a4.pages.flatMap((p) => p.images)).toContainEqual(expect.objectContaining({ width: 8, height: 8 }));
