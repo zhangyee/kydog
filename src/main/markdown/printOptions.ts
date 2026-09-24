@@ -11,10 +11,6 @@ import type { MdExportOptions } from '../../shared/mdExport';
  * printBackground 必须开：代码块的深底是背景色。
  * 不开 generateDocumentOutline / generateTaggedPDF：Yee 不要书签（§1.12）。
  */
-export const FOOTER_TEMPLATE = '<div style="width:100%;text-align:center;font-size:8px;color:#8a8a8a;'
-  + 'font-family:-apple-system,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;">'
-  + '— <span class="pageNumber"></span> —</div>';
-
 /** 四边同一个边距（英寸）。printOptionsFor 与 printableWidthPx 都从这里取，两边不会各改各的。 */
 function marginInches(o: MdExportOptions): number {
   return o.margin === 'narrow' ? 0.5 : 1;
@@ -26,8 +22,9 @@ export function printOptionsFor(o: MdExportOptions): PrintToPDFOptions {
     pageSize: o.paper === 'letter' ? 'Letter' : 'A4',
     margins: { top: m, bottom: m, left: m, right: m },
     printBackground: true,
-    displayHeaderFooter: o.pageNumbers,
-    ...(o.pageNumbers ? { headerTemplate: '<span></span>', footerTemplate: FOOTER_TEMPLATE } : {}),
+    // CI 的 macOS Chromium 曾把 header/footer template 整段漏印（PDF 原件已核对）。
+    // 页码由打印页的 @page @bottom-center 生成；这里关掉内建模板，避免本机重复印。
+    displayHeaderFooter: false,
   };
 }
 

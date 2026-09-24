@@ -14,6 +14,7 @@ export type MdPrintPayload = {
   mdPath: string;
   title: string;
   readingFontSize: 'small' | 'medium' | 'large';
+  pageNumbers: boolean;
 };
 
 /**
@@ -64,6 +65,12 @@ function waitUntil(root: HTMLElement, ready: () => boolean): Promise<void> {
 }
 
 async function renderForPrint(p: MdPrintPayload): Promise<void> {
+  if (p.pageNumbers) {
+    const style = document.createElement('style');
+    style.textContent = '@page { @bottom-center { content: "— " counter(page) " —"; '
+      + 'font-size: 8px; font-family: sans-serif; color: #8a8a8a; } }';
+    document.head.append(style);
+  }
   const html = document.documentElement;
   html.setAttribute('data-theme', 'vellum');
   html.setAttribute('data-reading-size', p.readingFontSize);

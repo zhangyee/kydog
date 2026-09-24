@@ -124,6 +124,7 @@ async function doExport(args: ExportPdfArgs, generation: number): Promise<{ pdfP
     mdPath: args.mdPath,
     title: path.basename(args.mdPath).replace(/\.(md|markdown)$/i, ''),
     readingFontSize,
+    pageNumbers: args.options.pageNumbers,
   };
   const code = `window.__mdPrintReady.then(() => window.__mdPrint(${JSON.stringify(payload)}))`;
   let onGone!: (err: Error) => void;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { printOptionsFor, printableWidthPx, FOOTER_TEMPLATE } from './printOptions';
+import { printOptionsFor, printableWidthPx } from './printOptions';
 
 describe('printOptionsFor', () => {
   it('A4 / 标准 / 页码开', () => {
@@ -7,9 +7,7 @@ describe('printOptionsFor', () => {
       pageSize: 'A4',
       margins: { top: 1, bottom: 1, left: 1, right: 1 },
       printBackground: true,
-      displayHeaderFooter: true,
-      headerTemplate: '<span></span>',
-      footerTemplate: FOOTER_TEMPLATE,
+      displayHeaderFooter: false,
     });
   });
 
@@ -28,16 +26,11 @@ describe('printOptionsFor', () => {
     expect(printOptionsFor({ paper: 'a4', margin: 'standard', pageNumbers: false }).displayHeaderFooter).toBe(false);
   });
 
-  it('页脚是居中的「— 页码 —」', () => {
-    expect(FOOTER_TEMPLATE).toContain('— <span class="pageNumber"></span> —');
-    expect(FOOTER_TEMPLATE).toContain('text-align:center');
-  });
-
   it('不开书签（spec §1.12）：页码开 / 关两种的键集合逐个点名', () => {
     // 有的与没有的在同一个断言里：多出 generateDocumentOutline / generateTaggedPDF 会红，
     // 该有的键少了一个也会红 —— 不靠别的用例替它证明「这种读法抓得到多出来的键」
     expect(Object.keys(printOptionsFor({ paper: 'a4', margin: 'standard', pageNumbers: true })).sort())
-      .toEqual(['displayHeaderFooter', 'footerTemplate', 'headerTemplate', 'margins', 'pageSize', 'printBackground']);
+      .toEqual(['displayHeaderFooter', 'margins', 'pageSize', 'printBackground']);
     expect(Object.keys(printOptionsFor({ paper: 'letter', margin: 'narrow', pageNumbers: false })).sort())
       .toEqual(['displayHeaderFooter', 'margins', 'pageSize', 'printBackground']);
   });
