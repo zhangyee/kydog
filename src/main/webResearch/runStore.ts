@@ -1,44 +1,18 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { KydogError } from '../../shared/errors';
-import type { Discovery, Passage, ResearchAngle, ResearchBudget, ResearchUsage,
-  SearchAttempt, SearchEngineId, SourceExtraction } from '../../shared/webResearch';
+import type { Passage, ResearchRunIndex, ResearchSourceIndex, ResearchTaskStatus,
+  SourceExtraction } from '../../shared/webResearch';
 import { atomicWriteWith0600Async } from '../persist/atomicWrite';
 import * as paths from '../persist/paths';
 
-export type SourceStatus = 'queued' | 'fetching' | 'extracting' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
-export type SourceIndex = {
-  sourceId: string;
-  requestedUrl: string;
-  finalUrl?: string;
-  contentHash?: string;
-  completeness?: 'complete' | 'truncated' | 'unknown';
-  status: SourceStatus;
-  reason?: string;
-  discoveries: Discovery[];
-  receivedBytes?: number;
-  evidenceIds?: string[];
-  /** Another requested URL resolved to this source's exact final URL and body hash. */
-  aliasOf?: string;
-};
+export type SourceStatus = ResearchTaskStatus;
+export type SourceIndex = ResearchSourceIndex;
 export type SavedSource = SourceIndex & {
   passages: Passage[];
   extraction?: SourceExtraction;
 };
-export type ResearchRunRecord = {
-  researchRunId: string;
-  threadId: string;
-  originalQuestion: string;
-  createdAt: string;
-  updatedAt: string;
-  angles: ResearchAngle[];
-  enabledEngines: SearchEngineId[];
-  attempts: SearchAttempt[];
-  candidates: Array<{ requestedUrl: string; discoveries: Discovery[] }>;
-  budget: ResearchBudget;
-  usage: ResearchUsage;
-  sources: SourceIndex[];
-};
+export type ResearchRunRecord = ResearchRunIndex;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function validId(id: string): void {

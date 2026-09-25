@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { sinkFor } from './ipc/broadcaster';
 import { viewStateStore } from './ui/viewState';
@@ -8,6 +8,8 @@ import { TITLE_BAR_HEIGHT } from './windowChrome';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService, toRendererSettings } from './settings/settingsService';
 import { researchService } from './research/researchService';
+import { researchRunStore } from './webResearch/runStore';
+import { readEvidence } from './webResearch/evidenceReader';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
@@ -62,6 +64,15 @@ const localeSet = createLocaleSet({
 
 /** 已经挂过 destroyed 监听的窗口（`fs.setWatched` 用），每个窗口只挂一次。 */
 const watchSenders = new Set<number>();
+
+/** Research metadata is visible only to the main window currently showing its owning thread. */
+function assertResearchViewer(threadId: string, sender: WebContents): void {
+  const window = BrowserWindow.fromWebContents(sender);
+  const view = viewStateStore.get();
+  if (!window || view?.activeTab !== 'thread' || view.threadId !== threadId) {
+    throw new KydogError('research.not_found', 'Research run not found');
+  }
+}
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -120,6 +131,19 @@ export function registerAllHandlers(): void {
   registerHandler('settings.update', async (args) => toRendererSettings(await settingsService.update(args)));
   registerHandler('research.get', () => researchService.get());
   registerHandler('research.save', (args) => researchService.save(args));
+  registerHandler('webResearch.list', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return researchRunStore.listRuns(args.threadId);
+  });
+  registerHandler('webResearch.get', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return researchRunStore.loadRun(args.threadId, args.researchRunId);
+  });
+  registerHandler('webResearch.evidence', async (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    const run = await researchRunStore.loadRun(args.threadId, args.researchRunId);
+    return readEvidence(run, args.evidenceId, (record, sourceId) => researchRunStore.loadSource(record, sourceId));
+  });
 
   // ── 内置浏览器（侧栏那条路）──
   // 这九条与 agent 那三个工具动的是**同一个** browserService。跨路的并发由

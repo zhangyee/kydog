@@ -4,6 +4,7 @@ import { useThreadsStore } from './stores/threadsStore';
 import { useAskStore } from './stores/askStore';
 import { useUnreadStore } from './panels/workspace/unreadStore';
 import { useUiStore } from './stores/uiStore';
+import { useWebResearchStore } from './stores/webResearchStore';
 
 /**
  * 本轮的 buffer 还不存在就先建出来。
@@ -54,6 +55,11 @@ export function applyRunEvent(e: RunEvent): void {
   switch (e.topic) {
     case 'run.started': {
       useRunsStore.getState().setRun(e.payload.threadId, { status: 'running', runId: e.payload.runId });
+      useWebResearchStore.getState().setCurrentRun(e.payload.threadId, e.payload.runId);
+      return;
+    }
+    case 'run.research_progress': {
+      useWebResearchStore.getState().applyProgress(e.payload);
       return;
     }
     case 'run.thinking_delta': {
@@ -149,6 +155,7 @@ export function applyRunEvent(e: RunEvent): void {
       // 按 thread 整体清，不是按某个 messageId 清：上一轮没能 flush 掉的残留 buffer
       // 也一并扫走，重放之后这条 thread 手上只剩本轮的真实内容。
       useRunsStore.getState().dropBuffersForThread(p.threadId);
+      useWebResearchStore.getState().resync(p.threadId, p.runId);
       useRunsStore.getState().setRun(p.threadId, { status: 'running', runId: p.runId });
       return;
     }

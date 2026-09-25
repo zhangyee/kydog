@@ -16,6 +16,7 @@ import { resolveProviderDefault } from '../llm/resolveProvider';
 import { threadService } from '../thread/threadService';
 import type { Message, MessageImage, ProviderId } from '../../shared/types';
 import { IMAGE_UNSUPPORTED_TEXT } from '../../shared/userTurn';
+import type { Progress as ResearchProgress } from '../webResearch/researchRun';
 
 export type Bound = {
   session: AnySession;
@@ -28,6 +29,8 @@ export type Bound = {
   askOpened: Set<string>;
   /** tool_execution_end 不带 args，所以在被抑制的 start 上缓存下来。 */
   askArgs: Map<string, { toolName: string; args: unknown }>;
+  /** Tool calls whose research progress may enter this run's journal. */
+  researchToolCalls?: Set<string>;
   /**
    * 本轮 run 已经广播出去的 run.* 事件，按发出顺序。渲染进程重载后 buffer 全丢，
    * 这份 journal 是把它复原回来的唯一依据 —— 不能改成「重载后重新归一化 pi transcript」：
@@ -101,6 +104,14 @@ class AgentService {
     return this.runs.get(threadId) ?? { status: 'idle' };
   }
 
+  /** Bound/run/tool-call IDs are checked at the source of the journal entry. */
+  onResearchProgress(threadId: string, runId: string, toolCallId: string, progress: ResearchProgress): void {
+    const bound = this.sessions.get(threadId);
+    const messageId = bound?.activeMessageId;
+    if (!bound || bound.runId !== runId || !messageId || !bound.researchToolCalls?.has(toolCallId)) return;
+    emitRun(bound, 'run.research_progress', { ...progress, threadId, runId, messageId, toolCallId });
+  }
+
   async ensureSession(threadId: string, projectPath: string): Promise<Bound> {
     const existing = this.sessions.get(threadId);
     if (existing) {
@@ -172,6 +183,7 @@ class AgentService {
       activeMessageId: null,
       askOpened: new Set(),
       askArgs: new Map(),
+      researchToolCalls: new Set(),
       runJournal: [],
       runStartIndex: null,
       runId: null,
@@ -404,6 +416,7 @@ class AgentService {
           // pi 是先发 agent_start 再把 prompt 消息 push 进 transcript 的
           // （agent-loop.js 的 runAgentLoop），所以这里读到的长度正好是本轮第一条消息的下标。
           bound.runJournal = [];
+          bound.researchToolCalls?.clear();
           bound.runStartIndex = piMessagesOf(bound).length;
           emitRun(bound, 'run.started', { threadId, runId });
           return;
@@ -438,6 +451,7 @@ class AgentService {
             bound.askArgs.set(e.toolCallId, { toolName: e.toolName, args: e.args });
             return;
           }
+          if (e.toolName === 'web_research_collect') bound.researchToolCalls?.add(e.toolCallId);
           const command = typeof e.args?.command === 'string' ? e.args.command : JSON.stringify(e.args ?? {});
           const startMessageId = toolMessageId(bound, e.toolCallId);
           if (!startMessageId) return;
@@ -451,6 +465,7 @@ class AgentService {
           return;
         case 'tool_execution_end': {
           const e = evt as unknown as { toolCallId: string; toolName: string; isError: boolean; result: unknown };
+          if (e.toolName === 'web_research_collect') bound.researchToolCalls?.delete(e.toolCallId);
           const messageId = toolMessageId(bound, e.toolCallId);
           if (e.toolName === ASK_TOOL_NAME) {
             const cached = bound.askArgs.get(e.toolCallId);

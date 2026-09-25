@@ -57,6 +57,49 @@ export type SourceExtraction = {
   gaps: string[];
   reason?: string;
 };
+export type ResearchTaskStatus = 'queued' | 'fetching' | 'extracting' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export type ResearchSourceIndex = {
+  sourceId: string;
+  requestedUrl: string;
+  finalUrl?: string;
+  contentHash?: string;
+  completeness?: 'complete' | 'truncated' | 'unknown';
+  status: ResearchTaskStatus;
+  reason?: string;
+  discoveries: Discovery[];
+  receivedBytes?: number;
+  evidenceIds?: string[];
+  aliasOf?: string;
+};
+/** Safe for renderer and model-visible lists: passage text lives only in source files. */
+export type ResearchRunIndex = {
+  researchRunId: string;
+  threadId: string;
+  originalQuestion: string;
+  createdAt: string;
+  updatedAt: string;
+  angles: ResearchAngle[];
+  enabledEngines: SearchEngineId[];
+  attempts: SearchAttempt[];
+  candidates: Array<{ requestedUrl: string; discoveries: Discovery[] }>;
+  budget: ResearchBudget;
+  usage: ResearchUsage;
+  sources: ResearchSourceIndex[];
+};
+/** A single bounded passage opened explicitly by evidence ID. */
+export type ResearchEvidenceExcerpt = {
+  evidenceId: string;
+  sourceId: string;
+  finalUrl: string;
+  passageId: string;
+  heading?: string;
+  pageNumber?: number;
+  quote: string;
+  relation: Evidence['relation'];
+  verification: Evidence['verification'];
+  excerpt: string;
+  excerptTruncated: boolean;
+};
 export type Candidate = {
   requestedUrl: string;
   discoveries: Discovery[];
