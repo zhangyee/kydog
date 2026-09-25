@@ -22,6 +22,41 @@ export type Discovery = {
   snippet?: string;
   searchPageUrl: string;
 };
+/** Stable location within one saved source; source bytes stay outside the agent context. */
+export type Passage = {
+  passageId: string;
+  sourceId: string;
+  ordinal: number;
+  text: string;
+  heading?: string;
+  pageNumber?: number;
+};
+export type Evidence = {
+  evidenceId: string;
+  claimId: string;
+  sourceId: string;
+  passageId: string;
+  quote: string;
+  relation: 'supports' | 'contradicts' | 'context';
+  verification: 'grounded' | 'unverified';
+};
+export type ExtractedClaim = {
+  claimId: string;
+  sourceId: string;
+  statement: string;
+  relevantAngleIds: string[];
+  evidenceIds: string[];
+  verification: 'grounded' | 'unverified';
+};
+export type SourceExtraction = {
+  sourceId: string;
+  status: 'claims' | 'irrelevant' | 'incomplete' | 'failed';
+  claims: ExtractedClaim[];
+  evidence: Evidence[];
+  examinedPassageIds: string[];
+  gaps: string[];
+  reason?: string;
+};
 export type Candidate = {
   requestedUrl: string;
   discoveries: Discovery[];

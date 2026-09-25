@@ -1,0 +1,164 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DEFAULT_RESEARCH_BUDGET, ResearchBudgetMeter } from './budget';
+import { createResearchModelAdapter, extractSource, ModelPermitPool, type ModelAdapter, type ModelRequest } from './extractClaims';
+import type { Discovery, Passage, ResearchAngle } from '../../shared/webResearch';
+
+const angles: ResearchAngle[] = [
+  { id: 'a', label: '协议变化', query: 'v2 protocol', rationale: '确认新版本' },
+  { id: 'b', label: '迁移', query: 'v2 migration' },
+];
+const discoveries: Discovery[] = [
+  { attemptId: 'ddg', angleId: 'a', engineId: 'duckduckgo', query: 'v2 protocol',
+    resultUrl: 'https://docs.example/v2', searchPageUrl: 'https://duckduckgo.com/?q=v2', snippet: '新协议' },
+  { attemptId: 'bing', angleId: 'b', engineId: 'bing', query: 'v2 migration',
+    resultUrl: 'https://docs.example/v2', searchPageUrl: 'https://bing.com/search?q=v2', snippet: '迁移指南' },
+];
+const passages: Passage[] = [{ sourceId: 's1', passageId: 's1:p1', ordinal: 1, heading: 'V2', text: '新版要求 HTTPS。' }];
+const modelSnapshot = { providerId: 'anthropic', modelId: 'claude-x', runtimeRevision: 7 };
+const signal = () => new AbortController().signal;
+const meter = (maxModelCalls = 10) => new ResearchBudgetMeter({ ...DEFAULT_RESEARCH_BUDGET,
+  maxModelCalls, maxOutputTokensPerCall: 700, modelConcurrency: 2 });
+const reply = (text: string, stopReason = 'stop') => ({ text, stopReason });
+const claimReply = JSON.stringify({ status: 'claims', claims: [{ statement: '新版要求 HTTPS',
+  relevantAngleIds: ['a'], evidence: [{ passageId: 's1:p1', quote: '新版要求 HTTPS', relation: 'supports' }] }] });
+
+describe('extractSource', () => {
+  it('sends the original question, every discovery, and only this source passage to an isolated call', async () => {
+    const complete = vi.fn(async (_request: ModelRequest) => reply(claimReply));
+    const adapter: ModelAdapter = { currentRevision: () => 7, complete };
+    const result = await extractSource({ sourceId: 's1', question: 'v2 的安全协议是什么？', angles, discoveries,
+      passages, completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
+      permits: new ModelPermitPool(2), adapter });
+    expect(result.status).toBe('claims');
+    expect(result.claims[0].verification).toBe('grounded');
+    expect(result.evidence[0].passageId).toBe('s1:p1');
+    const sent = complete.mock.calls[0][0];
+    expect(sent.userText).toContain('v2 的安全协议是什么？');
+    expect(sent.userText).toContain('duckduckgo');
+    expect(sent.userText).toContain('bing');
+    expect(sent.userText).toContain('协议变化');
+    expect(sent.userText).toContain('迁移');
+    expect(sent.userText).toContain('新版要求 HTTPS。');
+    expect(sent.maxTokens).toBe(700);
+    expect(sent.signal).toBeDefined();
+    expect(JSON.stringify(result)).not.toContain('新版要求 HTTPS。');
+  });
+
+  it('never calls a truncated source irrelevant, even when the model says irrelevant', async () => {
+    const adapter: ModelAdapter = { currentRevision: () => 7,
+      complete: async () => reply('{"status":"irrelevant","claims":[]}') };
+    const common = { sourceId: 's1', question: 'Q', angles, discoveries, passages, modelSnapshot,
+      signal: signal(), permits: new ModelPermitPool(2), adapter };
+    const complete = await extractSource({ ...common, completeness: 'complete', budget: meter() });
+    expect(complete.status).toBe('irrelevant');
+    const truncated = await extractSource({ ...common, completeness: 'truncated', budget: meter() });
+    expect(truncated.status).toBe('incomplete');
+  });
+
+  it.each([
+    ['length', 'incomplete'], ['aborted', 'incomplete'], ['toolUse', 'failed'],
+  ])('handles stopReason %s as %s', async (stopReason, expected) => {
+    const adapter: ModelAdapter = { currentRevision: () => 7, complete: async () => reply(claimReply, stopReason) };
+    const result = await extractSource({ sourceId: 's1', question: 'Q', angles, discoveries, passages,
+      completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
+      permits: new ModelPermitPool(2), adapter });
+    expect(result.status).toBe(expected);
+    expect(result.claims).toHaveLength(0);
+  });
+
+  it('stops later blocks when the pinned runtime revision changes', async () => {
+    let revision = 7;
+    const complete = vi.fn(async () => { revision = 8; return reply('{"status":"irrelevant","claims":[]}'); });
+    const result = await extractSource({ sourceId: 's1', question: 'Q', angles, discoveries,
+      passages: [...passages, { sourceId: 's1', passageId: 's1:p2', ordinal: 2, text: '第二段' }],
+      completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
+      permits: new ModelPermitPool(2), adapter: { currentRevision: () => revision, complete }, maxCharsPerBlock: 10 });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('incomplete');
+    expect(result.reason).toBe('model_changed');
+  });
+
+  it('charges malformed reply retries against the call budget', async () => {
+    const complete = vi.fn().mockResolvedValueOnce(reply('not JSON')).mockResolvedValueOnce(reply(claimReply));
+    const budget = meter(1);
+    const result = await extractSource({ sourceId: 's1', question: 'Q', angles, discoveries, passages,
+      completeness: 'complete', modelSnapshot, budget, signal: signal(),
+      permits: new ModelPermitPool(2), adapter: { currentRevision: () => 7, complete } });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(budget.usage.modelCalls).toBe(1);
+    expect(result.status).toBe('incomplete');
+  });
+
+  it('marks an invented quote or omitted passage ID unverified without dropping the claim', async () => {
+    const output = JSON.stringify({ status: 'claims', claims: [
+      { statement: '离线同步', relevantAngleIds: ['a'],
+        evidence: [{ passageId: 's1:p1', quote: '支持离线同步', relation: 'supports' }] },
+      { statement: '版本默认加密', relevantAngleIds: ['a'],
+        evidence: [{ quote: '新版要求 HTTPS', relation: 'supports' }] },
+    ] });
+    const result = await extractSource({ sourceId: 's1', question: 'Q', angles, discoveries, passages,
+      completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
+      permits: new ModelPermitPool(2), adapter: { currentRevision: () => 7, complete: async () => reply(output) } });
+    expect(result.status).toBe('claims');
+    expect(result.claims.map((claim) => claim.verification)).toEqual(['unverified', 'unverified']);
+    expect(result.evidence.map((item) => item.verification)).toEqual(['unverified', 'unverified']);
+    expect(result.evidence[1].passageId).toBe('');
+  });
+
+  it('releases a model permit after failure', async () => {
+    const permits = new ModelPermitPool(1);
+    await expect(permits.run(signal(), async () => { throw new Error('failure'); })).rejects.toThrow('failure');
+    await expect(permits.run(signal(), async () => 'available')).resolves.toBe('available');
+  });
+
+  it('does not spend a model call or dispatch after cancellation while waiting for a permit', async () => {
+    const permits = new ModelPermitPool(1);
+    let release!: () => void;
+    const holder = permits.run(signal(), () => new Promise<void>((resolve) => { release = resolve; }));
+    await Promise.resolve(); // let the holder acquire before the second call queues
+    const controller = new AbortController();
+    const budget = meter();
+    const complete = vi.fn(async () => reply(claimReply));
+    const pending = extractSource({ sourceId: 's1', question: 'Q', angles, discoveries, passages,
+      completeness: 'complete', modelSnapshot, budget, signal: controller.signal, permits,
+      adapter: { currentRevision: () => 7, complete } });
+    controller.abort();
+    release();
+    await holder;
+    const result = await pending;
+    expect(result.status).toBe('incomplete');
+    expect(budget.usage.modelCalls).toBe(0);
+    expect(complete).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe('research model fixture', () => {
+  const originalE2e = process.env.KYDOG_E2E;
+  const originalFixture = process.env.KYDOG_WEB_RESEARCH_FIXTURE;
+  let fixtureDir: string | undefined;
+  afterEach(() => {
+    if (originalE2e === undefined) delete process.env.KYDOG_E2E; else process.env.KYDOG_E2E = originalE2e;
+    if (originalFixture === undefined) delete process.env.KYDOG_WEB_RESEARCH_FIXTURE;
+    else process.env.KYDOG_WEB_RESEARCH_FIXTURE = originalFixture;
+    if (fixtureDir) rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it('uses ordered replies only in e2e and errors when exhausted', async () => {
+    fixtureDir = mkdtempSync(path.join(tmpdir(), 'kydog-web-research-'));
+    const fixturePath = path.join(fixtureDir, 'replies.json');
+    writeFileSync(fixturePath, JSON.stringify([{ text: claimReply, stopReason: 'stop' }]));
+    process.env.KYDOG_E2E = '1';
+    process.env.KYDOG_WEB_RESEARCH_FIXTURE = fixturePath;
+    const adapter = createResearchModelAdapter();
+    const request = { modelSnapshot, systemPrompt: 'system', userText: 'user', maxTokens: 100, signal: signal() };
+    expect((await adapter.complete(request)).text).toBe(claimReply);
+    await expect(adapter.complete(request)).rejects.toThrow('fixture exhausted');
+    await expect(extractSource({ sourceId: 's1', question: 'Q', angles, discoveries, passages,
+      completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
+      permits: new ModelPermitPool(2), adapter: { currentRevision: () => 7, complete: adapter.complete } }))
+      .rejects.toThrow('fixture exhausted');
+  });
+});
