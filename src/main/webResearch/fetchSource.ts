@@ -4,7 +4,9 @@ import { candidateKey } from './urlIdentity';
 import { ResearchBudgetMeter } from './budget';
 import { prepareResearchRoute, type ResearchRoute, type RouteDeps } from './networkGuard';
 
-export type FetchInput = { url: string; sourceId?: string; budget: ResearchBudgetMeter; signal: AbortSignal };
+export type FetchInput = { url: string; sourceId?: string; budget: ResearchBudgetMeter; signal: AbortSignal;
+  /** The orchestrator has already reserved this dispatch atomically. */
+  preReserved?: boolean };
 export type FetchResult = {
   requestedUrl: string;
   finalUrl?: string;
@@ -107,8 +109,10 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
   const result = (status: FetchResult['status'], reason?: string, extra: Partial<FetchResult> = {}): FetchResult =>
     ({ requestedUrl, redirectChain, status, reason, bytes: empty, receivedBytes: 0, ...extra });
   if (input.signal.aborted) return result('cancelled', 'cancelled');
-  const slot = input.budget.reserveFetch();
-  if (!slot.ok) return result(slot.reason === 'cancelled' ? 'cancelled' : 'unreadable', slot.reason);
+  if (!input.preReserved) {
+    const slot = input.budget.reserveFetch();
+    if (!slot.ok) return result(slot.reason === 'cancelled' ? 'cancelled' : 'unreadable', slot.reason);
+  }
   const sourceId = input.sourceId ?? requestedUrl;
   const seen = new Set<string>();
   let current = requestedUrl;

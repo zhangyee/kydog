@@ -7,6 +7,7 @@ import { browserService } from '../browser/browserService';
 import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import { turnTitleSource } from '../../shared/userTurn';
+import { researchRunStore } from '../webResearch/runStore';
 import type { AskAnswer } from '../../shared/askQuestion';
 import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
@@ -101,7 +102,10 @@ export class ThreadService {
       idx.threads = idx.threads.filter((t) => !gone.has(t.id));
       await saveIndex(idx);
       // 先改 index 再删文件（同改动前）：删文件失败不回滚 index。
-      for (const t of targets) await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
+      for (const t of targets) {
+        await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
+        await researchRunStore.removeRunsForThread(t.id);
+      }
     });
   }
 

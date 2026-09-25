@@ -94,6 +94,8 @@ export type CollectInput = {
   attempts: SearchAttempt[];
   discoveries: Discovery[];
   budget: ResearchBudget;
+  /** Keys explicitly supplied by the caller, so continuation does not reset prior limits to defaults. */
+  budgetOverrides?: Partial<ResearchBudget>;
   refresh: boolean;
 };
 
@@ -203,6 +205,10 @@ export function validateCollectInput(raw: unknown): CollectInput {
       title: optionalString(d.title, 'discovery.title'), snippet: optionalString(d.snippet, 'discovery.snippet') };
   });
   if (input.refresh !== undefined && typeof input.refresh !== 'boolean') fail('refresh');
+  const rawBudget = input.budget === undefined ? {} : object(input.budget, 'budget');
+  const budget = validateResearchBudget(input.budget);
+  const budgetOverrides = Object.fromEntries((Object.keys(budget) as Array<keyof ResearchBudget>)
+    .filter((key) => rawBudget[key] !== undefined).map((key) => [key, budget[key]])) as Partial<ResearchBudget>;
   return { researchRunId, originalQuestion, angles, enabledEngines, attempts, discoveries,
-    budget: validateResearchBudget(input.budget), refresh: input.refresh === true };
+    budget, budgetOverrides, refresh: input.refresh === true };
 }

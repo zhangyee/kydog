@@ -41,4 +41,15 @@ describe('ResearchBudgetMeter', () => {
     expect(meter.reserveModelCall()).toEqual({ ok: false, reason: 'cancelled' });
     expect(meter.reserveBytes('s1', 1)).toEqual({ ok: false, reason: 'cancelled' });
   });
+
+  it('restores exact usage and URL identities before a continued batch', () => {
+    const meter = new ResearchBudgetMeter(limits);
+    meter.restore({ candidates: 1, fetchesDispatched: 1, receivedBytes: 5, modelCalls: 1 },
+      ['https://a.example/'], [['s1', 5]]);
+    expect(meter.reserveCandidate('https://a.example/')).toEqual({ ok: true, newCandidate: false });
+    expect(meter.reserveCandidate('https://b.example/')).toEqual({ ok: true, newCandidate: true });
+    expect(meter.reserveFetch()).toEqual({ ok: false, reason: 'fetch_limit' });
+    expect(meter.reserveModelCall()).toEqual({ ok: false, reason: 'model_call_limit' });
+    expect(meter.reserveBytes('s1', 1)).toEqual({ ok: false, reason: 'source_byte_limit' });
+  });
 });

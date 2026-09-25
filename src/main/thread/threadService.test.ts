@@ -7,6 +7,11 @@ import { saveIndex } from '../persist/indexFile';
 import { threadService } from './threadService';
 import { agentService } from '../agent/AgentService';
 import { encodeUserTurn, refTag } from '../../shared/userTurn';
+import { researchRunStore } from '../webResearch/runStore';
+
+vi.mock('../webResearch/runStore', () => ({
+  researchRunStore: { removeRunsForThread: vi.fn().mockResolvedValue(undefined) },
+}));
 
 vi.mock('./titleService', () => ({
   titleService: { generateForThread: vi.fn() },
@@ -203,6 +208,7 @@ describe('threadService.delete 关掉这个对话的浏览器标签', () => {
 
     await threadService.delete({ threadIds: [a.id] });
     expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([[a.id]]);
+    expect(researchRunStore.removeRunsForThread).toHaveBeenCalledWith(a.id);
   });
 });
 

@@ -15,6 +15,23 @@ export class ResearchBudgetMeter {
 
   constructor(readonly limits: ResearchBudget) {}
 
+  /** Rebuild a continued run from its persisted counters and exact URL keys. */
+  restore(usage: ResearchUsage, candidateUrls: readonly string[], sourceBytes: ReadonlyArray<readonly [string, number]>): void {
+    if (Object.values(this.usage).some((value) => value !== 0) || this.candidateKeys.size) throw new Error('budget already used');
+    const keys = new Set(candidateUrls.map(candidateKey));
+    if (keys.size !== usage.candidates || Object.values(usage).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      throw new Error('invalid saved budget usage');
+    }
+    const perSource = new Map(sourceBytes);
+    if ([...perSource.values()].some((value) => !Number.isSafeInteger(value) || value < 0) ||
+      [...perSource.values()].reduce((sum, value) => sum + value, 0) > usage.receivedBytes) {
+      throw new Error('invalid saved source byte usage');
+    }
+    Object.assign(this.usage, usage);
+    for (const key of keys) this.candidateKeys.add(key);
+    for (const [sourceId, bytes] of perSource) this.sourceBytes.set(sourceId, bytes);
+  }
+
   cancel(): void { this.cancelled = true; }
 
   reserveCandidate(rawUrl: string): Reservation {

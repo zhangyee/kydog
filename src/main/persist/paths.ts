@@ -8,6 +8,7 @@ export const SETTINGS_FILE = path.join(ROOT, 'kydog.json');
 export const LOCK_PATH = path.join(ROOT, '.kydog.json.lock');
 export const SESSIONS_DIR = path.join(ROOT, 'sessions');
 export const LOGS_DIR = path.join(ROOT, 'logs');
+export const WEB_RESEARCH_DIR = path.join(ROOT, 'web-research');
 export const CACHE_DIR = path.join(ROOT, '.cache');
 export const STAGING_DIR = path.join(CACHE_DIR, 'staging');
 /** CARSI 机构清单的落盘副本（fsso.cnki.net 抓不到时的回落来源）。

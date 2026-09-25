@@ -4,6 +4,7 @@ export type KydogErrorCode =
   | 'thread.not_found'
   | 'thread.busy'
   | 'thread.has_messages'
+  | 'research.not_found'
   | 'project.not_found'
   | 'project.access_denied'
   | 'agent.provider_error'
