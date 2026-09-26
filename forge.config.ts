@@ -20,8 +20,8 @@ const vendorBins = Object.values(cliManifest.tools).map((cfg) =>
 
 // —— 打包成品要自带的运行时模块闭包 ——
 //
-// 主进程 bundle 里唯一没被 vite 打进去的第三方 bare specifier 是
-// @earendil-works/pi-coding-agent（vite.main.config.ts 的 external）。而
+// 主进程 bundle 里没被 vite 打进去的第三方 bare specifier（pi、undici、jsdom）
+// 必须显式带上运行时模块闭包。否则
 // @electron-forge/plugin-vite 默认装的 packagerConfig.ignore 只放行 /.vite，
 // node_modules 一个文件都不进包 —— 装到 %LOCALAPPDATA% / /Applications 的成品里
 // `import('@earendil-works/pi-coding-agent')` 直接 ERR_MODULE_NOT_FOUND，而
@@ -34,7 +34,7 @@ const vendorBins = Object.values(cliManifest.tools).map((cfg) =>
 // 这里按 package.json 的依赖边算出闭包，只放行闭包内的目录：renderer 侧那些 vite
 // 早已 bundle 进去的依赖（@fontsource / pdfjs-dist / canvas …，生产依赖全集 400+ MB）
 // 照旧挡在包外。
-const EXTERNAL_RUNTIME_MODULES = ['@earendil-works/pi-coding-agent', 'undici'];
+const EXTERNAL_RUNTIME_MODULES = ['@earendil-works/pi-coding-agent', 'undici', 'jsdom'];
 
 function resolveModuleDir(name: string, from: string): string | null {
   let dir = from;

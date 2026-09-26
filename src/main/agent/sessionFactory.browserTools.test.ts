@@ -110,6 +110,15 @@ beforeEach(() => {
 });
 
 describe('customTools 里有六个浏览器工具', () => {
+  it('registers web-research collector and evidence tools in the real session', async () => {
+    const tools = await build();
+    for (const name of ['web_research_collect', 'web_research_evidence']) {
+      const tool = tools.find((item) => item.name === name);
+      expect(tool?.executionMode).toBe('sequential');
+      expect(typeof tool?.execute).toBe('function');
+    }
+  });
+
   it('browser_open / browser_tabs / browser_act / browser_read / browser_login / browser_download 六个都在', async () => {
     const names = (await build()).map((t) => t.name);
     expect(names).toContain('browser_open');

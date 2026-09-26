@@ -176,6 +176,8 @@ class AgentService {
       askShared,
       // 取值函数，不是值：session 造出来这一刻还没有任何 run 在飞。
       currentRunId: () => this.currentRunIdFor(threadId),
+      onResearchProgress: (progress) => this.onResearchProgress(threadId, progress.runId,
+        progress.toolCallId, progress),
     });
     const bound: Bound = {
       session, cwd: projectPath, threadId,

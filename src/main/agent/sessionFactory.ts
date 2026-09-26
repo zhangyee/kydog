@@ -5,6 +5,10 @@ import { createReadPdfFigureTool } from './readPdfFigureTool';
 import { createReadDocxTool } from './readDocxTool';
 import { createCharCountFileTools, type PiFileToolFactories } from './charCountFileTools';
 import { createBrowserTools } from './browserTools';
+import { createWebResearchTools } from './webResearchTools';
+import { getWebResearchService } from '../webResearch/service';
+import { researchRunStore } from '../webResearch/runStore';
+import type { Progress as ResearchProgress } from '../webResearch/researchRun';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { settingsService } from '../settings/settingsService';
 import type { ProviderId } from '../../shared/types';
@@ -58,6 +62,7 @@ export async function createSession(opts: {
    * 可选：fixture / 用例那条路不接浏览器，缺省当作「没有 run 在飞」。
    */
   currentRunId?: () => string | null;
+  onResearchProgress?: (progress: ResearchProgress & { runId: string; toolCallId: string }) => void;
 }): Promise<AnySession> {
   // locale 在这里（session 构造时）快照一次，理由与写法同下面 createKydogResourceLoader
   // 里的 disabledBuiltins：已开的 session 用的是开工那一刻的界面语言，之后用户在设置里
@@ -91,12 +96,21 @@ export async function createSession(opts: {
     askShared: opts.askShared,
     institution,
   });
+  const researchTools = createWebResearchTools({
+    threadId: opts.sessionId,
+    currentRunId: opts.currentRunId ?? (() => null),
+    onProgress: opts.onResearchProgress ?? (() => undefined),
+    collect: (input, owner, onProgress) => getWebResearchService().collect(input, owner, onProgress),
+    loadRun: (threadId, researchRunId) => researchRunStore.loadRun(threadId, researchRunId),
+    loadSource: (run, sourceId) => researchRunStore.loadSource(run, sourceId),
+  });
 
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
   // sessionId 就是 threadId，fixture 里的工具必须用它注册 broker，
   // 否则 renderer 发来的 ask.submit / ask.cancel 会因 threadId 对不上被丢弃。
   if (fixturePath) {
-    return createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale, browserTools);
+    return createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale,
+      [...browserTools, ...researchTools]);
   }
 
   const pi = await import('@earendil-works/pi-coding-agent');
@@ -139,6 +153,7 @@ export async function createSession(opts: {
       ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd),
       // 内置浏览器的四个工具（上面造好的**同一份**，见那段注释）。
       ...browserTools,
+      ...researchTools,
     ],
   });
   return session as AnySession;
