@@ -14,6 +14,47 @@ const deps = (client: (url: string, init: { redirect: string; route: { kind: str
 });
 
 describe('fetchSource', () => {
+  it('closes a PDF response before reading its body', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(1024)); },
+      cancel() { cancelled = true; },
+    });
+    const meter = budget();
+    const result = await fetchSource({ url: 'https://docs.example/paper.pdf', budget: meter,
+      signal: new AbortController().signal }, deps(async () => new Response(stream, {
+        headers: { 'content-type': 'application/pdf' },
+      })));
+    expect(result.status).toBe('unsupported_media');
+    expect(result.reason).toBe('pdf_not_supported');
+    expect(result.bytes).toHaveLength(0);
+    expect(meter.usage.receivedBytes).toBe(0);
+    expect(cancelled).toBe(true);
+  });
+
+  it('stops a PDF stream mislabeled as HTML after its signature', async () => {
+    let cancelled = false;
+    const signature = new TextEncoder().encode('%PDF-');
+    let first = true;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(first ? signature : new Uint8Array(512));
+        first = false;
+      },
+      cancel() { cancelled = true; },
+    });
+    const meter = budget();
+    const result = await fetchSource({ url: 'https://docs.example/opaque', budget: meter,
+      signal: new AbortController().signal }, deps(async () => new Response(stream, {
+        headers: { 'content-type': 'text/html' },
+      })));
+    expect(result.status).toBe('unsupported_media');
+    expect(result.reason).toBe('pdf_not_supported');
+    expect(result.bytes).toHaveLength(0);
+    expect(meter.usage.receivedBytes).toBeLessThan(1000);
+    expect(cancelled).toBe(true);
+  });
+
   it('逐跳处理相对与跨站 HTTP Location，保留最终 URL 和路由事实', async () => {
     const calls: Array<{ url: string; kind: string; redirect: string }> = [];
     const client = vi.fn(async (url: string, init: { redirect: string; route: { kind: string } }) => {

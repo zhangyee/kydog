@@ -77,6 +77,7 @@ async function readBody(response: Response, sourceId: string, budget: ResearchBu
   if (!response.body) return { ok: true, bytes: new Uint8Array(), size: 0 };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
+  const signature: number[] = [];
   let size = 0;
   try {
     while (true) {
@@ -88,6 +89,13 @@ async function readBody(response: Response, sourceId: string, budget: ResearchBu
       if (!reserved.ok) return { ok: false, reason: reserved.reason, size };
       chunks.push(chunk);
       size += chunk.byteLength;
+      for (let index = 0; index < chunk.byteLength && signature.length < 5; index++) {
+        signature.push(chunk[index]);
+      }
+      if (signature.length === 5 && signature.every((value, index) =>
+        value === [0x25, 0x50, 0x44, 0x46, 0x2d][index])) {
+        return { ok: false, reason: 'pdf_not_supported', size };
+      }
     }
     const output = new Uint8Array(size);
     let offset = 0;
@@ -152,10 +160,17 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
         return result('http_error', `HTTP ${statusCode}`, { finalUrl: current, statusCode, receivedBytes });
       }
       const contentType = response.headers.get('content-type') ?? undefined;
+      const mediaType = contentType?.split(';', 1)[0].trim().toLowerCase();
+      if (mediaType === 'application/pdf') {
+        await response.body?.cancel();
+        return result('unsupported_media', 'pdf_not_supported', { finalUrl: current, statusCode,
+          contentType, receivedBytes, assurance: route.assurance });
+      }
       const body = await readBody(response, sourceId, input.budget, input.signal);
       receivedBytes += body.size;
       if (!body.ok) {
         const status = body.reason === 'cancelled' ? 'cancelled'
+          : body.reason === 'pdf_not_supported' ? 'unsupported_media'
           : body.reason === 'request_failed' ? 'network_error' : 'unreadable';
         return result(status, body.reason, { finalUrl: current, statusCode, contentType, receivedBytes });
       }
