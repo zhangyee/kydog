@@ -1,13 +1,22 @@
 # Google search card
 
-> Probed with KyDog's real IAB on 2026-09-25. **Result extraction remains unverified; do not enable it by default.** This is an observation for the tested network exit, not a general availability claim; trust the current IAB result.
+> On 2026-09-26, the user's open Chrome browser reached results pages and verified extraction selectors and requery. On 2026-09-25, KyDog IAB reached a challenge page for comparable searches. **Success in Chrome does not establish success in KyDog IAB.** Trust the current IAB response; Google is not in the default engine set yet.
 
-## Actions actually observed
+## Results-page structure observed in Chrome
 
-- `browser_open({url:"https://www.google.com/"})` reached the homepage with HTTP 200. Its search box was `textarea[name=q]`.
-- `browser_act` used `type` for the Chinese query and `key Enter`, then navigated to `www.google.com/sorry/index?continue=…`. The tool reported HTTP 429 and a `presentation "reCAPTCHA"` snapshot. Homepage reachability does not establish result reachability.
-- `browser_open` for the English query at `https://www.google.com/search?q=TypeScript%206.0%20release%20notes` also landed on `sorry/index`. An intermediate search URL or HTTP 200 text does not establish a results page.
+- Opening `https://www.google.com/search?q=` plus `encodeURIComponent(query)` directly returned organic results for `TypeScript 6.0 release notes`. The results-page search box was `textarea[name=q]`. Replacing its text with `TypeScript 6.0 breaking changes official` and pressing Enter navigated to a new results page with changed results and snippets.
+- Organic result containers were `div.N54PNb`; within each, `h3` held the title, `a:has(h3)@href` the target URL, and `div.VwiC3b` the snippet. The second query returned the official TypeScript documentation among other results. The page also had an AI block; do not mix its headings into organic results.
+- If the **current KyDog IAB** really reaches a results page, try:
 
-## Current handling
+```json
+{"item":"div.N54PNb","title":"h3","url":"a:has(h3)@href","snippet":"div.VwiC3b"}
+```
 
-This probe verified no result row, title, snippet, or `@href` selector, nor a requery or pagination. When `sorry/index`, HTTP 429, or a reCAPTCHA snapshot appears, record the current `(engineId, query, attemptId)` as blocked by a challenge. Do not call it zero results or feed the challenge page to WebFetch as target content. After a user completes the challenge or the network exit changes, reverify result extraction through KyDog IAB before marking Google supported.
+Check that the current query, titles, and URLs align after extraction. Snippets guide discovery; they do not replace fetching target content. Page structure can change, so these are candidate selectors rather than an IAB guarantee.
+
+## Block observed in KyDog IAB
+
+- On 2026-09-25, `browser_open({url:"https://www.google.com/"})` reached the homepage with HTTP 200. After `browser_act` typed a Chinese query into `textarea[name=q]` and pressed Enter, navigation reached `www.google.com/sorry/index?continue=…`; the tool reported HTTP 429 and a `presentation "reCAPTCHA"` snapshot.
+- A direct `browser_open` to an English search URL also reached `sorry/index`. That IAB probe **did not** verify result extraction or requery.
+
+If the current IAB still shows `sorry/index`, HTTP 429, or reCAPTCHA, record `(engineId, query, attemptId)` as `blocked`. Do not report zero results or send the challenge page to WebFetch. Record discoveries only when the current IAB displays organic results and successfully extracts their titles and target URLs.

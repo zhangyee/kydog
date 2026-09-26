@@ -13,7 +13,7 @@ description: 当用户需要跟进互联网上的最新信息、核对新版软�
 
 ## 2. 用 IAB 跨引擎发现
 
-先读本 skill `references/` 下拟用引擎的操作卡。当前已实测 DuckDuckGo 的搜索与改词，以及 Bing 的直接结果页入口和单次结果抽取；Google、百度在实测网络出口受到验证页阻断，其结果抽取尚未验证。默认对同一个 `query` 分别尝试 DuckDuckGo 和 Bing。用户指定其他引擎时，按相应卡片尝试并依据**当前 IAB 返回**记录结果或阻断，不声称未抽到的结果已经找到。
+先读本 skill `references/` 下拟用引擎的操作卡。当前已用 KyDog IAB 实测 DuckDuckGo 的搜索与改词，以及 Bing 的直接结果页入口和单次结果抽取；Google、百度的结果结构与改词已在 Chrome 探测，但 KyDog IAB 在实测网络出口受到验证页阻断，IAB 结果抽取仍待验证。默认对同一个 `query` 分别尝试 DuckDuckGo 和 Bing。用户指定其他引擎时，按相应卡片尝试并依据**当前 IAB 返回**记录结果或阻断，不声称未抽到的结果已经找到。
 
 每次检索保存一个唯一 `attemptId`、`engineId`、原样 `query`、`angleIds`、搜索页 URL 和状态。`browser_act` 抽出的每个候选保存所属 attempt、角度、引擎、query、标题、摘要、目标 `@href`。同一目标被多个引擎命中时保留全部发现背景。页面明确显示没有结果才能记 `explicit_empty`；验证码／挑战记 `blocked`，导航失败和抽取失败分别记录。零条抽取不能自动解释成零结果。明显的 PDF 链接不纳入正文候选；目标 URL 实际返回 PDF 时采集器会标为不支持媒体。
 
