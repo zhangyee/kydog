@@ -47,4 +47,14 @@ describe('webResearchStore event projection', () => {
     applyRunEvent(progress('fetching'));
     expect(useWebResearchStore.getState().runs[researchRunId].taskById['source-1'].status).toBe('cancelled');
   });
+
+  it('shows a new collection attempt instead of pinning the prior terminal state', () => {
+    applyRunEvent(progress('completed'));
+    expect(useWebResearchStore.getState().runs[researchRunId].taskById['source-1'].status).toBe('completed');
+    const next = { ...progress('queued'), payload: { ...base, runId: 'agent-run-2',
+      toolCallId: 'tool-2', status: 'queued' as const } };
+    applyRunEvent({ topic: 'run.started', payload: { threadId, runId: 'agent-run-2' } });
+    applyRunEvent(next);
+    expect(useWebResearchStore.getState().runs[researchRunId].taskById['source-1'].status).toBe('queued');
+  });
 });

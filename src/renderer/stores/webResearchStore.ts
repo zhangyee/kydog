@@ -42,9 +42,11 @@ export const useWebResearchStore = create<WebResearchState>((set) => ({
     if (active && active !== payload.runId) return state;
     const previous = state.runs[payload.researchRunId];
     const priorTask = previous?.taskById[payload.taskId];
-    const status = priorTask && terminal.has(priorTask.status) ? priorTask.status : payload.status;
+    const sameInvocation = previous?.runId === payload.runId && previous?.toolCallId === payload.toolCallId;
+    const keepTerminal = sameInvocation && priorTask && terminal.has(priorTask.status);
+    const status = keepTerminal ? priorTask.status : payload.status;
     const taskById = { ...(previous?.taskById ?? {}), [payload.taskId]: { status,
-      stage: priorTask && terminal.has(priorTask.status) ? priorTask.stage : payload.stage } };
+      stage: keepTerminal ? priorTask.stage : payload.stage } };
     const run: WebResearchProjection = {
       threadId: payload.threadId, runId: payload.runId, messageId: payload.messageId,
       toolCallId: payload.toolCallId, researchRunId: payload.researchRunId, taskById,

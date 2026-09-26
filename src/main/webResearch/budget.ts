@@ -44,10 +44,11 @@ export class ResearchBudgetMeter {
     return { ok: true, newCandidate: true };
   }
 
-  reserveFetch(): Reservation {
+  reserveFetch(sourceId?: string): Reservation {
     if (this.cancelled) return { ok: false, reason: 'cancelled' };
     if (this.usage.fetchesDispatched >= this.limits.maxFetches) return { ok: false, reason: 'fetch_limit' };
     this.usage.fetchesDispatched++;
+    if (sourceId) this.sourceBytes.set(sourceId, 0);
     return { ok: true };
   }
 

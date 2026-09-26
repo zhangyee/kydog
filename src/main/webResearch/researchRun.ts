@@ -15,6 +15,8 @@ export type BodyResult = {
   contentHash?: string;
   completeness: 'complete' | 'truncated' | 'unknown';
   reason?: string;
+  publishedAt?: string;
+  title?: string;
 };
 export type Progress = {
   researchRunId: string;
@@ -44,9 +46,10 @@ export type ResearchRunDeps = {
   adapter: ModelAdapter;
 };
 
-function newRecord(input: CollectInput, threadId: string): ResearchRunRecord {
+function newRecord(input: CollectInput, owner: CollectOwner): ResearchRunRecord {
   const now = new Date().toISOString();
-  return { researchRunId: randomUUID(), threadId, originalQuestion: input.originalQuestion,
+  return { researchRunId: randomUUID(), threadId: owner.threadId, createdByRunId: owner.runId,
+    continuationRunIds: [], originalQuestion: input.originalQuestion,
     createdAt: now, updatedAt: now, angles: [], enabledEngines: [], attempts: [], candidates: [],
     budget: input.budget, usage: { candidates: 0, fetchesDispatched: 0, receivedBytes: 0, modelCalls: 0 }, sources: [] };
 }
@@ -70,13 +73,22 @@ export class ResearchRunService {
     const store = this.deps.store;
     const run = input.researchRunId
       ? await store.loadRun(owner.threadId, input.researchRunId)
-      : newRecord(input, owner.threadId);
+      : newRecord(input, owner);
     if (this.collecting.has(run.researchRunId)) throw new Error('research run already collecting');
     if (run.originalQuestion !== input.originalQuestion) throw new Error('research question changed');
-    if (input.researchRunId && input.budgetOverrides) Object.assign(run.budget, input.budgetOverrides);
+    if (input.researchRunId && input.budgetOverrides) {
+      for (const key of Object.keys(input.budgetOverrides) as Array<keyof ResearchBudget>) {
+        const next = input.budgetOverrides[key];
+        if (next !== undefined && next < run.budget[key]) throw new Error(`research budget cannot decrease: ${key}`);
+      }
+      Object.assign(run.budget, input.budgetOverrides);
+    }
     this.collecting.add(run.researchRunId);
     let meter: ResearchBudgetMeter;
     try {
+      if (input.researchRunId && !run.continuationRunIds.includes(owner.runId)) {
+        run.continuationRunIds.push(owner.runId);
+      }
       if (input.researchRunId) store.activateRun(run.researchRunId);
       else await store.createRun(run);
       meter = new ResearchBudgetMeter(run.budget);
@@ -96,6 +108,15 @@ export class ResearchRunService {
         onProgress({ researchRunId: run.researchRunId, taskId: source.sourceId, stage,
           status: source.status, budget: { ...run.budget }, usage: { ...meter.usage } });
       } catch { /* progress observers cannot change persisted research state */ }
+    };
+    const syncAliases = async (canonical: SourceIndex): Promise<void> => {
+      for (const alias of run.sources.filter((source) => source.aliasOf === canonical.sourceId)) {
+        const saved = await store.loadSource(run, alias.sourceId);
+        alias.status = canonical.status;
+        alias.reason = canonical.reason;
+        await store.saveSource(run, { ...saved, ...alias });
+        emit(alias, 'persist');
+      }
     };
 
     try {
@@ -117,6 +138,9 @@ export class ResearchRunService {
       await store.saveRun(run);
 
       const tasks: SourceIndex[] = [];
+      const staged: Array<{ source: SourceIndex; body: BodyResult; previous?: SavedSource;
+        forceExtract?: boolean }> = [];
+      const changedCompleted = new Set<string>();
       for (const discovery of input.discoveries) {
         const key = candidateKey(discovery.resultUrl);
         let candidate = run.candidates.find((item) => candidateKey(item.requestedUrl) === key);
@@ -127,6 +151,19 @@ export class ResearchRunService {
           run.candidates.push(candidate);
         }
         candidate.discoveries = appendNewDiscoveries(candidate.discoveries, [discovery]);
+      }
+      // Search attempts and candidate URLs are facts already observed in IAB. Save them
+      // before model preflight so a changed model cannot erase that work.
+      await store.saveRun(run);
+      const needsModel = input.discoveries.length > 0 || input.refresh ||
+        run.sources.some((source) => source.status === 'interrupted' || source.pendingReanalysis);
+      if (needsModel) {
+        const activeModel = await this.deps.resolveModel(owner.threadId);
+        if (run.modelSnapshot && (run.modelSnapshot.providerId !== activeModel.providerId ||
+          run.modelSnapshot.modelId !== activeModel.modelId ||
+          run.modelSnapshot.runtimeRevision !== activeModel.runtimeRevision)) throw new Error('model_changed');
+        run.modelSnapshot ??= activeModel;
+        await store.saveRun(run);
       }
       for (const candidate of run.candidates) {
         const key = candidateKey(candidate.requestedUrl);
@@ -144,11 +181,15 @@ export class ResearchRunService {
             ? run.sources.find((item) => item.sourceId === source.aliasOf) : source;
           if (!canonical) throw new Error('missing canonical source');
           const saved = await store.loadSource(run, canonical.sourceId);
-          await store.saveSource(run, { ...saved,
-            discoveries: appendNewDiscoveries(saved.discoveries, source.discoveries) });
+          const discoveries = appendNewDiscoveries(saved.discoveries, source.discoveries);
+          const pendingReanalysis = discoveries.length > saved.discoveries.length || saved.pendingReanalysis;
+          if (pendingReanalysis) changedCompleted.add(canonical.sourceId);
+          canonical.discoveries = discoveries;
+          canonical.pendingReanalysis = pendingReanalysis;
+          await store.saveSource(run, { ...saved, discoveries, pendingReanalysis });
           continue;
         }
-        if (input.discoveries.some((item) => candidateKey(item.resultUrl) === key) ||
+        if (input.refresh || input.discoveries.some((item) => candidateKey(item.resultUrl) === key) ||
           source.status === 'interrupted') {
           source.status = 'queued';
           delete source.aliasOf;
@@ -158,14 +199,46 @@ export class ResearchRunService {
       await store.saveRun(run);
       for (const source of tasks) emit(source, 'collect');
 
-      const modelSnapshot = tasks.length ? await this.deps.resolveModel(owner.threadId) : undefined;
-      const staged: Array<{ source: SourceIndex; body: BodyResult; previous?: SavedSource }> = [];
+      for (const sourceId of changedCompleted) {
+        const saved = await store.loadSource(run, sourceId);
+        if (!saved.contentHash || !saved.passages.length) throw new Error('completed source missing body');
+        const current = run.sources.find((item) => item.sourceId === sourceId)!;
+        staged.push({ source: current, body: { status: 'readable', passages: saved.passages,
+          contentHash: saved.contentHash, completeness: saved.completeness ?? 'unknown' },
+        previous: saved, forceExtract: true });
+        emit({ ...current, status: 'extracting' }, 'extract');
+      }
+
+      const modelSnapshot = tasks.length || staged.length ? run.modelSnapshot : undefined;
+      if ((tasks.length || staged.length) && !modelSnapshot) throw new Error('model_unavailable');
       let next = 0;
       const fetchWork = async () => {
         while (!owner.signal.aborted && next < tasks.length) {
           const source = tasks[next++];
-          const reserved = meter.reserveFetch();
+          // A .pdf pathname is an explicit exclusion rule, not a MIME claim.
+          // Unknown URL shapes are decided from the actual response instead.
+          if (new URL(source.requestedUrl).pathname.toLowerCase().endsWith('.pdf')) {
+            source.status = 'failed'; source.reason = 'pdf_url_excluded';
+            await store.saveSource(run, { ...source, passages: [] });
+            emit(source, 'persist');
+            continue;
+          }
+          const previousSaved = await store.loadSource(run, source.sourceId).catch(() => undefined);
+          const restorePrevious = async (reason: string): Promise<boolean> => {
+            if (previousSaved?.status !== 'completed' || !previousSaved.extraction) return false;
+            source.status = 'completed'; source.reason = `refresh_${reason}`;
+            const discoveries = appendNewDiscoveries(previousSaved.discoveries, source.discoveries);
+            const pendingReanalysis = previousSaved.pendingReanalysis ||
+              discoveries.length > previousSaved.discoveries.length;
+            await store.saveSource(run, { ...previousSaved, status: source.status, reason: source.reason,
+              discoveries, pendingReanalysis });
+            gaps.push(`${source.sourceId}: ${source.reason}`);
+            emit(source, 'persist');
+            return true;
+          };
+          const reserved = meter.reserveFetch(source.sourceId);
           if (!reserved.ok) {
+            if (await restorePrevious(reserved.reason)) continue;
             source.status = reserved.reason === 'cancelled' ? 'cancelled' : 'failed';
             source.reason = reserved.reason;
             await store.saveRun(run); emit(source, 'fetch');
@@ -182,8 +255,14 @@ export class ResearchRunService {
             const fetched = await this.deps.fetch({ url: source.requestedUrl, sourceId: source.sourceId,
               budget: meter, signal: owner.signal, preReserved: true });
             source.finalUrl = fetched.finalUrl;
+            source.redirectChain = fetched.redirectChain;
+            source.statusCode = fetched.statusCode;
+            source.contentType = fetched.contentType;
+            source.canonicalUrl = fetched.canonicalUrl;
+            source.assurance = fetched.assurance;
             source.receivedBytes = fetched.receivedBytes;
             if (fetched.status !== 'readable' || !fetched.finalUrl) {
+              if (await restorePrevious(fetched.reason ?? fetched.status)) continue;
               source.status = fetched.status === 'cancelled' ? 'cancelled' : 'failed';
               source.reason = fetched.reason ?? fetched.status;
               await store.saveSource(run, { ...source, passages: [] }); emit(source, 'persist');
@@ -193,18 +272,25 @@ export class ResearchRunService {
               finalUrl: fetched.finalUrl, sourceId: source.sourceId });
             source.contentHash = body.contentHash;
             source.completeness = body.completeness;
+            source.publishedAt = body.publishedAt;
             if (body.status !== 'readable' || !body.passages.length || !body.contentHash) {
+              if (await restorePrevious(body.reason ?? body.status)) continue;
               source.status = 'failed'; source.reason = body.reason ?? body.status;
               await store.saveSource(run, { ...source, passages: body.passages }); emit(source, 'persist');
               continue;
             }
-            const previous = await store.loadSource(run, source.sourceId).catch(() => undefined);
+            const previous = previousSaved;
             source.status = 'extracting';
-            await store.saveSource(run, { ...source, passages: body.passages });
-            staged.push({ source: run.sources.find((item) => item.sourceId === source.sourceId)!, body, previous });
+            await store.saveSource(run, { ...source, passages: body.passages,
+              extraction: previous?.contentHash === body.contentHash ? previous.extraction : undefined });
+            const forceExtract = previous && appendNewDiscoveries(previous.discoveries, source.discoveries)
+              .length > previous.discoveries.length;
+            staged.push({ source: run.sources.find((item) => item.sourceId === source.sourceId)!,
+              body, previous, forceExtract });
             emit(source, 'extract');
           } catch (error) {
             if (error instanceof ResearchFixtureExhaustedError) throw error;
+            if (await restorePrevious(owner.signal.aborted ? 'cancelled' : 'task_error')) continue;
             source.status = owner.signal.aborted ? 'cancelled' : 'failed';
             source.reason = owner.signal.aborted ? 'cancelled' : 'task_error';
             await store.saveSource(run, { ...source, passages: [] });
@@ -230,6 +316,7 @@ export class ResearchRunService {
             const group = batches[batchIndex++];
             const leader = group[0].source;
             const body = group[0].body;
+            const forceExtract = group.some((item) => item.forceExtract);
             const prior = run.sources.find((source) => source.sourceId !== leader.sourceId &&
               source.status === 'completed' && !source.aliasOf && source.finalUrl === leader.finalUrl &&
               source.contentHash === leader.contentHash && source.completeness === 'complete');
@@ -241,22 +328,53 @@ export class ResearchRunService {
               if (prior) {
                 const saved = await store.loadSource(run, prior.sourceId);
                 if (!saved.extraction) throw new Error('missing canonical extraction');
-                extraction = saved.extraction;
                 canonical = prior;
-                prior.discoveries = appendNewDiscoveries(prior.discoveries, discoveries);
-                await store.saveSource(run, { ...saved, discoveries: prior.discoveries });
+                const merged = appendNewDiscoveries(prior.discoveries, discoveries);
+                const needsExtract = forceExtract || merged.length > prior.discoveries.length;
+                extraction = needsExtract
+                  ? await (this.deps.extract ?? extractSource)({ sourceId: prior.sourceId,
+                    question: run.originalQuestion, angles: run.angles, discoveries: merged,
+                    passages: saved.passages, completeness: saved.completeness ?? 'unknown',
+                    modelSnapshot: modelSnapshot!, budget: meter, signal: owner.signal,
+                    permits, adapter: this.deps.adapter })
+                  : saved.extraction;
+                prior.discoveries = merged;
+                if (needsExtract) {
+                  if (extraction.status === 'claims' || extraction.status === 'irrelevant') {
+                    prior.status = 'completed'; prior.reason = undefined; prior.pendingReanalysis = false;
+                  } else {
+                    // The saved body is unchanged, so retain its last grounded extraction.
+                    prior.status = 'completed'; prior.reason = `reanalysis_${extraction.reason ?? extraction.status}`;
+                    prior.pendingReanalysis = true;
+                    gaps.push(`${prior.sourceId}: ${prior.reason}`);
+                    extraction = saved.extraction;
+                  }
+                }
+                await store.saveSource(run, { ...saved, ...prior, extraction });
+                if (needsExtract) emit(prior, 'persist');
               } else {
                 leader.discoveries = appendNewDiscoveries(leader.discoveries, discoveries);
                 const previous = group[0].previous;
-                if (previous && previous.contentHash === body.contentHash && previous.extraction) {
+                if (!forceExtract && previous && previous.contentHash === body.contentHash && previous.extraction) {
                   extraction = previous.extraction;
                 }
                 else extraction = await (this.deps.extract ?? extractSource)({ sourceId: leader.sourceId,
                   question: run.originalQuestion, angles: run.angles, discoveries: leader.discoveries,
                   passages: body.passages, completeness: body.completeness,
                   modelSnapshot: modelSnapshot!, budget: meter, signal: owner.signal, permits, adapter: this.deps.adapter });
-                leader.status = extraction.status === 'claims' || extraction.status === 'irrelevant' ? 'completed' : 'failed';
-                leader.reason = extraction.reason;
+                if (previous?.extraction && previous.contentHash === body.contentHash &&
+                  extraction.status !== 'claims' && extraction.status !== 'irrelevant') {
+                  leader.status = 'completed';
+                  leader.reason = `reanalysis_${extraction.reason ?? extraction.status}`;
+                  leader.pendingReanalysis = true;
+                  gaps.push(`${leader.sourceId}: ${leader.reason}`);
+                  extraction = previous.extraction;
+                } else {
+                  leader.status = owner.signal.aborted || extraction.reason === 'aborted' ? 'cancelled'
+                    : extraction.status === 'claims' || extraction.status === 'irrelevant' ? 'completed' : 'failed';
+                  leader.reason = leader.status === 'cancelled' ? 'aborted' : extraction.reason;
+                  leader.pendingReanalysis = false;
+                }
                 await store.saveSource(run, { ...leader, passages: body.passages, extraction });
                 emit(leader, 'persist');
               }
@@ -265,8 +383,10 @@ export class ResearchRunService {
                 item.source.status = canonical.status;
                 item.source.aliasOf = canonical.sourceId;
                 item.source.reason = canonical.reason;
+                await store.saveSource(run, { ...item.source, passages: item.body.passages });
                 emit(item.source, 'persist');
               }
+              await syncAliases(canonical);
               await store.saveRun(run);
             } catch (error) {
               if (error instanceof ResearchFixtureExhaustedError) throw error;
@@ -282,9 +402,35 @@ export class ResearchRunService {
       }
       if (owner.signal.aborted) {
         meter.cancel();
-        const taskIds = new Set(tasks.map((source) => source.sourceId));
+        const taskIds = new Set([...tasks, ...staged.map((item) => item.source)]
+          .map((source) => source.sourceId));
         for (const source of run.sources) if (taskIds.has(source.sourceId) &&
           (source.status === 'queued' || source.status === 'extracting')) {
+          if (source.status === 'queued') {
+            const saved = await store.loadSource(run, source.sourceId).catch(() => undefined);
+            if (saved?.status === 'completed') {
+              source.status = 'completed'; source.reason = 'refresh_cancelled';
+              const discoveries = appendNewDiscoveries(saved.discoveries, source.discoveries);
+              await store.saveSource(run, { ...saved, status: source.status, reason: source.reason,
+                discoveries, pendingReanalysis: saved.pendingReanalysis ||
+                  discoveries.length > saved.discoveries.length });
+              gaps.push(`${source.sourceId}: ${source.reason}`);
+              emit(source, 'persist');
+              continue;
+            }
+          }
+          const previous = staged.find((item) => item.source.sourceId === source.sourceId)?.previous;
+          if (previous?.status === 'completed' && previous.extraction &&
+            previous.contentHash === source.contentHash) {
+            source.status = 'completed'; source.reason = 'reanalysis_aborted';
+            source.pendingReanalysis = true;
+            await store.saveSource(run, { ...previous, ...source, passages: previous.passages,
+              extraction: previous.extraction });
+            await syncAliases(source);
+            gaps.push(`${source.sourceId}: ${source.reason}`);
+            emit(source, 'persist');
+            continue;
+          }
           source.status = 'cancelled'; source.reason = 'cancelled'; emit(source, 'collect');
         }
         await store.saveRun(run);

@@ -114,14 +114,15 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
   const requestedUrl = input.url;
   const redirectChain: RedirectHop[] = [];
   const empty = new Uint8Array();
+  let assurance: FetchResult['assurance'];
   const result = (status: FetchResult['status'], reason?: string, extra: Partial<FetchResult> = {}): FetchResult =>
-    ({ requestedUrl, redirectChain, status, reason, bytes: empty, receivedBytes: 0, ...extra });
+    ({ requestedUrl, redirectChain, status, reason, bytes: empty, receivedBytes: 0, ...extra, assurance });
   if (input.signal.aborted) return result('cancelled', 'cancelled');
+  const sourceId = input.sourceId ?? requestedUrl;
   if (!input.preReserved) {
-    const slot = input.budget.reserveFetch();
+    const slot = input.budget.reserveFetch(sourceId);
     if (!slot.ok) return result(slot.reason === 'cancelled' ? 'cancelled' : 'unreadable', slot.reason);
   }
-  const sourceId = input.sourceId ?? requestedUrl;
   const seen = new Set<string>();
   let current = requestedUrl;
   let receivedBytes = 0;
@@ -130,10 +131,15 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
     let key: string;
     try { key = candidateKey(current); }
     catch { return result('network_error', 'unsafe_url', { finalUrl: current, receivedBytes }); }
+    if (new URL(current).pathname.toLowerCase().endsWith('.pdf')) {
+      return result('unsupported_media', 'pdf_url_excluded', { finalUrl: current, receivedBytes });
+    }
     if (seen.has(key)) return result('redirect_error', 'redirect_loop', { finalUrl: current, receivedBytes });
     seen.add(key);
     const route = await prepareResearchRoute(current, deps);
     if (!route.ok) return result('network_error', route.reason, { finalUrl: current, receivedBytes });
+    if (route.assurance === 'proxy_dns_unverified') assurance = route.assurance;
+    else assurance ??= route.assurance;
     let dispatcher: Dispatcher | undefined;
     try {
       dispatcher = createResearchDispatcher(route);
@@ -164,7 +170,7 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
       if (mediaType === 'application/pdf') {
         await response.body?.cancel();
         return result('unsupported_media', 'pdf_not_supported', { finalUrl: current, statusCode,
-          contentType, receivedBytes, assurance: route.assurance });
+          contentType, receivedBytes });
       }
       const body = await readBody(response, sourceId, input.budget, input.signal);
       receivedBytes += body.size;
@@ -185,7 +191,7 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
         continue;
       }
       return result('readable', undefined, { finalUrl: current, statusCode, contentType,
-        canonicalUrl: navigation.canonical, bytes: body.bytes, receivedBytes, assurance: route.assurance });
+        canonicalUrl: navigation.canonical, bytes: body.bytes, receivedBytes });
     } catch {
       return result(input.signal.aborted ? 'cancelled' : 'network_error',
         input.signal.aborted ? 'cancelled' : 'request_failed', { finalUrl: current, receivedBytes });

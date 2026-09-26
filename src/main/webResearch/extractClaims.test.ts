@@ -58,6 +58,17 @@ describe('extractSource', () => {
     expect(truncated.status).toBe('incomplete');
   });
 
+  it('marks a text-only access barrier as needing browser review without claiming irrelevance', async () => {
+    const result = await extractSource({ sourceId: 's1', question: 'Q', angles, discoveries,
+      passages: [{ ...passages[0], text: 'Security verification. Complete the check to continue.' }],
+      completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
+      permits: new ModelPermitPool(2), adapter: { currentRevision: () => 7,
+        complete: async () => reply('{"status":"needs_browser","claims":[]}') } });
+    expect(result.status).toBe('incomplete');
+    expect(result.reason).toBe('needs_browser');
+    expect(result.claims).toHaveLength(0);
+  });
+
   it.each([
     ['length', 'incomplete'], ['aborted', 'incomplete'], ['toolUse', 'failed'],
   ])('handles stopReason %s as %s', async (stopReason, expected) => {
@@ -160,5 +171,18 @@ describe('research model fixture', () => {
       completeness: 'complete', modelSnapshot, budget: meter(), signal: signal(),
       permits: new ModelPermitPool(2), adapter: { currentRevision: () => 7, complete: adapter.complete } }))
       .rejects.toThrow('fixture exhausted');
+  });
+
+  it('resolves an explicit fixture passage selector to the passage ID sent to the model', async () => {
+    fixtureDir = mkdtempSync(path.join(tmpdir(), 'kydog-web-research-'));
+    const fixturePath = path.join(fixtureDir, 'passage-reply.json');
+    writeFileSync(fixturePath, JSON.stringify([{ text: '{"passageId":"{{passageId:HTTPS}}"}', stopReason: 'stop' }]));
+    process.env.KYDOG_E2E = '1';
+    process.env.KYDOG_WEB_RESEARCH_FIXTURE = fixturePath;
+    const adapter = createResearchModelAdapter();
+    const request = { modelSnapshot, systemPrompt: 'system',
+      userText: JSON.stringify({ passages: [{ passageId: 's1:p1', text: '新版要求 HTTPS。' }] }),
+      maxTokens: 100, signal: signal() };
+    expect((await adapter.complete(request)).text).toBe('{"passageId":"s1:p1"}');
   });
 });

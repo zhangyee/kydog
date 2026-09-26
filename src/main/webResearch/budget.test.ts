@@ -52,4 +52,13 @@ describe('ResearchBudgetMeter', () => {
     expect(meter.reserveModelCall()).toEqual({ ok: false, reason: 'model_call_limit' });
     expect(meter.reserveBytes('s1', 1)).toEqual({ ok: false, reason: 'source_byte_limit' });
   });
+
+  it('resets the per-source byte allowance for each new fetch while retaining total usage', () => {
+    const meter = new ResearchBudgetMeter({ ...limits, maxFetches: 2, maxTotalBytes: 10 });
+    expect(meter.reserveFetch('s1')).toEqual({ ok: true });
+    expect(meter.reserveBytes('s1', 5)).toEqual({ ok: true });
+    expect(meter.reserveFetch('s1')).toEqual({ ok: true });
+    expect(meter.reserveBytes('s1', 5)).toEqual({ ok: true });
+    expect(meter.usage.receivedBytes).toBe(10);
+  });
 });

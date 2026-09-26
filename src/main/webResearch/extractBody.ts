@@ -78,7 +78,7 @@ export async function extractBody(input: ExtractBodyInput): Promise<ExtractBodyR
   const mime = mimeType(input.contentType);
   if (mime === 'application/pdf' || isPdf(input.bytes)) return unsupported('pdf_not_supported');
   if (mime && mime !== 'text/html' && mime !== 'application/xhtml+xml' &&
-    mime !== 'text/plain' && mime !== 'text/markdown') return unsupported('unsupported_media');
+    mime !== 'text/plain') return unsupported('unsupported_media');
   const raw = decode(input.bytes, input.contentType);
   const completeness = input.truncated ? 'truncated' : 'complete';
   const looksHtml = mime === 'text/html' || mime === 'application/xhtml+xml' ||

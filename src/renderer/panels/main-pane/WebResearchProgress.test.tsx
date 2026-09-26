@@ -19,7 +19,8 @@ vi.mock('../../stores/webResearchStore', async (importOriginal) => {
 const { WebResearchProgress } = await import('./WebResearchProgress');
 const { useWebResearchStore } = await import('../../stores/webResearchStore');
 const record: ResearchRunIndex = {
-  researchRunId: 'research-a', threadId: 'thread-a', originalQuestion: '新版文档是否要求 HTTPS？',
+  researchRunId: 'research-a', threadId: 'thread-a', createdByRunId: 'agent-a',
+  continuationRunIds: [], originalQuestion: '新版文档是否要求 HTTPS？',
   createdAt: '', updatedAt: '', angles: [], enabledEngines: [], attempts: [], candidates: [],
   budget: { ...DEFAULT_RESEARCH_BUDGET },
   usage: { candidates: 1, fetchesDispatched: 1, receivedBytes: 300, modelCalls: 1 },

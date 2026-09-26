@@ -47,11 +47,27 @@ describe('extractBody', () => {
     expect(body.reason).toBe('pdf_not_supported');
   });
 
+  it('rejects media outside HTML and plain text', async () => {
+    const body = await extractBody({ bytes: bytes('# Document'), contentType: 'text/markdown', finalUrl, sourceId });
+    expect(body.status).toBe('unsupported_media');
+    expect(body.passages).toEqual([]);
+  });
+
   it('treats an explicit verification widget as needs_browser rather than irrelevant content', async () => {
     const html = '<html><body><main><h1>Verify</h1><form><input name="captcha"></form></main></body></html>';
     const body = await extractBody({ bytes: bytes(html), contentType: 'text/html', finalUrl, sourceId });
     expect(body.status).toBe('needs_browser');
     expect(body.passages).toEqual([]);
+  });
+
+  it('leaves text-only verification semantics to extraction instead of guessing from a heading', async () => {
+    const html = '<html><body><main><h1>Verify you are human</h1><p>Complete the security check to continue.</p></main></body></html>';
+    const body = await extractBody({ bytes: bytes(html), contentType: 'text/html', finalUrl, sourceId });
+    expect(body.status).toBe('readable');
+    expect(body.passages.map((passage) => passage.text).join(' ')).toContain('Complete the security check');
+    const article = await extractBody({ bytes: bytes('<main><h1>Verify you are human</h1><p>This article explains CAPTCHA design.</p></main>'),
+      contentType: 'text/html', finalUrl, sourceId });
+    expect(article.status).toBe('readable');
   });
 
   it('does not invent article content for an empty or script-only page', async () => {

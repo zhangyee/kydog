@@ -21,7 +21,7 @@ describe('fetchSource', () => {
       cancel() { cancelled = true; },
     });
     const meter = budget();
-    const result = await fetchSource({ url: 'https://docs.example/paper.pdf', budget: meter,
+    const result = await fetchSource({ url: 'https://docs.example/opaque', budget: meter,
       signal: new AbortController().signal }, deps(async () => new Response(stream, {
         headers: { 'content-type': 'application/pdf' },
       })));
@@ -78,6 +78,19 @@ describe('fetchSource', () => {
     expect(new TextDecoder().decode(result.bytes)).toBe('Page body');
   });
 
+  it('retains proxy DNS uncertainty if an earlier redirect hop used a proxy', async () => {
+    const result = await fetchSource({ url: 'https://docs.example/start', budget: budget(),
+      signal: new AbortController().signal }, {
+      resolveProxy: async (url) => url.endsWith('/start') ? 'PROXY proxy.example:8080' : 'DIRECT',
+      resolveDns: publicDns,
+      httpClient: async (url) => url.endsWith('/start')
+        ? new Response(null, { status: 302, headers: { location: 'https://docs.example/final' } })
+        : new Response('body', { headers: { 'content-type': 'text/plain' } }),
+    });
+    expect(result.status).toBe('readable');
+    expect(result.assurance).toBe('proxy_dns_unverified');
+  });
+
   it('跨站 Location 指向内网时不派发第二跳', async () => {
     const client = vi.fn(async () => new Response(null, { status: 302,
       headers: { location: 'http://10.1.2.3/admin' } }));
@@ -86,6 +99,16 @@ describe('fetchSource', () => {
     expect(result.status).toBe('network_error');
     expect(result.reason).toBe('unsafe_url');
     expect(result.redirectChain[0].toUrl).toBe('http://10.1.2.3/admin');
+  });
+
+  it('does not request a redirect target explicitly labeled PDF', async () => {
+    const client = vi.fn(async () => new Response(null, { status: 302,
+      headers: { location: 'https://docs.example/paper.pdf' } }));
+    const result = await fetchSource({ url: 'https://docs.example/start', budget: budget(),
+      signal: new AbortController().signal }, deps(client));
+    expect(result.status).toBe('unsupported_media');
+    expect(result.reason).toBe('pdf_url_excluded');
+    expect(client).toHaveBeenCalledTimes(1);
   });
 
   it('循环和缺失 Location 各有明确原因', async () => {

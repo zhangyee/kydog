@@ -62,6 +62,12 @@ export type ResearchSourceIndex = {
   sourceId: string;
   requestedUrl: string;
   finalUrl?: string;
+  redirectChain?: RedirectHop[];
+  statusCode?: number;
+  contentType?: string;
+  canonicalUrl?: string;
+  assurance?: 'dns_pinned' | 'proxy_dns_unverified';
+  publishedAt?: string;
   contentHash?: string;
   completeness?: 'complete' | 'truncated' | 'unknown';
   status: ResearchTaskStatus;
@@ -70,11 +76,16 @@ export type ResearchSourceIndex = {
   receivedBytes?: number;
   evidenceIds?: string[];
   aliasOf?: string;
+  /** Last grounded extraction predates one or more saved discoveries. */
+  pendingReanalysis?: boolean;
 };
 /** Safe for renderer and model-visible lists: passage text lives only in source files. */
 export type ResearchRunIndex = {
   researchRunId: string;
   threadId: string;
+  createdByRunId: string;
+  continuationRunIds: string[];
+  modelSnapshot?: { providerId: string; modelId: string; runtimeRevision: number };
   originalQuestion: string;
   createdAt: string;
   updatedAt: string;

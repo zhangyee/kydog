@@ -13,7 +13,8 @@ async function setup() {
   return new RunStore(root);
 }
 const makeRun = (threadId: string): ResearchRunRecord => ({
-  researchRunId: randomUUID(), threadId, originalQuestion: '新版协议？', createdAt: new Date().toISOString(),
+  researchRunId: randomUUID(), threadId, createdByRunId: randomUUID(), continuationRunIds: [],
+  originalQuestion: '新版协议？', createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(), angles: [{ id: 'a', label: '协议', query: 'v2 protocol' }],
   enabledEngines: ['bing'], attempts: [], candidates: [], budget: { ...DEFAULT_RESEARCH_BUDGET },
   usage: { candidates: 0, fetchesDispatched: 0, receivedBytes: 0, modelCalls: 0 }, sources: [],

@@ -53,7 +53,8 @@ describe('web research tools', () => {
       extraction: { sourceId, status: 'claims', claims: [], examinedPassageIds: [passageId], gaps: [],
         evidence: [{ evidenceId, sourceId, claimId: `${sourceId}:c0`, passageId,
           quote: '要求 HTTPS', relation: 'supports', verification: 'grounded' }] } };
-    const run: ResearchRunRecord = { researchRunId, threadId, originalQuestion: 'Q',
+    const run: ResearchRunRecord = { researchRunId, threadId, createdByRunId: 'run-1',
+      continuationRunIds: [], originalQuestion: 'Q',
       createdAt: '', updatedAt: '', angles: [], enabledEngines: [], attempts: [], candidates: [],
       budget: { ...DEFAULT_RESEARCH_BUDGET }, usage: result.usage,
       sources: [{ sourceId, requestedUrl: source.requestedUrl, finalUrl: source.finalUrl,
