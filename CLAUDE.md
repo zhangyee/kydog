@@ -50,6 +50,8 @@ CI 里靠 `KYDOG_REQUIRE_SYMLINK=1` 反过来**禁止跳过**：能力缺失就�
 
 ## 约定
 
+- **Superpowers 文档位置**：设计 spec 放 `docs/superpowers/specs/`，实施 plan 放 `docs/superpowers/plans/`，不要放 `docs/scratch/` 或其他目录。两类文档都只在本地保存，不进 Git；创建后用 `git check-ignore -v <路径>` 确认被忽略，不要提交。
+- **隔离 worktree 位置**：建在项目根目录的 `.codex/worktrees/<主题>/`，方便从项目工作区查看；不要建到用户目录下的 `.codex/worktrees/`。项目根目录的 `.codex/` 必须被 Git 忽略。
 - **不要引入危险色**。设计系统里没有红色 token，破坏性操作走统一的 `confirm()` 对话框，不靠颜色警示。
 - **往 `vite.main.config.ts` 的 `external` 加包** → 同步 `forge.config.ts` 的 `EXTERNAL_RUNTIME_MODULES`。external 的包不进 bundle，只以裸名留在产物里，运行时按 Node 规则找 `node_modules`；打包成品里没有它就是 `ERR_MODULE_NOT_FOUND`。**开发机上看不出来**：`out/` 在仓库内，解析会一路上溯摸到 `<repo>/node_modules`，借开发树的货照样跑。守这条的是 `e2e/54-packaged-smoke` 的断言 2b（它把成品复制到仓库外再启动），而 e2e 要先 `npm run package`，只跑 gate 命令发现不了。
 - **改了 `src/shared/zhSidecar.ts` 的 `BLOCK_KINDS` / `PLACEHOLDER_KINDS` / `PLACEHOLDER_SCRIPTS`** → 同步 `src/main/harness/templates/{zh,en}/AGENTS.md` 里那份契约（bullet 列表与「只认这 N 个值」的数目）。模板是 agent 写译文边车时唯一读得到的说明，一个不认识的值会让**整份文件**被拒。守这条的是 `templates.test.ts`（集合相等，两个方向都守）。
