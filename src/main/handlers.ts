@@ -10,6 +10,7 @@ import { settingsService, toRendererSettings } from './settings/settingsService'
 import { researchService } from './research/researchService';
 import { researchRunStore } from './webResearch/runStore';
 import { readEvidence } from './webResearch/evidenceReader';
+import { getWebResearchTaskService } from './webResearch/service';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
@@ -143,6 +144,24 @@ export function registerAllHandlers(): void {
     assertResearchViewer(args.threadId, evt.sender);
     const run = await researchRunStore.loadRun(args.threadId, args.researchRunId);
     return readEvidence(run, args.evidenceId, (record, sourceId) => researchRunStore.loadSource(record, sourceId));
+  });
+  registerHandler('webResearch.taskList', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().list(args.threadId);
+  });
+  registerHandler('webResearch.taskGet', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().get(args.threadId, args.researchRunId);
+  });
+  registerHandler('webResearch.taskSiteIcon', async (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    const dataUrl = await getWebResearchTaskService()
+      .siteIcon(args.threadId, args.researchRunId, args.domain);
+    return { domain: args.domain, ...(dataUrl ? { dataUrl } : {}) };
+  });
+  registerHandler('webResearch.taskInspect', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().inspect(args.threadId, args.researchRunId, args);
   });
 
   // ── 内置浏览器（侧栏那条路）──

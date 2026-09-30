@@ -47,7 +47,7 @@ import { BROWSER_PARTITION } from '../src/main/browser/partition';
  *  · **侧栏从没打开过**（接 agent）：整次启动一次都不开侧栏 —— E-2 那条断的就是「一次 syncView
  *    都没发过」，所以它排第一，后面几条也不许开侧栏。性能那条（opt-in）排最后：它往自己的标签里
  *    塞十二万个节点。
- *  · **侧栏开着**（接 agent，`beforeAll` 就把侧栏打开）：点链接 → composer（**依赖上一条**：
+ *  · **侧栏开着**（接 agent，`beforeAll` 打开；第一条真实关闭、后台操作并恢复）：点链接 → composer（**依赖上一条**：
  *    它跑完一轮之后线程里才有消息，底部那个日常 Composer 才在）→ 拖宽度（从此侧栏变窄）→
  *    标签多到横滚 → 渲染层重载（**必须最后**：它把渲染层整个换掉）。
  *  · **1:1** 单独一次：它会切 page scale、横移 visual viewport，截整张仿真 surface 数像素。
@@ -271,6 +271,7 @@ type ToolOutcome = { text: string; status: 'ok' | 'failed' };
 async function runTools(
   page: Page, fixturePath: string, calls: ToolCall[],
   duringRun?: (page: Page) => Promise<unknown>,
+  reuseCurrentThread = false,
 ): Promise<Map<string, ToolOutcome>> {
   await fsp.writeFile(fixturePath, JSON.stringify(toolScript(calls), null, 2));
   // 收集器要挂在**建 thread 之前**：事件一到就得有人接着，补不回来。
@@ -287,7 +288,9 @@ async function runTools(
     window.kydog.on('run.ended', (p) => { box.ended = { reason: p.reason, errorMessage: p.errorMessage }; });
   });
 
-  await newThread(page);
+  // fixture session 会在每一轮 prompt 的边界重新读取剧本，因此需要根据上一轮真实
+  // 工具结果（例如现铸的 tabId）编下一轮时，可以留在同一个 thread 继续跑。
+  if (!reuseCurrentThread) await newThread(page);
   // 新建之后输入框会换一个实例，字可能填进正要卸载的那个（发送键就一直禁用）：填到字真的在
   // 当前这个输入框里为止（fill 是整体替换，重复无副作用）。
   const composer = page.getByTestId('composer-input');
@@ -645,6 +648,120 @@ test.describe('61-browser · 一次启动：侧栏从没打开过', () => {
     expect(rect.h, '高度也必须是真的，不是 0').toBe(40);
   });
 
+  test('侧栏从没打开过：后台 B 的 type 和下一轮 Enter 提交表单且不改变活动 A', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    await expect(page.getByTestId('browser-stage')).toHaveCount(0);
+    const a = await openTab(page, 'https://example.com/hidden-key-a/');
+    const opened = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-hidden-key-open', name: 'browser_open',
+      args: { url: 'https://example.org/hidden-key-b/' },
+    }])).get('tc-hidden-key-open')!;
+    const bId = opened.text.match(/\[(tab_[^\]]+)\] example\.org\b/)?.[1];
+    expect(bId).toBeTruthy();
+    if (!bId) throw new Error('找不到后台 B 标签');
+    await inPage(app, 'example.org/hidden-key-b/', `(() => {
+      document.body.innerHTML = '<form id="f"><input id="q" aria-label="检索词"></form>';
+      document.querySelector('#f').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const q = document.querySelector('#q');
+        location.href = 'https://example.net/hidden-key-result/?q=' + encodeURIComponent(q.value)
+          + '&focused=' + (document.hasFocus() ? '1' : '0');
+      });
+      return true;
+    })()`);
+    const typed = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-hidden-key-type', name: 'browser_act',
+      args: { tabId: bId, actions: [{ kind: 'type', selector: '#q', text: 'microvm' }] },
+    }], undefined, true)).get('tc-hidden-key-type')!;
+    expect(typed.status, typed.text).toBe('ok');
+    const acted = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-hidden-key-enter', name: 'browser_act', args: {
+        tabId: bId, actions: [
+          { kind: 'key', key: 'Enter' },
+          { kind: 'wait', until: { urlMatches: 'hidden-key-result' }, timeoutMs: 5_000 },
+        ],
+      },
+    }], undefined, true)).get('tc-hidden-key-enter')!;
+    expect(acted.status, acted.text).toBe('ok');
+    expect(await inPage<string>(app, 'example.net/hidden-key-result/', 'location.href'))
+      .toBe('https://example.net/hidden-key-result/?q=microvm&focused=1');
+    expect(acted.text).toContain(`[${a.tabId}]* example.com`);
+    expect(acted.text).not.toContain('临时切换');
+    await expect(page.getByTestId('browser-stage')).toHaveCount(0);
+  });
+
+  test('侧栏从没打开过：后台标签的真实按钮 click 能提交并导航', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    const a = await openTab(page, 'https://example.com/hidden-click-a/');
+    const opened = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-hidden-click-open', name: 'browser_open',
+      args: { url: 'https://example.org/hidden-click-b/' },
+    }])).get('tc-hidden-click-open')!;
+    const bId = opened.text.match(/\[(tab_[^\]]+)\] example\.org\b/)?.[1];
+    expect(bId).toBeTruthy();
+    if (!bId) throw new Error('找不到后台 click 标签');
+    await inPage(app, 'example.org/hidden-click-b/', `(() => {
+      document.body.innerHTML = '<form id="f"><button id="go" type="submit">搜索</button></form>';
+      document.querySelector('#f').addEventListener('submit', (event) => {
+        event.preventDefault();
+        location.href = 'https://example.net/hidden-click-result/?focused='
+          + (document.hasFocus() ? '1' : '0');
+      });
+      return true;
+    })()`);
+    const acted = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-hidden-click', name: 'browser_act', args: {
+        tabId: bId, actions: [
+          { kind: 'click', selector: '#go' },
+          { kind: 'wait', until: { urlMatches: 'hidden-click-result' }, timeoutMs: 5_000 },
+        ],
+      },
+    }], undefined, true)).get('tc-hidden-click')!;
+    expect(acted.status, acted.text).toBe('ok');
+    expect(await inPage<string>(app, 'example.net/hidden-click-result/', 'location.href'))
+      .toBe('https://example.net/hidden-click-result/?focused=1');
+    expect(acted.text).toContain(`[${a.tabId}]* example.com`);
+    expect(acted.text).not.toContain('临时切换');
+    await expect(page.getByTestId('browser-stage')).toHaveCount(0);
+  });
+
+  test('后台 Enter 触发 window.open 时新标签仍归当前 agent', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    await openTab(page, 'https://example.com/popup-owner-a/');
+    const opened = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-popup-owner-open', name: 'browser_open',
+      args: { url: 'https://example.org/popup-owner-b/' },
+    }])).get('tc-popup-owner-open')!;
+    const bId = opened.text.match(/\[(tab_[^\]]+)\] example\.org\b/)?.[1];
+    expect(bId).toBeTruthy();
+    if (!bId) throw new Error('找不到后台 popup 标签');
+    await inPage(app, 'example.org/popup-owner-b/', `(() => {
+      document.body.innerHTML = '<form id="f"><input id="q"></form>';
+      document.querySelector('#f').addEventListener('submit', (event) => {
+        event.preventDefault();
+        window.open('https://example.net/popup-owned/', '_blank');
+      });
+      return true;
+    })()`);
+    const typed = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-popup-owner-type', name: 'browser_act',
+      args: { tabId: bId, actions: [{ kind: 'type', selector: '#q', text: 'open' }] },
+    }], undefined, true)).get('tc-popup-owner-type')!;
+    expect(typed.status, typed.text).toBe('ok');
+    const acted = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-popup-owner-enter', name: 'browser_act',
+      args: { tabId: bId, actions: [{ kind: 'key', key: 'Enter' }] },
+    }], undefined, true)).get('tc-popup-owner-enter')!;
+    expect(acted.status, acted.text).toBe('ok');
+    expect(acted.text).toContain('这一批里新开了 1 个标签页');
+    expect(acted.text).toContain('https://example.net/popup-owned/');
+    expect(await inPage<string>(app, 'example.net/popup-owned/', 'location.href'))
+      .toBe('https://example.net/popup-owned/');
+  });
+
   /**
    * `e2e-requirements.md` **E-1a**：extract 必须跑在隔离世界 —— 这一条走的是
    * **真的 `browser_act` 工具**（`runStep` 的 extract 分支 → `browserService.evalInPage`），
@@ -981,8 +1098,8 @@ test.describe('61-browser · 一次启动：侧栏从没打开过', () => {
 
 // ══ 一次启动：侧栏开着 ═════════════════════════════════════════════════════════
 //
-// `beforeAll` 就把侧栏打开，之后谁都不再去点那个开关。顺序约束见文件头：composer 那条
-// 依赖点链接那条跑完的线程；拖宽度之后侧栏一直是窄的；渲染层重载必须最后。
+// `beforeAll` 先打开侧栏；第一条覆盖「关闭后仍可操作」并在结束前恢复。顺序约束见文件头：
+// composer 那条依赖点链接那条跑完的线程；拖宽度之后侧栏一直是窄的；渲染层重载必须最后。
 test.describe('61-browser · 一次启动：侧栏开着', () => {
   test.describe.configure({ mode: 'serial' });
   let env: OfflineApp;
@@ -991,6 +1108,167 @@ test.describe('61-browser · 一次启动：侧栏开着', () => {
     await openSidebar(env.launched.page);
   });
   test.afterAll(async () => { await env?.close(); });
+
+  test('用户看 A 时可操作隐藏 B；侧栏关闭后仍可操作，重开仍显示 A', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    const a = await openTab(page, 'https://example.com/visible-user-a/');
+    await expect(page.getByTestId('browser-url')).toHaveValue('https://example.com/visible-user-a/');
+    const opened = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-visible-hidden-open', name: 'browser_open',
+      args: { url: 'https://example.org/visible-hidden-b/' },
+    }])).get('tc-visible-hidden-open')!;
+    const bId = opened.text.match(/\[(tab_[^\]]+)\] example\.org\b/)?.[1];
+    expect(bId).toBeTruthy();
+    if (!bId) throw new Error('找不到隐藏 B 标签');
+    await inPage(app, 'example.org/visible-hidden-b/', `(() => {
+      document.body.innerHTML = '<button id="go">继续</button>';
+      document.querySelector('#go').addEventListener('click', () => {
+        location.href = 'https://example.net/visible-hidden-one/';
+      });
+      return true;
+    })()`);
+    const first = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-visible-hidden-first', name: 'browser_act', args: {
+        tabId: bId, actions: [
+          { kind: 'click', selector: '#go' },
+          { kind: 'wait', until: { urlMatches: 'visible-hidden-one' }, timeoutMs: 5_000 },
+        ],
+      },
+    }], undefined, true)).get('tc-visible-hidden-first')!;
+    expect(first.status, first.text).toBe('ok');
+    await expect(page.getByTestId('browser-url')).toHaveValue('https://example.com/visible-user-a/');
+
+    await page.getByTestId('titlebar-browser').click();
+    await expect(page.getByTestId('browser-stage')).toHaveCount(0);
+    await inPage(app, 'example.net/visible-hidden-one/', `(() => {
+      document.body.innerHTML = '<button id="go">继续</button>';
+      document.querySelector('#go').addEventListener('click', () => {
+        location.href = 'https://example.org/visible-hidden-two/';
+      });
+      return true;
+    })()`);
+    const second = (await runTools(page, fixturePath, [{
+      toolCallId: 'tc-visible-hidden-second', name: 'browser_act', args: {
+        tabId: bId, actions: [
+          { kind: 'click', selector: '#go' },
+          { kind: 'wait', until: { urlMatches: 'visible-hidden-two' }, timeoutMs: 5_000 },
+        ],
+      },
+    }], undefined, true)).get('tc-visible-hidden-second')!;
+    expect(second.status, second.text).toBe('ok');
+    expect(second.text).toContain(`[${a.tabId}]* example.com`);
+
+    await openSidebar(page);
+    await expect(page.getByTestId('browser-url')).toHaveValue('https://example.com/visible-user-a/');
+    await expect(page.getByTestId('browser-stage')).toBeVisible();
+  });
+
+  /** 真 Electron 主路径：用户继续看 A，CDP focus emulation 让隐藏 B 接收 Enter。 */
+  test('用户看 A 时隐藏 B 的 type 和下一轮 Enter 能提交，且不改变活动标签', async () => {
+    const { app, page } = env.launched;
+    const { fixturePath } = env;
+    await expect(page.getByTestId('browser-stage'), '这次启动的侧栏应当已经开着（beforeAll）').toBeVisible();
+
+    // A 是用户显式打开的活动标签。B 随后由 agent 的 browser_open 新建；产品契约是
+    // agent 新标签不抢活动位，所以 B 从创建起就不曾前台。
+    const a = await openTab(page, 'https://example.com/background-key-a/');
+    const openRes = await runTools(page, fixturePath, [{
+      toolCallId: 'tc-background-open', name: 'browser_open',
+      args: { url: 'https://example.org/background-key-b/' },
+    }]);
+    const opened = openRes.get('tc-background-open')!;
+    expect(opened.status, `browser_open 应当成功，实际结果：${opened.text.slice(0, 500)}`).toBe('ok');
+    expect(opened.text, 'B 建好后，工具返回的活动星号必须仍在 A 上').toContain(`[${a.tabId}]* example.com`);
+    // 这个正向匹配刻意要求 `]` 后面立刻是空格；若 B 带 `*` 成了活动标签，它不会命中。
+    const bId = opened.text.match(/\[(tab_[^\]]+)\] example\.org\b/)?.[1];
+    expect(bId, `browser_open 应当回显一张未带活动星号的 example.org 标签。实际结果：${opened.text.slice(0, 800)}`)
+      .toBeTruthy();
+    if (!bId) throw new Error('上面的断言已经说明：找不到从创建起就在后台的 B 标签');
+
+    const bReady = await inPage<string>(
+      app, 'example.org/background-key-b/', `(() => {
+        document.body.innerHTML = '<form id="kydog-background-form">'
+          + '<input id="kydog-background-q" aria-label="后台检索词"></form>';
+        const form = document.getElementById('kydog-background-form');
+        const q = document.getElementById('kydog-background-q');
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          location.href = 'https://example.net/background-key-result/?q=' + encodeURIComponent(q.value)
+            + '&focused=' + (document.hasFocus() ? '1' : '0');
+        });
+        return q.value;
+      })()`,
+    );
+    expect(bReady, 'B 的输入框在 browser_act 开始前必须还是空的').toBe('');
+
+    // 先单独输入，下一轮才按 Enter：真实 DDG 的失败就是 type 成功返回、页面在后台待过
+    // 一段时间后，再来一个独立 key 动作。把两步塞在同一批会漏掉这个形状。
+    const typeRes = await runTools(page, fixturePath, [{
+      toolCallId: 'tc-background-type', name: 'browser_act',
+      args: {
+        tabId: bId,
+        actions: [{ kind: 'type', selector: '#kydog-background-q', text: 'microvm' }],
+      },
+    }], undefined, true);
+    const typed = typeRes.get('tc-background-type')!;
+    expect(typed.status, `后台 type 应当成功。实际结果：${typed.text.slice(0, 800)}`).toBe('ok');
+    expect(await inPage<string>(app, 'example.org/background-key-b/',
+      "document.querySelector('#kydog-background-q').value")).toBe('microvm');
+
+    // 直接订阅主进程的标签状态广播；不靠截图、时间窗或原生 view 层级猜中间态。
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        __kydogBackgroundKeyActiveTrace?: Array<string | null>;
+        __kydogStopBackgroundKeyTrace?: () => void;
+      };
+      w.__kydogBackgroundKeyActiveTrace = [];
+      w.__kydogStopBackgroundKeyTrace = window.kydog.on('browser.tabsChanged', (state) => {
+        w.__kydogBackgroundKeyActiveTrace!.push(state.activeTabId);
+      });
+    });
+
+    // 同一个 thread 的下一轮：fixture session 会在 prompt 边界重读剧本。这样拿上一轮
+    // 真实现铸的 bId 继续操作，没有测试专用入口，也没有把 B 转成用户标签。
+    const actRes = await runTools(page, fixturePath, [{
+      toolCallId: 'tc-background-enter', name: 'browser_act',
+      args: {
+        tabId: bId,
+        actions: [
+          { kind: 'key', key: 'Enter' },
+          { kind: 'wait', until: { urlMatches: 'background-key-result' }, timeoutMs: 5_000 },
+        ],
+      },
+    }], undefined, true);
+    const acted = actRes.get('tc-background-enter')!;
+
+    const activeTrace = await page.evaluate(() => {
+      const w = window as unknown as {
+        __kydogBackgroundKeyActiveTrace?: Array<string | null>;
+        __kydogStopBackgroundKeyTrace?: () => void;
+      };
+      w.__kydogStopBackgroundKeyTrace?.();
+      return w.__kydogBackgroundKeyActiveTrace ?? [];
+    });
+    const activeTransitions = activeTrace
+      .filter((id): id is string => id === a.tabId || id === bId)
+      .filter((id, i, all) => i === 0 || id !== all[i - 1]);
+    expect(await inPage<string>(app, 'example.net/background-key-result/', 'location.href'),
+      `B 应当因 Enter 提交表单并带着 type 的值导航。工具结果：${acted.text.slice(0, 1600)}`)
+      .toBe('https://example.net/background-key-result/?q=microvm&focused=1');
+    expect(activeTransitions,
+      `后台输入不应把活动位切到 B。完整广播：${JSON.stringify(activeTrace)}`)
+      .not.toContain(bId);
+
+    expect(acted.status, `browser_act 工具级不该抛。实际结果：${acted.text.slice(0, 800)}`).toBe('ok');
+    expect(acted.text).toContain('第 1 个动作：按下 Enter');
+    expect(acted.text, 'focus emulation 不改变 UI，回执不应再声称切换/恢复标签').not.toContain('临时切换');
+    expect(acted.text, '第二步必须真的等到 B 的导航，不能只凭按键命令返回成功')
+      .toContain('第 2 个动作：等到了：地址里出现 "background-key-result"');
+    expect(acted.text, '整批结束后活动星号仍必须在 A 上').toContain(`[${a.tabId}]* example.com`);
+    expect(acted.text, '整批结束后 B 必须仍是未带星号的后台标签，且 URL 已是结果页')
+      .toContain(`[${bId}] example.net`);
+  });
 
   /**
    * 手测 A-2 的原始失败链。两段：① 侧栏开着时 CDP 点击坐标没乘 emulation scale，链接根本

@@ -9,7 +9,8 @@ export type SearchAttempt = {
   engineId: SearchEngineId;
   query: string;
   searchPageUrl?: string;
-  status: 'results' | 'explicit_empty' | 'blocked' | 'navigation_error' | 'extraction_error';
+  status: 'results' | 'explicit_empty' | 'blocked' | 'submission_error' |
+    'navigation_error' | 'extraction_error';
   reason?: string;
 };
 export type Discovery = {
@@ -48,11 +49,14 @@ export type ExtractedClaim = {
   evidenceIds: string[];
   verification: 'grounded' | 'unverified';
 };
+export type SourceBarrier = { passageId: string; quote: string; detail?: string };
 export type SourceExtraction = {
   sourceId: string;
   status: 'claims' | 'irrelevant' | 'incomplete' | 'failed';
   claims: ExtractedClaim[];
   evidence: Evidence[];
+  /** Grounded access barriers; absent only on records saved before this field existed. */
+  barriers?: SourceBarrier[];
   examinedPassageIds: string[];
   gaps: string[];
   reason?: string;
@@ -235,7 +239,8 @@ export function validateCollectInput(raw: unknown): CollectInput {
     if (!attemptAngleIds.length || new Set(attemptAngleIds).size !== attemptAngleIds.length ||
         attemptAngleIds.some((id) => !angleIds.has(id))) fail('attempt.angleIds');
     const status = a.status;
-    if (!['results', 'explicit_empty', 'blocked', 'navigation_error', 'extraction_error'].includes(String(status))) fail('attempt.status');
+    if (!['results', 'explicit_empty', 'blocked', 'submission_error',
+      'navigation_error', 'extraction_error'].includes(String(status))) fail('attempt.status');
     return { attemptId: nonempty(a.attemptId, 'attempt.attemptId'), angleIds: attemptAngleIds,
       engineId, query: nonempty(a.query, 'attempt.query'),
       searchPageUrl: a.searchPageUrl === undefined ? undefined : httpUrl(a.searchPageUrl, 'attempt.searchPageUrl'),

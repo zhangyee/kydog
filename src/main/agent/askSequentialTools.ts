@@ -6,19 +6,16 @@ import { ASK_TOOL_NAME } from '../../shared/askQuestion';
  * 名字写成字面量而不是从 `browserTools.ts` import：那个模块 import
  * `browserService`，而 `browserService` import 的是 electron 的
  * `WebContentsView` / `session` —— 本模块被 `AgentService` 与一堆纯逻辑用例引用，
- * 不该为四个字符串把整条 electron 依赖拖进来。**两边不漂由用例守**：
+ * 不该为这几个字符串把整条 electron 依赖拖进来。**两边不漂由用例守**：
  * `sessionFactory.browserTools.test.ts` 拿真正交给 pi 的那份 `customTools`
  * 与本名单做双向比对（少登记、以及登记了却没注册，都会红）。
  */
 export const SEQUENTIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   ASK_TOOL_NAME,
-  'browser_open',
-  'browser_act',
   'browser_read',
   'browser_login',
   'browser_download',
-  'web_research_collect',
-  'web_research_evidence',
+  'web_research_task',
 ]);
 
 type ContentLike = { type?: string; id?: string; name?: string };

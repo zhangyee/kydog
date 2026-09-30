@@ -1,76 +1,91 @@
 import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_RESEARCH_BUDGET } from '../webResearch/budget';
 import { createWebResearchTools } from './webResearchTools';
-import type { CollectInput } from '../../shared/webResearch';
-import type { ResearchRunRecord, SavedSource } from '../webResearch/runStore';
+import { DEFAULT_WEB_RESEARCH_TASK_BUDGET, type WebResearchTaskSnapshot } from '../../shared/webResearchTask';
 
 const threadId = randomUUID();
 const researchRunId = randomUUID();
-const params: CollectInput = {
-  originalQuestion: '新版文档要求 HTTPS 吗？', angles: [{ id: 'a', label: '安全', query: 'v2 HTTPS' }],
-  enabledEngines: ['bing'], attempts: [], discoveries: [], budget: { ...DEFAULT_RESEARCH_BUDGET }, refresh: false,
-};
-const result = { researchRunId, angles: [], sources: [], attempts: [], budget: { ...DEFAULT_RESEARCH_BUDGET },
-  usage: { candidates: 0, fetchesDispatched: 0, receivedBytes: 0, modelCalls: 0 }, gaps: [] };
+const snapshot: WebResearchTaskSnapshot = { researchRunId, threadId, originalQuestion: 'Q', revision: 1,
+  status: 'running', createdAt: '', updatedAt: '', budget: { ...DEFAULT_WEB_RESEARCH_TASK_BUDGET },
+  usage: { candidates: 1, fetchesDispatched: 0, receivedBytes: 0, modelCalls: 0 },
+  counts: { discoveries: 1, sources: 1, queued: 1, fetching: 0, extracting: 0, completed: 0,
+    failed: 0, cancelled: 0, unprocessed: 0, processed: 0, evidenceReady: 0,
+    irrelevant: 0, claims: 0, evidence: 0 }, sites: [] };
 
-describe('web research tools', () => {
-  it('binds collect to the session thread and current run, without accepting a caller thread ID', async () => {
-    const collect = vi.fn(async () => result);
-    const tools = createWebResearchTools({ threadId, currentRunId: () => 'run-1', onProgress: () => {},
-      collect, loadRun: vi.fn() });
-    expect(tools.map((tool) => tool.name)).toEqual(['web_research_collect', 'web_research_evidence']);
-    const response = await tools[0].execute('call-1', params, new AbortController().signal);
-    expect(collect).toHaveBeenCalledWith(expect.objectContaining({ originalQuestion: params.originalQuestion }),
-      expect.objectContaining({ threadId, runId: 'run-1', toolCallId: 'call-1' }), expect.any(Function));
+function harness() {
+  const service = {
+    submit: vi.fn(async () => ({ researchRunId, created: true, accepted: 1, duplicates: 0,
+      unresolved: 0, rejected: 0, observationResults: [], snapshot })),
+    inspect: vi.fn(async () => ({ snapshot, items: [], nextCursor: undefined })),
+    whenIdle: vi.fn(async () => {}),
+    get: vi.fn(async () => snapshot),
+    complete: vi.fn(async () => ({ completed: true as const, reportPath: '/project/report.md',
+      snapshot: { ...snapshot, status: 'completed' as const, reportPath: '/project/report.md' } })),
+    control: vi.fn(async () => snapshot),
+  };
+  const tools = createWebResearchTools({ threadId, projectRoot: '/project',
+    currentRunId: () => 'run-1', service });
+  return { service, tools, tool: tools[0] };
+}
+
+describe('web_research_task', () => {
+  it('sends an object-rooted parameter schema to OpenAI-compatible providers', () => {
+    const { tool } = harness();
+    const schema = JSON.parse(JSON.stringify(tool.parameters)) as { type?: string; required?: string[] };
+    expect(schema.type).toBe('object');
+    expect(schema.required).toContain('action');
+  });
+
+  it('exposes one tool and binds submit to the session thread/project', async () => {
+    const { service, tools, tool } = harness();
+    expect(tools.map((item) => item.name)).toEqual(['web_research_task']);
+    const response = await tool.execute('call-1', { action: 'submit', originalQuestion: 'Q',
+      angles: [{ id: 'a', label: 'A', query: 'q' }],
+      observationSelections: [{ observationId: 'o-1', resultIndexes: [1, 3] }] });
+    expect(service.submit).toHaveBeenCalledWith(expect.objectContaining({
+      observationSelections: [{ observationId: 'o-1', resultIndexes: [1, 3] }],
+    }),
+      { threadId, runId: 'run-1', projectRoot: '/project' });
     expect(JSON.stringify(response)).toContain(researchRunId);
-    await expect(tools[0].execute('call-2', { ...params, threadId: randomUUID() }, new AbortController().signal))
-      .rejects.toThrow();
-    expect(collect).toHaveBeenCalledTimes(1);
+    await expect(tool.execute('call-2', { action: 'submit', originalQuestion: 'Q', angles: [],
+      threadId: randomUUID() })).rejects.toThrow('threadId');
+    expect(service.submit).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects invalid budgets before collection and forbids cross-thread evidence reads', async () => {
-    const collect = vi.fn(async () => result);
-    const loadRun = vi.fn(async () => { throw Object.assign(new Error('missing'), { code: 'research.not_found' }); });
-    const tools = createWebResearchTools({ threadId, currentRunId: () => 'run-1', onProgress: () => {},
-      collect, loadRun });
-    await expect(tools[0].execute('call-1', { ...params, budget: { maxFetches: -1 } },
-      new AbortController().signal)).rejects.toThrow();
-    expect(collect).toHaveBeenCalledTimes(0);
-    await expect(tools[1].execute('call-2', { researchRunId, evidenceIds: ['source:c0:e0'] },
-      new AbortController().signal)).rejects.toMatchObject({ code: 'research.not_found' });
-    expect(loadRun).toHaveBeenCalledWith(threadId, researchRunId);
+  it('routes inspection and completion through the same owner-scoped task', async () => {
+    const { service, tool } = harness();
+    await tool.execute('call-1', { action: 'inspect', researchRunId, view: 'claims', pageSize: 20 });
+    expect(service.inspect).toHaveBeenCalledWith(threadId, researchRunId,
+      expect.objectContaining({ view: 'claims', pageSize: 20 }));
+    await tool.execute('call-2', { action: 'complete', researchRunId, reportMarkdown: '# Report',
+      fileName: 'topic' });
+    expect(service.complete).toHaveBeenCalledWith(threadId, researchRunId, '# Report', 'topic', undefined);
   });
 
-  it('returns only owner-scoped saved evidence and a bounded source excerpt', async () => {
-    const sourceId = randomUUID();
-    const evidenceId = `${sourceId}:c0:e0`;
-    const passageId = `${sourceId}:p1`;
-    const source: SavedSource = { sourceId, requestedUrl: 'https://docs.example/start',
-      finalUrl: 'https://docs.example/final', status: 'completed', discoveries: [],
-      evidenceIds: [evidenceId], passages: [{ sourceId, passageId, ordinal: 1,
-        text: `要求 HTTPS。${'x'.repeat(2000)}` }],
-      extraction: { sourceId, status: 'claims', claims: [], examinedPassageIds: [passageId], gaps: [],
-        evidence: [{ evidenceId, sourceId, claimId: `${sourceId}:c0`, passageId,
-          quote: '要求 HTTPS', relation: 'supports', verification: 'grounded' }] } };
-    const run: ResearchRunRecord = { researchRunId, threadId, createdByRunId: 'run-1',
-      continuationRunIds: [], originalQuestion: 'Q',
-      createdAt: '', updatedAt: '', angles: [], enabledEngines: [], attempts: [], candidates: [],
-      budget: { ...DEFAULT_RESEARCH_BUDGET }, usage: result.usage,
-      sources: [{ sourceId, requestedUrl: source.requestedUrl, finalUrl: source.finalUrl,
-        status: 'completed', discoveries: [], evidenceIds: [evidenceId] }] };
-    const loadRun = vi.fn(async () => run);
-    const loadSource = vi.fn(async () => source);
-    const tools = createWebResearchTools({ threadId, currentRunId: () => 'run-1', onProgress: () => {},
-      collect: async () => result, loadRun, loadSource });
-    const response = await tools[1].execute('call-1', { researchRunId, evidenceIds: [evidenceId] });
-    const payload = JSON.parse(response.content[0].text);
-    expect(payload.evidence[0]).toMatchObject({ evidenceId, passageId,
-      finalUrl: 'https://docs.example/final', quote: '要求 HTTPS', excerptTruncated: true });
-    expect(payload.evidence[0].excerpt).toContain('要求 HTTPS');
-    expect(payload.evidence[0].excerpt.length).toBeLessThan(2000);
-    expect(loadRun).toHaveBeenCalledWith(threadId, researchRunId);
-    await expect(tools[1].execute('call-2', { researchRunId, evidenceIds: ['missing'] }))
-      .rejects.toMatchObject({ code: 'research.not_found' });
+  it('waits for the submitted batch instead of polling inspect, then returns its snapshot', async () => {
+    const { service, tool } = harness();
+    let finish!: () => void;
+    service.whenIdle.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const pending = tool.execute('call-1', { action: 'wait', researchRunId });
+    await Promise.resolve();
+    expect(service.whenIdle).toHaveBeenCalledWith(threadId, researchRunId);
+    expect(service.get).not.toHaveBeenCalled();
+    expect(service.inspect).not.toHaveBeenCalled();
+    finish();
+    const response = await pending;
+    expect(service.get).toHaveBeenCalledWith(threadId, researchRunId);
+    expect(JSON.parse(response.content[0].text)).toMatchObject({ action: 'wait', snapshot });
+  });
+
+  it('stops waiting when the agent turn is aborted without cancelling background work', async () => {
+    const { service, tool } = harness();
+    let finish!: () => void;
+    service.whenIdle.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const controller = new AbortController();
+    const pending = tool.execute('call-1', { action: 'wait', researchRunId }, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toThrow('aborted');
+    expect(service.get).not.toHaveBeenCalled();
+    finish();
   });
 });

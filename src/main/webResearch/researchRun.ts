@@ -17,6 +17,8 @@ export type BodyResult = {
   reason?: string;
   publishedAt?: string;
   title?: string;
+  /** Absolute HTTP(S) favicon declared by the fetched HTML. */
+  siteIconUrl?: string;
 };
 export type Progress = {
   researchRunId: string;

@@ -57,6 +57,7 @@ const H = vi.hoisted(() => {
   }
 
   let nextWcId = 100;
+  let focusedWebContentsId: number | null = null;
   class FakeWebContents extends Emitter {
     readonly debugger = new FakeDebugger();
     /** 真 WebContents 有的那个进程内唯一 id。`webRequest` 的
@@ -66,6 +67,7 @@ const H = vi.hoisted(() => {
     url = '';
     title = '';
     loading = false;
+    focusWorks = true;
     /** 关联的渲染进程 pid。**默认 0** —— 与真实的全新 WebContentsView 一致：
      *  还没 load 过任何页面时它就是 0，那时发 CDP 命令会让主进程 SIGSEGV（实测）。 */
     osPid = 0;
@@ -99,6 +101,8 @@ const H = vi.hoisted(() => {
     getTitle(): string { return this.title; }
     isLoading(): boolean { return this.loading; }
     getOSProcessId(): number { return this.osPid; }
+    focus(): void { if (this.focusWorks) focusedWebContentsId = this.id; }
+    isFocused(): boolean { return focusedWebContentsId === this.id; }
     stop(): void { this.stopCalls += 1; }
     reload(): void { this.reloadCalls += 1; }
     close(): void { this.closeCalls += 1; this.destroyed = true; }
@@ -122,6 +126,7 @@ const H = vi.hoisted(() => {
     bounds: { x: number; y: number; width: number; height: number } | null = null;
     constructor(readonly options: unknown) { views.push(this); }
     setVisible(v: boolean): void { this.visible = v; }
+    getVisible(): boolean { return this.visible === true; }
     setBounds(b: { x: number; y: number; width: number; height: number }): void { this.bounds = b; }
   }
 
@@ -170,9 +175,15 @@ const H = vi.hoisted(() => {
     views, logs, emitted,
     FakeWebContentsView, FakeBrowserWindow, FakeSession,
     session: { fromPartition: () => sess },
+    webContents: {
+      getFocusedWebContents: () => views
+        .map((view) => view.webContents)
+        .find((wc) => wc.id === focusedWebContentsId) ?? null,
+    },
     getSess: () => sess,
     reset: () => {
       views.length = 0; logs.length = 0; emitted.length = 0;
+      focusedWebContentsId = null;
       sess = new FakeSession();
     },
   };
@@ -182,6 +193,7 @@ vi.mock('electron', () => ({
   BrowserWindow: H.FakeBrowserWindow,
   WebContentsView: H.FakeWebContentsView,
   session: H.session,
+  webContents: H.webContents,
 }));
 
 vi.mock('../log', () => ({
@@ -1356,6 +1368,25 @@ function fireDownload(url: string, wc: ReturnType<typeof wcOf>, chain: string[] 
 }
 
 describe('NavigationTracker 的输入全部接上（§E3）', () => {
+  it('research resolve 忽略引擎落地页，等主 frame 真正离开引擎域', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://www.bing.com/ck/a?id=1', settleOutsideHost: 'bing.com' });
+    await flush();
+    const wc = wcOf();
+    wc.fire('did-navigate', {}, 'https://www.bing.com/ck/a?id=1', 200);
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    wc.fire('did-start-navigation', {
+      url: 'https://github.com/example/repo', isMainFrame: true, isSameDocument: false,
+    });
+    wc.fire('did-navigate', {}, 'https://github.com/example/repo', 200);
+    const result = await p;
+    expect(result.nav.outcome).toEqual({ kind: 'ok',
+      finalUrl: 'https://github.com/example/repo', httpStatusCode: 200 });
+  });
+
   it('被 URL 闸拦下 → blocked，不必等满时限', async () => {
     const { svc } = make();
     await openTab(svc);
@@ -2528,6 +2559,138 @@ describe('dispatch：派发之前的两道闸（实测得来）', () => {
     expect(inputCmds(wc)).toEqual([]);
   });
 
+  it('隐藏标签发 Enter：先得到 focus emulation ACK，再派发按键，不要求页面可见', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    expect(H.views[0].getVisible(), '正向前提：浏览器侧栏从未打开，标签不可见').toBe(false);
+
+    await expect(svc.dispatch(id, { kind: 'key', key: 'Enter' }, null)).resolves.toBe('按下 Enter');
+    const methods = wc.debugger.sent.map((command) => command.method);
+    expect(methods.filter((method) => method === 'Emulation.setFocusEmulationEnabled')).toHaveLength(1);
+    expect(methods.filter((method) => method === 'Input.dispatchKeyEvent')).toHaveLength(2);
+    expect(methods.indexOf('Emulation.setFocusEmulationEnabled'))
+      .toBeLessThan(methods.indexOf('Input.dispatchKeyEvent'));
+    expect(wc.debugger.sent.find((command) => command.method === 'Emulation.setFocusEmulationEnabled')?.params)
+      .toEqual({ enabled: true });
+  });
+
+  it.each(['click', 'type', 'hover'] as const)(
+    '%s：focus emulation ACK 必须发生在定位和任何 Input 命令之前',
+    async (kind) => {
+      const { svc } = make();
+      const { id, wc } = await dispatchableTab(svc);
+      wc.isolatedImpl = (code) => {
+        const op = opOf(code);
+        if (op === 'measure') return Promise.resolve(okMeasure({ tag: kind === 'type' ? 'input' : 'button' }));
+        if (op === 'focusSelect') return Promise.resolve({ ok: true, focused: true, selected: true });
+        return Promise.resolve({ ok: true });
+      };
+      const action = kind === 'type'
+        ? { kind: 'type' as const, selector: '#q', text: '石墨烯' }
+        : kind === 'click'
+          ? { kind: 'click' as const, selector: '#q' }
+          : { kind: 'hover' as const, selector: '#q' };
+
+      await svc.dispatch(id, action, null);
+      const focusIndex = wc.debugger.sent.findIndex(
+        (command) => command.method === 'Emulation.setFocusEmulationEnabled',
+      );
+      const inputIndex = wc.debugger.sent.findIndex((command) => command.method.startsWith('Input.'));
+      expect(focusIndex).toBeGreaterThanOrEqual(0);
+      expect(inputIndex).toBeGreaterThan(focusIndex);
+      expect(wc.isolated[0]?.code, 'focus ACK 后才允许运行页面定位脚本').toContain('"op":"measure"');
+    },
+  );
+
+  it('focus emulation 被 Chromium 拒绝时明确失败，且不发送任何 Input 命令', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    await svc.dispatch(id, { kind: 'click', selector: '#search' }, null);
+    expect(inputCmds(wc).length, '正向前提：同一页面原本确实能派发点击').toBeGreaterThan(0);
+
+    wc.debugger.sent.length = 0;
+    wc.debugger.respond = async (method) => {
+      if (method === 'Emulation.setFocusEmulationEnabled') throw new Error('focus emulation rejected');
+      return {};
+    };
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#search' }, null))
+      .rejects.toMatchObject({
+        code: 'browser.input_not_delivered',
+        cause: expect.objectContaining({ message: 'focus emulation rejected' }),
+      });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  it('操作后台标签时保持用户当前标签的活动、可见与焦点状态', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [a, b] = svc.getState().tabs.map((tab) => tab.id);
+    const [viewA, viewB] = H.views;
+    const wcA = viewA.webContents;
+    const wcB = viewB.webContents;
+    svc.activate(a);
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    wcA.focus();
+    wcB.isolatedImpl = () => Promise.resolve(okMeasure());
+    const during: Array<{ active: string | null; aVisible: boolean; bVisible: boolean; aFocused: boolean }> = [];
+    wcB.debugger.respond = async (method) => {
+      if (method === 'Input.dispatchMouseEvent') {
+        during.push({
+          active: svc.getState().activeTabId,
+          aVisible: viewA.getVisible(),
+          bVisible: viewB.getVisible(),
+          aFocused: wcA.isFocused(),
+        });
+      }
+      return {};
+    };
+
+    await svc.dispatch(b, { kind: 'click', selector: '#search' }, null);
+    expect(during).toEqual([
+      { active: a, aVisible: true, bVisible: false, aFocused: true },
+      { active: a, aVisible: true, bVisible: false, aFocused: true },
+    ]);
+    expect(svc.getState().activeTabId).toBe(a);
+  });
+
+  it('不同标签可并行等待 focus ACK；同一标签仍由既有 enqueue 保序', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [a, b] = svc.getState().tabs.map((tab) => tab.id);
+    const [wcA, wcB] = H.views.map((view) => view.webContents);
+    wcA.isolatedImpl = () => Promise.resolve(okMeasure());
+    let releaseA!: () => void;
+    let focusAStarted = false;
+    wcA.debugger.respond = (method) => {
+      if (method === 'Emulation.setFocusEmulationEnabled' && !focusAStarted) {
+        focusAStarted = true;
+        return new Promise((resolve) => { releaseA = () => resolve({}); });
+      }
+      return Promise.resolve({});
+    };
+
+    const firstA = svc.enqueue(a, () => svc.dispatch(a, { kind: 'click', selector: '#search' }, null));
+    const secondA = svc.enqueue(a, () => svc.dispatch(a, { kind: 'key', key: 'Enter' }, null));
+    const actionB = svc.enqueue(b, () => svc.dispatch(b, { kind: 'key', key: 'Enter' }, null));
+    await flush(16);
+    expect(focusAStarted, '正向前提：A 已停在自己的 focus ACK').toBe(true);
+    expect(inputCmds(wcA), '同标签第二个动作还不能越过第一个动作').toEqual([]);
+    await actionB;
+    expect(inputCmds(wcB)).toHaveLength(2);
+
+    releaseA();
+    await Promise.all([firstA, secondA]);
+    expect(inputCmds(wcA).map((command) => command.method)).toEqual([
+      'Input.dispatchMouseEvent',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchKeyEvent',
+      'Input.dispatchKeyEvent',
+    ]);
+  });
+
   // **断言要落到「是哪一道闸挡的」**：只断言 not_dispatchable 的话，去掉这道闸
   // 也照样绿 —— 后面 `interact` 的形状校验会用**同一个码**兜住（脚本没回结果）。
   // 那是空绿：闸没了，而我们已经往一个 CDP 断掉的标签里注了一次脚本。
@@ -2573,6 +2736,39 @@ describe('dispatch：派发之前的两道闸（实测得来）', () => {
 });
 
 describe('dispatch · click：坐标是这一刻量的，命中检查不放水', () => {
+  it('locator 在动作时取新快照；活节点显式失效时只重新定位一次', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    let walkerRuns = 0;
+    let measureRuns = 0;
+    wc.isolatedImpl = (code) => {
+      if (code === WALKER_SOURCE) {
+        walkerRuns += 1;
+        return Promise.resolve(walkerOut({ nodes: [{
+          index: 1, nodeId: walkerRuns === 1 ? 70 : 71,
+          role: 'button', name: 'Google 搜索', x: 10, y: 10, w: 100, h: 30,
+        }] }));
+      }
+      if (opOf(code) === 'measure') {
+        measureRuns += 1;
+        return Promise.resolve(measureRuns === 1
+          ? { ok: false, reason: 'stale_node' }
+          : okMeasure({ x: 320, y: 180, label: 'Google 搜索' }));
+      }
+      return Promise.resolve(null);
+    };
+    const stale: AxSnapshot = { ...walkerOut(), snapshotId: 'before-type', nodes: [{
+      index: 1, nodeId: 5, role: 'button', name: 'Google 搜索', x: 1, y: 1, w: 20, h: 20,
+    }] };
+
+    await expect(svc.dispatch(id, { kind: 'click', locator: {
+      role: 'button', name: ['Google 搜索', 'Google Search'], visible: true,
+    } }, stale)).resolves.toContain('Google 搜索');
+    expect(walkerRuns).toBe(2);
+    expect(measureRuns).toBe(2);
+    expect(inputCmds(wc).map((command) => command.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+  });
+
   it('坐标用重量到的那份，不是快照里那份', async () => {
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
@@ -2795,7 +2991,7 @@ describe('取快照与页内求值：没有渲染进程时一个字都不注', (
   });
 
   // 这正是 C1 的失败序列：闸把 CDP 那一侧堵死之后，剩下的唯一出口就是这里。
-  // browser_act 是 sequential 工具，挂在这里等于整轮 run 永远不返回。
+  // browser_act 是模型等待结果的工具，挂在这里等于整轮 run 永远不返回。
   it('求值永不 settle 时，dispatch 在时限到点后报错，而不是挂死', async () => {
     vi.useFakeTimers();
     const { svc } = make();

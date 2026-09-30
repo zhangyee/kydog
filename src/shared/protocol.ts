@@ -14,6 +14,7 @@ import type { PdfAnnotationsFile } from './pdfSidecar';
 import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar';
 import type { MdExportOptions } from './mdExport';
 import type { ResearchBudget, ResearchUsage, ResearchRunIndex, ResearchTaskStatus, ResearchEvidenceExcerpt } from './webResearch';
+import type { WebResearchTaskSnapshot } from './webResearchTask';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -99,6 +100,14 @@ export type RpcCall =
   | { method: 'webResearch.list'; args: { threadId: string }; result: ResearchRunIndex[] }
   | { method: 'webResearch.get'; args: { threadId: string; researchRunId: string }; result: ResearchRunIndex }
   | { method: 'webResearch.evidence'; args: { threadId: string; researchRunId: string; evidenceId: string }; result: ResearchEvidenceExcerpt }
+  | { method: 'webResearch.taskList'; args: { threadId: string }; result: WebResearchTaskSnapshot[] }
+  | { method: 'webResearch.taskGet'; args: { threadId: string; researchRunId: string }; result: WebResearchTaskSnapshot }
+  | { method: 'webResearch.taskSiteIcon'; args: { threadId: string; researchRunId: string; domain: string };
+      result: { domain: string; dataUrl?: string } }
+  | { method: 'webResearch.taskInspect'; args: { threadId: string; researchRunId: string;
+      view: 'overview' | 'sources' | 'claims' | 'evidence'; cursor?: string; pageSize?: number;
+      angleId?: string; status?: import('./webResearchTask').WebResearchSourceState;
+      evidenceIds?: string[] }; result: { snapshot: WebResearchTaskSnapshot; items: unknown[]; nextCursor?: string } }
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
   | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean; projectPath?: string; modelOverride?: { providerId: string; modelId: string } | null }; result: Thread }
@@ -271,6 +280,10 @@ export const RPC_METHODS = [
   'webResearch.list',
   'webResearch.get',
   'webResearch.evidence',
+  'webResearch.taskList',
+  'webResearch.taskGet',
+  'webResearch.taskSiteIcon',
+  'webResearch.taskInspect',
   'project.openInOS',
   'project.update',
   'thread.update',
@@ -365,6 +378,7 @@ export type RuntimeEvent =
       toolCallId: string; researchRunId: string; taskId: string;
       stage: 'collect' | 'fetch' | 'extract' | 'persist'; status: ResearchTaskStatus;
       budget: ResearchBudget; usage: ResearchUsage } }
+  | { topic: 'webResearch.taskUpdated'; payload: WebResearchTaskSnapshot }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
   // errorMessage：这一轮以错误结束时的原文，**只在真有值时带这个键**。渲染层据此在这一轮里
   // 落一个 error 块 —— 一个字都没输出就失败时，这是这一轮唯一的内容。
@@ -465,6 +479,7 @@ export const EVENT_TOPICS = [
   'run.tool_call_chunk',
   'run.tool_call_end',
   'run.research_progress',
+  'webResearch.taskUpdated',
   'run.parallel_group',
   'run.message_end',
   'run.ask_start',

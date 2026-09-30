@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Check } from 'typebox/value';
 import {
   describeNav, landedOnPage, ActionSchema, createBrowserTools,
-  READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX, stripUrlUserinfo,
+  ActParams, OpenParams, READ_MAX_CHARS, TAB_TITLE_MAX, TAB_URL_MAX, stripUrlUserinfo,
 } from './browserTools';
 import { ACTION_KINDS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from '../browser/actions';
 import { MAX_BATCH_CHARS } from '../browser/extract';
@@ -182,6 +183,20 @@ describe('取不取快照：ok_same_document 也是「到了一个页面」', ()
 describe('browser_act 的 schema 是模型看得到的那道闸', () => {
   const props = (ActionSchema as unknown as { properties: Record<string, Record<string, unknown>> }).properties;
 
+  it('提供 wait.until 时，模型 schema 只接受明确的地址或元素条件', () => {
+    expect(Check(ActionSchema, { kind: 'wait', until: { urlMatches: 'q=' } })).toBe(true);
+    expect(Check(ActionSchema, { kind: 'wait', until: { selector: '.result' } })).toBe(true);
+    expect(Check(ActionSchema, { kind: 'wait', until: {} })).toBe(false);
+    expect(Check(ActionSchema, { kind: 'wait', until: { selector: '.result', urlMatches: 'q=' } })).toBe(false);
+  });
+
+  it('research.angleIds 至少一个，空数组在工具 schema 就被拒绝', () => {
+    const base = { tabId: 't1', actions: [{ kind: 'extract', selectors: { item: '.result' } }],
+      research: { engineId: 'duckduckgo', query: 'q', executionPath: 'homepage_form' } };
+    expect(Check(ActParams, { ...base, research: { ...base.research, angleIds: ['angle-1'] } })).toBe(true);
+    expect(Check(ActParams, { ...base, research: { ...base.research, angleIds: [] } })).toBe(false);
+  });
+
   it('kind 是九种动作的字面量白名单，不是裸字符串', () => {
     const kind = props.kind as { anyOf?: { const: string }[]; type?: string };
     expect(kind.type).toBeUndefined();
@@ -213,6 +228,29 @@ describe('browser_act 的 schema 是模型看得到的那道闸', () => {
   // 声明了一个谁都调不动的参数。
   it('scroll 的 amount 在 schema 上，带下界', () => {
     expect(props.amount).toMatchObject({ type: 'number', minimum: 1 });
+  });
+
+  it('click 可声明动作时语义定位，名字可给中英文候选', () => {
+    expect(Check(ActionSchema, { kind: 'click', locator: {
+      role: 'button', name: ['Google 搜索', 'Google Search'], visible: true,
+    } })).toBe(true);
+  });
+});
+
+describe('browser_open 的 schema 保持顶层 object', () => {
+  it('provider 能收到 object schema，同时允许普通 URL 或研究观察两种输入', () => {
+    expect((OpenParams as unknown as { type?: string }).type).toBe('object');
+    expect(Check(OpenParams, { url: 'https://example.com/' })).toBe(true);
+    expect(Check(OpenParams, { researchResolve: { observationId: 'obs', resultIndex: 0 } })).toBe(true);
+    expect(Check(OpenParams, { researchResolveBatch: { selections: [
+      { observationId: 'obs', resultIndexes: [0, 2] },
+    ] } })).toBe(true);
+    expect(Check(OpenParams, { url: 'https://www.google.com/search?q=architecture', research: {
+      engineId: 'google', query: 'architecture', angleIds: ['a'], executionPath: 'search_url',
+    } })).toBe(true);
+    expect(Check(OpenParams, { url: 'https://www.google.com/search?q=architecture', research: {
+      engineId: 'google', query: 'architecture', angleIds: [], executionPath: 'search_url',
+    } })).toBe(false);
   });
 });
 
@@ -259,7 +297,8 @@ const bs = vi.hoisted(() => ({
   tabs: [] as { id: string; url: string; title: string }[],
   /** 活动标签可配置。写死会让「标出用户正看着哪一个」这条断言在它恰好是首项时假绿。 */
   activeTabId: 't1' as string | null,
-  navImpl: (() => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as () => unknown,
+  navImpl: ((_args?: Record<string, unknown>) => ({ navigationId: 'n1', outcome: { kind: 'ok', finalUrl: 'https://a.example/q', httpStatusCode: 200 } })) as
+    (args?: Record<string, unknown>) => unknown,
   /** 「还没报给模型」的那次导航，按标签。见 browserService 的 `unreportedNavs`。 */
   unreported: new Map<string, { url: string; httpStatusCode: number }>(),
   /** 标签归哪个对话。没登记 = 用户的（null）。`stateVisibleTo` 的替身照它过滤。 */
@@ -268,6 +307,9 @@ const bs = vi.hoisted(() => ({
   evicted: [] as { tabId: string; ownerThreadId: string; url: string; title: string }[],
   /** `open` 收到的参数，按顺序。 */
   openArgs: [] as Record<string, unknown>[],
+  openImpl: ((args: Record<string, unknown>) => ({ tabId: 't1', nav: bs.navImpl(args), evicted: bs.evicted })) as
+    (args: Record<string, unknown>) => unknown,
+  closed: [] as string[],
   /** historyNav 收到了什么、回什么。null 表示「没有可去的历史」。 */
   historyCalls: [] as Array<{ tabId: string; action: string }>,
   historyImpl: (() => ({
@@ -347,8 +389,9 @@ vi.mock('../browser/browserService', () => {
       open: (args: { url: string }) => {
         bs.order.push(`open:${args.url}`);
         bs.openArgs.push(args);
-        return Promise.resolve({ tabId: 't1', nav: bs.navImpl(), evicted: bs.evicted });
+        return Promise.resolve(bs.openImpl(args));
       },
+      close: (tabId: string) => { bs.order.push(`close:${tabId}`); bs.closed.push(tabId); },
       historyNav: (tabId: string, action: string) => {
         bs.order.push(`historyNav:${action}`);
         bs.historyCalls.push({ tabId, action });
@@ -455,6 +498,8 @@ beforeEach(() => {
     navigationId: 'n2',
     outcome: { kind: 'ok', finalUrl: 'https://a.example/prev', httpStatusCode: 200 },
   });
+  bs.navImpl = () => ({ navigationId: 'n1', outcome: { kind: 'ok',
+    finalUrl: 'https://a.example/q', httpStatusCode: 200 } });
   bs.current = snap();
   bs.snapshotImpl = () => snap({ snapshotId: 'snap_bbb' });
   bs.isolatedImpl = () => null;
@@ -466,6 +511,8 @@ beforeEach(() => {
   bs.owners.clear();
   bs.evicted = [];
   bs.openArgs.length = 0;
+  bs.closed.length = 0;
+  bs.openImpl = (args) => ({ tabId: 't1', nav: bs.navImpl(args), evicted: bs.evicted });
   bs.noTab = false;
   bs.evalThrows = null;
   // 不复位的话上一条用例摆的错误会渗进下一条，「没有错误就一个字都不加」那条会假红。
@@ -816,6 +863,12 @@ describe('密码硬闸在工具层这一侧的样子', () => {
     expect(d).toContain('type');
   });
 
+  it('工具描述与 Native 输入实现一致，不再声称会切换用户可见标签', () => {
+    const d = toolNamed('browser_act').description;
+    expect(d).toContain('Native');
+    expect(d).not.toMatch(/临时把它切到前台|恢复原标签|切换用户当前可见/);
+  });
+
   // 「type 会先清空目标框」这句话对 date / time / month / week / datetime-local
   // **是假的**（实测：insertText 对分段选择器完全无效，先清空反而把原值抹了）。
   // 描述是模型唯一读得到的契约，说了做不到的事，模型就会照着排剧本。
@@ -910,6 +963,332 @@ describe('extract 的接线：隔离世界 + 整批预算（评审变异 M13）'
       + '（最坏 1.40x），余下 10000 给头部与收尾快照 —— 超出就说明实发与记账的比例变了'
       + '（换了 indent？把别的段落塞进数据块了？）。这一维只有这条用例在守：'
       + '预算的行为断言与 e2e 的 E-1b 都接不住它。').toBeLessThan(CEILING);
+  });
+});
+
+describe('web research IAB observation', () => {
+  it('browser_open rejects missing or conflicting targets before opening a page', async () => {
+    const tool = makeTools().find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const before = bs.openArgs.length;
+    await expect(tool.execute('call-empty', {})).rejects.toThrow('exactly one');
+    await expect(tool.execute('call-both', { url: 'https://example.com/',
+      researchResolve: { observationId: 'obs-1', resultIndex: 0 } })).rejects.toThrow('exactly one');
+    await expect(tool.execute('call-resolve-research', {
+      researchResolve: { observationId: 'obs-1', resultIndex: 0 },
+      research: { engineId: 'bing', query: 'q', angleIds: ['a'], executionPath: 'search_url' },
+    })).rejects.toThrow('research');
+    expect(bs.openArgs).toHaveLength(before);
+  });
+
+  it('records a visible search challenge without another page action', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://www.google.com/sorry/index', title: 'reCAPTCHA' }];
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    const response = await tool.execute('call-blocked', { tabId: 't1', actions: [],
+      research: { engineId: 'google', query: 'architecture', angleIds: ['a'],
+        executionPath: 'status_only', status: 'blocked' } });
+    expect(bs.dispatched).toHaveLength(0);
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({ status: 'blocked', rows: [],
+      searchPageUrl: 'https://www.google.com/sorry/index' });
+    expect(bodyOf(response)).toContain('状态 blocked');
+    await expect(tool.execute('call-empty', { tabId: 't1', actions: [] })).rejects.toThrow();
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+  });
+
+  it('rejects research without extract or explicit status before touching the page', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://duckduckgo.com/?q=q', title: 'DuckDuckGo' }];
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    const actions = [{ kind: 'key', key: 'Enter' }];
+    const research = { engineId: 'duckduckgo', query: 'q', angleIds: ['a'],
+      executionPath: 'result_page_form' };
+
+    await tool.execute('call-ok', { tabId: 't1', actions, research: { ...research, status: 'blocked' } });
+    expect(bs.dispatched).toHaveLength(1);
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+
+    bs.order.length = 0;
+    bs.dispatched.length = 0;
+    await expect(tool.execute('call-bad', { tabId: 't1', actions, research })).rejects.toThrow(/extract.*页面尚未操作/);
+    expect(bs.order).toEqual([]);
+    expect(bs.dispatched).toEqual([]);
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+  });
+
+  it('研究批次提交前失败时保存 submission_error，并保留具体失败事实', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://duckduckgo.com/', title: 'DuckDuckGo' }];
+    bs.dispatchImpl = () => {
+      throw new KydogError('browser.input_not_delivered', 'focus emulation rejected');
+    };
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+
+    const result = await tool.execute('call-focus-failed', { tabId: 't1', actions: [
+      { kind: 'click', selector: 'button[type=submit]' },
+      { kind: 'extract', selectors: { item: '.result', title: 'h2', url: 'a@href' } },
+    ], research: { engineId: 'duckduckgo', query: 'architecture', angleIds: ['a'],
+      executionPath: 'homepage_form', submitActionIndex: 0, status: 'blocked' } });
+
+    expect(bodyOf(result)).toContain('focus emulation rejected');
+    expect(bodyOf(result)).toContain('状态 submission_error');
+    expect(bodyOf(result)).not.toContain('research capture needs extract or explicit status');
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({
+      status: 'submission_error', inputSubmitted: false, navigationConfirmed: false,
+      resultsExtracted: false, rows: [], failure: {
+        stage: 'submission', actionIndex: 0, actionKind: 'click',
+        selector: 'button[type=submit]', message: 'focus emulation rejected',
+      },
+    });
+  });
+
+  it('提交成功后的 wait 失败保存 navigation_error，不丢掉已完成提交事实', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://duckduckgo.com/', title: 'DuckDuckGo' }];
+    bs.waitImpl = () => false;
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+
+    const result = await tool.execute('call-wait-failed', { tabId: 't1', actions: [
+      { kind: 'click', selector: 'form button[type=submit]' },
+      { kind: 'wait', until: { selector: 'article[data-testid=result]' }, timeoutMs: 2000 },
+      { kind: 'extract', selectors: { item: 'article[data-testid=result]', title: 'h2', url: 'a@href' } },
+    ], research: { engineId: 'duckduckgo', query: 'architecture', angleIds: ['a'],
+      executionPath: 'homepage_form', submitActionIndex: 0 } });
+
+    expect(bodyOf(result)).toContain('状态 navigation_error');
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({
+      status: 'navigation_error', inputSubmitted: true, navigationConfirmed: false,
+      resultsExtracted: false, failure: {
+        stage: 'navigation', actionIndex: 1, actionKind: 'wait',
+      },
+      executionFacts: { completedSubmitAction: { kind: 'click', selector: 'form button[type=submit]' } },
+    });
+  });
+
+  it('saves extracted search rows and returns an observation ID with only a short preview', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://www.bing.com/search?q=architecture', title: 'Bing' }];
+    bs.isolatedImpl = () => ({ rows: [{ title: 'Guide', url: 'https://docs.example/guide',
+      snippet: 'A concise result' }], rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] } });
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    const result = await tool.execute('call-1', { tabId: 't1', actions: [{ kind: 'extract',
+      selectors: { item: '.result', title: 'h2', url: 'a@href', snippet: 'p' } }],
+      research: { engineId: 'bing', query: 'architecture', angleIds: ['a'],
+        executionPath: 'result_page_form' } });
+    expect(saveResearchObservation).toHaveBeenCalledOnce();
+    const observation = saveResearchObservation.mock.calls[0][0];
+    expect(observation.rows[0]).toMatchObject({ rawHref: 'https://docs.example/guide',
+      targetUrl: 'https://docs.example/guide' });
+    expect(bodyOf(result)).toContain(observation.observationId);
+    expect(bodyOf(result)).not.toContain('"rawHref"');
+  });
+
+  it('records the successful form submit, URL wait, navigation and extraction as separate facts', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://www.google.com/', title: 'Google' }];
+    bs.dispatchImpl = (action) => {
+      if (action.kind === 'click') bs.tabs[0].url = 'https://www.google.com/search?q=architecture';
+      return `派发了 ${action.kind}`;
+    };
+    bs.isolatedImpl = () => ({ rows: [{ title: 'Guide', url: 'https://docs.example/guide' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] } });
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    await tool.execute('call-form', { tabId: 't1', actions: [
+      { kind: 'type', selector: 'textarea[name=q]', text: 'architecture' },
+      { kind: 'click', selector: 'button[type=submit]' },
+      { kind: 'wait', until: { urlMatches: '/search?' } },
+      { kind: 'extract', selectors: { item: '.result', title: 'h2', url: 'a@href' } },
+    ], research: { engineId: 'google', query: 'architecture', angleIds: ['a'],
+      executionPath: 'homepage_form', submitActionIndex: 1 } });
+
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({
+      executionPath: 'homepage_form', inputSubmitted: true, navigationConfirmed: true,
+      resultsExtracted: true, executionFacts: {
+        startUrl: 'https://www.google.com/',
+        endUrl: 'https://www.google.com/search?q=architecture',
+        completedSubmitAction: { kind: 'click', selector: 'button[type=submit]' },
+        successfulWaits: [{ urlMatches: '/search?' }],
+      },
+    });
+  });
+
+  it('records the semantic locator that actually submitted a dynamic search form', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://www.google.com/', title: 'Google' }];
+    bs.dispatchImpl = (action) => {
+      if (action.kind === 'click') bs.tabs[0].url = 'https://www.google.com/search?q=architecture';
+      return `派发了 ${action.kind}`;
+    };
+    bs.isolatedImpl = () => ({ rows: [{ title: 'Guide', url: 'https://docs.example/guide' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] } });
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    await tool.execute('call-form-locator', { tabId: 't1', actions: [
+      { kind: 'click', locator: { role: 'button', name: ['Google 搜索', 'Google Search'], visible: true } },
+      { kind: 'wait', until: { urlMatches: '/search?' } },
+      { kind: 'extract', selectors: { item: '.result', title: 'h2', url: 'a@href' } },
+    ], research: { engineId: 'google', query: 'architecture', angleIds: ['a'],
+      executionPath: 'homepage_form', submitActionIndex: 0 } });
+
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({
+      executionFacts: { completedSubmitAction: {
+        kind: 'click',
+        locator: { role: 'button', name: ['Google 搜索', 'Google Search'], visible: true },
+      } },
+    });
+  });
+
+  it('does not call a completed submit proof a confirmed navigation when the URL did not change', async () => {
+    bs.tabs = [{ id: 't1', url: 'https://duckduckgo.com/', title: 'DuckDuckGo' }];
+    bs.isolatedImpl = () => ({ rows: [{ title: 'Guide', url: 'https://docs.example/guide' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] } });
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tool = makeTools({ saveResearchObservation }).find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    await tool.execute('call-no-nav', { tabId: 't1', actions: [
+      { kind: 'key', key: 'Enter' },
+      { kind: 'extract', selectors: { item: '.result', title: 'h2', url: 'a@href' } },
+    ], research: { engineId: 'duckduckgo', query: 'architecture', angleIds: ['a'],
+      executionPath: 'homepage_form', submitActionIndex: 0 } });
+
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({
+      inputSubmitted: true, navigationConfirmed: false, resultsExtracted: true,
+      executionFacts: { completedSubmitAction: { kind: 'key', key: 'Enter' } },
+    });
+  });
+
+  it('carries a successful search URL navigation into the next matching extraction on that tab', async () => {
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tools = makeTools({ saveResearchObservation });
+    const open = tools.find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const actTool = tools.find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    bs.tabs = [{ id: 't1', url: 'https://www.bing.com/', title: 'Bing' }];
+    bs.navImpl = () => ({ navigationId: 'n-search', outcome: { kind: 'ok',
+      finalUrl: 'https://www.bing.com/search?q=architecture', httpStatusCode: 200 } });
+    await open.execute('call-search-url', { tabId: 't1',
+      url: 'https://www.bing.com/search?q=architecture', research: {
+      engineId: 'bing', query: 'architecture', angleIds: ['a'], executionPath: 'search_url',
+    } });
+    bs.tabs = [{ id: 't1', url: 'https://www.bing.com/search?q=architecture', title: 'Bing' }];
+    bs.isolatedImpl = () => ({ rows: [{ title: 'Guide', url: 'https://docs.example/guide' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] } });
+    await actTool.execute('call-extract', { tabId: 't1', actions: [{ kind: 'extract',
+      selectors: { item: '.b_algo', title: 'h2', url: 'a@href' } }], research: {
+      engineId: 'bing', query: 'architecture', angleIds: ['a'], executionPath: 'search_url',
+    } });
+
+    expect(saveResearchObservation.mock.calls[0][0]).toMatchObject({
+      executionPath: 'search_url', inputSubmitted: true, navigationConfirmed: true,
+      resultsExtracted: true, executionFacts: {
+        startUrl: 'https://www.bing.com/',
+        endUrl: 'https://www.bing.com/search?q=architecture', successfulWaits: [],
+      },
+    });
+  });
+
+  it('resolves the saved tracking href without asking the model to copy it', async () => {
+    const confirmResearchTarget = vi.fn(async () => { throw new Error('IAB did not observe a target destination'); });
+    const loadResearchTarget = vi.fn(async () => ({
+      requestedUrl: 'https://www.bing.com/ck/a?id=1', engineHost: 'bing.com',
+    }));
+    bs.navImpl = () => ({ navigationId: 'n1', outcome: { kind: 'ok',
+      finalUrl: 'https://www.bing.com/ck/a?id=1', httpStatusCode: 200 } });
+    const tool = makeTools({ confirmResearchTarget, loadResearchTarget })
+      .find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const result = await tool.execute('call-1', {
+      researchResolve: { observationId: 'obs-1', resultIndex: 0 },
+    });
+    expect(loadResearchTarget).toHaveBeenCalledWith('thread-1', 'obs-1', 0);
+    expect(bs.openArgs.at(-1)).toMatchObject({ url: 'https://www.bing.com/ck/a?id=1',
+      settleOutsideHost: 'bing.com' });
+    expect(confirmResearchTarget).toHaveBeenCalledOnce();
+    expect(bodyOf(result)).toContain('https://www.bing.com/ck/a?id=1');
+    expect(bodyOf(result)).toContain('未确认');
+  });
+
+  it('批量解析先读完全部目标，再以四条 IAB lane 复用标签；逐条确认且不返回页面快照', async () => {
+    const events: string[] = [];
+    const loadResearchTarget = vi.fn(async (_threadId: string, observationId: string, resultIndex: number) => {
+      events.push(`load:${observationId}:${resultIndex}`);
+      return { requestedUrl: `https://www.bing.com/ck/a?id=${resultIndex}`, engineHost: 'bing.com' };
+    });
+    const confirmResearchTarget = vi.fn(async (_threadId: string, observationId: string, resultIndex: number,
+      _requestedUrl: string, finalUrl: string) => {
+      events.push(`confirm:${observationId}:${resultIndex}`);
+      return { observationId, finalUrl } as never;
+    });
+    let nextTab = 0;
+    bs.openImpl = (args) => {
+      events.push(`open:${String(args.url)}`);
+      const tabId = typeof args.tabId === 'string' ? args.tabId : `resolve-${++nextTab}`;
+      const id = new URL(String(args.url)).searchParams.get('id');
+      return { tabId, nav: { navigationId: `n-${id}`, outcome: {
+        kind: 'ok', finalUrl: `https://target.example/article-${id}`, httpStatusCode: 200,
+      } }, evicted: [] };
+    };
+    const tool = makeTools({ loadResearchTarget, confirmResearchTarget })
+      .find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const result = await tool.execute('call-batch', { researchResolveBatch: { selections: [
+      { observationId: 'obs-1', resultIndexes: [0, 1, 2, 3, 4, 5] },
+    ] } });
+
+    expect(events.slice(0, 6)).toEqual([
+      'load:obs-1:0', 'load:obs-1:1', 'load:obs-1:2', 'load:obs-1:3', 'load:obs-1:4', 'load:obs-1:5',
+    ]);
+    expect(bs.openArgs).toHaveLength(6);
+    expect(new Set(bs.openArgs.map((args) => args.tabId).filter(Boolean)).size).toBeLessThanOrEqual(4);
+    expect(confirmResearchTarget).toHaveBeenCalledTimes(6);
+    expect(new Set(bs.closed)).toEqual(new Set(['resolve-1', 'resolve-2', 'resolve-3', 'resolve-4']));
+    const body = bodyOf(result);
+    expect(body).toContain('已确认 6');
+    expect(body).toContain('失败 0');
+    expect(body).not.toContain('快照 ');
+    expect(bs.order.filter((entry) => entry === 'snapshot')).toHaveLength(0);
+  });
+
+  it('批量解析中单条导航失败会如实列出并继续确认其他项', async () => {
+    const loadResearchTarget = vi.fn(async (_threadId: string, _observationId: string, resultIndex: number) => ({
+      requestedUrl: `https://www.baidu.com/link?url=${resultIndex}`, engineHost: 'baidu.com',
+    }));
+    const confirmResearchTarget = vi.fn(async (_threadId: string, observationId: string) => ({ observationId } as never));
+    let nextTab = 0;
+    bs.openImpl = (args) => {
+      const tabId = typeof args.tabId === 'string' ? args.tabId : `resolve-f-${++nextTab}`;
+      const id = new URL(String(args.url)).searchParams.get('url');
+      return { tabId, nav: { navigationId: `n-${id}`, outcome: id === '1'
+        ? { kind: 'timeout', abortObserved: false }
+        : { kind: 'ok', finalUrl: `https://target.example/${id}`, httpStatusCode: 200 } }, evicted: [] };
+    };
+    const tool = makeTools({ loadResearchTarget, confirmResearchTarget })
+      .find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const result = await tool.execute('call-batch-partial', { researchResolveBatch: { selections: [
+      { observationId: 'obs-2', resultIndexes: [0, 1, 2] },
+    ] } });
+    expect(confirmResearchTarget).toHaveBeenCalledTimes(2);
+    expect(bodyOf(result)).toContain('已确认 2');
+    expect(bodyOf(result)).toContain('失败 1');
+    expect(bodyOf(result)).toContain('timeout');
+  });
+
+  it('批量解析在导航前拒绝空批次、重复观察和非法索引', async () => {
+    const tool = makeTools().find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const before = bs.openArgs.length;
+    await expect(tool.execute('empty', { researchResolveBatch: { selections: [] } })).rejects.toThrow(/selections|empty/i);
+    await expect(tool.execute('duplicate-observation', { researchResolveBatch: { selections: [
+      { observationId: 'obs', resultIndexes: [0] }, { observationId: 'obs', resultIndexes: [1] },
+    ] } })).rejects.toThrow(/observationId/);
+    await expect(tool.execute('duplicate-index', { researchResolveBatch: { selections: [
+      { observationId: 'obs', resultIndexes: [0, 0] },
+    ] } })).rejects.toThrow(/unique/);
+    await expect(tool.execute('bad-index', { researchResolveBatch: { selections: [
+      { observationId: 'obs', resultIndexes: [-1] },
+    ] } })).rejects.toThrow(/index/);
+    expect(bs.openArgs).toHaveLength(before);
   });
 });
 

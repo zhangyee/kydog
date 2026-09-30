@@ -29,6 +29,22 @@ describe('extractBody', () => {
     expect(body.contentHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('keeps the declared HTTP favicon as resolved page metadata', async () => {
+    const html = '<html><head><link rel="shortcut icon" href="../assets/site.png"></head>' +
+      '<body><main><h1>Guide</h1><p>Body</p></main></body></html>';
+    const body = await extractBody({ bytes: bytes(html), contentType: 'text/html', finalUrl, sourceId });
+    expect(body.siteIconUrl).toBe('https://docs.example/assets/site.png');
+  });
+
+  it('does not expose data, javascript, or malformed favicon targets', async () => {
+    for (const href of ['data:image/png;base64,AA==', 'javascript:alert(1)', 'http://[']) {
+      const html = `<html><head><link rel="icon" href="${href}"></head>` +
+        '<body><main><h1>Guide</h1><p>Body</p></main></body></html>';
+      const body = await extractBody({ bytes: bytes(html), contentType: 'text/html', finalUrl, sourceId });
+      expect(body.siteIconUrl).toBeUndefined();
+    }
+  });
+
   it('keeps plain text lines and marks explicitly truncated input incomplete', async () => {
     const source = bytes('first line\nsecond line\n');
     const complete = await extractBody({ bytes: source, contentType: 'text/plain; charset=utf-8', finalUrl, sourceId });

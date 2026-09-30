@@ -30,6 +30,20 @@ describe('导航观测：403 是一次成功的导航', () => {
   });
 });
 
+describe('导航观测：搜索引擎跳转必须离开引擎域才收敛', () => {
+  it('忽略引擎自己的 200，等待后续主 frame 外链导航', () => {
+    const n = new NavigationTracker('n1', 'https://www.bing.com/ck/a?id=1',
+      (url) => new URL(url).hostname !== 'www.bing.com');
+    n.onDidNavigate('https://www.bing.com/ck/a?id=1', 200);
+    expect(n.observation()).toBeNull();
+    n.onDidStartNavigation('https://github.com/example/repo', true, false);
+    n.onDidNavigate('https://github.com/example/repo', 200);
+    expect(n.observation()).toEqual({ navigationId: 'n1', outcome: {
+      kind: 'ok', finalUrl: 'https://github.com/example/repo', httpStatusCode: 200,
+    } });
+  });
+});
+
 describe('导航观测：failed 与 timeout 不合并', () => {
   it('主 frame 的 did-fail-load → failed，errorCode 是 number', () => {
     const n = t();

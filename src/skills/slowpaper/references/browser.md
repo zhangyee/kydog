@@ -54,6 +54,10 @@ browser_act({ tabId: "<同一个 tabId>", actions: [
 
 **同一个源复用同一个标签**，把 `tabId` 传回去。
 
+**slowpaper 的浏览器调用不传 `research`。** `research:{engineId,query,angleIds,...}` 只用于
+`/web-research` 保存通用搜索引擎观察；论文源检索继续按本文件和各源卡片执行，避免把论文搜索
+误记进网页研究任务。
+
 ---
 
 ## 二、`browser_act` 的十二种动作

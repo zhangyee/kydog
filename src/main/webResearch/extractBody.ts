@@ -27,6 +27,18 @@ function decode(bytes: Uint8Array, contentType?: string): string {
 }
 function compact(text: string): string { return text.replace(/\s+/g, ' ').trim(); }
 
+function declaredSiteIcon(document: Document, baseUrl: string): string | undefined {
+  for (const link of document.querySelectorAll('link[href]')) {
+    const rel = (link.getAttribute('rel') ?? '').toLowerCase().split(/\s+/);
+    if (!rel.includes('icon')) continue;
+    try {
+      const url = new URL(link.getAttribute('href')!, baseUrl);
+      if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+    } catch { /* malformed or unsupported icon metadata */ }
+  }
+  return undefined;
+}
+
 function textWithLinks(element: Element, baseUrl: string): string {
   const clone = element.cloneNode(true) as Element;
   for (const link of clone.querySelectorAll('a[href]')) {
@@ -97,6 +109,7 @@ export async function extractBody(input: ExtractBodyInput): Promise<ExtractBodyR
     if (document.querySelector(challengeSelector)) return { status: 'needs_browser',
       reason: 'verification_widget', passages: [], completeness: 'unknown' };
     const hadScript = document.querySelector('script') !== null;
+    const siteIconUrl = declaredSiteIcon(document, input.finalUrl);
     for (const node of document.querySelectorAll(removedSelector)) node.remove();
     const fallback = document.querySelector('main,article')?.outerHTML;
     const pageTitle = compact(document.title || document.querySelector('h1')?.textContent || '');
@@ -122,7 +135,8 @@ export async function extractBody(input: ExtractBodyInput): Promise<ExtractBodyR
         reason: 'empty_article', passages: [], completeness: 'unknown' };
       return { status: 'readable', passages, completeness, contentHash: hashPassages(passages),
         title,
-        publishedAt: parsed?.publishedTime || publishedAt };
+        publishedAt: parsed?.publishedTime || publishedAt,
+        siteIconUrl };
     } finally { content.window.close(); }
   } finally { dom.window.close(); }
 }

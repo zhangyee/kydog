@@ -112,7 +112,7 @@ beforeEach(() => {
 describe('customTools 里有六个浏览器工具', () => {
   it('registers web-research collector and evidence tools in the real session', async () => {
     const tools = await build();
-    for (const name of ['web_research_collect', 'web_research_evidence']) {
+    for (const name of ['web_research_task']) {
       const tool = tools.find((item) => item.name === name);
       expect(tool?.executionMode).toBe('sequential');
       expect(typeof tool?.execute).toBe('function');
@@ -153,13 +153,17 @@ describe('customTools 里有六个浏览器工具', () => {
     }
   });
 
-  it('碰页面的五个都声明了 sequential —— 网页是有状态的，并行跑等于互相踩', async () => {
+  it('open/act 允许跨标签并行，其余共享会话动作保持 sequential', async () => {
     const browser = (await build()).filter((t) => t.name?.startsWith('browser_'));
     expect(browser).toHaveLength(6);
     const seq = browser.filter((t) => t.executionMode === 'sequential').map((t) => t.name);
-    // `browser_download` 也串行：它用的是那个标签的 session，与同标签上的导航/输入
-    // 并行跑等于抢同一个 webContents。
-    expect(seq.sort()).toEqual(['browser_act', 'browser_download', 'browser_login', 'browser_open', 'browser_read']);
+    expect(seq.sort()).toEqual(['browser_download', 'browser_login', 'browser_read']);
+    for (const name of ['browser_open', 'browser_act']) {
+      const tool = browser.find((item) => item.name === name);
+      expect(tool?.name).toBe(name);
+      expect(tool?.executionMode).toBeUndefined();
+      expect(SEQUENTIAL_TOOL_NAMES.has(name)).toBe(false);
+    }
   });
 
   /**

@@ -63,6 +63,18 @@ describe('pickFixtureEvents', () => {
 });
 
 describe('createFixtureSession × scripts', () => {
+  it('loads a revised fixture script on the next user turn in the same session', async () => {
+    const p = path.join(dir, 'live.json');
+    await fsp.writeFile(p, JSON.stringify({ scripts: { first: say('one') } }));
+    const session = await createFixtureSession(p, noopAskShared, 't1', 'zh');
+    const events: PiEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    await session.prompt('first');
+    await fsp.writeFile(p, JSON.stringify({ scripts: { second: say('two') } }));
+    await session.prompt('second');
+    expect(textsOf(events)).toEqual(['one', 'two']);
+  });
+
   it('同一个 session 连发两轮，各放各的剧本', async () => {
     const { session, events } = await sessionOf({ scripts: { 甲: say('甲的回复'), 乙: say('乙的回复') } });
     await session.prompt('乙');

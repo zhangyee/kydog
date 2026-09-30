@@ -73,7 +73,10 @@ export async function createFixtureSession(
         `${JSON.stringify({ content, images: images.map((i) => ({ mimeType: i.mimeType, length: i.data.length })) })}\n`,
       );
       // 先挑剧本：认不到就在发出任何事件之前抛（AgentService 那边按这一轮出错收口）。
-      const events = pickFixtureEvents(file, content, images.length);
+      // E2E may observe a tool result in one turn and write the next script from that
+      // protocol output. Reload at the turn boundary so the same thread can continue.
+      const nextFile = JSON.parse(await fs.readFile(fixturePath, 'utf8')) as FixtureFile;
+      const events = pickFixtureEvents(nextFile, content, images.length);
       // 中止只作用于它那一轮。不复位的话，同一个对话里停过一次，之后每一轮的事件都会被
       // 下面的 `aborted` 判断整份吞掉 —— 真实 pi 那条路上没有这回事。
       aborted = false;

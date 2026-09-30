@@ -1,22 +1,26 @@
-# Baidu search card
+# Baidu Search Operation Card
 
-> On 2026-09-26, the user's open Chrome browser reached results pages and verified extraction selectors and requery. On 2026-09-25, KyDog IAB reached a security challenge for comparable searches. **Success in Chrome does not establish success in KyDog IAB.** Trust the current IAB response; Baidu is not in the default engine set yet.
+## Verified search path
 
-## Results-page structure observed in Chrome
+Prefer the current home-page form pair `textarea#chat-textarea` and `button#chat-submit-button`. Use the classic pair `input#kw` and `input#su` only when the snapshot shows that both are visible. Never mix controls from the two forms.
 
-- Opening `https://www.baidu.com/s?wd=` plus `encodeURIComponent(query)` directly returned organic results for a Chinese query. The results-page input was `textarea#chat-textarea` and its submit button was `button#chat-submit-button`. Entering `TypeScript 6.0 破坏性变更 官方` and clicking submit navigated to the new query's results page.
-- Organic result cards were `#content_left .result.c-container[mu]`; within each, `h3` held the title and `.cos-line-clamp-2, .click-area-exp-block` the snippet. `h3 a@href` was a `www.baidu.com/link?url=…` redirect. The card's own `mu` attribute held the target URL. `result-op` AI and related cards were outside this organic set.
-- If the **current KyDog IAB** really reaches a results page, try:
+Open the home page with `browser_open({"url":"https://www.baidu.com/"})`, keep the returned `tabId`, then type, submit, wait for organic results, and extract in one call:
 
 ```json
-{"item":"#content_left .result.c-container[mu]","title":"h3","url":":scope@mu","snippet":".cos-line-clamp-2, .click-area-exp-block"}
+{"tabId":"<baiduTabId>","actions":[{"kind":"type","selector":"textarea#chat-textarea","text":"<query>"},{"kind":"click","selector":"button#chat-submit-button"},{"kind":"wait","until":{"selector":"#content_left .c-container:not(.EC_result)"},"timeoutMs":10000},{"kind":"extract","selectors":{"item":"#content_left .c-container:not(.EC_result)","title":"h3 a","url":"h3 a@href"}}],"research":{"engineId":"baidu","query":"<query>","angleIds":["<angleId>"],"executionPath":"homepage_form","submitActionIndex":1}}
 ```
 
-In `browser_act extract`, `:scope@mu` reads the **current item's own** `mu` attribute rather than a descendant. Check each URL is a target site matching its title. If `mu` is missing or the page changes, inspect the current page; do not guess the target from Baidu's redirect parameters. Snippets guide subsequent fetching but are not evidence from the target body.
+For the classic form, replace only the first two selectors. Keep the wait, extraction, and `research` metadata unchanged. `.EC_result` is the structural marker for ad cards; do not infer ads from position or title.
 
-## Block observed in KyDog IAB
+## Requery and failure criteria
 
-- On 2026-09-25, `browser_open({url:"https://www.baidu.com/"})` reached the homepage with HTTP 200. After `browser_act` entered a Chinese query and clicked submit, navigation reached `wappass.baidu.com/static/captcha/tuxing_v2.html`, titled `百度安全验证`.
-- A direct `browser_open` to an English search URL also reached the challenge. That IAB probe **did not** verify result extraction or requery.
+- There is no verified results-page requery path. For a new query, reuse the tab but return to the home page, determine which complete form pair is visible, and run the complete call again.
+- Do not press Enter or construct a search URL. After an address change, still wait for the organic-result container. A changing AI summary, blank body, or old results do not prove success.
+- Action failures before submit, in the post-submit wait, and during extraction automatically save `submission_error`, `navigation_error`, and `extraction_error`, respectively. Do not add diagnostic columns or a second call to guess the cause.
+- If the tab reaches `wappass.baidu.com` or a human-operable challenge, call `ask_user_question` once with the current `browserTabId`. Save `blocked` only if the user skips, recovery fails, or no operable control exists.
 
-If the current IAB still shows `wappass.baidu.com` or `百度安全验证`, record `(engineId, query, attemptId)` as `blocked`. Do not report zero results or send the challenge page to WebFetch. Record discoveries only when the current IAB displays organic results and successfully extracts their titles and target URLs.
+## Criteria and boundaries
+
+- `h3 a@href` may return `www.baidu.com/link?url=...`. Before first submitting the observation, call `browser_open({"researchResolveBatch":{"selections":[{"observationId":"<id>","resultIndexes":[0,3,7]}]}})` once for the shortlist. Submit only indexes reported as confirmed. Do not copy or decode redirect parameters.
+- When the batch resolver returns `timeout`, that index remains unresolved; it does not prove that the target does not exist. Exclude and retain only that lead. A timed-out index must not be submitted, and a few timeouts do not justify replaying the whole batch.
+- Submit only selected, confirmed redirect results. Explicit no-results pages and pagination have no verified path. Search snippets are discovery leads, not body evidence.

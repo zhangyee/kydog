@@ -6,8 +6,7 @@ import { createReadDocxTool } from './readDocxTool';
 import { createCharCountFileTools, type PiFileToolFactories } from './charCountFileTools';
 import { createBrowserTools } from './browserTools';
 import { createWebResearchTools } from './webResearchTools';
-import { getWebResearchService } from '../webResearch/service';
-import { researchRunStore } from '../webResearch/runStore';
+import { getWebResearchTaskService } from '../webResearch/service';
 import type { Progress as ResearchProgress } from '../webResearch/researchRun';
 import { getProviderRegistry } from '../llm/providerRegistry';
 import { settingsService } from '../settings/settingsService';
@@ -78,14 +77,14 @@ export async function createSession(opts: {
   const inst = settings.institution;
   const institution = inst ? { name: inst.name, entityID: inst.entityID } : null;
 
-  // 内置浏览器的四个工具。**造在分支之前，两条路用同一份** —— fixture 那条路要能
+  // 内置浏览器的六个工具。**造在分支之前，两条路用同一份** —— fixture 那条路要能
   // 真的执行它们（`fixtureProvider` 的 `tool` 事件，形态照 `ask`：那一条一直就是
   // 真调 `askUserQuestionTool.execute`）。造两次的话 e2e 走到的就不是产品那一份，
   // 而「测的不是用户拿到的东西」正是这条路要避开的。
   //
-  // 四个都声明了 `executionMode: 'sequential'`，名字要同步登记进
-  // askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES —— 漏登记不报错，
-  // 只会让 UI 把一次串行批次画成并行组。守这条的是本文件的用例（两个方向）。
+  // read / login / download 声明了 `executionMode: 'sequential'`；open / act 允许跨标签
+  // 并行，同标签仍由 BrowserService 队列串行。sequential 名字要同步登记进
+  // askSequentialTools.ts 的 SEQUENTIAL_TOOL_NAMES；守这条的是本文件的双向用例。
   //
   // `browser_login` 的确认框走的是**同一个** askShared / threadId：spec §4.6
   // 那道确认要用现成的 ask broker，不新发明挂起机制。
@@ -98,11 +97,9 @@ export async function createSession(opts: {
   });
   const researchTools = createWebResearchTools({
     threadId: opts.sessionId,
+    projectRoot: opts.cwd,
     currentRunId: opts.currentRunId ?? (() => null),
-    onProgress: opts.onResearchProgress ?? (() => undefined),
-    collect: (input, owner, onProgress) => getWebResearchService().collect(input, owner, onProgress),
-    loadRun: (threadId, researchRunId) => researchRunStore.loadRun(threadId, researchRunId),
-    loadSource: (run, sourceId) => researchRunStore.loadSource(run, sourceId),
+    service: getWebResearchTaskService(),
   });
 
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;

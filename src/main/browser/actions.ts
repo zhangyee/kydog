@@ -6,8 +6,21 @@ import type { AxSnapshot } from './snapshot';
  * 这里不碰 webContents —— 所有需要真页面的事都在 browserService 里做。
  */
 
-/** 定位方式两种，用途不同：selector 用于重放已探明的剧本，index 用于探索期。 */
-export type TargetSpec = { selector: string } | { index: number; snapshotId: string };
+/**
+ * 动作时语义定位：给会在输入后重排 DOM 的页面使用。它不是模糊匹配器，role 与 name
+ * 都精确相等，且必须唯一命中；`visible: true` 是显式条件，不靠元素名字猜可见性。
+ */
+export type SemanticLocator = {
+  role: string;
+  name: string | string[];
+  visible: true;
+};
+
+/** selector 用于稳定剧本，index 用于探索期，locator 用于动作前才会成形的动态控件。 */
+export type TargetSpec =
+  | { selector: string }
+  | { index: number; snapshotId: string }
+  | { locator: SemanticLocator };
 
 export type WaitUntil =
   | { selector: string; state: 'present' | 'absent' }
@@ -98,9 +111,23 @@ function isRepeat(a: Action): a is Extract<Action, { kind: 'repeat' }> {
  */
 function targetProblem(spec: unknown): string | null {
   if (!spec || typeof spec !== 'object') return '这个动作需要一个目标，但一个都没给';
-  const s = spec as { selector?: unknown; index?: unknown; snapshotId?: unknown };
+  const s = spec as { selector?: unknown; index?: unknown; snapshotId?: unknown; locator?: unknown };
+  const forms = Number(s.selector !== undefined) + Number(s.index !== undefined) + Number(s.locator !== undefined);
+  if (forms > 1) return 'selector、index + snapshotId、locator 三种目标只能给一种';
   if (s.selector !== undefined) {
     if (typeof s.selector !== 'string' || s.selector.trim() === '') return 'selector 不能为空';
+    return null;
+  }
+  if (s.locator !== undefined) {
+    if (!s.locator || typeof s.locator !== 'object') return 'locator 必须是对象';
+    const locator = s.locator as { role?: unknown; name?: unknown; visible?: unknown };
+    if (typeof locator.role !== 'string' || !locator.role.trim()) return 'locator.role 不能为空';
+    const names = typeof locator.name === 'string' ? [locator.name] : locator.name;
+    if (!Array.isArray(names) || names.length === 0 ||
+      names.some((name) => typeof name !== 'string' || !name.trim())) {
+      return 'locator.name 必须是非空字符串或非空字符串数组';
+    }
+    if (locator.visible !== true) return 'locator.visible 必须明确为 true';
     return null;
   }
   // 「没有 selector」不等于「这是 index 形式」。不查这一步的话，一个既没 selector
@@ -108,7 +135,8 @@ function targetProblem(spec: unknown): string | null {
   // 整批停在这里，而错误原因说的是另一件事。
   if (s.index === undefined) {
     return '这个动作需要一个目标：要么给 selector（重放已探明的剧本），'
-      + '要么给 index + snapshotId（探索期，编号来自那一份快照）';
+      + '要么给 index + snapshotId（探索期，编号来自那一份快照），'
+      + 'click 还可给 locator（动作时按语义唯一定位）';
   }
   if (typeof s.index !== 'number' || !Number.isInteger(s.index)) {
     return `index 必须是整数，收到 ${JSON.stringify(s.index)}`;
@@ -164,6 +192,9 @@ export function parseWaitUntil(until: unknown): WaitUntil {
  */
 function validateShape(a: Action, where: string): void {
   const p = (msg: string) => bad(`${where}${a.kind}：${msg}`);
+  if ('locator' in a && a.kind !== 'click') {
+    throw p('locator 只用于 click；其他动作请用 selector 或 index + snapshotId');
+  }
   if (a.kind === 'type') {
     // 空串没有定义好的语义：`Input.insertText('')` 的行为本项目没有量过，而「清空」
     // 也不是这一期的九种动作之一。fail-closed —— 不在真页面上试出一个不确定的结果。
@@ -310,12 +341,32 @@ export type ResolvedTarget =
 export function resolveTarget(spec: TargetSpec, snapshot: AxSnapshot | null): ResolvedTarget {
   const problem = targetProblem(spec);
   if (problem !== null) throw bad(problem);
-  const s = spec as { selector?: string; index?: number; snapshotId?: string };
+  const s = spec as { selector?: string; index?: number; snapshotId?: string; locator?: SemanticLocator };
   if (s.selector !== undefined) {
     return { kind: 'selector', selector: s.selector };
   }
   if (!snapshot) {
-    throw new KydogError('browser.stale_index', '这个标签还没有快照，编号无从解析 —— 先取一份快照');
+    throw new KydogError(s.locator ? 'browser.target_unusable' : 'browser.stale_index',
+      s.locator ? '这个标签还没有可用于语义定位的当前快照' : '这个标签还没有快照，编号无从解析 —— 先取一份快照');
+  }
+  if (s.locator) {
+    const names = typeof s.locator.name === 'string' ? [s.locator.name] : s.locator.name;
+    const matches = snapshot.nodes.filter((node) => node.role === s.locator!.role &&
+      names.includes(node.name) && node.w > 0 && node.h > 0);
+    const label = names.map((name) => JSON.stringify(name)).join(' / ');
+    if (matches.length === 0) {
+      throw new KydogError('browser.target_unusable',
+        `当前快照里找不到可见的 ${s.locator.role} ${label}`);
+    }
+    if (matches.length !== 1) {
+      throw new KydogError('browser.target_unusable',
+        `当前快照里有 ${matches.length} 个可见的 ${s.locator.role} 匹配 ${label}，无法唯一定位`);
+    }
+    const node = matches[0];
+    return {
+      kind: 'node', nodeId: node.nodeId, x: node.x + node.w / 2, y: node.y + node.h / 2,
+      isPassword: node.isPassword === true,
+    };
   }
   if (snapshot.snapshotId !== s.snapshotId) {
     throw new KydogError('browser.stale_index',

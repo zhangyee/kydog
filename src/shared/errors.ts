@@ -5,6 +5,7 @@ export type KydogErrorCode =
   | 'thread.busy'
   | 'thread.has_messages'
   | 'research.not_found'
+  | 'research.observation_already_submitted'
   | 'project.not_found'
   | 'project.access_denied'
   | 'agent.provider_error'
@@ -68,6 +69,10 @@ export type KydogErrorCode =
   // 内容为「Internal error」的话、`Input.insertText` **永不 settle**（整轮 run 挂死）、
   // `Input.dispatchKeyEvent` 照常 resolve（于是回报「按下 Enter」而它一个字都没发出去）。
   | 'browser.not_dispatchable'
+  // 键盘动作已经选中了目标标签，但它没有同时处于活动、可见、聚焦状态（侧栏已收起、
+  // 被遮挡、还没有上报布局，或操作期间用户切去了别处）。这种 CDP 键会静默失效，所以不发送。
+  // **处置是显示浏览器侧栏后重试，不按成功继续推断。**
+  | 'browser.input_not_delivered'
   // 往页面里注的那段脚本**没有拿回可用的结果**：求值 reject 了、回来的东西不成形状、
   // 撞了单次求值的时限，或者页面自己报「到达时已经过了时限、什么都没做」。
   // **这四种里只有最后一种说得出「没有发生」** —— 撞时限那一条取消不掉已经注进去的

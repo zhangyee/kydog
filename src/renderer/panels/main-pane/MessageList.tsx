@@ -1,4 +1,4 @@
-import type { RefObject } from 'react';
+import { useMemo, type RefObject } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useRunsStore } from '../../stores/runsStore';
 import { useIdentityStore } from '../../stores/identityStore';
@@ -8,6 +8,9 @@ import { UserMessage } from './UserMessage';
 import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
 import { StreamingIndicator } from './StreamingIndicator';
+import { latestResearchTaskMessages } from './researchTaskAnchor';
+
+const EMPTY_RESEARCH_RUN_IDS: ReadonlySet<string> = new Set();
 
 /**
  * @param scrollRef 滚动容器。**由 `ThreadView` 拿着**：跟随状态要同时喂给它上方的
@@ -17,6 +20,14 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
+  const researchTaskRunsByMessage = useMemo(() => latestResearchTaskMessages([
+    ...messages.flatMap((message) => message.role === 'assistant'
+      ? [{ messageId: message.id, blocks: message.blocks }]
+      : []),
+    ...Object.entries(bufferByMessage).flatMap(([messageId, buffer]) => buffer.threadId === threadId
+      ? [{ messageId, blocks: buffer.blocks }]
+      : []),
+  ]), [messages, bufferByMessage, threadId]);
   const askPending = useAskStore((s) => s.pendingByThread[threadId]);
   // 窄模式判据与 Composer.tsx 一致：browserOpen（协议层事实），不是宽度阈值。
   // 正文左右边距跟着收窄，给对话栏腾出来的横向空间不被留白吃掉。
@@ -38,7 +49,9 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
             ? <UserMessage key={m.id} name={userName} content={m.content} images={m.images} createdAt={m.createdAt} projectPath={projectPath} />
             // history 里的消息按定义已经落定：主进程在 pi 的 agent_end 上发
             // run.message_end，bootstrap 收到才把 buffer 搬进这里。
-            : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks} settled createdAt={m.createdAt} />,
+            : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks}
+              settled createdAt={m.createdAt}
+              researchTaskRunIds={researchTaskRunsByMessage.get(m.id) ?? EMPTY_RESEARCH_RUN_IDS} />,
         )}
         {liveBuffers.map(([messageId, buf]) => (
           <div key={messageId}>
@@ -49,6 +62,7 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
               messageId={messageId}
               blocks={buf.blocks}
               settled={false}
+              researchTaskRunIds={researchTaskRunsByMessage.get(messageId) ?? EMPTY_RESEARCH_RUN_IDS}
             />
             {/* 提问态下卡片本身就是最强的状态提示，再挂个转圈只会打架。 */}
             {!askPending && <StreamingIndicator />}

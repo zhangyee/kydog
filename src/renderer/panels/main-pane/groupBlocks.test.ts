@@ -10,6 +10,9 @@ const text = (t: string): AssistantBlock => ({ kind: 'text', text: t });
 const askBlock = (toolCallId: string): AssistantBlock => ({
   kind: 'ask', toolCallId, questions: [], status: 'pending',
 });
+const researchTool = (id: string, result: Record<string, unknown>, status: 'ok' | 'failed' = 'ok'):
+  AssistantBlock => ({ kind: 'tool_call', id, name: 'web_research_task', status,
+    chunks: [{ stream: 'stdout', data: JSON.stringify({ kind: 'web_research_task', ...result }) }] });
 
 describe('groupBlocks', () => {
   it('空数组返回空', () => {
@@ -93,5 +96,60 @@ describe('groupBlocks', () => {
     const out = groupBlocks([tool('x'), tool('y'), askBlock('a1')]);
     expect(out.map((g) => g.kind)).toEqual(['process', 'ask']);
     expect((out[0] as { blocks: unknown[] }).blocks).toHaveLength(2);
+  });
+
+  it('keeps one live research card in the process flow and a separate report card at complete', () => {
+    const submit = researchTool('submit', { action: 'submit', created: true, researchRunId: 'run-1' });
+    const update = researchTool('update', { action: 'submit', created: false, researchRunId: 'run-1' });
+    const complete = researchTool('complete', { action: 'complete', researchRunId: 'run-1',
+      completed: true, reportPath: '/project/report.md' });
+    const out = groupBlocks([thinking('searching'), submit, text('still researching'), update,
+      thinking('checking'), complete, text('done')]);
+    expect(out.map((g) => g.kind)).toEqual([
+      'process', 'text', 'process', 'research_task', 'process', 'report_file', 'text',
+    ]);
+    expect(out[3]).toEqual({ kind: 'research_task', researchRunId: 'run-1' });
+    expect(out[5]).toEqual({ kind: 'report_file', researchRunId: 'run-1',
+      path: '/project/report.md' });
+    expect(out.filter((group) => group.kind === 'research_task')).toHaveLength(1);
+  });
+
+  it('moves each run independently when one message contains more than one research task', () => {
+    const firstA = researchTool('a-1', { action: 'submit', created: true, researchRunId: 'run-a' });
+    const firstB = researchTool('b-1', { action: 'submit', created: true, researchRunId: 'run-b' });
+    const latestA = researchTool('a-2', { action: 'wait', researchRunId: 'run-a' });
+    const out = groupBlocks([firstA, firstB, latestA]);
+    expect(out.filter((group) => group.kind === 'research_task')).toEqual([
+      { kind: 'research_task', researchRunId: 'run-b' },
+      { kind: 'research_task', researchRunId: 'run-a' },
+    ]);
+  });
+
+  it('suppresses a run whose newer anchor belongs to another assistant message', () => {
+    const submit = researchTool('submit', { action: 'submit', created: true, researchRunId: 'run-1' });
+    expect(groupBlocks([submit], new Set()).map((group) => group.kind)).toEqual(['process']);
+    expect(groupBlocks([submit], new Set(['run-1'])).map((group) => group.kind))
+      .toEqual(['process', 'research_task']);
+  });
+
+  it('keeps the live research card after browser activity that follows the latest task result', () => {
+    const submit = researchTool('submit', { action: 'submit', created: true, researchRunId: 'run-1' });
+    const out = groupBlocks([submit, tool('browser-open'), thinking('extracting search results')]);
+    expect(out.map((group) => group.kind)).toEqual(['process', 'research_task']);
+    expect(out[0]).toMatchObject({ kind: 'process', blocks: [submit, tool('browser-open'),
+      thinking('extracting search results')] });
+  });
+
+  it('does not create a report card from a failed complete result', () => {
+    const complete = researchTool('complete', { action: 'complete', researchRunId: 'run-1',
+      reportPath: '/project/report.md' }, 'failed');
+    const out = groupBlocks([complete]);
+    expect(out.map((g) => g.kind)).toEqual(['process']);
+  });
+
+  it('keeps the task card live without creating a report card for completed:false diagnostics', () => {
+    const complete = researchTool('complete', { action: 'complete', researchRunId: 'run-1',
+      completed: false, validationErrors: [{ code: 'evidence_missing' }] });
+    expect(groupBlocks([complete]).map((group) => group.kind)).toEqual(['process', 'research_task']);
   });
 });

@@ -4,16 +4,100 @@ import type { AddressInfo } from 'node:net';
 import { gzipSync } from 'node:zlib';
 import { fetch as undiciFetch } from 'undici';
 import { ResearchBudgetMeter, DEFAULT_RESEARCH_BUDGET } from './budget';
-import { createResearchDispatcher, fetchSource } from './fetchSource';
+import { createResearchDispatcher, fetchSiteIcon, fetchSource } from './fetchSource';
 
 const publicDns = async () => [{ address: '93.184.216.34', family: 4 as const }];
 const budget = () => new ResearchBudgetMeter({ ...DEFAULT_RESEARCH_BUDGET, maxBytesPerSource: 1000,
   maxTotalBytes: 1500, maxRedirectsPerSource: 3 });
-const deps = (client: (url: string, init: { redirect: string; route: { kind: string } }) => Promise<Response>) => ({
+const deps = (client: (url: string, init: { redirect: string; route: { kind: string };
+  headers?: Record<string, string> }) => Promise<Response>) => ({
   resolveProxy: async (_url: string) => 'DIRECT', resolveDns: publicDns, httpClient: client,
 });
 
 describe('fetchSource', () => {
+  it('retries one 403 with IAB cookies for that URL and never exposes the cookie in the result', async () => {
+    const calls: Array<{ url: string; headers?: Record<string, string> }> = [];
+    const client = vi.fn(async (url: string, init: { headers?: Record<string, string> }) => {
+      calls.push({ url, headers: init.headers });
+      return calls.length === 1
+        ? new Response('forbidden', { status: 403 })
+        : new Response('article', { headers: { 'content-type': 'text/plain' } });
+    });
+    const getBrowserHeaders = vi.fn(async () => ({
+      cookie: 'sid=secret', userAgent: 'KyDog IAB', acceptLanguage: 'zh-CN',
+    }));
+    const result = await fetchSource({ url: 'https://medium.com/article', budget: budget(),
+      signal: new AbortController().signal }, { ...deps(client), getMediumBrowserHeaders: getBrowserHeaders });
+    expect(result.status).toBe('readable');
+    expect(client).toHaveBeenCalledTimes(2);
+    expect(calls[0].headers).toBeUndefined();
+    expect(calls[1].headers).toMatchObject({ cookie: 'sid=secret',
+      'user-agent': 'KyDog IAB', 'accept-language': 'zh-CN' });
+    expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
+  it('drops Medium IAB cookies after a cross-site redirect', async () => {
+    const calls: Array<{ url: string; cookie?: string }> = [];
+    const client = vi.fn(async (url: string, init: { headers?: Record<string, string> }) => {
+      calls.push({ url, cookie: init.headers?.cookie });
+      if (url === 'https://medium.com/start' && calls.length === 1) return new Response(null, { status: 403 });
+      if (url === 'https://medium.com/start') return new Response(null, { status: 302,
+        headers: { location: 'https://other.example/final' } });
+      return new Response('target', { headers: { 'content-type': 'text/plain' } });
+    });
+    const getBrowserHeaders = vi.fn(async () => ({ cookie: 'medium=one' }));
+    const result = await fetchSource({ url: 'https://medium.com/start', budget: budget(),
+      signal: new AbortController().signal }, { ...deps(client), getMediumBrowserHeaders: getBrowserHeaders });
+    expect(result.status).toBe('readable');
+    expect(calls).toEqual([
+      { url: 'https://medium.com/start', cookie: undefined },
+      { url: 'https://medium.com/start', cookie: 'medium=one' },
+      { url: 'https://other.example/final', cookie: undefined },
+    ]);
+    expect(getBrowserHeaders).toHaveBeenCalledWith('https://medium.com/start');
+    expect(getBrowserHeaders).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a source needs_browser when one cookie-assisted retry remains forbidden', async () => {
+    const client = vi.fn(async () => new Response('forbidden', { status: 403 }));
+    const result = await fetchSource({ url: 'https://medium.com/article', budget: budget(),
+      signal: new AbortController().signal }, {
+      ...deps(client), getMediumBrowserHeaders: async () => ({ cookie: 'sid=secret' }),
+    });
+    expect(client).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ status: 'needs_browser', reason: 'HTTP 403 after IAB cookie retry',
+      statusCode: 403 });
+  });
+
+  it('never reads IAB cookies for a non-Medium 403', async () => {
+    const getMediumBrowserHeaders = vi.fn(async () => ({ cookie: 'must-not-send=secret' }));
+    const client = vi.fn(async () => new Response('forbidden', { status: 403 }));
+    const result = await fetchSource({ url: 'https://other.example/article', budget: budget(),
+      signal: new AbortController().signal }, {
+      ...deps(client), getMediumBrowserHeaders,
+    });
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(getMediumBrowserHeaders).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: 'http_error', reason: 'HTTP 403', statusCode: 403 });
+  });
+
+  it('fetches a small declared image through the guarded route and returns a data URL', async () => {
+    const icon = Uint8Array.from([137, 80, 78, 71]);
+    const client = vi.fn(async () => new Response(icon, { headers: { 'content-type': 'image/png' } }));
+    await expect(fetchSiteIcon('https://docs.example/icon.png', new AbortController().signal,
+      deps(client))).resolves.toBe('data:image/png;base64,iVBORw==');
+    expect(client).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects non-image and oversized favicon responses', async () => {
+    const text = await fetchSiteIcon('https://docs.example/icon', new AbortController().signal,
+      deps(async () => new Response('not an icon', { headers: { 'content-type': 'text/plain' } })));
+    expect(text).toBeUndefined();
+    const huge = await fetchSiteIcon('https://docs.example/icon.png', new AbortController().signal,
+      deps(async () => new Response(new Uint8Array(33 * 1024), { headers: { 'content-type': 'image/png' } })));
+    expect(huge).toBeUndefined();
+  });
+
   it('closes a PDF response before reading its body', async () => {
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({

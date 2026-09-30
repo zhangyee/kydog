@@ -1,22 +1,26 @@
 # 百度搜索操作卡片
 
-> 2026-09-26 在用户已打开的 Chrome 中实测结果页、抽取选择器和改词；2026-09-25 KyDog IAB 在同类检索中进入安全验证页。**Chrome 成功不等于 KyDog IAB 已验证成功**。每次以当前 IAB 返回为准，百度暂不进入默认启用集。
+## 已验证的检索路径
 
-## Chrome 实测的结果页结构
+当前首页优先使用新版表单 `textarea#chat-textarea` 与 `button#chat-submit-button`。只有快照明确显示经典输入框和按钮都可见时，才成对改用 `input#kw` 与 `input#su`；不得跨两套表单混用。
 
-- 直接打开 `https://www.baidu.com/s?wd=` 加 `encodeURIComponent(query)`，中文检索得到了自然结果。结果页输入框是 `textarea#chat-textarea`，提交按钮是 `button#chat-submit-button`。在同一页输入 `TypeScript 6.0 破坏性变更 官方` 并点击提交后，导航到新 query 的结果页。
-- 自然结果卡片是 `#content_left .result.c-container[mu]`；其 `h3` 是标题，`.cos-line-clamp-2, .click-area-exp-block` 是摘要。`h3 a@href` 是 `www.baidu.com/link?url=…` 跳转地址；卡片自身的 `mu` 属性才给出目标 URL。`result-op` 等 AI／相关推荐卡片不属于这组自然结果。
-- 若当前 **KyDog IAB** 确实到达结果页，可尝试：
+先 `browser_open({"url":"https://www.baidu.com/"})` 保存 `tabId`，随后一次调用完成输入、提交、等待自然结果与抽取：
 
 ```json
-{"item":"#content_left .result.c-container[mu]","title":"h3","url":":scope@mu","snippet":".cos-line-clamp-2, .click-area-exp-block"}
+{"tabId":"<baiduTabId>","actions":[{"kind":"type","selector":"textarea#chat-textarea","text":"<query>"},{"kind":"click","selector":"button#chat-submit-button"},{"kind":"wait","until":{"selector":"#content_left .c-container:not(.EC_result)"},"timeoutMs":10000},{"kind":"extract","selectors":{"item":"#content_left .c-container:not(.EC_result)","title":"h3 a","url":"h3 a@href"}}],"research":{"engineId":"baidu","query":"<query>","angleIds":["<angleId>"],"executionPath":"homepage_form","submitActionIndex":1}}
 ```
 
-`:scope@mu` 用 `browser_act extract` 读取**当前条目自身**的 `mu`，不查子元素。逐行确认 URL 是目标站点且与标题匹配；若 `mu` 缺失或页面改版，检查当前页面，不要从百度跳转参数猜目标 URL。摘要只能指导后续抓取，不能充当正文证据。
+经典表单只替换前两个 selector，其余等待、抽取和 `research` 不变。`.EC_result` 是广告卡的结构标记；不按位置或标题猜广告。
 
-## KyDog IAB 已观察到的阻断
+## 改词与失败判据
 
-- 2026-09-25 `browser_open({url:"https://www.baidu.com/"})` 到达 HTTP 200 首页；`browser_act` 输入中文 query 并点击提交后落到 `wappass.baidu.com/static/captcha/tuxing_v2.html`，标题「`百度安全验证`」。
-- 同次 `browser_open` 直达英文搜索 URL 仍落到安全验证页。该 IAB 探测**没有**验证结果抽取或改词。
+- 结果页内改词没有已验证路径。新 query 复用同一标签但先回到首页，重新从快照判断哪一整套表单可见，再执行完整调用。
+- 不用 Enter，不拼接搜索 URL。地址变化后仍须等待自然结果容器，不能把 AI 摘要变化、空白主体或旧结果当成成功。
+- 提交前、提交后等待、抽取三个阶段的动作失败会分别自动保存 `submission_error`、`navigation_error`、`extraction_error`；不要再用诊断列或第二次调用猜原因。
+- 若到达 `wappass.baidu.com` 或可由人操作的安全验证，只调用一次带当前 `browserTabId` 的 `ask_user_question`。用户跳过、仍未恢复或无可操作控件时保存 `blocked`。
 
-当前 IAB 若仍显示 `wappass.baidu.com` 或「`百度安全验证`」，把 `(engineId, query, attemptId)` 记为 `blocked`，不能记成零结果，也不能把验证页当作 WebFetch 目标。仅在当前 IAB 真正显示自然结果并成功抽出标题、目标 URL 后，才记录这次检索的发现。
+## 判据与边界
+
+- `h3 a@href` 可能得到 `www.baidu.com/link?url=...`。对拟抓取的短名单，在观察首次提交前调用一次 `browser_open({"researchResolveBatch":{"selections":[{"observationId":"<id>","resultIndexes":[0,3,7]}]}})` 批量确认；只提交返回为已确认的索引，不抄写、不猜解跳转参数。
+- 批量确认返回 `timeout` 表示该索引仍未确认，不表示目标不存在。只排除并保留这条线索；超时索引不得提交，也不因少数超时重跑整批。
+- 只提交已选择并确认的跳转结果。明确零结果页与翻页没有已验证路径；搜索摘要只供发现，不是正文证据。

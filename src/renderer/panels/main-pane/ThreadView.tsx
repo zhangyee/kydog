@@ -5,7 +5,6 @@ import { MessageList } from './MessageList';
 import { Composer } from './Composer';
 import { NewThreadEmptyState } from './NewThreadEmptyState';
 import { ThreadBreadcrumb } from './ThreadBreadcrumb';
-import { WebResearchProgress } from './WebResearchProgress';
 import { QuestionComposer } from './QuestionComposer';
 import { useAskStore } from '../../stores/askStore';
 import { ErrorMarginalia } from './ErrorMarginalia';
@@ -91,7 +90,6 @@ export function ThreadView({ threadId }: { threadId: string }) {
       }}
     >
       {!narrow && <ThreadBreadcrumb threadId={threadId} />}
-      <WebResearchProgress threadId={threadId} />
       <div className="flex-1 min-h-0 flex flex-col">
         {messages.length === 0 ? (
           <NewThreadEmptyState threadId={threadId} />

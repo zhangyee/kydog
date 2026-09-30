@@ -26,6 +26,11 @@ describe('isParallelBatch', () => {
     expect(isParallelBatch([call('bash'), call('read')])).toBe(true);
   });
 
+  it('不同标签的 browser_open / browser_act 批次按并行组呈现', () => {
+    expect(isParallelBatch([call('browser_open', 'o1'), call('browser_open', 'o2')])).toBe(true);
+    expect(isParallelBatch([call('browser_act', 'a1'), call('browser_act', 'a2')])).toBe(true);
+  });
+
   it('单个工具不是并行', () => {
     expect(isParallelBatch([call('bash')])).toBe(false);
   });

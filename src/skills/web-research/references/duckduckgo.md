@@ -1,16 +1,25 @@
 # DuckDuckGo 搜索操作卡片
 
-> 2026-09-25 用 KyDog 真实 IAB 的 `browser_open`／`browser_act` 端到端验证。当时网络出口下，中文与英文检索各抽到 10 条。每次以当前工具返回为准。
-
 ## 已验证的检索路径
 
-1. `browser_open({url:"https://duckduckgo.com/"})`：首页 HTTP 200。保存返回的 `tabId`，后续动作始终传同一标签。
-2. `browser_act({tabId,actions:[{kind:"type",selector:"textarea[name=q]",text:query},{kind:"key",key:"Enter"},{kind:"wait",until:{urlMatches:"q="},timeoutMs:8000}]})`：本次中文检索落到 `duckduckgo.com/?…&q=…`，HTTP 200。`urlMatches` 只确认导航，仍需检查落定页是不是结果页。
-3. 在结果页运行 `browser_act({tabId,actions:[{kind:"extract",selectors:{item:"article[data-testid=result]",title:"a[data-testid=result-title-a]",url:"a[data-testid=result-title-a]@href",snippet:"[data-result=snippet]"}}]})`。本次抽到 10 条有标题、目标 URL 和摘要的自然结果。摘要只作发现线索，不是已核验的网页证据。
-4. 改词：在同一结果页 `type` 选择器 `input#search_form_input`，接 `key Enter`，再 `wait` 地址含新 query 的独特片段；随后用相同 `extract` 重新抽取。本次英文词 `TypeScript 6.0 release notes` 又抽到 10 条不同结果。
+首页输入框是 `textarea[name="q"]`，自然结果项是 `article[data-testid="result"]`。首页的提交按钮会按页面状态折叠；在 IAB 实际页面中，即使输入已成功，它仍可能保持 `0×32`，因此这条路径不点击提交按钮。输入框获得焦点并写入 query 后，用 Enter 提交表单。
+
+先 `browser_open({"url":"https://duckduckgo.com/"})` 保存 `tabId`，随后一次调用完成输入、提交、等待与抽取：
+
+```json
+{"tabId":"<ddgTabId>","actions":[{"kind":"type","selector":"textarea[name=\"q\"]","text":"<query>"},{"kind":"key","key":"Enter"},{"kind":"wait","until":{"selector":"article[data-testid=\"result\"]"},"timeoutMs":10000},{"kind":"extract","selectors":{"item":"article[data-testid=result]","title":"a[data-testid=result-title-a]","url":"a[data-testid=result-title-a]@href","snippet":"[data-result=snippet]"}}],"research":{"engineId":"duckduckgo","query":"<query>","angleIds":["<angleId>"],"executionPath":"homepage_form","submitActionIndex":1}}
+```
+
+`submitActionIndex` 指向零基的提交 `key Enter`。同一调用返回 `observationId`；不得为了检查 DOM 再拆出额外 `browser_act`。
+
+## 改词与失败判据
+
+- 新 query 复用同一标签，但先用 `browser_open({"tabId":"<ddgTabId>","url":"https://duckduckgo.com/"})` 回到首页，再执行上面的完整调用。
+- Enter 是这张卡片的主提交动作，不是失败后的后备方案。不要改点折叠按钮，也不要拼接搜索 URL。提交前失败会自动保存 `submission_error`；提交后结果条件未出现会保存 `navigation_error`；抽取动作失败会保存 `extraction_error`。不要再补一次 `status_only` 抄写同一失败。
+- 只有页面明确显示零结果时，才用 `executionPath:"status_only"`、`status:"explicit_empty"` 保存；验证页保存 `blocked`。
 
 ## 判据与边界
 
-- 首页 HTTP 200、动作 `status:ok` 或地址含 `q=` 都不能单独证明搜索成功；要看到当前 query 的结果页和本轮抽出的 `title`、`url`。空数组应记录为未取得可用结果，先检查快照和页面状态，不擅自判为“零结果”。
-- 验证页、明确零结果页、翻页、直接拼搜索 URL：本次未验证。遇到拦截、页面结构变化或等待超时，记录本引擎本次 attempt 的失败状态，按实际快照决定是否重试；不要凭猜测改选择器。
-- 抽出的 URL 是待抓取候选。后续读取这些 URL 应走独立 WebFetch，不用 IAB 的搜索动作代替抓取。
+- 首页 HTTP 200、提交动作完成或地址出现 `q=` 都不能单独证明取得自然结果；必须以结果容器等待和抽取事实为准。
+- 搜索摘要只供发现，不是正文证据。挑战页、翻页和明确零结果页没有额外的已验证操作路径。
+- IAB 观察用于发现候选；只通过 `observationSelections` 把选中的外站直链交给后台 worker。

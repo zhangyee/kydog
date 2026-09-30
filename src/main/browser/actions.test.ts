@@ -179,6 +179,43 @@ describe('resolveTarget：缺目标要说「缺目标」，不能说成编号失
   });
 });
 
+describe('resolveTarget：动作时语义定位', () => {
+  const locator = { role: 'button', name: ['Google 搜索', 'Google Search'], visible: true } as const;
+
+  it('从这一刻的新快照里按 role + name + 可见性唯一命中', () => {
+    const live: AxSnapshot = {
+      ...snap,
+      nodes: [
+        { index: 1, nodeId: 200, role: 'button', name: 'Google 搜索', x: 20, y: 30, w: 0, h: 0 },
+        { index: 2, nodeId: 201, role: 'button', name: 'Google 搜索', x: 40, y: 50, w: 80, h: 30 },
+        { index: 3, nodeId: 202, role: 'button', name: '别的按钮', x: 1, y: 1, w: 20, h: 20 },
+      ],
+    };
+    expect(resolveTarget({ locator } as never, live)).toEqual({
+      kind: 'node', nodeId: 201, x: 80, y: 65, isPassword: false,
+    });
+  });
+
+  it('零命中与多命中都拒绝，不猜一个按钮', () => {
+    const none: AxSnapshot = { ...snap, nodes: snap.nodes.filter((n) => n.role !== 'button') };
+    expect(() => resolveTarget({ locator } as never, none)).toThrow(/没有.*Google 搜索|找不到.*Google 搜索/);
+
+    const ambiguous: AxSnapshot = {
+      ...snap,
+      nodes: [
+        { index: 1, nodeId: 300, role: 'button', name: 'Google 搜索', x: 1, y: 1, w: 20, h: 20 },
+        { index: 2, nodeId: 301, role: 'button', name: 'Google Search', x: 30, y: 1, w: 20, h: 20 },
+      ],
+    };
+    expect(() => resolveTarget({ locator } as never, ambiguous)).toThrow(/2.*匹配|多个.*匹配/);
+  });
+
+  it('locator 只允许 click，type 仍须使用 selector 或快照编号', () => {
+    expect(() => validateBatch([{ kind: 'click', locator } as never])).not.toThrow();
+    expect(() => validateBatch([{ kind: 'type', locator, text: 'query' } as never])).toThrow(/locator.*click|click.*locator/);
+  });
+});
+
 describe('flattenActions：repeat 展开时保住「第几轮第几步」', () => {
   const A = (kind: string, n: number): Action => ({ kind: 'click', selector: `#${kind}${n}` } as Action);
 

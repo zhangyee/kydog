@@ -63,6 +63,11 @@ times as much.
 
 **Reuse one tab per source**, passing the `tabId` back in.
 
+**slowpaper browser calls do not pass `research`.** The
+`research:{engineId,query,angleIds,...}` object exists only for `/web-research` observations
+on general search engines. Paper-source searches continue to follow this guide and each
+source card, so they are never recorded as web-research tasks.
+
 ---
 
 ## 2. `browser_act`'s twelve actions

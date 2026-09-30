@@ -1,7 +1,7 @@
 import { Agent, ProxyAgent, Socks5ProxyAgent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import type { RedirectHop } from '../../shared/webResearch';
 import { candidateKey } from './urlIdentity';
-import { ResearchBudgetMeter } from './budget';
+import { DEFAULT_RESEARCH_BUDGET, ResearchBudgetMeter } from './budget';
 import { prepareResearchRoute, type ResearchRoute, type RouteDeps } from './networkGuard';
 
 export type FetchInput = { url: string; sourceId?: string; budget: ResearchBudgetMeter; signal: AbortSignal;
@@ -22,8 +22,14 @@ export type FetchResult = {
   assurance?: 'dns_pinned' | 'proxy_dns_unverified';
 };
 type Prepared = Extract<ResearchRoute, { ok: true }>;
-type HttpInit = { redirect: 'manual'; signal: AbortSignal; route: Prepared; dispatcher: Dispatcher };
-export type FetchDeps = RouteDeps & { httpClient?: (url: string, init: HttpInit) => Promise<Response> };
+type BrowserRequestHeaders = { cookie?: string; userAgent?: string; acceptLanguage?: string };
+type HttpInit = { redirect: 'manual'; signal: AbortSignal; route: Prepared; dispatcher: Dispatcher;
+  headers?: Record<string, string> };
+export type FetchDeps = RouteDeps & {
+  httpClient?: (url: string, init: HttpInit) => Promise<Response>;
+  /** Medium-only bridge to the persistent IAB profile. Values are used in-memory only. */
+  getMediumBrowserHeaders?: (url: string) => Promise<BrowserRequestHeaders>;
+};
 
 export function createResearchDispatcher(route: Prepared): Dispatcher {
   if (route.kind !== 'direct') {
@@ -40,7 +46,22 @@ export function createResearchDispatcher(route: Prepared): Dispatcher {
 }
 
 const defaultClient = (url: string, init: HttpInit): Promise<Response> =>
-  undiciFetch(url, { redirect: init.redirect, signal: init.signal, dispatcher: init.dispatcher }) as unknown as Promise<Response>;
+  undiciFetch(url, { redirect: init.redirect, signal: init.signal, dispatcher: init.dispatcher,
+    headers: init.headers }) as unknown as Promise<Response>;
+
+function isMediumUrl(raw: string): boolean {
+  const host = new URL(raw).hostname.toLowerCase();
+  return host === 'medium.com' || host.endsWith('.medium.com');
+}
+
+function requestHeaders(value: BrowserRequestHeaders | undefined): Record<string, string> | undefined {
+  if (!value) return undefined;
+  const headers: Record<string, string> = {};
+  if (value.cookie) headers.cookie = value.cookie;
+  if (value.userAgent) headers['user-agent'] = value.userAgent;
+  if (value.acceptLanguage) headers['accept-language'] = value.acceptLanguage;
+  return Object.keys(headers).length ? headers : undefined;
+}
 
 function attrs(tag: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -126,6 +147,8 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
   const seen = new Set<string>();
   let current = requestedUrl;
   let receivedBytes = 0;
+  let mediumCookieMode = false;
+  let mediumCookieRetryUsed = false;
   for (;;) {
     if (input.signal.aborted) return result('cancelled', 'cancelled', { finalUrl: current, receivedBytes });
     let key: string;
@@ -143,9 +166,21 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
     let dispatcher: Dispatcher | undefined;
     try {
       dispatcher = createResearchDispatcher(route);
-      const response = await (deps.httpClient ?? defaultClient)(current, {
-        redirect: 'manual', signal: input.signal, route, dispatcher,
-      });
+      const send = async (headers?: Record<string, string>): Promise<Response> =>
+        (deps.httpClient ?? defaultClient)(current, {
+          redirect: 'manual', signal: input.signal, route, dispatcher: dispatcher!, headers,
+        });
+      const medium = isMediumUrl(current);
+      mediumCookieMode = medium && mediumCookieRetryUsed;
+      let response = await send(mediumCookieMode
+        ? requestHeaders(await deps.getMediumBrowserHeaders?.(current)) : undefined);
+      if (medium && (response.status === 401 || response.status === 403) &&
+        !mediumCookieRetryUsed && deps.getMediumBrowserHeaders) {
+        await response.body?.cancel();
+        mediumCookieRetryUsed = true;
+        mediumCookieMode = true;
+        response = await send(requestHeaders(await deps.getMediumBrowserHeaders(current)));
+      }
       const statusCode = response.status;
       if (statusCode >= 300 && statusCode < 400) {
         await response.body?.cancel();
@@ -163,6 +198,11 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
       }
       if (statusCode < 200 || statusCode >= 400) {
         await response.body?.cancel();
+        if (medium && (statusCode === 401 || statusCode === 403) && mediumCookieMode) {
+          return result('needs_browser', `HTTP ${statusCode} after IAB cookie retry`, {
+            finalUrl: current, statusCode, receivedBytes,
+          });
+        }
         return result('http_error', `HTTP ${statusCode}`, { finalUrl: current, statusCode, receivedBytes });
       }
       const contentType = response.headers.get('content-type') ?? undefined;
@@ -199,4 +239,22 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
       try { await dispatcher?.close(); } catch { /* preserve the fetch result */ }
     }
   }
+}
+
+const SITE_ICON_MAX_BYTES = 32 * 1024;
+const SITE_ICON_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon',
+]);
+
+/** Fetch page-declared favicon bytes through the same guarded route as research sources. */
+export async function fetchSiteIcon(url: string, signal: AbortSignal,
+  deps: FetchDeps): Promise<string | undefined> {
+  const meter = new ResearchBudgetMeter({ ...DEFAULT_RESEARCH_BUDGET, maxCandidates: 1, maxFetches: 1,
+    maxTotalBytes: SITE_ICON_MAX_BYTES, maxBytesPerSource: SITE_ICON_MAX_BYTES,
+    maxModelCalls: 1, maxOutputTokensPerCall: 1, fetchConcurrency: 1, modelConcurrency: 1 });
+  const fetched = await fetchSource({ url, sourceId: `site-icon:${url}`, budget: meter, signal }, deps);
+  const mediaType = fetched.contentType?.split(';', 1)[0].trim().toLowerCase();
+  if (fetched.status !== 'readable' || !mediaType || !SITE_ICON_TYPES.has(mediaType) ||
+    fetched.bytes.byteLength === 0 || fetched.bytes.byteLength > SITE_ICON_MAX_BYTES) return undefined;
+  return `data:${mediaType};base64,${Buffer.from(fetched.bytes).toString('base64')}`;
 }

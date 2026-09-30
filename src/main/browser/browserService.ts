@@ -1,4 +1,7 @@
-import { BrowserWindow, WebContentsView, session, type WebContents, type Session, type DownloadItem } from 'electron';
+import {
+  BrowserWindow, WebContentsView, session,
+  type WebContents, type Session, type DownloadItem,
+} from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
 import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
@@ -375,8 +378,8 @@ export class BrowserService {
   /**
    * 同一个标签的 open / navControl / 动作派发排队执行。**跨标签仍然并行。**
    *
-   * pi 的工具带 `executionMode: 'sequential'`，但那只约束 pi 那一侧；渲染层发来的
-   * `browser.*` RPC 走的是另一条路。两条路同时动一个标签时，一次导航的事件会被
+   * pi 允许 `browser_open` / `browser_act` 跨标签并行，渲染层发来的 `browser.*` RPC
+   * 又走另一条路；所以同标签顺序必须在这里收口。两条路同时动一个标签时，一次导航的事件会被
    * 另一次调用消费掉 —— 那种错很难在日志里认出来。
    *
    * **公开是给 Task 4 的**：动作派发那个入口建起来之后必须走这里，不要另开一条路。
@@ -1052,7 +1055,8 @@ export class BrowserService {
     return { tabId };
   }
 
-  async open(args: { url: string; tabId?: string; ownerThreadId?: string | null; activate?: boolean }): Promise<{ tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }> {
+  async open(args: { url: string; tabId?: string; ownerThreadId?: string | null; activate?: boolean;
+    settleOutsideHost?: string }): Promise<{ tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }> {
     const url = assertAllowedUrl(args.url).toString();
     if (args.tabId && !this.registry.has(args.tabId)) {
       throw new KydogError('browser.no_tab', `没有这个标签页：${args.tabId}`);
@@ -1070,7 +1074,7 @@ export class BrowserService {
       tabId, args.ownerThreadId ?? null,
       // 目标 URL 传的是**已经规范化**的那份：它进下载的关联集合，
       // 一个 PDF 直链要靠它才能被认成本次导航的终态。
-      () => this.navigate(tabId, (wc) => wc.loadURL(url), url),
+      () => this.navigate(tabId, (wc) => wc.loadURL(url), url, args.settleOutsideHost),
       '打开网页',
     ));
     return { tabId, nav, evicted: created?.evicted ?? [] };
@@ -1082,6 +1086,7 @@ export class BrowserService {
     tabId: string,
     act: (wc: WebContents) => Promise<unknown> | void,
     targetUrl: string | null,
+    settleOutsideHost?: string,
   ): Promise<NavigationObservation> {
     const view = this.views.get(tabId);
     if (!view) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
@@ -1090,7 +1095,13 @@ export class BrowserService {
     // 换 tracker **之前**先告诉旧的它被接替了：它自己的收尾会 stop()，
     // 掐掉的正是接替它的这一次导航。两次导航都错，日志里还看不出原因。
     this.navs.get(tabId)?.onSuperseded();
-    const tracker = new NavigationTracker(randomUUID(), targetUrl);
+    const tracker = new NavigationTracker(randomUUID(), targetUrl, settleOutsideHost
+      ? (raw) => {
+          const host = new URL(raw).hostname.toLowerCase();
+          const boundary = settleOutsideHost.toLowerCase();
+          return host !== boundary && !host.endsWith(`.${boundary}`);
+        }
+      : undefined);
     this.navs.set(tabId, tracker);
     // **act 只负责触发，不等它返回。** `loadURL` 的 promise 要等 did-finish-load 才
     // resolve（electron.d.ts 明写），一个永不返回的 <script src> 就能让它永远挂着 ——
@@ -1657,7 +1668,7 @@ export class BrowserService {
    *
    * `browser_read` 的正文与 `extract` 的抽取都走它 —— 那两条路此前直接拿
    * `webContentsOf()` 注脚本，崩过一次的标签上就是一次挂死，而它们**都在
-   * `browser_act` / `browser_read` 这种 sequential 工具里**。
+   * `browser_act` / `browser_read` 这种模型等待结果的工具里**。
    *
    * `code` 收**拼装函数**那一档是给要带过期自检的注入用的（`loginFlow` 的填充脚本，
    * 与 `interactExpression` 同一个道理）：到点时刻由 `evalOn` 算一次、两边共用 ——
@@ -1686,7 +1697,7 @@ export class BrowserService {
    * | `Input.insertText` | **永不 settle** —— 进程退出时才以 "target closed" reject |
    * | `Input.dispatchKeyEvent` | resolve `{}`（静默无效） |
    *
-   * 中间那一条会让一次 `browser_act`（sequential 工具）**永远不返回**；最后一条更糟：
+   * 中间那一条会让一次 `browser_act` **永远不返回**；最后一条更糟：
    * 回报「按下 Enter」而它一个字都没发到页面上。
    * （`Emulation.setDeviceMetricsOverride` 在同样情形下是 **SIGSEGV**，见 applyViewport
    * 那段 —— 那条更硬，但闸是同一道。）
@@ -1734,9 +1745,32 @@ export class BrowserService {
 
   /** 报错时说得出「哪个目标」。selector 与编号两种说法不能混：处置不同。 */
   private static describeTarget(action: DispatchAction): string {
-    const s = action as { selector?: string; index?: number; snapshotId?: string };
+    const s = action as { selector?: string; index?: number; snapshotId?: string;
+      locator?: { role: string; name: string | string[] } };
     if (typeof s.selector === 'string') return `选择器 ${JSON.stringify(s.selector)}`;
+    if (s.locator) {
+      const names = typeof s.locator.name === 'string' ? [s.locator.name] : s.locator.name;
+      return `语义目标 ${s.locator.role} ${names.map((name) => JSON.stringify(name)).join(' / ')}`;
+    }
     return `编号 ${s.index}（来自快照 ${s.snapshotId}）`;
+  }
+
+  /**
+   * 让 Chromium 把这一张 WebContents 当成有焦点的页面来接收 agent 输入。
+   *
+   * 这是 CDP 的 per-target 状态，不会切 KyDog 的活动标签，也不要求 IAB 侧栏可见。
+   * 命令的 resolved promise 就是协议 ACK；没有 ACK 时绝不能继续定位或发送 Input.*，
+   * 否则 browser_act 会把一件没有发生的动作报成成功。
+   */
+  private async enableAgentFocus(tabId: string, wc: WebContents): Promise<void> {
+    this.assertDispatchable(tabId, wc);
+    try {
+      await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    } catch (cause) {
+      throw new KydogError('browser.input_not_delivered',
+        `标签 ${tabId} 没有确认进入可接收 agent 输入的状态。`
+        + '这次没有定位目标，也没有发送输入；等页面稳定后再试。', cause);
+    }
   }
 
   /**
@@ -1842,9 +1876,21 @@ export class BrowserService {
    * （`resolveTarget` 给的 x/y 是**快照当时**的，这里一个字都不用）。
    */
   async dispatch(tabId: string, action: DispatchAction, snapshot: AxSnapshot | null): Promise<string> {
+    return this.dispatchOnTab(tabId, action, snapshot);
+  }
+
+  /** 输入动作先等目标自己的 focus emulation ACK；不会切换用户正在看的标签。 */
+  private async dispatchOnTab(
+    tabId: string, action: DispatchAction, snapshot: AxSnapshot | null,
+  ): Promise<string> {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
-    this.assertDispatchable(tabId, wc);
+    if (action.kind === 'click' || action.kind === 'type'
+      || action.kind === 'hover' || action.kind === 'key') {
+      await this.enableAgentFocus(tabId, wc);
+    } else {
+      this.assertDispatchable(tabId, wc);
+    }
     // **先把视口坐实再碰页面**，与 `snapshot()` / `navigate()` 那两句是同一件事。
     //
     // 这是唯一一条「碰页面**且吃几何**」的路径：`interact.js` 的 measure 在页面里
@@ -1859,8 +1905,8 @@ export class BrowserService {
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
 
     if (action.kind === 'key') {
-      for (const ev of keyEventsFor(action.key)) {
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', ev);
+      for (const event of keyEventsFor(action.key)) {
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', event);
       }
       return `按下 ${action.key}`;
     }
@@ -1890,9 +1936,16 @@ export class BrowserService {
 
     // 剩下四种都要目标。**密码硬闸第一道排在这里**：快照里 walker 已经判过它是
     // 密码框的，连页面都不许碰（第二道在 interact.js 里，管 selector 定位那条路）。
-    const resolved = resolveTarget(action as TargetSpec, snapshot);
+    const semantic = 'locator' in action;
+    if (semantic && action.kind !== 'click') {
+      throw new KydogError('browser.bad_action', 'locator 只用于 click');
+    }
+    // locator 的意义就是避开「输入之前的快照」。Google 输入后会创建联想层并重排
+    // 提交按钮；因此必须在这个动作真正执行时取新快照，不能使用整批开始时的 before。
+    let targetSnapshot = semantic ? await this.snapshot(tabId) : snapshot;
+    let resolved = resolveTarget(action as TargetSpec, targetSnapshot);
     if (action.kind === 'type') assertTypeAllowed(resolved);
-    const target: InteractTarget = resolved.kind === 'selector'
+    let target: InteractTarget = resolved.kind === 'selector'
       ? { selector: resolved.selector } : { nodeId: resolved.nodeId };
 
     if (action.kind === 'select') {
@@ -1905,7 +1958,16 @@ export class BrowserService {
     }
 
     // spec §4.2 的三件事：滚进视野 → 重新量 → 命中检查。缺一件都是「打偏了还不报错」。
-    const m = await this.interact(tabId, wc, { op: 'measure', target });
+    let m = await this.interact(tabId, wc, { op: 'measure', target });
+    // 新快照与 measure 之间页面仍可能恰好再重建一次。只对页面明确回报的三种
+    // 「目标已变」事实重取一次；网络、超时、密码、不可编辑等错误不在这里猜测重试。
+    if (semantic && !m.ok && ['stale_node', 'not_visible', 'intercepted'].includes(String(m.reason))) {
+      targetSnapshot = await this.snapshot(tabId);
+      resolved = resolveTarget(action as TargetSpec, targetSnapshot);
+      target = resolved.kind === 'selector'
+        ? { selector: resolved.selector } : { nodeId: resolved.nodeId };
+      m = await this.interact(tabId, wc, { op: 'measure', target });
+    }
     if (!m.ok) throw BrowserService.interactError(m, action);
     // 第二道密码闸：selector 定位时快照那层看不出来，这里拿到的是活元素。
     if (action.kind === 'type' && m.isPassword === true) {
