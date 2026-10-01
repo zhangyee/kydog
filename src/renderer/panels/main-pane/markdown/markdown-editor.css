@@ -79,6 +79,31 @@
   color: var(--color-ink);
 }
 
+/* Mermaid 预览与编辑器、打印页共用纸张底色；宽图在容器内缩放或横向滚动。 */
+.kydog-md-editor .kydog-mermaid-preview {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.kydog-md-editor .kydog-mermaid-preview[data-status="ready"] svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-inline: auto;
+}
+
+.kydog-md-editor .kydog-mermaid-preview[data-status="error"] {
+  background: var(--color-paper-deep);
+  color: var(--color-ink-soft);
+  border: 1px solid var(--color-ink-hair);
+  padding: 12px 14px;
+  font-family: var(--font-sans);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* 被批注的句子：1px 虚下划线（spec §2.5）。 */
 .kydog-md-editor .kydog-comment-mark {
   text-decoration: underline dashed var(--color-marginalia);

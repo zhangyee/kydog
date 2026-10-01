@@ -11,6 +11,7 @@ import { appendToolbarTip, toolbarTipFor } from './toolbarTips';
 import { resolveImageSrc } from './imageSrc';
 import { imageBlockAltSchema } from './imageBlockAlt';
 import { isPrintableHref } from './printReadiness';
+import { mermaidPreview } from './mermaidPreview';
 import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 import './markdown-editor.css';
@@ -105,7 +106,7 @@ export function featureConfigsFor(opts: CrepeSetupOptions): CrepeFeatureConfig {
   const configs: CrepeFeatureConfig = {
     // 显式给出 Crepe 默认用的同一份语言表：打印页按它预加载语言（spec §3.4 第 3 条），
     // 两边必须是同一批 LanguageDescription 对象，预加载才命中 Crepe 自己那次 load()。
-    [Crepe.Feature.CodeMirror]: { languages },
+    [Crepe.Feature.CodeMirror]: { languages, renderPreview: mermaidPreview },
     // 相对路径图片按 md 所在目录解析（spec §2.6）。一个 proxyDomURL 同时管块级图与行内图
     // （Crepe 的 image-block 特性把它分别写进两者的配置）。
     [Crepe.Feature.ImageBlock]: { proxyDomURL: (url: string) => resolveImageSrc(url, opts.mdPath) },

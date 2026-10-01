@@ -5,6 +5,7 @@ import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState, TextSelection } from '@milkdown/kit/prose/state';
 import { featuresFor, featureConfigsFor } from './crepeSetup';
 import { addCommentMark, commentMarksPlugin } from './commentMarks';
+import { mermaidPreview } from './mermaidPreview';
 
 const F = Crepe.Feature;
 
@@ -32,6 +33,8 @@ describe('featureConfigsFor', () => {
     const print = featureConfigsFor({ mode: 'print', root, markdown: '', mdPath: '/p/a.md' });
     expect(edit[F.CodeMirror]?.languages).toBe(languages);
     expect(print[F.CodeMirror]?.languages).toBe(languages);
+    expect(edit[F.CodeMirror]?.renderPreview).toBe(mermaidPreview);
+    expect(print[F.CodeMirror]?.renderPreview).toBe(mermaidPreview);
   });
 
   it('只有编辑模式定制工具栏（评论键）', () => {
