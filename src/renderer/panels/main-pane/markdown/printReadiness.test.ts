@@ -3,6 +3,7 @@ import { Schema } from '@milkdown/kit/prose/model';
 import { languages } from '@codemirror/language-data';
 import {
   isKnownLanguage, expectsDataLanguage, languagesToLoad, factsFromDoc, factsFromDom, isPrintReady, isPrintableHref,
+  assertMermaidPrintSucceeded,
   type PrintFacts,
 } from './printReadiness';
 
@@ -25,6 +26,7 @@ const doc = schema.node('doc', null, [
   code('js'), code('javascript'),
   // 两个 LaTeX 块：一个有内容、一个没有——搭 nonEmptyLatexBlocks 只数非空那个的正向证据。
   code('LaTeX'), codeEmpty('LaTeX'),
+  code('MerMaid'), codeEmpty('mermaid'),
   code('nosuchlang'), code(''),
   schema.node('image-block', { src: 'figs/a.png' }),
   schema.node('image-block', { src: '' }),
@@ -72,11 +74,25 @@ describe('expectsDataLanguage（spec §3.4 第 3 条：只有加载出的 Langua
 describe('factsFromDoc', () => {
   it('按文档顺序收代码块语言（含空串、含重复）；只数非空的 latex 块；只收 src 非空的图片节点（块级 + 行内）', () => {
     expect(factsFromDoc(doc)).toEqual({
-      codeLanguages: ['js', 'javascript', 'LaTeX', 'LaTeX', 'nosuchlang', ''],
+      codeLanguages: ['js', 'javascript', 'LaTeX', 'LaTeX', 'MerMaid', 'mermaid', 'nosuchlang', ''],
       imageNodeSrcs: ['figs/a.png', 'b.png'],
       // 正向：两个 LaTeX 块里只有一个有内容——不是「LaTeX 出现几次」就直接算
       nonEmptyLatexBlocks: 1,
+      nonEmptyMermaidBlocks: 1,
     });
+  });
+
+  it('只统计非空 Mermaid 块，语言不分大小写', () => {
+    const count = (language: string, content: string) => factsFromDoc(schema.node('doc', null, [
+      schema.node('code_block', { language }, content ? [schema.text(content)] : []),
+    ])).nonEmptyMermaidBlocks;
+    // 各字段独立翻转：语言大小写、两侧空白、内容长度与其他语言都不会互相代偿。
+    expect(count('MerMaid', 'graph TD; A-->B')).toBe(1);
+    expect(count(' mermaid ', 'graph TD; A-->B')).toBe(1);
+    expect(count('mermaid', 'graph TD; A-->B')).toBe(1);
+    expect(count('mermaid', ' \n\t ')).toBe(0);
+    expect(count('mermaid', '')).toBe(0);
+    expect(count('javascript', 'graph TD; A-->B')).toBe(0);
   });
 });
 
@@ -88,11 +104,14 @@ describe('factsFromDom', () => {
         '.milkdown-code-block-placeholder': els(1),
         '.cm-content[data-language]': els(2),
         '.milkdown-code-block .preview-panel .preview': [{ childElementCount: 1 }, { childElementCount: 0 }],
+        '.kydog-mermaid-preview[data-status="ready"]': els(3),
+        '.kydog-mermaid-preview[data-status="error"]': els(2),
         img: [{ getAttribute: () => 'file:///a.png', complete: true }, { getAttribute: () => '', complete: true }],
       } as Record<string, unknown[]>)[sel] ?? [],
     };
     expect(factsFromDom(root as never)).toEqual({
       placeholders: 1, taggedCodeContents: 2, latexPreviews: 1,
+      mermaidReady: 3, mermaidErrors: 2,
       imgs: [{ src: 'file:///a.png', complete: true }],
     });
   });
@@ -102,7 +121,9 @@ describe('isPrintReady', () => {
   const ready: PrintFacts = {
     codeLanguages: ['js', 'LaTeX', 'nosuchlang', ''], imageNodeSrcs: ['a', 'b'],
     nonEmptyLatexBlocks: 1,
+    nonEmptyMermaidBlocks: 1,
     placeholders: 0, taggedCodeContents: 2, latexPreviews: 1,
+    mermaidReady: 1, mermaidErrors: 0,
     imgs: [{ src: 'a', complete: true }, { src: 'b', complete: true }],
   };
   it('全部成立 → true；任一条不成立 → false', () => {
@@ -124,6 +145,40 @@ describe('isPrintReady', () => {
     expect(isPrintReady({ ...ready, nonEmptyLatexBlocks: 0, latexPreviews: 0 })).toBe(true);
     // 正向：同一份事实，只要 nonEmptyLatexBlocks 变回 1（块里有内容），就重新要求 latexPreviews ≥ 1
     expect(isPrintReady({ ...ready, latexPreviews: 0 })).toBe(false);
+  });
+
+  it('Mermaid 完成数未与文档块数相等时不就绪；ready 与 error 都表示异步已结束', () => {
+    const mixed = { ...ready, nonEmptyMermaidBlocks: 3, mermaidReady: 2, mermaidErrors: 1 };
+    expect(isPrintReady(mixed)).toBe(true);
+    expect(isPrintReady({ ...mixed, mermaidReady: 1 })).toBe(false);
+    expect(isPrintReady({ ...mixed, mermaidReady: 3 })).toBe(false);
+    expect(isPrintReady({ ...mixed, mermaidErrors: 0 })).toBe(false);
+    expect(isPrintReady({ ...mixed, mermaidErrors: 2 })).toBe(false);
+    expect(isPrintReady({ ...mixed, nonEmptyMermaidBlocks: 2 })).toBe(false);
+    expect(isPrintReady({ ...mixed, nonEmptyMermaidBlocks: 4 })).toBe(false);
+    expect(isPrintReady({ ...mixed, mermaidReady: 3, mermaidErrors: 0 })).toBe(true);
+    expect(isPrintReady({ ...mixed, mermaidReady: 0, mermaidErrors: 3 })).toBe(true);
+  });
+
+  it('空 Mermaid 块不要求预览，避免打印永久等待', () => {
+    const empty = {
+      ...ready, ...factsFromDoc(schema.node('doc', null, [codeEmpty('mermaid')])),
+      taggedCodeContents: 0, latexPreviews: 0, mermaidReady: 0, mermaidErrors: 0, imgs: [],
+    };
+    expect(isPrintReady(empty)).toBe(true);
+    expect(isPrintReady({ ...empty, nonEmptyMermaidBlocks: 1 })).toBe(false);
+    const whitespace = factsFromDoc(schema.node('doc', null, [
+      schema.node('code_block', { language: 'mermaid' }, [schema.text(' \n\t ')]),
+    ]));
+    expect(isPrintReady({ ...empty, ...whitespace })).toBe(true);
+  });
+});
+
+describe('assertMermaidPrintSucceeded', () => {
+  it('存在 Mermaid error 时给出数量明确的导出错误；零错误不抛', () => {
+    expect(() => assertMermaidPrintSucceeded({ mermaidErrors: 2 })).toThrow('有 2 个 Mermaid 图表无法渲染');
+    expect(() => assertMermaidPrintSucceeded({ mermaidErrors: 1 })).toThrow('有 1 个 Mermaid 图表无法渲染');
+    expect(() => assertMermaidPrintSucceeded({ mermaidErrors: 0 })).not.toThrow();
   });
 });
 

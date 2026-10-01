@@ -14,11 +14,12 @@ body::before { display: none !important; }
 .kydog-md-print.kydog-md-editor { height: auto; overflow: visible; }
 .kydog-md-print .ProseMirror { padding: 0 !important; }
 
-/* 代码块：语言按钮 / 复制键不印；公式块只印渲染结果 */
+/* 代码块：语言按钮 / 复制键不印；公式与 Mermaid 块共用预览规则，只印渲染结果 */
 .kydog-md-print .milkdown-code-block .tools,
 .kydog-md-print .milkdown-code-block .preview-divider,
 .kydog-md-print .milkdown-code-block .preview-label { display: none !important; }
 .kydog-md-print .milkdown-code-block:has(.preview-panel .preview > *) .codemirror-host { display: none !important; }
+.kydog-md-print .kydog-mermaid-preview[data-status="ready"] svg { max-width: 100%; height: auto; }
 
 /* 不要试图把 .cm-scroller 改成 display:block：CodeMirror 基础主题是 display:flex !important 且选择器
    更具体，覆盖不生效（实测）。下面这套在 flex 下成立：

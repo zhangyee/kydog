@@ -7,7 +7,9 @@ import '../index.css';
 import '../panels/main-pane/markdown/print.css';
 import { editorViewCtx } from '@milkdown/kit/core';
 import { createCrepe } from '../panels/main-pane/markdown/crepeSetup';
-import { factsFromDoc, factsFromDom, isPrintReady, languagesToLoad } from '../panels/main-pane/markdown/printReadiness';
+import {
+  factsFromDoc, factsFromDom, isPrintReady, languagesToLoad, assertMermaidPrintSucceeded,
+} from '../panels/main-pane/markdown/printReadiness';
 
 export type MdPrintPayload = {
   markdown: string;
@@ -56,7 +58,9 @@ function waitUntil(root: HTMLElement, ready: () => boolean): Promise<void> {
       resolve();
     };
     const observer = new MutationObserver(check);
-    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-language', 'src'] });
+    observer.observe(root, {
+      subtree: true, childList: true, attributes: true, attributeFilter: ['data-language', 'data-status', 'src'],
+    });
     // img 的 load / error 不冒泡，捕获阶段拿得到
     root.addEventListener('load', check, true);
     root.addEventListener('error', check, true);
@@ -88,6 +92,7 @@ async function renderForPrint(p: MdPrintPayload): Promise<void> {
   // 等它兑现后各块的语言随即挂上（data-language），下面的判据再确认一遍。
   await Promise.all(languagesToLoad(doc).map((d) => d.load()));
   await waitUntil(root, () => isPrintReady({ ...factsFromDoc(doc), ...factsFromDom(root) }));
+  assertMermaidPrintSucceeded(factsFromDom(root));
   await document.fonts.ready;
 }
 

@@ -43,11 +43,18 @@ export function languagesToLoad(doc: PmNode): LanguageDescription[] {
   return [...found];
 }
 
-export type DocFacts = { codeLanguages: string[]; imageNodeSrcs: string[]; nonEmptyLatexBlocks: number };
+export type DocFacts = {
+  codeLanguages: string[];
+  imageNodeSrcs: string[];
+  nonEmptyLatexBlocks: number;
+  nonEmptyMermaidBlocks: number;
+};
 export type DomFacts = {
   placeholders: number;
   taggedCodeContents: number;
   latexPreviews: number;
+  mermaidReady: number;
+  mermaidErrors: number;
   imgs: Array<{ src: string; complete: boolean }>;
 };
 export type PrintFacts = DocFacts & DomFacts;
@@ -57,6 +64,7 @@ export function factsFromDoc(doc: PmNode): DocFacts {
   const codeLanguages: string[] = [];
   const imageNodeSrcs: string[] = [];
   let nonEmptyLatexBlocks = 0;
+  let nonEmptyMermaidBlocks = 0;
   doc.descendants((node) => {
     if (node.type.name === 'code_block') {
       const language = String(node.attrs.language ?? '');
@@ -68,12 +76,14 @@ export function factsFromDoc(doc: PmNode): DocFacts {
       // 数会一直等到超时。这里只数非空的，供 isPrintReady 的第 4 条判据用；
       // data-language 要不要挂（第 3 条判据）跟内容是否为空无关，仍然按 codeLanguages 全量数。
       if (language.toLowerCase() === 'latex' && node.textContent.length > 0) nonEmptyLatexBlocks += 1;
+      // 与 mermaidPreview 的启动条件相同：纯空白没有异步工作，也不要求终态预览。
+      if (language.trim().toLowerCase() === 'mermaid' && node.textContent.trim().length > 0) nonEmptyMermaidBlocks += 1;
     }
     if ((node.type.name === 'image-block' || node.type.name === 'image')
       && typeof node.attrs.src === 'string' && node.attrs.src !== '') imageNodeSrcs.push(node.attrs.src);
     return true;
   });
-  return { codeLanguages, imageNodeSrcs, nonEmptyLatexBlocks };
+  return { codeLanguages, imageNodeSrcs, nonEmptyLatexBlocks, nonEmptyMermaidBlocks };
 }
 
 type QueryRoot = { querySelectorAll: (sel: string) => ArrayLike<unknown> };
@@ -86,6 +96,8 @@ export function factsFromDom(root: QueryRoot): DomFacts {
     taggedCodeContents: all('.cm-content[data-language]').length,
     latexPreviews: all<{ childElementCount: number }>('.milkdown-code-block .preview-panel .preview')
       .filter((p) => p.childElementCount > 0).length,
+    mermaidReady: all('.kydog-mermaid-preview[data-status="ready"]').length,
+    mermaidErrors: all('.kydog-mermaid-preview[data-status="error"]').length,
     imgs: all<{ getAttribute: (n: string) => string | null; complete: boolean }>('img')
       .map((i) => ({ src: i.getAttribute('src') ?? '', complete: i.complete }))
       .filter((i) => i.src !== ''),
@@ -99,9 +111,16 @@ export function isPrintReady(f: PrintFacts): boolean {
   if (f.taggedCodeContents < expectTagged) return false;
   // 第 4 条：只有非空的 latex 块才要求 .preview（factsFromDoc 已经把空块排除在外）
   if (f.latexPreviews < f.nonEmptyLatexBlocks) return false;
+  // ready 与 error 都是异步终态；只放行与文档块数精确相等的结果，错误由打印页随后拒绝。
+  if (f.mermaidReady + f.mermaidErrors !== f.nonEmptyMermaidBlocks) return false;
   // src 为空的图片节点不计：它永远不会有 img，计进去就只能等到超时（spec §3.4 第 5 条）
   if (f.imgs.length !== f.imageNodeSrcs.length) return false;
   return f.imgs.every((i) => i.complete);
+}
+
+/** 异步已结束不等于可导出：任一 Mermaid 错误都必须拒绝 PDF。 */
+export function assertMermaidPrintSucceeded(facts: Pick<DomFacts, 'mermaidErrors'>): void {
+  if (facts.mermaidErrors > 0) throw new Error(`有 ${facts.mermaidErrors} 个 Mermaid 图表无法渲染`);
 }
 
 /** PDF 里只留 http(s) 与 mailto 链接；其余去掉 href 只留文字（spec §2.5）。 */
