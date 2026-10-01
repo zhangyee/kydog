@@ -1,12 +1,12 @@
 import { Crepe, type CrepeConfig } from '@milkdown/crepe';
-import { nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
+import { editorViewCtx, nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
 import type { MilkdownPlugin } from '@milkdown/kit/ctx';
 import { $prose } from '@milkdown/kit/utils';
 import type { NodeViewConstructor } from '@milkdown/kit/prose/view';
 import { languages } from '@codemirror/language-data';
 import { linkSchema } from '@milkdown/kit/preset/commonmark';
 import katex from 'katex';
-import { commentMarksPlugin } from './commentMarks';
+import { commentMarkRanges, commentMarksPlugin } from './commentMarks';
 import { appendToolbarTip, toolbarTipFor } from './toolbarTips';
 import { resolveImageSrc } from './imageSrc';
 import { imageBlockAltSchema } from './imageBlockAlt';
@@ -143,7 +143,12 @@ export function featureConfigsFor(opts: CrepeSetupOptions): CrepeFeatureConfig {
 
         builder.addGroup('kydog-comment', '批注').addItem('comment', {
           icon: appendToolbarTip(COMMENT_ICON_SVG, toolbarTipFor('comment', platform) ?? '评论'),
-          active: () => false,
+          active: (ctx) => {
+            const state = ctx.get(editorViewCtx).state;
+            const { from, to, empty } = state.selection;
+            if (empty) return false;
+            return commentMarkRanges(state).some((range) => range.from < to && range.to > from);
+          },
           onRun: () => opts.onCommentClick(),
         });
       },

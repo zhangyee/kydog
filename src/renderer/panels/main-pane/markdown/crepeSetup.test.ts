@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { Crepe } from '@milkdown/crepe';
 import { languages } from '@codemirror/language-data';
+import { Schema } from '@milkdown/kit/prose/model';
+import { EditorState, TextSelection } from '@milkdown/kit/prose/state';
 import { featuresFor, featureConfigsFor } from './crepeSetup';
+import { addCommentMark, commentMarksPlugin } from './commentMarks';
 
 const F = Crepe.Feature;
 
@@ -36,6 +39,41 @@ describe('featureConfigsFor', () => {
     const print = featureConfigsFor({ mode: 'print', root, markdown: '', mdPath: '/p/a.md' });
     expect(typeof edit[F.Toolbar]?.buildToolbar).toBe('function');
     expect(print[F.Toolbar]).toBeUndefined();
+  });
+
+  it('评论键 active：选区与已有评论有交集时强调；移到未评论文字时不强调', () => {
+    const edit = featureConfigsFor({ mode: 'edit', root, markdown: '', mdPath: '/p/a.md', platform: 'darwin', onCommentClick: () => {} });
+    const build = edit[F.Toolbar]?.buildToolbar;
+    expect(build).toBeTypeOf('function');
+
+    type ToolbarItem = { active: (ctx: { get: (key: unknown) => { state: EditorState } }) => boolean };
+    let comment: ToolbarItem | undefined;
+    const builder = {
+      getGroup: () => ({ group: { items: [] } }),
+      addGroup: () => ({
+        addItem: (_key: string, item: ToolbarItem) => { comment = item; },
+      }),
+    };
+    build?.(builder as never);
+    expect(comment).toBeDefined();
+
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'block+' }, paragraph: { group: 'block', content: 'inline*' },
+        text: { group: 'inline' },
+      },
+    });
+    const doc = schema.node('doc', null, [schema.node('paragraph', null, [schema.text('甲乙丙丁戊己')])]);
+    let state = EditorState.create({ doc, plugins: [commentMarksPlugin()] });
+    state = state.apply(addCommentMark(state.tr, 'c1', 2, 5)); // 乙丙丁
+    const active = () => comment!.active({ get: () => ({ state }) });
+
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 1, 3))); // 甲乙：部分交叠
+    expect(active()).toBe(true);
+
+    // 同条反向对照：选区确实换到未评论的「戊己」，同一回调必须恢复非 active。
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 5, 7)));
+    expect(active()).toBe(false);
   });
 });
 
