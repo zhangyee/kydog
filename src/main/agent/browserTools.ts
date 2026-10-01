@@ -804,7 +804,10 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         pending.engineId !== params.research.engineId || pending.query !== params.research.query ||
         pending.angleIds.length !== params.research.angleIds.length ||
         pending.angleIds.some((id, index) => id !== params.research?.angleIds[index]))) {
-        throw new Error('本标签没有与 research 完全匹配的 search_url 导航事实。页面尚未操作。');
+        const registeredQuery = pending ? JSON.stringify(pending.query) : '无';
+        const currentQuery = JSON.stringify(params.research.query);
+        throw new Error('本标签没有与 research 完全匹配的 search_url 导航事实'
+          + `（已登记 query：${registeredQuery}；本次 query：${currentQuery}）。页面尚未操作。`);
       }
 
       // 整批走 `enqueue` + `withAgentDriving`，与 `browser_open` 同一条路

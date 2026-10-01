@@ -156,6 +156,27 @@ describe('createStickyScroll：贴底跟随的判定', () => {
  * 判据是协议层事实：scrollTop 与状态机自己上一次写入 / 观察到的不一样 = 有人动过它。
  */
 describe('createStickyScroll：scroll 事件还没到时先渲染了一次', () => {
+  it('程序写到底的 scroll 事件迟到、下一批内容先长高：不误判用户翻走，继续跟到底', () => {
+    const s = scroller({ scrollHeight: 1000, clientHeight: 400 });
+    const ctl = createStickyScroll();
+    ctl.jumpToBottom(s.el);
+
+    // 第一批工具卡长出来，ResizeObserver 先把列表写到这一批的新底部；这个赋值产生的
+    // scroll 事件尚未派发。
+    s.grow(200);
+    ctl.afterRender(s.el);
+    expect(s.away()).toBe(0);
+
+    // 下一批卡片赶在那次 scroll 事件前落地。事件里的 scrollTop 仍是状态机刚写下的值，
+    // 只有 scrollHeight 变了——现场正是这种连续并行工具批次。
+    s.grow(300);
+    ctl.onScroll(s.el);
+    expect(ctl.sticky).toBe(true);
+
+    ctl.afterRender(s.el);
+    expect(s.away()).toBe(0);
+  });
+
   it('第一下滚动的事件还没到、先来了一次渲染：按改后的位置判定，不拉回底部', () => {
     const s = scroller({ scrollHeight: 1000, clientHeight: 400 });
     const ctl = createStickyScroll();

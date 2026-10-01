@@ -41,7 +41,11 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
   );
 
   return (
-    <div ref={scrollRef} className="ky-paper-grain ky-scroll flex-1 overflow-y-auto" data-testid="message-list">
+    // 贴底 / 自由阅读由 useAutoScroll 自己管理。Chromium 的原生 scroll anchoring 会在上方卡片
+    // 收起、下方内容增长时自行改写 scrollTop；普通 scroll 事件又不带来源，状态机会把它误认成
+    // 用户翻走。这里从源头关掉那套互相冲突的锚定语义，真实滚轮/键盘/滚动条仍照常发 scroll。
+    <div ref={scrollRef} className="ky-paper-grain ky-scroll flex-1 overflow-y-auto"
+      style={{ overflowAnchor: 'none' }} data-testid="message-list">
       <div style={{ maxWidth: 840, margin: '0 auto', padding: narrow ? '32px 20px 80px' : '32px 48px 80px' }}>
         <ThreadHeader threadId={threadId} />
         {messages.map((m) =>

@@ -24,7 +24,8 @@ export type ScrollBox = {
  * 所以能脱离浏览器单测。`useAutoScroll` 只负责把 React 的时机接到这三个方法上。
  *
  * 状态是 `sticky`（初始 true）加上「状态机最后一次写入 / 观察到的位置」`known`：
- * - `onScroll`：每次滚动后从位置反推 —— 离底 < STICKY_THRESHOLD_PX 才算贴底
+ * - `onScroll`：位置真的离开状态机最后一次写入 / 观察到的位置时才从位置反推；位置没变的迟到
+ *   事件不改判定
  * - `afterRender`：sticky 才跟到底；不 sticky（用户在往回翻）就一动不动
  * - `jumpToBottom`：override，无条件跳底并恢复 sticky
  *
@@ -45,7 +46,15 @@ export function createStickyScroll() {
   return {
     get sticky(): boolean { return sticky; },
     onScroll(box: ScrollBox): void {
-      sticky = isNearBottom(box);
+      if (known === null || box.scrollTop !== known.scrollTop) {
+        sticky = isNearBottom({
+          // 内容长高与 scroll 事件没有先后保证。用户是对着变化前的内容滚的；反过来，内容
+          // 变矮造成的上界夹取也不算用户翻走，所以两边都拿较矮的那份作底。
+          scrollHeight: known === null ? box.scrollHeight : Math.min(known.scrollHeight, box.scrollHeight),
+          clientHeight: box.clientHeight,
+          scrollTop: box.scrollTop,
+        });
+      }
       remember(box);
     },
     afterRender(box: ScrollBox): void {

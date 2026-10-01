@@ -1191,6 +1191,54 @@ describe('web research IAB observation', () => {
     });
   });
 
+  it('search_url 导航事实不匹配时同时报告已登记与本次 query，且在页面操作前拒绝', async () => {
+    const saveResearchObservation = vi.fn(async (_observation: import('../../shared/webResearchTask').SearchObservation) => {});
+    const tools = makeTools({ saveResearchObservation });
+    const open = tools.find((item) => item.name === 'browser_open') as unknown as { execute: Exec };
+    const actTool = tools.find((item) => item.name === 'browser_act') as unknown as { execute: Exec };
+    bs.tabs = [
+      { id: 't1', url: 'https://www.bing.com/', title: 'Bing' },
+      { id: 't2', url: 'https://www.bing.com/search?q=fresh', title: 'Bing' },
+    ];
+    bs.navImpl = () => ({ navigationId: 'n-search', outcome: { kind: 'ok',
+      finalUrl: 'https://www.bing.com/search?q=ready+made', httpStatusCode: 200 } });
+    await open.execute('call-search-url', { tabId: 't1',
+      url: 'https://www.bing.com/search?q=ready+made', research: {
+      engineId: 'bing', query: 'ready made', angleIds: ['a'], executionPath: 'search_url',
+    } });
+
+    const actions = [
+      { kind: 'key', key: 'Enter' },
+      { kind: 'extract', selectors: { item: '.b_algo', title: 'h2', url: 'a@href' } },
+    ];
+    bs.order.length = 0;
+    bs.dispatched.length = 0;
+    await expect(actTool.execute('call-query-mismatch', { tabId: 't1', actions, research: {
+      engineId: 'bing', query: 'ready-made', angleIds: ['a'], executionPath: 'search_url',
+    } })).rejects.toThrow(/已登记 query："ready made".*本次 query："ready-made"/);
+    expect(bs.order).toEqual([]);
+    expect(bs.dispatched).toEqual([]);
+
+    // 正向对照：换回登记时的 query，同一批动作真的会进队列、触碰页面。
+    bs.isolatedImpl = () => ({ rows: [{ title: 'Guide', url: 'https://docs.example/guide' }],
+      rowTruncation: { truncated: false, returned: 1, totalKnown: 1 },
+      fieldTruncation: { truncated: false, limit: 1000, columns: [] } });
+    await actTool.execute('call-query-match', { tabId: 't1', actions, research: {
+      engineId: 'bing', query: 'ready made', angleIds: ['a'], executionPath: 'search_url',
+    } });
+    expect(bs.order).toContain('enqueue:t1');
+    expect(bs.dispatched.map(({ action }) => action.kind)).toEqual(['key']);
+
+    // 另一个标签从未登记过 search_url 导航事实，也要把“无”和本次 query 说清楚。
+    bs.order.length = 0;
+    bs.dispatched.length = 0;
+    await expect(actTool.execute('call-no-registration', { tabId: 't2', actions, research: {
+      engineId: 'bing', query: 'fresh query', angleIds: ['a'], executionPath: 'search_url',
+    } })).rejects.toThrow(/已登记 query：无.*本次 query："fresh query"/);
+    expect(bs.order).toEqual([]);
+    expect(bs.dispatched).toEqual([]);
+  });
+
   it('resolves the saved tracking href without asking the model to copy it', async () => {
     const confirmResearchTarget = vi.fn(async () => { throw new Error('IAB did not observe a target destination'); });
     const loadResearchTarget = vi.fn(async () => ({
