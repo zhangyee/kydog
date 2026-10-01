@@ -29,7 +29,12 @@ function escapeHtml(value: string): string {
 }
 
 function errorPreview(error: unknown): string {
-  const summary = (error instanceof Error ? error.message : String(error)).split(/\r\n|\r|\n/, 1)[0];
+  let summary = 'Mermaid preview failed';
+  try {
+    summary = (error instanceof Error ? error.message : String(error)).split(/\r\n|\r|\n/, 1)[0];
+  } catch {
+    // Some rejected values cannot be converted to text; preserve the error protocol.
+  }
   return `<div class="kydog-mermaid-preview" data-status="error" role="status">${escapeHtml(summary)}</div>`;
 }
 
@@ -40,7 +45,7 @@ export function createMermaidPreview(loader: MermaidLoader = loadMermaid): CodeP
   return (language, content, applyPreview) => {
     const generation = (generations.get(applyPreview) ?? 0) + 1;
     generations.set(applyPreview, generation);
-    if (language.toLowerCase() !== 'mermaid' || !content.trim()) return null;
+    if (language.trim().toLowerCase() !== 'mermaid' || !content.trim()) return null;
 
     const id = `kydog-mermaid-${++renderId}`;
     // Defer the loader so synchronous loader failures follow the same error protocol.

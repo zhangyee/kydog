@@ -62,6 +62,38 @@ describe('Mermaid preview', () => {
     expect(calls[1][0]).not.toBe(calls[0][0]);
   });
 
+  it('带空白的 Mermaid 语言名仍渲染，源码保持原样', async () => {
+    const render = vi.fn(async (_id: string, source: string) => ({ svg: `<svg>${source}</svg>` }));
+    const preview = createMermaidPreview(async () => ({ render }));
+    const first = vi.fn();
+    const second = vi.fn();
+    preview(' mermaid ', 'first', first);
+    preview('\tMERMAID\n', 'second', second);
+    await settle();
+    expect(first.mock.calls).toEqual([[ready('<svg>first</svg>')]]);
+    expect(second.mock.calls).toEqual([[ready('<svg>second</svg>')]]);
+    expect(render.mock.calls.map((call) => call[1])).toEqual(['first', 'second']);
+  });
+
+  it.each([
+    ['loader', 'null-prototype'], ['loader', 'throwing-toString'],
+    ['render', 'null-prototype'], ['render', 'throwing-toString'],
+  ] as const)('%s 拒绝不可转成文字的 %s 异常时仍返回中性错误预览', async (stage, kind) => {
+    const reason: unknown = kind === 'null-prototype'
+      ? Object.create(null)
+      : { toString() { throw new Error('conversion failed'); } };
+    const preview = createMermaidPreview(async () => {
+      if (stage === 'loader') throw reason;
+      return { render: async () => { throw reason; } };
+    });
+    const apply = vi.fn();
+    preview('mermaid', 'invalid', apply);
+    await settle();
+    expect(apply.mock.calls).toEqual([[
+      '<div class="kydog-mermaid-preview" data-status="error" role="status">Mermaid preview failed</div>',
+    ]]);
+  });
+
   it('加载失败和渲染失败包装 error，异常文字被 HTML 转义且没有 stack', async () => {
     const apply = vi.fn();
     const working = createMermaidPreview(async () => ({ render: async () => ({ svg: '<svg>stack-visible</svg>' }) }));
