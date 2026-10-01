@@ -82,6 +82,29 @@ describe('web-research 搜索卡片的真实操作路径', () => {
   });
 
   it.each([
+    ['SKILL.md', ['架构', '工作原理', '数据流', '控制流', '状态变化', '角色协作', '跨组件交互'], /每个[^\n]*主题章节[^\n]*至少一幅 Mermaid 图/, /引用[^\n]*相邻正文/],
+    ['SKILL.en.md', ['architecture', 'operating principles', 'data flow', 'control flow', 'state changes', 'role collaboration', 'cross-component interactions'], /Each topical section[^\n]*at least one Mermaid diagram/, /citations[^\n]*adjacent prose/],
+  ] as const)('%s 要求关系解释章节使用 Mermaid，并把引用留在图旁正文', (rel, triggers, diagramRule, citationRule) => {
+    const text = read(rel).split(/## 4\./)[1];
+    expect(text).toBeDefined();
+    for (const trigger of triggers) expect(text).toContain(trigger);
+    expect(text).toMatch(diagramRule);
+    expect(text).toMatch(citationRule);
+  });
+
+  it.each([
+    ['references/report-template.md', /节点和连线[^\n]*证据支持/, /推断[^\n]*图旁正文[^\n]*标明/],
+    ['references/report-template.en.md', /Nodes and edges[^\n]*supported by evidence/, /inferences[^\n]*identified in the prose next to the diagram/],
+  ] as const)('%s 给出 Mermaid 图型选择和证据边界', (rel, evidenceRule, inferenceRule) => {
+    const text = read(rel);
+    for (const kind of ['flowchart', 'subgraph', 'sequenceDiagram', 'stateDiagram-v2']) {
+      expect(text).toContain(`\`${kind}\``);
+    }
+    expect(text).toMatch(evidenceRule);
+    expect(text).toMatch(inferenceRule);
+  });
+
+  it.each([
     ['references/baidu.md', /批量确认返回 `timeout`[^\n]*未确认/, /不得提交/],
     ['references/baidu.en.md', /batch resolver returns `timeout`[^\n]*unresolved/i, /must not be submitted/i],
   ])('%s 明确批量地址确认超时只淘汰该候选', (rel, timeoutRule, submitRule) => {

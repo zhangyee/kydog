@@ -2,6 +2,15 @@
 
 This is a structural constraint, not a fixed section list. Add or remove sections under “Topical findings” as the research question requires. Keep the other sections so readers can see the scope behind the conclusions and what remains unresolved.
 
+Each topical section explaining architecture, operating principles, data flow, control flow, state changes, role collaboration, or cross-component interactions must include at least one Mermaid diagram, using a standard `mermaid` fenced code block:
+
+- Use `flowchart` for architecture or data flow.
+- Use `flowchart` + `subgraph` for swimlanes.
+- Use `sequenceDiagram` for protocols or call interactions.
+- Use `stateDiagram-v2` for state lifecycles.
+
+Place the diagram next to its explanation. Nodes and edges must be supported by evidence, and inferences must be identified in the prose next to the diagram. Keep citations in the adjacent prose, outside Mermaid; do not add decorative diagrams for ordinary facts.
+
 ```markdown
 # {{Research topic}}
 
