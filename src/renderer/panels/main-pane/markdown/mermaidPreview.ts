@@ -1,4 +1,5 @@
 import type { MermaidConfig } from 'mermaid';
+import { renderMermaidFrame } from './mermaidFrame';
 
 export const MERMAID_CONFIG = {
   startOnLoad: false,
@@ -6,6 +7,8 @@ export const MERMAID_CONFIG = {
   htmlLabels: false,
   logLevel: 'fatal',
   deterministicIds: true,
+  suppressErrorRendering: true,
+  secure: ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'maxEdges', 'suppressErrorRendering', 'htmlLabels'],
 } satisfies MermaidConfig;
 
 export type MermaidEngine = { render(id: string, source: string): Promise<{ svg: string }> };
@@ -17,9 +20,8 @@ export type CodePreviewRenderer = (
 ) => void | null | string | HTMLElement;
 
 let defaultEngine: Promise<MermaidEngine> | undefined;
-const loadMermaid: MermaidLoader = () => defaultEngine ??= import('mermaid').then(({ default: mermaid }) => {
-  mermaid.initialize(MERMAID_CONFIG);
-  return { render: (id, source) => mermaid.render(id, source) };
+const loadMermaid: MermaidLoader = () => defaultEngine ??= import('mermaid/dist/mermaid.min.js?raw').then(({ default: bundle }) => {
+  return { render: (id, source) => renderMermaidFrame(bundle, id, source, MERMAID_CONFIG) };
 });
 
 function escapeHtml(value: string): string {
@@ -41,10 +43,7 @@ function errorPreview(error: unknown): string {
 export function createMermaidPreview(loader: MermaidLoader = loadMermaid): CodePreviewRenderer {
   let engine: Promise<MermaidEngine> | undefined;
   let renderId = 0;
-  const generations = new WeakMap<(value: null | string | HTMLElement) => void, number>();
   return (language, content, applyPreview) => {
-    const generation = (generations.get(applyPreview) ?? 0) + 1;
-    generations.set(applyPreview, generation);
     if (language.trim().toLowerCase() !== 'mermaid' || !content.trim()) return null;
 
     const id = `kydog-mermaid-${++renderId}`;
@@ -52,12 +51,10 @@ export function createMermaidPreview(loader: MermaidLoader = loadMermaid): CodeP
     engine ??= Promise.resolve().then(loader);
     void engine.then((mermaid) => mermaid.render(id, content)).then(
       ({ svg }) => {
-        if (generations.get(applyPreview) === generation) {
-          applyPreview(`<div class="kydog-mermaid-preview" data-status="ready">${svg}</div>`);
-        }
+        applyPreview(`<div class="kydog-mermaid-preview" data-status="ready">${svg}</div>`);
       },
       (error: unknown) => {
-        if (generations.get(applyPreview) === generation) applyPreview(errorPreview(error));
+        applyPreview(errorPreview(error));
       },
     );
   };

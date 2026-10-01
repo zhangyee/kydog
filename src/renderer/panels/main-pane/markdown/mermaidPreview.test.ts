@@ -2,13 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { setImmediate } from 'node:timers/promises';
 import { createMermaidPreview, MERMAID_CONFIG, type MermaidEngine } from './mermaidPreview';
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
-  return { promise, resolve, reject };
-}
-
 const ready = (svg: string) => `<div class="kydog-mermaid-preview" data-status="ready">${svg}</div>`;
 // Drain the loader/render promise chain without loading Mermaid or using wall-clock delays.
 async function settle() {
@@ -20,6 +13,8 @@ describe('Mermaid preview', () => {
     expect(MERMAID_CONFIG).toEqual({
       startOnLoad: false, securityLevel: 'strict', htmlLabels: false,
       logLevel: 'fatal', deterministicIds: true,
+      suppressErrorRendering: true,
+      secure: ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'maxEdges', 'suppressErrorRendering', 'htmlLabels'],
     });
     const loader = vi.fn(async () => ({ render: async () => ({ svg: '<svg>ok</svg>' }) }));
     const preview = createMermaidPreview(loader);
@@ -117,46 +112,4 @@ describe('Mermaid preview', () => {
     }
   });
 
-  it('较旧渲染后完成时不能覆盖较新源码的结果', async () => {
-    const old = deferred<{ svg: string }>();
-    const latest = deferred<{ svg: string }>();
-    const preview = createMermaidPreview(async () => ({
-      render: (_id, source) => source === 'old' ? old.promise : latest.promise,
-    }));
-    const apply = vi.fn();
-    preview('mermaid', 'old', apply);
-    preview('mermaid', 'latest', apply);
-    await settle();
-    latest.resolve({ svg: '<svg>latest</svg>' });
-    await settle();
-    expect(apply.mock.calls).toEqual([[ready('<svg>latest</svg>')]]);
-    old.resolve({ svg: '<svg>old</svg>' });
-    await settle();
-    expect(apply.mock.calls).toEqual([[ready('<svg>latest</svg>')]]);
-    // Stale rejection is subject to the same generation check.
-    const failing = deferred<{ svg: string }>();
-    const errors = createMermaidPreview(async () => ({ render: () => failing.promise }));
-    errors('mermaid', 'old error', apply);
-    errors('typescript', 'plain', apply);
-    failing.reject(new Error('stale error'));
-    await settle();
-    expect(apply.mock.calls).toEqual([[ready('<svg>latest</svg>')]]);
-  });
-
-  it('语言从 Mermaid 改成普通代码后，未完成的旧结果不能回填', async () => {
-    const pending = deferred<{ svg: string }>();
-    const preview = createMermaidPreview(async () => ({
-      render: async (_id, source) => source === 'pending' ? pending.promise : { svg: '<svg>control</svg>' },
-    }));
-    const apply = vi.fn();
-    preview('mermaid', 'control', apply);
-    await settle();
-    expect(apply.mock.calls).toEqual([[ready('<svg>control</svg>')]]);
-    preview('mermaid', 'pending', apply);
-    await settle();
-    expect(preview('javascript', 'pending', apply)).toBeNull();
-    pending.resolve({ svg: '<svg>obsolete</svg>' });
-    await settle();
-    expect(apply.mock.calls).toEqual([[ready('<svg>control</svg>')]]);
-  });
 });

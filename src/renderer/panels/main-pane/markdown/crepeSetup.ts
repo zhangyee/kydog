@@ -12,6 +12,7 @@ import { resolveImageSrc } from './imageSrc';
 import { imageBlockAltSchema } from './imageBlockAlt';
 import { isPrintableHref } from './printReadiness';
 import { mermaidPreview } from './mermaidPreview';
+import { CodeMirrorBlock } from '@milkdown/kit/component/code-block';
 import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 import './markdown-editor.css';
@@ -71,6 +72,37 @@ const mathInlineNodeViewPlugin: MilkdownPlugin = (ctx) => async () => {
     ...views.filter(([id]) => id !== MATH_INLINE),
     [MATH_INLINE, mathInlineNodeView] as [string, NodeViewConstructor],
   ]);
+};
+
+// Crepe creates a fresh applyPreview callback on every Vue watcher invocation,
+// and its LaTeX wrapper bypasses the Mermaid renderer. Own generations at the
+// actual NodeView, outside that final wrapper, while retaining Crepe's NodeView.
+const codePreviewLifecyclePlugin: MilkdownPlugin = (ctx) => async () => {
+  await ctx.wait(SchemaReady);
+  ctx.update(nodeViewCtx, (views) => views.map(([name, create]) => {
+    if (name !== 'code_block') return [name, create];
+    const wrapped: NodeViewConstructor = (...args) => {
+      const block = create(...args);
+      if (!(block instanceof CodeMirrorBlock)) throw new Error('Unsupported Crepe code block lifecycle');
+      const render = block.config.renderPreview;
+      let generation = 0;
+      block.config = { ...block.config, renderPreview: (language, content, apply) => {
+        const current = ++generation;
+        return render(language, content, (value) => {
+          if (current === generation) apply(value);
+        });
+      } };
+      const update = block.update.bind(block);
+      block.update = (node) => {
+        if (!node.eq(block.node)) generation++;
+        return update(node);
+      };
+      const destroy = block.destroy.bind(block);
+      block.destroy = () => { generation++; destroy(); };
+      return block;
+    };
+    return [name, wrapped];
+  }));
 };
 
 // 选区工具栏里评论键的图标（与 NavIcon 的 message-square-plus 同一套路径，描边风格）。
@@ -183,6 +215,7 @@ export function createCrepe(opts: CrepeSetupOptions): Crepe {
     featureConfigs: featureConfigsFor(opts),
   });
   crepe.editor.use(mathInlineNodeViewPlugin);
+  crepe.editor.use(codePreviewLifecyclePlugin);
   crepe.editor.use(imageBlockAltSchema);
   if (opts.mode === 'edit') crepe.editor.use($prose(() => commentMarksPlugin()));
   if (opts.mode === 'print') crepe.editor.use(printLinkSchema);

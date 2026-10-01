@@ -93,15 +93,23 @@ describe('web-research 搜索卡片的真实操作路径', () => {
   });
 
   it.each([
-    ['references/report-template.md', /节点和连线[^\n]*证据支持/, /推断[^\n]*图旁正文[^\n]*标明/],
-    ['references/report-template.en.md', /Nodes and edges[^\n]*supported by evidence/, /inferences[^\n]*identified in the prose next to the diagram/],
-  ] as const)('%s 给出 Mermaid 图型选择和证据边界', (rel, evidenceRule, inferenceRule) => {
+    ['references/report-template.md', /节点和连线[^\n]*证据支持/, /推断[^\n]*图旁正文[^\n]*标明/,
+      [/架构／数据流用 `flowchart`/, /泳道用 `flowchart` \+ `subgraph`/, /协议／调用交互用 `sequenceDiagram`/, /状态生命周期用 `stateDiagram-v2`/],
+      /图紧邻解释/, /引用留在相邻正文中，不写进 Mermaid/, /普通事实不加装饰图/],
+    ['references/report-template.en.md', /Nodes and edges[^\n]*supported by evidence/, /inferences[^\n]*identified in the prose next to the diagram/,
+      [/`flowchart` for architecture or data flow/, /`flowchart` \+ `subgraph` for swimlanes/, /`sequenceDiagram` for protocols or call interactions/, /`stateDiagram-v2` for state lifecycles/],
+      /Place the diagram next to its explanation/, /Keep citations in the adjacent prose, outside Mermaid/, /do not add decorative diagrams for ordinary facts/],
+  ] as const)('%s 给出 Mermaid 图型选择和证据边界', (rel, evidenceRule, inferenceRule, mappings, placementRule, citationRule, ordinaryRule) => {
     const text = read(rel);
     for (const kind of ['flowchart', 'subgraph', 'sequenceDiagram', 'stateDiagram-v2']) {
       expect(text).toContain(`\`${kind}\``);
     }
     expect(text).toMatch(evidenceRule);
     expect(text).toMatch(inferenceRule);
+    for (const mapping of mappings) expect(text).toMatch(mapping);
+    expect(text).toMatch(placementRule);
+    expect(text).toMatch(citationRule);
+    expect(text).toMatch(ordinaryRule);
   });
 
   it.each([

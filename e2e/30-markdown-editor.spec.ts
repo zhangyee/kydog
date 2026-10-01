@@ -110,6 +110,23 @@ test.beforeAll(async () => {
       await fs.writeFile(path.join(proj, 'norm.md'), NORM_CONTENT);
       await fs.writeFile(path.join(proj, 'code.md'), '# 代码块\n\n```python\ndef hello():\n    print("hi")\n```\n');
       await fs.writeFile(path.join(proj, 'mermaid.md'), MERMAID_MD);
+      await fs.writeFile(path.join(proj, 'mermaid-image.md'), [
+        '# Resource boundary', '', '![ordinary](https://example.invalid/control.png)', '',
+        '```mermaid', 'flowchart LR', 'A@{ img: "https://example.invalid/diagram.png", label: "Image" }', '```', '',
+      ].join('\n'));
+      await fs.writeFile(path.join(proj, 'mermaid-css.md'), [
+        '# CSS boundary', '', '```mermaid',
+        '%%{init: {"themeCSS": ".node rect { fill: url(https://example.invalid/paint.svg); }"}}%%',
+        'flowchart LR', 'A --> B', '```', '',
+        '```mermaid',
+        '%%{init: {"themeCSS": ".unused { background-image: url(https://example.invalid/inactive.png); }"}}%%',
+        'flowchart LR', 'C --> D', '```', '',
+      ].join('\n'));
+      await fs.writeFile(path.join(proj, 'mermaid-invalid.md'), '# Invalid\n\n```mermaid\nflowchart LR\nA --> [\n```\n');
+      await fs.writeFile(path.join(proj, 'mermaid-types.md'), [
+        '# Diagram families', '', '```mermaid', 'sequenceDiagram', 'CLIENT->>WORKER: request', '```', '',
+        '```mermaid', 'stateDiagram-v2', '[*] --> Active', 'Active --> [*]', '```', '',
+      ].join('\n'));
       await fs.writeFile(path.join(proj, 'figure.pdf'), MINIMAL_PDF);
       // md 导出 PDF（spec 2026-09-22-md-export-pdf-design §5）
       await fs.mkdir(path.join(proj, 'figs'), { recursive: true });
@@ -220,6 +237,102 @@ test('30-markdown-editor: Mermaid 代码块渲染 SVG、适应容器并原样保
   const saved = await fs.readFile(file, 'utf8');
   expect(saved).toContain('```mermaid');
   expect(saved).toContain('flowchart LR\nMMD_CLIENT_42 --> MMD_WORKER_42');
+  const types = await openMd('mermaid-types.md');
+  await types.locator('.milkdown-code-block').last().scrollIntoViewIfNeeded();
+  await expect(types.locator('.kydog-mermaid-preview[data-status="ready"] svg')).toHaveCount(2);
+  await expect(types).toContainText('request');
+  await expect(types).toContainText('Active');
+});
+
+test('30-markdown-editor: Mermaid resource containment and orphan cleanup', async () => {
+  const { page } = launched;
+  const requests: string[] = [];
+  await page.route('https://example.invalid/**', async (route) => {
+    requests.push(route.request().url());
+    if (route.request().url().endsWith('/control.png')) {
+      await route.fulfill({ contentType: 'image/png', body: Buffer.from(TINY_PNG_BASE64, 'base64') });
+    } else await route.abort();
+  });
+  try {
+    const valid = await openMd('mermaid.md');
+    await expect(valid.locator('.kydog-mermaid-preview[data-status="ready"] svg')).toBeVisible();
+    const images = await openMd('mermaid-image.md');
+    await expect(images.locator('img')).toBeVisible();
+    await expect.poll(() => requests.includes('https://example.invalid/control.png')).toBe(true);
+    await expect(images.locator('.kydog-mermaid-preview[data-status="error"]')).toHaveCount(1);
+    expect.soft(requests).toEqual(['https://example.invalid/control.png']);
+
+    const css = await openMd('mermaid-css.md');
+    // Scroll the second block into view to start Crepe's real lazy NodeView.
+    await css.locator('.milkdown-code-block').last().scrollIntoViewIfNeeded();
+    await expect.soft(css.locator('.kydog-mermaid-preview[data-status="error"]')).toHaveCount(2);
+    expect.soft(requests).toEqual(['https://example.invalid/control.png']);
+
+    // Positive selector control in this same test: a body-level SVG is observable.
+    await page.evaluate(() => {
+      const probe = document.createElement('div');
+      probe.id = 'dkydog-mermaid-orphan-control';
+      probe.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+      document.body.append(probe);
+    });
+    const orphans = page.locator('body > div[id^="dkydog-mermaid-"] svg');
+    await expect(page.locator('#dkydog-mermaid-orphan-control svg')).toHaveCount(1);
+    expect(await orphans.count()).toBeGreaterThanOrEqual(1);
+    await page.locator('#dkydog-mermaid-orphan-control').evaluate((probe) => probe.remove());
+    // Hold the parent MessagePort delivery, so the failed frame remains available
+    // for deterministic inspection before normal production cleanup removes it.
+    await page.evaluate(() => {
+      const state = window as typeof window & { releaseMermaid?: () => void };
+      const Original = window.MessageChannel;
+      window.MessageChannel = class extends Original {
+        constructor() {
+          super();
+          const descriptor = Object.getOwnPropertyDescriptor(MessagePort.prototype, 'onmessage')!;
+          Object.defineProperty(this.port1, 'onmessage', {
+            set: (callback: (event: MessageEvent) => void) => {
+              descriptor.set!.call(this.port1, (event: MessageEvent) => {
+                state.releaseMermaid = () => { callback(event); window.MessageChannel = Original; delete state.releaseMermaid; };
+              });
+            },
+          });
+        }
+      };
+    });
+    const invalid = await openMd('mermaid-invalid.md');
+    await expect.poll(() => page.evaluate(() => typeof (window as typeof window & { releaseMermaid?: () => void }).releaseMermaid)).toBe('function');
+    const isolated = page.locator('iframe.kydog-mermaid-render-frame');
+    await expect(isolated).toHaveAttribute('sandbox', 'allow-scripts');
+    const frame = await (await isolated.elementHandle())!.contentFrame();
+    const frameFacts = await frame!.evaluate(() => {
+      const state = window as unknown as { mermaid: { mermaidAPI: { getConfig(): { suppressErrorRendering: boolean } } } };
+      const probe = document.createElement('div');
+      probe.id = 'dkydog-mermaid-control';
+      probe.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+      document.body.append(probe);
+      const withControl = document.querySelectorAll('body > div[id^="dkydog-mermaid-"] svg').length;
+      probe.remove();
+      let parentAccess = true;
+      try { void parent.document.body; } catch { parentAccess = false; }
+      return {
+        withControl, withoutControl: document.querySelectorAll('body > div[id^="dkydog-mermaid-"] svg').length,
+        ownAccess: Boolean(document.body), parentAccess,
+        suppressed: state.mermaid.mermaidAPI.getConfig().suppressErrorRendering,
+        csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]')!.getAttribute('content'),
+      };
+    });
+    expect(frameFacts.withControl).toBe(1);
+    expect(frameFacts.withoutControl).toBe(0);
+    expect(frameFacts.ownAccess).toBe(true);
+    expect(frameFacts.parentAccess).toBe(false);
+    expect(frameFacts.suppressed).toBe(true);
+    expect(frameFacts.csp).toContain("default-src 'none'");
+    await page.evaluate(() => (window as typeof window & { releaseMermaid: () => void }).releaseMermaid());
+    await expect(invalid.locator('.kydog-mermaid-preview[data-status="error"]')).toHaveCount(1);
+    await expect(isolated).toHaveCount(0);
+    await expect.soft(orphans).toHaveCount(0);
+  } finally {
+    await page.unroute('https://example.invalid/**');
+  }
 });
 
 test('30-markdown-editor: 打开会被规范化的 md 不标脏；改了才脏，关脏 tab 弹确认框', async () => {
