@@ -23,6 +23,7 @@ const NORM_CONTENT = [
 const MERMAID_MD = [
   '# Mermaid 标题', '',
   '```mermaid', 'flowchart LR', 'MMD_CLIENT_42 --> MMD_WORKER_42', '```', '',
+  '```javascript', 'const ordinary = 42;', '```', '',
 ].join('\n');
 
 // 最小单页 PDF：无 xref，pdf.js 走 recovery 模式解析 → numPages=1，MediaBox 300x400。
@@ -221,6 +222,21 @@ test('30-markdown-editor: Mermaid 代码块渲染 SVG、适应容器并原样保
   await expect(preview.locator('svg')).toBeVisible();
   await expect(preview).toContainText('MMD_CLIENT_42');
   await expect(preview).toContainText('MMD_WORKER_42');
+  const block = editor.locator('.milkdown-code-block').filter({ has: page.locator('.kydog-mermaid-preview[data-status="ready"]') });
+  const source = block.locator('.codemirror-host');
+  const toggle = block.locator('.preview-toggle-button');
+  await expect(source).toHaveClass(/hidden/);
+  await expect(toggle).toHaveText('Edit');
+  await toggle.click();
+  await expect(source).toBeVisible();
+  await expect(source).not.toHaveClass(/hidden/);
+  await expect(toggle).toHaveText('Hide');
+  await toggle.click();
+  await expect(source).toHaveClass(/hidden/);
+  await expect(toggle).toHaveText('Edit');
+  const ordinarySource = editor.locator('.milkdown-code-block').filter({ hasText: 'const ordinary = 42;' }).locator('.codemirror-host');
+  await expect(ordinarySource).toBeVisible();
+  await expect(ordinarySource).not.toHaveClass(/hidden/);
   const size = await preview.evaluate((wrapper) => ({
     svg: wrapper.querySelector('svg')!.getBoundingClientRect().width,
     wrapper: wrapper.getBoundingClientRect().width,

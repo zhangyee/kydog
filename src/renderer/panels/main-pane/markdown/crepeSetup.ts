@@ -77,13 +77,18 @@ const mathInlineNodeViewPlugin: MilkdownPlugin = (ctx) => async () => {
 // Crepe creates a fresh applyPreview callback on every Vue watcher invocation,
 // and its LaTeX wrapper bypasses the Mermaid renderer. Own generations at the
 // actual NodeView, outside that final wrapper, while retaining Crepe's NodeView.
-const codePreviewLifecyclePlugin: MilkdownPlugin = (ctx) => async () => {
+const codePreviewLifecyclePlugin = (mode: CrepeSetupOptions['mode']): MilkdownPlugin => (ctx) => async () => {
   await ctx.wait(SchemaReady);
   ctx.update(nodeViewCtx, (views) => views.map(([name, create]) => {
     if (name !== 'code_block') return [name, create];
     const wrapped: NodeViewConstructor = (...args) => {
       const block = create(...args);
       if (!(block instanceof CodeMirrorBlock)) throw new Error('Unsupported Crepe code block lifecycle');
+      // The Vue UI initializes lazily after visibility observation. Scope this
+      // default to the initial node; updates must retain the user's toggle choice.
+      if (mode === 'edit' && String(args[0].attrs.language ?? '').trim().toLowerCase() === 'mermaid') {
+        block.config = { ...block.config, previewOnlyByDefault: true };
+      }
       const render = block.config.renderPreview;
       let generation = 0;
       block.config = { ...block.config, renderPreview: (language, content, apply) => {
@@ -215,7 +220,7 @@ export function createCrepe(opts: CrepeSetupOptions): Crepe {
     featureConfigs: featureConfigsFor(opts),
   });
   crepe.editor.use(mathInlineNodeViewPlugin);
-  crepe.editor.use(codePreviewLifecyclePlugin);
+  crepe.editor.use(codePreviewLifecyclePlugin(opts.mode));
   crepe.editor.use(imageBlockAltSchema);
   if (opts.mode === 'edit') crepe.editor.use($prose(() => commentMarksPlugin()));
   if (opts.mode === 'print') crepe.editor.use(printLinkSchema);

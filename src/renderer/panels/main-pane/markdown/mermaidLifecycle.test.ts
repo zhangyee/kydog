@@ -55,6 +55,42 @@ async function complete(source: string) {
 }
 
 describe('actual Crepe NodeView preview lifecycle', () => {
+  it.each(['mermaid', ' MeRmAiD '])('initial %s in edit mode hides only Mermaid source and preserves the toggle choice', async (language) => {
+    await crepe.destroy();
+    root.replaceChildren();
+    pending.clear();
+    crepe = createCrepe({ mode: 'edit', root,
+      markdown: `\`\`\`${language}\ncontrol\n\`\`\`\n\n\`\`\`javascript\nconst ordinary = 42;\n\`\`\``,
+      mdPath: '/p/a.md', platform: 'darwin', onCommentClick: () => {} });
+    await crepe.create();
+    crepe.editor.action((ctx) => { view = ctx.get(editorViewCtx); });
+    await vi.waitFor(() => expect(pending.has('control')).toBe(true));
+    await complete('control');
+    await vi.waitFor(() => expect(root.querySelector('.kydog-mermaid-preview')?.textContent).toBe('control'));
+    const blocks = root.querySelectorAll('.milkdown-code-block');
+    expect(blocks).toHaveLength(2);
+    const source = blocks[0].querySelector('.codemirror-host')!;
+    const ordinarySource = blocks[1].querySelector('.codemirror-host')!;
+    const toggle = blocks[0].querySelector('.preview-toggle-button') as HTMLElement;
+    expect(ordinarySource.textContent).toContain('const ordinary = 42;');
+    expect(ordinarySource.classList.contains('hidden')).toBe(false);
+    expect(source.classList.contains('hidden')).toBe(true);
+    expect(toggle.textContent).toContain('Edit');
+    toggle.click();
+    await vi.waitFor(() => expect(source.classList.contains('hidden')).toBe(false));
+    expect(toggle.textContent).toContain('Hide');
+    replaceFirst('javascript', 'changed');
+    replaceFirst('mermaid', 'returned');
+    await vi.waitFor(() => expect(pending.has('returned')).toBe(true));
+    await complete('returned');
+    await vi.waitFor(() => expect(root.querySelector('.kydog-mermaid-preview')?.textContent).toBe('returned'));
+    expect(source.classList.contains('hidden')).toBe(false);
+    expect(toggle.textContent).toContain('Hide');
+    toggle.click();
+    await vi.waitFor(() => expect(source.classList.contains('hidden')).toBe(true));
+    expect(toggle.textContent).toContain('Edit');
+  });
+
   it('discards a stale error after the actual LaTeX wrapper takes over', async () => {
     await complete('control');
     await vi.waitFor(() => expect(root.querySelector('.kydog-mermaid-preview')?.textContent).toBe('control'));
