@@ -73,8 +73,8 @@ describe('actual Crepe NodeView preview lifecycle', () => {
     const ordinarySource = blocks[1].querySelector('.codemirror-host')!;
     const toggle = blocks[0].querySelector('.preview-toggle-button') as HTMLElement;
     expect(ordinarySource.textContent).toContain('const ordinary = 42;');
-    expect(ordinarySource.classList.contains('hidden')).toBe(false);
     expect(source.classList.contains('hidden')).toBe(true);
+    expect(ordinarySource.classList.contains('hidden')).toBe(false);
     expect(toggle.textContent).toContain('Edit');
     toggle.click();
     await vi.waitFor(() => expect(source.classList.contains('hidden')).toBe(false));
