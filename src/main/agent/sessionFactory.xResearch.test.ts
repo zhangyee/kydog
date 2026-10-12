@@ -78,7 +78,10 @@ it('settled branch baseline includes the last actual result before branching to 
  const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
  const branch=manager.getBranch(),last=branch.at(-1)!;
  expect(last).toMatchObject({type:'message',message:{role:'toolResult',toolCallId:'last-result'}});
- manager.branch(last.parentId);
+ const parentId=last.parentId;
+ if(parentId===null) throw new Error('Expected the actual assistant tool-call parent');
+ expect(branch.find(entry=>entry.id===parentId)).toMatchObject({type:'message',message:{role:'assistant',content:[{type:'toolCall',id:'last-result',name:'x_research',arguments:searchInput}]}});
+ manager.branch(parentId);
  const denied=await execute(session,'write',{path:'ordinary.md',content:'[source](https://x.com/alice/status/123)'},'removed-result');
  expect(denied.isError).toBe(true);expect(denied.result.content[0].text).toContain('unobserved');
 });
