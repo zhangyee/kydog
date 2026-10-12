@@ -12,6 +12,10 @@ import type { AskSharedState } from './askUserQuestionTool';
 import { createSession } from './sessionFactory';
 import { resolveActive } from './resolveActive';
 import { browserService } from '../browser/browserService';
+import { logger } from '../log';
+import { saveIndex, loadIndex } from '../persist/indexFile';
+import { promises as fs } from 'node:fs';
+import * as atomic from '../persist/atomicWrite';
 import { threadService } from '../thread/threadService';
 import { broadcaster } from '../ipc/broadcaster';
 import { agentService } from './AgentService';
@@ -31,6 +35,11 @@ describe('AgentService invalidation entrypoints', () => {
   beforeEach(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-inv-'));
     vi.spyOn(paths, 'ROOT', 'get').mockReturnValue(dir);
+    vi.spyOn(paths, 'INDEX_FILE', 'get').mockReturnValue(path.join(dir, 'index.json'));
+    vi.spyOn(paths, 'WEB_RESEARCH_DIR', 'get').mockReturnValue(path.join(dir, 'web-research'));
+    vi.spyOn(paths, 'SESSIONS_DIR', 'get').mockReturnValue(path.join(dir, 'sessions'));
+    vi.spyOn(browserService, 'disposeForThread').mockImplementation(() => {});
+    (agentService as any).threadLifetimes?.clear();
     vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(path.join(dir, 'kydog.json'));
     vi.spyOn(paths, 'LOCK_PATH', 'get').mockReturnValue(path.join(dir, '.kydog.json.lock'));
     ensureSettingsFile();
@@ -222,10 +231,12 @@ describe('AgentService invalidation entrypoints', () => {
     await agentService.invalidateAllSessions();
     expect(agentService.currentRunIdFor('t1')).toBe(runId);
     expect(bound._dispose).not.toHaveBeenCalled();
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     reject(new Error('no key'));
     await rejected.catch(() => {});
     await Promise.resolve();
     expect(bound._dispose).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith('agent', 'prompt failed', { threadId: 't1', err: 'no key' });
     expect(agentService.hasActiveRunFor('t1')).toBe(false);
   });
 
@@ -337,6 +348,127 @@ describe('AgentService invalidation entrypoints', () => {
     const attempt = operation === 'send' ? agentService.send('t1', '/x', 'deleted') : agentService.loadHistory('t1', '/x');
     await expect(attempt).rejects.toMatchObject({ code: 'thread.not_found' });
     expect(made).toHaveLength(before + 1);
+  });
+
+  it.each(['send', 'history'] as const)('real deletion across cleanup refuses a %s handoff while index still contains thread', async (operation) => {
+    await saveIndex({ schemaVersion: 1, projects: [{ path: '/x', addedAt: 'fixture' }], threads: [{ id: '11111111-1111-4111-8111-111111111111', projectPath: '/x', title: 'existing', createdAt: 'fixture', lastActiveAt: 'fixture' }] });
+    vi.mocked(resolveActive).mockResolvedValue({ providerId: 'anthropic', modelId: 'm' });
+    const made: Array<any> = [];
+    vi.mocked(createSession).mockImplementation(async () => {
+      let listener: (event: unknown) => void = () => {};
+      const session = { state: { messages: [{ role: 'user', content: [{ type: 'text', text: 'live' }] }] }, prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), abort: vi.fn(),
+        subscribe: vi.fn(fn => { listener = fn; return () => {}; }), fire: (event: unknown) => listener(event) };
+      made.push(session); return session as never;
+    });
+    const act = () => operation === 'send' ? agentService.send('11111111-1111-4111-8111-111111111111', '/x', 'new') : agentService.loadHistory('11111111-1111-4111-8111-111111111111', '/x');
+    await act();
+    if (operation === 'history') await agentService.send('11111111-1111-4111-8111-111111111111', '/x', 'control');
+    made[0].fire({ type: 'agent_start' });
+    made[0].fire({ type: 'agent_end', messages: [] });
+    made[0].fire({ type: 'agent_settled' });
+    expect(made[0].prompt).toHaveBeenCalledOnce();
+    expect(made[0].subscribe).toHaveBeenCalledOnce();
+    let finish!: () => void;
+    const cleanup = new Promise<void>(resolve => { finish = resolve; });
+    let entered!: () => void;
+    const atCleanup = new Promise<void>(resolve => { entered = resolve; });
+    made[0].cleanup = () => { entered(); return cleanup; };
+    const original = agentService.ensureSession.bind(agentService);
+    let deleting!: Promise<void>;
+    let first = true;
+    vi.spyOn(agentService, 'ensureSession').mockImplementation(async (id, cwd) => {
+      const bound = await original(id, cwd);
+      if (first) { first = false; deleting = threadService.delete({ threadIds: ['11111111-1111-4111-8111-111111111111'] }); await atCleanup; }
+      return bound;
+    });
+    const outcome = await act().then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+    expect((await loadIndex()).threads.map(t => t.id)).toEqual(['11111111-1111-4111-8111-111111111111']);
+    finish(); await deleting;
+    expect(outcome.error).toMatchObject({ code: 'thread.not_found' });
+    expect(made).toHaveLength(1);
+    expect(made[0].prompt).toHaveBeenCalledOnce();
+  });
+
+  it.each(['send', 'history'] as const)('real deletion during replacement create prevents %s publication and prompt', async (operation) => {
+    await saveIndex({ schemaVersion: 1, projects: [{ path: '/x', addedAt: 'fixture' }], threads: [{ id: '11111111-1111-4111-8111-111111111111', projectPath: '/x', title: 'existing', createdAt: 'fixture', lastActiveAt: 'fixture' }] });
+    vi.mocked(resolveActive).mockResolvedValue({ providerId: 'anthropic', modelId: 'm' });
+    const made: Array<any> = [];
+    let entered!: () => void;
+    const atCreate = new Promise<void>(resolve => { entered = resolve; });
+    let finish!: () => void;
+    const createWait = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(createSession).mockImplementation(async () => {
+      let listener: (event: unknown) => void = () => {};
+      const session = { state: { messages: [{ role: 'user', content: [{ type: 'text', text: 'live' }] }] }, prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), abort: vi.fn(),
+        subscribe: vi.fn(fn => { listener = fn; return () => {}; }), fire: (event: unknown) => listener(event) };
+      made.push(session);
+      if (made.length === 2) { entered(); await createWait; }
+      return session as never;
+    });
+    const act = () => operation === 'send' ? agentService.send('11111111-1111-4111-8111-111111111111', '/x', 'new') : agentService.loadHistory('11111111-1111-4111-8111-111111111111', '/x');
+    await act();
+    if (operation === 'history') await agentService.send('11111111-1111-4111-8111-111111111111', '/x', 'control');
+    made[0].fire({ type: 'agent_start' }); made[0].fire({ type: 'agent_end', messages: [] }); made[0].fire({ type: 'agent_settled' });
+    expect(made[0].subscribe).toHaveBeenCalledOnce(); expect(made[0].prompt).toHaveBeenCalledOnce();
+    expect((agentService as any).sessions.has('11111111-1111-4111-8111-111111111111')).toBe(true);
+    const original = agentService.ensureSession.bind(agentService);
+    let first = true;
+    vi.spyOn(agentService, 'ensureSession').mockImplementation(async (id, cwd) => {
+      const bound = await original(id, cwd);
+      if (first) { first = false; await agentService.invalidateAllSessions(); }
+      return bound;
+    });
+    const outcomePromise = act().then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+    await atCreate;
+    expect((await loadIndex()).threads.map(t => t.id)).toEqual(['11111111-1111-4111-8111-111111111111']);
+    await threadService.delete({ threadIds: ['11111111-1111-4111-8111-111111111111'] });
+    finish(); const outcome = await outcomePromise;
+    expect(outcome.error).toMatchObject({ code: 'thread.not_found' });
+    expect(made[0].dispose).toHaveBeenCalledOnce();
+    expect(made[1].dispose).toHaveBeenCalledOnce();
+    expect(made[1].subscribe).not.toHaveBeenCalled();
+    expect(made[1].prompt).not.toHaveBeenCalled();
+    expect((agentService as any).sessions.has('11111111-1111-4111-8111-111111111111')).toBe(false);
+  });
+
+  it('actual delete lease blocks before dispose, rolls back failed save, and remains deleted after committed cleanup failure', async () => {
+    const id = '22222222-2222-4222-8222-222222222222';
+    await saveIndex({ schemaVersion: 1, projects: [{ path: '/x', addedAt: 'fixture' }], threads: [{ id, projectPath: '/x', title: 'existing', createdAt: 'fixture', lastActiveAt: 'fixture' }] });
+    vi.mocked(resolveActive).mockResolvedValue({ providerId: 'anthropic', modelId: 'm' });
+    vi.mocked(createSession).mockImplementation(async () => ({ state: { messages: [] }, prompt: vi.fn(), dispose: vi.fn(), subscribe: vi.fn() } as never));
+    const initial = await agentService.ensureSession(id, '/x');
+    expect(initial.threadId).toBe(id);
+    const originalDispose = agentService.dispose.bind(agentService);
+    const atDispose: unknown[] = [];
+    vi.spyOn(agentService, 'dispose').mockImplementation(async (threadId) => {
+      atDispose.push(await agentService.ensureSession(threadId, '/x').then(() => 'allowed', e => e.code));
+      return originalDispose(threadId);
+    });
+    vi.spyOn(atomic, 'atomicWrite').mockRejectedValueOnce(new Error('save failed'));
+    await expect(threadService.delete({ threadIds: [id] })).rejects.toThrow('save failed');
+    expect(atDispose).toEqual(['thread.not_found']);
+    const recovered = await agentService.ensureSession(id, '/x');
+    expect(recovered.threadId).toBe(id);
+    vi.spyOn(fs, 'rm').mockRejectedValueOnce(new Error('postcommit cleanup failed'));
+    await expect(threadService.delete({ threadIds: [id] })).rejects.toThrow('postcommit cleanup failed');
+    expect(atDispose).toEqual(['thread.not_found', 'thread.not_found']);
+    expect((await loadIndex()).threads).toEqual([]);
+    await expect(agentService.ensureSession(id, '/x')).rejects.toMatchObject({ code: 'thread.not_found' });
+  });
+
+  it('finishing an older deletion lease cannot roll back a newer lifetime', async () => {
+    vi.mocked(resolveActive).mockResolvedValue({ providerId: 'anthropic', modelId: 'm' });
+    vi.mocked(createSession).mockImplementation(async () => ({ state: { messages: [] }, dispose: vi.fn(), subscribe: vi.fn() } as never));
+    expect((await agentService.ensureSession('lease', '/x')).threadId).toBe('lease');
+    const old = agentService.beginThreadDeletion(['lease']);
+    const newer = agentService.beginThreadDeletion(['lease']);
+    old.finish();
+    await expect(agentService.ensureSession('lease', '/x')).rejects.toMatchObject({ code: 'thread.not_found' });
+    newer.finish();
+    expect((await agentService.ensureSession('lease', '/x')).threadId).toBe('lease');
+    const committed = agentService.beginThreadDeletion(['lease']);
+    committed.commit(); committed.finish();
+    await expect(agentService.ensureSession('lease', '/x')).rejects.toMatchObject({ code: 'thread.not_found' });
   });
 
 });

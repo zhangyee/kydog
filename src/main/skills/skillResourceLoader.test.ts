@@ -89,6 +89,8 @@ describe('createKydogResourceLoader', () => {
   });
 
   it('actual loader discovers experimental builtin, hides it when closed, preserves same-name user skill', async () => {
+    writeFileSync(path.join(home, 'USER.md'), 'harmless user fixture');
+    writeFileSync(path.join(home, 'AGENTS.md'), 'harmless agents fixture');
     const source = path.join(home, 'builtin-source');
     const projected = path.join(KYDOG_SKILLS_DIR, 'x-research');
     mkdirSync(path.join(source, 'x-research'), { recursive: true });

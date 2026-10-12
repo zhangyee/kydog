@@ -96,11 +96,14 @@ function emitRun<T extends RunEventTopic>(bound: Bound, topic: T, payload: Event
   broadcaster.emit(topic, payload);
 }
 
+type ThreadLifetime = { state: 'live' | 'deleting' | 'deleted' };
+
 class AgentService {
   private sessions = new Map<string, Bound>();
   private runs = new Map<string, RunState>();
   private sessionGeneration = 0;
   private sessionCreation = new Map<string, Promise<Bound>>();
+  private threadLifetimes = new Map<string, ThreadLifetime>();
 
   getRunState(threadId: string): RunState {
     return this.runs.get(threadId) ?? { status: 'idle' };
@@ -114,18 +117,74 @@ class AgentService {
     emitRun(bound, 'run.research_progress', { ...progress, threadId, runId, messageId, toolCallId });
   }
 
+  /** Called under the index lock, before deletion's first dispose await. */
+  beginThreadDeletion(threadIds: readonly string[]): { commit(): void; finish(): void } {
+    const leases = threadIds.map(threadId => {
+      const lifetime: ThreadLifetime = { state: 'deleting' };
+      this.threadLifetimes.set(threadId, lifetime);
+      return { threadId, lifetime };
+    });
+    return {
+      commit: () => {
+        for (const { threadId, lifetime } of leases) {
+          if (this.threadLifetimes.get(threadId) === lifetime && lifetime.state === 'deleting') lifetime.state = 'deleted';
+        }
+      },
+      finish: () => {
+        for (const { threadId, lifetime } of leases) {
+          if (this.threadLifetimes.get(threadId) === lifetime && lifetime.state === 'deleting') {
+            // A failed precommit deletion allows fresh requests, but cancels old creations.
+            this.threadLifetimes.set(threadId, { state: 'live' });
+          }
+        }
+      },
+    };
+  }
+
+  private assertThreadLifetime(threadId: string, lifetime: ThreadLifetime | undefined): void {
+    if (this.threadLifetimes.get(threadId) !== lifetime || (lifetime && lifetime.state !== 'live')) {
+      throw new KydogError('thread.not_found', `thread ${threadId} not found`);
+    }
+  }
+
+  /** Acquire and consume synchronously: no returned-promise handoff can cross deletion. */
+  private async withOwnedSession<T>(threadId: string, projectPath: string, use: (bound: Bound) => T): Promise<T> {
+    const lifetime = this.threadLifetimes.get(threadId);
+    this.assertThreadLifetime(threadId, lifetime);
+    for (;;) {
+      const bound = await this.ensureSession(threadId, projectPath);
+      this.assertThreadLifetime(threadId, lifetime);
+      if (this.sessions.get(threadId) !== bound) {
+        const threads = await threadService.listAll();
+        this.assertThreadLifetime(threadId, lifetime);
+        if (!threads.some(thread => thread.id === threadId)) {
+          throw new KydogError('thread.not_found', `thread ${threadId} not found`);
+        }
+        continue;
+      }
+      return use(bound);
+    }
+  }
+
   async ensureSession(threadId: string, projectPath: string): Promise<Bound> {
+    const lifetime = this.threadLifetimes.get(threadId);
+    this.assertThreadLifetime(threadId, lifetime);
     // Serialize per thread, including generation retries. Concurrent history/send must not
     // publish duplicate sessions, subscriptions, or orphan a newly built session.
     const previous = this.sessionCreation.get(threadId);
     const pending = (previous ?? Promise.resolve()).catch(() => {}).then(() =>
-      this.ensureSessionUnlocked(threadId, projectPath));
+      this.ensureSessionUnlocked(threadId, projectPath, lifetime));
     this.sessionCreation.set(threadId, pending);
-    try { return await pending; }
+    try {
+      const bound = await pending;
+      this.assertThreadLifetime(threadId, lifetime);
+      return bound;
+    }
     finally { if (this.sessionCreation.get(threadId) === pending) this.sessionCreation.delete(threadId); }
   }
 
-  private async ensureSessionUnlocked(threadId: string, projectPath: string): Promise<Bound> {
+  private async ensureSessionUnlocked(threadId: string, projectPath: string, lifetime: ThreadLifetime | undefined): Promise<Bound> {
+    this.assertThreadLifetime(threadId, lifetime);
     const generation = this.sessionGeneration;
     const existing = this.sessions.get(threadId);
     if (existing) {
@@ -199,12 +258,17 @@ class AgentService {
         if (ownedBound()) this.onResearchProgress(threadId, progress.runId, progress.toolCallId, progress);
       },
     });
+    if (this.threadLifetimes.get(threadId) !== lifetime || (lifetime && lifetime.state !== 'live')) {
+      if (session.cleanup) await session.cleanup();
+      else if (session.dispose) session.dispose();
+      this.assertThreadLifetime(threadId, lifetime);
+    }
     if (generation !== this.sessionGeneration) {
       // The save invalidated this creation while it awaited settings/SDK work.
       // It has never entered the cache or subscribed, so dispose it locally.
       if (session.cleanup) await session.cleanup();
       else if (session.dispose) session.dispose();
-      return this.ensureSessionUnlocked(threadId, projectPath);
+      return this.ensureSessionUnlocked(threadId, projectPath, lifetime);
     }
     const bound: Bound = {
       session, cwd: projectPath, threadId,
@@ -236,18 +300,28 @@ class AgentService {
    * 不经过 buffer。
    */
   async loadHistory(threadId: string, projectPath: string, replay?: EventSink): Promise<Message[]> {
-    let bound: Bound;
     try {
-      do {
-        bound = await this.ensureSession(threadId, projectPath);
-        if (this.sessions.get(threadId) !== bound) {
-          // Only a detached handoff needs this read: do not resurrect a deleted thread.
-          const threads = await threadService.listAll();
-          if (!threads.some(thread => thread.id === threadId)) {
-            throw new KydogError('thread.not_found', `thread ${threadId} not found`);
-          }
+      return await this.withOwnedSession(threadId, projectPath, (bound) => {
+        const raw = piMessagesOf(bound);
+        const state = this.runs.get(threadId);
+        const startIndex = bound.runStartIndex;
+        if (state?.status !== 'running' || startIndex === null) return normalizePiMessages(raw, threadId);
+
+        const committed = [
+          ...raw.slice(0, startIndex),
+          ...raw.slice(startIndex).filter((m) => m.role === 'user'),
+        ];
+        const messages = normalizePiMessages(committed, threadId);
+        if (replay) {
+          // 先发 run.resync 作废这个窗口手上关于本轮的一切，再按序重放 journal。
+          // 没有这一下，「run 在飞时窗口没打开这条 thread」的情形会出问题：那些事件已经
+          // 建过 buffer 了，紧接着重放会把它们再算一遍。journal 是本轮的全量事实，
+          // 所以「清空再重建」是安全的，而且顺带把上一轮的残留 buffer 也扫掉。
+          replay({ topic: 'run.resync', payload: { threadId, runId: state.runId } });
+          for (const event of bound.runJournal) replay(event);
         }
-      } while (this.sessions.get(threadId) !== bound);
+        return messages;
+      });
     } catch (err) {
       // 只对「provider/model 已解析、但 registry 里没有」这一种失败回退——通常是
       // 上游把这个模型从目录里撤了。session 建不起来时本轮不可能有 run 在飞（run
@@ -257,25 +331,6 @@ class AgentService {
       if (err instanceof ModelUnavailableError) return this.loadHistoryWithoutSession(threadId, projectPath);
       throw err;
     }
-    const raw = piMessagesOf(bound);
-    const state = this.runs.get(threadId);
-    const startIndex = bound.runStartIndex;
-    if (state?.status !== 'running' || startIndex === null) return normalizePiMessages(raw, threadId);
-
-    const committed = [
-      ...raw.slice(0, startIndex),
-      ...raw.slice(startIndex).filter((m) => m.role === 'user'),
-    ];
-    const messages = normalizePiMessages(committed, threadId);
-    if (replay) {
-      // 先发 run.resync 作废这个窗口手上关于本轮的一切，再按序重放 journal。
-      // 没有这一下，「run 在飞时窗口没打开这条 thread」的情形会出问题：那些事件已经
-      // 建过 buffer 了，紧接着重放会把它们再算一遍。journal 是本轮的全量事实，
-      // 所以「清空再重建」是安全的，而且顺带把上一轮的残留 buffer 也扫掉。
-      replay({ topic: 'run.resync', payload: { threadId, runId: state.runId } });
-      for (const event of bound.runJournal) replay(event);
-    }
-    return messages;
   }
 
   /**
@@ -299,18 +354,47 @@ class AgentService {
   }
 
   async send(threadId: string, projectPath: string, content: string, images: MessageImage[] = []): Promise<{ runId: string }> {
-    let bound: Bound;
     try {
-      do {
-        bound = await this.ensureSession(threadId, projectPath);
-        if (this.sessions.get(threadId) !== bound) {
-          // Only a detached handoff needs this read: do not resurrect a deleted thread.
-          const threads = await threadService.listAll();
-          if (!threads.some(thread => thread.id === threadId)) {
-            throw new KydogError('thread.not_found', `thread ${threadId} not found`);
-          }
+      return await this.withOwnedSession(threadId, projectPath, (bound) => {
+        const current = this.getRunState(threadId);
+        if (bound.runId !== null || current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
+        // 按这条 session **实际**用的模型判（pi Model.input），不按渲染层算出来的那个 ——
+        // 渲染层只是预先拦一道，它算错了这里兜住。拦在占用 run 之前，被拒不留痕迹。
+        if (images.length > 0 && bound.session.model?.input?.includes('image') !== true) {
+          throw new KydogError('llm.imageUnsupported', IMAGE_UNSUPPORTED_TEXT);
         }
-      } while (this.sessions.get(threadId) !== bound);
+        const runId = randomUUID();
+        this.runs.set(threadId, transition(current, { kind: 'send', runId }));
+        // 本轮的 runId 记在 bound 上。**浏览器那两侧都读它**（盖戳的 currentRunIdFor、
+        // 回收的 agent_settled），理由见 Bound.runId 那段注释。
+        bound.runId = runId;
+        // 没图时调用形状与改动前完全一致（只传一个参数）。
+        const started = images.length > 0
+          ? bound.session.prompt(content, { images: images.map((i) => ({ type: 'image' as const, data: i.data, mimeType: i.mimeType })) })
+          : bound.session.prompt(content);
+        void started.catch((err) => {
+          if (this.sessions.get(threadId) !== bound || bound.runId !== runId) return;
+          const msg = err instanceof Error ? err.message : String(err);
+          this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
+          broadcaster.emit('run.ended', { threadId, runId, reason: 'error', errorMessage: msg });
+          logger.error('agent', 'prompt failed', { threadId, err: msg });
+          // **本轮在这里落地**：pi 的 `agent_settled` 只在 `_runAgentPrompt` 的 finally 里发
+          // （`agent-session.js:755`），而 `prompt()` 的 catch（`:792`）排在它被 await 之前就
+          // throw 了 —— 没选模型 / OAuth 过期 / 没有 API key / 压缩失败 /
+          // `before_agent_start` 扩展抛错，这几条都是「reject 了但从没 settle 过」。
+          // 不清的话 `hasActiveRun()` 永远为真，用户此后切界面语言一律被拒（见 Bound.runId）。
+          //
+          // 相等判断不能省：reject 迟到时 `bound.runId` 可能已经是下一轮的了，
+          // 无条件置 null 会把新那一轮的戳抹掉。字段还是本轮的，才轮得到这里收尾 ——
+          // 顺带结束本轮，与另外两个出口同形（settled 已经来过时这一支不会进）。
+          if (bound.runId === runId) {
+            bound.runId = null;
+            browserService.endRun(runId);
+            if (bound.staleAfterRun && this.sessions.get(threadId) === bound) void this.dispose(threadId);
+          }
+        });
+        return { runId };
+      });
     } catch (err) {
       // loadHistory 已经把「读历史」和「模型还在不在」解耦了；发新消息终究要起一轮
       // 真的 run，绕不开这一步，所以这里仍然要 ensureSession，只是把技术性的
@@ -318,44 +402,6 @@ class AgentService {
       if (err instanceof ModelUnavailableError) throw new KydogError('llm.invalid', modelUnavailableSendMessage(err));
       throw err;
     }
-    const current = this.getRunState(threadId);
-    if (bound.runId !== null || current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
-    // 按这条 session **实际**用的模型判（pi Model.input），不按渲染层算出来的那个 ——
-    // 渲染层只是预先拦一道，它算错了这里兜住。拦在占用 run 之前，被拒不留痕迹。
-    if (images.length > 0 && bound.session.model?.input?.includes('image') !== true) {
-      throw new KydogError('llm.imageUnsupported', IMAGE_UNSUPPORTED_TEXT);
-    }
-    const runId = randomUUID();
-    this.runs.set(threadId, transition(current, { kind: 'send', runId }));
-    // 本轮的 runId 记在 bound 上。**浏览器那两侧都读它**（盖戳的 currentRunIdFor、
-    // 回收的 agent_settled），理由见 Bound.runId 那段注释。
-    bound.runId = runId;
-    // 没图时调用形状与改动前完全一致（只传一个参数）。
-    const started = images.length > 0
-      ? bound.session.prompt(content, { images: images.map((i) => ({ type: 'image' as const, data: i.data, mimeType: i.mimeType })) })
-      : bound.session.prompt(content);
-    void started.catch((err) => {
-      if (this.sessions.get(threadId) !== bound || bound.runId !== runId) return;
-      const msg = err instanceof Error ? err.message : String(err);
-      this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
-      broadcaster.emit('run.ended', { threadId, runId, reason: 'error', errorMessage: msg });
-      logger.error('agent', 'prompt failed', { threadId, err: msg });
-      // **本轮在这里落地**：pi 的 `agent_settled` 只在 `_runAgentPrompt` 的 finally 里发
-      // （`agent-session.js:755`），而 `prompt()` 的 catch（`:792`）排在它被 await 之前就
-      // throw 了 —— 没选模型 / OAuth 过期 / 没有 API key / 压缩失败 /
-      // `before_agent_start` 扩展抛错，这几条都是「reject 了但从没 settle 过」。
-      // 不清的话 `hasActiveRun()` 永远为真，用户此后切界面语言一律被拒（见 Bound.runId）。
-      //
-      // 相等判断不能省：reject 迟到时 `bound.runId` 可能已经是下一轮的了，
-      // 无条件置 null 会把新那一轮的戳抹掉。字段还是本轮的，才轮得到这里收尾 ——
-      // 顺带结束本轮，与另外两个出口同形（settled 已经来过时这一支不会进）。
-      if (bound.runId === runId) {
-        bound.runId = null;
-        browserService.endRun(runId);
-        if (bound.staleAfterRun && this.sessions.get(threadId) === bound) void this.dispose(threadId);
-      }
-    });
-    return { runId };
   }
 
   abort(threadId: string): void {

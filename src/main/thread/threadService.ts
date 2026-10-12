@@ -91,21 +91,25 @@ export class ThreadService {
     return withIndexLock(async () => {
       const idx = await loadIndex();
       const targets = this.pick(idx, threadIds);
-      for (const t of targets) {
-        await agentService.dispose(t.id);
-        // 对话没了，它名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
-        // **排在 dispose 之后**：先把在飞的那一轮停下，再关它可能正在驱动的标签。
-        // 不挂在 agentService.dispose 里 —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
-        browserService.disposeForThread(t.id);
-      }
-      const gone = new Set(threadIds);
-      idx.threads = idx.threads.filter((t) => !gone.has(t.id));
-      await saveIndex(idx);
-      // 先改 index 再删文件（同改动前）：删文件失败不回滚 index。
-      for (const t of targets) {
-        await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
-        await researchRunStore.removeRunsForThread(t.id);
-      }
+      const deletion = agentService.beginThreadDeletion(threadIds);
+      try {
+        for (const t of targets) {
+          await agentService.dispose(t.id);
+          // 对话没了，它名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
+          // **排在 dispose 之后**：先把在飞的那一轮停下，再关它可能正在驱动的标签。
+          // 不挂在 agentService.dispose 里 —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
+          browserService.disposeForThread(t.id);
+        }
+        const gone = new Set(threadIds);
+        idx.threads = idx.threads.filter((t) => !gone.has(t.id));
+        await saveIndex(idx);
+        deletion.commit();
+        // 先改 index 再删文件（同改动前）：删文件失败不回滚 index。
+        for (const t of targets) {
+          await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
+          await researchRunStore.removeRunsForThread(t.id);
+        }
+      } finally { deletion.finish(); }
     });
   }
 

@@ -28,6 +28,7 @@ vi.mock('../agent/AgentService', () => ({
     send: vi.fn().mockResolvedValue({ runId: 'r1' }),
     loadHistory: vi.fn().mockResolvedValue([]),
     dispose: vi.fn(),
+    beginThreadDeletion: vi.fn(() => ({ commit: vi.fn(), finish: vi.fn() })),
     hasActiveRunFor: vi.fn(() => false),
   },
 }));
