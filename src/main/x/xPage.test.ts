@@ -136,7 +136,7 @@ it.each([false,true])('registers private snapshots and retains issued Article as
   const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
   const destination='https://x.com/bob/status/456';
   let publicSnapshots=0;
-  const browser={
+  const browser={researchTabStatus:()=>'available',
     enqueue:(_tab:string,work:()=>Promise<unknown>)=>work(),withAgentDriving:(_tab:string,_thread:string,work:()=>Promise<unknown>)=>work(),
     onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},
     evalInPage:async(_tab:string,code:string)=>f.evaluate(code),snapshot:async()=>{publicSnapshots++;throw new Error('public cache used');},
@@ -311,7 +311,7 @@ it('returnToPostInvalidatesArticleAndPreArticleBindings',async()=>{
   const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
   const articleUrl='https://x.com/bob/status/456';
   let delivered=0;
-  const browser={enqueue:(_tab:string,work:()=>Promise<unknown>)=>work(),withAgentDriving:(_tab:string,_thread:string,work:()=>Promise<unknown>)=>work(),onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_tab:string,code:string)=>f.evaluate(code),
+  const browser={researchTabStatus:()=>'available',enqueue:(_tab:string,work:()=>Promise<unknown>)=>work(),withAgentDriving:(_tab:string,_thread:string,work:()=>Promise<unknown>)=>work(),onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_tab:string,code:string)=>f.evaluate(code),
     open:async()=>{facts.currentUrl=url;facts.documentEpoch++;facts.navigationSequence++;f=fixture(wrap(post('123','alice','returned',button)));return {tabId:'tab',evicted:[],nav:{outcome:{kind:'ok',finalUrl:url}}};},
     dispatchAndObserveNavigation:async(_tab:string,action:any,snapshot:any)=>{delivered++;if(snapshot.nodes.find((n:any)=>n.index===action.index)?.collectedPermission?.purpose==='article_entry'){facts.currentUrl=articleUrl;facts.documentEpoch++;facts.navigationSequence++;f=fixture(`<main><article data-testid="tweet">${author('bob')}<article data-testid="twitterArticleReadView"><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Body</div></div></div></article></article></main>`,articleUrl);return {line:'clicked',navigation:{outcome:{kind:'ok',finalUrl:articleUrl}}};}return {line:'clicked',navigation:null};},
   } as unknown as BrowserService;
@@ -392,4 +392,16 @@ it('never changes an observed invalid href into a href-less Article entry proof'
     box.setAttribute('href',href);
     expect(decode().entries).toEqual([]);
   }
+});
+
+it('counts only actual same-parent Article boxes as unresolved, independently of unrelated control truncation',()=>{
+ const buttons='<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>'.repeat(101);
+ const card='<div role="link" tabindex="0" href="https://unsafe.example/?token=secret">'+author('bob')+'<img data-testid="article-cover-image"></div>';
+ for(const preview of [card,'']) {
+  const f=fixture(wrap(post('123','alice','root original',buttons+preview)));
+  const observed=decodeXPage(f.collect(request),request,{currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},false);
+  expect(observed.controlTruncation.truncated).toBe(true);
+  expect(observed.root?.articlePreviewInventory).toEqual({scope:'collection',observed:0,retained:0,omitted:0,unresolved:preview?1:0});
+  expect(JSON.stringify(observed)).not.toContain('secret');
+ }
 });

@@ -32,6 +32,8 @@ async function result() {
     )
   ).details!;
   if (r.operation !== 'read') throw Error('fixture');
+  // These DTO mutation tests also cover schema2 history predating inventory.
+  delete r.targets[0].root!.articlePreviewInventory;
   return r;
 }
 const entry = (_r: Awaited<ReturnType<typeof result>>) => ({
@@ -701,4 +703,32 @@ it('legacy attached bodies exempt only their own same-item previews, never fresh
   expect(() => l.guard(report, citation())).toThrow(
     /unknown \(legacy preview\)/,
   );
+});
+
+it('an omitted or unresolved collection inventory stays unknown despite one genuine selected-entry attempt',async()=>{
+ const r=await result();
+ r.targets[0].root!.articlePreviews=[entry(r)];
+ r.targets[0].article={...r.targets[0].article,entryIdentity:entry(r),entryObserved:true,actionAttempted:true};
+ const l=new XResearchEvidence('/tmp',()=> 'run');
+ r.targets[0].root!.articlePreviewInventory={scope:'collection',observed:1,retained:1,omitted:0,unresolved:0};
+ l.observe(r);expect(l.guard(report,citation())).toEqual({createOnly:true});
+ for(const gap of [{observed:2,retained:1,omitted:1,unresolved:0},{observed:1,retained:1,omitted:0,unresolved:1}]){
+  const incomplete=structuredClone(r);incomplete.targets[0].root!.observationId='actual-gap';incomplete.targets[0].root!.articlePreviewInventory={scope:'collection',...gap};
+  l.observe(incomplete);expect(()=>l.guard(report,citation())).toThrow('inventory');
+  l.observe(r);expect(l.guard(report,citation())).toEqual({createOnly:true});
+ }
+});
+
+it('tab restoration follows only ordered true canonical branch results, never legacy, mismatched calls or timestamps',async()=>{
+ const {latestXResearchTab}=await import('./xResearchEvidence');const r=await result();
+ expect(latestXResearchTab([history(r)])).toBe('research-tab');
+ for(const invalid of [
+  {...history(r),message:{...history(r).message,isError:true,details:{...r,browserTabId:'wrong'}}},
+  {...history(r),message:{...history(r).message,toolCallId:'different-call',details:{...r,browserTabId:'wrong'}}},
+  history({...r,schemaVersion:1,browserTabId:'wrong'}),
+  history({...r,sourceKind:'legacy_x_graphql',browserTabId:'wrong'}),
+ ])expect(latestXResearchTab([history(r),invalid])).toBe('research-tab');
+ const later={...history({...r,browserTabId:'actually-later'}),timestamp:'1900-01-01T00:00:00Z'};
+ expect(latestXResearchTab([{...history(r),timestamp:'2100-01-01T00:00:00Z'},later])).toBe('actually-later');
+ expect(latestXResearchTab([])).toBeUndefined();
 });

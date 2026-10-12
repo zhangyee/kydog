@@ -1,3 +1,4 @@
+import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { describe, expect, it } from 'vitest';
 import { KydogError } from '../../shared/errors';
 import { fixture, post, query, searchHtml, searchInput } from '../../test-support/xResearchFixture';
@@ -45,7 +46,7 @@ describe('X search orchestration',()=>{
     const f=fixture([auth],{finalUrl:()=> 'https://x.com/i/jf/onboarding/web'});
     const input={search:{...searchInput.search,queries:[query,{...query,id:'untouched'}]}};
     const result=await searchX(input,f.context);
-    expect(result).toMatchObject({status:'auth_required',browserTabId:'research-tab',queries:[{status:'auth_required',stopReason:'access_barrier'},{query:{id:'untouched'},stopReason:'agent_stopped'}]});
+    expect(result).toMatchObject({status:'auth_required',browserTabId:'research-tab',queries:[{status:'auth_required',stopReason:'access_barrier'},{query:{id:'untouched'},status:'auth_required',stopReason:'access_barrier',barrier:{reason:'not_attempted:auth_required'}}]});
     expect(f.open).toHaveBeenCalledTimes(1);
     const controller=new AbortController();controller.abort();
     const cancelled=await searchX(input,{...f.context,signal:controller.signal});
@@ -78,4 +79,33 @@ describe('X search orchestration',()=>{
     expect(result.queries).toMatchObject([{posts:[{postId:'123'}],stopReason:'action_failed'},{posts:[],status:'failed',stopReason:'agent_stopped'}]);
     expect(broken.open).toHaveBeenCalledTimes(1);
   });
+});
+
+it('scroll receipt alone never admits the old DOM as a new frame; written ACK failure preserves evidence',async()=>{
+ for(const fail of [false,true]){
+  const f=fixture([searchHtml(post('123')),searchHtml(post('456','bob'))]);
+  const original=f.act.getMockImplementation()!;
+  f.act.mockImplementation(async(action,snapshot,options)=>{
+   expect(options?.scrollAcknowledgement).toBeDefined();
+   if(fail){options!.scrollAcknowledgement!.onWritten();throw new BrowserScrollAcknowledgementError('scroll_ack_timeout','no frame');}
+   return original(action,snapshot,options);
+  });
+  const r=await searchX(searchInput,f.context);
+  expect(r.queries[0].posts.map(p=>p.postId)).toEqual(fail?['123']:['123','456']);
+  expect(r.queries[0]).toMatchObject({budgetUsage:{scrolls:1},stopReason:fail?'wait_timeout':'budget_reached'});
+  if(fail)expect(r.queries[0].barrier?.reason).toBe('scroll_ack_timeout');
+ }
+});
+
+it('preserves every Article preview on its exact collected parent container, never the duplicate ID container',async()=>{
+ const card=(id:string)=>`<div role="link" tabindex="0" href="https://x.com/bob/status/${id}"><div data-testid="User-Name"><a href="/bob">bob</a><a href="/bob">@bob</a></div><img data-testid="article-cover-image"></div>`;
+ const a=post('123','alice','first body').replace('</article>',card('456')+card('789')+'</article>');
+ const b=post('123','alice','duplicate body');
+ const f=fixture([searchHtml(a+b)]);
+ const r=await searchX({...searchInput,search:{...searchInput.search,maxScrollsPerQuery:0}},f.context);
+ expect(r.queries[0].posts[0].articlePreviews?.map(e=>e.targetUrl)).toEqual(['https://x.com/bob/status/456','https://x.com/bob/status/789']);
+ const collected=await f.collect({stage:'search',expectedUrl:'https://x.com/search?q=scientific+agents&f=live',query:query.query,product:'Latest'});
+ expect(collected.entryParents.get(collected.entries[0])).toBe(collected.posts[0]);
+ expect(collected.entryParents.get(collected.entries[0])).not.toBe(collected.posts[1]);
+ expect(JSON.stringify(r)).not.toContain('entryParents');
 });

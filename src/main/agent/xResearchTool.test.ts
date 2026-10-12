@@ -242,3 +242,43 @@ it('observes only the final serialized canonical result once and never observes 
  expect(Buffer.byteLength(JSON.stringify(r))).toBe(received[0].budgetUsage.outputBytes);
  await expect(tool.execute('invalid',{search:{},read:{}} as never,undefined,undefined,{} as never)).rejects.toThrow();expect(received).toHaveLength(1);
 });
+
+ it('refuses an inactive run before browser I/O without manufacturing provenance',async()=>{
+  const f=fixture([searchHtml(post())]); let run:string|null='protocol-run';
+  const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=>run});
+  expect((await tool.execute('live',searchInput,undefined,undefined,{} as never)).details?.runId).toBe('protocol-run');
+  run=null;
+  await expect(tool.execute('idle',searchInput,undefined,undefined,{} as never)).rejects.toThrow('active run');
+  expect(f.open).toHaveBeenCalledTimes(1);
+ });
+
+it('restores an owned tab, rejects a foreign binding and only replaces a missing tab on the next request',async()=>{
+ const f=fixture([searchHtml(post())]);let status:'available'|'foreign'|'missing'='available';let retained:string|undefined='recovered-tab';
+ const tool=createXResearchTool({browser:{...f.context.browser,tabStatus:()=>status},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',tabBinding:{get:()=>retained,set:id=>{retained=id;}}});
+ await tool.execute('owned',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[0][1]).toBe('recovered-tab');
+ status='foreign';await expect(tool.execute('foreign',searchInput,undefined,undefined,{} as never)).rejects.toThrow('another thread');expect(f.open).toHaveBeenCalledTimes(1);
+ status='missing';const missing=await tool.execute('missing',searchInput,undefined,undefined,{} as never);expect(missing.details?.status).toBe('failed');expect(f.open).toHaveBeenCalledTimes(1);
+ status='available';await tool.execute('new',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[1][1]).toBeUndefined();
+});
+
+it('retains earlier precise root preview inventory across later body expansion and an accurate selected attempt',async()=>{
+ const card=(id:string)=>`<div role="link" tabindex="0" href="https://x.com/bob/status/${id}"><div data-testid="User-Name"><a href="/bob">bob</a><a href="/bob">@bob</a></div><img data-testid="article-cover-image"></div>`;
+ const initial=post().replace('</article>','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>'+card('456')+card('789')+'</article>');
+ const expanded=post('123','alice','expanded body').replace('</article>',card('456')+'</article>');
+ const f=fixture([readHtml(initial),readHtml(expanded)]);const act=f.act.getMockImplementation()!;
+ f.act.mockImplementation(async(...args)=>{if(f.act.mock.calls.length===2)throw new KydogError('browser.target_unusable','rejected exact entry');return act(...args);});
+ const {XResearchEvidence}=await import('../x/xResearchEvidence');const evidence=new XResearchEvidence('/tmp',()=> 'run');
+ const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
+ const r=await tool.execute('frames',{tabId:'research-tab',read:{objective:'frames',targets:[{url:'https://x.com/alice/status/123'}],includeReplies:false}},undefined,undefined,{} as never);
+ expect(r.details).toMatchObject({targets:[{root:{text:'expanded body',articlePreviewInventory:{observed:1,retained:1,omitted:0}},article:{actionAttempted:true},articlePreviewObservations:expect.arrayContaining([expect.objectContaining({articlePreviewInventory:{scope:'collection',observed:2,retained:1,omitted:1,unresolved:0}})])}]});
+ expect(()=>evidence.guard('/tmp/report.md','[source](https://x.com/alice/status/123)')).toThrow('inventory');
+});
+
+it('authoritative destruction during an action permits a new tab only on the following request',async()=>{
+ const f=fixture([searchHtml(post())]);let present=true;
+ const tool=createXResearchTool({browser:{...f.context.browser,tabStatus:()=>present?'available':'missing'},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+ await tool.execute('exists',searchInput,undefined,undefined,{} as never);expect(f.open).toHaveBeenCalledTimes(1);
+ f.act.mockImplementationOnce(async()=>{present=false;throw new KydogError('browser.not_dispatchable','target destroyed');});
+ const lost=await tool.execute('destroyed',searchInput,undefined,undefined,{} as never);expect(lost.details).toMatchObject({browserTabId:'research-tab',queries:[{posts:[{postId:'123'}],status:'partial'}]});expect(f.open).toHaveBeenCalledTimes(2);
+ present=true;await tool.execute('next-request',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[2][1]).toBeUndefined();
+});

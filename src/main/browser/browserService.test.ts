@@ -4445,3 +4445,14 @@ it('scroll ACK refuses mismatched receipt and same-URL navigation while disposin
     expect(written).toBe(2);expect(disposals).toBe(2);
   }
 });
+
+it('research recovery reads actual registry presence and ownership without exposing other threads',async()=>{
+ const {svc}=make();
+ const own=await openTab(svc,'https://x.com/home','thread-a');
+ const user=await openTab(svc,'https://x.com/home');
+ expect(svc.researchTabStatus(own.nav.tabId,'thread-a')).toBe('available');
+ expect(svc.researchTabStatus(own.nav.tabId,'thread-b')).toBe('foreign');
+ expect(svc.researchTabStatus(user.nav.tabId,'thread-b')).toBe('available');
+ svc.close(own.nav.tabId);expect(svc.researchTabStatus(own.nav.tabId,'thread-a')).toBe('missing');
+ svc.disposeAll();
+});

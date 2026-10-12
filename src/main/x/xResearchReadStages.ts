@@ -115,6 +115,17 @@ export function savePostFrame(
     return false;
   }
   if (row.root === observed.root) return true;
+  const previous=row.root,inventory=previous?.articlePreviewInventory;
+  if(previous && previous!==observed.root && previous.postId && previous.sourceUrl && previous.author?.handle && inventory && (inventory.observed>0 || inventory.unresolved>0)) {
+    (row.articlePreviewObservations??=[]).push({observationId:previous.observationId,postId:previous.postId,sourceUrl:previous.sourceUrl,authorHandle:previous.author.handle,articlePreviews:previous.articlePreviews??[],articlePreviewInventory:inventory});
+  }
+  const rootEntries=observed.entries.filter(entry=>observed.entryParents.get(entry)===observed.root);
+  const selected=rootEntries[0];
+  if(observed.root.articlePreviewInventory) {
+    observed.root.articlePreviewInventory.retained=selected?1:0;
+    observed.root.articlePreviewInventory.omitted=rootEntries.length-(selected?1:0);
+  }
+  if(selected) observed.root.articlePreviews=[{entryObservationId:selected.observationId,parentPostId:selected.parentPostId,sourceUrl:selected.sourceUrl,targetUrl:selected.targetUrl}];
   row.root = observed.root;
   row.sourceUrl = observed.root.sourceUrl;
   mergeText(row.quotedPosts, observed.quotedPosts);
@@ -149,7 +160,7 @@ export function savePostFrame(
   } else row.documentSource = null;
   if (!row.article.actionAttempted) {
     row.article.entry =
-      observed.entries.find((e) => e.parentPostId === row.postId) ??
+      rootEntries[0] ??
       row.article.entry;
     row.article.entryObserved = !!row.article.entry;
   }

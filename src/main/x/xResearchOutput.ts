@@ -27,7 +27,7 @@ export function xResearchToolResult(value: XSerializedResult): {
 }
 function texts(result: XResearchResult): XTextObservation[] {
   return result.operation === 'search'
-    ? result.queries.flatMap((q) => q.posts)
+    ? result.queries.flatMap((q) => [...q.posts,...(q.postObservations??[])])
     : result.targets.flatMap((t) => [
         ...(t.root ? [t.root] : []),
         ...t.quotedPosts,
@@ -37,6 +37,7 @@ function texts(result: XResearchResult): XTextObservation[] {
 }
 function body(p: XTextObservation) {
   return {
+    ...(p.articlePreviewInventory ? {articlePreviewInventory:p.articlePreviewInventory}:{}),
     ...(p.articlePreviews ? { articlePreviews: p.articlePreviews } : {}),
     observationId: p.observationId,
     postId: p.postId,
@@ -118,6 +119,7 @@ function projection(result: XResearchResult) {
         stopReason: q.stopReason,
         budgetUsage: q.budgetUsage,
         posts: q.posts.map(body),
+        ...(q.postObservations?{postObservations:q.postObservations.map(body)}:{}),
         barrier: q.barrier,
         collectionTransitions: q.collectionTransitions,
       })),
@@ -126,6 +128,8 @@ function projection(result: XResearchResult) {
     ...base,
     targets: result.targets.map((t, index) => ({
       targetIndex: index,
+      ...(t.articlePreviewObservations?{articlePreviewObservations:t.articlePreviewObservations}:{}),
+      ...(t.inventoryAuditOmitted?{inventoryAuditOmitted:t.inventoryAuditOmitted}:{}),
       inputKind: t.inputKind,
       inputUrlRedacted: t.inputUrlRedacted,
       postId: t.postId,
@@ -435,6 +439,8 @@ export function assertXRequestFits(original: XResearchResult): void {
           targetUrl: t.article.body?.sourceUrl ?? t.root.sourceUrl!,
         };
         t.root.articlePreviews = [sizingIdentity];
+        t.root.articlePreviewInventory={scope:'collection',observed:100,retained:1,omitted:99,unresolved:100};
+        t.inventoryAuditOmitted={count:Number.MAX_SAFE_INTEGER,first:{observationId:uuid,postId:t.root.postId!,sourceUrl:t.root.sourceUrl!,authorHandle:t.root.author!.handle!}};
         t.article.entryIdentity = sizingIdentity;
       }
       t.article.entryObserved = true;
@@ -526,9 +532,20 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
       return value;
   }
+  if(result.operation==='search') for(const q of result.queries) {
+    const candidates=[...q.posts],observations=[...(q.postObservations??[])];
+    let lo=0,hi=candidates.length;
+    const retain=(count:number)=>{
+      q.posts=candidates.slice(0,count);
+      const ids=new Set(q.posts.map(p=>p.postId));
+      if(q.postObservations) q.postObservations=observations.filter(p=>ids.has(p.postId));
+    };
+    while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES) lo=mid;else hi=mid-1;}
+    retain(lo);value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
   const lists =
     result.operation === 'search'
-      ? result.queries.map((q) => q.posts)
+      ? []
       : result.targets.flatMap((t) => [t.replies.observations, t.quotedPosts]);
   for (const list of lists) {
     const entries = [...list];
@@ -547,6 +564,19 @@ export function serializeXResearchResult<T extends XResearchResult>(
     value = update();
     if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
       return value;
+  }
+  if(result.operation==='read') for(const row of result.targets) {
+    const audits=row.articlePreviewObservations;
+    if(!audits?.length)continue;
+    const {observationId,postId,sourceUrl,authorHandle}=audits[0];
+    row.inventoryAuditOmitted={count:(row.inventoryAuditOmitted?.count??0)+audits.length,first:row.inventoryAuditOmitted?.first??{observationId,postId,sourceUrl,authorHandle}};
+    row.articlePreviewObservations=[];
+    (result.metadataOmissions??=[]).push(`targets.${result.targets.indexOf(row)}.articlePreviewObservations`);
+    if(row.status==='observed') row.status='partial';
+    row.reason??='article_inventory_audit_output_budget';
+    if(row.stopReason==='agent_stopped')row.stopReason='budget_reached';
+    if(result.status==='observed')result.status='partial';
+    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
   compactMetadata(result);
   value = update();

@@ -63,9 +63,18 @@ export function searchResult(input:XSearchInput,context:XResearchContext): Extra
 }
 export async function searchX(input:XSearchInput, context:XResearchContext): Promise<Extract<XResearchResult,{operation:'search'}>> {
   const result=searchResult(input,context);
-  let halted:false|'cancelled'|'other'=false;
+  let halted:false|'cancelled'|'auth_required'|'other'=false;
   for (const row of result.queries) {
-    if(halted || context.signal?.aborted) { if(halted==='cancelled' || context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';} continue; }
+    if(halted || context.signal?.aborted) { if(halted==='cancelled' || context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';} else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};} continue; }
+    const save = (observed:XPageObservation) => {
+      for(const p of observed.posts) if(p.postId) {
+        if(!row.posts.some(old=>old.postId===p.postId)) {
+          if(row.posts.length<input.search.maxPostsPerQuery) row.posts.push(p);
+        } else (row.postObservations??=[]).push(p);
+      }
+      rememberSources(context,[...observed.posts.filter(p=>row.posts.includes(p)||(row.postObservations??[]).includes(p))],row.query);
+      row.budgetUsage.distinctEntries=row.posts.length;
+    };
     const url=new URL(xSearchUrl(row.query));
     let stage:'navigation'|'collection'|'action'|'wait'='navigation';
     try {
@@ -74,15 +83,20 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       const committed=navigationUrl(opened.nav);row.location=committedFacts(url.href,opened.nav);
       if(!committed) { row.status=opened.nav.outcome.kind==='cancelled'?'cancelled':'failed';row.stopReason=row.status==='cancelled'?'cancelled':'navigation_failed';halted=opened.nav.outcome.kind==='cancelled'?'cancelled':opened.nav.outcome.kind==='crashed'?'other':false;continue; }
       await context.browser.withPage(opened.tabId,context.signal,async page=>{
-        const seen=new Set<string>();
+
         const request={stage:'search' as const,expectedUrl:url.href,query:row.query.query,product:row.query.product};
         let waited=false, waitFailed=false;
         while(true) {
           stage='collection';const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal);
           row.location=locationFacts(url.href,opened.nav,observed);
+          for(const p of observed.posts) {
+            const entries=observed.entries.filter(entry=>observed.entryParents.get(entry)===p);
+            if(p.articlePreviewInventory) {p.articlePreviewInventory.retained=entries.length;p.articlePreviewInventory.omitted=0;}
+            if(entries.length) p.articlePreviews=entries.map(entry=>({entryObservationId:entry.observationId,parentPostId:entry.parentPostId,sourceUrl:entry.sourceUrl,targetUrl:entry.targetUrl}));
+          }
           if(observed.state?.kind==='auth_required') {row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:observed.state.text,observationId:observed.state.observationId};break;}
           if(waitFailed) {
-            if(observed.identityProven) {rememberSources(context,observed.posts,row.query);for(const p of observed.posts) if(p.postId && !seen.has(p.postId) && row.posts.length<input.search.maxPostsPerQuery) {seen.add(p.postId);row.posts.push(p);}row.budgetUsage.distinctEntries=row.posts.length;}
+            if(observed.identityProven) save(observed);
             row.status=row.posts.length?'partial':'failed';row.stopReason='wait_timeout';break;
           }
           if(!observed.identityProven) {
@@ -99,9 +113,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
             }
             row.status='partial';row.stopReason='identity_unproven';break;
           }
-          rememberSources(context,observed.posts,row.query);
-          for(const p of observed.posts) if(p.postId && !seen.has(p.postId) && row.posts.length<input.search.maxPostsPerQuery) {seen.add(p.postId);row.posts.push(p);}
-          row.budgetUsage.distinctEntries=row.posts.length;
+          save(observed);
           if(observed.state?.kind==='explicit_empty') {row.status=row.posts.length?'partial':'explicit_empty';row.stopReason='explicit_ui_end';row.barrier={status:'explicit_empty',reason:observed.state.text,observationId:observed.state.observationId};break;}
           if(observed.scope.collectedItemCount===0 && !waited) {
             stage='wait';waited=true;
@@ -109,14 +121,14 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
             continue;
           }
           if(row.posts.length>=input.search.maxPostsPerQuery || row.budgetUsage.scrolls>=input.search.maxScrollsPerQuery) {row.status='partial';row.stopReason='budget_reached';break;}
-          stage='action';await page.act({kind:'scroll',direction:'down'},observed.snapshot);row.budgetUsage.scrolls++;
+          stage='action';await page.act({kind:'scroll',direction:'down'},observed.snapshot,{scrollAcknowledgement:{onWritten:()=>{row.budgetUsage.scrolls++;}}});
         }
       });
     } catch(error) {
       const problem=failure(error,stage);row.status=row.posts.length && problem.status!=='cancelled'?'partial':problem.status;row.stopReason=problem.stopReason;halted=problem.status==='cancelled'?'cancelled':problem.internal || (error instanceof KydogError && ['browser.no_tab','browser.not_dispatchable'].includes(error.code))?'other':false;
-      row.barrier={status:problem.status,reason:problem.internal?`internal_adapter_error:${stage}`:`${stage}_failed${error instanceof KydogError?':'+error.code:''}`,observationId:null};
+      row.barrier={status:problem.status,reason:problem.reason??(problem.internal?`internal_adapter_error:${stage}`:`${stage}_failed${error instanceof KydogError?':'+error.code:''}`),observationId:null};
     }
-    if(row.status==='auth_required') halted='other';
+    if(row.status==='auth_required') halted='auth_required';
   }
   aggregateResult(result);return result;
 }

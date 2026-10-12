@@ -15,7 +15,7 @@ function fixture() {
   const gone = new Set<(id: string) => void>();
   const unavailable = new Set<(id: string) => void>();
   const enqueue = <T>(_id: string, work: () => Promise<T>) => { queues++; const next = tail.then(work, work); tail = next.then(() => {}, () => {}); return next; };
-  const browser = {
+  const browser = {researchTabStatus:()=>'available',
     enqueue,
     open: (args: { url: string; tabId?: string }) => enqueue(args.tabId ?? 'tab', async () => ({ tabId: 'tab', nav: { navigationId: 'nav', outcome: { kind: 'ok', finalUrl: args.url, httpStatusCode: 200 } }, evicted: [] })),
     withAgentDriving: <T>(_id: string, _thread: string, work: () => Promise<T>) => work(),

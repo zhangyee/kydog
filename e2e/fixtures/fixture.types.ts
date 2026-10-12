@@ -28,6 +28,10 @@ export type FixtureEvent =
     }
   | {
       after_ms: number;
+      // Executes the shared production catalog, including read/write/edit and optional
+      // x_research. X fixtures supply parameters only; actual result content/details
+      // are appended through SDK SessionManager. Use isolated cwd/sessions profiles.
+      // Public run.tool_call_chunk carries actual text; run.tool_call_end is status only.
       type: 'tool';
       toolCallId: string;
       /**

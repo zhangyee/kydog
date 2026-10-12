@@ -38,7 +38,13 @@ export interface XAuthorIdentity { handle: string | null; displayName: string | 
 export interface XArticleEntryIdentity {
   entryObservationId: string; parentPostId: string; sourceUrl: string; targetUrl: string | null;
 }
+export interface XArticlePreviewInventory {
+  scope:'collection'; observed:number; retained:number; omitted:number;
+  /** Actual source preview nodes lacking a validated returned entry; no unsafe URL is retained. */
+  unresolved:number;
+}
 interface XTextBase {
+  articlePreviewInventory?: XArticlePreviewInventory;
   articlePreviews?: XArticleEntryIdentity[];
   observationId: string;
   sourceKind: 'rendered_ui';
@@ -143,12 +149,20 @@ export interface XSearchObservation {
   collectionTransitions: XCollectionTransition[];
   status: XResearchStatus;
   posts: XTextObservation[];
+  postObservations?: XTextObservation[];
   stopReason: XStopReason;
   budgetUsage: XBudgetUsage;
   location: XLocationFacts | null;
   barrier: XAccessBarrier | null;
 }
+export interface XArticlePreviewScopeObservation {
+  observationId:string;postId:string;sourceUrl:string;authorHandle:string;
+  articlePreviews:XArticleEntryIdentity[];
+  articlePreviewInventory:XArticlePreviewInventory;
+}
 export interface XReadObservation {
+  articlePreviewObservations?:XArticlePreviewScopeObservation[];
+  inventoryAuditOmitted?:{count:number;first:Pick<XArticlePreviewScopeObservation,'observationId'|'postId'|'sourceUrl'|'authorHandle'>};
   target: XReadTarget;
   collectionTransitions: XCollectionTransition[];
   documentSource: XObservedSource | null;

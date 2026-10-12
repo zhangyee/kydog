@@ -566,6 +566,13 @@ export class BrowserService {
 
   getState(): BrowserState { return this.registry.toState(); }
 
+  /** Trusted research recovery only. Presence and ownership are registry facts. */
+  researchTabStatus(tabId: string, threadId: string): 'available' | 'foreign' | 'missing' {
+    if (!this.registry.toState().tabs.some(tab => tab.id === tabId)) return 'missing';
+    const owner = this.registry.ownerThreadIdOf(tabId);
+    return owner === null || owner === threadId ? 'available' : 'foreign';
+  }
+
   private emit(): void {
     // **广播里不许带 epoch**（`BrowserTabsSnapshot` 那段注释写的就是这里）：
     // 类型只挡住「读」，`emit(topic, state)` 传一份 BrowserState 在结构类型下照样

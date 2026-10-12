@@ -72,27 +72,33 @@
   const roots = all(region,tweetSelector).filter(el=>shown(el) && !el.parentElement.closest(tweetSelector));
   const scopeOf = root => root ? [{el:root,semantic:false,members:'[data-testid="User-Name"] a[href], a[href] time'},...own(root,'[data-testid="User-Name"] a[href], a[href]').filter(el=>el.closest('[data-testid="User-Name"]') || el.querySelector('time')).map(el=>({el,semantic:true}))] : [];
   const focal = roots.find(root=>factOf(root).postId===request.postId);
-  let totalPosts = 0;
+  let totalPosts = 0, containerKey = 0;
   for (const root of roots) {
     const rootFact = factOf(root);
+    const parentContainerKey = containerKey;
+    let articleEntryCount=0;
     const boxes = [root,...all(root,'div[role="link"][tabindex="0"]').filter(b=>shown(b) && own(b,'[data-testid="User-Name"]').length)];
     for (const box of boxes) {
+      const sourceContainerKey = containerKey++;
       const texts = own(box,'[data-testid="tweetText"]');
       const fact = factOf(box);
       if (texts.length) {
         totalPosts++;
         if (posts.length < 100) {
           const full = texts.map(text).join('\n');
-          posts.push({...fact,scope:box===root?'post':'quote',text:full.slice(0,4000),truncation:{returned:Math.min(full.length,4000),totalKnown:full.length,truncated:full.length>4000}});
+          posts.push({...fact,containerKey:sourceContainerKey,articleEntryCount:0,scope:box===root?'post':'quote',text:full.slice(0,4000),truncation:{returned:Math.min(full.length,4000),totalKnown:full.length,truncated:full.length>4000}});
         }
       }
       for (const b of own(box,'button[role="button"][type="button"][data-testid="tweet-text-show-more-link"]')) control(b,'body_expand',fact.postId,[...scopeOf(root),...scopeOf(box)]);
       const cover = own(box,'[data-testid="article-cover-image"]');
       if (box!==root && cover.length && rootFact.postId) {
+        articleEntryCount++;
         const c = control(box,'article_entry',rootFact.postId,[...scopeOf(root),...scopeOf(box)]);
-        if (c) entries.push({el:box,author:authorOf(box),parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? box.getAttribute('href') : null,label:text(box).slice(0,512)});
+        if (c) entries.push({el:box,parentContainerKey,author:authorOf(box),parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? box.getAttribute('href') : null,label:text(box).slice(0,512)});
       }
     }
+    const parent=posts.find(p=>p.containerKey===parentContainerKey);
+    if(parent) parent.articleEntryCount=articleEntryCount;
   }
   for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) control(b,'replies_expand',null,scopeOf(focal));
   // Article body is independent of primaryColumn (immersive UI has none).

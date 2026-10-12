@@ -21,7 +21,7 @@ describe('bounded X production tool result',()=>{
     original.truncation={returned:original.text.length,totalKnown:original.text.length,truncated:false};
     const capped=serializeXResearchResult(result);
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)),'utf8')).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
-    expect(capped.result.truncation).toMatchObject({truncated:true,totalKnown:original.text.length});
+    expect(capped.result.truncation).toMatchObject({truncated:true,totalKnown:original.text.length+8});
     expect(capped.result.queries[0].posts[0].truncation).toMatchObject({truncated:true,totalKnown:original.text.length});
     expect(capped.result.queries[0]).toMatchObject({query:searchInput.search.queries[0],status:'partial',stopReason:'budget_reached'});
     expect(original.text.length).toBe(400000);
@@ -183,4 +183,32 @@ it('drops optional search posts with their complete preview lists at the exact c
  expect(out.result.queries[0].posts.length).toBeGreaterThan(0);expect(out.result.queries[0].posts.length).toBeLessThan(100);expect(out.result.truncation.truncated).toBe(true);
  for(const p of out.result.queries[0].posts)expect(p.articlePreviews).toEqual(previews);for(const p of model.queries[0].posts)expect(p.articlePreviews).toEqual(previews);
  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBe(out.result.budgetUsage.outputBytes);expect(out.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+});
+
+it('keeps repeated candidate observations as one atomic cap group and preserves read audit omission as unknown',async()=>{
+ const card=(id:string)=>`<div role="link" tabindex="0" href="https://x.com/bob/status/${id}"><div data-testid="User-Name"><a href="/bob">bob</a><a href="/bob">@bob</a></div><img data-testid="article-cover-image"></div>`;
+ const posts=Array.from({length:60},(_,i)=>post(String(1000+i),'alice').replace('</article>',card(String(2000+i)).repeat(i<30?0:3)+'</article>')).join('');
+ const search=await searchX({search:{...searchInput.search,maxPostsPerQuery:100}},fixture([searchHtml(posts),searchHtml(posts)]).context);
+ // Exact duplicated-container observations are real independently collected frames.
+ expect(search.queries[0].postObservations!.length).toBeGreaterThan(0);
+ search.objective='a'.repeat(1010000);
+ const capped=serializeXResearchResult(search);
+ const ids=new Set(capped.result.queries[0].posts.map(p=>p.postId));
+ expect(ids.size).toBeGreaterThan(0);expect(ids.size).toBeLessThan(search.queries[0].posts.length);
+ expect(capped.result.truncation.truncated).toBe(true);
+ for(const p of capped.result.queries[0].postObservations??[])expect(ids.has(p.postId)).toBe(true);
+ for(const id of ids)expect((capped.result.queries[0].postObservations??[]).filter(p=>p.postId===id).length).toBe(search.queries[0].postObservations!.filter(p=>p.postId===id).length);
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+ const r=await readX({tabId:'research-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
+ const baseline=structuredClone(r);const row=r.targets[0],root=row.root!;
+ row.articlePreviewObservations=Array.from({length:50},(_,i)=>({observationId:'scope-'+i,postId:root.postId!,sourceUrl:root.sourceUrl!,authorHandle:'alice',articlePreviews:[{entryObservationId:'entry-'+i,parentPostId:'123',sourceUrl:root.sourceUrl!,targetUrl:'https://x.com/bob/status/456'}],articlePreviewInventory:{scope:'collection',observed:2,retained:1,omitted:1,unresolved:0}}));
+ expect(serializeXResearchResult(r).result.targets[0].articlePreviewObservations).toHaveLength(50);
+ r.objective='b'.repeat(1020000);
+ const limited=serializeXResearchResult(r);
+ expect(limited.result.targets[0].inventoryAuditOmitted).toMatchObject({count:50,first:{observationId:'scope-0',sourceUrl:root.sourceUrl}});
+ expect(JSON.parse(limited.text).targets[0].inventoryAuditOmitted).toEqual(limited.result.targets[0].inventoryAuditOmitted);
+ const {XResearchEvidence}=await import('./xResearchEvidence');const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(baseline);expect(ledger.guard('/tmp/a.md','[source](https://x.com/alice/status/123)')).toBeUndefined();ledger.observe(limited.result);
+ // Explicit omission cannot disappear into a false known-empty inventory.
+ expect(()=>ledger.guard('/tmp/a.md','[source](https://x.com/alice/status/123)')).toThrow('inventory');
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(limited)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
 });

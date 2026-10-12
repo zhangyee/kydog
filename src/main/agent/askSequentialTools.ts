@@ -16,6 +16,7 @@ export const SEQUENTIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   'browser_login',
   'browser_download',
   'web_research_task',
+  'x_research',
 ]);
 
 type ContentLike = { type?: string; id?: string; name?: string };

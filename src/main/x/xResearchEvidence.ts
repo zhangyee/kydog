@@ -29,6 +29,9 @@ const author = z
     profileUrl: z.string().nullable(),
   })
   .nullable();
+const inventorySchema=z.object({scope:z.literal('collection'),observed:z.number().int().nonnegative(),retained:z.number().int().nonnegative(),omitted:z.number().int().nonnegative(),unresolved:z.number().int().nonnegative()});
+const scopeIdentitySchema=z.object({observationId:string,postId:string,sourceUrl:string,authorHandle:string});
+const scopeSchema=scopeIdentitySchema.extend({articlePreviews:z.array(entrySchema),articlePreviewInventory:inventorySchema});
 const textSchema = z.object({
   observationId: string,
   sourceKind: z.literal('rendered_ui'),
@@ -50,6 +53,7 @@ const textSchema = z.object({
     truncated: z.boolean(),
   }),
   articlePreviews: z.array(entrySchema).optional(),
+  articlePreviewInventory:inventorySchema.optional(),
 });
 const documentSchema = z.object({
   urlKind: z.literal('document'),
@@ -109,6 +113,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
           product: z.enum(['Top', 'Latest']),
         }),
         posts: z.array(textSchema),
+        postObservations:z.array(textSchema).optional(),
       }),
     ),
   }),
@@ -118,6 +123,8 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     targets: z.array(
       z.object({
         root: textSchema.nullable(),
+        articlePreviewObservations:z.array(scopeSchema).optional(),
+        inventoryAuditOmitted:z.object({count:z.number().int().positive(),first:scopeIdentitySchema}).optional(),
         quotedPosts: z.array(textSchema),
         replies: z.object({ observations: z.array(textSchema) }),
         article: articleSchema,
@@ -126,6 +133,20 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     ),
   }),
 ]);
+/** Only actual current-branch v2 tool results with a navigation receipt can bind a tab. */
+export function latestXResearchTab(branchEntries: readonly unknown[]): string | undefined {
+  let tab: string | undefined;
+  const envelope = z.object({type:z.literal('message'),message:z.object({role:z.literal('toolResult'),toolName:z.literal('x_research'),toolCallId:string,isError:z.literal(false),details:z.unknown()})});
+  const binding = z.object({browserTabId:string,operation:z.enum(['search','read']),queries:z.array(z.unknown()).optional(),targets:z.array(z.unknown()).optional()});
+  const row = z.object({location:z.object({committedNavigationOutcome:z.enum(['ok','ok_same_document','failed','cancelled','crashed','download','blocked','superseded','timeout'])})});
+  for(const raw of branchEntries) {
+    const e=envelope.safeParse(raw);if(!e.success) continue;
+    const canonical=canonicalSchema.safeParse(e.data.message.details),b=binding.safeParse(e.data.message.details);
+    if(!canonical.success || !b.success || canonical.data.callId!==e.data.message.toolCallId) continue;
+    if((b.data.operation==='search'?b.data.queries:b.data.targets)?.some(value=>row.safeParse(value).success)) tab=b.data.browserTabId;
+  }
+  return tab;
+}
 type Canonical = z.infer<typeof canonicalSchema>;
 type Text = z.infer<typeof textSchema>;
 export interface XEvidenceObservation {
@@ -143,6 +164,7 @@ export interface XEvidenceObservation {
   text: string;
   containerKind: Text['containerKind'];
   articlePreviews: readonly XArticleEntryIdentity[];
+  articlePreviewInventory?:Text['articlePreviewInventory'];
   truncation: Text['truncation'] | null;
 }
 interface Preview {
@@ -153,6 +175,9 @@ interface Preview {
   legacyRecord?: XEvidenceObservation;
 }
 interface ArticleFamily {
+  rootRecord: XEvidenceObservation;
+  order:number;
+  completeInventory:boolean;
   parentUrl: string;
   postId: string;
   entry: XArticleEntryIdentity;
@@ -167,6 +192,7 @@ function named(p: Text): p is Text & {
 } {
   const source = parseXSourcePost(p.sourceUrl);
   return (
+    (!p.articlePreviewInventory || (p.articlePreviewInventory.observed===p.articlePreviewInventory.retained+p.articlePreviewInventory.omitted && p.articlePreviewInventory.retained===(p.articlePreviews?.length??0))) &&
     p.containerKind !== 'unattributed_fragment' &&
     !!source?.handle &&
     source.id === p.postId &&
@@ -270,6 +296,8 @@ function isXReference(raw: string): boolean {
 export class XResearchEvidence {
   readonly sources = new Map<string, XSourceReference[]>();
   private records: XEvidenceObservation[] = [];
+  private resultOrder=0;
+  private inventoryGaps:{sourceUrl:string;postId:string;observationId:string;order:number}[]=[];
   private previews: Preview[] = [];
   private families: ArticleFamily[] = [];
   private attachedLegacyRecords = new Set<XEvidenceObservation>();
@@ -308,6 +336,7 @@ export class XResearchEvidence {
   /** Rebuild, rather than merge, so a changed branch cannot retain obsolete facts. */
   restore(branchEntries: readonly unknown[]): void {
     this.records = [];
+    this.resultOrder=0;this.inventoryGaps=[];
     this.previews = [];
     this.families = [];
     this.attachedLegacyRecords.clear();
@@ -349,6 +378,7 @@ export class XResearchEvidence {
           truncation: null,
         };
         this.records.push(record);
+
         if (projection.articles.some((a) => a.parent === p))
           this.attachedLegacyRecords.add(record);
         const source: XSourceReference = {
@@ -400,6 +430,7 @@ export class XResearchEvidence {
     origin: XEvidenceObservation['origin'],
     sessionEntryId: string | null,
   ) {
+    const order=++this.resultOrder;
     const add = (
       p: Text,
       query?: Extract<
@@ -426,9 +457,11 @@ export class XResearchEvidence {
         text: p.text,
         containerKind: p.containerKind,
         articlePreviews: previews,
+        ...(p.articlePreviewInventory?{articlePreviewInventory:p.articlePreviewInventory}:{}),
         truncation: p.truncation,
       };
       this.records.push(record);
+      if(p.articlePreviewInventory && (p.articlePreviewInventory.omitted>0 || p.articlePreviewInventory.unresolved>0))this.inventoryGaps.push({sourceUrl:p.sourceUrl,postId:p.postId,observationId:p.observationId,order});
       this.addSource(p.postId, {
         urlKind: 'permalink',
         sourceUrl: p.sourceUrl,
@@ -455,10 +488,20 @@ export class XResearchEvidence {
     };
     if (result.operation === 'search') {
       for (const row of result.queries)
-        for (const p of row.posts) add(p, row.query);
+        for (const p of [...row.posts,...(row.postObservations??[])]) add(p, row.query);
       return;
     }
     for (const row of result.targets) {
+      for(const scope of row.articlePreviewObservations??[]) {
+        const coordinates=parseXSourcePost(scope.sourceUrl),inventory=scope.articlePreviewInventory;
+        if(coordinates?.id!==scope.postId || coordinates.handle!==scope.authorHandle || inventory.observed!==inventory.retained+inventory.omitted || inventory.retained!==scope.articlePreviews.length || !scope.articlePreviews.every(entry=>parentEntry(entry,scope))) continue;
+        for(const identity of scope.articlePreviews)this.previews.push({parentUrl:scope.sourceUrl,postId:scope.postId,identity});
+        if(inventory.omitted>0 || inventory.unresolved>0)this.inventoryGaps.push({...scope,order});
+      }
+      if(row.inventoryAuditOmitted) {
+        const scope=row.inventoryAuditOmitted.first,coordinates=parseXSourcePost(scope.sourceUrl);
+        if(coordinates?.id===scope.postId && coordinates.handle===scope.authorHandle)this.inventoryGaps.push({...scope,order});
+      }
       const rootRecord =
         row.root?.containerKind === 'root_post' ? add(row.root) : undefined;
       for (const p of row.quotedPosts)
@@ -490,13 +533,15 @@ export class XResearchEvidence {
             this.addSource(root.postId, d);
           }
         }
-        if (e && parentEntry(e, root)) {
+        if (rootRecord && e && parentEntry(e, root)) {
           this.previews.push({
             parentUrl: root.sourceUrl,
             postId: root.postId,
             identity: e,
           });
           this.families.push({
+            rootRecord,order,
+            completeInventory:!!root.articlePreviewInventory && root.articlePreviewInventory.omitted===0 && root.articlePreviewInventory.unresolved===0,
             parentUrl: root.sourceUrl,
             postId: root.postId,
             entry: e,
@@ -536,6 +581,10 @@ export class XResearchEvidence {
           `X citation is unobserved or has unproven author/body identity: ${url}`,
         );
       const parentUrls = new Set(identities.map((r) => r.sourceUrl));
+      for(const gap of this.inventoryGaps.filter(r=>parentUrls.has(r.sourceUrl))) {
+        const newer=this.families.some(f=>f.parentUrl===gap.sourceUrl && f.postId===gap.postId && f.completeInventory && (f.attempted || f.bodySourceUrl!==null) && f.order>gap.order);
+        if(!newer) throw new Error(`X Article inventory is unknown: postId=${gap.postId}, sourceUrl=${gap.sourceUrl}, observationId=${gap.observationId}. Obtain a new complete same-parent collection and accurate entry attempt, or omit this parent citation.`);
+      }
       for (const p of this.previews.filter((p) =>
         parentUrls.has(p.parentUrl),
       )) {

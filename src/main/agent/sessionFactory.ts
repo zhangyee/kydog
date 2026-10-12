@@ -1,5 +1,9 @@
 // src/main/agent/sessionFactory.ts
 import { createFixtureSession } from './fixtureProvider';
+import { createXResearchTool } from './xResearchTool';
+import { XResearchEvidence, latestXResearchTab } from '../x/xResearchEvidence';
+import { createXResearchBrowser } from '../x/xResearchBrowser';
+import { browserService } from '../browser/browserService';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { createReadPdfFigureTool } from './readPdfFigureTool';
 import { createReadDocxTool } from './readDocxTool';
@@ -102,15 +106,58 @@ export async function createSession(opts: {
     service: getWebResearchTaskService(),
   });
 
-  const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
-  // sessionId 就是 threadId，fixture 里的工具必须用它注册 broker，
-  // 否则 renderer 发来的 ask.submit / ask.cancel 会因 threadId 对不上被丢弃。
-  if (fixturePath) {
-    return createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale,
-      [...browserTools, ...researchTools]);
-  }
-
+  // pi remains an external ESM dependency; runtime tool factories use this import.
   const pi = await import('@earendil-works/pi-coding-agent');
+  const sessionFile = `${opts.sessionsDir}/${opts.sessionId}.jsonl`;
+  // Explicit session directory and project cwd also apply to the parameter-only fixture.
+  const sessionManager = pi.SessionManager.open(sessionFile, opts.sessionsDir, opts.cwd);
+  const currentRunId = opts.currentRunId ?? (() => null);
+  const evidence = new XResearchEvidence(opts.cwd, currentRunId);
+  let branchIds: string[] | undefined;
+  let retainedTab: string | undefined;
+  // Ordinary appends retain the immediate production observations. A real branch
+  // change rebuilds exclusively from getBranch(), including through compaction.
+  const syncBranch = () => {
+    const branch = sessionManager.getBranch();
+    const next = branch.map(entry => entry.id);
+    if (!branchIds || !branchIds.every((id,index) => next[index]===id)) {
+      evidence.restore(branch);
+      retainedTab=latestXResearchTab(branch);
+    }
+    branchIds = next;
+  };
+  syncBranch();
+  // Shared cwd-aware SDK read; PDF delegation preserves the explicit image resize policy.
+  const readTool = pi.createReadToolDefinition(opts.cwd, { autoResizeImages: true });
+  const customTools = [
+    createAskUserQuestionTool(opts.sessionId, opts.askShared, locale),
+    readTool,
+    createReadPdfFigureTool({ readTool: readTool as never, cwd: opts.cwd }),
+    createReadDocxTool({ cwd: opts.cwd }),
+    // Same-name SDK overrides keep ordinary file semantics and full-content guarding.
+    ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd, (path, content) => {
+      syncBranch(); return evidence.guard(path, content);
+    }),
+    ...browserTools,
+    ...researchTools,
+    ...(settings.research?.xResearchEnabled === true ? [createXResearchTool({
+      browser: createXResearchBrowser(browserService, opts.sessionId),
+      threadId: opts.sessionId, sources: evidence.sources, currentRunId: () => {syncBranch();return currentRunId();},
+      tabBinding:{get:()=>retainedTab,set:id=>{retainedTab=id;}},
+      observeResult: result => evidence.observe(result),
+    })] : []),
+  ];
+  // SDK emits message_end before persisting it. Refresh only after prompt settles,
+  // so branching away from the last result cannot leave an untracked live observation.
+  const trackSettledBranch = <T extends AnySession>(session:T):T => {
+    const prompt=session.prompt.bind(session);
+    session.prompt=async (...args) => {try{return await prompt(...args);}finally{syncBranch();}};
+    return session;
+  };
+  const fixturePath = process.env.KYDOG_AGENT_FIXTURE;
+  if (fixturePath) return trackSettledBranch(await createFixtureSession(fixturePath, opts.askShared, opts.sessionId, locale,
+    customTools, sessionManager));
+
   const reg = getProviderRegistry();
   const model = reg.modelRuntime.getModel(opts.providerId, opts.modelId);
   if (!model) {
@@ -121,37 +168,13 @@ export async function createSession(opts: {
   const resourceLoader = await createKydogResourceLoader(opts.cwd);
   // KyDog 是 SDK 嵌入方，不吸收项目本地的 pi 配置（.pi/settings.json、.pi/SYSTEM.md）。
   await resourceLoader.reload({ resolveProjectTrust: async () => false });
-  const sessionFile = `${opts.sessionsDir}/${opts.sessionId}.jsonl`;
   const { session } = await (pi as any).createAgentSession({
     cwd: opts.cwd,
-    // 第三个参数是 cwd：不给的话新文件的头取 process.cwd()（从 Finder 启动的打包版是 `/`），
-    // 旧文件取头里记的值。给了则两种都以项目目录为准；旧文件头里的 `/` 不改写。
-    sessionManager: (pi as any).SessionManager.open(sessionFile, undefined, opts.cwd),
+    sessionManager,
     modelRuntime: reg.modelRuntime,
     model,
     resourceLoader,
-    customTools: [
-      createAskUserQuestionTool(opts.sessionId, opts.askShared, locale),
-      // read 定义在这里构造、注入进去，而不是在工具文件里 import：pi 在 vite.main.config.ts
-      // 里是 external、main 打成 CJS，所以 pi 的一切运行时引用都必须走上面那个动态 import()。
-      // autoResizeImages 显式给 true，不跟随 pi 的 settings（那个开关在 pi 的 settingsManager
-      // 里、KyDog 没有暴露）：渲染页的像素上限是 2400 万，不 resize 会把请求撑爆。
-      // 这份 read 定义只用于工具内部委托，不注册成一个对模型可见的工具。
-      // cwd 传进去：spec §2.3/§3.3 里项目内附件走的是相对路径，两个工具据此把它补成
-      // 绝对路径再校验（relpath-brief.md）。补全只做字符串拼接、不 normalize，
-      // `..` 段的检查不受影响，见 resolveAgainstCwd.ts。
-      createReadPdfFigureTool({
-        readTool: (pi as any).createReadToolDefinition(opts.cwd, { autoResizeImages: true }),
-        cwd: opts.cwd,
-      }),
-      createReadDocxTool({ cwd: opts.cwd }),
-      // 同名覆盖 pi 内置的 write / edit：行为不变，写完多报一行字数（见 charCountFileTools.ts）。
-      // pi 的注册表先放内置、再按名字放 customTools，同名的后者胜出。
-      ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd),
-      // 内置浏览器的四个工具（上面造好的**同一份**，见那段注释）。
-      ...browserTools,
-      ...researchTools,
-    ],
+    customTools,
   });
-  return session as AnySession;
+  return trackSettledBranch(session as AnySession);
 }

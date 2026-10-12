@@ -61,7 +61,7 @@ export async function stagedFixture(options: { scrollError?: Error; article?: 'o
   let entryGeneration:string|null=null;
   const stale={initial:options.staleInitial??0,returned:options.staleReturn??0,article:options.staleArticle??0};
   let collections=0, waits=0, discussionCollections=0;
-  const service={
+  const service={researchTabStatus:()=>'available',
     enqueue:async(_id:string,work:()=>Promise<unknown>)=>work(), withAgentDriving:async(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),
     onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:facts,prepareForDomRead:async()=>{},
     evalInPage:async(_id:string,code:string)=>{

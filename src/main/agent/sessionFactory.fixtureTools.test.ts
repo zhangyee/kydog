@@ -37,6 +37,8 @@ const H = vi.hoisted(() => ({
   settings: { ui: { locale: 'zh' }, institution: null as unknown },
 }));
 
+vi.mock('../browser/browserService', () => ({browserService:{}}));
+
 vi.mock('./browserTools', () => ({
   createBrowserTools: () => { H.builtCount += 1; return H.tools; },
 }));
@@ -78,7 +80,7 @@ async function run(file: FixtureFile): Promise<PiEvent[]> {
   await fsp.writeFile(fixturePath, JSON.stringify(file));
   process.env.KYDOG_AGENT_FIXTURE = fixturePath;
   const session = await createSession({
-    cwd: '/x', sessionId: 't1', sessionsDir: '/x/sessions',
+    cwd: dir, sessionId: 't1', sessionsDir: path.join(dir,'sessions'),
     providerId: 'anthropic', modelId: 'claude',
     askShared: noopAskShared,
     currentRunId: () => 'run-1',
@@ -203,4 +205,17 @@ describe('fixture 的 tool 事件真的执行 sessionFactory 交进来的那份�
     await run(script('browser_act', { tabId: 'tab_1' }));
     expect(H.builtCount).toBe(1);
   });
+});
+
+it('fixture executes production SDK write/read/edit and persists the actual result in the current SDK branch',async()=>{
+ const written=await run(script('write',{path:'note.md',content:'initial words'}));
+ expect(endOf(written)?.isError).toBe(false);expect(await fsp.readFile(path.join(dir,'note.md'),'utf8')).toBe('initial words');
+ expect(textOf(endOf(written))).toContain('字数');
+ const read=await run(script('read',{path:'note.md'}));expect(textOf(endOf(read))).toContain('initial words');
+ const edited=await run(script('edit',{path:'note.md',edits:[{oldText:'initial',newText:'revised'}]}));expect(endOf(edited)?.isError).toBe(false);
+ const {SessionManager}=await import('@earendil-works/pi-coding-agent');
+ const sm=SessionManager.open(path.join(dir,'sessions','t1.jsonl'),path.join(dir,'sessions'),dir);
+ const results=sm.getBranch().filter(e=>e.type==='message' && e.message.role==='toolResult');
+ expect(results.map(e=>e.type==='message'&&e.message.role==='toolResult'?e.message.toolName:'')).toEqual(['write','read','edit']);
+ expect(sm.buildSessionContext().messages.some(m=>m.role==='toolResult'&&m.toolName==='read')).toBe(true);
 });

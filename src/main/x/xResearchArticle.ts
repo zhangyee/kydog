@@ -35,7 +35,7 @@ export async function readArticle(
   context: XResearchContext,
 ): Promise<{ returnToParent: boolean }> {
   if (!limits.includeArticle) return { returnToParent: false };
-  const entry = parent.entries.find((e) => e.parentPostId === row.postId);
+  const entry = parent.entries.find((e) => parent.entryParents.get(e) === parent.root);
   const barrier = (reason: string) => {
     row.article.barrier = { status: 'partial', reason, observationId: null };
     row.status = 'partial';

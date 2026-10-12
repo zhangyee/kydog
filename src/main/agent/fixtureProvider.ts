@@ -1,3 +1,4 @@
+import type { SessionManager } from '@earendil-works/pi-coding-agent';
 import { promises as fs } from 'node:fs';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import type { AskLocale } from './askAnswers';
@@ -29,6 +30,7 @@ export type FakeAgentSession = {
   subscribe: (listener: FakeSessionListener) => () => void;
   cleanup: () => Promise<void>;
   state: { messages: unknown[] };
+  sessionManager?: SessionManager;
   model: { input: readonly string[] };
 };
 
@@ -42,6 +44,7 @@ export async function createFixtureSession(
   threadId: string,
   locale: AskLocale,
   tools: readonly FixtureTool[] = [],
+  sessionManager?: SessionManager,
 ): Promise<FakeAgentSession> {
   const raw = await fs.readFile(fixturePath, 'utf8');
   const file = JSON.parse(raw) as FixtureFile;
@@ -59,8 +62,16 @@ export async function createFixtureSession(
   // 而真实 pi 那条路上是停得住的 —— 两条路的语义不许在这里分叉。
   let toolAbort: AbortController | null = null;
 
+  const append = (message: unknown) => sessionManager?.appendMessage(message as Parameters<SessionManager['appendMessage']>[0]);
+  const saveToolCall = (id: string, name: string, args: unknown) => append({
+    ...stubAssistantMessage('toolUse'), content:[{type:'toolCall',id,name,arguments:args}],
+  });
+  const saveToolResult = (id: string, name: string, result: {content:unknown[];details?:unknown}, isError:boolean) => append({
+    role:'toolResult',toolCallId:id,toolName:name,...result,isError,timestamp:Date.now(),
+  });
   return {
-    state: { messages: [] },
+    sessionManager,
+    state: { get messages() { return sessionManager?.buildSessionContext().messages ?? []; } },
     model: { input: file.modelInput ?? ['text', 'image'] },
     subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
     abort() { aborted = true; cancelPendingWait?.(); toolAbort?.abort(); },
@@ -80,6 +91,8 @@ export async function createFixtureSession(
       // 中止只作用于它那一轮。不复位的话，同一个对话里停过一次，之后每一轮的事件都会被
       // 下面的 `aborted` 判断整份吞掉 —— 真实 pi 那条路上没有这回事。
       aborted = false;
+      const appendUser = () => append({role:'user',content:[{type:'text',text:content},...images],timestamp:Date.now()});
+      if(!events.some(event=>event.type==='agent_start')) {emitRaw(listeners,{type:'agent_start'});appendUser();}
       try {
         toolAbort = new AbortController();
         // Accumulate tool chunks so tool_end can embed them in result
@@ -98,7 +111,9 @@ export async function createFixtureSession(
           // 本身也不该再送出去（agent_end 除外——UI 靠它把状态收回 idle）。
           if (aborted && evt.type !== 'agent_end') continue;
 
+          if(evt.type==='agent_start') {emitRaw(listeners,{type:'agent_start'});appendUser();continue;}
           if (evt.type === 'ask') {
+            saveToolCall(evt.toolCallId,ASK_TOOL_NAME,{questions:evt.questions});
             // 走真实的工具：校验、分配 id、注册 broker、挂起等 renderer。
             // 先发 tool_execution_start（AgentService 靠它缓存 args），
             // 再发 tool_execution_end（携带 details），与真实 pi 顺序一致。
@@ -122,6 +137,7 @@ export async function createFixtureSession(
               result = { content: [{ type: 'text', text: String(err) }], details: {} };
               isError = true;
             }
+            saveToolResult(evt.toolCallId,ASK_TOOL_NAME,result,isError);
             emitRaw(listeners, {
               type: 'tool_execution_end',
               toolCallId: evt.toolCallId,
@@ -133,6 +149,7 @@ export async function createFixtureSession(
           }
 
           if (evt.type === 'tool') {
+            saveToolCall(evt.toolCallId,evt.name,evt.args);
             // 走真实的工具，**与上面 ask 那一条一字不差的形态** —— 那一条从来就是真调
             // `askUserQuestionTool.execute`。这里只是把「只认识 ask 一种工具」补齐成
             // 「按名字找 sessionFactory 交进来的任意一个」。
@@ -170,6 +187,7 @@ export async function createFixtureSession(
                 isError = true;
               }
             }
+            saveToolResult(evt.toolCallId,evt.name,result,isError);
             emitRaw(listeners, {
               type: 'tool_execution_end',
               toolCallId: evt.toolCallId,

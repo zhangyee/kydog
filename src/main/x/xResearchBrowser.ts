@@ -19,6 +19,7 @@ export interface XQueuedPage {
   location(): BrowserLocationFacts;
 }
 export interface XResearchBrowser {
+  tabStatus?(tabId: string): 'available' | 'foreign' | 'missing';
   open(url: string, tabId: string | undefined, signal?: AbortSignal): Promise<XOpenResult>;
   withPage<T>(tabId: string, signal: AbortSignal | undefined, work: (page: XQueuedPage) => Promise<T>): Promise<T>;
 }
@@ -30,8 +31,11 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
   const opens = new WeakMap<XOpenResult, {tabId:string; requestedUrl:string; location:BrowserLocationFacts; finalUrl:string|null}>();
   const finalUrl = (nav: NavigationObservation|null) => nav && (nav.outcome.kind==='ok' || nav.outcome.kind==='ok_same_document') ? nav.outcome.finalUrl : null;
   return {
+    tabStatus: tabId => browser.researchTabStatus(tabId, threadId),
     // BrowserService.open owns its one queue entry. Never enqueue around it.
     open: async (url, tabId, signal) => {
+      if(tabId && browser.researchTabStatus(tabId, threadId)==='foreign')
+        throw new KydogError('browser.bad_action','X research tab belongs to another thread');
       const result = await browser.open({ url, tabId, ownerThreadId: threadId, activate: false, signal });
       const destination = finalUrl(result.nav);
       if (destination) {
