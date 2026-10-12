@@ -115,6 +115,13 @@ describe('X page trusted boundary', () => {
     expect(JSON.stringify(result)).not.toContain('snapshot');
     expect(result.location.current.redacted).toBe(true);
   });
+  it('counts only the bounded collected items, never a whole-page total', () => {
+    const f=fixture(wrap(post()));
+    expect(decode(f).scope.collectedItemCount).toBe(1);
+    f.document.querySelector('[data-testid="tweet"]')!.remove();
+    expect(decode(f).scope.collectedItemCount).toBe(0);
+    expect(decode(f).scope.completeness).toBe('unknown');
+  });
   it('rejects malformed DOM result rather than fabricating empty success', () => {
     const f=fixture();
     expect(decode(f).root!.postId).toBe('123');

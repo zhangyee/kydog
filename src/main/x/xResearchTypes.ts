@@ -1,3 +1,4 @@
+import type { NavigationObservation } from '../../shared/types';
 /** v2 observations describe rendered UI facts, never platform-wide completeness. */
 export type XResearchStatus = 'observed' | 'partial' | 'explicit_empty' | 'auth_required' | 'action_required' | 'rate_limited' | 'access_denied' | 'unavailable' | 'cancelled' | 'failed';
 export type XStopReason = 'explicit_ui_end' | 'budget_reached' | 'action_failed' | 'navigation_failed' | 'identity_unproven' | 'wait_timeout' | 'access_barrier' | 'cancelled' | 'agent_stopped';
@@ -93,6 +94,8 @@ export interface XBudgetUsage {
   outputBytes: number;
 }
 export interface XLocationFacts {
+  /** Actual open() receipt, null when no navigation result was returned. */
+  committedNavigationOutcome: NavigationObservation['outcome']['kind'] | null;
   requested: XSafeLocation;
   committed: XSafeLocation | null;
   subsequent: XSafeLocation | null;
@@ -100,8 +103,24 @@ export interface XLocationFacts {
   documentGeneration: string | null;
   navigationEvent: string | null;
 }
+export interface XObservedSource {
+  urlKind: 'permalink' | 'document'; sourceUrl: string; observationId: string;
+  rootObservationId: string | null; observedAt: string; containerKind: XTextObservation['containerKind'];
+  runId: string; callId: string; batchId: string;
+  queryId: string | null; query: string | null; purpose: string | null; product: 'Top' | 'Latest' | null;
+}
+export interface XCollectionLocation {
+  location: XSafeLocation; documentEpoch: number; routeRevision: number; navigationSequence: number;
+  navigationEvent: string | null;
+}
+export interface XCollectionTransition {
+  stage: 'search' | 'post' | 'article'; before: XCollectionLocation; after: XCollectionLocation;
+  relation: XLocationRelation; rereadRequested: boolean;
+  outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';
+}
 export interface XSearchObservation {
   query: XSearchQuery;
+  collectionTransitions: XCollectionTransition[];
   status: XResearchStatus;
   posts: XTextObservation[];
   stopReason: XStopReason;
@@ -111,9 +130,15 @@ export interface XSearchObservation {
 }
 export interface XReadObservation {
   target: XReadTarget;
+  collectionTransitions: XCollectionTransition[];
+  documentSource: XObservedSource | null;
+  inputKind: 'url' | 'postId';
+  inputUrlRedacted: boolean;
   postId: string | null;
   inputUrl: string | null;
   sourceUrl: string | null;
+  /** Exact alias used only by bounded output; root retains the literal source URL. */
+  sourceUrlReference?: 'root.sourceUrl';
   status: XResearchStatus;
   reason: string | null;
   root: XTextObservation | null;
@@ -127,6 +152,8 @@ export interface XReadObservation {
 }
 interface XResultBase {
   schemaVersion: 2;
+  contentProjection?: 'x_research_projection_v1';
+  metadataOmissions?: string[];
   sourceKind: 'rendered_ui';
   callId: string;
   batchId: string;

@@ -22,11 +22,14 @@ export interface XPageObservation {
   article: { title: string; body: XTextObservation; blocks: string[]; links: {url: string | null; text: string; redacted: boolean}[] } | null;
   entries: XArticleEntry[]; controls: XPageControl[];
   state: {kind: 'auth_required' | 'explicit_empty'; text: string; observationId: string} | null;
-  scope: { regionObserved: boolean; selectedProduct: string | null; replyParent: null; completeness: 'unknown' };
+  /** Count of this bounded extractor's items, including quotes/fragments; never a page total. */
+  scope: { collectedItemCount: number; regionObserved: boolean; selectedProduct: string | null; replyParent: null; completeness: 'unknown' };
   truncation: XTruncation; controlTruncation: XTruncation;
   /** Trusted main-process only; non-enumerable, never serialize or persist. */
   readonly snapshot: AxSnapshot;
 }
+export const X_DOM_MAX_STRING_UNITS = 8192;
+export const X_DOM_MAX_QUERY_UNITS = 4096;
 interface RawPost {scope:'post'|'quote';postId:string|null;permalink:string|null;author:XAuthorIdentity|null;text:string;truncation:XTruncation}
 interface RawControl {kind:XPageControl['kind'];postId:string|null;nodeId:number;index:number}
 interface RawEntry {parentPostId:string;parentUrl:string;targetUrl:string|null;label:string;nodeId:number;index:number}
@@ -39,7 +42,7 @@ interface RawPage {
 }
 function invalid(): never { throw new KydogError('x.invalid_page', 'Invalid X page observation'); }
 const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const str = (v: unknown, max = 8192): v is string => typeof v === 'string' && v.length <= max;
+const str = (v: unknown, max = X_DOM_MAX_STRING_UNITS): v is string => typeof v === 'string' && v.length <= max;
 const nullable = (v: unknown): v is string | null => v === null || str(v);
 const integer = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 const list = (v: unknown, max: number): v is unknown[] => Array.isArray(v) && v.length <= max;
@@ -89,7 +92,7 @@ function safeLink(raw: string): {url:string|null;redacted:boolean} {
 function validRequest(request: XPageRequest): void {
   if (!obj(request) || !str(request.expectedUrl)) invalid();
   if (request.stage==='search') {
-    if (!str(request.query,4096) || !['Top','Latest'].includes(request.product)) invalid();
+    if (!str(request.query,X_DOM_MAX_QUERY_UNITS) || !['Top','Latest'].includes(request.product)) invalid();
     const expected=toSafeXLocation(request.expectedUrl);
     if (!expected.origin || expected.path!=='/search' || expected.q!==request.query || expected.f!==(request.product==='Latest'?'live':'top')) invalid();
   }
@@ -150,7 +153,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     article={title:a.title,blocks:a.blocks,links:a.links.map(l=>({...safeLink(l.url),text:l.text})),body:{observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:articleSource.url,author:a.author,text,observedAt,containerKind:'article',postId:articleSource.id,truncation:{returned:text.length,totalKnown:a.truncated?null:text.length,truncated:a.truncated}}};
   }
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
-  const result = {stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,scope:{regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  const result = {stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});
   return result;
 }
