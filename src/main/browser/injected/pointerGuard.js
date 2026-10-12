@@ -10,6 +10,22 @@
   };
   if (req.op === 'dispose') { discard(); return { ok: true }; }
   const reject = (reason) => ({ ok: false, reason });
+  // Retain the already rejected hit, without a second hit test or a new point.
+  // Diagnostics cannot change the verdict, even if a geometry read fails.
+  const intercepted = (el, hit, point, captured) => {
+    const result = reject('intercepted');
+    try {
+      const rect = el.getBoundingClientRect();
+      result.pointerFailure = {
+        point: { x: point.x, y: point.y }, targetTag: el.tagName, hitTag: hit ? hit.tagName : null,
+        targetConnected: el.isConnected, targetContainsHit: false,
+        hitSameAsCaptured: captured === undefined ? null : hit === captured,
+        rejectGeometry: { targetRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          scroll: { x: window.scrollX, y: window.scrollY }, viewport: { width: window.innerWidth, height: window.innerHeight } },
+      };
+    } catch { /* Original refusal remains authoritative. */ }
+    return result;
+  };
   if (Date.now() > req.notAfter) { discard(); return reject('expired'); }
   const world = window.__kydogWorld;
   const hitAt = (x, y) => {
@@ -111,7 +127,7 @@
         if (world.ids.get(node) === req.target.nodeId) { el = node; break; }
     }
     if (!el || !el.isConnected) return reject('stale_node');
-    if (!contains(el, hit)) return reject('intercepted');
+    if (!contains(el, hit)) return intercepted(el, hit, { x: req.x, y: req.y });
     if (!usable(el)) return reject('pointer_target_changed');
     const permission=req.target.collectedPermission;
     const original=collected(permission);
@@ -135,7 +151,7 @@
     || meaning.labels.some((value, i) => value.node !== entry.semantics.labels[i].node || value.state !== entry.semantics.labels[i].state))
     return reject('pointer_target_changed');
   const hit = hitAt(entry.point.x, entry.point.y);
-  if (!contains(entry.el, hit)) return reject('intercepted');
+  if (!contains(entry.el, hit)) return intercepted(entry.el, hit, entry.point, entry.hit);
   const intent = hitSources(hit);
   if (hit !== entry.hit || intent.length !== entry.hitSources.length
     || intent.some((value, i) => value.node !== entry.hitSources[i].node || value.state !== entry.hitSources[i].state))

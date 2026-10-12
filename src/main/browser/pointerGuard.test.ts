@@ -163,3 +163,43 @@ it('collection namespaces revoke only their owner and keep unrelated native bind
     expect(f.run('validate')).toEqual({ok:true});
   }finally{f.dom.window.close();}
 });
+
+
+it('interception retains the exact rejected hit and point without a second hit test or raw page strings', () => {
+  const f = fixture();
+  try {
+    expect(f.run('capture')).toEqual({ ok: true });
+    expect(f.run('validate')).toEqual({ ok: true });
+    const cover = f.window.document.createElement('aside');
+    cover.textContent = 'private text'; cover.id = 'secret-id';
+    f.window.document.body.append(cover);
+    let calls = 0;
+    Object.assign(f.window.document, { elementFromPoint: () => { calls++; return cover; } });
+    Object.assign(f.el, { getBoundingClientRect: () => ({ x: 11, y: 12, width: 71, height: 93 }) });
+    const rejected = f.run('validate');
+    expect(rejected).toEqual({ ok: false, reason: 'intercepted', pointerFailure: {
+      point: { x: 30, y: 40 }, targetTag: 'BUTTON', hitTag: 'ASIDE',
+      targetConnected: true, targetContainsHit: false, hitSameAsCaptured: false,
+      rejectGeometry: { targetRect: { x: 11, y: 12, width: 71, height: 93 },
+        scroll: { x: 0, y: 0 }, viewport: { width: 1024, height: 768 } },
+    } });
+    expect(calls).toBe(1);
+    expect(f.run('dispose')).toEqual({ ok: true });
+  } finally { f.window.close(); }
+});
+
+
+it('selector capture and a null validate hit retain source facts; a failed diagnostic read preserves refusal', () => {
+  const f = fixture();
+  try {
+    expect(f.run('capture', { target: { selector: '#target' } })).toEqual({ ok: true });
+    expect(f.run('validate')).toEqual({ ok: true });
+    f.setHit(null);
+    expect(f.run('validate')).toMatchObject({ ok: false, reason: 'intercepted',
+      pointerFailure: { point: { x: 30, y: 40 }, hitTag: null, hitSameAsCaptured: false } });
+    expect(f.run('capture', { target: { selector: '#target' } })).toMatchObject({ ok: false, reason: 'intercepted',
+      pointerFailure: { point: { x: 30, y: 40 }, hitTag: null, hitSameAsCaptured: null } });
+    f.el.getBoundingClientRect = () => { throw new Error('diagnostic read failed'); };
+    expect(f.run('validate')).toEqual({ ok: false, reason: 'intercepted' });
+  } finally { f.window.close(); }
+});

@@ -1,4 +1,6 @@
 import { KydogError } from '../../shared/errors';
+import { pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
+import { logger } from '../log';
 import type { XQueuedPage } from './xResearchBrowser';
 import type { XPageObservation } from './xPageSource';
 import {
@@ -161,6 +163,13 @@ export async function readArticle(
     row.budgetUsage.distinctEntries++;
     return { returnToParent: true };
   } catch (error) {
+    const diagnostic = pointerFailureDiagnostic(error);
+    if (diagnostic && diagnostic.snapshotId === entry.binding.snapshotId
+      && diagnostic.generation === entry.binding.generation && diagnostic.nodeId === entry.binding.nodeId) {
+      logger.warn('xResearch', 'Article pointer interception', {
+        runId: context.runId, callId: context.callId, batchId: context.batchId, diagnostic,
+      });
+    }
     const problem = failure(error, stage.current);
     row.article.barrier = {
       status: problem.status === 'cancelled' ? 'cancelled' : 'partial',

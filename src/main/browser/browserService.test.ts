@@ -4456,3 +4456,36 @@ it('research recovery reads actual registry presence and ownership without expos
  svc.close(own.nav.tabId);expect(svc.researchTabStatus(own.nav.tabId,'thread-a')).toBe('missing');
  svc.disposeAll();
 });
+
+
+it.each(['measure', 'pointer_validate'] as const)('retains private %s interception provenance while refusing native input', async stage => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const snapshot: AxSnapshot = {
+    snapshotId: 'snapshot-diagnostic', generation: 'generation-diagnostic', url: wc.url, title: 'private title', iframes: 0,
+    collection: { truncated: false, returned: 1, totalKnown: 1 },
+    nodes: [{ index: 4, nodeId: 17, role: 'link', name: 'private label', x: 11, y: 12, w: 71, h: 93 }],
+  };
+  const action = { kind: 'click', index: 4, snapshotId: snapshot.snapshotId } as const;
+  wc.isolatedImpl = async () => ({ ok: true, x: 31, y: 47, label: 'private label' });
+  let frames = 0;
+  wc.captureImpl = async () => { frames++; return { isEmpty: () => false }; };
+  await svc.dispatch(nav.tabId, action, snapshot, { strictSnapshot: true });
+  expect(inputCmds(wc).map(c => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+  wc.debugger.sent.length = 0; frames = 0;
+  const pointerFailure = {
+    point: { x: 31, y: 47 }, targetTag: 'DIV', hitTag: 'ASIDE', targetConnected: true,
+    targetContainsHit: false, hitSameAsCaptured: false,
+    rejectGeometry: { targetRect: { x: 11, y: 12, width: 71, height: 93 }, scroll: { x: 2, y: 524 }, viewport: { width: 1280, height: 800 } },
+  };
+  if (stage === 'measure') wc.isolatedImpl = async () => ({ ok: false, reason: 'intercepted', x: 31, y: 47, by: 'private-class' });
+  else wc.pointerImpl = async code => code.includes('"op":"validate"')
+    ? { ok: false, reason: 'intercepted', pointerFailure } : { ok: true };
+  const failure = await svc.dispatch(nav.tabId, action, snapshot, { strictSnapshot: true }).catch(error => error);
+  expect(failure).toMatchObject({ code: 'browser.click_intercepted', diagnostic: {
+    stage, reason: 'intercepted', tabId: nav.tabId, snapshotId: 'snapshot-diagnostic', generation: 'generation-diagnostic', nodeId: 17,
+    point: { x: 31, y: 47 }, nativeFrameObserved: stage === 'pointer_validate',
+    rejection: stage === 'measure' ? null : pointerFailure,
+  } });
+  expect(frames).toBe(stage === 'measure' ? 0 : 1);
+  expect(inputCmds(wc)).toEqual([]);
+});

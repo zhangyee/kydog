@@ -16,7 +16,7 @@ interface Harness {
   visible(): Promise<void>;
   hidden(): Promise<void>;
   act(action: DispatchAction): Promise<unknown>;
-  faults(mode: string): Promise<{ before: State; after: State; error: string | null }>;
+  faults(mode: string): Promise<{ before: State; after: State; error: string | null; diagnostic: import('../src/main/browser/pointerDiagnostic').PointerFailureDiagnostic | null }>;
   bindings(): Promise<{ before: { documentEpoch: number; routeRevision: number }; after: { documentEpoch: number; routeRevision: number }; error: string | null }>;
   lease(): Promise<{ control: string[]; error: string | null; beforeRelease: string[]; beforeCleanup: string[]; sequence: string[]; before: State; after: State }>;
   stop(): void;
@@ -80,7 +80,7 @@ test.describe('X browser port native safety (offline)', () => {
     expect(hidden.focused).toBe(true);
   });
   test('each successful native control precedes blocked cover/replacement/cancel/password/semantic/form-owner input', async () => {
-    for (const mode of ['cover', 'replace', 'cancel', 'password', 'semantic', 'form-owner']) {
+    for (const mode of ['cover', 'cover-before', 'replace', 'cancel', 'password', 'semantic', 'form-owner']) {
       const prior = await control(h => h.read());
       await control(async (h, value) => {
         await h.act(value === 'password' ? { kind: 'type', selector: '#query', text: 'safe control' } : { kind: 'click', selector: '#open' });
@@ -91,7 +91,20 @@ test.describe('X browser port native safety (offline)', () => {
         expect(positive.page.value, mode).toBe('safe control');
       } else expect(positive.page.trustedClicks, mode).toBe(prior.page.trustedClicks + 1);
       const result = await control((h, value) => h.faults(value), mode);
-      expect(result.error, mode).toBe(mode === 'cancel' ? 'browser.cancelled' : mode === 'password' ? 'browser.password_field' : mode === 'cover' ? 'browser.click_intercepted' : mode === 'replace' ? 'browser.stale_index' : 'browser.target_unusable');
+      expect(result.error, mode).toBe(mode === 'cancel' ? 'browser.cancelled' : mode === 'password' ? 'browser.password_field' : mode.startsWith('cover') ? 'browser.click_intercepted' : mode === 'replace' ? 'browser.stale_index' : 'browser.target_unusable');
+      if (mode.startsWith('cover')) {
+        expect(result.diagnostic, mode).toMatchObject({ stage: mode === 'cover' ? 'pointer_validate' : 'measure',
+          reason: 'intercepted', tabId: result.after.targetTabId, snapshotId: expect.any(String), generation: expect.any(String), nodeId: null,
+          nativeFrameObserved: mode === 'cover', point: { x: expect.any(Number), y: expect.any(Number) },
+        });
+        if (mode === 'cover') {
+          expect(result.diagnostic!.rejection).toMatchObject({ point: result.diagnostic!.point,
+            targetTag: 'BUTTON', hitTag: 'DIV', targetContainsHit: false, hitSameAsCaptured: false, targetConnected: true,
+            rejectGeometry: { targetRect: { width: expect.any(Number), height: expect.any(Number) },
+              viewport: { width: 1280, height: expect.any(Number) } },
+          });
+        } else expect(result.diagnostic!.rejection).toBe(null);
+      }
       expect(result.after.native, mode).toBe(result.before.native);
       expect(result.after.page, mode).toEqual(result.before.page);
       expect(result.after.activeTabId, mode).toBe(result.after.userTabId);

@@ -4,6 +4,7 @@ import {
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
+import { retainPointerFailure, type PointerFailureStage } from './pointerDiagnostic';
 import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
@@ -2249,6 +2250,11 @@ export class BrowserService {
     // spec §4.2 的三件事：滚进视野 → 重新量 → 命中检查。缺一件都是「打偏了还不报错」。
     const pointer: PointerBinding | undefined = action.kind === 'click' || action.kind === 'type'
       ? { token: randomUUID(), kind: action.kind, expiresAt: Date.now() + PAGE_EVAL_TIMEOUT_MS * 2 } : undefined;
+    const pointerError = (stage: PointerFailureStage, result: InteractResult, point?: { x: number; y: number }) =>
+      retainPointerFailure(BrowserService.interactError(result, action), {
+        tabId, snapshotId: targetSnapshot?.snapshotId ?? null, generation: targetSnapshot?.generation ?? null,
+        nodeId: 'nodeId' in target ? target.nodeId : null,
+      }, stage, result, point);
     try {
       let m = await this.interact(tabId, wc, { op: 'measure', target }, pointer);
       // 新快照与 measure 之间页面仍可能恰好再重建一次。只对页面明确回报的三种
@@ -2262,7 +2268,7 @@ export class BrowserService {
         m = await this.interact(tabId, wc, { op: 'measure', target }, pointer);
       }
       check();
-      if (!m.ok) throw BrowserService.interactError(m, action);
+      if (!m.ok) throw pointerError('measure', m);
       // 第二道密码闸：selector 定位时快照那层看不出来，这里拿到的是活元素。
       if (action.kind === 'type' && m.isPassword === true) {
         throw BrowserService.interactError({ ok: false, reason: 'password' }, action);
@@ -2304,13 +2310,13 @@ export class BrowserService {
       }
 
       if (pointer) {
-        if (m.pointerGuard?.ok !== true) throw BrowserService.interactError(m.pointerGuard ?? { ok: false, reason: 'stale_node' }, action);
+        if (m.pointerGuard?.ok !== true) throw pointerError('pointer_capture', m.pointerGuard ?? { ok: false, reason: 'stale_node' }, { x, y });
         await this.awaitNativeFrame(tabId, wc, options?.signal);
         check();
         assertMapping();
         const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate', pointer, notAfter)) as InteractResult;
         check();
-        if (!valid?.ok) throw BrowserService.interactError(valid ?? { ok: false, reason: 'stale_node' }, action);
+        if (!valid?.ok) throw pointerError('pointer_validate', valid ?? { ok: false, reason: 'stale_node' }, { x, y });
       }
       // 活目标本身给出的默认导航意图，必须在鼠标派发前记到本次 tracker。Electron 的
       // will/did-start 与 CDP Page 事件都可能晚于 Input ACK；拿事件到达速度作判据会让

@@ -9,6 +9,7 @@ import { readX } from '../../../src/main/x/xResearchRead';
 import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
 import { BrowserService } from '../../../src/main/browser/browserService';
+import { pointerFailureDiagnostic, type PointerFailureDiagnostic } from '../../../src/main/browser/pointerDiagnostic';
 import { createXResearchBrowser } from '../../../src/main/x/xResearchBrowser';
 import { BROWSER_PARTITION } from '../../../src/main/browser/partition';
 import type { DispatchAction } from '../../../src/main/browser/actions';
@@ -238,7 +239,7 @@ void app.whenReady().then(async () => {
     visible: async () => { browser.activate(target.tabId); layout(true); },
     hidden: async () => { browser.activate(user.tabId); layout(false); },
     act,
-    faults: async (mode: 'cover' | 'replace' | 'cancel' | 'password' | 'form-owner' | 'semantic') => {
+    faults: async (mode: 'cover-before' | 'cover' | 'replace' | 'cancel' | 'password' | 'form-owner' | 'semantic') => {
       await wc.executeJavaScript("document.querySelector('#cover')?.remove();document.querySelector('#open').removeAttribute('aria-label');document.querySelector('#open').removeAttribute('form')");
       const before = await read(), abort = new AbortController();
       const original = wc.capturePage.bind(wc);
@@ -251,14 +252,18 @@ void app.whenReady().then(async () => {
         if (mode === 'cancel') abort.abort();
         return image;
       };
-      let error: string | null = null;
+      let error: string | null = null, diagnostic: Readonly<PointerFailureDiagnostic> | null = null;
+      if (mode === 'cover-before') await wc.executeJavaScript("document.body.insertAdjacentHTML('beforeend','<div id=cover>Covered</div>')");
       try {
         await act(mode === 'password' ? { kind: 'type', selector: '#password', text: 'blocked' } : { kind: 'click', selector: '#open' }, abort.signal);
-      } catch (cause) { error = (cause as { code?: string }).code ?? String(cause); }
+      } catch (cause) {
+        error = (cause as { code?: string }).code ?? String(cause);
+        diagnostic = pointerFailureDiagnostic(cause) ?? null;
+      }
       finally { wc.capturePage = original; }
       const after = await read();
       await wc.executeJavaScript("document.querySelector('#cover')?.remove();document.querySelector('#open').removeAttribute('aria-label');document.querySelector('#open').removeAttribute('form');document.querySelector('#other')?.remove()");
-      return { before, after, error };
+      return { before, after, error, diagnostic };
     },
     lease: async () => {
       const sequence: string[] = [];
