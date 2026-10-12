@@ -99,6 +99,7 @@ const H = vi.hoisted(() => {
       length: () => this.historyEntries.length,
       getEntryAtIndex: (i: number) => ({ url: this.historyEntries[i], title: '' }),
     };
+    pointerImpl: (code: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
     captureImpl: () => Promise<{ isEmpty(): boolean }> = () => Promise.resolve({ isEmpty: () => false });
     capturePage(): Promise<{ isEmpty(): boolean }> { return this.captureImpl(); }
     isDestroyed(): boolean { return this.destroyed; }
@@ -122,7 +123,7 @@ const H = vi.hoisted(() => {
       const code = scripts[0].code;
       // These tests substitute Chromium; pointer guard behavior is separately
       // tested against real retained DOM references in pointerGuard.test.ts.
-      if (code.includes('kydog.pointerGuard') && !code.includes('const measured =')) return Promise.resolve({ ok: true });
+      if (code.includes('kydog.pointerGuard') && !code.includes('const measured =')) return this.pointerImpl(code);
       return this.isolatedImpl(code).then(value => {
         if (code.includes('const measured =') && value && typeof value === 'object') return { ...value, pointerGuard: { ok: true } };
         return value;
@@ -4367,4 +4368,21 @@ it('fixed DOM read preparation uses focus/viewport ACKs without requiring a surf
   await started; abort.abort(); release(); await rejected;
   expect(frames).toBe(0);
   expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
+});
+
+
+it.each(['focus', 'selection'] as const)('last typing permission rejects changed %s before insertText after same-case selected success', async change => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  wc.isolatedImpl = async code => code.includes('"op":"focusSelect"')
+    ? { ok: true, focused: true, selected: true, emptyBefore: false }
+    : code.includes('"op":"readValue"') ? { ok: true, value: 'replacement' }
+    : { ok: true, x: 10, y: 20, editable: true, label: 'query' };
+  const action = { kind: 'type', selector: '#query', text: 'replacement' } as const;
+  await svc.dispatch(nav.tabId, action, null);
+  expect(wc.debugger.sent.filter(command => command.method === 'Input.insertText').map(command => command.params.text)).toEqual(['replacement']);
+  wc.debugger.sent.length = 0;
+  wc.pointerImpl = async code => code.includes('"op":"validate_typing"')
+    ? { ok: false, reason: 'typing_destination_changed', change } : { ok: true };
+  await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.target_unusable' });
+  expect(wc.debugger.sent.filter(command => command.method === 'Input.insertText')).toEqual([]);
 });

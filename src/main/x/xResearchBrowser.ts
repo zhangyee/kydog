@@ -39,8 +39,12 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) abort();
       const check = () => { if (failure) throw failure; if (lifetime.signal.aborted) throw new KydogError('browser.cancelled', '这次浏览器操作已结束'); };
+      const issued = new Set<Promise<unknown>>();
       const run = async <T>(fn: () => Promise<T>): Promise<T> => {
-        check(); const value = await Promise.race([fn(), stopped]); check(); return value;
+        check();
+        const operation = fn(); issued.add(operation);
+        void operation.then(() => issued.delete(operation), () => issued.delete(operation));
+        const value = await Promise.race([operation, stopped]); check(); return value;
       };
       const bindings = new Map<AxSnapshot, BrowserLocationFacts>();
       const page: XQueuedPage = {
@@ -67,7 +71,14 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       try {
         const queued = browser.enqueue(tabId, async () => {
           check(); browser.locationFacts(tabId);
-          return browser.withAgentDriving(tabId, threadId, () => work(page), 'X 研究');
+          return browser.withAgentDriving(tabId, threadId, async () => {
+            try { return await Promise.race([Promise.resolve().then(() => work(page)), stopped]); }
+            finally {
+              // Caller cancellation can win immediately; actual queue/driving
+              // ownership lasts until issued native releases and cleanup settle.
+              while (issued.size) await Promise.allSettled([...issued]);
+            }
+          }, 'X 研究');
         });
         return await Promise.race([queued, stopped]);
       }

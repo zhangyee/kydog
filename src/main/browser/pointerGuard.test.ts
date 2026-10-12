@@ -87,3 +87,58 @@ describe('measured pointer permission sources', () => {
     } finally { f.dom.window.close(); }
   });
 });
+
+
+it.each(['focus', 'collapsed', 'partial'] as const)('typing guard requires the same selected destination at the last boundary: %s', change => {
+  const dom = new JSDOM('<input id="target" value="original"><input id="other" value="other value">', { url: 'https://example.org/', runScripts: 'outside-only' });
+  const { window } = dom, el = window.document.querySelector('#target') as HTMLInputElement;
+  Object.assign(window.document, { elementFromPoint: () => el });
+  Object.assign(window, { __kydogWorld: { gen: 'doc', ids: new WeakMap([[el, 7]]), pw: new WeakSet() } });
+  const run = (op: string) => window.eval(`(${SOURCE})(${JSON.stringify({ op, kind: 'type', token: 'typing', target: { nodeId: 7 }, x: 10, y: 10, expiresAt: Date.now() + 3000, notAfter: Date.now() + 3000 })})`);
+  try {
+    expect(run('capture')).toEqual({ ok: true }); el.focus(); el.select();
+    expect(run('validate_typing')).toEqual({ ok: true });
+    if (change === 'focus') (window.document.querySelector('#other') as HTMLInputElement).focus();
+    if (change === 'collapsed') el.setSelectionRange(3, 3);
+    if (change === 'partial') el.setSelectionRange(0, 3);
+    expect(run('validate_typing')).toMatchObject({ ok: false, reason: 'typing_destination_changed' });
+  } finally { window.close(); }
+});
+
+
+it.each(['email', 'number'] as const)('nonempty %s with unavailable selection offsets is unproven rather than assumed selected', type => {
+  const dom = new JSDOM('<input id="target" value="original">', { url: 'https://example.org/', runScripts: 'outside-only' });
+  const { window } = dom, el = window.document.querySelector('#target') as HTMLInputElement;
+  Object.assign(window.document, { elementFromPoint: () => el });
+  Object.assign(window, { __kydogWorld: { gen: 'doc', ids: new WeakMap([[el, 7]]), pw: new WeakSet() } });
+  const run = (op: string) => window.eval(`(${SOURCE})(${JSON.stringify({ op, kind: 'type', token: 'typing', target: { nodeId: 7 }, x: 10, y: 10, expiresAt: Date.now() + 3000, notAfter: Date.now() + 3000 })})`);
+  try {
+    expect(run('capture')).toEqual({ ok: true }); el.focus(); el.select();
+    expect(run('validate_typing')).toEqual({ ok: true });
+    el.type = type; el.value = type === 'number' ? '1234' : 'old@example.org';
+    expect(el.value).toBe(type === 'number' ? '1234' : 'old@example.org');
+    expect(run('capture')).toEqual({ ok: true }); el.focus(); el.select();
+    expect(el.selectionStart).toBe(null);
+    expect(run('validate_typing')).toMatchObject({ ok: false, reason: 'typing_selection_unproven' });
+    el.value = '';
+    expect(run('validate_typing')).toEqual({ ok: true });
+  } finally { window.close(); }
+});
+
+it('contenteditable typing requires the actual full target Range after a same-case successful selection', () => {
+  const dom = new JSDOM('<div id="target" tabindex="0" contenteditable="true">rich <b>text</b></div>', { url: 'https://example.org/', runScripts: 'outside-only' });
+  const { window } = dom, el = window.document.querySelector('#target') as HTMLElement;
+  Object.defineProperty(el, 'isContentEditable', { value: true });
+  Object.assign(window.document, { elementFromPoint: () => el });
+  Object.assign(window, { __kydogWorld: { gen: 'doc', ids: new WeakMap([[el, 7]]), pw: new WeakSet() } });
+  const run = (op: string) => window.eval(`(${SOURCE})(${JSON.stringify({ op, kind: 'type', token: 'typing', target: { nodeId: 7 }, x: 10, y: 10, expiresAt: Date.now() + 3000, notAfter: Date.now() + 3000 })})`);
+  try {
+    expect(run('capture')).toEqual({ ok: true }); el.focus();
+    const selection = window.getSelection()!, full = window.document.createRange(); full.selectNodeContents(el);
+    selection.removeAllRanges(); selection.addRange(full);
+    expect(run('validate_typing')).toEqual({ ok: true });
+    const partial = window.document.createRange(); partial.selectNodeContents(el.querySelector('b')!);
+    selection.removeAllRanges(); selection.addRange(partial);
+    expect(run('validate_typing')).toMatchObject({ ok: false, reason: 'typing_destination_changed' });
+  } finally { window.close(); }
+});

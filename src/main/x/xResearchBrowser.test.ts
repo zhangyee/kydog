@@ -101,3 +101,35 @@ it.each(['cancel', 'destroy', 'crash'] as const)('queued %s rejects before the p
   await f.enqueue('tab', async () => {});
   expect(f.count().injections).toBe(1);
 });
+
+
+it('caller cancellation is prompt but the queue lease covers deferred native release and cleanup', async () => {
+  const f = fixture(), port = createXResearchBrowser(f.browser, 'thread');
+  const order: string[] = [];
+  await port.withPage('tab', undefined, async () => { order.push('control entered'); });
+  expect(order).toEqual(['control entered']); order.length = 0;
+  let pressed!: () => void, releasePress!: () => void, cleanupStarted!: () => void, releaseCleanup!: () => void;
+  const started = new Promise<void>(r => { pressed = r; });
+  const cleaned = new Promise<void>(r => { cleanupStarted = r; });
+  f.browser.dispatchAndObserveNavigation = async () => {
+    order.push('press in flight'); pressed();
+    await new Promise<void>(r => { releasePress = r; });
+    order.push('native release'); cleanupStarted();
+    await new Promise<void>(r => { releaseCleanup = r; });
+    order.push('cleanup settled');
+    return { line: 'clicked', navigation: null };
+  };
+  const abort = new AbortController();
+  const old = port.withPage('tab', abort.signal, async page => { const snap = await page.snapshot(); return page.act({ kind: 'click', selector: '#target' }, snap); });
+  const rejected = expect(old).rejects.toMatchObject({ code: 'browser.cancelled' });
+  await started; abort.abort(); await rejected; order.push('caller cancelled');
+  const next = port.withPage('tab', undefined, async () => { order.push('next entered'); });
+  // Drain runnable promise continuations, never advance a deadline or infer from elapsed time.
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+  expect(order).toEqual(['press in flight', 'caller cancelled']);
+  releasePress(); await cleaned;
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+  expect(order).toEqual(['press in flight', 'caller cancelled', 'native release']);
+  releaseCleanup(); await next;
+  expect(order).toEqual(['press in flight', 'caller cancelled', 'native release', 'cleanup settled', 'next entered']);
+});

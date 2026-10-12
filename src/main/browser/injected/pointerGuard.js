@@ -75,7 +75,7 @@
     if (!usable(el)) return reject('pointer_target_changed');
     discard();
     const registry = globalThis[key] || (globalThis[key] = new Map());
-    registry.set(req.token, { el, formOwner: el.form, generation: world && world.gen, url: location.href,
+    registry.set(req.token, { el, kind: req.kind, formOwner: el.form, generation: world && world.gen, url: location.href,
       point: { x: req.x, y: req.y }, hit, hitSources: hitSources(hit), sources: sources(el), semantics: semantics(el), expiresAt: req.expiresAt,
       timer: setTimeout(discard, Math.max(0, req.expiresAt - Date.now())) });
     return { ok: true };
@@ -96,5 +96,30 @@
   if (hit !== entry.hit || intent.length !== entry.hitSources.length
     || intent.some((value, i) => value.node !== entry.hitSources[i].node || value.state !== entry.hitSources[i].state))
     return reject('pointer_target_changed');
+  if (req.op === 'validate_typing') {
+    if (entry.kind !== 'type' || req.kind !== 'type') return reject('typing_destination_changed');
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    if (active !== entry.el || entry.el.readOnly === true) return reject('typing_destination_changed');
+    if (typeof entry.el.value === 'string') {
+      const len = entry.el.value.length;
+      if (len !== 0) {
+        // Null selection APIs are unknown. Never turn null or matching text
+        // length elsewhere in the document into proof of this control's range.
+        if (typeof entry.el.selectionStart !== 'number' || typeof entry.el.selectionEnd !== 'number')
+          return reject('typing_selection_unproven');
+        if (entry.el.selectionStart !== 0 || entry.el.selectionEnd !== len) return reject('typing_destination_changed');
+      }
+    } else if (entry.el.isContentEditable === true) {
+      if (entry.el.childNodes.length !== 0) {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return reject('typing_destination_changed');
+        const range = selection.getRangeAt(0);
+        if (range.startContainer !== entry.el || range.startOffset !== 0
+          || range.endContainer !== entry.el || range.endOffset !== entry.el.childNodes.length)
+          return reject('typing_destination_changed');
+      }
+    } else return reject('typing_destination_changed');
+  }
   return { ok: true };
 }

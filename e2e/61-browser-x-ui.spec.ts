@@ -5,14 +5,17 @@ import os from 'node:os';
 import { build } from 'vite';
 import type { DispatchAction } from '../src/main/browser/actions';
 
-interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
+interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
 interface Harness {
   read(): Promise<State>;
+  neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
+  typingBoundary(mode: string): Promise<{ before: State; after: State; error: string | null; destination: { query: string; other: string; active: string } }>;
   visible(): Promise<void>;
   hidden(): Promise<void>;
   act(action: DispatchAction): Promise<unknown>;
   faults(mode: string): Promise<{ before: State; after: State; error: string | null }>;
   bindings(): Promise<{ before: { documentEpoch: number; routeRevision: number }; after: { documentEpoch: number; routeRevision: number }; error: string | null }>;
+  lease(): Promise<{ control: string[]; error: string | null; beforeRelease: string[]; beforeCleanup: string[]; sequence: string[]; before: State; after: State }>;
   stop(): void;
 }
 
@@ -40,6 +43,18 @@ test.describe('X browser port native safety (offline)', () => {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __xUiReady: boolean }).__xUiReady), { timeout: 30_000 }).toBe(true);
   });
   test.afterAll(async () => { if (app) { await control(async h => { h.stop(); }); await app.close(); } if (dir) await fs.rm(dir, { recursive: true, force: true }); });
+
+  test('a fresh never-shown tab delivers native click/type/key with no stage and the user tab active', async () => {
+    const result = await control(h => h.neverShown());
+    console.info('[never-shown-native-facts]', JSON.stringify(result));
+    expect(result.error, JSON.stringify(result)).toBe(null);
+    expect(result.phases).toEqual(['click', 'type', 'key']);
+    expect(result.page).toMatchObject({ trustedClicks: 1, trustedKeys: 1, value: 'never shown query' });
+    expect(result.before.activeTabId).toBe(result.before.userTabId);
+    expect(result.activeTabId).toBe(result.userTabId);
+    expect(result.before.visible).toBe(false);
+    expect(result.visible).toBe(false);
+  });
 
   test('visible then hidden native click/type/Enter affect the exact page without switching the user tab', async () => {
     await control(async h => { await h.visible(); });
@@ -73,6 +88,32 @@ test.describe('X browser port native safety (offline)', () => {
       expect(result.after.activeTabId, mode).toBe(result.after.userTabId);
     }
   });
+  test('actual focus and selection transfers at the last typing round trip reject before native insertText', async () => {
+    for (const mode of ['focus', 'selection']) {
+      const prior = await control(h => h.read());
+      await control(async h => { await h.act({ kind: 'type', selector: '#query', text: 'selected success' }); });
+      const positive = await control(h => h.read());
+      expect(positive.inserts).toBe(prior.inserts + 1);
+      expect(positive.page.value).toBe('selected success');
+      const result = await control((h, value) => h.typingBoundary(value), mode);
+      expect(result.error, mode).toBe('browser.target_unusable');
+      expect(result.after.inserts, mode).toBe(result.before.inserts);
+      expect(result.destination.query, mode).toBe('selected success');
+      expect(result.destination.other, mode).toBe('other-original');
+      expect(result.destination.active, mode).toBe(mode === 'focus' ? 'other' : 'query');
+    }
+  });
+
+  test('prompt cancellation keeps the native queue/driving lease through actual release and owned cleanup ACK', async () => {
+    const result = await control(h => h.lease());
+    expect(result.control).toEqual(['control entered']);
+    expect(result.error).toBe('browser.cancelled');
+    expect(result.beforeRelease).toEqual(['native press ACK', 'caller cancelled']);
+    expect(result.beforeCleanup).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight']);
+    expect(result.sequence).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight', 'owned cleanup ACK', 'next entered']);
+    expect(result.after.page.trustedClicks).toBe(result.before.page.trustedClicks + 1);
+  });
+
   test('source same-document route invalidates the old action binding', async () => {
     const result = await control(h => h.bindings());
     expect(result.after.documentEpoch).toBe(result.before.documentEpoch);

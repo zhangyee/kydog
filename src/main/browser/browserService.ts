@@ -2031,6 +2031,10 @@ export class BrowserService {
             : `${where} 这一步到达页面的时候已经过了这次求值的时限，它按约定什么都没做。`
               + '页面多半正被自己的脚本占着主线程 —— 等一下重试，或者先取一份快照看它现在什么样。',
           undefined, 'none');
+      case 'typing_destination_changed':
+        return new KydogError('browser.target_unusable', '文本插入前目标焦点或全选选区已改变；没有发送文本插入');
+      case 'typing_selection_unproven':
+        return new KydogError('browser.target_unusable', '这个非空控件没有提供可直接验证的全选选区；没有发送文本插入');
       case 'pointer_target_changed':
         return new KydogError('browser.target_unusable', '目标的语义、输入许可或表单归属已改变；需要新快照');
       default:
@@ -2279,7 +2283,7 @@ export class BrowserService {
       }
       check();
       if (pointer) {
-        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate', pointer, notAfter)) as InteractResult;
+        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate_typing', pointer, notAfter)) as InteractResult;
         check();
         if (!valid?.ok) throw BrowserService.interactError(valid ?? { ok: false, reason: 'stale_node' }, action, { priorInputDispatched: true });
       }
@@ -2303,7 +2307,7 @@ export class BrowserService {
       const now = v.ok && typeof v.value === 'string' ? `，框里现在是「${v.value}」` : '';
       return `已在「${label}」里输入${now}`;
     } finally {
-      if (pointer) void this.evalOn(wc, tabId, notAfter => pointerGuardExpression('dispose', pointer, notAfter)).catch(() => {});
+      if (pointer) await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('dispose', pointer, notAfter)).catch(() => {});
     }
   }
 

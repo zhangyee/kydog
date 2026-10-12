@@ -20,10 +20,10 @@ export function measuredPointerExpression(target: Target, pointer: PointerBindin
     if (!measured.ok || measured.disabled === true || (req.pointer.kind === 'type' &&
       (measured.isPassword === true || measured.editable === false || measured.segmented === true))) return measured;
     const pointerGuard = (${POINTER_GUARD_SOURCE})({ op:'capture', target:req.target,
-      token:req.pointer.token, expiresAt:req.pointer.expiresAt, notAfter:req.notAfter, x:measured.x, y:measured.y });
+      token:req.pointer.token, kind:req.pointer.kind, expiresAt:req.pointer.expiresAt, notAfter:req.notAfter, x:measured.x, y:measured.y });
     return { ...measured, pointerGuard };
   })(${JSON.stringify({ op: 'measure', target, pointer, notAfter })})`;
 }
-export function pointerGuardExpression(op: 'validate' | 'dispose', pointer: PointerBinding, notAfter: number): string {
-  return `(${POINTER_GUARD_SOURCE})(${JSON.stringify({ op, token: pointer.token, notAfter })})`;
+export function pointerGuardExpression(op: 'validate' | 'validate_typing' | 'dispose', pointer: PointerBinding, notAfter: number): string {
+  return `(${POINTER_GUARD_SOURCE})(${JSON.stringify({ op, token: pointer.token, kind: pointer.kind, notAfter })})`;
 }
