@@ -8,6 +8,7 @@ import type { DispatchAction } from '../src/main/browser/actions';
 interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
 interface Harness {
   read(): Promise<State>;
+  sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
   readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];activeTabId:string;userTabId:string}>;
   collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
@@ -26,7 +27,7 @@ interface Harness {
 // only the fixture has a global controller, never the shipped application.
 test.describe('X browser port native safety (offline)', () => {
   test.describe.configure({ mode: 'serial' });
-  let app: ElectronApplication, dir: string;
+  let app: ElectronApplication, dir: string, failed = false;
   const control = <T>(fn: (h: Harness, value: string) => Promise<T>, value = '') => app.evaluate((_electron, source) => {
     const run = new Function('h', 'value', `return (${source.fn})(h, value)`);
     return run((globalThis as unknown as { __xUiHarness: Harness }).__xUiHarness, source.value);
@@ -44,7 +45,13 @@ test.describe('X browser port native safety (offline)', () => {
     await app.firstWindow();
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __xUiReady: boolean }).__xUiReady), { timeout: 30_000 }).toBe(true);
   });
-  test.afterAll(async () => { if (app) { await control(async h => { h.stop(); }); await app.close(); } if (dir) await fs.rm(dir, { recursive: true, force: true }); });
+  test.afterEach(() => { if (test.info().status !== 'passed') failed = true; });
+  test.afterAll(async () => {
+    try { if (app) await control(async h => { h.stop(); }); }
+    finally { if (app) await app.close(); }
+    if (dir && !failed) await fs.rm(dir, {recursive:true,force:true});
+    else if (dir) console.info('[retained-native-failure-directory]',dir);
+  });
 
   test('a fresh never-shown tab delivers native click/type/key with no stage and the user tab active', async () => {
     const result = await control(h => h.neverShown());
@@ -131,6 +138,11 @@ test.describe('X browser port native safety (offline)', () => {
   });
 
   test('native Article, fresh parent return and bounded replies retain independent source evidence',async()=>{
+    const containers=await control(h=>h.sourceContainers());
+    expect(containers.posts.slice(0,2).map(p=>p.text)).toEqual(['PLAIN_EXACT_CONTAINER','PREVIEW_EXACT_CONTAINER']);
+    expect(containers.posts[1].articlePreviewInventory).toEqual({scope:'collection',observed:1,retained:0,omitted:1,unresolved:0});
+    expect(containers.posts[0].articlePreviewInventory).toEqual({scope:'collection',observed:0,retained:0,omitted:0,unresolved:0});
+    expect(containers.entryParents).toEqual([{author:'writer',parentText:'PREVIEW_EXACT_CONTAINER'}]);
     const actual=await control(h=>h.readStages('ok'));
     console.info('[native-read-stages]',JSON.stringify(actual));
     expect(actual.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native expanded body'},article:{actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'654',author:{handle:'writer'},sourceUrl:'https://x.com/writer/status/654',text:'Native paragraph rich\n\nNative heading'}},replies:{observations:[{postId:'801',directParent:null},{postId:'802',directParent:null}],scope:{completeness:'unknown',stopReason:'identity_unproven'}},budgetUsage:{expandActions:3,scrolls:0}});

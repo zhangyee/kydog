@@ -99,6 +99,19 @@ void app.whenReady().then(async () => {
   });
   const controller = {
     read,
+    sourceContainers: async () => {
+      const opened=await port.open('https://x.com/search?q=containers&f=top',undefined);
+      const view=browser.webContentsOf(opened.tabId)!;
+      await view.executeJavaScript(`document.querySelector('[data-testid="primaryColumn"]').insertAdjacentHTML('afterbegin','<div role="tab" aria-selected="true">Top</div>');const original=document.querySelector('article[data-testid="tweet"]');
+        original.querySelector('[data-testid="tweetText"]').textContent='PLAIN_EXACT_CONTAINER';
+        const duplicate=original.cloneNode(true);duplicate.querySelector('[data-testid="tweetText"]').textContent='PREVIEW_EXACT_CONTAINER';
+        duplicate.insertAdjacentHTML('beforeend','<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Preview</div></div>');
+        original.after(duplicate);`);
+      return port.withPage(opened.tabId,undefined,async page=>{
+        const observed=await collectXPage(page,{stage:'search',expectedUrl:'https://x.com/search?q=containers&f=top',query:'containers',product:'Top'});
+        return {posts:observed.posts,entryParents:observed.entries.map(entry=>({author:entry.author?.handle,parentText:observed.entryParents.get(entry)?.text}))};
+      });
+    },
     readStages: async (mode: string) => {
       const handle=mode==='blocked'?'blocked':mode==='scroll'?'scroller':'reader', url=`https://x.com/${handle}/status/321`;
       const opened=await port.open(url,undefined), view=browser.webContentsOf(opened.tabId)!;
