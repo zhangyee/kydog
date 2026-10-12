@@ -6,7 +6,9 @@ import { build } from 'vite';
 import type { DispatchAction } from '../src/main/browser/actions';
 
 interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
+interface EligibilityCounters { input:number;measures:number;scrolls:number;hits:number;trusted:number }
 interface Harness {
+  pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
   read(): Promise<State>;
   sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
   readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];activeTabId:string;userTabId:string}>;
@@ -51,6 +53,25 @@ test.describe('X browser port native safety (offline)', () => {
     finally { if (app) await app.close(); }
     if (dir && !failed) await fs.rm(dir, {recursive:true,force:true});
     else if (dir) console.info('[retained-native-failure-directory]',dir);
+  });
+
+  test('original native CSS eligibility precedes sole measure, and cancellation, permission change and post-gate race still refuse',async()=>{
+    for(const mode of ['enable','cancel','changed','race']){
+      const r=await control((h,value)=>h.pointerEligibility(value),mode);
+      console.info('[original-pointer-eligibility-native]',JSON.stringify({mode,...r}));
+      expect(r.positive,mode).toEqual({input:2,measures:1,scrolls:1,hits:3,trusted:1});
+      expect(r.beforeWriter,mode).toEqual({input:0,measures:0,scrolls:0,hits:0,trusted:1});
+      expect(r.sameBinding,mode).toBe(true);
+      if(mode==='enable'){
+        expect(r.error).toBe(null);expect(r.observations).toEqual(['none','auto']);
+        expect(r.after).toEqual({input:2,measures:1,scrolls:1,hits:3,trusted:2});
+      }else{
+        expect(r.error,mode).toBe(mode==='cancel'?'browser.cancelled':mode==='changed'?'browser.target_unusable':'browser.click_intercepted');
+        expect(r.after.input,mode).toBe(0);expect(r.after.trusted,mode).toBe(1);
+        expect(r.after.measures,mode).toBe(mode==='race'?1:0);expect(r.after.scrolls,mode).toBe(mode==='race'?1:0);expect(r.after.hits,mode).toBe(mode==='race'?1:0);
+        expect(r.observations,mode).toEqual(mode==='cancel'?['none']:mode==='changed'?['none','invalid']:['none','auto']);
+      }
+    }
   });
 
   test('a fresh never-shown tab delivers native click/type/key with no stage and the user tab active', async () => {

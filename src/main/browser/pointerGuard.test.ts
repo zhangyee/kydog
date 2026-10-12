@@ -3,7 +3,7 @@ import { JSDOM } from 'jsdom';
 import SOURCE from './injected/pointerGuard.js?raw';
 import { KydogError } from '../../shared/errors';
 import { pointerFailureDiagnostic, retainPointerFailure } from './pointerDiagnostic';
-import { guardedInteractExpression, measuredPointerExpression } from './measuredPointerSource';
+import { collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression } from './measuredPointerSource';
 
 function fixture() {
   const dom = new JSDOM('<form id="owner"><button id="target" aria-labelledby="label"><span>Open discussion</span></button></form><div id="label">Open</div><form id="other"></form>', { url: 'https://example.org/', runScripts: 'outside-only' });
@@ -286,4 +286,35 @@ it('initial measure retains the same rejected hit and original point through pri
     expect(unavailable.pointerFailure).toBeUndefined();
     expect({ hits, scrolls }).toEqual({ hits: 1, scrolls: 1 });
   } finally { f.window.close(); }
+});
+
+
+it('collected eligibility reads the original permitted control and generic validation remains readonly',()=>{
+ const f=fixture();try{
+ const permission={owner:'x',token:'original',purpose:'body'};
+ f.run('begin_collected',{owner:'x',namespace:'n'});
+ f.window.eval(`(${SOURCE})({...${JSON.stringify({op:'remember_collected',namespace:'n',permission,nodeId:7,notAfter:Date.now()+3000})},el:document.querySelector('#target'),scopes:[{el:document.querySelector('#owner'),semantic:false}]})`);
+ const target={nodeId:7,collectedPermission:permission};let reads=0;const original=f.window.getComputedStyle.bind(f.window);
+ f.window.getComputedStyle=el=>{expect(el).toBe(f.el);reads++;return original(el);};
+ expect(f.run('validate_collected',{target,readPointerEligibility:true})).toEqual({ok:true,pointerEligibility:'auto'});expect(reads).toBe(1);
+ expect(f.run('validate_collected',{target})).toEqual({ok:true});expect(reads).toBe(1);
+ f.el.style.pointerEvents='none';expect(f.run('validate_collected',{target,readPointerEligibility:true})).toEqual({ok:true,pointerEligibility:'none'});
+ f.el.style.pointerEvents='painted';expect(f.run('validate_collected',{target,readPointerEligibility:true})).toEqual({ok:true,pointerEligibility:'unknown'});
+ f.window.getComputedStyle=()=>{throw Error('unreadable');};expect(f.run('validate_collected',{target,readPointerEligibility:true})).toEqual({ok:true,pointerEligibility:'unknown'});
+ f.window.getComputedStyle=()=>{reads++;throw Error('invalid permission must not read');};f.el.form!.action='/repurposed';
+ expect(f.run('validate_collected',{target,readPointerEligibility:true})).toEqual({ok:false,reason:'pointer_target_changed'});expect(reads).toBe(3);
+ }finally{f.window.close();}
+});
+
+it('fixed eligibility expression checks raw generation and location before even reading computed state',()=>{
+ const f=fixture();try{
+ const permission={owner:'x',token:'original',purpose:'body'};f.run('begin_collected',{owner:'x',namespace:'n'});
+ f.window.eval(`(${SOURCE})({...${JSON.stringify({op:'remember_collected',namespace:'n',permission,nodeId:7,notAfter:Date.now()+3000})},el:document.querySelector('#target'),scopes:[]})`);
+ const target={nodeId:7,collectedPermission:permission,document:{generation:'document',url:'https://example.org/'}};
+ let reads=0;const original=f.window.getComputedStyle.bind(f.window);f.window.getComputedStyle=el=>{reads++;return original(el);};
+ const run=()=>f.window.eval(collectedPointerEligibilityExpression(target,Date.now()+3000));
+ expect(run()).toEqual({ok:true,pointerEligibility:'auto'});expect(reads).toBe(1);
+ f.world.gen='new';expect(run()).toEqual({ok:false,reason:'stale_node'});expect(reads).toBe(1);
+ f.world.gen='document';f.window.history.pushState({},'', '/different');expect(run()).toEqual({ok:false,reason:'stale_node'});expect(reads).toBe(1);
+ }finally{f.window.close();}
 });

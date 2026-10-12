@@ -8,7 +8,7 @@ import cert from './tls-cert.pem?raw';
 import { readX } from '../../../src/main/x/xResearchRead';
 import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
-import { BrowserService } from '../../../src/main/browser/browserService';
+import { WALKER_WORLD_ID, BrowserService } from '../../../src/main/browser/browserService';
 import { pointerFailureDiagnostic, type PointerFailureDiagnostic } from '../../../src/main/browser/pointerDiagnostic';
 import { createXResearchBrowser } from '../../../src/main/x/xResearchBrowser';
 import { BROWSER_PARTITION } from '../../../src/main/browser/partition';
@@ -191,6 +191,71 @@ void app.whenReady().then(async () => {
           sameNode:await xwc.executeJavaScript('window.collectedNode===document.querySelector("#expand")'),
           identity:first.identityProven,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
       });
+    },
+    pointerEligibility: async (mode: string) => {
+      const opened=await port.open('https://x.com/alice/status/123',undefined);
+      const xwc=browser.webContentsOf(opened.tabId)!;
+      const evaluate=xwc.executeJavaScriptInIsolatedWorld.bind(xwc),send=xwc.debugger.sendCommand.bind(xwc.debugger);
+      let input=0,measures=0,phase='positive',sameBinding=true;
+      let originalTarget:string|undefined;
+      const observations:string[]=[];
+      const abort=new AbortController();
+      let beforeWriter:unknown=null;
+      const isolated=(code:string)=>evaluate(WALKER_WORLD_ID,[{code}]);
+      const counters=async()=>({input,measures,...await isolated('({...window.__eligibilityFixture.counts})') as {scrolls:number;hits:number},trusted:await xwc.executeJavaScript('window.trusted') as number});
+      xwc.debugger.sendCommand=(method,params)=>{if(method.startsWith('Input.'))input++;return send(method,params);};
+      xwc.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
+        const code=scripts[0].code;
+        if(code.includes('const measured ='))measures++;
+        const result=await evaluate(world,scripts,...rest);
+        if(code.includes('"readPointerEligibility":true')) {
+          const request=JSON.parse(code.slice(code.lastIndexOf('})(')+3,-1)) as {target:unknown};
+          const binding=JSON.stringify(request.target);
+          if(phase==='pending') {originalTarget??=binding;sameBinding&&=binding===originalTarget;}
+          const value=(result as {pointerEligibility?:string}).pointerEligibility;
+          observations.push(value??'invalid');
+          if(phase==='pending' && value==='none') {
+            beforeWriter=await counters();phase='released';
+            if(mode==='cancel')abort.abort();
+            else if(mode==='changed')await xwc.executeJavaScript("document.querySelector('#expand').setAttribute('aria-label','Reply')");
+            else await xwc.executeJavaScript("document.querySelector('#expand').style.pointerEvents='auto'");
+          } else if(phase==='released')sameBinding&&=binding===originalTarget;
+        }
+        return result;
+      };
+      let positive:Awaited<ReturnType<typeof counters>>|undefined,error:string|null=null,after:Awaited<ReturnType<typeof counters>>|undefined;
+      try {
+        await port.withPage(opened.tabId,abort.signal,async page=>{
+          const request={stage:'post' as const,expectedUrl:'https://x.com/alice/status/123',postId:'123'};
+          const observed=await collectXPage(page,request);
+          await isolated(`(()=>{const scroll=Element.prototype.scrollIntoView,hit=document.elementFromPoint.bind(document);
+            window.__eligibilityFixture={counts:{scrolls:0,hits:0},race:false};
+            Element.prototype.scrollIntoView=function(...args){window.__eligibilityFixture.counts.scrolls++;if(window.__eligibilityFixture.race)this.style.pointerEvents='none';return scroll.apply(this,args);};
+            document.elementFromPoint=(...args)=>{window.__eligibilityFixture.counts.hits++;return hit(...args);};
+          })()`);
+          const control=observed.controls.find(c=>c.kind==='body_expand')!;
+          const action={kind:'click' as const,index:control.binding.index,snapshotId:control.binding.snapshotId};
+          await page.act(action,observed.snapshot);positive=await counters();
+          input=0;measures=0;observations.length=0;
+          await isolated('window.__eligibilityFixture.counts={scrolls:0,hits:0}');
+          // Same original collection, permission and saved control as positive.
+          await xwc.executeJavaScript("window.eligibilityOriginal=document.querySelector('#expand');eligibilityOriginal.style.pointerEvents='none'");
+          if(mode==='race')await isolated('window.__eligibilityFixture.race=true');
+          phase='pending';await page.act(action,observed.snapshot);
+        });
+      } catch(cause){error=(cause as {code?:string}).code??String(cause);}
+      finally {
+        // Outer cancellation can return first; wait for the issued read and lease cleanup.
+        try {
+          await browser.enqueue(opened.tabId,async()=>{});
+          after=await counters();
+          sameBinding&&=await xwc.executeJavaScript('window.eligibilityOriginal===document.querySelector("#expand")') as boolean;
+        } finally {
+          xwc.executeJavaScriptInIsolatedWorld=evaluate;xwc.debugger.sendCommand=send;
+          browser.close(opened.tabId);
+        }
+      }
+      return {positive,beforeWriter,after,observations,sameBinding,error};
     },
     neverShown: async () => {
       // Fresh service: stage is null from construction; not one syncView call.

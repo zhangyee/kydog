@@ -120,7 +120,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             collectedPermission='index' in action && action.snapshotId===snapshot.snapshotId ? permissions.get(snapshot)?.get(action.index) : undefined;
             if (!collectedPermission) throw new KydogError('browser.bad_action','X 控件必须使用原采集节点和许可');
           }
-          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
+          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission,collectedPointerEligibility:true}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
           const output = { action: { ...action }, ...result };
           const entry = action.kind==='click' && 'index' in action && action.snapshotId===snapshot.snapshotId
             ? currentEntries.get(snapshot)?.find(e=>e.binding.index===action.index) : undefined;

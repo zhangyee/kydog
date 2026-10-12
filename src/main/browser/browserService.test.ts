@@ -4589,3 +4589,74 @@ it('samples original hit containment before the visibility read can change the r
     expect(hits).toBe(1); expect(visibilityCalls).toBe(1);
   } finally { dom.window.close(); }
 });
+
+
+describe('original collected pointer eligibility',()=>{
+ async function setup(){
+  const {svc}=make();const {wc,nav}=await openTab(svc);
+  const snapshot:AxSnapshot={snapshotId:'eligibility-snapshot',generation:'eligibility-generation',url:wc.url,title:'private',iframes:0,collection:{truncated:false,returned:1,totalKnown:1},nodes:[{index:4,nodeId:17,role:'link',name:'original',x:11,y:12,w:71,h:93}]};
+  const action={kind:'click' as const,index:4,snapshotId:snapshot.snapshotId};
+  const options={strictSnapshot:true,location:svc.locationFacts(nav.tabId),signal:new AbortController().signal,collectedPermission:{owner:'fixed',token:'private-token',purpose:'body'},collectedPointerEligibility:true};
+  const order:string[]=[];wc.isolatedImpl=async()=>{order.push('measure');return {ok:true,x:31,y:47,label:'original'};};
+  wc.pointerImpl=async code=>{if(code.includes('"readPointerEligibility":true')){order.push('auto');return {ok:true,pointerEligibility:'auto'};}return {ok:true};};
+  await svc.dispatch(nav.tabId,action,snapshot,options);expect(inputCmds(wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);expect(order).toEqual(['auto','measure']);
+  order.length=0;wc.debugger.sent.length=0;H.logs.length=0;return {svc,wc,id:nav.tabId,snapshot,action,options,order};
+ }
+ it('observes none then auto before its sole original measure, with generic opt-out unchanged',async()=>{
+  const f=await setup();let probes=0;
+  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return {ok:true};expect(code).toContain('"nodeId":17');expect(code).toContain('"token":"private-token"');expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);return {ok:true,pointerEligibility:++probes===1?'none':'auto'};};
+  await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);expect(probes).toBe(2);expect(f.order).toEqual(['measure']);expect(inputCmds(f.wc)).toHaveLength(2);
+  probes=0;f.order.length=0;await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,collectedPointerEligibility:false});expect(probes).toBe(0);expect(f.order).toEqual(['measure']);
+ });
+ it.each(['unknown','permission','error','cancel','navigation','mapping','crash','deadline'] as const)('terminates %s before measure after enabled success',async mode=>{
+  const f=await setup(),abort=new AbortController();let probes=0;if(mode==='deadline')vi.useFakeTimers();
+  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return {ok:true};probes++;
+   if(mode==='cancel')abort.abort();if(mode==='navigation')f.wc.fire('did-navigate-in-page',{},f.wc.url,true);if(mode==='mapping')f.svc.syncView({...STAGE,epoch:f.svc.getState().epoch});if(mode==='crash')f.wc.osPid=0;if(mode==='error')throw Error('native eval failed');
+   return mode==='permission'?{ok:false,reason:'pointer_target_changed'}:{ok:true,pointerEligibility:mode==='deadline'||mode==='cancel'?'none':mode==='unknown'?'unknown':'auto'};
+  };
+  const pending=f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal});const rejected=expect(pending).rejects.toMatchObject({code:mode==='cancel'?'browser.cancelled':mode==='navigation'?'browser.stale_snapshot':mode==='mapping'?'browser.input_not_delivered':mode==='crash'?'browser.not_dispatchable':mode==='deadline'?'browser.wait_timeout':mode==='permission'?'browser.target_unusable':'browser.page_no_result'});
+  if(mode==='deadline')await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS+1);await rejected;expect(probes).toBeGreaterThan(0);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+  if(mode==='cancel')expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility')).toEqual([{level:'info',scope:'browser.pointer_eligibility',msg:expect.any(String),ctx:{tabId:f.id,snapshotId:'eligibility-snapshot',generation:'eligibility-generation',nodeId:17,firstState:'none',noneObserved:true,finalState:'none',outcome:'cancelled'}}]);
+ });
+ it('cancellation drains issued read before queued ownership release without late measure',async()=>{
+  const f=await setup(),abort=new AbortController();let release!:(v:unknown)=>void,start!:()=>void;const started=new Promise<void>(r=>{start=r;});
+  f.wc.pointerImpl=code=>code.includes('"readPointerEligibility":true')?new Promise(r=>{release=r;start();}):Promise.resolve({ok:true});
+  const pending=f.svc.enqueue(f.id,()=>f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal}));const rejected=expect(pending).rejects.toMatchObject({code:'browser.cancelled'});
+  await started;abort.abort();let following=false;const next=f.svc.enqueue(f.id,async()=>{following=true;});await flush();expect(following).toBe(false);expect(f.order).toEqual([]);
+  release({ok:true,pointerEligibility:'auto'});await rejected;await next;expect(following).toBe(true);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('a read begun near the total deadline cannot extend it or continue into measure after its late result',async()=>{
+  const f=await setup();vi.useFakeTimers();let reads=0,release!:(v:unknown)=>void;const began=Date.now();let ceiling=0;
+  f.wc.pointerImpl=async code=>{
+   if(!code.includes('"readPointerEligibility":true'))return {ok:true};
+   reads++;if(reads===1){vi.setSystemTime(began+PAGE_EVAL_TIMEOUT_MS-150);return {ok:true,pointerEligibility:'none'};}
+   ceiling=Number(/"notAfter":(\d+)\}\)$/.exec(code)?.[1]);return new Promise(r=>{release=r;});
+  };
+  const pending=f.svc.dispatch(f.id,f.action,f.snapshot,f.options);const rejected=expect(pending).rejects.toMatchObject({code:'browser.wait_timeout'});
+  await vi.advanceTimersByTimeAsync(100);expect(reads).toBe(2);expect(ceiling).toBe(began+PAGE_EVAL_TIMEOUT_MS);
+  await vi.advanceTimersByTimeAsync(50);await rejected;release({ok:true,pointerEligibility:'auto'});await flush();expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('aborting a scheduled none poll clears scheduling without issuing another read',async()=>{
+  const f=await setup();vi.useFakeTimers();const abort=new AbortController();let reads=0;
+  f.wc.pointerImpl=async()=>{reads++;return {ok:true,pointerEligibility:'none'};};
+  const pending=f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal});const rejected=expect(pending).rejects.toMatchObject({code:'browser.cancelled'});
+  await vi.advanceTimersByTimeAsync(0);expect(reads).toBe(1);abort.abort();await rejected;await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+  expect(reads).toBe(1);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it.each(['identity','dispatchability'] as const)('rejects %s lost during focus ACK before starting viewport setup',async mode=>{
+  const f=await setup();
+  const viewport=vi.spyOn(f.svc as unknown as {applyViewport(...args:unknown[]):Promise<void>},'applyViewport');
+  await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);expect(viewport).toHaveBeenCalled();viewport.mockClear();f.order.length=0;f.wc.debugger.sent.length=0;
+  const original=f.svc.webContentsOf.bind(f.svc);let changed=false;
+  const lookup=vi.spyOn(f.svc,'webContentsOf').mockImplementation(id=>changed&&mode==='identity'?null:original(id));
+  f.wc.debugger.respond=async method=>{if(method==='Emulation.setFocusEmulationEnabled'){changed=true;if(mode==='dispatchability')f.wc.osPid=0;}return {};};
+  try{await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:mode==='identity'?'browser.no_tab':'browser.not_dispatchable'});
+   expect(viewport).toHaveBeenCalledTimes(0);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+  }finally{lookup.mockRestore();viewport.mockRestore();}
+ });
+ it.each(['permission','strict','location','signal','node','kind'] as const)('rejects incomplete trusted opt-in: %s',async missing=>{
+  const f=await setup();const options={...f.options,...(missing==='permission'?{collectedPermission:undefined}:missing==='strict'?{strictSnapshot:false}:missing==='location'?{location:undefined}:missing==='signal'?{signal:undefined}:{})};
+  const action=missing==='node'?{kind:'click' as const,selector:'#original'}:missing==='kind'?{kind:'scroll' as const,direction:'down' as const}:f.action;
+  await expect(f.svc.dispatch(f.id,action,f.snapshot,options)).rejects.toMatchObject({code:'browser.bad_action'});expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+});

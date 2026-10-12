@@ -32,3 +32,8 @@ export function measuredPointerExpression(target: Target, pointer: PointerBindin
 export function pointerGuardExpression(op: 'validate' | 'validate_typing' | 'dispose', pointer: PointerBinding, notAfter: number): string {
   return `(${POINTER_GUARD_SOURCE})(${JSON.stringify({ op, token: pointer.token, kind: pointer.kind, notAfter })})`;
 }
+
+/** Read the original collected control's native CSS predicate without measuring. */
+export function collectedPointerEligibilityExpression(target: PointerTarget, notAfter: number): string {
+  return `((req) => { ${DOCUMENT_CHECK} return (${POINTER_GUARD_SOURCE})(req); })(${JSON.stringify({ op: 'validate_collected', target, readPointerEligibility: true, notAfter })})`;
+}

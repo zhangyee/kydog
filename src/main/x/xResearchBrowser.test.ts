@@ -161,6 +161,7 @@ it('private collected permission reaches actual measure and survives caller edit
   f.browser.evalInPage=async<T>(_id:string,code:string|((notAfter:number)=>string))=>dom.window.eval(typeof code==='string'?code:code(Date.now()+3000)) as T;
   let dispatched=0;
   f.browser.dispatchAndObserveNavigation=async(_id,action,snapshot,options)=>{
+    expect(options?.collectedPointerEligibility).toBe(true);
     const node=snapshot!.nodes.find(n=>'index' in action && n.index===action.index)!;
     const pointer={token:'native',kind:'click' as const,expiresAt:Date.now()+3000};
     const m=dom.window.eval(measuredPointerExpression({nodeId:node.nodeId,collectedPermission:options?.collectedPermission},pointer,Date.now()+3000)) as {ok:boolean;pointerGuard:{ok:boolean}};

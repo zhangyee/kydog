@@ -116,7 +116,15 @@
     && unchanged(saved.control) && saved.scopes.every(unchanged);
   if (req.op === 'validate_collected') {
     const permission=req.target.collectedPermission;
-    return permitted(collected(permission),permission,req.target) ? {ok:true} : reject('pointer_target_changed');
+    const saved=collected(permission);
+    if (!permitted(saved,permission,req.target)) return reject('pointer_target_changed');
+    if (!req.readPointerEligibility) return {ok:true};
+    let pointerEligibility='unknown';
+    try {
+      const value=getComputedStyle(saved.control.el).pointerEvents;
+      if (value==='auto' || value==='none') pointerEligibility=value;
+    } catch { /* Unreadable is terminal, never eligibility. */ }
+    return {ok:true,pointerEligibility};
   }
   if (req.op === 'capture') {
     const hit = hitAt(req.x, req.y);

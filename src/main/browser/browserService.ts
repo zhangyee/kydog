@@ -19,7 +19,7 @@ import {
 } from './actions';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
-import { guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget, type CollectedPermission } from './measuredPointerSource';
+import { collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget, type CollectedPermission } from './measuredPointerSource';
 import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
 import {
   TabRequestLog, ZERO_REQUEST_CURSOR,
@@ -85,6 +85,8 @@ export interface BrowserDispatchOptions {
   strictSnapshot?: boolean;
   /** Original fixed-adapter DOM permission, checked atomically before measurement. */
   collectedPermission?: CollectedPermission;
+  /** Trusted fixed adapter: direct native CSS eligibility on the original control. */
+  collectedPointerEligibility?: boolean;
   /** Trusted X read opt-in; receipt callback is never serialized into the page. */
   scrollAcknowledgement?: { onWritten: () => void };
 }
@@ -1777,10 +1779,10 @@ export class BrowserService {
    * 所以这条错说的是「结果未知」，**不是「没有发生」**——「没有发生」只有页面把
    * `expired` 送回来的时候才成立（见 `interactError` 的那一格）。
    */
-  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown> {
+  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string), ceiling = Infinity): Promise<unknown> {
     // **一个到点时刻，两边共用。** 页面那道自检与这里的定时器各算各的话，守卫要么
     // 提前把好的求值废掉、要么晚到根本不挡。
-    const notAfter = Date.now() + PAGE_EVAL_TIMEOUT_MS;
+    const notAfter = Math.min(Date.now() + PAGE_EVAL_TIMEOUT_MS, ceiling);
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<never>((_res, rej) => {
       timer = setTimeout(() => rej(new KydogError('browser.page_no_result',
@@ -1789,7 +1791,7 @@ export class BrowserService {
         + '**这一步到底生效了没有，我们不知道**：这次求值取消不掉，页面回过神来还会执行它'
         + '（写页面的那条路带着同一个时限自检，过期就自己不做，但卡在到点那一刻的窗口里仍可能已经落地）。'
         + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。',
-        undefined, 'unknown')), PAGE_EVAL_TIMEOUT_MS);
+        undefined, 'unknown')), Math.max(0, notAfter - Date.now()));
     });
     return Promise.race([
       wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
@@ -1877,6 +1879,71 @@ export class BrowserService {
         + '重新取一份快照再操作。');
     }
     return raw as InteractResult;
+  }
+
+  /** Direct state only: time bounds resources, never establishes eligibility.
+   * Await an issued read even after cancellation so the owning queue can drain. */
+  private async awaitCollectedPointerEligibility(
+    tabId: string, wc: WebContents, target: PointerTarget, snapshot: AxSnapshot,
+    action: DispatchAction, signal: AbortSignal, check: () => void,
+  ): Promise<void> {
+    const deadline = Date.now() + PAGE_EVAL_TIMEOUT_MS;
+    let firstState: 'auto' | 'none' | 'unknown' | null = null;
+    let finalState: 'auto' | 'none' | 'unknown' | null = null;
+    let noneObserved = false;
+    let outcome = 'unknown';
+    const timeout = () => new KydogError('browser.wait_timeout', '原采集控件的 pointer eligibility 未在资源时限内建立');
+    try {
+      for (;;) {
+        check();
+        if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
+        let raw: unknown;
+        try {
+          raw = await this.evalOn(wc, tabId, notAfter => collectedPointerEligibilityExpression(target, Math.min(notAfter, deadline)), deadline);
+        } catch {
+          check();
+          if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
+          throw new KydogError('browser.page_no_result', '原采集控件的 pointer eligibility 无法读取', undefined, 'unknown');
+        }
+        const result = raw as InteractResult | null;
+        // Retain the observed enum once, even if cancellation arrived during this read.
+        // This is bookkeeping only; lifecycle checks still precede authorization.
+        const state = result?.ok === true ? result.pointerEligibility : undefined;
+        if (result?.ok !== false) {
+          finalState = state === 'auto' || state === 'none' ? state : 'unknown';
+          firstState ??= finalState;
+          noneObserved ||= finalState === 'none';
+        }
+        check();
+        if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
+        if (result?.ok === false) {
+          outcome = 'permission_lost';
+          throw BrowserService.interactError(result, action);
+        }
+        if (finalState === 'auto') { outcome = 'eligible'; return; }
+        if (finalState === 'unknown') throw new KydogError('browser.page_no_result', '原采集控件的 pointer eligibility 未知', undefined, 'unknown');
+        await new Promise<void>((resolve) => {
+          const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+          const timer = setTimeout(finish, Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
+          signal.addEventListener('abort', finish, { once: true });
+          if (signal.aborted) finish();
+        });
+        check();
+      }
+    } catch (cause) {
+      if (cause instanceof KydogError && outcome !== 'timeout' && outcome !== 'permission_lost') {
+        const terminal: Record<string, string> = { 'browser.cancelled': 'cancelled', 'browser.stale_snapshot': 'invalidated',
+          'browser.no_tab': 'invalidated', 'browser.not_dispatchable': 'unavailable', 'browser.input_not_delivered': 'mapping_changed' };
+        outcome = terminal[cause.code] ?? 'unknown';
+      }
+      throw cause;
+    } finally {
+      // One finite source receipt; no page text, raw URL, permission token or per-poll logs.
+      try { logger.info('browser.pointer_eligibility', '原采集控件资格检查结束', {
+        tabId, snapshotId: snapshot.snapshotId, generation: snapshot.generation,
+        nodeId: 'nodeId' in target ? target.nodeId : null, firstState, noneObserved, finalState, outcome,
+      }); } catch { /* Logging cannot change the public result. */ }
+    }
   }
 
   /** A source write receipt and a later event/frame ACK are separate facts. */
@@ -2139,12 +2206,21 @@ export class BrowserService {
       }
     };
     check();
+    if (options?.collectedPointerEligibility && (action.kind !== 'click' || !('index' in action)
+      || !options.collectedPermission || !options.strictSnapshot || !options.location || !options.signal || !snapshot))
+      throw new KydogError('browser.bad_action', '控件资格检查必须绑定原节点、许可、快照、位置和操作生命周期');
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    const checkCollectedSetup = () => {
+      check();
+      if (!options?.collectedPointerEligibility) return;
+      if (this.webContentsOf(tabId) !== wc) throw new KydogError('browser.no_tab', '原标签页已失效');
+      this.assertDispatchable(tabId, wc);
+    };
     if (action.kind === 'click' || action.kind === 'type'
       || action.kind === 'hover' || action.kind === 'key') {
       await this.enableAgentFocus(tabId, wc);
-      check();
+      checkCollectedSetup();
     } else {
       this.assertDispatchable(tabId, wc);
     }
@@ -2160,6 +2236,7 @@ export class BrowserService {
     // `markDriving` 只在整批入口恢复一次；人在这一批中途按了 1:1 的话，这一步之前再恢复一次。
     this.restoreFitViewport(tabId);
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
+    if (options?.collectedPointerEligibility) checkCollectedSetup();
     const mapping = this.viewportAcknowledged.get(tabId);
     const assertMapping = () => {
       const current = this.viewportAcknowledged.get(tabId);
@@ -2245,6 +2322,16 @@ export class BrowserService {
       const label = String(r.label ?? '');
       return `已在下拉框里选中 ${label ? `「${label}」` : ''}（value=${JSON.stringify(r.value)}）`
         + (r.changed === false ? '（它本来就是这个值）' : '');
+    }
+
+    if (options?.collectedPointerEligibility) {
+      const checkEligibility = () => {
+        checkCollectedSetup();
+        assertMapping();
+      };
+      checkEligibility();
+      await this.awaitCollectedPointerEligibility(tabId, wc, target, targetSnapshot!, action, options.signal!, checkEligibility);
+      checkEligibility();
     }
 
     // spec §4.2 的三件事：滚进视野 → 重新量 → 命中检查。缺一件都是「打偏了还不报错」。
