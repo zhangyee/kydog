@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { JSDOM } from 'jsdom';
 import SOURCE from './injected/pointerGuard.js?raw';
+import { KydogError } from '../../shared/errors';
+import { pointerFailureDiagnostic, retainPointerFailure } from './pointerDiagnostic';
 import { guardedInteractExpression, measuredPointerExpression } from './measuredPointerSource';
 
 function fixture() {
@@ -201,5 +203,36 @@ it('selector capture and a null validate hit retain source facts; a failed diagn
       pointerFailure: { point: { x: 30, y: 40 }, hitTag: null, hitSameAsCaptured: null } });
     f.el.getBoundingClientRect = () => { throw new Error('diagnostic read failed'); };
     expect(f.run('validate')).toEqual({ ok: false, reason: 'intercepted' });
+  } finally { f.window.close(); }
+});
+
+
+it('retains an authentic same-hit rejection when a decorative descendant moves outside the target', () => {
+  const f = fixture();
+  try {
+    const decorative = f.window.document.createElement('span');
+    f.el.append(decorative);
+    f.setHit(decorative);
+    f.el.getBoundingClientRect = () => ({ x: 6, y: 7, width: 61, height: 41 } as DOMRect);
+    expect(f.el.contains(decorative)).toBe(true);
+    expect(f.run('capture')).toEqual({ ok: true });
+    expect(f.run('validate')).toEqual({ ok: true });
+    f.window.document.body.append(decorative);
+    expect(f.el.contains(decorative)).toBe(false);
+    const rejected = f.run('validate');
+    expect(rejected).toMatchObject({ ok: false, reason: 'intercepted', pointerFailure: {
+      point: { x: 30, y: 40 }, targetTag: 'BUTTON', hitTag: 'SPAN',
+      targetConnected: true, targetContainsHit: false, hitSameAsCaptured: true,
+      rejectGeometry: { targetRect: { x: 6, y: 7, width: 61, height: 41 } },
+    } });
+    const retained = retainPointerFailure(new KydogError('browser.click_intercepted', 'intercepted'),
+      { tabId: 'tab-source', snapshotId: 'snapshot-source', generation: 'document', nodeId: 7 },
+      'pointer_validate', rejected, { x: 30, y: 40 });
+    expect(retained.code).toBe('browser.click_intercepted');
+    expect(pointerFailureDiagnostic(retained)).toMatchObject({ stage: 'pointer_validate', reason: 'intercepted',
+      tabId: 'tab-source', snapshotId: 'snapshot-source', generation: 'document', nodeId: 7,
+      point: { x: 30, y: 40 }, nativeFrameObserved: true,
+      rejection: { targetContainsHit: false, hitSameAsCaptured: true, hitTag: 'SPAN' },
+    });
   } finally { f.window.close(); }
 });

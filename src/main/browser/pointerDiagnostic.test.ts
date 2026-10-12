@@ -27,7 +27,7 @@ it('validates reject-time source facts, strips surplus fields and authenticates 
     (r: ReturnType<typeof source>) => { r.pointerFailure.point.x = 74; },
     (r: ReturnType<typeof source>) => { r.pointerFailure.point.y = NaN; },
     (r: ReturnType<typeof source>) => { r.pointerFailure.targetContainsHit = true; },
-    (r: ReturnType<typeof source>) => { r.pointerFailure.hitSameAsCaptured = true; },
+    (r: ReturnType<typeof source>) => { Object.assign(r.pointerFailure, { hitSameAsCaptured: 'true' }); },
     (r: ReturnType<typeof source>) => { r.pointerFailure.targetTag = 'private class name'; },
     (r: ReturnType<typeof source>) => { r.pointerFailure.rejectGeometry.targetRect.height = -1; },
     (r: ReturnType<typeof source>) => { r.pointerFailure.rejectGeometry.viewport.width = Infinity; },
@@ -49,6 +49,12 @@ it('capture and null hits preserve their different source facts without inventin
   const bad = error();
   expect(retainPointerFailure(bad, binding, 'pointer_validate', capture, point)).toBe(bad);
   expect(pointerFailureDiagnostic(bad)).toBeUndefined();
+  for (const same of [false, true]) {
+    const invalid = { ...capture, pointerFailure: { ...capture.pointerFailure, hitSameAsCaptured: same } };
+    const refused = error();
+    expect(retainPointerFailure(refused, binding, 'pointer_capture', invalid, point)).toBe(refused);
+    expect(pointerFailureDiagnostic(refused)).toBeUndefined();
+  }
 });
 
 

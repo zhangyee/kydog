@@ -50,7 +50,8 @@ function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHi
   if (same !== null && typeof same !== 'boolean') return null;
   if (!p || p.x !== at.x || p.y !== at.y || !tag(v.targetTag) || (v.hitTag !== null && !tag(v.hitTag))
     || typeof v.targetConnected !== 'boolean' || v.targetContainsHit !== false
-    || (stage === 'pointer_capture' ? v.hitSameAsCaptured !== null : v.hitSameAsCaptured !== false)
+    // The same captured hit may have moved outside the target; retain either boolean.
+    || (stage === 'pointer_capture' ? same !== null : same === null)
     || !object(g) || !object(g.targetRect) || !object(g.viewport)) return null;
   const r = g.targetRect, viewport = g.viewport, scroll = point(g.scroll);
   if (!scroll || !finite(r.x) || !finite(r.y) || !finite(r.width) || !finite(r.height)
