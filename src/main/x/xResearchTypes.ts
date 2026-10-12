@@ -47,7 +47,12 @@ export type XTextObservation = XTextBase & (
   | { containerKind: 'article' | 'unattributed_fragment'; postId: string | null }
 );
 export interface XAccessBarrier { status: XResearchStatus; reason: string; observationId: string | null }
-export interface XArticleEntry { sourceUrl: string; label: string | null; observationId: string }
+export interface XControlBinding { nodeId: number; index: number; snapshotId: string; generation: string }
+export interface XArticleEntry {
+  /** Actual parent permalink, independent from the possibly absent entry href. */
+  sourceUrl: string; parentPostId: string; targetUrl: string | null;
+  label: string | null; observationId: string; binding: XControlBinding;
+}
 export interface XArticleFacts {
   requested: boolean;
   entryObserved: boolean;

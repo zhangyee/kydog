@@ -20,7 +20,7 @@ export default [
   {
     // 注入网页执行的脚本：它跑在浏览器里、不是 Node，也不是模块 ——
     // 整份源码被 ?raw 原样送进 executeJavaScriptInIsolatedWorld。
-    files: ['src/main/browser/injected/**/*.js'],
+    files: ['src/main/browser/injected/**/*.js', 'src/main/x/injected/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'script',

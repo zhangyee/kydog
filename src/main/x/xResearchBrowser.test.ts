@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { KydogError } from '../../shared/errors';
 import type { BrowserService, BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
 import { createXResearchBrowser } from './xResearchBrowser';
@@ -72,11 +73,12 @@ describe('X queued browser port', () => {
       expect([...f[event]]).toEqual([external]);
     }
   });
-  it('collect has a fixed unavailable operation and no caller evaluator', async () => {
+  it('collect rejects non-program requests before page evaluation', async () => {
     const f = fixture(), port = createXResearchBrowser(f.browser, 'thread');
     await port.withPage('tab', undefined, async page => {
       expect(Object.keys(page).sort()).toEqual(['act', 'collect', 'location', 'snapshot', 'wait']);
-      await expect(page.collect()).rejects.toMatchObject({ code: 'x.collect_unavailable' });
+      await expect(page.collect({ stage: 'post', expectedUrl: f.facts.currentUrl, postId: '123' })).rejects.toThrow();
+      await expect(page.collect('alert(1)' as never)).rejects.toMatchObject({ code: 'x.invalid_page' });
     });
   });
 });
@@ -132,4 +134,15 @@ it('caller cancellation is prompt but the queue lease covers deferred native rel
   expect(order).toEqual(['press in flight', 'caller cancelled', 'native release']);
   releaseCleanup(); await next;
   expect(order).toEqual(['press in flight', 'caller cancelled', 'native release', 'cleanup settled', 'next entered']);
+});
+
+it('keeps real open navigation results when the optional Article provenance can no longer read the tab', async () => {
+  const f=fixture(),port=createXResearchBrowser(f.browser,'thread');
+  expect((await port.open(f.facts.currentUrl,undefined)).nav.outcome.kind).toBe('ok');
+  f.browser.locationFacts=()=>{throw new KydogError('browser.no_tab','closed');};
+  for (const outcome of [{kind:'cancelled' as const},{kind:'ok' as const,finalUrl:f.facts.currentUrl,httpStatusCode:200}]) {
+    const result={tabId:'tab',nav:{navigationId:'actual',outcome},evicted:[]};
+    f.browser.open=async()=>result;
+    await expect(port.open(f.facts.currentUrl,undefined)).resolves.toEqual(result);
+  }
 });

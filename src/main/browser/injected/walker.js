@@ -1,3 +1,4 @@
+/* global kydogSnapshotScope */
 // 这段代码在**网页里**执行，不是主进程。它不能 import 任何东西。
 //
 // 写成 .js 而不是 .ts：整份源码会被 ?raw 原样注入浏览器，而浏览器跑不了 TS 语法。
@@ -410,7 +411,7 @@
 
       let ok = false;
       try { ok = typeof el.matches === 'function' && el.matches(SELECTOR); } catch { ok = false; }
-      if (ok) { matched += 1; collect(el); }
+      if (ok && (typeof kydogSnapshotScope === 'undefined' || kydogSnapshotScope.has(el))) { matched += 1; collect(el); }
 
       // open shadow root 里的控件在很多组件库里就是全部控件。closed 的看不见，
       // 那是这条路的已知边界（换 CDP 的 AX 树可解）。
@@ -432,6 +433,7 @@
   //    走完，这个数就是真的 —— 只有遍历自己停在半路时才根本不给这个键（不填 0，
   //    也不拿 returned 冒充）。
   const collection = { truncated: nodesTruncated || walkTruncated, returned: out.length };
+  if (typeof kydogSnapshotScope !== 'undefined') collection.scope = 'filtered';
   if (walkTruncated) {
     collection.limit = 'walked';
     collection.limitValue = MAX_WALKED;
@@ -440,7 +442,8 @@
       collection.limit = 'nodes';
       collection.limitValue = MAX_NODES;
     }
-    collection.totalKnown = matched;
+    if (typeof kydogSnapshotScope === 'undefined') collection.totalKnown = matched;
+    else { collection.scope = 'filtered'; collection.candidateTotalKnown = matched; }
   }
 
   return {

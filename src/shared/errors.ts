@@ -37,7 +37,7 @@ export type KydogErrorCode =
   // 不认识的按键名。与 bad_url 分开 —— 那条只管网址。
   | 'browser.cancelled'
   | 'browser.stale_snapshot'
-  | 'x.collect_unavailable'
+  | 'x.invalid_page'
   | 'browser.bad_action'
   | 'browser.no_tab'
   | 'browser.too_many_tabs'

@@ -3,14 +3,16 @@ import type { NavigationObservation } from '../../shared/types';
 import type { BrowserService, BrowserLocationFacts, EvictedTab } from '../browser/browserService';
 import type { DispatchAction, WaitUntil } from '../browser/actions';
 import type { AxSnapshot } from '../browser/snapshot';
+import { decodeXPage, xPageExpression, type XPageRequest, type XPageObservation } from './xPageSource';
+import type { XArticleEntry } from './xResearchTypes';
 
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
 export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }
 export interface XActionResult { action: DispatchAction; line: string; navigation: NavigationObservation | null }
 export interface XQueuedPage {
   snapshot(): Promise<AxSnapshot>;
-  /** Fixed program-owned extractor only; Task3 supplies the DOM adapter. */
-  collect(): Promise<unknown>;
+  /** Fixed program-owned extractor with validated DOM observations. */
+  collect(request: XPageRequest): Promise<XPageObservation>;
   act(action: DispatchAction, snapshot: AxSnapshot): Promise<XActionResult>;
   wait(until: WaitUntil, timeoutMs: number): Promise<boolean>;
   location(): BrowserLocationFacts;
@@ -21,9 +23,26 @@ export interface XResearchBrowser {
 }
 
 export function createXResearchBrowser(browser: BrowserService, threadId: string): XResearchBrowser {
+  const sameLocation = (a: BrowserLocationFacts, b: BrowserLocationFacts) => a.documentEpoch===b.documentEpoch && a.routeRevision===b.routeRevision && a.navigationSequence===b.navigationSequence && a.currentUrl===b.currentUrl;
+  const entries = new WeakMap<XArticleEntry, {tabId:string; snapshot:AxSnapshot}>();
+  const actions = new WeakMap<XActionResult, {tabId:string; entry:XArticleEntry; location:BrowserLocationFacts; finalUrl:string|null}>();
+  const opens = new WeakMap<XOpenResult, {tabId:string; requestedUrl:string; location:BrowserLocationFacts; finalUrl:string|null}>();
+  const finalUrl = (nav: NavigationObservation|null) => nav && (nav.outcome.kind==='ok' || nav.outcome.kind==='ok_same_document') ? nav.outcome.finalUrl : null;
   return {
     // BrowserService.open owns its one queue entry. Never enqueue around it.
-    open: (url, tabId, signal) => browser.open({ url, tabId, ownerThreadId: threadId, activate: false, signal }),
+    open: async (url, tabId, signal) => {
+      const result = await browser.open({ url, tabId, ownerThreadId: threadId, activate: false, signal });
+      const destination = finalUrl(result.nav);
+      if (destination) {
+        try {
+          opens.set(result,{tabId:result.tabId,requestedUrl:url,location:browser.locationFacts(result.tabId),finalUrl:destination});
+        } catch (error) {
+          // Losing an optional Article proof must not erase a real navigation outcome.
+          if (!(error instanceof KydogError) || error.code!=='browser.no_tab') throw error;
+        }
+      }
+      return result;
+    },
     withPage: async (tabId, signal, work) => {
       const lifetime = new AbortController();
       let failure: KydogError | undefined;
@@ -47,6 +66,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         const value = await Promise.race([operation, stopped]); check(); return value;
       };
       const bindings = new Map<AxSnapshot, BrowserLocationFacts>();
+      const currentEntries = new Map<AxSnapshot, XArticleEntry[]>();
       const page: XQueuedPage = {
         snapshot: () => run(async () => {
           const before = browser.locationFacts(tabId);
@@ -57,13 +77,40 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             throw new KydogError('browser.stale_snapshot', '采集期间页面已导航；需要新快照');
           bindings.set(snapshot, after); return snapshot;
         }),
-        collect: () => run(async () => { throw new KydogError('x.collect_unavailable', '固定 X 页面抽取器尚未接入'); }),
+        collect: request => run(async () => {
+          const expression = xPageExpression(request);
+          const before = browser.locationFacts(tabId);
+          await browser.prepareForDomRead(tabId,lifetime.signal); check();
+          const raw = await browser.evalInPage(tabId,expression); check();
+          const after = browser.locationFacts(tabId);
+          if (!sameLocation(before,after)) throw new KydogError('browser.stale_snapshot','采集期间页面已导航；需要新观察');
+          let articleProven = false;
+          if (request.stage==='article') {
+            const issuedEntry=entries.get(request.entry);
+            const proof=request.via.kind==='action' ? actions.get(request.via.result) : opens.get(request.via.result);
+            articleProven=!!issuedEntry && issuedEntry.tabId===tabId && !!proof && proof.tabId===tabId
+              && sameLocation(proof.location,after) && proof.finalUrl===request.expectedUrl
+              && ('entry' in proof ? proof.entry===request.entry : request.entry.targetUrl!==null && proof.requestedUrl===request.entry.targetUrl);
+          }
+          const observation=decodeXPage(raw,request,after,articleProven);
+          bindings.set(observation.snapshot,after);
+          currentEntries.set(observation.snapshot,[...observation.entries]);
+          for (const entry of observation.entries) {
+            Object.freeze(entry.binding); Object.freeze(entry);
+            entries.set(entry,{tabId,snapshot:observation.snapshot});
+          }
+          return observation;
+        }),
         act: (action, snapshot) => run(async () => {
           const expected = bindings.get(snapshot), current = browser.locationFacts(tabId);
           if (!expected || expected.documentEpoch !== current.documentEpoch || expected.routeRevision !== current.routeRevision || expected.navigationSequence !== current.navigationSequence || expected.currentUrl !== current.currentUrl)
             throw new KydogError('browser.stale_snapshot', '动作必须绑定本次操作内的当前快照');
           const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true });
-          return { action: { ...action }, ...result };
+          const output = { action: { ...action }, ...result };
+          const entry = action.kind==='click' && 'index' in action && action.snapshotId===snapshot.snapshotId
+            ? currentEntries.get(snapshot)?.find(e=>e.binding.index===action.index) : undefined;
+          if (entry) actions.set(output,{tabId,entry,location:browser.locationFacts(tabId),finalUrl:finalUrl(result.navigation)});
+          return output;
         }),
         wait: (until, timeoutMs) => run(() => browser.waitFor(tabId, until, timeoutMs, lifetime.signal)),
         location: () => { check(); return browser.locationFacts(tabId); },
@@ -84,7 +131,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       }
       finally {
         signal?.removeEventListener('abort', abort); offGone(); offUnavailable();
-        lifetime.abort(); bindings.clear();
+        lifetime.abort(); bindings.clear(); currentEntries.clear();
       }
     },
   };
