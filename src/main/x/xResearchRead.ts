@@ -458,12 +458,12 @@ export async function readX(
       row.status =
         row.root && problem.status !== 'cancelled' ? 'partial' : problem.status;
       row.stopReason = problem.stopReason;
-      row.reason =
+      row.reason = problem.reason ?? (
         problem.status === 'cancelled'
           ? 'cancelled'
           : problem.internal
             ? `internal_adapter_error:${stage.current}`
-            : `${stage.current}_failed${error instanceof KydogError ? ':' + error.code : ''}`;
+            : `${stage.current}_failed${error instanceof KydogError ? ':' + error.code : ''}`);
       if (problem.status === 'cancelled')
         halt = {
           cause: 'cancelled',

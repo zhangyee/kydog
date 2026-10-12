@@ -22,6 +22,13 @@ export type TargetSpec =
   | { index: number; snapshotId: string }
   | { locator: SemanticLocator };
 
+/** Trusted main-process scroll outcome; never classify failures from error prose. */
+export class BrowserScrollAcknowledgementError extends KydogError {
+  constructor(readonly reason: 'scroll_no_movement' | 'scroll_ack_timeout', message: string) {
+    super('browser.wait_timeout', message);
+  }
+}
+
 export type WaitUntil =
   | { selector: string; state: 'present' | 'absent' }
   | { urlMatches: string };

@@ -1,3 +1,4 @@
+import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
 import { collectXPage, type XPageRequest, type XPageObservation } from './xPageSource';
@@ -42,7 +43,8 @@ export function committedFacts(expected:string, nav:NavigationObservation): XLoc
   return {committedNavigationOutcome:nav.outcome.kind,requested:toSafeXLocation(expected),committed:committed?toSafeXLocation(committed):null,subsequent:null,
     relation:compareXLocation(expected,committed??''),documentGeneration:null,navigationEvent:null};
 }
-export function failure(error:unknown, stage:'navigation'|'collection'|'action'|'wait'): {status:XResearchStatus;stopReason:XStopReason;internal:boolean} {
+export function failure(error:unknown, stage:'navigation'|'collection'|'action'|'wait'): {status:XResearchStatus;stopReason:XStopReason;internal:boolean;reason?:BrowserScrollAcknowledgementError['reason']} {
+  if(error instanceof BrowserScrollAcknowledgementError) return {status:'failed',stopReason:error.reason==='scroll_ack_timeout'?'wait_timeout':'action_failed',internal:false,reason:error.reason};
   if(error instanceof KydogError && error.code==='browser.stale_snapshot' && stage==='collection') return {status:'partial',stopReason:'identity_unproven',internal:false};
   if(error instanceof KydogError && error.code==='browser.cancelled') return {status:'cancelled',stopReason:'cancelled',internal:false};
   const internal=!(error instanceof KydogError) || error.code==='x.invalid_page';

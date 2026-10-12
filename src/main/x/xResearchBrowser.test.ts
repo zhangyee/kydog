@@ -1,6 +1,7 @@
 import { JSDOM } from 'jsdom';
 import { measuredPointerExpression, pointerGuardExpression } from '../browser/measuredPointerSource';
 import { describe, expect, it } from 'vitest';
+import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import type { BrowserService, BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
@@ -191,4 +192,14 @@ it('opt-in scroll cancellation drains its actual receipt and disposal before ret
   const done=work.catch(error=>{order.push('returned');expect(error).toMatchObject({code:'browser.cancelled'});});
   await started;abort.abort();for(let i=0;i<24;i++)await Promise.resolve();expect(order).toEqual([]);
   release();await done;expect(order).toEqual(['written','disposed','returned']);
+});
+
+
+it('preserves the typed scroll error object across the owned port without prose classification',async()=>{
+  const f=fixture(),port=createXResearchBrowser(f.browser,'thread');let error:Error|undefined,writes=0;
+  f.browser.dispatchAndObserveNavigation=async(_id,_action,_snapshot,options)=>{options?.scrollAcknowledgement?.onWritten();if(error)throw error;return {line:'scrolled',navigation:null};};
+  const run=()=>port.withPage('tab',undefined,async page=>{const snap=await page.snapshot();return page.act({kind:'scroll',direction:'down'},snap,{scrollAcknowledgement:{onWritten:()=>writes++}});});
+  expect(await run()).toMatchObject({line:'scrolled'});expect(writes).toBe(1);
+  const causes=[new BrowserScrollAcknowledgementError('scroll_no_movement','scroll_ack_timeout'),new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement'),new KydogError('browser.wait_timeout','scroll_no_movement scroll_ack_timeout')];
+  for(const [index,cause] of causes.entries()){error=cause;await expect(run()).rejects.toBe(cause);expect(writes).toBe(index+2);}
 });

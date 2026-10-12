@@ -1,6 +1,7 @@
+import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import { describe, expect, it } from 'vitest';
-import { fixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
+import { fixture, stagedFixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
 import { createXResearchTool } from './xResearchTool';
 describe('production X SDK factory',()=>{
   it('uses actual sequential SDK signature, validation and bounded v2 details',async()=>{
@@ -214,4 +215,20 @@ describe('production X SDK factory',()=>{
     }
   });
 
+});
+
+
+it('factory content and canonical details preserve distinct source scroll failures with saved evidence',async()=>{
+  for(const cause of [null,'scroll_no_movement','scroll_ack_timeout','ordinary'] as const){
+    const scrollError=cause===null?undefined:cause==='ordinary'?Object.assign(new KydogError('browser.wait_timeout','scroll_no_movement scroll_ack_timeout'),{reason:'scroll_no_movement'}):new BrowserScrollAcknowledgementError(cause,cause==='scroll_no_movement'?'scroll_ack_timeout':'scroll_no_movement');
+    const f=await stagedFixture({article:'ok',scrollError});
+    const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'actual-run'});
+    const result=await tool.execute('typed-scroll',{tabId:'research-tab',read:{objective:'source outcome',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:true,maxExpandActionsPerPost:4,maxScrollsPerPost:1}},undefined,undefined,{} as never);
+    const expected={status:'partial',reason:cause===null?'reply_budget_reached':cause==='ordinary'?'action_failed:browser.wait_timeout':cause,stopReason:cause===null?'budget_reached':cause==='scroll_ack_timeout'?'wait_timeout':'action_failed',root:{postId:'123',author:{handle:'alice'},text:'expanded body'},article:{bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'}}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:3}};
+    expect(result.details?.operation).toBe('read');
+    if(result.details?.operation!=='read')throw new Error('Expected read result');
+    expect(result.details.targets[0]).toMatchObject(expected);
+    const model=JSON.parse((result.content[0] as {text:string}).text);
+    expect(model.targets[0]).toMatchObject(expected);
+  }
 });

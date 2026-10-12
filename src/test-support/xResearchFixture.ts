@@ -38,7 +38,7 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
 }
 
 /** Offline BrowserService boundary: the production port owns provenance and bindings. */
-export async function stagedFixture(options: { article?: 'ok'|'reject'|'nav-failed'|'auth'|'wrong-author'|'title-only'; virtualize?: boolean; abortAfterAction?: AbortController; noEffect?: boolean; resetOnReturn?: boolean; staleInitial?: number; staleReturn?: number; staleArticle?: number; returnDifferentUrl?: boolean; abortOnReturnCollect?: AbortController; returnWait?: boolean; waitResult?: boolean; discussion?: 'ready'|'never'|'auth'|'missing'|'route'|'cancel'|'stale'|'late'; discussionAbort?: AbortController } = {}) {
+export async function stagedFixture(options: { scrollError?: Error; article?: 'ok'|'reject'|'nav-failed'|'auth'|'wrong-author'|'title-only'; virtualize?: boolean; abortAfterAction?: AbortController; noEffect?: boolean; resetOnReturn?: boolean; staleInitial?: number; staleReturn?: number; staleArticle?: number; returnDifferentUrl?: boolean; abortOnReturnCollect?: AbortController; returnWait?: boolean; waitResult?: boolean; discussion?: 'ready'|'never'|'auth'|'missing'|'route'|'cancel'|'stale'|'late'; discussionAbort?: AbortController } = {}) {
   const { createXResearchBrowser } = await import('../main/x/xResearchBrowser');
   const { KydogError } = await import('../shared/errors');
   const parentUrl='https://x.com/alice/status/123', articleUrl='https://x.com/bob/status/456';
@@ -93,7 +93,7 @@ export async function stagedFixture(options: { article?: 'ok'|'reject'|'nav-fail
         return {line:'clicked',navigation:nav(url)};
       }
       executed.push(purpose??action.kind);
-      if(action.kind==='scroll') dispatchOptions?.scrollAcknowledgement?.onWritten();
+      if(action.kind==='scroll') { dispatchOptions?.scrollAcknowledgement?.onWritten(); if(options.scrollError) throw options.scrollError; }
       if(purpose==='body_expand') expanded=true;
       if(purpose==='replies_expand') replies=true;
       if (!options.noEffect) render(options.virtualize && action.kind==='scroll'?readHtml(post('999','eve','replacement reply')):parent());

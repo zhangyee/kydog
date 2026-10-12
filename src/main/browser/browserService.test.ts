@@ -5,6 +5,7 @@ import INTERACT_SOURCE from './injected/interact.js?raw';
 import LOGIN_FILL_SOURCE from './injected/loginFill.js?raw';
 import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
 import type { AxSnapshot } from './snapshot';
+import { BrowserScrollAcknowledgementError } from './actions';
 import { ZERO_CURSOR } from './consoleLog';
 import { MAX_AGENT_TABS } from './tabRegistry';
 
@@ -4417,7 +4418,9 @@ describe('private X scroll delivery boundary',()=>{
     };
     const opts={signal:abort.signal,location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++}};
     expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).toContain('800');expect(written).toBe(1);expect(disposed).toBe(1);
-    bad=true;await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:state==='cancel'?'browser.cancelled':state==='invalidated'?'browser.stale_snapshot':'browser.wait_timeout'});
+    bad=true;const rejected=svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts);
+    await expect(rejected).rejects.toMatchObject({code:state==='cancel'?'browser.cancelled':state==='invalidated'?'browser.stale_snapshot':'browser.wait_timeout',...(state==='expired'?{reason:'scroll_ack_timeout'}:state==='no_movement'?{reason:'scroll_no_movement'}:{})});
+    if(state==='expired'||state==='no_movement') await expect(rejected).rejects.toBeInstanceOf(BrowserScrollAcknowledgementError);
     expect(written).toBe(2);expect(disposed).toBe(2);
     if(state==='cancel'){await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:'browser.cancelled'});expect(written).toBe(2);}
   });

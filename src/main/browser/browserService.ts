@@ -13,7 +13,7 @@ import { TabRegistry, MAX_AGENT_TABS } from './tabRegistry';
 import { NavigationTracker } from './settle';
 import type { AxSnapshot } from './snapshot';
 import {
-  resolveTarget, assertTypeAllowed, keyEventsFor,
+  resolveTarget, assertTypeAllowed, keyEventsFor, BrowserScrollAcknowledgementError,
   type DispatchAction, type TargetSpec, type WaitUntil,
 } from './actions';
 import WALKER_SOURCE from './injected/walker.js?raw';
@@ -1903,8 +1903,8 @@ export class BrowserService {
         check();
         if (!current) throw new KydogError('browser.page_no_result','滚动没有返回真实写入记录');
         if (current.state==='invalidated') throw new KydogError('browser.stale_snapshot','滚动确认期间原文档、目标或偏移已改变');
-        if (current.state==='no_movement') throw new KydogError('browser.wait_timeout','scroll_no_movement：实际执行未改变偏移；讨论范围仍未知');
-        if (Date.now()>=expiresAt || current.state==='expired') throw new KydogError('browser.wait_timeout','scroll_ack_timeout：实际滚动尚未得到原目标事件及后续帧确认');
+        if (current.state==='no_movement') throw new BrowserScrollAcknowledgementError('scroll_no_movement','实际执行未改变偏移；讨论范围仍未知');
+        if (Date.now()>=expiresAt || current.state==='expired') throw new BrowserScrollAcknowledgementError('scroll_ack_timeout','实际滚动尚未得到原目标事件及后续帧确认');
         if (current.state==='frame_observed') return result;
         current=receipt(await this.interact(tabId,wc,{op:'scroll_ack_status',token}));
         check();

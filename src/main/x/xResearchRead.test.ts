@@ -1,3 +1,4 @@
+import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import { describe, expect, it, vi } from 'vitest';
 import { fixture, stagedFixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
@@ -202,5 +203,22 @@ it('discussion counts source-confirmed scroll writes before ACK failure and neve
     expect(receiptObserved).toBe(true);expect(row.budgetUsage.scrolls).toBe(1);expect(f.act).toHaveBeenCalledTimes(1);
     expect(row.root?.postId).toBe('123');expect(row.replies.observations[0].postId).toBe('456');expect(row.replies.scope.completeness).toBe('unknown');
     if(fail)expect(row.status).toBe('partial');
+  }
+});
+
+
+it('preserves typed no-movement versus ACK-timeout with independent Article/root/replies and ignores prose',async()=>{
+  const request=read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:4,maxScrollsPerPost:1});
+  const cases=[
+    {error:undefined,reason:'reply_budget_reached',stopReason:'budget_reached'},
+    {error:new BrowserScrollAcknowledgementError('scroll_no_movement','scroll_ack_timeout'),reason:'scroll_no_movement',stopReason:'action_failed'},
+    {error:new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement'),reason:'scroll_ack_timeout',stopReason:'wait_timeout'},
+    {error:Object.assign(new KydogError('browser.wait_timeout','scroll_no_movement scroll_ack_timeout'),{reason:'scroll_no_movement'}),reason:'action_failed:browser.wait_timeout',stopReason:'action_failed'},
+  ];
+  for(const sample of cases){
+    const f=await stagedFixture({article:'ok',scrollError:sample.error});
+    const row=(await readX(request,f.context)).targets[0];
+    expect(row).toMatchObject({status:'partial',reason:sample.reason,stopReason:sample.stopReason,root:{postId:'123',text:'expanded body'},article:{bodyObserved:true,body:{postId:'456',text:'Article paragraph\n\nHeading'}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown',stopReason:sample.stopReason}},budgetUsage:{scrolls:1,expandActions:3}});
+    expect(f.executed).toEqual(['body_expand','article_entry','replies_expand','scroll']);
   }
 });

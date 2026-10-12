@@ -62,12 +62,12 @@ describe('private scroll delivery acknowledgement',()=>{
     const f=fixture();
     try {
       f.begin();f.event();f.frame();expect(f.status().acknowledgement.state).toBe('frame_observed');f.dispose();
-      expect(f.begin(0).acknowledgement).toMatchObject({written:true,state:'no_movement',eventObserved:false,frameObserved:false});f.dispose();
+      expect(f.begin(0).acknowledgement).toMatchObject({written:true,before:210.25,after:210.25,state:'no_movement',eventObserved:false,frameObserved:false});f.dispose();
       f.begin();expect([...f.listeners.values()].reduce((n,s)=>n+s.size,0)).toBe(1);f.event();expect(f.frames.size).toBe(1);
       expect(f.dispose().acknowledgement).toMatchObject({written:true,state:'pending'});
       expect(f.frames.size).toBe(0);expect([...f.listeners.values()].reduce((n,s)=>n+s.size,0)).toBe(0);expect(f.status()).toMatchObject({ok:false,reason:'missing_scroll_ack'});
       f.begin();const expired=Date.now()+3001;vi.spyOn(f.w.Date,'now').mockReturnValue(expired);
-      expect(f.status().acknowledgement).toMatchObject({written:true,state:'expired',frameObserved:false});
+      expect(f.status().acknowledgement).toMatchObject({written:true,before:410.25,after:610.25,state:'expired',frameObserved:false});
     } finally {f.close();}
   });
 });
