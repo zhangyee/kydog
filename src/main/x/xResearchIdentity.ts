@@ -8,7 +8,7 @@ function isXOrigin(url: URL): boolean {
 }
 function postId(url: URL): string | null {
   if (!isXOrigin(url)) return null;
-  return /^(?:\/[A-Za-z0-9_]+\/status|\/i\/web\/status)\/([0-9]+)(?:\/(?:photo|video)\/[0-9]+)?\/?$/.exec(url.pathname)?.[1] ?? null;
+  return /^(?:\/[A-Za-z0-9_]+\/status|\/i\/web\/status)\/([0-9]+)(?:\/history|\/(?:photo|video)\/[0-9]+)?\/?$/.exec(url.pathname)?.[1] ?? null;
 }
 function singleParam(url: URL | null, name: string): string | null {
   const values = url?.searchParams.getAll(name);

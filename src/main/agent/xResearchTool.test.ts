@@ -55,4 +55,160 @@ describe('production X SDK factory',()=>{
       expect(f.open).toHaveBeenCalledTimes(2);
     }
   });
+  it('admits literal history/media targets without halting their ordinary sibling', async () => {
+    const plain = 'https://x.com/alice/status/123';
+    const f = fixture([readHtml(post())]);
+    const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+    const read = (targets:{url:string}[]) => ({tabId:'research-tab', read:{objective:'read', targets, includeArticle:false, includeReplies:false}});
+    expect((await tool.execute('plain', read([{url:plain}]), undefined, undefined, {} as never)).details).toMatchObject({targets:[{status:'observed', root:{postId:'123'}}]});
+    for (const suffix of ['/history', '/photo/1', '/video/1']) {
+      const url = plain + suffix;
+      const result = await tool.execute('route', read([{url}, {url:plain}]), undefined, undefined, {} as never);
+      expect(result.details).toMatchObject({targets:[
+        {target:{url}, inputUrl:url, status:'partial', reason:'unsupported_document_route', stopReason:'identity_unproven', root:null, location:{requested:{path:'/alice/status/123'+suffix}, committed:{path:'/alice/status/123'+suffix}}},
+        {status:'observed', root:{postId:'123', text:'original'}},
+      ]});
+      expect(f.open.mock.calls.slice(-2).map(c=>c[0])).toEqual([url, plain]);
+    }
+    expect(f.collect).toHaveBeenCalledTimes(7);
+    const redirected = fixture([readHtml(post())], {finalUrl:()=>plain});
+    const redirectedTool = createXResearchTool({browser:redirected.context.browser, threadId:'thread', sources:redirected.context.sources, currentRunId:()=> 'run'});
+    for (const suffix of ['/history', '/photo/1', '/video/1']) {
+      const url = plain + suffix;
+      const result = await redirectedTool.execute('redirect', read([{url}, {url:plain}]), undefined, undefined, {} as never);
+      expect(result.details).toMatchObject({targets:[
+        {target:{url}, inputUrl:url, root:{postId:'123', sourceUrl:plain}, location:{requested:{path:'/alice/status/123'+suffix}, committed:{path:'/alice/status/123'}, subsequent:{path:'/alice/status/123'}, relation:{path:'different', postId:'same'}}},
+        {root:{postId:'123'}},
+      ]});
+      expect(redirected.open.mock.calls.slice(-2).map(c=>c[0])).toEqual([url,plain]);
+    }
+
+  });
+  it('preserves fresh validated roots, quotes and sources after an actual false wait', async () => {
+    const url = 'https://x.com/alice/status/123';
+    const quote = '<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/bob">bob</a><a href="/bob">@bob</a></div><div data-testid="tweetText">quote</div><a href="/bob/status/456"><time>today</time></a></div>';
+    const html = readHtml(post().replace('</article>', quote+'</article>'));
+    for (const ready of [true, false]) {
+      const f = fixture([readHtml(''), html], {wait:ready, afterWaitIndex:1});
+      const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+      const result = await tool.execute('wait', {tabId:'research-tab', read:{objective:'read', targets:[{url}], includeArticle:false, includeReplies:false}}, undefined, undefined, {} as never);
+      expect(result.details).toMatchObject({targets:[{status:ready?'observed':'partial', reason:ready?null:'post_wait_timeout', stopReason:ready?'agent_stopped':'wait_timeout', root:{postId:'123', text:'original'}, quotedPosts:[{postId:'456', text:'quote'}], replies:{scope:{rootPostId:'123', stopReason:ready?'agent_stopped':'wait_timeout'}}}]});
+      const row = result.details!.operation==='read' ? result.details!.targets[0] : undefined;
+      expect(row?.documentSource).toMatchObject({sourceUrl:url, rootObservationId:row?.root?.observationId});
+      expect(f.context.sources.get('123')!.map(s=>s.urlKind)).toEqual(['permalink','document']);
+      expect(f.context.sources.get('456')![0]).toMatchObject({urlKind:'permalink', sourceUrl:'https://x.com/bob/status/456'});
+      expect(f.collect).toHaveBeenCalledTimes(2);
+    }
+  });
+  it('keeps normalized and ID-only actual root identity visible in projected SDK content', async () => {
+    const actual = 'https://x.com/alice/status/123';
+    const f = fixture([readHtml(post())], {finalUrl:()=>actual});
+    const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+    for (const target of [{url:'https://twitter.com/old/status/123'}, {postId:'123'}]) {
+      const result = await tool.execute('projection', {tabId:'research-tab', read:{objective:'a'.repeat(600000), targets:[target], includeArticle:false, includeReplies:false}}, undefined, undefined, {} as never);
+      const model = JSON.parse((result.content[0] as any).text);
+      expect(model.contentProjection).toBe('x_research_projection_v1');
+      expect(model.targets[0].root).toMatchObject({postId:'123', sourceUrl:actual, authorHandle:'alice', text:'original'});
+      expect(Buffer.byteLength(JSON.stringify(result))).toBe(result.details!.budgetUsage.outputBytes);
+      expect(result.details!.objective.length).toBe(600000);
+    }
+  });
+  it('propagates the actual auth, cancellation or adapter halt cause to untouched targets', async () => {
+    const targets = Array.from({length:3},()=>({url:'https://x.com/alice/status/123'}));
+    const auth = '<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>';
+    for (const cause of ['ordinary', 'auth', 'cancel', 'adapter'] as const) {
+      const f = fixture([readHtml(post())]);
+      const normalOpen = f.open.getMockImplementation()!;
+      f.open.mockImplementation(async (...args) => {
+        const opened = await normalOpen(...args);
+        if (cause==='cancel' && f.open.mock.calls.length===2) return {...opened, nav:{requestedUrl:args[0], outcome:{kind:'cancelled'}}} as any;
+        return opened;
+      });
+      const normalCollect = f.collect.getMockImplementation()!;
+      f.collect.mockImplementation(async request => {
+        if (f.open.mock.calls.length===2 && cause==='adapter') throw new TypeError('broken adapter');
+        if (f.open.mock.calls.length===2 && cause==='auth') {
+          const blocked = fixture([auth]);
+          await blocked.open('https://x.com/i/jf/onboarding/web');
+          return blocked.collect(request);
+        }
+        return normalCollect(request);
+      });
+      const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+      const result = await tool.execute('mixed', {tabId:'research-tab', read:{objective:'read', targets, includeArticle:false, includeReplies:true}}, undefined, undefined, {} as never);
+      expect(result.details!.operation==='read' && result.details!.targets[0].root?.text).toBe('original');
+      if (result.details!.operation!=='read') throw new Error('read expected');
+      if (cause==='ordinary') {
+        expect(result.details!.targets.map(t=>t.root?.text)).toEqual(['original','original','original']);
+        expect(f.open).toHaveBeenCalledTimes(3);
+      } else {
+        const expected = cause==='auth' ? {status:'auth_required', reason:'auth_required', stopReason:'access_barrier'} : cause==='cancel' ? {status:'cancelled', reason:'cancelled', stopReason:'cancelled'} : {status:'failed', reason:'internal_adapter_error:collection', stopReason:'action_failed'};
+        expect(result.details!.targets[1]).toMatchObject({...expected, root:null, replies:{scope:{stopReason:expected.stopReason}}});
+        expect(result.details!.targets[2]).toMatchObject({status:expected.status, reason:cause==='auth'?'not_attempted:auth_required':cause==='cancel'?'cancelled':'internal_adapter_stopped', stopReason:expected.stopReason, root:null, replies:{scope:{stopReason:expected.stopReason}}});
+        expect(f.open).toHaveBeenCalledTimes(2);
+      }
+    }
+  });
+
+  it('gives actually collected auth priority on history/media redirects and wait cancellation independent scope', async()=>{
+    const plain='https://x.com/alice/status/123';
+    const auth='<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>';
+    const read=(url:string)=>({tabId:'research-tab',read:{objective:'read',targets:[{url},{url:plain}],includeArticle:false,includeReplies:true}});
+    const good=fixture([readHtml(''),readHtml(post())],{afterWaitIndex:1,wait:false});
+    const goodTool=createXResearchTool({browser:good.context.browser,threadId:'thread',sources:good.context.sources,currentRunId:()=> 'run'});
+    expect((await goodTool.execute('good',read(plain),undefined,undefined,{} as never)).details).toMatchObject({targets:[{root:{postId:'123'},stopReason:'wait_timeout'},{root:{postId:'123'},stopReason:'wait_timeout'}]});
+    const delayedAuth='<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>';
+    const lateBarrier=fixture([readHtml(''),delayedAuth],{afterWaitIndex:1,wait:false});
+    const lateWait=(lateBarrier.page.wait as any).getMockImplementation();
+    (lateBarrier.page.wait as any).mockImplementation(async(...args:any[])=>{const result=await lateWait(...args);lateBarrier.navigate('https://x.com/i/jf/onboarding/web');return result;});
+    const lateTool=createXResearchTool({browser:lateBarrier.context.browser,threadId:'thread',sources:lateBarrier.context.sources,currentRunId:()=> 'run'});
+    expect((await lateTool.execute('lateAuth',read(plain),undefined,undefined,{} as never)).details).toMatchObject({targets:[{status:'auth_required',reason:'auth_required',stopReason:'access_barrier'},{status:'auth_required',reason:'not_attempted:auth_required',stopReason:'access_barrier'}]});
+    const controller=new AbortController();
+    const cancelled=fixture([readHtml(''),readHtml(post())],{afterWaitIndex:1,wait:false});
+    const normalWait=(cancelled.page.wait as any).getMockImplementation();
+    (cancelled.page.wait as any).mockImplementation(async(...args:any[])=>{const result=await normalWait(...args);controller.abort();return result;});
+    const cancelledTool=createXResearchTool({browser:cancelled.context.browser,threadId:'thread',sources:cancelled.context.sources,currentRunId:()=> 'run'});
+    const result=await cancelledTool.execute('cancelled',read(plain),controller.signal,undefined,{} as never);
+    expect(result.details).toMatchObject({targets:[{root:null,status:'cancelled',reason:'cancelled',stopReason:'cancelled',replies:{scope:{stopReason:'cancelled'}}},{root:null,status:'cancelled',reason:'cancelled',stopReason:'cancelled',replies:{scope:{stopReason:'cancelled'}}}]});
+    expect(cancelled.collect).toHaveBeenCalledTimes(1);expect(cancelled.open).toHaveBeenCalledTimes(1);
+    for(const suffix of ['/history','/photo/1','/video/1']) {
+      for(const html of [auth,'<main></main>']) {
+        const f=fixture([html],{finalUrl:()=> 'https://x.com/i/jf/onboarding/web'});
+        const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+        const result=await tool.execute('barrier',read(plain+suffix),undefined,undefined,{} as never);
+        if(result.details!.operation!=='read') throw new Error('read expected');
+        if(html===auth) {
+          expect(result.details!.targets[0]).toMatchObject({status:'auth_required',reason:'auth_required',root:null,stopReason:'access_barrier'});
+          expect(result.details!.targets[1].reason).toBe('not_attempted:auth_required');expect(f.open).toHaveBeenCalledTimes(1);
+        } else {
+          expect(result.details!.targets[0]).toMatchObject({status:'partial',root:null,reason:'unsupported_document_route',stopReason:'identity_unproven'});
+          expect(f.open).toHaveBeenCalledTimes(2);
+        }
+      }
+    }
+  });
+
+  it('stops further queries on an authoritative cancelled navigation receipt without an aborted signal',async()=>{
+    const queries=Array.from({length:3},(_,i)=>({...searchInput.search.queries[0],id:String(i)}));
+    const input={search:{...searchInput.search,queries,maxPostsPerQuery:1,maxScrollsPerQuery:0}};
+    for(const cancelled of [false,true]) {
+      const f=fixture([searchHtml(post())]);
+      const normalOpen=f.open.getMockImplementation()!;
+      f.open.mockImplementation(async(...args)=>{const opened=await normalOpen(...args);return cancelled && f.open.mock.calls.length===2 ? {...opened,nav:{requestedUrl:args[0],outcome:{kind:'cancelled'}}} as any : opened;});
+      const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+      const result=await tool.execute('navigation',input,undefined,undefined,{} as never);
+      if(result.details!.operation!=='search') throw new Error('search expected');
+      expect(result.details!.queries[0]).toMatchObject({posts:[{postId:'123'}],status:'partial',stopReason:'budget_reached'});
+      if(cancelled) {
+        expect(result.details!.queries[1]).toMatchObject({status:'cancelled',stopReason:'cancelled',posts:[]});
+        expect(result.details!.queries[2]).toMatchObject({status:'cancelled',stopReason:'cancelled',posts:[]});
+        expect(f.open).toHaveBeenCalledTimes(2);expect(f.collect).toHaveBeenCalledTimes(1);
+      } else {
+        expect(result.details!.queries.map(q=>q.posts[0].postId)).toEqual(['123','123','123']);
+        expect(f.open).toHaveBeenCalledTimes(3);expect(f.collect).toHaveBeenCalledTimes(3);
+      }
+      expect(f.act).toHaveBeenCalledTimes(0);
+    }
+  });
+
 });

@@ -82,6 +82,17 @@ function publicPost(raw: string | null, coordinatesOnly = false): {id:string;han
     return m ? {id:m[2],handle:m[1]??null,origin:u.origin,url:raw} : null;
   } catch { return null; }
 }
+/** Public media coordinates may name a request, never prove a document or body identity. */
+function requestedPostId(raw:string):string|null {
+  const ordinary = publicPost(raw);
+  if (ordinary) return ordinary.id;
+  try {
+    const u = new URL(raw);
+    if (u.protocol!=='https:' || u.port || u.username || u.password || u.search || u.hash ||
+        !['x.com','twitter.com'].includes(u.hostname)) return null;
+    return /^\/(?:[A-Za-z0-9_]+\/status|i\/web\/status)\/([0-9]+)\/(?:photo|video)\/[0-9]+\/?$/.exec(u.pathname)?.[1]??null;
+  } catch { return null; }
+}
 function safeLink(raw: string): {url:string|null;redacted:boolean} {
   try {
     const u=new URL(raw);
@@ -96,7 +107,7 @@ function validRequest(request: XPageRequest): void {
     const expected=toSafeXLocation(request.expectedUrl);
     if (!expected.origin || expected.path!=='/search' || expected.q!==request.query || expected.f!==(request.product==='Latest'?'live':'top')) invalid();
   }
-  else if (request.stage==='post') { if (!/^[0-9]+$/.test(request.postId) || publicPost(request.expectedUrl)?.id!==request.postId) invalid(); }
+  else if (request.stage==='post') { if (!/^[0-9]+$/.test(request.postId) || requestedPostId(request.expectedUrl)!==request.postId) invalid(); }
   else if (request.stage==='article') { if (!publicPost(request.expectedUrl) || !obj(request.entry) || !obj(request.via) || !['action','open'].includes(request.via.kind) || !obj(request.via.result)) invalid(); }
   else invalid();
 }

@@ -61,16 +61,16 @@ export function searchResult(input:XSearchInput,context:XResearchContext): Extra
 }
 export async function searchX(input:XSearchInput, context:XResearchContext): Promise<Extract<XResearchResult,{operation:'search'}>> {
   const result=searchResult(input,context);
-  let halted=false;
+  let halted:false|'cancelled'|'other'=false;
   for (const row of result.queries) {
-    if(halted || context.signal?.aborted) { if(context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';} continue; }
+    if(halted || context.signal?.aborted) { if(halted==='cancelled' || context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';} continue; }
     const url=new URL(xSearchUrl(row.query));
     let stage:'navigation'|'collection'|'action'|'wait'='navigation';
     try {
       const opened=await context.browser.open(url.href,result.browserTabId||undefined,context.signal);
       result.browserTabId=opened.tabId;
       const committed=navigationUrl(opened.nav);row.location=committedFacts(url.href,opened.nav);
-      if(!committed) { row.status=opened.nav.outcome.kind==='cancelled'?'cancelled':'failed';row.stopReason=row.status==='cancelled'?'cancelled':'navigation_failed';halted=['cancelled','crashed'].includes(opened.nav.outcome.kind);continue; }
+      if(!committed) { row.status=opened.nav.outcome.kind==='cancelled'?'cancelled':'failed';row.stopReason=row.status==='cancelled'?'cancelled':'navigation_failed';halted=opened.nav.outcome.kind==='cancelled'?'cancelled':opened.nav.outcome.kind==='crashed'?'other':false;continue; }
       await context.browser.withPage(opened.tabId,context.signal,async page=>{
         const seen=new Set<string>();
         const request={stage:'search' as const,expectedUrl:url.href,query:row.query.query,product:row.query.product};
@@ -111,10 +111,10 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
         }
       });
     } catch(error) {
-      const problem=failure(error,stage);row.status=row.posts.length && problem.status!=='cancelled'?'partial':problem.status;row.stopReason=problem.stopReason;halted=problem.internal || problem.status==='cancelled' || (error instanceof KydogError && ['browser.no_tab','browser.not_dispatchable'].includes(error.code));
+      const problem=failure(error,stage);row.status=row.posts.length && problem.status!=='cancelled'?'partial':problem.status;row.stopReason=problem.stopReason;halted=problem.status==='cancelled'?'cancelled':problem.internal || (error instanceof KydogError && ['browser.no_tab','browser.not_dispatchable'].includes(error.code))?'other':false;
       row.barrier={status:problem.status,reason:problem.internal?`internal_adapter_error:${stage}`:`${stage}_failed${error instanceof KydogError?':'+error.code:''}`,observationId:null};
     }
-    if(row.status==='auth_required') halted=true;
+    if(row.status==='auth_required') halted='other';
   }
   aggregateResult(result);return result;
 }

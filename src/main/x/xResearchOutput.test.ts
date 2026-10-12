@@ -73,4 +73,49 @@ describe('bounded X production tool result',()=>{
     const result=await searchX(searchInput,fixture([searchHtml(post())]).context),body=result.queries[0].posts[0];body.text='😀'.repeat(400000);body.truncation={returned:body.text.length,totalKnown:body.text.length,truncated:false};
     const out=serializeXResearchResult(result);expect(out.result.queries[0].posts[0].text.endsWith('\uD83D')).toBe(false);expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);expect(out.result.queries[0].posts[0].truncation.totalKnown).toBe(800000);
   });
+  it('projects every named body with its own literal ID, source and author',async()=>{
+    const f=fixture([readHtml(post())]);
+    const result=await readX({tabId:'tab',read:{objective:'a'.repeat(600000),targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+    const root=result.targets[0].root!;
+    const named=(kind:'quoted_post'|'reply'|'article',id:string,handle:string)=>({...root,containerKind:kind,postId:id,sourceUrl:`https://x.com/${handle}/status/${id}`,author:{handle,displayName:null,profileUrl:null},text:`${kind} body`});
+    result.targets[0].quotedPosts=[named('quoted_post','456','bob')];result.targets[0].article.body=named('article','789','carol');result.targets[0].replies.observations=[named('reply','234','dave')];
+    const out=serializeXResearchResult(result),model=JSON.parse(out.text).targets[0];
+    for(const [actual,expected] of [[model.root,root],[model.quotedPosts[0],result.targets[0].quotedPosts[0]],[model.article.body,result.targets[0].article.body],[model.replies.observations[0],result.targets[0].replies.observations[0]]] as const) {
+      expect(actual).toMatchObject({postId:expected!.postId,sourceUrl:expected!.sourceUrl,authorHandle:expected!.author!.handle,text:expected!.text});
+    }
+    expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBe(out.result.budgetUsage.outputBytes);
+  });
+
+  it('aliases only equal same-row model document URLs and explicitly omits a different secondary locator at cap',async()=>{
+    const handle='alice_'.repeat(100),url=`https://x.com/${handle}/status/123`;
+    const f=fixture([readHtml(post('123',handle))]);
+    const result=await readX({tabId:'tab',read:{objective:'a'.repeat(600000),targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+    const root=result.targets[0].root!,doc=result.targets[0].documentSource!;
+    const equal=serializeXResearchResult(result),equalModel=JSON.parse(equal.text);
+    expect(equalModel.targets[0].root).toMatchObject({postId:'123',sourceUrl:root.sourceUrl,authorHandle:handle});
+    expect(equalModel.targets[0].documentSource).toEqual({rootObservationId:root.observationId,sourceUrlReference:'root.sourceUrl'});
+    expect(equal.result.targets[0].documentSource).toEqual(doc);
+    const different=structuredClone(result);
+    const redirected=fixture([readHtml(post('123',handle))],{finalUrl:()=>url+'/'});
+    const actualDifferent=await readX({tabId:'tab',read:{objective:result.objective,targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},redirected.context);
+    different.targets[0]=actualDifferent.targets[0];
+    const differentRoot=different.targets[0].root!;
+    const fullDifferent=serializeXResearchResult(different);
+    expect(JSON.parse(fullDifferent.text).targets[0].documentSource).toMatchObject({rootObservationId:differentRoot.observationId,sourceUrl:url+'/'});
+    // Find the first exact-size request prose at which this secondary MODEL URI
+    // cannot fit, while canonical URI and all root identity still fit.
+    let lo=600000,hi=1048576;
+    while(lo<hi){const mid=Math.floor((lo+hi)/2);different.objective='a'.repeat(mid);try{const out=serializeXResearchResult(different);if(out.result.contentMetadataOmissions?.length)hi=mid;else lo=mid+1;}catch{hi=mid;}}
+    different.objective='a'.repeat(lo);
+    const capped=serializeXResearchResult(different),model=JSON.parse(capped.text);
+    expect(capped.result.contentMetadataOmissions).toContain('targets.0.documentSource.sourceUrl');
+    expect(model.contentMetadataOmissions).toContain('targets.0.documentSource.sourceUrl');
+    expect(model.targets[0].documentSource).toEqual({rootObservationId:differentRoot.observationId,sourceUrlInCanonicalDetails:true});
+    expect(model.targets[0].root).toMatchObject({postId:'123',sourceUrl:root.sourceUrl,authorHandle:handle});
+    expect(capped.result.targets[0].documentSource).toEqual(different.targets[0].documentSource);
+    expect(capped.result.objective).toBe(different.objective);
+    expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)))).toBe(capped.result.budgetUsage.outputBytes);
+    expect(capped.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+  });
+
 });

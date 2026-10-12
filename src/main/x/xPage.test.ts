@@ -286,3 +286,20 @@ it('a fresh empty collection revokes old permission without clearing public IDs 
   expect(f.evaluate('window.__kydogWorld.ids.get(document.querySelector("button"))')).toBe(originalId);
   expect(f.evaluate('window.__kydogWorld.pw.has(document.querySelector("#pw"))')).toBe(true);
 });
+
+it('media request coordinates do not prove a media document or admit its body identity', () => {
+  const facts=(currentUrl:string):BrowserLocationFacts=>({currentUrl,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:currentUrl});
+  const ordinary=fixture();
+  expect(decodeXPage(ordinary.collect(),request,facts(url),false).root).toMatchObject({postId:'123',author:{handle:'alice'}});
+  for(const suffix of ['/photo/1','/video/1']) {
+    const mediaUrl=url+suffix, mediaRequest={...request,expectedUrl:mediaUrl};
+    const media=fixture(wrap(post()),mediaUrl);
+    const collected=decodeXPage(media.collect(mediaRequest),mediaRequest,facts(mediaUrl),false);
+    expect(collected.identityProven).toBe(false);
+    expect(collected.root).toBeNull();
+    expect(collected.replies).toHaveLength(0);
+    // A current ordinary redirect must still supply all existing root facts.
+    expect(decodeXPage(ordinary.collect(mediaRequest),mediaRequest,facts(url),false).root).toMatchObject({postId:'123',author:{handle:'alice'}});
+    expect(()=>xPageExpression({...mediaRequest,expectedUrl:mediaUrl+'?token=secret'})).toThrow();
+  }
+});

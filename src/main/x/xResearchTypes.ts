@@ -154,6 +154,8 @@ interface XResultBase {
   schemaVersion: 2;
   contentProjection?: 'x_research_projection_v1';
   metadataOmissions?: string[];
+  /** Secondary model-content metadata omitted while canonical details retain it. */
+  contentMetadataOmissions?: string[];
   sourceKind: 'rendered_ui';
   callId: string;
   batchId: string;
