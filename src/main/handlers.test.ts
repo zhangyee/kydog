@@ -157,6 +157,14 @@ vi.mock('./institution/institutionService', () => ({
 // skillsService.listUnlocked() —— 它会 mkdir 真实的 ~/.kydog/skills 并读整棵树。
 vi.mock('./skills/skillsService', () => ({ skillsService: { listUnlocked: async () => [] } }));
 
+vi.mock('./research/researchService', () => ({ researchService: { save: vi.fn(), get: vi.fn() } }));
+vi.mock('./agent/AgentService', async (orig) => {
+  const actual = await orig<typeof import('./agent/AgentService')>();
+  return { ...actual, agentService: Object.assign(actual.agentService, { invalidateAllSessions: vi.fn().mockResolvedValue(undefined) }) };
+});
+import { researchService } from './research/researchService';
+import { agentService } from './agent/AgentService';
+
 import { registerAllHandlers } from './handlers';
 import { defaultSettings } from './persist/settingsFile';
 import type { SettingsFile, TelemetryStatus } from '../shared/types';
@@ -658,4 +666,20 @@ describe('md 导出 PDF 的三条 RPC', () => {
     expect(() => call('file.revealInFolder', { path: 'a.pdf' })).toThrow();
     expect(reveal).not.toHaveBeenCalled();
   });
+});
+
+it('research.save uses committed changed facts and preserves the RPC research result', async () => {
+  const research = { presets: { NCBI_API_KEY: 'preserved' }, custom: [], xResearchEnabled: true };
+  const save = vi.mocked(researchService.save);
+  const invalidate = vi.mocked(agentService.invalidateAllSessions);
+  invalidate.mockClear();
+  save.mockResolvedValueOnce({ research, xResearchEnabledChanged: true });
+  expect(await call('research.save', research)).toEqual(research);
+  expect(invalidate).toHaveBeenCalledOnce();
+  save.mockResolvedValueOnce({ research: { ...research, xResearchEnabled: false }, xResearchEnabledChanged: false });
+  expect(await call('research.save', research)).toEqual({ ...research, xResearchEnabled: false });
+  expect(invalidate).toHaveBeenCalledOnce();
+  save.mockRejectedValueOnce(new Error('disk full'));
+  await expect(call('research.save', research)).rejects.toThrow('disk full');
+  expect(invalidate).toHaveBeenCalledOnce();
 });

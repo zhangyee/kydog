@@ -90,7 +90,7 @@ export function normalizeResearch(r: SettingsFile['research']): SettingsFile['re
       value: typeof c.value === 'string' ? c.value.trim() : '',
     }));
 
-  return { presets, custom };
+  return { presets, custom, xResearchEnabled: obj.xResearchEnabled === true };
 }
 
 /** 单个自定义变量名的校验，供「+ 添加变量」就地反馈。合法返回 null。 */

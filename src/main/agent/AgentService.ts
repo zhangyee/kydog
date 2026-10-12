@@ -99,6 +99,8 @@ function emitRun<T extends RunEventTopic>(bound: Bound, topic: T, payload: Event
 class AgentService {
   private sessions = new Map<string, Bound>();
   private runs = new Map<string, RunState>();
+  private sessionGeneration = 0;
+  private sessionCreation = new Map<string, Promise<Bound>>();
 
   getRunState(threadId: string): RunState {
     return this.runs.get(threadId) ?? { status: 'idle' };
@@ -113,6 +115,18 @@ class AgentService {
   }
 
   async ensureSession(threadId: string, projectPath: string): Promise<Bound> {
+    // Serialize per thread, including generation retries. Concurrent history/send must not
+    // publish duplicate sessions, subscriptions, or orphan a newly built session.
+    const previous = this.sessionCreation.get(threadId);
+    const pending = (previous ?? Promise.resolve()).catch(() => {}).then(() =>
+      this.ensureSessionUnlocked(threadId, projectPath));
+    this.sessionCreation.set(threadId, pending);
+    try { return await pending; }
+    finally { if (this.sessionCreation.get(threadId) === pending) this.sessionCreation.delete(threadId); }
+  }
+
+  private async ensureSessionUnlocked(threadId: string, projectPath: string): Promise<Bound> {
+    const generation = this.sessionGeneration;
     const existing = this.sessions.get(threadId);
     if (existing) {
       // 缓存按 threadId 存，但一份 session 只对建它时的 cwd 有效（工具的 cwd、transcript
@@ -134,11 +148,15 @@ class AgentService {
     // 工具 → AgentService 的上行通道。这里补上 runId / messageId 再对外广播：
     // 只有工具知道 pending 何时真正就绪，所以事件必须由它触发，不能挂在
     // pi 的 tool_execution_start 上（那时还没校验、没分配 id、broker 也没注册）。
+    let createdBound: Bound | null = null;
+    const ownedBound = (): Bound | null =>
+      createdBound !== null && this.sessions.get(threadId) === createdBound ? createdBound : null;
     const askShared: AskSharedState = {
       onOpened: (toolCallId: string, questions: AskQuestion[], browserTabId?: string) => {
-        const b = this.sessions.get(threadId);
-        const messageId = b?.activeMessageId;
-        if (!b || !messageId) {
+        const b = ownedBound();
+        if (!b) return;
+        const messageId = b.activeMessageId;
+        if (!messageId) {
           // 不可达：activeMessageId 在 agent_start 与 agent_end 之间恒非空，
           // 工具执行必然落在窗口内。真发生了说明这个不变量被破坏了——
           // 后果是工具已在 await pending 而 UI 从未打开，run 会一直挂着，
@@ -155,9 +173,10 @@ class AgentService {
         });
       },
       onClosed: (toolCallId: string, outcome: AskOutcome) => {
-        const b = this.sessions.get(threadId);
-        const messageId = b?.activeMessageId;
-        if (!b || !messageId) {
+        const b = ownedBound();
+        if (!b) return;
+        const messageId = b.activeMessageId;
+        if (!messageId) {
           logger.error('agent', 'ask closed without active message', { threadId, toolCallId, kind: outcome.kind });
           return;
         }
@@ -175,10 +194,18 @@ class AgentService {
       modelId,
       askShared,
       // 取值函数，不是值：session 造出来这一刻还没有任何 run 在飞。
-      currentRunId: () => this.currentRunIdFor(threadId),
-      onResearchProgress: (progress) => this.onResearchProgress(threadId, progress.runId,
-        progress.toolCallId, progress),
+      currentRunId: () => ownedBound()?.runId ?? null,
+      onResearchProgress: (progress) => {
+        if (ownedBound()) this.onResearchProgress(threadId, progress.runId, progress.toolCallId, progress);
+      },
     });
+    if (generation !== this.sessionGeneration) {
+      // The save invalidated this creation while it awaited settings/SDK work.
+      // It has never entered the cache or subscribed, so dispose it locally.
+      if (session.cleanup) await session.cleanup();
+      else if (session.dispose) session.dispose();
+      return this.ensureSessionUnlocked(threadId, projectPath);
+    }
     const bound: Bound = {
       session, cwd: projectPath, threadId,
       providerId, modelId,
@@ -190,6 +217,7 @@ class AgentService {
       runStartIndex: null,
       runId: null,
     };
+    createdBound = bound;
     this.sessions.set(threadId, bound);
     this.subscribe(bound);
     return bound;
@@ -210,7 +238,16 @@ class AgentService {
   async loadHistory(threadId: string, projectPath: string, replay?: EventSink): Promise<Message[]> {
     let bound: Bound;
     try {
-      bound = await this.ensureSession(threadId, projectPath);
+      do {
+        bound = await this.ensureSession(threadId, projectPath);
+        if (this.sessions.get(threadId) !== bound) {
+          // Only a detached handoff needs this read: do not resurrect a deleted thread.
+          const threads = await threadService.listAll();
+          if (!threads.some(thread => thread.id === threadId)) {
+            throw new KydogError('thread.not_found', `thread ${threadId} not found`);
+          }
+        }
+      } while (this.sessions.get(threadId) !== bound);
     } catch (err) {
       // 只对「provider/model 已解析、但 registry 里没有」这一种失败回退——通常是
       // 上游把这个模型从目录里撤了。session 建不起来时本轮不可能有 run 在飞（run
@@ -264,7 +301,16 @@ class AgentService {
   async send(threadId: string, projectPath: string, content: string, images: MessageImage[] = []): Promise<{ runId: string }> {
     let bound: Bound;
     try {
-      bound = await this.ensureSession(threadId, projectPath);
+      do {
+        bound = await this.ensureSession(threadId, projectPath);
+        if (this.sessions.get(threadId) !== bound) {
+          // Only a detached handoff needs this read: do not resurrect a deleted thread.
+          const threads = await threadService.listAll();
+          if (!threads.some(thread => thread.id === threadId)) {
+            throw new KydogError('thread.not_found', `thread ${threadId} not found`);
+          }
+        }
+      } while (this.sessions.get(threadId) !== bound);
     } catch (err) {
       // loadHistory 已经把「读历史」和「模型还在不在」解耦了；发新消息终究要起一轮
       // 真的 run，绕不开这一步，所以这里仍然要 ensureSession，只是把技术性的
@@ -273,7 +319,7 @@ class AgentService {
       throw err;
     }
     const current = this.getRunState(threadId);
-    if (current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
+    if (bound.runId !== null || current.status === 'running') throw new KydogError('thread.busy', 'thread is busy');
     // 按这条 session **实际**用的模型判（pi Model.input），不按渲染层算出来的那个 ——
     // 渲染层只是预先拦一道，它算错了这里兜住。拦在占用 run 之前，被拒不留痕迹。
     if (images.length > 0 && bound.session.model?.input?.includes('image') !== true) {
@@ -289,6 +335,7 @@ class AgentService {
       ? bound.session.prompt(content, { images: images.map((i) => ({ type: 'image' as const, data: i.data, mimeType: i.mimeType })) })
       : bound.session.prompt(content);
     void started.catch((err) => {
+      if (this.sessions.get(threadId) !== bound || bound.runId !== runId) return;
       const msg = err instanceof Error ? err.message : String(err);
       this.runs.set(threadId, transition(this.runs.get(threadId)!, { kind: 'error', message: msg }));
       broadcaster.emit('run.ended', { threadId, runId, reason: 'error', errorMessage: msg });
@@ -305,6 +352,7 @@ class AgentService {
       if (bound.runId === runId) {
         bound.runId = null;
         browserService.endRun(runId);
+        if (bound.staleAfterRun && this.sessions.get(threadId) === bound) void this.dispose(threadId);
       }
     });
     return { runId };
@@ -338,16 +386,17 @@ class AgentService {
     const abandonedRunId = bound.runId;
     bound.runId = null;
     if (abandonedRunId !== null) browserService.endRun(abandonedRunId);
+    // Detach before async cleanup: a concurrent ensure may publish a replacement,
+    // which this old cleanup must neither return nor delete.
+    this.sessions.delete(threadId);
+    this.runs.delete(threadId);
     // Adaptation B: fake has cleanup(), real has dispose()
     if (bound.session.cleanup) await bound.session.cleanup();
     else if (bound.session.dispose) bound.session.dispose();
-    this.sessions.delete(threadId);
-    this.runs.delete(threadId);
   }
 
   private currentRunId(threadId: string): string {
-    const s = this.runs.get(threadId);
-    return s?.status === 'running' ? s.runId : 'unknown';
+    return this.sessions.get(threadId)?.runId ?? 'unknown';
   }
 
   /**
@@ -364,14 +413,19 @@ class AgentService {
   }
 
   private async markStaleOrDispose(bound: Bound): Promise<void> {
-    const state = this.runs.get(bound.threadId);
-    if (!state || state.status === 'idle') {
+    if (this.sessions.get(bound.threadId) !== bound) return;
+    if (bound.runId === null) {
       await this.dispose(bound.threadId);
       return;
     }
     bound.staleAfterRun = true;
   }
 
+
+  async invalidateAllSessions(): Promise<void> {
+    ++this.sessionGeneration;
+    for (const bound of [...this.sessions.values()]) await this.markStaleOrDispose(bound);
+  }
 
   async invalidateSessionsForProviders(providerIds: ProviderId[]): Promise<void> {
     const set = new Set(providerIds);
@@ -405,8 +459,8 @@ class AgentService {
   private subscribe(bound: Bound) {
     const { threadId } = bound;
     bound.session.subscribe((evt) => {
-      const state = this.runs.get(threadId);
-      const runId = state?.status === 'running' ? state.runId : 'unknown';
+      if (this.sessions.get(threadId) !== bound) return;
+      const runId = bound.runId ?? 'unknown';
       switch (evt.type) {
         case 'agent_start':
           // Synthesize one messageId per RUN (not per pi message_start) so that
@@ -560,13 +614,11 @@ class AgentService {
             ? { kind: 'error' as const, message: errorMessage ?? 'unknown' }
             : { kind: reason };
           this.runs.set(threadId, transition(this.runs.get(threadId) ?? { status: 'idle' }, endEvt));
-          // run.ended 不进 journal：它一到就说明这轮不在飞了，journal 到此作废。
+          // run.ended 不进 journal：这次低层 run 已结束，journal 到此作废。
+          // bound.runId 仍保留到 settled，后续自动重试继续归属同一轮。
           bound.runJournal = [];
           bound.runStartIndex = null;
           broadcaster.emit('run.ended', { threadId, runId, reason, errorMessage });
-          if (bound.staleAfterRun) {
-            void this.dispose(threadId);
-          }
           return;
         }
         case 'agent_settled': {
@@ -577,6 +629,7 @@ class AgentService {
           const settledRunId = bound.runId;
           bound.runId = null;
           if (settledRunId !== null) browserService.endRun(settledRunId);
+          if (bound.staleAfterRun) void this.dispose(threadId);
           return;
         }
         default:

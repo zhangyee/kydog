@@ -12,6 +12,7 @@ import { enumerateSkills } from './enumerateSkills';
 import { downloadToFile } from './urlFetch';
 import { extractTarGz } from './urlExtract';
 import { parseGithubUrl } from './githubUrl';
+import { hiddenExperimentalBuiltinSkills } from './experimentalSkillAvailability';
 import { withSkillTree } from './skillTreeLock';
 
 export interface SkillsServiceDeps {
@@ -34,7 +35,9 @@ export class SkillsService {
   async listUnlocked(): Promise<SkillEntry[]> {
     if (!existsSync(this.deps.skillsDir)) mkdirSync(this.deps.skillsDir, { recursive: true });
     const entries = readdirSync(this.deps.skillsDir, { withFileTypes: true });
-    const disabled = (await settingsService.get()).skills.disabledBuiltins;
+    const settings = await settingsService.get();
+    const disabled = settings.skills.disabledBuiltins;
+    const unavailable = hiddenExperimentalBuiltinSkills(settings);
     const out: SkillEntry[] = [];
     for (const e of entries) {
       if (!e.isDirectory() || e.name.startsWith('.')) continue;
@@ -47,6 +50,7 @@ export class SkillsService {
         continue;
       }
       const origin: 'builtin' | 'user' = this.deps.isBuiltin(e.name) ? 'builtin' : 'user';
+      if (origin === 'builtin' && unavailable.includes(e.name)) continue;
       const entry: SkillEntry = {
         name: e.name, // dirname is canonical id (§A.1)
         description: parsed.description,

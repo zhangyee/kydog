@@ -22,6 +22,7 @@ function attach(threadId: string) {
     // 这两个字段生产上由 ensureSession 初始化；这里绕过它直接塞 bound，得自己补齐。
     runJournal: [],
     runStartIndex: null,
+    runId: 'r1',
     session: {
       prompt: vi.fn(), abort: vi.fn(), dispose: vi.fn(),
       subscribe: (l: Listener) => { listener = l; return () => undefined; },

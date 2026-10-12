@@ -6,7 +6,7 @@ import { logger } from '../log';
 const TOUCHED = ['NCBI_API_KEY', 'UNPAYWALL_EMAIL', 'CORE_API_KEY', 'MY_KEY', 'AMBIENT_KEY', '1BAD'];
 
 const R = (r: Partial<SettingsFile['research']>): SettingsFile['research'] =>
-  ({ presets: {}, custom: [], ...r });
+  ({ presets: {}, custom: [], xResearchEnabled: false, ...r });
 
 describe('researchEnv.applyResearchEnv', () => {
   const saved = new Map<string, string | undefined>();
@@ -129,7 +129,7 @@ describe('researchEnv.applyResearchEnv', () => {
     expect(() => applyResearchEnv({
       presets: { NCBI_API_KEY: 'k1' },
       // 模拟手改 kydog.json 或 JSON.stringify 把数组空洞序列化成 null
-      custom: [null, { name: 'MY_KEY', kind: 'key', value: 'v1' }] as never,
+      custom: [null, { name: 'MY_KEY', kind: 'key', value: 'v1' }] as never, xResearchEnabled: false,
     })).not.toThrow();
     expect(process.env.NCBI_API_KEY).toBe('k1');
     expect(process.env.MY_KEY).toBe('v1');
@@ -160,3 +160,21 @@ describe('researchEnv.applyResearchEnv', () => {
     warn.mockRestore();
   });
 });
+
+ it('experimental setting never becomes an environment variable', () => {
+  const before = process.env.xResearchEnabled;
+  const keyBefore = process.env.NCBI_API_KEY;
+  try {
+    __resetResearchEnvForTest();
+    applyResearchEnv(R({ presets: { NCBI_API_KEY: 'env-control' }, xResearchEnabled: true }));
+    expect(process.env.NCBI_API_KEY).toBe('env-control');
+    expect(process.env.xResearchEnabled).toBe(before);
+    applyResearchEnv(R({ presets: { NCBI_API_KEY: 'env-control' }, xResearchEnabled: false }));
+    expect(process.env.NCBI_API_KEY).toBe('env-control');
+    expect(process.env.xResearchEnabled).toBe(before);
+  } finally {
+    if (keyBefore === undefined) delete process.env.NCBI_API_KEY;
+    else process.env.NCBI_API_KEY = keyBefore;
+    __resetResearchEnvForTest();
+  }
+ });

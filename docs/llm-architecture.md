@@ -125,7 +125,7 @@ modelId =
 `AgentService` 的失效语义统一走 `markStaleOrDispose(bound)`：
 
 - thread idle → 立即 `dispose()`，下次发消息时新建 session
-- thread running → 打上 `staleAfterRun`，等 pi 的 `agent_end` 之后再 dispose（不打断进行中的回答）
+- thread running → 打上 `staleAfterRun`，等 pi 的 `agent_settled` 之后再 dispose（`bound.runId` 跨 `agent_end` 后的自动重试保持在途，不打断进行中的回答）
 
 ## 6. Cloud providers 的特殊路径
 

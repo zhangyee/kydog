@@ -208,6 +208,7 @@ export type SettingsFile = {
     /** 变量名 → 值；键只可能来自 PRESET_RESEARCH_VAR_NAMES。空值不入表。 */
     presets: Record<string, string>;
     custom: ResearchCustomVar[];
+    xResearchEnabled: boolean;
   };
   /** 只能由更新服务改（见 update/updateService.ts），故不在 SettingsPatch 中。 */
   updates: {

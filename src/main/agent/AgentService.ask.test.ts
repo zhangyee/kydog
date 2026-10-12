@@ -38,6 +38,7 @@ async function setup(threadId = 't1') {
   });
   const bound = await agentService.ensureSession(threadId, '/p');
   bound.activeMessageId = `${threadId}:msg`;
+  bound.runId = 'r1';
   (agentService as any).runs.set(threadId, { status: 'running', runId: 'r1', abortRequested: false });
   (broadcaster.emit as any).mockClear();
   return { bound, askShared, fire: (evt: { type: string; [k: string]: unknown }) => listener(evt) };

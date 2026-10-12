@@ -18,6 +18,7 @@ function attach(threadId: string) {
     askArgs: new Map<string, { toolName: string; args: unknown }>(),
     runJournal: [],
     runStartIndex: null,
+    runId: 'r1',
     session: {
       prompt: vi.fn(), abort: vi.fn(), dispose: vi.fn(),
       subscribe: (l: Listener) => { listener = l; return () => undefined; },

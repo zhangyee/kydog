@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ResearchCustomVar, ResearchVarKind, SettingsFile } from '../../shared/types';
 import { PRESET_RESEARCH_VARS } from '../../shared/researchVars';
 import { validateCustomVarName } from '../../shared/researchValidate';
 import { INSTITUTION_LOGIN_OPEN } from '../../shared/features';
-import { Card, BlockHeader, SubHeader, Divider, Btn, Empty, inputStyle, labelStyle, hintStyle } from './ui';
+import { Card, BlockHeader, SubHeader, Divider, Btn, Empty, Toggle, inputStyle, labelStyle, hintStyle } from './ui';
 import { InstitutionBlock } from './InstitutionBlock';
+import { useSkillsStore } from '../stores/skillsStore';
 
 type Research = SettingsFile['research'];
 
@@ -14,13 +15,17 @@ type Research = SettingsFile['research'];
 type CustomRow = ResearchCustomVar & { uid: number };
 
 export function ResearchCredentialsSection() {
+  const xResearchLabelId = useId();
   const [presets, setPresets] = useState<Record<string, string>>({});
   const [custom, setCustom] = useState<CustomRow[]>([]);
+  const [xResearchEnabled, setXResearchEnabled] = useState(false);
+  const xResearchBaseline = useRef(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [savedSwitchChanged, setSavedSwitchChanged] = useState(false);
   const nextUid = useRef(0);
   const withUid = (list: ResearchCustomVar[]): CustomRow[] => list.map((c) => ({ ...c, uid: nextUid.current++ }));
 
@@ -30,6 +35,8 @@ export function ResearchCredentialsSection() {
         const r = await window.kydog.invoke('research.get');
         setPresets(r.presets);
         setCustom(withUid(r.custom));
+        setXResearchEnabled(r.xResearchEnabled);
+        xResearchBaseline.current = r.xResearchEnabled;
       } catch (e) {
         setError(String((e as Error).message));
       } finally {
@@ -43,14 +50,23 @@ export function ResearchCredentialsSection() {
   const onSave = async () => {
     setSaving(true); setError(null);
     try {
-      const payload: Research = { presets, custom: custom.map(({ uid: _uid, ...rest }) => rest) };
+      const payload: Research = { presets, custom: custom.map(({ uid: _uid, ...rest }) => rest), xResearchEnabled };
       const r = await window.kydog.invoke('research.save', payload);
+      const switchChanged = xResearchBaseline.current !== r.xResearchEnabled;
       setPresets(r.presets);
       // 按位置复用已有 uid（而非无条件重新发号），否则 key 变了会让 React 卸载重建
       // 每一行 VarRow，显隐这类本地 state 每次保存都会被打回默认值。位置对应在
       // 成功路径下是成立的：normalizeResearch 不会丢条目，顺序也随 .map 原样保留。
       setCustom((prev) => r.custom.map((c, i) => ({ ...c, uid: prev[i]?.uid ?? nextUid.current++ })));
+      setXResearchEnabled(r.xResearchEnabled);
+      xResearchBaseline.current = r.xResearchEnabled;
+      setSavedSwitchChanged(switchChanged);
       setSaved(true);
+      if (switchChanged) {
+        void window.kydog.invoke('skill.list')
+          .then((skills) => useSkillsStore.getState().setSkills(skills))
+          .catch((e: unknown) => console.error('Failed to refresh skills after research settings save', e));
+      }
     } catch (e) {
       setError(String((e as Error).message));
     } finally {
@@ -132,6 +148,17 @@ export function ResearchCredentialsSection() {
         )}
       </Card>
 
+      <div style={{ height: 28 }} />
+      <BlockHeader>实验性功能</BlockHeader>
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span id={xResearchLabelId} style={labelStyle}>启用 X 研究工具</span>
+          <div data-testid="research-x-enabled">
+            <Toggle labelledBy={xResearchLabelId} checked={xResearchEnabled} disabled={saving} onChange={() => edit(() => setXResearchEnabled((v) => !v))} />
+          </div>
+        </div>
+      </Card>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 20 }}>
         <button
           type="button"
@@ -153,12 +180,12 @@ export function ResearchCredentialsSection() {
         )}
         {saved && !adding && (
           <span data-testid="research-saved" className="font-serif italic" style={{ fontSize: 11, color: 'var(--color-ink-soft)' }}>
-            已保存，下一次工具调用即生效
+            {savedSwitchChanged ? '已保存，下一轮 Agent 运行生效' : '已保存，下一次工具调用即生效'}
           </span>
         )}
       </div>
       {error && (
-        <div data-testid="research-error" style={{ color: 'var(--color-danger, #c0392b)', marginTop: 10, fontSize: 12 }}>
+        <div data-testid="research-error" style={{ color: 'var(--color-ink-soft)', marginTop: 10, fontSize: 12 }}>
           {error.split('；').map((line, i) => <div key={i}>{line}</div>)}
         </div>
       )}
@@ -267,7 +294,7 @@ function AddVarForm({ existing, onAdd, onCancel }: {
         onChange={(e) => setValue(e.target.value)}
         style={inputStyle}
       />
-      {err && <div style={{ color: 'var(--color-danger, #c0392b)', fontSize: 11 }}>{err}</div>}
+      {err && <div style={{ color: 'var(--color-ink-soft)', fontSize: 11 }}>{err}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onCancel}>取消</Btn>
         <Btn variant="primary" testId="research-new-confirm" onClick={confirm}>确定</Btn>

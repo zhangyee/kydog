@@ -19,6 +19,38 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
+  it('replaceResearch reports committed changes under the settings lock', async () => {
+    const input = { presets: { NCBI_API_KEY: 'kept' }, custom: [], xResearchEnabled: true };
+    expect((await svc.replaceResearch(input)).xResearchEnabledChanged).toBe(true);
+    expect((await svc.replaceResearch({ ...input, presets: { NCBI_API_KEY: 'edited' } })).xResearchEnabledChanged).toBe(false);
+    // Queued patch wins before replace: changed must use the lock's current value.
+    const patch = svc.update({ research: { xResearchEnabled: false } });
+    const replaced = svc.replaceResearch(input);
+    await patch;
+    expect((await replaced).xResearchEnabledChanged).toBe(true);
+    expect((await svc.replaceResearch({ ...input, xResearchEnabled: false })).xResearchEnabledChanged).toBe(true);
+    const reloaded = await new SettingsService().get();
+    expect(reloaded.research).toEqual({ ...input, xResearchEnabled: false });
+    const sameFlagPatch = svc.update({ research: { xResearchEnabled: true } });
+    const sameFlagReplacement = svc.replaceResearch(input);
+    await sameFlagPatch;
+    expect((await sameFlagReplacement).xResearchEnabledChanged).toBe(false);
+  });
+
+  it('replaceResearch returns no committed facts and preserves cache/disk after atomic write failure', async () => {
+    const input = { presets: { NCBI_API_KEY: 'preserved' }, custom: [], xResearchEnabled: true };
+    expect((await svc.replaceResearch(input)).research).toEqual(input);
+    const file = path.join(dir, 'kydog.json');
+    const before = readFileSync(file, 'utf8');
+    const atomic = await import('../persist/atomicWrite');
+    vi.spyOn(atomic, 'atomicWriteWith0600Async').mockRejectedValueOnce(new Error('disk full'));
+    await expect(svc.replaceResearch({ ...input, xResearchEnabled: false })).rejects.toThrow('disk full');
+    expect((await svc.get()).research).toEqual(input);
+    expect(readFileSync(file, 'utf8')).toBe(before);
+    expect((await new SettingsService().get()).research).toEqual(input);
+    expect((await svc.replaceResearch({ ...input, xResearchEnabled: false })).xResearchEnabledChanged).toBe(true);
+  });
+
   /**
    * **一次读不出来，不许拿默认值把盘上那份盖掉。**
    *

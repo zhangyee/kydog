@@ -29,6 +29,7 @@ describe('SkillsService.list', () => {
     mkSkill(skillsDir, 'fastpaper');     // assumed builtin
     mkSkill(skillsDir, 'agent-browser'); // user
     (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      research: { xResearchEnabled: false },
       skills: { disabledBuiltins: ['fastpaper'] },
     });
     const svc = new SkillsService({
@@ -64,6 +65,7 @@ describe('SkillsService.list', () => {
     writeFileSync(path.join(skillsDir, 'broken', 'SKILL.md'),
       '---\nname: broken\ndescription: How it differs: it does not.\n---\nbody');
     (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      research: { xResearchEnabled: false },
       skills: { disabledBuiltins: [] },
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -79,6 +81,7 @@ describe('SkillsService.list', () => {
     mkdirSync(path.join(skillsDir, '.cache'));
     mkSkill(skillsDir, 'good');
     (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      research: { xResearchEnabled: false },
       skills: { disabledBuiltins: [] },
     });
     const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
@@ -91,8 +94,8 @@ describe('SkillsService.setEnabled', () => {
   it('builtin: writes disabledBuiltins via settingsService.update', async () => {
     const skillsDir = tmp();
     mkSkill(skillsDir, 'fastpaper');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
-    (settingsService.update as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: ['fastpaper'] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
+    (settingsService.update as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: ['fastpaper'] } });
     const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
     await svc.setEnabled('fastpaper', false);
     expect(settingsService.update).toHaveBeenCalledWith({ skills: { disabledBuiltins: ['fastpaper'] } });
@@ -101,7 +104,7 @@ describe('SkillsService.setEnabled', () => {
   it('user: throws skill.invalid', async () => {
     const skillsDir = tmp();
     mkSkill(skillsDir, 'agent-browser');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     (settingsService.update as ReturnType<typeof vi.fn>).mockReset();
     const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
     await expect(svc.setEnabled('agent-browser', false)).rejects.toThrow(/skill\.invalid|第三方/);
@@ -112,7 +115,7 @@ describe('SkillsService.setEnabled', () => {
     const skillsDir = tmp();
     mkSkill(skillsDir, 'fastpaper');
     (settingsService.get as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ skills: { disabledBuiltins: ['fastpaper'] } });
+      .mockResolvedValueOnce({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: ['fastpaper'] } });
     (settingsService.update as ReturnType<typeof vi.fn>).mockResolvedValue({});
     const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
     await svc.setEnabled('fastpaper', true);
@@ -124,7 +127,7 @@ describe('SkillsService.uninstall', () => {
   it('user: removes the directory', async () => {
     const skillsDir = tmp();
     mkSkill(skillsDir, 'agent-browser');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
     await svc.uninstall('agent-browser');
     expect(existsSync(path.join(skillsDir, 'agent-browser'))).toBe(false);
@@ -133,7 +136,7 @@ describe('SkillsService.uninstall', () => {
   it('builtin: throws skill.uninstall_forbidden', async () => {
     const skillsDir = tmp();
     mkSkill(skillsDir, 'fastpaper');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     const svc = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => '0' });
     await expect(svc.uninstall('fastpaper')).rejects.toThrow(/skill\.uninstall_forbidden|内置/);
     expect(existsSync(path.join(skillsDir, 'fastpaper'))).toBe(true);
@@ -145,7 +148,7 @@ describe('SkillsService.previewFromFolder', () => {
     const skillsDir = tmp();
     const src = tmp();
     mkSkill(src, 'foo');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     const svc = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => '0' });
     const r = await svc.previewFromFolder({ srcDir: src });
     expect(r.srcKind).toBe('folder');
@@ -157,7 +160,7 @@ describe('SkillsService.previewFromFolder', () => {
     mkSkill(skillsDir, 'foo');     // already installed
     const src = tmp();
     mkSkill(src, 'foo');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     const svc = new SkillsService({ skillsDir, isBuiltin: (n) => n === 'foo', builtinKydogVersion: () => '0' });
     const r = await svc.previewFromFolder({ srcDir: src });
     expect(r.candidates[0].alreadyInstalled).toBe('builtin');
@@ -181,7 +184,7 @@ describe('SkillsService.previewFromUrl', () => {
     if (typeof addr === 'string' || !addr) throw new Error('bad addr');
     const url = `http://127.0.0.1:${addr.port}/x.tar.gz`;
     try {
-      (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+      (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
       const svc = new SkillsService({
         skillsDir,
         isBuiltin: () => false,
@@ -203,7 +206,7 @@ describe('SkillsService.commitFromPreview', () => {
     const src = tmp();
     mkSkill(src, 'a');
     mkSkill(src, 'b');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     const svc = new SkillsService({
       skillsDir,
       isBuiltin: () => false,
@@ -231,7 +234,7 @@ describe('SkillsService.commitFromPreview', () => {
     mkSkill(skillsDir, 'a');   // already installed (user)
     mkSkill(src, 'a');
     mkSkill(src, 'b');
-    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
     const svc = new SkillsService({
       skillsDir,
       isBuiltin: () => false,
@@ -270,7 +273,7 @@ describe('SkillsService.commitFromPreview', () => {
     if (typeof addr === 'string' || !addr) throw new Error('bad addr');
     const url = `http://127.0.0.1:${addr.port}/x.tar.gz`;
     try {
-      (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ skills: { disabledBuiltins: [] } });
+      (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue({ research: { xResearchEnabled: false }, skills: { disabledBuiltins: [] } });
       const svc = new SkillsService({
         skillsDir,
         isBuiltin: () => false,
@@ -294,3 +297,20 @@ describe('SkillsService.commitFromPreview', () => {
     } finally { srv.close(); }
   });
 });
+
+ it('experimental built-in availability hides only builtins without rewriting preferences', async () => {
+  const skillsDir = tmp();
+  mkSkill(skillsDir, 'x-research');
+  const settings = { skills: { disabledBuiltins: ['another'] }, research: { xResearchEnabled: true } };
+  vi.mocked(settingsService.get).mockResolvedValue(settings as never);
+  const builtin = new SkillsService({ skillsDir, isBuiltin: () => true, builtinKydogVersion: () => 'test' });
+  expect((await builtin.list()).map(s => [s.name, s.enabled])).toEqual([['x-research', true]]);
+  settings.research.xResearchEnabled = false;
+  expect(await builtin.list()).toEqual([]);
+  const user = new SkillsService({ skillsDir, isBuiltin: () => false, builtinKydogVersion: () => 'test' });
+  expect((await user.list()).map(s => [s.name, s.enabled])).toEqual([['x-research', true]]);
+  expect(settings.skills.disabledBuiltins).toEqual(['another']);
+  settings.research.xResearchEnabled = true;
+  settings.skills.disabledBuiltins = ['x-research'];
+  expect((await builtin.list()).map(s => [s.name, s.enabled])).toEqual([['x-research', false]]);
+ });

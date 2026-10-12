@@ -24,6 +24,7 @@ function attach(threadId: string, runId = 'r1') {
     askArgs: new Map<string, { toolName: string; args: unknown }>(),
     runJournal: [] as RunEvent[],
     runStartIndex: null as number | null,
+    runId,
     session: {
       prompt: vi.fn(), abort: vi.fn(), dispose: vi.fn(),
       state: { messages },

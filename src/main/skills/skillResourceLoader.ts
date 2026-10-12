@@ -7,6 +7,8 @@ import { logger } from '../log';
 import { createAskBatchExtension } from '../agent/askBatchExtension';
 import { buildKydogSystemPrompt } from '../agent/systemPrompt';
 import { withSkillTree } from './skillTreeLock';
+import { builtinSkillsRoot, listBuiltinSkills } from './builtinSkills';
+import { hiddenExperimentalBuiltinSkills } from './experimentalSkillAvailability';
 
 export const KYDOG_SKILLS_DIR = path.join(os.homedir(), '.kydog', 'skills');
 
@@ -61,8 +63,14 @@ export function buildAgentsFilesOverride(harness: AgentsFileEntry[]) {
  */
 export function buildSkillsOverride(
   disabled: readonly string[],
-): <S extends { name: string }, D>(base: { skills: S[]; diagnostics: D[] }) => { skills: S[]; diagnostics: D[] } {
-  return (base) => ({ ...base, skills: base.skills.filter((s) => !disabled.includes(s.name)) });
+  unavailable: readonly string[] = [],
+): <S extends { name: string; filePath?: string }, D>(base: { skills: S[]; diagnostics: D[] }) => { skills: S[]; diagnostics: D[] } {
+  const hidden = new Set([...disabled, ...unavailable]);
+  return (base) => ({ ...base, skills: base.skills.filter((s) => {
+    if (!hidden.has(s.name)) return true;
+    // 内置 skill 只从这棵全局投影树加载；别把项目/用户目录里的同名 skill 一起藏掉。
+    return s.filePath !== undefined && s.filePath !== path.join(KYDOG_SKILLS_DIR, s.name, 'SKILL.md');
+  }) });
 }
 
 export async function createKydogResourceLoader(projectCwd: string) {
@@ -71,7 +79,10 @@ export async function createKydogResourceLoader(projectCwd: string) {
     const pi = await import('@earendil-works/pi-coding-agent');
     // Snapshot disabled list at construction time (spec §A.2): in-flight sessions
     // keep their original filter; new sessions pick up the latest setting.
-    const disabled = (await settingsService.get()).skills.disabledBuiltins;
+    const settings = await settingsService.get();
+    const builtins = new Set(listBuiltinSkills(builtinSkillsRoot()));
+    const disabled = settings.skills.disabledBuiltins.filter(name => builtins.has(name));
+    const unavailable = hiddenExperimentalBuiltinSkills(settings).filter(name => builtins.has(name));
     const harness = await loadHarnessAgentsFiles();
     // 批次独占：loader 与 session 同生命周期，所以守卫天然按 thread 隔离。
     const { factory: askBatchFactory } = createAskBatchExtension();
@@ -89,7 +100,7 @@ export async function createKydogResourceLoader(projectCwd: string) {
       // 不影响 extensionFactories：inline factory 走 loadExtensionFactories()，另一条路。
       noExtensions: true,
       additionalSkillPaths: [KYDOG_SKILLS_DIR],
-      skillsOverride: buildSkillsOverride(disabled),
+      skillsOverride: buildSkillsOverride(disabled, unavailable),
       agentsFilesOverride: buildAgentsFilesOverride(harness),
       extensionFactories: [askBatchFactory],
     });

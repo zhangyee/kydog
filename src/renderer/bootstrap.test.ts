@@ -47,7 +47,7 @@ const SETTINGS: SettingsFileForRenderer = {
   llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: 'anthropic', defaultModel: 'x' },
   skills: { disabledBuiltins: [] },
   tools: { externalBins: [] },
-  research: { presets: {}, custom: [] },
+  research: { presets: {}, custom: [], xResearchEnabled: false },
   institution: null,
   updates: { autoCheck: true, dismissedCandidateId: null },
   telemetry: { state: 'undecided', decidedAt: null },
@@ -454,4 +454,16 @@ describe('ui.mdExport 接进了 uiStore 并落盘', () => {
     expect((updates.at(-1)!.args as { ui: { mdExport: unknown } }).ui.mdExport)
       .toEqual({ paper: 'a4', margin: 'narrow', pageNumbers: false });
   });
+});
+
+it('bootstrap restores persisted experimental preference on each load', async () => {
+  const original = BOOT.settings;
+  try {
+    BOOT.settings = { ...original, research: { ...original.research, xResearchEnabled: true } };
+    await bootstrap();
+    expect(useSettingsStore.getState().settings?.research.xResearchEnabled).toBe(true);
+    BOOT.settings = { ...original, research: { ...original.research, xResearchEnabled: false } };
+    await bootstrap();
+    expect(useSettingsStore.getState().settings?.research.xResearchEnabled).toBe(false);
+  } finally { BOOT.settings = original; }
 });

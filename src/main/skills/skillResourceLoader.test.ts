@@ -2,9 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+vi.mock('electron', () => ({ app: { isPackaged: false } }));
 import * as paths from '../persist/paths';
 import { ensureSettingsFile } from '../persist/settingsFile';
-import { buildSkillsOverride, loadHarnessAgentsFiles, buildAgentsFilesOverride, HARNESS_MAX_CHARS, kydogAgentDir, createKydogResourceLoader } from './skillResourceLoader';
+import { buildSkillsOverride, loadHarnessAgentsFiles, buildAgentsFilesOverride, HARNESS_MAX_CHARS, kydogAgentDir, KYDOG_SKILLS_DIR, createKydogResourceLoader } from './skillResourceLoader';
+import * as builtinCatalog from './builtinSkills';
+import { settingsService } from '../settings/settingsService';
 import { buildKydogSystemPrompt } from '../agent/systemPrompt';
 
 describe('buildSkillsOverride', () => {
@@ -75,6 +78,7 @@ describe('createKydogResourceLoader', () => {
     vi.spyOn(paths, 'SETTINGS_FILE', 'get').mockReturnValue(path.join(home, 'kydog.json'));
     vi.spyOn(paths, 'LOCK_PATH', 'get').mockReturnValue(path.join(home, '.kydog.json.lock'));
     ensureSettingsFile();
+    (settingsService as any).cache = null;
     writeFileSync(path.join(home, 'SOUL.md'), 'S');
   });
 
@@ -82,6 +86,36 @@ describe('createKydogResourceLoader', () => {
     rmSync(home, { recursive: true, force: true });
     rmSync(proj, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  it('actual loader discovers experimental builtin, hides it when closed, preserves same-name user skill', async () => {
+    const source = path.join(home, 'builtin-source');
+    const projected = path.join(KYDOG_SKILLS_DIR, 'x-research');
+    mkdirSync(path.join(source, 'x-research'), { recursive: true });
+    mkdirSync(projected, { recursive: true });
+    const content = '---\nname: x-research\ndescription: deliberate temporary availability fixture\n---\nbody';
+    writeFileSync(path.join(source, 'x-research', 'SKILL.md'), content);
+    writeFileSync(path.join(projected, 'SKILL.md'), content);
+    vi.spyOn(builtinCatalog, 'builtinSkillsRoot').mockReturnValue(source);
+    const loaded = async () => {
+      const loader = await createKydogResourceLoader(proj);
+      await loader.reload();
+      return loader.getSkills().skills.filter(s => s.name === 'x-research');
+    };
+    try {
+      await settingsService.update({ research: { xResearchEnabled: true }, skills: { disabledBuiltins: ['another'] } });
+      expect((await loaded()).map(s => s.filePath)).toEqual([path.join(projected, 'SKILL.md')]);
+      await settingsService.update({ research: { xResearchEnabled: false } });
+      expect(await loaded()).toEqual([]);
+      expect((await settingsService.get()).skills.disabledBuiltins).toEqual(['another']);
+      await settingsService.update({ research: { xResearchEnabled: true }, skills: { disabledBuiltins: ['x-research'] } });
+      expect(await loaded()).toEqual([]);
+      // The source catalog no longer identifies it as builtin: same directory is now a user skill.
+      rmSync(path.join(source, 'x-research'), { recursive: true });
+      await settingsService.update({ research: { xResearchEnabled: false } });
+      expect((await loaded()).map(s => s.filePath)).toEqual([path.join(projected, 'SKILL.md')]);
+      expect((await settingsService.get()).skills.disabledBuiltins).toEqual(['x-research']);
+    } finally { rmSync(projected, { recursive: true, force: true }); }
   });
 
   // agentDir 若退回 pi.getAgentDir() 就会变成 ~/.pi/agent —— 用户 pi CLI 的家目录。
@@ -186,4 +220,24 @@ describe('createKydogResourceLoader', () => {
     expect(path.basename(files[0].path)).toBe('SOUL.md');
     expect(files.some((f) => f.path === path.join(proj, 'AGENTS.md'))).toBe(true);
   });
+});
+
+it('experimentalAvailabilityPreservesPreferenceAndProjectSkill', async () => {
+  const { hiddenExperimentalBuiltinSkills } = await import('./experimentalSkillAvailability');
+  const { defaultSettings } = await import('../persist/settingsFile');
+  const settings = defaultSettings();
+  settings.skills.disabledBuiltins = ['fastpaper'];
+  const builtin = { name: 'x-research', filePath: path.join(KYDOG_SKILLS_DIR, 'x-research', 'SKILL.md') };
+  const project = { name: 'x-research', filePath: '/project/.pi/skills/x-research/SKILL.md' };
+  const base = { skills: [project, builtin], diagnostics: ['kept'] };
+  settings.research.xResearchEnabled = true;
+  expect(buildSkillsOverride(settings.skills.disabledBuiltins, hiddenExperimentalBuiltinSkills(settings))(base).skills).toEqual([project, builtin]);
+  settings.research.xResearchEnabled = false;
+  const filtered = buildSkillsOverride(settings.skills.disabledBuiltins, hiddenExperimentalBuiltinSkills(settings))(base);
+  expect(filtered.skills).toEqual([project]);
+  expect(filtered.diagnostics).toBe(base.diagnostics);
+  expect(settings.skills.disabledBuiltins).toEqual(['fastpaper']);
+  settings.skills.disabledBuiltins = ['x-research'];
+  settings.research.xResearchEnabled = true;
+  expect(buildSkillsOverride(settings.skills.disabledBuiltins, hiddenExperimentalBuiltinSkills(settings))(base).skills).toEqual([project]);
 });

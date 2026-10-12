@@ -131,7 +131,11 @@ export function registerAllHandlers(): void {
   registerHandler('settings.get', async () => toRendererSettings(await settingsService.get()));
   registerHandler('settings.update', async (args) => toRendererSettings(await settingsService.update(args)));
   registerHandler('research.get', () => researchService.get());
-  registerHandler('research.save', (args) => researchService.save(args));
+  registerHandler('research.save', async (args) => {
+    const facts = await researchService.save(args);
+    if (facts.xResearchEnabledChanged) await agentService.invalidateAllSessions();
+    return facts.research;
+  });
   registerHandler('webResearch.list', (args, evt) => {
     assertResearchViewer(args.threadId, evt.sender);
     return researchRunStore.listRuns(args.threadId);
