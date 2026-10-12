@@ -89,8 +89,8 @@
       for (const b of own(box,'button[role="button"][type="button"][data-testid="tweet-text-show-more-link"]')) control(b,'body_expand',fact.postId,[...scopeOf(root),...scopeOf(box)]);
       const cover = own(box,'[data-testid="article-cover-image"]');
       if (box!==root && cover.length && rootFact.postId) {
-        const c = control(box,'article_entry',rootFact.postId,scopeOf(root));
-        if (c) entries.push({el:box,parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? null : null,label:text(box).slice(0,512)});
+        const c = control(box,'article_entry',rootFact.postId,[...scopeOf(root),...scopeOf(box)]);
+        if (c) entries.push({el:box,author:authorOf(box),parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? box.getAttribute('href') : null,label:text(box).slice(0,512)});
       }
     }
   }

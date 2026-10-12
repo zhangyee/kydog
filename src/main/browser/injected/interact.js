@@ -36,7 +36,7 @@
   //
   // 这不是「取消」：卡在到点那一刻的窗口里，自检过了之后写照样会落地。
   // 所以主进程那条消息说的是「结果未知」，不是「没有发生」。
-  if (typeof req.notAfter === 'number' && Date.now() > req.notAfter) {
+  if (req.op !== 'scroll_ack_dispose' && typeof req.notAfter === 'number' && Date.now() > req.notAfter) {
     return { ok: false, reason: 'expired' };
   }
 
@@ -307,6 +307,17 @@
 
   const op = req && req.op;
 
+  // X-only delivery records retain physical DOM references in this isolated world.
+  // Poll/dispose never repeat a write. Disposal deliberately ignores write expiry.
+  if (op === 'scroll_ack_status' || op === 'scroll_ack_dispose') {
+    const saved = world?.scrollAcknowledgements?.get(req.token);
+    if (!saved) return { ok: false, reason: 'missing_scroll_ack' };
+    saved.check();
+    const acknowledgement = { ...saved.receipt };
+    if (op === 'scroll_ack_dispose') { saved.cleanup(); world.scrollAcknowledgements.delete(req.token); }
+    return { ok: true, acknowledgement };
+  }
+
   if (op === 'scroll') {
     // **不用 CDP 的 `Input.dispatchMouseEvent` mouseWheel。** 2026-09-08 在 Electron
     // 41.2.1 上实测：那条命令**永不 ack、也一个像素都不滚**，五种组合逐一试过
@@ -357,12 +368,64 @@
     // 不给 amount 就滚一屏 —— 这个数来自页面自己的视口高度，不是拍的阈值。
     const step = typeof req.amount === 'number' ? req.amount : viewport;
     const before = target ? target.scrollTop : 0;
-    if (box) box.scrollTop = before + dir * step;
-    else W.scrollBy(0, dir * step);
+    let delivery = null;
+    if (req.acknowledgement) {
+      const a = req.acknowledgement;
+      if (!world || !target || !a.document || world.gen !== a.document.generation || location.href !== a.document.url)
+        return { ok: false, reason: 'stale_node' };
+      if (typeof a.token !== 'string' || !Number.isFinite(a.expiresAt) || Date.now() >= a.expiresAt)
+        return { ok: false, reason: 'expired' };
+      if (!world.scrollAcknowledgements) world.scrollAcknowledgements = new Map();
+      if (world.scrollAcknowledgements.has(a.token)) return { ok: false, reason: 'duplicate_scroll_ack' };
+      // HTML can be selected as an overflow box; its event still targets Document.
+      const eventTarget = target === D.scrollingElement ? D : target;
+      const receipt = { token:a.token, generation:world.gen, url:location.href,
+        targetKind:eventTarget===D?'document':'element', before, after:before,
+        written:false, eventObserved:false, frameObserved:false, state:'pending' };
+      let frame = null, timer = null;
+      const cleanup = () => {
+        eventTarget.removeEventListener('scroll', onScroll);
+        W.removeEventListener('pagehide', onPageHide);
+        if (frame !== null) W.cancelAnimationFrame(frame);
+        if (timer !== null) W.clearTimeout(timer);
+        frame = null; timer = null;
+      };
+      const finish = state => { receipt.state=state; cleanup(); };
+      const check = () => {
+        if (receipt.state !== 'pending') return;
+        if (Date.now() >= a.expiresAt) finish('expired');
+        else if (document !== D || world.gen !== a.document.generation || location.href !== a.document.url
+          || !target.isConnected || (eventTarget===D && D.scrollingElement!==target)
+          || (receipt.written && target.scrollTop!==receipt.after)) finish('invalidated');
+      };
+      const onPageHide = () => finish('invalidated');
+      const onScroll = event => {
+        if (!event.isTrusted || event.target !== eventTarget || !receipt.written) return;
+        check(); if (receipt.state !== 'pending' || receipt.eventObserved) return;
+        receipt.eventObserved=true;
+        frame=W.requestAnimationFrame(() => {
+          frame=null; check(); if (receipt.state !== 'pending') return;
+          receipt.frameObserved=true; finish('frame_observed');
+        });
+      };
+      delivery={receipt,cleanup,check};
+      world.scrollAcknowledgements.set(a.token,delivery);
+      eventTarget.addEventListener('scroll',onScroll);
+      W.addEventListener('pagehide',onPageHide);
+      timer=W.setTimeout(() => finish('expired'),Math.max(0,a.expiresAt-Date.now()));
+    }
+    try {
+      if (box) box.scrollTop = before + dir * step;
+      else W.scrollBy(0, dir * step);
+    } catch (error) { delivery?.cleanup(); throw error; }
     const after = target ? target.scrollTop : 0;
+    if (delivery) {
+      delivery.receipt.written=true; delivery.receipt.after=after;
+      if (after===before) { delivery.receipt.state='no_movement'; delivery.cleanup(); }
+    }
     const max = target ? target.scrollHeight - target.clientHeight : 0;
     return {
-      ok: true, container: box ? describe(box) : 'document',
+      ok: true, ...(delivery ? { acknowledgement:{...delivery.receipt} } : {}), container: box ? describe(box) : 'document',
       before: Math.round(before), after: Math.round(after),
       delta: Math.round(after - before),
       // ── `max - 1` 里那个 1 的出处（与上面 `> 1` 同源）─────────────────────

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixture, post, searchHtml, searchInput } from '../../test-support/xResearchFixture';
-import { readX } from './xResearchRead';
+import { readX, readResult } from './xResearchRead';
 import { readHtml } from '../../test-support/xResearchFixture';
 import { searchX, searchResult } from './xResearchSearch';
 import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
@@ -48,7 +48,7 @@ describe('bounded X production tool result',()=>{
     const f=fixture([readHtml(post())]);
     const result=await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'},{postId:'999'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:100,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
     const root=result.targets[0].root!;
-    result.targets[0].replies.observations=Array.from({length:2000},(_,i)=>({...root,postId:String(i+1000),observationId:`reply-${i}`,text:'',author:{handle:'a'.repeat(1000),displayName:null,profileUrl:null},containerKind:'reply' as const,truncation:{returned:0,totalKnown:0,truncated:false}}));
+    result.targets[0].replies.observations=Array.from({length:2000},(_,i)=>({...root,postId:String(i+1000),observationId:`reply-${i}`,text:'',author:{handle:'a'.repeat(15),displayName:null,profileUrl:null},directParent:null,containerKind:'reply' as const,truncation:{returned:0,totalKnown:0,truncated:false}}));
     expect(serializeXResearchResult({...result,targets:result.targets.map(t=>({...t,replies:{...t.replies,observations:t.replies.observations.slice(0,1)}}))}).result.truncation.truncated).toBe(false);
     const value=serializeXResearchResult(result);
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(value)),'utf8')).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
@@ -77,7 +77,7 @@ describe('bounded X production tool result',()=>{
     const f=fixture([readHtml(post())]);
     const result=await readX({tabId:'tab',read:{objective:'a'.repeat(600000),targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
     const root=result.targets[0].root!;
-    const named=(kind:'quoted_post'|'reply'|'article',id:string,handle:string)=>({...root,containerKind:kind,postId:id,sourceUrl:`https://x.com/${handle}/status/${id}`,author:{handle,displayName:null,profileUrl:null},text:`${kind} body`});
+    const named=(kind:'quoted_post'|'reply'|'article',id:string,handle:string)=>({...root,directParent:null,containerKind:kind,postId:id,sourceUrl:`https://x.com/${handle}/status/${id}`,author:{handle,displayName:null,profileUrl:null},text:`${kind} body`});
     result.targets[0].quotedPosts=[named('quoted_post','456','bob')];result.targets[0].article.body=named('article','789','carol');result.targets[0].replies.observations=[named('reply','234','dave')];
     const out=serializeXResearchResult(result),model=JSON.parse(out.text).targets[0];
     for(const [actual,expected] of [[model.root,root],[model.quotedPosts[0],result.targets[0].quotedPosts[0]],[model.article.body,result.targets[0].article.body],[model.replies.observations[0],result.targets[0].replies.observations[0]]] as const) {
@@ -86,8 +86,8 @@ describe('bounded X production tool result',()=>{
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBe(out.result.budgetUsage.outputBytes);
   });
 
-  it('aliases only equal same-row model document URLs and explicitly omits a different secondary locator at cap',async()=>{
-    const handle='alice_'.repeat(100),url=`https://x.com/${handle}/status/123`;
+  it('aliases only equal same-row model document URLs and retains legal different source coordinates at cap',async()=>{
+    const handle='alice_123456789',url=`https://x.com/${handle}/status/123`;
     const f=fixture([readHtml(post('123',handle))]);
     const result=await readX({tabId:'tab',read:{objective:'a'.repeat(600000),targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
     const root=result.targets[0].root!,doc=result.targets[0].documentSource!;
@@ -102,20 +102,53 @@ describe('bounded X production tool result',()=>{
     const differentRoot=different.targets[0].root!;
     const fullDifferent=serializeXResearchResult(different);
     expect(JSON.parse(fullDifferent.text).targets[0].documentSource).toMatchObject({rootObservationId:differentRoot.observationId,sourceUrl:url+'/'});
-    // Find the first exact-size request prose at which this secondary MODEL URI
-    // cannot fit, while canonical URI and all root identity still fit.
+    // Legal public source URLs are shorter than an omission marker. Find the
+    // last exact-size envelope retaining both identities, then prove rejection.
     let lo=600000,hi=1048576;
-    while(lo<hi){const mid=Math.floor((lo+hi)/2);different.objective='a'.repeat(mid);try{const out=serializeXResearchResult(different);if(out.result.contentMetadataOmissions?.length)hi=mid;else lo=mid+1;}catch{hi=mid;}}
+    while(lo<hi){const mid=Math.ceil((lo+hi)/2);different.objective='a'.repeat(mid);try{serializeXResearchResult(different);lo=mid;}catch{hi=mid-1;}}
     different.objective='a'.repeat(lo);
     const capped=serializeXResearchResult(different),model=JSON.parse(capped.text);
-    expect(capped.result.contentMetadataOmissions).toContain('targets.0.documentSource.sourceUrl');
-    expect(model.contentMetadataOmissions).toContain('targets.0.documentSource.sourceUrl');
-    expect(model.targets[0].documentSource).toEqual({rootObservationId:differentRoot.observationId,sourceUrlInCanonicalDetails:true});
+    expect(model.targets[0].documentSource).toEqual({rootObservationId:differentRoot.observationId,sourceUrl:url+'/'});
     expect(model.targets[0].root).toMatchObject({postId:'123',sourceUrl:root.sourceUrl,authorHandle:handle});
     expect(capped.result.targets[0].documentSource).toEqual(different.targets[0].documentSource);
     expect(capped.result.objective).toBe(different.objective);
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)))).toBe(capped.result.budgetUsage.outputBytes);
     expect(capped.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+    different.objective+='a';
+    expect(()=>serializeXResearchResult(different)).toThrow(/required-state envelope/);
   });
 
+});
+
+it('preflights the Article navigation-stage diagnostic cost before I/O',()=>{
+  const f=fixture([readHtml(post())]);
+  const initial=readResult({tabId:'tab',read:{objective:'x',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+  let low=1,high=1048576;
+  while(low<high){const mid=Math.ceil((low+high)/2);initial.objective='x'.repeat(mid);try{assertXRequestFits(initial);low=mid;}catch{high=mid-1;}}
+  initial.objective='x'.repeat(low);
+  expect(()=>assertXRequestFits(initial)).not.toThrow();
+  const article=structuredClone(initial);article.targets[0].article.requested=true;
+  expect(()=>assertXRequestFits(article)).toThrow(/required-state envelope/);
+});
+
+
+it('preserves actual independently collected root and Article identity at the exact combined cap',async()=>{
+  const {stagedFixture}=await import('../../test-support/xResearchFixture');
+  const f=await stagedFixture({article:'ok'});
+  const input={tabId:'research-tab',read:{objective:'a'.repeat(600000),targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}};
+  expect(()=>assertXRequestFits(readResult(input,f.context))).not.toThrow();
+  const result=await readX(input,f.context),row=result.targets[0];
+  expect(row.article).toMatchObject({entryObserved:true,actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'}}});
+  expect(row.root).toMatchObject({postId:'123',sourceUrl:'https://x.com/alice/status/123',author:{handle:'alice'}});
+  let lo=result.objective.length,hi=1048576;
+  while(lo<hi){const mid=Math.ceil((lo+hi)/2);result.objective='a'.repeat(mid);try{serializeXResearchResult(result);lo=mid;}catch{hi=mid-1;}}
+  result.objective='a'.repeat(lo);
+  const out=serializeXResearchResult(result),model=JSON.parse(out.text).targets[0];
+  expect(model.root).toMatchObject({postId:row.root!.postId,sourceUrl:row.root!.sourceUrl,authorHandle:'alice'});
+  expect(model.article.body).toMatchObject({postId:row.article.body!.postId,sourceUrl:row.article.body!.sourceUrl,authorHandle:'bob'});
+  expect(out.result.targets[0].article).toMatchObject({entryObserved:true,actionAttempted:true,navigationStarted:true,bodyObserved:true});
+  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBe(out.result.budgetUsage.outputBytes);
+  expect(out.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+  result.objective+='a';
+  expect(()=>serializeXResearchResult(result)).toThrow(/required-state envelope/);
 });

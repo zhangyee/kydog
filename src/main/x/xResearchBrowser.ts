@@ -9,11 +9,12 @@ import type { XArticleEntry } from './xResearchTypes';
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
 export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }
 export interface XActionResult { action: DispatchAction; line: string; navigation: NavigationObservation | null }
+export interface XActionOptions { scrollAcknowledgement?: { onWritten: () => void } }
 export interface XQueuedPage {
   snapshot(): Promise<AxSnapshot>;
   /** Fixed program-owned extractor with validated DOM observations. */
   collect(request: XPageRequest): Promise<XPageObservation>;
-  act(action: DispatchAction, snapshot: AxSnapshot): Promise<XActionResult>;
+  act(action: DispatchAction, snapshot: AxSnapshot, options?: XActionOptions): Promise<XActionResult>;
   wait(until: WaitUntil, timeoutMs: number): Promise<boolean>;
   location(): BrowserLocationFacts;
 }
@@ -59,9 +60,11 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       if (signal?.aborted) abort();
       const check = () => { if (failure) throw failure; if (lifetime.signal.aborted) throw new KydogError('browser.cancelled', '这次浏览器操作已结束'); };
       const issued = new Set<Promise<unknown>>();
-      const run = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const pendingScrolls = new Set<Promise<unknown>>();
+      const run = async <T>(fn: () => Promise<T>, drainScroll = false): Promise<T> => {
         check();
         const operation = fn(); issued.add(operation);
+        if (drainScroll) { pendingScrolls.add(operation); void operation.then(()=>pendingScrolls.delete(operation),()=>pendingScrolls.delete(operation)); }
         void operation.then(() => issued.delete(operation), () => issued.delete(operation));
         const value = await Promise.race([operation, stopped]); check(); return value;
       };
@@ -103,7 +106,8 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           }
           return observation;
         }),
-        act: (action, snapshot) => run(async () => {
+        act: (action, snapshot, options) => run(async () => {
+          if (options?.scrollAcknowledgement && action.kind!=='scroll') throw new KydogError('browser.bad_action','滚动确认只适用于滚动动作');
           const expected = bindings.get(snapshot), current = browser.locationFacts(tabId);
           if (!expected || expected.documentEpoch !== current.documentEpoch || expected.routeRevision !== current.routeRevision || expected.navigationSequence !== current.navigationSequence || expected.currentUrl !== current.currentUrl)
             throw new KydogError('browser.stale_snapshot', '动作必须绑定本次操作内的当前快照');
@@ -112,13 +116,13 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             collectedPermission='index' in action && action.snapshotId===snapshot.snapshotId ? permissions.get(snapshot)?.get(action.index) : undefined;
             if (!collectedPermission) throw new KydogError('browser.bad_action','X 控件必须使用原采集节点和许可');
           }
-          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission}:{}) });
+          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
           const output = { action: { ...action }, ...result };
           const entry = action.kind==='click' && 'index' in action && action.snapshotId===snapshot.snapshotId
             ? currentEntries.get(snapshot)?.find(e=>e.binding.index===action.index) : undefined;
           if (entry) actions.set(output,{tabId,entry,location:browser.locationFacts(tabId),finalUrl:finalUrl(result.navigation)});
           return output;
-        }),
+        }, !!options?.scrollAcknowledgement),
         wait: (until, timeoutMs) => run(() => browser.waitFor(tabId, until, timeoutMs, lifetime.signal)),
         location: () => { check(); return browser.locationFacts(tabId); },
       };
@@ -137,6 +141,8 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         return await Promise.race([queued, stopped]);
       }
       finally {
+        lifetime.abort();
+        while (pendingScrolls.size) await Promise.allSettled([...pendingScrolls]);
         signal?.removeEventListener('abort', abort); offGone(); offUnavailable();
         lifetime.abort(); bindings.clear(); currentEntries.clear(); permissions.clear();
       }

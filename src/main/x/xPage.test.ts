@@ -303,3 +303,93 @@ it('media request coordinates do not prove a media document or admit its body id
     expect(()=>xPageExpression({...mediaRequest,expectedUrl:mediaUrl+'?token=secret'})).toThrow();
   }
 });
+
+
+it('returnToPostInvalidatesArticleAndPreArticleBindings',async()=>{
+  const button='<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>';
+  let f=fixture(wrap(post('123','alice','parent',button+`<div role="link" tabindex="0">${author('bob')}<div data-testid="article-cover-image">Preview</div></div>`)));
+  const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
+  const articleUrl='https://x.com/bob/status/456';
+  let delivered=0;
+  const browser={enqueue:(_tab:string,work:()=>Promise<unknown>)=>work(),withAgentDriving:(_tab:string,_thread:string,work:()=>Promise<unknown>)=>work(),onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_tab:string,code:string)=>f.evaluate(code),
+    open:async()=>{facts.currentUrl=url;facts.documentEpoch++;facts.navigationSequence++;f=fixture(wrap(post('123','alice','returned',button)));return {tabId:'tab',evicted:[],nav:{outcome:{kind:'ok',finalUrl:url}}};},
+    dispatchAndObserveNavigation:async(_tab:string,action:any,snapshot:any)=>{delivered++;if(snapshot.nodes.find((n:any)=>n.index===action.index)?.collectedPermission?.purpose==='article_entry'){facts.currentUrl=articleUrl;facts.documentEpoch++;facts.navigationSequence++;f=fixture(`<main><article data-testid="tweet">${author('bob')}<article data-testid="twitterArticleReadView"><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Body</div></div></div></article></article></main>`,articleUrl);return {line:'clicked',navigation:{outcome:{kind:'ok',finalUrl:articleUrl}}};}return {line:'clicked',navigation:null};},
+  } as unknown as BrowserService;
+  const port=createXResearchBrowser(browser,'thread');
+  const prior=await port.withPage('tab',undefined,async page=>{
+    const parent=await page.collect(request),entry=parent.entries[0];
+    const action=await page.act({kind:'click',index:entry.binding.index,snapshotId:entry.binding.snapshotId},parent.snapshot);
+    const article=await page.collect({stage:'article',expectedUrl:articleUrl,entry,via:{kind:'action',result:action}});
+    expect(article.article!.body.text).toBe('Body');return {parent,article};
+  });
+  await port.open(url,'tab');
+  await port.withPage('tab',undefined,async page=>{
+    const current=await page.collect(request),binding=current.controls[0].binding;
+    await page.act({kind:'click',index:binding.index,snapshotId:binding.snapshotId},current.snapshot);
+    expect(delivered).toBe(2);
+    for(const stale of [prior.parent,prior.article]) await expect(page.act({kind:'scroll',direction:'down'},stale.snapshot)).rejects.toMatchObject({code:'browser.stale_snapshot'});
+    expect(delivered).toBe(2);
+  });
+});
+
+it('Article permission retains the independently observed preview author links',()=>{
+  const f=fixture(wrap(post('123','alice','parent',`<div role="link" tabindex="0">${author('bob')}<div data-testid="article-cover-image">Preview</div></div>`)));
+  const el=f.document.querySelector('[role="link"]')! as HTMLElement;
+  Object.assign(f.document,{elementFromPoint:()=>el});el.scrollIntoView=()=>{};
+  const raw=f.collect(),n=raw.snapshot.nodes.find((n:any)=>n.nodeId===raw.entries[0].nodeId);
+  const pointer={token:'article',kind:'click' as const,expiresAt:Date.now()+3000};
+  const measure=()=>f.evaluate(measuredPointerExpression({nodeId:n.nodeId,document:{generation:raw.snapshot.generation,url},collectedPermission:n.collectedPermission},pointer,Date.now()+3000));
+  expect(raw.entries[0].author.handle).toBe('bob');
+  expect(measure()).toMatchObject({ok:true,pointerGuard:{ok:true}});
+  el.querySelectorAll('a[href]').forEach(a=>a.setAttribute('href','/mallory'));
+  expect(measure()).toMatchObject({ok:false});
+});
+
+
+it('names only official source identities while preserving independent long Unicode display names',()=>{
+  const maximum='18446744073709551615', handle='Ab_0123456789xy';
+  const r={stage:'search' as const,expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest' as const};
+  const facts={currentUrl:r.expectedUrl,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:r.expectedUrl};
+  for(const [id,name] of [[maximum,handle],['0','a']]) {
+    const f=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post(id,name)),r.expectedUrl);
+    f.document.querySelector('[data-testid="User-Name"] a')!.textContent='科研显示名'.repeat(50);
+    const good=decodeXPage(f.collect(r),r,facts,false);
+    expect(good.posts[0]).toMatchObject({postId:id,author:{handle:name,displayName:'科研显示名'.repeat(50)}});
+    for(const [badId,badName] of [[id,handle+'z'],['18446744073709551616',name],['0'.repeat(21),name]]) {
+      const bad=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post(badId,badName)),r.expectedUrl);
+      const result=decodeXPage(bad.collect(r),r,facts,false);
+      expect(result.posts).toEqual([]);
+      expect(result.fragments[0]).toMatchObject({containerKind:'unattributed_fragment',postId:null,text:'root original'});
+    }
+  }
+});
+
+it('rejects invalid request identities before constructing a page expression and excludes media body sources',()=>{
+  const maximum='18446744073709551615',handle='Ab_0123456789xy';
+  for(const suffix of ['', '/history/', '/photo/1', '/video/2/']) {
+    const expectedUrl=`https://x.com/${handle}/status/${maximum}${suffix}`;
+    const r={stage:'post' as const,expectedUrl,postId:maximum};
+    expect(xPageExpression(r)).toContain('permissionNamespace');
+    expect(()=>xPageExpression({...r,expectedUrl:expectedUrl.replace(handle,handle+'z')})).toThrow();
+    expect(()=>xPageExpression({...r,postId:'18446744073709551616',expectedUrl:expectedUrl.replace(maximum,'18446744073709551616')})).toThrow();
+  }
+  const f=fixture(), facts={currentUrl:url,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
+  expect(decodeXPage(f.collect(),request,facts,false).root).toMatchObject({postId:'123'});
+  f.document.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/photo/1');
+  expect(decodeXPage(f.collect(),request,facts,false).root).toBeNull();
+});
+
+
+it('never changes an observed invalid href into a href-less Article entry proof',()=>{
+  const f=fixture(wrap(post('123','alice','parent',`<div role="link" tabindex="0">${author('bob')}<div data-testid="article-cover-image">Article</div></div>`)));
+  const facts={currentUrl:url,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
+  const decode=()=>decodeXPage(f.collect(),request,facts,false);
+  expect(decode().entries[0]).toMatchObject({targetUrl:null,author:{handle:'bob'}});
+  const box=f.document.querySelector('div[role="link"]')!;
+  box.setAttribute('href','/bob/status/456');
+  expect(decode().entries[0]).toMatchObject({targetUrl:'https://x.com/bob/status/456'});
+  for(const href of ['https://[','/bob/status/18446744073709551616','/abcdefghijklmnop/status/456','https://example.org/bob/status/456']) {
+    box.setAttribute('href',href);
+    expect(decode().entries).toEqual([]);
+  }
+});

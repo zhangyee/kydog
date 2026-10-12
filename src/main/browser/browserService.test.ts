@@ -4386,3 +4386,59 @@ it.each(['focus', 'selection'] as const)('last typing permission rejects changed
   await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.target_unusable' });
   expect(wc.debugger.sent.filter(command => command.method === 'Input.insertText')).toEqual([]);
 });
+
+describe('private X scroll delivery boundary',()=>{
+  it('keeps the generic contract and awaits the opt-in frame receipt before returning',async()=>{
+    const {svc}=make();const {id,wc}=await dispatchableTab(svc);
+    const scroll={ok:true,container:'document',before:1,after:801,delta:800,atStart:false,atEnd:false};
+    wc.isolatedImpl=async()=>scroll;
+    expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},null)).toContain('800');
+    const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
+    let frame!:()=>void;const ready=new Promise<void>(r=>{frame=r;});const order:string[]=[];
+    let receipt:Record<string,unknown>={};
+    wc.isolatedImpl=async code=>{
+      if(opOf(code)==='scroll') {receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',before:1,after:801,written:true,eventObserved:false,frameObserved:false,state:'pending'};return {...scroll,acknowledgement:receipt};}
+      if(opOf(code)==='scroll_ack_status'){order.push('waiting');await ready;receipt={...receipt,eventObserved:true,frameObserved:true,state:'frame_observed'};return {ok:true,acknowledgement:receipt};}
+      if(opOf(code)==='scroll_ack_dispose'){order.push('disposed');return {ok:true,acknowledgement:receipt};}
+      throw new Error('Unexpected source operation');
+    };
+    const pending=svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,{location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>order.push('written')}});
+    for(let i=0;i<24;i++)await Promise.resolve();
+    expect(order).toEqual(['written','waiting']);frame();expect(await pending).toContain('800');expect(order).toEqual(['written','waiting','disposed']);
+  });
+  it.each(['expired','no_movement','invalidated','cancel'] as const)('budgets actual write once and disposes on %s',async state=>{
+    const {svc}=make();const {id,wc}=await dispatchableTab(svc);const abort=new AbortController();let written=0,disposed=0;
+    const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
+    let receipt:Record<string,unknown>={};let bad=false;
+    wc.isolatedImpl=async code=>{
+      if(opOf(code)==='scroll'){receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',before:1,after:bad&&state==='no_movement'?1:801,written:true,eventObserved:!bad,frameObserved:!bad,state:bad?(state==='cancel'?'pending':state):'frame_observed'};if(bad&&state==='cancel')abort.abort();return {ok:true,container:'document',delta:800,before:1,after:801,acknowledgement:receipt};}
+      if(opOf(code)==='scroll_ack_dispose'){disposed++;return {ok:true,acknowledgement:receipt};}
+      return {ok:true,acknowledgement:receipt};
+    };
+    const opts={signal:abort.signal,location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++}};
+    expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).toContain('800');expect(written).toBe(1);expect(disposed).toBe(1);
+    bad=true;await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:state==='cancel'?'browser.cancelled':state==='invalidated'?'browser.stale_snapshot':'browser.wait_timeout'});
+    expect(written).toBe(2);expect(disposed).toBe(2);
+    if(state==='cancel'){await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:'browser.cancelled'});expect(written).toBe(2);}
+  });
+});
+
+it('scroll ACK refuses mismatched receipt and same-URL navigation while disposing its original token',async()=>{
+  for(const change of ['token','navigation'] as const){
+    const {svc}=make();const {id,wc}=await dispatchableTab(svc);const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
+    let bad=false,written=0,disposals=0;let receipt:Record<string,unknown>={};
+    wc.isolatedImpl=async code=>{
+      if(opOf(code)==='scroll'){
+        receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',before:1,after:801,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'};
+        if(bad&&change==='navigation')wc.fire('did-navigate-in-page',{},wc.url,true);
+        return {ok:true,container:'document',before:1,after:801,delta:800,acknowledgement:bad&&change==='token'?{...receipt,token:'unrelated'}:receipt};
+      }
+      disposals++;return {ok:true,acknowledgement:receipt};
+    };
+    const opts={location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++}};
+    expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).toContain('800');expect(written).toBe(1);expect(disposals).toBe(1);
+    bad=true;await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:change==='token'?'browser.page_no_result':'browser.stale_snapshot'});
+    // Correct original-token disposal still delivers the actual write receipt.
+    expect(written).toBe(2);expect(disposals).toBe(2);
+  }
+});

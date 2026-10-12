@@ -1,4 +1,8 @@
-import { X_DOM_MAX_STRING_UNITS } from './xPageSource';
+import {
+  X_MAX_HANDLE_UNITS,
+  X_MAX_POST_ID_UNITS,
+  X_MAX_SOURCE_URL_UNITS,
+} from './xResearchIdentity';
 import {
   X_RESEARCH_MAX_OUTPUT_BYTES,
   type XResearchResult,
@@ -38,6 +42,7 @@ function body(p: XTextObservation) {
     sourceUrl: p.sourceUrl,
     authorHandle: p.author?.handle ?? null,
     containerKind: p.containerKind,
+    ...(p.containerKind === 'reply' ? { directParent: p.directParent } : {}),
     text: p.text,
     truncation: p.truncation,
   };
@@ -227,6 +232,32 @@ function compactMetadata(result: XResearchResult): void {
   if (result.operation === 'read')
     result.targets.forEach((t, index) => {
       const prefix = `targets.${index}`;
+      if (t.article.location) {
+        t.article.location.requested = emptySafe();
+        mark(`${prefix}.article.location.requested`);
+        if (t.article.location.committed) {
+          t.article.location.committed = null;
+          mark(`${prefix}.article.location.committed`);
+        }
+        if (t.article.location.subsequent) {
+          t.article.location.subsequent = null;
+          mark(`${prefix}.article.location.subsequent`);
+        }
+      }
+      if (t.article.barrier) {
+        t.article.barrier.reason = 'omitted_due_output_budget';
+        mark(`${prefix}.article.barrier.reason`);
+      }
+      if (t.article.body?.author) {
+        if (t.article.body.author.profileUrl !== null) {
+          t.article.body.author.profileUrl = null;
+          mark(`${prefix}.article.body.author.profileUrl`);
+        }
+        if (t.article.body.author.displayName !== null) {
+          t.article.body.author.displayName = null;
+          mark(`${prefix}.article.body.author.displayName`);
+        }
+      }
       if (t.root?.author) {
         if (t.root.author.profileUrl !== null) {
           t.root.author.profileUrl = null;
@@ -250,8 +281,8 @@ function compactMetadata(result: XResearchResult): void {
     });
 }
 /** Admissibility sizes a required-state representation, not max100 optional
- * candidates/replies. Source identity strings are bounded by the actual fixed
- * DOM boundary. UUID/ISO/counter sizes follow production generators. This
+ * candidates/replies. Source identity strings follow the shared official public identity
+ * boundary. UUID/ISO/counter sizes follow production generators. This
  * sizing-only object is never returned, remembered or treated as evidence. */
 export function assertXRequestFits(original: XResearchResult): void {
   const state = structuredClone(original);
@@ -259,7 +290,9 @@ export function assertXRequestFits(original: XResearchResult): void {
   const uuid = '00000000-0000-0000-0000-000000000000',
     date = '0'.repeat(27);
   const rows = state.operation === 'search' ? state.queries : state.targets;
-  const transition = (stage: 'search' | 'post'): XCollectionTransition => ({
+  const transition = (
+    stage: 'search' | 'post' | 'article',
+  ): XCollectionTransition => ({
     stage,
     before: {
       location: emptySafe(),
@@ -323,17 +356,28 @@ export function assertXRequestFits(original: XResearchResult): void {
   });
   if (state.operation === 'read')
     state.targets.forEach((t) => {
+      const phases: NonNullable<XCollectionTransition['navigationPhase']>[] = t
+        .article.requested
+        ? ['initial_post', 'article', 'article', 'return_post', 'return_post']
+        : ['initial_post', 'initial_post'];
+      t.collectionTransitions = phases.map((navigationPhase) => ({
+        ...transition(navigationPhase === 'article' ? 'article' : 'post'),
+        navigationPhase,
+        navigationId: uuid,
+      }));
+      if (t.article.requested) {
+        t.article.location = structuredClone(t.location!);
+        t.article.barrier = structuredClone(t.barrier);
+      }
       t.reason = 'collection_failed:browser.not_dispatchable';
       const id = t.postId;
-      // A named permalink's handle+ID must fit the same literal URL boundary.
-      const handleUnits = id
-        ? X_DOM_MAX_STRING_UNITS - 'https://x.com//status/'.length - id.length
-        : 0;
+      // Source protocol limits are shared with the decoder; prose has a separate bound.
+      const handleUnits = id ? X_MAX_HANDLE_UNITS : 0;
       if (id && handleUnits >= 1) {
         t.root = {
           observationId: uuid,
           sourceKind: 'rendered_ui',
-          sourceUrl: 'u'.repeat(X_DOM_MAX_STRING_UNITS),
+          sourceUrl: 'u'.repeat(X_MAX_SOURCE_URL_UNITS),
           author: {
             handle: 'a'.repeat(handleUnits),
             displayName: 'd',
@@ -349,7 +393,7 @@ export function assertXRequestFits(original: XResearchResult): void {
         t.replies.scope.rootPostId = id;
         t.documentSource = {
           urlKind: 'document',
-          sourceUrl: 'v'.repeat(X_DOM_MAX_STRING_UNITS),
+          sourceUrl: 'v'.repeat(X_MAX_SOURCE_URL_UNITS),
           observationId: uuid,
           rootObservationId: uuid,
           observedAt: date,
@@ -361,6 +405,19 @@ export function assertXRequestFits(original: XResearchResult): void {
           query: null,
           purpose: null,
           product: null,
+        };
+      }
+      if (t.article.requested && t.root) {
+        t.article.body = {
+          ...structuredClone(t.root),
+          containerKind: 'article',
+          postId: '1'.repeat(X_MAX_POST_ID_UNITS),
+          sourceUrl: 'w'.repeat(X_MAX_SOURCE_URL_UNITS),
+          author: {
+            handle: 'b'.repeat(X_MAX_HANDLE_UNITS),
+            displayName: 'd',
+            profileUrl: 'p',
+          },
         };
       }
       t.article.entryObserved = true;

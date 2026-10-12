@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareXLocation, toSafeXLocation } from './xResearchIdentity';
+import { compareXLocation, toSafeXLocation, proveArticleIdentity, applyReplyEndEvidence, parseXSourcePost, X_MAX_SOURCE_URL_UNITS } from './xResearchIdentity';
 
 describe('X location identity', () => {
   // Losing one coordinate must not erase independent facts from other coordinates.
@@ -29,4 +29,39 @@ describe('X location identity', () => {
     expect(toSafeXLocation('https://evil.com/private?token=secret')).toEqual({ origin: null, path: null, q: null, f: null, fragment: null, redacted: true });
     expect(toSafeXLocation('invalid')).toEqual({ origin: null, path: null, q: null, f: null, fragment: null, redacted: true });
   });
+});
+
+
+it('articleUsesItsOwnIdentityStage and rejects an unrelated navigation, origin or title alone',async()=>{
+  const { stagedFixture }=await import('../../test-support/xResearchFixture');
+  const f=await stagedFixture({article:'ok'});
+  await f.context.browser.open('https://x.com/alice/status/123','research-tab');
+  await f.context.browser.withPage('research-tab',undefined,async page=>{
+    const parent=await page.collect({stage:'post',expectedUrl:'https://x.com/alice/status/123',postId:'123'}),entry=parent.entries[0];
+    const action=await page.act({kind:'click',index:entry.binding.index,snapshotId:entry.binding.snapshotId},parent.snapshot);
+    const article=await page.collect({stage:'article',expectedUrl:'https://x.com/bob/status/456',entry,via:{kind:'action',result:action}});
+    expect(proveArticleIdentity(entry,article,action.navigation)).toEqual({proven:true,stage:'body',reason:null});
+    for(const destination of ['https://x.com/bob/status/999','https://other.example/bob/status/456']) {
+      expect(proveArticleIdentity(entry,article,{...action.navigation!,outcome:{kind:'ok_same_document',finalUrl:destination}})).toMatchObject({proven:false,stage:'navigation'});
+    }
+    expect(proveArticleIdentity({...entry,author:{handle:'mallory',displayName:null,profileUrl:null}},article,action.navigation)).toMatchObject({proven:false,stage:'body'});
+    expect(proveArticleIdentity(entry,{...article,article:null},action.navigation)).toMatchObject({proven:false,stage:'body'});
+    expect(proveArticleIdentity({...entry,targetUrl:'https://x.com/bob/status/999'},article,action.navigation)).toMatchObject({proven:false,stage:'navigation'});
+  });
+});
+it('replyScopeDoesNotInferParentOrExhaustion across root, branch and sort flips',()=>{
+  const base={rootPostId:'123',branch:{postId:'789',sourceUrl:'https://x.com/carol/status/789'},sort:{label:'Most relevant',value:null},stopReason:'budget_reached' as const,displayedReplyCount:{text:'999 replies',value:999},completeness:'unknown' as const,endEvidence:null};
+  const end={observationId:'explicit-observation',text:'Observed end of this branch',sourceUrl:'https://x.com/alice/status/123',observedAt:'2026-10-12T00:00:00Z',rootPostId:'123',branch:base.branch,sort:base.sort};
+  expect(applyReplyEndEvidence(base,end)).toMatchObject({completeness:'ui_scope_end_observed',endEvidence:end,stopReason:'explicit_ui_end'});
+  for(const changed of [{...end,rootPostId:'456'},{...end,branch:null},{...end,branch:{...end.branch,postId:'790'}},{...end,sort:null},{...end,sort:{label:'Recent',value:null}}]) expect(applyReplyEndEvidence(base,changed)).toMatchObject({completeness:'unknown',stopReason:'budget_reached',endEvidence:null});
+  expect(applyReplyEndEvidence(base,null)).toMatchObject({completeness:'unknown',stopReason:'budget_reached',endEvidence:null});
+});
+
+
+it('derives the exact source bound from allowed origin, handle, uint64 and history route',()=>{
+  const url='https://twitter.com/Ab_0123456789xy/status/18446744073709551615/history/';
+  expect(url.length).toBe(X_MAX_SOURCE_URL_UNITS);
+  expect(parseXSourcePost(url)).toMatchObject({url,handle:'Ab_0123456789xy',id:'18446744073709551615'});
+  expect(parseXSourcePost(url+' ')).toBeNull();
+  expect(parseXSourcePost(url.replace('/history/','/photo/1'))).toBeNull();
 });

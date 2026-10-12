@@ -60,3 +60,18 @@ describe('parseXResearchInput', () => {
     }
   });
 });
+
+
+it('uses the official public identity boundary before I/O without rewriting literal input',()=>{
+  const handle='Ab_0123456789xy', maximum='18446744073709551615';
+  const parse=(url:string)=>parseXResearchInput({tabId:'tab',read:{...read,targets:[{url}]}});
+  for(const route of ['', '/', '/history', '/history/', '/photo/1', '/video/2/']) {
+    const url=`https://twitter.com/${handle}/status/${maximum}${route}?s=20`;
+    expect(parse(url).read?.targets).toEqual([{url}]);
+    expect(()=>parse(url.replace(handle,handle+'z'))).toThrow();
+    expect(()=>parse(url.replace(maximum,'18446744073709551616'))).toThrow();
+  }
+  for(const url of ['https://X.com/a/status/0','https://x.com/i/web/status/1/history','https://x.com/i/web/status/1/photo/9']) expect(parse(url).read?.targets).toEqual([{url}]);
+  for(const value of [maximum,'0','00001']) expect(parseXResearchInput({tabId:'tab',read:{...read,targets:[{postId:value}]}}).read?.targets).toEqual([{postId:value}]);
+  for(const value of ['18446744073709551616','0'.repeat(21),'-1']) expect(()=>parseXResearchInput({tabId:'tab',read:{...read,targets:[{postId:value}]}})).toThrow();
+});

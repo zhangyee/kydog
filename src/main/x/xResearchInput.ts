@@ -1,4 +1,4 @@
-import { isXPostUrl } from './xResearchIdentity';
+import { isXPostId, isXPostUrl } from './xResearchIdentity';
 import type { XReadTarget, XResearchInput, XSearchQuery } from './xResearchTypes';
 
 function object(raw: unknown, keys: string[], context: string): Record<string, unknown> {
@@ -49,7 +49,7 @@ export function parseXResearchInput(raw: unknown): XResearchInput {
     if (Object.hasOwn(target, 'postId') === Object.hasOwn(target, 'url')) throw new Error('target: provide exactly one of postId/url');
     if (Object.hasOwn(target, 'postId')) {
       const postId = text(target.postId, 'postId');
-      if (!/^[0-9]+$/.test(postId)) throw new Error('postId: expected numeric X post ID');
+      if (!isXPostId(postId)) throw new Error('postId: expected numeric X post ID');
       return { postId };
     }
     const url = text(target.url, 'url');

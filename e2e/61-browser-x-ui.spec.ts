@@ -8,6 +8,7 @@ import type { DispatchAction } from '../src/main/browser/actions';
 interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
 interface Harness {
   read(): Promise<State>;
+  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];activeTabId:string;userTabId:string}>;
   collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
   typingBoundary(mode: string): Promise<{ before: State; after: State; error: string | null; destination: { query: string; other: string; active: string } }>;
@@ -127,6 +128,32 @@ test.describe('X browser port native safety (offline)', () => {
     expect(result.beforeCleanup).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight']);
     expect(result.sequence).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight', 'owned cleanup ACK', 'next entered']);
     expect(result.after.page.trustedClicks).toBe(result.before.page.trustedClicks + 1);
+  });
+
+  test('native Article, fresh parent return and bounded replies retain independent source evidence',async()=>{
+    const actual=await control(h=>h.readStages('ok'));
+    console.info('[native-read-stages]',JSON.stringify(actual));
+    expect(actual.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native expanded body'},article:{actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'654',author:{handle:'writer'},sourceUrl:'https://x.com/writer/status/654',text:'Native paragraph rich\n\nNative heading'}},replies:{observations:[{postId:'801',directParent:null},{postId:'802',directParent:null}],scope:{completeness:'unknown',stopReason:'identity_unproven'}},budgetUsage:{expandActions:3,scrolls:0}});
+    expect(actual.actions).toEqual(['body','article','replies']);
+    expect(actual.currentPosts).toEqual(['/third/status/803']);
+    expect(actual.activeTabId).toBe(actual.userTabId);
+    const delayed=await control(h=>h.readStages('delayed'));
+    expect(delayed.readinessFrames).toEqual(['return-empty','discussion-empty','discussion-ready']);
+    expect(delayed.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native expanded body'},article:{bodyObserved:true,body:{postId:'654'}},replies:{observations:[{postId:'801'},{postId:'802'}]},budgetUsage:{expandActions:3,scrolls:0}});
+    expect(delayed.actions).toEqual(['body','article','replies']);
+    expect(delayed.currentPosts).toEqual(['/third/status/803']);
+    expect(delayed.activeTabId).toBe(delayed.userTabId);
+    const scrolled=await control(h=>h.readStages('scroll'));
+    console.info('[native-scroll-render]',JSON.stringify(scrolled));
+    expect(scrolled.actions).toEqual(['scroll-event','scroll-frame']);
+    expect(scrolled.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native preview'},replies:{observations:[{postId:'801'},{postId:'804',text:'Reply rendered after actual scroll'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:0}});
+    expect(scrolled.currentPosts).toEqual(['/scroller/status/321','/fourth/status/804']);
+    expect(scrolled.activeTabId).toBe(scrolled.userTabId);
+    const blocked=await control(h=>h.readStages('blocked'));
+    expect(blocked.rejectedNode).toBe(true);
+    expect(blocked.result.targets[0]).toMatchObject({root:{text:'Native expanded body'},article:{actionAttempted:true,navigationStarted:false,bodyObserved:false,barrier:{status:'partial'}},budgetUsage:{expandActions:2}});
+    expect(blocked.actions).toEqual(['body','replies']);
+    expect(blocked.activeTabId).toBe(blocked.userTabId);
   });
 
   test('source same-document route invalidates the old action binding', async () => {

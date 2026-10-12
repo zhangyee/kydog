@@ -119,11 +119,17 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
   aggregateResult(result);return result;
 }
 
+/** Owned by a single successful explicit navigation receipt, not by actions or waits. */
+export interface XCollectionBudget {
+  navigationPhase: NonNullable<XCollectionTransition['navigationPhase']>;
+  navigationId: string;
+  rereadRequested: boolean;
+}
 /** A rejected observation is never consumed. One new collection is permitted
  * only by an exact same-URL navigation-generation change, never by elapsed time. */
-export async function collectFreshXPage(page:XQueuedPage, request:XPageRequest, transitions:XCollectionTransition[], signal?:AbortSignal):Promise<XPageObservation> {
+export async function collectFreshXPage(page:XQueuedPage, request:XPageRequest, transitions:XCollectionTransition[], signal?:AbortSignal, budget?:XCollectionBudget):Promise<XPageObservation> {
   const safe=(facts:BrowserLocationFacts)=>({location:toSafeXLocation(facts.currentUrl),documentEpoch:facts.documentEpoch,routeRevision:facts.routeRevision,navigationSequence:facts.navigationSequence,navigationEvent:facts.navigationEvent});
-  let reread=transitions.some(t=>t.rereadRequested);
+  let reread=budget?.rereadRequested ?? transitions.some(t=>t.rereadRequested);
   for(;;) {
     if(signal?.aborted) throw new KydogError('browser.cancelled','X observation cancelled');
     const before=page.location();
@@ -134,11 +140,12 @@ export async function collectFreshXPage(page:XQueuedPage, request:XPageRequest, 
       const changed=before.documentEpoch!==after.documentEpoch || before.routeRevision!==after.routeRevision || before.navigationSequence!==after.navigationSequence;
       const sameUrl=before.currentUrl===after.currentUrl;
       const allowed=changed && sameUrl && !reread && !signal?.aborted;
-      transitions.push({stage:request.stage,before:safe(before),after:safe(after),relation:compareXLocation(before.currentUrl,after.currentUrl),rereadRequested:allowed,
+      transitions.push({...(budget?{navigationPhase:budget.navigationPhase,navigationId:budget.navigationId}:{}),stage:request.stage,before:safe(before),after:safe(after),relation:compareXLocation(before.currentUrl,after.currentUrl),rereadRequested:allowed,
         outcome:signal?.aborted?'cancelled':reread?'repeated_invalidation':!sameUrl?'route_changed':changed?'same_url_generation_changed':'generation_unchanged'});
       if(signal?.aborted) throw new KydogError('browser.cancelled','X observation cancelled');
       if(!allowed) throw new KydogError('browser.stale_snapshot','X navigation invalidated this observation');
       reread=true;
+      if(budget) budget.rereadRequested=true;
     }
   }
 }

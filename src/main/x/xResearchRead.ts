@@ -1,15 +1,27 @@
+import { readArticle } from './xResearchArticle';
+import {
+  beginReadNavigation,
+  checkReadCancelled,
+  collectPostFrame,
+  collectReadyPostFrame,
+  expandPostBody,
+  readDiscussion,
+  savePostFrame,
+  type XReadStage,
+} from './xResearchReadStages';
 import { KydogError } from '../../shared/errors';
-import { compareXLocation, toSafeXLocation } from './xResearchIdentity';
+import {
+  compareXLocation,
+  toSafeXLocation,
+  parseXPostCoordinates,
+} from './xResearchIdentity';
 import {
   aggregateResult,
-  collectFreshXPage,
   committedFacts,
   emptyUsage,
   failure,
   locationFacts,
   navigationUrl,
-  rememberSources,
-  X_POST_READY_SELECTOR,
   type XResearchContext,
 } from './xResearchSearch';
 import type {
@@ -24,25 +36,12 @@ import type {
 export type XReadInput = Extract<XResearchInput, { read: unknown }>;
 /** Recognize literal observed public coordinates; never generate a permalink. */
 function observedPostId(raw: string, coordinatesOnly = false): string | null {
-  try {
-    const u = new URL(raw);
-    if (
-      u.protocol !== 'https:' ||
-      u.port ||
-      u.username ||
-      u.password ||
-      !['x.com', 'twitter.com'].includes(u.hostname) ||
-      (!coordinatesOnly && (u.search || u.hash))
-    )
-      return null;
-    return (
-      /^\/(?:[A-Za-z0-9_]+\/status|i\/web\/status)\/([0-9]+)(?:\/history|\/(?:photo|video)\/[0-9]+)?\/?$/.exec(
-        u.pathname,
-      )?.[1] ?? null
-    );
-  } catch {
-    return null;
-  }
+  return (
+    parseXPostCoordinates(raw, {
+      allowMedia: true,
+      allowQuery: coordinatesOnly,
+    })?.id ?? null
+  );
 }
 function ordinaryDocument(raw: string, id: string): boolean {
   return (
@@ -156,7 +155,11 @@ export async function readX(
   const result = readResult(input, context);
   let halt: ReadHalt | null = null;
   for (const [index, row] of result.targets.entries()) {
-    let stage: 'navigation' | 'collection' | 'action' | 'wait' = 'navigation';
+    const stage: XReadStage = {
+      current: 'navigation',
+      attemptedControls: new Set(),
+    };
+    let returnToParent = false;
     // Every exit, including unvisited targets and navigation receipts, synchronizes scope in finally.
     try {
       if (context.signal?.aborted)
@@ -207,6 +210,7 @@ export async function readX(
         context.signal,
       );
       result.browserTabId = opened.tabId;
+      checkReadCancelled(context);
       const committed = navigationUrl(opened.nav);
       row.location = committedFacts(source, opened.nav);
       if (!committed) {
@@ -230,6 +234,7 @@ export async function readX(
           };
         continue;
       }
+      beginReadNavigation(stage, 'initial_post', opened.nav);
       // Unsupported public documents still get one fixed collection for actual
       // access barriers. Their route alone cannot assert auth or admit a root.
       const unsupportedRoute =
@@ -247,34 +252,17 @@ export async function readX(
             expectedUrl: ordinaryDocument(committed, id) ? committed : source,
             postId: id,
           };
-          stage = 'collection';
-          let observed = await collectFreshXPage(
+          const ready = await collectReadyPostFrame(
             page,
             request,
-            row.collectionTransitions,
-            context.signal,
+            row,
+            stage,
+            context,
+            !unsupportedRoute,
           );
-          let waitFailed = false;
-          if (
-            !unsupportedRoute &&
-            observed.scope.collectedItemCount === 0 &&
-            !observed.state &&
-            observed.location.current.origin &&
-            observed.location.relation.postId !== 'different'
-          ) {
-            stage = 'wait';
-            waitFailed = !(await page.wait(
-              { selector: X_POST_READY_SELECTOR, state: 'present' },
-              8000,
-            ));
-            stage = 'collection';
-            observed = await collectFreshXPage(
-              page,
-              request,
-              row.collectionTransitions,
-              context.signal,
-            );
-          }
+          let observed = ready.observed;
+          const waitFailed = ready.waitFailed;
+          checkReadCancelled(context);
           row.location = locationFacts(source, opened.nav, observed);
           // Compare original input to the exact private observation URL, even when
           // a public media/history input redirected to a supported document.
@@ -313,51 +301,160 @@ export async function readX(
             row.stopReason = waitFailed ? 'wait_timeout' : 'identity_unproven';
             return;
           }
-          row.root = observed.root;
-          row.sourceUrl = observed.root.sourceUrl;
-          row.quotedPosts = observed.quotedPosts;
-          rememberSources(context, [observed.root, ...observed.quotedPosts]);
-          const documentUrl = observed.snapshot.url;
-          if (observedPostId(documentUrl) === id) {
-            row.documentSource = {
-              urlKind: 'document',
-              sourceUrl: documentUrl,
-              observationId: observed.root.observationId,
-              rootObservationId: observed.root.observationId,
-              observedAt: observed.root.observedAt,
-              containerKind: 'root_post',
-              runId: context.runId,
-              callId: context.callId,
-              batchId: context.batchId,
-              queryId: null,
-              query: null,
-              purpose: null,
-              product: null,
-            };
-            const sources = context.sources.get(id) ?? [];
-            sources.push(row.documentSource);
-            context.sources.set(id, sources);
+          row.status = 'observed';
+          row.reason = null;
+          savePostFrame(row, observed, input.read, context);
+          if (waitFailed) {
+            row.status = 'partial';
+            row.reason = 'post_wait_timeout';
+            row.stopReason = 'wait_timeout';
+            return;
           }
-          row.budgetUsage.distinctEntries = 1 + observed.quotedPosts.length;
-          row.article.entry =
-            observed.entries.find((e) => e.parentPostId === id) ?? null;
-          row.article.entryObserved = !!row.article.entry;
-          row.replies.scope.rootPostId = id;
-          const later = input.read.includeArticle || input.read.includeReplies;
-          row.status =
-            waitFailed || later || observed.root.truncation.truncated
-              ? 'partial'
-              : 'observed';
-          row.reason = waitFailed
-            ? 'post_wait_timeout'
-            : later
-              ? 'later_stages_not_implemented'
-              : null;
-          row.stopReason = waitFailed ? 'wait_timeout' : 'agent_stopped';
+          observed = await expandPostBody(
+            page,
+            observed,
+            request,
+            row,
+            input.read,
+            stage,
+            context,
+          );
+          checkReadCancelled(context);
+          if (
+            !observed.identityProven ||
+            !observed.root ||
+            row.barrier?.status === 'auth_required'
+          )
+            return;
+          if (row.root?.truncation.truncated) row.status = 'partial';
+          const article = await readArticle(
+            page,
+            observed,
+            row,
+            input.read,
+            stage,
+            context,
+          );
+          checkReadCancelled(context);
+          returnToParent = article.returnToParent;
+          if (
+            (row.status as XResearchStatus) === 'auth_required' ||
+            returnToParent
+          )
+            return;
+          // An attempted entry can mutate its DOM even when native safety rejects it.
+          if (row.article.actionAttempted)
+            observed = await collectPostFrame(
+              page,
+              request,
+              row,
+              stage,
+              context,
+            );
+          await readDiscussion(
+            page,
+            observed,
+            request,
+            row,
+            input.read,
+            stage,
+            context,
+          );
         },
       );
+      checkReadCancelled(context);
+      if (returnToParent) {
+        // open owns the queue. The saved same-observation document is the real return address.
+        const parentUrl = row.documentSource?.sourceUrl ?? row.root?.sourceUrl;
+        if (!parentUrl) {
+          row.status = 'partial';
+          row.reason = 'parent_return_identity_unproven';
+          row.stopReason = 'identity_unproven';
+        } else {
+          stage.current = 'navigation';
+          const returned = await context.browser.open(
+            parentUrl,
+            opened.tabId,
+            context.signal,
+          );
+          checkReadCancelled(context);
+          const finalUrl = navigationUrl(returned.nav);
+          if (!finalUrl) {
+            if (returned.nav.outcome.kind === 'cancelled')
+              throw new KydogError(
+                'browser.cancelled',
+                'Parent return cancelled',
+              );
+            row.status = 'partial';
+            row.reason = 'parent_return_navigation_failed';
+            row.stopReason = 'navigation_failed';
+          } else {
+            beginReadNavigation(stage, 'return_post', returned.nav);
+            const savedParent = {
+              root: row.root,
+              sourceUrl: row.sourceUrl,
+              documentSource: row.documentSource,
+            };
+            try {
+              await context.browser.withPage(
+                opened.tabId,
+                context.signal,
+                async (page) => {
+                  const request = {
+                    stage: 'post' as const,
+                    expectedUrl: parentUrl,
+                    postId: id,
+                  };
+                  const { observed, waitFailed } = await collectReadyPostFrame(
+                    page,
+                    request,
+                    row,
+                    stage,
+                    context,
+                  );
+                  checkReadCancelled(context);
+                  const saved = savePostFrame(
+                    row,
+                    observed,
+                    input.read,
+                    context,
+                  );
+                  if (!saved && row.barrier?.status === 'auth_required') return;
+                  if (waitFailed) {
+                    row.status = 'partial';
+                    row.reason = 'post_wait_timeout';
+                    row.stopReason = 'wait_timeout';
+                    return;
+                  }
+                  if (!saved) return;
+                  await readDiscussion(
+                    page,
+                    observed,
+                    request,
+                    row,
+                    input.read,
+                    stage,
+                    context,
+                  );
+                },
+              );
+            } finally {
+              // Return-page previews are separate observations; retain the body actually expanded before Article.
+              Object.assign(row, savedParent);
+            }
+            checkReadCancelled(context);
+          }
+        }
+      }
+      if (row.status === 'auth_required')
+        halt = {
+          cause: 'auth',
+          status: 'auth_required',
+          stopReason: 'access_barrier',
+          reason: 'not_attempted:auth_required',
+        };
     } catch (error) {
-      const problem = failure(error, stage);
+      const problem = failure(error, stage.current);
       row.status =
         row.root && problem.status !== 'cancelled' ? 'partial' : problem.status;
       row.stopReason = problem.stopReason;
@@ -365,8 +462,8 @@ export async function readX(
         problem.status === 'cancelled'
           ? 'cancelled'
           : problem.internal
-            ? `internal_adapter_error:${stage}`
-            : `${stage}_failed${error instanceof KydogError ? ':' + error.code : ''}`;
+            ? `internal_adapter_error:${stage.current}`
+            : `${stage.current}_failed${error instanceof KydogError ? ':' + error.code : ''}`;
       if (problem.status === 'cancelled')
         halt = {
           cause: 'cancelled',

@@ -84,6 +84,8 @@ export interface BrowserDispatchOptions {
   strictSnapshot?: boolean;
   /** Original fixed-adapter DOM permission, checked atomically before measurement. */
   collectedPermission?: CollectedPermission;
+  /** Trusted X read opt-in; receipt callback is never serialized into the page. */
+  scrollAcknowledgement?: { onWritten: () => void };
 }
 function assertNotAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new KydogError('browser.cancelled', '浏览器操作已取消');
@@ -152,7 +154,8 @@ type InteractTarget = PointerTarget;
 type InteractRequest =
   | { op: 'measure' | 'focusSelect' | 'readValue'; target: InteractTarget }
   | { op: 'select'; target: InteractTarget; value: string }
-  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number };
+  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number; acknowledgement?: {token:string;expiresAt:number;document:{generation:string;url:string}} }
+  | { op: 'scroll_ack_status' | 'scroll_ack_dispose'; token: string };
 
 /** `interact.js` 的返回值。它在网页里执行、类型系统管不到它，所以这里只声明形状。 */
 type InteractResult = { ok: boolean; reason?: string; pointerGuard?: { ok: boolean; reason?: string }; [k: string]: unknown };
@@ -1868,6 +1871,62 @@ export class BrowserService {
     return raw as InteractResult;
   }
 
+  /** A source write receipt and a later event/frame ACK are separate facts. */
+  private async acknowledgedScroll(
+    tabId: string, wc: WebContents, request: Extract<InteractRequest,{op:'scroll'}>,
+    snapshot: AxSnapshot, options: BrowserDispatchOptions, check: () => void,
+  ): Promise<InteractResult> {
+    const token=randomUUID(), expiresAt=Date.now()+PAGE_EVAL_TIMEOUT_MS;
+    const document={generation:snapshot.generation,url:snapshot.url};
+    let written=false;
+    type Receipt = {token:string;generation:string;url:string;targetKind:string;before:number;after:number;written:boolean;eventObserved:boolean;frameObserved:boolean;state:string};
+    const receipt = (raw: unknown): Receipt | null => {
+      const r=raw as {acknowledgement?:Receipt} | null, a=r?.acknowledgement;
+      if (!a) return null;
+      if (a.token!==token || a.generation!==document.generation || a.url!==document.url
+        || !['document','element'].includes(a.targetKind) || !Number.isFinite(a.before) || !Number.isFinite(a.after)
+        || typeof a.written!=='boolean' || typeof a.eventObserved!=='boolean' || typeof a.frameObserved!=='boolean'
+        || !['pending','frame_observed','no_movement','invalidated','expired'].includes(a.state)
+        || (a.frameObserved && !a.eventObserved) || (a.state==='frame_observed' && (!a.written || !a.frameObserved))
+        || (a.state==='no_movement' && (!a.written || a.before!==a.after || a.eventObserved || a.frameObserved)))
+        throw new KydogError('browser.page_no_result','滚动确认返回了不匹配的来源事实');
+      if (a.written && !written) { written=true; options.scrollAcknowledgement!.onWritten(); }
+      return a;
+    };
+    try {
+      check();
+      const result=await this.interact(tabId,wc,{...request,acknowledgement:{token,expiresAt,document}});
+      let current=receipt(result); // Save an actual write before cancellation can reject its ACK.
+      check();
+      if (!result.ok) throw BrowserService.interactError(result,{kind:'scroll',direction:request.direction});
+      for (;;) {
+        check();
+        if (!current) throw new KydogError('browser.page_no_result','滚动没有返回真实写入记录');
+        if (current.state==='invalidated') throw new KydogError('browser.stale_snapshot','滚动确认期间原文档、目标或偏移已改变');
+        if (current.state==='no_movement') throw new KydogError('browser.wait_timeout','scroll_no_movement：实际执行未改变偏移；讨论范围仍未知');
+        if (Date.now()>=expiresAt || current.state==='expired') throw new KydogError('browser.wait_timeout','scroll_ack_timeout：实际滚动尚未得到原目标事件及后续帧确认');
+        if (current.state==='frame_observed') return result;
+        current=receipt(await this.interact(tabId,wc,{op:'scroll_ack_status',token}));
+        check();
+        if (current?.state==='pending') { await new Promise<void>(resolve=>setTimeout(resolve,WAIT_POLL_MS)); check(); }
+      }
+    } finally {
+      // evalOn cannot cancel Electron evaluation. Disposal must actually settle,
+      // or the original world must be destroyed, before this operation releases.
+      if (!wc.isDestroyed() && wc.getOSProcessId()>0) {
+        let gone!:()=>void;
+        const destroyed=new Promise<null>(resolve=>{gone=()=>resolve(null);wc.once('destroyed',gone);wc.once('render-process-gone',gone);wc.once('did-navigate',gone);});
+        try {
+          const cleaned=await Promise.race([
+            wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,[{code:interactExpression({op:'scroll_ack_dispose',token},0)}]),
+            destroyed,
+          ]);
+          receipt(cleaned);
+        } finally {wc.off('destroyed',gone);wc.off('render-process-gone',gone);wc.off('did-navigate',gone);}
+      }
+    }
+  }
+
   /** 报错时说得出「哪个目标」。selector 与编号两种说法不能混：处置不同。 */
   private static describeTarget(action: DispatchAction): string {
     const s = action as { selector?: string; index?: number; snapshotId?: string;
@@ -2125,9 +2184,14 @@ export class BrowserService {
       // `Input.synthesizeScrollGesture` 会 ack（约 1030ms）但同样不滚。
       // 隔离世界里的 scrollBy 是同步的、当场量得到，而且不挑可见性 ——
       // 这也正是「侧栏开不开都一样」那条要求的。
-      const r = await this.interact(tabId, wc, {
+      if (options?.scrollAcknowledgement && (!snapshot || !options.location))
+        throw new KydogError('browser.bad_action','滚动确认必须绑定原观察和文档坐标');
+      const request: Extract<InteractRequest,{op:'scroll'}> = {
         op: 'scroll', direction: action.direction, ...(action.amount === undefined ? {} : { amount: action.amount }),
-      });
+      };
+      const r = options?.scrollAcknowledgement
+        ? await this.acknowledgedScroll(tabId,wc,request,snapshot!,options,check)
+        : await this.interact(tabId,wc,request);
       check();
       if (!r.ok) throw BrowserService.interactError(r, action);
       const dir = action.direction === 'up' ? '上' : '下';

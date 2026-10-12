@@ -43,6 +43,9 @@ describe('production X SDK factory',()=>{
     rendered[0]=readHtml(post());
     const twenty={tabId:'research-tab',read:{objective:'ordinary targets',targets:Array.from({length:20},()=>({url:'https://x.com/alice/status/123'})),includeArticle:false,includeReplies:false}};
     const result=await tool.execute('twenty',twenty,undefined,undefined,{} as never);expect(result.details?.operation).toBe('read');expect(result.details?.status).toBe('observed');expect(f.open).toHaveBeenCalledTimes(26);
+    const withArticles=await tool.execute('twenty-articles',{...twenty,read:{...twenty.read,includeArticle:true}},undefined,undefined,{} as never);
+    expect(withArticles.details?.operation).toBe('read');
+    if(withArticles.details?.operation==='read') expect(withArticles.details.targets).toHaveLength(20);
   });
   it('checks the actual generated search URL rather than a different space encoding',async()=>{
     const f=fixture([searchHtml(post())]);const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
@@ -117,7 +120,7 @@ describe('production X SDK factory',()=>{
     const targets = Array.from({length:3},()=>({url:'https://x.com/alice/status/123'}));
     const auth = '<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>';
     for (const cause of ['ordinary', 'auth', 'cancel', 'adapter'] as const) {
-      const f = fixture([readHtml(post())]);
+      const f = fixture([readHtml(post()+post('456','bob','rendered discussion'))]);
       const normalOpen = f.open.getMockImplementation()!;
       f.open.mockImplementation(async (...args) => {
         const opened = await normalOpen(...args);

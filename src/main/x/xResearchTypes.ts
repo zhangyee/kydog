@@ -44,7 +44,8 @@ interface XTextBase {
   truncation: XTruncation;
 }
 export type XTextObservation = XTextBase & (
-  | { containerKind: 'root_post' | 'quoted_post' | 'reply'; postId: string }
+  | { containerKind: 'root_post' | 'quoted_post'; postId: string }
+  | { containerKind: 'reply'; postId: string; directParent: XReplyBranch | null }
   | { containerKind: 'article' | 'unattributed_fragment'; postId: string | null }
 );
 export interface XAccessBarrier { status: XResearchStatus; reason: string; observationId: string | null }
@@ -52,9 +53,10 @@ export interface XControlBinding { nodeId: number; index: number; snapshotId: st
 export interface XArticleEntry {
   /** Actual parent permalink, independent from the possibly absent entry href. */
   sourceUrl: string; parentPostId: string; targetUrl: string | null;
-  label: string | null; observationId: string; binding: XControlBinding;
+  author: XAuthorIdentity | null; label: string | null; observationId: string; binding: XControlBinding;
 }
 export interface XArticleFacts {
+  location?: XLocationFacts;
   requested: boolean;
   entryObserved: boolean;
   actionAttempted: boolean;
@@ -114,6 +116,8 @@ export interface XCollectionLocation {
   navigationEvent: string | null;
 }
 export interface XCollectionTransition {
+  navigationPhase?: 'initial_post' | 'article' | 'return_post';
+  navigationId?: string;
   stage: 'search' | 'post' | 'article'; before: XCollectionLocation; after: XCollectionLocation;
   relation: XLocationRelation; rereadRequested: boolean;
   outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';

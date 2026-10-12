@@ -178,3 +178,17 @@ it('private collected permission reaches actual measure and survives caller edit
     expect(dispatched).toBe(1);
   });}finally{dom.window.close();}
 });
+
+it('opt-in scroll cancellation drains its actual receipt and disposal before returning',async()=>{
+  const f=fixture(),port=createXResearchBrowser(f.browser,'thread');const order:string[]=[];
+  await port.withPage('tab',undefined,async()=>{order.push('positive');});expect(order).toEqual(['positive']);order.length=0;
+  let start!:()=>void,release!:()=>void;const started=new Promise<void>(r=>{start=r;});
+  f.browser.dispatchAndObserveNavigation=async(_tab,_action,_snapshot,options)=>{
+    start();await new Promise<void>(r=>{release=r;});options?.scrollAcknowledgement?.onWritten();order.push('disposed');return {line:'scroll',navigation:null};
+  };
+  const abort=new AbortController();
+  const work=port.withPage('tab',abort.signal,async page=>{const snap=await page.snapshot();await page.act({kind:'scroll',direction:'down'},snap,{scrollAcknowledgement:{onWritten:()=>order.push('written')}});});
+  const done=work.catch(error=>{order.push('returned');expect(error).toMatchObject({code:'browser.cancelled'});});
+  await started;abort.abort();for(let i=0;i<24;i++)await Promise.resolve();expect(order).toEqual([]);
+  release();await done;expect(order).toEqual(['written','disposed','returned']);
+});

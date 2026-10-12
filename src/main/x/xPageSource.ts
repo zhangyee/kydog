@@ -6,8 +6,8 @@ import { KydogError } from '../../shared/errors';
 import type { BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
 import type { XActionResult, XOpenResult, XQueuedPage } from './xResearchBrowser';
-import { compareXLocation, toSafeXLocation } from './xResearchIdentity';
-import type { XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation } from './xResearchTypes';
+import { compareXLocation, toSafeXLocation, parseXSourcePost, parseXPostCoordinates, isXPostId, isXHandle, X_MAX_RAW_URL_UNITS } from './xResearchIdentity';
+import type { XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope } from './xResearchTypes';
 
 export type XPageRequest =
   | { stage: 'search'; expectedUrl: string; query: string; product: 'Top' | 'Latest' }
@@ -20,6 +20,7 @@ export interface XPageObservation {
   root: XTextObservation | null; posts: XTextObservation[]; quotedPosts: XTextObservation[];
   replies: XTextObservation[]; fragments: XTextObservation[];
   article: { title: string; body: XTextObservation; blocks: string[]; links: {url: string | null; text: string; redacted: boolean}[] } | null;
+  replyScope?: XReplyScope;
   entries: XArticleEntry[]; controls: XPageControl[];
   state: {kind: 'auth_required' | 'explicit_empty'; text: string; observationId: string} | null;
   /** Count of this bounded extractor's items, including quotes/fragments; never a page total. */
@@ -28,11 +29,11 @@ export interface XPageObservation {
   /** Trusted main-process only; non-enumerable, never serialize or persist. */
   readonly snapshot: AxSnapshot;
 }
-export const X_DOM_MAX_STRING_UNITS = 8192;
+export const X_DOM_MAX_STRING_UNITS = X_MAX_RAW_URL_UNITS;
 export const X_DOM_MAX_QUERY_UNITS = 4096;
 interface RawPost {scope:'post'|'quote';postId:string|null;permalink:string|null;author:XAuthorIdentity|null;text:string;truncation:XTruncation}
 interface RawControl {kind:XPageControl['kind'];postId:string|null;nodeId:number;index:number}
-interface RawEntry {parentPostId:string;parentUrl:string;targetUrl:string|null;label:string;nodeId:number;index:number}
+interface RawEntry {author:XAuthorIdentity|null;parentPostId:string;parentUrl:string;targetUrl:string|null;label:string;nodeId:number;index:number}
 interface RawPage {
   rawUrl:string;region:boolean;selectedProduct:string|null;
   state:{kind:'auth_required'|'explicit_empty';text:string}|null;
@@ -55,7 +56,7 @@ function validateRaw(v: unknown): asserts v is RawPage {
   if (v.state !== null && (!obj(v.state) || !['auth_required','explicit_empty'].includes(String(v.state.kind)) || !str(v.state.text,4000))) invalid();
   for (const p of v.posts) if (!obj(p) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !author(p.author) || !str(p.text,4000) || !truncation(p.truncation)) invalid();
   for (const c of v.controls) if (!obj(c) || !['body_expand','replies_expand','article_entry'].includes(String(c.kind)) || !nullable(c.postId) || !integer(c.nodeId) || !integer(c.index)) invalid();
-  for (const e of v.entries) if (!obj(e) || !str(e.parentPostId) || !str(e.parentUrl) || !nullable(e.targetUrl) || !str(e.label,512) || !integer(e.nodeId) || !integer(e.index)) invalid();
+  for (const e of v.entries) if (!obj(e) || !author(e.author) || !str(e.parentPostId) || !str(e.parentUrl) || !nullable(e.targetUrl) || !str(e.label,512) || !integer(e.nodeId) || !integer(e.index)) invalid();
   const a = v.article;
   if (a !== null) {
     if (!obj(a) || !author(a.author) || !str(a.title,1000) || !list(a.blocks,256) || !a.blocks.every(b=>str(b,64000)) || a.blocks.join('').length>64000 || !list(a.links,100) || typeof a.truncated !== 'boolean') invalid();
@@ -72,26 +73,10 @@ function validateRaw(v: unknown): asserts v is RawPage {
   for (const c of [...v.controls,...v.entries]) if (!obj(c) || !(s.nodes as Record<string,unknown>[]).some(n=>n.nodeId===c.nodeId && n.index===c.index)) invalid();
   if (s.url !== v.rawUrl) invalid();
 }
-function publicPost(raw: string | null, coordinatesOnly = false): {id:string;handle:string|null;origin:string;url:string} | null {
-  if (!raw) return null;
-  try {
-    const u = new URL(raw);
-    if (u.protocol!=='https:' || u.port || u.username || u.password || !['x.com','twitter.com'].includes(u.hostname)) return null;
-    if (!coordinatesOnly && (u.search || u.hash)) return null;
-    const m = /^\/(?:([A-Za-z0-9_]+)\/status|i\/web\/status)\/([0-9]+)(?:\/history)?\/?$/.exec(u.pathname);
-    return m ? {id:m[2],handle:m[1]??null,origin:u.origin,url:raw} : null;
-  } catch { return null; }
-}
+const publicPost = parseXSourcePost;
 /** Public media coordinates may name a request, never prove a document or body identity. */
-function requestedPostId(raw:string):string|null {
-  const ordinary = publicPost(raw);
-  if (ordinary) return ordinary.id;
-  try {
-    const u = new URL(raw);
-    if (u.protocol!=='https:' || u.port || u.username || u.password || u.search || u.hash ||
-        !['x.com','twitter.com'].includes(u.hostname)) return null;
-    return /^\/(?:[A-Za-z0-9_]+\/status|i\/web\/status)\/([0-9]+)\/(?:photo|video)\/[0-9]+\/?$/.exec(u.pathname)?.[1]??null;
-  } catch { return null; }
+function requestedPostId(raw: string): string | null {
+  return parseXPostCoordinates(raw, { allowMedia: true })?.id ?? null;
 }
 function safeLink(raw: string): {url:string|null;redacted:boolean} {
   try {
@@ -107,7 +92,7 @@ function validRequest(request: XPageRequest): void {
     const expected=toSafeXLocation(request.expectedUrl);
     if (!expected.origin || expected.path!=='/search' || expected.q!==request.query || expected.f!==(request.product==='Latest'?'live':'top')) invalid();
   }
-  else if (request.stage==='post') { if (!/^[0-9]+$/.test(request.postId) || requestedPostId(request.expectedUrl)!==request.postId) invalid(); }
+  else if (request.stage==='post') { if (!isXPostId(request.postId) || requestedPostId(request.expectedUrl)!==request.postId) invalid(); }
   else if (request.stage==='article') { if (!publicPost(request.expectedUrl) || !obj(request.entry) || !obj(request.via) || !['action','open'].includes(request.via.kind) || !obj(request.via.result)) invalid(); }
   else invalid();
 }
@@ -136,7 +121,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   else if (exact && request.stage==='article') identityProven = articleProven && current.currentUrl===request.expectedUrl && !!currentPost;
   const binding = (v: {nodeId:number;index:number}): XControlBinding => ({nodeId:v.nodeId,index:v.index,snapshotId:snapshot.snapshotId,generation:snapshot.generation});
   const named = (p: RawPost): boolean => { const id=publicPost(p.permalink);return !!id && id.id===p.postId && !!p.author?.handle && id.handle===p.author.handle; };
-  const makeText = (p: RawPost,kind: XTextObservation['containerKind']): XTextObservation => ({observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:publicPost(p.permalink)?.url??null,author:p.author,text:p.text,observedAt,truncation:p.truncation,containerKind:kind,postId:kind==='unattributed_fragment'?null:p.postId} as XTextObservation);
+  const makeText = (p: RawPost,kind: XTextObservation['containerKind']): XTextObservation => ({observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:publicPost(p.permalink)?.url??null,author:p.author,text:p.text,observedAt,truncation:p.truncation,containerKind:kind,...(kind==='reply'?{directParent:null}:{}),postId:kind==='unattributed_fragment'?null:p.postId} as XTextObservation);
   let root: XTextObservation|null = null;
   const posts:XTextObservation[]=[],quotedPosts:XTextObservation[]=[],replies:XTextObservation[]=[],fragments:XTextObservation[]=[];
   if (identityProven && request.stage!=='article') {
@@ -156,7 +141,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     if (request.stage==='post' && !root) identityProven=false;
   }
   const controls=identityProven?raw.controls.map(c=>({kind:c.kind,postId:c.postId,binding:binding(c)})):[];
-  const entries:XArticleEntry[]=identityProven?raw.entries.filter(e=>publicPost(e.parentUrl)?.id===e.parentPostId && (request.stage==='search'?posts:root?[root,...replies]:[]).some(p=>p.postId===e.parentPostId)).map(e=>({sourceUrl:publicPost(e.parentUrl)!.url,parentPostId:e.parentPostId,targetUrl:publicPost(e.targetUrl)?.url??null,label:e.label,observationId:randomUUID(),binding:binding(e)})):[];
+  const entries:XArticleEntry[]=identityProven?raw.entries.filter(e=>(e.author?.handle == null || isXHandle(e.author.handle)) && (e.targetUrl===null || publicPost(e.targetUrl)!==null) && publicPost(e.parentUrl)?.id===e.parentPostId && (request.stage==='search'?posts:root?[root,...replies]:[]).some(p=>p.postId===e.parentPostId)).map(e=>({author:e.author,sourceUrl:publicPost(e.parentUrl)!.url,parentPostId:e.parentPostId,targetUrl:publicPost(e.targetUrl)?.url??null,label:e.label,observationId:randomUUID(),binding:binding(e)})):[];
   let article:XPageObservation['article']=null;
   const articleSource = publicPost(current.currentUrl);
   if (identityProven && request.stage==='article' && raw.article && articleSource && raw.article.author?.handle===articleSource.handle && raw.article.blocks.some(Boolean)) {
@@ -164,7 +149,8 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     article={title:a.title,blocks:a.blocks,links:a.links.map(l=>({...safeLink(l.url),text:l.text})),body:{observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:articleSource.url,author:a.author,text,observedAt,containerKind:'article',postId:articleSource.id,truncation:{returned:text.length,totalKnown:a.truncated?null:text.length,truncated:a.truncated}}};
   }
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
-  const result = {stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  const replyScope: XReplyScope = {rootPostId:root?.postId??null,branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
+  const result = {replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});
   return result;
 }
