@@ -30,6 +30,9 @@ const H = vi.hoisted(() => {
       return this;
     }
     once(ev: string, fn: Fn): this { return this.on(ev, fn); }
+    off(ev: string, fn: Fn): this {
+      this.handlers.set(ev, (this.handlers.get(ev) ?? []).filter(item => item !== fn)); return this;
+    }
     /** 让用例扮演 Chromium：把一个真实事件打进来。 */
     fire(ev: string, ...args: unknown[]): void {
       for (const fn of [...(this.handlers.get(ev) ?? [])]) (fn as (...a: unknown[]) => void)(...args);
@@ -96,6 +99,8 @@ const H = vi.hoisted(() => {
       length: () => this.historyEntries.length,
       getEntryAtIndex: (i: number) => ({ url: this.historyEntries[i], title: '' }),
     };
+    captureImpl: () => Promise<{ isEmpty(): boolean }> = () => Promise.resolve({ isEmpty: () => false });
+    capturePage(): Promise<{ isEmpty(): boolean }> { return this.captureImpl(); }
     isDestroyed(): boolean { return this.destroyed; }
     getURL(): string { return this.url; }
     getTitle(): string { return this.title; }
@@ -114,7 +119,14 @@ const H = vi.hoisted(() => {
     loadURL(u: string): Promise<unknown> { this.loadCalls.push(u); this.url = u; return this.loadImpl(); }
     executeJavaScriptInIsolatedWorld(worldId: number, scripts: Array<{ code: string }>): Promise<unknown> {
       this.isolated.push({ worldId, code: scripts[0].code });
-      return this.isolatedImpl(scripts[0].code);
+      const code = scripts[0].code;
+      // These tests substitute Chromium; pointer guard behavior is separately
+      // tested against real retained DOM references in pointerGuard.test.ts.
+      if (code.includes('kydog.pointerGuard') && !code.includes('const measured =')) return Promise.resolve({ ok: true });
+      return this.isolatedImpl(code).then(value => {
+        if (code.includes('const measured =') && value && typeof value === 'object') return { ...value, pointerGuard: { ok: true } };
+        return value;
+      });
     }
   }
 
@@ -1435,7 +1447,8 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
     let done = false;
     let outcome: unknown;
     void p.then((r) => { outcome = r.nav.outcome; done = true; });
-    await flush();
+    // Lifecycle Promise.race/finally adds microtasks; no fake time advances here.
+    await flush(16);
     expect(done).toBe(true);          // 一秒都没推进就定论了，不必等满时限
     expect(prevented).toBe(1);
     expect(outcome).toMatchObject({ kind: 'blocked' });
@@ -2495,16 +2508,16 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
     expect(pageScales(wc).at(-1)).toBe(2);
 
     // 从这一刻起，视口命令**挂在途中**，由用例决定什么时候落地
-    let release: (() => void) | null = null;
+    const releases: Array<() => void> = [];
     wc.debugger.respond = () => (wc.debugger.sent.at(-1)!.method === 'Emulation.setDeviceMetricsOverride'
-      ? new Promise<unknown>((r) => { release = () => r({}); })
+      ? new Promise<unknown>((r) => { releases.push(() => r({})); })
       : Promise.resolve({}));
     wc.isolatedImpl = () => Promise.resolve(okMeasure());
     wc.isolated.length = 0;
 
     // agent 的下一次动作：markDriving 把档位改回 fit 并 void 一发，随后进 dispatch
     const done: string[] = [];
-    void svc.withAgentDriving(id, 'thread-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+    const driving = svc.withAgentDriving(id, 'thread-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
       .then(() => done.push('ok'), (e: unknown) => done.push(`err:${String(e)}`));
     await flush();
 
@@ -2513,10 +2526,9 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
       + 'emulation scale 也还没坐实，点击会静默打偏').toBe(0);
     expect(overrides(wc).at(-1)!.params.width, '恢复的那一档必须是 1280').toBe(1280);
 
-    release!();
-    await flush();
-    expect(wc.isolated.length, '视口落地之后才该去量').toBeGreaterThan(0);
-    await flush();
+    for (const release of releases) release();
+    await driving;
+    expect(wc.isolated.length, '每一发视口落地之后才该去量').toBeGreaterThan(0);
     expect(done).toEqual(['ok']);
   });
 });
@@ -2713,7 +2725,7 @@ describe('dispatch：派发之前的两道闸（实测得来）', () => {
     const { id, wc } = await dispatchableTab(svc);
     wc.isolatedImpl = () => Promise.resolve(okMeasure());
     await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
-    expect(wc.isolated.map((r) => r.worldId)).toEqual([WALKER_WORLD_ID]);
+    expect(wc.isolated.map((r) => r.worldId)).toEqual([WALKER_WORLD_ID, WALKER_WORLD_ID, WALKER_WORLD_ID]);
   });
 
   // dispatch **不自己 enqueue**：调用方（browser_act 的整批）已经在队列里了，
@@ -4191,4 +4203,168 @@ describe('按对话回收与可见范围', () => {
     expect(svc.stateVisibleTo('thread-A').tabs.map((t) => t.id)).toEqual([a, u]);
     expect(svc.stateVisibleTo('thread-B').tabs.map((t) => t.id)).toEqual([b, u]);
   });
+});
+
+
+describe('research source location and cancellation', () => {
+  it('routeAndDocumentFactsComeFromEvents: normalization, new post and new document remain independent', async () => {
+    const { svc } = make();
+    const { wc, nav } = await openTab(svc, 'https://x.com/alice/status/123');
+    const initial = svc.locationFacts(nav.tabId);
+    expect(initial).toMatchObject({ currentUrl: 'https://x.com/alice/status/123', documentEpoch: 1, routeRevision: 0, navigationEvent: 'did-navigate' });
+    wc.url = 'https://x.com/i/web/status/123';
+    wc.fire('did-navigate-in-page', {}, wc.url, true);
+    expect(svc.locationFacts(nav.tabId)).toMatchObject({ currentUrl: wc.url, documentEpoch: 1, routeRevision: 1, navigationEvent: 'did-navigate-in-page' });
+    wc.fire('did-navigate-in-page', {}, 'https://iframe.example/', false);
+    expect(svc.locationFacts(nav.tabId).routeRevision).toBe(1);
+    wc.url = 'https://x.com/bob/status/456';
+    wc.fire('did-navigate-in-page', {}, wc.url, true);
+    expect(svc.locationFacts(nav.tabId)).toMatchObject({ documentEpoch: 1, routeRevision: 2 });
+    // Same URL, actual reload: no URL hash or elapsed-time surrogate can stand in for this event.
+    wc.fire('did-navigate', {}, wc.url, 200);
+    expect(svc.locationFacts(nav.tabId)).toMatchObject({ documentEpoch: 2, routeRevision: 2, navigationEvent: 'did-navigate' });
+  });
+  it('cancelled queued open never loads; later operation still executes', async () => {
+    const { svc } = make();
+    const { wc, nav } = await openTab(svc);
+    let release!: () => void;
+    const blocker = svc.enqueue(nav.tabId, () => new Promise<void>(r => { release = r; }));
+    await flush();
+    const abort = new AbortController();
+    const cancelled = svc.open({ url: 'https://b.example/', tabId: nav.tabId, signal: abort.signal });
+    abort.abort();
+    expect((await cancelled).nav.outcome.kind).toBe('cancelled');
+    release(); await blocker;
+    expect(wc.loadCalls).toEqual(['https://a.example/']);
+    const next = svc.open({ url: 'https://c.example/', tabId: nav.tabId });
+    await flush(); wc.fire('did-navigate', {}, 'https://c.example/', 200);
+    expect((await next).nav.outcome.kind).toBe('ok');
+    expect(wc.loadCalls).toEqual(['https://a.example/', 'https://c.example/']);
+  });
+});
+
+
+describe('native delivery barrier', () => {
+  it('allows real command entry after frame, but rejects cancellation during frame before native input', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.dispatch(nav.tabId, action, null);
+    expect(wc.debugger.sent.filter(c => c.method === 'Input.dispatchMouseEvent').map(c => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+    wc.debugger.sent.length = 0;
+    const abort = new AbortController();
+    let frameStarted!: () => void;
+    const started = new Promise<void>(r => { frameStarted = r; });
+    wc.captureImpl = () => { frameStarted(); return new Promise(() => {}); };
+    const attempt = svc.dispatch(nav.tabId, action, null, { signal: abort.signal });
+    const rejected = expect(attempt).rejects.toMatchObject({ code: 'browser.cancelled' });
+    await started; abort.abort(); await rejected;
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+  it('failed compositor copy blocks native input while the next queued operation remains usable', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.enqueue(nav.tabId, () => svc.dispatch(nav.tabId, action, null));
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+    wc.debugger.sent.length = 0;
+    wc.captureImpl = async () => ({ isEmpty: () => true });
+    await expect(svc.enqueue(nav.tabId, () => svc.dispatch(nav.tabId, action, null))).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    wc.captureImpl = async () => ({ isEmpty: () => false });
+    await svc.enqueue(nav.tabId, () => svc.dispatch(nav.tabId, action, null));
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+  });
+});
+
+
+describe('viewport input mapping ACK', () => {
+  it('failed viewport ACK blocks the input after a successful same-case control', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.dispatch(nav.tabId, action, null);
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+    wc.debugger.sent.length = 0;
+    wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride' ? Promise.reject(new Error('ACK lost')) : Promise.resolve({});
+    await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+  it('a different mapping ACK during frame invalidates the original CSS-to-input transform', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.dispatch(nav.tabId, action, null);
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+    wc.debugger.sent.length = 0;
+    wc.captureImpl = async () => {
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+});
+
+
+it('a guarded click reports its actual resulting navigation instead of rejecting its own route change', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+  const binding = svc.locationFacts(nav.tabId);
+  wc.debugger.respond = (method, params) => {
+    if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') {
+      wc.url = 'https://b.example/destination';
+      wc.fire('did-navigate', {}, wc.url, 200);
+    }
+    return Promise.resolve({});
+  };
+  const result = await svc.dispatchAndObserveNavigation(nav.tabId, { kind: 'click', selector: '#safe' }, null, { location: binding });
+  expect(result.navigation?.outcome).toEqual({ kind: 'ok', finalUrl: 'https://b.example/destination', httpStatusCode: 200 });
+});
+
+
+it('main-frame navigation starts preserve actual type/target and invalidate same-URL old action bindings', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const initial = svc.locationFacts(nav.tabId);
+  wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+  await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null, { location: initial });
+  wc.debugger.sent.length = 0;
+  wc.fire('did-start-navigation', { url: wc.url, isMainFrame: false, isSameDocument: false });
+  expect(svc.locationFacts(nav.tabId)).toEqual(initial);
+  wc.fire('did-start-navigation', { url: wc.url, isMainFrame: true, isSameDocument: false });
+  expect(svc.locationFacts(nav.tabId)).toMatchObject({ currentUrl: wc.url, navigationUrl: wc.url,
+    navigationType: 'cross_document', navigationEvent: 'did-start-navigation', documentEpoch: 1, routeRevision: 0,
+    navigationSequence: 2 });
+  await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null, { location: initial })).rejects.toMatchObject({ code: 'browser.stale_snapshot' });
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
+});
+
+
+it('fixed DOM read preparation uses focus/viewport ACKs without requiring a surface or sending native input', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+  let frames = 0;
+  wc.captureImpl = async () => { frames++; return { isEmpty: () => false }; };
+  await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null);
+  expect(frames).toBe(1);
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.')).length).toBe(2);
+  const user = await openTab(svc, 'https://user.example/'); svc.activate(user.nav.tabId);
+  wc.debugger.sent.length = 0; frames = 0;
+  wc.captureImpl = async () => { frames++; throw new Error('SurfaceUnavailable'); };
+  await svc.prepareForDomRead(nav.tabId);
+  expect(frames).toBe(0);
+  expect(wc.debugger.sent.find(command => command.method === 'Emulation.setFocusEmulationEnabled')?.params).toEqual({ enabled: true });
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
+  expect(svc.getState().activeTabId).toBe(user.nav.tabId);
+  const abort = new AbortController();
+  let start!: () => void, release!: () => void;
+  const started = new Promise<void>(r => { start = r; });
+  wc.debugger.respond = method => method === 'Emulation.setFocusEmulationEnabled'
+    ? new Promise(resolve => { start(); release = () => resolve({}); }) : Promise.resolve({});
+  const pending = svc.prepareForDomRead(nav.tabId, abort.signal);
+  const rejected = expect(pending).rejects.toMatchObject({ code: 'browser.cancelled' });
+  await started; abort.abort(); release(); await rejected;
+  expect(frames).toBe(0);
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
 });

@@ -35,6 +35,9 @@ export type KydogErrorCode =
   | 'browser.bad_url'
   // 动作批次本身不合法：空列表、repeat 嵌套、times 越界、展开后超步数上限、
   // 不认识的按键名。与 bad_url 分开 —— 那条只管网址。
+  | 'browser.cancelled'
+  | 'browser.stale_snapshot'
+  | 'x.collect_unavailable'
   | 'browser.bad_action'
   | 'browser.no_tab'
   | 'browser.too_many_tabs'
