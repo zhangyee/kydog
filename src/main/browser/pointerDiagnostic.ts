@@ -2,6 +2,7 @@ import { KydogError } from '../../shared/errors';
 
 export type PointerFailureStage = 'measure' | 'pointer_capture' | 'pointer_validate';
 type Point = Readonly<{ x: number; y: number }>;
+type Rect = Readonly<{ x: number; y: number; width: number; height: number }>;
 export interface PointerFailureBinding {
   tabId: string;
   snapshotId: string | null;
@@ -16,7 +17,9 @@ export interface PointerHitRejection {
   targetContainsHit: false;
   hitSameAsCaptured: boolean | null;
   rejectGeometry: {
-    targetRect: Readonly<{ x: number; y: number; width: number; height: number }>;
+    targetRect: Rect;
+    /** Supplied only by initial measure; null records an actual null hit. */
+    hitRect?: Rect | null;
     scroll: Point;
     viewport: Readonly<{ width: number; height: number }>;
   };
@@ -26,7 +29,7 @@ export interface PointerFailureDiagnostic extends PointerFailureBinding {
   reason: 'intercepted';
   nativeFrameObserved: boolean;
   point: Point;
-  /** Initial measure supplies no structured hit receipt. Null means unavailable. */
+  /** Null means structured source facts were unavailable, not that the hit was null. */
   rejection: PointerHitRejection | null;
 }
 const authenticated = new WeakMap<object, Readonly<PointerFailureDiagnostic>>();
@@ -44,6 +47,11 @@ const tag = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Z
 function point(v: unknown): Point | null {
   return object(v) && finite(v.x) && finite(v.y) ? Object.freeze({ x: v.x, y: v.y }) : null;
 }
+function rect(v: unknown): Rect | null {
+  return object(v) && finite(v.x) && finite(v.y) && finite(v.width) && finite(v.height)
+    && v.width >= 0 && v.height >= 0
+    ? Object.freeze({ x: v.x, y: v.y, width: v.width, height: v.height }) : null;
+}
 function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHitRejection | null {
   if (!object(v)) return null;
   const p = point(v.point), g = v.rejectGeometry, same = v.hitSameAsCaptured;
@@ -51,15 +59,18 @@ function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHi
   if (!p || p.x !== at.x || p.y !== at.y || !tag(v.targetTag) || (v.hitTag !== null && !tag(v.hitTag))
     || typeof v.targetConnected !== 'boolean' || v.targetContainsHit !== false
     // The same captured hit may have moved outside the target; retain either boolean.
-    || (stage === 'pointer_capture' ? same !== null : same === null)
+    || (stage === 'pointer_validate' ? same === null : same !== null)
     || !object(g) || !object(g.targetRect) || !object(g.viewport)) return null;
   const r = g.targetRect, viewport = g.viewport, scroll = point(g.scroll);
   if (!scroll || !finite(r.x) || !finite(r.y) || !finite(r.width) || !finite(r.height)
     || r.width < 0 || r.height < 0 || !finite(viewport.width) || !finite(viewport.height)
     || viewport.width < 0 || viewport.height < 0) return null;
+  const hitRect = stage === 'measure' ? rect(g.hitRect) : null;
+  if (stage === 'measure' && (v.hitTag === null ? g.hitRect !== null : !hitRect)) return null;
   return Object.freeze({ point: p, targetTag: v.targetTag, hitTag: v.hitTag,
     targetConnected: v.targetConnected, targetContainsHit: false, hitSameAsCaptured: same,
     rejectGeometry: Object.freeze({ targetRect: Object.freeze({ x: r.x, y: r.y, width: r.width, height: r.height }),
+      ...(stage === 'measure' ? { hitRect } : {}),
       scroll, viewport: Object.freeze({ width: viewport.width, height: viewport.height }) }),
   });
 }
@@ -74,8 +85,8 @@ export function retainPointerFailure(error: KydogError, binding: PointerFailureB
     || (binding.nodeId !== null && (!Number.isSafeInteger(binding.nodeId) || binding.nodeId < 0))) return error;
   const at = point(stage === 'measure' ? raw : measuredPoint);
   if (!at) return error;
-  const hit = stage === 'measure' ? null : rejection(raw.pointerFailure, stage, at);
-  if (stage !== 'measure' && !hit) return error;
+  const hit = rejection(raw.pointerFailure, stage, at);
+  if (!hit && (stage !== 'measure' || raw.pointerFailure !== undefined)) return error;
   const diagnostic = Object.freeze({ tabId: binding.tabId, snapshotId: binding.snapshotId,
     generation: binding.generation, nodeId: binding.nodeId, stage, reason: 'intercepted' as const,
     nativeFrameObserved: stage === 'pointer_validate', point: at, rejection: hit });

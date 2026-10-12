@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { JSDOM } from 'jsdom';
+import { guardedInteractExpression } from '../browser/measuredPointerSource';
 import { KydogError } from '../../shared/errors';
 import { fixture, post, readHtml } from '../../test-support/xResearchFixture';
 import { logger } from '../log';
@@ -18,8 +20,24 @@ describe('Article private failure diagnostics', () => {
           const node = snap.nodes.find(n => n.collectedPermission?.purpose === 'article_entry')!;
           const error = new KydogError('browser.click_intercepted', 'private-class private-label https://private.example/');
           if (mode.startsWith('genuine') || mode === 'wrong-binding') {
+            const dom = new JSDOM('<button>private label</button><aside class="private-class"></aside>', { runScripts: 'outside-only' });
+            let raw: unknown;
+            try {
+              const { window } = dom;
+              const target = window.document.querySelector('button')!, cover = window.document.querySelector('aside')!;
+              let hit: Element = target;
+              Object.assign(window, { __kydogWorld: { gen: snap.generation, ids: new WeakMap([[target, node.nodeId]]), pw: new WeakSet() } });
+              Object.assign(window.document, { elementFromPoint: () => hit });
+              target.getBoundingClientRect = () => ({ x: 23, y: 39, left: 23, top: 39, width: 100, height: 100 } as DOMRect);
+              cover.getBoundingClientRect = () => ({ x: 1, y: 2, width: 900, height: 700 } as DOMRect);
+              const measure = () => window.eval(guardedInteractExpression({ op: 'measure', target: { nodeId: node.nodeId } }, Date.now() + 3000));
+              expect(measure()).toMatchObject({ ok: true, x: 73, y: 89 });
+              hit = cover;
+              raw = measure();
+              expect(raw).toMatchObject({ ok: false, reason: 'intercepted' });
+            } finally { dom.window.close(); }
             genuine = retainPointerFailure(error, { tabId: 'research-tab', snapshotId: mode === 'wrong-binding' ? 'other-snapshot' : snap.snapshotId,
-              generation: snap.generation, nodeId: node.nodeId }, 'measure', { ok: false, reason: 'intercepted', x: 73, y: 89, by: 'private-class' });
+              generation: snap.generation, nodeId: node.nodeId }, 'measure', raw);
             throw genuine;
           }
           if (mode === 'prototype') throw Object.assign(Object.create(Object.getPrototypeOf(genuine!)), error, { diagnostic: pointerFailureDiagnostic(genuine) });
@@ -35,7 +53,13 @@ describe('Article private failure diagnostics', () => {
           expect(warn).toHaveBeenLastCalledWith('xResearch', 'Article pointer interception', {
             runId: `producer-run-${mode}`, callId: `producer-call-${mode}`, batchId: `producer-batch-${mode}`,
             diagnostic: { tabId: 'research-tab', snapshotId: binding.snapshotId, generation: binding.generation, nodeId: binding.nodeId,
-              stage: 'measure', reason: 'intercepted', nativeFrameObserved: false, point: { x: 73, y: 89 }, rejection: null },
+              stage: 'measure', reason: 'intercepted', nativeFrameObserved: false, point: { x: 73, y: 89 }, rejection: {
+                point: { x: 73, y: 89 }, targetTag: 'BUTTON', hitTag: 'ASIDE', targetConnected: true,
+                targetContainsHit: false, hitSameAsCaptured: null, rejectGeometry: {
+                  targetRect: { x: 23, y: 39, width: 100, height: 100 }, hitRect: { x: 1, y: 2, width: 900, height: 700 },
+                  scroll: { x: 0, y: 0 }, viewport: { width: 1024, height: 768 },
+                },
+              } },
           });
         }
         expect(warn).toHaveBeenCalledTimes(mode === 'genuine-A' ? 1 : 2);

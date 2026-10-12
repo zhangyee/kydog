@@ -284,7 +284,23 @@
     }
     const hit = deepHit(x, y);
     if (!hit || !(hit === el || containsDeep(el, hit))) {
-      return { ok: false, reason: 'intercepted', by: describe(hit), x, y };
+      const refused = { ok: false, reason: 'intercepted', by: describe(hit), x, y };
+      // Preserve facts from this exact refusal; diagnostic failure cannot change it.
+      try {
+        const targetRect = el.getBoundingClientRect();
+        const hitRect = hit ? hit.getBoundingClientRect() : null;
+        refused.pointerFailure = {
+          point: { x, y }, targetTag: el.tagName, hitTag: hit ? hit.tagName : null,
+          targetConnected: el.isConnected, targetContainsHit: false, hitSameAsCaptured: null,
+          rejectGeometry: {
+            targetRect: { x: targetRect.x, y: targetRect.y, width: targetRect.width, height: targetRect.height },
+            hitRect: hitRect ? { x: hitRect.x, y: hitRect.y, width: hitRect.width, height: hitRect.height } : null,
+            scroll: { x: W.scrollX, y: W.scrollY },
+            viewport: { width: W.innerWidth, height: W.innerHeight },
+          },
+        };
+      } catch { /* Keep the original refusal when diagnostic geometry is unavailable. */ }
+      return refused;
     }
     return {
       ok: true, x, y,

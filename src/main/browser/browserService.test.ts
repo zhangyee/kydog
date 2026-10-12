@@ -4474,17 +4474,17 @@ it.each(['measure', 'pointer_validate'] as const)('retains private %s intercepti
   wc.debugger.sent.length = 0; frames = 0;
   const pointerFailure = {
     point: { x: 31, y: 47 }, targetTag: 'DIV', hitTag: 'ASIDE', targetConnected: true,
-    targetContainsHit: false, hitSameAsCaptured: false,
-    rejectGeometry: { targetRect: { x: 11, y: 12, width: 71, height: 93 }, scroll: { x: 2, y: 524 }, viewport: { width: 1280, height: 800 } },
+    targetContainsHit: false, hitSameAsCaptured: stage === 'measure' ? null : false,
+    rejectGeometry: { ...(stage === 'measure' ? { hitRect: { x: 0, y: 0, width: 1280, height: 800 } } : {}), targetRect: { x: 11, y: 12, width: 71, height: 93 }, scroll: { x: 2, y: 524 }, viewport: { width: 1280, height: 800 } },
   };
-  if (stage === 'measure') wc.isolatedImpl = async () => ({ ok: false, reason: 'intercepted', x: 31, y: 47, by: 'private-class' });
+  if (stage === 'measure') wc.isolatedImpl = async () => ({ ok: false, reason: 'intercepted', x: 31, y: 47, by: 'private-class', pointerFailure });
   else wc.pointerImpl = async code => code.includes('"op":"validate"')
     ? { ok: false, reason: 'intercepted', pointerFailure } : { ok: true };
   const failure = await svc.dispatch(nav.tabId, action, snapshot, { strictSnapshot: true }).catch(error => error);
   expect(failure).toMatchObject({ code: 'browser.click_intercepted', diagnostic: {
     stage, reason: 'intercepted', tabId: nav.tabId, snapshotId: 'snapshot-diagnostic', generation: 'generation-diagnostic', nodeId: 17,
     point: { x: 31, y: 47 }, nativeFrameObserved: stage === 'pointer_validate',
-    rejection: stage === 'measure' ? null : pointerFailure,
+    rejection: pointerFailure,
   } });
   expect(frames).toBe(stage === 'measure' ? 0 : 1);
   expect(inputCmds(wc)).toEqual([]);

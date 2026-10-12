@@ -236,3 +236,47 @@ it('retains an authentic same-hit rejection when a decorative descendant moves o
     });
   } finally { f.window.close(); }
 });
+
+
+it('initial measure retains the same rejected hit and original point through private validation', () => {
+  const f = fixture();
+  try {
+    const cover = f.window.document.createElement('aside');
+    cover.id = 'private-id'; cover.className = 'private-class'; cover.textContent = 'private text';
+    f.window.document.body.append(cover);
+    let hit: Element | null = f.el, hits = 0, scrolls = 0, targetReads = 0, hitReads = 0;
+    Object.assign(f.window, { scrollX: 9, scrollY: 52 });
+    Object.assign(f.window.document, { elementFromPoint: () => { hits++; return hit; } });
+    f.el.scrollIntoView = () => { scrolls++; };
+    f.el.getBoundingClientRect = () => (++targetReads === 1
+      ? { x: 11, y: 12, left: 11, top: 12, width: 71, height: 94 }
+      : { x: 111, y: 112, left: 111, top: 112, width: 171, height: 194 }) as DOMRect;
+    cover.getBoundingClientRect = () => { hitReads++; return { x: 17, y: 19, width: 507, height: 611 } as DOMRect; };
+    const measure = () => f.window.eval(guardedInteractExpression({ op: 'measure', target: { nodeId: 7 } }, Date.now() + 3000)) as Record<string, unknown>;
+    expect(measure()).toMatchObject({ ok: true, x: 47, y: 59 });
+    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 1, hitReads: 0 });
+    hits = scrolls = targetReads = hitReads = 0; hit = cover;
+    const rejected = measure();
+    const wanted = { point: { x: 47, y: 59 }, targetTag: 'BUTTON', hitTag: 'ASIDE', targetConnected: true,
+      targetContainsHit: false, hitSameAsCaptured: null, rejectGeometry: {
+        targetRect: { x: 111, y: 112, width: 171, height: 194 }, hitRect: { x: 17, y: 19, width: 507, height: 611 },
+        scroll: { x: 9, y: 52 }, viewport: { width: 1024, height: 768 },
+      } };
+    expect(rejected).toMatchObject({ ok: false, reason: 'intercepted', x: 47, y: 59 });
+    expect(rejected.pointerFailure).toEqual(wanted);
+    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 2, hitReads: 1 });
+    const retained = retainPointerFailure(new KydogError('browser.click_intercepted', 'refused'),
+      { tabId: 'tab-source', snapshotId: 'snapshot-source', generation: 'document', nodeId: 7 }, 'measure', rejected);
+    expect(pointerFailureDiagnostic(retained)).toMatchObject({ stage: 'measure', point: { x: 47, y: 59 },
+      nativeFrameObserved: false, rejection: wanted });
+    hits = scrolls = targetReads = hitReads = 0; hit = null;
+    expect(measure().pointerFailure).toMatchObject({ hitTag: null, rejectGeometry: { hitRect: null } });
+    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 2, hitReads: 0 });
+    hits = scrolls = targetReads = hitReads = 0; hit = cover;
+    cover.getBoundingClientRect = () => { throw new Error('diagnostic geometry unavailable'); };
+    const unavailable = measure();
+    expect(unavailable).toMatchObject({ ok: false, reason: 'intercepted', x: 47, y: 59 });
+    expect(unavailable.pointerFailure).toBeUndefined();
+    expect({ hits, scrolls }).toEqual({ hits: 1, scrolls: 1 });
+  } finally { f.window.close(); }
+});

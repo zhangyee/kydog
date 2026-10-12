@@ -63,3 +63,37 @@ it('retains actual lowercase SVG hit tag names from the DOM', () => {
   expect(pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'pointer_validate', raw, point)))
     .toMatchObject({ rejection: { hitTag: 'path', targetTag: 'BUTTON' } });
 });
+
+it('measure distinguishes unavailable facts from a null hit and rejects malformed supplied geometry', () => {
+  const make = () => ({ ...source(), ...point, pointerFailure: { ...source().pointerFailure,
+    hitSameAsCaptured: null, rejectGeometry: { ...source().pointerFailure.rejectGeometry,
+      hitRect: { x: 1, y: 2, width: 99, height: 101 } } } });
+  const raw = make();
+  const saved = retainPointerFailure(error(), binding, 'measure', raw);
+  expect(pointerFailureDiagnostic(saved)).toMatchObject({ stage: 'measure', nativeFrameObserved: false,
+    point, rejection: raw.pointerFailure });
+  raw.pointerFailure.rejectGeometry.hitRect.width = 900;
+  expect(pointerFailureDiagnostic(saved)?.rejection?.rejectGeometry.hitRect?.width).toBe(99);
+  const nullHit = make();
+  Object.assign(nullHit.pointerFailure, { hitTag: null });
+  Object.assign(nullHit.pointerFailure.rejectGeometry, { hitRect: null });
+  expect(pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'measure', nullHit)))
+    .toMatchObject({ rejection: { hitTag: null, rejectGeometry: { hitRect: null } } });
+  expect(pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'measure', {
+    ok: false, reason: 'intercepted', ...point,
+  }))).toMatchObject({ point, rejection: null });
+  for (const mutate of [
+    (r: ReturnType<typeof make>) => { Object.assign(r.pointerFailure.rejectGeometry, { hitRect: undefined }); },
+    (r: ReturnType<typeof make>) => { Object.assign(r.pointerFailure.rejectGeometry, { hitRect: null }); },
+    (r: ReturnType<typeof make>) => { Object.assign(r.pointerFailure, { hitTag: null }); },
+    (r: ReturnType<typeof make>) => { r.pointerFailure.rejectGeometry.hitRect.x = NaN; },
+    (r: ReturnType<typeof make>) => { r.pointerFailure.rejectGeometry.hitRect.height = -1; },
+    (r: ReturnType<typeof make>) => { Object.assign(r.pointerFailure, { hitSameAsCaptured: false }); },
+    (r: ReturnType<typeof make>) => { Object.assign(r, { pointerFailure: null }); },
+  ]) {
+    const invalid = make(); mutate(invalid);
+    const refused = error();
+    expect(retainPointerFailure(refused, binding, 'measure', invalid)).toBe(refused);
+    expect(pointerFailureDiagnostic(refused)).toBeUndefined();
+  }
+});

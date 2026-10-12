@@ -103,7 +103,14 @@ test.describe('X browser port native safety (offline)', () => {
             rejectGeometry: { targetRect: { width: expect.any(Number), height: expect.any(Number) },
               viewport: { width: 1280, height: expect.any(Number) } },
           });
-        } else expect(result.diagnostic!.rejection).toBe(null);
+        } else {
+          expect(result.diagnostic!.rejection).toMatchObject({ point: result.diagnostic!.point,
+            targetTag: 'BUTTON', hitTag: 'DIV', targetContainsHit: false, hitSameAsCaptured: null, targetConnected: true,
+            rejectGeometry: { targetRect: { x: expect.any(Number), y: expect.any(Number), width: expect.any(Number), height: expect.any(Number) },
+              hitRect: { x: 0, y: 0, width: 1280, height: expect.any(Number) },
+              scroll: { x: 0, y: 0 }, viewport: { width: 1280, height: expect.any(Number) } },
+          });
+        }
       }
       expect(result.after.native, mode).toBe(result.before.native);
       expect(result.after.page, mode).toEqual(result.before.page);
