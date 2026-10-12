@@ -45,9 +45,9 @@ describe('countWords：汉字每字算 1，英文每词算 1', () => {
   });
 });
 
-async function tools(dir: string) {
+async function tools(dir: string, guard?: import('./charCountFileTools').FileWriteGuard) {
   const pi = await import('@earendil-works/pi-coding-agent');
-  const [write, edit] = createCharCountFileTools(pi as unknown as PiFileToolFactories, dir);
+  const [write, edit] = createCharCountFileTools(pi as unknown as PiFileToolFactories, dir, guard);
   return { write, edit };
 }
 
@@ -120,4 +120,58 @@ describe('write / edit × pi 真实实现：结果带字数', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// Break caught: checking edit arguments instead of the SDK's final complete content,
+// or accidentally applying the create-only policy to edits.
+describe('guarded final file contents', () => {
+  it('creates once, allows read/edit, rejects invalid multi-edit without changing the original', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-guard-'));
+    try {
+      const seen: string[] = [];
+      const { write, edit } = await tools(dir, (_absolutePath, content) => {
+        seen.push(content);
+        if (content.includes('bad citation')) throw new Error('unobserved citation');
+        return { createOnly: true };
+      });
+      const args = { path: 'x-research-topic-2026-10-12.md', content: '## One\nvalid source\n## Two\nretained source' };
+      await write.execute('create', args, undefined, undefined, {});
+      expect(readFileSync(path.join(dir, args.path), 'utf8')).toBe(args.content);
+      await expect(write.execute('again', args, undefined, undefined, {})).rejects.toMatchObject({ code: 'EEXIST' });
+      const result = await edit.execute('valid-edit', { path: args.path, edits: [{ oldText: 'valid source', newText: 'verified source' }] }, undefined, undefined, {});
+      expect(result.details).toHaveProperty('diff');
+      expect(textOf(result).join('')).toContain(COUNT_LINE_PREFIX);
+      const before = readFileSync(path.join(dir, args.path), 'utf8');
+      expect(before).toBe('## One\nverified source\n## Two\nretained source');
+      await expect(edit.execute('bad-edit', { path: args.path, edits: [{ oldText: 'verified', newText: 'updated' }, { oldText: 'retained source', newText: 'bad citation' }] }, undefined, undefined, {})).rejects.toThrow('unobserved citation');
+      expect(seen.at(-1)).toBe('## One\nupdated source\n## Two\nbad citation');
+      expect(readFileSync(path.join(dir, args.path), 'utf8')).toBe(before);
+      // The same path demonstrably existed above; failed creation cannot leave it behind.
+      rmSync(path.join(dir, args.path));
+      await expect(write.execute('bad-write', { path: args.path, content: 'bad citation' }, undefined, undefined, {})).rejects.toThrow('unobserved citation');
+      expect(existsSync(path.join(dir, args.path))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+it('real X ledger guards both complete file hooks while ordinary file overwrites and edits remain usable',async()=>{
+ const {XResearchEvidence}=await import('../x/xResearchEvidence');const {fixture,post,readHtml}=await import('../../test-support/xResearchFixture');const {createXResearchTool}=await import('./xResearchTool');
+ const dir=mkdtempSync(path.join(os.tmpdir(),'kydog-x-files-'));
+ try{
+  const evidence=new XResearchEvidence(dir,()=> 'run');const f=fixture([readHtml(post())]);const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
+  await tool.execute('read',{tabId:'research-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false}},undefined,undefined,{} as never);
+  const {write,edit}=await tools(dir,evidence.guard);const good='[source](https://x.com/alice/status/123)',bad='[source](https://x.com/WrongAuthor/status/123)';
+  for(const name of ['x-research-topic-2026-10-12.md','ordinary.md','ordinary.txt','ordinary.ts']){
+   await write.execute('create',{path:name,content:`Title\n${good}\nTail`},undefined,undefined,{});
+   const p=path.join(dir,name);expect(readFileSync(p,'utf8')).toBe(`Title\n${good}\nTail`);
+   const report=name.startsWith('x-research-');
+   if(report)await expect(write.execute('collision',{path:name,content:good},undefined,undefined,{})).rejects.toMatchObject({code:'EEXIST'});
+   else {await write.execute('ordinary-overwrite',{path:name,content:`Title\n${good}\nTail`},undefined,undefined,{});}
+   await edit.execute('valid',{path:name,edits:[{oldText:'Title',newText:'Updated'}]},undefined,undefined,{});
+   const before=readFileSync(p,'utf8');expect(before).toBe(`Updated\n${good}\nTail`);
+   await expect(edit.execute('invalid',{path:name,edits:[{oldText:good,newText:bad},{oldText:'Tail',newText:'Changed'}]},undefined,undefined,{})).rejects.toThrow(/unobserved/);
+   expect(readFileSync(p,'utf8')).toBe(before);
+   await expect(write.execute('invalid-overwrite',{path:name,content:bad},undefined,undefined,{})).rejects.toThrow(/unobserved/);expect(readFileSync(p,'utf8')).toBe(before);
+   rmSync(p);await expect(write.execute('invalid-create',{path:name,content:bad},undefined,undefined,{})).rejects.toThrow(/unobserved/);expect(existsSync(p)).toBe(false);
+  }
+ }finally{rmSync(dir,{recursive:true,force:true});}
 });

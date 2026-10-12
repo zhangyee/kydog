@@ -5,14 +5,14 @@ import { collectXPage, type XPageRequest, type XPageObservation } from './xPageS
 import type { BrowserLocationFacts } from '../browser/browserService';
 import type { XQueuedPage, XResearchBrowser } from './xResearchBrowser';
 import { compareXLocation, toSafeXLocation } from './xResearchIdentity';
-import type { XBudgetUsage, XLocationFacts, XResearchInput, XResearchResult, XResearchStatus, XSearchObservation, XStopReason, XTextObservation, XObservedSource, XCollectionTransition } from './xResearchTypes';
+import type { XBudgetUsage, XLocationFacts, XResearchInput, XResearchResult, XResearchStatus, XSearchObservation, XStopReason, XTextObservation, XSourceReference, XCollectionTransition } from './xResearchTypes';
 
 export type XSearchInput = Extract<XResearchInput, { search: unknown }>;
 /** Session-owned source table. Preserve actual URLs and every discovery's provenance. */
 export type { XObservedSource } from './xResearchTypes';
 export interface XResearchContext {
   browser: XResearchBrowser; threadId: string; runId: string; callId: string; batchId: string;
-  signal?: AbortSignal; sources: Map<string, XObservedSource[]>;
+  signal?: AbortSignal; sources: Map<string, XSourceReference[]>;
 }
 // Every selector comes from the dated actual X DOM source guide. Readiness
 // only gates one bounded wait; it never proves identity or completeness.

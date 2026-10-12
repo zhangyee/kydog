@@ -37,6 +37,7 @@ function texts(result: XResearchResult): XTextObservation[] {
 }
 function body(p: XTextObservation) {
   return {
+    ...(p.articlePreviews ? { articlePreviews: p.articlePreviews } : {}),
     observationId: p.observationId,
     postId: p.postId,
     sourceUrl: p.sourceUrl,
@@ -135,6 +136,9 @@ function projection(result: XResearchResult) {
       root: t.root ? body(t.root) : null,
       quotedPosts: t.quotedPosts.map(body),
       article: {
+        ...(t.article.entryIdentity
+          ? { entryIdentity: t.article.entryIdentity }
+          : {}),
         requested: t.article.requested,
         entryObserved: t.article.entryObserved,
         actionAttempted: t.article.actionAttempted,
@@ -420,6 +424,19 @@ export function assertXRequestFits(original: XResearchResult): void {
           },
         };
       }
+      // This local clone is ONLY an exact envelope-size probe. These maximum-width
+      // strings are never serialized as a result, returned, or given to a source ledger.
+      // Include both copies required when a preview and attempted entry are retained.
+      if (t.root) {
+        const sizingIdentity = {
+          entryObservationId: uuid,
+          parentPostId: id!,
+          sourceUrl: t.root.sourceUrl!,
+          targetUrl: t.article.body?.sourceUrl ?? t.root.sourceUrl!,
+        };
+        t.root.articlePreviews = [sizingIdentity];
+        t.article.entryIdentity = sizingIdentity;
+      }
       t.article.entryObserved = true;
       t.article.actionAttempted = true;
       t.article.navigationStarted = true;
@@ -452,6 +469,17 @@ export function serializeXResearchResult<T extends XResearchResult>(
     : bodies.some((p) => p.truncation.totalKnown === null)
       ? null
       : bodies.reduce((n, p) => n + p.truncation.totalKnown!, 0);
+  if (result.operation === 'read')
+    for (const row of result.targets) {
+      const entry = row.article.entry;
+      if (entry)
+        row.article.entryIdentity = {
+          entryObservationId: entry.observationId,
+          parentPostId: entry.parentPostId,
+          sourceUrl: entry.sourceUrl,
+          targetUrl: entry.targetUrl,
+        };
+    }
   let projected = !!result.contentProjection;
   const update = () => {
     result.truncation = {

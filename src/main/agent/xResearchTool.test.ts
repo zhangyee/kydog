@@ -232,3 +232,13 @@ it('factory content and canonical details preserve distinct source scroll failur
     expect(model.targets[0]).toMatchObject(expected);
   }
 });
+
+it('observes only the final serialized canonical result once and never observes rejected inputs',async()=>{
+ const f=fixture([readHtml(post('123','alice','&quot;'.repeat(6000)))]);
+ const received:import('../x/xResearchTypes').XResearchResult[]=[];
+ const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',observeResult:r=>received.push(r)});
+ const r=await tool.execute('final',{tabId:'research-tab',read:{objective:'a'.repeat(1020000),targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false}},undefined,undefined,{} as never);
+ expect(received).toHaveLength(1);expect(received[0]).toBe(r.details);expect(received[0].contentProjection).toBe('x_research_projection_v1');expect(received[0].truncation.truncated).toBe(true);
+ expect(Buffer.byteLength(JSON.stringify(r))).toBe(received[0].budgetUsage.outputBytes);
+ await expect(tool.execute('invalid',{search:{},read:{}} as never,undefined,undefined,{} as never)).rejects.toThrow();expect(received).toHaveLength(1);
+});

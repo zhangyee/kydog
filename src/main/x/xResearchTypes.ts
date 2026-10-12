@@ -34,7 +34,12 @@ export interface XReadRequest {
 export type XResearchInput = { tabId?: string; search: XSearchRequest; read?: never } | { tabId: string; read: XReadRequest; search?: never };
 export interface XTruncation { returned: number; totalKnown: number | null; truncated: boolean }
 export interface XAuthorIdentity { handle: string | null; displayName: string | null; profileUrl: string | null }
+/** Public identity only; no action binding or private proof crosses the result boundary. */
+export interface XArticleEntryIdentity {
+  entryObservationId: string; parentPostId: string; sourceUrl: string; targetUrl: string | null;
+}
 interface XTextBase {
+  articlePreviews?: XArticleEntryIdentity[];
   observationId: string;
   sourceKind: 'rendered_ui';
   sourceUrl: string | null;
@@ -56,6 +61,8 @@ export interface XArticleEntry {
   author: XAuthorIdentity | null; label: string | null; observationId: string; binding: XControlBinding;
 }
 export interface XArticleFacts {
+  /** Retained even when optional entry binding/label is omitted by output budgeting. */
+  entryIdentity?: XArticleEntryIdentity;
   location?: XLocationFacts;
   requested: boolean;
   entryObserved: boolean;
@@ -111,6 +118,15 @@ export interface XObservedSource {
   runId: string; callId: string; batchId: string;
   queryId: string | null; query: string | null; purpose: string | null; product: 'Top' | 'Latest' | null;
 }
+/** Legacy source coordinates can select a new read, but cannot become fresh UI provenance. */
+export interface XLegacyObservedSource {
+  sourceKind: 'legacy_x_graphql'; urlKind: 'permalink'; sourceUrl: string;
+  observationId: null; rootObservationId: null; observedAt: null;
+  containerKind: 'root_post' | 'quoted_post' | 'reply';
+  runId: null; callId: string | null; batchId: null; sessionEntryId: string | null;
+  queryId: string | null; query: string | null; purpose: string | null; product: 'Top' | 'Latest' | null;
+}
+export type XSourceReference = XObservedSource | XLegacyObservedSource;
 export interface XCollectionLocation {
   location: XSafeLocation; documentEpoch: number; routeRevision: number; navigationSequence: number;
   navigationEvent: string | null;

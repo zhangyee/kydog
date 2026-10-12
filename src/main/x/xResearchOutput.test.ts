@@ -152,3 +152,35 @@ it('preserves actual independently collected root and Article identity at the ex
   result.objective+='a';
   expect(()=>serializeXResearchResult(result)).toThrow(/required-state envelope/);
 });
+
+it('retains preview and exact entry identity in projected and metadata-compacted canonical output', async()=>{
+ const f=fixture([readHtml(post())]);
+ const r=await readX({tabId:'tab',read:{objective:'a'.repeat(600000),targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+ const identity={entryObservationId:'entry-real',parentPostId:'123',sourceUrl:'https://x.com/alice/status/123',targetUrl:'https://x.com/bob/status/456'};
+ const second={...identity,entryObservationId:'second-entry',targetUrl:'https://x.com/carol/status/789'};
+ r.targets[0].root!.articlePreviews=[identity,second];
+ r.targets[0].article.entry={observationId:'entry-real',parentPostId:'123',sourceUrl:identity.sourceUrl,targetUrl:identity.targetUrl,author:{handle:'bob',profileUrl:null,displayName:null},label:'label',binding:{nodeId:1,index:1,snapshotId:'s',generation:'g'}};
+ r.targets[0].article.entryObserved=true;r.targets[0].article.actionAttempted=true;
+ let value=serializeXResearchResult(r);
+ expect(JSON.parse(value.text).targets[0].root.articlePreviews).toEqual([identity,second]);
+ expect(JSON.parse(value.text).targets[0].article.entryIdentity).toEqual(identity);
+ // Giant optional label forces metadata pruning; the identity remains independently usable.
+ r.targets[0].article.entry.label='x'.repeat(1100000);
+ value=serializeXResearchResult(r);
+ expect(value.result.targets[0].article.entry).toBeNull();
+ expect(value.result.targets[0].article.entryIdentity).toEqual(identity);
+ expect(value.result.targets[0].root!.articlePreviews).toEqual([identity,second]);
+ expect(JSON.parse(value.text).targets[0].article.entryIdentity).toEqual(identity);
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(value)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+});
+it('drops optional search posts with their complete preview lists at the exact cap, never just an entry fact',async()=>{
+ const r=await searchX(searchInput,fixture([searchHtml(post())]).context),base=r.queries[0].posts[0];
+ const previews=Array.from({length:20},(_,i)=>({entryObservationId:`entry-${i}`,parentPostId:'123',sourceUrl:'https://x.com/alice/status/123',targetUrl:`https://x.com/bob/status/${i+1000}`}));
+ r.queries[0].posts=[{...base,articlePreviews:previews}];expect(serializeXResearchResult(r).result.queries[0].posts[0].articlePreviews).toEqual(previews);
+ r.objective='a'.repeat(600000);
+ r.queries[0].posts=Array.from({length:100},(_,i)=>({...base,observationId:`post-${i}`,articlePreviews:previews}));
+ const out=serializeXResearchResult(r),model=JSON.parse(out.text);
+ expect(out.result.queries[0].posts.length).toBeGreaterThan(0);expect(out.result.queries[0].posts.length).toBeLessThan(100);expect(out.result.truncation.truncated).toBe(true);
+ for(const p of out.result.queries[0].posts)expect(p.articlePreviews).toEqual(previews);for(const p of model.queries[0].posts)expect(p.articlePreviews).toEqual(previews);
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBe(out.result.budgetUsage.outputBytes);expect(out.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+});

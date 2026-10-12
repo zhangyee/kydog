@@ -4,10 +4,10 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { X_DOM_MAX_QUERY_UNITS, X_DOM_MAX_STRING_UNITS } from '../x/xPageSource';
 import { parseXResearchInput } from '../x/xResearchInput';
 import { readResult, readX } from '../x/xResearchRead';
-import { searchResult, searchX, xSearchUrl, type XObservedSource, type XResearchContext } from '../x/xResearchSearch';
+import { searchResult, searchX, xSearchUrl, type XResearchContext } from '../x/xResearchSearch';
 import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } from '../x/xResearchOutput';
 import type { XResearchBrowser } from '../x/xResearchBrowser';
-import type { XResearchResult } from '../x/xResearchTypes';
+import type { XResearchResult, XSourceReference } from '../x/xResearchTypes';
 
 const nonempty=Type.String({minLength:1});
 const budget=(max:number)=>Type.Optional(Type.Integer({minimum:0,maximum:max}));
@@ -19,7 +19,8 @@ export const XResearchParameters=Type.Union([
   Type.Object({tabId:nonempty,read:Read},{additionalProperties:false}),
 ]);
 export interface XResearchToolDeps {
-  browser:XResearchBrowser;threadId:string;sources:Map<string,XObservedSource[]>;currentRunId():string;
+  browser:XResearchBrowser;threadId:string;sources:Map<string,XSourceReference[]>;currentRunId():string;
+  observeResult?(result:XResearchResult):void;
 }
 /** Trusted main-process factory. Registration is supplied by the session catalog. */
 export function createXResearchTool(deps:XResearchToolDeps):ToolDefinition<typeof XResearchParameters,XResearchResult> {
@@ -39,7 +40,9 @@ export function createXResearchTool(deps:XResearchToolDeps):ToolDefinition<typeo
       if(result.browserTabId && rows.some(row=>row.location?.committedNavigationOutcome)) boundTabId=result.browserTabId;
       const destroyed=result.operation==='search'?result.queries.some(q=>q.barrier?.reason.endsWith(':browser.no_tab')):result.targets.some(t=>t.reason?.endsWith(':browser.no_tab'));
       if(destroyed && result.browserTabId===boundTabId) boundTabId=undefined;
-      return xResearchToolResult(serializeXResearchResult(result));
+      const serialized=serializeXResearchResult(result);
+      deps.observeResult?.(serialized.result);
+      return xResearchToolResult(serialized);
     },
   };
 }
