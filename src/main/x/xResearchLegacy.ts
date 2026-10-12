@@ -65,7 +65,8 @@ export interface XLegacyProjection {
   sourceKind: 'legacy_x_graphql';
   posts: XLegacyPost[];
   articles: {
-    parent: { postId: string; sourceUrl: string; authorHandle: string };
+    /** Direct reference to the same projected item root; never a URL-based join. */
+    parent: XLegacyPost;
     independentIdentity: null;
     title: string | null;
     plainText: string;
@@ -151,11 +152,7 @@ export function projectLegacyXResult(raw: unknown): XLegacyProjection {
           article.data.blocks.some((b) => b.text.trim()))
       )
         out.articles.push({
-          parent: {
-            postId: root.postId,
-            sourceUrl: root.sourceUrl,
-            authorHandle: root.authorHandle,
-          },
+          parent: root,
           independentIdentity: null,
           title: article.data.title ?? null,
           plainText: article.data.plainText,

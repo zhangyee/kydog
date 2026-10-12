@@ -149,6 +149,8 @@ interface Preview {
   parentUrl: string;
   postId: string;
   identity: XArticleEntryIdentity | null;
+  /** Only this exact legacy item may use its directly attached body. */
+  legacyRecord?: XEvidenceObservation;
 }
 interface ArticleFamily {
   parentUrl: string;
@@ -270,7 +272,12 @@ export class XResearchEvidence {
   private records: XEvidenceObservation[] = [];
   private previews: Preview[] = [];
   private families: ArticleFamily[] = [];
-  private attachedLegacyParents = new Set<string>();
+  private attachedLegacyRecords = new Set<XEvidenceObservation>();
+  /** Final canonical aliases, isolated from the mutable navigation-hint map. */
+  private documentAliases: Readonly<{
+    sourceUrl: string;
+    root: XEvidenceObservation;
+  }>[] = [];
   private legacy: XLegacyProjection[] = [];
   constructor(
     private readonly cwd: string,
@@ -303,7 +310,8 @@ export class XResearchEvidence {
     this.records = [];
     this.previews = [];
     this.families = [];
-    this.attachedLegacyParents.clear();
+    this.attachedLegacyRecords.clear();
+    this.documentAliases = [];
     this.legacy = [];
     this.sources.clear();
     for (const raw of branchEntries) {
@@ -332,14 +340,17 @@ export class XResearchEvidence {
       const projection = projectLegacyXResult(m.details);
       this.legacy.push(projection);
       for (const p of projection.posts) {
-        this.records.push({
+        const record: XEvidenceObservation = {
           ...p,
           origin: 'history',
           callId: m.toolCallId ?? null,
           sessionEntryId: id ?? null,
           articlePreviews: [],
           truncation: null,
-        });
+        };
+        this.records.push(record);
+        if (projection.articles.some((a) => a.parent === p))
+          this.attachedLegacyRecords.add(record);
         const source: XSourceReference = {
           sourceKind: 'legacy_x_graphql',
           urlKind: 'permalink',
@@ -363,10 +374,9 @@ export class XResearchEvidence {
             parentUrl: p.sourceUrl,
             postId: p.postId,
             identity: null,
+            legacyRecord: record,
           });
       }
-      for (const a of projection.articles)
-        this.attachedLegacyParents.add(a.parent.sourceUrl);
     }
   }
   private addSource(postId: string, source: XSourceReference) {
@@ -401,7 +411,7 @@ export class XResearchEvidence {
       const previews = (p.articlePreviews ?? []).filter((e) =>
         parentEntry(e, { postId: p.postId, sourceUrl: p.sourceUrl }),
       );
-      this.records.push({
+      const record: XEvidenceObservation = {
         sourceKind: 'rendered_ui',
         origin,
         sessionEntryId,
@@ -417,7 +427,8 @@ export class XResearchEvidence {
         containerKind: p.containerKind,
         articlePreviews: previews,
         truncation: p.truncation,
-      });
+      };
+      this.records.push(record);
       this.addSource(p.postId, {
         urlKind: 'permalink',
         sourceUrl: p.sourceUrl,
@@ -440,6 +451,7 @@ export class XResearchEvidence {
           postId: p.postId,
           identity,
         });
+      return record;
     };
     if (result.operation === 'search') {
       for (const row of result.queries)
@@ -447,7 +459,8 @@ export class XResearchEvidence {
       return;
     }
     for (const row of result.targets) {
-      if (row.root?.containerKind === 'root_post') add(row.root);
+      const rootRecord =
+        row.root?.containerKind === 'root_post' ? add(row.root) : undefined;
       for (const p of row.quotedPosts)
         if (p.containerKind === 'quoted_post') add(p);
       for (const p of row.replies.observations)
@@ -463,14 +476,19 @@ export class XResearchEvidence {
           const d = document.data,
             coordinates = parseXSourcePost(d.sourceUrl);
           if (
+            rootRecord &&
             d.rootObservationId === root.observationId &&
             coordinates?.id === root.postId &&
             coordinates.handle === root.author.handle &&
             d.runId === result.runId &&
             d.callId === result.callId &&
             d.batchId === result.batchId
-          )
+          ) {
+            this.documentAliases.push(
+              Object.freeze({ sourceUrl: d.sourceUrl, root: rootRecord }),
+            );
             this.addSource(root.postId, d);
+          }
         }
         if (e && parentEntry(e, root)) {
           this.previews.push({
@@ -503,24 +521,15 @@ export class XResearchEvidence {
           r.sourceUrl === url &&
           (r.text.trim() ||
             (r.sourceKind === 'legacy_x_graphql' &&
-              this.attachedLegacyParents.has(url))),
+              this.attachedLegacyRecords.has(r))),
       );
-      // A document alias is usable only when it records the exact validated root observation.
-      const docs = [...this.sources.values()]
-        .flat()
-        .filter((s) => s.urlKind === 'document' && s.sourceUrl === url);
+      // These direct same-row bindings were admitted from canonical details only.
+      // Public sources can be prepopulated/mutated by producers and never authorize citations.
       const identities = [
         ...own,
-        ...this.records.filter(
-          (r) =>
-            r.text.trim() &&
-            docs.some(
-              (d) =>
-                d.rootObservationId === r.observationId &&
-                d.callId === r.callId &&
-                d.batchId === r.batchId,
-            ),
-        ),
+        ...this.documentAliases
+          .filter((a) => a.sourceUrl === url && a.root.text.trim())
+          .map((a) => a.root),
       ];
       if (!identities.length)
         throw new Error(
@@ -530,7 +539,8 @@ export class XResearchEvidence {
       for (const p of this.previews.filter((p) =>
         parentUrls.has(p.parentUrl),
       )) {
-        if (this.attachedLegacyParents.has(p.parentUrl)) continue;
+        if (p.legacyRecord && this.attachedLegacyRecords.has(p.legacyRecord))
+          continue;
         // Select an actual same-item refreshed read family for the parent citation.
         // A href-less old card has unknown continuity; its stored fact is never upgraded.
         // Known target URLs remain distinct even when they share a parent.

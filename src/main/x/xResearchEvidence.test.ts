@@ -588,3 +588,117 @@ it('a href-less entry with an actually observed matching Article body resolves a
   l.restore([history(r)]);
   expect(() => l.guard(report, citation())).toThrow(/entry-real.*456/);
 });
+it('document citation authority is canonical and private even when shared navigation hints have matching IDs', async () => {
+  const r = await result();
+  r.targets[0].root!.sourceUrl = url + '/history';
+  const l = new XResearchEvidence('/tmp', () => 'run');
+  l.sources.set('123', [structuredClone(r.targets[0].documentSource!)]);
+  l.observe(r);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  const publicDocument = l.sources
+    .get('123')!
+    .find((s) => s.urlKind === 'document')!;
+  const wrong = 'https://x.com/WrongAuthor/status/123';
+  publicDocument.sourceUrl = wrong;
+  // Private canonical alias survives public mutation; that mutation gains no authority.
+  expect(() => l.guard(report, citation(wrong))).toThrow(/unobserved/);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  for (const [alias, canonical] of [
+    [wrong, true],
+    ['https://x.com/alice/status/999', true],
+    [url, false],
+  ] as const) {
+    const candidate = structuredClone(r),
+      hint = { ...r.targets[0].documentSource!, sourceUrl: alias };
+    candidate.targets[0].documentSource = canonical
+      ? structuredClone(hint)
+      : null;
+    l.restore([]);
+    l.sources.set('123', [hint]);
+    l.observe(candidate);
+    expect(l.guard(report, citation(url + '/history'))).toEqual({
+      createOnly: true,
+    });
+    expect(() => l.guard(report, citation(alias))).toThrow(/unobserved/);
+  }
+  // Restoration clears old canonical aliases too, even if a navigation hint is reinserted.
+  l.restore([history(r)]);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  const absent = structuredClone(r);
+  absent.targets[0].documentSource = null;
+  l.restore([history(absent)]);
+  l.sources.set('123', [structuredClone(r.targets[0].documentSource!)]);
+  expect(() => l.guard(report, citation())).toThrow(/unobserved/);
+});
+it('legacy attached bodies exempt only their own same-item previews, never fresh known targets or sibling items', async () => {
+  const root = {
+    id: '123',
+    url,
+    author: { handle: 'alice' },
+    text: '',
+    articlePreview: { title: 'legacy preview' },
+  };
+  const item = {
+    postId: '123',
+    root,
+    article: {
+      status: 'present',
+      plainText: 'legacy attached body',
+      blocks: [{ key: 'p', type: 'paragraph', text: 'legacy attached body' }],
+    },
+  };
+  const batch = { schemaVersion: 1, operation: 'read', items: [item] };
+  const l = new XResearchEvidence('/tmp', () => 'run');
+  l.restore([history(batch)]);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  const fresh = await result(),
+    b = entry(fresh);
+  fresh.targets[0].root!.articlePreviews = [b];
+  l.observe(fresh);
+  expect(() => l.guard(report, citation())).toThrow(/entry-real.*456/);
+  const attempt = structuredClone(fresh);
+  attempt.targets[0].article = {
+    ...attempt.targets[0].article,
+    entryObserved: true,
+    actionAttempted: true,
+    entryIdentity: b,
+  };
+  l.observe(attempt);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  const c = {
+    ...b,
+    entryObservationId: 'entry-C',
+    targetUrl: 'https://x.com/carol/status/789',
+  };
+  fresh.targets[0].root!.articlePreviews = [b, c];
+  l.observe(fresh);
+  expect(() => l.guard(report, citation())).toThrow(/entry-C.*789/);
+  const cAttempt = structuredClone(fresh);
+  cAttempt.targets[0].article = {
+    ...cAttempt.targets[0].article,
+    entryObserved: true,
+    actionAttempted: true,
+    entryIdentity: c,
+  };
+  l.observe(cAttempt);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  // Same URL and author do not make two old read items the same attachment family.
+  l.restore([history(batch)]);
+  expect(l.guard(report, citation())).toEqual({ createOnly: true });
+  l.restore([
+    history({
+      ...batch,
+      items: [
+        item,
+        {
+          ...item,
+          root: { ...root, text: 'other preview' },
+          article: { status: 'not_observed', reason: 'action_failed' },
+        },
+      ],
+    }),
+  ]);
+  expect(() => l.guard(report, citation())).toThrow(
+    /unknown \(legacy preview\)/,
+  );
+});
