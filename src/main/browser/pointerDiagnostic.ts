@@ -84,32 +84,40 @@ function diagnosticStyle(v: unknown): DiagnosticStyle | null | undefined {
 }
 function measureContext(v: unknown): Readonly<PointerMeasureContext> | null {
   // Optional malformed/throwing extensions cannot invalidate the old receipt.
+  // Save each input once; accessors cannot substitute unchecked values on copy.
   try {
-    if (!object(v) || !object(v.relation) || !object(v.targetAutoVisibility)) return null;
-    const r = v.relation, a = v.targetAutoVisibility;
-    const targetStyle = diagnosticStyle(v.targetStyle), hitStyle = diagnosticStyle(v.hitStyle);
-    if (!nullableBoolean(r.hitConnected) || !nullableBoolean(r.hitContainsTarget)
-      || targetStyle === undefined || hitStyle === undefined || typeof a.apiAvailable !== 'boolean'
-      || typeof a.readError !== 'boolean' || !nullableBoolean(a.optionObserved) || !nullableBoolean(a.value)
-      || (!a.apiAvailable && (a.optionObserved !== null || a.value !== null))
-      || ((a.optionObserved !== true || a.readError) && a.value !== null)) return null;
+    if (!object(v)) return null;
+    const { relation, targetAutoVisibility, targetStyle: rawTargetStyle,
+      hitStyle: rawHitStyle, contentVisibilityAncestors: rawAncestors } = v;
+    if (!object(relation) || !object(targetAutoVisibility)) return null;
+    const { hitConnected, hitContainsTarget } = relation;
+    const { apiAvailable, optionObserved, value, readError } = targetAutoVisibility;
+    const targetStyle = diagnosticStyle(rawTargetStyle), hitStyle = diagnosticStyle(rawHitStyle);
+    if (!nullableBoolean(hitConnected) || !nullableBoolean(hitContainsTarget)
+      || targetStyle === undefined || hitStyle === undefined || typeof apiAvailable !== 'boolean'
+      || typeof readError !== 'boolean' || !nullableBoolean(optionObserved) || !nullableBoolean(value)
+      || (!apiAvailable && (optionObserved !== null || value !== null))
+      || ((optionObserved !== true || readError) && value !== null)) return null;
     let ancestors: PointerMeasureContext['contentVisibilityAncestors'] = null;
-    if (v.contentVisibilityAncestors !== null) {
-      const chain = v.contentVisibilityAncestors;
-      if (!object(chain) || chain.chain !== 'parentNode-host' || typeof chain.complete !== 'boolean' || !Array.isArray(chain.entries)) return null;
+    if (rawAncestors !== null) {
+      if (!object(rawAncestors)) return null;
+      const { chain, complete, entries: rawEntries } = rawAncestors;
+      if (chain !== 'parentNode-host' || typeof complete !== 'boolean' || !Array.isArray(rawEntries)) return null;
       const entries: Array<Readonly<{ depth: number; contentVisibility: 'auto' | 'hidden'; isOriginalHit: boolean }>> = [];
       let previous = 0;
-      for (const entry of chain.entries) {
-        if (!object(entry) || !Number.isSafeInteger(entry.depth) || typeof entry.depth !== 'number' || entry.depth <= previous
-          || (entry.contentVisibility !== 'auto' && entry.contentVisibility !== 'hidden') || typeof entry.isOriginalHit !== 'boolean') return null;
-        previous = entry.depth;
-        entries.push(Object.freeze({ depth: entry.depth, contentVisibility: entry.contentVisibility, isOriginalHit: entry.isOriginalHit }));
+      for (const entry of rawEntries) {
+        if (!object(entry)) return null;
+        const { depth, contentVisibility, isOriginalHit } = entry;
+        if (typeof depth !== 'number' || !Number.isSafeInteger(depth) || depth <= previous
+          || (contentVisibility !== 'auto' && contentVisibility !== 'hidden') || typeof isOriginalHit !== 'boolean') return null;
+        previous = depth;
+        entries.push(Object.freeze({ depth, contentVisibility, isOriginalHit }));
       }
-      ancestors = Object.freeze({ chain: 'parentNode-host', complete: chain.complete, entries: Object.freeze(entries) });
+      ancestors = Object.freeze({ chain, complete, entries: Object.freeze(entries) });
     }
-    return Object.freeze({ relation: Object.freeze({ hitConnected: r.hitConnected, hitContainsTarget: r.hitContainsTarget }),
-      targetStyle, hitStyle, targetAutoVisibility: Object.freeze({ apiAvailable: a.apiAvailable,
-        optionObserved: a.optionObserved, value: a.value, readError: a.readError }), contentVisibilityAncestors: ancestors });
+    return Object.freeze({ relation: Object.freeze({ hitConnected, hitContainsTarget }),
+      targetStyle, hitStyle, targetAutoVisibility: Object.freeze({ apiAvailable,
+        optionObserved, value, readError }), contentVisibilityAncestors: ancestors });
   } catch { return null; }
 }
 function measureContextFromRejection(v: Record<string, unknown>): Readonly<PointerMeasureContext> | null {

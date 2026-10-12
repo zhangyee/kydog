@@ -119,3 +119,45 @@ it('validates optional context separately so malformed private extensions cannot
   }
   expect(pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'pointer_validate', { ...source(), pointerFailure: { ...source().pointerFailure, measureContext: context } }, point))?.rejection).toEqual(source().pointerFailure);
 });
+
+
+it('retains only the first validated optional values across changing object and scalar accessors', () => {
+  const context = () => ({ relation: { hitConnected: true, hitContainsTarget: false }, targetStyle: { display: 'block', visibility: 'visible', pointerEvents: 'none', contentVisibility: 'visible' }, hitStyle: null,
+    targetAutoVisibility: { apiAvailable: true, optionObserved: true, value: false, readError: false }, contentVisibilityAncestors: { chain: 'parentNode-host', complete: false, entries: [{ depth: 3, contentVisibility: 'hidden', isOriginalHit: true }] } });
+  const make = (extra: unknown) => ({ ...source(), ...point, pointerFailure: { ...source().pointerFailure, hitSameAsCaptured: null, measureContext: extra, rejectGeometry: { ...source().pointerFailure.rejectGeometry, hitRect: { x: 2, y: 7, width: 43, height: 33 } } } });
+  const save = (extra: unknown) => pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'measure', make(extra)))!;
+  for (const path of [
+    ['relation'], ['relation', 'hitConnected'], ['relation', 'hitContainsTarget'], ['targetStyle'], ['hitStyle'],
+    ['targetStyle', 'display'], ['targetStyle', 'visibility'], ['targetStyle', 'pointerEvents'], ['targetStyle', 'contentVisibility'],
+    ['targetAutoVisibility'], ['targetAutoVisibility', 'apiAvailable'], ['targetAutoVisibility', 'optionObserved'], ['targetAutoVisibility', 'value'], ['targetAutoVisibility', 'readError'],
+    ['contentVisibilityAncestors'], ['contentVisibilityAncestors', 'chain'], ['contentVisibilityAncestors', 'complete'], ['contentVisibilityAncestors', 'entries'],
+    ['contentVisibilityAncestors', 'entries', '0', 'depth'], ['contentVisibilityAncestors', 'entries', '0', 'contentVisibility'], ['contentVisibilityAncestors', 'entries', '0', 'isOriginalHit'],
+  ]) {
+    const valid = save(context());
+    expect(valid.rejection).toMatchObject({ targetTag: 'BUTTON', measureContext: context() });
+    const raw = context(), parent = path.slice(0, -1).reduce((v, key) => v[key] as Record<string, unknown>, raw as unknown as Record<string, unknown>), key = path.at(-1)!;
+    const first = parent[key]; let reads = 0;
+    Object.defineProperty(parent, key, { configurable: true, get() { return ++reads === 1 ? first : 'private-secret'; } });
+    const diagnostic = save(raw);
+    expect(diagnostic.rejection?.measureContext, path.join('.')).toEqual(context());
+    expect(reads, path.join('.')).toBe(1);
+    expect(parent[key]).toBe('private-secret');
+    expect(JSON.stringify(diagnostic)).not.toContain('private-secret');
+    Object.defineProperty(parent, key, { configurable: true, get() { throw new Error('private-secret'); } });
+    const unavailable = save(raw);
+    expect(unavailable.rejection).toMatchObject({ targetTag: 'BUTTON', hitTag: 'ASIDE', measureContext: null });
+    expect(unavailable.rejection?.rejectGeometry).toEqual(valid.rejection?.rejectGeometry);
+    expect(JSON.stringify(unavailable)).not.toContain('private-secret');
+    reads = 0;
+    Object.defineProperty(parent, key, { get() { return ++reads === 1 ? 'private-secret' : first; } });
+    const malformed = save(raw);
+    expect(malformed.rejection).toMatchObject({ targetTag: 'BUTTON', measureContext: null });
+    expect(malformed.rejection?.rejectGeometry).toEqual(valid.rejection?.rejectGeometry);
+    expect(reads, path.join('.')).toBe(1);
+    expect(parent[key]).toEqual(first);
+    expect(JSON.stringify(malformed)).not.toContain('private-secret');
+  }
+  const unknown = { relation: { hitConnected: null, hitContainsTarget: null }, targetStyle: null, hitStyle: null,
+    targetAutoVisibility: { apiAvailable: false, optionObserved: null, value: null, readError: false }, contentVisibilityAncestors: null };
+  expect(save(unknown).rejection?.measureContext).toEqual(unknown);
+});
