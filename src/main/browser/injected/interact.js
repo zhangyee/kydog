@@ -285,21 +285,92 @@
     const hit = deepHit(x, y);
     if (!hit || !(hit === el || containsDeep(el, hit))) {
       const refused = { ok: false, reason: 'intercepted', by: describe(hit), x, y };
-      // Preserve facts from this exact refusal; diagnostic failure cannot change it.
+      // Preserve the original rejection and identities before ordered diagnostic reads.
+      // These facts never authorize input and are not an atomic rendering snapshot.
+      const relation = { hitConnected: null, hitContainsTarget: null };
+      try { if (hit) { const connected = hit.isConnected; relation.hitConnected = typeof connected === 'boolean' ? connected : null; } } catch { /* unknown */ }
+      try { if (hit) relation.hitContainsTarget = containsDeep(hit, el); } catch { /* unknown */ }
+      const targetAutoVisibility = { apiAvailable: false, optionObserved: null, value: null, readError: false };
       try {
-        const targetRect = el.getBoundingClientRect();
+        const check = W.Element?.prototype?.checkVisibility;
+        targetAutoVisibility.apiAvailable = typeof check === 'function';
+        if (targetAutoVisibility.apiAvailable) {
+          targetAutoVisibility.optionObserved = false;
+          // Getter access records runtime option recognition, not type-level support.
+          const value = check.call(el, { get contentVisibilityAuto() {
+            targetAutoVisibility.optionObserved = true; return true;
+          } });
+          if (targetAutoVisibility.optionObserved && typeof value === 'boolean') targetAutoVisibility.value = value;
+        }
+      } catch { targetAutoVisibility.readError = true; }
+      // ONE auto-aware call above precedes all new style/layout reads. Chromium main
+      // source suggests forced-update risks; this is not proof of the installed branch.
+      try {
         const hitRect = hit ? hit.getBoundingClientRect() : null;
         refused.pointerFailure = {
           point: { x, y }, targetTag: el.tagName, hitTag: hit ? hit.tagName : null,
           targetConnected: el.isConnected, targetContainsHit: false, hitSameAsCaptured: null,
           rejectGeometry: {
-            targetRect: { x: targetRect.x, y: targetRect.y, width: targetRect.width, height: targetRect.height },
+            targetRect: { x: r.x, y: r.y, width: r.width, height: r.height },
             hitRect: hitRect ? { x: hitRect.x, y: hitRect.y, width: hitRect.width, height: hitRect.height } : null,
             scroll: { x: W.scrollX, y: W.scrollY },
             viewport: { width: W.innerWidth, height: W.innerHeight },
           },
         };
       } catch { /* Keep the original refusal when diagnostic geometry is unavailable. */ }
+      if (refused.pointerFailure) {
+        refused.pointerFailure.measureContext = null;
+        try {
+          const enums = {
+            display: ['none','contents','block','inline','run-in','flow-root','list-item','inline-block','flex','inline-flex','grid','inline-grid','table','inline-table','table-row-group','table-header-group','table-footer-group','table-row','table-cell','table-column-group','table-column','table-caption','ruby','ruby-base','ruby-text','ruby-base-container','ruby-text-container','block flow','inline flow','block flow-root','inline flow-root','block flex','inline flex','block grid','inline grid','block table','inline table','block ruby','inline ruby','block flow list-item','inline flow list-item','block flow-root list-item','inline flow-root list-item'],
+            visibility: ['visible','hidden','collapse'],
+            pointerEvents: ['auto','none','visiblePainted','visibleFill','visibleStroke','visible','painted','fill','stroke','all','bounding-box'],
+            contentVisibility: ['visible','auto','hidden'],
+          };
+          const style = node => {
+            if (!node) return null;
+            let computed;
+            try { computed = W.getComputedStyle(node); } catch { return null; }
+            if (!computed) return null;
+            const result = {};
+            for (const key of Object.keys(enums)) {
+              let value = null;
+              try { const observed = computed[key]; if (enums[key].includes(observed)) value = observed; } catch { /* unknown */ }
+              result[key] = value;
+            }
+            return result;
+          };
+          const targetStyle = style(el), hitStyle = style(hit);
+          const ancestors = { chain: 'parentNode-host', complete: true, entries: [] };
+          let current = el, depth = 0;
+          const seen = new Set();
+          while (current && current !== D) {
+            if (seen.has(current)) { ancestors.complete = false; break; }
+            seen.add(current);
+            // parentNode/host is not flat-tree proof around slots or shadow roots.
+            if (current.assignedSlot || current.host || current.tagName === 'SLOT'
+              || current.parentNode?.shadowRoot) ancestors.complete = false;
+            if (depth > 0 && current.nodeType === 1) {
+              let contentVisibility = current === hit ? hitStyle?.contentVisibility ?? null : null;
+              if (current !== hit) {
+                try {
+                  const observed = W.getComputedStyle(current)?.contentVisibility;
+                  if (enums.contentVisibility.includes(observed)) contentVisibility = observed;
+                } catch { /* unknown */ }
+              }
+              if (contentVisibility === null) ancestors.complete = false;
+              else if (contentVisibility !== 'visible') ancestors.entries.push({
+                depth, contentVisibility, isOriginalHit: current === hit,
+              });
+            }
+            current = current.parentNode || current.host || null;
+            depth++;
+          }
+          if (current !== D) ancestors.complete = false;
+          refused.pointerFailure.measureContext = { relation, targetStyle, hitStyle,
+            targetAutoVisibility, contentVisibilityAncestors: ancestors };
+        } catch { /* Optional context must never erase the old authentic rejection. */ }
+      }
       return refused;
     }
     return {

@@ -55,7 +55,14 @@ describe('Article private failure diagnostics', () => {
             diagnostic: { tabId: 'research-tab', snapshotId: binding.snapshotId, generation: binding.generation, nodeId: binding.nodeId,
               stage: 'measure', reason: 'intercepted', nativeFrameObserved: false, point: { x: 73, y: 89 }, rejection: {
                 point: { x: 73, y: 89 }, targetTag: 'BUTTON', hitTag: 'ASIDE', targetConnected: true,
-                targetContainsHit: false, hitSameAsCaptured: null, rejectGeometry: {
+                targetContainsHit: false, hitSameAsCaptured: null,
+                measureContext: {
+                  relation: { hitConnected: true, hitContainsTarget: false },
+                  targetStyle: { display: 'inline-block', visibility: 'visible', pointerEvents: 'auto', contentVisibility: 'visible' },
+                  hitStyle: { display: 'block', visibility: 'visible', pointerEvents: 'auto', contentVisibility: 'visible' },
+                  targetAutoVisibility: { apiAvailable: false, optionObserved: null, value: null, readError: false },
+                  contentVisibilityAncestors: { chain: 'parentNode-host', complete: true, entries: [] },
+                }, rejectGeometry: {
                   targetRect: { x: 23, y: 39, width: 100, height: 100 }, hitRect: { x: 1, y: 2, width: 900, height: 700 },
                   scroll: { x: 0, y: 0 }, viewport: { width: 1024, height: 768 },
                 },

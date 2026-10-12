@@ -97,3 +97,25 @@ it('measure distinguishes unavailable facts from a null hit and rejects malforme
     expect(pointerFailureDiagnostic(refused)).toBeUndefined();
   }
 });
+
+
+it('validates optional context separately so malformed private extensions cannot erase the older receipt', () => {
+  const context = { relation: { hitConnected: true, hitContainsTarget: false }, targetStyle: { display: 'inline flex', visibility: 'visible', pointerEvents: 'none', contentVisibility: 'visible' }, hitStyle: null,
+    targetAutoVisibility: { apiAvailable: true, optionObserved: true, value: false, readError: false }, contentVisibilityAncestors: { chain: 'parentNode-host', complete: false, entries: [{ depth: 1, contentVisibility: 'auto', isOriginalHit: false }] } };
+  const make = (extra: unknown) => ({ ...source(), ...point, pointerFailure: { ...source().pointerFailure, hitSameAsCaptured: null, measureContext: extra, rejectGeometry: { ...source().pointerFailure.rejectGeometry, hitRect: { x: 2, y: 7, width: 43, height: 33 } } } });
+  const raw = make({ ...context, secret: 'private-secret', targetStyle: { ...context.targetStyle, cssText: 'private-css' } });
+  const saved = pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'measure', raw))!;
+  expect(saved.rejection).toMatchObject({ measureContext: context });
+  expect(Object.isFrozen(saved.rejection?.measureContext?.contentVisibilityAncestors?.entries[0])).toBe(true);
+  expect(JSON.stringify(raw)).toContain('private-');
+  expect(JSON.stringify(saved)).not.toContain('private-');
+  const throwing = make(context);
+  Object.defineProperty(throwing.pointerFailure, 'measureContext', { get() { throw new Error('private-read'); } });
+  expect(pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'measure', throwing))?.rejection).toMatchObject({ targetTag: 'BUTTON', measureContext: null });
+  for (const bad of [{ ...context, targetStyle: { ...context.targetStyle, display: 'private-css' } }, { ...context, relation: { hitConnected: 'true', hitContainsTarget: false } }, { ...context, targetAutoVisibility: { apiAvailable: false, optionObserved: true, value: true, readError: false } }, { ...context, contentVisibilityAncestors: { chain: 'flat-tree', complete: true, entries: [] } }, { ...context, contentVisibilityAncestors: { chain: 'parentNode-host', complete: true, entries: [{ depth: NaN, contentVisibility: 'auto', isOriginalHit: false }] } }, 'private-malformed']) {
+    const diagnostic = pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'measure', make(bad)))!;
+    expect(diagnostic.rejection).toMatchObject({ targetTag: 'BUTTON', hitTag: 'ASIDE', measureContext: null });
+    expect(JSON.stringify(diagnostic)).not.toContain('private-');
+  }
+  expect(pointerFailureDiagnostic(retainPointerFailure(error(), binding, 'pointer_validate', { ...source(), pointerFailure: { ...source().pointerFailure, measureContext: context } }, point))?.rejection).toEqual(source().pointerFailure);
+});

@@ -9,7 +9,19 @@ export interface PointerFailureBinding {
   generation: string | null;
   nodeId: number | null;
 }
+type DiagnosticStyle = Readonly<{ display: string | null; visibility: string | null;
+  pointerEvents: string | null; contentVisibility: string | null }>;
+export interface PointerMeasureContext {
+  relation: Readonly<{ hitConnected: boolean | null; hitContainsTarget: boolean | null }>;
+  targetStyle: DiagnosticStyle | null;
+  hitStyle: DiagnosticStyle | null;
+  targetAutoVisibility: Readonly<{ apiAvailable: boolean; optionObserved: boolean | null; value: boolean | null; readError: boolean }>;
+  contentVisibilityAncestors: Readonly<{ chain: 'parentNode-host'; complete: boolean;
+    entries: readonly Readonly<{ depth: number; contentVisibility: 'auto' | 'hidden'; isOriginalHit: boolean }>[] }> | null;
+}
 export interface PointerHitRejection {
+  /** Optional post-refusal observations, never a readiness or permission verdict. */
+  measureContext?: Readonly<PointerMeasureContext> | null;
   point: Point;
   targetTag: string;
   hitTag: string | null;
@@ -52,6 +64,57 @@ function rect(v: unknown): Rect | null {
     && v.width >= 0 && v.height >= 0
     ? Object.freeze({ x: v.x, y: v.y, width: v.width, height: v.height }) : null;
 }
+const styleEnums = {
+  display: ['none','contents','block','inline','run-in','flow-root','list-item','inline-block','flex','inline-flex','grid','inline-grid','table','inline-table','table-row-group','table-header-group','table-footer-group','table-row','table-cell','table-column-group','table-column','table-caption','ruby','ruby-base','ruby-text','ruby-base-container','ruby-text-container','block flow','inline flow','block flow-root','inline flow-root','block flex','inline flex','block grid','inline grid','block table','inline table','block ruby','inline ruby','block flow list-item','inline flow list-item','block flow-root list-item','inline flow-root list-item'],
+  visibility: ['visible','hidden','collapse'],
+  pointerEvents: ['auto','none','visiblePainted','visibleFill','visibleStroke','visible','painted','fill','stroke','all','bounding-box'],
+  contentVisibility: ['visible','auto','hidden'],
+};
+const nullableBoolean = (v: unknown): v is boolean | null => v === null || typeof v === 'boolean';
+function diagnosticStyle(v: unknown): DiagnosticStyle | null | undefined {
+  if (v === null) return null;
+  if (!object(v)) return undefined;
+  const result: Record<string, string | null> = {};
+  for (const key of Object.keys(styleEnums) as (keyof typeof styleEnums)[]) {
+    const value = v[key];
+    if (value !== null && (typeof value !== 'string' || !styleEnums[key].includes(value))) return undefined;
+    result[key] = value;
+  }
+  return Object.freeze(result) as DiagnosticStyle;
+}
+function measureContext(v: unknown): Readonly<PointerMeasureContext> | null {
+  // Optional malformed/throwing extensions cannot invalidate the old receipt.
+  try {
+    if (!object(v) || !object(v.relation) || !object(v.targetAutoVisibility)) return null;
+    const r = v.relation, a = v.targetAutoVisibility;
+    const targetStyle = diagnosticStyle(v.targetStyle), hitStyle = diagnosticStyle(v.hitStyle);
+    if (!nullableBoolean(r.hitConnected) || !nullableBoolean(r.hitContainsTarget)
+      || targetStyle === undefined || hitStyle === undefined || typeof a.apiAvailable !== 'boolean'
+      || typeof a.readError !== 'boolean' || !nullableBoolean(a.optionObserved) || !nullableBoolean(a.value)
+      || (!a.apiAvailable && (a.optionObserved !== null || a.value !== null))
+      || ((a.optionObserved !== true || a.readError) && a.value !== null)) return null;
+    let ancestors: PointerMeasureContext['contentVisibilityAncestors'] = null;
+    if (v.contentVisibilityAncestors !== null) {
+      const chain = v.contentVisibilityAncestors;
+      if (!object(chain) || chain.chain !== 'parentNode-host' || typeof chain.complete !== 'boolean' || !Array.isArray(chain.entries)) return null;
+      const entries: Array<Readonly<{ depth: number; contentVisibility: 'auto' | 'hidden'; isOriginalHit: boolean }>> = [];
+      let previous = 0;
+      for (const entry of chain.entries) {
+        if (!object(entry) || !Number.isSafeInteger(entry.depth) || typeof entry.depth !== 'number' || entry.depth <= previous
+          || (entry.contentVisibility !== 'auto' && entry.contentVisibility !== 'hidden') || typeof entry.isOriginalHit !== 'boolean') return null;
+        previous = entry.depth;
+        entries.push(Object.freeze({ depth: entry.depth, contentVisibility: entry.contentVisibility, isOriginalHit: entry.isOriginalHit }));
+      }
+      ancestors = Object.freeze({ chain: 'parentNode-host', complete: chain.complete, entries: Object.freeze(entries) });
+    }
+    return Object.freeze({ relation: Object.freeze({ hitConnected: r.hitConnected, hitContainsTarget: r.hitContainsTarget }),
+      targetStyle, hitStyle, targetAutoVisibility: Object.freeze({ apiAvailable: a.apiAvailable,
+        optionObserved: a.optionObserved, value: a.value, readError: a.readError }), contentVisibilityAncestors: ancestors });
+  } catch { return null; }
+}
+function measureContextFromRejection(v: Record<string, unknown>): Readonly<PointerMeasureContext> | null {
+  try { return measureContext(v.measureContext); } catch { return null; }
+}
 function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHitRejection | null {
   if (!object(v)) return null;
   const p = point(v.point), g = v.rejectGeometry, same = v.hitSameAsCaptured;
@@ -69,6 +132,7 @@ function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHi
   if (stage === 'measure' && (v.hitTag === null ? g.hitRect !== null : !hitRect)) return null;
   return Object.freeze({ point: p, targetTag: v.targetTag, hitTag: v.hitTag,
     targetConnected: v.targetConnected, targetContainsHit: false, hitSameAsCaptured: same,
+    ...(stage === 'measure' && 'measureContext' in v ? { measureContext: measureContextFromRejection(v) } : {}),
     rejectGeometry: Object.freeze({ targetRect: Object.freeze({ x: r.x, y: r.y, width: r.width, height: r.height }),
       ...(stage === 'measure' ? { hitRect } : {}),
       scroll, viewport: Object.freeze({ width: viewport.width, height: viewport.height }) }),

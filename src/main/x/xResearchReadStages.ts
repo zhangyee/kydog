@@ -1,3 +1,5 @@
+import { logger } from '../log';
+import { pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
 import { KydogError } from '../../shared/errors';
 import type { XQueuedPage } from './xResearchBrowser';
 import type {
@@ -400,14 +402,25 @@ export async function readDiscussion(
     stage.current = 'action';
     if (control) {
       if (!admitControl(control, observed, row, stage)) return;
-      await page.act(
-        {
-          kind: 'click',
-          index: control.binding.index,
-          snapshotId: control.binding.snapshotId,
-        },
-        observed.snapshot,
-      );
+      try {
+        await page.act(
+          {
+            kind: 'click',
+            index: control.binding.index,
+            snapshotId: control.binding.snapshotId,
+          },
+          observed.snapshot,
+        );
+      } catch (error) {
+        const diagnostic = pointerFailureDiagnostic(error);
+        if (diagnostic && diagnostic.snapshotId === control.binding.snapshotId
+          && diagnostic.generation === control.binding.generation && diagnostic.nodeId === control.binding.nodeId) {
+          logger.warn('xResearch', 'Reply expansion pointer interception', {
+            runId: context.runId, callId: context.callId, batchId: context.batchId, diagnostic,
+          });
+        }
+        throw error;
+      }
       row.budgetUsage.expandActions++;
     } else {
       await page.act({ kind: 'scroll', direction: 'down' }, observed.snapshot, {

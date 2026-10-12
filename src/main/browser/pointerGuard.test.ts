@@ -258,20 +258,27 @@ it('initial measure retains the same rejected hit and original point through pri
     hits = scrolls = targetReads = hitReads = 0; hit = cover;
     const rejected = measure();
     const wanted = { point: { x: 47, y: 59 }, targetTag: 'BUTTON', hitTag: 'ASIDE', targetConnected: true,
-      targetContainsHit: false, hitSameAsCaptured: null, rejectGeometry: {
-        targetRect: { x: 111, y: 112, width: 171, height: 194 }, hitRect: { x: 17, y: 19, width: 507, height: 611 },
+      targetContainsHit: false, hitSameAsCaptured: null,
+      measureContext: {
+        relation: { hitConnected: true, hitContainsTarget: false },
+        targetStyle: { display: 'inline-block', visibility: 'visible', pointerEvents: 'auto', contentVisibility: 'visible' },
+        hitStyle: { display: 'block', visibility: 'visible', pointerEvents: 'auto', contentVisibility: 'visible' },
+        targetAutoVisibility: { apiAvailable: false, optionObserved: null, value: null, readError: false },
+        contentVisibilityAncestors: { chain: 'parentNode-host', complete: true, entries: [] },
+      }, rejectGeometry: {
+        targetRect: { x: 11, y: 12, width: 71, height: 94 }, hitRect: { x: 17, y: 19, width: 507, height: 611 },
         scroll: { x: 9, y: 52 }, viewport: { width: 1024, height: 768 },
       } };
     expect(rejected).toMatchObject({ ok: false, reason: 'intercepted', x: 47, y: 59 });
     expect(rejected.pointerFailure).toEqual(wanted);
-    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 2, hitReads: 1 });
+    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 1, hitReads: 1 });
     const retained = retainPointerFailure(new KydogError('browser.click_intercepted', 'refused'),
       { tabId: 'tab-source', snapshotId: 'snapshot-source', generation: 'document', nodeId: 7 }, 'measure', rejected);
     expect(pointerFailureDiagnostic(retained)).toMatchObject({ stage: 'measure', point: { x: 47, y: 59 },
       nativeFrameObserved: false, rejection: wanted });
     hits = scrolls = targetReads = hitReads = 0; hit = null;
     expect(measure().pointerFailure).toMatchObject({ hitTag: null, rejectGeometry: { hitRect: null } });
-    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 2, hitReads: 0 });
+    expect({ hits, scrolls, targetReads, hitReads }).toEqual({ hits: 1, scrolls: 1, targetReads: 1, hitReads: 0 });
     hits = scrolls = targetReads = hitReads = 0; hit = cover;
     cover.getBoundingClientRect = () => { throw new Error('diagnostic geometry unavailable'); };
     const unavailable = measure();

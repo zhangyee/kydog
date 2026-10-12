@@ -1,3 +1,6 @@
+import { readDiscussion } from './xResearchReadStages';
+import { logger } from '../log';
+import { retainPointerFailure, pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import { describe, expect, it, vi } from 'vitest';
@@ -221,4 +224,69 @@ it('preserves typed no-movement versus ACK-timeout with independent Article/root
     expect(row).toMatchObject({status:'partial',reason:sample.reason,stopReason:sample.stopReason,root:{postId:'123',text:'expanded body'},article:{bodyObserved:true,body:{postId:'456',text:'Article paragraph\n\nHeading'}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown',stopReason:sample.stopReason}},budgetUsage:{scrolls:1,expandActions:3}});
     expect(f.executed).toEqual(['body_expand','article_entry','replies_expand','scroll']);
   }
+});
+
+
+it('logs only authentic reply expansion receipts with saved control and producer identities, preserving the original rejection', async () => {
+  const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+  try {
+    let genuine: KydogError | undefined;
+    for (const mode of ['genuine-A', 'genuine-B', 'property', 'prototype', 'wrong-snapshot', 'wrong-generation', 'wrong-node', 'ordinary']) {
+      const f = fixture([readHtml(post() + post('789', 'carol', 'first reply') + '<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>')]);
+      Object.assign(f.context, { runId: `run-${mode}`, callId: `call-${mode}`, batchId: `batch-${mode}` });
+      let thrown: unknown;
+      f.act.mockImplementation(async (action, snapshot) => {
+        const snap = snapshot as import('../browser/snapshot').AxSnapshot;
+        const node = snap.nodes.find(n => n.index === action.index)!;
+        expect(node.collectedPermission?.purpose).toBe('replies_expand');
+        const error = new KydogError('browser.click_intercepted', 'private-text private-class https://private.example/');
+        if (mode.startsWith('genuine') || mode.startsWith('wrong-')) {
+          genuine = retainPointerFailure(error, { tabId: 'research-tab', snapshotId: mode === 'wrong-snapshot' ? 'other-snapshot' : snap.snapshotId,
+            generation: mode === 'wrong-generation' ? 'other-generation' : snap.generation, nodeId: mode === 'wrong-node' ? node.nodeId + 1 : node.nodeId }, 'measure', {
+            ok: false, reason: 'intercepted', x: 61, y: 63, pointerFailure: { point: { x: 61, y: 63 }, targetTag: 'BUTTON', hitTag: 'ASIDE', targetConnected: true, targetContainsHit: false, hitSameAsCaptured: null,
+              rejectGeometry: { targetRect: { x: 11, y: 23, width: 100, height: 80 }, hitRect: { x: 1, y: 2, width: 700, height: 900 }, scroll: { x: 0, y: 17 }, viewport: { width: 900, height: 700 } } },
+          });
+          thrown = genuine;
+        } else if (mode === 'property') thrown = Object.assign(error, { diagnostic: pointerFailureDiagnostic(genuine) });
+        else if (mode === 'prototype') thrown = Object.assign(Object.create(Object.getPrototypeOf(genuine!)), error, { diagnostic: pointerFailureDiagnostic(genuine) });
+        else thrown = error;
+        throw thrown;
+      });
+      const result = await readX(read([{ url: 'https://x.com/alice/status/123' }], { includeReplies: true, maxExpandActionsPerPost: 2 }), f.context);
+      expect(result.targets[0]).toMatchObject({ root: { text: 'original' }, reason: 'action_failed:browser.click_intercepted', budgetUsage: { expandActions: 0 } });
+      expect(f.act).toHaveBeenCalledTimes(1);
+      expect(f.collect).toHaveBeenCalledTimes(1);
+      if (mode.startsWith('genuine')) {
+        expect(warn).toHaveBeenLastCalledWith('xResearch', 'Reply expansion pointer interception', {
+          runId: `run-${mode}`, callId: `call-${mode}`, batchId: `batch-${mode}`, diagnostic: pointerFailureDiagnostic(thrown),
+        });
+        expect(pointerFailureDiagnostic(thrown)).toMatchObject({ stage: 'measure', nodeId: expect.any(Number) });
+        expect(JSON.stringify(warn.mock.calls.at(-1))).not.toContain('private-');
+      }
+      expect(warn).toHaveBeenCalledTimes(mode === 'genuine-A' ? 1 : 2);
+    }
+  } finally { warn.mockRestore(); }
+});
+
+
+it('reply action catch rethrows the same authenticated error without another collection or action', async () => {
+  const f = fixture([readHtml(post() + post('789', 'carol', 'reply') + '<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>')]);
+  const input = read([{ url: 'https://x.com/alice/status/123' }], { includeReplies: true, maxExpandActionsPerPost: 2 });
+  const row = (await readX({ ...input, read: { ...input.read, includeReplies: false } }, f.context)).targets[0];
+  const request = { stage: 'post' as const, expectedUrl: 'https://x.com/alice/status/123', postId: '123' };
+  const observed = await f.page.collect(request);
+  const control = observed.controls.find(c => c.kind === 'replies_expand')!;
+  expect(control).toBeDefined();
+  const original = retainPointerFailure(new KydogError('browser.click_intercepted', 'private'), { tabId: 'research-tab', ...control.binding }, 'measure', { ok: false, reason: 'intercepted', x: 3, y: 9 });
+  expect(pointerFailureDiagnostic(original)).toMatchObject({ nodeId: control.binding.nodeId, rejection: null });
+  const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+  try {
+    f.act.mockRejectedValue(original);
+    const before = f.collect.mock.calls.length;
+    await expect(readDiscussion(f.page, observed, request, row, input.read, { current: 'collection', attemptedControls: new Set() }, f.context)).rejects.toBe(original);
+    expect(f.act).toHaveBeenCalledTimes(1);
+    expect(f.collect).toHaveBeenCalledTimes(before);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(row.budgetUsage.expandActions).toBe(0);
+  } finally { warn.mockRestore(); }
 });

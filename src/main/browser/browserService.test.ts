@@ -4489,3 +4489,103 @@ it.each(['measure', 'pointer_validate'] as const)('retains private %s intercepti
   expect(frames).toBe(stage === 'measure' ? 0 : 1);
   expect(inputCmds(wc)).toEqual([]);
 });
+
+
+it('keeps original measure relation and one auto-aware call before diagnostic style/layout reads', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { measuredPointerExpression } = await import('./measuredPointerSource');
+  for (const mode of ['ancestor', 'competing', 'disconnected', 'false', 'null', 'absent', 'throw', 'throw-read', 'unread', 'style-getter', 'slot', 'shadow']) {
+    const dom = new JSDOM('<main><button>private-text</button></main><aside class="private-class"></aside>', { runScripts: 'outside-only' });
+    try {
+      const w = dom.window, d = w.document, target = d.querySelector('button')!, ancestor = d.querySelector('main')!, competitor = d.querySelector('aside')!;
+      if (mode === 'slot') Object.defineProperty(target, 'assignedSlot', { value: d.createElement('slot') });
+      if (mode === 'shadow') ancestor.attachShadow({ mode: 'open' }).append(target);
+      Object.assign(w, { __kydogWorld: { gen: 'source-gen', ids: new WeakMap([[target, 17]]), pw: new WeakSet() } });
+      let hit: Element | null = target;
+      const events: string[] = [];
+      expect(target.textContent).toBe('private-text');
+      expect(competitor.className).toBe('private-class');
+      Object.assign(d, { elementFromPoint: () => { events.push('hit'); return hit; } });
+      Object.assign(target, { scrollIntoView: () => events.push('scroll'), getBoundingClientRect: () => { events.push('target-rect'); return { x: 11, y: 23, left: 11, top: 23, width: 100, height: 80 }; } });
+      for (const el of [ancestor, competitor]) Object.assign(el, { getBoundingClientRect: () => { events.push(el === hit ? 'original-hit-rect' : 'wrong-hit-rect'); return { x: 1, y: 2, width: 700, height: 900 }; } });
+      Object.assign(w, { getComputedStyle: (el: Element) => { events.push('style'); const result = { display: 'block', visibility: 'visible', pointerEvents: el === target ? 'none' : 'auto', contentVisibility: el === ancestor ? 'auto' : 'visible' }; let reads = 0; Object.defineProperty(result, 'display', { get() { events.push(el === ancestor && el !== hit ? 'ancestor-other-style' : 'allowed-style'); return ++reads === 1 || mode !== 'style-getter' ? 'block' : 'private-css'; } }); return result; } });
+      const expression = measuredPointerExpression({ nodeId: 17 }, { token: 'pointer-token', kind: 'click', expiresAt: Date.now() + 3000 }, Date.now() + 3000);
+      expect(w.eval(expression)).toMatchObject({ ok: true });
+      expect(events.slice(0, 3)).toEqual(['scroll', 'target-rect', 'hit']);
+      events.length = 0;
+      hit = ['ancestor', 'slot', 'shadow'].includes(mode) ? ancestor : mode === 'null' ? null : competitor;
+      if (mode === 'disconnected') competitor.remove();
+      if (mode !== 'absent') Object.assign(w.Element.prototype, { checkVisibility: function (options: { contentVisibilityAuto: boolean }) {
+        expect(this).toBe(target); events.push('visibility');
+        if (mode === 'throw') throw new Error('private API error');
+        if (mode !== 'unread') expect(options.contentVisibilityAuto).toBe(true);
+        if (mode === 'throw-read') throw new Error('private API error after option');
+        return mode !== 'false';
+      } });
+      const raw = w.eval(expression) as { pointerFailure: unknown };
+      expect(raw).toMatchObject({ ok: false, reason: 'intercepted', x: 61, y: 63, pointerFailure: { targetContainsHit: false, rejectGeometry: { targetRect: { x: 11, y: 23, width: 100, height: 80 } }, measureContext: {
+        relation: { hitConnected: hit ? mode !== 'disconnected' : null, hitContainsTarget: hit ? hit === ancestor : null },
+        targetStyle: { display: 'block', visibility: 'visible', pointerEvents: 'none', contentVisibility: 'visible' },
+        targetAutoVisibility: { apiAvailable: mode !== 'absent', optionObserved: mode === 'absent' ? null : !['throw', 'unread'].includes(mode), value: ['absent', 'throw', 'throw-read', 'unread'].includes(mode) ? null : mode !== 'false', readError: mode === 'throw' || mode === 'throw-read' },
+        contentVisibilityAncestors: { chain: 'parentNode-host', complete: !['slot', 'shadow'].includes(mode), entries: [{ depth: mode === 'shadow' ? 2 : 1, contentVisibility: 'auto', isOriginalHit: hit === ancestor }] },
+      } } });
+      expect(events.filter(e => e === 'hit')).toHaveLength(1);
+      expect(events.filter(e => e === 'scroll')).toHaveLength(1);
+      expect(events.filter(e => e === 'target-rect')).toHaveLength(1);
+      if (mode !== 'absent') { expect(events.filter(e => e === 'visibility')).toHaveLength(1); expect(events.indexOf('visibility')).toBeLessThan(events.indexOf('style')); if (hit) expect(events.indexOf('visibility')).toBeLessThan(events.indexOf('original-hit-rect')); }
+      expect(events).toContain('allowed-style');
+      expect(events).not.toContain('ancestor-other-style');
+      expect(JSON.stringify(raw.pointerFailure)).not.toContain('private-');
+    } finally { dom.window.close(); }
+  }
+});
+
+
+it('a failed optional ancestor read retains the original measure rejection and old authentic geometry', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { guardedInteractExpression } = await import('./measuredPointerSource');
+  const { retainPointerFailure, pointerFailureDiagnostic } = await import('./pointerDiagnostic');
+  const { KydogError } = await import('../../shared/errors');
+  const dom = new JSDOM('<button>private-text</button><aside></aside>', { runScripts: 'outside-only' });
+  try {
+    const w = dom.window, target = w.document.querySelector('button')!, hit = w.document.querySelector('aside')!;
+    Object.assign(w.document, { elementFromPoint: () => hit });
+    target.getBoundingClientRect = () => ({ x: 11, y: 23, left: 11, top: 23, width: 100, height: 80 } as DOMRect);
+    hit.getBoundingClientRect = () => ({ x: 1, y: 2, width: 700, height: 900 } as DOMRect);
+    const expression = guardedInteractExpression({ op: 'measure', target: { selector: 'button' } }, Date.now() + 3000);
+    const before = w.eval(expression) as { pointerFailure: { measureContext: unknown } };
+    expect(before.pointerFailure.measureContext).toMatchObject({ relation: { hitConnected: true, hitContainsTarget: false } });
+    Object.defineProperty(target, 'assignedSlot', { get() { throw new Error('private-ancestor-read'); } });
+    const raw = w.eval(expression);
+    const diagnostic = pointerFailureDiagnostic(retainPointerFailure(new KydogError('browser.click_intercepted', 'private'), { tabId: 'tab-source', snapshotId: null, generation: null, nodeId: null }, 'measure', raw));
+    expect(diagnostic).toMatchObject({ stage: 'measure', rejection: { targetTag: 'BUTTON', hitTag: 'ASIDE', measureContext: null, rejectGeometry: { targetRect: { x: 11, y: 23, width: 100, height: 80 }, hitRect: { x: 1, y: 2, width: 700, height: 900 } } } });
+    expect(JSON.stringify(diagnostic)).not.toContain('private');
+  } finally { dom.window.close(); }
+});
+
+
+it('samples original hit containment before the visibility read can change the retained targets parent chain', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { measuredPointerExpression } = await import('./measuredPointerSource');
+  const dom = new JSDOM('<main><button>target</button></main><aside></aside>', { runScripts: 'outside-only' });
+  try {
+    const w = dom.window, target = w.document.querySelector('button')!, originalHit = w.document.querySelector('main')!, other = w.document.querySelector('aside')!;
+    Object.assign(w, { __kydogWorld: { gen: 'original-document', ids: new WeakMap([[target, 17]]), pw: new WeakSet() } });
+    let hit: Element = target, hits = 0, visibilityCalls = 0;
+    Object.assign(w.document, { elementFromPoint: () => { hits++; return hit; } });
+    target.getBoundingClientRect = () => ({ x: 11, y: 23, left: 11, top: 23, width: 100, height: 80 } as DOMRect);
+    originalHit.getBoundingClientRect = () => ({ x: 1, y: 2, width: 700, height: 900 } as DOMRect);
+    const expression = measuredPointerExpression({ nodeId: 17 }, { token: 'pointer-token', kind: 'click', expiresAt: Date.now() + 3000 }, Date.now() + 3000);
+    expect(w.eval(expression)).toMatchObject({ ok: true });
+    hit = originalHit; hits = 0;
+    Object.assign(w.Element.prototype, { checkVisibility: function (options: { contentVisibilityAuto: boolean }) {
+      expect(this).toBe(target); expect(options.contentVisibilityAuto).toBe(true); visibilityCalls++;
+      other.append(target); return false;
+    } });
+    expect(w.eval(expression)).toMatchObject({ ok: false, reason: 'intercepted', x: 61, y: 63, pointerFailure: { measureContext: {
+      relation: { hitConnected: true, hitContainsTarget: true }, targetAutoVisibility: { optionObserved: true, value: false, readError: false },
+    } } });
+    expect(target.parentNode).toBe(other);
+    expect(hits).toBe(1); expect(visibilityCalls).toBe(1);
+  } finally { dom.window.close(); }
+});
