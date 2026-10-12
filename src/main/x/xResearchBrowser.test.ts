@@ -1,3 +1,5 @@
+import { JSDOM } from 'jsdom';
+import { measuredPointerExpression, pointerGuardExpression } from '../browser/measuredPointerSource';
 import { describe, expect, it } from 'vitest';
 import { KydogError } from '../../shared/errors';
 import type { BrowserService, BrowserLocationFacts } from '../browser/browserService';
@@ -145,4 +147,34 @@ it('keeps real open navigation results when the optional Article provenance can 
     f.browser.open=async()=>result;
     await expect(port.open(f.facts.currentUrl,undefined)).resolves.toEqual(result);
   }
+});
+
+it('private collected permission reaches actual measure and survives caller edits, while selector rebinding is rejected',async()=>{
+  const f=fixture();
+  const dom=new JSDOM('<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation"><article data-testid="tweet"><div data-testid="User-Name"><a href="/a">@a</a></div><a href="/a/status/123/history"><time>today</time></a><div data-testid="tweetText">body</div><button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button></article></div></div></main>',{url:f.facts.currentUrl,runScripts:'outside-only'});
+  const el=dom.window.document.querySelector('button')!;
+  Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+  Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
+  Object.assign(dom.window.document,{elementFromPoint:()=>el});el.scrollIntoView=()=>{};
+  f.browser.prepareForDomRead=async()=>{};
+  f.browser.evalInPage=async<T>(_id:string,code:string|((notAfter:number)=>string))=>dom.window.eval(typeof code==='string'?code:code(Date.now()+3000)) as T;
+  let dispatched=0;
+  f.browser.dispatchAndObserveNavigation=async(_id,action,snapshot,options)=>{
+    const node=snapshot!.nodes.find(n=>'index' in action && n.index===action.index)!;
+    const pointer={token:'native',kind:'click' as const,expiresAt:Date.now()+3000};
+    const m=dom.window.eval(measuredPointerExpression({nodeId:node.nodeId,collectedPermission:options?.collectedPermission},pointer,Date.now()+3000)) as {ok:boolean;pointerGuard:{ok:boolean}};
+    if(!m.ok || !m.pointerGuard.ok || !(dom.window.eval(pointerGuardExpression('validate',pointer,Date.now()+3000)) as {ok:boolean}).ok) throw new KydogError('browser.target_unusable','changed');
+    dispatched++;return {line:'clicked',navigation:null};
+  };
+  const port=createXResearchBrowser(f.browser,'thread');
+  try {await port.withPage('tab',undefined,async page=>{
+    const observed=await page.collect({stage:'post',expectedUrl:f.facts.currentUrl,postId:'123'});
+    const b=observed.controls[0].binding, click={kind:'click' as const,index:b.index,snapshotId:b.snapshotId};
+    observed.snapshot.nodes[0].collectedPermission!.token='caller changed';
+    await page.act(click,observed.snapshot);expect(dispatched).toBe(1);
+    await expect(page.act({kind:'click',selector:'button'},observed.snapshot)).rejects.toMatchObject({code:'browser.bad_action'});
+    el.textContent='Reply';
+    await expect(page.act(click,observed.snapshot)).rejects.toMatchObject({code:'browser.target_unusable'});
+    expect(dispatched).toBe(1);
+  });}finally{dom.window.close();}
 });

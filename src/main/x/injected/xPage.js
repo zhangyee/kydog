@@ -1,4 +1,4 @@
-/* global X_REQUEST, X_WALKER */
+/* global X_REQUEST, X_WALKER, X_PERMISSION */
 // Fixed rendered-X observation. Selectors observed in IAB on 2026-10-12.
 // Invoked only in the existing isolated world. Page text is never executable.
 (() => {
@@ -63,13 +63,15 @@
   const posts = [], controls = [], entries = [];
   const candidates = new Set();
   let eligibleControls = 0;
-  const control = (el,kind,postId) => {
+  const control = (el,kind,postId,scopes) => {
     if (!shown(el) || el.form || el.closest('form') || el.disabled || el.getAttribute('aria-disabled') === 'true') return null;
     eligibleControls++;
     if (controls.length >= 100) return null;
-    candidates.add(el); const c = {el,kind,postId}; controls.push(c); return c;
+    candidates.add(el); const c = {el,kind,postId,scopes}; controls.push(c); return c;
   };
   const roots = all(region,tweetSelector).filter(el=>shown(el) && !el.parentElement.closest(tweetSelector));
+  const scopeOf = root => root ? [{el:root,semantic:false,members:'[data-testid="User-Name"] a[href], a[href] time'},...own(root,'[data-testid="User-Name"] a[href], a[href]').filter(el=>el.closest('[data-testid="User-Name"]') || el.querySelector('time')).map(el=>({el,semantic:true}))] : [];
+  const focal = roots.find(root=>factOf(root).postId===request.postId);
   let totalPosts = 0;
   for (const root of roots) {
     const rootFact = factOf(root);
@@ -84,15 +86,15 @@
           posts.push({...fact,scope:box===root?'post':'quote',text:full.slice(0,4000),truncation:{returned:Math.min(full.length,4000),totalKnown:full.length,truncated:full.length>4000}});
         }
       }
-      for (const b of own(box,'button[role="button"][type="button"][data-testid="tweet-text-show-more-link"]')) control(b,'body_expand',fact.postId);
+      for (const b of own(box,'button[role="button"][type="button"][data-testid="tweet-text-show-more-link"]')) control(b,'body_expand',fact.postId,[...scopeOf(root),...scopeOf(box)]);
       const cover = own(box,'[data-testid="article-cover-image"]');
       if (box!==root && cover.length && rootFact.postId) {
-        const c = control(box,'article_entry',rootFact.postId);
+        const c = control(box,'article_entry',rootFact.postId,scopeOf(root));
         if (c) entries.push({el:box,parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? null : null,label:text(box).slice(0,512)});
       }
     }
   }
-  for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) control(b,'replies_expand',null);
+  for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) control(b,'replies_expand',null,scopeOf(focal));
   // Article body is independent of primaryColumn (immersive UI has none).
   let article = null;
   const reads = all(document,'main article[data-testid="twitterArticleReadView"], [role="main"] article[data-testid="twitterArticleReadView"]').filter(shown);
@@ -114,9 +116,18 @@
   // eslint-disable-next-line no-unused-vars
   const kydogSnapshotScope = candidates;
   const snapshot = X_WALKER;
+  const permissionGuard = X_PERMISSION;
+  permissionGuard({op:'begin_collected',owner:'x',namespace:request.permissionNamespace});
   const nodeFor = el => snapshot.nodes.find(n=>window.__kydogWorld.ids.get(el)===n.nodeId);
+  for (const c of controls) {
+    const node=nodeFor(c.el);
+    if (!node) continue;
+    const permission={owner:'x',token:request.permissionNamespace+':'+node.nodeId,purpose:c.kind};
+    const saved=permissionGuard({op:'remember_collected',namespace:request.permissionNamespace,permission,el:c.el,nodeId:node.nodeId,scopes:c.scopes});
+    if (saved.ok) node.collectedPermission=permission;
+  }
   return {rawUrl:location.href,region:!!region,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
-    controls:controls.flatMap(({el,...c})=>{const n=nodeFor(el);return n?[{...c,nodeId:n.nodeId,index:n.index}]:[];}),
+    controls:controls.flatMap(({el,kind,postId})=>{const n=nodeFor(el);return n?[{kind,postId,nodeId:n.nodeId,index:n.index}]:[];}),
     entries:entries.flatMap(({el,...e})=>{const n=nodeFor(el);return n?[{...e,nodeId:n.nodeId,index:n.index}]:[];}),
     controlTruncation:{returned:snapshot.nodes.length,totalKnown:eligibleControls,truncated:snapshot.nodes.length<eligibleControls},
     truncation:{returned:posts.length,totalKnown:totalPosts,truncated:totalPosts>100},snapshot};

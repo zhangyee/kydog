@@ -2,6 +2,10 @@
  * or evaluator is added to the application or to XQueuedPage. */
 import { app, BrowserWindow, session, type WebContentsView } from 'electron';
 import http from 'node:http';
+import tls from 'node:tls';
+import key from './tls-key.pem?raw';
+import cert from './tls-cert.pem?raw';
+import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
 import { BrowserService } from '../../../src/main/browser/browserService';
 import { createXResearchBrowser } from '../../../src/main/x/xResearchBrowser';
@@ -18,6 +22,12 @@ query.addEventListener('input',()=>{facts.input++;facts.value=query.value});
 query.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();facts.keys++;if(e.isTrusted)facts.trustedKeys++}});
 </script>`;
 
+const xHtml = `<!doctype html><meta charset="utf-8"><style>body{margin:30px;font:20px sans-serif}button{padding:20px}</style>
+<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">
+<article data-testid="tweet"><div data-testid="User-Name"><a href="/alice">@alice</a></div><a id="stamp" href="/alice/status/123/history"><time>today</time></a><div data-testid="tweetText">Body</div><button id="expand" role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button><span id="likes">1</span></article>
+<article id="otherpost" data-testid="tweet"><div data-testid="User-Name"><a href="/bob">@bob</a></div><a href="/bob/status/456/history"><time>today</time></a><div data-testid="tweetText">Other</div></article>
+</div></div></main><form id="compose"></form><script>window.trusted=0;document.addEventListener('click',e=>{if(e.target.closest('#expand')&&e.isTrusted)window.trusted++});document.addEventListener('submit',e=>e.preventDefault());</script>`;
+
 void app.whenReady().then(async () => {
   const sockets = new Set<Socket>();
   const proxy = http.createServer((req, res) => {
@@ -25,10 +35,20 @@ void app.whenReady().then(async () => {
     if (!['example.com', 'example.org'].includes(url.hostname)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html);
   });
+  const origin = http.createServer((_req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); res.end(xHtml); });
+  origin.on('clientError', (_error,socket) => socket.destroy());
+  proxy.on('connect', (req,socket: Socket,head: Buffer) => {
+    socket.on('error',()=>{});
+    if(req.url!=='x.com:443') { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if(head.length) socket.unshift(head);
+    origin.emit('connection',new tls.TLSSocket(socket,{isServer:true,key,cert,ALPNProtocols:['http/1.1']}));
+  });
   proxy.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const portNumber = (proxy.address() as AddressInfo).port;
   const ses = session.fromPartition(BROWSER_PARTITION);
+  ses.setCertificateVerifyProc((req,cb)=>cb(req.hostname==='x.com' && req.certificate.data.replace(/\s+/g,'')===cert.replace(/\s+/g,'') ? 0 : -3));
   await ses.setProxy({ proxyRules: `http://127.0.0.1:${portNumber}` });
   const win = new BrowserWindow({ width: 1024, height: 720, show: true });
   await win.loadURL('data:text/html,<h1>Local native fixture controller</h1>');
@@ -50,6 +70,50 @@ void app.whenReady().then(async () => {
   });
   const controller = {
     read,
+    collectedPermission: async (mode: string) => {
+      const opened=await port.open('https://x.com/alice/status/123',undefined);
+      const xwc=browser.webContentsOf(opened.tabId)!;
+      let input=0;
+      const send=xwc.debugger.sendCommand.bind(xwc.debugger);
+      xwc.debugger.sendCommand=(method,params)=>{if(method.startsWith('Input.'))input++;return send(method,params);};
+      return port.withPage(opened.tabId,undefined,async page=>{
+        const request={stage:'post' as const,expectedUrl:'https://x.com/alice/status/123',postId:'123'};
+        const first=await collectXPage(page,request);
+        const click=(observation:typeof first)=>{const c=observation.controls.find(c=>c.kind==='body_expand')!;return page.act({kind:'click',index:c.binding.index,snapshotId:c.binding.snapshotId},observation.snapshot);};
+        // Unrelated metric changes are not part of expansion permission.
+        await xwc.executeJavaScript("document.querySelector('#likes').textContent='999'");
+        await click(first);
+        const positive={input,trusted:await xwc.executeJavaScript('window.trusted')};
+        const second=await collectXPage(page,request);
+        await xwc.executeJavaScript('window.collectedNode=document.querySelector("#expand")');
+        const mutation:Record<string,string>={
+          submit:"collectedNode.type='submit'", name:"collectedNode.setAttribute('name','reply')", text:"collectedNode.textContent='Reply'",
+          'form-owner':"collectedNode.setAttribute('form','compose')",
+          'post-owner':"document.querySelector('#otherpost').append(collectedNode)",
+          'post-identity':"document.querySelector('#stamp').href='/alice/status/999/history'",
+          'at-measure':"collectedNode.type='submit';collectedNode.setAttribute('form','compose');collectedNode.textContent='Reply'",
+          'after-frame':"document.querySelector('#stamp').href='/alice/status/999/history'",
+        };
+        const original=xwc.executeJavaScriptInIsolatedWorld.bind(xwc);
+        let changed=false;
+        xwc.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
+          if(!changed && ((mode==='at-measure' && scripts[0].code.includes('const measured ='))
+            || (mode==='after-frame' && scripts[0].code.includes('"op":"validate"')))) {
+            await xwc.executeJavaScript(mutation[mode]);changed=true;
+          }
+          return original(world,scripts,...rest);
+        };
+        let error:string|null=null;
+        try {
+          if(mode!=='at-measure' && mode!=='after-frame') await xwc.executeJavaScript(mutation[mode]);
+          await click(second);
+        } catch(cause) {error=(cause as {code?:string}).code??String(cause);}
+        finally {xwc.executeJavaScriptInIsolatedWorld=original;}
+        return {positive,after:{input,trusted:await xwc.executeJavaScript('window.trusted')},error,
+          sameNode:await xwc.executeJavaScript('window.collectedNode===document.querySelector("#expand")'),
+          identity:first.identityProven,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
+      });
+    },
     neverShown: async () => {
       // Fresh service: stage is null from construction; not one syncView call.
       const fresh = new BrowserService(); fresh.attach(win);

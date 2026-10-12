@@ -33,7 +33,7 @@
         node.disabled, node.readOnly, node.isContentEditable, world && world.pw && world.pw.has(node),
         ...['type', 'name', 'id', 'autocomplete', 'readonly', 'contenteditable', 'aria-disabled',
           'href', 'target', 'action', 'formaction', 'formtarget', 'formmethod', 'method', 'form',
-          'enctype', 'accept-charset', 'novalidate'].map(a => node.getAttribute(a)),
+          'enctype', 'accept-charset', 'novalidate', 'data-testid', 'role', 'aria-label'].map(a => node.getAttribute(a)),
         node.href, node.action, node.formAction, node.method, node.target, node.enctype, node.acceptCharset, node.noValidate,
       ]) });
     };
@@ -62,6 +62,46 @@
     const style = getComputedStyle(el);
     return el.disabled !== true && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
   };
+  const retain = (el, semantic, members) => ({ el, formOwner: el.form, sources: sources(el),
+    meaning: semantic ? semantics(el) : null, members,
+    memberNodes: members ? Array.from(el.querySelectorAll(members)) : [] });
+  const unchanged = saved => {
+    if (!saved.el.isConnected || saved.formOwner !== saved.el.form) return false;
+    const memberNodes = saved.members ? Array.from(saved.el.querySelectorAll(saved.members)) : [];
+    if (memberNodes.length !== saved.memberNodes.length || memberNodes.some((node,i)=>node!==saved.memberNodes[i])) return false;
+    const now = sources(saved.el);
+    if (now.length !== saved.sources.length || now.some((v,i)=>v.node!==saved.sources[i].node || v.state!==saved.sources[i].state)) return false;
+    if (saved.meaning) {
+      const nowMeaning = semantics(saved.el);
+      if (nowMeaning.state!==saved.meaning.state || nowMeaning.labels.length!==saved.meaning.labels.length
+        || nowMeaning.labels.some((v,i)=>v.node!==saved.meaning.labels[i].node || v.state!==saved.meaning.labels[i].state)) return false;
+    }
+    return true;
+  };
+  // Fixed adapters retain the original permission while they collect. DOM refs
+  // never cross worlds. A fresh collection invalidates the preceding namespace.
+  if (req.op === 'begin_collected') {
+    if (!world) return reject('stale_node');
+    if (!world.collectedPermissions) world.collectedPermissions = new Map();
+    world.collectedPermissions.set(req.owner, { namespace: req.namespace, entries: new Map() });
+    return { ok: true };
+  }
+  if (req.op === 'remember_collected') {
+    if (!world || !req.el?.isConnected || world.ids.get(req.el)!==req.nodeId) return reject('stale_node');
+    const registry = world.collectedPermissions?.get(req.permission.owner);
+    if (!registry || registry.namespace !== req.namespace) return reject('stale_node');
+    registry.entries.set(req.permission.token,{nodeId:req.nodeId,purpose:req.permission.purpose,
+      generation:world.gen,url:location.href,control:retain(req.el,true),scopes:req.scopes.map(s=>retain(s.el,s.semantic,s.members))});
+    return {ok:true};
+  }
+  const collected = permission => permission && world?.collectedPermissions?.get(permission.owner)?.entries.get(permission.token);
+  const permitted = (saved, permission, target) => !!saved && saved.purpose===permission.purpose
+    && saved.nodeId===target.nodeId && saved.generation===world.gen && saved.url===location.href
+    && unchanged(saved.control) && saved.scopes.every(unchanged);
+  if (req.op === 'validate_collected') {
+    const permission=req.target.collectedPermission;
+    return permitted(collected(permission),permission,req.target) ? {ok:true} : reject('pointer_target_changed');
+  }
   if (req.op === 'capture') {
     const hit = hitAt(req.x, req.y);
     let el = null;
@@ -73,9 +113,12 @@
     if (!el || !el.isConnected) return reject('stale_node');
     if (!contains(el, hit)) return reject('intercepted');
     if (!usable(el)) return reject('pointer_target_changed');
+    const permission=req.target.collectedPermission;
+    const original=collected(permission);
+    if (permission && !permitted(original,permission,req.target)) return reject('pointer_target_changed');
     discard();
     const registry = globalThis[key] || (globalThis[key] = new Map());
-    registry.set(req.token, { el, kind: req.kind, formOwner: el.form, generation: world && world.gen, url: location.href,
+    registry.set(req.token, { collected:original, permission, originalTarget:req.target, el, kind: req.kind, formOwner: el.form, generation: world && world.gen, url: location.href,
       point: { x: req.x, y: req.y }, hit, hitSources: hitSources(hit), sources: sources(el), semantics: semantics(el), expiresAt: req.expiresAt,
       timer: setTimeout(discard, Math.max(0, req.expiresAt - Date.now())) });
     return { ok: true };
@@ -84,6 +127,7 @@
   if (!entry || !entry.el.isConnected) return reject('stale_node');
   if (Date.now() > entry.expiresAt) { discard(); return reject('expired'); }
   if (entry.generation !== (world && world.gen) || entry.url !== location.href) return reject('stale_node');
+  if (entry.permission && (collected(entry.permission)!==entry.collected || !permitted(entry.collected,entry.permission,entry.originalTarget))) return reject('pointer_target_changed');
   const now = sources(entry.el), meaning = semantics(entry.el);
   if (!usable(entry.el) || entry.formOwner !== entry.el.form
     || now.length !== entry.sources.length || now.some((value, i) => value.node !== entry.sources[i].node || value.state !== entry.sources[i].state)

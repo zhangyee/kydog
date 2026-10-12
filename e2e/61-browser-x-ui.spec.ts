@@ -8,6 +8,7 @@ import type { DispatchAction } from '../src/main/browser/actions';
 interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
 interface Harness {
   read(): Promise<State>;
+  collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
   typingBoundary(mode: string): Promise<{ before: State; after: State; error: string | null; destination: { query: string; other: string; active: string } }>;
   visible(): Promise<void>;
@@ -88,6 +89,20 @@ test.describe('X browser port native safety (offline)', () => {
       expect(result.after.activeTabId, mode).toBe(result.after.userTabId);
     }
   });
+  test('collected X permission reaches native dispatch unchanged and rejects same-node repurposing before input', async () => {
+    for(const mode of ['submit','text','name','form-owner','post-owner','post-identity','at-measure','after-frame']) {
+      const result=await control((h,value)=>h.collectedPermission(value),mode);
+      console.info('[collected-native-permission]',mode,JSON.stringify(result));
+      expect(result.identity,mode).toBe(true);
+      expect(result.positive.input,mode).toBeGreaterThan(0);
+      expect(result.positive.trusted,mode).toBe(1);
+      expect(result.sameNode,mode).toBe(true);
+      expect(result.error,mode).toBe('browser.target_unusable');
+      expect(result.after,mode).toEqual(result.positive);
+      expect(result.activeTabId,mode).toBe(result.userTabId);
+    }
+  });
+
   test('actual focus and selection transfers at the last typing round trip reject before native insertText', async () => {
     for (const mode of ['focus', 'selection']) {
       const prior = await control(h => h.read());

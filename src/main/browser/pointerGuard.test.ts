@@ -142,3 +142,24 @@ it('contenteditable typing requires the actual full target Range after a same-ca
     expect(run('validate_typing')).toMatchObject({ ok: false, reason: 'typing_destination_changed' });
   } finally { window.close(); }
 });
+
+it('collection namespaces revoke only their owner and keep unrelated native bindings',()=>{
+  const f=fixture();
+  try {
+    const remember=(owner:string,namespace:string)=>{
+      expect(f.run('begin_collected',{owner,namespace})).toEqual({ok:true});
+      const permission={owner,token:owner+namespace,purpose:'fixed'};
+      const request={op:'remember_collected',namespace,permission,nodeId:7};
+      expect(f.window.eval(`(${SOURCE})({...${JSON.stringify(request)},el:document.querySelector('#target'),scopes:[]})`)).toEqual({ok:true});
+      return permission;
+    };
+    const first=remember('x','first'), external=remember('other','first');
+    const validate=(permission:typeof first)=>f.run('validate_collected',{target:{nodeId:7,collectedPermission:permission}});
+    expect(f.run('capture')).toEqual({ok:true});
+    expect(validate(first)).toEqual({ok:true});expect(validate(external)).toEqual({ok:true});
+    expect(f.run('begin_collected',{owner:'x',namespace:'empty'})).toEqual({ok:true});
+    expect(validate(first)).toMatchObject({ok:false});
+    expect(validate(external)).toEqual({ok:true});
+    expect(f.run('validate')).toEqual({ok:true});
+  }finally{f.dom.window.close();}
+});

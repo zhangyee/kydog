@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import SOURCE from './injected/xPage.js?raw';
+import POINTER_GUARD from '../browser/injected/pointerGuard.js?raw';
 import WALKER from '../browser/injected/walker.js?raw';
 import { KydogError } from '../../shared/errors';
 import type { BrowserLocationFacts } from '../browser/browserService';
@@ -62,6 +63,7 @@ function validateRaw(v: unknown): asserts v is RawPage {
   const ids = new Set<number>(), indexes = new Set<number>();
   for (const n of s.nodes) {
     if (!obj(n) || !integer(n.index) || !integer(n.nodeId) || !str(n.role) || !str(n.name) || !['x','y','w','h'].every(k=>typeof n[k]==='number' && Number.isFinite(n[k])) || ids.has(n.nodeId) || indexes.has(n.index)) invalid();
+    if (n.collectedPermission!==undefined && (!obj(n.collectedPermission) || n.collectedPermission.owner!=='x' || !str(n.collectedPermission.token) || !str(n.collectedPermission.purpose))) invalid();
     ids.add(n.nodeId); indexes.add(n.index);
   }
   for (const c of [...v.controls,...v.entries]) if (!obj(c) || !(s.nodes as Record<string,unknown>[]).some(n=>n.nodeId===c.nodeId && n.index===c.index)) invalid();
@@ -98,7 +100,7 @@ function validRequest(request: XPageRequest): void {
 /** Serializes only fixed data fields; provenance objects never enter the page. */
 export function xPageExpression(request: XPageRequest): string {
   validRequest(request);
-  return SOURCE.replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`);
+  return SOURCE.replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage,postId:request.stage==='post'?request.postId:null,permissionNamespace:randomUUID()})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`).replace('const permissionGuard = X_PERMISSION;', () => `const permissionGuard = (${POINTER_GUARD});`);
 }
 /** articleProven is supplied only by the port's object-identity provenance registry. */
 export function decodeXPage(raw: unknown, request: XPageRequest, current: BrowserLocationFacts, articleProven: boolean): XPageObservation {

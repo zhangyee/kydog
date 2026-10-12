@@ -18,7 +18,7 @@ import {
 } from './actions';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
-import { guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget } from './measuredPointerSource';
+import { guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget, type CollectedPermission } from './measuredPointerSource';
 import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
 import {
   TabRequestLog, ZERO_REQUEST_CURSOR,
@@ -82,6 +82,8 @@ export interface BrowserDispatchOptions {
   location?: BrowserLocationFacts;
   /** Fixed adapters never retry by rebinding a semantic locator within one action. */
   strictSnapshot?: boolean;
+  /** Original fixed-adapter DOM permission, checked atomically before measurement. */
+  collectedPermission?: CollectedPermission;
 }
 function assertNotAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new KydogError('browser.cancelled', '浏览器操作已取消');
@@ -2157,6 +2159,11 @@ export class BrowserService {
     let target: InteractTarget = resolved.kind === 'selector'
       ? { selector: resolved.selector, ...(document ? { document } : {}) }
       : { nodeId: resolved.nodeId, ...(document ? { document } : {}) };
+
+    if (options?.collectedPermission) {
+      if (action.kind!=='click' || resolved.kind!=='node') throw new KydogError('browser.bad_action','采集许可只允许原节点的 click');
+      target = {...target,collectedPermission:options.collectedPermission};
+    }
 
     if (action.kind === 'select') {
       // 不派发任何鼠标事件，所以「三件事」不适用：赋值 + 派发 input/change 就是全部。

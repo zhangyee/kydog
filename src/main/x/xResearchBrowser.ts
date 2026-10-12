@@ -66,6 +66,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         const value = await Promise.race([operation, stopped]); check(); return value;
       };
       const bindings = new Map<AxSnapshot, BrowserLocationFacts>();
+      const permissions = new Map<AxSnapshot, Map<number, {owner:string;token:string;purpose:string}>>();
       const currentEntries = new Map<AxSnapshot, XArticleEntry[]>();
       const page: XQueuedPage = {
         snapshot: () => run(async () => {
@@ -94,6 +95,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           }
           const observation=decodeXPage(raw,request,after,articleProven);
           bindings.set(observation.snapshot,after);
+          permissions.set(observation.snapshot,new Map(observation.snapshot.nodes.flatMap(n=>n.collectedPermission?[[n.index,{...n.collectedPermission}]]:[])));
           currentEntries.set(observation.snapshot,[...observation.entries]);
           for (const entry of observation.entries) {
             Object.freeze(entry.binding); Object.freeze(entry);
@@ -105,7 +107,12 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           const expected = bindings.get(snapshot), current = browser.locationFacts(tabId);
           if (!expected || expected.documentEpoch !== current.documentEpoch || expected.routeRevision !== current.routeRevision || expected.navigationSequence !== current.navigationSequence || expected.currentUrl !== current.currentUrl)
             throw new KydogError('browser.stale_snapshot', '动作必须绑定本次操作内的当前快照');
-          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true });
+          let collectedPermission;
+          if (permissions.has(snapshot) && action.kind==='click') {
+            collectedPermission='index' in action && action.snapshotId===snapshot.snapshotId ? permissions.get(snapshot)?.get(action.index) : undefined;
+            if (!collectedPermission) throw new KydogError('browser.bad_action','X 控件必须使用原采集节点和许可');
+          }
+          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission}:{}) });
           const output = { action: { ...action }, ...result };
           const entry = action.kind==='click' && 'index' in action && action.snapshotId===snapshot.snapshotId
             ? currentEntries.get(snapshot)?.find(e=>e.binding.index===action.index) : undefined;
@@ -131,7 +138,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       }
       finally {
         signal?.removeEventListener('abort', abort); offGone(); offUnavailable();
-        lifetime.abort(); bindings.clear(); currentEntries.clear();
+        lifetime.abort(); bindings.clear(); currentEntries.clear(); permissions.clear();
       }
     },
   };

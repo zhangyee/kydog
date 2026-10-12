@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { JSDOM } from 'jsdom';
 import WALKER from '../browser/injected/walker.js?raw';
+import { measuredPointerExpression, pointerGuardExpression } from '../browser/measuredPointerSource';
 import { renderDiff } from '../browser/snapshot';
 import { createXResearchBrowser } from './xResearchBrowser';
 import type { BrowserService, BrowserLocationFacts } from '../browser/browserService';
@@ -227,4 +228,54 @@ it('preserves link entry text but withholds opaque destination URLs instead of r
   const result=decodeXPage(f.collect(r),r,facts,true);
   expect(result.article!.links).toEqual([{url:null,text:'Source link',redacted:true}]);
   expect(JSON.stringify(result)).not.toContain('secret');
+});
+
+
+it.each(['submit','text','name','author','form-owner','post-owner','post-identity','new-identity','replace','after-frame'] as const)('retains actual collection permission through measurement and frame: %s', change => {
+  const button='<button type="button" role="button" data-testid="tweet-text-show-more-link">Show more</button>';
+  const f=fixture(wrap(post('123','alice','body',button)+post('456','bob','other')));
+  const el=f.document.querySelector('button')!;
+  Object.assign(f.document,{elementFromPoint:()=>el});
+  el.scrollIntoView=()=>{};
+  const measured=(raw:any)=>{
+    const n=raw.snapshot.nodes.find((n:any)=>n.nodeId===raw.controls[0].nodeId);
+    const pointer={token:'native',kind:'click' as const,expiresAt:Date.now()+3000};
+    const result=f.evaluate(measuredPointerExpression({nodeId:n.nodeId,document:{generation:raw.snapshot.generation,url},collectedPermission:n.collectedPermission},pointer,Date.now()+3000));
+    return {result,validate:()=>f.evaluate(pointerGuardExpression('validate',pointer,Date.now()+3000))};
+  };
+  const positive=measured(f.collect());
+  expect(positive.result).toMatchObject({ok:true,pointerGuard:{ok:true}});
+  expect(positive.validate()).toEqual({ok:true});
+  const collected=f.collect();
+  const mutate=()=>{
+    if(change==='submit') el.type='submit';
+    if(change==='text'||change==='after-frame') el.textContent='Reply';
+    if(change==='name') el.setAttribute('name','reply');
+    if(change==='author') f.document.querySelector('[data-testid="User-Name"] a')!.textContent='@eve';
+    if(change==='form-owner') { f.document.body.insertAdjacentHTML('beforeend','<form id="compose"></form>');el.setAttribute('form','compose'); }
+    if(change==='post-owner') f.document.querySelectorAll('article')[1].append(el);
+    if(change==='post-identity') f.document.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/999/history');
+    if(change==='new-identity') f.document.querySelector('article')!.insertAdjacentHTML('afterbegin',author('eve')+permalink('999','eve'));
+    if(change==='replace') el.replaceWith(el.cloneNode(true));
+  };
+  if(change==='after-frame') { const pending=measured(collected);expect(pending.result).toMatchObject({ok:true});mutate();expect(pending.validate()).toMatchObject({ok:false}); }
+  else { mutate();expect(measured(collected).result).toMatchObject({ok:false}); }
+});
+
+it('a fresh empty collection revokes old permission without clearing public IDs or password memory',()=>{
+  const f=fixture(wrap(post('123','alice','body','<button type="button" role="button" data-testid="tweet-text-show-more-link">Show more</button>'))+'<input id="pw" type="password">');
+  const el=f.document.querySelector('button')!;
+  Object.assign(f.document,{elementFromPoint:()=>el});el.scrollIntoView=()=>{};
+  const raw=f.collect(), n=raw.snapshot.nodes[0];
+  const pointer={token:'native',kind:'click' as const,expiresAt:Date.now()+3000};
+  const run=()=>f.evaluate(measuredPointerExpression({nodeId:n.nodeId,collectedPermission:n.collectedPermission},pointer,Date.now()+3000));
+  expect(run()).toMatchObject({ok:true,pointerGuard:{ok:true}});
+  const originalId=f.evaluate('window.__kydogWorld.ids.get(document.querySelector("button"))');
+  expect(f.evaluate('window.__kydogWorld.pw.has(document.querySelector("#pw"))')).toBe(true);
+  el.setAttribute('data-testid','temporarily-unobserved');
+  expect(f.collect().controls).toHaveLength(0);
+  el.setAttribute('data-testid','tweet-text-show-more-link');
+  expect(run()).toMatchObject({ok:false});
+  expect(f.evaluate('window.__kydogWorld.ids.get(document.querySelector("button"))')).toBe(originalId);
+  expect(f.evaluate('window.__kydogWorld.pw.has(document.querySelector("#pw"))')).toBe(true);
 });

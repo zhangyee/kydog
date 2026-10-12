@@ -1,7 +1,8 @@
 import INTERACT_SOURCE from './injected/interact.js?raw';
 import POINTER_GUARD_SOURCE from './injected/pointerGuard.js?raw';
 
-export type PointerTarget = ({ selector: string } | { nodeId: number }) & { document?: { generation: string; url: string } };
+export interface CollectedPermission { owner: string; token: string; purpose: string }
+export type PointerTarget = ({ selector: string } | { nodeId: number }) & { document?: { generation: string; url: string }; collectedPermission?: CollectedPermission };
 type Target = PointerTarget;
 export interface PointerBinding { token: string; kind: 'click' | 'type'; expiresAt: number }
 const DOCUMENT_CHECK = `if (req.target?.document &&
@@ -16,6 +17,10 @@ export function guardedInteractExpression(req: { op: string; target?: PointerTar
 export function measuredPointerExpression(target: Target, pointer: PointerBinding, notAfter: number): string {
   return `((req) => {
     ${DOCUMENT_CHECK}
+    if (req.target.collectedPermission) {
+      const allowed = (${POINTER_GUARD_SOURCE})({op:'validate_collected',target:req.target,notAfter:req.notAfter});
+      if (!allowed.ok) return allowed;
+    }
     const measured = (${INTERACT_SOURCE})(req);
     if (!measured.ok || measured.disabled === true || (req.pointer.kind === 'type' &&
       (measured.isPassword === true || measured.editable === false || measured.segmented === true))) return measured;

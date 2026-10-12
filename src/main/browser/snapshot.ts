@@ -20,6 +20,8 @@ export type AxNode = {
    * **跨文档的号必然撞车**（新文档从 1 重发），所以配对之前先看 `AxSnapshot.generation`。
    */
   nodeId: number;
+  /** Private fixed-adapter permission; absent from public walker snapshots. */
+  collectedPermission?: { owner: string; token: string; purpose: string };
   role: string;
   name: string;
   /** 视口内的 CSS 像素坐标。CDP 的 Input 事件就吃这个单位，不要按缩放换算 —— 换算过反而打不中。 */
