@@ -23,6 +23,7 @@ const REPORT_REASONS = new Set([
   'direct_article_discussion_unobserved', 'post_wait_timeout',
   'parent_return_identity_unproven', 'parent_return_navigation_failed',
   'body_expand_budget_reached', 'reply_budget_reached',
+  'body_expand_control_unchanged', 'replies_expand_control_unchanged',
   'body_observations_output_budget', 'article_inventory_audit_output_budget',
   'navigation_failed', 'not_attempted:auth_required',
   'not_attempted:navigation_failed', 'internal_adapter_stopped',

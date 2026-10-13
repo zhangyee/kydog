@@ -1,11 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { fixture, post, searchHtml, searchInput } from '../../test-support/xResearchFixture';
+import { fixture, post, searchHtml, searchInput, stagedFixture } from '../../test-support/xResearchFixture';
 import { readX, readResult } from './xResearchRead';
 import { readHtml } from '../../test-support/xResearchFixture';
 import { searchX, searchResult } from './xResearchSearch';
 import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { X_RESEARCH_MAX_OUTPUT_BYTES } from './xResearchTypes';
 describe('bounded X production tool result',()=>{
+  it('keeps actual unchanged-control read reasons distinct from page text and absent reasons',async()=>{
+    const bodyFixture=await stagedFixture({noEffect:true});
+    const body=await readX({tabId:'tab',read:{objective:'body',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},bodyFixture.context);
+    const replyOptions={noEffect:false};
+    const replyFixture=await stagedFixture(replyOptions);
+    Object.defineProperty(replyOptions,'noEffect',{get:()=>replyFixture.executed.includes('replies_expand')});
+    const reply=await readX({tabId:'tab',read:{objective:'replies',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:30,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},replyFixture.context);
+    for(const [actual,reason] of [[body,'body_expand_control_unchanged'],[reply,'replies_expand_control_unchanged']] as const){
+      expect(actual.targets[0]).toMatchObject({status:'partial',stopReason:'action_failed',reason});
+      const controls=readResult({tabId:'tab',read:{objective:'controls',targets:[{postId:'999'},{postId:'998'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
+      controls.targets[0].reason='登录页面说请重试';
+      controls.targets[1].reason=null;
+      const result={...actual,targets:[actual.targets[0],...controls.targets]};
+      const expected={version:1,operation:'read',reasonSource:'reason',totalRows:3,statusCounts:{partial:1,failed:2},stopReasonCounts:{action_failed:1,agent_stopped:2},reasonCounts:{[reason]:1,unknown:2},replyScopeCounts:{unknown:3}};
+      for(const candidate of [result,{...result,objective:'x'.repeat(600000)}]){
+        const out=serializeXResearchResult(candidate);
+        expect(out.result.reportScopeFacts).toEqual(expected);
+        expect(JSON.parse(out.text).reportScopeFacts).toEqual(expected);
+        expect(JSON.stringify(out.result.reportScopeFacts)).not.toContain('登录页面说请重试');
+        expect(out.result.targets.map(row=>row.reason)).toEqual([reason,'登录页面说请重试',null]);
+        expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+        if(candidate.objective.length>600000-1)expect(out.result.contentProjection).toBe('x_research_projection_v1');
+      }
+    }
+  });
   it('reports distinct per-call search stops from final rows in normal and capped content',()=>{
     const input=structuredClone(searchInput);
     input.search.queries=Array.from({length:4},(_,i)=>({...searchInput.search.queries[0],id:`q${i}`}));
