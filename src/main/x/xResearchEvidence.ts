@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { JSDOM } from 'jsdom';
 import { z } from 'zod';
+import { sourceRootStateSchema } from './xPageSource';
 import type { FileWriteGuard } from '../agent/charCountFileTools';
 import { parseXSourcePost, parseXArticleAnalyticsHref, X_MAX_ARTICLE_IDENTITY_HREF_UNITS } from './xResearchIdentity';
 import {
@@ -123,6 +124,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     operation: z.literal('read'),
     targets: z.array(
       z.object({
+        diagnostics:z.object({firstAdmittedFrame:z.object({sourceRootState:sourceRootStateSchema.optional()}).optional(),terminalFrame:z.object({sourceRootState:sourceRootStateSchema.optional()}).optional()}).optional(),
         root: textSchema.nullable(),
         bodyObservations: z.array(textSchema).optional(),
         articlePreviewObservations:z.array(scopeSchema).optional(),

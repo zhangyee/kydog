@@ -1,4 +1,5 @@
 import { logger } from '../log';
+import { admitXSourceRoot } from './xPageSource';
 import { pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
 import { KydogError } from '../../shared/errors';
 import type { XQueuedPage } from './xResearchBrowser';
@@ -132,6 +133,8 @@ export function savePostFrame(
     row.stopReason = 'identity_unproven';
     return false;
   }
+  admitXSourceRoot(observed);
+  if(row.diagnostics && observed.diagnosticFrame) row.diagnostics.firstAdmittedFrame ??= observed.diagnosticFrame;
   if (row.root === observed.root) return true;
   if (row.root) retainReadBody(row, row.root);
   const rootEntries=observed.entries.filter(entry=>observed.entryParents.get(entry)===observed.root);

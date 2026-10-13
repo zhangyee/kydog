@@ -65,6 +65,7 @@ export async function stagedFixture(options: { scrollError?: Error; article?: 'o
     enqueue:async(_id:string,work:()=>Promise<unknown>)=>work(), withAgentDriving:async(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),
     onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:facts,prepareForDomRead:async()=>{},
     evalInPage:async(_id:string,code:string)=>{
+      if(code.startsWith('/* kydog-x-root-release */')) return current.window.eval(code);
       collections++;
       if(options.discussion && expanded && url===parentUrl && ++discussionCollections>1) {
         if(options.discussion==='ready' || options.discussion==='late'){discussionReady=true;render(parent());}

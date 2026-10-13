@@ -1,3 +1,6 @@
+import { JSDOM } from 'jsdom';
+import { createXResearchBrowser } from './xResearchBrowser';
+import { xSourceRootReleaseExpression } from './xPageSource';
 import { readDiscussion } from './xResearchReadStages';
 import { logger } from '../log';
 import { retainPointerFailure, pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
@@ -36,7 +39,10 @@ describe('ordinary X read orchestration',()=>{
   });
   it('waits for absent collected content without treating it as identity success',async()=>{
     const f=fixture([readHtml(''),readHtml(post())],{afterWaitIndex:1});
-    expect((await readX(read([{url:'https://x.com/alice/status/123'}]),f.context)).targets[0].root?.text).toBe('original');
+    const row=(await readX(read([{url:'https://x.com/alice/status/123'}]),f.context)).targets[0];
+    expect(row.root?.text).toBe('original');
+    expect(row.diagnostics).toMatchObject({initialFrame:{rootIdentityProven:false},firstAdmittedFrame:{rootIdentityProven:true}});
+    expect(row.diagnostics?.firstAdmittedFrame?.snapshotId).toBe(row.diagnostics?.terminalFrame?.snapshotId);
     expect(f.page.wait).toHaveBeenCalledTimes(1);
     const wrong=fixture([readHtml(post('123','bob')),readHtml(post())],{afterWaitIndex:1});
     expect((await readX(read([{url:'https://x.com/alice/status/123'}]),wrong.context)).targets[0].stopReason).toBe('identity_unproven');
@@ -416,4 +422,44 @@ it('retains a 7009-unit focal body with no expansion control through read, outpu
   const restored = new XResearchEvidence('/tmp', () => 'later-run');
   restored.restore(manager.getBranch());
   expect(restored.observations).toContainEqual(expect.objectContaining({observationId:root.observationId,text:body,authorHandle:'alice',sourceUrl:root.sourceUrl,postId:'123'}));
+});
+
+
+it.each(['throw','false'] as const)('retains already admitted read row and serialized diagnostics when fixed release returns %s',async mode=>{
+  const url='https://x.com/alice/status/123',dom=new JSDOM(readHtml(post()),{url,runScripts:'outside-only'});
+  Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+  let failRelease=false;
+  const facts={currentUrl:url,documentEpoch:1,routeRevision:2,navigationSequence:3,navigationEvent:'did-navigate' as const,navigationType:'cross_document' as const,navigationUrl:url};
+  const service={researchTabStatus:()=> 'available',enqueue:async(_id:string,fn:()=>Promise<unknown>)=>fn(),withAgentDriving:async(_id:string,_thread:string,fn:()=>Promise<unknown>)=>fn(),
+    onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},
+    open:async()=>({tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:url}}}),
+    evalInPage:async(_id:string,code:string)=>{
+      if(failRelease && code.startsWith('/* kydog-x-root-release */')){
+        expect(dom.window.eval('!!window.__kydogXRootState.pending || !!window.__kydogXRootState.anchor')).toBe(true);
+        if(mode==='throw') throw Error('private_raw_error_token');return {released:false};
+      }
+      return dom.window.eval(code);
+    }};
+  const context={browser:createXResearchBrowser(service as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map()};
+  const log=vi.spyOn(logger,'error').mockImplementation(()=>{});
+  try{
+    const good=await readX(read([{url}]),context);
+    expect(good.targets[0]).toMatchObject({status:'observed',root:{text:'original',sourceUrl:url},diagnostics:{firstAdmittedFrame:{sourceRootState:{root:{connection:'connected'}}}}});
+    expect(dom.window.eval('window.__kydogXRootState')).toBeUndefined();
+    failRelease=true;
+    const failed=await readX(read([{url}]),context),row=failed.targets[0];
+    expect(row).toMatchObject({status:'partial',root:{text:'original',sourceUrl:url},sourceUrl:url,diagnostics:{firstAdmittedFrame:{rootIdentityProven:true,sourceRootState:{root:{connection:'connected'},identity:{coordinates:'same'}}}}});
+    expect(row.reason).toBe('internal_adapter_error:collection');
+    const serialized=serializeXResearchResult(failed),model=JSON.parse(serialized.text);
+    expect(serialized.result.targets[0].root?.text).toBe('original');
+    expect(model.targets[0].diagnostics.firstAdmittedFrame.sourceRootState).toEqual(row.diagnostics?.firstAdmittedFrame?.sourceRootState);
+    expect(model.targets[0].root.sourceUrl).toBe(url);
+    expect(log).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+    const publicControl=structuredClone(good);publicControl.objective='private_raw_error_token';
+    expect(serializeXResearchResult(publicControl).text).toContain('private_raw_error_token');
+    expect(serialized.text).not.toContain('private_raw_error_token');
+  }finally{
+    const lease=dom.window.eval('window.__kydogXRootState?.lease');if(lease) dom.window.eval(xSourceRootReleaseExpression(String(lease)));
+    dom.window.close();log.mockRestore();
+  }
 });

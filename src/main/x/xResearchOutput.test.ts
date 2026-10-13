@@ -130,6 +130,7 @@ describe('bounded X production tool result',()=>{
     const input={tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
     const result=await readX(input,fixture([readHtml(post())]).context);
     const row=result.targets[0],frame=row.diagnostics!.initialFrame!;
+    expect(serializeXResearchResult(result).result.targets[0].diagnostics?.firstAdmittedFrame?.rootIdentityProven).toBe(true);
     row.diagnostics!.scroll={totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,snapshotId:'xsnap_test',generation:frame.document.generation,location:frame.location,
       targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:10,after:10,
       scrollHeight:1000,clientHeight:700,written:true,eventObserved:false,frameObserved:false,state:'no_movement'}};
@@ -140,11 +141,13 @@ describe('bounded X production tool result',()=>{
     let out:ReturnType<typeof serializeXResearchResult<typeof result>>|undefined;
     for(let margin=200;margin<=4000;margin+=200){
       result.objective='x'.repeat(lo-margin);
-      try {const candidate=serializeXResearchResult(result);if(candidate.result.metadataOmissions?.includes('targets.0.diagnostics.scroll')){out=candidate;break;}} catch { /* The omission marker itself may need more room. */ }
+      try {const candidate=serializeXResearchResult(result);if(candidate.result.metadataOmissions?.includes('targets.0.diagnostics.firstAdmittedFrame')){out=candidate;break;}} catch { /* The omission marker itself may need more room. */ }
     }
     expect(out).toBeDefined();
     if(!out) throw new Error('diagnostic cap fixture did not reach an omission');
     expect(out.result.metadataOmissions).toContain('targets.0.diagnostics.scroll');
+    expect(out.result.metadataOmissions).toContain('targets.0.diagnostics.firstAdmittedFrame');
+    expect(out.result.targets[0].diagnostics?.firstAdmittedFrame).toBeUndefined();
     expect(out.result.targets[0]).toMatchObject({root:{postId:'123'},status:row.status,stopReason:row.stopReason,reason:row.reason});
     expect(JSON.parse(out.text).metadataOmissions).toContain('targets.0.diagnostics.scroll');
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8')).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);

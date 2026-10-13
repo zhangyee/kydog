@@ -192,7 +192,17 @@ export interface XReadObservation {
   location: XLocationFacts | null;
   barrier: XAccessBarrier | null;
 }
+/** Counts cap at 33, meaning at least 33; overflow is ambiguous, never identity proof. */
+export interface XSourceRootState {
+  anchorSnapshotId: string;
+  availability: 'captured' | 'unavailable';
+  conversation: {candidates:'none'|'unique'|'multiple'|'unavailable';sameObject:boolean|null;connected:boolean|null;sameDocument:boolean|null;containsRoot:boolean|null};
+  root: {connection:'connected'|'detached'|'unavailable';sameDocument:boolean|null;topLevel:boolean|null;ownBoundary:boolean|null;inRoots:boolean|null;inRawPosts:boolean|null;shown:'pass'|'dimensions'|'hidden'|'aria_hidden'|'display_none'|'visibility_hidden'|'collapse'|'unavailable'};
+  identity: {members:XSourceIdentityState;coordinates:XSourceIdentityState;owned:boolean|null;rendered:XSourceIdentityState;nameCount:number|null;profileLinkCount:number|null;timestampCount:number|null};
+}
+export type XSourceIdentityState = 'same'|'changed'|'missing'|'ambiguous'|'unavailable';
 export interface XReadFrameDiagnostic {
+  sourceRootState?: XSourceRootState;
   stage: 'post';
   snapshotId: string;
   location: XSafeLocation;
@@ -228,6 +238,7 @@ export interface XScrollReceiptDiagnostic {
 export interface XReadDiagnostics {
   version: 1;
   initialFrame?: XReadFrameDiagnostic;
+  firstAdmittedFrame?: XReadFrameDiagnostic;
   terminalFrame?: XReadFrameDiagnostic;
   readiness?: { collectCount: number; initial: {replyCount:number; expandControlCount:number; explicitEndObserved:boolean}; terminal: {replyCount:number; expandControlCount:number; explicitEndObserved:boolean}; timedOut: boolean };
   scroll?: { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number };

@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { logger } from '../log';
+import { bindXSourceRoot, xSourceRootReleaseExpression, type XSourceRootEnvelope } from './xPageSource';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
 import type { BrowserService, BrowserLocationFacts, EvictedTab } from '../browser/browserService';
@@ -52,6 +55,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
     withPage: async (tabId, signal, work) => {
       const lifetime = new AbortController();
       let failure: KydogError | undefined;
+      let realmGone=false;
       let rejectStopped!: (error: KydogError) => void;
       const stopped = new Promise<never>((_resolve, reject) => { rejectStopped = reject; });
       const stop = (error: KydogError) => {
@@ -59,7 +63,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         failure = error; lifetime.abort(); rejectStopped(error);
       };
       const abort = () => stop(new KydogError('browser.cancelled', '浏览器操作已取消'));
-      const gone = (id: string) => { if (id === tabId) stop(new KydogError('browser.not_dispatchable', '目标标签已销毁或渲染进程已退出')); };
+      const gone = (id: string) => { if (id === tabId) { realmGone=true;stop(new KydogError('browser.not_dispatchable', '目标标签已销毁或渲染进程已退出')); } };
       const offGone = browser.onTabDestroyed(gone), offUnavailable = browser.onTabUnavailable(gone);
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) abort();
@@ -72,6 +76,25 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         if (drainScroll) { pendingScrolls.add(operation); void operation.then(()=>pendingScrolls.delete(operation),()=>pendingScrolls.delete(operation)); }
         void operation.then(() => issued.delete(operation), () => issued.delete(operation));
         const value = await Promise.race([operation, stopped]); check(); return value;
+      };
+      const sourceLease=randomUUID();
+      let sourceUsed=false;
+      let sourceBinding:string|null=null, sourceCollection:string|null=null, sourceReset=true;
+      let sourceCommit:XSourceRootEnvelope['commit'];
+      const invalidateSource=()=>{sourceBinding=null;sourceCollection=null;sourceCommit=undefined;sourceReset=true;};
+      const releaseSource=async(workFailed:boolean)=>{
+        if(sourceUsed && !realmGone) {
+          try {
+            const released=await browser.evalInPage(tabId,xSourceRootReleaseExpression(sourceLease));
+            if(!released || typeof released!=='object' || (released as {released?:unknown}).released!==true) throw new Error('release');
+          } catch(error) {
+            if(error instanceof KydogError && (error.code==='browser.no_tab' || error.code==='browser.not_dispatchable')) realmGone=true;
+            if(!realmGone) {
+              logger.error('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+              if(!workFailed) throw new KydogError('x.invalid_page','Source root diagnostic cleanup failed');
+            }
+          }
+        }
       };
       const bindings = new Map<AxSnapshot, BrowserLocationFacts>();
       const permissions = new Map<AxSnapshot, Map<number, {owner:string;token:string;purpose:string}>>();
@@ -87,9 +110,18 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           bindings.set(snapshot, after); return snapshot;
         }),
         collect: request => run(async () => {
-          const expression = xPageExpression(request);
+          // Validate public request before constructing the private fixed envelope.
+          xPageExpression(request);
           const before = browser.locationFacts(tabId);
+          const binding=request.stage==='post'?JSON.stringify([request.expectedUrl,request.postId,before.currentUrl,before.documentEpoch,before.routeRevision,before.navigationSequence]):'';
+          if(binding!==sourceBinding) invalidateSource();
+          sourceBinding=binding;sourceCollection=randomUUID();
+          const envelope:XSourceRootEnvelope={lease:sourceLease,collectionKey:sourceCollection,binding,reset:sourceReset,...(sourceCommit?{commit:sourceCommit}:{})};
+          const expression=xPageExpression(request,envelope);
+          sourceReset=false;
+          try {
           await browser.prepareForDomRead(tabId,lifetime.signal); check();
+          if(request.stage==='post') sourceUsed=true;
           const raw = await browser.evalInPage(tabId,expression); check();
           const after = browser.locationFacts(tabId);
           if (!sameLocation(before,after)) throw new KydogError('browser.stale_snapshot','采集期间页面已导航；需要新观察');
@@ -108,6 +140,13 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
               navigationProof.directOpen={openedLocation:proof.location,sameGeneration:sameLocation(proof.location,after)};
           }
           const observation=decodeXPage(raw,request,after,navigationProof);
+          if(sourceCommit && sourceCommit.generation!==observation.snapshot.generation) sourceCommit=undefined;
+          if(observation.diagnosticFrame?.rawUrlMatchesPort===false) invalidateSource();
+          else bindXSourceRoot(observation,raw,envelope,commit=>{
+            if(failure || lifetime.signal.aborted || sourceBinding!==binding || sourceCollection!==envelope.collectionKey || sourceCommit
+              || !sameLocation(after,browser.locationFacts(tabId))) return false;
+            sourceCommit=commit;return true;
+          });
           bindings.set(observation.snapshot,after);
           permissions.set(observation.snapshot,new Map(observation.snapshot.nodes.flatMap(n=>n.collectedPermission?[[n.index,{...n.collectedPermission}]]:[])));
           currentEntries.set(observation.snapshot,[...observation.entries]);
@@ -116,6 +155,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             entries.set(entry,{tabId,snapshot:observation.snapshot});
           }
           return observation;
+          } catch(error) { invalidateSource();throw error; }
         }),
         act: (action, snapshot, options) => run(async () => {
           if (options?.scrollAcknowledgement && action.kind!=='scroll') throw new KydogError('browser.bad_action','滚动确认只适用于滚动动作');
@@ -141,11 +181,15 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         const queued = browser.enqueue(tabId, async () => {
           check(); browser.locationFacts(tabId);
           return browser.withAgentDriving(tabId, threadId, async () => {
+            let workFailed=false;
             try { return await Promise.race([Promise.resolve().then(() => work(page)), stopped]); }
+            catch(error) { workFailed=true;throw error; }
             finally {
               // Caller cancellation can win immediately; actual queue/driving
               // ownership lasts until issued native releases and cleanup settle.
               while (issued.size) await Promise.allSettled([...issued]);
+              await releaseSource(workFailed);
+              invalidateSource();
             }
           }, 'X 研究');
         });

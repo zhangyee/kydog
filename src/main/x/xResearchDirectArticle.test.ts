@@ -100,7 +100,7 @@ const directInput={tabId:'tab',read:{objective:'direct native identity',targets:
 it('uses independent owned native identity after a real collector generation change and retains it through cap and SDK restore',async()=>{
   const f=fixture();f.setHtml(withIdentity());
   const original=f.service.evalInPage;let collections=0;
-  f.service.evalInPage=async(...args)=>{const raw=await original(...args);if(++collections===1){f.facts.routeRevision++;f.facts.navigationSequence+=2;}return raw;};
+  f.service.evalInPage=async(...args)=>{const raw=await original(...args);if(args[1].startsWith('/* kydog-x-root-release */')) return raw;if(++collections===1){f.facts.routeRevision++;f.facts.navigationSequence+=2;}return raw;};
   const value=serializeXResearchResult(await readX(directInput,f.context));
   const row=value.result.targets[0];
   expect(row).toMatchObject({status:'observed',root:null,article:{bodyObserved:true,entryObserved:false,actionAttempted:false,navigationStarted:false,body:{text:'Article paragraph'},provenance:{navigationId:'actual-navigation',nativeIdentity:{kind:'owned_analytics',href:'/bob/status/456/analytics',documentGeneration:'1:1:3'}}},collectionTransitions:[{outcome:'same_url_generation_changed',rereadRequested:true}]});
@@ -146,9 +146,9 @@ it('never ignores conflicting owned identity, and never substitutes content link
   f.setHtml(withIdentity());
   const original=f.service.evalInPage;
   for(const ownIdentityLinks of [{totalKnown:2,hrefs:['/bob/status/456/analytics']},{totalKnown:1,hrefs:[]},{totalKnown:1,hrefs:[null]},{totalKnown:0,hrefs:['/bob/status/456/analytics']}]) {
-    f.service.evalInPage=async(...args)=>{const raw=await original(...args) as {article:{ownIdentityLinks:unknown}};raw.article.ownIdentityLinks=ownIdentityLinks;return raw;};
+    f.service.evalInPage=async(...args)=>{const raw=await original(...args) as {article:{ownIdentityLinks:unknown}};if(args[1].startsWith('/* kydog-x-root-release */')) return raw;raw.article.ownIdentityLinks=ownIdentityLinks;return raw;};
     expect((await collect()).article).toBeNull();
   }
-  f.service.evalInPage=async(...args)=>{const raw=await original(...args);f.facts.routeRevision++;return raw;};
+  f.service.evalInPage=async(...args)=>{const raw=await original(...args);if(args[1].startsWith('/* kydog-x-root-release */')) return raw;f.facts.routeRevision++;return raw;};
   await expect(collect()).rejects.toMatchObject({code:'browser.stale_snapshot'});
 });

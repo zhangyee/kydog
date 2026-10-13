@@ -15,7 +15,7 @@ interface Harness {
   read(): Promise<State>;
   sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
   longBodyNoControl():Promise<{domBody:string;detailRoot:import('../src/main/x/xResearchTypes').XTextObservation|null;detailQuote:import('../src/main/x/xResearchTypes').XTextObservation|null;detailReply:import('../src/main/x/xResearchTypes').XTextObservation|null;detailControls:string[];searchPost:import('../src/main/x/xResearchTypes').XTextObservation|null;buttonControls:string[];buttonExpandActions:number;buttonRootText:string|undefined;result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;activeTabId:string;userTabId:string}>;
-  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];activeTabId:string;userTabId:string}>;
+  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];sourceCleanup:{populated:boolean;cleared:boolean};sourceGeometry:{before:number;after:number;height:number}|null;activeTabId:string;userTabId:string}>;
   collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
   typingBoundary(mode: string): Promise<{ before: State; after: State; error: string | null; destination: { query: string; other: string; active: string } }>;
@@ -57,6 +57,31 @@ test.describe('X browser port native safety (offline)', () => {
     finally { if (app) await app.close(); }
     if (dir && !failed) await fs.rm(dir, {recursive:true,force:true});
     else if (dir) console.info('[retained-native-failure-directory]',dir);
+  });
+
+  test('admitted original source root survives real scroll body removal as diagnostics while normal read refuses',async()=>{
+    const receipt=await control(h=>h.readStages('source-state'));
+    console.info('[original-source-root-native]',JSON.stringify(receipt));
+    const row=receipt.result.targets[0],first=row.diagnostics?.firstAdmittedFrame,terminal=row.diagnostics?.terminalFrame;
+    expect(row.diagnostics?.initialFrame).toMatchObject({inventory:{returned:0},rootIdentityProven:false});
+    expect(first).toMatchObject({rootIdentityProven:true,sourceRootState:{anchorSnapshotId:first?.snapshotId,availability:'captured',
+      conversation:{candidates:'unique',sameObject:true,connected:true,sameDocument:true,containsRoot:true},
+      root:{connection:'connected',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:true,inRawPosts:true,shown:'pass'},
+      identity:{members:'same',coordinates:'same',owned:true,rendered:'same'}}});
+    expect(terminal).toMatchObject({rootIdentityProven:false,sourceRootState:{anchorSnapshotId:first?.snapshotId,availability:'captured',
+      conversation:{candidates:'unique',sameObject:true,connected:true,sameDocument:true,containsRoot:true},
+      root:{connection:'connected',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:true,inRawPosts:false,shown:'pass'},
+      identity:{members:'same',coordinates:'same',owned:true,rendered:'same'}}});
+    expect(terminal?.document).toEqual(first?.document);
+    expect(row).toMatchObject({status:'partial',reason:'post_identity_unproven',stopReason:'identity_unproven',root:{text:'Native preview',postId:'321'},replies:{observations:[{postId:'801'}]},budgetUsage:{scrolls:1,expandActions:0}});
+    expect(row.diagnostics?.scroll?.last).toMatchObject({state:'frame_observed',written:true,eventObserved:true,frameObserved:true});
+    expect(receipt.sourceGeometry?.height).toBeGreaterThan(0);
+    expect(receipt.sourceGeometry?.before).toBe(row.diagnostics?.scroll?.last?.after);
+    expect(receipt.sourceGeometry?.after).toBe(receipt.sourceGeometry?.before);
+    expect(receipt.actions).toEqual(['scroll-event','scroll-frame']);
+    expect(receipt.readinessFrames).toEqual(['initial-empty']);
+    expect(receipt.sourceCleanup).toEqual({populated:true,cleared:true});
+    expect(receipt.activeTabId).toBe(receipt.userTabId);
   });
 
   test('native same-URL collection transition requires matching current owned Article identity',async()=>{

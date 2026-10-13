@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
+import { readX } from './xResearchRead';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { XResearchEvidence } from './xResearchEvidence';
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
-import { fixture, post, readHtml } from '../../test-support/xResearchFixture';
+import { fixture, stagedFixture, post, readHtml } from '../../test-support/xResearchFixture';
 import { createXResearchTool } from '../agent/xResearchTool';
 import type { XResearchResult, XTextObservation } from './xResearchTypes';
 const url = 'https://x.com/alice/status/123';
@@ -62,7 +63,11 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
   const { SessionManager } = await import('@earendil-works/pi-coding-agent');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'kydog-x-diagnostic-sdk-'));
   try {
-    const fresh=await result(), frame=fresh.targets[0].diagnostics?.initialFrame;
+    const fresh=await result();
+    const physical=await readX({tabId:'research-tab',read:{objective:'source diagnostics',targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},(await stagedFixture()).context);
+    fresh.targets[0].diagnostics=physical.targets[0].diagnostics;
+    const frame=fresh.targets[0].diagnostics?.firstAdmittedFrame;
+    expect(frame?.sourceRootState).toMatchObject({root:{connection:'connected'},identity:{coordinates:'same'}});
     expect(frame?.snapshotId).toMatch(/^xsnap_/);
     const old=structuredClone(fresh);
     delete old.targets[0].diagnostics;
@@ -88,8 +93,11 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
       expect(saved?.role).toBe('toolResult');
       if(saved?.role!=='toolResult') throw new Error('tool result missing from SDK branch');
       const details=saved.details as typeof fresh;
-      expect(details.targets[0].diagnostics?.initialFrame?.snapshotId).toBe(expected);
-      expect(JSON.parse(saved.content[0].type==='text'?saved.content[0].text:'{}').targets[0].diagnostics?.initialFrame?.snapshotId).toBe(expected);
+      expect(details.targets[0].diagnostics?.firstAdmittedFrame?.snapshotId).toBe(expected);
+      expect(details.targets[0].diagnostics?.firstAdmittedFrame?.sourceRootState).toEqual(expected?frame?.sourceRootState:undefined);
+      expect(JSON.stringify({...details,objective:'collectionKey'})).toMatch(/__kydogXRootState|collectionKey|permissionNamespace/);
+      expect(JSON.stringify(details)).not.toMatch(/__kydogXRootState|collectionKey|permissionNamespace/);
+      expect(JSON.parse(saved.content[0].type==='text'?saved.content[0].text:'{}').targets[0].diagnostics?.firstAdmittedFrame?.snapshotId).toBe(expected);
       const ledger=new XResearchEvidence(dir,()=> 'restored-run');
       ledger.restore(reopened.getBranch());
       expect(ledger.guard(report,citation())).toEqual({createOnly:true});

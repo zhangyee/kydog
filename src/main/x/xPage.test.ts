@@ -5,7 +5,7 @@ import { measuredPointerExpression, pointerGuardExpression } from '../browser/me
 import { renderDiff } from '../browser/snapshot';
 import { createXResearchBrowser } from './xResearchBrowser';
 import type { BrowserService, BrowserLocationFacts } from '../browser/browserService';
-import { collectXPage, decodeXPage, xPageExpression } from './xPageSource';
+import { sourceRootStateSchema, admitXSourceRoot, collectXPage, decodeXPage, xPageExpression } from './xPageSource';
 
 const url = 'https://x.com/alice/status/123';
 const request = { stage: 'post' as const, expectedUrl: url, postId: '123' };
@@ -532,4 +532,116 @@ it('refuses conflicting native Article identity even with an otherwise proven pa
   expect(collect().article).toBeNull();
   f.document.querySelector('[role="group"]')!.remove();
   expect(collect().article?.body.text).toBe('Parent-entry body');
+});
+
+
+describe('original source root diagnostics', () => {
+  it.each(['hidden','body','detached','identity','member','conversation','duplicate','quote','diagnostic_error','adopted','boundary','overflow','host','query','hash'])(
+    'retains actual admitted refs through %s before next collect commit', async mode => {
+      const f=fixture(), facts={currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:url};
+      const browser={researchTabStatus:()=> 'available',enqueue:async(_id:string,fn:()=>Promise<unknown>)=>fn(),withAgentDriving:async(_id:string,_thread:string,fn:()=>Promise<unknown>)=>fn(),
+        onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>f.evaluate(code)};
+      await createXResearchBrowser(browser as never,'thread').withPage('tab',undefined,async page=>{
+        const initial=await page.collect(request);
+        admitXSourceRoot?.(initial);
+        expect(initial.diagnosticFrame?.sourceRootState).toMatchObject({anchorSnapshotId:initial.snapshot.snapshotId,root:{connection:'connected',sameDocument:true,inRoots:true,inRawPosts:true,shown:'pass'},identity:{members:'same',coordinates:'same',rendered:'same'}});
+        const root=f.document.querySelector('article')!, conversation=root.parentElement!;
+        if(mode==='hidden') root.setAttribute('hidden','');
+        if(mode==='body') root.querySelector('[data-testid="tweetText"]')!.remove();
+        if(mode==='detached') root.remove();
+        if(mode==='adopted') f.document.implementation.createHTMLDocument().body.append(root);
+        if(mode==='boundary') root.removeAttribute('data-testid');
+        if(mode==='overflow') {const profile=root.querySelector('[data-testid="User-Name"] a')!;for(let i=0;i<40;i++) profile.after(profile.cloneNode(true));}
+        if(mode==='diagnostic_error'){root.remove();Object.defineProperty(root,'getBoundingClientRect',{value:()=>{throw Error('unavailable');}});}
+        if(mode==='host') root.querySelector('a[href$="/history"]')!.setAttribute('href','https://twitter.com/alice/status/123/history');
+        if(mode==='query') root.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/history?private=query');
+        if(mode==='hash') root.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/history#private');
+        if(mode==='identity') root.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/999/history');
+        if(mode==='member') {const member=root.querySelector('a[href$="/history"]')!;member.replaceWith(member.cloneNode(true));}
+        if(mode==='conversation') conversation.replaceWith(conversation.cloneNode(true));
+        if(mode==='duplicate') conversation.after(conversation.cloneNode(true));
+        if(mode==='quote') {const quote=f.document.createElement('div');quote.setAttribute('role','link');quote.setAttribute('tabindex','0');conversation.append(quote);quote.append(root);}
+        const terminal=await page.collect(request), state=terminal.diagnosticFrame?.sourceRootState;
+        expect(state?.anchorSnapshotId).toBe(initial.snapshot.snapshotId);
+        if(mode==='hidden') expect(state).toMatchObject({root:{connection:'connected',shown:'hidden',inRoots:false,inRawPosts:false},identity:{coordinates:'same',rendered:'missing'}});
+        if(mode==='body') expect(state).toMatchObject({root:{connection:'connected',shown:'pass',inRoots:true,inRawPosts:false},identity:{members:'same',coordinates:'same',rendered:'same'}});
+        if(mode==='detached') expect(state).toMatchObject({root:{connection:'detached',sameDocument:true,inRoots:false,inRawPosts:false},identity:{coordinates:'same'}});
+        if(['identity','host','query','hash'].includes(mode)) expect(state).toMatchObject({identity:{members:'same',coordinates:'changed',rendered:'changed'}});
+        if(mode==='member') expect(state).toMatchObject({identity:{members:'changed',coordinates:'same'}});
+        if(mode==='conversation') expect(state).toMatchObject({conversation:{sameObject:false,connected:false},root:{connection:'detached'}});
+        if(mode==='duplicate') expect(state).toMatchObject({conversation:{candidates:'multiple',sameObject:null}});
+        if(['hidden','body','detached','identity','boundary','adopted','host','query','hash'].includes(mode)){expect(initial.root?.postId).toBe('123');expect(terminal.root).toBeNull();}
+        if(mode==='adopted') expect(state).toMatchObject({root:{connection:'connected',sameDocument:false},identity:{rendered:'missing'}});
+        if(mode==='boundary') expect(state).toMatchObject({root:{ownBoundary:false,topLevel:false},identity:{members:'missing',owned:false}});
+        if(mode==='overflow') expect(state).toMatchObject({identity:{members:'ambiguous',coordinates:'ambiguous',rendered:'ambiguous',profileLinkCount:33}});
+        if(mode==='diagnostic_error') expect(state).toMatchObject({availability:'unavailable',root:{connection:'unavailable'},identity:{members:'unavailable',nameCount:null}});
+        if(mode==='quote') expect(state).toMatchObject({root:{ownBoundary:false}});
+        expect(f.evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
+        expect((await page.collect(request)).diagnosticFrame?.sourceRootState).toEqual(state);
+      });
+      expect(f.evaluate('window.__kydogXRootState')).toBeUndefined();
+    });
+});
+
+
+it('source shown reasons preserve the original predicate for every ancestor exclusion and dimension flip',async()=>{
+  const f=fixture(), facts={currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:url};
+  const service={researchTabStatus:()=> 'available',enqueue:async(_id:string,fn:()=>Promise<unknown>)=>fn(),withAgentDriving:async(_id:string,_thread:string,fn:()=>Promise<unknown>)=>fn(),onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>f.evaluate(code)};
+  await createXResearchBrowser(service as never,'thread').withPage('tab',undefined,async page=>{
+    const first=await page.collect(request);admitXSourceRoot(first);
+    const root=f.document.querySelector('article')!, ancestor=root.parentElement!;
+    for(const [attribute,value,reason] of [['hidden','','hidden'],['aria-hidden','true','aria_hidden'],['style','display:none','display_none'],['style','visibility:hidden','visibility_hidden'],['style','visibility:collapse','collapse']]){
+      const positive=await page.collect(request);expect(positive.root?.postId).toBe('123');expect(positive.diagnosticFrame?.sourceRootState?.root.shown).toBe('pass');
+      ancestor.setAttribute(attribute,value);
+      const excluded=await page.collect(request);expect(excluded.root).toBeNull();expect(excluded.diagnosticFrame?.sourceRootState?.root.shown).toBe(reason);
+      ancestor.removeAttribute(attribute);
+    }
+    expect((await page.collect(request)).root?.postId).toBe('123');
+    Object.defineProperty(root,'getBoundingClientRect',{value:()=>({width:0,height:30})});
+    const zero=await page.collect(request);expect(zero.root).toBeNull();expect(zero.diagnosticFrame?.sourceRootState?.root.shown).toBe('dimensions');
+  });
+});
+
+it.each(['lease','key','container','raw_url','truncated','parse','route','epoch','sequence','generation','nonpost'])(
+  'rejects diagnostic admission and invalidates old source binding for %s',async mode=>{
+    const f=fixture(), facts={currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:url};
+    let corrupt=false;
+    const service={researchTabStatus:()=> 'available',enqueue:async(_id:string,fn:()=>Promise<unknown>)=>fn(),withAgentDriving:async(_id:string,_thread:string,fn:()=>Promise<unknown>)=>fn(),onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>{
+      const raw=f.evaluate(code);if(!corrupt || code.startsWith('/* kydog-x-root-release */')) return raw;
+      if(mode==='lease') raw.sourceRoot.lease='wrong';if(mode==='key') raw.sourceRoot.collectionKey='wrong';if(mode==='container') raw.sourceRoot.containerKey=99;
+      if(mode==='raw_url'){raw.rawUrl+='?changed';raw.snapshot.url=raw.rawUrl;}
+      if(mode==='truncated') {raw.truncation.totalKnown++;raw.truncation.truncated=true;}
+      if(mode==='parse') raw.posts='invalid';return raw;
+    }};
+    const port=createXResearchBrowser(service as never,'thread');
+    await port.withPage('tab',undefined,async page=>{
+      const good=await page.collect(request);admitXSourceRoot(good);expect(good.diagnosticFrame?.sourceRootState?.root.connection).toBe('connected');
+      expect((await page.collect(request)).diagnosticFrame?.sourceRootState?.anchorSnapshotId).toBe(good.snapshot.snapshotId);
+      if(['route','epoch','sequence','generation','nonpost'].includes(mode)){
+        if(mode==='route') facts.routeRevision++;if(mode==='epoch') facts.documentEpoch++;if(mode==='sequence') facts.navigationSequence++;
+        if(mode==='generation') f.evaluate('window.__kydogWorld.gen="replacement_generation"');
+        if(mode==='nonpost') await page.collect({stage:'search',expectedUrl:'https://x.com/search?q=test&f=live',query:'test',product:'Latest'});
+        const changed=await page.collect(request);expect(changed.diagnosticFrame?.sourceRootState).toBeUndefined();
+        admitXSourceRoot(changed);expect(changed.diagnosticFrame?.sourceRootState?.anchorSnapshotId).toBe(changed.snapshot.snapshotId);
+      }
+    });
+    expect(f.evaluate('window.__kydogXRootState')).toBeUndefined();
+    if(['route','epoch','sequence','generation','nonpost'].includes(mode)) return;
+    corrupt=true;
+    await port.withPage('tab',undefined,async page=>{
+      if(mode==='parse'){await expect(page.collect(request)).rejects.toMatchObject({code:'x.invalid_page'});return;}
+      const bad=await page.collect(request);admitXSourceRoot(bad);expect(bad.diagnosticFrame?.sourceRootState).toBeUndefined();
+      expect(f.evaluate('window.__kydogXRootState.anchor')).toBeNull();
+    });
+    expect(f.evaluate('window.__kydogXRootState')).toBeUndefined();
+  });
+
+it('source validator admits only bounded finite private-free diagnostic values',async()=>{
+  const f=fixture();
+  const raw=f.evaluate(xPageExpression(request,{lease:'test',collectionKey:'sample',binding:'binding'}));
+  const state=raw.sourceRoot.candidateState;
+  expect(sourceRootStateSchema.safeParse(state).success).toBe(true);
+  for(const mutation of [(s:any)=>s.root.shown='outside_viewport',(s:any)=>s.root.href=url,(s:any)=>s.identity.nameCount=34,(s:any)=>s.identity.members='virtualized',(s:any)=>s.nonce='secret']){
+    const invalid=structuredClone(state);mutation(invalid);expect(sourceRootStateSchema.safeParse(invalid).success).toBe(false);
+  }
 });

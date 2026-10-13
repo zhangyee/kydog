@@ -1,6 +1,8 @@
+import { admitXSourceRoot, xSourceRootReleaseExpression } from './xPageSource';
+import { logger } from '../log';
 import { JSDOM } from 'jsdom';
 import { measuredPointerExpression, pointerGuardExpression } from '../browser/measuredPointerSource';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import type { BrowserService, BrowserLocationFacts } from '../browser/browserService';
@@ -204,3 +206,86 @@ it('preserves the typed scroll error object across the owned port without prose 
   const causes=[new BrowserScrollAcknowledgementError('scroll_no_movement','scroll_ack_timeout'),new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement'),new KydogError('browser.wait_timeout','scroll_no_movement scroll_ack_timeout')];
   for(const [index,cause] of causes.entries()){error=cause;await expect(run()).rejects.toBe(cause);expect(writes).toBe(index+2);}
 });
+
+
+it.each(['normal','cancel','gone','cancel_gone','evalthrow','release_throw','release_false','newlease'] as const)(
+  'releases proven original source state within queue/driving after issued operations: %s',async mode=>{
+    const f=fixture(), events:string[]=[];
+    const dom=new JSDOM('<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation"><article data-testid="tweet"><div data-testid="User-Name"><a href="/a">A</a></div><div data-testid="tweetText">Body</div><a href="/a/status/123"><time>today</time></a></article></div></div></main>',{url:f.facts.currentUrl,runScripts:'outside-only'});
+    Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+    const evaluate=(code:string)=>dom.window.eval(code);
+    const request={stage:'post' as const,postId:'123',expectedUrl:f.facts.currentUrl};
+    let releasedOperation!:()=>void, started!:()=>void;
+    const operationStarted=new Promise<void>(r=>{started=r;});
+    const held=new Promise<void>(r=>{releasedOperation=r;});
+    const abort=new AbortController();
+    const errorLog=vi.spyOn(logger,'error').mockImplementation(()=>{});
+    f.browser.prepareForDomRead=async()=>{};
+    f.browser.withAgentDriving=async(_id,_thread,work)=>{events.push('driving');try{return await work();}finally{events.push('driving_end');}};
+    let reads=0, cleanupOracle=false;
+    f.browser.evalInPage=async(_id,code)=>{
+      if(typeof code!=='string') throw Error('fixture only accepts fixed expressions');
+      if(code.startsWith('/* kydog-x-root-release */')){
+        events.push('release');
+        if(cleanupOracle) throw Error('active realm release failure');
+        if(mode==='cancel_gone') throw new KydogError('browser.no_tab','gone');
+        if(mode==='release_throw') throw Error('private-token-must-not-be-logged');
+        if(mode==='release_false') return {released:false};
+        return evaluate(code);
+      }
+      reads++;const raw=evaluate(code);
+      if(!cleanupOracle && reads===2 && ['cancel','gone','cancel_gone','evalthrow'].includes(mode)){
+        started();await held;events.push('issued_settled');if(mode==='evalthrow') throw Error('collect failed');
+      }
+      return raw;
+    };
+    const port=createXResearchBrowser(f.browser,'thread');
+    try {
+      if(mode==='cancel_gone') {
+        cleanupOracle=true;
+        await expect(port.withPage('tab',undefined,async page=>{
+          const first=await page.collect(request);admitXSourceRoot(first);
+          expect(first.diagnosticFrame?.sourceRootState?.root.connection).toBe('connected');
+          await page.collect(request);expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
+        })).rejects.toMatchObject({code:'x.invalid_page',message:'Source root diagnostic cleanup failed'});
+        expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+        expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
+        evaluate(xSourceRootReleaseExpression(String(evaluate('window.__kydogXRootState.lease'))));
+        errorLog.mockClear();events.length=0;reads=0;cleanupOracle=false;
+      }
+      const running=port.withPage('tab',abort.signal,async page=>{
+        const first=await page.collect(request);admitXSourceRoot(first);
+        expect(first.diagnosticFrame?.sourceRootState?.root.connection).toBe('connected');
+        expect(evaluate('!!window.__kydogXRootState.pending')).toBe(true);
+        if(mode==='newlease'){
+          const lease=evaluate('window.__kydogXRootState.lease');
+          expect(evaluate(xSourceRootReleaseExpression('unrelated'))).toEqual({released:true});
+          expect(evaluate('window.__kydogXRootState.lease')).toBe(lease);
+        }
+        await page.collect(request);
+        expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
+      });
+      if(['cancel','gone','cancel_gone','evalthrow'].includes(mode)){
+        const rejected=expect(running).rejects.toMatchObject(mode==='evalthrow'?{message:'collect failed'}:{code:mode==='cancel'||mode==='cancel_gone'?'browser.cancelled':'browser.not_dispatchable'});
+        await operationStarted;
+        expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
+        if(mode==='cancel'||mode==='cancel_gone') abort.abort();
+        if(mode==='cancel_gone') {await Promise.resolve();dom.window.close();}
+        if(mode==='gone'){for(const notify of f.gone) notify('tab');dom.window.close();}
+        expect(events).toEqual(['driving']);releasedOperation();await rejected;
+        await f.enqueue('tab',async()=>{events.push('next_queue');});
+        expect(events).toEqual(mode==='gone'?['driving','issued_settled','driving_end','next_queue']:['driving','issued_settled','release','driving_end','next_queue']);
+      }else if(mode.startsWith('release_')){
+        await expect(running).rejects.toMatchObject({code:'x.invalid_page',message:'Source root diagnostic cleanup failed'});
+        expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+        expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
+        evaluate(xSourceRootReleaseExpression(String(evaluate('window.__kydogXRootState.lease'))));
+      }else await running;
+      if(mode!=='gone'&&mode!=='cancel_gone') expect(evaluate('window.__kydogXRootState')).toBeUndefined();
+      if(mode==='cancel_gone') expect(errorLog).not.toHaveBeenCalled();
+      if(mode==='newlease') await port.withPage('tab',undefined,async page=>{
+        const fresh=await page.collect(request);expect(fresh.diagnosticFrame?.sourceRootState).toBeUndefined();admitXSourceRoot(fresh);
+        expect(fresh.diagnosticFrame?.sourceRootState?.anchorSnapshotId).toBe(fresh.snapshot.snapshotId);
+      });
+    }finally{releasedOperation();errorLog.mockRestore();dom.window.close();}
+  });

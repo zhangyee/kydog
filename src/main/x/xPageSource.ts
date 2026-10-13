@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import ROOT_SOURCE from './injected/xSourceRoot.js?raw';
 import SOURCE from './injected/xPage.js?raw';
 import POINTER_GUARD from '../browser/injected/pointerGuard.js?raw';
 import WALKER from '../browser/injected/walker.js?raw';
@@ -7,7 +9,7 @@ import type { BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
 import type { XActionResult, XOpenResult, XQueuedPage } from './xResearchBrowser';
 import { compareXLocation, toSafeXLocation, parseXSourcePost, parseXPostCoordinates, isXPostId, isXHandle, parseXArticleAnalyticsHref, X_MAX_RAW_URL_UNITS } from './xResearchIdentity';
-import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope, XReadFrameDiagnostic } from './xResearchTypes';
+import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope, XReadFrameDiagnostic, XSourceRootState } from './xResearchTypes';
 
 export type XPageRequest =
   | { stage: 'search'; expectedUrl: string; query: string; product: 'Top' | 'Latest' }
@@ -122,9 +124,9 @@ function validRequest(request: XPageRequest): void {
   else invalid();
 }
 /** Serializes only fixed data fields; provenance objects never enter the page. */
-export function xPageExpression(request: XPageRequest): string {
+export function xPageExpression(request: XPageRequest, sourceRoot?: XSourceRootEnvelope): string {
   validRequest(request);
-  return SOURCE.replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage,postId:request.stage==='post'?request.postId:null,permissionNamespace:randomUUID()})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`).replace('const permissionGuard = X_PERMISSION;', () => `const permissionGuard = (${POINTER_GUARD});`);
+  return SOURCE.replace('const rootDiagnostics = X_ROOT;', () => `const rootDiagnostics = (${ROOT_SOURCE});`).replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage,postId:request.stage==='post'?request.postId:null,sourceRoot,permissionNamespace:randomUUID()})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`).replace('const permissionGuard = X_PERMISSION;', () => `const permissionGuard = (${POINTER_GUARD});`);
 }
 /** Supplied only by the port's object-identity provenance registries. */
 export interface XPageNavigationProof {
@@ -152,6 +154,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   const named = (p: RawPost): boolean => { const id=publicPost(p.permalink);return !!id && id.id===p.postId && !!p.author?.handle && id.handle===p.author.handle; };
   const makeText = (p: RawPost,kind: XTextObservation['containerKind']): XTextObservation => ({observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:publicPost(p.permalink)?.url??null,author:p.author,text:p.text,observedAt,truncation:p.truncation,containerKind:kind,...(kind==='reply'?{directParent:null}:{}),postId:kind==='unattributed_fragment'?null:p.postId} as XTextObservation);
   let root: XTextObservation|null = null;
+  let rootContainerKey: number|null=null;
   const parentObservations = new Map<number,XTextObservation>();
   const posts:XTextObservation[]=[],quotedPosts:XTextObservation[]=[],replies:XTextObservation[]=[],fragments:XTextObservation[]=[];
   if (identityProven && request.stage!=='article') {
@@ -160,7 +163,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
       return p.scope==='post' && named(p) && request.stage==='post' && p.postId===request.postId
         && own?.origin===currentPost?.origin && (currentPost?.handle===null || own?.handle===currentPost?.handle);
     });
-    if (request.stage==='post' && rootPosts.length===1) {root=makeText(rootPosts[0],'root_post');parentObservations.set(rootPosts[0].containerKey,root);}
+    if (request.stage==='post' && rootPosts.length===1) {rootContainerKey=rootPosts[0].containerKey;root=makeText(rootPosts[0],'root_post');parentObservations.set(rootPosts[0].containerKey,root);}
     for (const p of raw.posts) {
       if (!named(p)) { fragments.push(makeText(p,'unattributed_fragment'));continue; }
       if (request.stage==='post' && !root) continue;
@@ -224,6 +227,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     explicitEndObserved:!!replyScope.endEvidence,
   } : undefined;
   const result = {replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  if(rootContainerKey!==null) decodedRootKeys.set(result,rootContainerKey);
   Object.defineProperty(result,'entryParents',{value:entryParents,enumerable:false});
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});
   return result;
@@ -231,4 +235,53 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
 /** Public fixed-purpose adapter; the port validates raw DOM before returning. */
 export async function collectXPage(page: XQueuedPage, request: XPageRequest): Promise<XPageObservation> {
   return page.collect(request);
+}
+
+
+/** Internal envelope: never copied to observations, tools, persistence, or permissions. */
+export interface XSourceRootEnvelope {
+  lease:string; collectionKey:string; binding:string; reset?:boolean;
+  commit?:{collectionKey:string;containerKey:number;generation:string;anchorSnapshotId:string};
+}
+const nullableBool=z.boolean().nullable();
+const identityState=z.enum(['same','changed','missing','ambiguous','unavailable']);
+export const sourceRootStateSchema=z.object({
+  anchorSnapshotId:z.string().min(1).max(128),availability:z.enum(['captured','unavailable']),
+  conversation:z.object({candidates:z.enum(['none','unique','multiple','unavailable']),sameObject:nullableBool,connected:nullableBool,sameDocument:nullableBool,containsRoot:nullableBool}).strict(),
+  root:z.object({connection:z.enum(['connected','detached','unavailable']),sameDocument:nullableBool,topLevel:nullableBool,ownBoundary:nullableBool,inRoots:nullableBool,inRawPosts:nullableBool,
+    shown:z.enum(['pass','dimensions','hidden','aria_hidden','display_none','visibility_hidden','collapse','unavailable'])}).strict(),
+  identity:z.object({members:identityState,coordinates:identityState,owned:nullableBool,rendered:identityState,
+    nameCount:z.number().int().min(0).max(33).nullable(),profileLinkCount:z.number().int().min(0).max(33).nullable(),timestampCount:z.number().int().min(0).max(33).nullable()}).strict(),
+}).strict();
+const sourceRootReplySchema=z.object({lease:z.string(),collectionKey:z.string(),containerKey:z.number().int().nonnegative().nullable(),candidateState:sourceRootStateSchema.nullable(),anchorState:sourceRootStateSchema.nullable()}).strict();
+const decodedRootKeys=new WeakMap<XPageObservation,number>();
+const rootAdmissions=new WeakMap<XPageObservation,()=>void>();
+export function admitXSourceRoot(observation:XPageObservation):void { rootAdmissions.get(observation)?.(); }
+export function xSourceRootReleaseExpression(lease:string):string { return `/* kydog-x-root-release */ (${ROOT_SOURCE})(${JSON.stringify({lease,release:true})})`; }
+/** Bind only actual decoder output; restored diagnostic DTOs cannot call this path. */
+export function bindXSourceRoot(observation:XPageObservation, raw:unknown, envelope:XSourceRootEnvelope, admit:(commit:NonNullable<XSourceRootEnvelope['commit']>)=>boolean):void {
+  if (!obj(raw)) return;
+  const parsed=sourceRootReplySchema.safeParse(raw.sourceRoot);
+  if (!parsed.success) {
+    const frame=observation.diagnosticFrame, commit=envelope.commit;
+    if(frame && commit && commit.generation===observation.snapshot.generation) frame.sourceRootState={anchorSnapshotId:commit.anchorSnapshotId,availability:'unavailable',
+      conversation:{candidates:'unavailable',sameObject:null,connected:null,sameDocument:null,containsRoot:null},
+      root:{connection:'unavailable',sameDocument:null,topLevel:null,ownBoundary:null,inRoots:null,inRawPosts:null,shown:'unavailable'},
+      identity:{members:'unavailable',coordinates:'unavailable',owned:null,rendered:'unavailable',nameCount:null,profileLinkCount:null,timestampCount:null}};
+    return;
+  }
+  const data=parsed.data;
+  if(data.lease!==envelope.lease || data.collectionKey!==envelope.collectionKey) return;
+  const frame=observation.diagnosticFrame;
+  if(!frame) return;
+  if(data.anchorState && (!envelope.commit || data.anchorState.anchorSnapshotId===envelope.commit.anchorSnapshotId))
+    frame.sourceRootState=data.anchorState;
+  const key=decodedRootKeys.get(observation);
+  if (key===undefined || key!==data.containerKey || !data.candidateState || !observation.identityProven || !observation.root
+    || !frame.rawUrlMatchesPort || !frame.rootIdentityProven || observation.state || observation.truncation.truncated
+    || observation.truncation.totalKnown!==observation.truncation.returned) return;
+  const state:XSourceRootState={...data.candidateState,anchorSnapshotId:observation.snapshot.snapshotId};
+  rootAdmissions.set(observation,()=>{
+    if(admit({collectionKey:envelope.collectionKey,containerKey:key,generation:observation.snapshot.generation,anchorSnapshotId:observation.snapshot.snapshotId})) frame.sourceRootState=state;
+  });
 }

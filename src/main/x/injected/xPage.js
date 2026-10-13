@@ -1,18 +1,23 @@
-/* global X_REQUEST, X_WALKER, X_PERMISSION */
+/* global X_REQUEST, X_WALKER, X_PERMISSION, X_ROOT */
 // Fixed rendered-X observation. Selectors observed in IAB on 2026-10-12.
 // Invoked only in the existing isolated world. Page text is never executable.
 (() => {
   const request = X_REQUEST;
   const all = (root, selector) => root ? Array.from(root.querySelectorAll(selector)) : [];
   const text = el => el ? (el.innerText || el.textContent || '').trim() : '';
-  const shown = el => {
-    if (!el || el.getBoundingClientRect().width <= 0 || el.getBoundingClientRect().height <= 0) return false;
+  const shownReason = el => {
+    if (!el || el.getBoundingClientRect().width <= 0 || el.getBoundingClientRect().height <= 0) return 'dimensions';
     for (let p = el; p; p = p.parentElement) {
       const s = getComputedStyle(p);
-      if (p.hidden || p.getAttribute('aria-hidden') === 'true' || s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
+      if (p.hidden) return 'hidden';
+      if (p.getAttribute('aria-hidden') === 'true') return 'aria_hidden';
+      if (s.display === 'none') return 'display_none';
+      if (s.visibility === 'hidden') return 'visibility_hidden';
+      if (s.visibility === 'collapse') return 'collapse';
     }
-    return true;
+    return 'pass';
   };
+  const shown = el => shownReason(el)==='pass';
   const url = raw => { try { return new URL(raw, location.href); } catch { return null; } };
   const allowed = u => u && u.protocol === 'https:' && !u.username && !u.password && !u.port && ['x.com','twitter.com'].includes(u.hostname);
   const identity = raw => {
@@ -62,7 +67,7 @@
     const body = empty.querySelector('[data-testid="empty_state_body_text"]');
     if (shown(header) && shown(body) && text(header).startsWith('No results for ')) state = {kind:'explicit_empty',text:(text(header)+'\n'+text(body)).slice(0,4000)};
   }
-  const posts = [], controls = [], entries = [];
+  const posts = [], controls = [], entries = [], postRoots = [];
   const candidates = new Set();
   let eligibleControls = 0;
   const control = (el,kind,postId,scopes,sourceRelation='unknown') => {
@@ -98,6 +103,7 @@
         if (posts.length < 100) {
           const full = texts.map(text).join('\n');
           const limit=box===longBodyRoot?64000:4000;
+          postRoots.push(box);
           posts.push({...fact,containerKey:sourceContainerKey,articleEntryCount:0,scope:box===root?'post':'quote',text:full.slice(0,limit),truncation:{returned:Math.min(full.length,limit),totalKnown:full.length,truncated:full.length>limit}});
         }
       }
@@ -170,7 +176,13 @@
     const saved=permissionGuard({op:'remember_collected',namespace:request.permissionNamespace,permission,el:c.el,nodeId:node.nodeId,scopes:c.scopes});
     if (saved.ok) node.collectedPermission=permission;
   }
-  return {rawUrl:location.href,region:!!region,diagnosticNodes,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
+  const rootDiagnostics = X_ROOT;
+  const sourceCandidates=posts.filter(p=>p.scope==='post' && p.postId===request.postId);
+  const candidate=sourceCandidates.length===1 && totalPosts===posts.length && totalPosts<=100
+    ? {...sourceCandidates[0],root:postRoots[posts.indexOf(sourceCandidates[0])],handle:sourceCandidates[0].author?.handle} : null;
+  let sourceRoot=null;
+  try {sourceRoot=rootDiagnostics(request.sourceRoot??{},request.stage==='post'?{all,owner,shownReason,factOf,identity,url,allowed,roots,postRoots,conversation,primary,snapshot,tweetSelector,boundarySelector,candidate}:null);} catch { /* Missing source facts never change the ordinary observation. */ }
+  return {sourceRoot,rawUrl:location.href,region:!!region,diagnosticNodes,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
     controls:controls.flatMap(({el,kind,postId,sourceRelation})=>{const n=nodeFor(el);return n?[{kind,postId,nodeId:n.nodeId,index:n.index,sourceRelation}]:[];}),
     entries:entries.flatMap(({el,...e})=>{const n=nodeFor(el);return n?[{...e,nodeId:n.nodeId,index:n.index}]:[];}),
     controlTruncation:{returned:snapshot.nodes.length,totalKnown:eligibleControls,truncated:snapshot.nodes.length<eligibleControls},
