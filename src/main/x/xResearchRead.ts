@@ -159,6 +159,7 @@ export async function readX(
   for (const [index, row] of result.targets.entries()) {
     const stage: XReadStage = {
       current: 'navigation',
+      actionIndex: 0,
       attemptedControls: new Set(),
     };
     let returnToParent = false;

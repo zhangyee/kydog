@@ -58,6 +58,7 @@ export async function readArticle(
   try {
     checkReadCancelled(context);
     stage.current = 'action';
+    stage.actionIndex++;
     row.article.actionAttempted = true;
     const action = await page.act(
       {

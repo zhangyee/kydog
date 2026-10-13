@@ -28,6 +28,14 @@ export class BrowserScrollAcknowledgementError extends KydogError {
     super('browser.wait_timeout', message);
   }
 }
+/** Validated source fields only; no token or raw URL leaves the browser ACK port. */
+export interface BrowserScrollReceipt {
+  generation:string; targetKind:'document'|'element'; targetNodeId:number|null;
+  targetContainsHit:boolean|null; scrollHeight:number; clientHeight:number;
+  conversationRelation:'inside'|'equal'|'unknown'; rootRelation:'inside'|'equal'|'unknown';
+  before:number; after:number; written:boolean; eventObserved:boolean; frameObserved:boolean;
+  state:'pending'|'frame_observed'|'no_movement'|'invalidated'|'expired';
+}
 
 export type WaitUntil =
   | { selector: string; state: 'present' | 'absent' }

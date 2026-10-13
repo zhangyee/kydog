@@ -56,6 +56,14 @@ describe('fixed X page DOM source', () => {
     f.document.querySelector('[data-testid="cellInnerDiv"] button')!.textContent = 'Reply';
     expect(f.collect().controls).toEqual([]);
   });
+  it('records physical reply-control cell relations without asserting ownership', () => {
+    const button='<button role="button" type="button">Show replies</button>';
+    const f=fixture(wrap(`<div data-testid="cellInnerDiv">${post()}${button}</div><div data-testid="cellInnerDiv">${button}</div>`));
+    const raw=f.collect();
+    expect(raw.controls.filter((c:any)=>c.kind==='replies_expand').map((c:any)=>c.sourceRelation)).toEqual(['same_cell','different_cell']);
+    const decoded=decodeXPage(raw,request,{currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document',navigationEvent:'did-navigate-in-page',navigationUrl:url},{parentArticle:false});
+    expect(decoded.controls.filter(c=>c.kind==='replies_expand').map(c=>c.sourceRelation)).toEqual(['same_cell','different_cell']);
+  });
   it('explicitPageStatesHaveEvidence', () => {
     const r = {stage:'search', expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest'};
     const f = fixture('<main><div data-testid="primaryColumn"><a role="tab" aria-selected="true">Latest</a><div data-testid="emptyState"><div data-testid="empty_state_header_text">No results for "probe"</div><div data-testid="empty_state_body_text">Try searching for something else</div></div></div></main>',r.expectedUrl);
@@ -99,6 +107,38 @@ describe('X page trusted boundary', () => {
     expect(decode(missing).fragments[0]).toMatchObject({text:'root original',containerKind:'unattributed_fragment'});
     expect(decode(missing).root).toBeNull();
   });
+  it('retains the validated source predicates when a later post frame loses its root', () => {
+    const f = fixture(wrap(post()));
+    const good = decode(f);
+    expect(good.diagnosticFrame).toMatchObject({rawUrlMatchesPort:true,requestPostMatchesLocation:true,regionObserved:true,rootCandidateCount:1,
+      rootRejections:{unnamed:0,authorMismatch:0,permalinkMismatch:0},replyCount:0,repliesExpandControlCount:0,explicitEndObserved:false});
+    f.document.querySelector('[data-testid="tweet"]')!.remove();
+    const missing = decode(f);
+    expect(missing.root).toBeNull();
+    expect(missing.diagnosticFrame).toMatchObject({rawUrlMatchesPort:true,requestPostMatchesLocation:true,regionObserved:true,rootCandidateCount:0,
+      inventory:{returned:0,totalKnown:0,truncated:false}});
+    const wrong = decode(f, request, url + '?token=private');
+    expect(wrong.diagnosticFrame).toMatchObject({rawUrlMatchesPort:false,requestPostMatchesLocation:true});
+    expect(JSON.stringify(wrong.diagnosticFrame)).not.toContain('private');
+    const authorChanged=fixture(wrap(post('123','alice')));
+    authorChanged.document.querySelectorAll('[data-testid="User-Name"] a').forEach(a=>a.setAttribute('href','/bob'));
+    const rejected=decode(authorChanged);
+    expect(rejected.root).toBeNull();
+    expect(rejected.diagnosticFrame).toMatchObject({rootCandidateCount:1,rootRejections:{authorMismatch:1}});
+  });
+  it('does not report a source rejection for a root admitted beside an unsupported time link', () => {
+    const extra=(href:string)=>`<a href="${href}"><time>later</time></a>`;
+    const bothValid=fixture(wrap(post('123','alice','root',extra('/alice/status/123/history'))));
+    const accepted=decode(bothValid);
+    expect(accepted.root).toMatchObject({postId:'123',text:'root'});
+    expect(accepted.diagnosticFrame).toMatchObject({rootIdentityProven:true,rootCandidateCount:1,
+      rootRejections:{unnamed:0,authorMismatch:0,permalinkMismatch:0}});
+    const mixed=fixture(wrap(post('123','alice','root',extra('https://example.org/unsupported'))));
+    const observed=decode(mixed);
+    expect(observed.root).toMatchObject({postId:'123',text:'root'});
+    expect(observed.diagnosticFrame).toMatchObject({rootIdentityProven:true,rootCandidateCount:1,
+      rootRejections:{unnamed:0,authorMismatch:0,permalinkMismatch:0}});
+  });
   it('requires query URL and selected product together, with explicit empty separate', () => {
     const r={stage:'search',expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest'};
     const f=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post()),r.expectedUrl);
@@ -127,6 +167,8 @@ describe('X page trusted boundary', () => {
     expect(decode(f).root!.postId).toBe('123');
     const raw=f.collect();raw.posts[0].author={handle:123};
     expect(()=>decodeXPage(raw,request,facts(url),{parentArticle:false})).toThrow(/invalid X page/i);
+    const badDiagnostic=f.collect();badDiagnostic.diagnosticNodes.regionNodeId=-1;
+    expect(()=>decodeXPage(badDiagnostic,request,facts(url),{parentArticle:false})).toThrow(/invalid X page/i);
   });
 });
 

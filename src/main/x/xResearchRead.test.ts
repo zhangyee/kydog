@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fixture, stagedFixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
 import { searchX } from './xResearchSearch';
 import { readX } from './xResearchRead';
+import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 const read=(targets:any[],extra={})=>({tabId:'research-tab',read:{objective:'read',targets,includeArticle:false,includeReplies:false,maxRepliesPerPost:30,maxScrollsPerPost:0,maxExpandActionsPerPost:0,...extra}});
 describe('ordinary X read orchestration',()=>{
   it('readUsesObservedPermalink; unresolved postId never generates URL',async()=>{
@@ -100,6 +101,7 @@ describe('bounded independent read stages',()=>{
     const f=await stagedFixture({virtualize:true});
     const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:2,maxScrollsPerPost:3}),f.context)).targets[0];
     expect(row).toMatchObject({root:{text:'expanded body'},replies:{observations:[{postId:'789',directParent:null},{postId:'790',directParent:null}],scope:{rootPostId:'123',completeness:'unknown',stopReason:'identity_unproven'}},budgetUsage:{scrolls:1,expandActions:2},stopReason:'identity_unproven'});
+    expect(row.diagnostics).toMatchObject({version:1,initialFrame:{rootIdentityProven:true,rootCandidateCount:1},terminalFrame:{rootIdentityProven:false}});
     expect(f.executed).toEqual(['body_expand','replies_expand','scroll']);
     const limited=await stagedFixture();
     const result=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxRepliesPerPost:1,maxExpandActionsPerPost:1,maxScrollsPerPost:3}),limited.context)).targets[0];
@@ -179,6 +181,7 @@ it('waits for source-proven discussion before any budgeted scroll or expansion a
     };
     const good=await run('ready');
     expect(good.row).toMatchObject({root:{text:'expanded body'},replies:{observations:[{postId:'789'},{postId:'790'}]},budgetUsage:{expandActions:2,scrolls:0}});
+    expect(good.row.diagnostics?.readiness).toMatchObject({timedOut:false,initial:{replyCount:0},terminal:{replyCount:1}});
     expect(good.f.executed).toEqual(['body_expand','replies_expand']);
     for(const mode of ['never','late','auth','missing','route','cancel','stale'] as const) {
       const {f,row}=await run(mode);
@@ -187,6 +190,7 @@ it('waits for source-proven discussion before any budgeted scroll or expansion a
       expect(row.replies.scope.completeness,mode).toBe('unknown');
       expect(row.stopReason,mode).toBe(mode==='auth'?'access_barrier':mode==='cancel'?'cancelled':mode==='never'||mode==='late'?'wait_timeout':'identity_unproven');
       if(mode==='never'||mode==='late') expect(row.reason).toBe('reply_readiness_timeout');
+      if(mode==='never') expect(row.diagnostics?.readiness).toMatchObject({timedOut:true,initial:{replyCount:0,expandControlCount:0,explicitEndObserved:false},terminal:{replyCount:0,expandControlCount:0,explicitEndObserved:false}});
       if(mode==='late') expect(row.replies.observations[0].postId).toBe('789');
       if(mode==='stale') expect(row.collectionTransitions.map(t=>t.rereadRequested)).toEqual([true,false]);
     }
@@ -207,6 +211,57 @@ it('discussion counts source-confirmed scroll writes before ACK failure and neve
     expect(row.root?.postId).toBe('123');expect(row.replies.observations[0].postId).toBe('456');expect(row.replies.scope.completeness).toBe('unknown');
     if(fail)expect(row.status).toBe('partial');
   }
+});
+
+it('preserves the same validated scroll receipt through failure, canonical details and model content',async()=>{
+  for (const failed of [false,true]) {
+    const f=fixture([readHtml(post()+post('456','bob','reply'))]);
+    f.act.mockImplementation(async (action,rawSnapshot,options)=>{
+      const snapshot=rawSnapshot as import('../browser/snapshot').AxSnapshot;
+      const callback=options!.scrollAcknowledgement!;
+      callback.onWritten();
+      const source={generation:snapshot.generation,targetKind:'document' as const,targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown' as const,rootRelation:'unknown' as const,
+        scrollHeight:1600,clientHeight:600,before:240,after:failed?240:840,written:true,eventObserved:!failed,frameObserved:!failed,
+        state:failed?'no_movement' as const:'frame_observed' as const};
+      callback.onReceipt?.(source);
+      if(failed) throw new BrowserScrollAcknowledgementError('scroll_no_movement','opaque');
+      return {action,line:'scrolled',navigation:null};
+    });
+    const actual=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:1}),f.context);
+    const row=actual.targets[0];
+    expect(row.diagnostics?.scroll).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,targetKind:'document',targetNodeId:7,
+      before:240,after:failed?240:840,scrollHeight:1600,clientHeight:600,state:failed?'no_movement':'frame_observed'},
+      last:{state:failed?'no_movement':'frame_observed'}});
+    expect(row).toMatchObject({reason:failed?'scroll_no_movement':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{completeness:'unknown'}}});
+    expect(f.act).toHaveBeenCalledTimes(1);
+    const serialized=serializeXResearchResult(actual);
+    const details=xResearchToolResult(serialized).details;
+    expect(details.operation).toBe('read');
+    if(details.operation!=='read') throw new Error('read details expected');
+    expect(details.targets[0].diagnostics?.scroll).toEqual(row.diagnostics?.scroll);
+    expect(JSON.parse(serialized.text).targets[0].diagnostics.scroll).toEqual(row.diagnostics?.scroll);
+    const projected=serializeXResearchResult({...actual,contentProjection:'x_research_projection_v1'});
+    expect(JSON.parse(projected.text).targets[0].diagnostics.scroll).toEqual(row.diagnostics?.scroll);
+    expect(serialized.text).not.toContain('opaque');
+  }
+});
+
+it('counts actual scroll actions once while retaining only first and last receipts',async()=>{
+  const f=fixture([readHtml(post()+post('456','bob','reply'))]);
+  let actions=0;
+  f.act.mockImplementation(async (action,rawSnapshot,options)=>{
+    const snapshot=rawSnapshot as import('../browser/snapshot').AxSnapshot;
+    actions++;
+    options!.scrollAcknowledgement!.onWritten();
+    options!.scrollAcknowledgement!.onReceipt?.({generation:snapshot.generation,targetKind:'element',targetNodeId:9,targetContainsHit:true,conversationRelation:'inside',rootRelation:'unknown',
+      scrollHeight:2000,clientHeight:300,before:actions*10,after:actions*10+100,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'});
+    return {action,line:'scrolled',navigation:null};
+  });
+  const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:3}),f.context)).targets[0];
+  expect(f.act).toHaveBeenCalledTimes(3);
+  expect(actions).toBe(3);
+  expect(row.diagnostics?.scroll).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:1,before:10},last:{actionIndex:3,before:30}});
+  expect(row.budgetUsage.scrolls).toBe(3);
 });
 
 
@@ -257,12 +312,13 @@ it('logs only authentic reply expansion receipts with saved control and producer
       expect(f.act).toHaveBeenCalledTimes(1);
       expect(f.collect).toHaveBeenCalledTimes(1);
       if (mode.startsWith('genuine')) {
+        expect(result.targets[0].diagnostics?.pointerFailure).toMatchObject({actionIndex:1,targetPostId:'123',controlKind:'replies_expand',sourceRelation:'unknown',diagnostic:{nodeId:expect.any(Number),stage:'measure'}});
         expect(warn).toHaveBeenLastCalledWith('xResearch', 'Reply expansion pointer interception', {
           runId: `run-${mode}`, callId: `call-${mode}`, batchId: `batch-${mode}`, diagnostic: pointerFailureDiagnostic(thrown),
         });
         expect(pointerFailureDiagnostic(thrown)).toMatchObject({ stage: 'measure', nodeId: expect.any(Number) });
         expect(JSON.stringify(warn.mock.calls.at(-1))).not.toContain('private-');
-      }
+      } else expect(result.targets[0].diagnostics?.pointerFailure).toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(mode === 'genuine-A' ? 1 : 2);
     }
   } finally { warn.mockRestore(); }
@@ -283,7 +339,7 @@ it('reply action catch rethrows the same authenticated error without another col
   try {
     f.act.mockRejectedValue(original);
     const before = f.collect.mock.calls.length;
-    await expect(readDiscussion(f.page, observed, request, row, input.read, { current: 'collection', attemptedControls: new Set() }, f.context)).rejects.toBe(original);
+    await expect(readDiscussion(f.page, observed, request, row, input.read, { current: 'collection', actionIndex:0, attemptedControls: new Set() }, f.context)).rejects.toBe(original);
     expect(f.act).toHaveBeenCalledTimes(1);
     expect(f.collect).toHaveBeenCalledTimes(before);
     expect(warn).toHaveBeenCalledTimes(1);

@@ -11,7 +11,7 @@ function fixture(nested = false, offset = 10.25) {
   for (const [key,value] of Object.entries({scrollHeight:2000,clientHeight:200})) Object.defineProperty(target,key,{value});
   target.scrollTop=offset;
   Object.assign(d,{elementFromPoint:()=>target});
-  Object.assign(w,{innerHeight:200,getComputedStyle:()=>({overflowY:'auto'}),__kydogWorld:{gen:'g1'}});
+  Object.assign(w,{innerHeight:200,getComputedStyle:()=>({overflowY:'auto'}),__kydogWorld:{gen:'g1',next:1,ids:new WeakMap()}});
   const listeners = new Map<EventTarget, Set<(event: Event) => void>>();
   for (const el of [d,target]) {
     const add=el.addEventListener.bind(el),remove=el.removeEventListener.bind(el);
@@ -21,7 +21,7 @@ function fixture(nested = false, offset = 10.25) {
   const frames=new Map<number,(time:number)=>void>();let next=0;
   w.requestAnimationFrame=fn=>{frames.set(++next,fn);return next;};w.cancelAnimationFrame=id=>{frames.delete(id);};
   const run=(req:Record<string,unknown>)=>w.eval(`(${SOURCE})(${JSON.stringify(req)})`) as {ok:boolean;reason?:string;acknowledgement:{written:boolean;eventObserved:boolean;frameObserved:boolean;state:string}};
-  const begin=(amount=200)=>run({op:'scroll',direction:'down',amount,acknowledgement:{token:'one',expiresAt:Date.now()+3000,document:{generation:'g1',url:w.location.href}}});
+  const begin=(amount=200)=>run({op:'scroll',direction:'down',amount,acknowledgement:{token:'one',expiresAt:Date.now()+3000,document:{generation:'g1',url:w.location.href},relationNodes:{conversationNodeId:1,rootNodeId:2}}});
   const status=()=>run({op:'scroll_ack_status',token:'one'});
   const dispose=()=>run({op:'scroll_ack_dispose',token:'one'});
   const event=(eventTarget:EventTarget=nested?target:d,trusted=true)=>{for(const fn of listeners.get(nested?target:d)??[])fn({target:eventTarget,isTrusted:trusted} as unknown as Event);};
@@ -35,6 +35,7 @@ describe('private scroll delivery acknowledgement',()=>{
     const f=fixture(nested);
     try {
       expect(f.begin()).toMatchObject({ok:true,acknowledgement:{written:true,before:10.25,after:210.25,state:'pending'}});
+      expect(f.status().acknowledgement).toMatchObject({targetNodeId:1,targetContainsHit:true,conversationRelation:'equal',rootRelation:'unknown',scrollHeight:2000,clientHeight:200});
       f.event();f.frame();expect(f.status()).toMatchObject({ok:true,acknowledgement:{eventObserved:true,frameObserved:true,state:'frame_observed'}});
       f.dispose();f.begin();
       f.frame();expect(f.status().acknowledgement.state).toBe('pending');

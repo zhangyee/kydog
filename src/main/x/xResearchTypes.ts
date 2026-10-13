@@ -164,6 +164,8 @@ export interface XArticlePreviewScopeObservation {
   articlePreviewInventory:XArticlePreviewInventory;
 }
 export interface XReadObservation {
+  /** Bounded, read-only source facts from this target's actual validated frames and actions. */
+  diagnostics?: XReadDiagnostics;
   /** Earlier exact source observations displaced from the current per-post view. */
   bodyObservations?: XTextObservation[];
   bodyObservationsOmitted?: number;
@@ -189,6 +191,46 @@ export interface XReadObservation {
   budgetUsage: XBudgetUsage;
   location: XLocationFacts | null;
   barrier: XAccessBarrier | null;
+}
+export interface XReadFrameDiagnostic {
+  stage: 'post';
+  location: XSafeLocation;
+  document: { epoch: number; routeRevision: number; navigationSequence: number; generation: string };
+  rawUrlMatchesPort: boolean;
+  requestPostMatchesLocation: boolean;
+  regionObserved: boolean;
+  inventory: XTruncation;
+  rootCandidateCount: number;
+  regionNodeId: number | null;
+  rootNodeId: number | null;
+  rootRejections: { unnamed: number; authorMismatch: number; permalinkMismatch: number };
+  rootIdentityProven: boolean;
+  replyCount: number;
+  repliesExpandControlCount: number;
+  explicitEndObserved: boolean;
+}
+export interface XScrollReceiptDiagnostic {
+  actionIndex: number;
+  snapshotId: string;
+  generation: string;
+  location: XSafeLocation;
+  targetKind: 'document' | 'element';
+  targetNodeId: number | null;
+  /** A relation is unknown unless the same source action proved it. */
+  targetContainsHit: boolean | null;
+  conversationRelation: 'contains' | 'inside' | 'equal' | 'unrelated' | 'unknown';
+  rootRelation: 'contains' | 'inside' | 'equal' | 'unrelated' | 'unknown';
+  before: number; after: number; scrollHeight: number; clientHeight: number;
+  written: boolean; eventObserved: boolean; frameObserved: boolean;
+  state: 'pending' | 'frame_observed' | 'no_movement' | 'invalidated' | 'expired';
+}
+export interface XReadDiagnostics {
+  version: 1;
+  initialFrame?: XReadFrameDiagnostic;
+  terminalFrame?: XReadFrameDiagnostic;
+  readiness?: { collectCount: number; initial: {replyCount:number; expandControlCount:number; explicitEndObserved:boolean}; terminal: {replyCount:number; expandControlCount:number; explicitEndObserved:boolean}; timedOut: boolean };
+  scroll?: { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number };
+  pointerFailure?: { actionIndex: number; targetPostId: string; controlKind: 'replies_expand'; sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown'; diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic };
 }
 interface XResultBase {
   schemaVersion: 2;

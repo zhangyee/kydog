@@ -16,6 +16,7 @@ import {
   type XCollectionBudget,
 } from './xResearchSearch';
 import type {
+  XReadDiagnostics,
   XReadObservation,
   XReadRequest,
   XTextObservation,
@@ -23,6 +24,7 @@ import type {
 
 export interface XReadStage {
   current: 'navigation' | 'collection' | 'action' | 'wait';
+  actionIndex: number;
   attemptedControls: Set<string>;
   collectionBudget?: XCollectionBudget;
 }
@@ -214,6 +216,11 @@ export async function collectPostFrame(
     stage.collectionBudget,
   );
   checkReadCancelled(context);
+  if (observed.diagnosticFrame) {
+    const diagnostics = row.diagnostics ??= {version:1};
+    diagnostics.initialFrame ??= observed.diagnosticFrame;
+    diagnostics.terminalFrame = observed.diagnosticFrame;
+  }
   return observed;
 }
 /** Reuse the observed post DOM gate after either explicit parent navigation. */
@@ -288,6 +295,12 @@ async function waitForDiscussion(
   context: XResearchContext,
 ): Promise<XPageObservation | null> {
   let observed = initial;
+  const predicate = (frame:XPageObservation) => ({
+    replyCount:frame.replies.filter(p=>p.containerKind==='reply' && !!p.postId && !!p.sourceUrl).length,
+    expandControlCount:frame.controls.filter(c=>c.kind==='replies_expand').length,
+    explicitEndObserved:frame.replyScope?.completeness==='ui_scope_end_observed',
+  });
+  const readiness: XReadDiagnostics['readiness'] = row.diagnostics ? row.diagnostics.readiness = {collectCount:1,initial:predicate(initial),terminal:predicate(initial),timedOut:false} : undefined;
   if (discussionReady(observed, row)) return observed;
   const documentUrl = initial.snapshot.url;
   let expired = false;
@@ -304,6 +317,7 @@ async function waitForDiscussion(
       // Do not race collection against the deadline: a still-issued operation must
       // finish its owned cleanup, and its late observation cannot authorize input.
       observed = await collectPostFrame(page, request, row, stage, context);
+      if (readiness) {readiness.collectCount++;readiness.terminal=predicate(observed);}
       checkReadCancelled(context);
       if (readBarrier(row, observed)) return null;
       if (observed.snapshot.url !== documentUrl) {
@@ -319,6 +333,7 @@ async function waitForDiscussion(
     row.status = 'partial';
     row.reason = 'reply_readiness_timeout';
     row.stopReason = 'wait_timeout';
+    if (readiness) readiness.timedOut=true;
     return null;
   } finally {
     clearTimeout(deadline);
@@ -349,6 +364,7 @@ export async function expandPostBody(
     if (!admitControl(control, observed, row, stage)) return observed;
     checkReadCancelled(context);
     stage.current = 'action';
+    stage.actionIndex++;
     await page.act(
       {
         kind: 'click',
@@ -414,6 +430,7 @@ export async function readDiscussion(
     stage.current = 'action';
     if (control) {
       if (!admitControl(control, observed, row, stage)) return;
+      stage.actionIndex++;
       try {
         await page.act(
           {
@@ -427,6 +444,10 @@ export async function readDiscussion(
         const diagnostic = pointerFailureDiagnostic(error);
         if (diagnostic && diagnostic.snapshotId === control.binding.snapshotId
           && diagnostic.generation === control.binding.generation && diagnostic.nodeId === control.binding.nodeId) {
+          (row.diagnostics ??= {version:1}).pointerFailure = {
+            actionIndex:stage.actionIndex,targetPostId:row.postId!,controlKind:'replies_expand',
+            sourceRelation:control.sourceRelation ?? 'unknown',diagnostic,
+          };
           logger.warn('xResearch', 'Reply expansion pointer interception', {
             runId: context.runId, callId: context.callId, batchId: context.batchId, diagnostic,
           });
@@ -435,8 +456,22 @@ export async function readDiscussion(
       }
       row.budgetUsage.expandActions++;
     } else {
+      stage.actionIndex++;
+      const scroll = (row.diagnostics ??= {version:1}).scroll ??= {totalAttempts:0,omittedAttempts:0};
+      scroll.totalAttempts++;
+      scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter((id):id is number=>id!==undefined)).size;
+      const actionIndex=stage.actionIndex;
       await page.act({ kind: 'scroll', direction: 'down' }, observed.snapshot, {
-        scrollAcknowledgement: { onWritten: () => { row.budgetUsage.scrolls++; } },
+        scrollAcknowledgement: { onWritten: () => { row.budgetUsage.scrolls++; }, onReceipt: receipt => {
+          const saved = {actionIndex,snapshotId:observed.snapshot.snapshotId,generation:receipt.generation,location:observed.location.current,
+            targetKind:receipt.targetKind,targetNodeId:receipt.targetNodeId,targetContainsHit:receipt.targetContainsHit,
+            conversationRelation:receipt.conversationRelation,rootRelation:receipt.rootRelation,
+            before:receipt.before,after:receipt.after,scrollHeight:receipt.scrollHeight,clientHeight:receipt.clientHeight,
+            written:receipt.written,eventObserved:receipt.eventObserved,frameObserved:receipt.frameObserved,state:receipt.state};
+          if(scroll.totalAttempts===1) scroll.first=saved;
+          scroll.last=saved;
+          scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter((id):id is number=>id!==undefined)).size;
+        }, relationNodes:{conversationNodeId:observed.diagnosticFrame?.regionNodeId??null,rootNodeId:observed.diagnosticFrame?.rootNodeId??null} },
       });
     }
     checkReadCancelled(context);

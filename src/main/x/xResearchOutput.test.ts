@@ -58,6 +58,29 @@ describe('bounded X production tool result',()=>{
     expect(value.result.truncation.truncated).toBe(true);
     expect(value.result.targets[0].replies.observations.length).toBeLessThan(2000);
   });
+  it('names diagnostic omissions at the 1 MiB boundary while retaining stop and root facts',async()=>{
+    const input={tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+    const result=await readX(input,fixture([readHtml(post())]).context);
+    const row=result.targets[0],frame=row.diagnostics!.initialFrame!;
+    row.diagnostics!.scroll={totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,snapshotId:'xsnap_test',generation:frame.document.generation,location:frame.location,
+      targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:10,after:10,
+      scrollHeight:1000,clientHeight:700,written:true,eventObserved:false,frameObserved:false,state:'no_movement'}};
+    row.diagnostics!.scroll.last=row.diagnostics!.scroll.first;
+    const minimal=structuredClone(result);delete minimal.targets[0].diagnostics;
+    let lo=600000,hi=1048576;
+    while(lo<hi){const mid=Math.ceil((lo+hi)/2);minimal.objective='x'.repeat(mid);try{serializeXResearchResult(minimal);lo=mid;}catch{hi=mid-1;}}
+    let out:ReturnType<typeof serializeXResearchResult<typeof result>>|undefined;
+    for(let margin=200;margin<=4000;margin+=200){
+      result.objective='x'.repeat(lo-margin);
+      try {const candidate=serializeXResearchResult(result);if(candidate.result.metadataOmissions?.includes('targets.0.diagnostics.scroll')){out=candidate;break;}} catch { /* The omission marker itself may need more room. */ }
+    }
+    expect(out).toBeDefined();
+    if(!out) throw new Error('diagnostic cap fixture did not reach an omission');
+    expect(out.result.metadataOmissions).toContain('targets.0.diagnostics.scroll');
+    expect(out.result.targets[0]).toMatchObject({root:{postId:'123'},status:row.status,stopReason:row.stopReason,reason:row.reason});
+    expect(JSON.parse(out.text).metadataOmissions).toContain('targets.0.diagnostics.scroll');
+    expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8')).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+  });
   it('exact full boundary survives real tab/state growth through declared projection without losing requests',()=>{
     const f=fixture([searchHtml(post())]);const input=structuredClone(searchInput);
     let lo=0,hi=600000;

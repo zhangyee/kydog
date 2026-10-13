@@ -88,7 +88,8 @@ export interface BrowserDispatchOptions {
   /** Trusted fixed adapter: direct native CSS eligibility on the original control. */
   collectedPointerEligibility?: boolean;
   /** Trusted X read opt-in; receipt callback is never serialized into the page. */
-  scrollAcknowledgement?: { onWritten: () => void };
+  scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: import('./actions').BrowserScrollReceipt) => void;
+    relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} };
 }
 function assertNotAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new KydogError('browser.cancelled', '浏览器操作已取消');
@@ -157,7 +158,7 @@ type InteractTarget = PointerTarget;
 type InteractRequest =
   | { op: 'measure' | 'focusSelect' | 'readValue'; target: InteractTarget }
   | { op: 'select'; target: InteractTarget; value: string }
-  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number; acknowledgement?: {token:string;expiresAt:number;document:{generation:string;url:string}} }
+  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number; acknowledgement?: {token:string;expiresAt:number;document:{generation:string;url:string};relationNodes?:{conversationNodeId:number|null;rootNodeId:number|null}} }
   | { op: 'scroll_ack_status' | 'scroll_ack_dispose'; token: string };
 
 /** `interact.js` 的返回值。它在网页里执行、类型系统管不到它，所以这里只声明形状。 */
@@ -1954,7 +1955,7 @@ export class BrowserService {
     const token=randomUUID(), expiresAt=Date.now()+PAGE_EVAL_TIMEOUT_MS;
     const document={generation:snapshot.generation,url:snapshot.url};
     let written=false;
-    type Receipt = {token:string;generation:string;url:string;targetKind:string;before:number;after:number;written:boolean;eventObserved:boolean;frameObserved:boolean;state:string};
+    type Receipt = {token:string;generation:string;url:string;targetKind:string;targetNodeId?:number|null;targetContainsHit?:boolean|null;scrollHeight?:number;clientHeight?:number;conversationRelation?:string;rootRelation?:string;before:number;after:number;written:boolean;eventObserved:boolean;frameObserved:boolean;state:string};
     const receipt = (raw: unknown): Receipt | null => {
       const r=raw as {acknowledgement?:Receipt} | null, a=r?.acknowledgement;
       if (!a) return null;
@@ -1966,11 +1967,24 @@ export class BrowserService {
         || (a.state==='no_movement' && (!a.written || a.before!==a.after || a.eventObserved || a.frameObserved)))
         throw new KydogError('browser.page_no_result','滚动确认返回了不匹配的来源事实');
       if (a.written && !written) { written=true; options.scrollAcknowledgement!.onWritten(); }
+      if (options.scrollAcknowledgement?.onReceipt
+        && (a.targetNodeId===null || (typeof a.targetNodeId==='number' && Number.isSafeInteger(a.targetNodeId) && a.targetNodeId>0))
+        && (a.targetContainsHit===null || typeof a.targetContainsHit==='boolean')
+        && ['inside','equal','unknown'].includes(String(a.conversationRelation))
+        && ['inside','equal','unknown'].includes(String(a.rootRelation))
+        && typeof a.scrollHeight==='number' && Number.isSafeInteger(a.scrollHeight) && a.scrollHeight>=0
+        && typeof a.clientHeight==='number' && Number.isSafeInteger(a.clientHeight) && a.clientHeight>=0) {
+        try { options.scrollAcknowledgement.onReceipt({generation:a.generation,targetKind:a.targetKind as 'document'|'element',targetNodeId:a.targetNodeId,
+          targetContainsHit:a.targetContainsHit,conversationRelation:a.conversationRelation as import('./actions').BrowserScrollReceipt['conversationRelation'],
+          rootRelation:a.rootRelation as import('./actions').BrowserScrollReceipt['rootRelation'],scrollHeight:a.scrollHeight,clientHeight:a.clientHeight,before:a.before,after:a.after,
+          written:a.written,eventObserved:a.eventObserved,frameObserved:a.frameObserved,state:a.state as import('./actions').BrowserScrollReceipt['state']}); }
+        catch { /* Diagnostic observation cannot alter the ACK result. */ }
+      }
       return a;
     };
     try {
       check();
-      const result=await this.interact(tabId,wc,{...request,acknowledgement:{token,expiresAt,document}});
+      const result=await this.interact(tabId,wc,{...request,acknowledgement:{token,expiresAt,document,relationNodes:options.scrollAcknowledgement?.relationNodes}});
       let current=receipt(result); // Save an actual write before cancellation can reject its ACK.
       check();
       if (!result.ok) throw BrowserService.interactError(result,{kind:'scroll',direction:request.direction});

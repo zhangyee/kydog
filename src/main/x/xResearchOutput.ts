@@ -137,6 +137,7 @@ function projection(result: XResearchResult) {
       postId: t.postId,
       status: t.status,
       reason: t.reason,
+      ...(t.diagnostics ? {diagnostics:t.diagnostics} : {}),
       stopReason: t.stopReason,
       budgetUsage: t.budgetUsage,
       root: t.root ? body(t.root) : null,
@@ -606,6 +607,21 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if(row.stopReason==='agent_stopped')row.stopReason='budget_reached';
     if(result.status==='observed')result.status='partial';
     value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
+  if (result.operation==='read') {
+    const mark=(index:number,part:string)=>{
+      const path=`targets.${index}.diagnostics.${part}`;
+      (result.metadataOmissions??=[]).push(path);
+    };
+    for (const part of ['scroll','readiness','pointerFailure','initialFrame','terminalFrame'] as const) {
+      for (const [index,row] of result.targets.entries()) {
+        if (!row.diagnostics?.[part]) continue;
+        delete row.diagnostics[part];
+        mark(index,part);
+        value=update();
+        if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+      }
+    }
   }
   compactMetadata(result);
   value = update();

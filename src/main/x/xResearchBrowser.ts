@@ -1,7 +1,7 @@
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
 import type { BrowserService, BrowserLocationFacts, EvictedTab } from '../browser/browserService';
-import type { DispatchAction, WaitUntil } from '../browser/actions';
+import type { BrowserScrollReceipt, DispatchAction, WaitUntil } from '../browser/actions';
 import type { AxSnapshot } from '../browser/snapshot';
 import { decodeXPage, xPageExpression, type XPageRequest, type XPageObservation, type XPageNavigationProof } from './xPageSource';
 import type { XArticleEntry } from './xResearchTypes';
@@ -9,7 +9,8 @@ import type { XArticleEntry } from './xResearchTypes';
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
 export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }
 export interface XActionResult { action: DispatchAction; line: string; navigation: NavigationObservation | null }
-export interface XActionOptions { scrollAcknowledgement?: { onWritten: () => void } }
+export interface XActionOptions { scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: BrowserScrollReceipt) => void;
+  relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} } }
 export interface XQueuedPage {
   snapshot(): Promise<AxSnapshot>;
   /** Fixed program-owned extractor with validated DOM observations. */

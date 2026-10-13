@@ -40,7 +40,9 @@
     const ids = stamps.map(a=>identity(a.getAttribute('href'))).filter(Boolean);
     const unique = [...new Set(ids.map(i=>i.postId))];
     const fact = unique.length === 1 && ids.every(i=>i.handle === author?.handle) ? ids[0] : null;
-    return {author,postId:fact?.postId ?? null,permalink:fact?.permalink ?? null};
+    const candidatePostId=unique.length===1?unique[0]:null;
+    const identityIssue=!author || !candidatePostId?'unnamed':fact?null:'author_mismatch';
+    return {author,postId:fact?.postId ?? null,permalink:fact?.permalink ?? null,candidatePostId,identityIssue};
   };
   const primary = document.querySelector('main [data-testid="primaryColumn"], [role="main"] [data-testid="primaryColumn"]');
   const conversation = primary?.querySelector('[aria-label="Timeline: Conversation"]') ?? null;
@@ -63,11 +65,11 @@
   const posts = [], controls = [], entries = [];
   const candidates = new Set();
   let eligibleControls = 0;
-  const control = (el,kind,postId,scopes) => {
+  const control = (el,kind,postId,scopes,sourceRelation='unknown') => {
     if (!shown(el) || el.form || el.closest('form') || el.disabled || el.getAttribute('aria-disabled') === 'true') return null;
     eligibleControls++;
     if (controls.length >= 100) return null;
-    candidates.add(el); const c = {el,kind,postId,scopes}; controls.push(c); return c;
+    candidates.add(el); const c = {el,kind,postId,scopes,sourceRelation}; controls.push(c); return c;
   };
   const roots = all(region,tweetSelector).filter(el=>shown(el) && !el.parentElement.closest(tweetSelector));
   const scopeOf = root => root ? [{el:root,semantic:false,members:'[data-testid="User-Name"] a[href], a[href] time'},...own(root,'[data-testid="User-Name"] a[href], a[href]').filter(el=>el.closest('[data-testid="User-Name"]') || el.querySelector('time')).map(el=>({el,semantic:true}))] : [];
@@ -114,7 +116,13 @@
     p.text=p.text.slice(0,4000);
     p.truncation={returned:4000,totalKnown:p.truncation.totalKnown,truncated:true};
   }
-  for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) control(b,'replies_expand',null,scopeOf(focal));
+  for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) {
+    const focalCell=focal?.closest('[data-testid="cellInnerDiv"]') ?? null;
+    const buttonCell=b.closest('[data-testid="cellInnerDiv"]');
+    const sourceRelation=focal?.contains(b)?'focal_contains_control':b.contains(focal)?'control_contains_focal'
+      :focalCell && buttonCell ? focalCell===buttonCell?'same_cell':'different_cell' : 'unknown';
+    control(b,'replies_expand',null,scopeOf(focal),sourceRelation);
+  }
   // Article body is independent of primaryColumn (immersive UI has none).
   let article = null;
   const reads = all(document,'main article[data-testid="twitterArticleReadView"], [role="main"] article[data-testid="twitterArticleReadView"]').filter(shown);
@@ -144,6 +152,14 @@
   // eslint-disable-next-line no-unused-vars
   const kydogSnapshotScope = candidates;
   const snapshot = X_WALKER;
+  const diagnosticId = el => {
+    const world=window.__kydogWorld;
+    if (!el || !world?.ids) return null;
+    let id=world.ids.get(el);
+    if (!id) {id=world.next++;world.ids.set(el,id);}
+    return id;
+  };
+  const diagnosticNodes={regionNodeId:diagnosticId(conversation),rootNodeId:diagnosticId(longBodyRoot)};
   const permissionGuard = X_PERMISSION;
   permissionGuard({op:'begin_collected',owner:'x',namespace:request.permissionNamespace});
   const nodeFor = el => snapshot.nodes.find(n=>window.__kydogWorld.ids.get(el)===n.nodeId);
@@ -154,8 +170,8 @@
     const saved=permissionGuard({op:'remember_collected',namespace:request.permissionNamespace,permission,el:c.el,nodeId:node.nodeId,scopes:c.scopes});
     if (saved.ok) node.collectedPermission=permission;
   }
-  return {rawUrl:location.href,region:!!region,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
-    controls:controls.flatMap(({el,kind,postId})=>{const n=nodeFor(el);return n?[{kind,postId,nodeId:n.nodeId,index:n.index}]:[];}),
+  return {rawUrl:location.href,region:!!region,diagnosticNodes,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
+    controls:controls.flatMap(({el,kind,postId,sourceRelation})=>{const n=nodeFor(el);return n?[{kind,postId,nodeId:n.nodeId,index:n.index,sourceRelation}]:[];}),
     entries:entries.flatMap(({el,...e})=>{const n=nodeFor(el);return n?[{...e,nodeId:n.nodeId,index:n.index}]:[];}),
     controlTruncation:{returned:snapshot.nodes.length,totalKnown:eligibleControls,truncated:snapshot.nodes.length<eligibleControls},
     truncation:{returned:posts.length,totalKnown:totalPosts,truncated:totalPosts>100},snapshot};

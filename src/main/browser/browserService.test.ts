@@ -4409,19 +4409,23 @@ describe('private X scroll delivery boundary',()=>{
   });
   it.each(['expired','no_movement','invalidated','cancel'] as const)('budgets actual write once and disposes on %s',async state=>{
     const {svc}=make();const {id,wc}=await dispatchableTab(svc);const abort=new AbortController();let written=0,disposed=0;
+    const diagnostics:unknown[]=[];
     const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
     let receipt:Record<string,unknown>={};let bad=false;
     wc.isolatedImpl=async code=>{
-      if(opOf(code)==='scroll'){receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',before:1,after:bad&&state==='no_movement'?1:801,written:true,eventObserved:!bad,frameObserved:!bad,state:bad?(state==='cancel'?'pending':state):'frame_observed'};if(bad&&state==='cancel')abort.abort();return {ok:true,container:'document',delta:800,before:1,after:801,acknowledgement:receipt};}
+      if(opOf(code)==='scroll'){receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'inside',rootRelation:'unknown',scrollHeight:1000,clientHeight:200,before:1,after:bad&&state==='no_movement'?1:801,written:true,eventObserved:!bad,frameObserved:!bad,state:bad?(state==='cancel'?'pending':state):'frame_observed'};if(bad&&state==='cancel')abort.abort();return {ok:true,container:'document',delta:800,before:1,after:801,acknowledgement:receipt};}
       if(opOf(code)==='scroll_ack_dispose'){disposed++;return {ok:true,acknowledgement:receipt};}
       return {ok:true,acknowledgement:receipt};
     };
-    const opts={signal:abort.signal,location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++}};
+    const opts={signal:abort.signal,location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++,onReceipt:(value:unknown)=>diagnostics.push(value)}};
     expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).toContain('800');expect(written).toBe(1);expect(disposed).toBe(1);
+    expect(diagnostics[0]).toMatchObject({targetKind:'document',targetNodeId:7,targetContainsHit:true,scrollHeight:1000,clientHeight:200,before:1,after:801,state:'frame_observed'});
+    expect(JSON.stringify(diagnostics)).not.toContain('token');
     bad=true;const rejected=svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts);
     await expect(rejected).rejects.toMatchObject({code:state==='cancel'?'browser.cancelled':state==='invalidated'?'browser.stale_snapshot':'browser.wait_timeout',...(state==='expired'?{reason:'scroll_ack_timeout'}:state==='no_movement'?{reason:'scroll_no_movement'}:{})});
     if(state==='expired'||state==='no_movement') await expect(rejected).rejects.toBeInstanceOf(BrowserScrollAcknowledgementError);
     expect(written).toBe(2);expect(disposed).toBe(2);
+    if(state!=='cancel') expect(diagnostics.at(-1)).toMatchObject({state,before:1,after:state==='no_movement'?1:801});
     if(state==='cancel'){await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:'browser.cancelled'});expect(written).toBe(2);}
   });
 });

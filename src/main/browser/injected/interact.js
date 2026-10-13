@@ -443,7 +443,8 @@
       if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return false;
       return e.scrollHeight - e.clientHeight > 1;
     };
-    let node = deepHit(cx, cy);
+    const hit = deepHit(cx, cy);
+    let node = hit;
     let box = null;
     while (node) {
       if (scrollable(node)) { box = node; break; }
@@ -466,8 +467,25 @@
       if (world.scrollAcknowledgements.has(a.token)) return { ok: false, reason: 'duplicate_scroll_ack' };
       // HTML can be selected as an overflow box; its event still targets Document.
       const eventTarget = target === D.scrollingElement ? D : target;
+      let targetNodeId = world.ids?.get(target) ?? null;
+      if (targetNodeId === null && world.ids && Number.isSafeInteger(world.next)) {
+        targetNodeId = world.next++;
+        world.ids.set(target,targetNodeId);
+      }
+      const relationTo = id => {
+        if (!Number.isSafeInteger(id) || id < 1 || !world.ids) return 'unknown';
+        for (let p=target;p;p=p.parentNode || p.host || null) {
+          if (world.ids.get(p)===id) return p===target?'equal':'inside';
+        }
+        return 'unknown';
+      };
+      const conversationRelation=relationTo(a.relationNodes?.conversationNodeId);
+      const rootRelation=relationTo(a.relationNodes?.rootNodeId);
       const receipt = { token:a.token, generation:world.gen, url:location.href,
-        targetKind:eventTarget===D?'document':'element', before, after:before,
+        targetKind:eventTarget===D?'document':'element', targetNodeId,
+        targetContainsHit:hit ? target.contains(hit) : null,
+        conversationRelation,rootRelation,
+        scrollHeight:target.scrollHeight,clientHeight:target.clientHeight,before, after:before,
         written:false, eventObserved:false, frameObserved:false, state:'pending' };
       let frame = null, timer = null;
       const cleanup = () => {

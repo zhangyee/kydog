@@ -7,14 +7,16 @@ import type { BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
 import type { XActionResult, XOpenResult, XQueuedPage } from './xResearchBrowser';
 import { compareXLocation, toSafeXLocation, parseXSourcePost, parseXPostCoordinates, isXPostId, isXHandle, parseXArticleAnalyticsHref, X_MAX_RAW_URL_UNITS } from './xResearchIdentity';
-import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope } from './xResearchTypes';
+import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope, XReadFrameDiagnostic } from './xResearchTypes';
 
 export type XPageRequest =
   | { stage: 'search'; expectedUrl: string; query: string; product: 'Top' | 'Latest' }
   | { stage: 'post'; expectedUrl: string; postId: string; directOpen?: XOpenResult }
   | { stage: 'article'; expectedUrl: string; entry: XArticleEntry; via: { kind: 'action'; result: XActionResult } | { kind: 'open'; result: XOpenResult } };
-export interface XPageControl { kind: 'body_expand' | 'replies_expand' | 'article_entry'; postId: string | null; binding: XControlBinding }
+export interface XPageControl { kind: 'body_expand' | 'replies_expand' | 'article_entry'; postId: string | null; binding: XControlBinding; sourceRelation?: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown' }
 export interface XPageObservation {
+  /** Source predicates from this validated collection; never an authorization input. */
+  diagnosticFrame?: XReadFrameDiagnostic;
   stage: XPageRequest['stage']; status: XResearchStatus; identityProven: boolean;
   location: { requested: XSafeLocation; current: XSafeLocation; relation: XLocationRelation; documentEpoch: number; routeRevision: number; navigationSequence: number; navigationEvent: string | null };
   root: XTextObservation | null; posts: XTextObservation[]; quotedPosts: XTextObservation[];
@@ -32,11 +34,12 @@ export interface XPageObservation {
 }
 export const X_DOM_MAX_STRING_UNITS = X_MAX_RAW_URL_UNITS;
 export const X_DOM_MAX_QUERY_UNITS = 4096;
-interface RawPost {containerKey:number;articleEntryCount:number;scope:'post'|'quote';postId:string|null;permalink:string|null;author:XAuthorIdentity|null;text:string;truncation:XTruncation}
-interface RawControl {kind:XPageControl['kind'];postId:string|null;nodeId:number;index:number}
+interface RawPost {containerKey:number;articleEntryCount:number;scope:'post'|'quote';postId:string|null;permalink:string|null;candidatePostId:string|null;identityIssue:'unnamed'|'author_mismatch'|null;author:XAuthorIdentity|null;text:string;truncation:XTruncation}
+interface RawControl {kind:XPageControl['kind'];postId:string|null;nodeId:number;index:number;sourceRelation:XPageControl['sourceRelation']}
 interface RawEntry {parentContainerKey:number;author:XAuthorIdentity|null;parentPostId:string;parentUrl:string;targetUrl:string|null;label:string;nodeId:number;index:number}
 interface RawPage {
   rawUrl:string;region:boolean;selectedProduct:string|null;
+  diagnosticNodes:{regionNodeId:number|null;rootNodeId:number|null};
   state:{kind:'auth_required'|'explicit_empty';text:string}|null;
   posts:RawPost[];controls:RawControl[];entries:RawEntry[];truncation:XTruncation;controlTruncation:XTruncation;
   article:{ownIdentityLinks?:{totalKnown:number;hrefs:(string|null)[]};author:XAuthorIdentity|null;title:string;blocks:string[];links:{url:string;text:string}[];truncated:boolean}|null;
@@ -53,10 +56,13 @@ const truncation = (v: unknown): boolean => obj(v) && integer(v.returned) && (v.
 /** Validate the entire fixed DOM boundary before consuming any page-supplied field. */
 function validateRaw(v: unknown, request: XPageRequest, current: BrowserLocationFacts): asserts v is RawPage {
   if (!obj(v) || !str(v.rawUrl) || typeof v.region !== 'boolean' || !nullable(v.selectedProduct) || !truncation(v.truncation)
-    || !truncation(v.controlTruncation) || !list(v.posts,100) || !list(v.controls,100) || !list(v.entries,100)) invalid();
+    || !truncation(v.controlTruncation) || !list(v.posts,100) || !list(v.controls,100) || !list(v.entries,100)
+    || !obj(v.diagnosticNodes) || !(v.diagnosticNodes.regionNodeId===null || integer(v.diagnosticNodes.regionNodeId))
+    || !(v.diagnosticNodes.rootNodeId===null || integer(v.diagnosticNodes.rootNodeId))) invalid();
   if (v.state !== null && (!obj(v.state) || !['auth_required','explicit_empty'].includes(String(v.state.kind)) || !str(v.state.text,4000))) invalid();
-  for (const p of v.posts) if (!obj(p) || !integer(p.containerKey) || !integer(p.articleEntryCount) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !author(p.author) || !str(p.text,64000) || !truncation(p.truncation)) invalid();
+  for (const p of v.posts) if (!obj(p) || !integer(p.containerKey) || !integer(p.articleEntryCount) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !nullable(p.candidatePostId) || (p.identityIssue!==null && !['unnamed','author_mismatch'].includes(String(p.identityIssue))) || !author(p.author) || !str(p.text,64000) || !truncation(p.truncation)) invalid();
   const rawPosts=v.posts as RawPost[];
+  for (const p of rawPosts) if (p.identityIssue===null ? p.postId===null || p.postId!==p.candidatePostId : p.postId!==null) invalid();
   const rawTruncation=v.truncation as XTruncation;
   const currentPost=publicPost(current.currentUrl,true);
   const candidatePosts=request.stage==='post' ? rawPosts.filter(p=>p.postId===request.postId) : [];
@@ -69,7 +75,8 @@ function validateRaw(v: unknown, request: XPageRequest, current: BrowserLocation
   for (const p of rawPosts) if (!str(p.text,p===candidate && focal?64000:4000)
     || p.truncation.returned!==p.text.length || p.truncation.totalKnown===null
     || p.truncation.totalKnown<p.truncation.returned || p.truncation.truncated!==(p.truncation.totalKnown>p.truncation.returned)) invalid();
-  for (const c of v.controls) if (!obj(c) || !['body_expand','replies_expand','article_entry'].includes(String(c.kind)) || !nullable(c.postId) || !integer(c.nodeId) || !integer(c.index)) invalid();
+  for (const c of v.controls) if (!obj(c) || !['body_expand','replies_expand','article_entry'].includes(String(c.kind)) || !nullable(c.postId) || !integer(c.nodeId) || !integer(c.index)
+    || !['same_cell','focal_contains_control','control_contains_focal','different_cell','unknown'].includes(String(c.sourceRelation))) invalid();
   for (const e of v.entries) if (!obj(e) || !integer(e.parentContainerKey) || !author(e.author) || !str(e.parentPostId) || !str(e.parentUrl) || !nullable(e.targetUrl) || !str(e.label,512) || !integer(e.nodeId) || !integer(e.index)) invalid();
   const a = v.article;
   if (a !== null) {
@@ -165,7 +172,17 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   }
   if(new Set(raw.posts.map(p=>p.containerKey)).size!==raw.posts.length) invalid();
   const entryParents=new WeakMap<XArticleEntry,XTextObservation>();
-  const controls=identityProven?raw.controls.map(c=>({kind:c.kind,postId:c.postId,binding:binding(c)})):[];
+  const controls=identityProven?raw.controls.map(c=>({kind:c.kind,postId:c.postId,binding:binding(c),sourceRelation:c.sourceRelation})):[];
+  const postCandidates = request.stage === 'post' ? raw.posts.filter(p=>p.scope==='post' && p.candidatePostId===request.postId) : [];
+  const rootRejections = {unnamed:0,authorMismatch:0,permalinkMismatch:0};
+  if (request.stage==='post') rootRejections.unnamed=raw.posts.filter(p=>p.scope==='post' && p.candidatePostId===null).length;
+  for (const p of postCandidates) {
+    const own=publicPost(p.permalink);
+    if (p.identityIssue==='unnamed' || !p.author?.handle) rootRejections.unnamed++;
+    else if (p.identityIssue==='author_mismatch' || (own && own.handle!==p.author.handle)) rootRejections.authorMismatch++;
+    else if (!own) rootRejections.unnamed++;
+    else if (own.id!==p.postId || own.origin!==currentPost?.origin || (currentPost?.handle!==null && own.handle!==currentPost?.handle)) rootRejections.permalinkMismatch++;
+  }
   const entries:XArticleEntry[]=identityProven?raw.entries.flatMap(e=>{
     const parent=parentObservations.get(e.parentContainerKey),coordinates=publicPost(e.parentUrl);
     if(!parent || parent.containerKind==='quoted_post' || !coordinates || parent.postId!==e.parentPostId || parent.sourceUrl!==e.parentUrl || coordinates.handle!==parent.author?.handle
@@ -196,7 +213,17 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   }
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
   const replyScope: XReplyScope = {rootPostId:root?.postId??null,branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
-  const result = {replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  const diagnosticFrame: XReadFrameDiagnostic | undefined = request.stage==='post' ? {
+    stage:'post',location:location.current,
+    document:{epoch:current.documentEpoch,routeRevision:current.routeRevision,navigationSequence:current.navigationSequence,generation:snapshot.generation},
+    rawUrlMatchesPort:exact,requestPostMatchesLocation:currentPost?.id===request.postId,
+    regionObserved:raw.region,inventory:{...raw.truncation},rootCandidateCount:postCandidates.length,rootRejections,
+    regionNodeId:raw.diagnosticNodes.regionNodeId,rootNodeId:root?raw.diagnosticNodes.rootNodeId:null,
+    rootIdentityProven:identityProven && !!root,
+    replyCount:replies.length,repliesExpandControlCount:controls.filter(c=>c.kind==='replies_expand').length,
+    explicitEndObserved:!!replyScope.endEvidence,
+  } : undefined;
+  const result = {replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
   Object.defineProperty(result,'entryParents',{value:entryParents,enumerable:false});
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});
   return result;
