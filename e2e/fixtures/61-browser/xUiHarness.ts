@@ -5,6 +5,7 @@ import http from 'node:http';
 import tls from 'node:tls';
 import key from './tls-key.pem?raw';
 import cert from './tls-cert.pem?raw';
+import { xClosurePage } from './xClosurePages';
 import { readX } from '../../../src/main/x/xResearchRead';
 import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
@@ -66,7 +67,7 @@ void app.whenReady().then(async () => {
     if (!['example.com', 'example.org'].includes(url.hostname)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html);
   });
-  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller)\/status\/321$/.exec(req.url??'')?.[1]; res.end(handle?readerHtml(handle):xHtml); });
+  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):handle?readerHtml(handle):xHtml); });
   origin.on('clientError', (_error,socket) => socket.destroy());
   proxy.on('connect', (req,socket: Socket,head: Buffer) => {
     socket.on('error',()=>{});
@@ -101,6 +102,35 @@ void app.whenReady().then(async () => {
   });
   const controller = {
     read,
+    directIdentity: async () => {
+      const url='https://x.com/writer/status/654';
+      const opened=await port.open(url,undefined), view=browser.webContentsOf(opened.tabId)!;
+      const evaluate=browser.evalInPage.bind(browser);
+      const run=async(wrong:boolean)=>{
+        let collections=0;
+        const receipts: unknown[]=[];
+        browser.evalInPage=async(tabId,code)=>{
+          if(tabId!==opened.tabId || typeof code!=='string' || !code.includes('const request = {"stage":"post"')) return evaluate(tabId,code);
+          if(wrong && collections===0) await view.executeJavaScript("document.querySelector('[role=group] a').setAttribute('href','/writer/status/655/analytics')");
+          const raw=await evaluate(tabId,code);
+          if(++collections===1) {
+            const before=browser.locationFacts(tabId);
+            const routed=new Promise<{url:string;isMainFrame:boolean}>(resolve=>view.once('did-navigate-in-page',(_event,url,isMainFrame)=>resolve({url,isMainFrame})));
+            await view.executeJavaScript("history.replaceState({},'',location.href)");
+            const event=await routed,after=browser.locationFacts(tabId);
+            receipts.push({before,after,event,raw});
+          }
+          return raw;
+        };
+        try {
+          const result=await readX({tabId:opened.tabId,read:{objective:'native own identity transition',targets:[{url}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},
+            {browser:port,threadId:'fixture-thread',runId:'native-identity',callId:wrong?'negative':'positive',batchId:'native-identity',sources:new Map()});
+          return {result,collections,receipts};
+        } finally {browser.evalInPage=evaluate;}
+      };
+      try {return {positive:await run(false),negative:await run(true)};}
+      finally {browser.evalInPage=evaluate;browser.close(opened.tabId);}
+    },
     sourceContainers: async () => {
       const opened=await port.open('https://x.com/search?q=containers&f=top',undefined);
       const view=browser.webContentsOf(opened.tabId)!;

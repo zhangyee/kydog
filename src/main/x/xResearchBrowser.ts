@@ -3,7 +3,7 @@ import type { NavigationObservation } from '../../shared/types';
 import type { BrowserService, BrowserLocationFacts, EvictedTab } from '../browser/browserService';
 import type { DispatchAction, WaitUntil } from '../browser/actions';
 import type { AxSnapshot } from '../browser/snapshot';
-import { decodeXPage, xPageExpression, type XPageRequest, type XPageObservation } from './xPageSource';
+import { decodeXPage, xPageExpression, type XPageRequest, type XPageObservation, type XPageNavigationProof } from './xPageSource';
 import type { XArticleEntry } from './xResearchTypes';
 
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
@@ -92,21 +92,21 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           const raw = await browser.evalInPage(tabId,expression); check();
           const after = browser.locationFacts(tabId);
           if (!sameLocation(before,after)) throw new KydogError('browser.stale_snapshot','采集期间页面已导航；需要新观察');
-          let articleProven = false;
+          const navigationProof: XPageNavigationProof = {parentArticle:false};
           if (request.stage==='article') {
             const issuedEntry=entries.get(request.entry);
             const proof=request.via.kind==='action' ? actions.get(request.via.result) : opens.get(request.via.result);
-            articleProven=!!issuedEntry && issuedEntry.tabId===tabId && !!proof && proof.tabId===tabId
+            navigationProof.parentArticle=!!issuedEntry && issuedEntry.tabId===tabId && !!proof && proof.tabId===tabId
               && sameLocation(proof.location,after) && proof.finalUrl===request.expectedUrl
               && ('entry' in proof ? proof.entry===request.entry : request.entry.targetUrl!==null && proof.requestedUrl===request.entry.targetUrl);
           }
           if (request.stage==='post' && request.directOpen) {
             const proof=opens.get(request.directOpen);
-            articleProven=!!proof && proof.tabId===tabId && sameLocation(proof.location,after)
-              && proof.requestedUrl===request.expectedUrl && proof.finalUrl===request.expectedUrl
-              && after.currentUrl===request.expectedUrl;
+            if (proof && proof.tabId===tabId && proof.requestedUrl===request.expectedUrl && proof.finalUrl===request.expectedUrl
+              && after.currentUrl===request.expectedUrl)
+              navigationProof.directOpen={openedLocation:proof.location,sameGeneration:sameLocation(proof.location,after)};
           }
-          const observation=decodeXPage(raw,request,after,articleProven);
+          const observation=decodeXPage(raw,request,after,navigationProof);
           bindings.set(observation.snapshot,after);
           permissions.set(observation.snapshot,new Map(observation.snapshot.nodes.flatMap(n=>n.collectedPermission?[[n.index,{...n.collectedPermission}]]:[])));
           currentEntries.set(observation.snapshot,[...observation.entries]);

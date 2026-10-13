@@ -1,4 +1,5 @@
 import {
+  X_MAX_ARTICLE_IDENTITY_HREF_UNITS,
   X_MAX_HANDLE_UNITS,
   X_MAX_POST_ID_UNITS,
   X_MAX_SOURCE_URL_UNITS,
@@ -420,7 +421,7 @@ export function assertXRequestFits(original: XResearchResult): void {
         };
       }
       if (t.article.requested && t.root) {
-        t.article.provenance={kind:'direct_open',navigationId:uuid,bodyObservationId:uuid,sourceUrl:'w'.repeat(X_MAX_SOURCE_URL_UNITS)};
+        t.article.provenance={kind:'direct_open',navigationId:uuid,bodyObservationId:uuid,sourceUrl:'w'.repeat(X_MAX_SOURCE_URL_UNITS),nativeIdentity:{kind:'owned_analytics',href:'w'.repeat(X_MAX_ARTICLE_IDENTITY_HREF_UNITS),documentGeneration:`${Number.MAX_SAFE_INTEGER}:${Number.MAX_SAFE_INTEGER}:${Number.MAX_SAFE_INTEGER}`}};
         t.article.body = {
           ...structuredClone(t.root),
           containerKind: 'article',

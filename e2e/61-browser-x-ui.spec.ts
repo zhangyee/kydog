@@ -7,7 +7,9 @@ import type { DispatchAction } from '../src/main/browser/actions';
 
 interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
 interface EligibilityCounters { input:number;measures:number;scrolls:number;hits:number;trusted:number }
+type DirectIdentityReceipt={result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;collections:number;receipts:{before:import('../src/main/browser/browserService').BrowserLocationFacts;after:import('../src/main/browser/browserService').BrowserLocationFacts;event:{url:string;isMainFrame:boolean};raw:{rawUrl:string;article:{ownIdentityLinks:{totalKnown:number;hrefs:string[]};author:{handle:string};blocks:string[]}}}[]};
 interface Harness {
+  directIdentity():Promise<{positive:DirectIdentityReceipt;negative:DirectIdentityReceipt}>;
   postFrameDiagnostic(mode:string):Promise<{positive:EligibilityCounters&{frames:number};after:EligibilityCounters&{frames:number};results:unknown[];receipts:unknown[];error:string|null;sameControl:boolean}>;
   pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
   read(): Promise<State>;
@@ -54,6 +56,29 @@ test.describe('X browser port native safety (offline)', () => {
     finally { if (app) await app.close(); }
     if (dir && !failed) await fs.rm(dir, {recursive:true,force:true});
     else if (dir) console.info('[retained-native-failure-directory]',dir);
+  });
+
+  test('native same-URL collection transition requires matching current owned Article identity',async()=>{
+    const r=await control(h=>h.directIdentity());
+    console.info('[native-direct-article-identity]',JSON.stringify(r));
+    for(const [name,value] of Object.entries(r)) {
+      expect(value.receipts,name).toHaveLength(1);
+      const receipt=value.receipts[0],transition=value.result.targets[0].collectionTransitions;
+      expect(receipt.event,name).toEqual({url:'https://x.com/writer/status/654',isMainFrame:true});
+      expect(receipt.after.currentUrl,name).toBe(receipt.before.currentUrl);
+      expect(receipt.after.documentEpoch,name).toBe(receipt.before.documentEpoch);
+      expect(receipt.after.routeRevision,name).toBeGreaterThan(receipt.before.routeRevision);
+      expect(receipt.after.navigationSequence,name).toBeGreaterThan(receipt.before.navigationSequence);
+      expect(receipt.after.navigationEvent,name).toBe('did-navigate-in-page');
+      expect(receipt.raw,name).toMatchObject({rawUrl:receipt.after.currentUrl,article:{author:{handle:'writer'},blocks:['ARTICLE_BODY_DOM_a751','https://example.org/observed-external'],ownIdentityLinks:{totalKnown:1,hrefs:[name==='positive'?'/writer/status/654/analytics':'/writer/status/655/analytics']}}});
+      expect(transition,name).toHaveLength(1);
+      expect(transition![0],name).toMatchObject({outcome:'same_url_generation_changed',rereadRequested:true,navigationPhase:'initial_post',before:{documentEpoch:receipt.before.documentEpoch,routeRevision:receipt.before.routeRevision,navigationSequence:receipt.before.navigationSequence},after:{documentEpoch:receipt.after.documentEpoch,routeRevision:receipt.after.routeRevision,navigationSequence:receipt.after.navigationSequence}});
+    }
+    const positive=r.positive.result.targets[0],negative=r.negative.result.targets[0];
+    expect(r.positive.collections).toBe(2);
+    expect(positive).toMatchObject({status:'observed',root:null,article:{entryObserved:false,actionAttempted:false,navigationStarted:false,bodyObserved:true,body:{text:'ARTICLE_BODY_DOM_a751\n\nhttps://example.org/observed-external',postId:'654',author:{handle:'writer'},sourceUrl:'https://x.com/writer/status/654'},provenance:{kind:'direct_open',navigationId:positive.collectionTransitions![0].navigationId,bodyObservationId:positive.article.body?.observationId,nativeIdentity:{kind:'owned_analytics',href:'/writer/status/654/analytics',documentGeneration:positive.location?.documentGeneration}}},budgetUsage:{scrolls:0,expandActions:0,distinctEntries:1}});
+    expect(r.negative.collections).toBe(3);
+    expect(negative).toMatchObject({status:'failed',reason:'post_wait_timeout',article:{bodyObserved:false,body:null,entryObserved:false,actionAttempted:false,navigationStarted:false}});
   });
 
   test('original native CSS eligibility precedes sole measure, and cancellation, permission change and post-gate race still refuse',async()=>{

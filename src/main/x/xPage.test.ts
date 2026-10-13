@@ -89,7 +89,7 @@ describe('fixed X page DOM source', () => {
 
 describe('X page trusted boundary', () => {
   const facts = (rawUrl: string) => ({currentUrl:rawUrl,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:rawUrl});
-  const decode = (f: ReturnType<typeof fixture>, r: any = request, at = url) => decodeXPage(f.collect(r),r,facts(at),false);
+  const decode = (f: ReturnType<typeof fixture>, r: any = request, at = url) => decodeXPage(f.collect(r),r,facts(at),{parentArticle:false});
   it('requires current raw source and actual own identity before naming a root', () => {
     const f=fixture();
     expect(decode(f).root).toMatchObject({postId:'123',text:'root original'});
@@ -126,7 +126,7 @@ describe('X page trusted boundary', () => {
     const f=fixture();
     expect(decode(f).root!.postId).toBe('123');
     const raw=f.collect();raw.posts[0].author={handle:123};
-    expect(()=>decodeXPage(raw,request,facts(url),false)).toThrow(/invalid X page/i);
+    expect(()=>decodeXPage(raw,request,facts(url),{parentArticle:false})).toThrow(/invalid X page/i);
   });
 });
 
@@ -205,22 +205,22 @@ it('reports bounded control omissions without mistaking filtered candidates for 
 it('cross-checks the current document author/origin with the own permalink, allowing proven redirects', () => {
   const facts=(currentUrl:string):BrowserLocationFacts=>({currentUrl,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:currentUrl});
   const alice=fixture();
-  expect(decodeXPage(alice.collect(),request,facts(url),false).root).toMatchObject({postId:'123',author:{handle:'alice'}});
+  expect(decodeXPage(alice.collect(),request,facts(url),{parentArticle:false}).root).toMatchObject({postId:'123',author:{handle:'alice'}});
   const wrongAuthor=fixture(wrap(post('123','bob','bob words')));
-  expect(decodeXPage(wrongAuthor.collect(),request,facts(url),false).root).toBeNull();
+  expect(decodeXPage(wrongAuthor.collect(),request,facts(url),{parentArticle:false}).root).toBeNull();
   const actualRedirect='https://x.com/bob/status/123';
   const bob=fixture(wrap(post('123','bob','bob words')),actualRedirect);
-  expect(decodeXPage(bob.collect(),request,facts(actualRedirect),false).root).toMatchObject({postId:'123',author:{handle:'bob'},sourceUrl:'https://x.com/bob/status/123/history'});
+  expect(decodeXPage(bob.collect(),request,facts(actualRedirect),{parentArticle:false}).root).toMatchObject({postId:'123',author:{handle:'bob'},sourceUrl:'https://x.com/bob/status/123/history'});
   const original=bob.document.querySelector('a[href$="/history"]')!;
   original.setAttribute('href','https://twitter.com/bob/status/123/history');
-  expect(decodeXPage(bob.collect(),request,facts(actualRedirect),false).root).toBeNull();
+  expect(decodeXPage(bob.collect(),request,facts(actualRedirect),{parentArticle:false}).root).toBeNull();
 });
 it('rejects an opaque permalink query instead of synthesizing a cleaner citation', () => {
   const f=fixture();
   const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
-  expect(decodeXPage(f.collect(),request,facts,false).root!.sourceUrl).toBe('https://x.com/alice/status/123/history');
+  expect(decodeXPage(f.collect(),request,facts,{parentArticle:false}).root!.sourceUrl).toBe('https://x.com/alice/status/123/history');
   f.document.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/history?token=secret');
-  const result=decodeXPage(f.collect(),request,facts,false);
+  const result=decodeXPage(f.collect(),request,facts,{parentArticle:false});
   expect(result.root).toBeNull();
   expect(result.fragments[0]).toMatchObject({sourceUrl:null,postId:null,text:'root original'});
   expect(JSON.stringify(result)).not.toContain('secret');
@@ -230,9 +230,9 @@ it('preserves link entry text but withholds opaque destination URLs instead of r
   const f=fixture(`<main><article data-testid="tweet">${author()}<article data-testid="twitterArticleReadView"><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Body</div></div></div><a href="https://example.org/read">Source link</a></article></article></main>`);
   const r={stage:'article' as const,expectedUrl:url,entry:{} as never,via:{kind:'action' as const,result:{} as never}};
   const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
-  expect(decodeXPage(f.collect(r),r,facts,true).article!.links).toEqual([{url:'https://example.org/read',text:'Source link',redacted:false}]);
+  expect(decodeXPage(f.collect(r),r,facts,{parentArticle:true}).article!.links).toEqual([{url:'https://example.org/read',text:'Source link',redacted:false}]);
   f.document.querySelector('a[href^="https://example.org"]')!.setAttribute('href','https://example.org/read?token=secret#private');
-  const result=decodeXPage(f.collect(r),r,facts,true);
+  const result=decodeXPage(f.collect(r),r,facts,{parentArticle:true});
   expect(result.article!.links).toEqual([{url:null,text:'Source link',redacted:true}]);
   expect(JSON.stringify(result)).not.toContain('secret');
 });
@@ -290,16 +290,16 @@ it('a fresh empty collection revokes old permission without clearing public IDs 
 it('media request coordinates do not prove a media document or admit its body identity', () => {
   const facts=(currentUrl:string):BrowserLocationFacts=>({currentUrl,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:currentUrl});
   const ordinary=fixture();
-  expect(decodeXPage(ordinary.collect(),request,facts(url),false).root).toMatchObject({postId:'123',author:{handle:'alice'}});
+  expect(decodeXPage(ordinary.collect(),request,facts(url),{parentArticle:false}).root).toMatchObject({postId:'123',author:{handle:'alice'}});
   for(const suffix of ['/photo/1','/video/1']) {
     const mediaUrl=url+suffix, mediaRequest={...request,expectedUrl:mediaUrl};
     const media=fixture(wrap(post()),mediaUrl);
-    const collected=decodeXPage(media.collect(mediaRequest),mediaRequest,facts(mediaUrl),false);
+    const collected=decodeXPage(media.collect(mediaRequest),mediaRequest,facts(mediaUrl),{parentArticle:false});
     expect(collected.identityProven).toBe(false);
     expect(collected.root).toBeNull();
     expect(collected.replies).toHaveLength(0);
     // A current ordinary redirect must still supply all existing root facts.
-    expect(decodeXPage(ordinary.collect(mediaRequest),mediaRequest,facts(url),false).root).toMatchObject({postId:'123',author:{handle:'alice'}});
+    expect(decodeXPage(ordinary.collect(mediaRequest),mediaRequest,facts(url),{parentArticle:false}).root).toMatchObject({postId:'123',author:{handle:'alice'}});
     expect(()=>xPageExpression({...mediaRequest,expectedUrl:mediaUrl+'?token=secret'})).toThrow();
   }
 });
@@ -353,11 +353,11 @@ it('names only official source identities while preserving independent long Unic
   for(const [id,name] of [[maximum,handle],['0','a']]) {
     const f=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post(id,name)),r.expectedUrl);
     f.document.querySelector('[data-testid="User-Name"] a')!.textContent='科研显示名'.repeat(50);
-    const good=decodeXPage(f.collect(r),r,facts,false);
+    const good=decodeXPage(f.collect(r),r,facts,{parentArticle:false});
     expect(good.posts[0]).toMatchObject({postId:id,author:{handle:name,displayName:'科研显示名'.repeat(50)}});
     for(const [badId,badName] of [[id,handle+'z'],['18446744073709551616',name],['0'.repeat(21),name]]) {
       const bad=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post(badId,badName)),r.expectedUrl);
-      const result=decodeXPage(bad.collect(r),r,facts,false);
+      const result=decodeXPage(bad.collect(r),r,facts,{parentArticle:false});
       expect(result.posts).toEqual([]);
       expect(result.fragments[0]).toMatchObject({containerKind:'unattributed_fragment',postId:null,text:'root original'});
     }
@@ -374,16 +374,16 @@ it('rejects invalid request identities before constructing a page expression and
     expect(()=>xPageExpression({...r,postId:'18446744073709551616',expectedUrl:expectedUrl.replace(maximum,'18446744073709551616')})).toThrow();
   }
   const f=fixture(), facts={currentUrl:url,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
-  expect(decodeXPage(f.collect(),request,facts,false).root).toMatchObject({postId:'123'});
+  expect(decodeXPage(f.collect(),request,facts,{parentArticle:false}).root).toMatchObject({postId:'123'});
   f.document.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/photo/1');
-  expect(decodeXPage(f.collect(),request,facts,false).root).toBeNull();
+  expect(decodeXPage(f.collect(),request,facts,{parentArticle:false}).root).toBeNull();
 });
 
 
 it('never changes an observed invalid href into a href-less Article entry proof',()=>{
   const f=fixture(wrap(post('123','alice','parent',`<div role="link" tabindex="0">${author('bob')}<div data-testid="article-cover-image">Article</div></div>`)));
   const facts={currentUrl:url,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
-  const decode=()=>decodeXPage(f.collect(),request,facts,false);
+  const decode=()=>decodeXPage(f.collect(),request,facts,{parentArticle:false});
   expect(decode().entries[0]).toMatchObject({targetUrl:null,author:{handle:'bob'}});
   const box=f.document.querySelector('div[role="link"]')!;
   box.setAttribute('href','/bob/status/456');
@@ -399,9 +399,22 @@ it('counts only actual same-parent Article boxes as unresolved, independently of
  const card='<div role="link" tabindex="0" href="https://unsafe.example/?token=secret">'+author('bob')+'<img data-testid="article-cover-image"></div>';
  for(const preview of [card,'']) {
   const f=fixture(wrap(post('123','alice','root original',buttons+preview)));
-  const observed=decodeXPage(f.collect(request),request,{currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},false);
+  const observed=decodeXPage(f.collect(request),request,{currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},{parentArticle:false});
   expect(observed.controlTruncation.truncated).toBe(true);
   expect(observed.root?.articlePreviewInventory).toEqual({scope:'collection',observed:0,retained:0,omitted:0,unresolved:preview?1:0});
   expect(JSON.stringify(observed)).not.toContain('secret');
  }
+});
+
+it('refuses conflicting native Article identity even with an otherwise proven parent entry',()=>{
+  const at='https://x.com/alice/status/456';
+  const f=fixture(`<main><article data-testid="tweet">${author()}<article data-testid="twitterArticleReadView"><div role="group"><div><a role="link" href="/alice/status/456/analytics">views</a></div></div><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Parent-entry body</div></div></div></article></article></main>`,at);
+  const r={stage:'article',expectedUrl:at,entry:{},via:{kind:'action',result:{}}} as any;
+  const facts={currentUrl:at,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationEvent:'did-navigate' as const,navigationType:'cross_document' as const,navigationUrl:at};
+  const collect=()=>decodeXPage(f.collect(r),r,facts,{parentArticle:true});
+  expect(collect().article?.body.text).toBe('Parent-entry body');
+  f.document.querySelector('[role="group"] a')!.setAttribute('href','/alice/status/457/analytics');
+  expect(collect().article).toBeNull();
+  f.document.querySelector('[role="group"]')!.remove();
+  expect(collect().article?.body.text).toBe('Parent-entry body');
 });

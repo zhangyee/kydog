@@ -66,9 +66,10 @@ export interface XArticleEntry {
   sourceUrl: string; parentPostId: string; targetUrl: string | null;
   author: XAuthorIdentity | null; label: string | null; observationId: string; binding: XControlBinding;
 }
+export interface XArticleNativeIdentity { kind: 'owned_analytics'; href: string; documentGeneration: string }
 export interface XArticleFacts {
   /** Initial direct document open; distinct from a parent-entry action/navigation. */
-  provenance?: { kind: 'direct_open'; navigationId: string; bodyObservationId: string; sourceUrl: string };
+  provenance?: { kind: 'direct_open'; navigationId: string; bodyObservationId: string; sourceUrl: string; nativeIdentity?: XArticleNativeIdentity };
   /** Retained even when optional entry binding/label is omitted by output budgeting. */
   entryIdentity?: XArticleEntryIdentity;
   location?: XLocationFacts;

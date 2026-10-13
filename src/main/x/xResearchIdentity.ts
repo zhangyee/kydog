@@ -243,3 +243,14 @@ export function applyReplyEndEvidence(
       }
     : { ...scope, completeness: 'unknown', endEvidence: null };
 }
+
+/** Literal native readView analytics anchor; never derive a document URL from it. */
+export const X_MAX_ARTICLE_IDENTITY_HREF_UNITS = 'https://twitter.com/'.length + X_MAX_HANDLE_UNITS + '/status/'.length + X_MAX_POST_ID_UNITS + '/analytics'.length;
+export function parseXArticleAnalyticsHref(href: string, sourceUrl: string): {handle:string;id:string} | null {
+  if (href.length>X_MAX_ARTICLE_IDENTITY_HREF_UNITS) return null;
+  const match=/^(?:https:\/\/(?:x\.com|twitter\.com))?\/([A-Za-z0-9_]+)\/status\/([0-9]+)\/analytics$/.exec(href);
+  const source=parseXSourcePost(sourceUrl);
+  if (!match || !source || !isXHandle(match[1]) || !isXPostId(match[2])) return null;
+  try { if (new URL(href,sourceUrl).origin!==source.origin) return null; } catch { return null; }
+  return {handle:match[1],id:match[2]};
+}

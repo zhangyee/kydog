@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { JSDOM } from 'jsdom';
 import { z } from 'zod';
 import type { FileWriteGuard } from '../agent/charCountFileTools';
-import { parseXSourcePost } from './xResearchIdentity';
+import { parseXSourcePost, parseXArticleAnalyticsHref, X_MAX_ARTICLE_IDENTITY_HREF_UNITS } from './xResearchIdentity';
 import {
   projectLegacyXResult,
   type XLegacyProjection,
@@ -77,7 +77,7 @@ const documentSchema = z.object({
   product: z.enum(['Top', 'Latest']).nullable(),
 });
 const articleSchema = z.object({
-  provenance: z.object({kind:z.literal('direct_open'),navigationId:string,bodyObservationId:string,sourceUrl:string}).optional(),
+  provenance: z.object({kind:z.literal('direct_open'),navigationId:string,bodyObservationId:string,sourceUrl:string,nativeIdentity:z.object({kind:z.literal('owned_analytics'),href:string.max(X_MAX_ARTICLE_IDENTITY_HREF_UNITS),documentGeneration:string}).optional()}).optional(),
   requested: z.boolean(),
   entryObserved: z.boolean(),
   actionAttempted: z.boolean(),
@@ -130,6 +130,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
         quotedPosts: z.array(textSchema),
         replies: z.object({ observations: z.array(textSchema) }),
         article: articleSchema,
+        location:z.object({documentGeneration:z.string().nullable()}).optional(),
         documentSource: z.unknown().optional(),
       }),
     ),
@@ -514,7 +515,11 @@ export class XResearchEvidence {
       const root = row.root,
         body = row.article.body,
         e = entryIdentity(row.article);
-      if (body?.containerKind === 'article' && row.article.bodyObserved
+      const native=row.article.provenance?.nativeIdentity;
+      const nativeCoordinates=native && body?.sourceUrl ? parseXArticleAnalyticsHref(native.href,body.sourceUrl) : null;
+      const nativeValid=!native || (!!nativeCoordinates && nativeCoordinates.id===body?.postId && nativeCoordinates.handle===body?.author?.handle
+        && native.documentGeneration===row.location?.documentGeneration);
+      if (nativeValid && body?.containerKind === 'article' && row.article.bodyObserved
         && (!row.article.provenance || (row.article.provenance.bodyObservationId===body.observationId
           && row.article.provenance.sourceUrl===body.sourceUrl && !row.article.entryObserved
           && !row.article.actionAttempted && !row.article.navigationStarted))) add(body);

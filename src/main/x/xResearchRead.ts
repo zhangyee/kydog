@@ -300,7 +300,7 @@ export async function readX(
             const body = observed.article.body;
             row.article.body = body;
             row.article.bodyObserved = true;
-            row.article.provenance = {kind:'direct_open',navigationId:opened.nav.navigationId,bodyObservationId:body.observationId,sourceUrl:body.sourceUrl!};
+            row.article.provenance = {kind:'direct_open',navigationId:opened.nav.navigationId,bodyObservationId:body.observationId,sourceUrl:body.sourceUrl!,...(observed.article.nativeIdentity?{nativeIdentity:observed.article.nativeIdentity}:{})};
             row.sourceUrl = body.sourceUrl;
             row.status = body.truncation.truncated || input.read.includeReplies ? 'partial' : 'observed';
             row.reason = input.read.includeReplies ? 'direct_article_discussion_unobserved' : null;

@@ -112,7 +112,15 @@
       let remaining = 64000;
       const values = [];
       for (const block of blocks.slice(0,256)) { const s=text(block); values.push(s.slice(0,remaining)); remaining-=Math.min(remaining,s.length); }
-      article = {author:authorOf(outer),title:text(read.querySelector('[data-testid="twitter-article-title"]')).slice(0,1000),blocks:values,
+      // Captured readView group links identify the native Article, independently
+      // of arbitrary links in rich text. Preserve conflicts before ID decoding.
+      const identityLinks = all(read,'div[role="group"] a[role="link"][href]').filter(a=>shown(a)
+        && a.closest('article[data-testid="twitterArticleReadView"]')===read
+        && owner(a)===outer && !a.closest('[data-testid="twitterArticleRichTextView"]'));
+      const ownIdentityLinks = {totalKnown:identityLinks.length,hrefs:identityLinks.slice(0,2).map(a=>{
+        const href=a.getAttribute('href');return href.length<=8192?href:null;
+      })};
+      article = {ownIdentityLinks,author:authorOf(outer),title:text(read.querySelector('[data-testid="twitter-article-title"]')).slice(0,1000),blocks:values,
         links:all(read,'a[href]').filter(shown).slice(0,100).map(a=>({url:url(a.getAttribute('href'))?.href ?? '',text:text(a).slice(0,512)})),
         truncated:blocks.length>256 || blocks.reduce((n,b)=>n+text(b).length,0)>64000};
     }

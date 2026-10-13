@@ -92,3 +92,63 @@ it('retains failed actual navigation and rejects mismatched direct body provenan
   expect(failed.targets[0]).toMatchObject({status:'failed',reason:'navigation_failed',article:{bodyObserved:false,body:null},location:{committedNavigationOutcome:'failed'}});
   expect(f.service.open).toHaveBeenCalledTimes(2);
 });
+
+const ownLink=(href='/bob/status/456/analytics')=>`<div role="group"><div><a role="link" href="${href}">views</a></div></div>`;
+const withIdentity=(identity=ownLink(),author='bob',body='Article paragraph')=>articleHtml(author,body).replace('<div data-testid="twitter-article-title">',identity+'<div data-testid="twitter-article-title">');
+const directInput={tabId:'tab',read:{objective:'direct native identity',targets:[{url}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+
+it('uses independent owned native identity after a real collector generation change and retains it through cap and SDK restore',async()=>{
+  const f=fixture();f.setHtml(withIdentity());
+  const original=f.service.evalInPage;let collections=0;
+  f.service.evalInPage=async(...args)=>{const raw=await original(...args);if(++collections===1){f.facts.routeRevision++;f.facts.navigationSequence+=2;}return raw;};
+  const value=serializeXResearchResult(await readX(directInput,f.context));
+  const row=value.result.targets[0];
+  expect(row).toMatchObject({status:'observed',root:null,article:{bodyObserved:true,entryObserved:false,actionAttempted:false,navigationStarted:false,body:{text:'Article paragraph'},provenance:{navigationId:'actual-navigation',nativeIdentity:{kind:'owned_analytics',href:'/bob/status/456/analytics',documentGeneration:'1:1:3'}}},collectionTransitions:[{outcome:'same_url_generation_changed',rereadRequested:true}]});
+  expect(collections).toBe(2);
+  const capped=serializeXResearchResult({...value.result,objective:'x'.repeat(900000)});
+  expect(JSON.parse(capped.text).targets[0].article.provenance).toEqual(row.article.provenance);
+  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+  const {SessionManager}=await import('@earendil-works/pi-coding-agent');
+  const manager=SessionManager.inMemory('/tmp');manager.appendMessage({role:'user',content:'read',timestamp:0});
+  const append=(details:unknown)=>manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:'call',isError:false,content:[{type:'text',text:value.text}],details,timestamp:1});
+  append(value.result);
+  const ledger=new XResearchEvidence('/tmp',()=> 'restored');ledger.restore(manager.getBranch());
+  expect(ledger.observations).toContainEqual(expect.objectContaining({text:'Article paragraph',observationId:row.article.body!.observationId,origin:'history'}));
+  expect(()=>ledger.guard('/tmp/report.md',`[body](${url})`)).not.toThrow();
+  for(const bad of [{kind:'owned_analytics',href:'/bob/status/457/analytics',documentGeneration:'1:1:3'},{kind:'owned_analytics',href:'/bob/status/456/analytics',documentGeneration:'1:0:1'},{kind:'unknown'},null]) {
+    const wrong=structuredClone(value.result);Object.assign(wrong.targets[0].article.provenance!,{nativeIdentity:bad});
+    const branch=SessionManager.inMemory('/tmp');branch.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:'call',isError:false,content:[{type:'text',text:''}],details:wrong,timestamp:1});
+    ledger.restore(branch.getBranch());expect(()=>ledger.guard('/tmp/report.md',`[body](${url})`)).toThrow('unobserved');
+  }
+});
+
+it('never ignores conflicting owned identity, and never substitutes content links or weak open facts',async()=>{
+  const f=fixture();f.setHtml(withIdentity());const opened=await f.browser.open(url,'tab');
+  const collect=(directOpen=opened,tab='tab')=>f.browser.withPage(tab,undefined,page=>page.collect({stage:'post',expectedUrl:url,postId:'456',directOpen}));
+  expect((await collect()).article?.body.text).toBe('Article paragraph');
+  for(const href of ['/bob/status/457/analytics','/alice/status/456/analytics','https://twitter.com/bob/status/456/analytics','https://evil.test/bob/status/456/analytics','/bob/status/456/analytics?q=1','/bob/status/456/analytics#x','/bob/status/456','bad']) {
+    f.setHtml(withIdentity(ownLink(href)));expect((await collect()).article).toBeNull();
+  }
+  f.setHtml(withIdentity(ownLink()+ownLink()));expect((await collect()).article).toBeNull();
+  f.setHtml(withIdentity());f.facts.routeRevision++;f.facts.navigationSequence++;
+  expect((await collect()).article?.body.text).toBe('Article paragraph');
+  for(const html of [articleHtml(),articleHtml('bob','Article paragraph'+ownLink()),withIdentity(`<article data-testid="tweet">${ownLink()}</article>`),withIdentity(`<div role="link" tabindex="0">${ownLink()}</div>`),withIdentity(`<article data-testid="twitterArticleReadView">${ownLink()}</article>`),withIdentity(ownLink(),'alice'),withIdentity(ownLink(),'bob','')]) {
+    f.setHtml(html);expect((await collect()).article).toBeNull();
+  }
+  f.setHtml(withIdentity());
+  expect((await f.browser.withPage('tab',undefined,page=>page.collect({stage:'post',postId:'456',expectedUrl:url}))).article).toBeNull();
+  expect((await collect({...opened})).article).toBeNull();expect((await collect(structuredClone(opened))).article).toBeNull();expect((await collect(opened,'other')).article).toBeNull();
+  f.facts.documentEpoch++;expect((await collect()).article).toBeNull();f.facts.documentEpoch--;
+  f.setRaw('https://x.com/bob/status/457');expect((await collect()).article).toBeNull();f.setRaw(url);
+  expect((await collect()).article?.body.text).toBe('Article paragraph');
+  f.setHtml(withIdentity(ownLink('x'.repeat(9000))));
+  await expect(collect()).rejects.toMatchObject({code:'x.invalid_page'});
+  f.setHtml(withIdentity());
+  const original=f.service.evalInPage;
+  for(const ownIdentityLinks of [{totalKnown:2,hrefs:['/bob/status/456/analytics']},{totalKnown:1,hrefs:[]},{totalKnown:1,hrefs:[null]},{totalKnown:0,hrefs:['/bob/status/456/analytics']}]) {
+    f.service.evalInPage=async(...args)=>{const raw=await original(...args) as {article:{ownIdentityLinks:unknown}};raw.article.ownIdentityLinks=ownIdentityLinks;return raw;};
+    expect((await collect()).article).toBeNull();
+  }
+  f.service.evalInPage=async(...args)=>{const raw=await original(...args);f.facts.routeRevision++;return raw;};
+  await expect(collect()).rejects.toMatchObject({code:'browser.stale_snapshot'});
+});

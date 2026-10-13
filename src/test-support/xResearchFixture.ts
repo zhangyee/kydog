@@ -20,7 +20,7 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
     Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
     Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
     const raw=dom.window.eval(xPageExpression(request));
-    return decodeXPage(raw,request,{currentUrl:url,documentEpoch:3,routeRevision:revision,navigationSequence:sequence,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},false);
+    return decodeXPage(raw,request,{currentUrl:url,documentEpoch:3,routeRevision:revision,navigationSequence:sequence,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},{parentArticle:false});
   });
   const act=vi.fn(async (action:any, _snapshot?:unknown, actOptions?:import('../main/x/xResearchBrowser').XActionOptions) => {
     if(options.scrollError) throw options.scrollError;
