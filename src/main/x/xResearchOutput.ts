@@ -9,7 +9,51 @@ import {
   type XResearchResult,
   type XTextObservation,
   type XCollectionTransition,
+  type XReportScopeFacts,
 } from './xResearchTypes';
+
+// Only protocol-controlled, finite reason labels enter the aggregate. Search
+// barriers can contain localized page text, so all other values count as unknown.
+const REPORT_REASONS = new Set([
+  'scroll_no_movement', 'scroll_ack_timeout',
+  'post_identity_unproven', 'reply_readiness_timeout',
+  'action_failed:browser.click_intercepted',
+  'not_attempted', 'cancelled', 'unsafe_target_url', 'unresolved_target',
+  'auth_required', 'unsupported_document_route',
+  'direct_article_discussion_unobserved', 'post_wait_timeout',
+  'parent_return_identity_unproven', 'parent_return_navigation_failed',
+  'body_expand_budget_reached', 'reply_budget_reached',
+  'body_observations_output_budget', 'article_inventory_audit_output_budget',
+  'navigation_failed', 'not_attempted:auth_required',
+  'not_attempted:navigation_failed', 'internal_adapter_stopped',
+  'collection_failed:browser.not_dispatchable',
+  'omitted_due_output_budget',
+]);
+function reportScopeFacts(result: XResearchResult): XReportScopeFacts {
+  const facts: XReportScopeFacts = {
+    version: 1, operation: result.operation,
+    reasonSource: result.operation === 'search' ? 'barrier.reason' : 'reason',
+    totalRows: result.operation === 'search' ? result.queries.length : result.targets.length,
+    statusCounts: {}, stopReasonCounts: {}, reasonCounts: {}, replyScopeCounts: {},
+  };
+  const count = (counts: Record<string, number>, key: string) => {
+    counts[key] = (counts[key] ?? 0) + 1;
+  };
+  const countRow = (row: {status: keyof XReportScopeFacts['statusCounts']; stopReason: keyof XReportScopeFacts['stopReasonCounts']}, reason: string | null | undefined) => {
+    count(facts.statusCounts, row.status);
+    count(facts.stopReasonCounts, row.stopReason);
+    count(facts.reasonCounts, reason && REPORT_REASONS.has(reason) ? reason : 'unknown');
+  };
+  if (result.operation === 'search') {
+    for (const row of result.queries) countRow(row, row.barrier?.reason);
+  } else {
+    for (const row of result.targets) {
+      countRow(row, row.reason);
+      count(facts.replyScopeCounts, row.replies.scope.completeness);
+    }
+  }
+  return facts;
+}
 
 export interface XSerializedResult<
   T extends XResearchResult = XResearchResult,
@@ -106,6 +150,7 @@ function projection(result: XResearchResult) {
     batchId: result.batchId,
     runId: result.runId,
     status: result.status,
+    reportScopeFacts: result.reportScopeFacts,
     budgetUsage: result.budgetUsage,
     truncation: result.truncation,
     metadataOmissions: result.metadataOmissions ?? [],
@@ -173,6 +218,7 @@ function measure<T extends XResearchResult>(
   result: T,
   projected = false,
 ): XSerializedResult<T> {
+  result.reportScopeFacts = reportScopeFacts(result);
   const rows = result.operation === 'search' ? result.queries : result.targets;
   for (;;) {
     const projectedRows = projected

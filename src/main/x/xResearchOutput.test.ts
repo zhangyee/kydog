@@ -6,6 +6,49 @@ import { searchX, searchResult } from './xResearchSearch';
 import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { X_RESEARCH_MAX_OUTPUT_BYTES } from './xResearchTypes';
 describe('bounded X production tool result',()=>{
+  it('reports distinct per-call search stops from final rows in normal and capped content',()=>{
+    const input=structuredClone(searchInput);
+    input.search.queries=Array.from({length:4},(_,i)=>({...searchInput.search.queries[0],id:`q${i}`}));
+    const result=searchResult(input,fixture([searchHtml(post())]).context);
+    const [empty,wait,stalled,budget]=result.queries;
+    Object.assign(empty,{status:'explicit_empty',stopReason:'explicit_ui_end',barrier:{status:'explicit_empty',reason:'localized page text',observationId:'page-1'}});
+    Object.assign(wait,{status:'failed',stopReason:'wait_timeout'});
+    Object.assign(stalled,{status:'failed',stopReason:'action_failed',barrier:{status:'failed',reason:'scroll_no_movement',observationId:null}});
+    Object.assign(budget,{status:'partial',stopReason:'budget_reached'});
+    result.reportScopeFacts={version:1,operation:'search',reasonSource:'barrier.reason',totalRows:999,statusCounts:{},stopReasonCounts:{},reasonCounts:{},replyScopeCounts:{}};
+    const expected={version:1,operation:'search',reasonSource:'barrier.reason',totalRows:4,statusCounts:{explicit_empty:1,failed:2,partial:1},stopReasonCounts:{explicit_ui_end:1,wait_timeout:1,action_failed:1,budget_reached:1},reasonCounts:{unknown:3,scroll_no_movement:1},replyScopeCounts:{}};
+    const normal=serializeXResearchResult(result);
+    expect(normal.result.reportScopeFacts).toEqual(expected);
+    expect(JSON.parse(normal.text).reportScopeFacts).toEqual(expected);
+    expect(JSON.stringify(normal.result.reportScopeFacts)).not.toContain('localized page text');
+    const projected=serializeXResearchResult({...result,objective:'x'.repeat(600000)});
+    expect(projected.result.contentProjection).toBe('x_research_projection_v1');
+    expect(projected.result.reportScopeFacts).toEqual(expected);
+    expect(JSON.parse(projected.text).reportScopeFacts).toEqual(expected);
+    expect(serializeXResearchResult(projected.result)).toEqual(projected);
+    expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(projected)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+    const changed=structuredClone(normal.result);changed.queries[1].status='observed';
+    expect(serializeXResearchResult(changed).result.reportScopeFacts?.statusCounts).toEqual({explicit_empty:1,observed:1,failed:1,partial:1});
+    const next=structuredClone(normal.result);next.callId='another-call';next.queries=[next.queries[0]];
+    expect(serializeXResearchResult(next).result.reportScopeFacts?.totalRows).toBe(1);
+  });
+  it('reports partial read scope and finite reasons without promoting unknown reply parentage',()=>{
+    const input={tabId:'tab',read:{objective:'read',targets:Array.from({length:10},(_,i)=>({postId:String(i+100)})),includeArticle:false,includeReplies:true,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+    const result=readResult(input,fixture([readHtml(post())]).context);
+    const reasons=['post_identity_unproven','post_identity_unproven',...Array(6).fill('scroll_no_movement'),'reply_readiness_timeout','action_failed:browser.click_intercepted'];
+    result.targets.forEach((row,i)=>{row.status='partial';row.stopReason=i<2?'identity_unproven':i<8?'action_failed':i===8?'wait_timeout':'action_failed';row.reason=reasons[i];row.replies.scope.completeness='unknown';});
+    const root={observationId:'reply-1',sourceKind:'rendered_ui' as const,postId:'901',sourceUrl:'https://x.com/a/status/901',author:{handle:'a',displayName:null,profileUrl:null},text:'reply',observedAt:'2026-10-13T00:00:00.000Z',truncation:{returned:5,totalKnown:5,truncated:false},containerKind:'reply' as const,directParent:null};
+    result.targets[0].replies.observations=[root,{...root,observationId:'reply-2',postId:'902',directParent:{postId:'100',sourceUrl:'https://x.com/a/status/100'}}];
+    const expected={version:1,operation:'read',reasonSource:'reason',totalRows:10,statusCounts:{partial:10},stopReasonCounts:{identity_unproven:2,action_failed:7,wait_timeout:1},reasonCounts:{post_identity_unproven:2,scroll_no_movement:6,reply_readiness_timeout:1,'action_failed:browser.click_intercepted':1},replyScopeCounts:{unknown:10}};
+    for(const source of [result,{...result,objective:'x'.repeat(600000)}]){
+      const out=serializeXResearchResult(source);
+      expect(out.result.reportScopeFacts).toEqual(expected);
+      expect(JSON.parse(out.text).reportScopeFacts).toEqual(expected);
+      expect(out.result.targets[0].replies.observations.map(r=>r.containerKind==='reply'?r.directParent:undefined)).toEqual([null,{postId:'100',sourceUrl:'https://x.com/a/status/100'}]);
+      expect(JSON.parse(out.text).targets[0].replies.observations.map((r:{directParent:unknown})=>r.directParent)).toEqual([null,{postId:'100',sourceUrl:'https://x.com/a/status/100'}]);
+      expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+    }
+  });
   it('counts exact combined JSON envelope, including escaped text and v2 details',async()=>{
     const result=await searchX(searchInput,fixture([searchHtml(post())]).context);
     const serialized=serializeXResearchResult(result);

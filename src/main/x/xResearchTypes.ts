@@ -233,8 +233,21 @@ export interface XReadDiagnostics {
   scroll?: { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number };
   pointerFailure?: { actionIndex: number; targetPostId: string; controlKind: 'replies_expand'; sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown'; diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic };
 }
+/** Exact counts for this one serialized tool call. Unknown reason values include
+ * absent reasons and unclassified text; they must never become report prose. */
+export interface XReportScopeFacts {
+  version: 1;
+  operation: 'search' | 'read';
+  reasonSource: 'barrier.reason' | 'reason';
+  totalRows: number;
+  statusCounts: Partial<Record<XResearchStatus, number>>;
+  stopReasonCounts: Partial<Record<XStopReason, number>>;
+  reasonCounts: Record<string, number>;
+  replyScopeCounts: Partial<Record<XReplyScope['completeness'], number>>;
+}
 interface XResultBase {
   schemaVersion: 2;
+  reportScopeFacts?: XReportScopeFacts;
   contentProjection?: 'x_research_projection_v1';
   metadataOmissions?: string[];
   /** Secondary model-content metadata omitted while canonical details retain it. */
