@@ -214,7 +214,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
   const replyScope: XReplyScope = {rootPostId:root?.postId??null,branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
   const diagnosticFrame: XReadFrameDiagnostic | undefined = request.stage==='post' ? {
-    stage:'post',location:location.current,
+    stage:'post',snapshotId:snapshot.snapshotId,location:location.current,
     document:{epoch:current.documentEpoch,routeRevision:current.routeRevision,navigationSequence:current.navigationSequence,generation:snapshot.generation},
     rawUrlMatchesPort:exact,requestPostMatchesLocation:currentPost?.id===request.postId,
     regionObserved:raw.region,inventory:{...raw.truncation},rootCandidateCount:postCandidates.length,rootRejections,

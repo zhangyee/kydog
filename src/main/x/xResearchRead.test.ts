@@ -229,6 +229,9 @@ it('preserves the same validated scroll receipt through failure, canonical detai
     });
     const actual=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:1}),f.context);
     const row=actual.targets[0];
+    expect(row.diagnostics?.initialFrame?.snapshotId).toBe(row.diagnostics?.scroll?.first?.snapshotId);
+    if(failed) expect(row.diagnostics?.terminalFrame?.snapshotId).toBe(row.diagnostics?.initialFrame?.snapshotId);
+    else expect(row.diagnostics?.terminalFrame?.snapshotId).not.toBe(row.diagnostics?.initialFrame?.snapshotId);
     expect(row.diagnostics?.scroll).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,targetKind:'document',targetNodeId:7,
       before:240,after:failed?240:840,scrollHeight:1600,clientHeight:600,state:failed?'no_movement':'frame_observed'},
       last:{state:failed?'no_movement':'frame_observed'}});
@@ -239,9 +242,13 @@ it('preserves the same validated scroll receipt through failure, canonical detai
     expect(details.operation).toBe('read');
     if(details.operation!=='read') throw new Error('read details expected');
     expect(details.targets[0].diagnostics?.scroll).toEqual(row.diagnostics?.scroll);
+    expect(details.targets[0].diagnostics?.initialFrame?.snapshotId).toBe(row.diagnostics?.initialFrame?.snapshotId);
+    expect(details.targets[0].diagnostics?.terminalFrame?.snapshotId).toBe(row.diagnostics?.terminalFrame?.snapshotId);
     expect(JSON.parse(serialized.text).targets[0].diagnostics.scroll).toEqual(row.diagnostics?.scroll);
+    expect(JSON.parse(serialized.text).targets[0].diagnostics.initialFrame.snapshotId).toBe(row.diagnostics?.initialFrame?.snapshotId);
     const projected=serializeXResearchResult({...actual,contentProjection:'x_research_projection_v1'});
     expect(JSON.parse(projected.text).targets[0].diagnostics.scroll).toEqual(row.diagnostics?.scroll);
+    expect(JSON.parse(projected.text).targets[0].diagnostics.terminalFrame.snapshotId).toBe(row.diagnostics?.terminalFrame?.snapshotId);
     expect(serialized.text).not.toContain('opaque');
   }
 });

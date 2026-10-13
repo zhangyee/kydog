@@ -110,10 +110,14 @@ describe('X page trusted boundary', () => {
   it('retains the validated source predicates when a later post frame loses its root', () => {
     const f = fixture(wrap(post()));
     const good = decode(f);
+    expect(good.diagnosticFrame?.snapshotId).toBe(good.snapshot.snapshotId);
     expect(good.diagnosticFrame).toMatchObject({rawUrlMatchesPort:true,requestPostMatchesLocation:true,regionObserved:true,rootCandidateCount:1,
       rootRejections:{unnamed:0,authorMismatch:0,permalinkMismatch:0},replyCount:0,repliesExpandControlCount:0,explicitEndObserved:false});
     f.document.querySelector('[data-testid="tweet"]')!.remove();
     const missing = decode(f);
+    expect(missing.diagnosticFrame?.snapshotId).toBe(missing.snapshot.snapshotId);
+    expect(missing.diagnosticFrame?.snapshotId).not.toBe(good.diagnosticFrame?.snapshotId);
+    expect(missing.diagnosticFrame?.document).toEqual(good.diagnosticFrame?.document);
     expect(missing.root).toBeNull();
     expect(missing.diagnosticFrame).toMatchObject({rawUrlMatchesPort:true,requestPostMatchesLocation:true,regionObserved:true,rootCandidateCount:0,
       inventory:{returned:0,totalKnown:0,truncated:false}});
@@ -152,7 +156,8 @@ describe('X page trusted boundary', () => {
     expect(result.root!.text).toBe('root original');
     expect(result.snapshot.url).toBe(url+'?token=secret');
     expect(JSON.stringify(result)).not.toContain('secret');
-    expect(JSON.stringify(result)).not.toContain('snapshot');
+    expect(result.snapshot.snapshotId).toBe(result.diagnosticFrame?.snapshotId);
+    expect(JSON.parse(JSON.stringify(result))).not.toHaveProperty('snapshot');
     expect(result.location.current.redacted).toBe(true);
   });
   it('counts only the bounded collected items, never a whole-page total', () => {

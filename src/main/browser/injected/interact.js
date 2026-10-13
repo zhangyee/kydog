@@ -467,11 +467,6 @@
       if (world.scrollAcknowledgements.has(a.token)) return { ok: false, reason: 'duplicate_scroll_ack' };
       // HTML can be selected as an overflow box; its event still targets Document.
       const eventTarget = target === D.scrollingElement ? D : target;
-      let targetNodeId = world.ids?.get(target) ?? null;
-      if (targetNodeId === null && world.ids && Number.isSafeInteger(world.next)) {
-        targetNodeId = world.next++;
-        world.ids.set(target,targetNodeId);
-      }
       const relationTo = id => {
         if (!Number.isSafeInteger(id) || id < 1 || !world.ids) return 'unknown';
         for (let p=target;p;p=p.parentNode || p.host || null) {
@@ -481,6 +476,11 @@
       };
       const conversationRelation=relationTo(a.relationNodes?.conversationNodeId);
       const rootRelation=relationTo(a.relationNodes?.rootNodeId);
+      let targetNodeId = world.ids?.get(target) ?? null;
+      if (targetNodeId === null && world.ids && Number.isSafeInteger(world.next)) {
+        targetNodeId = world.next++;
+        world.ids.set(target,targetNodeId);
+      }
       const receipt = { token:a.token, generation:world.gen, url:location.href,
         targetKind:eventTarget===D?'document':'element', targetNodeId,
         targetContainsHit:hit ? target.contains(hit) : null,

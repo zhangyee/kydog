@@ -1,5 +1,9 @@
 import { expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { XResearchEvidence } from './xResearchEvidence';
+import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { fixture, post, readHtml } from '../../test-support/xResearchFixture';
 import { createXResearchTool } from '../agent/xResearchTool';
 import type { XResearchResult, XTextObservation } from './xResearchTypes';
@@ -53,6 +57,44 @@ const history = (details: unknown) => ({
     content: [],
     isError: false,
   },
+});
+it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SDK file reopen and branch selection', async () => {
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(),'kydog-x-diagnostic-sdk-'));
+  try {
+    const fresh=await result(), frame=fresh.targets[0].diagnostics?.initialFrame;
+    expect(frame?.snapshotId).toMatch(/^xsnap_/);
+    const old=structuredClone(fresh);
+    delete old.targets[0].diagnostics;
+    const manager=SessionManager.create(dir,dir);
+    const base=manager.appendMessage({role:'user',content:'read history',timestamp:1});
+    const record=(details:typeof fresh)=>{
+      const payload=xResearchToolResult(serializeXResearchResult(details));
+      return manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:details.callId,content:payload.content,details:payload.details,isError:false,timestamp:2});
+    };
+    const freshId=record(fresh);
+    manager.branch(base);
+    const oldId=record(old);
+    // The installed SDK defers its first JSONL flush until an assistant entry exists.
+    manager.appendMessage({role:'assistant',content:[{type:'text',text:'ack'}],api:'openai-completions',provider:'openai',model:'fixture',stopReason:'stop',
+      usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},timestamp:3});
+    const file=manager.getSessionFile();
+    expect(file).toBeDefined();
+    const reopened=SessionManager.open(file!);
+    for(const [id,expected] of [[freshId,frame?.snapshotId],[oldId,undefined]] as const){
+      reopened.branch(id);
+      const messages=reopened.buildSessionContext().messages;
+      const saved=messages.find(m=>m.role==='toolResult');
+      expect(saved?.role).toBe('toolResult');
+      if(saved?.role!=='toolResult') throw new Error('tool result missing from SDK branch');
+      const details=saved.details as typeof fresh;
+      expect(details.targets[0].diagnostics?.initialFrame?.snapshotId).toBe(expected);
+      expect(JSON.parse(saved.content[0].type==='text'?saved.content[0].text:'{}').targets[0].diagnostics?.initialFrame?.snapshotId).toBe(expected);
+      const ledger=new XResearchEvidence(dir,()=> 'restored-run');
+      ledger.restore(reopened.getBranch());
+      expect(ledger.guard(report,citation())).toEqual({createOnly:true});
+    }
+  } finally { await fs.rm(dir,{recursive:true,force:true}); }
 });
 it('onlyProductionObservationsBecomeEvidence: same-container identity, no assistant/page/candidate authority', async () => {
   const r = await result(),

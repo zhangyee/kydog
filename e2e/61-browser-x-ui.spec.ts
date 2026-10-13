@@ -269,6 +269,9 @@ test.describe('X browser port native safety (offline)', () => {
     expect(positiveScroll!.last).toEqual(positiveScroll!.first);
     expect(positiveScroll!.first!.generation).toBe(scrolled.result.targets[0].diagnostics?.initialFrame?.document.generation);
     expect(positiveScroll!.first!.location).toEqual(scrolled.result.targets[0].diagnostics?.initialFrame?.location);
+    expect(positiveScroll!.first!.snapshotId).toBe(scrolled.result.targets[0].diagnostics?.initialFrame?.snapshotId);
+    expect(scrolled.result.targets[0].diagnostics?.terminalFrame?.snapshotId).not.toBe(scrolled.result.targets[0].diagnostics?.initialFrame?.snapshotId);
+    expect(scrolled.result.targets[0].diagnostics?.terminalFrame?.document).toEqual(scrolled.result.targets[0].diagnostics?.initialFrame?.document);
     expect(positiveScroll!.first!.after).toBeGreaterThan(positiveScroll!.first!.before);
     expect(positiveScroll!.first!.scrollHeight).toBeGreaterThan(positiveScroll!.first!.clientHeight);
     // The terminal frame contains one visible reply; the result retains both distinct observations.
@@ -283,6 +286,8 @@ test.describe('X browser port native safety (offline)', () => {
     expect(negativeScroll!.last).toEqual(negativeScroll!.first);
     expect(negativeScroll!.first!.generation).toBe(stopped.diagnostics?.initialFrame?.document.generation);
     expect(negativeScroll!.first!.location).toEqual(stopped.diagnostics?.initialFrame?.location);
+    expect(negativeScroll!.first!.snapshotId).toBe(stopped.diagnostics?.initialFrame?.snapshotId);
+    expect(stopped.diagnostics?.terminalFrame?.snapshotId).toBe(stopped.diagnostics?.initialFrame?.snapshotId);
     expect(negativeScroll!.first!.after).toBe(negativeScroll!.first!.before);
     expect(negativeScroll!.first!.scrollHeight).toBeLessThanOrEqual(negativeScroll!.first!.clientHeight);
     expect(stopped.diagnostics?.terminalFrame).toMatchObject({rootIdentityProven:true,replyCount:1,explicitEndObserved:false});

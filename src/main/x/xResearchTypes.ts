@@ -194,6 +194,7 @@ export interface XReadObservation {
 }
 export interface XReadFrameDiagnostic {
   stage: 'post';
+  snapshotId: string;
   location: XSafeLocation;
   document: { epoch: number; routeRevision: number; navigationSequence: number; generation: string };
   rawUrlMatchesPort: boolean;
