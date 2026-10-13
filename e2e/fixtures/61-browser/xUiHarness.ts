@@ -6,6 +6,7 @@ import tls from 'node:tls';
 import key from './tls-key.pem?raw';
 import cert from './tls-cert.pem?raw';
 import { xClosurePage } from './xClosurePages';
+import { XResearchEvidence } from '../../../src/main/x/xResearchEvidence';
 import { readX } from '../../../src/main/x/xResearchRead';
 import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
@@ -53,7 +54,13 @@ if(['scroller','source'].includes(${JSON.stringify(handle)})) {
   if(!e.isTrusted || e.target!==document)return;
   record('scroll-event');requestAnimationFrame(()=>{
    record('scroll-frame');
-   if(${JSON.stringify(handle)}==='source'){const body=document.querySelector('#rootText'),height=body.getBoundingClientRect().height,before=scrollY,spacer=document.createElement('div');spacer.style.height=height+'px';body.replaceWith(spacer);window.sourceGeometry={before,after:scrollY,height};return;}
+   if(${JSON.stringify(handle)}==='source'){
+    const root=document.querySelector('#rootText').closest('article'),height=root.getBoundingClientRect().height,before=scrollY,spacer=document.createElement('div');
+    spacer.style.height=height+'px';root.replaceWith(spacer);
+    const current=document.createElement('div');current.style.cssText='position:absolute;left:24px;right:24px;top:'+(scrollY+20)+'px';
+    current.innerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/current">@current</a></div><a href="/current/status/805"><time>today</time></a><div data-testid="tweetText">Independent current body</div><div role="link" tabindex="0"><div data-testid="User-Name"><a href="/quoted">@quoted</a></div><a href="/quoted/status/806"><time>today</time></a><div data-testid="tweetText">Nested quote body</div></div></article><article data-testid="tweet"><div data-testid="User-Name"><a href="/wrong">@wrong</a></div><a href="/other/status/807"><time>today</time></a><div data-testid="tweetText">Wrong author body</div></article><article data-testid="tweet"><div data-testid="tweetText">Unnamed body</div></article><article data-testid="tweet"><div data-testid="User-Name"><a href="/preview">@preview</a></div><a href="/preview/status/808"><time>today</time></a><div data-testid="tweetText">Preview parent body</div><div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div></article>';
+    spacer.append(current);window.sourceGeometry={before,after:scrollY,height};return;
+   }
    const first=document.querySelector('#firstReply');
    if(first)first.outerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/fourth">@fourth</a></div><a href="/fourth/status/804"><time>today</time></a><div data-testid="tweetText">Reply rendered after actual scroll</div></article>';
   });
@@ -176,12 +183,15 @@ void app.whenReady().then(async () => {
       await view.executeJavaScript("sessionStorage.removeItem('read-actions')");
       const capture=view.capturePage.bind(view); let rejectedNode=false;
       const evaluate=view.executeJavaScriptInIsolatedWorld.bind(view), readinessFrames:string[]=[];
-      const sourceCleanup={populated:false,cleared:false};
+      const sourceCleanup={populated:false,cleared:false},sourceActions:string[]=[];
+      const dispatch=browser.dispatchAndObserveNavigation.bind(browser);
+      if(mode==='source-state') browser.dispatchAndObserveNavigation=async(...args)=>{sourceActions.push('dispatch:'+args[1].kind);return dispatch(...args);};
       if(mode==='source-state') view.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
         const code=scripts[0].code,collecting=code.includes('const request = {"stage":"post"');
         if(collecting && readinessFrames.length===0) await view.executeJavaScript("window.sourceRegion=document.querySelector('[aria-label=\"Timeline: Conversation\"]');window.sourceParts=Array.from(sourceRegion.children);sourceRegion.replaceChildren()");
         if(code.includes('/* kydog-x-root-release */')) sourceCleanup.populated=await evaluate(WALKER_WORLD_ID,[{code:'!!window.__kydogXRootState?.anchor || !!window.__kydogXRootState?.pending'}]);
         const raw=await evaluate(world,scripts,...rest);
+        if(collecting && raw.posts.some((p:{postId:string|null})=>p.postId==='805') && !raw.posts.some((p:{postId:string|null})=>p.postId==='321'))sourceActions.push('collection:rootless');
         if(collecting && readinessFrames.length===0){readinessFrames.push('initial-empty');await view.executeJavaScript('sourceRegion.append(...sourceParts)');}
         if(code.includes('/* kydog-x-root-release */')) sourceCleanup.cleared=await evaluate(WALKER_WORLD_ID,[{code:'window.__kydogXRootState === undefined'}]);
         return raw;
@@ -214,8 +224,15 @@ void app.whenReady().then(async () => {
         const actions=await view.executeJavaScript("JSON.parse(sessionStorage.getItem('read-actions')||'[]')");
         const currentPosts=await view.executeJavaScript("Array.from(document.querySelectorAll('a[href]')).filter(a=>a.querySelector('time')).map(a=>a.getAttribute('href'))");
         const sourceGeometry=mode==='source-state'?await view.executeJavaScript('window.sourceGeometry'):null;
-        return {result,actions,currentPosts,rejectedNode,readinessFrames,sourceCleanup,sourceGeometry,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
-      } finally {view.capturePage=capture;view.executeJavaScriptInIsolatedWorld=evaluate;}
+        const citationChecks:Record<string,string>={};
+        if(mode==='source-state'){
+          const ledger=new XResearchEvidence('/tmp',()=> 'native-run');ledger.observe(result);
+          for(const [name,uri] of Object.entries({root:url,own:'https://x.com/current/status/805',preview:'https://x.com/preview/status/808',quote:'https://x.com/quoted/status/806',bad:'https://x.com/other/status/807'})){
+            try{ledger.guard('/tmp/report.md',`[source](${uri})`);citationChecks[name]='allowed';}catch(error){citationChecks[name]=String(error);}
+          }
+        }
+        return {result,actions,currentPosts,rejectedNode,readinessFrames,sourceCleanup,sourceGeometry,sourceActions,citationChecks,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
+      } finally {view.capturePage=capture;view.executeJavaScriptInIsolatedWorld=evaluate;browser.dispatchAndObserveNavigation=dispatch;}
     },
     collectedPermission: async (mode: string) => {
       const opened=await port.open('https://x.com/alice/status/123',undefined);

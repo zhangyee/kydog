@@ -9,6 +9,7 @@ import {
   X_RESEARCH_MAX_OUTPUT_BYTES,
   type XResearchResult,
   type XTextObservation,
+  type XUnscopedPost,
   type XCollectionTransition,
   type XReportScopeFacts,
 } from './xResearchTypes';
@@ -72,7 +73,7 @@ export function xResearchToolResult(value: XSerializedResult): {
     details: value.result,
   };
 }
-function texts(result: XResearchResult): XTextObservation[] {
+function texts(result: XResearchResult): (XTextObservation | XUnscopedPost)[] {
   return result.operation === 'search'
     ? result.queries.flatMap((q) => [...q.posts,...(q.postObservations??[])])
     : result.targets.flatMap((t) => [
@@ -81,9 +82,10 @@ function texts(result: XResearchResult): XTextObservation[] {
         ...t.quotedPosts,
         ...(t.article.body ? [t.article.body] : []),
         ...t.replies.observations,
+        ...(t.unscopedPosts?.observations ?? []),
       ]);
 }
-function body(p: XTextObservation) {
+function body(p: XTextObservation | XUnscopedPost) {
   return {
     ...(p.articlePreviewInventory ? {articlePreviewInventory:p.articlePreviewInventory}:{}),
     ...(p.articlePreviews ? { articlePreviews: p.articlePreviews } : {}),
@@ -92,6 +94,7 @@ function body(p: XTextObservation) {
     sourceUrl: p.sourceUrl,
     authorHandle: p.author?.handle ?? null,
     containerKind: p.containerKind,
+    ...(p.containerKind==='unscoped_post'?{relationToTarget:p.relationToTarget,observedContainer:p.observedContainer}:{}),
     ...(p.containerKind === 'reply' ? { directParent: p.directParent } : {}),
     text: p.text,
     truncation: p.truncation,
@@ -177,6 +180,7 @@ function projection(result: XResearchResult) {
     ...base,
     targets: result.targets.map((t, index) => ({
       targetIndex: index,
+      ...(t.unscopedPosts?{unscopedPosts:{...t.unscopedPosts,observations:t.unscopedPosts.observations.map(body)}}:{}),
       ...(t.articlePreviewObservations?{articlePreviewObservations:t.articlePreviewObservations}:{}),
       ...(t.inventoryAuditOmitted?{inventoryAuditOmitted:t.inventoryAuditOmitted}:{}),
       inputKind: t.inputKind,
@@ -499,6 +503,10 @@ export function assertXRequestFits(original: XResearchResult): void {
         t.inventoryAuditOmitted={count:Number.MAX_SAFE_INTEGER,first:{observationId:uuid,postId:t.root.postId!,sourceUrl:t.root.sourceUrl!,authorHandle:t.root.author!.handle!}};
         t.article.entryIdentity = sizingIdentity;
       }
+      if(t.replies.requested) t.unscopedPosts={observations:[],
+        collection:{snapshotId:`xsnap_${uuid}`,document:{epoch:Number.MAX_SAFE_INTEGER,routeRevision:Number.MAX_SAFE_INTEGER,navigationSequence:Number.MAX_SAFE_INTEGER,generation:'g'.repeat(32)},location:{origin:'https://twitter.com',path:'p'.repeat(X_MAX_SOURCE_URL_UNITS),q:null,f:null,fragment:null,redacted:false}},
+        inventory:{scope:'collection',observed:100,retained:0,omitted:100,sourceInventoryTruncated:true,excludedNestedQuotes:100},
+        previewGaps:Array.from({length:100},()=>({sourceUrl:'u'.repeat(X_MAX_SOURCE_URL_UNITS),unresolved:Number.MAX_SAFE_INTEGER}))};
       t.article.entryObserved = true;
       t.article.actionAttempted = true;
       t.article.navigationStarted = true;
@@ -556,6 +564,12 @@ export function serializeXResearchResult<T extends XResearchResult>(
         !!result.metadataOmissions?.length ||
         !!result.contentMetadataOmissions?.length,
     };
+    if(result.operation==='read') for(const row of result.targets) if(row.unscopedPosts) {
+      row.unscopedPosts.inventory.retained=row.unscopedPosts.observations.length;
+      row.unscopedPosts.inventory.omitted=row.unscopedPosts.inventory.observed-row.unscopedPosts.inventory.retained;
+      row.budgetUsage.distinctEntries=new Set([...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,...(row.article.body?[row.article.body]:[]),...row.unscopedPosts.observations].map(p=>p.postId)).size;
+    }
+    if(result.operation==='read' && result.targets.some(row=>row.unscopedPosts)) result.budgetUsage.distinctEntries=result.targets.reduce((sum,row)=>sum+row.budgetUsage.distinctEntries,0);
     return measure(result, projected);
   };
   let value = update();
@@ -566,6 +580,21 @@ export function serializeXResearchResult<T extends XResearchResult>(
   value = update();
   if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
     return value;
+  // Independent failure-frame bodies are optional; their exact own-parent gap
+  // facts are required state. Remove whole items before touching scoped history.
+  if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
+    const envelope=row.unscopedPosts;if(!envelope?.observations.length) continue;
+    const entries=[...envelope.observations];
+    const path=`targets.${index}.unscopedPosts.observations`;
+    if(!(result.metadataOmissions??=[]).includes(path)) result.metadataOmissions.push(path);
+    let lo=0,hi=entries.length;
+    while(lo<hi) {
+      const mid=Math.ceil((lo+hi)/2);envelope.observations=entries.slice(0,mid);
+      if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;
+    }
+    envelope.observations=entries.slice(0,lo);value=update();
+    if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
   for (const p of bodies
     .filter((b) => b.text.length)
     .sort((a, b) => b.text.length - a.text.length)) {

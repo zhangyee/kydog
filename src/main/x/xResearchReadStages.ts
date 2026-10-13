@@ -219,6 +219,15 @@ export async function collectPostFrame(
     stage.collectionBudget,
   );
   checkReadCancelled(context);
+  if(row.replies.requested && observed.unscopedPosts && !observed.root && !observed.article && !observed.state
+    && row.unscopedPosts?.collection.snapshotId!==observed.unscopedPosts.collection.snapshotId) {
+    row.unscopedPosts=observed.unscopedPosts;
+    row.budgetUsage.distinctEntries=new Set([
+      ...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,
+      ...(row.article.body?[row.article.body]:[]),...row.unscopedPosts.observations,
+    ].map(p=>p.postId)).size;
+    // Navigation hints are registered from final serialized canonical details only.
+  }
   if (observed.diagnosticFrame) {
     const diagnostics = row.diagnostics ??= {version:1};
     diagnostics.initialFrame ??= observed.diagnosticFrame;

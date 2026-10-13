@@ -4,6 +4,7 @@ import { readX, readResult } from './xResearchRead';
 import { readHtml } from '../../test-support/xResearchFixture';
 import { searchX, searchResult } from './xResearchSearch';
 import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
+import { XResearchEvidence } from './xResearchEvidence';
 import { X_RESEARCH_MAX_OUTPUT_BYTES } from './xResearchTypes';
 describe('bounded X production tool result',()=>{
   it('keeps actual unchanged-control read reasons distinct from page text and absent reasons',async()=>{
@@ -329,4 +330,36 @@ it('caps displaced body observations honestly and retains their known Article ci
   ledger.observe(plain.result);
   expect(()=>ledger.guard('/tmp/report.md','[root](https://x.com/alice/status/123)')).toThrow(/Article/);
   expect(serializeXResearchResult(capped.result)).toEqual(capped);
+});
+
+it('budgets independent bodies before scoped history and protects every own-parent preview gap',async()=>{
+  const cover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
+  const html=Array.from({length:100},(_,i)=>post(String(1000+i),'b',('汉\\"😀').repeat(500)).replace('</article>',cover+'</article>')).join('');
+  const input={tabId:'tab',read:{objective:'budget',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:100,maxScrollsPerPost:1,maxExpandActionsPerPost:0}};
+  const actual=await readX(input,fixture([readHtml(post()+post('222','c','retained history')),readHtml(html)]).context);
+  expect(actual.targets[0].unscopedPosts?.observations).toHaveLength(100);
+  expect(actual.targets[0].unscopedPosts?.previewGaps).toHaveLength(100);
+  for(const count of [1,20]){
+    const source=structuredClone(actual);source.targets=Array.from({length:count},()=>structuredClone(actual.targets[0]));
+    const out=serializeXResearchResult(source),bytes=Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8');
+    expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+    expect(out.result.budgetUsage.outputBytes).toBe(bytes);
+    const projected=JSON.parse(out.text);
+    for(const [index,row] of out.result.targets.entries()){
+      expect(row.root?.text).toBe('original');expect(row.replies.observations[0].text).toBe('retained history');
+      expect(row.unscopedPosts?.previewGaps).toEqual(source.targets[index].unscopedPosts?.previewGaps);
+      expect(projected.targets[index].unscopedPosts.previewGaps).toEqual(row.unscopedPosts?.previewGaps);
+      expect(row.unscopedPosts!.inventory.retained+row.unscopedPosts!.inventory.omitted).toBe(100);
+      expect(row.unscopedPosts!.inventory.retained).toBe(row.unscopedPosts!.observations.length);
+      expect(row.budgetUsage.distinctEntries).toBe(2+row.unscopedPosts!.observations.length);
+      expect(row).toMatchObject({reason:'post_identity_unproven',stopReason:'identity_unproven'});
+      for(const p of row.unscopedPosts!.observations)expect(p).toMatchObject({relationToTarget:'unproven',observedContainer:'post'});
+    }
+    const ledger=new XResearchEvidence('/tmp',()=> 'run');
+    const old=await readX({...input,read:{...input.read,targets:[{url:'https://x.com/b/status/1099'}],includeReplies:false,maxScrollsPerPost:0}},fixture([readHtml(post('1099','b','older own body'))]).context);
+    ledger.observe(old);expect(ledger.guard('/tmp/report.md','[source](https://x.com/b/status/1099)')).toBeUndefined();
+    ledger.observe(out.result);expect(()=>ledger.guard('/tmp/report.md','[source](https://x.com/b/status/1099)')).toThrow(/inventory is unknown/);
+    expect(serializeXResearchResult(out.result)).toEqual(out);
+  }
+  expect(()=>serializeXResearchResult({...actual,objective:'x'.repeat(X_RESEARCH_MAX_OUTPUT_BYTES)})).toThrow(/required-state envelope/);
 });

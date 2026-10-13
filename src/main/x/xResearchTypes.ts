@@ -59,6 +59,22 @@ export type XTextObservation = XTextBase & (
   | { containerKind: 'reply'; postId: string; directParent: XReplyBranch | null }
   | { containerKind: 'article' | 'unattributed_fragment'; postId: string | null }
 );
+/** Independent own-container evidence; never a target root, reply, or quote role. */
+export type XUnscopedPost = XTextBase & {
+  containerKind: 'unscoped_post'; relationToTarget: 'unproven'; observedContainer: 'post';
+  postId: string; sourceUrl: string; author: XAuthorIdentity & {handle:string};
+};
+export interface XUnscopedPosts {
+  observations: XUnscopedPost[];
+  collection: {
+    snapshotId:string;
+    document:{epoch:number;routeRevision:number;navigationSequence:number;generation:string};
+    location:XSafeLocation;
+  };
+  inventory:{scope:'collection';observed:number;retained:number;omitted:number;sourceInventoryTruncated:boolean;excludedNestedQuotes:number};
+  /** Protective source facts, including own parents with no body. Never budget-optional. */
+  previewGaps:{sourceUrl:string;unresolved:number}[];
+}
 export interface XAccessBarrier { status: XResearchStatus; reason: string; observationId: string | null }
 export interface XControlBinding { nodeId: number; index: number; snapshotId: string; generation: string }
 export interface XArticleEntry {
@@ -123,7 +139,7 @@ export interface XLocationFacts {
 }
 export interface XObservedSource {
   urlKind: 'permalink' | 'document'; sourceUrl: string; observationId: string;
-  rootObservationId: string | null; observedAt: string; containerKind: XTextObservation['containerKind'];
+  rootObservationId: string | null; observedAt: string; containerKind: XTextObservation['containerKind'] | XUnscopedPost['containerKind'];
   runId: string; callId: string; batchId: string;
   queryId: string | null; query: string | null; purpose: string | null; product: 'Top' | 'Latest' | null;
 }
@@ -164,6 +180,7 @@ export interface XArticlePreviewScopeObservation {
   articlePreviewInventory:XArticlePreviewInventory;
 }
 export interface XReadObservation {
+  unscopedPosts?: XUnscopedPosts;
   /** Bounded, read-only source facts from this target's actual validated frames and actions. */
   diagnostics?: XReadDiagnostics;
   /** Earlier exact source observations displaced from the current per-post view. */

@@ -98,6 +98,43 @@ describe('fixed X page DOM source', () => {
 describe('X page trusted boundary', () => {
   const facts = (rawUrl: string) => ({currentUrl:rawUrl,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:rawUrl});
   const decode = (f: ReturnType<typeof fixture>, r: any = request, at = url) => decodeXPage(f.collect(r),r,facts(at),{parentArticle:false});
+  it('preserves only current independently named top-level bodies after focal root loss', () => {
+    const quote = `<div role="link" tabindex="0">${author('quoted')}<div data-testid="tweetText">quote words</div>${permalink('444','quoted')}</div>`;
+    const cover = '<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
+    const f=fixture(wrap(post()+post('456','bob','own body',quote)+post('789','carol','preview body',cover)+post('790','dave','',cover)));
+    const before=decode(f);
+    expect(before.root?.text).toBe('root original');
+    expect(before.replies.map(p=>p.postId)).toEqual(['456','789','790']);
+    f.document.querySelector('[data-testid="tweet"]')!.remove();
+    const after=decode(f);
+    expect(after.unscopedPosts?.observations.map(p=>[p.postId,p.containerKind,p.relationToTarget,p.observedContainer])).toEqual([['456','unscoped_post','unproven','post'],['789','unscoped_post','unproven','post']]);
+    expect(after.unscopedPosts?.previewGaps).toEqual([{sourceUrl:'https://x.com/carol/status/789/history',unresolved:1},{sourceUrl:'https://x.com/dave/status/790/history',unresolved:1}]);
+    expect(after.unscopedPosts?.inventory).toEqual({scope:'collection',observed:2,retained:2,omitted:0,sourceInventoryTruncated:false,excludedNestedQuotes:1});
+    expect(after.unscopedPosts?.collection.snapshotId).toBe(after.snapshot.snapshotId);
+    expect(after).toMatchObject({root:null,identityProven:false,replies:[],quotedPosts:[],controls:[],entries:[]});
+    for(const change of ['author','stamp','sidebar','auth','region'] as const){
+      const candidate=fixture(wrap(post('456','bob','own body')));
+      expect(decode(candidate).unscopedPosts?.observations[0]?.text).toBe('own body');
+      if(change==='author') candidate.document.querySelectorAll('[data-testid="User-Name"] a').forEach(a=>a.setAttribute('href','/wrong'));
+      if(change==='stamp') candidate.document.querySelector('time')!.remove();
+      if(change==='sidebar') candidate.document.querySelector('#sidebar')!.append(candidate.document.querySelector('[data-testid="tweet"]')!);
+      if(change==='auth'){candidate.document.body.insertAdjacentHTML('beforeend','<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>');candidate.evaluate("history.pushState({},'', '/i/jf/onboarding/web')");}
+      if(change==='region') candidate.document.querySelector('[aria-label]')!.removeAttribute('aria-label');
+      expect(decode(candidate,request,change==='auth'?'https://x.com/i/jf/onboarding/web':url).unscopedPosts?.observations??[],change).toEqual([]);
+    }
+    expect(decode(f,request,url+'?other=1').unscopedPosts).toBeUndefined();
+    for(const suffix of ['/history','/photo/1']){
+      const unsupported=fixture(wrap(post('456','bob','own body')),url+suffix);
+      expect(decode(unsupported,{...request,expectedUrl:url+suffix},url+suffix).unscopedPosts).toBeUndefined();
+    }
+    const many=fixture(wrap(post('456','bob','many previews',cover.repeat(120))));
+    expect(decode(many).unscopedPosts?.previewGaps).toEqual([{sourceUrl:'https://x.com/bob/status/456/history',unresolved:120}]);
+    const malformed=f.collect();malformed.posts[0].text='x'.repeat(4001);
+    expect(()=>decodeXPage(malformed,request,facts(url),{parentArticle:false})).toThrow(/Invalid X page/);
+    const duplicate=fixture(wrap(post()+post()));
+    expect(decode(duplicate).unscopedPosts?.observations.map(p=>p.postId)).toEqual(['123','123']);
+    expect(new Set(decode(duplicate).unscopedPosts?.observations.map(p=>p.observationId)).size).toBe(2);
+  });
   it('requires current raw source and actual own identity before naming a root', () => {
     const f=fixture();
     expect(decode(f).root).toMatchObject({postId:'123',text:'root original'});
@@ -643,5 +680,31 @@ it('source validator admits only bounded finite private-free diagnostic values',
   expect(sourceRootStateSchema.safeParse(state).success).toBe(true);
   for(const mutation of [(s:any)=>s.root.shown='outside_viewport',(s:any)=>s.root.href=url,(s:any)=>s.identity.nameCount=34,(s:any)=>s.identity.members='virtualized',(s:any)=>s.nonce='secret']){
     const invalid=structuredClone(state);mutation(invalid);expect(sourceRootStateSchema.safeParse(invalid).success).toBe(false);
+  }
+});
+
+it('requires the actual port collection coordinates and lifetime for unscoped source retention',async()=>{
+  for(const mode of ['epoch','route','sequence','url','raw','cancel'] as const){
+    const f=fixture(wrap(post('456','bob','port own body'))),abort=new AbortController();
+    const facts={currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:url};
+    let invalidate=false;
+    const service={researchTabStatus:()=>'available',enqueue:(_id:string,work:()=>Promise<unknown>)=>work(),withAgentDriving:(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:()=>({...facts}),prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>{
+      const raw=f.evaluate(code);
+      if(invalidate && code.includes('const request =')){
+        if(mode==='epoch')facts.documentEpoch++;
+        if(mode==='route')facts.routeRevision++;
+        if(mode==='sequence')facts.navigationSequence++;
+        if(mode==='url')facts.currentUrl='https://x.com/alice/status/999';
+        if(mode==='raw'){raw.rawUrl+='?changed=1';raw.snapshot.url=raw.rawUrl;}
+        if(mode==='cancel')abort.abort();
+      }
+      return raw;
+    }};
+    await createXResearchBrowser(service as never,'thread').withPage('tab',abort.signal,async page=>{
+      expect((await page.collect(request)).unscopedPosts?.observations[0].text).toBe('port own body');
+      invalidate=true;
+      if(mode==='raw')expect((await page.collect(request)).unscopedPosts).toBeUndefined();
+      else await expect(page.collect(request)).rejects.toMatchObject({code:mode==='cancel'?'browser.cancelled':'browser.stale_snapshot'});
+    }).catch(error=>{if(mode!=='cancel')throw error;expect(error.code).toBe('browser.cancelled');});
   }
 });

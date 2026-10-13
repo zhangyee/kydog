@@ -21,6 +21,8 @@ read 必须提供原 `tabId`、`objective` 和 `targets`；目标使用观察到
 
 当前工具仅主动展开目标主帖正文。引用帖和回复保留各自实际渲染的范围、原始作者与 URL；核心引用需要更完整正文时，独立 read 其已观察到的自身 URL。父帖读取不证明所有引用帖、回复或讨论都读全。显示回复数与取得条数分开；`ui_scope_end_observed` 仅限明确提示所属的当前账号、页面、分支与排序范围。预算停止的 completeness 仍为 unknown。
 
+仅当 includeReplies=true，主帖身份在当前帧无法确认时，工具仍可在 `unscopedPosts` 保留同页独立确认作者、原链接和正文的顶层帖子，标记 `unscoped_post`、`relationToTarget=unproven`。它们与目标帖的关系未证明，不是目标回复或引用帖，也不计入回复范围；当前目标仍按 partial/identity_unproven 停止。仅可引用各自非空正文的原链接，需要更多内容时按各自 URL 独立补读。已见 Article 预览的父帖义务不会因正文或项目被预算省略而消失；按准确同父帖入口补读或省略引用。
+
 准备引用且观察到 Article 预览的父帖，必须先对其准确文章入口做实际尝试。分别核对 `requested`、`entryObserved`、`actionAttempted`、`navigationStarted`、`bodyObserved` 与阻碍；includeArticle 或父帖导航不代表文章访问。标题、预览、图片、嵌入链接不代表正文。多入口、入口清单遗漏或无法证明归属时保留 unknown，按守卫给的精确目标补读，不把一个入口的尝试当全部入口已读。真实动作或导航失败允许交付有明确范围的报告；没有看到入口只说未观察到，普通帖子不写成 Article 失败。
 
 工具返回 `auth_required` 或 `action_required` 后，主 agent 单独调用 `ask_user_question`，带返回的 `browserTabId` 请用户在原标签登录或处理挑战。等待新的明确用户确认后才重试；刷新、头像、Gmail/Google 提示均不是确认。用户跳过则保留缺口。访问失败保留原标签；只有明确已关闭或销毁才在下一次请求重新建立标签，不自动重放整批。必要外链或官方文档用新标签核验，保留 X 标签；匿名 worker 不继承 X 会话，不能代替此处的正文观察。
@@ -31,7 +33,7 @@ read 必须提供原 `tabId`、`objective` 和 `targets`；目标使用观察到
 
 写入前逐条核对会改变答案的判断：来源是否直接记录**同一组件组合、模型与配置的实际运行**？某组件支持一个模型、另一组件固定到该 backend，以及分别谈到两者，不能合成这套配置已运行的证据；提问、建议或修辞比较也不证明叠加互通。缺少组合实测时明确写未验证或标为自己的推断。讨论区同页出现只证明共同被观察；只有所引用项目本身的 `directParent` 非 null 且与指定父帖身份匹配，才称它直接回复该帖。`directParent` 为 null 时只说在观察到的讨论中出现。Mermaid 边与文字结论遵守同样的证据强度。
 
-写范围句前，按当前 run 中每个实际 `callId` 去重，核对每次 search/read 的最终逐行 `status`、`stopReason` 与原因；可用该次结果的 `reportScopeFacts` 核算，`reasonCounts` 的来源由 `reasonSource` 指明，`unknown` 不能猜成具体原因。分开数显式无结果、等待超时、所选容器零移动、预算停止、身份未证与动作拒绝；read 的 `partial` 和回复 `unknown` 也要说明影响判断的缺口。单次结果的计数只属于本 call，只合并同一 run 的不同 call；历史正文观察次数不等于独立来源数。内部逐行核对后，在报告中只用简短自然语言说明范围，不承诺穷尽。
+写范围句前，按当前 run 中每个实际 `callId` 去重，核对每次 search/read 的最终逐行 `status`、`stopReason` 与原因；可用该次结果的 `reportScopeFacts` 核算，`reasonCounts` 的来源由 `reasonSource` 指明，`unknown` 不能猜成具体原因。分开数显式无结果、等待超时、所选容器零移动、预算停止、身份未证与动作拒绝；read 的 `partial` 和回复 `unknown` 也要说明影响判断的缺口。单次结果的计数只属于本 call，只合并同一 run 的不同 call；历史正文观察次数不等于独立来源数。历史讨论项与当前 unscoped 项分别核算；同一原帖 URL 的多次观察不重复计为新来源。unscoped 只能说同页独立观察，不能套用“在目标讨论中出现”的回复表述。引用守卫核对 URL、正文与 Article 义务，不验证报告句子中的父子关系，措辞须逐项人工核对。内部逐行核对后，在报告中只用简短自然语言说明范围，不承诺穷尽。
 
 报告四段：标题与原始问题/日期；3–5 条核心判断；按问题组织的主题分析；反证、争议与未核实项。引用和范围紧邻论证，避免逐帖流水账。仅在确实帮助解释机制时画 Mermaid，节点和关系有证据，交付前检查实际渲染。不生成 query 表、检索记录、工具计数、协议或调试附录；只用简短自然语言说明影响结论的缺口。
 

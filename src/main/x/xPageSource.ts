@@ -9,7 +9,7 @@ import type { BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
 import type { XActionResult, XOpenResult, XQueuedPage } from './xResearchBrowser';
 import { compareXLocation, toSafeXLocation, parseXSourcePost, parseXPostCoordinates, isXPostId, isXHandle, parseXArticleAnalyticsHref, X_MAX_RAW_URL_UNITS } from './xResearchIdentity';
-import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope, XReadFrameDiagnostic, XSourceRootState } from './xResearchTypes';
+import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation, XResearchStatus, XSafeLocation, XTextObservation, XTruncation, XReplyScope, XReadFrameDiagnostic, XSourceRootState, XUnscopedPost, XUnscopedPosts } from './xResearchTypes';
 
 export type XPageRequest =
   | { stage: 'search'; expectedUrl: string; query: string; product: 'Top' | 'Latest' }
@@ -17,6 +17,7 @@ export type XPageRequest =
   | { stage: 'article'; expectedUrl: string; entry: XArticleEntry; via: { kind: 'action'; result: XActionResult } | { kind: 'open'; result: XOpenResult } };
 export interface XPageControl { kind: 'body_expand' | 'replies_expand' | 'article_entry'; postId: string | null; binding: XControlBinding; sourceRelation?: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown' }
 export interface XPageObservation {
+  unscopedPosts?: XUnscopedPosts;
   /** Source predicates from this validated collection; never an authorization input. */
   diagnosticFrame?: XReadFrameDiagnostic;
   stage: XPageRequest['stage']; status: XResearchStatus; identityProven: boolean;
@@ -214,6 +215,23 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     if (directArticle) identityProven=true;
     article={...(nativeIdentity?{nativeIdentity}:{}),title:a.title,blocks:a.blocks,links:a.links.map(l=>({...safeLink(l.url),text:l.text})),body:{observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:articleSource.url,author:a.author,text,observedAt,containerKind:'article',postId:articleSource.id,truncation:{returned:text.length,totalKnown:a.truncated?null:text.length,truncated:a.truncated}}};
   }
+  // Focal admission still fails. Retain only independently source-named ordinary
+  // top-level containers from this same fixed collection, without action authority.
+  let unscopedPosts:XUnscopedPosts|undefined;
+  if(request.stage==='post' && !root && !raw.article && !raw.state && exact && raw.region
+    && currentPost?.id===request.postId && !/\/history\/?$/.test(new URL(current.currentUrl).pathname)
+    && publicPost(request.expectedUrl,true)?.id===request.postId && !/\/history\/?$/.test(new URL(request.expectedUrl).pathname)) {
+    const candidates=raw.posts.filter(p=>p.scope==='post' && named(p));
+    const previewGaps=candidates.filter(p=>p.articleEntryCount>0).map(p=>({sourceUrl:p.permalink!,unresolved:p.articleEntryCount}));
+    const observations:XUnscopedPost[]=candidates.filter(p=>p.text.trim()).map(p=>({
+      ...makeText(p,'root_post'),containerKind:'unscoped_post',relationToTarget:'unproven',observedContainer:'post',
+      postId:p.postId!,sourceUrl:p.permalink!,author:p.author as XUnscopedPost['author'],
+      articlePreviewInventory:{scope:'collection',observed:0,retained:0,omitted:0,unresolved:p.articleEntryCount},
+    }));
+    if(observations.length || previewGaps.length) unscopedPosts={observations,previewGaps,
+      collection:{snapshotId:snapshot.snapshotId,document:{epoch:current.documentEpoch,routeRevision:current.routeRevision,navigationSequence:current.navigationSequence,generation:snapshot.generation},location:location.current},
+      inventory:{scope:'collection',observed:observations.length,retained:observations.length,omitted:0,sourceInventoryTruncated:raw.truncation.truncated,excludedNestedQuotes:raw.posts.filter(p=>p.scope==='quote').length}};
+  }
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
   const replyScope: XReplyScope = {rootPostId:root?.postId??null,branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
   const diagnosticFrame: XReadFrameDiagnostic | undefined = request.stage==='post' ? {
@@ -226,7 +244,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     replyCount:replies.length,repliesExpandControlCount:controls.filter(c=>c.kind==='replies_expand').length,
     explicitEndObserved:!!replyScope.endEvidence,
   } : undefined;
-  const result = {replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  const result = {...(unscopedPosts?{unscopedPosts}:{}),replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
   if(rootContainerKey!==null) decodedRootKeys.set(result,rootContainerKey);
   Object.defineProperty(result,'entryParents',{value:entryParents,enumerable:false});
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});

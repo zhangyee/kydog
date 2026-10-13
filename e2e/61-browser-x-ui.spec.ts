@@ -15,7 +15,7 @@ interface Harness {
   read(): Promise<State>;
   sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
   longBodyNoControl():Promise<{domBody:string;detailRoot:import('../src/main/x/xResearchTypes').XTextObservation|null;detailQuote:import('../src/main/x/xResearchTypes').XTextObservation|null;detailReply:import('../src/main/x/xResearchTypes').XTextObservation|null;detailControls:string[];searchPost:import('../src/main/x/xResearchTypes').XTextObservation|null;buttonControls:string[];buttonExpandActions:number;buttonRootText:string|undefined;result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;activeTabId:string;userTabId:string}>;
-  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];sourceCleanup:{populated:boolean;cleared:boolean};sourceGeometry:{before:number;after:number;height:number}|null;activeTabId:string;userTabId:string}>;
+  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];sourceCleanup:{populated:boolean;cleared:boolean};sourceGeometry:{before:number;after:number;height:number}|null;sourceActions:string[];citationChecks:Record<string,string>;activeTabId:string;userTabId:string}>;
   collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
   typingBoundary(mode: string): Promise<{ before: State; after: State; error: string | null; destination: { query: string; other: string; active: string } }>;
@@ -40,10 +40,10 @@ test.describe('X browser port native safety (offline)', () => {
   }, { fn: fn.toString(), value }) as Promise<T>;
   test.beforeAll(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-x-ui-native-'));
-    await build({ configFile: false, root: path.resolve(__dirname, '..'), logLevel: 'warn', build: {
+    await build({ configFile: false, resolve:{conditions:['node']}, root: path.resolve(__dirname, '..'), logLevel: 'warn', build: {
       outDir: path.join(dir, 'bundle'), emptyOutDir: true, target: 'node22',
       lib: { entry: path.resolve(__dirname, 'fixtures/61-browser/xUiHarness.ts'), formats: ['cjs'], fileName: () => 'harness.cjs' },
-      rollupOptions: { external: id => id === 'electron' || id.startsWith('node:') },
+      rollupOptions: { external: id => id === 'electron' || id==='jsdom' || id.startsWith('node:'), output:{paths:{jsdom:require.resolve('jsdom')}} },
     } });
     app = await _electron.launch({ args: [path.join(dir, 'bundle/harness.cjs'), '--force-device-scale-factor=1',
       ...(process.platform === 'darwin' ? ['-AppleShowScrollBars', 'Always'] : []), `--user-data-dir=${path.join(dir, 'profile')}`],
@@ -55,11 +55,11 @@ test.describe('X browser port native safety (offline)', () => {
   test.afterAll(async () => {
     try { if (app) await control(async h => { h.stop(); }); }
     finally { if (app) await app.close(); }
-    if (dir && !failed) await fs.rm(dir, {recursive:true,force:true});
+    if (dir && !failed && app) await fs.rm(dir, {recursive:true,force:true});
     else if (dir) console.info('[retained-native-failure-directory]',dir);
   });
 
-  test('admitted original source root survives real scroll body removal as diagnostics while normal read refuses',async()=>{
+  test('real root removal preserves own current bodies and preview gaps while stopping target discussion',async()=>{
     const receipt=await control(h=>h.readStages('source-state'));
     console.info('[original-source-root-native]',JSON.stringify(receipt));
     const row=receipt.result.targets[0],first=row.diagnostics?.firstAdmittedFrame,terminal=row.diagnostics?.terminalFrame;
@@ -69,9 +69,9 @@ test.describe('X browser port native safety (offline)', () => {
       root:{connection:'connected',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:true,inRawPosts:true,shown:'pass'},
       identity:{members:'same',coordinates:'same',owned:true,rendered:'same'}}});
     expect(terminal).toMatchObject({rootIdentityProven:false,sourceRootState:{anchorSnapshotId:first?.snapshotId,availability:'captured',
-      conversation:{candidates:'unique',sameObject:true,connected:true,sameDocument:true,containsRoot:true},
-      root:{connection:'connected',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:true,inRawPosts:false,shown:'pass'},
-      identity:{members:'same',coordinates:'same',owned:true,rendered:'same'}}});
+      conversation:{candidates:'unique',sameObject:true,connected:true,sameDocument:true,containsRoot:false},
+      root:{connection:'detached',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:false,inRawPosts:false,shown:'dimensions'},
+      identity:{members:'same',coordinates:'same',owned:true,rendered:'missing'}}});
     expect(terminal?.document).toEqual(first?.document);
     expect(row).toMatchObject({status:'partial',reason:'post_identity_unproven',stopReason:'identity_unproven',root:{text:'Native preview',postId:'321'},replies:{observations:[{postId:'801'}]},budgetUsage:{scrolls:1,expandActions:0}});
     expect(row.diagnostics?.scroll?.last).toMatchObject({state:'frame_observed',written:true,eventObserved:true,frameObserved:true});
@@ -79,6 +79,16 @@ test.describe('X browser port native safety (offline)', () => {
     expect(receipt.sourceGeometry?.before).toBe(row.diagnostics?.scroll?.last?.after);
     expect(receipt.sourceGeometry?.after).toBe(receipt.sourceGeometry?.before);
     expect(receipt.actions).toEqual(['scroll-event','scroll-frame']);
+    expect(receipt.sourceActions).toEqual(['dispatch:scroll','collection:rootless']);
+    expect(row.unscopedPosts?.observations.map(p=>[p.postId,p.relationToTarget,p.observedContainer])).toEqual([['805','unproven','post'],['808','unproven','post'],['801','unproven','post']]);
+    expect(row.unscopedPosts?.inventory).toEqual({scope:'collection',observed:3,retained:3,omitted:0,sourceInventoryTruncated:false,excludedNestedQuotes:1});
+    expect(row.unscopedPosts?.previewGaps).toEqual([{sourceUrl:'https://x.com/preview/status/808',unresolved:1}]);
+    expect(row.unscopedPosts?.collection.snapshotId).toBe(terminal?.snapshotId);
+    expect(row.unscopedPosts?.observations.find(p=>p.postId==='801')?.observationId).not.toBe(row.replies.observations[0].observationId);
+    expect(row.budgetUsage.distinctEntries).toBe(4);
+    expect(receipt.citationChecks.root).toBe('allowed');expect(receipt.citationChecks.own).toBe('allowed');
+    expect(receipt.citationChecks.preview).toContain('inventory is unknown');
+    expect(receipt.citationChecks.quote).toContain('unobserved');expect(receipt.citationChecks.bad).toContain('unobserved');
     expect(receipt.readinessFrames).toEqual(['initial-empty']);
     expect(receipt.sourceCleanup).toEqual({populated:true,cleared:true});
     expect(receipt.activeTabId).toBe(receipt.userTabId);

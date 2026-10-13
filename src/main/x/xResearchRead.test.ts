@@ -13,6 +13,27 @@ import { readX } from './xResearchRead';
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 const read=(targets:any[],extra={})=>({tabId:'research-tab',read:{objective:'read',targets,includeArticle:false,includeReplies:false,maxRepliesPerPost:30,maxScrollsPerPost:0,maxExpandActionsPerPost:0,...extra}});
 describe('ordinary X read orchestration',()=>{
+  it('retains source bodies at the root-loss boundary without continuing or inheriting reply scope',async()=>{
+    const own='https://x.com/bob/status/456';
+    const f=fixture([readHtml(post()+post('456','bob','historical reply')),readHtml(post('456','bob','current own body')+post('789','carol','fresh own body'))]);
+    const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:3}),f.context)).targets[0];
+    expect(f.act.mock.calls.map(call=>call[0].kind)).toEqual(['scroll']);
+    expect(row).toMatchObject({status:'partial',reason:'post_identity_unproven',stopReason:'identity_unproven',root:{text:'original'},replies:{observations:[{text:'historical reply',sourceUrl:own}],scope:{completeness:'unknown'}}});
+    expect(row.unscopedPosts?.observations.map(p=>[p.postId,p.text,p.relationToTarget])).toEqual([['456','current own body','unproven'],['789','fresh own body','unproven']]);
+    expect(row.budgetUsage.distinctEntries).toBe(3);
+    expect(row.unscopedPosts?.observations[0].observationId).not.toBe(row.replies.observations[0].observationId);
+    expect(f.context.sources.get('456')).toHaveLength(1);
+    expect(f.context.sources.get('789')).toBeUndefined();
+    for(const includeReplies of [true,false]){
+      const cover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
+      const initial=fixture([readHtml(post('456','bob','current own body').replace('</article>',cover+'</article>'))]);
+      const result=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies,maxScrollsPerPost:3}),initial.context);
+      expect(result.targets[0]).toMatchObject({root:null,status:'partial',stopReason:'identity_unproven'});
+      expect(result.targets[0].unscopedPosts?.observations.map(p=>p.text)).toEqual(includeReplies?['current own body']:undefined);
+      expect(result.targets[0].unscopedPosts?.previewGaps).toEqual(includeReplies?[{sourceUrl:own,unresolved:1}]:undefined);
+      expect(initial.act).toHaveBeenCalledTimes(0);
+    }
+  });
   it('readUsesObservedPermalink; unresolved postId never generates URL',async()=>{
     const f=fixture([searchHtml(post())]); await searchX(searchInput,f.context);
     const reader=fixture([readHtml(post())]); reader.context.sources=f.context.sources;

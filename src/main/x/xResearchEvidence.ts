@@ -56,6 +56,17 @@ const textSchema = z.object({
   articlePreviews: z.array(entrySchema).optional(),
   articlePreviewInventory:inventorySchema.optional(),
 });
+const unscopedTextSchema=textSchema.extend({
+  containerKind:z.literal('unscoped_post'),relationToTarget:z.literal('unproven'),observedContainer:z.literal('post'),
+  postId:string,sourceUrl:string,author:z.object({handle:string,displayName:z.string().nullable(),profileUrl:z.string().nullable()}),
+  text:z.string().max(4000),articlePreviews:z.array(entrySchema).max(0).optional(),
+}).refine(p=>{const own=parseXSourcePost(p.sourceUrl);return own?.id===p.postId && own.handle===p.author.handle && !!p.text.trim();});
+const unscopedSchema=z.object({
+  observations:z.array(unscopedTextSchema).max(100),
+  collection:z.object({snapshotId:string,document:z.object({epoch:z.number().int().nonnegative(),routeRevision:z.number().int().nonnegative(),navigationSequence:z.number().int().nonnegative(),generation:string}),location:z.object({origin:z.string().nullable(),path:z.string().nullable(),q:z.string().nullable(),f:z.string().nullable(),fragment:z.string().nullable(),redacted:z.boolean()})}),
+  inventory:z.object({scope:z.literal('collection'),observed:z.number().int().min(0).max(100),retained:z.number().int().min(0).max(100),omitted:z.number().int().min(0).max(100),sourceInventoryTruncated:z.boolean(),excludedNestedQuotes:z.number().int().min(0).max(100)}),
+  previewGaps:z.array(z.object({sourceUrl:string.refine(url=>!!parseXSourcePost(url)?.handle),unresolved:z.number().int().positive()})).max(100),
+}).refine(p=>p.inventory.retained===p.observations.length && p.inventory.observed===p.inventory.retained+p.inventory.omitted);
 const documentSchema = z.object({
   urlKind: z.literal('document'),
   sourceUrl: string,
@@ -125,16 +136,17 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     targets: z.array(
       z.object({
         diagnostics:z.object({firstAdmittedFrame:z.object({sourceRootState:sourceRootStateSchema.optional()}).optional(),terminalFrame:z.object({sourceRootState:sourceRootStateSchema.optional()}).optional()}).optional(),
+        unscopedPosts:unscopedSchema.optional(),
         root: textSchema.nullable(),
         bodyObservations: z.array(textSchema).optional(),
         articlePreviewObservations:z.array(scopeSchema).optional(),
         inventoryAuditOmitted:z.object({count:z.number().int().positive(),first:scopeIdentitySchema}).optional(),
         quotedPosts: z.array(textSchema),
-        replies: z.object({ observations: z.array(textSchema) }),
+        replies: z.object({ requested:z.boolean().optional(), observations: z.array(textSchema) }),
         article: articleSchema,
         location:z.object({documentGeneration:z.string().nullable()}).optional(),
         documentSource: z.unknown().optional(),
-      }),
+      }).refine(row=>!row.unscopedPosts || row.replies.requested===true),
     ),
   }),
 ]);
@@ -153,7 +165,7 @@ export function latestXResearchTab(branchEntries: readonly unknown[]): string | 
   return tab;
 }
 type Canonical = z.infer<typeof canonicalSchema>;
-type Text = z.infer<typeof textSchema>;
+type Text = z.infer<typeof textSchema> | z.infer<typeof unscopedTextSchema>;
 export interface XEvidenceObservation {
   sourceKind: 'rendered_ui' | 'legacy_x_graphql';
   origin: 'production' | 'history';
@@ -168,6 +180,8 @@ export interface XEvidenceObservation {
   authorHandle: string;
   text: string;
   containerKind: Text['containerKind'];
+  relationToTarget?: 'unproven';
+  observedContainer?: 'post';
   articlePreviews: readonly XArticleEntryIdentity[];
   articlePreviewInventory?:Text['articlePreviewInventory'];
   truncation: Text['truncation'] | null;
@@ -461,6 +475,7 @@ export class XResearchEvidence {
         authorHandle: p.author.handle!,
         text: p.text,
         containerKind: p.containerKind,
+        ...(p.containerKind==='unscoped_post'?{relationToTarget:p.relationToTarget,observedContainer:p.observedContainer}:{}),
         articlePreviews: previews,
         ...(p.articlePreviewInventory?{articlePreviewInventory:p.articlePreviewInventory}:{}),
         truncation: p.truncation,
@@ -497,6 +512,13 @@ export class XResearchEvidence {
       return;
     }
     for (const row of result.targets) {
+      if(row.unscopedPosts) {
+        for(const gap of row.unscopedPosts.previewGaps) {
+          const own=parseXSourcePost(gap.sourceUrl)!;
+          this.inventoryGaps.push({sourceUrl:gap.sourceUrl,postId:own.id,observationId:row.unscopedPosts.collection.snapshotId,order});
+        }
+        for(const p of row.unscopedPosts.observations) add(p);
+      }
       for(const scope of row.articlePreviewObservations??[]) {
         const coordinates=parseXSourcePost(scope.sourceUrl),inventory=scope.articlePreviewInventory;
         if(coordinates?.id!==scope.postId || coordinates.handle!==scope.authorHandle || inventory.observed!==inventory.retained+inventory.omitted || inventory.retained!==scope.articlePreviews.length || !scope.articlePreviews.every(entry=>parentEntry(entry,scope))) continue;

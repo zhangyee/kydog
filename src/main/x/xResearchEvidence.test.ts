@@ -782,3 +782,82 @@ it('tab restoration follows only ordered true canonical branch results, never le
  expect(latestXResearchTab([{...history(r),timestamp:'2100-01-01T00:00:00Z'},later])).toBe('actually-later');
  expect(latestXResearchTab([])).toBeUndefined();
 });
+
+async function rootlessEvidence(body=post('456','bob','fresh own body')) {
+  return readX({tabId:'research-tab',read:{objective:'rootless',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:30,maxScrollsPerPost:1,maxExpandActionsPerPost:0}},fixture([readHtml(body)]).context);
+}
+it('unscoped source role authorizes only its own nonempty body and survives actual SDK branch restore',async()=>{
+  const preview=post('789','carol','preview body').replace('</article>','<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div></article>');
+  const r=await rootlessEvidence(post('456','bob','fresh own body')+preview);
+  const own='https://x.com/bob/status/456';
+  expect(r.targets[0].unscopedPosts?.observations[0]).toMatchObject({containerKind:'unscoped_post',relationToTarget:'unproven',observedContainer:'post'});
+  const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(r);
+  expect(ledger.guard(report,citation(own))).toEqual({createOnly:true});
+  expect(ledger.observations[0]).toMatchObject({containerKind:'unscoped_post',relationToTarget:'unproven',observedContainer:'post'});
+  expect(ledger.sources.get('456')).toEqual([expect.objectContaining({rootObservationId:null,query:null,sourceUrl:own})]);
+  expect(()=>ledger.guard(report,citation())).toThrow(/unobserved/);
+  for(const requested of [false,undefined]){
+    const wrong=structuredClone(r);
+    Object.assign(wrong.targets[0].replies,{requested});
+    ledger.restore([history(wrong)]);expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+  }
+  for(const slot of ['root','bodyObservations','quotedPosts','replies','article'] as const){
+    const wrong=structuredClone(r),row=wrong.targets[0],p=row.unscopedPosts!.observations[0];delete row.unscopedPosts;
+    if(slot==='root') row.root=p as never;
+    if(slot==='bodyObservations') row.bodyObservations=[p as never];
+    if(slot==='quotedPosts') row.quotedPosts=[p as never];
+    if(slot==='replies') row.replies.observations=[p as never];
+    if(slot==='article'){row.article.body=p as never;row.article.bodyObserved=true;}
+    ledger.restore([history(wrong)]);expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+  }
+  for(const field of ['relationToTarget','observedContainer','sourceUrl','text'] as const){
+    const wrong=structuredClone(r),p=wrong.targets[0].unscopedPosts!.observations[0];
+    Object.assign(p,{[field]:field==='relationToTarget'?'reply':field==='observedContainer'?'quote':field==='sourceUrl'?url:''});
+    ledger.restore([history(wrong)]);expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+  }
+  const {SessionManager}=await import('@earendil-works/pi-coding-agent');
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'kydog-unscoped-sdk-'));
+  try{
+    const manager=SessionManager.create(dir,dir),base=manager.appendMessage({role:'user',content:'source',timestamp:1});
+    const payload=xResearchToolResult(serializeXResearchResult(r));
+    const fresh=manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:'call',...payload,isError:false,timestamp:2});
+    manager.branch(base);
+    const falsePayload=structuredClone(payload);
+    if(falsePayload.details.operation!=='read')throw new Error('expected read');
+    falsePayload.details.targets[0].replies.requested=false;
+    const disabled=manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:'call',...falsePayload,isError:false,timestamp:2});
+    manager.branch(base);
+    const sibling=manager.appendMessage({role:'assistant',content:[{type:'text',text:JSON.stringify(payload)}],api:'openai-completions',provider:'openai',model:'fixture',stopReason:'stop',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},timestamp:3});
+    const reopened=SessionManager.open(manager.getSessionFile()!);
+    reopened.branch(fresh);ledger.restore(reopened.getBranch());
+    expect(ledger.guard(report,citation(own))).toEqual({createOnly:true});
+    expect(ledger.observations[0]).toMatchObject({origin:'history',relationToTarget:'unproven',observedContainer:'post'});
+    expect(()=>ledger.guard(report,citation('https://x.com/carol/status/789'))).toThrow(/inventory is unknown/);
+    reopened.branch(disabled);ledger.restore(reopened.getBranch());
+    expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+    reopened.branch(sibling);ledger.restore(reopened.getBranch());
+    ledger.sources.set('456',[{urlKind:'permalink',sourceUrl:own,observationId:'fake',rootObservationId:null,observedAt:'now',containerKind:'unscoped_post',runId:'run',callId:'call',batchId:'batch',queryId:null,query:null,purpose:null,product:null}]);
+    expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+it('unscoped preview obligations survive missing bodies and resolve only in a later exact parent family',async()=>{
+  const cover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
+  const parent=(id:string,name:string,text:string)=>post(id,name,text).replace('</article>',cover+'</article>');
+  const old=await rootlessEvidence(post('456','bob','old A')+post('789','carol','old B'));
+  const fresh=await rootlessEvidence(parent('456','bob','preview A')+parent('789','carol',''));
+  expect(fresh.targets[0].unscopedPosts?.previewGaps).toHaveLength(2);
+  const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(old);
+  for(const own of ['https://x.com/bob/status/456','https://x.com/carol/status/789'])expect(ledger.guard(report,citation(own))).toEqual({createOnly:true});
+  // Retention omits every new body; mandatory exact-parent facts still prohibit both old bodies.
+  const trimmed=structuredClone(fresh);trimmed.targets[0].unscopedPosts!.observations=[];trimmed.targets[0].unscopedPosts!.inventory.retained=0;trimmed.targets[0].unscopedPosts!.inventory.omitted=1;
+  ledger.observe(trimmed);
+  for(const own of ['https://x.com/bob/status/456','https://x.com/carol/status/789'])expect(()=>ledger.guard(report,citation(own))).toThrow(/inventory is unknown/);
+  const attempt=await readX({tabId:'research-tab',read:{objective:'accurate parent',targets:[{url:'https://x.com/bob/status/456'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(parent('456','bob','parent body'))]).context);
+  attempt.targets[0].article.actionAttempted=true;
+  const samePacket=structuredClone(trimmed);samePacket.targets.push(attempt.targets[0]);
+  ledger.restore([history(old),history(samePacket)]);
+  expect(()=>ledger.guard(report,citation('https://x.com/bob/status/456'))).toThrow(/inventory is unknown/);
+  ledger.observe(attempt);
+  expect(ledger.guard(report,citation('https://x.com/bob/status/456'))).toEqual({createOnly:true});
+  expect(()=>ledger.guard(report,citation('https://x.com/carol/status/789'))).toThrow(/inventory is unknown/);
+});
