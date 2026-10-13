@@ -130,6 +130,74 @@ describe('X page trusted boundary', () => {
   });
 });
 
+it('bounds only the unique current detail root at 64000 while search, quote and reply stay at 4000', () => {
+  const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
+  const body = 'a'.repeat(63999) + 'Z';
+  const detail = fixture(wrap(post('123','alice',body)));
+  const collected = detail.collect();
+  expect(collected.posts[0].text.length).toBe(64000);
+  expect(collected.posts[0].text.endsWith('Z')).toBe(true);
+  expect(collected.posts[0].truncation).toEqual({returned:64000,totalKnown:64000,truncated:false});
+  expect(decodeXPage(collected,request,facts,{parentArticle:false}).root).toMatchObject({text:body,truncation:{returned:64000,totalKnown:64000,truncated:false}});
+  detail.document.querySelector('[data-testid="tweetText"]')!.textContent = body + 'Q';
+  const over = detail.collect();
+  expect(over.posts[0].text.length).toBe(64000);
+  expect(over.posts[0].text.endsWith('Z')).toBe(true);
+  expect(over.posts[0].truncation).toEqual({returned:64000,totalKnown:64001,truncated:true});
+  expect(decodeXPage(over,request,facts,{parentArticle:false}).root!.truncation).toEqual(over.posts[0].truncation);
+
+  const long = 'b'.repeat(4999) + 'Y';
+  const search={stage:'search' as const,expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest' as const};
+  const searchPage=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post('123','alice',long)),search.expectedUrl);
+  expect(searchPage.collect(search).posts[0].truncation).toEqual({returned:4000,totalKnown:5000,truncated:true});
+  expect(decodeXPage(searchPage.collect(search),search,{...facts,currentUrl:search.expectedUrl,navigationUrl:search.expectedUrl},{parentArticle:false}).posts[0].text.length).toBe(4000);
+  const quote=`<div role="link" tabindex="0">${author('bob')}<div data-testid="tweetText">${long}</div>${permalink('456','bob')}</div>`;
+  const discussion=fixture(wrap(post('123','alice','root',quote)+post('789','carol',long)));
+  expect(discussion.collect().posts.map((p:any)=>[p.scope,p.text.length])).toEqual([['post',4],['quote',4000],['post',4000]]);
+  const decoded=decodeXPage(discussion.collect(),request,facts,{parentArticle:false});
+  expect(decoded.quotedPosts[0].text.length).toBe(4000);
+  expect(decoded.replies[0].text.length).toBe(4000);
+});
+
+it('refuses a larger body when focal identity, stage, uniqueness or raw bounds disagree', () => {
+  const facts:BrowserLocationFacts={currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:url};
+  const long='a'.repeat(5000);
+  const baseline=fixture(wrap(post('123','alice',long))).collect();
+  const altered=(change:(raw:any)=>void)=>{const raw=structuredClone(baseline);change(raw);return raw;};
+  const positive=altered(()=>{});
+  expect(decodeXPage(positive,request,facts,{parentArticle:false}).root!.text.length).toBe(5000);
+  const wrongId=fixture(wrap(post('456','alice',long)));
+  expect(wrongId.collect().posts[0].text.length).toBe(4000);
+  const wrongAuthor=fixture(wrap(post('123','bob',long)));
+  expect(wrongAuthor.collect().posts[0].text.length).toBe(4000);
+  expect(decodeXPage(wrongAuthor.collect(),request,facts,{parentArticle:false}).root).toBeNull();
+  const duplicate=fixture(wrap(post('123','alice',long)+post('123','alice',long)));
+  expect(duplicate.collect().posts.map((p:any)=>p.text.length)).toEqual([4000,4000]);
+  expect(decodeXPage(duplicate.collect(),request,facts,{parentArticle:false}).root).toBeNull();
+  const sameIdQuote=`<div role="link" tabindex="0">${author('alice')}<div data-testid="tweetText">${long}</div>${permalink('123','alice')}</div>`;
+  const quotedDuplicate=fixture(wrap(post('123','alice',long,sameIdQuote)));
+  expect(quotedDuplicate.collect().posts.map((p:any)=>p.text.length)).toEqual([4000,4000]);
+  const crowded=fixture(wrap(post('123','alice',long)+Array.from({length:100},(_,i)=>post(String(1000+i),'bob','short')).join('')));
+  const crowdedRaw=crowded.collect();
+  expect(crowdedRaw.posts).toHaveLength(100);
+  expect(crowdedRaw.truncation).toEqual({returned:100,totalKnown:101,truncated:true});
+  expect(crowdedRaw.posts[0].text.length).toBe(4000);
+  expect(decodeXPage(crowdedRaw,request,facts,{parentArticle:false}).root!.truncation).toEqual({returned:4000,totalKnown:5000,truncated:true});
+  const article={stage:'article' as const,expectedUrl:url,entry:{} as never,via:{kind:'action' as const,result:{} as never}};
+  expect(fixture(wrap(post('123','alice',long))).collect(article).posts[0].text.length).toBe(4000);
+
+  for(const change of [
+    (raw:any)=>{raw.posts[0].postId='456';},
+    (raw:any)=>{raw.posts[0].scope='quote';},
+    (raw:any)=>{raw.posts.push({...raw.posts[0],containerKey:1});},
+    (raw:any)=>{raw.posts.push({...raw.posts[0],containerKey:1,scope:'quote',text:'short',truncation:{returned:5,totalKnown:5,truncated:false}});raw.truncation={returned:2,totalKnown:2,truncated:false};},
+    (raw:any)=>{raw.posts[0].permalink='https://x.com/bob/status/123';},
+    (raw:any)=>{raw.rawUrl='https://x.com/bob/status/123';raw.snapshot.url=raw.rawUrl;},
+    (raw:any)=>{raw.posts[0].truncation.returned=4999;},
+  ]) expect(()=>decodeXPage(altered(change),request,facts,{parentArticle:false})).toThrow(/invalid X page/i);
+  expect(()=>decodeXPage(positive,article,facts,{parentArticle:false})).toThrow(/invalid X page/i);
+});
+
 
 it.each([false,true])('registers private snapshots and retains issued Article association when caller edits array: %s', async editArray => {
   let f=fixture(wrap(post('123','alice','parent',`<div role="link" tabindex="0">${author('bob')}<div data-testid="article-cover-image">Article preview</div></div>`)));

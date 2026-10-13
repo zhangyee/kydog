@@ -32,6 +32,13 @@ const xHtml = `<!doctype html><meta charset="utf-8"><style>body{margin:30px;font
 <article id="otherpost" data-testid="tweet"><div data-testid="User-Name"><a href="/bob">@bob</a></div><a href="/bob/status/456/history"><time>today</time></a><div data-testid="tweetText">Other</div></article>
 </div></div></main><form id="compose"></form><script>window.trusted=0;document.addEventListener('click',e=>{if(e.target.closest('#expand')&&e.isTrusted)window.trusted++});document.addEventListener('submit',e=>e.preventDefault());</script>`;
 
+const longFocalBody = 'A'.repeat(7008) + 'Z';
+const longSideBody = 'B'.repeat(4999) + 'Y';
+const longBodyPost = `<article data-testid="tweet"><div data-testid="User-Name"><a href="/longbody">@longbody</a></div><a href="/longbody/status/321"><time>today</time></a><div data-testid="tweetText">${longFocalBody}</div><div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><a href="/writer/status/654"><time>today</time></a><div data-testid="tweetText">${longSideBody}</div></div></article>`;
+const longReply = `<article data-testid="tweet"><div data-testid="User-Name"><a href="/first">@first</a></div><a href="/first/status/801"><time>today</time></a><div data-testid="tweetText">${longSideBody}</div></article>`;
+const longBodyHtml = `<!doctype html><meta charset="utf-8"><main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">${longBodyPost}${longReply}</div></div></main>`;
+const longSearchHtml = `<!doctype html><meta charset="utf-8"><main><div data-testid="primaryColumn"><div role="tab" aria-selected="true">Top</div>${longBodyPost}</div></main>`;
+
 // Source-derived DOM markers; navigation/input are real Chromium, content is offline.
 const readerHtml = (handle: string) => `<!doctype html><meta charset="utf-8"><style>body{margin:24px;font:16px sans-serif}button{padding:12px}#entry{padding:16px;border:1px solid;cursor:pointer}</style>
 <main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">
@@ -67,7 +74,7 @@ void app.whenReady().then(async () => {
     if (!['example.com', 'example.org'].includes(url.hostname)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html);
   });
-  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):handle?readerHtml(handle):xHtml); });
+  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):req.url==='/longbody/status/321'?longBodyHtml:req.url==='/search?q=longbody&f=top'?longSearchHtml:handle?readerHtml(handle):xHtml); });
   origin.on('clientError', (_error,socket) => socket.destroy());
   proxy.on('connect', (req,socket: Socket,head: Buffer) => {
     socket.on('error',()=>{});
@@ -143,6 +150,23 @@ void app.whenReady().then(async () => {
         const observed=await collectXPage(page,{stage:'search',expectedUrl:'https://x.com/search?q=containers&f=top',query:'containers',product:'Top'});
         return {posts:observed.posts,entryParents:observed.entries.map(entry=>({author:entry.author?.handle,parentText:observed.entryParents.get(entry)?.text}))};
       });
+    },
+    longBodyNoControl: async () => {
+      const url='https://x.com/longbody/status/321';
+      const opened=await port.open(url,undefined), view=browser.webContentsOf(opened.tabId)!;
+      const domBody=await view.executeJavaScript("document.querySelector('article[data-testid=\"tweet\"] > [data-testid=\"tweetText\"]').innerText") as string;
+      const detail=await port.withPage(opened.tabId,undefined,page=>collectXPage(page,{stage:'post',expectedUrl:url,postId:'321'}));
+      const result=await readX({tabId:opened.tabId,read:{objective:'native long body without control',targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},
+        {browser:port,threadId:'fixture-thread',runId:'native-long',callId:'native-long',batchId:'native-long',sources:new Map()});
+      const searchUrl='https://x.com/search?q=longbody&f=top';
+      await port.open(searchUrl,opened.tabId);
+      const search=await port.withPage(opened.tabId,undefined,page=>collectXPage(page,{stage:'search',expectedUrl:searchUrl,query:'longbody',product:'Top'}));
+      const buttonUrl='https://x.com/reader/status/321';
+      await port.open(buttonUrl,opened.tabId);
+      const withButton=await port.withPage(opened.tabId,undefined,page=>collectXPage(page,{stage:'post',expectedUrl:buttonUrl,postId:'321'}));
+      const buttonRead=await readX({tabId:opened.tabId,read:{objective:'native button positive',targets:[{url:buttonUrl}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},
+        {browser:port,threadId:'fixture-thread',runId:'native-long',callId:'native-button',batchId:'native-long',sources:new Map()});
+      return {domBody,detailRoot:detail.root,detailQuote:detail.quotedPosts[0],detailReply:detail.replies[0],detailControls:detail.controls.map(c=>c.kind),searchPost:search.posts[0],buttonControls:withButton.controls.map(c=>c.kind),buttonExpandActions:buttonRead.targets[0].budgetUsage.expandActions,buttonRootText:buttonRead.targets[0].root?.text,result,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
     },
     readStages: async (mode: string) => {
       const handle=mode==='blocked'?'blocked':mode==='scroll'?'scroller':'reader', url=`https://x.com/${handle}/status/321`;

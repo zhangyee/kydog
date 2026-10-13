@@ -14,6 +14,7 @@ interface Harness {
   pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
   read(): Promise<State>;
   sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
+  longBodyNoControl():Promise<{domBody:string;detailRoot:import('../src/main/x/xResearchTypes').XTextObservation|null;detailQuote:import('../src/main/x/xResearchTypes').XTextObservation|null;detailReply:import('../src/main/x/xResearchTypes').XTextObservation|null;detailControls:string[];searchPost:import('../src/main/x/xResearchTypes').XTextObservation|null;buttonControls:string[];buttonExpandActions:number;buttonRootText:string|undefined;result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;activeTabId:string;userTabId:string}>;
   readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];activeTabId:string;userTabId:string}>;
   collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
@@ -219,6 +220,26 @@ test.describe('X browser port native safety (offline)', () => {
     expect(result.beforeCleanup).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight']);
     expect(result.sequence).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight', 'owned cleanup ACK', 'next entered']);
     expect(result.after.page.trustedClicks).toBe(result.before.page.trustedClicks + 1);
+  });
+
+  test('native detail retains a long rendered body without a control while other scopes stay bounded',async()=>{
+    const r=await control(h=>h.longBodyNoControl());
+    const root=r.result.targets[0].root!;
+    expect(r.domBody.length).toBe(7009);
+    expect(r.domBody.endsWith('Z')).toBe(true);
+    expect(r.detailRoot).toMatchObject({postId:'321',sourceUrl:'https://x.com/longbody/status/321',author:{handle:'longbody'},text:r.domBody,truncation:{returned:7009,totalKnown:7009,truncated:false}});
+    expect(root).toMatchObject({postId:'321',sourceUrl:'https://x.com/longbody/status/321',author:{handle:'longbody'},text:r.domBody,truncation:{returned:7009,totalKnown:7009,truncated:false},observationId:expect.any(String)});
+    for(const [side,totalKnown] of [[r.detailQuote,5000],[r.detailReply,5000],[r.searchPost,7009]] as const) {
+      expect(side?.text.length).toBe(4000);
+      expect(side?.truncation).toEqual({returned:4000,totalKnown,truncated:true});
+    }
+    expect(r.buttonControls).toContain('body_expand');
+    expect(r.buttonExpandActions).toBe(1);
+    expect(r.buttonRootText).toBe('Native expanded body');
+    expect(r.detailControls).not.toContain('body_expand');
+    expect(root.text.endsWith('Z')).toBe(true);
+    expect(r.result.targets[0].budgetUsage.expandActions).toBe(0);
+    expect(r.activeTabId).toBe(r.userTabId);
   });
 
   test('native Article, fresh parent return and bounded replies retain independent source evidence',async()=>{

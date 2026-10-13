@@ -72,7 +72,15 @@
   const roots = all(region,tweetSelector).filter(el=>shown(el) && !el.parentElement.closest(tweetSelector));
   const scopeOf = root => root ? [{el:root,semantic:false,members:'[data-testid="User-Name"] a[href], a[href] time'},...own(root,'[data-testid="User-Name"] a[href], a[href]').filter(el=>el.closest('[data-testid="User-Name"]') || el.querySelector('time')).map(el=>({el,semantic:true}))] : [];
   const focal = roots.find(root=>factOf(root).postId===request.postId);
-  let totalPosts = 0, containerKey = 0;
+  const documentPost = identity(location.href);
+  const matchingRoots = request.stage === 'post' && documentPost?.postId === request.postId
+    ? roots.filter(root=>{
+      const fact=factOf(root);
+      return fact.postId===request.postId && fact.author?.handle===documentPost.handle
+        && url(fact.permalink)?.origin===current.origin;
+    }) : [];
+  const longBodyRoot = matchingRoots.length===1 ? matchingRoots[0] : null;
+  let totalPosts = 0, containerKey = 0, targetBodyCandidates = 0;
   for (const root of roots) {
     const rootFact = factOf(root);
     const parentContainerKey = containerKey;
@@ -84,9 +92,11 @@
       const fact = factOf(box);
       if (texts.length) {
         totalPosts++;
+        if (request.stage==='post' && fact.postId===request.postId) targetBodyCandidates++;
         if (posts.length < 100) {
           const full = texts.map(text).join('\n');
-          posts.push({...fact,containerKey:sourceContainerKey,articleEntryCount:0,scope:box===root?'post':'quote',text:full.slice(0,4000),truncation:{returned:Math.min(full.length,4000),totalKnown:full.length,truncated:full.length>4000}});
+          const limit=box===longBodyRoot?64000:4000;
+          posts.push({...fact,containerKey:sourceContainerKey,articleEntryCount:0,scope:box===root?'post':'quote',text:full.slice(0,limit),truncation:{returned:Math.min(full.length,limit),totalKnown:full.length,truncated:full.length>limit}});
         }
       }
       for (const b of own(box,'button[role="button"][type="button"][data-testid="tweet-text-show-more-link"]')) control(b,'body_expand',fact.postId,[...scopeOf(root),...scopeOf(box)]);
@@ -99,6 +109,10 @@
     }
     const parent=posts.find(p=>p.containerKey===parentContainerKey);
     if(parent) parent.articleEntryCount=articleEntryCount;
+  }
+  if (totalPosts>100 || targetBodyCandidates!==1) for (const p of posts) if (p.text.length>4000) {
+    p.text=p.text.slice(0,4000);
+    p.truncation={returned:4000,totalKnown:p.truncation.totalKnown,truncated:true};
   }
   for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) control(b,'replies_expand',null,scopeOf(focal));
   // Article body is independent of primaryColumn (immersive UI has none).

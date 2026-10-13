@@ -51,11 +51,24 @@ const list = (v: unknown, max: number): v is unknown[] => Array.isArray(v) && v.
 const author = (v: unknown): boolean => v === null || (obj(v) && nullable(v.handle) && nullable(v.displayName) && nullable(v.profileUrl));
 const truncation = (v: unknown): boolean => obj(v) && integer(v.returned) && (v.totalKnown === null || integer(v.totalKnown)) && typeof v.truncated === 'boolean';
 /** Validate the entire fixed DOM boundary before consuming any page-supplied field. */
-function validateRaw(v: unknown): asserts v is RawPage {
+function validateRaw(v: unknown, request: XPageRequest, current: BrowserLocationFacts): asserts v is RawPage {
   if (!obj(v) || !str(v.rawUrl) || typeof v.region !== 'boolean' || !nullable(v.selectedProduct) || !truncation(v.truncation)
     || !truncation(v.controlTruncation) || !list(v.posts,100) || !list(v.controls,100) || !list(v.entries,100)) invalid();
   if (v.state !== null && (!obj(v.state) || !['auth_required','explicit_empty'].includes(String(v.state.kind)) || !str(v.state.text,4000))) invalid();
-  for (const p of v.posts) if (!obj(p) || !integer(p.containerKey) || !integer(p.articleEntryCount) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !author(p.author) || !str(p.text,4000) || !truncation(p.truncation)) invalid();
+  for (const p of v.posts) if (!obj(p) || !integer(p.containerKey) || !integer(p.articleEntryCount) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !author(p.author) || !str(p.text,64000) || !truncation(p.truncation)) invalid();
+  const rawPosts=v.posts as RawPost[];
+  const rawTruncation=v.truncation as XTruncation;
+  const currentPost=publicPost(current.currentUrl,true);
+  const candidatePosts=request.stage==='post' ? rawPosts.filter(p=>p.postId===request.postId) : [];
+  const candidate=candidatePosts.length===1 ? candidatePosts[0] : null;
+  const own=candidate && publicPost(candidate.permalink);
+  const focal=!!candidate && candidate.scope==='post' && request.stage==='post' && v.rawUrl===current.currentUrl && v.region
+    && rawTruncation.returned===rawPosts.length && rawTruncation.totalKnown===rawPosts.length && !rawTruncation.truncated
+    && currentPost?.id===request.postId && !!currentPost.handle && own?.id===candidate.postId
+    && own.origin===currentPost.origin && own.handle===currentPost.handle && candidate.author?.handle===own.handle;
+  for (const p of rawPosts) if (!str(p.text,p===candidate && focal?64000:4000)
+    || p.truncation.returned!==p.text.length || p.truncation.totalKnown===null
+    || p.truncation.totalKnown<p.truncation.returned || p.truncation.truncated!==(p.truncation.totalKnown>p.truncation.returned)) invalid();
   for (const c of v.controls) if (!obj(c) || !['body_expand','replies_expand','article_entry'].includes(String(c.kind)) || !nullable(c.postId) || !integer(c.nodeId) || !integer(c.index)) invalid();
   for (const e of v.entries) if (!obj(e) || !integer(e.parentContainerKey) || !author(e.author) || !str(e.parentPostId) || !str(e.parentUrl) || !nullable(e.targetUrl) || !str(e.label,512) || !integer(e.nodeId) || !integer(e.index)) invalid();
   const a = v.article;
@@ -112,7 +125,7 @@ export interface XPageNavigationProof {
   directOpen?: {openedLocation: BrowserLocationFacts; sameGeneration: boolean};
 }
 export function decodeXPage(raw: unknown, request: XPageRequest, current: BrowserLocationFacts, proof: XPageNavigationProof): XPageObservation {
-  validRequest(request); validateRaw(raw);
+  validRequest(request); validateRaw(raw,request,current);
   const snapshot: AxSnapshot = { ...raw.snapshot, snapshotId: `xsnap_${randomUUID()}` };
   const observedAt = new Date().toISOString();
   const relation = compareXLocation(request.expectedUrl,current.currentUrl);

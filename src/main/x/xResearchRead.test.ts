@@ -327,3 +327,30 @@ it('preserves exact successive root, quote and reply bodies through canonical/mo
     manager.branch(base);restored.restore(manager.getBranch());expect(restored.observations).toHaveLength(0);
   }
 });
+
+it('retains a 7009-unit focal body with no expansion control through read, output, evidence and SDK restore', async () => {
+  const { serializeXResearchResult } = await import('./xResearchOutput');
+  const { XResearchEvidence } = await import('./xResearchEvidence');
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const body = 'a'.repeat(7008) + 'Z';
+  const f = fixture([readHtml(post('123', 'alice', body))]);
+  const result = await readX(read([{url:'https://x.com/alice/status/123'}]), f.context);
+  const root = result.targets[0].root!;
+  expect(root).toMatchObject({
+    postId:'123', sourceUrl:'https://x.com/alice/status/123', author:{handle:'alice'},
+    text:body, truncation:{returned:7009,totalKnown:7009,truncated:false},
+    observationId:expect.any(String),
+  });
+  const serialized = serializeXResearchResult(result);
+  expect(serialized.result.targets[0].root).toMatchObject({observationId:root.observationId,text:body});
+  expect(serialized.text).toContain(body);
+  const ledger = new XResearchEvidence('/tmp', () => 'run');
+  ledger.observe(serialized.result);
+  expect(ledger.observations).toContainEqual(expect.objectContaining({observationId:root.observationId,text:body,authorHandle:'alice',sourceUrl:root.sourceUrl,postId:'123'}));
+  const manager = SessionManager.inMemory('/tmp');
+  manager.appendMessage({role:'user',content:'read',timestamp:0});
+  manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:'call',isError:false,content:[{type:'text',text:serialized.text}],details:serialized.result,timestamp:1});
+  const restored = new XResearchEvidence('/tmp', () => 'later-run');
+  restored.restore(manager.getBranch());
+  expect(restored.observations).toContainEqual(expect.objectContaining({observationId:root.observationId,text:body,authorHandle:'alice',sourceUrl:root.sourceUrl,postId:'123'}));
+});
