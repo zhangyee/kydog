@@ -74,8 +74,7 @@
     }
     return states;
   };
-  const usable = (el) => {
-    const style = getComputedStyle(el);
+  const usable = (el, style = getComputedStyle(el)) => {
     return el.disabled !== true && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
   };
   const retain = (el, semantic, members) => ({ el, formOwner: el.form, sources: sources(el),
@@ -153,17 +152,33 @@
   if (entry.generation !== (world && world.gen) || entry.url !== location.href) return reject('stale_node');
   if (entry.permission && (collected(entry.permission)!==entry.collected || !permitted(entry.collected,entry.permission,entry.originalTarget))) return reject('pointer_target_changed');
   const now = sources(entry.el), meaning = semantics(entry.el);
-  if (!usable(entry.el) || entry.formOwner !== entry.el.form
+  const style = getComputedStyle(entry.el);
+  if (!usable(entry.el, style) || entry.formOwner !== entry.el.form
     || now.length !== entry.sources.length || now.some((value, i) => value.node !== entry.sources[i].node || value.state !== entry.sources[i].state)
     || meaning.state !== entry.semantics.state || meaning.labels.length !== entry.semantics.labels.length
     || meaning.labels.some((value, i) => value.node !== entry.semantics.labels[i].node || value.state !== entry.semantics.labels[i].state))
     return reject('pointer_target_changed');
+  // Copy the native scalar after original permission/semantic checks and before
+  // the FIRST final hit. Reuse the original usability read; no hit replay/wait.
+  const diagnose = req.op === 'validate' && req.kind === 'click' && entry.kind === 'click'
+    && entry.permission && req.readPostFramePointerEligibility === true;
+  let postFramePointerEligibility = 'unknown';
+  if (diagnose) try {
+    const value = style.pointerEvents;
+    if (value === 'auto' || value === 'none') postFramePointerEligibility = value;
+  } catch { /* Unknown is diagnostic only; preserve the original hit verdict. */ }
   const hit = hitAt(entry.point.x, entry.point.y);
-  if (!contains(entry.el, hit)) return intercepted(entry.el, hit, entry.point, entry.hit);
+  let postFrameHitConnected = null, postFrameHitContainsTarget = null;
+  if (diagnose && hit) {
+    try { const value = hit.isConnected; if (typeof value === 'boolean') postFrameHitConnected = value; } catch { /* Diagnostic only. */ }
+    try { const value = hit.contains(entry.el); if (typeof value === 'boolean') postFrameHitContainsTarget = value; } catch { /* Diagnostic only. */ }
+  }
+  const finish = result => diagnose ? { ...result, postFramePointerEligibility, postFrameHitConnected, postFrameHitContainsTarget } : result;
+  if (!contains(entry.el, hit)) return finish(intercepted(entry.el, hit, entry.point, entry.hit));
   const intent = hitSources(hit);
   if (hit !== entry.hit || intent.length !== entry.hitSources.length
     || intent.some((value, i) => value.node !== entry.hitSources[i].node || value.state !== entry.hitSources[i].state))
-    return reject('pointer_target_changed');
+    return finish(reject('pointer_target_changed'));
   if (req.op === 'validate_typing') {
     if (entry.kind !== 'type' || req.kind !== 'type') return reject('typing_destination_changed');
     let active = document.activeElement;
@@ -189,5 +204,5 @@
       }
     } else return reject('typing_destination_changed');
   }
-  return { ok: true };
+  return finish({ ok: true });
 }

@@ -9,6 +9,7 @@ import { readX } from '../../../src/main/x/xResearchRead';
 import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
 import { WALKER_WORLD_ID, BrowserService } from '../../../src/main/browser/browserService';
+import { logger } from '../../../src/main/log';
 import { pointerFailureDiagnostic, type PointerFailureDiagnostic } from '../../../src/main/browser/pointerDiagnostic';
 import { createXResearchBrowser } from '../../../src/main/x/xResearchBrowser';
 import { BROWSER_PARTITION } from '../../../src/main/browser/partition';
@@ -256,6 +257,67 @@ void app.whenReady().then(async () => {
         }
       }
       return {positive,beforeWriter,after,observations,sameBinding,error};
+    },
+    postFrameDiagnostic: async (mode: string) => {
+      const opened = await port.open('https://x.com/alice/status/123', undefined);
+      const xwc = browser.webContentsOf(opened.tabId)!;
+      const evaluate = xwc.executeJavaScriptInIsolatedWorld.bind(xwc), send = xwc.debugger.sendCommand.bind(xwc.debugger);
+      const capture = xwc.capturePage.bind(xwc), info = logger.info;
+      let input = 0, measures = 0, frames = 0, phase = 'positive';
+      const results: unknown[] = [], receipts: unknown[] = [];
+      const isolated = (code: string) => evaluate(WALKER_WORLD_ID, [{ code }]);
+      const counters = async () => ({ input, measures, frames, ...await isolated('({...window.__postFrameFixture})') as { scrolls: number; hits: number }, trusted: await xwc.executeJavaScript('window.trusted') as number });
+      xwc.debugger.sendCommand = (method, params) => { if (method.startsWith('Input.')) input++; return send(method, params); };
+      logger.info = (scope, message, context) => {
+        if (scope === 'browser.pointer_eligibility' && (context as { phase?: string })?.phase === 'post_frame') receipts.push(context);
+        return info(scope, message, context);
+      };
+      xwc.executeJavaScriptInIsolatedWorld = async (world, scripts, ...rest) => {
+        const code = scripts[0].code;
+        if (code.includes('const measured =')) measures++;
+        const result = await evaluate(world, scripts, ...rest);
+        if (code.includes('"op":"validate"')) results.push(result);
+        return result;
+      };
+      xwc.capturePage = async (...args) => {
+        const image = await capture(...args);
+        if (!image.isEmpty()) frames++;
+        if (phase === 'negative') await xwc.executeJavaScript(mode === 'none'
+          ? "window.postFrameOriginal.style.pointerEvents='none'"
+          : "document.body.insertAdjacentHTML('beforeend','<div id=postFrameCover style=\"position:fixed;inset:0;z-index:100;background:white\">Covered</div>')");
+        return image;
+      };
+      let positive: Awaited<ReturnType<typeof counters>> | undefined, after: Awaited<ReturnType<typeof counters>> | undefined;
+      let error: string | null = null, sameControl = false;
+      try {
+        await port.withPage(opened.tabId, undefined, async page => {
+          const observed = await collectXPage(page, { stage: 'post', expectedUrl: 'https://x.com/alice/status/123', postId: '123' });
+          const control = observed.controls.find(c => c.kind === 'body_expand')!;
+          const action = { kind: 'click' as const, index: control.binding.index, snapshotId: control.binding.snapshotId };
+          await xwc.executeJavaScript("window.postFrameOriginal=document.querySelector('#expand')");
+          await isolated(`(()=>{const scroll=Element.prototype.scrollIntoView,hit=document.elementFromPoint.bind(document);
+            window.__postFrameFixture={scrolls:0,hits:0};
+            Element.prototype.scrollIntoView=function(...args){window.__postFrameFixture.scrolls++;return scroll.apply(this,args);};
+            document.elementFromPoint=(...args)=>{window.__postFrameFixture.hits++;return hit(...args);};
+          })()`);
+          await page.act(action, observed.snapshot); positive = await counters();
+          input = measures = frames = 0;
+          await isolated('window.__postFrameFixture={scrolls:0,hits:0}');
+          phase = 'negative';
+          await page.act(action, observed.snapshot);
+        });
+      } catch (cause) { error = (cause as { code?: string }).code ?? String(cause); }
+      finally {
+        try {
+          await browser.enqueue(opened.tabId, async () => {});
+          after = await counters();
+          sameControl = await xwc.executeJavaScript("window.postFrameOriginal===document.querySelector('#expand')") as boolean;
+        } finally {
+          xwc.capturePage = capture; xwc.executeJavaScriptInIsolatedWorld = evaluate;
+          xwc.debugger.sendCommand = send; logger.info = info; browser.close(opened.tabId);
+        }
+      }
+      return { positive, after, results, receipts, error, sameControl };
     },
     neverShown: async () => {
       // Fresh service: stage is null from construction; not one syncView call.

@@ -4598,10 +4598,56 @@ describe('original collected pointer eligibility',()=>{
   const action={kind:'click' as const,index:4,snapshotId:snapshot.snapshotId};
   const options={strictSnapshot:true,location:svc.locationFacts(nav.tabId),signal:new AbortController().signal,collectedPermission:{owner:'fixed',token:'private-token',purpose:'body'},collectedPointerEligibility:true};
   const order:string[]=[];wc.isolatedImpl=async()=>{order.push('measure');return {ok:true,x:31,y:47,label:'original'};};
-  wc.pointerImpl=async code=>{if(code.includes('"readPointerEligibility":true')){order.push('auto');return {ok:true,pointerEligibility:'auto'};}return {ok:true};};
+  wc.pointerImpl=async code=>{if(code.includes('"readPointerEligibility":true')){order.push('auto');return {ok:true,pointerEligibility:'auto'};}if(code.includes('"readPostFramePointerEligibility":true'))return {ok:true,postFramePointerEligibility:'auto',postFrameHitConnected:true,postFrameHitContainsTarget:true};return {ok:true};};
   await svc.dispatch(nav.tabId,action,snapshot,options);expect(inputCmds(wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);expect(order).toEqual(['auto','measure']);
+  expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toEqual([expect.objectContaining({ctx:expect.objectContaining({state:'auto',outcome:'validated',hitConnected:true,hitContainsTarget:true})})]);
   order.length=0;wc.debugger.sent.length=0;H.logs.length=0;return {svc,wc,id:nav.tabId,snapshot,action,options,order};
  }
+ it.each((['postFramePointerEligibility','postFrameHitConnected','postFrameHitContainsTarget'] as const).flatMap(property=>[true,false].map(ok=>({property,ok}))))('optional $property getter errors preserve primary ok=$ok after same-case successful input',async({property,ok})=>{
+  const f=await setup();
+   let throwing=false;
+   const reads={postFramePointerEligibility:0,postFrameHitConnected:0,postFrameHitContainsTarget:0};
+   f.wc.pointerImpl=async code=>{
+    if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
+    if(!code.includes('"op":"validate"'))return {ok:true};
+    const result={ok:throwing?ok:true,reason:'intercepted'};
+    for(const key of Object.keys(reads) as Array<keyof typeof reads>)Object.defineProperty(result,key,{get:()=>{
+     reads[key]++;
+     if(throwing&&key===property)throw Error('private diagnostic getter failure');
+     return key==='postFramePointerEligibility'?'auto':true;
+    }});
+    return result;
+   };
+   // This exact result and getter path first delivers native input and a finite receipt.
+   await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);
+   expect(inputCmds(f.wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);
+   expect(reads).toEqual({postFramePointerEligibility:1,postFrameHitConnected:1,postFrameHitContainsTarget:1});
+   expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(1);
+   f.wc.debugger.sent.length=0;H.logs.length=0;throwing=true;
+   reads.postFramePointerEligibility=reads.postFrameHitConnected=reads.postFrameHitContainsTarget=0;
+   if(ok)await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).resolves.toContain('已点击');
+   else await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:'browser.click_intercepted'});
+   expect(inputCmds(f.wc).map(c=>c.params.type)).toEqual(ok?['mousePressed','mouseReleased']:[]);
+   expect(reads[property]).toBe(1);
+   expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(0);
+   f.wc.debugger.sent.length=0;H.logs.length=0;
+ });
+ it.each(['none','auto','untrusted','early','cancel'] as const)('retains post-frame %s before lifecycle checks and preserves the original refusal',async mode=>{
+  const f=await setup(),abort=new AbortController();let finalReads=0;
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
+   if(code.includes('"op":"validate"')){
+    expect(code).toContain('"readPostFramePointerEligibility":true');finalReads++;
+    if(mode==='cancel')abort.abort();
+    if(mode==='early')return {ok:false,reason:'pointer_target_changed'};
+    return {ok:false,reason:'intercepted',postFramePointerEligibility:mode==='untrusted'?'private raw page text':mode==='auto'?'auto':'none',postFrameHitConnected:mode==='untrusted'?'bad':true,postFrameHitContainsTarget:mode==='untrusted'?1:mode!=='auto'};
+   }
+   return {ok:true};
+  };
+  await expect(f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal})).rejects.toMatchObject({code:mode==='cancel'?'browser.cancelled':mode==='early'?'browser.target_unusable':'browser.click_intercepted'});
+  expect(finalReads).toBe(1);expect(inputCmds(f.wc)).toEqual([]);
+  expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toEqual([{level:'info',scope:'browser.pointer_eligibility',msg:expect.any(String),ctx:{phase:'post_frame',tabId:f.id,snapshotId:'eligibility-snapshot',generation:'eligibility-generation',nodeId:17,state:mode==='untrusted'||mode==='early'?'unknown':mode==='auto'?'auto':'none',samplePhase:mode==='untrusted'||mode==='early'?'not_observed':'before_first_hit',relationPhase:mode==='untrusted'||mode==='early'?'not_observed':'first_hit',hitConnected:mode==='untrusted'||mode==='early'?null:true,hitContainsTarget:mode==='untrusted'||mode==='early'?null:mode!=='auto',outcome:'refused'}}]);
+ });
  it('observes none then auto before its sole original measure, with generic opt-out unchanged',async()=>{
   const f=await setup();let probes=0;
   f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return {ok:true};expect(code).toContain('"nodeId":17');expect(code).toContain('"token":"private-token"');expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);return {ok:true,pointerEligibility:++probes===1?'none':'auto'};};

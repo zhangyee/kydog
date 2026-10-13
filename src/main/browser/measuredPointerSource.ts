@@ -29,8 +29,9 @@ export function measuredPointerExpression(target: Target, pointer: PointerBindin
     return { ...measured, pointerGuard };
   })(${JSON.stringify({ op: 'measure', target, pointer, notAfter })})`;
 }
-export function pointerGuardExpression(op: 'validate' | 'validate_typing' | 'dispose', pointer: PointerBinding, notAfter: number): string {
-  return `(${POINTER_GUARD_SOURCE})(${JSON.stringify({ op, token: pointer.token, kind: pointer.kind, notAfter })})`;
+export function pointerGuardExpression(op: 'validate' | 'validate_typing' | 'dispose', pointer: PointerBinding, notAfter: number, readPostFramePointerEligibility = false): string {
+  return `(${POINTER_GUARD_SOURCE})(${JSON.stringify({ op, token: pointer.token, kind: pointer.kind, notAfter,
+    ...(readPostFramePointerEligibility && op === 'validate' && pointer.kind === 'click' ? { readPostFramePointerEligibility: true } : {}) })})`;
 }
 
 /** Read the original collected control's native CSS predicate without measuring. */

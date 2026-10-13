@@ -3,7 +3,7 @@ import { JSDOM } from 'jsdom';
 import SOURCE from './injected/pointerGuard.js?raw';
 import { KydogError } from '../../shared/errors';
 import { pointerFailureDiagnostic, retainPointerFailure } from './pointerDiagnostic';
-import { collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression } from './measuredPointerSource';
+import { collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression, pointerGuardExpression } from './measuredPointerSource';
 
 function fixture() {
   const dom = new JSDOM('<form id="owner"><button id="target" aria-labelledby="label"><span>Open discussion</span></button></form><div id="label">Open</div><form id="other"></form>', { url: 'https://example.org/', runScripts: 'outside-only' });
@@ -317,4 +317,58 @@ it('fixed eligibility expression checks raw generation and location before even 
  f.world.gen='new';expect(run()).toEqual({ok:false,reason:'stale_node'});expect(reads).toBe(1);
  f.world.gen='document';f.window.history.pushState({},'', '/different');expect(run()).toEqual({ok:false,reason:'stale_node'});expect(reads).toBe(1);
  }finally{f.window.close();}
+});
+
+
+it('post-frame sample precedes the first hit and copies its enum once while preserving authentic refusal', () => {
+  const f = fixture();
+  try {
+    const permission = { owner: 'x', token: 'original', purpose: 'body' };
+    expect(f.run('begin_collected', { owner: 'x', namespace: 'n' })).toEqual({ ok: true });
+    expect(f.window.eval(`(${SOURCE})({...${JSON.stringify({ op: 'remember_collected', namespace: 'n', permission, nodeId: 7 })},el:document.querySelector('#target'),scopes:[]})`)).toEqual({ ok: true });
+    expect(f.run('capture', { kind: 'click', target: { nodeId: 7, collectedPermission: permission } })).toEqual({ ok: true });
+    const pointer = { token: 'token', kind: 'click' as const, expiresAt: Date.now() + 3000 };
+    const validate = () => f.window.eval(pointerGuardExpression('validate', pointer, Date.now() + 3000, true));
+    const style = f.window.getComputedStyle.bind(f.window);
+    let samples = 0, hits = 0;
+    const order: string[] = [];
+    f.window.getComputedStyle = el => {
+      const native = style(el);
+      Object.defineProperty(native, 'pointerEvents', { get: () => { samples++; order.push('sample'); return samples === 1 ? f.el.style.pointerEvents || 'auto' : 'painted'; } });
+      return native;
+    };
+    Object.assign(f.window.document, { elementFromPoint: () => { hits++; order.push('hit'); return f.el.firstElementChild; } });
+    expect(validate()).toEqual({ ok: true, postFramePointerEligibility: 'auto', postFrameHitConnected: true, postFrameHitContainsTarget: false });
+    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    samples = hits = 0; order.length = 0;
+    f.el.style.pointerEvents = 'none';
+    Object.assign(f.window.document, { elementFromPoint: () => { hits++; order.push('hit'); f.el.style.pointerEvents = 'auto'; return f.window.document.body; } });
+    expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'none', postFrameHitConnected: true, postFrameHitContainsTarget: true, pointerFailure: { hitSameAsCaptured: false } });
+    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    samples = hits = 0; order.length = 0;
+    Object.assign(f.window.document, { elementFromPoint: () => { hits++; order.push('hit'); f.el.style.pointerEvents = 'none'; return f.window.document.body; } });
+    expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'auto', postFrameHitConnected: true, postFrameHitContainsTarget: true });
+    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    samples = hits = 0; order.length = 0; f.el.style.pointerEvents = 'painted';
+    expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'unknown' });
+    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    f.window.getComputedStyle = el => {
+      const native = style(el);
+      Object.defineProperty(native, 'pointerEvents', { get: () => { throw Error('unreadable CSS scalar'); } });
+      return native;
+    };
+    const outside = f.window.document.body;
+    Object.defineProperty(outside, 'isConnected', { configurable: true, get: () => { throw Error('unreadable connected scalar'); } });
+    outside.contains = () => { throw Error('unreadable containment scalar'); };
+    Object.assign(f.window.document, { elementFromPoint: () => outside });
+    expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'unknown', postFrameHitConnected: null, postFrameHitContainsTarget: null });
+    Object.assign(f.window.document, { elementFromPoint: () => null });
+    expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFrameHitConnected: null, postFrameHitContainsTarget: null });
+    Object.assign(f.window.document, { elementFromPoint: () => f.window.document.body });
+    samples = 0;
+    expect((f.run('validate') as { postFramePointerEligibility?: unknown }).postFramePointerEligibility).toBeUndefined();
+    expect(f.run('validate')).toMatchObject({ ok: false, reason: 'intercepted' });
+    expect(f.run('validate_typing', { readPostFramePointerEligibility: true })).toMatchObject({ ok: false, reason: 'intercepted' });
+    expect(samples).toBe(0);
+  } finally { f.window.close(); }
 });

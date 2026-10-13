@@ -8,6 +8,7 @@ import type { DispatchAction } from '../src/main/browser/actions';
 interface State { page: { clicks: number; keys: number; input: number; trustedClicks: number; trustedKeys: number; value: string }; native: number; inserts: number; activeTabId: string; targetTabId: string; userTabId: string; focused: boolean }
 interface EligibilityCounters { input:number;measures:number;scrolls:number;hits:number;trusted:number }
 interface Harness {
+  postFrameDiagnostic(mode:string):Promise<{positive:EligibilityCounters&{frames:number};after:EligibilityCounters&{frames:number};results:unknown[];receipts:unknown[];error:string|null;sameControl:boolean}>;
   pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
   read(): Promise<State>;
   sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
@@ -71,6 +72,23 @@ test.describe('X browser port native safety (offline)', () => {
         expect(r.after.measures,mode).toBe(mode==='race'?1:0);expect(r.after.scrolls,mode).toBe(mode==='race'?1:0);expect(r.after.hits,mode).toBe(mode==='race'?1:0);
         expect(r.observations,mode).toEqual(mode==='cancel'?['none']:mode==='changed'?['none','invalid']:['none','auto']);
       }
+    }
+  });
+
+  test('same captured control retains pre-hit NONE/ancestor and AUTO/cover after the genuine native frame without input or replay', async () => {
+    for (const mode of ['none', 'cover']) {
+      const r = await control((h, value) => h.postFrameDiagnostic(value), mode);
+      console.info('[post-frame-source-native]', JSON.stringify({ mode, ...r }));
+      expect(r.positive, mode).toEqual({ input: 2, measures: 1, frames: 1, scrolls: 1, hits: 3, trusted: 1 });
+      expect(r.results[0], mode).toMatchObject({ ok: true, postFramePointerEligibility: 'auto', postFrameHitConnected: true, postFrameHitContainsTarget: true });
+      expect(r.receipts[0], mode).toMatchObject({ phase: 'post_frame', samplePhase: 'before_first_hit', relationPhase: 'first_hit', state: 'auto', outcome: 'validated' });
+      expect(r.sameControl, mode).toBe(true);
+      expect(r.error, mode).toBe('browser.click_intercepted');
+      expect(r.after, mode).toEqual({ input: 0, measures: 1, frames: 1, scrolls: 1, hits: 3, trusted: 1 });
+      expect(r.results, mode).toHaveLength(2);
+      expect(r.results[1], mode).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: mode === 'none' ? 'none' : 'auto', postFrameHitConnected: true, postFrameHitContainsTarget: mode === 'none', pointerFailure: { targetContainsHit: false, hitSameAsCaptured: false } });
+      expect(r.receipts, mode).toHaveLength(2);
+      expect(r.receipts[1], mode).toMatchObject({ phase: 'post_frame', samplePhase: 'before_first_hit', relationPhase: 'first_hit', state: mode === 'none' ? 'none' : 'auto', hitConnected: true, hitContainsTarget: mode === 'none', outcome: 'refused' });
     }
   });
 

@@ -2401,7 +2401,28 @@ export class BrowserService {
         await this.awaitNativeFrame(tabId, wc, options?.signal);
         check();
         assertMapping();
-        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate', pointer, notAfter)) as InteractResult;
+        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate', pointer, notAfter, options?.collectedPointerEligibility)) as InteractResult;
+        if (options?.collectedPointerEligibility) {
+          // Preserve the source observation even if cancellation arrived during
+          // evaluation. Lifecycle checks below still precede any native input.
+          try {
+            const value = valid?.postFramePointerEligibility;
+            const state = value === 'auto' || value === 'none' ? value : 'unknown';
+            const sampled = value === 'auto' || value === 'none' || value === 'unknown';
+            const connected = valid?.postFrameHitConnected, containsTarget = valid?.postFrameHitContainsTarget;
+            const hitConnected = typeof connected === 'boolean' ? connected : null;
+            const hitContainsTarget = typeof containsTarget === 'boolean' ? containsTarget : null;
+            logger.info('browser.pointer_eligibility', '原采集控件最终命中检查结束', {
+              phase: 'post_frame', tabId, snapshotId: targetSnapshot?.snapshotId ?? null,
+              generation: targetSnapshot?.generation ?? null, nodeId: 'nodeId' in target ? target.nodeId : null,
+              state, samplePhase: sampled ? 'before_first_hit' : 'not_observed',
+              relationPhase: sampled && (typeof connected === 'boolean' || connected === null)
+                && (typeof containsTarget === 'boolean' || containsTarget === null) ? 'first_hit' : 'not_observed',
+              hitConnected, hitContainsTarget,
+              outcome: valid?.ok === true ? 'validated' : 'refused',
+            });
+          } catch { /* Optional diagnostics cannot change the original result. */ }
+        }
         check();
         if (!valid?.ok) throw pointerError('pointer_validate', valid ?? { ok: false, reason: 'stale_node' }, { x, y });
       }
