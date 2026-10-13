@@ -183,7 +183,32 @@ test.describe('normal application X research closure (offline)', () => {
       return view.executeJavaScript("JSON.parse(sessionStorage.getItem('nativeActions')||'[]')") as Promise<string[]>;
     });
     expect(facts).toEqual(expect.arrayContaining(['body', 'article', 'replies', 'scroll', 'scroll-frame']));
+    const inspectDocument=(actualUrl:string)=>launched.app.evaluate(async({webContents},actualUrl)=>{
+      const views=webContents.getAllWebContents().filter(w=>w.getURL()===actualUrl);
+      if(views.length!==1)throw new Error('Expected actual direct Article document');
+      return views[0].executeJavaScript("({actions:JSON.parse(sessionStorage.getItem('nativeActions')||'[]'),conversation:!!document.querySelector('[aria-label=\"Timeline: Conversation\"]'),ordinaryBody:!!document.querySelector('[data-testid=\"tweetText\"]')})");
+    },actualUrl);
+    expect(await inspectDocument('https://x.com/quoted/status/456')).toEqual({actions:facts,conversation:true,ordinaryBody:true});
+    // Read the Article's actual independently returned own URI in this same application.
+    const articleUrl=target.article.body!.sourceUrl!;
+    const direct=canonical((await run([call('x_research',{tabId,read:{objective:'Read the returned Article document directly',targets:[{url:articleUrl}],includeArticle:true,includeReplies:false}})]))[0]);
+    if(direct.operation!=='read') throw new Error('read expected');
+    const directRow=direct.targets[0],directBody=directRow.article.body;
+    expect(directRow).toMatchObject({root:null,sourceUrl:articleUrl,status:'observed',article:{requested:true,entryObserved:false,entry:null,actionAttempted:false,navigationStarted:false,bodyObserved:true,body:{text:'ARTICLE_BODY_DOM_a751\n\nhttps://example.org/observed-external',postId:'654',sourceUrl:articleUrl,author:{handle:'writer'}},provenance:{kind:'direct_open',navigationId:expect.any(String),bodyObservationId:directBody?.observationId,sourceUrl:articleUrl}},budgetUsage:{scrolls:0,expandActions:0,distinctEntries:1},location:{committedNavigationOutcome:'ok',requested:{path:'/writer/status/654'},committed:{path:'/writer/status/654'},subsequent:{path:'/writer/status/654'},relation:{postId:'same',path:'same'}}});
+    expect(directRow.article.provenance!.navigationId.length).toBeGreaterThan(0);
+    const directFacts=await inspectDocument(articleUrl);
+    expect(directFacts).toEqual({actions:facts,conversation:false,ordinaryBody:false});
+
     const report = `# Offline evidence\n\n${target.root!.text}\n\n[Parent](${target.root!.sourceUrl}) · [Article](${target.article.body!.sourceUrl})\n\n${target.article.body!.text}\n\n${target.replies.observations.map(p => p.text).join('\n')}\n\n\`\`\`mermaid\nflowchart LR\nObserved --> Qualified\n\`\`\`\n`;
+    // The last discussion frame preserved an unresolved Article inventory. Its
+    // earlier successful Article action cannot silently authorize that later frame.
+    const unknownInventory=(await run([call('edit',{path:reportPath,edits:[{oldText:initial,newText:report}]})]))[0];
+    expect(unknownInventory.status).toBe('failed');
+    expect(unknownInventory.text).toContain('Article inventory is unknown');
+    expect(await fs.readFile(path.join(project,reportPath),'utf8')).toBe(initial);
+    const refreshed=canonical((await run([call('x_research',{tabId,read:{objective:'Resolve the observed parent Article inventory before citing',targets:[{url:target.root!.sourceUrl}],includeArticle:true,includeReplies:false,maxScrollsPerPost:0,maxExpandActionsPerPost:2}})]))[0]);
+    if(refreshed.operation!=='read')throw new Error('read expected');
+    expect(refreshed.targets[0]).toMatchObject({root:{postId:'321',sourceUrl:target.root!.sourceUrl,articlePreviewInventory:{scope:'collection',observed:1,retained:1,omitted:0,unresolved:0}},article:{entryObserved:true,actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'654',sourceUrl:articleUrl,text:'ARTICLE_BODY_DOM_a751\n\nhttps://example.org/observed-external'}},budgetUsage:{scrolls:0,expandActions:2}});
     const saved = await run([call('read', { path: reportPath }), call('edit', { path: reportPath, edits: [{ oldText: initial, newText: report }] })]);
     expect(saved[0].text).toContain(initial.trim()); expect(saved[1].status).toBe('ok');
     const bad = 'https://x.com/unobserved/status/999';

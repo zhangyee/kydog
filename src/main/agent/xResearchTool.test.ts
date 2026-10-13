@@ -252,13 +252,14 @@ it('observes only the final serialized canonical result once and never observes 
   expect(f.open).toHaveBeenCalledTimes(1);
  });
 
-it('restores an owned tab, rejects a foreign binding and only replaces a missing tab on the next request',async()=>{
+it('restores an owned tab, rejects a foreign binding and replaces an inherited missing tab before the first navigation',async()=>{
  const f=fixture([searchHtml(post())]);let status:'available'|'foreign'|'missing'='available';let retained:string|undefined='recovered-tab';
  const tool=createXResearchTool({browser:{...f.context.browser,tabStatus:()=>status},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',tabBinding:{get:()=>retained,set:id=>{retained=id;}}});
  await tool.execute('owned',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[0][1]).toBe('recovered-tab');
  status='foreign';await expect(tool.execute('foreign',searchInput,undefined,undefined,{} as never)).rejects.toThrow('another thread');expect(f.open).toHaveBeenCalledTimes(1);
- status='missing';const missing=await tool.execute('missing',searchInput,undefined,undefined,{} as never);expect(missing.details?.status).toBe('failed');expect(f.open).toHaveBeenCalledTimes(1);
- status='available';await tool.execute('new',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[1][1]).toBeUndefined();
+ status='missing';const recovered=await tool.execute('missing',searchInput,undefined,undefined,{} as never);expect(recovered.details?.status).toBe('partial');expect(f.open).toHaveBeenCalledTimes(2);expect(f.open.mock.calls[1][1]).toBeUndefined();
+ const explicit=await tool.execute('explicit-missing',{...searchInput,tabId:'explicit-tab'},undefined,undefined,{} as never);expect(explicit.details?.status).toBe('failed');expect(f.open).toHaveBeenCalledTimes(2);
+ const readMissing=await tool.execute('read-missing',{tabId:'recovered-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}]}},undefined,undefined,{} as never);expect(readMissing.details?.status).toBe('failed');expect(f.open).toHaveBeenCalledTimes(2);
 });
 
 it('retains earlier precise root preview inventory across later body expansion and an accurate selected attempt',async()=>{

@@ -67,6 +67,8 @@ export interface XArticleEntry {
   author: XAuthorIdentity | null; label: string | null; observationId: string; binding: XControlBinding;
 }
 export interface XArticleFacts {
+  /** Initial direct document open; distinct from a parent-entry action/navigation. */
+  provenance?: { kind: 'direct_open'; navigationId: string; bodyObservationId: string; sourceUrl: string };
   /** Retained even when optional entry binding/label is omitted by output budgeting. */
   entryIdentity?: XArticleEntryIdentity;
   location?: XLocationFacts;
@@ -161,6 +163,9 @@ export interface XArticlePreviewScopeObservation {
   articlePreviewInventory:XArticlePreviewInventory;
 }
 export interface XReadObservation {
+  /** Earlier exact source observations displaced from the current per-post view. */
+  bodyObservations?: XTextObservation[];
+  bodyObservationsOmitted?: number;
   articlePreviewObservations?:XArticlePreviewScopeObservation[];
   inventoryAuditOmitted?:{count:number;first:Pick<XArticlePreviewScopeObservation,'observationId'|'postId'|'sourceUrl'|'authorHandle'>};
   target: XReadTarget;

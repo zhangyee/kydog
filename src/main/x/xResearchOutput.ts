@@ -30,6 +30,7 @@ function texts(result: XResearchResult): XTextObservation[] {
     ? result.queries.flatMap((q) => [...q.posts,...(q.postObservations??[])])
     : result.targets.flatMap((t) => [
         ...(t.root ? [t.root] : []),
+        ...(t.bodyObservations ?? []),
         ...t.quotedPosts,
         ...(t.article.body ? [t.article.body] : []),
         ...t.replies.observations,
@@ -139,7 +140,10 @@ function projection(result: XResearchResult) {
       budgetUsage: t.budgetUsage,
       root: t.root ? body(t.root) : null,
       quotedPosts: t.quotedPosts.map(body),
+      ...(t.bodyObservations ? {bodyObservations: t.bodyObservations.map(body)} : {}),
+      ...(t.bodyObservationsOmitted ? {bodyObservationsOmitted: t.bodyObservationsOmitted} : {}),
       article: {
+        ...(t.article.provenance ? {provenance:t.article.provenance} : {}),
         ...(t.article.entryIdentity
           ? { entryIdentity: t.article.entryIdentity }
           : {}),
@@ -416,6 +420,7 @@ export function assertXRequestFits(original: XResearchResult): void {
         };
       }
       if (t.article.requested && t.root) {
+        t.article.provenance={kind:'direct_open',navigationId:uuid,bodyObservationId:uuid,sourceUrl:'w'.repeat(X_MAX_SOURCE_URL_UNITS)};
         t.article.body = {
           ...structuredClone(t.root),
           containerKind: 'article',
@@ -440,6 +445,7 @@ export function assertXRequestFits(original: XResearchResult): void {
         };
         t.root.articlePreviews = [sizingIdentity];
         t.root.articlePreviewInventory={scope:'collection',observed:100,retained:1,omitted:99,unresolved:100};
+        t.bodyObservationsOmitted=Number.MAX_SAFE_INTEGER;
         t.inventoryAuditOmitted={count:Number.MAX_SAFE_INTEGER,first:{observationId:uuid,postId:t.root.postId!,sourceUrl:t.root.sourceUrl!,authorHandle:t.root.author!.handle!}};
         t.article.entryIdentity = sizingIdentity;
       }
@@ -542,6 +548,28 @@ export function serializeXResearchResult<T extends XResearchResult>(
     };
     while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES) lo=mid;else hi=mid-1;}
     retain(lo);value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
+  if (result.operation === 'read') for (const row of result.targets) {
+    const history = row.bodyObservations;
+    if (!history?.length) continue;
+    const entries = [...history], previousOmitted = row.bodyObservationsOmitted ?? 0;
+    const retain = (count: number) => {
+      row.bodyObservations = entries.slice(0, count);
+      row.bodyObservationsOmitted = previousOmitted + entries.length - count;
+    };
+    let lo = 0, hi = entries.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2); retain(mid);
+      if (update().result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES) lo = mid;
+      else hi = mid - 1;
+    }
+    retain(lo);
+    if (row.status === 'observed') row.status = 'partial';
+    row.reason ??= 'body_observations_output_budget';
+    if (row.stopReason === 'agent_stopped') row.stopReason = 'budget_reached';
+    if (result.status === 'observed') result.status = 'partial';
+    value = update();
+    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES) return value;
   }
   const lists =
     result.operation === 'search'

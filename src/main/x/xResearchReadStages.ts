@@ -59,7 +59,18 @@ export function readBarrier(
   };
   return true;
 }
+/** Preserve source observations, never choose a body by length or similarity. */
+export function retainReadBody(row: XReadObservation, body: XTextObservation): void {
+  const history = (row.bodyObservations ??= []);
+  if (history.some(p => p.observationId === body.observationId)) return;
+  history.push(body);
+  const inventory = body.articlePreviewInventory;
+  if (body.postId && body.sourceUrl && body.author?.handle && inventory && (inventory.observed > 0 || inventory.unresolved > 0)) {
+    (row.articlePreviewObservations ??= []).push({ observationId: body.observationId, postId: body.postId, sourceUrl: body.sourceUrl, authorHandle: body.author.handle, articlePreviews: body.articlePreviews ?? [], articlePreviewInventory: inventory });
+  }
+}
 function mergeText(
+  row: XReadObservation,
   saved: XTextObservation[],
   incoming: XTextObservation[],
   maximum = Infinity,
@@ -68,7 +79,10 @@ function mergeText(
     const index = saved.findIndex(
       (p) => p.postId === item.postId && p.sourceUrl === item.sourceUrl,
     );
-    if (index >= 0) saved[index] = item;
+    if (index >= 0) {
+      if (saved[index].observationId !== item.observationId) retainReadBody(row, saved[index]);
+      saved[index] = item;
+    }
     else if (saved.length < maximum) saved.push(item);
   }
 }
@@ -117,10 +131,7 @@ export function savePostFrame(
     return false;
   }
   if (row.root === observed.root) return true;
-  const previous=row.root,inventory=previous?.articlePreviewInventory;
-  if(previous && previous!==observed.root && previous.postId && previous.sourceUrl && previous.author?.handle && inventory && (inventory.observed>0 || inventory.unresolved>0)) {
-    (row.articlePreviewObservations??=[]).push({observationId:previous.observationId,postId:previous.postId,sourceUrl:previous.sourceUrl,authorHandle:previous.author.handle,articlePreviews:previous.articlePreviews??[],articlePreviewInventory:inventory});
-  }
+  if (row.root) retainReadBody(row, row.root);
   const rootEntries=observed.entries.filter(entry=>observed.entryParents.get(entry)===observed.root);
   const selected=rootEntries[0];
   if(observed.root.articlePreviewInventory) {
@@ -130,9 +141,9 @@ export function savePostFrame(
   if(selected) observed.root.articlePreviews=[{entryObservationId:selected.observationId,parentPostId:selected.parentPostId,sourceUrl:selected.sourceUrl,targetUrl:selected.targetUrl}];
   row.root = observed.root;
   row.sourceUrl = observed.root.sourceUrl;
-  mergeText(row.quotedPosts, observed.quotedPosts);
+  mergeText(row, row.quotedPosts, observed.quotedPosts);
   const incoming = request.includeReplies ? observed.replies : [];
-  mergeText(row.replies.observations, incoming, request.maxRepliesPerPost);
+  mergeText(row, row.replies.observations, incoming, request.maxRepliesPerPost);
   rememberSources(context, [
     observed.root,
     ...observed.quotedPosts,
@@ -220,6 +231,7 @@ export async function collectReadyPostFrame(
   if (
     allowWait &&
     observed.scope.collectedItemCount === 0 &&
+    !observed.article &&
     !observed.state &&
     observed.location.current.origin &&
     observed.location.relation.postId !== 'different'

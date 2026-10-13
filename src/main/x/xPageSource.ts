@@ -11,7 +11,7 @@ import type { XArticleEntry, XAuthorIdentity, XControlBinding, XLocationRelation
 
 export type XPageRequest =
   | { stage: 'search'; expectedUrl: string; query: string; product: 'Top' | 'Latest' }
-  | { stage: 'post'; expectedUrl: string; postId: string }
+  | { stage: 'post'; expectedUrl: string; postId: string; directOpen?: XOpenResult }
   | { stage: 'article'; expectedUrl: string; entry: XArticleEntry; via: { kind: 'action'; result: XActionResult } | { kind: 'open'; result: XOpenResult } };
 export interface XPageControl { kind: 'body_expand' | 'replies_expand' | 'article_entry'; postId: string | null; binding: XControlBinding }
 export interface XPageObservation {
@@ -102,8 +102,8 @@ export function xPageExpression(request: XPageRequest): string {
   validRequest(request);
   return SOURCE.replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage,postId:request.stage==='post'?request.postId:null,permissionNamespace:randomUUID()})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`).replace('const permissionGuard = X_PERMISSION;', () => `const permissionGuard = (${POINTER_GUARD});`);
 }
-/** articleProven is supplied only by the port's object-identity provenance registry. */
-export function decodeXPage(raw: unknown, request: XPageRequest, current: BrowserLocationFacts, articleProven: boolean): XPageObservation {
+/** navigationProven is supplied only by the port's object-identity provenance registries. */
+export function decodeXPage(raw: unknown, request: XPageRequest, current: BrowserLocationFacts, navigationProven: boolean): XPageObservation {
   validRequest(request); validateRaw(raw);
   const snapshot: AxSnapshot = { ...raw.snapshot, snapshotId: `xsnap_${randomUUID()}` };
   const observedAt = new Date().toISOString();
@@ -119,7 +119,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
       && u.searchParams.getAll('f').length===1 && u.searchParams.get('f')===(request.product==='Latest'?'live':'top')
       && raw.selectedProduct===request.product && raw.region;
   } else if (exact && request.stage==='post') identityProven = !!currentPost && currentPost.id===request.postId && raw.region;
-  else if (exact && request.stage==='article') identityProven = articleProven && current.currentUrl===request.expectedUrl && !!currentPost;
+  else if (exact && request.stage==='article') identityProven = navigationProven && current.currentUrl===request.expectedUrl && !!currentPost;
   const binding = (v: {nodeId:number;index:number}): XControlBinding => ({nodeId:v.nodeId,index:v.index,snapshotId:snapshot.snapshotId,generation:snapshot.generation});
   const named = (p: RawPost): boolean => { const id=publicPost(p.permalink);return !!id && id.id===p.postId && !!p.author?.handle && id.handle===p.author.handle; };
   const makeText = (p: RawPost,kind: XTextObservation['containerKind']): XTextObservation => ({observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:publicPost(p.permalink)?.url??null,author:p.author,text:p.text,observedAt,truncation:p.truncation,containerKind:kind,...(kind==='reply'?{directParent:null}:{}),postId:kind==='unattributed_fragment'?null:p.postId} as XTextObservation);
@@ -160,8 +160,10 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   }
   let article:XPageObservation['article']=null;
   const articleSource = publicPost(current.currentUrl);
-  if (identityProven && request.stage==='article' && raw.article && articleSource && raw.article.author?.handle===articleSource.handle && raw.article.blocks.some(Boolean)) {
+  const directArticle = request.stage==='post' && !!request.directOpen && navigationProven && exact && current.currentUrl===request.expectedUrl && currentPost?.id===request.postId;
+  if (((identityProven && request.stage==='article') || directArticle) && raw.article && articleSource && raw.article.author?.handle===articleSource.handle && raw.article.blocks.some(Boolean)) {
     const a=raw.article, text=a.blocks.join('\n\n');
+    if (directArticle) identityProven=true;
     article={title:a.title,blocks:a.blocks,links:a.links.map(l=>({...safeLink(l.url),text:l.text})),body:{observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:articleSource.url,author:a.author,text,observedAt,containerKind:'article',postId:articleSource.id,truncation:{returned:text.length,totalKnown:a.truncated?null:text.length,truncated:a.truncated}}};
   }
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;

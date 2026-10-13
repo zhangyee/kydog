@@ -7,6 +7,7 @@ import {
   expandPostBody,
   readDiscussion,
   savePostFrame,
+  retainReadBody,
   type XReadStage,
 } from './xResearchReadStages';
 import { KydogError } from '../../shared/errors';
@@ -21,6 +22,7 @@ import {
   emptyUsage,
   failure,
   locationFacts,
+  rememberSources,
   navigationUrl,
   type XResearchContext,
 } from './xResearchSearch';
@@ -251,6 +253,7 @@ export async function readX(
             stage: 'post' as const,
             expectedUrl: ordinaryDocument(committed, id) ? committed : source,
             postId: id,
+            ...(input.read.includeArticle ? { directOpen: opened } : {}),
           };
           const ready = await collectReadyPostFrame(
             page,
@@ -291,6 +294,19 @@ export async function readX(
             row.status = 'partial';
             row.reason = 'unsupported_document_route';
             row.stopReason = 'identity_unproven';
+            return;
+          }
+          if (observed.identityProven && !observed.root && observed.article && input.read.includeArticle) {
+            const body = observed.article.body;
+            row.article.body = body;
+            row.article.bodyObserved = true;
+            row.article.provenance = {kind:'direct_open',navigationId:opened.nav.navigationId,bodyObservationId:body.observationId,sourceUrl:body.sourceUrl!};
+            row.sourceUrl = body.sourceUrl;
+            row.status = body.truncation.truncated || input.read.includeReplies ? 'partial' : 'observed';
+            row.reason = input.read.includeReplies ? 'direct_article_discussion_unobserved' : null;
+            row.replies.scope.rootPostId = body.postId;
+            row.budgetUsage.distinctEntries = 1;
+            rememberSources(context, [body]);
             return;
           }
           if (!observed.identityProven || !observed.root) {
@@ -440,6 +456,8 @@ export async function readX(
               );
             } finally {
               // Return-page previews are separate observations; retain the body actually expanded before Article.
+              if (row.root && row.root.observationId !== savedParent.root?.observationId) retainReadBody(row, row.root);
+              row.bodyObservations = row.bodyObservations?.filter(p => p.observationId !== savedParent.root?.observationId);
               Object.assign(row, savedParent);
             }
             checkReadCancelled(context);

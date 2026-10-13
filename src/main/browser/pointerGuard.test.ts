@@ -354,9 +354,12 @@ it('post-frame sample precedes the first hit and copies its enum once while pres
     expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
     f.window.getComputedStyle = el => {
       const native = style(el);
-      Object.defineProperty(native, 'pointerEvents', { get: () => { throw Error('unreadable CSS scalar'); } });
+      Object.defineProperty(native, 'pointerEvents', { get: () => { samples++; throw Error('unreadable CSS scalar'); } });
       return native;
     };
+    samples = 0;
+    expect(validate()).toMatchObject({ postFramePointerEligibility: 'unknown' });
+    expect(samples).toBe(1);
     const outside = f.window.document.body;
     Object.defineProperty(outside, 'isConnected', { configurable: true, get: () => { throw Error('unreadable connected scalar'); } });
     outside.contains = () => { throw Error('unreadable containment scalar'); };

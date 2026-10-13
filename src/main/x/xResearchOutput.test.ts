@@ -212,3 +212,27 @@ it('keeps repeated candidate observations as one atomic cap group and preserves 
  expect(()=>ledger.guard('/tmp/a.md','[source](https://x.com/alice/status/123)')).toThrow('inventory');
  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(limited)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
 });
+
+
+it('caps displaced body observations honestly and retains their known Article citation obligations',async()=>{
+  const {retainReadBody}=await import('./xResearchReadStages');
+  const {XResearchEvidence}=await import('./xResearchEvidence');
+  const result=await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
+  const row=result.targets[0],root=row.root!;
+  const plain=serializeXResearchResult(result);const admitted=new XResearchEvidence('/tmp',()=> 'run');admitted.observe(plain.result);
+  expect(()=>admitted.guard('/tmp/report.md','[root](https://x.com/alice/status/123)')).not.toThrow();
+  // Exact independently named observations, not fragments concatenated into a body.
+  for(let n=0;n<900;n++)retainReadBody(row,{...structuredClone(root),observationId:`earlier-${n}`,text:'',truncation:{returned:0,totalKnown:0,truncated:false},articlePreviews:[{entryObservationId:`entry-${n}`,parentPostId:'123',sourceUrl:root.sourceUrl!,targetUrl:'https://x.com/bob/status/456'}],articlePreviewInventory:{scope:'collection',observed:1,retained:1,omitted:0,unresolved:0}});
+  const capped=serializeXResearchResult(result),model=JSON.parse(capped.text),saved=capped.result.targets[0];
+  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+  expect(saved.bodyObservationsOmitted).toBeGreaterThan(0);
+  expect(saved.bodyObservations!.length+saved.bodyObservationsOmitted!).toBe(900);
+  expect(model.targets[0].bodyObservationsOmitted).toBe(saved.bodyObservationsOmitted);
+  expect(capped.result.truncation.truncated).toBe(true);
+  expect(saved.root).toMatchObject({observationId:root.observationId,sourceUrl:root.sourceUrl,truncation:{totalKnown:8,truncated:true}});
+  const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(capped.result);
+  // A later ordinary body supplies citable text but cannot erase the retained Article obligation.
+  ledger.observe(plain.result);
+  expect(()=>ledger.guard('/tmp/report.md','[root](https://x.com/alice/status/123)')).toThrow(/Article/);
+  expect(serializeXResearchResult(capped.result)).toEqual(capped);
+});

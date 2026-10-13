@@ -77,6 +77,7 @@ const documentSchema = z.object({
   product: z.enum(['Top', 'Latest']).nullable(),
 });
 const articleSchema = z.object({
+  provenance: z.object({kind:z.literal('direct_open'),navigationId:string,bodyObservationId:string,sourceUrl:string}).optional(),
   requested: z.boolean(),
   entryObserved: z.boolean(),
   actionAttempted: z.boolean(),
@@ -123,6 +124,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     targets: z.array(
       z.object({
         root: textSchema.nullable(),
+        bodyObservations: z.array(textSchema).optional(),
         articlePreviewObservations:z.array(scopeSchema).optional(),
         inventoryAuditOmitted:z.object({count:z.number().int().positive(),first:scopeIdentitySchema}).optional(),
         quotedPosts: z.array(textSchema),
@@ -502,6 +504,7 @@ export class XResearchEvidence {
         const scope=row.inventoryAuditOmitted.first,coordinates=parseXSourcePost(scope.sourceUrl);
         if(coordinates?.id===scope.postId && coordinates.handle===scope.authorHandle)this.inventoryGaps.push({...scope,order});
       }
+      for (const p of row.bodyObservations ?? []) add(p);
       const rootRecord =
         row.root?.containerKind === 'root_post' ? add(row.root) : undefined;
       for (const p of row.quotedPosts)
@@ -511,8 +514,10 @@ export class XResearchEvidence {
       const root = row.root,
         body = row.article.body,
         e = entryIdentity(row.article);
-      if (body?.containerKind === 'article' && row.article.bodyObserved)
-        add(body);
+      if (body?.containerKind === 'article' && row.article.bodyObserved
+        && (!row.article.provenance || (row.article.provenance.bodyObservationId===body.observationId
+          && row.article.provenance.sourceUrl===body.sourceUrl && !row.article.entryObserved
+          && !row.article.actionAttempted && !row.article.navigationStarted))) add(body);
       if (root?.containerKind === 'root_post' && named(root)) {
         const document = documentSchema.safeParse(row.documentSource);
         if (document.success) {

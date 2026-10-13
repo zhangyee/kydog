@@ -100,6 +100,12 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
               && sameLocation(proof.location,after) && proof.finalUrl===request.expectedUrl
               && ('entry' in proof ? proof.entry===request.entry : request.entry.targetUrl!==null && proof.requestedUrl===request.entry.targetUrl);
           }
+          if (request.stage==='post' && request.directOpen) {
+            const proof=opens.get(request.directOpen);
+            articleProven=!!proof && proof.tabId===tabId && sameLocation(proof.location,after)
+              && proof.requestedUrl===request.expectedUrl && proof.finalUrl===request.expectedUrl
+              && after.currentUrl===request.expectedUrl;
+          }
           const observation=decodeXPage(raw,request,after,articleProven);
           bindings.set(observation.snapshot,after);
           permissions.set(observation.snapshot,new Map(observation.snapshot.nodes.flatMap(n=>n.collectedPermission?[[n.index,{...n.collectedPermission}]]:[])));

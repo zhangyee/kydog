@@ -290,3 +290,40 @@ it('reply action catch rethrows the same authenticated error without another col
     expect(row.budgetUsage.expandActions).toBe(0);
   } finally { warn.mockRestore(); }
 });
+
+
+it('preserves exact successive root, quote and reply bodies through canonical/model evidence and branch restore', async () => {
+  const { serializeXResearchResult } = await import('./xResearchOutput');
+  const { XResearchEvidence } = await import('./xResearchEvidence');
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const frame = (root: string, quote: string, reply: string, extra = '') => readHtml(post('123','alice',root).replace('</article>', `<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/bob">@bob</a></div><div data-testid="tweetText">${quote}</div><a href="/bob/status/456"><time>today</time></a></div></article>`)+post('789','carol',reply)+extra);
+  for (const shorter of [false, true]) {
+    const first: [string,string,string] = ['Expanded root retained evidence','Expanded quoted evidence','Expanded reply evidence'];
+    const later: [string,string,string] = shorter ? ['Root preview','Quote preview','Reply preview'] : first;
+    const f=fixture([frame(...first),frame(...later,post('790','dave','new reply'))]);
+    const observed: import('./xPageSource').XPageObservation[]=[];
+    const collect=f.collect.getMockImplementation()!;
+    f.collect.mockImplementation(async request=>{const value=await collect(request);observed.push(value);return value;});
+    const result=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxRepliesPerPost:2,maxScrollsPerPost:1}),f.context);
+    expect(result.targets[0]).toMatchObject({root:{text:later[0]},quotedPosts:[{text:later[1]}],replies:{observations:[{text:later[2]},{text:'new reply'}]},budgetUsage:{scrolls:1,distinctEntries:4},stopReason:'budget_reached'});
+    const serialized=serializeXResearchResult(result);
+    const projected=serializeXResearchResult({...result,objective:'x'.repeat(600000)});
+    expect(projected.result.contentProjection).toBe('x_research_projection_v1');
+    const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(serialized.result);
+    const manager=SessionManager.inMemory('/tmp');
+    const base=manager.appendMessage({role:'user',content:'read',timestamp:0});
+    manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:'call',isError:false,content:[{type:'text',text:serialized.text}],details:serialized.result,timestamp:1});
+    const restored=new XResearchEvidence('/tmp',()=> 'later-run');restored.restore(manager.getBranch());
+    for (const page of observed) for (const p of [page.root!,...page.quotedPosts,...page.replies]) {
+      for (const records of [ledger.observations,restored.observations]) expect(records).toContainEqual(expect.objectContaining({observationId:p.observationId,text:p.text,authorHandle:p.author!.handle,sourceUrl:p.sourceUrl,postId:p.postId}));
+      expect(serialized.text).toContain(p.observationId);
+      expect(serialized.text).toContain(p.text);
+      expect(projected.text).toContain(p.observationId);
+      expect(projected.text).toContain(p.text);
+    }
+    expect(ledger.observations).toHaveLength(7);
+    expect(restored.observations).toHaveLength(7);
+    expect(()=>restored.guard('/tmp/report.md','[root](https://x.com/alice/status/123) [quote](https://x.com/bob/status/456) [reply](https://x.com/carol/status/789)')).not.toThrow();
+    manager.branch(base);restored.restore(manager.getBranch());expect(restored.observations).toHaveLength(0);
+  }
+});

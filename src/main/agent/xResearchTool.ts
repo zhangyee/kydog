@@ -35,7 +35,13 @@ export function createXResearchTool(deps:XResearchToolDeps):ToolDefinition<typeo
       if(!runId) throw new Error('x_research requires an active run');
       if(input.search) {
         for(const q of input.search.queries) if(q.query.length>X_DOM_MAX_QUERY_UNITS || xSearchUrl(q).length>X_DOM_MAX_STRING_UNITS) throw new Error('x_research: query exceeds the fixed DOM adapter input bounds; shorten or split the query');
-        if(input.tabId===undefined && boundTabId) input.tabId=boundTabId;
+        if(input.tabId===undefined && boundTabId) {
+          // Registry absence precedes this request's first navigation; never replay an attempt.
+          if(deps.browser.tabStatus?.(boundTabId)==='missing') {
+            boundTabId=undefined;
+            deps.tabBinding?.set(undefined);
+          } else input.tabId=boundTabId;
+        }
       } else for(const target of input.read.targets) if((target.url??target.postId).length>X_DOM_MAX_STRING_UNITS) throw new Error('x_research: target exceeds the fixed DOM adapter input bounds; use a shorter actually observed permalink');
       const context:XResearchContext={browser:deps.browser,threadId:deps.threadId,sources:deps.sources,runId,callId,batchId:`xbatch_${randomUUID()}`,signal};
       assertXRequestFits(input.search?searchResult(input,context):readResult(input,context));

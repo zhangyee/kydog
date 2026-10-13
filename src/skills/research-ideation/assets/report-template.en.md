@@ -235,5 +235,5 @@ therefore total <N8> = D1 + D3; the remaining <N6−N8> have abstracts only, and
 
 - Sources covered: <list>. Not covered: <list>, so <some category of literature> may have been missed.
 - Claims marked `[abstract only]` were verified against the abstract only; the full text was not seen.
-- Citation relations are available only from the `semantic` and `openalex` sources; every other "relatedness" judgment in this
-  report is a proxy, and is labeled as such in the text. No impact factor data.
+- Base citation relations only on citation records actually obtained and verifiable; state the basis for other relatedness judgments.
+  List unverified or missing information, including citation relations and impact factors, and explain how these gaps affect the conclusions.
