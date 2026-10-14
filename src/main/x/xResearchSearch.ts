@@ -1,3 +1,5 @@
+import type {BrowserScrollReceipt} from '../browser/actions';
+import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} from './xScrollRecovery';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
@@ -66,7 +68,18 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
   let halted:false|'cancelled'|'auth_required'|'other'=false;
   for (const row of result.queries) {
     if(halted || context.signal?.aborted) { if(halted==='cancelled' || context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';} else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};} continue; }
+    const seen=new Set<string>();
+    const savedFrames=new WeakSet<XPageObservation>();
     const save = (observed:XPageObservation) => {
+      if(savedFrames.has(observed))return;
+      savedFrames.add(observed);
+      rememberXIdentities(seen,observed.posts);
+      for(const p of observed.posts) {
+        const entries=observed.entries.filter(entry=>observed.entryParents.get(entry)===p);
+        if(p.articlePreviewInventory) {p.articlePreviewInventory.retained=entries.length;p.articlePreviewInventory.omitted=0;}
+        if(entries.length) p.articlePreviews=entries.map(entry=>({entryObservationId:entry.observationId,parentPostId:entry.parentPostId,sourceUrl:entry.sourceUrl,targetUrl:entry.targetUrl}));
+      }
+
       for(const p of observed.posts) if(p.postId) {
         if(!row.posts.some(old=>old.postId===p.postId)) {
           if(row.posts.length<input.search.maxPostsPerQuery) row.posts.push(p);
@@ -86,14 +99,10 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
 
         const request={stage:'search' as const,expectedUrl:url.href,query:row.query.query,product:row.query.product};
         let waited=false, waitFailed=false;
+        let recoveredFrame:XPageObservation|undefined;
         while(true) {
-          stage='collection';const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal);
+          stage='collection';const observed=recoveredFrame??await collectFreshXPage(page,request,row.collectionTransitions,context.signal);recoveredFrame=undefined;
           row.location=locationFacts(url.href,opened.nav,observed);
-          for(const p of observed.posts) {
-            const entries=observed.entries.filter(entry=>observed.entryParents.get(entry)===p);
-            if(p.articlePreviewInventory) {p.articlePreviewInventory.retained=entries.length;p.articlePreviewInventory.omitted=0;}
-            if(entries.length) p.articlePreviews=entries.map(entry=>({entryObservationId:entry.observationId,parentPostId:entry.parentPostId,sourceUrl:entry.sourceUrl,targetUrl:entry.targetUrl}));
-          }
           if(observed.state?.kind==='auth_required') {row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:observed.state.text,observationId:observed.state.observationId};break;}
           if(waitFailed) {
             if(observed.identityProven) save(observed);
@@ -126,9 +135,13 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
           const actionIndex=++scroll.totalAttempts;
           const countOmissions=()=>{scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter(id=>id!==undefined)).size;};
           countOmissions();
+          let receipt:BrowserScrollReceipt|undefined;let written=false;
+          try {
           await page.act({kind:'scroll',direction:'down'},observed.snapshot,{scrollAcknowledgement:{
-            onWritten:()=>{row.budgetUsage.scrolls++;},
-            onReceipt:receipt=>{
+            onWritten:()=>{written=true;row.budgetUsage.scrolls++;},
+            onReceipt:value=>{
+              receipt=isScrollReceipt(value)?{...value}:undefined;
+          if(!receipt)return;
               const saved={actionIndex,snapshotId:observed.snapshot.snapshotId,generation:receipt.generation,location:observed.location.current,
                 targetKind:receipt.targetKind,targetNodeId:receipt.targetNodeId,targetContainsHit:receipt.targetContainsHit,
                 conversationRelation:receipt.conversationRelation,rootRelation:receipt.rootRelation,
@@ -138,6 +151,28 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
               scroll.last=saved;countOmissions();
             },
           }});
+          }catch(error){
+            if(!isRecoverableScroll(error,receipt,written,observed))throw error;
+            stage='collection';
+            const recovered=await recoverXScroll(page,request,observed,actionIndex,row.diagnostics!,frame=>{
+              row.location=locationFacts(url.href,opened.nav,frame);
+              if(frame.state?.kind==='auth_required'){
+                row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:frame.state.text,observationId:frame.state.observationId};
+                return{outcome:'barrier',newIdentityCount:0};
+              }
+              if(!frame.identityProven)return{outcome:'identity_unproven',newIdentityCount:0};
+              const newIdentityCount=rememberXIdentities(seen,frame.posts);save(frame);
+              return{outcome:newIdentityCount>0||frame.state?.kind==='explicit_empty'?'progress':'continue',newIdentityCount};
+            },context.signal);
+            if(!recovered.frame){
+              if(recovered.outcome!=='barrier'){
+                row.status='partial';row.stopReason=recovered.outcome==='identity_unproven'?'identity_unproven':'action_failed';
+                row.barrier={status:'partial',reason:recovered.outcome==='identity_unproven'?'search_identity_unproven':'scroll_no_movement',observationId:null};
+              }
+              break;
+            }
+            recoveredFrame=recovered.frame;
+          }
         }
       });
     } catch(error) {

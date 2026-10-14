@@ -164,7 +164,7 @@ export interface XCollectionTransition {
   outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';
 }
 export interface XSearchObservation {
-  diagnostics?: { version: 1; scroll?: XScrollDiagnostics };
+  diagnostics?: { version: 1; scroll?: XScrollDiagnostics; scrollRecovery?: XScrollRecoveries };
   query: XSearchQuery;
   collectionTransitions: XCollectionTransition[];
   status: XResearchStatus;
@@ -255,6 +255,15 @@ export interface XScrollReceiptDiagnostic {
   written: boolean; eventObserved: boolean; frameObserved: boolean;
   state: 'pending' | 'frame_observed' | 'no_movement' | 'invalidated' | 'expired';
 }
+export interface XScrollRecoveryBinding {
+  snapshotId:string; generation:string; documentEpoch:number; routeRevision:number; navigationSequence:number; location:XSafeLocation;
+}
+export interface XScrollRecoveryAttempt extends XScrollRecoveryBinding {
+  actionIndex:number; collectCount:number; newIdentityCount:number;
+  outcome:'progress'|'expired'|'barrier'|'identity_unproven'|'cancelled'|'failed';
+  firstCollection?:XScrollRecoveryBinding; lastCollection?:XScrollRecoveryBinding;
+}
+export interface XScrollRecoveries {totalRecoveries:number;omittedRecoveries:number;first?:XScrollRecoveryAttempt;last?:XScrollRecoveryAttempt}
 export interface XScrollDiagnostics { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number }
 export interface XClickFailure {
   actionIndex: number; targetPostId: string; controlKind: 'body_expand' | 'article_entry' | 'replies_expand';
@@ -285,6 +294,7 @@ export interface XPointerPreflight {
  diagnostic:Readonly<import('../browser/pointerPreflightDiagnostic').PointerPreflightDiagnostic>;
 }
 export interface XReadDiagnostics {
+ scrollRecovery?:XScrollRecoveries;
  pointerPreflights?:{totalAttempts:number;omittedAttempts:number;first:XPointerPreflight;last:XPointerPreflight};
   replyExpansions?:XReplyExpansions;
   /** Counts authenticated failed click attempts, independently of all issued actions. */

@@ -12,7 +12,18 @@ const scroll=z.object({totalAttempts:count,first:receipt.optional(),last:receipt
  return v.omittedAttempts===v.totalAttempts-new Set(retained.map(v=>v.actionIndex)).size
   && retained.every(r=>r.actionIndex<=v.totalAttempts) && (!v.first||!v.last||v.first.actionIndex<=v.last.actionIndex);
 });
-const search=z.object({version:z.literal(1),scroll:scroll.optional()});
+const recoveryBinding=z.object({snapshotId:id,generation:id,documentEpoch:count,routeRevision:count,navigationSequence:count,location:safe});
+const recoveryAttempt=recoveryBinding.extend({actionIndex:count.positive(),collectCount:count,newIdentityCount:count,
+ outcome:z.enum(['progress','expired','barrier','identity_unproven','cancelled','failed']),firstCollection:recoveryBinding.optional(),lastCollection:recoveryBinding.optional()}).refine(v=>{
+ const frames=[v.firstCollection,v.lastCollection];
+ if(v.collectCount===0)return frames.every(f=>!f)&&v.newIdentityCount===0&&v.outcome!=='progress'&&v.outcome!=='expired';
+ if(frames.some(f=>!f))return false;
+ if(v.collectCount===1 && JSON.stringify(v.firstCollection)!==JSON.stringify(v.lastCollection))return false;
+ return !['progress','expired'].includes(v.outcome)||frames.every(f=>f!.generation===v.generation&&f!.documentEpoch===v.documentEpoch&&f!.routeRevision===v.routeRevision&&f!.navigationSequence===v.navigationSequence&&JSON.stringify(f!.location)===JSON.stringify(v.location));
+});
+const recoveries=z.object({totalRecoveries:count.positive(),omittedRecoveries:count,first:recoveryAttempt,last:recoveryAttempt}).refine(v=>v.omittedRecoveries===Math.max(0,v.totalRecoveries-2)
+ && v.last.actionIndex-v.first.actionIndex>=v.totalRecoveries-1 && (v.totalRecoveries!==1||JSON.stringify(v.first)===JSON.stringify(v.last)));
+const search=z.object({version:z.literal(1),scroll:scroll.optional(),scrollRecovery:recoveries.optional()});
 const relation=z.enum(['same_cell','focal_contains_control','control_contains_focal','different_cell','unknown']);
 const diagnostic=z.unknown().transform(projectPointerDiagnostic);
 const click=z.object({actionIndex:count.positive(),targetPostId:z.string().regex(/^\d+$/),controlKind:z.enum(['body_expand','article_entry','replies_expand']),binding:z.object({index:count,nodeId:count,snapshotId:id,generation:id}),sourceRelation:relation,diagnostic}).refine(v=>v.binding.snapshotId===v.diagnostic.snapshotId&&v.binding.generation===v.diagnostic.generation&&v.binding.nodeId===v.diagnostic.nodeId);
@@ -24,6 +35,7 @@ const legacy=z.object({actionIndex:count.positive(),targetPostId:z.string().rege
 export function projectActionDiagnostics<T extends XResearchResult>(value:T):T {
  if(value.operation==='search')return {...value,queries:value.queries.map(row=>({...row,...(row.diagnostics?{diagnostics:search.parse(row.diagnostics)}:{})}))};
  return {...value,targets:value.targets.map(row=>({...row,...(row.diagnostics?{diagnostics:{...row.diagnostics,
+  ...(row.diagnostics.scrollRecovery?{scrollRecovery:recoveries.parse(row.diagnostics.scrollRecovery)}:{}),
   ...(row.diagnostics.pointerPreflights?{pointerPreflights:preflights.parse(row.diagnostics.pointerPreflights)}:{}),
   ...(row.diagnostics.replyExpansions?{replyExpansions:replyExpansionsSchema.parse(row.diagnostics.replyExpansions)}:{}),
   ...(row.diagnostics.clickFailures?{clickFailures:failures.parse(row.diagnostics.clickFailures)}:{}),

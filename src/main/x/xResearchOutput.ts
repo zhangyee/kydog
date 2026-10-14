@@ -676,7 +676,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       const path=`targets.${index}.diagnostics.${part}`;
       (result.metadataOmissions??=[]).push(path);
     };
-    for (const part of ['pointerPreflights','scroll','readiness','clickFailures','pointerFailure','initialFrame','firstAdmittedFrame','terminalFrame'] as const) {
+    for (const part of ['scrollRecovery','pointerPreflights','scroll','readiness','clickFailures','pointerFailure','initialFrame','firstAdmittedFrame','terminalFrame'] as const) {
       for (const [index,row] of result.targets.entries()) {
         if (!row.diagnostics?.[part]) continue;
         delete row.diagnostics[part];
@@ -686,10 +686,10 @@ export function serializeXResearchResult<T extends XResearchResult>(
       }
     }
   }
-  if(result.operation==='search') for(const [index,row] of result.queries.entries()) {
-    if(!row.diagnostics?.scroll)continue;
-    delete row.diagnostics.scroll;
-    (result.metadataOmissions??=[]).push(`queries.${index}.diagnostics.scroll`);
+  if(result.operation==='search') for(const part of ['scrollRecovery','scroll'] as const) for(const [index,row] of result.queries.entries()) {
+    if(!row.diagnostics?.[part])continue;
+    delete row.diagnostics[part];
+    (result.metadataOmissions??=[]).push(`queries.${index}.diagnostics.${part}`);
     value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
   compactMetadata(result);

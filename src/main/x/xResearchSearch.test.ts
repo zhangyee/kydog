@@ -1,5 +1,5 @@
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { KydogError } from '../../shared/errors';
 import { fixture, post, query, searchHtml, searchInput } from '../../test-support/xResearchFixture';
 import { searchX } from './xResearchSearch';
@@ -111,6 +111,7 @@ it('preserves every Article preview on its exact collected parent container, nev
 });
 
 it('retains source ACKs per issued attempt, independently of writes and repeated callbacks',async()=>{
+ vi.useFakeTimers();try{
  for(const mode of ['success','no_movement','timeout','invalidated','cancelled','unwritten'] as const){
   const f=fixture([searchHtml(post())]);let attempts=0;const snapshots:string[]=[];
   f.act.mockImplementation(async(_action,snapshot,options)=>{
@@ -122,11 +123,12 @@ it('retains source ACKs per issued attempt, independently of writes and repeated
    if(terminal)throw mode==='cancelled'?new KydogError('browser.cancelled','cancelled'):new BrowserScrollAcknowledgementError(mode==='no_movement'?'scroll_no_movement':'scroll_ack_timeout','terminal');
    return {action:_action,line:'done',navigation:null};
   });
-  const row=(await searchX({search:{...searchInput.search,maxScrollsPerQuery:3}},f.context)).queries[0];
+  const pending=searchX({search:{...searchInput.search,maxScrollsPerQuery:3}},f.context);await vi.runAllTimersAsync();const row=(await pending).queries[0];
   expect(row.diagnostics?.scroll,mode).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:1,snapshotId:snapshots[0],targetNodeId:71,before:18,after:618,state:'frame_observed'},last:{actionIndex:mode==='unwritten'?2:3,snapshotId:snapshots[mode==='unwritten'?1:2],targetNodeId:mode==='unwritten'?72:73}});
   expect(row.budgetUsage.scrolls).toBe(mode==='unwritten'?2:3);
   expect(row.diagnostics?.scroll?.last?.generation).toBeTruthy();
   expect(row.diagnostics?.scroll?.last?.location).toMatchObject({origin:'https://x.com',path:'/search',q:'scientific agents',f:'live'});
   expect(row.diagnostics?.scroll?.last?.state).toBe(mode==='unwritten'||mode==='success'?'frame_observed':mode==='no_movement'?'no_movement':mode==='invalidated'?'invalidated':'expired');
  }
+ }finally{vi.useRealTimers();}
 });

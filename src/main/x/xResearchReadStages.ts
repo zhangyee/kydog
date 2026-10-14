@@ -1,3 +1,5 @@
+import type {BrowserScrollReceipt} from '../browser/actions';
+import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} from './xScrollRecovery';
 import {isPointerPreflight, type PointerPreflightDiagnostic} from '../browser/pointerPreflightDiagnostic';
 import {beginReplyExpansion,observeReplyDiagnostic,replyCollection,replyUsage} from './xReplyExpansionDiagnostics';
 import { logger } from '../log';
@@ -63,6 +65,25 @@ export function readBarrier(
     observationId: observed.state.observationId,
   };
   return true;
+}
+// Row lifetime spans body/Article/discussion stages. Retention caps never erase observed identity.
+const replyIdentities=new WeakMap<XReadObservation,Set<string>>();
+function seenReplies(row:XReadObservation):Set<string> {
+  let seen=replyIdentities.get(row);
+  if(!seen){seen=new Set();replyIdentities.set(row,seen);}
+  return seen;
+}
+const replyControlIdentities=new WeakMap<XReadObservation,Set<string>>();
+function rememberReplyControls(row:XReadObservation,frame:XPageObservation):number {
+  let seen=replyControlIdentities.get(row);
+  if(!seen){seen=new Set();replyControlIdentities.set(row,seen);}
+  let added=0;
+  for(const control of frame.controls)if(control.kind==='replies_expand'){
+    const key=JSON.stringify([frame.location.documentEpoch,frame.location.routeRevision,frame.location.navigationSequence,
+      control.binding.generation,control.binding.nodeId,control.kind,control.postId,frame.root?.postId,frame.root?.sourceUrl]);
+    if(!seen.has(key)){seen.add(key);added++;}
+  }
+  return added;
 }
 /** Preserve source observations, never choose a body by length or similarity. */
 export function retainReadBody(row: XReadObservation, body: XTextObservation): void {
@@ -136,6 +157,7 @@ export function savePostFrame(
     return false;
   }
   admitXSourceRoot(observed);
+  rememberReplyControls(row,observed);
   if(row.diagnostics && observed.diagnosticFrame) row.diagnostics.firstAdmittedFrame ??= observed.diagnosticFrame;
   if (row.root === observed.root) return true;
   if (row.root) retainReadBody(row, row.root);
@@ -150,6 +172,7 @@ export function savePostFrame(
   row.sourceUrl = observed.root.sourceUrl;
   mergeText(row, row.quotedPosts, observed.quotedPosts);
   const incoming = request.includeReplies ? observed.replies : [];
+  rememberXIdentities(seenReplies(row),incoming);
   mergeText(row, row.replies.observations, incoming, request.maxRepliesPerPost);
   rememberSources(context, [
     observed.root,
@@ -410,6 +433,7 @@ export async function readDiscussion(
   context: XResearchContext,
 ): Promise<void> {
   let observed = initial;
+  const seen=seenReplies(row);
   let readiness: 'pending' | 'after_progress' | 'settled' = 'pending';
   for (;;) {
     checkReadCancelled(context);
@@ -424,6 +448,7 @@ export async function readDiscussion(
       }
     }
     if (!savePostFrame(row, observed, limits, context)) return;
+    rememberXIdentities(seen,observed.replies);
     if (!limits.includeReplies) return;
     if (readiness !== 'settled' && row.replies.observations.length < limits.maxRepliesPerPost) {
       if (readiness === 'pending' && !discussionReady(observed, row)
@@ -436,6 +461,7 @@ export async function readDiscussion(
         checkReadCancelled(context);
         if (!ready) return;
         observed = ready;
+        rememberXIdentities(seen,observed.replies);
         readiness = 'settled';
       }
     }
@@ -489,8 +515,13 @@ export async function readDiscussion(
       scroll.totalAttempts++;
       scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter((id):id is number=>id!==undefined)).size;
       const actionIndex=stage.actionIndex;
+      let receipt:BrowserScrollReceipt|undefined;
+      let written=false;
+      try {
       await page.act({ kind: 'scroll', direction: 'down' }, observed.snapshot, {
-        scrollAcknowledgement: { onWritten: () => { row.budgetUsage.scrolls++; }, onReceipt: receipt => {
+        scrollAcknowledgement: { onWritten: () => { written=true;row.budgetUsage.scrolls++; }, onReceipt: value => {
+          receipt=isScrollReceipt(value)?{...value}:undefined;
+          if(!receipt)return;
           const saved = {actionIndex,snapshotId:observed.snapshot.snapshotId,generation:receipt.generation,location:observed.location.current,
             targetKind:receipt.targetKind,targetNodeId:receipt.targetNodeId,targetContainsHit:receipt.targetContainsHit,
             conversationRelation:receipt.conversationRelation,rootRelation:receipt.rootRelation,
@@ -501,6 +532,28 @@ export async function readDiscussion(
           scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter((id):id is number=>id!==undefined)).size;
         }, relationNodes:{conversationNodeId:observed.diagnosticFrame?.regionNodeId??null,rootNodeId:observed.diagnosticFrame?.rootNodeId??null} },
       });
+      } catch(error) {
+        if(!isRecoverableScroll(error,receipt,written,observed))throw error;
+        const stalled=observed;stage.current='collection';
+        const recovered=await recoverXScroll(page,request,stalled,actionIndex,row.diagnostics!,frame=>{
+          if(frame.diagnosticFrame)row.diagnostics!.terminalFrame=frame.diagnosticFrame;
+          if(readBarrier(row,frame))return{outcome:'barrier',newIdentityCount:0};
+          if(!frame.identityProven || !frame.root || frame.root.postId!==stalled.root?.postId || frame.root.sourceUrl!==stalled.root?.sourceUrl)
+            return{outcome:'identity_unproven',newIdentityCount:0};
+          const newIdentityCount=rememberXIdentities(seen,frame.replies);
+          const newControlCount=rememberReplyControls(row,frame);
+          if(!savePostFrame(row,frame,limits,context))return{outcome:'identity_unproven',newIdentityCount:0};
+          return{outcome:newIdentityCount>0 || newControlCount>0 || row.replies.scope.completeness==='ui_scope_end_observed'?'progress':'continue',newIdentityCount};
+        },context.signal);
+        if(!recovered.frame){
+          if(recovered.outcome!=='barrier'){
+            row.status='partial';row.reason=recovered.outcome==='identity_unproven'?'post_identity_unproven':'scroll_no_movement';
+            row.stopReason=recovered.outcome==='identity_unproven'?'identity_unproven':'action_failed';
+          }
+          return;
+        }
+        observed=recovered.frame;readiness='settled';continue;
+      }
     }
     checkReadCancelled(context);
     observed = await collectPostFrame(page, request, row, stage, context);

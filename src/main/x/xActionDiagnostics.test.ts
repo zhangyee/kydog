@@ -81,7 +81,7 @@ it('drops bounded search diagnostics with precise paths near the complete UTF8 e
 it('preserves canonical diagnostics through physical SDK reopen/branch and installed provider model content',async()=>{
  const replyFixture=replyContinuationFixture();
  let reply;try{reply=await replyFixture.run();}finally{replyFixture.close();}
- for(const raw of [await result(),await pointerResult(),reply]){
+ for(const raw of [await result(),await pointerResult(),reply,withRecovery(await result()),withRecovery(await pointerResult())]){
  const payload=xResearchToolResult(serializeXResearchResult(raw));
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'kydog-action-diag-'));
  try{
@@ -165,5 +165,40 @@ it('projection preserves zero-read early invalidation and nullable lost finaliza
    const out=serializeXResearchResult({...r,objective});expect(out.result.targets[0].diagnostics!.pointerPreflights!.first.diagnostic).toMatchObject(variant);
    expect(JSON.parse(out.text).targets[0].diagnostics.pointerPreflights.first.diagnostic).toMatchObject(variant);
   }
+ }
+});
+function withRecovery<T extends import('./xResearchTypes').XResearchResult>(r:T):T {
+ const row=r.operation==='search'?r.queries[0]:r.targets[0];
+ const source=r.operation==='search'?r.queries[0].diagnostics!.scroll!.first!:r.targets[0].diagnostics!.initialFrame!;
+ const generation='generation'in source?source.generation:source.document.generation;
+ const binding={snapshotId:source.snapshotId,generation,documentEpoch:3,routeRevision:7,navigationSequence:9,location:source.location};
+ const attempt={...binding,actionIndex:1,collectCount:2,newIdentityCount:1,outcome:'progress' as const,firstCollection:{...binding,snapshotId:'recovery_first'},lastCollection:{...binding,snapshotId:'recovery_last'}};
+ row.diagnostics!.scrollRecovery={totalRecoveries:1,omittedRecoveries:0,first:attempt,last:attempt};return r;
+}
+it('projects finite recovery diagnostics with strict invariants into content/details and strips raw private fields',async()=>{
+ for(const raw of [withRecovery(await result()),withRecovery(await pointerResult())]){
+  const row=raw.operation==='search'?raw.queries[0]:raw.targets[0];
+  const summary=row.diagnostics!.scrollRecovery!;Object.assign(summary.first!,{token:'private-recovery',dom:'private-recovery'});Object.assign(summary.first!.lastCollection!,{debug:'private-recovery'});
+  expect(JSON.stringify(raw)).toContain('private-recovery');
+  const good=serializeXResearchResult(raw),rows=good.result.operation==='search'?'queries':'targets';
+  expect((JSON.parse(good.text)[rows][0].diagnostics.scrollRecovery)).toEqual((good.result as any)[rows][0].diagnostics.scrollRecovery);
+  expect(JSON.stringify(xResearchToolResult(good))).not.toContain('private-recovery');
+  for(const mutate of [(v:any)=>v.omittedRecoveries=1,(v:any)=>v.first.collectCount=0,(v:any)=>v.first.newIdentityCount=-1,(v:any)=>v.first.outcome='complete',(v:any)=>v.first.lastCollection.generation='other',(v:any)=>v.first.lastCollection.routeRevision++]){
+   const bad=structuredClone(raw),entry=bad.operation==='search'?bad.queries[0]:bad.targets[0];mutate(entry.diagnostics!.scrollRecovery);expect(()=>serializeXResearchResult(bad)).toThrow();
+  }
+ }
+});
+it('names recovery omissions precisely under the complete one MiB UTF8 tool envelope',async()=>{
+ for(const raw of [withRecovery(await result()),withRecovery(await pointerResult())]){
+  const rows=raw.operation==='search'?'queries':'targets',path=`${rows}.0.diagnostics.scrollRecovery`;
+  expect((serializeXResearchResult(raw).result as any)[rows][0].diagnostics.scrollRecovery).toBeDefined();
+  const minimal=structuredClone(raw);delete (minimal as any)[rows][0].diagnostics;let lo=100000,hi=400000;
+  while(lo<hi){const mid=Math.ceil((lo+hi)/2);try{serializeXResearchResult({...minimal,objective:'界'.repeat(mid)});lo=mid;}catch{hi=mid-1;}}
+  let capped:ReturnType<typeof serializeXResearchResult>|undefined;
+  for(let margin=50;margin<6000;margin+=50){try{const out=serializeXResearchResult({...raw,objective:'界'.repeat(lo-margin)});if(out.result.metadataOmissions?.includes(path)){capped=out;break;}}catch{/* marker space */}}
+  expect(capped).toBeDefined();if(!capped)throw Error('recovery omission not reached');
+  expect((capped.result as any)[rows][0].diagnostics.scrollRecovery).toBeUndefined();expect(JSON.parse(capped.text).metadataOmissions).toContain(path);
+  const bytes=Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)),'utf8');expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);expect(capped.result.budgetUsage.outputBytes).toBe(bytes);
+  console.info('task26 final recovery omission bytes',raw.operation,bytes);
  }
 });

@@ -262,7 +262,9 @@ it('preserves the same validated scroll receipt through failure, canonical detai
     expect(row.diagnostics?.scroll).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,targetKind:'document',targetNodeId:7,
       before:240,after:failed?240:840,scrollHeight:1600,clientHeight:600,state:failed?'no_movement':'frame_observed'},
       last:{state:failed?'no_movement':'frame_observed'}});
-    expect(row).toMatchObject({reason:failed?'scroll_no_movement':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{completeness:'unknown'}}});
+    // This legacy fixture creates a new isolated world on every collection. Recovery must reject it.
+    expect(row).toMatchObject({reason:failed?'post_identity_unproven':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{completeness:'unknown'}}});
+    if(failed)expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:1,outcome:'identity_unproven'});
     expect(f.act).toHaveBeenCalledTimes(1);
     const serialized=serializeXResearchResult(actual);
     const details=xResearchToolResult(serialized).details;

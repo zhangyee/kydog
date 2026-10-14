@@ -1,0 +1,231 @@
+import {JSDOM} from 'jsdom';
+import {expect,it,vi} from 'vitest';
+import {post,readHtml,searchHtml,query} from '../../test-support/xResearchFixture';
+import {KydogError} from '../../shared/errors';
+import {BrowserScrollAcknowledgementError,type BrowserScrollReceipt} from '../browser/actions';
+import type {BrowserDispatchOptions} from '../browser/browserService';
+import {createXResearchBrowser} from './xResearchBrowser';
+import {readX} from './xResearchRead';
+import {serializeXResearchResult} from './xResearchOutput';
+import {searchX,xSearchUrl} from './xResearchSearch';
+import type {XReadRequest} from './xResearchTypes';
+
+function stallFixture(search=false,initialReply=false) {
+ const url=search?xSearchUrl(query):'https://x.com/alice/status/123';
+ const dom=new JSDOM(search?searchHtml(post('401','first')):readHtml(post('123')+(initialReply?post('401','first'):'')),{url,runScripts:'outside-only'});
+ Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+ Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
+ const abort=new AbortController(),events:string[]=[];
+ const facts={currentUrl:url,documentEpoch:3,routeRevision:7,navigationSequence:9,navigationEvent:'did-navigate' as const,navigationType:'cross_document' as const,navigationUrl:url};
+ let scrolls=0,clicks=0,collects=0,gone:((id:string)=>void)|undefined;
+ const hooks:{collect?:()=>void|Promise<void>;write?:()=>void|Promise<void>;receipt?:(r:BrowserScrollReceipt)=>BrowserScrollReceipt;error?:()=>Error;written?:boolean}={};
+ const container=()=>dom.window.document.querySelector(search?'[data-testid="primaryColumn"]':'[aria-label="Timeline: Conversation"]')!;
+ const add=(id='402')=>container().insertAdjacentHTML('beforeend',post(id,'next','real source '+id));
+ const service={researchTabStatus:()=>'available',enqueue:async(_id:string,work:()=>Promise<unknown>)=>{try{return await work();}finally{events.push('queue-release');}},withAgentDriving:async(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),onTabDestroyed:(cb:(id:string)=>void)=>{gone=cb;return()=>{};},onTabUnavailable:()=>()=>{},locationFacts:()=>facts,prepareForDomRead:async()=>{},
+  open:async()=>({tabId:'tab',evicted:[],nav:{navigationId:'one',startedAt:0,deadlineAt:1,outcome:{kind:'ok',finalUrl:facts.currentUrl}}}),
+  evalInPage:async(_id:string,code:string)=>{if(code.startsWith('/* kydog-x-root-release */')){events.push('source-release');return dom.window.eval(code);}collects++;events.push('collect');await hooks.collect?.();return dom.window.eval(code);},
+  dispatchAndObserveNavigation:async(_id:string,action:{kind:string},snapshot:{generation:string},options?:BrowserDispatchOptions)=>{
+   if(action.kind==='click'){clicks++;events.push('click');if(options?.collectedPermission?.purpose==='body_expand'){container().querySelector('a[href="/first/status/401"]')!.closest('article')!.remove();}else{expect(options?.collectedPermission?.purpose).toBe('replies_expand');add('777');}container().querySelector('button')!.remove();return{line:'clicked',navigation:null};}
+   scrolls++;events.push('scroll');const ack=options!.scrollAcknowledgement!;
+   if(hooks.written!==false)ack.onWritten();
+   const receipt:BrowserScrollReceipt={generation:snapshot.generation,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:0,after:0,scrollHeight:600,clientHeight:600,written:true,eventObserved:false,frameObserved:false,state:'no_movement'};
+   ack.onReceipt?.(hooks.receipt?hooks.receipt(receipt):receipt);
+   await hooks.write?.();events.push('action-cleanup');
+   throw hooks.error?.()??new BrowserScrollAcknowledgementError('scroll_no_movement','native no movement');
+  },
+ };
+ const context={browser:createXResearchBrowser(service as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map(),signal:abort.signal};
+ const run=async(limits:Partial<XReadRequest>={})=>{
+  const pending=search?searchX({search:{objective:'recover',queries:[query],maxPostsPerQuery:limits.maxRepliesPerPost??20,maxScrollsPerQuery:limits.maxScrollsPerPost??3}},context):readX({tabId:'tab',read:{objective:'recover',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:20,maxScrollsPerPost:3,maxExpandActionsPerPost:2,...limits}},context);
+  await vi.runAllTimersAsync();const result=await pending;serializeXResearchResult(result);return{result,row:result.operation==='read'?result.targets[0]:result.queries[0]};
+ };
+ return{dom,abort,events,facts,hooks,container,add,run,count:()=>({scrolls,clicks,collects}),destroy:()=>gone?.('tab'),close:()=>dom.window.close()};
+}
+it.each([false,true])('collects after settled authenticated stall and resumes on actual new identities (search=%s)',async(search)=>{
+ vi.useFakeTimers();const f=stallFixture(search);try{
+  f.hooks.write=()=>{if(f.count().scrolls===1)f.add();};
+  const {row}=await f.run();
+  expect(f.events.slice(0,5)).toEqual(['collect','scroll','action-cleanup','collect','scroll']);
+  expect(f.count().scrolls).toBe(2);
+  expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain('402');
+  expect(row.diagnostics).toMatchObject({scrollRecovery:{totalRecoveries:2,omittedRecoveries:0,first:{outcome:'progress',newIdentityCount:1,collectCount:1},last:{outcome:'expired',newIdentityCount:0}}});
+ }finally{f.close();vi.useRealTimers();}
+});
+it.each([false,true])('waits for delayed identity rather than old replies, text edits or fresh observation UUIDs (search=%s)',async(search)=>{
+ vi.useFakeTimers();try{
+  const good=stallFixture(search,true);try{
+   good.hooks.collect=()=>{if(good.count().collects===4)good.add();};
+   const {row}=await good.run({maxScrollsPerPost:2});expect(good.count().scrolls).toBe(2);
+   expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:3,newIdentityCount:1,outcome:'progress'});
+   expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain('402');
+  }finally{good.close();}
+  const old=stallFixture(search,true);try{
+   old.hooks.collect=()=>{if(old.count().collects>1)old.container().querySelector('[data-testid="tweetText"]')!.textContent='body changes '+old.count().collects;};
+   const {row}=await old.run();expect(old.count()).toMatchObject({scrolls:1,collects:81});
+   expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:80,newIdentityCount:0,outcome:'expired'});
+   expect(row).toMatchObject({status:'partial',stopReason:'action_failed',budgetUsage:{scrolls:1}});
+   expect('barrier'in row&&'posts'in row?row.barrier?.reason:'reason'in row?row.reason:null).toBe('scroll_no_movement');
+  }finally{old.close();}
+ }finally{vi.useRealTimers();}
+});
+it.each([false,true])('exact identity sets permit same-size A→B replacement once, not A/B reappearance (search=%s)',async(search)=>{
+ vi.useFakeTimers();const f=stallFixture(search,true);try{
+  f.hooks.collect=()=>{
+   if(f.count().collects===1)return;
+   for(const article of f.container().querySelectorAll('article'))if(search||!article.querySelector('a[href="/alice/status/123"]'))article.remove();
+   const id=f.count().collects===2?'402':f.count().collects%2===0?'402':'401';
+   f.container().insertAdjacentHTML('beforeend',post(id,id==='401'?'first':'next','changed '+f.count().collects));
+  };
+  const {row}=await f.run();expect(f.count().scrolls).toBe(2);
+  expect(row.diagnostics?.scrollRecovery).toMatchObject({totalRecoveries:2,first:{newIdentityCount:1,outcome:'progress'},last:{newIdentityCount:0,outcome:'expired'}});
+  expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toEqual(['401','402']);
+ }finally{f.close();vi.useRealTimers();}
+});
+it.each([false,true])('repeated actual progress stays finite and counts every written scroll at the explicit cap (search=%s)',async(search)=>{
+ vi.useFakeTimers();try{
+  for(const cap of [1,3,5]){
+   const f=stallFixture(search);try{
+    f.hooks.write=()=>f.add(String(500+f.count().scrolls));
+    const {row}=await f.run({maxScrollsPerPost:cap});expect(f.count().scrolls).toBe(cap);
+    expect(row).toMatchObject({budgetUsage:{scrolls:cap},stopReason:'budget_reached'});
+    expect(row.diagnostics?.scrollRecovery).toMatchObject({totalRecoveries:cap,omittedRecoveries:Math.max(0,cap-2),last:{actionIndex:cap,outcome:'progress'}});
+    expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain(String(500+cap));
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it('a current source reply control gets fresh private permission after the last allowed scroll, subject to its independent cap',async()=>{
+ vi.useFakeTimers();try{
+  for(const cap of [1,0]){
+   const f=stallFixture();try{
+    f.hooks.collect=()=>{if(f.count().collects===3)f.container().insertAdjacentHTML('beforeend','<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>');};
+    const {row}=await f.run({maxScrollsPerPost:1,maxExpandActionsPerPost:cap});expect(f.count().clicks).toBe(cap);expect(f.count().scrolls).toBe(1);
+    expect(row).toMatchObject({budgetUsage:{scrolls:1,expandActions:cap},stopReason:'budget_reached'});
+    if('replies'in row){expect(row.replies.observations.map(p=>p.postId)).toEqual(cap?['777']:[]);if(cap)expect(row.diagnostics?.replyExpansions?.first?.admission.state).toBe('consumed');}
+    expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:2,newIdentityCount:0,outcome:'progress'});
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it.each([false,true])('requires the actual error and local complete receipt, never a reason string or old/malformed facts (search=%s)',async(search)=>{
+ vi.useFakeTimers();try{
+  const good=stallFixture(search);try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
+  for(const mode of ['ack_timeout','fake','unwritten','missing','old_generation','written_false','event','frame','moved','pending','malformed','old_receipt'] as const){
+   const f=stallFixture(search);try{
+    f.hooks.write=()=>f.add();
+    if(mode==='ack_timeout')f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement');
+    if(mode==='fake')f.hooks.error=()=>Object.assign(new KydogError('browser.wait_timeout','scroll_no_movement'),{reason:'scroll_no_movement'});
+    if(mode==='unwritten')f.hooks.written=false;
+    f.hooks.receipt=r=>mode==='missing'?undefined as never:mode==='old_generation'?{...r,generation:'old'}:mode==='written_false'?{...r,written:false}:mode==='event'?{...r,eventObserved:true}:mode==='frame'?{...r,frameObserved:true}:mode==='moved'?{...r,after:1}:mode==='pending'?{...r,state:'pending'}:mode==='malformed'?{...r,before:NaN,after:NaN}:mode==='old_receipt'&&f.count().scrolls===2?undefined as never:r;
+    if(mode==='old_receipt')f.hooks.write=()=>{if(f.count().scrolls===1)f.add();};
+    const {row}=await f.run();expect(f.count().collects,mode).toBe(mode==='old_receipt'?2:1);expect(f.count().scrolls).toBe(mode==='old_receipt'?2:1);
+    expect(row.diagnostics?.scrollRecovery?.totalRecoveries??0).toBe(mode==='old_receipt'?1:0);
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it.each([false,true])('source invalidation, parser failure and cancellation cannot borrow old input authority (search=%s)',async(search)=>{
+ vi.useFakeTimers();try{
+  const good=stallFixture(search);try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
+  for(const mode of ['epoch','revision','sequence','generation','root','route','product','auth','parser','cancel_cleanup','cancel_wait','cancel_collect','destroy'] as const){
+   if(!search&&mode==='product')continue;
+   const f=stallFixture(search);try{
+    f.hooks.write=async()=>{
+     if(mode==='cancel_cleanup'){f.abort.abort();await new Promise(resolve=>setTimeout(resolve,20));}
+     else if(mode==='cancel_wait')setTimeout(()=>f.abort.abort(),150);
+     else if(mode==='destroy')f.destroy();
+     else if(mode==='auth'){f.facts.currentUrl='https://x.com/i/jf/onboarding/web';f.facts.routeRevision++;f.dom.reconfigure({url:f.facts.currentUrl});f.dom.window.document.body.innerHTML='<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input name="password" type="password"></div>';}
+    };
+    f.hooks.collect=async()=>{
+     if(f.count().collects!==2)return;
+     if(mode==='epoch')f.facts.documentEpoch++;
+     if(mode==='revision')f.facts.routeRevision++;
+     if(mode==='sequence')f.facts.navigationSequence++;
+     if(mode==='generation')f.dom.window.eval('delete window.__kydogWorld');
+     if(mode==='root'){if(search)f.container().remove();else f.container().querySelector('article')!.remove();}
+     if(mode==='route'){f.facts.currentUrl=search?'https://x.com/search?q=other&f=live':'https://x.com/alice/status/123/history';f.dom.reconfigure({url:f.facts.currentUrl});}
+     if(mode==='product')f.container().querySelector('[role="tab"]')!.textContent='Top';
+     if(mode==='parser')throw new KydogError('x.invalid_page','invalid fixed extractor result');
+     if(mode==='cancel_collect'){f.abort.abort();await new Promise(resolve=>setTimeout(resolve,20));f.events.push('collect-settled');}
+     if(!['root','auth','cancel_wait'].includes(mode))f.add();
+    };
+    const {row}=await f.run();
+    expect(f.count().scrolls,mode).toBe(1);
+    if(mode.startsWith('cancel'))expect(row.status,mode).toBe('cancelled');
+    if(mode==='auth')expect(row.status).toBe('auth_required');
+    if(mode==='cancel_cleanup')expect(f.events.indexOf('action-cleanup')).toBeLessThan(f.events.indexOf('queue-release'));
+    if(mode==='cancel_collect')expect(f.events.indexOf('collect-settled')).toBeLessThan(f.events.indexOf('queue-release'));
+    if(mode==='epoch'||mode==='revision'||mode==='sequence'||mode==='route')expect(row.collectionTransitions).toEqual([]);
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it.each([false,true])('late valid observation is retained after the deadline but cannot grant another input (search=%s)',async(search)=>{
+ vi.useFakeTimers();try{
+  for(const delay of [0,8001]){
+   const f=stallFixture(search);try{
+    f.hooks.collect=async()=>{if(f.count().collects===2){await new Promise(resolve=>setTimeout(resolve,delay));f.add();f.events.push('collect-settled');}};
+    const {row}=await f.run({maxScrollsPerPost:2});expect(f.count().scrolls).toBe(delay?1:2);
+    expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain('402');
+    expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({newIdentityCount:1,outcome:delay?'expired':'progress'});
+    expect(f.events.indexOf('collect-settled')).toBeLessThan(f.events.indexOf('queue-release'));
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it.each([false,true])('counts every observed new identity even beyond the retained cap and stops further input (search=%s)',async(search)=>{
+ vi.useFakeTimers();const f=stallFixture(search);try{
+  f.hooks.write=()=>{for(let i=0;i<25;i++)f.add(String(600+i));};
+  const {row}=await f.run({maxRepliesPerPost:2,maxScrollsPerPost:4});
+  expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:1,newIdentityCount:25,outcome:'progress'});
+  expect('posts'in row?row.posts.length:row.replies.observations.length).toBe(2);
+  expect(f.count().scrolls).toBe(1);expect(row.stopReason).toBe('budget_reached');
+ }finally{f.close();vi.useRealTimers();}
+});
+it('recovery cannot convert semantic inventory, body end prose or an invalid root owner into a source control',async()=>{
+ vi.useFakeTimers();try{
+  for(const mode of ['control','inventory','body','owner'] as const){
+   const f=stallFixture();try{
+    f.hooks.write=()=>{
+     if(mode==='control')f.container().insertAdjacentHTML('beforeend','<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>');
+     if(mode==='inventory')f.container().insertAdjacentHTML('beforeend','<div role="status">Show replies — No more replies</div>');
+     if(mode==='body')f.container().querySelector('[data-testid="tweetText"]')!.textContent='No more replies';
+     if(mode==='owner'){for(const a of f.container().querySelectorAll('[data-testid="User-Name"] a'))a.setAttribute('href','/mallory');f.add();}
+    };
+    const {row}=await f.run({maxScrollsPerPost:1,maxExpandActionsPerPost:1});
+    expect(f.count().clicks).toBe(mode==='control'?1:0);
+    if('replies'in row){expect(row.replies.scope.completeness).toBe('unknown');expect(row.diagnostics?.terminalFrame?.sourceEndDetector).toBe('not_implemented');}
+    if(mode==='owner')expect(row.stopReason).toBe('identity_unproven');
+    else expect(row.diagnostics?.scrollRecovery?.first?.outcome).toBe(mode==='control'?'progress':'expired');
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it('reappearing reply already saved before body expansion is not new row progress',async()=>{
+ vi.useFakeTimers();try{
+  for(const fresh of [true,false]){
+   const f=stallFixture(false,true);try{
+    f.container().querySelector('article')!.insertAdjacentHTML('beforeend','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>');
+    f.hooks.write=()=>f.container().insertAdjacentHTML('beforeend',post(fresh?'402':'401',fresh?'next':'first','source identity'));
+    const {row}=await f.run();
+    expect(row).toMatchObject({budgetUsage:{scrolls:fresh?2:1,expandActions:1}});
+    if('replies'in row)expect(row.replies.observations.map(p=>p.postId)).toEqual(fresh?['401','402']:['401']);
+    expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({newIdentityCount:fresh?1:0,outcome:fresh?'progress':'expired'});
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});
+it('a reappearing previously used physical control cannot repeatedly reactivate a stalled page, while a new control can',async()=>{
+ vi.useFakeTimers();try{
+  for(const fresh of [true,false]){
+   const f=stallFixture();try{
+    const html='<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>';
+    f.container().insertAdjacentHTML('beforeend',html);const old=f.container().querySelector('button')!;
+    f.hooks.write=()=>{if(fresh)f.container().insertAdjacentHTML('beforeend',html);else f.container().querySelector('[data-testid="cellInnerDiv"]')!.append(old);};
+    const {row}=await f.run({maxScrollsPerPost:1,maxExpandActionsPerPost:2});
+    expect(f.count().clicks).toBe(fresh?2:1);
+    expect(row.diagnostics?.scrollRecovery?.first?.outcome).toBe(fresh?'progress':'expired');
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
+});

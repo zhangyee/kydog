@@ -98,12 +98,12 @@ describe('one source-bound viewport advance before readiness',()=>{
       }
     }finally{vi.useRealTimers();}
   });
-  it('preserves written failure receipts and never collects or waits after failed or unwritten input',async()=>{
+  it('preserves written receipts, observes an authenticated stall and never recovers timeout or unwritten input',async()=>{
     vi.useFakeTimers();try {
       const good=await runProgress();expect(good.events).toEqual(['collect','scroll','collect']);expect(good.row.diagnostics?.readiness).toBeDefined();
       for(const mode of ['no_movement','ack_timeout','unwritten'] as const) {
         const stopped=await runProgress(mode,{maxScrollsPerPost:3});
-        expect(stopped.events).toEqual(['collect','scroll']);expect(stopped.writes).toBe(mode==='unwritten'?0:1);expect(stopped.row.diagnostics?.readiness).toBeUndefined();
+        expect(stopped.events).toEqual(mode==='no_movement'?['collect','scroll',...Array(80).fill('collect')]:['collect','scroll']);expect(stopped.writes).toBe(mode==='unwritten'?0:1);expect(stopped.row.diagnostics?.readiness).toBeUndefined();
         expect(stopped.row.reason).toBe(mode==='no_movement'?'scroll_no_movement':mode==='ack_timeout'?'scroll_ack_timeout':'action_failed:browser.stale_snapshot');
         expect(stopped.row.budgetUsage.scrolls).toBe(mode==='unwritten'?0:1);expect(stopped.row.replies.scope.completeness).toBe('unknown');
       }
