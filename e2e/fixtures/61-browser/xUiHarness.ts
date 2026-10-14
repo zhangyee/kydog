@@ -48,12 +48,21 @@ const readerHtml = (handle: string) => `<!doctype html><meta charset="utf-8"><st
 <div data-testid="cellInnerDiv"><button id="replyMore" role="button" type="button">Show replies</button></div>
 </div></div></main>${handle==='stalled'?'':'<div style="height:1800px"></div>'}<script>
 const record=kind=>{const saved=JSON.parse(sessionStorage.getItem('read-actions')||'[]');saved.push(kind);sessionStorage.setItem('read-actions',JSON.stringify(saved));};
-if(['scroller','source'].includes(${JSON.stringify(handle)})) {
+if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
  bodyMore.remove();entry.remove();replyMore.remove();
+ if(${JSON.stringify(handle)}==='progress')firstReply.remove();
  document.addEventListener('scroll',e=>{
   if(!e.isTrusted || e.target!==document)return;
   record('scroll-event');requestAnimationFrame(()=>{
    record('scroll-frame');
+   if(${JSON.stringify(handle)}==='progress'){
+    // Keep the source scroll offset stable: an in-flow insertion changes scroll anchoring before ACK.
+    const before=scrollY,arrived=document.createElement('article');arrived.dataset.testid='tweet';
+    arrived.style.cssText='position:absolute;left:24px;right:24px;top:'+(scrollY+20)+'px';
+    arrived.innerHTML='<div data-testid="User-Name"><a href="/arrived">@arrived</a></div><a href="/arrived/status/809"><time>today</time></a><div data-testid="tweetText">Own reply created by trusted scroll frame</div>';
+    document.querySelector('[aria-label="Timeline: Conversation"]').append(arrived);
+    window.sourceGeometry={before,after:scrollY,height:arrived.getBoundingClientRect().height};return;
+   }
    if(${JSON.stringify(handle)}==='source'){
     const root=document.querySelector('#rootText').closest('article'),height=root.getBoundingClientRect().height,before=scrollY,spacer=document.createElement('div');
     spacer.style.height=height+'px';root.replaceWith(spacer);
@@ -83,7 +92,7 @@ void app.whenReady().then(async () => {
     if (!['example.com', 'example.org'].includes(url.hostname)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html);
   });
-  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller|stalled|source)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):req.url==='/longbody/status/321'?longBodyHtml:req.url==='/search?q=longbody&f=top'?longSearchHtml:handle?readerHtml(handle):xHtml); });
+  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller|stalled|source|progress)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):req.url==='/longbody/status/321'?longBodyHtml:req.url==='/search?q=longbody&f=top'?longSearchHtml:handle?readerHtml(handle):xHtml); });
   origin.on('clientError', (_error,socket) => socket.destroy());
   proxy.on('connect', (req,socket: Socket,head: Buffer) => {
     socket.on('error',()=>{});
@@ -178,14 +187,15 @@ void app.whenReady().then(async () => {
       return {domBody,detailRoot:detail.root,detailQuote:detail.quotedPosts[0],detailReply:detail.replies[0],detailControls:detail.controls.map(c=>c.kind),searchPost:search.posts[0],buttonControls:withButton.controls.map(c=>c.kind),buttonExpandActions:buttonRead.targets[0].budgetUsage.expandActions,buttonRootText:buttonRead.targets[0].root?.text,result,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
     },
     readStages: async (mode: string) => {
-      const handle=mode==='source-state'?'source':mode==='blocked'?'blocked':mode==='scroll'?'scroller':mode==='stalled'?'stalled':'reader', url=`https://x.com/${handle}/status/321`;
+      const progressCase=mode==='progress'||mode==='progress-zero';
+      const handle=progressCase?'progress':mode==='source-state'?'source':mode==='blocked'?'blocked':mode==='scroll'?'scroller':mode==='stalled'?'stalled':'reader', url=`https://x.com/${handle}/status/321`;
       const opened=await port.open(url,undefined), view=browser.webContentsOf(opened.tabId)!;
       await view.executeJavaScript("sessionStorage.removeItem('read-actions')");
       const capture=view.capturePage.bind(view); let rejectedNode=false;
       const evaluate=view.executeJavaScriptInIsolatedWorld.bind(view), readinessFrames:string[]=[];
       const sourceCleanup={populated:false,cleared:false},sourceActions:string[]=[];
       const dispatch=browser.dispatchAndObserveNavigation.bind(browser);
-      if(mode==='source-state') browser.dispatchAndObserveNavigation=async(...args)=>{sourceActions.push('dispatch:'+args[1].kind);return dispatch(...args);};
+      if(mode==='source-state'||progressCase) browser.dispatchAndObserveNavigation=async(...args)=>{sourceActions.push('dispatch:'+args[1].kind);return dispatch(...args);};
       if(mode==='source-state') view.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
         const code=scripts[0].code,collecting=code.includes('const request = {"stage":"post"');
         if(collecting && readinessFrames.length===0) await view.executeJavaScript("window.sourceRegion=document.querySelector('[aria-label=\"Timeline: Conversation\"]');window.sourceParts=Array.from(sourceRegion.children);sourceRegion.replaceChildren()");
@@ -218,12 +228,13 @@ void app.whenReady().then(async () => {
         return image;
       };
       try {
-        const scrollCase=mode==='scroll'||mode==='stalled'||mode==='source-state';
-        const result=await readX({tabId:opened.tabId,read:{objective:'offline native stages',targets:[{url}],includeArticle:!scrollCase,includeReplies:true,maxRepliesPerPost:scrollCase?2:10,maxScrollsPerPost:2,maxExpandActionsPerPost:scrollCase?0:4}},
+        const scrollCase=progressCase||mode==='scroll'||mode==='stalled'||mode==='source-state';
+        // Delayed mode isolates the original polling path; progress mode owns the native scroll cause.
+        const result=await readX({tabId:opened.tabId,read:{objective:'offline native stages',targets:[{url}],includeArticle:!scrollCase,includeReplies:true,maxRepliesPerPost:progressCase?4:scrollCase?2:10,maxScrollsPerPost:mode==='progress-zero'||mode==='delayed'?0:progressCase?1:2,maxExpandActionsPerPost:scrollCase?0:4}},
           {browser:port,threadId:'fixture-thread',runId:'native-run',callId:'native-read',batchId:'native-batch',sources:new Map()});
         const actions=await view.executeJavaScript("JSON.parse(sessionStorage.getItem('read-actions')||'[]')");
         const currentPosts=await view.executeJavaScript("Array.from(document.querySelectorAll('a[href]')).filter(a=>a.querySelector('time')).map(a=>a.getAttribute('href'))");
-        const sourceGeometry=mode==='source-state'?await view.executeJavaScript('window.sourceGeometry'):null;
+        const sourceGeometry=mode==='source-state'||progressCase?await view.executeJavaScript('window.sourceGeometry ?? null'):null;
         const citationChecks:Record<string,string>={};
         if(mode==='source-state'){
           const ledger=new XResearchEvidence('/tmp',()=> 'native-run');ledger.observe(result);

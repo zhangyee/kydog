@@ -296,7 +296,7 @@ function pauseRead(context: XResearchContext): Promise<void> {
     if (context.signal?.aborted) abort();
   });
 }
-/** One readiness deadline before discussion actions. Existing port operations retain their lease. */
+/** One readiness deadline; a prior guarded viewport advance is not readiness evidence. */
 async function waitForDiscussion(
   page: XQueuedPage,
   initial: XPageObservation,
@@ -402,26 +402,35 @@ export async function readDiscussion(
   context: XResearchContext,
 ): Promise<void> {
   let observed = initial;
-  if (!savePostFrame(row, observed, limits, context) || !limits.includeReplies)
-    return;
-  if (row.replies.observations.length < limits.maxRepliesPerPost) {
-    const ready = await waitForDiscussion(
-      page,
-      observed,
-      request,
-      row,
-      limits,
-      stage,
-      context,
-    );
-    checkReadCancelled(context);
-    if (!ready) return;
-    observed = ready;
-  }
+  let readiness: 'pending' | 'after_progress' | 'settled' = 'pending';
   for (;;) {
     checkReadCancelled(context);
+    // Keep the original wait's barrier/route checks ahead of source admission.
+    if (readiness === 'after_progress') {
+      if (readBarrier(row, observed)) return;
+      if (observed.snapshot.url !== initial.snapshot.url) {
+        row.status = 'partial';
+        row.reason = 'post_identity_unproven';
+        row.stopReason = 'identity_unproven';
+        return;
+      }
+    }
     if (!savePostFrame(row, observed, limits, context)) return;
     if (!limits.includeReplies) return;
+    if (readiness !== 'settled' && row.replies.observations.length < limits.maxRepliesPerPost) {
+      if (readiness === 'pending' && !discussionReady(observed, row)
+        && row.budgetUsage.scrolls < limits.maxScrollsPerPost) {
+        // Consume the single opportunity before the ordinary guarded scroll below.
+        // Its fresh frame must be saved before the existing wait can judge readiness.
+        readiness = 'after_progress';
+      } else {
+        const ready = await waitForDiscussion(page, observed, request, row, limits, stage, context);
+        checkReadCancelled(context);
+        if (!ready) return;
+        observed = ready;
+        readiness = 'settled';
+      }
+    }
     if (row.replies.scope.completeness === 'ui_scope_end_observed') {
       row.stopReason = 'explicit_ui_end';
       return;

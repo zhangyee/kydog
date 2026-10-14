@@ -29,6 +29,8 @@ interface Harness {
 }
 
 // One isolated process for the feature area. Each repeat receives a fresh profile.
+// The root-only progress case runs last: its two fresh research tabs can evict the
+// original target under the real tab budget; earlier binding tests still need that target.
 // Production BrowserService and XQueuedPage are imported into the fixture bundle;
 // only the fixture has a global controller, never the shipped application.
 test.describe('X browser port native safety (offline)', () => {
@@ -340,5 +342,34 @@ test.describe('X browser port native safety (offline)', () => {
     expect(result.after.documentEpoch).toBe(result.before.documentEpoch);
     expect(result.after.routeRevision).toBe(result.before.routeRevision + 1);
     expect(result.error).toBe('browser.stale_snapshot');
+  });
+
+  test('root-only discussion advances once before readiness using a trusted native scroll frame',async()=>{
+    const progress=await control(h=>h.readStages('progress'));
+    console.info('[native-readiness-progress]',JSON.stringify(progress));
+    const row=progress.result.targets[0],initial=row.diagnostics!.initialFrame!,terminal=row.diagnostics!.terminalFrame!,scroll=row.diagnostics!.scroll!;
+    expect(initial).toMatchObject({rootIdentityProven:true,replyCount:0,repliesExpandControlCount:0,explicitEndObserved:false,sourceRootState:{root:{connection:'connected'},identity:{coordinates:'same'}}});
+    expect(progress.sourceActions).toEqual(['dispatch:scroll']);
+    expect(progress.actions).toEqual(['scroll-event','scroll-frame']);
+    expect(row).toMatchObject({root:{postId:'321',text:'Native preview'},replies:{observations:[{postId:'809',author:{handle:'arrived'},sourceUrl:'https://x.com/arrived/status/809',text:'Own reply created by trusted scroll frame'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:0},stopReason:'budget_reached'});
+    expect(scroll).toMatchObject({totalAttempts:1,first:{snapshotId:initial.snapshotId,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'}});
+    expect(scroll.first!.after).toBeGreaterThan(scroll.first!.before);
+    expect(progress.sourceGeometry!.height).toBeGreaterThan(0);
+    expect(progress.sourceGeometry!.before).toBe(scroll.first!.after);
+    expect(progress.sourceGeometry!.after).toBe(progress.sourceGeometry!.before);
+    expect(scroll.last).toEqual(scroll.first);
+    expect(terminal).toMatchObject({rootIdentityProven:true,rootNodeId:initial.rootNodeId,replyCount:1,explicitEndObserved:false});
+    expect(terminal.snapshotId).not.toBe(initial.snapshotId);
+    expect(row.diagnostics?.readiness).toMatchObject({collectCount:1,initial:{replyCount:1,expandControlCount:0,explicitEndObserved:false},timedOut:false});
+    expect(progress.currentPosts).toEqual(['/progress/status/321','/arrived/status/809']);
+    expect(progress.activeTabId).toBe(progress.userTabId);
+    // The same independently named source only exists after a native event/frame;
+    // zero budget supplies the counterfactual, with no collection-wrapper injection.
+    const zero=await control(h=>h.readStages('progress-zero'));
+    console.info('[native-readiness-zero]',JSON.stringify(zero));
+    expect(zero.sourceActions).toEqual([]);expect(zero.actions).toEqual([]);
+    expect(zero.currentPosts).toEqual(['/progress/status/321']);
+    expect(zero.result.targets[0]).toMatchObject({root:{postId:'321'},reason:'reply_readiness_timeout',stopReason:'wait_timeout',replies:{observations:[],scope:{completeness:'unknown'}},budgetUsage:{scrolls:0,expandActions:0},diagnostics:{initialFrame:{rootIdentityProven:true,replyCount:0},terminalFrame:{rootIdentityProven:true,replyCount:0},readiness:{timedOut:true}}});
+    expect(zero.activeTabId).toBe(zero.userTabId);
   });
 });

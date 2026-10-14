@@ -19,7 +19,7 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 read 必须提供原 `tabId`、`objective` 和 `targets`；目标使用观察到的 `url` 或来源表可解析的 `postId`。默认选不超过 10 个；工具允许 1–20 个。不要凭 ID 拼地址或改写作者、大小写及路由。`includeArticle`、`includeReplies` 默认 true；每目标默认最多 30 回复、6 次滚动、6 次展开，对应 `maxRepliesPerPost`、`maxScrollsPerPost`、`maxExpandActionsPerPost` 硬上限为 100、20、20。
 
-当前工具仅主动展开目标主帖正文。引用帖和回复保留各自实际渲染的范围、原始作者与 URL；核心引用需要更完整正文时，独立 read 其已观察到的自身 URL。父帖读取不证明所有引用帖、回复或讨论都读全。显示回复数与取得条数分开；`ui_scope_end_observed` 仅限明确提示所属的当前账号、页面、分支与排序范围。预算停止的 completeness 仍为 unknown。
+当前工具仅主动展开目标主帖正文。引用帖和回复保留各自实际渲染的范围、原始作者与 URL；核心引用需要更完整正文时，独立 read 其已观察到的自身 URL。父帖读取不证明所有引用帖、回复或讨论都读全。显示回复数与取得条数分开；`ui_scope_end_observed` 仅限明确提示所属的当前账号、页面、分支与排序范围。预算停止的 completeness 仍为 unknown。unknown 表示缺少范围完整性的证明，不证明一定漏读了回复。
 
 仅当 includeReplies=true，主帖身份在当前帧无法确认时，工具仍可在 `unscopedPosts` 保留同页独立确认作者、原链接和正文的顶层帖子，标记 `unscoped_post`、`relationToTarget=unproven`。它们与目标帖的关系未证明，不是目标回复或引用帖，也不计入回复范围；当前目标仍按 partial/identity_unproven 停止。仅可引用各自非空正文的原链接，需要更多内容时按各自 URL 独立补读。已见 Article 预览的父帖义务不会因正文或项目被预算省略而消失；按准确同父帖入口补读或省略引用。
 
