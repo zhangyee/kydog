@@ -55,7 +55,7 @@ async function runProgress(mode:Mode='reply',limits:Record<string,unknown>={},in
 
 describe('one source-bound viewport advance before readiness',()=>{
   it('uses normalized positive budgets before waiting and zero, disabled, capped or unproved inputs never gain an early write',async()=>{
-    vi.useFakeTimers();try {
+    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
       for(const [budget,writes] of [[1,1],[undefined,6]]) {
         const good=await runProgress('reply',{maxScrollsPerPost:budget});
         expect(good.row).toMatchObject({root:{postId:'123'},replies:{observations:[{postId:'456',text:'Own reply after viewport progress'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:writes},stopReason:'budget_reached'});
@@ -73,7 +73,7 @@ describe('one source-bound viewport advance before readiness',()=>{
     }finally{vi.useRealTimers();}
   });
   it('collects and saves after progress, then waits once even with exhausted scroll budget; remaining budget never repeats an empty advance',async()=>{
-    vi.useFakeTimers();try {
+    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
       const later=await runProgress('later');expect(later.row.replies.observations.map(p=>p.postId)).toEqual(['456']);
       expect(later.row.diagnostics?.readiness).toMatchObject({initial:{replyCount:0},terminal:{replyCount:1},timedOut:false});
       for(const budget of [1,3]) {
@@ -85,7 +85,7 @@ describe('one source-bound viewport advance before readiness',()=>{
     }finally{vi.useRealTimers();}
   });
   it('stops on fresh identity or barrier loss and retains independent rootless bodies without historical input authority',async()=>{
-    vi.useFakeTimers();try {
+    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
       const good=await runProgress();expect(good.row.replies.observations[0].postId).toBe('456');expect(good.row.diagnostics?.readiness?.initial.replyCount).toBe(1);
       for(const mode of ['rootless','auth','route','route_other'] as const) {
         const stopped=await runProgress(mode,{maxScrollsPerPost:3});
@@ -99,7 +99,7 @@ describe('one source-bound viewport advance before readiness',()=>{
     }finally{vi.useRealTimers();}
   });
   it('preserves written receipts, observes an authenticated stall and never recovers timeout or unwritten input',async()=>{
-    vi.useFakeTimers();try {
+    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
       const good=await runProgress();expect(good.events).toEqual(['collect','scroll','collect']);expect(good.row.diagnostics?.readiness).toBeDefined();
       for(const mode of ['no_movement','ack_timeout','unwritten'] as const) {
         const stopped=await runProgress(mode,{maxScrollsPerPost:3});
@@ -110,7 +110,7 @@ describe('one source-bound viewport advance before readiness',()=>{
     }finally{vi.useRealTimers();}
   });
   it('cancellation before input, during ACK and during wait preserves issued-operation cleanup and releases the source root',async()=>{
-    vi.useFakeTimers();try {
+    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
       const good=await runProgress();expect(good.events).toEqual(['collect','scroll','collect']);expect(good.row.replies.observations[0].postId).toBe('456');
       for(const mode of ['cancel_before','cancel_ack','cancel_wait'] as const) {
         const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.row).toMatchObject({status:'cancelled',stopReason:'cancelled'});
@@ -121,7 +121,7 @@ describe('one source-bound viewport advance before readiness',()=>{
     }finally{vi.useRealTimers();}
   });
   it('already-ready source uses the same one normal action and original readiness frame',async()=>{
-    vi.useFakeTimers();try {
+    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
       const ready=await runProgress('empty',{},'ready');expect(ready.events).toEqual(['collect','scroll','collect']);
       expect(ready.row).toMatchObject({replies:{observations:[{postId:'456'}]},budgetUsage:{scrolls:1}});
       expect(ready.row.diagnostics?.readiness).toMatchObject({collectCount:1,initial:{replyCount:1},terminal:{replyCount:1},timedOut:false});

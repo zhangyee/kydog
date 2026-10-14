@@ -199,6 +199,15 @@ it('names recovery omissions precisely under the complete one MiB UTF8 tool enve
   expect(capped).toBeDefined();if(!capped)throw Error('recovery omission not reached');
   expect((capped.result as any)[rows][0].diagnostics.scrollRecovery).toBeUndefined();expect(JSON.parse(capped.text).metadataOmissions).toContain(path);
   const bytes=Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)),'utf8');expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);expect(capped.result.budgetUsage.outputBytes).toBe(bytes);
-  console.info('task26 final recovery omission bytes',raw.operation,bytes);
  }
+});
+it('projects expiry before the first issued recovery collection as unobserved, never checked-empty',async()=>{
+ const raw=withRecovery(await result()),summary=raw.queries[0].diagnostics!.scrollRecovery!;
+ expect(serializeXResearchResult(raw).result.queries[0].diagnostics!.scrollRecovery!.first!.collectCount).toBe(2);
+ Object.assign(summary.first!,{collectCount:0,newIdentityCount:0,outcome:'expired'});
+ delete summary.first!.firstCollection;delete summary.first!.lastCollection;
+ const out=serializeXResearchResult(raw),saved=out.result.queries[0].diagnostics!.scrollRecovery!.first!;
+ expect(saved).toMatchObject({collectCount:0,newIdentityCount:0,outcome:'expired'});
+ expect(saved.firstCollection).toBeUndefined();expect(saved.lastCollection).toBeUndefined();
+ summary.first!.newIdentityCount=1;expect(()=>serializeXResearchResult(raw)).toThrow();
 });

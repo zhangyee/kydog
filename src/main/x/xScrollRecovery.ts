@@ -51,29 +51,32 @@ export async function recoverXScroll(page:XQueuedPage,request:XPageRequest,initi
  const attempt:XScrollRecoveryAttempt={actionIndex,...binding(initial),collectCount:0,newIdentityCount:0,outcome:'failed'};
  const summary=diagnostics.scrollRecovery??={totalRecoveries:0,omittedRecoveries:0};
  summary.totalRecoveries++;summary.first??=attempt;summary.last=attempt;summary.omittedRecoveries=Math.max(0,summary.totalRecoveries-2);
- let expired=false;
- const timer=setTimeout(()=>{expired=true;},8000);
+ // The resource deadline is monotonic; timer scheduling never grants extra time.
+ const deadlineAt=performance.now()+8000;
+ const expired=()=>performance.now()>=deadlineAt;
  const sameLocation=()=>{const now=page.location();return now.currentUrl===initial.snapshot.url && now.documentEpoch===initial.location.documentEpoch && now.routeRevision===initial.location.routeRevision && now.navigationSequence===initial.location.navigationSequence;};
  try {
   for(;;){
    check(signal);
+   if(expired()){attempt.outcome='expired';return{frame:null,outcome:attempt.outcome};}
    // Intentionally bypass collectFreshXPage: a new document cannot inherit this authorization.
    const frame=await collectXPage(page,request);
    attempt.collectCount++;attempt.firstCollection??=binding(frame);attempt.lastCollection=binding(frame);
    check(signal);
+   const collectedAfterDeadline=expired();
    if(frame.state?.kind!=='auth_required' && (!sameLocation() || frame.snapshot.url!==initial.snapshot.url || frame.snapshot.generation!==initial.snapshot.generation
     || frame.location.documentEpoch!==initial.location.documentEpoch || frame.location.routeRevision!==initial.location.routeRevision || frame.location.navigationSequence!==initial.location.navigationSequence)) {
     attempt.outcome='identity_unproven';return{frame:null,outcome:attempt.outcome};
    }
    const accepted=accept(frame);attempt.newIdentityCount+=accepted.newIdentityCount;
+   check(signal);
    if(accepted.outcome==='barrier'||accepted.outcome==='identity_unproven'){attempt.outcome=accepted.outcome;return{frame:null,outcome:attempt.outcome};}
-   if(expired){attempt.outcome='expired';return{frame:null,outcome:attempt.outcome};}
+   if(collectedAfterDeadline||expired()){attempt.outcome='expired';return{frame:null,outcome:attempt.outcome};}
    if(accepted.outcome==='progress'){attempt.outcome='progress';return{frame,outcome:attempt.outcome};}
-   await pause(signal);check(signal);
-   if(expired){attempt.outcome='expired';return{frame:null,outcome:attempt.outcome};}
+   await pause(signal);
   }
  } catch(error){
   attempt.outcome=error instanceof KydogError&&error.code==='browser.cancelled'?'cancelled':error instanceof KydogError&&error.code==='browser.stale_snapshot'?'identity_unproven':'failed';
   throw error;
- } finally {clearTimeout(timer);}
+ }
 }

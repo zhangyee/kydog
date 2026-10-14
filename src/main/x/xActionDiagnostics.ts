@@ -16,7 +16,7 @@ const recoveryBinding=z.object({snapshotId:id,generation:id,documentEpoch:count,
 const recoveryAttempt=recoveryBinding.extend({actionIndex:count.positive(),collectCount:count,newIdentityCount:count,
  outcome:z.enum(['progress','expired','barrier','identity_unproven','cancelled','failed']),firstCollection:recoveryBinding.optional(),lastCollection:recoveryBinding.optional()}).refine(v=>{
  const frames=[v.firstCollection,v.lastCollection];
- if(v.collectCount===0)return frames.every(f=>!f)&&v.newIdentityCount===0&&v.outcome!=='progress'&&v.outcome!=='expired';
+ if(v.collectCount===0)return frames.every(f=>!f)&&v.newIdentityCount===0&&v.outcome!=='progress';
  if(frames.some(f=>!f))return false;
  if(v.collectCount===1 && JSON.stringify(v.firstCollection)!==JSON.stringify(v.lastCollection))return false;
  return !['progress','expired'].includes(v.outcome)||frames.every(f=>f!.generation===v.generation&&f!.documentEpoch===v.documentEpoch&&f!.routeRevision===v.routeRevision&&f!.navigationSequence===v.navigationSequence&&JSON.stringify(f!.location)===JSON.stringify(v.location));

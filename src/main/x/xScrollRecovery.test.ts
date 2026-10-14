@@ -42,7 +42,7 @@ function stallFixture(search=false,initialReply=false) {
  return{dom,abort,events,facts,hooks,container,add,run,count:()=>({scrolls,clicks,collects}),destroy:()=>gone?.('tab'),close:()=>dom.window.close()};
 }
 it.each([false,true])('collects after settled authenticated stall and resumes on actual new identities (search=%s)',async(search)=>{
- vi.useFakeTimers();const f=stallFixture(search);try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(search);try{
   f.hooks.write=()=>{if(f.count().scrolls===1)f.add();};
   const {row}=await f.run();
   expect(f.events.slice(0,5)).toEqual(['collect','scroll','action-cleanup','collect','scroll']);
@@ -52,7 +52,7 @@ it.each([false,true])('collects after settled authenticated stall and resumes on
  }finally{f.close();vi.useRealTimers();}
 });
 it.each([false,true])('waits for delayed identity rather than old replies, text edits or fresh observation UUIDs (search=%s)',async(search)=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   const good=stallFixture(search,true);try{
    good.hooks.collect=()=>{if(good.count().collects===4)good.add();};
    const {row}=await good.run({maxScrollsPerPost:2});expect(good.count().scrolls).toBe(2);
@@ -69,7 +69,7 @@ it.each([false,true])('waits for delayed identity rather than old replies, text 
  }finally{vi.useRealTimers();}
 });
 it.each([false,true])('exact identity sets permit same-size A→B replacement once, not A/B reappearance (search=%s)',async(search)=>{
- vi.useFakeTimers();const f=stallFixture(search,true);try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(search,true);try{
   f.hooks.collect=()=>{
    if(f.count().collects===1)return;
    for(const article of f.container().querySelectorAll('article'))if(search||!article.querySelector('a[href="/alice/status/123"]'))article.remove();
@@ -82,7 +82,7 @@ it.each([false,true])('exact identity sets permit same-size A→B replacement on
  }finally{f.close();vi.useRealTimers();}
 });
 it.each([false,true])('repeated actual progress stays finite and counts every written scroll at the explicit cap (search=%s)',async(search)=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const cap of [1,3,5]){
    const f=stallFixture(search);try{
     f.hooks.write=()=>f.add(String(500+f.count().scrolls));
@@ -95,7 +95,7 @@ it.each([false,true])('repeated actual progress stays finite and counts every wr
  }finally{vi.useRealTimers();}
 });
 it('a current source reply control gets fresh private permission after the last allowed scroll, subject to its independent cap',async()=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const cap of [1,0]){
    const f=stallFixture();try{
     f.hooks.collect=()=>{if(f.count().collects===3)f.container().insertAdjacentHTML('beforeend','<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>');};
@@ -108,7 +108,7 @@ it('a current source reply control gets fresh private permission after the last 
  }finally{vi.useRealTimers();}
 });
 it.each([false,true])('requires the actual error and local complete receipt, never a reason string or old/malformed facts (search=%s)',async(search)=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   const good=stallFixture(search);try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
   for(const mode of ['ack_timeout','fake','unwritten','missing','old_generation','written_false','event','frame','moved','pending','malformed','old_receipt'] as const){
    const f=stallFixture(search);try{
@@ -125,7 +125,7 @@ it.each([false,true])('requires the actual error and local complete receipt, nev
  }finally{vi.useRealTimers();}
 });
 it.each([false,true])('source invalidation, parser failure and cancellation cannot borrow old input authority (search=%s)',async(search)=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   const good=stallFixture(search);try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
   for(const mode of ['epoch','revision','sequence','generation','root','route','product','auth','parser','cancel_cleanup','cancel_wait','cancel_collect','destroy'] as const){
    if(!search&&mode==='product')continue;
@@ -161,7 +161,7 @@ it.each([false,true])('source invalidation, parser failure and cancellation cann
  }finally{vi.useRealTimers();}
 });
 it.each([false,true])('late valid observation is retained after the deadline but cannot grant another input (search=%s)',async(search)=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const delay of [0,8001]){
    const f=stallFixture(search);try{
     f.hooks.collect=async()=>{if(f.count().collects===2){await new Promise(resolve=>setTimeout(resolve,delay));f.add();f.events.push('collect-settled');}};
@@ -174,7 +174,7 @@ it.each([false,true])('late valid observation is retained after the deadline but
  }finally{vi.useRealTimers();}
 });
 it.each([false,true])('counts every observed new identity even beyond the retained cap and stops further input (search=%s)',async(search)=>{
- vi.useFakeTimers();const f=stallFixture(search);try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(search);try{
   f.hooks.write=()=>{for(let i=0;i<25;i++)f.add(String(600+i));};
   const {row}=await f.run({maxRepliesPerPost:2,maxScrollsPerPost:4});
   expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:1,newIdentityCount:25,outcome:'progress'});
@@ -183,7 +183,7 @@ it.each([false,true])('counts every observed new identity even beyond the retain
  }finally{f.close();vi.useRealTimers();}
 });
 it('recovery cannot convert semantic inventory, body end prose or an invalid root owner into a source control',async()=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const mode of ['control','inventory','body','owner'] as const){
    const f=stallFixture();try{
     f.hooks.write=()=>{
@@ -202,7 +202,7 @@ it('recovery cannot convert semantic inventory, body end prose or an invalid roo
  }finally{vi.useRealTimers();}
 });
 it('reappearing reply already saved before body expansion is not new row progress',async()=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const fresh of [true,false]){
    const f=stallFixture(false,true);try{
     f.container().querySelector('article')!.insertAdjacentHTML('beforeend','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>');
@@ -216,7 +216,7 @@ it('reappearing reply already saved before body expansion is not new row progres
  }finally{vi.useRealTimers();}
 });
 it('a reappearing previously used physical control cannot repeatedly reactivate a stalled page, while a new control can',async()=>{
- vi.useFakeTimers();try{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const fresh of [true,false]){
    const f=stallFixture();try{
     const html='<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>';
@@ -228,4 +228,55 @@ it('a reappearing previously used physical control cannot repeatedly reactivate 
    }finally{f.close();}
   }
  }finally{vi.useRealTimers();}
+});
+it.each([false,true])('monotonic deadline wins when collection crosses it before timers run, across caps and identity changes (search=%s)',async(search)=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const baseNow=performance.now.bind(performance);let offset=0;
+ const clock=vi.spyOn(performance,'now').mockImplementation(()=>baseNow()+offset);
+ try{
+  for(const cap of [2,1])for(const fresh of [true,false])for(const elapsed of [7999,8000,8050]){
+   offset=0;const f=stallFixture(search,true);try{
+    f.hooks.collect=()=>{if(f.count().collects===2){offset=elapsed;if(fresh)f.add();else f.container().querySelector('[data-testid="tweetText"]')!.textContent='same identity, changed body';}};
+    const {row}=await f.run({maxScrollsPerPost:cap});
+    const inTime=elapsed<8000;
+    expect(f.count().scrolls,JSON.stringify({cap,fresh,elapsed})).toBe(inTime&&fresh?cap:1);
+    expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({outcome:inTime&&fresh?'progress':'expired',newIdentityCount:fresh?1:0});
+    // At 7999ms, the old identity can schedule one pause but no later source read.
+    expect(row.diagnostics?.scrollRecovery?.first?.collectCount).toBe(1);
+    expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toEqual(fresh?['401','402']:['401']);
+   }finally{f.close();}
+  }
+ }finally{clock.mockRestore();vi.useRealTimers();}
+});
+it('rechecks the monotonic deadline after acceptance while preserving cancellation, barrier and identity priorities',async()=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});let now=100;const clock=vi.spyOn(performance,'now').mockImplementation(()=>now);
+ try{
+  const {recoverXScroll}=await import('./xScrollRecovery');
+  const location={current:{origin:'https://x.com',path:'/alice/status/123',q:null,f:null,fragment:null,redacted:false},documentEpoch:3,routeRevision:7,navigationSequence:9};
+  const initial={snapshot:{snapshotId:'before',generation:'same',url:'https://x.com/alice/status/123'},location} as import('./xPageSource').XPageObservation;
+  const frame={...initial,snapshot:{...initial.snapshot,snapshotId:'after'}};
+  for(const elapsed of [7999,8000])for(const decision of ['progress','continue','barrier','identity_unproven','cancelled','generation'] as const){
+   now=100;const abort=new AbortController();let saved=false;
+   const accepted=()=>{saved=true;now+=elapsed;if(decision==='cancelled')abort.abort();return{outcome:decision==='barrier'||decision==='identity_unproven'||decision==='continue'?decision:'progress' as const,newIdentityCount:decision==='continue'?0:1};};
+   const page={location:()=>({currentUrl:initial.snapshot.url,...location}),collect:vi.fn(async()=>{if(decision==='generation')now+=elapsed;return decision==='generation'?{...frame,snapshot:{...frame.snapshot,generation:'changed'}}:frame;})} as unknown as import('./xResearchBrowser').XQueuedPage;
+   // The continue case needs a monotonic advance when its first scheduling pause wakes.
+   if(decision==='continue')setTimeout(()=>{now=8200;},50);
+   const pending=recoverXScroll(page,{stage:'post',expectedUrl:initial.snapshot.url,postId:'123'},initial,1,{},accepted,abort.signal);
+   if(decision==='cancelled'){
+    await expect(pending).rejects.toMatchObject({code:'browser.cancelled'});expect(saved).toBe(true);
+   }else{
+    await vi.runAllTimersAsync();const result=await pending;
+    const expected=decision==='generation'?'identity_unproven':decision==='barrier'||decision==='identity_unproven'?decision:elapsed>=8000||decision==='continue'?'expired':'progress';
+    expect(result.outcome,JSON.stringify({elapsed,decision})).toBe(expected);
+    if(expected==='progress')expect(result.frame).toBe(frame);else expect(result.frame).toBeNull();
+    expect(saved).toBe(decision!=='generation');
+   }
+   expect(page.collect).toHaveBeenCalledTimes(1);
+  }
+  // Main-thread starvation can also happen before the initial read is issued.
+  clock.mockReturnValueOnce(100).mockReturnValue(8100);
+  const collect=vi.fn(async()=>frame);
+  const stopped=await recoverXScroll({collect} as unknown as import('./xResearchBrowser').XQueuedPage,
+   {stage:'post',expectedUrl:initial.snapshot.url,postId:'123'},initial,1,{},()=>({outcome:'progress',newIdentityCount:1}));
+  expect(stopped).toEqual({frame:null,outcome:'expired'});expect(collect).toHaveBeenCalledTimes(0);
+ }finally{clock.mockRestore();vi.useRealTimers();}
 });
