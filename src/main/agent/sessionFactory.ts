@@ -1,4 +1,5 @@
 // src/main/agent/sessionFactory.ts
+import { XResearchScopeLedger } from '../x/xResearchScopeFacts';
 import { createFixtureSession } from './fixtureProvider';
 import { createXResearchTool } from './xResearchTool';
 import { XResearchEvidence, latestXResearchTab } from '../x/xResearchEvidence';
@@ -113,6 +114,7 @@ export async function createSession(opts: {
   const sessionManager = pi.SessionManager.open(sessionFile, opts.sessionsDir, opts.cwd);
   const currentRunId = opts.currentRunId ?? (() => null);
   const evidence = new XResearchEvidence(opts.cwd, currentRunId);
+  const scopeFacts = new XResearchScopeLedger();
   let branchIds: string[] | undefined;
   let retainedTab: string | undefined;
   // Ordinary appends retain the immediate production observations. A real branch
@@ -122,6 +124,7 @@ export async function createSession(opts: {
     const next = branch.map(entry => entry.id);
     if (!branchIds || !branchIds.every((id,index) => next[index]===id)) {
       evidence.restore(branch);
+      scopeFacts.restore(branch);
       retainedTab=latestXResearchTab(branch);
     }
     branchIds = next;
@@ -144,7 +147,8 @@ export async function createSession(opts: {
       browser: createXResearchBrowser(browserService, opts.sessionId),
       threadId: opts.sessionId, sources: evidence.sources, currentRunId: () => {syncBranch();return currentRunId();},
       tabBinding:{get:()=>retainedTab,set:id=>{retainedTab=id;}},
-      observeResult: result => evidence.observe(result),
+      scopePrior: runId => scopeFacts.prior(runId),
+      observeResult: result => { evidence.observe(result); scopeFacts.observe(result); },
     })] : []),
   ];
   // SDK emits message_end before persisting it. Refresh only after prompt settles,

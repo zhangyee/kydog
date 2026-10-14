@@ -309,9 +309,19 @@ export interface XReportScopeFacts {
   reasonCounts: Record<string, number>;
   replyScopeCounts: Partial<Record<XReplyScope['completeness'], number>>;
 }
+/** Distinct actual calls on the current branch/run; no source or citation authority. */
+export interface XReportRunScopeFacts {
+  version: 1;
+  runId: string;
+  callCount: number;
+  unavailableCallCount: number;
+  search: XReportScopeFacts;
+  read: XReportScopeFacts;
+}
 interface XResultBase {
   schemaVersion: 2;
   reportScopeFacts?: XReportScopeFacts;
+  reportRunScopeFacts?: XReportRunScopeFacts;
   contentProjection?: 'x_research_projection_v1';
   metadataOmissions?: string[];
   /** Secondary model-content metadata omitted while canonical details retain it. */

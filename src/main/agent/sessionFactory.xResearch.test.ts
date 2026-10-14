@@ -85,3 +85,28 @@ it('settled branch baseline includes the last actual result before branching to 
  const denied=await execute(session,'write',{path:'ordinary.md',content:'[source](https://x.com/alice/status/123)'},'removed-result');
  expect(denied.isError).toBe(true);expect(denied.result.content[0].text).toContain('unobserved');
 });
+
+// Catches missing production ledger wiring, persisted restore, and branch/run leakage.
+it('counts only actual current-run calls across SDK persistence and current branch changes',async()=>{
+ let session=await build();
+ const first=await execute(session,'x_research',searchInput,'scope-first');
+ expect(first.isError).toBe(false);
+ expect(first.result.details.reportRunScopeFacts).toMatchObject({version:1,runId:run,callCount:1,unavailableCallCount:0,search:{totalRows:1},read:{totalRows:0}});
+ const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
+ const firstLeaf=manager.getLeafId()!;
+ const second=await execute(session,'x_research',searchInput,'scope-second');
+ expect(second.result.details.reportRunScopeFacts).toMatchObject({callCount:2,search:{totalRows:2}});
+ expect(JSON.parse(second.result.content[0].text).reportRunScopeFacts).toEqual(second.result.details.reportRunScopeFacts);
+ await session.cleanup?.();session=await build();
+ const restored=await execute(session,'x_research',searchInput,'scope-third');
+ expect(restored.result.details.reportRunScopeFacts).toMatchObject({callCount:3,search:{totalRows:3}});
+ const restoredManager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
+ restoredManager.branch(firstLeaf);
+ const sibling=await execute(session,'x_research',searchInput,'scope-sibling');
+ expect(sibling.result.details.reportRunScopeFacts).toMatchObject({callCount:2,search:{totalRows:2}});
+ run='new-scope-run';
+ const nextRun=await execute(session,'x_research',searchInput,'scope-next-run');
+ expect(nextRun.result.details.reportRunScopeFacts).toMatchObject({runId:run,callCount:1,search:{totalRows:1}});
+ const stored=restoredManager.getBranch().at(-1);
+ expect(stored).toMatchObject({type:'message',message:{role:'toolResult',toolCallId:'scope-next-run',details:{reportRunScopeFacts:nextRun.result.details.reportRunScopeFacts}}});
+});

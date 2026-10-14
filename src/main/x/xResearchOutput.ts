@@ -1,3 +1,4 @@
+import { reportScopeFacts, type XResearchScopePrior } from './xResearchScopeFacts';
 import { projectActionDiagnostics } from './xActionDiagnostics';
 import { replyUiFrameSchema } from './xReplyUiInventory';
 import { sourceRootStateSchema } from './xPageSource';
@@ -13,52 +14,7 @@ import {
   type XTextObservation,
   type XUnscopedPost,
   type XCollectionTransition,
-  type XReportScopeFacts,
 } from './xResearchTypes';
-
-// Only protocol-controlled, finite reason labels enter the aggregate. Search
-// barriers can contain localized page text, so all other values count as unknown.
-const REPORT_REASONS = new Set([
-  'scroll_no_movement', 'scroll_ack_timeout',
-  'post_identity_unproven', 'reply_readiness_timeout',
-  'action_failed:browser.click_intercepted',
-  'not_attempted', 'cancelled', 'unsafe_target_url', 'unresolved_target',
-  'auth_required', 'unsupported_document_route',
-  'direct_article_discussion_unobserved', 'post_wait_timeout',
-  'parent_return_identity_unproven', 'parent_return_navigation_failed',
-  'body_expand_budget_reached', 'reply_budget_reached',
-  'body_expand_control_unchanged', 'replies_expand_control_unchanged',
-  'body_observations_output_budget', 'article_inventory_audit_output_budget',
-  'navigation_failed', 'not_attempted:auth_required',
-  'not_attempted:navigation_failed', 'internal_adapter_stopped',
-  'collection_failed:browser.not_dispatchable',
-  'omitted_due_output_budget',
-]);
-function reportScopeFacts(result: XResearchResult): XReportScopeFacts {
-  const facts: XReportScopeFacts = {
-    version: 1, operation: result.operation,
-    reasonSource: result.operation === 'search' ? 'barrier.reason' : 'reason',
-    totalRows: result.operation === 'search' ? result.queries.length : result.targets.length,
-    statusCounts: {}, stopReasonCounts: {}, reasonCounts: {}, replyScopeCounts: {},
-  };
-  const count = (counts: Record<string, number>, key: string) => {
-    counts[key] = (counts[key] ?? 0) + 1;
-  };
-  const countRow = (row: {status: keyof XReportScopeFacts['statusCounts']; stopReason: keyof XReportScopeFacts['stopReasonCounts']}, reason: string | null | undefined) => {
-    count(facts.statusCounts, row.status);
-    count(facts.stopReasonCounts, row.stopReason);
-    count(facts.reasonCounts, reason && REPORT_REASONS.has(reason) ? reason : 'unknown');
-  };
-  if (result.operation === 'search') {
-    for (const row of result.queries) countRow(row, row.barrier?.reason);
-  } else {
-    for (const row of result.targets) {
-      countRow(row, row.reason);
-      count(facts.replyScopeCounts, row.replies.scope.completeness);
-    }
-  }
-  return facts;
-}
 
 export interface XSerializedResult<
   T extends XResearchResult = XResearchResult,
@@ -158,6 +114,7 @@ function projection(result: XResearchResult) {
     runId: result.runId,
     status: result.status,
     reportScopeFacts: result.reportScopeFacts,
+    ...(result.reportRunScopeFacts ? {reportRunScopeFacts: result.reportRunScopeFacts} : {}),
     budgetUsage: result.budgetUsage,
     truncation: result.truncation,
     metadataOmissions: result.metadataOmissions ?? [],
@@ -226,8 +183,11 @@ function projection(result: XResearchResult) {
 function measure<T extends XResearchResult>(
   result: T,
   projected = false,
+  prior?: XResearchScopePrior,
 ): XSerializedResult<T> {
   result.reportScopeFacts = reportScopeFacts(result);
+  if (prior) result.reportRunScopeFacts = prior.withCurrent(result);
+  else delete result.reportRunScopeFacts;
   const rows = result.operation === 'search' ? result.queries : result.targets;
   for (;;) {
     const projectedRows = projected
@@ -353,7 +313,7 @@ function compactMetadata(result: XResearchResult): void {
  * candidates/replies. Source identity strings follow the shared official public identity
  * boundary. UUID/ISO/counter sizes follow production generators. This
  * sizing-only object is never returned, remembered or treated as evidence. */
-export function assertXRequestFits(original: XResearchResult): void {
+export function assertXRequestFits(original: XResearchResult, prior?: XResearchScopePrior): void {
   const state = structuredClone(original);
   if (!state.browserTabId) state.browserTabId = 'tab_00000000'; // actual tab_<UUID slice8> format
   const uuid = '00000000-0000-0000-0000-000000000000',
@@ -525,7 +485,7 @@ export function assertXRequestFits(original: XResearchResult): void {
   state.contentProjection = 'x_research_projection_v1';
   compactMetadata(state);
   compactModelDocumentLocations(state);
-  const requiredBytes = measure(state, true).result.budgetUsage.outputBytes;
+  const requiredBytes = measure(state, true, prior).result.budgetUsage.outputBytes;
   if (requiredBytes > X_RESEARCH_MAX_OUTPUT_BYTES)
     throw new Error(
       `x_research: request metadata exceeds 1 MiB required-state envelope (${requiredBytes} bytes); shorten or split the request`,
@@ -533,6 +493,7 @@ export function assertXRequestFits(original: XResearchResult): void {
 }
 export function serializeXResearchResult<T extends XResearchResult>(
   original: T,
+  prior?: XResearchScopePrior,
 ): XSerializedResult<T> {
   if(original.operation==='read') for(const row of original.targets) for(const frame of [row.diagnostics?.initialFrame,row.diagnostics?.firstAdmittedFrame,row.diagnostics?.terminalFrame])
     if(frame){
@@ -576,7 +537,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       row.budgetUsage.distinctEntries=new Set([...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,...(row.article.body?[row.article.body]:[]),...row.unscopedPosts.observations].map(p=>p.postId)).size;
     }
     if(result.operation==='read' && result.targets.some(row=>row.unscopedPosts)) result.budgetUsage.distinctEntries=result.targets.reduce((sum,row)=>sum+row.budgetUsage.distinctEntries,0);
-    return measure(result, projected);
+    return measure(result, projected, prior);
   };
   let value = update();
   if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)

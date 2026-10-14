@@ -32,6 +32,8 @@ describe('parseXResearchInput', () => {
   it('usesUiBudgets', () => {
     expect(parseXResearchInput({ search })).toEqual({ search: { ...search, maxPostsPerQuery: 30, maxScrollsPerQuery: 6 } });
     expect(parseXResearchInput({ tabId: 'tab', read })).toEqual({ tabId: 'tab', read: { ...read, includeArticle: true, includeReplies: true, maxRepliesPerPost: 30, maxScrollsPerPost: 6, maxExpandActionsPerPost: 6 } });
+    expect(parseXResearchInput({ search: { ...search, maxPostsPerQuery: 4, maxScrollsPerQuery: 1 } }).search).toMatchObject({ maxPostsPerQuery: 4, maxScrollsPerQuery: 1 });
+    expect(parseXResearchInput({ tabId: 'tab', read: { ...read, includeReplies: false, maxRepliesPerPost: 2, maxScrollsPerPost: 1, maxExpandActionsPerPost: 3 } }).read).toMatchObject({ includeReplies: false, maxRepliesPerPost: 2, maxScrollsPerPost: 1, maxExpandActionsPerPost: 3 });
     for (const [field, max] of [['maxPostsPerQuery', 100], ['maxScrollsPerQuery', 20]] as const) {
       expect(parseXResearchInput({ search: { ...search, [field]: max } }).search?.[field]).toBe(max);
       expect(parseXResearchInput({ search: { ...search, [field]: 0 } }).search?.[field]).toBe(0);
