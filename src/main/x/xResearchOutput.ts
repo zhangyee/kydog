@@ -43,6 +43,12 @@ function texts(result: XResearchResult): (XTextObservation | XUnscopedPost)[] {
         ...(t.unscopedPosts?.observations ?? []),
       ]);
 }
+// Preserve the observation's own Article obligations, even when its primary
+// candidate is later omitted. Identity validation remains the evidence ledger's job.
+function protectedSearchHistory(p: XTextObservation): boolean {
+  return !!p.articlePreviews?.length || !!p.articlePreviewInventory &&
+    (p.articlePreviewInventory.omitted > 0 || p.articlePreviewInventory.unresolved > 0);
+}
 function body(p: XTextObservation | XUnscopedPost) {
   return {
     ...(p.articlePreviewInventory ? {articlePreviewInventory:p.articlePreviewInventory}:{}),
@@ -132,6 +138,7 @@ function projection(result: XResearchResult) {
         budgetUsage: q.budgetUsage,
         posts: q.posts.map(body),
         ...(q.postObservations?{postObservations:q.postObservations.map(body)}:{}),
+        ...(q.postObservationsOmitted?{postObservationsOmitted:q.postObservationsOmitted}:{}),
         barrier: q.barrier,
         collectionTransitions: q.collectionTransitions,
       })),
@@ -547,6 +554,60 @@ export function serializeXResearchResult<T extends XResearchResult>(
   value = update();
   if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
     return value;
+  // Optional observation history yields before current text or diagnostics.
+  // This is output omission, never a claim that separate source frames are equal.
+  const mark = (path: string) => {
+    if (!(result.metadataOmissions ??= []).includes(path)) result.metadataOmissions.push(path);
+  };
+  if (result.operation === 'read') for (const [index,row] of result.targets.entries()) {
+    const entries = row.bodyObservations;
+    if (!entries?.length) continue;
+    const previousOmitted = row.bodyObservationsOmitted ?? 0;
+    mark(`targets.${index}.bodyObservations`);
+    if (row.status === 'observed') row.status = 'partial';
+    row.reason ??= 'body_observations_output_budget';
+    if (row.stopReason === 'agent_stopped') row.stopReason = 'budget_reached';
+    if (result.status === 'observed') result.status = 'partial';
+    const retain = (count: number) => {
+      row.bodyObservations = entries.slice(0,count);
+      row.bodyObservationsOmitted = previousOmitted + entries.length - count;
+    };
+    let lo=0,hi=entries.length;
+    while(lo<hi){const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
+    retain(lo);value=update();
+    if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
+  if (result.operation === 'search') for (const [index,row] of result.queries.entries()) {
+    const entries = row.postObservations;
+    if (!entries?.length) continue;
+    const previousOmitted = row.postObservationsOmitted ?? 0;
+    const optional = entries.filter(p=>!protectedSearchHistory(p));
+    if(optional.length){
+      mark(`queries.${index}.postObservations`);
+      if(row.status==='observed')row.status='partial';
+      if(row.stopReason==='agent_stopped')row.stopReason='budget_reached';
+      if(result.status==='observed')result.status='partial';
+      const retain=(count:number)=>{
+        const prefix=new Set(optional.slice(0,count));
+        row.postObservations=entries.filter(p=>protectedSearchHistory(p)||prefix.has(p));
+        row.postObservationsOmitted=previousOmitted+entries.length-row.postObservations.length;
+      };
+      let lo=0,hi=optional.length;
+      while(lo<hi){const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
+      retain(lo);value=update();
+      if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    }
+  }
+  if(result.operation==='search') for(const [index,row] of result.queries.entries()) {
+    const history=row.postObservations?.filter(p=>p.text.length);
+    if(!history?.length)continue;
+    mark(`queries.${index}.postObservations.text`);
+    for(const p of history){p.text='';p.truncation={...p.truncation,returned:0,truncated:true};}
+    if(row.status==='observed')row.status='partial';
+    if(row.stopReason==='agent_stopped')row.stopReason='budget_reached';
+    if(result.status==='observed')result.status='partial';
+    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
   // Reply attempt telemetry is one optional section, never partially rewritten.
   if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
     if(!row.diagnostics?.replyExpansions)continue;
@@ -565,7 +626,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     }
   }
   // Independent failure-frame bodies are optional; their exact own-parent gap
-  // facts are required state. Remove whole items before touching scoped history.
+  // facts are required state. Remove whole items before touching current text.
   if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
     const envelope=row.unscopedPosts;if(!envelope?.observations.length) continue;
     const entries=[...envelope.observations];
@@ -579,7 +640,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     envelope.observations=entries.slice(0,lo);value=update();
     if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
-  for (const p of bodies
+  for (const p of texts(result)
     .filter((b) => b.text.length)
     .sort((a, b) => b.text.length - a.text.length)) {
     const full = p.text;
@@ -609,32 +670,10 @@ export function serializeXResearchResult<T extends XResearchResult>(
     const retain=(count:number)=>{
       q.posts=candidates.slice(0,count);
       const ids=new Set(q.posts.map(p=>p.postId));
-      if(q.postObservations) q.postObservations=observations.filter(p=>ids.has(p.postId));
+      if(q.postObservations) q.postObservations=observations.filter(p=>protectedSearchHistory(p)||ids.has(p.postId));
     };
     while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES) lo=mid;else hi=mid-1;}
     retain(lo);value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
-  }
-  if (result.operation === 'read') for (const row of result.targets) {
-    const history = row.bodyObservations;
-    if (!history?.length) continue;
-    const entries = [...history], previousOmitted = row.bodyObservationsOmitted ?? 0;
-    const retain = (count: number) => {
-      row.bodyObservations = entries.slice(0, count);
-      row.bodyObservationsOmitted = previousOmitted + entries.length - count;
-    };
-    let lo = 0, hi = entries.length;
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2); retain(mid);
-      if (update().result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES) lo = mid;
-      else hi = mid - 1;
-    }
-    retain(lo);
-    if (row.status === 'observed') row.status = 'partial';
-    row.reason ??= 'body_observations_output_budget';
-    if (row.stopReason === 'agent_stopped') row.stopReason = 'budget_reached';
-    if (result.status === 'observed') result.status = 'partial';
-    value = update();
-    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES) return value;
   }
   const lists =
     result.operation === 'search'

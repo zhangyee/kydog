@@ -73,6 +73,10 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
     expect(frame?.snapshotId).toMatch(/^xsnap_/);
     const old=structuredClone(fresh);
     delete old.targets[0].diagnostics;
+    const {retainReadBody}=await import('./xResearchReadStages');
+    const current=fresh.targets[0].root!;
+    for(let i=0;i<100;i++)retainReadBody(fresh.targets[0],{...structuredClone(current),observationId:`sdk-history-${i}`,text:'历史'.repeat(2000),truncation:{returned:4000,totalKnown:4000,truncated:false}});
+    retainReadBody(fresh.targets[0],{...structuredClone(current),observationId:'sdk-gap',text:'old',truncation:{returned:3,totalKnown:3,truncated:false},articlePreviewInventory:{scope:'collection',observed:0,retained:0,omitted:0,unresolved:1}});
     const manager=SessionManager.create(dir,dir);
     const base=manager.appendMessage({role:'user',content:'read history',timestamp:1});
     const payloads=new Map<string,ReturnType<typeof xResearchToolResult>>();
@@ -99,6 +103,11 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
       expect(saved.details).toEqual(payloads.get(id)!.details);
       expect(saved.content).toEqual(payloads.get(id)!.content);
       const details=saved.details as typeof fresh;
+      expect(details.targets[0].root!.text).toBe(current.text);
+      if(expected){
+        expect(details.targets[0].bodyObservationsOmitted).toBeGreaterThan(0);
+        expect(details.targets[0].articlePreviewObservations).toContainEqual(expect.objectContaining({observationId:'sdk-gap',articlePreviewInventory:{scope:'collection',observed:0,retained:0,omitted:0,unresolved:1}}));
+      }
       expect(details.targets[0].diagnostics?.firstAdmittedFrame?.snapshotId).toBe(expected);
       expect(details.targets[0].diagnostics?.firstAdmittedFrame?.sourceRootState).toEqual(expected?frame?.sourceRootState:undefined);
       expect(JSON.stringify({...details,objective:'collectionKey'})).toMatch(/__kydogXRootState|collectionKey|permissionNamespace/);
@@ -106,7 +115,12 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
       expect(JSON.parse(saved.content[0].type==='text'?saved.content[0].text:'{}').targets[0].diagnostics?.firstAdmittedFrame?.snapshotId).toBe(expected);
       const ledger=new XResearchEvidence(dir,()=> 'restored-run');
       ledger.restore(reopened.getBranch());
-      expect(ledger.guard(report,citation())).toEqual({createOnly:true});
+      if(expected){
+        const plain=new XResearchEvidence(dir,()=> 'restored-run');plain.observe(old);expect(plain.guard(report,citation())).toEqual({createOnly:true});
+        expect(()=>ledger.guard(report,citation())).toThrow(/inventory is unknown/);
+        const qualified=await readX({tabId:'research-tab',read:{objective:'resolve gap',targets:[{url}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},(await stagedFixture({article:'ok'})).context);
+        ledger.observe(qualified);expect(ledger.guard(report,citation())).toEqual({createOnly:true});
+      }else expect(ledger.guard(report,citation())).toEqual({createOnly:true});
     }
   } finally { await fs.rm(dir,{recursive:true,force:true}); }
 });

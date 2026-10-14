@@ -170,6 +170,7 @@ export interface XSearchObservation {
   status: XResearchStatus;
   posts: XTextObservation[];
   postObservations?: XTextObservation[];
+  postObservationsOmitted?: number;
   stopReason: XStopReason;
   budgetUsage: XBudgetUsage;
   location: XLocationFacts | null;
