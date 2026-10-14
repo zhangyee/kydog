@@ -3,8 +3,8 @@ import type { XReadTarget, XResearchInput, XSearchQuery } from './xResearchTypes
 
 /** Shared by parsing and the model-facing budget descriptions. */
 export const X_RESEARCH_DEFAULT_BUDGETS = {
-  maxPostsPerQuery: 30, maxScrollsPerQuery: 6,
-  maxRepliesPerPost: 30, maxScrollsPerPost: 6, maxExpandActionsPerPost: 6,
+  maxPostsPerQuery: 100, maxScrollsPerQuery: 20,
+  maxRepliesPerPost: 100, maxScrollsPerPost: 20, maxExpandActionsPerPost: 20,
 } as const;
 
 function object(raw: unknown, keys: string[], context: string): Record<string, unknown> {

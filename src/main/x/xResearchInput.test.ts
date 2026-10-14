@@ -30,8 +30,8 @@ describe('parseXResearchInput', () => {
   });
 
   it('usesUiBudgets', () => {
-    expect(parseXResearchInput({ search })).toEqual({ search: { ...search, maxPostsPerQuery: 30, maxScrollsPerQuery: 6 } });
-    expect(parseXResearchInput({ tabId: 'tab', read })).toEqual({ tabId: 'tab', read: { ...read, includeArticle: true, includeReplies: true, maxRepliesPerPost: 30, maxScrollsPerPost: 6, maxExpandActionsPerPost: 6 } });
+    expect(parseXResearchInput({ search })).toEqual({ search: { ...search, maxPostsPerQuery: 100, maxScrollsPerQuery: 20 } });
+    expect(parseXResearchInput({ tabId: 'tab', read })).toEqual({ tabId: 'tab', read: { ...read, includeArticle: true, includeReplies: true, maxRepliesPerPost: 100, maxScrollsPerPost: 20, maxExpandActionsPerPost: 20 } });
     expect(parseXResearchInput({ search: { ...search, maxPostsPerQuery: 4, maxScrollsPerQuery: 1 } }).search).toMatchObject({ maxPostsPerQuery: 4, maxScrollsPerQuery: 1 });
     expect(parseXResearchInput({ tabId: 'tab', read: { ...read, includeReplies: false, maxRepliesPerPost: 2, maxScrollsPerPost: 1, maxExpandActionsPerPost: 3 } }).read).toMatchObject({ includeReplies: false, maxRepliesPerPost: 2, maxScrollsPerPost: 1, maxExpandActionsPerPost: 3 });
     for (const [field, max] of [['maxPostsPerQuery', 100], ['maxScrollsPerQuery', 20]] as const) {
@@ -43,6 +43,21 @@ describe('parseXResearchInput', () => {
       expect(parseXResearchInput({ tabId: 'tab', read: { ...read, [field]: max } }).read?.[field]).toBe(max);
       expect(parseXResearchInput({ tabId: 'tab', read: { ...read, [field]: 0 } }).read?.[field]).toBe(0);
       for (const value of [max + 1, -1, 1.5, NaN, Infinity, '6', null]) expect(() => parseXResearchInput({ tabId: 'tab', read: { ...read, [field]: value } })).toThrow();
+    }
+    // Omitting one dimension cannot reset another explicitly supplied dimension.
+    for (const explicit of [0, 1, 6, 30]) {
+      expect(parseXResearchInput({ search: { ...search, maxPostsPerQuery: explicit } }).search)
+        .toMatchObject({ maxPostsPerQuery: explicit, maxScrollsPerQuery: 20 });
+      expect(parseXResearchInput({ tabId: 'tab', read: { ...read, maxRepliesPerPost: explicit } }).read)
+        .toMatchObject({ maxRepliesPerPost: explicit, maxScrollsPerPost: 20, maxExpandActionsPerPost: 20 });
+      if (explicit <= 20) {
+        expect(parseXResearchInput({ search: { ...search, maxScrollsPerQuery: explicit } }).search)
+          .toMatchObject({ maxPostsPerQuery: 100, maxScrollsPerQuery: explicit });
+        expect(parseXResearchInput({ tabId: 'tab', read: { ...read, maxScrollsPerPost: explicit } }).read)
+          .toMatchObject({ maxRepliesPerPost: 100, maxScrollsPerPost: explicit, maxExpandActionsPerPost: 20 });
+        expect(parseXResearchInput({ tabId: 'tab', read: { ...read, maxExpandActionsPerPost: explicit } }).read)
+          .toMatchObject({ maxRepliesPerPost: 100, maxScrollsPerPost: 20, maxExpandActionsPerPost: explicit });
+      }
     }
     const queries = Array.from({ length: 6 }, (_, i) => ({ ...search.queries[0], id: `q${i}` }));
     expect(parseXResearchInput({ search: { ...search, queries } }).search?.queries).toHaveLength(6);

@@ -56,7 +56,7 @@ async function runProgress(mode:Mode='reply',limits:Record<string,unknown>={},in
 describe('one source-bound viewport advance before readiness',()=>{
   it('uses normalized positive budgets before waiting and zero, disabled, capped or unproved inputs never gain an early write',async()=>{
     vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      for(const [budget,writes] of [[1,1],[undefined,6]]) {
+      for(const [budget,writes] of [[1,1],[undefined,20]]) {
         const good=await runProgress('reply',{maxScrollsPerPost:budget});
         expect(good.row).toMatchObject({root:{postId:'123'},replies:{observations:[{postId:'456',text:'Own reply after viewport progress'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:writes},stopReason:'budget_reached'});
         expect(good.events.slice(0,3)).toEqual(['collect','scroll','collect']);
