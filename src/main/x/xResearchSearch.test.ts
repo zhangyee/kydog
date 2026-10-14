@@ -109,3 +109,24 @@ it('preserves every Article preview on its exact collected parent container, nev
  expect(collected.entryParents.get(collected.entries[0])).not.toBe(collected.posts[1]);
  expect(JSON.stringify(r)).not.toContain('entryParents');
 });
+
+it('retains source ACKs per issued attempt, independently of writes and repeated callbacks',async()=>{
+ for(const mode of ['success','no_movement','timeout','invalidated','cancelled','unwritten'] as const){
+  const f=fixture([searchHtml(post())]);let attempts=0;const snapshots:string[]=[];
+  f.act.mockImplementation(async(_action,snapshot,options)=>{
+   attempts++;const snap=snapshot as import('../browser/snapshot').AxSnapshot;snapshots.push(snap.snapshotId);
+   if(mode==='unwritten'&&attempts===3)throw new KydogError('browser.stale_snapshot','before write');
+   const ack=options!.scrollAcknowledgement!;ack.onWritten();const terminal=attempts===3&&mode!=='success';
+   const receipt={generation:snap.generation,targetKind:'element' as const,targetNodeId:70+attempts,targetContainsHit:true,conversationRelation:'unknown' as const,rootRelation:'unknown' as const,before:17+attempts,after:terminal?17+attempts:617+attempts,scrollHeight:2700,clientHeight:601,written:true,eventObserved:!terminal,frameObserved:!terminal,state:terminal?(mode==='no_movement'?'no_movement':mode==='invalidated'?'invalidated':'expired'):'frame_observed'} as import('../browser/actions').BrowserScrollReceipt;
+   ack.onReceipt?.({...receipt,state:'pending',eventObserved:false,frameObserved:false});ack.onReceipt?.(receipt);
+   if(terminal)throw mode==='cancelled'?new KydogError('browser.cancelled','cancelled'):new BrowserScrollAcknowledgementError(mode==='no_movement'?'scroll_no_movement':'scroll_ack_timeout','terminal');
+   return {action:_action,line:'done',navigation:null};
+  });
+  const row=(await searchX({search:{...searchInput.search,maxScrollsPerQuery:3}},f.context)).queries[0];
+  expect(row.diagnostics?.scroll,mode).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:1,snapshotId:snapshots[0],targetNodeId:71,before:18,after:618,state:'frame_observed'},last:{actionIndex:mode==='unwritten'?2:3,snapshotId:snapshots[mode==='unwritten'?1:2],targetNodeId:mode==='unwritten'?72:73}});
+  expect(row.budgetUsage.scrolls).toBe(mode==='unwritten'?2:3);
+  expect(row.diagnostics?.scroll?.last?.generation).toBeTruthy();
+  expect(row.diagnostics?.scroll?.last?.location).toMatchObject({origin:'https://x.com',path:'/search',q:'scientific agents',f:'live'});
+  expect(row.diagnostics?.scroll?.last?.state).toBe(mode==='unwritten'||mode==='success'?'frame_observed':mode==='no_movement'?'no_movement':mode==='invalidated'?'invalidated':'expired');
+ }
+});

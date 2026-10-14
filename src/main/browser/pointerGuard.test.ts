@@ -179,7 +179,7 @@ it('interception retains the exact rejected hit and point without a second hit t
     Object.assign(f.window.document, { elementFromPoint: () => { calls++; return cover; } });
     Object.assign(f.el, { getBoundingClientRect: () => ({ x: 11, y: 12, width: 71, height: 93 }) });
     const rejected = f.run('validate');
-    expect(rejected).toEqual({ ok: false, reason: 'intercepted', pointerFailure: {
+    expect(rejected).toMatchObject({ ok: false, reason: 'intercepted', pointerFailure: {
       point: { x: 30, y: 40 }, targetTag: 'BUTTON', hitTag: 'ASIDE',
       targetConnected: true, targetContainsHit: false, hitSameAsCaptured: false,
       rejectGeometry: { targetRect: { x: 11, y: 12, width: 71, height: 93 },
@@ -344,14 +344,14 @@ it('post-frame sample precedes the first hit and copies its enum once while pres
     f.el.style.pointerEvents = 'none';
     Object.assign(f.window.document, { elementFromPoint: () => { hits++; order.push('hit'); f.el.style.pointerEvents = 'auto'; return f.window.document.body; } });
     expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'none', postFrameHitConnected: true, postFrameHitContainsTarget: true, pointerFailure: { hitSameAsCaptured: false } });
-    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    expect({ samples, hits, order }).toEqual({ samples: 3, hits: 1, order: ['sample', 'hit', 'sample', 'sample'] });
     samples = hits = 0; order.length = 0;
     Object.assign(f.window.document, { elementFromPoint: () => { hits++; order.push('hit'); f.el.style.pointerEvents = 'none'; return f.window.document.body; } });
     expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'auto', postFrameHitConnected: true, postFrameHitContainsTarget: true });
-    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    expect({ samples, hits, order }).toEqual({ samples: 3, hits: 1, order: ['sample', 'hit', 'sample', 'sample'] });
     samples = hits = 0; order.length = 0; f.el.style.pointerEvents = 'painted';
     expect(validate()).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: 'unknown' });
-    expect({ samples, hits, order }).toEqual({ samples: 1, hits: 1, order: ['sample', 'hit'] });
+    expect({ samples, hits, order }).toEqual({ samples: 3, hits: 1, order: ['sample', 'hit', 'sample', 'sample'] });
     f.window.getComputedStyle = el => {
       const native = style(el);
       Object.defineProperty(native, 'pointerEvents', { get: () => { samples++; throw Error('unreadable CSS scalar'); } });
@@ -359,7 +359,7 @@ it('post-frame sample precedes the first hit and copies its enum once while pres
     };
     samples = 0;
     expect(validate()).toMatchObject({ postFramePointerEligibility: 'unknown' });
-    expect(samples).toBe(1);
+    expect(samples).toBe(3);
     const outside = f.window.document.body;
     Object.defineProperty(outside, 'isConnected', { configurable: true, get: () => { throw Error('unreadable connected scalar'); } });
     outside.contains = () => { throw Error('unreadable containment scalar'); };
@@ -372,6 +372,24 @@ it('post-frame sample precedes the first hit and copies its enum once while pres
     expect((f.run('validate') as { postFramePointerEligibility?: unknown }).postFramePointerEligibility).toBeUndefined();
     expect(f.run('validate')).toMatchObject({ ok: false, reason: 'intercepted' });
     expect(f.run('validate_typing', { readPostFramePointerEligibility: true })).toMatchObject({ ok: false, reason: 'intercepted' });
-    expect(samples).toBe(0);
+    expect(samples).toBe(6);
   } finally { f.window.close(); }
+});
+
+it('captures only original refused hit geometry and phase context after the sole hit test',()=>{
+ const f=fixture();try{
+  const hit=f.window.document.createElement('aside');f.window.document.body.append(hit);
+  hit.style.cssText='display:block;visibility:visible;pointer-events:none;content-visibility:auto';
+  const order:string[]=[];let selected:Element|null=f.el;
+  Object.assign(f.window.document,{elementFromPoint:()=>{order.push('hit');return selected;}});
+  hit.getBoundingClientRect=()=>{order.push('hitRect');return {x:17,y:21,width:301,height:407} as DOMRect;};
+  expect(f.run('capture',{target:{selector:'#target'}})).toEqual({ok:true});expect(f.run('validate')).toEqual({ok:true});selected=hit;
+  for(const phase of ['pointer_validate','pointer_capture'] as const){
+   order.length=0;const raw=f.run(phase==='pointer_validate'?'validate':'capture',{target:{selector:'#target'}});
+   expect(raw).toMatchObject({ok:false,reason:'intercepted',pointerFailure:{refusalContext:{phase,hitRect:{x:17,y:21,width:301,height:407},relation:{hitConnected:true,hitContainsTarget:false},hitStyle:{display:'block',visibility:'visible',pointerEvents:'none',contentVisibility:'auto'}}}});
+   expect(order).toEqual(['hit','hitRect']);
+  }
+  hit.getBoundingClientRect=()=>{throw Error('private geometry');};
+  expect(f.run('validate')).toMatchObject({ok:false,reason:'intercepted',pointerFailure:{targetTag:'BUTTON',refusalContext:null}});
+ }finally{f.window.close();}
 });

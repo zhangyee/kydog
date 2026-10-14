@@ -4,7 +4,7 @@ import {
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
-import { retainPointerFailure, type PointerFailureStage } from './pointerDiagnostic';
+import { retainPointerFailure, type PointerFailureStage, type PointerEligibilitySummary, type PointerPostFrame } from './pointerDiagnostic';
 import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
@@ -1887,7 +1887,7 @@ export class BrowserService {
   private async awaitCollectedPointerEligibility(
     tabId: string, wc: WebContents, target: PointerTarget, snapshot: AxSnapshot,
     action: DispatchAction, signal: AbortSignal, check: () => void,
-  ): Promise<void> {
+  ): Promise<PointerEligibilitySummary> {
     const deadline = Date.now() + PAGE_EVAL_TIMEOUT_MS;
     let firstState: 'auto' | 'none' | 'unknown' | null = null;
     let finalState: 'auto' | 'none' | 'unknown' | null = null;
@@ -1921,7 +1921,7 @@ export class BrowserService {
           outcome = 'permission_lost';
           throw BrowserService.interactError(result, action);
         }
-        if (finalState === 'auto') { outcome = 'eligible'; return; }
+        if (finalState === 'auto') { outcome = 'eligible'; return {phase:'collected_eligibility',firstState,noneObserved,finalState,outcome:'eligible'}; }
         if (finalState === 'unknown') throw new KydogError('browser.page_no_result', '原采集控件的 pointer eligibility 未知', undefined, 'unknown');
         await new Promise<void>((resolve) => {
           const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
@@ -2338,13 +2338,15 @@ export class BrowserService {
         + (r.changed === false ? '（它本来就是这个值）' : '');
     }
 
+    let eligibility: PointerEligibilitySummary | undefined;
+    let postFrame: PointerPostFrame | null | undefined;
     if (options?.collectedPointerEligibility) {
       const checkEligibility = () => {
         checkCollectedSetup();
         assertMapping();
       };
       checkEligibility();
-      await this.awaitCollectedPointerEligibility(tabId, wc, target, targetSnapshot!, action, options.signal!, checkEligibility);
+      eligibility = await this.awaitCollectedPointerEligibility(tabId, wc, target, targetSnapshot!, action, options.signal!, checkEligibility);
       checkEligibility();
     }
 
@@ -2355,7 +2357,7 @@ export class BrowserService {
       retainPointerFailure(BrowserService.interactError(result, action), {
         tabId, snapshotId: targetSnapshot?.snapshotId ?? null, generation: targetSnapshot?.generation ?? null,
         nodeId: 'nodeId' in target ? target.nodeId : null,
-      }, stage, result, point);
+      }, stage, result, point, {...(eligibility?{eligibility}:{}),...(postFrame!==undefined?{postFrame}:{})});
     try {
       let m = await this.interact(tabId, wc, { op: 'measure', target }, pointer);
       // 新快照与 measure 之间页面仍可能恰好再重建一次。只对页面明确回报的三种
@@ -2419,6 +2421,7 @@ export class BrowserService {
         if (options?.collectedPointerEligibility) {
           // Preserve the source observation even if cancellation arrived during
           // evaluation. Lifecycle checks below still precede any native input.
+          postFrame = null;
           try {
             const value = valid?.postFramePointerEligibility;
             const state = value === 'auto' || value === 'none' ? value : 'unknown';
@@ -2426,6 +2429,8 @@ export class BrowserService {
             const connected = valid?.postFrameHitConnected, containsTarget = valid?.postFrameHitContainsTarget;
             const hitConnected = typeof connected === 'boolean' ? connected : null;
             const hitContainsTarget = typeof containsTarget === 'boolean' ? containsTarget : null;
+            postFrame = {phase:'post_frame',state,samplePhase:sampled?'before_first_hit':'not_observed',
+              relationPhase:sampled && (typeof connected==='boolean'||connected===null) && (typeof containsTarget==='boolean'||containsTarget===null)?'first_hit':'not_observed',hitConnected,hitContainsTarget};
             logger.info('browser.pointer_eligibility', '原采集控件最终命中检查结束', {
               phase: 'post_frame', tabId, snapshotId: targetSnapshot?.snapshotId ?? null,
               generation: targetSnapshot?.generation ?? null, nodeId: 'nodeId' in target ? target.nodeId : null,

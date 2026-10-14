@@ -19,7 +19,20 @@ export interface PointerMeasureContext {
   contentVisibilityAncestors: Readonly<{ chain: 'parentNode-host'; complete: boolean;
     entries: readonly Readonly<{ depth: number; contentVisibility: 'auto' | 'hidden'; isOriginalHit: boolean }>[] }> | null;
 }
+export interface PointerEligibilitySummary {
+  phase: 'collected_eligibility'; firstState: 'auto' | 'none' | 'unknown' | null;
+  noneObserved: boolean; finalState: 'auto'; outcome: 'eligible';
+}
+export interface PointerPostFrame {
+  phase:'post_frame'; state:'auto'|'none'|'unknown'; samplePhase:'before_first_hit'|'not_observed';
+  relationPhase:'first_hit'|'not_observed'; hitConnected:boolean|null; hitContainsTarget:boolean|null;
+}
+export interface PointerRefusalContext {
+  phase:'pointer_capture'|'pointer_validate'; hitRect:Rect|null;
+  relation:{hitConnected:boolean|null;hitContainsTarget:boolean|null}; targetStyle:DiagnosticStyle|null; hitStyle:DiagnosticStyle|null;
+}
 export interface PointerHitRejection {
+  refusalContext?: Readonly<PointerRefusalContext> | null;
   /** Optional post-refusal observations, never a readiness or permission verdict. */
   measureContext?: Readonly<PointerMeasureContext> | null;
   point: Point;
@@ -37,6 +50,8 @@ export interface PointerHitRejection {
   };
 }
 export interface PointerFailureDiagnostic extends PointerFailureBinding {
+  eligibility?: Readonly<PointerEligibilitySummary> | null;
+  postFrame?: Readonly<PointerPostFrame> | null;
   stage: PointerFailureStage;
   reason: 'intercepted';
   nativeFrameObserved: boolean;
@@ -57,12 +72,13 @@ const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFi
 const identity = (v: unknown): v is string => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,256}$/.test(v);
 const tag = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(v);
 function point(v: unknown): Point | null {
-  return object(v) && finite(v.x) && finite(v.y) ? Object.freeze({ x: v.x, y: v.y }) : null;
+  if(!object(v))return null;
+  const {x,y}=v;return finite(x)&&finite(y)?Object.freeze({x,y}):null;
 }
 function rect(v: unknown): Rect | null {
-  return object(v) && finite(v.x) && finite(v.y) && finite(v.width) && finite(v.height)
-    && v.width >= 0 && v.height >= 0
-    ? Object.freeze({ x: v.x, y: v.y, width: v.width, height: v.height }) : null;
+  if(!object(v))return null;
+  const {x,y,width,height}=v;
+  return finite(x)&&finite(y)&&finite(width)&&finite(height)&&width>=0&&height>=0?Object.freeze({x,y,width,height}):null;
 }
 const styleEnums = {
   display: ['none','contents','block','inline','run-in','flow-root','list-item','inline-block','flex','inline-flex','grid','inline-grid','table','inline-table','table-row-group','table-header-group','table-footer-group','table-row','table-cell','table-column-group','table-column','table-caption','ruby','ruby-base','ruby-text','ruby-base-container','ruby-text-container','block flow','inline flow','block flow-root','inline flow-root','block flex','inline flex','block grid','inline grid','block table','inline table','block ruby','inline ruby','block flow list-item','inline flow list-item','block flow-root list-item','inline flow-root list-item'],
@@ -123,6 +139,48 @@ function measureContext(v: unknown): Readonly<PointerMeasureContext> | null {
 function measureContextFromRejection(v: Record<string, unknown>): Readonly<PointerMeasureContext> | null {
   try { return measureContext(v.measureContext); } catch { return null; }
 }
+function refusalContext(v: unknown, stage: PointerFailureStage, nullHit: boolean): Readonly<PointerRefusalContext> | null {
+  try {
+    if (!object(v)) return null;
+    const {phase,hitRect:rawRect,relation,targetStyle:rawTarget,hitStyle:rawHit}=v;
+    if (phase!==stage || phase==='measure' || !object(relation)) return null;
+    const {hitConnected,hitContainsTarget}=relation;
+    const hitRect=rect(rawRect),targetStyle=diagnosticStyle(rawTarget),hitStyle=diagnosticStyle(rawHit);
+    if ((nullHit ? rawRect!==null : !hitRect) || !nullableBoolean(hitConnected) || !nullableBoolean(hitContainsTarget)
+      || targetStyle===undefined || hitStyle===undefined) return null;
+    return Object.freeze({phase,hitRect,relation:Object.freeze({hitConnected,hitContainsTarget}),targetStyle,hitStyle}) as Readonly<PointerRefusalContext>;
+  } catch { return null; }
+}
+function optionalPhases(v: unknown, stage: PointerFailureStage): Pick<PointerFailureDiagnostic,'eligibility'|'postFrame'> {
+  const out: Pick<PointerFailureDiagnostic,'eligibility'|'postFrame'>={};
+  if (!object(v)) return out;
+  if ('eligibility' in v) {
+    out.eligibility=null;
+    try {
+      const e=v.eligibility;
+      if(object(e)) {
+        const {phase,firstState,noneObserved,finalState,outcome}=e;
+        if(phase==='collected_eligibility' && (firstState===null || (typeof firstState==='string' && ['auto','none','unknown'].includes(firstState)))
+          && typeof noneObserved==='boolean' && finalState==='auto' && outcome==='eligible')
+          out.eligibility=Object.freeze({phase,firstState,noneObserved,finalState,outcome}) as PointerEligibilitySummary;
+      }
+    } catch { /* unavailable */ }
+  }
+  if(stage==='pointer_validate' && 'postFrame' in v) {
+    out.postFrame=null;
+    try {
+      const p=v.postFrame;
+      if(object(p)) {
+        const {phase,state,samplePhase,relationPhase,hitConnected,hitContainsTarget}=p;
+        if(phase==='post_frame' && typeof state==='string' && ['auto','none','unknown'].includes(state)
+          && typeof samplePhase==='string' && ['before_first_hit','not_observed'].includes(samplePhase) && typeof relationPhase==='string' && ['first_hit','not_observed'].includes(relationPhase)
+          && nullableBoolean(hitConnected) && nullableBoolean(hitContainsTarget))
+          out.postFrame=Object.freeze({phase,state,samplePhase,relationPhase,hitConnected,hitContainsTarget}) as PointerPostFrame;
+      }
+    } catch { /* unavailable */ }
+  }
+  return out;
+}
 function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHitRejection | null {
   if (!object(v)) return null;
   const p = point(v.point), g = v.rejectGeometry, same = v.hitSameAsCaptured;
@@ -140,6 +198,7 @@ function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHi
   if (stage === 'measure' && (v.hitTag === null ? g.hitRect !== null : !hitRect)) return null;
   return Object.freeze({ point: p, targetTag: v.targetTag, hitTag: v.hitTag,
     targetConnected: v.targetConnected, targetContainsHit: false, hitSameAsCaptured: same,
+    ...(stage !== 'measure' && 'refusalContext' in v ? {refusalContext:(()=>{try{return refusalContext(v.refusalContext,stage,v.hitTag===null);}catch{return null;}})()} : {}),
     ...(stage === 'measure' && 'measureContext' in v ? { measureContext: measureContextFromRejection(v) } : {}),
     rejectGeometry: Object.freeze({ targetRect: Object.freeze({ x: r.x, y: r.y, width: r.width, height: r.height }),
       ...(stage === 'measure' ? { hitRect } : {}),
@@ -149,7 +208,7 @@ function rejection(v: unknown, stage: PointerFailureStage, at: Point): PointerHi
 /** Called only at existing trusted main dispatch boundaries. Invalid diagnostics
  * leave the original refusal untouched; never replace or relax its verdict. */
 export function retainPointerFailure(error: KydogError, binding: PointerFailureBinding,
-  stage: PointerFailureStage, raw: unknown, measuredPoint?: Point): KydogError {
+  stage: PointerFailureStage, raw: unknown, measuredPoint?: Point, phases?: unknown): KydogError {
   if (error.code !== 'browser.click_intercepted' || !object(raw) || raw.ok !== false || raw.reason !== 'intercepted'
     || !['measure', 'pointer_capture', 'pointer_validate'].includes(stage)
     || !identity(binding.tabId) || (binding.snapshotId !== null && !identity(binding.snapshotId))
@@ -161,10 +220,24 @@ export function retainPointerFailure(error: KydogError, binding: PointerFailureB
   if (!hit && (stage !== 'measure' || raw.pointerFailure !== undefined)) return error;
   const diagnostic = Object.freeze({ tabId: binding.tabId, snapshotId: binding.snapshotId,
     generation: binding.generation, nodeId: binding.nodeId, stage, reason: 'intercepted' as const,
-    nativeFrameObserved: stage === 'pointer_validate', point: at, rejection: hit });
+    nativeFrameObserved: stage === 'pointer_validate', point: at, rejection: hit, ...optionalPhases(phases,stage) });
   return new BrowserPointerDiagnosticError(error, diagnostic);
 }
 /** A lookalike property, prototype, or error message cannot authenticate a receipt. */
 export function pointerFailureDiagnostic(error: unknown): Readonly<PointerFailureDiagnostic> | undefined {
   return object(error) ? authenticated.get(error) : undefined;
+}
+
+/** Output projection only: this never authenticates an error or grants input permission. */
+export function projectPointerDiagnostic(value: unknown): PointerFailureDiagnostic {
+  if(!object(value)) throw new Error('Invalid pointer diagnostic');
+  const {tabId,snapshotId,generation,nodeId,stage,reason,nativeFrameObserved,point:rawPoint,rejection:rawRejection}=value;
+  if(!identity(tabId) || (snapshotId!==null&&!identity(snapshotId)) || (generation!==null&&!identity(generation))
+    || (nodeId!==null&&(!Number.isSafeInteger(nodeId)||Number(nodeId)<0)) || typeof stage!=='string'
+    || !['measure','pointer_capture','pointer_validate'].includes(stage) || reason!=='intercepted'
+    || nativeFrameObserved!==(stage==='pointer_validate')) throw new Error('Invalid pointer diagnostic');
+  const at=point(rawPoint);if(!at)throw new Error('Invalid pointer diagnostic point');
+  const hit=rawRejection===null?null:rejection(rawRejection,stage as PointerFailureStage,at);
+  if(!hit && (stage!=='measure'||rawRejection!==null))throw new Error('Invalid pointer rejection');
+  return {tabId,snapshotId,generation,nodeId:nodeId as number|null,stage:stage as PointerFailureStage,reason,nativeFrameObserved,point:at,rejection:hit,...optionalPhases(value,stage as PointerFailureStage)};
 }

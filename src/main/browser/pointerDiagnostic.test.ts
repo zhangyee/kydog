@@ -161,3 +161,15 @@ it('retains only the first validated optional values across changing object and 
     targetAutoVisibility: { apiAvailable: false, optionObserved: null, value: null, readError: false }, contentVisibilityAncestors: null };
   expect(save(unknown).rejection?.measureContext).toEqual(unknown);
 });
+
+it('preserves authenticated phase observations separately from measure and strips private extensions',()=>{
+ const refusalContext={phase:'pointer_validate',hitRect:{x:21,y:34,width:56,height:78},relation:{hitConnected:true,hitContainsTarget:true},targetStyle:{display:'block',visibility:'visible',pointerEvents:'none',contentVisibility:'visible'},hitStyle:null};
+ const postFrame={phase:'post_frame',state:'none',samplePhase:'before_first_hit',relationPhase:'first_hit',hitConnected:true,hitContainsTarget:true};
+ const eligibility={phase:'collected_eligibility',firstState:'auto',noneObserved:false,finalState:'auto',outcome:'eligible'};
+ const raw={...source(),pointerFailure:{...source().pointerFailure,refusalContext:{...refusalContext,secret:'private-secret'}}};
+ const saved=pointerFailureDiagnostic(retainPointerFailure(error(),binding,'pointer_validate',raw,point,{eligibility,postFrame}));
+ expect(saved).toMatchObject({eligibility,postFrame,rejection:{refusalContext}});
+ expect(JSON.stringify(raw)).toContain('private-secret');expect(JSON.stringify(saved)).not.toContain('private-secret');
+ const malformed={...raw,pointerFailure:{...raw.pointerFailure,refusalContext:{...refusalContext,phase:'measure'}}};
+ expect(pointerFailureDiagnostic(retainPointerFailure(error(),binding,'pointer_validate',malformed,point))?.rejection).toMatchObject({targetTag:'BUTTON',refusalContext:null});
+});

@@ -1,3 +1,4 @@
+import { projectActionDiagnostics } from './xActionDiagnostics';
 import { replyUiFrameSchema } from './xReplyUiInventory';
 import { sourceRootStateSchema } from './xPageSource';
 import {
@@ -167,6 +168,7 @@ function projection(result: XResearchResult) {
       ...base,
       queries: result.queries.map((q, index) => ({
         queryIndex: index,
+        ...(q.diagnostics?{diagnostics:q.diagnostics}:{}),
         product: q.query.product,
         status: q.status,
         stopReason: q.stopReason,
@@ -537,7 +539,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       if(frame.sourceRootState) sourceRootStateSchema.parse(frame.sourceRootState);
       replyUiFrameSchema.parse(frame);
     }
-  const result = structuredClone(original),
+  const result = structuredClone(projectActionDiagnostics(original)),
     bodies = texts(result),
     previous = result.truncation;
   const totalKnown = previous.truncated
@@ -706,7 +708,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       const path=`targets.${index}.diagnostics.${part}`;
       (result.metadataOmissions??=[]).push(path);
     };
-    for (const part of ['scroll','readiness','pointerFailure','initialFrame','firstAdmittedFrame','terminalFrame'] as const) {
+    for (const part of ['scroll','readiness','clickFailures','pointerFailure','initialFrame','firstAdmittedFrame','terminalFrame'] as const) {
       for (const [index,row] of result.targets.entries()) {
         if (!row.diagnostics?.[part]) continue;
         delete row.diagnostics[part];
@@ -715,6 +717,12 @@ export function serializeXResearchResult<T extends XResearchResult>(
         if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
       }
     }
+  }
+  if(result.operation==='search') for(const [index,row] of result.queries.entries()) {
+    if(!row.diagnostics?.scroll)continue;
+    delete row.diagnostics.scroll;
+    (result.metadataOmissions??=[]).push(`queries.${index}.diagnostics.scroll`);
+    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
   compactMetadata(result);
   value = update();

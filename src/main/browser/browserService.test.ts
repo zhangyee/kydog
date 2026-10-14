@@ -4644,11 +4644,18 @@ describe('original collected pointer eligibility',()=>{
     expect(code).toContain('"readPostFramePointerEligibility":true');finalReads++;
     if(mode==='cancel')abort.abort();
     if(mode==='early')return {ok:false,reason:'pointer_target_changed'};
-    return {ok:false,reason:'intercepted',postFramePointerEligibility:mode==='untrusted'?'private raw page text':mode==='auto'?'auto':'none',postFrameHitConnected:mode==='untrusted'?'bad':true,postFrameHitContainsTarget:mode==='untrusted'?1:mode!=='auto'};
+    return {ok:false,reason:'intercepted',postFramePointerEligibility:mode==='untrusted'?'private raw page text':mode==='auto'?'auto':'none',postFrameHitConnected:mode==='untrusted'?'bad':true,postFrameHitContainsTarget:mode==='untrusted'?1:mode!=='auto',pointerFailure:{point:{x:31,y:47},targetTag:'BUTTON',hitTag:'DIV',targetConnected:true,targetContainsHit:false,hitSameAsCaptured:false,rejectGeometry:{targetRect:{x:3,y:4,width:51,height:61},scroll:{x:0,y:0},viewport:{width:1000,height:800}}}};
    }
    return {ok:true};
   };
-  await expect(f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal})).rejects.toMatchObject({code:mode==='cancel'?'browser.cancelled':mode==='early'?'browser.target_unusable':'browser.click_intercepted'});
+  const failure=await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal}).catch(error=>error);
+  expect(failure).toMatchObject({code:mode==='cancel'?'browser.cancelled':mode==='early'?'browser.target_unusable':'browser.click_intercepted'});
+  if(mode!=='cancel' && mode!=='early') {
+    const {pointerFailureDiagnostic}=await import('./pointerDiagnostic');
+    expect(pointerFailureDiagnostic(failure)).toMatchObject({snapshotId:f.snapshot.snapshotId,generation:f.snapshot.generation,nodeId:17,
+      eligibility:{phase:'collected_eligibility',firstState:'auto',finalState:'auto',noneObserved:false,outcome:'eligible'},
+      postFrame:{phase:'post_frame',state:mode==='untrusted'?'unknown':mode==='auto'?'auto':'none',samplePhase:mode==='untrusted'?'not_observed':'before_first_hit',relationPhase:mode==='untrusted'?'not_observed':'first_hit',hitConnected:mode==='untrusted'?null:true,hitContainsTarget:mode==='untrusted'?null:mode!=='auto'}});
+  }
   expect(finalReads).toBe(1);expect(inputCmds(f.wc)).toEqual([]);
   expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toEqual([{level:'info',scope:'browser.pointer_eligibility',msg:expect.any(String),ctx:{phase:'post_frame',tabId:f.id,snapshotId:'eligibility-snapshot',generation:'eligibility-generation',nodeId:17,state:mode==='untrusted'||mode==='early'?'unknown':mode==='auto'?'auto':'none',samplePhase:mode==='untrusted'||mode==='early'?'not_observed':'before_first_hit',relationPhase:mode==='untrusted'||mode==='early'?'not_observed':'first_hit',hitConnected:mode==='untrusted'||mode==='early'?null:true,hitContainsTarget:mode==='untrusted'||mode==='early'?null:mode!=='auto',outcome:'refused'}}]);
  });

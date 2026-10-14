@@ -164,6 +164,7 @@ export interface XCollectionTransition {
   outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';
 }
 export interface XSearchObservation {
+  diagnostics?: { version: 1; scroll?: XScrollDiagnostics };
   query: XSearchQuery;
   collectionTransitions: XCollectionTransition[];
   status: XResearchStatus;
@@ -254,7 +255,16 @@ export interface XScrollReceiptDiagnostic {
   written: boolean; eventObserved: boolean; frameObserved: boolean;
   state: 'pending' | 'frame_observed' | 'no_movement' | 'invalidated' | 'expired';
 }
+export interface XScrollDiagnostics { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number }
+export interface XClickFailure {
+  actionIndex: number; targetPostId: string; controlKind: 'body_expand' | 'article_entry' | 'replies_expand';
+  binding: XControlBinding;
+  sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown';
+  diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic;
+}
 export interface XReadDiagnostics {
+  /** Counts authenticated failed click attempts, independently of all issued actions. */
+  clickFailures?: {totalFailures:number; first?:XClickFailure; last?:XClickFailure; omittedFailures:number};
   version: 1;
   initialFrame?: XReadFrameDiagnostic;
   firstAdmittedFrame?: XReadFrameDiagnostic;

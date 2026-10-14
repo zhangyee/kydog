@@ -24,6 +24,38 @@
           scroll: { x: window.scrollX, y: window.scrollY }, viewport: { width: window.innerWidth, height: window.innerHeight } },
       };
     } catch { /* Original refusal remains authoritative. */ }
+    if (result.pointerFailure) {
+      result.pointerFailure.refusalContext = null;
+      try {
+        // Ordered reads AFTER the original refusal; not a rendering snapshot.
+        const relation = { hitConnected: null, hitContainsTarget: null };
+        try { if (hit) { const v = hit.isConnected; if (typeof v === 'boolean') relation.hitConnected = v; } } catch { /* unknown */ }
+        try { if (hit) { const v = hit.contains(el); if (typeof v === 'boolean') relation.hitContainsTarget = v; } } catch { /* unknown */ }
+        const r = hit ? hit.getBoundingClientRect() : null;
+        const enums = {
+  display: ['none','contents','block','inline','run-in','flow-root','list-item','inline-block','flex','inline-flex','grid','inline-grid','table','inline-table','table-row-group','table-header-group','table-footer-group','table-row','table-cell','table-column-group','table-column','table-caption','ruby','ruby-base','ruby-text','ruby-base-container','ruby-text-container','block flow','inline flow','block flow-root','inline flow-root','block flex','inline flex','block grid','inline grid','block table','inline table','block ruby','inline ruby','block flow list-item','inline flow list-item','block flow-root list-item','inline flow-root list-item'],
+  visibility: ['visible','hidden','collapse'],
+  pointerEvents: ['auto','none','visiblePainted','visibleFill','visibleStroke','visible','painted','fill','stroke','all','bounding-box'],
+  contentVisibility: ['visible','auto','hidden'],
+};
+        const style = node => {
+          if (!node) return null;
+          try {
+            const computed = getComputedStyle(node), out = {};
+            for (const key of Object.keys(enums)) {
+              let value; try { value = computed[key]; } catch { /* unknown */ }
+              out[key] = enums[key].includes(value) ? value : null;
+            }
+            return out;
+          } catch { return null; }
+        };
+        result.pointerFailure.refusalContext = {
+          phase: captured === undefined ? 'pointer_capture' : 'pointer_validate',
+          hitRect: r ? { x:r.x, y:r.y, width:r.width, height:r.height } : null,
+          relation, targetStyle:style(el), hitStyle:style(hit),
+        };
+      } catch { /* Optional reads cannot erase the original refusal. */ }
+    }
     return result;
   };
   if (Date.now() > req.notAfter) { discard(); return reject('expired'); }

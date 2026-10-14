@@ -10,7 +10,7 @@ interface EligibilityCounters { input:number;measures:number;scrolls:number;hits
 type DirectIdentityReceipt={result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;collections:number;receipts:{before:import('../src/main/browser/browserService').BrowserLocationFacts;after:import('../src/main/browser/browserService').BrowserLocationFacts;event:{url:string;isMainFrame:boolean};raw:{rawUrl:string;article:{ownIdentityLinks:{totalKnown:number;hrefs:string[]};author:{handle:string};blocks:string[]}}}[]};
 interface Harness {
   directIdentity():Promise<{positive:DirectIdentityReceipt;negative:DirectIdentityReceipt}>;
-  postFrameDiagnostic(mode:string):Promise<{positive:EligibilityCounters&{frames:number};after:EligibilityCounters&{frames:number};results:unknown[];receipts:unknown[];error:string|null;sameControl:boolean}>;
+  postFrameDiagnostic(mode:string):Promise<{positive:EligibilityCounters&{frames:number};after:EligibilityCounters&{frames:number};results:unknown[];receipts:{snapshotId:string;generation:string;nodeId:number}[];error:string|null;sameControl:boolean;diagnostic:import('../src/main/browser/pointerDiagnostic').PointerFailureDiagnostic|null}>;
   pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
   read(): Promise<State>;
   sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
@@ -152,6 +152,17 @@ test.describe('X browser port native safety (offline)', () => {
       expect(r.results[1], mode).toMatchObject({ ok: false, reason: 'intercepted', postFramePointerEligibility: mode === 'none' ? 'none' : 'auto', postFrameHitConnected: true, postFrameHitContainsTarget: mode === 'none', pointerFailure: { targetContainsHit: false, hitSameAsCaptured: false } });
       expect(r.receipts, mode).toHaveLength(2);
       expect(r.receipts[1], mode).toMatchObject({ phase: 'post_frame', samplePhase: 'before_first_hit', relationPhase: 'first_hit', state: mode === 'none' ? 'none' : 'auto', hitConnected: true, hitContainsTarget: mode === 'none', outcome: 'refused' });
+      expect(r.diagnostic, mode).toMatchObject({stage:'pointer_validate',nativeFrameObserved:true,
+        eligibility:{phase:'collected_eligibility',firstState:'auto',noneObserved:false,finalState:'auto',outcome:'eligible'},
+        postFrame:{phase:'post_frame',samplePhase:'before_first_hit',relationPhase:'first_hit',state:mode==='none'?'none':'auto',hitConnected:true,hitContainsTarget:mode==='none'},
+        rejection:{refusalContext:{phase:'pointer_validate',relation:{hitConnected:true,hitContainsTarget:mode==='none'},targetStyle:{pointerEvents:mode==='none'?'none':'auto'}}}});
+      expect(r.diagnostic?.snapshotId).toBe(r.receipts[1].snapshotId);
+      expect(r.diagnostic?.generation).toBe(r.receipts[1].generation);
+      expect(r.diagnostic?.nodeId).toBe(r.receipts[1].nodeId);
+      const rect=r.diagnostic?.rejection?.refusalContext?.hitRect;
+      expect(rect, mode).toBeTruthy();
+      if(!rect)throw Error('refusal geometry unavailable');
+      expect(rect.width, mode).toBeGreaterThan(0);expect(rect.height, mode).toBeGreaterThan(0);
     }
   });
 

@@ -377,6 +377,7 @@ export async function expandPostBody(
     checkReadCancelled(context);
     stage.current = 'action';
     stage.actionIndex++;
+    try {
     await page.act(
       {
         kind: 'click',
@@ -385,6 +386,10 @@ export async function expandPostBody(
       },
       observed.snapshot,
     );
+    } catch (error) {
+      retainClickFailure(row,control,stage,error,context);
+      throw error;
+    }
     row.budgetUsage.expandActions++;
     checkReadCancelled(context);
     observed = await collectPostFrame(page, request, row, stage, context);
@@ -462,17 +467,7 @@ export async function readDiscussion(
           observed.snapshot,
         );
       } catch (error) {
-        const diagnostic = pointerFailureDiagnostic(error);
-        if (diagnostic && diagnostic.snapshotId === control.binding.snapshotId
-          && diagnostic.generation === control.binding.generation && diagnostic.nodeId === control.binding.nodeId) {
-          (row.diagnostics ??= {version:1}).pointerFailure = {
-            actionIndex:stage.actionIndex,targetPostId:row.postId!,controlKind:'replies_expand',
-            sourceRelation:control.sourceRelation ?? 'unknown',diagnostic,
-          };
-          logger.warn('xResearch', 'Reply expansion pointer interception', {
-            runId: context.runId, callId: context.callId, batchId: context.batchId, diagnostic,
-          });
-        }
+        retainClickFailure(row,control,stage,error,context);
         throw error;
       }
       row.budgetUsage.expandActions++;
@@ -498,4 +493,22 @@ export async function readDiscussion(
     checkReadCancelled(context);
     observed = await collectPostFrame(page, request, row, stage, context);
   }
+}
+
+/** Diagnostic binding cannot grant permission; only the actual source error is admitted. */
+export function retainClickFailure(row:XReadObservation, control:XPageControl, stage:XReadStage, error:unknown, context:XResearchContext): void {
+  const diagnostic=pointerFailureDiagnostic(error);
+  if(!diagnostic || diagnostic.snapshotId!==control.binding.snapshotId || diagnostic.generation!==control.binding.generation
+    || diagnostic.nodeId!==control.binding.nodeId || !row.postId) return;
+  const entry={actionIndex:stage.actionIndex,targetPostId:row.postId,controlKind:control.kind,binding:{...control.binding},sourceRelation:control.sourceRelation??'unknown',diagnostic};
+  const diagnostics=row.diagnostics??={version:1};
+  const failures=diagnostics.clickFailures??={totalFailures:0,omittedFailures:0};
+  failures.totalFailures++;
+  failures.first??=entry;failures.last=entry;
+  failures.omittedFailures=failures.totalFailures-new Set([failures.first.actionIndex,failures.last.actionIndex]).size;
+  if(control.kind==='replies_expand')diagnostics.pointerFailure={actionIndex:entry.actionIndex,targetPostId:entry.targetPostId,
+    controlKind:'replies_expand',sourceRelation:entry.sourceRelation,diagnostic};
+  try { logger.warn('xResearch', control.kind==='article_entry'?'Article pointer interception':control.kind==='replies_expand'?'Reply expansion pointer interception':'Body expansion pointer interception', {
+    runId:context.runId,callId:context.callId,batchId:context.batchId,diagnostic,
+  }); } catch { /* Observer failures never replace the original refusal. */ }
 }

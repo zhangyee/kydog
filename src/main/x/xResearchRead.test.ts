@@ -484,3 +484,21 @@ it.each(['throw','false'] as const)('retains already admitted read row and seria
     dom.window.close();log.mockRestore();
   }
 });
+
+it('retains authenticated failures for each exact original click purpose and preserves reply compatibility',async()=>{
+ const {retainPointerFailure}=await import('../browser/pointerDiagnostic');
+ for(const purpose of ['body_expand','article_entry','replies_expand','article_and_replies'] as const){
+  const f=await stagedFixture({semanticLabels:true,article:'ok'});const original=f.context.browser.withPage.bind(f.context.browser);
+  f.context.browser.withPage=async(tab,signal,work)=>original(tab,signal,page=>work({...page,act:async(action,snapshot,options)=>{
+   const node=snapshot.nodes.find(n=>'index' in action&&n.index===action.index)!;
+   if(node.collectedPermission?.purpose!==purpose && !(purpose==='article_and_replies' && ['article_entry','replies_expand'].includes(node.collectedPermission?.purpose??'')))return page.act(action,snapshot,options);
+   throw retainPointerFailure(new KydogError('browser.click_intercepted','private'),{tabId:tab,snapshotId:snapshot.snapshotId,generation:snapshot.generation,nodeId:node.nodeId},'measure',{ok:false,reason:'intercepted',x:61,y:37});
+  }}));
+  const result=await readX({tabId:'tab',read:{objective:'diagnose',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:true,maxRepliesPerPost:20,maxScrollsPerPost:0,maxExpandActionsPerPost:4}},f.context);
+  const row=result.targets[0],entry=row.diagnostics?.clickFailures?.first;
+  expect(entry,purpose).toMatchObject({controlKind:purpose==='article_and_replies'?'article_entry':purpose,targetPostId:'123',actionIndex:purpose==='body_expand'?1:purpose==='article_entry'||purpose==='article_and_replies'?2:3,diagnostic:{stage:'measure',point:{x:61,y:37}}});
+  expect(row.diagnostics?.clickFailures).toMatchObject({totalFailures:purpose==='article_and_replies'?2:1,omittedFailures:0,...(purpose==='article_and_replies'?{last:{controlKind:'replies_expand',actionIndex:3}}:{last:entry})});
+  expect(entry?.binding.snapshotId).toBe(entry?.diagnostic.snapshotId);
+  if(purpose==='replies_expand')expect(row.diagnostics?.pointerFailure?.diagnostic).toEqual(entry?.diagnostic);
+ }
+});

@@ -121,7 +121,23 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
             continue;
           }
           if(row.posts.length>=input.search.maxPostsPerQuery || row.budgetUsage.scrolls>=input.search.maxScrollsPerQuery) {row.status='partial';row.stopReason='budget_reached';break;}
-          stage='action';await page.act({kind:'scroll',direction:'down'},observed.snapshot,{scrollAcknowledgement:{onWritten:()=>{row.budgetUsage.scrolls++;}}});
+          stage='action';
+          const scroll=(row.diagnostics??={version:1}).scroll??={totalAttempts:0,omittedAttempts:0};
+          const actionIndex=++scroll.totalAttempts;
+          const countOmissions=()=>{scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter(id=>id!==undefined)).size;};
+          countOmissions();
+          await page.act({kind:'scroll',direction:'down'},observed.snapshot,{scrollAcknowledgement:{
+            onWritten:()=>{row.budgetUsage.scrolls++;},
+            onReceipt:receipt=>{
+              const saved={actionIndex,snapshotId:observed.snapshot.snapshotId,generation:receipt.generation,location:observed.location.current,
+                targetKind:receipt.targetKind,targetNodeId:receipt.targetNodeId,targetContainsHit:receipt.targetContainsHit,
+                conversationRelation:receipt.conversationRelation,rootRelation:receipt.rootRelation,
+                before:receipt.before,after:receipt.after,scrollHeight:receipt.scrollHeight,clientHeight:receipt.clientHeight,
+                written:receipt.written,eventObserved:receipt.eventObserved,frameObserved:receipt.frameObserved,state:receipt.state};
+              if(!scroll.first || scroll.first.actionIndex===actionIndex)scroll.first=saved;
+              scroll.last=saved;countOmissions();
+            },
+          }});
         }
       });
     } catch(error) {

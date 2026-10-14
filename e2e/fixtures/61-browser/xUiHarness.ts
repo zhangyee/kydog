@@ -394,6 +394,7 @@ void app.whenReady().then(async () => {
       };
       let positive: Awaited<ReturnType<typeof counters>> | undefined, after: Awaited<ReturnType<typeof counters>> | undefined;
       let error: string | null = null, sameControl = false;
+      let diagnostic: Readonly<PointerFailureDiagnostic> | null = null;
       try {
         await port.withPage(opened.tabId, undefined, async page => {
           const observed = await collectXPage(page, { stage: 'post', expectedUrl: 'https://x.com/alice/status/123', postId: '123' });
@@ -411,7 +412,7 @@ void app.whenReady().then(async () => {
           phase = 'negative';
           await page.act(action, observed.snapshot);
         });
-      } catch (cause) { error = (cause as { code?: string }).code ?? String(cause); }
+      } catch (cause) { error = (cause as { code?: string }).code ?? String(cause); diagnostic = pointerFailureDiagnostic(cause) ?? null; }
       finally {
         try {
           await browser.enqueue(opened.tabId, async () => {});
@@ -422,7 +423,7 @@ void app.whenReady().then(async () => {
           xwc.debugger.sendCommand = send; logger.info = info; browser.close(opened.tabId);
         }
       }
-      return { positive, after, results, receipts, error, sameControl };
+      return { positive, after, results, receipts, error, sameControl, diagnostic };
     },
     neverShown: async () => {
       // Fresh service: stage is null from construction; not one syncView call.
