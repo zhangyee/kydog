@@ -35,7 +35,17 @@ Before writing, check each answer-changing judgment against its source: does it 
 
 Before writing a scope sentence, deduplicate the actual calls in this run by `callId` and check every final search/read row's `status`, `stopReason`, and reason. The per-call `reportScopeFacts` can aid the count; `reasonSource` identifies where `reasonCounts` came from, and `unknown` cannot be guessed into a specific cause. Count explicit empty results, wait timeouts, no movement of the selected container, budget stops, unproved identity, and refused actions separately. Explain the read `partial` and reply `unknown` gaps that affect the judgment. A result's counts cover only that call; combine distinct calls only within this run. Historical body-observation counts are not independent source counts. Count historical discussion items separately from current unscoped items; repeated observations of the same original post URL are not new sources. Describe unscoped items only as independently observed on the same page, never as appearing in the target discussion. The citation guard checks URLs, bodies, and Article obligations, not parentage claims in prose; review those claims item by item. After the internal row check, state scope briefly in ordinary prose without promising exhaustive coverage.
 
-Use four report sections: title and original question/date; 3–5 core judgments; thematic analysis organized around the question; counterevidence, disputes, and unverified points. Place citations and scope beside the argument, avoiding a post-by-post log. Use Mermaid only when it helps explain a mechanism, support nodes and relations with evidence, and inspect actual rendering before delivery. Include no query tables, search logs, tool counts, protocol details, or debug appendices. Briefly describe only gaps that affect conclusions.
+Use four report sections: title and original question/search date; 3–5 core judgments; thematic analysis organized around the question; counterevidence, disputes, and unverified points. After the title, copy the subtitle structure below as **two separate paragraphs in one blockquote**, keeping the empty quote line between them. Preserve the user's original wording; let a long question wrap naturally, without using trailing spaces or a soft line break to separate the date. Use this run's actual search date, not the report revision date:
+
+```md
+# <Research topic>
+
+> **Original question:** <Preserve the user's wording>
+>
+> **Search date:** <YYYY-MM-DD>
+```
+
+Place citations and scope beside the argument, avoiding a post-by-post log. Use Mermaid only when it helps explain a mechanism, support nodes and relations with evidence, and inspect actual rendering before delivery. Include no query tables, search logs, tool counts, protocol details, or debug appendices. Briefly describe only gaps that affect conclusions.
 
 ## 4. Save and deliver
 

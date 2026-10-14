@@ -1,7 +1,8 @@
 # <Research topic>
 
-Original question: <Preserve the user's wording>
-Date: <YYYY-MM-DD>
+> **Original question:** <Preserve the user's wording>
+>
+> **Search date:** <YYYY-MM-DD>
 
 ## Core judgments
 
