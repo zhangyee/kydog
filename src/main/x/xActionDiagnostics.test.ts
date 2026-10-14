@@ -136,3 +136,34 @@ it('preflight authentication rejects lookalike receipts and projection validates
   expect(pointerPreflightSchema.safeParse(saved.diagnostic).success).toBe(true);const bad=structuredClone(saved.diagnostic);flip(bad);expect(pointerPreflightSchema.safeParse(bad).success).toBe(false);
  }
 });
+
+it.each([
+ ['eligibilityReadsIssued',0],['finalizationsIssued',2],['probeReadsIssued',1],['framesObserved',2],['initialState','unknown'],
+] as const)('output projection rejects impossible preflight history after a successful same-case control: %s=%s',async(field,value)=>{
+ const r=structuredClone(await pointerResult()),summary=r.targets[0].diagnostics!.pointerPreflights!;
+ const diagnostic=summary.first.diagnostic;
+ Object.assign(diagnostic,{initialState:'auto',finalState:'auto',noneObserved:false,eligibilityReadsIssued:1,probeReadsIssued:0,finalizationsIssued:1,framesObserved:1,finalHitPerformed:true,outcome:'final_hit_validated',unavailableFields:[]});
+ summary.last=summary.first;
+ for(const objective of ['normal','x'.repeat(600000)]){
+  const out=serializeXResearchResult({...r,objective});
+  expect(out.result.targets[0].diagnostics!.pointerPreflights!.first.diagnostic).toEqual(diagnostic);
+  expect(JSON.parse(out.text).targets[0].diagnostics.pointerPreflights.first.diagnostic).toEqual(diagnostic);
+  const bad=structuredClone({...r,objective}),entry=bad.targets[0].diagnostics!.pointerPreflights!;
+  expect(entry.first).toBe(entry.last); // The aggregate stays consistent; only this source field changes.
+  Object.assign(entry.first.diagnostic,{[field]:value});
+  expect(()=>serializeXResearchResult(bad)).toThrow();
+ }
+});
+it('projection preserves zero-read early invalidation and nullable lost finalization facts',async()=>{
+ const r=structuredClone(await pointerResult()),summary=r.targets[0].diagnostics!.pointerPreflights!;
+ for(const variant of [
+  {initialState:null,finalState:null,noneObserved:false,eligibilityReadsIssued:0,probeReadsIssued:0,finalizationsIssued:0,framesObserved:0,finalHitPerformed:null,outcome:'invalidated',unavailableFields:['initialState','finalState','finalHitPerformed']},
+  {initialState:'auto',finalState:null,noneObserved:false,eligibilityReadsIssued:1,probeReadsIssued:0,finalizationsIssued:1,framesObserved:1,finalHitPerformed:null,outcome:'unknown',unavailableFields:['finalState','finalHitPerformed']},
+ ]){
+  Object.assign(summary.first.diagnostic,variant);summary.last=summary.first;
+  for(const objective of ['normal','x'.repeat(600000)]){
+   const out=serializeXResearchResult({...r,objective});expect(out.result.targets[0].diagnostics!.pointerPreflights!.first.diagnostic).toMatchObject(variant);
+   expect(JSON.parse(out.text).targets[0].diagnostics.pointerPreflights.first.diagnostic).toMatchObject(variant);
+  }
+ }
+});

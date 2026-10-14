@@ -10,7 +10,17 @@ export const pointerPreflightSchema=z.object({
  unavailableFields:z.array(z.enum(['initialState','finalState','finalHitPerformed'])).max(3),
 }).refine(v=>{
  const missing=(['initialState','finalState','finalHitPerformed'] as const).filter(k=>v[k]===null);
- return JSON.stringify(missing)===JSON.stringify(v.unavailableFields)
+ const progressed=v.framesObserved>0||v.finalizationsIssued>0||v.probeReadsIssued>0;
+ // The driver reaches frames/finalization only after initial source eligibility.
+ // Each finalization consumes its own frame; every extra frame follows a probe,
+ // and probes are reachable only after a finalization observed pending NONE.
+ const history=(!progressed||(v.eligibilityReadsIssued>0&&(v.initialState==='auto'||v.initialState==='none')))
+  && v.finalizationsIssued<=v.framesObserved
+  && v.framesObserved<=v.finalizationsIssued+1
+  && v.framesObserved<=v.probeReadsIssued+1
+  && (v.probeReadsIssued===0||(v.noneObserved&&v.finalizationsIssued>0))
+  && (v.eligibilityReadsIssued>0||(v.initialState===null&&v.finalState===null&&v.finalHitPerformed===null&&!v.noneObserved));
+ return history && JSON.stringify(missing)===JSON.stringify(v.unavailableFields)
   && (!(v.initialState==='none'||v.finalState==='none')||v.noneObserved)
   && (!['final_hit_validated','final_hit_refused'].includes(v.outcome)||(v.finalHitPerformed===true&&v.finalState==='auto'&&v.finalizationsIssued>0&&v.framesObserved>0))
   && (v.finalHitPerformed!==true||v.finalizationsIssued>0);

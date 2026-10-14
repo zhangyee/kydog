@@ -4811,4 +4811,19 @@ describe('collected first-hit preflight recovery',()=>{
   expect(f.summaries[0]).toMatchObject({outcome:'expired',finalHitPerformed:false,finalState:'none',finalizationsIssued:1,framesObserved:1});
  });
 
+ it('retains an actual zero-read early invalidation receipt after same-case successful preflight',async()=>{
+  const f=await setup();await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);
+  expect(f.summaries).toHaveLength(1);expect(f.summaries[0]).toMatchObject({outcome:'final_hit_validated',eligibilityReadsIssued:1});
+  f.summaries.length=0;f.wc.debugger.sent.length=0;
+  const service=f.svc as any,original=service.awaitCollectedPointerEligibility.bind(service);
+  const boundary=vi.spyOn(service,'awaitCollectedPointerEligibility').mockImplementation((...args:any[])=>{
+   f.wc.debugger.attached=false;return original(...args);
+  });
+  try{
+   await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:'browser.not_dispatchable'});
+   expect(f.summaries).toHaveLength(1);expect(f.summaries[0]).toMatchObject({outcome:'invalidated',initialState:null,finalState:null,finalHitPerformed:null,eligibilityReadsIssued:0,probeReadsIssued:0,finalizationsIssued:0,framesObserved:0,unavailableFields:['initialState','finalState','finalHitPerformed']});
+   expect(inputCmds(f.wc)).toEqual([]);
+  }finally{boundary.mockRestore();}
+ });
+
 });
