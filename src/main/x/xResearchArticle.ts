@@ -20,6 +20,7 @@ import {
 import {
   beginReadNavigation,
   retainClickFailure,
+  preflightObserver,
   checkReadCancelled,
   readBarrier,
   type XReadStage,
@@ -66,6 +67,7 @@ export async function readArticle(
         snapshotId: entry.binding.snapshotId,
       },
       parent.snapshot,
+      {onPointerPreflight:preflightObserver(row,{kind:'article_entry',binding:entry.binding},stage.actionIndex)},
     );
     row.budgetUsage.expandActions++;
     row.article.navigationStarted = action.navigation !== null;

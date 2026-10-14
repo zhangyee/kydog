@@ -400,7 +400,8 @@ void app.whenReady().then(async () => {
       const evaluate = xwc.executeJavaScriptInIsolatedWorld.bind(xwc), send = xwc.debugger.sendCommand.bind(xwc.debugger);
       const capture = xwc.capturePage.bind(xwc), info = logger.info;
       let input = 0, measures = 0, frames = 0, phase = 'positive';
-      const results: unknown[] = [], receipts: unknown[] = [];
+      const results: unknown[] = [], receipts: unknown[] = [], preflights: unknown[] = [];
+      const abort=new AbortController();let recoveryFrames=0;const observations:string[]=[];
       const isolated = (code: string) => evaluate(WALKER_WORLD_ID, [{ code }]);
       const counters = async () => ({ input, measures, frames, ...await isolated('({...window.__postFrameFixture})') as { scrolls: number; hits: number }, trusted: await xwc.executeJavaScript('window.trusted') as number });
       xwc.debugger.sendCommand = (method, params) => { if (method.startsWith('Input.')) input++; return send(method, params); };
@@ -412,13 +413,23 @@ void app.whenReady().then(async () => {
         const code = scripts[0].code;
         if (code.includes('const measured =')) measures++;
         const result = await evaluate(world, scripts, ...rest);
-        if (code.includes('"op":"validate"')) results.push(result);
+        if (code.includes('"op":"finalize_collected_pointer"')) {
+          results.push(result);
+          if(phase==='negative' && (result as {phase?:string}).phase==='pending') {
+            if(mode==='none')abort.abort();
+            else if(mode==='recover')await xwc.executeJavaScript("window.postFrameOriginal.style.pointerEvents='auto'");
+          }
+        }
+        if(phase==='negative'&&mode==='recover'&&code.includes('"op":"validate_collected"')){
+          const state=(result as {pointerEligibility?:string}).pointerEligibility;observations.push(state??'unknown');
+          if(state==='none')await xwc.executeJavaScript("window.postFrameOriginal.style.pointerEvents='auto'");
+        }
         return result;
       };
       xwc.capturePage = async (...args) => {
         const image = await capture(...args);
         if (!image.isEmpty()) frames++;
-        if (phase === 'negative') await xwc.executeJavaScript(mode === 'none'
+        if (phase === 'negative' && (mode!=='recover'||++recoveryFrames<=2)) await xwc.executeJavaScript(mode === 'none'||mode==='recover'
           ? "window.postFrameOriginal.style.pointerEvents='none'"
           : "document.body.insertAdjacentHTML('beforeend','<div id=postFrameCover style=\"position:fixed;inset:0;z-index:100;background:white\">Covered</div>')");
         return image;
@@ -427,7 +438,7 @@ void app.whenReady().then(async () => {
       let error: string | null = null, sameControl = false;
       let diagnostic: Readonly<PointerFailureDiagnostic> | null = null;
       try {
-        await port.withPage(opened.tabId, undefined, async page => {
+        await port.withPage(opened.tabId, abort.signal, async page => {
           const observed = await collectXPage(page, { stage: 'post', expectedUrl: 'https://x.com/alice/status/123', postId: '123' });
           const control = observed.controls.find(c => c.kind === 'body_expand')!;
           const action = { kind: 'click' as const, index: control.binding.index, snapshotId: control.binding.snapshotId };
@@ -437,11 +448,12 @@ void app.whenReady().then(async () => {
             Element.prototype.scrollIntoView=function(...args){window.__postFrameFixture.scrolls++;return scroll.apply(this,args);};
             document.elementFromPoint=(...args)=>{window.__postFrameFixture.hits++;return hit(...args);};
           })()`);
-          await page.act(action, observed.snapshot); positive = await counters();
+          await page.act(action, observed.snapshot,{onPointerPreflight:r=>preflights.push(r)}); positive = await counters();
           input = measures = frames = 0;
           await isolated('window.__postFrameFixture={scrolls:0,hits:0}');
           phase = 'negative';
-          await page.act(action, observed.snapshot);
+          if(mode==='recover')await xwc.executeJavaScript("window.postFrameOriginal.style.pointerEvents='none'");
+          await page.act(action, observed.snapshot,{onPointerPreflight:r=>preflights.push(r)});
         });
       } catch (cause) { error = (cause as { code?: string }).code ?? String(cause); diagnostic = pointerFailureDiagnostic(cause) ?? null; }
       finally {
@@ -454,7 +466,7 @@ void app.whenReady().then(async () => {
           xwc.debugger.sendCommand = send; logger.info = info; browser.close(opened.tabId);
         }
       }
-      return { positive, after, results, receipts, error, sameControl, diagnostic };
+      return { positive, after, results, receipts, preflights, observations, error, sameControl, diagnostic };
     },
     neverShown: async () => {
       // Fresh service: stage is null from construction; not one syncView call.

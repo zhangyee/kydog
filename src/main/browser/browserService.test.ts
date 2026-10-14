@@ -4602,7 +4602,7 @@ describe('original collected pointer eligibility',()=>{
   const action={kind:'click' as const,index:4,snapshotId:snapshot.snapshotId};
   const options={strictSnapshot:true,location:svc.locationFacts(nav.tabId),signal:new AbortController().signal,collectedPermission:{owner:'fixed',token:'private-token',purpose:'body'},collectedPointerEligibility:true};
   const order:string[]=[];wc.isolatedImpl=async()=>{order.push('measure');return {ok:true,x:31,y:47,label:'original'};};
-  wc.pointerImpl=async code=>{if(code.includes('"readPointerEligibility":true')){order.push('auto');return {ok:true,pointerEligibility:'auto'};}if(code.includes('"readPostFramePointerEligibility":true'))return {ok:true,postFramePointerEligibility:'auto',postFrameHitConnected:true,postFrameHitContainsTarget:true};return {ok:true};};
+  wc.pointerImpl=async code=>{if(code.includes('"readPointerEligibility":true')){order.push('auto');return {ok:true,pointerEligibility:'auto'};}if(code.includes('"op":"finalize_collected_pointer"'))return {ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true,postFramePointerEligibility:'auto',postFrameHitConnected:true,postFrameHitContainsTarget:true};return {ok:true};};
   await svc.dispatch(nav.tabId,action,snapshot,options);expect(inputCmds(wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);expect(order).toEqual(['auto','measure']);
   expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toEqual([expect.objectContaining({ctx:expect.objectContaining({state:'auto',outcome:'validated',hitConnected:true,hitContainsTarget:true})})]);
   order.length=0;wc.debugger.sent.length=0;H.logs.length=0;return {svc,wc,id:nav.tabId,snapshot,action,options,order};
@@ -4613,8 +4613,8 @@ describe('original collected pointer eligibility',()=>{
    const reads={postFramePointerEligibility:0,postFrameHitConnected:0,postFrameHitContainsTarget:0};
    f.wc.pointerImpl=async code=>{
     if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
-    if(!code.includes('"op":"validate"'))return {ok:true};
-    const result={ok:throwing?ok:true,reason:'intercepted'};
+    if(!code.includes('"op":"finalize_collected_pointer"'))return {ok:true};
+    const result={ok:throwing?ok:true,reason:'intercepted',phase:throwing&&!ok?'terminal':'validated',pointerEligibility:'auto',hitPerformed:true};
     for(const key of Object.keys(reads) as Array<keyof typeof reads>)Object.defineProperty(result,key,{get:()=>{
      reads[key]++;
      if(throwing&&key===property)throw Error('private diagnostic getter failure');
@@ -4636,15 +4636,15 @@ describe('original collected pointer eligibility',()=>{
    expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(0);
    f.wc.debugger.sent.length=0;H.logs.length=0;
  });
- it.each(['none','auto','untrusted','early','cancel'] as const)('retains post-frame %s before lifecycle checks and preserves the original refusal',async mode=>{
+ it.each(['auto','untrusted','early','cancel'] as const)('retains post-frame %s before lifecycle checks and preserves the original refusal',async mode=>{
   const f=await setup(),abort=new AbortController();let finalReads=0;
   f.wc.pointerImpl=async code=>{
    if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
-   if(code.includes('"op":"validate"')){
-    expect(code).toContain('"readPostFramePointerEligibility":true');finalReads++;
+   if(code.includes('"op":"finalize_collected_pointer"')){
+    expect(code).toContain('"op":"finalize_collected_pointer"');finalReads++;
     if(mode==='cancel')abort.abort();
-    if(mode==='early')return {ok:false,reason:'pointer_target_changed'};
-    return {ok:false,reason:'intercepted',postFramePointerEligibility:mode==='untrusted'?'private raw page text':mode==='auto'?'auto':'none',postFrameHitConnected:mode==='untrusted'?'bad':true,postFrameHitContainsTarget:mode==='untrusted'?1:mode!=='auto',pointerFailure:{point:{x:31,y:47},targetTag:'BUTTON',hitTag:'DIV',targetConnected:true,targetContainsHit:false,hitSameAsCaptured:false,rejectGeometry:{targetRect:{x:3,y:4,width:51,height:61},scroll:{x:0,y:0},viewport:{width:1000,height:800}}}};
+    if(mode==='early')return {ok:false,reason:'pointer_target_changed',phase:'terminal',hitPerformed:false};
+    return {ok:false,reason:'intercepted',phase:'terminal',pointerEligibility:'auto',hitPerformed:true,postFramePointerEligibility:mode==='untrusted'?'private raw page text':mode==='auto'?'auto':'none',postFrameHitConnected:mode==='untrusted'?'bad':true,postFrameHitContainsTarget:mode==='untrusted'?1:mode!=='auto',pointerFailure:{point:{x:31,y:47},targetTag:'BUTTON',hitTag:'DIV',targetConnected:true,targetContainsHit:false,hitSameAsCaptured:false,rejectGeometry:{targetRect:{x:3,y:4,width:51,height:61},scroll:{x:0,y:0},viewport:{width:1000,height:800}}}};
    }
    return {ok:true};
   };
@@ -4657,17 +4657,17 @@ describe('original collected pointer eligibility',()=>{
       postFrame:{phase:'post_frame',state:mode==='untrusted'?'unknown':mode==='auto'?'auto':'none',samplePhase:mode==='untrusted'?'not_observed':'before_first_hit',relationPhase:mode==='untrusted'?'not_observed':'first_hit',hitConnected:mode==='untrusted'?null:true,hitContainsTarget:mode==='untrusted'?null:mode!=='auto'}});
   }
   expect(finalReads).toBe(1);expect(inputCmds(f.wc)).toEqual([]);
-  expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toEqual([{level:'info',scope:'browser.pointer_eligibility',msg:expect.any(String),ctx:{phase:'post_frame',tabId:f.id,snapshotId:'eligibility-snapshot',generation:'eligibility-generation',nodeId:17,state:mode==='untrusted'||mode==='early'?'unknown':mode==='auto'?'auto':'none',samplePhase:mode==='untrusted'||mode==='early'?'not_observed':'before_first_hit',relationPhase:mode==='untrusted'||mode==='early'?'not_observed':'first_hit',hitConnected:mode==='untrusted'||mode==='early'?null:true,hitContainsTarget:mode==='untrusted'||mode==='early'?null:mode!=='auto',outcome:'refused'}}]);
+  expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(mode==='early'||mode==='cancel'?0:1);
  });
  it('observes none then auto before its sole original measure, with generic opt-out unchanged',async()=>{
   const f=await setup();let probes=0;
-  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return {ok:true};expect(code).toContain('"nodeId":17');expect(code).toContain('"token":"private-token"');expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);return {ok:true,pointerEligibility:++probes===1?'none':'auto'};};
+  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return code.includes('"op":"finalize_collected_pointer"')?{ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true}:{ok:true};expect(code).toContain('"nodeId":17');expect(code).toContain('"token":"private-token"');expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);return {ok:true,pointerEligibility:++probes===1?'none':'auto'};};
   await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);expect(probes).toBe(2);expect(f.order).toEqual(['measure']);expect(inputCmds(f.wc)).toHaveLength(2);
   probes=0;f.order.length=0;await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,collectedPointerEligibility:false});expect(probes).toBe(0);expect(f.order).toEqual(['measure']);
  });
  it.each(['unknown','permission','error','cancel','navigation','mapping','crash','deadline'] as const)('terminates %s before measure after enabled success',async mode=>{
   const f=await setup(),abort=new AbortController();let probes=0;if(mode==='deadline')vi.useFakeTimers();
-  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return {ok:true};probes++;
+  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return code.includes('"op":"finalize_collected_pointer"')?{ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true}:{ok:true};probes++;
    if(mode==='cancel')abort.abort();if(mode==='navigation')f.wc.fire('did-navigate-in-page',{},f.wc.url,true);if(mode==='mapping')f.svc.syncView({...STAGE,epoch:f.svc.getState().epoch});if(mode==='crash')f.wc.osPid=0;if(mode==='error')throw Error('native eval failed');
    return mode==='permission'?{ok:false,reason:'pointer_target_changed'}:{ok:true,pointerEligibility:mode==='deadline'||mode==='cancel'?'none':mode==='unknown'?'unknown':'auto'};
   };
@@ -4685,13 +4685,13 @@ describe('original collected pointer eligibility',()=>{
  it('a read begun near the total deadline cannot extend it or continue into measure after its late result',async()=>{
   const f=await setup();vi.useFakeTimers();let reads=0,release!:(v:unknown)=>void;const began=Date.now();let ceiling=0;
   f.wc.pointerImpl=async code=>{
-   if(!code.includes('"readPointerEligibility":true'))return {ok:true};
+   if(!code.includes('"readPointerEligibility":true'))return code.includes('"op":"finalize_collected_pointer"')?{ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true}:{ok:true};
    reads++;if(reads===1){vi.setSystemTime(began+PAGE_EVAL_TIMEOUT_MS-150);return {ok:true,pointerEligibility:'none'};}
    ceiling=Number(/"notAfter":(\d+)\}\)$/.exec(code)?.[1]);return new Promise(r=>{release=r;});
   };
   const pending=f.svc.dispatch(f.id,f.action,f.snapshot,f.options);const rejected=expect(pending).rejects.toMatchObject({code:'browser.wait_timeout'});
   await vi.advanceTimersByTimeAsync(100);expect(reads).toBe(2);expect(ceiling).toBe(began+PAGE_EVAL_TIMEOUT_MS);
-  await vi.advanceTimersByTimeAsync(50);await rejected;release({ok:true,pointerEligibility:'auto'});await flush();expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+  await vi.advanceTimersByTimeAsync(50);release({ok:true,pointerEligibility:'auto'});await rejected;await flush();expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
  });
  it('aborting a scheduled none poll clears scheduling without issuing another read',async()=>{
   const f=await setup();vi.useFakeTimers();const abort=new AbortController();let reads=0;
@@ -4716,4 +4716,99 @@ describe('original collected pointer eligibility',()=>{
   const action=missing==='node'?{kind:'click' as const,selector:'#original'}:missing==='kind'?{kind:'scroll' as const,direction:'down' as const}:f.action;
   await expect(f.svc.dispatch(f.id,action,f.snapshot,options)).rejects.toMatchObject({code:'browser.bad_action'});expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
  });
+});
+
+
+describe('collected first-hit preflight recovery',()=>{
+ async function setup(){
+  const {svc}=make();const {wc,nav}=await openTab(svc);
+  const snapshot:AxSnapshot={snapshotId:'preflight-snapshot',generation:'preflight-generation',url:wc.url,title:'private',iframes:0,collection:{truncated:false,returned:1,totalKnown:1},nodes:[{index:4,nodeId:17,role:'button',name:'original',x:11,y:12,w:71,h:93}]};
+  const action={kind:'click' as const,index:4,snapshotId:snapshot.snapshotId};
+  const summaries:any[]=[];
+  const options={strictSnapshot:true,location:svc.locationFacts(nav.tabId),signal:new AbortController().signal,collectedPermission:{owner:'fixed',token:'private-token',purpose:'body'},collectedPointerEligibility:true,onPointerPreflight:(r:unknown)=>summaries.push(r)};
+  let measures=0,frames=0,finals=0,probes=0;
+  wc.isolatedImpl=async()=>{measures++;return {ok:true,x:31,y:47,label:'original'};};
+  wc.captureImpl=async()=>{frames++;return {isEmpty:()=>false};};
+  const valid={ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true,postFramePointerEligibility:'auto',postFrameHitConnected:true,postFrameHitContainsTarget:true};
+  const pending={ok:true,phase:'pending',pointerEligibility:'none',hitPerformed:false};
+  const base=async(code:string)=>{
+   if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
+   if(code.includes('"op":"finalize_collected_pointer"')){finals++;return valid;}
+   if(code.includes('"op":"probe_collected_pointer"')){probes++;return {ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false};}
+   return {ok:true};
+  };wc.pointerImpl=base;
+  await svc.dispatch(nav.tabId,action,snapshot,options);expect(inputCmds(wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);
+  wc.debugger.sent.length=0;measures=frames=finals=probes=0;summaries.length=0;
+  return {svc,wc,id:nav.tabId,snapshot,action,options,summaries,valid,pending,base,counts:()=>({measures,frames,finals,probes})};
+ }
+ it('recurring frame NONE waits for direct original auto and fresh frames before its only final hit/input',async()=>{
+  const f=await setup();let final=0,probe=0;
+  f.wc.pointerImpl=async code=>{
+   const r=await f.base(code);
+   if(code.includes('"op":"finalize_collected_pointer"'))return ++final<=2?f.pending:f.valid;
+   if(code.includes('"op":"probe_collected_pointer"')){probe++;expect(inputCmds(f.wc)).toEqual([]);return r;}
+   return r;
+  };
+  await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);
+  expect({final,probe,...f.counts()}).toEqual({final:3,probe:2,measures:1,frames:3,finals:3,probes:2});
+  expect(inputCmds(f.wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);
+  expect(f.summaries).toEqual([expect.objectContaining({snapshotId:f.snapshot.snapshotId,nodeId:17,initialState:'auto',finalState:'auto',noneObserved:true,probeReadsIssued:2,framesObserved:3,finalizationsIssued:3,finalHitPerformed:true,outcome:'final_hit_validated'})]);
+ });
+ it.each(['unknown','permission','cancel','route','mapping','renderer','debugger','tab','empty','frame-error'] as const)('stops %s at resumed preflight after a positive native pair',async mode=>{
+  const f=await setup(),abort=new AbortController();let final=0,probe=0;
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"finalize_collected_pointer"')){final++;return f.pending;}
+   if(code.includes('"op":"probe_collected_pointer"')){
+    probe++;if(mode==='cancel')abort.abort();if(mode==='route')f.wc.fire('did-navigate-in-page',{},f.wc.url,true);
+    if(mode==='mapping')f.svc.syncView({...STAGE,epoch:f.svc.getState().epoch});
+    if(mode==='renderer')f.wc.osPid=0;if(mode==='debugger')f.wc.debugger.attached=false;if(mode==='tab')vi.spyOn(f.svc,'webContentsOf').mockReturnValue(null);
+    if(mode==='empty')f.wc.captureImpl=async()=>({isEmpty:()=>true});if(mode==='frame-error')f.wc.captureImpl=async()=>{throw Error('frame');};
+    return mode==='unknown'||mode==='permission'?{ok:false,phase:'terminal',hitPerformed:false,reason:mode==='unknown'?'pointer_eligibility_unknown':'pointer_target_changed'}:{ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false};
+   }return f.base(code);
+  };
+  const code=mode==='cancel'?'browser.cancelled':mode==='route'?'browser.stale_snapshot':mode==='mapping'||mode==='empty'||mode==='frame-error'?'browser.input_not_delivered':mode==='tab'?'browser.no_tab':mode==='renderer'||mode==='debugger'?'browser.not_dispatchable':mode==='unknown'?'browser.page_no_result':'browser.target_unusable';
+  await expect(f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal})).rejects.toMatchObject({code});
+  expect(final).toBe(1);expect(probe).toBe(1);expect(inputCmds(f.wc)).toEqual([]);expect(f.counts().measures).toBe(1);expect(f.summaries).toHaveLength(1);
+ });
+ it.each(['probe','frame','timeout','measure','finalization'] as const)('drains issued %s and disposal before next queued action after termination',async mode=>{
+  const f=await setup(),abort=new AbortController();if(mode==='timeout')vi.useFakeTimers();
+  let start!:()=>void,release!:(v:any)=>void;const started=new Promise<void>(r=>{start=r;});let disposed=0;
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"dispose"'))disposed++;
+   if(code.includes('"op":"finalize_collected_pointer"'))return mode==='finalization'?new Promise(r=>{release=r;start();}):f.pending;
+   if(code.includes('"op":"probe_collected_pointer"') && mode!=='frame')return new Promise(r=>{release=r;start();});
+   return f.base(code);
+  };
+  if(mode==='frame')f.wc.captureImpl=()=>new Promise(r=>{release=r;start();});
+  if(mode==='measure')f.wc.isolatedImpl=()=>new Promise(r=>{release=r;start();});
+  const work=f.svc.enqueue(f.id,()=>f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal}));
+  const rejected=expect(work).rejects.toMatchObject({code:mode==='timeout'?'browser.wait_timeout':'browser.cancelled'});
+  if(mode==='timeout')await vi.advanceTimersByTimeAsync(100);
+  await started;if(mode==='timeout')await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);else abort.abort();
+  let next=false;const following=f.svc.enqueue(f.id,async()=>{next=true;});await flush();expect(next).toBe(false);expect(disposed).toBe(0);
+  release(mode==='frame'?{isEmpty:()=>false}:mode==='measure'?{ok:true,x:31,y:47}:mode==='finalization'?f.valid:{ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false});await rejected;await following;
+  expect(next).toBe(true);expect(disposed).toBe(1);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('lost finalization result reports unknown hit and observer failure cannot alter successful input',async()=>{
+  const f=await setup();
+  await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,onPointerPreflight:()=>{throw Error('observer');}});
+  expect(inputCmds(f.wc)).toHaveLength(2);f.wc.debugger.sent.length=0;
+  f.wc.pointerImpl=async code=>{if(code.includes('"op":"finalize_collected_pointer"'))throw Error('lost source result');return f.base(code);};
+  await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:'browser.page_no_result'});
+  expect(f.summaries[0]).toMatchObject({finalHitPerformed:null,outcome:'unknown',unavailableFields:['finalState','finalHitPerformed']});expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('permanent pending expires under the unchanged captured point and never grants input',async()=>{
+  const f=await setup();vi.useFakeTimers();const ceilings:number[]=[];
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"finalize_collected_pointer"')||code.includes('"op":"probe_collected_pointer"')){
+    ceilings.push(Number(/"notAfter":(\d+)\}\)$/.exec(code)?.[1]));return f.pending;
+   }return f.base(code);
+  };
+  const began=Date.now(),work=f.svc.dispatch(f.id,f.action,f.snapshot,f.options);const rejected=expect(work).rejects.toMatchObject({code:'browser.wait_timeout'});
+  await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS+1);await rejected;
+  expect(ceilings.length).toBeGreaterThan(1);expect(new Set(ceilings)).toEqual(new Set([began+PAGE_EVAL_TIMEOUT_MS]));
+  expect(f.counts()).toMatchObject({measures:1,frames:1});expect(inputCmds(f.wc)).toEqual([]);
+  expect(f.summaries[0]).toMatchObject({outcome:'expired',finalHitPerformed:false,finalState:'none',finalizationsIssued:1,framesObserved:1});
+ });
+
 });

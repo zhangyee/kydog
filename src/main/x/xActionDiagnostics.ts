@@ -1,3 +1,4 @@
+import {pointerPreflightSchema} from '../browser/pointerPreflightDiagnostic';
 import {replyExpansionsSchema} from './xReplyExpansionDiagnostics';
 import {z} from 'zod';
 import {projectPointerDiagnostic} from '../browser/pointerDiagnostic';
@@ -16,11 +17,14 @@ const relation=z.enum(['same_cell','focal_contains_control','control_contains_fo
 const diagnostic=z.unknown().transform(projectPointerDiagnostic);
 const click=z.object({actionIndex:count.positive(),targetPostId:z.string().regex(/^\d+$/),controlKind:z.enum(['body_expand','article_entry','replies_expand']),binding:z.object({index:count,nodeId:count,snapshotId:id,generation:id}),sourceRelation:relation,diagnostic}).refine(v=>v.binding.snapshotId===v.diagnostic.snapshotId&&v.binding.generation===v.diagnostic.generation&&v.binding.nodeId===v.diagnostic.nodeId);
 const failures=z.object({totalFailures:count,first:click.optional(),last:click.optional(),omittedFailures:count}).refine(v=>v.omittedFailures===v.totalFailures-new Set([v.first?.actionIndex,v.last?.actionIndex].filter(i=>i!==undefined)).size && (!v.first||!v.last||v.first.actionIndex<=v.last.actionIndex));
+const preflight=z.object({actionIndex:count.positive(),targetPostId:z.string().regex(/^\d+$/),controlKind:z.enum(['body_expand','article_entry','replies_expand']),binding:z.object({index:count,nodeId:count,snapshotId:id,generation:id}),diagnostic:pointerPreflightSchema}).refine(v=>v.binding.snapshotId===v.diagnostic.snapshotId&&v.binding.generation===v.diagnostic.generation&&v.binding.nodeId===v.diagnostic.nodeId);
+const preflights=z.object({totalAttempts:count.positive(),omittedAttempts:count,first:preflight,last:preflight}).refine(v=>v.omittedAttempts===Math.max(0,v.totalAttempts-2)&&v.last.actionIndex-v.first.actionIndex>=v.totalAttempts-1&&v.first.targetPostId===v.last.targetPostId&&(v.totalAttempts!==1||JSON.stringify(v.first)===JSON.stringify(v.last)));
 const legacy=z.object({actionIndex:count.positive(),targetPostId:z.string().regex(/^\d+$/),controlKind:z.literal('replies_expand'),sourceRelation:relation,diagnostic});
 /** Project new diagnostics before cloning. Telemetry never enters the evidence authority decoder. */
 export function projectActionDiagnostics<T extends XResearchResult>(value:T):T {
  if(value.operation==='search')return {...value,queries:value.queries.map(row=>({...row,...(row.diagnostics?{diagnostics:search.parse(row.diagnostics)}:{})}))};
  return {...value,targets:value.targets.map(row=>({...row,...(row.diagnostics?{diagnostics:{...row.diagnostics,
+  ...(row.diagnostics.pointerPreflights?{pointerPreflights:preflights.parse(row.diagnostics.pointerPreflights)}:{}),
   ...(row.diagnostics.replyExpansions?{replyExpansions:replyExpansionsSchema.parse(row.diagnostics.replyExpansions)}:{}),
   ...(row.diagnostics.clickFailures?{clickFailures:failures.parse(row.diagnostics.clickFailures)}:{}),
   ...(row.diagnostics.pointerFailure?{pointerFailure:legacy.parse(row.diagnostics.pointerFailure)}:{}),

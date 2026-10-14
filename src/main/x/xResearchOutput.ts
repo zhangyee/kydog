@@ -715,7 +715,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       const path=`targets.${index}.diagnostics.${part}`;
       (result.metadataOmissions??=[]).push(path);
     };
-    for (const part of ['scroll','readiness','clickFailures','pointerFailure','initialFrame','firstAdmittedFrame','terminalFrame'] as const) {
+    for (const part of ['pointerPreflights','scroll','readiness','clickFailures','pointerFailure','initialFrame','firstAdmittedFrame','terminalFrame'] as const) {
       for (const [index,row] of result.targets.entries()) {
         if (!row.diagnostics?.[part]) continue;
         delete row.diagnostics[part];

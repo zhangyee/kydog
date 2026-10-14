@@ -4,6 +4,7 @@ import {
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
+import { sealPointerPreflight, type PointerPreflightDiagnostic } from './pointerPreflightDiagnostic';
 import { retainPointerFailure, type PointerFailureStage, type PointerEligibilitySummary, type PointerPostFrame } from './pointerDiagnostic';
 import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
 import { broadcaster } from '../ipc/broadcaster';
@@ -19,7 +20,7 @@ import {
 } from './actions';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
-import { collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget, type CollectedPermission } from './measuredPointerSource';
+import { collectedPointerPreflightExpression, collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget, type CollectedPermission } from './measuredPointerSource';
 import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
 import {
   TabRequestLog, ZERO_REQUEST_CURSOR,
@@ -87,6 +88,7 @@ export interface BrowserDispatchOptions {
   collectedPermission?: CollectedPermission;
   /** Trusted fixed adapter: direct native CSS eligibility on the original control. */
   collectedPointerEligibility?: boolean;
+  onPointerPreflight?: (receipt:Readonly<PointerPreflightDiagnostic>)=>void;
   /** Trusted X read opt-in; receipt callback is never serialized into the page. */
   scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: import('./actions').BrowserScrollReceipt) => void;
     relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} };
@@ -1780,7 +1782,7 @@ export class BrowserService {
    * 所以这条错说的是「结果未知」，**不是「没有发生」**——「没有发生」只有页面把
    * `expired` 送回来的时候才成立（见 `interactError` 的那一格）。
    */
-  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string), ceiling = Infinity): Promise<unknown> {
+  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string), ceiling = Infinity, issued?: Set<Promise<unknown>>): Promise<unknown> {
     // **一个到点时刻，两边共用。** 页面那道自检与这里的定时器各算各的话，守卫要么
     // 提前把好的求值废掉、要么晚到根本不挡。
     const notAfter = Math.min(Date.now() + PAGE_EVAL_TIMEOUT_MS, ceiling);
@@ -1794,11 +1796,10 @@ export class BrowserService {
         + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。',
         undefined, 'unknown')), Math.max(0, notAfter - Date.now()));
     });
-    return Promise.race([
-      wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
-        [{ code: typeof code === 'string' ? code : code(notAfter) }]),
-      deadline,
-    ]).finally(() => { if (timer) clearTimeout(timer); });
+    const operation=wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
+      [{ code: typeof code === 'string' ? code : code(notAfter) }]);
+    if(issued){issued.add(operation);void operation.then(()=>issued.delete(operation),()=>issued.delete(operation));}
+    return Promise.race([operation,deadline]).finally(() => { if (timer) clearTimeout(timer); });
   }
 
   /**
@@ -1860,13 +1861,13 @@ export class BrowserService {
    * 当前页面状态），而闸那一侧的用例也断不准（把闸删掉之后，这里会用同一个码把它兜住，
    * 用例照样绿）。
    */
-  private async interact(tabId: string, wc: WebContents, req: InteractRequest, pointer?: PointerBinding): Promise<InteractResult> {
+  private async interact(tabId: string, wc: WebContents, req: InteractRequest, pointer?: PointerBinding, issued?: Set<Promise<unknown>>): Promise<InteractResult> {
     let raw: unknown;
     try {
       // 传的是**拼装函数**不是拼好的串：到点时刻由 `evalOn` 算，页面那道自检与
       // 主进程那道定时器共用同一个数（漂开就等于守卫失效）。
       raw = await this.evalOn(wc, tabId, (notAfter) => pointer && req.op === 'measure'
-        ? measuredPointerExpression(req.target, pointer, notAfter) : interactExpression(req, notAfter));
+        ? measuredPointerExpression(req.target, pointer, notAfter) : interactExpression(req, notAfter), Infinity, issued);
     } catch (err) {
       // 时限那一条自己就是 page_no_result，原样放行（它的消息说得更准）。
       if (err instanceof KydogError) throw err;
@@ -1887,6 +1888,7 @@ export class BrowserService {
   private async awaitCollectedPointerEligibility(
     tabId: string, wc: WebContents, target: PointerTarget, snapshot: AxSnapshot,
     action: DispatchAction, signal: AbortSignal, check: () => void,
+    issued?:Set<Promise<unknown>>, summary?:PointerPreflightDiagnostic,
   ): Promise<PointerEligibilitySummary> {
     const deadline = Date.now() + PAGE_EVAL_TIMEOUT_MS;
     let firstState: 'auto' | 'none' | 'unknown' | null = null;
@@ -1900,7 +1902,8 @@ export class BrowserService {
         if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
         let raw: unknown;
         try {
-          raw = await this.evalOn(wc, tabId, notAfter => collectedPointerEligibilityExpression(target, Math.min(notAfter, deadline)), deadline);
+          if(summary)summary.eligibilityReadsIssued++;
+          raw = await this.evalOn(wc, tabId, notAfter => collectedPointerEligibilityExpression(target, Math.min(notAfter, deadline)), deadline, issued);
         } catch {
           check();
           if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
@@ -1914,6 +1917,7 @@ export class BrowserService {
           finalState = state === 'auto' || state === 'none' ? state : 'unknown';
           firstState ??= finalState;
           noneObserved ||= finalState === 'none';
+          if(summary){summary.initialState??=finalState;summary.finalState=finalState;summary.noneObserved ||= finalState==='none';summary.finalHitPerformed=false;}
         }
         check();
         if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
@@ -2067,7 +2071,7 @@ export class BrowserService {
   }
 
   /** CopyFromSurface completion is per-target; pixels are neither retained nor logged. */
-  private async awaitNativeFrame(tabId: string, wc: WebContents, signal?: AbortSignal): Promise<void> {
+  private async awaitNativeFrame(tabId: string, wc: WebContents, signal?: AbortSignal, ceiling=Infinity, issued?:Set<Promise<unknown>>): Promise<void> {
     assertNotAborted(signal);
     let timer: NodeJS.Timeout | undefined;
     let abort!: () => void;
@@ -2077,11 +2081,13 @@ export class BrowserService {
       gone = () => reject(new KydogError('browser.not_dispatchable', '目标页面或调试通道已退出；没有继续发送输入'));
       signal?.addEventListener('abort', abort, { once: true });
       wc.once('destroyed', gone); wc.once('render-process-gone', gone); wc.debugger.once('detach', gone);
-      timer = setTimeout(() => reject(new KydogError('browser.input_not_delivered', '页面绘制帧没有在资源时限内返回；没有发送输入')), PAGE_EVAL_TIMEOUT_MS);
+      timer = setTimeout(() => reject(new KydogError('browser.input_not_delivered', '页面绘制帧没有在资源时限内返回；没有发送输入')), Math.max(0,Math.min(PAGE_EVAL_TIMEOUT_MS,ceiling-Date.now())));
     });
     try {
       if (signal?.aborted) abort();
-      const image = await Promise.race([wc.capturePage({ x: 0, y: 0, width: 1, height: 1 }, { stayHidden: true, stayAwake: true }), terminal]);
+      const operation=wc.capturePage({ x: 0, y: 0, width: 1, height: 1 }, { stayHidden: true, stayAwake: true });
+      if(issued){issued.add(operation);void operation.then(()=>issued.delete(operation),()=>issued.delete(operation));}
+      const image = await Promise.race([operation, terminal]);
       assertNotAborted(signal);
       this.assertDispatchable(tabId, wc);
       if (image.isEmpty()) throw new KydogError('browser.input_not_delivered', '页面没有返回实际绘制帧；没有发送输入');
@@ -2340,26 +2346,34 @@ export class BrowserService {
 
     let eligibility: PointerEligibilitySummary | undefined;
     let postFrame: PointerPostFrame | null | undefined;
-    if (options?.collectedPointerEligibility) {
-      const checkEligibility = () => {
-        checkCollectedSetup();
-        assertMapping();
-      };
-      checkEligibility();
-      eligibility = await this.awaitCollectedPointerEligibility(tabId, wc, target, targetSnapshot!, action, options.signal!, checkEligibility);
-      checkEligibility();
-    }
-
+    const issued=options?.collectedPointerEligibility?new Set<Promise<unknown>>():undefined;
+    const summary:PointerPreflightDiagnostic|undefined=options?.collectedPointerEligibility?{
+      phase:'collected_preflight',tabId,snapshotId:targetSnapshot!.snapshotId,generation:targetSnapshot!.generation,nodeId:'nodeId' in target?target.nodeId:0,
+      initialState:null,finalState:null,noneObserved:false,eligibilityReadsIssued:0,probeReadsIssued:0,finalizationsIssued:0,framesObserved:0,
+      finalHitPerformed:null,outcome:'unknown',unavailableFields:[],
+    }:undefined;
     // spec §4.2 的三件事：滚进视野 → 重新量 → 命中检查。缺一件都是「打偏了还不报错」。
-    const pointer: PointerBinding | undefined = action.kind === 'click' || action.kind === 'type'
-      ? { token: randomUUID(), kind: action.kind, expiresAt: Date.now() + PAGE_EVAL_TIMEOUT_MS * 2 } : undefined;
+    let pointer: PointerBinding | undefined;
+    let preflightDeadline=Infinity;
     const pointerError = (stage: PointerFailureStage, result: InteractResult, point?: { x: number; y: number }) =>
       retainPointerFailure(BrowserService.interactError(result, action), {
         tabId, snapshotId: targetSnapshot?.snapshotId ?? null, generation: targetSnapshot?.generation ?? null,
         nodeId: 'nodeId' in target ? target.nodeId : null,
       }, stage, result, point, {...(eligibility?{eligibility}:{}),...(postFrame!==undefined?{postFrame}:{})});
     try {
-      let m = await this.interact(tabId, wc, { op: 'measure', target }, pointer);
+    if (options?.collectedPointerEligibility) {
+      const checkEligibility = () => {
+        checkCollectedSetup();
+        assertMapping();
+      };
+      checkEligibility();
+      eligibility = await this.awaitCollectedPointerEligibility(tabId, wc, target, targetSnapshot!, action, options.signal!, checkEligibility, issued, summary);
+      checkEligibility();
+    }
+
+      pointer = action.kind === 'click' || action.kind === 'type'
+        ? { token: randomUUID(), kind: action.kind, expiresAt: Date.now() + PAGE_EVAL_TIMEOUT_MS * 2 } : undefined;
+      let m = await this.interact(tabId, wc, { op: 'measure', target }, pointer, issued);
       // 新快照与 measure 之间页面仍可能恰好再重建一次。只对页面明确回报的三种
       // 「目标已变」事实重取一次；网络、超时、密码、不可编辑等错误不在这里猜测重试。
       if (!options?.strictSnapshot && semantic && !m.ok && ['stale_node', 'not_visible', 'intercepted'].includes(String(m.reason))) {
@@ -2414,11 +2428,51 @@ export class BrowserService {
 
       if (pointer) {
         if (m.pointerGuard?.ok !== true) throw pointerError('pointer_capture', m.pointerGuard ?? { ok: false, reason: 'stale_node' }, { x, y });
-        await this.awaitNativeFrame(tabId, wc, options?.signal);
-        check();
-        assertMapping();
-        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate', pointer, notAfter, options?.collectedPointerEligibility)) as InteractResult;
-        if (options?.collectedPointerEligibility) {
+        let valid:InteractResult;
+        if(summary && pointer) {
+          const fixedPointer=pointer,deadline=Math.min(fixedPointer.expiresAt,Date.now()+PAGE_EVAL_TIMEOUT_MS);
+          preflightDeadline=deadline;
+          const boundary=()=>{checkCollectedSetup();assertMapping();if(Date.now()>=deadline)throw new KydogError('browser.wait_timeout','原控件最终命中前资格未在固定资源时限内建立');};
+          const read=async(op:'probe_collected_pointer'|'finalize_collected_pointer'):Promise<InteractResult>=>{
+            boundary();summary.finalState=null;if(op==='probe_collected_pointer')summary.probeReadsIssued++;else{summary.finalizationsIssued++;summary.finalHitPerformed=null;}
+            let raw:InteractResult;
+            try{raw=await this.evalOn(wc,tabId,n=>collectedPointerPreflightExpression(op,fixedPointer,n),deadline,issued) as InteractResult;}catch{boundary();throw new KydogError('browser.page_no_result','原控件 preflight 回执无法读取',undefined,'unknown');}
+            // Copy source facts before checking a cancellation that arrived in flight.
+            const state=raw?.pointerEligibility;summary.finalState=state==='auto'||state==='none'||state==='unknown'?state:null;
+            summary.noneObserved ||= state==='none';
+            if(typeof raw?.hitPerformed==='boolean')summary.finalHitPerformed=raw.hitPerformed;
+            boundary();
+            if(!raw || typeof raw.ok!=='boolean' || typeof raw.hitPerformed!=='boolean')throw new KydogError('browser.page_no_result','原控件 preflight 回执未知',undefined,'unknown');
+            if(raw.ok===false){
+              if(raw.reason==='expired')throw new KydogError('browser.wait_timeout','原控件资格已过期');
+              if(raw.reason==='pointer_eligibility_unknown')throw new KydogError('browser.page_no_result','原控件 pointer eligibility 未知',undefined,'unknown');
+              summary.outcome=raw.hitPerformed?'final_hit_refused':'permission_lost';return raw;
+            }
+            if(!((raw.phase==='pending'&&state==='none'&&raw.hitPerformed===false)
+              ||(op==='probe_collected_pointer'&&raw.phase==='eligible'&&state==='auto'&&raw.hitPerformed===false)
+              ||(op==='finalize_collected_pointer'&&raw.phase==='validated'&&state==='auto'&&raw.hitPerformed===true)))
+              throw new KydogError('browser.page_no_result','原控件 preflight 回执不一致',undefined,'unknown');
+            return raw;
+          };
+          let needsFrame=true;
+          for(;;){
+            if(needsFrame){boundary();try{await this.awaitNativeFrame(tabId,wc,options!.signal,deadline,issued);summary.framesObserved++;}
+              catch(error){boundary();summary.outcome='frame_failed';throw error;}boundary();}
+            valid=await read(needsFrame?'finalize_collected_pointer':'probe_collected_pointer');
+            if(!valid.ok||valid.phase==='validated')break;
+            needsFrame=valid.phase==='eligible';
+            if(!needsFrame && valid.phase==='pending'){
+              await new Promise<void>(resolve=>{const finish=()=>{clearTimeout(timer);options!.signal!.removeEventListener('abort',finish);resolve();};
+                const timer=setTimeout(finish,Math.min(WAIT_POLL_MS,Math.max(0,deadline-Date.now())));options!.signal!.addEventListener('abort',finish,{once:true});if(options!.signal!.aborted)finish();});
+              boundary();
+            }
+          }
+          if(valid.ok)summary.outcome='final_hit_validated';
+        } else {
+          await this.awaitNativeFrame(tabId,wc,options?.signal);check();assertMapping();
+          valid=await this.evalOn(wc,tabId,n=>pointerGuardExpression('validate',pointer!,n)) as InteractResult;
+        }
+        if (options?.collectedPointerEligibility && valid.hitPerformed === true) {
           // Preserve the source observation even if cancellation arrived during
           // evaluation. Lifecycle checks below still precede any native input.
           postFrame = null;
@@ -2455,8 +2509,9 @@ export class BrowserService {
       }
 
       const press = { ...at, button: 'left' as const, clickCount: 1 };
-      check();
+      checkCollectedSetup();
       assertMapping();
+      if(Date.now()>=preflightDeadline)throw new KydogError('browser.wait_timeout','原控件资格在输入前已过期');
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...press });
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
       assertNotAborted(options?.signal);
@@ -2494,7 +2549,7 @@ export class BrowserService {
       }
       check();
       if (pointer) {
-        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate_typing', pointer, notAfter)) as InteractResult;
+        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate_typing', pointer!, notAfter)) as InteractResult;
         check();
         if (!valid?.ok) throw BrowserService.interactError(valid ?? { ok: false, reason: 'stale_node' }, action, { priorInputDispatched: true });
       }
@@ -2517,8 +2572,23 @@ export class BrowserService {
       }
       const now = v.ok && typeof v.value === 'string' ? `，框里现在是「${v.value}」` : '';
       return `已在「${label}」里输入${now}`;
+    } catch(error) {
+      if(summary && summary.outcome!=='final_hit_refused' && summary.outcome!=='permission_lost' && summary.outcome!=='frame_failed' && summary.outcome!=='final_hit_validated') {
+        const code=error instanceof KydogError?error.code:'';
+        summary.outcome=code==='browser.cancelled'?'cancelled':code==='browser.wait_timeout'?'expired':code==='browser.target_unusable'?'permission_lost':
+          ['browser.stale_snapshot','browser.no_tab','browser.not_dispatchable','browser.input_not_delivered'].includes(code)?'invalidated':'unknown';
+      }
+      throw error;
     } finally {
-      if (pointer) await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('dispose', pointer, notAfter)).catch(() => {});
+      // The fixed deadline bounds admission, not Electron cancellation. Keep the
+      // queue lease until every issued operation actually settles, even on timeout.
+      if(issued)while(issued.size)await Promise.allSettled([...issued]);
+      if (pointer) await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('dispose', pointer!, notAfter),Infinity,issued).catch(() => {});
+      if(issued)while(issued.size)await Promise.allSettled([...issued]);
+      if(summary)try{
+        summary.unavailableFields=(['initialState','finalState','finalHitPerformed'] as const).filter(k=>summary[k]===null);
+        options?.onPointerPreflight?.(sealPointerPreflight(summary));
+      }catch{/* Optional diagnostics never replace action outcome. */}
     }
   }
 

@@ -32,7 +32,7 @@ const attempt=z.object({actionIndex:count.positive(),targetPostId:z.string().ref
 /** Strip all non-allowlisted data before cloning; this parser grants no authority. */
 export const replyExpansionsSchema=z.object({totalAttempts:count.positive(),omittedAttempts:count,first:attempt,last:attempt}).refine(v=>{
   const unique=v.first.actionIndex===v.last.actionIndex?1:2;
-  return v.omittedAttempts===v.totalAttempts-unique && v.first.actionIndex<=v.last.actionIndex
+  return v.omittedAttempts===v.totalAttempts-unique && v.last.actionIndex-v.first.actionIndex>=v.totalAttempts-1
     && v.last.targetPostId===v.first.targetPostId && JSON.stringify(v.last.caps)===JSON.stringify(v.first.caps)
     && v.last.usageBefore.expansions-v.first.usageBefore.expansions===v.totalAttempts-1
     && v.totalAttempts<=v.first.caps.expansions-v.first.usageBefore.expansions

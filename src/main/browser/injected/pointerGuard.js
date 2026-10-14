@@ -9,7 +9,12 @@
     return entry;
   };
   if (req.op === 'dispose') { discard(); return { ok: true }; }
-  const reject = (reason) => ({ ok: false, reason });
+  const preflight = req.op === 'probe_collected_pointer' || req.op === 'finalize_collected_pointer';
+  let hitPerformed = false;
+  const reject = (reason) => {
+    if (preflight) { discard(); return { ok: false, reason, phase: 'terminal', hitPerformed }; }
+    return { ok: false, reason };
+  };
   // Retain the already rejected hit, without a second hit test or a new point.
   // Diagnostics cannot change the verdict, even if a geometry read fails.
   const intercepted = (el, hit, point, captured) => {
@@ -178,8 +183,10 @@
       timer: setTimeout(discard, Math.max(0, req.expiresAt - Date.now())) });
     return { ok: true };
   }
+  const inspect = () => {
   const registry = globalThis[key], entry = registry && registry.get(req.token);
   if (!entry || !entry.el.isConnected) return reject('stale_node');
+  if (preflight && (entry.finalized || entry.kind !== 'click' || req.kind !== 'click' || !entry.permission || entry.collected.control.el !== entry.el)) return reject('pointer_target_changed');
   if (Date.now() > entry.expiresAt) { discard(); return reject('expired'); }
   if (entry.generation !== (world && world.gen) || entry.url !== location.href) return reject('stale_node');
   if (entry.permission && (collected(entry.permission)!==entry.collected || !permitted(entry.collected,entry.permission,entry.originalTarget))) return reject('pointer_target_changed');
@@ -192,10 +199,20 @@
     return reject('pointer_target_changed');
   // Copy the native scalar after original permission/semantic checks and before
   // the FIRST final hit. Reuse the original usability read; no hit replay/wait.
-  const diagnose = req.op === 'validate' && req.kind === 'click' && entry.kind === 'click'
-    && entry.permission && req.readPostFramePointerEligibility === true;
   let postFramePointerEligibility = 'unknown';
-  if (diagnose) try {
+  if (preflight) {
+    let pointerEligibility = 'unknown';
+    try { const value = style.pointerEvents; if (value === 'auto' || value === 'none') pointerEligibility = value; } catch { /* terminal */ }
+    postFramePointerEligibility = pointerEligibility;
+    if (pointerEligibility === 'unknown') return { ...reject('pointer_eligibility_unknown'), pointerEligibility };
+    if (pointerEligibility === 'none' || req.op === 'probe_collected_pointer')
+      return { ok: true, phase: pointerEligibility === 'none' ? 'pending' : 'eligible', pointerEligibility, hitPerformed: false };
+    entry.finalized = true; // Consume BEFORE the first actual hit, including a thrown read or refusal.
+    hitPerformed = true;
+  }
+  const diagnose = (preflight || req.op === 'validate') && req.kind === 'click' && entry.kind === 'click'
+    && entry.permission && (preflight || req.readPostFramePointerEligibility === true);
+  if (!preflight && diagnose) try {
     const value = style.pointerEvents;
     if (value === 'auto' || value === 'none') postFramePointerEligibility = value;
   } catch { /* Unknown is diagnostic only; preserve the original hit verdict. */ }
@@ -205,7 +222,10 @@
     try { const value = hit.isConnected; if (typeof value === 'boolean') postFrameHitConnected = value; } catch { /* Diagnostic only. */ }
     try { const value = hit.contains(entry.el); if (typeof value === 'boolean') postFrameHitContainsTarget = value; } catch { /* Diagnostic only. */ }
   }
-  const finish = result => diagnose ? { ...result, postFramePointerEligibility, postFrameHitConnected, postFrameHitContainsTarget } : result;
+  const finish = value => {
+    const result = preflight ? { ...value, phase: value.ok ? 'validated' : 'terminal', pointerEligibility: postFramePointerEligibility, hitPerformed: true } : value;
+    return diagnose ? { ...result, postFramePointerEligibility, postFrameHitConnected, postFrameHitContainsTarget } : result;
+  };
   if (!contains(entry.el, hit)) return finish(intercepted(entry.el, hit, entry.point, entry.hit));
   const intent = hitSources(hit);
   if (hit !== entry.hit || intent.length !== entry.hitSources.length
@@ -237,4 +257,7 @@
     } else return reject('typing_destination_changed');
   }
   return finish({ ok: true });
+  };
+  if (!preflight) return inspect();
+  try { return inspect(); } catch { return reject('pointer_eligibility_unknown'); }
 }

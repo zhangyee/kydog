@@ -51,3 +51,10 @@ it('inventory is bounded to 100 exact own identities and diagnostics grant no ci
  expect(()=>ledger.guard('/tmp/report.md','[phantom](https://x.com/phantom/status/999)')).toThrow();
  expect(r.targets[0].replies.scope.completeness).toBe('unknown');
 });
+
+it('rejects impossible global action span without bounding global indices by reply count',async()=>{
+ const r=await result(),d=r.targets[0].diagnostics!.replyExpansions!;
+ expect(d.totalAttempts).toBe(3);d.first!.actionIndex=20;d.last!.actionIndex=22;
+ expect(serializeXResearchResult(r).result.targets[0].diagnostics!.replyExpansions!.first!.actionIndex).toBe(20);
+ d.last!.actionIndex=21;expect(()=>serializeXResearchResult(r)).toThrow();
+});

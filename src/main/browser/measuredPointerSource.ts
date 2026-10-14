@@ -38,3 +38,8 @@ export function pointerGuardExpression(op: 'validate' | 'validate_typing' | 'dis
 export function collectedPointerEligibilityExpression(target: PointerTarget, notAfter: number): string {
   return `((req) => { ${DOCUMENT_CHECK} return (${POINTER_GUARD_SOURCE})(req); })(${JSON.stringify({ op: 'validate_collected', target, readPointerEligibility: true, notAfter })})`;
 }
+
+/** Entry-bound no-hit probe / adjacent first-hit gate. No target can be rebound here. */
+export function collectedPointerPreflightExpression(op: 'probe_collected_pointer' | 'finalize_collected_pointer', pointer: PointerBinding, notAfter: number): string {
+  return `(${POINTER_GUARD_SOURCE})(${JSON.stringify({ op, token:pointer.token, kind:pointer.kind, notAfter:Math.min(notAfter,pointer.expiresAt) })})`;
+}

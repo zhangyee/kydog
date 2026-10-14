@@ -280,7 +280,12 @@ export interface XReplyExpansionAttempt {
   before:XReplyCollectionDiagnostic;after:XReplyCollectionDiagnostic;
 }
 export interface XReplyExpansions {totalAttempts:number;omittedAttempts:number;first?:XReplyExpansionAttempt;last?:XReplyExpansionAttempt}
+export interface XPointerPreflight {
+ actionIndex:number;targetPostId:string;controlKind:'body_expand'|'article_entry'|'replies_expand';binding:XControlBinding;
+ diagnostic:Readonly<import('../browser/pointerPreflightDiagnostic').PointerPreflightDiagnostic>;
+}
 export interface XReadDiagnostics {
+ pointerPreflights?:{totalAttempts:number;omittedAttempts:number;first:XPointerPreflight;last:XPointerPreflight};
   replyExpansions?:XReplyExpansions;
   /** Counts authenticated failed click attempts, independently of all issued actions. */
   clickFailures?: {totalFailures:number; first?:XClickFailure; last?:XClickFailure; omittedFailures:number};

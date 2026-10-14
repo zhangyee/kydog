@@ -393,3 +393,55 @@ it('captures only original refused hit geometry and phase context after the sole
   expect(f.run('validate')).toMatchObject({ok:false,reason:'intercepted',pointerFailure:{targetTag:'BUTTON',refusalContext:null}});
  }finally{f.window.close();}
 });
+
+
+function preflightFixture() {
+ const f=fixture(),permission={owner:'x',token:'original',purpose:'body'};
+ f.run('begin_collected',{owner:'x',namespace:'n'});
+ f.window.eval(`(${SOURCE})({...${JSON.stringify({op:'remember_collected',namespace:'n',permission,nodeId:7})},el:document.querySelector('#target'),scopes:[{el:document.querySelector('#owner'),semantic:false,members:'button'}]})`);
+ const capture=()=>f.run('capture',{kind:'click',target:{nodeId:7,collectedPermission:permission}});
+ let hits=0;const hit=f.window.document.elementFromPoint.bind(f.window.document);
+ f.window.document.elementFromPoint=(...args)=>{hits++;return hit(...args);};
+ return {...f,capture,hits:()=>hits,reset:()=>{hits=0;}};
+}
+it('collected finalization keeps recurring original NONE pending without hitting and consumes its first actual hit',()=>{
+ const f=preflightFixture();try{
+  expect(f.capture()).toEqual({ok:true});f.reset();
+  expect(f.run('finalize_collected_pointer',{kind:'click'})).toMatchObject({ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true});expect(f.hits()).toBe(1);
+  expect(f.capture()).toEqual({ok:true});f.reset();
+  f.el.style.pointerEvents='none';(f.el.firstElementChild as HTMLElement).style.pointerEvents='auto';
+  for(let i=0;i<2;i++){
+   expect(f.run('finalize_collected_pointer',{kind:'click'})).toEqual({ok:true,phase:'pending',pointerEligibility:'none',hitPerformed:false});
+   expect(f.run('probe_collected_pointer',{kind:'click'})).toEqual({ok:true,phase:'pending',pointerEligibility:'none',hitPerformed:false});
+   expect(f.hits()).toBe(0);f.el.style.pointerEvents='auto';
+   expect(f.run('probe_collected_pointer',{kind:'click'})).toEqual({ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false});expect(f.hits()).toBe(0);
+   f.el.style.pointerEvents='none';
+  }
+  f.el.style.pointerEvents='auto';expect(f.run('finalize_collected_pointer',{kind:'click'})).toMatchObject({ok:true,phase:'validated',hitPerformed:true});expect(f.hits()).toBe(1);
+  expect(f.run('finalize_collected_pointer',{kind:'click'})).toMatchObject({ok:false,phase:'terminal',hitPerformed:false});expect(f.hits()).toBe(1);
+ }finally{f.window.close();}
+});
+it.each((['cover','unknown','unreadable','namespace','replacement','scope-members','scope-detach','semantic','label','form','generation','url','expiry'] as const).flatMap(change=> (change==='cover'?['finalize_collected_pointer']:['probe_collected_pointer','finalize_collected_pointer']).map(op=>({change,op}))))('collected preflight $op terminalizes $change permanently after a same-case positive first hit',({change,op})=>{
+ const f=preflightFixture();try{
+  expect(f.capture()).toEqual({ok:true});expect(f.run('finalize_collected_pointer',{kind:'click'})).toMatchObject({phase:'validated',hitPerformed:true});expect(f.hits()).toBe(2);
+  expect(f.capture()).toEqual({ok:true});f.reset();const style=f.window.getComputedStyle.bind(f.window);
+  if(change==='cover')f.setHit(f.window.document.body);
+  if(change==='unknown')f.el.style.pointerEvents='painted';
+  if(change==='unreadable')f.window.getComputedStyle=()=>{throw Error('unreadable');};
+  if(change==='namespace')f.run('begin_collected',{owner:'x',namespace:'new'});
+  if(change==='replacement')f.el.replaceWith(f.el.cloneNode(true));
+  if(change==='scope-members')f.el.form!.append(f.window.document.createElement('button'));
+  if(change==='scope-detach')f.el.form!.remove();
+  if(change==='semantic')f.el.setAttribute('aria-label','changed');
+  if(change==='label')f.window.document.querySelector('#label')!.textContent='changed';
+  if(change==='form')f.el.form!.action='/changed';
+  if(change==='generation')f.world.gen='new';
+  if(change==='url')f.window.history.pushState({},'', '/other');
+  const extra=change==='expiry'?{notAfter:Date.now()-1}:{};
+  expect(f.run(op,{kind:'click',...extra})).toMatchObject({ok:false,phase:'terminal',hitPerformed:change==='cover'});
+  expect(f.hits()).toBe(change==='cover'?1:0);
+  f.window.getComputedStyle=style;f.el.style.pointerEvents='auto';f.setHit(f.el.firstElementChild);f.world.gen='document';f.window.history.pushState({},'', '/');
+  expect(f.run('finalize_collected_pointer',{kind:'click'})).toMatchObject({ok:false,phase:'terminal',hitPerformed:false});
+  expect(f.run('probe_collected_pointer',{kind:'click'})).toMatchObject({ok:false,phase:'terminal',hitPerformed:false});expect(f.hits()).toBe(change==='cover'?1:0);
+ }finally{f.window.close();}
+});

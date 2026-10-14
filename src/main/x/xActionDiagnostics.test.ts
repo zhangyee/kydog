@@ -3,6 +3,7 @@ import {expect,it} from 'vitest';
 import {fixture,post,searchHtml,searchInput} from '../../test-support/xResearchFixture';
 import {readX} from './xResearchRead';
 import {KydogError} from '../../shared/errors';
+import {sealPointerPreflight,isPointerPreflight,pointerPreflightSchema} from '../browser/pointerPreflightDiagnostic';
 import {retainPointerFailure} from '../browser/pointerDiagnostic';
 import {readHtml} from '../../test-support/xResearchFixture';
 import {searchX} from './xResearchSearch';
@@ -26,8 +27,9 @@ async function result(){
 }
 async function pointerResult(){
  const f=fixture([readHtml(post().replace('</article>','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button></article>'))]);
- f.act.mockImplementation(async(action,snapshot)=>{
+ f.act.mockImplementation(async(action,snapshot,options)=>{
   const snap=snapshot as import('../browser/snapshot').AxSnapshot,node=snap.nodes.find(n=>n.index===action.index)!;
+  (options as any)?.onPointerPreflight?.(sealPointerPreflight({phase:'collected_preflight',tabId:'research-tab',snapshotId:snap.snapshotId,generation:snap.generation,nodeId:node.nodeId,initialState:'auto',finalState:'auto',noneObserved:true,eligibilityReadsIssued:1,probeReadsIssued:1,finalizationsIssued:2,framesObserved:2,finalHitPerformed:true,outcome:'final_hit_refused',unavailableFields:[]}));
   throw retainPointerFailure(new KydogError('browser.click_intercepted','private'),{tabId:'research-tab',snapshotId:snap.snapshotId,generation:snap.generation,nodeId:node.nodeId},'pointer_validate',{
    ok:false,reason:'intercepted',pointerFailure:{point:{x:31,y:47},targetTag:'BUTTON',hitTag:'DIV',targetConnected:true,targetContainsHit:false,hitSameAsCaptured:false,
     rejectGeometry:{targetRect:{x:3,y:4,width:51,height:61},scroll:{x:0,y:0},viewport:{width:1000,height:800}},
@@ -98,5 +100,39 @@ it('preserves canonical diagnostics through physical SDK reopen/branch and insta
   const rows=payload.details.operation==='search'?'queries':'targets';
   expect(JSON.parse(content)[rows][0].diagnostics).toEqual((payload.details as any)[rows][0].diagnostics);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
+ }
+});
+
+it('retains authenticated bounded preflight through model details and rejects spoof or inconsistent binding',async()=>{
+ const r=structuredClone(await pointerResult()),diag=(r.targets[0].diagnostics as any).pointerPreflights;
+ expect(diag).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,controlKind:'body_expand',diagnostic:{noneObserved:true,framesObserved:2,finalHitPerformed:true,outcome:'final_hit_refused'}}});
+ Object.assign(diag.first.diagnostic,{token:'private-preflight'});expect(JSON.stringify(r)).toContain('private-preflight');
+ for(const objective of ['normal','x'.repeat(600000)]){
+  const out=serializeXResearchResult({...r,objective});expect(JSON.parse(out.text).targets[0].diagnostics.pointerPreflights).toEqual((out.result.targets[0].diagnostics as any).pointerPreflights);
+  expect(JSON.stringify(xResearchToolResult(out))).not.toContain('private-preflight');
+ }
+ const bad=structuredClone(r);(bad.targets[0].diagnostics as any).pointerPreflights.first.binding.nodeId++;expect(()=>serializeXResearchResult(bad)).toThrow();
+ const legacy=structuredClone(r);delete (legacy.targets[0].diagnostics as any).pointerPreflights;expect((serializeXResearchResult(legacy).result.targets[0].diagnostics as any).pointerPreflights).toBeUndefined();
+});
+
+it('whole preflight summary has named UTF8 envelope omission and cannot create evidence authority',async()=>{
+ const r=await pointerResult();expect((serializeXResearchResult(r).result.targets[0].diagnostics as any).pointerPreflights).toBeDefined();
+ const minimal=structuredClone(r);delete minimal.targets[0].diagnostics;let lo=100000,hi=400000;
+ while(lo<hi){const mid=Math.ceil((lo+hi)/2);try{serializeXResearchResult({...minimal,objective:'界'.repeat(mid)});lo=mid;}catch{hi=mid-1;}}
+ let capped:ReturnType<typeof serializeXResearchResult<typeof r>>|undefined;
+ for(let margin=50;margin<4000;margin+=50){try{const out=serializeXResearchResult({...r,objective:'界'.repeat(lo-margin)});if(out.result.metadataOmissions?.includes('targets.0.diagnostics.pointerPreflights')){capped=out;break;}}catch{/* marker space */}}
+ expect(capped).toBeDefined();if(!capped)throw Error('omission not reached');
+ expect((capped.result.targets[0].diagnostics as any)?.pointerPreflights).toBeUndefined();expect(JSON.parse(capped.text).metadataOmissions).toContain('targets.0.diagnostics.pointerPreflights');
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)),'utf8')).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+});
+
+it('preflight authentication rejects lookalike receipts and projection validates unavailable and count invariants',async()=>{
+ const {preflightObserver}=await import('./xResearchReadStages');const r=await pointerResult(),row=r.targets[0],saved=row.diagnostics!.pointerPreflights!.first;
+ expect(isPointerPreflight(saved.diagnostic)).toBe(true);expect(Object.isFrozen(saved.diagnostic)).toBe(true);
+ const observer=preflightObserver(row,{kind:saved.controlKind,binding:saved.binding},2);observer(saved.diagnostic);
+ expect(row.diagnostics!.pointerPreflights!.totalAttempts).toBe(2);
+ observer({...saved.diagnostic});expect(row.diagnostics!.pointerPreflights!.totalAttempts).toBe(2);
+ for(const flip of [(v:any)=>v.finalHitPerformed=false,(v:any)=>v.framesObserved=0,(v:any)=>v.finalState='none',(v:any)=>v.unavailableFields=['initialState'],(v:any)=>v.finalizationsIssued=0]){
+  expect(pointerPreflightSchema.safeParse(saved.diagnostic).success).toBe(true);const bad=structuredClone(saved.diagnostic);flip(bad);expect(pointerPreflightSchema.safeParse(bad).success).toBe(false);
  }
 });

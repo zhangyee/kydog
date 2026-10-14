@@ -1,3 +1,4 @@
+import {isPointerPreflight, type PointerPreflightDiagnostic} from '../browser/pointerPreflightDiagnostic';
 import {beginReplyExpansion,observeReplyDiagnostic,replyCollection,replyUsage} from './xReplyExpansionDiagnostics';
 import { logger } from '../log';
 import { admitXSourceRoot } from './xPageSource';
@@ -386,6 +387,7 @@ export async function expandPostBody(
         snapshotId: control.binding.snapshotId,
       },
       observed.snapshot,
+      {onPointerPreflight:preflightObserver(row,control,stage.actionIndex)},
     );
     } catch (error) {
       retainClickFailure(row,control,stage,error,context);
@@ -466,7 +468,7 @@ export async function readDiscussion(
             snapshotId: control.binding.snapshotId,
           },
           observed.snapshot,
-          {onReplyAdmission:receipt=>observeReplyDiagnostic(()=>{if(attempt)attempt.admission={...receipt,binding:{...receipt.binding}};})},
+          {onPointerPreflight:preflightObserver(row,control,stage.actionIndex),onReplyAdmission:receipt=>observeReplyDiagnostic(()=>{if(attempt)attempt.admission={...receipt,binding:{...receipt.binding}};})},
         );
       } catch (error) {
         observeReplyDiagnostic(()=>{if(attempt){attempt.outcome=error instanceof KydogError&&error.code==='browser.cancelled'?'cancelled':'failed';attempt.usageAfter=replyUsage(row);}});
@@ -521,4 +523,17 @@ export function retainClickFailure(row:XReadObservation, control:XPageControl, s
   try { logger.warn('xResearch', control.kind==='article_entry'?'Article pointer interception':control.kind==='replies_expand'?'Reply expansion pointer interception':'Body expansion pointer interception', {
     runId:context.runId,callId:context.callId,batchId:context.batchId,diagnostic,
   }); } catch { /* Observer failures never replace the original refusal. */ }
+}
+
+/** Capture action identity at issue; asynchronous observers never borrow a later stage index. */
+export function preflightObserver(row:XReadObservation,control:Pick<XPageControl,'kind'|'binding'>,actionIndex:number):(value:Readonly<PointerPreflightDiagnostic>)=>void {
+ const binding={...control.binding},targetPostId=row.postId,controlKind=control.kind;
+ return value=>observeReplyDiagnostic(()=>{
+  if(!targetPostId||!isPointerPreflight(value)||value.snapshotId!==binding.snapshotId||value.generation!==binding.generation||value.nodeId!==binding.nodeId)return;
+  const entry={actionIndex,targetPostId,controlKind,binding,diagnostic:value};
+  const diagnostics=row.diagnostics??={version:1};
+  const summaries=diagnostics.pointerPreflights??={totalAttempts:0,omittedAttempts:0,first:entry,last:entry};
+  if(summaries.totalAttempts && summaries.last.actionIndex>=actionIndex)return;
+  summaries.totalAttempts++;summaries.last=entry;summaries.omittedAttempts=Math.max(0,summaries.totalAttempts-2);
+ });
 }

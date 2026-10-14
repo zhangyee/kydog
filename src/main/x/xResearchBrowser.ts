@@ -1,3 +1,4 @@
+import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/pointerPreflightDiagnostic';
 import { randomUUID } from 'node:crypto';
 import { logger } from '../log';
 import { bindXSourceRoot, xSourceRootReleaseExpression, type XSourceRootEnvelope } from './xPageSource';
@@ -12,7 +13,7 @@ import type { XArticleEntry, XControlBinding, XReplyAdmission } from './xResearc
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
 export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }
 export interface XActionResult { action: DispatchAction; line: string; navigation: NavigationObservation | null }
-export interface XActionOptions { onReplyAdmission?: (receipt:XReplyAdmission)=>void; scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: BrowserScrollReceipt) => void;
+export interface XActionOptions { onPointerPreflight?:(receipt:Readonly<PointerPreflightDiagnostic>)=>void; onReplyAdmission?: (receipt:XReplyAdmission)=>void; scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: BrowserScrollReceipt) => void;
   relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} } }
 export interface XQueuedPage {
   snapshot(): Promise<AxSnapshot>;
@@ -163,8 +164,10 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           if (!expected || expected.documentEpoch !== current.documentEpoch || expected.routeRevision !== current.routeRevision || expected.navigationSequence !== current.navigationSequence || expected.currentUrl !== current.currentUrl)
             throw new KydogError('browser.stale_snapshot', '动作必须绑定本次操作内的当前快照');
           let collectedPermission;
+          let originalBinding:XControlBinding|undefined;
           if (permissions.has(snapshot) && action.kind==='click') {
             const owned='index' in action ? permissions.get(snapshot)?.get(action.index) : undefined;
+            originalBinding=owned?.binding;
             collectedPermission=owned && 'index' in action && action.snapshotId===owned.binding.snapshotId ? owned.permission : undefined;
             if (!collectedPermission) throw new KydogError('browser.bad_action','X 控件必须使用原采集节点和许可');
             // Reserve exactly one native pipeline attempt. Keep the empty map so
@@ -175,7 +178,12 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
               catch { /* Optional observers cannot restore permission or replace the action. */ }
             }
           }
-          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission,collectedPointerEligibility:true}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
+          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission,collectedPointerEligibility:true,onPointerPreflight:(receipt:Readonly<PointerPreflightDiagnostic>)=>{
+            try {
+              if(isPointerPreflight(receipt)&&receipt.tabId===tabId&&receipt.snapshotId===originalBinding?.snapshotId&&receipt.generation===originalBinding.generation&&receipt.nodeId===originalBinding.nodeId)
+                options?.onPointerPreflight?.(receipt);
+            }catch{/* Optional observation cannot affect action. */}
+          }}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
           const output = { action: { ...action }, ...result };
           const entry = action.kind==='click' && 'index' in action && action.snapshotId===snapshot.snapshotId
             ? currentEntries.get(snapshot)?.find(e=>e.binding.index===action.index) : undefined;
