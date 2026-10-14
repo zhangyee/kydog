@@ -477,7 +477,11 @@ it.each(['throw','false'] as const)('retains already admitted read row and seria
     expect(serialized.result.targets[0].root?.text).toBe('original');
     expect(model.targets[0].diagnostics.firstAdmittedFrame.sourceRootState).toEqual(row.diagnostics?.firstAdmittedFrame?.sourceRootState);
     expect(model.targets[0].root.sourceUrl).toBe(url);
-    expect(log).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+    const receipt=row.diagnostics?.sourceFailure;
+    expect(receipt).toMatchObject({purpose:'x_source_release',phase:'release',cause:mode==='throw'?'wrapper_failure':'invalid_release_receipt',nativeSettlement:'not_observed'});
+    expect(model.targets[0].diagnostics.sourceFailure).toEqual(receipt);
+    expect(serialized.result.targets[0].diagnostics?.sourceFailure).toEqual(receipt);
+    expect(log).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{...receipt,workFailed:false,sourceUsed:true,failureCategory:mode==='throw'?'evaluation_rejected':'invalid_release_receipt'});
     const publicControl=structuredClone(good);publicControl.objective='private_raw_error_token';
     expect(serializeXResearchResult(publicControl).text).toContain('private_raw_error_token');
     expect(serialized.text).not.toContain('private_raw_error_token');

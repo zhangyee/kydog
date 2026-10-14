@@ -1,3 +1,4 @@
+import {getSourceFailure} from './xSourceDiagnostics';
 import type {BrowserScrollReceipt} from '../browser/actions';
 import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} from './xScrollRecovery';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
@@ -176,6 +177,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
         }
       });
     } catch(error) {
+      const sourceFailure=getSourceFailure(error);if(sourceFailure)(row.diagnostics??={version:1}).sourceFailure=sourceFailure;
       const problem=failure(error,stage);row.status=row.posts.length && problem.status!=='cancelled'?'partial':problem.status;row.stopReason=problem.stopReason;halted=problem.status==='cancelled'?'cancelled':problem.internal || (error instanceof KydogError && ['browser.no_tab','browser.not_dispatchable'].includes(error.code))?'other':false;
       row.barrier={status:problem.status,reason:problem.reason??(problem.internal?`internal_adapter_error:${stage}`:`${stage}_failed${error instanceof KydogError?':'+error.code:''}`),observationId:null};
     }

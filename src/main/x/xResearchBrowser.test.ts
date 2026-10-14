@@ -248,7 +248,7 @@ it.each(['normal','cancel','gone','cancel_gone','evalthrow','release_throw','rel
           expect(first.diagnosticFrame?.sourceRootState?.root.connection).toBe('connected');
           await page.collect(request);expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
         })).rejects.toMatchObject({code:'x.invalid_page',message:'Source root diagnostic cleanup failed'});
-        expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+        expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',expect.objectContaining({phase:'release',failureCategory:'evaluation_rejected',purpose:'x_source_release',workFailed:false,sourceUsed:true}));
         expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
         evaluate(xSourceRootReleaseExpression(String(evaluate('window.__kydogXRootState.lease'))));
         errorLog.mockClear();events.length=0;reads=0;cleanupOracle=false;
@@ -277,15 +277,77 @@ it.each(['normal','cancel','gone','cancel_gone','evalthrow','release_throw','rel
         expect(events).toEqual(mode==='gone'?['driving','issued_settled','driving_end','next_queue']:['driving','issued_settled','release','driving_end','next_queue']);
       }else if(mode.startsWith('release_')){
         await expect(running).rejects.toMatchObject({code:'x.invalid_page',message:'Source root diagnostic cleanup failed'});
-        expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
+        expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',expect.objectContaining({phase:'release',failureCategory:mode==='release_false'?'invalid_release_receipt':'evaluation_rejected',purpose:'x_source_release',workFailed:false,sourceUsed:true}));
         expect(evaluate('!!window.__kydogXRootState.anchor')).toBe(true);
         evaluate(xSourceRootReleaseExpression(String(evaluate('window.__kydogXRootState.lease'))));
       }else await running;
       if(mode!=='gone'&&mode!=='cancel_gone') expect(evaluate('window.__kydogXRootState')).toBeUndefined();
-      if(mode==='cancel_gone') expect(errorLog).not.toHaveBeenCalled();
+      if(mode==='cancel_gone') expect(errorLog).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',expect.objectContaining({cause:'observed_realm_unavailable',phase:'release',workFailed:true}));
       if(mode==='newlease') await port.withPage('tab',undefined,async page=>{
         const fresh=await page.collect(request);expect(fresh.diagnosticFrame?.sourceRootState).toBeUndefined();admitXSourceRoot(fresh);
         expect(fresh.diagnosticFrame?.sourceRootState?.anchorSnapshotId).toBe(fresh.snapshot.snapshotId);
       });
     }finally{releasedOperation();errorLog.mockRestore();dom.window.close();}
   });
+
+it.each(['prepare','evaluate','decode'] as const)('retains authenticated collection phase %s and preserves error/privacy',async phase=>{
+ const {getSourceFailure}=await import('./xSourceDiagnostics');
+ const f=fixture(),port=createXResearchBrowser(f.browser,'thread');
+ const error=new KydogError('browser.page_no_result','SECRET_ERROR');
+ f.browser.prepareForDomRead=async()=>{if(phase==='prepare')throw error;};
+ f.browser.evalInPage=async(_id,code)=>{
+  if(String(code).startsWith('/* kydog-x-root-release */'))return {released:true};
+  if(phase==='evaluate')throw error;
+  return {secret:'SECRET_VALUE'};
+ };
+ const caught=await port.withPage('tab',undefined,page=>page.collect({stage:'post',postId:'123',expectedUrl:f.facts.currentUrl})).catch(e=>e);
+ if(phase!=='decode')expect(caught).toBe(error);
+ expect(getSourceFailure(caught)).toMatchObject({purpose:'x_collect',tabId:'tab',phase,cause:'wrapper_failure',nativeSettlement:'not_observed',nativeSettlementObserved:false});
+ const receipt=getSourceFailure(caught)!;
+ expect(receipt.ownerId).not.toBe(receipt.operationId);
+ expect(getSourceFailure(Object.assign(new Error('spoof'),{sourceFailure:receipt}))).toBeUndefined();
+ expect(JSON.stringify(receipt)).not.toMatch(/SECRET_|https/);
+});
+
+it.each(['false','malformed','rejection','unavailable'] as const)('cleanup %s preserves cause and safe logger failures never replace work outcomes',async mode=>{
+ const {getSourceFailure}=await import('./xSourceDiagnostics');
+ const f=fixture(),port=createXResearchBrowser(f.browser,'thread');
+ const original=Error('SECRET_ORIGINAL');
+ f.browser.prepareForDomRead=async()=>{};
+ f.browser.evalInPage=async(_id,code)=>{
+  if(String(code).startsWith('/* kydog-x-root-release */')){
+   if(mode==='rejection')throw Error('SECRET_RELEASE');
+   if(mode==='unavailable')throw new KydogError('browser.no_tab','SECRET_REALM');
+   return mode==='false'?{released:false}:{other:true};
+  }
+  throw original;
+ };
+ const spy=vi.spyOn(logger,'error').mockImplementation(()=>{});
+ try{
+  const run=(workFailed:boolean)=>port.withPage('tab',undefined,async page=>{try{await page.collect({stage:'post',postId:'123',expectedUrl:f.facts.currentUrl});}catch(error){if(workFailed)throw error;}return 42;});
+  await expect(run(true)).rejects.toBe(original);
+  const collection=getSourceFailure(original)!;
+  expect(spy).toHaveBeenLastCalledWith('x_research','source_root_cleanup_failed',expect.objectContaining({ownerId:collection.ownerId,purpose:'x_source_release',workFailed:true,sourceUsed:true,cause:mode==='false'||mode==='malformed'?'invalid_release_receipt':mode==='unavailable'?'observed_realm_unavailable':'wrapper_failure'}));
+  expect(JSON.stringify(spy.mock.calls)).not.toContain('SECRET');
+  spy.mockImplementation(()=>{throw Error('LOGGER');});
+  await expect(run(true)).rejects.toBe(original);
+  if(mode==='unavailable')await expect(run(false)).resolves.toBe(42);
+  else{
+   const failure=await run(false).catch(e=>e);
+   expect(failure).toMatchObject({code:'x.invalid_page'});
+   expect(getSourceFailure(failure)).toMatchObject({purpose:'x_source_release',phase:'release',cause:mode==='rejection'?'wrapper_failure':'invalid_release_receipt'});
+  }
+ }finally{spy.mockRestore();}
+});
+
+it('cleanup reusing the primary error object cannot overwrite its collection receipt',async()=>{
+ const {getSourceFailure}=await import('./xSourceDiagnostics');
+ const f=fixture(),port=createXResearchBrowser(f.browser,'thread'),error=Error('same native error');
+ f.browser.prepareForDomRead=async()=>{};f.browser.evalInPage=async()=>{throw error;};
+ const log=vi.spyOn(logger,'error').mockImplementation(()=>{});
+ try{
+  await expect(port.withPage('tab',undefined,page=>page.collect({stage:'post',postId:'123',expectedUrl:f.facts.currentUrl}))).rejects.toBe(error);
+  expect(getSourceFailure(error)).toMatchObject({purpose:'x_collect',phase:'evaluate'});
+  expect(log).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',expect.objectContaining({purpose:'x_source_release',phase:'release',workFailed:true}));
+ }finally{log.mockRestore();}
+});

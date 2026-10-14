@@ -1,3 +1,4 @@
+import {observeSourceDeadline,observeSourceNative,type SourceEvaluation} from './sourceEvaluationDiagnostic';
 import {
   BrowserWindow, WebContentsView, session,
   type WebContents, type Session, type DownloadItem,
@@ -1782,22 +1783,23 @@ export class BrowserService {
    * 所以这条错说的是「结果未知」，**不是「没有发生」**——「没有发生」只有页面把
    * `expired` 送回来的时候才成立（见 `interactError` 的那一格）。
    */
-  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string), ceiling = Infinity, issued?: Set<Promise<unknown>>): Promise<unknown> {
+  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string), ceiling = Infinity, issued?: Set<Promise<unknown>>, provenance?: SourceEvaluation): Promise<unknown> {
     // **一个到点时刻，两边共用。** 页面那道自检与这里的定时器各算各的话，守卫要么
     // 提前把好的求值废掉、要么晚到根本不挡。
     const notAfter = Math.min(Date.now() + PAGE_EVAL_TIMEOUT_MS, ceiling);
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<never>((_res, rej) => {
-      timer = setTimeout(() => rej(new KydogError('browser.page_no_result',
+      timer = setTimeout(() => { const error=new KydogError('browser.page_no_result',
         `标签 ${tabId} 的页面在 ${PAGE_EVAL_TIMEOUT_MS} 毫秒内没有回应这次求值 —— `
         + '它要么正被自己的脚本占着主线程，要么已经不回话了。'
         + '**这一步到底生效了没有，我们不知道**：这次求值取消不掉，页面回过神来还会执行它'
         + '（写页面的那条路带着同一个时限自检，过期就自己不做，但卡在到点那一刻的窗口里仍可能已经落地）。'
         + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。',
-        undefined, 'unknown')), Math.max(0, notAfter - Date.now()));
+        undefined, 'unknown'); observeSourceDeadline(provenance,error);rej(error); }, Math.max(0, notAfter - Date.now()));
     });
     const operation=wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
       [{ code: typeof code === 'string' ? code : code(notAfter) }]);
+    if(provenance)void operation.then(()=>observeSourceNative(provenance,'resolved'),error=>observeSourceNative(provenance,'rejected',error));
     if(issued){issued.add(operation);void operation.then(()=>issued.delete(operation),()=>issued.delete(operation));}
     return Promise.race([operation,deadline]).finally(() => { if (timer) clearTimeout(timer); });
   }
@@ -1814,11 +1816,11 @@ export class BrowserService {
    * 调用方自己 `Date.now() + PAGE_EVAL_TIMEOUT_MS` 会与这里的定时器差开一小段，
    * 守卫要么提前把好的求值废掉、要么晚到根本不挡。
    */
-  async evalInPage(tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown> {
+  async evalInPage(tabId: string, code: string | ((notAfter: number) => string), provenance?: SourceEvaluation): Promise<unknown> {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     BrowserService.assertRenderProcess(tabId, wc);
-    return this.evalOn(wc, tabId, code);
+    return this.evalOn(wc, tabId, code, Infinity, undefined, provenance);
   }
 
   // ── 动作派发（spec §4.2）──────────────────────────────────────────────────

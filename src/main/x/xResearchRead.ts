@@ -1,3 +1,4 @@
+import {getSourceFailure} from './xSourceDiagnostics';
 import { readArticle } from './xResearchArticle';
 import {
   beginReadNavigation,
@@ -473,6 +474,7 @@ export async function readX(
           reason: 'not_attempted:auth_required',
         };
     } catch (error) {
+      const sourceFailure=getSourceFailure(error);if(sourceFailure)(row.diagnostics??={version:1}).sourceFailure=sourceFailure;
       const problem = failure(error, stage.current);
       row.status =
         row.root && problem.status !== 'cancelled' ? 'partial' : problem.status;

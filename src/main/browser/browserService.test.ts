@@ -4827,3 +4827,99 @@ describe('collected first-hit preflight recovery',()=>{
  });
 
 });
+
+
+describe('source evaluation provenance at raw Electron Promise boundary',()=>{
+ it.each(['resolved','rejected'] as const)('deadline retains wrapper error and later %s native receipt',async settlement=>{
+  vi.useFakeTimers();
+  const {createSourceEvaluation,sourceEvaluationFailure}=await import('./sourceEvaluationDiagnostic');
+  const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+  let resolve!:(v:unknown)=>void,reject!:(e:unknown)=>void;
+  wc.isolatedImpl=()=>new Promise((a,b)=>{resolve=a;reject=b;});
+  const context=createSourceEvaluation('owner',id,'x_collect');
+  const pending=svc.evalInPage(id,'SECRET_EXPRESSION',context).catch(e=>e);
+  await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+  const error=await pending;
+  expect(error).toMatchObject({code:'browser.page_no_result',outcome:'unknown'});
+  expect(sourceEvaluationFailure(context,error)).toEqual({cause:'main_deadline',nativeSettlement:'not_observed',nativeSettlementObserved:false});
+  expect(H.logs.find(l=>l.msg==='source_evaluation_failed')?.ctx).toMatchObject({ownerId:'owner',operationId:context.operationId,purpose:'x_collect',tabId:id,cause:'main_deadline',nativeSettlementObserved:false});
+  if(settlement==='resolved')resolve({secret:'SECRET_NATIVE_VALUE'});else reject(new Error('SECRET_ERROR'));
+  await Promise.resolve();await Promise.resolve();
+  expect(H.logs.find(l=>l.msg==='source_evaluation_native_settled')?.ctx).toMatchObject({ownerId:'owner',operationId:context.operationId,purpose:'x_collect',tabId:id,afterDeadline:true,nativeSettlement:settlement});
+  expect(JSON.stringify(H.logs)).not.toMatch(/SECRET_/);
+ });
+ it('native rejection preserves exact error; normal resolution and logger faults preserve values',async()=>{
+  const {createSourceEvaluation,sourceEvaluationFailure}=await import('./sourceEvaluationDiagnostic');
+  const {logger}=await import('../log');
+  const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+  const error=Object.assign(new Error('PRIVATE'),{cause:'main_deadline',code:'browser.page_no_result'}),context=createSourceEvaluation('owner',id,'x_source_release');
+  wc.isolatedImpl=()=>Promise.reject(error);
+  await expect(svc.evalInPage(id,'PRIVATE',context)).rejects.toBe(error);
+  expect(sourceEvaluationFailure(context,error)).toEqual({cause:'native_rejection',nativeSettlement:'rejected',nativeSettlementObserved:true});
+  expect(sourceEvaluationFailure(context,{...error})).toBeUndefined();
+  expect(H.logs.find(l=>l.msg==='source_evaluation_native_settled')?.ctx).toMatchObject({afterDeadline:false,nativeSettlement:'rejected'});
+  const spy=vi.spyOn(logger,'info').mockImplementation(()=>{throw Error('LOGGER');});
+  try{
+   const value={secret:'PRIVATE'},success=createSourceEvaluation('owner',id,'x_collect');
+   wc.isolatedImpl=()=>Promise.resolve(value);
+   await expect(svc.evalInPage(id,'PRIVATE',success)).resolves.toBe(value);
+   expect(sourceEvaluationFailure(success,error)).toBeUndefined();
+   wc.isolatedImpl=()=>Promise.reject(error);
+   await expect(svc.evalInPage(id,'PRIVATE',createSourceEvaluation('owner',id,'x_collect'))).rejects.toBe(error);
+  }finally{spy.mockRestore();}
+ });
+});
+
+it.each(['resolved','rejected'] as const)('source adapter records real deadline + cleanup native rejection then late %s, with owner identity',async late=>{
+ vi.useFakeTimers();
+ const {createXResearchBrowser}=await import('../x/xResearchBrowser');
+ const {getSourceFailure}=await import('../x/xSourceDiagnostics');
+ const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+ vi.spyOn(svc,'prepareForDomRead').mockResolvedValue(undefined);
+ let resolve!:(value:unknown)=>void,reject!:(error:unknown)=>void;
+ const cleanupError=new Error('SECRET_CLEANUP');
+ vi.spyOn(wc,'executeJavaScriptInIsolatedWorld').mockImplementation((_world,scripts)=>wc.isolatedImpl(scripts[0].code));
+ wc.isolatedImpl=code=>code.startsWith('/* kydog-x-root-release */')?Promise.reject(cleanupError):new Promise((a,b)=>{resolve=a;reject=b;});
+ const port=createXResearchBrowser(svc,'thread');
+ const pending=port.withPage(id,undefined,page=>page.collect({stage:'post',postId:'123',expectedUrl:'https://x.com/a/status/123'})).catch(e=>e);
+ await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+ const error=await pending,receipt=getSourceFailure(error)!;
+ expect(receipt).toMatchObject({purpose:'x_collect',phase:'evaluate',cause:'main_deadline',nativeSettlement:'not_observed',nativeSettlementObserved:false});
+ const cleanup=H.logs.find(l=>l.msg==='source_root_cleanup_failed')?.ctx;
+ expect(cleanup).toMatchObject({ownerId:receipt.ownerId,tabId:id,purpose:'x_source_release',phase:'release',cause:'native_rejection',failureCategory:'evaluation_rejected',nativeSettlement:'rejected',workFailed:true,sourceUsed:true});
+ expect((cleanup as {operationId:string}).operationId).not.toBe(receipt.operationId);
+ if(late==='resolved')resolve('SECRET_VALUE');else reject(Error('SECRET_ERROR'));
+ await Promise.resolve();await Promise.resolve();
+ expect(H.logs.find(l=>l.msg==='source_evaluation_native_settled'&&(l.ctx as {afterDeadline:boolean}).afterDeadline)?.ctx).toMatchObject({ownerId:receipt.ownerId,operationId:receipt.operationId,nativeSettlement:late,afterDeadline:true});
+ expect(getSourceFailure(error)).toBe(receipt);
+ expect(receipt.nativeSettlement).toBe('not_observed');
+ expect(JSON.stringify(H.logs)).not.toContain('SECRET');
+});
+
+it.each(['rejection','deadline'] as const)('successful source work preserves canonical release %s cause through real evalOn',async mode=>{
+ vi.useFakeTimers();
+ const {JSDOM}=await import('jsdom');
+ const {createXResearchBrowser}=await import('../x/xResearchBrowser');
+ const {getSourceFailure}=await import('../x/xSourceDiagnostics');
+ const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+ const url='https://x.com/a/status/123';wc.url=url;
+ const dom=new JSDOM('<main><article data-testid="tweet"><div data-testid="User-Name"><a href="/a">A</a></div><div data-testid="tweetText">Body</div><a href="/a/status/123"><time>today</time></a></article></main>',{url,runScripts:'outside-only'});
+ Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+ vi.spyOn(svc,'prepareForDomRead').mockResolvedValue(undefined);
+ let completeRelease!:(value:unknown)=>void;
+ vi.spyOn(wc,'executeJavaScriptInIsolatedWorld').mockImplementation((_world,scripts)=>{
+  const code=scripts[0].code;
+  if(code.startsWith('/* kydog-x-root-release */'))return mode==='rejection'?Promise.reject(Error('PRIVATE')):new Promise(resolve=>{completeRelease=resolve;});
+  return Promise.resolve(dom.window.eval(code));
+ });
+ try{
+  const port=createXResearchBrowser(svc,'thread');
+  const pending=port.withPage(id,undefined,async page=>{const observation=await page.collect({stage:'post',postId:'123',expectedUrl:url});expect(observation.snapshot).toBeDefined();return 42;}).catch(e=>e);
+  await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+  const error=await pending,receipt=getSourceFailure(error)!;
+  expect(error).toMatchObject({code:'x.invalid_page'});
+  expect(receipt).toMatchObject({purpose:'x_source_release',phase:'release',cause:mode==='rejection'?'native_rejection':'main_deadline',nativeSettlement:mode==='rejection'?'rejected':'not_observed'});
+  expect(H.logs.find(l=>l.msg==='source_root_cleanup_failed')?.ctx).toMatchObject({...receipt,workFailed:false,sourceUsed:true,failureCategory:'evaluation_rejected'});
+  if(mode==='deadline'){completeRelease({released:true});await Promise.resolve();expect(getSourceFailure(error)).toBe(receipt);expect(receipt.nativeSettlement).toBe('not_observed');}
+ }finally{dom.window.close();}
+});

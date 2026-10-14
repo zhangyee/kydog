@@ -1,3 +1,4 @@
+import {sourceFailureSchema} from './xSourceDiagnostics';
 import {pointerPreflightSchema} from '../browser/pointerPreflightDiagnostic';
 import {replyExpansionsSchema} from './xReplyExpansionDiagnostics';
 import {z} from 'zod';
@@ -23,7 +24,7 @@ const recoveryAttempt=recoveryBinding.extend({actionIndex:count.positive(),colle
 });
 const recoveries=z.object({totalRecoveries:count.positive(),omittedRecoveries:count,first:recoveryAttempt,last:recoveryAttempt}).refine(v=>v.omittedRecoveries===Math.max(0,v.totalRecoveries-2)
  && v.last.actionIndex-v.first.actionIndex>=v.totalRecoveries-1 && (v.totalRecoveries!==1||JSON.stringify(v.first)===JSON.stringify(v.last)));
-const search=z.object({version:z.literal(1),scroll:scroll.optional(),scrollRecovery:recoveries.optional()});
+const search=z.object({version:z.literal(1),sourceFailure:sourceFailureSchema.optional(),scroll:scroll.optional(),scrollRecovery:recoveries.optional()});
 const relation=z.enum(['same_cell','focal_contains_control','control_contains_focal','different_cell','unknown']);
 const diagnostic=z.unknown().transform(projectPointerDiagnostic);
 const click=z.object({actionIndex:count.positive(),targetPostId:z.string().regex(/^\d+$/),controlKind:z.enum(['body_expand','article_entry','replies_expand']),binding:z.object({index:count,nodeId:count,snapshotId:id,generation:id}),sourceRelation:relation,diagnostic}).refine(v=>v.binding.snapshotId===v.diagnostic.snapshotId&&v.binding.generation===v.diagnostic.generation&&v.binding.nodeId===v.diagnostic.nodeId);
@@ -35,6 +36,7 @@ const legacy=z.object({actionIndex:count.positive(),targetPostId:z.string().rege
 export function projectActionDiagnostics<T extends XResearchResult>(value:T):T {
  if(value.operation==='search')return {...value,queries:value.queries.map(row=>({...row,...(row.diagnostics?{diagnostics:search.parse(row.diagnostics)}:{})}))};
  return {...value,targets:value.targets.map(row=>({...row,...(row.diagnostics?{diagnostics:{...row.diagnostics,
+  ...(row.diagnostics.sourceFailure?{sourceFailure:sourceFailureSchema.parse(row.diagnostics.sourceFailure)}:{}),
   ...(row.diagnostics.scrollRecovery?{scrollRecovery:recoveries.parse(row.diagnostics.scrollRecovery)}:{}),
   ...(row.diagnostics.pointerPreflights?{pointerPreflights:preflights.parse(row.diagnostics.pointerPreflights)}:{}),
   ...(row.diagnostics.replyExpansions?{replyExpansions:replyExpansionsSchema.parse(row.diagnostics.replyExpansions)}:{}),

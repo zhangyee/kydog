@@ -81,7 +81,7 @@ it('drops bounded search diagnostics with precise paths near the complete UTF8 e
 it('preserves canonical diagnostics through physical SDK reopen/branch and installed provider model content',async()=>{
  const replyFixture=replyContinuationFixture();
  let reply;try{reply=await replyFixture.run();}finally{replyFixture.close();}
- for(const raw of [await result(),await pointerResult(),reply,withRecovery(await result()),withRecovery(await pointerResult())]){
+ for(const raw of [await result(),await pointerResult(),reply,withRecovery(await result()),withRecovery(await pointerResult()),await sourceFailureResult('read'),await sourceFailureResult('search')]){
  const payload=xResearchToolResult(serializeXResearchResult(raw));
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'kydog-action-diag-'));
  try{
@@ -210,4 +210,59 @@ it('projects expiry before the first issued recovery collection as unobserved, n
  expect(saved).toMatchObject({collectCount:0,newIdentityCount:0,outcome:'expired'});
  expect(saved.firstCollection).toBeUndefined();expect(saved.lastCollection).toBeUndefined();
  summary.first!.newIdentityCount=1;expect(()=>serializeXResearchResult(raw)).toThrow();
+});
+
+it('projects source failure strictly, rejects illegal phases, and preserves legacy absence',async()=>{
+ const raw=await result();
+ const sourceFailure={ownerId:'owner',operationId:'operation',tabId:'tab',purpose:'x_collect' as const,phase:'evaluate' as const,cause:'main_deadline' as const,nativeSettlement:'not_observed' as const,nativeSettlementObserved:false};
+ raw.queries[0].diagnostics={version:1,sourceFailure:{...sourceFailure,secret:'SECRET'} as never};
+ const out=serializeXResearchResult(raw);
+ expect(out.result.queries[0].diagnostics?.sourceFailure).toEqual(sourceFailure);
+ expect(JSON.parse(out.text).queries[0].diagnostics.sourceFailure).toEqual(sourceFailure);
+ expect(JSON.stringify(xResearchToolResult(out))).not.toContain('SECRET');
+ for(const mutation of [{phase:'decode'},{purpose:'x_source_release'},{cause:'native_rejection'},{nativeSettlementObserved:true},{cause:'invalid_release_receipt'},{code:'SECRET_CODE'},{operationId:'https://secret'}]){
+  raw.queries[0].diagnostics.sourceFailure={...sourceFailure,...mutation} as never;
+  expect(()=>serializeXResearchResult(raw)).toThrow();
+ }
+ delete raw.queries[0].diagnostics.sourceFailure;
+ expect(serializeXResearchResult(raw).result.queries[0].diagnostics?.sourceFailure).toBeUndefined();
+});
+
+async function sourceFailureResult(operation:'search'|'read'){
+ const {createSourceEvaluation,observeSourceNative}=await import('../browser/sourceEvaluationDiagnostic');
+ const {retainSourceFailure}=await import('./xSourceDiagnostics');
+ const f=fixture([readHtml(post())]),error=Error('PRIVATE_NATIVE_ERROR');
+ const context=createSourceEvaluation('owner','research-tab','x_collect');
+ observeSourceNative(context,'rejected',error);retainSourceFailure(error,context,'evaluate');
+ f.collect.mockRejectedValue(error);
+ // The fake queued port forwards the actual host-authenticated error unchanged.
+ return operation==='search'?searchX(searchInput,f.context):readX({tabId:'research-tab',read:{objective:'failure',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+}
+it.each(['read','search'] as const)('retains authenticated %s source failures without initial frames, ignores error property spoof',async operation=>{
+ const r=await sourceFailureResult(operation);
+ const row=r.operation==='read'?r.targets[0]:r.queries[0];
+ expect(row.diagnostics?.sourceFailure).toMatchObject({ownerId:'owner',tabId:'research-tab',purpose:'x_collect',phase:'evaluate',cause:'native_rejection',nativeSettlement:'rejected'});
+ for(const objective of ['normal','x'.repeat(600000)]){
+  const out=serializeXResearchResult({...r,objective});
+  const key=r.operation==='read'?'targets':'queries';
+  expect(JSON.parse(out.text)[key][0].diagnostics.sourceFailure).toEqual(row.diagnostics!.sourceFailure);
+  expect(JSON.stringify(xResearchToolResult(out))).not.toContain('PRIVATE_NATIVE_ERROR');
+ }
+ const f=fixture([readHtml(post())]);f.collect.mockRejectedValue(Object.assign(Error('fake'),{sourceFailure:row.diagnostics!.sourceFailure}));
+ const spoof=operation==='search'?await searchX(searchInput,f.context):await readX({tabId:'research-tab',read:{objective:'failure',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+ expect((spoof.operation==='read'?spoof.targets[0]:spoof.queries[0]).diagnostics?.sourceFailure).toBeUndefined();
+});
+it.each(['read','search'] as const)('sourceFailure %s omission is exact under the complete UTF8 one MiB SDK envelope',async operation=>{
+ const raw=await sourceFailureResult(operation),key=raw.operation==='read'?'targets':'queries';
+ const row=raw.operation==='read'?raw.targets[0]:raw.queries[0];
+ expect(row.diagnostics?.sourceFailure).toBeDefined();
+ const minimal=structuredClone(raw);delete (minimal.operation==='read'?minimal.targets[0]:minimal.queries[0]).diagnostics;
+ let lo=600000,hi=X_RESEARCH_MAX_OUTPUT_BYTES;
+ while(lo<hi){const mid=Math.ceil((lo+hi)/2);try{serializeXResearchResult({...minimal,objective:'x'.repeat(mid)});lo=mid;}catch{hi=mid-1;}}
+ let capped:ReturnType<typeof serializeXResearchResult>|undefined;
+ for(let margin=50;margin<=2000;margin+=50){try{const out=serializeXResearchResult({...raw,objective:'x'.repeat(lo-margin)});if(out.result.metadataOmissions?.includes(`${key}.0.diagnostics.sourceFailure`)){capped=out;break;}}catch{/* marker space */}}
+ expect(capped).toBeDefined();if(!capped)throw Error('source omission not reached');
+ expect(JSON.parse(capped.text).metadataOmissions).toContain(`${key}.0.diagnostics.sourceFailure`);
+ expect((capped.result.operation==='read'?capped.result.targets[0]:capped.result.queries[0]).diagnostics?.sourceFailure).toBeUndefined();
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
 });

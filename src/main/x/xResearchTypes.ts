@@ -164,7 +164,7 @@ export interface XCollectionTransition {
   outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';
 }
 export interface XSearchObservation {
-  diagnostics?: { version: 1; scroll?: XScrollDiagnostics; scrollRecovery?: XScrollRecoveries };
+  diagnostics?: { version: 1; sourceFailure?: import('./xSourceDiagnostics').XSourceFailure; scroll?: XScrollDiagnostics; scrollRecovery?: XScrollRecoveries };
   query: XSearchQuery;
   collectionTransitions: XCollectionTransition[];
   status: XResearchStatus;
@@ -294,6 +294,7 @@ export interface XPointerPreflight {
  diagnostic:Readonly<import('../browser/pointerPreflightDiagnostic').PointerPreflightDiagnostic>;
 }
 export interface XReadDiagnostics {
+ sourceFailure?:import('./xSourceDiagnostics').XSourceFailure;
  scrollRecovery?:XScrollRecoveries;
  pointerPreflights?:{totalAttempts:number;omittedAttempts:number;first:XPointerPreflight;last:XPointerPreflight};
   replyExpansions?:XReplyExpansions;

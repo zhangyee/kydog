@@ -1,6 +1,7 @@
 import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/pointerPreflightDiagnostic';
 import { randomUUID } from 'node:crypto';
-import { logger } from '../log';
+import {createSourceEvaluation,logSourceDiagnostic} from '../browser/sourceEvaluationDiagnostic';
+import {logSourceCollectionFailure,sourceFailureReceipt,retainSourceFailureReceipt,type XSourceFailure} from './xSourceDiagnostics';
 import { bindXSourceRoot, xSourceRootReleaseExpression, type XSourceRootEnvelope } from './xPageSource';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
@@ -79,21 +80,32 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         const value = await Promise.race([operation, stopped]); check(); return value;
       };
       const sourceLease=randomUUID();
+      const ownerId=randomUUID();
       let sourceUsed=false;
       let sourceBinding:string|null=null, sourceCollection:string|null=null, sourceReset=true;
       let sourceCommit:XSourceRootEnvelope['commit'];
       const invalidateSource=()=>{sourceBinding=null;sourceCollection=null;sourceCommit=undefined;sourceReset=true;};
       const releaseSource=async(workFailed:boolean)=>{
-        if(sourceUsed && !realmGone) {
-          try {
-            const released=await browser.evalInPage(tabId,xSourceRootReleaseExpression(sourceLease));
-            if(!released || typeof released!=='object' || (released as {released?:unknown}).released!==true) throw new Error('release');
-          } catch(error) {
-            if(error instanceof KydogError && (error.code==='browser.no_tab' || error.code==='browser.not_dispatchable')) realmGone=true;
-            if(!realmGone) {
-              logger.error('x_research','source_root_cleanup_failed',{phase:'release',code:'active_realm_release_failed'});
-              if(!workFailed) throw new KydogError('x.invalid_page','Source root diagnostic cleanup failed');
-            }
+        if(!sourceUsed)return;
+        const operation=createSourceEvaluation(ownerId,tabId,'x_source_release');
+        const report=(error:unknown,cause:XSourceFailure['cause'])=>{
+          try{const receipt=sourceFailureReceipt(error,operation,'release',cause);
+            logSourceDiagnostic('source_root_cleanup_failed',{...receipt,workFailed,sourceUsed,failureCategory:cause==='wrapper_failure'?'evaluation_rejected':cause},'error');
+          }catch{/* Preserve work and cleanup outcomes even if diagnostics fail. */}
+        };
+        if(realmGone){report(undefined,'observed_realm_unavailable');return;}
+        let cause:XSourceFailure['cause']='wrapper_failure';
+        try {
+          const released=await browser.evalInPage(tabId,xSourceRootReleaseExpression(sourceLease),operation);
+          if(!released || typeof released!=='object' || (released as {released?:unknown}).released!==true){cause='invalid_release_receipt';throw new Error('release');}
+        } catch(error) {
+          if(error instanceof KydogError && (error.code==='browser.no_tab' || error.code==='browser.not_dispatchable')) realmGone=true;
+          report(error,realmGone?'observed_realm_unavailable':cause);
+          if(!realmGone&&!workFailed){
+            const failure=new KydogError('x.invalid_page','Source root diagnostic cleanup failed');
+            // Keep the actual release failure receipt on the existing outward error route.
+            try{const receipt=sourceFailureReceipt(error,operation,'release',cause);retainSourceFailureReceipt(failure,receipt);}catch{/* Optional telemetry. */}
+            throw failure;
           }
         }
       };
@@ -120,10 +132,14 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           const envelope:XSourceRootEnvelope={lease:sourceLease,collectionKey:sourceCollection,binding,reset:sourceReset,...(sourceCommit?{commit:sourceCommit}:{})};
           const expression=xPageExpression(request,envelope);
           sourceReset=false;
+          const operation=createSourceEvaluation(ownerId,tabId,'x_collect');
+          let phase:XSourceFailure['phase']='prepare';
           try {
           await browser.prepareForDomRead(tabId,lifetime.signal); check();
           if(request.stage==='post') sourceUsed=true;
-          const raw = await browser.evalInPage(tabId,expression); check();
+          phase='evaluate';
+          const raw = await browser.evalInPage(tabId,expression,operation); check();
+          phase='decode';
           const after = browser.locationFacts(tabId);
           if (!sameLocation(before,after)) throw new KydogError('browser.stale_snapshot','采集期间页面已导航；需要新观察');
           const navigationProof: XPageNavigationProof = {parentArticle:false};
@@ -156,7 +172,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             entries.set(entry,{tabId,snapshot:observation.snapshot});
           }
           return observation;
-          } catch(error) { invalidateSource();throw error; }
+          } catch(error) { logSourceCollectionFailure(error,operation,phase);invalidateSource();throw error; }
         }),
         act: (action, snapshot, options) => run(async () => {
           if (options?.scrollAcknowledgement && action.kind!=='scroll') throw new KydogError('browser.bad_action','滚动确认只适用于滚动动作');
