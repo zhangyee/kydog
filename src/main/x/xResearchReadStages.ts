@@ -227,6 +227,23 @@ export function savePostFrame(
   ).size;
   return true;
 }
+/** Retain admitted collection facts even when the current focal root is absent. */
+function retainCollectedPostFrame(row: XReadObservation, observed: XPageObservation): void {
+  if(row.replies.requested && observed.unscopedPosts && !observed.root && !observed.article && !observed.state
+    && row.unscopedPosts?.collection.snapshotId!==observed.unscopedPosts.collection.snapshotId) {
+    row.unscopedPosts=observed.unscopedPosts;
+    row.budgetUsage.distinctEntries=new Set([
+      ...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,
+      ...(row.article.body?[row.article.body]:[]),...row.unscopedPosts.observations,
+    ].map(p=>p.postId)).size;
+    // Navigation hints are registered from final serialized canonical details only.
+  }
+  if (observed.diagnosticFrame) {
+    const diagnostics = row.diagnostics ??= {version:1};
+    diagnostics.initialFrame ??= observed.diagnosticFrame;
+    diagnostics.terminalFrame = observed.diagnosticFrame;
+  }
+}
 export async function collectPostFrame(
   page: XQueuedPage,
   request: Extract<XPageRequest, { stage: 'post' }>,
@@ -244,20 +261,7 @@ export async function collectPostFrame(
     stage.collectionBudget,
   );
   checkReadCancelled(context);
-  if(row.replies.requested && observed.unscopedPosts && !observed.root && !observed.article && !observed.state
-    && row.unscopedPosts?.collection.snapshotId!==observed.unscopedPosts.collection.snapshotId) {
-    row.unscopedPosts=observed.unscopedPosts;
-    row.budgetUsage.distinctEntries=new Set([
-      ...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,
-      ...(row.article.body?[row.article.body]:[]),...row.unscopedPosts.observations,
-    ].map(p=>p.postId)).size;
-    // Navigation hints are registered from final serialized canonical details only.
-  }
-  if (observed.diagnosticFrame) {
-    const diagnostics = row.diagnostics ??= {version:1};
-    diagnostics.initialFrame ??= observed.diagnosticFrame;
-    diagnostics.terminalFrame = observed.diagnosticFrame;
-  }
+  retainCollectedPostFrame(row, observed);
   return observed;
 }
 /** Reuse the observed post DOM gate after either explicit parent navigation. */
@@ -536,7 +540,7 @@ export async function readDiscussion(
         if(!isRecoverableScroll(error,receipt,written,observed))throw error;
         const stalled=observed;stage.current='collection';
         const recovered=await recoverXScroll(page,request,stalled,actionIndex,row.diagnostics!,frame=>{
-          if(frame.diagnosticFrame)row.diagnostics!.terminalFrame=frame.diagnosticFrame;
+          retainCollectedPostFrame(row, frame);
           if(readBarrier(row,frame))return{outcome:'barrier',newIdentityCount:0};
           if(!frame.identityProven || !frame.root || frame.root.postId!==stalled.root?.postId || frame.root.sourceUrl!==stalled.root?.sourceUrl)
             return{outcome:'identity_unproven',newIdentityCount:0};

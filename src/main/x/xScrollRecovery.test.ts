@@ -6,7 +6,8 @@ import {BrowserScrollAcknowledgementError,type BrowserScrollReceipt} from '../br
 import type {BrowserDispatchOptions} from '../browser/browserService';
 import {createXResearchBrowser} from './xResearchBrowser';
 import {readX} from './xResearchRead';
-import {serializeXResearchResult} from './xResearchOutput';
+import {serializeXResearchResult,xResearchToolResult} from './xResearchOutput';
+import {XResearchEvidence} from './xResearchEvidence';
 import {searchX,xSearchUrl} from './xResearchSearch';
 import type {XReadRequest} from './xResearchTypes';
 
@@ -279,4 +280,78 @@ it('rechecks the monotonic deadline after acceptance while preserving cancellati
    {stage:'post',expectedUrl:initial.snapshot.url,postId:'123'},initial,1,{},()=>({outcome:'progress',newIdentityCount:1}));
   expect(stopped).toEqual({frame:null,outcome:'expired'});expect(collect).toHaveBeenCalledTimes(0);
  }finally{clock.mockRestore();vi.useRealTimers();}
+});
+
+const recoveryOwnUrl='https://x.com/next/status/402';
+const recoveryCover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
+function replaceRootWithIndependentPosts(f:ReturnType<typeof stallFixture>,cover=true) {
+ // Four raw containers, but only two nonempty independently named bodies.
+ const withCover=(id:string,text:string)=>post(id,'next',text).replace('</article>',(cover?recoveryCover:'')+'</article>');
+ f.container().innerHTML=withCover('402','Independent body after root loss')+post('403','other','Second independent body')
+  +withCover('404','')+post('405','wrong','Rejected author').replace('/wrong/status/405','/different/status/405');
+}
+it('retains independently decoded recovery bodies and own Article gaps before root rejection, including late collections',async()=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
+  for(const delay of [0,8001]){
+   const ledger=new XResearchEvidence('/tmp',()=> 'run'),report='/tmp/x-research-recovery-2026-10-15.md';
+   for(const cover of [false,true]){
+    const f=stallFixture(false,true);try{
+     f.hooks.collect=async()=>{if(f.count().collects===2){await new Promise(resolve=>setTimeout(resolve,delay));replaceRootWithIndependentPosts(f,cover);}};
+     const {result,row}=await f.run();if(!('replies'in row))throw new Error('expected read');
+     expect(f.count()).toEqual({collects:2,scrolls:1,clicks:0});
+     expect(row).toMatchObject({status:'partial',reason:'post_identity_unproven',stopReason:'identity_unproven',
+      root:{postId:'123',sourceUrl:'https://x.com/alice/status/123',text:'original'},
+      replies:{observations:[{postId:'401',text:'original'}],scope:{completeness:'unknown'}},
+      budgetUsage:{scrolls:1,expandActions:0,distinctEntries:4}});
+     expect(row.unscopedPosts?.observations.map(p=>({postId:p.postId,text:p.text,containerKind:p.containerKind,relationToTarget:p.relationToTarget,observedContainer:p.observedContainer}))).toEqual([
+      {postId:'402',text:'Independent body after root loss',containerKind:'unscoped_post',relationToTarget:'unproven',observedContainer:'post'},
+      {postId:'403',text:'Second independent body',containerKind:'unscoped_post',relationToTarget:'unproven',observedContainer:'post'},
+     ]);
+     expect(row.unscopedPosts?.inventory).toEqual({scope:'collection',observed:2,retained:2,omitted:0,sourceInventoryTruncated:false,excludedNestedQuotes:0});
+     if(cover)expect(row.unscopedPosts?.previewGaps).toEqual([{sourceUrl:recoveryOwnUrl,unresolved:1},{sourceUrl:'https://x.com/next/status/404',unresolved:1}]);
+     expect(row.unscopedPosts?.observations[0].articlePreviewInventory).toEqual({scope:'collection',observed:0,retained:0,omitted:0,unresolved:cover?1:0});
+     expect(row.diagnostics).toMatchObject({initialFrame:{rootIdentityProven:true,replyCount:1},firstAdmittedFrame:{rootIdentityProven:true},
+      terminalFrame:{rootIdentityProven:false,inventory:{returned:4},sourceEndDetector:'not_implemented',sourceRootState:{root:{connection:'detached'}}},
+      scrollRecovery:{totalRecoveries:1,first:{collectCount:1,newIdentityCount:0,outcome:'identity_unproven'}}});
+     expect(row.unscopedPosts?.collection).toEqual({snapshotId:row.diagnostics!.terminalFrame!.snapshotId,document:row.diagnostics!.terminalFrame!.document,location:row.diagnostics!.terminalFrame!.location});
+     const payload=xResearchToolResult(serializeXResearchResult(result));
+     expect(payload.details).toMatchObject({targets:[{unscopedPosts:{observations:[{postId:'402',relationToTarget:'unproven'},{postId:'403',relationToTarget:'unproven'}]}}]});
+     expect(JSON.parse(payload.content[0].text)).toMatchObject({targets:[{unscopedPosts:{observations:[{postId:'402',sourceUrl:recoveryOwnUrl,text:'Independent body after root loss',relationToTarget:'unproven',observedContainer:'post',articlePreviewInventory:{unresolved:cover?1:0}},{postId:'403',relationToTarget:'unproven'}]}}]});
+     ledger.restore([{type:'message',message:{role:'toolResult',toolName:'x_research',toolCallId:'call',...payload,isError:false,timestamp:1}}]);
+     const citation=`Observed evidence [source](${recoveryOwnUrl})`;
+     if(cover)expect(()=>ledger.guard(report,citation)).toThrow(/inventory is unknown/);
+     else expect(ledger.guard(report,citation)).toEqual({createOnly:true});
+     expect(ledger.guard(report,'Observed evidence [source](https://x.com/other/status/403)')).toEqual({createOnly:true});
+    }finally{f.close();}
+   }
+  }
+ }finally{vi.useRealTimers();}
+});
+it('recovery retention still requires requested replies and safe non-Article, non-auth, same-location source frames',async()=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
+  for(const mode of ['admitted','disabled','article','auth','epoch','revision','sequence','generation','route','cancel'] as const){
+   const f=stallFixture(false,true);try{
+    f.hooks.collect=()=>{if(f.count().collects===2){
+     replaceRootWithIndependentPosts(f);
+     if(mode==='article')f.container().insertAdjacentHTML('beforeend','<article data-testid="tweet"><div data-testid="User-Name"><a href="/alice">@alice</a></div><article data-testid="twitterArticleReadView"><div data-testid="twitter-article-title">Article</div><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Article body</div></div></div></article></article>');
+     if(mode==='auth'){f.facts.currentUrl='https://x.com/i/jf/onboarding/web';f.facts.routeRevision++;f.dom.reconfigure({url:f.facts.currentUrl});f.dom.window.document.body.insertAdjacentHTML('beforeend','<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input name="password" type="password"></div>');}
+     if(mode==='epoch')f.facts.documentEpoch++;
+     if(mode==='revision')f.facts.routeRevision++;
+     if(mode==='sequence')f.facts.navigationSequence++;
+     if(mode==='generation')f.dom.window.eval('delete window.__kydogWorld');
+     if(mode==='route'){f.facts.currentUrl='https://x.com/alice/status/123/history';f.dom.reconfigure({url:f.facts.currentUrl});}
+     if(mode==='cancel')f.abort.abort();
+    }};
+    const {row}=await f.run({includeReplies:mode!=='disabled'});if(!('replies'in row))throw new Error('expected read');
+    if(mode==='admitted')expect(row.unscopedPosts?.observations.map(p=>p.postId)).toEqual(['402','403']);
+    else expect(row.unscopedPosts,mode).toBeUndefined();
+    expect(f.count()).toEqual({collects:mode==='disabled'?1:2,scrolls:mode==='disabled'?0:1,clicks:0});
+    expect(row.root).toMatchObject({postId:'123',text:'original'});
+    expect(row.replies.observations.map(p=>p.postId)).toEqual(mode==='disabled'?[]:['401']);
+    expect(row.replies.scope.completeness).toBe('unknown');
+    if(mode==='auth')expect(row.status).toBe('auth_required');
+    if(mode==='cancel')expect(row.status).toBe('cancelled');
+   }finally{f.close();}
+  }
+ }finally{vi.useRealTimers();}
 });
