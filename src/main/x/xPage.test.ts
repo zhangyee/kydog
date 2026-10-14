@@ -708,3 +708,120 @@ it('requires the actual port collection coordinates and lifetime for unscoped so
     }).catch(error=>{if(mode!=='cancel')throw error;expect(error.code).toBe('browser.cancelled');});
   }
 });
+
+describe('reply UI diagnostic inventory from the fixed source',()=>{
+  const capture=(f:ReturnType<typeof fixture>)=>f.collect().replyUiInventory.capture;
+  it('preserves supported literal labels and exact local ordering without end authority',()=>{
+    const f=fixture(wrap(post('123','alice','root original','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>')+'<h2>  回复  </h2><div role="status">arbitrary status</div><button>End of conversation</button><div role="alert">重复</div><div role="alert">重复</div><div role="status alert">unsupported role tokens</div>'));
+    const raw=f.collect(),c=raw.replyUiInventory.capture;
+    expect(c.state).toBe('checked');
+    expect(c.nodes.map((n:any)=>[n.tag,n.declaredRole,n.kind,n.text])).toEqual([['h2',null,'heading','回复'],['div','status','status','arbitrary status'],['button',null,'button','End of conversation'],['div','alert','alert','重复'],['div','alert','alert','重复']]);
+    expect(c.nodes.map((n:any)=>n.sourceOrdinal)).toEqual([3,5,7,9,11]);
+    expect(c.nodes.every((n:any)=>n.parentSourceOrdinal===1)).toBe(true);
+    expect(c).toMatchObject({candidateObserved:5,eligibleObserved:5,returned:5,traversal:{visited:14,truncated:false,eligibleTotalKnown:5},candidateCapacity:{limitValue:32,policy:'first_eligible_nodes',truncated:false}});
+    const decoded=decodeXPage(raw,request,{currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document',navigationEvent:'did-navigate-in-page',navigationUrl:url},{parentArticle:false});
+    expect(decoded.diagnosticFrame).toMatchObject({sourceEndDetector:'not_implemented',replyUiInventory:raw.replyUiInventory,document:{epoch:2,routeRevision:3,navigationSequence:4}});
+    expect(decoded.replyScope).toMatchObject({completeness:'unknown',endEvidence:null});
+    expect(decoded.controls.map(c=>c.kind)).toEqual(['body_expand']);
+    f.document.querySelector('[data-testid="tweet-text-show-more-link"]')!.remove();
+    const withoutAction=decodeXPage(f.collect(),request,{currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document',navigationEvent:'did-navigate-in-page',navigationUrl:url},{parentArticle:false});
+    expect(withoutAction.controls).toEqual([]);
+    expect(withoutAction.diagnosticFrame?.replyUiInventory).toEqual(decoded.diagnosticFrame?.replyUiInventory);
+    f.document.querySelector('h2')!.setAttribute('hidden','');
+    expect(capture(f)).toMatchObject({candidateObserved:5,omittedHidden:1,eligibleObserved:4,returned:4});
+    expect(capture(f).nodes.map((n:any)=>n.text)).toEqual(['arbitrary status','End of conversation','重复','重复']);
+    f.document.querySelector('h2')!.removeAttribute('hidden');
+    f.document.querySelector('#sidebar')!.append(f.document.querySelector('h2')!);
+    expect(capture(f).nodes.map((n:any)=>n.text)).toEqual(['arbitrary status','End of conversation','重复','重复']);
+  });
+  it('excludes structural private descendants before reading any ancestor text',()=>{
+    for(const boundary of ['<form></form>','<article data-testid="tweet"></article>','<div role="link" tabindex="0"></div>','<div contenteditable="true"></div>','<input type="password">','<textarea></textarea>','<select></select>']){
+      const f=fixture(wrap(post()+'<div role="status" id="candidate"><span>private sentinel</span></div><h2>safe sibling</h2>'));
+      expect(capture(f).nodes.map((n:any)=>n.text)).toEqual(['private sentinel','safe sibling']);
+      const candidate=f.document.querySelector('#candidate')!;
+      candidate.insertAdjacentHTML('beforeend',boundary);
+      const excluded=candidate.lastElementChild!;
+      if(excluded.tagName==='INPUT') excluded.setAttribute('value','credential sentinel');
+      else excluded.append(candidate.firstChild!);
+      Object.defineProperty(candidate,'innerText',{get(){throw new Error('unsafe aggregate read');}});
+      Object.defineProperty(candidate,'textContent',{get(){throw new Error('unsafe fallback read');}});
+      const c=capture(f);
+      expect(c).toMatchObject({state:'checked',returned:1,omittedUnsafeSubtree:{excludedDescendant:1}});
+      expect(c.nodes.map((n:any)=>n.text)).toEqual(['safe sibling']);
+    }
+  });
+  it('does not import external ARIA names, input values or hidden text candidates',()=>{
+    const f=fixture(wrap(post()+'<div role="status" aria-labelledby="external">own label</div><h2 id="external">foreign sentinel</h2><button>button</button>'));
+    expect(capture(f).nodes.map((n:any)=>n.text)).toEqual(['own label','foreign sentinel','button']);
+    f.document.querySelector('#sidebar')!.append(f.document.querySelector('#external')!);
+    f.document.querySelector('button')!.setAttribute('aria-hidden','true');
+    f.document.querySelector('[role="status"]')!.insertAdjacentHTML('afterend','<input value="value sentinel"><div>plain sentinel</div>');
+    expect(capture(f).nodes.map((n:any)=>n.text)).toEqual(['own label']);
+    expect(capture(f)).toMatchObject({omittedHidden:1,omittedByPrivacy:2});
+  });
+  it('counts resource caps separately and never reads an incompletely traversed subtree',()=>{
+    const f=fixture(wrap('<div role="status" id="outer"><h2>short</h2></div>'));
+    expect(capture(f).nodes.map((n:any)=>n.text)).toEqual(['short','short']);
+    f.document.querySelector('#outer')!.insertAdjacentHTML('beforeend','<span></span>'.repeat(5000));
+    Object.defineProperty(f.document.querySelector('#outer'),'innerText',{get(){throw new Error('uninspected aggregate read');}});
+    const capped=capture(f);
+    expect(capped).toMatchObject({state:'checked',returned:1,traversal:{visited:5000,truncated:true,limit:'visited_nodes',eligibleTotalKnown:null},omittedUnsafeSubtree:{subtreeNotFullyInspected:1}});
+    expect(capped.nodes[0].text).toBe('short');
+    const many=fixture(wrap('<div role="status">'+ '文'.repeat(513)+'</div>'+'<button>repeated</button>'.repeat(31)));
+    expect(capture(many)).toMatchObject({eligibleObserved:32,returned:32,omittedByCandidateLimit:0});
+    many.document.querySelector('[aria-label]')!.insertAdjacentHTML('beforeend','<button>extra</button>');
+    const c=capture(many);
+    expect(c).toMatchObject({eligibleObserved:33,returned:32,omittedByCandidateLimit:1,traversal:{eligibleTotalKnown:33,truncated:false},candidateCapacity:{truncated:true}});
+    expect(c.nodes[0]).toMatchObject({text:'文'.repeat(512),textTruncation:{returned:512,totalKnown:513,truncated:true}});
+  });
+});
+
+describe('reply UI inventory trusted-boundary validation',()=>{
+  const facts={currentUrl:url,documentEpoch:2,routeRevision:3,navigationSequence:4,navigationType:'same_document' as const,navigationEvent:'did-navigate-in-page' as const,navigationUrl:url};
+  const decode=(raw:any)=>decodeXPage(raw,request,facts,{parentArticle:false});
+  it('rejects forged counts, keys, ordinals, labels and region bindings while retaining legacy absence',()=>{
+    const f=fixture(wrap(post()+'<h2>first</h2><div role="status">second</div>'));
+    const raw=f.collect();
+    expect(decode(raw).diagnosticFrame?.replyUiInventory).toEqual(raw.replyUiInventory);
+    const changes=[
+      (r:any)=>r.replyUiInventory.capture.returned++,
+      (r:any)=>{r.replyUiInventory.capture.nodes[0].declaredRole='status';r.replyUiInventory.capture.nodes[0].kind='status';},
+      (r:any)=>r.replyUiInventory.capture.regionNodeId++,
+      (r:any)=>r.replyUiInventory.capture.nodes[0].nodeId=123,
+      (r:any)=>r.replyUiInventory.capture.nodes[0].parentSourceOrdinal=5000,
+      (r:any)=>r.replyUiInventory.capture.nodes[1].sourceOrdinal=r.replyUiInventory.capture.nodes[0].sourceOrdinal,
+      (r:any)=>r.replyUiInventory.capture.nodes[0].text='x'.repeat(513),
+      (r:any)=>r.replyUiInventory.capture.nodes[0].textTruncation.totalKnown++,
+      (r:any)=>r.replyUiInventory.capture.traversal.eligibleTotalKnown=null,
+      (r:any)=>r.replyUiInventory.capture.traversal.visited=5001,
+      (r:any)=>r.replyUiInventory.capture.omittedByPrivacy=5000,
+      (r:any)=>r.replyUiInventory.capture.candidateCapacity.truncated=true,
+      (r:any)=>r.replyUiInventory.unsupported=[],
+    ];
+    for(const change of changes){const bad=structuredClone(raw);change(bad);expect(()=>decode(bad)).toThrow(/Invalid X page/);}
+    delete raw.replyUiInventory;
+    expect(decode(raw).diagnosticFrame?.replyUiInventory).toBeUndefined();
+    expect(decode(raw).diagnosticFrame?.sourceEndDetector).toBeUndefined();
+  });
+  it('reports missing region, failed source and shadow gaps without inventing a checked result',()=>{
+    const f=fixture(wrap(post()+'<div role="status" id="host">light text</div><h2>safe</h2>'));
+    expect(f.collect().replyUiInventory.capture.nodes.map((n:any)=>n.text)).toEqual(['light text','safe']);
+    f.document.querySelector('#host')!.attachShadow({mode:'open'}).innerHTML='<span>shadow text</span>';
+    expect(f.collect().replyUiInventory.capture).toMatchObject({returned:1,omittedUnsupportedSubtree:1,nodes:[{text:'safe'}]});
+    f.document.querySelector('[aria-label]')!.remove();
+    expect(decode(f.collect()).diagnosticFrame?.replyUiInventory?.capture).toEqual({state:'region_missing'});
+    const failing=fixture(wrap(post()+'<h2>safe</h2>'));
+    expect(failing.collect().replyUiInventory.capture.state).toBe('checked');
+    failing.evaluate('const originalWalker=document.createTreeWalker.bind(document); document.createTreeWalker = (root,what,...args) => {if(what===0xffffffff && root.nodeType===1 && root.getAttribute("aria-label")==="Timeline: Conversation")throw new Error("private exception"); return originalWalker(root,what,...args);};');
+    expect(decode(failing.collect()).diagnosticFrame?.replyUiInventory?.capture).toEqual({state:'unavailable',reason:'source_capture_failed'});
+  });
+  it('counts exactly exhausted traversal and first eligible slots including unsafe ones',()=>{
+    const f=fixture(wrap('<h2>label</h2>'+'<span></span>'.repeat(4997)));
+    expect(f.collect().replyUiInventory.capture.traversal).toEqual({visited:5000,truncated:false,limit:null,limitValue:5000,eligibleTotalKnown:1});
+    f.document.querySelector('[aria-label]')!.insertAdjacentHTML('beforeend','<h2>unvisited</h2>');
+    expect(f.collect().replyUiInventory.capture.traversal).toEqual({visited:5000,truncated:true,limit:'visited_nodes',limitValue:5000,eligibleTotalKnown:null});
+    const slots=fixture(wrap('<h2 hidden>hidden</h2>'.repeat(35)+'<h2 role="'+ 'x'.repeat(129)+'">oversize metadata</h2><div role="status"><input value="secret"></div>'+'<button>safe</button>'.repeat(31)));
+    expect(slots.collect().replyUiInventory.capture).toMatchObject({candidateObserved:68,omittedHidden:35,eligibleObserved:33,returned:30,omittedByCandidateLimit:1,omittedUnsafeSubtree:{metadataLimit:1,excludedDescendant:1,subtreeNotFullyInspected:0}});
+    expect(decode(slots.collect()).diagnosticFrame?.replyUiInventory?.capture.state).toBe('checked');
+  });
+});

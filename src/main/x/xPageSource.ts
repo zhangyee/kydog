@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { replyUiInventorySchema, replyUiInventoryMatchesRegion, type XReplyUiInventory } from './xReplyUiInventory';
 import { z } from 'zod';
 import ROOT_SOURCE from './injected/xSourceRoot.js?raw';
 import SOURCE from './injected/xPage.js?raw';
@@ -41,6 +42,7 @@ interface RawPost {containerKey:number;articleEntryCount:number;scope:'post'|'qu
 interface RawControl {kind:XPageControl['kind'];postId:string|null;nodeId:number;index:number;sourceRelation:XPageControl['sourceRelation']}
 interface RawEntry {parentContainerKey:number;author:XAuthorIdentity|null;parentPostId:string;parentUrl:string;targetUrl:string|null;label:string;nodeId:number;index:number}
 interface RawPage {
+  replyUiInventory?: XReplyUiInventory;
   rawUrl:string;region:boolean;selectedProduct:string|null;
   diagnosticNodes:{regionNodeId:number|null;rootNodeId:number|null};
   state:{kind:'auth_required'|'explicit_empty';text:string}|null;
@@ -62,6 +64,10 @@ function validateRaw(v: unknown, request: XPageRequest, current: BrowserLocation
     || !truncation(v.controlTruncation) || !list(v.posts,100) || !list(v.controls,100) || !list(v.entries,100)
     || !obj(v.diagnosticNodes) || !(v.diagnosticNodes.regionNodeId===null || integer(v.diagnosticNodes.regionNodeId))
     || !(v.diagnosticNodes.rootNodeId===null || integer(v.diagnosticNodes.rootNodeId))) invalid();
+  if(v.replyUiInventory!==undefined){
+    const inventory=replyUiInventorySchema.safeParse(v.replyUiInventory);
+    if(!inventory.success || !replyUiInventoryMatchesRegion(inventory.data,v.diagnosticNodes.regionNodeId as number|null)) invalid();
+  }
   if (v.state !== null && (!obj(v.state) || !['auth_required','explicit_empty'].includes(String(v.state.kind)) || !str(v.state.text,4000))) invalid();
   for (const p of v.posts) if (!obj(p) || !integer(p.containerKey) || !integer(p.articleEntryCount) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !nullable(p.candidatePostId) || (p.identityIssue!==null && !['unnamed','author_mismatch'].includes(String(p.identityIssue))) || !author(p.author) || !str(p.text,64000) || !truncation(p.truncation)) invalid();
   const rawPosts=v.posts as RawPost[];
@@ -235,6 +241,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
   const replyScope: XReplyScope = {rootPostId:root?.postId??null,branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
   const diagnosticFrame: XReadFrameDiagnostic | undefined = request.stage==='post' ? {
+    ...(raw.replyUiInventory ? {sourceEndDetector:'not_implemented' as const,replyUiInventory:replyUiInventorySchema.parse(raw.replyUiInventory)} : {}),
     stage:'post',snapshotId:snapshot.snapshotId,location:location.current,
     document:{epoch:current.documentEpoch,routeRevision:current.routeRevision,navigationSequence:current.navigationSequence,generation:snapshot.generation},
     rawUrlMatchesPort:exact,requestPostMatchesLocation:currentPost?.id===request.postId,

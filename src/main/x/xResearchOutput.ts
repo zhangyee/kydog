@@ -1,3 +1,4 @@
+import { replyUiFrameSchema } from './xReplyUiInventory';
 import { sourceRootStateSchema } from './xPageSource';
 import {
   X_MAX_ARTICLE_IDENTITY_HREF_UNITS,
@@ -532,7 +533,10 @@ export function serializeXResearchResult<T extends XResearchResult>(
   original: T,
 ): XSerializedResult<T> {
   if(original.operation==='read') for(const row of original.targets) for(const frame of [row.diagnostics?.initialFrame,row.diagnostics?.firstAdmittedFrame,row.diagnostics?.terminalFrame])
-    if(frame?.sourceRootState) sourceRootStateSchema.parse(frame.sourceRootState);
+    if(frame){
+      if(frame.sourceRootState) sourceRootStateSchema.parse(frame.sourceRootState);
+      replyUiFrameSchema.parse(frame);
+    }
   const result = structuredClone(original),
     bodies = texts(result),
     previous = result.truncation;
@@ -580,6 +584,16 @@ export function serializeXResearchResult<T extends XResearchResult>(
   value = update();
   if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
     return value;
+  // Drop whole optional source inventories before evidence bodies. Clone each
+  // frame shell: two stage slots can honestly share the same collection object.
+  if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
+    for(const key of ['initialFrame','firstAdmittedFrame','terminalFrame'] as const){
+      const frame=row.diagnostics?.[key];if(!frame?.replyUiInventory)continue;
+      const retained={...frame};delete retained.replyUiInventory;row.diagnostics![key]=retained;
+      (result.metadataOmissions??=[]).push(`targets.${index}.diagnostics.${key}.replyUiInventory`);
+      value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    }
+  }
   // Independent failure-frame bodies are optional; their exact own-parent gap
   // facts are required state. Remove whole items before touching scoped history.
   if(result.operation==='read') for(const [index,row] of result.targets.entries()) {

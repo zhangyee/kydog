@@ -349,6 +349,19 @@ test.describe('X browser port native safety (offline)', () => {
     console.info('[native-readiness-progress]',JSON.stringify(progress));
     const row=progress.result.targets[0],initial=row.diagnostics!.initialFrame!,terminal=row.diagnostics!.terminalFrame!,scroll=row.diagnostics!.scroll!;
     expect(initial).toMatchObject({rootIdentityProven:true,replyCount:0,repliesExpandControlCount:0,explicitEndObserved:false,sourceRootState:{root:{connection:'connected'},identity:{coordinates:'same'}}});
+    const initialUi=initial.replyUiInventory?.capture,terminalUi=terminal.replyUiInventory?.capture;
+    expect(initialUi).toMatchObject({state:'checked',candidateObserved:4,eligibleObserved:4,returned:4,omittedHidden:0,
+      nodes:[{text:'Native heading'},{text:'Private sentinel'},{text:'状态信息'},{text:'End of conversation'}]});
+    // Same actual source candidates become hidden / structurally unsafe in the
+    // trusted native frame. The end-like label itself remains literal only.
+    expect(terminalUi).toMatchObject({state:'checked',candidateObserved:4,eligibleObserved:3,returned:2,omittedHidden:1,
+      omittedByPrivacy:3,omittedUnsafeSubtree:{excludedDescendant:1,subtreeNotFullyInspected:0,metadataLimit:0},
+      nodes:[{text:'状态信息'},{text:'End of conversation'}]});
+    expect(initial.sourceEndDetector).toBe('not_implemented');expect(terminal.sourceEndDetector).toBe('not_implemented');
+    expect(row.replies.scope).toMatchObject({completeness:'unknown',endEvidence:null});
+    if(initialUi?.state!=='checked'||terminalUi?.state!=='checked')throw new Error('source UI inventory missing');
+    expect(initialUi.regionNodeId).toBe(initial.regionNodeId);expect(terminalUi.regionNodeId).toBe(terminal.regionNodeId);
+    expect(terminal.document).toEqual(initial.document);
     expect(progress.sourceActions).toEqual(['dispatch:scroll']);
     expect(progress.actions).toEqual(['scroll-event','scroll-frame']);
     expect(row).toMatchObject({root:{postId:'321',text:'Native preview'},replies:{observations:[{postId:'809',author:{handle:'arrived'},sourceUrl:'https://x.com/arrived/status/809',text:'Own reply created by trusted scroll frame'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:0},stopReason:'budget_reached'});

@@ -219,6 +219,8 @@ export interface XSourceRootState {
 }
 export type XSourceIdentityState = 'same'|'changed'|'missing'|'ambiguous'|'unavailable';
 export interface XReadFrameDiagnostic {
+  sourceEndDetector?: 'not_implemented';
+  replyUiInventory?: import('./xReplyUiInventory').XReplyUiInventory;
   sourceRootState?: XSourceRootState;
   stage: 'post';
   snapshotId: string;

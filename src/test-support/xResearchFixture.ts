@@ -38,7 +38,7 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
 }
 
 /** Offline BrowserService boundary: the production port owns provenance and bindings. */
-export async function stagedFixture(options: { scrollError?: Error; article?: 'ok'|'reject'|'nav-failed'|'auth'|'wrong-author'|'title-only'; virtualize?: boolean; abortAfterAction?: AbortController; noEffect?: boolean; resetOnReturn?: boolean; staleInitial?: number; staleReturn?: number; staleArticle?: number; returnDifferentUrl?: boolean; abortOnReturnCollect?: AbortController; returnWait?: boolean; waitResult?: boolean; discussion?: 'ready'|'never'|'auth'|'missing'|'route'|'cancel'|'stale'|'late'; discussionAbort?: AbortController } = {}) {
+export async function stagedFixture(options: { semanticLabels?: boolean; scrollError?: Error; article?: 'ok'|'reject'|'nav-failed'|'auth'|'wrong-author'|'title-only'; virtualize?: boolean; abortAfterAction?: AbortController; noEffect?: boolean; resetOnReturn?: boolean; staleInitial?: number; staleReturn?: number; staleArticle?: number; returnDifferentUrl?: boolean; abortOnReturnCollect?: AbortController; returnWait?: boolean; waitResult?: boolean; discussion?: 'ready'|'never'|'auth'|'missing'|'route'|'cancel'|'stale'|'late'; discussionAbort?: AbortController } = {}) {
   const { createXResearchBrowser } = await import('../main/x/xResearchBrowser');
   const { KydogError } = await import('../shared/errors');
   const parentUrl='https://x.com/alice/status/123', articleUrl='https://x.com/bob/status/456';
@@ -48,7 +48,7 @@ export async function stagedFixture(options: { scrollError?: Error; article?: 'o
   const replyButton='<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>';
   let discussionReady=!options.discussion;
   let expanded=false, replies=false, url=parentUrl, generation=1, current:any;
-  const parent=()=>readHtml(post('123','alice',expanded?'expanded body':'preview').replace('</article>',(expanded?'':bodyButton)+(options.article?entry:'')+'</article>')+(discussionReady?post('789','carol','first reply')+(replies?post('790','dave','second reply'):replyButton):''));
+  const parent=()=>readHtml(post('123','alice',expanded?'expanded body':'preview').replace('</article>',(expanded?'':bodyButton)+(options.article?entry:'')+'</article>')+(discussionReady?post('789','carol','first reply')+(replies?post('790','dave','second reply'):replyButton):'')+(options.semanticLabels?`<div role="status">${expanded?'terminal End of conversation':'initial 回复'}</div>`:''));
   const render=(html:string)=>{
     current=new JSDOM(html,{url,runScripts:'outside-only'});
     Object.defineProperty(current.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});

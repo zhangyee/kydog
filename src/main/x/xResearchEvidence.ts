@@ -1,3 +1,4 @@
+import { replyUiFrameFields, replyUiFrameBindingValid } from './xReplyUiInventory';
 import path from 'node:path';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -113,6 +114,7 @@ const base = {
   callId: string,
   batchId: string,
 };
+const diagnosticFrameSchema=z.object({...replyUiFrameFields,sourceRootState:sourceRootStateSchema.optional()}).refine(replyUiFrameBindingValid);
 const canonicalSchema = z.discriminatedUnion('operation', [
   z.object({
     ...base,
@@ -135,7 +137,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     operation: z.literal('read'),
     targets: z.array(
       z.object({
-        diagnostics:z.object({firstAdmittedFrame:z.object({sourceRootState:sourceRootStateSchema.optional()}).optional(),terminalFrame:z.object({sourceRootState:sourceRootStateSchema.optional()}).optional()}).optional(),
+        diagnostics:z.object({initialFrame:diagnosticFrameSchema.optional(),firstAdmittedFrame:diagnosticFrameSchema.optional(),terminalFrame:diagnosticFrameSchema.optional()}).optional(),
         unscopedPosts:unscopedSchema.optional(),
         root: textSchema.nullable(),
         bodyObservations: z.array(textSchema).optional(),

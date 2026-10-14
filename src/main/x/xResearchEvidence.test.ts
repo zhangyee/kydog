@@ -64,18 +64,22 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'kydog-x-diagnostic-sdk-'));
   try {
     const fresh=await result();
-    const physical=await readX({tabId:'research-tab',read:{objective:'source diagnostics',targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},(await stagedFixture()).context);
+    const physical=await readX({tabId:'research-tab',read:{objective:'source diagnostics',targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},(await stagedFixture({semanticLabels:true})).context);
     fresh.targets[0].diagnostics=physical.targets[0].diagnostics;
     const frame=fresh.targets[0].diagnostics?.firstAdmittedFrame;
     expect(frame?.sourceRootState).toMatchObject({root:{connection:'connected'},identity:{coordinates:'same'}});
+    expect(frame?.replyUiInventory?.capture).toMatchObject({state:'checked',nodes:[{text:'Show replies'},{text:'initial 回复'}]});
+    expect(fresh.targets[0].diagnostics?.terminalFrame?.replyUiInventory?.capture).toMatchObject({state:'checked',nodes:[{text:'Show replies'},{text:'terminal End of conversation'}]});
     expect(frame?.snapshotId).toMatch(/^xsnap_/);
     const old=structuredClone(fresh);
     delete old.targets[0].diagnostics;
     const manager=SessionManager.create(dir,dir);
     const base=manager.appendMessage({role:'user',content:'read history',timestamp:1});
+    const payloads=new Map<string,ReturnType<typeof xResearchToolResult>>();
     const record=(details:typeof fresh)=>{
       const payload=xResearchToolResult(serializeXResearchResult(details));
-      return manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:details.callId,content:payload.content,details:payload.details,isError:false,timestamp:2});
+      const id=manager.appendMessage({role:'toolResult',toolName:'x_research',toolCallId:details.callId,content:payload.content,details:payload.details,isError:false,timestamp:2});
+      payloads.set(id,payload);return id;
     };
     const freshId=record(fresh);
     manager.branch(base);
@@ -92,6 +96,8 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
       const saved=messages.find(m=>m.role==='toolResult');
       expect(saved?.role).toBe('toolResult');
       if(saved?.role!=='toolResult') throw new Error('tool result missing from SDK branch');
+      expect(saved.details).toEqual(payloads.get(id)!.details);
+      expect(saved.content).toEqual(payloads.get(id)!.content);
       const details=saved.details as typeof fresh;
       expect(details.targets[0].diagnostics?.firstAdmittedFrame?.snapshotId).toBe(expected);
       expect(details.targets[0].diagnostics?.firstAdmittedFrame?.sourceRootState).toEqual(expected?frame?.sourceRootState:undefined);
@@ -860,4 +866,25 @@ it('unscoped preview obligations survive missing bodies and resolve only in a la
   ledger.observe(attempt);
   expect(ledger.guard(report,citation('https://x.com/bob/status/456'))).toEqual({createOnly:true});
   expect(()=>ledger.guard(report,citation('https://x.com/carol/status/789'))).toThrow(/inventory is unknown/);
+});
+
+
+it('canonical parsing rejects forged inventory bindings and diagnostic labels never grant citations',async()=>{
+  const valid=await result(),ledger=new XResearchEvidence('/tmp',()=> 'run');
+  expect(valid.targets[0].diagnostics?.initialFrame?.replyUiInventory?.capture.state).toBe('checked');
+  for(const change of [
+    (r:typeof valid)=>r.targets[0].diagnostics!.initialFrame!.regionNodeId!++,
+    (r:typeof valid)=>r.targets[0].diagnostics!.firstAdmittedFrame!.sourceEndDetector='implemented' as never,
+    (r:typeof valid)=>r.targets[0].diagnostics!.terminalFrame!.replyUiInventory!.capture={state:'checked'} as never,
+  ]){
+    ledger.restore([history(valid)]);expect(ledger.guard(report,citation())).toEqual({createOnly:true});
+    const bad=structuredClone(valid);
+    for(const key of ['initialFrame','firstAdmittedFrame','terminalFrame'] as const)bad.targets[0].diagnostics![key]=structuredClone(valid.targets[0].diagnostics![key]);
+    change(bad);ledger.restore([history(bad)]);
+    expect(()=>ledger.guard(report,citation())).toThrow(/unobserved/);
+  }
+  const f=fixture([readHtml(post()+'<div role="status">End of conversation https://x.com/other/status/999</div>')]);
+  const diagnostic=await readX({tabId:'tab',read:{objective:'read',targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},f.context);
+  ledger.restore([history(diagnostic)]);expect(ledger.guard(report,citation())).toEqual({createOnly:true});
+  expect(()=>ledger.guard(report,citation('https://x.com/other/status/999'))).toThrow(/unobserved/);
 });

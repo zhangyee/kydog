@@ -50,7 +50,14 @@ const readerHtml = (handle: string) => `<!doctype html><meta charset="utf-8"><st
 const record=kind=>{const saved=JSON.parse(sessionStorage.getItem('read-actions')||'[]');saved.push(kind);sessionStorage.setItem('read-actions',JSON.stringify(saved));};
 if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
  bodyMore.remove();entry.remove();replyMore.remove();
- if(${JSON.stringify(handle)}==='progress')firstReply.remove();
+ if(${JSON.stringify(handle)}==='progress'){
+  firstReply.remove();
+  // Diagnostic labels stay out of flow so the native scroll acknowledgement's
+  // original geometry and root-only readiness cause remain unchanged.
+  const panel=document.createElement('div');panel.style.cssText='position:absolute;left:600px;top:20px;width:280px';
+  panel.innerHTML='<h2 id="inventoryHeading">Native heading</h2><div id="inventoryPrivate" role="status">Private sentinel</div><div role="status">状态信息</div><button type="button">End of conversation</button>';
+  document.querySelector('[aria-label="Timeline: Conversation"]').append(panel);
+ }
  document.addEventListener('scroll',e=>{
   if(!e.isTrusted || e.target!==document)return;
   record('scroll-event');requestAnimationFrame(()=>{
@@ -61,6 +68,8 @@ if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
     arrived.style.cssText='position:absolute;left:24px;right:24px;top:'+(scrollY+20)+'px';
     arrived.innerHTML='<div data-testid="User-Name"><a href="/arrived">@arrived</a></div><a href="/arrived/status/809"><time>today</time></a><div data-testid="tweetText">Own reply created by trusted scroll frame</div>';
     document.querySelector('[aria-label="Timeline: Conversation"]').append(arrived);
+    document.querySelector('#inventoryHeading').style.visibility='hidden';
+    document.querySelector('#inventoryPrivate').innerHTML='<form><span>Private sentinel</span><input type="password" value="credential sentinel"></form>';
     window.sourceGeometry={before,after:scrollY,height:arrived.getBoundingClientRect().height};return;
    }
    if(${JSON.stringify(handle)}==='source'){

@@ -166,6 +166,80 @@
     return id;
   };
   const diagnosticNodes={regionNodeId:diagnosticId(conversation),rootNodeId:diagnosticId(longBodyRoot)};
+  // Optional diagnostics from this exact collection. Only light DOM is traversed;
+  // shadow/iframe content and arbitrary literal-label confidentiality are not proven.
+  const captureReplyUi = () => {
+    const base={version:1,source:'xPage_existing_collection',unsupported:['plain_text','external_aria_names','unloaded_ui','iframe','shadow_dom','unsupported_roles']};
+    if (!conversation) return {...base,capture:{state:'region_missing'}};
+    try {
+      const c={state:'checked',domain:'conversation_light_dom_semantic_nodes',regionNodeId:diagnosticNodes.regionNodeId,
+        traversal:{visited:0,truncated:false,limit:null,limitValue:5000,eligibleTotalKnown:null},
+        candidateCapacity:{limitValue:32,policy:'first_eligible_nodes',truncated:false},
+        candidateObserved:0,eligibleObserved:0,returned:0,omittedHidden:0,omittedByCandidateLimit:0,
+        omittedByPrivacy:0,omittedUnsupportedSubtree:0,
+        omittedUnsafeSubtree:{excludedDescendant:0,subtreeNotFullyInspected:0,metadataLimit:0},nodes:[]};
+      const walker=document.createTreeWalker(conversation,0xffffffff),stack=[],active=[];
+      const privacy=el=>el.matches(boundarySelector+',form,input,textarea,select') || !!el.form
+        || (el.hasAttribute('contenteditable') && el.getAttribute('contenteditable')!=='false');
+      const finish=(frame,complete)=>{
+        const n=frame.candidate;if(!n)return;
+        active.pop();
+        if(n.metadataLimit)c.omittedUnsafeSubtree.metadataLimit++;
+        else if(n.excluded)c.omittedUnsafeSubtree.excludedDescendant++;
+        else if(!complete)c.omittedUnsafeSubtree.subtreeNotFullyInspected++;
+        else {
+          const full=text(n.el);
+          c.nodes.push({sourceOrdinal:frame.ordinal,parentSourceOrdinal:frame.parentOrdinal,tag:n.tag,declaredRole:n.role,kind:n.kind,
+            regionRelation:'inside',postRelation:'outside_post_boundaries',visibility:'shownReason_pass',textSource:'xPage_innerText_or_textContent_trimmed',
+            text:full.slice(0,512),textTruncation:{returned:Math.min(512,full.length),totalKnown:full.length,truncated:full.length>512}});
+        }
+      };
+      let cursor=conversation;
+      while(cursor){
+        if(c.traversal.visited===5000){c.traversal.truncated=true;c.traversal.limit='visited_nodes';break;}
+        const frame={ordinal:++c.traversal.visited,parentOrdinal:stack.length?stack[stack.length-1].ordinal:null,candidate:null};
+        stack.push(frame);
+        let prune=false;
+        if(cursor.nodeType===1){
+          const el=cursor,tag=el.localName,role=el.getAttribute('role');
+          // The conversation itself may be nested in a boundary outside the walk.
+          const privateRoot=privacy(el) || (el===conversation && !!el.parentElement?.closest(boundarySelector+',form,input,textarea,select,[contenteditable]:not([contenteditable="false"])'));
+          const unsupported=['iframe','script','style','template'].includes(tag) || !!el.shadowRoot;
+          if(privateRoot || unsupported){
+            if(privateRoot)c.omittedByPrivacy++;else c.omittedUnsupportedSubtree++;
+            for(const n of active)n.excluded=true;
+            prune=true;
+          } else {
+            const kind=/^h[1-6]$/.test(tag)?'heading':tag==='button'?'button':['heading','status','alert','button'].includes(role)?role:null;
+            if(kind){
+              c.candidateObserved++;
+              if(!shown(el))c.omittedHidden++;
+              else {
+                c.eligibleObserved++;
+                if(c.eligibleObserved>32){c.omittedByCandidateLimit++;c.candidateCapacity.truncated=true;}
+                else {frame.candidate={el,tag,role,kind,excluded:false,metadataLimit:tag.length>32 || (role!==null && role.length>128)};active.push(frame.candidate);}
+              }
+            }
+          }
+        }
+        const child=prune?null:walker.firstChild();
+        if(child){cursor=child;continue;}
+        cursor=null;
+        while(stack.length){
+          finish(stack.pop(),true);
+          if(!stack.length)break;
+          const sibling=walker.nextSibling();
+          if(sibling){cursor=sibling;break;}
+          walker.parentNode();
+        }
+      }
+      while(stack.length)finish(stack.pop(),false);
+      c.nodes.sort((a,b)=>a.sourceOrdinal-b.sourceOrdinal);c.returned=c.nodes.length;
+      if(!c.traversal.truncated)c.traversal.eligibleTotalKnown=c.eligibleObserved;
+      return {...base,capture:c};
+    } catch {return {...base,capture:{state:'unavailable',reason:'source_capture_failed'}};}
+  };
+  const replyUiInventory=request.stage==='post'?captureReplyUi():undefined;
   const permissionGuard = X_PERMISSION;
   permissionGuard({op:'begin_collected',owner:'x',namespace:request.permissionNamespace});
   const nodeFor = el => snapshot.nodes.find(n=>window.__kydogWorld.ids.get(el)===n.nodeId);
@@ -182,7 +256,7 @@
     ? {...sourceCandidates[0],root:postRoots[posts.indexOf(sourceCandidates[0])],handle:sourceCandidates[0].author?.handle} : null;
   let sourceRoot=null;
   try {sourceRoot=rootDiagnostics(request.sourceRoot??{},request.stage==='post'?{all,owner,shownReason,factOf,identity,url,allowed,roots,postRoots,conversation,primary,snapshot,tweetSelector,boundarySelector,candidate}:null);} catch { /* Missing source facts never change the ordinary observation. */ }
-  return {sourceRoot,rawUrl:location.href,region:!!region,diagnosticNodes,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
+  return {...(replyUiInventory?{replyUiInventory}:{}),sourceRoot,rawUrl:location.href,region:!!region,diagnosticNodes,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
     controls:controls.flatMap(({el,kind,postId,sourceRelation})=>{const n=nodeFor(el);return n?[{kind,postId,nodeId:n.nodeId,index:n.index,sourceRelation}]:[];}),
     entries:entries.flatMap(({el,...e})=>{const n=nodeFor(el);return n?[{...e,nodeId:n.nodeId,index:n.index}]:[];}),
     controlTruncation:{returned:snapshot.nodes.length,totalKnown:eligibleControls,truncated:snapshot.nodes.length<eligibleControls},

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixture, post, searchHtml, searchInput, stagedFixture } from '../../test-support/xResearchFixture';
+import { collectPostFrame, savePostFrame, type XReadStage } from './xResearchReadStages';
 import { readX, readResult } from './xResearchRead';
 import { readHtml } from '../../test-support/xResearchFixture';
 import { searchX, searchResult } from './xResearchSearch';
@@ -362,4 +363,62 @@ it('budgets independent bodies before scoped history and protects every own-pare
     expect(serializeXResearchResult(out.result)).toEqual(out);
   }
   expect(()=>serializeXResearchResult({...actual,objective:'x'.repeat(X_RESEARCH_MAX_OUTPUT_BYTES)})).toThrow(/required-state envelope/);
+});
+
+it('preserves and validates three source inventories and names whole-inventory UTF8 budget omissions',async()=>{
+  const labels='<div role="status">'+ '文'.repeat(512)+'</div>';
+  const input={tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+  const result=await readX(input,fixture([readHtml(post()+labels.repeat(32))]).context);
+  const out=serializeXResearchResult(result),diagnostics=out.result.targets[0].diagnostics!;
+  expect(diagnostics.initialFrame?.replyUiInventory?.capture).toMatchObject({state:'checked',returned:32});
+  expect(JSON.parse(out.text).targets[0].diagnostics).toEqual(diagnostics);
+  const bad=structuredClone(result);bad.targets[0].diagnostics!.terminalFrame=structuredClone(result.targets[0].diagnostics!.terminalFrame);
+  bad.targets[0].diagnostics!.terminalFrame!.replyUiInventory!.capture={state:'checked'} as never;
+  expect(()=>serializeXResearchResult(bad)).toThrow();
+  const capped=serializeXResearchResult({...result,objective:'x'.repeat(850000)});
+  const paths=capped.result.metadataOmissions??[];
+  expect(paths).toContain('targets.0.diagnostics.initialFrame.replyUiInventory');
+  expect(capped.result.targets[0].diagnostics?.initialFrame?.sourceEndDetector).toBe('not_implemented');
+  expect(capped.result.targets[0].diagnostics?.initialFrame?.replyUiInventory).toBeUndefined();
+  for(const key of ['initialFrame','firstAdmittedFrame','terminalFrame'] as const){
+    if(!capped.result.targets[0].diagnostics?.[key]?.replyUiInventory) expect(paths).toContain(`targets.0.diagnostics.${key}.replyUiInventory`);
+  }
+  expect(JSON.parse(capped.text).metadataOmissions).toEqual(paths);
+  expect(JSON.parse(capped.text).targets[0].diagnostics).toEqual(capped.result.targets[0].diagnostics);
+  expect(capped.result.budgetUsage.outputBytes).toBe(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)),'utf8'));
+  expect(capped.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+  expect(serializeXResearchResult(capped.result)).toEqual(capped);
+});
+
+
+it('carries distinct initial admitted terminal collections through content and canonical details',async()=>{
+  const options={afterWaitIndex:1};
+  const f=fixture([readHtml('<h2>initial without root</h2>'),readHtml(post()+'<div role="status">admitted literal</div>'),readHtml(post()+'<button>terminal End of conversation</button>')],options);
+  const input={tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+  const result=readResult(input,f.context),row=result.targets[0],stage:XReadStage={current:'navigation',actionIndex:0,attemptedControls:new Set()};
+  await f.open('https://x.com/alice/status/123','tab');
+  const request={stage:'post' as const,postId:'123',expectedUrl:'https://x.com/alice/status/123'};
+  const initial=await collectPostFrame(f.page,request,row,stage,f.context);
+  await f.page.wait({selector:'[data-testid="tweet"]',state:'present'},1000);
+  const admitted=await collectPostFrame(f.page,request,row,stage,f.context);
+  expect(savePostFrame(row,admitted,input.read,f.context)).toBe(true);
+  options.afterWaitIndex=2;await f.page.wait({selector:'[data-testid="tweet"]',state:'present'},1000);
+  const terminal=await collectPostFrame(f.page,request,row,stage,f.context);
+  expect(savePostFrame(row,terminal,input.read,f.context)).toBe(true);
+  const out=serializeXResearchResult(result),tool=xResearchToolResult(out);
+  const frames=out.result.targets[0].diagnostics!;
+  expect([frames.initialFrame?.snapshotId,frames.firstAdmittedFrame?.snapshotId,frames.terminalFrame?.snapshotId]).toEqual([initial.snapshot.snapshotId,admitted.snapshot.snapshotId,terminal.snapshot.snapshotId]);
+  expect(new Set([initial.snapshot.snapshotId,admitted.snapshot.snapshotId,terminal.snapshot.snapshotId]).size).toBe(3);
+  expect([frames.initialFrame,frames.firstAdmittedFrame,frames.terminalFrame].map(frame=>frame?.replyUiInventory?.capture)).toMatchObject([
+    {nodes:[{text:'initial without root'}]},{nodes:[{text:'admitted literal'}]},{nodes:[{text:'terminal End of conversation'}]},
+  ]);
+  expect(JSON.parse(tool.content[0].text).targets[0].diagnostics).toEqual(frames);
+  if(tool.details.operation!=='read')throw new Error('read result required');
+  expect(tool.details.targets[0].diagnostics).toEqual(frames);
+  const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(out.result);
+  expect(ledger.guard('/tmp/x-research-diagnostics-2026-10-12.md','[source](https://x.com/alice/status/123)')).toEqual({createOnly:true});
+  expect(admitted.diagnosticFrame?.rootIdentityProven).toBe(true);
+  expect(initial.diagnosticFrame?.rootIdentityProven).toBe(false);
+  expect(terminal.replyScope).toEqual(admitted.replyScope);
+  expect(row.replies.scope.completeness).toBe('unknown');
 });
