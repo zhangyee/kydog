@@ -7,12 +7,12 @@ import type { BrowserService, BrowserLocationFacts, EvictedTab } from '../browse
 import type { BrowserScrollReceipt, DispatchAction, WaitUntil } from '../browser/actions';
 import type { AxSnapshot } from '../browser/snapshot';
 import { decodeXPage, xPageExpression, type XPageRequest, type XPageObservation, type XPageNavigationProof } from './xPageSource';
-import type { XArticleEntry } from './xResearchTypes';
+import type { XArticleEntry, XControlBinding, XReplyAdmission } from './xResearchTypes';
 
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
 export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }
 export interface XActionResult { action: DispatchAction; line: string; navigation: NavigationObservation | null }
-export interface XActionOptions { scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: BrowserScrollReceipt) => void;
+export interface XActionOptions { onReplyAdmission?: (receipt:XReplyAdmission)=>void; scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: BrowserScrollReceipt) => void;
   relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} } }
 export interface XQueuedPage {
   snapshot(): Promise<AxSnapshot>;
@@ -97,7 +97,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         }
       };
       const bindings = new Map<AxSnapshot, BrowserLocationFacts>();
-      const permissions = new Map<AxSnapshot, Map<number, {owner:string;token:string;purpose:string}>>();
+      const permissions = new Map<AxSnapshot, Map<number, {permission:{owner:string;token:string;purpose:string};binding:XControlBinding}>>();
       const currentEntries = new Map<AxSnapshot, XArticleEntry[]>();
       const page: XQueuedPage = {
         snapshot: () => run(async () => {
@@ -148,7 +148,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             sourceCommit=commit;return true;
           });
           bindings.set(observation.snapshot,after);
-          permissions.set(observation.snapshot,new Map(observation.snapshot.nodes.flatMap(n=>n.collectedPermission?[[n.index,{...n.collectedPermission}]]:[])));
+          permissions.set(observation.snapshot,new Map(observation.snapshot.nodes.flatMap(n=>n.collectedPermission?[[n.index,{permission:{...n.collectedPermission},binding:{index:n.index,nodeId:n.nodeId,snapshotId:observation.snapshot.snapshotId,generation:observation.snapshot.generation}}]]:[])));
           currentEntries.set(observation.snapshot,[...observation.entries]);
           for (const entry of observation.entries) {
             Object.freeze(entry.binding); Object.freeze(entry);
@@ -164,8 +164,16 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             throw new KydogError('browser.stale_snapshot', '动作必须绑定本次操作内的当前快照');
           let collectedPermission;
           if (permissions.has(snapshot) && action.kind==='click') {
-            collectedPermission='index' in action && action.snapshotId===snapshot.snapshotId ? permissions.get(snapshot)?.get(action.index) : undefined;
+            const owned='index' in action ? permissions.get(snapshot)?.get(action.index) : undefined;
+            collectedPermission=owned && 'index' in action && action.snapshotId===owned.binding.snapshotId ? owned.permission : undefined;
             if (!collectedPermission) throw new KydogError('browser.bad_action','X 控件必须使用原采集节点和许可');
+            // Reserve exactly one native pipeline attempt. Keep the empty map so
+            // a replay cannot fall through to generic click dispatch.
+            if (collectedPermission.purpose==='replies_expand' && 'index' in action) {
+              permissions.get(snapshot)!.delete(action.index);
+              try { options?.onReplyAdmission?.({state:'consumed',purpose:'replies_expand',binding:{...owned!.binding}}); }
+              catch { /* Optional observers cannot restore permission or replace the action. */ }
+            }
           }
           const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission,collectedPointerEligibility:true}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
           const output = { action: { ...action }, ...result };

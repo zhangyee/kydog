@@ -9,6 +9,8 @@ interface State { page: { clicks: number; keys: number; input: number; trustedCl
 interface EligibilityCounters { input:number;measures:number;scrolls:number;hits:number;trusted:number }
 type DirectIdentityReceipt={result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;collections:number;receipts:{before:import('../src/main/browser/browserService').BrowserLocationFacts;after:import('../src/main/browser/browserService').BrowserLocationFacts;event:{url:string;isMainFrame:boolean};raw:{rawUrl:string;article:{ownIdentityLinks:{totalKnown:number;hrefs:string[]};author:{handle:string};blocks:string[]}}}[]};
 interface Harness {
+  replyContinuation():Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;input:number;collections:{nodeId:number;generation:string;hasSourcePermission:boolean}[];physical:{trusted:number;sameButton:boolean;sameRoot:boolean;sameConversation:boolean}}>;
+
   directIdentity():Promise<{positive:DirectIdentityReceipt;negative:DirectIdentityReceipt}>;
   postFrameDiagnostic(mode:string):Promise<{positive:EligibilityCounters&{frames:number};after:EligibilityCounters&{frames:number};results:unknown[];receipts:{snapshotId:string;generation:string;nodeId:number}[];error:string|null;sameControl:boolean;diagnostic:import('../src/main/browser/pointerDiagnostic').PointerFailureDiagnostic|null}>;
   pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
@@ -59,6 +61,24 @@ test.describe('X browser port native safety (offline)', () => {
     finally { if (app) await app.close(); }
     if (dir && !failed && app) await fs.rm(dir, {recursive:true,force:true});
     else if (dir) console.info('[retained-native-failure-directory]',dir);
+  });
+
+  test('same physical reply button continues under fresh source permissions through native input',async()=>{
+    const receipt=await control(h=>h.replyContinuation());
+    console.info('[reply-continuation-native]',JSON.stringify(receipt));
+    expect(receipt.physical).toEqual({trusted:3,sameButton:true,sameRoot:true,sameConversation:true});
+    expect(receipt.input).toBe(6);
+    expect(receipt.collections).toHaveLength(4);
+    const first=receipt.collections[0];
+    expect(first.hasSourcePermission).toBe(true);
+    expect(receipt.collections).toEqual(Array(4).fill(first));
+    const row=receipt.result.targets[0];
+    expect(row).toMatchObject({root:{postId:'321',text:'Native preview'},budgetUsage:{expandActions:3,scrolls:0},stopReason:'budget_reached',replies:{scope:{completeness:'unknown'}}});
+    expect(row.replies.observations.map(p=>[p.postId,p.sourceUrl,p.text])).toEqual([['901','https://x.com/own1/status/901','Native own reply 1'],['902','https://x.com/own2/status/902','Native own reply 2'],['903','https://x.com/own3/status/903','Native own reply 3']]);
+    const d=row.diagnostics!.replyExpansions!;
+    expect(d).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:1,outcome:'succeeded',admission:{state:'consumed'},before:{inventory:{total:0}},after:{inventory:{items:[{postId:'901'}]}}},last:{actionIndex:3,outcome:'succeeded',usageAfter:{expansions:3},after:{inventory:{total:3}}}});
+    expect(d.first!.binding.nodeId).toBe(first.nodeId);expect(d.last!.binding.nodeId).toBe(first.nodeId);
+    expect(d.first!.admission).toMatchObject({binding:d.first!.binding});expect(d.last!.admission).toMatchObject({binding:d.last!.binding});
   });
 
   test('real root removal preserves own current bodies and preview gaps while stopping target discussion',async()=>{

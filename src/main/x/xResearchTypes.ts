@@ -262,7 +262,26 @@ export interface XClickFailure {
   sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown';
   diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic;
 }
+/** Inventory of the decoded scoped discussion in one existing collection, never a page total. */
+export type XReplyCollectionDiagnostic = {state:'not_observed'|'unavailable'} | {
+  state:'captured'; snapshotId:string; generation:string; location:XSafeLocation;
+  sourceAvailable:boolean; replyControlCount:number;
+  inventory:{state:'unavailable'} | {state:'captured';items:{postId:string;sourceUrl:string}[];total:number;returned:number;omitted:number};
+};
+export interface XReplyAdmission {state:'consumed';purpose:'replies_expand';binding:XControlBinding}
+export interface XReplyExpansionAttempt {
+  actionIndex:number;targetPostId:string;binding:XControlBinding;
+  admission:XReplyAdmission|{state:'unavailable'};
+  outcome:'succeeded'|'failed'|'cancelled';
+  caps:{replies:number;scrolls:number;expansions:number};
+  /** Usage at action issue/resolution; next collection inventory is recorded separately. */
+  usageBefore:{replies:number;scrolls:number;expansions:number};
+  usageAfter:{replies:number;scrolls:number;expansions:number};
+  before:XReplyCollectionDiagnostic;after:XReplyCollectionDiagnostic;
+}
+export interface XReplyExpansions {totalAttempts:number;omittedAttempts:number;first?:XReplyExpansionAttempt;last?:XReplyExpansionAttempt}
 export interface XReadDiagnostics {
+  replyExpansions?:XReplyExpansions;
   /** Counts authenticated failed click attempts, independently of all issued actions. */
   clickFailures?: {totalFailures:number; first?:XClickFailure; last?:XClickFailure; omittedFailures:number};
   version: 1;

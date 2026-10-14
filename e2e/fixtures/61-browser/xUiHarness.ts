@@ -84,12 +84,21 @@ if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
   });
  },{once:true});
 }
+if(${JSON.stringify(handle)}==='repeated') {
+ bodyMore.remove();entry.remove();firstReply.remove();
+ window.repeatClicks=0;window.repeatOriginal={button:replyMore,root:rootText.closest('article'),conversation:replyMore.closest('[aria-label="Timeline: Conversation"]')};
+}
 if(${JSON.stringify(handle)}==='stalled') { bodyMore.remove();entry.remove();replyMore.remove(); }
 
 document.addEventListener('click',e=>{
  if(!e.isTrusted)return;
  if(e.target.closest('#bodyMore')){record('body');rootText.textContent='Native expanded body';bodyMore.remove();firstReply.outerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/second">@second</a></div><a href="/second/status/802"><time>today</time></a><div data-testid="tweetText">Second reply</div></article>';return;}
  if(e.target.closest('#entry')){record('article');history.pushState({},'', '/writer/status/654');document.querySelector('main').innerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/writer">@writer</a></div><article data-testid="twitterArticleReadView"><div data-testid="twitter-article-title">Native Article</div><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Native paragraph <strong>rich</strong></div><h2 data-block="true">Native heading</h2></div></div></article></article>';return;}
+ if(e.target.closest('#replyMore') && ${JSON.stringify(handle)}==='repeated') {
+  const ordinal=++window.repeatClicks,reply=document.createElement('article');reply.dataset.testid='tweet';
+  reply.innerHTML='<div data-testid="User-Name"><a href="/own'+ordinal+'">@own'+ordinal+'</a></div><a href="/own'+ordinal+'/status/'+(900+ordinal)+'"><time>today</time></a><div data-testid="tweetText">Native own reply '+ordinal+'</div>';
+  window.repeatOriginal.conversation.append(reply);return;
+ }
  if(e.target.closest('#replyMore')){record('replies');document.querySelector('[aria-label="Timeline: Conversation"]').innerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/third">@third</a></div><a href="/third/status/803"><time>today</time></a><div data-testid="tweetText">Replacement reply</div></article>';}
 });
 </script>`;
@@ -101,7 +110,7 @@ void app.whenReady().then(async () => {
     if (!['example.com', 'example.org'].includes(url.hostname)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html);
   });
-  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller|stalled|source|progress)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):req.url==='/longbody/status/321'?longBodyHtml:req.url==='/search?q=longbody&f=top'?longSearchHtml:handle?readerHtml(handle):xHtml); });
+  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller|stalled|source|progress|repeated)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):req.url==='/longbody/status/321'?longBodyHtml:req.url==='/search?q=longbody&f=top'?longSearchHtml:handle?readerHtml(handle):xHtml); });
   origin.on('clientError', (_error,socket) => socket.destroy());
   proxy.on('connect', (req,socket: Socket,head: Buffer) => {
     socket.on('error',()=>{});
@@ -194,6 +203,28 @@ void app.whenReady().then(async () => {
       const buttonRead=await readX({tabId:opened.tabId,read:{objective:'native button positive',targets:[{url:buttonUrl}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},
         {browser:port,threadId:'fixture-thread',runId:'native-long',callId:'native-button',batchId:'native-long',sources:new Map()});
       return {domBody,detailRoot:detail.root,detailQuote:detail.quotedPosts[0],detailReply:detail.replies[0],detailControls:detail.controls.map(c=>c.kind),searchPost:search.posts[0],buttonControls:withButton.controls.map(c=>c.kind),buttonExpandActions:buttonRead.targets[0].budgetUsage.expandActions,buttonRootText:buttonRead.targets[0].root?.text,result,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
+    },
+    replyContinuation: async () => {
+      const url='https://x.com/repeated/status/321',opened=await port.open(url,undefined),view=browser.webContentsOf(opened.tabId)!;
+      const evaluate=view.executeJavaScriptInIsolatedWorld.bind(view),send=view.debugger.sendCommand.bind(view.debugger);
+      let input=0;
+      const collections:{nodeId:number;generation:string;hasSourcePermission:boolean}[]=[];
+      view.debugger.sendCommand=(method,params)=>{if(method.startsWith('Input.'))input++;return send(method,params);};
+      view.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
+        const raw=await evaluate(world,scripts,...rest);
+        if(scripts[0].code.includes('const request = {"stage":"post"')) {
+          const control=raw.controls.find((c:{kind:string})=>c.kind==='replies_expand');
+          const node=raw.snapshot.nodes.find((n:{nodeId:number})=>n.nodeId===control?.nodeId);
+          collections.push({nodeId:control?.nodeId,generation:raw.snapshot.generation,hasSourcePermission:node?.collectedPermission?.purpose==='replies_expand'});
+        }
+        return raw;
+      };
+      try {
+        const result=await readX({tabId:opened.tabId,read:{objective:'reusable reply native control',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:20,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},
+          {browser:port,threadId:'fixture-thread',runId:'native-repeat',callId:'native-repeat',batchId:'native-repeat',sources:new Map()});
+        const physical=await view.executeJavaScript(`({trusted:window.repeatClicks,sameButton:repeatOriginal.button===document.querySelector('#replyMore'),sameRoot:repeatOriginal.root===document.querySelector('#rootText').closest('article'),sameConversation:repeatOriginal.conversation===document.querySelector('[aria-label="Timeline: Conversation"]')})`);
+        return {result,input,collections,physical};
+      } finally {view.executeJavaScriptInIsolatedWorld=evaluate;view.debugger.sendCommand=send;browser.close(opened.tabId);}
     },
     readStages: async (mode: string) => {
       const progressCase=mode==='progress'||mode==='progress-zero';

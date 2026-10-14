@@ -8,14 +8,10 @@ import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } fro
 import { XResearchEvidence } from './xResearchEvidence';
 import { X_RESEARCH_MAX_OUTPUT_BYTES } from './xResearchTypes';
 describe('bounded X production tool result',()=>{
-  it('keeps actual unchanged-control read reasons distinct from page text and absent reasons',async()=>{
+  it('keeps actual unchanged-body read reasons distinct from page text and absent reasons',async()=>{
     const bodyFixture=await stagedFixture({noEffect:true});
     const body=await readX({tabId:'tab',read:{objective:'body',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},bodyFixture.context);
-    const replyOptions={noEffect:false};
-    const replyFixture=await stagedFixture(replyOptions);
-    Object.defineProperty(replyOptions,'noEffect',{get:()=>replyFixture.executed.includes('replies_expand')});
-    const reply=await readX({tabId:'tab',read:{objective:'replies',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:30,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},replyFixture.context);
-    for(const [actual,reason] of [[body,'body_expand_control_unchanged'],[reply,'replies_expand_control_unchanged']] as const){
+    for(const [actual,reason] of [[body,'body_expand_control_unchanged']] as const){
       expect(actual.targets[0]).toMatchObject({status:'partial',stopReason:'action_failed',reason});
       const controls=readResult({tabId:'tab',read:{objective:'controls',targets:[{postId:'999'},{postId:'998'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
       controls.targets[0].reason='登录页面说请重试';

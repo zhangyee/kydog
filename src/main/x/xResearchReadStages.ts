@@ -1,3 +1,4 @@
+import {beginReplyExpansion,observeReplyDiagnostic,replyCollection,replyUsage} from './xReplyExpansionDiagnostics';
 import { logger } from '../log';
 import { admitXSourceRoot } from './xPageSource';
 import { pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
@@ -455,8 +456,8 @@ export async function readDiscussion(
     checkReadCancelled(context);
     stage.current = 'action';
     if (control) {
-      if (!admitControl(control, observed, row, stage)) return;
       stage.actionIndex++;
+      const attempt=beginReplyExpansion(row,observed,control,limits,stage.actionIndex);
       try {
         await page.act(
           {
@@ -465,12 +466,21 @@ export async function readDiscussion(
             snapshotId: control.binding.snapshotId,
           },
           observed.snapshot,
+          {onReplyAdmission:receipt=>observeReplyDiagnostic(()=>{if(attempt)attempt.admission={...receipt,binding:{...receipt.binding}};})},
         );
       } catch (error) {
+        observeReplyDiagnostic(()=>{if(attempt){attempt.outcome=error instanceof KydogError&&error.code==='browser.cancelled'?'cancelled':'failed';attempt.usageAfter=replyUsage(row);}});
         retainClickFailure(row,control,stage,error,context);
         throw error;
       }
       row.budgetUsage.expandActions++;
+      observeReplyDiagnostic(()=>{if(attempt){attempt.outcome='succeeded';attempt.usageAfter=replyUsage(row);}});
+      checkReadCancelled(context);
+      observeReplyDiagnostic(()=>{if(attempt)attempt.after={state:'unavailable'};});
+      observed = await collectPostFrame(page, request, row, stage, context);
+      observeReplyDiagnostic(()=>{if(attempt)attempt.after=replyCollection(observed);});
+      // The existing following collection is saved/admitted at the next loop head.
+      continue;
     } else {
       stage.actionIndex++;
       const scroll = (row.diagnostics ??= {version:1}).scroll ??= {totalAttempts:0,omittedAttempts:0};

@@ -1,3 +1,4 @@
+import {replyExpansionsSchema} from './xReplyExpansionDiagnostics';
 import {z} from 'zod';
 import {projectPointerDiagnostic} from '../browser/pointerDiagnostic';
 import type {XResearchResult} from './xResearchTypes';
@@ -20,6 +21,7 @@ const legacy=z.object({actionIndex:count.positive(),targetPostId:z.string().rege
 export function projectActionDiagnostics<T extends XResearchResult>(value:T):T {
  if(value.operation==='search')return {...value,queries:value.queries.map(row=>({...row,...(row.diagnostics?{diagnostics:search.parse(row.diagnostics)}:{})}))};
  return {...value,targets:value.targets.map(row=>({...row,...(row.diagnostics?{diagnostics:{...row.diagnostics,
+  ...(row.diagnostics.replyExpansions?{replyExpansions:replyExpansionsSchema.parse(row.diagnostics.replyExpansions)}:{}),
   ...(row.diagnostics.clickFailures?{clickFailures:failures.parse(row.diagnostics.clickFailures)}:{}),
   ...(row.diagnostics.pointerFailure?{pointerFailure:legacy.parse(row.diagnostics.pointerFailure)}:{}),
  }}:{})}))};

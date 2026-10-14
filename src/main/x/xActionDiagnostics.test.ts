@@ -1,3 +1,4 @@
+import {replyContinuationFixture} from '../../test-support/xReplyContinuationFixture';
 import {expect,it} from 'vitest';
 import {fixture,post,searchHtml,searchInput} from '../../test-support/xResearchFixture';
 import {readX} from './xResearchRead';
@@ -76,7 +77,9 @@ it('drops bounded search diagnostics with precise paths near the complete UTF8 e
  expect(capped.result.queries[0].budgetUsage.scrolls).toBe(1);
 });
 it('preserves canonical diagnostics through physical SDK reopen/branch and installed provider model content',async()=>{
- for(const raw of [await result(),await pointerResult()]){
+ const replyFixture=replyContinuationFixture();
+ let reply;try{reply=await replyFixture.run();}finally{replyFixture.close();}
+ for(const raw of [await result(),await pointerResult(),reply]){
  const payload=xResearchToolResult(serializeXResearchResult(raw));
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'kydog-action-diag-'));
  try{

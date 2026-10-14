@@ -586,6 +586,13 @@ export function serializeXResearchResult<T extends XResearchResult>(
   value = update();
   if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
     return value;
+  // Reply attempt telemetry is one optional section, never partially rewritten.
+  if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
+    if(!row.diagnostics?.replyExpansions)continue;
+    delete row.diagnostics.replyExpansions;
+    (result.metadataOmissions??=[]).push(`targets.${index}.diagnostics.replyExpansions`);
+    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
   // Drop whole optional source inventories before evidence bodies. Clone each
   // frame shell: two stage slots can honestly share the same collection object.
   if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
