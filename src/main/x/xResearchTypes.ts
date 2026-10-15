@@ -362,3 +362,16 @@ export type XResearchResult = XResultBase & (
   | { operation: 'read'; targets: XReadObservation[] }
 );
 export const X_RESEARCH_MAX_OUTPUT_BYTES = 1024 * 1024;
+
+/** Opaque application-owned artifact identity; never an arbitrary filesystem path. */
+export interface XArtifactRef {
+  version: 1;
+  directoryId: string;
+  manifest: 'manifest.json';
+  sha256: string;
+  bytes: number;
+  runId: string;
+  callId: string;
+  batchId: string;
+  operation: 'search' | 'read';
+}

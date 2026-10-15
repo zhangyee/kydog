@@ -1,3 +1,4 @@
+import { publicXArticleEntryIdentity } from './xResearchCanonical';
 import { reportScopeFacts, type XResearchScopePrior } from './xResearchScopeFacts';
 import { projectActionDiagnostics } from './xActionDiagnostics';
 import { replyUiFrameSchema } from './xReplyUiInventory';
@@ -517,14 +518,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       : bodies.reduce((n, p) => n + p.truncation.totalKnown!, 0);
   if (result.operation === 'read')
     for (const row of result.targets) {
-      const entry = row.article.entry;
-      if (entry)
-        row.article.entryIdentity = {
-          entryObservationId: entry.observationId,
-          parentPostId: entry.parentPostId,
-          sourceUrl: entry.sourceUrl,
-          targetUrl: entry.targetUrl,
-        };
+      if (row.article.entry) row.article.entryIdentity = publicXArticleEntryIdentity(row.article);
     }
   let projected = !!result.contentProjection;
   const update = () => {

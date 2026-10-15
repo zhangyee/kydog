@@ -1,3 +1,4 @@
+import { entrySchema, evidenceTextSchema as textSchema, unscopedTextSchema, unscopedSchema, scopeSchema, scopeIdentitySchema } from './xResearchCanonical';
 import { replyUiFrameFields, replyUiFrameBindingValid } from './xReplyUiInventory';
 import path from 'node:path';
 import Markdown from 'react-markdown';
@@ -18,56 +19,6 @@ import type {
 } from './xResearchTypes';
 
 const string = z.string().min(1);
-const entrySchema = z.object({
-  entryObservationId: string,
-  parentPostId: string,
-  sourceUrl: string,
-  targetUrl: z.string().nullable(),
-});
-const author = z
-  .object({
-    handle: z.string().nullable(),
-    displayName: z.string().nullable(),
-    profileUrl: z.string().nullable(),
-  })
-  .nullable();
-const inventorySchema=z.object({scope:z.literal('collection'),observed:z.number().int().nonnegative(),retained:z.number().int().nonnegative(),omitted:z.number().int().nonnegative(),unresolved:z.number().int().nonnegative()});
-const scopeIdentitySchema=z.object({observationId:string,postId:string,sourceUrl:string,authorHandle:string});
-const scopeSchema=scopeIdentitySchema.extend({articlePreviews:z.array(entrySchema),articlePreviewInventory:inventorySchema});
-const textSchema = z.object({
-  observationId: string,
-  sourceKind: z.literal('rendered_ui'),
-  postId: z.string().nullable(),
-  sourceUrl: z.string().nullable(),
-  author,
-  text: z.string(),
-  observedAt: string,
-  containerKind: z.enum([
-    'root_post',
-    'quoted_post',
-    'reply',
-    'article',
-    'unattributed_fragment',
-  ]),
-  truncation: z.object({
-    returned: z.number().int().nonnegative(),
-    totalKnown: z.number().int().nonnegative().nullable(),
-    truncated: z.boolean(),
-  }),
-  articlePreviews: z.array(entrySchema).optional(),
-  articlePreviewInventory:inventorySchema.optional(),
-});
-const unscopedTextSchema=textSchema.extend({
-  containerKind:z.literal('unscoped_post'),relationToTarget:z.literal('unproven'),observedContainer:z.literal('post'),
-  postId:string,sourceUrl:string,author:z.object({handle:string,displayName:z.string().nullable(),profileUrl:z.string().nullable()}),
-  text:z.string().max(4000),articlePreviews:z.array(entrySchema).max(0).optional(),
-}).refine(p=>{const own=parseXSourcePost(p.sourceUrl);return own?.id===p.postId && own.handle===p.author.handle && !!p.text.trim();});
-const unscopedSchema=z.object({
-  observations:z.array(unscopedTextSchema).max(100),
-  collection:z.object({snapshotId:string,document:z.object({epoch:z.number().int().nonnegative(),routeRevision:z.number().int().nonnegative(),navigationSequence:z.number().int().nonnegative(),generation:string}),location:z.object({origin:z.string().nullable(),path:z.string().nullable(),q:z.string().nullable(),f:z.string().nullable(),fragment:z.string().nullable(),redacted:z.boolean()})}),
-  inventory:z.object({scope:z.literal('collection'),observed:z.number().int().min(0).max(100),retained:z.number().int().min(0).max(100),omitted:z.number().int().min(0).max(100),sourceInventoryTruncated:z.boolean(),excludedNestedQuotes:z.number().int().min(0).max(100)}),
-  previewGaps:z.array(z.object({sourceUrl:string.refine(url=>!!parseXSourcePost(url)?.handle),unresolved:z.number().int().positive()})).max(100),
-}).refine(p=>p.inventory.retained===p.observations.length && p.inventory.observed===p.inventory.retained+p.inventory.omitted);
 const documentSchema = z.object({
   urlKind: z.literal('document'),
   sourceUrl: string,
