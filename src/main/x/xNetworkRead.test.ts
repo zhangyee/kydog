@@ -1170,3 +1170,20 @@ it('requires this page retained parent for quotes across same-lease repeats and 
     }
   }
 });
+
+it('keeps an observed Article identity in distinct entries after subsequent source acceptance', async () => {
+  const { acceptReadNetworkPage } = await import('./xResearchReadStages');
+  for (const sameAsRoot of [false, true]) {
+    const c = await retentionCase(), first = c.page();
+    first.root = c.body(c.row.postId!, 'root_post', 'root', first.provenance) as import('./xResearchTypes').XTextObservation;
+    acceptReadNetworkPage(c.row, first, undefined, c.limits, c.context);
+    const baseline = c.row.budgetUsage.distinctEntries;
+    const articleId = sameAsRoot ? c.row.postId! : '654';
+    c.row.article.body = {...c.body(articleId, 'root_post', 'article', first.provenance), containerKind:'article', sourceKind:'rendered_ui'};
+    c.row.article.bodyObserved = true;
+    const next = c.page(); next.provenance = {...next.provenance, requestRef:'after-article'};
+    acceptReadNetworkPage(c.row, next, undefined, c.limits, c.context);
+    expect(c.row.budgetUsage.distinctEntries).toBe(baseline + (sameAsRoot ? 0 : 1));
+    expect(c.row.article.body.postId).toBe(articleId);
+  }
+});

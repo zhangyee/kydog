@@ -5,8 +5,8 @@ import http from 'node:http';
 import tls from 'node:tls';
 import key from './tls-key.pem?raw';
 import cert from './tls-cert.pem?raw';
+import { xWireResponse, xWireScript } from './xWirePages';
 import { xClosurePage } from './xClosurePages';
-import { XResearchEvidence } from '../../../src/main/x/xResearchEvidence';
 import { readX } from '../../../src/main/x/xResearchRead';
 import { collectXPage } from '../../../src/main/x/xPageSource';
 import type { AddressInfo, Socket } from 'node:net';
@@ -29,27 +29,21 @@ query.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();fact
 
 const xHtml = `<!doctype html><meta charset="utf-8"><style>body{margin:30px;font:20px sans-serif}button{padding:20px}</style>
 <main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">
-<article data-testid="tweet"><div data-testid="User-Name"><a href="/alice">@alice</a></div><a id="stamp" href="/alice/status/123/history"><time>today</time></a><div data-testid="tweetText">Body</div><button id="expand" role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button><span id="likes">1</span></article>
+<article data-testid="tweet"><div data-testid="User-Name"><a href="/alice">@alice</a></div><a id="stamp" href="/alice/status/123/history"><time>today</time></a><div data-testid="tweetText">Body</div><span id="likes">1</span></article>
 <article id="otherpost" data-testid="tweet"><div data-testid="User-Name"><a href="/bob">@bob</a></div><a href="/bob/status/456/history"><time>today</time></a><div data-testid="tweetText">Other</div></article>
-</div></div></main><form id="compose"></form><script>window.trusted=0;document.addEventListener('click',e=>{if(e.target.closest('#expand')&&e.isTrusted)window.trusted++});document.addEventListener('submit',e=>e.preventDefault());</script>`;
-
-const longFocalBody = 'A'.repeat(7008) + 'Z';
-const longSideBody = 'B'.repeat(4999) + 'Y';
-const longBodyPost = `<article data-testid="tweet"><div data-testid="User-Name"><a href="/longbody">@longbody</a></div><a href="/longbody/status/321"><time>today</time></a><div data-testid="tweetText">${longFocalBody}</div><div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><a href="/writer/status/654"><time>today</time></a><div data-testid="tweetText">${longSideBody}</div></div></article>`;
-const longReply = `<article data-testid="tweet"><div data-testid="User-Name"><a href="/first">@first</a></div><a href="/first/status/801"><time>today</time></a><div data-testid="tweetText">${longSideBody}</div></article>`;
-const longBodyHtml = `<!doctype html><meta charset="utf-8"><main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">${longBodyPost}${longReply}</div></div></main>`;
-const longSearchHtml = `<!doctype html><meta charset="utf-8"><main><div data-testid="primaryColumn"><div role="tab" aria-selected="true">Top</div>${longBodyPost}</div></main>`;
+<div data-testid="cellInnerDiv"><button id="expand" role="button" type="button">Show replies</button></div></div></div></main><form id="compose"></form><script>window.trusted=0;document.addEventListener('click',e=>{if(e.target.closest('#expand')&&e.isTrusted)window.trusted++});document.addEventListener('submit',e=>e.preventDefault());</script>`;
 
 // Source-derived DOM markers; navigation/input are real Chromium, content is offline.
 const readerHtml = (handle: string) => `<!doctype html><meta charset="utf-8"><style>body{margin:24px;font:16px sans-serif}button{padding:12px}#entry{padding:16px;border:1px solid;cursor:pointer}</style>
 <main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">
-<article data-testid="tweet"><div data-testid="User-Name"><a href="/${handle}">@${handle}</a></div><a href="/${handle}/status/321"><time>today</time></a><div id="rootText" data-testid="tweetText">Native preview</div><button id="bodyMore" role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button><div id="entry" role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article preview</div></div></article>
+<article data-testid="tweet"><div data-testid="User-Name"><a href="/${handle}">@${handle}</a></div><a href="/${handle}/status/321"><time>today</time></a><div id="rootText" data-testid="tweetText">Native preview</div><div id="entry" role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article preview</div></div></article>
 <article id="firstReply" data-testid="tweet"><div data-testid="User-Name"><a href="/first">@first</a></div><a href="/first/status/801"><time>today</time></a><div data-testid="tweetText">First reply</div></article>
 <div data-testid="cellInnerDiv"><button id="replyMore" role="button" type="button">Show replies</button></div>
 </div></div></main>${handle==='stalled'?'':'<div style="height:1800px"></div>'}<script>
+${xWireScript(handle)}
 const record=kind=>{const saved=JSON.parse(sessionStorage.getItem('read-actions')||'[]');saved.push(kind);sessionStorage.setItem('read-actions',JSON.stringify(saved));};
 if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
- bodyMore.remove();entry.remove();replyMore.remove();
+ entry.remove();replyMore.remove();
  if(${JSON.stringify(handle)}==='progress'){
   firstReply.remove();
   // Diagnostic labels stay out of flow so the native scroll acknowledgement's
@@ -60,7 +54,7 @@ if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
  }
  document.addEventListener('scroll',e=>{
   if(!e.isTrusted || e.target!==document)return;
-  record('scroll-event');requestAnimationFrame(()=>{
+  window.wireReady=window.wireReady.then(wireFetch);record('scroll-event');requestAnimationFrame(()=>{
    record('scroll-frame');
    if(${JSON.stringify(handle)}==='progress'){
     // Keep the source scroll offset stable: an in-flow insertion changes scroll anchoring before ACK.
@@ -76,7 +70,7 @@ if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
     const root=document.querySelector('#rootText').closest('article'),height=root.getBoundingClientRect().height,before=scrollY,spacer=document.createElement('div');
     spacer.style.height=height+'px';root.replaceWith(spacer);
     const current=document.createElement('div');current.style.cssText='position:absolute;left:24px;right:24px;top:'+(scrollY+20)+'px';
-    current.innerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/current">@current</a></div><a href="/current/status/805"><time>today</time></a><div data-testid="tweetText">Independent current body</div><div role="link" tabindex="0"><div data-testid="User-Name"><a href="/quoted">@quoted</a></div><a href="/quoted/status/806"><time>today</time></a><div data-testid="tweetText">Nested quote body</div></div></article><article data-testid="tweet"><div data-testid="User-Name"><a href="/wrong">@wrong</a></div><a href="/other/status/807"><time>today</time></a><div data-testid="tweetText">Wrong author body</div></article><article data-testid="tweet"><div data-testid="tweetText">Unnamed body</div></article><article data-testid="tweet"><div data-testid="User-Name"><a href="/preview">@preview</a></div><a href="/preview/status/808"><time>today</time></a><div data-testid="tweetText">Preview parent body</div><div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div></article>';
+    current.innerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/current">@current</a></div><a href="/current/status/805"><time>today</time></a><div data-testid="tweetText">Rootless DOM decoy</div></article>';
     spacer.append(current);window.sourceGeometry={before,after:scrollY,height};return;
    }
    const first=document.querySelector('#firstReply');
@@ -85,15 +79,15 @@ if(['scroller','source','progress'].includes(${JSON.stringify(handle)})) {
  },{once:true});
 }
 if(${JSON.stringify(handle)}==='repeated') {
- bodyMore.remove();entry.remove();firstReply.remove();
+ entry.remove();firstReply.remove();
  window.repeatClicks=0;window.repeatOriginal={button:replyMore,root:rootText.closest('article'),conversation:replyMore.closest('[aria-label="Timeline: Conversation"]')};
 }
-if(${JSON.stringify(handle)}==='stalled') { bodyMore.remove();entry.remove();replyMore.remove(); }
+if(${JSON.stringify(handle)}==='stalled') { entry.remove();replyMore.remove(); }
 
 document.addEventListener('click',e=>{
  if(!e.isTrusted)return;
- if(e.target.closest('#bodyMore')){record('body');rootText.textContent='Native expanded body';bodyMore.remove();firstReply.outerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/second">@second</a></div><a href="/second/status/802"><time>today</time></a><div data-testid="tweetText">Second reply</div></article>';return;}
  if(e.target.closest('#entry')){record('article');history.pushState({},'', '/writer/status/654');document.querySelector('main').innerHTML='<article data-testid="tweet"><div data-testid="User-Name"><a href="/writer">@writer</a></div><article data-testid="twitterArticleReadView"><div data-testid="twitter-article-title">Native Article</div><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Native paragraph <strong>rich</strong></div><h2 data-block="true">Native heading</h2></div></div></article></article>';return;}
+ if(e.target.closest('#replyMore'))window.wireReady=window.wireReady.then(wireFetch);
  if(e.target.closest('#replyMore') && ${JSON.stringify(handle)}==='repeated') {
   const ordinal=++window.repeatClicks,reply=document.createElement('article');reply.dataset.testid='tweet';
   reply.innerHTML='<div data-testid="User-Name"><a href="/own'+ordinal+'">@own'+ordinal+'</a></div><a href="/own'+ordinal+'/status/'+(900+ordinal)+'"><time>today</time></a><div data-testid="tweetText">Native own reply '+ordinal+'</div>';
@@ -110,7 +104,13 @@ void app.whenReady().then(async () => {
     if (!['example.com', 'example.org'].includes(url.hostname)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html);
   });
-  const origin = http.createServer((req,res) => { res.writeHead(200, {'content-type':'text/html; charset=utf-8'}); const handle=/^\/(reader|blocked|scroller|stalled|source|progress|repeated)\/status\/321$/.exec(req.url??'')?.[1]; res.end(req.url==='/writer/status/654'?xClosurePage(new URL('https://x.com'+req.url),true):req.url==='/longbody/status/321'?longBodyHtml:req.url==='/search?q=longbody&f=top'?longSearchHtml:handle?readerHtml(handle):xHtml); });
+  const origin = http.createServer((req,res) => {
+    const url=new URL(req.url??'/', 'https://x.com'),wire=xWireResponse(url);
+    if(wire!==null){res.writeHead(200,{'content-type':'application/json'});res.end(wire);return;}
+    const handle=/^\/(reader|blocked|scroller|stalled|source|progress|repeated)\/status\/321$/.exec(url.pathname)?.[1];
+    res.writeHead(200,{'content-type':'text/html; charset=utf-8'});
+    res.end(url.pathname==='/writer/status/654'?xClosurePage(url,true):handle?readerHtml(handle):xHtml);
+  });
   origin.on('clientError', (_error,socket) => socket.destroy());
   proxy.on('connect', (req,socket: Socket,head: Buffer) => {
     socket.on('error',()=>{});
@@ -174,36 +174,6 @@ void app.whenReady().then(async () => {
       try {return {positive:await run(false),negative:await run(true)};}
       finally {browser.evalInPage=evaluate;browser.close(opened.tabId);}
     },
-    sourceContainers: async () => {
-      const opened=await port.open('https://x.com/search?q=containers&f=top',undefined);
-      const view=browser.webContentsOf(opened.tabId)!;
-      await view.executeJavaScript(`document.querySelector('[data-testid="primaryColumn"]').insertAdjacentHTML('afterbegin','<div role="tab" aria-selected="true">Top</div>');const original=document.querySelector('article[data-testid="tweet"]');
-        original.querySelector('[data-testid="tweetText"]').textContent='PLAIN_EXACT_CONTAINER';
-        const duplicate=original.cloneNode(true);duplicate.querySelector('[data-testid="tweetText"]').textContent='PREVIEW_EXACT_CONTAINER';
-        duplicate.insertAdjacentHTML('beforeend','<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Preview</div></div>');
-        original.after(duplicate);`);
-      return port.withPage(opened.tabId,undefined,async page=>{
-        const observed=await collectXPage(page,{stage:'search',expectedUrl:'https://x.com/search?q=containers&f=top',query:'containers',product:'Top'});
-        return {posts:observed.posts,entryParents:observed.entries.map(entry=>({author:entry.author?.handle,parentCoordinates:observed.entryParents.get(entry)}))};
-      });
-    },
-    longBodyNoControl: async () => {
-      const url='https://x.com/longbody/status/321';
-      const opened=await port.open(url,undefined), view=browser.webContentsOf(opened.tabId)!;
-      const domBody=await view.executeJavaScript("document.querySelector('article[data-testid=\"tweet\"] > [data-testid=\"tweetText\"]').innerText") as string;
-      const detail=await port.withPage(opened.tabId,undefined,page=>collectXPage(page,{stage:'post',expectedUrl:url,postId:'321'}));
-      const result=await readX({tabId:opened.tabId,read:{objective:'native long body without control',targets:[{url}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},
-        {browser:port,threadId:'fixture-thread',runId:'native-long',callId:'native-long',batchId:'native-long',sources:new Map()});
-      const searchUrl='https://x.com/search?q=longbody&f=top';
-      await port.open(searchUrl,opened.tabId);
-      const search=await port.withPage(opened.tabId,undefined,page=>collectXPage(page,{stage:'search',expectedUrl:searchUrl,query:'longbody',product:'Top'}));
-      const buttonUrl='https://x.com/reader/status/321';
-      await port.open(buttonUrl,opened.tabId);
-      const withButton=await port.withPage(opened.tabId,undefined,page=>collectXPage(page,{stage:'post',expectedUrl:buttonUrl,postId:'321'}));
-      const buttonRead=await readX({tabId:opened.tabId,read:{objective:'native button positive',targets:[{url:buttonUrl}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},
-        {browser:port,threadId:'fixture-thread',runId:'native-long',callId:'native-button',batchId:'native-long',sources:new Map()});
-      return {domBody,detailRoot:detail.root,detailQuote:detail.quotedPosts[0],detailReply:detail.replies[0],detailControls:detail.controls.map(c=>c.kind),searchPost:search.posts[0],buttonControls:withButton.controls.map(c=>c.kind),buttonExpandActions:buttonRead.targets[0].budgetUsage.expandActions,buttonRootText:buttonRead.targets[0].root?.text,result,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
-    },
     replyContinuation: async () => {
       const url='https://x.com/repeated/status/321',opened=await port.open(url,undefined),view=browser.webContentsOf(opened.tabId)!;
       const evaluate=view.executeJavaScriptInIsolatedWorld.bind(view),send=view.debugger.sendCommand.bind(view.debugger);
@@ -228,62 +198,39 @@ void app.whenReady().then(async () => {
     },
     readStages: async (mode: string) => {
       const progressCase=mode==='progress'||mode==='progress-zero';
-      const handle=progressCase?'progress':mode==='source-state'?'source':mode==='blocked'?'blocked':mode==='scroll'?'scroller':mode==='stalled'?'stalled':'reader', url=`https://x.com/${handle}/status/321`;
+      const handle=progressCase?'progress':mode.startsWith('source-')?'source':mode==='blocked'?'blocked':mode==='scroll'?'scroller':mode==='stalled'?'stalled':'reader', url=`https://x.com/${handle}/status/321`;
       const opened=await port.open(url,undefined), view=browser.webContentsOf(opened.tabId)!;
       await view.executeJavaScript("sessionStorage.removeItem('read-actions')");
       const capture=view.capturePage.bind(view); let rejectedNode=false;
-      const evaluate=view.executeJavaScriptInIsolatedWorld.bind(view), readinessFrames:string[]=[];
+      const evaluate=view.executeJavaScriptInIsolatedWorld.bind(view);
       const sourceCleanup={populated:false,cleared:false},sourceActions:string[]=[];
       const dispatch=browser.dispatchAndObserveNavigation.bind(browser);
-      if(mode==='source-state'||progressCase) browser.dispatchAndObserveNavigation=async(...args)=>{sourceActions.push('dispatch:'+args[1].kind);return dispatch(...args);};
+      if(mode.startsWith('source-')||progressCase) browser.dispatchAndObserveNavigation=async(...args)=>{sourceActions.push('dispatch:'+args[1].kind);const result=await dispatch(...args);if(mode==='source-invalidated')await view.executeJavaScript("history.replaceState({},'',location.href)");return result;};
       if(mode==='source-state') view.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
         const code=scripts[0].code,collecting=code.includes('const request = {"stage":"post"');
-        if(collecting && readinessFrames.length===0) await view.executeJavaScript("window.sourceRegion=document.querySelector('[aria-label=\"Timeline: Conversation\"]');window.sourceParts=Array.from(sourceRegion.children);sourceRegion.replaceChildren()");
         if(code.includes('/* kydog-x-root-release */')) sourceCleanup.populated=await evaluate(WALKER_WORLD_ID,[{code:'!!window.__kydogXRootState?.anchor || !!window.__kydogXRootState?.pending'}]);
         const raw=await evaluate(world,scripts,...rest);
-        if(collecting && raw.posts.some((p:{postId:string|null})=>p.postId==='805') && !raw.posts.some((p:{postId:string|null})=>p.postId==='321'))sourceActions.push('collection:rootless');
-        if(collecting && readinessFrames.length===0){readinessFrames.push('initial-empty');await view.executeJavaScript('sourceRegion.append(...sourceParts)');}
+        if(collecting && await view.executeJavaScript("!document.querySelector('#rootText') && !!document.querySelector('a[href=\"/current/status/805\"]')"))sourceActions.push('collection:rootless');
         if(code.includes('/* kydog-x-root-release */')) sourceCleanup.cleared=await evaluate(WALKER_WORLD_ID,[{code:'window.__kydogXRootState === undefined'}]);
-        return raw;
-      };
-      if(mode==='delayed') view.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
-        const collecting=scripts[0].code.includes('const request = {"stage":"post"');
-        const returning=collecting && view.getURL()===url && await view.executeJavaScript("JSON.parse(sessionStorage.getItem('read-actions')||'[]').includes('article')");
-        if(returning && readinessFrames.length===0) await view.executeJavaScript("window.parentRegion=document.querySelector('[aria-label=\"Timeline: Conversation\"]');window.parentParts=Array.from(parentRegion.children);parentRegion.replaceChildren()");
-        const raw=await evaluate(world,scripts,...rest);
-        if(returning && readinessFrames.length===0 && raw.posts.length===0){
-          readinessFrames.push('return-empty');
-          await view.executeJavaScript('parentRegion.append(parentParts[0])');
-        } else if(returning && readinessFrames.length===1 && raw.posts.length===1 && raw.posts[0].postId==='321'){
-          readinessFrames.push('discussion-empty');
-          await view.executeJavaScript('parentRegion.append(...parentParts.slice(1))');
-        } else if(returning && readinessFrames.length===2 && raw.posts.some((p:{postId:string|null})=>p.postId==='801') && raw.controls.some((c:{kind:string})=>c.kind==='replies_expand')) readinessFrames.push('discussion-ready');
         return raw;
       };
       if(mode==='blocked') view.capturePage=async(...args)=>{
         const image=await capture(...args);
-        if(await view.executeJavaScript("!document.querySelector('#bodyMore') && !!document.querySelector('#entry')")) {
+        if(await view.executeJavaScript("!!document.querySelector('#entry')")) {
           await view.executeJavaScript("document.querySelector('#entry').setAttribute('aria-disabled','true')"); rejectedNode=true;
         }
         return image;
       };
       try {
-        const scrollCase=progressCase||mode==='scroll'||mode==='stalled'||mode==='source-state';
-        // Delayed mode isolates the original polling path; progress mode owns the native scroll cause.
-        const result=await readX({tabId:opened.tabId,read:{objective:'offline native stages',targets:[{url}],includeArticle:!scrollCase,includeReplies:true,maxRepliesPerPost:progressCase?4:scrollCase?2:10,maxScrollsPerPost:mode==='progress-zero'||mode==='delayed'?0:progressCase?1:2,maxExpandActionsPerPost:scrollCase?0:4}},
+        const scrollCase=progressCase||mode==='scroll'||mode==='stalled'||mode.startsWith('source-');
+        // Progress mode owns the native scroll cause.
+        const result=await readX({tabId:opened.tabId,read:{objective:'offline native stages',targets:[{url}],includeArticle:!scrollCase,includeReplies:true,maxRepliesPerPost:progressCase?4:scrollCase?2:10,maxScrollsPerPost:mode==='progress-zero'?0:progressCase?1:2,maxExpandActionsPerPost:scrollCase?0:4}},
           {browser:port,threadId:'fixture-thread',runId:'native-run',callId:'native-read',batchId:'native-batch',sources:new Map()});
         const actions=await view.executeJavaScript("JSON.parse(sessionStorage.getItem('read-actions')||'[]')");
-        const currentPosts=await view.executeJavaScript("Array.from(document.querySelectorAll('a[href]')).filter(a=>a.querySelector('time')).map(a=>a.getAttribute('href'))");
         const sourceGeometry=mode==='source-state'||progressCase?await view.executeJavaScript('window.sourceGeometry ?? null'):null;
-        const citationChecks:Record<string,string>={};
-        if(mode==='source-state'){
-          const ledger=new XResearchEvidence('/tmp',()=> 'native-run');ledger.observe(result);
-          for(const [name,uri] of Object.entries({root:url,own:'https://x.com/current/status/805',preview:'https://x.com/preview/status/808',quote:'https://x.com/quoted/status/806',bad:'https://x.com/other/status/807'})){
-            try{ledger.guard('/tmp/report.md',`[source](${uri})`);citationChecks[name]='allowed';}catch(error){citationChecks[name]=String(error);}
-          }
-        }
-        return {result,actions,currentPosts,rejectedNode,readinessFrames,sourceCleanup,sourceGeometry,sourceActions,citationChecks,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
-      } finally {view.capturePage=capture;view.executeJavaScriptInIsolatedWorld=evaluate;browser.dispatchAndObserveNavigation=dispatch;}
+
+        return {result,actions,rejectedNode,sourceCleanup,sourceGeometry,sourceActions,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
+      } finally {view.capturePage=capture;view.executeJavaScriptInIsolatedWorld=evaluate;browser.dispatchAndObserveNavigation=dispatch;browser.close(opened.tabId);}
     },
     collectedPermission: async (mode: string) => {
       const opened=await port.open('https://x.com/alice/status/123',undefined);
@@ -294,7 +241,7 @@ void app.whenReady().then(async () => {
       return port.withPage(opened.tabId,undefined,async page=>{
         const request={stage:'post' as const,expectedUrl:'https://x.com/alice/status/123',postId:'123'};
         const first=await collectXPage(page,request);
-        const click=(observation:typeof first)=>{const c=observation.controls.find(c=>c.kind==='body_expand')!;return page.act({kind:'click',index:c.binding.index,snapshotId:c.binding.snapshotId},observation.snapshot);};
+        const click=(observation:typeof first)=>{const c=observation.controls.find(c=>c.kind==='replies_expand')!;return page.act({kind:'click',index:c.binding.index,snapshotId:c.binding.snapshotId},observation.snapshot);};
         // Unrelated metric changes are not part of expansion permission.
         await xwc.executeJavaScript("document.querySelector('#likes').textContent='999'");
         await click(first);
@@ -313,21 +260,21 @@ void app.whenReady().then(async () => {
         let changed=false;
         xwc.executeJavaScriptInIsolatedWorld=async(world,scripts,...rest)=>{
           if(!changed && ((mode==='at-measure' && scripts[0].code.includes('const measured ='))
-            || (mode==='after-frame' && scripts[0].code.includes('"op":"validate"')))) {
+            || (mode==='after-frame' && scripts[0].code.includes('"op":"finalize_collected_pointer"')))) {
             await xwc.executeJavaScript(mutation[mode]);changed=true;
           }
           return original(world,scripts,...rest);
         };
         let error:string|null=null;
         try {
-          if(mode!=='at-measure' && mode!=='after-frame') await xwc.executeJavaScript(mutation[mode]);
+          if(mode!=='at-measure' && mode!=='after-frame') {await xwc.executeJavaScript(mutation[mode]);changed=true;}
           await click(second);
         } catch(cause) {error=(cause as {code?:string}).code??String(cause);}
         finally {xwc.executeJavaScriptInIsolatedWorld=original;}
-        return {positive,after:{input,trusted:await xwc.executeJavaScript('window.trusted')},error,
+        return {positive,after:{input,trusted:await xwc.executeJavaScript('window.trusted')},error,mutationApplied:changed,
           sameNode:await xwc.executeJavaScript('window.collectedNode===document.querySelector("#expand")'),
-          identity:first.identityProven,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
-      });
+          nativeOwnerProven:first.diagnosticFrame?.rootIdentityProven,activeTabId:browser.getState().activeTabId,userTabId:user.tabId};
+      }).finally(()=>browser.close(opened.tabId));
     },
     pointerEligibility: async (mode: string) => {
       const opened=await port.open('https://x.com/alice/status/123',undefined);
@@ -361,6 +308,7 @@ void app.whenReady().then(async () => {
         return result;
       };
       let positive:Awaited<ReturnType<typeof counters>>|undefined,error:string|null=null,after:Awaited<ReturnType<typeof counters>>|undefined;
+      let replayError:string|null=null,replayCounters:Awaited<ReturnType<typeof counters>>|undefined;
       try {
         await port.withPage(opened.tabId,abort.signal,async page=>{
           const request={stage:'post' as const,expectedUrl:'https://x.com/alice/status/123',postId:'123'};
@@ -370,15 +318,20 @@ void app.whenReady().then(async () => {
             Element.prototype.scrollIntoView=function(...args){window.__eligibilityFixture.counts.scrolls++;if(window.__eligibilityFixture.race)this.style.pointerEvents='none';return scroll.apply(this,args);};
             document.elementFromPoint=(...args)=>{window.__eligibilityFixture.counts.hits++;return hit(...args);};
           })()`);
-          const control=observed.controls.find(c=>c.kind==='body_expand')!;
+          const control=observed.controls.find(c=>c.kind==='replies_expand')!;
           const action={kind:'click' as const,index:control.binding.index,snapshotId:control.binding.snapshotId};
           await page.act(action,observed.snapshot);positive=await counters();
+          try { await page.act(action,observed.snapshot); } catch(cause) { replayError=(cause as {code?:string}).code??String(cause); }
+          replayCounters=await counters();
+          const fresh=await collectXPage(page,request),freshControl=fresh.controls.find(c=>c.kind==='replies_expand')!;
+          const freshAction={kind:'click' as const,index:freshControl.binding.index,snapshotId:freshControl.binding.snapshotId};
           input=0;measures=0;observations.length=0;
           await isolated('window.__eligibilityFixture.counts={scrolls:0,hits:0}');
-          // Same original collection, permission and saved control as positive.
+          // Fresh one-shot permission on the same physical control. The pending
+          // native attempt must retain this one binding across all eligibility reads.
           await xwc.executeJavaScript("window.eligibilityOriginal=document.querySelector('#expand');eligibilityOriginal.style.pointerEvents='none'");
           if(mode==='race')await isolated('window.__eligibilityFixture.race=true');
-          phase='pending';await page.act(action,observed.snapshot);
+          phase='pending';await page.act(freshAction,fresh.snapshot);
         });
       } catch(cause){error=(cause as {code?:string}).code??String(cause);}
       finally {
@@ -392,7 +345,7 @@ void app.whenReady().then(async () => {
           browser.close(opened.tabId);
         }
       }
-      return {positive,beforeWriter,after,observations,sameBinding,error};
+      return {positive,beforeWriter,after,observations,sameBinding,error,replayError,replayCounters};
     },
     postFrameDiagnostic: async (mode: string) => {
       const opened = await port.open('https://x.com/alice/status/123', undefined);
@@ -440,7 +393,7 @@ void app.whenReady().then(async () => {
       try {
         await port.withPage(opened.tabId, abort.signal, async page => {
           const observed = await collectXPage(page, { stage: 'post', expectedUrl: 'https://x.com/alice/status/123', postId: '123' });
-          const control = observed.controls.find(c => c.kind === 'body_expand')!;
+          const control = observed.controls.find(c => c.kind === 'replies_expand')!;
           const action = { kind: 'click' as const, index: control.binding.index, snapshotId: control.binding.snapshotId };
           await xwc.executeJavaScript("window.postFrameOriginal=document.querySelector('#expand')");
           await isolated(`(()=>{const scroll=Element.prototype.scrollIntoView,hit=document.elementFromPoint.bind(document);
@@ -449,11 +402,14 @@ void app.whenReady().then(async () => {
             document.elementFromPoint=(...args)=>{window.__postFrameFixture.hits++;return hit(...args);};
           })()`);
           await page.act(action, observed.snapshot,{onPointerPreflight:r=>preflights.push(r)}); positive = await counters();
+          const fresh=await collectXPage(page,{stage:'post',expectedUrl:'https://x.com/alice/status/123',postId:'123'});
+          const freshControl=fresh.controls.find(c=>c.kind==='replies_expand')!;
+          const freshAction={kind:'click' as const,index:freshControl.binding.index,snapshotId:freshControl.binding.snapshotId};
           input = measures = frames = 0;
           await isolated('window.__postFrameFixture={scrolls:0,hits:0}');
           phase = 'negative';
           if(mode==='recover')await xwc.executeJavaScript("window.postFrameOriginal.style.pointerEvents='none'");
-          await page.act(action, observed.snapshot,{onPointerPreflight:r=>preflights.push(r)});
+          await page.act(freshAction, fresh.snapshot,{onPointerPreflight:r=>preflights.push(r)});
         });
       } catch (cause) { error = (cause as { code?: string }).code ?? String(cause); diagnostic = pointerFailureDiagnostic(cause) ?? null; }
       finally {

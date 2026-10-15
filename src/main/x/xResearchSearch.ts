@@ -75,6 +75,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
     if(halted||context.signal?.aborted){if(halted==='cancelled'||context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';}else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};}continue;}
     const admitted=new Set<string>(),saved=new Set<string>();let pageCount=0;
     row.sampleTruncation={observed:0,sampled:0,omitted:0};
+    const capped=()=>{const bindings=reachedXBudgets(policy,{posts:admitted.size,scrolls:row.budgetUsage.scrolls,network_pages:pageCount},['posts','scrolls','network_pages']);if(bindings.length)row.budgetBinding=bindings;return bindings.length>0;};
     const acceptNetworkPage=(source:XNetworkPage,fact?:XNetworkPageFact)=>{
       if(saved.has(source.provenance.requestRef))return;
       if(pageCount>=1000)return;
@@ -84,8 +85,8 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       for(const post of sample.retained){if(row.posts.some(p=>p.postId===post.postId))(row.postObservations??=[]).push(post);else row.posts.push(post);}
       if(fact)(row.networkPages??=[]).push({...fact,observed:sample.observed,sampled:sample.sampled,omitted:sample.omitted});
       rememberSources(context,sample.retained,row.query);row.budgetUsage.distinctEntries=admitted.size;
+      capped();
     };
-    const capped=()=>{const bindings=reachedXBudgets(policy,{posts:admitted.size,scrolls:row.budgetUsage.scrolls,network_pages:pageCount},['posts','scrolls','network_pages']);if(bindings.length)row.budgetBinding=bindings;return bindings.length>0;};
     if(input.search.maxPostsPerQuery===0&&capped()){row.status='partial';row.stopReason='budget_reached';continue;}
     const request={stage:'search' as const,expectedUrl:xSearchUrl(row.query),query:row.query.query,product:row.query.product};
     let stage:'navigation'|'collection'|'action'|'wait'='navigation';

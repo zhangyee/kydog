@@ -297,3 +297,37 @@ it('preserves primary navigation/cancellation outcomes with canonical cleanup di
  expect(output.result.queries[0]).toMatchObject({status:'cancelled',stopReason:'cancelled',diagnostics:{networkCleanupFailure:'network_cleanup_failed'}});
  expect(output.result.queries[0].posts).toHaveLength(3);
 });
+
+it('binds accepted samples and pages synchronously even when cancellation wins the continuation', async () => {
+  const run = async (cancel: boolean, pageCount: number, limit: number) => {
+    const f = harness(3), i = input();
+    i.search.maxPostsPerQuery = limit; i.search.maxScrollsPerQuery = 1000;
+    f.context.budgetPolicy = { posts: {limit, origin: 'default'}, scrolls: {limit: 1000, origin: 'explicit'} };
+    f.context.browser.withPage = async (_tab, _signal, work, hooks) => {
+      const observed = await f.collect({stage:'search',expectedUrl:'https://x.com/search?q=from%3ACaptureAuthor&f=top',query:query.query,product:'Top'});
+      for (let n = 0; n < pageCount; n++) {
+        // Source-acceptance pressure: reuse decoded capture shape, vary exact
+        // request and post identities, without constructing 1000 DOM fixtures.
+        const source = structuredClone(observed.network!.pages[0]);
+        source.provenance.requestRef = 'sink-' + n;
+        source.posts = source.posts.map((post,index)=>({...post,postId:String(10000+3*n+index),sourceUrl:`https://x.com/CaptureAuthor/status/${10000+3*n+index}`,networkProvenance:source.provenance}));
+        hooks!.onNetworkPageAccepted!(source, {provenance:source.provenance, bytes:1, sha256:'a'.repeat(64), inputCursorRef:null, outputCursorRef:null, end:source.end, unsupported:[], observed:3,sampled:3,omitted:0});
+      }
+      if (cancel) throw new KydogError('browser.cancelled', 'accepted then cancelled');
+      return work(f.page);
+    };
+    return (await searchX(i, f.context)).queries[0];
+  };
+  const normal = await run(false, 1000, 2);
+  const cancelled = await run(true, 1000, 2);
+  const expected = [{dimension:'posts',limit:2,used:2,origin:'default'}, {dimension:'network_pages',limit:1000,used:1000,origin:'safety'}];
+  expect(normal.budgetBinding).toEqual(expected);
+  expect(normal.stopReason).toBe('budget_reached');
+  expect(cancelled.budgetBinding).toEqual(expected);
+  expect(cancelled.stopReason).toBe('cancelled');
+  expect(cancelled.sampleTruncation).toEqual({observed:3000,sampled:2,omitted:2998});
+  const below = await run(true, 1, 4);
+  expect(below.posts).toHaveLength(3);
+  expect(below.budgetBinding).toBeUndefined();
+  expect(below.stopReason).toBe('cancelled');
+});

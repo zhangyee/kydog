@@ -289,6 +289,7 @@ export function acceptReadNetworkPage(
   row.budgetUsage.distinctEntries = new Set(
     [
       row.root,
+      row.article.body,
       ...row.quotedPosts,
       ...row.replies.observations,
       ...(row.unscopedPosts?.observations ?? []),

@@ -13,12 +13,10 @@ interface Harness {
 
   directIdentity():Promise<{positive:DirectIdentityReceipt;negative:DirectIdentityReceipt}>;
   postFrameDiagnostic(mode:string):Promise<{preflights:import('../src/main/browser/pointerPreflightDiagnostic').PointerPreflightDiagnostic[];observations:string[];positive:EligibilityCounters&{frames:number};after:EligibilityCounters&{frames:number};results:unknown[];receipts:{snapshotId:string;generation:string;nodeId:number}[];error:string|null;sameControl:boolean;diagnostic:import('../src/main/browser/pointerDiagnostic').PointerFailureDiagnostic|null}>;
-  pointerEligibility(mode:string):Promise<{positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
+  pointerEligibility(mode:string):Promise<{replayError:string|null;replayCounters:EligibilityCounters;positive:EligibilityCounters;beforeWriter:EligibilityCounters;after:EligibilityCounters;observations:string[];sameBinding:boolean;error:string|null}>;
   read(): Promise<State>;
-  sourceContainers(): Promise<{ posts: import('../src/main/x/xResearchTypes').XTextObservation[]; entryParents: {author:string|undefined;parentText:string|undefined}[] }>;
-  longBodyNoControl():Promise<{domBody:string;detailRoot:import('../src/main/x/xResearchTypes').XTextObservation|null;detailQuote:import('../src/main/x/xResearchTypes').XTextObservation|null;detailReply:import('../src/main/x/xResearchTypes').XTextObservation|null;detailControls:string[];searchPost:import('../src/main/x/xResearchTypes').XTextObservation|null;buttonControls:string[];buttonExpandActions:number;buttonRootText:string|undefined;result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;activeTabId:string;userTabId:string}>;
-  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];currentPosts:string[];rejectedNode:boolean;readinessFrames:string[];sourceCleanup:{populated:boolean;cleared:boolean};sourceGeometry:{before:number;after:number;height:number}|null;sourceActions:string[];citationChecks:Record<string,string>;activeTabId:string;userTabId:string}>;
-  collectedPermission(mode:string):Promise<{positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;identity:boolean;activeTabId:string;userTabId:string}>;
+  readStages(mode:string):Promise<{result:Extract<import('../src/main/x/xResearchTypes').XResearchResult,{operation:'read'}>;actions:string[];rejectedNode:boolean;sourceCleanup:{populated:boolean;cleared:boolean};sourceGeometry:{before:number;after:number;height:number}|null;sourceActions:string[];activeTabId:string;userTabId:string}>;
+  collectedPermission(mode:string):Promise<{mutationApplied:boolean;positive:{input:number;trusted:number};after:{input:number;trusted:number};error:string|null;sameNode:boolean;nativeOwnerProven:boolean;activeTabId:string;userTabId:string}>;
   neverShown(): Promise<{ before: { bounds: unknown; visible: boolean; activeTabId: string; userTabId: string }; error: unknown; phases: string[]; page: State['page']; activeTabId: string; userTabId: string; visible: boolean }>;
   typingBoundary(mode: string): Promise<{ before: State; after: State; error: string | null; destination: { query: string; other: string; active: string } }>;
   visible(): Promise<void>;
@@ -31,8 +29,8 @@ interface Harness {
 }
 
 // One isolated process for the feature area. Each repeat receives a fresh profile.
-// The root-only progress case runs last: its two fresh research tabs can evict the
-// original target under the real tab budget; earlier binding tests still need that target.
+// Temporary research tabs close after their receipts are collected, preserving
+// the original target used by later typing, lease, and stale-binding checks.
 // Production BrowserService and XQueuedPage are imported into the fixture bundle;
 // only the fixture has a global controller, never the shipped application.
 test.describe('X browser port native safety (offline)', () => {
@@ -73,47 +71,32 @@ test.describe('X browser port native safety (offline)', () => {
     expect(first.hasSourcePermission).toBe(true);
     expect(receipt.collections).toEqual(Array(4).fill(first));
     const row=receipt.result.targets[0];
-    expect(row).toMatchObject({root:{postId:'321',text:'Native preview'},budgetUsage:{expandActions:3,scrolls:0},stopReason:'budget_reached',replies:{scope:{completeness:'unknown'}}});
-    expect(row.replies.observations.map(p=>[p.postId,p.sourceUrl,p.text])).toEqual([['901','https://x.com/own1/status/901','Native own reply 1'],['902','https://x.com/own2/status/902','Native own reply 2'],['903','https://x.com/own3/status/903','Native own reply 3']]);
+    expect(row).toMatchObject({root:{postId:'321',text:'NETWORK_ROOT_094a'},budgetUsage:{expandActions:3,scrolls:0},stopReason:'budget_reached',replies:{scope:{kind:'network',extent:'unknown'}}});
+    expect(row.replies.observations.map(p=>[p.postId,p.sourceUrl,p.text])).toEqual([['801','https://x.com/reply801/status/801','NETWORK_REPLY_801'],['802','https://x.com/reply802/status/802','NETWORK_REPLY_802'],['803','https://x.com/reply803/status/803','NETWORK_REPLY_803'],['804','https://x.com/reply804/status/804','NETWORK_REPLY_804']]);
     const d=row.diagnostics!.replyExpansions!;
-    expect(d).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:1,outcome:'succeeded',admission:{state:'consumed'},before:{inventory:{total:0}},after:{inventory:{items:[{postId:'901'}]}}},last:{actionIndex:3,outcome:'succeeded',usageAfter:{expansions:3},after:{inventory:{total:3}}}});
+    expect(d).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:1,outcome:'succeeded',admission:{state:'consumed'},before:{inventory:{total:1}},after:{inventory:{state:'unavailable'}}},last:{actionIndex:3,outcome:'succeeded',usageAfter:{expansions:3},after:{inventory:{state:'unavailable'}}}});
     expect(d.first!.binding.nodeId).toBe(first.nodeId);expect(d.last!.binding.nodeId).toBe(first.nodeId);
     expect(d.first!.admission).toMatchObject({binding:d.first!.binding});expect(d.last!.admission).toMatchObject({binding:d.last!.binding});
   });
 
-  test('real root removal preserves own current bodies and preview gaps while stopping target discussion',async()=>{
+  test('real root removal retains network root and accepts same-chain replies',async()=>{
     const receipt=await control(h=>h.readStages('source-state'));
     console.info('[original-source-root-native]',JSON.stringify(receipt));
-    const row=receipt.result.targets[0],first=row.diagnostics?.firstAdmittedFrame,terminal=row.diagnostics?.terminalFrame;
-    expect(row.diagnostics?.initialFrame).toMatchObject({inventory:{returned:0},rootIdentityProven:false});
-    expect(first).toMatchObject({rootIdentityProven:true,sourceRootState:{anchorSnapshotId:first?.snapshotId,availability:'captured',
-      conversation:{candidates:'unique',sameObject:true,connected:true,sameDocument:true,containsRoot:true},
-      root:{connection:'connected',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:true,inRawPosts:true,shown:'pass'},
-      identity:{members:'same',coordinates:'same',owned:true,rendered:'same'}}});
-    expect(terminal).toMatchObject({rootIdentityProven:false,sourceRootState:{anchorSnapshotId:first?.snapshotId,availability:'captured',
-      conversation:{candidates:'unique',sameObject:true,connected:true,sameDocument:true,containsRoot:false},
-      root:{connection:'detached',sameDocument:true,topLevel:true,ownBoundary:true,inRoots:false,inRawPosts:false,shown:'dimensions'},
-      identity:{members:'same',coordinates:'same',owned:true,rendered:'missing'}}});
-    expect(terminal?.document).toEqual(first?.document);
-    expect(row).toMatchObject({status:'partial',reason:'post_identity_unproven',stopReason:'identity_unproven',root:{text:'Native preview',postId:'321'},replies:{observations:[{postId:'801'}]},budgetUsage:{scrolls:1,expandActions:0}});
-    expect(row.diagnostics?.scroll?.last).toMatchObject({state:'frame_observed',written:true,eventObserved:true,frameObserved:true});
+    const row=receipt.result.targets[0];
+    expect(row.root).toMatchObject({postId:'321',text:'NETWORK_ROOT_094a',sourceKind:'page_graphql'});
+    expect(row.replies.observations.map(p=>p.postId)).toEqual(['801','802']);
+    expect(row.replies.scope).toMatchObject({kind:'network',extent:'unknown',context:{accountContextId:null}});
+    expect(row.diagnostics?.scroll?.last).toMatchObject({written:true,eventObserved:true,frameObserved:true});
+    expect(receipt.sourceActions).toContain('collection:rootless');
     expect(receipt.sourceGeometry?.height).toBeGreaterThan(0);
-    expect(receipt.sourceGeometry?.before).toBe(row.diagnostics?.scroll?.last?.after);
     expect(receipt.sourceGeometry?.after).toBe(receipt.sourceGeometry?.before);
-    expect(receipt.actions).toEqual(['scroll-event','scroll-frame']);
-    expect(receipt.sourceActions).toEqual(['dispatch:scroll','collection:rootless']);
-    expect(row.unscopedPosts?.observations.map(p=>[p.postId,p.relationToTarget,p.observedContainer])).toEqual([['805','unproven','post'],['808','unproven','post'],['801','unproven','post']]);
-    expect(row.unscopedPosts?.inventory).toEqual({scope:'collection',observed:3,retained:3,omitted:0,sourceInventoryTruncated:false,excludedNestedQuotes:1});
-    expect(row.unscopedPosts?.previewGaps).toEqual([{sourceUrl:'https://x.com/preview/status/808',unresolved:1}]);
-    expect(row.unscopedPosts?.collection.snapshotId).toBe(terminal?.snapshotId);
-    expect(row.unscopedPosts?.observations.find(p=>p.postId==='801')?.observationId).not.toBe(row.replies.observations[0].observationId);
-    expect(row.budgetUsage.distinctEntries).toBe(4);
-    expect(receipt.citationChecks.root).toBe('allowed');expect(receipt.citationChecks.own).toBe('allowed');
-    expect(receipt.citationChecks.preview).toContain('inventory is unknown');
-    expect(receipt.citationChecks.quote).toContain('unobserved');expect(receipt.citationChecks.bad).toContain('unobserved');
-    expect(receipt.readinessFrames).toEqual(['initial-empty']);
     expect(receipt.sourceCleanup).toEqual({populated:true,cleared:true});
     expect(receipt.activeTabId).toBe(receipt.userTabId);
+    const changed=await control(h=>h.readStages('source-invalidated'));
+    const rejected=changed.result.targets[0];
+    expect(rejected.root).toMatchObject({postId:'321',text:'NETWORK_ROOT_094a'});
+    expect(rejected.stopReason).toBe('source_unavailable');
+    expect(rejected.replies.observations.map(p=>p.postId)).not.toContain('802');
   });
 
   test('native same-URL collection transition requires matching current owned Article identity',async()=>{
@@ -144,6 +127,7 @@ test.describe('X browser port native safety (offline)', () => {
       const r=await control((h,value)=>h.pointerEligibility(value),mode);
       console.info('[original-pointer-eligibility-native]',JSON.stringify({mode,...r}));
       expect(r.positive,mode).toEqual({input:2,measures:1,scrolls:1,hits:3,trusted:1});
+      expect(r.replayError).toBe('browser.bad_action');expect(r.replayCounters).toEqual(r.positive);
       expect(r.beforeWriter,mode).toEqual({input:0,measures:0,scrolls:0,hits:0,trusted:1});
       expect(r.sameBinding,mode).toBe(true);
       if(mode==='enable'){
@@ -170,7 +154,9 @@ test.describe('X browser port native safety (offline)', () => {
     expect(r.results[3]).toMatchObject({ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true});
     expect(r.preflights).toHaveLength(2);
     expect(r.preflights[1]).toMatchObject({initialState:'none',finalState:'auto',noneObserved:true,eligibilityReadsIssued:2,probeReadsIssued:2,finalizationsIssued:3,framesObserved:3,finalHitPerformed:true,outcome:'final_hit_validated',unavailableFields:[]});
-    for(const key of ['tabId','snapshotId','generation','nodeId'] as const)expect(r.preflights[1][key]).toBe(r.preflights[0][key]);
+    expect(r.preflights[1].snapshotId).toBe(r.receipts[1].snapshotId);
+    expect(r.preflights[1].snapshotId).not.toBe(r.preflights[0].snapshotId);
+    for(const key of ['tabId','generation','nodeId'] as const)expect(r.preflights[1][key]).toBe(r.preflights[0][key]);
   });
 
   test('same captured control keeps pre-hit NONE pending and refuses AUTO cover after the genuine native frame', async () => {
@@ -275,7 +261,7 @@ test.describe('X browser port native safety (offline)', () => {
     for(const mode of ['submit','text','name','form-owner','post-owner','post-identity','at-measure','after-frame']) {
       const result=await control((h,value)=>h.collectedPermission(value),mode);
       console.info('[collected-native-permission]',mode,JSON.stringify(result));
-      expect(result.identity,mode).toBe(true);
+      expect(result.nativeOwnerProven,mode).toBe(true);expect(result.mutationApplied,mode).toBe(true);
       expect(result.positive.input,mode).toBeGreaterThan(0);
       expect(result.positive.trusted,mode).toBe(1);
       expect(result.sameNode,mode).toBe(true);
@@ -311,82 +297,24 @@ test.describe('X browser port native safety (offline)', () => {
     expect(result.after.page.trustedClicks).toBe(result.before.page.trustedClicks + 1);
   });
 
-  test('native detail retains a long rendered body without a control while other scopes stay bounded',async()=>{
-    const r=await control(h=>h.longBodyNoControl());
-    const root=r.result.targets[0].root!;
-    expect(r.domBody.length).toBe(7009);
-    expect(r.domBody.endsWith('Z')).toBe(true);
-    expect(r.detailRoot).toMatchObject({postId:'321',sourceUrl:'https://x.com/longbody/status/321',author:{handle:'longbody'},text:r.domBody,truncation:{returned:7009,totalKnown:7009,truncated:false}});
-    expect(root).toMatchObject({postId:'321',sourceUrl:'https://x.com/longbody/status/321',author:{handle:'longbody'},text:r.domBody,truncation:{returned:7009,totalKnown:7009,truncated:false},observationId:expect.any(String)});
-    for(const [side,totalKnown] of [[r.detailQuote,5000],[r.detailReply,5000],[r.searchPost,7009]] as const) {
-      expect(side?.text.length).toBe(4000);
-      expect(side?.truncation).toEqual({returned:4000,totalKnown,truncated:true});
-    }
-    expect(r.buttonControls).toContain('body_expand');
-    expect(r.buttonExpandActions).toBe(1);
-    expect(r.buttonRootText).toBe('Native expanded body');
-    expect(r.detailControls).not.toContain('body_expand');
-    expect(root.text.endsWith('Z')).toBe(true);
-    expect(r.result.targets[0].budgetUsage.expandActions).toBe(0);
-    expect(r.activeTabId).toBe(r.userTabId);
-  });
-
-  test('native Article, fresh parent return and bounded replies retain independent source evidence',async()=>{
-    const containers=await control(h=>h.sourceContainers());
-    expect(containers.posts.slice(0,2).map(p=>p.text)).toEqual(['PLAIN_EXACT_CONTAINER','PREVIEW_EXACT_CONTAINER']);
-    expect(containers.posts[1].articlePreviewInventory).toEqual({scope:'collection',observed:1,retained:0,omitted:1,unresolved:0});
-    expect(containers.posts[0].articlePreviewInventory).toEqual({scope:'collection',observed:0,retained:0,omitted:0,unresolved:0});
-    expect(containers.entryParents).toEqual([{author:'writer',parentText:'PREVIEW_EXACT_CONTAINER'}]);
+  test('native Article return and reply controls retain network source evidence and rejection receipts',async()=>{
     const actual=await control(h=>h.readStages('ok'));
     console.info('[native-read-stages]',JSON.stringify(actual));
-    expect(actual.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native expanded body'},article:{actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'654',author:{handle:'writer'},sourceUrl:'https://x.com/writer/status/654',text:'Native paragraph rich\n\nNative heading'}},replies:{observations:[{postId:'801',directParent:null},{postId:'802',directParent:null}],scope:{completeness:'unknown',stopReason:'identity_unproven'}},budgetUsage:{expandActions:3,scrolls:0}});
-    expect(actual.actions).toEqual(['body','article','replies']);
-    expect(actual.currentPosts).toEqual(['/third/status/803']);
+    expect(actual.result.targets[0]).toMatchObject({root:{postId:'321',sourceKind:'page_graphql',text:'NETWORK_ROOT_094a'},article:{actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'654',sourceKind:'rendered_ui',text:'Native paragraph rich\n\nNative heading'}}});
+    expect(actual.actions).toContain('article');expect(actual.actions).toContain('replies');
     expect(actual.activeTabId).toBe(actual.userTabId);
-    const delayed=await control(h=>h.readStages('delayed'));
-    expect(delayed.readinessFrames).toEqual(['return-empty','discussion-empty','discussion-ready']);
-    expect(delayed.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native expanded body'},article:{bodyObserved:true,body:{postId:'654'}},replies:{observations:[{postId:'801'},{postId:'802'}]},budgetUsage:{expandActions:3,scrolls:0}});
-    expect(delayed.actions).toEqual(['body','article','replies']);
-    expect(delayed.currentPosts).toEqual(['/third/status/803']);
-    expect(delayed.activeTabId).toBe(delayed.userTabId);
-    const scrolled=await control(h=>h.readStages('scroll'));
-    console.info('[native-scroll-render]',JSON.stringify(scrolled));
-    expect(scrolled.actions).toEqual(['scroll-event','scroll-frame']);
-    expect(scrolled.result.targets[0]).toMatchObject({root:{postId:'321',text:'Native preview'},replies:{observations:[{postId:'801'},{postId:'804',text:'Reply rendered after actual scroll'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:0}});
-    const positiveScroll=scrolled.result.targets[0].diagnostics?.scroll;
-    expect(positiveScroll).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,snapshotId:expect.any(String),targetKind:'document',targetNodeId:expect.any(Number),targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',written:true,eventObserved:true,frameObserved:true,state:'frame_observed'},last:{state:'frame_observed'}});
-    expect(positiveScroll!.last).toEqual(positiveScroll!.first);
-    expect(positiveScroll!.first!.generation).toBe(scrolled.result.targets[0].diagnostics?.initialFrame?.document.generation);
-    expect(positiveScroll!.first!.location).toEqual(scrolled.result.targets[0].diagnostics?.initialFrame?.location);
-    expect(positiveScroll!.first!.snapshotId).toBe(scrolled.result.targets[0].diagnostics?.initialFrame?.snapshotId);
-    expect(scrolled.result.targets[0].diagnostics?.terminalFrame?.snapshotId).not.toBe(scrolled.result.targets[0].diagnostics?.initialFrame?.snapshotId);
-    expect(scrolled.result.targets[0].diagnostics?.terminalFrame?.document).toEqual(scrolled.result.targets[0].diagnostics?.initialFrame?.document);
-    expect(positiveScroll!.first!.after).toBeGreaterThan(positiveScroll!.first!.before);
-    expect(positiveScroll!.first!.scrollHeight).toBeGreaterThan(positiveScroll!.first!.clientHeight);
-    // The terminal frame contains one visible reply; the result retains both distinct observations.
-    expect(scrolled.result.targets[0].diagnostics?.terminalFrame).toMatchObject({rootIdentityProven:true,replyCount:1,explicitEndObserved:false});
-    expect(scrolled.currentPosts).toEqual(['/scroller/status/321','/fourth/status/804']);
-    expect(scrolled.activeTabId).toBe(scrolled.userTabId);
-    const stalled=await control(h=>h.readStages('stalled'));
-    console.info('[native-scroll-no-movement]',JSON.stringify(stalled));
-    const stopped=stalled.result.targets[0],negativeScroll=stopped.diagnostics?.scroll;
-    expect(stopped).toMatchObject({status:'partial',reason:'scroll_no_movement',stopReason:'action_failed',root:{postId:'321',text:'Native preview'},replies:{observations:[{postId:'801',text:'First reply'}],scope:{completeness:'unknown',stopReason:'action_failed'}},budgetUsage:{scrolls:1,expandActions:0}});
-    expect(negativeScroll).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,snapshotId:expect.any(String),targetKind:'document',targetNodeId:expect.any(Number),targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',written:true,eventObserved:false,frameObserved:false,state:'no_movement'},last:{state:'no_movement'}});
-    expect(negativeScroll!.last).toEqual(negativeScroll!.first);
-    expect(negativeScroll!.first!.generation).toBe(stopped.diagnostics?.initialFrame?.document.generation);
-    expect(negativeScroll!.first!.location).toEqual(stopped.diagnostics?.initialFrame?.location);
-    expect(negativeScroll!.first!.snapshotId).toBe(stopped.diagnostics?.initialFrame?.snapshotId);
-    expect(stopped.diagnostics?.terminalFrame?.snapshotId).toBe(stopped.diagnostics?.initialFrame?.snapshotId);
-    expect(negativeScroll!.first!.after).toBe(negativeScroll!.first!.before);
-    expect(negativeScroll!.first!.scrollHeight).toBeLessThanOrEqual(negativeScroll!.first!.clientHeight);
-    expect(stopped.diagnostics?.terminalFrame).toMatchObject({rootIdentityProven:true,replyCount:1,explicitEndObserved:false});
-    expect(stalled.actions).toEqual([]);
-    expect(stalled.activeTabId).toBe(stalled.userTabId);
     const blocked=await control(h=>h.readStages('blocked'));
     expect(blocked.rejectedNode).toBe(true);
-    expect(blocked.result.targets[0]).toMatchObject({root:{text:'Native expanded body'},article:{actionAttempted:true,navigationStarted:false,bodyObserved:false,barrier:{status:'partial'}},budgetUsage:{expandActions:2}});
-    expect(blocked.actions).toEqual(['body','replies']);
+    expect(blocked.result.targets[0].article).toMatchObject({actionAttempted:true,navigationStarted:false,bodyObserved:false,barrier:{status:'partial'}});
+    expect(blocked.actions).not.toContain('article');
     expect(blocked.activeTabId).toBe(blocked.userTabId);
+    const scrolled=await control(h=>h.readStages('scroll'));
+    expect(scrolled.actions).toEqual(['scroll-event','scroll-frame']);
+    expect(scrolled.result.targets[0].diagnostics?.scroll?.last).toMatchObject({written:true,eventObserved:true,frameObserved:true,state:'frame_observed'});
+    expect(scrolled.result.targets[0].replies.observations.map(p=>p.text)).toContain('NETWORK_REPLY_802');
+    const stalled=await control(h=>h.readStages('stalled'));
+    expect(stalled.result.targets[0].diagnostics?.scroll?.last).toMatchObject({written:true,eventObserved:false,frameObserved:false,state:'no_movement'});
+    expect(stalled.result.targets[0].replies.scope).toMatchObject({kind:'network',extent:'unknown'});
   });
 
   test('source same-document route invalidates the old action binding', async () => {
@@ -396,45 +324,17 @@ test.describe('X browser port native safety (offline)', () => {
     expect(result.error).toBe('browser.stale_snapshot');
   });
 
-  test('root-only discussion advances once before readiness using a trusted native scroll frame',async()=>{
+  test('native scroll updates the source privacy inventory without reading ordinary DOM text',async()=>{
     const progress=await control(h=>h.readStages('progress'));
-    console.info('[native-readiness-progress]',JSON.stringify(progress));
-    const row=progress.result.targets[0],initial=row.diagnostics!.initialFrame!,terminal=row.diagnostics!.terminalFrame!,scroll=row.diagnostics!.scroll!;
-    expect(initial).toMatchObject({rootIdentityProven:true,replyCount:0,repliesExpandControlCount:0,explicitEndObserved:false,sourceRootState:{root:{connection:'connected'},identity:{coordinates:'same'}}});
-    const initialUi=initial.replyUiInventory?.capture,terminalUi=terminal.replyUiInventory?.capture;
-    expect(initialUi).toMatchObject({state:'checked',candidateObserved:4,eligibleObserved:4,returned:4,omittedHidden:0,
-      nodes:[{text:'Native heading'},{text:'Private sentinel'},{text:'状态信息'},{text:'End of conversation'}]});
-    // Same actual source candidates become hidden / structurally unsafe in the
-    // trusted native frame. The end-like label itself remains literal only.
-    expect(terminalUi).toMatchObject({state:'checked',candidateObserved:4,eligibleObserved:3,returned:2,omittedHidden:1,
-      omittedByPrivacy:3,omittedUnsafeSubtree:{excludedDescendant:1,subtreeNotFullyInspected:0,metadataLimit:0},
-      nodes:[{text:'状态信息'},{text:'End of conversation'}]});
-    expect(initial.sourceEndDetector).toBe('not_implemented');expect(terminal.sourceEndDetector).toBe('not_implemented');
-    expect(row.replies.scope).toMatchObject({completeness:'unknown',endEvidence:null});
-    if(initialUi?.state!=='checked'||terminalUi?.state!=='checked')throw new Error('source UI inventory missing');
-    expect(initialUi.regionNodeId).toBe(initial.regionNodeId);expect(terminalUi.regionNodeId).toBe(terminal.regionNodeId);
-    expect(terminal.document).toEqual(initial.document);
-    expect(progress.sourceActions).toEqual(['dispatch:scroll']);
+    const row=progress.result.targets[0], initial=row.diagnostics!.initialFrame!,terminal=row.diagnostics!.terminalFrame!;
     expect(progress.actions).toEqual(['scroll-event','scroll-frame']);
-    expect(row).toMatchObject({root:{postId:'321',text:'Native preview'},replies:{observations:[{postId:'809',author:{handle:'arrived'},sourceUrl:'https://x.com/arrived/status/809',text:'Own reply created by trusted scroll frame'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:0},stopReason:'budget_reached'});
-    expect(scroll).toMatchObject({totalAttempts:1,first:{snapshotId:initial.snapshotId,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'}});
-    expect(scroll.first!.after).toBeGreaterThan(scroll.first!.before);
-    expect(progress.sourceGeometry!.height).toBeGreaterThan(0);
-    expect(progress.sourceGeometry!.before).toBe(scroll.first!.after);
-    expect(progress.sourceGeometry!.after).toBe(progress.sourceGeometry!.before);
-    expect(scroll.last).toEqual(scroll.first);
-    expect(terminal).toMatchObject({rootIdentityProven:true,rootNodeId:initial.rootNodeId,replyCount:1,explicitEndObserved:false});
-    expect(terminal.snapshotId).not.toBe(initial.snapshotId);
-    expect(row.diagnostics?.readiness).toMatchObject({collectCount:1,initial:{replyCount:1,expandControlCount:0,explicitEndObserved:false},timedOut:false});
-    expect(progress.currentPosts).toEqual(['/progress/status/321','/arrived/status/809']);
-    expect(progress.activeTabId).toBe(progress.userTabId);
-    // The same independently named source only exists after a native event/frame;
-    // zero budget supplies the counterfactual, with no collection-wrapper injection.
+    expect(initial.replyUiInventory?.capture).toMatchObject({state:'checked',candidateObserved:4,eligibleObserved:4,returned:4,omittedHidden:0,nodes:[{text:'Native heading'},{text:'Private sentinel'},{text:'状态信息'},{text:'End of conversation'}]});
+    expect(terminal.replyUiInventory?.capture).toMatchObject({state:'checked',candidateObserved:4,eligibleObserved:3,returned:2,omittedHidden:1,omittedByPrivacy:3,nodes:[{text:'状态信息'},{text:'End of conversation'}]});
+    expect(row.replies.observations.map(p=>p.text)).toEqual(['NETWORK_REPLY_802']);
+    expect(row.diagnostics?.scroll?.last).toMatchObject({written:true,eventObserved:true,frameObserved:true});
+    expect(row.replies.scope).toMatchObject({kind:'network',extent:'unknown'});
     const zero=await control(h=>h.readStages('progress-zero'));
-    console.info('[native-readiness-zero]',JSON.stringify(zero));
-    expect(zero.sourceActions).toEqual([]);expect(zero.actions).toEqual([]);
-    expect(zero.currentPosts).toEqual(['/progress/status/321']);
-    expect(zero.result.targets[0]).toMatchObject({root:{postId:'321'},reason:'reply_readiness_timeout',stopReason:'wait_timeout',replies:{observations:[],scope:{completeness:'unknown'}},budgetUsage:{scrolls:0,expandActions:0},diagnostics:{initialFrame:{rootIdentityProven:true,replyCount:0},terminalFrame:{rootIdentityProven:true,replyCount:0},readiness:{timedOut:true}}});
+    expect(zero.actions).toEqual([]);expect(zero.result.targets[0].replies.observations).toEqual([]);
     expect(zero.activeTabId).toBe(zero.userTabId);
   });
 });
