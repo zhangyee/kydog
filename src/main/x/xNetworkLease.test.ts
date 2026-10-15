@@ -249,3 +249,29 @@ it('preserves cancellation while awaiting a bound successor instead of relabelin
     failure: 'cancelled', pending: false,
   });
 });
+
+it('delivers prior accepted pages when a later decoder unexpectedly fails', async () => {
+  const decoder=await import('./xNetworkSource');
+  const decode=decoder.decodeXSearchResponse;
+  const h=harness(), a=req(), b=req(next.request,{id:'next'});
+  expect(h.lease.accepts(a)).toBe(true);expect(h.lease.accepts(b)).toBe(true);
+  h.emit(a);h.emit(b,next.body);
+  const spy=vi.spyOn(decoder,'decodeXSearchResponse').mockImplementation((body,request)=>{
+    if(request.inputCursor!==null)throw new Error('private decoder error');
+    return decode(body,request);
+  });
+  try{expect(await h.lease.collect(location)).toMatchObject({pages:[{posts:expect.any(Array)}],facts:[{observed:20}],failure:'decode_failed',pending:false});}
+  finally{spy.mockRestore();}
+});
+
+it('retains a prior valid batch but rejects a successor invalidated before acceptance',async()=>{
+ const h=harness(),a=req();let current={...location};
+ expect(h.lease.accepts(a)).toBe(true);h.emit(a);
+ const accepted=await h.lease.collect(location,undefined,()=>current);
+ expect(accepted.pages[0].posts).toHaveLength(20);
+ const b=req(next.request,{id:'late'});expect(h.lease.accepts(b)).toBe(true);
+ h.source.take.mockImplementationOnce(async()=>{current={...location,routeRevision:99};h.emit(b,next.body);return h.events.shift()!;});
+ const late=await h.lease.collect(location,undefined,()=>current);
+ expect(late).toMatchObject({pages:[],facts:[],failure:'generation_changed',pending:false});
+ expect(accepted.pages[0].posts).toHaveLength(20);expect(h.lease.pageFacts).toHaveLength(1);
+});

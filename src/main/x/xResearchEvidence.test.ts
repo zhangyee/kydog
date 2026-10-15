@@ -903,3 +903,15 @@ it('canonical parsing rejects forged inventory bindings and diagnostic labels ne
   ledger.restore([history(diagnostic)]);expect(ledger.guard(report,citation())).toEqual({createOnly:true});
   expect(()=>ledger.guard(report,citation('https://x.com/other/status/999'))).toThrow(/unobserved/);
 });
+
+it('retains validated network provenance in production and restored evidence alongside rendered UI history',async()=>{
+ const {searchX}=await import('./xResearchSearch');const {searchHtml}=await import('../../test-support/xResearchFixture');
+ const f=fixture([searchHtml(post())]);
+ const network=await searchX({search:{objective:'source',queries:[{id:'q',query:'test',purpose:'test',product:'Top'}],maxPostsPerQuery:1,maxScrollsPerQuery:0}},f.context);
+ const provenance=network.queries[0].posts[0].networkProvenance!;
+ const ledger=new XResearchEvidence('/tmp',()=>network.runId);ledger.observe(network);
+ expect(ledger.observations[0]).toMatchObject({sourceKind:'page_graphql',networkProvenance:provenance});
+ const old=await result();ledger.restore([history(network),history(old)]);
+ expect(ledger.observations.find(p=>p.sourceKind==='page_graphql')).toMatchObject({origin:'history',networkProvenance:provenance});
+ const rendered=ledger.observations.find(p=>p.sourceKind==='rendered_ui');expect(rendered).toBeDefined();expect(rendered).not.toHaveProperty('networkProvenance');
+});

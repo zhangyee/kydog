@@ -13,6 +13,14 @@ import {
   type XNetworkProvenance,
   type XSearchNetworkRequest,
 } from './xNetworkSource';
+export type XNetworkCleanupFailure = 'network_cleanup_failed';
+const cleanupFailures = new WeakSet<object>();
+export function retainXNetworkCleanupFailure(error: unknown): void {
+  if(error!==null&&(typeof error==='object'||typeof error==='function'))cleanupFailures.add(error);
+}
+export function getXNetworkCleanupFailure(error: unknown): XNetworkCleanupFailure | undefined {
+  return error!==null&&(typeof error==='object'||typeof error==='function')&&cleanupFailures.has(error) ? 'network_cleanup_failed' : undefined;
+}
 export interface XNetworkPageFact {
   provenance: XNetworkProvenance;
   bytes: number;
@@ -157,6 +165,7 @@ export class XNetworkSearchLease {
   async collect(
     location: BrowserLocationFacts,
     signal?: AbortSignal,
+    currentLocation?: () => BrowserLocationFacts,
   ): Promise<{
     pages: XNetworkPage[];
     proof?: XNetworkProvenance;
@@ -173,7 +182,16 @@ export class XNetworkSearchLease {
     if (!this.source) this.fail('lease_missing');
     const pages: XNetworkPage[] = [];
     const facts: XNetworkPageFact[] = [];
+    const validSource = () => {
+      try {
+        if (signal?.aborted) { this.stopped='cancelled'; return false; }
+        const current=currentLocation?.() ?? location;
+        if(!same(location,current)||(this.location&&!same(this.location,current))) { this.stopped='generation_changed'; return false; }
+        return true;
+      } catch { this.stopped=signal?.aborted?'cancelled':'generation_changed'; return false; }
+    };
     const consume = (events: BrowserNetworkEvent[]) => {
+      if(!validSource())return;
       for (const e of events) {
         if (e.kind === 'closed') {
           this.stopped = e.reason;
@@ -211,7 +229,10 @@ export class XNetworkSearchLease {
           this.stopped = 'invalid_json';
           break;
         }
-        const page = decodeXSearchResponse(body, bound.request);
+        if(!validSource())break;
+        let page: XNetworkPage;
+        try { page = decodeXSearchResponse(body, bound.request); }
+        catch { this.stopped='decode_failed'; break; }
         this.requests.delete(id);
         this.responses.delete(id);
         const fact: XNetworkPageFact = {

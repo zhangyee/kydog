@@ -276,3 +276,24 @@ it('binds the accepted-page safety budget independently of distinct IDs and scro
   ]);
   expect(row.stopReason).toBe('budget_reached');
 });
+
+it('retains historical accepted pages on generation invalidation and performs no further action',async()=>{
+ const f=harness(),collect=f.collect.getMockImplementation()!;
+ const positive=input();positive.search.maxScrollsPerQuery=1;await searchX(positive,f.context);expect(f.act).toHaveBeenCalledOnce();f.act.mockClear();
+ f.collect.mockImplementation(async r=>{const o=await collect(r);o.network!.failure='generation_changed';o.identityProven=false;return o;});
+ const row=(await searchX(input(),f.context)).queries[0];
+ expect(row.posts).toHaveLength(3);expect(row.stopReason).toBe('source_unavailable');expect(row.barrier?.reason).toBe('generation_changed');expect(f.act).toHaveBeenCalledTimes(0);
+});
+
+it('preserves primary navigation/cancellation outcomes with canonical cleanup diagnostics',async()=>{
+ const {retainXNetworkCleanupFailure}=await import('./xNetworkLease');const {canonicalizeXResearchResult}=await import('./xResearchCanonical');const {serializeXResearchResult}=await import('./xResearchOutput');
+ const f=harness();
+ f.context.browser.open=async()=>({tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'timeout',abortObserved:false}},networkCleanupFailure:'network_cleanup_failed'});
+ const failed=canonicalizeXResearchResult(await searchX(input(),f.context));
+ if(failed.operation!=='search')throw Error('search');
+ expect(failed.queries[0]).toMatchObject({stopReason:'navigation_failed',diagnostics:{networkCleanupFailure:'network_cleanup_failed'}});
+ const cancelled=harness();cancelled.context.browser.withPage=async(_id,_signal,work)=>{await work(cancelled.page);const error=new KydogError('browser.cancelled','cancelled');retainXNetworkCleanupFailure(error);throw error;};
+ const i=input();i.search.maxScrollsPerQuery=0;const output=serializeXResearchResult(await searchX(i,cancelled.context));
+ expect(output.result.queries[0]).toMatchObject({status:'cancelled',stopReason:'cancelled',diagnostics:{networkCleanupFailure:'network_cleanup_failed'}});
+ expect(output.result.queries[0].posts).toHaveLength(3);
+});

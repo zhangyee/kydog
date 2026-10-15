@@ -362,11 +362,50 @@ it('captures first response before open returns, supplies an exclusive network b
  Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
   const raw={id:'source',requestId:'r',redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'frame',loaderId:'loader',navigationId:'[null,"frame","loader"]',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/variable-id/SearchTimeline?variables='+encodeURIComponent(JSON.stringify(capture.request))};
   expect(args.network.accepts(raw)).toBe(true);const body=JSON.stringify(capture.body);
-  return{tabId:'tab',evicted:[],nav:{navigationId:'navigation-receipt-is-different',outcome:{kind:'ok',finalUrl:request.expectedUrl}},networkLease:{id:'native',tabId:'tab',close,drain:async()=>{if(drained)return[];drained=true;if(changeGeneration)f.facts.routeRevision++;return[{kind:'request',request:raw},{kind:'response',request:raw,status:200,body,bytes:Buffer.byteLength(body),sha256:createHash('sha256').update(body).digest('hex')}];}}};
+  return{tabId:'tab',evicted:[],nav:{navigationId:'navigation-receipt-is-different',outcome:{kind:'ok',finalUrl:request.expectedUrl,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',close,drain:async()=>{if(drained)return[];drained=true;if(changeGeneration)f.facts.routeRevision++;return[{kind:'request',request:raw},{kind:'response',request:raw,status:200,body,bytes:Buffer.byteLength(body),sha256:createHash('sha256').update(body).digest('hex')}];}}};
  }});
  const port=createXResearchBrowser(f.browser,'thread');const opened=await port.open(request.expectedUrl,undefined,undefined,request);expect(opened.networkLeaseId).toEqual(expect.any(String));
- await port.withPage('tab',undefined,async page=>{const o=await page.collect(request);expect(o.network?.pages[0].posts).toHaveLength(20);expect(o.network?.proof.navigationId).toBe('[null,"frame","loader"]');expect(o.posts).toEqual([]);expect(o.snapshot.generation).toBeTruthy();});
+ await port.withPage('tab',undefined,async page=>{const o=await page.collect(request);expect(o.network?.pages[0].posts).toHaveLength(20);expect(o.network?.proof.navigationId).toBe('[null,"frame","loader"]');expect(o.posts).toEqual([]);expect(o.snapshot.generation).toBeTruthy();await page.act({kind:'scroll',direction:'down'},o.snapshot);});
  expect(close).toHaveBeenCalledOnce();await expect(port.withPage('tab',undefined,p=>p.collect(request))).rejects.toThrow('lease_missing');
  drained=false;changeGeneration=true;await port.open(request.expectedUrl,'tab',undefined,request);
- await expect(port.withPage('tab',undefined,p=>p.collect(request))).rejects.toMatchObject({code:'browser.stale_snapshot'});
+ await expect(port.withPage('tab',undefined,p=>p.collect(request))).rejects.toThrow('generation_changed');
+ drained=false;changeGeneration=false;await port.open(request.expectedUrl,'tab',undefined,request);
+ const {XNetworkSearchLease}=await import('./xNetworkLease');const collect=XNetworkSearchLease.prototype.collect;
+ const spy=vi.spyOn(XNetworkSearchLease.prototype,'collect').mockImplementation(async function(this:import('./xNetworkLease').XNetworkSearchLease,...args){const accepted=await collect.apply(this,args);f.facts.routeRevision++;return accepted;});
+ try{await port.withPage('tab',undefined,async page=>{const o=await page.collect(request);expect(o.network?.pages[0].posts).toHaveLength(20);expect(o.network).toMatchObject({failure:'generation_changed',pending:false});expect(o.identityProven).toBe(false);await expect(page.act({kind:'scroll',direction:'down'},o.snapshot)).rejects.toMatchObject({code:'browser.stale_snapshot'});});}finally{spy.mockRestore();}
+});
+
+it('reports cleanup failure on failed navigation and actual cancellation before the caller settles',async()=>{
+ const {getXNetworkCleanupFailure}=await import('./xNetworkLease');
+ const f=fixture(),port=createXResearchBrowser(f.browser,'thread');
+ const request={stage:'search' as const,expectedUrl:'https://x.com/search?q=test&f=top',query:'test',product:'Top' as const};
+ let failedNavigation=true,closeFails=false,releaseClose:()=>void=()=>{};
+ const close=vi.fn(async()=>{if(closeFails){await new Promise<void>(resolve=>{releaseClose=resolve;});throw Error('PRIVATE native close');}});
+ f.browser.open=async()=>({tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:failedNavigation?{kind:'timeout',abortObserved:false}:{kind:'ok',finalUrl:request.expectedUrl,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',drain:async()=>[],take:async()=>{throw Error('unused');},close}});
+ const normal=await port.open(request.expectedUrl,undefined,undefined,request);expect(normal.nav.outcome.kind).toBe('timeout');
+ closeFails=true;const opening=port.open(request.expectedUrl,undefined,undefined,request);await vi.waitFor(()=>expect(close).toHaveBeenCalledTimes(2));releaseClose();
+ const failed=await opening;expect(failed).toMatchObject({nav:{outcome:{kind:'timeout'}},networkCleanupFailure:'network_cleanup_failed'});expect(normal.networkCleanupFailure).toBeUndefined();
+ failedNavigation=false;await port.open(request.expectedUrl,undefined,undefined,request);
+ const controller=new AbortController();let entered=false,settled=false;
+ const pending=port.withPage('tab',controller.signal,async()=>{entered=true;await new Promise(()=>{});}).catch(error=>{settled=true;return error;});
+ await vi.waitFor(()=>expect(entered).toBe(true));controller.abort();
+ await vi.waitFor(()=>expect(close).toHaveBeenCalledTimes(3));expect(settled).toBe(false);releaseClose();
+ const error=await pending;expect(error).toMatchObject({code:'browser.cancelled'});expect(getXNetworkCleanupFailure(error)).toBe('network_cleanup_failed');
+});
+
+it('attaches cleanup failure when cancellation wins before queued work starts or the source dies',async()=>{
+ const {getXNetworkCleanupFailure}=await import('./xNetworkLease');
+ for(const mode of ['queued','source_death'] as const){
+  const f=fixture(),port=createXResearchBrowser(f.browser,'thread');
+  const request={stage:'search' as const,expectedUrl:'https://x.com/search?q=test&f=top',query:'test',product:'Top' as const};
+  const close=vi.fn(async()=>{throw Error('PRIVATE close');});
+  f.browser.open=async()=>({tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:request.expectedUrl,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',drain:async()=>[],take:async()=>{throw Error('unused');},close}});
+  await port.open(request.expectedUrl,undefined,undefined,request);
+  let release=()=>{};const blocker=mode==='queued'?f.enqueue('tab',()=>new Promise<void>(resolve=>{release=resolve;})):Promise.resolve();await Promise.resolve();
+  let entered=false;const controller=new AbortController();
+  const pending=port.withPage('tab',controller.signal,async()=>{entered=true;await new Promise(()=>{});}).catch(error=>error);
+  if(mode==='queued')controller.abort();else{await vi.waitFor(()=>expect(entered).toBe(true));for(const notify of f.gone)notify('tab');}
+  const error=await pending;expect(error).toMatchObject({code:mode==='queued'?'browser.cancelled':'browser.not_dispatchable'});expect(getXNetworkCleanupFailure(error)).toBe('network_cleanup_failed');expect(close).toHaveBeenCalledOnce();
+  release();await blocker;
+ }
 });

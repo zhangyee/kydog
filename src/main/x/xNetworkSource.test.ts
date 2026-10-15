@@ -150,3 +150,12 @@ it('preserves specific captured post identity and text in each recorded page', (
     });
   }
 });
+
+it('retains valid recorded members when an unknown module member is null', () => {
+  expect(decodeXSearchResponse(topNext.body, request(topNext)).posts).toHaveLength(23);
+  const malformed = structuredClone(topNext.body) as any;
+  malformed.data.search_by_raw_query.search_timeline.timeline.instructions[0].entries.find((e:any)=>e.content.entryType==='TimelineTimelineModule').content.items.push(null);
+  const page=decodeXSearchResponse(malformed,request(topNext));
+  expect(page.posts).toHaveLength(23);
+  expect(page).toMatchObject({end:'unknown',unsupported:['item_shape']});
+});

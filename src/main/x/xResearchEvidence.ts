@@ -143,6 +143,7 @@ type Canonical = z.infer<typeof canonicalSchema>;
 type Text = z.infer<typeof textSchema> | z.infer<typeof unscopedTextSchema>;
 export interface XEvidenceObservation {
   sourceKind: 'rendered_ui' | 'page_graphql' | 'legacy_x_graphql';
+  networkProvenance?: import('./xNetworkSource').XNetworkProvenance;
   origin: 'production' | 'history';
   observationId: string | null;
   observedAt: string | null;
@@ -469,6 +470,7 @@ export class XResearchEvidence {
       );
       const record: XEvidenceObservation = {
         sourceKind: p.sourceKind,
+        ...(p.networkProvenance?{networkProvenance:{...p.networkProvenance}}:{}),
         origin,
         sessionEntryId,
         runId: result.runId,

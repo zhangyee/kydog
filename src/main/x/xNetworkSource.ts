@@ -150,7 +150,7 @@ export function decodeXSearchResponse(
       c.displayType === 'VerticalConversation' &&
       Array.isArray(c.items)
     )
-      for (const child of c.items) item(child.item?.itemContent);
+      for (const child of c.items) item(object(child).item?.itemContent);
     else unsupported('entry_shape');
   };
   for (const instruction of instructions) {

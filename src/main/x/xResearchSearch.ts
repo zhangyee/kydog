@@ -1,3 +1,4 @@
+import {getXNetworkCleanupFailure} from './xNetworkLease';
 import { reachedXBudgets, resolveXBudgetPolicy, sampleXEntries, type XBudgetPolicy } from './xResearchBudget';
 import {getSourceFailure} from './xSourceDiagnostics';
 import type {BrowserScrollReceipt} from '../browser/actions';
@@ -80,6 +81,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
     try {
       const opened=await context.browser.open(request.expectedUrl,result.browserTabId||undefined,context.signal,request);result.browserTabId=opened.tabId;
       row.location=committedFacts(request.expectedUrl,opened.nav);
+      if(opened.networkCleanupFailure)(row.diagnostics??={version:1}).networkCleanupFailure=opened.networkCleanupFailure;
       if(!navigationUrl(opened.nav)){row.status=opened.nav.outcome.kind==='cancelled'?'cancelled':'failed';row.stopReason=row.status==='cancelled'?'cancelled':'navigation_failed';halted=row.status==='cancelled'?'cancelled':false;continue;}
       await context.browser.withPage(opened.tabId,context.signal,async page=>{
         let waited=false,waitFailed=false,bottom=false;
@@ -125,6 +127,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
         }
       });
     }catch(error){
+      const networkCleanupFailure=getXNetworkCleanupFailure(error);if(networkCleanupFailure)(row.diagnostics??={version:1}).networkCleanupFailure=networkCleanupFailure;
       const sourceFailure=getSourceFailure(error);if(sourceFailure)(row.diagnostics??={version:1}).sourceFailure=sourceFailure;
       const problem=failure(error,stage);row.status=row.posts.length&&problem.status!=='cancelled'?'partial':problem.status;
       row.stopReason=error instanceof KydogError&&error.message==='source_unavailable:wait_timeout'?'wait_timeout':problem.stopReason==='action_failed'||problem.stopReason==='identity_unproven'?'source_unavailable':problem.stopReason;

@@ -172,7 +172,7 @@ export interface XSearchObservation {
   sampleTruncation?: { observed: number; sampled: number; omitted: number };
   collectionStop?: { status: XResearchStatus; stopReason: XStopReason; reason: string | null };
 
-  diagnostics?: { version: 1; sourceFailure?: import('./xSourceDiagnostics').XSourceFailure; scroll?: XScrollDiagnostics; scrollRecovery?: XScrollRecoveries };
+  diagnostics?: { version: 1; sourceFailure?: import('./xSourceDiagnostics').XSourceFailure; networkCleanupFailure?:'network_cleanup_failed'; scroll?: XScrollDiagnostics; scrollRecovery?: XScrollRecoveries };
   query: XSearchQuery;
   collectionTransitions: XCollectionTransition[];
   status: XResearchStatus;
@@ -308,6 +308,7 @@ export interface XPointerPreflight {
 }
 export interface XReadDiagnostics {
  sourceFailure?:import('./xSourceDiagnostics').XSourceFailure;
+ networkCleanupFailure?:'network_cleanup_failed';
  scrollRecovery?:XScrollRecoveries;
  pointerPreflights?:{totalAttempts:number;omittedAttempts:number;first:XPointerPreflight;last:XPointerPreflight};
   replyExpansions?:XReplyExpansions;
