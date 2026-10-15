@@ -25,7 +25,6 @@ it.each(['read','search'] as const)('preserves current %s bodies and diagnostics
  // Search's source excerpt cap is separate; this DTO pressure case supplies a known body.
  if(raw.operation==='search'){current.text=text;current.truncation={returned:text.length,totalKnown:text.length,truncated:false};}
  const baseline=serializeXResearchResult(raw);
- const currentChars=text.length+(raw.operation==='read'?20+raw.targets[0].article.body!.text.length:0);
  expect(current.text).toBe(text);
  const history=Array.from({length:100},(_,i)=>({...structuredClone(current),observationId:`old-${i}`,text:'历史'.repeat(2000),truncation:{returned:4000,totalKnown:4000,truncated:false}}));
  if(raw.operation==='read'){raw.targets[0].bodyObservations=history;raw.targets[0].bodyObservationsOmitted=7;}
@@ -50,8 +49,8 @@ it.each(['read','search'] as const)('preserves current %s bodies and diagnostics
  expect(retained).toEqual(history.slice(0,retained.length));
  expect(model[operation==='read'?'bodyObservationsOmitted':'postObservationsOmitted']).toBe(omitted);
  expect(out.result.metadataOmissions).toContain(`${operation==='read'?'targets.0.bodyObservations':'queries.0.postObservations'}`);
- expect(out.result.truncation.totalKnown).toBe(currentChars+400000);
- expect(out.result.truncation.returned).toBe(currentChars+retained.length*4000);
+ expect(out.result.truncation).toEqual(raw.truncation);
+ expect(out.result.delivery).toMatchObject({truncated:true,omittedObservations:100-retained.length});
  expect(raw).toEqual(before);
  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8')).toBe(out.result.budgetUsage.outputBytes);
  expect(out.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
@@ -76,7 +75,7 @@ it.each(['null-preview','explicit-preview','bare-preview','unresolved','omitted'
  const reason=preview?/needs an accurate entry read/:/inventory is unknown/;
  expect(guard(raw)).toThrow(reason);
  const before=structuredClone(raw),out=serializeXResearchResult(raw),shell=out.result.queries[0].postObservations!.find(p=>p.observationId==='protected-last');
- expect(shell).toEqual({...protectedHistory,text:'',truncation:{returned:0,totalKnown:800000,truncated:true}});
+ expect(shell).toEqual({...protectedHistory,text:''});
  expect(out.result.queries[0].posts).toEqual(raw.queries[0].posts);
  expect(out.result.queries[0].postObservationsOmitted).toBe(10);
  expect(guard(out.result)).toThrow(reason);
@@ -195,8 +194,9 @@ describe('bounded X production tool result',()=>{
     original.truncation={returned:original.text.length,totalKnown:original.text.length,truncated:false};
     const capped=serializeXResearchResult(result);
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)),'utf8')).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
-    expect(capped.result.truncation).toMatchObject({truncated:true,totalKnown:original.text.length+8});
-    expect(capped.result.queries[0].posts[0].truncation).toMatchObject({truncated:true,totalKnown:original.text.length});
+    expect(capped.result.truncation).toEqual(result.truncation);
+    expect(capped.result.delivery?.truncated).toBe(true);
+    expect(capped.result.queries[0].posts[0].truncation).toEqual(original.truncation);
     expect(capped.result.queries[0]).toMatchObject({query:searchInput.search.queries[0],status:'partial',stopReason:'budget_reached'});
     expect(original.text.length).toBe(400000);
   });
@@ -229,7 +229,7 @@ describe('bounded X production tool result',()=>{
     expect(value.result.targets).toHaveLength(2);
     expect(value.result.targets[0].root).toMatchObject({postId:'123',sourceUrl:'https://x.com/alice/status/123'});
     expect(value.result.targets[1]).toMatchObject({postId:'999',status:'failed',reason:'unresolved_target',stopReason:'agent_stopped'});
-    expect(value.result.truncation.truncated).toBe(true);
+    expect(value.result.delivery?.truncated).toBe(true);
     expect(value.result.targets[0].replies.observations.length).toBeLessThan(2000);
   });
   it('names diagnostic omissions at the 1 MiB boundary while retaining stop and root facts',async()=>{
@@ -380,12 +380,12 @@ it('drops optional search posts with their complete preview lists at the exact c
  r.objective='a'.repeat(600000);
  r.queries[0].posts=Array.from({length:100},(_,i)=>({...base,observationId:`post-${i}`,articlePreviews:previews}));
  const out=serializeXResearchResult(r),model=JSON.parse(out.text);
- expect(out.result.queries[0].posts.length).toBeGreaterThan(0);expect(out.result.queries[0].posts.length).toBeLessThan(100);expect(out.result.truncation.truncated).toBe(true);
+ expect(out.result.queries[0].posts.length).toBeGreaterThan(0);expect(out.result.queries[0].posts.length).toBeLessThan(100);expect(out.result.delivery?.truncated).toBe(true);
  for(const p of out.result.queries[0].posts)expect(p.articlePreviews).toEqual(previews);for(const p of model.queries[0].posts)expect(p.articlePreviews).toEqual(previews);
  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBe(out.result.budgetUsage.outputBytes);expect(out.result.budgetUsage.outputBytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
 });
 
-it('rejects oversized protected search history and preserves read audit omission as unknown',async()=>{
+it('bounds modern protected history through artifact coverage while preserving legacy rejection and read audit gaps',async()=>{
  const card=(id:string)=>`<div role="link" tabindex="0" href="https://x.com/bob/status/${id}"><div data-testid="User-Name"><a href="/bob">bob</a><a href="/bob">@bob</a></div><img data-testid="article-cover-image"></div>`;
  const posts=Array.from({length:60},(_,i)=>post(String(1000+i),'alice').replace('</article>',card(String(2000+i)).repeat(i<30?0:3)+'</article>')).join('');
  const search=await searchX({search:{...searchInput.search,maxPostsPerQuery:100}},fixture([searchHtml(posts),searchHtml(posts)]).context);
@@ -393,9 +393,12 @@ it('rejects oversized protected search history and preserves read audit omission
  expect(search.queries[0].postObservations!.length).toBeGreaterThan(0);
  expect(serializeXResearchResult(search).result.queries[0].posts).toHaveLength(60);
  search.objective='a'.repeat(1010000);
- // The old candidate-group deletion erased historical obligations. Required
- // shells exceeding the envelope must now fail explicitly, never grant permission.
- expect(()=>serializeXResearchResult(search)).toThrow(/required-state envelope/);
+ const oldHistory=structuredClone(search);for(const row of oldHistory.queries)delete row.collectionStop;
+ expect(()=>serializeXResearchResult(oldHistory)).toThrow(/required-state envelope/);
+ const bounded=serializeXResearchResult(search);
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(bounded)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+ expect(bounded.result.delivery!.articleObligationCoverage).toBe('not_inline');
+ expect(bounded.result.delivery!.omittedFields).toContain('queries.0.postObservations');
  const r=await readX({tabId:'research-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
  const baseline=structuredClone(r);const row=r.targets[0],root=row.root!;
  row.articlePreviewObservations=Array.from({length:50},(_,i)=>({observationId:'scope-'+i,postId:root.postId!,sourceUrl:root.sourceUrl!,authorHandle:'alice',articlePreviews:[{entryObservationId:'entry-'+i,parentPostId:'123',sourceUrl:root.sourceUrl!,targetUrl:'https://x.com/bob/status/456'}],articlePreviewInventory:{scope:'collection',observed:2,retained:1,omitted:1,unresolved:0}}));
@@ -425,7 +428,7 @@ it('caps displaced body observations honestly and retains their known Article ci
   expect(saved.bodyObservationsOmitted).toBeGreaterThan(0);
   expect(saved.bodyObservations!.length+saved.bodyObservationsOmitted!).toBe(900);
   expect(model.targets[0].bodyObservationsOmitted).toBe(saved.bodyObservationsOmitted);
-  expect(capped.result.truncation.truncated).toBe(true);
+  expect(capped.result.delivery?.truncated).toBe(true);
   expect(saved.root).toEqual(root);
   const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(capped.result);
   // A later ordinary body supplies citable text but cannot erase the retained Article obligation.
@@ -452,8 +455,8 @@ it('budgets independent bodies before scoped history and protects every own-pare
       expect(row.unscopedPosts?.previewGaps).toEqual(source.targets[index].unscopedPosts?.previewGaps);
       expect(projected.targets[index].unscopedPosts.previewGaps).toEqual(row.unscopedPosts?.previewGaps);
       expect(row.unscopedPosts!.inventory.retained+row.unscopedPosts!.inventory.omitted).toBe(100);
-      expect(row.unscopedPosts!.inventory.retained).toBe(row.unscopedPosts!.observations.length);
-      expect(row.budgetUsage.distinctEntries).toBe(2+row.unscopedPosts!.observations.length);
+      expect(row.unscopedPosts!.inventory).toEqual(source.targets[index].unscopedPosts!.inventory);
+      expect(row.budgetUsage.distinctEntries).toBe(source.targets[index].budgetUsage.distinctEntries);
       expect(row).toMatchObject({reason:'post_identity_unproven',stopReason:'identity_unproven'});
       for(const p of row.unscopedPosts!.observations)expect(p).toMatchObject({relationToTarget:'unproven',observedContainer:'post'});
     }
@@ -522,4 +525,56 @@ it('carries distinct initial admitted terminal collections through content and c
   expect(initial.diagnosticFrame?.rootIdentityProven).toBe(false);
   expect(terminal.replyScope).toEqual(admitted.replyScope);
   expect(row.replies.scope.completeness).toBe('unknown');
+});
+
+it('delivery trimming keeps collection facts, source truncation and scope/run aggregates intact',async()=>{
+ const raw=await searchX(searchInput,fixture([searchHtml(post())]).context),row=raw.queries[0];
+ row.status='observed';row.stopReason='agent_stopped';raw.status='observed';
+ row.collectionStop={status:'observed',stopReason:'agent_stopped',reason:null};
+ row.budgetBinding=[{dimension:'posts',used:1,limit:500,origin:'default'}];
+ row.postObservations=Array.from({length:100},(_,i)=>({...structuredClone(row.posts[0]),observationId:`history-${i}`,text:'历史'.repeat(4000),truncation:{returned:8000,totalKnown:8000,truncated:false}}));
+ raw.truncation={returned:800008,totalKnown:800008,truncated:false};
+ row.budgetUsage.distinctEntries=41;raw.budgetUsage.distinctEntries=41;
+ const ledger=new XResearchScopeLedger();ledger.observe({...raw,callId:'prior'});
+ const out=serializeXResearchResult(raw,ledger.prior(raw.runId));
+ expect(out.result.delivery).toMatchObject({truncated:true,omittedObservations:expect.any(Number)});
+ expect(out.result.delivery!.omittedObservations).toBeGreaterThan(0);
+ expect(out.result.delivery!.omittedFields).toContain('queries.0.postObservations');
+ expect(out.result).toMatchObject({status:'observed',truncation:raw.truncation,budgetUsage:{distinctEntries:41},reportScopeFacts:{statusCounts:{observed:1},stopReasonCounts:{agent_stopped:1}},reportRunScopeFacts:{callCount:2,search:{statusCounts:{observed:2}}}});
+ expect(out.result.queries[0]).toMatchObject({status:'observed',stopReason:'agent_stopped',collectionStop:row.collectionStop,budgetBinding:row.budgetBinding,budgetUsage:{distinctEntries:41}});
+ expect(out.result.queries[0].posts[0].truncation).toEqual(row.posts[0].truncation);
+ expect(JSON.parse(out.text)).toMatchObject({delivery:out.result.delivery,queries:[{collectionStop:row.collectionStop,budgetBinding:row.budgetBinding}]});
+ expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)))).toBeLessThanOrEqual(1048576);
+});
+
+it('admission reserves artifact and delivery metadata before collection reaches the envelope boundary',()=>{
+ const raw=searchResult(searchInput,fixture([]).context);
+ raw.objective='x'.repeat(1040000);
+ expect(()=>assertXRequestFits({...raw,objective:'research'})).not.toThrow();
+ expect(()=>assertXRequestFits(raw)).toThrow('required-state envelope');
+});
+
+it('marks obligation coverage inline when omitted bodies carry no Article obligations',async()=>{
+ const raw=await searchX({...searchInput,search:{...searchInput.search,maxScrollsPerQuery:0}},fixture([searchHtml(post())]).context);
+ raw.objective='x'.repeat(900000);
+ raw.queries[0].posts=Array.from({length:500},(_,i)=>({...structuredClone(raw.queries[0].posts[0]),observationId:`plain-${i}`}));
+ const projected=serializeXResearchResult(raw).result;
+ expect(projected.delivery!.omittedObservations).toBeGreaterThan(0);
+ expect(projected.delivery!.articleObligationCoverage).toBe('inline');
+ expect(projected.delivery!.omittedFields).toContain('queries.0.posts');
+});
+
+it('keeps pre-artifact v2 delivery interpretation for historical results without collectionStop',async()=>{
+ const raw=await searchX({...searchInput,search:{...searchInput.search,maxScrollsPerQuery:0}},fixture([searchHtml(post())]).context);
+ delete raw.queries[0].collectionStop;
+ raw.queries[0].posts[0].text='汉'.repeat(300000);
+ raw.queries[0].posts[0].truncation={returned:300000,totalKnown:300000,truncated:false};
+ const projected=serializeXResearchResult(raw).result;
+ expect(projected.truncation).toMatchObject({truncated:true,totalKnown:300000});
+ expect(projected.queries[0].posts[0].truncation.truncated).toBe(true);
+ expect(projected.queries[0].posts[0].text.length).toBeLessThan(300000);
+ // The same body under a modern collection preserves source truncation instead.
+ raw.queries[0].collectionStop={status:raw.queries[0].status,stopReason:raw.queries[0].stopReason,reason:null};
+ expect(serializeXResearchResult(raw).result.delivery?.truncated).toBe(true);
+ expect(projected.delivery).toBeUndefined();
 });

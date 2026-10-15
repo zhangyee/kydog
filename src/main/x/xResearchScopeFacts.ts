@@ -81,6 +81,8 @@ export function reportScopeFacts(result: ScopeResult): XReportScopeFacts {
 
 type Call = {fingerprint:string; facts:XReportScopeFacts} | null;
 function call(raw:unknown):Call {
+  if(raw && typeof raw==='object' && 'restoration' in raw &&
+     (raw.restoration as {status?:unknown})?.status==='missing') return null;
   const parsed=scopeResult.safeParse(raw);
   if(!parsed.success)return null;
   const value=parsed.data;

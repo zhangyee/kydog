@@ -339,7 +339,27 @@ export interface XReportRunScopeFacts {
   search: XReportScopeFacts;
   read: XReportScopeFacts;
 }
+export type XArtifactFailureCode = 'reference' | 'path' | 'read' | 'write' | 'integrity' | 'canonical';
+export interface XArtifactRestorationSummary {
+  scope: 'current_branch';
+  missingCalls: number;
+  reasonCounts: Partial<Record<XArtifactFailureCode, number>>;
+}
+export interface XDelivery {
+  /** Exact coverage of Article obligations, independent of body omission counts. */
+  articleObligationCoverage?: 'inline' | 'not_inline';
+  truncated: boolean;
+  omittedObservations: number;
+  omittedFields: string[];
+  artifactPath: string | null;
+  persistence: 'saved' | 'failed';
+  failureCode?: XArtifactFailureCode;
+}
 interface XResultBase {
+  artifact?: XArtifactRef;
+  delivery?: XDelivery;
+  restoration?: {status: 'missing'; reason: XArtifactFailureCode};
+  artifactRestoration?: XArtifactRestorationSummary;
   schemaVersion: 2;
   reportScopeFacts?: XReportScopeFacts;
   reportRunScopeFacts?: XReportRunScopeFacts;

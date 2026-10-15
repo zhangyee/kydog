@@ -103,6 +103,28 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     ),
   }),
 ]);
+/** Evidence consumes retained bodies, while delivery keeps the original collection
+ * inventory counts. Validate the source counts before adapting an internal view;
+ * this view is never returned, persisted, or used as a scope/collection fact. */
+function evidenceDetails(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const value = raw as XResearchResult;
+  if (value.operation !== 'read' || !Array.isArray(value.targets) || !value.delivery?.truncated || !Array.isArray(value.delivery.omittedFields)) return raw;
+  const copy = structuredClone(value);
+  copy.targets.forEach((row,index) => {
+    if (!row || typeof row !== 'object') return;
+    const envelope = row.unscopedPosts;
+    if (!envelope || !Array.isArray(envelope.observations) || !envelope.inventory) return;
+    const inventory = envelope.inventory;
+    if (value.delivery!.omittedFields.includes(`targets.${index}.unscopedPosts.observations`) &&
+        inventory.observed === inventory.retained + inventory.omitted &&
+        envelope.observations.length <= inventory.retained) {
+      inventory.retained = envelope.observations.length;
+      inventory.omitted = inventory.observed - inventory.retained;
+    }
+  });
+  return copy;
+}
 /** Only actual current-branch v2 tool results with a navigation receipt can bind a tab. */
 export function latestXResearchTab(branchEntries: readonly unknown[]): string | undefined {
   let tab: string | undefined;
@@ -111,7 +133,7 @@ export function latestXResearchTab(branchEntries: readonly unknown[]): string | 
   const row = z.object({location:z.object({committedNavigationOutcome:z.enum(['ok','ok_same_document','failed','cancelled','crashed','download','blocked','superseded','timeout'])})});
   for(const raw of branchEntries) {
     const e=envelope.safeParse(raw);if(!e.success) continue;
-    const canonical=canonicalSchema.safeParse(e.data.message.details),b=binding.safeParse(e.data.message.details);
+    const canonical=canonicalSchema.safeParse(evidenceDetails(e.data.message.details)),b=binding.safeParse(e.data.message.details);
     if(!canonical.success || !b.success || canonical.data.callId!==e.data.message.toolCallId) continue;
     if((b.data.operation==='search'?b.data.queries:b.data.targets)?.some(value=>row.safeParse(value).success)) tab=b.data.browserTabId;
   }
@@ -269,6 +291,8 @@ export class XResearchEvidence {
   readonly sources = new Map<string, XSourceReference[]>();
   private records: XEvidenceObservation[] = [];
   private resultOrder=0;
+  private restorationGaps: {runId:string;order:number}[] = [];
+  private completeParentReads: {sourceUrl:string;order:number}[] = [];
   private inventoryGaps:{sourceUrl:string;postId:string;observationId:string;order:number}[]=[];
   private previews: Preview[] = [];
   private families: ArticleFamily[] = [];
@@ -298,7 +322,7 @@ export class XResearchEvidence {
     );
   }
   observe(result: XResearchResult): void {
-    const parsed = canonicalSchema.safeParse(result);
+    const parsed = canonicalSchema.safeParse(evidenceDetails(result));
     if (!parsed.success)
       throw new Error(
         'Invalid canonical X research result; no evidence recorded',
@@ -308,7 +332,7 @@ export class XResearchEvidence {
   /** Rebuild, rather than merge, so a changed branch cannot retain obsolete facts. */
   restore(branchEntries: readonly unknown[]): void {
     this.records = [];
-    this.resultOrder=0;this.inventoryGaps=[];
+    this.resultOrder=0;this.inventoryGaps=[];this.restorationGaps=[];this.completeParentReads=[];
     this.previews = [];
     this.families = [];
     this.attachedLegacyRecords.clear();
@@ -331,11 +355,39 @@ export class XResearchEvidence {
         .safeParse(raw);
       if (!entry.success) continue;
       const { message: m, id } = entry.data;
-      const fresh = canonicalSchema.safeParse(m.details);
+      const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(m.details);
+      if (restoration.success && m.toolCallId === restoration.data.callId && restoration.data.delivery?.articleObligationCoverage !== 'inline')
+        this.restorationGaps.push({runId:restoration.data.runId,order:++this.resultOrder});
+      const fresh = canonicalSchema.safeParse(evidenceDetails(m.details));
+      // A missing artifact cannot authorize omitted bodies. Independently retain
+      // well-formed rows/items from the recorded projection; no identity is filled in.
+      if (!fresh.success && m.details && typeof m.details === 'object' &&
+          'restoration' in m.details && (m.details.restoration as {status?:unknown})?.status === 'missing') {
+        const raw = evidenceDetails(m.details) as Record<string, unknown>;
+        const key = raw.operation === 'search' ? 'queries' : 'targets';
+        if (Array.isArray(raw[key])) for (const candidate of raw[key]) {
+          if (!candidate || typeof candidate !== 'object') continue;
+          const row = structuredClone(candidate);
+          const validTexts = (items: unknown) => Array.isArray(items) ? items.filter(p => textSchema.safeParse(p).success) : items;
+          if (key === 'queries') {
+            row.posts = validTexts(row.posts);
+            if (row.postObservations) row.postObservations = validTexts(row.postObservations);
+          } else {
+            for (const field of ['quotedPosts','bodyObservations']) if (row[field]) row[field] = validTexts(row[field]);
+            if (row.root && !textSchema.safeParse(row.root).success) row.root = null;
+            if (row.replies) row.replies.observations = validTexts(row.replies.observations);
+            if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;
+          }
+          const subset = canonicalSchema.safeParse({...raw,[key]:[row]});
+          if (subset.success && (m.toolCallId === undefined || m.toolCallId === subset.data.callId))
+            this.addCanonical(subset.data, 'history', id ?? null, false);
+        }
+        continue;
+      }
       if (fresh.success) {
         if (m.toolCallId !== undefined && m.toolCallId !== fresh.data.callId)
           continue;
-        this.addCanonical(fresh.data, 'history', id ?? null);
+        this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
         continue;
       }
       const projection = projectLegacyXResult(m.details);
@@ -401,6 +453,7 @@ export class XResearchEvidence {
     result: Canonical,
     origin: XEvidenceObservation['origin'],
     sessionEntryId: string | null,
+    allowParentProof = true,
   ) {
     const order=++this.resultOrder;
     const add = (
@@ -520,12 +573,18 @@ export class XResearchEvidence {
             this.addSource(root.postId, d);
           }
         }
+        if (allowParentProof && rootRecord?.text.trim() && root.articlePreviewInventory?.retained === 0 && root.articlePreviewInventory.omitted === 0 && root.articlePreviewInventory.unresolved === 0)
+          this.completeParentReads.push({sourceUrl:root.sourceUrl,order});
         if (rootRecord && e && parentEntry(e, root)) {
           this.previews.push({
             parentUrl: root.sourceUrl,
             postId: root.postId,
             identity: e,
           });
+          if (allowParentProof && rootRecord.text.trim() && root.articlePreviewInventory && root.articlePreviewInventory.omitted === 0 && root.articlePreviewInventory.unresolved === 0 &&
+              (row.article.entryObserved && row.article.actionAttempted || row.article.bodyObserved && body?.containerKind === 'article' && named(body) && !!body.text.trim()) &&
+              (root.articlePreviews ?? []).every(preview => preview.entryObservationId === e.entryObservationId || preview.targetUrl !== null && preview.targetUrl === e.targetUrl))
+            this.completeParentReads.push({sourceUrl:root.sourceUrl,order});
           this.families.push({
             rootRecord,order,
             completeInventory:!!root.articlePreviewInventory && root.articlePreviewInventory.omitted===0 && root.articlePreviewInventory.unresolved===0,
@@ -568,6 +627,11 @@ export class XResearchEvidence {
           `X citation is unobserved or has unproven author/body identity: ${url}`,
         );
       const parentUrls = new Set(identities.map((r) => r.sourceUrl));
+      for (const gap of this.restorationGaps) {
+        if (gap.runId !== this.currentRunId() && !identities.some(record => record.runId === gap.runId)) continue;
+        if (![...parentUrls].every(parent => this.completeParentReads.some(proof => proof.sourceUrl === parent && proof.order > gap.order)))
+          throw new Error('X artifact restoration is missing Article obligation evidence. Obtain a new complete exact-parent read before citing this parent.');
+      }
       for(const gap of this.inventoryGaps.filter(r=>parentUrls.has(r.sourceUrl))) {
         const newer=this.families.some(f=>f.parentUrl===gap.sourceUrl && f.postId===gap.postId && f.completeInventory && (f.attempted || f.bodySourceUrl!==null) && f.order>gap.order);
         if(!newer) throw new Error(`X Article inventory is unknown: postId=${gap.postId}, sourceUrl=${gap.sourceUrl}, observationId=${gap.observationId}. Obtain a new complete same-parent collection and accurate entry attempt, or omit this parent citation.`);

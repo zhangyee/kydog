@@ -110,3 +110,65 @@ it('counts only actual current-run calls across SDK persistence and current bran
  const stored=restoredManager.getBranch().at(-1);
  expect(stored).toMatchObject({type:'message',message:{role:'toolResult',toolCallId:'scope-next-run',details:{reportRunScopeFacts:nextRun.result.details.reportRunScopeFacts}}});
 });
+
+it('waits for artifact hydration before guarded writes and discards stale branch reads',async()=>{
+ const {fileService}=await import('../fs/fileService');
+ const session=await build();
+ const result=await execute(session,'x_research',searchInput,'artifact-A');
+ expect(result.result.details.delivery.persistence).toBe('saved');
+ const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
+ const leafA=manager.getLeafId()!;
+ const entryA=manager.getBranch().at(-1)!;
+ const leafB=entryA.parentId!;
+ const citation='[source](https://x.com/alice/status/123)';
+ expect((await execute(session,'write',{path:'positive.md',content:citation},'positive')).isError).toBe(false);
+ manager.branch(leafB);
+ expect((await execute(session,'write',{path:'negative.md',content:citation},'negative')).isError).toBe(true);
+ manager.branch(leafA);
+ await writeFile(path.join(dir,'guarded.md'),'original');
+ const originalRead=fileService.readBytes.bind(fileService);
+ let release!:()=>void,entered!:()=>void;
+ const pendingRead=new Promise<void>(resolve=>{release=resolve;});
+ const started=new Promise<void>(resolve=>{entered=resolve;});
+ const spy=vi.spyOn(fileService,'readBytes').mockImplementation(async args=>{
+  if(args.path.endsWith('manifest.json')){entered();await pendingRead;}
+  return originalRead(args);
+ });
+ try {
+  const write=H.fixture.find(tool=>tool.name==='write')!;
+  const pending=write.execute('pending',{path:'guarded.md',content:citation},undefined,undefined,{} as never);
+  const outcome=pending.then(()=> 'saved',error=>String(error));
+  await started;
+  expect(await readFile(path.join(dir,'guarded.md'),'utf8')).toBe('original');
+  manager.branch(leafB);release();
+  expect(await outcome).toContain('unobserved');
+  expect(await readFile(path.join(dir,'guarded.md'),'utf8')).toBe('original');
+  manager.branch(leafA);
+  await write.execute('restored',{path:'guarded.md',content:citation},undefined,undefined,{} as never);
+  expect(await readFile(path.join(dir,'guarded.md'),'utf8')).toBe(citation);
+ } finally {release();spy.mockRestore();}
+});
+
+it('reports missing older-run artifacts as bounded current-branch restoration metadata',async()=>{
+ let session=await build();
+ const first=await execute(session,'x_research',searchInput,'old-artifact');
+ expect(first.result.details.delivery.persistence).toBe('saved');
+ const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
+ const firstLeaf=manager.getLeafId()!;
+ const parent=manager.getBranch().at(-1)!.parentId!;
+ await session.cleanup?.();
+ await writeFile(first.result.details.delivery.artifactPath,'corrupt');
+ run='new-run';session=await build();
+ const next=await execute(session,'x_research',searchInput,'new-artifact');
+ expect(next.result.details.artifactRestoration).toEqual({scope:'current_branch',missingCalls:1,reasonCounts:{read:1}});
+ expect(JSON.parse(next.result.content[0].text).artifactRestoration).toEqual(next.result.details.artifactRestoration);
+ expect(next.result.details.reportRunScopeFacts).toMatchObject({runId:'new-run',callCount:1,unavailableCallCount:0});
+ const restoredManager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
+ restoredManager.branch(parent);
+ const sibling=await execute(session,'x_research',searchInput,'sibling-artifact');
+ expect(sibling.result.details.artifactRestoration).toBeUndefined();
+ restoredManager.branch(firstLeaf);
+ run='protocol-run-one';
+ const sameRun=await execute(session,'x_research',searchInput,'same-run-artifact');
+ expect(sameRun.result.details.reportRunScopeFacts).toMatchObject({callCount:1,unavailableCallCount:1});
+});

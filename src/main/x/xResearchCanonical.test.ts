@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import {
   canonicalizeXResearchResult,
+  finalizeXResearchCollection,
   parseXResearchCanonical,
 } from './xResearchCanonical';
 import {
@@ -150,6 +151,8 @@ it('accepts a pre-navigation empty result and rejects malformed public fields', 
 it('retains historical serialized scope aggregates with sparse count maps', async () => {
   const { serializeXResearchResult } = await import('./xResearchOutput');
   const raw = await searchX(searchInput, fixture([searchHtml(post())]).context);
+  // Historical v2 predates collectionStop/delivery. Keep that compatibility path explicit.
+  for (const row of raw.queries) delete row.collectionStop;
   const history = serializeXResearchResult(raw).result;
   expect(history.reportScopeFacts!.totalRows).toBe(1);
   expect(parseXResearchCanonical(history)).toEqual(history);
@@ -193,4 +196,18 @@ it('preserves declared direct Article provenance without retaining private nativ
   if (canonical.operation !== 'read') throw new Error('read expected');
   expect(canonical.targets[0].article.provenance).toEqual(provenance);
   expect(JSON.stringify(canonical)).not.toContain('PRIVATE-NATIVE');
+});
+
+it('finalizes full sampled body units before delivery, preserving unknown source totals', async()=>{
+ const raw=await readX({tabId:'tab',read:{objective:'units',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post('123','alice','汉😀'))]).context);
+ const root=raw.targets[0].root!;
+ raw.targets[0].bodyObservations=[{...structuredClone(root),observationId:'history',text:'old',truncation:{returned:3,totalKnown:5,truncated:true}}];
+ const finalized=finalizeXResearchCollection(raw);
+ expect(finalized.truncation).toEqual({returned:6,totalKnown:8,truncated:true});
+ expect(raw.truncation).toEqual({returned:0,totalKnown:0,truncated:false});
+ raw.truncation={returned:0,totalKnown:null,truncated:true};
+ expect(finalizeXResearchCollection(raw).truncation).toEqual({returned:6,totalKnown:null,truncated:true});
+ raw.truncation={returned:0,totalKnown:0,truncated:false};
+ root.truncation.totalKnown=null;
+ expect(finalizeXResearchCollection(raw).truncation).toEqual({returned:6,totalKnown:null,truncated:true});
 });

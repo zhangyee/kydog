@@ -1,3 +1,7 @@
+import path from 'node:path';
+import { createXResearchArtifactStore } from '../x/xResearchArtifacts';
+import { hydrateXResearchBranch } from '../x/xResearchBranch';
+import type { XArtifactRestorationSummary } from '../x/xResearchTypes';
 // src/main/agent/sessionFactory.ts
 import { XResearchScopeLedger } from '../x/xResearchScopeFacts';
 import { createFixtureSession } from './fixtureProvider';
@@ -117,19 +121,50 @@ export async function createSession(opts: {
   const scopeFacts = new XResearchScopeLedger();
   let branchIds: string[] | undefined;
   let retainedTab: string | undefined;
-  // Ordinary appends retain the immediate production observations. A real branch
-  // change rebuilds exclusively from getBranch(), including through compaction.
-  const syncBranch = () => {
-    const branch = sessionManager.getBranch();
-    const next = branch.map(entry => entry.id);
-    if (!branchIds || !branchIds.every((id,index) => next[index]===id)) {
-      evidence.restore(branch);
-      scopeFacts.restore(branch);
-      retainedTab=latestXResearchTab(branch);
-    }
-    branchIds = next;
+  const artifacts = createXResearchArtifactStore(path.join(opts.sessionsDir, `${opts.sessionId}.x-research`));
+  const pendingResults = new Map<string,string>();
+  let restorationSummary: XArtifactRestorationSummary | undefined;
+  let synchronization = Promise.resolve();
+  // Serialize restore work. A branch can move while disk reads are pending:
+  // publish only if its entire entry-ID sequence still equals the captured one.
+  const syncBranch = (): Promise<void> => {
+    const pending = synchronization.then(async () => {
+      for (;;) {
+        const branch = sessionManager.getBranch();
+        const next = branch.map(entry => entry.id);
+        if (branchIds && branchIds.every((id,index) => next[index] === id)) {
+          const appended = branch.slice(branchIds.length).filter(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolName === 'x_research');
+          const live = appended.every(entry => {
+            const message = (entry as {message:{toolCallId:string;details?:unknown}}).message;
+            const details = message.details as {batchId?:string} | undefined;
+            return details?.batchId !== undefined && pendingResults.get(message.toolCallId) === details.batchId;
+          });
+          if (live) {
+            for (const entry of appended) pendingResults.delete((entry as {message:{toolCallId:string}}).message.toolCallId);
+            branchIds = next;
+            return; // Only our immediate canonical observations may bypass disk restore.
+          }
+        }
+        const hydrated = await hydrateXResearchBranch(branch, artifacts);
+        const latest = sessionManager.getBranch().map(entry => entry.id);
+        if (next.length !== latest.length || next.some((id,index) => latest[index] !== id)) continue;
+        pendingResults.clear();
+        evidence.restore(hydrated.entries);
+        scopeFacts.restore(hydrated.entries);
+        retainedTab = latestXResearchTab(hydrated.entries);
+        restorationSummary = undefined;
+        if (hydrated.failures.length) {
+          restorationSummary = {scope:'current_branch',missingCalls:hydrated.failures.length,reasonCounts:{}};
+          for (const {reason} of hydrated.failures) restorationSummary.reasonCounts[reason] = (restorationSummary.reasonCounts[reason] ?? 0) + 1;
+        }
+        branchIds = next;
+        return;
+      }
+    });
+    synchronization = pending.catch(() => {});
+    return pending;
   };
-  syncBranch();
+  await syncBranch();
   // Shared cwd-aware SDK read; PDF delegation preserves the explicit image resize policy.
   const readTool = pi.createReadToolDefinition(opts.cwd, { autoResizeImages: true });
   const customTools = [
@@ -138,24 +173,25 @@ export async function createSession(opts: {
     createReadPdfFigureTool({ readTool: readTool as never, cwd: opts.cwd }),
     createReadDocxTool({ cwd: opts.cwd }),
     // Same-name SDK overrides keep ordinary file semantics and full-content guarding.
-    ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd, (path, content) => {
-      syncBranch(); return evidence.guard(path, content);
+    ...createCharCountFileTools(pi as unknown as PiFileToolFactories, opts.cwd, async (path, content) => {
+      await syncBranch(); return evidence.guard(path, content);
     }),
     ...browserTools,
     ...researchTools,
     ...(settings.research?.xResearchEnabled === true ? [createXResearchTool({
+      artifacts, beforeExecute: syncBranch, restorationSummary: () => restorationSummary,
       browser: createXResearchBrowser(browserService, opts.sessionId),
-      threadId: opts.sessionId, sources: evidence.sources, currentRunId: () => {syncBranch();return currentRunId();},
+      threadId: opts.sessionId, sources: evidence.sources, currentRunId,
       tabBinding:{get:()=>retainedTab,set:id=>{retainedTab=id;}},
       scopePrior: runId => scopeFacts.prior(runId),
-      observeResult: result => { evidence.observe(result); scopeFacts.observe(result); },
+      observeResult: result => { evidence.observe(result); scopeFacts.observe(result); pendingResults.set(result.callId,result.batchId); },
     })] : []),
   ];
   // SDK emits message_end before persisting it. Refresh only after prompt settles,
   // so branching away from the last result cannot leave an untracked live observation.
   const trackSettledBranch = <T extends AnySession>(session:T):T => {
     const prompt=session.prompt.bind(session);
-    session.prompt=async (...args) => {try{return await prompt(...args);}finally{syncBranch();}};
+    session.prompt=async (...args) => {await syncBranch();try{return await prompt(...args);}finally{await syncBranch();}};
     return session;
   };
   const fixturePath = process.env.KYDOG_AGENT_FIXTURE;

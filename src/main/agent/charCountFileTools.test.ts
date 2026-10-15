@@ -1,3 +1,4 @@
+import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';
@@ -157,7 +158,7 @@ it('real X ledger guards both complete file hooks while ordinary file overwrites
  const {XResearchEvidence}=await import('../x/xResearchEvidence');const {fixture,post,readHtml}=await import('../../test-support/xResearchFixture');const {createXResearchTool}=await import('./xResearchTool');
  const dir=mkdtempSync(path.join(os.tmpdir(),'kydog-x-files-'));
  try{
-  const evidence=new XResearchEvidence(dir,()=> 'run');const f=fixture([readHtml(post())]);const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
+  const evidence=new XResearchEvidence(dir,()=> 'run');const f=fixture([readHtml(post())]);const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
   await tool.execute('read',{tabId:'research-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false}},undefined,undefined,{} as never);
   const {write,edit}=await tools(dir,evidence.guard);const good='[source](https://x.com/alice/status/123)',bad='[source](https://x.com/WrongAuthor/status/123)';
   for(const name of ['x-research-topic-2026-10-12.md','ordinary.md','ordinary.txt','ordinary.ts']){
@@ -174,4 +175,29 @@ it('real X ledger guards both complete file hooks while ordinary file overwrites
    rmSync(p);await expect(write.execute('invalid-create',{path:name,content:bad},undefined,undefined,{})).rejects.toThrow(/unobserved/);expect(existsSync(p)).toBe(false);
   }
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+// Catches writing before asynchronous history validation resolves, including edit.
+it('awaits asynchronous guard before write or edit and honors create-only afterwards', async () => {
+ const dir=mkdtempSync(path.join(os.tmpdir(),'x-async-guard-'));
+ try {
+  let release!:()=>void;
+  let entered!:()=>void;
+  let waiting=Promise.resolve();
+  const {write,edit}=await tools(dir, async()=>{entered?.();await waiting;return {createOnly:true};});
+  await write.execute('seed',{path:'report.md',content:'original'},undefined,undefined,{});
+  expect(readFileSync(path.join(dir,'report.md'),'utf8')).toBe('original');
+  for(const operation of ['write','edit'] as const) {
+   waiting=new Promise<void>(resolve=>{release=resolve;});
+   const ready=new Promise<void>(resolve=>{entered=resolve;});
+   const pending=operation==='write'
+    ?write.execute('w',{path:'report.md',content:'replaced'},undefined,undefined,{})
+    :edit.execute('e',{path:'report.md',edits:[{oldText:'original',newText:'edited'}]},undefined,undefined,{});
+   const outcome=pending.then(()=> 'saved',error=>error.code);
+   await ready;await new Promise(resolve=>setImmediate(resolve));
+   expect(readFileSync(path.join(dir,'report.md'),'utf8')).toBe('original');
+   release();expect(await outcome).toBe(operation==='write'?'EEXIST':'saved');
+  }
+  expect(readFileSync(path.join(dir,'report.md'),'utf8')).toBe('edited');
+ } finally {rmSync(dir,{recursive:true,force:true});}
 });

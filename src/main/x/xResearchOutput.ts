@@ -44,6 +44,32 @@ function texts(result: XResearchResult): (XTextObservation | XUnscopedPost)[] {
         ...(t.unscopedPosts?.observations ?? []),
       ]);
 }
+function observationLists(result: XResearchResult): readonly (readonly [string, readonly (XTextObservation | XUnscopedPost)[]])[] {
+  return result.operation === 'search'
+    ? result.queries.flatMap((row,i) => [[`queries.${i}.posts`,row.posts],[`queries.${i}.postObservations`,row.postObservations??[]]] as const)
+    : result.targets.flatMap((row,i) => [[`targets.${i}.root`,row.root?[row.root]:[]],[`targets.${i}.article.body`,row.article.body?[row.article.body]:[]],[`targets.${i}.bodyObservations`,row.bodyObservations??[]],[`targets.${i}.quotedPosts`,row.quotedPosts],[`targets.${i}.replies.observations`,row.replies.observations],[`targets.${i}.unscopedPosts.observations`,row.unscopedPosts?.observations??[]]] as const);
+}
+/** Compare public obligation facts, not body counts or text lengths. Empty-text
+ * shells still carry obligations; removing their exact facts requires the artifact. */
+function articleObligations(result: XResearchResult): Set<string> {
+  const obligations = new Set<string>();
+  const add = (value: unknown) => obligations.add(JSON.stringify(value));
+  for (const body of texts(result)) {
+    for (const entry of body.articlePreviews ?? []) add({parent:body.sourceUrl,postId:body.postId,author:body.author?.handle,entry});
+    if (body.articlePreviewInventory && (body.articlePreviewInventory.omitted || body.articlePreviewInventory.unresolved))
+      add({parent:body.sourceUrl,observationId:body.observationId,inventory:body.articlePreviewInventory});
+  }
+  if (result.operation === 'read') for (const row of result.targets) {
+    for (const scope of row.articlePreviewObservations ?? []) {
+      for (const entry of scope.articlePreviews) add({parent:scope.sourceUrl,postId:scope.postId,author:scope.authorHandle,entry});
+      if (scope.articlePreviewInventory.omitted || scope.articlePreviewInventory.unresolved) add({parent:scope.sourceUrl,observationId:scope.observationId,inventory:scope.articlePreviewInventory});
+    }
+    if (row.inventoryAuditOmitted) add(row.inventoryAuditOmitted);
+    for (const gap of row.unscopedPosts?.previewGaps ?? []) add(gap);
+    if (row.article.entryIdentity) add(row.article.entryIdentity);
+  }
+  return obligations;
+}
 // Preserve the observation's own Article obligations, even when its primary
 // candidate is later omitted. Identity validation remains the evidence ledger's job.
 function protectedSearchHistory(p: XTextObservation): boolean {
@@ -120,6 +146,9 @@ function projection(result: XResearchResult) {
     batchId: result.batchId,
     runId: result.runId,
     status: result.status,
+    artifact: result.artifact,
+    delivery: result.delivery,
+    artifactRestoration: result.artifactRestoration,
     reportScopeFacts: result.reportScopeFacts,
     ...(result.reportRunScopeFacts ? {reportRunScopeFacts: result.reportRunScopeFacts} : {}),
     budgetUsage: result.budgetUsage,
@@ -136,6 +165,9 @@ function projection(result: XResearchResult) {
         product: q.query.product,
         status: q.status,
         stopReason: q.stopReason,
+        collectionStop: q.collectionStop,
+        budgetBinding: q.budgetBinding,
+        sampleTruncation: q.sampleTruncation,
         budgetUsage: q.budgetUsage,
         posts: q.posts.map(body),
         ...(q.postObservations?{postObservations:q.postObservations.map(body)}:{}),
@@ -158,6 +190,9 @@ function projection(result: XResearchResult) {
       reason: t.reason,
       ...(t.diagnostics ? {diagnostics:t.diagnostics} : {}),
       stopReason: t.stopReason,
+      collectionStop: t.collectionStop,
+      budgetBinding: t.budgetBinding,
+      sampleTruncation: t.sampleTruncation,
       budgetUsage: t.budgetUsage,
       root: t.root ? body(t.root) : null,
       quotedPosts: t.quotedPosts.map(body),
@@ -193,9 +228,9 @@ function measure<T extends XResearchResult>(
   projected = false,
   prior?: XResearchScopePrior,
 ): XSerializedResult<T> {
-  result.reportScopeFacts = reportScopeFacts(result);
-  if (prior) result.reportRunScopeFacts = prior.withCurrent(result);
-  else delete result.reportRunScopeFacts;
+  if (!result.delivery || !result.reportScopeFacts) result.reportScopeFacts = reportScopeFacts(result);
+  if (prior && (!result.delivery || !result.reportRunScopeFacts)) result.reportRunScopeFacts = prior.withCurrent(result);
+  else if (!prior && !result.delivery) delete result.reportRunScopeFacts;
   const rows = result.operation === 'search' ? result.queries : result.targets;
   for (;;) {
     const projectedRows = projected
@@ -491,8 +526,20 @@ export function assertXRequestFits(original: XResearchResult, prior?: XResearchS
   };
   state.truncation = { returned: 0, totalKnown: 8080000, truncated: true };
   state.contentProjection = 'x_research_projection_v1';
+  state.artifact = {version:1,directoryId:uuid,manifest:'manifest.json',sha256:'f'.repeat(64),bytes:Number.MAX_SAFE_INTEGER,runId:state.runId,callId:state.callId,batchId:state.batchId,operation:state.operation};
+  state.delivery = {truncated:true,omittedObservations:Number.MAX_SAFE_INTEGER,omittedFields:[],artifactPath:'p'.repeat(4096),persistence:'failed',failureCode:'canonical',articleObligationCoverage:'not_inline'};
+  state.artifactRestoration = {scope:'current_branch',missingCalls:Number.MAX_SAFE_INTEGER,reasonCounts:{reference:Number.MAX_SAFE_INTEGER,path:Number.MAX_SAFE_INTEGER,read:Number.MAX_SAFE_INTEGER,write:Number.MAX_SAFE_INTEGER,integrity:Number.MAX_SAFE_INTEGER,canonical:Number.MAX_SAFE_INTEGER}};
+  rows.forEach(row => {
+    row.collectionStop = {status:row.status,stopReason:row.stopReason,reason:'collection_failed:browser.not_dispatchable'};
+    row.budgetBinding = ['posts','replies','scrolls','expands','network_pages'].map(dimension => ({dimension:dimension as 'posts',used:Number.MAX_SAFE_INTEGER,limit:Number.MAX_SAFE_INTEGER,origin:'explicit'}));
+    row.sampleTruncation = {observed:Number.MAX_SAFE_INTEGER,sampled:0,omitted:Number.MAX_SAFE_INTEGER};
+  });
   compactMetadata(state);
   compactModelDocumentLocations(state);
+  state.delivery.omittedFields = [...(state.metadataOmissions ?? []),...(state.contentMetadataOmissions ?? []),...rows.flatMap((_,i) => {
+    const prefix = `${state.operation === 'search' ? 'queries' : 'targets'}.${i}`;
+    return ['posts','postObservations','postObservations.text','root.text','article.body.text','bodyObservations','bodyObservations.text','quotedPosts','quotedPosts.text','replies.observations','replies.observations.text','articlePreviewObservations','unscopedPosts.observations','diagnostics.replyExpansions','diagnostics.initialFrame.replyUiInventory','diagnostics.firstAdmittedFrame.replyUiInventory','diagnostics.terminalFrame.replyUiInventory','diagnostics.scrollRecovery','diagnostics.pointerPreflights','diagnostics.scroll','diagnostics.readiness','diagnostics.clickFailures','diagnostics.pointerFailure','diagnostics.initialFrame','diagnostics.firstAdmittedFrame','diagnostics.terminalFrame','diagnostics.sourceFailure'].map(field => `${prefix}.${field}`);
+  })];
   const requiredBytes = measure(state, true, prior).result.budgetUsage.outputBytes;
   if (requiredBytes > X_RESEARCH_MAX_OUTPUT_BYTES)
     throw new Error(
@@ -511,6 +558,18 @@ export function serializeXResearchResult<T extends XResearchResult>(
   const result = structuredClone(projectActionDiagnostics(original)),
     bodies = texts(result),
     previous = result.truncation;
+  const rows = result.operation === 'search' ? result.queries : result.targets;
+  const collection = rows.length > 0 && rows.every(row => !!row.collectionStop);
+  const sourceRows = rows.map(row => ({status:row.status,stopReason:row.stopReason,distinctEntries:row.budgetUsage.distinctEntries,reason:'reason' in row ? row.reason : null}));
+  const sourceListCounts = new Map(observationLists(result).map(([path,items]) => [path,items.length]));
+  const sourceObligations = articleObligations(result);
+  const sourceTruncation = new Map(bodies.map(p => [p, structuredClone(p.truncation)]));
+  const sourceTexts = new Map(bodies.map(p => [p, p.text]));
+  if (collection) {
+    result.delivery ??= {truncated:false,omittedObservations:0,omittedFields:[],artifactPath:null,persistence:'failed'};
+    result.reportScopeFacts = reportScopeFacts(original);
+    if (prior) result.reportRunScopeFacts = prior.withCurrent(original);
+  }
   const totalKnown = previous.truncated
     ? previous.totalKnown
     : bodies.some((p) => p.truncation.totalKnown === null)
@@ -522,7 +581,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     }
   let projected = !!result.contentProjection;
   const update = () => {
-    result.truncation = {
+    if (!collection) result.truncation = {
       returned: texts(result).reduce((n, p) => n + p.text.length, 0),
       totalKnown,
       truncated:
@@ -532,12 +591,38 @@ export function serializeXResearchResult<T extends XResearchResult>(
         !!result.metadataOmissions?.length ||
         !!result.contentMetadataOmissions?.length,
     };
-    if(result.operation==='read') for(const row of result.targets) if(row.unscopedPosts) {
+    if(!collection && result.operation==='read') for(const row of result.targets) if(row.unscopedPosts) {
       row.unscopedPosts.inventory.retained=row.unscopedPosts.observations.length;
       row.unscopedPosts.inventory.omitted=row.unscopedPosts.inventory.observed-row.unscopedPosts.inventory.retained;
       row.budgetUsage.distinctEntries=new Set([...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,...(row.article.body?[row.article.body]:[]),...row.unscopedPosts.observations].map(p=>p.postId)).size;
     }
-    if(result.operation==='read' && result.targets.some(row=>row.unscopedPosts)) result.budgetUsage.distinctEntries=result.targets.reduce((sum,row)=>sum+row.budgetUsage.distinctEntries,0);
+    if(!collection && result.operation==='read' && result.targets.some(row=>row.unscopedPosts)) result.budgetUsage.distinctEntries=result.targets.reduce((sum,row)=>sum+row.budgetUsage.distinctEntries,0);
+    if (collection) {
+      result.status = original.status;
+      result.truncation = structuredClone(previous);
+      rows.forEach((row,index) => {
+        const source = sourceRows[index];
+        row.status = source.status;
+        row.stopReason = source.stopReason;
+        row.budgetUsage.distinctEntries = source.distinctEntries;
+        if ('reason' in row && 'reason' in source) row.reason = source.reason;
+      });
+      const retained = texts(result);
+      for (const p of retained) p.truncation = structuredClone(sourceTruncation.get(p)!);
+      const omittedFields = new Set(original.delivery?.omittedFields ?? []);
+      for (const field of [...(result.metadataOmissions ?? []),...(result.contentMetadataOmissions ?? [])]) omittedFields.add(field);
+      for (const [path,items] of observationLists(result)) {
+        if (items.length < sourceListCounts.get(path)!) omittedFields.add(path);
+        if (items.some(p => sourceTexts.get(p) !== p.text)) omittedFields.add(`${path}.text`);
+      }
+      const removed = bodies.length - retained.length;
+      result.delivery!.omittedObservations = (original.delivery?.omittedObservations ?? 0) + removed;
+      result.delivery!.omittedFields = [...omittedFields];
+      const inlineObligations = articleObligations(result);
+      result.delivery!.articleObligationCoverage = original.delivery?.articleObligationCoverage === 'not_inline' ||
+        [...sourceObligations].some(fact => !inlineObligations.has(fact)) ? 'not_inline' : 'inline';
+      result.delivery!.truncated = !!original.delivery?.truncated || removed > 0 || omittedFields.size > 0;
+    }
     return measure(result, projected, prior);
   };
   let value = update();
@@ -634,6 +719,15 @@ export function serializeXResearchResult<T extends XResearchResult>(
     envelope.observations=entries.slice(0,lo);value=update();
     if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
+  if (collection) {
+    // Exact metadata-only probe. If even zero text is over the envelope, every
+    // text would be removed by the loop below; avoid hundreds of identical probes.
+    const full = texts(result).map(p => ({p,text:p.text}));
+    for (const {p} of full) p.text = '';
+    value = update();
+    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+      for (const {p,text} of full) p.text = text;
+  }
   for (const p of texts(result)
     .filter((b) => b.text.length)
     .sort((a, b) => b.text.length - a.text.length)) {
@@ -724,6 +818,19 @@ export function serializeXResearchResult<T extends XResearchResult>(
     delete row.diagnostics[part];
     (result.metadataOmissions??=[]).push(`queries.${index}.diagnostics.${part}`);
     value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
+  if (collection && result.operation === 'search') for (const row of result.queries) {
+    const entries = row.postObservations;
+    if (!entries?.length) continue;
+    const previouslyOmitted = row.postObservationsOmitted ?? 0;
+    const retain = (count:number) => {
+      row.postObservations = entries.slice(0,count);
+      row.postObservationsOmitted = previouslyOmitted + entries.length - count;
+    };
+    let lo=0,hi=entries.length;
+    while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
+    retain(lo);value=update();
+    if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
   compactMetadata(result);
   value = update();

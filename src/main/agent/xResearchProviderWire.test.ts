@@ -1,3 +1,4 @@
+import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
 import { validateToolCall } from '@earendil-works/pi-ai';
@@ -8,7 +9,7 @@ import { createXResearchTool } from './xResearchTool';
 
 describe('x_research DeepSeek provider request', () => {
   it('sends an object-root function schema through the installed SDK HTTP serializer', async () => {
-    const tool = createXResearchTool({
+    const tool = createXResearchTool({artifacts:tempXArtifactStore(),
       browser: {} as XResearchBrowser, threadId: 'wire-test', sources: new Map(), currentRunId: () => 'run',
     });
     const model = getBuiltinModel('deepseek', 'deepseek-v4-flash');
@@ -73,14 +74,14 @@ describe('x_research DeepSeek provider request', () => {
 
   it('keeps SDK validation and the first-line parser strict before browser activity', async () => {
     const f = fixture([searchHtml(post())]);
-    const tool = createXResearchTool({browser: f.context.browser, threadId: 'thread', sources: f.context.sources, currentRunId: () => 'run'});
+    const tool = createXResearchTool({artifacts:tempXArtifactStore(),browser: f.context.browser, threadId: 'thread', sources: f.context.sources, currentRunId: () => 'run'});
     const call = (arguments_: Record<string, unknown>) => validateToolCall([tool], {type: 'toolCall', id: 'sdk-call', name: tool.name, arguments: arguments_});
     expect((await tool.execute('search', call(searchInput), undefined, undefined, {} as never)).details?.operation).toBe('search');
     expect(f.open).toHaveBeenCalledTimes(1);
     const read = {tabId: 'read-tab', read: {objective: 'read', targets: [{url: 'https://x.com/bob/status/456'}], includeArticle: false, includeReplies: false}};
     // A valid read is checked through the same SDK validator before the invalid calls.
     const readFixture = fixture([readHtml(post('456', 'bob', 'read control'))]);
-    const readTool = createXResearchTool({browser: readFixture.context.browser, threadId: 'thread', sources: readFixture.context.sources, currentRunId: () => 'run'});
+    const readTool = createXResearchTool({artifacts:tempXArtifactStore(),browser: readFixture.context.browser, threadId: 'thread', sources: readFixture.context.sources, currentRunId: () => 'run'});
     const validatedRead = validateToolCall([readTool], {type: 'toolCall', id: 'read-call', name: readTool.name, arguments: read});
     expect((await readTool.execute('read', validatedRead, undefined, undefined, {} as never)).details?.operation).toBe('read');
     expect(readFixture.open).toHaveBeenCalledTimes(1);

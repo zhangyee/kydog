@@ -1,3 +1,4 @@
+import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { expect, it } from 'vitest';
 import { readX } from './xResearchRead';
 import { promises as fs } from 'node:fs';
@@ -13,7 +14,7 @@ const report = '/tmp/x-research-topic-2026-10-12.md';
 const citation = (u = url) => `Observed evidence [source](${u})`;
 async function result() {
   const f = fixture([readHtml(post())]);
-  const tool = createXResearchTool({
+  const tool = createXResearchTool({artifacts:tempXArtifactStore(),
     browser: f.context.browser,
     threadId: 'thread',
     sources: f.context.sources,
@@ -542,7 +543,7 @@ it('legacy navigation hints resolve a fresh ID read without stamping legacy prov
     }),
   ]);
   const f = fixture([readHtml(post('123', 'alice', 'new rendered body'))]);
-  const tool = createXResearchTool({
+  const tool = createXResearchTool({artifacts:tempXArtifactStore(),
     browser: f.context.browser,
     threadId: 'thread',
     sources: l.sources,

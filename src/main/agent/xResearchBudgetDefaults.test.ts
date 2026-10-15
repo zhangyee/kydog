@@ -1,3 +1,4 @@
+import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { describe, expect, it } from 'vitest';
 import { fixture, post, query, readHtml, searchHtml, stagedFixture } from '../../test-support/xResearchFixture';
 import { createXResearchTool } from './xResearchTool';
@@ -6,7 +7,7 @@ const target = { url: 'https://x.com/alice/status/123' };
 
 // The DOM boundary is offline; parser, collector, orchestration and final SDK envelope are real.
 function toolFor(f: { context: ReturnType<typeof fixture>['context'] }) {
-  return createXResearchTool({ browser: f.context.browser, threadId: 'thread', sources: f.context.sources, currentRunId: () => 'budget-run' });
+  return createXResearchTool({artifacts:tempXArtifactStore(), browser: f.context.browser, threadId: 'thread', sources: f.context.sources, currentRunId: () => 'budget-run' });
 }
 function bodies(start: number, count: number) {
   return Array.from({ length: count }, (_, i) => post(String(start + i), 'bob', `body-${start + i}`)).join('');

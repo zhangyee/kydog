@@ -289,7 +289,7 @@ it('preserves a valid U+FEFF character at the beginning of a later chunk', async
     canonical.slice(0, canonical.indexOf('START')),
     'utf8',
   );
-  result.objective = 'x'.repeat(1048576 - prefixBytes) + '\uFEFF正文';
+  result.objective = 'x'.repeat(32768 - prefixBytes) + '\uFEFF正文';
   const ref = await store.write(result);
   const manifest = JSON.parse(
     await fs.readFile(store.displayPath(ref), 'utf8'),
@@ -301,4 +301,50 @@ it('preserves a valid U+FEFF character at the beginning of a later chunk', async
     true,
   );
   expect(await store.read(ref)).toEqual(result);
+});
+
+it('new artifacts are fully readable through installed SDK read, with manifest line continuation',async()=>{
+ const {root,store,result}=await setup();
+ result.objective='汉字😀'.repeat(120000);
+ const ref=await store.write(result);
+ const {createReadToolDefinition}=await import('@earendil-works/pi-coding-agent');
+ const read=createReadToolDefinition(root);
+ const readText=async(file:string,offset?:number,limit?:number)=>{
+  const value=await read.execute('read',{path:file,offset,limit},undefined,undefined,{} as never);
+  return value.content.map(item=>item.type==='text'?item.text:'').join('');
+ };
+ let offset=1;const lines:string[]=[];
+ for(;;){
+  const text=await readText(store.displayPath(ref),offset,40);
+  const continuation=/\n\n\[\d+ more lines in file\. Use offset=(\d+) to continue\.\]$/.exec(text);
+  lines.push(continuation?text.slice(0,continuation.index):text);
+  if(!continuation)break;
+  offset=Number(continuation[1]);
+ }
+ const manifest=JSON.parse(lines.join('\n'));
+ expect(offset).toBeGreaterThan(1);
+ const fragments=[];
+ for(const chunk of manifest.chunks){
+  const text=await readText(path.join(root,ref.directoryId,chunk.name));
+  expect(createHash('sha256').update(text).digest('hex')).toBe(chunk.sha256);
+  fragments.push(text);
+ }
+ const complete=fragments.join('');
+ expect(Buffer.byteLength(complete)).toBe(ref.bytes);
+ expect(createHash('sha256').update(complete).digest('hex')).toBe(ref.sha256);
+ expect(JSON.parse(complete)).toEqual(result);
+});
+
+it('reads legacy single chunks up to the original 1 MiB ceiling',async()=>{
+ const {root,store,result}=await setup();result.objective='legacy'.repeat(10000);
+ const ref=await store.write(result),file=store.displayPath(ref);
+ const manifest=JSON.parse(await fs.readFile(file,'utf8'));
+ const content=JSON.stringify(canonicalizeXResearchResult(result));
+ expect(Buffer.byteLength(content)).toBeGreaterThan(32768);
+ const chunk={name:'chunk-000000.json',bytes:ref.bytes,sha256:ref.sha256};
+ await fs.writeFile(path.join(root,ref.directoryId,chunk.name),content);
+ manifest.chunks=[chunk];await fs.writeFile(file,JSON.stringify(manifest));
+ expect(await store.read(ref)).toEqual(result);
+ await fs.writeFile(path.join(root,ref.directoryId,chunk.name),' '.repeat(1048577));
+ await expect(store.read(ref)).rejects.toMatchObject({code:'integrity'});
 });

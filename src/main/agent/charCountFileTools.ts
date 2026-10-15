@@ -91,10 +91,10 @@ export type PiFileToolFactories = {
 const lastWrite = new AsyncLocalStorage<{ path?: string; content?: string }>();
 
 /** The guard sees the SDK-computed complete content before any target-file write. */
-export type FileWriteGuard = (absolutePath: string, finalContent: string) => { createOnly: true } | void;
+export type FileWriteGuard = (absolutePath: string, finalContent: string) => { createOnly: true } | void | Promise<{ createOnly: true } | void>;
 
 async function recordingWriteFile(absolutePath: string, content: string, guard?: FileWriteGuard, operation: 'write' | 'edit' = 'write'): Promise<void> {
-  const policy = guard?.(absolutePath, content);
+  const policy = await guard?.(absolutePath, content);
   if (operation === 'write' && policy?.createOnly) await createOnly(absolutePath, content);
   else await fs.writeFile(absolutePath, content, 'utf-8');
   const store = lastWrite.getStore();

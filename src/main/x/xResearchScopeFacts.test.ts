@@ -115,8 +115,8 @@ it('keeps trusted prior immutable, recomputes final scope through projection and
  expect(serializeXResearchResult(fake,prior).result.reportRunScopeFacts).toEqual(plain.result.reportRunScopeFacts);
 });
 
-// Catches computing a run summary before body-history trimming changes final row state.
-it('counts serializer-final partial rows and preserves them when final details are recorded and restored',async()=>{
+// Catches conflating delivery omissions with the collection source scope.
+it('preserves source scope when delivery omits body history and restores the same aggregate',async()=>{
  const {retainReadBody}=await import('./xResearchReadStages');
  const current=await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},
  {...fixture([readHtml(post())]).context,runId:'scope-run',callId:'final-read',batchId:'final-batch'});
@@ -128,7 +128,7 @@ it('counts serializer-final partial rows and preserves them when final details a
  for(let n=0;n<900;n++)retainReadBody(row,{...structuredClone(root),observationId:`earlier-${n}`,text:'',truncation:{returned:0,totalKnown:0,truncated:false},articlePreviews:[{entryObservationId:`entry-${n}`,parentPostId:'123',sourceUrl:root.sourceUrl!,targetUrl:'https://x.com/bob/status/456'}],articlePreviewInventory:{scope:'collection',observed:1,retained:1,omitted:0,unresolved:0}});
  const capped=serializeXResearchResult(current,prior);
  expect(capped.result.targets[0].bodyObservationsOmitted).toBeGreaterThan(0);
- expect(capped.result.reportRunScopeFacts).toMatchObject({callCount:2,unavailableCallCount:0,search:{totalRows:2},read:{totalRows:1,statusCounts:{partial:1},stopReasonCounts:{budget_reached:1},reasonCounts:{body_observations_output_budget:1}}});
+ expect(capped.result.reportRunScopeFacts).toMatchObject({callCount:2,unavailableCallCount:0,search:{totalRows:2},read:{totalRows:1,statusCounts:{observed:1},stopReasonCounts:{agent_stopped:1},reasonCounts:{unknown:1}}});
  expect(JSON.parse(capped.text).reportRunScopeFacts).toEqual(capped.result.reportRunScopeFacts);
  const bytes=Buffer.byteLength(JSON.stringify(xResearchToolResult(capped)));
  expect(bytes).toBe(capped.result.budgetUsage.outputBytes);expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);

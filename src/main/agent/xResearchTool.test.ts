@@ -1,3 +1,4 @@
+import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,7 @@ import { createXResearchTool } from './xResearchTool';
 describe('production X SDK factory',()=>{
   it('uses actual sequential SDK signature, validation and bounded v2 details',async()=>{
     const f=fixture([searchHtml(post())]);
-    const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'actual-run'});
+    const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'actual-run'});
     expect(tool).toMatchObject({name:'x_research',executionMode:'sequential'});
     const result=await tool.execute('actual-call',searchInput,undefined,undefined,{} as never);
     expect(result.details).toMatchObject({schemaVersion:2,runId:'actual-run',callId:'actual-call',browserTabId:'research-tab'});
@@ -16,14 +17,14 @@ describe('production X SDK factory',()=>{
   });
   it('rejects metadata alone over exact envelope budget before browser I/O',async()=>{
     const f=fixture([searchHtml(post())]);
-    const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+    const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
     expect((await tool.execute('small',searchInput,undefined,undefined,{} as never)).details?.schemaVersion).toBe(2);
     const huge={search:{...searchInput.search,objective:'汉'.repeat(400000)}};
     await expect(tool.execute('oversize',huge,undefined,undefined,{} as never)).rejects.toThrow('request metadata exceeds 1 MiB');
     expect(f.open).toHaveBeenCalledTimes(1);
   });
   it('retains actual tab across omitted searches, clears only after proven destruction for next call',async()=>{
-    const f=fixture([searchHtml(post())]);const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+    const f=fixture([searchHtml(post())]);const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
     await tool.execute('first',searchInput,undefined,undefined,{} as never);await tool.execute('reuse',searchInput,undefined,undefined,{} as never);
     expect(f.open.mock.calls[1][1]).toBe('research-tab');
     f.open.mockRejectedValueOnce(new KydogError('browser.target_unusable','access failed'));
@@ -38,7 +39,7 @@ describe('production X SDK factory',()=>{
     await tool.execute('explicit',{...searchInput,tabId:'provided-tab'},undefined,undefined,{} as never);expect(f.open.mock.calls[10][1]).toBe('provided-tab');
   });
   it('admits six queries and all20 modest targets under exact required-state sizing',async()=>{
-    const rendered=[searchHtml(post())],f=fixture(rendered);const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+    const rendered=[searchHtml(post())],f=fixture(rendered);const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
     const six={search:{...searchInput.search,queries:Array.from({length:6},(_,i)=>({...searchInput.search.queries[0],id:String(i)}))}};
     expect((await tool.execute('six',six,undefined,undefined,{} as never)).details?.operation).toBe('search');
     rendered[0]=readHtml(post());
@@ -49,7 +50,7 @@ describe('production X SDK factory',()=>{
     if(withArticles.details?.operation==='read') expect(withArticles.details.targets).toHaveLength(20);
   });
   it('checks the actual generated search URL rather than a different space encoding',async()=>{
-    const f=fixture([searchHtml(post())]);const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+    const f=fixture([searchHtml(post())]);const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
     expect((await tool.execute('normal',searchInput,undefined,undefined,{} as never)).details?.status).toBe('partial');
     const query='a'+' '.repeat(4095);const input={search:{...searchInput.search,queries:[{...searchInput.search.queries[0],query}]}};
     const result=await tool.execute('boundary',input,undefined,undefined,{} as never);expect(result.details?.status).toBe('partial');expect(new URL(f.open.mock.calls[1][0]).searchParams.get('q')).toBe(query);
@@ -62,7 +63,7 @@ describe('production X SDK factory',()=>{
   it('admits literal history/media targets without halting their ordinary sibling', async () => {
     const plain = 'https://x.com/alice/status/123';
     const f = fixture([readHtml(post())]);
-    const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+    const tool = createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
     const read = (targets:{url:string}[]) => ({tabId:'research-tab', read:{objective:'read', targets, includeArticle:false, includeReplies:false}});
     expect((await tool.execute('plain', read([{url:plain}]), undefined, undefined, {} as never)).details).toMatchObject({targets:[{status:'observed', root:{postId:'123'}}]});
     for (const suffix of ['/history', '/photo/1', '/video/1']) {
@@ -76,7 +77,7 @@ describe('production X SDK factory',()=>{
     }
     expect(f.collect).toHaveBeenCalledTimes(7);
     const redirected = fixture([readHtml(post())], {finalUrl:()=>plain});
-    const redirectedTool = createXResearchTool({browser:redirected.context.browser, threadId:'thread', sources:redirected.context.sources, currentRunId:()=> 'run'});
+    const redirectedTool = createXResearchTool({artifacts:tempXArtifactStore(),browser:redirected.context.browser, threadId:'thread', sources:redirected.context.sources, currentRunId:()=> 'run'});
     for (const suffix of ['/history', '/photo/1', '/video/1']) {
       const url = plain + suffix;
       const result = await redirectedTool.execute('redirect', read([{url}, {url:plain}]), undefined, undefined, {} as never);
@@ -94,7 +95,7 @@ describe('production X SDK factory',()=>{
     const html = readHtml(post().replace('</article>', quote+'</article>'));
     for (const ready of [true, false]) {
       const f = fixture([readHtml(''), html], {wait:ready, afterWaitIndex:1});
-      const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+      const tool = createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
       const result = await tool.execute('wait', {tabId:'research-tab', read:{objective:'read', targets:[{url}], includeArticle:false, includeReplies:false}}, undefined, undefined, {} as never);
       expect(result.details).toMatchObject({targets:[{status:ready?'observed':'partial', reason:ready?null:'post_wait_timeout', stopReason:ready?'agent_stopped':'wait_timeout', root:{postId:'123', text:'original'}, quotedPosts:[{postId:'456', text:'quote'}], replies:{scope:{rootPostId:'123', stopReason:ready?'agent_stopped':'wait_timeout'}}}]});
       const row = result.details!.operation==='read' ? result.details!.targets[0] : undefined;
@@ -107,7 +108,7 @@ describe('production X SDK factory',()=>{
   it('keeps normalized and ID-only actual root identity visible in projected SDK content', async () => {
     const actual = 'https://x.com/alice/status/123';
     const f = fixture([readHtml(post())], {finalUrl:()=>actual});
-    const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+    const tool = createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
     for (const target of [{url:'https://twitter.com/old/status/123'}, {postId:'123'}]) {
       const result = await tool.execute('projection', {tabId:'research-tab', read:{objective:'a'.repeat(600000), targets:[target], includeArticle:false, includeReplies:false}}, undefined, undefined, {} as never);
       const model = JSON.parse((result.content[0] as any).text);
@@ -138,7 +139,7 @@ describe('production X SDK factory',()=>{
         }
         return normalCollect(request);
       });
-      const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
+      const tool = createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
       // This checks target halt propagation; source bodies are already present in the first frame.
       const result = await tool.execute('mixed', {tabId:'research-tab', read:{objective:'read', targets, includeArticle:false, includeReplies:true, maxScrollsPerPost:0}}, undefined, undefined, {} as never);
       expect(result.details!.operation==='read' && result.details!.targets[0].root?.text).toBe('original');
@@ -160,26 +161,26 @@ describe('production X SDK factory',()=>{
     const auth='<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>';
     const read=(url:string)=>({tabId:'research-tab',read:{objective:'read',targets:[{url},{url:plain}],includeArticle:false,includeReplies:true}});
     const good=fixture([readHtml(''),readHtml(post())],{afterWaitIndex:1,wait:false});
-    const goodTool=createXResearchTool({browser:good.context.browser,threadId:'thread',sources:good.context.sources,currentRunId:()=> 'run'});
+    const goodTool=createXResearchTool({artifacts:tempXArtifactStore(),browser:good.context.browser,threadId:'thread',sources:good.context.sources,currentRunId:()=> 'run'});
     expect((await goodTool.execute('good',read(plain),undefined,undefined,{} as never)).details).toMatchObject({targets:[{root:{postId:'123'},stopReason:'wait_timeout'},{root:{postId:'123'},stopReason:'wait_timeout'}]});
     const delayedAuth='<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input type="password" name="password"></div>';
     const lateBarrier=fixture([readHtml(''),delayedAuth],{afterWaitIndex:1,wait:false});
     const lateWait=(lateBarrier.page.wait as any).getMockImplementation();
     (lateBarrier.page.wait as any).mockImplementation(async(...args:any[])=>{const result=await lateWait(...args);lateBarrier.navigate('https://x.com/i/jf/onboarding/web');return result;});
-    const lateTool=createXResearchTool({browser:lateBarrier.context.browser,threadId:'thread',sources:lateBarrier.context.sources,currentRunId:()=> 'run'});
+    const lateTool=createXResearchTool({artifacts:tempXArtifactStore(),browser:lateBarrier.context.browser,threadId:'thread',sources:lateBarrier.context.sources,currentRunId:()=> 'run'});
     expect((await lateTool.execute('lateAuth',read(plain),undefined,undefined,{} as never)).details).toMatchObject({targets:[{status:'auth_required',reason:'auth_required',stopReason:'access_barrier'},{status:'auth_required',reason:'not_attempted:auth_required',stopReason:'access_barrier'}]});
     const controller=new AbortController();
     const cancelled=fixture([readHtml(''),readHtml(post())],{afterWaitIndex:1,wait:false});
     const normalWait=(cancelled.page.wait as any).getMockImplementation();
     (cancelled.page.wait as any).mockImplementation(async(...args:any[])=>{const result=await normalWait(...args);controller.abort();return result;});
-    const cancelledTool=createXResearchTool({browser:cancelled.context.browser,threadId:'thread',sources:cancelled.context.sources,currentRunId:()=> 'run'});
+    const cancelledTool=createXResearchTool({artifacts:tempXArtifactStore(),browser:cancelled.context.browser,threadId:'thread',sources:cancelled.context.sources,currentRunId:()=> 'run'});
     const result=await cancelledTool.execute('cancelled',read(plain),controller.signal,undefined,{} as never);
     expect(result.details).toMatchObject({targets:[{root:null,status:'cancelled',reason:'cancelled',stopReason:'cancelled',replies:{scope:{stopReason:'cancelled'}}},{root:null,status:'cancelled',reason:'cancelled',stopReason:'cancelled',replies:{scope:{stopReason:'cancelled'}}}]});
     expect(cancelled.collect).toHaveBeenCalledTimes(1);expect(cancelled.open).toHaveBeenCalledTimes(1);
     for(const suffix of ['/history','/photo/1','/video/1']) {
       for(const html of [auth,'<main></main>']) {
         const f=fixture([html],{finalUrl:()=> 'https://x.com/i/jf/onboarding/web'});
-        const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+        const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
         const result=await tool.execute('barrier',read(plain+suffix),undefined,undefined,{} as never);
         if(result.details!.operation!=='read') throw new Error('read expected');
         if(html===auth) {
@@ -200,7 +201,7 @@ describe('production X SDK factory',()=>{
       const f=fixture([searchHtml(post())]);
       const normalOpen=f.open.getMockImplementation()!;
       f.open.mockImplementation(async(...args)=>{const opened=await normalOpen(...args);return cancelled && f.open.mock.calls.length===2 ? {...opened,nav:{requestedUrl:args[0],outcome:{kind:'cancelled'}}} as any : opened;});
-      const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+      const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
       const result=await tool.execute('navigation',input,undefined,undefined,{} as never);
       if(result.details!.operation!=='search') throw new Error('search expected');
       expect(result.details!.queries[0]).toMatchObject({posts:[{postId:'123'}],status:'partial',stopReason:'budget_reached'});
@@ -223,7 +224,7 @@ it('factory content and canonical details preserve distinct source scroll failur
   for(const cause of [null,'scroll_no_movement','scroll_ack_timeout','ordinary'] as const){
     const scrollError=cause===null?undefined:cause==='ordinary'?Object.assign(new KydogError('browser.wait_timeout','scroll_no_movement scroll_ack_timeout'),{reason:'scroll_no_movement'}):new BrowserScrollAcknowledgementError(cause,cause==='scroll_no_movement'?'scroll_ack_timeout':'scroll_no_movement');
     const f=await stagedFixture({article:'ok',scrollError});
-    const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'actual-run'});
+    const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'actual-run'});
     const result=await tool.execute('typed-scroll',{tabId:'research-tab',read:{objective:'source outcome',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:true,maxExpandActionsPerPost:4,maxScrollsPerPost:1}},undefined,undefined,{} as never);
     const expected={status:'partial',reason:cause===null?'reply_budget_reached':cause==='ordinary'?'action_failed:browser.wait_timeout':cause,stopReason:cause===null?'budget_reached':cause==='scroll_ack_timeout'?'wait_timeout':'action_failed',root:{postId:'123',author:{handle:'alice'},text:'expanded body'},article:{bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'}}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:3}};
     expect(result.details?.operation).toBe('read');
@@ -234,19 +235,30 @@ it('factory content and canonical details preserve distinct source scroll failur
   }
 });
 
-it('observes only the final serialized canonical result once and never observes rejected inputs',async()=>{
- const f=fixture([readHtml(post('123','alice','&quot;'.repeat(6000)))]);
+it('persists full canonical before bounded delivery and observes full evidence exactly once',async()=>{
+ const f=fixture([readHtml(post('123','alice','&quot;'.repeat(60000)).replace('</article>','<div role="link" tabindex="0" href="https://x.com/bob/status/456"><div data-testid="User-Name"><a href="/bob">@bob</a></div><img data-testid="article-cover-image"></div></article>'))]);
  const received:import('../x/xResearchTypes').XResearchResult[]=[];
- const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',observeResult:r=>received.push(r)});
+ const artifacts=tempXArtifactStore();
+ const tool=createXResearchTool({artifacts,browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',observeResult:r=>received.push(r)});
  const r=await tool.execute('final',{tabId:'research-tab',read:{objective:'a'.repeat(1020000),targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false}},undefined,undefined,{} as never);
- expect(received).toHaveLength(1);expect(received[0]).toBe(r.details);expect(received[0].contentProjection).toBe('x_research_projection_v1');expect(received[0].truncation.truncated).toBe(true);
- expect(Buffer.byteLength(JSON.stringify(r))).toBe(received[0].budgetUsage.outputBytes);
+ expect(received).toHaveLength(1);
+ expect(r.details!.delivery).toMatchObject({truncated:true,persistence:'saved'});
+ expect(await artifacts.read(r.details!.artifact!)).toEqual(received[0]);
+ expect(received[0].operation==='read' && received[0].targets[0].root!.text).toBe('"'.repeat(60000));
+ expect(r.details!.artifact!.bytes).toBeGreaterThan(1048576);
+ const {XResearchEvidence}=await import('../x/xResearchEvidence');
+ const evidence=new XResearchEvidence('/tmp',()=> 'run');evidence.observe(received[0]);
+ expect(()=>evidence.guard('/tmp/report.md','[source](https://x.com/alice/status/123)')).toThrow('accurate entry');
+ expect(r.details!.truncation).toEqual(received[0].truncation);
+ expect(r.details!.status).toBe(received[0].status);
+ expect(Buffer.byteLength(JSON.stringify(r))).toBe(r.details!.budgetUsage.outputBytes);
+ expect(r.details!.budgetUsage.outputBytes).toBeLessThanOrEqual(1048576);
  await expect(tool.execute('invalid',{search:{},read:{}} as never,undefined,undefined,{} as never)).rejects.toThrow();expect(received).toHaveLength(1);
 });
 
  it('refuses an inactive run before browser I/O without manufacturing provenance',async()=>{
   const f=fixture([searchHtml(post())]); let run:string|null='protocol-run';
-  const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=>run});
+  const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=>run});
   expect((await tool.execute('live',searchInput,undefined,undefined,{} as never)).details?.runId).toBe('protocol-run');
   run=null;
   await expect(tool.execute('idle',searchInput,undefined,undefined,{} as never)).rejects.toThrow('active run');
@@ -255,7 +267,7 @@ it('observes only the final serialized canonical result once and never observes 
 
 it('restores an owned tab, rejects a foreign binding and replaces an inherited missing tab before the first navigation',async()=>{
  const f=fixture([searchHtml(post())]);let status:'available'|'foreign'|'missing'='available';let retained:string|undefined='recovered-tab';
- const tool=createXResearchTool({browser:{...f.context.browser,tabStatus:()=>status},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',tabBinding:{get:()=>retained,set:id=>{retained=id;}}});
+ const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:{...f.context.browser,tabStatus:()=>status},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',tabBinding:{get:()=>retained,set:id=>{retained=id;}}});
  await tool.execute('owned',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[0][1]).toBe('recovered-tab');
  status='foreign';await expect(tool.execute('foreign',searchInput,undefined,undefined,{} as never)).rejects.toThrow('another thread');expect(f.open).toHaveBeenCalledTimes(1);
  status='missing';const recovered=await tool.execute('missing',searchInput,undefined,undefined,{} as never);expect(recovered.details?.status).toBe('partial');expect(f.open).toHaveBeenCalledTimes(2);expect(f.open.mock.calls[1][1]).toBeUndefined();
@@ -270,7 +282,7 @@ it('retains earlier precise root preview inventory across later body expansion a
  const f=fixture([readHtml(initial),readHtml(expanded)]);const act=f.act.getMockImplementation()!;
  f.act.mockImplementation(async(...args)=>{if(f.act.mock.calls.length===2)throw new KydogError('browser.target_unusable','rejected exact entry');return act(...args);});
  const {XResearchEvidence}=await import('../x/xResearchEvidence');const evidence=new XResearchEvidence('/tmp',()=> 'run');
- const tool=createXResearchTool({browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
+ const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
  const r=await tool.execute('frames',{tabId:'research-tab',read:{objective:'frames',targets:[{url:'https://x.com/alice/status/123'}],includeReplies:false}},undefined,undefined,{} as never);
  expect(r.details).toMatchObject({targets:[{root:{text:'expanded body',articlePreviewInventory:{observed:1,retained:1,omitted:0}},article:{actionAttempted:true},articlePreviewObservations:expect.arrayContaining([expect.objectContaining({articlePreviewInventory:{scope:'collection',observed:2,retained:1,omitted:1,unresolved:0}})])}]});
  expect(()=>evidence.guard('/tmp/report.md','[source](https://x.com/alice/status/123)')).toThrow('inventory');
@@ -278,9 +290,37 @@ it('retains earlier precise root preview inventory across later body expansion a
 
 it('authoritative destruction during an action permits a new tab only on the following request',async()=>{
  const f=fixture([searchHtml(post())]);let present=true;
- const tool=createXResearchTool({browser:{...f.context.browser,tabStatus:()=>present?'available':'missing'},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
+ const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:{...f.context.browser,tabStatus:()=>present?'available':'missing'},threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run'});
  await tool.execute('exists',searchInput,undefined,undefined,{} as never);expect(f.open).toHaveBeenCalledTimes(1);
  f.act.mockImplementationOnce(async()=>{present=false;throw new KydogError('browser.not_dispatchable','target destroyed');});
  const lost=await tool.execute('destroyed',searchInput,undefined,undefined,{} as never);expect(lost.details).toMatchObject({browserTabId:'research-tab',queries:[{posts:[{postId:'123'}],status:'partial'}]});expect(f.open).toHaveBeenCalledTimes(2);
  present=true;await tool.execute('next-request',searchInput,undefined,undefined,{} as never);expect(f.open.mock.calls[2][1]).toBeUndefined();
+});
+
+it('awaits pre-execution synchronization and saves sampled cancellation; persistence failure keeps canonical evidence without a fake ref',async()=>{
+ const {fileService}=await import('../fs/fileService');
+ const {vi}=await import('vitest');
+ const f=fixture([searchHtml(post())]);const artifacts=tempXArtifactStore();
+ let release!:()=>void,entered!:()=>void;
+ const ready=new Promise<void>(resolve=>{entered=resolve;});
+ const gate=new Promise<void>(resolve=>{release=resolve;});
+ const observed:import('../x/xResearchTypes').XResearchResult[]=[];
+ const tool=createXResearchTool({artifacts,browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'run',beforeExecute:async()=>{entered();await gate;},observeResult:r=>observed.push(r)});
+ const pending=tool.execute('saved',searchInput,undefined,undefined,{} as never);
+ await ready;expect(f.open).toHaveBeenCalledTimes(0);release();
+ const saved=await pending;expect(saved.details!.artifact).toBeDefined();expect(saved.details!.delivery!.persistence).toBe('saved');
+ const write=vi.spyOn(fileService,'writeText').mockRejectedValue(new Error('disk full with private path'));
+ try {
+  const failed=await tool.execute('failed-save',searchInput,undefined,undefined,{} as never);
+  expect(failed.details!.delivery).toMatchObject({persistence:'failed',artifactPath:null,failureCode:'write'});
+  expect(failed.details!.artifact).toBeUndefined();
+  expect(observed).toHaveLength(2);expect(observed[1].operation==='search'&&observed[1].queries[0].posts[0].text).toBe('original');
+ } finally {write.mockRestore();}
+ const abort=new AbortController();const collect=f.collect.getMockImplementation()!;
+ f.collect.mockImplementation(async(...args)=>{const value=await collect(...args);abort.abort();return value;});
+ const cancelled=await tool.execute('cancelled',searchInput,abort.signal,undefined,{} as never);
+ expect(cancelled.details!.delivery!.persistence).toBe('saved');
+ expect((await artifacts.read(cancelled.details!.artifact!)).operation).toBe('search');
+ expect(observed[2].operation==='search'&&observed[2].queries[0].posts[0].text).toBe('original');
+ expect(cancelled.details!.operation==='search' && cancelled.details!.queries[0].stopReason).toBe('cancelled');
 });

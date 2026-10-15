@@ -31,7 +31,8 @@ export class XResearchArtifactError extends Error {
     super(message, options);
   }
 }
-const CHUNK_BYTES = 1048576;
+const CHUNK_BYTES = 1048576; // Legacy reader hard ceiling.
+const WRITE_CHUNK_BYTES = 32768; // Fits the installed SDK read tool, even on one line.
 const count = z.number().int().nonnegative().safe();
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const refSchema = z.object({
@@ -120,7 +121,7 @@ function* chunks(text: string): Generator<string> {
     bytes = 0;
   for (const character of text) {
     const size = Buffer.byteLength(character, 'utf8');
-    if (bytes + size > CHUNK_BYTES) {
+    if (bytes + size > WRITE_CHUNK_BYTES) {
       yield text.slice(start, offset);
       start = offset;
       bytes = 0;
@@ -228,7 +229,7 @@ export function createXResearchArtifactStore(
           ...ref,
           chunks: entries,
           ...inventory(canonical),
-        });
+        }, null, 2);
         // The shared reader's 2 MiB limit applies to the manifest as well.
         if (Buffer.byteLength(manifest, 'utf8') > 2 * CHUNK_BYTES)
           throw new XResearchArtifactError(

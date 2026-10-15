@@ -569,3 +569,21 @@ export function canonicalizeXResearchResult(
 ): XResearchResult {
   return parseXResearchCanonical(projectActionDiagnostics(result));
 }
+
+/** Finalize collection units once, over the complete sampled public bodies.
+ * Delivery clipping must never recompute these source facts. */
+export function finalizeXResearchCollection(raw: XResearchResult): XResearchResult {
+  const result = canonicalizeXResearchResult(raw);
+  const bodies = result.operation === 'search'
+    ? result.queries.flatMap(row => [...row.posts,...(row.postObservations ?? [])])
+    : result.targets.flatMap(row => [...(row.root ? [row.root] : []),...row.quotedPosts,
+        ...(row.bodyObservations ?? []),...(row.article.body ? [row.article.body] : []),
+        ...row.replies.observations,...(row.unscopedPosts?.observations ?? [])]);
+  result.truncation = {
+    returned: bodies.reduce((sum,body) => sum + body.text.length, 0),
+    totalKnown: (raw.truncation.truncated && raw.truncation.totalKnown === null) || bodies.some(body => body.truncation.totalKnown === null)
+      ? null : bodies.reduce((sum,body) => sum + body.truncation.totalKnown!, 0),
+    truncated: raw.truncation.truncated || bodies.some(body => body.truncation.truncated),
+  };
+  return result;
+}
