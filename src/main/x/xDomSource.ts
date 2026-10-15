@@ -47,6 +47,8 @@ function validateRaw(v: unknown, request: XPageRequest, current: BrowserLocation
   if (v.state !== null && (!obj(v.state) || !['auth_required','explicit_empty'].includes(String(v.state.kind)) || !str(v.state.text,4000))) invalid();
   for (const p of v.posts) if (!obj(p) || !integer(p.containerKey) || !integer(p.articleEntryCount) || !['post','quote'].includes(String(p.scope)) || !nullable(p.postId) || !nullable(p.permalink) || !nullable(p.candidatePostId) || (p.identityIssue!==null && !['unnamed','author_mismatch'].includes(String(p.identityIssue))) || !author(p.author) || !str(p.text,64000) || !truncation(p.truncation)) invalid();
   const rawPosts=v.posts as RawPost[];
+  if(request.stage==='post' && request.collectReplies===false && (rawPosts.some(p=>p.scope==='post' && p.candidatePostId!==request.postId)
+    || v.controls.some(c=>obj(c) && c.kind==='replies_expand'))) invalid();
   for (const p of rawPosts) if (p.identityIssue===null ? p.postId===null || p.postId!==p.candidatePostId : p.postId!==null) invalid();
   const rawTruncation=v.truncation as XTruncation;
   const currentPost=publicPost(current.currentUrl,true);
@@ -102,14 +104,14 @@ function validRequest(request: XPageRequest): void {
     const expected=toSafeXLocation(request.expectedUrl);
     if (!expected.origin || expected.path!=='/search' || expected.q!==request.query || expected.f!==(request.product==='Latest'?'live':'top')) invalid();
   }
-  else if (request.stage==='post') { if (!isXPostId(request.postId) || requestedPostId(request.expectedUrl)!==request.postId) invalid(); }
+  else if (request.stage==='post') { if (!isXPostId(request.postId) || requestedPostId(request.expectedUrl)!==request.postId || (request.collectReplies!==undefined && typeof request.collectReplies!=='boolean')) invalid(); }
   else if (request.stage==='article') { if (!publicPost(request.expectedUrl) || !obj(request.entry) || !obj(request.via) || !['action','open'].includes(request.via.kind) || !obj(request.via.result)) invalid(); }
   else invalid();
 }
 /** Serializes only fixed data fields; provenance objects never enter the page. */
 export function xPageExpression(request: XPageRequest, sourceRoot?: XSourceRootEnvelope): string {
   validRequest(request);
-  return SOURCE.replace('const rootDiagnostics = X_ROOT;', () => `const rootDiagnostics = (${ROOT_SOURCE});`).replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage,postId:request.stage==='post'?request.postId:null,sourceRoot,permissionNamespace:randomUUID()})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`).replace('const permissionGuard = X_PERMISSION;', () => `const permissionGuard = (${POINTER_GUARD});`);
+  return SOURCE.replace('const rootDiagnostics = X_ROOT;', () => `const rootDiagnostics = (${ROOT_SOURCE});`).replace('const request = X_REQUEST;', () => `const request = ${JSON.stringify({stage:request.stage,postId:request.stage==='post'?request.postId:null,...(request.stage==='post'?{collectReplies:request.collectReplies}:{}),sourceRoot,permissionNamespace:randomUUID()})};`).replace('const snapshot = X_WALKER;', () => `const snapshot = ${WALKER.trim().replace(/;$/, '')};`).replace('const permissionGuard = X_PERMISSION;', () => `const permissionGuard = (${POINTER_GUARD});`);
 }
 /** Supplied only by the port's object-identity provenance registries. */
 export interface XPageNavigationProof {
@@ -200,7 +202,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   // Focal admission still fails. Retain only independently source-named ordinary
   // top-level containers from this same fixed collection, without action authority.
   let unscopedPosts:XUnscopedPosts|undefined;
-  if(request.stage==='post' && !root && !raw.article && !raw.state && exact && raw.region
+  if(request.stage==='post' && request.collectReplies!==false && !root && !raw.article && !raw.state && exact && raw.region
     && currentPost?.id===request.postId && !/\/history\/?$/.test(new URL(current.currentUrl).pathname)
     && publicPost(request.expectedUrl,true)?.id===request.postId && !/\/history\/?$/.test(new URL(request.expectedUrl).pathname)) {
     const candidates=raw.posts.filter(p=>p.scope==='post' && named(p));

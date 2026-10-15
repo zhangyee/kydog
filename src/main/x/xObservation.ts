@@ -4,7 +4,7 @@ import type { XArticleNativeIdentity, XArticleEntry, XControlBinding, XLocationR
 
 export type XPageRequest =
   | { stage: 'search'; expectedUrl: string; query: string; product: 'Top' | 'Latest' }
-  | { stage: 'post'; expectedUrl: string; postId: string; directOpen?: XOpenResult }
+  | { stage: 'post'; expectedUrl: string; postId: string; collectReplies?: boolean; directOpen?: XOpenResult }
   | { stage: 'article'; expectedUrl: string; entry: XArticleEntry; via: { kind: 'action'; result: XActionResult } | { kind: 'open'; result: XOpenResult } };
 export interface XPageControl { kind: 'body_expand' | 'replies_expand' | 'article_entry'; postId: string | null; binding: XControlBinding; sourceRelation?: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown' }
 export interface XPageObservation {

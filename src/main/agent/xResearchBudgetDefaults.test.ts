@@ -162,3 +162,36 @@ describe('zero and sampling boundaries through the SDK', () => {
     expect(zero.row.budgetBinding).toContainEqual({ dimension: 'replies', limit: 0, origin: 'explicit', used: 0 });
   });
 });
+
+
+it('reply zero reaches initial and Article-return producers while nonzero expansion still reads root and Article', async () => {
+  const run = async (maxRepliesPerPost: number) => {
+    const f = await stagedFixture({article:'ok'});
+    const frames: {request:import('../x/xObservation').XPageRequest; replies:number}[] = [];
+    const withPage = f.context.browser.withPage.bind(f.context.browser);
+    f.context.browser.withPage = (tabId, signal, work) => withPage(tabId, signal, page => {
+      const proxied:typeof page = {...page, collect:async request => {
+        const frame = await page.collect(request);
+        frames.push({request,replies:frame.replies.length});
+        return frame;
+      }};
+      return work(proxied);
+    });
+    const result = await toolFor(f).execute('independent-zero', {tabId:'research-tab',read:{objective:'independent scopes',targets:[target],includeArticle:true,includeReplies:true,maxRepliesPerPost,maxScrollsPerPost:0,maxExpandActionsPerPost:4}}, undefined, undefined, {} as never);
+    if (result.details?.operation !== 'read') throw new Error('read expected');
+    return {f, frames:frames.filter(frame => frame.request.stage === 'post'), row:result.details.targets[0]};
+  };
+  const positive = await run(2);
+  expect(positive.f.executed).toEqual(['body_expand','article_entry','replies_expand']);
+  expect(positive.frames.some(frame => frame.replies > 0)).toBe(true);
+  expect(positive.row.replies.observations).toHaveLength(2);
+  expect(positive.row.sampleTruncation!.observed).toBeGreaterThan(0);
+  expect(positive.f.context.sources.get('789')).toBeDefined();
+  const zero = await run(0);
+  expect(zero.f.executed).toEqual(['body_expand','article_entry']);
+  expect(zero.f.context.sources.get('789')).toBeUndefined();
+  expect(zero.f.opens).toEqual([target.url,target.url]);
+  expect(zero.frames.length).toBeGreaterThanOrEqual(3);
+  expect(zero.frames.map(frame => ({collectReplies:'collectReplies' in frame.request ? frame.request.collectReplies : undefined,replies:frame.replies}))).toEqual(Array(zero.frames.length).fill({collectReplies:false,replies:0}));
+  expect(zero.row).toMatchObject({root:{postId:'123',text:'expanded body'},article:{bodyObserved:true,body:{text:'Article paragraph\n\nHeading'}},replies:{observations:[]},sampleTruncation:{observed:0,sampled:0,omitted:0},budgetUsage:{expandActions:2,scrolls:0}});
+});

@@ -825,3 +825,56 @@ describe('reply UI inventory trusted-boundary validation',()=>{
     expect(decode(slots.collect()).diagnosticFrame?.replyUiInventory?.capture.state).toBe('checked');
   });
 });
+
+
+describe('post reply collection policy', () => {
+  it.each([false, true])('does not read non-target body getters while root, quotes and Article entries remain independent (rootLast=%s)', rootLast => {
+    const quote = `<div role="link" tabindex="0">${author('quoted')}<div data-testid="tweetText" id="root-quote">root quote</div>${permalink('456','quoted')}</div>`;
+    const card = `<div role="link" tabindex="0">${author('writer')}<div data-testid="article-cover-image">Article</div></div>`;
+    const root = post('123','alice','root body', quote + card + '<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>');
+    const other = post('789','dave','reply body', `<div role="link" tabindex="0">${author('nested')}<div data-testid="tweetText" id="reply-quote">reply quote</div>${permalink('790','nested')}</div>`);
+    const f = fixture(wrap((rootLast ? other + root : root + other) + '<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>'));
+    let replyReads = 0, quoteReads = 0;
+    const replyText = [...f.document.querySelectorAll('article[data-testid="tweet"]')].find(el => el.querySelector('a[href="/dave"]'))!.querySelector('[data-testid="tweetText"]')!;
+    for (const el of [replyText, f.document.querySelector('#reply-quote')!]) {
+      const value = el.textContent;
+      Object.defineProperty(el, 'textContent', {get() { replyReads++; return value; }});
+    }
+    const rootQuote = f.document.querySelector('#root-quote')!, value = rootQuote.textContent;
+    Object.defineProperty(rootQuote, 'textContent', {get() { quoteReads++; return value; }});
+    const enabled = f.collect({...request, collectReplies: true});
+    expect(replyReads).toBeGreaterThan(0);
+    expect(quoteReads).toBeGreaterThan(0);
+    expect(enabled.posts).toContainEqual(expect.objectContaining({postId:'789',text:'reply body'}));
+    expect(enabled.controls.map((c:any) => c.kind)).toContain('replies_expand');
+    replyReads = 0; quoteReads = 0;
+    const disabled = f.collect({...request, collectReplies: false});
+    expect(replyReads).toBe(0);
+    expect(quoteReads).toBeGreaterThan(0);
+    expect(disabled.posts.map((p:any) => p.text)).toEqual(['root body','root quote']);
+    expect(disabled.controls.map((c:any) => c.kind)).toEqual(['body_expand','article_entry']);
+    expect(disabled.entries).toHaveLength(1);
+    const facts = {currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
+    [...f.document.querySelectorAll('article[data-testid="tweet"]')].find(el => el.querySelector('a[href="/alice"]'))!.remove();
+    const rootless = f.collect();
+    expect(decodeXPage(rootless,request,facts,{parentArticle:false}).unscopedPosts?.observations).toHaveLength(1);
+    replyReads = 0;
+    const disabledRootless = f.collect({...request,collectReplies:false});
+    expect(replyReads).toBe(0);
+    expect(disabledRootless.posts).toHaveLength(0);
+    expect(decodeXPage(disabledRootless,{...request,collectReplies:false} as never,facts,{parentArticle:false}).unscopedPosts).toBeUndefined();
+  });
+  it('validates the optional policy and rejects reply bodies or reply controls that violate a disabled request', () => {
+    const f = fixture(wrap(post() + post('789','dave','reply body') + '<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>'));
+    const facts = {currentUrl:url,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
+    const enabled = f.collect({...request,collectReplies:true});
+    expect(decodeXPage(enabled,request,facts,{parentArticle:false}).replies).toHaveLength(1);
+    expect(() => decodeXPage(enabled,{...request,collectReplies:false} as never,facts,{parentArticle:false})).toThrow(/Invalid X page/);
+    const controlOnly = f.collect();
+    controlOnly.posts = controlOnly.posts.filter((p:any) => p.postId === '123');
+    controlOnly.truncation = {returned:1,totalKnown:1,truncated:false};
+    expect(() => decodeXPage(controlOnly,{...request,collectReplies:false} as never,facts,{parentArticle:false})).toThrow(/Invalid X page/);
+    for (const collectReplies of [undefined,true,false]) expect(() => xPageExpression({...request,collectReplies} as never)).not.toThrow();
+    for (const collectReplies of [0,null,'false',{}]) expect(() => xPageExpression({...request,collectReplies} as never)).toThrow(/Invalid X page/);
+  });
+});

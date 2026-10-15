@@ -159,7 +159,8 @@ export function savePostFrame(
     return false;
   }
   admitXSourceRoot(observed);
-  rememberReplyControls(row,observed);
+  const collectReplies=request.includeReplies && request.maxRepliesPerPost>0;
+  if(collectReplies) rememberReplyControls(row,observed);
   if(row.diagnostics && observed.diagnosticFrame) row.diagnostics.firstAdmittedFrame ??= observed.diagnosticFrame;
   if (row.root === observed.root) return true;
   if (row.root) retainReadBody(row, row.root);
@@ -173,14 +174,16 @@ export function savePostFrame(
   row.root = observed.root;
   row.sourceUrl = observed.root.sourceUrl;
   mergeText(row, row.quotedPosts, observed.quotedPosts);
-  const incoming = request.includeReplies ? observed.replies : [];
-  rememberXIdentities(seenReplies(row),incoming);
-  let admitted=admittedReplyIdentities.get(row);
-  if(!admitted){admitted=new Set();admittedReplyIdentities.set(row,admitted);}
-  const sample=sampleXEntries(incoming.filter((p):p is XTextObservation & {postId:string}=>p.postId!==null),admitted,request.maxRepliesPerPost);
+  const incoming = collectReplies ? observed.replies : [];
   const counts=row.sampleTruncation??={observed:0,sampled:0,omitted:0};
-  for(const key of ['observed','sampled','omitted'] as const)counts[key]+=sample[key];
-  mergeText(row, row.replies.observations, sample.retained);
+  if(collectReplies) {
+    rememberXIdentities(seenReplies(row),incoming);
+    let admitted=admittedReplyIdentities.get(row);
+    if(!admitted){admitted=new Set();admittedReplyIdentities.set(row,admitted);}
+    const sample=sampleXEntries(incoming.filter((p):p is XTextObservation & {postId:string}=>p.postId!==null),admitted,request.maxRepliesPerPost);
+    for(const key of ['observed','sampled','omitted'] as const)counts[key]+=sample[key];
+    mergeText(row, row.replies.observations, sample.retained);
+  }
   rememberSources(context, [
     observed.root,
     ...observed.quotedPosts,
@@ -444,6 +447,14 @@ export async function readDiscussion(
   context: XResearchContext,
 ): Promise<void> {
   let observed = initial;
+  if(!limits.includeReplies || limits.maxRepliesPerPost===0) {
+    if(!savePostFrame(row, observed, limits, context)) return;
+    if(limits.includeReplies) {
+      bindXReadBudgets(row, limits, context.budgetPolicy, ['replies']);
+      row.status='partial';row.reason??='reply_budget_reached';row.stopReason='budget_reached';
+    }
+    return;
+  }
   const seen=seenReplies(row);
   let readiness: 'pending' | 'after_progress' | 'settled' = 'pending';
   for (;;) {

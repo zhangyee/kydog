@@ -3,6 +3,7 @@
 // Invoked only in the existing isolated world. Page text is never executable.
 (() => {
   const request = X_REQUEST;
+  const collectReplies = request.stage!=='post' || request.collectReplies!==false;
   const all = (root, selector) => root ? Array.from(root.querySelectorAll(selector)) : [];
   const text = el => el ? (el.innerText || el.textContent || '').trim() : '';
   const shownReason = el => {
@@ -90,6 +91,9 @@
   let totalPosts = 0, containerKey = 0, targetBodyCandidates = 0;
   for (const root of roots) {
     const rootFact = factOf(root);
+    // Keep exact target candidates (including identity rejections) and their own
+    // quotes/Article entries; never read unrelated top-level bodies when disabled.
+    if (!collectReplies && rootFact.candidatePostId!==request.postId) continue;
     const parentContainerKey = containerKey;
     let articleEntryCount=0;
     const boxes = [root,...all(root,'div[role="link"][tabindex="0"]').filter(b=>shown(b) && own(b,'[data-testid="User-Name"]').length)];
@@ -122,7 +126,7 @@
     p.text=p.text.slice(0,4000);
     p.truncation={returned:4000,totalKnown:p.truncation.totalKnown,truncated:true};
   }
-  for (const b of all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]').filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) {
+  for (const b of (collectReplies ? all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]') : []).filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) {
     const focalCell=focal?.closest('[data-testid="cellInnerDiv"]') ?? null;
     const buttonCell=b.closest('[data-testid="cellInnerDiv"]');
     const sourceRelation=focal?.contains(b)?'focal_contains_control':b.contains(focal)?'control_contains_focal'

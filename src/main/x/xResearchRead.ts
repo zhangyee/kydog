@@ -255,6 +255,7 @@ export async function readX(
             stage: 'post' as const,
             expectedUrl: ordinaryDocument(committed, id) ? committed : source,
             postId: id,
+            collectReplies: input.read.includeReplies && input.read.maxRepliesPerPost > 0,
             ...(input.read.includeArticle ? { directOpen: opened } : {}),
           };
           const ready = await collectReadyPostFrame(
@@ -422,6 +423,7 @@ export async function readX(
                     stage: 'post' as const,
                     expectedUrl: parentUrl,
                     postId: id,
+                    collectReplies: input.read.includeReplies && input.read.maxRepliesPerPost > 0,
                   };
                   const { observed, waitFailed } = await collectReadyPostFrame(
                     page,
