@@ -1,3 +1,4 @@
+import { bindXReadBudgets } from './xResearchBudget';
 import { KydogError } from '../../shared/errors';
 import type { XQueuedPage } from './xResearchBrowser';
 import type { XPageObservation } from './xObservation';
@@ -49,7 +50,7 @@ export async function readArticle(
   }
   row.article.entry = entry;
   row.article.entryObserved = true;
-  if (row.budgetUsage.expandActions >= limits.maxExpandActionsPerPost) {
+  if (bindXReadBudgets(row, limits, context.budgetPolicy, ['expands']).length) {
     barrier('article_budget_reached');
     row.stopReason = 'budget_reached';
     return { returnToParent: false };

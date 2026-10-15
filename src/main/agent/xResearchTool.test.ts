@@ -139,7 +139,8 @@ describe('production X SDK factory',()=>{
         return normalCollect(request);
       });
       const tool = createXResearchTool({browser:f.context.browser, threadId:'thread', sources:f.context.sources, currentRunId:()=> 'run'});
-      const result = await tool.execute('mixed', {tabId:'research-tab', read:{objective:'read', targets, includeArticle:false, includeReplies:true}}, undefined, undefined, {} as never);
+      // This checks target halt propagation; source bodies are already present in the first frame.
+      const result = await tool.execute('mixed', {tabId:'research-tab', read:{objective:'read', targets, includeArticle:false, includeReplies:true, maxScrollsPerPost:0}}, undefined, undefined, {} as never);
       expect(result.details!.operation==='read' && result.details!.targets[0].root?.text).toBe('original');
       if (result.details!.operation!=='read') throw new Error('read expected');
       if (cause==='ordinary') {

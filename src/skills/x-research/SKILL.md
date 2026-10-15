@@ -11,9 +11,9 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 保留原始问题、时间范围和判定条件。通常扩展 2–6 个互补 query，覆盖主张、实践与反证；明确补搜或小闭环允许 1 个。只提交参数，不自填结果。
 
-`x_research` 每次只给 `search` 或 `read`，`tabId` 在顶层。首次 search 可省略 tabId，后续复用返回的 `browserTabId`。search 包含 `objective`、1–6 个 `queries`；每项有同批唯一的 `id`、`query`、`purpose`、`product`（`Top` 或 `Latest`）。每项 query 最长 4096 UTF-16 单位，构造的公开搜索 URL 最长 8192 单位，超出时拆分。默认每 query 最多 100 帖和 20 次滚动；可显式设置 `maxPostsPerQuery`、`maxScrollsPerQuery`，硬上限 100、20，不自动提高预算。
+`x_research` 每次只给 `search` 或 `read`，`tabId` 在顶层。首次 search 可省略 tabId，后续复用返回的 `browserTabId`。search 包含 `objective`、1–6 个 `queries`；每项有同批唯一的 `id`、`query`、`purpose`、`product`（`Top` 或 `Latest`）。每项 query 最长 4096 UTF-16 单位，构造的公开搜索 URL 最长 8192 单位，超出时拆分。默认每 query 最多 500 帖和 500 次滚动；可显式设置 `maxPostsPerQuery`、`maxScrollsPerQuery`，硬上限均为 1000，不自动提高预算。
 
-普通研究省略 search 的预算参数，使用默认 100/20。只有用户明确要求低预算或特定小范围时才显式降低，并在内部记录依据的用户限制；多个 query 或目标本身不是压低每项预算的理由。
+普通研究省略 search 的预算参数，使用默认 500/500。只有用户明确要求低预算或特定小范围时才显式降低，并在内部记录依据的用户限制；多个 query 或目标本身不是压低每项预算的理由。
 
 ### query 构造与 product 选择
 
@@ -45,15 +45,15 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 ## 2. 精确补读与交接
 
-read 必须提供原 `tabId`、`objective` 和 `targets`；目标使用观察到的 `url` 或来源表可解析的 `postId`。默认选不超过 10 个；工具允许 1–20 个。不要凭 ID 拼地址或改写作者、大小写及路由。`includeArticle`、`includeReplies` 默认 true；每目标默认最多 100 回复、20 次滚动、20 次展开，对应 `maxRepliesPerPost`、`maxScrollsPerPost`、`maxExpandActionsPerPost` 硬上限为 100、20、20。
+read 必须提供原 `tabId`、`objective` 和 `targets`；目标使用观察到的 `url` 或来源表可解析的 `postId`。默认选不超过 10 个；工具允许 1–20 个。不要凭 ID 拼地址或改写作者、大小写及路由。`includeArticle`、`includeReplies` 默认 true；每目标默认最多 500 回复、500 次滚动、500 次展开，对应 `maxRepliesPerPost`、`maxScrollsPerPost`、`maxExpandActionsPerPost` 硬上限均为 1000。
 
-普通研究省略 read 的预算参数，使用默认 100/20/20。用户明确要求低预算、只看主帖或特定小范围时，按用户指定的正文/Article/回复范围设置预算及 includeArticle/includeReplies，并在内部记录选择依据；用户明确允许 Article 时保留该请求。保持用户明确的上限，包括零，不因目标多而自行缩小每目标范围。用户排除引用所需的 Article 时，省略该无证据引用，不越过用户限制或 Article 引用义务。
+普通研究省略 read 的预算参数，使用默认 500/500/500。用户明确要求低预算、只看主帖或特定小范围时，按用户指定的正文/Article/回复范围设置预算及 includeArticle/includeReplies，并在内部记录选择依据；用户明确允许 Article 时保留该请求。保持用户明确的上限，包括零，不因目标多而自行缩小每目标范围。用户排除引用所需的 Article 时，省略该无证据引用，不越过用户限制或 Article 引用义务。
 
 当前工具仅主动展开目标主帖正文。引用帖和回复保留各自实际渲染的范围、原始作者与 URL；核心引用需要更完整正文时，独立 read 其已观察到的自身 URL。父帖读取不证明所有引用帖、回复或讨论都读全。显示回复数与取得条数分开；`ui_scope_end_observed` 仅限明确提示所属的当前账号、页面、分支与排序范围。预算停止的 completeness 仍为 unknown。unknown 表示缺少范围完整性的证明，不证明一定漏读了回复。
 
 search 和 read 会在同一次调用内主动处理有事实依据的暂时停滞，不等待用户说“继续”：只有滚动确已写出、所选容器确实零移动且源身份仍匹配，才进行一次以 8 秒为截止预算的同源只读复核，不重复发滚动；已经发出的只读操作仍等待结算。新帖子/回复身份、read 中新出现的准确回复展开控件或已验证的范围结束信号才允许继续既有流程；重读旧项目不算新进展。身份变化、访问阻碍、取消或不可恢复失败按实际事实停止，保留已取得的正文与来源。没有恢复进展时保留零移动失败与 unknown，不把等待结束、无新增或耗尽预算当成读完；报告只简短说明影响判断的具体缺口。
 
-较大的默认预算可能增加读取与输出截断；每次工具结果的总输出上限仍是 1 MiB。依据最终返回的正文截断与范围事实说明取得程度，不把默认 100/20/20 当成保证取得的条数或完整性。
+当前采集来源仍为 DOM 渲染观察。省略参数的预算来源是 default，显式传入（即使等于默认值或为零）是 explicit；budgetBinding 列出当前边界同时耗尽的维度、来源、上限与用量。search 帖数为零时不导航或采集；read 回复数为零仍保留主帖，滚动为零允许首帧采集但不滚动，展开为零不点击正文、Article 或回复展开。sampleTruncation 分别记录实际观察、接纳与因采样上限省略的正文观察次数；同一 ID 的后续版本不是新独立来源。collectionStop 保留采集停止时的状态与原因，独立于后续输出裁剪。较大的默认预算可能增加读取与输出截断；每次工具结果的总输出上限仍是 1 MiB。依据最终返回的正文截断与范围事实说明取得程度，不把默认 500/500/500 当成保证取得的条数或完整性。
 
 达到默认预算后，保留 partial 与 unknown。若仍有影响核心判断的具体待核实项，只在用户授权的范围和预算内决定下一次有针对性的补读；没有重要待核项就交付带真实限定的报告。不自动提高硬上限、不反复重放整批、不承诺读全回复。
 

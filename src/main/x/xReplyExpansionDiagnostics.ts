@@ -1,3 +1,4 @@
+import { X_RESEARCH_MAX_BUDGET } from './xResearchBudget';
 import {z} from 'zod';
 import {parseXSourcePost,parseXPostCoordinates,isXPostId} from './xResearchIdentity';
 import type {XPageControl,XPageObservation} from './xObservation';
@@ -18,7 +19,7 @@ const usage=z.object({replies:count,scrolls:count,expansions:count});
 const sameBinding=(a:z.infer<typeof binding>,b:z.infer<typeof binding>)=>a.index===b.index&&a.nodeId===b.nodeId&&a.snapshotId===b.snapshotId&&a.generation===b.generation;
 const attempt=z.object({actionIndex:count.positive(),targetPostId:z.string().refine(isXPostId),binding,
   admission:z.union([z.object({state:z.literal('unavailable')}),z.object({state:z.literal('consumed'),purpose:z.literal('replies_expand'),binding})]),
-  outcome:z.enum(['succeeded','failed','cancelled']),caps:z.object({replies:count.max(100),scrolls:count.max(20),expansions:count.max(20)}),usageBefore:usage,usageAfter:usage,before:frame,after:frame,
+  outcome:z.enum(['succeeded','failed','cancelled']),caps:z.object({replies:count.max(X_RESEARCH_MAX_BUDGET),scrolls:count.max(X_RESEARCH_MAX_BUDGET),expansions:count.max(X_RESEARCH_MAX_BUDGET)}),usageBefore:usage,usageAfter:usage,before:frame,after:frame,
 }).refine(v=>{
   if(v.admission.state==='consumed'&&!sameBinding(v.binding,v.admission.binding))return false;
   if(v.before.state==='captured'&&(v.before.snapshotId!==v.binding.snapshotId||v.before.generation!==v.binding.generation))return false;

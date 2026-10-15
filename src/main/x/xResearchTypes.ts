@@ -1,3 +1,4 @@
+import type { XBudgetBinding } from './xResearchBudget';
 import type { NavigationObservation } from '../../shared/types';
 /** v2 observations describe rendered UI facts, never platform-wide completeness. */
 export type XResearchStatus = 'observed' | 'partial' | 'explicit_empty' | 'auth_required' | 'action_required' | 'rate_limited' | 'access_denied' | 'unavailable' | 'cancelled' | 'failed';
@@ -164,6 +165,10 @@ export interface XCollectionTransition {
   outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';
 }
 export interface XSearchObservation {
+  budgetBinding?: XBudgetBinding[];
+  sampleTruncation?: { observed: number; sampled: number; omitted: number };
+  collectionStop?: { status: XResearchStatus; stopReason: XStopReason; reason: string | null };
+
   diagnostics?: { version: 1; sourceFailure?: import('./xSourceDiagnostics').XSourceFailure; scroll?: XScrollDiagnostics; scrollRecovery?: XScrollRecoveries };
   query: XSearchQuery;
   collectionTransitions: XCollectionTransition[];
@@ -182,6 +187,10 @@ export interface XArticlePreviewScopeObservation {
   articlePreviewInventory:XArticlePreviewInventory;
 }
 export interface XReadObservation {
+  budgetBinding?: XBudgetBinding[];
+  sampleTruncation?: { observed: number; sampled: number; omitted: number };
+  collectionStop?: { status: XResearchStatus; stopReason: XStopReason; reason: string | null };
+
   unscopedPosts?: XUnscopedPosts;
   /** Bounded, read-only source facts from this target's actual validated frames and actions. */
   diagnostics?: XReadDiagnostics;

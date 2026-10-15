@@ -511,6 +511,7 @@ export async function readX(
         };
     } finally {
       row.replies.scope.stopReason = row.stopReason;
+      row.collectionStop = {status:row.status,stopReason:row.stopReason,reason:row.reason};
     }
   }
   aggregateResult(result);

@@ -1,10 +1,11 @@
+import { X_RESEARCH_MAX_BUDGET } from './xResearchBudget';
 import { isXPostId, isXPostUrl } from './xResearchIdentity';
 import type { XReadTarget, XResearchInput, XSearchQuery } from './xResearchTypes';
 
 /** Shared by parsing and the model-facing budget descriptions. */
 export const X_RESEARCH_DEFAULT_BUDGETS = {
-  maxPostsPerQuery: 100, maxScrollsPerQuery: 20,
-  maxRepliesPerPost: 100, maxScrollsPerPost: 20, maxExpandActionsPerPost: 20,
+  maxPostsPerQuery: 500, maxScrollsPerQuery: 500,
+  maxRepliesPerPost: 500, maxScrollsPerPost: 500, maxExpandActionsPerPost: 500,
 } as const;
 
 function object(raw: unknown, keys: string[], context: string): Record<string, unknown> {
@@ -46,7 +47,7 @@ export function parseXResearchInput(raw: unknown): XResearchInput {
       if (query.product !== 'Top' && query.product !== 'Latest') throw new Error('query.product: expected Top/Latest');
       return { id, query: text(query.query, 'query.query'), purpose: text(query.purpose, 'query.purpose'), product: query.product };
     });
-    return { ...(tabId === undefined ? {} : { tabId }), search: { objective: text(search.objective, 'objective'), queries, maxPostsPerQuery: budget(search.maxPostsPerQuery, X_RESEARCH_DEFAULT_BUDGETS.maxPostsPerQuery, 100, 'maxPostsPerQuery'), maxScrollsPerQuery: budget(search.maxScrollsPerQuery, X_RESEARCH_DEFAULT_BUDGETS.maxScrollsPerQuery, 20, 'maxScrollsPerQuery') } };
+    return { ...(tabId === undefined ? {} : { tabId }), search: { objective: text(search.objective, 'objective'), queries, maxPostsPerQuery: budget(search.maxPostsPerQuery, X_RESEARCH_DEFAULT_BUDGETS.maxPostsPerQuery, X_RESEARCH_MAX_BUDGET, 'maxPostsPerQuery'), maxScrollsPerQuery: budget(search.maxScrollsPerQuery, X_RESEARCH_DEFAULT_BUDGETS.maxScrollsPerQuery, X_RESEARCH_MAX_BUDGET, 'maxScrollsPerQuery') } };
   }
   if (tabId === undefined) throw new Error('read: top-level tabId is required');
   const read = object(input.read, ['objective', 'targets', 'includeArticle', 'includeReplies', 'maxRepliesPerPost', 'maxScrollsPerPost', 'maxExpandActionsPerPost'], 'read');
@@ -62,5 +63,5 @@ export function parseXResearchInput(raw: unknown): XResearchInput {
     if (!isXPostUrl(url)) throw new Error('url: expected HTTPS public X post URL');
     return { url };
   });
-  return { tabId, read: { objective: text(read.objective, 'objective'), targets, includeArticle: flag(read.includeArticle, 'includeArticle'), includeReplies: flag(read.includeReplies, 'includeReplies'), maxRepliesPerPost: budget(read.maxRepliesPerPost, X_RESEARCH_DEFAULT_BUDGETS.maxRepliesPerPost, 100, 'maxRepliesPerPost'), maxScrollsPerPost: budget(read.maxScrollsPerPost, X_RESEARCH_DEFAULT_BUDGETS.maxScrollsPerPost, 20, 'maxScrollsPerPost'), maxExpandActionsPerPost: budget(read.maxExpandActionsPerPost, X_RESEARCH_DEFAULT_BUDGETS.maxExpandActionsPerPost, 20, 'maxExpandActionsPerPost') } };
+  return { tabId, read: { objective: text(read.objective, 'objective'), targets, includeArticle: flag(read.includeArticle, 'includeArticle'), includeReplies: flag(read.includeReplies, 'includeReplies'), maxRepliesPerPost: budget(read.maxRepliesPerPost, X_RESEARCH_DEFAULT_BUDGETS.maxRepliesPerPost, X_RESEARCH_MAX_BUDGET, 'maxRepliesPerPost'), maxScrollsPerPost: budget(read.maxScrollsPerPost, X_RESEARCH_DEFAULT_BUDGETS.maxScrollsPerPost, X_RESEARCH_MAX_BUDGET, 'maxScrollsPerPost'), maxExpandActionsPerPost: budget(read.maxExpandActionsPerPost, X_RESEARCH_DEFAULT_BUDGETS.maxExpandActionsPerPost, X_RESEARCH_MAX_BUDGET, 'maxExpandActionsPerPost') } };
 }

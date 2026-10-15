@@ -1,3 +1,4 @@
+import { reachedXBudgets, resolveXBudgetPolicy, sampleXEntries, type XBudgetPolicy } from './xResearchBudget';
 import {getSourceFailure} from './xSourceDiagnostics';
 import type {BrowserScrollReceipt} from '../browser/actions';
 import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} from './xScrollRecovery';
@@ -15,6 +16,7 @@ export type XSearchInput = Extract<XResearchInput, { search: unknown }>;
 export type { XObservedSource } from './xResearchTypes';
 export interface XResearchContext {
   browser: XResearchBrowser; threadId: string; runId: string; callId: string; batchId: string;
+  budgetPolicy?: XBudgetPolicy;
   signal?: AbortSignal; sources: Map<string, XSourceReference[]>;
 }
 // Every selector comes from the dated actual X DOM source guide. Readiness
@@ -66,10 +68,15 @@ export function searchResult(input:XSearchInput,context:XResearchContext): Extra
 }
 export async function searchX(input:XSearchInput, context:XResearchContext): Promise<Extract<XResearchResult,{operation:'search'}>> {
   const result=searchResult(input,context);
+  const policy=context.budgetPolicy??resolveXBudgetPolicy(input,input);
   let halted:false|'cancelled'|'auth_required'|'other'=false;
   for (const row of result.queries) {
     if(halted || context.signal?.aborted) { if(halted==='cancelled' || context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';} else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};} continue; }
     const seen=new Set<string>();
+    const admitted=new Set<string>();
+    row.sampleTruncation={observed:0,sampled:0,omitted:0};
+    const capped=()=>{const binding=reachedXBudgets(policy,{posts:admitted.size,scrolls:row.budgetUsage.scrolls},['posts','scrolls']);if(binding.length)row.budgetBinding=binding;return binding.length>0;};
+    if(input.search.maxPostsPerQuery===0 && capped()){row.status='partial';row.stopReason='budget_reached';continue;}
     const savedFrames=new WeakSet<XPageObservation>();
     const save = (observed:XPageObservation) => {
       if(savedFrames.has(observed))return;
@@ -81,7 +88,9 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
         if(entries.length) p.articlePreviews=entries.map(entry=>({entryObservationId:entry.observationId,parentPostId:entry.parentPostId,sourceUrl:entry.sourceUrl,targetUrl:entry.targetUrl}));
       }
 
-      for(const p of observed.posts) if(p.postId) {
+      const sample=sampleXEntries(observed.posts.filter((p):p is XTextObservation & {postId:string}=>p.postId!==null),admitted,input.search.maxPostsPerQuery);
+      for(const key of ['observed','sampled','omitted'] as const) row.sampleTruncation![key]+=sample[key];
+      for(const p of sample.retained) {
         if(!row.posts.some(old=>old.postId===p.postId)) {
           if(row.posts.length<input.search.maxPostsPerQuery) row.posts.push(p);
         } else (row.postObservations??=[]).push(p);
@@ -130,7 +139,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
             waitFailed=!await page.wait({selector:X_SEARCH_READY_SELECTOR,state:'present'},8000);
             continue;
           }
-          if(row.posts.length>=input.search.maxPostsPerQuery || row.budgetUsage.scrolls>=input.search.maxScrollsPerQuery) {row.status='partial';row.stopReason='budget_reached';break;}
+          if(capped()) {row.status='partial';row.stopReason='budget_reached';break;}
           stage='action';
           const scroll=(row.diagnostics??={version:1}).scroll??={totalAttempts:0,omittedAttempts:0};
           const actionIndex=++scroll.totalAttempts;
@@ -183,6 +192,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
     }
     if(row.status==='auth_required') halted='auth_required';
   }
+  for(const row of result.queries)row.collectionStop={status:row.status,stopReason:row.stopReason,reason:row.barrier?.reason??null};
   aggregateResult(result);return result;
 }
 

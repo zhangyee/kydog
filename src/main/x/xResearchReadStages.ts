@@ -1,3 +1,4 @@
+import { bindXReadBudgets, sampleXEntries } from './xResearchBudget';
 import type {BrowserScrollReceipt} from '../browser/actions';
 import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} from './xScrollRecovery';
 import {isPointerPreflight, type PointerPreflightDiagnostic} from '../browser/pointerPreflightDiagnostic';
@@ -67,6 +68,7 @@ export function readBarrier(
   return true;
 }
 // Row lifetime spans body/Article/discussion stages. Retention caps never erase observed identity.
+const admittedReplyIdentities=new WeakMap<XReadObservation,Set<string>>();
 const replyIdentities=new WeakMap<XReadObservation,Set<string>>();
 function seenReplies(row:XReadObservation):Set<string> {
   let seen=replyIdentities.get(row);
@@ -173,7 +175,12 @@ export function savePostFrame(
   mergeText(row, row.quotedPosts, observed.quotedPosts);
   const incoming = request.includeReplies ? observed.replies : [];
   rememberXIdentities(seenReplies(row),incoming);
-  mergeText(row, row.replies.observations, incoming, request.maxRepliesPerPost);
+  let admitted=admittedReplyIdentities.get(row);
+  if(!admitted){admitted=new Set();admittedReplyIdentities.set(row,admitted);}
+  const sample=sampleXEntries(incoming.filter((p):p is XTextObservation & {postId:string}=>p.postId!==null),admitted,request.maxRepliesPerPost);
+  const counts=row.sampleTruncation??={observed:0,sampled:0,omitted:0};
+  for(const key of ['observed','sampled','omitted'] as const)counts[key]+=sample[key];
+  mergeText(row, row.replies.observations, sample.retained);
   rememberSources(context, [
     observed.root,
     ...observed.quotedPosts,
@@ -396,7 +403,7 @@ export async function expandPostBody(
       (c) => c.kind === 'body_expand' && c.postId === row.postId,
     );
     if (!control) return observed;
-    if (row.budgetUsage.expandActions >= limits.maxExpandActionsPerPost) {
+    if (bindXReadBudgets(row, limits, context.budgetPolicy, ['expands']).length) {
       row.status = 'partial';
       row.reason = 'body_expand_budget_reached';
       row.stopReason = 'budget_reached';
@@ -474,11 +481,7 @@ export async function readDiscussion(
       return;
     }
     const control = observed.controls.find((c) => c.kind === 'replies_expand');
-    const capped =
-      row.replies.observations.length >= limits.maxRepliesPerPost ||
-      (control
-        ? row.budgetUsage.expandActions >= limits.maxExpandActionsPerPost
-        : row.budgetUsage.scrolls >= limits.maxScrollsPerPost);
+    const capped = bindXReadBudgets(row, limits, context.budgetPolicy, ['replies', control ? 'expands' : 'scrolls']).length > 0;
     if (capped) {
       row.status = 'partial';
       row.reason ??= 'reply_budget_reached';

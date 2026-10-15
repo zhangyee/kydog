@@ -53,8 +53,8 @@ describe('x_research DeepSeek provider request', () => {
               id: { type: 'string', minLength: 1 }, query: { type: 'string', minLength: 1, maxLength: 4096 },
               purpose: { type: 'string', minLength: 1 }, product: { anyOf: [{ const: 'Top' }, { const: 'Latest' }] },
             } } },
-          maxPostsPerQuery: { type: 'integer', minimum: 0, maximum: 100 },
-          maxScrollsPerQuery: { type: 'integer', minimum: 0, maximum: 20 },
+          maxPostsPerQuery: { type: 'integer', minimum: 0, maximum: 1000 },
+          maxScrollsPerQuery: { type: 'integer', minimum: 0, maximum: 1000 },
         }, required: ['objective', 'queries'] },
         read: { type: 'object', additionalProperties: false, properties: {
           objective: { type: 'string', minLength: 1 },
@@ -62,9 +62,9 @@ describe('x_research DeepSeek provider request', () => {
             { type: 'object', additionalProperties: false, properties: { postId: { type: 'string', pattern: '^[0-9]+$' } }, required: ['postId'] },
             { type: 'object', additionalProperties: false, properties: { url: { type: 'string', minLength: 1 } }, required: ['url'] },
           ] } },
-          maxRepliesPerPost: { type: 'integer', minimum: 0, maximum: 100 },
-          maxScrollsPerPost: { type: 'integer', minimum: 0, maximum: 20 },
-          maxExpandActionsPerPost: { type: 'integer', minimum: 0, maximum: 20 },
+          maxRepliesPerPost: { type: 'integer', minimum: 0, maximum: 1000 },
+          maxScrollsPerPost: { type: 'integer', minimum: 0, maximum: 1000 },
+          maxExpandActionsPerPost: { type: 'integer', minimum: 0, maximum: 1000 },
         }, required: ['objective', 'targets'] },
       },
     });
