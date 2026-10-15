@@ -303,7 +303,7 @@ export class BrowserService {
   private readonly network = new Map<string, NetworkResponseObserver>();
   private readonly networkBootstrapHistory = new Set<string>();
   private readonly networkBootstrapPending = new Set<string>();
-  private readonly networkNative = new Map<string, { tail: Promise<void>; pending: Set<() => void>; active: boolean }>();
+  private readonly networkNative = new Map<string, { tail: Promise<void>; pending: Set<() => void>; active: boolean; cleanupFailed: boolean }>();
   private readonly pristineViews = new Set<string>();
   /** 正在进行的 agent 驱动窗口，一次一帧（可以同时有好几帧，各在各的标签上）。 */
   private readonly drivingFrames: DrivingFrame[] = [];
@@ -1290,13 +1290,14 @@ export class BrowserService {
     await this.network.get(tabId)?.close('superseded');
     let native = this.networkNative.get(tabId);
     if (!native) {
-      native = { tail: Promise.resolve(), pending: new Set(), active: true };
+      native = { tail: Promise.resolve(), pending: new Set(), active: true, cleanupFailed: false };
       this.networkNative.set(tabId, native);
     }
     const state = native;
     // The barrier survives removal of a closed observer. A new lease cannot mount
     // until the preceding enable/disable has actually settled (or its target died).
     await state.tail;
+    if (state.cleanupFailed) throw new KydogError('browser.not_dispatchable', '页面网络采集清理失败');
     assertNotAborted(lifetime);
     const live = () => state.active && !wc.isDestroyed() && wc.getOSProcessId() > 0 && wc.debugger.isAttached();
     const send: WebContents['debugger']['sendCommand'] = (method, params, sessionId) => {
@@ -1313,7 +1314,15 @@ export class BrowserService {
       // Body reads need no ordering against native domain teardown. Their late
       // results are invalidated by the observer, and must not hold close open.
       if (method === 'Network.getResponseBody') return invoke();
-      const command = state.tail.then(invoke);
+      const command = state.tail.then(invoke).catch(error => {
+        if (method !== 'Network.disable') throw error;
+        // Source death establishes native teardown independently of a command ACK.
+        if (!state.active) return;
+        state.cleanupFailed = true;
+        logger.warn('browser.network', 'network_capture_cleanup_failed', { tabId, reason: 'network_disable_failed' });
+        // Retain only a finite failure fact, never protocol error/body/header text.
+        throw new KydogError('browser.not_dispatchable', '页面网络采集清理失败');
+      });
       state.tail = command.then(() => {}, () => {});
       return command;
     };
@@ -1322,7 +1331,7 @@ export class BrowserService {
       if (this.network.get(tabId) === observer) this.network.delete(tabId);
       signal?.removeEventListener('abort', cancel); lifetime.removeEventListener('abort', cancel);
       if (!state.active) return;
-      return send('Network.disable').then(() => {}, () => {});
+      return send('Network.disable').then(() => {});
     }, send);
     this.network.set(tabId, observer);
     signal?.addEventListener('abort', cancel, { once: true }); lifetime.addEventListener('abort', cancel, { once: true });

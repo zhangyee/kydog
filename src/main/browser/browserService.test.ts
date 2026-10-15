@@ -5069,3 +5069,37 @@ describe('network native teardown ownership', () => {
     finishBlank();
   });
 });
+
+describe('failed live network teardown', () => {
+  it.each(['explicit','cancel','take-abort'] as const)('surfaces finite %s cleanup failure and blocks remount until source death',async end=>{
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+    const controller=new AbortController();
+    const first=await svc.open({tabId:nav.tabId,url:'https://example.org/one',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    expect(wc.debugger.sent.filter(c=>c.method==='Network.enable')).toHaveLength(1);
+    wc.debugger.respond=method=>method==='Network.disable'?Promise.reject(Error('PRIVATE_PROTOCOL_BODY_HEADER')):Promise.resolve({});
+    const takeController=new AbortController();
+    const waiting=first.networkLease!.take(takeController.signal,1000);
+    if(end==='cancel')controller.abort();else if(end==='take-abort')takeController.abort();
+    // Let background rejection reach the event loop before an explicit caller
+    // observes the retained failure; no unhandled rejection may escape.
+    if(end!=='explicit')await new Promise<void>(resolve=>setImmediate(resolve));
+    const closing=first.networkLease!.close('done');
+    await expect(closing).rejects.toMatchObject({code:'browser.not_dispatchable',message:'页面网络采集清理失败'});
+    expect(await waiting).toMatchObject({kind:'closed'});
+    expect(wc.getOSProcessId()).toBeGreaterThan(0);expect(wc.debugger.isAttached()).toBe(true);
+    await expect(first.networkLease!.close('again')).rejects.toMatchObject({code:'browser.not_dispatchable'});
+    await expect(svc.open({tabId:nav.tabId,url:'https://example.org/blocked',network:{ownerId:'two',accepts:()=>true}})).rejects.toMatchObject({code:'browser.not_dispatchable',message:'页面网络采集清理失败'});
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable']);
+    expect(wc.loadCalls).toEqual(['https://a.example/', 'https://example.org/one']);
+    expect(H.logs.filter(l=>l.msg==='network_capture_cleanup_failed').map(l=>l.ctx)).toEqual([{tabId:nav.tabId,reason:'network_disable_failed'}]);
+    // Exact debugger detach ends the poisoned generation. Recovery explicitly
+    // restores attachment/renderer facts; command rejection alone never does.
+    wc.debugger.attached=false;wc.debugger.fire('detach',{},'target_closed');
+    wc.debugger.attached=true;wc.debugger.respond=async()=>({});
+    const recovered=await svc.open({tabId:nav.tabId,url:'https://example.org/recovered',network:{ownerId:'three',accepts:()=>true}});
+    expect(recovered.nav.outcome.kind).toBe('ok');
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
+    await recovered.networkLease!.close('done');
+  });
+});

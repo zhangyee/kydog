@@ -203,7 +203,7 @@ export class NetworkResponseObserver {
     const events = this.queue.map(q => q.event); this.queue = []; this.queueBytes = 0; return events;
   }
 
-  async close(reason: string): Promise<void> {
+  close(reason: string): Promise<void> {
     if (this.closed !== null) return this.closeCompletion;
     this.closed = reason;
     this.debugger_.off('message', this.message);
@@ -212,6 +212,10 @@ export class NetworkResponseObserver {
     this.finishClosed();
     // JS invalidation is immediate; BrowserService owns serialized native teardown.
     this.closeCompletion = Promise.resolve(this.onClose());
+    // Background close callers share this exact promise. Handle their rejection
+    // here while returning the original rejected promise to explicit callers;
+    // BrowserService already records a sanitized failure and poisons the generation.
+    void this.closeCompletion.catch(() => {});
     return this.closeCompletion;
   }
 }
