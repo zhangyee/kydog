@@ -99,6 +99,11 @@ const H = vi.hoisted(() => {
       getActiveIndex: () => this.historyIndex,
       length: () => this.historyEntries.length,
       getEntryAtIndex: (i: number) => ({ url: this.historyEntries[i], title: '' }),
+      getAllEntries: () => this.historyEntries.map(url => ({ url, title: '' })),
+      removeEntryAtIndex: (i: number) => {
+        if (i === this.historyIndex || i < 0 || i >= this.historyEntries.length) return false;
+        this.historyEntries.splice(i, 1); if (this.historyIndex > i) this.historyIndex--; return true;
+      },
     };
     pointerImpl: (code: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
     captureImpl: () => Promise<{ isEmpty(): boolean }> = () => Promise.resolve({ isEmpty: () => false });
@@ -4922,4 +4927,74 @@ it.each(['rejection','deadline'] as const)('successful source work preserves can
   expect(H.logs.find(l=>l.msg==='source_root_cleanup_failed')?.ctx).toMatchObject({...receipt,workFailed:false,sourceUsed:true,failureCategory:'evaluation_rejected'});
   if(mode==='deadline'){completeRelease({released:true});await Promise.resolve();expect(getSourceFailure(error)).toBe(receipt);expect(receipt.nativeSettlement).toBe('not_observed');}
  }finally{dom.window.close();}
+});
+
+describe('atomic network open', () => {
+  it('enables on existing renderer before target load; new renderer receives no CDP until safe blank resolves', async () => {
+    const { svc } = make(); const { nav, wc } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    wc.debugger.respond = async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f', loaderId: 'l' } } } : {};
+    wc.loadImpl = async () => { wc.fire('did-navigate', {}, wc.url, 200); };
+    const existing = await svc.open({ tabId: nav.tabId, url: 'https://example.org/next', network: { ownerId: 'n', accepts: () => true } });
+    expect(wc.debugger.sent.some(c => c.method === 'Network.enable')).toBe(true);
+    expect(existing.networkLease).toBeDefined(); await existing.networkLease!.close('done');
+    wc.fire('did-navigate', {}, 'https://example.org/unreported', 200);
+    expect(svc.takeUnreportedNav(nav.tabId)).toEqual({ url: 'https://example.org/unreported', httpStatusCode: 200 });
+    const pending = svc.open({ url: 'https://example.org/new', network: { ownerId: 'n', accepts: () => true } });
+    const fresh = wcOf(1); let ready!: () => void;
+    fresh.historyEntries = []; fresh.historyIndex = 0;
+    // Pinned Electron reports an initial placeholder in length(), but no real entries.
+    fresh.navigationHistory.length = () => Math.max(1, fresh.historyEntries.length);
+    fresh.loadImpl = () => {
+      fresh.historyEntries.push(fresh.url); fresh.historyIndex = fresh.historyEntries.length - 1;
+      return fresh.url === 'about:blank' ? new Promise<void>(r => { ready = r; }) : Promise.resolve().then(() => fresh.fire('did-navigate', {}, fresh.url, 200));
+    };
+    fresh.debugger.respond = wc.debugger.respond;
+    await flush(); expect(fresh.loadCalls).toEqual(['about:blank']); expect(fresh.debugger.sent).toEqual([]);
+    fresh.osPid = 9876; fresh.fire('did-navigate', {}, 'about:blank', 200); ready(); await flush(30);
+    const result = await pending;
+    expect(fresh.loadCalls).toEqual(['about:blank', 'https://example.org/new']);
+    expect(result.nav.outcome).toMatchObject({ kind: 'ok', finalUrl: 'https://example.org/new' });
+    expect(svc.takeUnreportedNav(result.tabId)).toBeNull();
+    expect(wc.historyEntries).toEqual(['https://prev.example/', 'https://cur.example/']);
+    expect(fresh.historyEntries).toEqual(['https://example.org/new']);
+    expect(fresh.navigationHistory.canGoBack()).toBe(false);
+    expect(result.networkLease).toBeDefined(); await result.networkLease!.close('done');
+  });
+
+  it('queues inline request before open returns and closes it on crash/detach/tab close', async () => {
+    for (const end of ['crash', 'detach', 'close', 'destroyed', 'cancel']) {
+      const { svc } = make(); const { nav, wc } = await openTab(svc);
+      wc.debugger.respond = async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f', loaderId: 'l' } } } : { body: 'body', base64Encoded: false };
+      wc.loadImpl = async () => {
+        expect(wc.debugger.sent.some(c => c.method === 'Network.enable')).toBe(true);
+        wc.debugger.fire('message', {}, 'Network.requestWillBeSent', { requestId: 'r', frameId: 'f', loaderId: 'l', request: { url: 'https://example.org/body', method: 'GET' } });
+        wc.debugger.fire('message', {}, 'Network.responseReceived', { requestId: 'r', response: { status: 200 } });
+        wc.debugger.fire('message', {}, 'Network.loadingFinished', { requestId: 'r' });
+        wc.fire('did-navigate', {}, wc.url, 200);
+      };
+      const controller = new AbortController();
+      const result = await svc.open({ tabId: nav.tabId, url: 'https://example.org/new', signal: controller.signal, network: { ownerId: 'n', accepts: () => true } });
+      expect((await result.networkLease!.drain()).map(e => e.kind)).toEqual(['request', 'response']);
+      const waiter = result.networkLease!.take(undefined, 1000);
+      if (end === 'crash') wc.fire('render-process-gone', {}, { reason: 'crashed' });
+      else if (end === 'detach') wc.debugger.fire('detach', {}, 'target_closed');
+      else if (end === 'destroyed') wc.fire('destroyed');
+      else if (end === 'cancel') controller.abort(); else svc.close(nav.tabId);
+      expect(await waiter).toMatchObject({ kind: 'closed' });
+    }
+  });
+  it('rejects a rendererless existing tab with user history without injecting blank or issuing CDP', async () => {
+    const { svc } = make(); const { nav, wc } = await openTab(svc);
+    wc.debugger.respond = async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f', loaderId: 'l' } } } : {};
+    wc.loadImpl = async () => { wc.fire('did-navigate', {}, wc.url, 200); };
+    const positive = await svc.open({ tabId: nav.tabId, url: 'https://example.org/positive', network: { ownerId: 'n', accepts: () => true } });
+    expect(wc.debugger.sent.some(c => c.method === 'Network.enable')).toBe(true); await positive.networkLease!.close('done');
+    expect(wc.loadCalls).toContain('https://example.org/positive');
+    wc.debugger.sent.length = 0; wc.loadCalls.length = 0; wc.osPid = 0;
+    await expect(svc.open({ tabId: nav.tabId, url: 'https://example.org/negative', network: { ownerId: 'n', accepts: () => true } })).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(wc.loadCalls).toEqual([]); expect(wc.debugger.sent).toEqual([]);
+    expect(wc.historyEntries).toEqual(['https://prev.example/', 'https://cur.example/']);
+  });
+
 });
