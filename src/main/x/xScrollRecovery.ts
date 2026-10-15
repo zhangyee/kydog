@@ -1,6 +1,6 @@
 import {BrowserScrollAcknowledgementError,type BrowserScrollReceipt} from '../browser/actions';
 import {KydogError} from '../../shared/errors';
-import {collectXPage,type XPageObservation,type XPageRequest} from './xPageSource';
+import {collectXPage,type XPageObservation,type XPageRequest} from './xObservation';
 import type {XQueuedPage} from './xResearchBrowser';
 import type {XScrollRecoveries,XScrollRecoveryAttempt,XTextObservation} from './xResearchTypes';
 

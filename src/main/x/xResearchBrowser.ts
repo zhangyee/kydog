@@ -2,13 +2,14 @@ import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/
 import { randomUUID } from 'node:crypto';
 import {createSourceEvaluation,logSourceDiagnostic} from '../browser/sourceEvaluationDiagnostic';
 import {logSourceCollectionFailure,sourceFailureReceipt,retainSourceFailureReceipt,type XSourceFailure} from './xSourceDiagnostics';
-import { bindXSourceRoot, xSourceRootReleaseExpression, type XSourceRootEnvelope } from './xPageSource';
+import { bindXSourceRoot, xSourceRootReleaseExpression, type XSourceRootEnvelope } from './xDomSource';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
 import type { BrowserService, BrowserLocationFacts, EvictedTab } from '../browser/browserService';
 import type { BrowserScrollReceipt, DispatchAction, WaitUntil } from '../browser/actions';
 import type { AxSnapshot } from '../browser/snapshot';
-import { decodeXPage, xPageExpression, type XPageRequest, type XPageObservation, type XPageNavigationProof } from './xPageSource';
+import { decodeXPage, xPageExpression, type XPageNavigationProof } from './xDomSource';
+import type { XPageRequest, XPageObservation } from './xObservation';
 import type { XArticleEntry, XControlBinding, XReplyAdmission } from './xResearchTypes';
 
 /** All values remain inside trusted main-process adapters. Redact at serialization. */

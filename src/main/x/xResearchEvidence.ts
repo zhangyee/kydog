@@ -4,7 +4,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { JSDOM } from 'jsdom';
 import { z } from 'zod';
-import { sourceRootStateSchema } from './xPageSource';
+import { sourceRootStateSchema } from './xDomSource';
 import type { FileWriteGuard } from '../agent/charCountFileTools';
 import { parseXSourcePost, parseXArticleAnalyticsHref, X_MAX_ARTICLE_IDENTITY_HREF_UNITS } from './xResearchIdentity';
 import {

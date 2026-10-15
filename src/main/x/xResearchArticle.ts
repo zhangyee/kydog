@@ -1,6 +1,6 @@
 import { KydogError } from '../../shared/errors';
 import type { XQueuedPage } from './xResearchBrowser';
-import type { XPageObservation } from './xPageSource';
+import type { XPageObservation } from './xObservation';
 import {
   compareXLocation,
   isXPostUrl,

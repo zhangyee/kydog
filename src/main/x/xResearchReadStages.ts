@@ -3,7 +3,7 @@ import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} 
 import {isPointerPreflight, type PointerPreflightDiagnostic} from '../browser/pointerPreflightDiagnostic';
 import {beginReplyExpansion,observeReplyDiagnostic,replyCollection,replyUsage} from './xReplyExpansionDiagnostics';
 import { logger } from '../log';
-import { admitXSourceRoot } from './xPageSource';
+import { admitXSourceRoot } from './xDomSource';
 import { pointerFailureDiagnostic } from '../browser/pointerDiagnostic';
 import { KydogError } from '../../shared/errors';
 import type { XQueuedPage } from './xResearchBrowser';
@@ -11,7 +11,7 @@ import type {
   XPageObservation,
   XPageRequest,
   XPageControl,
-} from './xPageSource';
+} from './xObservation';
 import { applyReplyEndEvidence } from './xResearchIdentity';
 import {
   collectFreshXPage,

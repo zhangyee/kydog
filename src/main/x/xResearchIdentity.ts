@@ -162,7 +162,7 @@ export type XArticleIdentityVerdict =
 /** The collector's private entry/action proof is prerequisite, never reconstructed here. */
 export function proveArticleIdentity(
   entry: import('./xResearchTypes').XArticleEntry,
-  page: import('./xPageSource').XPageObservation,
+  page: import('./xObservation').XPageObservation,
   navigation: import('../../shared/types').NavigationObservation | null,
 ): XArticleIdentityVerdict {
   if (!entry.parentPostId || !entry.sourceUrl)

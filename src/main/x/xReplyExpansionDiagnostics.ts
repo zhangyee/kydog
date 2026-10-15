@@ -1,6 +1,6 @@
 import {z} from 'zod';
 import {parseXSourcePost,parseXPostCoordinates,isXPostId} from './xResearchIdentity';
-import type {XPageControl,XPageObservation} from './xPageSource';
+import type {XPageControl,XPageObservation} from './xObservation';
 import type {XReadObservation,XReadRequest,XReplyCollectionDiagnostic,XReplyExpansionAttempt} from './xResearchTypes';
 
 const count=z.number().int().nonnegative().safe();

@@ -1,7 +1,7 @@
 import { reportScopeFacts, type XResearchScopePrior } from './xResearchScopeFacts';
 import { projectActionDiagnostics } from './xActionDiagnostics';
 import { replyUiFrameSchema } from './xReplyUiInventory';
-import { sourceRootStateSchema } from './xPageSource';
+import { sourceRootStateSchema } from './xDomSource';
 import {
   X_MAX_ARTICLE_IDENTITY_HREF_UNITS,
   X_MAX_HANDLE_UNITS,

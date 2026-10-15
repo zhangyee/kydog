@@ -4,7 +4,7 @@ import {isScrollReceipt,isRecoverableScroll,recoverXScroll,rememberXIdentities} 
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import type { NavigationObservation } from '../../shared/types';
-import { collectXPage, type XPageRequest, type XPageObservation } from './xPageSource';
+import { collectXPage, type XPageRequest, type XPageObservation } from './xObservation';
 import type { BrowserLocationFacts } from '../browser/browserService';
 import type { XQueuedPage, XResearchBrowser } from './xResearchBrowser';
 import { compareXLocation, toSafeXLocation } from './xResearchIdentity';

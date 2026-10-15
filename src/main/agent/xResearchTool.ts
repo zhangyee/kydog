@@ -2,7 +2,7 @@ import type { XResearchScopePrior } from '../x/xResearchScopeFacts';
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { X_DOM_MAX_QUERY_UNITS, X_DOM_MAX_STRING_UNITS } from '../x/xPageSource';
+import { X_DOM_MAX_QUERY_UNITS, X_DOM_MAX_STRING_UNITS } from '../x/xDomSource';
 import { parseXResearchInput, X_RESEARCH_DEFAULT_BUDGETS } from '../x/xResearchInput';
 import { readResult, readX } from '../x/xResearchRead';
 import { searchResult, searchX, xSearchUrl, type XResearchContext } from '../x/xResearchSearch';
