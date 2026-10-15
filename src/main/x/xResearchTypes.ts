@@ -209,7 +209,7 @@ export interface XReadObservation {
   /** Bounded, read-only source facts from this target's actual validated frames and actions. */
   diagnostics?: XReadDiagnostics;
   /** Earlier exact source observations displaced from the current per-post view. */
-  bodyObservations?: XTextObservation[];
+  bodyObservations?: (XTextObservation | XUnscopedPost)[];
   bodyObservationsOmitted?: number;
   articlePreviewObservations?:XArticlePreviewScopeObservation[];
   inventoryAuditOmitted?:{count:number;first:Pick<XArticlePreviewScopeObservation,'observationId'|'postId'|'sourceUrl'|'authorHandle'>};

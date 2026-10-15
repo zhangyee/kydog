@@ -33,6 +33,7 @@ import type {
   XReadObservation,
   XReadRequest,
   XTextObservation,
+  XUnscopedPost,
 } from './xResearchTypes';
 
 export interface XReadStage {
@@ -76,14 +77,26 @@ export function readBarrier(
 }
 // Row lifetime spans body/Article/discussion stages. Retention caps never erase observed identity.
 const admittedReplyIdentities = new WeakMap<XReadObservation, Set<string>>();
+// Only the current accepted root source; never a second body ledger or capability.
+const wireArticlePresence = new WeakMap<XReadObservation, number>();
 /** Preserve source observations, never choose a body by length or similarity. */
 export function retainReadBody(
   row: XReadObservation,
-  body: XTextObservation,
+  body: XTextObservation | XUnscopedPost,
 ): void {
+  if (body.containerKind === 'unscoped_post' && !body.text.trim()) {
+    retainReadArticleScope(row, body);
+    return;
+  }
   const history = (row.bodyObservations ??= []);
   if (history.some((p) => p.observationId === body.observationId)) return;
   history.push(body);
+  retainReadArticleScope(row, body);
+}
+function retainReadArticleScope(
+  row: XReadObservation,
+  body: XTextObservation | XUnscopedPost,
+): void {
   const inventory = body.articlePreviewInventory;
   if (
     body.postId &&
@@ -92,14 +105,21 @@ export function retainReadBody(
     inventory &&
     (inventory.observed > 0 || inventory.unresolved > 0)
   ) {
-    (row.articlePreviewObservations ??= []).push({
+    const scope = {
       observationId: body.observationId,
       postId: body.postId,
       sourceUrl: body.sourceUrl,
       authorHandle: body.author.handle,
       articlePreviews: body.articlePreviews ?? [],
       articlePreviewInventory: inventory,
-    });
+    };
+    const audit = (row.articlePreviewObservations ??= []);
+    if (
+      !audit.some(
+        (previous) => JSON.stringify(previous) === JSON.stringify(scope),
+      )
+    )
+      audit.push(structuredClone(scope));
   }
 }
 function mergeText(
@@ -143,7 +163,11 @@ export function acceptReadNetworkPage(
   if (page.root) {
     if (row.root && row.root.observationId !== page.root.observationId)
       retainReadBody(row, row.root);
-    row.root = page.root;
+    row.root = structuredClone(page.root);
+    wireArticlePresence.set(
+      row,
+      page.root.articlePreviewInventory?.unresolved ?? 0,
+    );
     row.sourceUrl = page.root.sourceUrl;
     row.identity = {
       state: 'proven',
@@ -197,8 +221,18 @@ export function acceptReadNetworkPage(
     const prior = row.unscopedPosts?.observations ?? [];
     for (const p of unscoped) {
       const i = prior.findIndex((v) => v.postId === p.postId);
-      if (i >= 0) prior[i] = p;
-      else prior.push(p);
+      if (i >= 0) {
+        if (prior[i].observationId !== p.observationId)
+          retainReadBody(row, prior[i]);
+        prior[i] = p;
+      } else prior.push(p);
+    }
+    const gaps = [...(row.unscopedPosts?.previewGaps ?? [])];
+    for (const p of [...prior, ...unscoped]) {
+      if (!p.text.trim()) retainReadArticleScope(row, p);
+      const unresolved = p.articlePreviewInventory?.unresolved ?? 0;
+      if (unresolved && !gaps.some((g) => g.sourceUrl === p.sourceUrl))
+        gaps.push({ sourceUrl: p.sourceUrl, unresolved });
     }
     row.unscopedPosts = {
       observations: prior.filter((p) => !!p.text.trim()),
@@ -211,19 +245,15 @@ export function acceptReadNetworkPage(
         sourceInventoryTruncated: false,
         excludedNestedQuotes: 0,
       },
-      previewGaps: prior
-        .filter((p) => p.articlePreviewInventory?.unresolved)
-        .map((p) => ({
-          sourceUrl: p.sourceUrl,
-          unresolved: p.articlePreviewInventory!.unresolved,
-        })),
+      previewGaps: gaps,
     };
   }
+  const retainedParents = new Set(sample.retained.map((p) => p.postId));
   const quoted = page.quotedPosts.filter((q) => {
     const parent = page.quoteParents?.[q.observationId];
     return parent
-      ? parent === page.root?.postId || admitted.has(parent)
-      : targetProven;
+      ? parent === page.root?.postId || retainedParents.has(parent)
+      : false;
   });
   mergeText(row, row.quotedPosts, quoted);
   if (fact) {
@@ -374,17 +404,30 @@ export function savePostFrame(
           sourceUrl: e.sourceUrl,
           targetUrl: e.targetUrl,
         }));
-        const wireUnresolved = root.articlePreviewInventory?.unresolved ?? 0;
+        // A later zero cannot revoke a previously observed native entry. The
+        // accepted wire root itself remains unchanged, and positive audits are
+        // copied independently of this current projection.
+        if (
+          native.observedEntries === 0 &&
+          native.unresolvedEntries === 0 &&
+          (root.articlePreviewInventory?.observed ?? 0) > 0
+        )
+          return true;
+        const wireUnresolved = wireArticlePresence.get(row) ?? 0;
         root.articlePreviews = previews;
         root.articlePreviewInventory = {
           scope: 'collection',
           observed: native.observedEntries,
           retained: previews.length,
           omitted: native.observedEntries - previews.length,
-          unresolved:
-            Math.max(wireUnresolved - native.observedEntries, 0) +
+          unresolved: Math.max(
+            wireUnresolved - native.observedEntries,
             native.unresolvedEntries,
+            0,
+          ),
         };
+        if (native.observedEntries > 0 || native.unresolvedEntries > 0)
+          retainReadArticleScope(row, root);
       }
     }
     return true;

@@ -846,3 +846,327 @@ it('observed own-target sort changes and incompatible source cursors revoke curr
   ).toBe(false);
   expect((await unrelated.lease.collect(location)).proof).toBeDefined();
 });
+
+async function retentionCase() {
+  const { readResult } = await import('./xResearchRead');
+  const { fixture } = await import('../../test-support/xResearchFixture');
+  const context = fixture([]).context;
+  const source = decodeXReadResponse(first.body, request(first));
+  const limits = {
+    objective: 'retention',
+    targets: [{ url: source.root!.sourceUrl! }],
+    includeArticle: true,
+    includeReplies: true,
+    maxRepliesPerPost: 10,
+    maxScrollsPerPost: 0,
+    maxExpandActionsPerPost: 0,
+  };
+  const result = readResult({ tabId: 'tab', read: limits }, context);
+  let sequence = 0;
+  const page = (leaseId = 'lease') =>
+    ({
+      ...source,
+      provenance: {
+        ...source.provenance,
+        leaseId,
+        requestRef: 'retention-' + sequence++,
+      },
+      root: null,
+      replies: [],
+      unscopedPosts: [],
+      quotedPosts: [],
+      posts: [],
+      sampleOrder: [],
+      quoteParents: {},
+    }) as import('./xNetworkSource').XNetworkReadPage;
+  const body = (
+    id: string,
+    kind: 'root_post' | 'reply' | 'quoted_post' | 'unscoped_post',
+    observationId: string,
+    p: import('./xNetworkSource').XNetworkProvenance,
+  ) =>
+    ({
+      ...source.root!,
+      postId: id,
+      sourceUrl: `https://x.com/ReadAuthor/status/${id}`,
+      author: { handle: 'ReadAuthor', displayName: null, profileUrl: null },
+      observationId,
+      containerKind: kind,
+      networkProvenance: p,
+      text: observationId,
+      truncation: {
+        returned: observationId.length,
+        totalKnown: observationId.length,
+        truncated: false,
+      },
+      articlePreviews: [],
+      ...(kind === 'reply'
+        ? {
+            directParent: { postId: source.root!.postId!, sourceUrl: null },
+            conversationId: source.root!.postId!,
+          }
+        : {}),
+      ...(kind === 'unscoped_post'
+        ? { relationToTarget: 'unproven', observedContainer: 'post' }
+        : {}),
+    }) as
+      | import('./xResearchTypes').XTextObservation
+      | import('./xResearchTypes').XUnscopedPost;
+  return {
+    context,
+    source,
+    limits,
+    result,
+    row: result.targets[0],
+    page,
+    body,
+  };
+}
+
+it('preserves immutable wire Article presence and positive native audit through later zero and repeated saves', async () => {
+  const { acceptReadNetworkPage, savePostFrame } =
+    await import('./xResearchReadStages');
+  const { canonicalizeXResearchResult } = await import('./xResearchCanonical');
+  const { XResearchEvidence } = await import('./xResearchEvidence');
+  const { tempXArtifactStore } =
+    await import('../../test-support/xArtifactStore');
+  const c = await retentionCase(),
+    p = c.page();
+  p.root = c.body(c.row.postId!, 'root_post', 'wire-root', p.provenance) as any;
+  p.root!.articlePreviewInventory = {
+    scope: 'collection',
+    observed: 0,
+    retained: 0,
+    omitted: 0,
+    unresolved: 1,
+  };
+  const original = structuredClone(p.root);
+  acceptReadNetworkPage(c.row, p, undefined, c.limits, c.context);
+  const parent = {
+    postId: c.row.postId!,
+    sourceUrl: p.root!.sourceUrl!,
+    authorHandle: 'ReadAuthor',
+  };
+  const entry = {
+    observationId: 'native-entry',
+    parentPostId: parent.postId,
+    sourceUrl: parent.sourceUrl,
+    targetUrl: 'https://x.com/bob/status/456',
+    author: { handle: 'bob', displayName: null, profileUrl: null },
+    label: 'Article',
+    binding: { nodeId: 1, index: 1, snapshotId: 'snap', generation: 'gen' },
+  };
+  const frame = {
+    state: null,
+    identityProven: true,
+    network: { pages: [], proof: p.provenance },
+    entries: [entry],
+    entryParents: new WeakMap([[entry, parent]]),
+    articleParentInventories: new Map([
+      [0, { ...parent, observedEntries: 1, unresolvedEntries: 0 }],
+    ]),
+    location: {
+      current: {
+        redacted: false,
+        origin: 'https://x.com',
+        path: `/ReadAuthor/status/${parent.postId}`,
+      },
+    },
+    snapshot: { url: parent.sourceUrl },
+  } as unknown as import('./xObservation').XPageObservation;
+  expect(savePostFrame(c.row, frame, c.limits, c.context)).toBe(true);
+  expect(c.row.root!.articlePreviews).toHaveLength(1);
+  expect(p.root).toEqual(original);
+  const positive = JSON.stringify(c.row);
+  savePostFrame(c.row, frame, c.limits, c.context);
+  expect(JSON.stringify(c.row)).toBe(positive);
+  frame.entries = [];
+  (frame as any).articleParentInventories = new Map([
+    [0, { ...parent, observedEntries: 0, unresolvedEntries: 0 }],
+  ]);
+  savePostFrame(c.row, frame, c.limits, c.context);
+  const once = JSON.stringify(c.row);
+  savePostFrame(c.row, frame, c.limits, c.context);
+  expect(JSON.stringify(c.row)).toBe(once);
+  expect(p.root).toEqual(original);
+  const canonical = canonicalizeXResearchResult(c.result),
+    store = tempXArtifactStore();
+  const persisted = await store.read(await store.write(canonical));
+  const ledger = new XResearchEvidence('/tmp', () => c.context.runId);
+  ledger.restore([
+    {
+      type: 'message',
+      id: 'saved',
+      message: {
+        role: 'toolResult',
+        toolName: 'x_research',
+        toolCallId: 'call',
+        details: persisted,
+        content: [],
+        isError: false,
+      },
+    },
+  ]);
+  expect(
+    ledger.observations.find((p) => p.postId === parent.postId)?.text,
+  ).toBe('wire-root');
+  expect(() =>
+    ledger.guard('/tmp/report.md', `[source](${parent.sourceUrl})`),
+  ).toThrow(/Article/);
+  expect([
+    ...(c.row.root!.articlePreviews ?? []),
+    ...(c.row.articlePreviewObservations ?? []).flatMap(
+      (p) => p.articlePreviews,
+    ),
+  ]).toContainEqual(
+    expect.objectContaining({ entryObservationId: 'native-entry' }),
+  );
+});
+
+it('retains displaced unscoped bodies and empty-body Article gaps through canonical artifact restoration', async () => {
+  const { acceptReadNetworkPage } = await import('./xResearchReadStages');
+  const { canonicalizeXResearchResult } = await import('./xResearchCanonical');
+  const { XResearchEvidence } = await import('./xResearchEvidence');
+  const { tempXArtifactStore } =
+    await import('../../test-support/xArtifactStore');
+  const c = await retentionCase(),
+    a = c.page();
+  a.root = c.body(c.row.postId!, 'root_post', 'root', a.provenance) as any;
+  const old = c.body(
+    '456',
+    'unscoped_post',
+    'original independent body',
+    a.provenance,
+  ) as import('./xResearchTypes').XUnscopedPost;
+  old.articlePreviewInventory = {
+    scope: 'collection',
+    observed: 0,
+    retained: 0,
+    omitted: 0,
+    unresolved: 1,
+  };
+  const empty = {
+    ...old,
+    postId: '457',
+    sourceUrl: 'https://x.com/ReadAuthor/status/457',
+    observationId: 'empty-gap',
+    text: '',
+    truncation: { returned: 0, totalKnown: 0, truncated: false },
+  };
+  a.unscopedPosts = [old, empty];
+  a.sampleOrder = [old.observationId, empty.observationId];
+  acceptReadNetworkPage(c.row, a, undefined, c.limits, c.context);
+  expect(c.row.unscopedPosts!.previewGaps.map((g) => g.sourceUrl)).toEqual([
+    old.sourceUrl,
+    empty.sourceUrl,
+  ]);
+  const b = c.page();
+  b.unscopedPosts = [
+    c.body('456', 'unscoped_post', 'replacement body', b.provenance) as any,
+    c.body(
+      '457',
+      'unscoped_post',
+      'later independent body',
+      b.provenance,
+    ) as any,
+  ];
+  b.sampleOrder = b.unscopedPosts.map((p) => p.observationId);
+  acceptReadNetworkPage(c.row, b, undefined, c.limits, c.context);
+  expect(c.row.bodyObservations).toContainEqual(
+    expect.objectContaining({
+      containerKind: 'unscoped_post',
+      observationId: old.observationId,
+      text: old.text,
+      relationToTarget: 'unproven',
+    }),
+  );
+  expect(c.row.unscopedPosts!.previewGaps.map((g) => g.sourceUrl)).toEqual([
+    old.sourceUrl,
+    empty.sourceUrl,
+  ]);
+  const canonical = canonicalizeXResearchResult(c.result),
+    store = tempXArtifactStore();
+  const { serializeXResearchResult } = await import('./xResearchOutput');
+  const projected = serializeXResearchResult({
+    ...canonical,
+    objective: 'x'.repeat(600000),
+  });
+  expect(
+    JSON.parse(projected.text).targets[0].bodyObservations[0],
+  ).toMatchObject({
+    containerKind: 'unscoped_post',
+    relationToTarget: 'unproven',
+    observedContainer: 'post',
+    text: old.text,
+  });
+  const saved = await store.read(await store.write(canonical));
+  const ledger = new XResearchEvidence('/tmp', () => c.context.runId);
+  ledger.restore([
+    {
+      type: 'message',
+      id: 'saved',
+      message: {
+        role: 'toolResult',
+        toolName: 'x_research',
+        toolCallId: 'call',
+        details: saved,
+        content: [],
+        isError: false,
+      },
+    },
+  ]);
+  expect(
+    ledger.observations.filter((p) => p.postId === '456').map((p) => p.text),
+  ).toEqual(expect.arrayContaining([old.text, 'replacement body']));
+  expect(
+    ledger.observations.find((p) => p.observationId === old.observationId),
+  ).toMatchObject({
+    containerKind: 'unscoped_post',
+    relationToTarget: 'unproven',
+    origin: 'history',
+  });
+  for (const url of [old.sourceUrl, empty.sourceUrl])
+    expect(() => ledger.guard('/tmp/report.md', `[source](${url})`)).toThrow(
+      /Article inventory/,
+    );
+});
+
+it('requires this page retained parent for quotes across same-lease repeats and unproved Article-return leases', async () => {
+  const { acceptReadNetworkPage } = await import('./xResearchReadStages');
+  const { XResearchEvidence } = await import('./xResearchEvidence');
+  const { canonicalizeXResearchResult } = await import('./xResearchCanonical');
+  for (const lease of ['lease', 'article-return']) {
+    const c = await retentionCase(),
+      a = c.page();
+    a.root = c.body(c.row.postId!, 'root_post', 'root', a.provenance) as any;
+    a.replies = [c.body('456', 'reply', 'first reply', a.provenance) as any];
+    a.sampleOrder = a.replies.map((p) => p.observationId);
+    acceptReadNetworkPage(c.row, a, undefined, c.limits, c.context);
+    expect(c.row.replies.observations[0].postId).toBe('456');
+    const b = c.page(lease);
+    b.replies = [c.body('456', 'reply', 'new reply', b.provenance) as any];
+    b.quotedPosts = [
+      c.body('789', 'quoted_post', 'fresh quote', b.provenance) as any,
+    ];
+    b.sampleOrder = b.replies.map((p) => p.observationId);
+    b.quoteParents = { [b.quotedPosts[0].observationId]: '456' };
+    acceptReadNetworkPage(c.row, b, undefined, c.limits, c.context);
+    const ledger = new XResearchEvidence('/tmp', () => c.context.runId);
+    ledger.observe(canonicalizeXResearchResult(c.result));
+    if (lease === 'lease') {
+      expect(c.row.quotedPosts).toHaveLength(1);
+      expect(c.context.sources.get('789')).toBeDefined();
+      expect(ledger.observations.some((p) => p.postId === '789')).toBe(true);
+    } else {
+      expect(c.row.quotedPosts).toHaveLength(0);
+      expect(c.context.sources.get('789')).toBeUndefined();
+      expect(ledger.observations.some((p) => p.postId === '789')).toBe(false);
+      expect(c.row.sampleTruncation).toEqual({
+        observed: 2,
+        sampled: 1,
+        omitted: 1,
+      });
+      expect(c.row.root!.text).toBe('root');
+    }
+  }
+});

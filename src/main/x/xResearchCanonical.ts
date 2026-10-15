@@ -508,14 +508,14 @@ const readRow = z
     }),
     unscopedPosts: unscopedSchema.optional(),
     diagnostics: readDiagnostics.optional(),
-    bodyObservations: z.array(textSchema).optional(),
+    bodyObservations: z.array(z.union([textSchema, unscopedTextSchema])).optional(),
     bodyObservationsOmitted: count.optional(),
     articlePreviewObservations: z.array(scopeSchema).optional(),
     inventoryAuditOmitted: z
       .object({ count: count.positive(), first: scopeIdentitySchema })
       .optional(),
   })
-  .refine((row) => !row.unscopedPosts || row.replies.requested).refine(networkReadScopeValid);
+  .refine((row) => (!row.unscopedPosts && !row.bodyObservations?.some(p=>p.containerKind==='unscoped_post')) || row.replies.requested).refine(networkReadScopeValid);
 const reportScope = z.object({
   version: z.literal(1),
   operation: z.enum(['search', 'read']),

@@ -92,7 +92,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
         diagnostics:z.object({initialFrame:diagnosticFrameSchema.optional(),firstAdmittedFrame:diagnosticFrameSchema.optional(),terminalFrame:diagnosticFrameSchema.optional()}).optional(),
         unscopedPosts:unscopedSchema.optional(),
         root: textSchema.nullable(),
-        bodyObservations: z.array(textSchema).optional(),
+        bodyObservations: z.array(z.union([textSchema, unscopedTextSchema])).optional(),
         articlePreviewObservations:z.array(scopeSchema).optional(),
         inventoryAuditOmitted:z.object({count:z.number().int().positive(),first:scopeIdentitySchema}).optional(),
         quotedPosts: z.array(textSchema),
@@ -100,7 +100,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
         article: articleSchema,
         location:z.object({documentGeneration:z.string().nullable()}).optional(),
         documentSource: z.unknown().optional(),
-      }).refine(row=>!row.unscopedPosts || row.replies.requested===true).refine(networkReadScopeValid),
+      }).refine(row=>(!row.unscopedPosts && !row.bodyObservations?.some(p=>p.containerKind==='unscoped_post')) || row.replies.requested===true).refine(networkReadScopeValid),
     ),
   }).refine(readSourceDomainsValid),
 ]);
@@ -375,7 +375,8 @@ export class XResearchEvidence {
             row.posts = validTexts(row.posts);
             if (row.postObservations) row.postObservations = validTexts(row.postObservations);
           } else {
-            for (const field of ['quotedPosts','bodyObservations']) if (row[field]) row[field] = validTexts(row[field]);
+            if(row.quotedPosts) row.quotedPosts=validTexts(row.quotedPosts);
+            if(Array.isArray(row.bodyObservations)) row.bodyObservations=row.bodyObservations.filter((p:unknown)=>z.union([textSchema,unscopedTextSchema]).safeParse(p).success);
             if (row.root && !textSchema.safeParse(row.root).success) row.root = null;
             if (row.replies) row.replies.observations = validTexts(row.replies.observations);
             if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;

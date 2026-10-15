@@ -12,6 +12,14 @@ const request = { stage: 'post' as const, expectedUrl: url, postId: '123' };
 const author = (name = 'alice') => `<div data-testid="User-Name"><a href="/${name}">${name}</a><a href="/${name}">@${name}</a></div>`;
 const permalink = (id = '123', name = 'alice') => `<a href="/${name}/status/${id}/history"><time datetime="2026-10-12T00:00:00Z">today</time></a>`;
 const post = (id = '123', name = 'alice', text = 'root original', extra = '') => `<article data-testid="tweet">${author(name)}<div data-testid="tweetText">${text}</div>${extra}${permalink(id,name)}</article>`;
+const parentCard = `<div role="link" tabindex="0" href="/bob/status/456">${author('bob')}<div data-testid="article-cover-image">Article</div></div>`;
+function expectParentAuthority(observed: ReturnType<typeof decodeXPage>, accepted: boolean) {
+  expect(observed.diagnosticFrame?.rootIdentityProven).toBe(accepted);
+  expect(observed.articleParentInventories.size).toBe(accepted ? 1 : 0);
+  expect(observed.entries).toHaveLength(accepted ? 1 : 0);
+  expect(observed.controls.map(c => c.kind)).toEqual(accepted ? ['article_entry'] : []);
+  if (accepted) expect(observed.entryParents.get(observed.entries[0])).toMatchObject({postId:'123'});
+}
 const wrap = (body: string) => `<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">${body}</div></div><aside id="sidebar"></aside></main>`;
 function fixture(html = wrap(post()), at = url) {
   html=html.replaceAll(/(<div data-testid="cellInnerDiv"><button[^>]*>Show replies<\/button><\/div>)([^]*?)(<\/article>)/g, '$2$3$1');
@@ -105,16 +113,18 @@ describe('X page trusted boundary', () => {
     expect(missing.diagnosticFrame?.snapshotId).toBe(missing.snapshot.snapshotId);
     expect(missing.diagnosticFrame?.snapshotId).not.toBe(good.diagnosticFrame?.snapshotId);
     expect(missing.diagnosticFrame?.document).toEqual(good.diagnosticFrame?.document);
-    expect(missing.root).toBeNull();
+    expect(good.diagnosticFrame?.rootIdentityProven).toBe(true);
+    expect(missing.diagnosticFrame?.rootIdentityProven).toBe(false);
     expect(missing.diagnosticFrame).toMatchObject({rawUrlMatchesPort:true,requestPostMatchesLocation:true,regionObserved:true,rootCandidateCount:0,
       inventory:{returned:0,totalKnown:0,truncated:false}});
     const wrong = decode(f, request, url + '?token=private');
     expect(wrong.diagnosticFrame).toMatchObject({rawUrlMatchesPort:false,requestPostMatchesLocation:true});
     expect(JSON.stringify(wrong.diagnosticFrame)).not.toContain('private');
     const authorChanged=fixture(wrap(post('123','alice')));
+    expect(decode(authorChanged).diagnosticFrame?.rootIdentityProven).toBe(true);
     authorChanged.document.querySelectorAll('[data-testid="User-Name"] a').forEach(a=>a.setAttribute('href','/bob'));
     const rejected=decode(authorChanged);
-    expect(rejected.root).toBeNull();
+    expect(rejected.diagnosticFrame?.rootIdentityProven).toBe(false);
     expect(rejected.diagnosticFrame).toMatchObject({rootCandidateCount:1,rootRejections:{authorMismatch:1}});
   });
   it('does not report a source rejection for a root admitted beside an unsupported time link', () => {
@@ -230,16 +240,16 @@ it('reports bounded control omissions without mistaking filtered candidates for 
 
 it('cross-checks the current document author/origin with the own permalink, allowing proven redirects', () => {
   const facts=(currentUrl:string):BrowserLocationFacts=>({currentUrl,documentEpoch:1,routeRevision:0,navigationSequence:1,navigationType:'cross_document',navigationEvent:'did-navigate',navigationUrl:currentUrl});
-  const alice=fixture();
-  expect(decodeXPage(alice.collect(),request,facts(url),{parentArticle:false}).diagnosticFrame?.rootIdentityProven).toBe(true);
-  const wrongAuthor=fixture(wrap(post('123','bob','bob words')));
-  expect(decodeXPage(wrongAuthor.collect(),request,facts(url),{parentArticle:false}).root).toBeNull();
+  const alice=fixture(wrap(post('123','alice','body',parentCard)));
+  expectParentAuthority(decodeXPage(alice.collect(),request,facts(url),{parentArticle:false}),true);
+  const wrongAuthor=fixture(wrap(post('123','bob','bob words',parentCard)));
+  expectParentAuthority(decodeXPage(wrongAuthor.collect(),request,facts(url),{parentArticle:false}),false);
   const actualRedirect='https://x.com/bob/status/123';
-  const bob=fixture(wrap(post('123','bob','bob words')),actualRedirect);
-  expect(decodeXPage(bob.collect(),request,facts(actualRedirect),{parentArticle:false}).diagnosticFrame?.rootIdentityProven).toBe(true);
+  const bob=fixture(wrap(post('123','bob','bob words',parentCard)),actualRedirect);
+  expectParentAuthority(decodeXPage(bob.collect(),request,facts(actualRedirect),{parentArticle:false}),true);
   const original=bob.document.querySelector('a[href$="/history"]')!;
   original.setAttribute('href','https://twitter.com/bob/status/123/history');
-  expect(decodeXPage(bob.collect(),request,facts(actualRedirect),{parentArticle:false}).root).toBeNull();
+  expectParentAuthority(decodeXPage(bob.collect(),request,facts(actualRedirect),{parentArticle:false}),false);
 });
 it('rejects an opaque permalink query instead of synthesizing a cleaner citation', () => {
   const f=fixture();
@@ -247,7 +257,6 @@ it('rejects an opaque permalink query instead of synthesizing a cleaner citation
   expect(decodeXPage(f.collect(),request,facts,{parentArticle:false}).diagnosticFrame?.rootIdentityProven).toBe(true);
   f.document.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/history?token=secret');
   const result=decodeXPage(f.collect(),request,facts,{parentArticle:false});
-  expect(result.root).toBeNull();
   expect(result.diagnosticFrame?.rootIdentityProven).toBe(false);
   expect(JSON.stringify(result)).not.toContain('secret');
 });
@@ -322,7 +331,7 @@ it('media request coordinates do not prove a media document or admit its body id
     const media=fixture(wrap(post()),mediaUrl);
     const collected=decodeXPage(media.collect(mediaRequest),mediaRequest,facts(mediaUrl),{parentArticle:false});
     expect(collected.identityProven).toBe(false);
-    expect(collected.root).toBeNull();
+    expect(collected.diagnosticFrame?.rootIdentityProven).toBe(false);
     expect(collected.replies).toHaveLength(0);
     // A current ordinary redirect must still supply all existing root facts.
     expect(decodeXPage(ordinary.collect(mediaRequest),mediaRequest,facts(url),{parentArticle:false}).diagnosticFrame?.rootIdentityProven).toBe(true);
@@ -381,10 +390,10 @@ it('rejects invalid request identities before constructing a page expression and
     expect(()=>xPageExpression({...r,expectedUrl:expectedUrl.replace(handle,handle+'z')})).toThrow();
     expect(()=>xPageExpression({...r,postId:'18446744073709551616',expectedUrl:expectedUrl.replace(maximum,'18446744073709551616')})).toThrow();
   }
-  const f=fixture(), facts={currentUrl:url,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
-  expect(decodeXPage(f.collect(),request,facts,{parentArticle:false}).diagnosticFrame?.rootIdentityProven).toBe(true);
+  const f=fixture(wrap(post('123','alice','body',parentCard))), facts={currentUrl:url,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:url};
+  expectParentAuthority(decodeXPage(f.collect(),request,facts,{parentArticle:false}),true);
   f.document.querySelector('a[href$="/history"]')!.setAttribute('href','/alice/status/123/photo/1');
-  expect(decodeXPage(f.collect(),request,facts,{parentArticle:false}).root).toBeNull();
+  expectParentAuthority(decodeXPage(f.collect(),request,facts,{parentArticle:false}),false);
 });
 
 
@@ -463,7 +472,8 @@ describe('original source root diagnostics', () => {
         if(mode==='member') expect(state).toMatchObject({identity:{members:'changed',coordinates:'same'}});
         if(mode==='conversation') expect(state).toMatchObject({conversation:{sameObject:false,connected:false},root:{connection:'detached'}});
         if(mode==='duplicate') expect(state).toMatchObject({conversation:{candidates:'multiple',sameObject:null}});
-        if(['hidden','body','detached','identity','boundary','adopted','host','query','hash'].includes(mode)){expect(initial.diagnosticFrame?.rootIdentityProven).toBe(true);expect(terminal.root).toBeNull();}
+        if(['hidden','detached','identity','boundary','adopted','host','query','hash'].includes(mode)){expect(initial.diagnosticFrame?.rootIdentityProven).toBe(true);expect(terminal.diagnosticFrame?.rootIdentityProven).toBe(false);}
+        if(mode==='body')expect(terminal.diagnosticFrame?.rootIdentityProven).toBe(true);
         if(mode==='adopted') expect(state).toMatchObject({root:{connection:'connected',sameDocument:false},identity:{rendered:'missing'}});
         if(mode==='boundary') expect(state).toMatchObject({root:{ownBoundary:false,topLevel:false},identity:{members:'missing',owned:false}});
         if(mode==='overflow') expect(state).toMatchObject({identity:{members:'ambiguous',coordinates:'ambiguous',rendered:'ambiguous',profileLinkCount:33}});
@@ -486,12 +496,12 @@ it('source shown reasons preserve the original predicate for every ancestor excl
     for(const [attribute,value,reason] of [['hidden','','hidden'],['aria-hidden','true','aria_hidden'],['style','display:none','display_none'],['style','visibility:hidden','visibility_hidden'],['style','visibility:collapse','collapse']]){
       const positive=await page.collect(request);expect(positive.diagnosticFrame?.rootIdentityProven).toBe(true);expect(positive.diagnosticFrame?.sourceRootState?.root.shown).toBe('pass');
       ancestor.setAttribute(attribute,value);
-      const excluded=await page.collect(request);expect(excluded.root).toBeNull();expect(excluded.diagnosticFrame?.sourceRootState?.root.shown).toBe(reason);
+      const excluded=await page.collect(request);expect(excluded.diagnosticFrame?.rootIdentityProven).toBe(false);expect(excluded.diagnosticFrame?.sourceRootState?.root.shown).toBe(reason);
       ancestor.removeAttribute(attribute);
     }
     expect((await page.collect(request)).diagnosticFrame?.rootIdentityProven).toBe(true);
     Object.defineProperty(root,'getBoundingClientRect',{value:()=>({width:0,height:30})});
-    const zero=await page.collect(request);expect(zero.root).toBeNull();expect(zero.diagnosticFrame?.sourceRootState?.root.shown).toBe('dimensions');
+    const zero=await page.collect(request);expect(zero.diagnosticFrame?.rootIdentityProven).toBe(false);expect(zero.diagnosticFrame?.sourceRootState?.root.shown).toBe('dimensions');
   });
 });
 

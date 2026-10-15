@@ -830,14 +830,25 @@ it('unscoped source role authorizes only its own nonempty body and survives actu
     Object.assign(wrong.targets[0].replies,{requested});
     ledger.restore([history(wrong)]);expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
   }
-  for(const slot of ['root','bodyObservations','quotedPosts','replies','article'] as const){
+  for(const slot of ['root','quotedPosts','replies','article'] as const){
     const wrong=structuredClone(r),row=wrong.targets[0],p=row.unscopedPosts!.observations[0];delete row.unscopedPosts;
     if(slot==='root') row.root=p as never;
-    if(slot==='bodyObservations') row.bodyObservations=[p as never];
     if(slot==='quotedPosts') row.quotedPosts=[p as never];
     if(slot==='replies') row.replies.observations=[p as never];
     if(slot==='article'){row.article.body=p as never;row.article.bodyObserved=true;}
     ledger.restore([history(wrong)]);expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+  }
+  // Displaced independent versions now use the existing body history field;
+  // role and reply-domain policy still apply to that exact historical item.
+  const historyOnly=structuredClone(r),historyRow=historyOnly.targets[0];
+  historyRow.bodyObservations=[historyRow.unscopedPosts!.observations[0]];delete historyRow.unscopedPosts;
+  ledger.restore([history(historyOnly)]);expect(ledger.guard(report,citation(own))).toEqual({createOnly:true});
+  expect(ledger.observations.find(p=>p.sourceUrl===own)).toMatchObject({containerKind:'unscoped_post',relationToTarget:'unproven'});
+  const malformedHistory=structuredClone(historyOnly);malformedHistory.targets[0].bodyObservations={} as never;
+  expect(()=>ledger.restore([history(malformedHistory)])).not.toThrow();expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
+  for(const requested of [false,undefined]){
+    const disabled=structuredClone(historyOnly);Object.assign(disabled.targets[0].replies,{requested});
+    ledger.restore([history(disabled)]);expect(()=>ledger.guard(report,citation(own))).toThrow(/unobserved/);
   }
   for(const field of ['relationToTarget','observedContainer','sourceUrl','text'] as const){
     const wrong=structuredClone(r),p=wrong.targets[0].unscopedPosts!.observations[0];
