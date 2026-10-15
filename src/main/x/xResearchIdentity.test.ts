@@ -65,3 +65,34 @@ it('derives the exact source bound from allowed origin, handle, uint64 and histo
   expect(parseXSourcePost(url+' ')).toBeNull();
   expect(parseXSourcePost(url.replace('/history/','/photo/1'))).toBeNull();
 });
+
+it('Article admission requires all private parent coordinates to match the network root and the current one-shot entry',async()=>{
+ const {stagedFixture}=await import('../../test-support/xResearchFixture');const {matchesXArticleParent}=await import('./xResearchIdentity');
+ const f=await stagedFixture({article:'ok'}),request={stage:'post' as const,expectedUrl:'https://x.com/alice/status/123',postId:'123',collectReplies:false};
+ await f.context.browser.open(request.expectedUrl,'research-tab',undefined,request);
+ await f.context.browser.withPage('research-tab',undefined,async page=>{
+  const observed=await page.collect(request),entry=observed.entries[0],root=observed.root!;expect(matchesXArticleParent(observed,entry,root)).toBe(true);
+  for(const altered of [{...root,postId:'999'},{...root,sourceUrl:'https://x.com/other/status/123'},{...root,author:{...root.author!,handle:'other'}}])expect(matchesXArticleParent(observed,entry,altered)).toBe(false);
+  expect(matchesXArticleParent(observed,{...entry},root)).toBe(false);
+  await page.act({kind:'click',index:entry.binding.index,snapshotId:entry.binding.snapshotId},observed.snapshot);expect(f.executed).toEqual(['article_entry']);
+  await expect(page.act({kind:'click',index:entry.binding.index,snapshotId:entry.binding.snapshotId},observed.snapshot)).rejects.toMatchObject({code:'browser.stale_snapshot'});expect(f.executed).toEqual(['article_entry']);
+ });
+});
+
+it('a complete private native Article inventory can prove zero but cannot erase wire presence or cross parent coordinates',async()=>{
+ const {fixture,post,readHtml}=await import('../../test-support/xResearchFixture');const {readResult}=await import('./xResearchRead');const {savePostFrame}=await import('./xResearchReadStages');
+ const input={tabId:'tab',read:{objective:'inventory',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+ for(const mode of ['zero','wire','postId','sourceUrl','author','missing'] as const){
+  const f=fixture([readHtml(mode==='missing'?'':post())]);await f.open(input.read.targets[0].url);const observed=await f.page.collect({stage:'post',postId:'123',expectedUrl:input.read.targets[0].url,collectReplies:false});const row=readResult(input,f.context).targets[0];
+  if(mode!=='missing'){
+   const root=(observed.network!.pages[0] as import('./xNetworkSource').XNetworkReadPage).root!;
+   if(mode==='wire')root.articlePreviewInventory={scope:'collection',observed:0,retained:0,omitted:0,unresolved:1};
+   if(mode==='postId')root.postId='999';if(mode==='sourceUrl')root.sourceUrl='https://x.com/other/status/123';if(mode==='author')root.author!.handle='other';
+  }
+  savePostFrame(row,observed,input.read,f.context);
+  if(mode==='zero')expect(row.root?.articlePreviewInventory).toEqual({scope:'collection',observed:0,retained:0,omitted:0,unresolved:0});
+  else if(mode==='wire')expect(row.root?.articlePreviewInventory?.unresolved).toBe(1);
+  else expect(row.root?.articlePreviewInventory).toBeUndefined();
+  expect(JSON.stringify(observed)).not.toContain('articleParentInventories');
+ }
+});

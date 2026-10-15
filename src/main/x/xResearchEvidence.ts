@@ -1,4 +1,4 @@
-import { entrySchema, evidenceTextSchema as textSchema, unscopedTextSchema, unscopedSchema, scopeSchema, scopeIdentitySchema } from './xResearchCanonical';
+import { readSourceDomainsValid, networkReadScopeValid, networkPageSchema, replyScopeSchema, entrySchema, evidenceTextSchema as textSchema, unscopedTextSchema, unscopedSchema, scopeSchema, scopeIdentitySchema } from './xResearchCanonical';
 import { replyUiFrameFields, replyUiFrameBindingValid } from './xReplyUiInventory';
 import path from 'node:path';
 import Markdown from 'react-markdown';
@@ -60,7 +60,7 @@ const articleSchema = z.object({
 });
 const base = {
   schemaVersion: z.literal(2),
-  sourceKind: z.enum(['rendered_ui','page_graphql']),
+  sourceKind: z.enum(['rendered_ui','page_graphql','mixed']),
   runId: string,
   callId: string,
   batchId: string,
@@ -88,6 +88,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     operation: z.literal('read'),
     targets: z.array(
       z.object({
+        postId:z.string().nullable().optional(),networkPages:z.array(networkPageSchema).optional(),
         diagnostics:z.object({initialFrame:diagnosticFrameSchema.optional(),firstAdmittedFrame:diagnosticFrameSchema.optional(),terminalFrame:diagnosticFrameSchema.optional()}).optional(),
         unscopedPosts:unscopedSchema.optional(),
         root: textSchema.nullable(),
@@ -95,13 +96,13 @@ const canonicalSchema = z.discriminatedUnion('operation', [
         articlePreviewObservations:z.array(scopeSchema).optional(),
         inventoryAuditOmitted:z.object({count:z.number().int().positive(),first:scopeIdentitySchema}).optional(),
         quotedPosts: z.array(textSchema),
-        replies: z.object({ requested:z.boolean().optional(), observations: z.array(textSchema) }),
+        replies: z.object({ requested:z.boolean().optional(), observations: z.array(textSchema),scope:replyScopeSchema.optional() }),
         article: articleSchema,
         location:z.object({documentGeneration:z.string().nullable()}).optional(),
         documentSource: z.unknown().optional(),
-      }).refine(row=>!row.unscopedPosts || row.replies.requested===true),
+      }).refine(row=>!row.unscopedPosts || row.replies.requested===true).refine(networkReadScopeValid),
     ),
-  }),
+  }).refine(readSourceDomainsValid),
 ]);
 /** Evidence consumes retained bodies, while delivery keeps the original collection
  * inventory counts. Validate the source counts before adapting an internal view;
@@ -523,7 +524,7 @@ export class XResearchEvidence {
       if(row.unscopedPosts) {
         for(const gap of row.unscopedPosts.previewGaps) {
           const own=parseXSourcePost(gap.sourceUrl)!;
-          this.inventoryGaps.push({sourceUrl:gap.sourceUrl,postId:own.id,observationId:row.unscopedPosts.collection.snapshotId,order});
+          this.inventoryGaps.push({sourceUrl:gap.sourceUrl,postId:own.id,observationId:'kind' in row.unscopedPosts.collection?row.unscopedPosts.collection.provenance.requestRef:row.unscopedPosts.collection.snapshotId,order});
         }
         for(const p of row.unscopedPosts.observations) add(p);
       }

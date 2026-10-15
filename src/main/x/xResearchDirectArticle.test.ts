@@ -33,7 +33,7 @@ it('admits directly opened Article own body through the production port/read/ser
   const f=fixture();
   const input={tabId:'tab',read:{objective:'direct Article',targets:[{url}],includeArticle:true,includeReplies:true,maxRepliesPerPost:30,maxScrollsPerPost:2,maxExpandActionsPerPost:2}};
   const value=serializeXResearchResult(await readX(input,f.context));
-  expect(value.result.targets[0]).toMatchObject({root:null,sourceUrl:url,status:'partial',reason:'direct_article_discussion_unobserved',article:{entryObserved:false,actionAttempted:false,navigationStarted:false,bodyObserved:true,entry:null,body:{postId:'456',sourceUrl:url,author:{handle:'bob'},text:'Article paragraph'},provenance:{kind:'direct_open',navigationId:'actual-navigation',sourceUrl:url}},replies:{observations:[],scope:{completeness:'unknown'}},budgetUsage:{distinctEntries:1,scrolls:0,expandActions:0}});
+  expect(value.result.targets[0]).toMatchObject({root:null,sourceUrl:url,status:'partial',reason:'direct_article_discussion_unobserved',article:{entryObserved:false,actionAttempted:false,navigationStarted:false,bodyObserved:true,entry:null,body:{postId:'456',sourceUrl:url,author:{handle:'bob'},text:'Article paragraph'},provenance:{kind:'direct_open',navigationId:'actual-navigation',sourceUrl:url}},replies:{observations:[],scope:{kind:'network',extent:'unknown',context:{leaseId:null}}},budgetUsage:{distinctEntries:1,scrolls:0,expandActions:0}});
   expect(f.service.open).toHaveBeenCalledTimes(1);expect(f.service.waitFor).toHaveBeenCalledTimes(0);expect(f.service.dispatchAndObserveNavigation).toHaveBeenCalledTimes(0);
   const body=value.result.targets[0].article.body!;
   expect(value.result.targets[0].article.provenance?.bodyObservationId).toBe(body.observationId);

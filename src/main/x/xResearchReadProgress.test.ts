@@ -1,6 +1,6 @@
 import { JSDOM } from 'jsdom';
 import { describe, expect, it, vi } from 'vitest';
-import { post, readHtml } from '../../test-support/xResearchFixture';
+import { post, readHtml, withDerivedReadNetwork } from '../../test-support/xResearchFixture';
 import { KydogError } from '../../shared/errors';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import type { BrowserDispatchOptions } from '../browser/browserService';
@@ -48,83 +48,44 @@ async function runProgress(mode:Mode='reply',limits:Record<string,unknown>={},in
   };
   const input=parseXResearchInput({tabId:'research-tab',read:{objective:'source readiness',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:4,maxScrollsPerPost:1,maxExpandActionsPerPost:0,...limits}});
   if(!input.read)throw new Error('read expected');
-  const pending=readX(input,{browser:createXResearchBrowser(service as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map(),signal:abort.signal});
+  const pending=readX(input,{browser:createXResearchBrowser(withDerivedReadNetwork(service,()=>dom.window.document,facts) as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map(),signal:abort.signal});
   await vi.runAllTimersAsync();
   return {row:(await pending).targets[0],events,writes,releases,rootReleased:dom.window.eval('window.__kydogXRootState === undefined')};
 }
 
-describe('one source-bound viewport advance before readiness',()=>{
-  it('uses normalized positive budgets before waiting and zero, disabled, capped or unproved inputs never gain an early write',async()=>{
-    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      for(const [budget,writes] of [[1,1],[undefined,500]]) {
-        const good=await runProgress('reply',{maxScrollsPerPost:budget});
-        expect(good.row).toMatchObject({root:{postId:'123'},replies:{observations:[{postId:'456',text:'Own reply after viewport progress'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:writes},stopReason:'budget_reached'});
-        expect(good.events.slice(0,3)).toEqual(['collect','scroll','collect']);
-        expect(good.events.filter(e=>e==='scroll')).toHaveLength(writes!);expect(good.writes).toBe(writes);
-      }
-      const good=await runProgress();
-      expect(good.row.diagnostics).toMatchObject({initialFrame:{rootIdentityProven:true,replyCount:0,repliesExpandControlCount:0,explicitEndObserved:false},terminalFrame:{rootIdentityProven:true,replyCount:1},readiness:{collectCount:1,initial:{replyCount:1},timedOut:false}});
-      expect(good.events).toEqual(['collect','scroll','collect']);expect(good.writes).toBe(1);
-      for(const [limits,initial] of [[{maxScrollsPerPost:0},'root'],[{includeReplies:false},'root'],[{maxRepliesPerPost:0},'root'],[{},'wrong'],[{},'auth']] as const) {
-        const stopped=await runProgress('reply',limits,initial);
-        expect(stopped.writes).toBe(0);expect(stopped.events.filter(e=>e==='scroll')).toEqual([]);expect(stopped.row.replies.observations).toEqual([]);
-        if('maxScrollsPerPost' in limits)expect(stopped.row).toMatchObject({reason:'reply_readiness_timeout',stopReason:'wait_timeout'});
-      }
-    }finally{vi.useRealTimers();}
-  },30000);
-  it('collects and saves after progress, then waits once even with exhausted scroll budget; remaining budget never repeats an empty advance',async()=>{
-    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      const later=await runProgress('later');expect(later.row.replies.observations.map(p=>p.postId)).toEqual(['456']);
-      expect(later.row.diagnostics?.readiness).toMatchObject({initial:{replyCount:0},terminal:{replyCount:1},timedOut:false});
-      for(const budget of [1,3]) {
-        const empty=await runProgress('empty',{maxScrollsPerPost:budget});
-        expect(empty.events.slice(0,3)).toEqual(['collect','scroll','collect']);expect(empty.writes).toBe(1);expect(empty.row.replies.observations).toEqual([]);
-        expect(empty.row).toMatchObject({reason:'reply_readiness_timeout',stopReason:'wait_timeout',budgetUsage:{scrolls:1},replies:{scope:{completeness:'unknown'}}});
-        expect(empty.row.diagnostics?.readiness).toMatchObject({collectCount:80,initial:{replyCount:0},terminal:{replyCount:0},timedOut:true});
-      }
-    }finally{vi.useRealTimers();}
-  });
-  it('stops on fresh identity or barrier loss and retains independent rootless bodies without historical input authority',async()=>{
-    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      const good=await runProgress();expect(good.row.replies.observations[0].postId).toBe('456');expect(good.row.diagnostics?.readiness?.initial.replyCount).toBe(1);
-      for(const mode of ['rootless','auth','route','route_other'] as const) {
-        const stopped=await runProgress(mode,{maxScrollsPerPost:3});
-        expect(stopped.events,mode).toEqual(['collect','scroll','collect']);expect(stopped.writes).toBe(1);
-        expect(stopped.row).toMatchObject({root:{postId:'123',text:'original'},stopReason:mode==='auth'?'access_barrier':'identity_unproven',replies:{observations:[],scope:{completeness:'unknown'}}});
-        expect(stopped.row.diagnostics?.readiness).toBeUndefined();
-        expect(stopped.row.diagnostics?.firstAdmittedFrame?.snapshotId).toBe(stopped.row.diagnostics?.initialFrame?.snapshotId);
-        expect(stopped.row.sourceUrl).toBe(url);
-        if(mode==='rootless')expect(stopped.row.unscopedPosts?.observations).toMatchObject([{postId:'456',text:'Own reply after viewport progress',relationToTarget:'unproven'}]);
-      }
-    }finally{vi.useRealTimers();}
-  });
-  it('preserves written receipts, observes an authenticated stall and never recovers timeout or unwritten input',async()=>{
-    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      const good=await runProgress();expect(good.events).toEqual(['collect','scroll','collect']);expect(good.row.diagnostics?.readiness).toBeDefined();
-      for(const mode of ['no_movement','ack_timeout','unwritten'] as const) {
-        const stopped=await runProgress(mode,{maxScrollsPerPost:3});
-        expect(stopped.events).toEqual(mode==='no_movement'?['collect','scroll',...Array(80).fill('collect')]:['collect','scroll']);expect(stopped.writes).toBe(mode==='unwritten'?0:1);expect(stopped.row.diagnostics?.readiness).toBeUndefined();
-        expect(stopped.row.reason).toBe(mode==='no_movement'?'scroll_no_movement':mode==='ack_timeout'?'scroll_ack_timeout':'action_failed:browser.stale_snapshot');
-        expect(stopped.row.budgetUsage.scrolls).toBe(mode==='unwritten'?0:1);expect(stopped.row.replies.scope.completeness).toBe('unknown');
-      }
-    }finally{vi.useRealTimers();}
-  });
-  it('cancellation before input, during ACK and during wait preserves issued-operation cleanup and releases the source root',async()=>{
-    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      const good=await runProgress();expect(good.events).toEqual(['collect','scroll','collect']);expect(good.row.replies.observations[0].postId).toBe('456');
-      for(const mode of ['cancel_before','cancel_ack','cancel_wait'] as const) {
-        const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.row).toMatchObject({status:'cancelled',stopReason:'cancelled'});
-        expect(stopped.writes).toBe(mode==='cancel_before'?0:1);expect(stopped.row.replies.observations).toEqual([]);
-        if(mode==='cancel_ack')expect(stopped.events).toEqual(['collect','scroll','ack-cleanup']);
-        expect(stopped.releases).toBe(1);expect(stopped.rootReleased).toBe(true);
-      }
-    }finally{vi.useRealTimers();}
-  });
-  it('already-ready source uses the same one normal action and original readiness frame',async()=>{
-    vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try {
-      const ready=await runProgress('empty',{},'ready');expect(ready.events).toEqual(['collect','scroll','collect']);
-      expect(ready.row).toMatchObject({replies:{observations:[{postId:'456'}]},budgetUsage:{scrolls:1}});
-      expect(ready.row.diagnostics?.readiness).toMatchObject({collectCount:1,initial:{replyCount:1},terminal:{replyCount:1},timedOut:false});
-    }finally{vi.useRealTimers();}
-  });
+describe('network read progress with native scroll receipts',()=>{
+ const timers=()=>vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});
+ it('normalizes budgets, collects after each native write and stops before zero or disabled domains',async()=>{
+  timers();try{
+   const good=await runProgress();expect(good.events).toEqual(['collect','scroll','collect']);expect(good.writes).toBe(1);
+   expect(good.row).toMatchObject({root:{postId:'123'},replies:{observations:[{postId:'456'}],scope:{kind:'network',extent:'unknown'}},budgetUsage:{scrolls:1},stopReason:'budget_reached'});
+   for(const limits of [{maxScrollsPerPost:0},{includeReplies:false},{maxRepliesPerPost:0}]){
+    const stopped=await runProgress('reply',limits);expect(stopped.writes).toBe(0);expect(stopped.row.root?.postId).toBe('123');expect(stopped.row.replies.observations).toEqual([]);
+   }
+  }finally{vi.useRealTimers();}
+ });
+ it('empty source pages stay unknown and consume only the authorized scroll budget',async()=>{
+  timers();try{
+   const positive=await runProgress();expect(positive.row.replies.observations[0].postId).toBe('456');
+   for(const budget of [1,3]){const empty=await runProgress('empty',{maxScrollsPerPost:budget});expect(empty.writes).toBe(budget);expect(empty.row.replies.observations).toEqual([]);expect(empty.row).toMatchObject({stopReason:'budget_reached',replies:{scope:{extent:'unknown'}}});}
+  }finally{vi.useRealTimers();}
+ });
+ it('rootless continuation retains proven history while route changes reject new data',async()=>{
+  timers();try{
+   const rootless=await runProgress('rootless',{maxScrollsPerPost:2});expect(rootless.writes).toBe(2);expect(rootless.row).toMatchObject({root:{postId:'123',text:'original'},identity:{state:'proven'},replies:{observations:[{postId:'456'}]},stopReason:'budget_reached'});
+   for(const mode of ['auth','route','route_other'] as const){const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.writes).toBe(1);expect(stopped.row.root?.text).toBe('original');expect(stopped.row.replies.observations).toEqual([]);expect(stopped.row.stopReason).toBe(mode==='auth'?'access_barrier':'source_unavailable');}
+  }finally{vi.useRealTimers();}
+ });
+ it('preserves authenticated no-movement and ACK timeout without reusing an invalid action',async()=>{
+  timers();try{
+   const good=await runProgress();expect(good.row.diagnostics?.scroll?.first?.state).toBe('frame_observed');
+   for(const mode of ['no_movement','ack_timeout','unwritten'] as const){const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.events).toEqual(['collect','scroll']);expect(stopped.writes).toBe(mode==='unwritten'?0:1);expect(stopped.row.reason).toBe(mode==='no_movement'?'scroll_no_movement':mode==='ack_timeout'?'scroll_ack_timeout':'action_failed:browser.stale_snapshot');expect(stopped.row.replies.scope.extent).toBe('unknown');}
+  }finally{vi.useRealTimers();}
+ });
+ it('cancellation before input and during native ACK retains accepted network root and releases ownership',async()=>{
+  timers();try{
+   const good=await runProgress();expect(good.row.replies.observations[0].postId).toBe('456');
+   for(const mode of ['cancel_before','cancel_ack'] as const){const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.row).toMatchObject({status:'cancelled',stopReason:'cancelled',...(mode==='cancel_ack'?{root:{postId:'123'}}:{root:null})});expect(stopped.writes).toBe(mode==='cancel_before'?0:1);expect(stopped.row.replies.observations).toEqual([]);if(mode==='cancel_ack')expect(stopped.events).toEqual(['collect','scroll','ack-cleanup']);expect(stopped.releases).toBe(1);expect(stopped.rootReleased).toBe(true);}
+  }finally{vi.useRealTimers();}
+ });
 });

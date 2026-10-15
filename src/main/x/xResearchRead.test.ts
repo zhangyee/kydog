@@ -7,32 +7,17 @@ import { retainPointerFailure, pointerFailureDiagnostic } from '../browser/point
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
 import { describe, expect, it, vi } from 'vitest';
-import { fixture, stagedFixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
+import { fixture, stagedFixture, post, readHtml, searchHtml, searchInput, withDerivedReadNetwork } from '../../test-support/xResearchFixture';
 import { searchX } from './xResearchSearch';
 import { readX } from './xResearchRead';
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 const read=(targets:any[],extra={})=>({tabId:'research-tab',read:{objective:'read',targets,includeArticle:false,includeReplies:false,maxRepliesPerPost:30,maxScrollsPerPost:0,maxExpandActionsPerPost:0,...extra}});
 describe('ordinary X read orchestration',()=>{
-  it('retains source bodies at the root-loss boundary without continuing or inheriting reply scope',async()=>{
-    const own='https://x.com/bob/status/456';
-    const f=fixture([readHtml(post()+post('456','bob','historical reply')),readHtml(post('456','bob','current own body')+post('789','carol','fresh own body'))]);
-    const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:3}),f.context)).targets[0];
-    expect(f.act.mock.calls.map(call=>call[0].kind)).toEqual(['scroll']);
-    expect(row).toMatchObject({status:'partial',reason:'post_identity_unproven',stopReason:'identity_unproven',root:{text:'original'},replies:{observations:[{text:'historical reply',sourceUrl:own}],scope:{completeness:'unknown'}}});
-    expect(row.unscopedPosts?.observations.map(p=>[p.postId,p.text,p.relationToTarget])).toEqual([['456','current own body','unproven'],['789','fresh own body','unproven']]);
-    expect(row.budgetUsage.distinctEntries).toBe(3);
-    expect(row.unscopedPosts?.observations[0].observationId).not.toBe(row.replies.observations[0].observationId);
-    expect(f.context.sources.get('456')).toHaveLength(1);
-    expect(f.context.sources.get('789')).toBeUndefined();
-    for(const includeReplies of [true,false]){
-      const cover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
-      const initial=fixture([readHtml(post('456','bob','current own body').replace('</article>',cover+'</article>'))]);
-      const result=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies,maxScrollsPerPost:3}),initial.context);
-      expect(result.targets[0]).toMatchObject({root:null,status:'partial',stopReason:'identity_unproven'});
-      expect(result.targets[0].unscopedPosts?.observations.map(p=>p.text)).toEqual(includeReplies?['current own body']:undefined);
-      expect(result.targets[0].unscopedPosts?.previewGaps).toEqual(includeReplies?[{sourceUrl:own,unresolved:1}]:undefined);
-      expect(initial.act).toHaveBeenCalledTimes(0);
-    }
+  it('retains the network root and collects rootless continuation without DOM identity inheritance',async()=>{
+    const f=fixture([readHtml(post()+post('456','bob','historical reply')),readHtml(post('456','bob','current body')+post('789','carol','fresh body'))]);
+    const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:2}),f.context)).targets[0];
+    expect(f.act).toHaveBeenCalledTimes(2);expect(row).toMatchObject({root:{text:'original'},identity:{state:'proven'},stopReason:'budget_reached',replies:{observations:[{postId:'456',text:'current body'},{postId:'789',text:'fresh body'}],scope:{extent:'unknown'}}});
+    for(const includeReplies of [true,false]){const initial=fixture([readHtml(post('456','bob','own body'))]);const result=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies,maxScrollsPerPost:3}),initial.context);expect(result.targets[0]).toMatchObject({root:null,stopReason:'identity_unproven'});expect(result.targets[0].unscopedPosts?.observations.map(p=>p.text)).toEqual(includeReplies?['own body']:undefined);expect(initial.act).toHaveBeenCalledTimes(0);}
   });
   it('readUsesObservedPermalink; unresolved postId never generates URL',async()=>{
     const f=fixture([searchHtml(post())]); await searchX(searchInput,f.context);
@@ -56,7 +41,7 @@ describe('ordinary X read orchestration',()=>{
     const f=fixture([readHtml(post()+post('456','bob','rendered discussion'))]);
     const result=await readX(read(targets,{includeArticle:true,includeReplies:true,maxScrollsPerPost:2}),f.context);
     expect(result.targets).toHaveLength(20); expect(f.open).toHaveBeenCalledTimes(20);
-    expect(result.targets[0]).toMatchObject({status:'partial',article:{requested:true,actionAttempted:false,bodyObserved:false},replies:{requested:true,scope:{completeness:'unknown'}},reason:'no_entry_observed'});
+    expect(result.targets[0]).toMatchObject({status:'partial',article:{requested:true,actionAttempted:false,bodyObserved:false},replies:{requested:true,scope:{kind:'network',extent:'unknown'}},reason:'reply_budget_reached'});
   });
   it('waits for absent collected content without treating it as identity success',async()=>{
     const f=fixture([readHtml(''),readHtml(post())],{afterWaitIndex:1});
@@ -87,7 +72,7 @@ describe('ordinary X read orchestration',()=>{
     await readX(read([{postId:'123'}]),f.context);expect(f.open.mock.calls[1][0]).toBe('https://x.com/alice/status/123');
     const sensitive=fixture([readHtml(post())],{finalUrl:()=> 'https://x.com/alice/status/123?token=secret'});
     expect((await readX(read([{url:'https://x.com/alice/status/123'}]),sensitive.context)).targets[0].documentSource).toBeNull();
-    expect(sensitive.context.sources.get('123')!.map(s=>s.urlKind)).toEqual(['permalink']);
+    expect(sensitive.context.sources.get('123')).toBeUndefined();
   });
   it('same-URL root freshness recollects but different author/path is refused',async()=>{
     const f=fixture([readHtml(post())]);f.collect.mockImplementationOnce(async()=>{f.navigate();throw new KydogError('browser.stale_snapshot','route changed');});
@@ -101,7 +86,7 @@ describe('ordinary X read orchestration',()=>{
     await readX(read([{postId:'123'}]),good.context);
     expect(good.open.mock.calls[0][0]).toBe('https://x.com/alice/status/123/history');
     const history=fixture(['<main><div data-testid="primaryColumn"><div aria-label="Timeline: Edit History">'+post('999')+'</div></div></main>']); history.context.sources=f.context.sources;
-    expect((await readX(read([{postId:'123'}]),history.context)).targets[0]).toMatchObject({root:null,replies:{observations:[],scope:{completeness:'unknown'}},stopReason:'identity_unproven'});
+    expect((await readX(read([{postId:'123'}]),history.context)).targets[0]).toMatchObject({root:null,replies:{observations:[],scope:{kind:'network',extent:'unknown'}},stopReason:'identity_unproven'});
   });
 });
 
@@ -111,12 +96,12 @@ describe('bounded independent read stages',()=>{
     const options={includeArticle:true,includeReplies:true,maxExpandActionsPerPost:4,maxScrollsPerPost:0};
     const good=await stagedFixture({article:'ok'});
     const actual=(await readX(read([{url:'https://x.com/alice/status/123'}],options),good.context)).targets[0];
-    expect(actual).toMatchObject({root:{postId:'123',text:'expanded body'},article:{requested:true,entryObserved:true,actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'},text:'Article paragraph\n\nHeading'}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown'}},budgetUsage:{expandActions:3,scrolls:0}});
+    expect(actual).toMatchObject({root:{postId:'123',text:'preview'},article:{requested:true,entryObserved:true,actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'},text:'Article paragraph\n\nHeading'}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{kind:'network',extent:'unknown'}},budgetUsage:{expandActions:2,scrolls:0}});
     expect(good.opens).toEqual(['https://x.com/alice/status/123','https://x.com/alice/status/123']);
     for(const mode of ['reject','nav-failed','auth','wrong-author','title-only'] as const) {
       const f=await stagedFixture({article:mode});
       const row=(await readX(read([{url:'https://x.com/alice/status/123'}],options),f.context)).targets[0];
-      expect(row.root?.text,mode).toBe('expanded body');
+      expect(row.root?.text,mode).toBe('preview');
       expect(row.article,mode).toMatchObject({requested:true,entryObserved:true,actionAttempted:true,navigationStarted:mode!=='reject',bodyObserved:false,body:null,barrier:{status:mode==='auth'?'auth_required':'partial'}});
       expect(row.article.barrier?.reason,mode).toMatch(mode==='reject'?/action/:mode==='nav-failed'?/navigation/:mode==='auth'?/onboarding/:/identity|body/);
       if(mode==='auth') expect(row).toMatchObject({status:'auth_required',stopReason:'access_barrier'});
@@ -124,104 +109,36 @@ describe('bounded independent read stages',()=>{
     const noEntry=await stagedFixture();
     expect((await readX(read([{url:'https://x.com/alice/status/123'}],options),noEntry.context)).targets[0].article).toMatchObject({requested:true,entryObserved:false,actionAttempted:false,navigationStarted:false,bodyObserved:false,barrier:{reason:'no_entry_observed'}});
   });
-  it('saves frames before replacement, bounds real actions, and stops when focal identity is lost',async()=>{
-    const f=await stagedFixture({virtualize:true});
-    const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:2,maxScrollsPerPost:3}),f.context)).targets[0];
-    expect(row).toMatchObject({root:{text:'expanded body'},replies:{observations:[{postId:'789',directParent:null},{postId:'790',directParent:null}],scope:{rootPostId:'123',completeness:'unknown',stopReason:'identity_unproven'}},budgetUsage:{scrolls:1,expandActions:2},stopReason:'identity_unproven'});
-    expect(row.diagnostics).toMatchObject({version:1,initialFrame:{rootIdentityProven:true,rootCandidateCount:1},terminalFrame:{rootIdentityProven:false}});
-    expect(f.executed).toEqual(['body_expand','replies_expand','scroll']);
-    const limited=await stagedFixture();
-    const result=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxRepliesPerPost:1,maxExpandActionsPerPost:1,maxScrollsPerPost:3}),limited.context)).targets[0];
-    expect(result.replies.observations.map(p=>p.postId)).toEqual(['789']);
-    expect(result).toMatchObject({stopReason:'budget_reached',replies:{scope:{completeness:'unknown'}},budgetUsage:{scrolls:0,expandActions:1}});
-    const cancelled=await stagedFixture({abortAfterAction:new AbortController()});
-    const stopped=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:3,maxScrollsPerPost:3}),cancelled.context)).targets[0];
-    expect(stopped).toMatchObject({root:{text:'preview'},status:'cancelled',stopReason:'cancelled'});
-    expect(cancelled.executed).toEqual(['body_expand']);
+  it('saves frames before virtualization and stops at shared budgets or cancellation',async()=>{
+    const f=await stagedFixture({virtualize:true});const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:2,maxScrollsPerPost:3}),f.context)).targets[0];
+    expect(row).toMatchObject({root:{text:'preview'},identity:{state:'proven'},replies:{observations:[{postId:'789',directParent:{postId:'123'}},{postId:'790',directParent:{postId:'123'}},{postId:'999',directParent:{postId:'123'}}],scope:{extent:'unknown'}},budgetUsage:{scrolls:3,expandActions:1},stopReason:'budget_reached'});
+    expect(row.diagnostics?.terminalFrame?.rootIdentityProven).toBe(false);expect(f.executed).toEqual(['replies_expand','scroll','scroll','scroll']);
+    const limited=await stagedFixture();const capped=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxRepliesPerPost:1,maxExpandActionsPerPost:1,maxScrollsPerPost:3}),limited.context)).targets[0];expect(capped.replies.observations.map(p=>p.postId)).toEqual(['789']);expect(capped.budgetUsage).toMatchObject({scrolls:0,expandActions:0});
+    const cancelled=await stagedFixture({abortAfterAction:new AbortController()});const stopped=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:3,maxScrollsPerPost:3}),cancelled.context)).targets[0];expect(stopped).toMatchObject({root:{text:'preview'},status:'cancelled',stopReason:'cancelled'});expect(cancelled.executed).toEqual(['replies_expand']);
   });
 });
 
-it('does not replay the same physical unchanged control or lose pre-Article expanded evidence on return',async()=>{
-  const request=read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:6,maxScrollsPerPost:0});
-  const good=await stagedFixture({article:'ok',resetOnReturn:true});
-  const row=(await readX(request,good.context)).targets[0];
-  expect(row.root?.text).toBe('expanded body');
-  expect(row.documentSource?.rootObservationId).toBe(row.root?.observationId);
-  expect(row.article.body?.text).toBe('Article paragraph\n\nHeading');
-  expect(row.article.entry?.binding.generation).toBe(good.entryGeneration());
-  const unchanged=await stagedFixture({noEffect:true});
-  const stopped=(await readX(read([{url:'https://x.com/alice/status/123'}],{maxExpandActionsPerPost:6}),unchanged.context)).targets[0];
-  expect(unchanged.executed).toEqual(['body_expand']);
-  expect(stopped).toMatchObject({status:'partial',reason:'body_expand_control_unchanged',budgetUsage:{expandActions:1}});
+it('Article return requires a fresh lease while ordinary body expansion remains inactive',async()=>{
+ const good=await stagedFixture({article:'ok',resetOnReturn:true});const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,maxExpandActionsPerPost:2}),good.context)).targets[0];
+ expect(row.article.body?.text).toBe('Article paragraph\n\nHeading');expect(row.root?.text).toBe('preview');expect(row.documentSource?.rootObservationId).toBe(row.root?.observationId);expect(good.executed).toEqual(['article_entry']);
+ const unchanged=await stagedFixture({noEffect:true});const stopped=(await readX(read([{url:'https://x.com/alice/status/123'}],{maxExpandActionsPerPost:6}),unchanged.context)).targets[0];expect(stopped.root?.text).toBe('preview');expect(unchanged.executed).toEqual([]);expect(stopped.budgetUsage.expandActions).toBe(0);
 });
 
-
-it('each successful explicit navigation receives one fresh observation without resetting action budgets',async()=>{
-  const request=read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:3,maxScrollsPerPost:0});
-  const good=await stagedFixture({article:'ok',staleInitial:1,staleReturn:1});
-  const row=(await readX(request,good.context)).targets[0];
-  expect(row).toMatchObject({root:{text:'expanded body'},article:{bodyObserved:true,body:{postId:'456'}},replies:{observations:[{postId:'789'},{postId:'790'}]},budgetUsage:{expandActions:3,scrolls:0},stopReason:'budget_reached'});
-  expect(row.collectionTransitions).toMatchObject([{navigationPhase:'initial_post',navigationId:'2',rereadRequested:true},{navigationPhase:'return_post',navigationId:'5',rereadRequested:true}]);
-  expect(good.executed).toEqual(['body_expand','article_entry','replies_expand']);
-  for(const options of [{staleReturn:2},{staleReturn:1,returnDifferentUrl:true}]) {
-    const rejected=await stagedFixture({article:'ok',staleInitial:1,...options});
-    const result=(await readX(request,rejected.context)).targets[0];
-    expect(result).toMatchObject({root:{text:'expanded body'},article:{bodyObserved:true},stopReason:'identity_unproven',budgetUsage:{expandActions:2}});
-    expect(result.collectionTransitions.at(-1)).toMatchObject({navigationPhase:'return_post',rereadRequested:false,outcome:options.returnDifferentUrl?'route_changed':'repeated_invalidation'});
-    expect(rejected.executed).toEqual(['body_expand','article_entry']);
-  }
-  const invalidProof=await stagedFixture({article:'ok',staleInitial:1,staleArticle:1});
-  const rejectedArticle=(await readX(request,invalidProof.context)).targets[0];
-  expect(rejectedArticle.collectionTransitions).toMatchObject([{navigationPhase:'initial_post',rereadRequested:true},{navigationPhase:'article',rereadRequested:true}]);
-  expect(rejectedArticle.article).toMatchObject({actionAttempted:true,navigationStarted:true,bodyObserved:false,barrier:{reason:'article_body_identity_unproven'}});
-  expect(invalidProof.executed).toEqual(['body_expand','article_entry','replies_expand']);
-  const abort=new AbortController(),cancelled=await stagedFixture({article:'ok',staleInitial:1,staleReturn:1,abortOnReturnCollect:abort});
-  const stopped=(await readX(request,cancelled.context)).targets[0];
-  expect(stopped).toMatchObject({status:'cancelled',stopReason:'cancelled',root:{text:'expanded body'},article:{bodyObserved:true}});
-  expect(cancelled.executed).toEqual(['body_expand','article_entry']);
-  // Initial rejected+fresh, expanded body, Article, and cancelled first return only.
-  expect(cancelled.collections()).toBe(5);
+it('fresh parent navigation renews source proof; generation invalidation never authorizes Article or reply input',async()=>{
+ const request=read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:3,maxScrollsPerPost:0});
+ const good=await stagedFixture({article:'ok'});const row=(await readX(request,good.context)).targets[0];expect(row).toMatchObject({root:{text:'preview'},article:{bodyObserved:true},replies:{observations:[{postId:'789'},{postId:'790'}]},budgetUsage:{expandActions:2}});expect(new Set(row.networkPages?.map(p=>p.provenance.leaseId)).size).toBe(2);
+ for(const options of [{staleInitial:1},{staleReturn:1},{staleReturn:1,returnDifferentUrl:true}]){const f=await stagedFixture({article:'ok',...options});const rejected=(await readX(request,f.context)).targets[0];expect(rejected.stopReason).toBe(options.returnDifferentUrl?'identity_unproven':'source_unavailable');expect(f.executed).toEqual(options.staleInitial?[]:['article_entry']);expect(rejected.article.bodyObserved).toBe(!options.staleInitial);if(!options.staleInitial)expect(rejected.root?.text).toBe('preview');}
 });
 
-
-it('waits for the actual parent after Article and retains evidence even when readiness times out',async()=>{
-  const request=read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:3});
-  const good=await stagedFixture({article:'ok',returnWait:true,staleReturn:1});
-  const row=(await readX(request,good.context)).targets[0];
-  expect(good.waits()).toBe(1);
-  expect(row).toMatchObject({root:{text:'expanded body'},article:{bodyObserved:true},replies:{observations:[{postId:'789'},{postId:'790'}]},budgetUsage:{expandActions:3}});
-  const timeout=await stagedFixture({article:'ok',returnWait:true,waitResult:false});
-  const stopped=(await readX(request,timeout.context)).targets[0];
-  expect(stopped).toMatchObject({root:{text:'expanded body'},article:{bodyObserved:true},reason:'post_wait_timeout',stopReason:'wait_timeout',budgetUsage:{expandActions:2}});
-  expect(timeout.executed).toEqual(['body_expand','article_entry']);
+it('an unproved parent return retains the accepted parent and Article without using old reply authority',async()=>{
+ const request=read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:3});
+ const good=await stagedFixture({article:'ok'});expect((await readX(request,good.context)).targets[0].replies.observations.map(p=>p.postId)).toEqual(['789','790']);
+ const f=await stagedFixture({article:'ok',returnWait:true});const stopped=(await readX(request,f.context)).targets[0];expect(stopped).toMatchObject({root:{text:'preview'},article:{bodyObserved:true},budgetUsage:{expandActions:1}});expect(f.executed).toEqual(['article_entry']);expect(stopped.replies.observations.map(p=>p.postId)).toEqual(['789']);
 });
 
-it('waits for source-proven discussion before any budgeted scroll or expansion and never treats deadline as completeness',async()=>{
-  vi.useFakeTimers();
-  try {
-    const request=read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:3,maxScrollsPerPost:0});
-    const run=async(mode:NonNullable<Parameters<typeof stagedFixture>[0]>['discussion'])=>{
-      const f=await stagedFixture({discussion:mode,discussionAbort:new AbortController()});
-      const pending=readX(request,f.context);
-      await vi.runAllTimersAsync();
-      return {f,row:(await pending).targets[0]};
-    };
-    const good=await run('ready');
-    expect(good.row).toMatchObject({root:{text:'expanded body'},replies:{observations:[{postId:'789'},{postId:'790'}]},budgetUsage:{expandActions:2,scrolls:0}});
-    expect(good.row.diagnostics?.readiness).toMatchObject({timedOut:false,initial:{replyCount:0},terminal:{replyCount:1}});
-    expect(good.f.executed).toEqual(['body_expand','replies_expand']);
-    for(const mode of ['never','late','auth','missing','route','cancel','stale'] as const) {
-      const {f,row}=await run(mode);
-      expect(f.executed,mode).toEqual(['body_expand']);
-      expect(row.root?.text,mode).toBe('expanded body');
-      expect(row.replies.scope.completeness,mode).toBe('unknown');
-      expect(row.stopReason,mode).toBe(mode==='auth'?'access_barrier':mode==='cancel'?'cancelled':mode==='never'||mode==='late'?'wait_timeout':'identity_unproven');
-      if(mode==='never'||mode==='late') expect(row.reason).toBe('reply_readiness_timeout');
-      if(mode==='never') expect(row.diagnostics?.readiness).toMatchObject({timedOut:true,initial:{replyCount:0,expandControlCount:0,explicitEndObserved:false},terminal:{replyCount:0,expandControlCount:0,explicitEndObserved:false}});
-      if(mode==='late') expect(row.replies.observations[0].postId).toBe('789');
-      if(mode==='stale') expect(row.collectionTransitions.map(t=>t.rereadRequested)).toEqual([true,false]);
-    }
-  } finally {vi.useRealTimers();}
+it('an empty reply page with zero scroll budget remains unknown without DOM readiness polling',async()=>{
+ const f=await stagedFixture({discussion:'never'});const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxExpandActionsPerPost:3,maxScrollsPerPost:0}),f.context)).targets[0];
+ expect(row.root?.text).toBe('preview');expect(row).toMatchObject({stopReason:'budget_reached',budgetUsage:{scrolls:0,expandActions:0},replies:{scope:{extent:'unknown'}}});expect(f.executed).toEqual([]);
 });
 
 it('discussion counts source-confirmed scroll writes before ACK failure and never retries them',async()=>{
@@ -235,7 +152,7 @@ it('discussion counts source-confirmed scroll writes before ACK failure and neve
     });
     const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:1}),f.context)).targets[0];
     expect(receiptObserved).toBe(true);expect(row.budgetUsage.scrolls).toBe(1);expect(f.act).toHaveBeenCalledTimes(1);
-    expect(row.root?.postId).toBe('123');expect(row.replies.observations[0].postId).toBe('456');expect(row.replies.scope.completeness).toBe('unknown');
+    expect(row.root?.postId).toBe('123');expect(row.replies.observations[0].postId).toBe('456');expect(row.replies.scope.extent).toBe('unknown');
     if(fail)expect(row.status).toBe('partial');
   }
 });
@@ -263,8 +180,7 @@ it('preserves the same validated scroll receipt through failure, canonical detai
       before:240,after:failed?240:840,scrollHeight:1600,clientHeight:600,state:failed?'no_movement':'frame_observed'},
       last:{state:failed?'no_movement':'frame_observed'}});
     // This legacy fixture creates a new isolated world on every collection. Recovery must reject it.
-    expect(row).toMatchObject({reason:failed?'post_identity_unproven':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{completeness:'unknown'}}});
-    if(failed)expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:1,outcome:'identity_unproven'});
+    expect(row).toMatchObject({reason:failed?'scroll_no_movement':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{kind:'network',extent:'unknown'}}});
     expect(f.act).toHaveBeenCalledTimes(1);
     const serialized=serializeXResearchResult(actual);
     const details=xResearchToolResult(serialized).details;
@@ -312,8 +228,8 @@ it('preserves typed no-movement versus ACK-timeout with independent Article/root
   for(const sample of cases){
     const f=await stagedFixture({article:'ok',scrollError:sample.error});
     const row=(await readX(request,f.context)).targets[0];
-    expect(row).toMatchObject({status:'partial',reason:sample.reason,stopReason:sample.stopReason,root:{postId:'123',text:'expanded body'},article:{bodyObserved:true,body:{postId:'456',text:'Article paragraph\n\nHeading'}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown',stopReason:sample.stopReason}},budgetUsage:{scrolls:1,expandActions:3}});
-    expect(f.executed).toEqual(['body_expand','article_entry','replies_expand','scroll']);
+    expect(row).toMatchObject({status:'partial',reason:sample.reason,stopReason:sample.stopReason,root:{postId:'123',text:'preview'},article:{bodyObserved:true,body:{postId:'456',text:'Article paragraph\n\nHeading'}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{kind:'network',extent:'unknown',stopReason:sample.stopReason}},budgetUsage:{scrolls:1,expandActions:2}});
+    expect(f.executed).toEqual(['article_entry','replies_expand','scroll']);
   }
 });
 
@@ -463,7 +379,7 @@ it.each(['throw','false'] as const)('retains already admitted read row and seria
       }
       return dom.window.eval(code);
     }};
-  const context={browser:createXResearchBrowser(service as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map()};
+  const context={browser:createXResearchBrowser(withDerivedReadNetwork(service,()=>dom.window.document,()=>facts) as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map()};
   const log=vi.spyOn(logger,'error').mockImplementation(()=>{});
   try{
     const good=await readX(read([{url}]),context);
@@ -493,7 +409,7 @@ it.each(['throw','false'] as const)('retains already admitted read row and seria
 
 it('retains authenticated failures for each exact original click purpose and preserves reply compatibility',async()=>{
  const {retainPointerFailure}=await import('../browser/pointerDiagnostic');
- for(const purpose of ['body_expand','article_entry','replies_expand','article_and_replies'] as const){
+ for(const purpose of ['article_entry','replies_expand','article_and_replies'] as const){
   const f=await stagedFixture({semanticLabels:true,article:'ok'});const original=f.context.browser.withPage.bind(f.context.browser);
   f.context.browser.withPage=async(tab,signal,work)=>original(tab,signal,page=>work({...page,act:async(action,snapshot,options)=>{
    const node=snapshot.nodes.find(n=>'index' in action&&n.index===action.index)!;
@@ -502,8 +418,8 @@ it('retains authenticated failures for each exact original click purpose and pre
   }}));
   const result=await readX({tabId:'tab',read:{objective:'diagnose',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:true,maxRepliesPerPost:20,maxScrollsPerPost:0,maxExpandActionsPerPost:4}},f.context);
   const row=result.targets[0],entry=row.diagnostics?.clickFailures?.first;
-  expect(entry,purpose).toMatchObject({controlKind:purpose==='article_and_replies'?'article_entry':purpose,targetPostId:'123',actionIndex:purpose==='body_expand'?1:purpose==='article_entry'||purpose==='article_and_replies'?2:3,diagnostic:{stage:'measure',point:{x:61,y:37}}});
-  expect(row.diagnostics?.clickFailures).toMatchObject({totalFailures:purpose==='article_and_replies'?2:1,omittedFailures:0,...(purpose==='article_and_replies'?{last:{controlKind:'replies_expand',actionIndex:3}}:{last:entry})});
+  expect(entry,purpose).toMatchObject({controlKind:purpose==='article_and_replies'?'article_entry':purpose,targetPostId:'123',actionIndex:purpose==='article_entry'||purpose==='article_and_replies'?1:2,diagnostic:{stage:'measure',point:{x:61,y:37}}});
+  expect(row.diagnostics?.clickFailures).toMatchObject({totalFailures:purpose==='article_and_replies'?2:1,omittedFailures:0,...(purpose==='article_and_replies'?{last:{controlKind:'replies_expand',actionIndex:2}}:{last:entry})});
   expect(entry?.binding.snapshotId).toBe(entry?.diagnostic.snapshotId);
   if(purpose==='replies_expand')expect(row.diagnostics?.pointerFailure?.diagnostic).toEqual(entry?.diagnostic);
  }

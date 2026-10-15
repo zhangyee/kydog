@@ -73,15 +73,7 @@
   const roots = all(region,tweetSelector).filter(el=>shown(el) && !el.parentElement.closest(tweetSelector));
   const scopeOf = root => root ? [{el:root,semantic:false,members:'[data-testid="User-Name"] a[href], a[href] time'},...own(root,'[data-testid="User-Name"] a[href], a[href]').filter(el=>el.closest('[data-testid="User-Name"]') || el.querySelector('time')).map(el=>({el,semantic:true}))] : [];
   const focal = roots.find(root=>factOf(root).postId===request.postId);
-  const documentPost = identity(location.href);
-  const matchingRoots = request.stage === 'post' && documentPost?.postId === request.postId
-    ? roots.filter(root=>{
-      const fact=factOf(root);
-      return fact.postId===request.postId && fact.author?.handle===documentPost.handle
-        && url(fact.permalink)?.origin===current.origin;
-    }) : [];
-  const longBodyRoot = matchingRoots.length===1 ? matchingRoots[0] : null;
-  let totalPosts = 0, containerKey = 0, targetBodyCandidates = 0;
+  let totalPosts = 0, containerKey = 0;
   for (const root of roots) {
     const rootFact = factOf(root);
     // Keep exact target candidates (including identity rejections) and their own
@@ -92,32 +84,19 @@
     const boxes = [root,...all(root,'div[role="link"][tabindex="0"]').filter(b=>shown(b) && own(b,'[data-testid="User-Name"]').length)];
     for (const box of boxes) {
       const sourceContainerKey = containerKey++;
-      const texts = own(box,'[data-testid="tweetText"]');
       const fact = factOf(box);
-      if (texts.length) {
-        totalPosts++;
-        if (request.stage==='post' && fact.postId===request.postId) targetBodyCandidates++;
-        if (posts.length < 100) {
-          const full = texts.map(text).join('\n');
-          const limit=box===longBodyRoot?64000:4000;
-          postRoots.push(box);
-          posts.push({...fact,containerKey:sourceContainerKey,articleEntryCount:0,scope:box===root?'post':'quote',text:full.slice(0,limit),truncation:{returned:Math.min(full.length,limit),totalKnown:full.length,truncated:full.length>limit}});
-        }
-      }
-      for (const b of own(box,'button[role="button"][type="button"][data-testid="tweet-text-show-more-link"]')) control(b,'body_expand',fact.postId,[...scopeOf(root),...scopeOf(box)]);
+      // Identity shells exist solely to bind Article entries and diagnostics.
+      // Ordinary post/quote/reply text belongs exclusively to the network source.
+      if(box===root){totalPosts++;if(posts.length<100){postRoots.push(box);posts.push({...fact,containerKey:sourceContainerKey,articleEntryCount:0,scope:'post',text:'',truncation:{returned:0,totalKnown:0,truncated:false}});}}
       const cover = own(box,'[data-testid="article-cover-image"]');
       if (box!==root && cover.length && rootFact.postId) {
         articleEntryCount++;
         const c = control(box,'article_entry',rootFact.postId,[...scopeOf(root),...scopeOf(box)]);
-        if (c) entries.push({el:box,parentContainerKey,author:authorOf(box),parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? box.getAttribute('href') : null,label:text(box).slice(0,512)});
+        if (c) entries.push({el:box,parentContainerKey,author:authorOf(box),parentPostId:rootFact.postId,parentUrl:rootFact.permalink,targetUrl:box.getAttribute('href') ? url(box.getAttribute('href'))?.href ?? box.getAttribute('href') : null,label:cover.map(text).join(' ' ).slice(0,512)});
       }
     }
     const parent=posts.find(p=>p.containerKey===parentContainerKey);
     if(parent) parent.articleEntryCount=articleEntryCount;
-  }
-  if (totalPosts>100 || targetBodyCandidates!==1) for (const p of posts) if (p.text.length>4000) {
-    p.text=p.text.slice(0,4000);
-    p.truncation={returned:4000,totalKnown:p.truncation.totalKnown,truncated:true};
   }
   for (const b of (collectReplies ? all(conversation,'[data-testid="cellInnerDiv"] button[role="button"][type="button"]') : []).filter(b=>!b.closest(tweetSelector) && text(b)==='Show replies')) {
     const focalCell=focal?.closest('[data-testid="cellInnerDiv"]') ?? null;
@@ -162,7 +141,7 @@
     if (!id) {id=world.next++;world.ids.set(el,id);}
     return id;
   };
-  const diagnosticNodes={regionNodeId:diagnosticId(conversation),rootNodeId:diagnosticId(longBodyRoot)};
+  const diagnosticNodes={regionNodeId:diagnosticId(conversation),rootNodeId:diagnosticId(focal)};
   // Optional diagnostics from this exact collection. Only light DOM is traversed;
   // shadow/iframe content and arbitrary literal-label confidentiality are not proven.
   const captureReplyUi = () => {

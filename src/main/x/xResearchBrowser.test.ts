@@ -154,7 +154,7 @@ it('keeps real open navigation results when the optional Article provenance can 
 
 it('private collected permission reaches actual measure and survives caller edits, while selector rebinding is rejected',async()=>{
   const f=fixture();
-  const dom=new JSDOM('<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation"><article data-testid="tweet"><div data-testid="User-Name"><a href="/a">@a</a></div><a href="/a/status/123/history"><time>today</time></a><div data-testid="tweetText">body</div><button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button></article></div></div></main>',{url:f.facts.currentUrl,runScripts:'outside-only'});
+  const dom=new JSDOM('<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation"><article data-testid="tweet"><div data-testid="User-Name"><a href="/a">@a</a></div><a href="/a/status/123/history"><time>today</time></a><div data-testid="tweetText">body</div></article><div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div></div></div></main>',{url:f.facts.currentUrl,runScripts:'outside-only'});
   const el=dom.window.document.querySelector('button')!;
   Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
   Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
@@ -178,7 +178,7 @@ it('private collected permission reaches actual measure and survives caller edit
     await page.act(click,observed.snapshot);expect(dispatched).toBe(1);
     await expect(page.act({kind:'click',selector:'button'},observed.snapshot)).rejects.toMatchObject({code:'browser.bad_action'});
     el.textContent='Reply';
-    await expect(page.act(click,observed.snapshot)).rejects.toMatchObject({code:'browser.target_unusable'});
+    await expect(page.act(click,observed.snapshot)).rejects.toMatchObject({code:'browser.bad_action'});
     expect(dispatched).toBe(1);
   });}finally{dom.window.close();}
 });
@@ -442,5 +442,67 @@ it('preserves source-valid accepted pages through real adapter cancellation into
     else expect(row.stopReason).toBe('budget_reached');
    }
   }finally{spy.mockRestore();dom.window.close();}
+ }
+});
+
+it('preserves accepted read root and samples through actual adapter cancellation, canonical output and restore',async()=>{
+ const {readX}=await import('./xResearchRead');const {canonicalizeXResearchResult}=await import('./xResearchCanonical');const {serializeXResearchResult}=await import('./xResearchOutput');const {XNetworkReadLease}=await import('./xNetworkLease');
+ const capture=(await import('../../test-support/fixtures/x-network/read-thread-0.json')).default;
+ const url=`https://x.com/ReadAuthor/status/${capture.request.focalTweetId}`,original=XNetworkReadLease.prototype.collect;
+ for(const timing of ['normal','after_accept','before_accept'] as const){
+  const f=fixture(),controller=new AbortController();f.facts.currentUrl=url;const dom=new JSDOM('<main><div data-testid="primaryColumn"></div></main>',{url,runScripts:'outside-only'});
+  Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
+   const raw={id:'source',requestId:'r',redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'f',loaderId:'l',navigationId:'nav',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/recorded/TweetDetail?variables='+encodeURIComponent(JSON.stringify(capture.request))};
+   expect(args.network.accepts(raw)).toBe(true);const body=JSON.stringify(capture.body);let drained=false;
+   return{tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:url,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',close:async()=>{if(timing==='after_accept')throw Error('private cleanup');},take:async()=>{throw Error('unused');},drain:async()=>{if(drained)return[];drained=true;if(timing==='before_accept')controller.abort();return[{kind:'response',request:raw,status:200,body,bytes:Buffer.byteLength(body),sha256:'a'.repeat(64)}];}}};
+  }});
+  const spy=vi.spyOn(XNetworkReadLease.prototype,'collect').mockImplementation(async function(this:import('./xNetworkLease').XNetworkReadLease,...args){const batch=await original.apply(this,args);if(timing==='after_accept')controller.abort();return batch;});
+  try{
+   const result=canonicalizeXResearchResult(await readX({tabId:'tab',read:{objective:'cancel evidence',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:5,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},{browser:createXResearchBrowser(f.browser,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',signal:controller.signal,sources:new Map()}));
+   if(result.operation!=='read')throw Error('read');const row=result.targets[0];
+   if(timing==='before_accept'){expect(row.root).toBeNull();expect(row.replies.observations).toEqual([]);expect(row.replies.scope).toMatchObject({kind:'network',rootPostId:null,context:{leaseId:null,accountContextId:null}});}
+   else{
+    expect(row.root).toMatchObject({text:'Captured read text 1',sourceKind:'page_graphql'});expect(row.replies.observations).toHaveLength(5);expect(row.networkPages).toHaveLength(1);expect(row.budgetBinding).toContainEqual({dimension:'replies',limit:5,used:5,origin:'explicit'});
+    expect(serializeXResearchResult(result).result.targets[0].replies.observations).toHaveLength(5);
+    const {XResearchEvidence}=await import('./xResearchEvidence');const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(result);expect(ledger.observations).toHaveLength(6);
+    ledger.restore([{type:'message',id:'history',message:{role:'toolResult',toolName:'x_research',toolCallId:'call',details:result,content:[],isError:false}}]);expect(ledger.observations).toHaveLength(6);expect(ledger.observations[0]).toMatchObject({origin:'history',networkProvenance:row.root!.networkProvenance});
+    if(timing==='after_accept')expect(row).toMatchObject({status:'cancelled',stopReason:'cancelled',diagnostics:{networkCleanupFailure:'network_cleanup_failed'}});
+   }
+  }finally{spy.mockRestore();dom.window.close();}
+ }
+});
+
+it('revokes a collected read snapshot during native preflight on own source changes while retaining accepted root',async()=>{
+ const capture=(await import('../../test-support/fixtures/x-network/read-thread-0.json')).default;
+ const url=`https://x.com/ReadAuthor/status/${capture.request.focalTweetId}`;
+ for(const change of ['unchanged','unrelated','sort','cursor','loader'] as const){
+  const f=fixture();f.facts.currentUrl=url;
+  const dom=new JSDOM('<main><div data-testid="primaryColumn"></div></main>',{url,runScripts:'outside-only'});
+  let accept!:(raw:any)=>boolean,raw:any;let inputs=0;
+  let entered!:()=>void,release!:()=>void;
+  const pending=new Promise<void>(resolve=>{entered=resolve;}),preflight=new Promise<void>(resolve=>{release=resolve;});
+  Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
+   accept=args.network.accepts;
+   raw={id:'source',requestId:'r',redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'f',loaderId:'l',navigationId:'nav',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/recorded/TweetDetail?variables='+encodeURIComponent(JSON.stringify(capture.request))};
+   expect(accept(raw)).toBe(true);const body=JSON.stringify(capture.body);let drained=false;
+   return{tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:url,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',close:async()=>{},drain:async()=>{if(drained)return[];drained=true;return[{kind:'response',request:raw,status:200,body,bytes:Buffer.byteLength(body),sha256:'a'.repeat(64)}];}}};
+  },dispatchAndObserveNavigation:async(_id:string,_action:unknown,_snapshot:unknown,options:any)=>{
+   entered();await preflight;
+   if(options.signal.aborted)throw new KydogError('browser.cancelled','native preinput aborted');
+   inputs++;return{line:'scrolled',navigation:null};
+  }});
+  const request={stage:'post' as const,postId:capture.request.focalTweetId,expectedUrl:url,collectReplies:true};
+  const port=createXResearchBrowser(f.browser,'thread');await port.open(url,undefined,undefined,request);
+  const accepted:import('./xNetworkSource').XNetworkPage[]=[];
+  const result=port.withPage('tab',undefined,async page=>{const o=await page.collect(request);expect(o.identityProven).toBe(true);await page.act({kind:'scroll',direction:'down'},o.snapshot);return 'acted';},{onNetworkPageAccepted:p=>accepted.push(p)}).catch(error=>error);
+  await pending;expect(accepted[0].posts[0].text).toBe('Captured read text 1');
+  if(change!=='unchanged'){
+   const vars={...capture.request,...(change==='unrelated'?{focalTweetId:'999'}:change==='sort'?{rankingMode:'Recency'}:{cursor:'unproved-branch'})};
+   expect(accept({...raw,id:'changed',...(change==='loader'?{loaderId:'new-loader'}:{}),url:'https://x.com/i/api/graphql/recorded/TweetDetail?variables='+encodeURIComponent(JSON.stringify(vars))})).toBe(false);
+  }
+  release();const outcome=await result;
+  if(change==='unchanged'||change==='unrelated'){expect(outcome).toBe('acted');expect(inputs).toBe(1);}
+  else{expect(outcome).toMatchObject({code:'x.invalid_page'});expect(inputs).toBe(0);}
+  expect(accepted[0].posts[0].text).toBe('Captured read text 1');expect(accepted).toHaveLength(1);dom.window.close();
  }
 });

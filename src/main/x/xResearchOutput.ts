@@ -88,7 +88,7 @@ function body(p: XTextObservation | XUnscopedPost) {
     authorHandle: p.author?.handle ?? null,
     containerKind: p.containerKind,
     ...(p.containerKind==='unscoped_post'?{relationToTarget:p.relationToTarget,observedContainer:p.observedContainer}:{}),
-    ...(p.containerKind === 'reply' ? { directParent: p.directParent } : {}),
+    ...(p.containerKind === 'reply' ? { directParent: p.directParent,...(p.conversationId?{conversationId:p.conversationId}:{}) } : {}),
     text: p.text,
     truncation: p.truncation,
   };
@@ -196,6 +196,8 @@ function projection(result: XResearchResult) {
       collectionStop: t.collectionStop,
       budgetBinding: t.budgetBinding,
       sampleTruncation: t.sampleTruncation,
+      identity:t.identity,
+      networkPageCount:(t.networkPages?.length??0)+(t.networkPagesOmitted??0),
       budgetUsage: t.budgetUsage,
       root: t.root ? body(t.root) : null,
       quotedPosts: t.quotedPosts.map(body),
@@ -541,7 +543,7 @@ export function assertXRequestFits(original: XResearchResult, prior?: XResearchS
   compactModelDocumentLocations(state);
   state.delivery.omittedFields = [...(state.metadataOmissions ?? []),...(state.contentMetadataOmissions ?? []),...rows.flatMap((_,i) => {
     const prefix = `${state.operation === 'search' ? 'queries' : 'targets'}.${i}`;
-    return ['posts','postObservations','postObservations.text','root.text','article.body.text','bodyObservations','bodyObservations.text','quotedPosts','quotedPosts.text','replies.observations','replies.observations.text','articlePreviewObservations','unscopedPosts.observations','diagnostics.replyExpansions','diagnostics.initialFrame.replyUiInventory','diagnostics.firstAdmittedFrame.replyUiInventory','diagnostics.terminalFrame.replyUiInventory','diagnostics.scrollRecovery','diagnostics.pointerPreflights','diagnostics.scroll','diagnostics.readiness','diagnostics.clickFailures','diagnostics.pointerFailure','diagnostics.initialFrame','diagnostics.firstAdmittedFrame','diagnostics.terminalFrame','diagnostics.sourceFailure'].map(field => `${prefix}.${field}`);
+    return ['networkPages','posts','postObservations','postObservations.text','root.text','article.body.text','bodyObservations','bodyObservations.text','quotedPosts','quotedPosts.text','replies.observations','replies.observations.text','articlePreviewObservations','unscopedPosts.observations','diagnostics.replyExpansions','diagnostics.initialFrame.replyUiInventory','diagnostics.firstAdmittedFrame.replyUiInventory','diagnostics.terminalFrame.replyUiInventory','diagnostics.scrollRecovery','diagnostics.pointerPreflights','diagnostics.scroll','diagnostics.readiness','diagnostics.clickFailures','diagnostics.pointerFailure','diagnostics.initialFrame','diagnostics.firstAdmittedFrame','diagnostics.terminalFrame','diagnostics.sourceFailure'].map(field => `${prefix}.${field}`);
   })];
   const requiredBytes = measure(state, true, prior).result.budgetUsage.outputBytes;
   if (requiredBytes > X_RESEARCH_MAX_OUTPUT_BYTES)
@@ -645,6 +647,15 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if(!row.networkPages?.length)continue;
     row.networkPagesOmitted=(row.networkPagesOmitted??0)+row.networkPages.length;
     delete row.networkPages;mark(`queries.${index}.networkPages`);
+    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
+  if(result.operation==='read')for(const [index,row] of result.targets.entries()){
+    if(!row.networkPages?.length)continue;
+    const terminal=row.replies.scope.kind==='network'?row.replies.scope.terminalRequestRef:null;
+    const keep=row.networkPages.filter(p=>p.provenance.requestRef===terminal);
+    row.networkPagesOmitted=(row.networkPagesOmitted??0)+row.networkPages.length-keep.length;
+    if(keep.length)row.networkPages=keep;else delete row.networkPages;
+    mark(`targets.${index}.networkPages`);
     value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
   }
   if (result.operation === 'read') for (const [index,row] of result.targets.entries()) {

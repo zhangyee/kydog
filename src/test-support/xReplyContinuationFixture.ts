@@ -1,5 +1,5 @@
 import { JSDOM } from 'jsdom';
-import { post, readHtml } from './xResearchFixture';
+import { post, readHtml, withDerivedReadNetwork } from './xResearchFixture';
 import { KydogError } from '../shared/errors';
 import type { BrowserService } from '../main/browser/browserService';
 import { measuredPointerExpression, pointerGuardExpression } from '../main/browser/measuredPointerSource';
@@ -47,7 +47,7 @@ export function replyContinuationFixture(options:{body?:boolean;zero?:boolean}={
       } finally {dom.window.eval(pointerGuardExpression('dispose',pointer,Date.now()+3000));}
     },
   };
-  const port=createXResearchBrowser(service as BrowserService,'thread');
+  const port=createXResearchBrowser(withDerivedReadNetwork(service,()=>document,()=>facts) as BrowserService,'thread');
   const request={stage:'post' as const,expectedUrl:replyUrl,postId:'123'};
   const context={browser:port,threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map(),signal:abort.signal};
   const run=async(limits:Record<string,unknown>={})=>{

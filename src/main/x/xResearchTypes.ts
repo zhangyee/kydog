@@ -58,7 +58,7 @@ interface XTextBase {
 }
 export type XTextObservation = XTextBase & (
   | { containerKind: 'root_post' | 'quoted_post'; postId: string }
-  | { containerKind: 'reply'; postId: string; directParent: XReplyBranch | null }
+  | { containerKind: 'reply'; postId: string; directParent: XReplyBranch | null; conversationId?: string }
   | { containerKind: 'article' | 'unattributed_fragment'; postId: string | null }
 );
 /** Independent own-container evidence; never a target root, reply, or quote role. */
@@ -68,8 +68,8 @@ export type XUnscopedPost = XTextBase & {
 };
 export interface XUnscopedPosts {
   observations: XUnscopedPost[];
-  collection: {
-    snapshotId:string;
+  collection: {kind:'network';provenance:import('./xNetworkSource').XNetworkProvenance;snapshotId?:never} | {
+    kind?:never; snapshotId:string;
     document:{epoch:number;routeRevision:number;navigationSequence:number;generation:string};
     location:XSafeLocation;
   };
@@ -112,16 +112,24 @@ export interface XReplyEndEvidence {
   sort: XReplySort | null;
 }
 interface XReplyScopeBase {
+  kind?:never;extent?:never;context?:never;terminalRequestRef?:never;
   rootPostId: string | null;
   branch: XReplyBranch | null;
   sort: XReplySort | null;
   stopReason: XStopReason;
   displayedReplyCount: { text: string; value: number | null } | null;
 }
-export type XReplyScope = XReplyScopeBase & (
+export type XLegacyReplyScope = XReplyScopeBase & (
   | { completeness: 'unknown'; endEvidence: XReplyEndEvidence | null }
   | { completeness: 'ui_scope_end_observed'; endEvidence: XReplyEndEvidence }
 );
+export interface XNetworkReplyScope {
+ kind:'network'; rootPostId:string|null; extent:'unknown'|'cursor_exhausted';
+ context:{leaseId:string|null;accountContextId:string|null;branchKey:string|null;sortKey:string|null};
+ terminalRequestRef:string|null;stopReason:XStopReason;
+ completeness?:never;endEvidence?:never;branch?:never;sort?:never;displayedReplyCount?:never;
+}
+export type XReplyScope=XLegacyReplyScope|XNetworkReplyScope;
 export interface XBudgetUsage {
   /** Successfully executed actions only; rejected/failed attempts do not increment these. */
   scrolls: number;
@@ -190,6 +198,9 @@ export interface XArticlePreviewScopeObservation {
   articlePreviewInventory:XArticlePreviewInventory;
 }
 export interface XReadObservation {
+ identity?:{state:'never_proven'}|{state:'proven';postId:string;proof:import('./xNetworkSource').XNetworkProvenance};
+ networkPages?:import('./xNetworkLease').XNetworkPageFact[];
+ networkPagesOmitted?:number;
   budgetBinding?: XBudgetBinding[];
   sampleTruncation?: { observed: number; sampled: number; omitted: number };
   collectionStop?: { status: XResearchStatus; stopReason: XStopReason; reason: string | null };
@@ -332,7 +343,7 @@ export interface XReportScopeFacts {
   statusCounts: Partial<Record<XResearchStatus, number>>;
   stopReasonCounts: Partial<Record<XStopReason, number>>;
   reasonCounts: Record<string, number>;
-  replyScopeCounts: Partial<Record<XReplyScope['completeness'], number>>;
+  replyScopeCounts: Partial<Record<'unknown'|'ui_scope_end_observed'|'cursor_exhausted', number>>;
 }
 /** Distinct actual calls on the current branch/run; no source or citation authority. */
 export interface XReportRunScopeFacts {
@@ -371,7 +382,7 @@ interface XResultBase {
   metadataOmissions?: string[];
   /** Secondary model-content metadata omitted while canonical details retain it. */
   contentMetadataOmissions?: string[];
-  sourceKind: 'rendered_ui' | 'page_graphql';
+  sourceKind: 'rendered_ui' | 'page_graphql' | 'mixed';
   callId: string;
   batchId: string;
   runId: string;

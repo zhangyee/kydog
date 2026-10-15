@@ -38,9 +38,9 @@ export function sampleXEntries<T extends { postId: string }>(items: readonly T[]
   return { retained, observed: items.length, sampled: retained.length, omitted: items.length - retained.length };
 }
 /** Direct callers supplied parsed values explicitly; they carry no raw default provenance. */
-export function bindXReadBudgets(row: XReadObservation, limits: XReadRequest, policy: XBudgetPolicy | undefined, dimensions: readonly XBudgetDimension[]): XBudgetBinding[] {
+export function bindXReadBudgets(row: XReadObservation, limits: XReadRequest, policy: XBudgetPolicy | undefined, dimensions: readonly XBudgetDimension[], sampledEntries?: number): XBudgetBinding[] {
   const effective = policy ?? resolveXBudgetPolicy({ read: limits }, { tabId: '', read: limits });
-  const reached = reachedXBudgets(effective, { replies: new Set(row.replies.observations.map(item => item.postId)).size, scrolls: row.budgetUsage.scrolls, expands: row.budgetUsage.expandActions }, dimensions);
+  const reached = reachedXBudgets(effective, { replies: sampledEntries ?? new Set([...row.replies.observations,...(row.unscopedPosts?.observations??[])].map(item => item.postId)).size, scrolls: row.budgetUsage.scrolls, expands: row.budgetUsage.expandActions }, dimensions);
   if (reached.length) {
     const bindings = new Map((row.budgetBinding ?? []).map(binding => [binding.dimension, binding]));
     for (const binding of reached) bindings.set(binding.dimension, binding);

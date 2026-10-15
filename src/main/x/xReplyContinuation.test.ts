@@ -12,7 +12,7 @@ it('fresh actual source permits three attempts on the identical physical reply b
   expect(new Set(f.records.map(r=>r.generation)).size).toBe(1);
   expect(f.document.querySelector('#replies')).toBe(f.button);expect(f.root.parentElement).toBe(f.conversation);
   expect(row.replies.observations.map(p=>[p.postId,p.sourceUrl])).toEqual([['701','https://x.com/reply1/status/701'],['702','https://x.com/reply2/status/702'],['703','https://x.com/reply3/status/703']]);
-  expect(row).toMatchObject({budgetUsage:{expandActions:3},stopReason:'budget_reached',replies:{scope:{completeness:'unknown'}}});
+  expect(row).toMatchObject({budgetUsage:{expandActions:3},stopReason:'budget_reached',replies:{scope:{kind:'network',extent:'unknown'}}});
  }finally{f.close();}
 });
 it('same private reply permission cannot dispatch twice, including when the first attempt failed',async()=>{
@@ -31,15 +31,15 @@ it('retains exact first/last source inventories, private admission, global indic
  const positive=replyContinuationFixture({body:true});try{
   const row=(await positive.run({maxExpandActionsPerPost:4})).targets[0];
   const d=row.diagnostics!.replyExpansions!;
-  expect(d).toMatchObject({totalAttempts:3,omittedAttempts:1,first:{actionIndex:2,outcome:'succeeded',caps:{replies:20,scrolls:0,expansions:4},usageBefore:{expansions:1},usageAfter:{expansions:2},admission:{state:'consumed',purpose:'replies_expand'},before:{state:'captured',inventory:{state:'captured',items:[],total:0,returned:0,omitted:0}},after:{state:'captured',inventory:{state:'captured',items:[{postId:'702',sourceUrl:'https://x.com/reply2/status/702'}]}}},last:{actionIndex:4,usageBefore:{expansions:3},usageAfter:{expansions:4}}});
-  expect(d.last!.after).toMatchObject({state:'captured',inventory:{total:3,returned:3,omitted:0}});
+  expect(d).toMatchObject({totalAttempts:4,omittedAttempts:2,first:{actionIndex:1,outcome:'succeeded',caps:{replies:20,scrolls:0,expansions:4},usageBefore:{expansions:0},usageAfter:{expansions:1},admission:{state:'consumed',purpose:'replies_expand'},before:{state:'captured',inventory:{state:'captured',items:[],total:0,returned:0,omitted:0}},after:{state:'captured',inventory:{state:'captured',items:[{postId:'701',sourceUrl:'https://x.com/reply1/status/701'}]}}},last:{actionIndex:4,usageBefore:{expansions:3},usageAfter:{expansions:4}}});
+  expect(d.last!.after).toMatchObject({state:'captured',inventory:{total:4,returned:4,omitted:0}});
   expect(d.first!.admission).toMatchObject({binding:d.first!.binding});
   expect(d.last!.binding.nodeId).toBe(d.first!.binding.nodeId);
   for(const [cap,writes] of [[0,0],[1,1],[3,3]]){
    const f=replyContinuationFixture({zero:true});try{
     const empty=(await f.run({maxExpandActionsPerPost:cap})).targets[0];
     expect(f.count().writes).toBe(writes);expect(empty.replies.observations).toEqual([]);
-    expect(empty).toMatchObject({budgetUsage:{expandActions:writes},stopReason:'budget_reached',replies:{scope:{completeness:'unknown'}}});
+    expect(empty).toMatchObject({budgetUsage:{expandActions:writes},stopReason:'budget_reached',replies:{scope:{kind:'network',extent:'unknown'}}});
     if(writes)expect(empty.diagnostics!.replyExpansions!.last!.after).toMatchObject({state:'captured',inventory:{state:'captured',items:[]}});
     else expect(empty.diagnostics!.replyExpansions).toBeUndefined();
    }finally{f.close();}
@@ -76,9 +76,9 @@ it('root, route, permission, collection and cancellation losses stop with explic
     if(mode==='cancel')f.abort.abort();
    };
    const result=await f.run(),row=result.targets[0],last=row.diagnostics!.replyExpansions!.last!;
-   expect(f.count().writes,mode).toBe(1);expect(row.replies.scope.completeness).toBe('unknown');
-   if(mode==='root'||mode==='route'||mode==='search_route')expect(last.after).toMatchObject({state:'captured',sourceAvailable:false,inventory:{state:'unavailable'}});
-   else expect(last.after.state).toBe(mode==='collect'?'unavailable':'not_observed');
+   expect(f.count().writes,mode).toBe(1);expect(row.replies.scope.extent).toBe('unknown');
+   if(mode==='root')expect(last.after).toMatchObject({state:'captured',sourceAvailable:false,inventory:{state:'unavailable'}});
+   else expect(last.after.state).toBe(['collect','route','search_route'].includes(mode)?'unavailable':'not_observed');
    if(mode==='permission'||mode==='failure')expect(last).toMatchObject({outcome:'failed',usageBefore:{expansions:1},usageAfter:{expansions:1},admission:{state:'consumed'}});
    expect(()=>serializeXResearchResult({...result})).not.toThrow();
    if(mode==='cancel')expect(last).toMatchObject({outcome:'cancelled',admission:{state:'consumed'}});

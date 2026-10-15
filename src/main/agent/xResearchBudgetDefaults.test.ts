@@ -62,7 +62,7 @@ describe('ordinary research budgets through the SDK entry point', () => {
         const result = await toolFor(f).execute('read-budget', { tabId: 'research-tab', read: { objective: 'read', targets: [target], includeArticle: false, ...caps } }, undefined, undefined, {} as never);
         if (result.details?.operation !== 'read') throw new Error('read result expected');
         const row = result.details.targets[0];
-        expect(row).toMatchObject({ root: { postId: '123', sourceUrl: target.url, text: 'focal body' }, status: 'partial', stopReason: 'budget_reached', replies: { requested: true, scope: { completeness: 'unknown' } } });
+        expect(row).toMatchObject({ root: { postId: '123', sourceUrl: target.url, text: 'focal body' }, status: 'partial', stopReason: 'budget_reached', replies: { requested: true, scope: { kind: 'network', extent: 'unknown' } } });
         expect(result.details.budgetUsage.scrolls).toBe(row.budgetUsage.scrolls);
         expect(result.details.budgetUsage.distinctEntries).toBe(1 + row.replies.observations.length);
         expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual(result.details);
@@ -99,7 +99,7 @@ describe('ordinary research budgets through the SDK entry point', () => {
       const result = await toolFor(f).execute('expand-budget', { tabId: 'research-tab', read: { objective: 'expand', targets: [target], includeArticle: false, maxRepliesPerPost: 1000, ...(maxExpandActionsPerPost === undefined ? {} : { maxExpandActionsPerPost }) } }, undefined, undefined, {} as never);
       if (result.details?.operation !== 'read') throw new Error('read result expected');
       const row = result.details.targets[0];
-      expect(row).toMatchObject({ status: 'partial', stopReason: 'budget_reached', budgetUsage: { scrolls: 0 }, replies: { scope: { completeness: 'unknown' } } });
+      expect(row).toMatchObject({ status: 'partial', stopReason: 'budget_reached', budgetUsage: { scrolls: 0 }, replies: { scope: { kind: 'network', extent: 'unknown' } } });
       return { f, row };
     };
     const ordinary = await run();
@@ -143,7 +143,7 @@ describe('zero and sampling boundaries through the SDK', () => {
     expect(small.details.queries[0]).toMatchObject({ budgetBinding: [{ dimension: 'posts', limit: 7, origin: 'explicit', used: 7 }, { dimension: 'scrolls', limit: 0, origin: 'explicit', used: 0 }] });
     expect(small.details.queries[0].posts).toHaveLength(7);
   });
-  it('replies zero retains root and expansion zero blocks body, Article and reply clicks', async () => {
+  it('replies zero retains network root and expansion zero blocks Article and reply clicks', async () => {
     const run = async (expands: number, replies: number) => {
       const f = await stagedFixture({ article: 'reject' });
       const result = await toolFor(f).execute('read-zero', { tabId: 'research-tab', read: { objective: 'test', targets: [target], maxRepliesPerPost: replies, maxScrollsPerPost: 0, maxExpandActionsPerPost: expands } }, undefined, undefined, {} as never);
@@ -151,7 +151,6 @@ describe('zero and sampling boundaries through the SDK', () => {
       return { f, row: result.details.targets[0] };
     };
     const positive = await run(3, 3);
-    expect(positive.f.executed).toContain('body_expand');
     expect(positive.f.executed).toContain('replies_expand');
     expect(positive.row.article.actionAttempted).toBe(true);
     expect(positive.row.replies.observations.length).toBeGreaterThan(0);
@@ -170,29 +169,29 @@ it('reply zero reaches initial and Article-return producers while nonzero expans
     const f = await stagedFixture({article:'ok'});
     const frames: {request:import('../x/xObservation').XPageRequest; replies:number}[] = [];
     const withPage = f.context.browser.withPage.bind(f.context.browser);
-    f.context.browser.withPage = (tabId, signal, work) => withPage(tabId, signal, page => {
+    f.context.browser.withPage = (tabId, signal, work, options) => withPage(tabId, signal, page => {
       const proxied:typeof page = {...page, collect:async request => {
         const frame = await page.collect(request);
-        frames.push({request,replies:frame.replies.length});
+        frames.push({request,replies:frame.network?.pages.reduce((n,p)=>n+('replies' in p ? (p as import('../x/xNetworkSource').XNetworkReadPage).replies.length : 0),0)??0});
         return frame;
       }};
       return work(proxied);
-    });
+    }, options);
     const result = await toolFor(f).execute('independent-zero', {tabId:'research-tab',read:{objective:'independent scopes',targets:[target],includeArticle:true,includeReplies:true,maxRepliesPerPost,maxScrollsPerPost:0,maxExpandActionsPerPost:4}}, undefined, undefined, {} as never);
     if (result.details?.operation !== 'read') throw new Error('read expected');
     return {f, frames:frames.filter(frame => frame.request.stage === 'post'), row:result.details.targets[0]};
   };
   const positive = await run(2);
-  expect(positive.f.executed).toEqual(['body_expand','article_entry','replies_expand']);
+  expect(positive.f.executed).toEqual(['article_entry','replies_expand']);
   expect(positive.frames.some(frame => frame.replies > 0)).toBe(true);
   expect(positive.row.replies.observations).toHaveLength(2);
   expect(positive.row.sampleTruncation!.observed).toBeGreaterThan(0);
   expect(positive.f.context.sources.get('789')).toBeDefined();
   const zero = await run(0);
-  expect(zero.f.executed).toEqual(['body_expand','article_entry']);
+  expect(zero.f.executed).toEqual(['article_entry']);
   expect(zero.f.context.sources.get('789')).toBeUndefined();
   expect(zero.f.opens).toEqual([target.url,target.url]);
-  expect(zero.frames.length).toBeGreaterThanOrEqual(3);
+  expect(zero.frames.length).toBeGreaterThanOrEqual(2);
   expect(zero.frames.map(frame => ({collectReplies:'collectReplies' in frame.request ? frame.request.collectReplies : undefined,replies:frame.replies}))).toEqual(Array(zero.frames.length).fill({collectReplies:false,replies:0}));
-  expect(zero.row).toMatchObject({root:{postId:'123',text:'expanded body'},article:{bodyObserved:true,body:{text:'Article paragraph\n\nHeading'}},replies:{observations:[]},sampleTruncation:{observed:0,sampled:0,omitted:0},budgetUsage:{expandActions:2,scrolls:0}});
+  expect(zero.row).toMatchObject({root:{postId:'123',text:'preview'},article:{bodyObserved:true,body:{text:'Article paragraph\n\nHeading'}},replies:{observations:[]},sampleTruncation:{observed:0,sampled:0,omitted:0},budgetUsage:{expandActions:1,scrolls:0}});
 });

@@ -9,6 +9,9 @@ import type {
 import type { XSearchQuery } from './xResearchTypes';
 import {
   decodeXSearchResponse,
+  decodeXReadResponse,
+  type XReadNetworkRequest,
+  type XNetworkReadPage,
   type XNetworkPage,
   type XNetworkProvenance,
   type XSearchNetworkRequest,
@@ -16,10 +19,20 @@ import {
 export type XNetworkCleanupFailure = 'network_cleanup_failed';
 const cleanupFailures = new WeakSet<object>();
 export function retainXNetworkCleanupFailure(error: unknown): void {
-  if(error!==null&&(typeof error==='object'||typeof error==='function'))cleanupFailures.add(error);
+  if (
+    error !== null &&
+    (typeof error === 'object' || typeof error === 'function')
+  )
+    cleanupFailures.add(error);
 }
-export function getXNetworkCleanupFailure(error: unknown): XNetworkCleanupFailure | undefined {
-  return error!==null&&(typeof error==='object'||typeof error==='function')&&cleanupFailures.has(error) ? 'network_cleanup_failed' : undefined;
+export function getXNetworkCleanupFailure(
+  error: unknown,
+): XNetworkCleanupFailure | undefined {
+  return error !== null &&
+    (typeof error === 'object' || typeof error === 'function') &&
+    cleanupFailures.has(error)
+    ? 'network_cleanup_failed'
+    : undefined;
 }
 export interface XNetworkPageFact {
   provenance: XNetworkProvenance;
@@ -32,24 +45,60 @@ export interface XNetworkPageFact {
   sampled: number;
   omitted: number;
   unsupported: string[];
+  readContext?: {
+    rootPostId: string;
+    accountContextId: string | null;
+    branchKey: string | null;
+    sortKey: string | null;
+    continuationKind: string | null;
+    terminationDirections: string[];
+  };
 }
 /** Trusted synchronous historical-fact sink; never grants page action authority. */
-export type XNetworkAcceptanceSink = (page: XNetworkPage, fact: XNetworkPageFact) => void;
+export type XNetworkAcceptanceSink<Page extends XNetworkPage = XNetworkPage> = (
+  page: Page,
+  fact: XNetworkPageFact,
+) => void;
+interface XNetworkStrategy<
+  Request extends {
+    provenance: XNetworkProvenance;
+    inputCursor: string | null;
+  },
+  Page extends XNetworkPage,
+> {
+  operation: string;
+  bindVariables(
+    vars: Record<string, unknown>,
+    provenance: XNetworkProvenance,
+    inputCursor: string | null,
+  ): Request | null;
+  decode(body: unknown, request: Request): Page;
+  provesIdentity?(page: Page): boolean;
+  onInvalidCursor?(): void;
+}
+
 const same = (a: BrowserLocationFacts, b: BrowserLocationFacts) =>
   a.currentUrl === b.currentUrl &&
   a.documentEpoch === b.documentEpoch &&
   a.routeRevision === b.routeRevision &&
   a.navigationSequence === b.navigationSequence;
 /** A request-time binding, separate from DOM generations and navigation receipt UUIDs. */
-export class XNetworkSearchLease {
+export class XNetworkLease<
+  Request extends {
+    provenance: XNetworkProvenance;
+    inputCursor: string | null;
+  },
+  Page extends XNetworkPage,
+> {
   readonly id = randomUUID();
   readonly pageFacts: XNetworkPageFact[] = [];
   private source?: BrowserNetworkLease;
   private location?: BrowserLocationFacts;
   private navigationId?: string;
+  private sourceCoordinates?: { frameId: string; loaderId: string };
   private readonly requests = new Map<
     string,
-    { raw: BrowserNetworkRequest; request: XSearchNetworkRequest }
+    { raw: BrowserNetworkRequest; request: Request }
   >();
   private readonly responses = new Map<
     string,
@@ -63,31 +112,36 @@ export class XNetworkSearchLease {
   private proof?: XNetworkProvenance;
   private stopped: string | null = null;
   private queued: BrowserNetworkEvent[] = [];
+  private invalidationReason: string | null = null;
+  private readonly invalidationListeners = new Set<(reason: string) => void>();
   constructor(
-    readonly query: XSearchQuery,
     readonly expectedUrl: string,
+    private readonly strategy: XNetworkStrategy<Request, Page>,
   ) {}
   bind(source: BrowserNetworkLease): void {
     if (this.source) throw new Error('lease_already_bound');
     this.source = source;
   }
+  onInvalidated(listener: (reason: string) => void): () => void {
+    this.invalidationListeners.add(listener);
+    if (this.invalidationReason !== null) listener(this.invalidationReason);
+    return () => this.invalidationListeners.delete(listener);
+  }
+  protected invalidate(reason: string): void {
+    if (this.invalidationReason !== null) return;
+    this.invalidationReason = reason;
+    this.stopped = reason;
+    for (const listener of this.invalidationListeners) listener(reason);
+  }
   accepts = (raw: BrowserNetworkRequest): boolean => {
     if (
       this.stopped ||
-      this.ended ||
-      this.pageFacts.length >= 1000 ||
       raw.isMainFrame !== true ||
       raw.sessionId !== null ||
       raw.redirectIndex < 0 ||
       !raw.navigationId ||
       raw.location.currentUrl !== this.expectedUrl ||
       raw.method !== 'GET'
-    )
-      return false;
-    if (
-      this.location &&
-      (!same(this.location, raw.location) ||
-        this.navigationId !== raw.navigationId)
     )
       return false;
     let vars: Record<string, unknown>;
@@ -99,7 +153,9 @@ export class XNetworkSearchLease {
         url.port ||
         url.username ||
         url.password ||
-        !/^\/i\/api\/graphql\/[^/]+\/SearchTimeline$/.test(url.pathname) ||
+        !new RegExp(
+          '^/i/api/graphql/[^/]+/' + this.strategy.operation + '$',
+        ).test(url.pathname) ||
         url.searchParams.getAll('variables').length !== 1
       )
         return false;
@@ -107,25 +163,8 @@ export class XNetworkSearchLease {
     } catch {
       return false;
     }
-    if (
-      !vars ||
-      vars.rawQuery !== this.query.query ||
-      vars.product !== this.query.product
-    )
-      return false;
+    if (!vars || Array.isArray(vars) || typeof vars !== 'object') return false;
     const input = Object.hasOwn(vars, 'cursor') ? vars.cursor : null;
-    if (input !== null && (typeof input !== 'string' || !input)) return false;
-    if (this.initial && input === null) return false;
-    if (!this.initial && this.requests.size === 0 && input !== null)
-      return false;
-    if (!this.requests.size && this.initial && input !== this.cursor)
-      return false;
-    if (
-      [...this.requests.values()].some((p) => p.request.inputCursor === input)
-    )
-      return false;
-    this.location ??= { ...raw.location };
-    this.navigationId ??= raw.navigationId;
     const provenance: XNetworkProvenance = {
       leaseId: this.id,
       requestRef: randomUUID(),
@@ -133,19 +172,53 @@ export class XNetworkSearchLease {
       documentEpoch: raw.location.documentEpoch,
       routeRevision: raw.location.routeRevision,
       navigationSequence: raw.location.navigationSequence,
-      operation: 'SearchTimeline',
+      operation: this.strategy.operation,
       observedAt: new Date().toISOString(),
     };
+    const request = this.strategy.bindVariables(
+      vars,
+      provenance,
+      input as string | null,
+    );
+    if (!request) return false;
+    if (
+      this.location &&
+      (!same(this.location, raw.location) ||
+        this.navigationId !== raw.navigationId ||
+        this.sourceCoordinates?.frameId !== raw.frameId ||
+        this.sourceCoordinates?.loaderId !== raw.loaderId)
+    ) {
+      this.invalidate('generation_changed');
+      return false;
+    }
+
+    if (
+      (input !== null && (typeof input !== 'string' || !input)) ||
+      (this.initial && input === null) ||
+      (!!this.strategy.onInvalidCursor &&
+        this.initial &&
+        input !== this.cursor) ||
+      (!this.initial && this.requests.size === 0 && input !== null) ||
+      (!this.requests.size && this.initial && input !== this.cursor)
+    ) {
+      this.strategy.onInvalidCursor?.();
+      return false;
+    }
+    if (
+      [...this.requests.values()].some((p) => p.request.inputCursor === input)
+    )
+      return false;
+
+    if (this.ended || this.pageFacts.length >= 1000) return false;
+    this.location ??= { ...raw.location };
+    this.navigationId ??= raw.navigationId;
+    this.sourceCoordinates ??= { frameId: raw.frameId, loaderId: raw.loaderId };
     this.requests.set(raw.id, {
       raw: Object.freeze({
         ...raw,
         location: Object.freeze({ ...raw.location }),
       }),
-      request: {
-        provenance,
-        query: { ...this.query },
-        inputCursor: input as string | null,
-      },
+      request,
     });
     return true;
   };
@@ -168,9 +241,9 @@ export class XNetworkSearchLease {
     location: BrowserLocationFacts,
     signal?: AbortSignal,
     currentLocation?: () => BrowserLocationFacts,
-    onAccepted?: XNetworkAcceptanceSink,
+    onAccepted?: XNetworkAcceptanceSink<Page>,
   ): Promise<{
-    pages: XNetworkPage[];
+    pages: Page[];
     proof?: XNetworkProvenance;
     facts: XNetworkPageFact[];
     failure?: string;
@@ -183,18 +256,31 @@ export class XNetworkSearchLease {
     )
       this.fail('generation_changed');
     if (!this.source) this.fail('lease_missing');
-    const pages: XNetworkPage[] = [];
+    const pages: Page[] = [];
     const facts: XNetworkPageFact[] = [];
     const validSource = () => {
       try {
-        if (signal?.aborted) { this.stopped='cancelled'; return false; }
-        const current=currentLocation?.() ?? location;
-        if(!same(location,current)||(this.location&&!same(this.location,current))) { this.stopped='generation_changed'; return false; }
+        if (this.invalidationReason !== null) return false;
+        if (signal?.aborted) {
+          this.stopped = 'cancelled';
+          return false;
+        }
+        const current = currentLocation?.() ?? location;
+        if (
+          !same(location, current) ||
+          (this.location && !same(this.location, current))
+        ) {
+          this.stopped = 'generation_changed';
+          return false;
+        }
         return true;
-      } catch { this.stopped=signal?.aborted?'cancelled':'generation_changed'; return false; }
+      } catch {
+        this.stopped = signal?.aborted ? 'cancelled' : 'generation_changed';
+        return false;
+      }
     };
     const consume = (events: BrowserNetworkEvent[]) => {
-      if(!validSource())return;
+      if (!validSource()) return;
       for (const e of events) {
         if (e.kind === 'closed') {
           this.stopped = e.reason;
@@ -232,10 +318,14 @@ export class XNetworkSearchLease {
           this.stopped = 'invalid_json';
           break;
         }
-        if(!validSource())break;
-        let page: XNetworkPage;
-        try { page = decodeXSearchResponse(body, bound.request); }
-        catch { this.stopped='decode_failed'; break; }
+        if (!validSource()) break;
+        let page: Page;
+        try {
+          page = this.strategy.decode(body, bound.request);
+        } catch {
+          this.stopped = 'decode_failed';
+          break;
+        }
         this.requests.delete(id);
         this.responses.delete(id);
         const fact: XNetworkPageFact = {
@@ -249,11 +339,27 @@ export class XNetworkSearchLease {
           sampled: page.posts.length,
           omitted: 0,
           unsupported: [...page.unsupported],
+          ...('root' in page
+            ? {
+                readContext: {
+                  rootPostId: (bound.request as unknown as XReadNetworkRequest)
+                    .postId,
+                  accountContextId: null,
+                  branchKey: (page as unknown as XNetworkReadPage).branchKey,
+                  sortKey: (page as unknown as XNetworkReadPage).sortKey,
+                  continuationKind: (page as unknown as XNetworkReadPage)
+                    .continuationKind,
+                  terminationDirections: (page as unknown as XNetworkReadPage)
+                    .terminationDirections,
+                },
+              }
+            : {}),
         };
         this.pageFacts.push(fact);
         facts.push(fact);
         pages.push(page);
-        this.proof = page.provenance;
+        if (!this.strategy.provesIdentity || this.strategy.provesIdentity(page))
+          this.proof = page.provenance;
         this.initial = true;
         // Commit evidence before any promise continuation can lose a cancellation race.
         onAccepted?.(page, fact);
@@ -349,5 +455,69 @@ export class XNetworkSearchLease {
         return 'network_cleanup_failed';
       }
     })());
+  }
+}
+
+export class XNetworkSearchLease extends XNetworkLease<
+  XSearchNetworkRequest,
+  XNetworkPage
+> {
+  constructor(
+    readonly query: XSearchQuery,
+    expectedUrl: string,
+  ) {
+    super(expectedUrl, {
+      operation: 'SearchTimeline',
+      bindVariables: (vars, provenance, inputCursor) =>
+        vars.rawQuery === query.query && vars.product === query.product
+          ? { provenance, query: { ...query }, inputCursor }
+          : null,
+      decode: (body, request) => decodeXSearchResponse(body, request),
+    });
+  }
+}
+export class XNetworkReadLease extends XNetworkLease<
+  XReadNetworkRequest,
+  XNetworkReadPage
+> {
+  constructor(
+    readonly postId: string,
+    expectedUrl: string,
+    readonly collectReplies: boolean,
+  ) {
+    let sortKey: string | null = null,
+      branchKey: string | null = null;
+    super(expectedUrl, {
+      operation: 'TweetDetail',
+      provesIdentity: (page) => !!page.root,
+      onInvalidCursor: () => this.invalidate('cursor_chain_mismatch'),
+      bindVariables: (vars, provenance, inputCursor) => {
+        if (vars.focalTweetId !== postId) return null;
+        if (
+          !['Relevance', 'Recency'].includes(String(vars.rankingMode)) ||
+          (sortKey !== null && vars.rankingMode !== sortKey)
+        ) {
+          this.invalidate('sort_changed');
+          return null;
+        }
+        sortKey = String(vars.rankingMode);
+        return {
+          provenance,
+          postId,
+          inputCursor,
+          branchKey,
+          sortKey,
+          collectReplies,
+        };
+      },
+      decode: (body, request) => {
+        // Source cursor transition, including out-of-order response completion. A Bottom
+        // continuation inside ShowMoreThreads retains that branch; it is not global main.
+        const page = decodeXReadResponse(body, { ...request, branchKey });
+        if (page.continuationKind === 'ShowMoreThreads')
+          branchKey = 'ShowMoreThreads';
+        return page;
+      },
+    });
   }
 }

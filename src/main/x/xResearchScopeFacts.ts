@@ -1,3 +1,4 @@
+import {replyScopeSchema,networkPageSchema,networkReadScopeValid} from './xResearchCanonical';
 import { z } from 'zod';
 import type { XReportScopeFacts, XReportRunScopeFacts, XResearchResult } from './xResearchTypes';
 
@@ -5,14 +6,8 @@ const text = z.string().min(1);
 const status = z.enum(['observed','partial','explicit_empty','auth_required','action_required','rate_limited','access_denied','unavailable','cancelled','failed']);
 const stop = z.enum(['explicit_ui_end','source_unavailable','cursor_exhausted','budget_reached','action_failed','navigation_failed','identity_unproven','wait_timeout','access_barrier','cancelled','agent_stopped']);
 const barrier = z.object({status,reason:z.string(),observationId:text.nullable()}).nullable();
-const branch = z.object({postId:z.string().nullable(),sourceUrl:z.string().nullable()}).nullable();
-const sort = z.object({label:z.string(),value:z.string().nullable()}).nullable();
-const endEvidence = z.object({observationId:text,text:z.string(),sourceUrl:text,observedAt:text,rootPostId:text,branch,sort});
-const scope = z.object({rootPostId:z.string().nullable(),branch,sort,stopReason:stop,
-  displayedReplyCount:z.object({text:z.string(),value:z.number().finite().nullable()}).nullable(),
-  completeness:z.enum(['unknown','ui_scope_end_observed']),endEvidence:endEvidence.nullable(),
-}).refine(value=>value.completeness!=='ui_scope_end_observed'||value.endEvidence!==null);
-const identity = z.object({schemaVersion:z.literal(2),sourceKind:z.enum(['rendered_ui','page_graphql']),runId:text,callId:text});
+const scope=replyScopeSchema;
+const identity = z.object({schemaVersion:z.literal(2),sourceKind:z.enum(['rendered_ui','page_graphql','mixed']),runId:text,callId:text});
 const base = {...identity.shape,batchId:text};
 // Validate only canonical scope source fields. Body/diagnostic validation belongs
 // to the evidence ledger; this independent bookkeeping cannot authorize evidence.
@@ -22,12 +17,13 @@ const scopeResult = z.discriminatedUnion('operation',[
     status,stopReason:stop,barrier,posts:z.array(z.unknown()),
   })).min(1).max(6)}),
   z.object({...base,operation:z.literal('read'),targets:z.array(z.object({
+    postId:z.string().nullable().optional(),networkPages:z.array(networkPageSchema).optional(),
     target:z.union([z.object({postId:text}).strict(),z.object({url:text}).strict()]),
     status,stopReason:stop,reason:z.string().nullable(),
     root:z.object({}).nullable(),quotedPosts:z.array(z.object({})),
     article:z.object({requested:z.boolean(),entryObserved:z.boolean(),actionAttempted:z.boolean(),navigationStarted:z.boolean(),bodyObserved:z.boolean(),entry:z.object({}).nullable(),body:z.object({}).nullable(),barrier}),
     replies:z.object({requested:z.boolean(),observations:z.array(z.unknown()),scope}),
-  })).min(1).max(20)}),
+  }).refine(networkReadScopeValid)).min(1).max(20)}),
 ]);
 type ParsedScopeResult = z.infer<typeof scopeResult>;
 type ScopeResult =
@@ -72,7 +68,7 @@ export function reportScopeFacts(result: ScopeResult): XReportScopeFacts {
   } else {
     for (const row of result.targets) {
       countRow(row, row.reason);
-      count(facts.replyScopeCounts, row.replies.scope.completeness);
+      count(facts.replyScopeCounts, 'kind' in row.replies.scope?row.replies.scope.extent:row.replies.scope.completeness);
     }
   }
   return facts;

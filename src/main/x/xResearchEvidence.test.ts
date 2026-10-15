@@ -70,9 +70,10 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
     const frame=fresh.targets[0].diagnostics?.firstAdmittedFrame;
     expect(frame?.sourceRootState).toMatchObject({root:{connection:'connected'},identity:{coordinates:'same'}});
     expect(frame?.replyUiInventory?.capture).toMatchObject({state:'checked',nodes:[{text:'Show replies'},{text:'initial 回复'}]});
-    expect(fresh.targets[0].diagnostics?.terminalFrame?.replyUiInventory?.capture).toMatchObject({state:'checked',nodes:[{text:'Show replies'},{text:'terminal End of conversation'}]});
+    expect(fresh.targets[0].diagnostics?.terminalFrame?.replyUiInventory?.capture).toMatchObject({state:'checked',nodes:[{text:'Show replies'},{text:'initial 回复'}]});
     expect(frame?.snapshotId).toMatch(/^xsnap_/);
     const old=structuredClone(fresh);
+    old.sourceKind='rendered_ui';old.targets[0].root!.sourceKind='rendered_ui';delete old.targets[0].root!.networkProvenance;delete old.targets[0].identity;delete old.targets[0].networkPages;old.targets[0].replies.scope={rootPostId:'123',branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
     delete old.targets[0].diagnostics;
     const {retainReadBody}=await import('./xResearchReadStages');
     const current=fresh.targets[0].root!;
@@ -228,6 +229,7 @@ it('previewNeedsExactArticleAttempt: requested and parent navigation cannot stan
   const body = structuredClone(r);
   body.targets[0].article.body = {
     ...body.targets[0].root!,
+    sourceKind: 'rendered_ui',networkProvenance:undefined,
     containerKind: 'article',
     postId: '456',
     sourceUrl: 'https://x.com/articleauthor/status/456',
@@ -238,12 +240,14 @@ it('previewNeedsExactArticleAttempt: requested and parent navigation cannot stan
   delete body.targets[0].article.body.articlePreviews;
   body.targets[0].article.bodyObserved = true;
   body.targets[0].article.entryIdentity = identity;
+  body.sourceKind='mixed';
   ledger.restore([history(body)]);
   expect(ledger.guard(report, citation())).toEqual({ createOnly: true });
   expect(
     ledger.guard(report, citation('https://x.com/articleauthor/status/456')),
   ).toEqual({ createOnly: true });
   body.targets[0].article.body.author!.handle = 'alice';
+  body.sourceKind='mixed';
   ledger.restore([history(body)]);
   expect(() =>
     ledger.guard(report, citation('https://x.com/articleauthor/status/456')),
@@ -395,7 +399,7 @@ it('refreshed href-less parent evidence permits an actual accurate-entry failure
     old = { ...entry(r), entryObservationId: 'search-entry', targetUrl: null };
   const search: XResearchResult = {
     schemaVersion: 2,
-    sourceKind: 'rendered_ui',
+    sourceKind: 'page_graphql',
     operation: 'search',
     runId: 'run',
     callId: 'search-call',
@@ -531,7 +535,7 @@ it('attached legacy body remains citeable when its same-item parent has an empty
   expect(l.guard(report, citation())).toEqual({ createOnly: true });
   expect(l.legacyProjections[0].articles[0].independentIdentity).toBeNull();
 });
-it('legacy navigation hints resolve a fresh ID read without stamping legacy provenance onto rendered UI', async () => {
+it('legacy navigation hints resolve a fresh ID read without stamping legacy provenance onto network reads', async () => {
   const l = new XResearchEvidence('/tmp', () => 'new-run');
   l.restore([
     history({
@@ -572,7 +576,7 @@ it('legacy navigation hints resolve a fresh ID read without stamping legacy prov
     targets: [
       {
         root: {
-          sourceKind: 'rendered_ui',
+          sourceKind: 'page_graphql',
           sourceUrl: url,
           text: 'new rendered body',
         },
@@ -585,7 +589,7 @@ it('legacy navigation hints resolve a fresh ID read without stamping legacy prov
   ]);
   expect(l.observations.map((o) => [o.sourceKind, o.runId])).toEqual([
     ['legacy_x_graphql', null],
-    ['rendered_ui', 'new-run'],
+    ['page_graphql', 'new-run'],
   ]);
   expect(l.sources.get('123')!.find((s) => 'sourceKind' in s)).toMatchObject({
     runId: null,
@@ -604,6 +608,7 @@ it('a parent body moved into the Article slot is not an observed Article body', 
     bodyObserved: true,
     body: {
       ...r.targets[0].root!,
+      sourceKind: 'rendered_ui',networkProvenance:undefined,
       containerKind: 'article',
       postId: '456',
       sourceUrl: e.targetUrl,
@@ -611,6 +616,7 @@ it('a parent body moved into the Article slot is not an observed Article body', 
       articlePreviews: undefined,
     },
   };
+  r.sourceKind='mixed';
   const l = new XResearchEvidence('/tmp', () => 'run');
   l.observe(r);
   expect(l.guard(report, citation())).toEqual({ createOnly: true });
@@ -645,6 +651,7 @@ it('a href-less entry with an actually observed matching Article body resolves a
     bodyObserved: true,
     body: {
       ...r.targets[0].root!,
+      sourceKind: 'rendered_ui',networkProvenance:undefined,
       containerKind: 'article',
       postId: '456',
       sourceUrl: known.targetUrl,
@@ -652,6 +659,7 @@ it('a href-less entry with an actually observed matching Article body resolves a
       articlePreviews: undefined,
     },
   };
+  r.sourceKind='mixed';
   const l = new XResearchEvidence('/tmp', () => 'run');
   l.observe(r);
   expect(l.guard(report, citation())).toEqual({ createOnly: true });
@@ -870,7 +878,7 @@ it('unscoped preview obligations survive missing bodies and resolve only in a la
   const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(old);
   for(const own of ['https://x.com/bob/status/456','https://x.com/carol/status/789'])expect(ledger.guard(report,citation(own))).toEqual({createOnly:true});
   // Retention omits every new body; mandatory exact-parent facts still prohibit both old bodies.
-  const trimmed=structuredClone(fresh);trimmed.targets[0].unscopedPosts!.observations=[];trimmed.targets[0].unscopedPosts!.inventory.retained=0;trimmed.targets[0].unscopedPosts!.inventory.omitted=1;
+  const trimmed=structuredClone(fresh);trimmed.targets[0].unscopedPosts!.observations=[];trimmed.targets[0].unscopedPosts!.inventory.retained=0;trimmed.targets[0].unscopedPosts!.inventory.omitted=trimmed.targets[0].unscopedPosts!.inventory.observed;
   ledger.observe(trimmed);
   for(const own of ['https://x.com/bob/status/456','https://x.com/carol/status/789'])expect(()=>ledger.guard(report,citation(own))).toThrow(/inventory is unknown/);
   const attempt=await readX({tabId:'research-tab',read:{objective:'accurate parent',targets:[{url:'https://x.com/bob/status/456'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(parent('456','bob','parent body'))]).context);
@@ -911,7 +919,16 @@ it('retains validated network provenance in production and restored evidence alo
  const provenance=network.queries[0].posts[0].networkProvenance!;
  const ledger=new XResearchEvidence('/tmp',()=>network.runId);ledger.observe(network);
  expect(ledger.observations[0]).toMatchObject({sourceKind:'page_graphql',networkProvenance:provenance});
- const old=await result();ledger.restore([history(network),history(old)]);
+ const old=await result();old.sourceKind='rendered_ui';old.targets[0].root!.sourceKind='rendered_ui';delete old.targets[0].root!.networkProvenance;delete old.targets[0].identity;delete old.targets[0].networkPages;old.targets[0].replies.scope={rootPostId:'123',branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};ledger.restore([history(network),history(old)]);
  expect(ledger.observations.find(p=>p.sourceKind==='page_graphql')).toMatchObject({origin:'history',networkProvenance:provenance});
  const rendered=ledger.observations.find(p=>p.sourceKind==='rendered_ui');expect(rendered).toBeDefined();expect(rendered).not.toHaveProperty('networkProvenance');
+});
+
+it('restores rendered UI end as historical UI evidence and rejects a mismatched network end upgrade',async()=>{
+ const r=await result();r.sourceKind='rendered_ui';const row=r.targets[0];row.root!.sourceKind='rendered_ui';delete row.root!.networkProvenance;delete row.identity;delete row.networkPages;
+ row.replies.scope={rootPostId:'123',branch:null,sort:null,displayedReplyCount:null,completeness:'ui_scope_end_observed',stopReason:'explicit_ui_end',endEvidence:{observationId:'historic-ui-end',text:'Visible branch end',sourceUrl:url,observedAt:'2026-10-12T00:00:00Z',rootPostId:'123',branch:null,sort:null}};
+ const ledger=new XResearchEvidence('/tmp',()=> 'restored');ledger.restore([history(r)]);expect(ledger.guard(report,citation())).toEqual({createOnly:true});expect(ledger.observations[0]).toMatchObject({sourceKind:'rendered_ui',origin:'history'});
+ const {XResearchScopeLedger}=await import('./xResearchScopeFacts');const scopes=new XResearchScopeLedger();scopes.restore([history(r)]);expect(scopes.prior('run').withCurrent(r).read.replyScopeCounts).toEqual({ui_scope_end_observed:1});
+ const invalid=structuredClone(r);invalid.targets[0].replies.scope={kind:'network',rootPostId:'123',extent:'cursor_exhausted',context:{leaseId:'invented',accountContextId:null,branchKey:'ShowMoreThreads',sortKey:'Relevance'},terminalRequestRef:'historic-ui-end',stopReason:'cursor_exhausted'};
+ ledger.restore([history(invalid)]);expect(()=>ledger.guard(report,citation())).toThrow(/unobserved/);
 });

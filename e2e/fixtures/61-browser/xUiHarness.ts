@@ -184,7 +184,7 @@ void app.whenReady().then(async () => {
         original.after(duplicate);`);
       return port.withPage(opened.tabId,undefined,async page=>{
         const observed=await collectXPage(page,{stage:'search',expectedUrl:'https://x.com/search?q=containers&f=top',query:'containers',product:'Top'});
-        return {posts:observed.posts,entryParents:observed.entries.map(entry=>({author:entry.author?.handle,parentText:observed.entryParents.get(entry)?.text}))};
+        return {posts:observed.posts,entryParents:observed.entries.map(entry=>({author:entry.author?.handle,parentCoordinates:observed.entryParents.get(entry)}))};
       });
     },
     longBodyNoControl: async () => {

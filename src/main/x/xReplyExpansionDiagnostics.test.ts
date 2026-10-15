@@ -14,7 +14,7 @@ it('allowlists private-free reply diagnostics in normal and projected model/deta
  for(const objective of ['normal','x'.repeat(600000)]){
   const out=serializeXResearchResult({...r,objective});
   expect(JSON.parse(out.text).targets[0].diagnostics.replyExpansions).toEqual(out.result.targets[0].diagnostics!.replyExpansions);
-  expect(out.result.targets[0].diagnostics!.replyExpansions!.first!.actionIndex).toBe(2);
+  expect(out.result.targets[0].diagnostics!.replyExpansions!.first!.actionIndex).toBe(1);
   expect(JSON.stringify(xResearchToolResult(out))).not.toContain('private-token');
   expect(out.result.budgetUsage.outputBytes).toBe(Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8'));
  }
@@ -35,7 +35,7 @@ it('whole optional reply section has a precise omission under full UTF8 envelope
  expect(capped.result.targets[0].budgetUsage.expandActions).toBe(4);
 });
 it('inventory is bounded to 100 exact own identities and diagnostics grant no citation or reply scope authority',async()=>{
- const f=replyContinuationFixture();try{await f.port.withPage('tab',undefined,async page=>{
+ const f=replyContinuationFixture();try{await f.port.open(f.request.expectedUrl,undefined,undefined,f.request);await f.port.withPage('tab',undefined,async page=>{
   const source=await page.collect(f.request);const one={...source.root!,containerKind:'reply' as const,directParent:null};
   source.replies=Array.from({length:103},(_,i)=>({...one,postId:String(900+i),sourceUrl:`https://x.com/own/status/${900+i}`}));
   const captured=replyCollection(source);expect(captured).toMatchObject({state:'captured',inventory:{state:'captured',total:103,returned:100,omitted:3}});
@@ -49,12 +49,12 @@ it('inventory is bounded to 100 exact own identities and diagnostics grant no ci
  ledger.observe(serializeXResearchResult(r).result);
  expect(()=>ledger.guard('/tmp/report.md','[root](https://x.com/alice/status/123)')).not.toThrow();
  expect(()=>ledger.guard('/tmp/report.md','[phantom](https://x.com/phantom/status/999)')).toThrow();
- expect(r.targets[0].replies.scope.completeness).toBe('unknown');
+ expect(r.targets[0].replies.scope.extent).toBe('unknown');
 });
 
 it('rejects impossible global action span without bounding global indices by reply count',async()=>{
  const r=await result(),d=r.targets[0].diagnostics!.replyExpansions!;
- expect(d.totalAttempts).toBe(3);d.first!.actionIndex=20;d.last!.actionIndex=22;
+ expect(d.totalAttempts).toBe(4);d.first!.actionIndex=20;d.last!.actionIndex=23;
  expect(serializeXResearchResult(r).result.targets[0].diagnostics!.replyExpansions!.first!.actionIndex).toBe(20);
  d.last!.actionIndex=21;expect(()=>serializeXResearchResult(r)).toThrow();
 });

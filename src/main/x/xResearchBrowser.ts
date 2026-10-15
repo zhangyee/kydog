@@ -1,4 +1,4 @@
-import { XNetworkSearchLease, retainXNetworkCleanupFailure, type XNetworkAcceptanceSink } from './xNetworkLease';
+import { XNetworkSearchLease, XNetworkReadLease, retainXNetworkCleanupFailure, type XNetworkAcceptanceSink } from './xNetworkLease';
 import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/pointerPreflightDiagnostic';
 import { randomUUID } from 'node:crypto';
 import {createSourceEvaluation,logSourceDiagnostic} from '../browser/sourceEvaluationDiagnostic';
@@ -33,7 +33,7 @@ export interface XResearchBrowser {
 }
 
 export function createXResearchBrowser(browser: BrowserService, threadId: string): XResearchBrowser {
-  const networkLeases=new Map<string,XNetworkSearchLease>();
+  const networkLeases=new Map<string,XNetworkSearchLease|XNetworkReadLease>();
   const sameLocation = (a: BrowserLocationFacts, b: BrowserLocationFacts) => a.documentEpoch===b.documentEpoch && a.routeRevision===b.routeRevision && a.navigationSequence===b.navigationSequence && a.currentUrl===b.currentUrl;
   const entries = new WeakMap<XArticleEntry, {tabId:string; snapshot:AxSnapshot}>();
   const actions = new WeakMap<XActionResult, {tabId:string; entry:XArticleEntry; location:BrowserLocationFacts; finalUrl:string|null}>();
@@ -47,7 +47,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         throw new KydogError('browser.bad_action','X research tab belongs to another thread');
       if(tabId){const previous=networkLeases.get(tabId);networkLeases.delete(tabId);if(await previous?.close()){const error=new KydogError('x.invalid_page','source_unavailable:network_cleanup_failed');retainXNetworkCleanupFailure(error);throw error;}}
       if(request)xPageExpression(request);
-      const network=request?.stage==='search'?new XNetworkSearchLease({id:randomUUID(),purpose:'collection',query:request.query,product:request.product},url):undefined;
+      const network=request?.stage==='search'?new XNetworkSearchLease({id:randomUUID(),purpose:'collection',query:request.query,product:request.product},url):request?.stage==='post'?new XNetworkReadLease(request.postId,url,request.collectReplies!==false):undefined;
       const opened = await browser.open({ url, tabId, ownerThreadId: threadId, activate: false, signal,...(network?{network:{ownerId:network.id,accepts:network.accepts}}:{}) });
       const result:XOpenResult={tabId:opened.tabId,nav:opened.nav,evicted:opened.evicted};
       if(network&&opened.networkLease){network.bind(opened.networkLease);networkLeases.set(result.tabId,network);result.networkLeaseId=network.id;}
@@ -75,6 +75,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         if (failure) return;
         failure = error; lifetime.abort(); rejectStopped(error);
       };
+      const offNetwork = network?.onInvalidated(reason => stop(new KydogError('x.invalid_page', 'source_unavailable:' + reason)));
       const abort = () => stop(new KydogError('browser.cancelled', '浏览器操作已取消'));
       const gone = (id: string) => { if (id === tabId) { realmGone=true;stop(new KydogError('browser.not_dispatchable', '目标标签已销毁或渲染进程已退出')); } };
       const offGone = browser.onTabDestroyed(gone), offUnavailable = browser.onTabUnavailable(gone);
@@ -168,8 +169,8 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
               navigationProof.directOpen={openedLocation:proof.location,sameGeneration:sameLocation(proof.location,after)};
           }
           const observation=decodeXPage(raw,request,after,navigationProof);
-          if(request.stage==='search'&&observation.state?.kind!=='auth_required'){
-            if(!network||network.expectedUrl!==request.expectedUrl||network.query.query!==request.query||network.query.product!==request.product)throw new KydogError('x.invalid_page','source_unavailable:lease_missing');
+          if((request.stage==='search'||(request.stage==='post'&&!!network))&&observation.state?.kind!=='auth_required'&&!observation.article){
+            if(!network||network.expectedUrl!==request.expectedUrl||(request.stage==='search'?!(network instanceof XNetworkSearchLease)||network.query.query!==request.query||network.query.product!==request.product:!(network instanceof XNetworkReadLease)||network.postId!==request.postId||network.collectReplies!==(request.collectReplies!==false)))throw new KydogError('x.invalid_page','source_unavailable:lease_missing');
             const captured=await network.collect(after,lifetime.signal,()=>{check();return browser.locationFacts(tabId);},options?.onNetworkPageAccepted);check();
             const invalidated=!sameLocation(after,browser.locationFacts(tabId));
             if(invalidated){captured.failure='generation_changed';captured.pending=false;}
@@ -180,6 +181,12 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             }
             if(captured.proof)observation.network={pages:captured.pages,proof:captured.proof,facts:captured.facts,pending:captured.pending,...(captured.failure?{failure:captured.failure}:{})};
             observation.identityProven=!!captured.proof;
+            if(request.stage==='post'){
+              const pages=captured.pages.filter((p):p is import('./xNetworkSource').XNetworkReadPage=>'root' in p);
+              observation.root=[...pages].reverse().find(p=>p.root)?.root??null;
+              observation.replies=pages.flatMap(p=>p.replies);observation.quotedPosts=pages.flatMap(p=>p.quotedPosts);
+              observation.scope.collectedItemCount=pages.reduce((n,p)=>n+p.posts.length,0);
+            }
           }
           if(sourceCommit && sourceCommit.generation!==observation.snapshot.generation) sourceCommit=undefined;
           if(observation.diagnosticFrame?.rawUrlMatchesPort===false) invalidateSource();
@@ -212,9 +219,9 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             if (!collectedPermission) throw new KydogError('browser.bad_action','X 控件必须使用原采集节点和许可');
             // Reserve exactly one native pipeline attempt. Keep the empty map so
             // a replay cannot fall through to generic click dispatch.
-            if (collectedPermission.purpose==='replies_expand' && 'index' in action) {
+            if ((collectedPermission.purpose==='replies_expand'||collectedPermission.purpose==='article_entry') && 'index' in action) {
               permissions.get(snapshot)!.delete(action.index);
-              try { options?.onReplyAdmission?.({state:'consumed',purpose:'replies_expand',binding:{...owned!.binding}}); }
+              try { if(collectedPermission.purpose==='replies_expand')options?.onReplyAdmission?.({state:'consumed',purpose:'replies_expand',binding:{...owned!.binding}}); }
               catch { /* Optional observers cannot restore permission or replace the action. */ }
             }
           }
@@ -259,7 +266,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
         lifetime.abort();
         while (pendingScrolls.size) await Promise.allSettled([...pendingScrolls]);
         if(await network?.close())retainXNetworkCleanupFailure(outwardError);
-        signal?.removeEventListener('abort', abort); offGone(); offUnavailable();
+        signal?.removeEventListener('abort', abort); offGone(); offUnavailable(); offNetwork?.();
         lifetime.abort(); bindings.clear(); currentEntries.clear(); permissions.clear();
       }
     },

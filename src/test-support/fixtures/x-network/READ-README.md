@@ -1,0 +1,19 @@
+# Recorded TweetDetail fixtures
+
+These nine field-projected, deidentified responses come from the ignored 2026-10-15 Chrome captures. HAR hashes were verified against the local manifest before projection. Only request focalTweetId, rankingMode and cursor and the listed response fields are retained. Credentials, viewer data, media, analytics and raw cursors are excluded. Public IDs and text are consistently replaced; cursor equality and container order are preserved. No raw mapping is committed.
+
+Source container: $.data.threaded_conversation_with_injections_v2.instructions. Recorded instructions: TimelineClearCache, TimelineAddEntries.entries and TimelineTerminateTimeline.direction (Top and Bottom). Entry content paths: itemContent and items[].item.itemContent (VerticalConversation), cursorType/value (Top, Bottom, ShowMoreThreads). Tweet nodes: tweet_results.result, actual TweetWithVisibilityResults.tweet, rest_id, legacy.id_str/full_text/conversation_id_str/in_reply_to_status_id_str, core.user_results.result.core.screen_name/name, note_tweet.note_tweet_results.result.text, quoted_status_result.result and article.article_results.result.rest_id. Article is only a preview-presence signal, never Article body/permission. Recorded TimelineLabel is non-post metadata. No null/missing itemContent or null module children were observed; those are rejected as unsupported. The recorded TweetWithVisibilityResults at read-expanded.har entry 0 instructions[1].entries[29].content.items[0].item.itemContent.tweet_results.result has a nested tweet with no __typename; absence is preserved, not filled.
+
+NASA Relevance pages 0→1; Recency pages 2→3→4. Dotey pages 0→1→2→3, final input equals page 2 ShowMoreThreads. Initial Top termination is not reply end. Final expanded page has both Bottom termination and Bottom cursor; preserve both, never global completeness. Manual Show probable spam click does not grant production DOM permissions. No unrecorded sort/branch/wrapper is supported.
+
+| Fixture | Local HAR / entry | Original bytes | Original SHA256 | Fixture SHA256 |
+|---|---|---:|---|---|
+| read-thread-0.json | read-thread.har / 0 | 218011 | f192e03cbd3de7e3951b406054fb6d734c535a73e7b5f235b99361847869e156 | 6f8fa335ac0d14836238083f584d60f934ff3b4a2646e334f670d24f50195dd8 |
+| read-thread-1.json | read-thread.har / 1 | 180417 | 048bb57efb42e73a4d7f67ad04e3007739ea6310685a9a1f0a34103541e6a25b | c57fd6f0c6adc81a3d17d954428cead0b3f19cd028562f8532db62edf60d3261 |
+| read-thread-2.json | read-thread.har / 2 | 150576 | cfbe09e006be00ba192a1136ecb0733ee07c332ebcfd5471d0736e32eac62738 | 7269232263f24bbfd61c283c91afb81a47d2c1b11090b12c4c05737be6d1a399 |
+| read-thread-3.json | read-thread.har / 3 | 142422 | 567cc7806389d1921e0832a4d7863cdcd61dc2fc5c3dfb4de79e6507f72ee5af | f6904b40f6176579278c325315211b742387f61571a851120c762e7143020b75 |
+| read-thread-4.json | read-thread.har / 4 | 123381 | fd5b2af3c3ba89178817bd844e9a427c0b99557ceaea5e4307c757fc6f82f58f | 13a5beffc06c5a0718a2a76615f7e45f58288bd46559e775d5f07f82cf212d20 |
+| read-expanded-0.json | read-expanded.har / 0 | 211693 | 4cc74a0b0dff21412218bd11cb0d8ba66e05518909b285b188c4b16bf6a8e558 | 425854c3d33f72392a98169ba6feefea11b7e14b1ba249e6f7a5900f604aa4ba |
+| read-expanded-1.json | read-expanded.har / 1 | 204254 | 0b855d02cf2be767e10ae655d8aa63fcee7f9329713033c8301033615c3b90b0 | 44fc7ef63d5ae4398e3bd0c61ceed29142ec767e680dc2d22a6cec4aff07c5a9 |
+| read-expanded-2.json | read-expanded.har / 2 | 21529 | e0d75423c76b8a1b3f0b34165a143f4cda56eba720ce962eb0919c10936d3ff6 | a171ea97fa9fc7466c62ba1f4d4da42f0cd9774d1012b8c192bce228dbb3457a |
+| read-expanded-3.json | read-expanded.har / 3 | 21977 | 28e1d02223817e4fda68774b05ba18525a5c2f63959a67b789ca3c7e21943a5e | 254d155a9f971971bb67a7118104bde15d87f79475a973c3212b8c6f36175fe0 |

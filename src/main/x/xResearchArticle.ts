@@ -3,7 +3,7 @@ import { KydogError } from '../../shared/errors';
 import type { XQueuedPage } from './xResearchBrowser';
 import type { XPageObservation } from './xObservation';
 import {
-  compareXLocation,
+  compareXLocation, matchesXArticleParent,
   isXPostUrl,
   proveArticleIdentity,
   toSafeXLocation,
@@ -38,7 +38,7 @@ export async function readArticle(
   context: XResearchContext,
 ): Promise<{ returnToParent: boolean }> {
   if (!limits.includeArticle) return { returnToParent: false };
-  const entry = parent.entries.find((e) => parent.entryParents.get(e) === parent.root);
+  const entry = parent.entries.find((e) => parent.identityProven && matchesXArticleParent(parent,e,row.root));
   const barrier = (reason: string) => {
     row.article.barrier = { status: 'partial', reason, observationId: null };
     row.status = 'partial';

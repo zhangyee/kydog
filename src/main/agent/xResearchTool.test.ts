@@ -100,7 +100,7 @@ describe('production X SDK factory',()=>{
       expect(result.details).toMatchObject({targets:[{status:ready?'observed':'partial', reason:ready?null:'post_wait_timeout', stopReason:ready?'agent_stopped':'wait_timeout', root:{postId:'123', text:'original'}, quotedPosts:[{postId:'456', text:'quote'}], replies:{scope:{rootPostId:'123', stopReason:ready?'agent_stopped':'wait_timeout'}}}]});
       const row = result.details!.operation==='read' ? result.details!.targets[0] : undefined;
       expect(row?.documentSource).toMatchObject({sourceUrl:url, rootObservationId:row?.root?.observationId});
-      expect(f.context.sources.get('123')!.map(s=>s.urlKind)).toEqual(['permalink','document']);
+      expect(f.context.sources.get('123')!.map(s=>s.urlKind)).toEqual(['permalink']);
       expect(f.context.sources.get('456')![0]).toMatchObject({urlKind:'permalink', sourceUrl:'https://x.com/bob/status/456'});
       expect(f.collect).toHaveBeenCalledTimes(2);
     }
@@ -226,7 +226,7 @@ it('factory content and canonical details preserve distinct source scroll failur
     const f=await stagedFixture({article:'ok',scrollError});
     const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:f.context.sources,currentRunId:()=> 'actual-run'});
     const result=await tool.execute('typed-scroll',{tabId:'research-tab',read:{objective:'source outcome',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:true,maxExpandActionsPerPost:4,maxScrollsPerPost:1}},undefined,undefined,{} as never);
-    const expected={status:'partial',reason:cause===null?'reply_budget_reached':cause==='ordinary'?'action_failed:browser.wait_timeout':cause,stopReason:cause===null?'budget_reached':cause==='scroll_ack_timeout'?'wait_timeout':'action_failed',root:{postId:'123',author:{handle:'alice'},text:'expanded body'},article:{bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'}}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{completeness:'unknown'}},budgetUsage:{scrolls:1,expandActions:3}};
+    const expected={status:'partial',reason:cause===null?'reply_budget_reached':cause==='ordinary'?'action_failed:browser.wait_timeout':cause,stopReason:cause===null?'budget_reached':cause==='scroll_ack_timeout'?'wait_timeout':'action_failed',root:{postId:'123',author:{handle:'alice'},text:'preview'},article:{bodyObserved:true,body:{postId:'456',sourceUrl:'https://x.com/bob/status/456',author:{handle:'bob'}}},replies:{observations:[{postId:'789'},{postId:'790'}],scope:{kind:'network',extent:'unknown'}},budgetUsage:{scrolls:1,expandActions:2}};
     expect(result.details?.operation).toBe('read');
     if(result.details?.operation!=='read')throw new Error('Expected read result');
     expect(result.details.targets[0]).toMatchObject(expected);
@@ -275,7 +275,7 @@ it('restores an owned tab, rejects a foreign binding and replaces an inherited m
  const readMissing=await tool.execute('read-missing',{tabId:'recovered-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}]}},undefined,undefined,{} as never);expect(readMissing.details?.status).toBe('failed');expect(f.open).toHaveBeenCalledTimes(2);
 });
 
-it('retains earlier precise root preview inventory across later body expansion and an accurate selected attempt',async()=>{
+it('retains earlier precise root preview inventory across later network pages and an accurate selected attempt',async()=>{
  const card=(id:string)=>`<div role="link" tabindex="0" href="https://x.com/bob/status/${id}"><div data-testid="User-Name"><a href="/bob">bob</a><a href="/bob">@bob</a></div><img data-testid="article-cover-image"></div>`;
  const initial=post().replace('</article>','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>'+card('456')+card('789')+'</article>');
  const expanded=post('123','alice','expanded body').replace('</article>',card('456')+'</article>');
@@ -284,8 +284,8 @@ it('retains earlier precise root preview inventory across later body expansion a
  const {XResearchEvidence}=await import('../x/xResearchEvidence');const evidence=new XResearchEvidence('/tmp',()=> 'run');
  const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
  const r=await tool.execute('frames',{tabId:'research-tab',read:{objective:'frames',targets:[{url:'https://x.com/alice/status/123'}],includeReplies:false}},undefined,undefined,{} as never);
- expect(r.details).toMatchObject({targets:[{root:{text:'expanded body',articlePreviewInventory:{observed:1,retained:1,omitted:0}},article:{actionAttempted:true},articlePreviewObservations:expect.arrayContaining([expect.objectContaining({articlePreviewInventory:{scope:'collection',observed:2,retained:1,omitted:1,unresolved:0}})])}]});
- expect(()=>evidence.guard('/tmp/report.md','[source](https://x.com/alice/status/123)')).toThrow('inventory');
+ expect(r.details).toMatchObject({targets:[{root:{text:'expanded body',articlePreviewInventory:{observed:1,retained:1,omitted:0}},article:{actionAttempted:true},articlePreviewObservations:expect.arrayContaining([expect.objectContaining({articlePreviewInventory:{scope:'collection',observed:2,retained:2,omitted:0,unresolved:0}})])}]});
+ expect(()=>evidence.guard('/tmp/report.md','[source](https://x.com/alice/status/123)')).toThrow('targetUrl=https://x.com/bob/status/789');
 });
 
 it('authoritative destruction during an action permits a new tab only on the following request',async()=>{

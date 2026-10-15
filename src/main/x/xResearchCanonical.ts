@@ -51,12 +51,14 @@ export const scopeSchema = scopeIdentitySchema.extend({
   articlePreviews: z.array(entrySchema),
   articlePreviewInventory: inventorySchema,
 });
-export const networkProvenanceSchema=z.object({leaseId:string,requestRef:string,navigationId:string,documentEpoch:count,routeRevision:count,navigationSequence:count,operation:z.literal('SearchTimeline'),observedAt:string});
-const networkPageSchema=z.object({provenance:networkProvenanceSchema,bytes:count,sha256:z.string().regex(/^[a-f0-9]{64}$/),inputCursorRef:string.nullable(),outputCursorRef:string.nullable(),end:z.enum(['unknown','cursor_exhausted']),observed:count,sampled:count,omitted:count,unsupported:z.array(string)}).refine(v=>v.observed===v.sampled+v.omitted);
+export const networkProvenanceSchema=z.object({leaseId:string,requestRef:string,navigationId:string,documentEpoch:count,routeRevision:count,navigationSequence:count,operation:z.enum(['SearchTimeline','TweetDetail']),observedAt:string});
+export const networkPageSchema=z.object({provenance:networkProvenanceSchema,bytes:count,sha256:z.string().regex(/^[a-f0-9]{64}$/),inputCursorRef:string.nullable(),outputCursorRef:string.nullable(),end:z.enum(['unknown','cursor_exhausted']),observed:count,sampled:count,omitted:count,unsupported:z.array(string),readContext:z.object({rootPostId:string,accountContextId:string.nullable(),branchKey:string.nullable(),sortKey:string.nullable(),continuationKind:string.nullable(),terminationDirections:z.array(z.enum(['Top','Bottom']))}).optional()}).refine(v=>v.observed===v.sampled+v.omitted);
 export const evidenceTextSchema = z.object({
   observationId: string,
   sourceKind: z.enum(['rendered_ui','page_graphql']),
   networkProvenance:networkProvenanceSchema.optional(),
+  conversationId:string.optional(),
+  directParent:z.object({postId:string.nullable(),sourceUrl:string.nullable()}).nullable().optional(),
   postId: z.string().nullable(),
   sourceUrl: z.string().nullable(),
   author,
@@ -79,7 +81,7 @@ export const evidenceTextSchema = z.object({
 }).refine(p=>p.sourceKind==='rendered_ui'||!!p.networkProvenance);
 export const unscopedTextSchema = z.object({
     ...evidenceTextSchema.shape,
-    sourceKind:z.literal('rendered_ui'),
+    sourceKind:z.enum(['rendered_ui','page_graphql']),
     containerKind: z.literal('unscoped_post'),
     relationToTarget: z.literal('unproven'),
     observedContainer: z.literal('post'),
@@ -90,19 +92,19 @@ export const unscopedTextSchema = z.object({
       displayName: z.string().nullable(),
       profileUrl: z.string().nullable(),
     }),
-    text: z.string().max(4000),
+    text: z.string(),
     articlePreviews: z.array(entrySchema).max(0).optional(),
   })
   .refine((p) => {
     const own = parseXSourcePost(p.sourceUrl);
     return (
-      own?.id === p.postId && own.handle === p.author.handle && !!p.text.trim()
+      own?.id === p.postId && own.handle === p.author.handle && !!p.text.trim() && (p.sourceKind==='rendered_ui'||!!p.networkProvenance)
     );
   });
 export const unscopedSchema = z
   .object({
-    observations: z.array(unscopedTextSchema).max(100),
-    collection: z.object({
+    observations: z.array(unscopedTextSchema).max(1000),
+    collection: z.union([z.object({kind:z.literal('network'),provenance:networkProvenanceSchema}),z.object({
       snapshotId: string,
       document: z.object({
         epoch: z.number().int().nonnegative(),
@@ -118,14 +120,14 @@ export const unscopedSchema = z
         fragment: z.string().nullable(),
         redacted: z.boolean(),
       }),
-    }),
+    })]),
     inventory: z.object({
       scope: z.literal('collection'),
-      observed: z.number().int().min(0).max(100),
-      retained: z.number().int().min(0).max(100),
-      omitted: z.number().int().min(0).max(100),
+      observed: z.number().int().min(0).max(1000),
+      retained: z.number().int().min(0).max(1000),
+      omitted: z.number().int().min(0).max(1000),
       sourceInventoryTruncated: z.boolean(),
-      excludedNestedQuotes: z.number().int().min(0).max(100),
+      excludedNestedQuotes: z.number().int().min(0).max(1000),
     }),
     previewGaps: z
       .array(
@@ -134,7 +136,7 @@ export const unscopedSchema = z
           unresolved: z.number().int().positive(),
         }),
       )
-      .max(100),
+      .max(1000),
   })
   .refine(
     (p) =>
@@ -344,7 +346,7 @@ const scopeFields = {
     .object({ text: z.string(), value: z.number().finite().nullable() })
     .nullable(),
 };
-const replyScope = z.discriminatedUnion('completeness', [
+const legacyReplyScope = z.discriminatedUnion('completeness', [
   z.object({
     ...scopeFields,
     completeness: z.literal('unknown'),
@@ -356,6 +358,21 @@ const replyScope = z.discriminatedUnion('completeness', [
     endEvidence,
   }),
 ]);
+export const networkReplyScopeSchema=z.object({kind:z.literal('network'),rootPostId:string.nullable(),extent:z.enum(['unknown','cursor_exhausted']),context:z.object({leaseId:string.nullable(),accountContextId:string.nullable(),branchKey:string.nullable(),sortKey:string.nullable()}),terminalRequestRef:string.nullable(),stopReason:stop}).strict().refine(s=>s.extent==='unknown'?s.terminalRequestRef===null:s.rootPostId!==null&&s.context.leaseId!==null&&s.context.accountContextId!==null&&s.context.branchKey!==null&&s.context.sortKey!==null&&s.terminalRequestRef!==null);
+export const replyScopeSchema=z.union([networkReplyScopeSchema,legacyReplyScope]);
+export function networkReadScopeValid(row:{postId?:string|null;networkPages?:z.infer<typeof networkPageSchema>[];replies:{scope?:z.infer<typeof replyScopeSchema>}}):boolean {
+ const s=row.replies.scope;if(!s||!('kind' in s))return true;
+ if(s.rootPostId!==null&&row.postId!==s.rootPostId)return false;
+ if(s.extent==='unknown')return true;
+ return !!row.networkPages?.some(p=>p.provenance.requestRef===s.terminalRequestRef&&p.provenance.leaseId===s.context.leaseId&&p.provenance.operation==='TweetDetail'&&p.end==='cursor_exhausted'&&p.unsupported.length===0&&p.readContext?.rootPostId===s.rootPostId&&p.readContext.accountContextId===s.context.accountContextId&&p.readContext.branchKey===s.context.branchKey&&p.readContext.sortKey===s.context.sortKey&&p.readContext.terminationDirections.includes('Bottom'));
+}
+export function readSourceDomainsValid(r:{sourceKind:string;targets:{root:{sourceKind:string}|null;quotedPosts:{sourceKind:string}[];bodyObservations?:{sourceKind:string;containerKind:string}[];unscopedPosts?:{observations:{sourceKind:string}[]};replies:{observations:{sourceKind:string}[]};article:{body:{sourceKind:string}|null}}[]}):boolean {
+ return r.targets.every(row=>{
+  const ordinary=[...(row.root?[row.root]:[]),...row.quotedPosts,...row.replies.observations,...(row.unscopedPosts?.observations??[]),...(row.bodyObservations??[]).filter(p=>p.containerKind!=='article')];
+  const articles=[...(row.article.body?[row.article.body]:[]),...(row.bodyObservations??[]).filter(p=>p.containerKind==='article')];
+  return articles.every(p=>p.sourceKind==='rendered_ui'&&r.sourceKind!=='page_graphql')&&ordinary.every(p=>p.sourceKind===(r.sourceKind==='rendered_ui'?'rendered_ui':'page_graphql'))&&(!row.article.body||(r.sourceKind!=='page_graphql'&&row.article.body.sourceKind==='rendered_ui'));
+ });
+}
 const observedSource = z.object({
   urlKind: z.enum(['permalink', 'document']),
   sourceUrl: string,
@@ -469,6 +486,8 @@ const searchRow = z.object({
 });
 const readRow = z
   .object({
+    identity:z.union([z.object({state:z.literal('never_proven')}),z.object({state:z.literal('proven'),postId:string,proof:networkProvenanceSchema})]).optional(),
+    networkPages:z.array(networkPageSchema).optional(),networkPagesOmitted:count.optional(),
     ...rowFields,
     target: z.union([z.object({ postId: string }), z.object({ url: string })]),
     documentSource: observedSource.nullable(),
@@ -485,7 +504,7 @@ const readRow = z
     replies: z.object({
       requested: z.boolean(),
       observations: z.array(textSchema),
-      scope: replyScope,
+      scope: replyScopeSchema,
     }),
     unscopedPosts: unscopedSchema.optional(),
     diagnostics: readDiagnostics.optional(),
@@ -496,7 +515,7 @@ const readRow = z
       .object({ count: count.positive(), first: scopeIdentitySchema })
       .optional(),
   })
-  .refine((row) => !row.unscopedPosts || row.replies.requested);
+  .refine((row) => !row.unscopedPosts || row.replies.requested).refine(networkReadScopeValid);
 const reportScope = z.object({
   version: z.literal(1),
   operation: z.enum(['search', 'read']),
@@ -506,13 +525,13 @@ const reportScope = z.object({
   stopReasonCounts: z.partialRecord(stop, count),
   reasonCounts: z.record(z.string(), count),
   replyScopeCounts: z.partialRecord(
-    z.enum(['unknown', 'ui_scope_end_observed']),
+    z.enum(['unknown', 'ui_scope_end_observed','cursor_exhausted']),
     count,
   ),
 });
 const base = {
   schemaVersion: z.literal(2),
-  sourceKind: z.enum(['rendered_ui','page_graphql']),
+  sourceKind: z.enum(['rendered_ui','page_graphql','mixed']),
   runId: string,
   callId: string,
   batchId: string,
@@ -546,7 +565,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     ...base,
     operation: z.literal('read'),
     targets: z.array(readRow),
-  }),
+  }).refine(readSourceDomainsValid),
 ]);
 
 /** Shared extraction: no binding, native capability, or snapshot enters the identity. */

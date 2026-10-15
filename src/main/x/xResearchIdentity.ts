@@ -218,9 +218,9 @@ export function proveArticleIdentity(
 }
 /** Explicit end evidence closes only the exact observed root/branch/sort scope. */
 export function applyReplyEndEvidence(
-  scope: import('./xResearchTypes').XReplyScope,
+  scope: import('./xResearchTypes').XLegacyReplyScope,
   end: import('./xResearchTypes').XReplyEndEvidence | null,
-): import('./xResearchTypes').XReplyScope {
+): import('./xResearchTypes').XLegacyReplyScope {
   const matches =
     !!end &&
     end.rootPostId === scope.rootPostId &&
@@ -253,4 +253,10 @@ export function parseXArticleAnalyticsHref(href: string, sourceUrl: string): {ha
   if (!match || !source || !isXHandle(match[1]) || !isXPostId(match[2])) return null;
   try { if (new URL(href,sourceUrl).origin!==source.origin) return null; } catch { return null; }
   return {handle:match[1],id:match[2]};
+}
+
+/** Coordinates come from the DOM producer's private map; a network root grants no capability. */
+export function matchesXArticleParent(page:import('./xObservation').XPageObservation,entry:import('./xResearchTypes').XArticleEntry,root:import('./xResearchTypes').XTextObservation|null):boolean {
+ const parent=page.entryParents.get(entry);
+ return !!parent&&!!root&&parent.postId===root.postId&&parent.sourceUrl===root.sourceUrl&&parent.authorHandle===root.author?.handle;
 }

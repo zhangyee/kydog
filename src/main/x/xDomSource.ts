@@ -10,7 +10,7 @@ import type { BrowserLocationFacts } from '../browser/browserService';
 import type { AxSnapshot } from '../browser/snapshot';
 import type { XPageRequest, XPageControl, XPageObservation } from './xObservation';
 import { compareXLocation, toSafeXLocation, parseXSourcePost, parseXPostCoordinates, isXPostId, isXHandle, parseXArticleAnalyticsHref, X_MAX_RAW_URL_UNITS } from './xResearchIdentity';
-import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XTextObservation, XTruncation, XReplyScope, XReadFrameDiagnostic, XSourceRootState, XUnscopedPost, XUnscopedPosts } from './xResearchTypes';
+import type { XArticleNativeIdentity, XArticleEntry, XAuthorIdentity, XControlBinding, XTextObservation, XTruncation, XReadFrameDiagnostic, XSourceRootState } from './xResearchTypes';
 
 export const X_DOM_MAX_STRING_UNITS = X_MAX_RAW_URL_UNITS;
 export const X_DOM_MAX_QUERY_UNITS = 4096;
@@ -131,29 +131,19 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   else if (exact && request.stage==='article') identityProven = proof.parentArticle && current.currentUrl===request.expectedUrl && !!currentPost;
   const binding = (v: {nodeId:number;index:number}): XControlBinding => ({nodeId:v.nodeId,index:v.index,snapshotId:snapshot.snapshotId,generation:snapshot.generation});
   const named = (p: RawPost): boolean => { const id=publicPost(p.permalink);return !!id && id.id===p.postId && !!p.author?.handle && id.handle===p.author.handle; };
-  const makeText = (p: RawPost,kind: XTextObservation['containerKind']): XTextObservation => ({observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:publicPost(p.permalink)?.url??null,author:p.author,text:p.text,observedAt,truncation:p.truncation,containerKind:kind,...(kind==='reply'?{directParent:null}:{}),postId:kind==='unattributed_fragment'?null:p.postId} as XTextObservation);
-  let root: XTextObservation|null = null;
-  let rootContainerKey: number|null=null;
-  const parentObservations = new Map<number,XTextObservation>();
+  const root: XTextObservation|null = null;
+  let rootContainerKey:number|null=null;
+  const parentObservations=new Map<number,{postId:string;sourceUrl:string;authorHandle:string}>();
   const posts:XTextObservation[]=[],quotedPosts:XTextObservation[]=[],replies:XTextObservation[]=[],fragments:XTextObservation[]=[];
-  if (identityProven && request.stage==='post') {
-    const rootPosts=raw.posts.filter(p=>{
-      const own=publicPost(p.permalink);
-      return p.scope==='post' && named(p) && request.stage==='post' && p.postId===request.postId
-        && own?.origin===currentPost?.origin && (currentPost?.handle===null || own?.handle===currentPost?.handle);
-    });
-    if (request.stage==='post' && rootPosts.length===1) {rootContainerKey=rootPosts[0].containerKey;root=makeText(rootPosts[0],'root_post');parentObservations.set(rootPosts[0].containerKey,root);}
-    for (const p of raw.posts) {
-      if (!named(p)) { fragments.push(makeText(p,'unattributed_fragment'));continue; }
-      if (request.stage==='post' && !root) continue;
-      if (p.scope==='quote') {const value=makeText(p,'quoted_post');quotedPosts.push(value);parentObservations.set(p.containerKey,value);}
-      else if (p.postId!==request.postId) {const value=makeText(p,'reply');replies.push(value);parentObservations.set(p.containerKey,value);}
-    }
-    if (request.stage==='post' && !root) identityProven=false;
+  if(identityProven&&request.stage==='post')for(const p of raw.posts){
+    if(p.scope!=='post'||!named(p)||p.postId!==request.postId)continue;
+    const own=publicPost(p.permalink);
+    if(own?.origin!==currentPost?.origin||(currentPost?.handle!==null&&own?.handle!==currentPost?.handle))continue;
+    parentObservations.set(p.containerKey,{postId:p.postId!,sourceUrl:p.permalink!,authorHandle:p.author!.handle!});rootContainerKey=p.containerKey;
   }
   if(new Set(raw.posts.map(p=>p.containerKey)).size!==raw.posts.length) invalid();
-  const entryParents=new WeakMap<XArticleEntry,XTextObservation>();
-  const controls=identityProven?raw.controls.map(c=>({kind:c.kind,postId:c.postId,binding:binding(c),sourceRelation:c.sourceRelation})):[];
+  const entryParents=new WeakMap<XArticleEntry,{postId:string;sourceUrl:string;authorHandle:string}>();
+  const controls=identityProven && (request.stage!=='post'||parentObservations.size===1)?raw.controls.map(c=>({kind:c.kind,postId:c.postId,binding:binding(c),sourceRelation:c.sourceRelation})):[];
   const postCandidates = request.stage === 'post' ? raw.posts.filter(p=>p.scope==='post' && p.candidatePostId===request.postId) : [];
   const rootRejections = {unnamed:0,authorMismatch:0,permalinkMismatch:0};
   if (request.stage==='post') rootRejections.unnamed=raw.posts.filter(p=>p.scope==='post' && p.candidatePostId===null).length;
@@ -164,18 +154,16 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     else if (!own) rootRejections.unnamed++;
     else if (own.id!==p.postId || own.origin!==currentPost?.origin || (currentPost?.handle!==null && own.handle!==currentPost?.handle)) rootRejections.permalinkMismatch++;
   }
-  const entries:XArticleEntry[]=identityProven?raw.entries.flatMap(e=>{
+  const entries:XArticleEntry[]=identityProven&&parentObservations.size===1?raw.entries.flatMap(e=>{
     const parent=parentObservations.get(e.parentContainerKey),coordinates=publicPost(e.parentUrl);
-    if(!parent || parent.containerKind==='quoted_post' || !coordinates || parent.postId!==e.parentPostId || parent.sourceUrl!==e.parentUrl || coordinates.handle!==parent.author?.handle
+    if(!parent || !coordinates || parent.postId!==e.parentPostId || parent.sourceUrl!==e.parentUrl || coordinates.handle!==parent.authorHandle
       || (e.author?.handle!=null && !isXHandle(e.author.handle)) || (e.targetUrl!==null && !publicPost(e.targetUrl))) return [];
     const entry:XArticleEntry={author:e.author,sourceUrl:coordinates.url,parentPostId:e.parentPostId,targetUrl:publicPost(e.targetUrl)?.url??null,label:e.label,observationId:randomUUID(),binding:binding(e)};
     entryParents.set(entry,parent);return [entry];
   }):[];
-  for(const rawPost of raw.posts) {
-    const parent=parentObservations.get(rawPost.containerKey);if(!parent) continue;
-    const matching=entries.filter(entry=>entryParents.get(entry)===parent);
-    if(matching.length>rawPost.articleEntryCount) invalid();
-    if(rawPost.scope==='post') parent.articlePreviewInventory={scope:'collection',observed:matching.length,retained:0,omitted:matching.length,unresolved:rawPost.articleEntryCount-matching.length};
+  const articleParentInventories=new Map<number,{postId:string;sourceUrl:string;authorHandle:string;observedEntries:number;unresolvedEntries:number}>();
+  if(parentObservations.size===1&&!raw.truncation.truncated&&!raw.controlTruncation.truncated){
+    for(const [key,parent] of parentObservations){const own=raw.posts.find(p=>p.containerKey===key)!;const permitted=entries.filter(e=>entryParents.get(e)===parent).length;if(permitted>own.articleEntryCount)invalid();articleParentInventories.set(key,{...parent,observedEntries:permitted,unresolvedEntries:own.articleEntryCount-permitted});}
   }
   let article:XPageObservation['article']=null;
   const articleSource = publicPost(current.currentUrl);
@@ -192,38 +180,22 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     if (directArticle) identityProven=true;
     article={...(nativeIdentity?{nativeIdentity}:{}),title:a.title,blocks:a.blocks,links:a.links.map(l=>({...safeLink(l.url),text:l.text})),body:{observationId:randomUUID(),sourceKind:'rendered_ui',sourceUrl:articleSource.url,author:a.author,text,observedAt,containerKind:'article',postId:articleSource.id,truncation:{returned:text.length,totalKnown:a.truncated?null:text.length,truncated:a.truncated}}};
   }
-  // Focal admission still fails. Retain only independently source-named ordinary
-  // top-level containers from this same fixed collection, without action authority.
-  let unscopedPosts:XUnscopedPosts|undefined;
-  if(request.stage==='post' && request.collectReplies!==false && !root && !raw.article && !raw.state && exact && raw.region
-    && currentPost?.id===request.postId && !/\/history\/?$/.test(new URL(current.currentUrl).pathname)
-    && publicPost(request.expectedUrl,true)?.id===request.postId && !/\/history\/?$/.test(new URL(request.expectedUrl).pathname)) {
-    const candidates=raw.posts.filter(p=>p.scope==='post' && named(p));
-    const previewGaps=candidates.filter(p=>p.articleEntryCount>0).map(p=>({sourceUrl:p.permalink!,unresolved:p.articleEntryCount}));
-    const observations:XUnscopedPost[]=candidates.filter(p=>p.text.trim()).map(p=>({
-      ...makeText(p,'root_post'),containerKind:'unscoped_post',relationToTarget:'unproven',observedContainer:'post',
-      postId:p.postId!,sourceUrl:p.permalink!,author:p.author as XUnscopedPost['author'],
-      articlePreviewInventory:{scope:'collection',observed:0,retained:0,omitted:0,unresolved:p.articleEntryCount},
-    }));
-    if(observations.length || previewGaps.length) unscopedPosts={observations,previewGaps,
-      collection:{snapshotId:snapshot.snapshotId,document:{epoch:current.documentEpoch,routeRevision:current.routeRevision,navigationSequence:current.navigationSequence,generation:snapshot.generation},location:location.current},
-      inventory:{scope:'collection',observed:observations.length,retained:observations.length,omitted:0,sourceInventoryTruncated:raw.truncation.truncated,excludedNestedQuotes:raw.posts.filter(p=>p.scope==='quote').length}};
-  }
+  if(request.stage==='post'&&!article)identityProven=false;
   const state=exact && location.current.origin && raw.state && (raw.state.kind==='auth_required' || identityProven) ? {...raw.state,observationId:randomUUID()} : null;
-  const replyScope: XReplyScope = {rootPostId:root?.postId??null,branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};
   const diagnosticFrame: XReadFrameDiagnostic | undefined = request.stage==='post' ? {
     ...(raw.replyUiInventory ? {sourceEndDetector:'not_implemented' as const,replyUiInventory:replyUiInventorySchema.parse(raw.replyUiInventory)} : {}),
     stage:'post',snapshotId:snapshot.snapshotId,location:location.current,
     document:{epoch:current.documentEpoch,routeRevision:current.routeRevision,navigationSequence:current.navigationSequence,generation:snapshot.generation},
     rawUrlMatchesPort:exact,requestPostMatchesLocation:currentPost?.id===request.postId,
     regionObserved:raw.region,inventory:{...raw.truncation},rootCandidateCount:postCandidates.length,rootRejections,
-    regionNodeId:raw.diagnosticNodes.regionNodeId,rootNodeId:root?raw.diagnosticNodes.rootNodeId:null,
-    rootIdentityProven:identityProven && !!root,
+    regionNodeId:raw.diagnosticNodes.regionNodeId,rootNodeId:rootContainerKey!==null?raw.diagnosticNodes.rootNodeId:null,
+    rootIdentityProven:rootContainerKey!==null,
     replyCount:replies.length,repliesExpandControlCount:controls.filter(c=>c.kind==='replies_expand').length,
-    explicitEndObserved:!!replyScope.endEvidence,
+    explicitEndObserved:false,
   } : undefined;
-  const result = {...(unscopedPosts?{unscopedPosts}:{}),replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  const result = {stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
   if(rootContainerKey!==null) decodedRootKeys.set(result,rootContainerKey);
+  Object.defineProperty(result,'articleParentInventories',{value:articleParentInventories,enumerable:false});
   Object.defineProperty(result,'entryParents',{value:entryParents,enumerable:false});
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});
   return result;
@@ -270,7 +242,7 @@ export function bindXSourceRoot(observation:XPageObservation, raw:unknown, envel
   if(data.anchorState && (!envelope.commit || data.anchorState.anchorSnapshotId===envelope.commit.anchorSnapshotId))
     frame.sourceRootState=data.anchorState;
   const key=decodedRootKeys.get(observation);
-  if (key===undefined || key!==data.containerKey || !data.candidateState || !observation.identityProven || !observation.root
+  if (key===undefined || key!==data.containerKey || !data.candidateState
     || !frame.rawUrlMatchesPort || !frame.rootIdentityProven || observation.state || observation.truncation.truncated
     || observation.truncation.totalKnown!==observation.truncation.returned) return;
   const state:XSourceRootState={...data.candidateState,anchorSnapshotId:observation.snapshot.snapshotId};

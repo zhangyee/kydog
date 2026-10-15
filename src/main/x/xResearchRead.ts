@@ -1,7 +1,8 @@
+import {getXNetworkCleanupFailure} from './xNetworkLease';
 import {getSourceFailure} from './xSourceDiagnostics';
 import { readArticle } from './xResearchArticle';
 import {
-  beginReadNavigation,
+  beginReadNavigation, acceptReadNetworkPage,
   checkReadCancelled,
   collectPostFrame,
   collectReadyPostFrame,
@@ -63,7 +64,7 @@ function emptyTarget(input: XReadInput, target: XReadTarget): XReadObservation {
     target.postId ?? (target.url ? observedPostId(target.url, true) : null);
   const safeTarget = redacted && id ? { postId: id } : target;
   return {
-    target: safeTarget,
+    target: safeTarget,identity:{state:'never_proven'},
     collectionTransitions: [],
     documentSource: null,
     inputKind: target.url ? 'url' : 'postId',
@@ -88,15 +89,7 @@ function emptyTarget(input: XReadInput, target: XReadTarget): XReadObservation {
     replies: {
       requested: input.read.includeReplies,
       observations: [],
-      scope: {
-        rootPostId: null,
-        branch: null,
-        sort: null,
-        stopReason: 'agent_stopped',
-        displayedReplyCount: null,
-        completeness: 'unknown',
-        endEvidence: null,
-      },
+      scope: {kind:'network',rootPostId:null,extent:'unknown',context:{leaseId:null,accountContextId:null,branchKey:null,sortKey:null},terminalRequestRef:null,stopReason:'agent_stopped'},
     },
     stopReason: 'agent_stopped',
     budgetUsage: emptyUsage(),
@@ -127,7 +120,7 @@ export function readResult(
 ): Extract<XResearchResult, { operation: 'read' }> {
   return {
     schemaVersion: 2,
-    sourceKind: 'rendered_ui',
+    sourceKind: 'page_graphql',
     operation: 'read',
     callId: context.callId,
     batchId: context.batchId,
@@ -212,6 +205,7 @@ export async function readX(
         source,
         input.tabId,
         context.signal,
+        {stage:'post',expectedUrl:source,postId:id,collectReplies:input.read.includeReplies&&input.read.maxRepliesPerPost>0},
       );
       result.browserTabId = opened.tabId;
       checkReadCancelled(context);
@@ -307,12 +301,14 @@ export async function readX(
             row.sourceUrl = body.sourceUrl;
             row.status = body.truncation.truncated || input.read.includeReplies ? 'partial' : 'observed';
             row.reason = input.read.includeReplies ? 'direct_article_discussion_unobserved' : null;
-            row.replies.scope.rootPostId = body.postId;
+
             row.budgetUsage.distinctEntries = 1;
             rememberSources(context, [body]);
             return;
           }
-          if (!observed.identityProven || !observed.root) {
+          savePostFrame(row, observed, input.read, context);
+          if (!observed.identityProven || (!observed.root && !row.root)) {
+            if(observed.network?.failure)return;
             row.status = waitFailed ? 'failed' : 'partial';
             row.reason = waitFailed
               ? 'post_wait_timeout'
@@ -341,7 +337,7 @@ export async function readX(
           checkReadCancelled(context);
           if (
             !observed.identityProven ||
-            !observed.root ||
+            (!observed.root && !row.root) ||
             row.barrier?.status === 'auth_required'
           )
             return;
@@ -380,6 +376,7 @@ export async function readX(
             context,
           );
         },
+        {onNetworkPageAccepted:(page,fact)=>{if('root' in page)acceptReadNetworkPage(row,page as import('./xNetworkSource').XNetworkReadPage,fact,input.read,context);}},
       );
       checkReadCancelled(context);
       if (returnToParent) {
@@ -395,6 +392,7 @@ export async function readX(
             parentUrl,
             opened.tabId,
             context.signal,
+            {stage:'post',expectedUrl:parentUrl,postId:id,collectReplies:input.read.includeReplies&&input.read.maxRepliesPerPost>0},
           );
           checkReadCancelled(context);
           const finalUrl = navigationUrl(returned.nav);
@@ -457,6 +455,7 @@ export async function readX(
                     context,
                   );
                 },
+                {onNetworkPageAccepted:(page,fact)=>{if('root' in page)acceptReadNetworkPage(row,page as import('./xNetworkSource').XNetworkReadPage,fact,input.read,context);}},
               );
             } finally {
               // Return-page previews are separate observations; retain the body actually expanded before Article.
@@ -476,12 +475,14 @@ export async function readX(
           reason: 'not_attempted:auth_required',
         };
     } catch (error) {
+      const cleanup=getXNetworkCleanupFailure(error);if(cleanup)(row.diagnostics??={version:1}).networkCleanupFailure=cleanup;
       const sourceFailure=getSourceFailure(error);if(sourceFailure)(row.diagnostics??={version:1}).sourceFailure=sourceFailure;
       const problem = failure(error, stage.current);
       row.status =
         row.root && problem.status !== 'cancelled' ? 'partial' : problem.status;
-      row.stopReason = problem.stopReason;
-      row.reason = problem.reason ?? (
+      const sourceUnavailable=error instanceof KydogError && error.code==='x.invalid_page' && error.message.startsWith('source_unavailable:');
+      row.stopReason = sourceUnavailable ? 'source_unavailable' : problem.stopReason;
+      row.reason = sourceUnavailable?'source_unavailable':problem.reason ?? (
         problem.status === 'cancelled'
           ? 'cancelled'
           : problem.internal
@@ -494,7 +495,7 @@ export async function readX(
           stopReason: 'cancelled',
           reason: 'cancelled',
         };
-      else if (problem.internal)
+      else if (problem.internal&&!sourceUnavailable)
         halt = {
           cause: 'adapter',
           status: 'failed',
@@ -516,6 +517,8 @@ export async function readX(
       row.collectionStop = {status:row.status,stopReason:row.stopReason,reason:row.reason};
     }
   }
+  const network=result.targets.some(row=>row.identity?.state==='proven'||row.root?.sourceKind==='page_graphql'||!!row.networkPages?.length||!!row.unscopedPosts?.observations.some(p=>p.sourceKind==='page_graphql'));
+  result.sourceKind=result.targets.some(row=>!!row.article.body)?(network?'mixed':'rendered_ui'):'page_graphql';
   aggregateResult(result);
   return result;
 }

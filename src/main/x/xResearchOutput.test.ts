@@ -117,14 +117,14 @@ describe('bounded X production tool result',()=>{
  });
   it('keeps actual unchanged-body read reasons distinct from page text and absent reasons',async()=>{
     const bodyFixture=await stagedFixture({noEffect:true});
-    const body=await readX({tabId:'tab',read:{objective:'body',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},bodyFixture.context);
-    for(const [actual,reason] of [[body,'body_expand_control_unchanged']] as const){
-      expect(actual.targets[0]).toMatchObject({status:'partial',stopReason:'action_failed',reason});
+    const body=await readX({tabId:'tab',read:{objective:'body',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:10,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},bodyFixture.context);
+    for(const [actual,reason] of [[body,'reply_budget_reached']] as const){
+      expect(actual.targets[0]).toMatchObject({status:'partial',stopReason:'budget_reached',reason});
       const controls=readResult({tabId:'tab',read:{objective:'controls',targets:[{postId:'999'},{postId:'998'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
       controls.targets[0].reason='登录页面说请重试';
       controls.targets[1].reason=null;
       const result={...actual,targets:[actual.targets[0],...controls.targets]};
-      const expected={version:1,operation:'read',reasonSource:'reason',totalRows:3,statusCounts:{partial:1,failed:2},stopReasonCounts:{action_failed:1,agent_stopped:2},reasonCounts:{[reason]:1,unknown:2},replyScopeCounts:{unknown:3}};
+      const expected={version:1,operation:'read',reasonSource:'reason',totalRows:3,statusCounts:{partial:1,failed:2},stopReasonCounts:{budget_reached:1,agent_stopped:2},reasonCounts:{[reason]:1,unknown:2},replyScopeCounts:{unknown:3}};
       for(const candidate of [result,{...result,objective:'x'.repeat(600000)}]){
         const out=serializeXResearchResult(candidate);
         expect(out.result.reportScopeFacts).toEqual(expected);
@@ -440,8 +440,8 @@ it('caps displaced body observations honestly and retains their known Article ci
 it('budgets independent bodies before scoped history and protects every own-parent preview gap',async()=>{
   const cover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
   const html=Array.from({length:100},(_,i)=>post(String(1000+i),'b',('汉\\"😀').repeat(500)).replace('</article>',cover+'</article>')).join('');
-  const input={tabId:'tab',read:{objective:'budget',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:100,maxScrollsPerPost:1,maxExpandActionsPerPost:0}};
-  const actual=await readX(input,fixture([readHtml(post()+post('222','c','retained history')),readHtml(html)]).context);
+  const input={tabId:'tab',read:{objective:'budget',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:101,maxScrollsPerPost:1,maxExpandActionsPerPost:0}};
+  const actual=await readX(input,fixture([readHtml(post()+post('222','c','retained history')),readHtml(html)],{unscopedAfterIndex:1}).context);
   expect(actual.targets[0].unscopedPosts?.observations).toHaveLength(100);
   expect(actual.targets[0].unscopedPosts?.previewGaps).toHaveLength(100);
   for(const count of [1,20]){
@@ -457,7 +457,7 @@ it('budgets independent bodies before scoped history and protects every own-pare
       expect(row.unscopedPosts!.inventory.retained+row.unscopedPosts!.inventory.omitted).toBe(100);
       expect(row.unscopedPosts!.inventory).toEqual(source.targets[index].unscopedPosts!.inventory);
       expect(row.budgetUsage.distinctEntries).toBe(source.targets[index].budgetUsage.distinctEntries);
-      expect(row).toMatchObject({reason:'post_identity_unproven',stopReason:'identity_unproven'});
+      expect(row).toMatchObject({reason:'reply_budget_reached',stopReason:'budget_reached'});
       for(const p of row.unscopedPosts!.observations)expect(p).toMatchObject({relationToTarget:'unproven',observedContainer:'post'});
     }
     const ledger=new XResearchEvidence('/tmp',()=> 'run');
@@ -509,6 +509,7 @@ it('carries distinct initial admitted terminal collections through content and c
   options.afterWaitIndex=2;await f.page.wait({selector:'[data-testid="tweet"]',state:'present'},1000);
   const terminal=await collectPostFrame(f.page,request,row,stage,f.context);
   expect(savePostFrame(row,terminal,input.read,f.context)).toBe(true);
+  result.sourceKind='page_graphql';
   const out=serializeXResearchResult(result),tool=xResearchToolResult(out);
   const frames=out.result.targets[0].diagnostics!;
   expect([frames.initialFrame?.snapshotId,frames.firstAdmittedFrame?.snapshotId,frames.terminalFrame?.snapshotId]).toEqual([initial.snapshot.snapshotId,admitted.snapshot.snapshotId,terminal.snapshot.snapshotId]);
@@ -524,7 +525,7 @@ it('carries distinct initial admitted terminal collections through content and c
   expect(admitted.diagnosticFrame?.rootIdentityProven).toBe(true);
   expect(initial.diagnosticFrame?.rootIdentityProven).toBe(false);
   expect(terminal.replyScope).toEqual(admitted.replyScope);
-  expect(row.replies.scope.completeness).toBe('unknown');
+  expect(row.replies.scope.extent).toBe('unknown');
 });
 
 it('delivery trimming keeps collection facts, source truncation and scope/run aggregates intact',async()=>{

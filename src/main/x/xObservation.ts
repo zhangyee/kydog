@@ -18,7 +18,9 @@ export interface XPageObservation {
   replies: XTextObservation[]; fragments: XTextObservation[];
   article: { nativeIdentity?: XArticleNativeIdentity; title: string; body: XTextObservation; blocks: string[]; links: {url: string | null; text: string; redacted: boolean}[] } | null;
   replyScope?: XReplyScope;
-  readonly entryParents: WeakMap<XArticleEntry,XTextObservation>;
+  /** Complete native Article scan only; private and non-enumerable, never an action capability. */
+  readonly articleParentInventories:ReadonlyMap<number,{postId:string;sourceUrl:string;authorHandle:string;observedEntries:number;unresolvedEntries:number}>;
+  readonly entryParents: WeakMap<XArticleEntry,{postId:string;sourceUrl:string;authorHandle:string}>;
   entries: XArticleEntry[]; controls: XPageControl[];
   state: {kind: 'auth_required' | 'explicit_empty'; text: string; observationId: string} | null;
   /** Count of this bounded extractor's items, including quotes/fragments; never a page total. */

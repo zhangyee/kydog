@@ -26,7 +26,7 @@ async function result(){
  return searchX(searchInput,f.context);
 }
 async function pointerResult(){
- const f=fixture([readHtml(post().replace('</article>','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button></article>'))]);
+ const f=fixture([readHtml(post()+'<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>')]);
  f.act.mockImplementation(async(action,snapshot,options)=>{
   const snap=snapshot as import('../browser/snapshot').AxSnapshot,node=snap.nodes.find(n=>n.index===action.index)!;
   (options as any)?.onPointerPreflight?.(sealPointerPreflight({phase:'collected_preflight',tabId:'research-tab',snapshotId:snap.snapshotId,generation:snap.generation,nodeId:node.nodeId,initialState:'auto',finalState:'auto',noneObserved:true,eligibilityReadsIssued:1,probeReadsIssued:1,finalizationsIssued:2,framesObserved:2,finalHitPerformed:true,outcome:'final_hit_refused',unavailableFields:[]}));
@@ -36,11 +36,11 @@ async function pointerResult(){
     refusalContext:{phase:'pointer_validate',hitRect:{x:0,y:0,width:1000,height:800},relation:{hitConnected:true,hitContainsTarget:true},targetStyle:{display:'block',visibility:'visible',pointerEvents:'none',contentVisibility:'visible'},hitStyle:null}}},
    {x:31,y:47},{eligibility:{phase:'collected_eligibility',firstState:'auto',noneObserved:false,finalState:'auto',outcome:'eligible'},postFrame:{phase:'post_frame',state:'none',samplePhase:'before_first_hit',relationPhase:'first_hit',hitConnected:true,hitContainsTarget:true}});
  });
- return readX({tabId:'research-tab',read:{objective:'diagnostic',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},f.context);
+ return readX({tabId:'research-tab',read:{objective:'diagnostic',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:true,maxRepliesPerPost:5,maxScrollsPerPost:0,maxExpandActionsPerPost:1}},f.context);
 }
 it('projects all click provenance and optional source phases without granting evidence authority',async()=>{
  const r=structuredClone(await pointerResult()),first=r.targets[0].diagnostics!.clickFailures!.first!;
- expect(first).toMatchObject({controlKind:'body_expand',actionIndex:1,diagnostic:{eligibility:{firstState:'auto'},postFrame:{state:'none'},rejection:{refusalContext:{phase:'pointer_validate'}}}});
+ expect(first).toMatchObject({controlKind:'replies_expand',actionIndex:1,diagnostic:{eligibility:{firstState:'auto'},postFrame:{state:'none'},rejection:{refusalContext:{phase:'pointer_validate'}}}});
  Object.assign(first,{secret:'private-click'});Object.assign(first.diagnostic,{secret:'private-click'});
  expect(JSON.stringify(r)).toContain('private-click');
  for(const objective of ['small','x'.repeat(600000)]){
@@ -105,7 +105,7 @@ it('preserves canonical diagnostics through physical SDK reopen/branch and insta
 
 it('retains authenticated bounded preflight through model details and rejects spoof or inconsistent binding',async()=>{
  const r=structuredClone(await pointerResult()),diag=(r.targets[0].diagnostics as any).pointerPreflights;
- expect(diag).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,controlKind:'body_expand',diagnostic:{noneObserved:true,framesObserved:2,finalHitPerformed:true,outcome:'final_hit_refused'}}});
+ expect(diag).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,controlKind:'replies_expand',diagnostic:{noneObserved:true,framesObserved:2,finalHitPerformed:true,outcome:'final_hit_refused'}}});
  Object.assign(diag.first.diagnostic,{token:'private-preflight'});expect(JSON.stringify(r)).toContain('private-preflight');
  for(const objective of ['normal','x'.repeat(600000)]){
   const out=serializeXResearchResult({...r,objective});expect(JSON.parse(out.text).targets[0].diagnostics.pointerPreflights).toEqual((out.result.targets[0].diagnostics as any).pointerPreflights);
