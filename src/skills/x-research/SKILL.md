@@ -15,6 +15,32 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 普通研究省略 search 的预算参数，使用默认 100/20。只有用户明确要求低预算或特定小范围时才显式降低，并在内部记录依据的用户限制；多个 query 或目标本身不是压低每项预算的理由。
 
+### query 构造与 product 选择
+
+发现阶段优先显式选择 `product: "Top"`，找相关讨论与候选来源；需要追踪近期动态时再用短 query 补 `Latest`。[X 官方搜索说明](https://help.x.com/en/resources/recommender-systems/search-recommendations)把 Top 描述为相关性与热度排序，把 Latest 描述为匹配词的逆时间序结果。将 Latest 用作近期发现视图，不能当成历史全量；不承诺固定近期窗口，也不保证换成 Top 就有结果。
+
+交接实测曾遇到长多词 Latest query 无结果。把多个概念要求为全部同时满足（AND）会带来召回风险；这是该次实测背景下的构造指导，不是所有 query 的失败规律。先拆成多条短 query，分别保留 `purpose`，再按原问题聚合证据；不要把某条短 query 的命中当成所有概念已在同一实践中组合成立。
+
+时间范围保留在 `query` 中，用 `since:YYYY-MM-DD until:YYYY-MM-DD` 表达请求的日期边界；这套拼写见 [X 官方 X Pro 网页搜索操作符说明](https://help.x.com/en/using-x/advanced-xpro-features)，[普通网页高级搜索帮助](https://help.x.com/en/using-x/x-advanced-search)也支持按日期限定检索。它们不构成本轮普通网页严格执行边界的证明：实测带日期的 Top 与 Latest 结果仍出现界外日期。逐帖核对实际发布日期是否符合用户范围，不把 query 边界当成结果日期证明；本指导不对端点是否含当天作保证。其他操作符需另行核实普通网页支持，不照抄 API 语法。
+
+例如，保留“查找 agent 记忆扩展实践与限制”的目的，将下面的长 query：
+
+```json
+{"id":"q1","query":"agent memory persistence plugin since:2026-09-01 until:2026-10-01","purpose":"查找 agent 记忆扩展实践与限制","product":"Latest"}
+```
+
+改成发现阶段的短 query；这两个日期是请求边界，是否纳入端点当天的帖子仍按用户范围逐帖核对：
+
+```json
+[
+  {"id":"q1","query":"agent memory since:2026-09-01 until:2026-10-01","purpose":"查找 agent 记忆扩展实践与限制","product":"Top"},
+  {"id":"q2","query":"memory persistence since:2026-09-01 until:2026-10-01","purpose":"查找 agent 记忆扩展实践与限制","product":"Top"},
+  {"id":"q3","query":"memory plugin since:2026-09-01 until:2026-10-01","purpose":"查找 agent 记忆扩展实践与限制","product":"Top"}
+]
+```
+
+空结果本身不是工具故障。先核对本条 query 的状态、页面明确提示与用户范围，再决定缩短、拆分或有针对性地换 product；保留无命中这一观察，不自动重放整批或增加预算。
+
 按问题相关性、原始作者和反证价值选择候选，不按热度当可信度。空 DOM、超时、无新增、滚动不动都不等于没有结果；只有 `explicit_empty` 表示页面明确显示无结果。一个 query 失败不抹掉其他 query 的观察。
 
 ## 2. 精确补读与交接

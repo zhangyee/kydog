@@ -15,6 +15,32 @@ Each `x_research` call contains either `search` or `read`, with `tabId` at the t
 
 For standard research, omit search budget parameters to use the 100/20 defaults. Lower them explicitly only for a user-requested low budget or specific narrow scope, recording that user constraint internally. Multiple queries or targets alone are not a reason to reduce each item’s budget.
 
+### Query construction and product selection
+
+For discovery, explicitly prefer `product: "Top"` to find relevant discussions and candidate sources; use short queries with `Latest` when following recent developments. [X's official search explanation](https://help.x.com/en/resources/recommender-systems/search-recommendations) describes Top as ranked by relevance and popularity, and Latest as keyword matches in reverse chronological order. Use Latest as a recent-discovery view, never as a complete historical archive. Promise neither a fixed recent window nor results merely from switching to Top.
+
+Handoff observations included long multiword Latest queries returning no results. Requiring several concepts to match together (AND) risks reducing recall; this construction guidance reflects that observed context, not a universal failure rule. Split into several short queries, retain each `purpose`, and aggregate evidence against the original question. A match for one short query does not establish that all concepts were combined in the same practice.
+
+Keep the time range in `query`, using `since:YYYY-MM-DD until:YYYY-MM-DD` to express the requested date boundaries. These spellings are documented in [X's official X Pro web-search operator guide](https://help.x.com/en/using-x/advanced-xpro-features), and [ordinary web advanced-search help](https://help.x.com/en/using-x/x-advanced-search) also supports date-scoped searching. These sources do not prove strict boundary enforcement in this ordinary web session: observed Top and Latest results with date operators still included out-of-range dates. Check each post's actual publication date against the user's scope; query boundaries do not prove result dates. This guidance makes no guarantee about endpoint-day inclusion. Verify ordinary web support separately for other operators; never copy API syntax without verification.
+
+For example, preserve the purpose of finding agent memory-extension practices and limitations, and rewrite this long query:
+
+```json
+{"id":"q1","query":"agent memory persistence plugin since:2026-09-01 until:2026-10-01","purpose":"Find agent memory-extension practices and limitations","product":"Latest"}
+```
+
+Use short discovery queries instead. These two dates are requested boundaries; whether to include posts on either endpoint day still requires checking each post against the user's scope:
+
+```json
+[
+  {"id":"q1","query":"agent memory since:2026-09-01 until:2026-10-01","purpose":"Find agent memory-extension practices and limitations","product":"Top"},
+  {"id":"q2","query":"memory persistence since:2026-09-01 until:2026-10-01","purpose":"Find agent memory-extension practices and limitations","product":"Top"},
+  {"id":"q3","query":"memory plugin since:2026-09-01 until:2026-10-01","purpose":"Find agent memory-extension practices and limitations","product":"Top"}
+]
+```
+
+Empty results alone are not a tool failure. Check this query's status, explicit page signals, and the user's scope before shortening, splitting, or making a targeted product change. Retain the no-match observation; do not automatically replay the batch or raise budgets.
+
 Select candidates by relevance, original authorship, and counterevidence value; popularity is not credibility. Empty DOM, timeout, no new items, and no scroll movement do not mean no results. Only `explicit_empty` records a visible no-results statement. A failed query does not erase other queries' observations.
 
 ## 2. Exact reads and handoff
