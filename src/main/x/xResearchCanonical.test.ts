@@ -211,3 +211,11 @@ it('finalizes full sampled body units before delivery, preserving unknown source
  root.truncation.totalKnown=null;
  expect(finalizeXResearchCollection(raw).truncation).toEqual({returned:6,totalKnown:null,truncated:true});
 });
+
+it('preserves explicit aggregate unknown independently of truncation when every body total is known',async()=>{
+ const raw=await readX({tabId:'tab',read:{objective:'unknown aggregate',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post('123','alice','汉😀'))]).context);
+ expect(raw.targets[0].root!.truncation).toEqual({returned:3,totalKnown:3,truncated:false});
+ expect(finalizeXResearchCollection(raw).truncation).toEqual({returned:3,totalKnown:3,truncated:false});
+ raw.truncation={returned:0,totalKnown:null,truncated:false};
+ expect(finalizeXResearchCollection(raw).truncation).toEqual({returned:3,totalKnown:null,truncated:false});
+});

@@ -581,7 +581,7 @@ export function finalizeXResearchCollection(raw: XResearchResult): XResearchResu
         ...row.replies.observations,...(row.unscopedPosts?.observations ?? [])]);
   result.truncation = {
     returned: bodies.reduce((sum,body) => sum + body.text.length, 0),
-    totalKnown: (raw.truncation.truncated && raw.truncation.totalKnown === null) || bodies.some(body => body.truncation.totalKnown === null)
+    totalKnown: raw.truncation.totalKnown === null || bodies.some(body => body.truncation.totalKnown === null)
       ? null : bodies.reduce((sum,body) => sum + body.truncation.totalKnown!, 0),
     truncated: raw.truncation.truncated || bodies.some(body => body.truncation.truncated),
   };
