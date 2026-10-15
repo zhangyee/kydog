@@ -302,6 +302,8 @@ export class BrowserService {
   private readonly cdpGone = new Set<string>();
   private readonly network = new Map<string, NetworkResponseObserver>();
   private readonly networkBootstrapHistory = new Set<string>();
+  private readonly networkBootstrapPending = new Set<string>();
+  private readonly networkNative = new Map<string, { tail: Promise<void>; pending: Set<() => void>; active: boolean }>();
   private readonly pristineViews = new Set<string>();
   /** 正在进行的 agent 驱动窗口，一次一帧（可以同时有好几帧，各在各的标签上）。 */
   private readonly drivingFrames: DrivingFrame[] = [];
@@ -943,6 +945,7 @@ export class BrowserService {
     wc.on('did-start-navigation', (details) => {
       if (details.isMainFrame) {
         this.pristineViews.delete(id);
+        if (details.url !== 'about:blank') this.networkBootstrapPending.delete(id);
         const prior = this.locationFacts(id);
         this.locations.set(id, { ...prior, navigationEvent: 'did-start-navigation',
           navigationSequence: prior.navigationSequence + 1, navigationUrl: details.url,
@@ -953,6 +956,11 @@ export class BrowserService {
 
     wc.on('did-navigate', (_e, url, httpResponseCode) => {
       this.pristineViews.delete(id);
+      const internalBootstrap = this.networkBootstrapPending.delete(id) && url === 'about:blank';
+      if (internalBootstrap && wc.navigationHistory.getAllEntries().length === 1
+        && wc.navigationHistory.getActiveIndex() === 0 && wc.navigationHistory.getEntryAtIndex(0)?.url === 'about:blank') {
+        this.networkBootstrapHistory.add(id);
+      }
       if (url !== 'about:blank' && this.networkBootstrapHistory.has(id)) {
         const history = wc.navigationHistory;
         // Only an entry created by our pristine-view bootstrap is owned here.
@@ -971,7 +979,7 @@ export class BrowserService {
       if (tracker) tracker.onDidNavigate(url, httpResponseCode);
       // 没有 tracker 在等 = 页面自己发起、或输入 ACK 之后才开始的异步导航。
       // 状态码只有这一个到达点，不记就永远没了 —— 见 `unreportedNavs` 的说明。
-      else this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
+      else if (!internalBootstrap) this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
       this.snapshots.delete(id);   // 页面换了，旧快照的编号一律作废
       // 主 frame 换了文档：origin 不同才恢复采集 —— origin 相同（`back` 命中 bfcache，
       // 恢复的是同一个文档对象）继续压着，密码明文可能还在它的 DOM 里。见
@@ -1030,8 +1038,9 @@ export class BrowserService {
       void this.applyViewport(id, this.stage?.bounds ?? null);
     });
 
-    wc.once('destroyed', () => { void this.network.get(id)?.close('tab_closed'); });
+    wc.once('destroyed', () => { this.invalidateNetworkNative(id); void this.network.get(id)?.close('tab_closed'); });
     wc.on('render-process-gone', (_e, details) => {
+      this.invalidateNetworkNative(id);
       void this.network.get(id)?.close('crashed');
       logger.warn('browser.crash', '页面进程没了', { id, reason: details.reason });
       // 在途导航要当场定论。不这样的话一次崩溃要挂满整个超时窗口，
@@ -1047,6 +1056,7 @@ export class BrowserService {
     // 一个都不挂的话，之后每次 override 都静默失败 —— 而且是以未处理 rejection
     // 的形式炸掉主进程。挂上：记一条，后续 applyViewport 靠 isAttached() 自己让开。
     wc.debugger.on('detach', (_e, reason) => {
+      this.invalidateNetworkNative(id);
       void this.network.get(id)?.close('detached');
       // 调试会话一断，Chromium 就撤掉它下发的 override —— 已落地的 emulation scale 不再成立。
       this.emulationScales.delete(id);
@@ -1099,7 +1109,9 @@ export class BrowserService {
   private destroyView(id: string): void {
     const view = this.views.get(id);
     if (!view) return;
+    this.invalidateNetworkNative(id);
     void this.network.get(id)?.close('tab_closed');
+    this.networkBootstrapPending.delete(id);
     this.networkBootstrapHistory.delete(id);
     this.pristineViews.delete(id);
     this.views.delete(id);
@@ -1236,6 +1248,14 @@ export class BrowserService {
     }
   }
 
+  private invalidateNetworkNative(tabId: string): void {
+    const state = this.networkNative.get(tabId);
+    if (!state) return;
+    state.active = false;
+    for (const invalidate of state.pending) invalidate();
+    state.pending.clear(); this.networkNative.delete(tabId);
+  }
+
   /** A fresh WebContents has pid 0. Materialize a controlled internal document
    * before any CDP command; public open and all page-driven URLs retain their guard. */
   private async startNetworkCapture(tabId: string, spec: BrowserNetworkSpec, lifetime: AbortSignal,
@@ -1249,6 +1269,7 @@ export class BrowserService {
       if (!this.pristineViews.has(tabId) || wc.getURL() !== '' || wc.navigationHistory.getAllEntries().length !== 0) {
         throw new KydogError('browser.not_dispatchable', '已有导航历史的标签页没有可用渲染进程');
       }
+      this.networkBootstrapPending.add(tabId);
       let timer: ReturnType<typeof setTimeout> | undefined;
       let abort!: () => void;
       try {
@@ -1261,21 +1282,48 @@ export class BrowserService {
           }),
         ]);
       } finally { clearTimeout(timer); lifetime.removeEventListener('abort', abort); }
-      if (wc.navigationHistory.length() === 1 && wc.navigationHistory.getActiveIndex() === 0
-        && wc.navigationHistory.getEntryAtIndex(0)?.url === 'about:blank') this.networkBootstrapHistory.add(tabId);
-      // Internal initialization is not a second user-visible navigation receipt.
-      if (this.unreportedNavs.get(tabId)?.url === 'about:blank') this.unreportedNavs.delete(tabId);
     }
     assertNotAborted(lifetime);
     if (wc.isDestroyed() || wc.getOSProcessId() <= 0 || !wc.debugger.isAttached()) {
       throw new KydogError('browser.not_dispatchable', '页面调试会话不可用');
     }
     await this.network.get(tabId)?.close('superseded');
+    let native = this.networkNative.get(tabId);
+    if (!native) {
+      native = { tail: Promise.resolve(), pending: new Set(), active: true };
+      this.networkNative.set(tabId, native);
+    }
+    const state = native;
+    // The barrier survives removal of a closed observer. A new lease cannot mount
+    // until the preceding enable/disable has actually settled (or its target died).
+    await state.tail;
+    assertNotAborted(lifetime);
+    const live = () => state.active && !wc.isDestroyed() && wc.getOSProcessId() > 0 && wc.debugger.isAttached();
+    const send: WebContents['debugger']['sendCommand'] = (method, params, sessionId) => {
+      const invoke = () => {
+        if (!live()) throw new KydogError('browser.not_dispatchable', '页面调试会话不可用');
+        const command = sessionId === undefined ? wc.debugger.sendCommand(method, params) : wc.debugger.sendCommand(method, params, sessionId);
+        let invalidate!: () => void;
+        const dead = new Promise<never>((_resolve, reject) => {
+          invalidate = () => reject(new KydogError('browser.not_dispatchable', '页面调试会话已结束'));
+          state.pending.add(invalidate);
+        });
+        return Promise.race([command, dead]).finally(() => state.pending.delete(invalidate));
+      };
+      // Body reads need no ordering against native domain teardown. Their late
+      // results are invalidated by the observer, and must not hold close open.
+      if (method === 'Network.getResponseBody') return invoke();
+      const command = state.tail.then(invoke);
+      state.tail = command.then(() => {}, () => {});
+      return command;
+    };
     const cancel = () => { void observer.close('cancelled'); };
     const observer = new NetworkResponseObserver(wc.debugger, tabId, spec, () => this.locationFacts(tabId), () => {
       if (this.network.get(tabId) === observer) this.network.delete(tabId);
       signal?.removeEventListener('abort', cancel); lifetime.removeEventListener('abort', cancel);
-    });
+      if (!state.active) return;
+      return send('Network.disable').then(() => {}, () => {});
+    }, send);
     this.network.set(tabId, observer);
     signal?.addEventListener('abort', cancel, { once: true }); lifetime.addEventListener('abort', cancel, { once: true });
     if (signal?.aborted || lifetime.aborted) cancel();

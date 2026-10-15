@@ -45,11 +45,13 @@ export class NetworkResponseObserver {
   private readonly frames = new Map<string, string>();
   private readonly reads = new Set<Promise<void>>();
   private readonly waiters = new Set<Waiter>();
+  private closeCompletion: Promise<void> = Promise.resolve();
   private finishClosed!: () => void;
   private readonly closedPromise = new Promise<void>(resolve => { this.finishClosed = resolve; });
 
   constructor(private readonly debugger_: Debugger, tabId: string, private readonly spec: BrowserNetworkSpec,
-    private readonly location: () => BrowserLocationFacts, private readonly onClose: () => void = () => {}) {
+    private readonly location: () => BrowserLocationFacts, private readonly onClose: () => Promise<void> | void = () => {},
+    private readonly sendCommand: Debugger['sendCommand'] = debugger_.sendCommand.bind(debugger_)) {
     this.lease = { id: randomUUID(), tabId, take: (signal, timeout) => this.take(signal, timeout),
       drain: () => this.drain(), close: reason => this.close(reason) };
   }
@@ -58,9 +60,9 @@ export class NetworkResponseObserver {
     if (this.closed !== null) return;
     this.debugger_.on('message', this.message);
     try {
-      await Promise.race([this.debugger_.sendCommand('Page.enable'), this.closedPromise]);
+      await Promise.race([this.sendCommand('Page.enable'), this.closedPromise]);
       if (this.closed !== null) return;
-      const tree = await Promise.race([this.debugger_.sendCommand('Page.getFrameTree'), this.closedPromise]);
+      const tree = await Promise.race([this.sendCommand('Page.getFrameTree'), this.closedPromise]);
       if (this.closed !== null) return;
       const visit = (node: { frame: { id: string; loaderId: string }; childFrames?: typeof node[] }) => {
         const key = JSON.stringify([null, node.frame.id]);
@@ -68,7 +70,7 @@ export class NetworkResponseObserver {
         node.childFrames?.forEach(visit);
       };
       if (tree.frameTree) visit(tree.frameTree);
-      await Promise.race([this.debugger_.sendCommand('Network.enable', {
+      await Promise.race([this.sendCommand('Network.enable', {
         maxTotalBufferSize: TOTAL_BYTES, maxResourceBufferSize: BODY_BYTES, maxPostDataSize: POST_BYTES,
       }), this.closedPromise]);
     } catch (error) { await this.close('enable_failed'); throw error; }
@@ -140,8 +142,8 @@ export class NetworkResponseObserver {
     try {
       if (this.requests.get(key)?.status === undefined) throw new Error('missing_response');
       const result = await (sessionId === null
-        ? this.debugger_.sendCommand('Network.getResponseBody', { requestId })
-        : this.debugger_.sendCommand('Network.getResponseBody', { requestId }, sessionId));
+        ? this.sendCommand('Network.getResponseBody', { requestId })
+        : this.sendCommand('Network.getResponseBody', { requestId }, sessionId));
       const pending = this.requests.get(key);
       if (this.closed !== null || !pending || pending.request.id !== observationId) return;
       const request = pending.request;
@@ -202,12 +204,14 @@ export class NetworkResponseObserver {
   }
 
   async close(reason: string): Promise<void> {
-    if (this.closed !== null) return;
+    if (this.closed !== null) return this.closeCompletion;
     this.closed = reason;
     this.debugger_.off('message', this.message);
     this.queue = []; this.queueBytes = 0; this.pendingBytes = 0; this.redirectBytes = 0; this.requests.clear(); this.redirects.clear(); this.frames.clear(); this.reads.clear();
     for (const waiter of [...this.waiters]) waiter.finish({ kind: 'closed', reason });
-    this.finishClosed(); this.onClose();
-    // Do not detach, disable a shared domain, or remove another owner's listeners.
+    this.finishClosed();
+    // JS invalidation is immediate; BrowserService owns serialized native teardown.
+    this.closeCompletion = Promise.resolve(this.onClose());
+    return this.closeCompletion;
   }
 }

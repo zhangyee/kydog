@@ -102,6 +102,8 @@ test.describe('production BrowserService network capture (offline)', () => {
     verify(first, Buffer.from(NETWORK_BODY), true); expect(first.events[1].body).toBe(NETWORK_BODY);
     const second = await electron.evaluate((_e, id) => globalThis.networkHarness.capture('existing', id), first.tabId);
     verify(second, Buffer.from(NETWORK_BODY), false); expect(second.events[1].body).toBe(NETWORK_BODY);
+    expect(second.trace.filter(t => t.event === 'command' && t.method?.startsWith('Network.')).map(t => t.method))
+      .toEqual(['Network.disable', 'Network.enable', 'Network.getResponseBody']);
     expect(second.history).toEqual({ canGoBack: true, urls: ['https://example.org/page/fresh', 'https://example.org/page/existing'] });
   });
 

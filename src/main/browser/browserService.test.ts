@@ -4998,3 +4998,74 @@ describe('atomic network open', () => {
   });
 
 });
+
+describe('network native teardown ownership', () => {
+  it.each(['close', 'cancel'] as const)('disables on healthy %s and serializes an immediate remount behind delayed disable', async end => {
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    let finishDisable!:()=>void;
+    wc.debugger.respond=method=>method==='Network.disable'?new Promise<void>(r=>{finishDisable=r;}):Promise.resolve({});
+    wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+    const controller=new AbortController();
+    const first=await svc.open({tabId:nav.tabId,url:'https://example.org/one',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    const waiter=first.networkLease!.take(undefined,1000);
+    const closing=end==='close'?first.networkLease!.close('done'):(controller.abort(),Promise.resolve());
+    await flush(30);
+    expect(await waiter).toMatchObject({kind:'closed'});
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable']);
+    const second=svc.open({tabId:nav.tabId,url:'https://example.org/two',network:{ownerId:'two',accepts:()=>true}});
+    await flush(30);
+    expect(wc.debugger.sent.filter(c=>c.method==='Network.enable')).toHaveLength(1);
+    finishDisable(); await closing; const result=await second;
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
+    wc.debugger.respond=async()=>({});await result.networkLease!.close('done');
+  });
+  it.each(['settle','crash','detach','destroyed'] as const)('cancels during native enable and releases safely on %s',async end=>{
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    let finishEnable!:()=>void;
+    wc.debugger.respond=method=>method==='Network.enable'?new Promise<void>(r=>{finishEnable=r;}):Promise.resolve({});
+    const controller=new AbortController();
+    const first=svc.open({tabId:nav.tabId,url:'https://example.org/one',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    await flush(40);expect(wc.debugger.sent.filter(c=>c.method==='Network.enable')).toHaveLength(1);
+    controller.abort();expect((await first).nav.outcome.kind).toBe('cancelled');await flush(20);
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
+    if(end==='settle'){
+      wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+      const remount=svc.open({tabId:nav.tabId,url:'https://example.org/two',network:{ownerId:'two',accepts:()=>true}});
+      await flush(30);
+      expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
+      wc.debugger.respond=async()=>({});finishEnable();const result=await remount;
+      expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
+      await result.networkLease!.close('done');
+    }else{
+      if(end==='crash')wc.fire('render-process-gone',{}, {reason:'crashed'});
+      else if(end==='detach')wc.debugger.fire('detach',{},'target_closed');else wc.fire('destroyed');
+      await flush(30);
+      // The tab operation queue must be released even if the old native command never settles.
+      wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+      const next=await svc.open({tabId:nav.tabId,url:'https://example.org/after'});
+      expect(next.nav.outcome.kind).toBe('ok');
+      finishEnable();await flush(30);
+      expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
+    }
+  });
+  it('owns a committed bootstrap before load settles, suppresses its receipt on cancellation, and removes only its history later',async()=>{
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    wc.fire('did-navigate',{},'https://example.org/real',200);
+    expect(svc.takeUnreportedNav(nav.tabId)).toMatchObject({url:'https://example.org/real'});
+    const controller=new AbortController();
+    const pending=svc.open({url:'https://example.org/cancelled',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    const fresh=wcOf(1);fresh.historyEntries=[];fresh.historyIndex=0;
+    let finishBlank!:()=>void;
+    fresh.loadImpl=()=>{fresh.historyEntries.push(fresh.url);fresh.historyIndex=fresh.historyEntries.length-1;return new Promise<void>(r=>{finishBlank=r;});};
+    await flush();fresh.osPid=9876;fresh.fire('did-navigate',{},'about:blank',200);
+    controller.abort();const cancelled=await pending;await flush(20);
+    expect(cancelled.nav.outcome.kind).toBe('cancelled');
+    expect(svc.takeUnreportedNav(cancelled.tabId)).toBeNull();
+    expect(fresh.historyEntries).toEqual(['about:blank']);
+    fresh.loadImpl=async()=>{fresh.historyEntries.push(fresh.url);fresh.historyIndex=fresh.historyEntries.length-1;fresh.fire('did-navigate',{},fresh.url,200);};
+    const result=await svc.open({tabId:cancelled.tabId,url:'https://example.org/after'});
+    expect(result.nav.outcome.kind).toBe('ok');expect(fresh.historyEntries).toEqual(['https://example.org/after']);
+    expect(fresh.navigationHistory.canGoBack()).toBe(false);
+    finishBlank();
+  });
+});
