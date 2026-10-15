@@ -1,3 +1,4 @@
+import { XNetworkActionPendingError } from './xNetworkLease';
 import { admitXSourceRoot } from './xDomSource';
 import { bindXReadBudgets, sampleXEntries } from './xResearchBudget';
 import type { BrowserScrollReceipt } from '../browser/actions';
@@ -718,6 +719,10 @@ async function readNetworkDiscussion(
           attempt.usageAfter = replyUsage(row);
         }
         retainClickFailure(row, control, stage, error, context);
+        if (error instanceof XNetworkActionPendingError) {
+          observed = await collectPostFrame(page, request, row, stage, context);
+          continue;
+        }
         throw error;
       }
       row.budgetUsage.expandActions++;
@@ -746,39 +751,45 @@ async function readNetworkDiscussion(
         ).size;
     };
     omissions();
-    await page.act({ kind: 'scroll', direction: 'down' }, observed.snapshot, {
-      scrollAcknowledgement: {
-        onWritten: () => {
-          row.budgetUsage.scrolls++;
+    try {
+      await page.act({ kind: 'scroll', direction: 'down' }, observed.snapshot, {
+        scrollAcknowledgement: {
+          onWritten: () => {
+            row.budgetUsage.scrolls++;
+          },
+          onReceipt: (r) => {
+            if (!isScrollReceipt(r)) return;
+            receipt = r;
+            const saved = {
+              actionIndex,
+              snapshotId: observed.snapshot.snapshotId,
+              generation: r.generation,
+              location: observed.location.current,
+              targetKind: r.targetKind,
+              targetNodeId: r.targetNodeId,
+              targetContainsHit: r.targetContainsHit,
+              conversationRelation: r.conversationRelation,
+              rootRelation: r.rootRelation,
+              before: r.before,
+              after: r.after,
+              scrollHeight: r.scrollHeight,
+              clientHeight: r.clientHeight,
+              written: r.written,
+              eventObserved: r.eventObserved,
+              frameObserved: r.frameObserved,
+              state: r.state,
+            };
+            scroll.first ??= saved;
+            scroll.last = saved;
+            omissions();
+          },
         },
-        onReceipt: (r) => {
-          if (!isScrollReceipt(r)) return;
-          receipt = r;
-          const saved = {
-            actionIndex,
-            snapshotId: observed.snapshot.snapshotId,
-            generation: r.generation,
-            location: observed.location.current,
-            targetKind: r.targetKind,
-            targetNodeId: r.targetNodeId,
-            targetContainsHit: r.targetContainsHit,
-            conversationRelation: r.conversationRelation,
-            rootRelation: r.rootRelation,
-            before: r.before,
-            after: r.after,
-            scrollHeight: r.scrollHeight,
-            clientHeight: r.clientHeight,
-            written: r.written,
-            eventObserved: r.eventObserved,
-            frameObserved: r.frameObserved,
-            state: r.state,
-          };
-          scroll.first ??= saved;
-          scroll.last = saved;
-          omissions();
-        },
-      },
-    });
+      });
+    } catch (error) {
+      if (!(error instanceof XNetworkActionPendingError)) throw error;
+      observed = await collectPostFrame(page, request, row, stage, context);
+      continue;
+    }
     observed = await collectPostFrame(page, request, row, stage, context);
     if (!savePostFrame(row, observed, limits, context)) return;
     if (observed.network?.pending) continue;

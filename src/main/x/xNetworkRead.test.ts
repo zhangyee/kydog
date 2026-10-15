@@ -1187,3 +1187,43 @@ it('keeps an observed Article identity in distinct entries after subsequent sour
     expect(c.row.article.body.postId).toBe(articleId);
   }
 });
+
+
+it('preserves the recorded three-page Recency chain across sequential and queued consumption', async () => {
+  const pages = [recency, (await import('../../test-support/fixtures/x-network/read-thread-3.json')).default,
+    (await import('../../test-support/fixtures/x-network/read-thread-4.json')).default];
+  const results: string[][] = [];
+  for (const queued of [false, true, 'reverse']) {
+    const h = harness(); const seen: string[] = [];
+    for (const [i, page] of pages.entries()) {
+      const r = raw(page.request, {id: String(i)});
+      expect(h.lease.accepts(r)).toBe(true);
+      if(queued!=='reverse' || i!==1)h.emit(r, page.body);
+      if(queued==='reverse' && i===2)h.emit(raw(pages[1].request,{id:'1'}),pages[1].body);
+      if (i === 0 || !queued || i === 2) {
+        const batch = await h.lease.collect(location);
+        expect(batch.failure).toBeUndefined();
+        seen.push(...batch.pages.map(p => JSON.stringify([p.inputCursor,p.outputCursor,p.posts.map(post=>[post.postId,post.text])])));
+      }
+    }
+    expect(h.lease.pageFacts).toHaveLength(3); results.push(seen);
+    expect(h.lease.accepts(raw({...pages[2].request,cursor:'wrong'}, {id:'wrong'}))).toBe(false);
+    await expect(h.lease.collect(location)).rejects.toThrow('cursor_chain_mismatch');
+  }
+  expect(results[1]).toEqual(results[0]);
+  expect(results[2]).toEqual(results[0]);
+});
+
+
+it('bounds unresolved captures without delivering unproved pages or reviving native authority',async()=>{
+  const h=harness();expect(h.lease.accepts(raw())).toBe(true);
+  for(let i=1;i<1000;i++)expect(h.lease.accepts(raw({...first.request,cursor:'unresolved-'+i},{id:String(i)}))).toBe(true);
+  expect(h.lease.accepts(raw({...first.request,cursor:'beyond-cap'},{id:'overflow'}))).toBe(false);
+  h.emit(raw(),first.body);
+  const saved:string[]=[];
+  const batch=await h.lease.collect(location,undefined,undefined,p=>saved.push(p.root!.text));
+  expect(saved).toEqual(['Captured read text 1']);
+  expect(batch).toMatchObject({failure:'cursor_chain_mismatch',pending:false});
+  expect(h.lease.pageFacts).toHaveLength(1);
+  expect(h.lease.actionSignal.aborted).toBe(true);
+});

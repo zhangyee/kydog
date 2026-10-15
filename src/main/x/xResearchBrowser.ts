@@ -1,4 +1,4 @@
-import { XNetworkSearchLease, XNetworkReadLease, retainXNetworkCleanupFailure, type XNetworkAcceptanceSink } from './xNetworkLease';
+import { XNetworkActionPendingError, XNetworkSearchLease, XNetworkReadLease, retainXNetworkCleanupFailure, type XNetworkAcceptanceSink } from './xNetworkLease';
 import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/pointerPreflightDiagnostic';
 import { randomUUID } from 'node:crypto';
 import {createSourceEvaluation,logSourceDiagnostic} from '../browser/sourceEvaluationDiagnostic';
@@ -206,6 +206,8 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           } catch(error) { logSourceCollectionFailure(error,operation,phase);invalidateSource();throw error; }
         }),
         act: (action, snapshot, options) => run(async () => {
+          const actionSignal = network ? AbortSignal.any([lifetime.signal, network.actionSignal]) : lifetime.signal;
+          if (actionSignal.aborted) throw actionSignal.reason;
           if (options?.scrollAcknowledgement && action.kind!=='scroll') throw new KydogError('browser.bad_action','滚动确认只适用于滚动动作');
           const expected = bindings.get(snapshot), current = browser.locationFacts(tabId);
           if (!expected || expected.documentEpoch !== current.documentEpoch || expected.routeRevision !== current.routeRevision || expected.navigationSequence !== current.navigationSequence || expected.currentUrl !== current.currentUrl)
@@ -225,12 +227,18 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
               catch { /* Optional observers cannot restore permission or replace the action. */ }
             }
           }
-          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: lifetime.signal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission,collectedPointerEligibility:true,onPointerPreflight:(receipt:Readonly<PointerPreflightDiagnostic>)=>{
+          const result = await browser.dispatchAndObserveNavigation(tabId, action, snapshot, { signal: actionSignal, location: expected, strictSnapshot: true, ...(collectedPermission?{collectedPermission,collectedPointerEligibility:true,onPointerPreflight:(receipt:Readonly<PointerPreflightDiagnostic>)=>{
             try {
               if(isPointerPreflight(receipt)&&receipt.tabId===tabId&&receipt.snapshotId===originalBinding?.snapshotId&&receipt.generation===originalBinding.generation&&receipt.nodeId===originalBinding.nodeId)
                 options?.onPointerPreflight?.(receipt);
             }catch{/* Optional observation cannot affect action. */}
-          }}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) });
+          }}:{}), ...(options?.scrollAcknowledgement?{scrollAcknowledgement:options.scrollAcknowledgement}:{}) }).catch(error => {
+            // A suspended chain is not user cancellation. The old attempt stays
+            // aborted even if collection has already issued a new action signal.
+            if (!lifetime.signal.aborted && actionSignal.reason instanceof XNetworkActionPendingError)
+              throw actionSignal.reason;
+            throw error;
+          });
           const output = { action: { ...action }, ...result };
           const entry = action.kind==='click' && 'index' in action && action.snapshotId===snapshot.snapshotId
             ? currentEntries.get(snapshot)?.find(e=>e.binding.index===action.index) : undefined;

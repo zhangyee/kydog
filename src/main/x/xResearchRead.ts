@@ -207,6 +207,7 @@ export async function readX(
         context.signal,
         {stage:'post',expectedUrl:source,postId:id,collectReplies:input.read.includeReplies&&input.read.maxRepliesPerPost>0},
       );
+      if (opened.networkCleanupFailure) (row.diagnostics ??= {version:1}).networkCleanupFailure = opened.networkCleanupFailure;
       result.browserTabId = opened.tabId;
       checkReadCancelled(context);
       const committed = navigationUrl(opened.nav);
@@ -394,6 +395,7 @@ export async function readX(
             context.signal,
             {stage:'post',expectedUrl:parentUrl,postId:id,collectReplies:input.read.includeReplies&&input.read.maxRepliesPerPost>0},
           );
+          if (returned.networkCleanupFailure) (row.diagnostics ??= {version:1}).networkCleanupFailure = returned.networkCleanupFailure;
           checkReadCancelled(context);
           const finalUrl = navigationUrl(returned.nav);
           if (!finalUrl) {

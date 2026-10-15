@@ -516,8 +516,9 @@ export function assertXRequestFits(original: XResearchResult, prior?: XResearchS
       }
       if(t.replies.requested) t.unscopedPosts={observations:[],
         collection:{snapshotId:`xsnap_${uuid}`,document:{epoch:Number.MAX_SAFE_INTEGER,routeRevision:Number.MAX_SAFE_INTEGER,navigationSequence:Number.MAX_SAFE_INTEGER,generation:'g'.repeat(32)},location:{origin:'https://twitter.com',path:'p'.repeat(X_MAX_SOURCE_URL_UNITS),q:null,f:null,fragment:null,redacted:false}},
-        inventory:{scope:'collection',observed:100,retained:0,omitted:100,sourceInventoryTruncated:true,excludedNestedQuotes:100},
-        previewGaps:Array.from({length:100},()=>({sourceUrl:'u'.repeat(X_MAX_SOURCE_URL_UNITS),unresolved:Number.MAX_SAFE_INTEGER}))};
+        inventory:{scope:'collection',observed:1000,retained:0,omitted:1000,sourceInventoryTruncated:true,excludedNestedQuotes:1000},
+        // Exact gaps (up to the reply cap) can yield to artifact-dependent coverage.
+        previewGaps:[]};
       t.article.entryObserved = true;
       t.article.actionAttempted = true;
       t.article.navigationStarted = true;
@@ -543,7 +544,7 @@ export function assertXRequestFits(original: XResearchResult, prior?: XResearchS
   compactModelDocumentLocations(state);
   state.delivery.omittedFields = [...(state.metadataOmissions ?? []),...(state.contentMetadataOmissions ?? []),...rows.flatMap((_,i) => {
     const prefix = `${state.operation === 'search' ? 'queries' : 'targets'}.${i}`;
-    return ['networkPages','posts','postObservations','postObservations.text','root.text','article.body.text','bodyObservations','bodyObservations.text','quotedPosts','quotedPosts.text','replies.observations','replies.observations.text','articlePreviewObservations','unscopedPosts.observations','diagnostics.replyExpansions','diagnostics.initialFrame.replyUiInventory','diagnostics.firstAdmittedFrame.replyUiInventory','diagnostics.terminalFrame.replyUiInventory','diagnostics.scrollRecovery','diagnostics.pointerPreflights','diagnostics.scroll','diagnostics.readiness','diagnostics.clickFailures','diagnostics.pointerFailure','diagnostics.initialFrame','diagnostics.firstAdmittedFrame','diagnostics.terminalFrame','diagnostics.sourceFailure'].map(field => `${prefix}.${field}`);
+    return ['networkPages','posts','postObservations','postObservations.text','root.text','article.body.text','bodyObservations','bodyObservations.text','quotedPosts','quotedPosts.text','replies.observations','replies.observations.text','articlePreviewObservations','unscopedPosts.observations','unscopedPosts.previewGaps','diagnostics.replyExpansions','diagnostics.initialFrame.replyUiInventory','diagnostics.firstAdmittedFrame.replyUiInventory','diagnostics.terminalFrame.replyUiInventory','diagnostics.scrollRecovery','diagnostics.pointerPreflights','diagnostics.scroll','diagnostics.readiness','diagnostics.clickFailures','diagnostics.pointerFailure','diagnostics.initialFrame','diagnostics.firstAdmittedFrame','diagnostics.terminalFrame','diagnostics.sourceFailure'].map(field => `${prefix}.${field}`);
   })];
   const requiredBytes = measure(state, true, prior).result.budgetUsage.outputBytes;
   if (requiredBytes > X_RESEARCH_MAX_OUTPUT_BYTES)
@@ -851,6 +852,16 @@ export function serializeXResearchResult<T extends XResearchResult>(
     while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
     retain(lo);value=update();
     if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
+  if (collection && result.operation === 'read') for (const [index,row] of result.targets.entries()) {
+    const gaps = row.unscopedPosts?.previewGaps;
+    if (!gaps?.length) continue;
+    // Canonical persistence and the live ledger retain every exact obligation.
+    // update() compares obligation facts and marks this delivery not_inline.
+    row.unscopedPosts!.previewGaps = [];
+    mark(`targets.${index}.unscopedPosts.previewGaps`);
+    value = update();
+    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES) return value;
   }
   compactMetadata(result);
   value = update();

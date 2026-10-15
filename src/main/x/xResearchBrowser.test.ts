@@ -506,3 +506,69 @@ it('revokes a collected read snapshot during native preflight on own source chan
   expect(accepted[0].posts[0].text).toBe('Captured read text 1');expect(accepted).toHaveLength(1);dom.window.close();
  }
 });
+
+it('suspends pending native input until exact queued Recency links resolve without reviving old preflight',async()=>{
+ const captures=await Promise.all([2,3,4].map(async n=>(await import(`../../test-support/fixtures/x-network/read-thread-${n}.json`)).default));
+ const url=`https://x.com/ReadAuthor/status/${captures[0].request.focalTweetId}`;
+ for(const wrong of [false,true]){
+  const f=fixture();f.facts.currentUrl=url;
+  const dom=new JSDOM('<main><div data-testid="primaryColumn"></div></main>',{url,runScripts:'outside-only'});
+  let accept!:(r:any)=>boolean;const events:any[]=[];let inputs=0;
+  const raw=(i:number)=>({id:String(i),requestId:String(i),redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'f',loaderId:'l',navigationId:'nav',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/recorded/TweetDetail?variables='+encodeURIComponent(JSON.stringify({...captures[i].request,...(i===2&&wrong?{cursor:'wrong'}:{})}))});
+  const emit=(i:number)=>{const body=JSON.stringify(captures[i].body);events.push({kind:'response',request:raw(i),status:200,body,bytes:Buffer.byteLength(body),sha256:'a'.repeat(64)});};
+  let entered!:()=>void,release!:()=>void;
+  const pending=new Promise<void>(r=>{entered=r;}),preflight=new Promise<void>(r=>{release=r;});let defer=false;
+  Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
+   accept=args.network.accepts;expect(accept(raw(0))).toBe(true);emit(0);
+   return{tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:url,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',close:async()=>{},drain:async()=>events.splice(0),take:async()=>{const e=events.shift();if(!e)throw Error('empty');return e;}}};
+  },dispatchAndObserveNavigation:async(_id:string,_action:unknown,_snapshot:unknown,options:any)=>{
+   if(defer){defer=false;entered();await preflight;}
+   if(options.signal.aborted)throw new KydogError('browser.cancelled','preinput aborted');
+   inputs++;return{line:'scrolled',navigation:null};
+  }});
+  const request={stage:'post' as const,postId:captures[0].request.focalTweetId,expectedUrl:url,collectReplies:true};
+  const port=createXResearchBrowser(f.browser,'thread');await port.open(url,undefined,undefined,request);
+  const accepted:import('./xNetworkSource').XNetworkPage[]=[];
+  const outcome=await port.withPage('tab',undefined,async page=>{
+   const first=await page.collect(request);await page.act({kind:'scroll',direction:'down'},first.snapshot);expect(inputs).toBe(1);
+   defer=true;const old=page.act({kind:'scroll',direction:'down'},first.snapshot).catch(e=>e);await pending;
+   expect(accept(raw(1))).toBe(true);emit(1);expect(accept(raw(2))).toBe(true);emit(2);
+   const blocked=await page.act({kind:'scroll',direction:'down'},first.snapshot).catch(e=>e);
+   expect(blocked).toBeInstanceOf(KydogError);expect(inputs).toBe(1);
+   const collection=await page.collect(request).catch(e=>e);
+   release();expect(await old).toMatchObject({code:wrong?'x.invalid_page':'browser.stale_snapshot'});expect(inputs).toBe(1);
+   if(wrong){expect(collection).toBeInstanceOf(KydogError);return;}
+   await page.act({kind:'scroll',direction:'down'},collection.snapshot);expect(inputs).toBe(2);
+  },{onNetworkPageAccepted:p=>accepted.push(p)}).catch(e=>e);
+  release();
+  if(wrong)expect(outcome).toBeInstanceOf(KydogError);else expect(outcome).toBeUndefined();
+  expect(accepted).toHaveLength(wrong?2:3);dom.window.close();
+ }
+});
+
+
+it('continues read orchestration after a cursor pause cancels native preflight',async()=>{
+ const captures=await Promise.all([2,3,4].map(async n=>(await import(`../../test-support/fixtures/x-network/read-thread-${n}.json`)).default));
+ const url=`https://x.com/ReadAuthor/status/${captures[0].request.focalTweetId}`;
+ const f=fixture();f.facts.currentUrl=url;
+ const dom=new JSDOM('<main><div data-testid="primaryColumn"></div></main>',{url,runScripts:'outside-only'});
+ let accept!:(r:any)=>boolean;const events:any[]=[];let inputs=0,attempts=0;
+ const raw=(i:number)=>({id:String(i),requestId:String(i),redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'f',loaderId:'l',navigationId:'nav',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/recorded/TweetDetail?variables='+encodeURIComponent(JSON.stringify(captures[i].request))});
+ const emit=(i:number)=>{const body=JSON.stringify(captures[i].body);events.push({kind:'response',request:raw(i),status:200,body,bytes:Buffer.byteLength(body),sha256:'a'.repeat(64)});};
+ Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
+  accept=args.network.accepts;expect(accept(raw(0))).toBe(true);emit(0);
+  return{tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:url,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',close:async()=>{},drain:async()=>events.splice(0),take:async()=>{throw Error('empty');}}};
+ },dispatchAndObserveNavigation:async(_id:string,_action:unknown,_snapshot:unknown,options:any)=>{
+  attempts++;
+  if(attempts===1){expect(accept(raw(1))).toBe(true);emit(1);expect(accept(raw(2))).toBe(true);emit(2);}
+  if(options.signal.aborted)throw new KydogError('browser.cancelled','preinput aborted');
+  inputs++;options.scrollAcknowledgement?.onWritten();return{line:'scrolled',navigation:null};
+ }});
+ try{
+  const {readX}=await import('./xResearchRead');
+  const result=await readX({tabId:'tab',read:{objective:'queued read',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:1000,maxScrollsPerPost:1,maxExpandActionsPerPost:0}},{browser:createXResearchBrowser(f.browser,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map()});
+  expect(result.targets[0].networkPages).toHaveLength(3);
+  expect(result.targets[0]).toMatchObject({status:'partial',stopReason:'wait_timeout',budgetUsage:{scrolls:1}});
+  expect(attempts).toBe(2);expect(inputs).toBe(1);
+ }finally{dom.window.close();}
+});

@@ -16,6 +16,9 @@ import {
   type XNetworkProvenance,
   type XSearchNetworkRequest,
 } from './xNetworkSource';
+export class XNetworkActionPendingError extends KydogError {
+  constructor() { super('browser.stale_snapshot', 'X cursor linkage is not yet proven'); }
+}
 export type XNetworkCleanupFailure = 'network_cleanup_failed';
 const cleanupFailures = new WeakSet<object>();
 export function retainXNetworkCleanupFailure(error: unknown): void {
@@ -93,6 +96,16 @@ export class XNetworkLease<
   readonly id = randomUUID();
   readonly pageFacts: XNetworkPageFact[] = [];
   private source?: BrowserNetworkLease;
+  private actionController = new AbortController();
+  /** A native attempt keeps this exact signal even after a later chain resolves. */
+  get actionSignal(): AbortSignal { return this.actionController.signal; }
+  private updateActionAuthority(): void {
+    if (!this.strategy.onInvalidCursor) return;
+    const unresolved = [...this.requests.values()].some(p => p.request.inputCursor !== this.cursor);
+    if (this.stopped) this.actionController.abort();
+    else if (unresolved) this.actionController.abort(new XNetworkActionPendingError());
+    else if (this.actionController.signal.aborted) this.actionController = new AbortController();
+  }
   private location?: BrowserLocationFacts;
   private navigationId?: string;
   private sourceCoordinates?: { frameId: string; loaderId: string };
@@ -131,6 +144,7 @@ export class XNetworkLease<
     if (this.invalidationReason !== null) return;
     this.invalidationReason = reason;
     this.stopped = reason;
+    this.actionController.abort();
     for (const listener of this.invalidationListeners) listener(reason);
   }
   accepts = (raw: BrowserNetworkRequest): boolean => {
@@ -195,9 +209,6 @@ export class XNetworkLease<
     if (
       (input !== null && (typeof input !== 'string' || !input)) ||
       (this.initial && input === null) ||
-      (!!this.strategy.onInvalidCursor &&
-        this.initial &&
-        input !== this.cursor) ||
       (!this.initial && this.requests.size === 0 && input !== null) ||
       (!this.requests.size && this.initial && input !== this.cursor)
     ) {
@@ -209,7 +220,8 @@ export class XNetworkLease<
     )
       return false;
 
-    if (this.ended || this.pageFacts.length >= 1000) return false;
+    // Pending captures reserve page slots but do not become accepted evidence.
+    if (this.ended || this.pageFacts.length + this.requests.size >= 1000) return false;
     this.location ??= { ...raw.location };
     this.navigationId ??= raw.navigationId;
     this.sourceCoordinates ??= { frameId: raw.frameId, loaderId: raw.loaderId };
@@ -220,6 +232,7 @@ export class XNetworkLease<
       }),
       request,
     });
+    this.updateActionAuthority();
     return true;
   };
   private fail(reason: string): never {
@@ -307,7 +320,11 @@ export class XNetworkLease<
         const pair = [...this.requests.entries()].find(
           ([, v]) => v.request.inputCursor === this.cursor,
         );
-        if (!pair) break;
+        if (!pair) {
+          if (this.requests.size && this.strategy.onInvalidCursor)
+            this.strategy.onInvalidCursor();
+          break;
+        }
         const [id, bound] = pair,
           response = this.responses.get(id);
         if (!response) break;
@@ -377,6 +394,7 @@ export class XNetworkLease<
         }
         this.cursor = page.outputCursor;
       }
+      this.updateActionAuthority();
     };
     consume([...this.queued, ...(await this.source.drain())]);
     this.queued = [];
@@ -443,6 +461,7 @@ export class XNetworkLease<
   close(): Promise<string | null> {
     if (this.closing) return this.closing;
     this.stopped ??= 'closed';
+    this.actionController.abort();
     this.requests.clear();
     this.responses.clear();
     this.queued = [];

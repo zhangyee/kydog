@@ -424,3 +424,26 @@ it('retains authenticated failures for each exact original click purpose and pre
   if(purpose==='replies_expand')expect(row.diagnostics?.pointerFailure?.diagnostic).toEqual(entry?.diagnostic);
  }
 });
+
+
+it('retains cleanup receipts on initial and parent-return failed or cancelled opens', async () => {
+  for (const site of ['initial', 'return'] as const) for (const outcome of ['failed', 'cancelled'] as const) {
+    for (const cleanup of [true, false]) {
+      const f = await stagedFixture({article:'ok'});
+      const original = f.context.browser.open.bind(f.context.browser); let opens = 0;
+      f.context.browser.open = async (...args) => {
+        const opened = await original(...args); opens++;
+        if (opens !== (site === 'initial' ? 1 : 2)) return opened;
+        return {...opened, nav:{...opened.nav,outcome:outcome === 'cancelled' ? {kind:'cancelled'} : {kind:'failed',error:'fixture'}},
+          ...(cleanup ? {networkCleanupFailure:'network_cleanup_failed' as const} : {})} as typeof opened;
+      };
+      const row = (await readX(read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,includeReplies:true,maxExpandActionsPerPost:3}),f.context)).targets[0];
+      expect(row.stopReason).toBe(outcome === 'cancelled' ? 'cancelled' : 'navigation_failed');
+      expect(row.status).toBe(outcome === 'cancelled' ? 'cancelled' : site === 'initial' ? 'failed' : 'partial');
+      expect(row.diagnostics?.networkCleanupFailure).toBe(cleanup ? 'network_cleanup_failed' : undefined);
+      if (site === 'return') expect(row).toMatchObject({root:{text:'preview'},article:{bodyObserved:true}});
+    }
+  }
+  const normal = await stagedFixture({article:'ok'});
+  expect((await readX(read([{url:'https://x.com/alice/status/123'}],{includeArticle:true,maxExpandActionsPerPost:3}),normal.context)).targets[0].article.bodyObserved).toBe(true);
+});
