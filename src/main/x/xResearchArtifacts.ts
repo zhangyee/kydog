@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import { z } from 'zod';
 import { fileService } from '../fs/fileService';
 import {
@@ -61,8 +62,22 @@ const manifestSchema = refSchema.extend({
   rows: count,
   bodies: count,
 });
-const digest = (text: string) =>
-  createHash('sha256').update(text, 'utf8').digest('hex');
+const digest = (value: string | Uint8Array) =>
+  createHash('sha256').update(value).digest('hex');
+function decodeUtf8(bytes: Uint8Array): string {
+  try {
+    // A leading U+FEFF may be actual body text at a chunk boundary.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
+  } catch (cause) {
+    throw new XResearchArtifactError(
+      'integrity',
+      'Artifact contains invalid UTF-8',
+      { cause },
+    );
+  }
+}
 const chunkName = (index: number) =>
   `chunk-${String(index).padStart(6, '0')}.json`;
 function checkedRef(raw: unknown): XArtifactRef {
@@ -144,14 +159,31 @@ export function createXResearchArtifactStore(
       );
     return real;
   }
-  async function readWithin(dir: string, name: string): Promise<string> {
+  async function readWithin(
+    dir: string,
+    name: string,
+    maxBytes: number,
+  ): Promise<Uint8Array> {
     const real = await fs.realpath(path.join(dir, name));
     if (!within(dir, real))
       throw new XResearchArtifactError(
         'path',
         'Artifact file escaped its directory',
       );
-    return (await fileService.readText({ path: real })).content;
+    // Keep the artifact-specific ceilings before allocating through the shared
+    // binary reader, and recheck actual bytes in case the file changed after stat.
+    if ((await fs.stat(real)).size > maxBytes)
+      throw new XResearchArtifactError(
+        'integrity',
+        'Artifact file exceeds its byte limit',
+      );
+    const { bytes } = await fileService.readBytes({ path: real });
+    if (bytes.byteLength > maxBytes)
+      throw new XResearchArtifactError(
+        'integrity',
+        'Artifact file exceeds its byte limit',
+      );
+    return bytes;
   }
   return {
     displayPath,
@@ -221,7 +253,9 @@ export function createXResearchArtifactStore(
       try {
         const dir = await directory(ref);
         const parsed = manifestSchema.safeParse(
-          JSON.parse(await readWithin(dir, ref.manifest)),
+          JSON.parse(
+            decodeUtf8(await readWithin(dir, ref.manifest, 2 * CHUNK_BYTES)),
+          ),
         );
         if (!parsed.success)
           throw new XResearchArtifactError(
@@ -235,28 +269,29 @@ export function createXResearchArtifactStore(
             'Artifact reference does not match manifest',
           );
         const parts: string[] = [];
+        const totalHash = createHash('sha256');
+        let totalBytes = 0;
         for (const [index, chunk] of manifest.chunks.entries()) {
           if (chunk.name !== chunkName(index))
             throw new XResearchArtifactError(
               'integrity',
               'Invalid artifact chunk order or name',
             );
-          const content = await readWithin(dir, chunk.name);
+          const content = await readWithin(dir, chunk.name, CHUNK_BYTES);
           if (
-            Buffer.byteLength(content, 'utf8') !== chunk.bytes ||
+            content.byteLength !== chunk.bytes ||
             digest(content) !== chunk.sha256
           )
             throw new XResearchArtifactError(
               'integrity',
               'Artifact chunk checksum mismatch',
             );
-          parts.push(content);
+          totalHash.update(content);
+          totalBytes += content.byteLength;
+          parts.push(decodeUtf8(content));
         }
         const text = parts.join('');
-        if (
-          Buffer.byteLength(text, 'utf8') !== ref.bytes ||
-          digest(text) !== ref.sha256
-        )
+        if (totalBytes !== ref.bytes || totalHash.digest('hex') !== ref.sha256)
           throw new XResearchArtifactError(
             'integrity',
             'Artifact checksum mismatch',

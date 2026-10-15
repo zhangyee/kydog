@@ -6,9 +6,14 @@ import { createHash } from 'node:crypto';
 import { createXResearchArtifactStore } from './xResearchArtifacts';
 import { canonicalizeXResearchResult } from './xResearchCanonical';
 import { fileService } from '../fs/fileService';
-import { fixture, stagedFixture } from '../../test-support/xResearchFixture';
+import {
+  fixture,
+  stagedFixture,
+  post,
+  searchHtml,
+} from '../../test-support/xResearchFixture';
 import { readX } from './xResearchRead';
-import { searchResult } from './xResearchSearch';
+import { searchResult, searchX } from './xResearchSearch';
 import { searchInput } from '../../test-support/xResearchFixture';
 import {
   SKIP_WITHOUT_SYMLINK,
@@ -190,4 +195,110 @@ it('commits manifest last, and retries the same call in a fresh directory', asyn
   expect(retry.directoryId).not.toBe(ref.directoryId);
   expect(await store.read(retry)).toEqual(result);
   expect(await store.read(ref)).toEqual({ ...result, objective: 'research' });
+});
+
+it.each(['chunk', 'manifest'] as const)(
+  'rejects invalid UTF-8 replacing valid U+FFFD in %s without changing the reference',
+  async (part) => {
+    const { root, store } = await setup();
+    const result = await searchX(
+      searchInput,
+      fixture([searchHtml(post('123', 'alice', 'valid body: \uFFFD'))]).context,
+    );
+    if (part === 'manifest') result.callId = 'call-\uFFFD';
+    const ref = await store.write(result);
+    expect(await store.read(ref)).toEqual(result);
+    const manifest = JSON.parse(
+      await fs.readFile(store.displayPath(ref), 'utf8'),
+    );
+    const file =
+      part === 'manifest'
+        ? store.displayPath(ref)
+        : path.join(root, ref.directoryId, manifest.chunks[0].name);
+    const original = await fs.readFile(file);
+    const offset = original.indexOf(Buffer.from([0xef, 0xbf, 0xbd]));
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const corrupt = Buffer.concat([
+      original.subarray(0, offset),
+      Buffer.from([0xff]),
+      original.subarray(offset + 3),
+    ]);
+    expect(corrupt.toString('utf8')).toBe(original.toString('utf8'));
+    expect(corrupt.byteLength).toBe(original.byteLength - 2);
+    await fs.writeFile(file, corrupt);
+    await expect(store.read(ref)).rejects.toMatchObject({ code: 'integrity' });
+  },
+);
+
+it('rejects invalid UTF-8 even when raw chunk length and hashes match the reference', async () => {
+  const { root, store, result } = await setup();
+  result.objective = 'replacement \uFFFD';
+  const ref = await store.write(result);
+  expect(await store.read(ref)).toEqual(result);
+  const manifest = JSON.parse(
+    await fs.readFile(store.displayPath(ref), 'utf8'),
+  );
+  expect(manifest.chunks).toHaveLength(1);
+  const chunk = manifest.chunks[0],
+    file = path.join(root, ref.directoryId, chunk.name);
+  const original = await fs.readFile(file),
+    offset = original.indexOf(Buffer.from([0xef, 0xbf, 0xbd]));
+  expect(offset).toBeGreaterThanOrEqual(0);
+  const corrupt = Buffer.concat([
+    original.subarray(0, offset),
+    Buffer.from([0xff]),
+    original.subarray(offset + 3),
+  ]);
+  ref.bytes = manifest.bytes = chunk.bytes = corrupt.byteLength;
+  ref.sha256 =
+    manifest.sha256 =
+    chunk.sha256 =
+      createHash('sha256').update(corrupt).digest('hex');
+  await fs.writeFile(file, corrupt);
+  await fs.writeFile(store.displayPath(ref), JSON.stringify(manifest));
+  await expect(store.read(ref)).rejects.toMatchObject({
+    code: 'integrity',
+    message: expect.stringContaining('UTF-8'),
+  });
+});
+
+it('retains the 2 MiB manifest read ceiling after switching to binary reads', async () => {
+  const { store, result } = await setup(),
+    ref = await store.write(result);
+  const file = store.displayPath(ref),
+    manifest = await fs.readFile(file);
+  await fs.writeFile(
+    file,
+    Buffer.concat([
+      manifest,
+      Buffer.alloc(2 * 1048576 - manifest.byteLength, 32),
+    ]),
+  );
+  expect(await store.read(ref)).toEqual(result);
+  await fs.appendFile(file, ' ');
+  await expect(store.read(ref)).rejects.toMatchObject({
+    name: 'XResearchArtifactError',
+  });
+});
+
+it('preserves a valid U+FEFF character at the beginning of a later chunk', async () => {
+  const { root, store, result } = await setup();
+  result.objective = 'START';
+  const canonical = JSON.stringify(canonicalizeXResearchResult(result));
+  const prefixBytes = Buffer.byteLength(
+    canonical.slice(0, canonical.indexOf('START')),
+    'utf8',
+  );
+  result.objective = 'x'.repeat(1048576 - prefixBytes) + '\uFEFF正文';
+  const ref = await store.write(result);
+  const manifest = JSON.parse(
+    await fs.readFile(store.displayPath(ref), 'utf8'),
+  );
+  const bytes = await fs.readFile(
+    path.join(root, ref.directoryId, manifest.chunks[1].name),
+  );
+  expect(bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))).toBe(
+    true,
+  );
+  expect(await store.read(ref)).toEqual(result);
 });
