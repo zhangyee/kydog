@@ -60,7 +60,7 @@ const articleSchema = z.object({
 });
 const base = {
   schemaVersion: z.literal(2),
-  sourceKind: z.literal('rendered_ui'),
+  sourceKind: z.enum(['rendered_ui','page_graphql']),
   runId: string,
   callId: string,
   batchId: string,
@@ -82,7 +82,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
         postObservations:z.array(textSchema).optional(),
       }),
     ),
-  }),
+  }).refine(r=>r.queries.every(q=>[...q.posts,...(q.postObservations??[])].every(p=>p.sourceKind===r.sourceKind))),
   z.object({
     ...base,
     operation: z.literal('read'),
@@ -142,7 +142,7 @@ export function latestXResearchTab(branchEntries: readonly unknown[]): string | 
 type Canonical = z.infer<typeof canonicalSchema>;
 type Text = z.infer<typeof textSchema> | z.infer<typeof unscopedTextSchema>;
 export interface XEvidenceObservation {
-  sourceKind: 'rendered_ui' | 'legacy_x_graphql';
+  sourceKind: 'rendered_ui' | 'page_graphql' | 'legacy_x_graphql';
   origin: 'production' | 'history';
   observationId: string | null;
   observedAt: string | null;
@@ -468,7 +468,7 @@ export class XResearchEvidence {
         parentEntry(e, { postId: p.postId, sourceUrl: p.sourceUrl }),
       );
       const record: XEvidenceObservation = {
-        sourceKind: 'rendered_ui',
+        sourceKind: p.sourceKind,
         origin,
         sessionEntryId,
         runId: result.runId,

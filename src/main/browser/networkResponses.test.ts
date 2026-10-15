@@ -168,4 +168,18 @@ describe('NetworkResponseObserver', () => {
     await h.lease.close('done');
   });
 
+  it('freezes proven global main-frame identity, distinguishes same-session children and unknown frames', async () => {
+    const h=harness();await h.observer.enable();h.request('main');
+    h.emit('Page.frameNavigated',{frame:{id:'child-frame',parentId:'frame',loaderId:'child-loader'}});
+    h.request('iframe',{frameId:'child-frame',loaderId:'child-loader'});
+    h.emit('Page.frameNavigated',{frame:{id:'oop-root',loaderId:'oop-loader'}},'oop');
+    h.request('oop',{frameId:'oop-root',loaderId:'oop-loader'},'oop');
+    h.request('missing',{frameId:'absent'});
+    h.emit('Page.frameDetached',{frameId:'frame'});
+    const requests=(await h.lease.drain()).filter(e=>e.kind==='request').map(e=>e.request);
+    expect(requests.map(r=>r.isMainFrame)).toEqual([true,false,false,null]);
+    expect(Object.isFrozen(requests[0])).toBe(true);
+    await h.lease.close('done');
+  });
+
 });

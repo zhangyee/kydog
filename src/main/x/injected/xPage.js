@@ -52,8 +52,7 @@
   };
   const primary = document.querySelector('main [data-testid="primaryColumn"], [role="main"] [data-testid="primaryColumn"]');
   const conversation = primary?.querySelector('[aria-label="Timeline: Conversation"]') ?? null;
-  const region = request.stage === 'search' ? primary : conversation;
-  const selected = all(primary,'[role="tab"][aria-selected="true"]').filter(shown).map(text);
+  const region = request.stage === 'search' ? null : conversation;
   let state = null;
   const current = url(location.href);
   if (allowed(current) && current.pathname === '/i/jf/onboarding/web') {
@@ -61,12 +60,6 @@
       if (dialog.querySelector('input[name="username_or_email"][type="text"][autocomplete="username webauthn"]') && dialog.querySelector('input[name="password"][type="password"]'))
         state = {kind:'auth_required',text:'Observed onboarding dialog with username and password fields'};
     }
-  }
-  const empty = primary?.querySelector('[data-testid="emptyState"]');
-  if (!state && request.stage === 'search' && shown(empty)) {
-    const header = empty.querySelector('[data-testid="empty_state_header_text"]');
-    const body = empty.querySelector('[data-testid="empty_state_body_text"]');
-    if (shown(header) && shown(body) && text(header).startsWith('No results for ')) state = {kind:'explicit_empty',text:(text(header)+'\n'+text(body)).slice(0,4000)};
   }
   const posts = [], controls = [], entries = [], postRoots = [];
   const candidates = new Set();
@@ -260,7 +253,7 @@
     ? {...sourceCandidates[0],root:postRoots[posts.indexOf(sourceCandidates[0])],handle:sourceCandidates[0].author?.handle} : null;
   let sourceRoot=null;
   try {sourceRoot=rootDiagnostics(request.sourceRoot??{},request.stage==='post'?{all,owner,shownReason,factOf,identity,url,allowed,roots,postRoots,conversation,primary,snapshot,tweetSelector,boundarySelector,candidate}:null);} catch { /* Missing source facts never change the ordinary observation. */ }
-  return {...(replyUiInventory?{replyUiInventory}:{}),sourceRoot,rawUrl:location.href,region:!!region,diagnosticNodes,selectedProduct:selected.length===1?selected[0]:null,state,posts,article,
+  return {...(replyUiInventory?{replyUiInventory}:{}),sourceRoot,rawUrl:location.href,region:!!region,diagnosticNodes,state,posts,article,
     controls:controls.flatMap(({el,kind,postId,sourceRelation})=>{const n=nodeFor(el);return n?[{kind,postId,nodeId:n.nodeId,index:n.index,sourceRelation}]:[];}),
     entries:entries.flatMap(({el,...e})=>{const n=nodeFor(el);return n?[{...e,nodeId:n.nodeId,index:n.index}]:[];}),
     controlTruncation:{returned:snapshot.nodes.length,totalKnown:eligibleControls,truncated:snapshot.nodes.length<eligibleControls},

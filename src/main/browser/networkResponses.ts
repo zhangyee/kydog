@@ -7,7 +7,7 @@ export interface BrowserNetworkRequest {
   id: string; requestId: string; sessionId: string | null;
   /** Zero-based only for a fully observed chain; -1 means its prefix was not observed. */
   redirectIndex: number;
-  loaderId: string; frameId: string;
+  loaderId: string; frameId: string; isMainFrame: boolean | null;
   /** CDP document tuple [sessionId, frameId, loaderId], NOT NavigationObservation's UUID.
    * Empty means the frame/loader association was unknown when the request arrived. */
   navigationId: string;
@@ -43,6 +43,7 @@ export class NetworkResponseObserver {
   private readonly requests = new Map<string, Pending>();
   private readonly redirects = new Map<string, number>();
   private readonly frames = new Map<string, string>();
+  private readonly mainFrames = new Map<string, boolean>();
   private readonly reads = new Set<Promise<void>>();
   private readonly waiters = new Set<Waiter>();
   private closeCompletion: Promise<void> = Promise.resolve();
@@ -64,12 +65,12 @@ export class NetworkResponseObserver {
       if (this.closed !== null) return;
       const tree = await Promise.race([this.sendCommand('Page.getFrameTree'), this.closedPromise]);
       if (this.closed !== null) return;
-      const visit = (node: { frame: { id: string; loaderId: string }; childFrames?: typeof node[] }) => {
+      const visit = (node: { frame: { id: string; loaderId: string }; childFrames?: typeof node[] }, main = false) => {
         const key = JSON.stringify([null, node.frame.id]);
-        if (!this.frames.has(key)) this.frames.set(key, node.frame.loaderId);
-        node.childFrames?.forEach(visit);
+        if (!this.frames.has(key)) { this.frames.set(key, node.frame.loaderId); this.mainFrames.set(key, main); }
+        node.childFrames?.forEach(child => visit(child, false));
       };
-      if (tree.frameTree) visit(tree.frameTree);
+      if (tree.frameTree) visit(tree.frameTree, true);
       await Promise.race([this.sendCommand('Network.enable', {
         maxTotalBufferSize: TOTAL_BYTES, maxResourceBufferSize: BODY_BYTES, maxPostDataSize: POST_BYTES,
       }), this.closedPromise]);
@@ -81,9 +82,11 @@ export class NetworkResponseObserver {
     // Electron 41 emits '' for the root session, but rejects it as a command session.
     const sessionId = session === '' || session === undefined ? null : session;
     if (method === 'Page.frameNavigated') {
-      this.frames.set(JSON.stringify([sessionId, p.frame.id]), p.frame.loaderId); return;
+      const key=JSON.stringify([sessionId, p.frame.id]);
+      this.frames.set(key, p.frame.loaderId);
+      this.mainFrames.set(key,sessionId===null && !p.frame.parentId); return;
     }
-    if (method === 'Page.frameDetached') { this.frames.delete(JSON.stringify([sessionId, p.frameId])); return; }
+    if (method === 'Page.frameDetached') { this.frames.delete(JSON.stringify([sessionId, p.frameId])); this.mainFrames.delete(JSON.stringify([sessionId, p.frameId])); return; }
     if (typeof p.requestId !== 'string') return;
     const key = JSON.stringify([sessionId, p.requestId]);
     if (method === 'Network.requestWillBeSent') {
@@ -100,7 +103,7 @@ export class NetworkResponseObserver {
       const loaderId = typeof p.loaderId === 'string' ? p.loaderId : '';
       const request: BrowserNetworkRequest = Object.freeze({
         id: JSON.stringify([this.lease.id, sessionId, p.requestId, redirectIndex, ++this.requestSequence]), requestId: p.requestId, sessionId, redirectIndex,
-        frameId, loaderId, navigationId: frameId && loaderId && this.frames.get(JSON.stringify([sessionId, frameId])) === loaderId
+        frameId, loaderId, isMainFrame: frameId && loaderId && this.frames.get(JSON.stringify([sessionId,frameId]))===loaderId ? this.mainFrames.get(JSON.stringify([sessionId,frameId])) ?? null : null, navigationId: frameId && loaderId && this.frames.get(JSON.stringify([sessionId, frameId])) === loaderId
           ? JSON.stringify([sessionId, frameId, loaderId]) : '',
         location: Object.freeze({ ...this.location() }), url: p.request.url, method: p.request.method,
         ...(typeof p.request.postData === 'string' ? { postData: p.request.postData } : {}),
@@ -207,7 +210,7 @@ export class NetworkResponseObserver {
     if (this.closed !== null) return this.closeCompletion;
     this.closed = reason;
     this.debugger_.off('message', this.message);
-    this.queue = []; this.queueBytes = 0; this.pendingBytes = 0; this.redirectBytes = 0; this.requests.clear(); this.redirects.clear(); this.frames.clear(); this.reads.clear();
+    this.queue = []; this.queueBytes = 0; this.pendingBytes = 0; this.redirectBytes = 0; this.requests.clear(); this.redirects.clear(); this.frames.clear(); this.mainFrames.clear(); this.reads.clear();
     for (const waiter of [...this.waiters]) waiter.finish({ kind: 'closed', reason });
     this.finishClosed();
     // JS invalidation is immediate; BrowserService owns serialized native teardown.

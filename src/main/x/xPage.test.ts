@@ -65,11 +65,6 @@ describe('fixed X page DOM source', () => {
     expect(decoded.controls.filter(c=>c.kind==='replies_expand').map(c=>c.sourceRelation)).toEqual(['same_cell','different_cell']);
   });
   it('explicitPageStatesHaveEvidence', () => {
-    const r = {stage:'search', expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest'};
-    const f = fixture('<main><div data-testid="primaryColumn"><a role="tab" aria-selected="true">Latest</a><div data-testid="emptyState"><div data-testid="empty_state_header_text">No results for "probe"</div><div data-testid="empty_state_body_text">Try searching for something else</div></div></div></main>',r.expectedUrl);
-    expect(f.collect(r).state).toMatchObject({kind:'explicit_empty',text:expect.stringContaining('No results')});
-    f.document.querySelector('[data-testid="emptyState"]')!.remove();
-    expect(f.collect(r).state).toBeNull();
     const auth = fixture('<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn" value="secret-user"><input type="password" name="password" value="secret-password"></div>','https://x.com/i/jf/onboarding/web?token=secret');
     expect(auth.collect().state.kind).toBe('auth_required');
     expect(JSON.stringify(auth.collect().state)).not.toContain('secret');
@@ -180,13 +175,6 @@ describe('X page trusted boundary', () => {
     expect(observed.diagnosticFrame).toMatchObject({rootIdentityProven:true,rootCandidateCount:1,
       rootRejections:{unnamed:0,authorMismatch:0,permalinkMismatch:0}});
   });
-  it('requires query URL and selected product together, with explicit empty separate', () => {
-    const r={stage:'search',expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest'};
-    const f=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post()),r.expectedUrl);
-    expect(decode(f,r,r.expectedUrl).posts[0].postId).toBe('123');
-    f.document.querySelector('[role="tab"]')!.textContent='Top';
-    expect(decode(f,r,r.expectedUrl)).toMatchObject({identityProven:false,posts:[],status:'partial'});
-  });
   it('sanitizes serialized location after exact raw comparison and keeps private snapshot out of JSON', () => {
     const f=fixture(wrap(post()),url+'?token=secret');
     const result=decode(f,request,url+'?token=secret');
@@ -231,10 +219,6 @@ it('bounds only the unique current detail root at 64000 while search, quote and 
   expect(decodeXPage(over,request,facts,{parentArticle:false}).root!.truncation).toEqual(over.posts[0].truncation);
 
   const long = 'b'.repeat(4999) + 'Y';
-  const search={stage:'search' as const,expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest' as const};
-  const searchPage=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post('123','alice',long)),search.expectedUrl);
-  expect(searchPage.collect(search).posts[0].truncation).toEqual({returned:4000,totalKnown:5000,truncated:true});
-  expect(decodeXPage(searchPage.collect(search),search,{...facts,currentUrl:search.expectedUrl,navigationUrl:search.expectedUrl},{parentArticle:false}).posts[0].text.length).toBe(4000);
   const quote=`<div role="link" tabindex="0">${author('bob')}<div data-testid="tweetText">${long}</div>${permalink('456','bob')}</div>`;
   const discussion=fixture(wrap(post('123','alice','root',quote)+post('789','carol',long)));
   expect(discussion.collect().posts.map((p:any)=>[p.scope,p.text.length])).toEqual([['post',4],['quote',4000],['post',4000]]);
@@ -498,24 +482,6 @@ it('Article permission retains the independently observed preview author links',
 });
 
 
-it('names only official source identities while preserving independent long Unicode display names',()=>{
-  const maximum='18446744073709551615', handle='Ab_0123456789xy';
-  const r={stage:'search' as const,expectedUrl:'https://x.com/search?q=probe&f=live',query:'probe',product:'Latest' as const};
-  const facts={currentUrl:r.expectedUrl,documentEpoch:1,routeRevision:1,navigationSequence:1,navigationType:'cross_document' as const,navigationEvent:'did-navigate' as const,navigationUrl:r.expectedUrl};
-  for(const [id,name] of [[maximum,handle],['0','a']]) {
-    const f=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post(id,name)),r.expectedUrl);
-    f.document.querySelector('[data-testid="User-Name"] a')!.textContent='科研显示名'.repeat(50);
-    const good=decodeXPage(f.collect(r),r,facts,{parentArticle:false});
-    expect(good.posts[0]).toMatchObject({postId:id,author:{handle:name,displayName:'科研显示名'.repeat(50)}});
-    for(const [badId,badName] of [[id,handle+'z'],['18446744073709551616',name],['0'.repeat(21),name]]) {
-      const bad=fixture(wrap('<a role="tab" aria-selected="true">Latest</a>'+post(badId,badName)),r.expectedUrl);
-      const result=decodeXPage(bad.collect(r),r,facts,{parentArticle:false});
-      expect(result.posts).toEqual([]);
-      expect(result.fragments[0]).toMatchObject({containerKind:'unattributed_fragment',postId:null,text:'root original'});
-    }
-  }
-});
-
 it('rejects invalid request identities before constructing a page expression and excludes media body sources',()=>{
   const maximum='18446744073709551615',handle='Ab_0123456789xy';
   for(const suffix of ['', '/history/', '/photo/1', '/video/2/']) {
@@ -657,7 +623,7 @@ it.each(['lease','key','container','raw_url','truncated','parse','route','epoch'
       if(['route','epoch','sequence','generation','nonpost'].includes(mode)){
         if(mode==='route') facts.routeRevision++;if(mode==='epoch') facts.documentEpoch++;if(mode==='sequence') facts.navigationSequence++;
         if(mode==='generation') f.evaluate('window.__kydogWorld.gen="replacement_generation"');
-        if(mode==='nonpost') await page.collect({stage:'search',expectedUrl:'https://x.com/search?q=test&f=live',query:'test',product:'Latest'});
+        if(mode==='nonpost') await expect(page.collect({stage:'search',expectedUrl:'https://x.com/search?q=test&f=live',query:'test',product:'Latest'})).rejects.toThrow('lease_missing');
         const changed=await page.collect(request);expect(changed.diagnosticFrame?.sourceRootState).toBeUndefined();
         admitXSourceRoot(changed);expect(changed.diagnosticFrame?.sourceRootState?.anchorSnapshotId).toBe(changed.snapshot.snapshotId);
       }

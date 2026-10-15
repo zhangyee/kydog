@@ -5,7 +5,7 @@ import type { BrowserNetworkLease } from '../../../src/main/browser/networkRespo
 
 type Trace = { seq: number; event: string; method?: string; pid?: number; wcId?: number; reason?: string; history?: { index: number; urls: string[] } };
 export interface NetworkHarnessResult {
-  tabId: string; history: { canGoBack: boolean; urls: string[] }; trace: Trace[]; events: Array<{ kind: string; bytes?: number; sha256?: string; body?: string; navigationId?: string; reason?: string }>;
+  tabId: string; history: { canGoBack: boolean; urls: string[] }; trace: Trace[]; events: Array<{ kind: string; bytes?: number; sha256?: string; body?: string; navigationId?: string; isMainFrame?:boolean|null; sessionId?:string|null; reason?: string }>;
 }
 export interface NetworkHarness {
   configure(port: number, cert: string): Promise<void>;
@@ -65,7 +65,7 @@ app.whenReady().then(() => {
         // consume real queue only after the handle is returned
         const events = await lastLease.drain();
         return { tabId: opened.tabId, history: { canGoBack: wc.navigationHistory.canGoBack(), urls: wc.navigationHistory.getAllEntries().map(e => e.url) }, trace: [...trace], events: events.map(e => e.kind === 'response'
-          ? { kind: e.kind, bytes: e.bytes, sha256: e.sha256, ...(name === 'top' ? {} : { body: e.body }), navigationId: e.request.navigationId }
+          ? { kind: e.kind, bytes: e.bytes, sha256: e.sha256, ...(name === 'top' ? {} : { body: e.body }), navigationId: e.request.navigationId, isMainFrame:e.request.isMainFrame, sessionId:e.request.sessionId }
           : { kind: e.kind, ...('reason' in e ? { reason: e.reason } : {}) }) };
       } catch (error) { throw new Error(`${String(error)}; trace=${JSON.stringify(trace)}; states=${JSON.stringify(webContents.getAllWebContents().map(w => ({ pid: w.getOSProcessId(), url: w.getURL(), length: w.navigationHistory.length(), index: w.navigationHistory.getActiveIndex(), entries: w.navigationHistory.getAllEntries().map(e => e.url) })))}`); }
       finally { clearTimeout(timer); release(); gate = undefined; }

@@ -1,6 +1,6 @@
 import {JSDOM} from 'jsdom';
 import {expect,it,vi} from 'vitest';
-import {post,readHtml,searchHtml,query} from '../../test-support/xResearchFixture';
+import {post,readHtml} from '../../test-support/xResearchFixture';
 import {KydogError} from '../../shared/errors';
 import {BrowserScrollAcknowledgementError,type BrowserScrollReceipt} from '../browser/actions';
 import type {BrowserDispatchOptions} from '../browser/browserService';
@@ -8,19 +8,18 @@ import {createXResearchBrowser} from './xResearchBrowser';
 import {readX} from './xResearchRead';
 import {serializeXResearchResult,xResearchToolResult} from './xResearchOutput';
 import {XResearchEvidence} from './xResearchEvidence';
-import {searchX,xSearchUrl} from './xResearchSearch';
 import type {XReadRequest} from './xResearchTypes';
 
-function stallFixture(search=false,initialReply=false) {
- const url=search?xSearchUrl(query):'https://x.com/alice/status/123';
- const dom=new JSDOM(search?searchHtml(post('401','first')):readHtml(post('123')+(initialReply?post('401','first'):'')),{url,runScripts:'outside-only'});
+function stallFixture(initialReply=false) {
+ const url='https://x.com/alice/status/123';
+ const dom=new JSDOM(readHtml(post('123')+(initialReply?post('401','first'):'')),{url,runScripts:'outside-only'});
  Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
  Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
  const abort=new AbortController(),events:string[]=[];
  const facts={currentUrl:url,documentEpoch:3,routeRevision:7,navigationSequence:9,navigationEvent:'did-navigate' as const,navigationType:'cross_document' as const,navigationUrl:url};
  let scrolls=0,clicks=0,collects=0,gone:((id:string)=>void)|undefined;
  const hooks:{collect?:()=>void|Promise<void>;write?:()=>void|Promise<void>;receipt?:(r:BrowserScrollReceipt)=>BrowserScrollReceipt;error?:()=>Error;written?:boolean}={};
- const container=()=>dom.window.document.querySelector(search?'[data-testid="primaryColumn"]':'[aria-label="Timeline: Conversation"]')!;
+ const container=()=>dom.window.document.querySelector('[aria-label="Timeline: Conversation"]')!;
  const add=(id='402')=>container().insertAdjacentHTML('beforeend',post(id,'next','real source '+id));
  const service={researchTabStatus:()=>'available',enqueue:async(_id:string,work:()=>Promise<unknown>)=>{try{return await work();}finally{events.push('queue-release');}},withAgentDriving:async(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),onTabDestroyed:(cb:(id:string)=>void)=>{gone=cb;return()=>{};},onTabUnavailable:()=>()=>{},locationFacts:()=>facts,prepareForDomRead:async()=>{},
   open:async()=>({tabId:'tab',evicted:[],nav:{navigationId:'one',startedAt:0,deadlineAt:1,outcome:{kind:'ok',finalUrl:facts.currentUrl}}}),
@@ -37,60 +36,60 @@ function stallFixture(search=false,initialReply=false) {
  };
  const context={browser:createXResearchBrowser(service as never,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map(),signal:abort.signal};
  const run=async(limits:Partial<XReadRequest>={})=>{
-  const pending=search?searchX({search:{objective:'recover',queries:[query],maxPostsPerQuery:limits.maxRepliesPerPost??20,maxScrollsPerQuery:limits.maxScrollsPerPost??3}},context):readX({tabId:'tab',read:{objective:'recover',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:20,maxScrollsPerPost:3,maxExpandActionsPerPost:2,...limits}},context);
-  await vi.runAllTimersAsync();const result=await pending;serializeXResearchResult(result);return{result,row:result.operation==='read'?result.targets[0]:result.queries[0]};
+  const pending=readX({tabId:'tab',read:{objective:'recover',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:20,maxScrollsPerPost:3,maxExpandActionsPerPost:2,...limits}},context);
+  await vi.runAllTimersAsync();const result=await pending;serializeXResearchResult(result);return{result,row:result.targets[0]};
  };
  return{dom,abort,events,facts,hooks,container,add,run,count:()=>({scrolls,clicks,collects}),destroy:()=>gone?.('tab'),close:()=>dom.window.close()};
 }
-it.each([false,true])('collects after settled authenticated stall and resumes on actual new identities (search=%s)',async(search)=>{
- vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(search);try{
+it('collects after settled authenticated stall and resumes on actual new identities',async()=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture();try{
   f.hooks.write=()=>{if(f.count().scrolls===1)f.add();};
   const {row}=await f.run();
   expect(f.events.slice(0,5)).toEqual(['collect','scroll','action-cleanup','collect','scroll']);
   expect(f.count().scrolls).toBe(2);
-  expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain('402');
+  expect(row.replies.observations.map(p=>p.postId)).toContain('402');
   expect(row.diagnostics).toMatchObject({scrollRecovery:{totalRecoveries:2,omittedRecoveries:0,first:{outcome:'progress',newIdentityCount:1,collectCount:1},last:{outcome:'expired',newIdentityCount:0}}});
  }finally{f.close();vi.useRealTimers();}
 });
-it.each([false,true])('waits for delayed identity rather than old replies, text edits or fresh observation UUIDs (search=%s)',async(search)=>{
+it('waits for delayed identity rather than old replies, text edits or fresh observation UUIDs',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
-  const good=stallFixture(search,true);try{
+  const good=stallFixture(true);try{
    good.hooks.collect=()=>{if(good.count().collects===4)good.add();};
    const {row}=await good.run({maxScrollsPerPost:2});expect(good.count().scrolls).toBe(2);
    expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:3,newIdentityCount:1,outcome:'progress'});
-   expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain('402');
+   expect(row.replies.observations.map(p=>p.postId)).toContain('402');
   }finally{good.close();}
-  const old=stallFixture(search,true);try{
+  const old=stallFixture(true);try{
    old.hooks.collect=()=>{if(old.count().collects>1)old.container().querySelector('[data-testid="tweetText"]')!.textContent='body changes '+old.count().collects;};
    const {row}=await old.run();expect(old.count()).toMatchObject({scrolls:1,collects:81});
    expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:80,newIdentityCount:0,outcome:'expired'});
    expect(row).toMatchObject({status:'partial',stopReason:'action_failed',budgetUsage:{scrolls:1}});
-   expect('barrier'in row&&'posts'in row?row.barrier?.reason:'reason'in row?row.reason:null).toBe('scroll_no_movement');
+   expect(row.reason).toBe('scroll_no_movement');
   }finally{old.close();}
  }finally{vi.useRealTimers();}
 });
-it.each([false,true])('exact identity sets permit same-size A→B replacement once, not A/B reappearance (search=%s)',async(search)=>{
- vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(search,true);try{
+it('exact identity sets permit same-size A→B replacement once, not A/B reappearance',async()=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(true);try{
   f.hooks.collect=()=>{
    if(f.count().collects===1)return;
-   for(const article of f.container().querySelectorAll('article'))if(search||!article.querySelector('a[href="/alice/status/123"]'))article.remove();
+   for(const article of f.container().querySelectorAll('article'))if(!article.querySelector('a[href="/alice/status/123"]'))article.remove();
    const id=f.count().collects===2?'402':f.count().collects%2===0?'402':'401';
    f.container().insertAdjacentHTML('beforeend',post(id,id==='401'?'first':'next','changed '+f.count().collects));
   };
   const {row}=await f.run();expect(f.count().scrolls).toBe(2);
   expect(row.diagnostics?.scrollRecovery).toMatchObject({totalRecoveries:2,first:{newIdentityCount:1,outcome:'progress'},last:{newIdentityCount:0,outcome:'expired'}});
-  expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toEqual(['401','402']);
+  expect(row.replies.observations.map(p=>p.postId)).toEqual(['401','402']);
  }finally{f.close();vi.useRealTimers();}
 });
-it.each([false,true])('repeated actual progress stays finite and counts every written scroll at the explicit cap (search=%s)',async(search)=>{
+it('repeated actual progress stays finite and counts every written scroll at the explicit cap',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const cap of [1,3,5]){
-   const f=stallFixture(search);try{
+   const f=stallFixture();try{
     f.hooks.write=()=>f.add(String(500+f.count().scrolls));
     const {row}=await f.run({maxScrollsPerPost:cap});expect(f.count().scrolls).toBe(cap);
     expect(row).toMatchObject({budgetUsage:{scrolls:cap},stopReason:'budget_reached'});
     expect(row.diagnostics?.scrollRecovery).toMatchObject({totalRecoveries:cap,omittedRecoveries:Math.max(0,cap-2),last:{actionIndex:cap,outcome:'progress'}});
-    expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain(String(500+cap));
+    expect(row.replies.observations.map(p=>p.postId)).toContain(String(500+cap));
    }finally{f.close();}
   }
  }finally{vi.useRealTimers();}
@@ -108,11 +107,11 @@ it('a current source reply control gets fresh private permission after the last 
   }
  }finally{vi.useRealTimers();}
 });
-it.each([false,true])('requires the actual error and local complete receipt, never a reason string or old/malformed facts (search=%s)',async(search)=>{
+it('requires the actual error and local complete receipt, never a reason string or old/malformed facts',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
-  const good=stallFixture(search);try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
+  const good=stallFixture();try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
   for(const mode of ['ack_timeout','fake','unwritten','missing','old_generation','written_false','event','frame','moved','pending','malformed','old_receipt'] as const){
-   const f=stallFixture(search);try{
+   const f=stallFixture();try{
     f.hooks.write=()=>f.add();
     if(mode==='ack_timeout')f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement');
     if(mode==='fake')f.hooks.error=()=>Object.assign(new KydogError('browser.wait_timeout','scroll_no_movement'),{reason:'scroll_no_movement'});
@@ -125,12 +124,11 @@ it.each([false,true])('requires the actual error and local complete receipt, nev
   }
  }finally{vi.useRealTimers();}
 });
-it.each([false,true])('source invalidation, parser failure and cancellation cannot borrow old input authority (search=%s)',async(search)=>{
+it('source invalidation, parser failure and cancellation cannot borrow old input authority',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
-  const good=stallFixture(search);try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
-  for(const mode of ['epoch','revision','sequence','generation','root','route','product','auth','parser','cancel_cleanup','cancel_wait','cancel_collect','destroy'] as const){
-   if(!search&&mode==='product')continue;
-   const f=stallFixture(search);try{
+  const good=stallFixture();try{good.hooks.write=()=>good.add();await good.run({maxScrollsPerPost:1});expect(good.count().collects).toBe(2);}finally{good.close();}
+  for(const mode of ['epoch','revision','sequence','generation','root','route','auth','parser','cancel_cleanup','cancel_wait','cancel_collect','destroy'] as const){
+   const f=stallFixture();try{
     f.hooks.write=async()=>{
      if(mode==='cancel_cleanup'){f.abort.abort();await new Promise(resolve=>setTimeout(resolve,20));}
      else if(mode==='cancel_wait')setTimeout(()=>f.abort.abort(),150);
@@ -143,9 +141,8 @@ it.each([false,true])('source invalidation, parser failure and cancellation cann
      if(mode==='revision')f.facts.routeRevision++;
      if(mode==='sequence')f.facts.navigationSequence++;
      if(mode==='generation')f.dom.window.eval('delete window.__kydogWorld');
-     if(mode==='root'){if(search)f.container().remove();else f.container().querySelector('article')!.remove();}
-     if(mode==='route'){f.facts.currentUrl=search?'https://x.com/search?q=other&f=live':'https://x.com/alice/status/123/history';f.dom.reconfigure({url:f.facts.currentUrl});}
-     if(mode==='product')f.container().querySelector('[role="tab"]')!.textContent='Top';
+     if(mode==='root')f.container().querySelector('article')!.remove();
+     if(mode==='route'){f.facts.currentUrl='https://x.com/alice/status/123/history';f.dom.reconfigure({url:f.facts.currentUrl});}
      if(mode==='parser')throw new KydogError('x.invalid_page','invalid fixed extractor result');
      if(mode==='cancel_collect'){f.abort.abort();await new Promise(resolve=>setTimeout(resolve,20));f.events.push('collect-settled');}
      if(!['root','auth','cancel_wait'].includes(mode))f.add();
@@ -161,25 +158,25 @@ it.each([false,true])('source invalidation, parser failure and cancellation cann
   }
  }finally{vi.useRealTimers();}
 });
-it.each([false,true])('late valid observation is retained after the deadline but cannot grant another input (search=%s)',async(search)=>{
+it('late valid observation is retained after the deadline but cannot grant another input',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const delay of [0,8001]){
-   const f=stallFixture(search);try{
+   const f=stallFixture();try{
     f.hooks.collect=async()=>{if(f.count().collects===2){await new Promise(resolve=>setTimeout(resolve,delay));f.add();f.events.push('collect-settled');}};
     const {row}=await f.run({maxScrollsPerPost:2});expect(f.count().scrolls).toBe(delay?1:2);
-    expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toContain('402');
+    expect(row.replies.observations.map(p=>p.postId)).toContain('402');
     expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({newIdentityCount:1,outcome:delay?'expired':'progress'});
     expect(f.events.indexOf('collect-settled')).toBeLessThan(f.events.indexOf('queue-release'));
    }finally{f.close();}
   }
  }finally{vi.useRealTimers();}
 });
-it.each([false,true])('counts every observed new identity even beyond the retained cap and stops further input (search=%s)',async(search)=>{
- vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture(search);try{
+it('counts every observed new identity even beyond the retained cap and stops further input',async()=>{
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const f=stallFixture();try{
   f.hooks.write=()=>{for(let i=0;i<25;i++)f.add(String(600+i));};
   const {row}=await f.run({maxRepliesPerPost:2,maxScrollsPerPost:4});
   expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({collectCount:1,newIdentityCount:25,outcome:'progress'});
-  expect('posts'in row?row.posts.length:row.replies.observations.length).toBe(2);
+  expect(row.replies.observations.length).toBe(2);
   expect(f.count().scrolls).toBe(1);expect(row.stopReason).toBe('budget_reached');
  }finally{f.close();vi.useRealTimers();}
 });
@@ -205,7 +202,7 @@ it('recovery cannot convert semantic inventory, body end prose or an invalid roo
 it('reappearing reply already saved before body expansion is not new row progress',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const fresh of [true,false]){
-   const f=stallFixture(false,true);try{
+   const f=stallFixture(true);try{
     f.container().querySelector('article')!.insertAdjacentHTML('beforeend','<button role="button" type="button" data-testid="tweet-text-show-more-link">Show more</button>');
     f.hooks.write=()=>f.container().insertAdjacentHTML('beforeend',post(fresh?'402':'401',fresh?'next':'first','source identity'));
     const {row}=await f.run();
@@ -230,12 +227,12 @@ it('a reappearing previously used physical control cannot repeatedly reactivate 
   }
  }finally{vi.useRealTimers();}
 });
-it.each([false,true])('monotonic deadline wins when collection crosses it before timers run, across caps and identity changes (search=%s)',async(search)=>{
+it('monotonic deadline wins when collection crosses it before timers run, across caps and identity changes',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});const baseNow=performance.now.bind(performance);let offset=0;
  const clock=vi.spyOn(performance,'now').mockImplementation(()=>baseNow()+offset);
  try{
   for(const cap of [2,1])for(const fresh of [true,false])for(const elapsed of [7999,8000,8050]){
-   offset=0;const f=stallFixture(search,true);try{
+   offset=0;const f=stallFixture(true);try{
     f.hooks.collect=()=>{if(f.count().collects===2){offset=elapsed;if(fresh)f.add();else f.container().querySelector('[data-testid="tweetText"]')!.textContent='same identity, changed body';}};
     const {row}=await f.run({maxScrollsPerPost:cap});
     const inTime=elapsed<8000;
@@ -243,7 +240,7 @@ it.each([false,true])('monotonic deadline wins when collection crosses it before
     expect(row.diagnostics?.scrollRecovery?.first).toMatchObject({outcome:inTime&&fresh?'progress':'expired',newIdentityCount:fresh?1:0});
     // At 7999ms, the old identity can schedule one pause but no later source read.
     expect(row.diagnostics?.scrollRecovery?.first?.collectCount).toBe(1);
-    expect('posts'in row?row.posts.map(p=>p.postId):row.replies.observations.map(p=>p.postId)).toEqual(fresh?['401','402']:['401']);
+    expect(row.replies.observations.map(p=>p.postId)).toEqual(fresh?['401','402']:['401']);
    }finally{f.close();}
   }
  }finally{clock.mockRestore();vi.useRealTimers();}
@@ -295,7 +292,7 @@ it('retains independently decoded recovery bodies and own Article gaps before ro
   for(const delay of [0,8001]){
    const ledger=new XResearchEvidence('/tmp',()=> 'run'),report='/tmp/x-research-recovery-2026-10-15.md';
    for(const cover of [false,true]){
-    const f=stallFixture(false,true);try{
+    const f=stallFixture(true);try{
      f.hooks.collect=async()=>{if(f.count().collects===2){await new Promise(resolve=>setTimeout(resolve,delay));replaceRootWithIndependentPosts(f,cover);}};
      const {result,row}=await f.run();if(!('replies'in row))throw new Error('expected read');
      expect(f.count()).toEqual({collects:2,scrolls:1,clicks:0});
@@ -330,7 +327,7 @@ it('retains independently decoded recovery bodies and own Article gaps before ro
 it('recovery retention still requires requested replies and safe non-Article, non-auth, same-location source frames',async()=>{
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','performance']});try{
   for(const mode of ['admitted','disabled','article','auth','epoch','revision','sequence','generation','route','cancel'] as const){
-   const f=stallFixture(false,true);try{
+   const f=stallFixture(true);try{
     f.hooks.collect=()=>{if(f.count().collects===2){
      replaceRootWithIndependentPosts(f);
      if(mode==='article')f.container().insertAdjacentHTML('beforeend','<article data-testid="tweet"><div data-testid="User-Name"><a href="/alice">@alice</a></div><article data-testid="twitterArticleReadView"><div data-testid="twitter-article-title">Article</div><div data-testid="twitterArticleRichTextView"><div data-testid="longformRichTextComponent" contenteditable="false"><div data-block="true">Article body</div></div></div></article></article>');

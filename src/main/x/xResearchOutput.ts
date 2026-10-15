@@ -80,6 +80,8 @@ function body(p: XTextObservation | XUnscopedPost) {
   return {
     ...(p.articlePreviewInventory ? {articlePreviewInventory:p.articlePreviewInventory}:{}),
     ...(p.articlePreviews ? { articlePreviews: p.articlePreviews } : {}),
+    sourceKind:p.sourceKind,
+    ...(p.networkProvenance?{networkProvenance:p.networkProvenance}:{}),
     observationId: p.observationId,
     postId: p.postId,
     sourceUrl: p.sourceUrl,
@@ -168,6 +170,7 @@ function projection(result: XResearchResult) {
         collectionStop: q.collectionStop,
         budgetBinding: q.budgetBinding,
         sampleTruncation: q.sampleTruncation,
+        networkPageCount:(q.networkPages?.length??0)+(q.networkPagesOmitted??0),
         budgetUsage: q.budgetUsage,
         posts: q.posts.map(body),
         ...(q.postObservations?{postObservations:q.postObservations.map(body)}:{}),
@@ -638,6 +641,12 @@ export function serializeXResearchResult<T extends XResearchResult>(
   const mark = (path: string) => {
     if (!(result.metadataOmissions ??= []).includes(path)) result.metadataOmissions.push(path);
   };
+  if(result.operation==='search')for(const [index,row] of result.queries.entries()){
+    if(!row.networkPages?.length)continue;
+    row.networkPagesOmitted=(row.networkPagesOmitted??0)+row.networkPages.length;
+    delete row.networkPages;mark(`queries.${index}.networkPages`);
+    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+  }
   if (result.operation === 'read') for (const [index,row] of result.targets.entries()) {
     const entries = row.bodyObservations;
     if (!entries?.length) continue;

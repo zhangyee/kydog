@@ -3,7 +3,7 @@ import type { XReportScopeFacts, XReportRunScopeFacts, XResearchResult } from '.
 
 const text = z.string().min(1);
 const status = z.enum(['observed','partial','explicit_empty','auth_required','action_required','rate_limited','access_denied','unavailable','cancelled','failed']);
-const stop = z.enum(['explicit_ui_end','budget_reached','action_failed','navigation_failed','identity_unproven','wait_timeout','access_barrier','cancelled','agent_stopped']);
+const stop = z.enum(['explicit_ui_end','source_unavailable','cursor_exhausted','budget_reached','action_failed','navigation_failed','identity_unproven','wait_timeout','access_barrier','cancelled','agent_stopped']);
 const barrier = z.object({status,reason:z.string(),observationId:text.nullable()}).nullable();
 const branch = z.object({postId:z.string().nullable(),sourceUrl:z.string().nullable()}).nullable();
 const sort = z.object({label:z.string(),value:z.string().nullable()}).nullable();
@@ -12,7 +12,7 @@ const scope = z.object({rootPostId:z.string().nullable(),branch,sort,stopReason:
   displayedReplyCount:z.object({text:z.string(),value:z.number().finite().nullable()}).nullable(),
   completeness:z.enum(['unknown','ui_scope_end_observed']),endEvidence:endEvidence.nullable(),
 }).refine(value=>value.completeness!=='ui_scope_end_observed'||value.endEvidence!==null);
-const identity = z.object({schemaVersion:z.literal(2),sourceKind:z.literal('rendered_ui'),runId:text,callId:text});
+const identity = z.object({schemaVersion:z.literal(2),sourceKind:z.enum(['rendered_ui','page_graphql']),runId:text,callId:text});
 const base = {...identity.shape,batchId:text};
 // Validate only canonical scope source fields. Body/diagnostic validation belongs
 // to the evidence ledger; this independent bookkeeping cannot authorize evidence.

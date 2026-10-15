@@ -1,3 +1,4 @@
+import { XNetworkSearchLease } from './xNetworkLease';
 import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/pointerPreflightDiagnostic';
 import { randomUUID } from 'node:crypto';
 import {createSourceEvaluation,logSourceDiagnostic} from '../browser/sourceEvaluationDiagnostic';
@@ -13,7 +14,7 @@ import type { XPageRequest, XPageObservation } from './xObservation';
 import type { XArticleEntry, XControlBinding, XReplyAdmission } from './xResearchTypes';
 
 /** All values remain inside trusted main-process adapters. Redact at serialization. */
-export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }
+export interface XOpenResult { tabId: string; nav: NavigationObservation; evicted: EvictedTab[]; networkLeaseId?:string }
 export interface XActionResult { action: DispatchAction; line: string; navigation: NavigationObservation | null }
 export interface XActionOptions { onPointerPreflight?:(receipt:Readonly<PointerPreflightDiagnostic>)=>void; onReplyAdmission?: (receipt:XReplyAdmission)=>void; scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: BrowserScrollReceipt) => void;
   relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} } }
@@ -27,11 +28,12 @@ export interface XQueuedPage {
 }
 export interface XResearchBrowser {
   tabStatus?(tabId: string): 'available' | 'foreign' | 'missing';
-  open(url: string, tabId: string | undefined, signal?: AbortSignal): Promise<XOpenResult>;
+  open(url: string, tabId: string | undefined, signal?: AbortSignal, request?: XPageRequest): Promise<XOpenResult>;
   withPage<T>(tabId: string, signal: AbortSignal | undefined, work: (page: XQueuedPage) => Promise<T>): Promise<T>;
 }
 
 export function createXResearchBrowser(browser: BrowserService, threadId: string): XResearchBrowser {
+  const networkLeases=new Map<string,XNetworkSearchLease>();
   const sameLocation = (a: BrowserLocationFacts, b: BrowserLocationFacts) => a.documentEpoch===b.documentEpoch && a.routeRevision===b.routeRevision && a.navigationSequence===b.navigationSequence && a.currentUrl===b.currentUrl;
   const entries = new WeakMap<XArticleEntry, {tabId:string; snapshot:AxSnapshot}>();
   const actions = new WeakMap<XActionResult, {tabId:string; entry:XArticleEntry; location:BrowserLocationFacts; finalUrl:string|null}>();
@@ -40,10 +42,17 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
   return {
     tabStatus: tabId => browser.researchTabStatus(tabId, threadId),
     // BrowserService.open owns its one queue entry. Never enqueue around it.
-    open: async (url, tabId, signal) => {
+    open: async (url, tabId, signal, request) => {
       if(tabId && browser.researchTabStatus(tabId, threadId)==='foreign')
         throw new KydogError('browser.bad_action','X research tab belongs to another thread');
-      const result = await browser.open({ url, tabId, ownerThreadId: threadId, activate: false, signal });
+      if(tabId){const previous=networkLeases.get(tabId);networkLeases.delete(tabId);if(await previous?.close())throw new KydogError('x.invalid_page','source_unavailable:network_cleanup_failed');}
+      if(request)xPageExpression(request);
+      const network=request?.stage==='search'?new XNetworkSearchLease({id:randomUUID(),purpose:'collection',query:request.query,product:request.product},url):undefined;
+      const opened = await browser.open({ url, tabId, ownerThreadId: threadId, activate: false, signal,...(network?{network:{ownerId:network.id,accepts:network.accepts}}:{}) });
+      const result:XOpenResult={tabId:opened.tabId,nav:opened.nav,evicted:opened.evicted};
+      if(network&&opened.networkLease){network.bind(opened.networkLease);networkLeases.set(result.tabId,network);result.networkLeaseId=network.id;}
+      if(network&&(!finalUrl(result.nav)||!opened.networkLease)){await network.close();networkLeases.delete(result.tabId);}
+
       const destination = finalUrl(result.nav);
       if (destination) {
         try {
@@ -55,7 +64,8 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       }
       return result;
     },
-    withPage: async (tabId, signal, work) => {
+    withPage: async <T>(tabId:string, signal:AbortSignal|undefined, work:(page:XQueuedPage)=>Promise<T>) => {
+      const network=networkLeases.get(tabId);networkLeases.delete(tabId);
       const lifetime = new AbortController();
       let failure: KydogError | undefined;
       let realmGone=false;
@@ -158,6 +168,13 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
               navigationProof.directOpen={openedLocation:proof.location,sameGeneration:sameLocation(proof.location,after)};
           }
           const observation=decodeXPage(raw,request,after,navigationProof);
+          if(request.stage==='search'&&observation.state?.kind!=='auth_required'){
+            if(!network||network.expectedUrl!==request.expectedUrl||network.query.query!==request.query||network.query.product!==request.product)throw new KydogError('x.invalid_page','source_unavailable:lease_missing');
+            const captured=await network.collect(after,lifetime.signal);check();
+            if(!sameLocation(after,browser.locationFacts(tabId)))throw new KydogError('browser.stale_snapshot','Network response settled after navigation');
+            if(captured.proof)observation.network={pages:captured.pages,proof:captured.proof,facts:captured.facts,pending:captured.pending,...(captured.failure?{failure:captured.failure}:{})};
+            observation.identityProven=!!captured.proof;
+          }
           if(sourceCommit && sourceCommit.generation!==observation.snapshot.generation) sourceCommit=undefined;
           if(observation.diagnosticFrame?.rawUrlMatchesPort===false) invalidateSource();
           else bindXSourceRoot(observation,raw,envelope,commit=>{
@@ -207,23 +224,24 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           if (entry) actions.set(output,{tabId,entry,location:browser.locationFacts(tabId),finalUrl:finalUrl(result.navigation)});
           return output;
         }, !!options?.scrollAcknowledgement),
-        wait: (until, timeoutMs) => run(() => browser.waitFor(tabId, until, timeoutMs, lifetime.signal)),
+        wait: (until, timeoutMs) => run(() => network?network.wait(lifetime.signal,timeoutMs):browser.waitFor(tabId, until, timeoutMs, lifetime.signal)),
         location: () => { check(); return browser.locationFacts(tabId); },
       };
       try {
         const queued = browser.enqueue(tabId, async () => {
           check(); browser.locationFacts(tabId);
           return browser.withAgentDriving(tabId, threadId, async () => {
-            let workFailed=false;
-            try { return await Promise.race([Promise.resolve().then(() => work(page)), stopped]); }
-            catch(error) { workFailed=true;throw error; }
-            finally {
-              // Caller cancellation can win immediately; actual queue/driving
-              // ownership lasts until issued native releases and cleanup settle.
-              while (issued.size) await Promise.allSettled([...issued]);
-              await releaseSource(workFailed);
-              invalidateSource();
-            }
+            let workFailed=false,workError:unknown,value:T|undefined;
+            try { value=await Promise.race([Promise.resolve().then(() => work(page)), stopped]); }
+            catch(error) { workFailed=true;workError=error; }
+            // Cancellation can win outwardly; queue ownership still lasts until
+            // issued native work and both source lifecycles settle.
+            while (issued.size) await Promise.allSettled([...issued]);
+            const networkFailure=await network?.close();
+            await releaseSource(workFailed);invalidateSource();
+            if(workFailed)throw workError;
+            if(networkFailure)throw new KydogError('x.invalid_page','source_unavailable:'+networkFailure);
+            return value as T;
           }, 'X 研究');
         });
         return await Promise.race([queued, stopped]);
@@ -231,6 +249,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       finally {
         lifetime.abort();
         while (pendingScrolls.size) await Promise.allSettled([...pendingScrolls]);
+        await network?.close();
         signal?.removeEventListener('abort', abort); offGone(); offUnavailable();
         lifetime.abort(); bindings.clear(); currentEntries.clear(); permissions.clear();
       }

@@ -2,7 +2,7 @@ import type { XBudgetBinding } from './xResearchBudget';
 import type { NavigationObservation } from '../../shared/types';
 /** v2 observations describe rendered UI facts, never platform-wide completeness. */
 export type XResearchStatus = 'observed' | 'partial' | 'explicit_empty' | 'auth_required' | 'action_required' | 'rate_limited' | 'access_denied' | 'unavailable' | 'cancelled' | 'failed';
-export type XStopReason = 'explicit_ui_end' | 'budget_reached' | 'action_failed' | 'navigation_failed' | 'identity_unproven' | 'wait_timeout' | 'access_barrier' | 'cancelled' | 'agent_stopped';
+export type XStopReason = 'explicit_ui_end' | 'cursor_exhausted' | 'source_unavailable' | 'budget_reached' | 'action_failed' | 'navigation_failed' | 'identity_unproven' | 'wait_timeout' | 'access_barrier' | 'cancelled' | 'agent_stopped';
 export type XFactRelation = 'same' | 'different' | 'unknown';
 export interface XLocationRelation {
   origin: XFactRelation;
@@ -48,7 +48,8 @@ interface XTextBase {
   articlePreviewInventory?: XArticlePreviewInventory;
   articlePreviews?: XArticleEntryIdentity[];
   observationId: string;
-  sourceKind: 'rendered_ui';
+  sourceKind: 'rendered_ui' | 'page_graphql';
+  networkProvenance?: import('./xNetworkSource').XNetworkProvenance;
   sourceUrl: string | null;
   author: XAuthorIdentity | null;
   text: string;
@@ -165,6 +166,8 @@ export interface XCollectionTransition {
   outcome: 'same_url_generation_changed' | 'route_changed' | 'generation_unchanged' | 'cancelled' | 'repeated_invalidation';
 }
 export interface XSearchObservation {
+  networkPages?:import('./xNetworkLease').XNetworkPageFact[];
+  networkPagesOmitted?:number;
   budgetBinding?: XBudgetBinding[];
   sampleTruncation?: { observed: number; sampled: number; omitted: number };
   collectionStop?: { status: XResearchStatus; stopReason: XStopReason; reason: string | null };
@@ -367,7 +370,7 @@ interface XResultBase {
   metadataOmissions?: string[];
   /** Secondary model-content metadata omitted while canonical details retain it. */
   contentMetadataOmissions?: string[];
-  sourceKind: 'rendered_ui';
+  sourceKind: 'rendered_ui' | 'page_graphql';
   callId: string;
   batchId: string;
   runId: string;

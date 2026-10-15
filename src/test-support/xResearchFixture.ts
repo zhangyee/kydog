@@ -1,4 +1,6 @@
 import { JSDOM } from 'jsdom';
+import {randomUUID} from 'node:crypto';
+import type {XTextObservation} from '../main/x/xResearchTypes';
 import { vi } from 'vitest';
 import { decodeXPage, xPageExpression, type XPageRequest } from '../main/x/xPageSource';
 import type { XResearchBrowser, XQueuedPage } from '../main/x/xResearchBrowser';
@@ -11,7 +13,7 @@ export function post(id='123', name='alice', text='original') {
 }
 export const searchHtml = (body:string, product='Latest') => `<main><div data-testid="primaryColumn"><div role="tablist"><a role="tab" aria-selected="true">${product}</a></div>${body}</div></main>`;
 export const readHtml = (body:string) => `<main><div data-testid="primaryColumn"><div aria-label="Timeline: Conversation">${body}</div></div></main>`;
-export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string; selectedProduct?:string; collectErrorAt?:number; scrollError?:Error; wait?:boolean; afterWaitIndex?:number}={}) {
+export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string; collectErrorAt?:number; scrollError?:Error; wait?:boolean; afterWaitIndex?:number}={}) {
   let url='https://x.com/home', index=0, collects=0, revision=7, sequence=9;
   const collect = vi.fn(async (request:XPageRequest) => {
     if (collects++===options.collectErrorAt) throw new TypeError('broken adapter');
@@ -20,7 +22,20 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
     Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
     Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
     const raw=dom.window.eval(xPageExpression(request));
-    return decodeXPage(raw,request,{currentUrl:url,documentEpoch:3,routeRevision:revision,navigationSequence:sequence,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},{parentArticle:false});
+    const observation=decodeXPage(raw,request,{currentUrl:url,documentEpoch:3,routeRevision:revision,navigationSequence:sequence,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},{parentArticle:false});
+    // Legacy output/SDK unit fixtures are DTO test doubles, NOT captured wire
+    // evidence. The dedicated xNetwork* tests exercise real source decoding.
+    if(request.stage==='search'){
+      const provenance={leaseId:'fixture-lease',requestRef:randomUUID(),navigationId:'fixture-document',documentEpoch:3,routeRevision:revision,navigationSequence:sequence,operation:'SearchTimeline',observedAt:'2026-10-15T00:00:00Z'};
+      const posts:XTextObservation[]=[...dom.window.document.querySelectorAll('article[data-testid="tweet"]')].map(el=>{
+        const stamp=el.querySelector('a[href] time')?.parentElement as HTMLAnchorElement;const m=/\/(\w+)\/status\/(\d+)/.exec(stamp?.href??'');if(!m)return null;
+        const text=el.querySelector('[data-testid="tweetText"]')?.textContent??'';
+        const previews=[...el.querySelectorAll('[role="link"][tabindex="0"]')].filter(a=>a.querySelector('[data-testid="article-cover-image"]')).map(a=>({entryObservationId:randomUUID(),parentPostId:m[2],sourceUrl:stamp.href,targetUrl:a.getAttribute('href')?new URL(a.getAttribute('href')!,url).href:null}));
+        return {sourceKind:'page_graphql',networkProvenance:provenance,observationId:randomUUID(),postId:m[2],sourceUrl:stamp.href,author:{handle:m[1],displayName:m[1],profileUrl:`https://x.com/${m[1]}`},containerKind:'root_post',text,observedAt:provenance.observedAt,truncation:{returned:text.length,totalKnown:text.length,truncated:false},...(previews.length?{articlePreviews:previews,articlePreviewInventory:{scope:'collection',observed:previews.length,retained:previews.length,omitted:0,unresolved:0}}:{})} as XTextObservation;
+      }).filter((p):p is XTextObservation=>p!==null);
+      if(posts.length){observation.network={pages:[{provenance,inputCursor:null,outputCursor:'fixture',end:'unknown',posts,quotedPosts:[],unsupported:[]}],proof:provenance};observation.identityProven=true;}
+    }
+    return observation;
   });
   const act=vi.fn(async (action:any, _snapshot?:unknown, actOptions?:import('../main/x/xResearchBrowser').XActionOptions) => {
     if(options.scrollError) throw options.scrollError;

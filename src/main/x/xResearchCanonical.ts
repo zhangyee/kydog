@@ -51,9 +51,12 @@ export const scopeSchema = scopeIdentitySchema.extend({
   articlePreviews: z.array(entrySchema),
   articlePreviewInventory: inventorySchema,
 });
+export const networkProvenanceSchema=z.object({leaseId:string,requestRef:string,navigationId:string,documentEpoch:count,routeRevision:count,navigationSequence:count,operation:z.literal('SearchTimeline'),observedAt:string});
+const networkPageSchema=z.object({provenance:networkProvenanceSchema,bytes:count,sha256:z.string().regex(/^[a-f0-9]{64}$/),inputCursorRef:string.nullable(),outputCursorRef:string.nullable(),end:z.enum(['unknown','cursor_exhausted']),observed:count,sampled:count,omitted:count,unsupported:z.array(string)}).refine(v=>v.observed===v.sampled+v.omitted);
 export const evidenceTextSchema = z.object({
   observationId: string,
-  sourceKind: z.literal('rendered_ui'),
+  sourceKind: z.enum(['rendered_ui','page_graphql']),
+  networkProvenance:networkProvenanceSchema.optional(),
   postId: z.string().nullable(),
   sourceUrl: z.string().nullable(),
   author,
@@ -73,9 +76,10 @@ export const evidenceTextSchema = z.object({
   }),
   articlePreviews: z.array(entrySchema).optional(),
   articlePreviewInventory: inventorySchema.optional(),
-});
-export const unscopedTextSchema = evidenceTextSchema
-  .extend({
+}).refine(p=>p.sourceKind==='rendered_ui'||!!p.networkProvenance);
+export const unscopedTextSchema = z.object({
+    ...evidenceTextSchema.shape,
+    sourceKind:z.literal('rendered_ui'),
     containerKind: z.literal('unscoped_post'),
     relationToTarget: z.literal('unproven'),
     observedContainer: z.literal('post'),
@@ -152,6 +156,8 @@ const status = z.enum([
 ]);
 const stop = z.enum([
   'explicit_ui_end',
+  'source_unavailable',
+  'cursor_exhausted',
   'budget_reached',
   'action_failed',
   'navigation_failed',
@@ -170,21 +176,21 @@ const sort = z
   .nullable();
 const textSchema = z
   .discriminatedUnion('containerKind', [
-    evidenceTextSchema.extend({
+    evidenceTextSchema.safeExtend({
       containerKind: z.literal('root_post'),
       postId: string,
     }),
-    evidenceTextSchema.extend({
+    evidenceTextSchema.safeExtend({
       containerKind: z.literal('quoted_post'),
       postId: string,
     }),
-    evidenceTextSchema.extend({
+    evidenceTextSchema.safeExtend({
       containerKind: z.literal('reply'),
       postId: string,
       directParent: branch,
     }),
-    evidenceTextSchema.extend({ containerKind: z.literal('article') }),
-    evidenceTextSchema.extend({
+    evidenceTextSchema.safeExtend({ containerKind: z.literal('article') }),
+    evidenceTextSchema.safeExtend({
       containerKind: z.literal('unattributed_fragment'),
     }),
   ])
@@ -447,6 +453,8 @@ const rowFields = {
     .optional(),
 };
 const searchRow = z.object({
+  networkPages:z.array(networkPageSchema).optional(),
+  networkPagesOmitted:count.optional(),
   ...rowFields,
   query: z.object({
     id: string,
@@ -504,7 +512,7 @@ const reportScope = z.object({
 });
 const base = {
   schemaVersion: z.literal(2),
-  sourceKind: z.literal('rendered_ui'),
+  sourceKind: z.enum(['rendered_ui','page_graphql']),
   runId: string,
   callId: string,
   batchId: string,
@@ -533,7 +541,7 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     ...base,
     operation: z.literal('search'),
     queries: z.array(searchRow),
-  }),
+  }).refine(r=>r.queries.every(q=>[...q.posts,...(q.postObservations??[])].every(p=>p.sourceKind===r.sourceKind))),
   z.object({
     ...base,
     operation: z.literal('read'),

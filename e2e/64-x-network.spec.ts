@@ -47,6 +47,8 @@ test.describe('production BrowserService network capture (offline)', () => {
       } else if (url.pathname.startsWith('/body/')) {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(name === 'top' ? topBody : NETWORK_BODY);
+      } else if(url.pathname==='/frame/iframe'){
+        res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(`<script>fetch('/body/iframe').then(r=>r.text())</script>`);
       } else if (url.pathname.startsWith('/page/')) {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end(networkPage(name));
       } else { res.writeHead(404); res.end(); }
@@ -73,12 +75,13 @@ test.describe('production BrowserService network capture (offline)', () => {
   });
   test.afterAll(cleanup);
 
-  function verify(result: NetworkHarnessResult, expected: Buffer, fresh: boolean) {
+  function verify(result: NetworkHarnessResult, expected: Buffer, fresh: boolean, main = true) {
     console.info('[network-capture-result]', JSON.stringify({ history: result.history, trace: result.trace, events: result.events.map(({ body: _body, ...event }) => event) }));
     expect(result.events.map(e => e.kind)).toEqual(['request', 'response']);
     const response = result.events[1];
     expect(response.bytes).toBe(expected.length);
     expect(response.sha256).toBe(createHash('sha256').update(expected).digest('hex'));
+    expect(response.isMainFrame).toBe(main);expect(response.sessionId).toBeNull();
     expect(response.navigationId).toMatch(/^\[null,".+",".+"\]$/);
     const body = result.trace.find(t => t.event === 'body-settled');
     const opened = result.trace.find(t => t.event === 'open-resolved');
@@ -105,6 +108,8 @@ test.describe('production BrowserService network capture (offline)', () => {
     expect(second.trace.filter(t => t.event === 'command' && t.method?.startsWith('Network.')).map(t => t.method))
       .toEqual(['Network.disable', 'Network.enable', 'Network.getResponseBody']);
     expect(second.history).toEqual({ canGoBack: true, urls: ['https://example.org/page/fresh', 'https://example.org/page/existing'] });
+    const iframe=await electron.evaluate(()=>globalThis.networkHarness.capture('iframe'));
+    verify(iframe,Buffer.from(NETWORK_BODY),true,false);expect(iframe.events[1].body).toBe(NETWORK_BODY);
   });
 
   test('optional local Top body replays exact decoded byte count and SHA256', async () => {

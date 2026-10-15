@@ -351,3 +351,22 @@ it('cleanup reusing the primary error object cannot overwrite its collection rec
   expect(log).toHaveBeenCalledWith('x_research','source_root_cleanup_failed',expect.objectContaining({purpose:'x_source_release',phase:'release',workFailed:true}));
  }finally{log.mockRestore();}
 });
+
+it('captures first response before open returns, supplies an exclusive network body and releases its own lease',async()=>{
+ const capture=(await import('../../test-support/fixtures/x-network/search-top-initial.json')).default;
+ const {createHash}=await import('node:crypto');const f=fixture();
+ const request={stage:'search' as const,expectedUrl:'https://x.com/search?q=from%3ACaptureAuthor&f=top',query:'from:CaptureAuthor',product:'Top' as const};
+ f.facts.currentUrl=request.expectedUrl;const dom=new JSDOM('<main><div data-testid="primaryColumn"><article data-testid="tweet"><div data-testid="tweetText">DOM MUST NOT SUPPLY BODY</div></article></div></main>',{url:request.expectedUrl,runScripts:'outside-only'});
+ Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({width:100,height:30,left:0,top:0,right:100,bottom:30})});
+ const close=vi.fn(async()=>{});let drained=false,changeGeneration=false;
+ Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
+  const raw={id:'source',requestId:'r',redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'frame',loaderId:'loader',navigationId:'[null,"frame","loader"]',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/variable-id/SearchTimeline?variables='+encodeURIComponent(JSON.stringify(capture.request))};
+  expect(args.network.accepts(raw)).toBe(true);const body=JSON.stringify(capture.body);
+  return{tabId:'tab',evicted:[],nav:{navigationId:'navigation-receipt-is-different',outcome:{kind:'ok',finalUrl:request.expectedUrl}},networkLease:{id:'native',tabId:'tab',close,drain:async()=>{if(drained)return[];drained=true;if(changeGeneration)f.facts.routeRevision++;return[{kind:'request',request:raw},{kind:'response',request:raw,status:200,body,bytes:Buffer.byteLength(body),sha256:createHash('sha256').update(body).digest('hex')}];}}};
+ }});
+ const port=createXResearchBrowser(f.browser,'thread');const opened=await port.open(request.expectedUrl,undefined,undefined,request);expect(opened.networkLeaseId).toEqual(expect.any(String));
+ await port.withPage('tab',undefined,async page=>{const o=await page.collect(request);expect(o.network?.pages[0].posts).toHaveLength(20);expect(o.network?.proof.navigationId).toBe('[null,"frame","loader"]');expect(o.posts).toEqual([]);expect(o.snapshot.generation).toBeTruthy();});
+ expect(close).toHaveBeenCalledOnce();await expect(port.withPage('tab',undefined,p=>p.collect(request))).rejects.toThrow('lease_missing');
+ drained=false;changeGeneration=true;await port.open(request.expectedUrl,'tab',undefined,request);
+ await expect(port.withPage('tab',undefined,p=>p.collect(request))).rejects.toMatchObject({code:'browser.stale_snapshot'});
+});

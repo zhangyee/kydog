@@ -52,7 +52,7 @@ it('actual canonical execution persists through SDK branch and disable/enable ge
  expect((await execute(session,'x_research',searchInput,'restored-search')).result.details.runId).toBe(run);expect(f.open.mock.calls.at(-1)![1]).toBe('research-tab');
  const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
  const branch=manager.getBranch();const savedResult=branch.find(e=>e.type==='message'&&e.message.role==='toolResult'&&e.message.toolCallId==='actual-search');
- expect(savedResult).toMatchObject({type:'message',message:{details:{callId:'actual-search',sourceKind:'rendered_ui'}}});
+ expect(savedResult).toMatchObject({type:'message',message:{details:{callId:'actual-search',sourceKind:'page_graphql'}}});
  manager.branch(branch[0].id);
  expect((await execute(session,'write',{path:'ordinary.md',content:markdown},'branched-write')).isError).toBe(true);
  expect((await execute(session,'write',{path:'ordinary.md',content:'No citation'},'ordinary-write')).isError).toBe(false);

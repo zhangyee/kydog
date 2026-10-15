@@ -1,0 +1,46 @@
+{
+  "request": {
+    "rawQuery": "capture-empty-query",
+    "product": "Top",
+    "count": 20
+  },
+  "body": {
+    "data": {
+      "search_by_raw_query": {
+        "search_timeline": {
+          "timeline": {
+            "instructions": [
+              {
+                "entries": [
+                  {
+                    "content": {
+                      "__typename": "TimelineTimelineCursor",
+                      "cursorType": "Top",
+                      "entryType": "TimelineTimelineCursor",
+                      "value": "fixture-cursor-9"
+                    },
+                    "entryId": "cursor-top-9223372036854775807"
+                  },
+                  {
+                    "content": {
+                      "__typename": "TimelineTimelineCursor",
+                      "cursorType": "Bottom",
+                      "entryType": "TimelineTimelineCursor",
+                      "value": "fixture-cursor-10"
+                    },
+                    "entryId": "cursor-bottom-0"
+                  }
+                ],
+                "type": "TimelineAddEntries"
+              },
+              {
+                "direction": "Bottom",
+                "type": "TimelineTerminateTimeline"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

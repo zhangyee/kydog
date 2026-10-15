@@ -19,7 +19,7 @@ interface RawControl {kind:XPageControl['kind'];postId:string|null;nodeId:number
 interface RawEntry {parentContainerKey:number;author:XAuthorIdentity|null;parentPostId:string;parentUrl:string;targetUrl:string|null;label:string;nodeId:number;index:number}
 interface RawPage {
   replyUiInventory?: XReplyUiInventory;
-  rawUrl:string;region:boolean;selectedProduct:string|null;
+  rawUrl:string;region:boolean;
   diagnosticNodes:{regionNodeId:number|null;rootNodeId:number|null};
   state:{kind:'auth_required'|'explicit_empty';text:string}|null;
   posts:RawPost[];controls:RawControl[];entries:RawEntry[];truncation:XTruncation;controlTruncation:XTruncation;
@@ -36,7 +36,7 @@ const author = (v: unknown): boolean => v === null || (obj(v) && nullable(v.hand
 const truncation = (v: unknown): boolean => obj(v) && integer(v.returned) && (v.totalKnown === null || integer(v.totalKnown)) && typeof v.truncated === 'boolean';
 /** Validate the entire fixed DOM boundary before consuming any page-supplied field. */
 function validateRaw(v: unknown, request: XPageRequest, current: BrowserLocationFacts): asserts v is RawPage {
-  if (!obj(v) || !str(v.rawUrl) || typeof v.region !== 'boolean' || !nullable(v.selectedProduct) || !truncation(v.truncation)
+  if (!obj(v) || !str(v.rawUrl) || typeof v.region !== 'boolean' || !truncation(v.truncation)
     || !truncation(v.controlTruncation) || !list(v.posts,100) || !list(v.controls,100) || !list(v.entries,100)
     || !obj(v.diagnosticNodes) || !(v.diagnosticNodes.regionNodeId===null || integer(v.diagnosticNodes.regionNodeId))
     || !(v.diagnosticNodes.rootNodeId===null || integer(v.diagnosticNodes.rootNodeId))) invalid();
@@ -127,13 +127,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   const exact = raw.rawUrl===current.currentUrl;
   const currentPost = publicPost(current.currentUrl,true);
   let identityProven = false;
-  if (exact && request.stage==='search') {
-    const u=new URL(current.currentUrl);
-    identityProven = location.current.origin!==null && u.pathname==='/search' && !u.username && !u.password
-      && u.searchParams.getAll('q').length===1 && u.searchParams.get('q')===request.query
-      && u.searchParams.getAll('f').length===1 && u.searchParams.get('f')===(request.product==='Latest'?'live':'top')
-      && raw.selectedProduct===request.product && raw.region;
-  } else if (exact && request.stage==='post') identityProven = !!currentPost && currentPost.id===request.postId && raw.region;
+  if (exact && request.stage==='post') identityProven = !!currentPost && currentPost.id===request.postId && raw.region;
   else if (exact && request.stage==='article') identityProven = proof.parentArticle && current.currentUrl===request.expectedUrl && !!currentPost;
   const binding = (v: {nodeId:number;index:number}): XControlBinding => ({nodeId:v.nodeId,index:v.index,snapshotId:snapshot.snapshotId,generation:snapshot.generation});
   const named = (p: RawPost): boolean => { const id=publicPost(p.permalink);return !!id && id.id===p.postId && !!p.author?.handle && id.handle===p.author.handle; };
@@ -142,7 +136,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
   let rootContainerKey: number|null=null;
   const parentObservations = new Map<number,XTextObservation>();
   const posts:XTextObservation[]=[],quotedPosts:XTextObservation[]=[],replies:XTextObservation[]=[],fragments:XTextObservation[]=[];
-  if (identityProven && request.stage!=='article') {
+  if (identityProven && request.stage==='post') {
     const rootPosts=raw.posts.filter(p=>{
       const own=publicPost(p.permalink);
       return p.scope==='post' && named(p) && request.stage==='post' && p.postId===request.postId
@@ -153,7 +147,6 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
       if (!named(p)) { fragments.push(makeText(p,'unattributed_fragment'));continue; }
       if (request.stage==='post' && !root) continue;
       if (p.scope==='quote') {const value=makeText(p,'quoted_post');quotedPosts.push(value);parentObservations.set(p.containerKey,value);}
-      else if (request.stage==='search') {const value=makeText(p,'root_post');posts.push(value);parentObservations.set(p.containerKey,value);}
       else if (p.postId!==request.postId) {const value=makeText(p,'reply');replies.push(value);parentObservations.set(p.containerKey,value);}
     }
     if (request.stage==='post' && !root) identityProven=false;
@@ -229,7 +222,7 @@ export function decodeXPage(raw: unknown, request: XPageRequest, current: Browse
     replyCount:replies.length,repliesExpandControlCount:controls.filter(c=>c.kind==='replies_expand').length,
     explicitEndObserved:!!replyScope.endEvidence,
   } : undefined;
-  const result = {...(unscopedPosts?{unscopedPosts}:{}),replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,selectedProduct:raw.selectedProduct,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
+  const result = {...(unscopedPosts?{unscopedPosts}:{}),replyScope,stage:request.stage,status:state?.kind ?? (root || posts.length || article ? 'observed':'partial'),identityProven,location,root,posts,quotedPosts,replies,fragments,article,entries,controls,state,diagnosticFrame,scope:{collectedItemCount:raw.posts.length,regionObserved:raw.region,replyParent:null,completeness:'unknown'},truncation:raw.truncation,controlTruncation:{...raw.controlTruncation,returned:controls.length,truncated:raw.controlTruncation.truncated || controls.length<raw.controlTruncation.returned}} as XPageObservation;
   if(rootContainerKey!==null) decodedRootKeys.set(result,rootContainerKey);
   Object.defineProperty(result,'entryParents',{value:entryParents,enumerable:false});
   Object.defineProperty(result,'snapshot',{value:snapshot,enumerable:false});
