@@ -1,4 +1,4 @@
-import { XNetworkSearchLease, retainXNetworkCleanupFailure } from './xNetworkLease';
+import { XNetworkSearchLease, retainXNetworkCleanupFailure, type XNetworkAcceptanceSink } from './xNetworkLease';
 import { isPointerPreflight, type PointerPreflightDiagnostic } from '../browser/pointerPreflightDiagnostic';
 import { randomUUID } from 'node:crypto';
 import {createSourceEvaluation,logSourceDiagnostic} from '../browser/sourceEvaluationDiagnostic';
@@ -29,7 +29,7 @@ export interface XQueuedPage {
 export interface XResearchBrowser {
   tabStatus?(tabId: string): 'available' | 'foreign' | 'missing';
   open(url: string, tabId: string | undefined, signal?: AbortSignal, request?: XPageRequest): Promise<XOpenResult>;
-  withPage<T>(tabId: string, signal: AbortSignal | undefined, work: (page: XQueuedPage) => Promise<T>): Promise<T>;
+  withPage<T>(tabId: string, signal: AbortSignal | undefined, work: (page: XQueuedPage) => Promise<T>, options?: {onNetworkPageAccepted?: XNetworkAcceptanceSink}): Promise<T>;
 }
 
 export function createXResearchBrowser(browser: BrowserService, threadId: string): XResearchBrowser {
@@ -64,7 +64,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
       }
       return result;
     },
-    withPage: async <T>(tabId:string, signal:AbortSignal|undefined, work:(page:XQueuedPage)=>Promise<T>) => {
+    withPage: async <T>(tabId:string, signal:AbortSignal|undefined, work:(page:XQueuedPage)=>Promise<T>, options?:{onNetworkPageAccepted?:XNetworkAcceptanceSink}) => {
       const network=networkLeases.get(tabId);networkLeases.delete(tabId);
       const lifetime = new AbortController();
       let failure: KydogError | undefined;
@@ -170,7 +170,7 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
           const observation=decodeXPage(raw,request,after,navigationProof);
           if(request.stage==='search'&&observation.state?.kind!=='auth_required'){
             if(!network||network.expectedUrl!==request.expectedUrl||network.query.query!==request.query||network.query.product!==request.product)throw new KydogError('x.invalid_page','source_unavailable:lease_missing');
-            const captured=await network.collect(after,lifetime.signal,()=>{check();return browser.locationFacts(tabId);});check();
+            const captured=await network.collect(after,lifetime.signal,()=>{check();return browser.locationFacts(tabId);},options?.onNetworkPageAccepted);check();
             const invalidated=!sameLocation(after,browser.locationFacts(tabId));
             if(invalidated){captured.failure='generation_changed';captured.pending=false;}
             if(captured.failure){

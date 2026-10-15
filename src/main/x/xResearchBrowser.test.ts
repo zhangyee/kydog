@@ -409,3 +409,38 @@ it('attaches cleanup failure when cancellation wins before queued work starts or
   release();await blocker;
  }
 });
+
+it('preserves source-valid accepted pages through real adapter cancellation into search canonical output',async()=>{
+ const {searchX}=await import('./xResearchSearch');const {canonicalizeXResearchResult}=await import('./xResearchCanonical');const {serializeXResearchResult}=await import('./xResearchOutput');
+ const {XNetworkSearchLease}=await import('./xNetworkLease');const {createHash}=await import('node:crypto');
+ const capture=(await import('../../test-support/fixtures/x-network/search-top-initial.json')).default;
+ const query={id:'q',query:capture.request.rawQuery,purpose:'test',product:'Top' as const};
+ const url='https://x.com/search?q=from%3ACaptureAuthor&f=top';
+ const original=XNetworkSearchLease.prototype.collect;
+ for(const timing of ['normal','after_accept','before_accept'] as const){
+  const f=fixture(),controller=new AbortController();f.facts.currentUrl=url;
+  const dom=new JSDOM('<main><div data-testid="primaryColumn"></div></main>',{url,runScripts:'outside-only'});
+  let accepted=0;
+  Object.assign(f.browser,{prepareForDomRead:async()=>{},evalInPage:async(_id:string,code:string)=>dom.window.eval(code),open:async(args:any)=>{
+   const raw={id:'source',requestId:'r',redirectIndex:0,sessionId:null,isMainFrame:true,frameId:'f',loaderId:'l',navigationId:'[null,"f","l"]',location:{...f.facts},method:'GET',url:'https://x.com/i/api/graphql/recorded/SearchTimeline?variables='+encodeURIComponent(JSON.stringify(capture.request))};
+   expect(args.network.accepts(raw)).toBe(true);const body=JSON.stringify(capture.body);let drained=false;
+   return{tabId:'tab',evicted:[],nav:{navigationId:'nav',outcome:{kind:'ok',finalUrl:url,httpStatusCode:200}},networkLease:{id:'native',tabId:'tab',close:async()=>{if(timing==='after_accept')throw Error('private cleanup');},take:async()=>{throw Error('unused');},drain:async()=>{if(drained)return[];drained=true;if(timing==='before_accept')controller.abort();return[{kind:'response',request:raw,status:200,body,bytes:Buffer.byteLength(body),sha256:createHash('sha256').update(body).digest('hex')}];}}};
+  }});
+  const spy=vi.spyOn(XNetworkSearchLease.prototype,'collect').mockImplementation(async function(this:import('./xNetworkLease').XNetworkSearchLease,...args){const batch=await original.apply(this,args);accepted=batch.pages.reduce((n,p)=>n+p.posts.length,0);if(timing==='after_accept')controller.abort();return batch;});
+  try{
+   const result=canonicalizeXResearchResult(await searchX({search:{objective:'cancel evidence',queries:[query],maxPostsPerQuery:5,maxScrollsPerQuery:0}},{browser:createXResearchBrowser(f.browser,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',signal:controller.signal,sources:new Map()}));
+   if(result.operation!=='search')throw Error('search');const row=result.queries[0];
+   expect(row.posts).toHaveLength(timing==='before_accept'?0:5);
+   if(timing==='before_accept'){expect(row.stopReason).toBe('cancelled');expect(row.sampleTruncation).toEqual({observed:0,sampled:0,omitted:0});}
+   else{
+    expect(accepted).toBe(20);expect(row.networkPages).toHaveLength(1);expect(row.networkPages![0]).toMatchObject({observed:20,sampled:5,omitted:15,bytes:Buffer.byteLength(JSON.stringify(capture.body)),sha256:createHash('sha256').update(JSON.stringify(capture.body)).digest('hex')});expect(row.sampleTruncation).toEqual({observed:20,sampled:5,omitted:15});
+    expect(row.posts[0].networkProvenance?.requestRef).toBe(row.networkPages![0].provenance.requestRef);
+    const delivered=serializeXResearchResult(result).result;expect(delivered.queries[0].posts).toHaveLength(5);
+    const {XResearchEvidence}=await import('./xResearchEvidence');const evidence=new XResearchEvidence('/tmp',()=>result.runId);evidence.observe(result);expect(evidence.observations).toHaveLength(5);expect(evidence.observations[0].networkProvenance).toEqual(row.posts[0].networkProvenance);
+    evidence.restore([{type:'message',id:'history-entry',message:{role:'toolResult',toolName:'x_research',toolCallId:'call',details:result,content:[],isError:false}}]);expect(evidence.observations).toHaveLength(5);expect(evidence.observations[0]).toMatchObject({origin:'history',networkProvenance:row.posts[0].networkProvenance});
+    if(timing==='after_accept')expect(row).toMatchObject({status:'cancelled',stopReason:'cancelled',diagnostics:{networkCleanupFailure:'network_cleanup_failed'}});
+    else expect(row.stopReason).toBe('budget_reached');
+   }
+  }finally{spy.mockRestore();dom.window.close();}
+ }
+});

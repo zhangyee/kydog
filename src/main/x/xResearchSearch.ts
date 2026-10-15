@@ -1,4 +1,5 @@
-import {getXNetworkCleanupFailure} from './xNetworkLease';
+import type {XNetworkPage} from './xNetworkSource';
+import {getXNetworkCleanupFailure,type XNetworkPageFact} from './xNetworkLease';
 import { reachedXBudgets, resolveXBudgetPolicy, sampleXEntries, type XBudgetPolicy } from './xResearchBudget';
 import {getSourceFailure} from './xSourceDiagnostics';
 import type {BrowserScrollReceipt} from '../browser/actions';
@@ -74,6 +75,16 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
     if(halted||context.signal?.aborted){if(halted==='cancelled'||context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';}else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};}continue;}
     const admitted=new Set<string>(),saved=new Set<string>();let pageCount=0;
     row.sampleTruncation={observed:0,sampled:0,omitted:0};
+    const acceptNetworkPage=(source:XNetworkPage,fact?:XNetworkPageFact)=>{
+      if(saved.has(source.provenance.requestRef))return;
+      if(pageCount>=1000)return;
+      saved.add(source.provenance.requestRef);pageCount++;
+      const sample=sampleXEntries(source.posts.filter((p):p is XTextObservation&{postId:string}=>p.postId!==null&&p.sourceKind==='page_graphql'&&p.networkProvenance?.leaseId===source.provenance.leaseId&&p.networkProvenance.requestRef===source.provenance.requestRef),admitted,input.search.maxPostsPerQuery);
+      for(const key of ['observed','sampled','omitted'] as const)row.sampleTruncation![key]+=sample[key];
+      for(const post of sample.retained){if(row.posts.some(p=>p.postId===post.postId))(row.postObservations??=[]).push(post);else row.posts.push(post);}
+      if(fact)(row.networkPages??=[]).push({...fact,observed:sample.observed,sampled:sample.sampled,omitted:sample.omitted});
+      rememberSources(context,sample.retained,row.query);row.budgetUsage.distinctEntries=admitted.size;
+    };
     const capped=()=>{const bindings=reachedXBudgets(policy,{posts:admitted.size,scrolls:row.budgetUsage.scrolls,network_pages:pageCount},['posts','scrolls','network_pages']);if(bindings.length)row.budgetBinding=bindings;return bindings.length>0;};
     if(input.search.maxPostsPerQuery===0&&capped()){row.status='partial';row.stopReason='budget_reached';continue;}
     const request={stage:'search' as const,expectedUrl:xSearchUrl(row.query),query:row.query.query,product:row.query.product};
@@ -86,21 +97,15 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       await context.browser.withPage(opened.tabId,context.signal,async page=>{
         let waited=false,waitFailed=false,bottom=false;
         while(true){
+          const priorPageCount=pageCount;
           stage='collection';const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal);row.location=locationFacts(request.expectedUrl,opened.nav,observed);
           if(observed.state?.kind==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:observed.state.text,observationId:observed.state.observationId};break;}
-          let terminal=false,unsupported=false,accepted=0;
+          let terminal=false,unsupported=false;
           for(const source of observed.network?.pages??[]){
-            if(saved.has(source.provenance.requestRef))continue;
-            if(pageCount>=1000)break;
-            saved.add(source.provenance.requestRef);pageCount++;accepted++;
-            const sample=sampleXEntries(source.posts.filter((p):p is XTextObservation&{postId:string}=>p.postId!==null&&p.sourceKind==='page_graphql'&&p.networkProvenance?.leaseId===source.provenance.leaseId&&p.networkProvenance.requestRef===source.provenance.requestRef),admitted,input.search.maxPostsPerQuery);
-            for(const key of ['observed','sampled','omitted'] as const)row.sampleTruncation![key]+=sample[key];
-            for(const post of sample.retained){if(row.posts.some(p=>p.postId===post.postId))(row.postObservations??=[]).push(post);else row.posts.push(post);}
-            const fact=observed.network?.facts?.find(f=>f.provenance.requestRef===source.provenance.requestRef);
-            if(fact)(row.networkPages??=[]).push({...fact,observed:sample.observed,sampled:sample.sampled,omitted:sample.omitted});
-            rememberSources(context,sample.retained,row.query);row.budgetUsage.distinctEntries=admitted.size;
+            acceptNetworkPage(source,observed.network?.facts?.find(f=>f.provenance.requestRef===source.provenance.requestRef));
             terminal ||= source.end==='cursor_exhausted';unsupported ||= source.unsupported.length>0;
           }
+          const accepted=pageCount-priorPageCount;
           const budget=capped();
           if(unsupported||observed.network?.failure){row.status=row.posts.length?'partial':'unavailable';row.stopReason=observed.network?.failure==='wait_timeout'?'wait_timeout':observed.network?.failure==='cancelled'?'cancelled':'source_unavailable';if(row.stopReason==='cancelled')row.status='cancelled';row.barrier={status:row.status,reason:observed.network?.failure??'unsupported_response',observationId:null};break;}
           if(terminal){row.status=row.sampleTruncation!.omitted?'partial':row.posts.length?'observed':'explicit_empty';row.stopReason='cursor_exhausted';break;}
@@ -125,7 +130,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
           catch(error){if(!(error instanceof BrowserScrollAcknowledgementError&&receipt?.state==='no_movement'))throw error;}
           bottom=!!receipt&&receipt.written&&receipt.after+receipt.clientHeight>=receipt.scrollHeight;
         }
-      });
+      },{onNetworkPageAccepted:acceptNetworkPage});
     }catch(error){
       const networkCleanupFailure=getXNetworkCleanupFailure(error);if(networkCleanupFailure)(row.diagnostics??={version:1}).networkCleanupFailure=networkCleanupFailure;
       const sourceFailure=getSourceFailure(error);if(sourceFailure)(row.diagnostics??={version:1}).sourceFailure=sourceFailure;

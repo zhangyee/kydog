@@ -33,6 +33,8 @@ export interface XNetworkPageFact {
   omitted: number;
   unsupported: string[];
 }
+/** Trusted synchronous historical-fact sink; never grants page action authority. */
+export type XNetworkAcceptanceSink = (page: XNetworkPage, fact: XNetworkPageFact) => void;
 const same = (a: BrowserLocationFacts, b: BrowserLocationFacts) =>
   a.currentUrl === b.currentUrl &&
   a.documentEpoch === b.documentEpoch &&
@@ -166,6 +168,7 @@ export class XNetworkSearchLease {
     location: BrowserLocationFacts,
     signal?: AbortSignal,
     currentLocation?: () => BrowserLocationFacts,
+    onAccepted?: XNetworkAcceptanceSink,
   ): Promise<{
     pages: XNetworkPage[];
     proof?: XNetworkProvenance;
@@ -252,6 +255,8 @@ export class XNetworkSearchLease {
         pages.push(page);
         this.proof = page.provenance;
         this.initial = true;
+        // Commit evidence before any promise continuation can lose a cancellation race.
+        onAccepted?.(page, fact);
         if (page.unsupported.length) {
           this.stopped = 'unsupported_response';
           break;
