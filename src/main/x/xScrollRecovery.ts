@@ -9,6 +9,10 @@ export function isScrollReceipt(receipt:BrowserScrollReceipt|undefined):receipt 
  return !!receipt && typeof receipt.generation==='string' && receipt.generation.length>0
   && typeof receipt.written==='boolean' && typeof receipt.eventObserved==='boolean' && typeof receipt.frameObserved==='boolean'
   && ['pending','frame_observed','no_movement','invalidated','expired'].includes(receipt.state)
+  && (receipt.invalidatedReason===null || ['document','generation','url','detached','scrolling_element','offset'].includes(receipt.invalidatedReason))
+  && (receipt.viewport===undefined || (typeof receipt.viewport.visibility==='string' && receipt.viewport.visibility.length>0 && receipt.viewport.visibility.length<=32
+    && Number.isFinite(receipt.viewport.innerHeight) && receipt.viewport.innerHeight>=0
+    && (receipt.viewport.visualViewportHeight===null || (Number.isFinite(receipt.viewport.visualViewportHeight) && receipt.viewport.visualViewportHeight>=0))))
   && Number.isFinite(receipt.before) && Number.isFinite(receipt.after)
   && Number.isFinite(receipt.scrollHeight) && receipt.scrollHeight>=0 && Number.isFinite(receipt.clientHeight) && receipt.clientHeight>=0
   && ['document','element'].includes(receipt.targetKind) && (receipt.targetNodeId===null || Number.isSafeInteger(receipt.targetNodeId)&&receipt.targetNodeId>=0)

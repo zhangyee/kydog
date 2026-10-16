@@ -23,7 +23,7 @@ function fixture(nested = false, offset = 10.25, conversationAt: 'outer'|'target
   }
   const frames=new Map<number,(time:number)=>void>();let next=0;
   w.requestAnimationFrame=fn=>{frames.set(++next,fn);return next;};w.cancelAnimationFrame=id=>{frames.delete(id);};
-  const run=(req:Record<string,unknown>)=>w.eval(`(${SOURCE})(${JSON.stringify(req)})`) as {ok:boolean;reason?:string;acknowledgement:{written:boolean;eventObserved:boolean;frameObserved:boolean;state:string}};
+  const run=(req:Record<string,unknown>)=>w.eval(`(${SOURCE})(${JSON.stringify(req)})`) as {ok:boolean;reason?:string;acknowledgement:{written:boolean;eventObserved:boolean;frameObserved:boolean;state:string;invalidatedReason:string|null}};
   const begin=(amount=200,conversationNodeId=7)=>run({op:'scroll',direction:'down',amount,acknowledgement:{token:'one',expiresAt:Date.now()+3000,document:{generation:'g1',url:w.location.href},relationNodes:{conversationNodeId,rootNodeId:9}}});
   const status=()=>run({op:'scroll_ack_status',token:'one'});
   const dispose=()=>run({op:'scroll_ack_dispose',token:'one'});
@@ -58,17 +58,20 @@ describe('private scroll delivery acknowledgement',()=>{
   });
   it('rejects changed physical target, raw offset or document without rebinding',()=>{
     const positive=fixture();positive.begin();positive.event();positive.frame();expect(positive.status().acknowledgement.state).toBe('frame_observed');positive.close();
-    for(const mutation of ['offset','detached','generation','url'] as const){
+    for(const [mutation,invalidatedReason] of [['offset','offset'],['detached','detached'],['generation','generation'],['url','url']] as const){
       const f=fixture(true);
       try {f.begin();f.event();
         if(mutation==='offset')f.target.scrollTop+=0.125;
         if(mutation==='detached')f.target.replaceWith(f.target.cloneNode(true));
         if(mutation==='generation')(f.w as unknown as {__kydogWorld:{gen:string}}).__kydogWorld.gen='g2';
         if(mutation==='url')f.w.history.replaceState(null,'','/alice/status/124');
-        f.frame();expect(f.status().acknowledgement).toMatchObject({written:true,frameObserved:false,state:'invalidated'});
+        f.frame();expect(f.status().acknowledgement).toMatchObject({written:true,frameObserved:false,state:'invalidated',invalidatedReason});
         expect(f.frames.size).toBe(0);
       } finally {f.close();}
     }
+    // A healthy acknowledgement never carries a reason label.
+    const clean=fixture(true);
+    try {clean.begin();expect(clean.status().acknowledgement).toMatchObject({state:'pending',invalidatedReason:null});} finally {clean.close();}
   });
   it('preserves executed no-op and expiry receipts, and disposal removes owned callbacks',()=>{
     const f=fixture();

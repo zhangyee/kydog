@@ -34,7 +34,7 @@ async function runProgress(mode:Mode='reply',limits:Record<string,unknown>={},in
       if(mode==='unwritten')throw new KydogError('browser.stale_snapshot','source changed before write');
       const ack=options!.scrollAcknowledgement!;ack.onWritten();writes++;
       const failed=mode==='no_movement'||mode==='ack_timeout';
-      ack.onReceipt?.({generation:snapshot.generation,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:0,after:failed?0:600,scrollHeight:2400,clientHeight:600,written:true,eventObserved:!failed,frameObserved:!failed,state:mode==='no_movement'?'no_movement':mode==='ack_timeout'?'expired':'frame_observed'});
+      ack.onReceipt?.({generation:snapshot.generation,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:0,after:failed?0:600,scrollHeight:2400,clientHeight:600,written:true,eventObserved:!failed,frameObserved:!failed,state:mode==='no_movement'?'no_movement':mode==='ack_timeout'?'expired':'frame_observed',invalidatedReason:null});
       if(failed)throw new BrowserScrollAcknowledgementError(mode==='no_movement'?'scroll_no_movement':'scroll_ack_timeout','native failure');
       if(mode==='reply'&&initial!=='ready'&&writes===1)addReply();
       if(mode==='later')setTimeout(addReply,250);
@@ -76,10 +76,15 @@ describe('network read progress with native scroll receipts',()=>{
    for(const mode of ['auth','route','route_other'] as const){const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.writes).toBe(1);expect(stopped.row.root?.text).toBe('original');expect(stopped.row.replies.observations).toEqual([]);expect(stopped.row.stopReason).toBe(mode==='auth'?'access_barrier':'source_unavailable');}
   }finally{vi.useRealTimers();}
  });
- it('preserves authenticated no-movement and ACK timeout without reusing an invalid action',async()=>{
+ it('treats an executed no-movement as geometry and keeps failing closed on unwritten or unacknowledged scrolls',async()=>{
   timers();try{
    const good=await runProgress();expect(good.row.diagnostics?.scroll?.first?.state).toBe('frame_observed');
-   for(const mode of ['no_movement','ack_timeout','unwritten'] as const){const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.events).toEqual(['collect','scroll']);expect(stopped.writes).toBe(mode==='unwritten'?0:1);expect(stopped.row.reason).toBe(mode==='no_movement'?'scroll_no_movement':mode==='ack_timeout'?'scroll_ack_timeout':'action_failed:browser.stale_snapshot');expect(stopped.row.replies.scope.extent).toBe('unknown');}
+   // An executed no-op is a geometry fact, not an action failure: the target keeps
+   // going and consumes its scroll budget instead of ending as action_failed.
+   const unmoved=await runProgress('no_movement',{maxScrollsPerPost:3});
+   expect(unmoved.writes).toBe(3);
+   expect(unmoved.row).toMatchObject({status:'partial',stopReason:'budget_reached',reason:'reply_budget_reached',replies:{scope:{extent:'unknown'}}});
+   for(const mode of ['ack_timeout','unwritten'] as const){const stopped=await runProgress(mode,{maxScrollsPerPost:3});expect(stopped.events).toEqual(['collect','scroll']);expect(stopped.writes).toBe(mode==='unwritten'?0:1);expect(stopped.row.reason).toBe(mode==='ack_timeout'?'scroll_ack_timeout':'action_failed:browser.stale_snapshot');expect(stopped.row.replies.scope.extent).toBe('unknown');}
   }finally{vi.useRealTimers();}
  });
  it('cancellation before input and during native ACK retains accepted network root and releases ownership',async()=>{

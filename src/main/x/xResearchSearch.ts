@@ -25,6 +25,27 @@ export interface XResearchContext {
 // only gates one bounded wait; it never proves identity or completeness.
 export const X_AUTH_READY_SELECTOR='[role="dialog"] input[name="username_or_email"][type="text"][autocomplete="username webauthn"]';
 export const X_POST_READY_SELECTOR='[aria-label="Timeline: Conversation"] [data-testid="tweet"], '+X_AUTH_READY_SELECTOR;
+/** X loads the next page only once the viewport nears the bottom of the list, so a
+ *  round without a reply means "not far enough yet", not "the list ended". Pause
+ *  this long for a slow reply, then keep scrolling. */
+export const X_SCROLL_REPLY_WAIT_MS = 3000;
+/** Extra per-round pause drawn from [0, this): a machine-regular scroll cadence is
+ *  itself a behavioural signal, so the pause must not be constant. */
+export const X_SCROLL_REPLY_JITTER_MS = 1500;
+export const xScrollPauseMs = (): number => X_SCROLL_REPLY_WAIT_MS + Math.floor(Math.random() * X_SCROLL_REPLY_JITTER_MS);
+/** HTTP statuses that mean "the source is refusing the rate": 429/503 are limits,
+ *  anything else is an access/source fact. Kept finite for the barrier reason. */
+export const HALTING_HTTP_STATUS = /^http_status:(\d{3})$/;
+export function xHttpFailure(reason: string): {status: XResearchStatus; stopReason: XStopReason; reason: string; skippedReason: string} | null {
+  const match = HALTING_HTTP_STATUS.exec(reason.replace(/^source_unavailable:/, ''));
+  if (!match) return null;
+  const code = Number(match[1]);
+  const status = code === 429 || code === 503 ? 'rate_limited' : code === 401 || code === 403 ? 'access_denied' : 'unavailable';
+  return {status, stopReason: status === 'unavailable' ? 'source_unavailable' : 'access_barrier', reason: `http_status:${code}`,
+    skippedReason: status === 'rate_limited' ? 'not_attempted:rate_limited' : `not_attempted:http_status:${code}`};
+}
+/** Consecutive scroll rounds whose write moved nothing before the row stops. */
+export const X_SEARCH_UNMOVED_ROUNDS = 2;
 export function xSearchUrl(query:XSearchObservation['query']):string {
   const url=new URL('https://x.com/search');url.searchParams.set('q',query.query);url.searchParams.set('f',query.product==='Latest'?'live':'top');return url.href;
 }
@@ -70,13 +91,27 @@ export function searchResult(input:XSearchInput,context:XResearchContext): Extra
 export async function searchX(input:XSearchInput, context:XResearchContext): Promise<Extract<XResearchResult,{operation:'search'}>> {
   const result=searchResult(input,context);
   const policy={...(context.budgetPolicy??resolveXBudgetPolicy(input,input)),network_pages:{limit:1000,origin:'safety' as const}};
-  let halted:false|'cancelled'|'auth_required'|'other'=false;
+  let halted:false|'cancelled'|'auth_required'|'rate_limited'|'other'=false;
+  let httpHalt: ReturnType<typeof xHttpFailure> = null;
   for(const row of result.queries){
-    if(halted||context.signal?.aborted){if(halted==='cancelled'||context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';}else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};}continue;}
-    const admitted=new Set<string>(),saved=new Set<string>();let pageCount=0;
+    if(halted||httpHalt||context.signal?.aborted){
+      if(halted==='cancelled'||context.signal?.aborted){row.status='cancelled';row.stopReason='cancelled';}
+      else if(halted==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:'not_attempted:auth_required',observationId:null};}
+      else if(httpHalt){row.status=httpHalt.status;row.stopReason=httpHalt.stopReason;row.barrier={status:httpHalt.status,reason:httpHalt.skippedReason,observationId:null};}
+      // A skipped row must not read as "the agent stopped": it was never attempted
+      // because an earlier row hit the same source barrier (or an adapter defect).
+      else if(halted==='rate_limited'){row.status='rate_limited';row.stopReason='access_barrier';row.barrier={status:'rate_limited',reason:'not_attempted:rate_limited',observationId:null};}
+      else {row.status='failed';row.stopReason='source_unavailable';row.barrier={status:'failed',reason:'internal_adapter_stopped',observationId:null};}
+      continue;
+    }
+    const admitted=new Set<string>(),saved=new Set<string>();let pageCount=0,unsupportedSeen=false;
     row.sampleTruncation={observed:0,sampled:0,omitted:0};
     const capped=()=>{const bindings=reachedXBudgets(policy,{posts:admitted.size,scrolls:row.budgetUsage.scrolls,network_pages:pageCount},['posts','scrolls','network_pages']);if(bindings.length)row.budgetBinding=bindings;return bindings.length>0;};
     const acceptNetworkPage=(source:XNetworkPage,fact?:XNetworkPageFact)=>{
+      // Retained across the whole row: an unrecorded shape anywhere in the
+      // collected chain means the row cannot claim a complete timeline even if a
+      // later page proves the cursor end, so it stays partial.
+      if(source.unsupported.length)unsupportedSeen=true;
       if(saved.has(source.provenance.requestRef))return;
       if(pageCount>=1000)return;
       saved.add(source.provenance.requestRef);pageCount++;
@@ -96,40 +131,75 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       if(opened.networkCleanupFailure)(row.diagnostics??={version:1}).networkCleanupFailure=opened.networkCleanupFailure;
       if(!navigationUrl(opened.nav)){row.status=opened.nav.outcome.kind==='cancelled'?'cancelled':'failed';row.stopReason=row.status==='cancelled'?'cancelled':'navigation_failed';halted=row.status==='cancelled'?'cancelled':false;continue;}
       await context.browser.withPage(opened.tabId,context.signal,async page=>{
-        let waited=false,waitFailed=false,bottom=false;
+        let waited=false,bottom=false,lastMoved=true,unmoved=0,stepReceipt:BrowserScrollReceipt|undefined;
         while(true){
           const priorPageCount=pageCount;
-          stage='collection';const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal);row.location=locationFacts(request.expectedUrl,opened.nav,observed);
+          // A fresh reread allowance per collection: X search performs a same-URL
+          // generation change on load and again around a scroll, and the row-wide
+          // one-shot check rejected the second one. The outer loop's post/scroll
+          // budget still bounds how many times this can happen.
+          stage='collection';const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal,{rereadRequested:false});row.location=locationFacts(request.expectedUrl,opened.nav,observed);
           if(observed.state?.kind==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:observed.state.text,observationId:observed.state.observationId};break;}
-          let terminal=false,unsupported=false;
+          let terminal=false;
           for(const source of observed.network?.pages??[]){
             acceptNetworkPage(source,observed.network?.facts?.find(f=>f.provenance.requestRef===source.provenance.requestRef));
-            terminal ||= source.end==='cursor_exhausted';unsupported ||= source.unsupported.length>0;
+            terminal ||= source.end==='cursor_exhausted';
           }
           const accepted=pageCount-priorPageCount;
           const budget=capped();
-          if(unsupported||observed.network?.failure){row.status=row.posts.length?'partial':'unavailable';row.stopReason=observed.network?.failure==='wait_timeout'?'wait_timeout':observed.network?.failure==='cancelled'?'cancelled':'source_unavailable';if(row.stopReason==='cancelled')row.status='cancelled';row.barrier={status:row.status,reason:observed.network?.failure??'unsupported_response',observationId:null};break;}
-          if(terminal){row.status=row.sampleTruncation!.omitted?'partial':row.posts.length?'observed':'explicit_empty';row.stopReason='cursor_exhausted';break;}
-          if(waitFailed){row.status=row.posts.length?'partial':'failed';row.stopReason='wait_timeout';break;}
-          // collect drains associated response bodies before this geometric stop.
-          if(bottom&&!observed.network?.pending){row.status='partial';row.stopReason='explicit_ui_end';break;}
+          // An unrecorded shape is a retained page fact, not a source failure:
+          // its page keeps end='unknown' and collection continues on the proven
+          // cursor until a real failure, budget, terminal or wait limits it.
+          if(observed.network?.failure){
+            if(xHttpFailure(observed.network.failure))throw new KydogError('x.invalid_page', 'source_unavailable:'+observed.network.failure);
+            row.status=row.posts.length?'partial':'unavailable';row.stopReason=observed.network?.failure==='wait_timeout'?'wait_timeout':observed.network?.failure==='cancelled'?'cancelled':'source_unavailable';if(row.stopReason==='cancelled')row.status='cancelled';row.barrier={status:row.status,reason:observed.network?.failure,observationId:null};break;
+          }
+          if(terminal){row.status=(unsupportedSeen||row.sampleTruncation!.omitted)?'partial':row.posts.length?'observed':'explicit_empty';row.stopReason='cursor_exhausted';break;}
+          // A page that arrived means the list grew: the earlier geometric bottom is
+          // stale, so keep scrolling instead of stopping on it.
+          if(accepted){bottom=false;unmoved=0;}else if(!lastMoved)unmoved++;
           if(!observed.network?.proof||!observed.identityProven){
-            if(!waited){stage='wait';waited=true;waitFailed=!await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},8000);continue;}
-            row.status='unavailable';row.stopReason='source_unavailable';break;
+            // No provable response chain even after a bounded wait: the design stop for
+            // "no matching response before the deadline".
+            if(!waited){stage='wait';waited=true;await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},8000);continue;}
+            row.status=row.posts.length?'partial':'unavailable';row.stopReason='wait_timeout';break;
           }
           if(budget){row.status='partial';row.stopReason='budget_reached';break;}
+          // Only a container that has stopped moving ends the row: on X's virtualized
+          // list a geometric bottom is reached after almost every scroll, so one
+          // bottom receipt is not an end. `explicit_ui_end` still labels the case
+          // where the stop happened at the container bottom.
+          if(!observed.network?.pending&&unmoved>=X_SEARCH_UNMOVED_ROUNDS){row.status='partial';row.stopReason=bottom?'explicit_ui_end':'wait_timeout';break;}
           if(observed.network.pending)continue;
-          if(!accepted&&!waited){stage='wait';waited=true;waitFailed=!await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},8000);continue;}
-          if(accepted)waited=false;
+          // Keep scrolling toward the bottom: one bounded pause for a slow reply,
+          // then another scroll. Ending after a single unanswered round is what
+          // left every long page on its first batch.
+          if(!accepted){stage='wait';await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},xScrollPauseMs());}
           stage='action';let receipt:BrowserScrollReceipt|undefined;
+          // X only loads the next page near the bottom of a very long virtualized
+          // list (live: 240,890px, ~14 one-viewport rounds per page). Ask for the
+          // whole remaining distance so one round lands at the bottom and triggers
+          // the next page instead of inching toward it.
+          const remaining=stepReceipt?Math.round(stepReceipt.scrollHeight-stepReceipt.clientHeight-stepReceipt.after):null;
+          const amount=remaining!==null&&remaining>0?remaining:undefined;
           const scroll=(row.diagnostics??={version:1}).scroll??={totalAttempts:0,omittedAttempts:0};
           const actionIndex=++scroll.totalAttempts;
           const omissions=()=>{scroll.omittedAttempts=scroll.totalAttempts-new Set([scroll.first?.actionIndex,scroll.last?.actionIndex].filter(id=>id!==undefined)).size;};omissions();
-          try{await page.act({kind:'scroll',direction:'down'},observed.snapshot,{scrollAcknowledgement:{onWritten:()=>{row.budgetUsage.scrolls++;},onReceipt:value=>{if(!isScrollReceipt(value)||value.generation!==observed.snapshot.generation)return;
+          try{await page.act({kind:'scroll',direction:'down',...(amount===undefined?{}:{amount})},observed.snapshot,{scrollAcknowledgement:{onWritten:()=>{row.budgetUsage.scrolls++;},onReceipt:value=>{if(!isScrollReceipt(value)||value.generation!==observed.snapshot.generation)return;
             receipt={...value};const saved={actionIndex,snapshotId:observed.snapshot.snapshotId,...receipt,location:observed.location.current};
             if(!scroll.first||scroll.first.actionIndex===actionIndex)scroll.first=saved;scroll.last=saved;omissions();}}});}
-          catch(error){if(!(error instanceof BrowserScrollAcknowledgementError&&receipt?.state==='no_movement'))throw error;}
+          catch(error){
+            const writtenInvalidation=isScrollReceipt(receipt)&&receipt.state==='invalidated'&&receipt.written&&receipt.after!==receipt.before;
+            if(error instanceof BrowserScrollAcknowledgementError&&receipt?.state==='no_movement'){/* executed no-op; geometry below stays authoritative */}
+            // The write landed but the page changed underneath it (X search does a
+            // same-URL in-page navigation around a scroll). Re-collect the new
+            // generation and keep the chain instead of ending the query.
+            else if(writtenInvalidation&&error instanceof KydogError&&error.code==='browser.stale_snapshot')continue;
+            else throw error;
+          }
+          if(receipt)stepReceipt=receipt;
           bottom=!!receipt&&receipt.written&&receipt.after+receipt.clientHeight>=receipt.scrollHeight;
+          lastMoved=!!receipt&&receipt.written&&receipt.after!==receipt.before;
         }
       },{onNetworkPageAccepted:acceptNetworkPage});
     }catch(error){
@@ -138,9 +208,21 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       const problem=failure(error,stage);row.status=row.posts.length&&problem.status!=='cancelled'?'partial':problem.status;
       row.stopReason=error instanceof KydogError&&error.message==='source_unavailable:wait_timeout'?'wait_timeout':problem.stopReason==='action_failed'||problem.stopReason==='identity_unproven'?'source_unavailable':problem.stopReason;
       halted=problem.status==='cancelled'?'cancelled':problem.internal||(error instanceof KydogError&&['browser.no_tab','browser.not_dispatchable'].includes(error.code))?'other':false;
-      row.barrier={status:row.status,reason:error instanceof KydogError&&error.message.startsWith('source_unavailable:')?error.message:problem.reason??`${stage}_failed${error instanceof KydogError?':'+error.code:''}`,observationId:null};
+      let reason=error instanceof KydogError&&error.message.startsWith('source_unavailable:')?error.message:problem.reason??`${stage}_failed${error instanceof KydogError?':'+error.code:''}`;
+      // A non-200 is a source fact, not an adapter defect: rate limiting gets the
+      // designed barrier instead of a generic source_unavailable, and it halts the
+      // rest of the batch (further queries would only burn the limit further).
+      const http=xHttpFailure(reason);
+      if(http){
+        reason=http.reason;
+        row.status=row.posts.length?'partial':http.status;
+        row.stopReason=http.stopReason;
+        httpHalt=http;
+      }
+      row.barrier={status:row.status,reason,observationId:null};
     }
     if(row.status==='auth_required')halted='auth_required';
+    else if(row.status==='rate_limited')halted='rate_limited';
   }
   for(const row of result.queries)row.collectionStop={status:row.status,stopReason:row.stopReason,reason:row.barrier?.reason??null};
   aggregateResult(result);return result;
@@ -148,8 +230,8 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
 
 /** Owned by a single successful explicit navigation receipt, not by actions or waits. */
 export interface XCollectionBudget {
-  navigationPhase: NonNullable<XCollectionTransition['navigationPhase']>;
-  navigationId: string;
+  navigationPhase?: NonNullable<XCollectionTransition['navigationPhase']>;
+  navigationId?: string;
   rereadRequested: boolean;
 }
 /** A rejected observation is never consumed. One new collection is permitted
@@ -165,9 +247,14 @@ export async function collectFreshXPage(page:XQueuedPage, request:XPageRequest, 
       if(!(error instanceof KydogError) || error.code!=='browser.stale_snapshot') throw error;
       const after=page.location();
       const changed=before.documentEpoch!==after.documentEpoch || before.routeRevision!==after.routeRevision || before.navigationSequence!==after.navigationSequence;
+      const relation=compareXLocation(before.currentUrl,after.currentUrl);
       const sameUrl=before.currentUrl===after.currentUrl;
-      const allowed=changed && sameUrl && !reread && !signal?.aborted;
-      transitions.push({...(budget?{navigationPhase:budget.navigationPhase,navigationId:budget.navigationId}:{}),stage:request.stage,before:safe(before),after:safe(after),relation:compareXLocation(before.currentUrl,after.currentUrl),rereadRequested:allowed,
+      // X canonicalizes an author handle in place (…/weiwang/status/ID → …/wei_wang/status/ID).
+      // That is still the same post, so the identity that gates a re-read is origin plus
+      // post id; a genuine retarget changes the post id and stays rejected.
+      const samePost=relation.origin==='same'&&relation.postId==='same';
+      const allowed=changed && (sameUrl||samePost) && !reread && !signal?.aborted;
+      transitions.push({...(budget?.navigationPhase&&budget.navigationId?{navigationPhase:budget.navigationPhase,navigationId:budget.navigationId}:{}),stage:request.stage,before:safe(before),after:safe(after),relation,rereadRequested:allowed,
         outcome:signal?.aborted?'cancelled':reread?'repeated_invalidation':!sameUrl?'route_changed':changed?'same_url_generation_changed':'generation_unchanged'});
       if(signal?.aborted) throw new KydogError('browser.cancelled','X observation cancelled');
       if(!allowed) throw new KydogError('browser.stale_snapshot','X navigation invalidated this observation');

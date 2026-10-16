@@ -20,7 +20,7 @@ async function result(){
  const f=fixture([searchHtml(post())]);
  f.act.mockImplementation(async(action,snapshot,options)=>{
   const ack=options!.scrollAcknowledgement!;ack.onWritten();
-  ack.onReceipt?.({generation:(snapshot as import('../browser/snapshot').AxSnapshot).generation,targetKind:'document',targetNodeId:27,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:39,after:739,scrollHeight:2800,clientHeight:701,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'});
+  ack.onReceipt?.({generation:(snapshot as import('../browser/snapshot').AxSnapshot).generation,targetKind:'document',targetNodeId:27,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:39,after:739,scrollHeight:2800,clientHeight:701,written:true,eventObserved:true,frameObserved:true,state:'frame_observed',invalidatedReason:null});
   return {action,line:'done',navigation:null};
  });
  return searchX(searchInput,f.context);

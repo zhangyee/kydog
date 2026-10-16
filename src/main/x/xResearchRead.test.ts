@@ -13,6 +13,28 @@ import { readX } from './xResearchRead';
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 const read=(targets:any[],extra={})=>({tabId:'research-tab',read:{objective:'read',targets,includeArticle:false,includeReplies:false,maxRepliesPerPost:30,maxScrollsPerPost:0,maxExpandActionsPerPost:0,...extra}});
 describe('ordinary X read orchestration',()=>{
+  it.each([
+    [429, 'rate_limited', 'access_barrier'],
+    [503, 'rate_limited', 'access_barrier'],
+    [403, 'access_denied', 'access_barrier'],
+    [500, 'unavailable', 'source_unavailable'],
+  ] as const)('preserves HTTP %s before and after accepted read evidence', async (code, status, stopReason) => {
+    for (const accepted of [true, false]) {
+      const f = fixture([readHtml(post())]);
+      const collect = f.collect.getMockImplementation()!;
+      f.collect.mockImplementation(async r => {
+        if (!accepted) throw new KydogError('x.invalid_page', `source_unavailable:http_status:${code}`);
+        const observed = await collect(r);
+        observed.network!.failure = `http_status:${code}`;
+        return observed;
+      });
+      const rows = (await readX(read([{url:'https://x.com/alice/status/123'}, {url:'https://x.com/bob/status/456'}]), f.context)).targets;
+      expect(rows[0]).toMatchObject({status: accepted ? 'partial' : status, stopReason, reason: `http_status:${code}`});
+      expect(rows[0].root?.text).toBe(accepted ? 'original' : undefined);
+      expect(rows[1]).toMatchObject({status, stopReason, reason: status === 'rate_limited' ? 'not_attempted:rate_limited' : `not_attempted:http_status:${code}`});
+      expect(f.open).toHaveBeenCalledTimes(1);
+    }
+  });
   it('retains the network root and collects rootless continuation without DOM identity inheritance',async()=>{
     const f=fixture([readHtml(post()+post('456','bob','historical reply')),readHtml(post('456','bob','current body')+post('789','carol','fresh body'))]);
     const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:2}),f.context)).targets[0];
@@ -74,10 +96,30 @@ describe('ordinary X read orchestration',()=>{
     expect((await readX(read([{url:'https://x.com/alice/status/123'}]),sensitive.context)).targets[0].documentSource).toBeNull();
     expect(sensitive.context.sources.get('123')).toBeUndefined();
   });
-  it('same-URL root freshness recollects but different author/path is refused',async()=>{
+  it('keeps the specific source failure reason and turns a rate limit into a batch-wide access barrier',async()=>{
+    const a='https://x.com/alice/status/123',b='https://x.com/bob/status/456';
+    // A named source failure keeps its reason instead of collapsing to one word.
+    const named=fixture([readHtml(post())]);named.collect.mockRejectedValue(new KydogError('x.invalid_page','source_unavailable:lease_missing'));
+    const namedRows=(await readX(read([{url:a},{url:b}]),named.context)).targets;
+    expect(namedRows[0]).toMatchObject({stopReason:'source_unavailable',reason:'lease_missing'});
+    expect(namedRows[1]).toMatchObject({stopReason:'source_unavailable',reason:'lease_missing'});
+    // 429/503 is the designed access barrier, and it halts the rest of the batch.
+    const limited=fixture([readHtml(post())]);limited.collect.mockRejectedValue(new KydogError('x.invalid_page','source_unavailable:http_status:429'));
+    const limitedRows=(await readX(read([{url:a},{url:b}]),limited.context)).targets;
+    expect(limitedRows[0]).toMatchObject({status:'rate_limited',stopReason:'access_barrier',reason:'http_status:429'});
+    expect(limitedRows[1]).toMatchObject({status:'rate_limited',stopReason:'access_barrier',reason:'not_attempted:rate_limited'});
+  });
+  it('same-URL root freshness recollects, a canonicalized handle keeps the post, and a different post id is refused',async()=>{
     const f=fixture([readHtml(post())]);f.collect.mockImplementationOnce(async()=>{f.navigate();throw new KydogError('browser.stale_snapshot','route changed');});
     expect((await readX(read([{url:'https://x.com/alice/status/123'}]),f.context)).targets[0].root?.text).toBe('original');
-    const wrong=fixture([readHtml(post('123','bob'))]);wrong.collect.mockImplementationOnce(async()=>{wrong.navigate('https://x.com/bob/status/123');throw new KydogError('browser.stale_snapshot','route changed');});
+    // The author handle in an X status URL is decorative: the post id is the identity.
+    // X rewrites the handle in place (…/weiwang/status/ID → …/wei_wang/status/ID), so a
+    // same-id canonical URL must resolve to the cited post rather than be refused.
+    const renamed=fixture([readHtml(post('123','alice_renamed'))]);renamed.collect.mockImplementationOnce(async()=>{renamed.navigate('https://x.com/alice_renamed/status/123');throw new KydogError('browser.stale_snapshot','route changed');});
+    const canonical=(await readX(read([{url:'https://x.com/alice/status/123'}]),renamed.context)).targets[0];
+    expect(canonical.root).toMatchObject({postId:'123',author:{handle:'alice_renamed'}});expect(renamed.collect).toHaveBeenCalledTimes(2);
+    // Control: a different post id is a genuine retarget and stays refused.
+    const wrong=fixture([readHtml(post('123','bob'))]);wrong.collect.mockImplementationOnce(async()=>{wrong.navigate('https://x.com/bob/status/999');throw new KydogError('browser.stale_snapshot','route changed');});
     expect((await readX(read([{url:'https://x.com/alice/status/123'}]),wrong.context)).targets[0]).toMatchObject({root:null,stopReason:'identity_unproven'});expect(wrong.collect).toHaveBeenCalledTimes(1);
   });
   it('history source is navigated literally, never stripped or old versions admitted',async()=>{
@@ -166,9 +208,9 @@ it('preserves the same validated scroll receipt through failure, canonical detai
       callback.onWritten();
       const source={generation:snapshot.generation,targetKind:'document' as const,targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown' as const,rootRelation:'unknown' as const,
         scrollHeight:1600,clientHeight:600,before:240,after:failed?240:840,written:true,eventObserved:!failed,frameObserved:!failed,
-        state:failed?'no_movement' as const:'frame_observed' as const};
+        state:failed?'expired' as const:'frame_observed' as const,invalidatedReason:null};
       callback.onReceipt?.(source);
-      if(failed) throw new BrowserScrollAcknowledgementError('scroll_no_movement','opaque');
+      if(failed) throw new BrowserScrollAcknowledgementError('scroll_ack_timeout','opaque');
       return {action,line:'scrolled',navigation:null};
     });
     const actual=await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:1}),f.context);
@@ -177,10 +219,10 @@ it('preserves the same validated scroll receipt through failure, canonical detai
     if(failed) expect(row.diagnostics?.terminalFrame?.snapshotId).toBe(row.diagnostics?.initialFrame?.snapshotId);
     else expect(row.diagnostics?.terminalFrame?.snapshotId).not.toBe(row.diagnostics?.initialFrame?.snapshotId);
     expect(row.diagnostics?.scroll).toMatchObject({totalAttempts:1,omittedAttempts:0,first:{actionIndex:1,targetKind:'document',targetNodeId:7,
-      before:240,after:failed?240:840,scrollHeight:1600,clientHeight:600,state:failed?'no_movement':'frame_observed'},
-      last:{state:failed?'no_movement':'frame_observed'}});
+      before:240,after:failed?240:840,scrollHeight:1600,clientHeight:600,state:failed?'expired':'frame_observed'},
+      last:{state:failed?'expired':'frame_observed'}});
     // This legacy fixture creates a new isolated world on every collection. Recovery must reject it.
-    expect(row).toMatchObject({reason:failed?'scroll_no_movement':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{kind:'network',extent:'unknown'}}});
+    expect(row).toMatchObject({reason:failed?'scroll_ack_timeout':'reply_budget_reached',budgetUsage:{scrolls:1},replies:{scope:{kind:'network',extent:'unknown'}}});
     expect(f.act).toHaveBeenCalledTimes(1);
     const serialized=serializeXResearchResult(actual);
     const details=xResearchToolResult(serialized).details;
@@ -206,7 +248,7 @@ it('counts actual scroll actions once while retaining only first and last receip
     actions++;
     options!.scrollAcknowledgement!.onWritten();
     options!.scrollAcknowledgement!.onReceipt?.({generation:snapshot.generation,targetKind:'element',targetNodeId:9,targetContainsHit:true,conversationRelation:'inside',rootRelation:'unknown',
-      scrollHeight:2000,clientHeight:300,before:actions*10,after:actions*10+100,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'});
+      scrollHeight:2000,clientHeight:300,before:actions*10,after:actions*10+100,written:true,eventObserved:true,frameObserved:true,state:'frame_observed',invalidatedReason:null});
     return {action,line:'scrolled',navigation:null};
   });
   const row=(await readX(read([{url:'https://x.com/alice/status/123'}],{includeReplies:true,maxScrollsPerPost:3}),f.context)).targets[0];

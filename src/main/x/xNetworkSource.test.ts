@@ -69,6 +69,54 @@ describe('recorded SearchTimeline decoding', () => {
       )?.text,
     ).toBe(raw.note_tweet.note_tweet_results.result.text);
   });
+  it('keeps a decoded tweet with a quoted post or Article in the proven timeline instead of unsupporting the page', () => {
+    const body = structuredClone(top.body) as any;
+    const entries =
+      body.data.search_by_raw_query.search_timeline.timeline.instructions[0]
+        .entries;
+    const tweets = entries
+      .flatMap((e: any) =>
+        'itemContent' in e.content ? [e.content.itemContent] : [],
+      )
+      .filter((i: any) => i.itemType === 'TimelineTweet');
+    tweets[0].tweet_results.result.quoted_status_result = {
+      result: {
+        __typename: 'Tweet',
+        rest_id: '900000000000000900',
+        core: {
+          user_results: {
+            result: { __typename: 'User', core: { screen_name: 'Quoted' } },
+          },
+        },
+        legacy: { id_str: '900000000000000900', full_text: 'quoted body' },
+      },
+    };
+    tweets[1].tweet_results.result.article = {
+      article_results: { result: { rest_id: '900000000000000901' } },
+    };
+    // The page proves its own end; a nested quote must not downgrade it.
+    body.data.search_by_raw_query.search_timeline.timeline.instructions.push({
+      type: 'TimelineTerminateTimeline',
+      direction: 'Bottom',
+    });
+    const page = decodeXSearchResponse(body, request(top));
+    expect(page.unsupported).toEqual([]);
+    expect(page.posts).toHaveLength(20);
+    expect(page.end).toBe('cursor_exhausted');
+    expect(
+      page.posts.find((p) => p.postId === tweets[1].tweet_results.result.rest_id)
+        ?.articlePreviewInventory,
+    ).toMatchObject({ scope: 'collection', unresolved: 1 });
+    // Control: a genuinely unreadable member of the same page still reports
+    // unsupported and cannot claim the termination.
+    entries.push({
+      content: { entryType: 'TimelineTimelineItem', itemContent: null },
+    });
+    const guarded = decodeXSearchResponse(body, request(top));
+    expect(guarded.unsupported).toContain('item_shape');
+    expect(guarded.end).toBe('unknown');
+  });
+
   it('requires the recorded Bottom termination; an empty array or Top termination cannot prove end', () => {
     expect(decodeXSearchResponse(empty.body, request(empty)).end).toBe(
       'cursor_exhausted',

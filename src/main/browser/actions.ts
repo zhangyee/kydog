@@ -35,6 +35,11 @@ export interface BrowserScrollReceipt {
   conversationRelation:'inside'|'equal'|'unknown'; rootRelation:'inside'|'equal'|'unknown';
   before:number; after:number; written:boolean; eventObserved:boolean; frameObserved:boolean;
   state:'pending'|'frame_observed'|'no_movement'|'invalidated'|'expired';
+  /** Which physical fact invalidated the acknowledgement; null unless state==='invalidated'. */
+  invalidatedReason:'document'|'generation'|'url'|'detached'|'scrolling_element'|'offset'|null;
+  /** Page visibility/viewport at the moment of the write; a hidden view cannot run
+   *  visibility-driven load logic. */
+  viewport?:{visibility:string;innerHeight:number;visualViewportHeight:number|null};
 }
 
 export type WaitUntil =

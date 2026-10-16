@@ -27,7 +27,7 @@ function stallFixture(initialReply=false) {
    if(action.kind==='click'){clicks++;events.push('click');if(options?.collectedPermission?.purpose==='body_expand'){container().querySelector('a[href="/first/status/401"]')!.closest('article')!.remove();}else{expect(options?.collectedPermission?.purpose).toBe('replies_expand');add('777');}container().querySelector('button')!.remove();return{line:'clicked',navigation:null};}
    scrolls++;events.push('scroll');const ack=options!.scrollAcknowledgement!;
    if(hooks.written!==false)ack.onWritten();
-   const receipt:BrowserScrollReceipt={generation:snapshot.generation,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:0,after:0,scrollHeight:600,clientHeight:600,written:true,eventObserved:false,frameObserved:false,state:'no_movement'};
+   const receipt:BrowserScrollReceipt={generation:snapshot.generation,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'unknown',rootRelation:'unknown',before:0,after:0,scrollHeight:600,clientHeight:600,written:true,eventObserved:false,frameObserved:false,state:'no_movement',invalidatedReason:null};
    if(!hooks.omitReceipt)ack.onReceipt?.(hooks.receipt?hooks.receipt(receipt):receipt);
    await hooks.write?.();events.push('action-cleanup');
    throw hooks.error?.()??new BrowserScrollAcknowledgementError('scroll_no_movement','native no movement');
@@ -44,19 +44,22 @@ function stallFixture(initialReply=false) {
 // native receipt/ownership safety while proving that DOM changes cannot revive it.
 it('a settled native stall retains accepted network data and does not poll DOM identities for permission',async()=>{
  vi.useFakeTimers();const f=stallFixture(true);try{
+  // An unacknowledged write is still fatal (an executed no-op is now geometry).
+  f.hooks.receipt=r=>({...r,state:'expired'});f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','native ack timeout');
   f.hooks.write=()=>f.add('402');const {row}=await f.run();
   expect(row.root?.postId).toBe('123');expect(row.replies.observations.map(p=>p.postId)).toEqual(['401']);expect(f.count()).toEqual({collects:1,scrolls:1,clicks:0});
-  expect(row).toMatchObject({reason:'scroll_no_movement',stopReason:'action_failed',budgetUsage:{scrolls:1},replies:{scope:{extent:'unknown'}}});expect(row.diagnostics?.scroll?.first).toMatchObject({written:true,state:'no_movement'});expect(row.diagnostics?.scrollRecovery).toBeUndefined();
+  expect(row).toMatchObject({reason:'scroll_ack_timeout',stopReason:'wait_timeout',budgetUsage:{scrolls:1},replies:{scope:{extent:'unknown'}}});expect(row.diagnostics?.scroll?.first).toMatchObject({written:true,state:'expired'});expect(row.diagnostics?.scrollRecovery).toBeUndefined();
  }finally{f.close();vi.useRealTimers();}
 });
 it('authentic native no-movement and timeout retain receipt identity while lookalike prose grants no recovery',async()=>{
  vi.useFakeTimers();try{
-  for(const kind of ['real','timeout','prose','unwritten'] as const){const f=stallFixture(true);try{
-   if(kind==='timeout')f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement');
+  // Genuinely fatal scroll outcomes: an expired ACK still stops the target, and a
+  // KydogError that merely says "scroll_no_movement" must not be read as recovery.
+  for(const kind of ['timeout','prose'] as const){const f=stallFixture(true);try{
+   if(kind==='timeout'){f.hooks.receipt=r=>({...r,state:'expired'});f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','scroll_no_movement');}
    if(kind==='prose')f.hooks.error=()=>new KydogError('browser.wait_timeout','scroll_no_movement');
-   if(kind==='unwritten')f.hooks.written=false;
-   const {result,row}=await f.run();expect(row.root?.text).toBe('original');expect(row.replies.observations[0].postId).toBe('401');expect(f.count()).toEqual({collects:1,scrolls:1,clicks:0});expect(row.budgetUsage.scrolls).toBe(kind==='unwritten'?0:1);
-   expect(row.reason).toBe(kind==='timeout'?'scroll_ack_timeout':kind==='prose'?'action_failed:browser.wait_timeout':'scroll_no_movement');expect(serializeXResearchResult(result).result.targets[0].diagnostics?.scroll).toEqual(row.diagnostics?.scroll);
+   const {result,row}=await f.run();expect(row.root?.text).toBe('original');expect(row.replies.observations[0].postId).toBe('401');expect(f.count()).toEqual({collects:1,scrolls:1,clicks:0});expect(row.budgetUsage.scrolls).toBe(1);
+   expect(row.reason).toBe(kind==='timeout'?'scroll_ack_timeout':'action_failed:browser.wait_timeout');expect(serializeXResearchResult(result).result.targets[0].diagnostics?.scroll).toEqual(row.diagnostics?.scroll);
   }finally{f.close();}}
  }finally{vi.useRealTimers();}
 });
@@ -64,7 +67,7 @@ it('new DOM text, semantic end prose and newly visible reply controls cannot aut
  vi.useFakeTimers();try{
   const positive=stallFixture(true);try{const {row}=await positive.run();expect(row.replies.observations[0].postId).toBe('401');}finally{positive.close();}
   for(const html of [post('402','next','End of conversation'),'<div role="status">End of conversation</div>','<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>']){
-   const f=stallFixture(true);try{f.hooks.write=()=>f.container().insertAdjacentHTML('beforeend',html);const {row}=await f.run();expect(f.count().clicks).toBe(0);expect(f.count().scrolls).toBe(1);expect(row.replies.scope.extent).toBe('unknown');expect(row.replies.observations.map(p=>p.postId)).toEqual(['401']);}finally{f.close();}
+   const f=stallFixture(true);try{f.hooks.receipt=r=>({...r,state:'expired'});f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','native ack timeout');f.hooks.write=()=>f.container().insertAdjacentHTML('beforeend',html);const {row}=await f.run();expect(f.count().clicks).toBe(0);expect(f.count().scrolls).toBe(1);expect(row.replies.scope.extent).toBe('unknown');expect(row.replies.observations.map(p=>p.postId)).toEqual(['401']);}finally{f.close();}
   }
  }finally{vi.useRealTimers();}
 });
@@ -112,12 +115,13 @@ it('counts missing scroll receipts and keeps scroll ordinals independent of prec
    const f=stallFixture(true);try{
     f.container().insertAdjacentHTML('beforeend','<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>');
     f.hooks.omitReceipt=omitReceipt;
+    f.hooks.receipt=r=>({...r,state:'expired'});f.hooks.error=()=>new BrowserScrollAcknowledgementError('scroll_ack_timeout','native ack timeout');
     const {row}=await f.run();
     expect(f.count().clicks).toBe(1);expect(f.count().scrolls).toBe(1);
     expect(row.replies.observations.map(p=>p.postId)).toEqual(['401','777']);
     expect(row.diagnostics?.scroll).toMatchObject({totalAttempts:1,omittedAttempts:omitReceipt?1:0});
     if(omitReceipt)expect(row.diagnostics?.scroll?.first).toBeUndefined();
-    else expect(row.diagnostics?.scroll?.first).toMatchObject({actionIndex:1,state:'no_movement'});
+    else expect(row.diagnostics?.scroll?.first).toMatchObject({actionIndex:1,state:'expired'});
    }finally{f.close();}
   }
  }finally{vi.useRealTimers();}

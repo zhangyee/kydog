@@ -3,7 +3,7 @@ import captured from '../../test-support/fixtures/x-network/search-top-initial.j
 import empty from '../../test-support/fixtures/x-network/search-empty-initial.json';
 import { fixture, searchHtml } from '../../test-support/xResearchFixture';
 import { decodeXSearchResponse } from './xNetworkSource';
-import { searchX } from './xResearchSearch';
+import { collectFreshXPage, searchX } from './xResearchSearch';
 import { parseXResearchInput } from './xResearchInput';
 import { KydogError } from '../../shared/errors';
 const query = {
@@ -99,40 +99,182 @@ describe('exclusive network search producer', () => {
       posts: [],
     });
   });
-  it('drains after exact geometric bottom receipt and retains the late page before stopping', async () => {
+  it('keeps the query row partial but keeps collecting past an unrecorded shape', async () => {
+    const f = harness(3, 1);
+    const collect = f.collect.getMockImplementation()!;
+    let calls = 0;
+    f.collect.mockImplementation(async (r) => {
+      const observed = await collect(r);
+      const page = observed.network!.pages[0];
+      if (calls++ === 0) {
+        page.unsupported = ['entry_shape'];
+        page.end = 'unknown';
+      }
+      observed.network!.facts = [
+        {
+          provenance: page.provenance,
+          bytes: 1,
+          sha256: 'a'.repeat(64),
+          inputCursorRef: null,
+          outputCursorRef: null,
+          end: page.end,
+          observed: page.posts.length,
+          sampled: page.posts.length,
+          omitted: 0,
+          unsupported: [...page.unsupported],
+        },
+      ];
+      return observed;
+    });
+    const row = (await searchX(input(), f.context)).queries[0];
+    expect(row.posts).toHaveLength(3);
+    expect(row.stopReason).toBe('cursor_exhausted');
+    expect(row.status).toBe('partial');
+    expect(row.networkPages?.[0].unsupported).toContain('entry_shape');
+    expect(f.collect).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-collects after a scroll write whose acknowledgement was invalidated by the page', async () => {
+    const f = fixture([searchHtml('')]);
+    let index = 0, scrolls = 0;
+    const original = f.collect.getMockImplementation()!;
+    f.collect.mockImplementation(async (request) => {
+      const observed = await original(request);
+      const page = decodeXSearchResponse(
+        structuredClone(index === 2 ? empty.body : captured.body),
+        {
+          provenance: { leaseId: 'lease', requestRef: 'request-' + index, navigationId: 'document', documentEpoch: 3, routeRevision: 7, navigationSequence: 9, operation: 'SearchTimeline', observedAt: '2026-10-15T00:00:00Z' },
+          query, inputCursor: index ? 'cursor-' + (index - 1) : null,
+        },
+      );
+      page.posts = page.posts.slice(0, 3).map((p, i) => ({ ...p, postId: String(1000 + index * 3 + i), sourceUrl: `https://x.com/CaptureAuthor/status/${1000 + index * 3 + i}` }));
+      page.outputCursor = 'cursor-' + index;
+      index++;
+      observed.network = { pages: [page], proof: page.provenance };
+      observed.identityProven = true;
+      return observed;
+    });
+    f.act.mockImplementation(async (action, snapshot, opts) => {
+      const ack = opts!.scrollAcknowledgement!;
+      ack.onWritten();
+      const attempt = ++scrolls;
+      const base = { generation: (snapshot as import('../browser/snapshot').AxSnapshot).generation, targetKind: 'document' as const, targetNodeId: 1, targetContainsHit: true, conversationRelation: 'unknown' as const, rootRelation: 'unknown' as const, scrollHeight: 3000, clientHeight: 800 };
+      if (attempt === 1) {
+        ack.onReceipt!({ ...base, before: 0, after: 700, written: true, eventObserved: false, frameObserved: false, state: 'invalidated', invalidatedReason: 'url' });
+        throw new KydogError('browser.stale_snapshot', '页面在确认期间导航');
+      }
+      ack.onReceipt!({ ...base, before: 700, after: 1400, written: true, eventObserved: true, frameObserved: true, state: 'frame_observed', invalidatedReason: null });
+      return { action, line: 'scrolled', navigation: null };
+    });
+    const row = (await searchX(input(), f.context)).queries[0];
+    expect(row.posts).toHaveLength(6);
+    expect(row.stopReason).toBe('cursor_exhausted');
+    expect(row.status).toBe('observed');
+    expect(row.diagnostics?.scroll).toMatchObject({ totalAttempts: 2, last: { state: 'frame_observed' } });
+    expect(row.diagnostics?.scroll?.first).toMatchObject({ state: 'invalidated', invalidatedReason: 'url' });
+  });
+
+  it('allows one same-URL re-read per collection instead of once per query', async () => {
+    const f = fixture([searchHtml('')]);
+    const original = f.collect.getMockImplementation()!;
+    let calls = 0;
+    f.collect.mockImplementation(async (request) => {
+      const n = calls++;
+      // Same-URL generation change on load and again around the scroll.
+      if (n === 0 || n === 2) {
+        f.navigate();
+        throw new KydogError('browser.stale_snapshot', '采集期间页面已导航');
+      }
+      const observed = await original(request);
+      const page = decodeXSearchResponse(
+        structuredClone(n >= 4 ? empty.body : captured.body),
+        {
+          provenance: { leaseId: 'lease', requestRef: 'request-' + n, navigationId: 'document', documentEpoch: 3, routeRevision: 7, navigationSequence: 9, operation: 'SearchTimeline', observedAt: '2026-10-15T00:00:00Z' },
+          query, inputCursor: n > 1 ? 'cursor-' + (n - 1) : null,
+        },
+      );
+      page.posts = page.posts.slice(0, 3).map((p, i) => ({ ...p, postId: String(2000 + n * 3 + i), sourceUrl: `https://x.com/CaptureAuthor/status/${2000 + n * 3 + i}` }));
+      page.outputCursor = 'cursor-' + n;
+      observed.network = { pages: [page], proof: page.provenance };
+      observed.identityProven = true;
+      return observed;
+    });
+    const row = (await searchX(input(), f.context)).queries[0];
+    expect(row.posts).toHaveLength(6);
+    expect(row.stopReason).toBe('cursor_exhausted');
+    expect(row.collectionTransitions.filter((t) => t.outcome === 'same_url_generation_changed')).toHaveLength(2);
+  });
+
+  it('keeps the late page and only stops once the scroll itself stops moving', async () => {
     const f = harness();
+    const collect = f.collect.getMockImplementation()!;
+    let collects = 0, scrolls = 0;
+    // Two batches arrive, then the list really ends.
+    f.collect.mockImplementation(async (r) => {
+      const observed = await collect(r);
+      if (collects++ >= 2) observed.network = { pages: [], proof: observed.network!.proof };
+      return observed;
+    });
     f.act.mockImplementation(async (action, snapshot, opts) => {
       opts!.scrollAcknowledgement!.onWritten();
+      const moved = ++scrolls <= 2;
       opts!.scrollAcknowledgement!.onReceipt!({
-        generation: (snapshot as import('../browser/snapshot').AxSnapshot)
-          .generation,
-        targetKind: 'document',
-        targetNodeId: null,
-        targetContainsHit: true,
-        conversationRelation: 'unknown',
-        rootRelation: 'unknown',
-        before: 0,
-        after: 10,
-        scrollHeight: 20,
-        clientHeight: 10,
-        written: true,
-        eventObserved: true,
-        frameObserved: true,
-        state: 'frame_observed',
+        generation: (snapshot as import('../browser/snapshot').AxSnapshot).generation,
+        targetKind: 'document', targetNodeId: null, targetContainsHit: true,
+        conversationRelation: 'unknown', rootRelation: 'unknown',
+        // A geometric bottom from the first write on, as X's virtualized list gives.
+        before: moved ? 0 : 10, after: 10, scrollHeight: 20, clientHeight: 10,
+        written: true, eventObserved: true, frameObserved: true,
+        state: moved ? 'frame_observed' : 'no_movement', invalidatedReason: null,
       } as never);
       return { action, line: 'scroll', navigation: null };
     });
     const row = (await searchX(input(), f.context)).queries[0];
     expect(row.posts).toHaveLength(6);
     expect(row.stopReason).toBe('explicit_ui_end');
-    expect(row.diagnostics?.scroll?.last).toMatchObject({
-      after: 10,
-      clientHeight: 10,
-      scrollHeight: 20,
-      written: true,
-    });
-    expect(f.collect).toHaveBeenCalledTimes(2);
+    expect(row.diagnostics?.scroll?.last).toMatchObject({ after: 10, clientHeight: 10, scrollHeight: 20, written: true });
+    expect(scrolls).toBe(4);
   });
+  it('keeps scrolling toward the bottom instead of ending after one unanswered round', async () => {
+    const f = harness();
+    const collect = f.collect.getMockImplementation()!;
+    // The reply is not there yet when the first bounded wait expires.
+    f.page.wait = async () => false;
+    let n = 0, scrolls = 0; const amounts: (number | undefined)[] = [];
+    f.collect.mockImplementation(async (r) => {
+      const observed = await collect(r);
+      const i = n++;
+      if (i !== 0 && i !== 2) observed.network = { pages: [], proof: observed.network!.proof };
+      return observed;
+    });
+    f.act.mockImplementation(async (action, snapshot, opts) => {
+      amounts.push((action as { amount?: number }).amount);
+      opts!.scrollAcknowledgement!.onWritten();
+      const moved = ++scrolls <= 3;
+      opts!.scrollAcknowledgement!.onReceipt!({
+        generation: (snapshot as import('../browser/snapshot').AxSnapshot).generation,
+        targetKind: 'document', targetNodeId: null, targetContainsHit: true,
+        conversationRelation: 'unknown', rootRelation: 'unknown',
+        // Long page: one viewport is nowhere near the bottom.
+        before: moved ? (scrolls - 1) * 10 : 30, after: moved ? scrolls * 10 : 30,
+        scrollHeight: 100, clientHeight: 10,
+        written: true, eventObserved: true, frameObserved: true,
+        state: moved ? 'frame_observed' : 'no_movement', invalidatedReason: null,
+      } as never);
+      return { action, line: 'scroll', navigation: null };
+    });
+    const row = (await searchX(input(), f.context)).queries[0];
+    // The batch that arrives after the second scroll is kept: one unanswered round
+    // is not the end of the list.
+    expect(row.posts).toHaveLength(6);
+    expect(scrolls).toBeGreaterThanOrEqual(4);
+    // The first round has no prior geometry; later rounds ask for the whole
+    // remaining distance (scrollHeight 100 - clientHeight 10 - after 10) instead of
+    // one viewport, so a 240k-px list does not need ~14 rounds per page.
+    expect(amounts[0]).toBeUndefined();
+    expect(amounts[1]).toBe(80);
+  });
+
   it.each(['action', 'detach', 'cancel'] as const)(
     'retains accepted bodies on %s and never reports action_failed',
     async (kind) => {
@@ -252,6 +394,102 @@ it('bounds multi-query network metadata delivery while canonical facts stay inta
   expect(output.result.delivery?.omittedFields).toContain(
     'queries.0.networkPages',
   );
+});
+
+it('maps a non-200 HTTP failure to a rate-limited barrier and labels the skipped queries', async () => {
+  const f = harness();
+  f.collect.mockRejectedValue(new KydogError('x.invalid_page', 'source_unavailable:http_status:429'));
+  const two = parseXResearchInput({
+    search: { objective: 'test', queries: [{ ...query, id: 'q1' }, { ...query, id: 'q2' }] },
+  }) as Parameters<typeof searchX>[0];
+  const result = await searchX(two, f.context);
+  expect(result.queries[0]).toMatchObject({
+    status: 'rate_limited', stopReason: 'access_barrier',
+    barrier: { status: 'rate_limited', reason: 'http_status:429' },
+  });
+  // The skipped row must say why it never ran, not "agent_stopped".
+  expect(result.queries[1]).toMatchObject({
+    status: 'rate_limited', stopReason: 'access_barrier',
+    barrier: { status: 'rate_limited', reason: 'not_attempted:rate_limited' },
+  });
+});
+
+it.each([
+  [429, 'rate_limited', 'access_barrier'],
+  [503, 'rate_limited', 'access_barrier'],
+  [403, 'access_denied', 'access_barrier'],
+  [500, 'unavailable', 'source_unavailable'],
+] as const)('preserves HTTP %s before and after accepted search evidence', async (code, status, stopReason) => {
+  for (const accepted of [true, false]) {
+    const f = harness();
+    const collect = f.collect.getMockImplementation()!;
+    f.collect.mockImplementation(async r => {
+      if (!accepted) throw new KydogError('x.invalid_page', `source_unavailable:http_status:${code}`);
+      const observed = await collect(r);
+      observed.network!.failure = `http_status:${code}`;
+      return observed;
+    });
+    const two = parseXResearchInput({ search: { objective: 'test', queries: [{ ...query, id: 'q1' }, { ...query, id: 'q2' }] } }) as Parameters<typeof searchX>[0];
+    const rows = (await searchX(two, f.context)).queries;
+    expect(rows[0]).toMatchObject({ status: accepted ? 'partial' : status, stopReason, barrier: { reason: `http_status:${code}` } });
+    expect(rows[0].posts).toHaveLength(accepted ? 3 : 0);
+    expect(rows[1]).toMatchObject({ status, stopReason, barrier: { reason: status === 'rate_limited' ? 'not_attempted:rate_limited' : `not_attempted:http_status:${code}` } });
+    expect(f.open).toHaveBeenCalledTimes(1);
+  }
+});
+
+it('labels queries skipped by an internal adapter stop instead of agent_stopped', async () => {
+  const f = harness();
+  f.collect.mockRejectedValue(new TypeError('broken adapter'));
+  const two = parseXResearchInput({
+    search: { objective: 'test', queries: [{ ...query, id: 'q1' }, { ...query, id: 'q2' }] },
+  }) as Parameters<typeof searchX>[0];
+  const result = await searchX(two, f.context);
+  expect(result.queries[1]).toMatchObject({
+    status: 'failed', stopReason: 'source_unavailable',
+    barrier: { status: 'failed', reason: 'internal_adapter_stopped' },
+  });
+});
+
+it('re-reads a canonical author-handle redirect for the same post and still rejects a real retarget', async () => {
+  const at = (url: string, routeRevision: number) => ({
+    currentUrl: url, documentEpoch: 1, routeRevision, navigationSequence: routeRevision * 2,
+    navigationEvent: 'did-navigate' as const, navigationType: 'cross_document' as const, navigationUrl: null,
+  });
+  const canonical: import('./xResearchTypes').XCollectionTransition[] = [];
+  let calls = 0;
+  const page = {
+    location: () => (calls === 0
+      ? at('https://x.com/weiwang/status/2089854355331481872', 1)
+      : at('https://x.com/wei_wang/status/2089854355331481872', 2)),
+    collect: async () => {
+      if (calls++ === 0) throw new KydogError('browser.stale_snapshot', 'site changed');
+      return { snapshot: { url: 'https://x.com/wei_wang/status/2089854355331481872' } };
+    },
+  } as unknown as Parameters<typeof collectFreshXPage>[0];
+  await collectFreshXPage(
+    page,
+    { stage: 'post', expectedUrl: 'https://x.com/weiwang/status/2089854355331481872', postId: '2089854355331481872' } as never,
+    canonical,
+  );
+  expect(canonical[0]).toMatchObject({
+    rereadRequested: true, relation: { origin: 'same', path: 'different', postId: 'same' },
+  });
+  // Control: a different post id is a genuine retarget and stays rejected.
+  const retarget: import('./xResearchTypes').XCollectionTransition[] = [];
+  let other = 0;
+  const otherPage = {
+    location: () => (other === 0
+      ? at('https://x.com/alice/status/1000000000000000001', 1)
+      : at('https://x.com/alice/status/1000000000000000002', 2)),
+    collect: async () => { if (other++ === 0) throw new KydogError('browser.stale_snapshot', 'site changed'); return {}; },
+  } as unknown as Parameters<typeof collectFreshXPage>[0];
+  await expect(collectFreshXPage(
+    otherPage,
+    { stage: 'post', expectedUrl: 'https://x.com/alice/status/1000000000000000001', postId: '1000000000000000001' } as never,
+    retarget,
+  )).rejects.toThrow();
+  expect(retarget[0]).toMatchObject({ rereadRequested: false, outcome: 'route_changed' });
 });
 
 it('binds the accepted-page safety budget independently of distinct IDs and scroll cap', async () => {

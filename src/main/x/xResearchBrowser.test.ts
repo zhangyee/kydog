@@ -131,12 +131,9 @@ it('caller cancellation is prompt but the queue lease covers deferred native rel
   const rejected = expect(old).rejects.toMatchObject({ code: 'browser.cancelled' });
   await started; abort.abort(); await rejected; order.push('caller cancelled');
   const next = port.withPage('tab', undefined, async () => { order.push('next entered'); });
-  // Drain runnable promise continuations, never advance a deadline or infer from elapsed time.
-  for (let i = 0; i < 24; i++) await Promise.resolve();
-  expect(order).toEqual(['press in flight', 'caller cancelled']);
+  // Assert the complete settlement order; no number of microtask turns proves
+  // that a competing queue entry cannot run.
   releasePress(); await cleaned;
-  for (let i = 0; i < 24; i++) await Promise.resolve();
-  expect(order).toEqual(['press in flight', 'caller cancelled', 'native release']);
   releaseCleanup(); await next;
   expect(order).toEqual(['press in flight', 'caller cancelled', 'native release', 'cleanup settled', 'next entered']);
 });
@@ -568,7 +565,9 @@ it('continues read orchestration after a cursor pause cancels native preflight',
   const {readX}=await import('./xResearchRead');
   const result=await readX({tabId:'tab',read:{objective:'queued read',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:1000,maxScrollsPerPost:1,maxExpandActionsPerPost:0}},{browser:createXResearchBrowser(f.browser,'thread'),threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map()});
   expect(result.targets[0].networkPages).toHaveLength(3);
-  expect(result.targets[0]).toMatchObject({status:'partial',stopReason:'wait_timeout',budgetUsage:{scrolls:1}});
+  // The unacknowledged write no longer ends the target by itself: its authorized
+  // scroll budget is what stops it, so the return value reflects the budget binding.
+  expect(result.targets[0]).toMatchObject({status:'partial',stopReason:'budget_reached',budgetUsage:{scrolls:1}});
   expect(attempts).toBe(2);expect(inputs).toBe(1);
  }finally{dom.window.close();}
 });

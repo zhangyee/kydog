@@ -223,6 +223,9 @@ export function createXResearchBrowser(browser: BrowserService, threadId: string
             // a replay cannot fall through to generic click dispatch.
             if ((collectedPermission.purpose==='replies_expand'||collectedPermission.purpose==='article_entry') && 'index' in action) {
               permissions.get(snapshot)!.delete(action.index);
+              // The expansion's own continuation may not be in the decoded chain; ask the
+              // lease to refuse that one reply rather than revoke the whole target.
+              if(collectedPermission.purpose==='replies_expand')(network as {expectBranchContinuation?:()=>void}|undefined)?.expectBranchContinuation?.();
               try { if(collectedPermission.purpose==='replies_expand')options?.onReplyAdmission?.({state:'consumed',purpose:'replies_expand',binding:{...owned!.binding}}); }
               catch { /* Optional observers cannot restore permission or replace the action. */ }
             }

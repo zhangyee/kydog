@@ -1,7 +1,7 @@
 import { XNetworkActionPendingError } from './xNetworkLease';
 import { admitXSourceRoot } from './xDomSource';
 import { bindXReadBudgets, sampleXEntries } from './xResearchBudget';
-import type { BrowserScrollReceipt } from '../browser/actions';
+import { BrowserScrollAcknowledgementError, type BrowserScrollReceipt } from '../browser/actions';
 import { isScrollReceipt } from './xScrollRecovery';
 import {
   isPointerPreflight,
@@ -26,6 +26,8 @@ import { matchesXArticleParent } from './xResearchIdentity';
 import {
   collectFreshXPage,
   rememberSources,
+  xScrollPauseMs,
+  xHttpFailure,
   X_POST_READY_SELECTOR,
   type XResearchContext,
   type XCollectionBudget,
@@ -36,6 +38,9 @@ import type {
   XTextObservation,
   XUnscopedPost,
 } from './xResearchTypes';
+
+/** Consecutive rounds whose scroll moved nothing before a read target stops. */
+export const X_READ_MAX_UNMOVED_ROUNDS = 2;
 
 export interface XReadStage {
   current: 'navigation' | 'collection' | 'action' | 'wait';
@@ -337,6 +342,8 @@ export function savePostFrame(
           request,
           context,
         );
+    if (observed.network.failure && xHttpFailure(observed.network.failure))
+      throw new KydogError('x.invalid_page', 'source_unavailable:'+observed.network.failure);
     if (
       !observed.identityProven ||
       observed.network.failure ||
@@ -653,6 +660,10 @@ async function readNetworkDiscussion(
   context: XResearchContext,
 ): Promise<void> {
   let observed = initial;
+  // Mirrors the search loop: one unanswered round is not the end of a discussion,
+  // and one viewport per round cannot reach the bottom of a long virtualized thread.
+  let stepReceipt: BrowserScrollReceipt | undefined;
+  let unmoved = 0;
   for (;;) {
     if (!savePostFrame(row, observed, limits, context)) return;
     if (!limits.includeReplies) return;
@@ -751,8 +762,12 @@ async function readNetworkDiscussion(
         ).size;
     };
     omissions();
+    // Ask for the whole remaining distance so one round lands at the thread's
+    // bottom (which is what makes X load the next batch) instead of inching down.
+    const remaining=stepReceipt?Math.round(stepReceipt.scrollHeight-stepReceipt.clientHeight-stepReceipt.after):null;
+    const amount=remaining!==null&&remaining>0?remaining:undefined;
     try {
-      await page.act({ kind: 'scroll', direction: 'down' }, observed.snapshot, {
+      await page.act({ kind: 'scroll', direction: 'down', ...(amount===undefined?{}:{amount}) }, observed.snapshot, {
         scrollAcknowledgement: {
           onWritten: () => {
             row.budgetUsage.scrolls++;
@@ -778,6 +793,8 @@ async function readNetworkDiscussion(
               eventObserved: r.eventObserved,
               frameObserved: r.frameObserved,
               state: r.state,
+              invalidatedReason: r.invalidatedReason ?? null,
+              ...(r.viewport ? { viewport: r.viewport } : {}),
             };
             scroll.first ??= saved;
             scroll.last = saved;
@@ -786,36 +803,42 @@ async function readNetworkDiscussion(
         },
       });
     } catch (error) {
-      if (!(error instanceof XNetworkActionPendingError)) throw error;
-      observed = await collectPostFrame(page, request, row, stage, context);
-      continue;
+      if (error instanceof XNetworkActionPendingError) {
+        observed = await collectPostFrame(page, request, row, stage, context);
+        continue;
+      }
+      const writtenInvalidation = isScrollReceipt(receipt) && receipt.state === 'invalidated' && receipt.written && receipt.after !== receipt.before;
+      // A write that landed before the page changed generation is recoverable: the
+      // batch is still obtainable from the new generation.
+      if (writtenInvalidation && error instanceof KydogError && error.code === 'browser.stale_snapshot') {
+        observed = await collectPostFrame(page, request, row, stage, context);
+        continue;
+      }
+      // An executed no-op is a geometry fact, not an action failure: fall through
+      // and let the receipt's bottom decide.
+      if (!(error instanceof BrowserScrollAcknowledgementError && receipt?.state === 'no_movement')) throw error;
     }
+    if (receipt) stepReceipt = receipt;
     observed = await collectPostFrame(page, request, row, stage, context);
     if (!savePostFrame(row, observed, limits, context)) return;
+    const arrived = observed.network?.pages.length ?? 0;
     if (observed.network?.pending) continue;
-    if (
-      receipt &&
-      receipt.after + receipt.clientHeight >= receipt.scrollHeight
-    ) {
+    if (arrived) unmoved = 0;
+    else if (receipt && receipt.written && receipt.after === receipt.before) unmoved++;
+    if (unmoved >= X_READ_MAX_UNMOVED_ROUNDS) {
+      const atBottom = !!receipt && receipt.after + receipt.clientHeight >= receipt.scrollHeight;
       row.status = 'partial';
-      row.stopReason = 'explicit_ui_end';
-      row.reason = 'reply_ui_end';
+      row.stopReason = atBottom ? 'explicit_ui_end' : 'wait_timeout';
+      row.reason = atBottom ? 'reply_ui_end' : 'reply_readiness_timeout';
       return;
     }
-    if (!observed.network?.pages.length) {
+    if (!arrived) {
+      // Pause once for a slow batch, then scroll again rather than ending the target.
       stage.current = 'wait';
-      if (
-        !(await page.wait(
-          { selector: X_POST_READY_SELECTOR, state: 'present' },
-          8000,
-        ))
-      ) {
-        row.status = 'partial';
-        row.stopReason = 'wait_timeout';
-        row.reason = 'reply_readiness_timeout';
-        return;
-      }
-      observed = await collectPostFrame(page, request, row, stage, context);
+      await page.wait(
+        { selector: X_POST_READY_SELECTOR, state: 'present' },
+        xScrollPauseMs(),
+      );
     }
   }
 }

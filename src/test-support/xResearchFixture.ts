@@ -118,7 +118,7 @@ export async function stagedFixture(options: { semanticLabels?: boolean; scrollE
     const request={id:'derived-'+pageNumber,requestId:'derived-'+pageNumber,sessionId:null,isMainFrame:true,redirectIndex:0,frameId:'frame',loaderId:String(generation),navigationId:String(generation),location:facts(),method:'GET',url:'https://x.com/i/api/graphql/derived/TweetDetail?variables='+encodeURIComponent(JSON.stringify(variables))};
     if(!accepts(request))return;
     const wire=derivedReadWire(current.window.document,'123',output);
-    networkEvents.push({kind:'response',request,status:200,body:JSON.stringify(wire),bytes:Buffer.byteLength(JSON.stringify(wire)),sha256:'a'.repeat(64)});pageNumber++;
+    networkEvents.push({kind:'response',request,status:200,retryAfterMs:null,body:JSON.stringify(wire),bytes:Buffer.byteLength(JSON.stringify(wire)),sha256:'a'.repeat(64)});pageNumber++;
   };
   const service={researchTabStatus:()=>'available',
     enqueue:async(_id:string,work:()=>Promise<unknown>)=>work(), withAgentDriving:async(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),
@@ -191,7 +191,7 @@ export function withDerivedReadNetwork(service:any,document:()=>Document,facts:(
   const location=facts(),request={id:'derived-'+pageNumber,requestId:'derived-'+pageNumber,sessionId:null,isMainFrame:true,redirectIndex:0,frameId:'frame',loaderId:String(location.documentEpoch),navigationId:String(location.documentEpoch),location:{...location},method:'GET',url:'https://x.com/i/api/graphql/derived/TweetDetail?variables='+encodeURIComponent(JSON.stringify({focalTweetId:postId,rankingMode:'Relevance',...(pageNumber?{cursor:'derived-'+(pageNumber-1)}:{})}))};
   if(!accepts(request))return;
   const body=JSON.stringify(derivedReadWire(document(),postId,'derived-'+pageNumber++));
-  events.push({kind:'response',request,status:200,body,bytes:Buffer.byteLength(body),sha256:'a'.repeat(64)});
+  events.push({kind:'response',request,status:200,retryAfterMs:null,body,bytes:Buffer.byteLength(body),sha256:'a'.repeat(64)});
  };
  service.open=async(args:any)=>{
   const result=await open(args);accepts=args.network?.accepts;postId=/\/status\/(\d+)/.exec(args.url)?.[1]??'';pageNumber=0;events.length=0;

@@ -278,6 +278,12 @@ export interface XScrollReceiptDiagnostic {
   before: number; after: number; scrollHeight: number; clientHeight: number;
   written: boolean; eventObserved: boolean; frameObserved: boolean;
   state: 'pending' | 'frame_observed' | 'no_movement' | 'invalidated' | 'expired';
+  /** Present only on an invalidated receipt: which physical fact changed. */
+  invalidatedReason?: 'document' | 'generation' | 'url' | 'detached' | 'scrolling_element' | 'offset' | null;
+  /** Page visibility/viewport when the write happened. A hidden view cannot run
+   *  visibility-driven load logic, which distinguishes "did not scroll far enough"
+   *  from "the page never gets a frame". */
+  viewport?: { visibility: string; innerHeight: number; visualViewportHeight: number | null };
 }
 export interface XScrollRecoveryBinding {
   snapshotId:string; generation:string; documentEpoch:number; routeRevision:number; navigationSequence:number; location:XSafeLocation;

@@ -817,6 +817,9 @@ export class BrowserService {
         webviewTag: false,
         webSecurity: true,
         allowRunningInsecureContent: false,
+        // Agent 驱动的标签页可能不是当前可见标签：默认节流会让后台页停止出帧，
+        // 依赖帧管线/可见性的站点逻辑（IntersectionObserver 懒加载）就不会跑。
+        backgroundThrottling: false,
       },
     });
     this.views.set(id, view);
@@ -2095,7 +2098,7 @@ export class BrowserService {
     const token=randomUUID(), expiresAt=Date.now()+PAGE_EVAL_TIMEOUT_MS;
     const document={generation:snapshot.generation,url:snapshot.url};
     let written=false;
-    type Receipt = {token:string;generation:string;url:string;targetKind:string;targetNodeId?:number|null;targetContainsHit?:boolean|null;scrollHeight?:number;clientHeight?:number;conversationRelation?:string;rootRelation?:string;before:number;after:number;written:boolean;eventObserved:boolean;frameObserved:boolean;state:string};
+    type Receipt = {token:string;generation:string;url:string;targetKind:string;targetNodeId?:number|null;targetContainsHit?:boolean|null;scrollHeight?:number;clientHeight?:number;conversationRelation?:string;rootRelation?:string;before:number;after:number;written:boolean;eventObserved:boolean;frameObserved:boolean;state:string;invalidatedReason?:string|null;viewport?:{visibility?:unknown;innerHeight?:unknown;visualViewportHeight?:unknown}};
     const receipt = (raw: unknown): Receipt | null => {
       const r=raw as {acknowledgement?:Receipt} | null, a=r?.acknowledgement;
       if (!a) return null;
@@ -2117,7 +2120,11 @@ export class BrowserService {
         try { options.scrollAcknowledgement.onReceipt({generation:a.generation,targetKind:a.targetKind as 'document'|'element',targetNodeId:a.targetNodeId,
           targetContainsHit:a.targetContainsHit,conversationRelation:a.conversationRelation as import('./actions').BrowserScrollReceipt['conversationRelation'],
           rootRelation:a.rootRelation as import('./actions').BrowserScrollReceipt['rootRelation'],scrollHeight:a.scrollHeight,clientHeight:a.clientHeight,before:a.before,after:a.after,
-          written:a.written,eventObserved:a.eventObserved,frameObserved:a.frameObserved,state:a.state as import('./actions').BrowserScrollReceipt['state']}); }
+          written:a.written,eventObserved:a.eventObserved,frameObserved:a.frameObserved,state:a.state as import('./actions').BrowserScrollReceipt['state'],
+          invalidatedReason:(['document','generation','url','detached','scrolling_element','offset'].includes(String(a.invalidatedReason))?a.invalidatedReason:null) as import('./actions').BrowserScrollReceipt['invalidatedReason'],
+          ...(a.viewport && Number.isFinite(a.viewport.innerHeight) && (a.viewport.visualViewportHeight===null||Number.isFinite(a.viewport.visualViewportHeight))
+            ? {viewport:{visibility:String(a.viewport.visibility),innerHeight:a.viewport.innerHeight as number,visualViewportHeight:(a.viewport.visualViewportHeight ?? null) as number|null}}
+            : {})}); }
         catch { /* Diagnostic observation cannot alter the ACK result. */ }
       }
       return a;

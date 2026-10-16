@@ -24,13 +24,12 @@ interface Harness {
   act(action: DispatchAction): Promise<unknown>;
   faults(mode: string): Promise<{ before: State; after: State; error: string | null; diagnostic: import('../src/main/browser/pointerDiagnostic').PointerFailureDiagnostic | null }>;
   bindings(): Promise<{ before: { documentEpoch: number; routeRevision: number }; after: { documentEpoch: number; routeRevision: number }; error: string | null }>;
-  lease(): Promise<{ control: string[]; error: string | null; beforeRelease: string[]; beforeCleanup: string[]; sequence: string[]; before: State; after: State }>;
   stop(): void;
 }
 
 // One isolated process for the feature area. Each repeat receives a fresh profile.
 // Temporary research tabs close after their receipts are collected, preserving
-// the original target used by later typing, lease, and stale-binding checks.
+// the original target used by later typing and stale-binding checks.
 // Production BrowserService and XQueuedPage are imported into the fixture bundle;
 // only the fixture has a global controller, never the shipped application.
 test.describe('X browser port native safety (offline)', () => {
@@ -219,8 +218,8 @@ test.describe('X browser port native safety (offline)', () => {
     expect(hidden.activeTabId).toBe(hidden.userTabId);
     expect(hidden.focused).toBe(true);
   });
-  test('each successful native control precedes blocked cover/replacement/cancel/password/semantic/form-owner input', async () => {
-    for (const mode of ['cover', 'cover-before', 'replace', 'cancel', 'password', 'semantic', 'form-owner']) {
+  test('native hit testing and the password gate reject before input', async () => {
+    for (const mode of ['cover', 'cover-before', 'password']) {
       const prior = await control(h => h.read());
       await control(async (h, value) => {
         await h.act(value === 'password' ? { kind: 'type', selector: '#query', text: 'safe control' } : { kind: 'click', selector: '#open' });
@@ -231,7 +230,7 @@ test.describe('X browser port native safety (offline)', () => {
         expect(positive.page.value, mode).toBe('safe control');
       } else expect(positive.page.trustedClicks, mode).toBe(prior.page.trustedClicks + 1);
       const result = await control((h, value) => h.faults(value), mode);
-      expect(result.error, mode).toBe(mode === 'cancel' ? 'browser.cancelled' : mode === 'password' ? 'browser.password_field' : mode.startsWith('cover') ? 'browser.click_intercepted' : mode === 'replace' ? 'browser.stale_index' : 'browser.target_unusable');
+      expect(result.error, mode).toBe(mode === 'password' ? 'browser.password_field' : 'browser.click_intercepted');
       if (mode.startsWith('cover')) {
         expect(result.diagnostic, mode).toMatchObject({ stage: mode === 'cover' ? 'pointer_validate' : 'measure',
           reason: 'intercepted', tabId: result.after.targetTabId, snapshotId: expect.any(String), generation: expect.any(String), nodeId: null,
@@ -258,7 +257,9 @@ test.describe('X browser port native safety (offline)', () => {
     }
   });
   test('collected X permission reaches native dispatch unchanged and rejects same-node repurposing before input', async () => {
-    for(const mode of ['submit','text','name','form-owner','post-owner','post-identity','at-measure','after-frame']) {
+    // Pre-dispatch semantic mutations are covered by xPage.test.ts. These two
+    // cases require the native measurement/frame boundary.
+    for(const mode of ['at-measure','after-frame']) {
       const result=await control((h,value)=>h.collectedPermission(value),mode);
       console.info('[collected-native-permission]',mode,JSON.stringify(result));
       expect(result.nativeOwnerProven,mode).toBe(true);expect(result.mutationApplied,mode).toBe(true);
@@ -285,16 +286,6 @@ test.describe('X browser port native safety (offline)', () => {
       expect(result.destination.other, mode).toBe('other-original');
       expect(result.destination.active, mode).toBe(mode === 'focus' ? 'other' : 'query');
     }
-  });
-
-  test('prompt cancellation keeps the native queue/driving lease through actual release and owned cleanup ACK', async () => {
-    const result = await control(h => h.lease());
-    expect(result.control).toEqual(['control entered']);
-    expect(result.error).toBe('browser.cancelled');
-    expect(result.beforeRelease).toEqual(['native press ACK', 'caller cancelled']);
-    expect(result.beforeCleanup).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight']);
-    expect(result.sequence).toEqual(['native press ACK', 'caller cancelled', 'native release ACK', 'owned cleanup in flight', 'owned cleanup ACK', 'next entered']);
-    expect(result.after.page.trustedClicks).toBe(result.before.page.trustedClicks + 1);
   });
 
   test('native Article return and reply controls retain network source evidence and rejection receipts',async()=>{

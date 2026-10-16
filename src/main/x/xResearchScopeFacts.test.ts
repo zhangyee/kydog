@@ -34,6 +34,17 @@ it('adds the exact 4+2 budget search rows, two empty and one failed, separately 
  expect(ledger.prior('scope-run').withCurrent(r).read.reasonCounts).toEqual({post_identity_unproven:6,unknown:1});
 });
 
+// Article failures carry finite protocol labels; collapsing them into unknown loses the fact.
+it('counts finite Article reason labels while free-form page text stays unknown',()=>{
+ const ledger=new XResearchScopeLedger();
+ const article=read('article');article.targets[0].reason='article_body_wait_timeout';ledger.observe(article);
+ const budget=read('article-budget');budget.targets[0].reason='body_expand_budget_reached';ledger.observe(budget);
+ const prose=read('article-prose');prose.targets[0].reason='localized unsupported speculation';ledger.observe(prose);
+ expect(ledger.prior('scope-run').withCurrent(prose).read.reasonCounts).toEqual({
+  article_body_wait_timeout:1,body_expand_budget_reached:1,unknown:1,
+ });
+});
+
 // Catches totals-only dedupe, accidental ID reuse, and conflict recovery by last writer.
 it('deduplicates exact scope rows and marks changed row identity/order/status/reason or operation unavailable once',()=>{
  const original=search('same','scope-run',2),current=read('current');

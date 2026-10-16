@@ -74,9 +74,11 @@ export function decodeXSearchResponse(
       unsupported('tweet_shape');
       return;
     }
-    if (r.quoted_status_result || r.article) {
-      unsupported('tweet_embedded_shape');
-    }
+    // A quoted post or an Article preview is nested content this tier never
+    // recurses into; it is not an unreadable shape. The Tweet itself is fully
+    // decoded below, and an Article's missing body is already carried per-post
+    // by articlePreviewInventory. Marking the whole response unsupported here
+    // discarded every proven entry and aborted the query chain.
     let text = legacy.full_text;
     if (r.note_tweet) {
       const note = r.note_tweet?.note_tweet_results?.result?.text;

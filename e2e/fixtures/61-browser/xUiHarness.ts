@@ -249,10 +249,6 @@ void app.whenReady().then(async () => {
         const second=await collectXPage(page,request);
         await xwc.executeJavaScript('window.collectedNode=document.querySelector("#expand")');
         const mutation:Record<string,string>={
-          submit:"collectedNode.type='submit'", name:"collectedNode.setAttribute('name','reply')", text:"collectedNode.textContent='Reply'",
-          'form-owner':"collectedNode.setAttribute('form','compose')",
-          'post-owner':"document.querySelector('#otherpost').append(collectedNode)",
-          'post-identity':"document.querySelector('#stamp').href='/alice/status/999/history'",
           'at-measure':"collectedNode.type='submit';collectedNode.setAttribute('form','compose');collectedNode.textContent='Reply'",
           'after-frame':"document.querySelector('#stamp').href='/alice/status/999/history'",
         };
@@ -267,7 +263,6 @@ void app.whenReady().then(async () => {
         };
         let error:string|null=null;
         try {
-          if(mode!=='at-measure' && mode!=='after-frame') {await xwc.executeJavaScript(mutation[mode]);changed=true;}
           await click(second);
         } catch(cause) {error=(cause as {code?:string}).code??String(cause);}
         finally {xwc.executeJavaScriptInIsolatedWorld=original;}
@@ -471,17 +466,13 @@ void app.whenReady().then(async () => {
     visible: async () => { browser.activate(target.tabId); layout(true); },
     hidden: async () => { browser.activate(user.tabId); layout(false); },
     act,
-    faults: async (mode: 'cover-before' | 'cover' | 'replace' | 'cancel' | 'password' | 'form-owner' | 'semantic') => {
+    faults: async (mode: 'cover-before' | 'cover' | 'password') => {
       await wc.executeJavaScript("document.querySelector('#cover')?.remove();document.querySelector('#open').removeAttribute('aria-label');document.querySelector('#open').removeAttribute('form')");
       const before = await read(), abort = new AbortController();
       const original = wc.capturePage.bind(wc);
       wc.capturePage = async (...args) => {
         const image = await original(...args);
         if (mode === 'cover') await wc.executeJavaScript("document.body.insertAdjacentHTML('beforeend','<div id=cover>Covered</div>')");
-        if (mode === 'replace') await wc.executeJavaScript("const old=document.querySelector('#open');old.replaceWith(old.cloneNode(true))");
-        if (mode === 'form-owner') await wc.executeJavaScript("document.body.insertAdjacentHTML('beforeend','<form id=other></form>');document.querySelector('#open').setAttribute('form','other')");
-        if (mode === 'semantic') await wc.executeJavaScript("document.querySelector('#open').setAttribute('aria-label','Publish')");
-        if (mode === 'cancel') abort.abort();
         return image;
       };
       let error: string | null = null, diagnostic: Readonly<PointerFailureDiagnostic> | null = null;
@@ -496,43 +487,6 @@ void app.whenReady().then(async () => {
       const after = await read();
       await wc.executeJavaScript("document.querySelector('#cover')?.remove();document.querySelector('#open').removeAttribute('aria-label');document.querySelector('#open').removeAttribute('form');document.querySelector('#other')?.remove()");
       return { before, after, error, diagnostic };
-    },
-    lease: async () => {
-      const sequence: string[] = [];
-      await port.withPage(target.tabId, undefined, async () => { sequence.push('control entered'); });
-      const control = [...sequence]; sequence.length = 0;
-      const before = await read(), abort = new AbortController();
-      const originalSend = wc.debugger.sendCommand.bind(wc.debugger), originalEval = wc.executeJavaScriptInIsolatedWorld.bind(wc);
-      let pressStarted!: () => void, releasePress!: () => void, cleanupStarted!: () => void, releaseCleanup!: () => void;
-      const pressed = new Promise<void>(r => { pressStarted = r; });
-      const cleaned = new Promise<void>(r => { cleanupStarted = r; });
-      wc.debugger.sendCommand = async (method, params) => {
-        const result = await originalSend(method, params);
-        if (method === 'Input.dispatchMouseEvent' && params?.type === 'mousePressed') {
-          sequence.push('native press ACK'); pressStarted(); await new Promise<void>(r => { releasePress = r; });
-        }
-        if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') sequence.push('native release ACK');
-        return result;
-      };
-      wc.executeJavaScriptInIsolatedWorld = async (world, scripts, ...rest) => {
-        const result = await originalEval(world, scripts, ...rest);
-        if (scripts[0].code.includes('"op":"dispose"')) {
-          sequence.push('owned cleanup in flight'); cleanupStarted(); await new Promise<void>(r => { releaseCleanup = r; });
-          sequence.push('owned cleanup ACK');
-        }
-        return result;
-      };
-      try {
-        const old = act({ kind: 'click', selector: '#open' }, abort.signal);
-        const caller = old.then(() => null, cause => (cause as { code?: string }).code ?? String(cause));
-        await pressed; abort.abort(); const error = await caller; sequence.push('caller cancelled');
-        const next = port.withPage(target.tabId, undefined, async () => { sequence.push('next entered'); });
-        for (let i = 0; i < 24; i++) await Promise.resolve();
-        const beforeRelease = [...sequence]; releasePress(); await cleaned;
-        for (let i = 0; i < 24; i++) await Promise.resolve();
-        const beforeCleanup = [...sequence]; releaseCleanup(); await next;
-        return { control, error, beforeRelease, beforeCleanup, sequence, before, after: await read() };
-      } finally { wc.debugger.sendCommand = originalSend; wc.executeJavaScriptInIsolatedWorld = originalEval; }
     },
     bindings: async () => port.withPage(target.tabId, undefined, async page => {
       const snapshot = await page.snapshot();

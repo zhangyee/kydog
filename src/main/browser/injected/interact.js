@@ -486,7 +486,10 @@
         targetContainsHit:hit ? target.contains(hit) : null,
         conversationRelation,rootRelation,
         scrollHeight:target.scrollHeight,clientHeight:target.clientHeight,before, after:before,
-        written:false, eventObserved:false, frameObserved:false, state:'pending' };
+        written:false, eventObserved:false, frameObserved:false, state:'pending', invalidatedReason:null,
+        // 页面在滚动那一刻的可见性与视口事实：后台/被遮挡的 view 里基于可见性的加载
+        // 逻辑（IntersectionObserver 等）不会跑，没有这两个数就分不清“没滚到”和“页面是 hidden”。
+        viewport:{visibility:typeof D.visibilityState==='string'?D.visibilityState:'unknown', innerHeight:W.innerHeight||0, visualViewportHeight:W.visualViewport?W.visualViewport.height:null} };
       let frame = null, timer = null;
       const cleanup = () => {
         eventTarget.removeEventListener('scroll', onScroll);
@@ -495,15 +498,21 @@
         if (timer !== null) W.clearTimeout(timer);
         frame = null; timer = null;
       };
-      const finish = state => { receipt.state=state; cleanup(); };
+      // `invalidated` alone loses which physical fact changed. Keep the finite
+      // reason so a consumer can tell a recoverable same-URL navigation from a
+      // detached target or a scroll offset the page itself adjusted.
+      const finish = (state, reason) => { receipt.state=state; if (reason) receipt.invalidatedReason=reason; cleanup(); };
       const check = () => {
         if (receipt.state !== 'pending') return;
         if (Date.now() >= a.expiresAt) finish('expired');
-        else if (document !== D || world.gen !== a.document.generation || location.href !== a.document.url
-          || !target.isConnected || (eventTarget===D && D.scrollingElement!==target)
-          || (receipt.written && target.scrollTop!==receipt.after)) finish('invalidated');
+        else if (document !== D) finish('invalidated','document');
+        else if (world.gen !== a.document.generation) finish('invalidated','generation');
+        else if (location.href !== a.document.url) finish('invalidated','url');
+        else if (!target.isConnected) finish('invalidated','detached');
+        else if (eventTarget===D && D.scrollingElement!==target) finish('invalidated','scrolling_element');
+        else if (receipt.written && target.scrollTop!==receipt.after) finish('invalidated','offset');
       };
-      const onPageHide = () => finish('invalidated');
+      const onPageHide = () => finish('invalidated','document');
       const onScroll = event => {
         if (!event.isTrusted || event.target !== eventTarget || !receipt.written) return;
         check(); if (receipt.state !== 'pending' || receipt.eventObserved) return;

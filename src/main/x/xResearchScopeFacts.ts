@@ -44,7 +44,14 @@ const REPORT_REASONS = new Set([
   'body_expand_control_unchanged', 'replies_expand_control_unchanged',
   'body_observations_output_budget', 'article_inventory_audit_output_budget',
   'navigation_failed', 'not_attempted:auth_required',
-  'not_attempted:navigation_failed', 'internal_adapter_stopped',
+  'not_attempted:navigation_failed', 'not_attempted:rate_limited', 'internal_adapter_stopped',
+  'article_body_wait_timeout', 'article_budget_reached', 'article_navigation_failed', 'no_entry_observed',
+  'action_failed:browser.wait_timeout', 'navigation_failed:browser.no_tab',
+  // `source_unavailable:<reason>` specifics a read row can carry.
+  'lease_missing', 'network_cleanup_failed', 'generation_changed', 'cursor_not_advanced',
+  'cursor_chain_mismatch', 'decode_failed', 'invalid_json', 'request_changed',
+  'accept_failed', 'body_limit', 'loading_failed', 'body_unavailable', 'enable_failed',
+  'tab_closed', 'crashed', 'detached', 'superseded', 'closed',
   'collection_failed:browser.not_dispatchable',
   'omitted_due_output_budget',
 ]);

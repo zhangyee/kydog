@@ -15,7 +15,7 @@ export interface BrowserNetworkRequest {
 }
 export type BrowserNetworkEvent =
   | { kind: 'request'; request: BrowserNetworkRequest }
-  | { kind: 'response'; request: BrowserNetworkRequest; status: number; body: string; bytes: number; sha256: string }
+  | { kind: 'response'; request: BrowserNetworkRequest; status: number; retryAfterMs: number | null; body: string; bytes: number; sha256: string }
   | { kind: 'failed'; request: BrowserNetworkRequest; reason: 'loading_failed' | 'body_unavailable' | 'body_limit' }
   | { kind: 'closed'; reason: string };
 export interface BrowserNetworkSpec { ownerId: string; accepts: (request: BrowserNetworkRequest) => boolean }
@@ -28,7 +28,15 @@ export interface BrowserNetworkLease {
 const TOTAL_BYTES = 67108864;
 const BODY_BYTES = 16777216;
 const POST_BYTES = 65536;
-type Pending = { request: BrowserNetworkRequest; status?: number; reading: boolean; bytes: number };
+type Pending = { request: BrowserNetworkRequest; status?: number; retryAfterMs?: number | null; reading: boolean; bytes: number };
+/** `Retry-After` as milliseconds: delta-seconds or an HTTP-date. Unknown stays null. */
+function retryAfterMs(raw: unknown): number | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const seconds = Number(raw.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
 type Waiter = { finish: (event: BrowserNetworkEvent) => void };
 
 /** Uses the already attached debugger owned exclusively by BrowserService. */
@@ -122,7 +130,11 @@ export class NetworkResponseObserver {
       this.withinBudget();
     } else if (method === 'Network.responseReceived') {
       const pending = this.requests.get(key);
-      if (pending) pending.status = p.response.status;
+      if (pending) {
+        pending.status = p.response.status;
+        const headers = p.response.headers as Record<string, unknown> | undefined;
+        pending.retryAfterMs = headers ? retryAfterMs(headers['retry-after'] ?? headers['Retry-After']) : null;
+      }
     } else if (method === 'Network.loadingFailed') {
       const pending = this.requests.get(key);
       if (pending) this.push({ kind: 'failed', request: pending.request, reason: 'loading_failed' });
@@ -157,7 +169,7 @@ export class NetworkResponseObserver {
       // CDP's unencoded string is already decoded. Reject unpaired surrogates rather
       // than silently hashing replacement bytes different from the provided string.
       if (!result.base64Encoded && body !== result.body) throw new Error('lossy_body');
-      this.push({ kind: 'response', request, status: pending.status!, body, bytes: bytes.length,
+      this.push({ kind: 'response', request, status: pending.status!, retryAfterMs: pending.retryAfterMs ?? null, body, bytes: bytes.length,
         sha256: createHash('sha256').update(bytes).digest('hex') });
     } catch {
       const pending = this.requests.get(key);

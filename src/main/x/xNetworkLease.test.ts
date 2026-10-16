@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import first from '../../test-support/fixtures/x-network/search-top-initial.json';
 import next from '../../test-support/fixtures/x-network/search-top-next.json';
 import { XNetworkSearchLease } from './xNetworkLease';
+import { logger } from '../log';
 import type {
   BrowserNetworkEvent,
   BrowserNetworkRequest,
@@ -64,6 +65,7 @@ function harness() {
       kind: 'response',
       request: r,
       status: 200,
+      retryAfterMs: null,
       body: str,
       bytes: Buffer.byteLength(str),
       sha256: createHash('sha256').update(str).digest('hex'),
@@ -71,6 +73,50 @@ function harness() {
   };
   return { lease, events, source, emit };
 }
+it('logs token-free visibility of operation-matching requests for later alignment', async () => {
+  const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+  try {
+    const h = harness();
+    // A different operation on the same host is not a sighting at all.
+    const unrelated = req(first.request, {
+      id: 'u',
+      url: 'https://x.com/i/api/graphql/hash/HomeTimeline?variables=' + encodeURIComponent('{}'),
+    });
+    expect(h.lease.accepts(unrelated)).toBe(false);
+    expect(info.mock.calls.filter(([, msg]) => msg === 'network_lease_request')).toHaveLength(0);
+    // Our operation but rejected: the finite reason is recorded, no cursor token.
+    const wrongLocation = req(first.request, {
+      id: 'w',
+      location: { ...location, currentUrl: 'https://x.com/home' },
+    });
+    expect(h.lease.accepts(wrongLocation)).toBe(false);
+    expect(
+      info.mock.calls.find(([, msg]) => msg === 'network_lease_request')?.[2],
+    ).toMatchObject({ operation: 'SearchTimeline', accepted: false, reason: 'location_mismatch', hasInputCursor: false });
+    const accepted = req();
+    expect(h.lease.accepts(accepted)).toBe(true);
+    h.emit(accepted);
+    await h.lease.collect(location);
+    expect(
+      info.mock.calls.find(([, msg]) => msg === 'network_lease_collect')?.[2],
+    ).toMatchObject({ operation: 'SearchTimeline', seen: 2, accepted: 1, rejected: 1, reasons: { location_mismatch: 1 } });
+  } finally {
+    info.mockRestore();
+  }
+});
+
+it('keeps a non-200 HTTP status as a protocol fact instead of one collapsed word', async () => {
+  const h = harness();
+  const request = req();
+  expect(h.lease.accepts(request)).toBe(true);
+  const str = JSON.stringify(first.body);
+  h.events.push({
+    kind: 'response', request, status: 429, retryAfterMs: 120_000, body: str,
+    bytes: Buffer.byteLength(str), sha256: createHash('sha256').update(str).digest('hex'),
+  });
+  await expect(h.lease.collect(location)).rejects.toThrow('source_unavailable:http_status:429');
+});
+
 describe('search request-time leases', () => {
   it('accepts before open finishes and chains exact recorded cursors', async () => {
     const h = harness(),

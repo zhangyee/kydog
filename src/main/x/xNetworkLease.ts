@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
+import { logger } from '../log';
 import type { BrowserLocationFacts } from '../browser/browserService';
 import type {
   BrowserNetworkEvent,
@@ -80,6 +81,15 @@ interface XNetworkStrategy<
   onInvalidCursor?(): void;
 }
 
+/** Finite label for why an operation-matching request was not accepted. */
+export type XNetworkRejection =
+  | 'lease_stopped' | 'not_main_frame' | 'session_scoped' | 'redirect_unknown'
+  | 'navigation_unknown' | 'location_mismatch' | 'method' | 'variables_shape'
+  | 'bind_variables' | 'generation_changed' | 'cursor_link'
+  | 'duplicate_input_cursor' | 'capture_exhausted'
+  /** A cursor answering a control we just dispatched: refused, but not a chain revocation. */
+  | 'cursor_link_branch';
+
 const same = (a: BrowserLocationFacts, b: BrowserLocationFacts) =>
   a.currentUrl === b.currentUrl &&
   a.documentEpoch === b.documentEpoch &&
@@ -124,6 +134,17 @@ export class XNetworkLease<
   private closing?: Promise<string | null>;
   private proof?: XNetworkProvenance;
   private stopped: string | null = null;
+  /** Bounded, token-free visibility of the operation-matching requests this lease saw.
+   *  Answers "did X even send the next page, and if so why was it dropped" without
+   *  inventing a heuristic from geometry or elapsed time. */
+  private readonly sightings = { seen: 0, accepted: 0, rejected: 0, reasons: {} as Record<string, number> };
+  /** Last non-200 HTTP fact for this lease: status plus any Retry-After hint. */
+  private httpFailure: { status: number; retryAfterMs: number | null } | null = null;
+  /** Set just before dispatching a control whose continuation the decoded chain may not
+   *  announce (a DOM reply-expansion). Its next reply is refused instead of revoking the
+   *  whole lease, so one unprovable branch cannot destroy an otherwise readable target. */
+  private branchContinuationExpected = false;
+  expectBranchContinuation(): void { this.branchContinuationExpected = true; }
   private queued: BrowserNetworkEvent[] = [];
   private invalidationReason: string | null = null;
   private readonly invalidationListeners = new Set<(reason: string) => void>();
@@ -147,38 +168,56 @@ export class XNetworkLease<
     this.actionController.abort();
     for (const listener of this.invalidationListeners) listener(reason);
   }
-  accepts = (raw: BrowserNetworkRequest): boolean => {
-    if (
-      this.stopped ||
-      raw.isMainFrame !== true ||
-      raw.sessionId !== null ||
-      raw.redirectIndex < 0 ||
-      !raw.navigationId ||
-      raw.location.currentUrl !== this.expectedUrl ||
-      raw.method !== 'GET'
-    )
-      return false;
-    let vars: Record<string, unknown>;
+  /** The URL alone names this lease's operation, before variables are validated. */
+  private operationUrl(raw: BrowserNetworkRequest): URL | null {
     try {
       const url = new URL(raw.url);
-      if (
-        url.protocol !== 'https:' ||
-        url.hostname !== 'x.com' ||
-        url.port ||
-        url.username ||
-        url.password ||
-        !new RegExp(
-          '^/i/api/graphql/[^/]+/' + this.strategy.operation + '$',
-        ).test(url.pathname) ||
-        url.searchParams.getAll('variables').length !== 1
-      )
-        return false;
+      return url.protocol === 'https:' && url.hostname === 'x.com' && !url.port &&
+        !url.username && !url.password &&
+        new RegExp('^/i/api/graphql/[^/]+/' + this.strategy.operation + '$').test(url.pathname)
+        ? url : null;
+    } catch { return null; }
+  }
+  /** One source fact per operation-matching request; never carries a cursor token. */
+  private sighting(accepted: boolean, hasInputCursor: boolean, reason?: XNetworkRejection): void {
+    this.sightings.seen++;
+    if (accepted) this.sightings.accepted++;
+    else {
+      this.sightings.rejected++;
+      const key = reason ?? 'unknown';
+      this.sightings.reasons[key] = (this.sightings.reasons[key] ?? 0) + 1;
+    }
+    try {
+      logger.info('x_research', 'network_lease_request', {
+        leaseId: this.id, operation: this.strategy.operation, accepted, hasInputCursor,
+        ...(reason ? { reason } : {}),
+      });
+    } catch { /* Diagnostics cannot change acceptance. */ }
+  }
+  accepts = (raw: BrowserNetworkRequest): boolean => {
+    const url = this.operationUrl(raw);
+    if (!url) return false;
+    let input: unknown = null;
+    const deny = (reason: XNetworkRejection): false => {
+      this.sighting(false, input !== null, reason);
+      return false;
+    };
+    if (this.stopped) return deny('lease_stopped');
+    if (raw.isMainFrame !== true) return deny('not_main_frame');
+    if (raw.sessionId !== null) return deny('session_scoped');
+    if (raw.redirectIndex < 0) return deny('redirect_unknown');
+    if (!raw.navigationId) return deny('navigation_unknown');
+    if (raw.location.currentUrl !== this.expectedUrl) return deny('location_mismatch');
+    if (raw.method !== 'GET') return deny('method');
+    let vars: Record<string, unknown>;
+    try {
+      if (url.searchParams.getAll('variables').length !== 1) return deny('variables_shape');
       vars = JSON.parse(url.searchParams.get('variables')!);
     } catch {
-      return false;
+      return deny('variables_shape');
     }
-    if (!vars || Array.isArray(vars) || typeof vars !== 'object') return false;
-    const input = Object.hasOwn(vars, 'cursor') ? vars.cursor : null;
+    if (!vars || Array.isArray(vars) || typeof vars !== 'object') return deny('variables_shape');
+    input = Object.hasOwn(vars, 'cursor') ? vars.cursor : null;
     const provenance: XNetworkProvenance = {
       leaseId: this.id,
       requestRef: randomUUID(),
@@ -194,7 +233,7 @@ export class XNetworkLease<
       provenance,
       input as string | null,
     );
-    if (!request) return false;
+    if (!request) return deny('bind_variables');
     if (
       this.location &&
       (!same(this.location, raw.location) ||
@@ -203,7 +242,7 @@ export class XNetworkLease<
         this.sourceCoordinates?.loaderId !== raw.loaderId)
     ) {
       this.invalidate('generation_changed');
-      return false;
+      return deny('generation_changed');
     }
 
     if (
@@ -212,16 +251,20 @@ export class XNetworkLease<
       (!this.initial && this.requests.size === 0 && input !== null) ||
       (!this.requests.size && this.initial && input !== this.cursor)
     ) {
+      if (this.branchContinuationExpected) {
+        this.branchContinuationExpected = false;
+        return deny('cursor_link_branch');
+      }
       this.strategy.onInvalidCursor?.();
-      return false;
+      return deny('cursor_link');
     }
     if (
       [...this.requests.values()].some((p) => p.request.inputCursor === input)
     )
-      return false;
+      return deny('duplicate_input_cursor');
 
     // Pending captures reserve page slots but do not become accepted evidence.
-    if (this.ended || this.pageFacts.length + this.requests.size >= 1000) return false;
+    if (this.ended || this.pageFacts.length + this.requests.size >= 1000) return deny('capture_exhausted');
     this.location ??= { ...raw.location };
     this.navigationId ??= raw.navigationId;
     this.sourceCoordinates ??= { frameId: raw.frameId, loaderId: raw.loaderId };
@@ -233,6 +276,7 @@ export class XNetworkLease<
       request,
     });
     this.updateActionAuthority();
+    this.sighting(true, input !== null);
     return true;
   };
   private fail(reason: string): never {
@@ -307,7 +351,10 @@ export class XNetworkLease<
           continue;
         }
         if (e.status !== 200) {
-          this.stopped = 'http_status';
+          // Keep the protocol fact instead of collapsing every non-200 into one word:
+          // the status and any Retry-After decide whether this is rate limiting.
+          this.httpFailure = { status: e.status, retryAfterMs: e.retryAfterMs ?? null };
+          this.stopped = 'http_status:' + e.status;
           continue;
         }
         if (JSON.stringify(bound.raw) !== JSON.stringify(e.request)) {
@@ -380,10 +427,11 @@ export class XNetworkLease<
         this.initial = true;
         // Commit evidence before any promise continuation can lose a cancellation race.
         onAccepted?.(page, fact);
-        if (page.unsupported.length) {
-          this.stopped = 'unsupported_response';
-          break;
-        }
+        // An unrecorded shape inside an otherwise accepted page is retained on
+        // the page fact and forces end='unknown' in the decoder, but it must not
+        // abort the chain: the design stops on budget or an exhausted wait, and
+        // a page can still carry a valid cursor. A page without a usable cursor
+        // is stopped by the cursor_not_advanced branch below.
         if (page.end === 'cursor_exhausted') {
           this.ended = true;
           break;
@@ -430,6 +478,14 @@ export class XNetworkLease<
       }
     }
     if (this.stopped && !this.proof) this.fail(this.stopped);
+    try {
+      logger.info('x_research', 'network_lease_collect', {
+        leaseId: this.id, operation: this.strategy.operation, ...this.sightings,
+        pages: pages.length, pending: this.requests.size > 0 && !this.stopped && !this.ended,
+        ...(this.stopped ? { stopped: this.stopped } : {}),
+        ...(this.httpFailure ? { httpStatus: this.httpFailure.status, retryAfterMs: this.httpFailure.retryAfterMs } : {}),
+      });
+    } catch { /* Diagnostics cannot change collection. */ }
     return {
       pages,
       pending: this.requests.size > 0 && !this.stopped && !this.ended,

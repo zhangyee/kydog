@@ -178,6 +178,7 @@ function harness() {
       kind: 'response',
       request: r,
       status: 200,
+      retryAfterMs: null,
       body: JSON.stringify(body),
       bytes: 1,
       sha256: 'a'.repeat(64),
@@ -264,6 +265,43 @@ it('commits accepted read facts synchronously before cancellation and rejects la
     await g.lease.collect(location, undefined, () => current),
   ).toMatchObject({ pages: [], failure: 'generation_changed' });
   expect(a.pages[0].root).toBeTruthy();
+});
+
+it('retains an unrecorded shape as a page fact instead of aborting the proven cursor chain', async () => {
+  const malformed = (extra: object[], dropCursors = false) => {
+    const body = structuredClone(first.body) as any;
+    const instructions =
+      body.data.threaded_conversation_with_injections_v2.instructions;
+    for (const instruction of instructions) {
+      if (!instruction.entries) continue;
+      instruction.entries = instruction.entries.filter(
+        (e: any) => !dropCursors || e.content?.entryType !== 'TimelineTimelineCursor',
+      );
+      instruction.entries.push(...structuredClone(extra));
+    }
+    return body;
+  };
+  const unrecorded = { content: { entryType: 'TimelineTimelineItem', itemContent: null } };
+  const h = harness();
+  expect(h.lease.accepts(raw())).toBe(true);
+  h.emit(raw(), malformed([unrecorded]));
+  const a = await h.lease.collect(location);
+  expect(a.pages).toHaveLength(1);
+  expect(a.pages[0].root?.postId).toBe(first.request.focalTweetId);
+  expect(a.pages[0].unsupported).toContain('item_shape');
+  expect(a.failure).toBeUndefined();
+  const successor = raw(next.request, { id: 'b' });
+  expect(h.lease.accepts(successor)).toBe(true);
+  h.emit(successor, next.body);
+  const b = await h.lease.collect(location);
+  expect(b.pages[0].replies.length).toBeGreaterThan(0);
+  // Same page without a usable cursor still fails closed on the cursor, not on the shape.
+  const noCursor = harness();
+  expect(noCursor.lease.accepts(raw())).toBe(true);
+  noCursor.emit(raw(), malformed([unrecorded], true));
+  const failed = await noCursor.lease.collect(location);
+  expect(failed.pages[0].unsupported).toContain('item_shape');
+  expect(failed.failure).toBe('cursor_not_advanced');
 });
 
 it('saves rootless pages once, retains proven history after invalidation, and binds reply budget at acceptance', async () => {
@@ -503,6 +541,7 @@ it('keeps actual hidden-branch terminal facts while account context and live sco
       kind: 'response',
       request: source,
       status: 200,
+      retryAfterMs: null,
       body: JSON.stringify(capture.body),
       bytes: 1,
       sha256: 'a'.repeat(64),
@@ -814,6 +853,22 @@ it('projects read provenance and network page omission counts without changing s
     directParent: { postId: '123' },
     networkProvenance: row.replies.observations[0].networkProvenance,
   });
+});
+
+it('refuses the branch cursor a dispatched reply-expansion introduces without revoking the lease', async () => {
+  const h = harness();
+  expect(h.lease.accepts(raw())).toBe(true);
+  h.emit(raw(), first.body);
+  expect((await h.lease.collect(location)).proof).toBeDefined();
+  // A DOM expansion can answer with a continuation the decoded page never announced
+  // (its entry was skipped as an unrecorded shape). Refuse that one reply…
+  h.lease.expectBranchContinuation();
+  expect(h.lease.accepts(raw({ ...next.request, cursor: 'branch-only-cursor' }, { id: 'branch' }))).toBe(false);
+  await expect(h.lease.collect(location)).resolves.toBeDefined();
+  // …and the proven chain is still usable for the real successor.
+  expect(h.lease.accepts(raw(next.request, { id: 'b' }))).toBe(true);
+  h.emit(raw(next.request, { id: 'b' }), next.body);
+  expect((await h.lease.collect(location)).pages[0].replies.length).toBeGreaterThan(0);
 });
 
 it('observed own-target sort changes and incompatible source cursors revoke current authority but retain accepted history', async () => {

@@ -26,6 +26,7 @@ import {
   locationFacts,
   rememberSources,
   navigationUrl,
+  xHttpFailure,
   type XResearchContext,
 } from './xResearchSearch';
 import type {
@@ -139,6 +140,7 @@ interface ReadHalt {
     | 'cancelled'
     | 'adapter'
     | 'browser_unavailable'
+    | 'http'
     | 'navigation';
   status: XResearchStatus;
   stopReason: XStopReason;
@@ -483,13 +485,24 @@ export async function readX(
       row.status =
         row.root && problem.status !== 'cancelled' ? 'partial' : problem.status;
       const sourceUnavailable=error instanceof KydogError && error.code==='x.invalid_page' && error.message.startsWith('source_unavailable:');
-      row.stopReason = sourceUnavailable ? 'source_unavailable' : problem.stopReason;
-      row.reason = sourceUnavailable?'source_unavailable':problem.reason ?? (
-        problem.status === 'cancelled'
-          ? 'cancelled'
-          : problem.internal
-            ? `internal_adapter_error:${stage.current}`
-            : `${stage.current}_failed${error instanceof KydogError ? ':' + error.code : ''}`);
+      // Keep which source fact failed (`…:lease_missing`, `…:cursor_not_advanced`, …)
+      // instead of collapsing every one of them into the bare word source_unavailable.
+      const sourceReason=sourceUnavailable?error.message.slice('source_unavailable:'.length):null;
+      const http=sourceReason?xHttpFailure(sourceReason):null;
+      if(http){
+        row.status=row.root?'partial':http.status;
+        row.stopReason=http.stopReason;
+        row.reason=http.reason;
+        halt={cause:'http',status:http.status,stopReason:http.stopReason,reason:http.skippedReason};
+      }else{
+        row.stopReason = sourceUnavailable ? 'source_unavailable' : problem.stopReason;
+        row.reason = sourceReason ?? problem.reason ?? (
+          problem.status === 'cancelled'
+            ? 'cancelled'
+            : problem.internal
+              ? `internal_adapter_error:${stage.current}`
+              : `${stage.current}_failed${error instanceof KydogError ? ':' + error.code : ''}`);
+      }
       if (problem.status === 'cancelled')
         halt = {
           cause: 'cancelled',
