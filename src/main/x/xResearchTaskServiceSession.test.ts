@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { fixture, post, searchHtml, searchInput } from '../../test-support/xResearchFixture';
 import { createXResearchRunner } from './xResearchRunner';
+import { searchResult } from './xResearchSearch';
 import { XResearchEvidence } from './xResearchEvidence';
 import { XResearchScopeLedger } from './xResearchScopeFacts';
 import {
@@ -57,6 +58,40 @@ function serviceWith(runWork: XResearchRunWork, artifacts = tempXArtifactStore()
 
 const owner = () => ({ threadId: randomUUID(), runId: 'run-1', projectRoot: '/projects/x' });
 const searchWork = () => ({ search: searchInput.search });
+
+/** 被闸门放行才交结果的工作体：用来证明「没人动它，它就自己跑完」。 */
+function releasedRunner(seen: { signal?: AbortSignal; started: Promise<void> }): {
+  runWork: XResearchRunWork;
+  release: () => void;
+} {
+  let markStarted!: () => void;
+  seen.started = new Promise<void>((resolve) => { markStarted = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const runWork: XResearchRunWork = async (_work, ctx) => {
+    seen.signal = ctx.signal;
+    markStarted();
+    // 闸门放行或信号中止，先到的收场（与采集层同一条：中止时不产出结果）。
+    await new Promise<void>((resolve, reject) => {
+      if (ctx.signal.aborted) {
+        reject(new Error('aborted by teardown'));
+        return;
+      }
+      ctx.signal.addEventListener('abort', () => reject(new Error('aborted by teardown')), { once: true });
+      void gate.then(resolve);
+    });
+    const result = searchResult({ search: searchInput.search }, {
+      browser: {} as never, threadId: ctx.threadId, sources: new Map(),
+      runId: ctx.runId, callId: ctx.submitCallId, batchId: ctx.batchId,
+    });
+    for (const row of result.queries) {
+      row.status = 'partial';
+      row.stopReason = 'budget_reached';
+    }
+    return result;
+  };
+  return { runWork, release };
+}
 
 it('cancels in-flight work when the session is disposed and marks it interrupted', async () => {
   const seen: { signal?: AbortSignal; started: Promise<void> } = { started: Promise.resolve() };
@@ -175,4 +210,24 @@ it('drops the cache a card RPC opened when a session tears down', async () => {
   // 会话拆除：这份缓存既没有账本也没有在飞工作 —— 纯内存残留，跟着会话一起走。
   await service.disposeThread(thread.threadId, ledger);
   expect((await service.get(thread.threadId, submitted.researchRunId)).revision).toBe(record.revision + 7);
+});
+
+it('leaves a ledger-less active holding in-flight work alone when another ledger tears down', async () => {
+  // 生产里造不出这个状态：每次 `submit` 都带账本。留着这条用例是为了**不让 `owns` 的安全那一半
+  // 被当成死代码删掉** —— 没有账本、又真有在飞工作的 active 谁也不认领，拆除必须原样留着它。
+  const seen: { signal?: AbortSignal; started: Promise<void> } = { started: Promise.resolve() };
+  const { runWork, release } = releasedRunner(seen);
+  const service = serviceWith(runWork);
+  const thread = owner();
+  const submitted = await service.submit({ work: searchWork() }, thread);
+  await seen.started;
+  await service.disposeThread(thread.threadId, {});
+  // 拆除没碰它：信号没响，工作照旧在跑。
+  expect(seen.signal?.aborted).toBe(false);
+  release();
+  await service.whenIdle(thread.threadId, submitted.researchRunId);
+  const snapshot = await service.get(thread.threadId, submitted.researchRunId);
+  // 它的工作跑完了、结论落在盘上，`get` 也还答得出这段研究。
+  expect(snapshot.state).toBe('completed');
+  expect(snapshot.counts).toMatchObject({ done: 1, interrupted: 0, running: 0, queued: 0 });
 });
