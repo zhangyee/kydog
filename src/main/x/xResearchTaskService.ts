@@ -357,14 +357,24 @@ export class XResearchTaskService {
   /** 崩溃后的诚实表示（spec §4.4）：盘上还留着排队/在飞的提交 = 写它的那个进程在两个边界之间被杀
    *  （`task.json` 与提交文件那两次写之间，或一轮采集跑到一半）。未收尾的提交按中断收尾（复用
    *  `interrupt` / `project`，不另写一份状态规则），再落一次盘 —— 否则同一个「在飞」在每次重开时都会
-   *  被当成最新状态读回来。 */
+   *  被当成最新状态读回来。
+   *
+   *  例外是**被取消过**的那一段（盘上 `stateReason = 'cancelled'`，见 R28）：崩溃也可能落在 `cancel`
+   *  落盘的两个边界之间 —— 排队的那份已经写成 `cancelled`，索引还没写（或者反过来）。这时把残留的
+   *  提交收成 `interrupted` 就抹掉了「有人停过它」这条黏的事实，而 `submit` 认的正是 `stateReason`：
+   *  工作于是能重新回到一段已取消的研究里。所以按取消收尾（复用 `cancelSubmission`，结论与 `cancel`
+   *  一致），并且落盘的理由也写 `cancelled` —— 写成 `process_restarted` 会盖掉那条黏的事实。 */
   private async repairRestarted(active: ActiveResearch): Promise<void> {
     const unsettled = [...active.submissions.values()]
       .filter((submission) => submission.state === 'queued' || submission.state === 'running');
-    for (const submission of unsettled) this.interrupt(submission);
+    const cancelled = active.record.stateReason === 'cancelled';
+    for (const submission of unsettled) {
+      if (cancelled) this.cancelSubmission(submission);
+      else this.interrupt(submission);
+    }
+    const reason = cancelled ? 'cancelled' : unsettled.length ? 'process_restarted' : undefined;
     // 落盘失败在这里只能放弃：这条研究下一次打开时会再修一次，而 `get` 不该因为修复写失败而不回答。
-    await this.persist(active, unsettled, unsettled.length ? 'process_restarted' : undefined)
-      .catch(() => undefined);
+    await this.persist(active, unsettled, reason).catch(() => undefined);
   }
 
   private create(owner: XResearchTaskOwner, researchRunId: string): ActiveResearch {

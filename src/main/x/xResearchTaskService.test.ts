@@ -939,6 +939,21 @@ describe('XResearchTaskService', () => {
     });
     await store.writeSubmission(submission);
 
+    // 同一块盘上还有一段**被取消过**的研究，崩溃落在 `cancel` 落盘的两个边界之间：`task.json` 已经
+    // 带上 `stateReason: 'cancelled'`，排队的那份提交还没写成 `cancelled`。这条黏的事实不许被修复
+    // 擦掉（R28）：收成 `interrupted` 就是说它是崩溃的残迹，而 `submit` 认的正是 `stateReason` ——
+    // 工作会重新回到一段已取消的研究里。
+    const cancelledRunId = randomUUID();
+    const queuedSubmission = storedSubmission({
+      threadId: thread.threadId, researchRunId: cancelledRunId, state: 'queued',
+    });
+    await store.writeTask({
+      version: 1, researchRunId: cancelledRunId, threadId: thread.threadId, projectRoot: thread.projectRoot,
+      createdAt, updatedAt: createdAt, revision: 9, state: 'running', stateReason: 'cancelled',
+      submissionIds: [queuedSubmission.submissionId],
+    });
+    await store.writeSubmission(queuedSubmission);
+
     const { service } = harness(echoRunner, { store });
     const repaired = await service.get(thread.threadId, researchRunId);
     expect(repaired.state).toBe('interrupted');
@@ -949,6 +964,24 @@ describe('XResearchTaskService', () => {
     const persisted = await new XResearchTaskStore(dir)
       .readSubmission(thread.threadId, researchRunId, submission.submissionId);
     expect(persisted).toMatchObject({ state: 'interrupted', endedAt: expect.any(String) });
+
+    // 被取消过的那一段：残留的提交按**取消**收尾，快照说 `cancelled`，理由还在盘上。
+    const cancelled = await service.get(thread.threadId, cancelledRunId);
+    expect(cancelled.state).toBe('cancelled');
+    expect(cancelled.stateReason).toBe('cancelled');
+    expect(cancelled.counts).toMatchObject({ queued: 0, running: 0, cancelled: 1 });
+    expect(cancelled.search.map((item) => [item.state, item.status]))
+      .toEqual([['stopped', 'cancelled']]);
+    const reopened = new XResearchTaskStore(dir);
+    expect(await reopened.readSubmission(thread.threadId, cancelledRunId, queuedSubmission.submissionId))
+      .toMatchObject({ state: 'cancelled', endedAt: expect.any(String) });
+    expect(await reopened.readTask(thread.threadId, cancelledRunId))
+      .toMatchObject({ state: 'cancelled', stateReason: 'cancelled' });
+    // 而且不许再往里追加工作：`submit` 认的就是这条理由。
+    const rejected = await service.submit(
+      { researchRunId: cancelledRunId, work: { search: searchWork() } }, thread)
+      .then(() => null, (error: unknown) => error);
+    expect(rejected).toMatchObject({ code: 'research.cancelled' });
   });
 
   it('does not keep a submission whose files never landed', async () => {
