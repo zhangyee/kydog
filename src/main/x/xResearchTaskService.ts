@@ -892,3 +892,23 @@ export class XResearchTaskService {
     return { state: xResearchTaskState(submissions) };
   }
 }
+
+/**
+ * 进程级实例的**接入点**（RPC 只读这一份）。
+ *
+ * 为什么不是像 `getWebResearchTaskService()` 那样在这里自己装配：这个 service 的 runner 需要
+ * per-session 的证据账本、范围 prior 与标签页绑定（`sessionFactory.createSession` 里才有的东西），
+ * 装配点因此只能在会话那侧。这里只留一个登记缝：Task 9 的会话接线登记**唯一**那一个实例，
+ * `xResearch.task*` 四条 RPC 读它。**不许**每个会话登记一个新实例 —— 队列与在飞状态都在实例里。
+ */
+let instance: XResearchTaskService | null = null;
+
+export function registerXResearchTaskService(service: XResearchTaskService | undefined): void {
+  instance = service ?? null;
+}
+
+/** 未接线（x research 关闭、或这个进程还没建过会话）时回 `null`，**不抛**：
+ *  「没接线」与「这条研究不存在」是两件事，`taskList` 要能把前者答成空列表。 */
+export function xResearchTaskService(): XResearchTaskService | null {
+  return instance;
+}

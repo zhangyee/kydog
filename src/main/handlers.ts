@@ -11,6 +11,7 @@ import { researchService } from './research/researchService';
 import { researchRunStore } from './webResearch/runStore';
 import { readEvidence } from './webResearch/evidenceReader';
 import { getWebResearchTaskService } from './webResearch/service';
+import { xResearchTaskService, type XResearchTaskService } from './x/xResearchTaskService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
@@ -73,6 +74,14 @@ function assertResearchViewer(threadId: string, sender: WebContents): void {
   if (!window || view?.activeTab !== 'thread' || view.threadId !== threadId) {
     throw new KydogError('research.not_found', 'Research run not found');
   }
+}
+
+/** 未接线的 x research 任务 service。与上面那道闸用同一个错误码：从调用方看，「这条研究不在」
+ *  就是全部事实 —— 多一个「服务没接上」的说法只会让渲染层多一条无处安放的错误。 */
+function requireXResearchTaskService(): XResearchTaskService {
+  const service = xResearchTaskService();
+  if (!service) throw new KydogError('research.not_found', 'X research task service is not wired');
+  return service;
 }
 
 export function registerAllHandlers(): void {
@@ -166,6 +175,37 @@ export function registerAllHandlers(): void {
   registerHandler('webResearch.taskInspect', (args, evt) => {
     assertResearchViewer(args.threadId, evt.sender);
     return getWebResearchTaskService().inspect(args.threadId, args.researchRunId, args);
+  });
+
+  // ── x research 任务 ──
+  // 四条都先过同一道可见性闸（`assertResearchViewer`）：研究元数据只给正在看这个对话的主窗口。
+  //
+  // 未接线（x research 关闭、或这个进程还没建过会话）时分两种处置：`taskList` 答空列表 ——
+  // 渲染层在开对话时就会调它，此时没有东西可显示是正常状态，报一个错只会变成一条不该有的提示；
+  // 其余三条答 `research.not_found` —— 从调用方看，「这条研究不在」就是全部事实。
+  // 那个 null 分支由 `handlers.xResearchTask.test.ts` 钉住，不靠「生产里总会接线」。
+  registerHandler('xResearch.taskList', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    const service = xResearchTaskService();
+    return service ? service.list(args.threadId) : [];
+  });
+  registerHandler('xResearch.taskGet', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return requireXResearchTaskService().get(args.threadId, args.researchRunId);
+  });
+  registerHandler('xResearch.taskInspect', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    // 显式投影：`args` 上还挂着 threadId / researchRunId，整个递下去等于把没写进协议的东西也当输入。
+    return requireXResearchTaskService().inspect(args.threadId, args.researchRunId, {
+      view: args.view,
+      ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+      ...(args.pageSize === undefined ? {} : { pageSize: args.pageSize }),
+    });
+  });
+  registerHandler('xResearch.taskCancel', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    // 与工具 `cancel` 动作调的是同一个服务方法：两个表面共用一处实现，不会各自漂。
+    return requireXResearchTaskService().cancel(args.threadId, args.researchRunId);
   });
 
   // ── 内置浏览器（侧栏那条路）──
