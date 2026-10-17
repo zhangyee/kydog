@@ -22,7 +22,7 @@
  *    `auth_required`」的交付结果，第二行的 `barrier.reason` 是 `not_attempted:auth_required`。
  *    原生登录点击那一段（真 `sendInputEvent`）与改造前完全一样，一字未改。
  *
- * 一次启动跑完全部说法（`serial`），中间只有一次真重启（进程 pid 会变，见最后一条）。
+ * 一次启动跑完全部说法（`serial`），中间只有一次真重启（进程 pid 会变，见 `a real process restart` 那一条）。
  * 普通帖文本只来自 HTTP 响应（`xWirePages`），DOM 里的 `*_DOM_*` 是诱饵。
  *
  * **这份 spec 一次都不调 `browser.getState`。** 那条 RPC 每调一次就签发一个新 epoch
@@ -79,6 +79,8 @@ const LIFECYCLE_OBJECTIVE = 'Card lifecycle evidence';
 const CANCEL_OBJECTIVE = 'Card cancel evidence';
 const NAVIGATING_CANCEL_OBJECTIVE = 'Card cancel during navigation';
 const OCCUPANT_OBJECTIVE = 'Card queue occupant';
+/** 重启之后**第一次**采集（没有用户标签、侧栏也还没展开）那一段研究的问题。 */
+const RESTART_OBJECTIVE = 'Restart first collection';
 /** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
 const TAB_ID = /^tab_[0-9a-f]{8}$/;
 
@@ -614,22 +616,87 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(after.counts.undelivered).toBe(0);
   });
 
+  test('the first collection after a restart reaches the wire even though the sidebar flaps the stage mid-collection', async () => {
+    // 重启把主进程的标签表清空了（标签表在内存里），但**渲染层的侧栏会被上一条自己打开**：
+    // 上一条的 `thread.loadHistory` 把 journal 重放进 store，test 1 那条 `run.ask_start`
+    // 带着 `browserTabId`，于是 `handOffToBrowser` 把侧栏展开（`runEvents.ts` 登记过的观感问题）。
+    // 先像用户那样把它收起来 —— 这条要走的起点就是「这个进程里侧栏还没展开、一个标签也没有」，
+    // 也是下面那句「采集进行中才展开侧栏」能成立的前提。
+    await launched.page.getByTestId('titlebar-browser').click();
+    await expect(launched.page.locator('[data-pane="browser"]')).toHaveCount(0);
+
+    // 闸门扣住第二个 query 的导航：研究在**采集进行中**停住（第一行已收、第二行停在 navigating），
+    // 用户才有机会在采集跑着的时候去点侧栏 —— 否则整段采集比一次点击还短，跳动一定落在采集之后。
+    holdNextQuery(SECOND_QUERY.query);
+    const submitRun = await run([call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY], RESTART_OBJECTIVE) })],
+      undefined, 'the submit turn ended while the research was still running');
+    const submitted = envelope(submitRun[0]);
+    expect(submitted.status).toBe('running');
+    const restartRunId = submitted.researchRunId;
+    await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+    await expect.poll(async () => (await taskGet(restartRunId)).search.map(row => row.state))
+      .toEqual(['collecting', 'navigating']);
+    // 研究自己开的那一页是**唯一**的标签（用户没有自己的页），所以它是活动标签。
+    // 横幅只为活动标签出现（`agentBanner` 的判据），这是下面那次舞台跳动的前提，先证明它在。
+    // 标签 id 只能从广播里拿：`taskGet` 的 `browserTabId` 要等 `browser.open` 返回才写进记录，
+    // 而它要等这次导航落地 —— 此刻正被闸门扣着。
+    await expect.poll(async () => (await tabFrames()).at(-1)?.tabIds.length ?? 0,
+      { message: '重启之后只有研究自己开的那一页（没有用户标签）' }).toBe(1);
+    const researchTabId = (await tabFrames()).at(-1)?.tabIds[0];
+    expect(researchTabId, '一帧 browser.tabsChanged 都没到：标签清单本身没被观测到').toMatch(TAB_ID);
+    await expect.poll(async () => (await tabFrames()).at(-1)?.activeTabId ?? null).toBe(researchTabId);
+
+    // 用户此刻才点开浏览器侧栏 —— 采集还在跑（第二行仍被闸门挡在那次导航上）。展开这一下就是
+    // 失败的原始现场：研究那页是活动标签又被驱动，横幅出现；横幅收起时舞台长回去。
+    // 每一次变化都是一次 `syncView` → `applyLayout` → 对每个标签（含研究那页）`applyViewport`。
+    await launched.page.getByTestId('titlebar-browser').click();
+    await expect(launched.page.locator('[data-pane="browser"]')).toBeVisible();
+    const banner = launched.page.getByTestId('browser-agent-banner');
+    await expect(banner, '研究那页是活动标签且正在被驱动：横幅出现（舞台因此矮一条横幅）').toBeVisible();
+    const stageHeight = (): Promise<number> => launched.page.evaluate(() => {
+      const stage = document.querySelector('[data-testid="browser-stage"]');
+      if (!stage) throw new Error('browser stage missing');
+      return stage.getBoundingClientRect().height;
+    });
+    const withBanner = await stageHeight();
+    expect(withBanner).toBeGreaterThan(0);
+
+    // 放行：导航落地 → 驱动帧收尾 → 横幅收起 → 舞台长回去。这一次 `applyViewport` 就落在
+    // 第二行那次 collect 的 `prepareForDomRead` 前后（`applyLayout` 是 fire-and-forget 的）。
+    expect(await releaseHeldQuery()).toContain('/search');
+    await expect(banner).toHaveCount(0);
+    await expect.poll(stageHeight, { message: '横幅收起后舞台长回去了（高度变了 = 又一次 syncView）' })
+      .not.toBe(withBanner);
+
+    const waitRun = await run([call('x_research', { action: 'wait', researchRunId: restartRunId })]);
+    const delivered = envelope(waitRun[0]);
+    expect(delivered.delivery).toBeTruthy();
+    const result = canonical(delivered.delivery!, submitRun[0].runId);
+    if (result.operation !== 'search') throw new Error('search expected');
+    // 判据是**结果**：两行都拿着 wire 夹具的那两条帖 —— 采集真的发生了，不是「没报错」。
+    // 旧判据（`7ccd9d2`）下这里会是一个 `barrier.reason` 带 `input_not_delivered` 的失败行，
+    // 而交付本身报成 `failed`（用户看到的是「源不可用」）。
+    for (const row of result.queries) {
+      expect(row.posts.map(post => post.text)).toEqual([WIRE_ROOT, WIRE_PLAIN]);
+      expect(row).toMatchObject({ status: 'partial', stopReason: 'budget_reached', barrier: null });
+      expect(row.collectionStop).toMatchObject({ status: 'partial', stopReason: 'budget_reached', reason: null });
+    }
+    expect(delivered.status).toBe('completed');
+    expect(delivered.snapshot.counts).toMatchObject({ submissions: 1, done: 2, failed: 0, posts: 4 });
+    expect(result.browserTabId).toBe(researchTabId);
+  });
+
   // ── 卡片级说法（Task 16）──
   //
-  // 上面六条只看协议层。下面五条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
+  // 上面七条只看协议层。下面五条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
   // 两段各说各的行数、一段研究会不会长出第二张卡、取消入口走不走确认、默认收放与手动点击谁说话算数、
   // 卡停在哪一条消息里（最后一条提到它的那条，后面还有不提它的消息时也一样）。
   // 判据全部是「DOM 上看得见的东西」或协议事实（`xResearch.taskGet` / 工具包络），没有时间窗。
 
   test('the card appears for a submit and shows both sections with their own rows while the research runs', async () => {
-    // 重启后浏览器侧栏是关着的、一个标签也没有（标签表是主进程内存里的）。侧栏看的是用户的活动标签：
-    // 先按用户的做法开一页（与 beforeAll 那次同一个 RPC），再展开侧栏 —— 研究自己那一页在**已有标签**
-    // 的侧栏里开、用同一套视口，与 test 1..5 那次启动里的环境一致。
-    await launched.page.evaluate(() => window.kydog.invoke('browser.open', { url: 'https://example.org/user-tab' }));
-    if (await launched.page.locator('[data-pane="browser"]').count() === 0) {
-      await launched.page.getByTestId('titlebar-browser').click();
-    }
-    await expect(launched.page.locator('[data-pane="browser"]')).toBeVisible();
+    // **这里不预开用户页、也不展开侧栏**（R79）：那段绕法原本是为了让舞台不再跳动，而跳动的
+    // 来源恰恰就是上一条要证明的路径（横幅为活动标签收放 → `applyLayout` 在采集进行中下发视口）。
+    // 卡片这几条只读消息列里的 DOM，不点侧栏里的任何东西，所以它们不需要一个用户标签。
     // 重启恢复的每一段研究都各有一张卡（含 test 1 那段失败了的、test 5 那段被取消的）：
     // 「一段研究一张卡」在这条会话里从此刻起一直成立。
     await expectOneCardPerResearch();
