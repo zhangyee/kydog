@@ -83,6 +83,21 @@ export function reportScopeFacts(result: ScopeResult): XReportScopeFacts {
 
 
 type Call = {fingerprint:string; facts:XReportScopeFacts} | null;
+/** 壳（`./xResearchTaskShell`）→ `delivery.result`；改造前的平铺 details → 原样。
+ *  `null` = 这个壳没有结果（`submit` / `inspect` / `cancel`）：它没有可入账的调用。 */
+function deliveryResult(details:unknown):unknown|null {
+  if(!details||typeof details!=='object')return details;
+  const value=details as {kind?:unknown;delivery?:{result?:unknown}};
+  return value.kind==='x_research'?value.delivery?.result??null:details;
+}
+/** 这条工具结果属于哪一轮调用：平铺 details 说的是自己的 `callId`，壳说的是**交付**那一轮
+ *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮（R20），
+ *  拿它比 `toolCallId` 永远不相等。 */
+function resultCallId(details:unknown):unknown {
+  if(!details||typeof details!=='object')return null;
+  const value=details as {kind?:unknown;callId?:unknown;delivery?:{deliveryCallId?:unknown}};
+  return value.kind==='x_research'?value.delivery?.deliveryCallId??null:value.callId??null;
+}
 function call(raw:unknown):Call {
   if(raw && typeof raw==='object' && 'restoration' in raw &&
      (raw.restoration as {status?:unknown})?.status==='missing') return null;
@@ -131,9 +146,10 @@ export class XResearchScopeLedger {
     const envelope=z.object({type:z.literal('message'),message:z.object({role:z.literal('toolResult'),toolName:z.literal('x_research'),toolCallId:text,isError:z.literal(false),details:z.unknown()})});
     for(const entry of entries){
       const parsed=envelope.safeParse(entry);if(!parsed.success)continue;
-      const id=identity.safeParse(parsed.data.message.details);
-      if(!id.success||id.data.callId!==parsed.data.message.toolCallId)continue;
-      this.observe(parsed.data.message.details);
+      const details=deliveryResult(parsed.data.message.details);if(details===null)continue;
+      const id=identity.safeParse(details);
+      if(!id.success||resultCallId(parsed.data.message.details)!==parsed.data.message.toolCallId)continue;
+      this.observe(details);
     }
   }
   prior(runId:string):XResearchScopePrior {

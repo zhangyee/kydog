@@ -104,6 +104,23 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     ),
   }).refine(readSourceDomainsValid),
 ]);
+/** 壳（`./xResearchTaskShell`）→ `delivery.result`；改造前的平铺 details → 原样。
+ *  `null` = 这个壳没有结果（`submit` / `inspect` / `cancel`）：它没有可引用的东西，也不走旧路径。 */
+function deliveryResult(details: unknown): unknown | null {
+  if (!details || typeof details !== 'object') return details;
+  const value = details as { kind?: unknown; delivery?: { result?: unknown } };
+  return value.kind === 'x_research' ? value.delivery?.result ?? null : details;
+}
+/** 这条工具结果属于哪一轮调用：平铺 details 说的是自己的 `callId`，壳说的是**交付**那一轮
+ *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮（R20），
+ *  拿它比 `toolCallId` 永远不相等。 */
+function resultCallId(details: unknown): unknown {
+  if (!details || typeof details !== 'object') return null;
+  const value = details as {
+    kind?: unknown; callId?: unknown; delivery?: { deliveryCallId?: unknown };
+  };
+  return value.kind === 'x_research' ? value.delivery?.deliveryCallId ?? null : value.callId ?? null;
+}
 /** Evidence consumes retained bodies, while delivery keeps the original collection
  * inventory counts. Validate the source counts before adapting an internal view;
  * this view is never returned, persisted, or used as a scope/collection fact. */
@@ -134,8 +151,9 @@ export function latestXResearchTab(branchEntries: readonly unknown[]): string | 
   const row = z.object({location:z.object({committedNavigationOutcome:z.enum(['ok','ok_same_document','failed','cancelled','crashed','download','blocked','superseded','timeout'])})});
   for(const raw of branchEntries) {
     const e=envelope.safeParse(raw);if(!e.success) continue;
-    const canonical=canonicalSchema.safeParse(evidenceDetails(e.data.message.details)),b=binding.safeParse(e.data.message.details);
-    if(!canonical.success || !b.success || canonical.data.callId!==e.data.message.toolCallId) continue;
+    const result=deliveryResult(e.data.message.details);if(result===null) continue;
+    const canonical=canonicalSchema.safeParse(evidenceDetails(result)),b=binding.safeParse(result);
+    if(!canonical.success || !b.success || resultCallId(e.data.message.details)!==e.data.message.toolCallId) continue;
     if((b.data.operation==='search'?b.data.queries:b.data.targets)?.some(value=>row.safeParse(value).success)) tab=b.data.browserTabId;
   }
   return tab;
@@ -357,15 +375,20 @@ export class XResearchEvidence {
         .safeParse(raw);
       if (!entry.success) continue;
       const { message: m, id } = entry.data;
-      const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(m.details);
-      if (restoration.success && m.toolCallId === restoration.data.callId && restoration.data.delivery?.articleObligationCoverage !== 'inline')
+      const value = deliveryResult(m.details);
+      // 壳里没有 delivery：没有可引用的结果，也不是改造前的平铺结果。
+      if (value === null) continue;
+      // 归属判据跟着壳换：平铺比自己的 `callId`，壳比「交付那一轮」的 `deliveryCallId`（R20）。
+      const owner = resultCallId(m.details);
+      const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(value);
+      if (restoration.success && m.toolCallId === owner && restoration.data.delivery?.articleObligationCoverage !== 'inline')
         this.restorationGaps.push({runId:restoration.data.runId,order:++this.resultOrder});
-      const fresh = canonicalSchema.safeParse(evidenceDetails(m.details));
+      const fresh = canonicalSchema.safeParse(evidenceDetails(value));
       // A missing artifact cannot authorize omitted bodies. Independently retain
       // well-formed rows/items from the recorded projection; no identity is filled in.
-      if (!fresh.success && m.details && typeof m.details === 'object' &&
-          'restoration' in m.details && (m.details.restoration as {status?:unknown})?.status === 'missing') {
-        const raw = evidenceDetails(m.details) as Record<string, unknown>;
+      if (!fresh.success && value && typeof value === 'object' &&
+          'restoration' in value && (value.restoration as {status?:unknown})?.status === 'missing') {
+        const raw = evidenceDetails(value) as Record<string, unknown>;
         const key = raw.operation === 'search' ? 'queries' : 'targets';
         if (Array.isArray(raw[key])) for (const candidate of raw[key]) {
           if (!candidate || typeof candidate !== 'object') continue;
@@ -382,18 +405,18 @@ export class XResearchEvidence {
             if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;
           }
           const subset = canonicalSchema.safeParse({...raw,[key]:[row]});
-          if (subset.success && (m.toolCallId === undefined || m.toolCallId === subset.data.callId))
+          if (subset.success && (m.toolCallId === undefined || m.toolCallId === owner))
             this.addCanonical(subset.data, 'history', id ?? null, false);
         }
         continue;
       }
       if (fresh.success) {
-        if (m.toolCallId !== undefined && m.toolCallId !== fresh.data.callId)
+        if (m.toolCallId !== undefined && m.toolCallId !== owner)
           continue;
         this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
         continue;
       }
-      const projection = projectLegacyXResult(m.details);
+      const projection = projectLegacyXResult(value);
       this.legacy.push(projection);
       for (const p of projection.posts) {
         const record: XEvidenceObservation = {
