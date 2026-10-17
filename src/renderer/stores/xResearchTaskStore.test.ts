@@ -44,6 +44,42 @@ describe('xResearchTaskStore', () => {
     });
   });
 
+  it('keeps the stored snapshot when a resync list carries an older revision of it', () => {
+    const store = useXResearchTaskStore.getState();
+    store.upsert(snapshot({ researchRunId: 'xrun-a', revision: 5, state: 'completed' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-c', revision: 2, state: 'cancelled' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-d', threadId: 'thread-b' }));
+
+    // resync 的列表是更早时刻从盘上算出来的：那期间广播已经把 xrun-a 推到 rev 5 的终态。
+    useXResearchTaskStore.getState().replaceThread('thread-a', [
+      snapshot({ researchRunId: 'xrun-a', revision: 3, state: 'running' }),
+      snapshot({ researchRunId: 'xrun-b', revision: 1, state: 'running' }),
+    ]);
+
+    const after = useXResearchTaskStore.getState().snapshotsByRunId;
+    // 倒退的那条留在位：否则卡片会从「完成」退回「运行中」，而 upsert 的守卫管不到这一支。
+    expect(after['xrun-a']).toMatchObject({ revision: 5, state: 'completed' });
+    // 列表里新出现的那条照常落入 —— 守卫只挡「倒退」，不是把整批替换降级成合并。
+    expect(after['xrun-b']).toMatchObject({ revision: 1, state: 'running' });
+    // 整批语义照旧：不在列表里的同线程行仍被清掉。
+    expect(after['xrun-c']).toBeUndefined();
+    // 别的线程不受影响。
+    expect(after['xrun-d']).toMatchObject({ threadId: 'thread-b', revision: 1 });
+  });
+
+  it('lets an equal-revision resync snapshot overwrite, mirroring upsert', () => {
+    const store = useXResearchTaskStore.getState();
+    store.upsert(snapshot({ researchRunId: 'xrun-a', revision: 4, state: 'running' }));
+
+    store.replaceThread('thread-a', [
+      snapshot({ researchRunId: 'xrun-a', revision: 4, state: 'completed' }),
+    ]);
+
+    expect(useXResearchTaskStore.getState().snapshotsByRunId['xrun-a']).toMatchObject({
+      revision: 4, state: 'completed',
+    });
+  });
+
   it('reset drops only that thread', () => {
     const store = useXResearchTaskStore.getState();
     store.upsert(snapshot({ researchRunId: 'xrun-a' }));

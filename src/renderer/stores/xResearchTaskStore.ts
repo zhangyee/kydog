@@ -26,14 +26,23 @@ export const useXResearchTaskStore = create<XResearchTaskStoreState>((set) => ({
     return { snapshotsByRunId: { ...state.snapshotsByRunId, [snapshot.researchRunId]: snapshot } };
   }),
   // 整批替换而不是合并：resync 拿到的列表就是该线程此刻的全部研究，
-  // 合并会把盘上已经不在的那几行永久留在卡上。这里不加 revision 守卫 ——
-  // 列表本身是主进程的权威结论，与它比新旧只会让一个过期的守卫挡住正确的一版。
-  replaceThread: (threadId, snapshots) => set((state) => ({
-    snapshotsByRunId: {
-      ...withoutThread(state.snapshotsByRunId, threadId),
-      ...Object.fromEntries(snapshots.map((snapshot) => [snapshot.researchRunId, snapshot])),
-    },
-  })),
+  // 合并会把盘上已经不在的那几行永久留在卡上。
+  // 但这份列表可能是更早时刻算出来的（`list()` → `open()` 要读盘，期间广播一直在推 revision），
+  // 所以落每条之前先比一次 revision：低于手里那份的是过期重放，保留手里那份。
+  // `upsert` 的守卫在这里帮不上忙 —— 这一支是先按线程删、再把列表整个铺回去，没有「已有行」可挡。
+  replaceThread: (threadId, snapshots) => set((state) => {
+    const incoming: [string, XResearchTaskSnapshot][] = snapshots.map((snapshot) => {
+      const prior = state.snapshotsByRunId[snapshot.researchRunId];
+      // 相等时放行，与 `upsert` 一致。
+      return [snapshot.researchRunId, prior && prior.revision > snapshot.revision ? prior : snapshot];
+    });
+    return {
+      snapshotsByRunId: {
+        ...withoutThread(state.snapshotsByRunId, threadId),
+        ...Object.fromEntries(incoming),
+      },
+    };
+  }),
   // 换线程时只丢那一个线程的行：别的线程的研究还在主进程里跑，快照要留着。
   reset: (threadId) => set((state) => ({
     snapshotsByRunId: withoutThread(state.snapshotsByRunId, threadId),
