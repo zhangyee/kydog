@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { sessionsDirFor, sessionFileFor } from '../persist/paths';
-import { createSession, forgetXResearchSession, ModelUnavailableError, type AnySession } from './sessionFactory';
+import {
+  createSession, forgetXResearchSession, ModelUnavailableError, xResearchSessionIdentity, type AnySession,
+} from './sessionFactory';
 import { disposeXResearchThread } from '../x/xResearchTaskService';
 import { transition, type RunState } from './runState';
 import { broadcaster, type EventSink } from '../ipc/broadcaster';
@@ -72,6 +74,9 @@ export type Bound = {
    */
   runId: string | null;
   staleAfterRun?: boolean;
+  /** 这份 session 对应的 x-research 账本身份（`sessionFactory` 的 per-session 对象）。
+   *  拆除只收自己那一份：同一个 threadId 上重新发布的替换会话是另一个对象。 */
+  xResearchLedger?: object;
 };
 
 /** pi 的 transcript。Adaptation A: handle both real SDK (state.messages) and fake (messages). */
@@ -281,6 +286,8 @@ class AgentService {
       runJournal: [],
       runStartIndex: null,
       runId: null,
+      // 建会话与登记账本是同一段同步代码，所以这里取到的就是**这个** session 的那一份。
+      xResearchLedger: xResearchSessionIdentity(threadId),
     };
     createdBound = bound;
     this.sessions.set(threadId, bound);
@@ -437,14 +444,25 @@ class AgentService {
     // which this old cleanup must neither return nor delete.
     this.sessions.delete(threadId);
     this.runs.delete(threadId);
-    // Adaptation B: fake has cleanup(), real has dispose()
-    if (bound.session.cleanup) await bound.session.cleanup();
-    else if (bound.session.dispose) bound.session.dispose();
-    // 研究跟着会话走：在飞的那一份照信号收尾并落盘（`interrupted`），排队的一次都没起跑。
-    // 排在会话清理之后：拆除本身是本地动作，不该被一次浏览器采集的收尾拖住；而这条 thread 的
-    // 活账本要等研究收完尾才丢 —— 反过来的话，排队的提交会在一个已经不存在的会话上起跑。
-    await disposeXResearchThread(threadId);
-    forgetXResearchSession(threadId);
+    // 拆的是**这个** session 的账本：清理里还有两个 await，替换会话可以在这段时间发布，
+    // 拿 threadId 现取会取到它的账本。身份在建 bound 时就固定下来了。
+    const ledger = bound.xResearchLedger;
+    // `cleanup` 抛了也一样要把研究收尾：否则采集还在跑、内存缓存也漏在那里。
+    try {
+      // Adaptation B: fake has cleanup(), real has dispose()
+      if (bound.session.cleanup) await bound.session.cleanup();
+      else if (bound.session.dispose) bound.session.dispose();
+    } finally {
+      // 研究跟着会话走：在飞的那一份照信号收尾并落盘（`interrupted`），排队的一次都没起跑。
+      // 排在会话清理之后：拆除本身是本地动作，不该被一次浏览器采集的收尾拖住；而这条 thread 的
+      // 活账本要等研究收完尾才丢 —— 反过来的话，排队的提交会在一个已经不存在的会话上起跑。
+      try {
+        await disposeXResearchThread(threadId, ledger);
+      } finally {
+        // 这条 thread 已经有替换会话时不许删它的账本（身份守卫在 `forgetXResearchSession` 里）。
+        if (!this.sessions.has(threadId)) forgetXResearchSession(threadId, ledger);
+      }
+    }
   }
 
   private currentRunId(threadId: string): string {

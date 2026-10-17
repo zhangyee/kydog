@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { KydogError } from '../../shared/errors';
 import { logger } from '../log';
-import { fixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
+import { fixture, post, query, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
 import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { finalizeXResearchCollection } from './xResearchCanonical';
 import type { XResearchArtifactStore } from './xResearchArtifacts';
@@ -239,6 +239,34 @@ describe('x research runner', () => {
     }, harness().ctx);
     expect(searchRows(explicit)[0].budgetBinding)
       .toContainEqual({ dimension: 'posts', limit: 1, origin: 'explicit', used: 1 });
+  });
+
+  it('rejects request bounds before touching the browser', async () => {
+    const f = fixture([searchHtml(post())]);
+    const runner = createXResearchRunner(depsFor(f));
+    // 边界内侧：4096 UTF-16 units，构造出的公开搜索 URL 仍在 8192 以内 —— 照旧跑。
+    // 没有这一条，下面「一次浏览器都没碰」也可能只是「什么也没跑」。
+    const boundary = 'a' + ' '.repeat(4095);
+    const accepted = await runner({
+      search: { ...searchInput.search, queries: [{ ...query, query: boundary }] },
+    }, harness().ctx);
+    expect(searchRows(accepted)[0].query.query).toBe(boundary);
+    expect(f.open).toHaveBeenCalledTimes(1);
+    expect(new URL(f.open.mock.calls[0][0]).searchParams.get('q')).toBe(boundary);
+    const collected = f.collect.mock.calls.length;
+    // 越过 query 上限：4100 units 与 4096 个汉字（URL 约 36 KB）都拒，且浏览器一次都没开。
+    for (const text of ['a'.repeat(4100), '汉'.repeat(4096)]) {
+      await expect(runner({
+        search: { ...searchInput.search, queries: [{ ...query, query: text }] },
+      }, harness().ctx)).rejects.toThrow('shorten or split');
+      expect(f.open).toHaveBeenCalledTimes(1);
+    }
+    // read 的 target 同理：超长 URL 也必须在碰浏览器之前拒。
+    await expect(runner({
+      read: { ...readWork, targets: [{ url: 'https://x.com/alice/status/1' + 'x'.repeat(8192) }] },
+    }, harness().ctx)).rejects.toThrow('shorter actually observed permalink');
+    expect(f.open).toHaveBeenCalledTimes(1);
+    expect(f.collect).toHaveBeenCalledTimes(collected);
   });
 
   it('rejects a tab owned by another thread and lets a read open its own', async () => {

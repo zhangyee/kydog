@@ -5,7 +5,7 @@
 // 执行、队列、落盘、交付都在 `../x/xResearchTaskService` 里 —— 工具不再自己碰浏览器，所以
 // `submit` 能在同一微任务里返回（工作排在队列上跑）。
 //
-// 旧的非动作式工具（`./xResearchTool`）此刻**仍在注册**（R26）：注册交换与它的删除一起归 Task 9。
+// 旧的非动作式工具（`./xResearchTool`）已随 Task 9 的注册交换删除：这里是唯一的面。
 import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { X_DOM_MAX_QUERY_UNITS } from '../x/xDomSource';
@@ -75,6 +75,8 @@ export type XResearchToolsDeps = {
   threadId: string;
   projectRoot: string;
   currentRunId(): string | null;
+  /** 会话侧账本的不透明身份：随提交交给任务 service，拆除时用来认出「这是替换会话的研究」。 */
+  ledger?: object;
   /** 交付后喂证据账本（spec §4.5「可引用 = 已交付」）：只有 `wait` 真交出去时才调用，
    *  绝不在工作收尾时调用 —— 未交付的观察不许变得可引用。 */
   observeDelivery(result: XResearchResult): void;
@@ -94,7 +96,10 @@ async function submit(args: Record<string, unknown>, deps: XResearchToolsDeps) {
     ...(researchRunId === undefined ? {} : { researchRunId }),
     ...(work.tabId === undefined ? {} : { tabId: work.tabId }),
     work: 'search' in work ? { search: work.search, budgetPolicy } : { read: work.read, budgetPolicy },
-  }, { threadId: deps.threadId, runId, projectRoot: deps.projectRoot });
+  }, {
+    threadId: deps.threadId, runId, projectRoot: deps.projectRoot,
+    ...(deps.ledger === undefined ? {} : { ledger: deps.ledger }),
+  });
   return deliverEnvelope({
     researchRunId: submitted.researchRunId, snapshot: submitted.snapshot,
     delivery: null, undelivered: [], action: 'submit',

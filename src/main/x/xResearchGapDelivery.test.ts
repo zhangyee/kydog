@@ -39,8 +39,9 @@ function harness(f: ReturnType<typeof fixture>, ledger: XResearchEvidence) {
   const artifacts = tempXArtifactStore();
   const scope = new XResearchScopeLedger();
   const observed: XResearchResult[] = [];
+  const store = new XResearchTaskStore(root());
   const service = new XResearchTaskService({
-    store: new XResearchTaskStore(root()),
+    store,
     runWork: createXResearchRunner({
       browserFor: () => f.context.browser,
       contextFor: () => ({
@@ -65,15 +66,13 @@ function harness(f: ReturnType<typeof fixture>, ledger: XResearchEvidence) {
     if (!delivered.delivery) throw new Error('expected a delivered result');
     return delivered;
   };
-  return { run, artifacts, observed };
+  return { run, artifacts, observed, store, threadId };
 }
 
 it.each([500, 1000])('delivers twenty targets with %i Article gaps through persistence and the live ledger', async count => {
-  const store = tempXArtifactStore();
   const f = fixture([readHtml(post('1000000', 'ReadAuthor', 'ordinary earlier body'))]);
   const ledger = new XResearchEvidence('/tmp', () => 'run');
-  void store;
-  const { run, artifacts, observed } = harness(f, ledger);
+  const { run, artifacts, observed, store, threadId } = harness(f, ledger);
   const baseline = await run({
     read: {
       objective: 'baseline', targets: [{ url: 'https://x.com/ReadAuthor/status/1000000' }],
@@ -120,8 +119,13 @@ it.each([500, 1000])('delivers twenty targets with %i Article gaps through persi
   expect(details.delivery).toMatchObject({ persistence: 'saved', truncated: true, articleObligationCoverage: 'not_inline' });
   expect(details.artifact).toBeTruthy();
   // 入过账的就是这一份（`callId` 是提交那一轮，由 service 铸；交付那一轮在壳上）。
-  expect(observed.at(-1)?.callId).toBe(delivered.delivery!.submitCallId);
-  expect(observed.at(-1)?.batchId).toBe(delivered.delivery!.result.batchId);
+  // 判据取**盘上的提交记录**：壳与账本自己对比对不出来一个整体写歪的 id。
+  const stored = (await store.listSubmissions(threadId, delivered.researchRunId))
+    .find(submission => submission.objective === 'gap pressure');
+  if (!stored) throw new Error('expected the persisted gaps submission');
+  expect(observed.at(-1)?.callId).toBe(stored.submitCallId);
+  expect(observed.at(-1)?.batchId).toBe(stored.batchId);
+  expect(delivered.delivery!.submitCallId).toBe(stored.submitCallId);
   // 工件里是完整的 canonical：二十条目标的缺口数一个都没少，而交付副本照 1 MiB 裁过。
   const saved = await artifacts.read(details.artifact!);
   if (saved.operation !== 'read' || details.operation !== 'read') throw Error('read');

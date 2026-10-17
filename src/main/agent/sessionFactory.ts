@@ -119,9 +119,17 @@ function researchService(): XResearchTaskService {
   return service;
 }
 
+/** 这条 thread 此刻活账本的不透明身份：拆除路径用它区分「我那一份」与替换会话的账本。 */
+export function xResearchSessionIdentity(threadId: string): object | undefined {
+  return xResearchSessions.get(threadId);
+}
+
 /** 会话拆掉之后这条 thread 的活账本跟着丢（在飞研究已由 `disposeXResearchThread` 先收尾落盘）。
- *  不丢的话，之后任何一个走错路的调用会拿到一个没人再同步的账本。 */
-export function forgetXResearchSession(threadId: string): void {
+ *  不丢的话，之后任何一个走错路的调用会拿到一个没人再同步的账本。
+ *  给了身份时只删那一份：拆除有多个 await，这个窗口里重新发布的替换会话会把同一个
+ *  threadId 换成另一个账本对象 —— 旧会话不许把它删掉。 */
+export function forgetXResearchSession(threadId: string, identity?: object): void {
+  if (identity !== undefined && xResearchSessions.get(threadId) !== identity) return;
   xResearchSessions.delete(threadId);
 }
 
@@ -217,7 +225,9 @@ export async function createSession(opts: {
   const scopeFacts = new XResearchScopeLedger();
   let branchIds: string[] | undefined;
   // 进程级 service 按 threadId 现取这一份：证据表与范围 prior 属于会话，队列与在飞状态属于进程。
-  xResearchSessions.set(opts.sessionId, { evidence, scopeFacts, currentRunId, sessionsDir: opts.sessionsDir });
+  // 它同时是会话身份：替换会话在同一个 threadId 上登记的永远是新对象。
+  const ledger = { evidence, scopeFacts, currentRunId, sessionsDir: opts.sessionsDir };
+  xResearchSessions.set(opts.sessionId, ledger);
   const service = researchService();
   // 恢复链读本 thread 任意一次研究的工件（任务根按 researchRunId 分叉，见那个工厂的注释）。
   const artifacts = createXResearchThreadArtifactStore({
@@ -253,8 +263,9 @@ export async function createSession(opts: {
         evidence.restore(hydrated.entries);
         scopeFacts.restore(hydrated.entries);
         if (hydrated.failures.length) {
-          // 恢复不了的工件在各自的壳上已标了 `restoration: missing`（模型看得见）；
-          // 这里是它唯一的进程侧痕迹。
+          // 恢复不了的工件在 `hydrateXResearchBranch` 返回的**副本**上标了 `restoration: missing` ——
+          // 它不回写 transcript，模型看不到：账本凭这个标记挡住引用，模型只看到工具自己那份
+          // `delivery` 事实。这里是它唯一的进程侧痕迹。
           const reasonCounts: Record<string, number> = {};
           for (const {reason} of hydrated.failures) reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
           logger.warn('x_research', 'could not restore artifacts on this branch', { threadId: opts.sessionId, missingCalls: hydrated.failures.length, reasonCounts });
@@ -281,7 +292,7 @@ export async function createSession(opts: {
     ...browserTools,
     ...researchTools,
     ...(settings.research?.xResearchEnabled === true ? [createXResearchTools({
-      service, threadId: opts.sessionId, projectRoot: opts.cwd, currentRunId,
+      service, threadId: opts.sessionId, projectRoot: opts.cwd, currentRunId, ledger,
       // 交付即入账（spec §4.5「可引用 = 已交付」）：只有 `wait` 真把结果交出去时才会走到这里。
       // `pendingResults` 记的是「这一份是我亲手交的」：`syncBranch` 靠它绕过磁盘恢复。
       observeDelivery: result => {

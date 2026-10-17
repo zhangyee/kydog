@@ -26,7 +26,12 @@ import type { XResearchProgressEvent } from './xResearchSearch';
 /** 进度事件归采集层（它知道自己在哪一段）：任务侧只消费，不另写一份形状。 */
 export type { XResearchProgressEvent };
 
-export type XResearchTaskOwner = { threadId: string; runId: string; projectRoot: string };
+export type XResearchTaskOwner = {
+  threadId: string; runId: string; projectRoot: string;
+  /** 会话侧账本的不透明身份（`sessionFactory` 的 per-session 对象）：拆除时只认领自己那一份 ——
+   *  同一个 threadId 上重新发布的替换会话是另一个对象，它的在飞研究与缓存都不该被旧会话带走。 */
+  ledger?: object;
+};
 
 /** 一次提交的工作：一组 query（search）或一组目标（read），与 `XResearchInput` 的两支同形。
  *  `budgetPolicy` 由提交时从**原始参数**算出（`resolveXBudgetPolicy` 看的是「这个键写没写」）：
@@ -201,6 +206,8 @@ type ActiveResearch = {
   /** 这段研究所在的会话被拆掉了：排队的提交不再起跑，在飞的那一份按**中断**收尾（不是用户取消）——
    *  用户按停止是 `cancelRequested`，两者在盘上留下的结论不同（`cancelled` vs `interrupted`）。 */
   disposed: boolean;
+  /** 谁最后一次把工作提交进这段研究（会话侧账本身份）。拆除时据此只中断自己那一份。 */
+  ledger?: object;
   /** 每份提交自己的执行体（`enqueue` 排上链时就记下、跑完就删）。`cancel` 等的是**在飞那一份
    *  自己**的收尾 —— 等整条 thread 链会让同一 thread 上另一段研究排在后头的采集把 cancel 绑住。 */
   pending: Map<string, Promise<void>>;
@@ -330,6 +337,7 @@ export class XResearchTaskService {
       controller: new AbortController(),
       cancelRequested: false,
       disposed: false,
+      ledger: undefined,
       pending: new Map(),
     };
     this.active.set(key, opened);
@@ -362,6 +370,7 @@ export class XResearchTaskService {
       controller: new AbortController(),
       cancelRequested: false,
       disposed: false,
+      ledger: owner.ledger,
       pending: new Map(),
     };
     this.active.set(this.key(owner.threadId, researchRunId), created);
@@ -384,6 +393,8 @@ export class XResearchTaskService {
       throw new KydogError('research.cancelled', 'X research task was cancelled; start a new research');
     }
     const active = opened ?? this.create(owner, researchRunId);
+    // 续跑同一段研究时，最后提交进它的会话接手这段研究：旧会话的拆除不该打断它。
+    if (owner.ledger !== undefined) active.ledger = owner.ledger;
     const createdAt = this.now();
     const submission: XResearchSubmission = {
       version: 1,
@@ -594,22 +605,29 @@ export class XResearchTaskService {
    *  （R12）；而排队的那些提交还挂在 per-thread 链上，它们的 `run` 会再写一次盘 —— 不先把链排空就
    *  `forget`，那次写盘会拿内存里的活副本把一条已经不存在的研究重新写回盘上（删对话之后这条
    *  目录刚刚被 `removeThread` 删掉）。链上这时只剩状态转移，不会再碰浏览器。 */
-  async disposeThread(threadId: string): Promise<void> {
+  async disposeThread(threadId: string, ledger?: object): Promise<void> {
     for (const active of [...this.active.values()]) {
-      if (active.record.threadId === threadId) await this.interruptActive(active);
+      if (active.record.threadId === threadId && this.owns(active, ledger)) await this.interruptActive(active);
     }
     await this.awaitIdle(threadId).catch(() => undefined);
-    this.forget(threadId);
+    this.forget(threadId, ledger);
+  }
+
+  /** 拆除只认领自己那一份：给了账本身份时，只碰由它最后一次提交的研究；没给（删对话等）
+   *  就是整条 thread。`undefined` 的 active 是只被 `get` / `wait` 打开过的缓存，里面不可能有在飞工作。 */
+  private owns(active: ActiveResearch, ledger?: object): boolean {
+    return ledger === undefined || active.ledger === ledger;
   }
 
   /** 会话消失时的收尾：在飞那一份照信号抛出（`run` 的 catch 写成 `interrupted`），
    *  排队的一次都没起跑就收成 `interrupted`，最后落一次盘。 */
   private async interruptActive(active: ActiveResearch): Promise<void> {
+    // 先关门再早退：否则落在「没有在飞」与「拆除完成」之间的提交会照常起跑一整轮采集。
+    active.disposed = true;
     const inFlight = [...active.submissions.values()].filter(
       (submission) => submission.state === 'queued' || submission.state === 'running',
     );
     if (!inFlight.length) return;
-    active.disposed = true;
     active.controller.abort();
     const queued = inFlight.filter((submission) => submission.state === 'queued');
     for (const submission of queued) this.interrupt(submission);
@@ -624,10 +642,11 @@ export class XResearchTaskService {
     });
   }
 
-  /** 淘汰内存缓存：下一次 `get()` 从盘上重读（删对话后不许再从缓存答复）。 */
-  forget(threadId: string): void {
+  /** 淘汰内存缓存：下一次 `get()` 从盘上重读（删对话后不许再从缓存答复）。
+   *  给了账本身份时只淘汰自己那一份 —— 同一条 thread 上替换会话的缓存不许被旧会话删掉。 */
+  forget(threadId: string, ledger?: object): void {
     for (const [key, active] of this.active) {
-      if (active.record.threadId === threadId) this.active.delete(key);
+      if (active.record.threadId === threadId && this.owns(active, ledger)) this.active.delete(key);
     }
   }
 
@@ -990,8 +1009,8 @@ export function xResearchTaskService(): XResearchTaskService | null {
 /** 会话被拆（切项目 / 换模型 / 切语言 / 删对话）时，这条 thread 的在飞研究要停下并落盘。
  *  由会话侧调用（`AgentService.dispose`）：**先**取消并等盘上写成收尾状态，**再**解绑那次会话
  *  的活账本 —— 反过来的话，排队的提交会在一个已经不存在的会话上起跑。 */
-export async function disposeXResearchThread(threadId: string): Promise<void> {
-  await instance?.disposeThread(threadId);
+export async function disposeXResearchThread(threadId: string, ledger?: object): Promise<void> {
+  await instance?.disposeThread(threadId, ledger);
 }
 
 /** 删对话：盘上的目录由 `XResearchTaskStore.removeThread` 删，这里淘汰内存缓存 ——

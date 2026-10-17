@@ -182,6 +182,27 @@ it('counts only actual current-run calls across SDK persistence and current bran
  const stored=restoredManager.getBranch().at(-1);
  expect(stored).toMatchObject({type:'message',message:{role:'toolResult',toolCallId:'scope-next-run-wait',details:{kind:'x_research',delivery:{result:{reportRunScopeFacts:deliveredOf(nextRun).reportRunScopeFacts}}}}});
 });
+// F4: `pendingResults` 的判据是 submitCallId **与** batchId 一起对上。下面让同一个 submitCallId
+// 在 pending 里挂着另一个 batchId：这一份不是「我亲手交的」，必须回到磁盘，而不是被当成 live。
+it('re-reads from disk when the pending batch for a submit call id differs',async()=>{
+ const session=await build();
+ const tool=H.fixture.find(candidate=>candidate.name==='x_research')!;
+ const submitted=(await tool.execute('direct-submit',{action:'submit',...searchInput} as never,undefined,undefined,{} as never)).details as XResearchDeliveryEnvelope;
+ const waited=(await tool.execute('direct-wait',{action:'wait',researchRunId:submitted.researchRunId} as never,undefined,undefined,{} as never)).details as XResearchDeliveryEnvelope;
+ const delivered=waited.delivery!;expect(delivered.result.artifact).toBeDefined();
+ // 直接调工具不经 `session.prompt` 的 syncBranch：`pendingResults` 仍记着这一份。transcript 里再放
+ // 一条同 submitCallId、不同 batchId 的壳 —— 这就是「pending 里有，但不是这一份」。
+ const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
+ manager.appendMessage({role:'toolResult',toolCallId:'mismatch-wait',toolName:'x_research',content:[{type:'text',text:'{}'}],isError:false,timestamp:Date.now(),details:{kind:'x_research',action:'wait',delivery:{deliveryCallId:'mismatch-wait',submissionId:delivered.submissionId,submitCallId:delivered.submitCallId,operation:delivered.operation,result:{...delivered.result,batchId:'xbatch_not_mine'}}}} as never);
+ // guard 工具的 execute 先跑 syncBranch：这就是「重新读盘」的入口。
+ const write=H.fixture.find(candidate=>candidate.name==='write')!;
+ await write.execute('trigger-sync',{path:'sync.md',content:'plain text'},undefined,undefined,{} as never);
+ // 恢复链碰了这条壳（参考对不上 → `restoration: missing`），账本因此记了一个不可用调用；
+ // 若它被当成 live，这个数会是 0。
+ const after=await research(session,searchInput,'after-mismatch');
+ expect(deliveredOf(after).reportRunScopeFacts).toMatchObject({callCount:1,unavailableCallCount:1});
+ await session.cleanup?.();
+});
 it('waits for artifact hydration before guarded writes and discards stale branch reads',async()=>{
  const {fileService}=await import('../fs/fileService');
  const session=await build();
