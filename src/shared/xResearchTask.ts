@@ -1,10 +1,9 @@
-// 只放「研究 → 提交 → 工作项」三层身份的最小形状（spec §4.1、§4.4）。
-// 快照、交付壳与投影函数在后续任务里往这个文件上补，字段名不动。
+// 「研究 → 提交 → 工作项」三层身份的最小形状（spec §4.1、§4.4），加上研究级快照与它的投影（§5.3）。
 //
 // `status` / `stopReason` 的取值就是采集层实际写出来的那两个联合类型：抄一份到这里
-// 会让两份词表各自漂移（卡片上一个不认识的词，任何测试都不会红）。这里只做 type-only
-// import，编译后被抹掉，渲染层打包不会因此把主进程代码拉进来。
-import type { XResearchStatus, XStopReason } from '../main/x/xResearchTypes';
+// 会让两份词表各自漂移（卡片上一个不认识的词，任何测试都不会红）。两个词表放在
+// `./xResearchStatus`（采集层的 `src/main/x/xResearchTypes.ts` 从那里 re-export 同一个声明）。
+import type { XResearchStatus, XStopReason } from './xResearchStatus';
 
 /** 研究段的状态词。`interrupted` 只在盘上还留着未收尾的工作时出现（§4.4 的崩溃诚实性）。 */
 export type XResearchTaskState = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -72,3 +71,149 @@ export type XResearchTaskRecord = {
   browserTabId?: string;
   submissionIds: string[];
 };
+
+/** 研究级快照：卡片与 `xResearch.taskGet` / `taskList` 的唯一数据源（spec §5.3）。
+ *  里面每个数字都是工作项字段的累加，没有百分比、剩余时间或任何估算。 */
+export type XResearchTaskSnapshot = {
+  researchRunId: string;
+  threadId: string;
+  revision: number;
+  /** 生命周期取 `record.state`：它是唯一权威（唯一写者是任务 service，恢复时由它写 `interrupted`）。
+   *  `counts` 是按**工作项**分桶的，两者可以不一致 —— 状态词取这里，桶只喂行内数字（「失败 2」）。 */
+  state: XResearchTaskState;
+  stateReason?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 卡头那句话：这段研究**最初**一次提交要回答的问题（R10 / spec §5.3）——
+   *  后续提交只是往同一段研究里追加步骤，拿最新一次会让卡头在运行中换题。 */
+  objective: string;
+  browserTabId?: string;
+  counts: {
+    submissions: number;
+    queued: number;
+    running: number;
+    done: number;
+    failed: number;
+    cancelled: number;
+    interrupted: number;
+    posts: number;
+    replies: number;
+    articles: number;
+    undelivered: number;
+  };
+  budget: { scrolls: number; expandActions: number };
+  usage: { posts: number; scrolls: number; expandActions: number };
+  search: XResearchWorkItem[];
+  read: XResearchWorkItem[];
+};
+
+/** 判定「这一行收尾了、且是源侧拒绝/失败」（spec §5.3 的「有失败」判据）。 */
+const X_RESEARCH_FAILURE_STATUSES: ReadonlySet<XResearchStatus> = new Set([
+  'failed', 'unavailable', 'access_denied', 'auth_required', 'rate_limited', 'action_required',
+]);
+
+/** 研究状态。顺序就是优先级（spec §5.3 的卡状态表 + §4.4 的中断诚实性）：
+ *  中断 > 取消 > 进行中 > 有失败 > 完成。
+ *
+ *  调用方保证传入的列表非空（`record.submissionIds` 非空却读不出任何 submission 时，
+ *  由 service 写 `interrupted`，不要调用本函数）；`[]` 落出的 `completed` 不是结论。 */
+export function xResearchTaskState(submissions: readonly XResearchSubmission[]): XResearchTaskState {
+  // 盘上还留着未收尾的工作 → 进程被杀过，任何「最新」的说法都是假的。
+  if (submissions.some((submission) => submission.state === 'interrupted')) return 'interrupted';
+  // 取消是用户下的动作：只有整段研究都被取消才算取消，否则它可能已有成功的工作。
+  if (submissions.length > 0 && submissions.every((submission) => submission.state === 'cancelled')) {
+    return 'cancelled';
+  }
+  if (submissions.some((submission) => submission.state === 'queued' || submission.state === 'running')) {
+    return 'running';
+  }
+  for (const submission of submissions) {
+    if (submission.workItems.some((item) => item.status !== null && X_RESEARCH_FAILURE_STATUSES.has(item.status))) {
+      return 'failed';
+    }
+  }
+  return 'completed';
+}
+
+type XResearchWorkItemBucket = 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted';
+
+/** 工作项落进且只落进一个桶：先按阶段分「还没开始 / 在飞」，收尾的再按状态结论分。
+ *  状态那一支是穷举的 switch —— `XResearchStatus` 将来多一个取值，这里会编译失败，
+ *  逼人先决定它属于哪个桶，而不是静悄悄落进「取消」。 */
+function workItemBucket(item: XResearchWorkItem): XResearchWorkItemBucket {
+  if (item.state === 'queued') return 'queued';
+  if (item.state !== 'stopped') return 'running';
+  switch (item.status) {
+    case 'observed':
+    case 'partial':
+    case 'explicit_empty':
+      return 'done';
+    case 'failed':
+    case 'unavailable':
+    case 'access_denied':
+    case 'auth_required':
+    case 'rate_limited':
+    case 'action_required':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case null:
+      // 收尾了却没有任何状态结论：进程被杀留下的那一类，照 §4.4 说「中断」，不猜成失败或成功。
+      return 'interrupted';
+  }
+}
+
+export function xResearchTaskSnapshot(record: XResearchTaskRecord,
+  submissions: readonly XResearchSubmission[]): XResearchTaskSnapshot {
+  const workItems = submissions.flatMap((submission) => submission.workItems);
+  const counts = {
+    submissions: submissions.length,
+    queued: 0, running: 0, done: 0, failed: 0, cancelled: 0, interrupted: 0,
+    posts: 0, replies: 0, articles: 0, undelivered: 0,
+  };
+  for (const item of workItems) {
+    counts[workItemBucket(item)] += 1;
+    // `posts` 只由 search 工作项填写；read 工作项恒为 0，否则卡头会双计（§5.4 的「收 N 帖」
+    // 就是搜索行的去重帖数）。按 section 过滤而不是信任那个 0：将来 read 行填了 posts，
+    // 卡头也不会多出一个「读取也收了 N 帖」的数字。
+    if (item.section === 'search') counts.posts += item.posts;
+    counts.replies += item.replies;
+    if (item.article === 'body') counts.articles += 1;
+  }
+  // 「没交付」只算已经收尾、盘上还没有交付标记的提交：还在跑的提交压根没有结果可交付，
+  // 算进去会让卡上那个数字变成对未来的估算。两处都按「空值」判而不是逐字比 `null` / `undefined`：
+  // store 直接 `JSON.parse(...) as XResearchSubmission`，只有真时间戳才算交付过（`deliveredAt: null`
+  // 仍是没交付），缺 `endedAt` 的是还没收尾。
+  counts.undelivered = submissions.filter(
+    (submission) => submission.endedAt != null && !submission.deliveredAt,
+  ).length;
+  const usage = { posts: counts.posts, scrolls: 0, expandActions: 0 };
+  const budget = { scrolls: 0, expandActions: 0 };
+  for (const item of workItems) {
+    usage.scrolls += item.scrolls;
+    usage.expandActions += item.expandActions;
+  }
+  // 预算按提交时各自声明的上限相加：一次研究可以追加多次提交，每一份的额度都是真的。
+  for (const submission of submissions) {
+    budget.scrolls += submission.budget.scrolls;
+    budget.expandActions += submission.budget.expandActions;
+  }
+  return {
+    researchRunId: record.researchRunId,
+    threadId: record.threadId,
+    revision: record.revision,
+    // 生命周期由 task.json 说了算（唯一写者是任务 service，恢复时由它写 `interrupted`）；
+    // `xResearchTaskState` 是 service 做这个决定时用的那把尺子，不是投影里的第二份真相。
+    state: record.state,
+    stateReason: record.stateReason,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    objective: submissions[0]?.objective ?? '', // R10 / spec §5.3：最早一次提交，`[]` 时为空串
+    browserTabId: record.browserTabId,
+    counts,
+    budget,
+    usage,
+    search: workItems.filter((item) => item.section === 'search'),
+    read: workItems.filter((item) => item.section === 'read'),
+  };
+}

@@ -1,8 +1,9 @@
 import type { XBudgetBinding } from './xResearchBudget';
 import type { NavigationObservation } from '../../shared/types';
-/** v2 observations describe rendered UI facts, never platform-wide completeness. */
-export type XResearchStatus = 'observed' | 'partial' | 'explicit_empty' | 'auth_required' | 'action_required' | 'rate_limited' | 'access_denied' | 'unavailable' | 'cancelled' | 'failed';
-export type XStopReason = 'explicit_ui_end' | 'cursor_exhausted' | 'source_unavailable' | 'budget_reached' | 'action_failed' | 'navigation_failed' | 'identity_unproven' | 'wait_timeout' | 'access_barrier' | 'cancelled' | 'agent_stopped';
+// `XResearchStatus` / `XStopReason` 归 shared（任务投影与采集层共用同一个词表）；这里 re-export
+// 保住采集层原有那批 `from './xResearchTypes'` 的 import，同时本文件内部继续可用。
+import type { XResearchStatus, XStopReason } from '../../shared/xResearchStatus';
+export type { XResearchStatus, XStopReason };
 export type XFactRelation = 'same' | 'different' | 'unknown';
 export interface XLocationRelation {
   origin: XFactRelation;
