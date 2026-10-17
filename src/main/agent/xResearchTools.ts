@@ -9,6 +9,7 @@
 import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { X_DOM_MAX_QUERY_UNITS } from '../x/xDomSource';
+import { assertXRequestWithinBounds } from '../x/xResearchBounds';
 import { resolveXBudgetPolicy, X_RESEARCH_MAX_BUDGET } from '../x/xResearchBudget';
 import { deliverEnvelope } from '../x/xResearchDeliver';
 import { parseXResearchWork, X_RESEARCH_DEFAULT_BUDGETS } from '../x/xResearchInput';
@@ -86,6 +87,10 @@ async function submit(args: Record<string, unknown>, deps: XResearchToolsDeps) {
   const workArgs: Record<string, unknown> = {};
   for (const key of WORK_KEYS) if (Object.hasOwn(args, key)) workArgs[key] = args[key];
   const work = parseXResearchWork(workArgs);
+  // 与 runner 里 `browserFor` 之前那一句是同一个 helper：请求越界要在**入队之前**拒。排进队列
+  // 才拒的话，抛出会被 `run` 的 catch 收成一条 `interrupted` 的提交，模型看到的是泛化失败，
+  // 而不是「把 query 缩短或拆分」。
+  assertXRequestWithinBounds(work);
   const runId = deps.currentRunId();
   if (!runId) throw new Error('x_research requires an active run');
   // R19：`origin` 看的是「这个键写没写」，只有**原始参数**说得清；到服务那一层只剩数值。

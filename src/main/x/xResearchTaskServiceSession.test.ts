@@ -129,3 +129,50 @@ it('feeds the ledger only on delivery', async () => {
   expect(ledger.observations.length).toBeGreaterThan(0);
   expect(ledger.guard('/tmp/x-research-topic-2026-10-12.md', '[source](https://x.com/alice/status/123)')).toEqual({ createOnly: true });
 });
+
+it('does not wait for another ledger\'s running submission when a session tears down', async () => {
+  const seen: { signal?: AbortSignal; started: Promise<void> } = { started: Promise.resolve() };
+  const service = serviceWith(hangingRunner(seen));
+  const thread = owner();
+  const ledgerA = {};
+  const ledgerB = {};
+  // 同一 thread 上另一个账本的在飞提交（替换会话那一份）。
+  const foreign = await service.submit({ work: searchWork() }, { ...thread, ledger: ledgerB });
+  await seen.started;
+  let resolved = false;
+  void service.disposeThread(thread.threadId, ledgerA).then(() => { resolved = true; });
+  // 工作体一直在等信号（没有人中止它）：拆除必须已经返回 —— 它等的是自己那一份在跑的提交，
+  // 不是整条链。
+  await vi.waitFor(() => expect(resolved).toBe(true));
+  expect(seen.signal?.aborted).toBe(false);
+  // 翻面：换成本会话的账本，同一份在飞工作就被收走，拆除也因此等得到它。
+  await service.disposeThread(thread.threadId, ledgerB);
+  expect(seen.signal?.aborted).toBe(true);
+  expect((await service.get(thread.threadId, foreign.researchRunId)).counts)
+    .toMatchObject({ interrupted: 1, running: 0, queued: 0 });
+});
+
+it('drops the cache a card RPC opened when a session tears down', async () => {
+  const seen: { signal?: AbortSignal; started: Promise<void> } = { started: Promise.resolve() };
+  const store = new XResearchTaskStore(root());
+  const service = new XResearchTaskService({
+    store, runWork: hangingRunner(seen), onUpdate: () => undefined,
+    artifacts: () => tempXArtifactStore(),
+  });
+  const thread = owner();
+  const ledger = {};
+  const submitted = await service.submit({ work: searchWork() }, { ...thread, ledger });
+  await seen.started;
+  await service.cancel(thread.threadId, submitted.researchRunId);
+  // 卡片 RPC 那一侧的形状：缓存里没有这份研究，`get` 把它按「无账本」重新打开。
+  service.forget(thread.threadId);
+  const cached = await service.get(thread.threadId, submitted.researchRunId);
+  const record = (await store.readTask(thread.threadId, submitted.researchRunId))!;
+  expect(cached.revision).toBe(record.revision);
+  // 盘上前进一格：缓存还在时 `get` 答的仍是内存里那一份。
+  await store.writeTask({ ...record, revision: record.revision + 7 });
+  expect((await service.get(thread.threadId, submitted.researchRunId)).revision).toBe(record.revision);
+  // 会话拆除：这份缓存既没有账本也没有在飞工作 —— 纯内存残留，跟着会话一起走。
+  await service.disposeThread(thread.threadId, ledger);
+  expect((await service.get(thread.threadId, submitted.researchRunId)).revision).toBe(record.revision + 7);
+});

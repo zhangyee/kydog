@@ -151,6 +151,25 @@ describe('x_research submit', () => {
     expect(submitted.snapshot.search).toHaveLength(1);
   });
 
+  it('rejects out-of-bounds requests before they are queued', async () => {
+    const { tool, service } = harness(echoSearch);
+    const submit = vi.spyOn(service, 'submit');
+    // schema 放行（恰好 4096 units），但构造出来的公开搜索 URL 约 36 KB：越界要在**入队之前**拒。
+    // 只在排队的 runner 里拒的话，抛出会被 `run` 的 catch 收成一份 `interrupted` 的提交 ——
+    // 模型看到的是一条泛化失败，而不是「把 query 缩短或拆分」。
+    await expect(execute(tool, {
+      action: 'submit', search: searchArgs({ queries: [{ ...queries[0], query: '汉'.repeat(4096) }] }),
+    })).rejects.toThrow('shorten or split the query');
+    // read 的 target 越过 8192：解析层先于这一道拒（同一个上限），拒绝同样发生在入队之前。
+    await expect(execute(tool, {
+      action: 'submit', read: { ...readArgs(), targets: [{ url: `https://x.com/alice/status/1?q=${'x'.repeat(8192)}` }] },
+    })).rejects.toThrow('url: expected HTTPS public X post URL');
+    expect(submit).not.toHaveBeenCalled();
+    // 翻面：边界内侧的同一份请求照常提交（否则「没调用」也可能只是「什么都没跑」）。
+    await execute(tool, { action: 'submit', search: searchArgs() });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it('never delivers a submission whose work body was refused', async () => {
     // 标签页归属由工作体判（`xResearchRunner` 拿任务的 tab 调 `researchTabStatus`）：提交方不再回传
     // `tabId`，所以这条在动作面上的可观测形态是「这一轮收尾成中断、永远不产出可交付的结果」。

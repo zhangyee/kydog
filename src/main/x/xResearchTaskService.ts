@@ -601,22 +601,34 @@ export class XResearchTaskService {
    *  做了决定，后者只是这一段执行没了。所以这里不置 `cancelRequested`：工作体自己照信号抛出，
    *  `run` 的 catch 把它收成 `interrupted`。
    *
-   *  排在 `forget` 之前的两步都是必需的：中断只改内存，盘上的「进行中」要靠 `run` 的收尾落一次盘
-   *  （R12）；而排队的那些提交还挂在 per-thread 链上，它们的 `run` 会再写一次盘 —— 不先把链排空就
-   *  `forget`，那次写盘会拿内存里的活副本把一条已经不存在的研究重新写回盘上（删对话之后这条
-   *  目录刚刚被 `removeThread` 删掉）。链上这时只剩状态转移，不会再碰浏览器。 */
+   *  给了账本身份（切项目 / 关窗 / 换 provider）时**只等自己那一份在跑的提交**：`interruptActive`
+   *  等的就是那个；整条 per-thread 链上还排着替换会话的采集，等它会把一次拆除绑在别人几分钟的
+   *  浏览上。没给账本（删对话）时仍然排空整条链 —— 目录随后就被删，迟到的落盘会把一条已经不存在
+   *  的研究写回来。排队的那几份在两种路径里都一样：中断只改内存 + 落一次盘，不会再碰浏览器
+   *  （带账本那条路上，它们随后还会按 `disposed` 自己收尾一次；thread 还在，那次写盘无害）。 */
   async disposeThread(threadId: string, ledger?: object): Promise<void> {
     for (const active of [...this.active.values()]) {
       if (active.record.threadId === threadId && this.owns(active, ledger)) await this.interruptActive(active);
     }
-    await this.awaitIdle(threadId).catch(() => undefined);
+    if (ledger === undefined) await this.awaitIdle(threadId).catch(() => undefined);
     this.forget(threadId, ledger);
   }
 
   /** 拆除只认领自己那一份：给了账本身份时，只碰由它最后一次提交的研究；没给（删对话等）
-   *  就是整条 thread。`undefined` 的 active 是只被 `get` / `wait` 打开过的缓存，里面不可能有在飞工作。 */
+   *  就是整条 thread。`undefined` 的 active 只可能来自卡片 RPC（`get` / `inspect` / `cancel`
+   *  打开的缓存）：它不属于任何会话，没有在飞工作时就是一段纯内存残留，跟着这次拆除一起走；
+   *  真有在飞工作时谁也认领不了它，留着不动。 */
   private owns(active: ActiveResearch, ledger?: object): boolean {
-    return ledger === undefined || active.ledger === ledger;
+    if (ledger === undefined || active.ledger === ledger) return true;
+    return active.ledger === undefined && !this.hasInFlight(active);
+  }
+
+  /** 提交级的「还在队列上或正在跑」：淘汰缓存（`owns`）问的就是这个事实。 */
+  private hasInFlight(active: ActiveResearch): boolean {
+    for (const submission of active.submissions.values()) {
+      if (submission.state === 'queued' || submission.state === 'running') return true;
+    }
+    return false;
   }
 
   /** 会话消失时的收尾：在飞那一份照信号抛出（`run` 的 catch 写成 `interrupted`），
@@ -1008,7 +1020,9 @@ export function xResearchTaskService(): XResearchTaskService | null {
 
 /** 会话被拆（切项目 / 换模型 / 切语言 / 删对话）时，这条 thread 的在飞研究要停下并落盘。
  *  由会话侧调用（`AgentService.dispose`）：**先**取消并等盘上写成收尾状态，**再**解绑那次会话
- *  的活账本 —— 反过来的话，排队的提交会在一个已经不存在的会话上起跑。 */
+ *  的活账本 —— 反过来的话，排队的提交会在一个已经不存在的会话上起跑。
+ *  给了账本身份时只等自己那份在跑的提交；删对话（目录随后就要删）走不带账本的那一条，
+ *  它会排空整条 thread 链，迟到的那次落盘因此落在目录消失之前。 */
 export async function disposeXResearchThread(threadId: string, ledger?: object): Promise<void> {
   await instance?.disposeThread(threadId, ledger);
 }

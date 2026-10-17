@@ -60,6 +60,12 @@ vi.mock('../x/xResearchRunner', async () => {
       H.started.push(ctx.runId);
       if (ctx.runId === 'run-A') {
         return new Promise((_resolve, reject) => {
+          // 拆除可以落在「这一份已经算 running」与「采集体真正开始」之间：信号已经是中止态时
+          // `addEventListener` 不会再响，替身必须当场收场（真实采集层读的就是这个状态）。
+          if (ctx.signal.aborted) {
+            reject(new Error('aborted by teardown'));
+            return;
+          }
           ctx.signal.addEventListener('abort', () => reject(new Error('aborted by teardown')), { once: true });
         });
       }
@@ -157,8 +163,10 @@ it('keeps the replacement session ledger and its research when the old session t
   expect(H.signals.get('run-A')?.aborted).toBe(true);
   expect((await xResearchTaskService()!.get(THREAD_ID, aSubmit.researchRunId)).counts)
     .toMatchObject({ interrupted: 1 });
+  // 拆除只等自己那一份（F2），所以 B 的起跑要显式等到 —— 它仍必须发生。
+  await vi.waitFor(() => expect(H.started).toContain('run-B'));
+  await xResearchTaskService()!.whenIdle(THREAD_ID, bSubmit.researchRunId);
   // B 的研究真的起跑了（账本还在，contextFor 没抛），而且没被一起中止 —— 它交付完成。
-  expect(H.started).toContain('run-B');
   expect(H.signals.get('run-B')?.aborted).toBe(false);
   const bState: XResearchTaskSnapshot = await xResearchTaskService()!.get(THREAD_ID, bSubmit.researchRunId);
   expect(bState.counts).toMatchObject({ done: 1, running: 0, queued: 0, interrupted: 0 });
@@ -182,5 +190,32 @@ it('still interrupts the research and drops the ledger when session cleanup reje
   expect(xResearchSessionIdentity(THREAD_ID)).toBeUndefined();
   // 盘上的结论是「中断」—— 下一次 `get` 从盘上读回同一个事实。
   expect((await xResearchTaskService()!.get(THREAD_ID, submitted.researchRunId)).counts)
+    .toMatchObject({ interrupted: 1, running: 0 });
+});
+
+it('drains the thread chain when the dispose is part of a deletion', async () => {
+  await build();
+  const aSubmit = await submit(researchTool(), 'a-submit');
+  await vi.waitFor(() => expect(H.started).toContain('run-A'));
+  // 同一 thread 上另一个账本的研究（替换会话那一份）：排在 run-A 后面，尚在队列上。
+  // 采集体的替身只在 `run-A` 上挂着等中止，所以这里也报 `run-A`（同一轮里的第二次提交本来就能共用）。
+  const foreign = await xResearchTaskService()!.submit(
+    { work: { search: searchInput.search } },
+    { threadId: THREAD_ID, runId: 'run-A', projectRoot: dir, ledger: {} },
+  );
+  // 删对话：lifetime 先进入 deleting，于是 dispose 走**不带账本**的那一条（整条链要排空）——
+  // 目录随后就被 `removeThread` 删掉，迟到的落盘会把一条已经不存在的研究写回来。
+  (agentService as any).sessions.set(THREAD_ID, bound(async () => {}, xResearchSessionIdentity(THREAD_ID)));
+  const deletion = agentService.beginThreadDeletion([THREAD_ID]);
+  try {
+    await agentService.dispose(THREAD_ID);
+  } finally {
+    deletion.finish();
+  }
+  // 整条 thread 都在删：不属于本次会话账本的那一份也被收走（走的是不带账本那一条）。
+  expect(H.signals.get('run-A')?.aborted).toBe(true);
+  expect((await xResearchTaskService()!.get(THREAD_ID, foreign.researchRunId)).counts)
+    .toMatchObject({ interrupted: 1, done: 0, queued: 0, running: 0 });
+  expect((await xResearchTaskService()!.get(THREAD_ID, aSubmit.researchRunId)).counts)
     .toMatchObject({ interrupted: 1, running: 0 });
 });

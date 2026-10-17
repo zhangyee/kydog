@@ -6,13 +6,13 @@
 // 交付（Task 5）、证据账本（交付时喂，spec §4.5）。
 import { finalizeXResearchCollection } from './xResearchCanonical';
 import { XResearchArtifactError, type XResearchArtifactStore } from './xResearchArtifacts';
-import { X_DOM_MAX_QUERY_UNITS, X_DOM_MAX_STRING_UNITS } from './xDomSource';
+import { assertXRequestWithinBounds } from './xResearchBounds';
 import type { XResearchScopePrior } from './xResearchScopeFacts';
 import { assertXRequestFits, serializeXResearchResult } from './xResearchOutput';
 import { readResult, readX } from './xResearchRead';
-import { searchResult, searchX, xSearchUrl, type XResearchContext } from './xResearchSearch';
+import { searchResult, searchX, type XResearchContext } from './xResearchSearch';
 import type { XResearchBrowser } from './xResearchBrowser';
-import type { XResearchRunWork, XResearchWorkRequest } from './xResearchTaskService';
+import type { XResearchRunWork } from './xResearchTaskService';
 import type { XResearchInput, XSourceReference } from './xResearchTypes';
 
 export type XResearchRunnerDeps = {
@@ -29,24 +29,6 @@ export type XResearchRunnerDeps = {
   /** 工件根由调用方决定（Task 7 换双根）：runner 只拿一个已经建好的 store。 */
   artifacts(threadId: string, researchRunId: string): XResearchArtifactStore;
 };
-
-// 请求边界（旧工具同一处前置校验）：TypeBox 只挡得住 query 的 4096 units，挡不住构造出来的
-// 公开搜索 URL（4096 个汉字约 36 KB）。read 的 target 更是只校验非空。两者都必须在碰浏览器之前拒。
-function assertXRequestWithinBounds(work: XResearchWorkRequest): void {
-  if ('search' in work) {
-    for (const row of work.search.queries) {
-      if (row.query.length > X_DOM_MAX_QUERY_UNITS || xSearchUrl(row).length > X_DOM_MAX_STRING_UNITS) {
-        throw new Error('x_research: query exceeds the validated request bounds; shorten or split the query');
-      }
-    }
-    return;
-  }
-  for (const target of work.read.targets) {
-    if ((target.url ?? target.postId).length > X_DOM_MAX_STRING_UNITS) {
-      throw new Error('x_research: target exceeds the validated request bounds; use a shorter actually observed permalink');
-    }
-  }
-}
 
 export function createXResearchRunner(deps: XResearchRunnerDeps): XResearchRunWork {
   return async (work, ctx) => {
