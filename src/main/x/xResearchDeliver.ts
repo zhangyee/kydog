@@ -3,7 +3,9 @@
 // 壳是 main↔模型 transcript 的协议面（`./xResearchTaskShell`）：`kind` / `action` / `researchRunId` /
 // `status` 这四个键渲染层锚定与 transcript 解析都只认它们，包络再紧也不许省。可省的是**模型可见性**：
 // 快照的行明细（卡片走 RPC，不受影响）先让位，然后是 `undelivered` 清单 —— 快照里的
-// `counts.undelivered` 还在，模型据此再 `wait` 一次即可；最后才把快照省到只剩数字类事实。
+// `counts.undelivered` 还在，模型据此再 `wait` 一次即可；再然后是把快照省到只剩数字类事实；
+// 最后（R25）才省结果自己的省略账本（`metadataOmissions` → `contentMetadataOmissions` →
+// `reportScopeFacts`）。四个协议键与结果本身一律不动，省了账本就置 `delivery.truncated`。
 //
 // `delivery` 在交付路径上不动（控制器裁决 T5/B'）：一份结果在**收尾时**就按量出来的包络额度裁好，
 // 交付只是把它装进壳。这样同一份提交只有一份裁过的副本 —— 工件里是完整 canonical，交付的是
@@ -146,6 +148,27 @@ export function deliverEnvelope(input: XResearchEnvelopeInput): {
     delete minimal.stateReason;
     envelope.snapshot = minimal;
     bytes = stampEnvelopeBytes(envelope);
+  }
+  if (bytes > X_RESEARCH_MAX_OUTPUT_BYTES) {
+    // 快照已经没有可省的文本之后：省结果自己的省略账本（控制器裁决 R25）。顺序固定为
+    // `metadataOmissions` → `contentMetadataOmissions` → `reportScopeFacts`，每省一项重新量；
+    // 省的是「账本怎么写的」，不是「东西没少」—— 交付记录必须跟着说裁过。
+    const delivered = envelope.delivery?.result;
+    if (delivered) {
+      const shedders: ReadonlyArray<() => void> = [
+        () => { delete delivered.metadataOmissions; },
+        () => { delete delivered.contentMetadataOmissions; },
+        () => { delete delivered.reportScopeFacts; },
+      ];
+      for (const shed of shedders) {
+        if (bytes <= X_RESEARCH_MAX_OUTPUT_BYTES) break;
+        shed();
+        // 账本让了位，交付就不能再说自己是完整的那一份（`persistence: 'failed'` 那类没有采集
+        // 收尾的结果本来就没有这个字段，不在这里凭空造一个）。
+        if (delivered.delivery) delivered.delivery.truncated = true;
+        bytes = stampEnvelopeBytes(envelope);
+      }
+    }
   }
   if (bytes > X_RESEARCH_MAX_OUTPUT_BYTES) {
     throw new Error(

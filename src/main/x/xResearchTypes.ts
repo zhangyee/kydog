@@ -8,6 +8,10 @@ export type { XResearchStatus, XStopReason };
 // 采集层原有那批 `XArtifactRef` import。
 import type { XArtifactRef } from '../../shared/xArtifactRef';
 export type { XArtifactRef };
+// scope 事实同理归 shared（提交记录里存着它们，重启后的交付靠它们补回序列化时才算出来的事实）：
+// 这里 re-export 保住采集层与序列化那批 import。
+import type { XReportRunScopeFacts, XReportScopeFacts } from '../../shared/xReportScopeFacts';
+export type { XReportRunScopeFacts, XReportScopeFacts };
 export type XFactRelation = 'same' | 'different' | 'unknown';
 export interface XLocationRelation {
   origin: XFactRelation;
@@ -343,27 +347,6 @@ export interface XReadDiagnostics {
   readiness?: { collectCount: number; initial: {replyCount:number; expandControlCount:number; explicitEndObserved:boolean}; terminal: {replyCount:number; expandControlCount:number; explicitEndObserved:boolean}; timedOut: boolean };
   scroll?: { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number };
   pointerFailure?: { actionIndex: number; targetPostId: string; controlKind: 'replies_expand'; sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown'; diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic };
-}
-/** Exact counts for this one serialized tool call. Unknown reason values include
- * absent reasons and unclassified text; they must never become report prose. */
-export interface XReportScopeFacts {
-  version: 1;
-  operation: 'search' | 'read';
-  reasonSource: 'barrier.reason' | 'reason';
-  totalRows: number;
-  statusCounts: Partial<Record<XResearchStatus, number>>;
-  stopReasonCounts: Partial<Record<XStopReason, number>>;
-  reasonCounts: Record<string, number>;
-  replyScopeCounts: Partial<Record<'unknown'|'ui_scope_end_observed'|'cursor_exhausted', number>>;
-}
-/** Distinct actual calls on the current branch/run; no source or citation authority. */
-export interface XReportRunScopeFacts {
-  version: 1;
-  runId: string;
-  callCount: number;
-  unavailableCallCount: number;
-  search: XReportScopeFacts;
-  read: XReportScopeFacts;
 }
 export type XArtifactFailureCode = 'reference' | 'path' | 'read' | 'write' | 'integrity' | 'canonical';
 export interface XArtifactRestorationSummary {

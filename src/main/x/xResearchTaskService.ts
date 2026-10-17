@@ -369,6 +369,9 @@ export class XResearchTaskService {
       return { snapshot: this.snapshotOf(active), delivery: null, undelivered: this.undeliveredOf(active) };
     }
     const delivered = active.submissions.get(delivery.submissionId)!;
+    // 顺序是「选中 → 内存标记 → 落盘」：`deliveredAt` 必须在结果真的交给调用方之前写（spec §4.5，
+    // 否则同一个崩溃窗口会让同一份结果再交一次）；而「标了却抛错」那条路已被关掉 —— 包络装不下
+    // 时 `deliverEnvelope` 会抛，但两条交付副本（收尾 / 重启）都先按量出来的额度裁过，抛不出来。
     delivered.deliveredAt = this.now();
     delivered.deliveryCallId = deliveryCallId;
     active.results.delete(delivered.submissionId);
@@ -385,7 +388,8 @@ export class XResearchTaskService {
 
   /** 这份提交能不能交出结果：服务手里那份优先（它就是 `settle` 写结论用的那一份字节），
    *  只有在内存里没有它（重启后）时才走工件。工件里存的是完整 canonical，读回来要照今天的
-   *  预算再裁一次 —— 否则一个超前 1 MiB 的工件会让整个包络装不下它。 */
+   *  预算再裁一次，并且和收尾路径一样按**量出来的包络额度**裁（控制器裁决 T5/B'）——
+   *  否则一个顶到 1 MiB 的工件加上壳就装不进包络，而那份结果恰恰是重启后最需要交出去的。 */
   private async deliverable(active: ActiveResearch, submission: XResearchSubmission,
     deliveryCallId: string): Promise<XResearchDelivery | null> {
     const { threadId, researchRunId } = active.record;
@@ -406,7 +410,16 @@ export class XResearchTaskService {
         truncated: false, omittedObservations: 0, omittedFields: [],
         artifactPath: artifacts.displayPath(submission.artifact), persistence: 'saved',
       };
-      const result = serializeXResearchResult(canonical).result;
+      // R24：这两份事实只有序列化时才算出来，工件（序列化之前的 canonical）里没有它们 ——
+      // 收尾那一刻存进提交记录，这里放回去再序列化。放在裁切之前，字节数从一开始就把它们算进去。
+      if (submission.reportScopeFacts) canonical.reportScopeFacts = submission.reportScopeFacts;
+      if (submission.reportRunScopeFacts) canonical.reportRunScopeFacts = submission.reportRunScopeFacts;
+      const result = clipForEnvelope({
+        researchRunId, snapshot: this.snapshotOf(active),
+        submissionId: submission.submissionId, submitCallId: submission.submitCallId,
+        operation: submission.operation,
+        result: serializeXResearchResult(canonical).result,
+      });
       active.results.set(submission.submissionId, result);
       return { ...identity, result };
     } catch (error) {
@@ -526,7 +539,7 @@ export class XResearchTaskService {
     else delete submission.artifact;
     // 控制器裁决（T5，B'）：交付副本在这里按**量出来的**包络额度裁一次，交付路径不再裁第二次。
     // 额度 = 1 MiB 减去壳与快照占的字节（壳按交付时的形状搭一遍量出来，没有写死的常数）。
-    return clipForEnvelope({
+    const clipped = clipForEnvelope({
       researchRunId: active.record.researchRunId,
       snapshot: this.snapshotOf(active),
       submissionId: submission.submissionId,
@@ -534,6 +547,13 @@ export class XResearchTaskService {
       operation: submission.operation,
       result,
     });
+    // R24：交付的这份结果带着序列化时算出来的 scope 事实，工件里只有序列化之前的 canonical。
+    // 提交记录是重启后唯一的来源，所以收尾时把存在的那两份一并落进去。
+    if (clipped.reportScopeFacts) submission.reportScopeFacts = clipped.reportScopeFacts;
+    else delete submission.reportScopeFacts;
+    if (clipped.reportRunScopeFacts) submission.reportRunScopeFacts = clipped.reportRunScopeFacts;
+    else delete submission.reportRunScopeFacts;
+    return clipped;
   }
 
   /** 没有结果的工作项停在这里：`state: 'stopped'` + `status: null` 就是「中断」在投影里的形状。 */

@@ -13,6 +13,7 @@ import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput
 import { searchX } from './xResearchSearch';
 import { clipForEnvelope, pickDelivery, deliverEnvelope } from './xResearchDeliver';
 import type { XResearchDelivery } from './xResearchTaskShell';
+import type { XReportRunScopeFacts } from '../../shared/xReportScopeFacts';
 import { XResearchTaskService, type XResearchRunWork } from './xResearchTaskService';
 import { XResearchTaskStore } from './xResearchTaskStore';
 import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult } from './xResearchTypes';
@@ -145,22 +146,60 @@ describe('deliverEnvelope', () => {
       .toBe(details.delivery!.result.budgetUsage.outputBytes);
   });
 
-  it('drops the undelivered list only after the snapshot has given up its rows', async () => {
+  it('sheds the snapshot rows before the undelivered list', async () => {
     const many = Array.from({ length: 100 }, () => ({
       submissionId: randomUUID(), operation: 'search' as const,
       objective: 'y'.repeat(2_000), state: 'done' as const,
     }));
-    const { details } = deliverEnvelope({
-      researchRunId: 'research-1',
-      snapshot: snapshot({ counts: { ...snapshot().counts, undelivered: 100 } }),
-      delivery: await deliveryOf(380_000), undelivered: many, action: 'wait',
+    // 只让快照的行明细让位就够装进 1 MiB：`undelivered` 必须原样留着。
+    // 若两档顺序反过来（先省清单），清单会先被丢掉、行明细却还占着地方 —— 这条用例就会红。
+    const big = snapshot({
+      search: [workItem({ reason: 'x'.repeat(900_000) }), workItem({ label: 'second' })],
+      counts: { ...snapshot().counts, undelivered: 100 },
     });
-    expect(details.undelivered).toBeUndefined();
-    // 顺序是「快照行明细 → undelivered」：两个都让了位，但快照的数字类事实没丢。
+    const { details } = deliverEnvelope({
+      researchRunId: 'research-1', snapshot: big, delivery: await deliveryOf(), undelivered: many,
+      action: 'wait',
+    });
     expect(details.snapshot.search).toEqual([]);
+    // 只省行明细就够时，清单必须原样留着；先省清单的写法会让这里空掉。
+    expect(details.undelivered).toHaveLength(many.length);
+    expect(details.undelivered?.[many.length - 1]).toMatchObject({
+      objective: many[many.length - 1]!.objective,
+    });
     expect(details.snapshot.counts.undelivered).toBe(100);
     expect(Buffer.byteLength(JSON.stringify(xResearchToolResult({ result: details, text: JSON.stringify(details) })), 'utf8'))
       .toBe(details.delivery!.result.budgetUsage.outputBytes);
+  });
+
+  it('sheds the result ledgers only after the snapshot is minimal', async () => {
+    // 收尾额度被这一轮 `wait` 的长 id 撑破、快照已无可省文本时（控制器裁决 R25）：
+    // 按 metadataOmissions → contentMetadataOmissions → reportScopeFacts 省结果自己的省略账本。
+    const result = await resultOf(480_000);
+    result.delivery = {
+      truncated: false, omittedObservations: 0, omittedFields: [], artifactPath: null,
+      persistence: 'failed',
+    };
+    result.metadataOmissions = Array.from(
+      { length: 800 }, (_, index) => `queries.0.field.${index}`.padEnd(120, 'x'));
+    // 账本真在夹具里（不能靠一个空数组把下面的「省掉了」假绿）：
+    expect(result.metadataOmissions).toHaveLength(800);
+    const { details } = deliverEnvelope({
+      researchRunId: 'research-1', snapshot: snapshot({ objective: 'o'.repeat(2_000) }),
+      delivery: {
+        deliveryCallId: 'toolu_01Wxyz'.repeat(4), submissionId: 'submission-1',
+        submitCallId: 'call-submit', operation: 'search', result,
+      },
+      undelivered: [], action: 'wait',
+    });
+    const bytes = Buffer.byteLength(JSON.stringify(xResearchToolResult(
+      { result: details, text: JSON.stringify(details) })), 'utf8');
+    expect(bytes).toBe(details.delivery!.result.budgetUsage.outputBytes);
+    expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
+    expect(details.delivery!.result.metadataOmissions).toBeUndefined();
+    // 账本让了位，交付就不许再说自己是完整的那一份。
+    expect(details.delivery!.result.delivery?.truncated).toBe(true);
+    expect(details.snapshot.objective).toBe('');
   });
 
   it('sheds the snapshot down to its numbers when the shell alone is over', async () => {
@@ -252,6 +291,41 @@ describe('XResearchTaskService.wait', () => {
     const waited = await service.wait(thread.threadId, submitted.researchRunId, 'call-wait');
     // 装得下就原样交付：包络不许因为「要量字节」而重新序列化一份结果（那会多一份裁过的副本）。
     expect(waited.delivery!.result).toBe(settleCopy);
+    // R24：序列化时算出来的 scope 事实要跟着提交记录落盘（重启后的交付只能从这里补回）。
+    const stored = await store.readSubmission(
+      thread.threadId, submitted.researchRunId, submitted.submissionId);
+    expect(stored?.reportScopeFacts).toBeDefined();
+    expect(stored?.reportScopeFacts).toEqual(waited.delivery!.result.reportScopeFacts);
+  });
+
+  it('delivers the in-memory copy when the artifact write failed', async () => {
+    const store = new XResearchTaskStore(root());
+    const artifacts = tempXArtifactStore();
+    const runWork: XResearchRunWork = async () => {
+      const result = await realResult();
+      // 工件写失败（R20）：结果只在内存里，提交记录没有 ref —— 这一轮交付不许把它丢掉。
+      result.delivery = {
+        truncated: false, omittedObservations: 0, omittedFields: [], artifactPath: null,
+        persistence: 'failed', failureCode: 'write',
+      };
+      return result;
+    };
+    const service = new XResearchTaskService({
+      store, runWork, artifacts: () => artifacts, onUpdate: () => undefined,
+    });
+    const thread = owner();
+    const submitted = await service.submit({ work: searchWork() }, thread);
+    await service.whenIdle(thread.threadId, submitted.researchRunId);
+    const waited = await service.wait(thread.threadId, submitted.researchRunId, 'call-wait');
+    expect(waited.delivery?.submissionId).toBe(submitted.submissionId);
+    expect(waited.delivery?.result.delivery).toMatchObject({
+      persistence: 'failed', artifactPath: null,
+    });
+    // 没有工件 ref 不等于不能交付：交付标记照写（内存里它已经交出去了）。
+    const stored = await store.readSubmission(
+      thread.threadId, submitted.researchRunId, submitted.submissionId);
+    expect(stored?.artifact).toBeUndefined();
+    expect(stored?.deliveredAt).toEqual(expect.any(String));
   });
 
   it('fits a clipped result by clipping it once at settle, never again at delivery', async () => {
@@ -342,9 +416,20 @@ describe('XResearchTaskService.wait', () => {
       batchId: 'xbatch_1', operation: 'search' as const,
     };
     const canonical = await realResult();
-    // 上一个进程留下的形状：提交已收尾、带工件 ref，内存里没有它（重启后）。
+    // 收尾那一刻序列化算出来的 scope 事实（R24）：工件里是序列化之前的 canonical，没有这两份。
+    const scopeFacts = canonical.reportScopeFacts;
+    if (!scopeFacts) throw new Error('fixture must carry the serialized scope facts');
+    const runFacts: XReportRunScopeFacts = {
+      version: 1, runId: 'run-1', callCount: 1, unavailableCallCount: 0, search: scopeFacts,
+      read: {
+        version: 1, operation: 'read', reasonSource: 'reason', totalRows: 0,
+        statusCounts: {}, stopReasonCounts: {}, reasonCounts: {}, replyScopeCounts: {},
+      },
+    };
+    // 上一个进程留下的形状：提交已收尾、带工件 ref 与 scope 事实，内存里没有它（重启后）。
     const stored = submission({
       threadId: thread.threadId, researchRunId, artifact: ref,
+      reportScopeFacts: scopeFacts, reportRunScopeFacts: runFacts,
       workItems: [workItem({ section: 'search' })],
     });
     await store.writeTask({
@@ -353,7 +438,12 @@ describe('XResearchTaskService.wait', () => {
       revision: 2, state: 'completed', submissionIds: [stored.submissionId],
     });
     await store.writeSubmission(stored);
-    const artifacts = fakeArtifacts(() => canonical);
+    const artifacts = fakeArtifacts(() => {
+      const artifactCopy = structuredClone(canonical);
+      delete artifactCopy.reportScopeFacts;
+      delete artifactCopy.reportRunScopeFacts;
+      return artifactCopy;
+    });
     const service = new XResearchTaskService({
       store, runWork: realResult, artifacts: () => artifacts.store, onUpdate: () => undefined,
     });
@@ -366,6 +456,56 @@ describe('XResearchTaskService.wait', () => {
     expect(waited.delivery!.result.budgetUsage.outputBytes)
       .toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
     expect(waited.delivery!.result.delivery).toMatchObject({ persistence: 'saved' });
+    // R24：提交记录里的 scope 事实被补回结果再序列化（工件里没有它们）。
+    expect(waited.delivery!.result.reportScopeFacts).toEqual(scopeFacts);
+    expect(waited.delivery!.result.reportRunScopeFacts).toEqual(runFacts);
+  });
+
+  it('clips a restarted result to the envelope budget, not to the whole 1 MiB', async () => {
+    const store = new XResearchTaskStore(root());
+    const researchRunId = randomUUID();
+    const thread = owner();
+    const ref = {
+      version: 1 as const, directoryId: randomUUID(), manifest: 'manifest.json' as const,
+      sha256: 'c'.repeat(64), bytes: 1_100_000, runId: 'run-3', callId: 'call-submit-3',
+      batchId: 'xbatch_3', operation: 'search' as const,
+    };
+    // 工件里是完整 canonical：正文 600 000 字，和收尾裁切那条用例同一份夹具。
+    const canonical = await searchX(searchInput, fixture([searchHtml(post())]).context);
+    for (const row of canonical.queries) {
+      for (const body of row.posts) {
+        body.text = 'a'.repeat(600_000);
+        body.truncation = { returned: 600_000, totalKnown: 600_000, truncated: false };
+      }
+    }
+    const stored = submission({
+      threadId: thread.threadId, researchRunId, artifact: ref, workItems: [workItem()],
+    });
+    await store.writeTask({
+      version: 1, researchRunId, threadId: thread.threadId, projectRoot: thread.projectRoot,
+      createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:01:00.000Z',
+      revision: 2, state: 'completed', submissionIds: [stored.submissionId],
+    });
+    await store.writeSubmission(stored);
+    const artifacts = fakeArtifacts(() => canonical);
+    const service = new XResearchTaskService({
+      store, runWork: realResult, artifacts: () => artifacts.store, onUpdate: () => undefined,
+    });
+    const waited = await service.wait(thread.threadId, researchRunId,
+      'call-wait-0000000000000000000000000000');
+    // 重启路径按**量出来的包络额度**裁（T5/B'）：不是整份 1 MiB 的预算。
+    const wholeBudget = serializeXResearchResult(structuredClone(canonical))
+      .result.budgetUsage.outputBytes;
+    expect(waited.delivery!.result.budgetUsage.outputBytes).toBeLessThan(wholeBudget);
+    // 整包实测落在 1 MiB 以内：壳也要字节，只按 1 MiB 裁结果会让这份提交永远交付不了。
+    const envelope = deliverEnvelope({
+      researchRunId, snapshot: waited.snapshot, delivery: waited.delivery,
+      undelivered: waited.undelivered, action: 'wait',
+    });
+    const bytes = Buffer.byteLength(JSON.stringify(xResearchToolResult(
+      { result: envelope.details, text: envelope.content[0]!.text })), 'utf8');
+    expect(bytes).toBe(envelope.details.delivery!.result.budgetUsage.outputBytes);
+    expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
   });
 
   it('skips a settled submission whose result is gone instead of blocking the next one', async () => {
