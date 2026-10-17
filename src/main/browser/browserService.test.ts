@@ -4312,6 +4312,131 @@ describe('viewport input mapping ACK', () => {
     await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
     expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
   });
+  // `applyLayout` 对每个标签都 `void applyViewport(...)`：窗口改大小、拖侧栏、确认框弹出、
+  // 横幅展开都会在下一次布局里多发一份。它们算的是**同一份 `stage`** —— 落地的是同一份映射，
+  // 落不落地都换不出别的坐标。旧判据把「在途」本身当成了拒绝理由（`viewportPending.size`），
+  // 于是把一次完全安全的点击说成了「映射变了」。
+  it('a concurrent layout apply with identical geometry lets the click through', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    // 只挂住布局这一发；dispatch 自己那一发照常落地。
+    const held: Array<() => void> = [];
+    wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride' && held.length === 0
+      ? new Promise(resolve => { held.push(() => resolve({})); })
+      : Promise.resolve({});
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    expect(held.length).toBe(1);
+    // 前提：这一发与 dispatch 自己那一发算出来的几何逐字相同 —— 「在途、但换不出别的映射」。
+    await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null);
+    expect(overrides(wc).map(c => c.params)).toHaveLength(2);
+    expect(overrides(wc)[0].params).toEqual(overrides(wc)[1].params);
+    expect(overrides(wc)[0].params).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).map(c => c.params.type))
+      .toEqual(['mousePressed', 'mouseReleased']);
+    expect(held.length, '布局那一发在点击整条路上都还在途').toBe(1);
+    held.forEach(land => land());
+  });
+  // 已落地的**只差高度**的那一份：`measure` 是在它落地之后跑的，坐标量的就是新布局 —— 不能拒。
+  // 这就是 `e2e/61` 那条「侧栏开着点链接」的形状：侧栏的对话面板在批次跑着的时候改了高度
+  // （实测 618→593，同一批里又发了一份只差 height 的下发）。
+  it('a landed height-only mapping change lets the click through', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    wc.captureImpl = async () => {
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null);
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).map(c => c.params.type))
+      .toEqual(['mousePressed', 'mouseReleased']);
+    // 前提：后落地的那一份只差 height —— width / scale 逐字相同。
+    const landed = overrides(wc).slice(-2).map(c => c.params);
+    expect(landed[0]).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    expect(landed[1]).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+  });
+  // 还在途的那一份**只差高度**也必须拒：它会落在 measure 之后、鼠标事件之前，那是一次纵向重排。
+  // 这条钉住「对已落地的宽容」没有滚成「对在途的也宽容」。
+  it('a pending apply that would land a different height still refuses the click', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    let land!: () => void;
+    wc.captureImpl = async () => {
+      wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride'
+        ? new Promise(resolve => { land = () => resolve({}); })
+        : Promise.resolve({});
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    // 前提：在途那一份与已确认的那一份只差 height —— 拒它的只能是意图里的高度那一项。
+    expect(overrides(wc).at(-1)!.params).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+    expect(overrides(wc).at(-2)!.params).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    land();
+  });
+  // 反过来：在途的那一份**会落一份不同的映射**时，测量到的那一段坐标就不再作数
+  // （CSS 坐标按 emulation scale 换算，几何一变就按旧的发出去 —— spec §4.2 那个静默打偏）。
+  // 这里它**还没落地**，所以拒它的只能是意图，不可能是「已确认的那一份变了」。
+  it('a concurrent apply that would land a different mapping refuses the click mid-sequence', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const narrow = { x: 0, y: 0, width: 900, height: 700 };
+    let land!: () => void;
+    wc.captureImpl = async () => {
+      wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride'
+        ? new Promise(resolve => { land = () => resolve({}); })
+        : Promise.resolve({});
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: narrow });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    // 前提：在途那一份的几何与已确认的那一份（1280×1800，scale 0.5）确实不同。
+    expect(overrides(wc).at(-1)!.params).toMatchObject({ width: 1280, height: 996, scale: 0.703125 });
+    land();
+  });
+  // 1:1 的移交先在 override 落地时 `settle()`（意图跟着删），再由 `beginPageScale()` 把同一个
+  // generation 放回在途 —— 「在途、却读不到它会落成什么」是真实存在的一段窗口。那段时间里
+  // 不能假定它落成已确认的那一份（fail closed）。
+  it('a pending generation with no recorded intent refuses the click', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const held: Array<() => void> = [];
+    wc.debugger.respond = (method) => method === 'Emulation.setPageScaleFactor' && held.length === 0
+      ? new Promise(resolve => { held.push(() => resolve({})); })
+      : Promise.resolve({});
+    svc.setViewportMode(nav.tabId, 'oneToOne');
+    await flush();
+    // 前提：那一份还挂在 page scale 上，而它那份意图已经随 override 落地删掉了。
+    const internals = svc as unknown as {
+      viewportPending: Map<string, Set<number>>;
+      viewportIntents: Map<string, Map<number, unknown>>;
+    };
+    const pending = [...(internals.viewportPending.get(nav.tabId) ?? [])];
+    expect(pending).toHaveLength(1);
+    expect(internals.viewportIntents.get(nav.tabId)?.get(pending[0])).toBeUndefined();
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    held.forEach(land => land());
+  });
 });
 
 

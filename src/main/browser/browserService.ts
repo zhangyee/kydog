@@ -229,6 +229,15 @@ export const PAGE_EVAL_TIMEOUT_MS = NAV_TIMEOUT_MS;
  */
 const VIEWPORT_SETTLE_TIMEOUT_MS = PAGE_EVAL_TIMEOUT_MS;
 
+/**
+ * 一次 `applyViewport` 落地后坐标所依赖的那份几何：`Emulation.setDeviceMetricsOverride` 的
+ * width / height / scale，加上 page scale。
+ *
+ * 各处判「落地的是不是这一份」都拿它比，但**比的字段不一样**：派发那条路上在途的意图四个全比、
+ * 已确认的那一份不比 height（见 `dispatchOnTab` 的 `assertMapping`）；`prepareForDomRead` 四个全比。
+ */
+type ViewportGeometry = { width: number; height: number; scale: number; pageScale: number };
+
 /** agent 点过名、还没落定的一次下载（`browserService.pendingDownloads` 的值）。 */
 type PendingDownload = {
   url: string; dir: string; filename?: string;
@@ -275,7 +284,17 @@ export class BrowserService {
   /** 每次 `applyViewport` 递增。1:1 那条「抬上限 → 设 page scale」是异步的，晚到时靠它判断自己已被接替。 */
   private readonly viewportGenerations = new Map<string, number>();
   private readonly viewportPending = new Map<string, Set<number>>();
-  private readonly viewportAcknowledged = new Map<string, { revision: number; width: number; height: number; scale: number; pageScale: number }>();
+  private readonly viewportAcknowledged = new Map<string, ViewportGeometry & { revision: number }>();
+  /**
+   * 每一份**还在途**的 generation 打算落地的几何。
+   *
+   * 判「坐标还能不能按已确认的那一份用」靠它，不靠代号：`applyLayout` 对每个标签都
+   * `void applyViewport(...)`，窗口改大小、确认框弹出、横幅展开都会再发一份 —— 它们算的
+   * 是同一份 `stage`，落地后映射逐字不变，落不落地都不影响一次点击的坐标。会改变映射的
+   * 那一份才让它作废。落地就删（`applyViewport` 的 `settle`），所以「在途却没有意图」只可能
+   * 是 1:1 那次 page scale 移交，那一支自己按 fail-closed 处理。
+   */
+  private readonly viewportIntents = new Map<string, Map<number, ViewportGeometry>>();
   /** 等 `viewportPending` 清空的调用方（`prepareForDomRead`）。每次有 generation 落地就唤醒一次。 */
   private readonly viewportSettled = new Map<string, Set<() => void>>();
   /** 这个标签上抬过 pinch-zoom 上限（进过 1:1）。回到适配时据此收回 page scale 与上限；没抬过就一条都不多发。 */
@@ -669,8 +688,7 @@ export class BrowserService {
    * 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
    * 纵向一滚就整片露白。
    */
-  private viewportGeometry(tabId: string, bounds: RectDip | null):
-    { width: number; height: number; scale: number; pageScale: number } {
+  private viewportGeometry(tabId: string, bounds: RectDip | null): ViewportGeometry {
     const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
     const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
     const logicalWidth = Math.max(LOGICAL_WIDTH, w);
@@ -724,8 +742,12 @@ export class BrowserService {
     this.viewportGenerations.set(tabId, generation);
     const pending = this.viewportPending.get(tabId) ?? new Set<number>();
     this.viewportPending.set(tabId, pending); pending.add(generation);
+    const intents = this.viewportIntents.get(tabId) ?? new Map<number, ViewportGeometry>();
+    this.viewportIntents.set(tabId, intents);
+    intents.set(generation, { width: logicalWidth, height, scale, pageScale });
     // 落地（成功或失败都算）就把它从「在途」里拿掉，并唤醒在等清空的调用方。
-    const settle = () => { pending.delete(generation); this.wakeViewportSettled(tabId); };
+    // 意图跟着一起删：落地之后它到底落成了什么都写在 `viewportAcknowledged` 里。
+    const settle = () => { pending.delete(generation); intents.delete(generation); this.wakeViewportSettled(tabId); };
     const acknowledge = () => {
       settle();
       // Preserve the actual ACK, including a late superseded operation. A
@@ -1192,6 +1214,7 @@ export class BrowserService {
     this.emulationScales.delete(id);
     this.viewportGenerations.delete(id);
     this.viewportPending.delete(id);
+    this.viewportIntents.delete(id);
     // 等清空的人也不能白等到上限：标签都没了，下一轮就该看见没有确认过的那一份。
     this.wakeViewportSettled(id);
     this.viewportAcknowledged.delete(id);
@@ -2517,11 +2540,36 @@ export class BrowserService {
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
     if (options?.collectedPointerEligibility) checkCollectedSetup();
     const mapping = this.viewportAcknowledged.get(tabId);
+    // **判据是几何，不是代号。** 这里要分出两件被旧判据揉成一件的事：映射**变了**（`measure`
+    // 量到的坐标按旧映射换算会打偏，必须拒）和**另一份不会换出别的坐标的下发还在收尾**（拒掉它
+    // 只是把一次安全的点击说成失败）。
+    //
+    // **两边的字段不一样，因为两者的窗口不一样：**
+    // - 在途的那一份（意图）**四个字段全比**：它会落在 measure 之后、`Input.dispatchMouseEvent`
+    //   之前，那时上一次量到的 x/y 就得在新几何里重新看 —— 纵向重排也算。
+    // - 已确认的那一份（`current`）**不比 height**：已经落地的高度变化发生在 measure 之前，
+    //   坐标是在新布局里量的，不会过期。这里要守的是指针变换本身：`scale`（emulation scale）
+    //   与 `pageScale`（1:1 的 pinch），加上 `width` 这个重排信号 —— 排版宽被夹在 1280，只有
+    //   舞台宽过 1280 时它才跟着舞台走，而那时正是它决定元素在哪。高度重排整页，但不进指针变换。
+    //   （2026-10-17 实测：侧栏的对话面板在 `browser_act` 跑着的时候改了高度，618→593，
+    //   于是有一份只差 height 的下发落在批次中间。按它拒的话，`e2e/61` 那条「侧栏开着点链接」
+    //   每次都是红的 —— 而那次点击的坐标确实是按新布局量的，拒它没有任何依据。）
+    const samePointerTransform = (a: ViewportGeometry, b: ViewportGeometry) => a.width === b.width
+      && a.scale === b.scale && a.pageScale === b.pageScale;
+    const sameMapping = (a: ViewportGeometry, b: ViewportGeometry) => samePointerTransform(a, b)
+      && a.height === b.height;
+    const refuseMapping: () => never = () => {
+      throw new KydogError('browser.input_not_delivered',
+        '视口映射没有确认落地、在坐标交接期间改变，或有一次会改变映射的下发在途；没有发送输入');
+    };
     const assertMapping = () => {
       const current = this.viewportAcknowledged.get(tabId);
-      if (!mapping || !current || current.revision !== this.viewportGenerations.get(tabId)
-        || this.viewportPending.get(tabId)?.size || mapping.scale !== current.scale || mapping.pageScale !== current.pageScale)
-        throw new KydogError('browser.input_not_delivered', '视口映射没有确认落地或在坐标交接期间改变；没有发送输入');
+      if (!mapping || !current || !samePointerTransform(mapping, current)) refuseMapping();
+      const intents = this.viewportIntents.get(tabId);
+      for (const generation of this.viewportPending.get(tabId) ?? []) {
+        const intent = intents?.get(generation);
+        if (!intent || !sameMapping(intent, mapping)) refuseMapping();
+      }
     };
     assertMapping();
 
