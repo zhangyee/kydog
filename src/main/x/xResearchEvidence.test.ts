@@ -70,12 +70,23 @@ const history = (details: unknown) => ({
   message: {
     role: 'toolResult',
     toolName: 'x_research',
-    toolCallId: 'call',
+    // 归属判据跟着壳走（`resultCallId`）：平铺的老结果比自己的 `callId`。用例里换过交付身份的
+    // 那份结果因此要带着自己的 callId 进 transcript，否则它不会被当成那一轮交付的结果。
+    toolCallId: (details as { callId?: string } | null)?.callId ?? 'call',
     details,
     content: [],
     isError: false,
   },
 });
+
+/** 换一个交付身份并交出去：身份是 `[runId, batchId, callId]`（spec §4.5 的交付幂等；生产上这三者
+ *  一份提交一个 UUID）。账本按**身份**去重，所以同一个账本里要 observe 第二份事实就得换一个身份 ——
+ *  「同一份身份、改字节再 observe 一遍」是造不出来的形状：一份提交只有一个结果。 */
+let deliverySequence = 0;
+function anotherDelivery<T extends XResearchResult>(result: T): T {
+  deliverySequence += 1;
+  return { ...result, callId: `call-delivery-${deliverySequence}`, batchId: `batch-delivery-${deliverySequence}` };
+}
 it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SDK file reopen and branch selection', async () => {
   const { SessionManager } = await import('@earendil-works/pi-coding-agent');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'kydog-x-diagnostic-sdk-'));
@@ -137,7 +148,8 @@ it('persists exact diagnostic frame IDs and legacy no-diagnostic read through SD
         const plain=new XResearchEvidence(dir,()=> 'restored-run');plain.observe(old);expect(plain.guard(report,citation())).toEqual({createOnly:true});
         expect(()=>ledger.guard(report,citation())).toThrow(/inventory is unknown/);
         const qualified=await readX({tabId:'research-tab',read:{objective:'resolve gap',targets:[{url}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},(await stagedFixture({article:'ok'})).context);
-        ledger.observe(qualified);expect(ledger.guard(report,citation())).toEqual({createOnly:true});
+        // 这一份是**另一次采集**的结果（一次新的读）：换一个交付身份，否则它按上一份的身份被丢掉。
+        ledger.observe(anotherDelivery(qualified));expect(ledger.guard(report,citation())).toEqual({createOnly:true});
       }else expect(ledger.guard(report,citation())).toEqual({createOnly:true});
     }
   } finally { await fs.rm(dir,{recursive:true,force:true}); }
@@ -743,7 +755,7 @@ it('legacy attached bodies exempt only their own same-item previews, never fresh
     actionAttempted: true,
     entryIdentity: b,
   };
-  l.observe(attempt);
+  l.observe(anotherDelivery(attempt));
   expect(l.guard(report, citation())).toEqual({ createOnly: true });
   const c = {
     ...b,
@@ -751,7 +763,7 @@ it('legacy attached bodies exempt only their own same-item previews, never fresh
     targetUrl: 'https://x.com/carol/status/789',
   };
   fresh.targets[0].root!.articlePreviews = [b, c];
-  l.observe(fresh);
+  l.observe(anotherDelivery(fresh));
   expect(() => l.guard(report, citation())).toThrow(/entry-C.*789/);
   const cAttempt = structuredClone(fresh);
   cAttempt.targets[0].article = {
@@ -760,7 +772,7 @@ it('legacy attached bodies exempt only their own same-item previews, never fresh
     actionAttempted: true,
     entryIdentity: c,
   };
-  l.observe(cAttempt);
+  l.observe(anotherDelivery(cAttempt));
   expect(l.guard(report, citation())).toEqual({ createOnly: true });
   // Same URL and author do not make two old read items the same attachment family.
   l.restore([history(batch)]);
@@ -789,15 +801,22 @@ it('records one delivery once: the same canonical result delivered twice does no
  l.observe(r);
  const once=l.observations.length;
  expect(once).toBeGreaterThan(0);
- // 崩溃窗口里的「再交一次」（spec §4.5）：逐字节相同的那一份按交付身份丢掉，不报错、不写日志。
+ // 崩溃窗口里的「再交一次」（spec §4.5）：同一份结果按交付身份丢掉，不报错、不写日志。
  l.observe(structuredClone(r));
  expect(l.observations).toHaveLength(once);
  expect(l.guard(report,citation())).toEqual({createOnly:true});
- // 翻面：同一交付身份下**字节不同**的那一份不是「同一份结果再交一次」，账本照收 —— 去重按
- // 身份分组、按指纹比，宁可多一条真事实，也不把两条不同的事实合成一条。
- const different=structuredClone(r);
- different.targets[0].root!.text='另一份结果';
- l.observe(different);
+ // 翻面：同一交付身份下**字节不同**的那一份也是同一次提交的结果，照样得丢。同一份提交的结果会被
+ // 裁两次 —— `settle` 按收尾那一刻的快照裁包络、重启后的交付按交付那一刻的快照裁（`deliverable`）
+ // —— 两次的额度不同，字节就不同，而它们是同一批事实。去重按身份（spec §4.5），字节不进身份：
+ // 按字节比会让一次提交在 records 里落两份。
+ const reclipped=structuredClone(r);
+ reclipped.targets[0].root!.text='另一份结果';
+ l.observe(reclipped);
+ expect(l.observations).toHaveLength(once);
+ // 翻到另一边：另一个交付身份（另一次提交，callId / batchId 都换了）就是另一份事实，照收。
+ const anotherSubmission=structuredClone(r);
+ anotherSubmission.callId='call-another-submission';anotherSubmission.batchId='batch-another';
+ l.observe(anotherSubmission);
  expect(l.observations.length).toBeGreaterThan(once);
 });
 
@@ -810,7 +829,7 @@ it('an omitted or unresolved collection inventory stays unknown despite one genu
  l.observe(r);expect(l.guard(report,citation())).toEqual({createOnly:true});
  for(const [index,gap] of [{observed:2,retained:1,omitted:1,unresolved:0},{observed:1,retained:1,omitted:0,unresolved:1}].entries()){
   const incomplete=structuredClone(r);incomplete.targets[0].root!.observationId='actual-gap';incomplete.targets[0].root!.articlePreviewInventory={scope:'collection',...gap};
-  l.observe(incomplete);expect(()=>l.guard(report,citation())).toThrow('inventory');
+  l.observe(anotherDelivery(incomplete));expect(()=>l.guard(report,citation())).toThrow('inventory');
   // 让 gap 恢复的必须是**新的一次交付**（另一次提交 = 另一个 callId / batchId）：同一份结果再交一次
   // 不再产生观察（`observe` 按交付身份幂等，spec §4.5），账本里「更新的一条事实」只能来自新提交。
   const rerun=structuredClone(r);rerun.callId=`call-rerun-${index}`;rerun.batchId=`batch-rerun-${index}`;
@@ -896,14 +915,14 @@ it('unscoped preview obligations survive missing bodies and resolve only in a la
   for(const own of ['https://x.com/bob/status/456','https://x.com/carol/status/789'])expect(ledger.guard(report,citation(own))).toEqual({createOnly:true});
   // Retention omits every new body; mandatory exact-parent facts still prohibit both old bodies.
   const trimmed=structuredClone(fresh);trimmed.targets[0].unscopedPosts!.observations=[];trimmed.targets[0].unscopedPosts!.inventory.retained=0;trimmed.targets[0].unscopedPosts!.inventory.omitted=trimmed.targets[0].unscopedPosts!.inventory.observed;
-  ledger.observe(trimmed);
+  ledger.observe(anotherDelivery(trimmed));
   for(const own of ['https://x.com/bob/status/456','https://x.com/carol/status/789'])expect(()=>ledger.guard(report,citation(own))).toThrow(/inventory is unknown/);
   const attempt=await readX({tabId:'research-tab',read:{objective:'accurate parent',targets:[{url:'https://x.com/bob/status/456'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(parent('456','bob','parent body'))]).context);
   attempt.targets[0].article.actionAttempted=true;
-  const samePacket=structuredClone(trimmed);samePacket.targets.push(attempt.targets[0]);
+  const samePacket=anotherDelivery(structuredClone(trimmed));samePacket.targets.push(attempt.targets[0]);
   ledger.restore([history(old),history(samePacket)]);
   expect(()=>ledger.guard(report,citation('https://x.com/bob/status/456'))).toThrow(/inventory is unknown/);
-  ledger.observe(attempt);
+  ledger.observe(anotherDelivery(attempt));
   expect(ledger.guard(report,citation('https://x.com/bob/status/456'))).toEqual({createOnly:true});
   expect(()=>ledger.guard(report,citation('https://x.com/carol/status/789'))).toThrow(/inventory is unknown/);
 });
@@ -936,7 +955,7 @@ it('retains validated network provenance in production and restored evidence alo
  const provenance=network.queries[0].posts[0].networkProvenance!;
  const ledger=new XResearchEvidence('/tmp',()=>network.runId);ledger.observe(network);
  expect(ledger.observations[0]).toMatchObject({sourceKind:'page_graphql',networkProvenance:provenance});
- const old=await result();old.sourceKind='rendered_ui';old.targets[0].root!.sourceKind='rendered_ui';delete old.targets[0].root!.networkProvenance;delete old.targets[0].identity;delete old.targets[0].networkPages;old.targets[0].replies.scope={rootPostId:'123',branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};ledger.restore([history(network),history(old)]);
+ const old=await result();old.sourceKind='rendered_ui';old.targets[0].root!.sourceKind='rendered_ui';delete old.targets[0].root!.networkProvenance;delete old.targets[0].identity;delete old.targets[0].networkPages;old.targets[0].replies.scope={rootPostId:'123',branch:null,sort:null,displayedReplyCount:null,completeness:'unknown',endEvidence:null,stopReason:'agent_stopped'};ledger.restore([history(network),history(anotherDelivery(old))]);
  expect(ledger.observations.find(p=>p.sourceKind==='page_graphql')).toMatchObject({origin:'history',networkProvenance:provenance});
  const rendered=ledger.observations.find(p=>p.sourceKind==='rendered_ui');expect(rendered).toBeDefined();expect(rendered).not.toHaveProperty('networkProvenance');
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -207,6 +207,16 @@ class RecordingStore extends XResearchTaskStore {
   override async writeSubmission(submission: XResearchSubmission): Promise<void> {
     this.writeOrder.push('submission');
     return super.writeSubmission(submission);
+  }
+}
+
+/** 记下「交付标记那笔写」落盘了没有：它写在 `wait` 返回之后（spec §4.5），于是「拆除有没有等它」
+ *  是可以直接观察的事实，不用靠计时器。 */
+class DeliveryWriteProbeStore extends XResearchTaskStore {
+  deliveryWritten = false;
+  override async writeSubmission(submission: XResearchSubmission): Promise<void> {
+    await super.writeSubmission(submission);
+    if (submission.deliveredAt) this.deliveryWritten = true;
   }
 }
 
@@ -723,6 +733,26 @@ describe('XResearchTaskService', () => {
       .rejects.toThrow('X research task not found');
   });
 
+  it('drains the post-return delivery write before the thread directory can be deleted', async () => {
+    // 删对话的顺序是「拆除（排空）→ 删目录」（`threadService`）。交付标记写在 `wait` 返回之后
+    // （spec §4.5），它不在那条尾链上 —— 排空不把它算进来的话，它会在目录被删之后把 `task.json`
+    // 与 `submission-*.json` 写回来，一条已经删掉的研究重新长出来。
+    const store = new DeliveryWriteProbeStore(root());
+    const { service } = harness(echoRunner, { store });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() } }, thread);
+    const waited = await service.wait(thread.threadId, submitted.researchRunId, 'wait-1');
+    expect(waited.delivery?.submissionId).toBe(submitted.submissionId);
+    // 它确实还在飞：`wait` 已经返回，盘上还没有交付标记（否则下面的断言什么都证明不了）。
+    expect(store.deliveryWritten).toBe(false);
+
+    await service.disposeThread(thread.threadId);
+    // 拆除返回之前那笔写必须已经落完 —— 下面这次删目录因此排在它之后。
+    expect(store.deliveryWritten).toBe(true);
+    await store.removeThread(thread.threadId);
+    expect(existsSync(store.taskDir(thread.threadId, submitted.researchRunId))).toBe(false);
+  });
+
   it('leaves a finished delivery unmarked when the turn stops before the mark', async () => {
     // 队列**已经空闲**：`awaitIdle` 当场返回，中止因此没有被「等链」接住。交付路径上还有两个真实
     // await —— 重启后首次 `open` 读盘、`deliverable` 读工件 —— 每一个都在写 `deliveredAt` 之前；
@@ -886,6 +916,39 @@ describe('XResearchTaskService', () => {
     const untouched = await service.get(thread.threadId, settledRunId);
     expect(untouched.state).toBe('completed');
     expect(untouched.stateReason).toBeUndefined();
+  });
+
+  it('repairs a run the crash left as completed with one submission still running', async () => {
+    // `flush` 先写 `task.json`、后写提交文件（`wait` 的交付落盘就是这个顺序）：被杀在两次写之间，
+    // 盘上就是「任务已完成 + 提交还在跑」。修复的判据是**提交**，不是 `record.state` —— 按后者判，
+    // 这一份永远不会被修，而卡片按 `counts.queued + counts.running` 判「还有活」，于是一段做完了的
+    // 研究在卡上带着一个能按的取消。
+    const dir = root();
+    const store = new XResearchTaskStore(dir);
+    const thread = owner();
+    const createdAt = '2026-10-16T00:00:00.000Z';
+    const researchRunId = randomUUID();
+    const submission = storedSubmission({
+      threadId: thread.threadId, researchRunId,
+      workItems: [workItem({ state: 'scrolling', posts: 3, scrolls: 4 })],
+    });
+    await store.writeTask({
+      version: 1, researchRunId, threadId: thread.threadId, projectRoot: thread.projectRoot,
+      createdAt, updatedAt: createdAt, revision: 7, state: 'completed',
+      submissionIds: [submission.submissionId],
+    });
+    await store.writeSubmission(submission);
+
+    const { service } = harness(echoRunner, { store });
+    const repaired = await service.get(thread.threadId, researchRunId);
+    expect(repaired.state).toBe('interrupted');
+    expect(repaired.stateReason).toBe('process_restarted');
+    expect(repaired.counts).toMatchObject({ queued: 0, running: 0, interrupted: 1 });
+    expect(repaired.search.map((item) => [item.state, item.status])).toEqual([['stopped', null]]);
+    // 修复本身落盘：下一个进程重开时不能再把这一份读成「在跑」。
+    const persisted = await new XResearchTaskStore(dir)
+      .readSubmission(thread.threadId, researchRunId, submission.submissionId);
+    expect(persisted).toMatchObject({ state: 'interrupted', endedAt: expect.any(String) });
   });
 
   it('does not keep a submission whose files never landed', async () => {

@@ -6,8 +6,17 @@ import { readHtml } from '../../test-support/xResearchFixture';
 import { searchX, searchResult } from './xResearchSearch';
 import { assertXRequestFits, serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { XResearchEvidence } from './xResearchEvidence';
-import { X_RESEARCH_MAX_OUTPUT_BYTES } from './xResearchTypes';
+import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult } from './xResearchTypes';
 import { XResearchScopeLedger } from './xResearchScopeFacts';
+
+/** 同一份交付身份只对应一份结果（spec §4.5 的交付幂等；生产上每份提交的 `callId` / `batchId` 都是新的
+ *  UUID）。采集夹具给所有上下文同一组身份，所以往**同一个账本**里喂「另一份提交」的结果时要显式换一个
+ *  身份 —— 否则账本按身份把它当成一次重复交付丢掉。 */
+let deliverySequence = 0;
+function anotherSubmission<T extends XResearchResult>(result: T): T {
+  deliverySequence += 1;
+  return { ...result, callId: `call-output-${deliverySequence}`, batchId: `batch-output-${deliverySequence}` };
+}
 
 it.each(['read','search'] as const)('preserves current %s bodies and diagnostics before omitting optional history',async operation=>{
  const text='当前汉字😀'.repeat(1100);
@@ -59,7 +68,7 @@ it.each(['read','search'] as const)('preserves current %s bodies and diagnostics
 
 it.each(['null-preview','explicit-preview','bare-preview','unresolved','omitted'] as const)('preserves historical %s citation obligation as an empty-text shell under pressure',async kind=>{
  const raw=await searchX(searchInput,fixture([searchHtml(post())]).context),row=raw.queries[0];row.postObservations=[];
- const read=await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
+ const read=anotherSubmission(await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context));
  const cite='[source](https://x.com/alice/status/123)',guard=(value:typeof raw)=>{
   const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(read);ledger.observe(value);return ()=>ledger.guard('/tmp/report.md',cite);
  };
@@ -79,7 +88,7 @@ it.each(['null-preview','explicit-preview','bare-preview','unresolved','omitted'
  expect(out.result.queries[0].posts).toEqual(raw.queries[0].posts);
  expect(out.result.queries[0].postObservationsOmitted).toBe(10);
  expect(guard(out.result)).toThrow(reason);
- const qualified=await readX({tabId:'research-tab',read:{objective:'resolve',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},(await stagedFixture({article:'ok'})).context);
+ const qualified=anotherSubmission(await readX({tabId:'research-tab',read:{objective:'resolve',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:true,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:3}},(await stagedFixture({article:'ok'})).context));
  const resolved=new XResearchEvidence('/tmp',()=> 'run');resolved.observe(read);resolved.observe(out.result);expect(()=>resolved.guard('/tmp/report.md',cite)).toThrow(reason);
  resolved.observe(qualified);expect(resolved.guard('/tmp/report.md',cite)).toBeUndefined();
  const wholeDrop=structuredClone(out.result);wholeDrop.queries[0].postObservations=[];expect(guard(wholeDrop)()).toBeUndefined();
@@ -100,7 +109,7 @@ describe('bounded X production tool result',()=>{
   const raw=await searchX(searchInput,fixture([searchHtml(post())]).context),first=raw.queries[0];first.postObservations=[];
   const second=structuredClone(first);second.query.id='second';raw.queries.push(second);
   const base=first.posts[0];
-  const priorRead=await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context);
+  const priorRead=anotherSubmission(await readX({tabId:'tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}},fixture([readHtml(post())]).context));
   const guard=(value:typeof raw)=>{const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(priorRead);ledger.observe(value);return ()=>ledger.guard('/tmp/report.md','[source](https://x.com/alice/status/123)');};
   expect(guard(raw)()).toBeUndefined();
   first.posts[0].articlePreviews=Array.from({length:300},(_,i)=>({entryObservationId:`large-entry-${i}`,parentPostId:'123',sourceUrl:base.sourceUrl!,targetUrl:'https://x.com/bob/status/456'}));
@@ -407,7 +416,13 @@ it('bounds modern protected history through artifact coverage while preserving l
  const limited=serializeXResearchResult(r);
  expect(limited.result.targets[0].inventoryAuditOmitted).toMatchObject({count:50,first:{observationId:'scope-0',sourceUrl:root.sourceUrl}});
  expect(JSON.parse(limited.text).targets[0].inventoryAuditOmitted).toEqual(limited.result.targets[0].inventoryAuditOmitted);
- const {XResearchEvidence}=await import('./xResearchEvidence');const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(baseline);expect(ledger.guard('/tmp/a.md','[source](https://x.com/alice/status/123)')).toBeUndefined();ledger.observe(limited.result);
+ const {XResearchEvidence}=await import('./xResearchEvidence');
+ // 同一份交付身份只有一份结果（spec §4.5 的交付幂等）：第一份是**另一次提交**交来的完整正文 ——
+ // 同一份身份的两份裁切只会留下第一份，那条问题就问成假的了；第二份是被包络裁过的这次交付。
+ const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(anotherSubmission(baseline));
+ // 正控：完整正文那份本来可以引用（下面那次拒绝不是「这个来源根本不可引」）。
+ expect(ledger.guard('/tmp/a.md','[source](https://x.com/alice/status/123)')).toBeUndefined();
+ ledger.observe(limited.result);
  // Explicit omission cannot disappear into a false known-empty inventory.
  expect(()=>ledger.guard('/tmp/a.md','[source](https://x.com/alice/status/123)')).toThrow('inventory');
  expect(Buffer.byteLength(JSON.stringify(xResearchToolResult(limited)))).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
@@ -431,8 +446,9 @@ it('caps displaced body observations honestly and retains their known Article ci
   expect(capped.result.delivery?.truncated).toBe(true);
   expect(saved.root).toEqual(root);
   const ledger=new XResearchEvidence('/tmp',()=> 'run');ledger.observe(capped.result);
-  // A later ordinary body supplies citable text but cannot erase the retained Article obligation.
-  ledger.observe(plain.result);
+  // A later ordinary body (another submission: the same delivery identity would be the same result) supplies
+  // citable text but cannot erase the retained Article obligation.
+  ledger.observe(anotherSubmission(plain.result));
   expect(()=>ledger.guard('/tmp/report.md','[root](https://x.com/alice/status/123)')).toThrow(/Article/);
   expect(serializeXResearchResult(capped.result)).toEqual(capped);
 });
@@ -461,7 +477,7 @@ it('budgets independent bodies before scoped history and protects every own-pare
       for(const p of row.unscopedPosts!.observations)expect(p).toMatchObject({relationToTarget:'unproven',observedContainer:'post'});
     }
     const ledger=new XResearchEvidence('/tmp',()=> 'run');
-    const old=await readX({...input,read:{...input.read,targets:[{url:'https://x.com/b/status/1099'}],includeReplies:false,maxScrollsPerPost:0}},fixture([readHtml(post('1099','b','older own body'))]).context);
+    const old=anotherSubmission(await readX({...input,read:{...input.read,targets:[{url:'https://x.com/b/status/1099'}],includeReplies:false,maxScrollsPerPost:0}},fixture([readHtml(post('1099','b','older own body'))]).context));
     ledger.observe(old);expect(ledger.guard('/tmp/report.md','[source](https://x.com/b/status/1099)')).toBeUndefined();
     ledger.observe(out.result);expect(()=>ledger.guard('/tmp/report.md','[source](https://x.com/b/status/1099)')).toThrow(/inventory is unknown/);
     expect(serializeXResearchResult(out.result)).toEqual(out);

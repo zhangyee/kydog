@@ -85,6 +85,13 @@ function rowStateWord(row: XResearchWorkItem): string {
   return row.state === 'stopped' ? rowStatusWord(row) : WORK_STATE_WORD[row.state];
 }
 
+/** 收尾了却没有结论的行：进程被杀在中间（spec §4.4），它的计数只长到最后一次落盘，而快照又把它算进
+ *  `*Done` 那一桶。卡头（`summaryLine`）与行内（`searchRowElement` / `readRowElement`）读的是同一
+ *  条判据 —— 两个读者各写一份，迟早各自漂移。 */
+function rowWithoutConclusion(row: XResearchWorkItem): boolean {
+  return row.state === 'stopped' && row.status === null;
+}
+
 /** `stateReason` 只在它能解释状态时才当括注出现：「取消」+「被取消」是同一件事说两遍。
  *  不认识的词不进卡面：它是开放字符串，猜一句解释会把「有一份提交读不出来」说成用户动作。 */
 function stateNote(reason: string | undefined, state: XResearchTaskState): string | null {
@@ -98,14 +105,17 @@ function stateNote(reason: string | undefined, state: XResearchTaskState): strin
 /** 摘要行：每个数字都是快照的权威字段 —— `counts.*` 由主进程按工作项分桶，
  *  `*Done/*Total` 是**按段**分好的同一份分桶（卡片不再自己数 `read.length`：那一读在运行中
  *  会被读成「20 个目标都读完了」）。
- *  一段的目标数是 0 时整段不出现：一次纯读取的研究不该在卡头写「搜索 0/0 个 query」。 */
+ *  一段的目标数是 0 时整段不出现：一次纯读取的研究不该在卡头写「搜索 0/0 个 query」。
+ *  一段里有收尾却没有结论的行（`rowWithoutConclusion`）时整段也不出现：那一行的帖数 / 回复数停在
+ *  最后一次落盘上（`收 N 帖` 漏了它），而 `*Done` 又把它算成收尾（`N/N` 说它已经有结论）。
+ *  两个数字都是没人观测到的，那一节的结论只由行自己说（spec §4.4）。 */
 function summaryLine(snapshot: XResearchTaskSnapshot): string {
   const { counts } = snapshot;
   const parts: string[] = [];
-  if (counts.searchTotal > 0) {
+  if (counts.searchTotal > 0 && !snapshot.search.some(rowWithoutConclusion)) {
     parts.push(`搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 收 ${counts.posts} 帖`);
   }
-  if (counts.readTotal > 0) {
+  if (counts.readTotal > 0 && !snapshot.read.some(rowWithoutConclusion)) {
     parts.push(`读取 ${counts.readDone}/${counts.readTotal} 个目标 · ${counts.replies} 回复`
       + ` · 文章 ${counts.articles} 篇`);
   }
@@ -131,7 +141,7 @@ function budgetLine(snapshot: XResearchTaskSnapshot): string {
 function searchRowElement(row: XResearchWorkItem, index: number) {
   const started = row.state !== 'queued';
   // 有结论的收尾行才谈数字：`stopped` 而没有 `status` 的那一类只能说「中断」。
-  const counted = started && !(row.state === 'stopped' && row.status === null);
+  const counted = started && !rowWithoutConclusion(row);
   return (
     <div key={row.workItemId} data-testid="x-research-row" data-section="search" style={ROW_STYLE}>
       <span style={MARK_STYLE}>{numberMark(index)}</span>
@@ -156,7 +166,7 @@ function readRowElement(row: XResearchWorkItem, index: number) {
   const active = started && row.state !== 'stopped';
   // `stopped` + `status: null` = 进程被杀留下的那一类：行自己已经说「中断」，它的根帖与回复数
   // 停在最后一次落盘上，再说「无根帖」就是拿残缺的计数当结论（spec §4.4）。
-  const counted = started && !(row.state === 'stopped' && row.status === null);
+  const counted = started && !rowWithoutConclusion(row);
   // `article === 'pending'` 说的是「要了、还没取到」。只有真在飞的那一行才是进行时的「请求中」：
   // 排队行说义务（`待取`），收尾行说的是它没走到取文章那一步（`concludeRow` 不收尾这个字段），
   // 对着一行已经有结论的行说「请求中」等于承诺一件再也不会发生的事。

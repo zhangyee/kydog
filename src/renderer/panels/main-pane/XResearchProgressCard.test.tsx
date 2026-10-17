@@ -385,6 +385,36 @@ describe('XResearchProgressCard', () => {
     expect(byLabel('observed-target')).toContain('根帖 + 42 回复');
   });
 
+  it('leaves the header numbers out when a repaired run cannot support them', async () => {
+    // 崩溃后修复出来的快照（spec §4.4）：一行收尾却没有结论。它的帖数 / 回复数停在最后一次落盘上，
+    // 而 `*Done` 又把它算成收尾 —— `收 N 帖` 漏了它、`N/M` 说它已经有结论，两个数字都是没人观测
+    // 到的。那一节的数字整段不出现，结论只由那一行自己说（行内同一条判据，见上一条用例）。
+    const repaired = snapshot({
+      revision: 1, state: 'interrupted',
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0,
+        interrupted: 1, posts: 0, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 1, searchTotal: 1, readDone: 0, readTotal: 0 },
+      search: [workItem({ section: 'search', label: 'crashed-query', state: 'stopped', status: null })],
+      read: [],
+    });
+    invoke.mockResolvedValue(repaired);
+    useXResearchTaskStore.getState().upsert(repaired);
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+
+    expect(mounted.find('x-research-card').props['data-status']).toBe('interrupted');
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('X 研究 · 中断');
+    // 两个都不画：没有「收 N 帖」，也没有「N/M」—— 连那一行摘要本身都不出现（两段都没东西可说）。
+    expect(mounted.query('x-research-summary')).toBeNull();
+
+    // 同一条用例里的正控：换成真有结论的那一份（同样的渲染路径），两个数字都回来。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 2 }));
+    mounted.rerender(props);
+    const summary = visibleText(mounted.find('x-research-summary'));
+    expect(summary).toContain('收 128 帖');
+    expect(summary).toContain('搜索 2/2 个 query');
+  });
+
   it('asks for confirmation before cancelling and does nothing when declined', async () => {
     useXResearchTaskStore.getState().upsert(running);
     invoke.mockImplementation(async (method) => method === 'xResearch.taskCancel'

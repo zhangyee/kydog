@@ -309,6 +309,10 @@ function planWork(work: XResearchWorkRequest): {
 export class XResearchTaskService {
   private readonly active = new Map<string, ActiveResearch>();
   private readonly chains = new Map<string, Promise<void>>();
+  /** 返回之后才落的那笔写（spec §4.5：交付标记写在返回之后）。它不在那条尾链上，所以「排空」不能
+   *  只看链：删对话的顺序是「拆除（排空）→ 删目录」，这笔写抢在删之后落地就会把 `task.json` /
+   *  `submission-*.json` 写回来 —— 一条已经删掉的研究重新长出来。键是 threadId（目录的所有者）。 */
+  private readonly lateWrites = new Map<string, Set<Promise<void>>>();
 
   constructor(private readonly deps: XResearchTaskServiceDeps) {}
 
@@ -341,14 +345,19 @@ export class XResearchTaskService {
       pending: new Map(),
     };
     this.active.set(key, opened);
-    // 「进行中」只可能来自一个已经不在的进程：`open` 读盘的前提就是这条研究没有内存活副本。
-    if (record.state === 'running') await this.repairRestarted(opened);
+    // 判据是**提交**，不是 `record.state`：盘上还留着排队/在飞的那一份 = 写它的那个进程没走完（何况
+    // `open` 的前提本来就是这条研究没有内存活副本 —— 本进程里没有在跑的队列）。`flush` 先写 `task.json`
+    // 再写提交文件，两次写之间被杀就会留下「任务已完成 + 提交还在跑」（`wait` 的交付落盘正是这种写法）；
+    // 按 `record.state` 判断这一份永远不会被修，而卡片按 `counts.queued + counts.running` 判「还有活」，
+    // 于是一段做完了的研究在卡上带着一个能按的取消。
+    if (this.hasInFlight(opened)) await this.repairRestarted(opened);
     return opened;
   }
 
-  /** 崩溃后的诚实表示（spec §4.4）：盘上写着「进行中」= 写它的那个进程在两个边界之间被杀。
-   *  未收尾的提交按中断收尾（复用 `interrupt` / `project`，不另写一份状态规则），再落一次盘 ——
-   *  否则同一个「进行中」在每次重开时都会被当成最新状态读回来。 */
+  /** 崩溃后的诚实表示（spec §4.4）：盘上还留着排队/在飞的提交 = 写它的那个进程在两个边界之间被杀
+   *  （`task.json` 与提交文件那两次写之间，或一轮采集跑到一半）。未收尾的提交按中断收尾（复用
+   *  `interrupt` / `project`，不另写一份状态规则），再落一次盘 —— 否则同一个「在飞」在每次重开时都会
+   *  被当成最新状态读回来。 */
   private async repairRestarted(active: ActiveResearch): Promise<void> {
     const unsettled = [...active.submissions.values()]
       .filter((submission) => submission.state === 'queued' || submission.state === 'running');
@@ -459,6 +468,7 @@ export class XResearchTaskService {
   /** 等该研究的队列排空（`wait` 与测试共用同一个事实）。
    *  队列是 per-thread 的一条尾链，所以「这条研究跑完了」只能靠整条链排空来回答：同一 thread 上
    *  排在它后面的提交也在这条链上，只盯该研究自己的那一轮会提前返回。
+   *  「排空」也包括返回之后才落的那笔交付标记（`lateWrites`）：它不在链上，但删目录必须排在它之后。
    *  `researchRunId` 在这里的作用是确认这条研究存在 —— 盘上没有它，就没有可等的活。 */
   async whenIdle(threadId: string, researchRunId: string): Promise<void> {
     if (!(await this.open(threadId, researchRunId))) {
@@ -470,11 +480,28 @@ export class XResearchTaskService {
   private async awaitIdle(threadId: string, signal?: AbortSignal): Promise<void> {
     for (;;) {
       const chain = this.chains.get(threadId);
-      if (!chain) return;
-      const settled = chain.catch(() => undefined);
+      const late = [...(this.lateWrites.get(threadId) ?? new Set<Promise<void>>())];
+      if (!chain && !late.length) return;
+      const settled = Promise.all([
+        chain ? chain.catch(() => undefined) : Promise.resolve(),
+        // 这些写自己已经把失败记进日志（`trackLateWrite`）：排空不因其中一笔失败而拒绝。
+        ...late.map((work) => work.catch(() => undefined)),
+      ]);
       await (signal ? abortable(settled, signal) : settled);
-      if (this.chains.get(threadId) === chain) return;
+      if (this.chains.get(threadId) === chain && !this.lateWrites.get(threadId)?.size) return;
     }
+  }
+
+  /** 记下「这笔写还没落完」：落完（成功或失败）就摘掉，`awaitIdle` 等的是这个集合。 */
+  private trackLateWrite(threadId: string, work: Promise<void>): void {
+    const writes = this.lateWrites.get(threadId) ?? new Set<Promise<void>>();
+    this.lateWrites.set(threadId, writes);
+    writes.add(work);
+    const release = (): void => {
+      writes.delete(work);
+      if (!writes.size && this.lateWrites.get(threadId) === writes) this.lateWrites.delete(threadId);
+    };
+    void work.then(release, release);
   }
 
   /** 交付：等队列排空，然后把**最早一份尚未交付**的结果交出去（spec §4.5）。
@@ -523,11 +550,13 @@ export class XResearchTaskService {
     const snapshot = this.emit(active);
     // 落盘确认放在返回**之后**（spec §4.5 的顺序）：失败不该把已经交出去的结果要回来 —— 内存里它
     // 已经是交付过的，重启后最多再交一次（幂等兜底就在那个窗口里），日志是这件事唯一露面的地方。
-    void this.flush(active, [delivered]).catch((error: unknown) => {
+    // 这一笔写仍要进 `lateWrites`：删对话的顺序是「排空 → 删目录」，排空不把它算进来的话，它会
+    // 在目录被删之后把 `task.json` 与 `submission-*.json` 写回来。
+    this.trackLateWrite(threadId, this.flush(active, [delivered]).catch((error: unknown) => {
       logger.warn('x_research', 'could not persist the delivery mark', {
         threadId, researchRunId, submissionId: delivered.submissionId, err: String(error),
       });
-    });
+    }));
     return { snapshot, delivery, undelivered: this.undeliveredOf(active) };
   }
 
@@ -623,7 +652,8 @@ export class XResearchTaskService {
     return active.ledger === undefined && !this.hasInFlight(active);
   }
 
-  /** 提交级的「还在队列上或正在跑」：淘汰缓存（`owns`）问的就是这个事实。 */
+  /** 提交级的「还在队列上或正在跑」：淘汰缓存（`owns`）与重启修复（`repairRestarted`）问的是同一个
+   *  事实 —— 盘上还剩这种提交，就是上一个进程留下的。 */
   private hasInFlight(active: ActiveResearch): boolean {
     for (const submission of active.submissions.values()) {
       if (submission.state === 'queued' || submission.state === 'running') return true;

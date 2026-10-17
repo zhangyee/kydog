@@ -298,12 +298,12 @@ export class XResearchEvidence {
   }>[] = [];
   private legacy: XLegacyProjection[] = [];
   /** 交付幂等（spec §4.5）：同一份结果被交付两次（崩溃窗口里的「再交一次」）不得在 records 里
-   *  变成两份。键是交付身份（`deliveryIdentity`），值是这一份结果在它那个身份下的指纹 ——
-   *  同一身份下**字节相同**的那一份只收一次；字节不同的那一份是另一份结果（同一身份下重新序列化 /
-   *  另一批事实），照收不误：这张表是「观测过什么」的账本，宁可多一条真事实，也不能把两条不同的事实
-   *  合成一条。`restore` 也把 transcript 里那份的指纹记下：进程重开后它已经进了 records，
-   *  同一份结果再交付一次不会重复。 */
-  private readonly delivered = new Map<string, Set<string>>();
+   *  变成两份。键是交付身份（`deliveryIdentity`），**只有身份、没有字节**：同一份提交的结果会在两个
+   *  时刻各裁一次（`settle` 按收尾那一刻的快照裁包络、重启后的交付按交付那一刻的快照裁），两次的
+   *  包络额度不同、字节就不同，而它们是同一次提交的同一批事实。按字节比会把这同一份结果收两遍。
+   *  `restore` 也把 transcript 里那份的身份记下：进程重开后它已经进了 records，同一份结果再交付
+   *  一次不会重复。 */
+  private readonly delivered = new Set<string>();
   constructor(
     private readonly cwd: string,
     private readonly currentRunId: () => string | null,
@@ -334,11 +334,8 @@ export class XResearchEvidence {
   /** 记下「这一份交付进过表了」，返回它是不是第一次。重复的那一次直接丢掉 —— 它带的是同一批事实。 */
   private claimDelivery(result: Canonical): boolean {
     const identity = deliveryIdentity(result);
-    const fingerprints = this.delivered.get(identity) ?? new Set<string>();
-    const fingerprint = JSON.stringify(result);
-    if (fingerprints.has(fingerprint)) return false;
-    fingerprints.add(fingerprint);
-    this.delivered.set(identity, fingerprints);
+    if (this.delivered.has(identity)) return false;
+    this.delivered.add(identity);
     return true;
   }
   /** Rebuild, rather than merge, so a changed branch cannot retain obsolete facts. */
