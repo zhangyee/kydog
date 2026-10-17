@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { findAllWhere, mount } from '../../../test-support/miniReact';
-import type { XResearchTaskSnapshot, XResearchWorkItem } from '../../../shared/xResearchTask';
+import {
+  xResearchTaskSnapshot,
+  type XResearchSubmission, type XResearchTaskRecord, type XResearchTaskSnapshot,
+  type XResearchWorkItem,
+} from '../../../shared/xResearchTask';
 
 vi.mock('react', async (importOriginal) => {
   const real = await importOriginal<typeof import('react')>();
@@ -140,6 +144,40 @@ describe('XResearchProgressCard', () => {
     // 读取段的 ① 与搜索段的 ① 是同一个字符：这条断的是「两段都从头数」，不是「只有一个 ①」。
     expect(searchText.indexOf('搜索①')).toBe(0);
     expect(readText.indexOf('读取①')).toBe(0);
+  });
+
+  it('reads a section that finished with failures as settled, not as still running', async () => {
+    const record: XResearchTaskRecord = {
+      version: 1, researchRunId: 'xrun-a', threadId: 'thread-1', projectRoot: '/tmp/project',
+      createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:05.000Z',
+      revision: 1, state: 'failed', submissionIds: ['sub-read'],
+    };
+    const readSubmission: XResearchSubmission = {
+      version: 1, submissionId: 'sub-read', researchRunId: 'xrun-a', threadId: 'thread-1',
+      submitCallId: 'call-submit-1', batchId: 'xbatch_1', runId: 'xrun-a',
+      operation: 'read', objective: '读四个目标', state: 'done',
+      budget: { scrolls: 0, expandActions: 0 }, usage: { posts: 0, scrolls: 0, expandActions: 0 },
+      workItems: [
+        workItem({ section: 'read', label: 'status/1', state: 'stopped', status: 'observed' }),
+        workItem({ section: 'read', label: 'status/2', state: 'stopped', status: 'explicit_empty' }),
+        workItem({ section: 'read', label: 'status/3', state: 'stopped', status: 'access_denied',
+          reason: FAILED_REASON }),
+        workItem({ section: 'read', label: 'status/4', state: 'stopped', status: 'failed' }),
+      ],
+      createdAt: '2026-10-16T00:00:00.000Z', endedAt: '2026-10-16T00:00:05.000Z',
+    };
+    // 快照走真投影：卡面上那个分子只能从 `xResearchTaskSnapshot` 来，不是手写的字面量。
+    const projected = xResearchTaskSnapshot(record, [readSubmission]);
+    invoke.mockResolvedValue(projected);
+    useXResearchTaskStore.getState().upsert(projected);
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+
+    const summary = visibleText(mounted.find('x-research-summary'));
+    // 2 成功 + 2 失败、四个目标全都收尾了：卡面必须说「读取 4/4」，说「读取 2/4」就是谎报还有两个在跑。
+    expect(summary).toContain('读取 4/4 个目标');
+    // 失败那两行没有被藏起来：结论在同一个摘要行里（这一条同时把「分子不是成功数」钉住）。
+    expect(summary).toContain('失败 2');
   });
 
   it('shows the exact failure text of a failed target next to a successful one', async () => {

@@ -200,7 +200,8 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
     expect(snap.counts).toEqual({
       submissions: 1, queued: 1, running: 1, done: 1, failed: 1, cancelled: 1, interrupted: 1,
       posts: 0, replies: 0, articles: 0, undelivered: 0,
-      searchDone: 1, searchTotal: 6, readDone: 0, readTotal: 0,
+      // 六行里只有排队与在飞那两行还没收尾：分子是收尾数 4，不是成功数 1。
+      searchDone: 4, searchTotal: 6, readDone: 0, readTotal: 0,
     });
   });
 
@@ -219,16 +220,52 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
           item({ workItemId: 'w-r4', section: 'read', label: 'd', state: 'queued' }),
         ] }),
     ]);
-    // 每段的行数都不是「已完成数」：搜索 3 行只完成 1 行，读取 4 行完成 2 行。
-    // 若把 `search.length` / `read.length` 当成完成数，这两对数字就相等，卡片会在运行中说
-    // 「读取 4 个目标」—— 正是这条用例要挡下的那种假进度。
-    expect([snap.counts.searchDone, snap.counts.searchTotal]).toEqual([1, 3]);
+    // 每段的行数都不是「收尾数」（也不是「成功数」）：搜索 3 行只收尾 2 行（w-s3 还在滚），
+    // 读取 4 行收尾 2 行（w-r3 在等、w-r4 排队）。若把 `search.length` / `read.length` 当成
+    // 收尾数，这两对数字就相等，卡片会在运行中说「读取 4 个目标」—— 正是这条用例要挡下的那种假进度。
+    expect([snap.counts.searchDone, snap.counts.searchTotal]).toEqual([2, 3]);
     expect([snap.counts.readDone, snap.counts.readTotal]).toEqual([2, 4]);
     expect(snap.counts.searchDone).not.toBe(snap.search.length);
     expect(snap.counts.readDone).not.toBe(snap.read.length);
-    // 失败的那一行没有落进 `done` 桶：段内计数与 `done` 桶是同一把尺子（另有 failed 桶）。
+    // 段内分子数的是「收尾」：搜索那行失败也算收尾（它在 failed 桶里，不在 done 桶里），
+    // `done` 桶本身仍是只装成功的那一桶 —— 两个口径各自有断言钉着。
     expect(snap.counts.done).toBe(3);
     expect(snap.counts.failed).toBe(1);
+  });
+
+  it('counts settled rows in the numerator, so 2 successes + 2 failures reads 4/4', () => {
+    const snap = xResearchTaskSnapshot(record(), [
+      submission({ submissionId: 'sub-r', operation: 'read', state: 'done',
+        endedAt: '2026-10-16T00:09:00.000Z', workItems: [
+          item({ workItemId: 'w-r1', section: 'read', label: 'a', state: 'stopped', status: 'observed' }),
+          item({ workItemId: 'w-r2', section: 'read', label: 'b', state: 'stopped', status: 'partial' }),
+          item({ workItemId: 'w-r3', section: 'read', label: 'c', state: 'stopped',
+            status: 'access_denied' }),
+          item({ workItemId: 'w-r4', section: 'read', label: 'd', state: 'stopped',
+            status: 'rate_limited' }),
+        ] }),
+    ]);
+    // 四行全都收尾了：2 个成功 + 2 个失败。分子只数成功的话卡面会说「读取 2/4」，读者会以为
+    // 还有两个目标在跑 —— 而那两行的结论早就在「失败 2」那一栏交代过了。
+    expect([snap.counts.readDone, snap.counts.readTotal]).toEqual([4, 4]);
+    // 对照：`done` 桶没有跟着分子改口径，仍是「只装成功」的那一桶（别的读者按它读）。
+    expect(snap.counts.done).toBe(2);
+    expect(snap.counts.failed).toBe(2);
+  });
+
+  it('keeps a partial numerator while a section still has queued and running rows', () => {
+    const snap = xResearchTaskSnapshot(record(), [
+      submission({ submissionId: 'sub-r', operation: 'read', state: 'running', workItems: [
+        item({ workItemId: 'w-r1', section: 'read', label: 'a', state: 'stopped', status: 'observed' }),
+        item({ workItemId: 'w-r2', section: 'read', label: 'b', state: 'stopped', status: 'failed' }),
+        item({ workItemId: 'w-r3', section: 'read', label: 'c', state: 'collecting' }),
+        item({ workItemId: 'w-r4', section: 'read', label: 'd', state: 'queued' }),
+      ] }),
+    ]);
+    // 收尾 2 行（1 成功 + 1 失败）、另 2 行还没收尾：分子不能因为「失败也算收尾」就吞掉在飞的行。
+    expect([snap.counts.readDone, snap.counts.readTotal]).toEqual([2, 4]);
+    expect(snap.counts.running).toBe(1);
+    expect(snap.counts.queued).toBe(1);
   });
 
   it('counts an article only when its body was read, and a delivery only when the submission ended', () => {

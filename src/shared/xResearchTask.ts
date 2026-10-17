@@ -111,8 +111,10 @@ export type XResearchTaskSnapshot = {
     replies: number;
     articles: number;
     undelivered: number;
-    /** 按段分开的进度（spec §5.3 的「读取 2/20 个目标」）：`*Done` 与 `done` 桶同一把尺子、
-     *  只是按 `section` 分了段；`*Total` 就是这一段的 `search` / `read` 行数。
+    /** 按段分开的进度（spec §5.3 的「读取 2/20 个目标」）：`*Done` 是这一段**收尾**了的行数
+     *  （成功、失败、取消、中断都算收尾），`*Total` 是这一段的 `search` / `read` 行数。
+     *  分子故意不是「成功数」：2 成功 + 2 失败收尾的研究若说「读取 2/4」，读者会以为还有两个目标
+     *  在跑，而成功与否另有 `done` / `failed` 两个桶交代。
      *  卡片直接读这四个数，不拿 `read.length` 冒充「已读」——运行中那样读会被读成「20 个都读完了」。 */
     searchDone: number;
     searchTotal: number;
@@ -191,18 +193,18 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
     posts: 0, replies: 0, articles: 0, undelivered: 0,
     searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0,
   };
+  // 段内还没收尾的行数（排队 + 在飞），收尾数由「总数 − 它」算出来 —— 见循环后的那两行。
+  const sectionPending: Record<XResearchSection, number> = { search: 0, read: 0 };
   for (const item of workItems) {
     const bucket = workItemBucket(item);
     counts[bucket] += 1;
-    // 段内进度复用同一把尺子：落进 `done` 桶才算这一段做完了，失败 / 取消 / 中断各自有桶、
-    // 卡上另有「失败 N」那一栏 —— 在这里再写一条「算不算完成」的规则就会出现第二份口径。
+    // 段内进度仍只用 `workItemBucket` 这一份分桶，不另写「算不算收尾」的规则：收尾 = 不在这两个桶里。
     if (item.section === 'search') {
       counts.searchTotal += 1;
-      if (bucket === 'done') counts.searchDone += 1;
     } else {
       counts.readTotal += 1;
-      if (bucket === 'done') counts.readDone += 1;
     }
+    if (bucket === 'queued' || bucket === 'running') sectionPending[item.section] += 1;
     // `posts` 只由 search 工作项填写；read 工作项恒为 0，否则卡头会双计（§5.4 的「收 N 帖」
     // 就是搜索行的去重帖数）。按 section 过滤而不是信任那个 0：将来 read 行填了 posts，
     // 卡头也不会多出一个「读取也收了 N 帖」的数字。
@@ -210,6 +212,11 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
     counts.replies += item.replies;
     if (item.article === 'body') counts.articles += 1;
   }
+  // 段内的分子是**收尾**了的行数，不是「成功了几行」：2 成功 + 2 失败收尾的研究若说「读取 2/4」，
+  // 读者会以为还有两个目标在跑，而卡上「失败 N」已经把那两行交代过了。分母仍只是这一段的行数，
+  // 所以分子恒 ≤ 分母。`counts.done` 仍只装成功那一桶 —— 别的读者按它读，口径不动。
+  counts.searchDone = counts.searchTotal - sectionPending.search;
+  counts.readDone = counts.readTotal - sectionPending.read;
   // 「没交付」只算已经收尾、盘上还没有交付标记的提交：还在跑的提交压根没有结果可交付，
   // 算进去会让卡上那个数字变成对未来的估算。两处都按「空值」判而不是逐字比 `null` / `undefined`：
   // store 直接 `JSON.parse(...) as XResearchSubmission`，只有真时间戳才算交付过（`deliveredAt: null`
