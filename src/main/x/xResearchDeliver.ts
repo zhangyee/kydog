@@ -10,6 +10,12 @@
 // `delivery` 在交付路径上不动（控制器裁决 T5/B'）：一份结果在**收尾时**就按量出来的包络额度裁好，
 // 交付只是把它装进壳。这样同一份提交只有一份裁过的副本 —— 工件里是完整 canonical，交付的是
 // `settle` 写结论用的那一份，卡与交付永远说同一件事（`clipForEnvelope`）。
+//
+// 两个字节数说的不是同一件事，别混：**裁切读的是整包实测**（`clipForEnvelope` 里
+// `measuredBytes(envelopeOf(...))`，判据是壳 + 结果在模型眼里真的占多少）；而
+// `delivery.result.budgetUsage.outputBytes` 在交付这一层由 `stampEnvelopeBytes` 盖成**整包**的字节数，
+// 只是给模型看的一个读数，没有任何裁切闸读它（结果自己序列化时那个数按投影后的文本算，
+// 会比整包小一块 —— 拿它当闸就是少裁）。
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult } from './xResearchTypes';
 import type {
@@ -112,9 +118,12 @@ export function clipForEnvelope(identity: XResearchDeliveryIdentity & { result: 
   // 定点循环，不靠闭式解：额度是按「壳 + 结果」量出来的，而结果自己的字节数写着它自己
   // （`outputBytes` 盖的是整包字节），两者互相影响 —— 只差个位数到几十字节的量，一两轮就收敛。
   // 取不到就停手：交付侧还会把快照省到只剩数字类事实，最后那一步才是硬失败。
+  //
+  // 判据只认**整包实测**，不读 `budgetUsage.outputBytes`：那个数说的是序列化那一刻按
+  // `content.text`（过 1 MiB 时是投影后的文本）量出来的字节，而交付壳的文本是把整份结果
+  // 原样放进去的 —— 投影过的结果因此会少报出投影省下的那一块，拿它当闸就会漏过 1 MiB
+  // （二十个目标各带五百个 Article 缺口那一档实测差 1.9 KB）。
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (delivered.budgetUsage.outputBytes <= budget) return delivered;
-    delivered = serializeXResearchResult(delivered, undefined, budget).result;
     const over = measuredBytes(envelopeOf({
       ...identity, action: 'wait', undelivered: [], delivery: {
         deliveryCallId: identity.submitCallId, submissionId: identity.submissionId,
@@ -124,6 +133,7 @@ export function clipForEnvelope(identity: XResearchDeliveryIdentity & { result: 
     if (over <= 0) return delivered;
     // 多扣 1 字节：每轮都必须真的少放一点东西，否则同一份额度会原地打转。
     budget -= over + 1;
+    delivered = serializeXResearchResult(delivered, undefined, budget).result;
   }
   return delivered;
 }

@@ -391,3 +391,65 @@ export function createXResearchArtifactStore(
     },
   };
 }
+
+/** thread 级读入口的根：任务根的上层（`<root>/<threadId>/<runId>/artifact`）与旧根。
+ *  `root` 是 `<X_RESEARCH_DIR>`，不是某一次研究的目录 —— run 由这份 ref 在盘上定位。 */
+export type XResearchThreadArtifactRoots = {
+  root: string;
+  threadId: string;
+  legacy: string;
+};
+
+/**
+ * 恢复链的读入口：一次对话的 branch 里可能是**好几次研究**的交付，而任务根按 `researchRunId`
+ * 分叉（`<root>/<threadId>/<runId>/artifact`）—— ref 里没有 `researchRunId`（它的 `runId` 是采集
+ * 那一轮的 runId，与研究的 id 不是一件事）。所以按目录身份在盘上找：这个 `directoryId` 落在哪个
+ * run 的 `artifact` 下。真正的读交给那一个 run 的双根 store —— realpath 收容、manifest 与字节校验、
+ * ref 身份判据一字不改，这里只回答「哪一棵根」。
+ *
+ * **只读**：写只有一个归属（那次研究的任务根），跨 run 的写入口只会长出第二条写路径。
+ *
+ * 零匹配与多匹配都失败：零匹配按旧根的「读不到」收场（`hydrateXResearchBranch` 把它变成
+ * `restoration: missing`）；多匹配是身份说不清（两个 run 都有这个目录），**不按目录顺序挑一个** ——
+ * 挑错就是把别人的观测当成这一次的。
+ */
+export function createXResearchThreadArtifactStore(
+  roots: XResearchThreadArtifactRoots,
+): Pick<XResearchArtifactStore, 'read'> {
+  // threadId 就是会话 id：它已经参与拼 transcript 的路径（`<sessionsDir>/<threadId>.jsonl`），
+  // 这里沿用同一份信任 —— 不在这条只是读的链上另立一套 id 政策。
+  const threadDir = path.resolve(roots.root, roots.threadId);
+  const holdsDirectory = async (base: string, directoryId: string): Promise<boolean> => {
+    const stat = await fs.stat(path.join(base, directoryId)).catch((error: unknown) => {
+      if (missing(error)) return null;
+      throw error;
+    });
+    return stat?.isDirectory() === true;
+  };
+  return {
+    async read(raw) {
+      const ref = checkedRef(raw);
+      // run 目录每次现列、不缓存：一条对话随时会开新的研究，缓存下来的列表会把新工件报成不存在。
+      const runs = await fs.readdir(threadDir, { withFileTypes: true }).catch((error: unknown) => {
+        if (missing(error)) return [];
+        throw error;
+      });
+      const matches: string[] = [];
+      for (const run of runs) {
+        if (!run.isDirectory()) continue;
+        const task = path.join(threadDir, run.name, 'artifact');
+        if (await holdsDirectory(task, ref.directoryId)) matches.push(task);
+      }
+      if (matches.length > 1) {
+        throw new XResearchArtifactError(
+          'read',
+          'Artifact directory identity is ambiguous across research runs',
+        );
+      }
+      // 一个 run 都没有它：旧根是唯一还可能有的地方（改造前按会话落的那一棵）。把旧根
+      // 同时当作任务根交给同一个 store，双根判据与错误码照原样。
+      const task = matches[0] ?? roots.legacy;
+      return createXResearchArtifactStore({ task, legacy: roots.legacy }).read(ref);
+    },
+  };
+}

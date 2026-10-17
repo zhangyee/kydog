@@ -12,8 +12,8 @@ import { stripComments } from '../../test-support/stripComments';
  * `lint` 不响、用例全绿 —— 渲染层照常订阅，那盏灯永远不亮。`browser.agentFocus`
  * 一度就是这个状态（Task 6 声明、Task 8 接上），本台账立起来之前它唯一的记录在一份
  * **被 .gitignore 忽略的**交接报告里。**它现在已经有发送方**（`browserService`
- * 的 `emitAgentFocus`）。今天的 `PENDING_EMITTER` 只剩 `xResearch.taskUpdated` 一条：
- * topic 与 RPC 先落地，发送点在 Task 9 的会话接线上。
+ * 的 `emitAgentFocus`）。今天 `PENDING_EMITTER` 是空的：最后一条 `xResearch.taskUpdated`
+ * 由 Task 9 的会话接线接上（任务 service 的 `onUpdate`）。
  *
  * 三份台账：
  *  · **声明** = `EVENT_TOPICS`（漏一条在 protocol.ts 里编译不过）；
@@ -74,12 +74,11 @@ const SENDERS = new Set(EMITTED);
  * 接上之后必须从这里划掉 —— 下面第二条用例守着这份名单不许过期。
  */
 const PENDING_EMITTER: EventTopic[] = [
-  // Task 9 接上：`xResearch.taskUpdated` 的发送点是任务 service 的 `onUpdate`，经 AgentService
-  // 广播（与 `webResearch.taskUpdated` 同一条路），在 `createSession` 里注入那个回调。
-  // 本任务先声明 topic + 四条 RPC：渲染层现在就能订阅，而这条名单明确说着「还没有人在发」。
-  'xResearch.taskUpdated',
+  // 从这里划掉的最后一条是 `xResearch.taskUpdated`（Task 9）：发送点是任务 service 的
+  // `onUpdate`，在 `createSession` 里注入（`broadcaster.emit('xResearch.taskUpdated', clone)`，
+  // 与 `webResearch.taskUpdated` 同一条路）。
   //
-  // 最后从这里划掉的是 `browser.agentFocus`（Task 8）：发送点是 `browserService`
+  // 再往前划掉的是 `browser.agentFocus`（Task 8）：发送点是 `browserService`
   // 的 `emitAgentFocus`，由 `markDriving` 与 `withAgentDriving` 的 `finally` 各调一次。
   // 那条信号在主进程本来就有（`registry.setAgentActive` 那一对），但 `setAgentActive`
   // 刻意不推 revision、`toState()` 又把 `isAgentActive` 抹掉，所以 `browser.tabsChanged`

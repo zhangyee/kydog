@@ -166,7 +166,10 @@ export function latestXResearchTab(branchEntries: readonly unknown[]): string | 
     const e=envelope.safeParse(raw);if(!e.success) continue;
     const result=deliveryResult(e.data.message.details);if(result===null) continue;
     const canonical=canonicalSchema.safeParse(evidenceDetails(result)),b=binding.safeParse(result);
-    if(!canonical.success || !b.success || resultCallId(e.data.message.details)!==e.data.message.toolCallId) continue;
+    // 壳自己的两轮也得对上（R38，与恢复链、账本同一条判据）：`result.callId` 是**提交**那一轮，
+    // 必须等于壳记下的 `submitCallId`。只认 `deliveryCallId` 的话，一份壳能借另一份提交的结果
+    // 绑上一个它没导航过的标签页。
+    if(!canonical.success || !b.success || !shellChainValid(e.data.message.details) || resultCallId(e.data.message.details)!==e.data.message.toolCallId) continue;
     if((b.data.operation==='search'?b.data.queries:b.data.targets)?.some(value=>row.safeParse(value).success)) tab=b.data.browserTabId;
   }
   return tab;

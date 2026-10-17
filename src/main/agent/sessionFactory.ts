@@ -1,14 +1,20 @@
 import path from 'node:path';
-import { createXResearchArtifactStore } from '../x/xResearchArtifacts';
+import * as paths from '../persist/paths';
+import { createXResearchArtifactStore, createXResearchThreadArtifactStore, type XResearchArtifactStore } from '../x/xResearchArtifacts';
 import { hydrateXResearchBranch } from '../x/xResearchBranch';
-import type { XArtifactRestorationSummary } from '../x/xResearchTypes';
 // src/main/agent/sessionFactory.ts
 import { XResearchScopeLedger } from '../x/xResearchScopeFacts';
 import { createFixtureSession } from './fixtureProvider';
-import { createXResearchTool } from './xResearchTool';
-import { XResearchEvidence, latestXResearchTab } from '../x/xResearchEvidence';
+import { createXResearchTools } from './xResearchTools';
+import { XResearchEvidence } from '../x/xResearchEvidence';
 import { createXResearchBrowser } from '../x/xResearchBrowser';
 import { browserService } from '../browser/browserService';
+import { createXResearchRunner } from '../x/xResearchRunner';
+import { registerXResearchTaskService, XResearchTaskService } from '../x/xResearchTaskService';
+import { XResearchTaskStore } from '../x/xResearchTaskStore';
+import { broadcaster } from '../ipc/broadcaster';
+import { logger } from '../log';
+import { KydogError } from '../../shared/errors';
 import { createAskUserQuestionTool, type AskSharedState } from './askUserQuestionTool';
 import { createReadPdfFigureTool } from './readPdfFigureTool';
 import { createReadDocxTool } from './readDocxTool';
@@ -48,6 +54,96 @@ export class ModelUnavailableError extends Error {
     super(`model not found: ${providerId}/${modelId}`);
     this.name = 'ModelUnavailableError';
   }
+}
+
+/** 这条 thread 此刻的活账本与它的落盘目录。任务 service 是**进程级**的（队列、在飞状态、
+ *  `onUpdate` 都只有一份），而证据表 / 范围 prior / 当前轮都是 per-session 的 —— 所以工作体
+ *  按 threadId 现取这一份，不把会话的东西塞进 service。 */
+type XResearchSession = {
+  evidence: XResearchEvidence;
+  scopeFacts: XResearchScopeLedger;
+  currentRunId: () => string | null;
+  /** 改造前按会话落的工件根在那底下（`<sessionsDir>/<threadId>.x-research`）。 */
+  sessionsDir: string;
+};
+const xResearchSessions = new Map<string, XResearchSession>();
+let xResearchService: XResearchTaskService | null = null;
+
+function xResearchSessionOf(threadId: string): XResearchSession {
+  const session = xResearchSessions.get(threadId);
+  // 会话没了还在跑的工作不猜也不糊：拿一份空账本跑完只会产出没有归属的观测。
+  if (!session) throw new KydogError('research.not_found', `X research session ${threadId} is gone`);
+  return session;
+}
+
+/** 一次研究的工件：写进这次研究的任务根；旧根只读，改造前的 ref 只认得它。 */
+function xResearchArtifactsFor(threadId: string, researchRunId: string): XResearchArtifactStore {
+  return createXResearchArtifactStore({
+    task: path.join(paths.X_RESEARCH_DIR, threadId, researchRunId, 'artifact'),
+    legacy: path.join(xResearchSessionOf(threadId).sessionsDir, `${threadId}.x-research`),
+  });
+}
+
+/**
+ * 进程里唯一那一个任务 service（R42）：**第一次建会话时懒构造一次**。
+ *
+ * 不在模块加载时构造：那样本进程一启动就得定下工件根与 store，而没有任何会话能告诉它
+ * 每一条 thread 的 `sessionsDir`（旧工件根在那底下）。也不按 `xResearchEnabled` 决定注册不注册 ——
+ * 工具由那个开关 gate，而「这个进程有没有任务队列」是另一件事：关开关不该让已经排上的
+ * 工作失去归处（同一次会话里把开关关掉再开会新建 instance，访问器的守卫会直接报接线错误）。
+ *
+ * 建会话那一段是同步的（中间没有 await），所以两个并发会话不可能各造一个实例。
+ */
+function researchService(): XResearchTaskService {
+  if (xResearchService) return xResearchService;
+  const service = new XResearchTaskService({
+    store: new XResearchTaskStore(paths.X_RESEARCH_DIR),
+    runWork: createXResearchRunner({
+      browserFor: (threadId) => createXResearchBrowser(browserService, threadId),
+      contextFor: (threadId) => {
+        const session = xResearchSessionOf(threadId);
+        return {
+          sources: session.evidence.sources,
+          scopePrior: (runId) => session.scopeFacts.prior(runId),
+          currentRunId: session.currentRunId,
+        };
+      },
+      artifacts: xResearchArtifactsFor,
+    }),
+    artifacts: xResearchArtifactsFor,
+    // R22：推出去的快照里带着活工作项对象，不拷贝的话 journal 里那一帧会跟着后续状态转移一起变。
+    onUpdate: (snapshot) => broadcaster.emit('xResearch.taskUpdated', structuredClone(snapshot)),
+  });
+  xResearchService = service;
+  registerXResearchTaskService(service);
+  return service;
+}
+
+/** 会话拆掉之后这条 thread 的活账本跟着丢（在飞研究已由 `disposeXResearchThread` 先收尾落盘）。
+ *  不丢的话，之后任何一个走错路的调用会拿到一个没人再同步的账本。 */
+export function forgetXResearchSession(threadId: string): void {
+  xResearchSessions.delete(threadId);
+}
+
+/** 这条工具结果是不是**这一轮亲手交付**的那一份：是就返回它的配对身份。
+ *  `undefined` = 这条结果没有可恢复的东西（submit / inspect / cancel 的壳，本来就没有结果）；
+ *  `null` = 不是我们发的（要继续去磁盘恢复）。
+ *
+ *  配对键取壳里的 `submitCallId`，不取这条结果的 `toolCallId`：`delivery.result.callId` 是**提交**
+ *  那一轮（`observeDelivery` 只拿得到它），而 `toolCallId` 是 `wait` 那一轮 —— 两者不是一个 id。 */
+function liveDelivery(details: unknown): { submitCallId: string; batchId: string } | null | undefined {
+  if (!details || typeof details !== 'object') return null;
+  const value = details as {
+    kind?: unknown;
+    delivery?: { submitCallId?: unknown; result?: { batchId?: unknown } | null };
+  };
+  // 改造前的平铺结果不可能被这一轮追加（旧工具已删）：一律交给磁盘恢复。
+  if (value.kind !== 'x_research') return null;
+  if (!value.delivery) return undefined;
+  const submitCallId = value.delivery.submitCallId;
+  const batchId = value.delivery.result?.batchId;
+  if (typeof submitCallId !== 'string' || typeof batchId !== 'string') return null;
+  return { submitCallId, batchId };
 }
 
 export async function createSession(opts: {
@@ -120,10 +216,15 @@ export async function createSession(opts: {
   const evidence = new XResearchEvidence(opts.cwd, currentRunId);
   const scopeFacts = new XResearchScopeLedger();
   let branchIds: string[] | undefined;
-  let retainedTab: string | undefined;
-  const artifacts = createXResearchArtifactStore(path.join(opts.sessionsDir, `${opts.sessionId}.x-research`));
+  // 进程级 service 按 threadId 现取这一份：证据表与范围 prior 属于会话，队列与在飞状态属于进程。
+  xResearchSessions.set(opts.sessionId, { evidence, scopeFacts, currentRunId, sessionsDir: opts.sessionsDir });
+  const service = researchService();
+  // 恢复链读本 thread 任意一次研究的工件（任务根按 researchRunId 分叉，见那个工厂的注释）。
+  const artifacts = createXResearchThreadArtifactStore({
+    root: paths.X_RESEARCH_DIR, threadId: opts.sessionId,
+    legacy: path.join(opts.sessionsDir, `${opts.sessionId}.x-research`),
+  });
   const pendingResults = new Map<string,string>();
-  let restorationSummary: XArtifactRestorationSummary | undefined;
   let synchronization = Promise.resolve();
   // Serialize restore work. A branch can move while disk reads are pending:
   // publish only if its entire entry-ID sequence still equals the captured one.
@@ -134,13 +235,13 @@ export async function createSession(opts: {
         const next = branch.map(entry => entry.id);
         if (branchIds && branchIds.every((id,index) => next[index] === id)) {
           const appended = branch.slice(branchIds.length).filter(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolName === 'x_research');
-          const live = appended.every(entry => {
-            const message = (entry as {message:{toolCallId:string;details?:unknown}}).message;
-            const details = message.details as {batchId?:string} | undefined;
-            return details?.batchId !== undefined && pendingResults.get(message.toolCallId) === details.batchId;
-          });
+          const delivered = appended.map(entry => liveDelivery((entry as {message:{details?:unknown}}).message.details));
+          // 只有这一轮亲手交付的那几份可以绕过磁盘恢复：账本已经按「生产」记过它们，重读一遍
+          // 会把它们降级成历史。没有交付的壳（submit / inspect / cancel）没有可恢复的事实。
+          const live = delivered.every(identity => identity === undefined
+            || (identity !== null && pendingResults.get(identity.submitCallId) === identity.batchId));
           if (live) {
-            for (const entry of appended) pendingResults.delete((entry as {message:{toolCallId:string}}).message.toolCallId);
+            for (const identity of delivered) if (identity) pendingResults.delete(identity.submitCallId);
             branchIds = next;
             return; // Only our immediate canonical observations may bypass disk restore.
           }
@@ -151,11 +252,12 @@ export async function createSession(opts: {
         pendingResults.clear();
         evidence.restore(hydrated.entries);
         scopeFacts.restore(hydrated.entries);
-        retainedTab = latestXResearchTab(hydrated.entries);
-        restorationSummary = undefined;
         if (hydrated.failures.length) {
-          restorationSummary = {scope:'current_branch',missingCalls:hydrated.failures.length,reasonCounts:{}};
-          for (const {reason} of hydrated.failures) restorationSummary.reasonCounts[reason] = (restorationSummary.reasonCounts[reason] ?? 0) + 1;
+          // 恢复不了的工件在各自的壳上已标了 `restoration: missing`（模型看得见）；
+          // 这里是它唯一的进程侧痕迹。
+          const reasonCounts: Record<string, number> = {};
+          for (const {reason} of hydrated.failures) reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
+          logger.warn('x_research', 'could not restore artifacts on this branch', { threadId: opts.sessionId, missingCalls: hydrated.failures.length, reasonCounts });
         }
         branchIds = next;
         return;
@@ -178,13 +280,15 @@ export async function createSession(opts: {
     }),
     ...browserTools,
     ...researchTools,
-    ...(settings.research?.xResearchEnabled === true ? [createXResearchTool({
-      artifacts, beforeExecute: syncBranch, restorationSummary: () => restorationSummary,
-      browser: createXResearchBrowser(browserService, opts.sessionId),
-      threadId: opts.sessionId, sources: evidence.sources, currentRunId,
-      tabBinding:{get:()=>retainedTab,set:id=>{retainedTab=id;}},
-      scopePrior: runId => scopeFacts.prior(runId),
-      observeResult: result => { evidence.observe(result); scopeFacts.observe(result); pendingResults.set(result.callId,result.batchId); },
+    ...(settings.research?.xResearchEnabled === true ? [createXResearchTools({
+      service, threadId: opts.sessionId, projectRoot: opts.cwd, currentRunId,
+      // 交付即入账（spec §4.5「可引用 = 已交付」）：只有 `wait` 真把结果交出去时才会走到这里。
+      // `pendingResults` 记的是「这一份是我亲手交的」：`syncBranch` 靠它绕过磁盘恢复。
+      observeDelivery: result => {
+        evidence.observe(result);
+        scopeFacts.observe(result);
+        pendingResults.set(result.callId, result.batchId);
+      },
     })] : []),
   ];
   // SDK emits message_end before persisting it. Refresh only after prompt settles,

@@ -37,10 +37,11 @@ const shellSchema = z.object({
 const reasonOf = (error: unknown): XArtifactFailureCode =>
   error instanceof XResearchArtifactError ? error.code : 'read';
 
-/** Hydrate only references on this exact branch; never scan siblings or rewrite JSONL. */
+/** Hydrate only references on this exact branch; never scan siblings or rewrite JSONL.
+ *  store 只要读：恢复链从不写工件（写只有任务根一个归属，见 `createXResearchThreadArtifactStore`）。 */
 export async function hydrateXResearchBranch(
   entries: readonly unknown[],
-  store: XResearchArtifactStore,
+  store: Pick<XResearchArtifactStore, 'read'>,
 ): Promise<{ entries: unknown[]; failures: { callId: string; reason: XArtifactFailureCode }[] }> {
   const copied = structuredClone(entries) as unknown[];
   const failures: { callId: string; reason: XArtifactFailureCode }[] = [];

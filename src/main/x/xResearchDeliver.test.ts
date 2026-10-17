@@ -362,7 +362,10 @@ describe('XResearchTaskService.wait', () => {
     // 收尾时已经裁过：交付的那一份不是运行体那份字节（省掉的内容都记在 `delivery` 上）。
     expect(waited.delivery!.result).not.toBe(runnerCopy);
     expect(waited.delivery!.result.delivery?.truncated).toBe(true);
-    expect(envelope.details.snapshot.search).toEqual([]);
+    // settle 时已经按**包络实测**裁到位，交付层无需再省快照（行明细照旧留给模型看）。
+    // 本条原先断的是反对面：那时裁切按结果的投影字节记账，交付必须再省一次快照才装得下 ——
+    // 那份少报的字节正是 `clipForEnvelope` 的记账错误，Task 9 把它改成按整包实测。
+    expect(envelope.details.snapshot.search).toHaveLength(1);
   });
 
   it('hands out one submission per wait and never the same one twice', async () => {

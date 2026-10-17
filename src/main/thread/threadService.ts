@@ -8,6 +8,8 @@ import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import { turnTitleSource } from '../../shared/userTurn';
 import { researchRunStore } from '../webResearch/runStore';
+import { xResearchTaskStore } from '../x/xResearchTaskStore';
+import { forgetXResearchThread } from '../x/xResearchTaskService';
 import type { AskAnswer } from '../../shared/askQuestion';
 import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
@@ -108,6 +110,10 @@ export class ThreadService {
         for (const t of targets) {
           await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
           await researchRunStore.removeRunsForThread(t.id);
+          // x 研究任务目录跟对话走（同一处置）：本条对话名下所有研究的产物没有别的所有者。
+          // 内存缓存也要淘汰：没有建过会话的对话走不到 `dispose`，缓存却可能还在。
+          await xResearchTaskStore.removeThread(t.id);
+          forgetXResearchThread(t.id);
         }
       } finally { deletion.finish(); }
     });

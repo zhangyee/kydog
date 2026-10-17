@@ -7,36 +7,52 @@ import path from 'node:path';
 import { XResearchEvidence } from './xResearchEvidence';
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { fixture, stagedFixture, post, readHtml } from '../../test-support/xResearchFixture';
-import { createXResearchTool } from '../agent/xResearchTool';
-import type { XResearchResult, XTextObservation } from './xResearchTypes';
+import { createXResearchRunner } from './xResearchRunner';
+import { parseXResearchWork } from './xResearchInput';
+import { XResearchScopeLedger } from './xResearchScopeFacts';
+import type { XResearchResult, XSourceReference, XTextObservation } from './xResearchTypes';
 const url = 'https://x.com/alice/status/123';
 const report = '/tmp/x-research-topic-2026-10-12.md';
 const citation = (u = url) => `Observed evidence [source](${u})`;
+
+/** 一份真结果走生产的工作体（runner）：旧的非动作式工具已删，采集的唯一入口就是它。
+ *  `observe` 在这里手动调用 —— 生产上它挂在交付（`wait`）那条路上（可引用 = 已交付）。 */
+async function collect(
+  f: ReturnType<typeof fixture>,
+  raw: Record<string, unknown>,
+  deps: { callId: string; runId: string; sources?: Map<string, XSourceReference[]>; observe?(result: XResearchResult): void },
+): Promise<XResearchResult> {
+  const work = parseXResearchWork(raw);
+  if (!('read' in work)) throw new Error('read work expected');
+  const tabId = raw.tabId;
+  if (typeof tabId !== 'string') throw new Error('tabId expected');
+  const ledger = new XResearchScopeLedger();
+  const runner = createXResearchRunner({
+    browserFor: () => f.context.browser,
+    contextFor: () => ({
+      sources: deps.sources ?? f.context.sources,
+      scopePrior: (runId) => ledger.prior(runId),
+      currentRunId: () => deps.runId,
+    }),
+    artifacts: () => tempXArtifactStore(),
+  });
+  const result = await runner({ read: work.read }, {
+    threadId: 'thread', researchRunId: 'research', submissionId: 'submission',
+    batchId: 'batch', runId: deps.runId, submitCallId: deps.callId,
+    signal: new AbortController().signal,
+    tabBinding: { get: () => tabId, set: () => undefined },
+    onProgress: () => undefined,
+  });
+  deps.observe?.(result);
+  return result;
+}
+
 async function result() {
   const f = fixture([readHtml(post())]);
-  const tool = createXResearchTool({artifacts:tempXArtifactStore(),
-    browser: f.context.browser,
-    threadId: 'thread',
-    sources: f.context.sources,
-    currentRunId: () => 'run',
-  });
-  const r = (
-    await tool.execute(
-      'call',
-      {
-        tabId: 'research-tab',
-        read: {
-          objective: 'read',
-          targets: [{ url }],
-          includeArticle: false,
-          includeReplies: false,
-        },
-      },
-      undefined,
-      undefined,
-      {} as never,
-    )
-  ).details!;
+  const r = await collect(f, {
+    tabId: 'research-tab',
+    read: { objective: 'read', targets: [{ url }], includeArticle: false, includeReplies: false },
+  }, { callId: 'call', runId: 'run' });
   if (r.operation !== 'read') throw Error('fixture');
   // These DTO mutation tests also cover schema2 history predating inventory.
   delete r.targets[0].root!.articlePreviewInventory;
@@ -547,28 +563,11 @@ it('legacy navigation hints resolve a fresh ID read without stamping legacy prov
     }),
   ]);
   const f = fixture([readHtml(post('123', 'alice', 'new rendered body'))]);
-  const tool = createXResearchTool({artifacts:tempXArtifactStore(),
-    browser: f.context.browser,
-    threadId: 'thread',
-    sources: l.sources,
-    currentRunId: () => 'new-run',
-    observeResult: (r) => l.observe(r),
-  });
-  const output = await tool.execute(
-    'new-call',
-    {
-      tabId: 'research-tab',
-      read: {
-        objective: 'read',
-        targets: [{ postId: '123' }],
-        includeArticle: false,
-        includeReplies: false,
-      },
-    },
-    undefined,
-    undefined,
-    {} as never,
-  );
+  const collected = await collect(f, {
+    tabId: 'research-tab',
+    read: { objective: 'read', targets: [{ postId: '123' }], includeArticle: false, includeReplies: false },
+  }, { callId: 'new-call', runId: 'new-run', sources: l.sources, observe: (r) => l.observe(r) });
+  const output = { details: collected };
   expect(f.open.mock.calls[0][0]).toBe(url);
   expect(output.details).toMatchObject({
     runId: 'new-run',

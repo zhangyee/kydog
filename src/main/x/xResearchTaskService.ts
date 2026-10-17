@@ -198,6 +198,9 @@ type ActiveResearch = {
   /** 这段研究被 `cancel` 过：之后排队的提交不再起跑、在飞的那一份按取消收尾。
    *  跨重启的一致性靠盘上的 `state` / `stateReason`（见 `submit`），这个标记只管本进程的窗口。 */
   cancelRequested: boolean;
+  /** 这段研究所在的会话被拆掉了：排队的提交不再起跑，在飞的那一份按**中断**收尾（不是用户取消）——
+   *  用户按停止是 `cancelRequested`，两者在盘上留下的结论不同（`cancelled` vs `interrupted`）。 */
+  disposed: boolean;
   /** 每份提交自己的执行体（`enqueue` 排上链时就记下、跑完就删）。`cancel` 等的是**在飞那一份
    *  自己**的收尾 —— 等整条 thread 链会让同一 thread 上另一段研究排在后头的采集把 cancel 绑住。 */
   pending: Map<string, Promise<void>>;
@@ -326,6 +329,7 @@ export class XResearchTaskService {
       results: new Map(),
       controller: new AbortController(),
       cancelRequested: false,
+      disposed: false,
       pending: new Map(),
     };
     this.active.set(key, opened);
@@ -357,6 +361,7 @@ export class XResearchTaskService {
       results: new Map(),
       controller: new AbortController(),
       cancelRequested: false,
+      disposed: false,
       pending: new Map(),
     };
     this.active.set(this.key(owner.threadId, researchRunId), created);
@@ -550,6 +555,10 @@ export class XResearchTaskService {
   async cancel(threadId: string, researchRunId: string): Promise<XResearchTaskSnapshot> {
     const active = await this.open(threadId, researchRunId);
     if (!active) throw new KydogError('research.not_found', 'X research task not found');
+    return this.cancelActive(active);
+  }
+
+  private async cancelActive(active: ActiveResearch): Promise<XResearchTaskSnapshot> {
     const inFlight = [...active.submissions.values()].filter(
       (submission) => submission.state === 'queued' || submission.state === 'running',
     );
@@ -569,10 +578,57 @@ export class XResearchTaskService {
     // 标记同一条处置），日志是这件事唯一露面的地方。
     return this.persist(active, queued, 'cancelled').catch((error: unknown) => {
       logger.warn('x_research', 'could not persist the cancellation', {
-        threadId, researchRunId, err: String(error),
+        threadId: active.record.threadId, researchRunId: active.record.researchRunId, err: String(error),
       });
       return this.snapshotOf(active);
     });
+  }
+
+  /** 会话被拆 / 对话被删：这条 thread 的全部在飞提交照信号收尾成**中断**、写进盘，然后淘汰内存缓存。
+   *
+   *  与 `cancel` 分开（结论不同）：用户按停止是「被取消」，会话消失是「被打断」—— 前者是有人
+   *  做了决定，后者只是这一段执行没了。所以这里不置 `cancelRequested`：工作体自己照信号抛出，
+   *  `run` 的 catch 把它收成 `interrupted`。
+   *
+   *  排在 `forget` 之前的两步都是必需的：中断只改内存，盘上的「进行中」要靠 `run` 的收尾落一次盘
+   *  （R12）；而排队的那些提交还挂在 per-thread 链上，它们的 `run` 会再写一次盘 —— 不先把链排空就
+   *  `forget`，那次写盘会拿内存里的活副本把一条已经不存在的研究重新写回盘上（删对话之后这条
+   *  目录刚刚被 `removeThread` 删掉）。链上这时只剩状态转移，不会再碰浏览器。 */
+  async disposeThread(threadId: string): Promise<void> {
+    for (const active of [...this.active.values()]) {
+      if (active.record.threadId === threadId) await this.interruptActive(active);
+    }
+    await this.awaitIdle(threadId).catch(() => undefined);
+    this.forget(threadId);
+  }
+
+  /** 会话消失时的收尾：在飞那一份照信号抛出（`run` 的 catch 写成 `interrupted`），
+   *  排队的一次都没起跑就收成 `interrupted`，最后落一次盘。 */
+  private async interruptActive(active: ActiveResearch): Promise<void> {
+    const inFlight = [...active.submissions.values()].filter(
+      (submission) => submission.state === 'queued' || submission.state === 'running',
+    );
+    if (!inFlight.length) return;
+    active.disposed = true;
+    active.controller.abort();
+    const queued = inFlight.filter((submission) => submission.state === 'queued');
+    for (const submission of queued) this.interrupt(submission);
+    for (const submission of inFlight) {
+      if (submission.state !== 'running') continue;
+      await active.pending.get(submission.submissionId)?.catch(() => undefined);
+    }
+    await this.persist(active, queued).catch((error: unknown) => {
+      logger.warn('x_research', 'could not persist the interruption', {
+        threadId: active.record.threadId, researchRunId: active.record.researchRunId, err: String(error),
+      });
+    });
+  }
+
+  /** 淘汰内存缓存：下一次 `get()` 从盘上重读（删对话后不许再从缓存答复）。 */
+  forget(threadId: string): void {
+    for (const [key, active] of this.active) {
+      if (active.record.threadId === threadId) this.active.delete(key);
+    }
   }
 
   /** 每个视图都按**提交序 → 工作项序**铺开：翻页因此是稳定的，游标只是偏移。
@@ -694,6 +750,12 @@ export class XResearchTaskService {
       await this.persist(active, [submission], 'cancelled');
       return;
     }
+    // 会话已经拆掉：排队的这一份一次都不起跑，按中断收尾（结论与用户取消不同）。
+    if (active.disposed) {
+      this.interrupt(submission);
+      await this.persist(active, [submission]);
+      return;
+    }
     submission.state = 'running';
     await this.persist(active, [submission]);
     try {
@@ -813,8 +875,10 @@ export class XResearchTaskService {
     submission.usage = usageOf(submission.workItems);
   }
 
-  /** 没有结果的工作项停在这里：`state: 'stopped'` + `status: null` 就是「中断」在投影里的形状。 */
+  /** 没有结果的工作项停在这里：`state: 'stopped'` + `status: null` 就是「中断」在投影里的形状。
+   *  已经收尾的那一份原样不动（会话拆除可能落在它自己的收尾之后）。 */
   private interrupt(submission: XResearchSubmission): void {
+    if (submission.state !== 'queued' && submission.state !== 'running') return;
     for (const workItem of submission.workItems) {
       if (workItem.state === 'stopped') continue;
       workItem.state = 'stopped';
@@ -921,4 +985,17 @@ export function registerXResearchTaskService(service: XResearchTaskService | und
  *  「没接线」与「这条研究不存在」是两件事，`taskList` 要能把前者答成空列表。 */
 export function xResearchTaskService(): XResearchTaskService | null {
   return instance;
+}
+
+/** 会话被拆（切项目 / 换模型 / 切语言 / 删对话）时，这条 thread 的在飞研究要停下并落盘。
+ *  由会话侧调用（`AgentService.dispose`）：**先**取消并等盘上写成收尾状态，**再**解绑那次会话
+ *  的活账本 —— 反过来的话，排队的提交会在一个已经不存在的会话上起跑。 */
+export async function disposeXResearchThread(threadId: string): Promise<void> {
+  await instance?.disposeThread(threadId);
+}
+
+/** 删对话：盘上的目录由 `XResearchTaskStore.removeThread` 删，这里淘汰内存缓存 ——
+ *  删一条从没建过会话的对话走的正是这条路（没有 `disposeThread` 可走，缓存却可能还在）。 */
+export function forgetXResearchThread(threadId: string): void {
+  instance?.forget(threadId);
 }
