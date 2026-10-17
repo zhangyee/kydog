@@ -4338,15 +4338,46 @@ describe('viewport input mapping ACK', () => {
     expect(held.length, '布局那一发在点击整条路上都还在途').toBe(1);
     held.forEach(land => land());
   });
-  // 已落地的**只差高度**的那一份：`measure` 是在它落地之后跑的，坐标量的就是新布局 —— 不能拒。
-  // 这就是 `e2e/61` 那条「侧栏开着点链接」的形状：侧栏的对话面板在批次跑着的时候改了高度
-  // （实测 618→593，同一批里又发了一份只差 height 的下发）。
-  it('a landed height-only mapping change lets the click through', async () => {
+  // 已落地的**只差高度**的那一份：**高度变化在 measure 之前就落地了**，坐标量的就是新布局 —— 不能拒。
+  // 这条钉的是「`height` 不进指针变换」的第一种落点。形状来自 `e2e/61` 那条「侧栏开着点链接」：
+  // 侧栏的对话面板在批次跑着的时候改了高度（实测 618→593，同一批里又发了一份只差 height 的下发）。
+  // 用 `locator` 是**必要**的：`selector` 那条路在 `mapping` 读完之后、measure 之前一次页面求值
+  // 都没有（快照是调用方给的），改动只可能落在 measure 之后 —— 那是下一条的形状，钉不到这一种。
+  it('a height-only mapping change landed before measure lets the click through', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    // 快照的 walker 是 `mapping` 读完之后、measure 之前唯一一次页面求值：在这里把高度改掉并等它
+    // ACK，落成的就是「`dispatch` 读到的 `mapping` 是 1800，而量坐标时的布局已经是 1760」。
+    wc.isolatedImpl = async (code) => {
+      if (code === WALKER_SOURCE) {
+        svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+        await flush();
+        return walkerOut();
+      }
+      return okMeasure();
+    };
+    await svc.dispatch(nav.tabId, { kind: 'click', locator: { role: 'button', name: '搜索', visible: true } }, null);
+    expect(inputCmds(wc).map(c => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+    // 前提：先落 1800、后落 1760，两者只差 height —— width / scale 逐字相同。
+    const landed = overrides(wc).slice(-2).map(c => c.params);
+    expect(landed[0]).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    expect(landed[1]).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+  });
+  // **落在 measure 之后的那一半也必须放过，但理由不是「坐标还新」**：那时上一次量到的 x/y
+  // 确实是旧布局里的。兜住它的是第二道闸 —— `awaitNativeFrame` 之后 `injected/pointerGuard.js`
+  // 的 `validate` 拿保留的那个点再命中测试一次，命中的不是目标（或它的后代）就拒，所以一次纵向
+  // 重排表现出来是 `intercepted` / `pointer_target_changed`，而不是把点击打在别人的位置上。
+  // 拒它反而会把一次安全的点击说成失败（`e2e/61` 那条「侧栏开着点链接」就是这样常红的）。
+  // 下面 `…is caught by the pointer guard…` 那条钉的就是这道闸真能接住这一种落点。
+  it('a height-only mapping change that lands after measure is still accepted', async () => {
     const { svc } = make(); const { wc, nav } = await openTab(svc);
     wc.debugger.sent.length = 0;
     svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
     await flush();
     wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    // `captureImpl` 就是 `awaitNativeFrame`：它在 measure 之后、鼠标事件之前。
     wc.captureImpl = async () => {
       svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
       await flush();
@@ -4359,6 +4390,26 @@ describe('viewport input mapping ACK', () => {
     const landed = overrides(wc).slice(-2).map(c => c.params);
     expect(landed[0]).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
     expect(landed[1]).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+  });
+  // 同一个落点，但纵向重排把保留的那个点挪到了别的元素上：这就是上面那份宽容**实际**会遇到的形状，
+  // 接住它的必须是 `pointerGuard.js` 的 `validate`（第二道闸），而且一个鼠标事件都不许发出去。
+  it('a height-only mapping change that lands after measure is caught by the pointer guard hit test', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    wc.captureImpl = async () => {
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    // 重排之后命中测试打到了浮层上：`validate` 的标准拒绝形状。
+    wc.pointerImpl = async (code) => code.includes('"op":"validate"')
+      ? { ok: false, reason: 'intercepted', x: 10, y: 20, by: 'div#overlay' } : { ok: true };
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.click_intercepted' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
   });
   // 还在途的那一份**只差高度**也必须拒：它会落在 measure 之后、鼠标事件之前，那是一次纵向重排。
   // 这条钉住「对已落地的宽容」没有滚成「对在途的也宽容」。

@@ -621,7 +621,11 @@ test.describe('x research task protocol closure (offline)', () => {
     // 上一条的 `thread.loadHistory` 把 journal 重放进 store，test 1 那条 `run.ask_start`
     // 带着 `browserTabId`，于是 `handOffToBrowser` 把侧栏展开（`runEvents.ts` 登记过的观感问题）。
     // 先像用户那样把它收起来 —— 这条要走的起点就是「这个进程里侧栏还没展开、一个标签也没有」，
-    // 也是下面那句「采集进行中才展开侧栏」能成立的前提。
+    // 也是下面那句「采集进行中才展开侧栏」能成立的前提。**这一步的前提自己也断一下**：
+    // 侧栏是上一条的 journal 重放留下的（`runEvents.ts` 登记的观感问题），将来它不再展开时，
+    // 这一下点击就变成了「打开」，会红在一个看不出在等什么的地方。
+    await expect(launched.page.locator('[data-pane="browser"]'), '上一条的 journal 重放把侧栏留在了展开状态：这一下点击是「收起来」')
+      .toBeVisible();
     await launched.page.getByTestId('titlebar-browser').click();
     await expect(launched.page.locator('[data-pane="browser"]')).toHaveCount(0);
 
@@ -665,6 +669,17 @@ test.describe('x research task protocol closure (offline)', () => {
     // 第二行那次 collect 的 `prepareForDomRead` 前后（`applyLayout` 是 fire-and-forget 的）。
     expect(await releaseHeldQuery()).toContain('/search');
     await expect(banner).toHaveCount(0);
+    // **这条判据只到「跳动发生过」这一层，先后顺序没有被钉住。** 要考的那条接缝钉在
+    // `browserService.test.ts` 的 `viewport input mapping ACK` 三条用例里（只差 height 的已落地
+    // 变化在 `measure` 两头都放过，`measure` 之后那一头由 `pointerGuard` 的命中测试兜住）；
+    // 这里证明的是另一件事：跳动真实发生过（横幅收起 → 又一次 `syncView`），采集照旧把两行交给 wire。
+    //
+    // 为什么这里不断「跳动落在采集还在跑的时候」：在这个夹具里那两件事是**并发的** —— 横幅收起与
+    // 采集收尾由同一个收尾时刻驱动，实测三遍里两遍跳动先到、一遍收尾先到。渲染层装记录器
+    // （`ResizeObserver` + `xResearch.taskUpdated`）也只能记到跳动**画出来**那一刻的状态，滞后于
+    // 真正的那一次 `syncView`，于是会把「跳动其实落在采集尾巴里」的情形判成「落在收尾之后」——
+    // 一条会红的假阴性断言，比没有更糟。要真钉住先后，得让夹具在收尾之后还压着一份采集
+    // （闸门目前只扣得住导航那一次，在跳动之前）。
     await expect.poll(stageHeight, { message: '横幅收起后舞台长回去了（高度变了 = 又一次 syncView）' })
       .not.toBe(withBanner);
 

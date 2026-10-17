@@ -2547,13 +2547,20 @@ export class BrowserService {
     // **两边的字段不一样，因为两者的窗口不一样：**
     // - 在途的那一份（意图）**四个字段全比**：它会落在 measure 之后、`Input.dispatchMouseEvent`
     //   之前，那时上一次量到的 x/y 就得在新几何里重新看 —— 纵向重排也算。
-    // - 已确认的那一份（`current`）**不比 height**：已经落地的高度变化发生在 measure 之前，
-    //   坐标是在新布局里量的，不会过期。这里要守的是指针变换本身：`scale`（emulation scale）
-    //   与 `pageScale`（1:1 的 pinch），加上 `width` 这个重排信号 —— 排版宽被夹在 1280，只有
-    //   舞台宽过 1280 时它才跟着舞台走，而那时正是它决定元素在哪。高度重排整页，但不进指针变换。
-    //   （2026-10-17 实测：侧栏的对话面板在 `browser_act` 跑着的时候改了高度，618→593，
-    //   于是有一份只差 height 的下发落在批次中间。按它拒的话，`e2e/61` 那条「侧栏开着点链接」
-    //   每次都是红的 —— 而那次点击的坐标确实是按新布局量的，拒它没有任何依据。）
+    // - 已确认的那一份（`current`）**不比 height**：已经落地的高度变化有两个落点，**两个都安全**：
+    //   (i) 落在 measure **之前** —— 坐标就是在新布局里量的，不会过期。这是常见的那一种：
+    //       `applyLayout` 的下发在自己的 measure 之前就 ACK 了。
+    //   (ii) 落在 measure **之后**、`Input.dispatchMouseEvent` 之前 —— 这时上一次量到的 x/y
+    //       确实是旧布局里的，但第二道闸兜着：`awaitNativeFrame` 之后 `injected/pointerGuard.js`
+    //       的 `validate` 拿**保留的那个点**再命中测试一次，命中的不是目标（或它的后代）就拒。
+    //       所以一次纵向重排表现出来的是一份 `intercepted` / `pointer_target_changed`
+    //       （`click_intercepted` / `browser.target_unusable`），而不是「打在别人的位置上」。
+    //   这里要守的是指针变换本身：`scale`（emulation scale）与 `pageScale`（1:1 的 pinch），
+    //   加上 `width` 这个重排信号 —— 排版宽被夹在 1280，只有舞台宽过 1280 时它才跟着舞台走，
+    //   而那时正是它决定元素在哪。高度重排整页，但不进指针变换。
+    //   （2026-10-17 实测：侧栏的对话面板在 `browser_act` 跑着的时候改了高度 618→593，于是同一批里
+    //   有一份只差 height 的下发。按它拒的话，`e2e/61` 那条「侧栏开着点链接」每次都是红的 ——
+    //   而那种点击本来就不需要拒：上面两条覆盖了它的两种落点。）
     const samePointerTransform = (a: ViewportGeometry, b: ViewportGeometry) => a.width === b.width
       && a.scale === b.scale && a.pageScale === b.pageScale;
     const sameMapping = (a: ViewportGeometry, b: ViewportGeometry) => samePointerTransform(a, b)
