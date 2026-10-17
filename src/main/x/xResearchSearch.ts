@@ -6,6 +6,7 @@ import type {BrowserScrollReceipt} from '../browser/actions';
 import {isScrollReceipt} from './xScrollRecovery';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
+import { logger } from '../log';
 import type { NavigationObservation } from '../../shared/types';
 import { collectXPage, type XPageRequest, type XPageObservation } from './xObservation';
 import type { BrowserLocationFacts } from '../browser/browserService';
@@ -34,9 +35,15 @@ export interface XResearchContext {
   /** 唯一的进度缝：不传就没有进度，行为与改造前逐字节相同。 */
   onProgress?: (event: XResearchProgressEvent) => void;
 }
-/** 观察者抛异常绝不影响采集（与 `retainClickFailure` 同一条规矩）：采集的结论不因一个观察者改写。 */
+/** 观察者抛异常绝不影响采集（与 `retainClickFailure` 同一条规矩）：采集的结论不因一个观察者改写。
+ *  但吞掉之前必须留一条诊断：一个系统性坏掉的投影表现为「一条进度也没有」，日志是它唯一露面的地方。 */
 export function reportXProgress(context: XResearchContext, event: XResearchProgressEvent): void {
-  try { context.onProgress?.(event); } catch { /* observer failures never replace the collection outcome */ }
+  try { context.onProgress?.(event); }
+  catch (err) {
+    logger.warn('x_research', 'progress observer threw', {
+      section: event.section, rowIndex: event.rowIndex, state: event.state, err: String(err),
+    });
+  }
 }
 // Every selector comes from the dated actual X DOM source guide. Readiness
 // only gates one bounded wait; it never proves identity or completeness.

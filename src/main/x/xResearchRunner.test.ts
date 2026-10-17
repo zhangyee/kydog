@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { KydogError } from '../../shared/errors';
+import { logger } from '../log';
 import { fixture, post, readHtml, searchHtml, searchInput } from '../../test-support/xResearchFixture';
 import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import { finalizeXResearchCollection } from './xResearchCanonical';
@@ -250,10 +251,18 @@ describe('x research runner', () => {
     expect(f.open).not.toHaveBeenCalled();
     // 翻面：标签页只是还没被任务记住时，read 自己开一个（不是前置失败，也不是猜一个 id）
     status = 'available';
-    const fresh = harness();
+    const events: XResearchProgressEvent[] = [];
+    const fresh = harness({ onProgress: (event) => events.push({ ...event }) });
     const read = await runner({ read: readWork }, fresh.ctx);
     expect(f.open).toHaveBeenCalledTimes(1);
     expect(read.operation === 'read' && read.targets[0].root?.postId).toBe('123');
+    // 读的一半也真的报了进度（spec §5.5）：先导航到 root，再落到收集段。没有这两句，
+    // 采集侧少报一条或报错段落都不会红 —— 任务侧只会看到一条进度也没有。
+    expect(events[0]).toMatchObject({
+      section: 'read', rowIndex: 0, state: 'navigating', phaseDetail: 'root',
+    });
+    expect(events.some((event) => event.state === 'collecting')).toBe(true);
+    expect(events.every((event) => event.section === 'read' && event.rowIndex === 0)).toBe(true);
   });
 
   it('forgets the task tab only after the live registry proves it gone', async () => {
@@ -336,9 +345,17 @@ describe('x research runner', () => {
 
   it('never lets a progress observer change the collection result', async () => {
     const f = fixture([searchHtml(post())]);
-    const result = await createXResearchRunner(depsFor(f))({ search: searchInput.search },
-      harness({ onProgress: () => { throw new Error('observer failure'); } }).ctx);
-    expect(searchRows(result)[0].posts).toHaveLength(1);
-    expect(f.open).toHaveBeenCalledTimes(1);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await createXResearchRunner(depsFor(f))({ search: searchInput.search },
+        harness({ onProgress: () => { throw new Error('observer failure'); } }).ctx);
+      expect(searchRows(result)[0].posts).toHaveLength(1);
+      expect(f.open).toHaveBeenCalledTimes(1);
+      // 吞掉异常不等于静默：一个系统性坏掉的投影表现为「一条进度也没有」，日志是它唯一露面的地方。
+      expect(warn).toHaveBeenCalledWith('x_research', 'progress observer threw',
+        expect.objectContaining({ section: 'search', rowIndex: 0, state: 'navigating' }));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
