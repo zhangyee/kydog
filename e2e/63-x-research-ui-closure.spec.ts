@@ -2,7 +2,7 @@
  * `x_research` 改成动作面之后，63 只证明**协议层**（控制器裁决 R58）：`submit` 立即返回、工作活在
  * 回合之后、`wait` 一次交付一份、`xResearch.taskGet` 说的是真实状态、真重启之后状态与计数还在、
  * `cancel` 只收尾它自己那一段。卡片级断言（`data-status`、两段行数、取消入口、默认收放）在文件末尾
- * 那三条里：同一次启动、同一条会话，靠卡头（`x-research-objective`）在会话里认出「这一张卡」——
+ * 那四条里：同一次启动、同一条会话，靠卡头（`x-research-objective`）在会话里认出「这一张卡」——
  * `data-status` 会变，不能拿它当定位器。
  *
  * 读这份文件之前先知道夹具上的三件事：
@@ -54,6 +54,8 @@ import { xWireResponse, WIRE_ROOT, WIRE_PLAIN } from './fixtures/61-browser/xWir
 import { xClosurePage } from './fixtures/61-browser/xClosurePages';
 
 type Call = { name: string; args: Record<string, unknown>; toolCallId: string };
+/** 一张卡在会话里的落位：卡数、它所在那条消息的下标、消息列最后一个子元素的下标。 */
+type CardPlacement = { cards: number; messageIndex: number; lastIndex: number };
 /** 这一跑里见过的每一段研究（`envelope()` 登记）。「一段研究一张卡」的期望值就是它的大小。 */
 const seenResearchRuns = new Set<string>();
 type Events = RuntimeEvent[];
@@ -71,7 +73,7 @@ const FIRST_QUERY = { id: 'top', query: 'fixture primary', purpose: 'initial', p
 const SECOND_QUERY = { id: 'latest', query: 'fixture blocked', purpose: 'cross-check', product: 'Latest' as const };
 const OBJECTIVE = 'Offline rendered evidence';
 const READ_OBJECTIVE = 'Read the observed root';
-/** 卡片级断言（文件末尾三条）各自的一段研究：卡头是**用户在这个会话里唯一认得出这张卡的东西**，
+/** 卡片级断言（文件末尾四条）各自的一段研究：卡头是**用户在这个会话里唯一认得出这张卡的东西**，
  *  也是 e2e 里唯一安全的定位键（`data-status` 会从运行中变到终态）。 */
 const LIFECYCLE_OBJECTIVE = 'Card lifecycle evidence';
 const CANCEL_OBJECTIVE = 'Card cancel evidence';
@@ -287,7 +289,7 @@ test.describe('x research task protocol closure (offline)', () => {
       maxScrollsPerPost: 0, maxExpandActionsPerPost: 0 },
   });
 
-  // ── 卡片级观测（文件末尾那三条的观测口）──
+  // ── 卡片级观测（文件末尾那四条的观测口）──
 
   /** 会话里的一段研究的那张卡。卡头（`x-research-objective`）是这段研究的**第一份**提交的问题
    *  （R10），它在研究的一生里不变；`data-status` 会从运行中走到终态，所以不能用它定位。
@@ -307,7 +309,7 @@ test.describe('x research task protocol closure (offline)', () => {
    *  助手一条），所以「卡在最后一次提到它的那条消息里」= 卡所在的那个直接子元素就是这一列的
    *  最后一个子元素（此时没有在跑的消息，列尾就是最后一条）。带回两个序号，红的时候说得清
    *  它实际停在哪一条。 */
-  async function cardPlacement(objective: string): Promise<{ cards: number; messageIndex: number; lastIndex: number }> {
+  async function cardPlacement(objective: string): Promise<CardPlacement> {
     return launched.page.evaluate((text) => {
       const cards = [...document.querySelectorAll('[data-testid="x-research-card"]')]
         .filter((card) => card.querySelector('[data-testid="x-research-objective"]')?.textContent?.trim() === text);
@@ -318,6 +320,19 @@ test.describe('x research task protocol closure (offline)', () => {
       return { cards: cards.length, messageIndex: anchor ? [...column.children].indexOf(anchor) : -1,
         lastIndex: column.children.length - 1 };
     }, objective);
+  }
+
+  /** 断这张卡此刻的落位，**以稳定态为准**：`cardPlacement` 是一次 `page.evaluate`，读的是同一帧 ——
+   *  buffer→history 那一瞬（同一份结果既在 buffer 里又已进 history）会读到两张卡，或者卡还挂在
+   *  旧消息上。`toHaveCount` 那条已经会重试，这两条也得会重试：被断的性质是「最终回到一张、停在
+   *  它该在的那条消息里」，不是「某一帧恰好如此」。失败信息带上实际读到的三个数。 */
+  async function expectCardPlacement(objective: string, claim: string,
+    holds: (placed: CardPlacement) => boolean): Promise<void> {
+    await expect.poll(async () => {
+      const placed = await cardPlacement(objective);
+      return holds(placed) ? 'settled'
+        : `cards=${placed.cards} messageIndex=${placed.messageIndex} lastIndex=${placed.lastIndex}`;
+    }, { message: claim }).toBe('settled');
   }
 
   test('an unauthenticated research delivers the auth barrier as row status; a native fixture login clears it', async () => {
@@ -600,8 +615,9 @@ test.describe('x research task protocol closure (offline)', () => {
 
   // ── 卡片级说法（Task 16）──
   //
-  // 上面六条只看协议层。下面三条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
-  // 两段各说各的行数、一段研究会不会长出第二张卡、取消入口走不走确认、默认收放与手动点击谁说话算数。
+  // 上面六条只看协议层。下面四条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
+  // 两段各说各的行数、一段研究会不会长出第二张卡、取消入口走不走确认、默认收放与手动点击谁说话算数、
+  // 卡停在哪一条消息里（最后一条提到它的那条，后面还有不提它的消息时也一样）。
   // 判据全部是「DOM 上看得见的东西」或协议事实（`xResearch.taskGet` / 工具包络），没有时间窗。
 
   test('the card appears for a submit and shows both sections with their own rows while the research runs', async () => {
@@ -649,10 +665,8 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card.locator('[data-testid="x-research-row"][data-section="read"]')).toHaveCount(1);
     // 两次提交是两轮、两条消息，卡只有一张，而且停在最后一条（也就是刚提到它的那条）里。
     await expectOneCardPerResearch();
-    const placed = await cardPlacement(LIFECYCLE_OBJECTIVE);
-    expect(placed.cards, '一段研究只有一张卡').toBe(1);
-    expect(placed.messageIndex, `卡应停在消息列最后一条（第 ${placed.lastIndex} 个子元素）里，实际在第 ${placed.messageIndex} 个`)
-      .toBe(placed.lastIndex);
+    await expectCardPlacement(LIFECYCLE_OBJECTIVE, '一段研究只有一张卡，且停在提到它的最后一条消息里',
+      placed => placed.cards === 1 && placed.messageIndex === placed.lastIndex);
   });
 
   test('the card collapses and expands by hand, keeps that choice when the research finishes in place, and one wait does not add a second card', async () => {
@@ -688,10 +702,8 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card).toHaveCount(1);
     await expect(card).toHaveAttribute('data-status', 'completed');
     await expectOneCardPerResearch();
-    const afterDelivery = await cardPlacement(LIFECYCLE_OBJECTIVE);
-    expect(afterDelivery.cards).toBe(1);
-    expect(afterDelivery.messageIndex, `卡应停在新的一条消息里（第 ${afterDelivery.lastIndex} 个子元素）`)
-      .toBe(afterDelivery.lastIndex);
+    await expectCardPlacement(LIFECYCLE_OBJECTIVE, '交付后仍是那一张卡，且停在新的一条消息里',
+      placed => placed.cards === 1 && placed.messageIndex === placed.lastIndex);
     // 新消息里是新建的卡（没有手动选择）：终态默认收起。
     await expect(card.getByTestId('x-research-rows')).toHaveCount(0);
   });
@@ -749,5 +761,15 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(cardFor(OCCUPANT_OBJECTIVE)).toHaveAttribute('data-status', 'completed', { timeout: 15_000 });
     expect((await taskGet(occupant.researchRunId)).state).toBe('completed');
     await expectOneCardPerResearch();
+  });
+
+  test('the card stays on the message that mentioned it when a later message does not', async () => {
+    // 上一条那一轮提交了两段新研究（占队列的与要取消的），那一条助手消息**没提到** lifecycle 这段：
+    // 卡必须留在它最后被提到的那一条里 —— `messageIndex < lastIndex`。
+    // 上面两处 `messageIndex === lastIndex` 在「永远画在最新消息上」的实现上也成立（那时它恰好
+    // 就是最新一条），只有这一条能把它判红。
+    await expectCardPlacement(LIFECYCLE_OBJECTIVE,
+      '后面的消息不提这段研究时，卡仍停在提到它的那条里（不是永远画在最新一条上）',
+      placed => placed.cards === 1 && placed.messageIndex >= 0 && placed.messageIndex < placed.lastIndex);
   });
 });

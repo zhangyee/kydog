@@ -349,11 +349,6 @@ export interface XReadDiagnostics {
   pointerFailure?: { actionIndex: number; targetPostId: string; controlKind: 'replies_expand'; sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown'; diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic };
 }
 export type XArtifactFailureCode = 'reference' | 'path' | 'read' | 'write' | 'integrity' | 'canonical';
-export interface XArtifactRestorationSummary {
-  scope: 'current_branch';
-  missingCalls: number;
-  reasonCounts: Partial<Record<XArtifactFailureCode, number>>;
-}
 export interface XDelivery {
   /** Exact coverage of Article obligations, independent of body omission counts. */
   articleObligationCoverage?: 'inline' | 'not_inline';
@@ -368,7 +363,6 @@ interface XResultBase {
   artifact?: XArtifactRef;
   delivery?: XDelivery;
   restoration?: {status: 'missing'; reason: XArtifactFailureCode};
-  artifactRestoration?: XArtifactRestorationSummary;
   schemaVersion: 2;
   reportScopeFacts?: XReportScopeFacts;
   reportRunScopeFacts?: XReportRunScopeFacts;

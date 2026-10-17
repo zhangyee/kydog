@@ -393,6 +393,34 @@ describe('XResearchProgressCard', () => {
     // 对照：别的失败不是「记录不可用」，卡头仍是未知状态里那个「读取中」。
     expect(broken.find('x-research-card').props['data-status']).toBe('loading');
     expect(visibleText(broken.find('x-research-toggle'))).toContain('X 研究 · 读取中');
+
+    // 第四条分支：`research.not_found` 对「这个窗口当时没在看这条对话」只是一个**瞬时**事实，
+    // 不许把「记录不可用」锁死。补取路径还开着（这里是 `unavailable` 那条：它要有一次成功才
+    // 会关掉），所以取到一次成功就得把这个锁清掉 —— 清不掉的话，下一次行从池里消失时「一次性
+    // 补取」会被这个锁挡在门外，卡永远停在「记录不可用」。
+    useXResearchTaskStore.getState().reset(props.threadId);
+    invoke.mockRejectedValue(Object.assign(new Error('X research task service is not wired'),
+      { code: 'research.unavailable' }));
+    const transient = mount(XResearchProgressCard, props);
+    await transient.settle();
+    // 补取这一次答「不在这个窗口」：锁置上，但 `unavailable` 还没被关掉，补取仍在武装状态。
+    invoke.mockRejectedValue(Object.assign(new Error('X research task not found'),
+      { code: 'research.not_found' }));
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 1 }));
+    transient.rerender(props);
+    await transient.settle();
+    // 再补一次，这次成功：锁该清掉。
+    invoke.mockResolvedValue(running);
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 2 }));
+    transient.rerender(props);
+    await transient.settle();
+    // 池里那一行没了：一次性补取还在，卡必须回到真内容 —— 锁若还锁着，这里会是「记录不可用」。
+    useXResearchTaskStore.getState().reset(props.threadId);
+    transient.rerender(props);
+    await transient.settle();
+    // 补取的结果落进了池里，重渲染一次才看得见（与上一条用例同一个读法）。
+    transient.rerender(props);
+    expect(transient.find('x-research-card').props['data-status']).toBe('running');
   });
 
   it('keeps 读取中 while the service is unwired and refetches once a snapshot arrives', async () => {

@@ -152,7 +152,6 @@ function projection(result: XResearchResult) {
     status: result.status,
     artifact: result.artifact,
     delivery: result.delivery,
-    artifactRestoration: result.artifactRestoration,
     reportScopeFacts: result.reportScopeFacts,
     ...(result.reportRunScopeFacts ? {reportRunScopeFacts: result.reportRunScopeFacts} : {}),
     budgetUsage: result.budgetUsage,
@@ -536,7 +535,6 @@ export function assertXRequestFits(original: XResearchResult, prior?: XResearchS
   state.contentProjection = 'x_research_projection_v1';
   state.artifact = {version:1,directoryId:uuid,manifest:'manifest.json',sha256:'f'.repeat(64),bytes:Number.MAX_SAFE_INTEGER,runId:state.runId,callId:state.callId,batchId:state.batchId,operation:state.operation};
   state.delivery = {truncated:true,omittedObservations:Number.MAX_SAFE_INTEGER,omittedFields:[],artifactPath:'p'.repeat(4096),persistence:'failed',failureCode:'canonical',articleObligationCoverage:'not_inline'};
-  state.artifactRestoration = {scope:'current_branch',missingCalls:Number.MAX_SAFE_INTEGER,reasonCounts:{reference:Number.MAX_SAFE_INTEGER,path:Number.MAX_SAFE_INTEGER,read:Number.MAX_SAFE_INTEGER,write:Number.MAX_SAFE_INTEGER,integrity:Number.MAX_SAFE_INTEGER,canonical:Number.MAX_SAFE_INTEGER}};
   rows.forEach(row => {
     row.collectionStop = {status:row.status,stopReason:row.stopReason,reason:'collection_failed:browser.not_dispatchable'};
     row.budgetBinding = ['posts','replies','scrolls','expands','network_pages'].map(dimension => ({dimension:dimension as 'posts',used:Number.MAX_SAFE_INTEGER,limit:Number.MAX_SAFE_INTEGER,origin:'explicit'}));

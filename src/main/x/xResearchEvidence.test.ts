@@ -797,20 +797,6 @@ it('an omitted or unresolved collection inventory stays unknown despite one genu
  }
 });
 
-it('tab restoration follows only ordered true canonical branch results, never legacy, mismatched calls or timestamps',async()=>{
- const {latestXResearchTab}=await import('./xResearchEvidence');const r=await result();
- expect(latestXResearchTab([history(r)])).toBe('research-tab');
- for(const invalid of [
-  {...history(r),message:{...history(r).message,isError:true,details:{...r,browserTabId:'wrong'}}},
-  {...history(r),message:{...history(r).message,toolCallId:'different-call',details:{...r,browserTabId:'wrong'}}},
-  history({...r,schemaVersion:1,browserTabId:'wrong'}),
-  history({...r,sourceKind:'legacy_x_graphql',browserTabId:'wrong'}),
- ])expect(latestXResearchTab([history(r),invalid])).toBe('research-tab');
- const later={...history({...r,browserTabId:'actually-later'}),timestamp:'1900-01-01T00:00:00Z'};
- expect(latestXResearchTab([{...history(r),timestamp:'2100-01-01T00:00:00Z'},later])).toBe('actually-later');
- expect(latestXResearchTab([])).toBeUndefined();
-});
-
 async function rootlessEvidence(body=post('456','bob','fresh own body')) {
   return readX({tabId:'research-tab',read:{objective:'rootless',targets:[{url}],includeArticle:false,includeReplies:true,maxRepliesPerPost:30,maxScrollsPerPost:1,maxExpandActionsPerPost:0}},fixture([readHtml(body)]).context);
 }

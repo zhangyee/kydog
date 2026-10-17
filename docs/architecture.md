@@ -43,6 +43,8 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 其余 `run.*` 事件都来自 `AgentService.subscribe()` 对 pi session 的订阅：`run.started` 来自 `agent_start`，两个 delta 来自 message 流，普通 `run.tool_call_*` 来自 `tool_execution_start` / `tool_execution_end`，`run.ended` 来自 `agent_end`。另有一个 `run.resync` 谁都不来自——它是上面那段重放的帧头，只在 `loadHistory` 里发给单个窗口，也不进 journal。
 
+**X 研究的任务快照走另一条线，不在 `run.*` journal 里。** `xResearch.taskUpdated` 的载荷是任务快照（`XResearchTaskSnapshot`：状态、计数、逐行工作项），来源是主进程的 `XResearchTaskService`——队列与在飞状态在进程内存里，落盘在 `~/.kydog/x-research/<threadId>/<researchRunId>/`（`task.json` 是研究级索引、`submission-<id>.json` 是提交级工作项与实时状态；结果正文按工件格式单独落盘，提交记录只存 `artifact` 引用，交付时按那个引用读回来）。于是渲染进程重载时 `run.resync` 带不回它：开对话时 `thread.loadHistory` 那条路顺手拉一次 `xResearch.taskList` 补全整批，之后靠广播跟；卡片自己用 `xResearch.taskGet` 补齐它那一份。研究工作跑在 `run.ended` **之后**，卡也要跟着走——这两件事不能靠一条 journal 的时序。
+
 其他非直觉点（为什么按 run 而不是按 pi message 合成 messageId、为什么并行判定要读 `message_end` 携带的 content）写在 `src/main/agent/AgentService.ts` 的注释里，改那块之前先读。
 
 ## 用户消息里的结构（附件、批注、@ 引用）

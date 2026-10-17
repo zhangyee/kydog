@@ -8,7 +8,6 @@ import * as paths from '../persist/paths';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TASK_FILE = 'task.json';
 const SUBMISSION_PREFIX = 'submission-';
-const CANONICAL_PREFIX = 'canonical-';
 
 /** 目录名来自 id，所以「不是 UUID」必须在碰文件系统之前就拒绝 —— `../../etc` 拼出来是别的目录。 */
 function validId(id: string): void {
@@ -20,8 +19,9 @@ function missing(error: unknown): boolean {
 
 /**
  * 研究目录 `<root>/<threadId>/<researchRunId>/`（spec §4.4）：
- * `task.json`（研究级索引）、`submission-<id>.json`（提交级工作项与实时状态）、
- * `canonical-<id>.json`（该次提交的完整结果）。
+ * `task.json`（研究级索引）、`submission-<id>.json`（提交级工作项与实时状态）。
+ * 结果正文不在这里：它按工件格式单独落盘（分块 + manifest + sha256），提交记录只存
+ * `artifact` 引用 —— 交付时按那个引用读回来（R20）。
  *
  * 读的一律把「文件不在」与「文件坏了」都当 `null`：进程被杀留下的截断文件不是崩溃源，
  * 只是这份事实没写成功（§4.4「崩溃后的诚实表示」）。
@@ -123,26 +123,6 @@ export class XResearchTaskStore {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.submissionId.localeCompare(b.submissionId));
   }
 
-  async writeCanonical(threadId: string, researchRunId: string, submissionId: string,
-    json: string): Promise<void> {
-    validId(submissionId);
-    await this.ensureTaskDir(threadId, researchRunId);
-    const file = this.canonicalFile(threadId, researchRunId, submissionId);
-    await this.serial(file, () => atomicWriteWith0600Async(file, json));
-  }
-
-  /** 原样返回字符串：写进去的字节不会因为一次重新序列化而变（与 `xResearchCanonical` 的
-   *  「结果逐字节不变」同一条约束）。这里同样不解析，所以「坏」只能表现为交付时下游的失败。 */
-  async readCanonical(threadId: string, researchRunId: string, submissionId: string): Promise<string | null> {
-    validId(submissionId);
-    try {
-      return await fs.readFile(this.canonicalFile(threadId, researchRunId, submissionId), 'utf8');
-    } catch (error) {
-      if (missing(error)) return null;
-      throw error;
-    }
-  }
-
   async listRuns(threadId: string): Promise<string[]> {
     const dir = this.threadDir(threadId);
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
@@ -166,10 +146,6 @@ export class XResearchTaskStore {
 
   private submissionFile(threadId: string, researchRunId: string, submissionId: string): string {
     return path.join(this.taskDir(threadId, researchRunId), `${SUBMISSION_PREFIX}${submissionId}.json`);
-  }
-
-  private canonicalFile(threadId: string, researchRunId: string, submissionId: string): string {
-    return path.join(this.taskDir(threadId, researchRunId), `${CANONICAL_PREFIX}${submissionId}.json`);
   }
 }
 

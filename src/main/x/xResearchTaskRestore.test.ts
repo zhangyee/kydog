@@ -8,7 +8,7 @@ import { SKIP_WITHOUT_SYMLINK, SYMLINK_SKIP_REASON } from '../../test-support/sy
 import type { XResearchTaskSnapshot } from '../../shared/xResearchTask';
 import { createXResearchArtifactStore, type XResearchArtifactStore } from './xResearchArtifacts';
 import { hydrateXResearchBranch } from './xResearchBranch';
-import { XResearchEvidence, latestXResearchTab } from './xResearchEvidence';
+import { XResearchEvidence } from './xResearchEvidence';
 import { deliverEnvelope } from './xResearchDeliver';
 import { serializeXResearchResult } from './xResearchOutput';
 import { XResearchScopeLedger } from './xResearchScopeFacts';
@@ -264,18 +264,6 @@ it('keeps a delivered result without its artifact from authorizing the parent', 
   expect(evidence.observations.length).toBeGreaterThan(0);
   expect(() => evidence.guard('/tmp/report.md', '[source](https://x.com/alice/status/123)'))
     .toThrow('restoration');
-});
-
-it('binds the tab from a delivered shell', async () => {
-  const store = storeWith(root('task'), root('legacy'));
-  const full = await twoPosts();
-  const ref = await store.write(full);
-  const details = shell({ toolCallId: 'delivery-call', submitCallId: 'call', result: deliveredCopy(full, ref) });
-  expect(latestXResearchTab((await hydrateXResearchBranch([entry(details, 'delivery-call')], store)).entries))
-    .toBe(full.browserTabId);
-  // 同一条归属判据：交付那一轮对不上就不算这次导航过。
-  expect(latestXResearchTab((await hydrateXResearchBranch([entry(details, 'other-call')], store)).entries))
-    .toBeUndefined();
 });
 
 it.skipIf(SKIP_WITHOUT_SYMLINK)(

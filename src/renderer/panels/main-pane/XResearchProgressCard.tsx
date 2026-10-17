@@ -215,6 +215,9 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
       if (!isActive()) return;
       sawSnapshot.current = true;
       setUnavailable(false);
+      // 「记录不可用」也要撤：`research.not_found` 对「这个窗口没在看该对话」只是一个瞬时事实，
+      // 取到一次就把这个永久锁清掉 —— 否则下一次行从池里消失时它会以「记录不可用」重新露出来。
+      setGone(false);
       upsert(value);
     } catch (reason) {
       if (!isActive()) return;

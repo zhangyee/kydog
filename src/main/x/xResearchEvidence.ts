@@ -12,6 +12,7 @@ import {
   projectLegacyXResult,
   type XLegacyProjection,
 } from './xResearchLegacy';
+import { deliveryResult, resultCallId, shellChainValid } from './xResearchTaskShell';
 import type {
   XArticleEntryIdentity,
   XResearchResult,
@@ -104,36 +105,6 @@ const canonicalSchema = z.discriminatedUnion('operation', [
     ),
   }).refine(readSourceDomainsValid),
 ]);
-/** 壳（`./xResearchTaskShell`）→ `delivery.result`；改造前的平铺 details → 原样。
- *  `null` = 这个壳没有结果（`submit` / `inspect` / `cancel`）：它没有可引用的东西，也不走旧路径。 */
-function deliveryResult(details: unknown): unknown | null {
-  if (!details || typeof details !== 'object') return details;
-  const value = details as { kind?: unknown; delivery?: { result?: unknown } };
-  return value.kind === 'x_research' ? value.delivery?.result ?? null : details;
-}
-/** 这条工具结果属于哪一轮调用：平铺 details 说的是自己的 `callId`，壳说的是**交付**那一轮
- *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮，
- *  拿它比 `toolCallId` 永远不相等。 */
-function resultCallId(details: unknown): unknown {
-  if (!details || typeof details !== 'object') return null;
-  const value = details as {
-    kind?: unknown; callId?: unknown; delivery?: { deliveryCallId?: unknown };
-  };
-  return value.kind === 'x_research' ? value.delivery?.deliveryCallId ?? null : value.callId ?? null;
-}
-/** 壳自己的两轮也得对得上：`result.callId` 是提交那一轮，必须等于壳记下的 `submitCallId`。
- *  与恢复链（`./xResearchBranch`）同一条判据 —— 只认「交付那一轮」的话，一份壳能借另一份
- *  提交的结果进账本。平铺 details 没有这层壳，放行。 */
-function shellChainValid(details: unknown): boolean {
-  if (!details || typeof details !== 'object') return true;
-  const value = details as {
-    kind?: unknown;
-    delivery?: { submitCallId?: unknown; result?: { callId?: unknown } | null };
-  };
-  if (value.kind !== 'x_research') return true;
-  const delivery = value.delivery;
-  return delivery?.result?.callId === delivery?.submitCallId;
-}
 /** Evidence consumes retained bodies, while delivery keeps the original collection
  * inventory counts. Validate the source counts before adapting an internal view;
  * this view is never returned, persisted, or used as a scope/collection fact. */
@@ -155,24 +126,6 @@ function evidenceDetails(raw: unknown): unknown {
     }
   });
   return copy;
-}
-/** Only actual current-branch v2 tool results with a navigation receipt can bind a tab. */
-export function latestXResearchTab(branchEntries: readonly unknown[]): string | undefined {
-  let tab: string | undefined;
-  const envelope = z.object({type:z.literal('message'),message:z.object({role:z.literal('toolResult'),toolName:z.literal('x_research'),toolCallId:string,isError:z.literal(false),details:z.unknown()})});
-  const binding = z.object({browserTabId:string,operation:z.enum(['search','read']),queries:z.array(z.unknown()).optional(),targets:z.array(z.unknown()).optional()});
-  const row = z.object({location:z.object({committedNavigationOutcome:z.enum(['ok','ok_same_document','failed','cancelled','crashed','download','blocked','superseded','timeout'])})});
-  for(const raw of branchEntries) {
-    const e=envelope.safeParse(raw);if(!e.success) continue;
-    const result=deliveryResult(e.data.message.details);if(result===null) continue;
-    const canonical=canonicalSchema.safeParse(evidenceDetails(result)),b=binding.safeParse(result);
-    // 壳自己的两轮也得对上（R38，与恢复链、账本同一条判据）：`result.callId` 是**提交**那一轮，
-    // 必须等于壳记下的 `submitCallId`。只认 `deliveryCallId` 的话，一份壳能借另一份提交的结果
-    // 绑上一个它没导航过的标签页。
-    if(!canonical.success || !b.success || !shellChainValid(e.data.message.details) || resultCallId(e.data.message.details)!==e.data.message.toolCallId) continue;
-    if((b.data.operation==='search'?b.data.queries:b.data.targets)?.some(value=>row.safeParse(value).success)) tab=b.data.browserTabId;
-  }
-  return tab;
 }
 type Canonical = z.infer<typeof canonicalSchema>;
 type Text = z.infer<typeof textSchema> | z.infer<typeof unscopedTextSchema>;

@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { XResearchSubmission, XResearchTaskRecord, XResearchWorkItem } from '../../shared/xResearchTask';
@@ -199,15 +199,6 @@ it('lists submissions in creation order and ignores files that are not submissio
   expect(await store.listSubmissions(THREAD, OTHER_RUN)).toEqual([]);
 });
 
-it('stores canonical payloads byte-for-byte and reads a missing one as null', async () => {
-  const store = new XResearchTaskStore(root());
-  const payload = '{"operation":"search","rows":["汉字😀"]}';
-  await store.writeCanonical(THREAD, RUN, SUB, payload);
-  expect(await readFile(path.join(store.taskDir(THREAD, RUN), `canonical-${SUB}.json`), 'utf8')).toBe(payload);
-  expect(await store.readCanonical(THREAD, RUN, SUB)).toBe(payload);
-  expect(await store.readCanonical(THREAD, RUN, OTHER_SUB)).toBeNull();
-});
-
 it('lists only run directories for a thread', async () => {
   const dir = root();
   const store = new XResearchTaskStore(dir);
@@ -224,13 +215,11 @@ it('removeRun deletes the whole task directory and leaves other runs alone', asy
   const store = new XResearchTaskStore(root());
   await store.writeTask(record());
   await store.writeSubmission(submission());
-  await store.writeCanonical(THREAD, RUN, SUB, '{}');
   await store.writeTask(record({ researchRunId: OTHER_RUN }));
   await store.removeRun(THREAD, RUN);
   expect(await store.listRuns(THREAD)).toEqual([OTHER_RUN]);
   expect(await store.readTask(THREAD, RUN)).toBeNull();
   expect(await store.readSubmission(THREAD, RUN, SUB)).toBeNull();
-  expect(await store.readCanonical(THREAD, RUN, SUB)).toBeNull();
   expect(await store.readTask(THREAD, OTHER_RUN)).toEqual(record({ researchRunId: OTHER_RUN }));
 });
 
@@ -239,7 +228,6 @@ it('removeThread deletes the whole thread directory and leaves other threads alo
   const store = new XResearchTaskStore(dir);
   await store.writeTask(record());
   await store.writeSubmission(submission());
-  await store.writeCanonical(THREAD, RUN, SUB, '{}');
   await store.writeTask(record({ threadId: OTHER_THREAD }));
   await store.removeThread(THREAD);
   await expect(readdir(path.join(dir, THREAD))).rejects.toMatchObject({ code: 'ENOENT' });
