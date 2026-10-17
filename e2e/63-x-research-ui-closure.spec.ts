@@ -27,7 +27,12 @@
  * （`handlers.ts` 里写明了），而渲染层只在 bootstrap 那一次把 epoch 抄进 store ——
  * 用例从外面调一次之后，侧栏此后上报的每一份 `syncView` 都会被主进程判为过期丢弃，
  * 原生页永远拿不到 bounds。表现出来就是「侧栏里那页看不见、原生点击落在 (0,0)」，
- * 全程没有任何报错。要核对标签身份就用壳里的 `browserTabId` 与 `browser.open` 的返回值。
+ * 全程没有任何报错。要核对标签**身份**就用壳里的 `browserTabId` 与 `browser.open` 的返回值。
+ *
+ * 要核对**活动标签**则用 `browser.tabsChanged` 广播：它的载荷是 `{revision, tabs, activeTabId}`，
+ * **刻意不带 epoch**（`types.ts` 的 `BrowserTabsSnapshot` 写明了为什么）。所以读它不会像
+ * `getState` 那样把渲染层的 epoch 换掉 —— 这是「研究不抢用户的活动标签」唯一安全的协议出口，
+ * 而这条性质在改造后更重要：研究工作跑在 `run.ended` **之后**，那时候用户可能正在读自己的页。
  */
 import { test, expect } from '@playwright/test';
 import { promises as fs, readFileSync } from 'node:fs';
@@ -95,6 +100,9 @@ test.describe('x research task protocol closure (offline)', () => {
   let researchSubmitRunId = '';
   let rootUrl = '';
   let readSubmitRunId = '';
+  /** test 1 末尾把用户页激活回来那一帧：revision 用来切「此后」，标签清单用来认出研究后面新开的那张。 */
+  let userTabRevision = 0;
+  let baselineTabIds: readonly string[] = [];
   /** 重启后要交付的那一份（主研究里最后提交、故意不交付就跑重启）的提交轮 runId。 */
   let pendingSubmitRunId = '';
 
@@ -177,13 +185,17 @@ test.describe('x research task protocol closure (offline)', () => {
       const settings = await window.kydog.invoke('research.get');
       await window.kydog.invoke('research.save', { ...settings, xResearchEnabled: true });
       window.__xClosureEvents = [];
-      const topics = ['run.started', 'run.tool_call_chunk', 'run.tool_call_end', 'run.ended', 'run.ask_start', 'run.ask_end'] as const;
+      const topics = ['run.started', 'run.tool_call_chunk', 'run.tool_call_end', 'run.ended', 'run.ask_start', 'run.ask_end',
+        // 活动标签那条性质的观测口。**不是 `browser.getState`** —— 那条每调一次就换 epoch（见文件头）。
+        'browser.tabsChanged'] as const;
       for (const topic of topics) window.kydog.on(topic, payload => window.__xClosureEvents.push({ topic, payload } as RuntimeEvent));
     });
   }
 
-  /** 一轮：写脚本 → 发消息 → 等 `run.ended`。脚本每轮重写：下一轮的 `wait` 要带上这一轮才铸出来的 id。 */
-  async function run(calls: Call[], during?: () => Promise<void>): Promise<ToolOutcome[]> {
+  /** 一轮：写脚本 → 发消息 → 等 `run.ended`。脚本每轮重写：下一轮的 `wait` 要带上这一轮才铸出来的 id。
+   *  `endedClaim` 是「这一轮必须自己结束」那条断言失败时的说法：若某个工具退化成阻塞，轮次就停在
+   *  tool_call 里，失败只剩一个裸 `expect.poll` 超时，读不出在等什么性质。 */
+  async function run(calls: Call[], during?: () => Promise<void>, endedClaim?: string): Promise<ToolOutcome[]> {
     await fs.writeFile(fixture, JSON.stringify({ events: [
       { type: 'agent_start', after_ms: 0 },
       ...calls.map(c => ({ ...c, type: 'tool', after_ms: 0 })),
@@ -192,7 +204,10 @@ test.describe('x research task protocol closure (offline)', () => {
     const { runId } = await launched.page.evaluate(a => window.kydog.invoke('thread.send', a), { threadId, content: randomUUID() });
     if (during) await during();
     const events = () => launched.page.evaluate(a => window.__xClosureEvents.filter(e => e.payload && 'runId' in e.payload && e.payload.runId === a.runId && 'threadId' in e.payload && e.payload.threadId === a.threadId), { threadId, runId });
-    await expect.poll(async () => (await events()).some(e => e.topic === 'run.ended')).toBe(true);
+    // 这一轮必须自己收尾（`reason: 'completed'` 另断在下一句）。工具若退化成阻塞，`run.ended`
+    // 永远不来 —— 消息把「等着的是哪个性质」说出来。
+    await expect.poll(async () => (await events()).some(e => e.topic === 'run.ended'),
+      { message: endedClaim ?? 'the turn ended (run.ended) instead of staying inside a tool call' }).toBe(true);
     const received = await events();
     expect(received.find(e => e.topic === 'run.ended')).toMatchObject({ payload: { reason: 'completed' } });
     return calls.map(c => {
@@ -235,6 +250,21 @@ test.describe('x research task protocol closure (offline)', () => {
 
   const taskGet = (researchRunId: string): Promise<XResearchTaskSnapshot> =>
     launched.page.evaluate(a => window.kydog.invoke('xResearch.taskGet', a), { threadId, researchRunId });
+
+  /** 至今收到的每一帧 `browser.tabsChanged`：活动标签 + 那一刻的标签清单（带 revision 用来切窗口）。 */
+  const tabFrames = (): Promise<Array<{ revision: number; activeTabId: string | null; tabIds: string[] }>> =>
+    launched.page.evaluate(() => window.__xClosureEvents
+      .filter((e): e is Extract<RuntimeEvent, { topic: 'browser.tabsChanged' }> => e.topic === 'browser.tabsChanged')
+      .map(e => ({ revision: e.payload.revision, activeTabId: e.payload.activeTabId, tabIds: e.payload.tabs.map(t => t.id) })));
+
+  /** 基线（`userTabRevision`）之后每一帧说的活动标签，去重。 */
+  const activeTabsSinceUserTab = async (): Promise<Array<string | null>> => [...new Set((await tabFrames())
+    .filter(frame => frame.revision > userTabRevision).map(frame => frame.activeTabId))];
+
+  /** 基线之后新出现的标签 id —— 就是研究自己开的那一页（提交那一刻它还在排队，开页在 `run.ended` 之后）。 */
+  const researchTabsSinceUserTab = async (): Promise<string[]> => [...new Set((await tabFrames())
+    .filter(frame => frame.revision > userTabRevision).flatMap(frame => frame.tabIds)
+    .filter(id => !baselineTabIds.includes(id)))];
 
   const searchArgs = (queries: readonly (typeof FIRST_QUERY | typeof SECOND_QUERY)[]) => ({
     search: { objective: OBJECTIVE, queries, maxPostsPerQuery: 3, maxScrollsPerQuery: 0 },
@@ -311,11 +341,20 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(asks[0]).toMatchObject({ payload: { toolCallId: ask.toolCallId, threadId, browserTabId: taskTabId } });
     // 用户回到自己那一页：之后的任务页一次都不许把它抢走。
     await launched.page.evaluate(id => window.kydog.invoke('browser.activate', { tabId: id }), userTabId);
+    // 基线（广播自己说的）：活动标签是用户那一页。这一帧的 revision 是闸门窗口与取消那一条
+    // 切「此后」的分界线，标签清单用来认出研究后面新开的那张（两张都存下来给下面两条用）。
+    await expect.poll(async () => (await tabFrames()).at(-1)?.activeTabId ?? null,
+      { message: `the user tab ${userTabId} is the active tab right after browser.activate(userTabId)` }).toBe(userTabId);
+    const baselineFrame = (await tabFrames()).at(-1);
+    if (!baselineFrame) throw new Error('一帧 browser.tabsChanged 都没到：这个观测量本身坏了');
+    userTabRevision = baselineFrame.revision;
+    baselineTabIds = baselineFrame.tabIds;
   });
 
   test('submit returns at once while the held second query has not been collected and the first row carries the wire counts', async () => {
     holdNextQuery(SECOND_QUERY.query);
-    const submitRun = await run([call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY]) })]);
+    const submitRun = await run([call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY]) })], undefined,
+      'the submit turn ended while the research was still running');
     const submitted = envelope(submitRun[0]);
     researchRunId = submitted.researchRunId;
     researchSubmitRunId = submitRun[0].runId;
@@ -323,6 +362,15 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(submitted.status).toBe('running');
     // 这一轮已经结束（`run` 断过 reason=completed），而工作在跑：submit 不阻塞。
     expect((await taskGet(researchRunId)).state).toBe('running');
+    // 研究在闸门窗口里开了自己的页（提交那一刻两行都还在排队，开页发生在 `run.ended` 之后）。
+    // 活动标签却还得是用户那一页。先证明研究那张标签真的被广播过（「基线里没有的 id」只能来自
+    // 研究自己开页的那一帧，否则下面那条就是「什么都没观测到」），再证明基线之后每一帧说的
+    // 活动标签都只有用户那一页。（`browser.getState` 也读得到 `activeTabId`，但它每调一次就换
+    // epoch，会把侧栏静音 —— 见文件头。）
+    await expect.poll(researchTabsSinceUserTab,
+      { message: 'the research opened its own tab (a tab id that is not in the baseline frame)' }).not.toHaveLength(0);
+    const researchTabIds = await researchTabsSinceUserTab();
+    expect(await activeTabsSinceUserTab(), `the research's tab ${researchTabIds.join(',')} must not become the active tab`).toEqual([userTabId]);
     // 闸门里躺着第二个 query 的那次导航 —— 正向证明这一行「到了、没拿到页面」，不是「从没试过」。
     await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
     expect(new URL(gate.held[0].url).searchParams.get('q')).toBe(SECOND_QUERY.query);
@@ -335,8 +383,11 @@ test.describe('x research task protocol closure (offline)', () => {
     const heldWindow = await taskGet(researchRunId);
     expect(heldWindow.state).toBe('running');
     expect(heldWindow.objective).toBe(OBJECTIVE);
-    expect(heldWindow.counts).toMatchObject({ submissions: 1, queued: 0, running: 2, done: 0, posts: 2, replies: 0, undelivered: 0 });
-    expect(heldWindow.budget).toEqual({ scrolls: 0, expandActions: 0 });
+    // 这里不断 `budget`：每个夹具都把 `maxScrollsPerQuery` 声明成 0，而快照里的 `budget` 是
+    // 各次提交**声明值**的累加（xResearchTask 的 `budget.scrolls += submission.budget.scrolls`），
+    // 于是那条断言是「零的和等于零」—— 恒真（R59b）。真实数额在下面这几桶里：
+    // `running` 是两行都还没收尾，`posts` 是 wire 夹具已服务的那两条。
+    expect(heldWindow.counts).toMatchObject({ submissions: 1, queued: 0, running: 2, done: 0, posts: 2, undelivered: 0 });
   });
 
   test('releasing the held navigation lets one wait deliver exactly one canonical result', async () => {
@@ -445,6 +496,15 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(retrieved.undelivered).toHaveLength(1);
     expect(retrieved.undelivered![0]).toMatchObject({ operation: 'search', state: 'done', objective: OBJECTIVE });
     expect(retrieved.snapshot.counts).toMatchObject({ submissions: 4, done: 5, undelivered: 1, posts: 8 });
+
+    // 这一段研究从头到尾（闸门那一次、追加的两次、被取消那一段）自己开了页、导航、交付，
+    // 而活动标签一次都没被它抢走。两条断合起来才是这条性质：
+    // ①此后确实还有研究自己开的新标签（观测量是活的，不是没观测到东西）；
+    // ②这些帧说的活动标签永远是用户那一页（`browserService.open` 里 `activate === true` 只有
+    //   用户自己在地址栏那条路才传，研究侧 `xResearchBrowser.open` 传的是 false）。
+    const laterResearchTabs = await researchTabsSinceUserTab();
+    expect(laterResearchTabs, 'the research opened tabs after the baseline').not.toHaveLength(0);
+    expect(await activeTabsSinceUserTab(), `research tabs ${laterResearchTabs.join(',')} must not become the active tab`).toEqual([userTabId]);
   });
 
   test('a real process restart keeps the run state and counts, and wait still delivers the undelivered result', async () => {
