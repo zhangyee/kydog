@@ -96,7 +96,8 @@ export function createXResearchRunner(deps: XResearchRunnerDeps): XResearchRunWo
       delivery.artifact = await artifacts.write(canonical);
       delivery.delivery = {
         truncated: false, omittedObservations: 0, omittedFields: [],
-        artifactPath: artifacts.displayPath(delivery.artifact), persistence: 'saved',
+        // 模型会照这个路径去读文件：定位走双根（读得到旧根里的那一份），不能用 `displayPath`。
+        artifactPath: await artifacts.locate(delivery.artifact), persistence: 'saved',
       };
     } catch (error) {
       // 落盘失败不改变「读到的东西」：结果照发，只是没有可解析的工件引用（旧工具同一处判据）。

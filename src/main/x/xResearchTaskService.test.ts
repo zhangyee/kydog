@@ -664,6 +664,7 @@ describe('XResearchTaskService', () => {
     const artifacts: XResearchArtifactStore = {
       write: async () => { throw new Error('not used'); },
       displayPath: () => '/artifacts/manifest.json',
+      locate: async () => '/artifacts/manifest.json',
       read: async () => structuredClone(result),
     };
     const next = harness(echoRunner, {
@@ -746,6 +747,7 @@ describe('XResearchTaskService', () => {
     const artifacts: XResearchArtifactStore = {
       write: async () => { throw new Error('not used'); },
       displayPath: () => '/artifacts/manifest.json',
+      locate: async () => '/artifacts/manifest.json',
       read: async (readRef) => {
         reads.push(readRef.callId);
         // 只有第二段闸住读工件；第一段要的是「读很快、中止照样得被接住」。

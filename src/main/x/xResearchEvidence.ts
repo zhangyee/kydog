@@ -112,7 +112,7 @@ function deliveryResult(details: unknown): unknown | null {
   return value.kind === 'x_research' ? value.delivery?.result ?? null : details;
 }
 /** 这条工具结果属于哪一轮调用：平铺 details 说的是自己的 `callId`，壳说的是**交付**那一轮
- *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮（R20），
+ *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮，
  *  拿它比 `toolCallId` 永远不相等。 */
 function resultCallId(details: unknown): unknown {
   if (!details || typeof details !== 'object') return null;
@@ -120,6 +120,19 @@ function resultCallId(details: unknown): unknown {
     kind?: unknown; callId?: unknown; delivery?: { deliveryCallId?: unknown };
   };
   return value.kind === 'x_research' ? value.delivery?.deliveryCallId ?? null : value.callId ?? null;
+}
+/** 壳自己的两轮也得对得上：`result.callId` 是提交那一轮，必须等于壳记下的 `submitCallId`。
+ *  与恢复链（`./xResearchBranch`）同一条判据 —— 只认「交付那一轮」的话，一份壳能借另一份
+ *  提交的结果进账本。平铺 details 没有这层壳，放行。 */
+function shellChainValid(details: unknown): boolean {
+  if (!details || typeof details !== 'object') return true;
+  const value = details as {
+    kind?: unknown;
+    delivery?: { submitCallId?: unknown; result?: { callId?: unknown } | null };
+  };
+  if (value.kind !== 'x_research') return true;
+  const delivery = value.delivery;
+  return delivery?.result?.callId === delivery?.submitCallId;
 }
 /** Evidence consumes retained bodies, while delivery keeps the original collection
  * inventory counts. Validate the source counts before adapting an internal view;
@@ -378,7 +391,9 @@ export class XResearchEvidence {
       const value = deliveryResult(m.details);
       // 壳里没有 delivery：没有可引用的结果，也不是改造前的平铺结果。
       if (value === null) continue;
-      // 归属判据跟着壳换：平铺比自己的 `callId`，壳比「交付那一轮」的 `deliveryCallId`（R20）。
+      // 壳自己的两轮对不上：恢复链不收它的结果，账本也不收 —— 否则一份错壳能喂出证据。
+      if (!shellChainValid(m.details)) continue;
+      // 归属判据跟着壳换：平铺比自己的 `callId`，壳比「交付那一轮」的 `deliveryCallId`。
       const owner = resultCallId(m.details);
       const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(value);
       if (restoration.success && m.toolCallId === owner && restoration.data.delivery?.articleObligationCoverage !== 'inline')

@@ -631,7 +631,8 @@ export class XResearchTaskService {
       canonical.artifact = submission.artifact;
       canonical.delivery = {
         truncated: false, omittedObservations: 0, omittedFields: [],
-        artifactPath: artifacts.displayPath(submission.artifact), persistence: 'saved',
+        // 重启后提交记录里的 ref 可能出自旧根（改造前那份提交）：路径也要双根定位。
+        artifactPath: await artifacts.locate(submission.artifact), persistence: 'saved',
       };
       // R24：这两份事实只有序列化时才算出来，工件（序列化之前的 canonical）里没有它们 ——
       // 收尾那一刻存进提交记录，这里放回去再序列化。放在裁切之前，字节数从一开始就把它们算进去。

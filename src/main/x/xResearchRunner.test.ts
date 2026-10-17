@@ -294,6 +294,7 @@ describe('x research runner', () => {
     const artifacts: XResearchArtifactStore = {
       write: async () => { throw new Error('disk full'); },
       read: async () => { throw new Error('unused'); },
+      locate: async () => 'unused',
       displayPath: () => 'unused',
     };
     const result = await createXResearchRunner(depsFor(f, { artifacts }))(

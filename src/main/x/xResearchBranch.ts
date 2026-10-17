@@ -70,8 +70,8 @@ export async function hydrateXResearchBranch(
           );
         }
         const ref = result.artifact as XArtifactRef;
-        // R20：`deliveryCallId` 是交付那一轮（= 这条工具结果），`result.callId` 是**提交**那一轮，
-        // 两者不许混着用 —— 壳的完整性判据就是这两条加 `batchId`。
+        // `deliveryCallId` 是交付这一轮（= 这条工具结果），`result.callId` 是**提交**那一轮：两者
+        // 不许混着用 —— 壳的完整性判据就是这两条连同 `batchId` 一起对得上。
         if (delivery.deliveryCallId !== message.toolCallId ||
             result.callId !== delivery.submitCallId ||
             result.operation !== delivery.operation ||

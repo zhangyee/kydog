@@ -91,12 +91,21 @@ function deliveryResult(details:unknown):unknown|null {
   return value.kind==='x_research'?value.delivery?.result??null:details;
 }
 /** 这条工具结果属于哪一轮调用：平铺 details 说的是自己的 `callId`，壳说的是**交付**那一轮
- *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮（R20），
+ *  （`delivery.deliveryCallId`）—— 壳里的 `result.callId` 是**提交**那一轮，
  *  拿它比 `toolCallId` 永远不相等。 */
 function resultCallId(details:unknown):unknown {
   if(!details||typeof details!=='object')return null;
   const value=details as {kind?:unknown;callId?:unknown;delivery?:{deliveryCallId?:unknown}};
   return value.kind==='x_research'?value.delivery?.deliveryCallId??null:value.callId??null;
+}
+/** 壳自己的两轮也得对得上：`result.callId` 是提交那一轮，必须等于壳记下的 `submitCallId`。
+ *  与恢复链（`./xResearchBranch`）同一条判据 —— 只认「交付那一轮」的话，一份壳能借另一份
+ *  提交的结果入账。平铺 details 没有这层壳，放行。 */
+function shellChainValid(details:unknown):boolean {
+  if(!details||typeof details!=='object')return true;
+  const value=details as {kind?:unknown;delivery?:{submitCallId?:unknown;result?:{callId?:unknown}|null}};
+  if(value.kind!=='x_research')return true;
+  return value.delivery?.result?.callId===value.delivery?.submitCallId;
 }
 function call(raw:unknown):Call {
   if(raw && typeof raw==='object' && 'restoration' in raw &&
@@ -147,6 +156,8 @@ export class XResearchScopeLedger {
     for(const entry of entries){
       const parsed=envelope.safeParse(entry);if(!parsed.success)continue;
       const details=deliveryResult(parsed.data.message.details);if(details===null)continue;
+      // 壳自己的两轮对不上：恢复链不收它的结果，账本也不收 —— 否则一份错壳能入账。
+      if(!shellChainValid(parsed.data.message.details))continue;
       const id=identity.safeParse(details);
       if(!id.success||resultCallId(parsed.data.message.details)!==parsed.data.message.toolCallId)continue;
       this.observe(details);

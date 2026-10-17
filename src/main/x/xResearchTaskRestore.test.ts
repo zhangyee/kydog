@@ -115,6 +115,19 @@ it('restores a delivered result from the shell', async () => {
     store,
   );
   expect(wrongSubmit.failures).toEqual([{ callId: 'delivery-call', reason: 'reference' }]);
+  // ref 与结果说的不是同一批（同一份壳、只改 `ref.batchId`）：引用不指向这份结果，不恢复，
+  // 但要留下 `restoration` 标记 —— 不然那份工件凭空消失而没人说得出为什么。
+  const wrongBatch = await hydrateXResearchBranch(
+    [entry(shell({
+      toolCallId: 'delivery-call', submitCallId: 'call',
+      result: { ...clipped, artifact: { ...ref, batchId: 'other-batch' } },
+    }), 'delivery-call')],
+    store,
+  );
+  expect(wrongBatch.failures).toEqual([{ callId: 'delivery-call', reason: 'reference' }]);
+  expect(wrongBatch.entries[0]).toMatchObject({ message: { details: { delivery: { result: {
+    restoration: { status: 'missing', reason: 'reference' },
+  } } } } });
 });
 
 it('still restores a flat pre-change toolResult', async () => {
@@ -147,6 +160,33 @@ it('reads an artifact written under the legacy root', async () => {
   const old = createXResearchArtifactStore(legacy);
   const ref = await old.write(full);
   expect(await storeWith(task, legacy).read(ref)).toEqual(await old.read(ref));
+});
+
+it('requires the legacy root in the object form', () => {
+  // `legacy` 是必填项：对象写法漏掉它，`read` / `locate` 只会找任务根，旧根里的历史证据就此
+  // 静默消失。这个闭包**不执行**，它钉的是类型 —— 这一行一旦不再报错，就是有人把它改回可选了。
+  const construct = (): XResearchArtifactStore => {
+    // @ts-expect-error 对象写法必须两个根都给
+    return createXResearchArtifactStore({ task: root('task') });
+  };
+  expect(construct).toBeTypeOf('function');
+});
+
+it('locates an artifact that only exists under the legacy root', async () => {
+  const legacy = root('legacy'), task = root('task');
+  const old = createXResearchArtifactStore(legacy);
+  const ref = await old.write(await twoPosts());
+  const store = storeWith(task, legacy);
+  // 这条同时证明两棵根真都被找了（`legacy` 是必填项的运行时判据）：旧根里那一份给出的是
+  // 旧根下的路径，而且模型照着它能真的打开文件 —— 不是任务根下一个不存在的路径。
+  const legacyPath = await store.locate(ref);
+  expect(legacyPath).toBe(path.join(legacy, ref.directoryId, 'manifest.json'));
+  expect((await fs.stat(legacyPath)).isFile()).toBe(true);
+  // 翻面：同一份 ref 落在任务根时，定位给的是任务根下的路径。
+  const taskRef = await store.write(await twoPosts());
+  const taskPath = await store.locate(taskRef);
+  expect(taskPath).toBe(path.join(task, taskRef.directoryId, 'manifest.json'));
+  expect((await fs.stat(taskPath)).isFile()).toBe(true);
 });
 
 it('reads an artifact written under the task root', async () => {
@@ -183,6 +223,19 @@ it('does not feed the ledger from a shell that lacks delivery', async () => {
   const scope = new XResearchScopeLedger();
   scope.restore([entry(withoutDelivery, 'submit-call')]);
   expect(scope.prior('run').withCurrent({ ...full, callId: 'next' })).toMatchObject({
+    callCount: 1, unavailableCallCount: 0,
+  });
+  // 只认「交付那一轮」还不够：壳自己的两轮对不上（`result.callId` ≠ `submitCallId`）时，
+  // 恢复链把这份壳判成不可信，两个账本也得一样 —— 否则一份错壳能自己喂出证据。
+  const mismatched = shell({ toolCallId: 'delivery-call', submitCallId: 'other', result: clipped });
+  const refused = new XResearchEvidence('/tmp', () => 'run');
+  refused.restore([entry(mismatched, 'delivery-call')]);
+  expect(refused.observations).toEqual([]);
+  expect(refused.sources.size).toBe(0);
+  expect(refused.legacyProjections).toEqual([]);
+  const refusedScope = new XResearchScopeLedger();
+  refusedScope.restore([entry(mismatched, 'delivery-call')]);
+  expect(refusedScope.prior('run').withCurrent({ ...full, callId: 'next' })).toMatchObject({
     callCount: 1, unavailableCallCount: 0,
   });
 });

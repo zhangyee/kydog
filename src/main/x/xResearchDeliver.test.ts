@@ -263,6 +263,7 @@ describe('XResearchTaskService.wait', () => {
       store: {
         write: async () => { throw new Error('not used'); },
         displayPath: () => '/artifacts/manifest.json',
+        locate: async () => '/artifacts/manifest.json',
         read: async (ref) => { reads.push(ref); return structuredClone(result(ref)); },
       },
     };

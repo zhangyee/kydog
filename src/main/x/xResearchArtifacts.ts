@@ -13,14 +13,20 @@ import type { XArtifactRef, XResearchResult } from './xResearchTypes';
 export interface XResearchArtifactStore {
   write(result: XResearchResult): Promise<XArtifactRef>;
   read(ref: XArtifactRef): Promise<XResearchResult>;
+  /** 这份 ref 的工件文件在哪：与 `read` 同一个双根定位，所以对旧根里的 ref 也给得出真路径。
+   *  交给模型的路径（`artifactPath`）只能来自这里。 */
+  locate(ref: XArtifactRef): Promise<string>;
+  /** 这个 store 把工件写在哪。不做 I/O，因此只答得出写下去的那一棵根 —— 模型可见的路径
+   *  不许用它（旧根里的 ref 会得到一个不存在的路径），用 `locate`。 */
   displayPath(ref: XArtifactRef): string;
 }
 /** 工件的两个根。`task` 是新位置（`<X_RESEARCH_DIR>/<threadId>/<runId>/artifact`）—— 写只写这里；
  *  `legacy` 是改造前按会话落的那一棵（`<sessionsDir>/<sessionId>.x-research`）：旧 transcript 里的
- *  ref 只认得它，所以读要两棵都找（R34）。旧根只读，绝不再写 —— 新工件只有一个归属。 */
+ *  ref 只认得它，所以定位与读都要两棵都找。**两个根都必填**：漏掉 `legacy` 不会有什么报错，
+ *  只会让旧根里的历史证据静默消失。旧根只读，绝不再写 —— 新工件只有一个归属。 */
 export type XResearchArtifactRoots = {
   task: string;
-  legacy?: string;
+  legacy: string;
 };
 export class XResearchArtifactError extends Error {
   readonly name = 'XResearchArtifactError';
@@ -154,19 +160,19 @@ function within(base: string, target: string): boolean {
 export function createXResearchArtifactStore(
   roots: string | XResearchArtifactRoots,
 ): XResearchArtifactStore {
-  const { task, legacy } = typeof roots === 'string' ? { task: roots } : roots;
-  const writeBase = path.resolve(task);
-  const readBases = [...new Set(legacy === undefined ? [writeBase] : [writeBase, path.resolve(legacy)])];
-  /** 只回答「这个 store 把工件写在哪」：`read` 还会去旧根里找，而 `displayPath` 不做 I/O。
-   *  它的读者都是刚写下这份工件的那两处（runner / 交付），那里的 ref 一定出自任务根。 */
+  const writeBase = path.resolve(typeof roots === 'string' ? roots : roots.task);
+  const readBases = typeof roots === 'string'
+    ? [writeBase]
+    : [...new Set([writeBase, path.resolve(roots.legacy)])];
   const displayPath = (raw: XArtifactRef) => {
     const ref = checkedRef(raw);
     return path.join(writeBase, ref.directoryId, ref.manifest);
   };
   /** 双根定位：任务根优先，那里没有这个目录才看旧根。**一旦某个根里有它，就由这个根说话** ——
    *  不在两棵根之间「坏的那个让位给好的那个」，否则一个被改坏的工件会被另一棵里的同名目录顶掉。
-   *  每个根各自做一次 realpath 收容检查：工件目录不许逃出它所在的那棵根，也不许别名到别的工件。 */
-  async function directory(ref: XArtifactRef): Promise<string> {
+   *  每个根各自做一次 realpath 收容检查：工件目录不许逃出它所在的那棵根，也不许别名到别的工件。
+   *  回给调用方两样东西：命中的那棵根（原样的配置路径，路径展示用它）与它的 realpath（收容检查用它）。 */
+  async function directory(ref: XArtifactRef): Promise<{ base: string; dir: string }> {
     for (const base of readBases) {
       const realRoot = await fs.realpath(base).catch((error: unknown) => {
         if (missing(error)) return null;
@@ -185,13 +191,31 @@ export function createXResearchArtifactStore(
           'path',
           'Artifact directory escaped its identity',
         );
-      return real;
+      return { base, dir: real };
     }
     // 两棵根都没有它：与改造前「目录不存在」同一个说法（`read`）。
     throw new XResearchArtifactError(
       'read',
       'Artifact directory is missing from every root',
     );
+  }
+  async function locate(raw: XArtifactRef): Promise<string> {
+    const ref = checkedRef(raw);
+    try {
+      const { base, dir } = await directory(ref);
+      const file = path.join(base, ref.directoryId, ref.manifest);
+      if (!within(dir, await fs.realpath(file)))
+        throw new XResearchArtifactError(
+          'path',
+          'Artifact file escaped its directory',
+        );
+      return file;
+    } catch (cause) {
+      if (cause instanceof XResearchArtifactError) throw cause;
+      throw new XResearchArtifactError('read', 'Could not locate X artifact', {
+        cause,
+      });
+    }
   }
   async function readWithin(
     dir: string,
@@ -220,6 +244,7 @@ export function createXResearchArtifactStore(
     return bytes;
   }
   return {
+    locate,
     displayPath,
     async write(result) {
       let canonical: XResearchResult;
@@ -247,7 +272,7 @@ export function createXResearchArtifactStore(
       try {
         await fs.mkdir(writeBase, { recursive: true });
         await fs.mkdir(path.join(writeBase, ref.directoryId));
-        const dir = await directory(ref),
+        const { dir } = await directory(ref),
           entries: z.infer<typeof manifestSchema>['chunks'] = [];
         for (const content of chunks(text)) {
           const name = chunkName(entries.length);
@@ -285,7 +310,7 @@ export function createXResearchArtifactStore(
     async read(raw) {
       const ref = checkedRef(raw);
       try {
-        const dir = await directory(ref);
+        const { dir } = await directory(ref);
         const parsed = manifestSchema.safeParse(
           JSON.parse(
             decodeUtf8(await readWithin(dir, ref.manifest, 2 * CHUNK_BYTES)),
