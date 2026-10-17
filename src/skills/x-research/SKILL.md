@@ -17,7 +17,7 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 请求边界在 `submit` 当场校验：每条 query 最长 4096 UTF-16 单位、构造出的公开搜索 URL 最长 8192 单位、read 的每个目标最长 8192 单位。越界会被立即拒绝且什么都不入队 —— 缩短、拆分或改用实际观察到的短 permalink 后重新提交，不要原样重试。
 
-`wait` 必带 `researchRunId`，阻塞到这条会话的队列排空，然后交付最早一份尚未交付的结果。一次只交一份：同一段研究有多份已完成结果时，`delivery` 给出一份，其余列在 `undelivered`；`undelivered` 非空就再调一次 `wait`（它为空或缺失，表示没有待交的结果），此时队列已空闲，它会立刻交出下一份。`delivery` 为空表示当前没有可交的结果。等结果只走 `wait`，不要用 `inspect` 轮询。
+`wait` 必带 `researchRunId`，阻塞到这条会话的队列排空，然后交付最早一份尚未交付的结果。一次只交一份：同一段研究有多份已完成结果时，`delivery` 给出一份，其余列在 `undelivered`（包络紧张时这份清单会被省掉，判据改取快照的 `counts.undelivered`）；还有待交的就再调一次 `wait`，此时队列已空闲，它会立刻交出下一份；`delivery` 为空就停，不再重试 —— 清单里可能还剩一份拿不到结果的。等结果只走 `wait`，不要用 `inspect` 轮询。
 
 `inspect` 必带 `researchRunId` 与 `view`：`rows` 看每个工作行、`deliveries` 看每次提交的交付标记与工件是否存在、`failures` 只看已收尾的失败行。`pageSize` 缺省 20、最大 50；`nextCursor` 是服务给的不透明游标，读不懂就原样传回，不要自己拼。它只读、从不交付：`inspect` 的行不进结果账本，只有 `wait` 交付过的结果可以引用。只在要解释失败或核对某次提交是否交付过时用它。
 
@@ -75,7 +75,7 @@ search 区分 `cursor_exhausted`（录制支持的 Bottom 终止）、`explicit_
 
 省略预算参数时来源为 `default`；显式传入（即使等于默认值或为零）时来源为 `explicit`。`budgetBinding` 保留同时到达的维度、来源、上限与用量，包括 1000 个已接受网络页的 `safety` 上限；取消仍可作为主停止原因并保留已绑定预算。search 帖数为零不导航或采集；read 回复数为零仍保留主帖；滚动为零允许初始采集但不滚动；展开为零不点击 Article 或回复展开。回复与 unscoped 帖共享一个 distinct-ID 采样预算，已接纳 ID 的后续版本仍保留，不另占身份名额。`sampleTruncation` 记录观察、接纳与采样省略的正文观察次数；`collectionStop` 保留采集结局。
 
-采样省略与 delivery 裁剪不同：canonical artifact 逐字保留全部已采样正文，包括后续版本。序列化模型包（`content` 加 `details`）不超过 1 MiB；`delivery` 说明省略字段、观察与持久化状态。保存成功时，用普通 `read` 读取 `delivery.artifactPath` 的 manifest，再按顺序读取其列出的 chunk 文件，路径相对于 manifest 所在目录。chunk 是一份 canonical JSON 的 UTF-8 分段，单个 chunk 不一定是合法 JSON。引用前核对正文范围，不把模型输出裁剪写成源内容不存在。artifact 保存失败会明确报告；当前分支恢复会验证保存的 artifact 引用，`artifactRestoration.missingCalls` 与 `reasonCounts` 显示缺失证据，不静默补成已恢复。默认 500/500/500 不保证取得条数或完整性。
+采样省略与 delivery 裁剪不同：canonical artifact 逐字保留全部已采样正文，包括后续版本。序列化模型包（`content` 加 `details`）不超过 1 MiB；`delivery` 说明省略字段、观察与持久化状态。保存成功时，用普通 `read` 读取 `delivery.result.delivery.artifactPath` 的 manifest，再按顺序读取其列出的 chunk 文件，路径相对于 manifest 所在目录。chunk 是一份 canonical JSON 的 UTF-8 分段，单个 chunk 不一定是合法 JSON。引用前核对正文范围，不把模型输出裁剪写成源内容不存在。artifact 保存失败会明确报告；当前分支恢复会验证保存的 artifact 引用，`artifactRestoration.missingCalls` 与 `reasonCounts` 显示缺失证据，不静默补成已恢复。默认 500/500/500 不保证取得条数或完整性。
 
 回复范围只限已证明的请求链、分支、排序和账号上下文。当前浏览器生产者无法证明认证账号上下文：`accountContextId` 为 null，`extent` 保持 `unknown`，即使观察到录制支持的 Bottom 终止也如此。原始终止与 cursor 事实仍是该链的证据，不是全讨论或全平台耗尽证明。unknown 表示缺少完整性证明，不证明一定漏读了回复。
 
@@ -85,7 +85,7 @@ includeReplies=true 时，与目标关系未证明的网络项目可保留在 `u
 
 准备引用且观察到 Article 预览的父帖，必须先对其准确文章入口做实际尝试。分别核对 `requested`、`entryObserved`、`actionAttempted`、`navigationStarted`、`bodyObserved` 与阻碍；includeArticle 或父帖导航不代表文章访问。标题、预览、图片、嵌入链接不代表正文。多入口、入口清单遗漏或无法证明归属时保留 unknown，按守卫给的精确目标补读，不把一个入口的尝试当全部入口已读。真实动作或导航失败允许交付有明确范围的报告；没有看到入口只说未观察到，普通帖子不写成 Article 失败。
 
-交付的结果里出现 `auth_required` 或 `action_required` 后，主 agent 单独调用 `ask_user_question`，带返回的 `browserTabId` 请用户在原标签登录或处理挑战。等待新的明确用户确认后才重试；刷新、头像、Gmail/Google 提示均不是确认。用户跳过则保留缺口。访问失败保留原标签；只有明确已关闭或销毁时，下一次提交才重新建立标签，不自动重放整批。必要外链或官方文档用新标签核验，保留 X 标签；匿名 worker 不继承 X 会话，不能代替此处的正文观察。
+交付的结果里出现 `auth_required` 或 `action_required` 后，主 agent 单独调用 `ask_user_question`，带交付快照里的 `browserTabId` 请用户在原标签登录或处理挑战。等待新的明确用户确认后才重试；刷新、头像、Gmail/Google 提示均不是确认。用户跳过则保留缺口。访问失败保留原标签；只有明确已关闭或销毁时，下一次提交才重新建立标签，不自动重放整批。必要外链或官方文档用新标签核验，保留 X 标签；匿名 worker 不继承 X 会话，不能代替此处的正文观察。
 
 ## 4. 判断与写作
 
