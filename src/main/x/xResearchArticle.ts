@@ -20,6 +20,7 @@ import {
 } from './xResearchSearch';
 import {
   beginReadNavigation,
+  reportReadProgress,
   retainClickFailure,
   preflightObserver,
   checkReadCancelled,
@@ -59,6 +60,7 @@ export async function readArticle(
   try {
     checkReadCancelled(context);
     stage.current = 'action';
+    reportReadProgress(context, stage, row, 'action');
     stage.actionIndex++;
     row.article.actionAttempted = true;
     const action = await page.act(
@@ -100,6 +102,7 @@ export async function readArticle(
       via: { kind: 'action' as const, result: action },
     };
     stage.current = 'collection';
+    reportReadProgress(context, stage, row, 'collecting');
     let observed = await collectFreshXPage(
       page,
       request,
@@ -110,6 +113,7 @@ export async function readArticle(
     checkReadCancelled(context);
     if (!observed.article && !observed.state && destination) {
       stage.current = 'wait';
+      reportReadProgress(context, stage, row, 'waiting');
       const ready = await page.wait(
         {
           selector:
@@ -120,6 +124,7 @@ export async function readArticle(
       );
       checkReadCancelled(context);
       stage.current = 'collection';
+      reportReadProgress(context, stage, row, 'collecting');
       observed = await collectFreshXPage(
         page,
         request,

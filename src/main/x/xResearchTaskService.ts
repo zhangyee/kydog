@@ -8,27 +8,28 @@ import { KydogError } from '../../shared/errors';
 import { logger } from '../log';
 import type {
   XResearchSection, XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot,
-  XResearchTaskState, XResearchWorkItem, XResearchWorkState,
+  XResearchTaskState, XResearchWorkItem,
 } from '../../shared/xResearchTask';
 import { xResearchTaskSnapshot, xResearchTaskState } from '../../shared/xResearchTask';
 import type { XResearchTaskStore } from './xResearchTaskStore';
 import type {
   XArticleFacts, XReadObservation, XReadRequest, XResearchResult, XSearchObservation, XSearchRequest,
 } from './xResearchTypes';
+import type { XBudgetPolicy } from './xResearchBudget';
+import type { XResearchProgressEvent } from './xResearchSearch';
+
+/** 进度事件归采集层（它知道自己在哪一段）：任务侧只消费，不另写一份形状。 */
+export type { XResearchProgressEvent };
 
 export type XResearchTaskOwner = { threadId: string; runId: string; projectRoot: string };
 
-/** 一次提交的工作：一组 query（search）或一组目标（read），与 `XResearchInput` 的两支同形。 */
-export type XResearchWorkRequest = { search: XSearchRequest } | { read: XReadRequest };
-
-/** 采集循环在**阶段边界**主动报的进度（spec §5.5）。`row` 是采集层正在改的那一行：
- *  收到即抄数字，绝不保留引用。 */
-export type XResearchProgressEvent = {
-  section: XResearchSection;
-  rowIndex: number;
-  state: XResearchWorkState;
-  phaseDetail?: 'root' | 'article' | 'return' | 'discussion';
-  row: XSearchObservation | XReadObservation;
+/** 一次提交的工作：一组 query（search）或一组目标（read），与 `XResearchInput` 的两支同形。
+ *  `budgetPolicy` 由提交时从**原始参数**算出（`resolveXBudgetPolicy` 看的是「这个键写没写」）：
+ *  到这一层只剩数值，采集层自己推会把每个省缺的预算都说成 `explicit` —— 一句关于请求的假话。 */
+export type XResearchWorkRequest = {
+  search: XSearchRequest; budgetPolicy?: XBudgetPolicy;
+} | {
+  read: XReadRequest; budgetPolicy?: XBudgetPolicy;
 };
 
 export type XResearchWorkContext = {

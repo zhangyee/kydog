@@ -8,6 +8,7 @@ import {
   collectReadyPostFrame,
   expandPostBody,
   readDiscussion,
+  reportReadProgress,
   savePostFrame,
   retainReadBody,
   type XReadStage,
@@ -157,6 +158,8 @@ export async function readX(
       current: 'navigation',
       actionIndex: 0,
       attemptedControls: new Set(),
+      rowIndex: index,
+      phaseDetail: 'root',
     };
     let returnToParent = false;
     // Every exit, including unvisited targets and navigation receipts, synchronizes scope in finally.
@@ -203,6 +206,7 @@ export async function readX(
         continue;
       }
       row.postId = id;
+      reportReadProgress(context, stage, row, 'navigating');
       const opened = await context.browser.open(
         source,
         input.tabId,
@@ -345,6 +349,7 @@ export async function readX(
           )
             return;
           if (row.root?.truncation.truncated) row.status = 'partial';
+          stage.phaseDetail = 'article';
           const article = await readArticle(
             page,
             observed,
@@ -361,6 +366,7 @@ export async function readX(
           )
             return;
           // An attempted entry can mutate its DOM even when native safety rejects it.
+          stage.phaseDetail = 'discussion';
           if (row.article.actionAttempted)
             observed = await collectPostFrame(
               page,
@@ -391,6 +397,8 @@ export async function readX(
           row.stopReason = 'identity_unproven';
         } else {
           stage.current = 'navigation';
+          stage.phaseDetail = 'return';
+          reportReadProgress(context, stage, row, 'navigating');
           const returned = await context.browser.open(
             parentUrl,
             opened.tabId,
@@ -449,6 +457,7 @@ export async function readX(
                     return;
                   }
                   if (!saved) return;
+                  stage.phaseDetail = 'discussion';
                   await readDiscussion(
                     page,
                     observed,

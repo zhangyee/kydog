@@ -11,9 +11,11 @@ export type XResearchTaskState = 'running' | 'completed' | 'failed' | 'cancelled
 export type XResearchSection = 'search' | 'read';
 
 /** 工作项的实时阶段：搜索行取自 `searchX` 的 stage，读取行取自 `XReadStage.current`，
- *  外加排队与收尾。它只活在任务侧，不进观察结果（§5.4「phase 不进 row」）。 */
+ *  外加排队与收尾。它只活在任务侧，不进观察结果（§5.4「phase 不进 row」）。
+ *  `scrolling` 是搜索行的「正在滚下一页」，`action` 是读取行的「正在点一次动作」（展开正文 /
+ *  进入文章 / 展开回复）—— 两者都是采集层真实存在的 stage，不合并成一个词。 */
 export type XResearchWorkState =
-  | 'queued' | 'navigating' | 'collecting' | 'waiting' | 'scrolling' | 'stopped';
+  | 'queued' | 'navigating' | 'collecting' | 'waiting' | 'scrolling' | 'action' | 'stopped';
 
 export type XResearchWorkItem = {
   workItemId: string;
