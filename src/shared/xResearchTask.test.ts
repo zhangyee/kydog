@@ -200,7 +200,35 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
     expect(snap.counts).toEqual({
       submissions: 1, queued: 1, running: 1, done: 1, failed: 1, cancelled: 1, interrupted: 1,
       posts: 0, replies: 0, articles: 0, undelivered: 0,
+      searchDone: 1, searchTotal: 6, readDone: 0, readTotal: 0,
     });
+  });
+
+  it('tracks per-section progress separately from the section row count', () => {
+    const snap = xResearchTaskSnapshot(record(), [
+      submission({ submissionId: 'sub-s', state: 'running', workItems: [
+        item({ workItemId: 'w-s1', state: 'stopped', status: 'observed' }),
+        item({ workItemId: 'w-s2', state: 'stopped', status: 'failed' }),
+        item({ workItemId: 'w-s3', state: 'scrolling' }),
+      ] }),
+      submission({ submissionId: 'sub-r', operation: 'read', state: 'running',
+        workItems: [
+          item({ workItemId: 'w-r1', section: 'read', label: 'a', state: 'stopped', status: 'observed' }),
+          item({ workItemId: 'w-r2', section: 'read', label: 'b', state: 'stopped', status: 'partial' }),
+          item({ workItemId: 'w-r3', section: 'read', label: 'c', state: 'waiting' }),
+          item({ workItemId: 'w-r4', section: 'read', label: 'd', state: 'queued' }),
+        ] }),
+    ]);
+    // 每段的行数都不是「已完成数」：搜索 3 行只完成 1 行，读取 4 行完成 2 行。
+    // 若把 `search.length` / `read.length` 当成完成数，这两对数字就相等，卡片会在运行中说
+    // 「读取 4 个目标」—— 正是这条用例要挡下的那种假进度。
+    expect([snap.counts.searchDone, snap.counts.searchTotal]).toEqual([1, 3]);
+    expect([snap.counts.readDone, snap.counts.readTotal]).toEqual([2, 4]);
+    expect(snap.counts.searchDone).not.toBe(snap.search.length);
+    expect(snap.counts.readDone).not.toBe(snap.read.length);
+    // 失败的那一行没有落进 `done` 桶：段内计数与 `done` 桶是同一把尺子（另有 failed 桶）。
+    expect(snap.counts.done).toBe(3);
+    expect(snap.counts.failed).toBe(1);
   });
 
   it('counts an article only when its body was read, and a delivery only when the submission ended', () => {

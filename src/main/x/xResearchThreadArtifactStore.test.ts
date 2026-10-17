@@ -118,6 +118,7 @@ function snapshot(): XResearchTaskSnapshot {
     counts: {
       submissions: 1, queued: 0, running: 0, done: 1, failed: 0, cancelled: 0, interrupted: 0,
       posts: 1, replies: 0, articles: 0, undelivered: 0,
+      searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0,
     },
     budget: { scrolls: 500, expandActions: 0 },
     usage: { posts: 1, scrolls: 0, expandActions: 0 },

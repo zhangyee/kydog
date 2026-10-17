@@ -52,9 +52,16 @@ const STATUS_WORD: Record<XResearchStatus, string> = {
   access_denied: '访问被拒', unavailable: '源不可用', cancelled: '已取消', failed: '失败',
 };
 
-/** 文章四态（spec §5.4）。`not_requested` 是「这次没要文章」，不是「文章取失败了」。 */
+/** 文章四态（spec §5.4）。`not_requested` 是「这次没要文章」，不是「文章取失败了」。
+ *  `pending` 在没起跑的行上说的是义务而不是动作：`排队 请求中` 是还没发生的进行时。 */
 const ARTICLE_WORD: Record<XResearchWorkItem['article'], string> = {
   not_requested: '无文章', pending: '请求中', entry: '有入口', body: '有正文', failed: '文章失败',
+};
+
+/** 读取行的段落（spec §5.4：`readX` 循环里四个真实分支）。它答的是「这一行现在在哪一段」，
+ *  与状态词连起来读：「等待中 · 读回复」。已收尾的行 `phaseDetail` 为空，不渲染（见 `readRowElement`）。 */
+const PHASE_DETAIL_WORD: Record<NonNullable<XResearchWorkItem['phaseDetail']>, string> = {
+  root: '读根帖', article: '读文章', return: '回主帖', discussion: '读回复',
 };
 
 const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
@@ -89,13 +96,14 @@ function stateNote(reason: string | undefined, state: XResearchTaskState): strin
 }
 
 /** 摘要行：每个数字都是快照的权威字段 —— `counts.*` 由主进程按工作项分桶，
- *  `search` / `read` 是两段各有多少工作项。不写「已读 2/20」那种比值：快照里没有按段分桶的
- *  完成数（`counts.done` 把两段混在一起），自己数一遍就是在渲染层再造一份分桶规则。 */
+ *  `*Done/*Total` 是**按段**分好的同一份分桶（卡片不再自己数 `read.length`：那一读在运行中
+ *  会被读成「20 个目标都读完了」）。 */
 function summaryLine(snapshot: XResearchTaskSnapshot): string {
-  const failed = snapshot.counts.failed > 0 ? ` · 失败 ${snapshot.counts.failed}` : '';
-  return `搜索 ${snapshot.search.length} 个 query · 收 ${snapshot.counts.posts} 帖 ｜ `
-    + `读取 ${snapshot.read.length} 个目标 · ${snapshot.counts.replies} 回复`
-    + ` · 文章 ${snapshot.counts.articles} 篇${failed}`;
+  const { counts } = snapshot;
+  const failed = counts.failed > 0 ? ` · 失败 ${counts.failed}` : '';
+  return `搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 收 ${counts.posts} 帖 ｜ `
+    + `读取 ${counts.readDone}/${counts.readTotal} 个目标 · ${counts.replies} 回复`
+    + ` · 文章 ${counts.articles} 篇${failed}`;
 }
 
 /** 预算行取快照的 `usage` / `budget` 两个字段，口径就是 spec §5.3 与 §5.4 的那一对。 */
@@ -133,16 +141,24 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
 function readRowElement(row: XResearchWorkItem, index: number) {
   const started = row.state !== 'queued';
   const active = started && row.state !== 'stopped';
+  // 没起跑的行说「待取」（提交时声明过的义务），起跑之后才说「请求中」（真的在取）。
+  const articleWord = row.article === 'pending' && !started ? '待取' : ARTICLE_WORD[row.article];
   return (
     <div key={row.workItemId} data-testid="x-research-row" data-section="read" style={ROW_STYLE}>
       <span style={MARK_STYLE}>{numberMark(index)}</span>
       <span className="truncate" title={row.label} style={ROW_LABEL_STYLE}>{row.label}</span>
       <span style={SOFT_STYLE}>{rowStateWord(row)}</span>
+      {/* 段落只在还在飞的行上有意义（收尾时主进程会清空它）；为空时就不说这段，
+          状态词已经交代了它在哪一步，渲染一个空 span 或「null」只是噪声。 */}
+      {active && row.phaseDetail &&
+        <span data-testid="x-research-phase-detail" style={SOFT_STYLE}>
+          {PHASE_DETAIL_WORD[row.phaseDetail]}
+        </span>}
       {started && row.hasRoot && <span style={SOFT_STYLE}>根帖 + {row.replies} 回复</span>}
       {/* 收尾了还没拿到根帖才是「无根帖」；还在飞的时候只是「还没拿到」，不能这么说。 */}
       {started && !row.hasRoot && row.state === 'stopped' && <span style={SOFT_STYLE}>无根帖</span>}
       {/* 文章四态是提交时就声明过的义务（没要 / 要了），起跑前就说得出，不依赖 `started`。 */}
-      <span style={SOFT_STYLE}>{ARTICLE_WORD[row.article]}</span>
+      <span style={SOFT_STYLE}>{articleWord}</span>
       {active && <span style={SOFT_STYLE}>展开 {row.expandActions} · 滚动 {row.scrolls}</span>}
       {row.reason && <span style={REASON_STYLE}>{row.reason}</span>}
     </div>
@@ -166,6 +182,10 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
   // `null` = 还没点过，跟着状态走；一旦点过就永远以这一份布尔为准（不再随状态自动收放）。
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // `research.not_found` 没有快照可说：那个 code 同时盖着「不在这个线程/窗口/活动标签页」、
+  // 「这段研究真被删了」与「任务服务没接上」。前两种都不是错误，第三种是接线回归；
+  // 两种情形都不该把卡永远停在「读取中」—— 这里记一笔，卡头改说「记录不可用」。
+  const [gone, setGone] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
@@ -175,7 +195,10 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
       .catch((reason: unknown) => {
         if (!active) return;
         // 研究已经被删掉不是错误：卡跟着那条记录一起消失，不该在会话里留一条红字。
-        if ((reason as { code?: string } | null)?.code === 'research.not_found') return;
+        if ((reason as { code?: string } | null)?.code === 'research.not_found') {
+          setGone(true);
+          return;
+        }
         setError(errorText(reason));
       });
     return () => { active = false; };
@@ -201,13 +224,16 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
   const state = snapshot?.state;
   const note = state ? stateNote(snapshot.stateReason, state) : null;
   const expanded = manualExpanded ?? (state === 'running');
+  // 有快照时仍以快照为准（那个 code 也盖着「不在这个窗口的标签页」，广播来的快照是真的）。
+  const status = state ?? (gone ? 'missing' : 'loading');
+  const headerWord = state ? STATE_WORD[state] : (gone ? '记录不可用' : '读取中');
 
   return (
-    <section data-testid="x-research-card" data-status={state ?? 'loading'}
+    <section data-testid="x-research-card" data-status={status}
       className="ky-paper-deep font-sans" style={CARD_STYLE}>
       <button type="button" data-testid="x-research-toggle" onClick={() => setManualExpanded(!expanded)}
         className="w-full text-left" style={{ color: 'var(--color-ink)' }}>
-        <strong>X 研究 · {state ? STATE_WORD[state] : '读取中'}{note ? `（${note}）` : ''}</strong>
+        <strong>X 研究 · {headerWord}{note ? `（${note}）` : ''}</strong>
         <span style={{ float: 'right', color: 'var(--color-ink-faint)' }}>{expanded ? '收起' : '展开'}</span>
       </button>
       {snapshot && snapshot.objective &&

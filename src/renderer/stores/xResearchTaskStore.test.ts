@@ -9,6 +9,7 @@ function snapshot(over: Partial<XResearchTaskSnapshot> = {}): XResearchTaskSnaps
     objective: '找到讨论此事的帖子', counts: {
       submissions: 1, queued: 0, running: 1, done: 0, failed: 0, cancelled: 0,
       interrupted: 0, posts: 0, replies: 0, articles: 0, undelivered: 0,
+      searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0,
     },
     budget: { scrolls: 50, expandActions: 10 }, usage: { posts: 0, scrolls: 0, expandActions: 0 },
     search: [], read: [],

@@ -111,6 +111,13 @@ export type XResearchTaskSnapshot = {
     replies: number;
     articles: number;
     undelivered: number;
+    /** 按段分开的进度（spec §5.3 的「读取 2/20 个目标」）：`*Done` 与 `done` 桶同一把尺子、
+     *  只是按 `section` 分了段；`*Total` 就是这一段的 `search` / `read` 行数。
+     *  卡片直接读这四个数，不拿 `read.length` 冒充「已读」——运行中那样读会被读成「20 个都读完了」。 */
+    searchDone: number;
+    searchTotal: number;
+    readDone: number;
+    readTotal: number;
   };
   budget: { scrolls: number; expandActions: number };
   usage: { posts: number; scrolls: number; expandActions: number };
@@ -182,9 +189,20 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
     submissions: submissions.length,
     queued: 0, running: 0, done: 0, failed: 0, cancelled: 0, interrupted: 0,
     posts: 0, replies: 0, articles: 0, undelivered: 0,
+    searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0,
   };
   for (const item of workItems) {
-    counts[workItemBucket(item)] += 1;
+    const bucket = workItemBucket(item);
+    counts[bucket] += 1;
+    // 段内进度复用同一把尺子：落进 `done` 桶才算这一段做完了，失败 / 取消 / 中断各自有桶、
+    // 卡上另有「失败 N」那一栏 —— 在这里再写一条「算不算完成」的规则就会出现第二份口径。
+    if (item.section === 'search') {
+      counts.searchTotal += 1;
+      if (bucket === 'done') counts.searchDone += 1;
+    } else {
+      counts.readTotal += 1;
+      if (bucket === 'done') counts.readDone += 1;
+    }
     // `posts` 只由 search 工作项填写；read 工作项恒为 0，否则卡头会双计（§5.4 的「收 N 帖」
     // 就是搜索行的去重帖数）。按 section 过滤而不是信任那个 0：将来 read 行填了 posts，
     // 卡头也不会多出一个「读取也收了 N 帖」的数字。

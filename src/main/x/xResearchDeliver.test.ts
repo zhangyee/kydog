@@ -47,6 +47,7 @@ function snapshot(over: Partial<XResearchTaskSnapshot> = {}): XResearchTaskSnaps
     counts: {
       submissions: 1, queued: 0, running: 0, done: search.length, failed: 0, cancelled: 0,
       interrupted: 0, posts: 87, replies: 0, articles: 0, undelivered: 0,
+      searchDone: search.length, searchTotal: search.length, readDone: 0, readTotal: 0,
     },
     budget: { scrolls: 500, expandActions: 0 },
     usage: { posts: 87, scrolls: 4, expandActions: 0 },

@@ -59,7 +59,9 @@ function snapshot(over: Partial<XResearchTaskSnapshot> = {}): XResearchTaskSnaps
     createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:01.000Z',
     objective: 'Qwen3.8 27B 量化版在 agentic 任务上的实际表现',
     counts: { submissions: 2, queued: 1, running: 1, done: 3, failed: 1, cancelled: 0,
-      interrupted: 0, posts: 128, replies: 42, articles: 1, undelivered: 0 },
+      interrupted: 0, posts: 128, replies: 42, articles: 1, undelivered: 0,
+      // 搜索两行都收尾了；读取四行只有一行落进 done 桶（19590 在飞、19595 排队）。
+      searchDone: 2, searchTotal: 2, readDone: 1, readTotal: 4 },
     budget: { scrolls: 12500, expandActions: 10000 },
     usage: { posts: 128, scrolls: 12, expandActions: 2 },
     search: SEARCH_ROWS, read: READ_ROWS,
@@ -77,6 +79,10 @@ function visibleText(node: unknown): string {
 
 function rows(tree: unknown) {
   return findAllWhere(tree, (element) => element.props['data-testid'] === 'x-research-row');
+}
+
+function phaseDetails(tree: unknown) {
+  return findAllWhere(tree, (element) => element.props['data-testid'] === 'x-research-phase-detail');
 }
 
 describe('XResearchProgressCard', () => {
@@ -103,6 +109,11 @@ describe('XResearchProgressCard', () => {
     expect(rows(mounted.tree)).toHaveLength(0);
     // 收起只收掉两段列表：摘要与预算行仍在，否则终态卡上什么数字都没有。
     expect(visibleText(mounted.find('x-research-summary'))).toContain('收 128 帖');
+    // 读取段的分母是目标总数、分子是快照的按段完成数：运行中说「读取 4 个目标」是假进度。
+    expect(visibleText(mounted.find('x-research-summary')))
+      .toContain('搜索 2/2 个 query');
+    expect(visibleText(mounted.find('x-research-summary')))
+      .toContain('读取 1/4 个目标');
     expect(visibleText(mounted.find('x-research-budget'))).toBe('滚动 12/12500 · 展开 2/10000');
   });
 
@@ -147,22 +158,41 @@ describe('XResearchProgressCard', () => {
     expect(observed).not.toContain(FAILED_REASON);
   });
 
-  it('keeps a user-collapsed card collapsed when it goes terminal', async () => {
+  it('keeps a user-collapsed card collapsed across state changes', async () => {
     useXResearchTaskStore.getState().upsert(running);
     const mounted = mount(XResearchProgressCard, props);
     await mounted.settle();
 
     expect(rows(mounted.tree)).toHaveLength(6);
+    expect(mounted.query('x-research-cancel')).not.toBeNull();
     mounted.find('x-research-toggle').props.onClick();
     expect(rows(mounted.tree)).toHaveLength(0);
 
     useXResearchTaskStore.getState().upsert(snapshot({ revision: 2, state: 'completed' }));
     mounted.rerender(props);
     expect(rows(mounted.tree)).toHaveLength(0);
+    // 终态不给取消入口（同一条用例里上面已经证明运行中有）。
+    expect(mounted.query('x-research-cancel')).toBeNull();
+
+    // 终态再回到运行是真实路径（重启修复后往收尾的研究上再提交一段）。手动收起仍然说话算数：
+    // 如果 `manualExpanded` 在每次状态变化时被重置，这一条会重新展开。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 3, state: 'running' }));
+    mounted.rerender(props);
+    expect(rows(mounted.tree)).toHaveLength(0);
 
     // 手动点过之后这一层就以点击为准：再点一次仍然展开得回来。
     mounted.find('x-research-toggle').props.onClick();
     expect(rows(mounted.tree)).toHaveLength(6);
+
+    // 没点过的对照：同一张卡从终态回到运行时按默认规则重新展开（上一条不是「永远收起」）。
+    invoke.mockResolvedValue(snapshot({ revision: 4, state: 'completed' }));
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 4, state: 'completed' }));
+    const untouched = mount(XResearchProgressCard, props);
+    await untouched.settle();
+    expect(rows(untouched.tree)).toHaveLength(0);
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 5, state: 'running' }));
+    untouched.rerender(props);
+    expect(rows(untouched.tree)).toHaveLength(6);
   });
 
   it('reads every row number from that row and only reports live actions while it runs', async () => {
@@ -189,12 +219,17 @@ describe('XResearchProgressCard', () => {
     // 读取行的实时动作数只在还在飞的那一行出现：收尾的行报的是结论，不是「滑动了几次」。
     const active = byLabel('status/19590');
     expect(active).toContain('等待中');
+    // 段落（spec §5.4 的 phaseDetail）与状态词连着读：「等待中 · 读回复」。
+    expect(active).toContain('读回复');
     expect(active).toContain('根帖 + 0 回复');
     expect(active).toContain('请求中');
     expect(active).toContain('展开 18 · 滚动 6');
     const observedRead = byLabel('status/19581');
     expect(observedRead).toContain('有正文');
     expect(observedRead).not.toContain('展开');
+    // 收尾的行没有段落可说：主进程收尾时清空 `phaseDetail`，卡上也不该留一个词。
+    expect(phaseDetails(mounted.tree).map(visibleText)).toEqual(['读回复']);
+    expect(observedRead).not.toContain('读回复');
     expect(byLabel('status/19583')).toContain('文章失败');
 
     // 排队那一行只说状态与「这次没要文章」：帖数 / 根帖 / 动作数都是还没发生的事。
@@ -219,6 +254,29 @@ describe('XResearchProgressCard', () => {
     const header = visibleText(mounted.find('x-research-toggle'));
     expect(header).toContain('X 研究 · 取消');
     expect(header).not.toContain('（');
+  });
+
+  it('states a queued article obligation without claiming action', async () => {
+    useXResearchTaskStore.getState().upsert(snapshot({ read: [
+      workItem({ section: 'read', label: 'queued-target', state: 'queued', article: 'pending' }),
+      workItem({ section: 'read', label: 'live-target', state: 'collecting', article: 'pending' }),
+    ] }));
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    const byLabel = (label: string) => rows(mounted.tree).map(visibleText)
+      .find((text) => text.includes(label))!;
+
+    // 排队行只能说义务：`排队 请求中` 是讲一件还没发生的事（进行时）。
+    const queued = byLabel('queued-target');
+    expect(queued).toContain('排队');
+    expect(queued).toContain('待取');
+    expect(queued).not.toContain('请求中');
+    // 对照：真在飞的那一行还在取，说「请求中」；它没有段落可报时也不编一个词。
+    const live = byLabel('live-target');
+    expect(live).toContain('收集中');
+    expect(live).toContain('请求中');
+    expect(live).not.toContain('待取');
+    expect(phaseDetails(mounted.tree).map(visibleText)).toEqual([]);
   });
 
   it('asks for confirmation before cancelling and does nothing when declined', async () => {
@@ -256,12 +314,18 @@ describe('XResearchProgressCard', () => {
     const gone = mount(XResearchProgressCard, props);
     await gone.settle();
     expect(invoke).toHaveBeenCalledWith('xResearch.taskGet', props);
+    // 不是错误（不弹红字），但也不能永远停在「读取中」：那个 code 也盖着「任务服务没接上」。
     expect(gone.query('x-research-error')).toBeNull();
+    expect(visibleText(gone.find('x-research-toggle'))).toContain('X 研究 · 记录不可用');
+    expect(gone.find('x-research-card').props['data-status']).toBe('missing');
 
     // 同一条用例里的正面对照：「删掉的研究」被吞掉，别的失败要看得见。
     invoke.mockRejectedValue(Object.assign(new Error('IPC 断了'), { code: 'fs.read_failed' }));
     const broken = mount(XResearchProgressCard, props);
     await broken.settle();
     expect(visibleText(broken.find('x-research-error'))).toContain('IPC 断了');
+    // 对照：别的失败不是「记录不可用」，卡头仍是未知状态里那个「读取中」。
+    expect(broken.find('x-research-card').props['data-status']).toBe('loading');
+    expect(visibleText(broken.find('x-research-toggle'))).toContain('X 研究 · 读取中');
   });
 });
