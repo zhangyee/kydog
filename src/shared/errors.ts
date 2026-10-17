@@ -6,6 +6,9 @@ export type KydogErrorCode =
   | 'thread.has_messages'
   | 'research.not_found'
   | 'research.observation_already_submitted'
+  // 往一段已经取消的研究里追加工作。与 not_found 分开：这条的下一步是**开一段新研究**
+  // （没有 pause / resume），而 not_found 的下一步是把 id 找对。
+  | 'research.cancelled'
   | 'project.not_found'
   | 'project.access_denied'
   | 'agent.provider_error'

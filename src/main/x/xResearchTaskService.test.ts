@@ -890,4 +890,46 @@ describe('XResearchTaskService inspect / cancel', () => {
     const persisted = await new XResearchTaskStore(dir).readTask(thread.threadId, submitted.researchRunId);
     expect(persisted).toMatchObject({ state: 'cancelled', stateReason: 'cancelled' });
   });
+
+  it('settles every queued submission at once, on the returned snapshot and on disk', async () => {
+    // 两个研究在同一 thread：第一段把整条链占住，于是第二段的两次提交**一份都没在跑**。
+    // 这条钉的是 `cancel` 里那段「把排队中的提交当场写成 cancelled」的循环：没有它，链上的 `run`
+    // 闸要到链推进时才补上同一个结果，取消返回的快照（以及它落盘的那份）会停在 `queued`。
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const dir = root();
+    const store = new XResearchTaskStore(dir);
+    const blockerStarted = gate();
+    const blockerRelease = gate();
+    const { service } = harness(async (work, ctx) => {
+      blockerStarted.open();
+      await blockerRelease.promise;
+      return echoRunner(work, ctx);
+    }, { store });
+    const thread = owner();
+    const blocker = await service.submit({ work: { search: searchWork() } }, thread);
+    await blockerStarted.promise;
+    const queued = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.submit({ researchRunId: queued.researchRunId, work: { search: searchWork() } }, thread);
+
+    const cancelled = await service.cancel(thread.threadId, queued.researchRunId);
+    expect(cancelled.state).toBe('cancelled');
+    expect(cancelled.stateReason).toBe('cancelled');
+    // 两次提交 × 两个 query：每一行都是取消收尾，没有一行停在 queued。
+    expect(cancelled.counts).toMatchObject({ submissions: 2, cancelled: 4, queued: 0, running: 0 });
+    expect([...cancelled.search, ...cancelled.read].map((item) => [item.state, item.status, item.stopReason]))
+      .toEqual(Array.from({ length: 4 }, () => ['stopped', 'cancelled', 'cancelled']));
+    // 换一个 store 实例读同一块盘：返回时盘上已经是取消后的样子（R12）。
+    const fresh = new XResearchTaskStore(dir);
+    expect(await fresh.readTask(thread.threadId, queued.researchRunId))
+      .toMatchObject({ state: 'cancelled', stateReason: 'cancelled' });
+    const persisted = await fresh.listSubmissions(thread.threadId, queued.researchRunId);
+    expect(persisted.map((submission) => submission.state)).toEqual(['cancelled', 'cancelled']);
+    expect(persisted.flatMap((submission) => submission.workItems.map((item) => item.status)))
+      .toEqual(['cancelled', 'cancelled', 'cancelled', 'cancelled']);
+
+    // 翻面：被取消的只是那段研究 —— 占着链的第一段照旧跑完（取消只拦它自己那一段）。
+    blockerRelease.open();
+    await service.whenIdle(thread.threadId, blocker.researchRunId);
+    expect((await service.get(thread.threadId, blocker.researchRunId)).state).toBe('completed');
+  });
 });

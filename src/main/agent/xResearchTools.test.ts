@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { tempXArtifactStore } from '../../test-support/xArtifactStore';
+import { KydogError } from '../../shared/errors';
 import { logger } from '../log';
 import type { XBudgetPolicy } from '../x/xResearchBudget';
 import type { XResearchDeliveryEnvelope } from '../x/xResearchTaskShell';
@@ -103,6 +104,12 @@ type ToolResult = Awaited<ReturnType<Tool['execute']>>;
 
 function execute(tool: Tool, raw: Record<string, unknown>, callId = 'call-1'): Promise<ToolResult> {
   return tool.execute(callId, raw as never, undefined, undefined, {} as never);
+}
+
+/** 同一个入口，但把 pi 这一轮的中止信号真的传下去（用户按停止走的就是它）。 */
+function executeWithSignal(tool: Tool, raw: Record<string, unknown>, signal: AbortSignal,
+  callId = 'call-1'): Promise<ToolResult> {
+  return tool.execute(callId, raw as never, signal, undefined, {} as never);
 }
 
 function envelopeOf(result: ToolResult): XResearchDeliveryEnvelope {
@@ -217,6 +224,46 @@ describe('x_research wait', () => {
     expect(c.delivery).toBeUndefined();
     expect(observed).toHaveLength(2);
   });
+
+  it('abandons a pending wait when the turn is stopped, without consuming a delivery', async () => {
+    // 用户按停止：pi 中止这一轮的工具调用，`wait` 必须当场收场，而不是挂到队列排空（20 个目标的
+    // read 是几分钟）。同时它不许把一份结果标成交过了 —— 那是「交给了没人接的那一侧」。
+    const release = gate();
+    const { tool, service, threadId, observed } = harness(async (work) => {
+      await release.promise;
+      if (!('search' in work)) throw new Error('search work expected');
+      return searchResult(work.search.queries.map((query) => searchRow({ query })));
+    });
+    const submitted = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
+    const controller = new AbortController();
+    const waiting = executeWithSignal(tool, {
+      action: 'wait', researchRunId: submitted.researchRunId,
+    }, controller.signal, 'wait-1').then(
+      () => 'resolved',
+      (error: unknown) => `rejected:${String((error as { code?: unknown }).code)}`,
+    );
+    controller.abort();
+    // 队列还闸着：能在它排空之前收场，才叫「中止当场放手」。
+    expect(await Promise.race([
+      waiting, new Promise<string>((resolve) => setTimeout(() => resolve('still-pending'), 100)),
+    ])).toBe('rejected:agent.aborted');
+    // 中止不消费交付：账本没被喂，盘上也没有交付标记。
+    expect(observed).toHaveLength(0);
+    const deliveries = envelopeOf(await execute(tool, {
+      action: 'inspect', researchRunId: submitted.researchRunId, view: 'deliveries',
+    }, 'inspect-1'));
+    expect(inspectItems(deliveries)).toEqual([expect.objectContaining({ deliveredAt: null, deliveryCallId: null })]);
+
+    // 翻面：那一份结果现在还能真交出去一次（中止没有把它吃掉），且账本只因此喂一次。
+    release.open();
+    await service.whenIdle(threadId, submitted.researchRunId);
+    const delivered = envelopeOf(await execute(tool, {
+      action: 'wait', researchRunId: submitted.researchRunId,
+    }, 'wait-2'));
+    expect(delivered.delivery?.deliveryCallId).toBe('wait-2');
+    expect(delivered.undelivered).toBeUndefined();
+    expect(observed).toHaveLength(1);
+  });
 });
 
 describe('x_research inspect', () => {
@@ -323,9 +370,17 @@ describe('x_research cancel', () => {
     expect(waited.delivery).toBeDefined();
     expect(observed).toHaveLength(1);
 
-    // 已取消的研究不能再追加工作：静默地把它写成 cancelled 会让模型以为工作排上了。
-    await expect(execute(tool, { action: 'submit', researchRunId: first.researchRunId, search: searchArgs() }))
-      .rejects.toThrow('cancelled');
+    // 已取消的研究不能再追加工作：放行就是**静默复活** —— 它会被当场写成 cancelled，
+    // 而模型拿到的回执是一段「已排上」的研究，于是一遍遍 wait 一段永远不会动的研究。
+    const rejected = await execute(tool, {
+      action: 'submit', researchRunId: first.researchRunId, search: searchArgs(),
+    }).then(() => null, (error: unknown) => error);
+    expect(rejected).toBeInstanceOf(KydogError);
+    expect(rejected).toMatchObject({ code: 'research.cancelled' });
+    // 翻面：闸认的是**那段研究**，不是这个 thread —— 同一 thread 上开一段新研究照样能提交。
+    const fresh = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
+    expect(fresh.researchRunId).not.toBe(first.researchRunId);
+    await service.whenIdle(threadId, fresh.researchRunId);
   });
 
   it('reports the cancelled state when nothing had finished', async () => {

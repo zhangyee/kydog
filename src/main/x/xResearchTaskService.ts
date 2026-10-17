@@ -159,6 +159,27 @@ function inspectPageSize(raw: number | undefined): number {
   return Math.min(raw, X_INSPECT_MAX_PAGE_SIZE);
 }
 
+const X_WAIT_ABORTED = 'X research wait aborted';
+
+/** 等一个 promise，但**中止信号一响就当场放手**（与 `webResearchTools.waitUnlessAborted` 同一语义）。
+ *  pi 的回合被停掉时 `wait` 必须立刻收场，否则一次等待会挂到整条队列排空 —— 20 个目标的 read
+ *  是几分钟。中止的回合**不交付**：`deliveredAt` 一写就等于把结果交给了没人接的那一侧，所以拒绝
+ *  发生在选中与标记之前 —— 中止不消费交付。 */
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new KydogError('agent.aborted', X_WAIT_ABORTED));
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => {
+      signal.removeEventListener('abort', abort);
+      reject(new KydogError('agent.aborted', X_WAIT_ABORTED));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener('abort', abort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', abort); reject(error); },
+    );
+  });
+}
+
 /** 一个研究在本进程里的活状态。盘上只有落盘边界那一刻的副本，实时数字只在这里。 */
 type ActiveResearch = {
   record: XResearchTaskRecord;
@@ -342,11 +363,13 @@ export class XResearchTaskService {
     if (input.researchRunId && !opened) {
       throw new KydogError('research.not_found', 'X research task not found');
     }
-    // 已取消的研究不能续跑（`cancel` 是唯一的控制，没有 resume）：静默把这次提交排成「立刻 cancelled」
-    // 会让模型以为工作排上了。要接着做就开一段新研究。判据全在盘上，跨重启一致。
+    // 已取消的研究不能续跑（`cancel` 是唯一的控制，没有 pause / resume）。放行这次提交就是**静默复活**：
+    // 排上链的那一份会被 `run` 的闸当场写成 `cancelled`，而模型拿到的提交回执是一段「已排上」的
+    // 研究 —— 它于是一遍遍 `wait` 一段永远不会动的研究，且没有任何一次调用会说出原因。判据全在盘上，
+    // 跨重启一致；要接着做就显式开一段新研究（`research.not_found` 的下一步是把 id 找对，处置不同）。
     if (opened && (opened.cancelRequested || opened.record.state === 'cancelled'
       || opened.record.stateReason === 'cancelled')) {
-      throw new Error('X research task was cancelled; start a new research');
+      throw new KydogError('research.cancelled', 'X research task was cancelled; start a new research');
     }
     const active = opened ?? this.create(owner, researchRunId);
     const createdAt = this.now();
@@ -421,11 +444,12 @@ export class XResearchTaskService {
     await this.awaitIdle(threadId);
   }
 
-  private async awaitIdle(threadId: string): Promise<void> {
+  private async awaitIdle(threadId: string, signal?: AbortSignal): Promise<void> {
     for (;;) {
       const chain = this.chains.get(threadId);
       if (!chain) return;
-      await chain.catch(() => undefined);
+      const settled = chain.catch(() => undefined);
+      await (signal ? abortable(settled, signal) : settled);
       if (this.chains.get(threadId) === chain) return;
     }
   }
@@ -436,11 +460,16 @@ export class XResearchTaskService {
    *
    *  顺序是「选中 → 内存标记 → 落盘」：`deliveredAt` 是跨重启的权威，所以它必须在结果**真的**
    *  交给调用方之前就写上（否则同一个窗口里崩掉会让同一份结果再交一次）；
-   *  这也是它只在这里写、在进展回调里不写的原因。 */
-  async wait(threadId: string, researchRunId: string, deliveryCallId: string): Promise<XResearchWaitResult> {
+   *  这也是它只在这里写、在进展回调里不写的原因。
+   *
+   *  `signal` 是 pi 这一轮工具调用的中止信号（用户按了停止）：一响就当场放手，并且**不再交付** ——
+   *  拒绝发生在选中之前，所以中止不会把一份结果标成交过了（见 `abortable`）。 */
+  async wait(threadId: string, researchRunId: string, deliveryCallId: string,
+    signal?: AbortSignal): Promise<XResearchWaitResult> {
+    if (signal?.aborted) throw new KydogError('agent.aborted', X_WAIT_ABORTED);
     const active = await this.open(threadId, researchRunId);
     if (!active) throw new KydogError('research.not_found', 'X research task not found');
-    await this.awaitIdle(threadId);
+    await this.awaitIdle(threadId, signal);
     let candidates = [...active.submissions.values()];
     let delivery: XResearchDelivery | null = null;
     for (;;) {
@@ -815,7 +844,11 @@ export class XResearchTaskService {
 
   /** 生命周期只由这里写（快照取 `record.state`）。`submissionIds` 读不齐时不下结论：
    *  读不出来的那份可能载着未收尾的工作，而 `xResearchTaskState([])` 落出的 `completed` 不是结论
-   *  （Task 2 的调用方约定）。 */
+   *  （Task 2 的调用方约定）。
+   *
+   *  `xResearchTaskState` 只在**每一份**提交都被取消时才落 `cancelled`：一段研究里有已完成的提交、
+   *  也有被取消的，投影仍是 `completed`，取消这件事由 `record.stateReason = 'cancelled'` 说出来 ——
+   *  每一行的 `status` 各自说得出真相，这是刻意的（不是漏了 `cancelled` 这一支）。 */
   private project(active: ActiveResearch): { state: XResearchTaskState; reason?: string } {
     const submissions = [...active.submissions.values()];
     if (!submissions.length || submissions.length !== active.record.submissionIds.length) {
