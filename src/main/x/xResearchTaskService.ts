@@ -828,7 +828,7 @@ export class XResearchTaskService {
    *  写盘顺序是先 `task.json`、后这些 `submission-*.json`：中间被杀只会留下「索引比提交新」
    *  的一侧，任务目录里永远不会出现「有提交、没有索引」的形状（Task 1 评审的同一条约束）。
    *  `reason` 只给「不是投影推出来的」那一个结论用（进程重启后的修复）。
-   *  `stateReason` 一旦是 `cancelled` 就不许被擦：理由见下面那行注释。 */
+   *  `stateReason` 一旦是 `cancelled` 就不许被擦（`process_restarted` 除外：崩溃是真的发生过的事）。 */
   private async persist(active: ActiveResearch,
     submissions: readonly XResearchSubmission[] = [],
     reason?: string): Promise<XResearchTaskSnapshot> {
@@ -839,8 +839,15 @@ export class XResearchTaskService {
     // 「被取消过」是黏的：取消之后每一次落盘（交付标记、更新）都没有理由可写，但它不许把这件事
     // 擦掉 —— 重启后 `cancelRequested` 已经不在内存里（只在本次进程的窗口里有效），`stateReason`
     // 是「这段研究被停过」唯一跨进程的痕迹：`submit` 靠它拒绝续跑，卡片靠它说「被取消过」。
-    const stateReason = reason ?? settled.reason
-      ?? (active.record.stateReason === 'cancelled' ? 'cancelled' : undefined);
+    //
+    // 投影里的 `submission_unreadable` 也不许盖掉它：那是**读盘缺口**（有一份提交文件读不出来），
+    // 不是「为什么停了」的事实。让它盖掉就等于把一段已取消的研究在重启后变回可追加 —— `submit`
+    // 认的就是这条理由。`process_restarted` 不同：崩溃真的发生过，它优先于取消。
+    const derived = reason ?? settled.reason;
+    const stickyCancelled = active.record.stateReason === 'cancelled' ? 'cancelled' : undefined;
+    const stateReason = derived === 'submission_unreadable'
+      ? (stickyCancelled ?? derived)
+      : (derived ?? stickyCancelled);
     if (stateReason) active.record.stateReason = stateReason;
     else delete active.record.stateReason;
     await this.deps.store.writeTask(active.record);

@@ -629,6 +629,75 @@ describe('XResearchTaskService', () => {
     expect((await store.readTask(thread.threadId, researchRunId))?.state).toBe('interrupted');
   });
 
+  it('keeps a cancellation when another submission file cannot be read', async () => {
+    // 取消 + 一份读不出来的提交文件：`wait` 交付那份读得出来的时会落盘，而投影这一刻说
+    // 「有一份提交读不出来」。那是**读盘缺口**，不是「为什么停了」的事实 —— 不许覆盖「被取消过」，
+    // 否则重启后的 `submit` 认不出这段研究被停过，会直接往里追加。
+    const dir = root();
+    const artifactRef: XArtifactRef = {
+      version: 1, directoryId: randomUUID(), manifest: 'manifest.json',
+      sha256: 'a'.repeat(64), bytes: 10, runId: 'run-1', callId: 'call-submit',
+      batchId: 'xbatch_1', operation: 'search',
+    };
+    const result = searchResult([searchRow({ query: searchWork().queries[0] })]);
+    const writer = harness(async (work, ctx) => ({ ...(await echoRunner(work, ctx)), artifact: artifactRef }), {
+      store: new XResearchTaskStore(dir),
+    });
+    const thread = owner();
+    const cancelled = await writer.service.submit({ work: { search: searchWork() } }, thread);
+    const control = await writer.service.submit({ work: { search: searchWork() } }, thread);
+    await writer.service.whenIdle(thread.threadId, cancelled.researchRunId);
+
+    const store = new XResearchTaskStore(dir);
+    // 盘上的形状：索引里多一条读不出来的提交（崩溃 / 损坏之后的样子）。
+    const breakOne = async (researchRunId: string, patch: Partial<XResearchTaskRecord>) => {
+      const record = (await store.readTask(thread.threadId, researchRunId))!;
+      const unreadable = randomUUID();
+      await store.writeTask({ ...record, ...patch, submissionIds: [...record.submissionIds, unreadable] });
+      writeFileSync(path.join(store.taskDir(thread.threadId, researchRunId), `submission-${unreadable}.json`),
+        '{ not json');
+    };
+    await breakOne(cancelled.researchRunId, { state: 'cancelled', stateReason: 'cancelled' });
+    // 对照（同一条用例里）：同样有一份读不出来的提交，但这段研究从来没被取消过。
+    await breakOne(control.researchRunId, {});
+
+    const artifacts: XResearchArtifactStore = {
+      write: async () => { throw new Error('not used'); },
+      displayPath: () => '/artifacts/manifest.json',
+      read: async () => structuredClone(result),
+    };
+    const next = harness(echoRunner, {
+      store: new XResearchTaskStore(dir), artifacts: () => artifacts,
+    });
+
+    // 交付那份读得出来的：这一次落盘必须留下「被取消过」。
+    const before = (await store.readTask(thread.threadId, cancelled.researchRunId))!;
+    const delivered = await next.service.wait(thread.threadId, cancelled.researchRunId, 'wait-2');
+    expect(delivered.delivery).not.toBeNull();
+    // 盘上真的又被写过一次：`stateReason` 仍是 `cancelled` 不能只是因为没人碰过那份 fixture。
+    expect((await store.readTask(thread.threadId, cancelled.researchRunId))!.revision)
+      .toBeGreaterThan(before.revision);
+    expect(delivered.snapshot.stateReason).toBe('cancelled');
+    expect((await next.service.get(thread.threadId, cancelled.researchRunId)).stateReason).toBe('cancelled');
+    expect((await store.readTask(thread.threadId, cancelled.researchRunId))?.stateReason).toBe('cancelled');
+
+    // 重启之后照样不许追加：`submit` 认的就是这条理由。
+    const rejected = await next.service.submit({
+      researchRunId: cancelled.researchRunId, work: { search: searchWork() },
+    }, thread).then(() => null, (error: unknown) => error);
+    expect(rejected).toMatchObject({ code: 'research.cancelled' });
+
+    // 翻面：从没被取消过的那段研究在同一刻落的是 `submission_unreadable`（上面那条不是「谁都留着」），
+    // 而且它照样能追加 —— 拒绝的是「被取消过」这一段，不是所有带读盘缺口的研究。
+    const controlDelivered = await next.service.wait(thread.threadId, control.researchRunId, 'wait-3');
+    expect(controlDelivered.delivery).not.toBeNull();
+    expect(controlDelivered.snapshot.stateReason).toBe('submission_unreadable');
+    await next.service.submit({
+      researchRunId: control.researchRunId, work: { search: searchWork() },
+    }, thread);
+    await next.service.whenIdle(thread.threadId, control.researchRunId);
+  });
+
   it('marks a submission interrupted when its result has fewer rows than work items', async () => {
     // 工作体少给一行 = 有一项没等到结论。快照不许因此落成「完成」：
     // `xResearchTaskState` 只看提交级的 `state`，所以这一层就得把话说准。

@@ -144,12 +144,16 @@ export function createXResearchTools(
         // 用户按停止：`signal` 原样交给服务 —— 等队列排空的那一段是可中止的，中止之后不再挑一份交付
         // （那是交付权威所在的地方，工具层拿不到 `deliveredAt`，拦不住「标了却没人接」）。
         const delivered = await deps.service.wait(deps.threadId, researchRunId, callId, signal);
-        // 一次交付喂一次账本：服务对同一份提交最多交付一次（`deliveredAt` 是权威）。
-        if (delivered.delivery) deps.observeDelivery(delivered.delivery.result);
-        return deliverEnvelope({
+        // 先搭包络、后喂账本：顺序就是 spec §4.5 的不变量「可引用 = 已交付」。`deliverEnvelope`
+        // 在 1 MiB 硬失败上会抛，而抛出的那一刻这份结果并没有交给模型 —— 反过来写（先 observe）
+        // 就会让一份模型从没看到的结果变得可引用。搭包络是纯测量，重排没有副作用。
+        const envelope = deliverEnvelope({
           researchRunId, snapshot: delivered.snapshot, delivery: delivered.delivery,
           undelivered: delivered.undelivered, action,
         });
+        // 一次交付喂一次账本：服务对同一份提交最多交付一次（`deliveredAt` 是权威）。
+        if (delivered.delivery) deps.observeDelivery(delivered.delivery.result);
+        return envelope;
       }
       const snapshot = await deps.service.cancel(deps.threadId, researchRunId);
       return deliverEnvelope({ researchRunId, snapshot, delivery: null, undelivered: [], action });

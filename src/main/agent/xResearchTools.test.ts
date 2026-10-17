@@ -14,7 +14,7 @@ import type { XBudgetPolicy } from '../x/xResearchBudget';
 import type { XResearchDeliveryEnvelope } from '../x/xResearchTaskShell';
 import { XResearchTaskService, type XResearchRunWork } from '../x/xResearchTaskService';
 import { XResearchTaskStore } from '../x/xResearchTaskStore';
-import type { XResearchResult, XSearchObservation, XSearchQuery } from '../x/xResearchTypes';
+import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult, type XSearchObservation, type XSearchQuery } from '../x/xResearchTypes';
 import { createXResearchTools } from './xResearchTools';
 
 const roots: string[] = [];
@@ -235,6 +235,58 @@ describe('x_research wait', () => {
     const c = envelopeOf(await execute(tool, { action: 'wait', researchRunId: first.researchRunId }, 'wait-3'));
     expect(c.delivery).toBeUndefined();
     expect(observed).toHaveLength(2);
+  });
+
+  it('feeds the ledger only after the envelope fits under 1 MiB', async () => {
+    // 账本是「可引用 = 已交付」的那一侧：`deliverEnvelope` 在装不下 1 MiB 时会抛，而抛出的那一刻
+    // 这份结果并没有交给模型。先喂账本再搭包络，就会让一份模型从没看到的结果变得可引用。
+    const { tool, service, threadId } = harness(echoSearch);
+    const submitted = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
+    await service.whenIdle(threadId, submitted.researchRunId);
+
+    const observed: XResearchResult[] = [];
+    // 把服务交出来的那份结果换掉：工具拿到的就是一份装不进包络的结果（壳这一层的 1 MiB 硬失败）。
+    const toolWith = (oversized?: XResearchResult) => createXResearchTools({
+      service: {
+        submit: (input, owner) => service.submit(input, owner),
+        inspect: (runThreadId, researchRunId, input) => service.inspect(runThreadId, researchRunId, input),
+        cancel: (runThreadId, researchRunId) => service.cancel(runThreadId, researchRunId),
+        wait: async (runThreadId, researchRunId, deliveryCallId, signal) => {
+          const delivered = await service.wait(runThreadId, researchRunId, deliveryCallId, signal);
+          const delivery = delivered.delivery;
+          return delivery && oversized
+            ? { ...delivered, delivery: { ...delivery, result: oversized } }
+            : delivered;
+        },
+      },
+      threadId, projectRoot: '/projects/demo', currentRunId: () => 'run-1',
+      observeDelivery: (result) => { observed.push(result); },
+    });
+
+    const oversized = searchResult([searchRow()], {
+      objective: 'x'.repeat(X_RESEARCH_MAX_OUTPUT_BYTES + 1),
+    });
+    const failed = await execute(toolWith(oversized), {
+      action: 'wait', researchRunId: submitted.researchRunId,
+    }, 'wait-1').then(() => null, (error: unknown) => error);
+    expect(String(failed)).toContain('1 MiB');
+    // 交付本身发生过（服务那一侧已标 `deliveredAt`），被扣下的只有账本 —— 所以这条 0 次不是
+    // 「什么都没发生」。
+    const deliveries = envelopeOf(await execute(tool, {
+      action: 'inspect', researchRunId: submitted.researchRunId, view: 'deliveries',
+    }, 'inspect-1'));
+    expect(inspectItems(deliveries)[0]).toMatchObject({ deliveryCallId: 'wait-1' });
+    expect(observed).toHaveLength(0);
+
+    // 翻面：同一个替身把结果真的交出去时，账本正好喂一次 —— 上面的 0 次是「包络没装下」，
+    // 不是这个替身根本不喂账本。
+    await execute(toolWith(), { action: 'submit', researchRunId: submitted.researchRunId, search: searchArgs() });
+    await service.whenIdle(threadId, submitted.researchRunId);
+    const delivered = envelopeOf(await execute(toolWith(), {
+      action: 'wait', researchRunId: submitted.researchRunId,
+    }, 'wait-2'));
+    expect(delivered.delivery).toBeDefined();
+    expect(observed).toHaveLength(1);
   });
 
   it('abandons a pending wait when the turn is stopped, without consuming a delivery', async () => {
