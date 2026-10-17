@@ -151,9 +151,10 @@ describe('x_research submit', () => {
     expect(submitted.snapshot.search).toHaveLength(1);
   });
 
-  it('rejects read work that names a foreign tab', async () => {
+  it('never delivers a submission whose work body was refused', async () => {
     // 标签页归属由工作体判（`xResearchRunner` 拿任务的 tab 调 `researchTabStatus`）：提交方不再回传
     // `tabId`，所以这条在动作面上的可观测形态是「这一轮收尾成中断、永远不产出可交付的结果」。
+    // 标签页归属本身在 `xResearchRunner.test.ts` 里钉，这里钉的是它落在这个面上的那一半。
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     const { tool, service, threadId, observed } = harness(async () => {
       throw new Error('X research tab belongs to another thread');
@@ -166,6 +167,17 @@ describe('x_research submit', () => {
     // 没收尾的行落进「中断」桶：既不说成失败，也不说成完成。
     expect(waited.snapshot.counts.interrupted).toBe(1);
     expect(observed).toHaveLength(0);
+  });
+
+  it('binds an explicit tabId override to the task', async () => {
+    const { tool } = harness(echoSearch);
+    const bound = envelopeOf(await execute(tool, {
+      action: 'submit', tabId: 'tab-9', search: searchArgs(),
+    }));
+    expect(bound.snapshot.browserTabId).toBe('tab-9');
+    // 翻面：不带 `tabId` 的提交不许凭空绑上一个（否则上面那条可能只是回显了一个默认值）。
+    const own = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
+    expect(own.snapshot.browserTabId).toBeUndefined();
   });
 
   it('computes the budget labels from the raw arguments, not from the parsed work', async () => {
@@ -369,6 +381,10 @@ describe('x_research cancel', () => {
     }, 'wait-1'));
     expect(waited.delivery).toBeDefined();
     expect(observed).toHaveLength(1);
+    // 「被取消过」是**黏的**：这次 `wait` 落盘没有理由可写，但它不许把取消这件事擦掉 —— 否则重启之后
+    // （`cancelRequested` 只在内存里）就只剩 `stateReason` 能认出这段研究被停过。
+    expect(waited.snapshot.stateReason).toBe('cancelled');
+    expect((await service.get(threadId, first.researchRunId)).stateReason).toBe('cancelled');
 
     // 已取消的研究不能再追加工作：放行就是**静默复活** —— 它会被当场写成 cancelled，
     // 而模型拿到的回执是一段「已排上」的研究，于是一遍遍 wait 一段永远不会动的研究。
@@ -380,7 +396,13 @@ describe('x_research cancel', () => {
     // 翻面：闸认的是**那段研究**，不是这个 thread —— 同一 thread 上开一段新研究照样能提交。
     const fresh = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
     expect(fresh.researchRunId).not.toBe(first.researchRunId);
-    await service.whenIdle(threadId, fresh.researchRunId);
+    // 翻面：从来没被取消的研究，`wait` 之后照样没有 `stateReason`（上面那条不是因为谁都带上它）。
+    const freshWait = envelopeOf(await execute(tool, {
+      action: 'wait', researchRunId: fresh.researchRunId,
+    }, 'wait-2'));
+    expect(freshWait.delivery).toBeDefined();
+    expect(freshWait.snapshot.stateReason).toBeUndefined();
+    expect((await service.get(threadId, fresh.researchRunId)).stateReason).toBeUndefined();
   });
 
   it('reports the cancelled state when nothing had finished', async () => {
@@ -400,6 +422,42 @@ describe('x_research cancel', () => {
     }, 'cancel-1'));
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.snapshot.counts).toMatchObject({ cancelled: 1, interrupted: 0 });
+  });
+
+  it('keeps a submission that finished before the cancellation could stop it', async () => {
+    // 取消落在收尾之后：工作体不听 `ctx.signal`（采集恰好在那一刻跑完了），于是这一份已经有结论。
+    // 取消不是用来抹掉已经观察到的事实的 —— 它只给还没收尾的那一份写结论。
+    const started = gate();
+    const stopped = gate();
+    const releaseBody = gate();
+    const { tool } = harness(async (work, ctx) => {
+      started.open();
+      await new Promise<void>((resolve) => {
+        ctx.signal.addEventListener('abort', () => { stopped.open(); void releaseBody.promise.then(resolve); });
+      });
+      return echoSearch(work, ctx);
+    });
+    const submitted = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
+    await started.promise;
+    const cancelling = execute(tool, { action: 'cancel', researchRunId: submitted.researchRunId }, 'cancel-1');
+    // 取消已经落地（`cancelRequested` 已置、信号已发）之后，工作体才收尾。
+    await stopped.promise;
+    releaseBody.open();
+    const cancelled = envelopeOf(await cancelling);
+
+    const deliveries = envelopeOf(await execute(tool, {
+      action: 'inspect', researchRunId: submitted.researchRunId, view: 'deliveries',
+    }, 'inspect-1'));
+    const [entry] = inspectItems(deliveries);
+    expect(inspectItems(deliveries)).toHaveLength(1);
+    expect(entry).toMatchObject({ state: 'done', deliveredAt: null });
+    expect(cancelled.snapshot.counts.done).toBe(1);
+    expect(cancelled.snapshot.counts.cancelled).toBe(0);
+    // 翻面：它仍然交得出去 —— 保住结论不是把结果扣下。
+    const waited = envelopeOf(await execute(tool, {
+      action: 'wait', researchRunId: submitted.researchRunId,
+    }, 'wait-1'));
+    expect(waited.delivery?.submissionId).toBe(entry.submissionId);
   });
 });
 

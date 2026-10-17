@@ -9,10 +9,11 @@ import type {
 import { logger } from '../log';
 import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import type { XNetworkPageFact } from './xNetworkLease';
+import type { XResearchArtifactStore } from './xResearchArtifacts';
 import { XResearchTaskStore } from './xResearchTaskStore';
 import { XResearchTaskService, type XResearchRunWork } from './xResearchTaskService';
 import type {
-  XArticleFacts, XReadObservation, XReadRequest, XResearchResult, XSearchObservation,
+  XArticleFacts, XArtifactRef, XReadObservation, XReadRequest, XResearchResult, XSearchObservation,
   XSearchRequest, XTextObservation,
 } from './xResearchTypes';
 
@@ -177,13 +178,18 @@ const echoRunner: XResearchRunWork = async (work) => ('search' in work
   ? searchResult(work.search.queries.map((query) => searchRow({ query })))
   : readResult(work.read.targets.map((target) => readRow({ target }))));
 
-function harness(runWork: XResearchRunWork, options: { store?: XResearchTaskStore; now?: () => string } = {}) {
+function harness(runWork: XResearchRunWork, options: {
+  store?: XResearchTaskStore;
+  now?: () => string;
+  /** 交付要回到工件（重启后）的用例自己给一个：它的读是这一层唯一能闸住的交付前 await。 */
+  artifacts?: () => XResearchArtifactStore;
+} = {}) {
   const store = options.store ?? new XResearchTaskStore(root());
   const frames: XResearchTaskSnapshot[] = [];
   const service = new XResearchTaskService({
     store, runWork, onUpdate: (snapshot) => frames.push(snapshot),
     // 这些用例不碰交付的工件路径（`wait` 的回归在 `xResearchDeliver.test.ts`）：给一个空根即可。
-    artifacts: () => tempXArtifactStore(),
+    artifacts: options.artifacts ?? (() => tempXArtifactStore()),
     ...(options.now ? { now: options.now } : {}),
   });
   return { store, service, frames };
@@ -642,6 +648,85 @@ describe('XResearchTaskService', () => {
     const { service } = harness(echoRunner);
     await expect(service.whenIdle(randomUUID(), randomUUID()))
       .rejects.toThrow('X research task not found');
+  });
+
+  it('leaves a finished delivery unmarked when the turn stops before the mark', async () => {
+    // 队列**已经空闲**：`awaitIdle` 当场返回，中止因此没有被「等链」接住。交付路径上还有两个真实
+    // await —— 重启后首次 `open` 读盘、`deliverable` 读工件 —— 每一个都在写 `deliveredAt` 之前；
+    // 中止落在那里时不复查就会「标了却没人接」。两处复查各用一段研究，一条红了不遮挡另一条。
+    const dir = root();
+    const artifactRef: XArtifactRef = {
+      version: 1, directoryId: randomUUID(), manifest: 'manifest.json',
+      sha256: 'a'.repeat(64), bytes: 10, runId: 'run-1', callId: 'call-submit',
+      batchId: 'xbatch_1', operation: 'search',
+    };
+    const result = searchResult([searchRow({ query: searchWork().queries[0] })]);
+    const writer = harness(async (work, ctx) => ({ ...(await echoRunner(work, ctx)), artifact: artifactRef }), {
+      store: new XResearchTaskStore(dir),
+    });
+    const thread = owner();
+    const earlyRun = await writer.service.submit({ work: { search: searchWork() } }, thread);
+    const lateRun = await writer.service.submit({ work: { search: searchWork() } }, thread);
+    await writer.service.whenIdle(thread.threadId, earlyRun.researchRunId);
+
+    // 换一个进程：内存里没有结果，交付只能回到工件（R20）。
+    const readEntered = gate();
+    const readRelease = gate();
+    const reads: string[] = [];
+    let readGated = false;
+    const artifacts: XResearchArtifactStore = {
+      write: async () => { throw new Error('not used'); },
+      displayPath: () => '/artifacts/manifest.json',
+      read: async (readRef) => {
+        reads.push(readRef.callId);
+        // 只有第二段闸住读工件；第一段要的是「读很快、中止照样得被接住」。
+        if (!readGated) return structuredClone(result);
+        readEntered.open();
+        await readRelease.promise;
+        return structuredClone(result);
+      },
+    };
+    const openProcess = () => harness(echoRunner, {
+      store: new XResearchTaskStore(dir), artifacts: () => artifacts,
+    });
+    const stored = new XResearchTaskStore(dir);
+
+    // 1) 中止落在 `open` 读盘那一段：`awaitIdle` 之后的复查接住它。
+    const early = new AbortController();
+    const opened = openProcess().service
+      .wait(thread.threadId, earlyRun.researchRunId, 'wait-1', early.signal)
+      .then(() => 'resolved', (error: unknown) => `rejected:${String((error as { code?: unknown }).code)}`);
+    early.abort();
+    expect(await opened).toBe('rejected:agent.aborted');
+    // 中止之后连工件都不该再读一次：这条复查就在 `awaitIdle` 之后，不是靠写 mark 之前那条兜住的。
+    expect(reads).toEqual([]);
+    expect((await stored.readSubmission(thread.threadId, earlyRun.researchRunId, earlyRun.submissionId))?.deliveredAt)
+      .toBeUndefined();
+
+    // 2) 中止落在 `deliverable` 读工件那一段：写 mark 之前的最后一次复查接住它。
+    readGated = true;
+    const lateProcess = openProcess();
+    const late = new AbortController();
+    const waiting = lateProcess.service
+      .wait(thread.threadId, lateRun.researchRunId, 'wait-2', late.signal)
+      .then(() => 'resolved', (error: unknown) => `rejected:${String((error as { code?: unknown }).code)}`);
+    await readEntered.promise;
+    late.abort();
+    readRelease.open();
+    expect(await waiting).toBe('rejected:agent.aborted');
+    expect((await stored.readSubmission(thread.threadId, lateRun.researchRunId, lateRun.submissionId))?.deliveredAt)
+      .toBeUndefined();
+    const listed = await lateProcess.service.inspect(thread.threadId, lateRun.researchRunId, { view: 'deliveries' });
+    expect(listed.items).toEqual([
+      expect.objectContaining({ submissionId: lateRun.submissionId, deliveredAt: null, deliveryCallId: null }),
+    ]);
+
+    // 翻面：中止没有把这份结果吃掉，之后的 `wait` 照样交付一次。
+    const delivered = await lateProcess.service.wait(thread.threadId, lateRun.researchRunId, 'wait-3');
+    expect(delivered.delivery?.submissionId).toBe(lateRun.submissionId);
+    expect(delivered.delivery?.deliveryCallId).toBe('wait-3');
+    expect((await stored.readSubmission(thread.threadId, lateRun.researchRunId, lateRun.submissionId))?.deliveredAt)
+      .toEqual(expect.any(String));
   });
 
   it('lists the thread runs newest first', async () => {

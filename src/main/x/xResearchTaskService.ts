@@ -180,6 +180,13 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+/** 已中止就当场拒绝。`abortable` 只护住「等」的那一段；交付路径上还有两个真实 await ——
+ *  重启后首次 `open` 读盘与 `deliverable` 读工件 —— 它们都在写 `deliveredAt` 之前，中止落在
+ *  那里时不复查就会「标了却没人接」。两次复查都在 mark 之前，所以不会造出「标了却没交出去」。 */
+function assertNotAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new KydogError('agent.aborted', X_WAIT_ABORTED);
+}
+
 /** 一个研究在本进程里的活状态。盘上只有落盘边界那一刻的副本，实时数字只在这里。 */
 type ActiveResearch = {
   record: XResearchTaskRecord;
@@ -463,13 +470,14 @@ export class XResearchTaskService {
    *  这也是它只在这里写、在进展回调里不写的原因。
    *
    *  `signal` 是 pi 这一轮工具调用的中止信号（用户按了停止）：一响就当场放手，并且**不再交付** ——
-   *  拒绝发生在选中之前，所以中止不会把一份结果标成交过了（见 `abortable`）。 */
+   *  拒绝发生在选中与标记之前（见 `abortable` 与 `assertNotAborted`），中止不会把一份结果标成交过了。 */
   async wait(threadId: string, researchRunId: string, deliveryCallId: string,
     signal?: AbortSignal): Promise<XResearchWaitResult> {
-    if (signal?.aborted) throw new KydogError('agent.aborted', X_WAIT_ABORTED);
+    assertNotAborted(signal);
     const active = await this.open(threadId, researchRunId);
     if (!active) throw new KydogError('research.not_found', 'X research task not found');
     await this.awaitIdle(threadId, signal);
+    assertNotAborted(signal);
     let candidates = [...active.submissions.values()];
     let delivery: XResearchDelivery | null = null;
     for (;;) {
@@ -490,6 +498,9 @@ export class XResearchTaskService {
     // 顺序是「选中 → 内存标记 → 落盘」：`deliveredAt` 必须在结果真的交给调用方之前写（spec §4.5，
     // 否则同一个崩溃窗口会让同一份结果再交一次）；而「标了却抛错」那条路已被关掉 —— 包络装不下
     // 时 `deliverEnvelope` 会抛，但两条交付副本（收尾 / 重启）都先按量出来的额度裁过，抛不出来。
+    // mark 之前的最后一次复查：读工件那一段是真实的 await（重启后的交付才会走到），中止落在那里
+    // 同样不交付。
+    assertNotAborted(signal);
     delivered.deliveredAt = this.now();
     delivered.deliveryCallId = deliveryCallId;
     active.results.delete(delivered.submissionId);
@@ -505,7 +516,9 @@ export class XResearchTaskService {
   }
 
   /** 分页看行 / 交付清单 / 失败（spec §4.2、§4.5）：读的就是快照背后那批记录，
-   *  绝不重算状态、也不写盘 —— 它是同一份事实的另一种切法，不是第二份权威。 */
+   *  绝不重算状态 —— 它是同一份事实的另一种切法，不是第二份权威。
+   *  「只读」指不作用于任务，不是不写盘：它 `open()` 一条研究，而 `open()` 可能修一次重启遗留
+   *  （`running` 收成 `interrupted` 并落盘），那是打开一条研究的代价，不是 `inspect` 自己在改状态。 */
   async inspect(threadId: string, researchRunId: string,
     input: XResearchInspectInput): Promise<XResearchInspectResult> {
     const active = await this.open(threadId, researchRunId);
@@ -552,7 +565,14 @@ export class XResearchTaskService {
       if (submission.state !== 'running') continue;
       await active.pending.get(submission.submissionId)?.catch(() => undefined);
     }
-    return this.persist(active, queued, 'cancelled');
+    // 落盘失败不该把已经发生的取消说成没发生：内存里它已经是取消后的样子了（与 `wait` 的交付
+    // 标记同一条处置），日志是这件事唯一露面的地方。
+    return this.persist(active, queued, 'cancelled').catch((error: unknown) => {
+      logger.warn('x_research', 'could not persist the cancellation', {
+        threadId, researchRunId, err: String(error),
+      });
+      return this.snapshotOf(active);
+    });
   }
 
   /** 每个视图都按**提交序 → 工作项序**铺开：翻页因此是稳定的，游标只是偏移。
@@ -775,9 +795,11 @@ export class XResearchTaskService {
   }
 
   /** 取消的收尾：已经收尾的行保住结论（spec §4.2「保留已完成的观察」），没收尾的行写成
-   *  `cancelled` —— 用户停的，不是进程被杀。 */
+   *  `cancelled` —— 用户停的，不是进程被杀。
+   *  只给**还没收尾**的提交改结论：取消落在收尾之后时这一份已经有自己的结论（`done` /
+   *  `interrupted`），取消不许把它改写成一个它并不处于的状态。 */
   private cancelSubmission(submission: XResearchSubmission): void {
-    if (submission.state === 'cancelled') return;
+    if (submission.state !== 'queued' && submission.state !== 'running') return;
     for (const workItem of submission.workItems) {
       if (workItem.state === 'stopped') continue;
       workItem.state = 'stopped';
@@ -805,7 +827,8 @@ export class XResearchTaskService {
   /** 一次状态转移：内存先改，再落盘，再推一帧。
    *  写盘顺序是先 `task.json`、后这些 `submission-*.json`：中间被杀只会留下「索引比提交新」
    *  的一侧，任务目录里永远不会出现「有提交、没有索引」的形状（Task 1 评审的同一条约束）。
-   *  `reason` 只给「不是投影推出来的」那一个结论用（进程重启后的修复）。 */
+   *  `reason` 只给「不是投影推出来的」那一个结论用（进程重启后的修复）。
+   *  `stateReason` 一旦是 `cancelled` 就不许被擦：理由见下面那行注释。 */
   private async persist(active: ActiveResearch,
     submissions: readonly XResearchSubmission[] = [],
     reason?: string): Promise<XResearchTaskSnapshot> {
@@ -813,7 +836,11 @@ export class XResearchTaskService {
     active.record.updatedAt = this.now();
     const settled = this.project(active);
     active.record.state = settled.state;
-    const stateReason = reason ?? settled.reason;
+    // 「被取消过」是黏的：取消之后每一次落盘（交付标记、更新）都没有理由可写，但它不许把这件事
+    // 擦掉 —— 重启后 `cancelRequested` 已经不在内存里（只在本次进程的窗口里有效），`stateReason`
+    // 是「这段研究被停过」唯一跨进程的痕迹：`submit` 靠它拒绝续跑，卡片靠它说「被取消过」。
+    const stateReason = reason ?? settled.reason
+      ?? (active.record.stateReason === 'cancelled' ? 'cancelled' : undefined);
     if (stateReason) active.record.stateReason = stateReason;
     else delete active.record.stateReason;
     await this.deps.store.writeTask(active.record);
