@@ -217,6 +217,18 @@ const WAIT_POLL_MS = 100;
  */
 export const PAGE_EVAL_TIMEOUT_MS = NAV_TIMEOUT_MS;
 
+/**
+ * 等「这个标签上别的 `applyViewport` 落地」的上限。
+ *
+ * 等的对象与 `PAGE_EVAL_TIMEOUT_MS` 同一量级，理由也相同：一次
+ * `Emulation.setDeviceMetricsOverride` 的 ACK 就是一次 CDP 往返，卡住时卡在同一个地方
+ * （渲染进程不回应）。所以直接引用同一个常量，两边不会漂开。
+ *
+ * **它只是等待的上限，不是判据。** 判「落地的是不是这一份」靠几何（见
+ * `prepareForDomRead`）—— 到点了仍然按几何判，不是到点就失败。
+ */
+const VIEWPORT_SETTLE_TIMEOUT_MS = PAGE_EVAL_TIMEOUT_MS;
+
 /** agent 点过名、还没落定的一次下载（`browserService.pendingDownloads` 的值）。 */
 type PendingDownload = {
   url: string; dir: string; filename?: string;
@@ -264,6 +276,8 @@ export class BrowserService {
   private readonly viewportGenerations = new Map<string, number>();
   private readonly viewportPending = new Map<string, Set<number>>();
   private readonly viewportAcknowledged = new Map<string, { revision: number; width: number; height: number; scale: number; pageScale: number }>();
+  /** 等 `viewportPending` 清空的调用方（`prepareForDomRead`）。每次有 generation 落地就唤醒一次。 */
+  private readonly viewportSettled = new Map<string, Set<() => void>>();
   /** 这个标签上抬过 pinch-zoom 上限（进过 1:1）。回到适配时据此收回 page scale 与上限；没抬过就一条都不多发。 */
   private readonly zoomLimitsRaised = new Set<string>();
   private readonly snapshots = new Map<string, AxSnapshot>();
@@ -635,6 +649,37 @@ export class BrowserService {
   }
 
   /**
+   * 一次 `applyViewport` 要落地的**几何**。
+   *
+   * **两侧共用这一个算法**：`prepareForDomRead` 判「确认落地的是不是这一份」只能拿它算出来的值
+   * 比 —— 各算各的，两边一漂就在正好要判的时候看不出漂。
+   *
+   * **档位（spec §4.6）**。`fit`：排版恒 1280，整幅按 W/1280 缩进侧栏。
+   * `oneToOne` 窄舞台：override 与 `fit` **逐字相同**（排版、agent 的快照坐标系都不变），
+   * 另把 Chromium 自己的 pinch-zoom（page scale）放大到 1280/W —— 横移、纵滚、原生点击的
+   * 坐标映射全由它的 visual viewport 负责。侧栏没打开（`bounds` 为 null）时两档是同一件事。
+   *
+   * **舞台宽过 1280（全屏）时两档都按舞台宽排版、scale 恒 1，适配档不放大。** Chromium 按
+   * override 的宽高开画布、再把 scale 当变换画进去：scale > 1 时画布（1280 × H/scale）比舞台小，
+   * 放大的内容溢出被裁、画布外什么都不画 —— 2026-09-14 手测全屏退回适配时右侧与底部露白、
+   * 顶栏被裁，截图量得网页区域 / 舞台 = 0.875 ≈ 1/1.14，两个方向一致。往宽里排版一般不换版式；
+   * 固定 1280 要防的是变窄切移动版。
+   *
+   * **不用 override 的 `viewport` 参数**：那是截图用的「强制可见区域」，Chromium 的根变换
+   * 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
+   * 纵向一滚就整片露白。
+   */
+  private viewportGeometry(tabId: string, bounds: RectDip | null):
+    { width: number; height: number; scale: number; pageScale: number } {
+    const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
+    const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
+    const logicalWidth = Math.max(LOGICAL_WIDTH, w);
+    const scale = w / logicalWidth;
+    const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
+    return { width: logicalWidth, height, scale, pageScale: oneToOne ? logicalWidth / w : 1 };
+  }
+
+  /**
    * 固定逻辑视口。用 CDP 的 Emulation 而不是 setZoomFactor —— 后者按 host 存在
    * session 的 HostZoomMap 里：跨 host 导航就失效，还会被用户手动缩放污染，
    * 且污染跨 WebContentsView 实例存活（2026-09-08 spike 实测）。
@@ -674,32 +719,15 @@ export class BrowserService {
     // `getOSProcessId()` 是「关联的渲染进程的 pid」，没有渲染进程时是 0：协议层的事实。
     // 页面崩过一次之后它也回到 0，所以这道闸同时挡住了「对着已死的 target 发命令」。
     if (wc.getOSProcessId() === 0) return Promise.resolve();
-    const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
-    // **档位（spec §4.6）**。`fit`：排版恒 1280，整幅按 W/1280 缩进侧栏。
-    // `oneToOne` 窄舞台：override 与 `fit` **逐字相同**（排版、agent 的快照坐标系都不变），
-    // 另把 Chromium 自己的 pinch-zoom（page scale）放大到 1280/W —— 横移、纵滚、原生点击的
-    // 坐标映射全由它的 visual viewport 负责。侧栏没打开（`bounds` 为 null）时两档是同一件事。
-    //
-    // **舞台宽过 1280（全屏）时两档都按舞台宽排版、scale 恒 1，适配档不放大。** Chromium 按
-    // override 的宽高开画布、再把 scale 当变换画进去：scale > 1 时画布（1280 × H/scale）比舞台小，
-    // 放大的内容溢出被裁、画布外什么都不画 —— 2026-09-14 手测全屏退回适配时右侧与底部露白、
-    // 顶栏被裁，截图量得网页区域 / 舞台 = 0.875 ≈ 1/1.14，两个方向一致。往宽里排版一般不换版式；
-    // 固定 1280 要防的是变窄切移动版。
-    //
-    // **不用 override 的 `viewport` 参数**：那是截图用的「强制可见区域」，Chromium 的根变换
-    // 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
-    // 纵向一滚就整片露白。
-    const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
-    const logicalWidth = Math.max(LOGICAL_WIDTH, w);
-    const scale = w / logicalWidth;
-    const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
-    const pageScale = oneToOne ? logicalWidth / w : 1;
+    const { width: logicalWidth, height, scale, pageScale } = this.viewportGeometry(tabId, bounds);
     const generation = (this.viewportGenerations.get(tabId) ?? 0) + 1;
     this.viewportGenerations.set(tabId, generation);
     const pending = this.viewportPending.get(tabId) ?? new Set<number>();
     this.viewportPending.set(tabId, pending); pending.add(generation);
+    // 落地（成功或失败都算）就把它从「在途」里拿掉，并唤醒在等清空的调用方。
+    const settle = () => { pending.delete(generation); this.wakeViewportSettled(tabId); };
     const acknowledge = () => {
-      pending.delete(generation);
+      settle();
       // Preserve the actual ACK, including a late superseded operation. A
       // numerically identical configuration cannot stand in for its revision.
       if (this.viewportGenerations.has(tabId))
@@ -707,7 +735,7 @@ export class BrowserService {
     };
     if (pageScale !== 1) this.zoomLimitsRaised.add(tabId);
     const failed = (err: unknown) => {
-      pending.delete(generation);
+      settle();
       if (this.viewportGenerations.get(tabId) === generation) this.viewportAcknowledged.delete(tabId);
       logger.warn('browser.viewport', '设置逻辑视口失败', { tabId, err: String(err) });
     };
@@ -732,9 +760,9 @@ export class BrowserService {
           // settle for a replaced renderer; a superseding fit operation must
           // not inherit it as an in-flight coordinate command. The generation
           // check in raisePageScale prevents any superseded page-scale send.
-          pending.delete(generation);
+          settle();
           void this.raisePageScale(tabId, wc, generation, pageScale, acknowledge, failed,
-            () => pending.add(generation), () => pending.delete(generation));
+            () => pending.add(generation), settle);
           return undefined;
         }
         // 适配档要**等 page scale 回 1 落地**：dispatch 紧接着要量坐标、按 emulation scale 派发。
@@ -786,6 +814,39 @@ export class BrowserService {
     }, (err: unknown) => {
       failed(err);
       logger.warn('browser.viewport', '把 page scale 恢复成 1 失败', { tabId, err: String(err) });
+    });
+  }
+
+  /** 把一个 generation 落地的消息转给在等清空的人。落地就是 `viewportPending` 少一格。 */
+  private wakeViewportSettled(tabId: string): void {
+    for (const wake of [...(this.viewportSettled.get(tabId) ?? [])]) wake();
+  }
+
+  /**
+   * 等这个标签的 `viewportPending` 清空，最多 `VIEWPORT_SETTLE_TIMEOUT_MS`。
+   *
+   * 返回 false = 到点没清空，或者这次调用被取消（取消由调用方的 `assertNotAborted` 定论，
+   * 不在这里抛）。**清空不等于「几何对了」**：清空只说明没人在途，判据仍然是几何。
+   */
+  private waitForViewportSettled(tabId: string, signal?: AbortSignal): Promise<boolean> {
+    if (!this.viewportPending.get(tabId)?.size) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const waiters = this.viewportSettled.get(tabId) ?? new Set<() => void>();
+      this.viewportSettled.set(tabId, waiters);
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (settled: boolean) => {
+        waiters.delete(check);
+        if (!waiters.size) this.viewportSettled.delete(tabId);
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        resolve(settled);
+      };
+      const check = () => { if (!this.viewportPending.get(tabId)?.size) finish(true); };
+      const onAbort = () => finish(false);
+      waiters.add(check);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => finish(false), VIEWPORT_SETTLE_TIMEOUT_MS);
+      if (signal?.aborted) finish(false); else check();
     });
   }
 
@@ -1123,6 +1184,8 @@ export class BrowserService {
     this.emulationScales.delete(id);
     this.viewportGenerations.delete(id);
     this.viewportPending.delete(id);
+    // 等清空的人也不能白等到上限：标签都没了，下一轮就该看见没有确认过的那一份。
+    this.wakeViewportSettled(id);
     this.viewportAcknowledged.delete(id);
     this.zoomLimitsRaised.delete(id);
     // 在途的观测当场定论。不这样的话 navigate() 还卡在 race 上白等满 20 秒，
@@ -2193,8 +2256,17 @@ export class BrowserService {
     }
   }
 
-  /** Queue-owned fixed DOM collectors can prepare the same hidden target without
-   * emitting an artificial hover/click. Does not enqueue or activate a UI tab. */
+  /**
+   * Queue-owned fixed DOM collectors can prepare the same hidden target without
+   * emitting an artificial hover/click. Does not enqueue or activate a UI tab.
+   *
+   * **判据是几何，不是代号。** `applyLayout` 对每个标签都 `void applyViewport(...)`：
+   * 窗口改大小、拖侧栏、确认框弹出、横幅展开都会在下一次布局里多发一份。`await` 的这一份
+   * 已经证明**自己那份**落地了；早在途的那份无法推翻它（落地早于就不算），后发的那份算的
+   * 是**同一份 `stage`**、落地的是同一份几何。拿代号比会把这件「另一份一模一样的下发
+   * 正在收尾」判成「映射变了」，而这条路上它等于整次提交失败 ——
+   * x-research 侧报到用户眼前是「源不可用」（重启后的第一次采集就是这么失败的）。
+   */
   async prepareForDomRead(tabId: string, signal?: AbortSignal): Promise<void> {
     assertNotAborted(signal);
     const wc = this.webContentsOf(tabId);
@@ -2205,10 +2277,37 @@ export class BrowserService {
     this.restoreFitViewport(tabId);
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
     assertNotAborted(signal);
-    const current = this.viewportAcknowledged.get(tabId);
-    if (!current || current.revision !== this.viewportGenerations.get(tabId)
-      || this.viewportPending.get(tabId)?.size)
-      throw new KydogError('browser.input_not_delivered', '页面准备期间视口映射改变或没有确认落地');
+    // 先把**别人**在途的那几份等落地（有界）。它们不改结论，但落地晚于下面那次
+    // `viewportAcknowledged` 读取时，读到的那一条就不是最后落地的那一条。
+    const settled = await this.waitForViewportSettled(tabId, signal);
+    assertNotAborted(signal);
+    const acknowledged = () => {
+      const ack = this.viewportAcknowledged.get(tabId);
+      const want = this.viewportGeometry(tabId, this.stage?.bounds ?? null);
+      return { ack, want, same: !!ack && ack.width === want.width && ack.height === want.height
+        && ack.scale === want.scale && ack.pageScale === want.pageScale };
+    };
+    let state = acknowledged();
+    if (!state.same) {
+      const first = state;
+      // 重下发一次：能被这一步修掉的只有「晚到的旧档位盖住了已确认的那一份」。
+      await this.applyViewport(tabId, this.stage?.bounds ?? null);
+      assertNotAborted(signal);
+      state = acknowledged();
+      if (!state.same) {
+        const geometry = (v: { width: number; height: number; scale: number; pageScale: number }) =>
+          `${v.width}×${v.height}（scale ${v.scale}，pageScale ${v.pageScale}）`;
+        const facts = [
+          settled ? '' : `在途的视口下发在 ${VIEWPORT_SETTLE_TIMEOUT_MS} 毫秒内没有清空`,
+          first.ack ? `确认落地的几何 ${geometry(first.ack)} 与当前舞台算出的 ${geometry(first.want)} 不一致`
+            : '没有任何一份确认落地',
+          state.ack ? `重下发后确认的几何 ${geometry(state.ack)} 仍与当前舞台算出的 ${geometry(state.want)} 不一致`
+            : '重下发之后仍然没有确认落地',
+        ];
+        throw new KydogError('browser.input_not_delivered',
+          `页面准备期间视口映射没有落地：${facts.filter(Boolean).join('；')}`);
+      }
+    }
     if (this.locationFacts(tabId).navigationSequence !== location.navigationSequence)
       throw new KydogError('browser.stale_snapshot', '页面准备期间已导航；需要重新观察');
   }

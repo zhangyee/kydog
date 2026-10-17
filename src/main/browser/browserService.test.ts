@@ -4376,6 +4376,69 @@ it('fixed DOM read preparation uses focus/viewport ACKs without requiring a surf
   expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
 });
 
+// `applyLayout` 对**每一个**标签都 `void applyViewport(...)`：窗口改大小、拖侧栏、
+// 确认框弹出、横幅展开都会在 `prepareForDomRead` 自己那一份之外再发一份。判据是几何，
+// 不是代号 —— 后发的那份算的是同一份 `stage`、落地的是同一份几何，拿代号比就会把它判成
+// 「映射变了」，而这条路上那等于整次提交失败（x-research 重启后的第一次采集就是这么失败的）。
+it('a concurrent layout apply with identical geometry does not fail the prepared DOM read', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const held: Array<{ params: Record<string, unknown>; land: () => void }> = [];
+  wc.debugger.respond = (method, params) => method === 'Emulation.setDeviceMetricsOverride'
+    ? new Promise(resolve => { held.push({ params: params!, land: () => resolve({}) }); })
+    : Promise.resolve({});
+  svc.syncView({ ...STAGE, epoch });            // ① 布局这一发先挂在途上
+  await flush();
+  expect(held.length).toBe(1);
+  const preparing = svc.prepareForDomRead(nav.tabId);   // ② prepare 自己那一发
+  let settled = false; void preparing.then(() => { settled = true; }, () => { settled = true; });
+  await flush();
+  expect(held.length).toBe(2);
+  svc.syncView({ ...STAGE, epoch });            // ③ 布局又发一份（同一份 stage）
+  await flush();
+  expect(held.length).toBe(3);
+  // 前提：后发的那份与 prepare 自己那份算出来的几何逐字相同 —— 「代号新、几何一样」。
+  expect(held[2].params).toEqual(held[1].params);
+  held[1].land(); await flush();                // 自己那一份落地
+  held[2].land(); await flush();
+  // ① 还在途：这一句是这次缺陷的形状 —— 旧代码在这里已经按「映射变了」拒了。
+  expect(settled).toBe(false);
+  held[0].land();
+  await expect(preparing).resolves.toBeUndefined();
+});
+
+// 反过来也必须守住：几何**真的**不一样时仍然要拒，而且拒得说得出是哪一个事实。
+// 「按几何判」不能变成「谁也不判」。
+it('a superseded viewport landing with different geometry still fails the prepared DOM read', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const narrow = { x: 0, y: 0, width: 900, height: 700 };
+  const held: Array<{ params: Record<string, unknown>; land: () => void }> = [];
+  wc.debugger.respond = (method, params) => {
+    if (method !== 'Emulation.setDeviceMetricsOverride') return Promise.resolve({});
+    // 第四发（重下发）以 ACK 丢失失败：几何就一直停在旧舞台那一份上。
+    if (held.length === 3) return Promise.reject(new Error('ACK lost'));
+    return new Promise(resolve => { held.push({ params: params!, land: () => resolve({}) }); });
+  };
+  svc.syncView({ ...STAGE, epoch });
+  await flush();
+  svc.syncView({ ...STAGE, epoch, bounds: narrow });
+  await flush();
+  expect(held.length).toBe(2);
+  const preparing = svc.prepareForDomRead(nav.tabId);
+  const rejected = preparing.then(() => null, (error: { code: string; message: string }) => error);
+  await flush();
+  expect(held.length).toBe(3);
+  held[2].land(); await flush();                // 自己那一份：ack 是新舞台的几何
+  held[1].land(); await flush();                // 新舞台那一发
+  held[0].land(); await flush();                // 旧舞台那一发晚到，把 ack 盖成旧几何
+  const error = await rejected;
+  expect(error?.code).toBe('browser.input_not_delivered');
+  expect(error?.message).toContain('确认落地的几何 1280×1800（scale 0.5，pageScale 1）');
+  expect(error?.message).toContain('1280×996（scale 0.703125，pageScale 1） 不一致');
+  expect(error?.message).toContain('重下发之后仍然没有确认落地');
+});
+
 
 it.each(['focus', 'selection'] as const)('last typing permission rejects changed %s before insertText after same-case selected success', async change => {
   const { svc } = make(); const { wc, nav } = await openTab(svc);
