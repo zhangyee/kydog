@@ -23,9 +23,11 @@ export interface XSerializedResult<
   result: T;
   text: string;
 }
-export function xResearchToolResult(value: XSerializedResult): {
+/** 把 `{result, text}` 装成 toolResult。泛型是为了让交付壳（`XResearchDeliveryEnvelope`）也能用
+ *  `measure` 同一把尺子量整包字节 —— 量的是「模型真正看到的那一份」，不是在别处再写一遍形状。 */
+export function xResearchToolResult<T>(value: { result: T; text: string }): {
   content: { type: 'text'; text: string }[];
-  details: XResearchResult;
+  details: T;
 } {
   return {
     content: [{ type: 'text', text: value.text }],
@@ -552,9 +554,13 @@ export function assertXRequestFits(original: XResearchResult, prior?: XResearchS
       `x_research: request metadata exceeds 1 MiB required-state envelope (${requiredBytes} bytes); shorten or split the request`,
     );
 }
+/** 按今天的省略顺序把结果裁到 `maxBytes`（缺省就是 1 MiB 的工具结果预算）。
+ *  `maxBytes` 存在是因为交付要装进**包络**：壳与快照也要字节，剩下的额度才是这份结果的
+ *  （控制器裁决 T5/B'：在收尾时按量出来的额度裁一次，交付路径不再裁第二次）。 */
 export function serializeXResearchResult<T extends XResearchResult>(
   original: T,
   prior?: XResearchScopePrior,
+  maxBytes: number = X_RESEARCH_MAX_OUTPUT_BYTES,
 ): XSerializedResult<T> {
   if(original.operation==='read') for(const row of original.targets) for(const frame of [row.diagnostics?.initialFrame,row.diagnostics?.firstAdmittedFrame,row.diagnostics?.terminalFrame])
     if(frame){
@@ -632,12 +638,12 @@ export function serializeXResearchResult<T extends XResearchResult>(
     return measure(result, projected, prior);
   };
   let value = update();
-  if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+  if (value.result.budgetUsage.outputBytes <= maxBytes)
     return value;
   projected = true;
   result.contentProjection = 'x_research_projection_v1';
   value = update();
-  if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+  if (value.result.budgetUsage.outputBytes <= maxBytes)
     return value;
   // Optional observation history yields before current text or diagnostics.
   // This is output omission, never a claim that separate source frames are equal.
@@ -648,7 +654,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if(!row.networkPages?.length)continue;
     row.networkPagesOmitted=(row.networkPagesOmitted??0)+row.networkPages.length;
     delete row.networkPages;mark(`queries.${index}.networkPages`);
-    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if(result.operation==='read')for(const [index,row] of result.targets.entries()){
     if(!row.networkPages?.length)continue;
@@ -657,7 +663,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     row.networkPagesOmitted=(row.networkPagesOmitted??0)+row.networkPages.length-keep.length;
     if(keep.length)row.networkPages=keep;else delete row.networkPages;
     mark(`targets.${index}.networkPages`);
-    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (result.operation === 'read') for (const [index,row] of result.targets.entries()) {
     const entries = row.bodyObservations;
@@ -673,9 +679,9 @@ export function serializeXResearchResult<T extends XResearchResult>(
       row.bodyObservationsOmitted = previousOmitted + entries.length - count;
     };
     let lo=0,hi=entries.length;
-    while(lo<hi){const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
+    while(lo<hi){const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=maxBytes)lo=mid;else hi=mid-1;}
     retain(lo);value=update();
-    if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (result.operation === 'search') for (const [index,row] of result.queries.entries()) {
     const entries = row.postObservations;
@@ -693,9 +699,9 @@ export function serializeXResearchResult<T extends XResearchResult>(
         row.postObservationsOmitted=previousOmitted+entries.length-row.postObservations.length;
       };
       let lo=0,hi=optional.length;
-      while(lo<hi){const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
+      while(lo<hi){const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=maxBytes)lo=mid;else hi=mid-1;}
       retain(lo);value=update();
-      if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+      if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
     }
   }
   if(result.operation==='search') for(const [index,row] of result.queries.entries()) {
@@ -706,14 +712,14 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if(row.status==='observed')row.status='partial';
     if(row.stopReason==='agent_stopped')row.stopReason='budget_reached';
     if(result.status==='observed')result.status='partial';
-    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   // Reply attempt telemetry is one optional section, never partially rewritten.
   if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
     if(!row.diagnostics?.replyExpansions)continue;
     delete row.diagnostics.replyExpansions;
     (result.metadataOmissions??=[]).push(`targets.${index}.diagnostics.replyExpansions`);
-    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   // Drop whole optional source inventories before evidence bodies. Clone each
   // frame shell: two stage slots can honestly share the same collection object.
@@ -722,7 +728,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       const frame=row.diagnostics?.[key];if(!frame?.replyUiInventory)continue;
       const retained={...frame};delete retained.replyUiInventory;row.diagnostics![key]=retained;
       (result.metadataOmissions??=[]).push(`targets.${index}.diagnostics.${key}.replyUiInventory`);
-      value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+      value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
     }
   }
   // Independent failure-frame bodies are optional; their exact own-parent gap
@@ -735,10 +741,10 @@ export function serializeXResearchResult<T extends XResearchResult>(
     let lo=0,hi=entries.length;
     while(lo<hi) {
       const mid=Math.ceil((lo+hi)/2);envelope.observations=entries.slice(0,mid);
-      if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;
+      if(update().result.budgetUsage.outputBytes<=maxBytes)lo=mid;else hi=mid-1;
     }
     envelope.observations=entries.slice(0,lo);value=update();
-    if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (collection) {
     // Exact metadata-only probe. If even zero text is over the envelope, every
@@ -746,7 +752,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     const full = texts(result).map(p => ({p,text:p.text}));
     for (const {p} of full) p.text = '';
     value = update();
-    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+    if (value.result.budgetUsage.outputBytes <= maxBytes)
       for (const {p,text} of full) p.text = text;
   }
   for (const p of texts(result)
@@ -761,7 +767,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
       p.text = full.slice(0, mid);
       p.truncation.returned = p.text.length;
       if (
-        update().result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES
+        update().result.budgetUsage.outputBytes <= maxBytes
       )
         lo = mid;
       else hi = mid - 1;
@@ -770,7 +776,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if (/[\uD800-\uDBFF]$/.test(p.text)) p.text = p.text.slice(0, -1);
     p.truncation.returned = p.text.length;
     value = update();
-    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+    if (value.result.budgetUsage.outputBytes <= maxBytes)
       return value;
   }
   if(result.operation==='search') for(const q of result.queries) {
@@ -781,8 +787,8 @@ export function serializeXResearchResult<T extends XResearchResult>(
       const ids=new Set(q.posts.map(p=>p.postId));
       if(q.postObservations) q.postObservations=observations.filter(p=>protectedSearchHistory(p)||ids.has(p.postId));
     };
-    while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES) lo=mid;else hi=mid-1;}
-    retain(lo);value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=maxBytes) lo=mid;else hi=mid-1;}
+    retain(lo);value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   const lists =
     result.operation === 'search'
@@ -796,14 +802,14 @@ export function serializeXResearchResult<T extends XResearchResult>(
       const mid = Math.ceil((lo + hi) / 2);
       list.splice(0, list.length, ...entries.slice(0, mid));
       if (
-        update().result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES
+        update().result.budgetUsage.outputBytes <= maxBytes
       )
         lo = mid;
       else hi = mid - 1;
     }
     list.splice(0, list.length, ...entries.slice(0, lo));
     value = update();
-    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+    if (value.result.budgetUsage.outputBytes <= maxBytes)
       return value;
   }
   if(result.operation==='read') for(const row of result.targets) {
@@ -817,7 +823,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     row.reason??='article_inventory_audit_output_budget';
     if(row.stopReason==='agent_stopped')row.stopReason='budget_reached';
     if(result.status==='observed')result.status='partial';
-    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (result.operation==='read') {
     const mark=(index:number,part:string)=>{
@@ -830,7 +836,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
         delete row.diagnostics[part];
         mark(index,part);
         value=update();
-        if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+        if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
       }
     }
   }
@@ -838,7 +844,7 @@ export function serializeXResearchResult<T extends XResearchResult>(
     if(!row.diagnostics?.[part])continue;
     delete row.diagnostics[part];
     (result.metadataOmissions??=[]).push(`queries.${index}.diagnostics.${part}`);
-    value=update();if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    value=update();if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (collection && result.operation === 'search') for (const row of result.queries) {
     const entries = row.postObservations;
@@ -849,9 +855,9 @@ export function serializeXResearchResult<T extends XResearchResult>(
       row.postObservationsOmitted = previouslyOmitted + entries.length - count;
     };
     let lo=0,hi=entries.length;
-    while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)lo=mid;else hi=mid-1;}
+    while(lo<hi) {const mid=Math.ceil((lo+hi)/2);retain(mid);if(update().result.budgetUsage.outputBytes<=maxBytes)lo=mid;else hi=mid-1;}
     retain(lo);value=update();
-    if(value.result.budgetUsage.outputBytes<=X_RESEARCH_MAX_OUTPUT_BYTES)return value;
+    if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (collection && result.operation === 'read') for (const [index,row] of result.targets.entries()) {
     const gaps = row.unscopedPosts?.previewGaps;
@@ -861,15 +867,15 @@ export function serializeXResearchResult<T extends XResearchResult>(
     row.unscopedPosts!.previewGaps = [];
     mark(`targets.${index}.unscopedPosts.previewGaps`);
     value = update();
-    if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES) return value;
+    if (value.result.budgetUsage.outputBytes <= maxBytes) return value;
   }
   compactMetadata(result);
   value = update();
-  if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+  if (value.result.budgetUsage.outputBytes <= maxBytes)
     return value;
   compactModelDocumentLocations(result);
   value = update();
-  if (value.result.budgetUsage.outputBytes <= X_RESEARCH_MAX_OUTPUT_BYTES)
+  if (value.result.budgetUsage.outputBytes <= maxBytes)
     return value;
   // The factory's required-state admission prevents this branch for supported
   // production source bounds. Reject unsupported direct helper callers clearly.

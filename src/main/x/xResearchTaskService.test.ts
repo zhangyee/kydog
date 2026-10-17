@@ -7,6 +7,7 @@ import type {
   XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot, XResearchWorkItem,
 } from '../../shared/xResearchTask';
 import { logger } from '../log';
+import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import type { XNetworkPageFact } from './xNetworkLease';
 import { XResearchTaskStore } from './xResearchTaskStore';
 import { XResearchTaskService, type XResearchRunWork } from './xResearchTaskService';
@@ -22,6 +23,8 @@ function root(): string {
   return dir;
 }
 afterEach(() => {
+  // 一个断言失败时漏出去的 spy 会污染后面的用例（比如 `logger.warn` 被永久换成 mock）。
+  vi.restoreAllMocks();
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -179,6 +182,8 @@ function harness(runWork: XResearchRunWork, options: { store?: XResearchTaskStor
   const frames: XResearchTaskSnapshot[] = [];
   const service = new XResearchTaskService({
     store, runWork, onUpdate: (snapshot) => frames.push(snapshot),
+    // 这些用例不碰交付的工件路径（`wait` 的回归在 `xResearchDeliver.test.ts`）：给一个空根即可。
+    artifacts: () => tempXArtifactStore(),
     ...(options.now ? { now: options.now } : {}),
   });
   return { store, service, frames };
@@ -202,6 +207,26 @@ class FailingSubmissionStore extends XResearchTaskStore {
   failWrites = false;
   override async writeSubmission(submission: XResearchSubmission): Promise<void> {
     if (this.failWrites) throw new Error('disk full');
+    return super.writeSubmission(submission);
+  }
+}
+
+/** 上膛之后把**下一次**提交写闸住再拒绝：用来制造「一份提交在落盘，另一份抢在它后面提交」的窗口。 */
+class BlockingSubmissionStore extends XResearchTaskStore {
+  readonly entered = gate();
+  readonly release = gate();
+  private armed = false;
+  private calls = 0;
+  arm(): void { this.armed = true; }
+  override async writeSubmission(submission: XResearchSubmission): Promise<void> {
+    if (this.armed) {
+      this.calls += 1;
+      if (this.calls === 1) {
+        this.entered.open();
+        await this.release.promise;
+        throw new Error('disk full');
+      }
+    }
     return super.writeSubmission(submission);
   }
 }
@@ -405,6 +430,52 @@ describe('XResearchTaskService', () => {
     expect((await service.get(thread.threadId, submitted.researchRunId)).read[0])
       .toMatchObject({ state: 'waiting', phaseDetail: null });
     await service.whenIdle(thread.threadId, submitted.researchRunId);
+  });
+
+  it('removes exactly the rejected submission from the index, not the last one', async () => {
+    const store = new BlockingSubmissionStore();
+    const { service } = harness(echoRunner, { store });
+    const thread = owner();
+    const settled = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, settled.researchRunId);
+    // 第一份收尾提交先把研究建起来，接下来两份并发：A 的提交文件被闸住，B 抢在它后面提交。
+    store.arm();
+    const rejected = service.submit({ researchRunId: settled.researchRunId, work: { search: searchWork() } }, thread);
+    await store.entered.promise;
+    const second = await service.submit(
+      { researchRunId: settled.researchRunId, work: { search: searchWork() } }, thread);
+    store.release.open();
+    await expect(rejected).rejects.toThrow('disk full');
+    await service.whenIdle(thread.threadId, settled.researchRunId);
+    // 索引必须与文件一致：A 的 id 被删掉，而排在它后面的 B 仍在（`pop()` 会删掉 B、留下 A）。
+    const record = await store.readTask(thread.threadId, settled.researchRunId);
+    expect(record?.submissionIds).toEqual([settled.submissionId, second.submissionId]);
+    expect((await store.listSubmissions(thread.threadId, settled.researchRunId))
+      .map((submission) => submission.submissionId).sort())
+      .toEqual([settled.submissionId, second.submissionId].sort());
+  });
+
+  it('never repairs a run that is still live in this process', async () => {
+    const entered = gate();
+    const hold = gate();
+    const { service } = harness(async (work, ctx) => {
+      entered.open();
+      await hold.promise;
+      return echoRunner(work, ctx);
+    });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() } }, thread);
+    await entered.promise;
+    // 读一个正在飞的研究不是「上一个进程留下的进行中」：修复只能落在重启这个前提上。
+    const live = await service.get(thread.threadId, submitted.researchRunId);
+    expect(live.state).toBe('running');
+    expect(live.stateReason).toBeUndefined();
+    expect(live.counts).toMatchObject({ submissions: 1, queued: 2, interrupted: 0 });
+    expect(live.search.map((item) => item.state)).toEqual(['queued', 'queued']);
+    hold.open();
+    await service.whenIdle(thread.threadId, submitted.researchRunId);
+    // 而且修复不该在收尾时冒出：这一轮真的跑完了。
+    expect((await service.get(thread.threadId, submitted.researchRunId)).state).toBe('completed');
   });
 
   it('writes the task record before the first submission file', async () => {
@@ -669,6 +740,9 @@ describe('XResearchTaskService', () => {
     const snapshot = await service.get(thread.threadId, first.researchRunId);
     expect(snapshot.counts.submissions).toBe(1);
     expect(snapshot.read).toHaveLength(0);
+    // 盘上那一半也要撤回：索引说「有 2 份提交」而只有 1 个文件，是重启后才露面的静默错位。
+    const persisted = await store.readTask(thread.threadId, first.researchRunId);
+    expect(persisted?.submissionIds).toEqual([first.submissionId]);
     // 剩下的那份提交是收尾过的：孤儿提交不许把整段研究钉在「进行中」。
     expect(snapshot.state).toBe('completed');
     store.failWrites = false;

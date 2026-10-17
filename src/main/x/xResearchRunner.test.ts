@@ -324,6 +324,8 @@ describe('x research runner', () => {
         state: snapshot.search[0]?.state, posts: snapshot.search[0]?.posts,
         status: snapshot.search[0]?.status,
       }),
+      // 这个用例只关心进度帧；交付的工件路径在 `xResearchDeliver.test.ts` 里钉。
+      artifacts: () => tempXArtifactStore(),
     });
     try {
       const submitted = await service.submit({ work: { search: searchInput.search } },

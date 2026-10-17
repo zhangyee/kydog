@@ -4,6 +4,10 @@ import type { NavigationObservation } from '../../shared/types';
 // 保住采集层原有那批 `from './xResearchTypes'` 的 import，同时本文件内部继续可用。
 import type { XResearchStatus, XStopReason } from '../../shared/xResearchStatus';
 export type { XResearchStatus, XStopReason };
+// 工件身份同理归 shared（提交记录里存着它，重启后的交付靠它读回结果）：这里 re-export 保住
+// 采集层原有那批 `XArtifactRef` import。
+import type { XArtifactRef } from '../../shared/xArtifactRef';
+export type { XArtifactRef };
 export type XFactRelation = 'same' | 'different' | 'unknown';
 export interface XLocationRelation {
   origin: XFactRelation;
@@ -405,15 +409,4 @@ export type XResearchResult = XResultBase & (
 );
 export const X_RESEARCH_MAX_OUTPUT_BYTES = 1024 * 1024;
 
-/** Opaque application-owned artifact identity; never an arbitrary filesystem path. */
-export interface XArtifactRef {
-  version: 1;
-  directoryId: string;
-  manifest: 'manifest.json';
-  sha256: string;
-  bytes: number;
-  runId: string;
-  callId: string;
-  batchId: string;
-  operation: 'search' | 'read';
-}
+

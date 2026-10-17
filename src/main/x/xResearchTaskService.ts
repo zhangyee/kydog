@@ -12,6 +12,10 @@ import type {
 } from '../../shared/xResearchTask';
 import { xResearchTaskSnapshot, xResearchTaskState } from '../../shared/xResearchTask';
 import type { XResearchTaskStore } from './xResearchTaskStore';
+import type { XResearchArtifactStore } from './xResearchArtifacts';
+import { clipForEnvelope, pickDelivery } from './xResearchDeliver';
+import type { XResearchDelivery, XResearchDeliveryEnvelope } from './xResearchTaskShell';
+import { serializeXResearchResult } from './xResearchOutput';
 import type {
   XArticleFacts, XReadObservation, XReadRequest, XResearchResult, XSearchObservation, XSearchRequest,
 } from './xResearchTypes';
@@ -56,6 +60,8 @@ export type XResearchTaskServiceDeps = {
   store: XResearchTaskStore;
   runWork: XResearchRunWork;
   onUpdate: (snapshot: XResearchTaskSnapshot) => void;
+  /** 交付用的工件根（Task 7 换成双根）：重启后交付要按提交记录里的 ref 把结果读回来（R20）。 */
+  artifacts: (threadId: string, researchRunId: string) => XResearchArtifactStore;
   now?: () => string;
 };
 
@@ -72,10 +78,21 @@ export type XResearchSubmitResult = {
   snapshot: XResearchTaskSnapshot;
 };
 
+/** `wait` 的产物：这一轮的快照、交付的那一份（可能没有）、以及还没交付的清单。
+ *  壳的构造与 1 MiB 定点归 `./xResearchDeliver`（它只管字节，不碰任务状态）。 */
+export type XResearchWaitResult = {
+  snapshot: XResearchTaskSnapshot;
+  delivery: XResearchDelivery | null;
+  undelivered: NonNullable<XResearchDeliveryEnvelope['undelivered']>;
+};
+
 /** 一个研究在本进程里的活状态。盘上只有落盘边界那一刻的副本，实时数字只在这里。 */
 type ActiveResearch = {
   record: XResearchTaskRecord;
   submissions: Map<string, XResearchSubmission>;
+  /** 收尾那一刻的结果（`settle` 用来写结论的那一份，与交付出去的是同一份字节）。
+   *  只在这个进程里有效：重启后靠提交记录上的工件 ref 读回来（R20）。 */
+  results: Map<string, XResearchResult>;
   controller: AbortController;
 };
 
@@ -198,6 +215,8 @@ export class XResearchTaskService {
       record,
       // 插入序 = 提交序（`listSubmissions` 按 createdAt 排），`objective` 取的是第一份。
       submissions: new Map(submissions.map((submission) => [submission.submissionId, submission])),
+      // 上一个进程手里的结果已经随进程消失：这里只可能是空的，要交付就回到工件（R20）。
+      results: new Map(),
       controller: new AbortController(),
     };
     this.active.set(key, opened);
@@ -226,6 +245,7 @@ export class XResearchTaskService {
         createdAt: now, updatedAt: now, revision: 0, state: 'running', submissionIds: [],
       },
       submissions: new Map(),
+      results: new Map(),
       controller: new AbortController(),
     };
     this.active.set(this.key(owner.threadId, researchRunId), created);
@@ -269,7 +289,10 @@ export class XResearchTaskService {
       // 落盘失败 = 这次提交不存在：工作从没被排进队列，内存里留着它会让 `get()` 永远报「进行中」。
       // 撤回内存再尽力把撤回后的样子落一次盘（失败就放弃 —— 调用方拿到的是原来那个错误）。
       active.submissions.delete(submission.submissionId);
-      active.record.submissionIds.pop();
+      // 按 id 删，不能用 `pop()`：并发的另一次提交可能已经排在这一份后面，
+      // 弹尾会删掉它、留下这一份（文件不存在、索引却说有）—— 索引与文件当场对不上。
+      const index = active.record.submissionIds.indexOf(submission.submissionId);
+      if (index >= 0) active.record.submissionIds.splice(index, 1);
       await this.persist(active).catch(() => undefined);
       throw error;
     }
@@ -306,12 +329,103 @@ export class XResearchTaskService {
     if (!(await this.open(threadId, researchRunId))) {
       throw new KydogError('research.not_found', 'X research task not found');
     }
+    await this.awaitIdle(threadId);
+  }
+
+  private async awaitIdle(threadId: string): Promise<void> {
     for (;;) {
       const chain = this.chains.get(threadId);
       if (!chain) return;
       await chain.catch(() => undefined);
       if (this.chains.get(threadId) === chain) return;
     }
+  }
+
+  /** 交付：等队列排空，然后把**最早一份尚未交付**的结果交出去（spec §4.5）。
+   *  一次只给一份 —— 一份结果的上限就是整个 1 MiB 包络（壳 + 快照 + 这份结果），
+   *  多份会把它撑成几 MiB。剩下的进 `undelivered`，`counts.undelivered` 也还在快照里。
+   *
+   *  顺序是「选中 → 内存标记 → 落盘」：`deliveredAt` 是跨重启的权威，所以它必须在结果**真的**
+   *  交给调用方之前就写上（否则同一个窗口里崩掉会让同一份结果再交一次）；
+   *  这也是它只在这里写、在进展回调里不写的原因。 */
+  async wait(threadId: string, researchRunId: string, deliveryCallId: string): Promise<XResearchWaitResult> {
+    const active = await this.open(threadId, researchRunId);
+    if (!active) throw new KydogError('research.not_found', 'X research task not found');
+    await this.awaitIdle(threadId);
+    let candidates = [...active.submissions.values()];
+    let delivery: XResearchDelivery | null = null;
+    for (;;) {
+      const pick = pickDelivery(candidates);
+      if (!pick) break;
+      const picked = await this.deliverable(active, pick, deliveryCallId);
+      if (picked) {
+        delivery = picked;
+        break;
+      }
+      // 这份结果真的不在了（工件写失败过、或工件读不回来）：不拿它挡住后面那份。
+      candidates = candidates.filter((submission) => submission !== pick);
+    }
+    if (!delivery) {
+      return { snapshot: this.snapshotOf(active), delivery: null, undelivered: this.undeliveredOf(active) };
+    }
+    const delivered = active.submissions.get(delivery.submissionId)!;
+    delivered.deliveredAt = this.now();
+    delivered.deliveryCallId = deliveryCallId;
+    active.results.delete(delivered.submissionId);
+    // 标记落盘失败不该把已经交出去的结果要回来：内存里它已经是交付过的，重启后最多再交一次
+    // （交付幂等就是那个窗口的兜底，spec §4.5），日志是这件事唯一露面的地方。
+    const snapshot = await this.persist(active, [delivered]).catch((error: unknown) => {
+      logger.warn('x_research', 'could not persist the delivery mark', {
+        threadId, researchRunId, submissionId: delivered.submissionId, err: String(error),
+      });
+      return this.snapshotOf(active);
+    });
+    return { snapshot, delivery, undelivered: this.undeliveredOf(active) };
+  }
+
+  /** 这份提交能不能交出结果：服务手里那份优先（它就是 `settle` 写结论用的那一份字节），
+   *  只有在内存里没有它（重启后）时才走工件。工件里存的是完整 canonical，读回来要照今天的
+   *  预算再裁一次 —— 否则一个超前 1 MiB 的工件会让整个包络装不下它。 */
+  private async deliverable(active: ActiveResearch, submission: XResearchSubmission,
+    deliveryCallId: string): Promise<XResearchDelivery | null> {
+    const { threadId, researchRunId } = active.record;
+    const identity = {
+      deliveryCallId, submissionId: submission.submissionId,
+      submitCallId: submission.submitCallId, operation: submission.operation,
+    };
+    const held = active.results.get(submission.submissionId);
+    if (held) return { ...identity, result: held };
+    // 工件写失败过：这份结果不在盘上，重启后它就不存在了（R20）。
+    if (!submission.artifact) return null;
+    const artifacts = this.deps.artifacts(threadId, researchRunId);
+    try {
+      const canonical = await artifacts.read(submission.artifact);
+      // 工件里是 canonical DTO（没有交付字段）：补上「已落盘」，否则序列化会把这件事说成失败。
+      canonical.artifact = submission.artifact;
+      canonical.delivery = {
+        truncated: false, omittedObservations: 0, omittedFields: [],
+        artifactPath: artifacts.displayPath(submission.artifact), persistence: 'saved',
+      };
+      const result = serializeXResearchResult(canonical).result;
+      active.results.set(submission.submissionId, result);
+      return { ...identity, result };
+    } catch (error) {
+      logger.warn('x_research', 'could not read a delivered artifact', {
+        threadId, researchRunId, submissionId: submission.submissionId, err: String(error),
+      });
+      return null;
+    }
+  }
+
+  /** 还没交付的清单：与 `pickDelivery` / `counts.undelivered` 同一判据。
+   *  拿不到结果的那一份也在里面 —— 它确实没交付过，不假装。 */
+  private undeliveredOf(active: ActiveResearch): XResearchWaitResult['undelivered'] {
+    return [...active.submissions.values()]
+      .filter((submission) => submission.endedAt != null && !submission.deliveredAt)
+      .map((submission) => ({
+        submissionId: submission.submissionId, operation: submission.operation,
+        objective: submission.objective, state: submission.state,
+      }));
   }
 
   /** 每个 thread 一条尾链：x 的风控与「一个 thread 一个标签页」都要求串行（spec §4.3）。 */
@@ -353,7 +467,9 @@ export class XResearchTaskService {
         },
         onProgress: (event) => this.progress(active, submission, event),
       });
-      this.settle(submission, result);
+      // 交付优先用这一份：它就是 `settle` 写结论、并按包络额度裁过的那一份字节
+      // （卡与交付出去的结果不许各自一套结论）。
+      active.results.set(submission.submissionId, this.settle(active, submission, result));
     } catch (err) {
       // 工作体抛出 = 这一轮没有结果。没有结果就没有任何行结论（见 `interrupt`）。
       // 先留一条诊断：抛出被收在这里，日志是它唯一露面的地方。
@@ -382,7 +498,8 @@ export class XResearchTaskService {
   }
 
   /** 收尾：结果的行序就是请求的行序（采集循环按 query / target 顺序跑），工作项按同一个序展开。 */
-  private settle(submission: XResearchSubmission, result: XResearchResult): void {
+  private settle(active: ActiveResearch, submission: XResearchSubmission,
+    result: XResearchResult): XResearchResult {
     const rows: readonly (XSearchObservation | XReadObservation)[] =
       result.operation === 'search' ? result.queries : result.targets;
     if (result.operation === submission.operation) {
@@ -404,6 +521,19 @@ export class XResearchTaskService {
     submission.state = concluded ? 'done' : 'interrupted';
     submission.endedAt = this.now();
     submission.usage = usageOf(submission.workItems);
+    // R20：结果只按今天的工件格式落一次，提交记录里只存 ref —— 重启后的交付靠它把结果读回来。
+    if (result.artifact) submission.artifact = result.artifact;
+    else delete submission.artifact;
+    // 控制器裁决（T5，B'）：交付副本在这里按**量出来的**包络额度裁一次，交付路径不再裁第二次。
+    // 额度 = 1 MiB 减去壳与快照占的字节（壳按交付时的形状搭一遍量出来，没有写死的常数）。
+    return clipForEnvelope({
+      researchRunId: active.record.researchRunId,
+      snapshot: this.snapshotOf(active),
+      submissionId: submission.submissionId,
+      submitCallId: submission.submitCallId,
+      operation: submission.operation,
+      result,
+    });
   }
 
   /** 没有结果的工作项停在这里：`state: 'stopped'` + `status: null` 就是「中断」在投影里的形状。 */

@@ -4,6 +4,7 @@
 // 会让两份词表各自漂移（卡片上一个不认识的词，任何测试都不会红）。两个词表放在
 // `./xResearchStatus`（采集层的 `src/main/x/xResearchTypes.ts` 从那里 re-export 同一个声明）。
 import type { XResearchStatus, XStopReason } from './xResearchStatus';
+import type { XArtifactRef } from './xArtifactRef';
 
 /** 研究段的状态词。`interrupted` 只在盘上还留着未收尾的工作时出现（§4.4 的崩溃诚实性）。 */
 export type XResearchTaskState = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -55,6 +56,9 @@ export type XResearchSubmission = {
   workItems: XResearchWorkItem[];
   createdAt: string;
   endedAt: string | null;
+  /** 这份结果的工件（R20：结果只按今天的工件格式落一次，不另写 canonical 副本）。
+   *  重启后的交付靠它把结果读回来；工件写失败过的那一份没有这个字段 —— 那份结果只在内存里可交付。 */
+  artifact?: XArtifactRef;
   deliveredAt?: string;
   deliveryCallId?: string;
 };
