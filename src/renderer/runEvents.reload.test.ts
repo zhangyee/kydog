@@ -6,6 +6,8 @@ import { useAskStore } from './stores/askStore';
 import type { AskQuestion } from '../shared/askQuestion';
 import type { RunEvent } from '../shared/protocol';
 import type { AssistantBlock } from '../shared/types';
+import type { XResearchTaskSnapshot } from '../shared/xResearchTask';
+import { useXResearchTaskStore } from './stores/xResearchTaskStore';
 
 const TID = 'thr-1';
 const RID = 'run-1';
@@ -230,5 +232,44 @@ describe('initHistory 与直播追加的先后', () => {
     useThreadsStore.getState().initHistory(TID, msgs);
     useThreadsStore.getState().initHistory(TID, msgs);
     expect(useThreadsStore.getState().historyByThread[TID]).toHaveLength(2);
+  });
+});
+
+/**
+ * `run.resync` 也作废 x research 的快照池（R63）。
+ *
+ * 重载后紧跟着的是本轮 journal 的重放，但研究快照不在这份 journal 里 —— 它在主进程的
+ * x research 服务里另存一份。所以「作废」这一半得显式做：留着重载前那几行，卡会拿一份
+ * 比盘上更旧的状态去渲染，而下一次广播带来的已经是更晚的 revision（卡不会自己修回去，
+ * 它只是把手里那份当权威）。清的范围与 web 那边同一条规矩：只清这条 thread 的。
+ */
+describe('run.resync 作废 x research 的快照池（只清这条 thread）', () => {
+  beforeEach(() => {
+    resetStores();
+    useXResearchTaskStore.setState({ snapshotsByRunId: {} });
+  });
+
+  function xSnapshot(threadId: string, researchRunId: string): XResearchTaskSnapshot {
+    return {
+      researchRunId, threadId, revision: 1, state: 'running',
+      createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:01.000Z',
+      objective: '这段研究最初要回答的问题',
+      counts: { submissions: 1, queued: 0, running: 1, done: 0, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 0, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 0, searchTotal: 1, readDone: 0, readTotal: 0 },
+      budget: { scrolls: 100, expandActions: 100 },
+      usage: { posts: 0, scrolls: 0, expandActions: 0 },
+      search: [], read: [],
+    };
+  }
+
+  it('这条 thread 的行被清掉，别的 thread 的行留着', () => {
+    useXResearchTaskStore.getState().upsert(xSnapshot(TID, 'xrun-a'));
+    useXResearchTaskStore.getState().upsert(xSnapshot(`other-${TID}`, 'xrun-b'));
+
+    applyRunEvent(resync());
+
+    expect(useXResearchTaskStore.getState().snapshotsByRunId['xrun-a']).toBeUndefined();
+    expect(useXResearchTaskStore.getState().snapshotsByRunId['xrun-b']).toBeDefined();
   });
 });
