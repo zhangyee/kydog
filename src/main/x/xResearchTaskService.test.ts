@@ -11,7 +11,9 @@ import { tempXArtifactStore } from '../../test-support/xArtifactStore';
 import type { XNetworkPageFact } from './xNetworkLease';
 import type { XResearchArtifactStore } from './xResearchArtifacts';
 import { XResearchTaskStore } from './xResearchTaskStore';
-import { XResearchTaskService, type XResearchRunWork } from './xResearchTaskService';
+import {
+  XResearchTaskService, registerXResearchTaskService, xResearchTaskService, type XResearchRunWork,
+} from './xResearchTaskService';
 import type {
   XArticleFacts, XArtifactRef, XReadObservation, XReadRequest, XResearchResult, XSearchObservation,
   XSearchRequest, XTextObservation,
@@ -1087,5 +1089,36 @@ describe('XResearchTaskService inspect / cancel', () => {
     blockerRelease.open();
     await service.whenIdle(thread.threadId, blocker.researchRunId);
     expect((await service.get(thread.threadId, blocker.researchRunId)).state).toBe('completed');
+  });
+});
+
+describe('registerXResearchTaskService：进程级实例只许有一个', () => {
+  afterEach(() => { registerXResearchTaskService(undefined); });
+
+  /** 登记缝只比身份：这两个假实例从不被调用，构造整台 service 只会把判据埋进无关依赖里。 */
+  function token(label: string): XResearchTaskService {
+    return { label } as unknown as XResearchTaskService;
+  }
+
+  it('同一实例重复登记无害，第二个不同的实例当场抛 research.conflict', () => {
+    const first = token('first');
+    const second = token('second');
+    registerXResearchTaskService(first);
+    // 正控：同一条路、同一个实例再来一次不抛。下面那句的抛出因此来自「换了一个实例」。
+    expect(() => registerXResearchTaskService(first)).not.toThrow();
+    expect(xResearchTaskService()).toBe(first);
+    expect(() => registerXResearchTaskService(second)).toThrow(expect.objectContaining({ code: 'research.conflict' }));
+    // 拒绝发生在改状态之前：抛了之后登记的仍是原来那一个，不会留下「抛了但换了一半」。
+    expect(xResearchTaskService()).toBe(first);
+  });
+
+  it('中间夹一次 undefined 的重接线是允许的（T9 的 dispose / 重建走这条路）', () => {
+    const first = token('first');
+    const second = token('second');
+    registerXResearchTaskService(first);
+    registerXResearchTaskService(undefined);
+    expect(xResearchTaskService()).toBeNull();
+    expect(() => registerXResearchTaskService(second)).not.toThrow();
+    expect(xResearchTaskService()).toBe(second);
   });
 });

@@ -904,7 +904,17 @@ export class XResearchTaskService {
 let instance: XResearchTaskService | null = null;
 
 export function registerXResearchTaskService(service: XResearchTaskService | undefined): void {
-  instance = service ?? null;
+  const next = service ?? null;
+  // 同一实例重复登记是无害的；换一个实例则是接线错误：队列、在飞状态与 `onUpdate` 各自一份，
+  // 而两边的行为都说得通 —— 不抛的话，Task 9 的接线 bug 与「功能没开」在外部完全同形。
+  // 合法重接线的路是中间夹一次 `registerXResearchTaskService(undefined)`。
+  if (instance !== null && next !== null && next !== instance) {
+    throw new KydogError(
+      'research.conflict',
+      'X research task service is already registered; register(undefined) before wiring a different instance',
+    );
+  }
+  instance = next;
 }
 
 /** 未接线（x research 关闭、或这个进程还没建过会话）时回 `null`，**不抛**：

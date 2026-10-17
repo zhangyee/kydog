@@ -9,6 +9,10 @@ export type KydogErrorCode =
   // 往一段已经取消的研究里追加工作。与 not_found 分开：这条的下一步是**开一段新研究**
   // （没有 pause / resume），而 not_found 的下一步是把 id 找对。
   | 'research.cancelled'
+  // 进程级 x research task service 已经登记过，又被换成一个**另一个实例**。这是接线错误，
+  // 不是用户能触发的事：多实例会让队列与在飞状态各自一份。与 not_found 分开 ——
+  // 那一条的下一步是把 id 找对，这一条的下一步是修 `registerXResearchTaskService` 的调用点。
+  | 'research.conflict'
   | 'project.not_found'
   | 'project.access_denied'
   | 'agent.provider_error'

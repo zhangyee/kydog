@@ -190,7 +190,9 @@ describe('x research task RPC 转发到 service 上对应的那一个', () => {
 
 /**
  * 未接线（x research 关闭 / 这个进程还没建过会话）时：`taskList` 答空列表，其余三条答
- * `research.not_found`。这是 null 分支唯一的钉子 —— 生产里它只在启动早期可达。
+ * `research.not_found`。这是 null 分支唯一的钉子 —— 它**不是**启动早期的短暂状态：
+ * x research 的开关默认关闭，关着的时候整条进程都停在这里。
+ * 这些答案都在可见性闸**之后**：未接线不等于可以越过「主窗口正在看这个对话」那道判据。
  */
 describe('未接线时 x research task RPC 的答案', () => {
   it('taskList 答空列表（渲染层开对话就会调它，没有东西可显示不是错误）', async () => {
@@ -202,5 +204,20 @@ describe('未接线时 x research task RPC 的答案', () => {
       await expect(call(method, { threadId: THREAD, researchRunId: RUN, view: 'rows' }))
         .rejects.toMatchObject({ code: 'research.not_found' });
     }
+  });
+
+  // 下面两条钉的是**顺序**：未接线分支在 `assertResearchViewer` 之后。把 null 判定挪到闸上面，
+  // 这两句里的拒绝会变成「答空列表」，而 describe 里前三条照旧绿 —— 只看那三条看不出顺序。
+  // 每句前面都带同一条件下的正控（同一个 sender 看自己的对话 → 空列表）：拒绝不是因为这条路没通。
+  it('taskList 未接线也先过闸：别的对话答 research.not_found，不是空列表', async () => {
+    await expect(call('xResearch.taskList', { threadId: THREAD })).resolves.toEqual([]);
+    await expect(call('xResearch.taskList', { threadId: 'thread-b' }))
+      .rejects.toMatchObject({ code: 'research.not_found' });
+  });
+
+  it('taskList 未接线也先过闸：不是主窗口的 sender 答 research.not_found', async () => {
+    await expect(call('xResearch.taskList', { threadId: THREAD })).resolves.toEqual([]);
+    await expect(call('xResearch.taskList', { threadId: THREAD }, { id: 'hidden' }))
+      .rejects.toMatchObject({ code: 'research.not_found' });
   });
 });
