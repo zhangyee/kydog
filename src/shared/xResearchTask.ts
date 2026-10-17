@@ -118,8 +118,9 @@ export type XResearchTaskSnapshot = {
   read: XResearchWorkItem[];
 };
 
-/** 判定「这一行收尾了、且是源侧拒绝/失败」（spec §5.3 的「有失败」判据）。 */
-const X_RESEARCH_FAILURE_STATUSES: ReadonlySet<XResearchStatus> = new Set([
+/** 判定「这一行收尾了、且是源侧拒绝/失败」（spec §5.3 的「有失败」判据）。
+ *  `inspect` 的 `failures` 视图用同一个集合：两个读者各写一份，迟早各自漂移。 */
+export const X_RESEARCH_FAILURE_STATUSES: ReadonlySet<XResearchStatus> = new Set([
   'failed', 'unavailable', 'access_denied', 'auth_required', 'rate_limited', 'action_required',
 ]);
 

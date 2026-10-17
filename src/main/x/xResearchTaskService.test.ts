@@ -752,3 +752,142 @@ describe('XResearchTaskService', () => {
     expect((await service.get(thread.threadId, first.researchRunId)).counts.submissions).toBe(2);
   });
 });
+
+describe('XResearchTaskService inspect / cancel', () => {
+  it('pages rows in submission order then work-item order without touching state', async () => {
+    const { service } = harness(echoRunner);
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    const before = await service.get(thread.threadId, first.researchRunId);
+
+    const page = await service.inspect(thread.threadId, first.researchRunId, { view: 'rows', pageSize: 1 });
+    expect(page.items).toEqual([
+      expect.objectContaining({ submissionId: first.submissionId, operation: 'search', index: 0 }),
+    ]);
+    expect(page.nextCursor).toEqual(expect.any(String));
+    const next = await service.inspect(thread.threadId, first.researchRunId, {
+      view: 'rows', pageSize: 1, cursor: page.nextCursor,
+    });
+    expect(next.items).toEqual([expect.objectContaining({ submissionId: first.submissionId, index: 1 })]);
+    expect(next.nextCursor).toBeUndefined();
+    // inspect 只读：revision 与状态一个都没动（它读的就是快照背后的那批记录）。
+    expect(await service.get(thread.threadId, first.researchRunId)).toEqual(before);
+
+    // 页大小：缺省 20，上限 50。60 个工作项因此走两页。
+    const wide = Array.from({ length: 60 }, (_, index) => ({
+      id: `m${index}`, query: `query ${index}`, purpose: '看表现', product: 'Top' as const,
+    }));
+    await service.submit({ researchRunId: first.researchRunId, work: { search: searchWork({ queries: wide }) } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    expect((await service.inspect(thread.threadId, first.researchRunId, { view: 'rows' })).items).toHaveLength(20);
+    const capped = await service.inspect(thread.threadId, first.researchRunId, { view: 'rows', pageSize: 999 });
+    expect(capped.items).toHaveLength(50);
+    expect(capped.nextCursor).toBeDefined();
+    // 游标读不懂当场拒绝：静默从头发一页会让模型以为翻页成功了。
+    await expect(service.inspect(thread.threadId, first.researchRunId, { view: 'rows', cursor: 'not-a-cursor' }))
+      .rejects.toThrow('cursor');
+  });
+
+  it('reports the delivery authority of each submission', async () => {
+    const artifact = {
+      version: 1 as const, directoryId: 'dir-1', manifest: 'manifest.json' as const,
+      sha256: 'a'.repeat(64), bytes: 10, runId: 'run-1', callId: 'call-1',
+      batchId: 'xbatch_1', operation: 'search' as const,
+    };
+    let calls = 0;
+    const { service } = harness(async (work, ctx) => {
+      calls += 1;
+      return calls === 1 ? echoRunner(work, ctx).then((result) => ({ ...result, artifact })) : echoRunner(work, ctx);
+    });
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.submit({ researchRunId: first.researchRunId, work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+
+    const before = await service.inspect(thread.threadId, first.researchRunId, { view: 'deliveries' });
+    expect(before.items).toEqual([
+      expect.objectContaining({ submissionId: first.submissionId, deliveredAt: null, deliveryCallId: null, hasArtifact: true }),
+      expect.objectContaining({ deliveredAt: null, deliveryCallId: null, hasArtifact: false }),
+    ]);
+    await service.wait(thread.threadId, first.researchRunId, 'wait-1');
+    const after = await service.inspect(thread.threadId, first.researchRunId, { view: 'deliveries' });
+    // 交付标记只落在真交出去的那一份上：清单不猜「大概交过了」。
+    expect(after.items).toEqual([
+      expect.objectContaining({ submissionId: first.submissionId, deliveredAt: expect.any(String), deliveryCallId: 'wait-1' }),
+      expect.objectContaining({ deliveredAt: null, deliveryCallId: null }),
+    ]);
+  });
+
+  it('cancel on an idle research is a no-op and does not poison later submissions', async () => {
+    const { service } = harness(echoRunner);
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    const before = await service.get(thread.threadId, first.researchRunId);
+    const after = await service.cancel(thread.threadId, first.researchRunId);
+    // 空操作：连 revision 都不动（动了就说明白写了一次盘、改了一次状态）。
+    expect(after).toEqual(before);
+    const second = await service.submit({ researchRunId: first.researchRunId, work: { read: readWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    expect((await service.get(thread.threadId, first.researchRunId)).counts.submissions).toBe(2);
+    expect(second.researchRunId).toBe(first.researchRunId);
+  });
+
+  it('cancel does not wait for another research on the same thread', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const firstStarted = gate();
+    const secondGate = gate();
+    let calls = 0;
+    const { service } = harness(async (work, ctx) => {
+      calls += 1;
+      if (calls === 1) {
+        firstStarted.open();
+        await new Promise<void>((_resolve, reject) => {
+          ctx.signal.addEventListener('abort', () => reject(new Error('cancelled')));
+        });
+      } else await secondGate.promise;
+      return echoRunner(work, ctx);
+    });
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    await firstStarted.promise;
+    // 同一 thread 上的第二段研究排在它后面：cancel 等的是第一段**自己**在飞的那一份，
+    // 不是整条 thread 链（等链 = 点一下取消就要等另一段研究的采集跑完）。
+    const second = await service.submit({ work: { search: searchWork() } }, thread);
+    const outcome = await Promise.race([
+      service.cancel(thread.threadId, first.researchRunId).then(() => 'returned'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ]);
+    expect(outcome).toBe('returned');
+    expect((await service.get(thread.threadId, first.researchRunId)).state).toBe('cancelled');
+    // 翻面：被等的是「那段研究」，不是「这个 thread」—— 第二段研究照旧跑完。
+    expect(second.researchRunId).not.toBe(first.researchRunId);
+    secondGate.open();
+    await service.whenIdle(thread.threadId, second.researchRunId);
+    expect((await service.get(thread.threadId, second.researchRunId)).state).toBe('completed');
+  });
+
+  it('cancel flushes the cancellation to disk before it answers', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const dir = root();
+    const store = new XResearchTaskStore(dir);
+    const started = gate();
+    const { service } = harness(async (work, ctx) => {
+      started.open();
+      // 采集层照 `ctx.signal` 收尾：cancel 之后当场拒绝。
+      await new Promise<void>((_resolve, reject) => {
+        ctx.signal.addEventListener('abort', () => reject(new Error('cancelled')));
+      });
+      return echoRunner(work, ctx);
+    }, { store });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() } }, thread);
+    await started.promise;
+    const snapshot = await service.cancel(thread.threadId, submitted.researchRunId);
+    expect(snapshot.state).toBe('cancelled');
+    // 换一个 store 实例读同一块盘：返回时盘上已经是取消后的样子（R12：先 flush 再返回）。
+    const persisted = await new XResearchTaskStore(dir).readTask(thread.threadId, submitted.researchRunId);
+    expect(persisted).toMatchObject({ state: 'cancelled', stateReason: 'cancelled' });
+  });
+});

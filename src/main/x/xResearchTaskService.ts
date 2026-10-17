@@ -10,7 +10,8 @@ import type {
   XResearchSection, XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot,
   XResearchTaskState, XResearchWorkItem,
 } from '../../shared/xResearchTask';
-import { xResearchTaskSnapshot, xResearchTaskState } from '../../shared/xResearchTask';
+import { X_RESEARCH_FAILURE_STATUSES, xResearchTaskSnapshot, xResearchTaskState } from '../../shared/xResearchTask';
+import type { XResearchStatus, XStopReason } from '../../shared/xResearchStatus';
 import type { XResearchTaskStore } from './xResearchTaskStore';
 import type { XResearchArtifactStore } from './xResearchArtifacts';
 import { clipForEnvelope, pickDelivery } from './xResearchDeliver';
@@ -86,6 +87,78 @@ export type XResearchWaitResult = {
   undelivered: NonNullable<XResearchDeliveryEnvelope['undelivered']>;
 };
 
+export type XResearchInspectView = 'rows' | 'deliveries' | 'failures';
+
+export type XResearchInspectInput = {
+  view: XResearchInspectView;
+  /** 不透明的偏移记号（spec §九 把编码留给实现）：读不懂就拒绝，不静默从头发一页。 */
+  cursor?: string;
+  pageSize?: number;
+};
+
+/** `rows` 的一行：工作项原样给出，加上它属于哪次提交、是那次里的第几项。
+ *  行明细在快照里也有（卡片走快照），这里给的是**带提交身份**的那一份。 */
+export type XResearchInspectRow = {
+  kind: 'work_item';
+  submissionId: string;
+  operation: 'search' | 'read';
+  index: number;
+  item: XResearchWorkItem;
+};
+
+/** `deliveries` 的一行：提交级的交付权威（`deliveredAt` / `deliveryCallId`）与工件有没有落盘。
+ *  快照故意不带这层数据（它按工作项分桶），所以 `inspect` 是看它唯一的地方。 */
+export type XResearchInspectDelivery = {
+  kind: 'delivery';
+  submissionId: string;
+  operation: 'search' | 'read';
+  objective: string;
+  state: XResearchSubmission['state'];
+  endedAt: string | null;
+  deliveredAt: string | null;
+  deliveryCallId: string | null;
+  hasArtifact: boolean;
+};
+
+/** `failures` 的一行：只给结论（要看整行走 `rows`）。判据是快照「有失败」用的同一个集合。 */
+export type XResearchInspectFailure = {
+  kind: 'failure';
+  submissionId: string;
+  operation: 'search' | 'read';
+  index: number;
+  label: string;
+  status: XResearchStatus;
+  stopReason: XStopReason | null;
+  reason: string | null;
+};
+
+export type XResearchInspectItem = XResearchInspectRow | XResearchInspectDelivery | XResearchInspectFailure;
+
+/** 一页：快照 + 这一页的条目（+ 下一页的游标）。`snapshot` 让调用方不必再 `get` 一次。 */
+export type XResearchInspectResult = {
+  snapshot: XResearchTaskSnapshot;
+  items: XResearchInspectItem[];
+  nextCursor?: string;
+};
+
+const X_INSPECT_DEFAULT_PAGE_SIZE = 20;
+const X_INSPECT_MAX_PAGE_SIZE = 50;
+
+function encodeInspectCursor(offset: number): string {
+  return `o${offset}`;
+}
+function decodeInspectCursor(cursor: string | undefined): number {
+  if (cursor === undefined) return 0;
+  const matched = /^o(\d+)$/.exec(cursor);
+  if (!matched) throw new Error('x_research inspect: invalid cursor');
+  return Number(matched[1]);
+}
+function inspectPageSize(raw: number | undefined): number {
+  if (raw === undefined) return X_INSPECT_DEFAULT_PAGE_SIZE;
+  if (!Number.isInteger(raw) || raw < 1) throw new Error('x_research inspect: pageSize must be a positive integer');
+  return Math.min(raw, X_INSPECT_MAX_PAGE_SIZE);
+}
+
 /** 一个研究在本进程里的活状态。盘上只有落盘边界那一刻的副本，实时数字只在这里。 */
 type ActiveResearch = {
   record: XResearchTaskRecord;
@@ -94,6 +167,12 @@ type ActiveResearch = {
    *  只在这个进程里有效：重启后靠提交记录上的工件 ref 读回来（R20）。 */
   results: Map<string, XResearchResult>;
   controller: AbortController;
+  /** 这段研究被 `cancel` 过：之后排队的提交不再起跑、在飞的那一份按取消收尾。
+   *  跨重启的一致性靠盘上的 `state` / `stateReason`（见 `submit`），这个标记只管本进程的窗口。 */
+  cancelRequested: boolean;
+  /** 每份提交自己的执行体（`enqueue` 排上链时就记下、跑完就删）。`cancel` 等的是**在飞那一份
+   *  自己**的收尾 —— 等整条 thread 链会让同一 thread 上另一段研究排在后头的采集把 cancel 绑住。 */
+  pending: Map<string, Promise<void>>;
 };
 
 /** 「收 N 帖」= 去重后接纳的帖子数，不是保留的观测条数；`另省 N` 取采样省略数。
@@ -218,6 +297,8 @@ export class XResearchTaskService {
       // 上一个进程手里的结果已经随进程消失：这里只可能是空的，要交付就回到工件（R20）。
       results: new Map(),
       controller: new AbortController(),
+      cancelRequested: false,
+      pending: new Map(),
     };
     this.active.set(key, opened);
     // 「进行中」只可能来自一个已经不在的进程：`open` 读盘的前提就是这条研究没有内存活副本。
@@ -247,6 +328,8 @@ export class XResearchTaskService {
       submissions: new Map(),
       results: new Map(),
       controller: new AbortController(),
+      cancelRequested: false,
+      pending: new Map(),
     };
     this.active.set(this.key(owner.threadId, researchRunId), created);
     return created;
@@ -258,6 +341,12 @@ export class XResearchTaskService {
     const opened = input.researchRunId ? await this.open(owner.threadId, researchRunId) : null;
     if (input.researchRunId && !opened) {
       throw new KydogError('research.not_found', 'X research task not found');
+    }
+    // 已取消的研究不能续跑（`cancel` 是唯一的控制，没有 resume）：静默把这次提交排成「立刻 cancelled」
+    // 会让模型以为工作排上了。要接着做就开一段新研究。判据全在盘上，跨重启一致。
+    if (opened && (opened.cancelRequested || opened.record.state === 'cancelled'
+      || opened.record.stateReason === 'cancelled')) {
+      throw new Error('X research task was cancelled; start a new research');
     }
     const active = opened ?? this.create(owner, researchRunId);
     const createdAt = this.now();
@@ -386,6 +475,91 @@ export class XResearchTaskService {
     return { snapshot, delivery, undelivered: this.undeliveredOf(active) };
   }
 
+  /** 分页看行 / 交付清单 / 失败（spec §4.2、§4.5）：读的就是快照背后那批记录，
+   *  绝不重算状态、也不写盘 —— 它是同一份事实的另一种切法，不是第二份权威。 */
+  async inspect(threadId: string, researchRunId: string,
+    input: XResearchInspectInput): Promise<XResearchInspectResult> {
+    const active = await this.open(threadId, researchRunId);
+    if (!active) throw new KydogError('research.not_found', 'X research task not found');
+    if (input.view !== 'rows' && input.view !== 'deliveries' && input.view !== 'failures') {
+      throw new Error(`x_research inspect: unknown view ${String(input.view)}`);
+    }
+    const offset = decodeInspectCursor(input.cursor);
+    const pageSize = inspectPageSize(input.pageSize);
+    const items = this.inspectItems(active, input.view);
+    const page = items.slice(offset, offset + pageSize);
+    const end = offset + page.length;
+    return {
+      snapshot: this.snapshotOf(active),
+      items: page,
+      ...(end < items.length ? { nextCursor: encodeInspectCursor(end) } : {}),
+    };
+  }
+
+  /** 取消（spec §4.2）：`cancel` 是唯一的控制，没有 pause / resume。
+   *
+   *  排队中的提交当场写成 `cancelled` —— 一次导航都不会发生；在飞的那一份由任务的 AbortController
+   *  停下，采集层照 `ctx.signal` 收尾。**已经收尾的行保住它们的结论**（取消不抹掉观察过的事实），
+   *  没收尾的行写成 `cancelled`：那是「为什么停了」的事实，不是崩溃留下的「中断」。
+   *  已完成的提交不受影响：`wait` 照样交付它们。
+   *
+   *  没有排队/在飞的提交就是空操作：不改状态、不写盘，也不把研究毒成「已取消」（否则一段做完的
+   *  研究只因为点过一次取消就再也追加不了工作）。 */
+  async cancel(threadId: string, researchRunId: string): Promise<XResearchTaskSnapshot> {
+    const active = await this.open(threadId, researchRunId);
+    if (!active) throw new KydogError('research.not_found', 'X research task not found');
+    const inFlight = [...active.submissions.values()].filter(
+      (submission) => submission.state === 'queued' || submission.state === 'running',
+    );
+    if (!inFlight.length) return this.snapshotOf(active);
+    active.cancelRequested = true;
+    active.controller.abort();
+    const queued = inFlight.filter((submission) => submission.state === 'queued');
+    for (const submission of queued) this.cancelSubmission(submission);
+    // 等在飞那一份**自己**照信号收尾（`run` 按 `cancelRequested` 把它写成 cancelled 并落盘）。
+    // 不等整条 thread 链：同一 thread 上另一段研究排在后面的采集与这次取消无关，等它会把
+    // 「点一下取消」变成「等几分钟」。返回时盘上已经是取消后的样子（R12：先 flush 再返回）。
+    for (const submission of inFlight) {
+      if (submission.state !== 'running') continue;
+      await active.pending.get(submission.submissionId)?.catch(() => undefined);
+    }
+    return this.persist(active, queued, 'cancelled');
+  }
+
+  /** 每个视图都按**提交序 → 工作项序**铺开：翻页因此是稳定的，游标只是偏移。
+   *  `failures` 与快照的「有失败」用同一个集合，不另写一份词表。 */
+  private inspectItems(active: ActiveResearch, view: XResearchInspectView): XResearchInspectItem[] {
+    const submissions = [...active.submissions.values()];
+    if (view === 'deliveries') {
+      return submissions.map((submission): XResearchInspectDelivery => ({
+        kind: 'delivery',
+        submissionId: submission.submissionId,
+        operation: submission.operation,
+        objective: submission.objective,
+        state: submission.state,
+        endedAt: submission.endedAt ?? null,
+        deliveredAt: submission.deliveredAt ?? null,
+        deliveryCallId: submission.deliveryCallId ?? null,
+        hasArtifact: submission.artifact !== undefined,
+      }));
+    }
+    const rows = submissions.flatMap((submission) => submission.workItems.map(
+      (item, index): XResearchInspectRow => ({
+        kind: 'work_item', submissionId: submission.submissionId,
+        operation: submission.operation, index, item,
+      }),
+    ));
+    if (view === 'rows') return rows;
+    return rows.flatMap((row): XResearchInspectFailure[] => {
+      const { status, stopReason, reason, label } = row.item;
+      if (status === null || !X_RESEARCH_FAILURE_STATUSES.has(status)) return [];
+      return [{
+        kind: 'failure', submissionId: row.submissionId, operation: row.operation,
+        index: row.index, label, status, stopReason, reason,
+      }];
+    });
+  }
+
   /** 这份提交能不能交出结果：服务手里那份优先（它就是 `settle` 写结论用的那一份字节），
    *  只有在内存里没有它（重启后）时才走工件。工件里存的是完整 canonical，读回来要照今天的
    *  预算再裁一次，并且和收尾路径一样按**量出来的包络额度**裁（控制器裁决 T5/B'）——
@@ -448,7 +622,11 @@ export class XResearchTaskService {
     // 一条链上的失败不许卡住后续提交：`run` 自己吞掉工作体的异常，这里再兜一次。
     const run = prior.catch(() => undefined).then(() => this.run(active, submission, work));
     this.chains.set(threadId, run);
-    const release = (): void => { if (this.chains.get(threadId) === run) this.chains.delete(threadId); };
+    active.pending.set(submission.submissionId, run);
+    const release = (): void => {
+      if (this.chains.get(threadId) === run) this.chains.delete(threadId);
+      active.pending.delete(submission.submissionId);
+    };
     void run.then(release, () => {
       // `run` 只会在落盘失败时拒绝。还挂在「进行中」上的提交收成「中断」，再尽力落一次盘；
       // 第二次失败也只能放弃 —— 但它不许变成 unhandled rejection，也不许卡住队列。
@@ -460,6 +638,12 @@ export class XResearchTaskService {
 
   private async run(active: ActiveResearch, submission: XResearchSubmission,
     work: XResearchWorkRequest): Promise<void> {
+    // 取消之后不再起跑：排队中的提交在 `cancel` 那一刻就有结论，采集层一次都不该被碰。
+    if (active.cancelRequested) {
+      this.cancelSubmission(submission);
+      await this.persist(active, [submission], 'cancelled');
+      return;
+    }
     submission.state = 'running';
     await this.persist(active, [submission]);
     try {
@@ -490,9 +674,14 @@ export class XResearchTaskService {
         threadId: active.record.threadId, researchRunId: active.record.researchRunId,
         submissionId: submission.submissionId, err: String(err),
       });
-      this.interrupt(submission);
+      // 因取消而停下的是「取消」，不是崩溃留下的「中断」（见 `cancelSubmission`）。
+      if (!active.cancelRequested) this.interrupt(submission);
     }
-    await this.persist(active, [submission]);
+    // 取消可能恰好落在收尾前后：这一份仍按「被取消」收尾（已收尾的行结论原样保留），
+    // 并且在盘上留下「被取消」这条理由 —— `state` 只由投影决定（可能仍是 completed），
+    // 重启后的 `submit` 与卡片都要靠这条理由知道这段研究已经被停过。
+    if (active.cancelRequested) this.cancelSubmission(submission);
+    await this.persist(active, [submission], active.cancelRequested ? 'cancelled' : undefined);
   }
 
   /** 进度事件说的是「这一行此刻在哪个阶段」，不是结论：`status` / `stopReason` / `reason`
@@ -554,6 +743,22 @@ export class XResearchTaskService {
     if (clipped.reportRunScopeFacts) submission.reportRunScopeFacts = clipped.reportRunScopeFacts;
     else delete submission.reportRunScopeFacts;
     return clipped;
+  }
+
+  /** 取消的收尾：已经收尾的行保住结论（spec §4.2「保留已完成的观察」），没收尾的行写成
+   *  `cancelled` —— 用户停的，不是进程被杀。 */
+  private cancelSubmission(submission: XResearchSubmission): void {
+    if (submission.state === 'cancelled') return;
+    for (const workItem of submission.workItems) {
+      if (workItem.state === 'stopped') continue;
+      workItem.state = 'stopped';
+      workItem.phaseDetail = null;
+      workItem.status = 'cancelled';
+      workItem.stopReason = 'cancelled';
+    }
+    submission.state = 'cancelled';
+    submission.endedAt = this.now();
+    submission.usage = usageOf(submission.workItems);
   }
 
   /** 没有结果的工作项停在这里：`state: 'stopped'` + `status: null` 就是「中断」在投影里的形状。 */

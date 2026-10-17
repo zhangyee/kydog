@@ -12,7 +12,9 @@
 // `settle` 写结论用的那一份，卡与交付永远说同一件事（`clipForEnvelope`）。
 import { serializeXResearchResult, xResearchToolResult } from './xResearchOutput';
 import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult } from './xResearchTypes';
-import type { XResearchDelivery, XResearchDeliveryEnvelope } from './xResearchTaskShell';
+import type {
+  XResearchDelivery, XResearchDeliveryEnvelope, XResearchInspectPage,
+} from './xResearchTaskShell';
 import type { XResearchSubmission, XResearchTaskSnapshot } from '../../shared/xResearchTask';
 
 /** 一次 `wait` 要交付的那一份：**提交顺序**下最早的「已收尾、未交付」的一份。
@@ -33,7 +35,9 @@ export type XResearchEnvelopeInput = {
   /** 这一轮交付的结果；没有可交付的（队列空了 / 结果都不在了）就是 `null`。 */
   delivery: XResearchDelivery | null;
   undelivered: XResearchDeliveryEnvelope['undelivered'];
-  action: 'wait';
+  action: XResearchDeliveryEnvelope['action'];
+  /** `inspect` 的那一页：也算进整包字节 —— 模型看到的一切都在同一次测量里。 */
+  inspect?: XResearchInspectPage;
 };
 
 /** 交付身份里除那一份结果以外的部分：收尾时就全知道，只有 `deliveryCallId` 要等 `wait` 那一轮。 */
@@ -60,6 +64,7 @@ function envelopeOf(input: XResearchEnvelopeInput): XResearchDeliveryEnvelope {
     status: input.snapshot.state,
     snapshot: input.snapshot,
     ...(input.delivery ? { delivery: input.delivery } : {}),
+    ...(input.inspect ? { inspect: input.inspect } : {}),
     ...(input.undelivered?.length ? { undelivered: input.undelivered } : {}),
   };
 }
@@ -175,5 +180,9 @@ export function deliverEnvelope(input: XResearchEnvelopeInput): {
       `x_research: the delivery envelope exceeds the 1 MiB tool-result budget (${bytes} bytes)`,
     );
   }
-  return { content: [{ type: 'text', text: JSON.stringify(envelope) }], details: envelope };
+  // `details` 与 `content` 是同一份字节的两种写法：壳里的快照与工作项与任务内存**共享对象**，
+  // 而任务在工具返回之后还会继续推进（R22 的同一个隐患）—— 从同一份文本反解，工具结果才不会
+  // 事后改口（`submit` 返回的「排队中」不会在几分钟后变成「已完成」）。
+  const text = JSON.stringify(envelope);
+  return { content: [{ type: 'text', text }], details: JSON.parse(text) as XResearchDeliveryEnvelope };
 }
