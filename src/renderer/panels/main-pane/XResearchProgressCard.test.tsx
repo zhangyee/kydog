@@ -58,7 +58,7 @@ const READ_ROWS: XResearchWorkItem[] = [
 ];
 
 function snapshot(over: Partial<XResearchTaskSnapshot> = {}): XResearchTaskSnapshot {
-  return {
+  const base: XResearchTaskSnapshot = {
     researchRunId: 'xrun-a', threadId: 'thread-1', revision: 1, state: 'running',
     createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:01.000Z',
     objective: 'Qwen3.8 27B 量化版在 agentic 任务上的实际表现',
@@ -69,8 +69,14 @@ function snapshot(over: Partial<XResearchTaskSnapshot> = {}): XResearchTaskSnaps
     budget: { scrolls: 12500, expandActions: 10000 },
     usage: { posts: 128, scrolls: 12, expandActions: 2 },
     search: SEARCH_ROWS, read: READ_ROWS,
-    ...over,
   };
+  // 终态快照里没有排队/在飞的行（生产里 `settle` / `cancelSubmission` 把它们都收尾了）：
+  // 夹具跟着这条不变量走，否则一个「完成」的快照还带着 queued/running 的计数 —— 那是造不出来的形状。
+  // 想造「状态词与计数各说各的」那条用例自己给 `counts`（取消入口的判据靠它翻面）。
+  if (over.state !== undefined && over.state !== 'running' && over.counts === undefined) {
+    return { ...base, ...over, counts: { ...base.counts, queued: 0, running: 0 } };
+  }
+  return { ...base, ...over };
 }
 const running = snapshot();
 
@@ -331,6 +337,52 @@ describe('XResearchProgressCard', () => {
     expect(live).toContain('读文章');
     // 段落 span 只有那一个：三行里两行 `phaseDetail: null`，一行 `article`。
     expect(phaseDetails(mounted.tree).map(visibleText)).toEqual(['读文章']);
+  });
+
+  it('offers cancel while work is still queued or running, whatever the state word says', async () => {
+    // `interrupted` 是黏的：一份失败的提交把它留在盘上，而往同一段研究追加的工作可能正在跑。
+    // 卡上的取消入口因此不能只认状态词 —— 认它就会在一段**正在采集**的研究上把按钮藏掉，
+    // 用户没有任何办法停下它（「停止」按钮只中止 agent 回合，spec §4.7）。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 1, state: 'interrupted',
+      counts: { ...running.counts, queued: 0, running: 1, interrupted: 1 } }));
+    const collecting = mount(XResearchProgressCard, props);
+    await collecting.settle();
+    expect(collecting.query('x-research-cancel')).not.toBeNull();
+
+    // 翻面：同一张卡，活干完了（中断仍留在状态词上）—— 没有可停的东西，入口消失。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 2, state: 'interrupted',
+      counts: { ...running.counts, queued: 0, running: 0, interrupted: 1 } }));
+    collecting.rerender(props);
+    expect(collecting.query('x-research-cancel')).toBeNull();
+  });
+
+  it('keeps a row that stopped without a conclusion free of its numbers', async () => {
+    // 进程被杀留下的行是 `stopped` + `status: null`（没有节流落盘，spec §4.4）：计数停在最后一次
+    // 落盘上，`收 0 帖` / `无根帖` 会把一份没人观测到的残缺当结论。行自己已经说「中断」。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 1, state: 'running', search: [
+      workItem({ section: 'search', label: 'interrupted-query', state: 'stopped', status: null }),
+      workItem({ section: 'search', label: 'observed-query', product: 'Top', state: 'stopped',
+        status: 'observed', posts: 87, pages: 3 }),
+      workItem({ section: 'search', label: 'live-query', state: 'collecting', posts: 5 }),
+    ], read: [
+      workItem({ section: 'read', label: 'interrupted-target', state: 'stopped', status: null }),
+      workItem({ section: 'read', label: 'observed-target', state: 'stopped', status: 'observed',
+        hasRoot: true, replies: 42, article: 'body' }),
+    ] }));
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    const byLabel = (label: string) => rows(mounted.tree).map(visibleText)
+      .find((text) => text.includes(label))!;
+
+    expect(byLabel('interrupted-query')).toContain('中断');
+    expect(byLabel('interrupted-query')).not.toContain('收 0 帖');
+    expect(byLabel('interrupted-target')).toContain('中断');
+    expect(byLabel('interrupted-target')).not.toContain('无根帖');
+    expect(byLabel('interrupted-target')).not.toContain('根帖');
+    // 正控（同一条用例里）：有结论的行与还在飞的行照常报数 —— 上面两条不是「整段都不报数」。
+    expect(byLabel('observed-query')).toContain('收 87 帖');
+    expect(byLabel('live-query')).toContain('收 5 帖');
+    expect(byLabel('observed-target')).toContain('根帖 + 42 回复');
   });
 
   it('asks for confirmation before cancelling and does nothing when declined', async () => {

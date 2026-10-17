@@ -125,18 +125,22 @@ function budgetLine(snapshot: XResearchTaskSnapshot): string {
  * 搜索行：query + 产品 + 状态 + `收 N 帖`（`budgetUsage.distinctEntries` 的去重帖数）
  * + `另省 N`（`sampleTruncation.omitted`，只在 >0 时有内容）+ `N 页`（被接纳的网络页数）。
  * 每条都来自行自己的字段；行还没起跑（`queued`）时一个数字都不说 —— 「收 0 帖」会被读成结论。
+ * `interrupted` 的行也一样：`stopped` + `status: null` 是「进程被杀在中间」的形，它的计数只长到
+ * 最后一次落盘 / 最后一次进度回调，拿它当结论就会写出「收 0 帖」这种没人观测到的数（spec §4.4）。
  */
 function searchRowElement(row: XResearchWorkItem, index: number) {
   const started = row.state !== 'queued';
+  // 有结论的收尾行才谈数字：`stopped` 而没有 `status` 的那一类只能说「中断」。
+  const counted = started && !(row.state === 'stopped' && row.status === null);
   return (
     <div key={row.workItemId} data-testid="x-research-row" data-section="search" style={ROW_STYLE}>
       <span style={MARK_STYLE}>{numberMark(index)}</span>
       <span className="truncate" title={row.label} style={ROW_LABEL_STYLE}>{row.label}</span>
       {row.product && <span data-testid="x-research-row-product" style={SOFT_STYLE}>{row.product}</span>}
       <span style={SOFT_STYLE}>{rowStateWord(row)}</span>
-      {started && <span style={SOFT_STYLE}>收 {row.posts} 帖</span>}
-      {started && row.omitted > 0 && <span style={SOFT_STYLE}>另省 {row.omitted}</span>}
-      {started && row.pages > 0 && <span style={SOFT_STYLE}>{row.pages} 页</span>}
+      {counted && <span style={SOFT_STYLE}>收 {row.posts} 帖</span>}
+      {counted && row.omitted > 0 && <span style={SOFT_STYLE}>另省 {row.omitted}</span>}
+      {counted && row.pages > 0 && <span style={SOFT_STYLE}>{row.pages} 页</span>}
       {row.reason && <span style={REASON_STYLE}>{row.reason}</span>}
     </div>
   );
@@ -150,6 +154,9 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
 function readRowElement(row: XResearchWorkItem, index: number) {
   const started = row.state !== 'queued';
   const active = started && row.state !== 'stopped';
+  // `stopped` + `status: null` = 进程被杀留下的那一类：行自己已经说「中断」，它的根帖与回复数
+  // 停在最后一次落盘上，再说「无根帖」就是拿残缺的计数当结论（spec §4.4）。
+  const counted = started && !(row.state === 'stopped' && row.status === null);
   // `article === 'pending'` 说的是「要了、还没取到」。只有真在飞的那一行才是进行时的「请求中」：
   // 排队行说义务（`待取`），收尾行说的是它没走到取文章那一步（`concludeRow` 不收尾这个字段），
   // 对着一行已经有结论的行说「请求中」等于承诺一件再也不会发生的事。
@@ -165,9 +172,9 @@ function readRowElement(row: XResearchWorkItem, index: number) {
         <span data-testid="x-research-phase-detail" style={SOFT_STYLE}>
           {PHASE_DETAIL_WORD[row.phaseDetail]}
         </span>}
-      {started && row.hasRoot && <span style={SOFT_STYLE}>根帖 + {row.replies} 回复</span>}
+      {counted && row.hasRoot && <span style={SOFT_STYLE}>根帖 + {row.replies} 回复</span>}
       {/* 收尾了还没拿到根帖才是「无根帖」；还在飞的时候只是「还没拿到」，不能这么说。 */}
-      {started && !row.hasRoot && row.state === 'stopped' && <span style={SOFT_STYLE}>无根帖</span>}
+      {counted && !row.hasRoot && row.state === 'stopped' && <span style={SOFT_STYLE}>无根帖</span>}
       {/* 文章四态是提交时就声明过的义务（没要 / 要了），起跑前就说得出，不依赖 `started`。 */}
       <span style={SOFT_STYLE}>{articleWord}</span>
       {active && <span style={SOFT_STYLE}>展开 {row.expandActions} · 滚动 {row.scrolls}</span>}
@@ -300,8 +307,11 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
       {summary !== '' &&
         <div data-testid="x-research-summary" style={SUMMARY_STYLE}>{summary}</div>}
       {snapshot && <div data-testid="x-research-budget" style={BUDGET_STYLE}>{budgetLine(snapshot)}</div>}
-      {/* 取消放在收起区之外：用户手动收起之后，运行中的那段研究仍然要停得下来。 */}
-      {snapshot && state === 'running' &&
+      {/* 取消放在收起区之外：用户手动收起之后，运行中的那段研究仍然要停得下来。
+          判据是**队列里还有没有活**，不是状态词：`interrupted` 是黏的（一份失败的提交就把它留在盘上），
+          而一段刚追加了工作、正在采集的研究会因为那个词被判成中断 —— 卡收起、取消入口消失，
+          用户于是没有办法停下它。`counts.queued + counts.running` 就是「还有活」的可执行形式。 */}
+      {snapshot && snapshot.counts.queued + snapshot.counts.running > 0 &&
         <button type="button" data-testid="x-research-cancel" disabled={cancelling}
           onClick={() => { void cancelResearch(); }} style={CANCEL_STYLE}>
           {cancelling ? '取消中' : '取消研究'}

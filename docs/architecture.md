@@ -45,6 +45,8 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 **X 研究的任务快照走另一条线，不在 `run.*` journal 里。** `xResearch.taskUpdated` 的载荷是任务快照（`XResearchTaskSnapshot`：状态、计数、逐行工作项），来源是主进程的 `XResearchTaskService`——队列与在飞状态在进程内存里，落盘在 `~/.kydog/x-research/<threadId>/<researchRunId>/`（`task.json` 是研究级索引、`submission-<id>.json` 是提交级工作项与实时状态；结果正文按工件格式单独落盘，提交记录只存 `artifact` 引用，交付时按那个引用读回来）。于是渲染进程重载时 `run.resync` 带不回它：开对话时 `thread.loadHistory` 那条路顺手拉一次 `xResearch.taskList` 补全整批，之后靠广播跟；卡片自己用 `xResearch.taskGet` 补齐它那一份。研究工作跑在 `run.ended` **之后**，卡也要跟着走——这两件事不能靠一条 journal 的时序。
 
+**与 spec §4.4 的偏差（知情接受）：实时状态不按节流窗口落盘。** 盘上只在状态转移（提交、开跑、收尾、取消、交付标记）时更新，滚动数 / 帖数这类活计数只在内存里。于是进程被杀之后，`submission-*.json` 里的行会停在 `stopped` 且没有结论——卡对这类行只说「中断」，不报「收 0 帖」「无根帖」这种没人观测到的残缺计数。
+
 其他非直觉点（为什么按 run 而不是按 pi message 合成 messageId、为什么并行判定要读 `message_end` 携带的 content）写在 `src/main/agent/AgentService.ts` 的注释里，改那块之前先读。
 
 ## 用户消息里的结构（附件、批注、@ 引用）

@@ -60,9 +60,17 @@ describe('xResearchTaskState：状态只从提交与工作项推出来', () => {
       .toBe('interrupted');
   });
 
-  it('puts 中断 above 取消 and 运行 above 失败', () => {
+  it('puts 运行 above 中断, and 中断 above 取消', () => {
+    // 有活就说是「进行中」：`interrupted` 是黏的（一份失败的提交把它留在盘上，而 `submit` 允许往
+    // 一段已中断的研究上追加工作），一段**正在采集**的研究不能因为那个词被判成中断 —— 卡会收起行
+    // 列表、把取消入口藏掉，用户没有办法停下它。
     expect(xResearchTaskState([
       submission({ state: 'interrupted' }), submission({ state: 'running' }),
+    ])).toBe('running');
+    // 翻面：没有活的时候那个词才作数。
+    expect(xResearchTaskState([
+      submission({ state: 'interrupted' }),
+      submission({ state: 'done', workItems: [item({ status: 'observed' })] }),
     ])).toBe('interrupted');
     expect(xResearchTaskState([
       submission({ state: 'running', workItems: [item({ status: 'failed' })] }),

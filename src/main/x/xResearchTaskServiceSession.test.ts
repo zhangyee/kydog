@@ -107,6 +107,42 @@ it('cancels in-flight work when the session is disposed and marks it interrupted
   expect(stored.counts).toMatchObject({ interrupted: 1, running: 0, queued: 0 });
 });
 
+it('marks a torn-down research interrupted even though the collector returns cancelled rows instead of throwing', async () => {
+  // 采集层的拆除形状同样不是抛错：`context.signal` 一响，它把剩下的行映成 `status: 'cancelled'`
+  // 再返回（spec §4.7）。只看行数的收尾会把这段研究写成 `done`，而 §4.6 要的是 `interrupted` ——
+  // 会话没了和被用户取消是两件事，卡上不能都说成「完成」。
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const runWork: XResearchRunWork = async (_work, ctx) => {
+    const result = searchResult({ search: searchInput.search }, {
+      browser: {} as never, threadId: ctx.threadId, sources: new Map(),
+      runId: ctx.runId, callId: ctx.submitCallId, batchId: ctx.batchId,
+    });
+    markStarted();
+    await new Promise<void>((resolve) => {
+      if (ctx.signal.aborted) resolve();
+      else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+    for (const row of result.queries) {
+      row.status = 'cancelled';
+      row.stopReason = 'cancelled';
+    }
+    return result;
+  };
+  const service = serviceWith(runWork);
+  const thread = owner();
+  const submitted = await service.submit({ work: searchWork() }, thread);
+  await started;
+  await disposeXResearchThread(thread.threadId);
+  const torn = await service.get(thread.threadId, submitted.researchRunId);
+  expect(torn.state).toBe('interrupted');
+  // 行自己的结论仍是采集层说的「这一轮被取消了」，研究级的生命周期由 `record.state` 说「中断」：
+  // 桶按行分，状态词说这段研究为什么停下（spec §5.3）。两头都要在，所以两条都断。
+  expect(torn.counts).toMatchObject({
+    cancelled: submitted.snapshot.search.length, interrupted: 0, running: 0, queued: 0,
+  });
+});
+
 it('never delivers into a ledger that belongs to a disposed session', async () => {
   const seen: { signal?: AbortSignal; started: Promise<void> } = { started: Promise.resolve() };
   const service = serviceWith(hangingRunner(seen));

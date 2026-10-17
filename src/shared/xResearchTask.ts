@@ -134,19 +134,27 @@ export const X_RESEARCH_FAILURE_STATUSES: ReadonlySet<XResearchStatus> = new Set
 ]);
 
 /** 研究状态。顺序就是优先级（spec §5.3 的卡状态表 + §4.4 的中断诚实性）：
- *  中断 > 取消 > 进行中 > 有失败 > 完成。
+ *  进行中 > 中断 > 取消 > 有失败 > 完成。
+ *
+ *  「进行中」排在「中断」之前是被一次缺陷逼出来的：`interrupted` 是**黏的**（收尾了的提交不再改结论，
+ *  而 `submit` 允许往一段已中断的研究上追加工作），于是「一份提交在盘上是中断 + 一份正在跑」是真实
+ *  状态，而后者的「正在进行」才是此刻的事实。反过来读（中断优先）会让一段**正在采集**的研究在卡上
+ *  显示「中断」、收起行列表、连取消入口都藏掉 —— 用户没有办法停下它。
+ *  「排队/在飞」不可能与「盘上未收尾」同时成立：盘上那份是上一次进程留下的，`open()` 会在读盘时
+ *  把它修成 `interrupted`（`repairRestarted`），所以这里看到 `queued` / `running` 一定是这一进程排上的。
  *
  *  调用方保证传入的列表非空（`record.submissionIds` 非空却读不出任何 submission 时，
  *  由 service 写 `interrupted`，不要调用本函数）；`[]` 落出的 `completed` 不是结论。 */
 export function xResearchTaskState(submissions: readonly XResearchSubmission[]): XResearchTaskState {
+  // 此刻真有工作在跑：这是最新的事实，任何「上一次留下的未收尾」都不能盖掉它。
+  if (submissions.some((submission) => submission.state === 'queued' || submission.state === 'running')) {
+    return 'running';
+  }
   // 盘上还留着未收尾的工作 → 进程被杀过，任何「最新」的说法都是假的。
   if (submissions.some((submission) => submission.state === 'interrupted')) return 'interrupted';
   // 取消是用户下的动作：只有整段研究都被取消才算取消，否则它可能已有成功的工作。
   if (submissions.length > 0 && submissions.every((submission) => submission.state === 'cancelled')) {
     return 'cancelled';
-  }
-  if (submissions.some((submission) => submission.state === 'queued' || submission.state === 'running')) {
-    return 'running';
   }
   for (const submission of submissions) {
     if (submission.workItems.some((item) => item.status !== null && X_RESEARCH_FAILURE_STATUSES.has(item.status))) {

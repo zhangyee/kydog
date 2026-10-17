@@ -2,7 +2,7 @@
  * `x_research` 改成动作面之后，63 只证明**协议层**（控制器裁决 R58）：`submit` 立即返回、工作活在
  * 回合之后、`wait` 一次交付一份、`xResearch.taskGet` 说的是真实状态、真重启之后状态与计数还在、
  * `cancel` 只收尾它自己那一段。卡片级断言（`data-status`、两段行数、取消入口、默认收放）在文件末尾
- * 那四条里：同一次启动、同一条会话，靠卡头（`x-research-objective`）在会话里认出「这一张卡」——
+ * 那几条里：同一次启动、同一条会话，靠卡头（`x-research-objective`）在会话里认出「这一张卡」——
  * `data-status` 会变，不能拿它当定位器。
  *
  * 读这份文件之前先知道夹具上的三件事：
@@ -77,6 +77,7 @@ const READ_OBJECTIVE = 'Read the observed root';
  *  也是 e2e 里唯一安全的定位键（`data-status` 会从运行中变到终态）。 */
 const LIFECYCLE_OBJECTIVE = 'Card lifecycle evidence';
 const CANCEL_OBJECTIVE = 'Card cancel evidence';
+const NAVIGATING_CANCEL_OBJECTIVE = 'Card cancel during navigation';
 const OCCUPANT_OBJECTIVE = 'Card queue occupant';
 /** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
 const TAB_ID = /^tab_[0-9a-f]{8}$/;
@@ -615,7 +616,7 @@ test.describe('x research task protocol closure (offline)', () => {
 
   // ── 卡片级说法（Task 16）──
   //
-  // 上面六条只看协议层。下面四条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
+  // 上面六条只看协议层。下面五条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
   // 两段各说各的行数、一段研究会不会长出第二张卡、取消入口走不走确认、默认收放与手动点击谁说话算数、
   // 卡停在哪一条消息里（最后一条提到它的那条，后面还有不提它的消息时也一样）。
   // 判据全部是「DOM 上看得见的东西」或协议事实（`xResearch.taskGet` / 工具包络），没有时间窗。
@@ -760,6 +761,36 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(await releaseHeldQuery()).toContain('/search');
     await expect(cardFor(OCCUPANT_OBJECTIVE)).toHaveAttribute('data-status', 'completed', { timeout: 15_000 });
     expect((await taskGet(occupant.researchRunId)).state).toBe('completed');
+    await expectOneCardPerResearch();
+  });
+
+  test('cancelling a research that is actually navigating ends cancelled, not completed', async () => {
+    // 采集层的取消形状是**返回**一份每行 `status: 'cancelled'` 的结果，不是抛错（spec §4.7）：
+    // 只看行数的收尾会把它写成 `done`，卡上读成「完成（部分被取消）」。这里让取消落在一次**真导航**上
+    // （闸门扣着第二个 query 的响应），于是「这一轮确实跑完了」与「它被用户取消了」同时为真 ——
+    // 只有停下来的原因能分辨它们，行数分辨不了。
+    holdNextQuery(SECOND_QUERY.query);
+    const submitRun = await run([call('x_research', {
+      action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY], NAVIGATING_CANCEL_OBJECTIVE),
+    })], undefined, 'the submit turn ended while the research was still running');
+    const submitted = envelope(submitRun[0]);
+    const card = cardFor(NAVIGATING_CANCEL_OBJECTIVE);
+    await expect(card).toHaveAttribute('data-status', 'running');
+    // 正向证明它在**导航**，不是排着队：代理里确实躺着一次 `/search` 请求（协议事实，不是时间窗）。
+    await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+    await expect.poll(async () => (await taskGet(submitted.researchRunId)).search.map(row => row.state))
+      .toEqual(['collecting', 'navigating']);
+
+    await card.getByTestId('x-research-cancel').click();
+    const dialog = launched.page.getByTestId('confirm-dialog');
+    await expect(dialog).toBeVisible();
+    await launched.page.getByTestId('confirm-dialog-confirm').click();
+    // 卡片与协议两边都得说「取消」：卡上画一个词而服务里是 `completed` 是两个事实各说各的。
+    await expect(card).toHaveAttribute('data-status', 'cancelled');
+    expect((await taskGet(submitted.researchRunId)).state).toBe('cancelled');
+    // 收尾：闸门里那份响应可能还挂着（客户端未必立刻放弃一条被取消的导航）——放掉它，
+    // 别把一份没人要的响应留到 afterAll。放行之后它落到一张已经没有采集在等的页上，无害。
+    await releaseHeldQuery();
     await expectOneCardPerResearch();
   });
 

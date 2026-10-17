@@ -678,8 +678,9 @@ describe('XResearchTaskService', () => {
     const delivered = await next.service.wait(thread.threadId, cancelled.researchRunId, 'wait-2');
     expect(delivered.delivery).not.toBeNull();
     // 盘上真的又被写过一次：`stateReason` 仍是 `cancelled` 不能只是因为没人碰过那份 fixture。
-    expect((await store.readTask(thread.threadId, cancelled.researchRunId))!.revision)
-      .toBeGreaterThan(before.revision);
+    // `wait` 的交付标记写在返回之后（spec §4.5），所以这一笔要等它落地。
+    await vi.waitFor(async () => expect((await store.readTask(
+      thread.threadId, cancelled.researchRunId))!.revision).toBeGreaterThan(before.revision));
     expect(delivered.snapshot.stateReason).toBe('cancelled');
     expect((await next.service.get(thread.threadId, cancelled.researchRunId)).stateReason).toBe('cancelled');
     expect((await store.readTask(thread.threadId, cancelled.researchRunId))?.stateReason).toBe('cancelled');
@@ -798,8 +799,10 @@ describe('XResearchTaskService', () => {
     const delivered = await lateProcess.service.wait(thread.threadId, lateRun.researchRunId, 'wait-3');
     expect(delivered.delivery?.submissionId).toBe(lateRun.submissionId);
     expect(delivered.delivery?.deliveryCallId).toBe('wait-3');
-    expect((await stored.readSubmission(thread.threadId, lateRun.researchRunId, lateRun.submissionId))?.deliveredAt)
-      .toEqual(expect.any(String));
+    // 交付标记写在返回之后（spec §4.5）：等它落地，别把「还没写完」读成「没写」。
+    await vi.waitFor(async () => expect((await stored.readSubmission(
+      thread.threadId, lateRun.researchRunId, lateRun.submissionId))?.deliveredAt)
+      .toEqual(expect.any(String)));
   });
 
   it('lists the thread runs newest first', async () => {
@@ -1024,6 +1027,42 @@ describe('XResearchTaskService inspect / cancel', () => {
     secondGate.open();
     await service.whenIdle(thread.threadId, second.researchRunId);
     expect((await service.get(thread.threadId, second.researchRunId)).state).toBe('completed');
+  });
+
+  it('concludes a cancelled research as cancelled even though the collector returns a result instead of throwing', async () => {
+    // 采集层的取消形状是**返回**一份结果：`browser.cancelled` 被映成 `status: 'cancelled'` 的行
+    // （`xResearchSearch` 的 `failure` / `xResearchRead` 的 `halt`），不是抛错。只看行数的收尾会把它
+    // 当成 `done` —— 一段用户刚取消的研究于是读成「完成（部分被取消）」，`cancelSubmission` 又因为
+    // 提交已经不是 queued/running 而早退，谁都不改它。
+    const started = gate();
+    const { service, store } = harness(async (work, ctx) => {
+      started.open();
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return searchResult([
+        // 取消之前已经收尾的那一行保住它的结论与数字（§4.7）。
+        searchRow({ query: searchWork().queries[0]!, budgetUsage: usage({ distinctEntries: 12 }) }),
+        searchRow({
+          query: searchWork().queries[1]!, status: 'cancelled', stopReason: 'cancelled',
+        }),
+      ]);
+    });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() } }, thread);
+    await started.promise;
+    const snapshot = await service.cancel(thread.threadId, submitted.researchRunId);
+    expect(snapshot.state).toBe('cancelled');
+    // 桶按行结论分：取消之前收尾的那一行在 done 里，取消的那一行才在 cancelled 里。
+    expect(snapshot.counts).toMatchObject({ submissions: 1, done: 1, cancelled: 1, queued: 0, running: 0 });
+    expect(snapshot.search.map((row) => [row.state, row.status, row.posts])).toEqual([
+      ['stopped', 'observed', 12],
+      ['stopped', 'cancelled', 0],
+    ]);
+    expect((await store.readTask(thread.threadId, submitted.researchRunId))?.state).toBe('cancelled');
+    expect((await store.listSubmissions(thread.threadId, submitted.researchRunId))
+      .map((submission) => submission.state)).toEqual(['cancelled']);
   });
 
   it('cancel flushes the cancellation to disk before it answers', async () => {

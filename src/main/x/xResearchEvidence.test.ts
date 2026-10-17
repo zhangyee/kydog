@@ -783,6 +783,24 @@ it('legacy attached bodies exempt only their own same-item previews, never fresh
   );
 });
 
+it('records one delivery once: the same canonical result delivered twice does not double the facts',async()=>{
+ const r=await result();
+ const l=new XResearchEvidence('/tmp',()=> 'run');
+ l.observe(r);
+ const once=l.observations.length;
+ expect(once).toBeGreaterThan(0);
+ // 崩溃窗口里的「再交一次」（spec §4.5）：逐字节相同的那一份按交付身份丢掉，不报错、不写日志。
+ l.observe(structuredClone(r));
+ expect(l.observations).toHaveLength(once);
+ expect(l.guard(report,citation())).toEqual({createOnly:true});
+ // 翻面：同一交付身份下**字节不同**的那一份不是「同一份结果再交一次」，账本照收 —— 去重按
+ // 身份分组、按指纹比，宁可多一条真事实，也不把两条不同的事实合成一条。
+ const different=structuredClone(r);
+ different.targets[0].root!.text='另一份结果';
+ l.observe(different);
+ expect(l.observations.length).toBeGreaterThan(once);
+});
+
 it('an omitted or unresolved collection inventory stays unknown despite one genuine selected-entry attempt',async()=>{
  const r=await result();
  r.targets[0].root!.articlePreviews=[entry(r)];
@@ -790,10 +808,13 @@ it('an omitted or unresolved collection inventory stays unknown despite one genu
  const l=new XResearchEvidence('/tmp',()=> 'run');
  r.targets[0].root!.articlePreviewInventory={scope:'collection',observed:1,retained:1,omitted:0,unresolved:0};
  l.observe(r);expect(l.guard(report,citation())).toEqual({createOnly:true});
- for(const gap of [{observed:2,retained:1,omitted:1,unresolved:0},{observed:1,retained:1,omitted:0,unresolved:1}]){
+ for(const [index,gap] of [{observed:2,retained:1,omitted:1,unresolved:0},{observed:1,retained:1,omitted:0,unresolved:1}].entries()){
   const incomplete=structuredClone(r);incomplete.targets[0].root!.observationId='actual-gap';incomplete.targets[0].root!.articlePreviewInventory={scope:'collection',...gap};
   l.observe(incomplete);expect(()=>l.guard(report,citation())).toThrow('inventory');
-  l.observe(r);expect(l.guard(report,citation())).toEqual({createOnly:true});
+  // 让 gap 恢复的必须是**新的一次交付**（另一次提交 = 另一个 callId / batchId）：同一份结果再交一次
+  // 不再产生观察（`observe` 按交付身份幂等，spec §4.5），账本里「更新的一条事实」只能来自新提交。
+  const rerun=structuredClone(r);rerun.callId=`call-rerun-${index}`;rerun.batchId=`batch-rerun-${index}`;
+  l.observe(rerun);expect(l.guard(report,citation())).toEqual({createOnly:true});
  }
 });
 

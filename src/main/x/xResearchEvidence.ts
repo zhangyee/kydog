@@ -127,6 +127,11 @@ function evidenceDetails(raw: unknown): unknown {
   });
   return copy;
 }
+/** 一份结果的固定身份（spec §4.5 的交付幂等）：`runId` 是提交那一轮的、`callId` 是这次提交的
+ *  `submitCallId`、`batchId` 一次提交一个 —— 同一份结果被交付两次时带着同一组事实回来。 */
+function deliveryIdentity(result: {runId: string; batchId: string; callId: string}): string {
+  return JSON.stringify([result.runId, result.batchId, result.callId]);
+}
 type Canonical = z.infer<typeof canonicalSchema>;
 type Text = z.infer<typeof textSchema> | z.infer<typeof unscopedTextSchema>;
 export interface XEvidenceObservation {
@@ -292,6 +297,13 @@ export class XResearchEvidence {
     root: XEvidenceObservation;
   }>[] = [];
   private legacy: XLegacyProjection[] = [];
+  /** 交付幂等（spec §4.5）：同一份结果被交付两次（崩溃窗口里的「再交一次」）不得在 records 里
+   *  变成两份。键是交付身份（`deliveryIdentity`），值是这一份结果在它那个身份下的指纹 ——
+   *  同一身份下**字节相同**的那一份只收一次；字节不同的那一份是另一份结果（同一身份下重新序列化 /
+   *  另一批事实），照收不误：这张表是「观测过什么」的账本，宁可多一条真事实，也不能把两条不同的事实
+   *  合成一条。`restore` 也把 transcript 里那份的指纹记下：进程重开后它已经进了 records，
+   *  同一份结果再交付一次不会重复。 */
+  private readonly delivered = new Map<string, Set<string>>();
   constructor(
     private readonly cwd: string,
     private readonly currentRunId: () => string | null,
@@ -316,7 +328,18 @@ export class XResearchEvidence {
       throw new Error(
         'Invalid canonical X research result; no evidence recorded',
       );
+    if (!this.claimDelivery(parsed.data)) return;
     this.addCanonical(parsed.data, 'production', null);
+  }
+  /** 记下「这一份交付进过表了」，返回它是不是第一次。重复的那一次直接丢掉 —— 它带的是同一批事实。 */
+  private claimDelivery(result: Canonical): boolean {
+    const identity = deliveryIdentity(result);
+    const fingerprints = this.delivered.get(identity) ?? new Set<string>();
+    const fingerprint = JSON.stringify(result);
+    if (fingerprints.has(fingerprint)) return false;
+    fingerprints.add(fingerprint);
+    this.delivered.set(identity, fingerprints);
+    return true;
   }
   /** Rebuild, rather than merge, so a changed branch cannot retain obsolete facts. */
   restore(branchEntries: readonly unknown[]): void {
@@ -327,6 +350,7 @@ export class XResearchEvidence {
     this.attachedLegacyRecords.clear();
     this.documentAliases = [];
     this.legacy = [];
+    this.delivered.clear();
     this.sources.clear();
     for (const raw of branchEntries) {
       const entry = z
@@ -384,6 +408,8 @@ export class XResearchEvidence {
       if (fresh.success) {
         if (m.toolCallId !== undefined && m.toolCallId !== owner)
           continue;
+        // 这一份已经在 transcript 里了：记下它，之后同一份结果再交付一次不会被收进 records 第二遍。
+        if (!this.claimDelivery(fresh.data)) continue;
         this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
         continue;
       }

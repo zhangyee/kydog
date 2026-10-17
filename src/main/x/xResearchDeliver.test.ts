@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -16,6 +16,7 @@ import type { XResearchDelivery } from './xResearchTaskShell';
 import type { XReportRunScopeFacts } from '../../shared/xReportScopeFacts';
 import { XResearchTaskService, type XResearchRunWork } from './xResearchTaskService';
 import { XResearchTaskStore } from './xResearchTaskStore';
+import { logger } from '../log';
 import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult } from './xResearchTypes';
 
 const roots: string[] = [];
@@ -323,11 +324,14 @@ describe('XResearchTaskService.wait', () => {
     expect(waited.delivery?.result.delivery).toMatchObject({
       persistence: 'failed', artifactPath: null,
     });
-    // 没有工件 ref 不等于不能交付：交付标记照写（内存里它已经交出去了）。
-    const stored = await store.readSubmission(
-      thread.threadId, submitted.researchRunId, submitted.submissionId);
-    expect(stored?.artifact).toBeUndefined();
-    expect(stored?.deliveredAt).toEqual(expect.any(String));
+    // 没有工件 ref 不等于不能交付：交付标记照写（内存里它已经交出去了）。落盘现在跟在返回之后
+    // （spec §4.5 的顺序），所以这里等它落地。
+    await vi.waitFor(async () => {
+      const stored = await store.readSubmission(
+        thread.threadId, submitted.researchRunId, submitted.submissionId);
+      expect(stored?.artifact).toBeUndefined();
+      expect(stored?.deliveredAt).toEqual(expect.any(String));
+    });
   });
 
   it('fits a clipped result by clipping it once at settle, never again at delivery', async () => {
@@ -402,13 +406,62 @@ describe('XResearchTaskService.wait', () => {
     expect(b.snapshot.counts.undelivered).toBe(0);
 
     // 交付标记是权威（spec §4.5）：盘上记着哪一轮交付过，重启后据此不再交付第二次。
-    const storedFirst = await store.readSubmission(thread.threadId, first.researchRunId, first.submissionId);
-    expect(storedFirst).toMatchObject({
+    // 标记的落盘跟在返回之后，所以这里等它写完（等不到才是缺陷）。
+    await vi.waitFor(async () => expect(await store.readSubmission(
+      thread.threadId, first.researchRunId, first.submissionId)).toMatchObject({
       deliveredAt: expect.any(String), deliveryCallId: 'call-wait-1',
       artifact: expect.objectContaining({ version: 1 }),
-    });
+    }));
     expect(await service.wait(thread.threadId, first.researchRunId, 'call-wait-3'))
       .toMatchObject({ delivery: null, undelivered: [] });
+  });
+
+  it('marks the delivery in memory first, so a failed mark write still delivers once and never twice', async () => {
+    // 盘上的标记写在返回**之后**（spec §4.5）：写失败只留在日志里，已经交出去的结果不被要回来；
+    // 而同一进程的下一次 `wait` 看的是内存里的标记，不会再交一遍。
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    let failMarkWrites = false;
+    class MarkFailingStore extends XResearchTaskStore {
+      markAttempts = 0;
+      override async writeSubmission(submission: XResearchSubmission): Promise<void> {
+        if (failMarkWrites && submission.deliveredAt !== undefined) {
+          this.markAttempts += 1;
+          throw new Error('disk full');
+        }
+        return super.writeSubmission(submission);
+      }
+    }
+    const store = new MarkFailingStore(root());
+    const artifacts = tempXArtifactStore();
+    const runWork: XResearchRunWork = async () => {
+      const result = await realResult();
+      result.artifact = await artifacts.write(result);
+      result.delivery = {
+        truncated: false, omittedObservations: 0, omittedFields: [],
+        artifactPath: artifacts.displayPath(result.artifact), persistence: 'saved',
+      };
+      return result;
+    };
+    const service = new XResearchTaskService({
+      store, runWork, artifacts: () => artifacts, onUpdate: () => undefined,
+    });
+    const thread = owner();
+    const submitted = await service.submit({ work: searchWork() }, thread);
+    await service.whenIdle(thread.threadId, submitted.researchRunId);
+    failMarkWrites = true;
+    const waited = await service.wait(thread.threadId, submitted.researchRunId, 'call-wait-1');
+    // 结果照旧交出去：写盘失败不改事实。
+    expect(waited.delivery?.submissionId).toBe(submitted.submissionId);
+    expect(waited.snapshot.counts.undelivered).toBe(0);
+    await vi.waitFor(() => expect(store.markAttempts).toBe(1));
+    expect(warn).toHaveBeenCalledWith('x_research', 'could not persist the delivery mark',
+      expect.objectContaining({ submissionId: submitted.submissionId }));
+    // 同一进程里不会再交一次：内存里的标记已经在了（盘上没有它 —— 这正是重启后「再交一次」的窗口，
+    // 那一次的重复写入由 `XResearchEvidence.observe` 的幂等兜底）。
+    expect(await service.wait(thread.threadId, submitted.researchRunId, 'call-wait-2'))
+      .toMatchObject({ delivery: null, undelivered: [] });
+    expect((await store.readSubmission(
+      thread.threadId, submitted.researchRunId, submitted.submissionId))?.deliveredAt).toBeUndefined();
   });
 
   it('reads the result back from the artifact when the process no longer holds it', async () => {

@@ -481,9 +481,10 @@ export class XResearchTaskService {
    *  一次只给一份 —— 一份结果的上限就是整个 1 MiB 包络（壳 + 快照 + 这份结果），
    *  多份会把它撑成几 MiB。剩下的进 `undelivered`，`counts.undelivered` 也还在快照里。
    *
-   *  顺序是「选中 → 内存标记 → 落盘」：`deliveredAt` 是跨重启的权威，所以它必须在结果**真的**
-   *  交给调用方之前就写上（否则同一个窗口里崩掉会让同一份结果再交一次）；
-   *  这也是它只在这里写、在进展回调里不写的原因。
+   *  顺序是 spec §4.5 的那一条：**选中 → 内存标记 → 返回 → 落盘确认**。`deliveredAt` 是跨重启
+   *  的权威，但把它先写盘再返回会造出「标了却没交」：同一个窗口里崩掉，结果永远丢（盘上说交过了，
+   *  而模型从没见过它）。反过来，落盘落在返回之后，窗口内崩掉只是「再交一次」—— 那一次的重复写入
+   *  由 `XResearchEvidence.observe` 的幂等兜底（同一份结果不会在 records 里变成两份）。
    *
    *  `signal` 是 pi 这一轮工具调用的中止信号（用户按了停止）：一响就当场放手，并且**不再交付** ——
    *  拒绝发生在选中与标记之前（见 `abortable` 与 `assertNotAborted`），中止不会把一份结果标成交过了。 */
@@ -511,22 +512,21 @@ export class XResearchTaskService {
       return { snapshot: this.snapshotOf(active), delivery: null, undelivered: this.undeliveredOf(active) };
     }
     const delivered = active.submissions.get(delivery.submissionId)!;
-    // 顺序是「选中 → 内存标记 → 落盘」：`deliveredAt` 必须在结果真的交给调用方之前写（spec §4.5，
-    // 否则同一个崩溃窗口会让同一份结果再交一次）；而「标了却抛错」那条路已被关掉 —— 包络装不下
-    // 时 `deliverEnvelope` 会抛，但两条交付副本（收尾 / 重启）都先按量出来的额度裁过，抛不出来。
     // mark 之前的最后一次复查：读工件那一段是真实的 await（重启后的交付才会走到），中止落在那里
     // 同样不交付。
     assertNotAborted(signal);
     delivered.deliveredAt = this.now();
     delivered.deliveryCallId = deliveryCallId;
     active.results.delete(delivered.submissionId);
-    // 标记落盘失败不该把已经交出去的结果要回来：内存里它已经是交付过的，重启后最多再交一次
-    // （交付幂等就是那个窗口的兜底，spec §4.5），日志是这件事唯一露面的地方。
-    const snapshot = await this.persist(active, [delivered]).catch((error: unknown) => {
+    // 内存标记与交给调用方的那一帧先做完：这一份从此刻起就是「交过了」（本进程的 `wait` 不会再挑它）。
+    this.transition(active);
+    const snapshot = this.emit(active);
+    // 落盘确认放在返回**之后**（spec §4.5 的顺序）：失败不该把已经交出去的结果要回来 —— 内存里它
+    // 已经是交付过的，重启后最多再交一次（幂等兜底就在那个窗口里），日志是这件事唯一露面的地方。
+    void this.flush(active, [delivered]).catch((error: unknown) => {
       logger.warn('x_research', 'could not persist the delivery mark', {
         threadId, researchRunId, submissionId: delivered.submissionId, err: String(error),
       });
-      return this.snapshotOf(active);
     });
     return { snapshot, delivery, undelivered: this.undeliveredOf(active) };
   }
@@ -808,8 +808,11 @@ export class XResearchTaskService {
         onProgress: (event) => this.progress(active, submission, event),
       });
       // 交付优先用这一份：它就是 `settle` 写结论、并按包络额度裁过的那一份字节
-      // （卡与交付出去的结果不许各自一套结论）。
-      active.results.set(submission.submissionId, this.settle(active, submission, result));
+      // （卡与交付出去的结果不许各自一套结论）。结论的原因在**收尾那一刻**取：采集层取消时
+      // 照样返回一份结果，所以「跑完了」不等于「跑成功了」（见 `settle`）。
+      const cause: 'cancelled' | 'interrupted' | null =
+        active.disposed ? 'interrupted' : active.cancelRequested ? 'cancelled' : null;
+      active.results.set(submission.submissionId, this.settle(active, submission, result, cause));
     } catch (err) {
       // 工作体抛出 = 这一轮没有结果。没有结果就没有任何行结论（见 `interrupt`）。
       // 先留一条诊断：抛出被收在这里，日志是它唯一露面的地方。
@@ -842,9 +845,16 @@ export class XResearchTaskService {
     this.publish(active);
   }
 
-  /** 收尾：结果的行序就是请求的行序（采集循环按 query / target 顺序跑），工作项按同一个序展开。 */
+  /** 收尾：结果的行序就是请求的行序（采集循环按 query / target 顺序跑），工作项按同一个序展开。
+   *
+   *  `cause` 是「为什么停的」：采集层**不会在取消时抛出**，它把 `browser.cancelled` 映成
+   *  `status: 'cancelled'` 的行**返回**（`xResearchSearch` 的 `failure` / `xResearchRead` 的 `halt`），
+   *  于是这一轮一样会「跑完」。只看行数会把一段用户刚取消的研究写成 `done`（卡上读「完成
+   *  （部分被取消）」），把一段被拆掉的会话写成「完成」—— 两种结论都与事实相反。所以结论由调用方
+   *  给出的原因说了算（只要这一轮确实被中止过 —— 证据就是行上的 `cancelled`），行自己的结论照
+   *  `concludeRow` 原样保留（§4.7「取消不抹掉观察过的事实」）。 */
   private settle(active: ActiveResearch, submission: XResearchSubmission,
-    result: XResearchResult): XResearchResult {
+    result: XResearchResult, cause: 'cancelled' | 'interrupted' | null): XResearchResult {
     const rows: readonly (XSearchObservation | XReadObservation)[] =
       result.operation === 'search' ? result.queries : result.targets;
     if (result.operation === submission.operation) {
@@ -863,7 +873,12 @@ export class XResearchTaskService {
     }
     const concluded = result.operation === submission.operation
       && rows.length >= submission.workItems.length;
-    submission.state = concluded ? 'done' : 'interrupted';
+    // 「这一轮真的被中止过」的唯一证据在行上：采集层把被中止的行写成 `status: 'cancelled'`
+    // （`xResearchSearch` 的 `failure` / `xResearchRead` 的 `halt` 都走这一支）。有这种行时结论由
+    // 原因说了算；一行都没有说明这一轮根本没被中止 —— 取消 / 拆除只是恰好落在它收尾之后，
+    // 那时把一份已经完整的结论改写成「取消」就等于抹掉已经观察到的事实（§4.7）。
+    const aborted = rows.some((row) => row.status === 'cancelled');
+    submission.state = cause !== null && aborted ? cause : (concluded ? 'done' : 'interrupted');
     submission.endedAt = this.now();
     submission.usage = usageOf(submission.workItems);
     // R20：结果只按今天的工件格式落一次，提交记录里只存 ref —— 重启后的交付靠它把结果读回来。
@@ -928,6 +943,13 @@ export class XResearchTaskService {
   private async persist(active: ActiveResearch,
     submissions: readonly XResearchSubmission[] = [],
     reason?: string): Promise<XResearchTaskSnapshot> {
+    this.transition(active, reason);
+    await this.flush(active, submissions);
+    return this.emit(active);
+  }
+
+  /** 只改内存里的那一份与要写的那两份记录，不碰磁盘 —— 「返回之后再落盘」的那条路要先做完这一步。 */
+  private transition(active: ActiveResearch, reason?: string): void {
     active.record.revision += 1;
     active.record.updatedAt = this.now();
     const settled = this.project(active);
@@ -946,9 +968,13 @@ export class XResearchTaskService {
       : (derived ?? stickyCancelled);
     if (stateReason) active.record.stateReason = stateReason;
     else delete active.record.stateReason;
+  }
+
+  /** 把此刻内存里的 `record` 与给定的提交写到盘上。`wait` 把它放到返回**之后**（spec §4.5）。 */
+  private async flush(active: ActiveResearch,
+    submissions: readonly XResearchSubmission[]): Promise<void> {
     await this.deps.store.writeTask(active.record);
     for (const submission of submissions) await this.deps.store.writeSubmission(submission);
-    return this.emit(active);
   }
 
   /** 只推一帧、不落盘：进度回调绝不能等磁盘（spec §4.4「实时状态按边界更新内存」）。
