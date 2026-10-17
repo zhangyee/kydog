@@ -9,6 +9,7 @@ import { AssistantMessage } from './AssistantMessage';
 import { ThreadHeader } from './ThreadHeader';
 import { StreamingIndicator } from './StreamingIndicator';
 import { latestResearchTaskMessages } from './researchTaskAnchor';
+import { latestXResearchTaskMessages } from './xResearchTaskAnchor';
 
 const EMPTY_RESEARCH_RUN_IDS: ReadonlySet<string> = new Set();
 
@@ -20,14 +21,18 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
   const messages = useThreadsStore((s) => s.historyByThread[threadId] ?? []);
   const bufferByMessage = useRunsStore((s) => s.bufferByMessage);
   const liveBuffers = Object.entries(bufferByMessage).filter(([, v]) => v.threadId === threadId);
-  const researchTaskRunsByMessage = useMemo(() => latestResearchTaskMessages([
+  // 两份锚点看同一串消息：web research 每个 run 一张卡，x research 一段研究一张卡；
+  // 两者都跟着「最后一次提到这个 run 的那条消息」走。
+  const anchorMessages = useMemo(() => [
     ...messages.flatMap((message) => message.role === 'assistant'
       ? [{ messageId: message.id, blocks: message.blocks }]
       : []),
     ...Object.entries(bufferByMessage).flatMap(([messageId, buffer]) => buffer.threadId === threadId
       ? [{ messageId, blocks: buffer.blocks }]
       : []),
-  ]), [messages, bufferByMessage, threadId]);
+  ], [messages, bufferByMessage, threadId]);
+  const researchTaskRunsByMessage = useMemo(() => latestResearchTaskMessages(anchorMessages), [anchorMessages]);
+  const xResearchTaskRunsByMessage = useMemo(() => latestXResearchTaskMessages(anchorMessages), [anchorMessages]);
   const askPending = useAskStore((s) => s.pendingByThread[threadId]);
   // 窄模式判据与 Composer.tsx 一致：browserOpen（协议层事实），不是宽度阈值。
   // 正文左右边距跟着收窄，给对话栏腾出来的横向空间不被留白吃掉。
@@ -55,7 +60,8 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
             // run.message_end，bootstrap 收到才把 buffer 搬进这里。
             : <AssistantMessage key={m.id} threadId={threadId} messageId={m.id} blocks={m.blocks}
               settled createdAt={m.createdAt}
-              researchTaskRunIds={researchTaskRunsByMessage.get(m.id) ?? EMPTY_RESEARCH_RUN_IDS} />,
+              researchTaskRunIds={researchTaskRunsByMessage.get(m.id) ?? EMPTY_RESEARCH_RUN_IDS}
+              xResearchTaskRunIds={xResearchTaskRunsByMessage.get(m.id) ?? EMPTY_RESEARCH_RUN_IDS} />,
         )}
         {liveBuffers.map(([messageId, buf]) => (
           <div key={messageId}>
@@ -67,6 +73,7 @@ export function MessageList({ threadId, scrollRef }: { threadId: string; scrollR
               blocks={buf.blocks}
               settled={false}
               researchTaskRunIds={researchTaskRunsByMessage.get(messageId) ?? EMPTY_RESEARCH_RUN_IDS}
+              xResearchTaskRunIds={xResearchTaskRunsByMessage.get(messageId) ?? EMPTY_RESEARCH_RUN_IDS}
             />
             {/* 提问态下卡片本身就是最强的状态提示，再挂个转圈只会打架。 */}
             {!askPending && <StreamingIndicator />}
