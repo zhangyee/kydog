@@ -1,6 +1,37 @@
+/**
+ * `x_research` 改成动作面之后，63 只证明**协议层**（控制器裁决 R58）：`submit` 立即返回、工作活在
+ * 回合之后、`wait` 一次交付一份、`xResearch.taskGet` 说的是真实状态、真重启之后状态与计数还在、
+ * `cancel` 只收尾它自己那一段。卡片级断言（`data-status`、两段行数）属 Task 16，这里一条都不碰。
+ *
+ * 读这份文件之前先知道夹具上的三件事：
+ *
+ * 1. **闸门**（第二个 query 的导航响应被扣住）。本地代理（下面那个 `serve`）可以把**某一次**
+ *    `/search` 导航的响应留在手里不放，直到用例调用 `releaseHeldQuery()`。扣住的是导航响应本身，
+ *    所以那个 query 连一次采集都没开始，任务里那一行停在 `navigating`。开合全是夹具事件
+ *    （`holdNextQuery` 与那一次导航真的到达），没有任何时间窗：判据不是 `waitForTimeout`，
+ *    而是「代理里确实躺着一个请求」这个协议事实。
+ *
+ * 2. **`researchRunId` 要跨回合传**。脚本是每轮**先写文件、再发消息**的（fixture session 在回合
+ *    边界重读它，见 `fixtureProvider` 的 `prompt`），而这个 id 是 submit 那一刻才铸出来的。
+ *    于是流程是「submit 一轮 → 从这一轮的工具输出里解出 id → 写下一轮带 `wait` 的脚本」。
+ *    这本身也是被测性质：**工作活过了那一轮**，下一轮才拿得到它的结果。
+ *
+ * 3. **auth 屏障在新面上是一行的状态**：`submit` 不再阻塞，未登录的搜索返回的是一份「两行
+ *    `auth_required`」的交付结果，第二行的 `barrier.reason` 是 `not_attempted:auth_required`。
+ *    原生登录点击那一段（真 `sendInputEvent`）与改造前完全一样，一字未改。
+ *
+ * 一次启动跑完全部说法（`serial`），中间只有一次真重启（进程 pid 会变，见最后一条）。
+ * 普通帖文本只来自 HTTP 响应（`xWirePages`），DOM 里的 `*_DOM_*` 是诱饵。
+ *
+ * **这份 spec 一次都不调 `browser.getState`。** 那条 RPC 每调一次就签发一个新 epoch
+ * （`handlers.ts` 里写明了），而渲染层只在 bootstrap 那一次把 epoch 抄进 store ——
+ * 用例从外面调一次之后，侧栏此后上报的每一份 `syncView` 都会被主进程判为过期丢弃，
+ * 原生页永远拿不到 bounds。表现出来就是「侧栏里那页看不见、原生点击落在 (0,0)」，
+ * 全程没有任何报错。要核对标签身份就用壳里的 `browserTabId` 与 `browser.open` 的返回值。
+ */
 import { test, expect } from '@playwright/test';
 import { promises as fs, readFileSync } from 'node:fs';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
@@ -10,43 +41,111 @@ import { launchKydog, teardown, seedProject, newThread, type LaunchedApp } from 
 import { BROWSER_PARTITION } from '../src/main/browser/partition';
 import type { RuntimeEvent } from '../src/shared/protocol';
 import type { XResearchResult } from '../src/main/x/xResearchTypes';
-import {xWireResponse, WIRE_ROOT, WIRE_PLAIN, LARGE_BODY} from './fixtures/61-browser/xWirePages';
+import type { XResearchDelivery, XResearchDeliveryEnvelope } from '../src/main/x/xResearchTaskShell';
+import type { XResearchTaskSnapshot } from '../src/shared/xResearchTask';
+import { xWireResponse, WIRE_ROOT, WIRE_PLAIN } from './fixtures/61-browser/xWirePages';
 import { xClosurePage } from './fixtures/61-browser/xClosurePages';
 
 type Call = { name: string; args: Record<string, unknown>; toolCallId: string };
 type Events = RuntimeEvent[];
+type ToolOutcome = { runId: string; callId: string; status: string; text: string };
 declare global { interface Window { __xClosureEvents: Events } }
+
 const hosts = ['x.com', 'example.org'];
 const cert = readFileSync(path.join(__dirname, 'fixtures/61-browser/tls-cert.pem'), 'utf8');
 const key = readFileSync(path.join(__dirname, 'fixtures/61-browser/tls-key.pem'));
 const call = (name: string, args: Record<string, unknown>): Call => ({ name, args, toolCallId: randomUUID() });
 
-// One application session for auth/search/read/report, then one genuine process restart.
-// Ordinary text comes from capture-derived HTTP responses; Article remains DOM sourced.
-test.describe('normal application X research closure (offline)', () => {
+/** 第一个 query 不被闸门碰：它用来证明「闸门开着的窗口里，这一行已经带着真实帖数」。 */
+const FIRST_QUERY = { id: 'top', query: 'fixture primary', purpose: 'initial', product: 'Top' as const };
+/** 第二个 query 是闸门扣住的那一次导航（`q=fixture+blocked`）。 */
+const SECOND_QUERY = { id: 'latest', query: 'fixture blocked', purpose: 'cross-check', product: 'Latest' as const };
+const OBJECTIVE = 'Offline rendered evidence';
+const READ_OBJECTIVE = 'Read the observed root';
+/** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
+const TAB_ID = /^tab_[0-9a-f]{8}$/;
+
+/** 夹具驱动的闸门：`holdQuery` 非空时，下一次同 `q` 的 `/search` 导航响应被扣住不写回。 */
+const gate: { holdQuery: string | null; held: Array<{ url: string; release: () => void }> } = {
+  holdQuery: null, held: [],
+};
+
+function holdNextQuery(query: string): void {
+  expect(gate.held).toHaveLength(0);
+  gate.holdQuery = query;
+}
+
+/** 放行被扣住的那一次导航，返回它的 URL（调用方断言放行的确实是第二个 query）。 */
+async function releaseHeldQuery(): Promise<string | null> {
+  const [held] = gate.held.splice(0);
+  if (!held) return null;
+  held.release();
+  return held.url;
+}
+
+test.describe('x research task protocol closure (offline)', () => {
   test.describe.configure({ mode: 'serial' });
   let launched: LaunchedApp, dir: string, fixture: string, project: string, threadId: string;
   let proxy: http.Server, loggedIn = false;
   const sockets = new Set<Socket>();
-  let tabId: string, userTabId: string;
-  let discovered: Extract<XResearchResult, { operation: 'search' }>;
-  let read: Extract<XResearchResult, { operation: 'read' }>;
+  let userTabId: string;
+  /** 主研究：闸门那一条、追加的那两次、重启要交付的那一份都在它里面。 */
+  let researchRunId = '';
+  /** 提交那一轮的 runId：结果的 `runId` 写的是它，不是 `wait` 那一轮。 */
+  let researchSubmitRunId = '';
+  let rootUrl = '';
+  let readSubmitRunId = '';
+  /** 重启后要交付的那一份（主研究里最后提交、故意不交付就跑重启）的提交轮 runId。 */
+  let pendingSubmitRunId = '';
+
   const cleanup = async () => {
     try { if (launched) await teardown(launched); }
-    finally { for (const socket of sockets) socket.destroy(); if (proxy?.listening) await new Promise<void>(r => proxy.close(() => r())); }
+    finally {
+      for (const socket of sockets) socket.destroy();
+      await releaseHeldQuery(); // 卡在闸门里的响应不会自己回来（客户端已经没了）：先解开再关服务器
+      if (proxy?.listening) await new Promise<void>(r => proxy.close(() => r()));
+    }
   };
+
+  /** 本地 origin：X 的页面与 GraphQL 响应、登录确认端点，以及那一道闸门。 */
+  async function serve(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? '/', `https://${req.headers.host}`);
+    if (url.pathname === '/fixture-login' && req.method === 'POST') { loggedIn = true; res.end('confirmed'); return; }
+    if (url.hostname === 'x.com' && !loggedIn && url.pathname !== '/i/jf/onboarding/web') {
+      res.writeHead(302, { location: '/i/jf/onboarding/web' }); res.end(); return;
+    }
+    if (url.pathname === '/favicon.ico') { res.writeHead(404); res.end(); return; }
+    // 闸门：只扣**一次**同 `q` 的搜索导航响应。放行之后同一 URL 正常穿过（后面的 wait 要靠它）。
+    if (gate.holdQuery !== null && url.pathname === '/search' && url.searchParams.get('q') === gate.holdQuery) {
+      gate.holdQuery = null;
+      console.info('[held-navigation]', url.href);
+      await new Promise<void>((release) => {
+        const done = (): void => {
+          gate.held = gate.held.filter((entry) => entry.release !== done);
+          res.off('close', done);
+          release();
+        };
+        gate.held.push({ url: url.href, release: done });
+        // 客户端放弃（导航超时 / 取消）时也要解开，否则这里会一直挂着一份没人要的响应体。
+        res.on('close', done);
+      });
+      if (res.destroyed || res.writableEnded) { console.info('[held-navigation-abandoned]', url.href); return; }
+    }
+    const wire = xWireResponse(url);
+    res.writeHead(200, { 'content-type': wire === null ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8' });
+    res.end(wire ?? xClosurePage(url, loggedIn));
+  }
+
   test.beforeAll(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-x-closure-'));
     console.info('[isolated-fixture-directory]', dir);
     project = path.join(dir, 'project'); fixture = path.join(dir, 'fixture.json');
     await fs.mkdir(project); await fs.writeFile(fixture, JSON.stringify({ events: [] }));
     const origin = http.createServer((req, res) => {
-      const url = new URL(req.url ?? '/', `https://${req.headers.host}`);
-      if (url.pathname === '/fixture-login' && req.method === 'POST') { loggedIn = true; res.end('confirmed'); return; }
-      if (url.hostname === 'x.com' && !loggedIn && url.pathname !== '/i/jf/onboarding/web') { res.writeHead(302, { location: '/i/jf/onboarding/web' }); res.end(); return; }
-      if (url.pathname === '/favicon.ico') { res.writeHead(404); res.end(); return; }
-      const wire=xWireResponse(url);
-      res.writeHead(200, { 'content-type': wire===null?'text/html; charset=utf-8':'application/json; charset=utf-8' }); res.end(wire??xClosurePage(url, loggedIn));
+      void serve(req, res).catch((error: unknown) => {
+        console.error('[origin-failure]', error);
+        try { res.destroy(); } catch { /* 已经没了 */ }
+      });
     });
     origin.on('clientError', (_e, s) => s.destroy());
     proxy = http.createServer((_req, res) => { res.writeHead(403); res.end(); });
@@ -65,6 +164,7 @@ test.describe('normal application X research closure (offline)', () => {
     } catch (error) { await cleanup(); throw error; }
   });
   test.afterAll(cleanup);
+
   async function configure() {
     const port = (proxy.address() as AddressInfo).port;
     expect(await launched.app.evaluate(async ({ session }, a) => {
@@ -82,7 +182,8 @@ test.describe('normal application X research closure (offline)', () => {
     });
   }
 
-  async function run(calls: Call[], during?: () => Promise<void>) {
+  /** 一轮：写脚本 → 发消息 → 等 `run.ended`。脚本每轮重写：下一轮的 `wait` 要带上这一轮才铸出来的 id。 */
+  async function run(calls: Call[], during?: () => Promise<void>): Promise<ToolOutcome[]> {
     await fs.writeFile(fixture, JSON.stringify({ events: [
       { type: 'agent_start', after_ms: 0 },
       ...calls.map(c => ({ ...c, type: 'tool', after_ms: 0 })),
@@ -106,40 +207,98 @@ test.describe('normal application X research closure (offline)', () => {
         text: received.flatMap(e => e.topic === 'run.tool_call_chunk' && e.payload.toolCallId === c.toolCallId ? [e.payload.chunk] : []).join('') };
     });
   }
-  function canonical(outcome: Awaited<ReturnType<typeof run>>[number]): XResearchResult {
-    expect(outcome.status).toBe('ok'); const result = JSON.parse(outcome.text) as XResearchResult;
-    expect(result).toMatchObject({ schemaVersion: 2, runId: outcome.runId, callId: outcome.callId });
-    console.info('[result-receipt]',JSON.stringify({operation:result.operation,runId:result.runId,callId:result.callId,artifact:result.artifact,delivery:result.delivery,scope:result.reportScopeFacts})); return result;
-  }
-  const searchArgs = () => ({ ...(tabId ? { tabId } : {}), search: { objective: 'Offline rendered evidence', queries: [
-    { id: 'top', query: 'fixture primary', purpose: 'initial', product: 'Top' },
-    { id: 'latest', query: 'fixture secondary', purpose: 'cross-check', product: 'Latest' },
-  ], maxPostsPerQuery: 3, maxScrollsPerQuery: 0 } });
 
-  test('auth returns before an independent original-tab ask; fresh fixture confirmation releases the next hidden query', async () => {
-    const result = canonical((await run([call('x_research', searchArgs())]))[0]);
-    expect(result.operation).toBe('search'); if (result.operation !== 'search') throw new Error('search expected');
+  /** 工具输出就是壳本身：`content[0].text` 是它的 JSON，四个协议键一个都不会被省。 */
+  function envelope(outcome: ToolOutcome): XResearchDeliveryEnvelope {
+    expect(outcome.status).toBe('ok');
+    const parsed = JSON.parse(outcome.text) as XResearchDeliveryEnvelope;
+    expect(parsed.kind).toBe('x_research');
+    expect(parsed.researchRunId).toBeTruthy();
+    const rows = parsed.delivery
+      ? parsed.delivery.operation === 'search'
+        ? (parsed.delivery.result as Extract<XResearchResult, { operation: 'search' }>).queries.map(q => ({ status: q.status, stopReason: q.stopReason, posts: q.posts.map(p => p.postId) }))
+        : (parsed.delivery.result as Extract<XResearchResult, { operation: 'read' }>).targets.map(t => ({ status: t.status, stopReason: t.stopReason, root: t.root?.postId ?? null }))
+      : null;
+    console.info('[x-envelope]', JSON.stringify({ action: parsed.action, researchRunId: parsed.researchRunId,
+      status: parsed.status, counts: parsed.snapshot.counts, undelivered: parsed.undelivered,
+      delivery: parsed.delivery ? { submissionId: parsed.delivery.submissionId, submitCallId: parsed.delivery.submitCallId, operation: parsed.delivery.operation, rows } : null }));
+    return parsed;
+  }
+
+  /** 交付结果的规范形状：`schemaVersion: 2`，`runId` 是**提交**那一轮，`callId` 与壳里的提交身份一致。 */
+  function canonical(delivery: XResearchDelivery, submitRunId: string): XResearchResult {
+    expect(delivery.result).toMatchObject({
+      schemaVersion: 2, runId: submitRunId, callId: delivery.submitCallId, operation: delivery.operation,
+    });
+    return delivery.result;
+  }
+
+  const taskGet = (researchRunId: string): Promise<XResearchTaskSnapshot> =>
+    launched.page.evaluate(a => window.kydog.invoke('xResearch.taskGet', a), { threadId, researchRunId });
+
+  const searchArgs = (queries: readonly (typeof FIRST_QUERY | typeof SECOND_QUERY)[]) => ({
+    search: { objective: OBJECTIVE, queries, maxPostsPerQuery: 3, maxScrollsPerQuery: 0 },
+  });
+  const readArgs = (url: string) => ({
+    read: { objective: READ_OBJECTIVE, targets: [{ url }], includeArticle: false, includeReplies: false,
+      maxScrollsPerPost: 0, maxExpandActionsPerPost: 0 },
+  });
+
+  test('an unauthenticated research delivers the auth barrier as row status; a native fixture login clears it', async () => {
+    const submitRun = await run([call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY]) })]);
+    const submitted = envelope(submitRun[0]);
+    expect(submitted.action).toBe('submit');
+    expect(submitted.status).toBe('running');
+    // submit 不带交付、wait 带：同一条用例里两种形状都在，`delivery` 这个字段确实会出现在壳上。
+    expect(submitted.delivery).toBeUndefined();
+    const authRun = await run([call('x_research', { action: 'wait', researchRunId: submitted.researchRunId })]);
+    const delivered = envelope(authRun[0]);
+    expect(delivered.delivery).toBeTruthy();
+    const result = canonical(delivered.delivery!, submitRun[0].runId);
+    if (result.operation !== 'search') throw new Error('search expected');
     expect(result.queries.map(q => q.status)).toEqual(['auth_required', 'auth_required']);
-    expect(result.queries[1].barrier?.reason).toBe('not_attempted:auth_required'); tabId = result.browserTabId;
-    const ask = call('ask_user_question', { browserTabId: tabId, questions: [{ header: 'Login', question: 'Confirm this isolated fixture login?', options: [{ label: 'Confirmed', description: 'Fresh fixture human confirmation' }, { label: 'Cancel', description: 'Stop' }] }] });
+    expect(result.queries[1].barrier?.reason).toBe('not_attempted:auth_required');
+    // 有失败 > 完成：barrier 是源侧的拒绝事实，不是「还没跑」。
+    expect(delivered.status).toBe('failed');
+    expect(delivered.snapshot.counts).toMatchObject({ submissions: 1, failed: 2, done: 0, posts: 0, undelivered: 0 });
+    const taskTabId = delivered.snapshot.browserTabId;
+    expect(taskTabId).toBeTruthy();
+    expect(result.browserTabId).toBe(taskTabId);
+    // 任务那一页与用户那一页是两个真实的标签（同一套 id 形状），不是一个。
+    expect(userTabId).toMatch(TAB_ID);
+    expect(taskTabId).toMatch(TAB_ID);
+    expect(taskTabId).not.toBe(userTabId);
+
+    const ask = call('ask_user_question', { browserTabId: taskTabId, questions: [{ header: 'Login', question: 'Confirm this isolated fixture login?', options: [{ label: 'Confirmed', description: 'Fresh fixture human confirmation' }, { label: 'Cancel', description: 'Stop' }] }] });
     await run([ask], async () => {
       await expect(launched.page.getByTestId('question-composer')).toBeVisible();
+      // 问句要问的是任务页的那一屏：侧栏确实把那页摆出来了（也是接下来那次原生点击的几何前提）。
       await expect(launched.page.locator('[data-pane="browser"]')).toBeVisible();
-      const state = await launched.page.evaluate(() => window.kydog.invoke('browser.getState'));
-      expect(state.activeTabId).toBe(tabId);
-      // Native trusted mouse delivery supplies the fixture user's login confirmation.
-      await launched.app.evaluate(async ({ webContents, BrowserWindow }) => {
+      // 原生 view 拿到真实 bounds 之后才能算点击坐标：侧栏刚摆出来时那一刻还是 0×0（
+      // ResizeObserver 的下一帧才上报 stage），此时算出来的点永远落在 (0,0)。
+      const authViewBounds = () => launched.app.evaluate(({ webContents, BrowserWindow }) => {
         const views = webContents.getAllWebContents().filter(w => w.getURL().includes('/i/jf/onboarding/web'));
         if (views.length !== 1) throw new Error('Expected original auth view');
         const view = BrowserWindow.getAllWindows()[0].contentView.children.find(v => 'webContents' in v && (v as import('electron').WebContentsView).webContents === views[0]);
         if (!view) throw new Error('Missing native auth view');
-        const logical = await views[0].executeJavaScript("(()=>{const r=document.querySelector('#fixtureLogin').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,width:innerWidth}})()");
-        const scale = view.getBounds().width / logical.width;
+        return view.getBounds();
+      });
+      await expect.poll(async () => (await authViewBounds()).width).toBeGreaterThan(0);
+      // Native trusted mouse delivery supplies the fixture user's login confirmation.
+      const click = await launched.app.evaluate(async ({ webContents, BrowserWindow }) => {
+        const views = webContents.getAllWebContents().filter(w => w.getURL().includes('/i/jf/onboarding/web'));
+        if (views.length !== 1) throw new Error('Expected original auth view');
+        const view = BrowserWindow.getAllWindows()[0].contentView.children.find(v => 'webContents' in v && (v as import('electron').WebContentsView).webContents === views[0]);
+        if (!view) throw new Error('Missing native auth view');
+        const logical = await views[0].executeJavaScript("(()=>{const r=document.querySelector('#fixtureLogin').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,width:innerWidth}})()") as { x: number; y: number; width: number };
+        const bounds = view.getBounds();
+        const scale = bounds.width / logical.width;
         const point = { x: Math.round(logical.x * scale), y: Math.round(logical.y * scale) };
-        console.info('[fixture-human-click]', { logical, bounds: view.getBounds(), point });
         views[0].sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
         views[0].sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
+        return { logical, bounds, point };
       });
+      console.info('[fixture-human-click]', JSON.stringify(click));
       await expect.poll(() => launched.app.evaluate(async ({ webContents }) => {
         const view = webContents.getAllWebContents().find(w => w.getURL().includes('/i/jf/onboarding/web'))!;
         return view.executeJavaScript('document.body.dataset.fixtureConfirmed');
@@ -148,128 +307,188 @@ test.describe('normal application X research closure (offline)', () => {
       await launched.page.getByTestId('ask-submit').click();
     });
     const asks = await launched.page.evaluate(() => window.__xClosureEvents.filter(e => e.topic === 'run.ask_start'));
-    expect(asks).toHaveLength(1); expect(asks[0]).toMatchObject({ payload: { toolCallId: ask.toolCallId, threadId, browserTabId: tabId } });
-    await launched.page.getByTestId('titlebar-browser').click();
-    await expect(launched.page.locator('[data-pane="browser"]')).toHaveCount(0);
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ payload: { toolCallId: ask.toolCallId, threadId, browserTabId: taskTabId } });
+    // 用户回到自己那一页：之后的任务页一次都不许把它抢走。
     await launched.page.evaluate(id => window.kydog.invoke('browser.activate', { tabId: id }), userTabId);
-    const next = canonical((await run([call('x_research', searchArgs())]))[0]);
-    if (next.operation !== 'search') throw new Error('search expected'); discovered = next;
-    expect(next.browserTabId).toBe(tabId);
-    for (const row of next.queries) {expect(row.posts.map(p => p.text)).toEqual([WIRE_ROOT, WIRE_PLAIN]);expect(row.stopReason).toBe('budget_reached');}
-    expect(next.sourceKind).toBe('page_graphql');
-    expect((await launched.page.evaluate(() => window.kydog.invoke('browser.getState'))).activeTabId).toBe(userTabId);
   });
 
-  test('network search → exact read preview → native Article → guarded rendered report', async () => {
-    const root = discovered.queries[0].posts[0], plain=discovered.queries[0].posts[1];
-    const reportPath='x-research-offline-2026-10-16.md', initial=`# Offline evidence\n\n[Plain](${plain.sourceUrl})\n`;
-    expect((await run([call('write',{path:reportPath,content:initial})]))[0].status).toBe('ok');
-    const preview=canonical((await run([call('x_research',{tabId,read:{objective:'Observe exact native Article preview',targets:[{url:root.sourceUrl}],includeArticle:false,includeReplies:false,maxScrollsPerPost:0}})]))[0]);
-    if(preview.operation!=='read')throw Error('read expected');
-    expect(preview.targets[0].root).toMatchObject({text:WIRE_ROOT,sourceKind:'page_graphql',articlePreviewInventory:{observed:1,retained:1,unresolved:0}});
-    const denied=(await run([call('write',{path:'x-research-preview-2026-10-16.md',content:`[Parent](${root.sourceUrl})`})]))[0];
-    expect(denied.status).toBe('failed');expect(denied.text).toContain('accurate entry');
-    const readArgs={tabId,read:{objective:'Read observed exact sources',targets:[{url:root.sourceUrl}],includeArticle:true,includeReplies:true,maxRepliesPerPost:3,maxScrollsPerPost:1,maxExpandActionsPerPost:4}};
-    const result=canonical((await run([call('x_research',readArgs)]))[0]);
-    if(result.operation!=='read')throw Error('read expected');read=result;
-    const target=read.targets[0],articleUrl='https://x.com/writer/status/654';
-    expect(target.root).toMatchObject({postId:'321',author:{handle:'reader'},text:WIRE_ROOT,sourceKind:'page_graphql'});
-    expect(target.article).toMatchObject({entryObserved:true,actionAttempted:true,navigationStarted:true,bodyObserved:true,body:{postId:'654',sourceUrl:articleUrl,author:{handle:'writer'},sourceKind:'rendered_ui',text:'ARTICLE_BODY_DOM_a751\n\nhttps://example.org/observed-external'}});
-    expect(target.replies.observations.map(p=>p.text)).toContain('NETWORK_REPLY_802');
-    expect(target.replies.scope).toMatchObject({kind:'network',extent:'unknown',context:{accountContextId:null}});
-    const native=await launched.app.evaluate(async({webContents})=>{
-      const view=webContents.getAllWebContents().find(w=>w.getURL()==='https://x.com/reader/status/321')!;
-      return view.executeJavaScript("({actions:JSON.parse(sessionStorage.getItem('nativeActions')||'[]'),decoy:document.querySelector('[data-testid=\"tweetText\"]').textContent})");
-    });
-    expect(native.actions).toContain('article');expect(native.actions).toContain('replies');
-    expect(native.decoy).toBe('ROOT_DOM_094a');expect(target.root?.text).not.toBe(native.decoy);
-    const direct=canonical((await run([call('x_research',{tabId,read:{objective:'Read own Article URI',targets:[{url:articleUrl}],includeArticle:true,includeReplies:false}})]))[0]);
-    if(direct.operation!=='read')throw Error('read expected');
-    expect(direct.targets[0]).toMatchObject({root:null,status:'observed',article:{actionAttempted:false,bodyObserved:true,body:{postId:'654'},provenance:{kind:'direct_open',nativeIdentity:{kind:'owned_analytics',href:'/writer/status/654/analytics'}}},budgetUsage:{distinctEntries:1}});
-    const report=`# Offline evidence\n\n${WIRE_ROOT}\n\n[Parent](${root.sourceUrl}) · [Article](${articleUrl})\n\n${target.article.body!.text}\n\n${target.replies.observations.map(p=>p.text).join('\n')}\n\n\`\`\`mermaid\nflowchart LR\nObserved --> Qualified\n\`\`\`\n`;
-    // Resolve the current parent frame's Article inventory before citing it.
-    const refreshed=canonical((await run([call('x_research',{tabId,read:{objective:'Resolve current Article inventory',targets:[{url:root.sourceUrl}],includeArticle:true,includeReplies:false,maxScrollsPerPost:0,maxExpandActionsPerPost:2}})]))[0]);
-    if(refreshed.operation!=='read')throw Error('read expected');
-    expect(refreshed.targets[0].article.bodyObserved).toBe(true);
-    const saved=await run([call('read',{path:reportPath}),call('edit',{path:reportPath,edits:[{oldText:initial,newText:report}]})]);
-    expect(saved[0].text).toContain(initial.trim());expect(saved[1].status).toBe('ok');
-    const bad='https://x.com/unobserved/status/999';
-    const rejects=await run([call('write',{path:reportPath,content:'replacement'}),call('write',{path:'x-research-bad-2026-10-16.md',content:`[Bad](${bad})`}),call('edit',{path:reportPath,edits:[{oldText:'Offline evidence',newText:`[Bad](${bad})`}]})]);
-    expect(rejects.map(r=>r.status)).toEqual(['failed','failed','failed']);
-    expect(await fs.readFile(path.join(project,reportPath),'utf8')).toBe(report);
-    const observedExternal=target.article.body!.text.match(/https:\/\/example\.org\/observed-external/)?.[0];
-    expect(observedExternal).toBe('https://example.org/observed-external');
-    const external=(await run([call('browser_open',{url:observedExternal})]))[0];
-    expect(external.status).toBe('ok');expect(external.text).toContain('EXTERNAL_DOM_8b2e');
-    const state=await launched.page.evaluate(()=>window.kydog.invoke('browser.getState'));
-    expect(state.activeTabId).toBe(userTabId);
-    expect(state.tabs.some(t=>t.url===observedExternal&&t.id!==tabId)).toBe(true);
-    const history=await launched.page.evaluate(id=>window.kydog.invoke('thread.loadHistory',{threadId:id}),threadId);
-    expect(JSON.stringify(history)).toContain('ARTICLE_BODY_DOM_a751');
-    const sessionDir=path.join(launched.kydogHome,'.kydog','sessions');
-    const sessionFiles=(await fs.readdir(sessionDir,{recursive:true})).filter(file=>path.basename(file)===`${threadId}.jsonl`);
-    expect(sessionFiles).toHaveLength(1);
-    const entries=(await fs.readFile(path.join(sessionDir,sessionFiles[0]),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-    const persisted=entries.filter(entry=>entry.message?.role==='toolResult'&&entry.message.toolCallId===read.callId);
-    expect(persisted).toHaveLength(1);
-    expect(persisted[0].message).toMatchObject({toolName:'x_research',isError:false,details:read});
-    expect(entries.find(entry=>entry.id===persisted[0].parentId)?.message.content).toContainEqual({type:'toolCall',id:read.callId,name:'x_research',arguments:readArgs});
-    await launched.page.getByTestId(`fs-${path.join(project,reportPath)}`).dblclick();
-    const editor=launched.page.locator('.kydog-md-editor .ProseMirror').locator('visible=true');
-    await expect(editor.locator('a[href="https://x.com/writer/status/654"]')).toHaveText('Article');
-    await expect(editor.locator('.kydog-mermaid-preview[data-status="ready"] svg')).toBeVisible();
-    await launched.page.screenshot({path:test.info().outputPath('rendered-report.png')});
+  test('submit returns at once while the held second query has not been collected and the first row carries the wire counts', async () => {
+    holdNextQuery(SECOND_QUERY.query);
+    const submitRun = await run([call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY]) })]);
+    const submitted = envelope(submitRun[0]);
+    researchRunId = submitted.researchRunId;
+    researchSubmitRunId = submitRun[0].runId;
+    expect(submitted.action).toBe('submit');
+    expect(submitted.status).toBe('running');
+    // 这一轮已经结束（`run` 断过 reason=completed），而工作在跑：submit 不阻塞。
+    expect((await taskGet(researchRunId)).state).toBe('running');
+    // 闸门里躺着第二个 query 的那次导航 —— 正向证明这一行「到了、没拿到页面」，不是「从没试过」。
+    await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+    expect(new URL(gate.held[0].url).searchParams.get('q')).toBe(SECOND_QUERY.query);
+    await expect.poll(async () => (await taskGet(researchRunId)).search.map(
+      row => ({ label: row.label, state: row.state, posts: row.posts, scrolls: row.scrolls, pages: row.pages })))
+      .toEqual([
+        { label: FIRST_QUERY.query, state: 'collecting', posts: 2, scrolls: 0, pages: 1 },
+        { label: SECOND_QUERY.query, state: 'navigating', posts: 0, scrolls: 0, pages: 0 },
+      ]);
+    const heldWindow = await taskGet(researchRunId);
+    expect(heldWindow.state).toBe('running');
+    expect(heldWindow.objective).toBe(OBJECTIVE);
+    expect(heldWindow.counts).toMatchObject({ submissions: 1, queued: 0, running: 2, done: 0, posts: 2, replies: 0, undelivered: 0 });
+    expect(heldWindow.budget).toEqual({ scrolls: 0, expandActions: 0 });
   });
 
-  test('full canonical artifact exceeds 1 MiB and the same current-branch evidence guards files after a real process restart',async()=>{
-    const outcome=(await run([call('x_research',{tabId,search:{objective:'Capture-derived resource pressure',queries:[{id:'pressure',query:'pressure',purpose:'full artifact',product:'Top'}],maxPostsPerQuery:1000,maxScrollsPerQuery:0}})]))[0];
-    const result=canonical(outcome);
-    expect(Buffer.byteLength(outcome.text)).toBeLessThanOrEqual(1048576);
-    expect(result.artifact!.bytes).toBeGreaterThan(1048576);
-    if(result.operation!=='search')throw Error('search expected');
-    expect(result.queries[0]).toMatchObject({stopReason:'budget_reached',sampleTruncation:{observed:1000,sampled:1000,omitted:0},budgetBinding:[{dimension:'posts',limit:1000,used:1000,origin:'explicit'},{dimension:'scrolls',limit:0,used:0,origin:'explicit'}]});
-    expect(result.delivery).toMatchObject({persistence:'saved',truncated:true});
-    const manifestPath=result.delivery!.artifactPath!;
-    const manifest=JSON.parse(await fs.readFile(manifestPath,'utf8'));
-    const chunks=await Promise.all(manifest.chunks.map(async(c:{name:string;bytes:number;sha256:string})=>{
-      const bytes=await fs.readFile(path.join(path.dirname(manifestPath),c.name));
-      expect(bytes.length).toBe(c.bytes);expect(createHash('sha256').update(bytes).digest('hex')).toBe(c.sha256);return bytes;
-    }));
-    const bytes=Buffer.concat(chunks),full=JSON.parse(bytes.toString());
-    expect(bytes.length).toBe(result.artifact!.bytes);
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(result.artifact!.sha256);
-    expect(full.queries[0].posts[1].text).toBe(LARGE_BODY);
-    const citation='https://x.com/pressure/status/1699';
-    expect(full.queries[0].posts.at(-1)).toMatchObject({postId:'1699',sourceUrl:citation,text:'RESOURCE_PRESSURE_1699'});
-    expect(outcome.text).not.toContain(citation);
-    expect(JSON.stringify(result)).not.toContain(citation);
-    const endChunk=manifest.chunks[chunks.findIndex(bytes=>bytes.toString().includes('_CANONICAL_FULL_END'))];
-    expect(endChunk).toBeDefined();
-    const readManifest=(await run([call('read',{path:manifestPath})]))[0];
-    expect(readManifest.status).toBe('ok');expect(readManifest.text).toContain(result.artifact!.sha256);
-    const chunkRead=(await run([call('read',{path:path.join(path.dirname(manifestPath),endChunk.name)})]))[0];
-    expect(chunkRead.status).toBe('ok');expect(chunkRead.text).toContain('_CANONICAL_FULL_END');
-    const sessions=path.join(launched.kydogHome,'.kydog','sessions');
-    const files=(await fs.readdir(sessions,{recursive:true})).filter(file=>path.basename(file)===`${threadId}.jsonl`);
-    expect(files).toHaveLength(1);
-    const entries=(await fs.readFile(path.join(sessions,files[0]),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-    const persisted=entries.find(e=>e.message?.role==='toolResult'&&e.message.toolCallId===outcome.callId);
-    expect(persisted.message.details.artifact).toEqual(result.artifact);
-    expect(JSON.stringify({content:persisted.message.content,details:persisted.message.details})).not.toContain(citation);
-    expect(Buffer.byteLength(JSON.stringify({content:persisted.message.content,details:persisted.message.details}))).toBeLessThanOrEqual(1048576);
-    const home=launched.kydogHome,oldPid=launched.app.process().pid;
+  test('releasing the held navigation lets one wait deliver exactly one canonical result', async () => {
+    expect(await releaseHeldQuery()).toContain('/search');
+    const waitRun = await run([call('x_research', { action: 'wait', researchRunId })]);
+    const delivered = envelope(waitRun[0]);
+    expect(delivered.action).toBe('wait');
+    expect(delivered.delivery).toBeTruthy();
+    const delivery = delivered.delivery!;
+    expect(delivery.operation).toBe('search');
+    const result = canonical(delivery, researchSubmitRunId);
+    if (result.operation !== 'search') throw new Error('search expected');
+    expect(result.status).toBe('partial');
+    for (const row of result.queries) {
+      expect(row.posts.map(post => post.text)).toEqual([WIRE_ROOT, WIRE_PLAIN]);
+      expect(row.stopReason).toBe('budget_reached');
+      expect(row.budgetUsage).toMatchObject({ scrolls: 0, expandActions: 0 });
+    }
+    rootUrl = 'https://x.com/reader/status/321';
+    expect(result.queries[0].posts[0].sourceUrl).toBe(rootUrl);
+    // 任务页就是闸门窗口里快照说的那一页（不是用户的活动标签）。
+    expect(result.browserTabId).toMatch(TAB_ID);
+    expect(delivered.snapshot.browserTabId).toBe(result.browserTabId);
+    expect(result.browserTabId).not.toBe(userTabId);
+    expect(delivered.status).toBe('completed');
+    expect(delivered.snapshot.counts).toMatchObject({ submissions: 1, done: 2, failed: 0, posts: 4, undelivered: 0 });
+    expect(delivered.snapshot.usage).toEqual({ posts: 4, scrolls: 0, expandActions: 0 });
+    // 交付的那一份是收尾时落过盘的那份字节（工件可定位、路径真实存在）。
+    expect(result.delivery).toMatchObject({ persistence: 'saved', truncated: false });
+    expect((await fs.stat(result.delivery!.artifactPath!)).isFile()).toBe(true);
+  });
+
+  test('a second submission appends to the same research and one wait delivers one result while listing the rest', async () => {
+    const outcomes = await run([
+      call('x_research', { action: 'submit', researchRunId, ...searchArgs([FIRST_QUERY]) }),
+      call('x_research', { action: 'submit', researchRunId, ...readArgs(rootUrl) }),
+    ]);
+    const appended = envelope(outcomes[0]);
+    const readSubmitted = envelope(outcomes[1]);
+    readSubmitRunId = outcomes[1].runId;
+    expect(appended.researchRunId).toBe(researchRunId);
+    expect(readSubmitted.researchRunId).toBe(researchRunId);
+    expect(readSubmitted.snapshot.counts.submissions).toBe(3);
+    // 卡头永远是最早一次提交要回答的问题（R10）：追加读取不让它换题。
+    expect(readSubmitted.snapshot.objective).toBe(OBJECTIVE);
+    const waitRun = await run([call('x_research', { action: 'wait', researchRunId })]);
+    const delivered = envelope(waitRun[0]);
+    expect(delivered.delivery!.operation).toBe('search');
+    canonical(delivered.delivery!, outcomes[0].runId);
+    // 一次 wait 只交一份：读取那份已经收尾，进清单不进这一轮的交付。
+    expect(delivered.undelivered).toHaveLength(1);
+    expect(delivered.undelivered![0]).toMatchObject({ operation: 'read', state: 'done', objective: READ_OBJECTIVE });
+    expect(delivered.snapshot.counts).toMatchObject({ submissions: 3, done: 4, undelivered: 1, posts: 6 });
+  });
+
+  test('cancel settles a research whose only submission never ran; a finished delivery is still retrievable', async () => {
+    holdNextQuery(SECOND_QUERY.query);
+    // 先占住这条 thread 的队列（第二个 query 被闸住 ⇒ 它不会很快收尾），第二份提交因此真的**排队**着。
+    const occupyingRun = await run([
+      call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY]) }),
+      call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY]) }),
+    ]);
+    const occupying = envelope(occupyingRun[0]);
+    const queued = envelope(occupyingRun[1]);
+    expect(occupying.researchRunId).toBeTruthy();
+    expect(queued.researchRunId).toBeTruthy();
+    expect(queued.researchRunId).not.toBe(occupying.researchRunId);
+    expect(queued.status).toBe('running');
+    await expect.poll(() => gate.held.length).toBe(1);
+    const beforeCancel = await taskGet(queued.researchRunId);
+    expect(beforeCancel.counts).toMatchObject({ submissions: 1, queued: 1, running: 0, cancelled: 0 });
+    const cancelledRun = await run([
+      call('x_research', { action: 'cancel', researchRunId: queued.researchRunId }),
+      call('x_research', { action: 'submit', researchRunId: queued.researchRunId, ...searchArgs([FIRST_QUERY]) }),
+    ]);
+    const cancelled = envelope(cancelledRun[0]);
+    expect(cancelled.action).toBe('cancel');
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.snapshot.stateReason).toBe('cancelled');
+    expect(cancelled.snapshot.counts).toMatchObject({ submissions: 1, cancelled: 1, queued: 0, running: 0, posts: 0 });
+    // 取消是唯一的控制：一段被取消的研究不能被追加工作（静默复活）。
+    expect(cancelledRun[1].status).toBe('failed');
+    expect(cancelledRun[1].text).toContain('cancelled');
+    expect((await taskGet(queued.researchRunId)).state).toBe('cancelled');
+
+    // 放行占住队列的那一段：它照常交付自己的结果，被取消的那一段跟它无关。
+    expect(await releaseHeldQuery()).toContain('/search');
+    const occupyingWait = envelope((await run([call('x_research', { action: 'wait', researchRunId: occupying.researchRunId })]))[0]);
+    expect(occupyingWait.delivery).toBeTruthy();
+    expect(occupyingWait.snapshot.state).toBe('completed');
+    const occupyingResult = canonical(occupyingWait.delivery!, occupyingRun[0].runId);
+    if (occupyingResult.operation !== 'search') throw new Error('search expected');
+    expect(occupyingResult.queries.map(row => row.status)).toEqual(['partial', 'partial']);
+
+    // 主研究里早就收尾、一直没交付的那份还在：取消别人不会让它消失。
+    expect((await taskGet(researchRunId)).state).toBe('completed');
+    const pendingRun = await run([call('x_research', { action: 'submit', researchRunId, ...searchArgs([FIRST_QUERY]) })]);
+    expect(pendingRun[0].status).toBe('ok');
+    pendingSubmitRunId = pendingRun[0].runId;
+    const retrieved = envelope((await run([call('x_research', { action: 'wait', researchRunId })]))[0]);
+    expect(retrieved.delivery!.operation).toBe('read');
+    const readResult = canonical(retrieved.delivery!, readSubmitRunId);
+    if (readResult.operation !== 'read') throw new Error('read expected');
+    expect(readResult.targets[0]).toMatchObject({ status: 'observed', root: { postId: '321', text: WIRE_ROOT, sourceUrl: rootUrl } });
+    // 交出去的只是最早那一份未交付：刚提交的那份仍在清单里（重启那一条要交付的正是它）。
+    expect(retrieved.undelivered).toHaveLength(1);
+    expect(retrieved.undelivered![0]).toMatchObject({ operation: 'search', state: 'done', objective: OBJECTIVE });
+    expect(retrieved.snapshot.counts).toMatchObject({ submissions: 4, done: 5, undelivered: 1, posts: 8 });
+  });
+
+  test('a real process restart keeps the run state and counts, and wait still delivers the undelivered result', async () => {
+    const home = launched.kydogHome, oldPid = launched.app.process().pid;
+    expect(oldPid).toBeGreaterThan(0);
     await teardown(launched);
-    launched=await launchKydog({fixture,kydogHome:home});await configure();
+    launched = await launchKydog({ fixture, kydogHome: home });
+    await configure();
+    expect(launched.app.process().pid).toBeGreaterThan(0);
     expect(launched.app.process().pid).not.toBe(oldPid);
-    const history=await launched.page.evaluate(id=>window.kydog.invoke('thread.loadHistory',{threadId:id}),threadId);
-    expect(JSON.stringify(history)).toContain(result.artifact!.directoryId);
-    const restored=await run([call('write',{path:'x-research-restored-2026-10-16.md',content:`# Restored\n\n[Evidence](${citation})`}),call('write',{path:'x-research-restored-bad-2026-10-16.md',content:'[Unobserved](https://x.com/unobserved/status/999)'})]);
-    expect(restored[0].status).toBe('ok');expect(restored[1].status).toBe('failed');expect(restored[1].text).toContain('unobserved');
-    expect(await fs.readFile(manifestPath,'utf8')).toBe(JSON.stringify(manifest,null,2));
-    const restoredRead=(await run([call('read',{path:path.join(path.dirname(manifestPath),endChunk.name)})]))[0];
-    expect(restoredRead.text).toContain('_CANONICAL_FULL_END');
-    const receipt=canonical((await run([call('x_research',{search:{objective:'Restoration receipt without new evidence',queries:[{id:'zero',query:'zero',purpose:'receipt',product:'Top'}],maxPostsPerQuery:0}})]))[0]);
-    expect(receipt.artifactRestoration?.missingCalls??0).toBe(0);
-    console.info('[artifact-restart-receipt]',JSON.stringify({oldPid,newPid:launched.app.process().pid,artifact:result.artifact,artifactOnlySource:{postId:'1699',sourceUrl:citation},envelopeBytes:Buffer.byteLength(JSON.stringify({content:persisted.message.content,details:persisted.message.details})),restoration:receipt.artifactRestoration}));
+    // 冷启动落在欢迎页：先真的打开这条对话（`taskGet` 只答「正在看这个对话的主窗口」）。
+    await launched.page.getByTestId(`thread-${threadId}`).click();
+    await expect(launched.page.locator('[data-thread-id]').first()).toHaveAttribute('data-thread-id', threadId);
+    const history = await launched.page.evaluate(id => window.kydog.invoke('thread.loadHistory', { threadId: id }), threadId);
+    expect(JSON.stringify(history)).toContain(WIRE_ROOT);
+
+    // 第一次建会话的那一轮：`inspect` 读的是盘上那批记录（也是这一轮把任务 service 接上）。
+    const inspected = envelope((await run([call('x_research', { action: 'inspect', researchRunId, view: 'deliveries' })]))[0]);
+    expect(inspected.action).toBe('inspect');
+    expect(inspected.snapshot.counts).toMatchObject({ submissions: 4, done: 5, undelivered: 1, posts: 8 });
+    const deliveries = inspected.inspect!.items as Array<{ operation: string; deliveredAt: string | null; hasArtifact: boolean }>;
+    expect(deliveries.map(item => item.operation)).toEqual(['search', 'search', 'read', 'search']);
+    expect(deliveries.map(item => item.deliveredAt !== null)).toEqual([true, true, true, false]);
+    expect(deliveries.map(item => item.hasArtifact)).toEqual([true, true, true, true]);
+    // 重启后的 `taskGet`：状态与计数都是盘上那一份，不是内存里重算的。
+    const restored = await taskGet(researchRunId);
+    expect(restored.state).toBe('completed');
+    expect(restored.objective).toBe(OBJECTIVE);
+    expect(restored.counts).toMatchObject({ submissions: 4, done: 5, posts: 8, undelivered: 1 });
+
+    const waitRun = await run([call('x_research', { action: 'wait', researchRunId })]);
+    const delivered = envelope(waitRun[0]);
+    expect(delivered.delivery).toBeTruthy();
+    const delivery = delivered.delivery!;
+    const result = canonical(delivery, pendingSubmitRunId);
+    if (result.operation !== 'search') throw new Error('search expected');
+    expect(result.queries[0].posts.map(post => post.text)).toEqual([WIRE_ROOT, WIRE_PLAIN]);
+    // 重启后没有内存里的那份结果：交付走工件读回（R20），持久化与路径都得说得出来。
+    expect(result.delivery).toMatchObject({ persistence: 'saved', truncated: false });
+    expect((await fs.stat(result.delivery!.artifactPath!)).isFile()).toBe(true);
+    expect(result.artifact).toBeTruthy();
+    expect(delivered.snapshot.counts.undelivered).toBe(0);
+    const after = await taskGet(researchRunId);
+    expect(after.state).toBe('completed');
+    expect(after.counts.undelivered).toBe(0);
   });
 });
