@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import type { XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot } from '../../shared/xResearchTask';
+import type {
+  XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot, XResearchWorkItem,
+} from '../../shared/xResearchTask';
+import { logger } from '../log';
 import type { XNetworkPageFact } from './xNetworkLease';
 import { XResearchTaskStore } from './xResearchTaskStore';
 import { XResearchTaskService, type XResearchRunWork } from './xResearchTaskService';
@@ -194,6 +197,37 @@ class RecordingStore extends XResearchTaskStore {
   }
 }
 
+/** 可以中途拒绝写提交的盘：用来证明 `submit` 落盘失败时不在内存里留下一条孤儿提交。 */
+class FailingSubmissionStore extends XResearchTaskStore {
+  failWrites = false;
+  override async writeSubmission(submission: XResearchSubmission): Promise<void> {
+    if (this.failWrites) throw new Error('disk full');
+    return super.writeSubmission(submission);
+  }
+}
+
+function workItem(over: Partial<XResearchWorkItem> = {}): XResearchWorkItem {
+  return {
+    workItemId: randomUUID(), section: 'search', label: 'Qwen3.8 27B', product: 'Top',
+    state: 'queued', phaseDetail: null, status: null, stopReason: null, reason: null,
+    posts: 0, omitted: 0, pages: 0, hasRoot: false, replies: 0, article: 'not_requested',
+    scrolls: 0, expandActions: 0, ...over,
+  };
+}
+
+/** 一条已经停在盘上的提交（不经 `submit` 造出来，用来表示「上一个进程留下的」）。 */
+function storedSubmission(over: Partial<XResearchSubmission> & {
+  threadId: string; researchRunId: string;
+}): XResearchSubmission {
+  return {
+    version: 1, submissionId: randomUUID(), submitCallId: randomUUID(), batchId: 'xbatch_stored',
+    runId: randomUUID(), operation: 'search', objective: searchWork().objective,
+    state: 'running', budget: { scrolls: 1000, expandActions: 0 },
+    usage: { posts: 0, scrolls: 0, expandActions: 0 }, workItems: [workItem()],
+    createdAt: '2026-10-16T00:00:00.000Z', endedAt: null, ...over,
+  };
+}
+
 describe('XResearchTaskService', () => {
   it('runs two submissions on the same thread one after another', async () => {
     const order: string[] = [];
@@ -238,13 +272,17 @@ describe('XResearchTaskService', () => {
   });
 
   it('appends a second submission to the same researchRunId', async () => {
-    const { service } = harness(echoRunner);
+    const { service, store } = harness(echoRunner);
     const thread = owner();
     const first = await service.submit({ work: { search: searchWork() } }, thread);
     const second = await service.submit({ researchRunId: first.researchRunId, work: { read: readWork() } }, thread);
     await service.whenIdle(thread.threadId, first.researchRunId);
     expect(second.researchRunId).toBe(first.researchRunId);
     const snapshot = await service.get(thread.threadId, first.researchRunId);
+    // 两份都跑成功了：终态必须是「完成」。只断行级桶的话，`project()` 把跑完的提交说成中断
+    // 也能让下面每条都绿（行都会照结果收尾）。
+    expect(snapshot.state).toBe('completed');
+    expect((await store.readTask(thread.threadId, first.researchRunId))?.state).toBe('completed');
     expect(snapshot.counts.submissions).toBe(2);
     expect(snapshot.search).toHaveLength(2);
     expect(snapshot.read).toHaveLength(2);
@@ -256,14 +294,52 @@ describe('XResearchTaskService', () => {
     expect(snapshot.budget).toEqual({ scrolls: 2000, expandActions: 400 });
   });
 
+  it('hands the work body a tab binding onto the task record', async () => {
+    const bound = gate();
+    const release = gate();
+    const seen: (string | undefined)[] = [];
+    const { service, store } = harness(async (work, ctx) => {
+      // 提交时显式给了 tabId：工作体读到的就是任务记的那个。
+      seen.push(ctx.tabBinding.get());
+      ctx.tabBinding.set('tab-9');
+      seen.push(ctx.tabBinding.get());
+      bound.open();
+      await release.promise;
+      return echoRunner(work, ctx);
+    });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() }, tabId: 'tab-7' }, thread);
+    await bound.promise;
+    expect(seen).toEqual(['tab-7', 'tab-9']);
+    // 任务持有标签页（spec §4.3）：采集层写回的值在快照上看得见，下一轮提交复用它。
+    expect((await service.get(thread.threadId, submitted.researchRunId)).browserTabId).toBe('tab-9');
+    release.open();
+    await service.whenIdle(thread.threadId, submitted.researchRunId);
+    // 新的 service 实例（内存里没有活副本）= 从盘上重开：写回的值跟着这一轮的收尾落了盘。
+    const reopened = harness(echoRunner, { store });
+    expect((await reopened.service.get(thread.threadId, submitted.researchRunId)).browserTabId).toBe('tab-9');
+  });
+
   it('emits a snapshot on submit before any work runs', async () => {
     const hold = gate();
+    // 工作体开跑时已经推过几帧：这才是「提交先推帧、再排队」的可观察形式 ——
+    // 闸住的假 runner 让 `frames[0]` 在违规实现下也长得一模一样（提交帧与开跑帧的内容逐字相同），
+    // 所以不能只断 `frames[0]`。
+    const entered = gate();
+    const framesOnEntry: number[] = [];
     const { service, frames } = harness(async (work, ctx) => {
+      framesOnEntry.push(frames.length);
+      entered.open();
       await hold.promise;
       return echoRunner(work, ctx);
     });
     const thread = owner();
     const submitted = await service.submit({ work: { search: searchWork() }, tabId: 'tab-7' }, thread);
+    await entered.promise;
+    expect(framesOnEntry).toHaveLength(1);
+    expect(framesOnEntry[0]).toBeGreaterThanOrEqual(1);
+    // 第一帧就是 `submit` 返回的那一份：提交帧（提交队列之前推的）不是第二帧。
+    expect(frames[0]).toBe(submitted.snapshot);
     expect(frames[0].state).toBe('running');
     expect(frames[0].counts.queued).toBe(2);
     expect(frames[0].search.map((item) => item.state)).toEqual(['queued', 'queued']);
@@ -419,6 +495,7 @@ describe('XResearchTaskService', () => {
   });
 
   it('marks the research interrupted when the work body throws and keeps the queue moving', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     let calls = 0;
     const { service } = harness(async (work, ctx) => {
       calls += 1;
@@ -428,6 +505,14 @@ describe('XResearchTaskService', () => {
     const thread = owner();
     const first = await service.submit({ work: { search: searchWork() } }, thread);
     await service.whenIdle(thread.threadId, first.researchRunId);
+    // 异常被收在这里：日志是它唯一露面的地方（不带诊断 = 用户看到「中断」而没人知道原因）。
+    expect(warn).toHaveBeenCalledWith('x_research', 'work body threw', expect.objectContaining({
+      threadId: thread.threadId,
+      researchRunId: first.researchRunId,
+      submissionId: first.submissionId,
+      err: 'Error: artifact write failed',
+    }));
+    warn.mockRestore();
     const failed = await service.get(thread.threadId, first.researchRunId);
     expect(failed.state).toBe('interrupted');
     // 没有结果就没有任何行结论：工作项停在 stopped、`status` 留空，投影把它算成「中断」，
@@ -499,5 +584,97 @@ describe('XResearchTaskService', () => {
     const listed = await service.list(thread.threadId);
     expect(listed.map((snapshot) => snapshot.researchRunId))
       .toEqual([second.researchRunId, first.researchRunId]);
+  });
+
+  it('orders two runs created in the same millisecond deterministically', async () => {
+    const store = new XResearchTaskStore(root());
+    const thread = owner();
+    const createdAt = '2026-10-16T00:00:00.000Z';
+    // 同一毫秒创建的两条：先后只能由第二个键定，否则两次 `list` 可以给出不同的列表。
+    const older = '00000000-0000-4000-8000-000000000001';
+    const newer = '00000000-0000-4000-8000-000000000002';
+    for (const researchRunId of [older, newer]) {
+      await store.writeTask({
+        version: 1, researchRunId, threadId: thread.threadId, projectRoot: thread.projectRoot,
+        createdAt, updatedAt: createdAt, revision: 0, state: 'completed', submissionIds: [],
+      });
+    }
+    const { service } = harness(echoRunner, { store });
+    const listed = await service.list(thread.threadId);
+    expect(listed.map((snapshot) => snapshot.createdAt)).toEqual([createdAt, createdAt]);
+    expect(listed.map((snapshot) => snapshot.researchRunId)).toEqual([newer, older]);
+  });
+
+  it('repairs a record left running on disk into an interrupted one', async () => {
+    const dir = root();
+    const store = new XResearchTaskStore(dir);
+    const thread = owner();
+    const createdAt = '2026-10-16T00:00:00.000Z';
+    const researchRunId = randomUUID();
+    const submission = storedSubmission({
+      threadId: thread.threadId, researchRunId,
+      // 被杀时的形状：一项还没开始、一项在飞。
+      workItems: [workItem(), workItem({ state: 'scrolling', posts: 3, scrolls: 4 })],
+    });
+    await store.writeTask({
+      version: 1, researchRunId, threadId: thread.threadId, projectRoot: thread.projectRoot,
+      createdAt, updatedAt: createdAt, revision: 4, state: 'running',
+      submissionIds: [submission.submissionId], browserTabId: 'tab-4',
+    });
+    await store.writeSubmission(submission);
+    // 同一块盘上还有一条**已经收尾**的研究：修复只该落在「盘上写着进行中」的那条上。
+    const settledRunId = randomUUID();
+    const settledSubmission = storedSubmission({
+      threadId: thread.threadId, researchRunId: settledRunId, state: 'done',
+      endedAt: createdAt, workItems: [workItem({ state: 'stopped', status: 'observed' })],
+    });
+    await store.writeTask({
+      version: 1, researchRunId: settledRunId, threadId: thread.threadId, projectRoot: thread.projectRoot,
+      createdAt, updatedAt: createdAt, revision: 2, state: 'completed',
+      submissionIds: [settledSubmission.submissionId],
+    });
+    await store.writeSubmission(settledSubmission);
+
+    const { service, frames } = harness(echoRunner, { store });
+    const repaired = await service.get(thread.threadId, researchRunId);
+    // §4.4「崩溃后的诚实表示」：进程被杀后盘上的「进行中」不是最新状态，它是中断的残迹。
+    expect(repaired.state).toBe('interrupted');
+    expect(repaired.stateReason).toBe('process_restarted');
+    expect(repaired.search.map((item) => [item.state, item.status]))
+      .toEqual([['stopped', null], ['stopped', null]]);
+    expect(repaired.browserTabId).toBe('tab-4');
+    expect(frames.map((frame) => frame.state)).toEqual(['interrupted']);
+    // 修复本身必须落盘：否则下一个进程重开时又会把它当成「进行中」。
+    const disk = new XResearchTaskStore(dir);
+    const persisted = await disk.readTask(thread.threadId, researchRunId);
+    expect(persisted).toMatchObject({ state: 'interrupted', stateReason: repaired.stateReason });
+    const persistedSubmission = await disk.readSubmission(thread.threadId, researchRunId, submission.submissionId);
+    expect(persistedSubmission).toMatchObject({ state: 'interrupted', endedAt: expect.any(String) });
+    // 已经收尾的那条原样读回：修复的判据是盘上的 `state`，不是「凡是读盘就改成中断」。
+    const untouched = await service.get(thread.threadId, settledRunId);
+    expect(untouched.state).toBe('completed');
+    expect(untouched.stateReason).toBeUndefined();
+  });
+
+  it('does not keep a submission whose files never landed', async () => {
+    const store = new FailingSubmissionStore(root());
+    const { service } = harness(echoRunner, { store });
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    store.failWrites = true;
+    // 写提交的那一刻失败：这次提交从没被排进队列，所以调用方拿到错误、内存里也不许留它。
+    await expect(service.submit({ researchRunId: first.researchRunId, work: { read: readWork() } }, thread))
+      .rejects.toThrow('disk full');
+    const snapshot = await service.get(thread.threadId, first.researchRunId);
+    expect(snapshot.counts.submissions).toBe(1);
+    expect(snapshot.read).toHaveLength(0);
+    // 剩下的那份提交是收尾过的：孤儿提交不许把整段研究钉在「进行中」。
+    expect(snapshot.state).toBe('completed');
+    store.failWrites = false;
+    const retried = await service.submit({ researchRunId: first.researchRunId, work: { read: readWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    expect(retried.researchRunId).toBe(first.researchRunId);
+    expect((await service.get(thread.threadId, first.researchRunId)).counts.submissions).toBe(2);
   });
 });

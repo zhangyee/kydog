@@ -5,6 +5,7 @@
 // 一条用例里用假工作体跑完，不需要 DOM 也不需要浏览器。
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
+import { logger } from '../log';
 import type {
   XResearchSection, XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot,
   XResearchTaskState, XResearchWorkItem, XResearchWorkState,
@@ -39,6 +40,9 @@ export type XResearchWorkContext = {
   /** 提交那一轮的 `callId`：结果里写的就是它，交付壳在恢复时据此与结果对上（Task 7）。 */
   submitCallId: string;
   signal: AbortSignal;
+  /** 任务的标签页（spec §4.3「任务记自己的 browserTabId」）：读写都落在 `record.browserTabId` 上，
+   *  下一次提交因此复用同一个标签页。改它是内存转移，随这一轮的收尾落盘。 */
+  tabBinding: { get(): string | undefined; set(tabId: string | undefined): void };
   onProgress: (event: XResearchProgressEvent) => void;
 };
 
@@ -196,7 +200,21 @@ export class XResearchTaskService {
       controller: new AbortController(),
     };
     this.active.set(key, opened);
+    // 「进行中」只可能来自一个已经不在的进程：`open` 读盘的前提就是这条研究没有内存活副本。
+    if (record.state === 'running') await this.repairRestarted(opened);
     return opened;
+  }
+
+  /** 崩溃后的诚实表示（spec §4.4）：盘上写着「进行中」= 写它的那个进程在两个边界之间被杀。
+   *  未收尾的提交按中断收尾（复用 `interrupt` / `project`，不另写一份状态规则），再落一次盘 ——
+   *  否则同一个「进行中」在每次重开时都会被当成最新状态读回来。 */
+  private async repairRestarted(active: ActiveResearch): Promise<void> {
+    const unsettled = [...active.submissions.values()]
+      .filter((submission) => submission.state === 'queued' || submission.state === 'running');
+    for (const submission of unsettled) this.interrupt(submission);
+    // 落盘失败在这里只能放弃：这条研究下一次打开时会再修一次，而 `get` 不该因为修复写失败而不回答。
+    await this.persist(active, unsettled, unsettled.length ? 'process_restarted' : undefined)
+      .catch(() => undefined);
   }
 
   private create(owner: XResearchTaskOwner, researchRunId: string): ActiveResearch {
@@ -243,7 +261,17 @@ export class XResearchTaskService {
     active.record.submissionIds.push(submission.submissionId);
     if (input.tabId) active.record.browserTabId = input.tabId;
     active.submissions.set(submission.submissionId, submission);
-    const snapshot = await this.persist(active, submission);
+    let snapshot: XResearchTaskSnapshot;
+    try {
+      snapshot = await this.persist(active, [submission]);
+    } catch (error) {
+      // 落盘失败 = 这次提交不存在：工作从没被排进队列，内存里留着它会让 `get()` 永远报「进行中」。
+      // 撤回内存再尽力把撤回后的样子落一次盘（失败就放弃 —— 调用方拿到的是原来那个错误）。
+      active.submissions.delete(submission.submissionId);
+      active.record.submissionIds.pop();
+      await this.persist(active).catch(() => undefined);
+      throw error;
+    }
     this.enqueue(active, submission, input.work);
     return { researchRunId, submissionId: submission.submissionId, snapshot };
   }
@@ -260,10 +288,13 @@ export class XResearchTaskService {
       const active = await this.open(threadId, researchRunId);
       return active ? this.snapshotOf(active) : null;
     }));
-    // 新的在前（与 `webResearch.taskList` 一致）。读不出来的那一份跳过：一个坏目录不该让整个列表变空。
+    // 新的在前（与 `webResearch.taskList` 一致）。同一毫秒创建的两条按 `researchRunId` 定序：
+    // 只比 `createdAt` 时它们的先后取决于数组顺序，同一个盘的两次 `list` 可以给出不同的列表。
+    // 读不出来的那一份跳过：一个坏目录不该让整个列表变空。
     return snapshots
       .filter((snapshot): snapshot is XResearchTaskSnapshot => snapshot !== null)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)
+        || b.researchRunId.localeCompare(a.researchRunId));
   }
 
   /** 等该研究的队列排空（`wait` 与测试共用同一个事实）。
@@ -294,7 +325,7 @@ export class XResearchTaskService {
       // `run` 只会在落盘失败时拒绝。还挂在「进行中」上的提交收成「中断」，再尽力落一次盘；
       // 第二次失败也只能放弃 —— 但它不许变成 unhandled rejection，也不许卡住队列。
       if (submission.state === 'running') this.interrupt(submission);
-      void this.persist(active, submission).catch(() => undefined);
+      void this.persist(active, [submission]).catch(() => undefined);
       release();
     });
   }
@@ -302,7 +333,7 @@ export class XResearchTaskService {
   private async run(active: ActiveResearch, submission: XResearchSubmission,
     work: XResearchWorkRequest): Promise<void> {
     submission.state = 'running';
-    await this.persist(active, submission);
+    await this.persist(active, [submission]);
     try {
       const result = await this.deps.runWork(work, {
         threadId: active.record.threadId,
@@ -312,14 +343,26 @@ export class XResearchTaskService {
         runId: submission.runId,
         submitCallId: submission.submitCallId,
         signal: active.controller.signal,
+        tabBinding: {
+          get: () => active.record.browserTabId,
+          set: (tabId) => {
+            if (tabId) active.record.browserTabId = tabId;
+            else delete active.record.browserTabId;
+          },
+        },
         onProgress: (event) => this.progress(active, submission, event),
       });
       this.settle(submission, result);
-    } catch {
+    } catch (err) {
       // 工作体抛出 = 这一轮没有结果。没有结果就没有任何行结论（见 `interrupt`）。
+      // 先留一条诊断：抛出被收在这里，日志是它唯一露面的地方。
+      logger.warn('x_research', 'work body threw', {
+        threadId: active.record.threadId, researchRunId: active.record.researchRunId,
+        submissionId: submission.submissionId, err: String(err),
+      });
       this.interrupt(submission);
     }
-    await this.persist(active, submission);
+    await this.persist(active, [submission]);
   }
 
   /** 进度事件说的是「这一行此刻在哪个阶段」，不是结论：`status` / `stopReason` / `reason`
@@ -375,18 +418,21 @@ export class XResearchTaskService {
   }
 
   /** 一次状态转移：内存先改，再落盘，再推一帧。
-   *  写盘顺序是先 `task.json`、后这份 `submission-*.json`：中间被杀只会留下「索引比提交新」
-   *  的一侧，任务目录里永远不会出现「有提交、没有索引」的形状（Task 1 评审的同一条约束）。 */
+   *  写盘顺序是先 `task.json`、后这些 `submission-*.json`：中间被杀只会留下「索引比提交新」
+   *  的一侧，任务目录里永远不会出现「有提交、没有索引」的形状（Task 1 评审的同一条约束）。
+   *  `reason` 只给「不是投影推出来的」那一个结论用（进程重启后的修复）。 */
   private async persist(active: ActiveResearch,
-    submission?: XResearchSubmission): Promise<XResearchTaskSnapshot> {
+    submissions: readonly XResearchSubmission[] = [],
+    reason?: string): Promise<XResearchTaskSnapshot> {
     active.record.revision += 1;
     active.record.updatedAt = this.now();
     const settled = this.project(active);
     active.record.state = settled.state;
-    if (settled.reason) active.record.stateReason = settled.reason;
+    const stateReason = reason ?? settled.reason;
+    if (stateReason) active.record.stateReason = stateReason;
     else delete active.record.stateReason;
     await this.deps.store.writeTask(active.record);
-    if (submission) await this.deps.store.writeSubmission(submission);
+    for (const submission of submissions) await this.deps.store.writeSubmission(submission);
     return this.emit(active);
   }
 
