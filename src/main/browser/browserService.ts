@@ -827,6 +827,14 @@ export class BrowserService {
    *
    * 返回 false = 到点没清空，或者这次调用被取消（取消由调用方的 `assertNotAborted` 定论，
    * 不在这里抛）。**清空不等于「几何对了」**：清空只说明没人在途，判据仍然是几何。
+   *
+   * **这一次排空不包括 1:1 的 page scale 移交。** `applyViewport` 先 `settle()` 再调
+   * `raisePageScale`，那一步的 `beginPageScale()` 才把 generation 重新加回 `viewportPending`
+   * —— 所以这里可能返回 true 时 `Emulation.setPageScaleFactor` 还在途。**提前放行是故意的**：
+   * 移交里先落的 `setVisualZoomLevelLimits` 是 Electron 内部 IPC，在渲染进程被换掉的那个窗口里
+   * **永不 settle**（见 `applyViewport` 里那条实测注释）；把它算进排空，等于让这台机器上每一次
+   * 读 DOM 都先坐满 20 秒上限。它也不削弱判据：落地的是哪一份由几何比出来，page scale 是
+   * `ack.pageScale` 与 `want.pageScale` 单独的一项。
    */
   private waitForViewportSettled(tabId: string, signal?: AbortSignal): Promise<boolean> {
     if (!this.viewportPending.get(tabId)?.size) return Promise.resolve(true);
@@ -2281,6 +2289,15 @@ export class BrowserService {
     // `viewportAcknowledged` 读取时，读到的那一条就不是最后落地的那一条。
     const settled = await this.waitForViewportSettled(tabId, signal);
     assertNotAborted(signal);
+    // 到点没清空**不是**失败判据（下面仍然按几何判），所以它可以一路走成功 —— 一个永不落地的
+    // generation 于是只表现为「这个标签的每次 DOM 读取都先慢 20 秒」，日志里一个字都没有。
+    // 走到这里的只可能是到点：abort 那一种在上一句就抛了。
+    if (!settled) {
+      logger.warn('browser.viewport', '读取 DOM 之前等视口下发排空到点', {
+        tabId, phase: 'prepareForDomRead',
+        pending: [...(this.viewportPending.get(tabId) ?? [])],
+      });
+    }
     const acknowledged = () => {
       const ack = this.viewportAcknowledged.get(tabId);
       const want = this.viewportGeometry(tabId, this.stage?.bounds ?? null);

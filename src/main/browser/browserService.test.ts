@@ -4439,6 +4439,105 @@ it('a superseded viewport landing with different geometry still fails the prepar
   expect(error?.message).toContain('重下发之后仍然没有确认落地');
 });
 
+// 上一条的两份几何都是 1280 宽（两个舞台都窄于 `LOGICAL_WIDTH`，排版宽一律被抬到 1280），
+// 所以 width、height、scale 一起变 —— 删掉 `ack.width === want.width` 这一项它照样绿。
+// 舞台**宽过 1280** 时排版宽跟着舞台走：这里两份只差 width（scale 恒 1、height 都是 900），
+// width 就成了唯一还对得上的那一项之外的判据。
+it('a superseded wide viewport landing fails on width alone', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const wide = { x: 0, y: 0, width: 1440, height: 900 };
+  const wider = { x: 0, y: 0, width: 1600, height: 900 };
+  const held: Array<{ params: Record<string, unknown>; land: () => void }> = [];
+  wc.debugger.respond = (method, params) => {
+    if (method !== 'Emulation.setDeviceMetricsOverride') return Promise.resolve({});
+    // 第四发（重下发）以 ACK 丢失失败：几何就一直停在旧舞台那一份上。
+    if (held.length === 3) return Promise.reject(new Error('ACK lost'));
+    return new Promise(resolve => { held.push({ params: params!, land: () => resolve({}) }); });
+  };
+  svc.syncView({ ...STAGE, epoch, bounds: wide });
+  await flush();
+  svc.syncView({ ...STAGE, epoch, bounds: wider });
+  await flush();
+  expect(held.length).toBe(2);
+  // 前提：两份几何只差 width —— scale 与 height 逐字相同。
+  expect(held[0].params).toMatchObject({ width: 1440, height: 900, scale: 1 });
+  expect(held[1].params).toMatchObject({ width: 1600, height: 900, scale: 1 });
+  const preparing = svc.prepareForDomRead(nav.tabId);
+  const rejected = preparing.then(() => null, (error: { code: string; message: string }) => error);
+  await flush();
+  expect(held.length).toBe(3);
+  held[2].land(); await flush();                // 自己那一份：ack 是新舞台的几何
+  held[1].land(); await flush();                // 新舞台那一发
+  held[0].land(); await flush();                // 旧舞台那一发晚到，把 ack 盖成旧几何
+  const error = await rejected;
+  expect(error?.code).toBe('browser.input_not_delivered');
+  expect(error?.message).toContain('确认落地的几何 1440×900（scale 1，pageScale 1）');
+  expect(error?.message).toContain('1600×900（scale 1，pageScale 1） 不一致');
+});
+
+// 排空等的是「它落地」，abort 等的是「别等了」—— 后者不许坐满上限。
+// 这一条里 prepare 自己那一发已经落地、别人那一发还挂在途上，所以取消只能从
+// `waitForViewportSettled` 的 abort 出口走；没有它就得等满 20 秒。
+it('cancelling while another override is outstanding rejects the prepared DOM read at once', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const held: Array<{ land: () => void }> = [];
+  wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride'
+    ? new Promise(resolve => { held.push({ land: () => resolve({}) }); })
+    : Promise.resolve({});
+  svc.syncView({ ...STAGE, epoch });            // ① 布局这一发留在途上
+  await flush();
+  const abort = new AbortController();
+  const preparing = svc.prepareForDomRead(nav.tabId, abort.signal);   // ② prepare 自己那一发
+  const rejected = preparing.then(() => null, (error: { code?: string }) => error);
+  await flush();
+  expect(held.length).toBe(2);
+  held[1].land(); await flush();                // ② 落地 → 它进了排空，① 还在
+  abort.abort();
+  await flush();
+  // 只看微任务：提前返回就是「取消当场生效」，不是「等 20 秒之后恰好也取消」。
+  expect(await Promise.race([rejected, Promise.resolve('still-waiting')]))
+    .toMatchObject({ code: 'browser.cancelled' });
+  held[0].land(); await flush();                // 收尾
+});
+
+// 到点没清空时可以按几何判成功（见上一条正例），但失败时必须说得出「等满了上限没清空」。
+// 这一条：① 旧几何永不落地（等满上限）；② 新舞台那一发在 prepare 之后落地；③ prepare 自己
+// 那一发先落地、① 晚到把 ack 盖成旧几何；④ 重下发以 ACK 丢失失败 —— 三条事实都在。
+it('a drain that hits the timeout names the timeout in the failure', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const narrow = { x: 0, y: 0, width: 900, height: 700 };
+  const held: Array<{ land: () => void }> = [];
+  wc.debugger.respond = (method) => {
+    if (method !== 'Emulation.setDeviceMetricsOverride') return Promise.resolve({});
+    if (held.length === 3) return Promise.reject(new Error('ACK lost'));
+    return new Promise(resolve => { held.push({ land: () => resolve({}) }); });
+  };
+  svc.syncView({ ...STAGE, epoch });            // ① 旧舞台这一发永不落地
+  await flush();
+  svc.syncView({ ...STAGE, epoch, bounds: narrow });   // ② 新舞台这一发
+  await flush();
+  expect(held.length).toBe(2);
+  vi.useFakeTimers();
+  const preparing = svc.prepareForDomRead(nav.tabId);  // ③
+  const rejected = preparing.then(() => null, (error: { code?: string; message?: string }) => error);
+  await flush();
+  expect(held.length).toBe(3);
+  held[2].land(); await flush();                // ③ 落地：进排空
+  held[0].land(); await flush();                // ① 晚到，把 ack 盖成旧几何；② 仍在途
+  await vi.advanceTimersByTimeAsync(20_000);
+  const error = await rejected;
+  expect(error?.code).toBe('browser.input_not_delivered');
+  expect(error?.message).toContain('在途的视口下发在 20000 毫秒内没有清空');
+  expect(error?.message).toContain('重下发之后仍然没有确认落地');
+  // 同一个事实要在日志里留一条 —— 不抛的那一支（几何对得上、排空到点）只有这处痕迹。
+  expect(H.logs.filter(l => l.msg === '读取 DOM 之前等视口下发排空到点').map(l => l.ctx))
+    .toEqual([{ tabId: nav.tabId, phase: 'prepareForDomRead', pending: [expect.any(Number)] }]);
+  held[1].land(); await flush();                // 收尾
+});
+
 
 it.each(['focus', 'selection'] as const)('last typing permission rejects changed %s before insertText after same-case selected success', async change => {
   const { svc } = make(); const { wc, nav } = await openTab(svc);
