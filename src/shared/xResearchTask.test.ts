@@ -268,6 +268,23 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
     expect(snap.counts.queued).toBe(1);
   });
 
+  it('keeps a row whose on-disk section is neither segment out of the denominators', () => {
+    const snap = xResearchTaskSnapshot(record(), [
+      submission({ submissionId: 'sub-x', workItems: [
+        item({ workItemId: 'w-s1', state: 'stopped', status: 'observed' }),
+        // 盘上的 `section` 不是这两个词之一（store 直接 `JSON.parse(...) as`，坏值到不了类型层）。
+        // 这行永远不会成为一行（快照两段都按这两个词过滤），所以也不该胀大任何一段的分母。
+        item({ workItemId: 'w-bad', section: 'bogus' as XResearchWorkItem['section'], state: 'queued' }),
+      ] }),
+    ]);
+    expect([snap.counts.searchDone, snap.counts.searchTotal]).toEqual([1, 1]);
+    // 坏值曾被 `else` 收进读取那一支：卡上会写「读取 1/1」，而读取段一行都没有。
+    expect([snap.counts.readDone, snap.counts.readTotal]).toEqual([0, 0]);
+    // 对照：它确实不是一行（分母之外的原因也交代清楚：两段列表各自按词过滤）。
+    expect(snap.search).toHaveLength(1);
+    expect(snap.read).toEqual([]);
+  });
+
   it('counts an article only when its body was read, and a delivery only when the submission ended', () => {
     const snap = xResearchTaskSnapshot(record(), [
       submission({ submissionId: 'sub-a', state: 'done', endedAt: '2026-10-16T00:02:00.000Z',

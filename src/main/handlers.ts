@@ -76,11 +76,12 @@ function assertResearchViewer(threadId: string, sender: WebContents): void {
   }
 }
 
-/** 未接线的 x research 任务 service。与上面那道闸用同一个错误码：从调用方看，「这条研究不在」
- *  就是全部事实 —— 多一个「服务没接上」的说法只会让渲染层多一条无处安放的错误。 */
+/** 未接线的 x research 任务 service。**与上面那道闸不是一个码**：闸答的「这条研究不在」是
+ *  结论，这一条说的是「现在还答不了」—— 渲染层据此不 latch「记录不可用」，等服务接上再取一次。
+ *  两者共用一个码时，有内容的卡会一直挂着「记录不可用」（R65）。 */
 function requireXResearchTaskService(): XResearchTaskService {
   const service = xResearchTaskService();
-  if (!service) throw new KydogError('research.not_found', 'X research task service is not wired');
+  if (!service) throw new KydogError('research.unavailable', 'X research task service is not wired');
   return service;
 }
 
@@ -182,7 +183,8 @@ export function registerAllHandlers(): void {
   //
   // 未接线（x research 关闭、或这个进程还没建过会话）时分两种处置：`taskList` 答空列表 ——
   // 渲染层在开对话时就会调它，此时没有东西可显示是正常状态，报一个错只会变成一条不该有的提示；
-  // 其余三条答 `research.not_found` —— 从调用方看，「这条研究不在」就是全部事实。
+  // 其余三条答 `research.unavailable` —— 「现在还答不了」，不是「这条研究不在」：服务接上之后
+  // 同一个 id 就能取到，所以渲染层不该把它当成一次结论（见 `requireXResearchTaskService`）。
   // 那个 null 分支由 `handlers.xResearchTask.test.ts` 钉住，不靠「生产里总会接线」。
   registerHandler('xResearch.taskList', (args, evt) => {
     assertResearchViewer(args.threadId, evt.sender);

@@ -89,6 +89,11 @@ function phaseDetails(tree: unknown) {
   return findAllWhere(tree, (element) => element.props['data-testid'] === 'x-research-phase-detail');
 }
 
+/** 发了几次 `taskGet`：补取（服务接上 / 行从池里消失）的判据就是多出来的一次请求。 */
+function taskGetCalls(): number {
+  return invoke.mock.calls.filter(([method]) => method === 'xResearch.taskGet').length;
+}
+
 describe('XResearchProgressCard', () => {
   beforeEach(() => {
     useXResearchTaskStore.setState({ snapshotsByRunId: {} });
@@ -294,10 +299,14 @@ describe('XResearchProgressCard', () => {
     expect(header).not.toContain('（');
   });
 
-  it('states a queued article obligation without claiming action', async () => {
+  it('states a queued or settled article obligation without claiming action', async () => {
     useXResearchTaskStore.getState().upsert(snapshot({ read: [
       workItem({ section: 'read', label: 'queued-target', state: 'queued', article: 'pending' }),
-      workItem({ section: 'read', label: 'live-target', state: 'collecting', article: 'pending' }),
+      // 收尾了却没走到取文章那一步：`article` 不会被 `concludeRow` 收尾，它停在 `pending`。
+      workItem({ section: 'read', label: 'settled-target', state: 'stopped', status: 'access_denied',
+        article: 'pending' }),
+      workItem({ section: 'read', label: 'live-target', state: 'collecting', article: 'pending',
+        phaseDetail: 'article' }),
     ] }));
     const mounted = mount(XResearchProgressCard, props);
     await mounted.settle();
@@ -309,12 +318,19 @@ describe('XResearchProgressCard', () => {
     expect(queued).toContain('排队');
     expect(queued).toContain('待取');
     expect(queued).not.toContain('请求中');
-    // 对照：真在飞的那一行还在取，说「请求中」；它没有段落可报时也不编一个词。
+    // 收尾的行再说「请求中」等于承诺一件再也不会发生的事：它没走到取文章那一步，只剩义务。
+    const settled = byLabel('settled-target');
+    expect(settled).toContain('访问被拒');
+    expect(settled).toContain('待取');
+    expect(settled).not.toContain('请求中');
+    // 对照：真在飞的那一行还在取，说「请求中」；它的段落（读文章）与状态词连着读。
     const live = byLabel('live-target');
     expect(live).toContain('收集中');
     expect(live).toContain('请求中');
     expect(live).not.toContain('待取');
-    expect(phaseDetails(mounted.tree).map(visibleText)).toEqual([]);
+    expect(live).toContain('读文章');
+    // 段落 span 只有那一个：三行里两行 `phaseDetail: null`，一行 `article`。
+    expect(phaseDetails(mounted.tree).map(visibleText)).toEqual(['读文章']);
   });
 
   it('asks for confirmation before cancelling and does nothing when declined', async () => {
@@ -346,18 +362,30 @@ describe('XResearchProgressCard', () => {
     expect(mounted.query('x-research-cancel')).toBeNull();
   });
 
-  it('reloads the snapshot on mount and swallows a deleted run', async () => {
+  it('reloads the snapshot on mount and distinguishes a deleted run from an unwired service', async () => {
     invoke.mockRejectedValue(Object.assign(new Error('X research task not found'),
       { code: 'research.not_found' }));
-    const gone = mount(XResearchProgressCard, props);
-    await gone.settle();
+    const deleted = mount(XResearchProgressCard, props);
+    await deleted.settle();
     expect(invoke).toHaveBeenCalledWith('xResearch.taskGet', props);
-    // 不是错误（不弹红字），但也不能永远停在「读取中」：那个 code 也盖着「任务服务没接上」。
-    expect(gone.query('x-research-error')).toBeNull();
-    expect(visibleText(gone.find('x-research-toggle'))).toContain('X 研究 · 记录不可用');
-    expect(gone.find('x-research-card').props['data-status']).toBe('missing');
+    // 不是错误（不弹红字），但也不能永远停在「读取中」：研究真的不在了，卡头直说。
+    expect(deleted.query('x-research-error')).toBeNull();
+    expect(visibleText(deleted.find('x-research-toggle'))).toContain('X 研究 · 记录不可用');
+    expect(deleted.find('x-research-card').props['data-status']).toBe('missing');
 
-    // 同一条用例里的正面对照：「删掉的研究」被吞掉，别的失败要看得见。
+    // 第二条分支：**服务还没接上**（x research 开关默认关闭）。它不是一个结论，
+    // 所以不 latch「记录不可用」—— 否则服务一接上、快照一到位，卡头还是那句话。
+    invoke.mockRejectedValue(Object.assign(new Error('X research task service is not wired'),
+      { code: 'research.unavailable' }));
+    const unwired = mount(XResearchProgressCard, props);
+    await unwired.settle();
+    expect(unwired.query('x-research-error')).toBeNull();
+    expect(unwired.find('x-research-card').props['data-status']).toBe('loading');
+    expect(visibleText(unwired.find('x-research-toggle'))).toContain('X 研究 · 读取中');
+    // 对照：同一条用例里刚证明过的「记录不可用」不能出现在这一支上。
+    expect(visibleText(unwired.find('x-research-toggle'))).not.toContain('记录不可用');
+
+    // 第三条分支：别的失败要看得见（同一条用例里的正面对照：「删掉的研究」被吞掉）。
     invoke.mockRejectedValue(Object.assign(new Error('IPC 断了'), { code: 'fs.read_failed' }));
     const broken = mount(XResearchProgressCard, props);
     await broken.settle();
@@ -365,5 +393,89 @@ describe('XResearchProgressCard', () => {
     // 对照：别的失败不是「记录不可用」，卡头仍是未知状态里那个「读取中」。
     expect(broken.find('x-research-card').props['data-status']).toBe('loading');
     expect(visibleText(broken.find('x-research-toggle'))).toContain('X 研究 · 读取中');
+  });
+
+  it('keeps 读取中 while the service is unwired and refetches once a snapshot arrives', async () => {
+    invoke.mockRejectedValue(Object.assign(new Error('X research task service is not wired'),
+      { code: 'research.unavailable' }));
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    expect(mounted.find('x-research-card').props['data-status']).toBe('loading');
+    expect(mounted.query('x-research-summary')).toBeNull();
+    expect(taskGetCalls()).toBe(1);
+
+    // store 里出现了这份 run 的快照（广播或 resync 到了）：补取一次。
+    // 补回来的那一份 revision 更高、状态也不同，所以卡面只能来自**补取的结果**。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 1, state: 'running' }));
+    invoke.mockResolvedValue(snapshot({ revision: 7, state: 'failed', stateReason: 'cancelled' }));
+    mounted.rerender(props);
+    await mounted.settle();
+    mounted.rerender(props);
+
+    expect(taskGetCalls()).toBe(2);
+    expect(mounted.find('x-research-card').props['data-status']).toBe('failed');
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('有失败（部分被取消）');
+    // 真内容出来了：那一行摘要就是卡面在「服务接上」前后的差别。
+    expect(visibleText(mounted.find('x-research-summary'))).toContain('收 128 帖');
+  });
+
+  it('refetches once when the store drops the row after it had been read', async () => {
+    // 挂载时 store 里还没有这一行：内容来自挂载那次 taskGet（它把快照 upsert 回池里）。
+    expect(useXResearchTaskStore.getState().snapshotsByRunId['xrun-a']).toBeUndefined();
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    mounted.rerender(props);
+    expect(rows(mounted.tree)).toHaveLength(6);
+    expect(taskGetCalls()).toBe(1);
+
+    // `taskList` 的整批替换在这条研究落盘之前就扫完了：它没见过的那一行被删掉。
+    useXResearchTaskStore.getState().reset(props.threadId);
+    mounted.rerender(props);
+    expect(mounted.query('x-research-summary')).toBeNull();
+    await mounted.settle();
+    mounted.rerender(props);
+    // 补取了一次，卡面回到真内容，而不是永远停在「读取中」。
+    expect(taskGetCalls()).toBe(2);
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('X 研究 · 进行中');
+    expect(rows(mounted.tree)).toHaveLength(6);
+
+    // 第二次消失不再补取：真被删掉的研究（或一直扫不到它的 resync）不能变成死循环。
+    useXResearchTaskStore.getState().reset(props.threadId);
+    mounted.rerender(props);
+    await mounted.settle();
+    expect(taskGetCalls()).toBe(2);
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('X 研究 · 读取中');
+  });
+
+  it('leaves a section with no targets out of the summary', async () => {
+    // 一次纯读取的研究：搜索段一行都没有，卡头不该说「搜索 0/0 个 query」。
+    const readOnly = snapshot({ search: [],
+      counts: { ...snapshot().counts, searchDone: 0, searchTotal: 0, posts: 0 } });
+    invoke.mockResolvedValue(readOnly);
+    useXResearchTaskStore.getState().upsert(readOnly);
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+
+    const readOnlySummary = visibleText(mounted.find('x-research-summary'));
+    expect(readOnlySummary).toContain('读取 1/4 个目标');
+    expect(readOnlySummary).not.toContain('搜索');
+    expect(readOnlySummary).not.toContain('收 0 帖');
+
+    // 同一条用例里的正面对照：两段都有行的研究照常把两段都写出来（上一条不是「搜索永远不写」）。
+    const both = snapshot({ revision: 2 });
+    invoke.mockResolvedValue(both);
+    useXResearchTaskStore.getState().upsert(both);
+    mounted.rerender(props);
+    const bothSummary = visibleText(mounted.find('x-research-summary'));
+    expect(bothSummary).toContain('搜索 2/2 个 query');
+    expect(bothSummary).toContain('收 128 帖');
+
+    // 两段都是 0 行（还没有工作的一项研究）：整行不画，而不是留一个空 div。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 3, search: [], read: [],
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 0, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0 } }));
+    mounted.rerender(props);
+    expect(mounted.query('x-research-summary')).toBeNull();
   });
 });

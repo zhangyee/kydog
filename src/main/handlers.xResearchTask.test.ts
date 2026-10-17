@@ -191,8 +191,10 @@ describe('x research task RPC 转发到 service 上对应的那一个', () => {
 
 /**
  * 未接线（x research 关闭 / 这个进程还没建过会话）时：`taskList` 答空列表，其余三条答
- * `research.not_found`。这是 null 分支唯一的钉子 —— 它**不是**启动早期的短暂状态：
+ * `research.unavailable`。这是 null 分支唯一的钉子 —— 它**不是**启动早期的短暂状态：
  * x research 的开关默认关闭，关着的时候整条进程都停在这里。
+ * 那个码与闸的 `research.not_found` 分开（R65）：「现在还答不了」与「这条研究不在」是
+ * 两个不同的事实，共用一个码时卡片只能把有内容的那张卡也 latch 成「记录不可用」。
  * 这些答案都在可见性闸**之后**：未接线不等于可以越过「主窗口正在看这个对话」那道判据。
  */
 describe('未接线时 x research task RPC 的答案', () => {
@@ -200,10 +202,17 @@ describe('未接线时 x research task RPC 的答案', () => {
     await expect(call('xResearch.taskList', { threadId: THREAD })).resolves.toEqual([]);
   });
 
-  it('taskGet / taskInspect / taskCancel 答 research.not_found', async () => {
+  it('taskGet / taskInspect / taskCancel 答 research.unavailable', async () => {
     for (const method of ['xResearch.taskGet', 'xResearch.taskInspect', 'xResearch.taskCancel'] as const) {
       await expect(call(method, { threadId: THREAD, researchRunId: RUN, view: 'rows' }))
-        .rejects.toMatchObject({ code: 'research.not_found' });
+        .rejects.toMatchObject({ code: 'research.unavailable' });
+    }
+    // 同一条用例里的对照：接上服务之后**同一批调用**（同一个 sender、同一个 id）走的是服务的答复。
+    // 没有这一句，上面三个拒绝可能只是转发根本没通 —— 与那个码是不是 `unavailable` 无关。
+    registerXResearchTaskService(fakeService() as unknown as XResearchTaskService);
+    for (const method of ['xResearch.taskGet', 'xResearch.taskInspect', 'xResearch.taskCancel'] as const) {
+      await expect(call(method, { threadId: THREAD, researchRunId: RUN, view: 'rows' }))
+        .resolves.toBeTruthy();
     }
   });
 

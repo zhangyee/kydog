@@ -199,12 +199,15 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
     const bucket = workItemBucket(item);
     counts[bucket] += 1;
     // 段内进度仍只用 `workItemBucket` 这一份分桶，不另写「算不算收尾」的规则：收尾 = 不在这两个桶里。
-    if (item.section === 'search') {
-      counts.searchTotal += 1;
-    } else {
-      counts.readTotal += 1;
-    }
-    if (bucket === 'queued' || bucket === 'running') sectionPending[item.section] += 1;
+    // 分母只认这两段：store 把盘上的 JSON 直接 `as XResearchTaskRecord` 落类型，第三种 `section`
+    // 到不了类型层。那种行不落进任何一段 —— 它本来也不会成为一行（快照两段都按这两个词过滤），
+    // 所以两个分母都不该动。曾经这里的分母是 `else`：一个坏值会胀大读取的分母、又永远不出现，
+    // `sectionPending[那个值]` 还算出一个 NaN。
+    const section: XResearchSection | null =
+      item.section === 'search' || item.section === 'read' ? item.section : null;
+    if (section === 'search') counts.searchTotal += 1;
+    else if (section === 'read') counts.readTotal += 1;
+    if (section !== null && (bucket === 'queued' || bucket === 'running')) sectionPending[section] += 1;
     // `posts` 只由 search 工作项填写；read 工作项恒为 0，否则卡头会双计（§5.4 的「收 N 帖」
     // 就是搜索行的去重帖数）。按 section 过滤而不是信任那个 0：将来 read 行填了 posts，
     // 卡头也不会多出一个「读取也收了 N 帖」的数字。

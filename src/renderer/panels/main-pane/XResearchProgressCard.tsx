@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { XResearchStatus } from '../../../shared/xResearchStatus';
 import type {
   XResearchTaskSnapshot, XResearchTaskState, XResearchWorkItem,
@@ -97,13 +97,22 @@ function stateNote(reason: string | undefined, state: XResearchTaskState): strin
 
 /** 摘要行：每个数字都是快照的权威字段 —— `counts.*` 由主进程按工作项分桶，
  *  `*Done/*Total` 是**按段**分好的同一份分桶（卡片不再自己数 `read.length`：那一读在运行中
- *  会被读成「20 个目标都读完了」）。 */
+ *  会被读成「20 个目标都读完了」）。
+ *  一段的目标数是 0 时整段不出现：一次纯读取的研究不该在卡头写「搜索 0/0 个 query」。 */
 function summaryLine(snapshot: XResearchTaskSnapshot): string {
   const { counts } = snapshot;
-  const failed = counts.failed > 0 ? ` · 失败 ${counts.failed}` : '';
-  return `搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 收 ${counts.posts} 帖 ｜ `
-    + `读取 ${counts.readDone}/${counts.readTotal} 个目标 · ${counts.replies} 回复`
-    + ` · 文章 ${counts.articles} 篇${failed}`;
+  const parts: string[] = [];
+  if (counts.searchTotal > 0) {
+    parts.push(`搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 收 ${counts.posts} 帖`);
+  }
+  if (counts.readTotal > 0) {
+    parts.push(`读取 ${counts.readDone}/${counts.readTotal} 个目标 · ${counts.replies} 回复`
+      + ` · 文章 ${counts.articles} 篇`);
+  }
+  const head = parts.join(' ｜ ');
+  const failed = counts.failed > 0 ? `失败 ${counts.failed}` : '';
+  if (failed === '') return head;
+  return head === '' ? failed : `${head} · ${failed}`;
 }
 
 /** 预算行取快照的 `usage` / `budget` 两个字段，口径就是 spec §5.3 与 §5.4 的那一对。 */
@@ -141,8 +150,10 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
 function readRowElement(row: XResearchWorkItem, index: number) {
   const started = row.state !== 'queued';
   const active = started && row.state !== 'stopped';
-  // 没起跑的行说「待取」（提交时声明过的义务），起跑之后才说「请求中」（真的在取）。
-  const articleWord = row.article === 'pending' && !started ? '待取' : ARTICLE_WORD[row.article];
+  // `article === 'pending'` 说的是「要了、还没取到」。只有真在飞的那一行才是进行时的「请求中」：
+  // 排队行说义务（`待取`），收尾行说的是它没走到取文章那一步（`concludeRow` 不收尾这个字段），
+  // 对着一行已经有结论的行说「请求中」等于承诺一件再也不会发生的事。
+  const articleWord = row.article === 'pending' && !active ? '待取' : ARTICLE_WORD[row.article];
   return (
     <div key={row.workItemId} data-testid="x-research-row" data-section="read" style={ROW_STYLE}>
       <span style={MARK_STYLE}>{numberMark(index)}</span>
@@ -172,7 +183,9 @@ function errorText(error: unknown): string {
 /**
  * 「X 研究」的过程卡片（spec §5.3）。一张卡跟着一段研究走，数据源是渲染层 store 里的快照：
  * 挂载时用 `xResearch.taskGet` 把这一份补齐，之后 `xResearch.taskUpdated` 广播（bootstrap 那条线）
- * 会把它更新到 store 里。运行中默认展开、进终态自动收起，用户手动点过之后以点击为准。
+ * 会把它更新到 store 里。另有两种「取不到」不应当成结论，各自补取一次：
+ * 服务还没接上（`research.unavailable`）与 store 里那一行取到之后又消失（见下面两条 effect）。
+ * 运行中默认展开、进终态自动收起，用户手动点过之后以点击为准。
  */
 export function XResearchProgressCard({ threadId, researchRunId }: {
   threadId: string; researchRunId: string;
@@ -182,27 +195,68 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
   // `null` = 还没点过，跟着状态走；一旦点过就永远以这一份布尔为准（不再随状态自动收放）。
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // `research.not_found` 没有快照可说：那个 code 同时盖着「不在这个线程/窗口/活动标签页」、
-  // 「这段研究真被删了」与「任务服务没接上」。前两种都不是错误，第三种是接线回归；
-  // 两种情形都不该把卡永远停在「读取中」—— 这里记一笔，卡头改说「记录不可用」。
+  // `research.not_found`：这段研究不在（被删了，或它不属于正看着的对话/窗口/标签页）。
+  // 不是错误，也不该把卡永远停在「读取中」—— 记一笔，卡头改说「记录不可用」。
   const [gone, setGone] = useState(false);
+  // `research.unavailable`：这个进程里还没有任务服务（x research 的开关默认关闭）。
+  // **它不是一个结论**：服务接上之后同一个 id 就能取到，所以不 latch、卡停在「读取中」、
+  // 等 store 里出现这份 run 的快照时再取一次（见下面那条补取的 effect）。
+  const [unavailable, setUnavailable] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // 这次挂载里已经拿到过这份 run 的快照（只有「有 → 没有」的转变才有补取可言）。
+  const sawSnapshot = useRef(false);
+  // 已经为「行从 store 里消失」补取过一次：只补一次，真被删掉的研究不会变成死循环。
+  const refetchedAfterLoss = useRef(false);
+
+  /** 取一次这份研究的快照并落进 store。挂载、换 run、以及下面两条补取都走这一处。 */
+  async function loadSnapshot(isActive: () => boolean): Promise<void> {
+    try {
+      const value = await window.kydog.invoke('xResearch.taskGet', { threadId, researchRunId });
+      if (!isActive()) return;
+      sawSnapshot.current = true;
+      setUnavailable(false);
+      upsert(value);
+    } catch (reason) {
+      if (!isActive()) return;
+      const code = (reason as { code?: string } | null)?.code;
+      // 研究已经被删掉不是错误：卡跟着那条记录一起消失，不该在会话里留一条红字。
+      if (code === 'research.not_found') { setGone(true); return; }
+      // 服务没接上：不 latch（latch 了就变成「记录不可用」永驻），交给下面那条补取。
+      if (code === 'research.unavailable') { setUnavailable(true); return; }
+      setError(errorText(reason));
+    }
+  }
 
   useEffect(() => {
     let active = true;
-    void window.kydog.invoke('xResearch.taskGet', { threadId, researchRunId })
-      .then((value) => { if (active) upsert(value); })
-      .catch((reason: unknown) => {
-        if (!active) return;
-        // 研究已经被删掉不是错误：卡跟着那条记录一起消失，不该在会话里留一条红字。
-        if ((reason as { code?: string } | null)?.code === 'research.not_found') {
-          setGone(true);
-          return;
-        }
-        setError(errorText(reason));
-      });
+    // 两个记号跟着这一段 run 走：换 run 之后，「拿到过 / 补过一次」重新算。
+    sawSnapshot.current = false;
+    refetchedAfterLoss.current = false;
+    void loadSnapshot(() => active);
     return () => { active = false; };
   }, [threadId, researchRunId, upsert]);
+
+  // 补取：两条触发条件都读 store 里这份快照的「有无」，所以共用一个 effect。
+  //  · 上一轮答 `research.unavailable` 之后，store 里却出现了这份 run 的快照 —— 服务接上了，再问一次；
+  //  · 取到过之后又消失了（`taskList` 的整批替换可能在这条研究落盘之前就扫完，于是删掉它没见过的那一行）。
+  //    卡是被消息块锚住的，等不到 store 再叫它，只有这里补一次。
+  // 两者不会互相打架：快照不在时只走「消失之后补一次」，它不看 `unavailable`；
+  // 快照在时只走「服务接上了补一次」，它不动 `refetchedAfterLoss` 那个一次性记号 ——
+  // 于是未接线的服务不会把「行丢了再取一次」这一次机会用掉，反之亦然。
+  // 依赖就取 store 里那一份对象本身（不是另开一条通道，也不是计时器）：它只在 store 写入新快照时换
+  // 身份，出现与消失都在里面。「`revision` 变了」单靠自己也说得出出现，说不出消失 ——
+  // 所以这里不用 `revision` 当键。两个标记也不进依赖：它们只是「这一刻该怎么读」的旗，
+  // 变了不需要动作，要等 store 里那一行再变。
+  useEffect(() => {
+    let active = true;
+    if (snapshot !== undefined) {
+      if (unavailable) void loadSnapshot(() => active);
+    } else if (sawSnapshot.current && !gone && !refetchedAfterLoss.current) {
+      refetchedAfterLoss.current = true;
+      void loadSnapshot(() => active);
+    }
+    return () => { active = false; };
+  }, [snapshot]);
 
   async function cancelResearch(): Promise<void> {
     const confirmed = await confirm({
@@ -224,9 +278,11 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
   const state = snapshot?.state;
   const note = state ? stateNote(snapshot.stateReason, state) : null;
   const expanded = manualExpanded ?? (state === 'running');
-  // 有快照时仍以快照为准（那个 code 也盖着「不在这个窗口的标签页」，广播来的快照是真的）。
+  // 有快照时仍以快照为准（「不在这个窗口的标签页」那一条也可能带着广播来的快照）。
   const status = state ?? (gone ? 'missing' : 'loading');
   const headerWord = state ? STATE_WORD[state] : (gone ? '记录不可用' : '读取中');
+  // 两段都是 0 行时这一行没东西可说（空串），不画一个空 div。
+  const summary = snapshot ? summaryLine(snapshot) : '';
 
   return (
     <section data-testid="x-research-card" data-status={status}
@@ -238,7 +294,8 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
       </button>
       {snapshot && snapshot.objective &&
         <div data-testid="x-research-objective" style={OBJECTIVE_STYLE}>{snapshot.objective}</div>}
-      {snapshot && <div data-testid="x-research-summary" style={SUMMARY_STYLE}>{summaryLine(snapshot)}</div>}
+      {summary !== '' &&
+        <div data-testid="x-research-summary" style={SUMMARY_STYLE}>{summary}</div>}
       {snapshot && <div data-testid="x-research-budget" style={BUDGET_STYLE}>{budgetLine(snapshot)}</div>}
       {/* 取消放在收起区之外：用户手动收起之后，运行中的那段研究仍然要停得下来。 */}
       {snapshot && state === 'running' &&
