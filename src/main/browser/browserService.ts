@@ -1294,11 +1294,15 @@ export class BrowserService {
   async open(args: { url: string; tabId?: string; ownerThreadId?: string | null; activate?: boolean;
     settleOutsideHost?: string; signal?: AbortSignal; network?: BrowserNetworkSpec }): Promise<{ tabId: string; nav: NavigationObservation; evicted: EvictedTab[]; networkLease?: BrowserNetworkLease }> {
     const url = assertAllowedUrl(args.url).toString();
-    if (args.tabId && !this.registry.has(args.tabId)) {
-      throw new KydogError('browser.no_tab', `没有这个标签页：${args.tabId}`);
+    // `''` 是调用方「这个任务还没有标签页」的写法（`x_research` 的 read 输入把它当空值传下来）：
+    // 归一化一次，has 判据、建不建页、回退到新页三处读的是同一个事实。就地分开读的话，`''` 是假值
+    // 于是真的建了一张页，而 `??` 又保留 `''` —— 导航打到一个不存在的 id 上，刚建的页成了孤儿。
+    const requested = args.tabId || undefined;
+    if (requested && !this.registry.has(requested)) {
+      throw new KydogError('browser.no_tab', `没有这个标签页：${requested}`);
     }
-    const created = args.tabId ? null : this.createTab(url, args.ownerThreadId ?? null);
-    const tabId = args.tabId ?? created!.id;
+    const created = requested ? null : this.createTab(url, args.ownerThreadId ?? null);
+    const tabId = requested ?? created!.id;
     // **默认不抢活动标签**，与 createTab 同一条规矩：活动标签是侧栏里用户看的那一页，由用户决定。
     // agent 的 browser_open 从前在这里无条件切过去 —— 侧栏开着时用户正在看的页面被顶掉，那张标签
     // 被收回后侧栏又跳到别处（2026-09-14 实测），与「能不打扰就不打扰」冲突。需要让用户看

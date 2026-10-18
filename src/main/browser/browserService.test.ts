@@ -4053,6 +4053,52 @@ describe('open：默认不抢活动标签，显式 activate: true 才切过去',
 });
 
 /**
+ * `''` 是「这个任务还没有标签页」的写法（`x_research` 的 read 输入把它原样传下来，见
+ * `xResearchRunner`），不是标签 id。就地按 `args.tabId` 分开读会造出一张孤儿页：`''` 是假值，
+ * 于是真的 `createTab` 了；而 `??` 不把空串当空值，导航照旧发给 `''` → `no_tab`，刚建的页
+ * 谁也没引用 —— 泄漏一张 view，且每一行都是「标签页已关闭」。
+ */
+describe('open：空的 tabId 等于没有标签页', () => {
+  async function openAndNavigate(svc: Svc, args: { url: string; tabId?: string }) {
+    const p = svc.open(args);
+    await flush();
+    const wc = H.views[H.views.length - 1].webContents;
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, args.url, 200);
+    return { result: await p, wc };
+  }
+
+  it('`tabId: \'\'` 自己开一张页并导航到它，注册表里只有这一张（没有孤儿）', async () => {
+    const { svc } = make();
+    const { result, wc } = await openAndNavigate(svc, { url: 'https://a.example/', tabId: '' });
+    expect(result.tabId).not.toBe('');
+    expect(result.nav.outcome).toMatchObject({ kind: 'ok', finalUrl: 'https://a.example/' });
+    // 刚开的那张页真的被导航了（不是「建了就扔」）。
+    expect(wc.loadCalls).toEqual(['https://a.example/']);
+    // 注册表里只有它这一张：修好之前这里是「建的那张 + 报错的那次调用」，前者是孤儿。
+    expect(svc.getState().tabs.map((tab) => tab.id)).toEqual([result.tabId]);
+  });
+
+  it('不存在的 tabId 仍然当场抛 browser.no_tab，且一手都不建页', async () => {
+    const { svc } = make();
+    await expect(svc.open({ url: 'https://a.example/', tabId: 'tab_nope' }))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(svc.getState().tabs).toHaveLength(0);
+  });
+
+  it('没给 tabId（缺省与显式 undefined）与改造前一样：各开一张新页', async () => {
+    const { svc } = make();
+    const omitted = await openAndNavigate(svc, { url: 'https://a.example/' });
+    const explicit = await openAndNavigate(svc, { url: 'https://b.example/', tabId: undefined });
+    expect(omitted.result.tabId).not.toBe('');
+    expect(explicit.result.tabId).not.toBe('');
+    expect(explicit.result.tabId).not.toBe(omitted.result.tabId);
+    expect(svc.getState().tabs.map((tab) => tab.id).sort())
+      .toEqual([omitted.result.tabId, explicit.result.tabId].sort());
+  });
+});
+
+/**
  * **新标签在第一个文档提交之前，url 不许被冲成空串**（2026-09-14 录屏）。
  *
  * 没有任何标签时在地址栏回车：`createTab` 记下要打开的网址，随后 `did-start-loading` 触发
