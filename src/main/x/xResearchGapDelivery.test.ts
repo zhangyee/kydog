@@ -56,14 +56,14 @@ function harness(f: ReturnType<typeof fixture>, ledger: XResearchEvidence) {
     service, threadId, projectRoot: '/projects/x', currentRunId: () => 'run',
     observeDelivery: (result) => { observed.push(result); ledger.observe(result); },
   });
-  /** 一次提交 + 一次交付。`wait` 一次只交一份，所以这里必须等这一份交完再发下一次。 */
+  /** 一次提交 + 一次交付：这个夹具每次都只有一份收尾的结果，`wait` 交的就是它。 */
   const run = async (args: Record<string, unknown>, ids: { submit: string; wait: string }) => {
     const submitted = (await tool.execute(ids.submit, { action: 'submit', ...args } as never,
       undefined, undefined, {} as never)).details as XResearchDeliveryEnvelope;
     const delivered = (await tool.execute(ids.wait, {
       action: 'wait', researchRunId: submitted.researchRunId,
     } as never, undefined, undefined, {} as never)).details as XResearchDeliveryEnvelope;
-    if (!delivered.delivery) throw new Error('expected a delivered result');
+    if (!delivered.deliveries?.length) throw new Error('expected a delivered result');
     return delivered;
   };
   return { run, artifacts, observed, store, threadId };
@@ -115,7 +115,7 @@ it.each([500, 1000])('delivers twenty targets with %i Article gaps through persi
   } finally { spy.mockRestore(); }
   // 模型看到的是整包（壳 + 快照 + 结果）：定点就是这一整包。
   expect(Buffer.byteLength(JSON.stringify(delivered))).toBeLessThanOrEqual(1048576);
-  const details = delivered.delivery!.result;
+  const details = delivered.deliveries![0]!.result;
   expect(details.delivery).toMatchObject({ persistence: 'saved', truncated: true, articleObligationCoverage: 'not_inline' });
   expect(details.artifact).toBeTruthy();
   // 入过账的就是这一份（`callId` 是提交那一轮，由 service 铸；交付那一轮在壳上）。
@@ -125,7 +125,7 @@ it.each([500, 1000])('delivers twenty targets with %i Article gaps through persi
   if (!stored) throw new Error('expected the persisted gaps submission');
   expect(observed.at(-1)?.callId).toBe(stored.submitCallId);
   expect(observed.at(-1)?.batchId).toBe(stored.batchId);
-  expect(delivered.delivery!.submitCallId).toBe(stored.submitCallId);
+  expect(delivered.deliveries![0]!.submitCallId).toBe(stored.submitCallId);
   // 工件里是完整的 canonical：二十条目标的缺口数一个都没少，而交付副本照 1 MiB 裁过。
   const saved = await artifacts.read(details.artifact!);
   if (saved.operation !== 'read' || details.operation !== 'read') throw Error('read');
@@ -162,11 +162,11 @@ it.each([500, 1000])('delivers twenty targets with %i Article gaps through persi
     if (failure === 'corrupt') await fs.writeFile(artifacts.displayPath(details.artifact!), '{}');
     if (failure === 'missing') await fs.rm(artifacts.displayPath(details.artifact!));
     if (failure === 'failed_write') {
-      delete unavailable.delivery!.result.artifact;
-      unavailable.delivery!.result.delivery!.persistence = 'failed';
-      unavailable.delivery!.result.delivery!.failureCode = 'write';
+      delete unavailable.deliveries![0]!.result.artifact;
+      unavailable.deliveries![0]!.result.delivery!.persistence = 'failed';
+      unavailable.deliveries![0]!.result.delivery!.failureCode = 'write';
     }
-    if (failure === 'no_ref') delete unavailable.delivery!.result.artifact;
+    if (failure === 'no_ref') delete unavailable.deliveries![0]!.result.artifact;
     fresh.restore((await hydrateXResearchBranch([entry(baseline, 'baseline-wait')], artifacts)).entries);
     expect(fresh.guard('/tmp/report.md', '[source](https://x.com/ReadAuthor/status/1000000)')).toBeUndefined();
     const missing = await hydrateXResearchBranch(

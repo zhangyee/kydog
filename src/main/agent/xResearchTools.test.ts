@@ -135,7 +135,7 @@ describe('x_research submit', () => {
     // 工作还没完成就已经有快照，且它说的是「在跑」，不是「还没开始」。
     expect(submitted.snapshot.state).toBe('running');
     expect(submitted.snapshot.search).toEqual([expect.objectContaining({ state: 'queued' })]);
-    expect(submitted.delivery).toBeUndefined();
+    expect(submitted.deliveries).toBeUndefined();
     release.open();
     await service.whenIdle(threadId, submitted.researchRunId);
     expect((await service.get(threadId, submitted.researchRunId)).state).toBe('completed');
@@ -181,7 +181,7 @@ describe('x_research submit', () => {
     const submitted = envelopeOf(await execute(tool, { action: 'submit', read: readArgs() }));
     await service.whenIdle(threadId, submitted.researchRunId);
     const waited = envelopeOf(await execute(tool, { action: 'wait', researchRunId: submitted.researchRunId }));
-    expect(waited.delivery).toBeUndefined();
+    expect(waited.deliveries).toBeUndefined();
     expect(waited.snapshot.state).toBe('interrupted');
     // 没收尾的行落进「中断」桶：既不说成失败，也不说成完成。
     expect(waited.snapshot.counts.interrupted).toBe(1);
@@ -230,7 +230,7 @@ describe('x_research submit', () => {
 });
 
 describe('x_research wait', () => {
-  it('delivers one submission at a time and observes each exactly once', async () => {
+  it('delivers every finished submission in one wait and observes each exactly once', async () => {
     const { tool, service, threadId, observed } = harness(echoSearch);
     const first = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
     await execute(tool, { action: 'submit', researchRunId: first.researchRunId, search: searchArgs() });
@@ -238,24 +238,19 @@ describe('x_research wait', () => {
 
     const a = envelopeOf(await execute(tool, { action: 'wait', researchRunId: first.researchRunId }, 'wait-1'));
     expect(a.action).toBe('wait');
-    expect(a.delivery).toBeDefined();
-    expect(a.delivery?.deliveryCallId).toBe('wait-1');
-    expect(observed).toHaveLength(1);
-    // 账本拿到的是那一条交付本身（壳里的 `details` 是从同一份字节反解的副本，值相同）。
-    expect(observed[0]).toEqual(a.delivery?.result);
-    // 另一份还在队列里没交出去：清单说的和计数说的是同一件事。
-    expect(a.undelivered).toHaveLength(1);
-    expect(a.snapshot.counts.undelivered).toBe(1);
-
-    const b = envelopeOf(await execute(tool, { action: 'wait', researchRunId: first.researchRunId }, 'wait-2'));
-    expect(b.delivery?.submissionId).not.toBe(a.delivery?.submissionId);
+    // 两份都收尾了：一次 `wait` 全交出去，不再分两次。
+    expect(a.deliveries).toHaveLength(2);
+    expect(a.deliveries?.map((delivery) => delivery.deliveryCallId)).toEqual(['wait-1', 'wait-1']);
+    expect(a.deliveries?.[0]?.submissionId).not.toBe(a.deliveries?.[1]?.submissionId);
     expect(observed).toHaveLength(2);
-    expect(observed[1]).toEqual(b.delivery?.result);
-    expect(b.undelivered).toBeUndefined();
+    // 账本拿到的是每一条交付本身（壳里的 `details` 是从同一份字节反解的副本，值相同）。
+    expect(observed).toEqual(a.deliveries?.map((delivery) => delivery.result));
+    expect(a.undelivered).toBeUndefined();
+    expect(a.snapshot.counts.undelivered).toBe(0);
 
-    // 第三次没有可交付的：账本不再被喂一次。
-    const c = envelopeOf(await execute(tool, { action: 'wait', researchRunId: first.researchRunId }, 'wait-3'));
-    expect(c.delivery).toBeUndefined();
+    // 第二次没有可交付的：一条都不重复，账本也不再被喂。
+    const c = envelopeOf(await execute(tool, { action: 'wait', researchRunId: first.researchRunId }, 'wait-2'));
+    expect(c.deliveries).toBeUndefined();
     expect(observed).toHaveLength(2);
   });
 
@@ -275,9 +270,9 @@ describe('x_research wait', () => {
         cancel: (runThreadId, researchRunId) => service.cancel(runThreadId, researchRunId),
         wait: async (runThreadId, researchRunId, deliveryCallId, signal) => {
           const delivered = await service.wait(runThreadId, researchRunId, deliveryCallId, signal);
-          const delivery = delivered.delivery;
+          const [delivery] = delivered.deliveries;
           return delivery && oversized
-            ? { ...delivered, delivery: { ...delivery, result: oversized } }
+            ? { ...delivered, deliveries: [{ ...delivery, result: oversized }] }
             : delivered;
         },
       },
@@ -307,7 +302,7 @@ describe('x_research wait', () => {
     const delivered = envelopeOf(await execute(toolWith(), {
       action: 'wait', researchRunId: submitted.researchRunId,
     }, 'wait-2'));
-    expect(delivered.delivery).toBeDefined();
+    expect(delivered.deliveries).toHaveLength(1);
     expect(observed).toHaveLength(1);
   });
 
@@ -346,7 +341,7 @@ describe('x_research wait', () => {
     const delivered = envelopeOf(await execute(tool, {
       action: 'wait', researchRunId: submitted.researchRunId,
     }, 'wait-2'));
-    expect(delivered.delivery?.deliveryCallId).toBe('wait-2');
+    expect(delivered.deliveries?.[0]?.deliveryCallId).toBe('wait-2');
     expect(delivered.undelivered).toBeUndefined();
     expect(observed).toHaveLength(1);
   });
@@ -455,7 +450,7 @@ describe('x_research cancel', () => {
     const waited = envelopeOf(await execute(tool, {
       action: 'wait', researchRunId: first.researchRunId,
     }, 'wait-1'));
-    expect(waited.delivery).toBeDefined();
+    expect(waited.deliveries).toHaveLength(1);
     expect(observed).toHaveLength(1);
     // 「被取消过」是**黏的**：这次 `wait` 落盘没有理由可写，但它不许把取消这件事擦掉 —— 否则重启之后
     // （`cancelRequested` 只在内存里）就只剩 `stateReason` 能认出这段研究被停过。
@@ -476,7 +471,7 @@ describe('x_research cancel', () => {
     const freshWait = envelopeOf(await execute(tool, {
       action: 'wait', researchRunId: fresh.researchRunId,
     }, 'wait-2'));
-    expect(freshWait.delivery).toBeDefined();
+    expect(freshWait.deliveries).toHaveLength(1);
     expect(freshWait.snapshot.stateReason).toBeUndefined();
     expect((await service.get(threadId, fresh.researchRunId)).stateReason).toBeUndefined();
   });
@@ -533,7 +528,7 @@ describe('x_research cancel', () => {
     const waited = envelopeOf(await execute(tool, {
       action: 'wait', researchRunId: submitted.researchRunId,
     }, 'wait-1'));
-    expect(waited.delivery?.submissionId).toBe(entry.submissionId);
+    expect(waited.deliveries?.[0]?.submissionId).toBe(entry.submissionId);
   });
 });
 

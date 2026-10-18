@@ -72,11 +72,11 @@ function shell(input: {
 }): unknown {
   return deliverEnvelope({
     researchRunId: 'run', snapshot: snapshot(), action: 'wait', undelivered: [],
-    delivery: {
+    deliveries: [{
       deliveryCallId: input.toolCallId, submissionId: 'submission-1',
       submitCallId: input.submitCallId, operation: input.result.operation,
       result: input.result,
-    },
+    }],
   }).details;
 }
 
@@ -126,9 +126,41 @@ it('restores a delivered result from the shell', async () => {
     store,
   );
   expect(wrongBatch.failures).toEqual([{ callId: 'delivery-call', reason: 'reference' }]);
-  expect(wrongBatch.entries[0]).toMatchObject({ message: { details: { delivery: { result: {
+  expect(wrongBatch.entries[0]).toMatchObject({ message: { details: { deliveries: [{ result: {
     restoration: { status: 'missing', reason: 'reference' },
+  } }] } } });
+});
+
+it('still restores a hand-written single-delivery shell from an older transcript', async () => {
+  // R81c 之前每一次 `wait` 写的是 `details.delivery`（单数）。旧会话必须照旧恢复：
+  // 读侧同时认单数与平铺，新的 `deliveries` 只是模型看到的那一帧。
+  const store = storeWith(root('task'), root('legacy'));
+  const full = await twoPosts();
+  const ref = await store.write(full);
+  const clipped = deliveredCopy(full, ref);
+  clipped.queries[0].posts = clipped.queries[0].posts.slice(0, 1);
+  const legacy = {
+    kind: 'x_research', action: 'wait', researchRunId: 'run', status: 'completed',
+    snapshot: snapshot(),
+    delivery: {
+      deliveryCallId: 'delivery-call', submissionId: 'submission-1',
+      submitCallId: 'call', operation: 'search', result: clipped,
+    },
+  };
+  const hydrated = await hydrateXResearchBranch([entry(legacy, 'delivery-call')], store);
+  expect(hydrated.failures).toEqual([]);
+  // 恢复链把工件里的完整 canonical 写回旧形状（`delivery`），不擅自改写成新键。
+  expect(hydrated.entries[0]).toMatchObject({ message: { details: { delivery: { result: {
+    queries: [{ posts: [{ text: 'original' }, { text: 'second body' }] }],
   } } } } });
+  const evidence = new XResearchEvidence('/tmp', () => 'run');
+  evidence.restore(hydrated.entries);
+  expect(evidence.observations.map((o) => o.text)).toEqual(['original', 'second body']);
+  const scope = new XResearchScopeLedger();
+  scope.restore(hydrated.entries);
+  expect(scope.prior('run').withCurrent({ ...full, callId: 'next' })).toMatchObject({
+    callCount: 2, unavailableCallCount: 0,
+  });
 });
 
 it('still restores a flat pre-change toolResult', async () => {
@@ -207,7 +239,7 @@ it('does not feed the ledger from a shell that lacks delivery', async () => {
   const ref = await store.write(full);
   const clipped = deliveredCopy(full, ref);
   const { details: withoutDelivery } = deliverEnvelope({
-    researchRunId: 'run', snapshot: snapshot(), action: 'submit', delivery: null, undelivered: [],
+    researchRunId: 'run', snapshot: snapshot(), action: 'submit', deliveries: [], undelivered: [],
   });
   // 同一份壳带 delivery 时是喂账本的（正面对照），不带时一条都不许进。
   const fed = new XResearchEvidence('/tmp', () => 'run');

@@ -67,7 +67,7 @@ function envelopeOf(end:{result:{details?:unknown}}):XResearchDeliveryEnvelope{
  return end.result.details as XResearchDeliveryEnvelope;
 }
 function deliveredOf(end:{result:{details?:unknown}}) {
- const delivery=envelopeOf(end).delivery;
+ const delivery=envelopeOf(end).deliveries?.[0];
  if(!delivery)throw new Error('expected a delivery');
  return delivery.result;
 }
@@ -102,7 +102,7 @@ it('actual canonical execution persists through SDK branch and disable/enable ge
  const delivered=deliveredOf(search);
  expect(delivered).toMatchObject({runId:'protocol-run-one'});
  // 提交那一轮的身份由 service 铸：结果里的 `callId` 与壳上的 `submitCallId` 是同一个。
- expect(delivered.callId).toBe(envelopeOf(search).delivery!.submitCallId);
+ expect(delivered.callId).toBe(envelopeOf(search).deliveries![0]!.submitCallId);
  expect(starts[0]).toBe(0);
  const markdown='Original [source](https://x.com/alice/status/123)';
  const saved=await execute(session,'write',{path:'x-research-test-2026-10-13.md',content:markdown},'save');expect(saved.isError).toBe(false);
@@ -119,7 +119,7 @@ it('actual canonical execution persists through SDK branch and disable/enable ge
  const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;
  const branch=manager.getBranch();
  const savedResult=branch.find(e=>e.type==='message'&&e.message.role==='toolResult'&&e.message.toolCallId==='actual-search-wait');
- expect(savedResult).toMatchObject({type:'message',message:{details:{kind:'x_research',delivery:{result:{sourceKind:'page_graphql'}}}}});
+ expect(savedResult).toMatchObject({type:'message',message:{details:{kind:'x_research',deliveries:[{result:{sourceKind:'page_graphql'}}]}}});
  manager.branch(branch[0].id);
  expect((await execute(session,'write',{path:'ordinary.md',content:markdown},'branched-write')).isError).toBe(true);
  expect((await execute(session,'write',{path:'ordinary.md',content:'No citation'},'ordinary-write')).isError).toBe(false);
@@ -167,7 +167,7 @@ it('counts only actual current-run calls across SDK persistence and current bran
  const firstLeaf=manager.getLeafId()!;
  const second=await research(session,searchInput,'scope-second');
  expect(deliveredOf(second).reportRunScopeFacts).toMatchObject({callCount:2,search:{totalRows:2}});
- expect(JSON.parse((second.result.content[0] as {text:string}).text).delivery.result.reportRunScopeFacts)
+ expect(JSON.parse((second.result.content[0] as {text:string}).text).deliveries[0].result.reportRunScopeFacts)
    .toEqual(deliveredOf(second).reportRunScopeFacts);
  await session.cleanup?.();session=await build();
  const restored=await research(session,searchInput,'scope-third');
@@ -180,7 +180,7 @@ it('counts only actual current-run calls across SDK persistence and current bran
  const nextRun=await research(session,searchInput,'scope-next-run');
  expect(deliveredOf(nextRun).reportRunScopeFacts).toMatchObject({runId:run,callCount:1,search:{totalRows:1}});
  const stored=restoredManager.getBranch().at(-1);
- expect(stored).toMatchObject({type:'message',message:{role:'toolResult',toolCallId:'scope-next-run-wait',details:{kind:'x_research',delivery:{result:{reportRunScopeFacts:deliveredOf(nextRun).reportRunScopeFacts}}}}});
+ expect(stored).toMatchObject({type:'message',message:{role:'toolResult',toolCallId:'scope-next-run-wait',details:{kind:'x_research',deliveries:[{result:{reportRunScopeFacts:deliveredOf(nextRun).reportRunScopeFacts}}]}}});
 });
 // F4: `pendingResults` 的判据是 submitCallId **与** batchId 一起对上。下面让同一个 submitCallId
 // 在 pending 里挂着另一个 batchId：这一份不是「我亲手交的」，必须回到磁盘，而不是被当成 live。
@@ -189,7 +189,7 @@ it('re-reads from disk when the pending batch for a submit call id differs',asyn
  const tool=H.fixture.find(candidate=>candidate.name==='x_research')!;
  const submitted=(await tool.execute('direct-submit',{action:'submit',...searchInput} as never,undefined,undefined,{} as never)).details as XResearchDeliveryEnvelope;
  const waited=(await tool.execute('direct-wait',{action:'wait',researchRunId:submitted.researchRunId} as never,undefined,undefined,{} as never)).details as XResearchDeliveryEnvelope;
- const delivered=waited.delivery!;expect(delivered.result.artifact).toBeDefined();
+ const delivered=waited.deliveries![0]!;expect(delivered.result.artifact).toBeDefined();
  // 直接调工具不经 `session.prompt` 的 syncBranch：`pendingResults` 仍记着这一份。transcript 里再放
  // 一条同 submitCallId、不同 batchId 的壳 —— 这就是「pending 里有，但不是这一份」。
  const manager=(session as unknown as {sessionManager:SessionManager}).sessionManager;

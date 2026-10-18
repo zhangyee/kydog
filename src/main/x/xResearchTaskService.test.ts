@@ -743,7 +743,7 @@ describe('XResearchTaskService', () => {
     // 交付那份读得出来的：这一次落盘必须留下「被取消过」。
     const before = (await store.readTask(thread.threadId, cancelled.researchRunId))!;
     const delivered = await next.service.wait(thread.threadId, cancelled.researchRunId, 'wait-2');
-    expect(delivered.delivery).not.toBeNull();
+    expect(delivered.deliveries).toHaveLength(1);
     // 盘上真的又被写过一次：`stateReason` 仍是 `cancelled` 不能只是因为没人碰过那份 fixture。
     // `wait` 的交付标记写在返回之后（spec §4.5），所以这一笔要等它落地。
     await vi.waitFor(async () => expect((await store.readTask(
@@ -761,12 +761,53 @@ describe('XResearchTaskService', () => {
     // 翻面：从没被取消过的那段研究在同一刻落的是 `submission_unreadable`（上面那条不是「谁都留着」），
     // 而且它照样能追加 —— 拒绝的是「被取消过」这一段，不是所有带读盘缺口的研究。
     const controlDelivered = await next.service.wait(thread.threadId, control.researchRunId, 'wait-3');
-    expect(controlDelivered.delivery).not.toBeNull();
+    expect(controlDelivered.deliveries).toHaveLength(1);
     expect(controlDelivered.snapshot.stateReason).toBe('submission_unreadable');
     await next.service.submit({
       researchRunId: control.researchRunId, work: { search: searchWork() },
     }, thread);
     await next.service.whenIdle(thread.threadId, control.researchRunId);
+  });
+
+  it('delivers every finished submission of the run in one wait, in submission order', async () => {
+    // R81c：一次 read 主题的提交 = 一份交付；三次 read 提交（三个目标）要能在**一次** `wait`
+    // 里全部取回，而不是三次。`now` 每次前进一秒，提交顺序因此是确定的。
+    let tick = 0;
+    const { service, store } = harness(echoRunner, {
+      now: () => new Date(Date.UTC(2026, 9, 16) + (tick++) * 1000).toISOString(),
+    });
+    const thread = owner();
+    const submitted: Array<{ researchRunId: string; submissionId: string }> = [];
+    for (const postId of ['101', '102', '103']) {
+      submitted.push(await service.submit({
+        ...(submitted.length ? { researchRunId: submitted[0]!.researchRunId } : {}),
+        work: { read: readWork({ targets: [{ postId }] }) },
+      }, thread));
+    }
+    await service.whenIdle(thread.threadId, submitted[0]!.researchRunId);
+
+    const waited = await service.wait(thread.threadId, submitted[0]!.researchRunId, 'wait-1');
+    expect(waited.deliveries.map((delivery) => delivery.submissionId))
+      .toEqual(submitted.map((item) => item.submissionId));
+    expect(waited.deliveries.every((delivery) => delivery.operation === 'read')).toBe(true);
+    expect(waited.deliveries.map((delivery) => delivery.deliveryCallId))
+      .toEqual(['wait-1', 'wait-1', 'wait-1']);
+    expect(waited.undelivered).toEqual([]);
+    expect(waited.snapshot.counts.undelivered).toBe(0);
+    // `deliveredAt` / `deliveryCallId` 逐条落盘：这一批里每一条都是「这一轮交过了」。
+    // 标记写在返回之后（spec §4.5），所以等它落地。
+    await vi.waitFor(async () => {
+      for (const item of submitted) {
+        expect(await store.readSubmission(
+          thread.threadId, item.researchRunId, item.submissionId)).toMatchObject({
+          deliveredAt: expect.any(String), deliveryCallId: 'wait-1',
+        });
+      }
+    });
+    // 正控：没有一条被交第二遍。
+    const again = await service.wait(thread.threadId, submitted[0]!.researchRunId, 'wait-2');
+    expect(again.deliveries).toEqual([]);
+    expect(again.undelivered).toEqual([]);
   });
 
   it('marks a submission interrupted when its result has fewer rows than work items', async () => {
@@ -799,7 +840,7 @@ describe('XResearchTaskService', () => {
     const thread = owner();
     const submitted = await service.submit({ work: { search: searchWork() } }, thread);
     const waited = await service.wait(thread.threadId, submitted.researchRunId, 'wait-1');
-    expect(waited.delivery?.submissionId).toBe(submitted.submissionId);
+    expect(waited.deliveries[0]?.submissionId).toBe(submitted.submissionId);
     // 它确实还在飞：`wait` 已经返回，盘上还没有交付标记（否则下面的断言什么都证明不了）。
     expect(store.deliveryWritten).toBe(false);
 
@@ -884,8 +925,8 @@ describe('XResearchTaskService', () => {
 
     // 翻面：中止没有把这份结果吃掉，之后的 `wait` 照样交付一次。
     const delivered = await lateProcess.service.wait(thread.threadId, lateRun.researchRunId, 'wait-3');
-    expect(delivered.delivery?.submissionId).toBe(lateRun.submissionId);
-    expect(delivered.delivery?.deliveryCallId).toBe('wait-3');
+    expect(delivered.deliveries[0]?.submissionId).toBe(lateRun.submissionId);
+    expect(delivered.deliveries[0]?.deliveryCallId).toBe('wait-3');
     // 交付标记写在返回之后（spec §4.5）：等它落地，别把「还没写完」读成「没写」。
     await vi.waitFor(async () => expect((await stored.readSubmission(
       thread.threadId, lateRun.researchRunId, lateRun.submissionId))?.deliveredAt)
@@ -1112,24 +1153,29 @@ describe('XResearchTaskService inspect / cancel', () => {
     let calls = 0;
     const { service } = harness(async (work, ctx) => {
       calls += 1;
+      // 第三份没有结果可交付（工作体抛出）：它是「没交付」那一边的正面对照。
+      if (calls === 3) throw new Error('no result');
       return calls === 1 ? echoRunner(work, ctx).then((result) => ({ ...result, artifact })) : echoRunner(work, ctx);
     });
     const thread = owner();
     const first = await service.submit({ work: { search: searchWork() } }, thread);
     await service.submit({ researchRunId: first.researchRunId, work: { search: searchWork() } }, thread);
+    const third = await service.submit({ researchRunId: first.researchRunId, work: { search: searchWork() } }, thread);
     await service.whenIdle(thread.threadId, first.researchRunId);
 
     const before = await service.inspect(thread.threadId, first.researchRunId, { view: 'deliveries' });
     expect(before.items).toEqual([
       expect.objectContaining({ submissionId: first.submissionId, deliveredAt: null, deliveryCallId: null, hasArtifact: true }),
       expect.objectContaining({ deliveredAt: null, deliveryCallId: null, hasArtifact: false }),
+      expect.objectContaining({ submissionId: third.submissionId, deliveredAt: null, deliveryCallId: null }),
     ]);
     await service.wait(thread.threadId, first.researchRunId, 'wait-1');
     const after = await service.inspect(thread.threadId, first.researchRunId, { view: 'deliveries' });
-    // 交付标记只落在真交出去的那一份上：清单不猜「大概交过了」。
+    // 交付标记落在这一轮真交出去的两份上；没有结果的第三份仍是没交付（清单不猜「大概交过了」）。
     expect(after.items).toEqual([
       expect.objectContaining({ submissionId: first.submissionId, deliveredAt: expect.any(String), deliveryCallId: 'wait-1' }),
-      expect.objectContaining({ deliveredAt: null, deliveryCallId: null }),
+      expect.objectContaining({ deliveredAt: expect.any(String), deliveryCallId: 'wait-1' }),
+      expect.objectContaining({ submissionId: third.submissionId, deliveredAt: null, deliveryCallId: null }),
     ]);
   });
 

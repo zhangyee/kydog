@@ -161,9 +161,9 @@ it('never delivers into a ledger that belongs to a disposed session', async () =
   const waited = (await tool.execute('wait', {
     action: 'wait', researchRunId: submitted.researchRunId,
   } as never, undefined, undefined, {} as never)).details as {
-    delivery?: unknown; undelivered?: unknown[];
+    deliveries?: unknown[]; undelivered?: unknown[];
   };
-  expect(waited.delivery).toBeUndefined();
+  expect(waited.deliveries).toBeUndefined();
   expect(waited.undelivered).toHaveLength(1);
   expect(observed).toEqual([]);
 });
@@ -194,8 +194,8 @@ it('feeds the ledger only on delivery', async () => {
     .toThrow(/unobserved/);
   const waited = (await tool.execute('wait', {
     action: 'wait', researchRunId: submitted.researchRunId,
-  } as never, undefined, undefined, {} as never)).details as { delivery?: { result: unknown } };
-  expect(waited.delivery).toBeDefined();
+  } as never, undefined, undefined, {} as never)).details as { deliveries?: Array<{ result: unknown }> };
+  expect(waited.deliveries).toHaveLength(1);
   // 交付之后才有可引用的事实，而且是这一份。
   expect(ledger.observations.length).toBeGreaterThan(0);
   expect(ledger.guard('/tmp/x-research-topic-2026-10-12.md', '[source](https://x.com/alice/status/123)')).toEqual({ createOnly: true });

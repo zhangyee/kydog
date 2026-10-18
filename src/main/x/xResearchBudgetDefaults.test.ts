@@ -59,12 +59,12 @@ function toolFor(f: { context: FixtureContext }) {
     const delivered = (await tool.execute('wait-budget', {
       action: 'wait', researchRunId: submitted.researchRunId,
     } as never, undefined, undefined, {} as never)).details as XResearchDeliveryEnvelope;
-    if (!delivered.delivery) throw new Error('expected a delivered result');
+    if (!delivered.deliveries?.length) throw new Error('expected a delivered result');
     // 交付副本自己写着它在模型眼里占多少字节（壳 + 快照 + 结果，spec §4.5）：定点由
     // `deliverEnvelope` 量出来并盖在这里，所以它必须是一个真的、装得进包络的数。
-    expect(delivered.delivery.result.budgetUsage.outputBytes).toBeGreaterThan(0);
-    expect(delivered.delivery.result.budgetUsage.outputBytes).toBeLessThanOrEqual(1024 * 1024);
-    return { result: delivered.delivery.result, envelope: delivered };
+    expect(delivered.deliveries[0]!.result.budgetUsage.outputBytes).toBeGreaterThan(0);
+    expect(delivered.deliveries[0]!.result.budgetUsage.outputBytes).toBeLessThanOrEqual(1024 * 1024);
+    return { result: delivered.deliveries[0]!.result, envelope: delivered };
   };
 }
 

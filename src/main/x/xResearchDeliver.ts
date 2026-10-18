@@ -1,4 +1,5 @@
-// 交付：一次 `wait` 给一份结果，外面包一层壳，整包重新量到 1 MiB 的定点（spec §4.5、§5.2）。
+// 交付：一次 `wait` 给出该 run 所有已收尾、未交付的结果（`deliveries` 一条一个元素），外面包一层
+// 壳，整包重新量到 1 MiB 的定点（spec §4.5、§5.2）。
 //
 // 壳是 main↔模型 transcript 的协议面（`./xResearchTaskShell`）：`kind` / `action` / `researchRunId` /
 // `status` 这四个键渲染层锚定与 transcript 解析都只认它们，包络再紧也不许省。可省的是**模型可见性**：
@@ -23,23 +24,29 @@ import type {
 } from './xResearchTaskShell';
 import type { XResearchSubmission, XResearchTaskSnapshot } from '../../shared/xResearchTask';
 
-/** 一次 `wait` 要交付的那一份：**提交顺序**下最早的「已收尾、未交付」的一份。
+/** 一次 `wait` 要交付的清单：该 run 下**所有**「已收尾、未交付」的提交，按 `createdAt` 升序。
  *
- *  顺序由调用方保证（`listSubmissions` 按 `createdAt` 排；内存里的 Map 是插入序 = 提交序）。
+ *  同一毫秒的两条按 `submissionId` 定序，与 `listSubmissions` 的排序是同一个比较器 —— 否则
+ *  同一个盘的两次读取会给出两种先后。这里只回答「该轮到谁、按什么顺序」，不回答「拿不拿得到」：
+ *  结果在内存里还是在工件里（重启后）由服务判，连工件 ref 都没有的那一份同样算「没交付」——
+ *  它不该被悄悄跳过，也不该被假装交付过。
+ *
  *  「已收尾」= `endedAt != null`；「未交付」= 没有真时间戳 —— 盘上的 `deliveredAt: null` 是
- *  store 直接 `JSON.parse` 出来的空值，它仍然是没交付（与快照 `counts.undelivered` 同一判据）。
- *
- *  这里只回答「该轮到谁」，不回答「拿不拿得到」：结果在内存里还是在工件里（重启后）由服务判，
- *  连工件 ref 都没有的那一份同样算「没交付」—— 它不该被悄悄跳过，也不该被假装交付过。 */
-export function pickDelivery(submissions: readonly XResearchSubmission[]): XResearchSubmission | null {
-  return submissions.find((submission) => submission.endedAt != null && !submission.deliveredAt) ?? null;
+ *  store 直接 `JSON.parse` 出来的空值，它仍然是没交付（与快照 `counts.undelivered` 同一判据）。 */
+export function deliverableSubmissions(
+  submissions: readonly XResearchSubmission[],
+): XResearchSubmission[] {
+  return submissions
+    .filter((submission) => submission.endedAt != null && !submission.deliveredAt)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt)
+      || a.submissionId.localeCompare(b.submissionId));
 }
 
 export type XResearchEnvelopeInput = {
   researchRunId: string;
   snapshot: XResearchTaskSnapshot;
-  /** 这一轮交付的结果；没有可交付的（队列空了 / 结果都不在了）就是 `null`。 */
-  delivery: XResearchDelivery | null;
+  /** 这一轮交付的结果，一条一个元素；没有可交付的（队列空了 / 结果都不在了）就是空数组。 */
+  deliveries: readonly XResearchDelivery[];
   undelivered: XResearchDeliveryEnvelope['undelivered'];
   action: XResearchDeliveryEnvelope['action'];
   /** `inspect` 的那一页：也算进整包字节 —— 模型看到的一切都在同一次测量里。 */
@@ -69,7 +76,7 @@ function envelopeOf(input: XResearchEnvelopeInput): XResearchDeliveryEnvelope {
     researchRunId: input.researchRunId,
     status: input.snapshot.state,
     snapshot: input.snapshot,
-    ...(input.delivery ? { delivery: input.delivery } : {}),
+    ...(input.deliveries.length ? { deliveries: [...input.deliveries] } : {}),
     ...(input.inspect ? { inspect: input.inspect } : {}),
     ...(input.undelivered?.length ? { undelivered: input.undelivered } : {}),
   };
@@ -80,15 +87,23 @@ function tightSnapshot(snapshot: XResearchTaskSnapshot): XResearchTaskSnapshot {
   return { ...snapshot, search: [], read: [] };
 }
 
-/** 定点：把整包字节数盖在 `delivery.result.budgetUsage.outputBytes` 上，反复量到稳定 ——
- *  字节数写着它自己，多一位数就会再变一次（与 `measure` 同一个循环，不设上限地收敛）。 */
+/** 定点：把整包字节数盖在每条 `deliveries[i].result.budgetUsage.outputBytes` 上，反复量到稳定 ——
+ *  字节数写着它自己，多一位数就会再变一次（与 `measure` 同一个循环，不设上限地收敛）。
+ *  一份交付的读数说的是**它到达时那一整包**（壳 + 快照 + 本轮全部交付），不是它自己的大小；
+ *  同一轮交付的每一条因此带着同一个数。 */
 function stampEnvelopeBytes(envelope: XResearchDeliveryEnvelope): number {
   for (;;) {
     const bytes = measuredBytes(envelope);
-    const result = envelope.delivery?.result;
-    if (!result || result.budgetUsage.outputBytes === bytes) return bytes;
-    result.budgetUsage.outputBytes = bytes;
+    const results = (envelope.deliveries ?? []).map((delivery) => delivery.result);
+    if (results.every((result) => result.budgetUsage.outputBytes === bytes)) return bytes;
+    for (const result of results) result.budgetUsage.outputBytes = bytes;
   }
+}
+
+/** 这一包在 1 MiB 的定点之内吗：服务靠它决定还能不能再塞一份（量法与 `deliverEnvelope` 同一把尺子）。
+ *  它会把整包字节数盖到试装的那几条结果上；没装下的那一条随后会由下一次交付重新盖。 */
+export function fitsDeliveryEnvelope(input: XResearchEnvelopeInput): boolean {
+  return stampEnvelopeBytes(envelopeOf(input)) <= X_RESEARCH_MAX_OUTPUT_BYTES;
 }
 
 /** 一次 `wait` 的壳占多少字节：协议键 + 快照按紧的形状 + 交付身份（不含结果）。
@@ -125,10 +140,10 @@ export function clipForEnvelope(identity: XResearchDeliveryIdentity & { result: 
   // （二十个目标各带五百个 Article 缺口那一档实测差 1.9 KB）。
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const over = measuredBytes(envelopeOf({
-      ...identity, action: 'wait', undelivered: [], delivery: {
+      ...identity, action: 'wait', undelivered: [], deliveries: [{
         deliveryCallId: identity.submitCallId, submissionId: identity.submissionId,
         submitCallId: identity.submitCallId, operation: identity.operation, result: delivered,
-      },
+      }],
     })) - X_RESEARCH_MAX_OUTPUT_BYTES;
     if (over <= 0) return delivered;
     // 多扣 1 字节：每轮都必须真的少放一点东西，否则同一份额度会原地打转。
@@ -138,7 +153,7 @@ export function clipForEnvelope(identity: XResearchDeliveryIdentity & { result: 
   return delivered;
 }
 
-/** 壳 + 快照 + 那一份结果，量到 1 MiB 以内再交给工具层。 */
+/** 壳 + 快照 + 这一轮的全部结果，量到 1 MiB 以内再交给工具层。 */
 export function deliverEnvelope(input: XResearchEnvelopeInput): {
   content: { type: 'text'; text: string }[];
   details: XResearchDeliveryEnvelope;
@@ -168,8 +183,11 @@ export function deliverEnvelope(input: XResearchEnvelopeInput): {
     // 快照已经没有可省的文本之后：省结果自己的省略账本（控制器裁决 R25）。顺序固定为
     // `metadataOmissions` → `contentMetadataOmissions` → `reportScopeFacts`，每省一项重新量；
     // 省的是「账本怎么写的」，不是「东西没少」—— 交付记录必须跟着说裁过。
-    const delivered = envelope.delivery?.result;
-    if (delivered) {
+    // 正常情况下服务已经把包塞在 1 MiB 之内；走到这里的只会是「一份就装不下」的那条（与改造前
+    // 同一条路），此时逐条省到装下为止。
+    for (const delivery of envelope.deliveries ?? []) {
+      if (bytes <= X_RESEARCH_MAX_OUTPUT_BYTES) break;
+      const delivered = delivery.result;
       const shedders: ReadonlyArray<() => void> = [
         () => { delete delivered.metadataOmissions; },
         () => { delete delivered.contentMetadataOmissions; },

@@ -14,7 +14,7 @@ import { X_RESEARCH_FAILURE_STATUSES, xResearchTaskSnapshot, xResearchTaskState 
 import type { XResearchStatus, XStopReason } from '../../shared/xResearchStatus';
 import type { XResearchTaskStore } from './xResearchTaskStore';
 import type { XResearchArtifactStore } from './xResearchArtifacts';
-import { clipForEnvelope, pickDelivery } from './xResearchDeliver';
+import { clipForEnvelope, deliverableSubmissions, fitsDeliveryEnvelope } from './xResearchDeliver';
 import type { XResearchDelivery, XResearchDeliveryEnvelope } from './xResearchTaskShell';
 import { serializeXResearchResult } from './xResearchOutput';
 import type {
@@ -84,11 +84,12 @@ export type XResearchSubmitResult = {
   snapshot: XResearchTaskSnapshot;
 };
 
-/** `wait` 的产物：这一轮的快照、交付的那一份（可能没有）、以及还没交付的清单。
+/** `wait` 的产物：这一轮的快照、这一轮交付的每一份（可能为空）、以及还没交付的清单。
+ *  `undelivered` 是**这次调用之后**仍然收尾未交付的提交：包络装不下时它会大于 0，模型据此再 `wait`。
  *  壳的构造与 1 MiB 定点归 `./xResearchDeliver`（它只管字节，不碰任务状态）。 */
 export type XResearchWaitResult = {
   snapshot: XResearchTaskSnapshot;
-  delivery: XResearchDelivery | null;
+  deliveries: XResearchDelivery[];
   undelivered: NonNullable<XResearchDeliveryEnvelope['undelivered']>;
 };
 
@@ -525,17 +526,20 @@ export class XResearchTaskService {
     void work.then(release, release);
   }
 
-  /** 交付：等队列排空，然后把**最早一份尚未交付**的结果交出去（spec §4.5）。
-   *  一次只给一份 —— 一份结果的上限就是整个 1 MiB 包络（壳 + 快照 + 这份结果），
-   *  多份会把它撑成几 MiB。剩下的进 `undelivered`，`counts.undelivered` 也还在快照里。
+  /** 交付：等队列排空，然后把该 run 下**所有已收尾、未交付**的结果一次交出去（spec §4.5）。
+   *  逐条塞进同一个 1 MiB 包络（壳 + 快照 + 本轮全部结果）：塞不下就停在最后一个装得下的位置，
+   *  剩下的进 `undelivered`，`counts.undelivered` 也还在快照里 —— 模型再 `wait` 一次即可。
+   *  一份就超过预算时仍然把它交出去（与改造前同一条路：快照与结果的省略账本让位，最后才是硬失败）
+   *  —— 否则它会永远交不出来，把整条队列堵死。
    *
    *  顺序是 spec §4.5 的那一条：**选中 → 内存标记 → 返回 → 落盘确认**。`deliveredAt` 是跨重启
    *  的权威，但把它先写盘再返回会造出「标了却没交」：同一个窗口里崩掉，结果永远丢（盘上说交过了，
    *  而模型从没见过它）。反过来，落盘落在返回之后，窗口内崩掉只是「再交一次」—— 那一次的重复写入
    *  由 `XResearchEvidence.observe` 的幂等兜底（同一份结果不会在 records 里变成两份）。
+   *  标记是逐条的（每条各自 `deliveredAt` / `deliveryCallId`），但整批只推进一次快照、只落一次盘。
    *
-   *  `signal` 是 pi 这一轮工具调用的中止信号（用户按了停止）：一响就当场放手，并且**不再交付** ——
-   *  拒绝发生在选中与标记之前（见 `abortable` 与 `assertNotAborted`），中止不会把一份结果标成交过了。 */
+   *  `signal` 是 pi 这一轮工具调用的中止信号（用户按了停止）：一响就当场放手，并且**一条都不标** ——
+   *  拒绝发生在选中与标记之前（见 `abortable` 与 `assertNotAborted`），中止不会把结果标成交过了。 */
   async wait(threadId: string, researchRunId: string, deliveryCallId: string,
     signal?: AbortSignal): Promise<XResearchWaitResult> {
     assertNotAborted(signal);
@@ -543,42 +547,57 @@ export class XResearchTaskService {
     if (!active) throw new KydogError('research.not_found', 'X research task not found');
     await this.awaitIdle(threadId, signal);
     assertNotAborted(signal);
-    let candidates = [...active.submissions.values()];
-    let delivery: XResearchDelivery | null = null;
-    for (;;) {
-      const pick = pickDelivery(candidates);
-      if (!pick) break;
-      const picked = await this.deliverable(active, pick, deliveryCallId);
-      if (picked) {
-        delivery = picked;
-        break;
+    const candidates = deliverableSubmissions([...active.submissions.values()]);
+    const packed: XResearchSubmission[] = [];
+    const deliveries: XResearchDelivery[] = [];
+    for (const candidate of candidates) {
+      const delivery = await this.deliverable(active, candidate, deliveryCallId);
+      // 这份结果真的不在了（工件写失败过、或工件读不回来）：不拿它挡住后面的，也不假装交付过。
+      if (!delivery) continue;
+      if (deliveries.length) {
+        // 试装下一份：装不下就停在上一份。`undelivered` 按「试装之后还剩谁」量，包络字节因此
+        // 说的就是这一轮真正会返回的形状 —— 不是先按空清单量、再塞进一份更大的清单。
+        const next = [...deliveries, delivery];
+        const taken = new Set([...packed, candidate].map((submission) => submission.submissionId));
+        if (!fitsDeliveryEnvelope({
+          researchRunId, snapshot: this.snapshotOf(active), deliveries: next,
+          undelivered: candidates.filter((submission) => !taken.has(submission.submissionId))
+            .map((submission) => ({
+              submissionId: submission.submissionId, operation: submission.operation,
+              objective: submission.objective, state: submission.state,
+            })),
+          action: 'wait',
+        })) break;
       }
-      // 这份结果真的不在了（工件写失败过、或工件读不回来）：不拿它挡住后面那份。
-      candidates = candidates.filter((submission) => submission !== pick);
+      deliveries.push(delivery);
+      packed.push(candidate);
     }
-    if (!delivery) {
-      return { snapshot: this.snapshotOf(active), delivery: null, undelivered: this.undeliveredOf(active) };
+    if (!deliveries.length) {
+      return { snapshot: this.snapshotOf(active), deliveries: [], undelivered: this.undeliveredOf(active) };
     }
-    const delivered = active.submissions.get(delivery.submissionId)!;
     // mark 之前的最后一次复查：读工件那一段是真实的 await（重启后的交付才会走到），中止落在那里
-    // 同样不交付。
+    // 同样一条都不交。
     assertNotAborted(signal);
-    delivered.deliveredAt = this.now();
-    delivered.deliveryCallId = deliveryCallId;
-    active.results.delete(delivered.submissionId);
-    // 内存标记与交给调用方的那一帧先做完：这一份从此刻起就是「交过了」（本进程的 `wait` 不会再挑它）。
+    const deliveredAt = this.now();
+    for (const submission of packed) {
+      submission.deliveredAt = deliveredAt;
+      submission.deliveryCallId = deliveryCallId;
+      active.results.delete(submission.submissionId);
+    }
+    // 内存标记与交给调用方的那一帧先做完：这些从此刻起就是「交过了」（本进程的 `wait` 不会再挑它们）。
     this.transition(active);
     const snapshot = this.emit(active);
     // 落盘确认放在返回**之后**（spec §4.5 的顺序）：失败不该把已经交出去的结果要回来 —— 内存里它
     // 已经是交付过的，重启后最多再交一次（幂等兜底就在那个窗口里），日志是这件事唯一露面的地方。
     // 这一笔写仍要进 `lateWrites`：删对话的顺序是「排空 → 删目录」，排空不把它算进来的话，它会
     // 在目录被删之后把 `task.json` 与 `submission-*.json` 写回来。
-    this.trackLateWrite(threadId, this.flush(active, [delivered]).catch((error: unknown) => {
+    this.trackLateWrite(threadId, this.flush(active, packed).catch((error: unknown) => {
       logger.warn('x_research', 'could not persist the delivery mark', {
-        threadId, researchRunId, submissionId: delivered.submissionId, err: String(error),
+        threadId, researchRunId, submissionIds: packed.map((submission) => submission.submissionId),
+        err: String(error),
       });
     }));
-    return { snapshot, delivery, undelivered: this.undeliveredOf(active) };
+    return { snapshot, deliveries, undelivered: this.undeliveredOf(active) };
   }
 
   /** 分页看行 / 交付清单 / 失败（spec §4.2、§4.5）：读的就是快照背后那批记录，
@@ -801,7 +820,7 @@ export class XResearchTaskService {
     }
   }
 
-  /** 还没交付的清单：与 `pickDelivery` / `counts.undelivered` 同一判据。
+  /** 还没交付的清单：与 `deliverableSubmissions` / `counts.undelivered` 同一判据。
    *  拿不到结果的那一份也在里面 —— 它确实没交付过，不假装。 */
   private undeliveredOf(active: ActiveResearch): XResearchWaitResult['undelivered'] {
     return [...active.submissions.values()]

@@ -30,42 +30,47 @@ export type XResearchInspectPage = {
 
 /** 工具结果的外壳。`kind` / `action` / `researchRunId` / `status` 是协议面（渲染层锚定与
  *  transcript 解析都只认它们），快照其余字段可以按包络预算省略，这四个键不许省。 */
-/** 工具结果 `details` 里那一份结果：壳（下面这个类型）取 `delivery.result`，改造前的平铺 details
- *  原样返回。`null` = 这个壳没有结果（`submit` / `inspect` / `cancel`）—— 它没有可入账、可恢复、
- *  可引用的东西，也不走旧路径。
+/** 工具结果 `details` 里那一批结果：壳（下面这个类型）取 `deliveries[i].result`（旧 transcript 是
+ *  `delivery.result`），改造前的平铺 details 原样一条。`[]` = 这个壳没有结果（`submit` / `inspect` /
+ *  `cancel`）—— 它们没有可入账、可恢复、可引用的东西，也不走旧路径。
  *
- *  下面三个函数是账本（`./xResearchEvidence`）、范围账本（`./xResearchScopeFacts`）与恢复链
+ *  下面几个函数是账本（`./xResearchEvidence`）、范围账本（`./xResearchScopeFacts`）与恢复链
  *  （`./xResearchBranch`）共同的壳判据。以前账本那两处各抄一份，漂移之后一份壳能借另一份提交的
  *  结果入账 —— 所以放在壳自己的文件里，只有一份。 */
-export function deliveryResult(details: unknown): unknown | null {
-  if (!details || typeof details !== 'object') return details;
-  const value = details as { kind?: unknown; delivery?: { result?: unknown } };
-  return value.kind === 'x_research' ? value.delivery?.result ?? null : details;
+export function deliveryResults(details: unknown): unknown[] | null {
+  if (!details || typeof details !== 'object' || (details as { kind?: unknown }).kind !== 'x_research') {
+    return details == null ? null : [details];
+  }
+  return shellDeliveries(details).map((delivery) => delivery.result);
+}
+
+/** 壳里的交付：新形状 `deliveries` 一条一个元素，旧 transcript 的 `delivery` 退回一条。
+ *  `null` = 不是壳（平铺的旧结果没有这层壳）。 */
+function shellDeliveries(details: unknown): XResearchDelivery[] {
+  const value = details as { delivery?: XResearchDelivery; deliveries?: XResearchDelivery[] };
+  if (Array.isArray(value.deliveries)) return value.deliveries;
+  return value.delivery ? [value.delivery] : [];
 }
 
 /** 这条工具结果属于哪一轮调用：平铺 details 说的是自己的 `callId`，壳说的是**交付**那一轮
  *  （`delivery.deliveryCallId`）—— 壳里 `result.callId` 是**提交**那一轮，拿它比 `toolCallId`
- *  永远不相等。 */
+ *  永远不相等。同一批交付共用一次 `wait` 的 callId。 */
 export function resultCallId(details: unknown): unknown {
   if (!details || typeof details !== 'object') return null;
-  const value = details as {
-    kind?: unknown; callId?: unknown; delivery?: { deliveryCallId?: unknown };
-  };
-  return value.kind === 'x_research' ? value.delivery?.deliveryCallId ?? null : value.callId ?? null;
+  const value = details as { kind?: unknown; callId?: unknown };
+  return value.kind === 'x_research' ? shellDeliveries(details)[0]?.deliveryCallId ?? null : value.callId ?? null;
 }
 
-/** 壳自己的两轮也得对得上：`result.callId` 是提交那一轮，必须等于壳记下的 `submitCallId`。
+/** 壳自己的两轮也得对得上：每一条 `result.callId` 是提交那一轮，必须等于那条记下的 `submitCallId`。
  *  只认「交付那一轮」的话，一份壳能借另一份提交的结果入账 / 恢复 / 绑标签页。平铺 details
  *  没有这层壳，放行。 */
 export function shellChainValid(details: unknown): boolean {
-  if (!details || typeof details !== 'object') return true;
-  const value = details as {
-    kind?: unknown;
-    delivery?: { submitCallId?: unknown; result?: { callId?: unknown } | null };
-  };
-  if (value.kind !== 'x_research') return true;
-  const delivery = value.delivery;
-  return delivery?.result?.callId === delivery?.submitCallId;
+  if (!details || typeof details !== 'object' || (details as { kind?: unknown }).kind !== 'x_research') return true;
+  const deliveries = shellDeliveries(details);
+  // 同一批交付共用一次 `wait` 的 callId（`resultCallId` 只报一条）：id 对不上就不是我们写出的壳，
+  // 整条拒掉，免得一份错壳把一条结果挂到另一轮的交付身份上。
+  return deliveries.every((delivery) => delivery.result?.callId === delivery.submitCallId)
+    && new Set(deliveries.map((delivery) => delivery.deliveryCallId)).size <= 1;
 }
 
 export type XResearchDeliveryEnvelope = {
@@ -74,6 +79,9 @@ export type XResearchDeliveryEnvelope = {
   researchRunId: string;
   status: XResearchTaskState;
   snapshot: XResearchTaskSnapshot;
+  /** 这一轮 `wait` 交付的每一份，按提交顺序；一条一个元素（空/缺 = 没有交付）。 */
+  deliveries?: XResearchDelivery[];
+  /** 旧 transcript 的单交付壳（R81c 之前）：只为读旧会话保留，新壳不再写它。 */
   delivery?: XResearchDelivery;
   inspect?: XResearchInspectPage;
   undelivered?: Array<{

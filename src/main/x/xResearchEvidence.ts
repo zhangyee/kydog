@@ -12,7 +12,7 @@ import {
   projectLegacyXResult,
   type XLegacyProjection,
 } from './xResearchLegacy';
-import { deliveryResult, resultCallId, shellChainValid } from './xResearchTaskShell';
+import { deliveryResults, resultCallId, shellChainValid } from './xResearchTaskShell';
 import type {
   XArticleEntryIdentity,
   XResearchResult,
@@ -365,91 +365,94 @@ export class XResearchEvidence {
         .safeParse(raw);
       if (!entry.success) continue;
       const { message: m, id } = entry.data;
-      const value = deliveryResult(m.details);
-      // 壳里没有 delivery：没有可引用的结果，也不是改造前的平铺结果。
-      if (value === null) continue;
+      const values = deliveryResults(m.details);
+      // 壳里没有结果：没有可引用的，也不是改造前的平铺结果。
+      if (!values || !values.length) continue;
       // 壳自己的两轮对不上：恢复链不收它的结果，账本也不收 —— 否则一份错壳能喂出证据。
       if (!shellChainValid(m.details)) continue;
       // 归属判据跟着壳换：平铺比自己的 `callId`，壳比「交付那一轮」的 `deliveryCallId`。
       const owner = resultCallId(m.details);
-      const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(value);
-      if (restoration.success && m.toolCallId === owner && restoration.data.delivery?.articleObligationCoverage !== 'inline')
-        this.restorationGaps.push({runId:restoration.data.runId,order:++this.resultOrder});
-      const fresh = canonicalSchema.safeParse(evidenceDetails(value));
-      // A missing artifact cannot authorize omitted bodies. Independently retain
-      // well-formed rows/items from the recorded projection; no identity is filled in.
-      if (!fresh.success && value && typeof value === 'object' &&
-          'restoration' in value && (value.restoration as {status?:unknown})?.status === 'missing') {
-        const raw = evidenceDetails(value) as Record<string, unknown>;
-        const key = raw.operation === 'search' ? 'queries' : 'targets';
-        if (Array.isArray(raw[key])) for (const candidate of raw[key]) {
-          if (!candidate || typeof candidate !== 'object') continue;
-          const row = structuredClone(candidate);
-          const validTexts = (items: unknown) => Array.isArray(items) ? items.filter(p => textSchema.safeParse(p).success) : items;
-          if (key === 'queries') {
-            row.posts = validTexts(row.posts);
-            if (row.postObservations) row.postObservations = validTexts(row.postObservations);
-          } else {
-            if(row.quotedPosts) row.quotedPosts=validTexts(row.quotedPosts);
-            if(Array.isArray(row.bodyObservations)) row.bodyObservations=row.bodyObservations.filter((p:unknown)=>z.union([textSchema,unscopedTextSchema]).safeParse(p).success);
-            if (row.root && !textSchema.safeParse(row.root).success) row.root = null;
-            if (row.replies) row.replies.observations = validTexts(row.replies.observations);
-            if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;
+      // 一次 `wait` 的每一条交付都是一份独立观察：逐条入账，不因为同批就并成一份。
+      for (const value of values) {
+        const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(value);
+        if (restoration.success && m.toolCallId === owner && restoration.data.delivery?.articleObligationCoverage !== 'inline')
+          this.restorationGaps.push({runId:restoration.data.runId,order:++this.resultOrder});
+        const fresh = canonicalSchema.safeParse(evidenceDetails(value));
+        // A missing artifact cannot authorize omitted bodies. Independently retain
+        // well-formed rows/items from the recorded projection; no identity is filled in.
+        if (!fresh.success && value && typeof value === 'object' &&
+            'restoration' in value && (value.restoration as {status?:unknown})?.status === 'missing') {
+          const raw = evidenceDetails(value) as Record<string, unknown>;
+          const key = raw.operation === 'search' ? 'queries' : 'targets';
+          if (Array.isArray(raw[key])) for (const candidate of raw[key]) {
+            if (!candidate || typeof candidate !== 'object') continue;
+            const row = structuredClone(candidate);
+            const validTexts = (items: unknown) => Array.isArray(items) ? items.filter(p => textSchema.safeParse(p).success) : items;
+            if (key === 'queries') {
+              row.posts = validTexts(row.posts);
+              if (row.postObservations) row.postObservations = validTexts(row.postObservations);
+            } else {
+              if(row.quotedPosts) row.quotedPosts=validTexts(row.quotedPosts);
+              if(Array.isArray(row.bodyObservations)) row.bodyObservations=row.bodyObservations.filter((p:unknown)=>z.union([textSchema,unscopedTextSchema]).safeParse(p).success);
+              if (row.root && !textSchema.safeParse(row.root).success) row.root = null;
+              if (row.replies) row.replies.observations = validTexts(row.replies.observations);
+              if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;
+            }
+            const subset = canonicalSchema.safeParse({...raw,[key]:[row]});
+            if (subset.success && (m.toolCallId === undefined || m.toolCallId === owner))
+              this.addCanonical(subset.data, 'history', id ?? null, false);
           }
-          const subset = canonicalSchema.safeParse({...raw,[key]:[row]});
-          if (subset.success && (m.toolCallId === undefined || m.toolCallId === owner))
-            this.addCanonical(subset.data, 'history', id ?? null, false);
-        }
-        continue;
-      }
-      if (fresh.success) {
-        if (m.toolCallId !== undefined && m.toolCallId !== owner)
           continue;
-        // 这一份已经在 transcript 里了：记下它，之后同一份结果再交付一次不会被收进 records 第二遍。
-        if (!this.claimDelivery(fresh.data)) continue;
-        this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
-        continue;
-      }
-      const projection = projectLegacyXResult(value);
-      this.legacy.push(projection);
-      for (const p of projection.posts) {
-        const record: XEvidenceObservation = {
-          ...p,
-          origin: 'history',
-          callId: m.toolCallId ?? null,
-          sessionEntryId: id ?? null,
-          articlePreviews: [],
-          truncation: null,
-        };
-        this.records.push(record);
+        }
+        if (fresh.success) {
+          if (m.toolCallId !== undefined && m.toolCallId !== owner)
+            continue;
+          // 这一份已经在 transcript 里了：记下它，之后同一份结果再交付一次不会被收进 records 第二遍。
+          if (!this.claimDelivery(fresh.data)) continue;
+          this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
+          continue;
+        }
+        const projection = projectLegacyXResult(value);
+        this.legacy.push(projection);
+        for (const p of projection.posts) {
+          const record: XEvidenceObservation = {
+            ...p,
+            origin: 'history',
+            callId: m.toolCallId ?? null,
+            sessionEntryId: id ?? null,
+            articlePreviews: [],
+            truncation: null,
+          };
+          this.records.push(record);
 
-        if (projection.articles.some((a) => a.parent === p))
-          this.attachedLegacyRecords.add(record);
-        const source: XSourceReference = {
-          sourceKind: 'legacy_x_graphql',
-          urlKind: 'permalink',
-          sourceUrl: p.sourceUrl,
-          observationId: null,
-          rootObservationId: null,
-          observedAt: null,
-          containerKind: p.containerKind,
-          runId: null,
-          callId: m.toolCallId ?? null,
-          batchId: null,
-          sessionEntryId: id ?? null,
-          queryId: null,
-          query: null,
-          purpose: null,
-          product: null,
-        };
-        this.addSource(p.postId, source);
-        if (p.articlePreview)
-          this.previews.push({
-            parentUrl: p.sourceUrl,
-            postId: p.postId,
-            identity: null,
-            legacyRecord: record,
-          });
+          if (projection.articles.some((a) => a.parent === p))
+            this.attachedLegacyRecords.add(record);
+          const source: XSourceReference = {
+            sourceKind: 'legacy_x_graphql',
+            urlKind: 'permalink',
+            sourceUrl: p.sourceUrl,
+            observationId: null,
+            rootObservationId: null,
+            observedAt: null,
+            containerKind: p.containerKind,
+            runId: null,
+            callId: m.toolCallId ?? null,
+            batchId: null,
+            sessionEntryId: id ?? null,
+            queryId: null,
+            query: null,
+            purpose: null,
+            product: null,
+          };
+          this.addSource(p.postId, source);
+          if (p.articlePreview)
+            this.previews.push({
+              parentUrl: p.sourceUrl,
+              postId: p.postId,
+              identity: null,
+              legacyRecord: record,
+            });
+        }
       }
     }
   }

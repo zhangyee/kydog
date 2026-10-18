@@ -133,25 +133,35 @@ export function forgetXResearchSession(threadId: string, identity?: object): voi
   xResearchSessions.delete(threadId);
 }
 
-/** 这条工具结果是不是**这一轮亲手交付**的那一份：是就返回它的配对身份。
+/** 这条工具结果里**这一轮亲手交付**的每一份：是就返回它们的配对身份。
  *  `undefined` = 这条结果没有可恢复的东西（submit / inspect / cancel 的壳，本来就没有结果）；
  *  `null` = 不是我们发的（要继续去磁盘恢复）。
  *
  *  配对键取壳里的 `submitCallId`，不取这条结果的 `toolCallId`：`delivery.result.callId` 是**提交**
- *  那一轮（`observeDelivery` 只拿得到它），而 `toolCallId` 是 `wait` 那一轮 —— 两者不是一个 id。 */
-function liveDelivery(details: unknown): { submitCallId: string; batchId: string } | null | undefined {
+ *  那一轮（`observeDelivery` 只拿得到它），而 `toolCallId` 是 `wait` 那一轮 —— 两者不是一个 id。
+ *  一次 `wait` 可以带 N 份（`deliveries`）；旧 transcript 的单份 `delivery` 也认。 */
+function liveDeliveries(details: unknown): Array<{ submitCallId: string; batchId: string }> | null | undefined {
   if (!details || typeof details !== 'object') return null;
   const value = details as {
     kind?: unknown;
+    deliveries?: unknown;
     delivery?: { submitCallId?: unknown; result?: { batchId?: unknown } | null };
   };
   // 改造前的平铺结果不可能被这一轮追加（旧工具已删）：一律交给磁盘恢复。
   if (value.kind !== 'x_research') return null;
-  if (!value.delivery) return undefined;
-  const submitCallId = value.delivery.submitCallId;
-  const batchId = value.delivery.result?.batchId;
-  if (typeof submitCallId !== 'string' || typeof batchId !== 'string') return null;
-  return { submitCallId, batchId };
+  const items = Array.isArray(value.deliveries)
+    ? value.deliveries
+    : value.delivery ? [value.delivery] : [];
+  if (!items.length) return undefined;
+  const identities: Array<{ submitCallId: string; batchId: string }> = [];
+  for (const item of items) {
+    const delivery = item as { submitCallId?: unknown; result?: { batchId?: unknown } | null };
+    const submitCallId = delivery?.submitCallId;
+    const batchId = delivery?.result?.batchId;
+    if (typeof submitCallId !== 'string' || typeof batchId !== 'string') return null;
+    identities.push({ submitCallId, batchId });
+  }
+  return identities;
 }
 
 export async function createSession(opts: {
@@ -245,13 +255,18 @@ export async function createSession(opts: {
         const next = branch.map(entry => entry.id);
         if (branchIds && branchIds.every((id,index) => next[index] === id)) {
           const appended = branch.slice(branchIds.length).filter(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolName === 'x_research');
-          const delivered = appended.map(entry => liveDelivery((entry as {message:{details?:unknown}}).message.details));
+          const delivered = appended.map(entry => liveDeliveries((entry as {message:{details?:unknown}}).message.details));
           // 只有这一轮亲手交付的那几份可以绕过磁盘恢复：账本已经按「生产」记过它们，重读一遍
           // 会把它们降级成历史。没有交付的壳（submit / inspect / cancel）没有可恢复的事实。
-          const live = delivered.every(identity => identity === undefined
-            || (identity !== null && pendingResults.get(identity.submitCallId) === identity.batchId));
+          // 一次 `wait` 的 N 份都得对得上，否则整条分支回到磁盘恢复（不能只放过其中几份）。
+          const live = delivered.every(identities => identities === undefined
+            || (identities !== null && identities.every(
+              identity => pendingResults.get(identity.submitCallId) === identity.batchId)));
           if (live) {
-            for (const identity of delivered) if (identity) pendingResults.delete(identity.submitCallId);
+            for (const identities of delivered) {
+              if (!identities) continue;
+              for (const identity of identities) pendingResults.delete(identity.submitCallId);
+            }
             branchIds = next;
             return; // Only our immediate canonical observations may bypass disk restore.
           }

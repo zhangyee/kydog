@@ -71,10 +71,10 @@ it('fails as unreadable when no research run holds the directory identity', asyn
   const missing: XArtifactRef = { ...(await store.write(full)), directoryId: '11111111-1111-4111-8111-111111111111' };
   const details = deliverEnvelope({
     researchRunId: 'research', snapshot: snapshot(), action: 'wait', undelivered: [],
-    delivery: {
+    deliveries: [{
       deliveryCallId: 'delivery-call', submissionId: 'submission-1', submitCallId: 'call',
       operation: full.operation, result: serializeXResearchResult({ ...full, artifact: missing }).result,
-    },
+    }],
   }).details;
   const hydrated = await hydrateXResearchBranch(
     [{ type: 'message', message: { role: 'toolResult', toolName: 'x_research',
@@ -82,9 +82,9 @@ it('fails as unreadable when no research run holds the directory identity', asyn
     threadStore(task, legacy),
   );
   expect(hydrated.failures).toEqual([{ callId: 'delivery-call', reason: 'read' }]);
-  expect(hydrated.entries[0]).toMatchObject({ message: { details: { delivery: { result: {
+  expect(hydrated.entries[0]).toMatchObject({ message: { details: { deliveries: [{ result: {
     restoration: { status: 'missing', reason: 'read' },
-  } } } } });
+  } }] } } });
 });
 
 it('still reads a ref written under the legacy root', async () => {
