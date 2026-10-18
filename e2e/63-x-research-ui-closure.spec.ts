@@ -566,10 +566,13 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.snapshot.stateReason).toBe('cancelled');
     expect(cancelled.snapshot.counts).toMatchObject({ submissions: 1, cancelled: 1, queued: 0, running: 0, posts: 0 });
-    // 取消是唯一的控制：一段被取消的研究不能被追加工作（静默复活）。
-    expect(cancelledRun[1].status).toBe('failed');
-    expect(cancelledRun[1].text).toContain('cancelled');
-    expect((await taskGet(queued.researchRunId)).state).toBe('cancelled');
+    // 取消只作用于**这一次的工作**（R83）：被取消的那一份永不重跑、也永远不会变成「没取消过」，
+    // 但同一段研究可以继续追加 —— 那是新的一轮，不是「静默复活」旧的那一份。
+    expect(cancelledRun[1].status).toBe('ok');
+    expect(envelope(cancelledRun[1]).action).toBe('submit');
+    // 盘上是两份提交：被取消的那份 + 刚追加的那一轮；取消事实粘在前者身上。
+    expect((await taskGet(queued.researchRunId)).counts)
+      .toMatchObject({ submissions: 2, cancelled: 1 });
 
     // 放行占住队列的那一段：它照常交付自己的结果，被取消的那一段跟它无关。
     expect(await releaseHeldQuery()).toContain('/search');
@@ -1125,10 +1128,13 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query已取消（你中途取消）');
     await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
     await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
-    // 三行都在：被取消那一轮的两行（结论是取消）与新的一轮那一行。
+    // 三行都在。取消只落在**在飞的那一条**上：第一行在点击前就撞预算收尾了，守住它自己的结论；
+    // 被闸门扣住的那一行才是被取消的（两件事各说各的，不是「整轮一起翻成取消」）。
     const searchRows = card.locator('[data-testid="x-research-row"][data-section="search"]');
     await expect(searchRows).toHaveCount(3);
-    await expect(searchRows.nth(0)).toContainText('已取消');
+    await expect(searchRows.nth(0)).toContainText(FIRST_QUERY.query);
+    await expect(searchRows.nth(0)).toContainText('采集 2 帖');
+    await expect(searchRows.nth(1)).toContainText('已取消');
     await expect(searchRows.nth(2)).toContainText(FIRST_QUERY.query);
     await expectOneCardPerRun();
   });
