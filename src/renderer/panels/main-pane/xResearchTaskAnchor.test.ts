@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { AssistantBlock } from '../../../shared/types';
-import { latestXResearchTaskMessages, xResearchTaskEvent } from './xResearchTaskAnchor';
+import {
+  latestXResearchTaskMessages, xResearchTaskEvent, type XResearchTaskAnchor,
+} from './xResearchTaskAnchor';
 
 const toolText = (text: string, over: Partial<Extract<AssistantBlock, { kind: 'tool_call' }>> = {}):
 AssistantBlock => ({ kind: 'tool_call', id: 'call-1', name: 'x_research', status: 'ok',
   chunks: [{ stream: 'stdout', data: text }], ...over });
 const envelope = (over: Record<string, unknown> = {}): AssistantBlock =>
   toolText(JSON.stringify({ kind: 'x_research', researchRunId: 'xrun-a', ...over }));
+
+/** 落位压成可读的形状：`[消息 id, [[分组键, 该组的研究 id…]…]]`。 */
+const placement = (anchors: Map<string, XResearchTaskAnchor[]>): Array<[string, Array<[string, string[]]>]> =>
+  [...anchors.entries()].map(([messageId, list]) =>
+    [messageId, list.map((anchor) => [anchor.groupKey, anchor.researchRunIds] as [string, string[]])]);
 
 describe('xResearchTaskEvent', () => {
   it('anchors every action shell, including the ones that carry no delivery', () => {
@@ -53,9 +60,9 @@ describe('xResearchTaskEvent', () => {
       { messageId: 'wait', blocks: [envelope({ action: 'wait', delivery: { deliveryCallId: 'c2' } })] },
       { messageId: 'inspect', blocks: [envelope({ action: 'inspect', inspect: { view: 'rows', items: [] } })] },
     ]);
-    expect([...anchors.entries()].map(([messageId, ids]) => [messageId, [...ids]])).toEqual([
-      ['other', ['xrun-b']],
-      ['inspect', ['xrun-a']],
+    expect(placement(anchors)).toEqual([
+      ['other', [['xrun-b', ['xrun-b']]]],
+      ['inspect', [['xrun-a', ['xrun-a']]]],
     ]);
   });
 
@@ -65,9 +72,41 @@ describe('xResearchTaskEvent', () => {
         envelope({ researchRunId: 'xrun-b', action: 'submit' })] },
       { messageId: 'only-b', blocks: [envelope({ researchRunId: 'xrun-b', action: 'wait' })] },
     ]);
-    expect([...anchors.entries()].map(([messageId, ids]) => [messageId, [...ids]])).toEqual([
-      ['both', ['xrun-a']],
-      ['only-b', ['xrun-b']],
+    expect(placement(anchors)).toEqual([
+      ['both', [['xrun-a', ['xrun-a']]]],
+      ['only-b', [['xrun-b', ['xrun-b']]]],
+    ]);
+  });
+
+  it('merges researches of one turn into one card at the latest message that mentions any of them', () => {
+    // 一个回合里两段研究（取消后重开）：分组键由快照的 `runId` 给出，锚点只有研究 id。
+    const groupKeyOf = (researchRunId: string): string =>
+      ({ 'xrun-a': 'turn-1', 'xrun-b': 'turn-1', 'xrun-c': 'turn-2' })[researchRunId] ?? researchRunId;
+    const anchors = latestXResearchTaskMessages([
+      { messageId: 'submit-a', blocks: [envelope({ action: 'submit' })] },
+      { messageId: 'submit-b', blocks: [envelope({ researchRunId: 'xrun-b', action: 'submit' })] },
+      // 另一个回合的研究不影响这一张卡。
+      { messageId: 'other-turn', blocks: [envelope({ researchRunId: 'xrun-c', action: 'submit' })] },
+    ], groupKeyOf);
+    expect(placement(anchors)).toEqual([
+      // 同一个回合的第二段研究把整张卡推到了最新那条消息上，且仍是**一张**卡。
+      ['submit-b', [['turn-1', ['xrun-a', 'xrun-b']]]],
+      ['other-turn', [['turn-2', ['xrun-c']]]],
+    ]);
+  });
+
+  it('does not move a card to a newer message that mentions no research of its turn', () => {
+    const groupKeyOf = (researchRunId: string): string =>
+      researchRunId === 'xrun-a' || researchRunId === 'xrun-b' ? 'turn-1' : researchRunId;
+    const anchors = latestXResearchTaskMessages([
+      { messageId: 'turn-1', blocks: [envelope({ researchRunId: 'xrun-a', action: 'submit' })] },
+      // 后面的消息完全没提这一段：卡留在原地（不是永远画在最后一条上）。
+      { messageId: 'unrelated', blocks: [toolText('boom', { status: 'failed' })] },
+      { messageId: 'turn-1-again', blocks: [envelope({ researchRunId: 'xrun-b', action: 'submit' })] },
+      { messageId: 'later', blocks: [toolText(JSON.stringify({ operation: 'read' }))] },
+    ], groupKeyOf);
+    expect(placement(anchors)).toEqual([
+      ['turn-1-again', [['turn-1', ['xrun-a', 'xrun-b']]]],
     ]);
   });
 
@@ -81,10 +120,9 @@ describe('xResearchTaskEvent', () => {
     ];
     expect([...latestXResearchTaskMessages(messages)]).toEqual([]);
     // 正对照：同一批位置上换成协议壳，卡就有了。
-    expect([...latestXResearchTaskMessages([
+    expect(placement(latestXResearchTaskMessages([
       { messageId: 'envelope-submit', blocks: [envelope({ action: 'submit' })] },
       { messageId: 'envelope-wait', blocks: [envelope({ action: 'wait' })] },
-    ])].map(([messageId, ids]) => [messageId, [...ids]]))
-      .toEqual([['envelope-wait', ['xrun-a']]]);
+    ]))).toEqual([['envelope-wait', [['xrun-a', ['xrun-a']]]]]);
   });
 });

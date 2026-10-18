@@ -25,7 +25,9 @@ const { XResearchProgressCard } = await import('./XResearchProgressCard');
 const { useXResearchTaskStore } = await import('../../stores/xResearchTaskStore');
 const { useConfirmStore } = await import('../../stores/confirmStore');
 
-const props = { threadId: 'thread-1', researchRunId: 'xrun-a' };
+const props = { threadId: 'thread-1', groupKey: 'xrun-a', researchRunIds: ['xrun-a'] };
+/** 卡对单段研究发出的 RPC 参数：卡片级 RPC 仍按研究（`researchRunId`），不按回合。 */
+const rpcArgs = { threadId: 'thread-1', researchRunId: 'xrun-a' };
 const FAILED_REASON = '该帖所在的对话要求登录才能看';
 const invoke = vi.fn<(method: string, args?: unknown) => Promise<unknown>>();
 
@@ -378,6 +380,143 @@ describe('XResearchProgressCard', () => {
     expect(collecting.query('x-research-cancel')).toBeNull();
   });
 
+  it('renders one card for a whole turn: a segment header per research, in createdAt order, each with its own terminal chip', async () => {
+    const cancelled = snapshot({
+      researchRunId: 'xrun-cancelled', runId: 'turn-1', objective: '模型取消的那一段',
+      createdAt: '2026-10-16T00:00:01.000Z', state: 'cancelled', stateReason: 'cancelled',
+      cancelledBy: 'agent',
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 0, cancelled: 1,
+        interrupted: 0, posts: 7, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 1, searchTotal: 1, readDone: 0, readTotal: 0 },
+      budget: { scrolls: 40, expandActions: 10 }, usage: { posts: 7, scrolls: 3, expandActions: 1 },
+      search: [workItem({ section: 'search', label: '取消前收完的 query', state: 'stopped',
+        status: 'observed', posts: 7 })],
+      read: [],
+    });
+    const failed = snapshot({
+      researchRunId: 'xrun-failed', runId: 'turn-1', objective: '全灭的那一段',
+      createdAt: '2026-10-16T00:00:02.000Z', state: 'failed',
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 1, cancelled: 0,
+        interrupted: 0, posts: 0, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 0, searchTotal: 0, readDone: 1, readTotal: 1 },
+      budget: { scrolls: 50, expandActions: 20 }, usage: { posts: 0, scrolls: 5, expandActions: 2 },
+      search: [],
+      read: [workItem({ section: 'read', label: 'https://x.com/acme/status/failed',
+        state: 'stopped', status: 'failed', reason: '源侧拒绝' })],
+    });
+    const completed = snapshot({
+      researchRunId: 'xrun-completed', runId: 'turn-1', objective: '重试成功的那一段',
+      createdAt: '2026-10-16T00:00:03.000Z', state: 'completed',
+      counts: { submissions: 1, queued: 0, running: 0, done: 2, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 10, replies: 4, articles: 1, undelivered: 0,
+        searchDone: 1, searchTotal: 1, readDone: 1, readTotal: 1 },
+      budget: { scrolls: 60, expandActions: 30 }, usage: { posts: 10, scrolls: 1, expandActions: 0 },
+      search: [workItem({ section: 'search', label: '重试的 query', state: 'stopped',
+        status: 'observed', posts: 10 })],
+      read: [workItem({ section: 'read', label: 'https://x.com/acme/status/ok',
+        state: 'stopped', status: 'observed', hasRoot: true, replies: 4, article: 'body' })],
+    });
+    // 池子里故意乱序放：分组与段序只能来自 `createdAt`，不能来自写入次序。
+    useXResearchTaskStore.setState({ snapshotsByRunId: {
+      'xrun-completed': completed, 'xrun-failed': failed, 'xrun-cancelled': cancelled,
+    } });
+    invoke.mockResolvedValue(cancelled);
+    const groupProps = { threadId: 'thread-1', groupKey: 'turn-1',
+      researchRunIds: ['xrun-cancelled', 'xrun-failed', 'xrun-completed'] };
+    const mounted = mount(XResearchProgressCard, groupProps);
+    await mounted.settle();
+
+    expect(mounted.find('x-research-card').props['data-status']).toBe('cancelled');
+    // 卡头副标题取最早一段的目标（R10），合并不能让它换题。
+    expect(visibleText(mounted.find('x-research-objective'))).toBe('模型取消的那一段');
+    // 三段都是终态：卡默认收起，展开才看得见分段头。
+    mounted.find('x-research-toggle').props.onClick();
+    // 三个分段头，按 createdAt 升序，各自的终态（取消那一段带 R81a 的归因）。
+    const headers = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-segment');
+    expect(headers.map((header) => header.props['data-status']))
+      .toEqual(['cancelled', 'failed', 'completed']);
+    expect(headers.map(visibleText)).toEqual([
+      expect.stringContaining('取消（模型中途取消）'),
+      expect.stringContaining('有失败'),
+      expect.stringContaining('完成'),
+    ]);
+    expect(headers.map((header) => header.props.children[0].props.children[2].props.children))
+      .toEqual(['模型取消的那一段', '全灭的那一段', '重试成功的那一段']);
+    // 卡头的数字是每段真实计数的合计：7+10 帖、1+1 个 query、1+1 个目标、4 回复、1 篇文章、1 个失败。
+    const summary = visibleText(mounted.find('x-research-summary'));
+    expect(summary).toContain('搜索 2/2 个 query · 收 17 帖');
+    expect(summary).toContain('读取 2/2 个目标 · 4 回复 · 文章 1 篇');
+    expect(summary).toContain('失败 1');
+    expect(visibleText(mounted.find('x-research-budget'))).toBe('滚动 9/150 · 展开 3/60');
+    // 段内行各自编号、各自归段：三段的搜索行都是 ①（不是跨段连续编号）。
+    expect(rows(mounted.tree)).toHaveLength(4);
+  });
+
+  it('renders a segment header even when that research has no rows', async () => {
+    const withRows = snapshot({ researchRunId: 'xrun-a', runId: 'turn-1', objective: '有行的一段',
+      createdAt: '2026-10-16T00:00:01.000Z' });
+    const empty = snapshot({ researchRunId: 'xrun-b', runId: 'turn-1', objective: '崩溃前没落下行的一段',
+      createdAt: '2026-10-16T00:00:02.000Z', state: 'interrupted', stateReason: 'process_restarted',
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 0, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0 }, search: [], read: [] });
+    useXResearchTaskStore.setState({ snapshotsByRunId: { 'xrun-a': withRows, 'xrun-b': empty } });
+    invoke.mockResolvedValue(withRows);
+    const mounted = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-1', researchRunIds: ['xrun-a', 'xrun-b'] });
+    await mounted.settle();
+
+    const headers = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-segment');
+    // 段数要数得出来：没有行的那一段也画自己的头（不能因为空就少一个段）。
+    expect(headers).toHaveLength(2);
+    expect(headers.map(visibleText)).toEqual([
+      expect.stringContaining('有行的一段'), expect.stringContaining('崩溃前没落下行的一段'),
+    ]);
+    expect(visibleText(headers[1])).toContain('中断（进程重启）');
+  });
+
+  it('confirms once and cancels every segment of the turn that still has work', async () => {
+    const completed = snapshot({ researchRunId: 'xrun-done', runId: 'turn-1', objective: '已经完成的一段',
+      createdAt: '2026-10-16T00:00:01.000Z', state: 'completed' });
+    const runningA = snapshot({ researchRunId: 'xrun-a', runId: 'turn-1', objective: '还在跑的一段 A',
+      createdAt: '2026-10-16T00:00:02.000Z', state: 'running' });
+    const runningB = snapshot({ researchRunId: 'xrun-b', runId: 'turn-1', objective: '还在跑的一段 B',
+      createdAt: '2026-10-16T00:00:03.000Z', state: 'running' });
+    useXResearchTaskStore.setState({ snapshotsByRunId: {
+      'xrun-done': completed, 'xrun-a': runningA, 'xrun-b': runningB,
+    } });
+    invoke.mockImplementation(async (method, args) => {
+      if (method !== 'xResearch.taskCancel') return runningA;
+      const { researchRunId } = args as { researchRunId: string };
+      return snapshot({ researchRunId, runId: 'turn-1', revision: 2, state: 'cancelled',
+        stateReason: 'cancelled', cancelledBy: 'user',
+        counts: { ...runningA.counts, queued: 0, running: 0, cancelled: 1 } });
+    });
+    const mounted = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-1', researchRunIds: ['xrun-done', 'xrun-a', 'xrun-b'] });
+    await mounted.settle();
+
+    mounted.find('x-research-cancel').props.onClick();
+    await vi.waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    // 确认只弹一次：一次点击 = 一次确认，不是每段弹一个。
+    expect(invoke).not.toHaveBeenCalledWith('xResearch.taskCancel', expect.anything());
+    useConfirmStore.getState().resolve(true);
+    await vi.waitFor(() => expect(invoke)
+      .toHaveBeenCalledWith('xResearch.taskCancel', { threadId: 'thread-1', researchRunId: 'xrun-b' }));
+
+    // RPC 仍按研究发：两段还在跑的各自一份，已完成的那一段一份都不发。
+    const cancelledIds = invoke.mock.calls
+      .filter(([method]) => method === 'xResearch.taskCancel')
+      .map(([, args]) => (args as { researchRunId: string }).researchRunId);
+    expect(cancelledIds.sort()).toEqual(['xrun-a', 'xrun-b']);
+    // 两段都换成取消之后，卡上再没有可停的活：取消入口消失。
+    mounted.rerender({ threadId: 'thread-1', groupKey: 'turn-1',
+      researchRunIds: ['xrun-done', 'xrun-a', 'xrun-b'] });
+    expect(mounted.query('x-research-cancel')).toBeNull();
+  });
+
   it('keeps a row that stopped without a conclusion free of its numbers', async () => {
     // 进程被杀留下的行是 `stopped` + `status: null`（没有节流落盘，spec §4.4）：计数停在最后一次
     // 落盘上，`收 0 帖` / `无根帖` 会把一份没人观测到的残缺当结论。行自己已经说「中断」。
@@ -453,12 +592,12 @@ describe('XResearchProgressCard', () => {
 
     useConfirmStore.getState().resolve(false);
     await mounted.settle();
-    expect(invoke).not.toHaveBeenCalledWith('xResearch.taskCancel', props);
+    expect(invoke).not.toHaveBeenCalledWith('xResearch.taskCancel', rpcArgs);
 
     mounted.find('x-research-cancel').props.onClick();
     await vi.waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
     useConfirmStore.getState().resolve(true);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('xResearch.taskCancel', props));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('xResearch.taskCancel', rpcArgs));
 
     // 终态不再给取消入口（上一段已经证明它在运行中是有的）。
     useXResearchTaskStore.getState().upsert(snapshot({ revision: 2, state: 'cancelled' }));
@@ -471,7 +610,7 @@ describe('XResearchProgressCard', () => {
       { code: 'research.not_found' }));
     const deleted = mount(XResearchProgressCard, props);
     await deleted.settle();
-    expect(invoke).toHaveBeenCalledWith('xResearch.taskGet', props);
+    expect(invoke).toHaveBeenCalledWith('xResearch.taskGet', rpcArgs);
     // 不是错误（不弹红字），但也不能永远停在「读取中」：研究真的不在了，卡头直说。
     expect(deleted.query('x-research-error')).toBeNull();
     expect(visibleText(deleted.find('x-research-toggle'))).toContain('X 研究 · 记录不可用');

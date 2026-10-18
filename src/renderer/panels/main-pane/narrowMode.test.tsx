@@ -104,6 +104,14 @@ vi.mock('../../stores/identityStore', async (importOriginal) => {
   return { ...mod, useIdentityStore: hook };
 });
 
+vi.mock('../../stores/xResearchTaskStore', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../stores/xResearchTaskStore')>();
+  const real = mod.useXResearchTaskStore;
+  const hook = ((sel?: (s: unknown) => unknown) => (sel ? sel(real.getState()) : real.getState())) as unknown as typeof real;
+  Object.assign(hook, real);
+  return { ...mod, useXResearchTaskStore: hook };
+});
+
 vi.mock('./composerDraftStore', async (importOriginal) => {
   const mod = await importOriginal<typeof import('./composerDraftStore')>();
   const real = mod.useComposerDraftStore;
@@ -126,6 +134,7 @@ const { useSkillsStore } = await import('../../stores/skillsStore');
 const { useAskStore } = await import('../../stores/askStore');
 const { useIdentityStore } = await import('../../stores/identityStore');
 const { useComposerDraftStore } = await import('./composerDraftStore');
+const { useXResearchTaskStore } = await import('../../stores/xResearchTaskStore');
 
 beforeEach(() => {
   useUiStore.setState(useUiStore.getInitialState());
@@ -136,6 +145,7 @@ beforeEach(() => {
   useAskStore.setState(useAskStore.getInitialState());
   useIdentityStore.setState(useIdentityStore.getInitialState());
   useComposerDraftStore.setState(useComposerDraftStore.getInitialState());
+  useXResearchTaskStore.setState({ snapshotsByRunId: {} });
 });
 
 /** 模型 pill 在 `ComposerActionsRow` 的 `right` prop 里，见文件头注释。 */

@@ -43,7 +43,9 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 其余 `run.*` 事件都来自 `AgentService.subscribe()` 对 pi session 的订阅：`run.started` 来自 `agent_start`，两个 delta 来自 message 流，普通 `run.tool_call_*` 来自 `tool_execution_start` / `tool_execution_end`，`run.ended` 来自 `agent_end`。另有一个 `run.resync` 谁都不来自——它是上面那段重放的帧头，只在 `loadHistory` 里发给单个窗口，也不进 journal。
 
-**X 研究的任务快照走另一条线，不在 `run.*` journal 里。** `xResearch.taskUpdated` 的载荷是任务快照（`XResearchTaskSnapshot`：状态、计数、逐行工作项），来源是主进程的 `XResearchTaskService`——队列与在飞状态在进程内存里，落盘在 `~/.kydog/x-research/<threadId>/<researchRunId>/`（`task.json` 是研究级索引、`submission-<id>.json` 是提交级工作项与实时状态；结果正文按工件格式单独落盘，提交记录只存 `artifact` 引用，交付时按那个引用读回来）。于是渲染进程重载时 `run.resync` 带不回它：开对话时 `thread.loadHistory` 那条路顺手拉一次 `xResearch.taskList` 补全整批，之后靠广播跟；卡片自己用 `xResearch.taskGet` 补齐它那一份。研究工作跑在 `run.ended` **之后**，卡也要跟着走——这两件事不能靠一条 journal 的时序。
+**X 研究的任务快照走另一条线，不在 `run.*` journal 里。** `xResearch.taskUpdated` 的载荷是任务快照（`XResearchTaskSnapshot`：状态、计数、逐行工作项），来源是主进程的 `XResearchTaskService`——队列与在飞状态在进程内存里，落盘在 `~/.kydog/x-research/<threadId>/<researchRunId>/`（`task.json` 是研究级索引、`submission-<id>.json` 是提交级工作项与实时状态；结果正文按工件格式单独落盘，提交记录只存 `artifact` 引用，交付时按那个引用读回来）。于是渲染进程重载时 `run.resync` 带不回它：开对话时 `thread.loadHistory` 那条路顺手拉一次 `xResearch.taskList` 补全整批，之后靠广播跟；卡片自己用 `xResearch.taskGet` 补齐它那几份。研究工作跑在 `run.ended` **之后**，卡也要跟着走——这两件事不能靠一条 journal 的时序。
+
+**卡片是「一回合一张」（R81b），不是「一段研究一张」。** 分组键是 `task.json` 里的 `runId`（创建这段研究的那个回合，`XResearchTaskRecord` / `XResearchTaskSnapshot` 上的同一个字段），旧记录没有它时退回 `researchRunId`——一段研究一张卡，不会空白。卡内按 `createdAt` 升序列出该回合的每一段研究，每段一个分段头（圈号 · 终态 · 目标），行仍按「搜索 / 读取」两段、段内各自编号；卡头副标题取**最早一段**的 objective，数字是各段权威计数逐项相加。广播仍按研究发（`xResearch.taskUpdated` 一次一段），渲染层按分组键归并、每段只替换自己那一格；锚点也按回合算——一张卡落在「最后一次提到该回合任何一段研究」的那条消息上，后续不再提它的消息不会把卡拽走。取消按钮确认一次，然后逐个 `xResearch.taskCancel` 停下该回合里还在排队/进行中的每一段（RPC 仍按研究）。
 
 **与 spec §4.4 的偏差（知情接受）：实时状态不按节流窗口落盘。** 盘上只在状态转移（提交、开跑、收尾、取消、交付标记）时更新，滚动数 / 帖数这类活计数只在内存里。于是进程被杀之后，`submission-*.json` 里的行会停在 `stopped` 且没有结论——卡对这类行只说「中断」，不报「收 0 帖」「无根帖」这种没人观测到的残缺计数。
 

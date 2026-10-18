@@ -35,6 +35,7 @@ vi.mock('../../stores/runsStore', async (o) => directRead(await o<typeof import(
 vi.mock('../../stores/askStore', async (o) => directRead(await o<typeof import('../../stores/askStore')>(), 'useAskStore'));
 vi.mock('../../stores/uiStore', async (o) => directRead(await o<typeof import('../../stores/uiStore')>(), 'useUiStore'));
 vi.mock('../../stores/identityStore', async (o) => directRead(await o<typeof import('../../stores/identityStore')>(), 'useIdentityStore'));
+vi.mock('../../stores/xResearchTaskStore', async (o) => directRead(await o<typeof import('../../stores/xResearchTaskStore')>(), 'useXResearchTaskStore'));
 
 const { MessageList } = await import('./MessageList');
 const { AssistantMessage } = await import('./AssistantMessage');
@@ -43,6 +44,7 @@ const { useRunsStore } = await import('../../stores/runsStore');
 const { useAskStore } = await import('../../stores/askStore');
 const { useUiStore } = await import('../../stores/uiStore');
 const { useIdentityStore } = await import('../../stores/identityStore');
+const { useXResearchTaskStore } = await import('../../stores/xResearchTaskStore');
 
 const TID = 'thr-1';
 
@@ -60,10 +62,11 @@ beforeEach(() => {
   useAskStore.setState(useAskStore.getInitialState());
   useUiStore.setState(useUiStore.getInitialState());
   useIdentityStore.setState(useIdentityStore.getInitialState());
+  useXResearchTaskStore.setState({ snapshotsByRunId: {} });
 });
 
 describe('MessageList → AssistantMessage 的 x research 锚点', () => {
-  it('历史与在途两条分支各自把自己那段研究的 id 交下去（拼错 prop 名就是 undefined = 全部显示）', () => {
+  it('历史与在途两条分支各自把自己那段研究的卡交下去（拼错 prop 名就是没有卡）', () => {
     useThreadsStore.setState({
       historyByThread: {
         [TID]: [
@@ -81,7 +84,9 @@ describe('MessageList → AssistantMessage 的 x research 锚点', () => {
 
     expect(settled).toHaveLength(1);
     expect(live).toHaveLength(1);
-    expect(settled[0].props.xResearchTaskRunIds).toEqual(new Set(['xrun-a']));
-    expect(live[0].props.xResearchTaskRunIds).toEqual(new Set(['xrun-b']));
+    expect(settled[0].props.xResearchAnchors)
+      .toEqual([{ groupKey: 'xrun-a', researchRunIds: ['xrun-a'] }]);
+    expect(live[0].props.xResearchAnchors)
+      .toEqual([{ groupKey: 'xrun-b', researchRunIds: ['xrun-b'] }]);
   });
 });

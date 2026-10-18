@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { XResearchStatus } from '../../../shared/xResearchStatus';
 import type {
   XResearchCancelActor, XResearchTaskSnapshot, XResearchTaskState, XResearchWorkItem,
 } from '../../../shared/xResearchTask';
-import { useXResearchTaskStore } from '../../stores/xResearchTaskStore';
+import { useXResearchTaskStore, xResearchTaskSegments } from '../../stores/xResearchTaskStore';
 import { confirm } from '../../stores/confirmStore';
 
 const CARD_STYLE: CSSProperties = {
@@ -20,6 +20,12 @@ const CANCEL_STYLE: CSSProperties = {
 };
 const ROWS_STYLE: CSSProperties = {
   marginTop: 10, borderTop: '0.5px solid var(--color-ink-hair)', paddingTop: 8,
+};
+const SEGMENT_HEADER_STYLE: CSSProperties = {
+  display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap',
+};
+const SEGMENT_OBJECTIVE_STYLE: CSSProperties = {
+  flex: '0 1 auto', minWidth: 0, color: 'var(--color-ink-soft)',
 };
 const SECTION_HEADING_STYLE: CSSProperties = { color: 'var(--color-ink-soft)', marginBottom: 2 };
 const ROW_STYLE: CSSProperties = {
@@ -109,20 +115,37 @@ function stateNote(reason: string | undefined, state: XResearchTaskState,
   return null;
 }
 
+/** 卡头上的每个数字：同一回合里各段研究的权威计数**相加**，不取最大、不估算。
+ *  键列在这里而不是 `for (const key in segments[0].counts)`：`counts` 多一个字段时，
+ *  这份字面量会先编译失败，逼人决定它要不要进合计。 */
+function groupCounts(segments: readonly XResearchTaskSnapshot[]): XResearchTaskSnapshot['counts'] {
+  const total: XResearchTaskSnapshot['counts'] = {
+    submissions: 0, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0, interrupted: 0,
+    posts: 0, replies: 0, articles: 0, undelivered: 0,
+    searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0,
+  };
+  for (const segment of segments) {
+    for (const key of Object.keys(total) as Array<keyof typeof total>) {
+      total[key] += segment.counts[key];
+    }
+  }
+  return total;
+}
+
 /** 摘要行：每个数字都是快照的权威字段 —— `counts.*` 由主进程按工作项分桶，
  *  `*Done/*Total` 是**按段**分好的同一份分桶（卡片不再自己数 `read.length`：那一读在运行中
- *  会被读成「20 个目标都读完了」）。
+ *  会被读成「20 个目标都读完了」）。一个回合里几段研究的数字逐项相加。
  *  一段的目标数是 0 时整段不出现：一次纯读取的研究不该在卡头写「搜索 0/0 个 query」。
- *  一段里有收尾却没有结论的行（`rowWithoutConclusion`）时整段也不出现：那一行的帖数 / 回复数停在
+ *  任何一段里有收尾却没有结论的行（`rowWithoutConclusion`）时整段也不出现：那一行的帖数 / 回复数停在
  *  最后一次落盘上（`收 N 帖` 漏了它），而 `*Done` 又把它算成收尾（`N/N` 说它已经有结论）。
  *  两个数字都是没人观测到的，那一节的结论只由行自己说（spec §4.4）。 */
-function summaryLine(snapshot: XResearchTaskSnapshot): string {
-  const { counts } = snapshot;
+function summaryLine(segments: readonly XResearchTaskSnapshot[]): string {
+  const counts = groupCounts(segments);
   const parts: string[] = [];
-  if (counts.searchTotal > 0 && !snapshot.search.some(rowWithoutConclusion)) {
+  if (counts.searchTotal > 0 && !segments.some((segment) => segment.search.some(rowWithoutConclusion))) {
     parts.push(`搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 收 ${counts.posts} 帖`);
   }
-  if (counts.readTotal > 0 && !snapshot.read.some(rowWithoutConclusion)) {
+  if (counts.readTotal > 0 && !segments.some((segment) => segment.read.some(rowWithoutConclusion))) {
     parts.push(`读取 ${counts.readDone}/${counts.readTotal} 个目标 · ${counts.replies} 回复`
       + ` · 文章 ${counts.articles} 篇`);
   }
@@ -132,10 +155,59 @@ function summaryLine(snapshot: XResearchTaskSnapshot): string {
   return head === '' ? failed : `${head} · ${failed}`;
 }
 
-/** 预算行取快照的 `usage` / `budget` 两个字段，口径就是 spec §5.3 与 §5.4 的那一对。 */
-function budgetLine(snapshot: XResearchTaskSnapshot): string {
-  return `滚动 ${snapshot.usage.scrolls}/${snapshot.budget.scrolls}`
-    + ` · 展开 ${snapshot.usage.expandActions}/${snapshot.budget.expandActions}`;
+/** 预算行取快照的 `usage` / `budget` 两个字段，口径就是 spec §5.3 与 §5.4 的那一对。
+ *  一个回合里的几段研究各自有一份额度，合计是它们相加（与主进程按提交相加同一条规则）。 */
+function budgetLine(segments: readonly XResearchTaskSnapshot[]): string {
+  let usageScrolls = 0;
+  let usageExpand = 0;
+  let budgetScrolls = 0;
+  let budgetExpand = 0;
+  for (const segment of segments) {
+    usageScrolls += segment.usage.scrolls;
+    usageExpand += segment.usage.expandActions;
+    budgetScrolls += segment.budget.scrolls;
+    budgetExpand += segment.budget.expandActions;
+  }
+  return `滚动 ${usageScrolls}/${budgetScrolls} · 展开 ${usageExpand}/${budgetExpand}`;
+}
+
+/** 卡头状态：按段聚合，优先级与主进程的 `xResearchTaskState` 是同一套
+ *  （进行中 > 中断 > 取消 > 有失败 > 完成）。卡上不重新判定状态，只挑一个已经得出的词。 */
+const GROUP_STATE_ORDER: readonly XResearchTaskState[] = [
+  'running', 'interrupted', 'cancelled', 'failed', 'completed',
+];
+function groupState(segments: readonly XResearchTaskSnapshot[]): XResearchTaskState {
+  for (const state of GROUP_STATE_ORDER) {
+    if (segments.some((segment) => segment.state === state)) return state;
+  }
+  return segments[0].state;
+}
+
+/** 一个分段的头：圈号 + 该段终态（含 R81a 的取消归因）+ 该段的目标。
+ *  空段（一行都没有）也要画这个头：段数要数得出来，而「这一段没有行」本身就是该段的结论。 */
+function segmentElement(segment: XResearchTaskSnapshot, index: number) {
+  const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
+  return (
+    <div key={segment.researchRunId} data-testid="x-research-segment" data-status={segment.state}
+      style={{ marginTop: index === 0 ? 0 : 10 }}>
+      <div style={SEGMENT_HEADER_STYLE}>
+        <span style={MARK_STYLE}>{numberMark(index)}</span>
+        <span style={SOFT_STYLE}>{STATE_WORD[segment.state]}{note ? `（${note}）` : ''}</span>
+        <span className="truncate" title={segment.objective}
+          style={SEGMENT_OBJECTIVE_STYLE}>{segment.objective}</span>
+      </div>
+      {segment.search.length > 0 &&
+        <div data-testid="x-research-search" style={{ marginTop: 6 }}>
+          <div style={SECTION_HEADING_STYLE}>搜索</div>
+          {segment.search.map(searchRowElement)}
+        </div>}
+      {segment.read.length > 0 &&
+        <div data-testid="x-research-read" style={{ marginTop: 8 }}>
+          <div style={SECTION_HEADING_STYLE}>读取</div>
+          {segment.read.map(readRowElement)}
+        </div>}
+    </div>
+  );
 }
 
 /**
@@ -206,96 +278,125 @@ function errorText(error: unknown): string {
 }
 
 /**
- * 「X 研究」的过程卡片（spec §5.3）。一张卡跟着一段研究走，数据源是渲染层 store 里的快照：
- * 挂载时用 `xResearch.taskGet` 把这一份补齐，之后 `xResearch.taskUpdated` 广播（bootstrap 那条线）
- * 会把它更新到 store 里。另有两种「取不到」不应当成结论，各自补取一次：
- * 服务还没接上（`research.unavailable`）与 store 里那一行取到之后又消失（见下面两条 effect）。
- * 运行中默认展开、进终态自动收起，用户手动点过之后以点击为准。
+ * 「X 研究」的过程卡片（spec §5.3）：**一个回合一张卡**（R81b）。卡跟着一个回合走，里面按
+ * `createdAt` 升序列出这个回合的每一段研究（分段头 = 圈号 + 该段终态 + 目标），数据源是渲染层
+ * store 里的快照：挂载时用 `xResearch.taskGet` 把锚点提到的那几段补齐，之后
+ * `xResearch.taskUpdated` 广播（bootstrap 那条线）会逐段更新到 store 里。另有两种「取不到」不应当成
+ * 结论，各自补取一次：服务还没接上（`research.unavailable`）与 store 里那几段取到之后又消失（见
+ * 下面两条 effect）。运行中默认展开、进终态自动收起，用户手动点过之后以点击为准。
  */
-export function XResearchProgressCard({ threadId, researchRunId }: {
-  threadId: string; researchRunId: string;
+export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
+  threadId: string; groupKey: string; researchRunIds: readonly string[];
 }) {
-  const snapshot = useXResearchTaskStore((state) => state.snapshotsByRunId[researchRunId]);
+  const snapshotsByRunId = useXResearchTaskStore((state) => state.snapshotsByRunId);
   const upsert = useXResearchTaskStore((state) => state.upsert);
+  // 一张卡的内容就是这个回合里的全部研究，按创建时间排：广播照旧一段一段地到，
+  // 每一段只替换它自己那一格，卡的次序因此在运行中不会跳。
+  const segments = useMemo(
+    () => xResearchTaskSegments(snapshotsByRunId, groupKey), [snapshotsByRunId, groupKey]);
   // `null` = 还没点过，跟着状态走；一旦点过就永远以这一份布尔为准（不再随状态自动收放）。
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // `research.not_found`：这段研究不在（被删了，或它不属于正看着的对话/窗口/标签页）。
+  // `research.not_found`：这几段研究都不在了（被删了，或它不属于正看着的对话/窗口/标签页）。
   // 不是错误，也不该把卡永远停在「读取中」—— 记一笔，卡头改说「记录不可用」。
   const [gone, setGone] = useState(false);
   // `research.unavailable`：这个进程里还没有任务服务（x research 的开关默认关闭）。
   // **它不是一个结论**：服务接上之后同一个 id 就能取到，所以不 latch、卡停在「读取中」、
-  // 等 store 里出现这份 run 的快照时再取一次（见下面那条补取的 effect）。
+  // 等 store 里出现这组的快照时再取一次（见下面那条补取的 effect）。
   const [unavailable, setUnavailable] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  // 这次挂载里已经拿到过这份 run 的快照（只有「有 → 没有」的转变才有补取可言）。
+  // 这次挂载里已经拿到过这组里的快照（只有「有 → 没有」的转变才有补取可言）。
   const sawSnapshot = useRef(false);
-  // 已经为「行从 store 里消失」补取过一次：只补一次，真被删掉的研究不会变成死循环。
+  // 已经为「段从 store 里消失」补取过一次：只补一次，真被删掉的研究不会变成死循环。
   const refetchedAfterLoss = useRef(false);
+  // 名单的键：同一组的研究还是那几个时不给 effect 换身份（数组字面量每次都换）。
+  const researchKey = researchRunIds.join(',');
 
-  /** 取一次这份研究的快照并落进 store。挂载、换 run、以及下面两条补取都走这一处。 */
-  async function loadSnapshot(isActive: () => boolean): Promise<void> {
-    try {
-      const value = await window.kydog.invoke('xResearch.taskGet', { threadId, researchRunId });
-      if (!isActive()) return;
+  /** 把锚点提到的那几段研究的快照取回来并落进 store。挂载、换组、以及下面两条补取都走这一处。
+   *  只把**全部**答 `research.not_found` 读成「记录不可用」：一组里少了一段，其余几段照常画。 */
+  async function loadSnapshots(isActive: () => boolean): Promise<void> {
+    let found = 0;
+    let notFound = 0;
+    let unwired = false;
+    let failure: unknown = null;
+    for (const researchRunId of researchRunIds) {
+      try {
+        const value = await window.kydog.invoke('xResearch.taskGet', { threadId, researchRunId });
+        if (!isActive()) return;
+        found += 1;
+        upsert(value);
+      } catch (reason) {
+        if (!isActive()) return;
+        const code = (reason as { code?: string } | null)?.code;
+        // 研究已经被删掉不是错误：卡跟着那条记录一起消失，不该在会话里留一条红字。
+        if (code === 'research.not_found') { notFound += 1; continue; }
+        // 服务没接上：不 latch（latch 了就变成「记录不可用」永驻），交给下面那条补取。
+        if (code === 'research.unavailable') { unwired = true; continue; }
+        failure = reason;
+      }
+    }
+    if (!isActive()) return;
+    if (found > 0) {
       sawSnapshot.current = true;
       setUnavailable(false);
       // 「记录不可用」也要撤：`research.not_found` 对「这个窗口没在看该对话」只是一个瞬时事实，
-      // 取到一次就把这个永久锁清掉 —— 否则下一次行从池里消失时它会以「记录不可用」重新露出来。
+      // 取到一次就把这个永久锁清掉 —— 否则下一次段从池里消失时它会以「记录不可用」重新露出来。
       setGone(false);
-      upsert(value);
-    } catch (reason) {
-      if (!isActive()) return;
-      const code = (reason as { code?: string } | null)?.code;
-      // 研究已经被删掉不是错误：卡跟着那条记录一起消失，不该在会话里留一条红字。
-      if (code === 'research.not_found') { setGone(true); return; }
-      // 服务没接上：不 latch（latch 了就变成「记录不可用」永驻），交给下面那条补取。
-      if (code === 'research.unavailable') { setUnavailable(true); return; }
-      setError(errorText(reason));
+    } else if (unwired) {
+      setUnavailable(true);
+    } else if (researchRunIds.length > 0 && notFound === researchRunIds.length) {
+      setGone(true);
     }
+    if (failure !== null) setError(errorText(failure));
   }
 
   useEffect(() => {
     let active = true;
-    // 两个记号跟着这一段 run 走：换 run 之后，「拿到过 / 补过一次」重新算。
+    // 两个记号跟着这一组研究走：换组之后，「拿到过 / 补过一次」重新算。
     sawSnapshot.current = false;
     refetchedAfterLoss.current = false;
-    void loadSnapshot(() => active);
+    void loadSnapshots(() => active);
     return () => { active = false; };
-  }, [threadId, researchRunId, upsert]);
+  }, [threadId, groupKey, researchKey, upsert]);
 
-  // 补取：两条触发条件都读 store 里这份快照的「有无」，所以共用一个 effect。
-  //  · 上一轮答 `research.unavailable` 之后，store 里却出现了这份 run 的快照 —— 服务接上了，再问一次；
-  //  · 取到过之后又消失了（`taskList` 的整批替换可能在这条研究落盘之前就扫完，于是删掉它没见过的那一行）。
+  // 补取：两条触发条件都读 store 里这组快照的「有无」，所以共用一个 effect。
+  //  · 上一轮答 `research.unavailable` 之后，store 里却出现了这组的快照 —— 服务接上了，再问一次；
+  //  · 取到过之后又消失了（`taskList` 的整批替换可能在这几段研究落盘之前就扫完，于是删掉它没见过的行）。
   //    卡是被消息块锚住的，等不到 store 再叫它，只有这里补一次。
   // 两者不会互相打架：快照不在时只走「消失之后补一次」，它不看 `unavailable`；
   // 快照在时只走「服务接上了补一次」，它不动 `refetchedAfterLoss` 那个一次性记号 ——
   // 于是未接线的服务不会把「行丢了再取一次」这一次机会用掉，反之亦然。
-  // 依赖就取 store 里那一份对象本身（不是另开一条通道，也不是计时器）：它只在 store 写入新快照时换
-  // 身份，出现与消失都在里面。「`revision` 变了」单靠自己也说得出出现，说不出消失 ——
-  // 所以这里不用 `revision` 当键。两个标记也不进依赖：它们只是「这一刻该怎么读」的旗，
-  // 变了不需要动作，要等 store 里那一行再变。
+  // 依赖取 store 里那一组对象（不是另开一条通道，也不是计时器）：它只在 store 写入新快照时换身份，
+  // 出现与消失都在里面。「`revision` 变了」单靠自己也说得出出现，说不出消失 —— 所以不用它当键。
   useEffect(() => {
     let active = true;
-    if (snapshot !== undefined) {
-      if (unavailable) void loadSnapshot(() => active);
+    if (segments.length > 0) {
+      if (unavailable) void loadSnapshots(() => active);
     } else if (sawSnapshot.current && !gone && !refetchedAfterLoss.current) {
       refetchedAfterLoss.current = true;
-      void loadSnapshot(() => active);
+      void loadSnapshots(() => active);
     }
     return () => { active = false; };
-  }, [snapshot]);
+  }, [segments, unavailable, gone]);
 
-  async function cancelResearch(): Promise<void> {
+  /** 取消**整张卡**：确认一次，然后把这个回合里还在排队/进行中的每一段都停下。
+   *  RPC 仍是**按研究**的（取消是每段研究自己的控制），这里只是把 id 逐个发出去。 */
+  async function cancelRun(): Promise<void> {
+    const targets = segments
+      .filter((segment) => segment.counts.queued + segment.counts.running > 0)
+      .map((segment) => segment.researchRunId);
     const confirmed = await confirm({
       title: '取消这段 X 研究？',
-      message: '已收集的帖子与已读的帖子会保留；排队中与进行中的工作会停下，之后不能在这段研究上续跑。',
+      message: '已收集的帖子与已读的帖子会保留；排队中与进行中的工作会停下，之后不能在这些研究上续跑。',
       confirmLabel: '取消研究',
     });
     if (!confirmed) return;
     setCancelling(true);
     try {
-      upsert(await window.kydog.invoke('xResearch.taskCancel', { threadId, researchRunId }));
+      // 逐段发、逐段写回快照：并发发出去的两份回执可能乱序，卡会按 revision 丢掉旧的那份。
+      for (const researchRunId of targets) {
+        upsert(await window.kydog.invoke('xResearch.taskCancel', { threadId, researchRunId }));
+      }
     } catch (reason) {
       setError(errorText(reason));
     } finally {
@@ -303,14 +404,20 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
     }
   }
 
-  const state = snapshot?.state;
-  const note = state ? stateNote(snapshot.stateReason, state, snapshot.cancelledBy) : null;
+  const state = segments.length > 0 ? groupState(segments) : undefined;
+  // 卡头括注取**决定这个状态的那一段**：一段研究时就是它自己，几段时是优先级最高的那一段。
+  const deciding = state === undefined ? undefined
+    : segments.find((segment) => segment.state === state) ?? segments[0];
+  const note = deciding ? stateNote(deciding.stateReason, deciding.state, deciding.cancelledBy) : null;
   const expanded = manualExpanded ?? (state === 'running');
   // 有快照时仍以快照为准（「不在这个窗口的标签页」那一条也可能带着广播来的快照）。
   const status = state ?? (gone ? 'missing' : 'loading');
   const headerWord = state ? STATE_WORD[state] : (gone ? '记录不可用' : '读取中');
-  // 两段都是 0 行时这一行没东西可说（空串），不画一个空 div。
-  const summary = snapshot ? summaryLine(snapshot) : '';
+  // 卡头副标题是**最早一段**研究的目标（R10）：合并不能让卡头换题。
+  const objective = segments[0]?.objective ?? '';
+  // 一段行都没有时这一行没东西可说（空串），不画一个空 div。
+  const summary = segments.length > 0 ? summaryLine(segments) : '';
+  const cancellable = segments.some((segment) => segment.counts.queued + segment.counts.running > 0);
 
   return (
     <section data-testid="x-research-card" data-status={status}
@@ -320,32 +427,24 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
         <strong>X 研究 · {headerWord}{note ? `（${note}）` : ''}</strong>
         <span style={{ float: 'right', color: 'var(--color-ink-faint)' }}>{expanded ? '收起' : '展开'}</span>
       </button>
-      {snapshot && snapshot.objective &&
-        <div data-testid="x-research-objective" style={OBJECTIVE_STYLE}>{snapshot.objective}</div>}
+      {objective !== '' &&
+        <div data-testid="x-research-objective" style={OBJECTIVE_STYLE}>{objective}</div>}
       {summary !== '' &&
         <div data-testid="x-research-summary" style={SUMMARY_STYLE}>{summary}</div>}
-      {snapshot && <div data-testid="x-research-budget" style={BUDGET_STYLE}>{budgetLine(snapshot)}</div>}
-      {/* 取消放在收起区之外：用户手动收起之后，运行中的那段研究仍然要停得下来。
+      {segments.length > 0 &&
+        <div data-testid="x-research-budget" style={BUDGET_STYLE}>{budgetLine(segments)}</div>}
+      {/* 取消放在收起区之外：用户手动收起之后，运行中的那几段研究仍然要停得下来。
           判据是**队列里还有没有活**，不是状态词：`interrupted` 是黏的（一份失败的提交就把它留在盘上），
           而一段刚追加了工作、正在采集的研究会因为那个词被判成中断 —— 卡收起、取消入口消失，
           用户于是没有办法停下它。`counts.queued + counts.running` 就是「还有活」的可执行形式。 */}
-      {snapshot && snapshot.counts.queued + snapshot.counts.running > 0 &&
+      {cancellable &&
         <button type="button" data-testid="x-research-cancel" disabled={cancelling}
-          onClick={() => { void cancelResearch(); }} style={CANCEL_STYLE}>
+          onClick={() => { void cancelRun(); }} style={CANCEL_STYLE}>
           {cancelling ? '取消中' : '取消研究'}
         </button>}
-      {expanded && snapshot && (snapshot.search.length > 0 || snapshot.read.length > 0) &&
+      {expanded && segments.length > 0 &&
         <div data-testid="x-research-rows" style={ROWS_STYLE}>
-          {snapshot.search.length > 0 &&
-            <div data-testid="x-research-search">
-              <div style={SECTION_HEADING_STYLE}>搜索</div>
-              {snapshot.search.map(searchRowElement)}
-            </div>}
-          {snapshot.read.length > 0 &&
-            <div data-testid="x-research-read" style={{ marginTop: 8 }}>
-              <div style={SECTION_HEADING_STYLE}>读取</div>
-              {snapshot.read.map(readRowElement)}
-            </div>}
+          {segments.map(segmentElement)}
         </div>}
       {error && <div role="alert" data-testid="x-research-error" style={{ marginTop: 8 }}>{error}</div>}
     </section>

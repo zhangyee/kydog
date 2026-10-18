@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { XResearchTaskSnapshot } from '../../shared/xResearchTask';
-import { useXResearchTaskStore } from './xResearchTaskStore';
+import { useXResearchTaskStore, xResearchTaskGroupKey, xResearchTaskSegments } from './xResearchTaskStore';
 
 function snapshot(over: Partial<XResearchTaskSnapshot> = {}): XResearchTaskSnapshot {
   return {
@@ -90,6 +90,74 @@ describe('xResearchTaskStore', () => {
     store.reset('thread-a');
 
     expect(Object.keys(useXResearchTaskStore.getState().snapshotsByRunId)).toEqual(['xrun-c']);
+  });
+
+  it('derives one group per turn in createdAt order — three researches of one run are one card', () => {
+    const store = useXResearchTaskStore.getState();
+    // 同一个回合里三段研究（取消后重开两次）：`runId` 相同，`createdAt` 决定段序。
+    store.upsert(snapshot({ researchRunId: 'xrun-b', runId: 'turn-1',
+      createdAt: '2026-10-16T00:00:02.000Z' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-a', runId: 'turn-1',
+      createdAt: '2026-10-16T00:00:01.000Z' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-c', runId: 'turn-1',
+      createdAt: '2026-10-16T00:00:03.000Z' }));
+
+    const pool = useXResearchTaskStore.getState().snapshotsByRunId;
+    expect(Object.keys(pool)).toHaveLength(3);
+    expect(xResearchTaskSegments(pool, 'turn-1').map((segment) => segment.researchRunId))
+      .toEqual(['xrun-a', 'xrun-b', 'xrun-c']);
+    // 池子仍是按研究存的（广播照旧一段一段地到）：分组是读的时候算出来的那一层。
+    expect(pool['xrun-b']).toMatchObject({ runId: 'turn-1' });
+  });
+
+  it('an update replaces only its own research inside the group and keeps the order', () => {
+    const store = useXResearchTaskStore.getState();
+    store.upsert(snapshot({ researchRunId: 'xrun-a', runId: 'turn-1',
+      createdAt: '2026-10-16T00:00:01.000Z', revision: 1, state: 'running' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-b', runId: 'turn-1',
+      createdAt: '2026-10-16T00:00:02.000Z', revision: 1, state: 'running' }));
+
+    store.upsert(snapshot({ researchRunId: 'xrun-a', runId: 'turn-1',
+      createdAt: '2026-10-16T00:00:01.000Z', revision: 2, state: 'cancelled' }));
+
+    const segments = xResearchTaskSegments(useXResearchTaskStore.getState().snapshotsByRunId, 'turn-1');
+    expect(segments.map((segment) => [segment.researchRunId, segment.revision, segment.state]))
+      .toEqual([['xrun-a', 2, 'cancelled'], ['xrun-b', 1, 'running']]);
+  });
+
+  it('keeps another turn separate and gives a record without runId its own group', () => {
+    const store = useXResearchTaskStore.getState();
+    store.upsert(snapshot({ researchRunId: 'xrun-a', runId: 'turn-1' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-b', runId: 'turn-2' }));
+    // 旧数据：`task.json` 里没有 `runId`。分组键退回它自己的 id —— 一段研究一张卡，不空白。
+    store.upsert(snapshot({ researchRunId: 'xrun-legacy' }));
+
+    const pool = useXResearchTaskStore.getState().snapshotsByRunId;
+    expect(xResearchTaskSegments(pool, 'turn-1').map((segment) => segment.researchRunId))
+      .toEqual(['xrun-a']);
+    expect(xResearchTaskSegments(pool, 'turn-2').map((segment) => segment.researchRunId))
+      .toEqual(['xrun-b']);
+    expect(xResearchTaskGroupKey(pool['xrun-legacy'])).toBe('xrun-legacy');
+    expect(xResearchTaskSegments(pool, 'xrun-legacy').map((segment) => segment.researchRunId))
+      .toEqual(['xrun-legacy']);
+    // 旧的那条既不属于任何回合，也不把别的回合的研究吸进它那一组。
+    expect(xResearchTaskSegments(pool, 'turn-1')).toHaveLength(1);
+  });
+
+  it('clears every group of a thread on reset and on a wholesale resync', () => {
+    const store = useXResearchTaskStore.getState();
+    store.upsert(snapshot({ researchRunId: 'xrun-a', runId: 'turn-1' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-b', runId: 'turn-1' }));
+
+    store.reset('thread-a');
+    expect(xResearchTaskSegments(useXResearchTaskStore.getState().snapshotsByRunId, 'turn-1')).toEqual([]);
+
+    // 整批替换同理：这一回合只剩列表里那一份，组跟着缩到一段。
+    store.upsert(snapshot({ researchRunId: 'xrun-a', runId: 'turn-1' }));
+    store.upsert(snapshot({ researchRunId: 'xrun-b', runId: 'turn-1' }));
+    store.replaceThread('thread-a', [snapshot({ researchRunId: 'xrun-a', runId: 'turn-1' })]);
+    expect(xResearchTaskSegments(useXResearchTaskStore.getState().snapshotsByRunId, 'turn-1')
+      .map((segment) => segment.researchRunId)).toEqual(['xrun-a']);
   });
 
   it('keeps snapshots of two threads independent through upsert', () => {

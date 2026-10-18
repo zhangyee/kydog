@@ -44,7 +44,7 @@ const text = (value: string): AssistantBlock => ({ kind: 'text', text: value });
  *  「两张卡各是哪一段研究」与「卡在这一条消息的哪里」都是这条用例的判据。 */
 const layout = (tree: unknown): string[] => findAllWhere(tree, (element) =>
   [XResearchProgressCard, ProcessGroup, MarkdownBlock].includes(element.type as typeof XResearchProgressCard))
-  .map((element) => element.type === XResearchProgressCard ? `x:${String(element.props.researchRunId)}` :
+  .map((element) => element.type === XResearchProgressCard ? `x:${String(element.props.groupKey)}` :
     element.type === ProcessGroup ? 'process' : 'text');
 const xCards = (tree: unknown) =>
   findAllWhere(tree, (element) => element.type === XResearchProgressCard);
@@ -61,7 +61,9 @@ describe('AssistantMessage x research cards', () => {
         text('继续调研'), shell({ action: 'wait', researchRunId: 'xrun-a', delivery: { deliveryCallId: 'c2' } }, 'call-2')] });
     expect(layout(rendered.tree)).toEqual(['process', 'text', 'process', 'x:xrun-a']);
     // 卡拿到的就是这一段研究所在的那条对话，与消息上的 threadId 是同一个。
-    expect(xCards(rendered.tree)[0].props).toMatchObject({ threadId: 'thread-1', researchRunId: 'xrun-a' });
+    expect(xCards(rendered.tree)[0].props).toMatchObject({
+      threadId: 'thread-1', groupKey: 'xrun-a', researchRunIds: ['xrun-a'],
+    });
   });
 
   it('keeps two researches on two cards, ordered by their last mention', () => {
@@ -82,7 +84,7 @@ describe('AssistantMessage x research cards', () => {
     const render = (message: { messageId: string; blocks: AssistantBlock[] }) =>
       mount(AssistantMessage, { threadId: 'thread-1', messageId: message.messageId, settled: true,
         blocks: message.blocks,
-        xResearchTaskRunIds: anchors.get(message.messageId) ?? new Set<string>() });
+        xResearchAnchors: anchors.get(message.messageId) ?? [] });
     expect(layout(render(submitMessage).tree)).toEqual(['process']);
     expect(layout(render(waitMessage).tree)).toEqual(['process', 'x:xrun-a']);
   });
@@ -90,11 +92,12 @@ describe('AssistantMessage x research cards', () => {
   it('renders no card whose run is owned by a newer message', () => {
     const submit = shell({ action: 'submit', researchRunId: 'xrun-a' });
     const owned = mount(AssistantMessage, { threadId: 'thread-1', messageId: 'message-1',
-      settled: true, blocks: [submit], xResearchTaskRunIds: new Set(['xrun-a']) });
+      settled: true, blocks: [submit],
+      xResearchAnchors: [{ groupKey: 'xrun-a', researchRunIds: ['xrun-a'] }] });
     expect(layout(owned.tree)).toEqual(['process', 'x:xrun-a']);
     // 正对照在同一条用例里：同一个块、run 归了更新的那条消息，卡就不该出现在这里。
     const stale = mount(AssistantMessage, { threadId: 'thread-1', messageId: 'message-1',
-      settled: true, blocks: [submit], xResearchTaskRunIds: new Set<string>() });
+      settled: true, blocks: [submit], xResearchAnchors: [] });
     expect(layout(stale.tree)).toEqual(['process']);
   });
 
