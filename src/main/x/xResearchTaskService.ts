@@ -281,7 +281,9 @@ function queuedWorkItem(section: XResearchSection, label: string,
 }
 
 /** 把一次请求展开成有序工作项：顺序就是采集循环的顺序（search 按 query、read 按 target）。
- *  预算取「本次提交各上限之和」（spec §6.7）：5 个 query × 500 滚动 + 20 个目标 × 500 = 12500。 */
+ *  预算取「本次提交各上限之和」（spec §6.7）：5 个 query × 500 滚动 + 20 个目标 × 500 = 12500。
+ *  这里不盖 `submissionId`：计划工作项的 helper 不认识「哪一份提交」，盖章只在 `submit`
+ *  铸出 id 的那一处（否则一个调用方就能替别人编一个提交身份）。 */
 function planWork(work: XResearchWorkRequest): {
   operation: XResearchSubmission['operation'];
   objective: string;
@@ -433,9 +435,10 @@ export class XResearchTaskService {
     // 续跑同一段研究时，最后提交进它的会话接手这段研究：旧会话的拆除不该打断它。
     if (owner.ledger !== undefined) active.ledger = owner.ledger;
     const createdAt = this.now();
+    const submissionId = randomUUID();
     const submission: XResearchSubmission = {
       version: 1,
-      submissionId: randomUUID(),
+      submissionId,
       researchRunId,
       threadId: owner.threadId,
       // 提交那一轮的身份：结果里的 `callId` 取它，于是交付壳与结果能在恢复时逐一对上（Task 7）。
@@ -447,7 +450,9 @@ export class XResearchTaskService {
       state: 'queued',
       budget: plan.budget,
       usage: { posts: 0, scrolls: 0, expandActions: 0 },
-      workItems: plan.workItems,
+      // 每一行都盖上它自己的提交 id —— 卡在**一段研究内**按提轮分轮，依据是这个字段，
+      // 不是提交的 createdAt、也不是时间窗。盖章只发生在这一处（id 就在这里铸出来）。
+      workItems: plan.workItems.map((row) => ({ ...row, submissionId })),
       createdAt,
       endedAt: null,
     };

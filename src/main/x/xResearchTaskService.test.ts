@@ -337,6 +337,24 @@ describe('XResearchTaskService', () => {
     expect(snapshot.budget).toEqual({ scrolls: 2000, expandActions: 400 });
   });
 
+  it('stamps every planned row with the submission that created it', async () => {
+    const { service, store } = harness(echoRunner);
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    const second = await service.submit(
+      { researchRunId: first.researchRunId, work: { read: readWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    const snapshot = await service.get(thread.threadId, first.researchRunId);
+    // 计划工作项时就带上提交 id（不是卡从提交时间反推的）：搜索那两行属于第一份，读取那两行
+    // 属于第二份 —— 这就是「一段研究里的两轮」。
+    expect(snapshot.search.map((row) => row.submissionId)).toEqual([first.submissionId, first.submissionId]);
+    expect(snapshot.read.map((row) => row.submissionId)).toEqual([second.submissionId, second.submissionId]);
+    expect(first.submissionId).not.toBe(second.submissionId);
+    // 落盘的提交文件里也有它：重启之后卡仍能按轮分组，而不是只在这一次进程里成立。
+    const onDisk = await store.readSubmission(thread.threadId, first.researchRunId, second.submissionId);
+    expect(onDisk?.workItems.map((row) => row.submissionId)).toEqual([second.submissionId, second.submissionId]);
+  });
+
   it('stamps a research with the turn that created it, not the turn that appended to it', async () => {
     const { service, store } = harness(echoRunner);
     const thread = owner();

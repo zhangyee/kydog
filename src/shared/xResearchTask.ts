@@ -25,6 +25,10 @@ export type XResearchWorkState =
 
 export type XResearchWorkItem = {
   workItemId: string;
+  /** 这行属于哪一份提交。同一次提交的行带同一个 id，于是卡能在**一段研究内**按提交分轮
+   *  （「第 1 轮 · 5 个 query」「第 2 轮 · 补搜 3 个 query」），次序仍由行本身的次序说。
+   *  旧数据（这个字段之前落盘的提交）没有它：分不出轮次时卡退回今天的样子，不画轮次头。 */
+  submissionId?: string;
   section: XResearchSection;
   label: string;
   product: 'Top' | 'Latest' | null;

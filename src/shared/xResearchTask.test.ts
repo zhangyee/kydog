@@ -325,4 +325,38 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
     expect(snap.counts.replies).toBe(5);
     expect(snap.counts.undelivered).toBe(1);
   });
+
+  it('keeps each row\'s submissionId so the card can regroup one research into rounds', () => {
+    // 现场形状（一张卡里一次研究跑了四次提交）：搜 5、补搜 3、读 3、补读 2。分组只能按
+    // `submissionId` —— 提交的 `createdAt` 与行序都不在这个字段里，而卡也不该从时间窗去猜。
+    const round = (submissionId: string, operation: 'search' | 'read', labels: string[]) =>
+      submission({ submissionId, operation, state: 'done', workItems: labels.map((label, at) =>
+        item({ workItemId: `${submissionId}-${at}`, submissionId,
+          section: operation, label, state: 'stopped', status: 'observed' })) });
+    const snap = xResearchTaskSnapshot(record(), [
+      round('sub-1', 'search', ['s1', 's2', 's3', 's4', 's5']),
+      round('sub-2', 'search', ['s6', 's7', 's8']),
+      round('sub-3', 'read', ['r1', 'r2', 'r3']),
+      round('sub-4', 'read', ['r4', 'r5']),
+    ]);
+    // 字段真的落到了投影上，而行序就是提交序 → 提交内行序（不重排）。
+    expect(snap.search.map((row) => row.submissionId)).toEqual([
+      'sub-1', 'sub-1', 'sub-1', 'sub-1', 'sub-1', 'sub-2', 'sub-2', 'sub-2']);
+    expect(snap.read.map((row) => row.submissionId)).toEqual([
+      'sub-3', 'sub-3', 'sub-3', 'sub-4', 'sub-4']);
+    // 按提交分组，就是「四轮、5/3/3/2」那个形状。
+    const rounds = (rows: readonly XResearchWorkItem[]) => rows.reduce<Array<[string, number]>>(
+      (acc, row) => {
+        const last = acc[acc.length - 1];
+        if (last && last[0] === row.submissionId) last[1] += 1;
+        else acc.push([row.submissionId!, 1]);
+        return acc;
+      }, []);
+    expect(rounds(snap.search)).toEqual([['sub-1', 5], ['sub-2', 3]]);
+    expect(rounds(snap.read)).toEqual([['sub-3', 3], ['sub-4', 2]]);
+
+    // 旧数据：这个字段之前落的盘上提交没有它，投影原样透传「没有」——不补一个猜出来的 id。
+    const old = xResearchTaskSnapshot(record(), [submission({ workItems: [item()] })]);
+    expect(old.search[0]!.submissionId).toBeUndefined();
+  });
 });
