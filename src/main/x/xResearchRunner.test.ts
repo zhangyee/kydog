@@ -12,7 +12,7 @@ import type { XResearchTaskSnapshot } from '../../shared/xResearchTask';
 import { XResearchTaskService } from './xResearchTaskService';
 import { XResearchTaskStore } from './xResearchTaskStore';
 import { serializeXResearchResult } from './xResearchOutput';
-import { searchResult, searchX } from './xResearchSearch';
+import { searchX } from './xResearchSearch';
 import { XResearchScopeLedger } from './xResearchScopeFacts';
 import type { XResearchProgressEvent, XResearchWorkContext } from './xResearchTaskService';
 import { createXResearchRunner } from './xResearchRunner';
@@ -64,7 +64,9 @@ function harness(overrides: Partial<XResearchWorkContext> = {}) {
 }
 
 type DepsOptions = {
-  tabStatus?: () => 'available' | 'foreign' | 'missing';
+  /** 接收要问的那张页：替身得能只把死掉的那一张报成 `missing`（否则「活注册表才分得清」那道闸
+   *  会把这一轮刚开的新页也判成死页，测试于是考的就不是重试了）。 */
+  tabStatus?: (tabId: string) => 'available' | 'foreign' | 'missing';
   artifacts?: XResearchArtifactStore;
   askedPriors?: string[];
   ledger?: XResearchScopeLedger;
@@ -132,60 +134,125 @@ describe('x research runner', () => {
     expect(nextResult.reportRunScopeFacts?.runId).toBe('run-of-next-turn');
   });
 
-  it('marks every row failed when the tab is gone before the work starts', async () => {
+  it('recovers a dead bound tab with one retry and rebinds the tab it opened', async () => {
     const f = fixture([searchHtml(post())]);
     let status: 'available' | 'foreign' | 'missing' = 'missing';
-    const runner = createXResearchRunner(depsFor(f, { tabStatus: () => status }));
+    const runner = createXResearchRunner(depsFor(f, {
+      tabStatus: (tabId) => (status === 'missing' && tabId === 'gone-tab' ? 'missing' : 'available'),
+    }));
     const gone = harness();
     gone.bind('gone-tab');
-    const failed = await runner({ search: searchInput.search }, gone.ctx);
-    expect(failed.status).toBe('failed');
-    for (const row of searchRows(failed)) {
-      expect(row).toMatchObject({
-        status: 'failed', stopReason: 'navigation_failed',
-        barrier: { status: 'failed', reason: 'navigation_failed:browser.no_tab', observationId: null },
-      });
-    }
-    // 注册表缺席发生在这轮第一次导航之前：不重放一次注定失败的尝试。
-    expect(f.open).not.toHaveBeenCalled();
-    // 任务忘掉这个标签页，下一个提交自己开一个。
-    expect(gone.tab()).toBeUndefined();
-    // 翻面：标签页还在时同样的输入照常采集 —— 上面那条「没导航」才不是「什么也没跑」。
-    // 同一个任务上下文**再提交一次**：死标签页已经忘了，这一轮自己开一个。
-    status = 'available';
     const collected = await runner({ search: searchInput.search }, gone.ctx);
+    // 绑定的页在这一轮开始前就没了：忘掉它、用新页跑**一次**（R81f）。第一轮一次浏览器都没碰，
+    // 所以这一次重试只重做那些证明什么都没产出的工作。不恢复的话整批全灭 —— 现场 13 行全失败。
     expect(f.open).toHaveBeenCalledTimes(1);
     expect(f.open.mock.calls[0][1]).toBeUndefined();
     expect(searchRows(collected)[0].status).not.toBe('failed');
-    // 新开的标签页被任务记住，下一轮直接复用它。
+    expect(searchRows(collected)[0].posts).toHaveLength(1);
+    // 任务记住的是**新页**，下一轮直接复用它。
     expect(gone.tab()).toBe('research-tab');
-    await runner({ search: searchInput.search }, gone.ctx);
+    // 翻面：页还在时同样的输入只跑一次 —— 上面那次重试不是「每轮都跑两次」。
+    status = 'available';
+    const again = await runner({ search: searchInput.search }, gone.ctx);
+    expect(again.browserTabId).toBe('research-tab');
+    expect(f.open).toHaveBeenCalledTimes(2);
     expect(f.open.mock.calls[1][1]).toBe('research-tab');
+    expect(searchRows(again)[0].posts).toHaveLength(1);
   });
 
-  it('fills collectionStop for every row before delivering', async () => {
-    const f = fixture([readHtml(post())]);
-    // 前提：前置失败的裸形状里根本没有 collectionStop —— 下面那些断言只能来自补齐。
-    const bare = searchResult({ search: searchInput.search }, {
-      browser: f.context.browser, threadId: 'thread', sources: f.context.sources,
-      runId: RUN_ID, callId: SUBMIT_CALL_ID, batchId: BATCH_ID,
+  it('retries a dead tab at most once', async () => {
+    const f = fixture([searchHtml(post())]);
+    const runner = createXResearchRunner(depsFor(f, { tabStatus: () => 'missing' }));
+    // 重试开新页也失败（浏览器真的没法再开一页）：不许一轮接一轮地重放。
+    f.open.mockImplementation(async () => { throw new KydogError('browser.no_tab', '标签页已关闭'); });
+    const gone = harness();
+    gone.bind('gone-tab');
+    const result = await runner({ search: searchInput.search }, gone.ctx);
+    expect(f.open).toHaveBeenCalledTimes(1);
+    expect(searchRows(result).every((row) => row.stopReason === 'navigation_failed')).toBe(true);
+    // 一行导航都没提交过，任务不再持有这张死页。
+    expect(gone.tab()).toBeUndefined();
+  });
+
+  it('does not retry a batch where one row already committed a navigation', async () => {
+    const f = fixture([searchHtml(post())]);
+    const twoQueries = {
+      search: {
+        ...searchInput.search,
+        queries: [query, { ...query, id: 'q3', query: 'second query' }],
+      },
+    };
+    const runner = createXResearchRunner(depsFor(f));
+    const submitted = harness();
+    submitted.bind('live-tab');
+    // 第一个 query 照常导航采集；第二个 query 撞上 no_tab。重放会把第一行已经观察到的帖重新采一遍。
+    const defaultOpen = f.open.getMockImplementation()!;
+    let opens = 0;
+    f.open.mockImplementation(async (url: string, tabId?: string) => {
+      opens += 1;
+      if (opens === 2) throw new KydogError('browser.no_tab', '标签页已关闭');
+      return defaultOpen(url, tabId);
     });
-    expect(bare.queries[0].collectionStop).toBeUndefined();
-    const gone = () => createXResearchRunner(depsFor(f, { tabStatus: () => 'missing' }));
-    const deadTab = () => { const submitted = harness(); submitted.bind('gone-tab'); return submitted; };
-    const searched = await gone()({ search: searchInput.search }, deadTab().ctx);
-    const read = await gone()({ read: readWork }, deadTab().ctx);
-    for (const result of [searched, read]) {
+    const result = await runner(twoQueries, submitted.ctx);
+    // 只跑了一轮：重试的话第一个 query 会被再开一次（3 次）。
+    expect(opens).toBe(2);
+    const rows = searchRows(result);
+    // 已提交过导航的那一行保住它的结论，没提交的那一行老实说「导航失败」。
+    expect(rows[0].location?.committedNavigationOutcome).toBeTruthy();
+    expect(rows[0].status).not.toBe('failed');
+    expect(rows[0].posts).toHaveLength(1);
+    expect(rows[1].stopReason).toBe('navigation_failed');
+  });
+
+  it('needs no retry when the task has no tab at all', async () => {
+    const f = fixture([readHtml(post())]);
+    const runner = createXResearchRunner(depsFor(f));
+    const fresh = harness();
+    const read = await runner({ read: readWork }, fresh.ctx);
+    // 没有标签页照旧以 `''` 传下去（`browser.open` 把空值当成「自己开一张」，R81e）：
+    // 一轮就成，不存在「先失败再重试」。
+    expect(f.open).toHaveBeenCalledTimes(1);
+    expect(f.open.mock.calls[0][1]).toBe('');
+    expect(read.operation === 'read' && read.targets[0].status).toBe('observed');
+    // 「任务记住这一轮开的页」在这里考不出来：替身把调用方给的 tabId 原样回给结果
+    // （`'' ?? 'research-tab'` 仍是 `''`），只有 `undefined` 那次它才编一个 id。那一条在上面的
+    // 重试用例里钉；而 `''` 真的开出一张页是 `browserService.open` 自己的契约（R81e）。
+  });
+
+  it('delivers a conclusion (collectionStop) for every row of every batch', async () => {
+    const f = fixture([readHtml(post())]);
+    // 三种批：绑定的页死了、重试开新页成功；绑定的页死了、重试也开不出来（两轮都失败）；
+    // 页还活着（翻面对照）。三批的每一行都必须带着自己的结论 —— 序列化靠它分辨「采集收尾过」
+    // 与「中途被砍」，所以这条判据不能只是「失败的那一批有」。
+    const recover = harness();
+    recover.bind('gone-tab');
+    const recovered = await createXResearchRunner(depsFor(f, {
+      tabStatus: (tabId) => (tabId === 'gone-tab' ? 'missing' : 'available'),
+    }))({ search: searchInput.search }, recover.ctx);
+    const unrecoverableSite = fixture([readHtml(post())]);
+    unrecoverableSite.open.mockImplementation(async () => {
+      throw new KydogError('browser.no_tab', '标签页已关闭');
+    });
+    const failing = harness();
+    failing.bind('gone-tab');
+    const failed = await createXResearchRunner(depsFor(unrecoverableSite, {
+      tabStatus: () => 'missing',
+    }))({ read: readWork }, failing.ctx);
+    const alive = fixture([searchHtml(post()), readHtml(post())]);
+    const live = createXResearchRunner(depsFor(alive));
+    const collected = await live({ search: searchInput.search }, harness().ctx);
+    const read = await live({ read: readWork }, harness().ctx);
+
+    for (const result of [recovered, failed, collected, read]) {
       const rows = rowsOf(result);
       expect(rows.length).toBeGreaterThan(0);
-      expect(rows.every((row) => row.stopReason === 'navigation_failed')).toBe(true);
       for (const row of rows) expect(row.collectionStop).toEqual(conclusionOf(row));
     }
-    // 翻面：采集层自己写的 collectionStop 原样留着（补齐不是覆盖）。
-    const alive = fixture([searchHtml(post())]);
-    const collected = await createXResearchRunner(depsFor(alive))(
-      { search: searchInput.search }, harness().ctx);
-    expect(searchRows(collected)[0].collectionStop).toEqual(conclusionOf(searchRows(collected)[0]));
+    // 前提：其中一批真的走进了「一行导航都没发生」那条路（上面的判据不是只对成功批次成立）。
+    expect(rowsOf(failed).every((row) => row.stopReason === 'navigation_failed')).toBe(true);
+    // 翻面：另一批照常采到帖子（两种形状都在这条用例里出现过）。
+    expect(searchRows(collected)[0].posts).toHaveLength(1);
+    expect(recovered.operation === 'search' && recovered.queries[0].status).not.toBe('failed');
   });
 
   it('keeps the collected result byte-identical to a direct searchX call', async () => {
