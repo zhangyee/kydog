@@ -31,7 +31,7 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 保留原始问题、时间范围和判定条件。通常扩展 2–6 个互补 query，覆盖主张、实践与反证；明确补搜或小闭环允许 1 个。只提交参数，不自填结果。
 
-一次 search 提交是 `action: 'submit'` 加 `search`（同一段研究的后续提交再加 `researchRunId`，见第 1 节）。search 包含 `objective`、1–6 个 `queries`；每项有同批唯一的 `id`、`query`、`purpose`、`product`（`Top` 或 `Latest`）。每项 query 最长 4096 UTF-16 单位，构造的公开搜索 URL 最长 8192 单位；越界的那条 query 在提交时被拒、整批不入队，拆开再提交。默认每 query 最多 500 帖和 500 次滚动；可显式设置 `maxPostsPerQuery`、`maxScrollsPerQuery`，硬上限均为 1000，不自动提高预算。
+一次 search 提交是 `action: 'submit'` 加 `search`（同一段研究的后续提交再加 `researchRunId`，见第 1 节）。search 包含 `objective`、1–6 个 `queries`；每项有同批唯一的 `id`、`query`、`purpose`、`product`（`Top` 或 `Latest`）。每项 query 最长 4096 UTF-16 单位，构造的公开搜索 URL 最长 8192 单位；越界的那条 query 在提交时被拒、整批不入队，拆开再提交。默认每 query 最多 500 帖和 500 次滚动；可显式设置 `maxPostsPerQuery`、`maxScrollsPerQuery` —— **这两个字段在 `search` 上，不在每个 `query` 里**（写进 query 会被 schema 拒绝，整轮都不入队），硬上限均为 1000，不自动提高预算。
 
 普通研究**显式**给 search 设 `maxPostsPerQuery: 150`（工具默认 500，但 Top 排序的相关度在前几页之后迅速衰减，而 canonical artifact 超过约 150 帖后模型读不完 —— 收得再多也只用到其中一段）。用户明确要求穷尽时才提高，硬上限 1000。只有用户明确要求更低预算或特定小范围时才低于 150，并在内部记录依据的用户限制；多个 query 或目标本身不是压低每项预算的理由。`maxScrollsPerQuery` 可省略，用默认 500。
 
