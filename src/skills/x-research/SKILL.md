@@ -17,7 +17,7 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 请求边界在 `submit` 当场校验：每条 query 最长 4096 UTF-16 单位、构造出的公开搜索 URL 最长 8192 单位、read 的每个目标最长 8192 单位。越界会被立即拒绝且什么都不入队 —— 缩短、拆分或改用实际观察到的短 permalink 后重新提交，不要原样重试。
 
-`wait` 必带 `researchRunId`，阻塞到这条会话的队列排空，然后把这段研究里**所有已收尾、尚未交付**的结果按提交顺序装进 `deliveries` 一次交出：`deliveries` 的每个元素都是一份独立结果，各自带 `submissionId`、`deliveryCallId` 与结果本身。包络有 1 MiB 上限，装不下的留在 `undelivered`（包络紧张时这份清单会被省掉，判据改取快照的 `counts.undelivered`）；`undelivered` 非空就再调一次 `wait`（队列已空闲，会立刻交出下一批），直到它为 0。`deliveries` 为空而 `undelivered` 非空，说明剩下的拿不到结果，此时才停、不再重试。等结果只走 `wait`，不要用 `inspect` 轮询。
+`wait` 必带 `researchRunId`，阻塞到这条会话的队列排空，然后把这段研究里**所有已收尾、尚未交付**的结果按提交顺序装进 `deliveries` 一次交出：`deliveries` 的每个元素都是一份独立结果，各自带 `submissionId`、`deliveryCallId` 与结果本身。**一份 `submit` 只产出一份结果** —— 提交里有几个 query 或 target 不改变份数，所以 N 个目标的一次 read 仍然是一次 `wait` 就拿到，不要按目标数估要等几次。包络有 1 MiB 上限，装不下的留在 `undelivered`（包络紧张时这份清单会被省掉，判据改取快照的 `counts.undelivered`）；`undelivered` 非空就再调一次 `wait`（队列已空闲，会立刻交出下一批），直到它为 0。`deliveries` 为空而 `undelivered` 非空，说明剩下的拿不到结果，此时才停、不再重试。等结果只走 `wait`，不要用 `inspect` 轮询。
 
 `inspect` 必带 `researchRunId` 与 `view`：`rows` 看每个工作行、`deliveries` 看每次提交的交付标记与工件是否存在、`failures` 只看已收尾的失败行。`pageSize` 缺省 20、最大 50；`nextCursor` 是服务给的不透明游标，读不懂就原样传回，不要自己拼。它只读、从不交付：`inspect` 的行不进结果账本，只有 `wait` 交付过的结果可以引用。只在要解释失败或核对某次提交是否交付过时用它。
 
@@ -75,7 +75,7 @@ search 区分 `cursor_exhausted`（录制支持的 Bottom 终止）、`explicit_
 
 省略预算参数时来源为 `default`；显式传入（即使等于默认值或为零）时来源为 `explicit`。`budgetBinding` 保留同时到达的维度、来源、上限与用量，包括 1000 个已接受网络页的 `safety` 上限；取消仍可作为主停止原因并保留已绑定预算。search 帖数为零不导航或采集；read 回复数为零仍保留主帖；滚动为零允许初始采集但不滚动；展开为零不点击 Article 或回复展开。回复与 unscoped 帖共享一个 distinct-ID 采样预算，已接纳 ID 的后续版本仍保留，不另占身份名额。`sampleTruncation` 记录观察、接纳与采样省略的正文观察次数；`collectionStop` 保留采集结局。
 
-采样省略与 delivery 裁剪不同：canonical artifact 逐字保留全部已采样正文，包括后续版本。序列化模型包（`content` 加 `details`）不超过 1 MiB；每条交付的 `deliveries[i].result.delivery` 说明这一份的省略字段、观察与持久化状态。保存成功时，用普通 `read` 读取 `deliveries[i].result.delivery.artifactPath` 的 manifest，再按顺序读取其列出的 chunk 文件，路径相对于 manifest 所在目录。chunk 是一份 canonical JSON 的 UTF-8 分段，单个 chunk 不一定是合法 JSON。引用前核对正文范围，不把模型输出裁剪写成源内容不存在。artifact 保存失败会明确报告；当前分支恢复会验证保存的 artifact 引用。默认 500/500/500 不保证取得条数或完整性。
+采样省略与 delivery 裁剪不同：canonical artifact 逐字保留全部已采样正文，包括后续版本。序列化模型包（`content` 加 `details`）不超过 1 MiB；每条交付的 `deliveries[i].result.delivery` 说明这一份的省略字段、观察与持久化状态；`deliveries[i].result.budgetUsage.outputBytes` 盖的是**整个包络**的字节数（同一次调用里每份相同），不是这一份自己的大小。保存成功时，用普通 `read` 读取 `deliveries[i].result.delivery.artifactPath` 的 manifest，再按顺序读取其列出的 chunk 文件，路径相对于 manifest 所在目录。chunk 是一份 canonical JSON 的 UTF-8 分段，单个 chunk 不一定是合法 JSON。引用前核对正文范围，不把模型输出裁剪写成源内容不存在。artifact 保存失败会明确报告；当前分支恢复会验证保存的 artifact 引用。默认 500/500/500 不保证取得条数或完整性。
 
 回复范围只限已证明的请求链、分支、排序和账号上下文。当前浏览器生产者无法证明认证账号上下文：`accountContextId` 为 null，`extent` 保持 `unknown`，即使观察到录制支持的 Bottom 终止也如此。原始终止与 cursor 事实仍是该链的证据，不是全讨论或全平台耗尽证明。unknown 表示缺少完整性证明，不证明一定漏读了回复。
 
