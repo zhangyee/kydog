@@ -137,13 +137,13 @@ function groupCounts(segments: readonly XResearchTaskSnapshot[]): XResearchTaskS
  *  会被读成「20 个目标都读完了」）。一个回合里几段研究的数字逐项相加。
  *  一段的目标数是 0 时整段不出现：一次纯读取的研究不该在卡头写「搜索 0/0 个 query」。
  *  任何一段里有收尾却没有结论的行（`rowWithoutConclusion`）时整段也不出现：那一行的帖数 / 回复数停在
- *  最后一次落盘上（`收 N 帖` 漏了它），而 `*Done` 又把它算成收尾（`N/N` 说它已经有结论）。
+ *  最后一次落盘上（`采集 N 帖` 漏了它），而 `*Done` 又把它算成收尾（`N/N` 说它已经有结论）。
  *  两个数字都是没人观测到的，那一节的结论只由行自己说（spec §4.4）。 */
 function summaryLine(segments: readonly XResearchTaskSnapshot[]): string {
   const counts = groupCounts(segments);
   const parts: string[] = [];
   if (counts.searchTotal > 0 && !segments.some((segment) => segment.search.some(rowWithoutConclusion))) {
-    parts.push(`搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 收 ${counts.posts} 帖`);
+    parts.push(`搜索 ${counts.searchDone}/${counts.searchTotal} 个 query · 采集 ${counts.posts} 帖`);
   }
   if (counts.readTotal > 0 && !segments.some((segment) => segment.read.some(rowWithoutConclusion))) {
     parts.push(`读取 ${counts.readDone}/${counts.readTotal} 个目标 · ${counts.replies} 回复`
@@ -225,12 +225,12 @@ function segmentElement(segment: XResearchTaskSnapshot, index: number) {
 }
 
 /**
- * 搜索行：query + 产品 + 状态 + `收 N 帖`（`budgetUsage.distinctEntries` 的去重帖数）
+ * 搜索行：query + 产品 + 状态 + `采集 N 帖`（`budgetUsage.distinctEntries` 的去重帖数）
  * + `略过 N 条`（`sampleTruncation.omitted`，只在 >0 时有内容）+ `N 页响应`（被接纳的网络页数 ——
  * 「响应」写全是因为 `N 页` 会被读成「翻了几屏」，而这里数的是一份 GraphQL 响应）。
- * 每条都来自行自己的字段；行还没起跑（`queued`）时一个数字都不说 —— 「收 0 帖」会被读成结论。
+ * 每条都来自行自己的字段；行还没起跑（`queued`）时一个数字都不说 —— 「采集 0 帖」会被读成结论。
  * `interrupted` 的行也一样：`stopped` + `status: null` 是「进程被杀在中间」的形，它的计数只长到
- * 最后一次落盘 / 最后一次进度回调，拿它当结论就会写出「收 0 帖」这种没人观测到的数（spec §4.4）。
+ * 最后一次落盘 / 最后一次进度回调，拿它当结论就会写出「采集 0 帖」这种没人观测到的数（spec §4.4）。
  */
 function searchRowElement(row: XResearchWorkItem, index: number) {
   const started = row.state !== 'queued';
@@ -242,7 +242,7 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
       <span className="truncate" title={row.label} style={ROW_LABEL_STYLE}>{row.label}</span>
       {row.product && <span data-testid="x-research-row-product" style={SOFT_STYLE}>{row.product}</span>}
       <span style={SOFT_STYLE}>{rowStateWord(row)}</span>
-      {counted && <span style={SOFT_STYLE}>收 {row.posts} 帖</span>}
+      {counted && <span style={SOFT_STYLE}>采集 {row.posts} 帖</span>}
       {counted && row.omitted > 0 && <span style={SOFT_STYLE}>略过 {row.omitted} 条</span>}
       {counted && row.pages > 0 && <span style={SOFT_STYLE}>{row.pages} 页响应</span>}
       {row.reason && <span style={REASON_STYLE}>{row.reason}</span>}

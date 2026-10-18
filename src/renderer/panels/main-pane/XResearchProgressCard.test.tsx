@@ -125,7 +125,7 @@ describe('XResearchProgressCard', () => {
     expect(mounted.find('x-research-card').props['data-status']).toBe('completed');
     expect(rows(mounted.tree)).toHaveLength(0);
     // 收起只收掉两段列表：摘要与预算行仍在，否则终态卡上什么数字都没有。
-    expect(visibleText(mounted.find('x-research-summary'))).toContain('收 128 帖');
+    expect(visibleText(mounted.find('x-research-summary'))).toContain('采集 128 帖');
     // 读取段的分母是目标总数、分子是快照的按段完成数：运行中说「读取 4 个目标」是假进度。
     expect(visibleText(mounted.find('x-research-summary')))
       .toContain('搜索 2/2 个 query');
@@ -256,7 +256,7 @@ describe('XResearchProgressCard', () => {
     const collected = byLabel('Qwen3.8 27B');
     expect(collected).toContain('Top');
     expect(collected).toContain('收完');
-    expect(collected).toContain('收 87 帖');
+    expect(collected).toContain('采集 87 帖');
     // 标签写全：`3 页` 是 `3 页响应` 的子串，只写半截就分不清「翻了几屏」与「几份响应」。
     expect(collected).toContain('3 页响应');
     expect(collected).not.toContain('略过');
@@ -264,7 +264,7 @@ describe('XResearchProgressCard', () => {
     const budgeted = byLabel('Qwen3.8 Q4 量化');
     expect(budgeted).toContain('Latest');
     expect(budgeted).toContain('预算用尽');
-    expect(budgeted).toContain('收 41 帖');
+    expect(budgeted).toContain('采集 41 帖');
     expect(budgeted).toContain('略过 12 条');
     expect(budgeted).toContain('2 页响应');
 
@@ -448,7 +448,7 @@ describe('XResearchProgressCard', () => {
       .toEqual(['模型取消的那一段', '全灭的那一段', '重试成功的那一段']);
     // 卡头的数字是每段真实计数的合计：7+10 帖、1+1 个 query、1+1 个目标、4 回复、1 篇文章、1 个失败。
     const summary = visibleText(mounted.find('x-research-summary'));
-    expect(summary).toContain('搜索 2/2 个 query · 收 17 帖');
+    expect(summary).toContain('搜索 2/2 个 query · 采集 17 帖');
     expect(summary).toContain('读取 2/2 个目标 · 4 回复 · 文章 1 篇');
     expect(summary).toContain('失败 1');
     expect(visibleText(mounted.find('x-research-budget'))).toBe('滚动 9/150 · 展开 3/60');
@@ -522,7 +522,7 @@ describe('XResearchProgressCard', () => {
 
   it('keeps a row that stopped without a conclusion free of its numbers', async () => {
     // 进程被杀留下的行是 `stopped` + `status: null`（没有节流落盘，spec §4.4）：计数停在最后一次
-    // 落盘上，`收 0 帖` / `无根帖` 会把一份没人观测到的残缺当结论。行自己已经说「中断」。
+    // 落盘上，`采集 0 帖` / `无根帖` 会把一份没人观测到的残缺当结论。行自己已经说「中断」。
     useXResearchTaskStore.getState().upsert(snapshot({ revision: 1, state: 'running', search: [
       workItem({ section: 'search', label: 'interrupted-query', state: 'stopped', status: null }),
       workItem({ section: 'search', label: 'observed-query', product: 'Top', state: 'stopped',
@@ -539,19 +539,19 @@ describe('XResearchProgressCard', () => {
       .find((text) => text.includes(label))!;
 
     expect(byLabel('interrupted-query')).toContain('中断');
-    expect(byLabel('interrupted-query')).not.toContain('收 0 帖');
+    expect(byLabel('interrupted-query')).not.toContain('采集 0 帖');
     expect(byLabel('interrupted-target')).toContain('中断');
     expect(byLabel('interrupted-target')).not.toContain('无根帖');
     expect(byLabel('interrupted-target')).not.toContain('根帖');
     // 正控（同一条用例里）：有结论的行与还在飞的行照常报数 —— 上面两条不是「整段都不报数」。
-    expect(byLabel('observed-query')).toContain('收 87 帖');
-    expect(byLabel('live-query')).toContain('收 5 帖');
+    expect(byLabel('observed-query')).toContain('采集 87 帖');
+    expect(byLabel('live-query')).toContain('采集 5 帖');
     expect(byLabel('observed-target')).toContain('根帖 + 42 回复');
   });
 
   it('leaves the header numbers out when a repaired run cannot support them', async () => {
     // 崩溃后修复出来的快照（spec §4.4）：一行收尾却没有结论。它的帖数 / 回复数停在最后一次落盘上，
-    // 而 `*Done` 又把它算成收尾 —— `收 N 帖` 漏了它、`N/M` 说它已经有结论，两个数字都是没人观测
+    // 而 `*Done` 又把它算成收尾 —— `采集 N 帖` 漏了它、`N/M` 说它已经有结论，两个数字都是没人观测
     // 到的。那一节的数字整段不出现，结论只由那一行自己说（行内同一条判据，见上一条用例）。
     const repaired = snapshot({
       revision: 1, state: 'interrupted',
@@ -575,7 +575,7 @@ describe('XResearchProgressCard', () => {
     useXResearchTaskStore.getState().upsert(snapshot({ revision: 2 }));
     mounted.rerender(props);
     const summary = visibleText(mounted.find('x-research-summary'));
-    expect(summary).toContain('收 128 帖');
+    expect(summary).toContain('采集 128 帖');
     expect(summary).toContain('搜索 2/2 个 query');
   });
 
@@ -690,7 +690,7 @@ describe('XResearchProgressCard', () => {
     expect(mounted.find('x-research-card').props['data-status']).toBe('failed');
     expect(visibleText(mounted.find('x-research-toggle'))).toContain('有失败（部分被取消）');
     // 真内容出来了：那一行摘要就是卡面在「服务接上」前后的差别。
-    expect(visibleText(mounted.find('x-research-summary'))).toContain('收 128 帖');
+    expect(visibleText(mounted.find('x-research-summary'))).toContain('采集 128 帖');
   });
 
   it('refetches once when the store drops the row after it had been read', async () => {
@@ -733,7 +733,7 @@ describe('XResearchProgressCard', () => {
     const readOnlySummary = visibleText(mounted.find('x-research-summary'));
     expect(readOnlySummary).toContain('读取 1/4 个目标');
     expect(readOnlySummary).not.toContain('搜索');
-    expect(readOnlySummary).not.toContain('收 0 帖');
+    expect(readOnlySummary).not.toContain('采集 0 帖');
 
     // 同一条用例里的正面对照：两段都有行的研究照常把两段都写出来（上一条不是「搜索永远不写」）。
     const both = snapshot({ revision: 2 });
@@ -742,7 +742,7 @@ describe('XResearchProgressCard', () => {
     mounted.rerender(props);
     const bothSummary = visibleText(mounted.find('x-research-summary'));
     expect(bothSummary).toContain('搜索 2/2 个 query');
-    expect(bothSummary).toContain('收 128 帖');
+    expect(bothSummary).toContain('采集 128 帖');
 
     // 两段都是 0 行（还没有工作的一项研究）：整行不画，而不是留一个空 div。
     useXResearchTaskStore.getState().upsert(snapshot({ revision: 3, search: [], read: [],
