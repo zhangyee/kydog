@@ -427,6 +427,9 @@ describe('XResearchProgressCard', () => {
     await mounted.settle();
 
     expect(mounted.find('x-research-card').props['data-status']).toBe('cancelled');
+    // 段间结论不一致时，卡头补一句「3 段：…」—— 否则「取消后重试成功」的回合只看得到「取消」。
+    expect(visibleText(mounted.find('x-research-toggle')))
+      .toContain('3 段：1 取消 / 1 有失败 / 1 完成');
     // 卡头副标题取最早一段的目标（R10），合并不能让它换题。
     expect(visibleText(mounted.find('x-research-objective'))).toBe('模型取消的那一段');
     // 三段都是终态：卡默认收起，展开才看得见分段头。
@@ -748,5 +751,29 @@ describe('XResearchProgressCard', () => {
         searchDone: 0, searchTotal: 0, readDone: 0, readTotal: 0 } }));
     mounted.rerender(props);
     expect(mounted.query('x-research-summary')).toBeNull();
+  });
+
+  it('says how many segments disagree, and stays quiet when only one does', async () => {
+    // 同回合「取消 → 重试成功」时，卡头只挑最高优先级的词会把「最后交付了」藏进展开里。
+    const cancelled = snapshot({ researchRunId: 'xrun-a', runId: 'turn-1', objective: '被取消的一段',
+      createdAt: '2026-10-16T00:00:01.000Z', state: 'cancelled', stateReason: 'cancelled',
+      cancelledBy: 'agent' });
+    const completed = snapshot({ researchRunId: 'xrun-b', runId: 'turn-1', objective: '重试成功的一段',
+      createdAt: '2026-10-16T00:00:02.000Z', state: 'completed',
+      counts: { submissions: 1, queued: 0, running: 0, done: 1, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 4, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 1, searchTotal: 1, readDone: 0, readTotal: 0 } });
+    const props = { threadId: 'thread-1', groupKey: 'turn-1', researchRunIds: ['xrun-a', 'xrun-b'] };
+    useXResearchTaskStore.setState({ snapshotsByRunId: { 'xrun-a': cancelled, 'xrun-b': completed } });
+    invoke.mockResolvedValue(completed);
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('2 段：1 取消 / 1 完成');
+
+    // 翻面：只有一段时不出现这句括注。同一条用例里换池子，证明上一条不是「永远都写」。
+    useXResearchTaskStore.setState({ snapshotsByRunId: { 'xrun-b': completed } });
+    mounted.rerender({ ...props, researchRunIds: ['xrun-b'] });
+    await mounted.settle();
+    expect(visibleText(mounted.find('x-research-toggle'))).not.toContain('段：');
   });
 });

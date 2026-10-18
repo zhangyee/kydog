@@ -208,9 +208,12 @@ export async function readX(
       }
       row.postId = id;
       reportReadProgress(context, stage, row, 'navigating');
+      // 每个目标都落在**同一张页**上：第一次没有页时由 `open` 开一张（`''` 就是「没有页」，R81e），
+      // 之后用第一张返回的 id —— 否则 N 个目标会开 N 张标签页，撞上 agent 页上限后挤掉科研自己的页
+      // （search 侧一直是这样写的：`result.browserTabId || undefined`）。
       const opened = await context.browser.open(
         source,
-        input.tabId,
+        result.browserTabId || input.tabId,
         context.signal,
         {stage:'post',expectedUrl:source,postId:id,collectReplies:input.read.includeReplies&&input.read.maxRepliesPerPost>0},
       );

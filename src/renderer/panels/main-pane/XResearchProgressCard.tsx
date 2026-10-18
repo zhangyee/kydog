@@ -157,6 +157,20 @@ function summaryLine(segments: readonly XResearchTaskSnapshot[]): string {
 
 /** 预算行取快照的 `usage` / `budget` 两个字段，口径就是 spec §5.3 与 §5.4 的那一对。
  *  一个回合里的几段研究各自有一份额度，合计是它们相加（与主进程按提交相加同一条规则）。 */
+/** 段之间的结论不一致时（同一回合里「取消 → 重试成功」就是这种形状），卡头只挑优先级最高的那一个
+ *  词，会把「这一回合最后是交付了的」藏进展开里 —— 与 R81a 要修的是同一类事：卡头不许与事实相左。
+ *  这里不重算状态，只把各段已经得出的词数出来：`2 段：1 完成 / 1 取消`。全段同词时不补。 */
+function mixedNote(segments: readonly XResearchTaskSnapshot[]): string | null {
+  if (segments.length < 2) return null;
+  const counts = new Map<XResearchTaskState, number>();
+  for (const segment of segments) counts.set(segment.state, (counts.get(segment.state) ?? 0) + 1);
+  if (counts.size < 2) return null;
+  const parts = GROUP_STATE_ORDER
+    .filter((state) => counts.has(state))
+    .map((state) => `${counts.get(state)} ${STATE_WORD[state]}`);
+  return `${segments.length} 段：${parts.join(' / ')}`;
+}
+
 function budgetLine(segments: readonly XResearchTaskSnapshot[]): string {
   let usageScrolls = 0;
   let usageExpand = 0;
@@ -409,6 +423,9 @@ export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
   const deciding = state === undefined ? undefined
     : segments.find((segment) => segment.state === state) ?? segments[0];
   const note = deciding ? stateNote(deciding.stateReason, deciding.state, deciding.cancelledBy) : null;
+  // 几段的结论不一致时，卡头补一句「N 段：…」，否则「取消后重试成功」的回合只看得到「取消」。
+  const mixed = mixedNote(segments);
+  const headerNote = [note, mixed].filter((part): part is string => part !== null).join('，');
   const expanded = manualExpanded ?? (state === 'running');
   // 有快照时仍以快照为准（「不在这个窗口的标签页」那一条也可能带着广播来的快照）。
   const status = state ?? (gone ? 'missing' : 'loading');
@@ -424,7 +441,7 @@ export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
       className="ky-paper-deep font-sans" style={CARD_STYLE}>
       <button type="button" data-testid="x-research-toggle" onClick={() => setManualExpanded(!expanded)}
         className="w-full text-left" style={{ color: 'var(--color-ink)' }}>
-        <strong>X 研究 · {headerWord}{note ? `（${note}）` : ''}</strong>
+        <strong>X 研究 · {headerWord}{headerNote ? `（${headerNote}）` : ''}</strong>
         <span style={{ float: 'right', color: 'var(--color-ink-faint)' }}>{expanded ? '收起' : '展开'}</span>
       </button>
       {objective !== '' &&

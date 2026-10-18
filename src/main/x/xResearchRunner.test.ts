@@ -224,6 +224,27 @@ describe('x research runner', () => {
     // 重试用例里钉；而 `''` 真的开出一张页是 `browserService.open` 自己的契约（R81e）。
   });
 
+  it('opens one page for a read batch that has none, and reuses it for the rest', async () => {
+    // 现场（R81 评审 P1）：read 以前把 `input.tabId`（没有页时是 `''`）逐目标传下去，于是 R81e
+    // 修好「空串 = 自己开一张」之后，13 个目标就开了 13 张页，撞上 agent 页上限后把别的研究
+    // 正在用的页挤掉。判据：第一张 `''`（自己开），后面每一张都是第一张返回的 id。
+    const f = fixture([readHtml(post())]);
+    const read = await createXResearchRunner(depsFor(f))({
+      read: { ...readWork, targets: [{ url: target }, { url: `${target}2` }] },
+    }, harness().ctx);
+    const args = f.open.mock.calls.map((call) => call[1]);
+    expect(args, '第一张自己开，第二张复用第一张的 id').toEqual(['', 'research-tab']);
+    // 翻面：任务本来就有页时，两张都落在它上面（不许因为「没有页」那条分支又去开新页）。
+    f.open.mockClear();
+    const bound = harness();
+    bound.bind('tab-of-task');
+    await createXResearchRunner(depsFor(f))({
+      read: { ...readWork, targets: [{ url: target }, { url: `${target}2` }] },
+    }, bound.ctx);
+    expect(f.open.mock.calls.map((call) => call[1])).toEqual(['tab-of-task', 'tab-of-task']);
+    expect(read.operation).toBe('read');
+  });
+
   it('delivers a conclusion (collectionStop) for every row of every batch', async () => {
     const f = fixture([readHtml(post())]);
     // 三种批：绑定的页死了、重试开新页成功；绑定的页死了、重试也开不出来（两轮都失败）；
