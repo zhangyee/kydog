@@ -363,6 +363,103 @@ describe('XResearchProgressCard', () => {
     expect(phaseDetails(mounted.tree).map(visibleText)).toEqual(['读文章']);
   });
 
+  it('opens a round header for every submission of a section, in order, with numbering continuous', async () => {
+    // 现场形状（一张卡里一段研究跑了四次提交）：搜 5、补搜 3、读 3、补读 2。同一次提交的行
+    // `submissionId` 相同 —— 卡按它切轮，不靠时间窗或阈值。
+    const roundOf = (submissionId: string, section: XResearchWorkItem['section'], labels: string[]) =>
+      labels.map((label) => workItem({ submissionId, section, label, state: 'stopped',
+        status: 'observed', posts: 10, hasRoot: section === 'read', replies: 1 }));
+    const fourRounds = snapshot({
+      researchRunId: 'xrun-rounds', runId: 'turn-rounds', objective: '一场四轮的研究',
+      counts: { submissions: 4, queued: 0, running: 0, done: 13, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 80, replies: 5, articles: 0, undelivered: 0,
+        searchDone: 8, searchTotal: 8, readDone: 5, readTotal: 5 },
+      search: [...roundOf('sub-s1', 'search', ['s1', 's2', 's3', 's4', 's5']),
+        ...roundOf('sub-s2', 'search', ['s6', 's7', 's8'])],
+      read: [...roundOf('sub-r1', 'read', ['r1', 'r2', 'r3']),
+        ...roundOf('sub-r2', 'read', ['r4', 'r5'])],
+    });
+    useXResearchTaskStore.getState().upsert(fourRounds);
+    invoke.mockResolvedValue(fourRounds);
+    const mounted = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-rounds', researchRunIds: ['xrun-rounds'] });
+    await mounted.settle();
+
+    const headers = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-round');
+    // 两段各两轮：先说的这一轮是首个提交，后面的都是往同一段研究里补的步骤。
+    expect(headers.map(visibleText)).toEqual([
+      '第 1 轮 · 5 个 query', '第 2 轮 · 补搜 3 个 query',
+      '第 1 轮 · 3 个目标', '第 2 轮 · 补读 2 个目标',
+    ]);
+    expect(headers.map((header) => header.props['data-operation']))
+      .toEqual(['search', 'search', 'read', 'read']);
+    // `data-round` 是**这一段里**第几次提交（两段各自从 1 起）。
+    expect(headers.map((header) => header.props['data-round'])).toEqual([1, 2, 1, 2]);
+    expect(rows(mounted.tree)).toHaveLength(13);
+
+    // 行必须在自己那一轮的头之后、下一轮的头之前；编号在段内连续（第二轮接着 ⑥⑦⑧，不从 ① 重来）。
+    const inOrder = (text: string, parts: string[]) => parts.map((part) => {
+      const at = text.indexOf(part);
+      expect(at, `${part} 不在这一段里：${text}`).toBeGreaterThanOrEqual(0);
+      return at;
+    });
+    const search = inOrder(visibleText(mounted.find('x-research-search')), [
+      '第 1 轮 · 5 个 query', '①', 's1', '②', 's2', '③', 's3', '④', 's4', '⑤', 's5',
+      '第 2 轮 · 补搜 3 个 query', '⑥', 's6', '⑦', 's7', '⑧', 's8',
+    ]);
+    expect(search).toEqual([...search].sort((a, b) => a - b));
+    const read = inOrder(visibleText(mounted.find('x-research-read')), [
+      '第 1 轮 · 3 个目标', '①', 'r1', '②', 'r2', '③', 'r3',
+      '第 2 轮 · 补读 2 个目标', '④', 'r4', '⑤', 'r5',
+    ]);
+    expect(read).toEqual([...read].sort((a, b) => a - b));
+
+    // 对照（同一条用例）：只有一轮的一段**不画**轮次头 —— 「总是画一个轮次头」在这里就红了。
+    const oneRound = snapshot({ researchRunId: 'xrun-one', runId: 'turn-one',
+      objective: '只有一轮的一段',
+      search: roundOf('sub-only', 'search', ['only-1', 'only-2']),
+      read: roundOf('sub-only-r', 'read', ['only-r1']) });
+    useXResearchTaskStore.getState().upsert(oneRound);
+    invoke.mockResolvedValue(oneRound);
+    const single = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-one', researchRunIds: ['xrun-one'] });
+    await single.settle();
+    expect(findAllWhere(single.tree,
+      (element) => element.props['data-testid'] === 'x-research-round')).toHaveLength(0);
+    // 单轮与今天的行文本一样：① 起头，行自己的数字不变。
+    expect(visibleText(single.find('x-research-search'))
+      .startsWith('搜索①only-1')).toBe(true);
+    expect(visibleText(single.find('x-research-read')).startsWith('读取①only-r1')).toBe(true);
+  });
+
+  it('renders rows from before submissionId exactly like a single-round section', async () => {
+    // 旧数据（这个字段之前落的盘）：分不出轮次，卡退回今天的样子 —— 不猜一个轮次，也不画头。
+    useXResearchTaskStore.getState().upsert(running);
+    const old = mount(XResearchProgressCard, props);
+    await old.settle();
+    expect(findAllWhere(old.tree,
+      (element) => element.props['data-testid'] === 'x-research-round')).toHaveLength(0);
+    expect(rows(old.tree).map(visibleText)).toHaveLength(6);
+
+    // 同一批行带上属于同一份提交的 `submissionId`（也就是一轮）：两段的文本逐字相同。
+    const stamped = snapshot({ researchRunId: 'xrun-stamped', runId: 'turn-stamped',
+      objective: '同一批行加上提交 id',
+      search: SEARCH_ROWS.map((row) => ({ ...row, submissionId: 'sub-old' })),
+      read: READ_ROWS.map((row) => ({ ...row, submissionId: 'sub-old' })) });
+    useXResearchTaskStore.getState().upsert(stamped);
+    invoke.mockResolvedValue(stamped);
+    const withIds = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-stamped', researchRunIds: ['xrun-stamped'] });
+    await withIds.settle();
+    expect(findAllWhere(withIds.tree,
+      (element) => element.props['data-testid'] === 'x-research-round')).toHaveLength(0);
+    expect(visibleText(withIds.find('x-research-search')))
+      .toBe(visibleText(old.find('x-research-search')));
+    expect(visibleText(withIds.find('x-research-read')))
+      .toBe(visibleText(old.find('x-research-read')));
+  });
+
   it('offers cancel while work is still queued or running, whatever the state word says', async () => {
     // `interrupted` 是黏的：一份失败的提交把它留在盘上，而往同一段研究追加的工作可能正在跑。
     // 卡上的取消入口因此不能只认状态词 —— 认它就会在一段**正在采集**的研究上把按钮藏掉，

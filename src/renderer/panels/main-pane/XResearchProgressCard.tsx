@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { XResearchStatus } from '../../../shared/xResearchStatus';
 import type {
-  XResearchCancelActor, XResearchTaskSnapshot, XResearchTaskState, XResearchWorkItem,
+  XResearchCancelActor, XResearchSection, XResearchTaskSnapshot, XResearchTaskState,
+  XResearchWorkItem,
 } from '../../../shared/xResearchTask';
 import { useXResearchTaskStore, xResearchTaskSegments } from '../../stores/xResearchTaskStore';
 import { confirm } from '../../stores/confirmStore';
@@ -28,6 +29,11 @@ const SEGMENT_OBJECTIVE_STYLE: CSSProperties = {
   flex: '0 1 auto', minWidth: 0, color: 'var(--color-ink-soft)',
 };
 const SECTION_HEADING_STYLE: CSSProperties = { color: 'var(--color-ink-soft)', marginBottom: 2 };
+/** 轮次头（一段研究里的一次提交）：从属于段头 —— 字号比卡面（12）小一档、颜色更淡，
+ *  用的是同一套纸墨色，不引入新颜色。 */
+const ROUND_HEADER_STYLE: CSSProperties = {
+  color: 'var(--color-ink-faint)', fontSize: 11, marginTop: 4, lineHeight: 1.5,
+};
 const ROW_STYLE: CSSProperties = {
   display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', padding: '2px 0',
 };
@@ -213,15 +219,64 @@ function segmentElement(segment: XResearchTaskSnapshot, index: number) {
       {segment.search.length > 0 &&
         <div data-testid="x-research-search" style={{ marginTop: 6 }}>
           <div style={SECTION_HEADING_STYLE}>搜索</div>
-          {segment.search.map(searchRowElement)}
+          {sectionElements('search', segment.search)}
         </div>}
       {segment.read.length > 0 &&
         <div data-testid="x-research-read" style={{ marginTop: 8 }}>
           <div style={SECTION_HEADING_STYLE}>读取</div>
-          {segment.read.map(readRowElement)}
+          {sectionElements('read', segment.read)}
         </div>}
     </div>
   );
+}
+
+/** 一段内的一次提交：这一轮的行。`submissionId` 是**这次提交**的 id（不是提交时间），
+ *  所以分组不靠时间窗、不靠阈值 —— 行自己是哪一份提交带出来的。 */
+type RowRound = { submissionId: string; rows: XResearchWorkItem[] };
+
+/** 按 `submissionId` 把这一段的行分成轮，**不重排**：行在快照里的次序就是提交序 → 提交内行序，
+ *  分组只做切分。旧数据里任何一行没有这个字段就返回 `null`（分不出轮次），而不是猜一个轮次。 */
+function rowRounds(rows: readonly XResearchWorkItem[]): RowRound[] | null {
+  const rounds: RowRound[] = [];
+  for (const row of rows) {
+    if (row.submissionId === undefined) return null;
+    const current = rounds[rounds.length - 1];
+    if (current && current.submissionId === row.submissionId) current.rows.push(row);
+    else rounds.push({ submissionId: row.submissionId, rows: [row] });
+  }
+  return rounds;
+}
+
+/** 只有一轮时不给轮次头：**一段研究的一次提交就是今天的样子**，加一个总出现的头只是噪声，
+ *  而卡上真正想说的是「模型在首次采集之后又补跑了几轮」。旧数据（分不出轮次）也走这一支。 */
+function sectionRounds(rows: readonly XResearchWorkItem[]): RowRound[] | null {
+  const rounds = rowRounds(rows);
+  return rounds !== null && rounds.length > 1 ? rounds : null;
+}
+
+/** 轮次头的字。`round` 是这一段里第几次提交（1-based），`count` 是这一轮的行数：
+ *  第一轮说「N 个 query」/「N 个目标」，之后的轮次说「补搜」/「补读」—— 后续提交都是往同一段研究里
+ *  追加的补充步骤（spec §4.1），「第 2 轮」本身就是那件事。 */
+function roundWord(operation: XResearchSection, round: number, count: number): string {
+  const unit = operation === 'search' ? `${count} 个 query` : `${count} 个目标`;
+  if (round === 1) return `第 1 轮 · ${unit}`;
+  return `第 ${round} 轮 · ${operation === 'search' ? '补搜' : '补读'} ${unit}`;
+}
+
+/** 一段的行，必要时按轮切开：编号在**这一段内**连续（第二轮的行接着第一轮数下去），
+ *  不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，行号也该是同一个分母。 */
+function sectionElements(operation: XResearchSection, rows: readonly XResearchWorkItem[]) {
+  const render = operation === 'search' ? searchRowElement : readRowElement;
+  const rounds = sectionRounds(rows);
+  if (rounds === null) return rows.map(render);
+  let index = 0;
+  return rounds.flatMap((round, at) => [
+    <div key={round.submissionId} data-testid="x-research-round" data-operation={operation}
+      data-round={at + 1} style={ROUND_HEADER_STYLE}>
+      {roundWord(operation, at + 1, round.rows.length)}
+    </div>,
+    ...round.rows.map((row) => render(row, index++)),
+  ]);
 }
 
 /**
