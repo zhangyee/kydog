@@ -735,7 +735,7 @@ describe('XResearchTaskService', () => {
   it('keeps a cancellation when another submission file cannot be read', async () => {
     // 取消 + 一份读不出来的提交文件：`wait` 交付那份读得出来的时会落盘，而投影这一刻说
     // 「有一份提交读不出来」。那是**读盘缺口**，不是「为什么停了」的事实 —— 不许覆盖「被取消过」，
-    // 否则重启后的 `submit` 认不出这段研究被停过，会直接往里追加。
+    // 否则重启后卡片说不清那几轮是怎么停的（「读不出来」会把「谁取消的」挤掉）。
     const dir = root();
     const artifactRef: XArtifactRef = {
       version: 1, directoryId: randomUUID(), manifest: 'manifest.json',
@@ -786,14 +786,18 @@ describe('XResearchTaskService', () => {
     expect((await next.service.get(thread.threadId, cancelled.researchRunId)).stateReason).toBe('cancelled');
     expect((await store.readTask(thread.threadId, cancelled.researchRunId))?.stateReason).toBe('cancelled');
 
-    // 重启之后照样不许追加：`submit` 认的就是这条理由。
-    const rejected = await next.service.submit({
+    // 重启之后照样能接着提交（R83）：取消不封研究，而这条理由在这之前也不会把研究封死。
+    // 提交之后理由换成这一份研究此刻真实的那一条 —— 还有一份提交读不出来 —— 而不是把一个
+    // 已经过去的取消继续说成「正在进行的事」。
+    await next.service.submit({
       researchRunId: cancelled.researchRunId, work: { search: searchWork() },
-    }, thread).then(() => null, (error: unknown) => error);
-    expect(rejected).toMatchObject({ code: 'research.cancelled' });
+    }, thread);
+    await next.service.whenIdle(thread.threadId, cancelled.researchRunId);
+    expect((await next.service.get(thread.threadId, cancelled.researchRunId)).stateReason)
+      .toBe('submission_unreadable');
 
-    // 翻面：从没被取消过的那段研究在同一刻落的是 `submission_unreadable`（上面那条不是「谁都留着」），
-    // 而且它照样能追加 —— 拒绝的是「被取消过」这一段，不是所有带读盘缺口的研究。
+    // 翻面：从没被取消过的那段研究在同一刻落的是 `submission_unreadable`（上面那次落盘不是「谁都留着」
+    // 取消），它照样能追加 —— 两段研究此刻的差别只在取消那一段多出来的「被停过」是过去的事。
     const controlDelivered = await next.service.wait(thread.threadId, control.researchRunId, 'wait-3');
     expect(controlDelivered.deliveries).toHaveLength(1);
     expect(controlDelivered.snapshot.stateReason).toBe('submission_unreadable');
@@ -1072,9 +1076,8 @@ describe('XResearchTaskService', () => {
     await store.writeSubmission(submission);
 
     // 同一块盘上还有一段**被取消过**的研究，崩溃落在 `cancel` 落盘的两个边界之间：`task.json` 已经
-    // 带上 `stateReason: 'cancelled'`，排队的那份提交还没写成 `cancelled`。这条黏的事实不许被修复
-    // 擦掉（R28）：收成 `interrupted` 就是说它是崩溃的残迹，而 `submit` 认的正是 `stateReason` ——
-    // 工作会重新回到一段已取消的研究里。
+    // 带上 `stateReason: 'cancelled'`，排队的那份提交还没写成 `cancelled`。这条事实不许被修复擦掉
+    // （R28）：收成 `interrupted` 就是说它是崩溃的残迹 —— 那几轮明明是取消的，谁停的也就说不出来了。
     const cancelledRunId = randomUUID();
     const queuedSubmission = storedSubmission({
       threadId: thread.threadId, researchRunId: cancelledRunId, state: 'queued',
@@ -1109,11 +1112,18 @@ describe('XResearchTaskService', () => {
       .toMatchObject({ state: 'cancelled', endedAt: expect.any(String) });
     expect(await reopened.readTask(thread.threadId, cancelledRunId))
       .toMatchObject({ state: 'cancelled', stateReason: 'cancelled' });
-    // 而且不许再往里追加工作：`submit` 认的就是这条理由。
-    const rejected = await service.submit(
-      { researchRunId: cancelledRunId, work: { search: searchWork() } }, thread)
-      .then(() => null, (error: unknown) => error);
-    expect(rejected).toMatchObject({ code: 'research.cancelled' });
+    // 取消**不封研究**（R83）：同一条研究可以接着提交新一轮，被取消的那一轮原样留在盘上。
+    const continued = await service.submit(
+      { researchRunId: cancelledRunId, work: { search: searchWork() } }, thread);
+    expect(continued.researchRunId).toBe(cancelledRunId);
+    await service.whenIdle(thread.threadId, cancelledRunId);
+    const after = await service.get(thread.threadId, cancelledRunId);
+    // 新一轮跑完了：整段研究回到完成，但取消那一份仍然是取消 —— 两件事各说各的。
+    expect(after.state).toBe('completed');
+    expect(after.counts).toMatchObject({ queued: 0, running: 0, cancelled: 1, done: 2 });
+    expect(after.rounds!.map((round) => round.state)).toEqual(['cancelled', 'done']);
+    expect(await reopened.readSubmission(thread.threadId, cancelledRunId, queuedSubmission.submissionId))
+      .toMatchObject({ state: 'cancelled' });
   });
 
   it('does not keep a submission whose files never landed', async () => {
@@ -1358,7 +1368,10 @@ describe('XResearchTaskService inspect / cancel', () => {
     const store = new XResearchTaskStore(dir);
     const blockerStarted = gate();
     const blockerRelease = gate();
+    // 工作体被调了几次：被取消的那两份**一次都不许**走到这里（链推进到它们时也一样）。
+    const started: string[] = [];
     const { service } = harness(async (work, ctx) => {
+      started.push(ctx.submissionId);
       blockerStarted.open();
       await blockerRelease.promise;
       return echoRunner(work, ctx);
@@ -1389,6 +1402,79 @@ describe('XResearchTaskService inspect / cancel', () => {
     blockerRelease.open();
     await service.whenIdle(thread.threadId, blocker.researchRunId);
     expect((await service.get(thread.threadId, blocker.researchRunId)).state).toBe('completed');
+    // 链推进到那两份被取消的提交时，它们**一次都没起跑**（R83）：取消请求在 `cancel` 返回时就到期了，
+    // 挡住它们的是提交自己的状态，不是那个标记。放行就是「排队被取消的工作又被跑了一遍」——
+    // 它的行会被改写成新结论，而卡上那一轮还写着「已取消」。
+    expect(started).toEqual([blocker.submissionId]);
+    const afterDrain = await service.get(thread.threadId, queued.researchRunId);
+    expect(afterDrain.state).toBe('cancelled');
+    expect([...afterDrain.search, ...afterDrain.read].map((item) => item.status))
+      .toEqual(['cancelled', 'cancelled', 'cancelled', 'cancelled']);
+  });
+
+  it('lets a cancelled research continue with a new round, and keeps the cancelled round cancelled', async () => {
+    // R83：取消停的是**这一轮**，不是整段研究。取消之后同一段研究可以接着 `submit` —— 新的一轮真跑，
+    // 被取消的那一轮的结论、行与收尾一行都不许被改写；重启之后两边的形状都还在。
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const dir = root();
+    const started = gate();
+    let calls = 0;
+    const { service } = harness(async (work, ctx) => {
+      calls += 1;
+      if (calls === 1) {
+        started.open();
+        // 采集层照 `ctx.signal` 收尾：取消之后当场拒绝（这一轮没有结果）。
+        await new Promise<void>((_resolve, reject) => {
+          ctx.signal.addEventListener('abort', () => reject(new Error('cancelled')));
+        });
+      }
+      return echoRunner(work, ctx);
+    }, { store: new XResearchTaskStore(dir) });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() } }, thread);
+    await started.promise;
+    const cancelled = await service.cancel(thread.threadId, submitted.researchRunId, 'user');
+    expect(cancelled.state).toBe('cancelled');
+    const cancelledRows = cancelled.search.map((row) => [row.state, row.status]);
+
+    // 继续研究：这次提交是**新一轮**，不是复活被取消的那一轮。
+    const continued = await service.submit(
+      { researchRunId: submitted.researchRunId, work: { search: searchWork() } }, thread);
+    expect(continued.researchRunId).toBe(submitted.researchRunId);
+    // 提交那一刻就回到「进行中」：状态由提交重算，取消不把研究钉死。
+    expect(continued.snapshot.state).toBe('running');
+    await service.whenIdle(thread.threadId, submitted.researchRunId);
+
+    const after = await service.get(thread.threadId, submitted.researchRunId);
+    expect(after.state).toBe('completed');
+    expect(after.counts).toMatchObject({ submissions: 2, cancelled: 2, done: 2, queued: 0, running: 0 });
+    // 被取消的那一轮一行都没被改写：它没有重跑，也没有被新的一轮收尾盖掉。
+    expect(after.search.slice(0, 2).map((row) => [row.state, row.status])).toEqual(cancelledRows);
+    expect(after.rounds!.map((round) => round.state)).toEqual(['cancelled', 'done']);
+    // 被取消的那一轮保住归因，新的一轮没有主语可说（R81a 只盖真的停过东西的那一次）。
+    expect(after.rounds![0].cancelledBy).toBe('user');
+    expect(after.rounds![1].cancelledBy).toBeUndefined();
+    // 「被取消过」是过去那一轮的事实，不是这段研究此刻的理由：续上新的一轮之后它不再挂着 ——
+    // 否则下一次崩溃会把**新一轮**的中断说成取消（说错了主语）。
+    expect(after.stateReason).toBeUndefined();
+    // 取消那一轮的工作体只被调过一次（第二次调用属于新的一轮）：没有任何重跑。
+    expect(calls).toBe(2);
+
+    // 重启（换 store、换 service 实例）：两份提交都在，取消的那一轮仍是取消。
+    const reopened = harness(echoRunner, { store: new XResearchTaskStore(dir) });
+    const restarted = await reopened.service.get(thread.threadId, submitted.researchRunId);
+    expect(restarted.state).toBe('completed');
+    expect(restarted.rounds!.map((round) => round.state)).toEqual(['cancelled', 'done']);
+    expect((await new XResearchTaskStore(dir).listSubmissions(thread.threadId, submitted.researchRunId))
+      .map((one) => one.state)).toEqual(['cancelled', 'done']);
+    // 翻面：重启之后照样还能再加一轮 ——「不封研究」不是只在本进程的内存里成立。
+    const resumed = await reopened.service.submit(
+      { researchRunId: submitted.researchRunId, work: { read: readWork() } }, thread);
+    expect(resumed.researchRunId).toBe(submitted.researchRunId);
+    await reopened.service.whenIdle(thread.threadId, submitted.researchRunId);
+    const last = await reopened.service.get(thread.threadId, submitted.researchRunId);
+    expect(last.rounds!.map((round) => round.state)).toEqual(['cancelled', 'done', 'done']);
+    expect(last.counts.cancelled).toBe(2);
   });
 });
 

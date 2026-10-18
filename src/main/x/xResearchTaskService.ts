@@ -209,8 +209,9 @@ type ActiveResearch = {
    *  只在这个进程里有效：重启后靠提交记录上的工件 ref 读回来（R20）。 */
   results: Map<string, XResearchResult>;
   controller: AbortController;
-  /** 这段研究被 `cancel` 过：之后排队的提交不再起跑、在飞的那一份按取消收尾。
-   *  跨重启的一致性靠盘上的 `state` / `stateReason`（见 `submit`），这个标记只管本进程的窗口。 */
+  /** 这段研究有一个**未到期**的取消请求：排队的提交不再起跑、在飞的那一份按取消收尾。
+   *  `cancel` 收尾时就把这个标记清掉（R83）：它只盖「当时那几份提交」，不盖此后 `submit` 的新一轮。
+   *  跨重启的一致性靠盘上的 `state` / `stateReason`（见 `repairRestarted`），这个标记只管本进程的窗口。 */
   cancelRequested: boolean;
   /** 这段研究所在的会话被拆掉了：排队的提交不再起跑，在飞的那一份按**中断**收尾（不是用户取消）——
    *  用户按停止是 `cancelRequested`，两者在盘上留下的结论不同（`cancelled` vs `interrupted`）。 */
@@ -374,11 +375,12 @@ export class XResearchTaskService {
    *  `interrupt` / `project`，不另写一份状态规则），再落一次盘 —— 否则同一个「在飞」在每次重开时都会
    *  被当成最新状态读回来。
    *
-   *  例外是**被取消过**的那一段（盘上 `stateReason = 'cancelled'`，见 R28）：崩溃也可能落在 `cancel`
-   *  落盘的两个边界之间 —— 排队的那份已经写成 `cancelled`，索引还没写（或者反过来）。这时把残留的
-   *  提交收成 `interrupted` 就抹掉了「有人停过它」这条黏的事实，而 `submit` 认的正是 `stateReason`：
-   *  工作于是能重新回到一段已取消的研究里。所以按取消收尾（复用 `cancelSubmission`，结论与 `cancel`
-   *  一致），并且落盘的理由也写 `cancelled` —— 写成 `process_restarted` 会盖掉那条黏的事实。 */
+   *  例外是**被取消过**且还没续上新的一轮的那一段（盘上 `stateReason = 'cancelled'`，见 R28）：
+   *  崩溃也可能落在 `cancel` 落盘的两个边界之间 —— 排队的那份已经写成 `cancelled`，索引还没写
+   *  （或者反过来）。这时把残留的提交收成 `interrupted` 就抹掉了「有人停过它」这条事实：那几轮
+   *  明明是取消的，重启后却变成「进程重启」，卡上也就说不出谁停的。所以按取消收尾（复用
+   *  `cancelSubmission`，结论与 `cancel` 一致），并且落盘的理由也写 `cancelled`。
+   *  续上新的一轮之后 `submit` 已经把这条理由清掉（R83）：那时的残留属于**新一轮**，按中断收尾。 */
   private async repairRestarted(active: ActiveResearch): Promise<void> {
     const unsettled = [...active.submissions.values()]
       .filter((submission) => submission.state === 'queued' || submission.state === 'running');
@@ -423,15 +425,18 @@ export class XResearchTaskService {
     if (input.researchRunId && !opened) {
       throw new KydogError('research.not_found', 'X research task not found');
     }
-    // 已取消的研究不能续跑（`cancel` 是唯一的控制，没有 pause / resume）。放行这次提交就是**静默复活**：
-    // 排上链的那一份会被 `run` 的闸当场写成 `cancelled`，而模型拿到的提交回执是一段「已排上」的
-    // 研究 —— 它于是一遍遍 `wait` 一段永远不会动的研究，且没有任何一次调用会说出原因。判据全在盘上，
-    // 跨重启一致；要接着做就显式开一段新研究（`research.not_found` 的下一步是把 id 找对，处置不同）。
-    if (opened && (opened.cancelRequested || opened.record.state === 'cancelled'
-      || opened.record.stateReason === 'cancelled')) {
-      throw new KydogError('research.cancelled', 'X research task was cancelled; start a new research');
-    }
     const active = opened ?? this.create(owner, researchRunId);
+    // 已取消的研究不再封死（R83）：停下的那一轮永远是取消的（`state: 'cancelled'`、行与
+    // `collectionStop` 都不再改写、也永不再跑），但这之后再 `submit` 是**新一轮**，不是把取消过的工作
+    // 复活。三件事要在这里恢复成「可以开新一轮」的样子：
+    //  · 取消时 abort 过的控制器 —— 不换一份的话，`runWork` 拿到的信号一上来就是 aborted，
+    //    采一次都不会发生（表现是「提交被接收、什么都不动」，正是这条契约要消掉的那种静默）；
+    //  · 盘上「被取消过」的理由 —— 它的作用曾经是让 `submit` 拒绝续跑，现在只剩让重启修复把
+    //    残留的提交收成取消。留着它，下一次崩溃会把**新一轮**的中断说成取消（说错了主语）；
+    //  · `record.state` 不用动：`persist` 里的 `project` 每次都从提交重算，加上这一份排队就是「进行中」。
+    // 取消请求本身（`cancelRequested`）在 `cancel` 收尾时已经清掉：落在那之后才排到链上的提交看得到 false。
+    if (active.controller.signal.aborted) active.controller = new AbortController();
+    if (active.record.stateReason === 'cancelled') delete active.record.stateReason;
     // 续跑同一段研究时，最后提交进它的会话接手这段研究：旧会话的拆除不该打断它。
     if (owner.ledger !== undefined) active.ledger = owner.ledger;
     const createdAt = this.now();
@@ -645,12 +650,16 @@ export class XResearchTaskService {
     };
   }
 
-  /** 取消（spec §4.2）：`cancel` 是唯一的控制，没有 pause / resume。
+  /** 取消（spec §4.2）：停在飞的这一轮。
    *
    *  排队中的提交当场写成 `cancelled` —— 一次导航都不会发生；在飞的那一份由任务的 AbortController
    *  停下，采集层照 `ctx.signal` 收尾。**已经收尾的行保住它们的结论**（取消不抹掉观察过的事实），
    *  没收尾的行写成 `cancelled`：那是「为什么停了」的事实，不是崩溃留下的「中断」。
    *  已完成的提交不受影响：`wait` 照样交付它们。
+   *
+   *  **取消不封研究**（R83）：被取消的那几轮永远是取消的（不会再跑、不会被改写），但同一段研究可以
+   *  接着 `submit` 新一轮 ——「停下这一轮」与「这一段再也做不了」是两件事，混成一件就逼模型另开一段
+   *  研究去接着做同一个问题（现场那三张卡就是这么来的）。请求本身到期在下面收尾时清掉。
    *
    *  没有排队/在飞的提交就是空操作：不改状态、不写盘，也不把研究毒成「已取消」（否则一段做完的
    *  研究只因为点过一次取消就再也追加不了工作）。`cancelledBy` 因此只在真停下东西时才盖章 ——
@@ -683,12 +692,17 @@ export class XResearchTaskService {
     }
     // 落盘失败不该把已经发生的取消说成没发生：内存里它已经是取消后的样子了（与 `wait` 的交付
     // 标记同一条处置），日志是这件事唯一露面的地方。
-    return this.persist(active, queued, 'cancelled').catch((error: unknown) => {
+    const snapshot = await this.persist(active, queued, 'cancelled').catch((error: unknown) => {
       logger.warn('x_research', 'could not persist the cancellation', {
         threadId: active.record.threadId, researchRunId: active.record.researchRunId, err: String(error),
       });
       return this.snapshotOf(active);
     });
+    // 取消请求到期（R83）：被请求停下的是**当时**那几份提交，它们已经各自收尾了（上面等过在飞那一份）。
+    // 留着这个标记会让 `run` 把此后排到链上的新一轮也当场收成取消 —— 研究于是再也接不了工作，
+    // 而那正是这次要废掉的那条契约。
+    active.cancelRequested = false;
+    return snapshot;
   }
 
   /** 会话被拆 / 对话被删：这条 thread 的全部在飞提交照信号收尾成**中断**、写进盘，然后淘汰内存缓存。
@@ -906,7 +920,12 @@ export class XResearchTaskService {
 
   private async run(active: ActiveResearch, submission: XResearchSubmission,
     work: XResearchWorkRequest): Promise<void> {
-    // 取消之后不再起跑：排队中的提交在 `cancel` 那一刻就有结论，采集层一次都不该被碰。
+    // 这一份在轮到自己之前已经有结论了（`cancel` 当场给排队的那几份写了 `cancelled`、`disposeThread`
+    // 写了 `interrupted`）：绝不起跑，也不重写 —— 被取消的那一轮永远是取消的（R83）。
+    // 这条闸认的是**提交自己的状态**，不是「研究被取消过没有」：后者在续上新的一轮之后是 false，
+    // 而链上排在后面的那一份仍不该起跑。
+    if (submission.state !== 'queued') return;
+    // 取消请求还没到期：这一次 `run` 是在 `cancel` 的等待窗口里轮到的，采集层一次都不该被碰。
     if (active.cancelRequested) {
       this.cancelSubmission(submission);
       await this.persist(active, [submission], 'cancelled');
@@ -1091,9 +1110,11 @@ export class XResearchTaskService {
     active.record.updatedAt = this.now();
     const settled = this.project(active);
     active.record.state = settled.state;
-    // 「被取消过」是黏的：取消之后每一次落盘（交付标记、更新）都没有理由可写，但它不许把这件事
-    // 擦掉 —— 重启后 `cancelRequested` 已经不在内存里（只在本次进程的窗口里有效），`stateReason`
-    // 是「这段研究被停过」唯一跨进程的痕迹：`submit` 靠它拒绝续跑，卡片靠它说「被取消过」。
+    // 「被取消过」在这一段续上新的一轮之前是黏的：取消之后每一次落盘（交付标记、更新）都没有理由
+    // 可写，但它不许把这件事擦掉 —— 重启后 `cancelRequested` 已经不在内存里（只在本次进程的窗口里
+    // 有效），`stateReason` 是「这段研究被停过」唯一跨进程的痕迹：重启修复靠它把残留的提交收成取消
+    // （而不是「进程重启」）。续上新的一轮时 `submit` 会把它清掉（R83）：那之后「哪一轮被取消」由
+    // 提交自己说（`state: 'cancelled'`），研究级理由再留着就会把新一轮的中断说成取消。
     //
     // 投影里的 `submission_unreadable` 也不许盖掉它：那是**读盘缺口**（有一份提交文件读不出来），
     // 不是「为什么停了」的事实。让它盖掉就等于把一段已取消的研究在重启后变回可追加 —— `submit`

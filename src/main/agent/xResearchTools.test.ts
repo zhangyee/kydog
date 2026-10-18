@@ -8,7 +8,6 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { tempXArtifactStore } from '../../test-support/xArtifactStore';
-import { KydogError } from '../../shared/errors';
 import { logger } from '../log';
 import type { XBudgetPolicy } from '../x/xResearchBudget';
 import type { XResearchDeliveryEnvelope } from '../x/xResearchTaskShell';
@@ -457,20 +456,30 @@ describe('x_research cancel', () => {
     expect(waited.snapshot.stateReason).toBe('cancelled');
     expect((await service.get(threadId, first.researchRunId)).stateReason).toBe('cancelled');
 
-    // 已取消的研究不能再追加工作：放行就是**静默复活** —— 它会被当场写成 cancelled，
-    // 而模型拿到的回执是一段「已排上」的研究，于是一遍遍 wait 一段永远不会动的研究。
-    const rejected = await execute(tool, {
+    // 取消**不封研究**（R83）：停下的那两轮永远是取消的，而同一段研究可以接着提交**新一轮** ——
+    // 「停下这一轮」与「这一段再也做不了」是两件事。新的一轮真跑，取消的那两份一行都不改。
+    const continued = envelopeOf(await execute(tool, {
       action: 'submit', researchRunId: first.researchRunId, search: searchArgs(),
-    }).then(() => null, (error: unknown) => error);
-    expect(rejected).toBeInstanceOf(KydogError);
-    expect(rejected).toMatchObject({ code: 'research.cancelled' });
-    // 翻面：闸认的是**那段研究**，不是这个 thread —— 同一 thread 上开一段新研究照样能提交。
+    }));
+    expect(continued.researchRunId).toBe(first.researchRunId);
+    // 提交那一刻就回到「进行中」：`record.state` 是提交重算出来的，不是被取消钉死的。
+    expect(continued.snapshot.state).toBe('running');
+    await service.whenIdle(threadId, first.researchRunId);
+    const after = envelopeOf(await execute(tool, {
+      action: 'wait', researchRunId: first.researchRunId,
+    }, 'wait-2'));
+    expect(after.deliveries).toHaveLength(1);
+    expect(after.snapshot.state).toBe('completed');
+    // 取消那两份仍是取消（从没被重跑：工作体只被调了三次 —— 第一份、被取消的那份、新的这份）。
+    expect(after.snapshot.counts).toMatchObject({ cancelled: 2, done: 2, queued: 0, running: 0 });
+    expect(after.snapshot.rounds!.filter((round) => round.state === 'cancelled')).toHaveLength(2);
+    expect(calls).toHaveLength(3);
+    // 翻面：一段从没被取消过的研究在同一刻没有理由可说 —— 上面那些 `cancelled` 不是「谁都带上」。
     const fresh = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
     expect(fresh.researchRunId).not.toBe(first.researchRunId);
-    // 翻面：从来没被取消的研究，`wait` 之后照样没有 `stateReason`（上面那条不是因为谁都带上它）。
     const freshWait = envelopeOf(await execute(tool, {
       action: 'wait', researchRunId: fresh.researchRunId,
-    }, 'wait-2'));
+    }, 'wait-3'));
     expect(freshWait.deliveries).toHaveLength(1);
     expect(freshWait.snapshot.stateReason).toBeUndefined();
     expect((await service.get(threadId, fresh.researchRunId)).stateReason).toBeUndefined();
