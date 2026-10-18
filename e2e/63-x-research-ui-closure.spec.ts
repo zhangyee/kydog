@@ -970,6 +970,8 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card).toHaveCount(1);
     await expect(card.getByTestId('x-research-objective')).toHaveText(RETRY_OBJECTIVE);
     await expect(card).toHaveAttribute('data-status', 'cancelled');
+    // 终态默认收起：展开才看得见两个分段头（它们属于行那一段，不是卡头）。
+    await card.getByTestId('x-research-toggle').click();
     const segments = card.getByTestId('x-research-segment');
     await expect(segments).toHaveCount(2);
     await expect(segments.nth(0)).toHaveAttribute('data-status', 'cancelled');
