@@ -442,6 +442,8 @@ describe('x_research cancel', () => {
       action: 'cancel', researchRunId: first.researchRunId,
     }, 'cancel-1'));
     expect(cancelled.action).toBe('cancel');
+    // 主语是**模型**（R81a）：工具的 cancel 不是用户按了停止，卡头不该说「你取消的」。
+    expect(cancelled.snapshot.cancelledBy).toBe('agent');
     // 排队中的那一份一次都没起跑：cancel 之后没有任何导航发生。
     expect(calls).toHaveLength(2);
     expect(cancelled.snapshot.counts).toMatchObject({ done: 1, cancelled: 2 });

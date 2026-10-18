@@ -207,7 +207,8 @@ export function registerAllHandlers(): void {
   registerHandler('xResearch.taskCancel', (args, evt) => {
     assertResearchViewer(args.threadId, evt.sender);
     // 与工具 `cancel` 动作调的是同一个服务方法：两个表面共用一处实现，不会各自漂。
-    return requireXResearchTaskService().cancel(args.threadId, args.researchRunId);
+    // 这条路上的取消是**用户**按了卡上的取消（R81a）：卡头据此说「你中途取消」。
+    return requireXResearchTaskService().cancel(args.threadId, args.researchRunId, 'user');
   });
 
   // ── 内置浏览器（侧栏那条路）──

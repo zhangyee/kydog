@@ -49,8 +49,8 @@ function fakeService(overrides: Partial<Record<'list' | 'get' | 'inspect' | 'can
       h.calls.push({ method: 'inspect', args: [threadId, researchRunId, input] });
       return { snapshot: snapshot({ threadId, researchRunId }), items: [] };
     },
-    cancel: async (threadId: string, researchRunId: string) => {
-      h.calls.push({ method: 'cancel', args: [threadId, researchRunId] });
+    cancel: async (threadId: string, researchRunId: string, cancelledBy?: string) => {
+      h.calls.push({ method: 'cancel', args: [threadId, researchRunId, cancelledBy] });
       return snapshot({ threadId, researchRunId, state: 'cancelled' });
     },
   };
@@ -185,7 +185,8 @@ describe('x research task RPC 转发到 service 上对应的那一个', () => {
   it('taskCancel 走的是服务上那个唯一的 cancel（与工具 cancel 动作同一处实现）', async () => {
     await expect(call('xResearch.taskCancel', { threadId: THREAD, researchRunId: RUN }))
       .resolves.toMatchObject({ state: 'cancelled' });
-    expect(h.calls).toEqual([{ method: 'cancel', args: [THREAD, RUN] }]);
+    // 这条路上的主语是**用户**（R81a）：卡头据此说「你中途取消」。
+    expect(h.calls).toEqual([{ method: 'cancel', args: [THREAD, RUN, 'user'] }]);
   });
 });
 

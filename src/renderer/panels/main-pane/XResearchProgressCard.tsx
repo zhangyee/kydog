@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { XResearchStatus } from '../../../shared/xResearchStatus';
 import type {
-  XResearchTaskSnapshot, XResearchTaskState, XResearchWorkItem,
+  XResearchCancelActor, XResearchTaskSnapshot, XResearchTaskState, XResearchWorkItem,
 } from '../../../shared/xResearchTask';
 import { useXResearchTaskStore } from '../../stores/xResearchTaskStore';
 import { confirm } from '../../stores/confirmStore';
@@ -93,10 +93,17 @@ function rowWithoutConclusion(row: XResearchWorkItem): boolean {
 }
 
 /** `stateReason` 只在它能解释状态时才当括注出现：「取消」+「被取消」是同一件事说两遍。
+ *  `cancelledBy` 答的是「谁停的」（R81a）：用户没有按过取消时，卡面不许把模型自己停的写成无主语的
+ *  「被取消」—— 两种主语各自有一句话，旧数据（没有这个字段）照旧说今天的措辞。
  *  不认识的词不进卡面：它是开放字符串，猜一句解释会把「有一份提交读不出来」说成用户动作。 */
-function stateNote(reason: string | undefined, state: XResearchTaskState): string | null {
+function stateNote(reason: string | undefined, state: XResearchTaskState,
+  cancelledBy?: XResearchCancelActor): string | null {
   if (!reason) return null;
-  if (reason === 'cancelled') return state === 'cancelled' ? null : '部分被取消';
+  if (reason === 'cancelled') {
+    if (cancelledBy === 'agent') return '模型中途取消';
+    if (cancelledBy === 'user') return '你中途取消';
+    return state === 'cancelled' ? null : '部分被取消';
+  }
   if (reason === 'process_restarted') return '进程重启';
   if (reason === 'submission_unreadable') return '有提交记录读不出来';
   return null;
@@ -297,7 +304,7 @@ export function XResearchProgressCard({ threadId, researchRunId }: {
   }
 
   const state = snapshot?.state;
-  const note = state ? stateNote(snapshot.stateReason, state) : null;
+  const note = state ? stateNote(snapshot.stateReason, state, snapshot.cancelledBy) : null;
   const expanded = manualExpanded ?? (state === 'running');
   // 有快照时仍以快照为准（「不在这个窗口的标签页」那一条也可能带着广播来的快照）。
   const status = state ?? (gone ? 'missing' : 'loading');

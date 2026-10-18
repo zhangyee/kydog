@@ -1132,7 +1132,9 @@ describe('XResearchTaskService inspect / cancel', () => {
     const first = await service.submit({ work: { search: searchWork() } }, thread);
     await service.whenIdle(thread.threadId, first.researchRunId);
     const before = await service.get(thread.threadId, first.researchRunId);
-    const after = await service.cancel(thread.threadId, first.researchRunId);
+    // 带一个主语调空操作：返回的快照仍必须与调用前**逐字节相同** —— 有人按了取消但什么都没停，
+    // 「谁取消的」也不能写上去（否则一段做完的研究会凭空多出一句「模型中途取消」）。
+    const after = await service.cancel(thread.threadId, first.researchRunId, 'user');
     // 空操作：连 revision 都不动（动了就说明白写了一次盘、改了一次状态）。
     expect(after).toEqual(before);
     const second = await service.submit({ researchRunId: first.researchRunId, work: { read: readWork() } }, thread);
@@ -1232,6 +1234,32 @@ describe('XResearchTaskService inspect / cancel', () => {
     // 换一个 store 实例读同一块盘：返回时盘上已经是取消后的样子（R12：先 flush 再返回）。
     const persisted = await new XResearchTaskStore(dir).readTask(thread.threadId, submitted.researchRunId);
     expect(persisted).toMatchObject({ state: 'cancelled', stateReason: 'cancelled' });
+  });
+
+  it('keeps who cancelled on disk, so a restart still says who stopped it', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const dir = root();
+    const started = gate();
+    const { service } = harness(async (work, ctx) => {
+      started.open();
+      // 采集层照 `ctx.signal` 收尾（取消之后它返回一份结果，不抛）。
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return echoRunner(work, ctx);
+    }, { store: new XResearchTaskStore(dir) });
+    const thread = owner();
+    const submitted = await service.submit({ work: { search: searchWork() } }, thread);
+    await started.promise;
+    const snapshot = await service.cancel(thread.threadId, submitted.researchRunId, 'agent');
+    expect(snapshot.cancelledBy).toBe('agent');
+    // 主语随取消一起落盘：换 store、换 service 实例（= 重启）读回来的还是同一个主语。
+    expect(await new XResearchTaskStore(dir).readTask(thread.threadId, submitted.researchRunId))
+      .toMatchObject({ stateReason: 'cancelled', cancelledBy: 'agent' });
+    const reopened = harness(echoRunner, { store: new XResearchTaskStore(dir) });
+    expect((await reopened.service.get(thread.threadId, submitted.researchRunId)).cancelledBy)
+      .toBe('agent');
   });
 
   it('settles every queued submission at once, on the returned snapshot and on disk', async () => {

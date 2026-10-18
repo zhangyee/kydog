@@ -196,6 +196,24 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
     expect(snap.counts.submissions).toBe(2);
   });
 
+  it('carries who cancelled the research from the record onto the snapshot', () => {
+    const cancelled = xResearchTaskSnapshot(
+      record({ state: 'cancelled', stateReason: 'cancelled', cancelledBy: 'agent' }),
+      [submission({ state: 'cancelled' })],
+    );
+    // 主语是盘上那条事实（R81a）：投影不猜「大概是谁」，也不因为状态是 cancelled 就默认为 user。
+    expect(cancelled.cancelledBy).toBe('agent');
+    // 翻面：同一个理由换一个主语 → 跟着换；没有字段（旧数据）→ 也说没有，不编一个。
+    expect(xResearchTaskSnapshot(
+      record({ state: 'cancelled', stateReason: 'cancelled', cancelledBy: 'user' }),
+      [submission({ state: 'cancelled' })],
+    ).cancelledBy).toBe('user');
+    expect(xResearchTaskSnapshot(
+      record({ state: 'cancelled', stateReason: 'cancelled' }),
+      [submission({ state: 'cancelled' })],
+    ).cancelledBy).toBeUndefined();
+  });
+
   it('puts every work item in exactly one bucket by its state and status', () => {
     const snap = xResearchTaskSnapshot(record(), [submission({ workItems: [
       item({ state: 'queued' }),

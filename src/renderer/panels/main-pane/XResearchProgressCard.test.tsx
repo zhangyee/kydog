@@ -306,6 +306,27 @@ describe('XResearchProgressCard', () => {
     expect(header).not.toContain('（');
   });
 
+  it('says who cancelled when the snapshot knows', async () => {
+    // 旧数据（没有 `cancelledBy`）走的仍是今天那句措辞 —— 这里的第一帧就是那个形状。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 2, state: 'cancelled',
+      stateReason: 'cancelled' }));
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('X 研究 · 取消');
+
+    // 模型自己停的：不许写成无主语的「被取消」。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 3, state: 'completed',
+      stateReason: 'cancelled', cancelledBy: 'agent' }));
+    mounted.rerender(props);
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('完成（模型中途取消）');
+
+    // 用户按的取消说「你」：两个主语各自一句话（翻面：同一条理由换主语就跟着换）。
+    useXResearchTaskStore.getState().upsert(snapshot({ revision: 4, state: 'cancelled',
+      stateReason: 'cancelled', cancelledBy: 'user' }));
+    mounted.rerender(props);
+    expect(visibleText(mounted.find('x-research-toggle'))).toContain('取消（你中途取消）');
+  });
+
   it('states a queued or settled article obligation without claiming action', async () => {
     useXResearchTaskStore.getState().upsert(snapshot({ read: [
       workItem({ section: 'read', label: 'queued-target', state: 'queued', article: 'pending' }),

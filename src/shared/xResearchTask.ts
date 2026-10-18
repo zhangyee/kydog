@@ -10,6 +10,10 @@ import type { XReportRunScopeFacts, XReportScopeFacts } from './xReportScopeFact
 /** 研究段的状态词。`interrupted` 只在盘上还留着未收尾的工作时出现（§4.4 的崩溃诚实性）。 */
 export type XResearchTaskState = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
+/** 取消是谁发起的（R81a）：模型在 `x_research cancel` 里自己停的，还是用户按了卡上的取消。
+ *  只对「确实停下过东西」的那次取消有意义 —— 空操作的取消不盖这个章。 */
+export type XResearchCancelActor = 'user' | 'agent';
+
 export type XResearchSection = 'search' | 'read';
 
 /** 工作项的实时阶段：搜索行取自 `searchX` 的 stage，读取行取自 `XReadStage.current`，
@@ -79,6 +83,9 @@ export type XResearchTaskRecord = {
   revision: number;
   state: XResearchTaskState;
   stateReason?: string;
+  /** 这次停止是谁发起的（R81a）。与 `stateReason` 一起落盘：重启后卡面仍能说「模型中途取消」
+   *  而不是无主语的「被取消」。 */
+  cancelledBy?: XResearchCancelActor;
   browserTabId?: string;
   submissionIds: string[];
 };
@@ -93,6 +100,8 @@ export type XResearchTaskSnapshot = {
    *  `counts` 是按**工作项**分桶的，两者可以不一致 —— 状态词取这里，桶只喂行内数字（「失败 2」）。 */
   state: XResearchTaskState;
   stateReason?: string;
+  /** 与 `record.cancelledBy` 同一份事实：谁停的这段研究（R81a）。旧数据没有这个字段，卡面照旧。 */
+  cancelledBy?: XResearchCancelActor;
   createdAt: string;
   updatedAt: string;
   /** 卡头那句话：这段研究**最初**一次提交要回答的问题（R10 / spec §5.3）——
@@ -254,6 +263,7 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
     // `xResearchTaskState` 是 service 做这个决定时用的那把尺子，不是投影里的第二份真相。
     state: record.state,
     stateReason: record.stateReason,
+    cancelledBy: record.cancelledBy,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     objective: submissions[0]?.objective ?? '', // R10 / spec §5.3：最早一次提交，`[]` 时为空串

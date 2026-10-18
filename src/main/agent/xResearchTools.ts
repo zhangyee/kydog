@@ -165,7 +165,8 @@ export function createXResearchTools(
         if (delivered.delivery) deps.observeDelivery(delivered.delivery.result);
         return envelope;
       }
-      const snapshot = await deps.service.cancel(deps.threadId, researchRunId);
+      // 工具里的取消是**模型**自己停的（R81a）：卡头据此说「模型中途取消」，而不是无主语的「被取消」。
+      const snapshot = await deps.service.cancel(deps.threadId, researchRunId, 'agent');
       return deliverEnvelope({ researchRunId, snapshot, delivery: null, undelivered: [], action });
     },
   };

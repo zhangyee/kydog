@@ -7,8 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
 import { logger } from '../log';
 import type {
-  XResearchSection, XResearchSubmission, XResearchTaskRecord, XResearchTaskSnapshot,
-  XResearchTaskState, XResearchWorkItem,
+  XResearchCancelActor, XResearchSection, XResearchSubmission, XResearchTaskRecord,
+  XResearchTaskSnapshot, XResearchTaskState, XResearchWorkItem,
 } from '../../shared/xResearchTask';
 import { X_RESEARCH_FAILURE_STATUSES, xResearchTaskSnapshot, xResearchTaskState } from '../../shared/xResearchTask';
 import type { XResearchStatus, XStopReason } from '../../shared/xResearchStatus';
@@ -612,18 +612,23 @@ export class XResearchTaskService {
    *  已完成的提交不受影响：`wait` 照样交付它们。
    *
    *  没有排队/在飞的提交就是空操作：不改状态、不写盘，也不把研究毒成「已取消」（否则一段做完的
-   *  研究只因为点过一次取消就再也追加不了工作）。 */
-  async cancel(threadId: string, researchRunId: string): Promise<XResearchTaskSnapshot> {
+   *  研究只因为点过一次取消就再也追加不了工作）。`cancelledBy` 因此只在真停下东西时才盖章 ——
+   *  空操作连「谁取消的」都不该在盘上留下（R81a）。 */
+  async cancel(threadId: string, researchRunId: string,
+    cancelledBy?: XResearchCancelActor): Promise<XResearchTaskSnapshot> {
     const active = await this.open(threadId, researchRunId);
     if (!active) throw new KydogError('research.not_found', 'X research task not found');
-    return this.cancelActive(active);
+    return this.cancelActive(active, cancelledBy);
   }
 
-  private async cancelActive(active: ActiveResearch): Promise<XResearchTaskSnapshot> {
+  private async cancelActive(active: ActiveResearch,
+    cancelledBy?: XResearchCancelActor): Promise<XResearchTaskSnapshot> {
     const inFlight = [...active.submissions.values()].filter(
       (submission) => submission.state === 'queued' || submission.state === 'running',
     );
     if (!inFlight.length) return this.snapshotOf(active);
+    // 谁停的（R81a）：有东西真的停下才盖章。空操作的返回必须与调用前逐字节相同。
+    if (cancelledBy) active.record.cancelledBy = cancelledBy;
     active.cancelRequested = true;
     active.controller.abort();
     const queued = inFlight.filter((submission) => submission.state === 'queued');
