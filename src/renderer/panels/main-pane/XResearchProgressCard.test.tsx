@@ -93,6 +93,23 @@ function rows(tree: unknown) {
   return findAllWhere(tree, (element) => element.props['data-testid'] === 'x-research-row');
 }
 
+/** 三层的缩进：段头 0、轮次头 12、行 24。`paddingLeft` 就是这一层级的记号 ——
+ *  断言拿的是渲染出来的 style，不是「代码里写了常量」。 */
+function indentOf(element: { props: { style?: { paddingLeft?: string } } }): number {
+  return Number.parseFloat(element.props.style?.paddingLeft ?? '0');
+}
+
+/** 段里轮次头与行的树上次序（深度优先）：段头自己不在里面（它由 `indentOf(segment)` 断）。
+ *  这一串同时证明了「行在自己那一轮的头之后、下一轮的头之前」与三层缩进。 */
+function rowsAndRounds(node: unknown): Array<{ kind: 'round' | 'row'; text: string; indent: number }> {
+  return findAllWhere(node, (element) => element.props['data-testid'] === 'x-research-round'
+    || element.props['data-testid'] === 'x-research-row')
+    .map((element) => ({
+      kind: element.props['data-testid'] === 'x-research-round' ? 'round' : 'row',
+      text: visibleText(element), indent: indentOf(element),
+    }));
+}
+
 function phaseDetails(tree: unknown) {
   return findAllWhere(tree, (element) => element.props['data-testid'] === 'x-research-phase-detail');
 }
@@ -134,29 +151,39 @@ describe('XResearchProgressCard', () => {
     expect(visibleText(mounted.find('x-research-budget'))).toBe('滚动 12/12500 · 展开 2/10000');
   });
 
-  it('groups rows into 搜索 / 读取 sections with per-section numbering', async () => {
+  it('draws the round level between the segment and its rows, and the header names the operation', async () => {
+    // 旧数据（没有 `rounds`，行上也没有 `submissionId`）：两节各是一轮。卡上不再画「搜索 / 读取」
+    // 两个节标题 —— 每个轮次头已经说了操作与这一轮的行数。
     useXResearchTaskStore.getState().upsert(running);
     const mounted = mount(XResearchProgressCard, props);
     await mounted.settle();
 
-    const searchText = visibleText(mounted.find('x-research-search'));
-    const readText = visibleText(mounted.find('x-research-read'));
-    expect(searchText.startsWith('搜索')).toBe(true);
-    expect(readText.startsWith('读取')).toBe(true);
-
-    // 每一段各自从 ① 起：用行序而非「出现过 ①」来断，否则两段共用一个计数器也绿。
-    const order = (text: string, parts: string[]) => parts.map((part) => {
-      const at = text.indexOf(part);
-      expect(at, `${part} 不在这一段的文本里：${text}`).toBeGreaterThanOrEqual(0);
-      return at;
-    });
-    const search = order(searchText, ['①', 'Qwen3.8 27B', '②', 'Qwen3.8 Q4 量化']);
-    expect(search).toEqual([...search].sort((a, b) => a - b));
-    const read = order(readText, ['①', 'status/19581', '②', 'status/19583']);
-    expect(read).toEqual([...read].sort((a, b) => a - b));
-    // 读取段的 ① 与搜索段的 ① 是同一个字符：这条断的是「两段都从头数」，不是「只有一个 ①」。
-    expect(searchText.indexOf('搜索①')).toBe(0);
-    expect(readText.indexOf('读取①')).toBe(0);
+    const segment = mounted.find('x-research-segment');
+    const levels = rowsAndRounds(segment);
+    // 段头之后是「轮次头 + 这一轮的行」，再是下一轮的轮次头与行。
+    expect(levels.map((level) => level.kind)).toEqual(
+      ['round', 'row', 'row', 'round', 'row', 'row', 'row', 'row']);
+    expect(levels.filter((level) => level.kind === 'round').map((level) => level.text))
+      .toEqual(['第 1 轮 · 2 个 query', '第 2 轮 · 补读 4 个目标']);
+    // 操作由轮次头自己带着（`data-operation` + 单位词：query / 目标），不从节的标题来。
+    const rounds = findAllWhere(segment,
+      (element) => element.props['data-testid'] === 'x-research-round');
+    expect(rounds.map((round) => round.props['data-operation'])).toEqual(['search', 'read']);
+    expect(rounds.map((round) => round.props['data-round'])).toEqual([1, 2]);
+    expect(rows(segment).map((row) => row.props['data-section']))
+      .toEqual(['search', 'search', 'read', 'read', 'read', 'read']);
+    // 行号在段内连续、跨操作不重置：搜索两行是 ① ②，读取四行接着 ③ ④ ⑤ ⑥。
+    expect(levels.filter((level) => level.kind === 'row')
+      .map((level) => /^[①-⑩]/.exec(level.text)?.[0]))
+      .toEqual(['①', '②', '③', '④', '⑤', '⑥']);
+    // 段头是纯序号：圈号只给行用，两个层级不共用字形（段头不在 levels 里，单独断）。
+    expect(visibleText(segment)).toMatch(/^1\./);
+    // 三层缩进严格递增：段头（0）< 轮次头（12）< 行（24）。顺序再多、字号再像也分得开。
+    expect(indentOf(segment)).toBe(0);
+    expect(levels[0]!.indent).toBe(12);
+    expect(levels[1]!.indent).toBe(24);
+    expect(indentOf(segment)).toBeLessThan(levels[0]!.indent);
+    expect(levels[0]!.indent).toBeLessThan(levels[1]!.indent);
   });
 
   it('reads a section that finished with failures as settled, not as still running', async () => {
@@ -363,7 +390,7 @@ describe('XResearchProgressCard', () => {
     expect(phaseDetails(mounted.tree).map(visibleText)).toEqual(['读文章']);
   });
 
-  it('opens a round header for every submission of a section, in order, with numbering continuous', async () => {
+  it('opens a round header for every submission, in submit order, with one numbering run through the segment', async () => {
     // 现场形状（一张卡里一段研究跑了四次提交）：搜 5、补搜 3、读 3、补读 2。同一次提交的行
     // `submissionId` 相同 —— 卡按它切轮，不靠时间窗或阈值。
     const roundOf = (submissionId: string, section: XResearchWorkItem['section'], labels: string[]) =>
@@ -387,35 +414,33 @@ describe('XResearchProgressCard', () => {
 
     const headers = findAllWhere(mounted.tree,
       (element) => element.props['data-testid'] === 'x-research-round');
-    // 两段各两轮：先说的这一轮是首个提交，后面的都是往同一段研究里补的步骤。
+    // 每一份提交一个轮次头，编号在这一段里连续数下去（旧数据没有 `rounds`，两节按「搜索、读取」相接）。
     expect(headers.map(visibleText)).toEqual([
       '第 1 轮 · 5 个 query', '第 2 轮 · 补搜 3 个 query',
-      '第 1 轮 · 3 个目标', '第 2 轮 · 补读 2 个目标',
+      '第 3 轮 · 补读 3 个目标', '第 4 轮 · 补读 2 个目标',
     ]);
     expect(headers.map((header) => header.props['data-operation']))
       .toEqual(['search', 'search', 'read', 'read']);
-    // `data-round` 是**这一段里**第几次提交（两段各自从 1 起）。
-    expect(headers.map((header) => header.props['data-round'])).toEqual([1, 2, 1, 2]);
+    expect(headers.map((header) => header.props['data-round'])).toEqual([1, 2, 3, 4]);
     expect(rows(mounted.tree)).toHaveLength(13);
 
-    // 行必须在自己那一轮的头之后、下一轮的头之前；编号在段内连续（第二轮接着 ⑥⑦⑧，不从 ① 重来）。
+    // 行必须在自己那一轮的头之后、下一轮的头之前；行号在段内连续（第二轮接着 ⑥，还是不从 ① 重来；
+    // 换成读取也不重置 —— 搜索 8 行之后的读取行是 ⑨ 起）。
     const inOrder = (text: string, parts: string[]) => parts.map((part) => {
       const at = text.indexOf(part);
       expect(at, `${part} 不在这一段里：${text}`).toBeGreaterThanOrEqual(0);
       return at;
     });
-    const search = inOrder(visibleText(mounted.find('x-research-search')), [
+    const segmentText = visibleText(mounted.find('x-research-segment'));
+    const order = inOrder(segmentText, [
       '第 1 轮 · 5 个 query', '①', 's1', '②', 's2', '③', 's3', '④', 's4', '⑤', 's5',
       '第 2 轮 · 补搜 3 个 query', '⑥', 's6', '⑦', 's7', '⑧', 's8',
+      '第 3 轮 · 补读 3 个目标', '⑨', 'r1', '⑩', 'r2', '⑪', 'r3',
+      '第 4 轮 · 补读 2 个目标', '⑫', 'r4', '⑬', 'r5',
     ]);
-    expect(search).toEqual([...search].sort((a, b) => a - b));
-    const read = inOrder(visibleText(mounted.find('x-research-read')), [
-      '第 1 轮 · 3 个目标', '①', 'r1', '②', 'r2', '③', 'r3',
-      '第 2 轮 · 补读 2 个目标', '④', 'r4', '⑤', 'r5',
-    ]);
-    expect(read).toEqual([...read].sort((a, b) => a - b));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
 
-    // 对照（同一条用例）：只有一轮的一段**不画**轮次头 —— 「总是画一个轮次头」在这里就红了。
+    // 对照（同一条用例）：只有一轮的一段**也画**轮次头 —— 三层结构从第一轮就在，不是第二轮才长出来。
     const oneRound = snapshot({ researchRunId: 'xrun-one', runId: 'turn-one',
       objective: '只有一轮的一段',
       search: roundOf('sub-only', 'search', ['only-1', 'only-2']),
@@ -425,12 +450,11 @@ describe('XResearchProgressCard', () => {
     const single = mount(XResearchProgressCard,
       { threadId: 'thread-1', groupKey: 'turn-one', researchRunIds: ['xrun-one'] });
     await single.settle();
-    expect(findAllWhere(single.tree,
-      (element) => element.props['data-testid'] === 'x-research-round')).toHaveLength(0);
-    // 单轮与今天的行文本一样：① 起头，行自己的数字不变。
-    expect(visibleText(single.find('x-research-search'))
-      .startsWith('搜索①only-1')).toBe(true);
-    expect(visibleText(single.find('x-research-read')).startsWith('读取①only-r1')).toBe(true);
+    const singleSegment = single.find('x-research-segment');
+    expect(rowsAndRounds(singleSegment).map((level) => level.text)).toEqual([
+      '第 1 轮 · 2 个 query', '①only-1收完采集 10 帖', '②only-2收完采集 10 帖',
+      '第 2 轮 · 补读 1 个目标', '③only-r1已读根帖 + 1 回复无文章',
+    ]);
   });
 
   /** 一份提交（一轮）的夹具：快照的 `rounds` 那一项 + 它的行。行上写着同一个 `submissionId` ——
@@ -455,6 +479,53 @@ describe('XResearchProgressCard', () => {
 
   const roundsOf = (parts: ReturnType<typeof roundPart>[], section: 'search' | 'read') =>
     parts.filter((part) => part.round.operation === section).flatMap((part) => part.rows);
+
+  it('reads as three levels in the field shape: segments are 1. 2. and rows are circled within each segment', async () => {
+    // 用户在现场看到的形状：一段 6 个 query 收完，接着一段新目标 1 个 query。修复前两段都画「搜索」
+    // 节标题、段头与行又都是圈号，卡上同时出现两个「搜索」与两个 ① ——「搜索① ② ③…后面又是搜索①」。
+    const parts = [
+      roundPart('sub-field-a', 'search', '目标 A：macOS 轻量虚拟化',
+        ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']),
+      roundPart('sub-field-b', 'search', '目标 B：补读引信', ['q7']),
+    ];
+    const field = snapshot({
+      researchRunId: 'xrun-field', runId: 'turn-field', objective: '目标 A：macOS 轻量虚拟化',
+      state: 'completed',
+      rounds: parts.map((part) => part.round),
+      search: roundsOf(parts, 'search'), read: [],
+      counts: { submissions: 2, queued: 0, running: 0, done: 7, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 70, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 7, searchTotal: 7, readDone: 0, readTotal: 0 },
+    });
+    useXResearchTaskStore.getState().upsert(field);
+    invoke.mockResolvedValue(field);
+    const mounted = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-field', researchRunIds: ['xrun-field'] });
+    await mounted.settle();
+    mounted.find('x-research-toggle').props.onClick();
+
+    const segments = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-segment');
+    expect(segments).toHaveLength(2);
+    // 段头之后只有轮次头与它的行：轮次头说操作与行数，行号在段内连续数下去。
+    expect(rowsAndRounds(segments[0]).map((level) => level.text)).toEqual([
+      '第 1 轮 · 6 个 query',
+      '①q1收完采集 10 帖', '②q2收完采集 10 帖', '③q3收完采集 10 帖',
+      '④q4收完采集 10 帖', '⑤q5收完采集 10 帖', '⑥q6收完采集 10 帖',
+    ]);
+    // 第二段的行从 ① 重新起（对照：不是接着上一段数到 ⑦）—— 段头 2. 才是它的序号。
+    expect(rowsAndRounds(segments[1]).map((level) => level.text))
+      .toEqual(['第 1 轮 · 1 个 query', '①q7收完采集 10 帖']);
+
+    // 两套字形不共用：正控是段头以 1. / 2. 起头、每一行都以圈号起头；
+    // 负控是没有任何一行以 `N.` 起头 —— 段 2. 下看到 ① 不会被读成「又一个 1.」。
+    expect(visibleText(segments[0])).toMatch(/^1\./);
+    expect(visibleText(segments[1])).toMatch(/^2\./);
+    const rowTexts = rows(mounted.tree).map(visibleText);
+    expect(rowTexts).toHaveLength(7);
+    expect(rowTexts.every((text) => /^[①-⑩]/.test(text))).toBe(true);
+    expect(rowTexts.filter((text) => /^\d+\./.test(text))).toEqual([]);
+  });
 
   it('cuts the turn into segments by objective: one segment per goal, rounds inside, across researches too', async () => {
     // 现场形状（R83）：一次「macOS 轻量虚拟化」的研究里，模型取消后接着补搜、又换了目标补读引信。
@@ -550,16 +621,23 @@ describe('XResearchProgressCard', () => {
     expect(rows(merged[0])).toHaveLength(2);
   });
 
-  it('renders rows from before submissionId exactly like a single-round section', async () => {
-    // 旧数据（这个字段之前落的盘）：分不出轮次，卡退回今天的样子 —— 不猜一个轮次，也不画头。
+  it('renders rows from before submissionId exactly like a stamped single round', async () => {
+    // 旧数据（这个字段之前落的盘）：分不出轮次，每节就是一整轮。卡不再画「搜索 / 读取」节标题，
+    // 但轮次头与行号照画 —— 三层结构与新数据同一个形状。
     useXResearchTaskStore.getState().upsert(running);
     const old = mount(XResearchProgressCard, props);
     await old.settle();
-    expect(findAllWhere(old.tree,
-      (element) => element.props['data-testid'] === 'x-research-round')).toHaveLength(0);
-    expect(rows(old.tree).map(visibleText)).toHaveLength(6);
+    expect(rowsAndRounds(old.find('x-research-segment')).map((level) => level.text)).toEqual([
+      '第 1 轮 · 2 个 query', '①Qwen3.8 27BTop收完采集 87 帖3 页响应',
+      '②Qwen3.8 Q4 量化Latest预算用尽采集 41 帖略过 12 条2 页响应',
+      '第 2 轮 · 补读 4 个目标',
+      '③https://x.com/acme/status/19581已读根帖 + 42 回复有正文',
+      '④https://x.com/acme/status/19583访问被拒无根帖文章失败该帖所在的对话要求登录才能看',
+      '⑤https://x.com/acme/status/19590等待中读回复根帖 + 0 回复请求中展开 18 · 滚动 6',
+      '⑥https://x.com/acme/status/19595排队无文章',
+    ]);
 
-    // 同一批行带上属于同一份提交的 `submissionId`（也就是一轮）：两段的文本逐字相同。
+    // 同一批行带上属于同一份提交的 `submissionId`（也就是一轮）：轮次头与行逐字相同。
     const stamped = snapshot({ researchRunId: 'xrun-stamped', runId: 'turn-stamped',
       objective: '同一批行加上提交 id',
       search: SEARCH_ROWS.map((row) => ({ ...row, submissionId: 'sub-old' })),
@@ -569,12 +647,8 @@ describe('XResearchProgressCard', () => {
     const withIds = mount(XResearchProgressCard,
       { threadId: 'thread-1', groupKey: 'turn-stamped', researchRunIds: ['xrun-stamped'] });
     await withIds.settle();
-    expect(findAllWhere(withIds.tree,
-      (element) => element.props['data-testid'] === 'x-research-round')).toHaveLength(0);
-    expect(visibleText(withIds.find('x-research-search')))
-      .toBe(visibleText(old.find('x-research-search')));
-    expect(visibleText(withIds.find('x-research-read')))
-      .toBe(visibleText(old.find('x-research-read')));
+    expect(rowsAndRounds(withIds.find('x-research-segment')).map((level) => level.text))
+      .toEqual(rowsAndRounds(old.find('x-research-segment')).map((level) => level.text));
   });
 
   it('offers cancel while work is still queued or running, whatever the state word says', async () => {

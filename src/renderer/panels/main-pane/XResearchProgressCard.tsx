@@ -29,17 +29,22 @@ const SEGMENT_HEADER_STYLE: CSSProperties = {
 const SEGMENT_OBJECTIVE_STYLE: CSSProperties = {
   flex: '0 1 auto', minWidth: 0, color: 'var(--color-ink-soft)',
 };
-const SECTION_HEADING_STYLE: CSSProperties = { color: 'var(--color-ink-soft)', marginBottom: 2 };
+/** 三级缩进（段 → 轮 → 行）：轮比段头退一档，行再退一档。三层各有自己的字号与颜色，
+ *  但只靠字号分不出层级 —— 行摊在段头那一列上时，读起来只是一个列表。 */
+const ROUND_INDENT = 12;
+const ROW_INDENT = 24;
 /** 轮次头（一轮 = 一次提交）：从属于段头 —— 字号比卡面（12）小一档、颜色更淡，
  *  用的是同一套纸墨色，不引入新颜色。 */
 const ROUND_HEADER_STYLE: CSSProperties = {
   color: 'var(--color-ink-faint)', fontSize: 11, marginTop: 4, lineHeight: 1.5,
+  paddingLeft: ROUND_INDENT,
 };
 /** 轮次头上的「已取消」章（R83）：被取消的那一轮停在原地，卡片不把它从卡上抹掉 ——
  *  它是这一段真实的经过。颜色比轮次头深一档，因为它是这一轮的结论，不是标题。 */
 const ROUND_CHIP_STYLE: CSSProperties = { marginLeft: 6, color: 'var(--color-ink-soft)' };
 const ROW_STYLE: CSSProperties = {
-  display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', padding: '2px 0',
+  display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap',
+  paddingTop: 2, paddingBottom: 2, paddingLeft: ROW_INDENT,
 };
 const MARK_STYLE: CSSProperties = { color: 'var(--color-ink-faint)', flex: '0 0 auto' };
 const ROW_LABEL_STYLE: CSSProperties = { flex: '0 1 auto', minWidth: 0, maxWidth: 240 };
@@ -82,9 +87,16 @@ const PHASE_DETAIL_WORD: Record<NonNullable<XResearchWorkItem['phaseDetail']>, s
 
 const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
 
-/** 段内编号：两段各自从 ① 起。超过 ⑳ 之后退回 `N.` —— 没有第 21 个圈号，凑一个只会变成怪字符。 */
-function numberMark(index: number): string {
-  return CIRCLED[index] ?? `${index + 1}.`;
+/** 段头的编号：`1.` `2.` `3.` —— 段是最高层，用最安静的字形；圈号留给行。 */
+function segmentMark(index: number): string {
+  return `${index + 1}.`;
+}
+
+/** 行号：段内连续（跨轮、跨操作接着数），每段从 ① 起。圈号只给行用 —— 段头是 `N.`，
+ *  两个层级不共用字形家族，段 2 下看到 ① 不会被读成「又一个第一行」。超过 ⑳ 之后用 `(21)`：
+ *  不借用段头的 `N.`，也不凑一个不存在的圈号。 */
+function rowMark(index: number): string {
+  return CIRCLED[index] ?? `(${index + 1})`;
 }
 
 /** 收尾的行说结论，还在飞的行说阶段。`status === null` 的「收尾但无结论」照 §4.4 说「中断」，
@@ -207,23 +219,26 @@ function groupState(segments: readonly XResearchTaskSnapshot[]): XResearchTaskSt
   return segments[0].state;
 }
 
-/** 分段头：圈号 + 该段的终态（含 R81a 的取消归因）+ 该段的目标。两种画法（按目标 / 按研究）共用它：
+/** 分段头：段号 + 该段的终态（含 R81a 的取消归因）+ 该段的目标。两种画法（按目标 / 按研究）共用它：
  *  段头只有一种说法。空段（一行都没有）也要画这个头 —— 段数要数得出来，而「这一段没有行」本身就是
  *  该段的结论。 */
 function segmentHeaderElement(index: number, state: XResearchTaskState, objective: string,
   note: string | null) {
   return (
     <div style={SEGMENT_HEADER_STYLE}>
-      <span style={MARK_STYLE}>{numberMark(index)}</span>
+      <span style={MARK_STYLE}>{segmentMark(index)}</span>
       <span style={SOFT_STYLE}>{STATE_WORD[state]}{note ? `（${note}）` : ''}</span>
       <span className="truncate" title={objective} style={SEGMENT_OBJECTIVE_STYLE}>{objective}</span>
     </div>
   );
 }
 
-/** 一段里某个 section 的一轮：这一轮的行 + 轮次头上要不要挂章。
- *  行的来源有两条（快照的 `rounds` / 旧数据里行上的 `submissionId`），轮次头的画法只有这一份。 */
-type SectionRound = { key: string; rows: readonly XResearchWorkItem[]; chip: string | null };
+/** 一段里的一轮（一次提交）：这一轮的行 + 轮次头上要不要挂章。行的来源有两条
+ *  （快照的 `rounds` / 旧数据里行上的 `submissionId`），轮次头的画法只有这一份。
+ *  `operation` 是这一轮提交的活儿：轮次头用它的单位词说这一轮是什么（query / 目标）。 */
+type SegmentRound = {
+  key: string; operation: XResearchSection; rows: readonly XResearchWorkItem[]; chip: string | null;
+};
 
 /** 被取消的那一轮在轮次头上挂一个章（R83）：它停在原地，卡片不把它从卡上抹掉。
  *  有主语时连主语一起说（R81a：卡面不许写无主语的「被取消」）；只有取消这一种停法挂章 ——
@@ -234,15 +249,20 @@ function roundChip(round: XResearchRound): string | null {
   return note ? `已取消（${note}）` : '已取消';
 }
 
-/** 旧数据的轮次：行上有 `submissionId`（这个字段落盘之后的那几份提交）就按它切轮，没有就整段一轮。
- *  分不出轮次时**不猜**一个轮次，也不丢行 —— 一整段平铺，就是加轮次头之前的样子。 */
-function rowRounds(rows: readonly XResearchWorkItem[], key: string): SectionRound[] {
-  const rounds: SectionRound[] = [];
+/** 旧数据的轮次：行上有 `submissionId`（这个字段落盘之后的那几份提交）就按它切轮，没有就整节一轮。
+ *  分不出轮次时**不猜**一个轮次，也不丢行 —— 整节一轮。旧数据没有 `rounds`，搜索与读取真实的
+ *  提交次序取不到，两节的轮只能按「搜索、读取」相接的次序排下去。 */
+function rowRounds(rows: readonly XResearchWorkItem[], operation: XResearchSection,
+  key: string): SegmentRound[] {
+  const rounds: SegmentRound[] = [];
   for (const row of rows) {
-    if (row.submissionId === undefined) return [{ key, rows, chip: null }];
+    if (row.submissionId === undefined) {
+      return [{ key: `${operation}:${key}`, operation, rows, chip: null }];
+    }
+    const roundKey = `${operation}:${row.submissionId}`;
     const current = rounds[rounds.length - 1];
-    if (current && current.key === row.submissionId) (current.rows as XResearchWorkItem[]).push(row);
-    else rounds.push({ key: row.submissionId, rows: [row], chip: null });
+    if (current && current.key === roundKey) (current.rows as XResearchWorkItem[]).push(row);
+    else rounds.push({ key: roundKey, operation, rows: [row], chip: null });
   }
   return rounds;
 }
@@ -256,46 +276,38 @@ function roundWord(operation: XResearchSection, round: number, count: number): s
   return `第 ${round} 轮 · ${operation === 'search' ? '补搜' : '补读'} ${unit}`;
 }
 
-/** 一段的行，必要时按轮切开：编号在**这一段内**连续（第二轮的行接着第一轮数下去），
- *  不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，行号也该是同一个分母。
- *  只有一轮时不给轮次头：一次提交就是今天的样子，加一个总出现的头只是噪声。 */
-function sectionElements(operation: XResearchSection, rounds: readonly SectionRound[]) {
-  const render = operation === 'search' ? searchRowElement : readRowElement;
-  // 只算有行的轮次：这一轮只提交了读取时，搜索段不该为它多出一个「0 个 query」的头。
-  const visible = rounds.filter((round) => round.rows.length > 0);
+/** 一段的行，按轮切开：每一轮先画轮次头（操作与这一轮的行数都由它说），再画它的行。
+ *  行号在**这一段内**连续：跨轮、跨操作都接着数下去（搜索 6 行 + 读取 3 行是 ①...⑨），
+ *  不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，行号也该是同一个分母。 */
+function roundElements(rounds: readonly SegmentRound[]) {
   let index = 0;
-  if (visible.length <= 1) {
-    return visible.flatMap((round) => round.rows.map((row) => render(row, index++)));
-  }
-  return visible.flatMap((round, at) => [
-    <div key={round.key} data-testid="x-research-round" data-operation={operation}
-      data-round={at + 1} style={ROUND_HEADER_STYLE}>
-      {roundWord(operation, at + 1, round.rows.length)}
-      {round.chip !== null &&
-        <span data-testid="x-research-round-cancelled" style={ROUND_CHIP_STYLE}>{round.chip}</span>}
-    </div>,
-    ...round.rows.map((row) => render(row, index++)),
-  ]);
+  return rounds.flatMap((round, at) => {
+    const render = round.operation === 'search' ? searchRowElement : readRowElement;
+    return [
+      <div key={round.key} data-testid="x-research-round" data-operation={round.operation}
+        data-round={at + 1} style={ROUND_HEADER_STYLE}>
+        {roundWord(round.operation, at + 1, round.rows.length)}
+        {round.chip !== null &&
+          <span data-testid="x-research-round-cancelled" style={ROUND_CHIP_STYLE}>{round.chip}</span>}
+      </div>,
+      ...round.rows.map((row) => render(row, index++)),
+    ];
+  });
 }
 
 /** 退路：一批分不出段的快照（旧数据）—— **一段研究一段**，行按研究平铺。与合并成一张卡之前一样，
- *  不会因为分不出段就少画一段或留白。 */
+ *  不会因为分不出段就少画一段或留白。两节的轮按「搜索、读取」相接：旧数据没有 `rounds`，
+ *  取不到真实的提交次序，能取到的只有这两节的行序。 */
 function researchSegmentElement(segment: XResearchTaskSnapshot, index: number) {
   const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
   return (
     <div key={segment.researchRunId} data-testid="x-research-segment" data-status={segment.state}
       style={{ marginTop: index === 0 ? 0 : 10 }}>
       {segmentHeaderElement(index, segment.state, segment.objective, note)}
-      {segment.search.length > 0 &&
-        <div data-testid="x-research-search" style={{ marginTop: 6 }}>
-          <div style={SECTION_HEADING_STYLE}>搜索</div>
-          {sectionElements('search', rowRounds(segment.search, segment.researchRunId))}
-        </div>}
-      {segment.read.length > 0 &&
-        <div data-testid="x-research-read" style={{ marginTop: 8 }}>
-          <div style={SECTION_HEADING_STYLE}>读取</div>
-          {sectionElements('read', rowRounds(segment.read, segment.researchRunId))}
-        </div>}
+      {roundElements([
+        ...rowRounds(segment.search, 'search', segment.researchRunId),
+        ...rowRounds(segment.read, 'read', segment.researchRunId),
+      ])}
     </div>
   );
 }
@@ -365,28 +377,20 @@ function objectiveSegments(snapshots: readonly XResearchTaskSnapshot[]): CardSeg
   return byObjective.map(({ objective, rounds: own }) => ({ objective, ...summarizeSegment(own), rounds: own }));
 }
 
-/** 一个目标的分段：头（终态 + 归因 + 目标）+ 搜索 / 读取两段行，段内按轮切。 */
+/** 一个目标的分段：头（终态 + 归因 + 目标）+ 这一段的轮，段内按提交序。
+ *  一轮的行 = 它那份提交的行（搜索 / 读取两桶按拥有它的提交归位，一轮只占一桶）。 */
 function objectiveSegmentElement(segment: CardSegment, index: number) {
   const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
-  const search: SectionRound[] = segment.rounds.map((round) => (
-    { key: round.round.submissionId, rows: round.search, chip: roundChip(round.round) }));
-  const read: SectionRound[] = segment.rounds.map((round) => (
-    { key: round.round.submissionId, rows: round.read, chip: roundChip(round.round) }));
+  const rounds: SegmentRound[] = segment.rounds.map((round) => ({
+    key: round.round.submissionId, operation: round.round.operation,
+    rows: [...round.search, ...round.read], chip: roundChip(round.round),
+  }));
   // 段的身份就是它第一轮的提交 id：提交 id 全局唯一，段序跟着轮序走，重建时不会串位。
   return (
     <div key={segment.rounds[0]!.round.submissionId} data-testid="x-research-segment"
       data-status={segment.state} style={{ marginTop: index === 0 ? 0 : 10 }}>
       {segmentHeaderElement(index, segment.state, segment.objective, note)}
-      {search.some((round) => round.rows.length > 0) &&
-        <div data-testid="x-research-search" style={{ marginTop: 6 }}>
-          <div style={SECTION_HEADING_STYLE}>搜索</div>
-          {sectionElements('search', search)}
-        </div>}
-      {read.some((round) => round.rows.length > 0) &&
-        <div data-testid="x-research-read" style={{ marginTop: 8 }}>
-          <div style={SECTION_HEADING_STYLE}>读取</div>
-          {sectionElements('read', read)}
-        </div>}
+      {roundElements(rounds)}
     </div>
   );
 }
@@ -405,7 +409,7 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
   const counted = started && !rowWithoutConclusion(row);
   return (
     <div key={row.workItemId} data-testid="x-research-row" data-section="search" style={ROW_STYLE}>
-      <span style={MARK_STYLE}>{numberMark(index)}</span>
+      <span style={MARK_STYLE}>{rowMark(index)}</span>
       <span className="truncate" title={row.label} style={ROW_LABEL_STYLE}>{row.label}</span>
       {row.product && <span data-testid="x-research-row-product" style={SOFT_STYLE}>{row.product}</span>}
       <span style={SOFT_STYLE}>{rowStateWord(row)}</span>
@@ -434,7 +438,7 @@ function readRowElement(row: XResearchWorkItem, index: number) {
   const articleWord = row.article === 'pending' && !active ? '待取' : ARTICLE_WORD[row.article];
   return (
     <div key={row.workItemId} data-testid="x-research-row" data-section="read" style={ROW_STYLE}>
-      <span style={MARK_STYLE}>{numberMark(index)}</span>
+      <span style={MARK_STYLE}>{rowMark(index)}</span>
       <span className="truncate" title={row.label} style={ROW_LABEL_STYLE}>{row.label}</span>
       <span style={SOFT_STYLE}>{rowStateWord(row)}</span>
       {/* 段落只在还在飞的行上有意义（收尾时主进程会清空它）；为空时就不说这段，

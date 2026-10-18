@@ -782,11 +782,11 @@ test.describe('x research task protocol closure (offline)', () => {
   // ── 卡片级说法（Task 16）──
   //
   // 上面七条只看协议层。下面五条看的是渲染层真跑起来的那张卡：`data-status` 跟不跟着快照走、
-  // 两段各说各的行数、一段研究会不会长出第二张卡、取消入口走不走确认、默认收放与手动点击谁说话算数、
+  // 每一轮各说各的行数、一段研究会不会长出第二张卡、取消入口走不走确认、默认收放与手动点击谁说话算数、
   // 卡停在哪一条消息里（最后一条提到它的那条，后面还有不提它的消息时也一样）。
   // 判据全部是「DOM 上看得见的东西」或协议事实（`xResearch.taskGet` / 工具包络），没有时间窗。
 
-  test('the card appears for a submit and shows both sections with their own rows while the research runs', async () => {
+  test('the card appears for a submit and shows every round with its own rows while the research runs', async () => {
     // **这里不预开用户页、也不展开侧栏**（R79）：那段绕法原本是为了让舞台不再跳动，而跳动的
     // 来源恰恰就是上一条要证明的路径（横幅为活动标签收放 → `applyLayout` 在采集进行中下发视口）。
     // 卡片这几条只读消息列里的 DOM，不点侧栏里的任何东西，所以它们不需要一个用户标签。
@@ -808,20 +808,28 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card).toHaveAttribute('data-status', 'running');
     // 卡头说的是这一段研究的问题（R10：最早一次提交的那个，不是卡片自己编的）。
     await expect(card.getByTestId('x-research-objective')).toHaveText(LIFECYCLE_OBJECTIVE);
-    // 运行中默认展开：搜索段带着两个 query 各一行（提交那一刻就有的行，不是等收尾才算）。
+    // 运行中默认展开：搜索那一轮带着两个 query 各一行（提交那一刻就有的行，不是等收尾才算）。
+    // 卡上不再有「搜索 / 读取」节标题：轮次头自己说操作与这一轮的行数。
     await expect(card.getByTestId('x-research-rows')).toBeVisible();
-    await expect(card.getByTestId('x-research-search')).toContainText('搜索');
+    const rounds = card.getByTestId('x-research-round');
+    await expect(rounds).toHaveCount(1);
+    await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
-    // 读取还没提交过：这一段此刻不存在（「两段各说各的行数」不能拿一段冒充另一段）。
-    await expect(card.getByTestId('x-research-read')).toHaveCount(0);
+    // 读取还没提交过：这一轮此刻不存在（「两轮各说各的行数」不能拿一轮冒充另一轮）。
+    await expect(card.locator('[data-testid="x-research-round"][data-operation="read"]')).toHaveCount(0);
     await expectOneCardPerRun();
 
-    // 同一段研究的第二次提交：卡头不换题，两段行数各算各的。
+    // 同一段研究的第二次提交：卡头不换题（R10），两轮的行数各算各的。读取提交带的是自己的
+    // objective，所以它是**第二个段**的第一轮 —— 轮号在段内从 1 起，不是接着搜索那一段数。
     const readRun = await run([call('x_research', { action: 'submit', researchRunId: submitted.researchRunId, ...readArgs(rootUrl) })]);
     expect(envelope(readRun[0]).snapshot.objective).toBe(LIFECYCLE_OBJECTIVE);
     await expect(card).toHaveAttribute('data-status', 'running');
-    await expect(card.getByTestId('x-research-search')).toContainText('搜索');
-    await expect(card.getByTestId('x-research-read')).toContainText('读取');
+    await expect(card.getByTestId('x-research-segment')).toHaveCount(2);
+    await expect(rounds).toHaveCount(2);
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query');
+    await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'read');
+    await expect(rounds.nth(1)).toHaveText('第 1 轮 · 1 个目标');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     await expect(card.locator('[data-testid="x-research-row"][data-section="read"]')).toHaveCount(1);
     // 两次提交是两轮、两条消息，卡只有一张，而且停在最后一条（也就是刚提到它的那条）里。
@@ -1029,7 +1037,7 @@ test.describe('x research task protocol closure (offline)', () => {
       placed => placed.cards === 1 && placed.messageIndex >= 0 && placed.messageIndex < placed.lastIndex);
   });
 
-  test('one research submitted twice shows a round header per submission inside the search section', async () => {
+  test('one research submitted twice shows a round header per submission, in submit order', async () => {
     // 用户看到的断层（R82）：一段研究跑了四次提交，卡把行全摊成两个列表，看不出模型在首次采集之后
     // 又补跑了几轮。判据是行自己的 `submissionId`（协议事实）：同一份提交的行带同一个 id，卡按它
     // 切轮 —— 不是时间窗、不是阈值。
