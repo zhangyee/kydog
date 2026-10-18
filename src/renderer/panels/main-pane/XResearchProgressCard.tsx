@@ -133,7 +133,8 @@ function budgetLine(snapshot: XResearchTaskSnapshot): string {
 
 /**
  * 搜索行：query + 产品 + 状态 + `收 N 帖`（`budgetUsage.distinctEntries` 的去重帖数）
- * + `另省 N`（`sampleTruncation.omitted`，只在 >0 时有内容）+ `N 页`（被接纳的网络页数）。
+ * + `略过 N 条`（`sampleTruncation.omitted`，只在 >0 时有内容）+ `N 页响应`（被接纳的网络页数 ——
+ * 「响应」写全是因为 `N 页` 会被读成「翻了几屏」，而这里数的是一份 GraphQL 响应）。
  * 每条都来自行自己的字段；行还没起跑（`queued`）时一个数字都不说 —— 「收 0 帖」会被读成结论。
  * `interrupted` 的行也一样：`stopped` + `status: null` 是「进程被杀在中间」的形，它的计数只长到
  * 最后一次落盘 / 最后一次进度回调，拿它当结论就会写出「收 0 帖」这种没人观测到的数（spec §4.4）。
@@ -149,8 +150,8 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
       {row.product && <span data-testid="x-research-row-product" style={SOFT_STYLE}>{row.product}</span>}
       <span style={SOFT_STYLE}>{rowStateWord(row)}</span>
       {counted && <span style={SOFT_STYLE}>收 {row.posts} 帖</span>}
-      {counted && row.omitted > 0 && <span style={SOFT_STYLE}>另省 {row.omitted}</span>}
-      {counted && row.pages > 0 && <span style={SOFT_STYLE}>{row.pages} 页</span>}
+      {counted && row.omitted > 0 && <span style={SOFT_STYLE}>略过 {row.omitted} 条</span>}
+      {counted && row.pages > 0 && <span style={SOFT_STYLE}>{row.pages} 页响应</span>}
       {row.reason && <span style={REASON_STYLE}>{row.reason}</span>}
     </div>
   );

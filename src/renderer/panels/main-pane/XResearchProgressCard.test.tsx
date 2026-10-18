@@ -38,7 +38,7 @@ XResearchWorkItem {
   };
 }
 
-// 一条搜索行收尾成「收完」，一条卡在预算上（另省 12）；读取行两收尾（读完 / 被登录墙挡住）、
+// 一条搜索行收尾成「收完」，一条卡在预算上（略过 12 条）；读取行两收尾（读完 / 被登录墙挡住）、
 // 一条还在等（实时动作数只有这一行有）。
 const SEARCH_ROWS: XResearchWorkItem[] = [
   workItem({ section: 'search', label: 'Qwen3.8 27B', product: 'Top', state: 'stopped',
@@ -255,15 +255,16 @@ describe('XResearchProgressCard', () => {
     expect(collected).toContain('Top');
     expect(collected).toContain('收完');
     expect(collected).toContain('收 87 帖');
-    expect(collected).toContain('3 页');
-    expect(collected).not.toContain('另省');
+    // 标签写全：`3 页` 是 `3 页响应` 的子串，只写半截就分不清「翻了几屏」与「几份响应」。
+    expect(collected).toContain('3 页响应');
+    expect(collected).not.toContain('略过');
 
     const budgeted = byLabel('Qwen3.8 Q4 量化');
     expect(budgeted).toContain('Latest');
     expect(budgeted).toContain('预算用尽');
     expect(budgeted).toContain('收 41 帖');
-    expect(budgeted).toContain('另省 12');
-    expect(budgeted).toContain('2 页');
+    expect(budgeted).toContain('略过 12 条');
+    expect(budgeted).toContain('2 页响应');
 
     // 读取行的实时动作数只在还在飞的那一行出现：收尾的行报的是结论，不是「滑动了几次」。
     const active = byLabel('status/19590');

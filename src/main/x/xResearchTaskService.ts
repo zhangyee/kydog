@@ -213,7 +213,7 @@ type ActiveResearch = {
   pending: Map<string, Promise<void>>;
 };
 
-/** 「收 N 帖」= 去重后接纳的帖子数，不是保留的观测条数；`另省 N` 取采样省略数。
+/** 「收 N 帖」= 去重后接纳的帖子数，不是保留的观测条数；`略过 N 条` 取采样省略数。
  *  每个数字都来自这一行自己的字段，没有任何估算。 */
 function copyRowFacts(workItem: XResearchWorkItem, row: XSearchObservation | XReadObservation): void {
   workItem.scrolls = row.budgetUsage.scrolls;
