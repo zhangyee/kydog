@@ -1,6 +1,6 @@
 /**
  * `x_research` 改成动作面之后，63 只证明**协议层**（控制器裁决 R58）：`submit` 立即返回、工作活在
- * 回合之后、`wait` 一次交付一份、`xResearch.taskGet` 说的是真实状态、真重启之后状态与计数还在、
+ * 回合之后、`wait` 一次交付所有已收尾未交付的结果、`xResearch.taskGet` 说的是真实状态、真重启之后状态与计数还在、
  * `cancel` 只收尾它自己那一段。卡片级断言（`data-status`、两段行数、取消入口、默认收放）在文件末尾
  * 那几条里：同一次启动、同一条会话，靠卡头（`x-research-objective`）在会话里认出「这一张卡」——
  * `data-status` 会变，不能拿它当定位器。
@@ -81,6 +81,8 @@ const NAVIGATING_CANCEL_OBJECTIVE = 'Card cancel during navigation';
 const OCCUPANT_OBJECTIVE = 'Card queue occupant';
 /** 重启之后**第一次**采集（没有用户标签、侧栏也还没展开）那一段研究的问题。 */
 const RESTART_OBJECTIVE = 'Restart first collection';
+/** 批交付那一段研究的问题（一条用例，三次提交，一次 wait）。 */
+const BATCH_OBJECTIVE = 'Batch delivery evidence';
 /** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
 const TAB_ID = /^tab_[0-9a-f]{8}$/;
 
@@ -247,14 +249,13 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(parsed.kind).toBe('x_research');
     expect(parsed.researchRunId).toBeTruthy();
     seenResearchRuns.add(parsed.researchRunId);
-    const rows = parsed.delivery
-      ? parsed.delivery.operation === 'search'
-        ? (parsed.delivery.result as Extract<XResearchResult, { operation: 'search' }>).queries.map(q => ({ status: q.status, stopReason: q.stopReason, posts: q.posts.map(p => p.postId) }))
-        : (parsed.delivery.result as Extract<XResearchResult, { operation: 'read' }>).targets.map(t => ({ status: t.status, stopReason: t.stopReason, root: t.root?.postId ?? null }))
-      : null;
+    const rowsOf = (delivery: XResearchDelivery) => delivery.operation === 'search'
+      ? (delivery.result as Extract<XResearchResult, { operation: 'search' }>).queries.map(q => ({ status: q.status, stopReason: q.stopReason, posts: q.posts.map(p => p.postId) }))
+      : (delivery.result as Extract<XResearchResult, { operation: 'read' }>).targets.map(t => ({ status: t.status, stopReason: t.stopReason, root: t.root?.postId ?? null }));
+    const deliveries = parsed.deliveries ?? (parsed.delivery ? [parsed.delivery] : []);
     console.info('[x-envelope]', JSON.stringify({ action: parsed.action, researchRunId: parsed.researchRunId,
       status: parsed.status, counts: parsed.snapshot.counts, undelivered: parsed.undelivered,
-      delivery: parsed.delivery ? { submissionId: parsed.delivery.submissionId, submitCallId: parsed.delivery.submitCallId, operation: parsed.delivery.operation, rows } : null }));
+      deliveries: deliveries.map((delivery) => ({ submissionId: delivery.submissionId, submitCallId: delivery.submitCallId, operation: delivery.operation, rows: rowsOf(delivery) })) }));
     return parsed;
   }
 
@@ -343,12 +344,12 @@ test.describe('x research task protocol closure (offline)', () => {
     const submitted = envelope(submitRun[0]);
     expect(submitted.action).toBe('submit');
     expect(submitted.status).toBe('running');
-    // submit 不带交付、wait 带：同一条用例里两种形状都在，`delivery` 这个字段确实会出现在壳上。
-    expect(submitted.delivery).toBeUndefined();
+    // submit 不带交付、wait 带：同一条用例里两种形状都在，`deliveries` 这个字段确实会出现在壳上。
+    expect(submitted.deliveries).toBeUndefined();
     const authRun = await run([call('x_research', { action: 'wait', researchRunId: submitted.researchRunId })]);
     const delivered = envelope(authRun[0]);
-    expect(delivered.delivery).toBeTruthy();
-    const result = canonical(delivered.delivery!, submitRun[0].runId);
+    expect(delivered.deliveries).toHaveLength(1);
+    const result = canonical(delivered.deliveries![0]!, submitRun[0].runId);
     if (result.operation !== 'search') throw new Error('search expected');
     expect(result.queries.map(q => q.status)).toEqual(['auth_required', 'auth_required']);
     expect(result.queries[1].barrier?.reason).toBe('not_attempted:auth_required');
@@ -465,8 +466,8 @@ test.describe('x research task protocol closure (offline)', () => {
     const waitRun = await run([call('x_research', { action: 'wait', researchRunId })]);
     const delivered = envelope(waitRun[0]);
     expect(delivered.action).toBe('wait');
-    expect(delivered.delivery).toBeTruthy();
-    const delivery = delivered.delivery!;
+    expect(delivered.deliveries).toHaveLength(1);
+    const delivery = delivered.deliveries![0]!;
     expect(delivery.operation).toBe('search');
     const result = canonical(delivery, researchSubmitRunId);
     if (result.operation !== 'search') throw new Error('search expected');
@@ -490,7 +491,7 @@ test.describe('x research task protocol closure (offline)', () => {
     expect((await fs.stat(result.delivery!.artifactPath!)).isFile()).toBe(true);
   });
 
-  test('a second submission appends to the same research and one wait delivers one result while listing the rest', async () => {
+  test('a second submission appends to the same research and one wait delivers both finished results', async () => {
     const outcomes = await run([
       call('x_research', { action: 'submit', researchRunId, ...searchArgs([FIRST_QUERY]) }),
       call('x_research', { action: 'submit', researchRunId, ...readArgs(rootUrl) }),
@@ -505,12 +506,24 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(readSubmitted.snapshot.objective).toBe(OBJECTIVE);
     const waitRun = await run([call('x_research', { action: 'wait', researchRunId })]);
     const delivered = envelope(waitRun[0]);
-    expect(delivered.delivery!.operation).toBe('search');
-    canonical(delivered.delivery!, outcomes[0].runId);
-    // 一次 wait 只交一份：读取那份已经收尾，进清单不进这一轮的交付。
-    expect(delivered.undelivered).toHaveLength(1);
-    expect(delivered.undelivered![0]).toMatchObject({ operation: 'read', state: 'done', objective: READ_OBJECTIVE });
-    expect(delivered.snapshot.counts).toMatchObject({ submissions: 3, done: 4, undelivered: 1, posts: 6 });
+    // 一次 `wait` 交回这一轮已经收尾的两份（上一轮的 search 与这一轮的 read），按提交顺序；
+    // 每条都是独立的一份交付，各自带着自己的提交身份。
+    expect(delivered.deliveries).toHaveLength(2);
+    const searchDelivery = delivered.deliveries!.find(delivery => delivery.operation === 'search');
+    const readDelivery = delivered.deliveries!.find(delivery => delivery.operation === 'read');
+    if (!searchDelivery || !readDelivery) throw new Error('both submissions must be delivered');
+    canonical(searchDelivery, outcomes[0].runId);
+    const readResult = canonical(readDelivery, readSubmitRunId);
+    if (readResult.operation !== 'read') throw new Error('read expected');
+    expect(readResult.targets[0]).toMatchObject({
+      status: 'observed', root: { postId: '321', text: WIRE_ROOT, sourceUrl: rootUrl },
+    });
+    expect(delivered.undelivered).toBeUndefined();
+    expect(delivered.snapshot.counts).toMatchObject({ submissions: 3, done: 4, undelivered: 0, posts: 6 });
+    // 正控：第二次 `wait` 一份都不重复交付。
+    const again = envelope((await run([call('x_research', { action: 'wait', researchRunId })]))[0]);
+    expect(again.deliveries).toBeUndefined();
+    expect(again.undelivered).toBeUndefined();
   });
 
   test('cancel settles a research whose only submission never ran; a finished delivery is still retrievable', async () => {
@@ -546,26 +559,21 @@ test.describe('x research task protocol closure (offline)', () => {
     // 放行占住队列的那一段：它照常交付自己的结果，被取消的那一段跟它无关。
     expect(await releaseHeldQuery()).toContain('/search');
     const occupyingWait = envelope((await run([call('x_research', { action: 'wait', researchRunId: occupying.researchRunId })]))[0]);
-    expect(occupyingWait.delivery).toBeTruthy();
+    expect(occupyingWait.deliveries).toHaveLength(1);
     expect(occupyingWait.snapshot.state).toBe('completed');
-    const occupyingResult = canonical(occupyingWait.delivery!, occupyingRun[0].runId);
+    const occupyingResult = canonical(occupyingWait.deliveries![0]!, occupyingRun[0].runId);
     if (occupyingResult.operation !== 'search') throw new Error('search expected');
     expect(occupyingResult.queries.map(row => row.status)).toEqual(['partial', 'partial']);
 
-    // 主研究里早就收尾、一直没交付的那份还在：取消别人不会让它消失。
+    // 主研究早就收尾的两份已经在上一轮交过了；取消别人不会让它们回到未交付。
     expect((await taskGet(researchRunId)).state).toBe('completed');
     const pendingRun = await run([call('x_research', { action: 'submit', researchRunId, ...searchArgs([FIRST_QUERY]) })]);
     expect(pendingRun[0].status).toBe('ok');
     pendingSubmitRunId = pendingRun[0].runId;
-    const retrieved = envelope((await run([call('x_research', { action: 'wait', researchRunId })]))[0]);
-    expect(retrieved.delivery!.operation).toBe('read');
-    const readResult = canonical(retrieved.delivery!, readSubmitRunId);
-    if (readResult.operation !== 'read') throw new Error('read expected');
-    expect(readResult.targets[0]).toMatchObject({ status: 'observed', root: { postId: '321', text: WIRE_ROOT, sourceUrl: rootUrl } });
-    // 交出去的只是最早那一份未交付：刚提交的那份仍在清单里（重启那一条要交付的正是它）。
-    expect(retrieved.undelivered).toHaveLength(1);
-    expect(retrieved.undelivered![0]).toMatchObject({ operation: 'search', state: 'done', objective: OBJECTIVE });
-    expect(retrieved.snapshot.counts).toMatchObject({ submissions: 4, done: 5, undelivered: 1, posts: 8 });
+    // 新的那份照常收尾，停在「已收尾未交付」——重启那一条要交付的正是它。这里**不 wait**：
+    // 一次 wait 会把它也交出去，重启就没有待交付的结果了。
+    await expect.poll(async () => (await taskGet(researchRunId)).counts)
+      .toMatchObject({ submissions: 4, undelivered: 1, posts: 8 });
 
     // 这一段研究从头到尾（闸门那一次、追加的两次、被取消那一段）自己开了页、导航、交付，
     // 而活动标签一次都没被它抢走。两条断合起来才是这条性质：
@@ -611,8 +619,8 @@ test.describe('x research task protocol closure (offline)', () => {
 
     const waitRun = await run([call('x_research', { action: 'wait', researchRunId })]);
     const delivered = envelope(waitRun[0]);
-    expect(delivered.delivery).toBeTruthy();
-    const delivery = delivered.delivery!;
+    expect(delivered.deliveries).toHaveLength(1);
+    const delivery = delivered.deliveries![0]!;
     const result = canonical(delivery, pendingSubmitRunId);
     if (result.operation !== 'search') throw new Error('search expected');
     expect(result.queries[0].posts.map(post => post.text)).toEqual([WIRE_ROOT, WIRE_PLAIN]);
@@ -697,8 +705,8 @@ test.describe('x research task protocol closure (offline)', () => {
 
     const waitRun = await run([call('x_research', { action: 'wait', researchRunId: restartRunId })]);
     const delivered = envelope(waitRun[0]);
-    expect(delivered.delivery).toBeTruthy();
-    const result = canonical(delivered.delivery!, submitRun[0].runId);
+    expect(delivered.deliveries).toHaveLength(1);
+    const result = canonical(delivered.deliveries![0]!, submitRun[0].runId);
     if (result.operation !== 'search') throw new Error('search expected');
     // 判据是**结果**：两行都拿着 wire 夹具的那两条帖 —— 采集真的发生了，不是「没报错」。
     // 旧判据（`7ccd9d2`）下这里会是一个 `barrier.reason` 带 `input_not_delivered` 的失败行，
@@ -711,6 +719,46 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(delivered.status).toBe('completed');
     expect(delivered.snapshot.counts).toMatchObject({ submissions: 1, done: 2, failed: 0, posts: 4 });
     expect(result.browserTabId).toBe(researchTabId);
+  });
+
+  test('one wait delivers three finished submissions of the run in submission order, and never twice', async () => {
+    // R81c：20 目标的 read 让模型以为「20 次 wait」，于是它自己取消了研究。判据是协议事实：
+    // 三段提交都收尾后，**一次** `wait` 的 `deliveries` 有三条，`undelivered` 为空。
+    const firstRun = await run([call('x_research', {
+      action: 'submit', ...searchArgs([FIRST_QUERY], BATCH_OBJECTIVE),
+    })]);
+    const first = envelope(firstRun[0]);
+    const batchRunId = first.researchRunId;
+    const secondRun = await run([
+      call('x_research', { action: 'submit', researchRunId: batchRunId, ...searchArgs([FIRST_QUERY], BATCH_OBJECTIVE) }),
+      call('x_research', { action: 'submit', researchRunId: batchRunId, ...searchArgs([FIRST_QUERY], BATCH_OBJECTIVE) }),
+    ]);
+    expect(secondRun.every(outcome => envelope(outcome).researchRunId === batchRunId)).toBe(true);
+
+    const waited = envelope((await run([call('x_research', { action: 'wait', researchRunId: batchRunId })]))[0]);
+    expect(waited.deliveries).toHaveLength(3);
+    // 三段都收尾了：一条都不留在清单里，快照的计数也这么说。
+    expect(waited.undelivered).toBeUndefined();
+    expect(waited.snapshot.counts.undelivered).toBe(0);
+    // 顺序是提交顺序：第一段来自上一轮，后两段来自这一轮的最后两次提交。
+    // 结果的 `runId` 是**提交**那一轮（不是 `wait` 那一轮），三段各自对得上。
+    const [firstDelivery, ...batchDeliveries] = waited.deliveries!;
+    expect(canonical(firstDelivery!, firstRun[0].runId).operation).toBe('search');
+    expect(batchDeliveries.map(delivery => delivery.result.runId))
+      .toEqual([secondRun[0].runId, secondRun[1].runId]);
+    expect(new Set(waited.deliveries!.map(delivery => delivery.submitCallId)).size).toBe(3);
+    // 每条都是独立的一份结果：`callId` 与壳上的提交身份一致，正文来自 wire 夹具。
+    for (const delivery of waited.deliveries!) {
+      const result = canonical(delivery, delivery.result.runId);
+      if (result.operation !== 'search') throw new Error('search expected');
+      expect(result.queries[0]!.posts.map((post) => post.text)).toEqual([WIRE_ROOT, WIRE_PLAIN]);
+    }
+
+    // 正控：再 `wait` 一次，一条都不重复交付。
+    const again = envelope((await run([call('x_research', { action: 'wait', researchRunId: batchRunId })]))[0]);
+    expect(again.deliveries).toBeUndefined();
+    expect(again.undelivered).toBeUndefined();
+    expect(again.snapshot.counts.undelivered).toBe(0);
   });
 
   // ── 卡片级说法（Task 16）──
@@ -786,13 +834,18 @@ test.describe('x research task protocol closure (offline)', () => {
 
     const waitRun = await run([call('x_research', { action: 'wait', researchRunId: lifecycleRunId })]);
     const delivered = envelope(waitRun[0]);
-    expect(delivered.delivery).toBeTruthy();
-    const result = canonical(delivered.delivery!, lifecycleSubmitRunId);
+    // 这一段研究的两份提交都收尾了：一次 `wait` 两条一起交（R81c）。
+    expect(delivered.deliveries).toHaveLength(2);
+    const searchDelivery = delivered.deliveries!.find(delivery => delivery.operation === 'search');
+    const readDelivery = delivered.deliveries!.find(delivery => delivery.operation === 'read');
+    if (!searchDelivery || !readDelivery) throw new Error('both submissions must be delivered');
+    const result = canonical(searchDelivery, lifecycleSubmitRunId);
     if (result.operation !== 'search') throw new Error('search expected');
     expect(result.queries.map(row => row.status)).toEqual(['partial', 'partial']);
+    expect(readDelivery.result.runId).toBeTruthy();
     expect(delivered.snapshot.counts).toMatchObject({ submissions: 2, searchDone: 2, searchTotal: 2,
-      readDone: 1, readTotal: 1, undelivered: 1 });
-    expect(delivered.undelivered).toMatchObject([{ operation: 'read', state: 'done' }]);
+      readDone: 1, readTotal: 1, undelivered: 0 });
+    expect(delivered.undelivered).toBeUndefined();
     // 交付完这一份，卡仍是那一段研究的唯一一张，停在新的一条消息里，状态还是完成。
     await expect(card).toHaveCount(1);
     await expect(card).toHaveAttribute('data-status', 'completed');
