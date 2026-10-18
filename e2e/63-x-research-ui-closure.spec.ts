@@ -53,11 +53,12 @@ import type { XResearchTaskSnapshot } from '../src/shared/xResearchTask';
 import { xWireResponse, WIRE_ROOT, WIRE_PLAIN } from './fixtures/61-browser/xWirePages';
 import { xClosurePage } from './fixtures/61-browser/xClosurePages';
 
-type Call = { name: string; args: Record<string, unknown>; toolCallId: string };
+type Call = { name: string; args: Record<string, unknown>; toolCallId: string; afterMs?: number };
 /** 一张卡在会话里的落位：卡数、它所在那条消息的下标、消息列最后一个子元素的下标。 */
 type CardPlacement = { cards: number; messageIndex: number; lastIndex: number };
-/** 这一跑里见过的每一段研究（`envelope()` 登记）。「一段研究一张卡」的期望值就是它的大小。 */
-const seenResearchRuns = new Set<string>();
+/** 这一跑里见过的每一段研究 → **创建它的那个回合**（`envelope()` 按第一次出现登记）。
+ *  卡片是「一个回合一张」，所以期望的卡数 = 这些回合去重后的大小，不是研究的个数（R81b）。 */
+const seenResearchTurns = new Map<string, string>();
 type Events = RuntimeEvent[];
 type ToolOutcome = { runId: string; callId: string; status: string; text: string };
 declare global { interface Window { __xClosureEvents: Events } }
@@ -83,6 +84,9 @@ const OCCUPANT_OBJECTIVE = 'Card queue occupant';
 const RESTART_OBJECTIVE = 'Restart first collection';
 /** 批交付那一段研究的问题（一条用例，三次提交，一次 wait）。 */
 const BATCH_OBJECTIVE = 'Batch delivery evidence';
+/** 同一回合里「取消 → 重试」那两段研究各自的问题（卡头取最早一段，也就是被取消的那段）。 */
+const RETRY_OBJECTIVE = 'Card retry evidence';
+const RETRY_AFTER_CANCEL_OBJECTIVE = 'Card retry after cancel';
 /** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
 const TAB_ID = /^tab_[0-9a-f]{8}$/;
 
@@ -217,7 +221,8 @@ test.describe('x research task protocol closure (offline)', () => {
   async function run(calls: Call[], during?: () => Promise<void>, endedClaim?: string): Promise<ToolOutcome[]> {
     await fs.writeFile(fixture, JSON.stringify({ events: [
       { type: 'agent_start', after_ms: 0 },
-      ...calls.map(c => ({ ...c, type: 'tool', after_ms: 0 })),
+      ...calls.map(c => ({ name: c.name, args: c.args, toolCallId: c.toolCallId,
+        type: 'tool', after_ms: c.afterMs ?? 0 })),
       { type: 'agent_end', reason: 'completed', after_ms: 0 },
     ] }));
     const { runId } = await launched.page.evaluate(a => window.kydog.invoke('thread.send', a), { threadId, content: randomUUID() });
@@ -248,7 +253,11 @@ test.describe('x research task protocol closure (offline)', () => {
     const parsed = JSON.parse(outcome.text) as XResearchDeliveryEnvelope;
     expect(parsed.kind).toBe('x_research');
     expect(parsed.researchRunId).toBeTruthy();
-    seenResearchRuns.add(parsed.researchRunId);
+    // 第一次见到这段研究的那次调用就是它的创建回合：后来的 submit 只是追加，wait / inspect / cancel
+    // 更是别的回合在提到它。分组键（`runId`）只在创建时定下来。
+    if (!seenResearchTurns.has(parsed.researchRunId)) {
+      seenResearchTurns.set(parsed.researchRunId, outcome.runId);
+    }
     const rowsOf = (delivery: XResearchDelivery) => delivery.operation === 'search'
       ? (delivery.result as Extract<XResearchResult, { operation: 'search' }>).queries.map(q => ({ status: q.status, stopReason: q.stopReason, posts: q.posts.map(p => p.postId) }))
       : (delivery.result as Extract<XResearchResult, { operation: 'read' }>).targets.map(t => ({ status: t.status, stopReason: t.stopReason, root: t.root?.postId ?? null }));
@@ -295,18 +304,20 @@ test.describe('x research task protocol closure (offline)', () => {
 
   // ── 卡片级观测（文件末尾那四条的观测口）──
 
-  /** 会话里的一段研究的那张卡。卡头（`x-research-objective`）是这段研究的**第一份**提交的问题
-   *  （R10），它在研究的一生里不变；`data-status` 会从运行中走到终态，所以不能用它定位。
-   *  一张卡跨回合跟着「最后一次提到这段研究的那条消息」走，所以任何时刻每段研究最多一张。 */
+  /** 会话里的一个回合的那张卡。卡头（`x-research-objective`）是**最早一段**研究的第一份提交的问题
+   *  （R10），它在这一回合的一生里不变；`data-status` 会从运行中走到终态，所以不能用它定位。
+   *  一张卡跟着「最后一次提到这个回合任何一段研究的那条消息」走，所以任何时刻每回合最多一张。
+   *  传的是**最早一段**的 objective；后面几段的目标在各段自己的分段头里。 */
   const cardFor = (objective: string) => launched.page.locator('[data-testid="x-research-card"]')
     .filter({ has: launched.page.locator('[data-testid="x-research-objective"]', { hasText: objective }) });
 
-  /** 会话里卡的总数。**一段研究一张**：期望值就是这轮测试见过的 `researchRunId` 个数，
-   *  于是「同一个 run 的第二次 submit / wait 没有长出第二张卡」与「没有多出来一张来历不明的卡」
-   *  是同一条断言。`toHaveCount` 会重试，所以 buffer → history 那一瞬的重复不算。 */
-  const expectOneCardPerResearch = async (): Promise<void> => {
+  /** 会话里卡的总数。**一个回合一张**（R81b）：期望值就是这些研究所属回合去重后的大小，
+   *  于是「同一回合的第二段研究并进同一张卡」与「没有多出来一张来历不明的卡」是同一条断言。
+   *  `toHaveCount` 会重试，所以 buffer → history 那一瞬的重复、以及第二段快照到达前的一瞬不算。 */
+  const expectOneCardPerRun = async (): Promise<void> => {
     await expect(launched.page.getByTestId('x-research-card'),
-      '会话里每段研究各一张卡（卡数 = 见过的 researchRunId 个数）').toHaveCount(seenResearchRuns.size);
+      '会话里每个回合各一张卡（卡数 = 见过的创建回合个数）')
+      .toHaveCount(new Set(seenResearchTurns.values()).size);
   };
 
   /** 这张卡停在会话里的哪一条消息上。`message-list` 那一列的直接子元素就是消息（用户一条、
@@ -774,7 +785,7 @@ test.describe('x research task protocol closure (offline)', () => {
     // 卡片这几条只读消息列里的 DOM，不点侧栏里的任何东西，所以它们不需要一个用户标签。
     // 重启恢复的每一段研究都各有一张卡（含 test 1 那段失败了的、test 5 那段被取消的）：
     // 「一段研究一张卡」在这条会话里从此刻起一直成立。
-    await expectOneCardPerResearch();
+    await expectOneCardPerRun();
     const existing = await cardPlacement(LIFECYCLE_OBJECTIVE);
     expect(existing.cards, '这一段研究还没提交过，不该有卡').toBe(0);
 
@@ -796,7 +807,7 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     // 读取还没提交过：这一段此刻不存在（「两段各说各的行数」不能拿一段冒充另一段）。
     await expect(card.getByTestId('x-research-read')).toHaveCount(0);
-    await expectOneCardPerResearch();
+    await expectOneCardPerRun();
 
     // 同一段研究的第二次提交：卡头不换题，两段行数各算各的。
     const readRun = await run([call('x_research', { action: 'submit', researchRunId: submitted.researchRunId, ...readArgs(rootUrl) })]);
@@ -807,7 +818,7 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     await expect(card.locator('[data-testid="x-research-row"][data-section="read"]')).toHaveCount(1);
     // 两次提交是两轮、两条消息，卡只有一张，而且停在最后一条（也就是刚提到它的那条）里。
-    await expectOneCardPerResearch();
+    await expectOneCardPerRun();
     await expectCardPlacement(LIFECYCLE_OBJECTIVE, '一段研究只有一张卡，且停在提到它的最后一条消息里',
       placed => placed.cards === 1 && placed.messageIndex === placed.lastIndex);
   });
@@ -849,16 +860,16 @@ test.describe('x research task protocol closure (offline)', () => {
     // 交付完这一份，卡仍是那一段研究的唯一一张，停在新的一条消息里，状态还是完成。
     await expect(card).toHaveCount(1);
     await expect(card).toHaveAttribute('data-status', 'completed');
-    await expectOneCardPerResearch();
+    await expectOneCardPerRun();
     await expectCardPlacement(LIFECYCLE_OBJECTIVE, '交付后仍是那一张卡，且停在新的一条消息里',
       placed => placed.cards === 1 && placed.messageIndex === placed.lastIndex);
     // 新消息里是新建的卡（没有手动选择）：终态默认收起。
     await expect(card.getByTestId('x-research-rows')).toHaveCount(0);
   });
 
-  test('cancelling from the card goes through the confirm dialog: declining leaves it running, confirming reaches cancelled', async () => {
-    // 占住这条会话的队列（第二个 query 被闸住），所以在同一轮里提交的上一段研究真的**排队**着
-    // —— 卡上是「运行中」，与 test 5 里那次取消同一个前提。
+  test('cancelling from the card goes through the confirm dialog once and settles every segment of the turn', async () => {
+    // 同一回合里两段新研究：第一段占住队列（第二个 query 被闸住 ⇒ 它在真导航），第二段真的**排队**着。
+    // 按 R81b 它们是一张卡的两个分段；取消按钮因此确认一次、把这一段回合里还在排队/进行中的都停下。
     holdNextQuery(SECOND_QUERY.query);
     const queueRun = await run([
       call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY], OCCUPANT_OBJECTIVE) }),
@@ -867,14 +878,17 @@ test.describe('x research task protocol closure (offline)', () => {
     const occupant = envelope(queueRun[0]);
     const doomed = envelope(queueRun[1]);
     expect(occupant.researchRunId).not.toBe(doomed.researchRunId);
+    expect(queueRun[0].runId).toBe(queueRun[1].runId);
     expect(doomed.status).toBe('running');
-    await expectOneCardPerResearch();
+    await expectOneCardPerRun();
 
-    const card = cardFor(CANCEL_OBJECTIVE);
+    // 两段研究是**一张**卡：卡头取最早一段的目标（R10），分段头两行。
+    const card = cardFor(OCCUPANT_OBJECTIVE);
     await expect(card).toHaveCount(1);
     await expect(card).toHaveAttribute('data-status', 'running');
     await expect(card.getByTestId('x-research-rows')).toBeVisible();
-    await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(1);
+    await expect(card.getByTestId('x-research-segment')).toHaveCount(2);
+    await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(3);
     const cancel = card.getByTestId('x-research-cancel');
     await expect(cancel).toBeVisible();
 
@@ -892,23 +906,76 @@ test.describe('x research task protocol closure (offline)', () => {
     const declined = await taskGet(doomed.researchRunId);
     expect(declined.state).toBe('running');
     expect(declined.counts).toMatchObject({ submissions: 1, queued: 1, cancelled: 0 });
+    expect((await taskGet(occupant.researchRunId)).state).toBe('running');
 
-    // ② 确认：卡进「取消」终态，并且**在协议里**也是取消（不是卡上画出来的）。
+    // ② 确认：两段都在协议里取消（不是卡上画出来的），卡进「取消」终态。
     await cancel.click();
     await expect(dialog).toBeVisible();
     await launched.page.getByTestId('confirm-dialog-confirm').click();
     await expect(card).toHaveAttribute('data-status', 'cancelled');
-    expect((await taskGet(doomed.researchRunId)).state).toBe('cancelled');
+    await expect.poll(async () => [
+      (await taskGet(occupant.researchRunId)).state,
+      (await taskGet(doomed.researchRunId)).state,
+    ]).toEqual(['cancelled', 'cancelled']);
+    // 两张分段头各自说取消：「用户按的」不是无主语的「被取消」（R81a 的归因落在段上）。
+    const segments = card.getByTestId('x-research-segment');
+    await expect(segments).toHaveCount(2);
+    await expect(segments.nth(0)).toContainText('你中途取消');
+    await expect(segments.nth(1)).toContainText('你中途取消');
     // 这一张从未被手动点过：终态默认收起（与上一条那种「手动展开过」的卡正好相反）。
     await expect(card.getByTestId('x-research-rows')).toHaveCount(0);
 
-    // 取消别人不动已经交付过的那段研究：卡上仍是完成。
+    // 取消一个回合不动别的回合里已经交付过的那段研究：它仍是完成。
     await expect(cardFor(LIFECYCLE_OBJECTIVE)).toHaveAttribute('data-status', 'completed');
-    // 放行占住队列的那一段：它照常跑完 —— 取消只收尾它自己那一段。
-    expect(await releaseHeldQuery()).toContain('/search');
-    await expect(cardFor(OCCUPANT_OBJECTIVE)).toHaveAttribute('data-status', 'completed', { timeout: 15_000 });
-    expect((await taskGet(occupant.researchRunId)).state).toBe('completed');
-    await expectOneCardPerResearch();
+    // 放行闸门里那份响应（取消可能已经让它被放弃，那就不在手上）——别留到 afterAll。
+    await releaseHeldQuery();
+    await expectOneCardPerRun();
+  });
+
+  test('a cancelled research and its retry submitted later in the same turn are one card with two segments', async () => {
+    // 现场那三张卡的成因（R81）：一个回合里取消 → 重开 → 重试。这里在**同一个回合**里复现：
+    // 第一段提交后闸门扣住它的导航，回合中途用户从卡上取消它；第二段（重试）在同一回合里后到
+    // （`afterMs` 是夹具的节奏，不是断言的等待）。两段研究的 `runId` 相同 ⇒ 一张卡、两个分段头。
+    holdNextQuery(SECOND_QUERY.query);
+    const retryRun = await run([
+      call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY, SECOND_QUERY], RETRY_OBJECTIVE) }),
+      { ...call('x_research', { action: 'submit', ...searchArgs([FIRST_QUERY], RETRY_AFTER_CANCEL_OBJECTIVE) }),
+        afterMs: 5000 },
+    ], async () => {
+      const card = cardFor(RETRY_OBJECTIVE);
+      await expect(card).toHaveAttribute('data-status', 'running');
+      await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+      await card.getByTestId('x-research-cancel').click();
+      const dialog = launched.page.getByTestId('confirm-dialog');
+      await expect(dialog).toBeVisible();
+      await launched.page.getByTestId('confirm-dialog-confirm').click();
+      // 此刻回合里只有第一段研究：取消只停它。
+      await expect(card).toHaveAttribute('data-status', 'cancelled');
+    }, 'the submit turn ended while the retry was still queued');
+    const first = envelope(retryRun[0]);
+    const retry = envelope(retryRun[1]);
+    expect(first.researchRunId).not.toBe(retry.researchRunId);
+    // 同一回合：分组键（创建回合的 runId）相同，这正是它们并成一张卡的依据。
+    expect(retryRun[0].runId).toBe(retryRun[1].runId);
+
+    // 放行被取消那段还挂着的响应，让重试那一段自己跑完（闸门是夹具事件，重试的 query 不被扣）。
+    await releaseHeldQuery();
+    await expect.poll(async () => (await taskGet(retry.researchRunId)).state,
+      { message: 'the retry research finishes on its own', timeout: 15_000 }).toBe('completed');
+    expect((await taskGet(first.researchRunId)).state).toBe('cancelled');
+
+    // 一张卡、两个分段头：① 被取消的那段（用户按的）② 重试成功的那段；卡头仍是最早一段的目标。
+    const card = cardFor(RETRY_OBJECTIVE);
+    await expect(card).toHaveCount(1);
+    await expect(card.getByTestId('x-research-objective')).toHaveText(RETRY_OBJECTIVE);
+    await expect(card).toHaveAttribute('data-status', 'cancelled');
+    const segments = card.getByTestId('x-research-segment');
+    await expect(segments).toHaveCount(2);
+    await expect(segments.nth(0)).toHaveAttribute('data-status', 'cancelled');
+    await expect(segments.nth(1)).toHaveAttribute('data-status', 'completed');
+    await expect(segments.nth(0)).toContainText('你中途取消');
+    await expect(segments.nth(1)).toContainText(RETRY_AFTER_CANCEL_OBJECTIVE);
+    await expectOneCardPerRun();
   });
 
   test('cancelling a research that is actually navigating ends cancelled, not completed', async () => {
@@ -939,7 +1006,7 @@ test.describe('x research task protocol closure (offline)', () => {
     // 收尾：闸门里那份响应可能还挂着（客户端未必立刻放弃一条被取消的导航）——放掉它，
     // 别把一份没人要的响应留到 afterAll。放行之后它落到一张已经没有采集在等的页上，无害。
     await releaseHeldQuery();
-    await expectOneCardPerResearch();
+    await expectOneCardPerRun();
   });
 
   test('the card stays on the message that mentioned it when a later message does not', async () => {
