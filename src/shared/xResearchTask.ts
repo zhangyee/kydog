@@ -76,6 +76,10 @@ export type XResearchSubmission = {
 export type XResearchTaskRecord = {
   version: 1;
   researchRunId: string;
+  /** 创建这段研究的那个回合（R81b）：卡片按它分组，**一个回合一张卡**。
+   *  同一回合里被取消后重开的研究仍是同一个 `runId` —— 分组键取 `runId ?? researchRunId`，
+   *  所以旧记录（没有这个字段）退回一段研究一张卡，不会因此渲染不出卡。 */
+  runId?: string;
   threadId: string;
   projectRoot: string;
   createdAt: string;
@@ -94,6 +98,9 @@ export type XResearchTaskRecord = {
  *  里面每个数字都是工作项字段的累加，没有百分比、剩余时间或任何估算。 */
 export type XResearchTaskSnapshot = {
   researchRunId: string;
+  /** 创建这段研究的那个回合（R81b），与 `record.runId` 同一份事实。渲染层按
+   *  `runId ?? researchRunId` 把同一回合的几段研究拼成一张卡。 */
+  runId?: string;
   threadId: string;
   revision: number;
   /** 生命周期取 `record.state`：它是唯一权威（唯一写者是任务 service，恢复时由它写 `interrupted`）。
@@ -257,6 +264,7 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
   }
   return {
     researchRunId: record.researchRunId,
+    runId: record.runId,
     threadId: record.threadId,
     revision: record.revision,
     // 生命周期由 task.json 说了算（唯一写者是任务 service，恢复时由它写 `interrupted`）；

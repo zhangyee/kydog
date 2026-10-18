@@ -396,7 +396,9 @@ export class XResearchTaskService {
     const inherited = this.threadTab.get(owner.threadId);
     const created: ActiveResearch = {
       record: {
-        version: 1, researchRunId, threadId: owner.threadId, projectRoot: owner.projectRoot,
+        // `runId` 是创建这张卡的那个回合（R81b）：取消后重开的研究仍落在同一张卡上。
+        version: 1, researchRunId, runId: owner.runId, threadId: owner.threadId,
+        projectRoot: owner.projectRoot,
         createdAt: now, updatedAt: now, revision: 0, state: 'running', submissionIds: [],
         ...(inherited ? { browserTabId: inherited } : {}),
       },

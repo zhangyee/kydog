@@ -337,6 +337,22 @@ describe('XResearchTaskService', () => {
     expect(snapshot.budget).toEqual({ scrolls: 2000, expandActions: 400 });
   });
 
+  it('stamps a research with the turn that created it, not the turn that appended to it', async () => {
+    const { service, store } = harness(echoRunner);
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    // 快照与 `task.json` 都是这份事实（R81b 的卡片分组键）：卡要跨重启还能认出同一回合的研究。
+    expect(first.snapshot.runId).toBe(thread.runId);
+    expect((await store.readTask(thread.threadId, first.researchRunId))?.runId).toBe(thread.runId);
+
+    // 下一轮里追加工作：分组键仍是**创建**它的那一轮，否则一张卡会在续跑时换组。
+    const next = { ...thread, runId: randomUUID() };
+    const appended = await service.submit(
+      { researchRunId: first.researchRunId, work: { read: readWork() } }, next);
+    expect(appended.snapshot.runId).toBe(thread.runId);
+    expect((await store.readTask(thread.threadId, first.researchRunId))?.runId).toBe(thread.runId);
+  });
+
   it('hands the work body a tab binding onto the task record', async () => {
     const bound = gate();
     const release = gate();
