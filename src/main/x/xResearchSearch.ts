@@ -18,14 +18,17 @@ import type { XResearchSection, XResearchWorkState } from '../../shared/xResearc
 export type XSearchInput = Extract<XResearchInput, { search: unknown }>;
 /** Session-owned source table. Preserve actual URLs and every discovery's provenance. */
 export type { XObservedSource } from './xResearchTypes';
-/** 任务侧的进度事件（spec §5.5）：采集循环在**阶段边界**说一句「这一行此刻在哪一段」。
+/** 任务侧的进度事件（spec §5.5）：采集循环在**阶段边界**说一句「这一行此刻在哪一段」，
+ *  并在这一行采集结束时报一次 `state: 'stopped'`（`phaseDetail: null`）—— 那是「收尾了」的唯一信号，
+ *  任务侧只有收到它才会把这一行算进 `*Done`（R81g：不报的话分子恒为 0，已跑完的行一直显示「收集中」）。
  *  `row` 是采集层正在改的那一行 —— 接收方收到即抄数字，绝不保留引用；它不进结果、不进工件。 */
 export type XResearchProgressEvent = {
   section: XResearchSection;
   /** 这一行在**本次提交**里的序号（`queries` / `targets` 的下标）。 */
   rowIndex: number;
   state: XResearchWorkState;
-  phaseDetail?: 'root' | 'article' | 'return' | 'discussion';
+  /** `null` 只在终态事件上出现：行已经收尾，没有「此刻在哪一段」可说。 */
+  phaseDetail?: 'root' | 'article' | 'return' | 'discussion' | null;
   row: XSearchObservation | XReadObservation;
 };
 export interface XResearchContext {
@@ -126,6 +129,8 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       // because an earlier row hit the same source barrier (or an adapter defect).
       else if(halted==='rate_limited'){row.status='rate_limited';row.stopReason='access_barrier';row.barrier={status:'rate_limited',reason:'not_attempted:rate_limited',observationId:null};}
       else {row.status='failed';row.stopReason='source_unavailable';row.barrier={status:'failed',reason:'internal_adapter_stopped',observationId:null};}
+      // 一行都没起跑也是这一行的结局（前置屏障 / 取消 / 适配器停了）：跳过不发终态，分子就永远追不上（R81g）。
+      reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'stopped',phaseDetail:null,row});
       continue;
     }
     const admitted=new Set<string>(),saved=new Set<string>();let pageCount=0,unsupportedSeen=false;
@@ -148,7 +153,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       // 每接纳一页就是一帧可见的新数字（spec §5.5 第 2 条），行仍是活着的那一行。
       reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'collecting',row});
     };
-    if(input.search.maxPostsPerQuery===0&&capped()){row.status='partial';row.stopReason='budget_reached';continue;}
+    if(input.search.maxPostsPerQuery===0&&capped()){row.status='partial';row.stopReason='budget_reached';reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'stopped',phaseDetail:null,row});continue;}
     const request={stage:'search' as const,expectedUrl:xSearchUrl(row.query),query:row.query.query,product:row.query.product};
     let stage:'navigation'|'collection'|'action'|'wait'='navigation';
     try {
@@ -247,6 +252,10 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
         httpHalt=http;
       }
       row.barrier={status:row.status,reason,observationId:null};
+    } finally {
+      // 这一行采集结束了 —— 正常收尾、取消、抛出都走这里。终态进度只发一次，且是**唯一**的来源：
+      // 卡片上的「搜索 N/M」分子就靠它（R81g）。`finally` 不是风格选择：抛出 / 取消的那一行同样要收尾。
+      reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'stopped',phaseDetail:null,row});
     }
     if(row.status==='auth_required')halted='auth_required';
     else if(row.status==='rate_limited')halted='rate_limited';

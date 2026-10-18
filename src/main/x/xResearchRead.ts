@@ -27,6 +27,7 @@ import {
   locationFacts,
   rememberSources,
   navigationUrl,
+  reportXProgress,
   xHttpFailure,
   type XResearchContext,
 } from './xResearchSearch';
@@ -539,6 +540,11 @@ export async function readX(
     } finally {
       row.replies.scope.stopReason = row.stopReason;
       row.collectionStop = {status:row.status,stopReason:row.stopReason,reason:row.reason};
+      // 这一行采集结束了（正常收尾、跳过、取消、抛出都走这里）：终态进度是卡片上「读取 N/M」分子的
+      // 唯一来源（R81g）。`phaseDetail: null` —— 行已收尾，没有「此刻在哪一段」可说。
+      reportXProgress(context, {
+        section: 'read', rowIndex: index, state: 'stopped', phaseDetail: null, row,
+      });
     }
   }
   const network=result.targets.some(row=>row.identity?.state==='proven'||row.root?.sourceKind==='page_graphql'||!!row.networkPages?.length||!!row.unscopedPosts?.observations.some(p=>p.sourceKind==='page_graphql'));

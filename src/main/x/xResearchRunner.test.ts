@@ -108,6 +108,11 @@ function conclusionOf(row: ReturnType<typeof rowsOf>[number]) {
   };
 }
 
+/** 每一帧的分子按序去重：留下的是「收盘一格一格涨」的形状，重复的帧不影响它。 */
+function successiveValues(values: number[]): number[] {
+  return values.filter((value, index) => index === 0 || value !== values[index - 1]);
+}
+
 describe('x research runner', () => {
   it('carries the submit-run scope prior into the serialized result', async () => {
     const f = fixture([searchHtml(post())]);
@@ -455,5 +460,83 @@ describe('x research runner', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('settles every search row as its collection ends, so the numerator reaches the total', async () => {
+    const f = fixture([searchHtml(post())]);
+    const root = mkdtempSync(path.join(os.tmpdir(), 'x-runner-settle-'));
+    // 帧里的快照与内存里是同一批工作项对象，所以在收到的当下抄数字（与上一条同一个理由）。
+    const settled: number[] = [];
+    const service = new XResearchTaskService({
+      store: new XResearchTaskStore(root),
+      runWork: createXResearchRunner(depsFor(f)),
+      onUpdate: (snapshot: XResearchTaskSnapshot) => settled.push(snapshot.counts.searchDone),
+      artifacts: () => tempXArtifactStore(),
+    });
+    try {
+      const submitted = await service.submit({
+        work: {
+          search: {
+            ...searchInput.search,
+            queries: [
+              query, { ...query, id: 'q3', query: 'second query' },
+              { ...query, id: 'q4', query: 'third query' },
+            ],
+          },
+        },
+      }, { threadId: '33333333-3333-4333-8333-333333333333', runId: RUN_ID, projectRoot: '/p' });
+      await service.whenIdle('33333333-3333-4333-8333-333333333333', submitted.researchRunId);
+      // 0 → 1 → 2 → 3，一行收尾长一格。R81g 的现场是三个 query 都跑完了、卡上还写「搜索 0/6」：
+      // 分子只有收到那一行的终态进度才会动（停在 0 直到 `settle()` 的形态就是这次要修的东西）。
+      expect(successiveValues(settled)).toEqual([0, 1, 2, 3]);
+      const final = await service.get('33333333-3333-4333-8333-333333333333', submitted.researchRunId);
+      expect(final.counts).toMatchObject({ searchDone: 3, searchTotal: 3 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('settles every read row as its collection ends, so the numerator reaches the total', async () => {
+    const f = fixture([readHtml(post())]);
+    const root = mkdtempSync(path.join(os.tmpdir(), 'x-runner-settle-read-'));
+    const settled: number[] = [];
+    const service = new XResearchTaskService({
+      store: new XResearchTaskStore(root),
+      runWork: createXResearchRunner(depsFor(f)),
+      onUpdate: (snapshot: XResearchTaskSnapshot) => settled.push(snapshot.counts.readDone),
+      artifacts: () => tempXArtifactStore(),
+    });
+    try {
+      const submitted = await service.submit({
+        work: { read: { ...readWork, targets: [{ url: target }, { url: target }, { url: target }] } },
+      }, { threadId: '44444444-4444-4444-8444-444444444444', runId: RUN_ID, projectRoot: '/p' });
+      await service.whenIdle('44444444-4444-4444-8444-444444444444', submitted.researchRunId);
+      expect(successiveValues(settled)).toEqual([0, 1, 2, 3]);
+      const final = await service.get('44444444-4444-4444-8444-444444444444', submitted.researchRunId);
+      expect(final.counts).toMatchObject({ readDone: 3, readTotal: 3 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('settles a row whose collection threw instead of leaving it running', async () => {
+    // 收集里抛出的那一行（适配器坏了）与因此一行都没起跑的下一行，都必须报终态 —— 这就是把终态
+    // 放在 `finally`、而不是「跑完那条路」上的理由：抛出 / 取消的行同样要收尾（R81g）。
+    const f = fixture([searchHtml(post())], { collectErrorAt: 0 });
+    const events: XResearchProgressEvent[] = [];
+    const twoQueries = {
+      search: { ...searchInput.search, queries: [query, { ...query, id: 'q3', query: 'second query' }] },
+    };
+    const result = await createXResearchRunner(depsFor(f))(
+      twoQueries, harness({ onProgress: (event) => events.push({ ...event }) }).ctx);
+    const stopped = events.filter((event) => event.state === 'stopped');
+    expect(stopped.map((event) => event.rowIndex)).toEqual([0, 1]);
+    expect(stopped.every((event) => event.phaseDetail === null)).toBe(true);
+    // 终态事件带的是**结论**，不是采集层的初始值：卡片按它印「失败」。
+    expect(searchRows(result).map((row) => row.status)).toEqual(['failed', 'failed']);
+    expect(stopped.map((event) => event.row.status)).toEqual(['failed', 'failed']);
+    // 翻面：抛出之前真的报过活着的阶段（上面两条不是「一条进度都没有」的空转）。
+    expect(events.some((event) => event.state === 'collecting')).toBe(true);
+    expect(events.some((event) => event.state === 'navigating')).toBe(true);
   });
 });
