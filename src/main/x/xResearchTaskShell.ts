@@ -8,9 +8,9 @@ import type { XResearchSubmission, XResearchTaskSnapshot, XResearchTaskState } f
 import type { XResearchResult } from './xResearchTypes';
 
 /** 一次交付：哪一份提交的结果，以及那一份结果本身（与旧工具结果同形，1 MiB 裁剪不变）。
- *  `result.budgetUsage.outputBytes` 在这里盖的是**整个包络**（壳 + 快照 + 这份结果）的字节数，
- *  不再是这一份结果自己的大小 —— 壳也要占字节，定点只能按模型看到的那一整包算（有意为之，
- *  Task 9 读这个字段当这一轮的输出用量）。 */
+ *  `result.budgetUsage.outputBytes` 在这里盖的是**整个包络**（壳 + 快照 + 这一轮的全部交付）的
+ *  字节数，不再是这一份结果自己的大小 —— 壳也要占字节，定点只能按模型看到的那一整包算（有意为之，
+ *  Task 9 读这个字段当这一轮的输出用量；同一轮交付的每一条带着同一个数）。 */
 export type XResearchDelivery = {
   deliveryCallId: string;
   submissionId: string;
