@@ -21,7 +21,7 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 `inspect` 必带 `researchRunId` 与 `view`：`rows` 看每个工作行、`deliveries` 看每次提交的交付标记与工件是否存在、`failures` 只看已收尾的失败行。`pageSize` 缺省 20、最大 50；`nextCursor` 是服务给的不透明游标，读不懂就原样传回，不要自己拼。它只读、从不交付：`inspect` 的行不进结果账本，只有 `wait` 交付过的结果可以引用。只在要解释失败或核对某次提交是否交付过时用它。
 
-`cancel` 必带 `researchRunId`，是唯一的控制（没有 pause/resume，也没有 complete）。它停掉排队与在飞的工作，已经收尾的行保住原结论，已经完成的结果在取消后仍可用 `wait` 取回；没有任何排队或在飞工作时取消是空操作。被取消过的研究不再接受新的 `submit`：要接着研究就新开一段（不带 `researchRunId` 的提交）。取消之后快照的 `state` 可能仍是 `completed`（此前有已完成的提交），“被停过”记在 `stateReason` 上。
+`cancel` 必带 `researchRunId`，是唯一的控制（没有 pause/resume，也没有 complete）。它停掉排队与在飞的工作，已经收尾的行保住原结论，已经完成的结果在取消后仍可用 `wait` 取回；没有任何排队或在飞工作时取消是空操作。被取消的那几轮**永远是取消的**（结论、行与交付都不再改写，也不会重跑），但同一段研究可以接着 `submit`：那是这一段的新一轮，不是一段新研究 —— 接着做同一个问题就带同一个 `researchRunId` 续上，只有换了一个目标才开新的一段（新 `objective`）。取消之后快照的 `state` 可能仍是 `completed`（此前有已完成的提交），“被停过”记在 `stateReason` 上；续上新的一轮之后它由提交重算。
 
 用户点“停止”中止的是这一轮 agent 回合：正在等的 `wait` 当场放弃，这一轮拿不到结果（那份结果仍是未交付的，下一次 `wait` 照常交付），后台队列并不因此停下。要停采集只能用 `cancel`。
 
