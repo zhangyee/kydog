@@ -717,7 +717,9 @@ export class XResearchTaskService {
       if (active.record.threadId === threadId && this.owns(active, ledger)) this.active.delete(key);
     }
     // 对话的页跟着对话走：拆除 / 删除之后，这条 thread 不再有几号页可继承（R81h）。
-    this.threadTab.delete(threadId);
+    // **只认整条 thread 的拆除**：给了账本身份的那一次（换会话时 `disposeThread` 带的就是它）
+    // 不是「这条对话没了」—— 页还活着，下一条会话的研究照样该继承它。与 R46/R47 守的是同一条边界。
+    if (ledger === undefined) this.threadTab.delete(threadId);
   }
 
   /** 每个视图都按**提交序 → 工作项序**铺开：翻页因此是稳定的，游标只是偏移。

@@ -390,12 +390,19 @@ describe('XResearchTaskService', () => {
     await service.whenIdle(other.threadId, third.researchRunId);
     expect(seen[2]).toBeUndefined();
 
-    // 对话被拆除 / 删除（`disposeThread` / `forgetXResearchThread` 走的就是 `forget`）：这条 thread
+    // 翻面二：**带着账本身份**的那次拆除（换会话时 `disposeThread` 走的就是它）不算「这条对话没了」
+    // —— 页还活着，新的那一段研究照样继承它（R46/R47 的同一条边界）。
+    service.forget(thread.threadId, {});
+    const replaced = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, replaced.researchRunId);
+    expect(seen[3], '带着账本身份的拆除不该把这条对话的页丢掉').toBe('tab-of-this-thread');
+
+    // 对话被拆除 / 删除（`disposeThread` / `forgetXResearchThread` 走的就是整条拆除）：这条 thread
     // 不再有页可继承。
     service.forget(thread.threadId);
     const fourth = await service.submit({ work: { search: searchWork() } }, thread);
     await service.whenIdle(thread.threadId, fourth.researchRunId);
-    expect(seen[3]).toBeUndefined();
+    expect(seen[4]).toBeUndefined();
   });
 
   it('remembers an explicitly submitted tab for the rest of the thread', async () => {
