@@ -79,7 +79,9 @@ export type XResearchToolsDeps = {
   /** 会话侧账本的不透明身份：随提交交给任务 service，拆除时用来认出「这是替换会话的研究」。 */
   ledger?: object;
   /** 交付后喂证据账本（spec §4.5「可引用 = 已交付」）：只有 `wait` 真交出去时才调用，
-   *  绝不在工作收尾时调用 —— 未交付的观察不许变得可引用。 */
+   *  绝不在工作收尾时调用 —— 未交付的观察不许变得可引用。
+   *  拿到的是 `wait` 给出的**工件 canonical**（`XResearchWaitResult.evidence`），不是包络里那份裁过的
+   *  副本（R81d）：交付裁掉的正文仍是已观察的事实，引用它不需要再跑一遍浏览器 read。 */
   observeDelivery(result: XResearchResult): void;
 };
 
@@ -162,7 +164,9 @@ export function createXResearchTools(
           undelivered: delivered.undelivered, action,
         });
         // 一次交付喂一条账本：服务对同一份提交最多交付一次（`deliveredAt` 是权威）。
-        for (const delivery of delivered.deliveries) deps.observeDelivery(delivery.result);
+        // 喂的是 `evidence`（工件里的 canonical，与 `deliveries` 同序，R81d），不是包络里那份裁过的
+        // 副本：1 MiB 把正文裁空不等于没观察到，可引用面跟着观察记录走，而不是跟着模型可见的字节数走。
+        for (const evidence of delivered.evidence) deps.observeDelivery(evidence);
         return envelope;
       }
       // 工具里的取消是**模型**自己停的（R81a）：卡头据此说「模型中途取消」，而不是无主语的「被取消」。

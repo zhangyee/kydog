@@ -86,10 +86,18 @@ export type XResearchSubmitResult = {
 
 /** `wait` 的产物：这一轮的快照、这一轮交付的每一份（可能为空）、以及还没交付的清单。
  *  `undelivered` 是**这次调用之后**仍然收尾未交付的提交：包络装不下时它会大于 0，模型据此再 `wait`。
- *  壳的构造与 1 MiB 定点归 `./xResearchDeliver`（它只管字节，不碰任务状态）。 */
+ *  壳的构造与 1 MiB 定点归 `./xResearchDeliver`（它只管字节，不碰任务状态）。
+ *
+ *  `evidence` 与 `deliveries` **同序一一对应**：每条交付的账本投喂源（R81d）。它是**工件里的 canonical**
+ *  （`store.read(submission.artifact)` 那条 sha256 校验过的读），不是交付那份按 1 MiB 裁过的副本 ——
+ *  实测 1,196,614 字节的交付里正文被裁成 `"text": ""`、整段 `posts` 被省掉，而工件里逐字还在；
+ *  裁剪是模型可见性，不是「没观察到」。工件读不回来（`persistence: 'failed'`、旧交付没有 ref、
+ *  字节坏了）时它就是交付副本本身：可引用面不因此扩大一个字。它**不进包络**，模型看到的仍只有
+ *  `deliveries`。 */
 export type XResearchWaitResult = {
   snapshot: XResearchTaskSnapshot;
   deliveries: XResearchDelivery[];
+  evidence: XResearchResult[];
   undelivered: NonNullable<XResearchDeliveryEnvelope['undelivered']>;
 };
 
@@ -550,10 +558,13 @@ export class XResearchTaskService {
     const candidates = deliverableSubmissions([...active.submissions.values()]);
     const packed: XResearchSubmission[] = [];
     const deliveries: XResearchDelivery[] = [];
+    // 与 `deliveries` 同序：每条交付的账本投喂源（工件 canonical），不进包络。
+    const evidence: XResearchResult[] = [];
     for (const candidate of candidates) {
-      const delivery = await this.deliverable(active, candidate, deliveryCallId);
+      const candidateDelivery = await this.deliverable(active, candidate, deliveryCallId);
       // 这份结果真的不在了（工件写失败过、或工件读不回来）：不拿它挡住后面的，也不假装交付过。
-      if (!delivery) continue;
+      if (!candidateDelivery) continue;
+      const { delivery } = candidateDelivery;
       if (deliveries.length) {
         // 试装下一份：装不下就停在上一份。`undelivered` 按「试装之后还剩谁」量，包络字节因此
         // 说的就是这一轮真正会返回的形状 —— 不是先按空清单量、再塞进一份更大的清单。
@@ -570,10 +581,14 @@ export class XResearchTaskService {
         })) break;
       }
       deliveries.push(delivery);
+      evidence.push(candidateDelivery.evidence);
       packed.push(candidate);
     }
     if (!deliveries.length) {
-      return { snapshot: this.snapshotOf(active), deliveries: [], undelivered: this.undeliveredOf(active) };
+      return {
+        snapshot: this.snapshotOf(active), deliveries: [], evidence: [],
+        undelivered: this.undeliveredOf(active),
+      };
     }
     // mark 之前的最后一次复查：读工件那一段是真实的 await（重启后的交付才会走到），中止落在那里
     // 同样一条都不交。
@@ -597,7 +612,7 @@ export class XResearchTaskService {
         err: String(error),
       });
     }));
-    return { snapshot, deliveries, undelivered: this.undeliveredOf(active) };
+    return { snapshot, deliveries, evidence, undelivered: this.undeliveredOf(active) };
   }
 
   /** 分页看行 / 交付清单 / 失败（spec §4.2、§4.5）：读的就是快照背后那批记录，
@@ -778,19 +793,28 @@ export class XResearchTaskService {
   /** 这份提交能不能交出结果：服务手里那份优先（它就是 `settle` 写结论用的那一份字节），
    *  只有在内存里没有它（重启后）时才走工件。工件里存的是完整 canonical，读回来要照今天的
    *  预算再裁一次，并且和收尾路径一样按**量出来的包络额度**裁（控制器裁决 T5/B'）——
-   *  否则一个顶到 1 MiB 的工件加上壳就装不进包络，而那份结果恰恰是重启后最需要交出去的。 */
+   *  否则一个顶到 1 MiB 的工件加上壳就装不进包络，而那份结果恰恰是重启后最需要交出去的。
+   *
+   *  交付的**账本投喂源**（`evidence`）在这一层定：它必须是工件里的 canonical，不是上面裁过的那一份
+   *  （R81d）。每条交付最多读一次工件 —— 重启后那条路本来就要读它，读回来的字节直接当投喂源，
+   *  不为了喂账本再读第二遍。 */
   private async deliverable(active: ActiveResearch, submission: XResearchSubmission,
-    deliveryCallId: string): Promise<XResearchDelivery | null> {
+    deliveryCallId: string): Promise<{ delivery: XResearchDelivery; evidence: XResearchResult } | null> {
     const { threadId, researchRunId } = active.record;
     const identity = {
       deliveryCallId, submissionId: submission.submissionId,
       submitCallId: submission.submitCallId, operation: submission.operation,
     };
+    const artifacts = this.deps.artifacts(threadId, researchRunId);
     const held = active.results.get(submission.submissionId);
-    if (held) return { ...identity, result: held };
+    if (held) {
+      return {
+        delivery: { ...identity, result: held },
+        evidence: await this.canonicalFor(submission, held),
+      };
+    }
     // 工件写失败过：这份结果不在盘上，重启后它就不存在了（R20）。
     if (!submission.artifact) return null;
-    const artifacts = this.deps.artifacts(threadId, researchRunId);
     try {
       const canonical = await artifacts.read(submission.artifact);
       // 工件里是 canonical DTO（没有交付字段）：补上「已落盘」，否则序列化会把这件事说成失败。
@@ -811,12 +835,33 @@ export class XResearchTaskService {
         result: serializeXResearchResult(canonical).result,
       });
       active.results.set(submission.submissionId, result);
-      return { ...identity, result };
+      // 同一份读回来的 canonical 既是交付字节的来源，也是账本的投喂源：一次读，两处用。
+      return { delivery: { ...identity, result }, evidence: canonical };
     } catch (error) {
       logger.warn('x_research', 'could not read a delivered artifact', {
         threadId, researchRunId, submissionId: submission.submissionId, err: String(error),
       });
       return null;
+    }
+  }
+
+  /** 账本吃的那一份观察记录（R81d）：工件里的 canonical，读一次。
+   *  **没有工件就没有第二条路**：`persistence: 'failed'` 或旧交付没带 ref 时退回交付副本本身 ——
+   *  那正是模型看到的东西，可引用面与改造前逐字相同（不静默放宽，也不凭空造观察）。
+   *  工件在但读不回来（字节被改、chunk 缺、ref 不对）同样退回交付副本，并留一条日志：
+   *  这一次的可引用面确实比工件窄，那是读失败的事实，不是裁切。 */
+  private async canonicalFor(submission: XResearchSubmission,
+    clipped: XResearchResult): Promise<XResearchResult> {
+    if (!submission.artifact) return clipped;
+    try {
+      return await this.deps.artifacts(submission.threadId, submission.researchRunId)
+        .read(submission.artifact);
+    } catch (error) {
+      logger.warn('x_research', 'could not read the delivered artifact for the ledger', {
+        threadId: submission.threadId, researchRunId: submission.researchRunId,
+        submissionId: submission.submissionId, err: String(error),
+      });
+      return clipped;
     }
   }
 

@@ -156,6 +156,8 @@ it('still restores a hand-written single-delivery shell from an older transcript
   const evidence = new XResearchEvidence('/tmp', () => 'run');
   evidence.restore(hydrated.entries);
   expect(evidence.observations.map((o) => o.text)).toEqual(['original', 'second body']);
+  // 旧壳恢复后引用照旧可用：第二帖只在工件里（交付副本里被裁掉了），凭恢复出来的观察可引用。
+  expect(evidence.guard('/tmp/report.md', '[source](https://x.com/bob/status/456)')).toBeUndefined();
   const scope = new XResearchScopeLedger();
   scope.restore(hydrated.entries);
   expect(scope.prior('run').withCurrent({ ...full, callId: 'next' })).toMatchObject({
@@ -179,6 +181,8 @@ it('still restores a flat pre-change toolResult', async () => {
   const evidence = new XResearchEvidence('/tmp', () => 'run');
   evidence.restore(hydrated.entries);
   expect(evidence.observations.map((o) => o.text)).toEqual(['original', 'second body']);
+  // 平铺的旧结果（改造前没有壳）恢复后同样可引用：工件里的第二帖照样授权。
+  expect(evidence.guard('/tmp/report.md', '[source](https://x.com/bob/status/456)')).toBeUndefined();
   const scope = new XResearchScopeLedger();
   scope.restore(hydrated.entries);
   expect(scope.prior('run').withCurrent({ ...full, callId: 'next' })).toMatchObject({

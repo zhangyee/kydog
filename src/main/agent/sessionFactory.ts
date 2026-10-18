@@ -309,6 +309,8 @@ export async function createSession(opts: {
     ...(settings.research?.xResearchEnabled === true ? [createXResearchTools({
       service, threadId: opts.sessionId, projectRoot: opts.cwd, currentRunId, ledger,
       // 交付即入账（spec §4.5「可引用 = 已交付」）：只有 `wait` 真把结果交出去时才会走到这里。
+      // 进来的 `result` 是那份结果的**工件 canonical**（R81d：交付副本被 1 MiB 裁掉的正文也在这里），
+      // 两个账本因此认的是同一份真实观察；卡片与交付结论仍取 `settle` 那一份（R23 不变）。
       // `pendingResults` 记的是「这一份是我亲手交的」：`syncBranch` 靠它绕过磁盘恢复。
       observeDelivery: result => {
         evidence.observe(result);

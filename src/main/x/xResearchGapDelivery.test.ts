@@ -149,11 +149,16 @@ it.each([500, 1000])('delivers twenty targets with %i Article gaps through persi
   for (const [index, row] of details.targets.entries()) {
     expect(declaredGaps(index)).toBe(row.unscopedPosts!.previewGaps.length < count);
   }
-  expect(ledger.guard('/tmp/report.md', '[source](https://x.com/ReadAuthor/status/1000000)')).toBeUndefined();
+  // R81d：账本在交付那一刻吃的是**工件里的 canonical**，所以缺口身份和在恢复链里读到的一样在账本里 ——
+  // 这条父帖在没有完整同父帖采集之前不能引用。此前这里断言的是「通过」，那是因为账本吃的是交付副本、
+  // 缺口被 1 MiB 的省略账本盖住了；那正是 R81d 拆掉的那条「可引用面跟着模型可见的字节数走」。
+  // 闸的正面在基线那一段：同一个父帖在那次交付里带完整正文，引用通过。
+  expect(() => ledger.guard('/tmp/report.md', '[source](https://x.com/ReadAuthor/status/1000000)'))
+    .toThrow(/inventory/);
   const branch = [entry(baseline, 'baseline-wait'), entry(delivered, 'gaps-wait')];
   const restored = await hydrateXResearchBranch(branch, artifacts);
   expect(restored.failures).toEqual([]);
-  // 恢复链读的是工件里的**完整** canonical：缺口身份回到账本，同一条父帖引用被挡住。
+  // 恢复链读的是工件里的**完整** canonical：与上面那次活交付同一个结论（同一份工件、同一个闸）。
   const fresh = new XResearchEvidence('/tmp', () => 'run'); fresh.restore(restored.entries);
   expect(() => fresh.guard('/tmp/report.md', '[source](https://x.com/ReadAuthor/status/1000000)')).toThrow(/inventory/);
   // Every unavailable-artifact route must retain the unknown-obligation block.
