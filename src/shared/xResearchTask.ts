@@ -25,9 +25,10 @@ export type XResearchWorkState =
 
 export type XResearchWorkItem = {
   workItemId: string;
-  /** 这行属于哪一份提交。同一次提交的行带同一个 id，于是卡能在**一段研究内**按提交分轮
+  /** 这行属于哪一份提交。同一次提交的行带同一个 id，于是卡能按提交分轮
    *  （「第 1 轮 · 5 个 query」「第 2 轮 · 补搜 3 个 query」），次序仍由行本身的次序说。
-   *  旧数据（这个字段之前落盘的提交）没有它：分不出轮次时卡退回今天的样子，不画轮次头。 */
+   *  **快照里这一格由投影从「拥有它的那份提交」盖上**，不靠这里落盘的值：旧提交文件没有它，
+   *  而旧对话同样要按轮分组（见 `xResearchTaskSnapshot`）。 */
   submissionId?: string;
   section: XResearchSection;
   label: string;
@@ -77,6 +78,27 @@ export type XResearchSubmission = {
 };
 
 /** 一段研究的索引，落在 `task.json`。故意小：工作项在 `submission-*.json`，结果在 `canonical-*.json`。 */
+/** 一份提交在卡上的那一轮：一轮 = 一次 `submit`。
+ *
+ *  和 `XResearchSubmission` 分开是因为它只带分段要用的那几件事：行在快照的 `search` / `read` 里
+ *  （各自盖着 `submissionId`），预算、工件引用、交付标记都不进这里。
+ *
+ *  `state` 是**提交**的状态（排队 / 在跑 / 收尾 / 取消 / 中断），不是研究的状态：卡片按目标分段之后，
+ *  一段研究会被切进两段（补读换了问题），研究级的 `record.state` 回答不了「这一段成了没有」。 */
+export type XResearchRound = {
+  submissionId: string;
+  operation: XResearchSection;
+  objective: string;
+  createdAt: string;
+  state: XResearchSubmission['state'];
+  /** 这一轮为什么停。被取消的那一轮写 `cancelled` —— 提交记录里没有第二个理由，
+   *  所以这里只收这一个词；还在跑 / 已完成 / 中断的轮次没有可说的（研究级 `stateReason` 才是
+   *  「为什么整段停了」）。 */
+  stateReason?: string;
+  /** 这一轮是谁停的（R81a）：只有取消的那一轮有，取自研究级 `cancelledBy` —— 提交记录不记主语。 */
+  cancelledBy?: XResearchCancelActor;
+};
+
 export type XResearchTaskRecord = {
   version: 1;
   researchRunId: string;
@@ -119,6 +141,11 @@ export type XResearchTaskSnapshot = {
    *  后续提交只是往同一段研究里追加步骤，拿最新一次会让卡头在运行中换题。 */
   objective: string;
   browserTabId?: string;
+  /** 这个回合里这段研究的每一份提交，按提交序（`createdAt` 升序，同毫秒按 id）。
+   *  卡片按 `objective` 把它们并成段（R83）：一个目标可以横跨几段研究（取消后重开、继续研究），
+   *  一个目标也可能只有几轮里的一部分 —— 段与轮都是**提交**这一层的形状，不是研究的形状。
+   *  旧数据没有这个字段（投影之前落的分段），卡退回「一段研究一段、行平铺」，不会空白。 */
+  rounds?: XResearchRound[];
   counts: {
     submissions: number;
     queued: number;
@@ -166,20 +193,28 @@ export const X_RESEARCH_FAILURE_STATUSES: ReadonlySet<XResearchStatus> = new Set
  *  调用方保证传入的列表非空（`record.submissionIds` 非空却读不出任何 submission 时，
  *  由 service 写 `interrupted`，不要调用本函数）；`[]` 落出的 `completed` 不是结论。 */
 export function xResearchTaskState(submissions: readonly XResearchSubmission[]): XResearchTaskState {
+  return xResearchRoundsState(
+    submissions.map((submission) => submission.state),
+    submissions.flatMap((submission) => submission.workItems),
+  );
+}
+
+/** 一「组」提交的终态：研究的全部提交，或者卡片上同一目标的那几轮（R83）。
+ *  两者是同一把尺子 —— 量的东西不同（整段研究 / 一个目标下的几轮），判据只有一份。
+ *  `rows` 是这几份提交的行：`failed` 那一支要看行结论（分桶规则在 `workItemBucket`，这里只问
+ *  「有没有源侧拒绝」）。 */
+export function xResearchRoundsState(
+  states: readonly XResearchSubmission['state'][],
+  rows: readonly XResearchWorkItem[],
+): XResearchTaskState {
   // 此刻真有工作在跑：这是最新的事实，任何「上一次留下的未收尾」都不能盖掉它。
-  if (submissions.some((submission) => submission.state === 'queued' || submission.state === 'running')) {
-    return 'running';
-  }
+  if (states.some((state) => state === 'queued' || state === 'running')) return 'running';
   // 盘上还留着未收尾的工作 → 进程被杀过，任何「最新」的说法都是假的。
-  if (submissions.some((submission) => submission.state === 'interrupted')) return 'interrupted';
-  // 取消是用户下的动作：只有整段研究都被取消才算取消，否则它可能已有成功的工作。
-  if (submissions.length > 0 && submissions.every((submission) => submission.state === 'cancelled')) {
-    return 'cancelled';
-  }
-  for (const submission of submissions) {
-    if (submission.workItems.some((item) => item.status !== null && X_RESEARCH_FAILURE_STATUSES.has(item.status))) {
-      return 'failed';
-    }
+  if (states.some((state) => state === 'interrupted')) return 'interrupted';
+  // 取消是有人下的动作：只有整组都被取消才算取消，否则它可能已有成功的工作。
+  if (states.length > 0 && states.every((state) => state === 'cancelled')) return 'cancelled';
+  if (rows.some((row) => row.status !== null && X_RESEARCH_FAILURE_STATUSES.has(row.status))) {
+    return 'failed';
   }
   return 'completed';
 }
@@ -214,7 +249,29 @@ function workItemBucket(item: XResearchWorkItem): XResearchWorkItemBucket {
 
 export function xResearchTaskSnapshot(record: XResearchTaskRecord,
   submissions: readonly XResearchSubmission[]): XResearchTaskSnapshot {
-  const workItems = submissions.flatMap((submission) => submission.workItems);
+  // 行上的 `submissionId` 由**拥有它的那份提交**盖上（R83）：盘上的值可能是旧的、缺的或篡改过的，
+  // 而「这行是哪一份提交计划出来的」是投影自己就能回答的事实 —— 行就躺在这份提交的 `workItems` 里。
+  // 旧提交文件（这个字段之前落的盘）因此也能按轮分组，不需要迁移。行序不动：仍是提交序 → 提交内序。
+  const workItems = submissions.flatMap((submission) => submission.workItems.map(
+    (item) => ({ ...item, submissionId: submission.submissionId }),
+  ));
+  // 轮次按提交序：`createdAt` 升序，同一毫秒按 id（只比 `createdAt` 时先后取决于提交文件的枚举序，
+  // 而卡片不能用「同一个盘读两次给出不同次序」的东西当分段依据）。
+  const rounds: XResearchRound[] = [...submissions]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt)
+      || a.submissionId.localeCompare(b.submissionId))
+    .map((submission) => ({
+      submissionId: submission.submissionId,
+      operation: submission.operation,
+      objective: submission.objective,
+      createdAt: submission.createdAt,
+      state: submission.state,
+      // 取消归因只在取消的那一轮上：`cancelledBy` 是研究级的事实（谁最后一次停过这段研究），
+      // 被取消的那一轮正是它停的 —— 提交自己不记主语。
+      ...(submission.state === 'cancelled'
+        ? { stateReason: 'cancelled', ...(record.cancelledBy ? { cancelledBy: record.cancelledBy } : {}) }
+        : {}),
+    }));
   const counts = {
     submissions: submissions.length,
     queued: 0, running: 0, done: 0, failed: 0, cancelled: 0, interrupted: 0,
@@ -280,6 +337,7 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
     updatedAt: record.updatedAt,
     objective: submissions[0]?.objective ?? '', // R10 / spec §5.3：最早一次提交，`[]` 时为空串
     browserTabId: record.browserTabId,
+    rounds,
     counts,
     budget,
     usage,

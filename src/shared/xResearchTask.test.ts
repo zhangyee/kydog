@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  xResearchTaskSnapshot, xResearchTaskState,
+  xResearchRoundsState, xResearchTaskSnapshot, xResearchTaskState,
   type XResearchSubmission, type XResearchTaskRecord, type XResearchWorkItem,
 } from './xResearchTask';
 
@@ -329,34 +329,98 @@ describe('xResearchTaskSnapshot：研究级快照全是事实的投影', () => {
   it('keeps each row\'s submissionId so the card can regroup one research into rounds', () => {
     // 现场形状（一张卡里一次研究跑了四次提交）：搜 5、补搜 3、读 3、补读 2。分组只能按
     // `submissionId` —— 提交的 `createdAt` 与行序都不在这个字段里，而卡也不该从时间窗去猜。
+    // **行上不写这个字段**：那正是旧提交文件的形状，而「这行是哪一份提交计划出来的」由投影从
+    // 拥有它的那份提交盖上（对照在下面：行上本来就写着同一个 id 时结果逐字相同）。
     const round = (submissionId: string, operation: 'search' | 'read', labels: string[]) =>
       submission({ submissionId, operation, state: 'done', workItems: labels.map((label, at) =>
-        item({ workItemId: `${submissionId}-${at}`, submissionId,
+        item({ workItemId: `${submissionId}-${at}`,
           section: operation, label, state: 'stopped', status: 'observed' })) });
-    const snap = xResearchTaskSnapshot(record(), [
+    const four = [
       round('sub-1', 'search', ['s1', 's2', 's3', 's4', 's5']),
       round('sub-2', 'search', ['s6', 's7', 's8']),
       round('sub-3', 'read', ['r1', 'r2', 'r3']),
       round('sub-4', 'read', ['r4', 'r5']),
-    ]);
+    ];
+    const snap = xResearchTaskSnapshot(record(), four);
     // 字段真的落到了投影上，而行序就是提交序 → 提交内行序（不重排）。
     expect(snap.search.map((row) => row.submissionId)).toEqual([
       'sub-1', 'sub-1', 'sub-1', 'sub-1', 'sub-1', 'sub-2', 'sub-2', 'sub-2']);
     expect(snap.read.map((row) => row.submissionId)).toEqual([
       'sub-3', 'sub-3', 'sub-3', 'sub-4', 'sub-4']);
     // 按提交分组，就是「四轮、5/3/3/2」那个形状。
-    const rounds = (rows: readonly XResearchWorkItem[]) => rows.reduce<Array<[string, number]>>(
+    const regroup = (rows: readonly XResearchWorkItem[]) => rows.reduce<Array<[string, number]>>(
       (acc, row) => {
         const last = acc[acc.length - 1];
         if (last && last[0] === row.submissionId) last[1] += 1;
         else acc.push([row.submissionId!, 1]);
         return acc;
       }, []);
-    expect(rounds(snap.search)).toEqual([['sub-1', 5], ['sub-2', 3]]);
-    expect(rounds(snap.read)).toEqual([['sub-3', 3], ['sub-4', 2]]);
+    expect(regroup(snap.search)).toEqual([['sub-1', 5], ['sub-2', 3]]);
+    expect(regroup(snap.read)).toEqual([['sub-3', 3], ['sub-4', 2]]);
 
-    // 旧数据：这个字段之前落的盘上提交没有它，投影原样透传「没有」——不补一个猜出来的 id。
-    const old = xResearchTaskSnapshot(record(), [submission({ workItems: [item()] })]);
-    expect(old.search[0]!.submissionId).toBeUndefined();
+    // 对照：同一批提交的行**本来就盖着**同一个 id（新数据）时，分段形状逐字相同 ——
+    // 上面那两行不是因为行上原本写着，而是投影盖上去的。
+    const stamped = xResearchTaskSnapshot(record(), four.map((one) => submission({
+      ...one, workItems: one.workItems.map((row) => ({ ...row, submissionId: one.submissionId })),
+    })));
+    expect(stamped.search.map((row) => row.submissionId)).toEqual(snap.search.map((row) => row.submissionId));
+    expect(stamped.read.map((row) => row.submissionId)).toEqual(snap.read.map((row) => row.submissionId));
+    expect(stamped.counts).toEqual(snap.counts);
+  });
+
+  it('lists every submission as one round, in submit order, with its own operation and objective', () => {
+    const at = (minute: number) => `2026-10-16T00:0${minute}:00.000Z`;
+    // 现场形状（R83）：一个目标下几轮，其中一轮被模型取消；同一个目标可以横跨两段研究。
+    const snap = xResearchTaskSnapshot(
+      record({ state: 'completed', stateReason: 'cancelled', cancelledBy: 'agent' }),
+      // 输入数组刻意不按时间排（第三份提交夹在中间）：`rounds` 的次序只能来自提交自己的
+      // `createdAt`，不能来自「这次调用恰好先读到哪个文件」。第一份仍是最早的那一份 ——
+      // 卡头副标题取它（R10），而那是输入次序，不是这里排出来的次序。
+      [
+        submission({ submissionId: 'sub-1', objective: 'macOS 轻量虚拟化', state: 'cancelled',
+          createdAt: at(1), endedAt: at(2) }),
+        submission({ submissionId: 'sub-3', objective: '补读引信', state: 'done',
+          createdAt: at(4), endedAt: at(5) }),
+        submission({ submissionId: 'sub-2', operation: 'read', objective: '补读引信', state: 'done',
+          createdAt: at(2), endedAt: at(3) }),
+      ],
+    );
+    // 提交序由 `createdAt` 说（输入数组的次序不参与）：卡按这个次序画轮次头。
+    expect(snap.rounds!.map((round) => [round.submissionId, round.operation, round.objective]))
+      .toEqual([
+        ['sub-1', 'search', 'macOS 轻量虚拟化'],
+        ['sub-2', 'read', '补读引信'],
+        ['sub-3', 'search', '补读引信'],
+      ]);
+    // 被取消的那一轮带着「为什么停」与「谁停的」：R81a 的归因按轮给，卡上不必再猜主语。
+    expect(snap.rounds![0]).toMatchObject({ state: 'cancelled', stateReason: 'cancelled', cancelledBy: 'agent' });
+    // 对照：没被取消的轮次不带这两项 —— 上面那一行不是因为每一轮都盖着。
+    expect(snap.rounds![1].cancelledBy).toBeUndefined();
+    expect(snap.rounds![1].stateReason).toBeUndefined();
+    // 同一毫秒的两份提交按 id 定序：只比 `createdAt` 时它们的先后取决于提交文件的枚举序，
+    // 而卡片不能用一个「同一个盘读两次给出不同次序」的东西当分段依据。
+    const sameMoment = xResearchTaskSnapshot(record(), [
+      submission({ submissionId: 'sub-b', createdAt: at(6) }),
+      submission({ submissionId: 'sub-a', createdAt: at(6) }),
+    ]);
+    expect(sameMoment.rounds!.map((round) => round.submissionId)).toEqual(['sub-a', 'sub-b']);
+    // 其余事实照旧：投影只多了一列 `rounds`。
+    expect(snap.counts.submissions).toBe(3);
+    expect(snap.objective).toBe('macOS 轻量虚拟化');
+  });
+});
+
+describe('xResearchRoundsState：一组提交的终态（研究 / 卡上的一个目标共用一把尺子）', () => {
+  const row = (status: XResearchWorkItem['status']) => item({ state: 'stopped', status });
+
+  it('only says 取消 when every round of the group was cancelled', () => {
+    // 一个目标被取消后又补了一轮跑完：这一段是**完成**的，被取消的是其中一轮（轮次头上另有记号）。
+    expect(xResearchRoundsState(['cancelled', 'done'], [row('cancelled'), row('observed')])).toBe('completed');
+    // 对照：整组都是取消 → 取消（研究级的「全部取消才算取消」原样适用于组）。
+    expect(xResearchRoundsState(['cancelled'], [row('cancelled')])).toBe('cancelled');
+    // 有活就说是进行中，其次中断；失败只在没有这些时才算。
+    expect(xResearchRoundsState(['cancelled', 'queued'], [])).toBe('running');
+    expect(xResearchRoundsState(['cancelled', 'interrupted'], [])).toBe('interrupted');
+    expect(xResearchRoundsState(['done'], [row('access_denied')])).toBe('failed');
   });
 });
