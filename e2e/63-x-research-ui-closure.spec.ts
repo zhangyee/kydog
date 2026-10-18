@@ -917,13 +917,14 @@ test.describe('x research task protocol closure (offline)', () => {
       (await taskGet(occupant.researchRunId)).state,
       (await taskGet(doomed.researchRunId)).state,
     ]).toEqual(['cancelled', 'cancelled']);
-    // 两张分段头各自说取消：「用户按的」不是无主语的「被取消」（R81a 的归因落在段上）。
+    // 终态默认收起（这一张从未被手动点过），分段头跟着行一起收起来。
+    await expect(card.getByTestId('x-research-rows')).toHaveCount(0);
+    // 展开之后两段各自说取消：「用户按的」不是无主语的「被取消」（R81a 的归因落在段上）。
+    await card.getByTestId('x-research-toggle').click();
     const segments = card.getByTestId('x-research-segment');
     await expect(segments).toHaveCount(2);
     await expect(segments.nth(0)).toContainText('你中途取消');
     await expect(segments.nth(1)).toContainText('你中途取消');
-    // 这一张从未被手动点过：终态默认收起（与上一条那种「手动展开过」的卡正好相反）。
-    await expect(card.getByTestId('x-research-rows')).toHaveCount(0);
 
     // 取消一个回合不动别的回合里已经交付过的那段研究：它仍是完成。
     await expect(cardFor(LIFECYCLE_OBJECTIVE)).toHaveAttribute('data-status', 'completed');
