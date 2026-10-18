@@ -1129,7 +1129,8 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(segments).toHaveCount(1);
     // 段的终态按**轮**算：一轮取消 + 一轮完成 = 完成（取消的是其中一轮，不是这一段）。
     await expect(segments.nth(0)).toHaveAttribute('data-status', 'completed');
-    await expect(segments.nth(0)).toContainText(CONTINUE_OBJECTIVE);
+    // 只有一段时目标只印在卡头（段头不重复那句），段头自己不印。
+    await expect(segments.nth(0)).not.toContainText(CONTINUE_OBJECTIVE);
     const rounds = card.getByTestId('x-research-round');
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');

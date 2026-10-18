@@ -245,6 +245,9 @@ function copyRowFacts(workItem: XResearchWorkItem, row: XSearchObservation | XRe
 function articleState(article: XArticleFacts): XResearchWorkItem['article'] {
   if (!article.requested) return 'not_requested';
   if (article.bodyObserved) return 'body';
+  // 「没看到入口」是一个观察事实，不是失败：普通帖子本来就没有 Article 这一部分（skill 明确
+  // 要求普通帖子不写成 Article 失败）。真尝试过而没拿到的，仍然落 `failed`。
+  if (article.barrier?.reason === 'no_entry_observed') return 'absent';
   if (article.barrier) return 'failed';
   if (article.entryObserved || article.entry) return 'entry';
   return 'pending';

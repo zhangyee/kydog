@@ -27,7 +27,8 @@ const SEGMENT_HEADER_STYLE: CSSProperties = {
   display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap',
 };
 const SEGMENT_OBJECTIVE_STYLE: CSSProperties = {
-  flex: '0 1 auto', minWidth: 0, color: 'var(--color-ink-soft)',
+  // 换行，不省略：这一段的目标只印在这里（第 1 段由卡头印），截断会把唯一的那份说成半句话。
+  flex: '1 1 auto', minWidth: 0, color: 'var(--color-ink-soft)', whiteSpace: 'normal',
 };
 /** 三级缩进（段 → 轮 → 行）：轮比段头退一档，行再退一档。三层各有自己的字号与颜色，
  *  但只靠字号分不出层级 —— 行摊在段头那一列上时，读起来只是一个列表。 */
@@ -76,7 +77,10 @@ const STATUS_WORD: Record<XResearchStatus, string> = {
 /** 文章四态（spec §5.4）。`not_requested` 是「这次没要文章」，不是「文章取失败了」。
  *  `pending` 在没起跑的行上说的是义务而不是动作：`排队 请求中` 是还没发生的进行时。 */
 const ARTICLE_WORD: Record<XResearchWorkItem['article'], string> = {
-  not_requested: '无文章', pending: '请求中', entry: '有入口', body: '有正文', failed: '文章失败',
+  not_requested: '无文章', pending: '请求中', entry: '有入口', body: '有正文',
+  // 请求了文章但页面上没看到匹配的入口（普通帖子就是这个形状）：说「文章失败」是把「没这部分」
+  // 说成了「取失败了」，skill 明确要求「普通帖子不写成 Article 失败」。
+  absent: '无文章入口', failed: '文章失败',
 };
 
 /** 读取行的段落（spec §5.4：`readX` 循环里四个真实分支）。它答的是「这一行现在在哪一段」，
@@ -224,11 +228,15 @@ function groupState(segments: readonly XResearchTaskSnapshot[]): XResearchTaskSt
  *  该段的结论。 */
 function segmentHeaderElement(index: number, state: XResearchTaskState, objective: string,
   note: string | null) {
+  // 第一段的目标**不再重复**：卡头副标题取的就是最早一段的 objective（R10），两处印同一句话
+  // 只是噪声 —— 更要紧的是它一度被截断、而卡头那行是完整的，看起来像两个不同的目标。
+  // 段头只在第 2 段起写自己的目标，而它按定义与卡头那句不同，所以两处永远不重复。
   return (
     <div style={SEGMENT_HEADER_STYLE}>
       <span style={MARK_STYLE}>{segmentMark(index)}</span>
       <span style={SOFT_STYLE}>{STATE_WORD[state]}{note ? `（${note}）` : ''}</span>
-      <span className="truncate" title={objective} style={SEGMENT_OBJECTIVE_STYLE}>{objective}</span>
+      {index > 0 &&
+        <span title={objective} style={SEGMENT_OBJECTIVE_STYLE}>{objective}</span>}
     </div>
   );
 }

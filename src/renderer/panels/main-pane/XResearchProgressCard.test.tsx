@@ -554,16 +554,20 @@ describe('XResearchProgressCard', () => {
     // 终态默认收起：展开才看得见段与轮（它们属于行那一段，不是卡头）。
     mounted.find('x-research-toggle').props.onClick();
 
+    // 第 1 段的目标只印在卡头（R10 的那一句），段头从第 2 段起才重复自己的目标 —— 两处永不印同一句。
     const objectives = (node: unknown) => findAllWhere(node,
       (element) => element.props['data-testid'] === 'x-research-segment')
-      .map((header) => header.props.children[0].props.children[2].props.children);
+      .map((header) => header.props.children[0]?.props?.children?.[2]?.props?.children ?? undefined);
     const roundHeaders = (node: unknown) => findAllWhere(node,
       (element) => element.props['data-testid'] === 'x-research-round');
     const segments = findAllWhere(mounted.tree,
       (element) => element.props['data-testid'] === 'x-research-segment');
     // 一段研究、两个目标 → 两个分段：搜索那两轮一段，补读那两轮一段。
     expect(segments.map((segment) => segment.props['data-status'])).toEqual(['completed', 'completed']);
-    expect(objectives(mounted.tree)).toEqual(['macOS 轻量虚拟化', '补读引信']);
+    // 第 1 段不重复卡头那句（`undefined` 就是「这一段没印」），第 2 段印自己的目标。
+    expect(objectives(mounted.tree)).toEqual([undefined, '补读引信']);
+    // 翻面：卡头那句仍是完整的一句（段头不再截断它，也不会两处各说一遍）。
+    expect(visibleText(mounted.find('x-research-objective'))).toBe('macOS 轻量虚拟化');
     // 轮次头在各自那一段里，编号在段内连续（第二轮接着第一轮数下去）。
     expect(roundHeaders(segments[0]).map(visibleText))
       .toEqual(['第 1 轮 · 搜索 5 个 query', '第 2 轮 · 补搜 3 个 query']);
@@ -614,11 +618,42 @@ describe('XResearchProgressCard', () => {
       (element) => element.props['data-testid'] === 'x-research-segment');
     expect(merged).toHaveLength(1);
     expect(merged[0].props['data-status']).toBe('completed');
-    expect(objectives(forked.tree)).toEqual(['取消后接着做的那个目标']);
+    // 只有一段时目标只印在卡头（段头不重复），正面对照：卡头就是那句目标。
+    expect(objectives(forked.tree)).toEqual([undefined]);
+    expect(visibleText(forked.find('x-research-objective'))).toBe('取消后接着做的那个目标');
     // 两轮都在这段里，被取消的那一轮留着并带着章（R83）：卡不把停下的那一轮从经过里抹掉。
     expect(roundHeaders(merged[0]).map(visibleText))
       .toEqual(['第 1 轮 · 搜索 1 个 query已取消（模型中途取消）', '第 2 轮 · 补搜 1 个 query']);
     expect(rows(merged[0])).toHaveLength(2);
+  });
+
+  it('says 无文章入口 for a page that has no article, and 文章失败 only for a real refusal', async () => {
+    // 现场（R84）：`includeArticle: true` 的读取里，普通帖子逐条显示「文章失败 no_entry_observed」。
+    // 「没看到入口」是观察事实，不是取失败；同一条用例里放一个真的拒绝，证明 `failed` 没有被改宽。
+    const absent = workItem({ section: 'read', label: 'https://x.com/acme/status/19601',
+      state: 'stopped', status: 'partial', hasRoot: true, article: 'absent' });
+    const refused = workItem({ section: 'read', label: 'https://x.com/acme/status/19602',
+      state: 'stopped', status: 'access_denied', article: 'failed', reason: FAILED_REASON });
+    const onlyRead = snapshot({
+      search: [], read: [absent, refused],
+      counts: { submissions: 1, queued: 0, running: 0, done: 1, failed: 1, cancelled: 0,
+        interrupted: 0, posts: 0, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 0, searchTotal: 0, readDone: 2, readTotal: 2 },
+    });
+    useXResearchTaskStore.setState({ snapshotsByRunId: { 'xrun-a': onlyRead } });
+    invoke.mockResolvedValue(onlyRead);
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    expect(visibleText(mounted.find('x-research-card'))).toContain('无文章入口');
+    expect(visibleText(mounted.find('x-research-card'))).toContain('文章失败');
+    // 行级对照：两条行各说各的，不许共用一个词。
+    const rows = findAllWhere(mounted.tree, (el) => el.props['data-testid'] === 'x-research-row')
+      .map(visibleText);
+    const noEntryRow = rows.find((text) => text.includes('19601'))!;
+    const refusedRow = rows.find((text) => text.includes('19602'))!;
+    expect(noEntryRow).toContain('无文章入口');
+    expect(noEntryRow).not.toContain('文章失败');
+    expect(refusedRow).toContain('文章失败');
   });
 
   it('renders rows from before submissionId exactly like a stamped single round', async () => {
@@ -732,8 +767,9 @@ describe('XResearchProgressCard', () => {
       expect.stringContaining('有失败'),
       expect.stringContaining('完成'),
     ]);
-    expect(headers.map((header) => header.props.children[0].props.children[2].props.children))
-      .toEqual(['模型取消的那一段', '全灭的那一段', '重试成功的那一段']);
+    // 第 1 段的目标在卡头（就是「模型取消的那一段」），段头从第 2 段起印自己的。
+    expect(headers.slice(1).map((header) => header.props.children[0].props.children[2].props.children))
+      .toEqual(['全灭的那一段', '重试成功的那一段']);
     // 卡头的数字是每段真实计数的合计：7+10 帖、1+1 个 query、1+1 个目标、4 回复、1 篇文章、1 个失败。
     const summary = visibleText(mounted.find('x-research-summary'));
     expect(summary).toContain('搜索 2/2 个 query · 采集 17 帖');
@@ -762,9 +798,9 @@ describe('XResearchProgressCard', () => {
       (element) => element.props['data-testid'] === 'x-research-segment');
     // 段数要数得出来：没有行的那一段也画自己的头（不能因为空就少一个段）。
     expect(headers).toHaveLength(2);
-    expect(headers.map(visibleText)).toEqual([
-      expect.stringContaining('有行的一段'), expect.stringContaining('崩溃前没落下行的一段'),
-    ]);
+    // 第 1 段不重复卡头那句；第 2 段（空的那一段）照样印自己的目标 —— 段数数得出来。
+    expect(visibleText(headers[0])).not.toContain('有行的一段');
+    expect(visibleText(headers[1])).toContain('崩溃前没落下行的一段');
     expect(visibleText(headers[1])).toContain('中断（进程重启）');
   });
 

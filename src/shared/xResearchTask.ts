@@ -43,7 +43,9 @@ export type XResearchWorkItem = {
   pages: number;
   hasRoot: boolean;
   replies: number;
-  article: 'not_requested' | 'pending' | 'entry' | 'body' | 'failed';
+  /** `absent` = 请求了文章、但页面上的这一帖没有可匹配的入口（普通帖子）—— 那是「没有这部分」，
+   *  不是「取失败」。`failed` 只留给真的尝试过而没拿到的情形（导航/动作/正文超时）。 */
+  article: 'not_requested' | 'pending' | 'entry' | 'body' | 'absent' | 'failed';
   scrolls: number;
   expandActions: number;
 };

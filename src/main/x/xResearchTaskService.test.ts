@@ -674,6 +674,30 @@ describe('XResearchTaskService', () => {
     expect(snapshot.counts).toMatchObject({ replies: 2, articles: 1, posts: 0 });
   });
 
+  it('says 无文章入口 when the page simply had no article, and 文章失败 only for a real attempt', async () => {
+    // 现场（R84）：`includeArticle: true` 的读取里，普通帖子每一条都显示「文章失败 no_entry_observed」。
+    // 「没看到入口」是观察事实（这帖本来就没有 Article），不是取失败 —— skill 明确要求普通帖子
+    // 不写成 Article 失败。同一条用例里放一个真的失败，证明 `failed` 没有被这条改宽。
+    const { service } = harness(async (work, ctx) => {
+      const result = await echoRunner(work, ctx);
+      if (result.operation !== 'read') return result;
+      result.targets[0]!.article = articleFacts({
+        barrier: { status: 'partial', reason: 'no_entry_observed', observationId: null },
+      });
+      result.targets[1]!.article = articleFacts({
+        barrier: { status: 'partial', reason: 'article_body_wait_timeout', observationId: null },
+      });
+      return result;
+    });
+    const thread = owner();
+    const submitted = await service.submit({ work: { read: readWork() } }, thread);
+    await service.whenIdle(thread.threadId, submitted.researchRunId);
+    const snapshot = await service.get(thread.threadId, submitted.researchRunId);
+    expect(snapshot.read.map((item) => item.article)).toEqual(['absent', 'failed']);
+    // 计数口径不动：只有 `body` 算「文章 N 篇」，两种情形都不进这个数。
+    expect(snapshot.counts.articles).toBe(0);
+  });
+
   it('marks the research interrupted when the work body throws and keeps the queue moving', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     let calls = 0;
