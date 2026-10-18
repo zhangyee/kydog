@@ -814,7 +814,7 @@ test.describe('x research task protocol closure (offline)', () => {
     const rounds = card.getByTestId('x-research-round');
     await expect(rounds).toHaveCount(1);
     await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     // 读取还没提交过：这一轮此刻不存在（「两轮各说各的行数」不能拿一轮冒充另一轮）。
     await expect(card.locator('[data-testid="x-research-round"][data-operation="read"]')).toHaveCount(0);
@@ -827,9 +827,9 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card).toHaveAttribute('data-status', 'running');
     await expect(card.getByTestId('x-research-segment')).toHaveCount(2);
     await expect(rounds).toHaveCount(2);
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query');
     await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'read');
-    await expect(rounds.nth(1)).toHaveText('第 1 轮 · 1 个目标');
+    await expect(rounds.nth(1)).toHaveText('第 1 轮 · 读取 1 个目标');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     await expect(card.locator('[data-testid="x-research-row"][data-section="read"]')).toHaveCount(1);
     // 两次提交是两轮、两条消息，卡只有一张，而且停在最后一条（也就是刚提到它的那条）里。
@@ -1068,7 +1068,7 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');
     await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query');
     await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'search');
     await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
     await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
@@ -1133,7 +1133,7 @@ test.describe('x research task protocol closure (offline)', () => {
     const rounds = card.getByTestId('x-research-round');
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query已取消（你中途取消）');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query已取消（你中途取消）');
     await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
     await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
     // 三行都在。取消只落在**在飞的那一条**上：第一行在点击前就撞预算收尾了，守住它自己的结论；

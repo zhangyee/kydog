@@ -268,11 +268,12 @@ function rowRounds(rows: readonly XResearchWorkItem[], operation: XResearchSecti
 }
 
 /** 轮次头的字。`round` 是这一段里第几次提交（1-based），`count` 是这一轮的行数：
- *  第一轮说「N 个 query」/「N 个目标」，之后的轮次说「补搜」/「补读」—— 后续提交都是往同一个目标里
- *  追加的补充步骤（spec §4.1），「第 2 轮」本身就是那件事。 */
+ *  **操作词必须在轮头里**：段下的「搜索 / 读取」小标题已经删掉了，轮头是这一行唯一的操作说明，
+ *  所以第一轮写「搜索 N 个 query」/「读取 N 个目标」，之后的轮次写「补搜」/「补读」—— 后续提交
+ *  都是往同一个目标里追加的补充步骤（spec §4.1），「第 2 轮」本身就是那件事。 */
 function roundWord(operation: XResearchSection, round: number, count: number): string {
   const unit = operation === 'search' ? `${count} 个 query` : `${count} 个目标`;
-  if (round === 1) return `第 1 轮 · ${unit}`;
+  if (round === 1) return `第 1 轮 · ${operation === 'search' ? '搜索' : '读取'} ${unit}`;
   return `第 ${round} 轮 · ${operation === 'search' ? '补搜' : '补读'} ${unit}`;
 }
 

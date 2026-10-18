@@ -164,7 +164,7 @@ describe('XResearchProgressCard', () => {
     expect(levels.map((level) => level.kind)).toEqual(
       ['round', 'row', 'row', 'round', 'row', 'row', 'row', 'row']);
     expect(levels.filter((level) => level.kind === 'round').map((level) => level.text))
-      .toEqual(['第 1 轮 · 2 个 query', '第 2 轮 · 补读 4 个目标']);
+      .toEqual(['第 1 轮 · 搜索 2 个 query', '第 2 轮 · 补读 4 个目标']);
     // 操作由轮次头自己带着（`data-operation` + 单位词：query / 目标），不从节的标题来。
     const rounds = findAllWhere(segment,
       (element) => element.props['data-testid'] === 'x-research-round');
@@ -416,7 +416,7 @@ describe('XResearchProgressCard', () => {
       (element) => element.props['data-testid'] === 'x-research-round');
     // 每一份提交一个轮次头，编号在这一段里连续数下去（旧数据没有 `rounds`，两节按「搜索、读取」相接）。
     expect(headers.map(visibleText)).toEqual([
-      '第 1 轮 · 5 个 query', '第 2 轮 · 补搜 3 个 query',
+      '第 1 轮 · 搜索 5 个 query', '第 2 轮 · 补搜 3 个 query',
       '第 3 轮 · 补读 3 个目标', '第 4 轮 · 补读 2 个目标',
     ]);
     expect(headers.map((header) => header.props['data-operation']))
@@ -433,7 +433,7 @@ describe('XResearchProgressCard', () => {
     });
     const segmentText = visibleText(mounted.find('x-research-segment'));
     const order = inOrder(segmentText, [
-      '第 1 轮 · 5 个 query', '①', 's1', '②', 's2', '③', 's3', '④', 's4', '⑤', 's5',
+      '第 1 轮 · 搜索 5 个 query', '①', 's1', '②', 's2', '③', 's3', '④', 's4', '⑤', 's5',
       '第 2 轮 · 补搜 3 个 query', '⑥', 's6', '⑦', 's7', '⑧', 's8',
       '第 3 轮 · 补读 3 个目标', '⑨', 'r1', '⑩', 'r2', '⑪', 'r3',
       '第 4 轮 · 补读 2 个目标', '⑫', 'r4', '⑬', 'r5',
@@ -452,7 +452,7 @@ describe('XResearchProgressCard', () => {
     await single.settle();
     const singleSegment = single.find('x-research-segment');
     expect(rowsAndRounds(singleSegment).map((level) => level.text)).toEqual([
-      '第 1 轮 · 2 个 query', '①only-1收完采集 10 帖', '②only-2收完采集 10 帖',
+      '第 1 轮 · 搜索 2 个 query', '①only-1收完采集 10 帖', '②only-2收完采集 10 帖',
       '第 2 轮 · 补读 1 个目标', '③only-r1已读根帖 + 1 回复无文章',
     ]);
   });
@@ -509,13 +509,13 @@ describe('XResearchProgressCard', () => {
     expect(segments).toHaveLength(2);
     // 段头之后只有轮次头与它的行：轮次头说操作与行数，行号在段内连续数下去。
     expect(rowsAndRounds(segments[0]).map((level) => level.text)).toEqual([
-      '第 1 轮 · 6 个 query',
+      '第 1 轮 · 搜索 6 个 query',
       '①q1收完采集 10 帖', '②q2收完采集 10 帖', '③q3收完采集 10 帖',
       '④q4收完采集 10 帖', '⑤q5收完采集 10 帖', '⑥q6收完采集 10 帖',
     ]);
     // 第二段的行从 ① 重新起（对照：不是接着上一段数到 ⑦）—— 段头 2. 才是它的序号。
     expect(rowsAndRounds(segments[1]).map((level) => level.text))
-      .toEqual(['第 1 轮 · 1 个 query', '①q7收完采集 10 帖']);
+      .toEqual(['第 1 轮 · 搜索 1 个 query', '①q7收完采集 10 帖']);
 
     // 两套字形不共用：正控是段头以 1. / 2. 起头、每一行都以圈号起头；
     // 负控是没有任何一行以 `N.` 起头 —— 段 2. 下看到 ① 不会被读成「又一个 1.」。
@@ -566,9 +566,9 @@ describe('XResearchProgressCard', () => {
     expect(objectives(mounted.tree)).toEqual(['macOS 轻量虚拟化', '补读引信']);
     // 轮次头在各自那一段里，编号在段内连续（第二轮接着第一轮数下去）。
     expect(roundHeaders(segments[0]).map(visibleText))
-      .toEqual(['第 1 轮 · 5 个 query', '第 2 轮 · 补搜 3 个 query']);
+      .toEqual(['第 1 轮 · 搜索 5 个 query', '第 2 轮 · 补搜 3 个 query']);
     expect(roundHeaders(segments[1]).map(visibleText))
-      .toEqual(['第 1 轮 · 3 个目标', '第 2 轮 · 补读 2 个目标']);
+      .toEqual(['第 1 轮 · 读取 3 个目标', '第 2 轮 · 补读 2 个目标']);
     expect(rows(segments[0])).toHaveLength(8);
     expect(rows(segments[1])).toHaveLength(5);
     // 卡头的数字与副标题不因为分段而变：仍是各段真实计数的合计、仍是最早一次提交的目标（R10）。
@@ -617,7 +617,7 @@ describe('XResearchProgressCard', () => {
     expect(objectives(forked.tree)).toEqual(['取消后接着做的那个目标']);
     // 两轮都在这段里，被取消的那一轮留着并带着章（R83）：卡不把停下的那一轮从经过里抹掉。
     expect(roundHeaders(merged[0]).map(visibleText))
-      .toEqual(['第 1 轮 · 1 个 query已取消（模型中途取消）', '第 2 轮 · 补搜 1 个 query']);
+      .toEqual(['第 1 轮 · 搜索 1 个 query已取消（模型中途取消）', '第 2 轮 · 补搜 1 个 query']);
     expect(rows(merged[0])).toHaveLength(2);
   });
 
@@ -628,7 +628,7 @@ describe('XResearchProgressCard', () => {
     const old = mount(XResearchProgressCard, props);
     await old.settle();
     expect(rowsAndRounds(old.find('x-research-segment')).map((level) => level.text)).toEqual([
-      '第 1 轮 · 2 个 query', '①Qwen3.8 27BTop收完采集 87 帖3 页响应',
+      '第 1 轮 · 搜索 2 个 query', '①Qwen3.8 27BTop收完采集 87 帖3 页响应',
       '②Qwen3.8 Q4 量化Latest预算用尽采集 41 帖略过 12 条2 页响应',
       '第 2 轮 · 补读 4 个目标',
       '③https://x.com/acme/status/19581已读根帖 + 42 回复有正文',
