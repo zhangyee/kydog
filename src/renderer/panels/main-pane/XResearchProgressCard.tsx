@@ -246,6 +246,8 @@ function segmentHeaderElement(index: number, state: XResearchTaskState, objectiv
  *  `operation` 是这一轮提交的活儿：轮次头用它的单位词说这一轮是什么（query / 目标）。 */
 type SegmentRound = {
   key: string; operation: XResearchSection; rows: readonly XResearchWorkItem[]; chip: string | null;
+  /** 这一轮每条 query 的采集上限（R85）。只有 search 轮有，旧数据没有。 */
+  postsCap?: number;
 };
 
 /** 被取消的那一轮在轮次头上挂一个章（R83）：它停在原地，卡片不把它从卡上抹掉。
@@ -279,10 +281,17 @@ function rowRounds(rows: readonly XResearchWorkItem[], operation: XResearchSecti
  *  **操作词必须在轮头里**：段下的「搜索 / 读取」小标题已经删掉了，轮头是这一行唯一的操作说明，
  *  所以第一轮写「搜索 N 个 query」/「读取 N 个目标」，之后的轮次写「补搜」/「补读」—— 后续提交
  *  都是往同一个目标里追加的补充步骤（spec §4.1），「第 2 轮」本身就是那件事。 */
-function roundWord(operation: XResearchSection, round: number, count: number): string {
+function roundWord(round: SegmentRound, index: number): string {
+  const { operation, rows, postsCap } = round;
+  const count = rows.length;
   const unit = operation === 'search' ? `${count} 个 query` : `${count} 个目标`;
-  if (round === 1) return `第 1 轮 · ${operation === 'search' ? '搜索' : '读取'} ${unit}`;
-  return `第 ${round} 轮 · ${operation === 'search' ? '补搜' : '补读'} ${unit}`;
+  // 预算是一次一议的显式裁决（R85）：把这一轮的上限印出来，否则同一段里 150 / 25 / 40 三个数
+  // 只能让读者猜哪一个是有意的。上限来自提交记录（`postsCap`），旧数据没有就不印。
+  const cap = operation === 'search' && postsCap !== undefined ? ` · 每 query ≤ ${postsCap} 帖` : '';
+  const head = index === 1
+    ? `第 1 轮 · ${operation === 'search' ? '搜索' : '读取'}`
+    : `第 ${index} 轮 · ${operation === 'search' ? '补搜' : '补读'}`;
+  return `${head} ${unit}${cap}`;
 }
 
 /** 一段的行，按轮切开：每一轮先画轮次头（操作与这一轮的行数都由它说），再画它的行。
@@ -295,7 +304,7 @@ function roundElements(rounds: readonly SegmentRound[]) {
     return [
       <div key={round.key} data-testid="x-research-round" data-operation={round.operation}
         data-round={at + 1} style={ROUND_HEADER_STYLE}>
-        {roundWord(round.operation, at + 1, round.rows.length)}
+        {roundWord(round, at + 1)}
         {round.chip !== null &&
           <span data-testid="x-research-round-cancelled" style={ROUND_CHIP_STYLE}>{round.chip}</span>}
       </div>,
@@ -393,6 +402,7 @@ function objectiveSegmentElement(segment: CardSegment, index: number) {
   const rounds: SegmentRound[] = segment.rounds.map((round) => ({
     key: round.round.submissionId, operation: round.round.operation,
     rows: [...round.search, ...round.read], chip: roundChip(round.round),
+    ...(round.round.postsCap === undefined ? {} : { postsCap: round.round.postsCap }),
   }));
   // 段的身份就是它第一轮的提交 id：提交 id 全局唯一，段序跟着轮序走，重建时不会串位。
   return (

@@ -814,7 +814,7 @@ test.describe('x research task protocol closure (offline)', () => {
     const rounds = card.getByTestId('x-research-round');
     await expect(rounds).toHaveCount(1);
     await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query · 每 query ≤ 3 帖');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     // 读取还没提交过：这一轮此刻不存在（「两轮各说各的行数」不能拿一轮冒充另一轮）。
     await expect(card.locator('[data-testid="x-research-round"][data-operation="read"]')).toHaveCount(0);
@@ -827,7 +827,7 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card).toHaveAttribute('data-status', 'running');
     await expect(card.getByTestId('x-research-segment')).toHaveCount(2);
     await expect(rounds).toHaveCount(2);
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query · 每 query ≤ 3 帖');
     await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'read');
     await expect(rounds.nth(1)).toHaveText('第 1 轮 · 读取 1 个目标');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
@@ -1068,10 +1068,10 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');
     await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query · 每 query ≤ 3 帖');
     await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'search');
     await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
-    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
+    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query · 每 query ≤ 3 帖');
     // 行还是三行，编号在段内连续（第二轮接着 ③，不从 ① 重来）。
     const searchRows = card.locator('[data-testid="x-research-row"][data-section="search"]');
     await expect(searchRows).toHaveCount(3);
@@ -1134,9 +1134,9 @@ test.describe('x research task protocol closure (offline)', () => {
     const rounds = card.getByTestId('x-research-round');
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');
-    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query已取消（你中途取消）');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query · 每 query ≤ 3 帖已取消（你中途取消）');
     await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
-    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
+    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query · 每 query ≤ 3 帖');
     // 三行都在。取消只落在**在飞的那一条**上：第一行在点击前就撞预算收尾了，守住它自己的结论；
     // 被闸门扣住的那一行才是被取消的（两件事各说各的，不是「整轮一起翻成取消」）。
     const searchRows = card.locator('[data-testid="x-research-row"][data-section="search"]');

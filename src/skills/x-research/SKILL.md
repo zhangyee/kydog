@@ -33,7 +33,7 @@ description: 当用户要求研究 X 上的讨论、帖子或 Article，并形�
 
 一次 search 提交是 `action: 'submit'` 加 `search`（同一段研究的后续提交再加 `researchRunId`，见第 1 节）。search 包含 `objective`、1–6 个 `queries`；每项有同批唯一的 `id`、`query`、`purpose`、`product`（`Top` 或 `Latest`）。每项 query 最长 4096 UTF-16 单位，构造的公开搜索 URL 最长 8192 单位；越界的那条 query 在提交时被拒、整批不入队，拆开再提交。默认每 query 最多 500 帖和 500 次滚动；可显式设置 `maxPostsPerQuery`、`maxScrollsPerQuery` —— **这两个字段在 `search` 上，不在每个 `query` 里**（写进 query 会被 schema 拒绝，整轮都不入队），硬上限均为 1000，不自动提高预算。
 
-普通研究**显式**给 search 设 `maxPostsPerQuery: 150`（工具默认 500，但 Top 排序的相关度在前几页之后迅速衰减，而 canonical artifact 超过约 150 帖后模型读不完 —— 收得再多也只用到其中一段）。用户明确要求穷尽时才提高，硬上限 1000。只有用户明确要求更低预算或特定小范围时才低于 150，并在内部记录依据的用户限制；多个 query 或目标本身不是压低每项预算的理由。`maxScrollsPerQuery` 可省略，用默认 500。
+**搜索预算是每次提交的显式裁决，不是固定值**：`maxPostsPerQuery` 由你按「这一次要读多少」定，工具默认 500、硬上限 1000。裁决的硬约束是**可读量**：单次提交的 `maxPostsPerQuery × query 数` 必须是你能读完的量 —— 实测 6 个 query × 150 = 900 帖 ≈ 1.2 MB 的 canonical 读不完，收得再多也只用到其中一段；150 帖量级的单份工件是可读的。要覆盖更多就**拆成几次提交**（每份自己的工件、各自可读），而不是把每 query 压到 25 帖却仍要在一个大工件里找证据。用户明确要求穷尽时才提高上限。**选定之后把依据说出来**：为什么是这个数、为什么拆或不拆；报告的范围句里也要有一句，否则同一段工作里出现 150 / 25 / 40 三个上限时，读者无从判断哪一个是有意的。query 多不是压低每项预算的理由（按上面两条办）；`maxScrollsPerQuery` 可省略，用默认 500。
 
 ### query 构造与 product 选择
 

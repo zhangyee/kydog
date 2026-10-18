@@ -65,6 +65,8 @@ export type XResearchSubmission = {
   state: 'queued' | 'running' | 'done' | 'cancelled' | 'interrupted';
   budget: { scrolls: number; expandActions: number };
   usage: { posts: number; scrolls: number; expandActions: number };
+  /** 每条 query 的采集上限（R85）：预算是一次一议的显式裁决，落盘才解释得了卡上的 150/25/40。 */
+  postsCap?: number;
   workItems: XResearchWorkItem[];
   createdAt: string;
   endedAt: string | null;
@@ -99,6 +101,9 @@ export type XResearchRound = {
   stateReason?: string;
   /** 这一轮是谁停的（R81a）：只有取消的那一轮有，取自研究级 `cancelledBy` —— 提交记录不记主语。 */
   cancelledBy?: XResearchCancelActor;
+  /** 这一轮每条 query 的采集上限（R85）：预算由模型每次提交自己定，卡上要把这个数说出来 ——
+   *  否则同一段工作里出现 150 / 25 / 40 三个数，读者没有依据判断哪一个是有意的。只有 search 轮有。 */
+  postsCap?: number;
 };
 
 export type XResearchTaskRecord = {
@@ -266,6 +271,7 @@ export function xResearchTaskSnapshot(record: XResearchTaskRecord,
       submissionId: submission.submissionId,
       operation: submission.operation,
       objective: submission.objective,
+      ...(submission.postsCap === undefined ? {} : { postsCap: submission.postsCap }),
       createdAt: submission.createdAt,
       state: submission.state,
       // 取消归因只在取消的那一轮上：`cancelledBy` 是研究级的事实（谁最后一次停过这段研究），

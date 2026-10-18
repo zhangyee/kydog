@@ -674,6 +674,28 @@ describe('XResearchTaskService', () => {
     expect(snapshot.counts).toMatchObject({ replies: 2, articles: 1, posts: 0 });
   });
 
+  it('keeps each search round\'s posts cap on disk, so the card can explain 150 vs 25 vs 40', async () => {
+    // R85：预算是一次一议的显式裁决。现场同一段工作里出现 150 / 25 / 40 三个上限，落盘后
+    // 卡才解释得了它们各自是哪一轮的决定；读取轮没有这个数（它衡量的是回复/滚动）。
+    const { service } = harness(echoRunner);
+    const thread = owner();
+    const first = await service.submit(
+      { work: { search: { ...searchWork(), maxPostsPerQuery: 150 } } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    await service.submit({ work: { search: { ...searchWork(), maxPostsPerQuery: 40 } },
+      researchRunId: first.researchRunId }, thread);
+    const read = await service.submit({ work: { read: readWork() },
+      researchRunId: first.researchRunId }, thread);
+    await service.whenIdle(thread.threadId, read.researchRunId);
+    const snapshot = await service.get(thread.threadId, first.researchRunId);
+    // 两条 search 轮各带自己的上限；read 轮没有（不是 0，是没有这个字段）。
+    // 不断先后：三次提交落在同一毫秒里时，顺序由 `submissionId` 决定，那是身份不是事实。
+    expect(snapshot.rounds?.filter((round) => round.operation === 'search')
+      .map((round) => round.postsCap).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([40, 150]);
+    expect(snapshot.rounds?.filter((round) => round.operation === 'read')
+      .map((round) => round.postsCap)).toEqual([undefined]);
+  });
+
   it('says 无文章入口 when the page simply had no article, and 文章失败 only for a real attempt', async () => {
     // 现场（R84）：`includeArticle: true` 的读取里，普通帖子每一条都显示「文章失败 no_entry_observed」。
     // 「没看到入口」是观察事实（这帖本来就没有 Article），不是取失败 —— skill 明确要求普通帖子

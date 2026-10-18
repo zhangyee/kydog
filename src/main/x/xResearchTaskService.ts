@@ -292,14 +292,17 @@ function planWork(work: XResearchWorkRequest): {
   operation: XResearchSubmission['operation'];
   objective: string;
   budget: XResearchSubmission['budget'];
+  postsCap?: number;
   workItems: XResearchWorkItem[];
 } {
   if ('search' in work) {
-    const { objective, queries, maxScrollsPerQuery } = work.search;
+    const { objective, queries, maxScrollsPerQuery, maxPostsPerQuery } = work.search;
     return {
       operation: 'search',
       objective,
       budget: { scrolls: maxScrollsPerQuery * queries.length, expandActions: 0 },
+      // 预算是一次一议的显式裁决（R85）：这个数落盘，卡上才解释得了 150 / 25 / 40 的差别。
+      postsCap: maxPostsPerQuery,
       workItems: queries.map((query) => queuedWorkItem('search', query.query, query.product)),
     };
   }
@@ -457,6 +460,7 @@ export class XResearchTaskService {
       objective: plan.objective,
       state: 'queued',
       budget: plan.budget,
+      ...(plan.postsCap === undefined ? {} : { postsCap: plan.postsCap }),
       usage: { posts: 0, scrolls: 0, expandActions: 0 },
       // 每一行都盖上它自己的提交 id —— 卡在**一段研究内**按提轮分轮，依据是这个字段，
       // 不是提交的 createdAt、也不是时间窗。盖章只发生在这一处（id 就在这里铸出来）。

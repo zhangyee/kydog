@@ -460,11 +460,12 @@ describe('XResearchProgressCard', () => {
   /** 一份提交（一轮）的夹具：快照的 `rounds` 那一项 + 它的行。行上写着同一个 `submissionId` ——
    *  真快照里那一格由投影从拥有它的提交盖上（`xResearchTaskSnapshot`），夹具照抄一遍。 */
   function roundPart(submissionId: string, operation: 'search' | 'read', objective: string,
-    labels: string[], over: { state?: 'done' | 'cancelled'; at?: string } = {}) {
+    labels: string[], over: { state?: 'done' | 'cancelled'; at?: string; postsCap?: number } = {}) {
     const state = over.state ?? 'done';
     return {
       round: {
         submissionId, operation, objective, state, createdAt: over.at ?? '2026-10-16T00:00:00.000Z',
+        ...(over.postsCap === undefined ? {} : { postsCap: over.postsCap }),
         // 被取消的那一轮带归因（R81a）：卡上的章说的是「谁停的」，不是无主语的「被取消」。
         ...(state === 'cancelled' ? { stateReason: 'cancelled', cancelledBy: 'agent' as const } : {}),
       },
@@ -485,8 +486,9 @@ describe('XResearchProgressCard', () => {
     // 节标题、段头与行又都是圈号，卡上同时出现两个「搜索」与两个 ① ——「搜索① ② ③…后面又是搜索①」。
     const parts = [
       roundPart('sub-field-a', 'search', '目标 A：macOS 轻量虚拟化',
-        ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']),
-      roundPart('sub-field-b', 'search', '目标 B：补读引信', ['q7']),
+        ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'], { postsCap: 150 }),
+      // 第二轮只收 25 帖：上限由模型自己定（R85），卡上要把这个数印出来，读者才知道 150 与 25 的差别。
+      roundPart('sub-field-b', 'search', '目标 B：补读引信', ['q7'], { postsCap: 25 }),
     ];
     const field = snapshot({
       researchRunId: 'xrun-field', runId: 'turn-field', objective: '目标 A：macOS 轻量虚拟化',
@@ -509,13 +511,15 @@ describe('XResearchProgressCard', () => {
     expect(segments).toHaveLength(2);
     // 段头之后只有轮次头与它的行：轮次头说操作与行数，行号在段内连续数下去。
     expect(rowsAndRounds(segments[0]).map((level) => level.text)).toEqual([
-      '第 1 轮 · 搜索 6 个 query',
+      '第 1 轮 · 搜索 6 个 query · 每 query ≤ 150 帖',
       '①q1收完采集 10 帖', '②q2收完采集 10 帖', '③q3收完采集 10 帖',
       '④q4收完采集 10 帖', '⑤q5收完采集 10 帖', '⑥q6收完采集 10 帖',
     ]);
     // 第二段的行从 ① 重新起（对照：不是接着上一段数到 ⑦）—— 段头 2. 才是它的序号。
     expect(rowsAndRounds(segments[1]).map((level) => level.text))
-      .toEqual(['第 1 轮 · 搜索 1 个 query', '①q7收完采集 10 帖']);
+      .toEqual(['第 1 轮 · 搜索 1 个 query · 每 query ≤ 25 帖', '①q7收完采集 10 帖']);
+    // 上限是每轮自己说的：两段的轮头印的是各自的数（150 / 25），不是全局一个值。
+    // 翻面：没有 `postsCap` 的轮（旧数据 / 读取轮）不印这一段 —— 见下一条用例。
 
     // 两套字形不共用：正控是段头以 1. / 2. 起头、每一行都以圈号起头；
     // 负控是没有任何一行以 `N.` 起头 —— 段 2. 下看到 ① 不会被读成「又一个 1.」。
