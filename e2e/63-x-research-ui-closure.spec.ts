@@ -426,22 +426,26 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(submitted.status).toBe('running');
     // 这一轮已经结束（`run` 断过 reason=completed），而工作在跑：submit 不阻塞。
     expect((await taskGet(researchRunId)).state).toBe('running');
-    // 研究在闸门窗口里开了自己的页（提交那一刻两行都还在排队，开页发生在 `run.ended` 之后）。
-    // 活动标签却还得是用户那一页。先证明研究那张标签真的被广播过（「基线里没有的 id」只能来自
-    // 研究自己开页的那一帧，否则下面那条就是「什么都没观测到」），再证明基线之后每一帧说的
-    // 活动标签都只有用户那一页。（`browser.getState` 也读得到 `activeTabId`，但它每调一次就换
-    // epoch，会把侧栏静音 —— 见文件头。）
-    await expect.poll(researchTabsSinceUserTab,
-      { message: 'the research opened its own tab (a tab id that is not in the baseline frame)' }).not.toHaveLength(0);
-    const researchTabIds = await researchTabsSinceUserTab();
-    expect(await activeTabsSinceUserTab(), `the research's tab ${researchTabIds.join(',')} must not become the active tab`).toEqual([userTabId]);
+    // 研究用的那一页由任务自己说（`taskGet` 的 `browserTabId` 是权威，R81h）：同一个对话里的新研究
+    // 继承本对话当前页，所以它可能正是基线上已有的那一张 ——「开一张新标签」不再是这条研究的形状。
+    // 要钉的性质没变：先证明研究那一页真的被广播过（否则下面那条就是「什么都没观测到」），再证明
+    // 基线之后每一帧说的活动标签都只有用户那一页。（`browser.getState` 也读得到 `activeTabId`，但它
+    // 每调一次就换 epoch，会把侧栏静音 —— 见文件头。）
+    const researchTabId = (await taskGet(researchRunId)).browserTabId;
+    expect(researchTabId, 'the task names the tab the research works in').toBeTruthy();
+    await expect.poll(async () => [...baselineTabIds, ...await researchTabsSinceUserTab()],
+      { message: `the research tab ${researchTabId} was broadcast` }).toContain(researchTabId);
+    expect(await activeTabsSinceUserTab(), `the research's tab ${researchTabId} must not become the active tab`).toEqual([userTabId]);
     // 闸门里躺着第二个 query 的那次导航 —— 正向证明这一行「到了、没拿到页面」，不是「从没试过」。
     await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
     expect(new URL(gate.held[0].url).searchParams.get('q')).toBe(SECOND_QUERY.query);
+    // 第一行**已经收尾**（`maxScrollsPerQuery: 0` ⇒ 收完那一页就撞预算），第二行才停在闸门里：
+    // 这正是 R81g 修的那件事 —— 收尾了的行说「收完 / 预算用尽」，不再一直挂着「收集中」（分子因此
+    // 不再是 0）。两行都在飞时这条就分不出「谁收尾了」。
     await expect.poll(async () => (await taskGet(researchRunId)).search.map(
       row => ({ label: row.label, state: row.state, posts: row.posts, scrolls: row.scrolls, pages: row.pages })))
       .toEqual([
-        { label: FIRST_QUERY.query, state: 'collecting', posts: 2, scrolls: 0, pages: 1 },
+        { label: FIRST_QUERY.query, state: 'stopped', posts: 2, scrolls: 0, pages: 1 },
         { label: SECOND_QUERY.query, state: 'navigating', posts: 0, scrolls: 0, pages: 0 },
       ]);
     const heldWindow = await taskGet(researchRunId);
@@ -450,8 +454,10 @@ test.describe('x research task protocol closure (offline)', () => {
     // 这里不断 `budget`：每个夹具都把 `maxScrollsPerQuery` 声明成 0，而快照里的 `budget` 是
     // 各次提交**声明值**的累加（xResearchTask 的 `budget.scrolls += submission.budget.scrolls`），
     // 于是那条断言是「零的和等于零」—— 恒真（R59b）。真实数额在下面这几桶里：
-    // `running` 是两行都还没收尾，`posts` 是 wire 夹具已服务的那两条。
-    expect(heldWindow.counts).toMatchObject({ submissions: 1, queued: 0, running: 2, done: 0, posts: 2, undelivered: 0 });
+    // `done` 是撞上预算收尾的第一行，`running` 是还停在闸门里的第二行，`posts` 是 wire 夹具已服务的两条。
+    expect(heldWindow.counts).toMatchObject({
+      submissions: 1, queued: 0, running: 1, done: 1, searchDone: 1, posts: 2, undelivered: 0,
+    });
   });
 
   test('releasing the held navigation lets one wait deliver exactly one canonical result', async () => {
@@ -566,9 +572,13 @@ test.describe('x research task protocol closure (offline)', () => {
     // ①此后确实还有研究自己开的新标签（观测量是活的，不是没观测到东西）；
     // ②这些帧说的活动标签永远是用户那一页（`browserService.open` 里 `activate === true` 只有
     //   用户自己在地址栏那条路才传，研究侧 `xResearchBrowser.open` 传的是 false）。
-    const laterResearchTabs = await researchTabsSinceUserTab();
-    expect(laterResearchTabs, 'the research opened tabs after the baseline').not.toHaveLength(0);
-    expect(await activeTabsSinceUserTab(), `research tabs ${laterResearchTabs.join(',')} must not become the active tab`).toEqual([userTabId]);
+    expect((await tabFrames()).some(frame => frame.revision > userTabRevision),
+      'frames kept arriving after the baseline').toBe(true);
+    const researchTabs = [...new Set((await tabFrames())
+      .filter(frame => frame.revision > userTabRevision).flatMap(frame => frame.tabIds))];
+    expect(researchTabs, 'the research tabs were broadcast').toContain(
+      (await taskGet(researchRunId)).browserTabId);
+    expect(await activeTabsSinceUserTab(), `research tabs ${researchTabs.join(',')} must not become the active tab`).toEqual([userTabId]);
   });
 
   test('a real process restart keeps the run state and counts, and wait still delivers the undelivered result', async () => {
@@ -638,8 +648,10 @@ test.describe('x research task protocol closure (offline)', () => {
     expect(submitted.status).toBe('running');
     const restartRunId = submitted.researchRunId;
     await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+    // 第一行已收尾（撞预算 ⇒ `stopped`），第二行停在闸门里 —— 采集仍在进行（R81g 之后，
+    // 「收尾」是行自己说的，不再等到整批结束才统一落成 `stopped`）。
     await expect.poll(async () => (await taskGet(restartRunId)).search.map(row => row.state))
-      .toEqual(['collecting', 'navigating']);
+      .toEqual(['stopped', 'navigating']);
     // 研究自己开的那一页是**唯一**的标签（用户没有自己的页），所以它是活动标签。
     // 横幅只为活动标签出现（`agentBanner` 的判据），这是下面那次舞台跳动的前提，先证明它在。
     // 标签 id 只能从广播里拿：`taskGet` 的 `browserTabId` 要等 `browser.open` 返回才写进记录，
@@ -860,8 +872,9 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(card).toHaveAttribute('data-status', 'running');
     // 正向证明它在**导航**，不是排着队：代理里确实躺着一次 `/search` 请求（协议事实，不是时间窗）。
     await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+    // 第一行已经收尾（撞预算），第二行还在导航：取消要落在**真导航**上，这正是闸门扣着的那一条。
     await expect.poll(async () => (await taskGet(submitted.researchRunId)).search.map(row => row.state))
-      .toEqual(['collecting', 'navigating']);
+      .toEqual(['stopped', 'navigating']);
 
     await card.getByTestId('x-research-cancel').click();
     const dialog = launched.page.getByTestId('confirm-dialog');
