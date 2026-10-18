@@ -433,6 +433,123 @@ describe('XResearchProgressCard', () => {
     expect(visibleText(single.find('x-research-read')).startsWith('读取①only-r1')).toBe(true);
   });
 
+  /** 一份提交（一轮）的夹具：快照的 `rounds` 那一项 + 它的行。行上写着同一个 `submissionId` ——
+   *  真快照里那一格由投影从拥有它的提交盖上（`xResearchTaskSnapshot`），夹具照抄一遍。 */
+  function roundPart(submissionId: string, operation: 'search' | 'read', objective: string,
+    labels: string[], over: { state?: 'done' | 'cancelled'; at?: string } = {}) {
+    const state = over.state ?? 'done';
+    return {
+      round: {
+        submissionId, operation, objective, state, createdAt: over.at ?? '2026-10-16T00:00:00.000Z',
+        // 被取消的那一轮带归因（R81a）：卡上的章说的是「谁停的」，不是无主语的「被取消」。
+        ...(state === 'cancelled' ? { stateReason: 'cancelled', cancelledBy: 'agent' as const } : {}),
+      },
+      rows: labels.map((label) => workItem({
+        submissionId, section: operation, label, state: 'stopped',
+        status: state === 'cancelled' ? 'cancelled' : 'observed',
+        posts: operation === 'search' ? 10 : 0,
+        hasRoot: operation === 'read', replies: operation === 'read' ? 1 : 0,
+      })),
+    };
+  }
+
+  const roundsOf = (parts: ReturnType<typeof roundPart>[], section: 'search' | 'read') =>
+    parts.filter((part) => part.round.operation === section).flatMap((part) => part.rows);
+
+  it('cuts the turn into segments by objective: one segment per goal, rounds inside, across researches too', async () => {
+    // 现场形状（R83）：一次「macOS 轻量虚拟化」的研究里，模型取消后接着补搜、又换了目标补读引信。
+    // 卡按 **objective** 切段（不是按研究）：同一个目标的连续几轮是一段，换目标才开新段。
+    const parts = [
+      roundPart('sub-a1', 'search', 'macOS 轻量虚拟化', ['s1', 's2', 's3', 's4', 's5'],
+        { at: '2026-10-16T00:01:00.000Z' }),
+      roundPart('sub-a2', 'search', 'macOS 轻量虚拟化', ['s6', 's7', 's8'],
+        { at: '2026-10-16T00:02:00.000Z' }),
+      roundPart('sub-b1', 'read', '补读引信', ['r1', 'r2', 'r3'], { at: '2026-10-16T00:03:00.000Z' }),
+      roundPart('sub-b2', 'read', '补读引信', ['r4', 'r5'], { at: '2026-10-16T00:04:00.000Z' }),
+    ];
+    const twoGoals = snapshot({
+      researchRunId: 'xrun-goals', runId: 'turn-goals', objective: 'macOS 轻量虚拟化', state: 'completed',
+      rounds: parts.map((part) => part.round),
+      counts: { submissions: 4, queued: 0, running: 0, done: 13, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 80, replies: 5, articles: 0, undelivered: 0,
+        searchDone: 8, searchTotal: 8, readDone: 5, readTotal: 5 },
+      search: roundsOf(parts, 'search'), read: roundsOf(parts, 'read'),
+    });
+    useXResearchTaskStore.getState().upsert(twoGoals);
+    invoke.mockResolvedValue(twoGoals);
+    const mounted = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-goals', researchRunIds: ['xrun-goals'] });
+    await mounted.settle();
+    // 终态默认收起：展开才看得见段与轮（它们属于行那一段，不是卡头）。
+    mounted.find('x-research-toggle').props.onClick();
+
+    const objectives = (node: unknown) => findAllWhere(node,
+      (element) => element.props['data-testid'] === 'x-research-segment')
+      .map((header) => header.props.children[0].props.children[2].props.children);
+    const roundHeaders = (node: unknown) => findAllWhere(node,
+      (element) => element.props['data-testid'] === 'x-research-round');
+    const segments = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-segment');
+    // 一段研究、两个目标 → 两个分段：搜索那两轮一段，补读那两轮一段。
+    expect(segments.map((segment) => segment.props['data-status'])).toEqual(['completed', 'completed']);
+    expect(objectives(mounted.tree)).toEqual(['macOS 轻量虚拟化', '补读引信']);
+    // 轮次头在各自那一段里，编号在段内连续（第二轮接着第一轮数下去）。
+    expect(roundHeaders(segments[0]).map(visibleText))
+      .toEqual(['第 1 轮 · 5 个 query', '第 2 轮 · 补搜 3 个 query']);
+    expect(roundHeaders(segments[1]).map(visibleText))
+      .toEqual(['第 1 轮 · 3 个目标', '第 2 轮 · 补读 2 个目标']);
+    expect(rows(segments[0])).toHaveLength(8);
+    expect(rows(segments[1])).toHaveLength(5);
+    // 卡头的数字与副标题不因为分段而变：仍是各段真实计数的合计、仍是最早一次提交的目标（R10）。
+    expect(visibleText(mounted.find('x-research-objective'))).toBe('macOS 轻量虚拟化');
+    const summary = visibleText(mounted.find('x-research-summary'));
+    expect(summary).toContain('搜索 8/8 个 query · 采集 80 帖');
+    expect(summary).toContain('读取 5/5 个目标 · 5 回复 · 文章 0 篇');
+
+    // 对照（同一条用例）：**同一个目标横跨两段研究**（取消后重开 / 接着做）→ 一段，不是两段。
+    // 这就是这次要修的那件事：三段「残骸」其实是同一个目标下的三轮。
+    const cancelledPart = roundPart('sub-c1', 'search', '取消后接着做的那个目标', ['c1'],
+      { state: 'cancelled', at: '2026-10-16T00:05:00.000Z' });
+    const continuedPart = roundPart('sub-c2', 'search', '取消后接着做的那个目标', ['c2'],
+      { at: '2026-10-16T00:06:00.000Z' });
+    const cancelledRun = snapshot({
+      researchRunId: 'xrun-fork-a', runId: 'turn-fork', objective: '取消后接着做的那个目标',
+      state: 'cancelled', stateReason: 'cancelled', cancelledBy: 'agent',
+      createdAt: '2026-10-16T00:05:00.000Z',
+      rounds: [cancelledPart.round], search: roundsOf([cancelledPart], 'search'), read: [],
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 0, cancelled: 1,
+        interrupted: 0, posts: 10, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 1, searchTotal: 1, readDone: 0, readTotal: 0 },
+    });
+    const continuedRun = snapshot({
+      researchRunId: 'xrun-fork-b', runId: 'turn-fork', objective: '取消后接着做的那个目标',
+      state: 'completed', createdAt: '2026-10-16T00:06:00.000Z',
+      rounds: [continuedPart.round], search: roundsOf([continuedPart], 'search'), read: [],
+      counts: { submissions: 1, queued: 0, running: 0, done: 1, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 10, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 1, searchTotal: 1, readDone: 0, readTotal: 0 },
+    });
+    useXResearchTaskStore.setState({ snapshotsByRunId: {
+      'xrun-fork-a': cancelledRun, 'xrun-fork-b': continuedRun,
+    } });
+    invoke.mockResolvedValue(cancelledRun);
+    const forked = mount(XResearchProgressCard,
+      { threadId: 'thread-1', groupKey: 'turn-fork', researchRunIds: ['xrun-fork-a', 'xrun-fork-b'] });
+    await forked.settle();
+    forked.find('x-research-toggle').props.onClick();
+
+    // 两段研究、一个目标 → **一段**。终态按**轮**算：一轮取消 + 一轮完成 = 完成（取消的是其中一轮）。
+    const merged = findAllWhere(forked.tree,
+      (element) => element.props['data-testid'] === 'x-research-segment');
+    expect(merged).toHaveLength(1);
+    expect(merged[0].props['data-status']).toBe('completed');
+    expect(objectives(forked.tree)).toEqual(['取消后接着做的那个目标']);
+    // 两轮都在这段里，被取消的那一轮留着并带着章（R83）：卡不把停下的那一轮从经过里抹掉。
+    expect(roundHeaders(merged[0]).map(visibleText))
+      .toEqual(['第 1 轮 · 1 个 query已取消（模型中途取消）', '第 2 轮 · 补搜 1 个 query']);
+    expect(rows(merged[0])).toHaveLength(2);
+  });
+
   it('renders rows from before submissionId exactly like a single-round section', async () => {
     // 旧数据（这个字段之前落的盘）：分不出轮次，卡退回今天的样子 —— 不猜一个轮次，也不画头。
     useXResearchTaskStore.getState().upsert(running);

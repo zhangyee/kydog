@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { XResearchStatus } from '../../../shared/xResearchStatus';
 import type {
-  XResearchCancelActor, XResearchSection, XResearchTaskSnapshot, XResearchTaskState,
+  XResearchCancelActor, XResearchRound, XResearchSection, XResearchTaskSnapshot, XResearchTaskState,
   XResearchWorkItem,
 } from '../../../shared/xResearchTask';
+import { xResearchRoundsState } from '../../../shared/xResearchTask';
 import { useXResearchTaskStore, xResearchTaskSegments } from '../../stores/xResearchTaskStore';
 import { confirm } from '../../stores/confirmStore';
 
@@ -29,11 +30,14 @@ const SEGMENT_OBJECTIVE_STYLE: CSSProperties = {
   flex: '0 1 auto', minWidth: 0, color: 'var(--color-ink-soft)',
 };
 const SECTION_HEADING_STYLE: CSSProperties = { color: 'var(--color-ink-soft)', marginBottom: 2 };
-/** 轮次头（一段研究里的一次提交）：从属于段头 —— 字号比卡面（12）小一档、颜色更淡，
+/** 轮次头（一轮 = 一次提交）：从属于段头 —— 字号比卡面（12）小一档、颜色更淡，
  *  用的是同一套纸墨色，不引入新颜色。 */
 const ROUND_HEADER_STYLE: CSSProperties = {
   color: 'var(--color-ink-faint)', fontSize: 11, marginTop: 4, lineHeight: 1.5,
 };
+/** 轮次头上的「已取消」章（R83）：被取消的那一轮停在原地，卡片不把它从卡上抹掉 ——
+ *  它是这一段真实的经过。颜色比轮次头深一档，因为它是这一轮的结论，不是标题。 */
+const ROUND_CHIP_STYLE: CSSProperties = { marginLeft: 6, color: 'var(--color-ink-soft)' };
 const ROW_STYLE: CSSProperties = {
   display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', padding: '2px 0',
 };
@@ -203,59 +207,48 @@ function groupState(segments: readonly XResearchTaskSnapshot[]): XResearchTaskSt
   return segments[0].state;
 }
 
-/** 一个分段的头：圈号 + 该段终态（含 R81a 的取消归因）+ 该段的目标。
- *  空段（一行都没有）也要画这个头：段数要数得出来，而「这一段没有行」本身就是该段的结论。 */
-function segmentElement(segment: XResearchTaskSnapshot, index: number) {
-  const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
+/** 分段头：圈号 + 该段的终态（含 R81a 的取消归因）+ 该段的目标。两种画法（按目标 / 按研究）共用它：
+ *  段头只有一种说法。空段（一行都没有）也要画这个头 —— 段数要数得出来，而「这一段没有行」本身就是
+ *  该段的结论。 */
+function segmentHeaderElement(index: number, state: XResearchTaskState, objective: string,
+  note: string | null) {
   return (
-    <div key={segment.researchRunId} data-testid="x-research-segment" data-status={segment.state}
-      style={{ marginTop: index === 0 ? 0 : 10 }}>
-      <div style={SEGMENT_HEADER_STYLE}>
-        <span style={MARK_STYLE}>{numberMark(index)}</span>
-        <span style={SOFT_STYLE}>{STATE_WORD[segment.state]}{note ? `（${note}）` : ''}</span>
-        <span className="truncate" title={segment.objective}
-          style={SEGMENT_OBJECTIVE_STYLE}>{segment.objective}</span>
-      </div>
-      {segment.search.length > 0 &&
-        <div data-testid="x-research-search" style={{ marginTop: 6 }}>
-          <div style={SECTION_HEADING_STYLE}>搜索</div>
-          {sectionElements('search', segment.search)}
-        </div>}
-      {segment.read.length > 0 &&
-        <div data-testid="x-research-read" style={{ marginTop: 8 }}>
-          <div style={SECTION_HEADING_STYLE}>读取</div>
-          {sectionElements('read', segment.read)}
-        </div>}
+    <div style={SEGMENT_HEADER_STYLE}>
+      <span style={MARK_STYLE}>{numberMark(index)}</span>
+      <span style={SOFT_STYLE}>{STATE_WORD[state]}{note ? `（${note}）` : ''}</span>
+      <span className="truncate" title={objective} style={SEGMENT_OBJECTIVE_STYLE}>{objective}</span>
     </div>
   );
 }
 
-/** 一段内的一次提交：这一轮的行。`submissionId` 是**这次提交**的 id（不是提交时间），
- *  所以分组不靠时间窗、不靠阈值 —— 行自己是哪一份提交带出来的。 */
-type RowRound = { submissionId: string; rows: XResearchWorkItem[] };
+/** 一段里某个 section 的一轮：这一轮的行 + 轮次头上要不要挂章。
+ *  行的来源有两条（快照的 `rounds` / 旧数据里行上的 `submissionId`），轮次头的画法只有这一份。 */
+type SectionRound = { key: string; rows: readonly XResearchWorkItem[]; chip: string | null };
 
-/** 按 `submissionId` 把这一段的行分成轮，**不重排**：行在快照里的次序就是提交序 → 提交内行序，
- *  分组只做切分。旧数据里任何一行没有这个字段就返回 `null`（分不出轮次），而不是猜一个轮次。 */
-function rowRounds(rows: readonly XResearchWorkItem[]): RowRound[] | null {
-  const rounds: RowRound[] = [];
+/** 被取消的那一轮在轮次头上挂一个章（R83）：它停在原地，卡片不把它从卡上抹掉。
+ *  有主语时连主语一起说（R81a：卡面不许写无主语的「被取消」）；只有取消这一种停法挂章 ——
+ *  `中断` 由行自己说，轮次头再加一句只是噪声。 */
+function roundChip(round: XResearchRound): string | null {
+  if (round.state !== 'cancelled') return null;
+  const note = stateNote(round.stateReason, 'cancelled', round.cancelledBy);
+  return note ? `已取消（${note}）` : '已取消';
+}
+
+/** 旧数据的轮次：行上有 `submissionId`（这个字段落盘之后的那几份提交）就按它切轮，没有就整段一轮。
+ *  分不出轮次时**不猜**一个轮次，也不丢行 —— 一整段平铺，就是加轮次头之前的样子。 */
+function rowRounds(rows: readonly XResearchWorkItem[], key: string): SectionRound[] {
+  const rounds: SectionRound[] = [];
   for (const row of rows) {
-    if (row.submissionId === undefined) return null;
+    if (row.submissionId === undefined) return [{ key, rows, chip: null }];
     const current = rounds[rounds.length - 1];
-    if (current && current.submissionId === row.submissionId) current.rows.push(row);
-    else rounds.push({ submissionId: row.submissionId, rows: [row] });
+    if (current && current.key === row.submissionId) (current.rows as XResearchWorkItem[]).push(row);
+    else rounds.push({ key: row.submissionId, rows: [row], chip: null });
   }
   return rounds;
 }
 
-/** 只有一轮时不给轮次头：**一段研究的一次提交就是今天的样子**，加一个总出现的头只是噪声，
- *  而卡上真正想说的是「模型在首次采集之后又补跑了几轮」。旧数据（分不出轮次）也走这一支。 */
-function sectionRounds(rows: readonly XResearchWorkItem[]): RowRound[] | null {
-  const rounds = rowRounds(rows);
-  return rounds !== null && rounds.length > 1 ? rounds : null;
-}
-
 /** 轮次头的字。`round` 是这一段里第几次提交（1-based），`count` 是这一轮的行数：
- *  第一轮说「N 个 query」/「N 个目标」，之后的轮次说「补搜」/「补读」—— 后续提交都是往同一段研究里
+ *  第一轮说「N 个 query」/「N 个目标」，之后的轮次说「补搜」/「补读」—— 后续提交都是往同一个目标里
  *  追加的补充步骤（spec §4.1），「第 2 轮」本身就是那件事。 */
 function roundWord(operation: XResearchSection, round: number, count: number): string {
   const unit = operation === 'search' ? `${count} 个 query` : `${count} 个目标`;
@@ -264,19 +257,138 @@ function roundWord(operation: XResearchSection, round: number, count: number): s
 }
 
 /** 一段的行，必要时按轮切开：编号在**这一段内**连续（第二轮的行接着第一轮数下去），
- *  不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，行号也该是同一个分母。 */
-function sectionElements(operation: XResearchSection, rows: readonly XResearchWorkItem[]) {
+ *  不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，行号也该是同一个分母。
+ *  只有一轮时不给轮次头：一次提交就是今天的样子，加一个总出现的头只是噪声。 */
+function sectionElements(operation: XResearchSection, rounds: readonly SectionRound[]) {
   const render = operation === 'search' ? searchRowElement : readRowElement;
-  const rounds = sectionRounds(rows);
-  if (rounds === null) return rows.map(render);
+  // 只算有行的轮次：这一轮只提交了读取时，搜索段不该为它多出一个「0 个 query」的头。
+  const visible = rounds.filter((round) => round.rows.length > 0);
   let index = 0;
-  return rounds.flatMap((round, at) => [
-    <div key={round.submissionId} data-testid="x-research-round" data-operation={operation}
+  if (visible.length <= 1) {
+    return visible.flatMap((round) => round.rows.map((row) => render(row, index++)));
+  }
+  return visible.flatMap((round, at) => [
+    <div key={round.key} data-testid="x-research-round" data-operation={operation}
       data-round={at + 1} style={ROUND_HEADER_STYLE}>
       {roundWord(operation, at + 1, round.rows.length)}
+      {round.chip !== null &&
+        <span data-testid="x-research-round-cancelled" style={ROUND_CHIP_STYLE}>{round.chip}</span>}
     </div>,
     ...round.rows.map((row) => render(row, index++)),
   ]);
+}
+
+/** 退路：一批分不出段的快照（旧数据）—— **一段研究一段**，行按研究平铺。与合并成一张卡之前一样，
+ *  不会因为分不出段就少画一段或留白。 */
+function researchSegmentElement(segment: XResearchTaskSnapshot, index: number) {
+  const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
+  return (
+    <div key={segment.researchRunId} data-testid="x-research-segment" data-status={segment.state}
+      style={{ marginTop: index === 0 ? 0 : 10 }}>
+      {segmentHeaderElement(index, segment.state, segment.objective, note)}
+      {segment.search.length > 0 &&
+        <div data-testid="x-research-search" style={{ marginTop: 6 }}>
+          <div style={SECTION_HEADING_STYLE}>搜索</div>
+          {sectionElements('search', rowRounds(segment.search, segment.researchRunId))}
+        </div>}
+      {segment.read.length > 0 &&
+        <div data-testid="x-research-read" style={{ marginTop: 8 }}>
+          <div style={SECTION_HEADING_STYLE}>读取</div>
+          {sectionElements('read', rowRounds(segment.read, segment.researchRunId))}
+        </div>}
+    </div>
+  );
+}
+
+/** 卡上一轮：快照里的那一份提交 + 它自己的行（按「搜索 / 读取」分开）。 */
+type CardRound = { round: XResearchRound; search: XResearchWorkItem[]; read: XResearchWorkItem[] };
+
+/** 卡上的一段（R83）：一个 objective + 它下面**连续**的几轮。
+ *  段可以横跨几段研究 —— 取消后重开、接着做同一个问题时，它们落进同一段。现场那三张卡就是
+ *  「一段研究一段」造成的：一次取消把一个目标切成了三段「残骸」。 */
+type CardSegment = {
+  objective: string;
+  state: XResearchTaskState;
+  stateReason?: string;
+  cancelledBy?: XResearchCancelActor;
+  rounds: CardRound[];
+};
+
+/** 一段的终态与括注：终态由 `xResearchRoundsState` 按这一段的**轮**算（与主进程判定研究状态是同一把
+ *  尺子）；括注取**决定这个状态的那一轮** ——「谁停的」只说一次，说的是最近那一次动作。 */
+function summarizeSegment(rounds: readonly CardRound[]): Pick<CardSegment, 'state' | 'stateReason' | 'cancelledBy'> {
+  const state = xResearchRoundsState(
+    rounds.map(({ round }) => round.state),
+    rounds.flatMap(({ search, read }) => [...search, ...read]),
+  );
+  const decidingState = state === 'cancelled' ? 'cancelled' : state === 'interrupted' ? 'interrupted' : null;
+  const deciding = decidingState === null ? undefined
+    : rounds.filter(({ round }) => round.state === decidingState).pop()?.round;
+  return { state, stateReason: deciding?.stateReason, cancelledBy: deciding?.cancelledBy };
+}
+
+/** 按 objective 把回合里所有轮次并成段：**连续**的同一目标合成一段，换目标就开新段。
+ *  返回 `null` 表示这批快照分不出段 —— 旧数据没有 `rounds`、或者有行找不到自己那一轮：卡退回
+ *  一段研究一段、行平铺，不丢行也不空白。 */
+function objectiveSegments(snapshots: readonly XResearchTaskSnapshot[]): CardSegment[] | null {
+  const rounds: CardRound[] = [];
+  for (const snapshot of snapshots) {
+    if (snapshot.rounds === undefined) return null;
+    // 行跟着**拥有它的提交**走：快照的 `search` / `read` 两段各自按 `submissionId` 归位。
+    // 这一格由投影从提交盖上来（`xResearchTaskSnapshot`），旧提交文件也有。
+    const rowsById = new Map<string, { search: XResearchWorkItem[]; read: XResearchWorkItem[] }>();
+    const place = (row: XResearchWorkItem, section: XResearchSection): boolean => {
+      if (row.submissionId === undefined) return false;
+      const own = rowsById.get(row.submissionId) ?? { search: [], read: [] };
+      own[section].push(row);
+      rowsById.set(row.submissionId, own);
+      return true;
+    };
+    for (const row of snapshot.search) if (!place(row, 'search')) return null;
+    for (const row of snapshot.read) if (!place(row, 'read')) return null;
+    for (const round of snapshot.rounds) {
+      const own = rowsById.get(round.submissionId);
+      rowsById.delete(round.submissionId);
+      rounds.push({ round, search: own?.search ?? [], read: own?.read ?? [] });
+    }
+    // 有行找不到自己那一轮（盘上的数据被改坏、或手造的快照）：这一批分不出来，交给退路。
+    if (rowsById.size > 0) return null;
+  }
+  const byObjective: Array<{ objective: string; rounds: CardRound[] }> = [];
+  for (const round of rounds) {
+    const current = byObjective[byObjective.length - 1];
+    if (current && current.objective === round.round.objective) current.rounds.push(round);
+    else byObjective.push({ objective: round.round.objective, rounds: [round] });
+  }
+  // 一轮都没有（研究读不出来）：分不出段，交给退路 —— 那里的段头还在，卡不会空白。
+  if (byObjective.length === 0) return null;
+  return byObjective.map(({ objective, rounds: own }) => ({ objective, ...summarizeSegment(own), rounds: own }));
+}
+
+/** 一个目标的分段：头（终态 + 归因 + 目标）+ 搜索 / 读取两段行，段内按轮切。 */
+function objectiveSegmentElement(segment: CardSegment, index: number) {
+  const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
+  const search: SectionRound[] = segment.rounds.map((round) => (
+    { key: round.round.submissionId, rows: round.search, chip: roundChip(round.round) }));
+  const read: SectionRound[] = segment.rounds.map((round) => (
+    { key: round.round.submissionId, rows: round.read, chip: roundChip(round.round) }));
+  // 段的身份就是它第一轮的提交 id：提交 id 全局唯一，段序跟着轮序走，重建时不会串位。
+  return (
+    <div key={segment.rounds[0]!.round.submissionId} data-testid="x-research-segment"
+      data-status={segment.state} style={{ marginTop: index === 0 ? 0 : 10 }}>
+      {segmentHeaderElement(index, segment.state, segment.objective, note)}
+      {search.some((round) => round.rows.length > 0) &&
+        <div data-testid="x-research-search" style={{ marginTop: 6 }}>
+          <div style={SECTION_HEADING_STYLE}>搜索</div>
+          {sectionElements('search', search)}
+        </div>}
+      {read.some((round) => round.rows.length > 0) &&
+        <div data-testid="x-research-read" style={{ marginTop: 8 }}>
+          <div style={SECTION_HEADING_STYLE}>读取</div>
+          {sectionElements('read', read)}
+        </div>}
+    </div>
+  );
 }
 
 /**
@@ -347,12 +459,16 @@ function errorText(error: unknown): string {
 }
 
 /**
- * 「X 研究」的过程卡片（spec §5.3）：**一个回合一张卡**（R81b）。卡跟着一个回合走，里面按
- * `createdAt` 升序列出这个回合的每一段研究（分段头 = 圈号 + 该段终态 + 目标），数据源是渲染层
- * store 里的快照：挂载时用 `xResearch.taskGet` 把锚点提到的那几段补齐，之后
- * `xResearch.taskUpdated` 广播（bootstrap 那条线）会逐段更新到 store 里。另有两种「取不到」不应当成
- * 结论，各自补取一次：服务还没接上（`research.unavailable`）与 store 里那几段取到之后又消失（见
- * 下面两条 effect）。运行中默认展开、进终态自动收起，用户手动点过之后以点击为准。
+ * 「X 研究」的过程卡片（spec §5.3）：**卡 = 回合，段 = 目标，轮 = 提交**（R81b / R83）。
+ *
+ * 卡跟着一个回合走（分组键 `runId`）；卡里按 **objective** 分段：同一个目标的连续几轮是一段，
+ * 换目标才开新段 —— 段可以横跨几段研究（取消后重开、接着做同一个问题）。段里再按轮（提交）切开，
+ * 被取消的那一轮留住并挂一个「已取消」章：用户要看的是「这个目标经过了几轮、哪一轮停了」，
+ * 而不是一段取消就长出一段「残骸」。数据源是渲染层 store 里的快照：挂载时用 `xResearch.taskGet`
+ * 把锚点提到的那几段补齐，之后 `xResearch.taskUpdated` 广播（bootstrap 那条线）会逐段更新到
+ * store 里。另有两种「取不到」不应当成结论，各自补取一次：服务还没接上（`research.unavailable`）与
+ * store 里那几段取到之后又消失（见下面两条 effect）。运行中默认展开、进终态自动收起，用户手动点过
+ * 之后以点击为准。
  */
 export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
   threadId: string; groupKey: string; researchRunIds: readonly string[];
@@ -363,6 +479,9 @@ export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
   // 每一段只替换它自己那一格，卡的次序因此在运行中不会跳。
   const segments = useMemo(
     () => xResearchTaskSegments(snapshotsByRunId, groupKey), [snapshotsByRunId, groupKey]);
+  // 行区按**目标**分段（R83）：同一目标的连续几轮并进一段，跨研究也算。`null` = 这批快照分不出段
+  // （旧数据），行区退回「一段研究一段」—— 卡头的数字与段序仍走 `segments`，两种画法共用。
+  const rowSegments = useMemo(() => objectiveSegments(segments), [segments]);
   // `null` = 还没点过，跟着状态走；一旦点过就永远以这一份布尔为准（不再随状态自动收放）。
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -516,7 +635,7 @@ export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
         </button>}
       {expanded && segments.length > 0 &&
         <div data-testid="x-research-rows" style={ROWS_STYLE}>
-          {segments.map(segmentElement)}
+          {rowSegments === null ? segments.map(researchSegmentElement) : rowSegments.map(objectiveSegmentElement)}
         </div>}
       {error && <div role="alert" data-testid="x-research-error" style={{ marginTop: 8 }}>{error}</div>}
     </section>
