@@ -89,6 +89,8 @@ const RETRY_OBJECTIVE = 'Card retry evidence';
 const RETRY_AFTER_CANCEL_OBJECTIVE = 'Card retry after cancel';
 /** 同一段研究提交两次的那一段的问题（卡上应该长出两个轮次头）。 */
 const ROUNDS_OBJECTIVE = 'Card rounds evidence';
+/** 取消之后接着做同一个目标的那一段的问题（卡上应该只有一段、两个轮次头：R83）。 */
+const CONTINUE_OBJECTIVE = 'Card continue after cancel';
 /** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
 const TAB_ID = /^tab_[0-9a-f]{8}$/;
 
@@ -1068,6 +1070,66 @@ test.describe('x research task protocol closure (offline)', () => {
 
     // 收尾：放行闸门里那份响应（下一轮提交还要在这条链上跑），别把它留到 afterAll。
     await releaseHeldQuery();
+    await expectOneCardPerRun();
+  });
+
+  test('a cancelled round and the round that continues it are one card, one segment, two rounds', async () => {
+    // R83：取消停的是**这一轮**，不是整段研究。用户按取消之后模型接着提交同一个目标 —— 这是同一段
+    // 研究的新一轮，不是一段新研究，所以卡上不该多出一段「残骸」：一张卡、一个分段、两个轮次头，
+    // 第一轮带着「已取消」。判据全是协议事实（`xResearch.taskGet` 的 `rounds`）与 DOM 上的字。
+    holdNextQuery(SECOND_QUERY.query);
+    const firstRun = await run([call('x_research', { action: 'submit',
+      ...searchArgs([FIRST_QUERY, SECOND_QUERY], CONTINUE_OBJECTIVE) })],
+    undefined, 'the submit turn ended while the research was still running');
+    const first = envelope(firstRun[0]);
+    const card = cardFor(CONTINUE_OBJECTIVE);
+    await expect(card).toHaveAttribute('data-status', 'running');
+    // 正向证明它在**导航**（取消有东西可停）：代理里确实躺着一次 `/search` 请求。
+    await expect.poll(() => gate.held.map(entry => new URL(entry.url).pathname)).toEqual(['/search']);
+    await card.getByTestId('x-research-cancel').click();
+    const dialog = launched.page.getByTestId('confirm-dialog');
+    await expect(dialog).toBeVisible();
+    await launched.page.getByTestId('confirm-dialog-confirm').click();
+    await expect(card).toHaveAttribute('data-status', 'cancelled');
+    // 协议里那一轮是取消的，带主语（用户按的，R81a）。
+    const stoppedRounds = (await taskGet(first.researchRunId)).rounds!;
+    expect(stoppedRounds).toHaveLength(1);
+    expect(stoppedRounds[0]).toMatchObject({ state: 'cancelled', cancelledBy: 'user' });
+
+    // 同一个 `researchRunId`、同一个 objective 接着提交：这是新一轮，真会跑。
+    const second = envelope((await run([call('x_research', {
+      action: 'submit', researchRunId: first.researchRunId, ...searchArgs([FIRST_QUERY], CONTINUE_OBJECTIVE),
+    })]))[0]);
+    expect(second.researchRunId).toBe(first.researchRunId);
+    // 提交那一刻就回到进行中：取消没有把研究钉死（这一份排在链上，`queued` 也是真的活）。
+    expect(second.snapshot).toMatchObject({ state: 'running' });
+    expect(second.snapshot.rounds!.map(round => round.state)).toEqual(['cancelled', 'queued']);
+    // 放行闸门里那份响应（被取消的那一轮可能已经放弃了它，那时它不在手上）—— 别留到 afterAll。
+    await releaseHeldQuery();
+    await expect.poll(async () => (await taskGet(first.researchRunId)).state,
+      { message: 'the round submitted after the cancel runs on its own', timeout: 15_000 }).toBe('completed');
+
+    // 一张卡、**一段**（同一个目标）、两个轮次头：第一轮带章，第二轮说它是补搜。
+    await expect(card).toHaveCount(1);
+    await expect(card).toHaveAttribute('data-status', 'completed');
+    await expect(card.getByTestId('x-research-objective')).toHaveText(CONTINUE_OBJECTIVE);
+    await card.getByTestId('x-research-toggle').click();
+    const segments = card.getByTestId('x-research-segment');
+    await expect(segments).toHaveCount(1);
+    // 段的终态按**轮**算：一轮取消 + 一轮完成 = 完成（取消的是其中一轮，不是这一段）。
+    await expect(segments.nth(0)).toHaveAttribute('data-status', 'completed');
+    await expect(segments.nth(0)).toContainText(CONTINUE_OBJECTIVE);
+    const rounds = card.getByTestId('x-research-round');
+    await expect(rounds).toHaveCount(2);
+    await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query已取消（你中途取消）');
+    await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
+    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
+    // 三行都在：被取消那一轮的两行（结论是取消）与新的一轮那一行。
+    const searchRows = card.locator('[data-testid="x-research-row"][data-section="search"]');
+    await expect(searchRows).toHaveCount(3);
+    await expect(searchRows.nth(0)).toContainText('已取消');
+    await expect(searchRows.nth(2)).toContainText(FIRST_QUERY.query);
     await expectOneCardPerRun();
   });
 });
