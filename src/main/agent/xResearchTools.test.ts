@@ -194,9 +194,12 @@ describe('x_research submit', () => {
       action: 'submit', tabId: 'tab-9', search: searchArgs(),
     }));
     expect(bound.snapshot.browserTabId).toBe('tab-9');
-    // 翻面：不带 `tabId` 的提交不许凭空绑上一个（否则上面那条可能只是回显了一个默认值）。
+    // 翻面：同一对话里新开一段研究继承这张页（R81h）—— 不带 `tabId` 的提交拿到的是这个对话此刻的页，
+    // 不是回显的默认值。「没有可继承的页时也不凭空造一个」在 `xResearchTaskService.test.ts` 里钳
+    // （另一个对话不继承、`forget` 之后不继承、一开始谁也没给页时是 `undefined`）。
     const own = envelopeOf(await execute(tool, { action: 'submit', search: searchArgs() }));
-    expect(own.snapshot.browserTabId).toBeUndefined();
+    expect(own.researchRunId).not.toBe(bound.researchRunId);
+    expect(own.snapshot.browserTabId).toBe('tab-9');
   });
 
   it('computes the budget labels from the raw arguments, not from the parsed work', async () => {

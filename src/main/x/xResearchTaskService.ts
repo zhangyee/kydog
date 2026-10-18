@@ -313,6 +313,10 @@ export class XResearchTaskService {
    *  只看链：删对话的顺序是「拆除（排空）→ 删目录」，这笔写抢在删之后落地就会把 `task.json` /
    *  `submission-*.json` 写回来 —— 一条已经删掉的研究重新长出来。键是 threadId（目录的所有者）。 */
   private readonly lateWrites = new Map<string, Set<Promise<void>>>();
+  /** 这条对话的标签页（R81h）：新开一段研究时先继承这里记的那一页，于是「取消后重试」不用让模型去
+   *  `browser_tabs` 把页找回来。按 threadId 记，不按研究：换一段研究还是同一个对话的同一张页。
+   *  只活在内存里 —— 重启后靠各研究自己的 `task.json` 上的 `browserTabId`（本轮继承只在本进程内）。 */
+  private readonly threadTab = new Map<string, string>();
 
   constructor(private readonly deps: XResearchTaskServiceDeps) {}
 
@@ -379,10 +383,13 @@ export class XResearchTaskService {
 
   private create(owner: XResearchTaskOwner, researchRunId: string): ActiveResearch {
     const now = this.now();
+    // 本对话当前那张页：新研究先继承它（R81h）。没有就什么都不写 —— 空串不是标签页 id。
+    const inherited = this.threadTab.get(owner.threadId);
     const created: ActiveResearch = {
       record: {
         version: 1, researchRunId, threadId: owner.threadId, projectRoot: owner.projectRoot,
         createdAt: now, updatedAt: now, revision: 0, state: 'running', submissionIds: [],
+        ...(inherited ? { browserTabId: inherited } : {}),
       },
       submissions: new Map(),
       results: new Map(),
@@ -434,7 +441,11 @@ export class XResearchTaskService {
       endedAt: null,
     };
     active.record.submissionIds.push(submission.submissionId);
-    if (input.tabId) active.record.browserTabId = input.tabId;
+    if (input.tabId) {
+      active.record.browserTabId = input.tabId;
+      // 显式给的页也是这条对话的页：下一段研究接着用它（R81h）。
+      this.threadTab.set(owner.threadId, input.tabId);
+    }
     active.submissions.set(submission.submissionId, submission);
     let snapshot: XResearchTaskSnapshot;
     try {
@@ -700,6 +711,8 @@ export class XResearchTaskService {
     for (const [key, active] of this.active) {
       if (active.record.threadId === threadId && this.owns(active, ledger)) this.active.delete(key);
     }
+    // 对话的页跟着对话走：拆除 / 删除之后，这条 thread 不再有几号页可继承（R81h）。
+    this.threadTab.delete(threadId);
   }
 
   /** 每个视图都按**提交序 → 工作项序**铺开：翻页因此是稳定的，游标只是偏移。
@@ -841,8 +854,14 @@ export class XResearchTaskService {
         tabBinding: {
           get: () => active.record.browserTabId,
           set: (tabId) => {
-            if (tabId) active.record.browserTabId = tabId;
-            else delete active.record.browserTabId;
+            if (tabId) {
+              active.record.browserTabId = tabId;
+              // 采集层写回的页也记到对话上：下一段研究（同一对话）从这里继承（R81h）。
+              this.threadTab.set(active.record.threadId, tabId);
+            } else {
+              delete active.record.browserTabId;
+              this.threadTab.delete(active.record.threadId);
+            }
           },
         },
         onProgress: (event) => this.progress(active, submission, event),

@@ -363,6 +363,56 @@ describe('XResearchTaskService', () => {
     expect((await reopened.service.get(thread.threadId, submitted.researchRunId)).browserTabId).toBe('tab-9');
   });
 
+  it('remembers the tab the collector wrote back for the whole thread', async () => {
+    const seen: (string | undefined)[] = [];
+    const { service } = harness(async (work, ctx) => {
+      seen.push(ctx.tabBinding.get());
+      ctx.tabBinding.set('tab-of-this-thread');
+      return echoRunner(work, ctx);
+    });
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    // 前提：第一段研究一开始谁也没给它页。
+    expect(seen).toEqual([undefined]);
+    // 同一对话里新开一段研究：一开始就拿得到上一段留下的页（R81h）—— 取消后重试不必让模型
+    // 再 `browser_tabs` 找一次页。
+    const second = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, second.researchRunId);
+    expect(second.researchRunId).not.toBe(first.researchRunId);
+    expect(seen).toEqual([undefined, 'tab-of-this-thread']);
+    expect((await service.get(thread.threadId, second.researchRunId)).browserTabId)
+      .toBe('tab-of-this-thread');
+
+    // 翻面：另一个对话不继承（记住的是「这条对话的页」，不是一张全局页）。
+    const other = owner();
+    const third = await service.submit({ work: { search: searchWork() } }, other);
+    await service.whenIdle(other.threadId, third.researchRunId);
+    expect(seen[2]).toBeUndefined();
+
+    // 对话被拆除 / 删除（`disposeThread` / `forgetXResearchThread` 走的就是 `forget`）：这条 thread
+    // 不再有页可继承。
+    service.forget(thread.threadId);
+    const fourth = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, fourth.researchRunId);
+    expect(seen[3]).toBeUndefined();
+  });
+
+  it('remembers an explicitly submitted tab for the rest of the thread', async () => {
+    const seen: (string | undefined)[] = [];
+    const { service } = harness(async (work, ctx) => {
+      seen.push(ctx.tabBinding.get());
+      return echoRunner(work, ctx);
+    });
+    const thread = owner();
+    const first = await service.submit({ work: { search: searchWork() }, tabId: 'tab-explicit' }, thread);
+    await service.whenIdle(thread.threadId, first.researchRunId);
+    const second = await service.submit({ work: { search: searchWork() } }, thread);
+    await service.whenIdle(thread.threadId, second.researchRunId);
+    // 两段研究拿到同一张页：第一段是提交时显式给的，第二段是同一对话里新建的、从对话上继承的。
+    expect(seen).toEqual(['tab-explicit', 'tab-explicit']);
+  });
+
   it('emits a snapshot on submit before any work runs', async () => {
     const hold = gate();
     // 工作体开跑时已经推过几帧：这才是「提交先推帧、再排队」的可观察形式 ——
