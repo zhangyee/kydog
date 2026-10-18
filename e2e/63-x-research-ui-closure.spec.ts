@@ -87,6 +87,8 @@ const BATCH_OBJECTIVE = 'Batch delivery evidence';
 /** 同一回合里「取消 → 重试」那两段研究各自的问题（卡头取最早一段，也就是被取消的那段）。 */
 const RETRY_OBJECTIVE = 'Card retry evidence';
 const RETRY_AFTER_CANCEL_OBJECTIVE = 'Card retry after cancel';
+/** 同一段研究提交两次的那一段的问题（卡上应该长出两个轮次头）。 */
+const ROUNDS_OBJECTIVE = 'Card rounds evidence';
 /** `browser.createTab` 的 id 形状（`tab_` + uuid 前 8 位）：两个标签 id 相等/不等之前先证明它们是 id。 */
 const TAB_ID = /^tab_[0-9a-f]{8}$/;
 
@@ -1020,5 +1022,52 @@ test.describe('x research task protocol closure (offline)', () => {
     await expectCardPlacement(LIFECYCLE_OBJECTIVE,
       '后面的消息不提这段研究时，卡仍停在提到它的那条里（不是永远画在最新一条上）',
       placed => placed.cards === 1 && placed.messageIndex >= 0 && placed.messageIndex < placed.lastIndex);
+  });
+
+  test('one research submitted twice shows a round header per submission inside the search section', async () => {
+    // 用户看到的断层（R82）：一段研究跑了四次提交，卡把行全摊成两个列表，看不出模型在首次采集之后
+    // 又补跑了几轮。判据是行自己的 `submissionId`（协议事实）：同一份提交的行带同一个 id，卡按它
+    // 切轮 —— 不是时间窗、不是阈值。
+    // 闸门扣住第二个 query 的导航：第一份提交停在 `navigating`，卡是运行中（默认展开）、
+    // 第二份提交排在它后面但**行已经计划好**（提交那一刻就在快照里）。
+    holdNextQuery(SECOND_QUERY.query);
+    const firstRun = await run([call('x_research', { action: 'submit',
+      ...searchArgs([FIRST_QUERY, SECOND_QUERY], ROUNDS_OBJECTIVE) })],
+    undefined, 'the submit turn ended while the research was still running');
+    const created = envelope(firstRun[0]);
+    const card = cardFor(ROUNDS_OBJECTIVE);
+    await expect(card).toHaveAttribute('data-status', 'running');
+    await expect(card.getByTestId('x-research-rows')).toBeVisible();
+
+    // 同一段研究的第二份提交（一个 query）：这就是卡上的「第 2 轮」。
+    const secondRun = await run([call('x_research', { action: 'submit',
+      researchRunId: created.researchRunId, ...searchArgs([FIRST_QUERY], ROUNDS_OBJECTIVE) })]);
+    expect(envelope(secondRun[0]).snapshot.counts.submissions).toBe(2);
+    // 协议里确实是两份提交：三行的 `submissionId` 只有两个值，前两行属于第一份。
+    const protocol = await taskGet(created.researchRunId);
+    expect(new Set(protocol.search.map(row => row.submissionId)).size).toBe(2);
+    expect(protocol.search.map(row => row.submissionId)).toEqual([
+      protocol.search[0]!.submissionId, protocol.search[0]!.submissionId, protocol.search[2]!.submissionId,
+    ]);
+
+    // 卡上：两个轮次头，各自说这一轮带出来几项；第一轮说 query 数，第二轮说「补搜」。
+    const rounds = card.getByTestId('x-research-round');
+    await expect(rounds).toHaveCount(2);
+    await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');
+    await expect(rounds.nth(0)).toHaveAttribute('data-round', '1');
+    await expect(rounds.nth(0)).toHaveText('第 1 轮 · 2 个 query');
+    await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'search');
+    await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
+    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 补搜 1 个 query');
+    // 行还是三行，编号在段内连续（第二轮接着 ③，不从 ① 重来）。
+    const searchRows = card.locator('[data-testid="x-research-row"][data-section="search"]');
+    await expect(searchRows).toHaveCount(3);
+    await expect(searchRows.nth(0)).toContainText('①');
+    await expect(searchRows.nth(2)).toContainText('③');
+    await expect(searchRows.nth(2)).toContainText(FIRST_QUERY.query);
+
+    // 收尾：放行闸门里那份响应（下一轮提交还要在这条链上跑），别把它留到 afterAll。
+    await releaseHeldQuery();
+    await expectOneCardPerRun();
   });
 });
