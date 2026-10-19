@@ -8,9 +8,17 @@ import { threadService } from './threadService';
 import { agentService } from '../agent/AgentService';
 import { encodeUserTurn, refTag } from '../../shared/userTurn';
 import { researchRunStore } from '../webResearch/runStore';
+import { xResearchTaskStore } from '../x/xResearchTaskStore';
 
 vi.mock('../webResearch/runStore', () => ({
   researchRunStore: { removeRunsForThread: vi.fn().mockResolvedValue(undefined) },
+}));
+
+// 任务目录跟对话走（`xResearchTaskStore.removeThread`）：这里只钉「删对话真的调了它」，
+// 目录本身归 `xResearchTaskStore.test.ts`。用例里的 thread id 是 `a`/`b` 这种短名，不是 UUID —
+// 真 store 会按穿越防线拒掉它们，所以这一层必须是替身。
+vi.mock('../x/xResearchTaskStore', () => ({
+  xResearchTaskStore: { removeThread: vi.fn().mockResolvedValue(undefined) },
 }));
 
 vi.mock('./titleService', () => ({
@@ -313,5 +321,7 @@ describe('threadService.archive / unarchive / delete（批量）', () => {
     expect(existsSync(sessionFile('b'))).toBe(false);
     expect(existsSync(sessionFile('d'))).toBe(true);
     expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([['a'], ['b']]);
+    // 研究任务目录与它同一处置：只删点名的两条，且每条一次。
+    expect(vi.mocked(xResearchTaskStore.removeThread).mock.calls).toEqual([['a'], ['b']]);
   });
 });

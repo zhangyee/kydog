@@ -155,11 +155,13 @@ describe('guarded final file contents', () => {
   });
 });
 it('real X ledger guards both complete file hooks while ordinary file overwrites and edits remain usable',async()=>{
- const {XResearchEvidence}=await import('../x/xResearchEvidence');const {fixture,post,readHtml}=await import('../../test-support/xResearchFixture');const {createXResearchTool}=await import('./xResearchTool');
+ const {XResearchEvidence}=await import('../x/xResearchEvidence');const {fixture,post,readHtml}=await import('../../test-support/xResearchFixture');const {createXResearchRunner}=await import('../x/xResearchRunner');const {parseXResearchWork}=await import('../x/xResearchInput');const {XResearchScopeLedger}=await import('../x/xResearchScopeFacts');
  const dir=mkdtempSync(path.join(os.tmpdir(),'kydog-x-files-'));
  try{
-  const evidence=new XResearchEvidence(dir,()=> 'run');const f=fixture([readHtml(post())]);const tool=createXResearchTool({artifacts:tempXArtifactStore(),browser:f.context.browser,threadId:'thread',sources:evidence.sources,currentRunId:()=> 'run',observeResult:r=>evidence.observe(r)});
-  await tool.execute('read',{tabId:'research-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false}},undefined,undefined,{} as never);
+  const evidence=new XResearchEvidence(dir,()=> 'run');const f=fixture([readHtml(post())]);const work=parseXResearchWork({tabId:'research-tab',read:{objective:'read',targets:[{url:'https://x.com/alice/status/123'}],includeArticle:false,includeReplies:false}});if(!('read' in work))throw new Error('read expected');const ledger=new XResearchScopeLedger();
+  // 一份真结果走生产的工作体（runner），再手动入账（生产上入账挂在交付那条路上）。
+  const collected=await createXResearchRunner({browserFor:()=>f.context.browser,contextFor:()=>({sources:evidence.sources,scopePrior:runId=>ledger.prior(runId),currentRunId:()=> 'run'}),artifacts:()=>tempXArtifactStore()})({read:work.read},{threadId:'thread',researchRunId:'research',submissionId:'submission',batchId:'batch',runId:'run',submitCallId:'read',signal:new AbortController().signal,tabBinding:{get:()=> 'research-tab',set:()=>undefined},onProgress:()=>undefined});
+  evidence.observe(collected);
   const {write,edit}=await tools(dir,evidence.guard);const good='[source](https://x.com/alice/status/123)',bad='[source](https://x.com/WrongAuthor/status/123)';
   for(const name of ['x-research-topic-2026-10-12.md','ordinary.md','ordinary.txt','ordinary.ts']){
    await write.execute('create',{path:name,content:`Title\n${good}\nTail`},undefined,undefined,{});

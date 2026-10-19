@@ -1,6 +1,7 @@
 import {replyScopeSchema,networkPageSchema,networkReadScopeValid} from './xResearchCanonical';
 import { z } from 'zod';
 import type { XReportScopeFacts, XReportRunScopeFacts, XResearchResult } from './xResearchTypes';
+import { deliveryResults, resultCallId, shellChainValid } from './xResearchTaskShell';
 
 const text = z.string().min(1);
 const status = z.enum(['observed','partial','explicit_empty','auth_required','action_required','rate_limited','access_denied','unavailable','cancelled','failed']);
@@ -131,9 +132,18 @@ export class XResearchScopeLedger {
     const envelope=z.object({type:z.literal('message'),message:z.object({role:z.literal('toolResult'),toolName:z.literal('x_research'),toolCallId:text,isError:z.literal(false),details:z.unknown()})});
     for(const entry of entries){
       const parsed=envelope.safeParse(entry);if(!parsed.success)continue;
-      const id=identity.safeParse(parsed.data.message.details);
-      if(!id.success||id.data.callId!==parsed.data.message.toolCallId)continue;
-      this.observe(parsed.data.message.details);
+      const results=deliveryResults(parsed.data.message.details);
+      // 壳里没有结果（submit / inspect / cancel）：没有可入账的调用。
+      if(!results||!results.length)continue;
+      // 壳自己的两轮对不上：恢复链不收它的结果，账本也不收 —— 否则一份错壳能入账。
+      if(!shellChainValid(parsed.data.message.details))continue;
+      if(resultCallId(parsed.data.message.details)!==parsed.data.message.toolCallId)continue;
+      // 一次 `wait` 交付的每一条都是一次独立调用，逐条入账。
+      for(const details of results){
+        const id=identity.safeParse(details);
+        if(!id.success)continue;
+        this.observe(details);
+      }
     }
   }
   prior(runId:string):XResearchScopePrior {

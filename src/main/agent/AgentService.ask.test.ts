@@ -4,7 +4,7 @@ vi.mock('../ipc/broadcaster', () => ({ broadcaster: { emit: vi.fn() } }));
 vi.mock('./resolveActive', () => ({
   resolveActive: vi.fn().mockResolvedValue({ providerId: 'anthropic', modelId: 'm' }),
 }));
-vi.mock('./sessionFactory', () => ({ createSession: vi.fn() }));
+vi.mock('./sessionFactory', () => ({ createSession: vi.fn(), xResearchSessionIdentity: () => undefined }));
 
 import { broadcaster } from '../ipc/broadcaster';
 import { createSession } from './sessionFactory';

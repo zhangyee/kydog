@@ -43,6 +43,19 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 
 其余 `run.*` 事件都来自 `AgentService.subscribe()` 对 pi session 的订阅：`run.started` 来自 `agent_start`，两个 delta 来自 message 流，普通 `run.tool_call_*` 来自 `tool_execution_start` / `tool_execution_end`，`run.ended` 来自 `agent_end`。另有一个 `run.resync` 谁都不来自——它是上面那段重放的帧头，只在 `loadHistory` 里发给单个窗口，也不进 journal。
 
+**X 研究的任务快照走另一条线，不在 `run.*` journal 里。** `xResearch.taskUpdated` 的载荷是任务快照（`XResearchTaskSnapshot`：状态、计数、逐行工作项），来源是主进程的 `XResearchTaskService`——队列与在飞状态在进程内存里，落盘在 `~/.kydog/x-research/<threadId>/<researchRunId>/`（`task.json` 是研究级索引、`submission-<id>.json` 是提交级工作项与实时状态；结果正文按工件格式单独落盘，提交记录只存 `artifact` 引用，交付时按那个引用读回来）。于是渲染进程重载时 `run.resync` 带不回它：开对话时 `thread.loadHistory` 那条路顺手拉一次 `xResearch.taskList` 补全整批，之后靠广播跟；卡片自己用 `xResearch.taskGet` 补齐它那几份。研究工作跑在 `run.ended` **之后**，卡也要跟着走——这两件事不能靠一条 journal 的时序。
+
+**卡 = 回合，段 = 目标，轮 = 提交。** 三层各自有唯一的锚，不要混用：
+
+- **卡**的单位是回合（R81b）。分组键是 `task.json` 里的 `runId`（创建这段研究的那个回合，`XResearchTaskRecord` / `XResearchTaskSnapshot` 上的同一个字段），旧记录没有它时退回 `researchRunId`——一段研究一张卡，不会空白。广播仍按研究发（`xResearch.taskUpdated` 一次一段），渲染层按分组键归并、每段只替换自己那一格；锚点也按回合算——一张卡落在「最后一次提到该回合任何一段研究」的那条消息上，后续不再提它的消息不会把卡拽走。
+- **段**的单位是 objective（R83）。卡内把该回合所有研究的**提交**按 `createdAt` 串起来，**连续的同一个 objective 合成一段**，换目标才开新段；于是同一个目标横跨几段研究（取消后重开、接着做同一个问题）时仍是一段——现场那「三段残骸」其实就是三轮。段头 = 圈号 + 该段的终态（由 `xResearchRoundsState` 按这一段的**轮**算，与判定研究状态同一把尺子）+ 取消归因（R81a）+ objective；`N 段：…` 那句仍按研究数，数字仍是各研究权威计数的合计。
+- **轮**的单位是提交。快照的 `rounds` 把每一份提交列成一项（`submissionId` / `operation` / `objective` / `state` / 取消归因），行在投影时**由拥有它的那份提交**盖上 `submissionId`（盘上旧提交文件没有这个字段，靠投影盖，不靠迁移）。段内按提交序画轮次头（`第 1 轮 · 5 个 query`、`第 2 轮 · 补搜 3 个 query` —— 操作与这一轮的行数都由它说，卡面不再分「搜索 / 读取」两节），行挂在自己那一轮的头下面。**三层靠两样东西分开**：缩进（段头 0 ＜ 轮次头 12px ＜ 行 24px）与字形（段头是 `1.` `2.`，行号是圈号 `①…`；行号在段内跨轮、跨操作连续，每段从 ① 起）。**被取消的那一轮留着**并带一个「已取消（谁停的）」章：取消停的是这一轮，不是整段研究（R83，`cancel` 之后同一段研究可以接着 `submit` 新一轮，被取消的那一轮永远是取消的）。
+- 两组退路，判据都在数据里：没有 `rounds` 或行找不到自己那一轮（旧数据）→ 按研究分段、行平铺（与合并成一张卡之前一样，不会空白）；卡头副标题永远取**最早一段**研究的 objective（R10），合并与分段都不能让它换题。
+
+取消按钮确认一次，然后逐个 `xResearch.taskCancel` 停下该回合里还在排队/进行中的每一段（RPC 仍按研究）。
+
+**与 spec §4.4 的偏差（知情接受）：实时状态不按节流窗口落盘。** 盘上只在状态转移（提交、开跑、收尾、取消、交付标记）时更新，滚动数 / 帖数这类活计数只在内存里。于是进程被杀之后，`submission-*.json` 里的行会停在 `stopped` 且没有结论——卡对这类行只说「中断」，不报「收 0 帖」「无根帖」这种没人观测到的残缺计数。
+
 其他非直觉点（为什么按 run 而不是按 pi message 合成 messageId、为什么并行判定要读 `message_end` 携带的 content）写在 `src/main/agent/AgentService.ts` 的注释里，改那块之前先读。
 
 ## 用户消息里的结构（附件、批注、@ 引用）

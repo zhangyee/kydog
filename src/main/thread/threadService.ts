@@ -8,6 +8,8 @@ import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import { turnTitleSource } from '../../shared/userTurn';
 import { researchRunStore } from '../webResearch/runStore';
+import { xResearchTaskStore } from '../x/xResearchTaskStore';
+import { disposeXResearchThread, forgetXResearchThread } from '../x/xResearchTaskService';
 import type { AskAnswer } from '../../shared/askQuestion';
 import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
@@ -108,6 +110,14 @@ export class ThreadService {
         for (const t of targets) {
           await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
           await researchRunStore.removeRunsForThread(t.id);
+          // 目录删之前先等这条 thread 的队列排空：没建过会话的对话，上面那次 `agentService.dispose`
+          // 一开始就读不到 bound session 而早退，排在这条链上的工作因此没人等 —— 它随后的落盘会把
+          // 刚删掉的目录写回来。不带账本 = 等整条链（同 `AgentService.dispose` 的删对话路径）。
+          await disposeXResearchThread(t.id);
+          // x 研究任务目录跟对话走（同一处置）：本条对话名下所有研究的产物没有别的所有者。
+          // 内存缓存也要淘汰：没有建过会话的对话走不到 `dispose`，缓存却可能还在。
+          await xResearchTaskStore.removeThread(t.id);
+          forgetXResearchThread(t.id);
         }
       } finally { deletion.finish(); }
     });

@@ -6,20 +6,47 @@ import type {BrowserScrollReceipt} from '../browser/actions';
 import {isScrollReceipt} from './xScrollRecovery';
 import { BrowserScrollAcknowledgementError } from '../browser/actions';
 import { KydogError } from '../../shared/errors';
+import { logger } from '../log';
 import type { NavigationObservation } from '../../shared/types';
 import { collectXPage, type XPageRequest, type XPageObservation } from './xObservation';
 import type { BrowserLocationFacts } from '../browser/browserService';
 import type { XQueuedPage, XResearchBrowser } from './xResearchBrowser';
 import { compareXLocation, toSafeXLocation } from './xResearchIdentity';
-import type { XBudgetUsage, XLocationFacts, XResearchInput, XResearchResult, XResearchStatus, XSearchObservation, XStopReason, XTextObservation, XSourceReference, XCollectionTransition } from './xResearchTypes';
+import type { XBudgetUsage, XLocationFacts, XReadObservation, XResearchInput, XResearchResult, XResearchStatus, XSearchObservation, XStopReason, XTextObservation, XSourceReference, XCollectionTransition } from './xResearchTypes';
+import type { XResearchSection, XResearchWorkState } from '../../shared/xResearchTask';
 
 export type XSearchInput = Extract<XResearchInput, { search: unknown }>;
 /** Session-owned source table. Preserve actual URLs and every discovery's provenance. */
 export type { XObservedSource } from './xResearchTypes';
+/** 任务侧的进度事件（spec §5.5）：采集循环在**阶段边界**说一句「这一行此刻在哪一段」，
+ *  并在这一行采集结束时报一次 `state: 'stopped'`（`phaseDetail: null`）—— 那是「收尾了」的唯一信号，
+ *  任务侧只有收到它才会把这一行算进 `*Done`（R81g：不报的话分子恒为 0，已跑完的行一直显示「收集中」）。
+ *  `row` 是采集层正在改的那一行 —— 接收方收到即抄数字，绝不保留引用；它不进结果、不进工件。 */
+export type XResearchProgressEvent = {
+  section: XResearchSection;
+  /** 这一行在**本次提交**里的序号（`queries` / `targets` 的下标）。 */
+  rowIndex: number;
+  state: XResearchWorkState;
+  /** `null` 只在终态事件上出现：行已经收尾，没有「此刻在哪一段」可说。 */
+  phaseDetail?: 'root' | 'article' | 'return' | 'discussion' | null;
+  row: XSearchObservation | XReadObservation;
+};
 export interface XResearchContext {
   browser: XResearchBrowser; threadId: string; runId: string; callId: string; batchId: string;
   budgetPolicy?: XBudgetPolicy;
   signal?: AbortSignal; sources: Map<string, XSourceReference[]>;
+  /** 唯一的进度缝：不传就没有进度，行为与改造前逐字节相同。 */
+  onProgress?: (event: XResearchProgressEvent) => void;
+}
+/** 观察者抛异常绝不影响采集（与 `retainClickFailure` 同一条规矩）：采集的结论不因一个观察者改写。
+ *  但吞掉之前必须留一条诊断：一个系统性坏掉的投影表现为「一条进度也没有」，日志是它唯一露面的地方。 */
+export function reportXProgress(context: XResearchContext, event: XResearchProgressEvent): void {
+  try { context.onProgress?.(event); }
+  catch (err) {
+    logger.warn('x_research', 'progress observer threw', {
+      section: event.section, rowIndex: event.rowIndex, state: event.state, err: String(err),
+    });
+  }
 }
 // Every selector comes from the dated actual X DOM source guide. Readiness
 // only gates one bounded wait; it never proves identity or completeness.
@@ -102,6 +129,8 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       // because an earlier row hit the same source barrier (or an adapter defect).
       else if(halted==='rate_limited'){row.status='rate_limited';row.stopReason='access_barrier';row.barrier={status:'rate_limited',reason:'not_attempted:rate_limited',observationId:null};}
       else {row.status='failed';row.stopReason='source_unavailable';row.barrier={status:'failed',reason:'internal_adapter_stopped',observationId:null};}
+      // 一行都没起跑也是这一行的结局（前置屏障 / 取消 / 适配器停了）：跳过不发终态，分子就永远追不上（R81g）。
+      reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'stopped',phaseDetail:null,row});
       continue;
     }
     const admitted=new Set<string>(),saved=new Set<string>();let pageCount=0,unsupportedSeen=false;
@@ -121,11 +150,14 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
       if(fact)(row.networkPages??=[]).push({...fact,observed:sample.observed,sampled:sample.sampled,omitted:sample.omitted});
       rememberSources(context,sample.retained,row.query);row.budgetUsage.distinctEntries=admitted.size;
       capped();
+      // 每接纳一页就是一帧可见的新数字（spec §5.5 第 2 条），行仍是活着的那一行。
+      reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'collecting',row});
     };
-    if(input.search.maxPostsPerQuery===0&&capped()){row.status='partial';row.stopReason='budget_reached';continue;}
+    if(input.search.maxPostsPerQuery===0&&capped()){row.status='partial';row.stopReason='budget_reached';reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'stopped',phaseDetail:null,row});continue;}
     const request={stage:'search' as const,expectedUrl:xSearchUrl(row.query),query:row.query.query,product:row.query.product};
     let stage:'navigation'|'collection'|'action'|'wait'='navigation';
     try {
+      reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'navigating',row});
       const opened=await context.browser.open(request.expectedUrl,result.browserTabId||undefined,context.signal,request);result.browserTabId=opened.tabId;
       row.location=committedFacts(request.expectedUrl,opened.nav);
       if(opened.networkCleanupFailure)(row.diagnostics??={version:1}).networkCleanupFailure=opened.networkCleanupFailure;
@@ -138,7 +170,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
           // generation change on load and again around a scroll, and the row-wide
           // one-shot check rejected the second one. The outer loop's post/scroll
           // budget still bounds how many times this can happen.
-          stage='collection';const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal,{rereadRequested:false});row.location=locationFacts(request.expectedUrl,opened.nav,observed);
+          stage='collection';reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'collecting',row});const observed=await collectFreshXPage(page,request,row.collectionTransitions,context.signal,{rereadRequested:false});row.location=locationFacts(request.expectedUrl,opened.nav,observed);
           if(observed.state?.kind==='auth_required'){row.status='auth_required';row.stopReason='access_barrier';row.barrier={status:'auth_required',reason:observed.state.text,observationId:observed.state.observationId};break;}
           let terminal=false;
           for(const source of observed.network?.pages??[]){
@@ -161,7 +193,7 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
           if(!observed.network?.proof||!observed.identityProven){
             // No provable response chain even after a bounded wait: the design stop for
             // "no matching response before the deadline".
-            if(!waited){stage='wait';waited=true;await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},8000);continue;}
+            if(!waited){stage='wait';waited=true;reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'waiting',row});await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},8000);continue;}
             row.status=row.posts.length?'partial':'unavailable';row.stopReason='wait_timeout';break;
           }
           if(budget){row.status='partial';row.stopReason='budget_reached';break;}
@@ -174,8 +206,8 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
           // Keep scrolling toward the bottom: one bounded pause for a slow reply,
           // then another scroll. Ending after a single unanswered round is what
           // left every long page on its first batch.
-          if(!accepted){stage='wait';await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},xScrollPauseMs());}
-          stage='action';let receipt:BrowserScrollReceipt|undefined;
+          if(!accepted){stage='wait';reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'waiting',row});await page.wait({selector:X_AUTH_READY_SELECTOR,state:'present'},xScrollPauseMs());}
+          stage='action';reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'scrolling',row});let receipt:BrowserScrollReceipt|undefined;
           // X only loads the next page near the bottom of a very long virtualized
           // list (live: 240,890px, ~14 one-viewport rounds per page). Ask for the
           // whole remaining distance so one round lands at the bottom and triggers
@@ -220,6 +252,10 @@ export async function searchX(input:XSearchInput, context:XResearchContext): Pro
         httpHalt=http;
       }
       row.barrier={status:row.status,reason,observationId:null};
+    } finally {
+      // 这一行采集结束了 —— 正常收尾、取消、抛出都走这里。终态进度只发一次，且是**唯一**的来源：
+      // 卡片上的「搜索 N/M」分子就靠它（R81g）。`finally` 不是风格选择：抛出 / 取消的那一行同样要收尾。
+      reportXProgress(context,{section:'search',rowIndex:result.queries.indexOf(row),state:'stopped',phaseDetail:null,row});
     }
     if(row.status==='auth_required')halted='auth_required';
     else if(row.status==='rate_limited')halted='rate_limited';

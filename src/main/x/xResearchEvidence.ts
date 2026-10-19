@@ -12,6 +12,7 @@ import {
   projectLegacyXResult,
   type XLegacyProjection,
 } from './xResearchLegacy';
+import { deliveryResults, resultCallId, shellChainValid } from './xResearchTaskShell';
 import type {
   XArticleEntryIdentity,
   XResearchResult,
@@ -126,19 +127,10 @@ function evidenceDetails(raw: unknown): unknown {
   });
   return copy;
 }
-/** Only actual current-branch v2 tool results with a navigation receipt can bind a tab. */
-export function latestXResearchTab(branchEntries: readonly unknown[]): string | undefined {
-  let tab: string | undefined;
-  const envelope = z.object({type:z.literal('message'),message:z.object({role:z.literal('toolResult'),toolName:z.literal('x_research'),toolCallId:string,isError:z.literal(false),details:z.unknown()})});
-  const binding = z.object({browserTabId:string,operation:z.enum(['search','read']),queries:z.array(z.unknown()).optional(),targets:z.array(z.unknown()).optional()});
-  const row = z.object({location:z.object({committedNavigationOutcome:z.enum(['ok','ok_same_document','failed','cancelled','crashed','download','blocked','superseded','timeout'])})});
-  for(const raw of branchEntries) {
-    const e=envelope.safeParse(raw);if(!e.success) continue;
-    const canonical=canonicalSchema.safeParse(evidenceDetails(e.data.message.details)),b=binding.safeParse(e.data.message.details);
-    if(!canonical.success || !b.success || canonical.data.callId!==e.data.message.toolCallId) continue;
-    if((b.data.operation==='search'?b.data.queries:b.data.targets)?.some(value=>row.safeParse(value).success)) tab=b.data.browserTabId;
-  }
-  return tab;
+/** 一份结果的固定身份（spec §4.5 的交付幂等）：`runId` 是提交那一轮的、`callId` 是这次提交的
+ *  `submitCallId`、`batchId` 一次提交一个 —— 同一份结果被交付两次时带着同一组事实回来。 */
+function deliveryIdentity(result: {runId: string; batchId: string; callId: string}): string {
+  return JSON.stringify([result.runId, result.batchId, result.callId]);
 }
 type Canonical = z.infer<typeof canonicalSchema>;
 type Text = z.infer<typeof textSchema> | z.infer<typeof unscopedTextSchema>;
@@ -305,6 +297,13 @@ export class XResearchEvidence {
     root: XEvidenceObservation;
   }>[] = [];
   private legacy: XLegacyProjection[] = [];
+  /** 交付幂等（spec §4.5）：同一份结果被交付两次（崩溃窗口里的「再交一次」）不得在 records 里
+   *  变成两份。键是交付身份（`deliveryIdentity`），**只有身份、没有字节**：同一份提交的结果会在两个
+   *  时刻各裁一次（`settle` 按收尾那一刻的快照裁包络、重启后的交付按交付那一刻的快照裁），两次的
+   *  包络额度不同、字节就不同，而它们是同一次提交的同一批事实。按字节比会把这同一份结果收两遍。
+   *  `restore` 也把 transcript 里那份的身份记下：进程重开后它已经进了 records，同一份结果再交付
+   *  一次不会重复。 */
+  private readonly delivered = new Set<string>();
   constructor(
     private readonly cwd: string,
     private readonly currentRunId: () => string | null,
@@ -329,7 +328,15 @@ export class XResearchEvidence {
       throw new Error(
         'Invalid canonical X research result; no evidence recorded',
       );
+    if (!this.claimDelivery(parsed.data)) return;
     this.addCanonical(parsed.data, 'production', null);
+  }
+  /** 记下「这一份交付进过表了」，返回它是不是第一次。重复的那一次直接丢掉 —— 它带的是同一批事实。 */
+  private claimDelivery(result: Canonical): boolean {
+    const identity = deliveryIdentity(result);
+    if (this.delivered.has(identity)) return false;
+    this.delivered.add(identity);
+    return true;
   }
   /** Rebuild, rather than merge, so a changed branch cannot retain obsolete facts. */
   restore(branchEntries: readonly unknown[]): void {
@@ -340,6 +347,7 @@ export class XResearchEvidence {
     this.attachedLegacyRecords.clear();
     this.documentAliases = [];
     this.legacy = [];
+    this.delivered.clear();
     this.sources.clear();
     for (const raw of branchEntries) {
       const entry = z
@@ -357,82 +365,94 @@ export class XResearchEvidence {
         .safeParse(raw);
       if (!entry.success) continue;
       const { message: m, id } = entry.data;
-      const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(m.details);
-      if (restoration.success && m.toolCallId === restoration.data.callId && restoration.data.delivery?.articleObligationCoverage !== 'inline')
-        this.restorationGaps.push({runId:restoration.data.runId,order:++this.resultOrder});
-      const fresh = canonicalSchema.safeParse(evidenceDetails(m.details));
-      // A missing artifact cannot authorize omitted bodies. Independently retain
-      // well-formed rows/items from the recorded projection; no identity is filled in.
-      if (!fresh.success && m.details && typeof m.details === 'object' &&
-          'restoration' in m.details && (m.details.restoration as {status?:unknown})?.status === 'missing') {
-        const raw = evidenceDetails(m.details) as Record<string, unknown>;
-        const key = raw.operation === 'search' ? 'queries' : 'targets';
-        if (Array.isArray(raw[key])) for (const candidate of raw[key]) {
-          if (!candidate || typeof candidate !== 'object') continue;
-          const row = structuredClone(candidate);
-          const validTexts = (items: unknown) => Array.isArray(items) ? items.filter(p => textSchema.safeParse(p).success) : items;
-          if (key === 'queries') {
-            row.posts = validTexts(row.posts);
-            if (row.postObservations) row.postObservations = validTexts(row.postObservations);
-          } else {
-            if(row.quotedPosts) row.quotedPosts=validTexts(row.quotedPosts);
-            if(Array.isArray(row.bodyObservations)) row.bodyObservations=row.bodyObservations.filter((p:unknown)=>z.union([textSchema,unscopedTextSchema]).safeParse(p).success);
-            if (row.root && !textSchema.safeParse(row.root).success) row.root = null;
-            if (row.replies) row.replies.observations = validTexts(row.replies.observations);
-            if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;
+      const values = deliveryResults(m.details);
+      // 壳里没有结果：没有可引用的，也不是改造前的平铺结果。
+      if (!values || !values.length) continue;
+      // 壳自己的两轮对不上：恢复链不收它的结果，账本也不收 —— 否则一份错壳能喂出证据。
+      if (!shellChainValid(m.details)) continue;
+      // 归属判据跟着壳换：平铺比自己的 `callId`，壳比「交付那一轮」的 `deliveryCallId`。
+      const owner = resultCallId(m.details);
+      // 一次 `wait` 的每一条交付都是一份独立观察：逐条入账，不因为同批就并成一份。
+      for (const value of values) {
+        const restoration = z.object({...base,restoration:z.object({status:z.literal('missing')}),delivery:z.object({articleObligationCoverage:z.enum(['inline','not_inline']).optional()}).optional()}).safeParse(value);
+        if (restoration.success && m.toolCallId === owner && restoration.data.delivery?.articleObligationCoverage !== 'inline')
+          this.restorationGaps.push({runId:restoration.data.runId,order:++this.resultOrder});
+        const fresh = canonicalSchema.safeParse(evidenceDetails(value));
+        // A missing artifact cannot authorize omitted bodies. Independently retain
+        // well-formed rows/items from the recorded projection; no identity is filled in.
+        if (!fresh.success && value && typeof value === 'object' &&
+            'restoration' in value && (value.restoration as {status?:unknown})?.status === 'missing') {
+          const raw = evidenceDetails(value) as Record<string, unknown>;
+          const key = raw.operation === 'search' ? 'queries' : 'targets';
+          if (Array.isArray(raw[key])) for (const candidate of raw[key]) {
+            if (!candidate || typeof candidate !== 'object') continue;
+            const row = structuredClone(candidate);
+            const validTexts = (items: unknown) => Array.isArray(items) ? items.filter(p => textSchema.safeParse(p).success) : items;
+            if (key === 'queries') {
+              row.posts = validTexts(row.posts);
+              if (row.postObservations) row.postObservations = validTexts(row.postObservations);
+            } else {
+              if(row.quotedPosts) row.quotedPosts=validTexts(row.quotedPosts);
+              if(Array.isArray(row.bodyObservations)) row.bodyObservations=row.bodyObservations.filter((p:unknown)=>z.union([textSchema,unscopedTextSchema]).safeParse(p).success);
+              if (row.root && !textSchema.safeParse(row.root).success) row.root = null;
+              if (row.replies) row.replies.observations = validTexts(row.replies.observations);
+              if (row.article?.body && !textSchema.safeParse(row.article.body).success) row.article.body = null;
+            }
+            const subset = canonicalSchema.safeParse({...raw,[key]:[row]});
+            if (subset.success && (m.toolCallId === undefined || m.toolCallId === owner))
+              this.addCanonical(subset.data, 'history', id ?? null, false);
           }
-          const subset = canonicalSchema.safeParse({...raw,[key]:[row]});
-          if (subset.success && (m.toolCallId === undefined || m.toolCallId === subset.data.callId))
-            this.addCanonical(subset.data, 'history', id ?? null, false);
-        }
-        continue;
-      }
-      if (fresh.success) {
-        if (m.toolCallId !== undefined && m.toolCallId !== fresh.data.callId)
           continue;
-        this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
-        continue;
-      }
-      const projection = projectLegacyXResult(m.details);
-      this.legacy.push(projection);
-      for (const p of projection.posts) {
-        const record: XEvidenceObservation = {
-          ...p,
-          origin: 'history',
-          callId: m.toolCallId ?? null,
-          sessionEntryId: id ?? null,
-          articlePreviews: [],
-          truncation: null,
-        };
-        this.records.push(record);
+        }
+        if (fresh.success) {
+          if (m.toolCallId !== undefined && m.toolCallId !== owner)
+            continue;
+          // 这一份已经在 transcript 里了：记下它，之后同一份结果再交付一次不会被收进 records 第二遍。
+          if (!this.claimDelivery(fresh.data)) continue;
+          this.addCanonical(fresh.data, 'history', id ?? null, !restoration.success);
+          continue;
+        }
+        const projection = projectLegacyXResult(value);
+        this.legacy.push(projection);
+        for (const p of projection.posts) {
+          const record: XEvidenceObservation = {
+            ...p,
+            origin: 'history',
+            callId: m.toolCallId ?? null,
+            sessionEntryId: id ?? null,
+            articlePreviews: [],
+            truncation: null,
+          };
+          this.records.push(record);
 
-        if (projection.articles.some((a) => a.parent === p))
-          this.attachedLegacyRecords.add(record);
-        const source: XSourceReference = {
-          sourceKind: 'legacy_x_graphql',
-          urlKind: 'permalink',
-          sourceUrl: p.sourceUrl,
-          observationId: null,
-          rootObservationId: null,
-          observedAt: null,
-          containerKind: p.containerKind,
-          runId: null,
-          callId: m.toolCallId ?? null,
-          batchId: null,
-          sessionEntryId: id ?? null,
-          queryId: null,
-          query: null,
-          purpose: null,
-          product: null,
-        };
-        this.addSource(p.postId, source);
-        if (p.articlePreview)
-          this.previews.push({
-            parentUrl: p.sourceUrl,
-            postId: p.postId,
-            identity: null,
-            legacyRecord: record,
-          });
+          if (projection.articles.some((a) => a.parent === p))
+            this.attachedLegacyRecords.add(record);
+          const source: XSourceReference = {
+            sourceKind: 'legacy_x_graphql',
+            urlKind: 'permalink',
+            sourceUrl: p.sourceUrl,
+            observationId: null,
+            rootObservationId: null,
+            observedAt: null,
+            containerKind: p.containerKind,
+            runId: null,
+            callId: m.toolCallId ?? null,
+            batchId: null,
+            sessionEntryId: id ?? null,
+            queryId: null,
+            query: null,
+            purpose: null,
+            product: null,
+          };
+          this.addSource(p.postId, source);
+          if (p.articlePreview)
+            this.previews.push({
+              parentUrl: p.sourceUrl,
+              postId: p.postId,
+              identity: null,
+              legacyRecord: record,
+            });
+        }
       }
     }
   }

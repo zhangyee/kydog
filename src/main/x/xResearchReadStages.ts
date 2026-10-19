@@ -26,12 +26,14 @@ import { matchesXArticleParent } from './xResearchIdentity';
 import {
   collectFreshXPage,
   rememberSources,
+  reportXProgress,
   xScrollPauseMs,
   xHttpFailure,
   X_POST_READY_SELECTOR,
   type XResearchContext,
   type XCollectionBudget,
 } from './xResearchSearch';
+import type { XResearchWorkState } from '../../shared/xResearchTask';
 import type {
   XReadObservation,
   XReadRequest,
@@ -47,6 +49,22 @@ export interface XReadStage {
   actionIndex: number;
   attemptedControls: Set<string>;
   collectionBudget?: XCollectionBudget;
+  /** 这一行在本次提交里的序号与该行此刻所在的段落：只有任务侧的进度需要它们。
+   *  直接调采集助手的测试替身没有这两项 → 不报进度（采集结论与它们无关）。 */
+  rowIndex?: number;
+  phaseDetail?: 'root' | 'article' | 'return' | 'discussion';
+}
+/** 把一个阶段转移说给任务侧（spec §5.5）：`rowIndex` 缺失 = 没有任务在听，静默跳过。 */
+export function reportReadProgress(
+  context: XResearchContext,
+  stage: XReadStage,
+  row: XReadObservation,
+  state: XResearchWorkState,
+): void {
+  if (stage.rowIndex === undefined) return;
+  reportXProgress(context, {
+    section: 'read', rowIndex: stage.rowIndex, state, phaseDetail: stage.phaseDetail, row,
+  });
 }
 /** Only real successful navigation receipts establish an independent collection stage. */
 export function beginReadNavigation(
@@ -466,6 +484,7 @@ export async function collectPostFrame(
 ): Promise<XPageObservation> {
   checkReadCancelled(context);
   stage.current = 'collection';
+  reportReadProgress(context, stage, row, 'collecting');
   const observed = await collectFreshXPage(
     page,
     request,
@@ -498,6 +517,7 @@ export async function collectReadyPostFrame(
     observed.location.relation.postId !== 'different'
   ) {
     stage.current = 'wait';
+    reportReadProgress(context, stage, row, 'waiting');
     waitFailed = !(await page.wait(
       { selector: X_POST_READY_SELECTOR, state: 'present' },
       8000,
@@ -696,6 +716,7 @@ async function readNetworkDiscussion(
     }
     checkReadCancelled(context);
     stage.current = 'action';
+    reportReadProgress(context, stage, row, 'action');
     stage.actionIndex++;
     if (control) {
       const attempt = beginReplyExpansion(
@@ -835,6 +856,7 @@ async function readNetworkDiscussion(
     if (!arrived) {
       // Pause once for a slow batch, then scroll again rather than ending the target.
       stage.current = 'wait';
+      reportReadProgress(context, stage, row, 'waiting');
       await page.wait(
         { selector: X_POST_READY_SELECTOR, state: 'present' },
         xScrollPauseMs(),

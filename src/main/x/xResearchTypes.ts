@@ -1,8 +1,17 @@
 import type { XBudgetBinding } from './xResearchBudget';
 import type { NavigationObservation } from '../../shared/types';
-/** v2 observations describe rendered UI facts, never platform-wide completeness. */
-export type XResearchStatus = 'observed' | 'partial' | 'explicit_empty' | 'auth_required' | 'action_required' | 'rate_limited' | 'access_denied' | 'unavailable' | 'cancelled' | 'failed';
-export type XStopReason = 'explicit_ui_end' | 'cursor_exhausted' | 'source_unavailable' | 'budget_reached' | 'action_failed' | 'navigation_failed' | 'identity_unproven' | 'wait_timeout' | 'access_barrier' | 'cancelled' | 'agent_stopped';
+// `XResearchStatus` / `XStopReason` 归 shared（任务投影与采集层共用同一个词表）；这里 re-export
+// 保住采集层原有那批 `from './xResearchTypes'` 的 import，同时本文件内部继续可用。
+import type { XResearchStatus, XStopReason } from '../../shared/xResearchStatus';
+export type { XResearchStatus, XStopReason };
+// 工件身份同理归 shared（提交记录里存着它，重启后的交付靠它读回结果）：这里 re-export 保住
+// 采集层原有那批 `XArtifactRef` import。
+import type { XArtifactRef } from '../../shared/xArtifactRef';
+export type { XArtifactRef };
+// scope 事实同理归 shared（提交记录里存着它们，重启后的交付靠它们补回序列化时才算出来的事实）：
+// 这里 re-export 保住采集层与序列化那批 import。
+import type { XReportRunScopeFacts, XReportScopeFacts } from '../../shared/xReportScopeFacts';
+export type { XReportRunScopeFacts, XReportScopeFacts };
 export type XFactRelation = 'same' | 'different' | 'unknown';
 export interface XLocationRelation {
   origin: XFactRelation;
@@ -339,33 +348,7 @@ export interface XReadDiagnostics {
   scroll?: { totalAttempts: number; first?: XScrollReceiptDiagnostic; last?: XScrollReceiptDiagnostic; omittedAttempts: number };
   pointerFailure?: { actionIndex: number; targetPostId: string; controlKind: 'replies_expand'; sourceRelation: 'same_cell' | 'focal_contains_control' | 'control_contains_focal' | 'different_cell' | 'unknown'; diagnostic: import('../browser/pointerDiagnostic').PointerFailureDiagnostic };
 }
-/** Exact counts for this one serialized tool call. Unknown reason values include
- * absent reasons and unclassified text; they must never become report prose. */
-export interface XReportScopeFacts {
-  version: 1;
-  operation: 'search' | 'read';
-  reasonSource: 'barrier.reason' | 'reason';
-  totalRows: number;
-  statusCounts: Partial<Record<XResearchStatus, number>>;
-  stopReasonCounts: Partial<Record<XStopReason, number>>;
-  reasonCounts: Record<string, number>;
-  replyScopeCounts: Partial<Record<'unknown'|'ui_scope_end_observed'|'cursor_exhausted', number>>;
-}
-/** Distinct actual calls on the current branch/run; no source or citation authority. */
-export interface XReportRunScopeFacts {
-  version: 1;
-  runId: string;
-  callCount: number;
-  unavailableCallCount: number;
-  search: XReportScopeFacts;
-  read: XReportScopeFacts;
-}
 export type XArtifactFailureCode = 'reference' | 'path' | 'read' | 'write' | 'integrity' | 'canonical';
-export interface XArtifactRestorationSummary {
-  scope: 'current_branch';
-  missingCalls: number;
-  reasonCounts: Partial<Record<XArtifactFailureCode, number>>;
-}
 export interface XDelivery {
   /** Exact coverage of Article obligations, independent of body omission counts. */
   articleObligationCoverage?: 'inline' | 'not_inline';
@@ -380,7 +363,6 @@ interface XResultBase {
   artifact?: XArtifactRef;
   delivery?: XDelivery;
   restoration?: {status: 'missing'; reason: XArtifactFailureCode};
-  artifactRestoration?: XArtifactRestorationSummary;
   schemaVersion: 2;
   reportScopeFacts?: XReportScopeFacts;
   reportRunScopeFacts?: XReportRunScopeFacts;
@@ -404,15 +386,4 @@ export type XResearchResult = XResultBase & (
 );
 export const X_RESEARCH_MAX_OUTPUT_BYTES = 1024 * 1024;
 
-/** Opaque application-owned artifact identity; never an arbitrary filesystem path. */
-export interface XArtifactRef {
-  version: 1;
-  directoryId: string;
-  manifest: 'manifest.json';
-  sha256: string;
-  bytes: number;
-  runId: string;
-  callId: string;
-  batchId: string;
-  operation: 'search' | 'read';
-}
+

@@ -1,4 +1,4 @@
-import type { XReadObservation, XReadRequest, XResearchInput } from './xResearchTypes';
+import type { XReadObservation, XReadRequest, XSearchRequest } from './xResearchTypes';
 
 export type XBudgetDimension = 'posts' | 'replies' | 'scrolls' | 'expands' | 'network_pages';
 export interface XBudgetLimit { limit: number; origin: 'default' | 'explicit' | 'safety' }
@@ -7,8 +7,15 @@ export type XBudgetPolicy = Partial<Record<XBudgetDimension, XBudgetLimit>>;
 export const X_RESEARCH_MAX_BUDGET = 1000;
 const dimensionOrder: readonly XBudgetDimension[] = ['posts', 'replies', 'scrolls', 'expands', 'network_pages'];
 
+/** 预算来源只看「这次提交是哪一支、各维度写没写」，与标签页无关 —— 所以动作面的
+ *  `parseXResearchWork`（`read` 可以不带 `tabId`，spec §4.3）也能直接传进来。
+ *  `XResearchInput` 是它的子类型。 */
+export type XBudgetPolicyInput =
+  | { search: XSearchRequest; read?: never }
+  | { read: XReadRequest; search?: never };
+
 /** Input is already validated. Presence, never numeric equality, identifies an override. */
-export function resolveXBudgetPolicy(raw: unknown, input: XResearchInput): XBudgetPolicy {
+export function resolveXBudgetPolicy(raw: unknown, input: XBudgetPolicyInput): XBudgetPolicy {
   const source = raw as { search?: object; read?: object };
   const own = input.search ? source.search : source.read;
   const limit = (key: string, value: number): XBudgetLimit => ({ limit: value, origin: own && Object.hasOwn(own, key) ? 'explicit' : 'default' });
@@ -39,7 +46,7 @@ export function sampleXEntries<T extends { postId: string }>(items: readonly T[]
 }
 /** Direct callers supplied parsed values explicitly; they carry no raw default provenance. */
 export function bindXReadBudgets(row: XReadObservation, limits: XReadRequest, policy: XBudgetPolicy | undefined, dimensions: readonly XBudgetDimension[], sampledEntries?: number): XBudgetBinding[] {
-  const effective = policy ?? resolveXBudgetPolicy({ read: limits }, { tabId: '', read: limits });
+  const effective = policy ?? resolveXBudgetPolicy({ read: limits }, { read: limits });
   const reached = reachedXBudgets(effective, { replies: sampledEntries ?? new Set([...row.replies.observations,...(row.unscopedPosts?.observations??[])].map(item => item.postId)).size, scrolls: row.budgetUsage.scrolls, expands: row.budgetUsage.expandActions }, dimensions);
   if (reached.length) {
     const bindings = new Map((row.budgetBinding ?? []).map(binding => [binding.dimension, binding]));

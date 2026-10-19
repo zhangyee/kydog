@@ -75,7 +75,9 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
   const page={collect,act,wait:vi.fn(async()=>{if(options.afterWaitIndex!==undefined) index=options.afterWaitIndex;return options.wait??true;}),location:()=>({currentUrl:url,documentEpoch:3,routeRevision:revision,navigationSequence:sequence,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url})} as unknown as XQueuedPage;
   const open=vi.fn(async (requested:string,tabId?:string)=>{
     url=options.finalUrl?.(requested)??requested; index=0;readProof=undefined;
-    return {tabId:tabId??'research-tab',evicted:[],nav:{requestedUrl:requested,outcome:{kind:'ok',finalUrl:url}}};
+    // 与生产同形（`browserService.open`）：空串 = 「没有页」→ 真开一张并把**新 id** 返回。
+    // 原样回 `''` 会让「开出来的页下一行还在用」这件事在替身里永远测不出来（C1 那类假件）。
+    return {tabId:tabId||'research-tab',evicted:[],nav:{requestedUrl:requested,outcome:{kind:'ok',finalUrl:url}}};
   });
   const browser={open,withPage:vi.fn(async (_id:string,_signal:unknown,work:(p:XQueuedPage)=>Promise<unknown>)=>work(page))} as unknown as XResearchBrowser;
   const context:XResearchContext={browser,threadId:'thread',runId:'run',callId:'call',batchId:'batch',sources:new Map()};

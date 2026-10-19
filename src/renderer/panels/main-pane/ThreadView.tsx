@@ -7,6 +7,7 @@ import { NewThreadEmptyState } from './NewThreadEmptyState';
 import { ThreadBreadcrumb } from './ThreadBreadcrumb';
 import { QuestionComposer } from './QuestionComposer';
 import { useAskStore } from '../../stores/askStore';
+import { useXResearchTaskStore } from '../../stores/xResearchTaskStore';
 import { ErrorMarginalia } from './ErrorMarginalia';
 import { ingestFiles } from './composerIngest';
 import { JumpToLatest } from './JumpToLatest';
@@ -41,7 +42,21 @@ export function ThreadView({ threadId }: { threadId: string }) {
     if (messages !== undefined || error !== null) return;
     let cancelled = false;
     void window.kydog.invoke('thread.loadHistory', { threadId })
-      .then((msgs) => { if (!cancelled) initHistory(threadId, msgs); })
+      .then((msgs) => {
+        if (cancelled) return;
+        initHistory(threadId, msgs);
+        // 研究快照不在 journal 里（主进程的 x research 服务另存一份），所以开对话时补拉一次整批。
+        // 之后靠 `xResearch.taskUpdated` 广播跟。**不 await**：这几行不是「对话能不能打开」的
+        // 前提，拉慢或不拉（卡自己会用 `taskGet` 补）都不该挡住宿主。失败一并吞掉 —— 未接线时
+        // 服务答空列表，闸门拒绝 / 接线回归才会真抛，那些时候对话照样得开。
+        // 每次开对话只拉一次：这个 effect 只在 `messages === undefined` 时走到这里，
+        // 而 StrictMode 那次双调用里，第一轮在 promise 落地前就被 cleanup 掉（cancelled）。
+        void window.kydog.invoke('xResearch.taskList', { threadId })
+          .then((list) => useXResearchTaskStore.getState().replaceThread(threadId, list))
+          .catch(() => {
+            /* 见上：拉不到就只是这几张卡先空着。 */
+          });
+      })
       .catch((err: unknown) => {
         // 这条以前只有 .then 没有 .catch：RPC 一失败就变成 unhandled rejection，
         // 界面永远停在「加载中…」，什么都不说。session 建不出来（模型配错、fixture

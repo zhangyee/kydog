@@ -11,6 +11,8 @@ import { useIdentityStore } from '../../stores/identityStore';
 import { groupBlocks } from './groupBlocks';
 import { collectFileCards } from './fileCards';
 import { ResearchTaskCard } from './ResearchTaskCard';
+import { XResearchProgressCard } from './XResearchProgressCard';
+import type { XResearchTaskAnchor } from './xResearchTaskAnchor';
 
 /**
  * `settled`：这条消息**本轮已经结束**了吗。
@@ -31,16 +33,19 @@ type Props = {
   settled: boolean;
   createdAt?: string;
   researchTaskRunIds?: ReadonlySet<string>;
+  /** 这一条消息上要挂的 X 研究卡（一个回合一张，见 `xResearchTaskAnchor`）。 */
+  xResearchAnchors?: readonly XResearchTaskAnchor[];
 };
 
 export function AssistantMessage({ threadId, messageId, blocks, settled, createdAt,
-  researchTaskRunIds }: Props) {
+  researchTaskRunIds, xResearchAnchors }: Props) {
   const projectPath = useThreadsStore((s) => {
     const t = Object.values(s.threadsByProject).flat().find((x) => x.id === threadId);
     return t?.projectPath ?? null;
   });
   const agentName = useIdentityStore((s) => s.agentName);
-  const groups = useMemo(() => groupBlocks(blocks, researchTaskRunIds), [blocks, researchTaskRunIds]);
+  const groups = useMemo(() => groupBlocks(blocks, researchTaskRunIds, xResearchAnchors),
+    [blocks, researchTaskRunIds, xResearchAnchors]);
   // 卡片延到本轮结束才出。
   //
   // 落盘那一刻就出卡片的话，用户点开的是半成品：learning-deck 的模板是 `cp` 之后
@@ -86,6 +91,10 @@ export function AssistantMessage({ threadId, messageId, blocks, settled, created
           if (g.kind === 'research_task') {
             return <ResearchTaskCard key={`research-${g.researchRunId}`} threadId={threadId}
               researchRunId={g.researchRunId} />;
+          }
+          if (g.kind === 'x_research') {
+            return <XResearchProgressCard key={`x-research-${g.groupKey}`} threadId={threadId}
+              groupKey={g.groupKey} researchRunIds={g.researchRunIds} />;
           }
           if (g.kind === 'report_file') {
             return <FileCard key={`report-${i}`} path={g.path} projectPath={projectPath} size={null} />;

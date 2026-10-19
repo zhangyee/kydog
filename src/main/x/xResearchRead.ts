@@ -8,6 +8,7 @@ import {
   collectReadyPostFrame,
   expandPostBody,
   readDiscussion,
+  reportReadProgress,
   savePostFrame,
   retainReadBody,
   type XReadStage,
@@ -26,6 +27,7 @@ import {
   locationFacts,
   rememberSources,
   navigationUrl,
+  reportXProgress,
   xHttpFailure,
   type XResearchContext,
 } from './xResearchSearch';
@@ -157,6 +159,8 @@ export async function readX(
       current: 'navigation',
       actionIndex: 0,
       attemptedControls: new Set(),
+      rowIndex: index,
+      phaseDetail: 'root',
     };
     let returnToParent = false;
     // Every exit, including unvisited targets and navigation receipts, synchronizes scope in finally.
@@ -203,9 +207,13 @@ export async function readX(
         continue;
       }
       row.postId = id;
+      reportReadProgress(context, stage, row, 'navigating');
+      // 每个目标都落在**同一张页**上：第一次没有页时由 `open` 开一张（`''` 就是「没有页」，R81e），
+      // 之后用第一张返回的 id —— 否则 N 个目标会开 N 张标签页，撞上 agent 页上限后挤掉科研自己的页
+      // （search 侧一直是这样写的：`result.browserTabId || undefined`）。
       const opened = await context.browser.open(
         source,
-        input.tabId,
+        result.browserTabId || input.tabId,
         context.signal,
         {stage:'post',expectedUrl:source,postId:id,collectReplies:input.read.includeReplies&&input.read.maxRepliesPerPost>0},
       );
@@ -345,6 +353,7 @@ export async function readX(
           )
             return;
           if (row.root?.truncation.truncated) row.status = 'partial';
+          stage.phaseDetail = 'article';
           const article = await readArticle(
             page,
             observed,
@@ -361,6 +370,7 @@ export async function readX(
           )
             return;
           // An attempted entry can mutate its DOM even when native safety rejects it.
+          stage.phaseDetail = 'discussion';
           if (row.article.actionAttempted)
             observed = await collectPostFrame(
               page,
@@ -391,6 +401,8 @@ export async function readX(
           row.stopReason = 'identity_unproven';
         } else {
           stage.current = 'navigation';
+          stage.phaseDetail = 'return';
+          reportReadProgress(context, stage, row, 'navigating');
           const returned = await context.browser.open(
             parentUrl,
             opened.tabId,
@@ -449,6 +461,7 @@ export async function readX(
                     return;
                   }
                   if (!saved) return;
+                  stage.phaseDetail = 'discussion';
                   await readDiscussion(
                     page,
                     observed,
@@ -530,6 +543,11 @@ export async function readX(
     } finally {
       row.replies.scope.stopReason = row.stopReason;
       row.collectionStop = {status:row.status,stopReason:row.stopReason,reason:row.reason};
+      // 这一行采集结束了（正常收尾、跳过、取消、抛出都走这里）：终态进度是卡片上「读取 N/M」分子的
+      // 唯一来源（R81g）。`phaseDetail: null` —— 行已收尾，没有「此刻在哪一段」可说。
+      reportXProgress(context, {
+        section: 'read', rowIndex: index, state: 'stopped', phaseDetail: null, row,
+      });
     }
   }
   const network=result.targets.some(row=>row.identity?.state==='proven'||row.root?.sourceKind==='page_graphql'||!!row.networkPages?.length||!!row.unscopedPosts?.observations.some(p=>p.sourceKind==='page_graphql'));
