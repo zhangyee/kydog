@@ -649,6 +649,44 @@ describe('XResearchProgressCard', () => {
     expect(rows(merged[0])).toHaveLength(2);
   });
 
+  it('turns a normal stop reason into words, keeps an unknown code raw, and does not say one thing twice', async () => {
+    // 现场（R87）：读取行显示「部分 根帖 + 1 回复 无文章入口 reply_ui_end」—— `reply_ui_end` 是
+    // 「回复区已经到底了」这个范围事实，原样印出来像一条报错。
+    const rows: XResearchWorkItem[] = [
+      workItem({ section: 'read', label: 'https://x.com/acme/status/19701', state: 'stopped',
+        status: 'partial', hasRoot: true, replies: 1, article: 'absent',
+        stopReason: 'explicit_ui_end', reason: 'reply_ui_end' }),
+      // 对照一：不认识的代码照原样给 —— 不替它编意思。
+      workItem({ section: 'read', label: 'https://x.com/acme/status/19702', state: 'stopped',
+        status: 'partial', hasRoot: true, article: 'absent', reason: 'some_future_code' }),
+      // 对照二：文章入口那一条已经由文章态说了，不再印一遍 `no_entry_observed`。
+      workItem({ section: 'read', label: 'https://x.com/acme/status/19703', state: 'stopped',
+        status: 'partial', hasRoot: true, article: 'absent', reason: 'no_entry_observed' }),
+    ];
+    const onlyRead = snapshot({
+      search: [], read: rows,
+      counts: { submissions: 1, queued: 0, running: 0, done: 0, failed: 1, cancelled: 0,
+        interrupted: 0, posts: 0, replies: 2, articles: 0, undelivered: 0,
+        searchDone: 0, searchTotal: 0, readDone: 3, readTotal: 3 },
+    });
+    useXResearchTaskStore.setState({ snapshotsByRunId: { 'xrun-a': onlyRead } });
+    invoke.mockResolvedValue(onlyRead);
+    const mounted = mount(XResearchProgressCard, props);
+    await mounted.settle();
+    const text = visibleText(mounted.find('x-research-card'));
+    const rowText = (post: string) => findAllWhere(mounted.tree,
+      (el) => el.props['data-testid'] === 'x-research-row').map(visibleText)
+      .find((one) => one.includes(post))!;
+    expect(rowText('19701')).toContain('回复已到底');
+    expect(rowText('19701')).not.toContain('reply_ui_end');
+    // 文章态照旧说事实：无文章入口（不是「文章失败」）。
+    expect(rowText('19701')).toContain('无文章入口');
+    expect(rowText('19702')).toContain('some_future_code');
+    expect(rowText('19703')).not.toContain('no_entry_observed');
+    expect(rowText('19703')).toContain('无文章入口');
+    expect(text).toContain('回复已到底');
+  });
+
   it('says 无文章入口 for a page that has no article, and 文章失败 only for a real refusal', async () => {
     // 现场（R84）：`includeArticle: true` 的读取里，普通帖子逐条显示「文章失败 no_entry_observed」。
     // 「没看到入口」是观察事实，不是取失败；同一条用例里放一个真的拒绝，证明 `failed` 没有被改宽。

@@ -50,6 +50,25 @@ const ROW_STYLE: CSSProperties = {
 const MARK_STYLE: CSSProperties = { color: 'var(--color-ink-faint)', flex: '0 0 auto' };
 const ROW_LABEL_STYLE: CSSProperties = { flex: '0 1 auto', minWidth: 0, maxWidth: 240 };
 const SOFT_STYLE: CSSProperties = { color: 'var(--color-ink-soft)', flex: '0 0 auto' };
+/** 停下来的原因里，有几个是**正常的范围事实**（收完了、到底了、等超时了），不是故障。
+ *  它们在盘上是代码（`reply_ui_end` 这类），原样印在卡上就像一条报错 —— 这里只翻译**我们说得准**的
+ *  那几个；不认识的代码照原样显示，绝不替它编一个意思（与 `stateNote` 同一条规矩）。 */
+const REASON_WORD: Record<string, string> = {
+  reply_ui_end: '回复已到底',
+  reply_readiness_timeout: '等回复超时',
+  post_wait_timeout: '等帖子超时',
+  article_body_wait_timeout: '等文章正文超时',
+  article_budget_reached: '文章预算用尽',
+  article_navigation_failed: '文章导航失败',
+  body_expand_budget_reached: '展开预算用尽',
+  reply_budget_reached: '回复预算用尽',
+  direct_article_discussion_unobserved: '没观察到文章的讨论区',
+  parent_return_identity_unproven: '回主帖后身份没证成',
+  parent_return_navigation_failed: '回主帖失败',
+  unsafe_target_url: '目标地址不可用',
+  unresolved_target: '目标在本轮来源表里解析不出来',
+};
+
 const REASON_STYLE: CSSProperties = {
   flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
   color: 'var(--color-ink-soft)',
@@ -226,6 +245,13 @@ function groupState(segments: readonly XResearchTaskSnapshot[]): XResearchTaskSt
 /** 分段头：段号 + 该段的终态（含 R81a 的取消归因）+ 该段的目标。两种画法（按目标 / 按研究）共用它：
  *  段头只有一种说法。空段（一行都没有）也要画这个头 —— 段数要数得出来，而「这一段没有行」本身就是
  *  该段的结论。 */
+/** 行上那句原因：认识的代码翻成人话，不认识的原样给。文章入口那一条已经由文章态说了
+ *  （`无文章入口` / `文章失败`），再印一遍 `no_entry_observed` 只是同一件事说两次。 */
+function reasonWord(reason: string, article: XResearchWorkItem['article']): string | null {
+  if (reason === 'no_entry_observed' && article === 'absent') return null;
+  return REASON_WORD[reason] ?? reason;
+}
+
 function segmentHeaderElement(index: number, state: XResearchTaskState, objective: string,
   note: string | null) {
   // 第一段的目标**不再重复**：卡头副标题取的就是最早一段的 objective（R10），两处印同一句话
@@ -465,7 +491,8 @@ function searchRowElement(row: XResearchWorkItem, index: number) {
       {counted && <span style={SOFT_STYLE}>采集 {row.posts} 帖</span>}
       {counted && row.omitted > 0 && <span style={SOFT_STYLE}>略过 {row.omitted} 条</span>}
       {counted && row.pages > 0 && <span style={SOFT_STYLE}>{row.pages} 页响应</span>}
-      {row.reason && <span style={REASON_STYLE}>{row.reason}</span>}
+      {row.reason && reasonWord(row.reason, row.article) !== null &&
+        <span style={REASON_STYLE}>{reasonWord(row.reason, row.article)}</span>}
     </div>
   );
 }
@@ -502,7 +529,8 @@ function readRowElement(row: XResearchWorkItem, index: number) {
       {/* 文章四态是提交时就声明过的义务（没要 / 要了），起跑前就说得出，不依赖 `started`。 */}
       <span style={SOFT_STYLE}>{articleWord}</span>
       {active && <span style={SOFT_STYLE}>展开 {row.expandActions} · 滚动 {row.scrolls}</span>}
-      {row.reason && <span style={REASON_STYLE}>{row.reason}</span>}
+      {row.reason && reasonWord(row.reason, row.article) !== null &&
+        <span style={REASON_STYLE}>{reasonWord(row.reason, row.article)}</span>}
     </div>
   );
 }
