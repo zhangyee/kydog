@@ -150,6 +150,17 @@ describe('x_research submit', () => {
     expect(submitted.snapshot.search).toHaveLength(1);
   });
 
+  it('treats a null payload as absent instead of rejecting the call', async () => {
+    // 现场（R88）：模型发 `{"action":"submit","read":null, <一份合法的 search>}`，被 schema 拒了
+    // （`read: must be object`），白掉一轮。`null` 在 JSON 里就是「这一次不用这个载荷」的意思。
+    const { tool } = harness(echoSearch);
+    const submitted = envelopeOf(await execute(tool, { action: 'submit', read: null, search: searchArgs() }));
+    expect(submitted.snapshot.search).toHaveLength(1);
+    // 翻面：两支都是 null 就是「什么都没给」，仍按「必须给一支」拒（不把 null 变成一个合法载荷）。
+    await expect(execute(tool, { action: 'submit', search: null, read: null }))
+      .rejects.toThrow('exactly one of search/read');
+  });
+
   it('rejects out-of-bounds requests before they are queued', async () => {
     const { tool, service } = harness(echoSearch);
     const submit = vi.spyOn(service, 'submit');

@@ -30,8 +30,10 @@ export const XResearchParameters = Type.Object({
   action: Type.Union([Type.Literal('submit'), Type.Literal('wait'), Type.Literal('inspect'), Type.Literal('cancel')], { description: 'submit queues work and returns at once; wait blocks until the queue is idle and delivers every finished submission that has not been delivered yet, packed into one result up to the 1 MiB budget; inspect pages through rows/deliveries/failures; cancel is the only control (there is no pause/resume).' }),
   researchRunId: Type.Optional(nonempty),
   tabId: Type.Optional(nonempty),
-  search: Type.Optional(Search),
-  read: Type.Optional(Read),
+  // `null` 与「没写」同义：模型用它表示「这一次不用这个载荷」，而 `Type.Optional` 只放过缺省。
+  // 现场因为 `read: null` 被拒了一整轮（`read: must be object`），而它要的是一次纯 search。
+  search: Type.Optional(Type.Union([Search, Type.Null()])),
+  read: Type.Optional(Type.Union([Read, Type.Null()])),
   view: Type.Optional(Type.Union([Type.Literal('rows'), Type.Literal('deliveries'), Type.Literal('failures')], { description: 'inspect only: work-item rows, one entry per submission with its delivery mark, or the concluded failures.' })),
   cursor: Type.Optional(nonempty),
   pageSize: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
@@ -90,7 +92,8 @@ export type XResearchToolsDeps = {
 
 async function submit(args: Record<string, unknown>, deps: XResearchToolsDeps) {
   const workArgs: Record<string, unknown> = {};
-  for (const key of WORK_KEYS) if (Object.hasOwn(args, key)) workArgs[key] = args[key];
+  // `null` 就是「没写」（见 schema 那条注释）：不把 null 交给解析层，否则它会说「read 必须是对象」。
+  for (const key of WORK_KEYS) if (args[key] !== null && Object.hasOwn(args, key)) workArgs[key] = args[key];
   const work = parseXResearchWork(workArgs);
   // 与 runner 里 `browserFor` 之前那一句是同一个 helper：请求越界要在**入队之前**拒。排进队列
   // 才拒的话，抛出会被 `run` 的 catch 收成一条 `interrupted` 的提交，模型看到的是泛化失败，

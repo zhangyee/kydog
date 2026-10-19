@@ -95,7 +95,8 @@ describe('x_research DeepSeek provider request', () => {
           { const: 'submit' }, { const: 'wait' }, { const: 'inspect' }, { const: 'cancel' },
         ] },
         tabId: { type: 'string', minLength: 1 },
-        search: { type: 'object', additionalProperties: false, properties: {
+        // `search` / `read` 现在是「对象或 null」：`null` 就是「这一次不用这个载荷」（R88）。
+        search: { anyOf: [{ type: 'object', additionalProperties: false, properties: {
           objective: { type: 'string', minLength: 1 },
           queries: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'object', additionalProperties: false,
             required: ['id', 'query', 'purpose', 'product'], properties: {
@@ -104,8 +105,8 @@ describe('x_research DeepSeek provider request', () => {
             } } },
           maxPostsPerQuery: { type: 'integer', minimum: 0, maximum: 1000 },
           maxScrollsPerQuery: { type: 'integer', minimum: 0, maximum: 1000 },
-        }, required: ['objective', 'queries'] },
-        read: { type: 'object', additionalProperties: false, properties: {
+        }, required: ['objective', 'queries'] }, { type: 'null' }] },
+        read: { anyOf: [{ type: 'object', additionalProperties: false, properties: {
           objective: { type: 'string', minLength: 1 },
           targets: { type: 'array', minItems: 1, maxItems: 20, items: { anyOf: [
             { type: 'object', additionalProperties: false, properties: { postId: { type: 'string', pattern: '^[0-9]+$' } }, required: ['postId'] },
@@ -114,7 +115,7 @@ describe('x_research DeepSeek provider request', () => {
           maxRepliesPerPost: { type: 'integer', minimum: 0, maximum: 1000 },
           maxScrollsPerPost: { type: 'integer', minimum: 0, maximum: 1000 },
           maxExpandActionsPerPost: { type: 'integer', minimum: 0, maximum: 1000 },
-        }, required: ['objective', 'targets'] },
+        }, required: ['objective', 'targets'] }, { type: 'null' }] },
       },
     });
     expect(Object.keys(schema)).not.toContain('anyOf');
