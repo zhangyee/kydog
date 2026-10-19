@@ -821,7 +821,8 @@ test.describe('x research task protocol closure (offline)', () => {
     await expectOneCardPerRun();
 
     // 同一段研究的第二次提交：卡头不换题（R10），两轮的行数各算各的。读取提交带的是自己的
-    // objective，所以它是**第二个段**的第一轮 —— 轮号在段内从 1 起，不是接着搜索那一段数。
+    // objective，所以它是**第二个段**的第一轮；轮号却是整张卡的第 2 轮 —— 用户数的是「这张卡
+    // 的第几次提交」，不是每一段里的第几次。动词是「读取」：换了目标，这一轮不是上一轮的补充。
     const readRun = await run([call('x_research', { action: 'submit', researchRunId: submitted.researchRunId, ...readArgs(rootUrl) })]);
     expect(envelope(readRun[0]).snapshot.objective).toBe(LIFECYCLE_OBJECTIVE);
     await expect(card).toHaveAttribute('data-status', 'running');
@@ -829,7 +830,8 @@ test.describe('x research task protocol closure (offline)', () => {
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveText('第 1 轮 · 搜索 2 个 query · 每 query ≤ 3 帖');
     await expect(rounds.nth(1)).toHaveAttribute('data-operation', 'read');
-    await expect(rounds.nth(1)).toHaveText('第 1 轮 · 读取 1 个目标');
+    await expect(rounds.nth(1)).toHaveAttribute('data-round', '2');
+    await expect(rounds.nth(1)).toHaveText('第 2 轮 · 读取 1 个目标');
     await expect(card.locator('[data-testid="x-research-row"][data-section="search"]')).toHaveCount(2);
     await expect(card.locator('[data-testid="x-research-row"][data-section="read"]')).toHaveCount(1);
     // 两次提交是两轮、两条消息，卡只有一张，而且停在最后一条（也就是刚提到它的那条）里。
@@ -1063,7 +1065,8 @@ test.describe('x research task protocol closure (offline)', () => {
       protocol.search[0]!.submissionId, protocol.search[0]!.submissionId, protocol.search[2]!.submissionId,
     ]);
 
-    // 卡上：两个轮次头，各自说这一轮带出来几项；第一轮说 query 数，第二轮说「补搜」。
+    // 卡上：两个轮次头，各自说这一轮带出来几项；第一轮说 query 数，第二轮说「补搜」——
+    // 第二份提交的 objective 与第一份相同，所以它是补充，轮号接着数到 2。
     const rounds = card.getByTestId('x-research-round');
     await expect(rounds).toHaveCount(2);
     await expect(rounds.nth(0)).toHaveAttribute('data-operation', 'search');

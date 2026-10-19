@@ -481,23 +481,26 @@ describe('XResearchProgressCard', () => {
   const roundsOf = (parts: ReturnType<typeof roundPart>[], section: 'search' | 'read') =>
     parts.filter((part) => part.round.operation === section).flatMap((part) => part.rows);
 
-  it('reads as three levels in the field shape: segments are 1. 2. and rows are circled within each segment', async () => {
-    // 用户在现场看到的形状：一段 6 个 query 收完，接着一段新目标 1 个 query。修复前两段都画「搜索」
-    // 节标题、段头与行又都是圈号，卡上同时出现两个「搜索」与两个 ① ——「搜索① ② ③…后面又是搜索①」。
+  it('reads as three levels in the field shape: segments are 1. 2. and round numbers continue across them', async () => {
+    // 现场形状：一段 5 个 query 收完（每 query ≤ 60 帖），接着一段新目标 3 个 query（≤ 40 帖）。
+    // 用户在这里问过「这里不是应该叫第 2 轮？」—— 轮号数的是**整张卡**里的第几次提交，不是每一段
+    // 里的第几次；这一轮换了目标，所以动词是「搜索」，不是「补搜」。
     const parts = [
       roundPart('sub-field-a', 'search', '目标 A：macOS 轻量虚拟化',
-        ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'], { postsCap: 150 }),
-      // 第二轮只收 25 帖：上限由模型自己定（R85），卡上要把这个数印出来，读者才知道 150 与 25 的差别。
-      roundPart('sub-field-b', 'search', '目标 B：补读引信', ['q7'], { postsCap: 25 }),
+        ['q1', 'q2', 'q3', 'q4', 'q5'], { postsCap: 60 }),
+      roundPart('sub-field-b', 'search', '补缺口：定位那段表述的原始出处',
+        ['q6', 'q7', 'q8'], { postsCap: 40 }),
+      // 第三轮又换了一个目标：轮号接着数到 3，动词仍是「搜索」—— 词跟着目标走，不跟着轮号走。
+      roundPart('sub-field-c', 'search', '目标 C：另一个问题', ['q9', 'q10'], { postsCap: 40 }),
     ];
     const field = snapshot({
       researchRunId: 'xrun-field', runId: 'turn-field', objective: '目标 A：macOS 轻量虚拟化',
       state: 'completed',
       rounds: parts.map((part) => part.round),
       search: roundsOf(parts, 'search'), read: [],
-      counts: { submissions: 2, queued: 0, running: 0, done: 7, failed: 0, cancelled: 0,
-        interrupted: 0, posts: 70, replies: 0, articles: 0, undelivered: 0,
-        searchDone: 7, searchTotal: 7, readDone: 0, readTotal: 0 },
+      counts: { submissions: 3, queued: 0, running: 0, done: 10, failed: 0, cancelled: 0,
+        interrupted: 0, posts: 100, replies: 0, articles: 0, undelivered: 0,
+        searchDone: 10, searchTotal: 10, readDone: 0, readTotal: 0 },
     });
     useXResearchTaskStore.getState().upsert(field);
     invoke.mockResolvedValue(field);
@@ -508,25 +511,37 @@ describe('XResearchProgressCard', () => {
 
     const segments = findAllWhere(mounted.tree,
       (element) => element.props['data-testid'] === 'x-research-segment');
-    expect(segments).toHaveLength(2);
+    expect(segments).toHaveLength(3);
     // 段头之后只有轮次头与它的行：轮次头说操作与行数，行号在段内连续数下去。
     expect(rowsAndRounds(segments[0]).map((level) => level.text)).toEqual([
-      '第 1 轮 · 搜索 6 个 query · 每 query ≤ 150 帖',
+      '第 1 轮 · 搜索 5 个 query · 每 query ≤ 60 帖',
       '①q1收完采集 10 帖', '②q2收完采集 10 帖', '③q3收完采集 10 帖',
-      '④q4收完采集 10 帖', '⑤q5收完采集 10 帖', '⑥q6收完采集 10 帖',
+      '④q4收完采集 10 帖', '⑤q5收完采集 10 帖',
     ]);
-    // 第二段的行从 ① 重新起（对照：不是接着上一段数到 ⑦）—— 段头 2. 才是它的序号。
-    expect(rowsAndRounds(segments[1]).map((level) => level.text))
-      .toEqual(['第 1 轮 · 搜索 1 个 query · 每 query ≤ 25 帖', '①q7收完采集 10 帖']);
-    // 上限是每轮自己说的：两段的轮头印的是各自的数（150 / 25），不是全局一个值。
+    // 第二段的轮号接着上一段数（不是又从 1 起），动词是「搜索」（换了目标，不是上一轮的补充）。
+    // 行号仍从 ① 重新起 —— 段头 2. 才是行的分母，轮号回答的是另一个问题。
+    expect(rowsAndRounds(segments[1]).map((level) => level.text)).toEqual([
+      '第 2 轮 · 搜索 3 个 query · 每 query ≤ 40 帖',
+      '①q6收完采集 10 帖', '②q7收完采集 10 帖', '③q8收完采集 10 帖',
+    ]);
+    expect(rowsAndRounds(segments[2]).map((level) => level.text)).toEqual([
+      '第 3 轮 · 搜索 2 个 query · 每 query ≤ 40 帖',
+      '①q9收完采集 10 帖', '②q10收完采集 10 帖',
+    ]);
+    // `data-round` 与轮次头是同个数：它是整张卡的第几次提交。
+    const headers = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-round');
+    expect(headers.map((header) => header.props['data-round'])).toEqual([1, 2, 3]);
+    // 上限是每轮自己说的：三轮的轮头印的是各自的数（60 / 40 / 40），不是全局一个值。
     // 翻面：没有 `postsCap` 的轮（旧数据 / 读取轮）不印这一段 —— 见下一条用例。
 
-    // 两套字形不共用：正控是段头以 1. / 2. 起头、每一行都以圈号起头；
+    // 两套字形不共用：正控是段头以 1. / 2. / 3. 起头、每一行都以圈号起头；
     // 负控是没有任何一行以 `N.` 起头 —— 段 2. 下看到 ① 不会被读成「又一个 1.」。
     expect(visibleText(segments[0])).toMatch(/^1\./);
     expect(visibleText(segments[1])).toMatch(/^2\./);
+    expect(visibleText(segments[2])).toMatch(/^3\./);
     const rowTexts = rows(mounted.tree).map(visibleText);
-    expect(rowTexts).toHaveLength(7);
+    expect(rowTexts).toHaveLength(10);
     expect(rowTexts.every((text) => /^[①-⑩]/.test(text))).toBe(true);
     expect(rowTexts.filter((text) => /^\d+\./.test(text))).toEqual([]);
   });
@@ -572,11 +587,14 @@ describe('XResearchProgressCard', () => {
     expect(objectives(mounted.tree)).toEqual([undefined, '补读引信']);
     // 翻面：卡头那句仍是完整的一句（段头不再截断它，也不会两处各说一遍）。
     expect(visibleText(mounted.find('x-research-objective'))).toBe('macOS 轻量虚拟化');
-    // 轮次头在各自那一段里，编号在段内连续（第二轮接着第一轮数下去）。
+    // 轮次头在各自那一段里，轮号在**整张卡**上连续（第二段接着第一段的末轮数下去）。
     expect(roundHeaders(segments[0]).map(visibleText))
       .toEqual(['第 1 轮 · 搜索 5 个 query', '第 2 轮 · 补搜 3 个 query']);
+    // 第二段换了目标：轮号接着数到 3、4，动词回到「读取 / 补读」（不是在答同一个问题）。
     expect(roundHeaders(segments[1]).map(visibleText))
-      .toEqual(['第 1 轮 · 读取 3 个目标', '第 2 轮 · 补读 2 个目标']);
+      .toEqual(['第 3 轮 · 读取 3 个目标', '第 4 轮 · 补读 2 个目标']);
+    expect(roundHeaders(mounted.tree).map((header) => header.props['data-round']))
+      .toEqual([1, 2, 3, 4]);
     expect(rows(segments[0])).toHaveLength(8);
     expect(rows(segments[1])).toHaveLength(5);
     // 卡头的数字与副标题不因为分段而变：仍是各段真实计数的合计、仍是最早一次提交的目标（R10）。
@@ -688,6 +706,47 @@ describe('XResearchProgressCard', () => {
     await withIds.settle();
     expect(rowsAndRounds(withIds.find('x-research-segment')).map((level) => level.text))
       .toEqual(rowsAndRounds(old.find('x-research-segment')).map((level) => level.text));
+  });
+
+  it('numbers the old-data fallback across the whole card: one segment per research, rounds continue', async () => {
+    // 旧数据（没有 `rounds`）：一段研究一段。轮号仍是**整张卡**的序号 —— 第二段研究的第一轮是
+    // 第 2 轮，不是又一张「第 1 轮」。它的目标与上一段不同，所以动词是「搜索」，不是「补搜」。
+    const counts = { submissions: 1, queued: 0, running: 0, done: 1, failed: 0, cancelled: 0,
+      interrupted: 0, posts: 3, replies: 0, articles: 0, undelivered: 0,
+      searchDone: 1, searchTotal: 1, readDone: 0, readTotal: 0 };
+    const firstRun = snapshot({ researchRunId: 'xrun-old-a', runId: 'turn-old', revision: 2,
+      objective: '旧数据的第一段', createdAt: '2026-10-16T00:00:01.000Z', state: 'completed', counts,
+      search: [workItem({ section: 'search', label: 'old-a', state: 'stopped',
+        status: 'observed', posts: 3 })],
+      read: [] });
+    const secondRun = snapshot({ researchRunId: 'xrun-old-b', runId: 'turn-old', revision: 2,
+      objective: '旧数据的第二段', createdAt: '2026-10-16T00:00:02.000Z', state: 'completed',
+      counts: { ...counts, posts: 4, searchDone: 2, searchTotal: 2 },
+      search: [
+        workItem({ section: 'search', label: 'old-b1', state: 'stopped', status: 'observed', posts: 2 }),
+        workItem({ section: 'search', label: 'old-b2', state: 'stopped', status: 'observed', posts: 2 }),
+      ],
+      read: [] });
+    useXResearchTaskStore.setState({ snapshotsByRunId: {
+      'xrun-old-a': firstRun, 'xrun-old-b': secondRun,
+    } });
+    invoke.mockImplementation(async (method, args) => (args as { researchRunId: string }).researchRunId
+      === 'xrun-old-b' ? secondRun : firstRun);
+    const mounted = mount(XResearchProgressCard, { threadId: 'thread-1', groupKey: 'turn-old',
+      researchRunIds: ['xrun-old-a', 'xrun-old-b'] });
+    await mounted.settle();
+    mounted.find('x-research-toggle').props.onClick();
+
+    const segments = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-segment');
+    expect(segments).toHaveLength(2);
+    const rounds = findAllWhere(mounted.tree,
+      (element) => element.props['data-testid'] === 'x-research-round');
+    expect(rounds.map(visibleText)).toEqual(['第 1 轮 · 搜索 1 个 query', '第 2 轮 · 搜索 2 个 query']);
+    expect(rounds.map((round) => round.props['data-round'])).toEqual([1, 2]);
+    // 行号仍按**段**从 ① 起（对照：段 2 的两行不是接着 ② 数到 ③）。
+    expect(rows(mounted.tree).map(visibleText).map((text) => /^[①-⑩]/.exec(text)?.[0]))
+      .toEqual(['①', '①', '②']);
   });
 
   it('offers cancel while work is still queued or running, whatever the state word says', async () => {

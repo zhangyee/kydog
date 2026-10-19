@@ -250,6 +250,25 @@ type SegmentRound = {
   postsCap?: number;
 };
 
+/** 一张卡上继续数的段落位置：这一段的第 1 轮在**整张卡**上是第几轮，以及上一段的目标 ——
+ *  「补搜 / 补读」只在目标没换时用（换目标的那一轮不是上一轮的补充步骤）。 */
+type SegmentPlace = { firstRound: number; previousObjective: string | null };
+
+/** 按段序算出每一段的 `SegmentPlace`：轮号在**整张卡**上连续 —— 用户数的是「这张卡的第几轮」，
+ *  不是每一段里的第几轮。行号仍按段从 ① 起，两个编号回答两个不同的问题。 */
+function segmentPlaces(
+  segments: ReadonlyArray<{ objective: string; rounds: readonly unknown[] }>,
+): SegmentPlace[] {
+  let firstRound = 1;
+  let previousObjective: string | null = null;
+  return segments.map((segment) => {
+    const place = { firstRound, previousObjective };
+    firstRound += segment.rounds.length;
+    previousObjective = segment.objective;
+    return place;
+  });
+}
+
 /** 被取消的那一轮在轮次头上挂一个章（R83）：它停在原地，卡片不把它从卡上抹掉。
  *  有主语时连主语一起说（R81a：卡面不许写无主语的「被取消」）；只有取消这一种停法挂章 ——
  *  `中断` 由行自己说，轮次头再加一句只是噪声。 */
@@ -277,34 +296,39 @@ function rowRounds(rows: readonly XResearchWorkItem[], operation: XResearchSecti
   return rounds;
 }
 
-/** 轮次头的字。`round` 是这一段里第几次提交（1-based），`count` 是这一轮的行数：
- *  **操作词必须在轮头里**：段下的「搜索 / 读取」小标题已经删掉了，轮头是这一行唯一的操作说明，
- *  所以第一轮写「搜索 N 个 query」/「读取 N 个目标」，之后的轮次写「补搜」/「补读」—— 后续提交
- *  都是往同一个目标里追加的补充步骤（spec §4.1），「第 2 轮」本身就是那件事。 */
-function roundWord(round: SegmentRound, index: number): string {
+/** 轮次头的字。`number` 是这一轮在**整张卡**上的序号（1-based），`count` 是这一轮的行数：
+ *  **操作词必须在轮头里**：段下的「搜索 / 读取」小标题已经删掉了，轮头是这一行唯一的操作说明。
+ *  「补搜 / 补读」说的是这一轮的目标与上一轮相同 —— 后续提交都是往同一个目标里追加的补充步骤
+ *  （spec §4.1）；换了目标的那一轮是在答另一个问题，写「搜索 / 读取」，不是上一轮的补充。 */
+function roundWord(round: SegmentRound, number: number, supplement: boolean): string {
   const { operation, rows, postsCap } = round;
   const count = rows.length;
   const unit = operation === 'search' ? `${count} 个 query` : `${count} 个目标`;
   // 预算是一次一议的显式裁决（R85）：把这一轮的上限印出来，否则同一段里 150 / 25 / 40 三个数
   // 只能让读者猜哪一个是有意的。上限来自提交记录（`postsCap`），旧数据没有就不印。
   const cap = operation === 'search' && postsCap !== undefined ? ` · 每 query ≤ ${postsCap} 帖` : '';
-  const head = index === 1
-    ? `第 1 轮 · ${operation === 'search' ? '搜索' : '读取'}`
-    : `第 ${index} 轮 · ${operation === 'search' ? '补搜' : '补读'}`;
-  return `${head} ${unit}${cap}`;
+  const verb = operation === 'search'
+    ? (supplement ? '补搜' : '搜索')
+    : (supplement ? '补读' : '读取');
+  return `第 ${number} 轮 · ${verb} ${unit}${cap}`;
 }
 
 /** 一段的行，按轮切开：每一轮先画轮次头（操作与这一轮的行数都由它说），再画它的行。
- *  行号在**这一段内**连续：跨轮、跨操作都接着数下去（搜索 6 行 + 读取 3 行是 ①...⑨），
- *  不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，行号也该是同一个分母。 */
-function roundElements(rounds: readonly SegmentRound[]) {
+ *  轮号在**整张卡**上连续（`place.firstRound` 是这一段的第 1 轮）：段 2 的第 1 轮接着段 1 的末轮
+ *  数下去 —— 用户数的是「这张卡的第几轮」。行号仍在**这一段内**连续：跨轮、跨操作都接着数下去
+ *  （搜索 6 行 + 读取 3 行是 ①...⑨），不按轮重新从 ① 起 —— 卡上「搜索 8/8 个 query」说的是这一段，
+ *  行号也该是同一个分母。 */
+function roundElements(rounds: readonly SegmentRound[], objective: string, place: SegmentPlace) {
   let index = 0;
+  // 段内第一轮看上一段的目标；同一段里的后续轮次目标必然相同（段就是按目标切的），都是补充。
+  const sameObjective = objective === place.previousObjective;
   return rounds.flatMap((round, at) => {
     const render = round.operation === 'search' ? searchRowElement : readRowElement;
+    const number = place.firstRound + at;
     return [
       <div key={round.key} data-testid="x-research-round" data-operation={round.operation}
-        data-round={at + 1} style={ROUND_HEADER_STYLE}>
-        {roundWord(round, at + 1)}
+        data-round={number} style={ROUND_HEADER_STYLE}>
+        {roundWord(round, number, at > 0 || sameObjective)}
         {round.chip !== null &&
           <span data-testid="x-research-round-cancelled" style={ROUND_CHIP_STYLE}>{round.chip}</span>}
       </div>,
@@ -313,19 +337,25 @@ function roundElements(rounds: readonly SegmentRound[]) {
   });
 }
 
+/** 旧数据两节的轮序：搜索、读取相接。旧数据没有 `rounds`，取不到真实的提交次序，
+ *  能取到的只有这两节的行序。卡要先知道轮数才能按段接着数轮号，所以切轮这一份在这里共用。 */
+function researchRounds(segment: XResearchTaskSnapshot): SegmentRound[] {
+  return [
+    ...rowRounds(segment.search, 'search', segment.researchRunId),
+    ...rowRounds(segment.read, 'read', segment.researchRunId),
+  ];
+}
+
 /** 退路：一批分不出段的快照（旧数据）—— **一段研究一段**，行按研究平铺。与合并成一张卡之前一样，
- *  不会因为分不出段就少画一段或留白。两节的轮按「搜索、读取」相接：旧数据没有 `rounds`，
- *  取不到真实的提交次序，能取到的只有这两节的行序。 */
-function researchSegmentElement(segment: XResearchTaskSnapshot, index: number) {
+ *  不会因为分不出段就少画一段或留白。轮号照样接着上一段数（`place`），不每段从第 1 轮重来。 */
+function researchSegmentElement(segment: XResearchTaskSnapshot, index: number,
+  rounds: readonly SegmentRound[], place: SegmentPlace) {
   const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
   return (
     <div key={segment.researchRunId} data-testid="x-research-segment" data-status={segment.state}
       style={{ marginTop: index === 0 ? 0 : 10 }}>
       {segmentHeaderElement(index, segment.state, segment.objective, note)}
-      {roundElements([
-        ...rowRounds(segment.search, 'search', segment.researchRunId),
-        ...rowRounds(segment.read, 'read', segment.researchRunId),
-      ])}
+      {roundElements(rounds, segment.objective, place)}
     </div>
   );
 }
@@ -397,7 +427,7 @@ function objectiveSegments(snapshots: readonly XResearchTaskSnapshot[]): CardSeg
 
 /** 一个目标的分段：头（终态 + 归因 + 目标）+ 这一段的轮，段内按提交序。
  *  一轮的行 = 它那份提交的行（搜索 / 读取两桶按拥有它的提交归位，一轮只占一桶）。 */
-function objectiveSegmentElement(segment: CardSegment, index: number) {
+function objectiveSegmentElement(segment: CardSegment, index: number, place: SegmentPlace) {
   const note = stateNote(segment.stateReason, segment.state, segment.cancelledBy);
   const rounds: SegmentRound[] = segment.rounds.map((round) => ({
     key: round.round.submissionId, operation: round.round.operation,
@@ -409,7 +439,7 @@ function objectiveSegmentElement(segment: CardSegment, index: number) {
     <div key={segment.rounds[0]!.round.submissionId} data-testid="x-research-segment"
       data-status={segment.state} style={{ marginTop: index === 0 ? 0 : 10 }}>
       {segmentHeaderElement(index, segment.state, segment.objective, note)}
-      {roundElements(rounds)}
+      {roundElements(rounds, segment.objective, place)}
     </div>
   );
 }
@@ -632,6 +662,14 @@ export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
   // 一段行都没有时这一行没东西可说（空串），不画一个空 div。
   const summary = segments.length > 0 ? summaryLine(segments) : '';
   const cancellable = segments.some((segment) => segment.counts.queued + segment.counts.running > 0);
+  // 行区的轮号是**整张卡**的序号（段 2 的第 1 轮接着段 1 数下去），所以渲染前先把每段的位置算出来。
+  // 旧数据（分不出段）在这里先切轮：轮数也得在渲染前就知道。
+  const fallbackRows = rowSegments === null
+    ? segments.map((segment) => ({
+        segment, objective: segment.objective, rounds: researchRounds(segment),
+      }))
+    : null;
+  const places = segmentPlaces(fallbackRows ?? rowSegments ?? []);
 
   return (
     <section data-testid="x-research-card" data-status={status}
@@ -658,7 +696,11 @@ export function XResearchProgressCard({ threadId, groupKey, researchRunIds }: {
         </button>}
       {expanded && segments.length > 0 &&
         <div data-testid="x-research-rows" style={ROWS_STYLE}>
-          {rowSegments === null ? segments.map(researchSegmentElement) : rowSegments.map(objectiveSegmentElement)}
+          {fallbackRows !== null
+            ? fallbackRows.map(({ segment, rounds }, index) =>
+                researchSegmentElement(segment, index, rounds, places[index]!))
+            : (rowSegments ?? []).map((segment, index) =>
+                objectiveSegmentElement(segment, index, places[index]!))}
         </div>}
       {error && <div role="alert" data-testid="x-research-error" style={{ marginTop: 8 }}>{error}</div>}
     </section>
