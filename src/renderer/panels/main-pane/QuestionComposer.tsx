@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { useAskStore } from '../../stores/askStore';
 import { QuestionCustomRow, QuestionOptionRow } from './QuestionOptionRow';
-import { firstUnhandled, goTo, pickOption, setCustom, skipQuestion, toAnswers } from './askDraft';
+import { ErrorMarginalia } from './ErrorMarginalia';
+import type { AskQuestion } from '../../../shared/askQuestion';
+import { firstUnhandled, goTo, pickOption, setCustom, skipQuestion, toAnswers, type AskDraft } from './askDraft';
 
 const COMPOSER_FADE_HEIGHT = 32;
 
@@ -9,6 +11,7 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
   const pending = useAskStore((s) => s.pendingByThread[threadId]);
   const draft = useAskStore((s) => s.draftByThread[threadId]);
   const updateDraft = useAskStore((s) => s.updateDraft);
+  const submission = useAskStore((s) => s.submissionByThread[threadId]);
   const customInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -32,29 +35,77 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
   // 用户翻回第 1 题复看时三题都已处理，按钮写着「下一题」，点下去却是提交。
   const gap = firstUnhandled(draft, pending.questions);
 
-  const onSubmit = async () => {
-    // 不置灰按钮：还有没处理的题就跳过去，而不是让用户对着一个禁用控件猜原因。
-    if (gap !== null) { updateDraft(threadId, (d) => goTo(d, gap, total)); return; }
+  const locked = submission?.status === 'submitting' || submission?.status === 'submitted';
+
+  // 同一事件快照可能连续触发；每次从 store 取当前身份与草稿，不让闭包旧值覆盖本次选择。
+  const current = () => {
+    const state = useAskStore.getState();
+    const latestPending = state.pendingByThread[threadId];
+    const latestDraft = state.draftByThread[threadId];
+    const status = state.submissionByThread[threadId]?.status;
+    if (latestPending?.toolCallId !== pending.toolCallId || !latestDraft ||
+        status === 'submitting' || status === 'submitted') return null;
+    return { pending: latestPending, draft: latestDraft };
+  };
+
+  const editDraft = (fn: (d: AskDraft, question: AskQuestion, total: number) => AskDraft) => {
+    const latest = current();
+    if (!latest) return;
+    const { questions } = latest.pending;
+    updateDraft(threadId, (d) => fn(d, questions[d.cursor], questions.length));
+  };
+
+  const submitDraft = async (nextDraft: AskDraft): Promise<void> => {
+    const latest = current();
+    if (!latest) return;
+    const { toolCallId, questions } = latest.pending;
+    const nextGap = firstUnhandled(nextDraft, questions);
+    // 不置灰未答全的按钮：先把用户引导到缺口，不隐式跳过。
+    if (nextGap !== null) {
+      updateDraft(threadId, () => goTo(nextDraft, nextGap, questions.length));
+      return;
+    }
+    if (!useAskStore.getState().beginSubmit(threadId, toolCallId)) return;
     try {
       await window.kydog.invoke('ask.submit', {
-        threadId, toolCallId: pending.toolCallId, answers: toAnswers(draft, pending.questions),
+        threadId, toolCallId, answers: toAnswers(nextDraft, questions),
       });
+      useAskStore.getState().finishSubmit(threadId, toolCallId);
     } catch (err) {
-      console.error('ask.submit failed', err);
+      useAskStore.getState().finishSubmit(threadId, toolCallId, err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const onPickOption = (optionId: string): void => {
+    const latest = current();
+    if (!latest) return;
+    const { questions } = latest.pending;
+    const question = questions[latest.draft.cursor];
+    if (!question.options.some((option) => option.id === optionId)) return;
+    const nextDraft = pickOption(latest.draft, question, optionId, questions.length);
+    updateDraft(threadId, () => nextDraft);
+    if (latest.draft.cursor === questions.length - 1 && !question.multiSelect) void submitDraft(nextDraft);
+  };
+
+  const onSubmit = () => {
+    const latest = current();
+    if (latest) void submitDraft(latest.draft);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // 全部快捷键只在焦点不在输入框时生效：框里数字键就是打字、←→ 就是移光标。
     if (e.target instanceof HTMLInputElement) return;
     if (e.key === 'Escape') { e.preventDefault(); void onCancel(); return; }
-    if (e.key === 'ArrowLeft') { e.preventDefault(); updateDraft(threadId, (d) => goTo(d, d.cursor - 1, total)); return; }
-    if (e.key === 'ArrowRight') { e.preventDefault(); updateDraft(threadId, (d) => goTo(d, d.cursor + 1, total)); return; }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); editDraft((d, _q, count) => goTo(d, d.cursor - 1, count)); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); editDraft((d, _q, count) => goTo(d, d.cursor + 1, count)); return; }
+    const latest = current();
+    if (!latest || e.repeat) return;
+    const question = latest.pending.questions[latest.draft.cursor];
     const n = Number(e.key);
-    if (!Number.isInteger(n) || n < 1 || n > q.options.length + 1) return;
+    if (!Number.isInteger(n) || n < 1 || n > question.options.length + 1) return;
     e.preventDefault();
-    if (n === q.options.length + 1) { customInputRef.current?.focus(); return; }
-    updateDraft(threadId, (d) => pickOption(d, q, q.options[n - 1].id, total));
+    if (n === question.options.length + 1) { customInputRef.current?.focus(); return; }
+    onPickOption(question.options[n - 1].id);
   };
 
   return (
@@ -88,8 +139,8 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
               <span style={{ flex: 1, fontSize: 14, color: 'var(--color-ink)' }}>{q.question}</span>
               <button
                 type="button" data-testid="ask-prev" aria-label="上一题"
-                disabled={draft.cursor === 0}
-                onClick={() => updateDraft(threadId, (d) => goTo(d, d.cursor - 1, total))}
+                disabled={locked || draft.cursor === 0}
+                onClick={() => editDraft((d, _q, count) => goTo(d, d.cursor - 1, count))}
                 style={navStyle}
               >‹</button>
               <span className="font-mono" style={{ fontSize: 11, color: 'var(--color-ink-faint)' }}>
@@ -97,8 +148,8 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
               </span>
               <button
                 type="button" data-testid="ask-next" aria-label="下一题"
-                disabled={isLast}
-                onClick={() => updateDraft(threadId, (d) => goTo(d, d.cursor + 1, total))}
+                disabled={locked || isLast}
+                onClick={() => editDraft((d, _q, count) => goTo(d, d.cursor + 1, count))}
                 style={navStyle}
               >›</button>
               <button
@@ -114,7 +165,7 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
                 index={i}
                 multiSelect={q.multiSelect === true}
                 selected={selectedIds.includes(o.id)}
-                onSelect={() => updateDraft(threadId, (d) => pickOption(d, q, o.id, total))}
+                onSelect={() => onPickOption(o.id)}
               />
             ))}
             <QuestionCustomRow
@@ -122,16 +173,19 @@ export function QuestionComposer({ threadId }: { threadId: string }) {
               multiSelect={q.multiSelect === true}
               value={custom}
               inputRef={customInputRef}
-              onChange={(text) => updateDraft(threadId, (d) => setCustom(d, q, text))}
+              onChange={(text) => editDraft((d, question) => setCustom(d, question, text))}
             />
+
+            {submission?.status === 'error' && <ErrorMarginalia text={submission.error ?? ''} />}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
               <button
                 type="button" data-testid="ask-skip"
-                onClick={() => updateDraft(threadId, (d) => skipQuestion(d, q, total))}
+                disabled={locked}
+                onClick={() => editDraft((d, question, count) => skipQuestion(d, question, count))}
                 style={{ ...btnStyle, border: 'none', color: 'var(--color-ink-soft)' }}
               >跳过</button>
-              <button type="button" data-testid="ask-submit" onClick={() => void onSubmit()} style={btnStyle}>
+              <button type="button" data-testid="ask-submit" disabled={locked} onClick={onSubmit} style={btnStyle}>
                 {gap === null ? '提交' : '下一题'}
               </button>
             </div>

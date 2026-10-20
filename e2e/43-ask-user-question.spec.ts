@@ -105,6 +105,28 @@ test('43-ask: 逐题作答后提交，留痕卡片记下答案', async () => {
   await expect(page.locator('[data-testid="composer-input"]')).toBeVisible();
 });
 
+test('43-ask: 最后一题选中预设单选项后自动提交，回流留痕并恢复 composer', async () => {
+  const { page } = launched;
+  await askUntilPending(page, 'ask');
+  const composer = page.getByTestId('question-composer');
+  await expect(composer).toBeVisible();
+  await page.getByTestId('ask-option-q0o0').click();
+  await expect(composer).toContainText('2 / 3');
+  await page.getByTestId('ask-option-q1o0').click();
+  await expect(composer).toContainText('2 / 3');
+  await page.getByTestId('ask-next').click();
+  await expect(composer).toContainText('3 / 3');
+  await page.getByTestId('ask-option-q2o1').click();
+
+  const recap = page.getByTestId('ask-recap');
+  await expect(recap).toHaveAttribute('data-status', 'answered', { timeout: 10_000 });
+  await expect(recap).toContainText('当前 worktree');
+  await expect(recap).toContainText('tsc');
+  await expect(recap).toContainText('直接推');
+  await expect(composer).toHaveCount(0);
+  await expect(page.getByTestId('composer-input')).toBeVisible();
+});
+
 test('43-ask: Esc 关闭提问后 composer 恢复，留痕卡片记为取消', async () => {
   const { page } = launched;
   await askUntilPending(page, 'ask');

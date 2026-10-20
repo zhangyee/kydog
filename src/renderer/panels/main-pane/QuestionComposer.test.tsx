@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { findAllWhere, findOneWhere, type MiniElement, type Mounted } from '../../../test-support/miniReact';
-import type { AskQuestion } from '../../../shared/askQuestion';
+import type { AskAnswer, AskQuestion } from '../../../shared/askQuestion';
 
 /**
  * **提问态 composer 的键盘规格。** 这套规格是刻意设计过的：
  *
  *  - 数字键 1..N 选第 N 个选项（单选选中即前进），N+1 把光标送进「其他」输入框 —— 不是选中；
  *  - ←→ 翻题，Esc 等同 ×（结束提问）；
- *  - **Enter 什么都不做**：用户正在框里写想法时一个回车就跳走太危险，前进与提交只走底部按钮；
+ *  - **Enter 什么都不做**：用户正在框里写想法时一个回车就跳走太危险，Enter 不承担前进或提交动作；
  *  - 以上全部只在焦点**不在输入框**时生效：框里数字键就是打字、← 就是移光标。
  *
  * 真身是根节点上的 `onKeyDown`：键盘事件从输入框冒泡上来时 `e.target` 是那个 input，
@@ -40,6 +40,7 @@ const { mount } = await import('../../../test-support/miniReact');
 const { QuestionComposer } = await import('./QuestionComposer');
 const { QuestionOptionRow, QuestionCustomRow } = await import('./QuestionOptionRow');
 const { useAskStore } = await import('../../stores/askStore');
+const { ErrorMarginalia } = await import('./ErrorMarginalia');
 
 const TID = 'thr-1';
 const TCID = 'ask-1';
@@ -81,14 +82,26 @@ class FakeInput {}
 
 let invokes: Array<{ method: string; args: unknown }> = [];
 let focusCustom: ReturnType<typeof vi.fn>;
+let submissions: Array<{
+  args: { threadId: string; toolCallId: string; answers: AskAnswer[] };
+  resolve: () => void;
+  reject: (error: Error) => void;
+}>;
 
 beforeEach(() => {
   invokes = [];
-  useAskStore.setState({ pendingByThread: {}, draftByThread: {} });
+  submissions = [];
+  useAskStore.setState({ pendingByThread: {}, draftByThread: {}, submissionByThread: {} });
   (globalThis as unknown as { HTMLInputElement: unknown }).HTMLInputElement = FakeInput;
   (globalThis as unknown as { window: unknown }).window = {
     kydog: {
-      invoke: (method: string, args?: unknown) => { invokes.push({ method, args }); return Promise.resolve(undefined); },
+      invoke: (method: string, args?: unknown) => {
+        invokes.push({ method, args });
+        if (method !== 'ask.submit') return Promise.resolve(undefined);
+        return new Promise<void>((resolve, reject) => {
+          submissions.push({ args: args as typeof submissions[number]['args'], resolve, reject });
+        });
+      },
     },
   };
 });
@@ -126,11 +139,11 @@ const selectedRows = (m: M) => findAllWhere(m.tree, (el) => el.type === Question
  * 在根节点上按一个键。`inInput` 为真时 target 是输入框（事件从框里冒泡上来）。
  * 返回 preventDefault 被调了没有 —— 框里的键**不许**被拦，否则打不进字。
  */
-function press(m: M, key: string, opts: { inInput?: boolean } = {}): boolean {
+function press(m: M, key: string, opts: { inInput?: boolean; repeat?: boolean } = {}): boolean {
   const root = m.find('question-composer');
   let prevented = false;
   const target = opts.inInput ? new FakeInput() : {};
-  (root.props.onKeyDown as (e: unknown) => void)({ key, target, preventDefault: () => { prevented = true; } });
+  (root.props.onKeyDown as (e: unknown) => void)({ key, target, repeat: opts.repeat ?? false, preventDefault: () => { prevented = true; } });
   m.rerender({ threadId: TID });
   return prevented;
 }
@@ -179,14 +192,17 @@ describe('提问态：数字键', () => {
     // 「其他」行排在第 9 位（它的前导序号是 index + 1）
     expect(findOneWhere(m.tree, (el) => el.type === QuestionCustomRow).props.index).toBe(8);
 
+    expect(press(m, '9')).toBe(true);
+    expect(focusCustom).toHaveBeenCalledTimes(1);
+    expect(picked('q0')).toBe('unhandled');
+
     press(m, '8');
     expect(picked('q0')).toEqual(['q0o7']);
     expect(selectedRows(m)).toEqual([false, false, false, false, false, false, false, true]);
-    expect(focusCustom).not.toHaveBeenCalled();
-
-    expect(press(m, '9')).toBe(true);
-    expect(focusCustom).toHaveBeenCalledTimes(1);
-    expect(picked('q0')).toEqual(['q0o7']);
+    expect(submissions[0]?.args).toEqual({
+      threadId: TID, toolCallId: TCID,
+      answers: [{ questionId: 'q0', kind: 'answered', optionIds: ['q0o7'] }],
+    });
   });
 });
 
@@ -255,5 +271,214 @@ describe('提问态：Esc 等同 ×', () => {
     expect(press(m, 'Escape')).toBe(true);
     const cancel = { method: 'ask.cancel', args: { threadId: TID, toolCallId: TCID } };
     expect(invokes).toEqual([cancel, cancel]);
+  });
+});
+
+const rows = (m: M) => findAllWhere(m.tree, (el) => el.type === QuestionOptionRow);
+const choose = (row: MiniElement) => { (row.props.onSelect as () => void)(); };
+const writeCustom = (m: M, text: string) => {
+  const row = findOneWhere(m.tree, (el) => el.type === QuestionCustomRow);
+  (row.props.onChange as (text: string) => void)(text);
+  m.rerender({ threadId: TID });
+};
+const errors = (m: M) => findAllWhere(m.tree, (el) => el.type === ErrorMarginalia).map((el) => el.props.text);
+
+// 去掉统一选择入口、用闭包中的旧草稿提交或漏掉 beginSubmit 都必须在精确载荷/次数上红。
+describe('最后一道单选题自动提交', () => {
+  it.each([
+    { mode: 'mouse', last: 0, expected: 'q2o0' },
+    { mode: 'keyboard', last: 1, expected: 'q2o1' },
+  ])('$mode 使用本次选择的完整草稿，同一事件快照连选只提交一次', async ({ mode, last, expected }) => {
+    const m = open(THREE);
+    press(m, '2');
+    click(m.find('ask-skip'));
+    m.rerender({ threadId: TID });
+    writeCustom(m, '旧的自定义交付方式');
+    const pick = mode === 'mouse'
+      ? () => choose(rows(m)[last])
+      : (() => {
+        const handler = m.find('question-composer').props.onKeyDown as (e: unknown) => void;
+        return () => handler({ key: String(last + 1), target: {}, repeat: false, preventDefault() {} });
+      })();
+    // 不重渲染，保留同一事件快照。
+    pick();
+    pick();
+    expect(picked('q2')).toEqual([expected]);
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].args).toEqual({ threadId: TID, toolCallId: TCID, answers: [
+      { questionId: 'q0', kind: 'answered', optionIds: ['q0o1'] },
+      { questionId: 'q1', kind: 'skipped' },
+      { questionId: 'q2', kind: 'answered', optionIds: [expected] },
+    ] });
+    const sentDraft = draft();
+    m.rerender({ threadId: TID });
+    writeCustom(m, '在飞时不应改写');
+    click(m.find('ask-skip'));
+    choose(rows(m)[1 - last]);
+    click(m.find('ask-submit'));
+    expect(draft()).toBe(sentDraft);
+    expect(submissions).toHaveLength(1);
+
+    submissions[0].resolve();
+    await m.settle();
+    m.rerender({ threadId: TID });
+    expect(useAskStore.getState().submissionByThread[TID]?.status).toBe('submitted');
+    // 成功 RPC 后仍等 run.ask_end，不能继续更改或重复发送。
+    choose(rows(m)[1 - last]);
+    click(m.find('ask-submit'));
+    expect(draft()).toBe(sentDraft);
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('同一旧选项行连点不会把上一题的选项 id 写进下一题', () => {
+    const m = open(THREE);
+    press(m, '1');
+    choose(rows(m)[0]);
+    expect(picked('q1')).toEqual(['q1o0']);
+    useAskStore.getState().open(TID, 'ask-2', THREE);
+    m.rerender({ threadId: TID });
+    const first = rows(m)[1];
+    choose(first);
+    expect(picked('q0')).toEqual(['q0o1']);
+    expect(draft().cursor).toBe(1);
+    choose(first);
+    expect(picked('q0')).toEqual(['q0o1']);
+    expect(picked('q1')).toBe('unhandled');
+  });
+
+  it('先前有缺口时保留最后一题选择并回到第一道未处理题，不隐式跳过', () => {
+    const m = open(THREE);
+    press(m, '2');
+    click(m.find('ask-skip'));
+    m.rerender({ threadId: TID });
+    choose(rows(m)[0]);
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].args.answers).toEqual([
+      { questionId: 'q0', kind: 'answered', optionIds: ['q0o1'] },
+      { questionId: 'q1', kind: 'skipped' },
+      { questionId: 'q2', kind: 'answered', optionIds: ['q2o0'] },
+    ]);
+    useAskStore.getState().close(TID, TCID);
+    useAskStore.getState().open(TID, 'ask-2', THREE);
+    m.rerender({ threadId: TID });
+    press(m, 'ArrowRight');
+    press(m, 'ArrowRight');
+    choose(rows(m)[1]);
+    expect(draft().cursor).toBe(0);
+    expect(picked('q2')).toEqual(['q2o1']);
+    expect(submissions).toHaveLength(1);
+  });
+
+  it.each(['multi', 'custom', 'skip', 'Enter'] as const)('%s 保留手动提交，不触发自动提交', (action) => {
+    const m = open(EIGHT);
+    press(m, '8');
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].args.answers).toEqual([{ questionId: 'q0', kind: 'answered', optionIds: ['q0o7'] }]);
+    useAskStore.getState().close(TID, TCID);
+    useAskStore.getState().open(TID, 'manual', action === 'multi' ? [THREE[1]] : EIGHT);
+    m.rerender({ threadId: TID });
+    if (action === 'multi') {
+      choose(rows(m)[1]);
+      expect(picked('q1')).toEqual(['q1o1']);
+    } else if (action === 'skip') {
+      click(m.find('ask-skip'));
+      expect(picked('q0')).toBe('skipped');
+    } else {
+      writeCustom(m, '自定义回答');
+      expect(draft().byQuestionId.q0).toEqual({ kind: 'answered', optionIds: [], custom: '自定义回答' });
+      if (action === 'Enter') {
+        press(m, 'Enter');
+        press(m, 'Enter', { inInput: true });
+      }
+    }
+    expect(submissions).toHaveLength(1);
+    m.rerender({ threadId: TID });
+    expect(m.find('ask-submit').props.children).toBe('提交');
+    click(m.find('ask-submit'));
+    expect(submissions).toHaveLength(2);
+    const answers: AskAnswer[] = action === 'multi'
+      ? [{ questionId: 'q1', kind: 'answered', optionIds: ['q1o1'] }]
+      : action === 'skip'
+        ? [{ questionId: 'q0', kind: 'skipped' }]
+        : [{ questionId: 'q0', kind: 'answered', optionIds: [], custom: '自定义回答' }];
+    expect(submissions[1].args).toEqual({ threadId: TID, toolCallId: 'manual', answers });
+  });
+
+  it('数字键 repeat 不会选择或提交；非 repeat 的同一个键可以提交', () => {
+    const m = open(EIGHT);
+    press(m, '8');
+    expect(submissions).toHaveLength(1);
+    useAskStore.getState().open(TID, 'ask-2', EIGHT);
+    m.rerender({ threadId: TID });
+    press(m, '8', { repeat: true });
+    expect(picked('q0')).toBe('unhandled');
+    expect(submissions).toHaveLength(1);
+    press(m, '8');
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1].args.answers).toEqual([{ questionId: 'q0', kind: 'answered', optionIds: ['q0o7'] }]);
+  });
+
+  it('失败显示错误并保留草稿，底部按钮能用同一完整答案重试', async () => {
+    const m = open(THREE);
+    press(m, '2');
+    click(m.find('ask-skip'));
+    m.rerender({ threadId: TID });
+    writeCustom(m, '即将替换');
+    choose(rows(m)[0]);
+    expect(submissions).toHaveLength(1);
+    const answers: AskAnswer[] = [
+      { questionId: 'q0', kind: 'answered', optionIds: ['q0o1'] },
+      { questionId: 'q1', kind: 'skipped' },
+      { questionId: 'q2', kind: 'answered', optionIds: ['q2o0'] },
+    ];
+    expect(submissions[0].args.answers).toEqual(answers);
+    const before = draft();
+    submissions[0].reject(new Error('连接失败，请重试'));
+    await m.settle();
+    m.rerender({ threadId: TID });
+    expect(errors(m)).toEqual(['连接失败，请重试']);
+    expect(draft()).toBe(before);
+    click(m.find('ask-submit'));
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1].args).toEqual({ threadId: TID, toolCallId: TCID, answers });
+    m.rerender({ threadId: TID });
+    expect(errors(m)).toEqual([]);
+    submissions[1].resolve();
+    await m.settle();
+    expect(useAskStore.getState().submissionByThread[TID]?.status).toBe('submitted');
+  });
+
+  it.each(['resolve', 'reject'] as const)('旧请求 %s 不改切换后的 thread 或同 thread 新提问', async (settle) => {
+    const m = open(EIGHT);
+    press(m, '8');
+    expect(submissions).toHaveLength(1);
+    const old = submissions[0];
+    expect(old.args.answers).toEqual([{ questionId: 'q0', kind: 'answered', optionIds: ['q0o7'] }]);
+    useAskStore.getState().open('thr-2', 'other-ask', EIGHT);
+    m.rerender({ threadId: 'thr-2' });
+    const otherDraft = useAskStore.getState().draftByThread['thr-2'];
+    useAskStore.getState().close(TID, TCID);
+    useAskStore.getState().open(TID, 'new-ask', EIGHT);
+    m.rerender({ threadId: TID });
+    press(m, '1');
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1].args).toEqual({
+      threadId: TID, toolCallId: 'new-ask',
+      answers: [{ questionId: 'q0', kind: 'answered', optionIds: ['q0o0'] }],
+    });
+    submissions[1].reject(new Error('新请求错误'));
+    await m.settle();
+    m.rerender({ threadId: TID });
+    expect(errors(m)).toEqual(['新请求错误']);
+    const newDraft = draft();
+    if (settle === 'resolve') old.resolve();
+    else old.reject(new Error('旧请求错误'));
+    await m.settle();
+    m.rerender({ threadId: TID });
+    expect(errors(m)).toEqual(['新请求错误']);
+    expect(draft()).toBe(newDraft);
+    expect(useAskStore.getState().draftByThread['thr-2']).toBe(otherDraft);
+    expect(useAskStore.getState().pendingByThread['thr-2']?.toolCallId).toBe('other-ask');
+    expect(useAskStore.getState().submissionByThread[TID]).toEqual({ toolCallId: 'new-ask', status: 'error', error: '新请求错误' });
   });
 });
