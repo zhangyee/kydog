@@ -10,8 +10,9 @@ import { inspectPdf, type PdfPage, type PdfReport } from './pdfInspect';
  * 关脏 tab 的确认、相对路径图片、块级图片说明文字）、主进程把 PDF 页渲染成 PNG、md 导出 PDF。
  * 串行共用一次启动，各条用不同的文件。
  *
- * 顺序约束：原导出之后才跑高亮编辑和高亮 PDF；高亮 PDF 重新替换存储框。原导出 —— 它替换了主进程的 dialog.showSaveDialog / shell.showItemInFolder、
- * 改了设置文件里的 ui.mdExport、开着一个 PDF 标签，这些都不收回。
+ * 顺序约束：原导出之后才跑高亮编辑 / PDF，最后验证逐字输入的源码保留。
+ * 原导出替换 dialog.showSaveDialog / shell.showItemInFolder、修改 ui.mdExport 并留下 PDF 标签；
+ * 高亮 PDF 用例重新替换存储框，其余用例各用独立文件。
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -110,6 +111,7 @@ test.beforeAll(async () => {
       await fs.writeFile(path.join(proj, 'images.md'), IMAGES_MD);
       await fs.writeFile(path.join(proj, 'highlight.md'), '# 高亮报告\n\n==中文== and ==English==\n\n==**bold** [link](https://example.org) `code`==\n\n`==literal==`\n\nplain\n');
       await fs.writeFile(path.join(proj, 'highlight-print.md'), '==ZZ_HIGHLIGHT==\n');
+      await fs.writeFile(path.join(proj, 'highlight-sequences.md'), '# sequences\n\nmath\n\ncode\n');
       await seedProject(home, proj, [{ id: 'thr-1', title: '测试 Thread' }]);
     },
   });
@@ -627,4 +629,32 @@ test('30-markdown-editor: actual printed highlight pixels disappear after removi
   await selectHighlightText(editor, 'ZZ_HIGHLIGHT');
   await highlightButton().dispatchEvent('pointerdown');
   expect(await exportPixels(outputs[1])).toBe(0);
+});
+
+
+test('30-markdown-editor: completed typed math and code retain transient highlight source', async () => {
+  const { page } = launched;
+  const editor = await openMd('highlight-sequences.md');
+  await editor.locator('p').filter({ hasText: /^math$/ }).click();
+  await page.keyboard.press(END_OF_LINE); await page.keyboard.press('Enter');
+  await page.keyboard.type('$a==b==');
+  await expect(editor.locator('mark')).toHaveText('b');
+  await page.keyboard.type('$');
+  await expect.soft(editor.locator('[data-type="math_inline"]')).toHaveAttribute('data-value', 'a==b==');
+  await editor.locator('p').filter({ hasText: /^code$/ }).click();
+  await page.keyboard.press(END_OF_LINE); await page.keyboard.press('Enter');
+  await page.keyboard.type('`==code==');
+  await expect(editor.locator('mark')).toHaveText('code');
+  await page.keyboard.type('`');
+  await expect.soft(editor.locator('code')).toHaveText('==code==');
+  const file = at('highlight-sequences.md');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect.poll(() => fs.readFile(file, 'utf8')).toContain('$a==b==$');
+  expect(await fs.readFile(file, 'utf8')).toContain('`==code==`');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toHaveCount(0);
+  await page.getByTestId(`tab-close-${file}`).click();
+  await openMd('highlight-sequences.md');
+  await expect(editor.locator('[data-type="math_inline"]')).toHaveAttribute('data-value', 'a==b==');
+  await expect(editor.locator('code')).toHaveText('==code==');
 });

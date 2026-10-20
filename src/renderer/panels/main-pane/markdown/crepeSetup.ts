@@ -6,7 +6,7 @@ import type { NodeViewConstructor } from '@milkdown/kit/prose/view';
 import { languages } from '@codemirror/language-data';
 import { isMarkSelectedCommand, linkSchema } from '@milkdown/kit/preset/commonmark';
 import katex from 'katex';
-import { highlightSchema, remarkHighlightPlugin, toggleHighlightCommand, highlightInputRule } from './highlight';
+import { highlightSchema, remarkHighlightPlugin, toggleHighlightCommand, highlightInputRule, highlightSourceInputRules } from './highlight';
 import { commentMarksPlugin } from './commentMarks';
 import { appendToolbarTip, toolbarTipFor } from './toolbarTips';
 import { resolveImageSrc } from './imageSrc';
@@ -185,7 +185,7 @@ export function createCrepe(opts: CrepeSetupOptions): Crepe {
   crepe.editor.use(mathInlineNodeViewPlugin);
   crepe.editor.use(imageBlockAltSchema);
   crepe.editor.use(remarkHighlightPlugin).use(highlightSchema);
-  if (opts.mode === 'edit') crepe.editor.use(toggleHighlightCommand).use(highlightInputRule);
+  if (opts.mode === 'edit') crepe.editor.use(toggleHighlightCommand).use(highlightInputRule).use(highlightSourceInputRules);
   if (opts.mode === 'edit') crepe.editor.use($prose(() => commentMarksPlugin()));
   if (opts.mode === 'print') crepe.editor.use(printLinkSchema);
   return crepe;

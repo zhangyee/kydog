@@ -8,6 +8,7 @@ import {
   schemaCtx,
   editorViewCtx,
   inputRulesCtx,
+  prosePluginsCtx,
 } from '@milkdown/kit/core';
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState, TextSelection, type Transaction } from '@milkdown/kit/prose/state';
@@ -15,7 +16,12 @@ import { isMarkSelectedCommand } from '@milkdown/kit/preset/commonmark';
 import { inputRules } from '@milkdown/kit/prose/inputrules';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { Crepe } from '@milkdown/crepe';
-import { highlightSchema, toggleHighlightCommand, highlightInputRule } from './highlight';
+import {
+  highlightSchema,
+  toggleHighlightCommand,
+  highlightInputRule,
+  highlightSourceInputRules,
+} from './highlight';
 import { featureConfigsFor } from './crepeSetup';
 
 beforeEach(() => {
@@ -35,15 +41,21 @@ async function setup() {
       paragraph: { content: 'inline*', group: 'block' },
       code_block: { content: 'text*', group: 'block', code: true, marks: '' },
       text: { group: 'inline' },
+      math_inline: { group: 'inline', inline: true, atom: true, attrs: { value: { default: '' } } },
     },
     marks: {
       highlight: spec,
       strong: {},
       code: { code: true },
+      inlineCode: { code: true },
       link: { attrs: { href: { default: 'https://example.org' } } },
     },
   });
-  ctx.inject(schemaCtx, schema).inject(inputRulesCtx, []).inject(commandsCtx, new CommandManager());
+  ctx
+    .inject(schemaCtx, schema)
+    .inject(inputRulesCtx, [])
+    .inject(prosePluginsCtx, [])
+    .inject(commandsCtx, new CommandManager());
   ctx.record(CommandsReady).record(SchemaReady);
   const waits = Promise.all([ctx.wait(CommandsReady), ctx.wait(SchemaReady)]);
   ctx.done(CommandsReady);
@@ -52,6 +64,7 @@ async function setup() {
   await toggleHighlightCommand(ctx)();
   await isMarkSelectedCommand(ctx)();
   await highlightInputRule(ctx)();
+  await highlightSourceInputRules(ctx)();
   return { ctx, schema, spec };
 }
 it('actual schema and toggle retain strong, inline code and link marks', async () => {
@@ -246,5 +259,43 @@ it('uses actual input-rule match positions for committed composition and two-cha
     ).toBe(true);
     expect(result.doc.textContent).toBe('typed');
     expect(result.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual(['highlight']);
+  }
+});
+
+it('completed outer code and math recover literal equals from transient highlight marks', async () => {
+  const { schema } = await setup();
+  for (const source of ['$a==b==$', '`==code==`']) {
+    const plugins = [
+      highlightSourceInputRules.plugin(),
+      inputRules({ rules: [highlightInputRule.inputRule] }),
+    ];
+    let state = EditorState.create({ schema, plugins });
+    const view = {
+      get state() {
+        return state;
+      },
+      composing: false,
+      dispatch(tr: Transaction) {
+        state = state.apply(tr);
+      },
+    } as EditorView;
+    let sawHighlight = false;
+    for (const char of source) {
+      const end = state.doc.content.size - 1;
+      const handled = plugins.some((plugin) =>
+        plugin.props.handleTextInput?.call(plugin, view, end, end, char, () => state.tr),
+      );
+      if (!handled) view.dispatch(state.tr.insertText(char, end));
+      sawHighlight ||= state.doc.rangeHasMark(0, state.doc.content.size, schema.marks.highlight);
+    }
+    expect(sawHighlight).toBe(true);
+    expect(state.doc.rangeHasMark(0, state.doc.content.size, schema.marks.highlight)).toBe(false);
+    if (source.startsWith('$')) {
+      expect(state.doc.firstChild!.firstChild!.type.name).toBe('math_inline');
+      expect(state.doc.firstChild!.firstChild!.attrs.value).toBe('a==b==');
+    } else {
+      expect(state.doc.textContent).toBe('==code==');
+      expect(state.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual(['inlineCode']);
+    }
   }
 });
