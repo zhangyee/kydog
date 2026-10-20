@@ -109,6 +109,9 @@ type UiState = {
    *  于是要么新 project 一律是收起的，要么得靠一个 seen 表在渲染期替它补记录 ——
    *  两条都是拿启发式补上游丢掉的信号。落盘的是 settings.ui.collapsedProjects。 */
   collapsedProjects: Set<string>;
+  /** 每课题显示全部会话，只活在本窗口内存；手动收起时清除。 */
+  showAllThreadProjects: Set<string>;
+  showAllProjectThreads: (path: string) => void;
   dirCache: Record<string, FsNode[]>;
   /** 正在读、还没进缓存的目录。它们也算「在看」：监听集合必须在读之前就包含它们
    *  （见 watchSync.ts），否则读完到开始监听之间的变化没人知道。 */
@@ -229,6 +232,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   }),
   expandedDirs: new Set(),
   collapsedProjects: new Set<string>(),
+  showAllThreadProjects: new Set<string>(),
+  showAllProjectThreads: (path) => set((s) => ({ showAllThreadProjects: new Set(s.showAllThreadProjects).add(path) })),
   dirCache: {},
   dirPending: new Set<string>(),
   dirErrors: {},
@@ -236,7 +241,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   projectsSortBy: 'updated',
   setProjectsGroupBy: (g) => set({ projectsGroupBy: g }),
   setProjectsSortBy: (s) => set({ projectsSortBy: s }),
-  collapseAllProjects: (paths) => set({ collapsedProjects: new Set(paths) }),
+  collapseAllProjects: (paths) => set((s) => {
+    const showAll = new Set(s.showAllThreadProjects);
+    paths.forEach(path => showAll.delete(path));
+    return { collapsedProjects: new Set(paths), showAllThreadProjects: showAll };
+  }),
   setTheme: (t) => set({ theme: t }),
   setReadingFontSize: (s) => set({ readingFontSize: s }),
   toggleWorkspace: () => set((s) => ({ workspaceCollapsed: !s.workspaceCollapsed })),
@@ -295,6 +304,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     const keep = <T>(rec: Record<string, T>) =>
       Object.fromEntries(Object.entries(rec).filter(([k]) => !isWithin(k, root)));
     return {
+      showAllThreadProjects: new Set([...s.showAllThreadProjects].filter(path => !isWithin(path, root))),
       dirCache: keep(s.dirCache),
       dirPending: new Set([...s.dirPending].filter((d) => !isWithin(d, root))),
       dirErrors: keep(s.dirErrors),
@@ -307,8 +317,14 @@ export const useUiStore = create<UiState>((set, get) => ({
   }),
   toggleProject: (path) => set((s) => {
     const next = new Set(s.collapsedProjects);
-    if (next.has(path)) next.delete(path); else next.add(path);
-    return { collapsedProjects: next };
+    if (next.has(path)) {
+      next.delete(path);
+      return { collapsedProjects: next };
+    }
+    next.add(path);
+    const showAll = new Set(s.showAllThreadProjects);
+    showAll.delete(path);
+    return { collapsedProjects: next, showAllThreadProjects: showAll };
   }),
   expandProject: (path) => set((s) => {
     if (!s.collapsedProjects.has(path)) return {};

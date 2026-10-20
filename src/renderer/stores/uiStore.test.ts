@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { currentViewState } from '../viewState';
 import { useUiStore } from './uiStore';
 import { MIN_BROWSER_WIDTH, DEFAULT_BROWSER_WIDTH } from '../../shared/types';
 import { rightPaneLayout } from '../app/rightPane';
@@ -422,4 +423,49 @@ describe('uiStore 浏览器侧栏', () => {
     useUiStore.getState().setWindowWidth(900);
     expect(useUiStore.getState().windowWidth).toBe(900);
   });
+});
+
+
+describe('uiStore project preview lifecycle', () => {
+  beforeEach(() => useUiStore.setState(useUiStore.getInitialState(), true));
+
+  it('manual collapse resets only that project; opening preserves reset', () => {
+    const s = useUiStore.getState();
+    expect([...s.showAllThreadProjects]).toEqual([]);
+    s.showAllProjectThreads('/a');
+    s.showAllProjectThreads('/b');
+    const before = useUiStore.getState().showAllThreadProjects;
+    expect([...before]).toEqual(['/a', '/b']);
+    s.toggleProject('/a');
+    expect([...useUiStore.getState().showAllThreadProjects]).toEqual(['/b']);
+    expect(useUiStore.getState().showAllThreadProjects).not.toBe(before);
+    s.toggleProject('/a');
+    expect([...useUiStore.getState().showAllThreadProjects]).toEqual(['/b']);
+  });
+
+  it('collapse-all resets its paths, while tabs and project cleanup preserve others', () => {
+    const s = useUiStore.getState();
+    s.showAllProjectThreads('/a'); s.showAllProjectThreads('/b'); s.showAllProjectThreads('/c');
+    s.openSettings(); s.openFile('/a/x.md'); s.showThreadTab();
+    s.setProjectsGroupBy('time'); s.setProjectsGroupBy('project');
+    expect([...useUiStore.getState().showAllThreadProjects]).toEqual(['/a', '/b', '/c']);
+    s.collapseAllProjects(['/a', '/c']);
+    expect([...useUiStore.getState().showAllThreadProjects]).toEqual(['/b']);
+    s.showAllProjectThreads('/a');
+    s.dropDirsUnder('/a');
+    expect([...useUiStore.getState().showAllThreadProjects]).toEqual(['/b']);
+    useUiStore.setState(useUiStore.getInitialState(), true);
+    expect([...useUiStore.getState().showAllThreadProjects]).toEqual([]);
+  });
+});
+
+
+it('show-all is absent from the current view snapshot after being used', () => {
+  useUiStore.setState(useUiStore.getInitialState(), true);
+  useUiStore.getState().openFile('/p/view.md');
+  const before = currentViewState();
+  useUiStore.getState().showAllProjectThreads('/p');
+  expect([...useUiStore.getState().showAllThreadProjects]).toEqual(['/p']);
+  expect(currentViewState()).toEqual(before);
+  expect(Object.keys(currentViewState())).toEqual(['threadId', 'filePaths', 'activeFilePath', 'activeTab']);
 });

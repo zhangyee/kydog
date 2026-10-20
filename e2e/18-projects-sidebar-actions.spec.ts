@@ -2,7 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { launchKydog, teardown, seedSettings, seedSamplePackage, type LaunchedApp } from './helpers';
+import { launchKydog, teardown, seedSettings, seedSamplePackage, newThread, type LaunchedApp } from './helpers';
 
 /**
  * 左栏的 project / thread 操作与它们的落盘，最后一条重启一次验持久化。
@@ -240,6 +240,30 @@ test('17-project-tree-collapse: selected thread project still toggles closed', a
   await expect(threadRow).toBeVisible();
 });
 
+test('课题预览：隐藏的当前会话在手动收起重开后恢复前五条', async () => {
+  const { page } = launched;
+  const project = page.getByTestId(`project-${dirA}`);
+  const rows = project.locator('[data-testid^="thread-"][class~="group"]');
+  const more = page.getByTestId(`project-show-more-${dirA}`);
+  await expect(rows).toHaveCount(5);
+  await expect(more).toHaveText('展开显示');
+  await more.click();
+  await expect(rows).toHaveCount(7);
+  // t-arc2 is genuinely sixth by activity, and stays current across both real clicks.
+  await page.getByTestId('thread-t-arc2').click();
+  await expect(page.getByTestId('tab-t-arc2')).toBeVisible();
+  await page.getByTestId(`project-toggle-${nameA}`).click();
+  await page.getByTestId(`project-toggle-${nameA}`).click();
+  await expect(rows).toHaveCount(5);
+  expect(await rows.evaluateAll(els => els.map(el => el.getAttribute('data-testid'))))
+    .toEqual(['thread-t-a', 'thread-t-long', 'thread-t-short', 'thread-t-x', 'thread-t-arc1']);
+  await expect(more).toBeVisible();
+  await expect(page.getByTestId('tab-t-arc2')).toBeVisible();
+  await more.click();
+  await expect(page.getByTestId('thread-t-arc2')).toBeVisible();
+  await page.getByTestId('thread-t-a').click();
+});
+
 test('35-marquee: 长标题 hover 滚动，短标题不滚，离开复位', async () => {
   const { page } = launched;
   const longRow = page.getByTestId('thread-t-long');
@@ -403,6 +427,8 @@ test('右键归档：不打开被右键的那一行，当前对话不变（porta
 
 test('多选：单击 + ⇧ 单击连选三条，右键批量归档', async () => {
   const { page } = launched;
+  // collapse-all cleared A's earlier expansion; expose arc2/arc3 before the range action.
+  await page.getByTestId(`project-show-more-${dirA}`).click();
   const rows = ['t-arc1', 't-arc2', 't-arc3'].map((id) => page.getByTestId(`thread-${id}`));
   await rows[0].click();
   await rows[2].click({ modifiers: ['Shift'] });
@@ -424,6 +450,18 @@ test('多选：单击 + ⇧ 单击连选三条，右键批量归档', async () =
 
 test('07/50/53c/18-pin: 重启之后主题、置顶、收起、改名都在；视图不恢复', async () => {
   const { page } = launched;
+  // Prepare six active A threads only after the existing batch archive/count assertions.
+  await page.getByTestId('thread-t-a').click();
+  for (let i = 0; i < 3; i++) await newThread(page);
+  await page.getByTestId('thread-t-a').click();
+  // Batch archive left show-all active; reset A before proving its fresh expansion.
+  await page.getByTestId(`project-toggle-${nameA}`).click();
+  await page.getByTestId(`project-toggle-${nameA}`).click();
+  const rows = page.getByTestId(`project-${dirA}`).locator('[data-testid^="thread-"][class~="group"]');
+  await expect(rows).toHaveCount(5);
+  await page.getByTestId(`project-show-more-${dirA}`).click();
+  await expect(rows).toHaveCount(6);
+  await expect(page.getByTestId('thread-t-short')).toBeVisible();
   // 重启前：开着一个 thread tab（53c：冷启动不恢复视图快照）、切到 midnight（07）。
   await page.getByTestId('thread-t-a').click();
   await expect(page.getByTestId('tab-t-a')).toBeVisible();
@@ -436,10 +474,15 @@ test('07/50/53c/18-pin: 重启之后主题、置顶、收起、改名都在；�
     return { theme: s.ui.theme, collapsed: s.ui.collapsedProjects };
   }).toEqual({ theme: 'midnight', collapsed: [dirB] });
 
+  const persisted = await readSettings();
+  expect(Object.keys(persisted.ui)).toContain('collapsedProjects');
+  expect(Object.keys(persisted.ui)).not.toContain('showAllThreadProjects');
   await teardown(launched);
   launched = await launchKydog({ kydogHome: home });
   const p2 = launched.page;
 
+  await expect(p2.getByTestId(`project-${dirA}`).locator('[data-testid^="thread-"][class~="group"]')).toHaveCount(5);
+  await expect(p2.getByTestId(`project-show-more-${dirA}`)).toHaveText('展开显示');
   await expect(p2.locator('html')).toHaveAttribute('data-theme', 'midnight');
   // 置顶的 B 排第一，改过名的 A 在它后面。
   await expect(p2.getByTestId(`project-toggle-${nameB}`)).toBeVisible();

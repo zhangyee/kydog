@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyProjectsView } from './projectsView';
+import { applyProjectsView, projectThreadsPreview } from './projectsView';
 import type { Project, Thread } from '../../../shared/types';
 
 const proj = (path: string, addedAt: string, pinned = false): Project => ({ path, addedAt, pinned: pinned || undefined });
@@ -53,5 +53,40 @@ describe('applyProjectsView', () => {
     const r = applyProjectsView({ projects, threadsByProject: tbp, groupBy: 'time', sortBy: 'updated' });
     if (r.kind !== 'flat') throw new Error('expected flat');
     expect(r.threads[0].id).toBe('a1');
+  });
+});
+
+
+describe('projectThreadsPreview', () => {
+  const projects = [proj('/a', 'a'), proj('/b', 'b')];
+  // Deliberately shuffled; creation and activity rank in opposite directions, t7 pinned.
+  const all = [3, 7, 1, 6, 2, 5, 4].map(i =>
+    thd(`t${i}`, '/a', `2026-01-0${i}`, `2026-02-0${8 - i}`, i === 7));
+  const ids = (v: ReturnType<typeof projectThreadsPreview>) => v.kind === 'grouped'
+    ? v.groups.map(g => g.threads.map(t => t.id)) : v.threads.map(t => t.id);
+
+  it.each([
+    ['updated', ['t7', 't1', 't2', 't3', 't4'], ['t7', 't1', 't2', 't3', 't4', 't5', 't6']],
+    ['created', ['t7', 't6', 't5', 't4', 't3'], ['t7', 't6', 't5', 't4', 't3', 't2', 't1']],
+  ] as const)('sort %s before preview, with independent project state', (sortBy, preview, full) => {
+    const view = applyProjectsView({ projects, threadsByProject: { '/a': all, '/b': [thd('b1', '/b', '0', '0')] }, groupBy: 'project', sortBy });
+    expect(ids(projectThreadsPreview(view, new Set()))).toEqual([preview, ['b1']]);
+    expect(ids(projectThreadsPreview(view, new Set(['/b'])))).toEqual([preview, ['b1']]);
+    expect(ids(projectThreadsPreview(view, new Set(['/a'])))).toEqual([full, ['b1']]);
+    expect(ids(view)).toEqual([full, ['b1']]);
+  });
+
+  it.each([
+    [0, []], [5, ['t5', 't4', 't3', 't2', 't1']], [6, ['t6', 't5', 't4', 't3', 't2']],
+  ])('%i threads has exact preview boundary', (count, want) => {
+    const threads = Array.from({ length: count as number }, (_, i) => thd(`t${i + 1}`, '/a', `${i}`, `${i}`));
+    const view = applyProjectsView({ projects, threadsByProject: { '/a': threads }, groupBy: 'project', sortBy: 'updated' });
+    expect(ids(projectThreadsPreview(view, new Set()))).toEqual([want, []]);
+  });
+
+  it('flat keeps the full sorted list and identity', () => {
+    const view = applyProjectsView({ projects, threadsByProject: { '/a': all, '/b': [thd('b1', '/b', '0', '0')] }, groupBy: 'time', sortBy: 'updated' });
+    expect(projectThreadsPreview(view, new Set())).toBe(view);
+    expect(ids(projectThreadsPreview(view, new Set()))).toEqual(['t7', 't1', 't2', 't3', 't4', 't5', 't6', 'b1']);
   });
 });

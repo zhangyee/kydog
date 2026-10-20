@@ -57,3 +57,16 @@ export function applyProjectsView({ projects, threadsByProject, groupBy, sortBy 
     })),
   };
 }
+
+
+/** 完整排序后再取预览；完整 view 留给导航定位与总数。平铺不受项目预览影响。 */
+export function projectThreadsPreview(view: ProjectsView, showAllProjects: ReadonlySet<string>): ProjectsView {
+  if (view.kind === 'flat') return view;
+  return {
+    kind: 'grouped',
+    groups: view.groups.map(group => ({
+      ...group,
+      threads: showAllProjects.has(group.project.path) ? group.threads : group.threads.slice(0, 5),
+    })),
+  };
+}

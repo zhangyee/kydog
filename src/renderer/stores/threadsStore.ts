@@ -5,6 +5,8 @@ type ThreadsState = {
   projects: Project[];
   threadsByProject: Record<string, Thread[]>;
   currentThreadId: string | null;
+  /** 明确导航的身份（含同 ID 重选及当前会话迁移项目）；广播更新不算。不持久化。 */
+  threadNavigationRevision: number;
   /**
    * 用户最近一次明确指向的项目 —— 「新对话」按钮 / ⌘N / 欢迎页把对话建在这里
    * （读它走 newThreadProjectPath）。**只由明确动作写入，不按时间戳推测**：
@@ -56,14 +58,17 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
   projects: [],
   threadsByProject: {},
   currentThreadId: null,
+  threadNavigationRevision: 0,
   focusedProjectPath: null,
   historyByThread: {},
   hydrate: (projects, threads) => set({ projects, threadsByProject: bucketize(threads) }),
   selectThread: (threadId) => set((s) => {
     const thread = threadId ? findThread(s.threadsByProject, threadId) : undefined;
-    return thread
-      ? { currentThreadId: threadId, focusedProjectPath: thread.projectPath }
-      : { currentThreadId: threadId };
+    return {
+      currentThreadId: threadId,
+      threadNavigationRevision: s.threadNavigationRevision + 1,
+      ...(thread ? { focusedProjectPath: thread.projectPath } : {}),
+    };
   }),
   addProject: (project) => set((s) => ({
     projects: [...s.projects.filter((p) => p.path !== project.path), project],
@@ -77,7 +82,7 @@ export const useThreadsStore = create<ThreadsState>((set) => ({
       // 只认「当前对话的项目变了」：标题生成之类把当前对话推回来时不许把焦点抢回去。
       const moved = thread.id === s.currentThreadId && prev !== undefined && prev.projectPath !== thread.projectPath;
       return moved
-        ? { threadsByProject: bucketize(flat), focusedProjectPath: thread.projectPath }
+        ? { threadsByProject: bucketize(flat), focusedProjectPath: thread.projectPath, threadNavigationRevision: s.threadNavigationRevision + 1 }
         : { threadsByProject: bucketize(flat) };
     }
     // 进来的是一个已归档的：它出桶（bucketize 滤掉）；其 history 一律丢掉（同 removeThread）；正开着的话主区回到 Welcome。

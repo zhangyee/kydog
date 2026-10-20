@@ -6,36 +6,46 @@ import { TreeChildren } from './TreeChildren';
 import { ProjectsHeaderActions } from './ProjectsHeaderActions';
 import { ProjectRow } from './ProjectRow';
 import { ThreadRow } from './ThreadRow';
-import { applyProjectsView } from './projectsView';
+import { applyProjectsView, projectThreadsPreview } from './projectsView';
 import { useSidebarSelection, visibleThreadOrder, effectiveSelection } from './sidebarSelection';
 
 export function ProjectsTree() {
   const projects = useThreadsStore((s) => s.projects);
   const threadsByProject = useThreadsStore((s) => s.threadsByProject);
   const currentThreadId = useThreadsStore((s) => s.currentThreadId);
+  const navigationRevision = useThreadsStore((s) => s.threadNavigationRevision);
+  const showAll = useUiStore((s) => s.showAllThreadProjects);
+  const showAllProjectThreads = useUiStore((s) => s.showAllProjectThreads);
   const collapsed = useUiStore((s) => s.collapsedProjects);
   const toggleProject = useUiStore((s) => s.toggleProject);
   const expandProject = useUiStore((s) => s.expandProject);
   const groupBy = useUiStore((s) => s.projectsGroupBy);
   const sortBy = useUiStore((s) => s.projectsSortBy);
 
-  const view = applyProjectsView({ projects, threadsByProject, groupBy, sortBy });
+  const fullView = applyProjectsView({ projects, threadsByProject, groupBy, sortBy });
+  const view = projectThreadsPreview(fullView, showAll);
   const selectedIds = useSidebarSelection((s) => s.selectedIds);
   // 可见顺序与有效选中每次渲染现算，不另存（spec §2.2：收起项目下的行不算选中）。
   const order = visibleThreadOrder(view, collapsed);
   const selection = effectiveSelection(selectedIds, order);
 
-  // 选中某个 thread 时把它所在的 project 展开一次。ref 记住「已经为这个 thread
-  // 展开过了」，否则用户随后手动收起会被这个 effect 立刻顶回去（见 e2e/17）。
-  const autoExpandedThreadRef = useRef<string | null>(null);
+  // 每个明确导航只消费一次。手动重开项目不是导航；数据未齐时保留未消费身份，
+  // 等目标与所属项目到达后再展开，不能因提前记下 ID 而丢掉恢复导航。
+  const consumedNavigationRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!currentThreadId) { autoExpandedThreadRef.current = null; return; }
-    if (autoExpandedThreadRef.current === currentThreadId) return;
-    autoExpandedThreadRef.current = currentThreadId;
+    if (!currentThreadId || consumedNavigationRef.current === navigationRevision) return;
     const t = Object.values(threadsByProject).flat().find(x => x.id === currentThreadId);
-    if (!t) return;
+    if (!t || !projects.some(p => p.path === t.projectPath)) return;
+    const grouped = applyProjectsView({ projects, threadsByProject, groupBy: 'project', sortBy });
+    if (grouped.kind !== 'grouped') return;
+    const group = grouped.groups.find(g => g.project.path === t.projectPath);
+    if (!group) return;
+    consumedNavigationRef.current = navigationRevision;
     expandProject(t.projectPath);
-  }, [currentThreadId, threadsByProject, expandProject]);
+    if (group.threads.findIndex(thread => thread.id === currentThreadId) >= 5) {
+      showAllProjectThreads(t.projectPath);
+    }
+  }, [currentThreadId, navigationRevision, threadsByProject, projects, sortBy, expandProject, showAllProjectThreads]);
 
   if (projects.length === 0) {
     return (
@@ -61,6 +71,16 @@ export function ProjectsTree() {
                 {open && (
                   <TreeChildren>
                     {threads.map((t) => <ThreadRow key={t.id} thread={t} selection={selection} order={order} />)}
+                    {!showAll.has(project.path) && fullView.kind === 'grouped'
+                      && (fullView.groups.find(g => g.project.path === project.path)?.threads.length ?? 0) > 5 && (
+                      <button
+                        type="button"
+                        data-testid={`project-show-more-${project.path}`}
+                        className="text-xs px-2.5 py-1 hover:bg-[color:var(--color-hover-bg)] rounded"
+                        style={{ marginLeft: 34, color: 'var(--color-ink-soft)' }}
+                        onClick={() => showAllProjectThreads(project.path)}
+                      >展开显示</button>
+                    )}
                     {threads.length === 0 && (
                       <div className="text-xs italic px-2.5 py-1" style={{ paddingLeft: 34, color: 'var(--color-ink-soft)' }}>
                         暂无对话

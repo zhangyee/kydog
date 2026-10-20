@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyClick, effectiveSelection, visibleThreadOrder, EMPTY_SELECTION } from './sidebarSelection';
-import { applyProjectsView } from './projectsView';
+import { applyProjectsView, projectThreadsPreview } from './projectsView';
 import type { Project, Thread } from '../../../shared/types';
 
 /**
@@ -102,4 +102,17 @@ describe('visibleThreadOrder', () => {
     const view = applyProjectsView({ projects, threadsByProject, groupBy: 'time', sortBy: 'updated' });
     expect(visibleThreadOrder(view, new Set(['/a']))).toEqual(['b1', 'a1', 'a2']);
   });
+});
+
+
+it('preview hides rows from effective selection and Shift ranges together', () => {
+  const ts: Thread[] = Array.from({ length: 7 }, (_, i) => ({ id: `t${i + 1}`, projectPath: '/a', title: '', createdAt: '0', lastActiveAt: `${7 - i}` }));
+  const view = applyProjectsView({ projects: [{ path: '/a', addedAt: '0' }, { path: '/b', addedAt: '0' }], threadsByProject: { '/a': ts, '/b': [{ ...ts[0], id: 'b', projectPath: '/b' }] }, groupBy: 'project', sortBy: 'updated' });
+  const full = visibleThreadOrder(projectThreadsPreview(view, new Set(['/a'])), new Set());
+  expect(effectiveSelection(['t4', 't6', 't7'], full)).toEqual(['t4', 't6', 't7']);
+  expect(applyClick(sel([], 't4'), { id: 'b', shift: true, toggle: false }, ctx('t7', full))).toEqual(sel(['t4', 't5', 't6', 't7', 'b'], 't4'));
+  const preview = visibleThreadOrder(projectThreadsPreview(view, new Set()), new Set());
+  expect(preview).toEqual(['t1', 't2', 't3', 't4', 't5', 'b']);
+  expect(effectiveSelection(['t4', 't6', 't7'], preview)).toEqual([]);
+  expect(applyClick(sel([], 't4'), { id: 'b', shift: true, toggle: false }, ctx('t7', preview))).toEqual(sel(['t4', 't5', 'b'], 't4'));
 });

@@ -15,3 +15,33 @@ describe('threadsStore', () => {
     expect(S().historyByThread['t2']!.map((m) => m.id)).toEqual(['a']);
   });
 });
+
+
+describe('thread navigation identity', () => {
+  beforeEach(() => useThreadsStore.setState(useThreadsStore.getInitialState(), true));
+  const t = (id: string, projectPath = '/a') => ({ id, projectPath, title: id, createdAt: '1', lastActiveAt: '2' });
+  it('every explicit selection, including same ID and null, advances revision', () => {
+    const s = useThreadsStore.getState();
+    expect(s.threadNavigationRevision).toBe(0);
+    s.hydrate([], [t('a')]);
+    s.selectThread('a');
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(1);
+    s.selectThread('a');
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(2);
+    s.selectThread(null);
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(3);
+  });
+  it('only an existing current thread project migration advances revision on upsert', () => {
+    const s = useThreadsStore.getState();
+    s.hydrate([], [t('a'), t('b')]); s.selectThread('a');
+    const revision = useThreadsStore.getState().threadNavigationRevision;
+    s.upsertThread({ ...t('a'), title: 'renamed', lastActiveAt: '9' });
+    s.upsertThread(t('b', '/b'));
+    s.upsertThread(t('new', '/b'));
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(revision);
+    s.upsertThread(t('a', '/b'));
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(revision + 1);
+    s.upsertThread(t('a', '/b'));
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(revision + 1);
+  });
+});
