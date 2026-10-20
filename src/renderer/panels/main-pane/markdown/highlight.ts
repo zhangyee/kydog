@@ -1,8 +1,9 @@
 /** Editor adapters for the shared source grammar. No DOM access or bridge calls. */
 import { $command, $inputRule, $markSchema, $remark, $prose } from '@milkdown/kit/utils';
-import type { ResolvedPos } from '@milkdown/kit/prose/model';
+import type { ResolvedPos, Node as PmNode } from '@milkdown/kit/prose/model';
 import type { InlineCode } from 'mdast';
-import type { InlineMath } from 'mdast-util-math';
+import { mathToMarkdown, type InlineMath } from 'mdast-util-math';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import { toggleMark } from '@milkdown/kit/prose/commands';
 import { InputRule, inputRules } from '@milkdown/kit/prose/inputrules';
 import { unified } from 'unified';
@@ -37,6 +38,36 @@ export const toggleHighlightCommand = $command(
 );
 
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkHighlight);
+/** Recover supported leaf nodes using the same Markdown writers as saving.
+ * Only math/image have a closing delimiter before toMarkdown's final newline;
+ * hardbreak source is handled explicitly so its meaningful newline is retained. */
+function inlineNodeSource(node: PmNode): string | undefined {
+  if (!node.isLeaf) return undefined;
+  switch (node.type.name) {
+    case 'math_inline':
+      return typeof node.attrs.value === 'string'
+        ? toMarkdown(
+            { type: 'inlineMath', value: node.attrs.value },
+            { extensions: [mathToMarkdown()] },
+          ).slice(0, -1)
+        : undefined;
+    case 'image': {
+      const { src, alt, title } = node.attrs;
+      if (
+        typeof src !== 'string' ||
+        (alt != null && typeof alt !== 'string') ||
+        (title != null && typeof title !== 'string')
+      )
+        return undefined;
+      return toMarkdown({ type: 'image', url: src, alt, title }).slice(0, -1);
+    }
+    case 'hardbreak':
+      return node.attrs.isInline ? '\n' : '\\\n';
+    default:
+      return undefined;
+  }
+}
+
 /** Source syntax plus an exact map for the characters that already exist in the document.
  * Synthetic mark delimiters have no document position. Consecutive highlighted text
  * nodes share one delimiter pair, including when bold/link marks split the text. */
@@ -48,11 +79,20 @@ function inlineSource(cursor: ResolvedPos, restoreHighlights = false) {
     positions.push(...Array<undefined>(text.length).fill(undefined));
   };
   let highlighting = false;
+  let complete = true;
+  let hasAtoms = false;
   cursor.parent.content.cut(0, cursor.parentOffset).forEach((node, offset) => {
     const highlighted = restoreHighlights && node.marks.some((mark) => mark.type.name === 'highlight');
     if (highlighted !== highlighting) synthetic('==');
     highlighting = highlighted;
-    const value = node.isText ? node.text! : '\uFFFC';
+    if (!node.isText) {
+      hasAtoms = true;
+      const value = inlineNodeSource(node);
+      if (value === undefined) complete = false;
+      else synthetic(value); // Generated syntax never points inside an atom's document boundary.
+      return;
+    }
+    const value = node.text!;
     const code = node.marks.some((mark) => mark.type.spec.code);
     const fence = '`'.repeat(Math.max(0, ...[...value.matchAll(/`+/g)].map((match) => match[0].length)) + 1);
     if (code) synthetic(`${fence} `);
@@ -63,7 +103,7 @@ function inlineSource(cursor: ResolvedPos, restoreHighlights = false) {
     if (code) synthetic(` ${fence}`);
   });
   if (highlighting) synthetic('==');
-  return { source, positions };
+  return { source, positions, complete, hasAtoms };
 }
 
 export const highlightInputRule = $inputRule(
@@ -78,6 +118,7 @@ export const highlightInputRule = $inputRule(
         )
           return null;
         const projected = inlineSource($start);
+        if (!projected.complete) return null;
         let { source } = projected;
         const { positions } = projected;
         source += match[0];
@@ -121,7 +162,13 @@ export const highlightSourceInputRules = $prose((ctx) =>
             (state.storedMarks ?? cursor.marks()).some((mark) => mark.type.spec.code)
           )
             return null;
-          const { source: prefix, positions } = inlineSource(cursor, true);
+          if (!state.doc.rangeHasMark(cursor.start(), end, highlightSchema.type(ctx))) return null;
+          const { source: prefix, positions, complete, hasAtoms } = inlineSource(cursor, true);
+          // A declined conversion must not fall through to a text-only rule that
+          // would consume atoms. Handle the keystroke literally and retain the doc.
+          const literalInput = () => state.tr.insertText(match[0], start, end);
+          const decline = () => (hasAtoms ? literalInput() : null);
+          if (!complete) return literalInput();
           const source = prefix + match[0];
           let target: InlineCode | InlineMath | undefined;
           visit(parser.parse(source), (node) => {
@@ -131,10 +178,10 @@ export const highlightSourceInputRules = $prose((ctx) =>
             )
               target = node;
           });
-          if (!target) return null;
+          if (!target) return decline();
           const from = positions[target.position!.start.offset!];
           if (from === undefined || !state.doc.rangeHasMark(from, end, highlightSchema.type(ctx)))
-            return null;
+            return decline();
           const surroundingMarks = state.doc
             .resolve(from)
             .marks()
@@ -147,7 +194,7 @@ export const highlightSourceInputRules = $prose((ctx) =>
                   ...surroundingMarks,
                   state.schema.marks.inlineCode.create(),
                 ]);
-          if (!replacement) return null;
+          if (!replacement) return decline();
           return state.tr.replaceWith(from, end, replacement).setStoredMarks(surroundingMarks);
         },
         { inCode: false, inCodeMark: false },

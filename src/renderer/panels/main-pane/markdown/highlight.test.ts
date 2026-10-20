@@ -12,7 +12,7 @@ import {
 } from '@milkdown/kit/core';
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState, TextSelection, type Transaction } from '@milkdown/kit/prose/state';
-import { isMarkSelectedCommand } from '@milkdown/kit/preset/commonmark';
+import { isMarkSelectedCommand, inlineCodeInputRule } from '@milkdown/kit/preset/commonmark';
 import { inputRules } from '@milkdown/kit/prose/inputrules';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { Crepe } from '@milkdown/crepe';
@@ -42,6 +42,9 @@ async function setup() {
       code_block: { content: 'text*', group: 'block', code: true, marks: '' },
       text: { group: 'inline' },
       math_inline: { group: 'inline', inline: true, atom: true, attrs: { value: { default: '' } } },
+      image: { group: 'inline', inline: true, atom: true, attrs: { src: {}, alt: {}, title: {} } },
+      hardbreak: { group: 'inline', inline: true, attrs: { isInline: { default: false } } },
+      unknown_atom: { group: 'inline', inline: true, atom: true, attrs: { payload: {} } },
     },
     marks: {
       highlight: spec,
@@ -297,5 +300,97 @@ it('completed outer code and math recover literal equals from transient highligh
       expect(state.doc.textContent).toBe('==code==');
       expect(state.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual(['inlineCode']);
     }
+  }
+});
+
+it('completed code preserves supported inline atom source and maps subsequent text by document boundaries', async () => {
+  const { schema } = await setup();
+  for (const [middle, expected] of [
+    [schema.text('plain'), 'before plain ==y=='],
+    [schema.nodes.math_inline.create({ value: 'x' }), 'before $x$ ==y=='],
+    [
+      schema.nodes.image.create({ src: 'fig.png', alt: 'plot', title: 'caption' }),
+      'before ![plot](fig.png "caption") ==y==',
+    ],
+    [schema.nodes.hardbreak.create(), 'before \\\n ==y=='],
+    [schema.nodes.hardbreak.create({ isInline: true }), 'before \n ==y=='],
+  ] as const) {
+    const plugin = highlightSourceInputRules.plugin();
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', null, [
+        schema.text('`before '),
+        middle,
+        schema.text(' '),
+        schema.text('y', [schema.marks.highlight.create()]),
+      ]),
+    ]);
+    let state = EditorState.create({
+      doc,
+      plugins: [plugin],
+      selection: TextSelection.create(doc, doc.content.size - 1),
+    });
+    const view = {
+      get state() {
+        return state;
+      },
+      composing: false,
+      dispatch(tr: Transaction) {
+        state = state.apply(tr);
+      },
+    } as EditorView;
+    const end = state.selection.from;
+    expect(plugin.props.handleTextInput!.call(plugin, view, end, end, '`', () => state.tr)).toBe(true);
+    expect(state.doc.textContent, middle.type.name).toBe(expected);
+    expect(state.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual(['inlineCode']);
+  }
+});
+
+it('unsupported atoms remain intact and do not fall through to the destructive upstream code rule', async () => {
+  const { ctx, schema } = await setup();
+  await inlineCodeInputRule(ctx)();
+  const upstream = inputRules({ rules: [inlineCodeInputRule.inputRule] });
+  const source = highlightSourceInputRules.plugin();
+  for (const atom of [
+    schema.nodes.unknown_atom.create({ payload: 'must survive' }),
+    schema.nodes.math_inline.create({ value: '`' }),
+  ]) {
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', null, [
+        schema.text('`before '),
+        atom,
+        schema.text(' '),
+        schema.text('y', [schema.marks.highlight.create()]),
+      ]),
+    ]);
+    const run = (plugins: (typeof upstream)[]) => {
+      let state = EditorState.create({
+        doc,
+        plugins,
+        selection: TextSelection.create(doc, doc.content.size - 1),
+      });
+      const view = {
+        get state() {
+          return state;
+        },
+        composing: false,
+        dispatch(tr: Transaction) {
+          state = state.apply(tr);
+        },
+      } as EditorView;
+      const end = state.selection.from;
+      const handled = plugins.some((plugin) =>
+        plugin.props.handleTextInput?.call(plugin, view, end, end, '`', () => state.tr),
+      );
+      return { handled, doc: state.doc };
+    };
+    // Positive control: the actual upstream rule accepts this mixed document and consumes its atom.
+    const unsafe = run([upstream]);
+    expect(unsafe.handled).toBe(true);
+    expect(unsafe.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual(['inlineCode']);
+    const safe = run([source, upstream]);
+    expect(safe.handled).toBe(true);
+    expect(safe.doc.firstChild!.child(1).eq(atom)).toBe(true);
+    expect(safe.doc.textContent).toBe('`before  y`');
+    expect(safe.doc.firstChild!.child(3).marks.map((mark) => mark.type.name)).toEqual(['highlight']);
   }
 });

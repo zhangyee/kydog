@@ -112,6 +112,7 @@ test.beforeAll(async () => {
       await fs.writeFile(path.join(proj, 'highlight.md'), '# 高亮报告\n\n==中文== and ==English==\n\n==**bold** [link](https://example.org) `code`==\n\n`==literal==`\n\nplain\n');
       await fs.writeFile(path.join(proj, 'highlight-print.md'), '==ZZ_HIGHLIGHT==\n');
       await fs.writeFile(path.join(proj, 'highlight-sequences.md'), '# sequences\n\nmath\n\ncode\n');
+      await fs.writeFile(path.join(proj, 'highlight-atoms.md'), '# atoms\n\n\\`before $x$ ![plot](figs/a.png "caption") ==y==\n');
       await seedProject(home, proj, [{ id: 'thr-1', title: '测试 Thread' }]);
     },
   });
@@ -657,4 +658,26 @@ test('30-markdown-editor: completed typed math and code retain transient highlig
   await openMd('highlight-sequences.md');
   await expect(editor.locator('[data-type="math_inline"]')).toHaveAttribute('data-value', 'a==b==');
   await expect(editor.locator('code')).toHaveText('==code==');
+});
+
+
+test('30-markdown-editor: existing inline atoms retain source in completed code and saved Markdown', async () => {
+  const { page } = launched;
+  const file = at('highlight-atoms.md');
+  const editor = await openMd('highlight-atoms.md');
+  await expect(editor.locator('[data-type="math_inline"]')).toHaveAttribute('data-value', 'x');
+  await expect(editor.locator('img')).toHaveAttribute('alt', 'plot');
+  await expect(editor.locator('mark')).toHaveText('y');
+  await editor.locator('mark').click();
+  await page.keyboard.press(END_OF_LINE);
+  await page.keyboard.type('`');
+  const expected = 'before $x$ ![plot](figs/a.png "caption") ==y==';
+  await expect(editor.locator('code')).toHaveText(expected);
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect.poll(() => fs.readFile(file, 'utf8')).toContain('`' + expected + '`');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toHaveCount(0);
+  await page.getByTestId(`tab-close-${file}`).click();
+  await openMd('highlight-atoms.md');
+  await expect(editor.locator('code')).toHaveText(expected);
 });
