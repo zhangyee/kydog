@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import * as persistPaths from './persist/paths';
+import { saveIndex } from './persist/indexFile';
+import { fileWatcherService } from './project/fileWatcher';
+import type { TrashFilesResult } from '../shared/files';
 import { RPC_METHODS, type RpcMethod } from '../shared/protocol';
 import type { TelemetryService, TelemetrySettings } from './telemetry/telemetryService';
 
@@ -30,7 +37,7 @@ vi.mock('electron', () => ({
   app: { getVersion: () => '1.2.3', getLocale: () => 'zh-CN', isPackaged: true },
   dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
   ipcMain: { handle: vi.fn() },
-  shell: { openExternal: vi.fn(), showItemInFolder: vi.fn() },
+  shell: { openExternal: vi.fn(), showItemInFolder: vi.fn(), trashItem: vi.fn() },
   BrowserWindow: class {
     static fromWebContents(sender: unknown) {
       return sender === h.windowSender ? { close: () => { h.windowCloseCalls += 1; } } : null;
@@ -602,5 +609,50 @@ describe('md 导出 PDF 的三条 RPC', () => {
     reveal.mockClear();
     expect(() => call('file.revealInFolder', { path: 'a.pdf' })).toThrow();
     expect(reveal).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('file.trash RPC', () => {
+  it('registers the method, forwards actual paths/results, and notifies only successful paths after trashing', async () => {
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-handler-trash-'));
+    const root = path.join(temp, 'project');
+    const trash = path.join(temp, 'trash');
+    const md = path.join(root, 'selected.md');
+    const pdf = path.join(root, 'failed.pdf');
+    const html = path.join(root, 'page.html');
+    const notify = vi.spyOn(fileWatcherService, 'notifyChanges');
+    const indexPath = vi.spyOn(persistPaths, 'INDEX_FILE', 'get').mockReturnValue(path.join(temp, 'index.json'));
+    const { shell } = await import('electron');
+    try {
+      await fs.mkdir(root);
+      await fs.mkdir(trash);
+      await fs.writeFile(md, 'SELECTED');
+      await fs.writeFile(pdf, 'RETAINED');
+      await fs.writeFile(html, 'HTML');
+      await saveIndex({ schemaVersion: 1, projects: [{ path: root, addedAt: '2026-10-20T00:00:00Z' }], threads: [] });
+      vi.mocked(shell.trashItem).mockImplementation(async (target) => {
+        if (target === pdf) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+        await fs.rename(target, path.join(trash, path.basename(target)));
+      });
+      const method = 'file.trash' as RpcMethod;
+      expect(RPC_METHODS).toContain('file.trash');
+      const result = await call(method, { projectPath: root, paths: [md, pdf, md] }) as TrashFilesResult;
+      expect(result).toEqual({ trashed: [md], failed: [{ path: pdf, error: { code: 'fs.write_failed', message: expect.stringContaining('EPERM') } }] });
+      expect(await fs.readFile(path.join(trash, 'selected.md'), 'utf8')).toBe('SELECTED');
+      expect(await fs.readFile(pdf, 'utf8')).toBe('RETAINED');
+      expect(notify.mock.calls).toEqual([[[md]]]);
+
+      // Same-test positive control above proves that notification lookup and moving both work.
+      notify.mockClear();
+      await expect(call(method, { projectPath: root, paths: [pdf, html] })).rejects.toMatchObject({ code: 'fs.access_denied' });
+      expect(await fs.readFile(pdf, 'utf8')).toBe('RETAINED');
+      expect(notify.mock.calls).toEqual([]);
+    } finally {
+      vi.mocked(shell.trashItem).mockReset();
+      notify.mockRestore();
+      indexPath.mockRestore();
+      await fs.rm(temp, { recursive: true, force: true });
+    }
   });
 });

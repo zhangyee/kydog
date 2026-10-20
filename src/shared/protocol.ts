@@ -13,6 +13,7 @@ import type { SerializedError } from './errors';
 import type { PdfAnnotationsFile } from './pdfSidecar';
 import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar';
 import type { MdExportOptions } from './mdExport';
+import type { TrashFilesArgs, TrashFilesResult } from './files';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -138,6 +139,7 @@ export type RpcCall =
   // realpath 之内，符号链接指向目录树外也会被拒。学习报告内联本地图片用这个，见
   // reportTheme.ts 的 inlineLocalImages 与 fileService.readBytesWithin 的注释。
   | { method: 'file.readBytesWithin'; args: { baseDir: string; path: string }; result: { bytes: Uint8Array<ArrayBuffer> } }
+  | { method: 'file.trash'; args: TrashFilesArgs; result: TrashFilesResult }
   | { method: 'file.writeText'; args: { path: string; content: string }; result: void }
   | { method: 'file.revealInFolder'; args: { path: string }; result: void }
   | { method: 'markdown.exportPdf'; args: { mdPath: string; markdown: string; outPath: string; options: MdExportOptions }; result: { pdfPath: string } }
@@ -296,6 +298,7 @@ export const RPC_METHODS = [
   'file.readText',
   'file.readBytes',
   'file.readBytesWithin',
+  'file.trash',
   'file.writeText',
   'file.revealInFolder',
   'markdown.exportPdf',

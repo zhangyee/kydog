@@ -21,6 +21,7 @@ import { browserService } from './browser/browserService';
 import { institutionService } from './institution/institutionService';
 import { toolsService } from './skills/toolsService';
 import { fileService } from './fs/fileService';
+import { trashFiles } from './fs/trashFiles';
 import { renderPageToPng } from './pdf/pdfRaster';
 import { exportMarkdownPdf } from './markdown/mdPdfExport';
 import { pdfAnnotations } from './pdf/pdfAnnotations';
@@ -206,6 +207,11 @@ export function registerAllHandlers(): void {
   registerHandler('file.readText', (args) => fileService.readText(args));
   registerHandler('file.readBytes', (args) => fileService.readBytes(args));
   registerHandler('file.readBytesWithin', (args) => fileService.readBytesWithin(args));
+  registerHandler('file.trash', async (args) => {
+    const result = await trashFiles(args);
+    fileWatcherService.notifyChanges(result.trashed);
+    return result;
+  });
   registerHandler('file.writeText', (args) => fileService.writeText(args));
   registerHandler('pdf.renderPage', (args) => renderPageToPng(args));
   registerHandler('pdf.annotations.load', (args) => pdfAnnotations.load(args));
