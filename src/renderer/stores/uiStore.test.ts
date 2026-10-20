@@ -469,3 +469,12 @@ it('show-all is absent from the current view snapshot after being used', () => {
   expect(currentViewState()).toEqual(before);
   expect(Object.keys(currentViewState())).toEqual(['threadId', 'filePaths', 'activeFilePath', 'activeTab']);
 });
+
+it('file sort preference survives file and project navigation but starts at name for a new window', () => {
+  expect(useUiStore.getInitialState().fileTreeSortBy).toBe('name');
+  useUiStore.getState().setFileTreeSortBy('modified');
+  useUiStore.getState().openFile('/other/z.pdf');
+  useUiStore.getState().toggleDir('/other/sub');
+  expect(useUiStore.getState().fileTreeSortBy).toBe('modified');
+  useUiStore.getState().setFileTreeSortBy('name');
+});

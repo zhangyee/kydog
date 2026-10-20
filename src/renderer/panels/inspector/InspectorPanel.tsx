@@ -31,14 +31,8 @@ export function InspectorPanel() {
       ) : projectPath ? (
         <>
           <ProjectCard projectPath={projectPath} />
-          <div style={{ padding: '10px 14px 4px' }}>
-            <div
-              className="font-mono uppercase"
-              style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-ink-faint)', letterSpacing: 1, marginBottom: 4 }}
-            >文件</div>
-          </div>
           <div className="flex-1 overflow-hidden">
-            <FileTree projectPath={projectPath} />
+            <FileTree key={projectPath} projectPath={projectPath} />
           </div>
         </>
       ) : (

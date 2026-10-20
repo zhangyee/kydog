@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { FileSortBy } from '../panels/inspector/fileTreeModel';
 import type { FsNode, ReadingFontSize, SkillSyncHealth, ThemeName } from '../../shared/types';
 import { DEFAULT_MD_EXPORT, type MdExportOptions } from '../../shared/mdExport';
 import { fileTitle, isHtmlPath, isPdfPath } from '../panels/main-pane/markdown/fileTabHelpers';
@@ -103,6 +104,8 @@ type UiState = {
   setFileTabDirty: (id: string, dirty: boolean) => void;
   setFileTabDiskContent: (id: string, content: string) => void;
   markFileChanged: (path: string) => void;
+  fileTreeSortBy: FileSortBy;
+  setFileTreeSortBy: (sortBy: FileSortBy) => void;
   expandedDirs: Set<string>;
   /** 记「收起」而不是「展开」：project 默认展开，只有用户显式收起的才进这个集合。
    *  倒过来记的话，「刚加进来还没人碰过」与「用户展开过」在集合里长得一模一样，
@@ -151,6 +154,8 @@ type UiState = {
 };
 
 export const useUiStore = create<UiState>((set, get) => ({
+  fileTreeSortBy: 'name',
+  setFileTreeSortBy: (fileTreeSortBy) => set({ fileTreeSortBy }),
   theme: 'vellum',
   readingFontSize: 'medium',
   workspaceCollapsed: false,

@@ -14,3 +14,16 @@ export function sortFileNodes(nodes: readonly FsNode[], sortBy: FileSortBy): FsN
     return a.name.localeCompare(b.name);
   });
 }
+
+/** The rendered DFS order, including directory rows and only expanded descendants. */
+export function visibleFileRows(projectPath: string, cache: Readonly<Record<string, FsNode[]>>, expanded: ReadonlySet<string>, sortBy: FileSortBy): Array<{ node: FsNode; parentPath: string; depth: number }> {
+  const rows: Array<{ node: FsNode; parentPath: string; depth: number }> = [];
+  const visit = (parentPath: string, depth: number) => {
+    for (const node of sortFileNodes(cache[parentPath] ?? [], sortBy)) {
+      rows.push({ node, parentPath, depth });
+      if (node.kind === 'dir' && expanded.has(node.path)) visit(node.path, depth + 1);
+    }
+  };
+  visit(projectPath, 0);
+  return rows;
+}

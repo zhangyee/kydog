@@ -13,6 +13,7 @@ import { inspectPdf, type PdfPage, type PdfReport } from './pdfInspect';
  * 顺序约束：原导出之后才跑高亮编辑 / PDF，最后验证逐字输入的源码保留。
  * 原导出替换 dialog.showSaveDialog / shell.showItemInFolder、修改 ui.mdExport 并留下 PDF 标签；
  * 高亮 PDF 用例重新替换存储框，其余用例各用独立文件。
+ * 文件排序 / 删除最后运行，各用专属文件；trashItem 在 finally 恢复并清理测试废纸篓。
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -680,4 +681,78 @@ test('30-markdown-editor: existing inline atoms retain source in completed code 
   await page.getByTestId(`tab-close-${file}`).click();
   await openMd('highlight-atoms.md');
   await expect(editor.locator('code')).toHaveText(expected);
+});
+
+
+test('Inspector modified order follows actual watcher and Delete keeps selected path across sorting', async () => {
+  const { page, app } = launched;
+  const a = at('a-sort.md'), z = at('z-sort.pdf');
+  await fs.writeFile(a, '# sort old\n'); await fs.writeFile(z, MINIMAL_PDF);
+  await fs.utimes(a, 1000000000, 1000000000); await fs.utimes(z, 1100000000, 1100000000);
+  await expect(page.getByTestId(`fs-${a}`)).toBeVisible();
+  await expect(page.getByTestId(`fs-${z}`)).toBeVisible();
+  const order = () => page.getByTestId('file-tree').locator('[data-file-path]').evaluateAll(els => els.map(el => el.getAttribute('data-file-path')));
+  await page.getByTestId('file-sort-trigger').click(); await page.getByTestId('file-sort-modified').click();
+  await expect.poll(async () => (await order()).filter(p => p === a || p === z)).toEqual([z, a]);
+  await fs.writeFile(a, '# sort newer\n'); await fs.utimes(a, 1200000000, 1200000000);
+  await expect.poll(async () => (await order()).filter(p => p === a || p === z)).toEqual([a, z]);
+  await page.getByTestId(`fs-${a}`).click();
+  await page.getByTestId('file-sort-trigger').click(); await page.getByTestId('file-sort-name').click();
+  const trash = await fs.mkdtemp(path.join(launched.kydogHome, 'sort-trash-'));
+  try {
+    await app.evaluate(({ shell }, args) => {
+      const fs = process.getBuiltinModule('fs/promises'), path = process.getBuiltinModule('path');
+      (globalThis as any).__originalTrash = shell.trashItem;
+      (globalThis as any).__trashPaths = [];
+      shell.trashItem = async file => { (globalThis as any).__trashPaths.push(file); await fs.rename(file, path.join(args.trash, path.basename(file))); };
+    }, { trash });
+    await page.getByTestId('file-tree').focus(); await page.keyboard.press('Delete');
+    await expect(page.getByTestId('confirm-dialog')).toContainText('a-sort.md');
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect.poll(() => fs.readFile(path.join(trash, 'a-sort.md'), 'utf8').catch(() => null)).toBe('# sort newer\n');
+    expect(await app.evaluate(() => (globalThis as any).__trashPaths)).toEqual([a]);
+    await expect(page.getByTestId(`fs-${a}`)).toHaveCount(0);
+    expect(await fs.readFile(z, 'utf8')).toBe(MINIMAL_PDF);
+  } finally {
+    await app.evaluate(({ shell }) => { if ((globalThis as any).__originalTrash) shell.trashItem = (globalThis as any).__originalTrash; });
+    await fs.rm(trash, { recursive: true, force: true });
+  }
+});
+
+test('Inspector deletion traverses actual IPC and service; partial failure preserves PDF sidecar and failed draft', async () => {
+  const { page, app } = launched;
+  const pdf = at('trash-success.pdf'), md = at('trash-failure.md'), sidecar = at('.trash-success.pdf.json');
+  await fs.writeFile(pdf, MINIMAL_PDF); await fs.writeFile(md, '# retained draft\n'); await fs.writeFile(sidecar, '{"version":1,"pdf":"trash-success.pdf","annotations":[]}');
+  await expect(page.getByTestId(`fs-${pdf}`)).toBeVisible(); await expect(page.getByTestId(`fs-${md}`)).toBeVisible();
+  await page.getByTestId(`fs-${pdf}`).dblclick(); await expect(page.getByTestId(`tab-${pdf}`)).toBeVisible();
+  const editor = await openMd('trash-failure.md');
+  await editor.locator('h1').click(); await page.keyboard.press(END_OF_LINE); await page.keyboard.type(' changed');
+  await expect(page.getByTestId(`tab-dirty-${md}`)).toBeVisible();
+  expect(await fs.readFile(pdf, 'utf8')).toBe(MINIMAL_PDF); expect(await fs.readFile(md, 'utf8')).toBe('# retained draft\n');
+  await page.getByTestId(`fs-${md}`).click(); await page.getByTestId(`fs-${pdf}`).click({ modifiers: ['ControlOrMeta'] });
+  const trash = await fs.mkdtemp(path.join(launched.kydogHome, 'partial-trash-'));
+  try {
+    await app.evaluate(({ shell }, args) => {
+      const fs = process.getBuiltinModule('fs/promises'), path = process.getBuiltinModule('path');
+      (globalThis as any).__originalTrash = shell.trashItem;
+      shell.trashItem = async file => {
+        if (file === args.md) throw Object.assign(new Error('EPERM intentional trash test'), { code: 'EPERM' });
+        await fs.rename(file, path.join(args.trash, path.basename(file)));
+      };
+    }, { trash, md });
+    await page.getByTestId('file-delete-selected').click();
+    await expect(page.getByTestId('confirm-dialog')).toContainText('未保存修改将丢失');
+    await expect(page.getByTestId('confirm-dialog')).toContainText('trash-failure.md');
+    await page.getByTestId('confirm-dialog-confirm').click();
+    await expect.poll(() => fs.readFile(path.join(trash, 'trash-success.pdf'), 'utf8').catch(() => null)).toBe(MINIMAL_PDF);
+    await expect(page.getByTestId(`fs-${pdf}`)).toHaveCount(0); await expect(page.getByTestId(`tab-${pdf}`)).toHaveCount(0);
+    await expect(page.getByTestId(`fs-${md}`)).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId(`tab-${md}`)).toBeVisible(); await expect(page.getByTestId(`tab-dirty-${md}`)).toBeVisible();
+    await expect(page.getByTestId('file-tree')).toContainText('trash-failure.md'); await expect(page.getByTestId('file-tree')).toContainText('EPERM intentional trash test');
+    expect(await fs.readFile(sidecar, 'utf8')).toBe('{"version":1,"pdf":"trash-success.pdf","annotations":[]}'); expect(await fs.readFile(md, 'utf8')).toBe('# retained draft\n');
+    await expect(editor.locator('h1')).toHaveText('retained draft changed');
+  } finally {
+    await app.evaluate(({ shell }) => { if ((globalThis as any).__originalTrash) shell.trashItem = (globalThis as any).__originalTrash; });
+    await fs.rm(trash, { recursive: true, force: true });
+  }
 });
