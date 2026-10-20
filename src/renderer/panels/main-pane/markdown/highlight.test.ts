@@ -13,6 +13,7 @@ import {
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState, TextSelection, type Transaction } from '@milkdown/kit/prose/state';
 import { isMarkSelectedCommand, inlineCodeInputRule } from '@milkdown/kit/preset/commonmark';
+import { customInputRules, nodeRule } from '@milkdown/kit/prose';
 import { inputRules } from '@milkdown/kit/prose/inputrules';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { Crepe } from '@milkdown/crepe';
@@ -392,5 +393,174 @@ it('unsupported atoms remain intact and do not fall through to the destructive u
     expect(safe.doc.firstChild!.child(1).eq(atom)).toBe(true);
     expect(safe.doc.textContent).toBe('`before  y`');
     expect(safe.doc.firstChild!.child(3).marks.map((mark) => mark.type.name)).toEqual(['highlight']);
+  }
+});
+
+it('unrelated earlier atoms and highlights do not suppress safe upstream code or math conversion', async () => {
+  const { ctx, schema } = await setup();
+  await inlineCodeInputRule(ctx)();
+  // Same installed nodeRule factory and regex used by Crepe's mathInlineInputRule.
+  const mathRule = nodeRule(/(?:\$)([^$]+)(?:\$)$/, schema.nodes.math_inline, {
+    getAttr: (match) => ({ value: match[1] ?? '' }),
+  });
+  ctx.update(inputRulesCtx, (rules) => [...rules, mathRule]);
+  const upstream = customInputRules({ rules: [inlineCodeInputRule.inputRule, mathRule] });
+  const source = highlightSourceInputRules.plugin();
+  for (const atom of [
+    schema.nodes.math_inline.create({ value: 'x' }),
+    schema.nodes.unknown_atom.create({ payload: 'keep' }),
+  ]) {
+    // Escaped openings also exercise the no-Markdown-target decline path:
+    // upstream's installed text-only rules still accept those sequences.
+    for (const opening of ['`', '$', '\\`', '\\$']) {
+      const delimiter = opening.slice(-1);
+      const doc = schema.node('doc', null, [
+        schema.node('paragraph', null, [
+          atom,
+          schema.text(' '),
+          schema.text('control', [schema.marks.highlight.create()]),
+          schema.text(` ${opening}plain`),
+        ]),
+      ]);
+      const run = (plugins: (typeof upstream)[]) => {
+        let state = EditorState.create({
+          doc,
+          plugins,
+          selection: TextSelection.create(doc, doc.content.size - 1),
+        });
+        const view = {
+          get state() {
+            return state;
+          },
+          composing: false,
+          dispatch(tr: Transaction) {
+            state = state.apply(tr);
+          },
+        } as EditorView;
+        const end = state.selection.from;
+        expect(
+          plugins.some((plugin) =>
+            plugin.props.handleTextInput?.call(plugin, view, end, end, delimiter, () => state.tr),
+          ),
+        ).toBe(true);
+        return state.doc;
+      };
+      const expected = run([upstream]);
+      if (delimiter === '`') {
+        expect(expected.lastChild!.lastChild!.text).toBe('plain');
+        expect(expected.lastChild!.lastChild!.marks.map((mark) => mark.type.name)).toEqual([
+          'inlineCode',
+        ]);
+      } else {
+        expect(expected.lastChild!.lastChild!.attrs.value).toBe('plain');
+      }
+      expect(run([source, upstream]).toJSON()).toEqual(expected.toJSON());
+      expect(expected.firstChild!.firstChild!.eq(atom)).toBe(true);
+      expect(expected.firstChild!.child(2).marks.map((mark) => mark.type.name)).toEqual([
+        'highlight',
+      ]);
+    }
+  }
+});
+
+it('atom protection follows the installed upstream matching window at its exact boundary', async () => {
+  const { ctx, schema } = await setup();
+  await inlineCodeInputRule(ctx)();
+  const upstream = customInputRules({ rules: [inlineCodeInputRule.inputRule] });
+  const source = highlightSourceInputRules.plugin();
+  const atom = schema.nodes.math_inline.create({ value: '`' });
+  for (const length of [500, 501]) {
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', null, [
+        schema.text('`'),
+        atom,
+        schema.text(' '),
+        schema.text('y'.repeat(length - 3), [schema.marks.highlight.create()]),
+      ]),
+    ]);
+    const run = (plugin: typeof upstream) => {
+      let state = EditorState.create({
+        doc,
+        plugins: [plugin],
+        selection: TextSelection.create(doc, doc.content.size - 1),
+      });
+      const view = {
+        get state() {
+          return state;
+        },
+        composing: false,
+        dispatch(tr: Transaction) {
+          state = state.apply(tr);
+        },
+      } as EditorView;
+      const end = state.selection.from;
+      const handled = plugin.props.handleTextInput!.call(
+        plugin,
+        view,
+        end,
+        end,
+        '`',
+        () => state.tr,
+      );
+      return { handled, doc: state.doc };
+    };
+    const baseline = run(upstream);
+    const guarded = run(source);
+    expect(baseline.handled, `upstream window ${length}`).toBe(length === 500);
+    expect(guarded.handled, `adapter window ${length}`).toBe(baseline.handled);
+    if (length === 500) {
+      expect(baseline.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual([
+        'inlineCode',
+      ]);
+      expect(guarded.doc.firstChild!.child(1).eq(atom)).toBe(true);
+      expect(guarded.doc.textContent).toBe(`${doc.textContent}\``);
+    } else {
+      expect(guarded.doc.eq(doc)).toBe(true);
+    }
+  }
+});
+
+it('completed composition preserves atoms at both sides of the upstream matching boundary', async () => {
+  const { ctx, schema } = await setup();
+  await inlineCodeInputRule(ctx)();
+  const upstream = customInputRules({ rules: [inlineCodeInputRule.inputRule] });
+  const source = highlightSourceInputRules.plugin();
+  const atom = schema.nodes.math_inline.create({ value: '`' });
+  for (const length of [500, 501]) {
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', null, [
+        schema.text('`'),
+        atom,
+        schema.text('y'.repeat(length - 3), [schema.marks.highlight.create()]),
+        schema.text('`'),
+      ]),
+    ]);
+    const run = (plugin: typeof upstream) => {
+      let state = EditorState.create({
+        doc,
+        plugins: [plugin],
+        selection: TextSelection.create(doc, doc.content.size - 1),
+      });
+      const view = {
+        get state() {
+          return state;
+        },
+        composing: false,
+        dispatch(tr: Transaction) {
+          state = state.apply(tr);
+        },
+      } as EditorView;
+      const end = state.selection.from;
+      // Composition-end uses the existing cursor and empty text, after the DOM
+      // insertion has already entered editor state.
+      const handled = plugin.props.handleTextInput!.call(plugin, view, end, end, '', () => state.tr);
+      return { handled, doc: state.doc };
+    };
+    const baseline = run(upstream);
+    expect(baseline.handled).toBe(length === 500);
+    if (length === 500) {
+      expect(baseline.doc.firstChild!.firstChild!.marks.map((mark) => mark.type.name)).toEqual(['inlineCode']);
+    }
+    expect(run(source).doc.eq(doc)).toBe(true);
   }
 });

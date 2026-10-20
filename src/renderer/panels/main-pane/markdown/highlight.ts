@@ -1,5 +1,6 @@
 /** Editor adapters for the shared source grammar. No DOM access or bridge calls. */
 import { $command, $inputRule, $markSchema, $remark, $prose } from '@milkdown/kit/utils';
+import { inputRulesCtx } from '@milkdown/kit/core';
 import type { ResolvedPos, Node as PmNode } from '@milkdown/kit/prose/model';
 import type { InlineCode } from 'mdast';
 import { mathToMarkdown, type InlineMath } from 'mdast-util-math';
@@ -80,16 +81,22 @@ function inlineSource(cursor: ResolvedPos, restoreHighlights = false) {
   };
   let highlighting = false;
   let complete = true;
-  let hasAtoms = false;
+  const atoms: Array<{ from: number; to: number; supported: boolean }> = [];
   cursor.parent.content.cut(0, cursor.parentOffset).forEach((node, offset) => {
     const highlighted = restoreHighlights && node.marks.some((mark) => mark.type.name === 'highlight');
     if (highlighted !== highlighting) synthetic('==');
     highlighting = highlighted;
     if (!node.isText) {
-      hasAtoms = true;
       const value = inlineNodeSource(node);
+      atoms.push({
+        from: cursor.start() + offset,
+        to: cursor.start() + offset + node.nodeSize,
+        supported: value !== undefined,
+      });
       if (value === undefined) complete = false;
-      else synthetic(value); // Generated syntax never points inside an atom's document boundary.
+      // Unknown nodes are opaque parse boundaries, never replacement content:
+      // conversion below rejects every target overlapping an unsupported atom.
+      synthetic(value ?? '\uFFFC');
       return;
     }
     const value = node.text!;
@@ -103,7 +110,37 @@ function inlineSource(cursor: ResolvedPos, restoreHighlights = false) {
     if (code) synthetic(` ${fence}`);
   });
   if (highlighting) synthetic('==');
-  return { source, positions, complete, hasAtoms };
+  return { source, positions, complete, atoms };
+}
+
+/** Mirror only matching, never execute a handler speculatively. Milkdown 7.21.1
+ * @milkdown/prose/src/toolkit/input-rules/custom-input-rules.ts uses this exact
+ * 500-document-position window and leaf placeholder. The bound is not exported;
+ * the differential boundary test guards it against the installed implementation. */
+function upstreamMatchConsumesAtom(
+  cursor: ResolvedPos,
+  text: string,
+  rules: InputRule[],
+  atoms: Array<{ from: number; to: number }>,
+) {
+  if (!atoms.length) return false;
+  const textBefore =
+    cursor.parent.textBetween(
+      Math.max(0, cursor.parentOffset - 500),
+      cursor.parentOffset,
+      undefined,
+      '\uFFFC',
+    ) + text;
+  return rules.some((rule) => {
+    // InputRule keeps match at runtime, but omits it from its public declaration.
+    const { match } = rule as unknown as { match: RegExp };
+    const matcher = new RegExp(match.source, match.flags);
+    matcher.lastIndex = match.lastIndex;
+    const result = matcher.exec(textBefore);
+    if (!result?.[0]) return false;
+    const from = cursor.pos - (result[0].length - text.length);
+    return atoms.some((atom) => atom.from < cursor.pos && atom.to > from);
+  });
 }
 
 export const highlightInputRule = $inputRule(
@@ -163,12 +200,14 @@ export const highlightSourceInputRules = $prose((ctx) =>
           )
             return null;
           if (!state.doc.rangeHasMark(cursor.start(), end, highlightSchema.type(ctx))) return null;
-          const { source: prefix, positions, complete, hasAtoms } = inlineSource(cursor, true);
+          const { source: prefix, positions, atoms } = inlineSource(cursor, true);
           // A declined conversion must not fall through to a text-only rule that
           // would consume atoms. Handle the keystroke literally and retain the doc.
           const literalInput = () => state.tr.insertText(match[0], start, end);
-          const decline = () => (hasAtoms ? literalInput() : null);
-          if (!complete) return literalInput();
+          const decline = () =>
+            upstreamMatchConsumesAtom(cursor, match[0], ctx.get(inputRulesCtx), atoms)
+              ? literalInput()
+              : null;
           const source = prefix + match[0];
           let target: InlineCode | InlineMath | undefined;
           visit(parser.parse(source), (node) => {
@@ -180,8 +219,13 @@ export const highlightSourceInputRules = $prose((ctx) =>
           });
           if (!target) return decline();
           const from = positions[target.position!.start.offset!];
-          if (from === undefined || !state.doc.rangeHasMark(from, end, highlightSchema.type(ctx)))
-            return decline();
+          if (from === undefined) return decline();
+          const affectedAtoms = atoms.filter((atom) => atom.from < end && atom.to > from);
+          if (affectedAtoms.some((atom) => !atom.supported)) return decline();
+          if (!state.doc.rangeHasMark(from, end, highlightSchema.type(ctx)))
+            // A completed ordinary target after an atom is safe for upstream.
+            // If it includes an atom, the text-only upstream matcher must not eat it.
+            return affectedAtoms.length ? decline() : null;
           const surroundingMarks = state.doc
             .resolve(from)
             .marks()
