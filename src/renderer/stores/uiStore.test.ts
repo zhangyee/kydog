@@ -119,15 +119,15 @@ describe('uiStore 文件 tab', () => {
   it('failDir：摘掉这一条缓存、记下错误、不再算在读；别的目录不动', () => {
     useUiStore.setState({
       dirCache: {
-        '/p': [{ name: 'a', path: '/p/a', kind: 'file' }],
-        '/p/sub': [{ name: 'b', path: '/p/sub/b', kind: 'file' }],
+        '/p': [{ name: 'a', path: '/p/a', kind: 'file', mtimeMs: null }],
+        '/p/sub': [{ name: 'b', path: '/p/sub/b', kind: 'file', mtimeMs: null }],
       },
       dirPending: new Set(['/p/sub', '/p/other']),
       dirErrors: {},
     });
     useUiStore.getState().failDir('/p/sub', 'cannot read /p/sub (ENOENT)');
     const s = useUiStore.getState();
-    expect(s.dirCache).toEqual({ '/p': [{ name: 'a', path: '/p/a', kind: 'file' }] });
+    expect(s.dirCache).toEqual({ '/p': [{ name: 'a', path: '/p/a', kind: 'file', mtimeMs: null }] });
     expect([...s.dirPending]).toEqual(['/p/other']);
     expect(s.dirErrors).toEqual({ '/p/sub': 'cannot read /p/sub (ENOENT)' });
   });

@@ -54,3 +54,13 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 能不能发图由 pi `Model.input` 决定：`llm.list` 的每个服务商带 `imageInputModelIds` 供输入框预先拦；主进程发送时按会话实际模型再判一次（`llm.imageUnsupported`）。
 
 @ 的项目文件列表没有主进程索引，也不另设 RPC / 事件：渲染层一次弹出 = 一个会话（`renderer/panels/main-pane/mentionSearch.ts`，纯逻辑、注入读目录的函数），复用文件树的 `project.readDir`（同一套 `isListedName` 过滤与排序）。查询词为空或含 `/` 时**逐级浏览**，只读那一个目录、按这一层的筛选词筛；否则**按名字找**：先出根目录这一层，同时从浅到深一层层往下读（整个会话同一时间只有一个 readDir 在飞），名字命中的文件随读随进、取前 50。读过的目录记在会话内存里，接着打字只在已读的内容里重筛，切到逐级浏览时暂停往下读。列表关掉就停：Composer 在查询词变回 null、换项目、卸载时 `dispose()`，内存随之丢掉。**不设文件数上限、不设时限、不跨会话缓存** —— 大目录只在用户开着列表等的时候才被读，下次弹出从头读，agent 刚写出的文件自然就在。
+
+## 文件列表元数据与监听
+
+`project.readDir` 只读取当前层的可见条目及其文件系统 `stat.mtimeMs`，不扫描子树。`FsNode.mtimeMs` 是必需字段：条目已消失（ENOENT）时略过，其他元数据错误保留条目并置为 `null`；目录读取整体失败仍返回带 errno 的 `fs.read_failed`。
+
+目录缓存保持默认的目录先行、名称升序。Inspector 的 `sortFileNodes` 在副本上派生名称或修改时间排序，不改变共享缓存和 @ 文件查找的顺序；目录始终按名称升序，文件时间降序、未知时间最后，同时间按名称升序。
+
+`fs.setWatched` 声明当前窗口缓存的目录和跟随磁盘的文件。`fs.changed` 表示目录列表或所列可见条目的元数据变化，`change` 与 `rename` 都触发重读；隐藏条目仍按 `isListedName` 过滤。`file.changed` 独立表示声明的具体文件被改动，不用目录通知推断文件身份。监听只覆盖声明集合，不递归扫描项目，debounce 只用于合并刷新次数。
+
+主进程已知操作完成后可调用 `FileWatcherService.notifyChanges(paths)`，直接安排既有两类通知，无需等待 OS watch。入口按 exact 路径匹配声明集合、对父目录去重；撤销声明会取消尚未发出的通知，不向未声明目录或文件发送。

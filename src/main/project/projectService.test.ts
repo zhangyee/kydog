@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
@@ -47,7 +47,7 @@ describe('projectService.close 关掉被带走的对话的标签', () => {
 describe('projectService.readDir', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-readdir-')); });
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
   it('不列点号开头的与 node_modules（与 watcher 判「列表动没动」是同一个谓词）', async () => {
     writeFileSync(path.join(dir, 'a.md'), '');
@@ -56,6 +56,38 @@ describe('projectService.readDir', () => {
     mkdirSync(path.join(dir, 'data'));
     const names = (await projectService.readDir({ path: dir })).map((n) => n.name);
     expect(names).toEqual(['data', 'a.md']);
+  });
+
+  it('读取这一层真实 mtime，默认顺序仍按名称而非时间', async () => {
+    writeFileSync(path.join(dir, 'a.md'), 'a');
+    writeFileSync(path.join(dir, 'z.pdf'), 'z');
+    const aTime = new Date('2026-01-02T00:00:00Z');
+    const zTime = new Date('2026-01-03T00:00:00Z');
+    utimesSync(path.join(dir, 'a.md'), aTime, aTime);
+    utimesSync(path.join(dir, 'z.pdf'), zTime, zTime);
+    expect((await fs.stat(path.join(dir, 'z.pdf'))).mtimeMs).toBe(1767398400000);
+    expect((await fs.stat(path.join(dir, 'a.md'))).mtimeMs).toBe(1767312000000);
+    const nodes = await projectService.readDir({ path: dir });
+    expect(nodes.map((n) => n.name)).toEqual(['a.md', 'z.pdf']);
+    expect(nodes.map((n) => n.mtimeMs)).toEqual([1767312000000, 1767398400000]);
+  });
+
+  it('仅元数据 ENOENT 略过条目，EACCES 保留条目且时间为 null', async () => {
+    writeFileSync(path.join(dir, 'gone.md'), 'gone');
+    writeFileSync(path.join(dir, 'denied.pdf'), 'denied');
+    writeFileSync(path.join(dir, 'ok.md'), 'ok');
+    const before = await projectService.readDir({ path: dir });
+    expect(before.map((n) => n.name)).toEqual(['denied.pdf', 'gone.md', 'ok.md']);
+    const stat = fs.stat.bind(fs);
+    vi.spyOn(fs, 'stat').mockImplementation((async (filePath: string) => {
+      if (filePath === path.join(dir, 'gone.md')) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      if (filePath === path.join(dir, 'denied.pdf')) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      return stat(filePath);
+    }) as typeof fs.stat);
+    const nodes = await projectService.readDir({ path: dir });
+    expect(nodes.map((n) => n.name)).toEqual(['denied.pdf', 'ok.md']);
+    expect(nodes[0]).toEqual({ name: 'denied.pdf', path: path.join(dir, 'denied.pdf'), kind: 'file', mtimeMs: null });
+    expect(nodes[1].mtimeMs).toBe((await stat(path.join(dir, 'ok.md'))).mtimeMs);
   });
 
   it('读不了时错误消息带 errno：文件树原样显示，用户截图就分得清是被删了还是没权限', async () => {

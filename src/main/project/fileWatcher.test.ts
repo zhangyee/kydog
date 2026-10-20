@@ -77,34 +77,49 @@ describe('FileWatcherService：事件怎么分流', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it('列表里的条目出现/消失（rename）→ fs.changed 带那个目录；内容改动（change）不动列表', async () => {
+  it('可见条目的 change 与 rename 都刷新目录，文件通知仍独立', async () => {
     const { svc, handle, emitDir, emitFile } = setup();
-    svc.set(1, { dirs: ['/p'], files: [] });
+    svc.set(1, { dirs: ['/p'], files: ['/p/a.md'] });
 
     handle('/p').fire('change', 'a.md');
     await vi.advanceTimersByTimeAsync(60);
-    expect(emitDir).not.toHaveBeenCalled();
+    expect(emitDir.mock.calls).toEqual([['/p']]);
+    expect(emitFile.mock.calls).toEqual([['/p/a.md']]);
 
     handle('/p').fire('rename', 'new.md');
     await vi.advanceTimersByTimeAsync(60);
-    expect(emitDir).toHaveBeenCalledTimes(1);
-    expect(emitDir).toHaveBeenCalledWith('/p');
-    expect(emitFile).not.toHaveBeenCalled();
+    expect(emitDir.mock.calls).toEqual([['/p'], ['/p']]);
+    expect(emitFile.mock.calls).toEqual([['/p/a.md']]);
   });
 
   it('列表里不显示的条目（点号开头、node_modules）变了，不让渲染层重读', async () => {
     const { svc, handle, emitDir } = setup();
     svc.set(1, { dirs: ['/p'], files: [] });
 
-    handle('/p').fire('rename', '.paper.pdf.json');
-    handle('/p').fire('rename', 'node_modules');
+    handle('/p').fire('change', 'a.md');
     await vi.advanceTimersByTimeAsync(60);
-    expect(emitDir).not.toHaveBeenCalled();
+    expect(emitDir.mock.calls).toEqual([['/p']]);
+    for (const type of ['change', 'rename']) {
+      handle('/p').fire(type, '.paper.pdf.json');
+      handle('/p').fire(type, 'node_modules');
+      await vi.advanceTimersByTimeAsync(60);
+      expect(emitDir.mock.calls).toEqual([['/p']]);
+    }
+  });
 
-    // 同一个目录、同一种事件，换成列表里有的名字就发：上面没发不是因为句柄没接上。
-    handle('/p').fire('rename', 'paper.pdf');
+  it('notifyChanges 按 exact 声明过滤、父目录去重，撤销声明后不再通知', async () => {
+    const { svc, emitDir, emitFile } = setup();
+    svc.set(1, { dirs: ['/p'], files: ['/p/a.md', '/p/a.md.backup'] });
+    const paths = ['/p/a.md', '/p/b.pdf', '/unwatched/x.md'];
+    svc.notifyChanges(paths);
     await vi.advanceTimersByTimeAsync(60);
-    expect(emitDir).toHaveBeenCalledWith('/p');
+    expect(emitDir.mock.calls).toEqual([['/p']]);
+    expect(emitFile.mock.calls).toEqual([['/p/a.md']]);
+    svc.set(1, { dirs: [], files: [] });
+    svc.notifyChanges(paths);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(emitDir.mock.calls).toEqual([['/p']]);
+    expect(emitFile.mock.calls).toEqual([['/p/a.md']]);
   });
 
   it('声明过的文件：改写（change）与原子替换（rename）都发 file.changed，带声明时那串路径', async () => {

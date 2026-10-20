@@ -50,13 +50,18 @@ export class ProjectService {
   async readDir({ path: dirPath }: { path: string }): Promise<FsNode[]> {
     try {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
-      return entries
-        .filter((e) => isListedName(e.name))
-        .map((e) => ({
-          name: e.name,
-          path: path.join(dirPath, e.name),
-          kind: e.isDirectory() ? 'dir' : 'file' as 'dir' | 'file',
-        }))
+      const nodes = await Promise.all(entries.filter((e) => isListedName(e.name)).map(async (e): Promise<FsNode | null> => {
+        const entryPath = path.join(dirPath, e.name);
+        let mtimeMs: number | null = null;
+        try {
+          mtimeMs = (await fs.stat(entryPath)).mtimeMs;
+        } catch (err) {
+          // 条目在 readdir 后消失可略过；其他元数据错误保留名称，不伪造时间。
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        }
+        return { name: e.name, path: entryPath, kind: e.isDirectory() ? 'dir' : 'file', mtimeMs };
+      }));
+      return nodes.filter((n): n is FsNode => n !== null)
         .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
     } catch (err) {
       // 文件树会把这句话原样显示出来：带上 errno，用户截图就能分清是被删了（ENOENT）还是没权限（EPERM）。

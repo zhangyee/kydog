@@ -29,7 +29,7 @@ const { useUiStore } = await import('../../stores/uiStore');
 
 const ROOT = 'C:\\Users\\u\\Desktop\\article';
 /** 下一次 readDir 的结局：一个 Error 就拒，否则就给这份列表。 */
-let next: Error | Array<{ name: string; path: string; kind: 'file' | 'dir' }> = [];
+let next: Error | Array<{ name: string; path: string; kind: 'file' | 'dir'; mtimeMs: number | null }> = [];
 let reads = 0;
 
 beforeEach(() => {
@@ -68,7 +68,7 @@ describe('FileTree：根目录读失败', () => {
     await m.settle();
     expect(reads).toBe(1);
 
-    next = [{ name: 'draft.md', path: `${ROOT}\\draft.md`, kind: 'file' }];
+    next = [{ name: 'draft.md', path: `${ROOT}\\draft.md`, kind: 'file', mtimeMs: null }];
     (err.props.onRetry as () => void)();
     m.rerender({ projectPath: ROOT });
     await m.settle();

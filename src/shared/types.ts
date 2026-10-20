@@ -74,7 +74,7 @@ export type Message =
   | { id: string; role: 'user'; createdAt: string; content: string; images?: MessageImage[] }
   | { id: string; role: 'assistant'; createdAt: string; blocks: AssistantBlock[] };
 
-export type FsNode = { name: string; path: string; kind: 'file' | 'dir' };
+export type FsNode = { name: string; path: string; kind: 'file' | 'dir'; mtimeMs: number | null };
 
 export type ThemeName = 'vellum' | 'porcelain' | 'sepia' | 'midnight' | 'lilac';
 

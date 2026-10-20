@@ -35,8 +35,8 @@ const nodeWatch: WatchFn = (dir, onEvent, onError) => {
  * 磁盘走的已打开文件。成本跟屏幕上的东西成正比，跟 project 多大无关。按窗口分账，
  * 窗口没了就把它那份撤掉（`forget`），取并集后逐目录开/关句柄。
  *
- * 两条出口，语义与以前相同：
- *  · `fs.changed { dir }` —— 这个目录的列表变了（有条目出现、消失或改名），重读它；
+ * 两条出口：
+ *  · `fs.changed { dir }` —— 这个目录的列表或所列条目元数据变了，重读它；
  *  · `file.changed { path }` —— 这个文件被动过（改写或原子替换），带的是渲染层声明时的那串路径。
  */
 export class FileWatcherService {
@@ -83,6 +83,17 @@ export class FileWatcherService {
   /** 此刻开着句柄的目录。 */
   watchedDirs(): string[] {
     return [...this.handles.keys()].sort();
+  }
+
+  /** 已知操作完成后直接通知，不等待 OS watch；只通知 exact 路径声明过的目录与文件。 */
+  notifyChanges(paths: readonly string[]): void {
+    const dirs = new Set<string>();
+    for (const filePath of new Set(paths)) {
+      const dir = path.dirname(filePath);
+      if (this.dirs.has(dir)) dirs.add(dir);
+      if (this.files.has(filePath)) this.schedule(this.fileTimers, filePath, this.emitFile);
+    }
+    for (const dir of dirs) this.schedule(this.dirTimers, dir, this.emitDir);
   }
 
   private reconcile(): void {
@@ -136,8 +147,8 @@ export class FileWatcherService {
       }
       return;
     }
-    // 列表只关心条目的增、删、改名 —— 那些都是 rename；内容改动（change）不动列表。
-    if (eventType === 'rename' && this.dirs.has(dir) && isListedName(filename)) {
+    // 可见条目的内容改动同样改变 mtime，目录列表缓存也需要刷新。
+    if ((eventType === 'rename' || eventType === 'change') && this.dirs.has(dir) && isListedName(filename)) {
       this.schedule(this.dirTimers, dir, this.emitDir);
     }
     for (const f of this.files) {

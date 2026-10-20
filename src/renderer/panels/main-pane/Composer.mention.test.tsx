@@ -116,7 +116,7 @@ describe('Composer —— @ 列表的会话', () => {
     expect(sessions[0].opts.projectPath).toBe(PROJ);
     expect(sessions[0].setQuery).toHaveBeenLastCalledWith('dp');
 
-    const nodes = [{ name: 'dpo-2023.pdf', path: '/proj/refs/dpo-2023.pdf', kind: 'file' }];
+    const nodes = [{ name: 'dpo-2023.pdf', path: '/proj/refs/dpo-2023.pdf', kind: 'file', mtimeMs: null }];
     invoke.mockResolvedValueOnce(nodes);
     await expect(sessions[0].opts.readDir('/proj/refs')).resolves.toBe(nodes);
     expect(invoke).toHaveBeenLastCalledWith('project.readDir', { path: '/proj/refs' });

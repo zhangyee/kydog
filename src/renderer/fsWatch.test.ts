@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { useUiStore } from './stores/uiStore';
+import { sortFileNodes } from './panels/inspector/fileTreeModel';
 import { installWatchSync, loadDir, currentWatchSet } from './fsWatch';
 
 /** 按发生次序记下每一次 invoke；readDir 的结果由用例手动放行。 */
@@ -65,10 +66,32 @@ describe('loadDir', () => {
     expect(iRead).toBeGreaterThanOrEqual(0);
     expect(iWatch).toBeLessThan(iRead);
 
-    pendingReads[0].resolve([{ name: 'a.md', path: '/p/a.md', kind: 'file' }]);
+    pendingReads[0].resolve([{ name: 'a.md', path: '/p/a.md', kind: 'file', mtimeMs: null }]);
     await settle();
-    expect(useUiStore.getState().dirCache['/p']).toEqual([{ name: 'a.md', path: '/p/a.md', kind: 'file' }]);
+    expect(useUiStore.getState().dirCache['/p']).toEqual([{ name: 'a.md', path: '/p/a.md', kind: 'file', mtimeMs: null }]);
     // 读完之后仍在集合里（从「在读」换成了「缓存着」）。
+    expect(currentWatchSet().dirs).toEqual(['/p']);
+  });
+
+  it('重读刷新 mtime，派生时间排序不改变缓存的名称顺序', async () => {
+    off = installWatchSync();
+    const first = loadDir('/p');
+    pendingReads[0].resolve([
+      { name: 'a.md', path: '/p/a.md', kind: 'file', mtimeMs: 20 },
+      { name: 'z.pdf', path: '/p/z.pdf', kind: 'file', mtimeMs: 30 },
+    ]);
+    await first;
+    expect(useUiStore.getState().dirCache['/p'].map((n) => n.mtimeMs)).toEqual([20, 30]);
+    const refresh = loadDir('/p');
+    pendingReads[1].resolve([
+      { name: 'a.md', path: '/p/a.md', kind: 'file', mtimeMs: 20 },
+      { name: 'z.pdf', path: '/p/z.pdf', kind: 'file', mtimeMs: 40 },
+    ]);
+    await refresh;
+    const cached = useUiStore.getState().dirCache['/p'];
+    expect(cached.map((n) => n.mtimeMs)).toEqual([20, 40]);
+    expect(sortFileNodes(cached, 'modified').map((n) => n.name)).toEqual(['z.pdf', 'a.md']);
+    expect(cached.map((n) => n.name)).toEqual(['a.md', 'z.pdf']);
     expect(currentWatchSet().dirs).toEqual(['/p']);
   });
 

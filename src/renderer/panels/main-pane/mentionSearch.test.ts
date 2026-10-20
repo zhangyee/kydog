@@ -29,7 +29,7 @@ function fakeFs(dirs: Record<string, string[]>, opts: { manual?: boolean; fail?:
       return dirs[rel].map((n) => {
         const isDir = n.endsWith('/');
         const name = isDir ? n.slice(0, -1) : n;
-        return { name, path: `${root}${sep}${(relOf(abs) ? `${relOf(abs)}/${name}` : name).split('/').join(sep)}`, kind: isDir ? 'dir' as const : 'file' as const };
+        return { name, path: `${root}${sep}${(relOf(abs) ? `${relOf(abs)}/${name}` : name).split('/').join(sep)}`, kind: isDir ? 'dir' as const : 'file' as const, mtimeMs: null };
       });
     };
     if (!opts.manual) return Promise.resolve().then(answer);
@@ -284,8 +284,8 @@ describe('rel 与读目录的路径', () => {
 
   it('rel 只由 readDir 给的名字拼出来，不看它给的 path 长什么样', async () => {
     const readDir: ReadDirFn = async (abs) => (abs === '/proj'
-      ? [{ name: 'a b', path: 'Z:\\不相干\\x', kind: 'dir' }, { name: 'r.md', path: '', kind: 'file' }]
-      : abs === '/proj/a b' ? [{ name: 'c.md', path: 'whatever', kind: 'file' }] : []);
+      ? [{ name: 'a b', path: 'Z:\\不相干\\x', kind: 'dir', mtimeMs: null }, { name: 'r.md', path: '', kind: 'file', mtimeMs: null }]
+      : abs === '/proj/a b' ? [{ name: 'c.md', path: 'whatever', kind: 'file', mtimeMs: null }] : []);
     const views: MentionView[] = [];
     const s = createMentionSession({ projectPath: '/proj', readDir, onChange: (v) => views.push(v) });
     s.setQuery('a b/');

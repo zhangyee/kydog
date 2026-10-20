@@ -376,7 +376,7 @@ export type RuntimeEvent =
   | { topic: 'oauth.success'; payload: { providerId: string } }
   | { topic: 'oauth.error'; payload: { providerId: string; error: string } }
   | { topic: 'thread.updated'; payload: { thread: Thread } }
-  // fs.changed 是「这个目录的列表变了」（有条目出现、消失或改名 → 重读这一个目录）；
+  // fs.changed 是「这个目录的列表或所列条目元数据变了」（可见条目的 change / rename → 重读这一个目录）；
   // file.changed 是「这个文件被动过」，带路径。两者语义不同，不要用前者代替后者 ——
   // 拿目录级事件当文件级信号就是在下游补 proxy，而文件名在 fs.watch 的回调里本来就有。
   // 两条都只对 fs.setWatched 声明过的东西发。
