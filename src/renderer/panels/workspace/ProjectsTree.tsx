@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { NavSection } from './NavSection';
@@ -14,6 +14,7 @@ export function ProjectsTree() {
   const threadsByProject = useThreadsStore((s) => s.threadsByProject);
   const currentThreadId = useThreadsStore((s) => s.currentThreadId);
   const navigationRevision = useThreadsStore((s) => s.threadNavigationRevision);
+  const consumeThreadNavigation = useUiStore((s) => s.consumeThreadNavigation);
   const showAll = useUiStore((s) => s.showAllThreadProjects);
   const showAllProjectThreads = useUiStore((s) => s.showAllProjectThreads);
   const collapsed = useUiStore((s) => s.collapsedProjects);
@@ -30,22 +31,21 @@ export function ProjectsTree() {
   const selection = effectiveSelection(selectedIds, order);
 
   // 每个明确导航只消费一次。手动重开项目不是导航；数据未齐时保留未消费身份，
-  // 等目标与所属项目到达后再展开，不能因提前记下 ID 而丢掉恢复导航。
-  const consumedNavigationRef = useRef<number | null>(null);
+  // 等目标与所属项目到达后再展开。消费记录跟窗口走，工作区卸载重挂也不能重播。
   useEffect(() => {
-    if (!currentThreadId || consumedNavigationRef.current === navigationRevision) return;
+    if (!currentThreadId || useUiStore.getState().consumedThreadNavigationRevision === navigationRevision) return;
     const t = Object.values(threadsByProject).flat().find(x => x.id === currentThreadId);
     if (!t || !projects.some(p => p.path === t.projectPath)) return;
     const grouped = applyProjectsView({ projects, threadsByProject, groupBy: 'project', sortBy });
     if (grouped.kind !== 'grouped') return;
     const group = grouped.groups.find(g => g.project.path === t.projectPath);
     if (!group) return;
-    consumedNavigationRef.current = navigationRevision;
+    consumeThreadNavigation(navigationRevision);
     expandProject(t.projectPath);
     if (group.threads.findIndex(thread => thread.id === currentThreadId) >= 5) {
       showAllProjectThreads(t.projectPath);
     }
-  }, [currentThreadId, navigationRevision, threadsByProject, projects, sortBy, expandProject, showAllProjectThreads]);
+  }, [currentThreadId, navigationRevision, threadsByProject, projects, sortBy, expandProject, showAllProjectThreads, consumeThreadNavigation]);
 
   if (projects.length === 0) {
     return (

@@ -6,6 +6,7 @@ import { ProjectRow } from './ProjectRow';
 import { useUiStore } from '../../stores/uiStore';
 import { useThreadsStore } from '../../stores/threadsStore';
 import { useSidebarSelection } from './sidebarSelection';
+import { restoreViewState } from '../../viewState';
 import type { Thread } from '../../../shared/types';
 
 vi.mock('react', async (original) => ({
@@ -113,6 +114,48 @@ describe('ProjectsTree preview wiring', () => {
     expect(ids()).toEqual([...allSeven, 'b']);
   });
 
+  it.each([false, true])('workspace remount preserves manual reset (project left closed: %s)', leaveClosed => {
+    tree = mount(ProjectsTree, {});
+    expect(tree.find('project-show-more-/a')).toBeDefined();
+    useThreadsStore.getState().selectThread('t7'); rerender();
+    expect(ids()).toEqual([...allSeven, 'b']);
+    toggle(); rerender();
+    if (!leaveClosed) { toggle(); rerender(); }
+    expect(ids()).toEqual(leaveClosed ? ['b'] : [...firstFive, 'b']);
+    const revision = useThreadsStore.getState().threadNavigationRevision;
+    // WorkspacePanel swaps the tree for CollapsedRail; its stores stay alive.
+    useUiStore.getState().toggleWorkspace(); tree.unmount();
+    useUiStore.getState().toggleWorkspace(); tree = mount(ProjectsTree, {}); rerender();
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(revision);
+    expect(ids()).toEqual(leaveClosed ? ['b'] : [...firstFive, 'b']);
+    expect(findAllWhere(tree.tree, el => el.type === ProjectRow && el.props.project.path === '/a')[0].props.expanded)
+      .toBe(!leaveClosed);
+    if (!leaveClosed) expect(tree.find('project-show-more-/a')).toBeDefined();
+    expect(useThreadsStore.getState().currentThreadId).toBe('t7');
+    useThreadsStore.getState().selectThread('t7'); rerender();
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(revision + 1);
+    expect(ids()).toEqual([...allSeven, 'b']);
+  });
+
+  it('a fresh renderer restores the hidden current thread even with the same initial revision', () => {
+    useThreadsStore.getState().selectThread('t7');
+    tree = mount(ProjectsTree, {}); rerender();
+    expect(ids()).toEqual([...allSeven, 'b']);
+    toggle(); rerender(); toggle(); rerender();
+    expect(ids()).toEqual([...firstFive, 'b']);
+    const revision = useThreadsStore.getState().threadNavigationRevision;
+    tree.unmount();
+    useUiStore.setState(useUiStore.getInitialState(), true);
+    useThreadsStore.setState(useThreadsStore.getInitialState(), true);
+    useThreadsStore.getState().hydrate(projects, [...threads(), b]);
+    useUiStore.setState({ collapsedProjects: new Set(['/a']) });
+    restoreViewState({ threadId: 't7', filePaths: [], activeFilePath: null, activeTab: 'thread' }, new Set(allSeven));
+    expect(useThreadsStore.getState().threadNavigationRevision).toBe(revision);
+    tree = mount(ProjectsTree, {}); rerender();
+    expect(ids()).toEqual([...allSeven, 'b']);
+    expect([...useUiStore.getState().collapsedProjects]).toEqual([]);
+  });
+
   it('title/activity broadcasts cannot reopen manually collapsed project', () => {
     useThreadsStore.getState().selectThread('t7');
     tree = mount(ProjectsTree, {}); rerender();
@@ -130,6 +173,7 @@ describe('ProjectsTree preview wiring', () => {
     useThreadsStore.getState().selectThread('t7');
     tree = mount(ProjectsTree, {});
     useThreadsStore.getState().upsertThread(threads()[6]); rerender();
+    tree.unmount(); tree = mount(ProjectsTree, {});
     useUiStore.setState({ collapsedProjects: new Set(['/a']) });
     useThreadsStore.getState().hydrate(projects, [...threads(), b]); rerender();
     expect(ids()).toEqual([...allSeven, 'b']);

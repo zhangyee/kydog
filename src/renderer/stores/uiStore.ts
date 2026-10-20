@@ -112,6 +112,9 @@ type UiState = {
   /** 每课题显示全部会话，只活在本窗口内存；手动收起时清除。 */
   showAllThreadProjects: Set<string>;
   showAllProjectThreads: (path: string) => void;
+  /** 已处理的导航身份跟窗口走，工作区树卸载不清除；与预览状态一样不持久化。 */
+  consumedThreadNavigationRevision: number | null;
+  consumeThreadNavigation: (revision: number) => void;
   dirCache: Record<string, FsNode[]>;
   /** 正在读、还没进缓存的目录。它们也算「在看」：监听集合必须在读之前就包含它们
    *  （见 watchSync.ts），否则读完到开始监听之间的变化没人知道。 */
@@ -233,6 +236,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   expandedDirs: new Set(),
   collapsedProjects: new Set<string>(),
   showAllThreadProjects: new Set<string>(),
+  consumedThreadNavigationRevision: null,
+  consumeThreadNavigation: (revision) => set({ consumedThreadNavigationRevision: revision }),
   showAllProjectThreads: (path) => set((s) => ({ showAllThreadProjects: new Set(s.showAllThreadProjects).add(path) })),
   dirCache: {},
   dirPending: new Set<string>(),
