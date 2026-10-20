@@ -28,8 +28,20 @@ export const highlightSchema = $markSchema('highlight', () => ({
   },
   toMarkdown: {
     match: (mark) => mark.type.name === 'highlight',
-    runner(state, mark) {
+    runner(state, mark, node) {
       state.withMark(mark, 'highlight');
+      // Milkdown extracts ASCII edge spaces while closing every mark. Nested
+      // marks can then move a leading whitespace-only child to the run's end.
+      // Retain this literal until our source writer encodes the boundary.
+      // Code owns its literal serialization and must keep its upstream runner.
+      if (
+        node.isText &&
+        (node.text!.startsWith(' ') || node.text!.endsWith(' ')) &&
+        !node.marks.some((current) => current.type.spec.code)
+      ) {
+        state.addNode('highlightText', undefined, node.text!);
+        return true;
+      }
     },
   },
 }));

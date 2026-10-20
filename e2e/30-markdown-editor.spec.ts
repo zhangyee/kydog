@@ -114,6 +114,7 @@ test.beforeAll(async () => {
       await fs.writeFile(path.join(proj, 'highlight-print.md'), '==ZZ_HIGHLIGHT==\n');
       await fs.writeFile(path.join(proj, 'highlight-sequences.md'), '# sequences\n\nmath\n\ncode\n');
       await fs.writeFile(path.join(proj, 'highlight-atoms.md'), '# atoms\n\n\\`before $x$ ![plot](figs/a.png "caption") ==y==\n');
+      await fs.writeFile(path.join(proj, 'highlight-whitespace.md'), 'leading\n\ntrailing\n\n**wo**[rd](https://example.org)\n');
       await seedProject(home, proj, [{ id: 'thr-1', title: '测试 Thread' }]);
     },
   });
@@ -683,6 +684,51 @@ test('30-markdown-editor: existing inline atoms retain source in completed code 
   await expect(editor.locator('code')).toHaveText(expected);
 });
 
+
+test('30-markdown-editor: edited highlight whitespace and nested formatting survive save and reopen', async () => {
+  const { page } = launched;
+  const file = at('highlight-whitespace.md');
+  const editor = await openMd('highlight-whitespace.md');
+  const expected = ['\u3000leading', 'trailing\u00a0', ' word'];
+  for (const [index, whitespace, side] of [
+    [0, '\u3000', 'start'],
+    [1, '\u00a0', 'end'],
+    [2, ' ', 'start'],
+  ] as const) {
+    const paragraph = editor.locator('p').nth(index);
+    await paragraph.evaluate(p => {
+      (p.closest('[contenteditable]') as HTMLElement).focus();
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
+    });
+    await expect(page.locator('.milkdown-toolbar[data-show="true"]')).toHaveCount(1);
+    await highlightButton().dispatchEvent('pointerdown');
+    await expect(paragraph.locator('mark').first()).toBeVisible();
+    await page.keyboard.press(side === 'start' ? 'ArrowLeft' : 'ArrowRight');
+    await page.keyboard.insertText(whitespace);
+    await expect.poll(() => paragraph.textContent()).toBe(expected[index]);
+  }
+  const checkContent = async () => {
+    for (let index = 0; index < expected.length; index++) {
+      const paragraph = editor.locator('p').nth(index);
+      await expect.poll(() => paragraph.textContent()).toBe(expected[index]);
+      expect((await paragraph.locator('mark').allTextContents()).join('')).toBe(expected[index]);
+    }
+    await expect(editor.locator('strong')).toHaveText(' wo');
+    await expect(editor.locator('a')).toHaveText('rd');
+    await expect(editor.locator('a')).toHaveAttribute('href', 'https://example.org');
+  };
+  await checkContent();
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toHaveCount(0);
+  await page.getByTestId(`tab-close-${file}`).click();
+  await openMd('highlight-whitespace.md');
+  await checkContent();
+  expect(await fs.readFile(file, 'utf8')).toContain('&#x3000;');
+  expect(await fs.readFile(file, 'utf8')).toContain('&#xa0;');
+});
 
 test('Inspector modified order follows actual watcher and Delete keeps selected path across sorting', async () => {
   const { page, app } = launched;

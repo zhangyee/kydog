@@ -45,6 +45,7 @@ it('real confirmation approves exact snapshot, closes successes, refreshes captu
 });
 it.each([a, b])('partial response preserves failed draft when active=%s and refreshes only successful parents', async (active) => {
   prepare(); useUiStore.getState().focusFileTab(active);
+  expect(useUiStore.getState().openFileTabs.map(t => t.path)).toEqual([b, a]);
   result = { trashed: [a], failed: [{ path: b, error: { code: 'fs.access_denied', message: 'EPERM test' } }] };
   const p = deleteProjectFiles('C:\\p', targets); useConfirmStore.getState().resolve(true);
   expect(await p).toEqual(result);

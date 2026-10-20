@@ -1,6 +1,6 @@
 /** Shared Markdown grammar only: no DOM, editor, or bridge dependencies. */
 import type { Plugin } from 'unified';
-import type { Root, Parent, PhrasingContent } from 'mdast';
+import type { Root, Parent, Literal, PhrasingContent } from 'mdast';
 import type { Extension, Tokenizer, Resolver, Token, Event, Construct } from 'micromark-util-types';
 import type { Extension as FromMarkdownExtension } from 'mdast-util-from-markdown';
 import type { Options as ToMarkdownOptions } from 'mdast-util-to-markdown';
@@ -12,12 +12,20 @@ export interface Highlight extends Parent {
   type: 'highlight';
   children: PhrasingContent[];
 }
+/** Serialization-only text: keep editor whitespace in place until the highlight
+ * writer can encode its boundaries, before Milkdown's generic mark trimming. */
+interface HighlightText extends Literal {
+  type: 'highlightText';
+  value: string;
+}
 declare module 'mdast' {
   interface PhrasingContentMap {
     highlight: Highlight;
+    highlightText: HighlightText;
   }
   interface RootContentMap {
     highlight: Highlight;
+    highlightText: HighlightText;
   }
 }
 declare module 'micromark-util-types' {
@@ -134,12 +142,21 @@ export function highlightToMarkdown(): ToMarkdownOptions {
       },
     ],
     handlers: {
+      highlightText(node, _parent, state, info) {
+        return state.safe(node.value, info);
+      },
       highlight(node, _parent, state, info) {
         const tracker = state.createTracker(info);
         const value = tracker.move('==');
-        return (
-          value + state.containerPhrasing(node, { ...tracker.current(), before: value, after: '=' }) + '=='
-        );
+        let content = state.containerPhrasing(node, { ...tracker.current(), before: value, after: '=' });
+        // Like mdast's strong handler, encode whitespace at source delimiter
+        // boundaries. Editor marks can acquire these characters through edits;
+        // references preserve their text/formatting without relaxing the grammar.
+        const head = content.charCodeAt(0);
+        if (unicodeWhitespace(head)) content = `&#x${head.toString(16)};` + content.slice(1);
+        const tail = content.charCodeAt(content.length - 1);
+        if (unicodeWhitespace(tail)) content = content.slice(0, -1) + `&#x${tail.toString(16)};`;
+        return value + content + '==';
       },
     },
   };
