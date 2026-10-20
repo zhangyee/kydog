@@ -20,6 +20,7 @@ describe('toolbarTipFor', () => {
   it('无快捷键的项两个平台文案相同（latex / link / comment）', () => {
     for (const platform of ['darwin', 'win32']) {
       expect(toolbarTipFor('latex', platform)).toBe('公式');
+      expect(toolbarTipFor('highlight', platform)).toBe('高亮');
       expect(toolbarTipFor('link', platform)).toBe('链接');
       expect(toolbarTipFor('comment', platform)).toBe('评论');
     }

@@ -68,3 +68,9 @@ body::before { display: none !important; }
    visible，没有可覆盖的对象，所以这里不补规则（brief 步骤 4 的决策）。 */
 .kydog-md-print table { width: 100%; }
 .kydog-md-print img { max-width: 100%; }
+
+.kydog-md-print .kydog-highlight {
+  background: #fff0b3;
+  color: inherit;
+  print-color-adjust: exact;
+}

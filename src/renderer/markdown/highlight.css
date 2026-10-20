@@ -1,0 +1,4 @@
+.kydog-highlight {
+  color: inherit;
+  background: color-mix(in srgb, var(--color-amber) 28%, transparent);
+}

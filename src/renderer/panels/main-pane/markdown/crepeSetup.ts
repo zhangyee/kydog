@@ -1,11 +1,12 @@
 import { Crepe, type CrepeConfig } from '@milkdown/crepe';
-import { nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
+import { commandsCtx, nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
 import type { MilkdownPlugin } from '@milkdown/kit/ctx';
 import { $prose } from '@milkdown/kit/utils';
 import type { NodeViewConstructor } from '@milkdown/kit/prose/view';
 import { languages } from '@codemirror/language-data';
-import { linkSchema } from '@milkdown/kit/preset/commonmark';
+import { isMarkSelectedCommand, linkSchema } from '@milkdown/kit/preset/commonmark';
 import katex from 'katex';
+import { highlightSchema, remarkHighlightPlugin, toggleHighlightCommand, highlightInputRule } from './highlight';
 import { commentMarksPlugin } from './commentMarks';
 import { appendToolbarTip, toolbarTipFor } from './toolbarTips';
 import { resolveImageSrc } from './imageSrc';
@@ -134,6 +135,11 @@ export function featureConfigsFor(opts: CrepeSetupOptions): CrepeFeatureConfig {
           if (!item || !tip) return;
           item.icon = appendToolbarTip(item.icon, tip);
         };
+        builder.getGroup('formatting').addItem('highlight', {
+          icon: appendToolbarTip('<svg viewBox="0 0 24 24"><path d="M5 3h3v7h8V3h3v17h-3v-7H8v7H5z"/></svg>', toolbarTipFor('highlight', platform)!),
+          active: (ctx) => ctx.get(commandsCtx).call(isMarkSelectedCommand.key, highlightSchema.type(ctx)),
+          onRun: (ctx) => { ctx.get(commandsCtx).call(toggleHighlightCommand.key); },
+        });
         tipItem('formatting', 'bold');
         tipItem('formatting', 'italic');
         tipItem('formatting', 'strikethrough');
@@ -178,6 +184,8 @@ export function createCrepe(opts: CrepeSetupOptions): Crepe {
   });
   crepe.editor.use(mathInlineNodeViewPlugin);
   crepe.editor.use(imageBlockAltSchema);
+  crepe.editor.use(remarkHighlightPlugin).use(highlightSchema);
+  if (opts.mode === 'edit') crepe.editor.use(toggleHighlightCommand).use(highlightInputRule);
   if (opts.mode === 'edit') crepe.editor.use($prose(() => commentMarksPlugin()));
   if (opts.mode === 'print') crepe.editor.use(printLinkSchema);
   return crepe;

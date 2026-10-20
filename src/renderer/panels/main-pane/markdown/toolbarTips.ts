@@ -13,6 +13,7 @@ const TIPS_DARWIN: Readonly<Record<string, string>> = {
   strikethrough: '删除线 · ⌘⌥X',
   code: '行内代码 · ⌘E',
   latex: '公式',
+  highlight: '高亮',
   link: '链接',
   // 功能整体叫「评论追问」，但这颗按钮的 tooltip 就叫「评论」（拍板见协调者更正）。
   comment: '评论',

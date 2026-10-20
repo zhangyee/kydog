@@ -7,3 +7,5 @@
 @import "./theme/midnight.css";
 @import "./theme/lilac.css";
 @import "./theme/globals.css";
+
+@import "./markdown/highlight.css";

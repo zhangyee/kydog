@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -10,7 +10,7 @@ import { inspectPdf, type PdfPage, type PdfReport } from './pdfInspect';
  * 关脏 tab 的确认、相对路径图片、块级图片说明文字）、主进程把 PDF 页渲染成 PNG、md 导出 PDF。
  * 串行共用一次启动，各条用不同的文件。
  *
- * 顺序约束：导出那条放最后 —— 它替换了主进程的 dialog.showSaveDialog / shell.showItemInFolder、
+ * 顺序约束：原导出之后才跑高亮编辑和高亮 PDF；高亮 PDF 重新替换存储框。原导出 —— 它替换了主进程的 dialog.showSaveDialog / shell.showItemInFolder、
  * 改了设置文件里的 ui.mdExport、开着一个 PDF 标签，这些都不收回。
  */
 test.describe.configure({ mode: 'serial' });
@@ -108,6 +108,8 @@ test.beforeAll(async () => {
       await fs.writeFile(path.join(proj, 'figs', 'wide.png'), solidPng(WIDE_PNG.width, WIDE_PNG.height, [0xa5, 0x6e, 0x3a]));
       await fs.writeFile(path.join(proj, 'export.md'), EXPORT_MD);
       await fs.writeFile(path.join(proj, 'images.md'), IMAGES_MD);
+      await fs.writeFile(path.join(proj, 'highlight.md'), '# 高亮报告\n\n==中文== and ==English==\n\n==**bold** [link](https://example.org) `code`==\n\n`==literal==`\n\nplain\n');
+      await fs.writeFile(path.join(proj, 'highlight-print.md'), '==ZZ_HIGHLIGHT==\n');
       await seedProject(home, proj, [{ id: 'thr-1', title: '测试 Thread' }]);
     },
   });
@@ -512,4 +514,117 @@ test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter
   expect((await recorded()).defaultPaths).toEqual([at('export.pdf'), at('export.pdf'), at('export.pdf')]);
   // 打印窗口用完即毁：只剩主窗口
   expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+});
+
+
+async function selectHighlightText(editor: Locator, text: string) {
+  await editor.evaluate((root, needle) => {
+    (root as HTMLElement).focus();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const offset = n.textContent!.indexOf(needle);
+      if (offset < 0) continue;
+      const range = document.createRange();
+      range.setStart(n, offset); range.setEnd(n, offset + needle.length);
+      getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
+      return;
+    }
+    throw new Error(`Missing selection text: ${needle}`);
+  }, text);
+  await expect(launched.page.locator('.milkdown-toolbar[data-show="true"]')).toHaveCount(1);
+}
+const highlightButton = () => launched.page.locator('.milkdown-toolbar').locator('visible=true')
+  .locator('.toolbar-item').filter({ has: launched.page.locator('.kydog-tb-tip', { hasText: /^高亮$/ }) });
+
+test('30-markdown-editor: highlight editing, saved source, input rule, comments and themes', async () => {
+  const { page } = launched;
+  const file = at('highlight.md');
+  const editor = await openMd('highlight.md');
+  await expect(editor.locator('mark.kydog-highlight').first()).toHaveText('中文');
+  await expect(editor.locator('mark strong, strong mark')).toHaveText('bold');
+  await expect(editor.locator('mark a, a mark')).toHaveText('link');
+  await expect(editor.locator('mark code, code mark')).toHaveText('code');
+  await expect(editor.locator('code').filter({ hasText: '==literal==' })).toHaveText('==literal==');
+  // Loading has no completion event for a potential dirty echo; observe the existing editor debounce.
+  await page.waitForTimeout(1500);
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toHaveCount(0);
+  await selectHighlightText(editor, 'plain');
+  await highlightButton().dispatchEvent('pointerdown');
+  await expect(editor.locator('mark').filter({ hasText: /^plain$/ })).toHaveCount(1);
+  await selectHighlightText(editor, 'plain');
+  await highlightButton().dispatchEvent('pointerdown');
+  await expect(editor.locator('mark').filter({ hasText: /^plain$/ })).toHaveCount(0);
+  await editor.locator('h1').click();
+  await page.keyboard.press(END_OF_LINE);
+  await page.keyboard.type('改');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect.poll(() => fs.readFile(file, 'utf8')).toContain('# 高亮报告改');
+  expect(await fs.readFile(file, 'utf8')).toContain('==中文==');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toHaveCount(0);
+  await page.getByTestId(`tab-close-${file}`).click();
+  await openMd('highlight.md');
+  await expect(editor.locator('mark').first()).toHaveText('中文');
+  await expect(editor.locator('mark strong, strong mark')).toHaveText('bold');
+  await expect(editor.locator('mark code, code mark')).toHaveText('code');
+  await editor.locator('p').last().click();
+  await page.keyboard.press(END_OF_LINE); await page.keyboard.press('Enter');
+  await page.keyboard.type('==typed==');
+  await expect(editor.locator('mark').filter({ hasText: /^typed$/ })).toHaveCount(1);
+  await selectHighlightText(editor, '中文');
+  await page.locator('.milkdown-toolbar').locator('visible=true').locator('.toolbar-item').last().dispatchEvent('pointerdown');
+  await expect(page.getByTestId('comment-box')).toBeVisible();
+  await expect(editor.locator('.kydog-comment-mark')).toHaveText('中文');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('comment-box')).toHaveCount(0);
+  await expect(editor.locator('.kydog-comment-mark')).toHaveCount(0);
+  await expect(editor.locator('mark').first()).toHaveText('中文');
+  await page.getByTestId('user-menu-trigger').click();
+  for (const theme of ['vellum', 'midnight', 'vellum']) {
+    await page.getByTestId(`theme-${theme}`).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    const style = await editor.locator('mark').first().evaluate(el => ({
+      color: getComputedStyle(el).color, parent: getComputedStyle(el.parentElement!).color,
+      bg: getComputedStyle(el).backgroundColor,
+    }));
+    expect(style.color).toBe(style.parent);
+    expect(style.bg).not.toBe('rgba(0, 0, 0, 0)');
+    expect(style.bg).not.toBe('transparent');
+  }
+  await page.getByTestId('user-menu-trigger').click();
+});
+
+test('30-markdown-editor: actual printed highlight pixels disappear after removing mark', async () => {
+  const { page, app } = launched;
+  const editor = await openMd('highlight-print.md');
+  const pane = page.getByTestId(`file-pane-${at('highlight-print.md')}`);
+  const outputs = [at('highlight-on.pdf'), at('highlight-off.pdf')];
+  await app.evaluate(({ dialog }, paths) => {
+    const queue = [...paths];
+    dialog.showSaveDialog = (async () => ({ canceled: false, filePath: queue.shift()! })) as typeof dialog.showSaveDialog;
+  }, outputs);
+  const exportPixels = async (out: string) => {
+    await pane.getByTestId('md-export').click();
+    await pane.getByTestId('md-export-go').click();
+    const toast = pane.getByTestId('md-export-toast');
+    await expect(toast).toBeVisible({ timeout: EXPORT_BUDGET_MS });
+    expect(await toast.getAttribute('data-kind'), await toast.innerText()).toBe('done');
+    const { pngPath } = await page.evaluate(p => window.kydog.invoke('pdf.renderPage', { path: p, page: 1, scale: 2 }), out);
+    const base64 = (await fs.readFile(pngPath)).toString('base64');
+    const pixels = await page.evaluate(async bytes => {
+      const img = new Image(); img.src = `data:image/png;base64,${bytes}`; await img.decode();
+      const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!; ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, img.width, img.height).data;
+      let count = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] === 255 && data[i + 1] === 240 && data[i + 2] === 179 && data[i + 3] === 255) count++;
+      return count;
+    }, base64);
+    expect((await inspectPdf(out)).text).toContain('ZZ_HIGHLIGHT');
+    return pixels;
+  };
+  expect(await exportPixels(outputs[0])).toBeGreaterThan(0);
+  await selectHighlightText(editor, 'ZZ_HIGHLIGHT');
+  await highlightButton().dispatchEvent('pointerdown');
+  expect(await exportPixels(outputs[1])).toBe(0);
 });
