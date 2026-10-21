@@ -183,6 +183,26 @@ function runExpression(
 /** 一条结果：容器里挂着若干按选择器登记的子元素。 */
 const row = (kids: Record<string, FakeEl>) => new FakeEl({}, '', kids);
 
+describe('页面表达式 · 条目自身属性', () => {
+  it('从条目本身读取目标 URL，同时保持其他字段在条目内查找', () => {
+    const plan = compileExtractPlan({ item: '.result[mu]', title: 'h3', url: ':scope@mu' });
+    const card = new FakeEl({ mu: 'https://docs.example/article' }, '',
+      { h3: new FakeEl({}, 'Article title') });
+    expect(runExpression(plan, [card]).rows).toEqual([
+      { title: 'Article title', url: 'https://docs.example/article' },
+    ]);
+  });
+
+  it('条目本身是密码框时不读取其属性，普通输入框仍可读取', () => {
+    const plan = compileExtractPlan({ item: 'input', value: ':scope@value' });
+    const ordinary = new FakeInput('text', { value: 'safe' });
+    const password = new FakeInput('password', { value: 'secret' });
+    expect(runExpression(plan, [ordinary, password]).rows).toEqual([
+      { value: 'safe' }, { value: null },
+    ]);
+  });
+});
+
 describe('页面表达式 · 密码判据补齐到与 walker 一致（最终评审 C3）', () => {
   // 从前这里只有一条判据（此刻 IDL type === 'password'），而 extract.ts 的注释明写
   // 「与 walker 用的是同一个协议层判据」—— 那句话是假的。评审实测的三种态里

@@ -9,7 +9,7 @@ import {
 import { PRESET_RESEARCH_VARS } from './researchVars';
 
 const R = (r: Partial<SettingsFile['research']>): SettingsFile['research'] =>
-  ({ presets: {}, custom: [], ...r });
+  ({ presets: {}, custom: [], xResearchEnabled: false, ...r });
 
 describe('normalizeResearch', () => {
   it('trim 值与变量名，剔掉空的预设项', () => {
@@ -70,9 +70,11 @@ describe('normalizeResearch', () => {
     expect(normalizeResearch({
       presets: { NCBI_API_KEY: 'k1' },
       custom: [{ name: 'MY_KEY', kind: 'email', value: 'a@b.com' }],
+      xResearchEnabled: false,
     })).toEqual({
       presets: { NCBI_API_KEY: 'k1' },
       custom: [{ name: 'MY_KEY', kind: 'email', value: 'a@b.com' }],
+      xResearchEnabled: false,
     });
   });
 });
@@ -204,4 +206,11 @@ describe('RESERVED_ENV_NAMES', () => {
   it('不误伤预设的文献变量', () => {
     for (const v of PRESET_RESEARCH_VARS) expect(RESERVED_ENV_NAMES.has(v.name)).toBe(false);
   });
+});
+
+it('experimental flag only accepts boolean true and defaults old inputs to false', () => {
+  expect(normalizeResearch({ presets: {}, custom: [], xResearchEnabled: true }).xResearchEnabled).toBe(true);
+  for (const value of [false, undefined, 'true', 1, null]) {
+    expect(normalizeResearch({ presets: {}, custom: [], xResearchEnabled: value } as never).xResearchEnabled).toBe(false);
+  }
 });

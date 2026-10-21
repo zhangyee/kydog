@@ -7,7 +7,7 @@ import { inspectPdf, type PdfPage, type PdfReport } from './pdfInspect';
 
 /**
  * 项目文件：右栏文件树跟着磁盘走、markdown 编辑器（保存往返、KaTeX、代码块配色、开档不标脏、
- * 关脏 tab 的确认、相对路径图片、块级图片说明文字）、主进程把 PDF 页渲染成 PNG、md 导出 PDF。
+ * 关脏 tab 的确认、相对路径图片、块级图片说明文字、Mermaid SVG 与源码保存）、主进程把 PDF 页渲染成 PNG、md 导出 PDF。
  * 串行共用一次启动，各条用不同的文件。
  *
  * 顺序约束：原导出之后才跑高亮编辑 / PDF，最后验证逐字输入的源码保留。
@@ -21,6 +21,12 @@ test.describe.configure({ mode: 'serial' });
 // 语法会被 Crepe 规范化的内容：- 列表 → *，--- → ***，表格重新补空格对齐。
 const NORM_CONTENT = [
   '# 规范化标题', '', '- 列表项一', '- 列表项二', '', '---', '', '| A | B |', '|---|---|', '| 1 | 2 |', '',
+].join('\n');
+
+const MERMAID_MD = [
+  '# Mermaid 标题', '',
+  '```mermaid', 'flowchart LR', 'MMD_CLIENT_42 --> MMD_WORKER_42', '```', '',
+  '```javascript', 'const ordinary = 42;', '```', '',
 ].join('\n');
 
 // 最小单页 PDF：无 xref，pdf.js 走 recovery 模式解析 → numPages=1，MediaBox 300x400。
@@ -73,7 +79,8 @@ const WIDE_PNG = { width: 1600, height: 400 };
 const LONG_CODE = Array.from({ length: 300 }, (_, i) => (i === 299 ? 'const LAST = "ZZ_LAST_LINE";' : `const line_${i + 1} = ${i + 1};`)).join('\n');
 // 一行远宽于版心、中间有空格可断的代码，行尾带标记：守「长行折行」与「折出来的行不计数」。
 const LONG_LINE = `const LONG = "${'x'.repeat(60)} ${Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ')} ZZ_LONG_TAIL";`;
-// python 块放在最后：打印窗口只有 600 高，它离视口最远，守「视口外的代码块也真的挂上 CodeMirror」。
+// python 与 Mermaid 块放在长代码、图片、公式之后：打印窗口只有 600 高，守「视口外的代码块也真的
+// 挂上 CodeMirror、启动 Mermaid 预览并按终态完成对账」。
 const EXPORT_MD = [
   '# 导出标题', '',
   '正文段落，带一个 [外链](https://example.org/x) 和一个 [相对链接](other.md)。', '',
@@ -84,6 +91,8 @@ const EXPORT_MD = [
   '![宽图](figs/wide.png)', '',
   '$$', 'E=mc^2', '$$', '',
   '```python', 'def tail():', "    return 'ZZ_PY_TAIL'", '```', '',
+  // 节点文字用 10px：Mermaid 默认 120px 的标签换行宽度下，两段唯一标记各占一行，PDF 可直接读回。
+  '```mermaid', 'flowchart LR', 'MMD_PDF_LEFT_42 --> MMD_PDF_RIGHT_42', 'classDef default font-size:10px;', '```', '',
 ].join('\n');
 // 块级图的两种 alt：说明文字、Milkdown 自己写的缩放比例；外加一张行内图。
 const IMAGES_MD = ['# 图片', '', '![块级图](figs/a.png)', '', '![1.50](figs/a.png)', '', '行内 ![行内图](figs/a.png) 在句中。', ''].join('\n');
@@ -104,6 +113,24 @@ test.beforeAll(async () => {
       await fs.writeFile(path.join(proj, 'math.md'), '# 行内公式标题\n\n这里有行内公式 $E = mc^2$ 在文字中。\n');
       await fs.writeFile(path.join(proj, 'norm.md'), NORM_CONTENT);
       await fs.writeFile(path.join(proj, 'code.md'), '# 代码块\n\n```python\ndef hello():\n    print("hi")\n```\n');
+      await fs.writeFile(path.join(proj, 'mermaid.md'), MERMAID_MD);
+      await fs.writeFile(path.join(proj, 'mermaid-image.md'), [
+        '# Resource boundary', '', '![ordinary](https://example.invalid/control.png)', '',
+        '```mermaid', 'flowchart LR', 'A@{ img: "https://example.invalid/diagram.png", label: "Image" }', '```', '',
+      ].join('\n'));
+      await fs.writeFile(path.join(proj, 'mermaid-css.md'), [
+        '# CSS boundary', '', '```mermaid',
+        '%%{init: {"themeCSS": ".node rect { fill: url(https://example.invalid/paint.svg); }"}}%%',
+        'flowchart LR', 'A --> B', '```', '',
+        '```mermaid',
+        '%%{init: {"themeCSS": ".unused { background-image: url(https://example.invalid/inactive.png); }"}}%%',
+        'flowchart LR', 'C --> D', '```', '',
+      ].join('\n'));
+      await fs.writeFile(path.join(proj, 'mermaid-invalid.md'), '# Invalid\n\n```mermaid\nflowchart LR\nA --> [\n```\n');
+      await fs.writeFile(path.join(proj, 'mermaid-types.md'), [
+        '# Diagram families', '', '```mermaid', 'sequenceDiagram', 'CLIENT->>WORKER: request', '```', '',
+        '```mermaid', 'stateDiagram-v2', '[*] --> Active', 'Active --> [*]', '```', '',
+      ].join('\n'));
       await fs.writeFile(path.join(proj, 'figure.pdf'), MINIMAL_PDF);
       // md 导出 PDF（spec 2026-09-22-md-export-pdf-design §5）
       await fs.mkdir(path.join(proj, 'figs'), { recursive: true });
@@ -193,6 +220,143 @@ test('30-markdown-editor: 代码块当前行高亮跟随主题，而非 One Dark
   expect(r.gutterBg).not.toBe('rgb(44, 49, 58)');   // One Dark 的 highlightBackground
   expect(r.gutterBg).toBe(r.want);
   expect(r.lineBg).toBe(r.want);
+});
+
+test('30-markdown-editor: Mermaid 代码块渲染 SVG、适应容器并原样保存源码', async () => {
+  const { page } = launched;
+  const file = at('mermaid.md');
+  const editor = await openMd('mermaid.md');
+  const preview = editor.locator('.kydog-mermaid-preview[data-status="ready"]');
+  await expect(preview.locator('svg')).toBeVisible();
+  await expect(preview).toContainText('MMD_CLIENT_42');
+  await expect(preview).toContainText('MMD_WORKER_42');
+  const block = editor.locator('.milkdown-code-block').filter({ has: page.locator('.kydog-mermaid-preview[data-status="ready"]') });
+  const source = block.locator('.codemirror-host');
+  const toggle = block.locator('.preview-toggle-button');
+  await expect(source).toHaveClass(/hidden/);
+  await expect(toggle).toHaveText('Edit');
+  await toggle.click();
+  await expect(source).toBeVisible();
+  await expect(source).not.toHaveClass(/hidden/);
+  await expect(toggle).toHaveText('Hide');
+  await toggle.click();
+  await expect(source).toHaveClass(/hidden/);
+  await expect(toggle).toHaveText('Edit');
+  const ordinarySource = editor.locator('.milkdown-code-block').filter({ hasText: 'const ordinary = 42;' }).locator('.codemirror-host');
+  await expect(ordinarySource).toBeVisible();
+  await expect(ordinarySource).not.toHaveClass(/hidden/);
+  const size = await preview.evaluate((wrapper) => ({
+    svg: wrapper.querySelector('svg')!.getBoundingClientRect().width,
+    wrapper: wrapper.getBoundingClientRect().width,
+  }));
+  expect(size.svg, `SVG 宽 ${size.svg}px，容器宽 ${size.wrapper}px`).toBeLessThanOrEqual(size.wrapper + 1);
+
+  // 改标题后写回整份文档：普通文本真改了，图仍是原来的 fenced Mermaid 源码。
+  await editor.locator('h1').click();
+  await page.keyboard.press(END_OF_LINE);
+  await page.keyboard.type('改');
+  await expect(page.getByTestId(`tab-dirty-${file}`)).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect.poll(() => fs.readFile(file, 'utf8').catch(() => '')).toContain('# Mermaid 标题改');
+  const saved = await fs.readFile(file, 'utf8');
+  expect(saved).toContain('```mermaid');
+  expect(saved).toContain('flowchart LR\nMMD_CLIENT_42 --> MMD_WORKER_42');
+  const types = await openMd('mermaid-types.md');
+  await types.locator('.milkdown-code-block').last().scrollIntoViewIfNeeded();
+  await expect(types.locator('.kydog-mermaid-preview[data-status="ready"] svg')).toHaveCount(2);
+  await expect(types).toContainText('request');
+  await expect(types).toContainText('Active');
+});
+
+test('30-markdown-editor: Mermaid resource containment and orphan cleanup', async () => {
+  const { page } = launched;
+  const requests: string[] = [];
+  await page.route('https://example.invalid/**', async (route) => {
+    requests.push(route.request().url());
+    if (route.request().url().endsWith('/control.png')) {
+      await route.fulfill({ contentType: 'image/png', body: Buffer.from(TINY_PNG_BASE64, 'base64') });
+    } else await route.abort();
+  });
+  try {
+    const valid = await openMd('mermaid.md');
+    await expect(valid.locator('.kydog-mermaid-preview[data-status="ready"] svg')).toBeVisible();
+    const images = await openMd('mermaid-image.md');
+    await expect(images.locator('img')).toBeVisible();
+    await expect.poll(() => requests.includes('https://example.invalid/control.png')).toBe(true);
+    await expect(images.locator('.kydog-mermaid-preview[data-status="error"]')).toHaveCount(1);
+    expect.soft(requests).toEqual(['https://example.invalid/control.png']);
+
+    const css = await openMd('mermaid-css.md');
+    // Scroll the second block into view to start Crepe's real lazy NodeView.
+    await css.locator('.milkdown-code-block').last().scrollIntoViewIfNeeded();
+    await expect.soft(css.locator('.kydog-mermaid-preview[data-status="error"]')).toHaveCount(2);
+    expect.soft(requests).toEqual(['https://example.invalid/control.png']);
+
+    // Positive selector control in this same test: a body-level SVG is observable.
+    await page.evaluate(() => {
+      const probe = document.createElement('div');
+      probe.id = 'dkydog-mermaid-orphan-control';
+      probe.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+      document.body.append(probe);
+    });
+    const orphans = page.locator('body > div[id^="dkydog-mermaid-"] svg');
+    await expect(page.locator('#dkydog-mermaid-orphan-control svg')).toHaveCount(1);
+    expect(await orphans.count()).toBeGreaterThanOrEqual(1);
+    await page.locator('#dkydog-mermaid-orphan-control').evaluate((probe) => probe.remove());
+    // Hold the parent MessagePort delivery, so the failed frame remains available
+    // for deterministic inspection before normal production cleanup removes it.
+    await page.evaluate(() => {
+      const state = window as typeof window & { releaseMermaid?: () => void };
+      const Original = window.MessageChannel;
+      window.MessageChannel = class extends Original {
+        constructor() {
+          super();
+          const descriptor = Object.getOwnPropertyDescriptor(MessagePort.prototype, 'onmessage')!;
+          Object.defineProperty(this.port1, 'onmessage', {
+            set: (callback: (event: MessageEvent) => void) => {
+              descriptor.set!.call(this.port1, (event: MessageEvent) => {
+                state.releaseMermaid = () => { callback(event); window.MessageChannel = Original; delete state.releaseMermaid; };
+              });
+            },
+          });
+        }
+      };
+    });
+    const invalid = await openMd('mermaid-invalid.md');
+    await expect.poll(() => page.evaluate(() => typeof (window as typeof window & { releaseMermaid?: () => void }).releaseMermaid)).toBe('function');
+    const isolated = page.locator('iframe.kydog-mermaid-render-frame');
+    await expect(isolated).toHaveAttribute('sandbox', 'allow-scripts');
+    const frame = await (await isolated.elementHandle())!.contentFrame();
+    const frameFacts = await frame!.evaluate(() => {
+      const state = window as unknown as { mermaid: { mermaidAPI: { getConfig(): { suppressErrorRendering: boolean } } } };
+      const probe = document.createElement('div');
+      probe.id = 'dkydog-mermaid-control';
+      probe.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+      document.body.append(probe);
+      const withControl = document.querySelectorAll('body > div[id^="dkydog-mermaid-"] svg').length;
+      probe.remove();
+      let parentAccess = true;
+      try { void parent.document.body; } catch { parentAccess = false; }
+      return {
+        withControl, withoutControl: document.querySelectorAll('body > div[id^="dkydog-mermaid-"] svg').length,
+        ownAccess: Boolean(document.body), parentAccess,
+        suppressed: state.mermaid.mermaidAPI.getConfig().suppressErrorRendering,
+        csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]')!.getAttribute('content'),
+      };
+    });
+    expect(frameFacts.withControl).toBe(1);
+    expect(frameFacts.withoutControl).toBe(0);
+    expect(frameFacts.ownAccess).toBe(true);
+    expect(frameFacts.parentAccess).toBe(false);
+    expect(frameFacts.suppressed).toBe(true);
+    expect(frameFacts.csp).toContain("default-src 'none'");
+    await page.evaluate(() => (window as typeof window & { releaseMermaid: () => void }).releaseMermaid());
+    await expect(invalid.locator('.kydog-mermaid-preview[data-status="error"]')).toHaveCount(1);
+    await expect(isolated).toHaveCount(0);
+    await expect.soft(orphans).toHaveCount(0);
+  } finally {
+    await page.unroute('https://example.invalid/**');
+  }
 });
 
 test('30-markdown-editor: 打开会被规范化的 md 不标脏；改了才脏，关脏 tab 弹确认框', async () => {
@@ -406,6 +570,10 @@ test('30-markdown-editor: 导出 PDF —— A4 / 标准 / 页码开，再 Letter
   await expect(toast).toHaveCount(0);
 
   const a4 = await inspectPdf(out1);
+  // 屏幕外的 Mermaid 已变成图：两个节点文字来自 SVG，原始代码没有被打印。
+  expect(a4.text).toContain('MMD_PDF_LEFT_42');
+  expect(a4.text).toContain('MMD_PDF_RIGHT_42');
+  expect(a4.text).not.toContain('flowchart LR');
   // 1 长代码块不截断：末行在、编号是 300。.cm-editor / .cm-scroller 不放开 overflow 时，分页推下去的行被
   //   滚动层按分页前的高度裁掉，末行没了（探针实测）
   expect(rowWith(a4, 'ZZ_LAST_LINE')).toMatch(/^300\s*const LAST = "ZZ_LAST_LINE";/);

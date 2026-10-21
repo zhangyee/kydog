@@ -129,16 +129,18 @@ export function Empty() {
   return <div style={{ color: 'var(--color-ink-faint)', fontSize: 12, padding: '4px 0' }}>（无）</div>;
 }
 
-export function Toggle({ checked, onChange, disabled }: {
+export function Toggle({ checked, onChange, disabled, labelledBy }: {
   checked: boolean;
   onChange: () => void;
   disabled?: boolean;
+  labelledBy?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-labelledby={labelledBy}
       onClick={disabled ? undefined : onChange}
       disabled={disabled}
       style={{

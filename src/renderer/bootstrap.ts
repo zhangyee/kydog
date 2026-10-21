@@ -9,6 +9,8 @@ import { applyRunEvent } from './runEvents';
 import { restoreViewState, installViewStateSync } from './viewState';
 import { RUN_EVENT_TOPICS, type RunEvent } from '../shared/protocol';
 import { useBrowserStore } from './panels/browser/browserStore';
+import { useWebResearchTaskStore } from './stores/webResearchTaskStore';
+import { useXResearchTaskStore } from './stores/xResearchTaskStore';
 import { installBrowserBridge } from './panels/browser/browserBridge';
 import { installWatchSync, loadDir } from './fsWatch';
 
@@ -140,6 +142,14 @@ function setupEventBridge(): void {
       applyRunEvent({ topic, payload } as RunEvent);
     });
   }
+  window.kydog.on('webResearch.taskUpdated', (snapshot) => {
+    useWebResearchTaskStore.getState().upsert(snapshot);
+  });
+  // 另一份快照池。它的另一半是进对话时那次 `xResearch.taskList`（ThreadView 的
+  // `thread.loadHistory` 那条路上）—— 两条都只是往同一个池子里 upsert/replaceThread。
+  window.kydog.on('xResearch.taskUpdated', (snapshot) => {
+    useXResearchTaskStore.getState().upsert(snapshot);
+  });
   window.kydog.on('thread.updated', (p) => {
     useThreadsStore.getState().upsertThread(p.thread);
   });

@@ -28,6 +28,10 @@ export type FixtureEvent =
     }
   | {
       after_ms: number;
+      // Executes the shared production catalog, including read/write/edit and optional
+      // x_research. X fixtures supply parameters only; actual result content/details
+      // are appended through SDK SessionManager. Use isolated cwd/sessions profiles.
+      // Public run.tool_call_chunk carries actual text; run.tool_call_end is status only.
       type: 'tool';
       toolCallId: string;
       /**
@@ -36,9 +40,8 @@ export type FixtureEvent =
        * 成「按名字找任意一个已注册的工具」。
        *
        * 找得到的名字取决于 `sessionFactory` 交给 fixture session 的那份工具清单 ——
-       * 目前是 `createBrowserTools()` 那五个（`browser_open` / `browser_act` /
-       * `browser_read` / `browser_login` / `browser_tabs`），与非 fixture 分支交给
-       * pi 的是**同一次构造**。名字不在清单里时这一条按工具失败处理
+       * 与非 fixture 分支交给 pi 的是**同一次构造**的共享生产工具清单，
+       * 包含按设置启用的工具。名字不在清单里时这一条按工具失败处理
        * （`isError: true`），不静默跳过。
        *
        * ── 写 fixture 剧本不再是零副作用的事 ────────────────────────────────

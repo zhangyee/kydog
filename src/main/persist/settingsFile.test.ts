@@ -277,7 +277,7 @@ describe('settingsFile v9', () => {
   it('defaultSettings: schemaVersion=9 + research 为空表', () => {
     const d = defaultSettings();
     expect(d.schemaVersion).toBe(9);
-    expect(d.research).toEqual({ presets: {}, custom: [] });
+    expect(d.research).toEqual({ presets: {}, custom: [], xResearchEnabled: false });
   });
 
   it('loadSettings: v4 → v9 补出空 research，其余字段保留', async () => {
@@ -293,7 +293,7 @@ describe('settingsFile v9', () => {
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v4));
     const s = await loadSettings();
     expect(s.schemaVersion).toBe(9);
-    expect(s.research).toEqual({ presets: {}, custom: [] });
+    expect(s.research).toEqual({ presets: {}, custom: [], xResearchEnabled: false });
     expect(s.ui.theme).toBe('sepia');
     expect(s.ui.locale).toBe('en');
     expect(s.llm.defaultProvider).toBe('anthropic');
@@ -349,7 +349,7 @@ describe('settingsFile v9', () => {
     await fsp.writeFile(path.join(dir, 'kydog.json'), JSON.stringify(v1));
     const s = await loadSettings();
     expect(s.schemaVersion).toBe(9);
-    expect(s.research).toEqual({ presets: {}, custom: [] });
+    expect(s.research).toEqual({ presets: {}, custom: [], xResearchEnabled: false });
   });
 
   it('research 容器形状不对时兜底：presets 非对象归空表、custom 里的数组元素被滤掉', async () => {
@@ -400,7 +400,7 @@ describe('settings v5 → v9 迁移', () => {
       llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null },
       skills: { disabledBuiltins: [] },
       tools: { externalBins: [] },
-      research: { presets: {}, custom: [] },
+      research: { presets: {}, custom: [], xResearchEnabled: false },
       onboarding: { completedAt: '2026-01-01T00:00:00.000Z' },
     });
     const got = migrated(v5);
@@ -421,7 +421,7 @@ describe('settings v5 → v9 迁移', () => {
     const got = migrated(v4);
     expect(got.schemaVersion).toBe(9);
     expect(got.updates).toEqual({ autoCheck: true, dismissedCandidateId: null });
-    expect(got.research).toEqual({ presets: {}, custom: [] });
+    expect(got.research).toEqual({ presets: {}, custom: [], xResearchEnabled: false });
     expect(got.onboarding.completedAt).toBe('2026-01-01T00:00:00.000Z');
   });
 
@@ -678,7 +678,7 @@ describe('ui.collapsedProjects（v7 → v9）', () => {
       llm: { auth: {}, providers: {}, customProviders: [], defaultProvider: null, defaultModel: null },
       skills: { disabledBuiltins: [] },
       tools: { externalBins: [] },
-      research: { presets: {}, custom: [] },
+      research: { presets: {}, custom: [], xResearchEnabled: false },
       onboarding: { completedAt: null },
     });
     const got = migrated(v7);
@@ -974,4 +974,13 @@ describe('confirmedLogins：数组、去重、旧数据迁移（Task 5）', () =
     expect(sanitizeInstitution({ ...base, confirmedLoginHost: 'a.x.edu.cn' })?.confirmedLogins)
       .toEqual([]);
   });
+});
+
+it('persisted experimental flag is restored, legacy and non-boolean fields default false', () => {
+  expect(migrated(JSON.stringify(richSettings({ research: { presets: {}, custom: [], xResearchEnabled: true } }))).research.xResearchEnabled).toBe(true);
+  for (const value of [undefined, false, 'true', 1]) {
+    expect(migrated(JSON.stringify(richSettings({ research: { presets: { NCBI_API_KEY: 'preserved' }, custom: [], xResearchEnabled: value } }))).research)
+      .toEqual({ presets: { NCBI_API_KEY: 'preserved' }, custom: [], xResearchEnabled: false });
+  }
+  expect(defaultSettings().research.xResearchEnabled).toBe(false);
 });

@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron';
 import { registerHandler } from './ipc/dispatcher';
 import { sinkFor } from './ipc/broadcaster';
 import { viewStateStore } from './ui/viewState';
@@ -8,6 +8,10 @@ import { TITLE_BAR_HEIGHT } from './windowChrome';
 import { oauthCoordinator } from './llm/oauth';
 import { settingsService, toRendererSettings } from './settings/settingsService';
 import { researchService } from './research/researchService';
+import { researchRunStore } from './webResearch/runStore';
+import { readEvidence } from './webResearch/evidenceReader';
+import { getWebResearchTaskService } from './webResearch/service';
+import { xResearchTaskService, type XResearchTaskService } from './x/xResearchTaskService';
 import { llmService } from './llm/llmService';
 import { projectService } from './project/projectService';
 import { fileWatcherService } from './project/fileWatcher';
@@ -63,6 +67,24 @@ const localeSet = createLocaleSet({
 
 /** 已经挂过 destroyed 监听的窗口（`fs.setWatched` 用），每个窗口只挂一次。 */
 const watchSenders = new Set<number>();
+
+/** Research metadata is visible only to the main window currently showing its owning thread. */
+function assertResearchViewer(threadId: string, sender: WebContents): void {
+  const window = BrowserWindow.fromWebContents(sender);
+  const view = viewStateStore.get();
+  if (!window || view?.activeTab !== 'thread' || view.threadId !== threadId) {
+    throw new KydogError('research.not_found', 'Research run not found');
+  }
+}
+
+/** 未接线的 x research 任务 service。**与上面那道闸不是一个码**：闸答的「这条研究不在」是
+ *  结论，这一条说的是「现在还答不了」—— 渲染层据此不 latch「记录不可用」，等服务接上再取一次。
+ *  两者共用一个码时，有内容的卡会一直挂着「记录不可用」（R65）。 */
+function requireXResearchTaskService(): XResearchTaskService {
+  const service = xResearchTaskService();
+  if (!service) throw new KydogError('research.unavailable', 'X research task service is not wired');
+  return service;
+}
 
 export function registerAllHandlers(): void {
   registerHandler('app.bootstrap', async () => {
@@ -120,7 +142,75 @@ export function registerAllHandlers(): void {
   registerHandler('settings.get', async () => toRendererSettings(await settingsService.get()));
   registerHandler('settings.update', async (args) => toRendererSettings(await settingsService.update(args)));
   registerHandler('research.get', () => researchService.get());
-  registerHandler('research.save', (args) => researchService.save(args));
+  registerHandler('research.save', async (args) => {
+    const facts = await researchService.save(args);
+    if (facts.xResearchEnabledChanged) await agentService.invalidateAllSessions();
+    return facts.research;
+  });
+  registerHandler('webResearch.list', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return researchRunStore.listRuns(args.threadId);
+  });
+  registerHandler('webResearch.get', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return researchRunStore.loadRun(args.threadId, args.researchRunId);
+  });
+  registerHandler('webResearch.evidence', async (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    const run = await researchRunStore.loadRun(args.threadId, args.researchRunId);
+    return readEvidence(run, args.evidenceId, (record, sourceId) => researchRunStore.loadSource(record, sourceId));
+  });
+  registerHandler('webResearch.taskList', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().list(args.threadId);
+  });
+  registerHandler('webResearch.taskGet', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().get(args.threadId, args.researchRunId);
+  });
+  registerHandler('webResearch.taskSiteIcon', async (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    const dataUrl = await getWebResearchTaskService()
+      .siteIcon(args.threadId, args.researchRunId, args.domain);
+    return { domain: args.domain, ...(dataUrl ? { dataUrl } : {}) };
+  });
+  registerHandler('webResearch.taskInspect', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().inspect(args.threadId, args.researchRunId, args);
+  });
+
+  // ── x research 任务 ──
+  // 四条都先过同一道可见性闸（`assertResearchViewer`）：研究元数据只给正在看这个对话的主窗口。
+  //
+  // 未接线（x research 关闭、或这个进程还没建过会话）时分两种处置：`taskList` 答空列表 ——
+  // 渲染层在开对话时就会调它，此时没有东西可显示是正常状态，报一个错只会变成一条不该有的提示；
+  // 其余三条答 `research.unavailable` —— 「现在还答不了」，不是「这条研究不在」：服务接上之后
+  // 同一个 id 就能取到，所以渲染层不该把它当成一次结论（见 `requireXResearchTaskService`）。
+  // 那个 null 分支由 `handlers.xResearchTask.test.ts` 钉住，不靠「生产里总会接线」。
+  registerHandler('xResearch.taskList', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    const service = xResearchTaskService();
+    return service ? service.list(args.threadId) : [];
+  });
+  registerHandler('xResearch.taskGet', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return requireXResearchTaskService().get(args.threadId, args.researchRunId);
+  });
+  registerHandler('xResearch.taskInspect', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    // 显式投影：`args` 上还挂着 threadId / researchRunId，整个递下去等于把没写进协议的东西也当输入。
+    return requireXResearchTaskService().inspect(args.threadId, args.researchRunId, {
+      view: args.view,
+      ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+      ...(args.pageSize === undefined ? {} : { pageSize: args.pageSize }),
+    });
+  });
+  registerHandler('xResearch.taskCancel', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    // 与工具 `cancel` 动作调的是同一个服务方法：两个表面共用一处实现，不会各自漂。
+    // 这条路上的取消是**用户**按了卡上的取消（R81a）：卡头据此说「你中途取消」。
+    return requireXResearchTaskService().cancel(args.threadId, args.researchRunId, 'user');
+  });
 
   // ── 内置浏览器（侧栏那条路）──
   // 这九条与 agent 那三个工具动的是**同一个** browserService。跨路的并发由

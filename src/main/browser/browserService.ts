@@ -1,6 +1,13 @@
-import { BrowserWindow, WebContentsView, session, type WebContents, type Session, type DownloadItem } from 'electron';
+import { NetworkResponseObserver, type BrowserNetworkSpec, type BrowserNetworkLease } from './networkResponses';
+import {observeSourceDeadline,observeSourceNative,type SourceEvaluation} from './sourceEvaluationDiagnostic';
+import {
+  BrowserWindow, WebContentsView, session,
+  type WebContents, type Session, type DownloadItem,
+} from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
+import { sealPointerPreflight, type PointerPreflightDiagnostic } from './pointerPreflightDiagnostic';
+import { retainPointerFailure, type PointerFailureStage, type PointerEligibilitySummary, type PointerPostFrame } from './pointerDiagnostic';
 import type { BrowserState, NavigationObservation, RectDip, ViewportMode } from '../../shared/types';
 import { broadcaster } from '../ipc/broadcaster';
 import { logger } from '../log';
@@ -10,12 +17,12 @@ import { TabRegistry, MAX_AGENT_TABS } from './tabRegistry';
 import { NavigationTracker } from './settle';
 import type { AxSnapshot } from './snapshot';
 import {
-  resolveTarget, assertTypeAllowed, keyEventsFor,
+  resolveTarget, assertTypeAllowed, keyEventsFor, BrowserScrollAcknowledgementError,
   type DispatchAction, type TargetSpec, type WaitUntil,
 } from './actions';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
-import INTERACT_SOURCE from './injected/interact.js?raw';
+import { collectedPointerPreflightExpression, collectedPointerEligibilityExpression, guardedInteractExpression, measuredPointerExpression, pointerGuardExpression, type PointerBinding, type PointerTarget, type CollectedPermission } from './measuredPointerSource';
 import { TabConsoleLog, ZERO_CURSOR, type ConsoleCursor, type ConsoleReport } from './consoleLog';
 import {
   TabRequestLog, ZERO_REQUEST_CURSOR,
@@ -63,6 +70,34 @@ const NAV_TIMEOUT_MS = 20_000;
 /** walker 与 extract 都跑在这个隔离世界里。选一个不太可能撞车的号；
  *  页面看不见这里的任何东西，也覆写不了这里看到的 `document.querySelectorAll`。 */
 export const WALKER_WORLD_ID = 31337;
+
+/** Trusted in-memory facts; callers redact only when serializing tool/log output. */
+export interface BrowserLocationFacts {
+  currentUrl: string;
+  documentEpoch: number;
+  routeRevision: number;
+  navigationEvent: 'did-start-navigation' | 'did-navigate' | 'did-navigate-in-page' | null;
+  navigationSequence: number;
+  navigationType: 'cross_document' | 'same_document' | null;
+  navigationUrl: string | null;
+}
+export interface BrowserDispatchOptions {
+  signal?: AbortSignal;
+  location?: BrowserLocationFacts;
+  /** Fixed adapters never retry by rebinding a semantic locator within one action. */
+  strictSnapshot?: boolean;
+  /** Original fixed-adapter DOM permission, checked atomically before measurement. */
+  collectedPermission?: CollectedPermission;
+  /** Trusted fixed adapter: direct native CSS eligibility on the original control. */
+  collectedPointerEligibility?: boolean;
+  onPointerPreflight?: (receipt:Readonly<PointerPreflightDiagnostic>)=>void;
+  /** Trusted X read opt-in; receipt callback is never serialized into the page. */
+  scrollAcknowledgement?: { onWritten: () => void; onReceipt?: (receipt: import('./actions').BrowserScrollReceipt) => void;
+    relationNodes?: {conversationNodeId:number|null;rootNodeId:number|null} };
+}
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new KydogError('browser.cancelled', '浏览器操作已取消');
+}
 
 type Stage = { epoch: number; visible: boolean; occluded: boolean; bounds: RectDip };
 
@@ -122,15 +157,16 @@ type WalkerOutput = Omit<AxSnapshot, 'snapshotId'>;
 // ── 动作派发（spec §4.2）─────────────────────────────────────────────────────
 
 /** `interact.js` 认得的目标形态。与 `ResolvedTarget` 一一对应，只是不带快照坐标。 */
-type InteractTarget = { selector: string } | { nodeId: number };
+type InteractTarget = PointerTarget;
 
 type InteractRequest =
   | { op: 'measure' | 'focusSelect' | 'readValue'; target: InteractTarget }
   | { op: 'select'; target: InteractTarget; value: string }
-  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number };
+  | { op: 'scroll'; direction: 'up' | 'down'; amount?: number; acknowledgement?: {token:string;expiresAt:number;document:{generation:string;url:string};relationNodes?:{conversationNodeId:number|null;rootNodeId:number|null}} }
+  | { op: 'scroll_ack_status' | 'scroll_ack_dispose'; token: string };
 
 /** `interact.js` 的返回值。它在网页里执行、类型系统管不到它，所以这里只声明形状。 */
-type InteractResult = { ok: boolean; reason?: string; [k: string]: unknown };
+type InteractResult = { ok: boolean; reason?: string; pointerGuard?: { ok: boolean; reason?: string }; [k: string]: unknown };
 
 /**
  * 拼出注进隔离世界的那段代码。
@@ -147,7 +183,7 @@ type InteractResult = { ok: boolean; reason?: string; [k: string]: unknown };
  * 过期就在碰页面之前退出来（见 `interact.js` 顶上那段实测）。
  */
 function interactExpression(req: InteractRequest, notAfter: number): string {
-  return `(${INTERACT_SOURCE})(${JSON.stringify({ ...req, notAfter })})`;
+  return guardedInteractExpression(req, notAfter);
 }
 
 /** 轮询周期。**它是等待的粒度，不是任何判据** —— 判据是「条件成立了没有」这个页面事实。
@@ -181,6 +217,27 @@ const WAIT_POLL_MS = 100;
  */
 export const PAGE_EVAL_TIMEOUT_MS = NAV_TIMEOUT_MS;
 
+/**
+ * 等「这个标签上别的 `applyViewport` 落地」的上限。
+ *
+ * 等的对象与 `PAGE_EVAL_TIMEOUT_MS` 同一量级，理由也相同：一次
+ * `Emulation.setDeviceMetricsOverride` 的 ACK 就是一次 CDP 往返，卡住时卡在同一个地方
+ * （渲染进程不回应）。所以直接引用同一个常量，两边不会漂开。
+ *
+ * **它只是等待的上限，不是判据。** 判「落地的是不是这一份」靠几何（见
+ * `prepareForDomRead`）—— 到点了仍然按几何判，不是到点就失败。
+ */
+const VIEWPORT_SETTLE_TIMEOUT_MS = PAGE_EVAL_TIMEOUT_MS;
+
+/**
+ * 一次 `applyViewport` 落地后坐标所依赖的那份几何：`Emulation.setDeviceMetricsOverride` 的
+ * width / height / scale，加上 page scale。
+ *
+ * 各处判「落地的是不是这一份」都拿它比，但**比的字段不一样**：派发那条路上在途的意图四个全比、
+ * 已确认的那一份不比 height（见 `dispatchOnTab` 的 `assertMapping`）；`prepareForDomRead` 四个全比。
+ */
+type ViewportGeometry = { width: number; height: number; scale: number; pageScale: number };
+
 /** agent 点过名、还没落定的一次下载（`browserService.pendingDownloads` 的值）。 */
 type PendingDownload = {
   url: string; dir: string; filename?: string;
@@ -213,6 +270,8 @@ export class BrowserService {
   private win: BrowserWindow | null = null;
   private readonly registry = new TabRegistry();
   private readonly views = new Map<string, WebContentsView>();
+  private readonly locations = new Map<string, BrowserLocationFacts>();
+  private readonly tabUnavailable = new Set<(tabId: string, reason: string) => void>();
   /**
    * 每个标签**已经落地**的 emulation scale（最近一次 `setDeviceMetricsOverride` 成功时带的那个）。
    *
@@ -224,6 +283,20 @@ export class BrowserService {
   private readonly emulationScales = new Map<string, number>();
   /** 每次 `applyViewport` 递增。1:1 那条「抬上限 → 设 page scale」是异步的，晚到时靠它判断自己已被接替。 */
   private readonly viewportGenerations = new Map<string, number>();
+  private readonly viewportPending = new Map<string, Set<number>>();
+  private readonly viewportAcknowledged = new Map<string, ViewportGeometry & { revision: number }>();
+  /**
+   * 每一份**还在途**的 generation 打算落地的几何。
+   *
+   * 判「坐标还能不能按已确认的那一份用」靠它，不靠代号：`applyLayout` 对每个标签都
+   * `void applyViewport(...)`，窗口改大小、确认框弹出、横幅展开都会再发一份 —— 它们算的
+   * 是同一份 `stage`，落地后映射逐字不变，落不落地都不影响一次点击的坐标。会改变映射的
+   * 那一份才让它作废。落地就删（`applyViewport` 的 `settle`），所以「在途却没有意图」只可能
+   * 是 1:1 那次 page scale 移交，那一支自己按 fail-closed 处理。
+   */
+  private readonly viewportIntents = new Map<string, Map<number, ViewportGeometry>>();
+  /** 等 `viewportPending` 清空的调用方（`prepareForDomRead`）。每次有 generation 落地就唤醒一次。 */
+  private readonly viewportSettled = new Map<string, Set<() => void>>();
   /** 这个标签上抬过 pinch-zoom 上限（进过 1:1）。回到适配时据此收回 page scale 与上限；没抬过就一条都不多发。 */
   private readonly zoomLimitsRaised = new Set<string>();
   private readonly snapshots = new Map<string, AxSnapshot>();
@@ -260,6 +333,11 @@ export class BrowserService {
   /** CDP 已经不可用的标签（attach 失败，或者 DevTools 打开把我们顶掉了）。
    *  只用来「同一件事只记一条日志」，判据本身走 `debugger.isAttached()`。 */
   private readonly cdpGone = new Set<string>();
+  private readonly network = new Map<string, NetworkResponseObserver>();
+  private readonly networkBootstrapHistory = new Set<string>();
+  private readonly networkBootstrapPending = new Set<string>();
+  private readonly networkNative = new Map<string, { tail: Promise<void>; pending: Set<() => void>; active: boolean; cleanupFailed: boolean }>();
+  private readonly pristineViews = new Set<string>();
   /** 正在进行的 agent 驱动窗口，一次一帧（可以同时有好几帧，各在各的标签上）。 */
   private readonly drivingFrames: DrivingFrame[] = [];
   /** 「这个标签没了」的订阅者。见 `onTabDestroyed`。 */
@@ -375,8 +453,8 @@ export class BrowserService {
   /**
    * 同一个标签的 open / navControl / 动作派发排队执行。**跨标签仍然并行。**
    *
-   * pi 的工具带 `executionMode: 'sequential'`，但那只约束 pi 那一侧；渲染层发来的
-   * `browser.*` RPC 走的是另一条路。两条路同时动一个标签时，一次导航的事件会被
+   * pi 允许 `browser_open` / `browser_act` 跨标签并行，渲染层发来的 `browser.*` RPC
+   * 又走另一条路；所以同标签顺序必须在这里收口。两条路同时动一个标签时，一次导航的事件会被
    * 另一次调用消费掉 —— 那种错很难在日志里认出来。
    *
    * **公开是给 Task 4 的**：动作派发那个入口建起来之后必须走这里，不要另开一条路。
@@ -534,6 +612,13 @@ export class BrowserService {
 
   getState(): BrowserState { return this.registry.toState(); }
 
+  /** Trusted research recovery only. Presence and ownership are registry facts. */
+  researchTabStatus(tabId: string, threadId: string): 'available' | 'foreign' | 'missing' {
+    if (!this.registry.toState().tabs.some(tab => tab.id === tabId)) return 'missing';
+    const owner = this.registry.ownerThreadIdOf(tabId);
+    return owner === null || owner === threadId ? 'available' : 'foreign';
+  }
+
   private emit(): void {
     // **广播里不许带 epoch**（`BrowserTabsSnapshot` 那段注释写的就是这里）：
     // 类型只挡住「读」，`emit(topic, state)` 传一份 BrowserState 在结构类型下照样
@@ -583,6 +668,36 @@ export class BrowserService {
   }
 
   /**
+   * 一次 `applyViewport` 要落地的**几何**。
+   *
+   * **两侧共用这一个算法**：`prepareForDomRead` 判「确认落地的是不是这一份」只能拿它算出来的值
+   * 比 —— 各算各的，两边一漂就在正好要判的时候看不出漂。
+   *
+   * **档位（spec §4.6）**。`fit`：排版恒 1280，整幅按 W/1280 缩进侧栏。
+   * `oneToOne` 窄舞台：override 与 `fit` **逐字相同**（排版、agent 的快照坐标系都不变），
+   * 另把 Chromium 自己的 pinch-zoom（page scale）放大到 1280/W —— 横移、纵滚、原生点击的
+   * 坐标映射全由它的 visual viewport 负责。侧栏没打开（`bounds` 为 null）时两档是同一件事。
+   *
+   * **舞台宽过 1280（全屏）时两档都按舞台宽排版、scale 恒 1，适配档不放大。** Chromium 按
+   * override 的宽高开画布、再把 scale 当变换画进去：scale > 1 时画布（1280 × H/scale）比舞台小，
+   * 放大的内容溢出被裁、画布外什么都不画 —— 2026-09-14 手测全屏退回适配时右侧与底部露白、
+   * 顶栏被裁，截图量得网页区域 / 舞台 = 0.875 ≈ 1/1.14，两个方向一致。往宽里排版一般不换版式；
+   * 固定 1280 要防的是变窄切移动版。
+   *
+   * **不用 override 的 `viewport` 参数**：那是截图用的「强制可见区域」，Chromium 的根变换
+   * 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
+   * 纵向一滚就整片露白。
+   */
+  private viewportGeometry(tabId: string, bounds: RectDip | null): ViewportGeometry {
+    const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
+    const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
+    const logicalWidth = Math.max(LOGICAL_WIDTH, w);
+    const scale = w / logicalWidth;
+    const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
+    return { width: logicalWidth, height, scale, pageScale: oneToOne ? logicalWidth / w : 1 };
+  }
+
+  /**
    * 固定逻辑视口。用 CDP 的 Emulation 而不是 setZoomFactor —— 后者按 host 存在
    * session 的 HostZoomMap 里：跨 host 导航就失效，还会被用户手动缩放污染，
    * 且污染跨 WebContentsView 实例存活（2026-09-08 spike 实测）。
@@ -622,30 +737,28 @@ export class BrowserService {
     // `getOSProcessId()` 是「关联的渲染进程的 pid」，没有渲染进程时是 0：协议层的事实。
     // 页面崩过一次之后它也回到 0，所以这道闸同时挡住了「对着已死的 target 发命令」。
     if (wc.getOSProcessId() === 0) return Promise.resolve();
-    const w = bounds ? Math.max(1, Math.round(bounds.width)) : LOGICAL_WIDTH;
-    // **档位（spec §4.6）**。`fit`：排版恒 1280，整幅按 W/1280 缩进侧栏。
-    // `oneToOne` 窄舞台：override 与 `fit` **逐字相同**（排版、agent 的快照坐标系都不变），
-    // 另把 Chromium 自己的 pinch-zoom（page scale）放大到 1280/W —— 横移、纵滚、原生点击的
-    // 坐标映射全由它的 visual viewport 负责。侧栏没打开（`bounds` 为 null）时两档是同一件事。
-    //
-    // **舞台宽过 1280（全屏）时两档都按舞台宽排版、scale 恒 1，适配档不放大。** Chromium 按
-    // override 的宽高开画布、再把 scale 当变换画进去：scale > 1 时画布（1280 × H/scale）比舞台小，
-    // 放大的内容溢出被裁、画布外什么都不画 —— 2026-09-14 手测全屏退回适配时右侧与底部露白、
-    // 顶栏被裁，截图量得网页区域 / 舞台 = 0.875 ≈ 1/1.14，两个方向一致。往宽里排版一般不换版式；
-    // 固定 1280 要防的是变窄切移动版。
-    //
-    // **不用 override 的 `viewport` 参数**：那是截图用的「强制可见区域」，Chromium 的根变换
-    // 会把当前滚动量加回去（dev_tools_emulator.cc `ApplyViewportOverride`），2026-09-14 实测
-    // 纵向一滚就整片露白。
-    const oneToOne = this.registry.viewportModeOf(tabId) === 'oneToOne';
-    const logicalWidth = Math.max(LOGICAL_WIDTH, w);
-    const scale = w / logicalWidth;
-    const height = bounds ? Math.max(1, Math.round(bounds.height / scale)) : DEFAULT_VIEWPORT_HEIGHT;
-    const pageScale = oneToOne ? logicalWidth / w : 1;
+    const { width: logicalWidth, height, scale, pageScale } = this.viewportGeometry(tabId, bounds);
     const generation = (this.viewportGenerations.get(tabId) ?? 0) + 1;
     this.viewportGenerations.set(tabId, generation);
+    const pending = this.viewportPending.get(tabId) ?? new Set<number>();
+    this.viewportPending.set(tabId, pending); pending.add(generation);
+    const intents = this.viewportIntents.get(tabId) ?? new Map<number, ViewportGeometry>();
+    this.viewportIntents.set(tabId, intents);
+    intents.set(generation, { width: logicalWidth, height, scale, pageScale });
+    // 落地（成功或失败都算）就把它从「在途」里拿掉，并唤醒在等清空的调用方。
+    // 意图跟着一起删：落地之后它到底落成了什么都写在 `viewportAcknowledged` 里。
+    const settle = () => { pending.delete(generation); intents.delete(generation); this.wakeViewportSettled(tabId); };
+    const acknowledge = () => {
+      settle();
+      // Preserve the actual ACK, including a late superseded operation. A
+      // numerically identical configuration cannot stand in for its revision.
+      if (this.viewportGenerations.has(tabId))
+        this.viewportAcknowledged.set(tabId, {revision:generation,width:logicalWidth,height,scale,pageScale});
+    };
     if (pageScale !== 1) this.zoomLimitsRaised.add(tabId);
     const failed = (err: unknown) => {
+      settle();
+      if (this.viewportGenerations.get(tabId) === generation) this.viewportAcknowledged.delete(tabId);
       logger.warn('browser.viewport', '设置逻辑视口失败', { tabId, err: String(err) });
     };
     try {
@@ -660,13 +773,24 @@ export class BrowserService {
         width: logicalWidth, height, deviceScaleFactor: 0, mobile: false, scale,
       }).then(() => {
         this.emulationScales.set(tabId, scale);
+        this.viewportAcknowledged.delete(tabId);
         // 1:1 的放大**不进这个 promise**：它要先等 Electron 的内部 IPC，而那条 IPC 在渲染进程
         // 换掉的窗口里永不 settle（实测）。await 它的是 agent 那几条路（快照、派发、导航收尾），
         // 它们进来前 markDriving 已经恢复成适配，走的是下面收回的那一支。
-        if (pageScale !== 1) { void this.raisePageScale(tabId, wc, generation, pageScale); return undefined; }
+        if (pageScale !== 1) {
+          // Zoom-limit IPC does not change the coordinate map. It may never
+          // settle for a replaced renderer; a superseding fit operation must
+          // not inherit it as an in-flight coordinate command. The generation
+          // check in raisePageScale prevents any superseded page-scale send.
+          settle();
+          void this.raisePageScale(tabId, wc, generation, pageScale, acknowledge, failed,
+            () => pending.add(generation), settle);
+          return undefined;
+        }
         // 适配档要**等 page scale 回 1 落地**：dispatch 紧接着要量坐标、按 emulation scale 派发。
         // （只挂这一层 then：多一层就多一拍微任务，一批用例按拍数等 open 收尾。）
-        return this.zoomLimitsRaised.has(tabId) ? this.resetPageScale(tabId, wc, generation) : undefined;
+        if (this.zoomLimitsRaised.has(tabId)) return this.resetPageScale(tabId, wc, generation, acknowledge, failed);
+        acknowledge(); return undefined;
       }, failed);
     } catch (err) {
       failed(err);
@@ -682,13 +806,17 @@ export class BrowserService {
    * 导航换了进程之后它与 page scale 都回到默认（2026-09-14 实测），所以每个新文档
    * （dom-ready → applyViewport）都重走一遍。
    */
-  private async raisePageScale(tabId: string, wc: WebContents, generation: number, pageScale: number): Promise<void> {
+  private async raisePageScale(tabId: string, wc: WebContents, generation: number, pageScale: number,
+    acknowledge: () => void, failed: (error: unknown) => void, beginPageScale: () => void, superseded: () => void): Promise<void> {
     try {
       await wc.setVisualZoomLevelLimits(1, pageScale);
-      if (this.viewportGenerations.get(tabId) !== generation) return;   // 已被接替（切回适配、舞台变了）
-      if (wc.isDestroyed() || !wc.debugger.isAttached() || wc.getOSProcessId() === 0) return;
+      if (this.viewportGenerations.get(tabId) !== generation) { superseded(); return; }
+      if (wc.isDestroyed() || !wc.debugger.isAttached() || wc.getOSProcessId() === 0) { failed('unavailable'); return; }
+      beginPageScale();
       await wc.debugger.sendCommand('Emulation.setPageScaleFactor', { pageScaleFactor: pageScale });
+      acknowledge();
     } catch (err) {
+      failed(err);
       logger.warn('browser.viewport', '1:1 的 page scale 没能设上', { tabId, err: String(err) });
     }
   }
@@ -697,15 +825,58 @@ export class BrowserService {
    * 回到适配：page scale 回 1（等它落地），再收回 pinch-zoom 上限，适配档下人也捏不动。
    * **永不 reject**，理由同 applyViewport（它的返回值就挂在那条 promise 上）。
    */
-  private resetPageScale(tabId: string, wc: WebContents, generation: number): Promise<void> {
+  private resetPageScale(tabId: string, wc: WebContents, generation: number, acknowledge: () => void, failed: (error: unknown) => void): Promise<void> {
     return wc.debugger.sendCommand('Emulation.setPageScaleFactor', { pageScaleFactor: 1 }).then(() => {
       // 不 await：同样是 Electron 内部 IPC。page scale 已经是 1，上限收不收回不影响坐标。
       void wc.setVisualZoomLevelLimits(1, 1).catch((err: unknown) => {
         logger.warn('browser.viewport', '收回 pinch-zoom 上限失败', { tabId, err: String(err) });
       });
       if (this.viewportGenerations.get(tabId) === generation) this.zoomLimitsRaised.delete(tabId);
+      acknowledge();
     }, (err: unknown) => {
+      failed(err);
       logger.warn('browser.viewport', '把 page scale 恢复成 1 失败', { tabId, err: String(err) });
+    });
+  }
+
+  /** 把一个 generation 落地的消息转给在等清空的人。落地就是 `viewportPending` 少一格。 */
+  private wakeViewportSettled(tabId: string): void {
+    for (const wake of [...(this.viewportSettled.get(tabId) ?? [])]) wake();
+  }
+
+  /**
+   * 等这个标签的 `viewportPending` 清空，最多 `VIEWPORT_SETTLE_TIMEOUT_MS`。
+   *
+   * 返回 false = 到点没清空，或者这次调用被取消（取消由调用方的 `assertNotAborted` 定论，
+   * 不在这里抛）。**清空不等于「几何对了」**：清空只说明没人在途，判据仍然是几何。
+   *
+   * **这一次排空不包括 1:1 的 page scale 移交。** `applyViewport` 先 `settle()` 再调
+   * `raisePageScale`，那一步的 `beginPageScale()` 才把 generation 重新加回 `viewportPending`
+   * —— 所以这里可能返回 true 时 `Emulation.setPageScaleFactor` 还在途。**提前放行是故意的**：
+   * 移交里先落的 `setVisualZoomLevelLimits` 是 Electron 内部 IPC，在渲染进程被换掉的那个窗口里
+   * **永不 settle**（见 `applyViewport` 里那条实测注释）；把它算进排空，等于让这台机器上每一次
+   * 读 DOM 都先坐满 20 秒上限。它也不削弱判据：落地的是哪一份由几何比出来，page scale 是
+   * `ack.pageScale` 与 `want.pageScale` 单独的一项。
+   */
+  private waitForViewportSettled(tabId: string, signal?: AbortSignal): Promise<boolean> {
+    if (!this.viewportPending.get(tabId)?.size) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const waiters = this.viewportSettled.get(tabId) ?? new Set<() => void>();
+      this.viewportSettled.set(tabId, waiters);
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (settled: boolean) => {
+        waiters.delete(check);
+        if (!waiters.size) this.viewportSettled.delete(tabId);
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        resolve(settled);
+      };
+      const check = () => { if (!this.viewportPending.get(tabId)?.size) finish(true); };
+      const onAbort = () => finish(false);
+      waiters.add(check);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => finish(false), VIEWPORT_SETTLE_TIMEOUT_MS);
+      if (signal?.aborted) finish(false); else check();
     });
   }
 
@@ -737,9 +908,13 @@ export class BrowserService {
         webviewTag: false,
         webSecurity: true,
         allowRunningInsecureContent: false,
+        // Agent 驱动的标签页可能不是当前可见标签：默认节流会让后台页停止出帧，
+        // 依赖帧管线/可见性的站点逻辑（IntersectionObserver 懒加载）就不会跑。
+        backgroundThrottling: false,
       },
     });
     this.views.set(id, view);
+    this.pristineViews.add(id);
     this.consoles.set(id, new TabConsoleLog());
     this.requests.set(id, new TabRequestLog());
     this.win.contentView.addChildView(view);
@@ -862,16 +1037,43 @@ export class BrowserService {
     // （isSameDocument 是协议层现成的信号，丢了它状态机就会把旧文档的 pushState
     // 当成本次导航的结果）。
     wc.on('did-start-navigation', (details) => {
+      if (details.isMainFrame) {
+        this.pristineViews.delete(id);
+        if (details.url !== 'about:blank') this.networkBootstrapPending.delete(id);
+        const prior = this.locationFacts(id);
+        this.locations.set(id, { ...prior, navigationEvent: 'did-start-navigation',
+          navigationSequence: prior.navigationSequence + 1, navigationUrl: details.url,
+          navigationType: details.isSameDocument ? 'same_document' : 'cross_document' });
+      }
       this.navs.get(id)?.onDidStartNavigation(details.url, details.isMainFrame, details.isSameDocument);
     });
 
     wc.on('did-navigate', (_e, url, httpResponseCode) => {
+      this.pristineViews.delete(id);
+      const internalBootstrap = this.networkBootstrapPending.delete(id) && url === 'about:blank';
+      if (internalBootstrap && wc.navigationHistory.getAllEntries().length === 1
+        && wc.navigationHistory.getActiveIndex() === 0 && wc.navigationHistory.getEntryAtIndex(0)?.url === 'about:blank') {
+        this.networkBootstrapHistory.add(id);
+      }
+      if (url !== 'about:blank' && this.networkBootstrapHistory.has(id)) {
+        const history = wc.navigationHistory;
+        // Only an entry created by our pristine-view bootstrap is owned here.
+        // Keep all user history; never clear the stack or remove an active entry.
+        if (history.getEntryAtIndex(0)?.url !== 'about:blank'
+          || history.getActiveIndex() > 0 && history.removeEntryAtIndex(0)) {
+          this.networkBootstrapHistory.delete(id);
+        }
+      }
+      const prior = this.locations.get(id);
+      this.locations.set(id, { currentUrl: url, documentEpoch: (prior?.documentEpoch ?? 0) + 1,
+        routeRevision: prior?.routeRevision ?? 0, navigationEvent: 'did-navigate',
+        navigationSequence: (prior?.navigationSequence ?? 0) + 1, navigationType: 'cross_document', navigationUrl: url });
       // 403 走的就是这条路：它是一次**成功**的导航，did-fail-load 不触发。
       const tracker = this.navs.get(id);
       if (tracker) tracker.onDidNavigate(url, httpResponseCode);
       // 没有 tracker 在等 = 页面自己发起、或输入 ACK 之后才开始的异步导航。
       // 状态码只有这一个到达点，不记就永远没了 —— 见 `unreportedNavs` 的说明。
-      else this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
+      else if (!internalBootstrap) this.unreportedNavs.set(id, { url, httpStatusCode: httpResponseCode });
       this.snapshots.delete(id);   // 页面换了，旧快照的编号一律作废
       // 主 frame 换了文档：origin 不同才恢复采集 —— origin 相同（`back` 命中 bfcache，
       // 恢复的是同一个文档对象）继续压着，密码明文可能还在它的 DOM 里。见
@@ -887,6 +1089,11 @@ export class BrowserService {
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       this.navs.get(id)?.onDidNavigateInPage(url, isMainFrame);
       if (!isMainFrame) return;
+      this.pristineViews.delete(id);
+      const prior = this.locations.get(id);
+      this.locations.set(id, { currentUrl: url, documentEpoch: prior?.documentEpoch ?? 0,
+        routeRevision: (prior?.routeRevision ?? 0) + 1, navigationEvent: 'did-navigate-in-page',
+        navigationSequence: (prior?.navigationSequence ?? 0) + 1, navigationType: 'same_document', navigationUrl: url });
       // **同文档也要作废快照编号**：AxNode 的 x/y/w/h 是**视口内**的 CSS 像素，
       // hash 跳转会滚动页面、站内路由会换内容，而 resolveTarget 只在 snapshotId
       // 对不上时才报错 —— 不删就是「编号还在、指向的元素已经变了」：不报错，只是点错东西。
@@ -925,11 +1132,17 @@ export class BrowserService {
       void this.applyViewport(id, this.stage?.bounds ?? null);
     });
 
+    wc.once('destroyed', () => { this.invalidateNetworkNative(id); void this.network.get(id)?.close('tab_closed'); });
     wc.on('render-process-gone', (_e, details) => {
+      this.invalidateNetworkNative(id);
+      void this.network.get(id)?.close('crashed');
       logger.warn('browser.crash', '页面进程没了', { id, reason: details.reason });
       // 在途导航要当场定论。不这样的话一次崩溃要挂满整个超时窗口，
       // 而且报出来的是 timeout —— 可我们明明知道发生了什么。
       this.navs.get(id)?.onCrashed(details.reason);
+      for (const notify of [...this.tabUnavailable]) {
+        try { notify(id, details.reason); } catch { /* One subscriber cannot hide the source fact. */ }
+      }
       this.syncTabMeta(id);
     });
 
@@ -937,6 +1150,8 @@ export class BrowserService {
     // 一个都不挂的话，之后每次 override 都静默失败 —— 而且是以未处理 rejection
     // 的形式炸掉主进程。挂上：记一条，后续 applyViewport 靠 isAttached() 自己让开。
     wc.debugger.on('detach', (_e, reason) => {
+      this.invalidateNetworkNative(id);
+      void this.network.get(id)?.close('detached');
       // 调试会话一断，Chromium 就撤掉它下发的 override —— 已落地的 emulation scale 不再成立。
       this.emulationScales.delete(id);
       this.cdpLost(id, `detach：${reason}`);
@@ -988,10 +1203,21 @@ export class BrowserService {
   private destroyView(id: string): void {
     const view = this.views.get(id);
     if (!view) return;
+    this.invalidateNetworkNative(id);
+    void this.network.get(id)?.close('tab_closed');
+    this.networkBootstrapPending.delete(id);
+    this.networkBootstrapHistory.delete(id);
+    this.pristineViews.delete(id);
     this.views.delete(id);
+    this.locations.delete(id);
     this.snapshots.delete(id);
     this.emulationScales.delete(id);
     this.viewportGenerations.delete(id);
+    this.viewportPending.delete(id);
+    this.viewportIntents.delete(id);
+    // 等清空的人也不能白等到上限：标签都没了，下一轮就该看见没有确认过的那一份。
+    this.wakeViewportSettled(id);
+    this.viewportAcknowledged.delete(id);
     this.zoomLimitsRaised.delete(id);
     // 在途的观测当场定论。不这样的话 navigate() 还卡在 race 上白等满 20 秒，
     // 再报一个「我们不知道发生了什么」—— 而我们明确知道：标签被关了。
@@ -1030,6 +1256,19 @@ export class BrowserService {
     return () => { this.tabGone.delete(fn); };
   }
 
+  /** Crash observers are owned independently of destruction observers. */
+  onTabUnavailable(fn: (tabId: string, reason: string) => void): () => void {
+    this.tabUnavailable.add(fn);
+    return () => { this.tabUnavailable.delete(fn); };
+  }
+
+  locationFacts(tabId: string): BrowserLocationFacts {
+    const wc = this.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    return { ...(this.locations.get(tabId) ?? { documentEpoch: 0, routeRevision: 0, navigationEvent: null, navigationSequence: 0, navigationType: null, navigationUrl: null }),
+      currentUrl: wc.getURL() };
+  }
+
   // ── 对外操作 ────────────────────────────────────────────────────────────
 
   /**
@@ -1052,13 +1291,18 @@ export class BrowserService {
     return { tabId };
   }
 
-  async open(args: { url: string; tabId?: string; ownerThreadId?: string | null; activate?: boolean }): Promise<{ tabId: string; nav: NavigationObservation; evicted: EvictedTab[] }> {
+  async open(args: { url: string; tabId?: string; ownerThreadId?: string | null; activate?: boolean;
+    settleOutsideHost?: string; signal?: AbortSignal; network?: BrowserNetworkSpec }): Promise<{ tabId: string; nav: NavigationObservation; evicted: EvictedTab[]; networkLease?: BrowserNetworkLease }> {
     const url = assertAllowedUrl(args.url).toString();
-    if (args.tabId && !this.registry.has(args.tabId)) {
-      throw new KydogError('browser.no_tab', `没有这个标签页：${args.tabId}`);
+    // `''` 是调用方「这个任务还没有标签页」的写法（`x_research` 的 read 输入把它当空值传下来）：
+    // 归一化一次，has 判据、建不建页、回退到新页三处读的是同一个事实。就地分开读的话，`''` 是假值
+    // 于是真的建了一张页，而 `??` 又保留 `''` —— 导航打到一个不存在的 id 上，刚建的页成了孤儿。
+    const requested = args.tabId || undefined;
+    if (requested && !this.registry.has(requested)) {
+      throw new KydogError('browser.no_tab', `没有这个标签页：${requested}`);
     }
-    const created = args.tabId ? null : this.createTab(url, args.ownerThreadId ?? null);
-    const tabId = args.tabId ?? created!.id;
+    const created = requested ? null : this.createTab(url, args.ownerThreadId ?? null);
+    const tabId = requested ?? created!.id;
     // **默认不抢活动标签**，与 createTab 同一条规矩：活动标签是侧栏里用户看的那一页，由用户决定。
     // agent 的 browser_open 从前在这里无条件切过去 —— 侧栏开着时用户正在看的页面被顶掉，那张标签
     // 被收回后侧栏又跳到别处（2026-09-14 实测），与「能不打扰就不打扰」冲突。需要让用户看
@@ -1066,14 +1310,136 @@ export class BrowserService {
     // 在地址栏开页面那条路（handlers 的 browser.open）显式传 true。
     if (args.activate === true) this.registry.activate(tabId);
     this.applyLayout();
-    const nav = await this.enqueue(tabId, () => this.withAgentDriving(
-      tabId, args.ownerThreadId ?? null,
-      // 目标 URL 传的是**已经规范化**的那份：它进下载的关联集合，
-      // 一个 PDF 直链要靠它才能被认成本次导航的终态。
-      () => this.navigate(tabId, (wc) => wc.loadURL(url), url),
-      '打开网页',
-    ));
-    return { tabId, nav, evicted: created?.evicted ?? [] };
+    const lifetime = new AbortController();
+    let finishStopped!: (nav: NavigationObservation) => void;
+    let navigationStarted = false;
+    let networkLease: BrowserNetworkLease | undefined;
+    const stopped = new Promise<NavigationObservation>(resolve => { finishStopped = resolve; });
+    const abort = () => {
+      lifetime.abort();
+      void networkLease?.close('cancelled');
+      finishStopped({ navigationId: randomUUID(), outcome: { kind: 'cancelled' } });
+    };
+    const gone = (id: string) => {
+      if (id !== tabId || navigationStarted) return;
+      abort();
+    };
+    const crashed = (id: string, reason: string) => {
+      if (id !== tabId || navigationStarted) return;
+      lifetime.abort(); finishStopped({ navigationId: randomUUID(), outcome: { kind: 'crashed', reason } });
+    };
+    const offGone = this.onTabDestroyed(gone), offUnavailable = this.onTabUnavailable(crashed);
+    args.signal?.addEventListener('abort', abort, { once: true });
+    if (args.signal?.aborted) abort();
+    try {
+      const queued = this.enqueue(tabId, async () => {
+        if (lifetime.signal.aborted) return Promise.resolve<NavigationObservation>({ navigationId: randomUUID(), outcome: { kind: 'cancelled' } });
+        if (args.network) {
+          networkLease = await this.startNetworkCapture(tabId, args.network, lifetime.signal, args.signal);
+          if (lifetime.signal.aborted) return { navigationId: randomUUID(), outcome: { kind: 'cancelled' } } as NavigationObservation;
+        }
+        navigationStarted = true;
+        return this.withAgentDriving(tabId, args.ownerThreadId ?? null,
+          () => this.navigate(tabId, wc => wc.loadURL(url), url, args.settleOutsideHost, lifetime.signal), '打开网页');
+      });
+      const nav = await Promise.race([queued, stopped]);
+      return { tabId, nav, evicted: created?.evicted ?? [], ...(networkLease ? { networkLease } : {}) };
+    } finally {
+      args.signal?.removeEventListener('abort', abort); offGone(); offUnavailable();
+    }
+  }
+
+  private invalidateNetworkNative(tabId: string): void {
+    const state = this.networkNative.get(tabId);
+    if (!state) return;
+    state.active = false;
+    for (const invalidate of state.pending) invalidate();
+    state.pending.clear(); this.networkNative.delete(tabId);
+  }
+
+  /** A fresh WebContents has pid 0. Materialize a controlled internal document
+   * before any CDP command; public open and all page-driven URLs retain their guard. */
+  private async startNetworkCapture(tabId: string, spec: BrowserNetworkSpec, lifetime: AbortSignal,
+    signal?: AbortSignal): Promise<BrowserNetworkLease> {
+    const wc = this.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', '标签页已关闭');
+    assertNotAborted(lifetime);
+    if (wc.getOSProcessId() === 0) {
+      // length() includes Chromium's initial placeholder (1) even though
+      // getAllEntries() is empty. Ownership comes from our view lifecycle too.
+      if (!this.pristineViews.has(tabId) || wc.getURL() !== '' || wc.navigationHistory.getAllEntries().length !== 0) {
+        throw new KydogError('browser.not_dispatchable', '已有导航历史的标签页没有可用渲染进程');
+      }
+      this.networkBootstrapPending.add(tabId);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let abort!: () => void;
+      try {
+        await Promise.race([
+          wc.loadURL('about:blank'),
+          new Promise<never>((_resolve, reject) => {
+            abort = () => { try { wc.stop(); } catch { /* destroyed */ } reject(new KydogError('browser.cancelled', '浏览器操作已取消')); };
+            lifetime.addEventListener('abort', abort, { once: true });
+            timer = setTimeout(abort, NAV_TIMEOUT_MS);
+          }),
+        ]);
+      } finally { clearTimeout(timer); lifetime.removeEventListener('abort', abort); }
+    }
+    assertNotAborted(lifetime);
+    if (wc.isDestroyed() || wc.getOSProcessId() <= 0 || !wc.debugger.isAttached()) {
+      throw new KydogError('browser.not_dispatchable', '页面调试会话不可用');
+    }
+    await this.network.get(tabId)?.close('superseded');
+    let native = this.networkNative.get(tabId);
+    if (!native) {
+      native = { tail: Promise.resolve(), pending: new Set(), active: true, cleanupFailed: false };
+      this.networkNative.set(tabId, native);
+    }
+    const state = native;
+    // The barrier survives removal of a closed observer. A new lease cannot mount
+    // until the preceding enable/disable has actually settled (or its target died).
+    await state.tail;
+    if (state.cleanupFailed) throw new KydogError('browser.not_dispatchable', '页面网络采集清理失败');
+    assertNotAborted(lifetime);
+    const live = () => state.active && !wc.isDestroyed() && wc.getOSProcessId() > 0 && wc.debugger.isAttached();
+    const send: WebContents['debugger']['sendCommand'] = (method, params, sessionId) => {
+      const invoke = () => {
+        if (!live()) throw new KydogError('browser.not_dispatchable', '页面调试会话不可用');
+        const command = sessionId === undefined ? wc.debugger.sendCommand(method, params) : wc.debugger.sendCommand(method, params, sessionId);
+        let invalidate!: () => void;
+        const dead = new Promise<never>((_resolve, reject) => {
+          invalidate = () => reject(new KydogError('browser.not_dispatchable', '页面调试会话已结束'));
+          state.pending.add(invalidate);
+        });
+        return Promise.race([command, dead]).finally(() => state.pending.delete(invalidate));
+      };
+      // Body reads need no ordering against native domain teardown. Their late
+      // results are invalidated by the observer, and must not hold close open.
+      if (method === 'Network.getResponseBody') return invoke();
+      const command = state.tail.then(invoke).catch(error => {
+        if (method !== 'Network.disable') throw error;
+        // Source death establishes native teardown independently of a command ACK.
+        if (!state.active) return;
+        state.cleanupFailed = true;
+        logger.warn('browser.network', 'network_capture_cleanup_failed', { tabId, reason: 'network_disable_failed' });
+        // Retain only a finite failure fact, never protocol error/body/header text.
+        throw new KydogError('browser.not_dispatchable', '页面网络采集清理失败');
+      });
+      state.tail = command.then(() => {}, () => {});
+      return command;
+    };
+    const cancel = () => { void observer.close('cancelled'); };
+    const observer = new NetworkResponseObserver(wc.debugger, tabId, spec, () => this.locationFacts(tabId), () => {
+      if (this.network.get(tabId) === observer) this.network.delete(tabId);
+      signal?.removeEventListener('abort', cancel); lifetime.removeEventListener('abort', cancel);
+      if (!state.active) return;
+      return send('Network.disable').then(() => {});
+    }, send);
+    this.network.set(tabId, observer);
+    signal?.addEventListener('abort', cancel, { once: true }); lifetime.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted || lifetime.aborted) cancel();
+    await observer.enable();
+    assertNotAborted(lifetime);
+    return observer.lease;
   }
 
   /** 所有会引发主 frame 导航的操作都经过这里 —— 观测结果要挂在**每一次**这样的操作上，
@@ -1082,15 +1448,24 @@ export class BrowserService {
     tabId: string,
     act: (wc: WebContents) => Promise<unknown> | void,
     targetUrl: string | null,
+    settleOutsideHost?: string,
+    signal?: AbortSignal,
   ): Promise<NavigationObservation> {
     const view = this.views.get(tabId);
     if (!view) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     const wc = view.webContents;
+    if (signal?.aborted) return { navigationId: randomUUID(), outcome: { kind: 'cancelled' } };
 
     // 换 tracker **之前**先告诉旧的它被接替了：它自己的收尾会 stop()，
     // 掐掉的正是接替它的这一次导航。两次导航都错，日志里还看不出原因。
     this.navs.get(tabId)?.onSuperseded();
-    const tracker = new NavigationTracker(randomUUID(), targetUrl);
+    const tracker = new NavigationTracker(randomUUID(), targetUrl, settleOutsideHost
+      ? (raw) => {
+          const host = new URL(raw).hostname.toLowerCase();
+          const boundary = settleOutsideHost.toLowerCase();
+          return host !== boundary && !host.endsWith(`.${boundary}`);
+        }
+      : undefined);
     this.navs.set(tabId, tracker);
     // **act 只负责触发，不等它返回。** `loadURL` 的 promise 要等 did-finish-load 才
     // resolve（electron.d.ts 明写），一个永不返回的 <script src> 就能让它永远挂着 ——
@@ -1099,7 +1474,11 @@ export class BrowserService {
     try {
       void Promise.resolve(act(wc)).catch(() => { /* 结论以事件为准 */ });
     } catch { /* 同步抛出（goBack 之类）也一样，以事件为准 */ }
-    return this.finishNavigation(tabId, wc, tracker);
+    const abort = () => { tracker.onCancelled(); try { wc.stop(); } catch { /* destroyed */ } };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    try { return await this.finishNavigation(tabId, wc, tracker, signal); }
+    finally { signal?.removeEventListener('abort', abort); }
   }
 
   /**
@@ -1109,7 +1488,7 @@ export class BrowserService {
    * CDP Input ACK 作为判据。晚到的异步导航仍由 unreportedNavs 在下一次工具调用上报。
    */
   async dispatchAndObserveNavigation(
-    tabId: string, action: DispatchAction, snapshot: AxSnapshot | null,
+    tabId: string, action: DispatchAction, snapshot: AxSnapshot | null, options?: BrowserDispatchOptions,
   ): Promise<{ line: string; navigation: NavigationObservation | null }> {
     const view = this.views.get(tabId);
     if (!view) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
@@ -1120,7 +1499,7 @@ export class BrowserService {
     this.navs.set(tabId, tracker);
     let line: string;
     try {
-      line = await this.dispatch(tabId, action, snapshot);
+      line = await this.dispatch(tabId, action, snapshot, options);
     } catch (err) {
       if (this.navs.get(tabId) === tracker) this.navs.delete(tabId);
       throw err;
@@ -1130,12 +1509,16 @@ export class BrowserService {
       if (this.navs.get(tabId) === tracker) this.navs.delete(tabId);
       return { line, navigation: null };
     }
-    return { line, navigation: await this.finishNavigation(tabId, wc, tracker) };
+    const abort = () => { tracker.onCancelled(); try { wc.stop(); } catch { /* destroyed */ } };
+    options?.signal?.addEventListener('abort', abort, { once: true });
+    if (options?.signal?.aborted) abort();
+    try { return { line, navigation: await this.finishNavigation(tabId, wc, tracker, options?.signal) }; }
+    finally { options?.signal?.removeEventListener('abort', abort); }
   }
 
   /** 等一份已经挂好的导航观测落到协议终态；navigate 与输入派发共用唯一收尾。 */
   private async finishNavigation(
-    tabId: string, wc: WebContents, tracker: NavigationTracker,
+    tabId: string, wc: WebContents, tracker: NavigationTracker, signal?: AbortSignal,
   ): Promise<NavigationObservation> {
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<void>((r) => { timer = setTimeout(r, NAV_TIMEOUT_MS); });
@@ -1151,7 +1534,7 @@ export class BrowserService {
     this.syncTabMeta(tabId);
     // **await**：这次导航提交之后渲染进程已经在了，这一发才是真的落得下去；
     // 而调用方紧接着就会取快照，walker 量的正是这个视口。
-    await this.applyViewport(tabId, this.stage?.bounds ?? null);
+    if (!signal?.aborted) await this.applyViewport(tabId, this.stage?.bounds ?? null);
     return tracker.observation()!;
   }
 
@@ -1365,7 +1748,8 @@ export class BrowserService {
    * 注入之前就被 pid 谓词挡掉，靠 catch 是接不住的。这里两道都在：先问 pid，
    * 再罩时限。
    */
-  async snapshot(tabId: string): Promise<AxSnapshot> {
+  async snapshot(tabId: string, signal?: AbortSignal): Promise<AxSnapshot> {
+    assertNotAborted(signal);
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     // 没有渲染进程就**一个字都不注**：那时求值永不 settle，而 `browser_act` 的
@@ -1381,8 +1765,11 @@ export class BrowserService {
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
     let raw: unknown;
     try {
+      assertNotAborted(signal);
       raw = await this.evalOn(wc, tabId, WALKER_SOURCE);
+      assertNotAborted(signal);
     } catch (err) {
+      assertNotAborted(signal);
       return this.failedSnapshot(tabId, wc, `采集脚本没能执行：${String(err)}`);
     }
     if (!isWalkerOutput(raw)) {
@@ -1631,25 +2018,25 @@ export class BrowserService {
    * 所以这条错说的是「结果未知」，**不是「没有发生」**——「没有发生」只有页面把
    * `expired` 送回来的时候才成立（见 `interactError` 的那一格）。
    */
-  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown> {
+  private evalOn(wc: WebContents, tabId: string, code: string | ((notAfter: number) => string), ceiling = Infinity, issued?: Set<Promise<unknown>>, provenance?: SourceEvaluation): Promise<unknown> {
     // **一个到点时刻，两边共用。** 页面那道自检与这里的定时器各算各的话，守卫要么
     // 提前把好的求值废掉、要么晚到根本不挡。
-    const notAfter = Date.now() + PAGE_EVAL_TIMEOUT_MS;
+    const notAfter = Math.min(Date.now() + PAGE_EVAL_TIMEOUT_MS, ceiling);
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<never>((_res, rej) => {
-      timer = setTimeout(() => rej(new KydogError('browser.page_no_result',
+      timer = setTimeout(() => { const error=new KydogError('browser.page_no_result',
         `标签 ${tabId} 的页面在 ${PAGE_EVAL_TIMEOUT_MS} 毫秒内没有回应这次求值 —— `
         + '它要么正被自己的脚本占着主线程，要么已经不回话了。'
         + '**这一步到底生效了没有，我们不知道**：这次求值取消不掉，页面回过神来还会执行它'
         + '（写页面的那条路带着同一个时限自检，过期就自己不做，但卡在到点那一刻的窗口里仍可能已经落地）。'
         + '别按「它没做」去重试 —— 要重试就先取一份快照看页面现在什么样。',
-        undefined, 'unknown')), PAGE_EVAL_TIMEOUT_MS);
+        undefined, 'unknown'); observeSourceDeadline(provenance,error);rej(error); }, Math.max(0, notAfter - Date.now()));
     });
-    return Promise.race([
-      wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
-        [{ code: typeof code === 'string' ? code : code(notAfter) }]),
-      deadline,
-    ]).finally(() => { if (timer) clearTimeout(timer); });
+    const operation=wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,
+      [{ code: typeof code === 'string' ? code : code(notAfter) }]);
+    if(provenance)void operation.then(()=>observeSourceNative(provenance,'resolved'),error=>observeSourceNative(provenance,'rejected',error));
+    if(issued){issued.add(operation);void operation.then(()=>issued.delete(operation),()=>issued.delete(operation));}
+    return Promise.race([operation,deadline]).finally(() => { if (timer) clearTimeout(timer); });
   }
 
   /**
@@ -1657,18 +2044,18 @@ export class BrowserService {
    *
    * `browser_read` 的正文与 `extract` 的抽取都走它 —— 那两条路此前直接拿
    * `webContentsOf()` 注脚本，崩过一次的标签上就是一次挂死，而它们**都在
-   * `browser_act` / `browser_read` 这种 sequential 工具里**。
+   * `browser_act` / `browser_read` 这种模型等待结果的工具里**。
    *
    * `code` 收**拼装函数**那一档是给要带过期自检的注入用的（`loginFlow` 的填充脚本，
    * 与 `interactExpression` 同一个道理）：到点时刻由 `evalOn` 算一次、两边共用 ——
    * 调用方自己 `Date.now() + PAGE_EVAL_TIMEOUT_MS` 会与这里的定时器差开一小段，
    * 守卫要么提前把好的求值废掉、要么晚到根本不挡。
    */
-  async evalInPage(tabId: string, code: string | ((notAfter: number) => string)): Promise<unknown> {
+  async evalInPage(tabId: string, code: string | ((notAfter: number) => string), provenance?: SourceEvaluation): Promise<unknown> {
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     BrowserService.assertRenderProcess(tabId, wc);
-    return this.evalOn(wc, tabId, code);
+    return this.evalOn(wc, tabId, code, Infinity, undefined, provenance);
   }
 
   // ── 动作派发（spec §4.2）──────────────────────────────────────────────────
@@ -1686,7 +2073,7 @@ export class BrowserService {
    * | `Input.insertText` | **永不 settle** —— 进程退出时才以 "target closed" reject |
    * | `Input.dispatchKeyEvent` | resolve `{}`（静默无效） |
    *
-   * 中间那一条会让一次 `browser_act`（sequential 工具）**永远不返回**；最后一条更糟：
+   * 中间那一条会让一次 `browser_act` **永远不返回**；最后一条更糟：
    * 回报「按下 Enter」而它一个字都没发到页面上。
    * （`Emulation.setDeviceMetricsOverride` 在同样情形下是 **SIGSEGV**，见 applyViewport
    * 那段 —— 那条更硬，但闸是同一道。）
@@ -1711,12 +2098,13 @@ export class BrowserService {
    * 当前页面状态），而闸那一侧的用例也断不准（把闸删掉之后，这里会用同一个码把它兜住，
    * 用例照样绿）。
    */
-  private async interact(tabId: string, wc: WebContents, req: InteractRequest): Promise<InteractResult> {
+  private async interact(tabId: string, wc: WebContents, req: InteractRequest, pointer?: PointerBinding, issued?: Set<Promise<unknown>>): Promise<InteractResult> {
     let raw: unknown;
     try {
       // 传的是**拼装函数**不是拼好的串：到点时刻由 `evalOn` 算，页面那道自检与
       // 主进程那道定时器共用同一个数（漂开就等于守卫失效）。
-      raw = await this.evalOn(wc, tabId, (notAfter) => interactExpression(req, notAfter));
+      raw = await this.evalOn(wc, tabId, (notAfter) => pointer && req.op === 'measure'
+        ? measuredPointerExpression(req.target, pointer, notAfter) : interactExpression(req, notAfter), Infinity, issued);
     } catch (err) {
       // 时限那一条自己就是 page_no_result，原样放行（它的消息说得更准）。
       if (err instanceof KydogError) throw err;
@@ -1732,11 +2120,271 @@ export class BrowserService {
     return raw as InteractResult;
   }
 
+  /** Direct state only: time bounds resources, never establishes eligibility.
+   * Await an issued read even after cancellation so the owning queue can drain. */
+  private async awaitCollectedPointerEligibility(
+    tabId: string, wc: WebContents, target: PointerTarget, snapshot: AxSnapshot,
+    action: DispatchAction, signal: AbortSignal, check: () => void,
+    issued?:Set<Promise<unknown>>, summary?:PointerPreflightDiagnostic,
+  ): Promise<PointerEligibilitySummary> {
+    const deadline = Date.now() + PAGE_EVAL_TIMEOUT_MS;
+    let firstState: 'auto' | 'none' | 'unknown' | null = null;
+    let finalState: 'auto' | 'none' | 'unknown' | null = null;
+    let noneObserved = false;
+    let outcome = 'unknown';
+    const timeout = () => new KydogError('browser.wait_timeout', '原采集控件的 pointer eligibility 未在资源时限内建立');
+    try {
+      for (;;) {
+        check();
+        if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
+        let raw: unknown;
+        try {
+          if(summary)summary.eligibilityReadsIssued++;
+          raw = await this.evalOn(wc, tabId, notAfter => collectedPointerEligibilityExpression(target, Math.min(notAfter, deadline)), deadline, issued);
+        } catch {
+          check();
+          if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
+          throw new KydogError('browser.page_no_result', '原采集控件的 pointer eligibility 无法读取', undefined, 'unknown');
+        }
+        const result = raw as InteractResult | null;
+        // Retain the observed enum once, even if cancellation arrived during this read.
+        // This is bookkeeping only; lifecycle checks still precede authorization.
+        const state = result?.ok === true ? result.pointerEligibility : undefined;
+        if (result?.ok !== false) {
+          finalState = state === 'auto' || state === 'none' ? state : 'unknown';
+          firstState ??= finalState;
+          noneObserved ||= finalState === 'none';
+          if(summary){summary.initialState??=finalState;summary.finalState=finalState;summary.noneObserved ||= finalState==='none';summary.finalHitPerformed=false;}
+        }
+        check();
+        if (Date.now() >= deadline) { outcome = 'timeout'; throw timeout(); }
+        if (result?.ok === false) {
+          outcome = 'permission_lost';
+          throw BrowserService.interactError(result, action);
+        }
+        if (finalState === 'auto') { outcome = 'eligible'; return {phase:'collected_eligibility',firstState,noneObserved,finalState,outcome:'eligible'}; }
+        if (finalState === 'unknown') throw new KydogError('browser.page_no_result', '原采集控件的 pointer eligibility 未知', undefined, 'unknown');
+        await new Promise<void>((resolve) => {
+          const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+          const timer = setTimeout(finish, Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
+          signal.addEventListener('abort', finish, { once: true });
+          if (signal.aborted) finish();
+        });
+        check();
+      }
+    } catch (cause) {
+      if (cause instanceof KydogError && outcome !== 'timeout' && outcome !== 'permission_lost') {
+        const terminal: Record<string, string> = { 'browser.cancelled': 'cancelled', 'browser.stale_snapshot': 'invalidated',
+          'browser.no_tab': 'invalidated', 'browser.not_dispatchable': 'unavailable', 'browser.input_not_delivered': 'mapping_changed' };
+        outcome = terminal[cause.code] ?? 'unknown';
+      }
+      throw cause;
+    } finally {
+      // One finite source receipt; no page text, raw URL, permission token or per-poll logs.
+      try { logger.info('browser.pointer_eligibility', '原采集控件资格检查结束', {
+        tabId, snapshotId: snapshot.snapshotId, generation: snapshot.generation,
+        nodeId: 'nodeId' in target ? target.nodeId : null, firstState, noneObserved, finalState, outcome,
+      }); } catch { /* Logging cannot change the public result. */ }
+    }
+  }
+
+  /** A source write receipt and a later event/frame ACK are separate facts. */
+  private async acknowledgedScroll(
+    tabId: string, wc: WebContents, request: Extract<InteractRequest,{op:'scroll'}>,
+    snapshot: AxSnapshot, options: BrowserDispatchOptions, check: () => void,
+  ): Promise<InteractResult> {
+    const token=randomUUID(), expiresAt=Date.now()+PAGE_EVAL_TIMEOUT_MS;
+    const document={generation:snapshot.generation,url:snapshot.url};
+    let written=false;
+    type Receipt = {token:string;generation:string;url:string;targetKind:string;targetNodeId?:number|null;targetContainsHit?:boolean|null;scrollHeight?:number;clientHeight?:number;conversationRelation?:string;rootRelation?:string;before:number;after:number;written:boolean;eventObserved:boolean;frameObserved:boolean;state:string;invalidatedReason?:string|null;viewport?:{visibility?:unknown;innerHeight?:unknown;visualViewportHeight?:unknown}};
+    const receipt = (raw: unknown): Receipt | null => {
+      const r=raw as {acknowledgement?:Receipt} | null, a=r?.acknowledgement;
+      if (!a) return null;
+      if (a.token!==token || a.generation!==document.generation || a.url!==document.url
+        || !['document','element'].includes(a.targetKind) || !Number.isFinite(a.before) || !Number.isFinite(a.after)
+        || typeof a.written!=='boolean' || typeof a.eventObserved!=='boolean' || typeof a.frameObserved!=='boolean'
+        || !['pending','frame_observed','no_movement','invalidated','expired'].includes(a.state)
+        || (a.frameObserved && !a.eventObserved) || (a.state==='frame_observed' && (!a.written || !a.frameObserved))
+        || (a.state==='no_movement' && (!a.written || a.before!==a.after || a.eventObserved || a.frameObserved)))
+        throw new KydogError('browser.page_no_result','滚动确认返回了不匹配的来源事实');
+      if (a.written && !written) { written=true; options.scrollAcknowledgement!.onWritten(); }
+      if (options.scrollAcknowledgement?.onReceipt
+        && (a.targetNodeId===null || (typeof a.targetNodeId==='number' && Number.isSafeInteger(a.targetNodeId) && a.targetNodeId>0))
+        && (a.targetContainsHit===null || typeof a.targetContainsHit==='boolean')
+        && ['inside','equal','unknown'].includes(String(a.conversationRelation))
+        && ['inside','equal','unknown'].includes(String(a.rootRelation))
+        && typeof a.scrollHeight==='number' && Number.isSafeInteger(a.scrollHeight) && a.scrollHeight>=0
+        && typeof a.clientHeight==='number' && Number.isSafeInteger(a.clientHeight) && a.clientHeight>=0) {
+        try { options.scrollAcknowledgement.onReceipt({generation:a.generation,targetKind:a.targetKind as 'document'|'element',targetNodeId:a.targetNodeId,
+          targetContainsHit:a.targetContainsHit,conversationRelation:a.conversationRelation as import('./actions').BrowserScrollReceipt['conversationRelation'],
+          rootRelation:a.rootRelation as import('./actions').BrowserScrollReceipt['rootRelation'],scrollHeight:a.scrollHeight,clientHeight:a.clientHeight,before:a.before,after:a.after,
+          written:a.written,eventObserved:a.eventObserved,frameObserved:a.frameObserved,state:a.state as import('./actions').BrowserScrollReceipt['state'],
+          invalidatedReason:(['document','generation','url','detached','scrolling_element','offset'].includes(String(a.invalidatedReason))?a.invalidatedReason:null) as import('./actions').BrowserScrollReceipt['invalidatedReason'],
+          ...(a.viewport && Number.isFinite(a.viewport.innerHeight) && (a.viewport.visualViewportHeight===null||Number.isFinite(a.viewport.visualViewportHeight))
+            ? {viewport:{visibility:String(a.viewport.visibility),innerHeight:a.viewport.innerHeight as number,visualViewportHeight:(a.viewport.visualViewportHeight ?? null) as number|null}}
+            : {})}); }
+        catch { /* Diagnostic observation cannot alter the ACK result. */ }
+      }
+      return a;
+    };
+    try {
+      check();
+      const result=await this.interact(tabId,wc,{...request,acknowledgement:{token,expiresAt,document,relationNodes:options.scrollAcknowledgement?.relationNodes}});
+      let current=receipt(result); // Save an actual write before cancellation can reject its ACK.
+      check();
+      if (!result.ok) throw BrowserService.interactError(result,{kind:'scroll',direction:request.direction});
+      for (;;) {
+        check();
+        if (!current) throw new KydogError('browser.page_no_result','滚动没有返回真实写入记录');
+        if (current.state==='invalidated') throw new KydogError('browser.stale_snapshot','滚动确认期间原文档、目标或偏移已改变');
+        if (current.state==='no_movement') throw new BrowserScrollAcknowledgementError('scroll_no_movement','实际执行未改变偏移；讨论范围仍未知');
+        if (Date.now()>=expiresAt || current.state==='expired') throw new BrowserScrollAcknowledgementError('scroll_ack_timeout','实际滚动尚未得到原目标事件及后续帧确认');
+        if (current.state==='frame_observed') return result;
+        current=receipt(await this.interact(tabId,wc,{op:'scroll_ack_status',token}));
+        check();
+        if (current?.state==='pending') { await new Promise<void>(resolve=>setTimeout(resolve,WAIT_POLL_MS)); check(); }
+      }
+    } finally {
+      // evalOn cannot cancel Electron evaluation. Disposal must actually settle,
+      // or the original world must be destroyed, before this operation releases.
+      if (!wc.isDestroyed() && wc.getOSProcessId()>0) {
+        let gone!:()=>void;
+        const destroyed=new Promise<null>(resolve=>{gone=()=>resolve(null);wc.once('destroyed',gone);wc.once('render-process-gone',gone);wc.once('did-navigate',gone);});
+        try {
+          const cleaned=await Promise.race([
+            wc.executeJavaScriptInIsolatedWorld(WALKER_WORLD_ID,[{code:interactExpression({op:'scroll_ack_dispose',token},0)}]),
+            destroyed,
+          ]);
+          receipt(cleaned);
+        } finally {wc.off('destroyed',gone);wc.off('render-process-gone',gone);wc.off('did-navigate',gone);}
+      }
+    }
+  }
+
   /** 报错时说得出「哪个目标」。selector 与编号两种说法不能混：处置不同。 */
   private static describeTarget(action: DispatchAction): string {
-    const s = action as { selector?: string; index?: number; snapshotId?: string };
+    const s = action as { selector?: string; index?: number; snapshotId?: string;
+      locator?: { role: string; name: string | string[] } };
     if (typeof s.selector === 'string') return `选择器 ${JSON.stringify(s.selector)}`;
+    if (s.locator) {
+      const names = typeof s.locator.name === 'string' ? [s.locator.name] : s.locator.name;
+      return `语义目标 ${s.locator.role} ${names.map((name) => JSON.stringify(name)).join(' / ')}`;
+    }
     return `编号 ${s.index}（来自快照 ${s.snapshotId}）`;
+  }
+
+  /**
+   * 让 Chromium 把这一张 WebContents 当成有焦点的页面来接收 agent 输入。
+   *
+   * 这是 CDP 的 per-target 状态，不会切 KyDog 的活动标签，也不要求 IAB 侧栏可见。
+   * 命令的 resolved promise 就是协议 ACK；没有 ACK 时绝不能继续定位或发送 Input.*，
+   * 否则 browser_act 会把一件没有发生的动作报成成功。
+   */
+  private async enableAgentFocus(tabId: string, wc: WebContents): Promise<void> {
+    this.assertDispatchable(tabId, wc);
+    try {
+      await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    } catch (cause) {
+      throw new KydogError('browser.input_not_delivered',
+        `标签 ${tabId} 没有确认进入可接收 agent 输入的状态。`
+        + '这次没有定位目标，也没有发送输入；等页面稳定后再试。', cause);
+    }
+  }
+
+  /**
+   * Queue-owned fixed DOM collectors can prepare the same hidden target without
+   * emitting an artificial hover/click. Does not enqueue or activate a UI tab.
+   *
+   * **判据是几何，不是代号。** `applyLayout` 对每个标签都 `void applyViewport(...)`：
+   * 窗口改大小、拖侧栏、确认框弹出、横幅展开都会在下一次布局里多发一份。`await` 的这一份
+   * 已经证明**自己那份**落地了；早在途的那份无法推翻它（落地早于就不算），后发的那份算的
+   * 是**同一份 `stage`**、落地的是同一份几何。拿代号比会把这件「另一份一模一样的下发
+   * 正在收尾」判成「映射变了」，而这条路上它等于整次提交失败 ——
+   * x-research 侧报到用户眼前是「源不可用」（重启后的第一次采集就是这么失败的）。
+   */
+  async prepareForDomRead(tabId: string, signal?: AbortSignal): Promise<void> {
+    assertNotAborted(signal);
+    const wc = this.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    const location = this.locationFacts(tabId);
+    await this.enableAgentFocus(tabId, wc);
+    assertNotAborted(signal);
+    this.restoreFitViewport(tabId);
+    await this.applyViewport(tabId, this.stage?.bounds ?? null);
+    assertNotAborted(signal);
+    // 先把**别人**在途的那几份等落地（有界）。它们不改结论，但落地晚于下面那次
+    // `viewportAcknowledged` 读取时，读到的那一条就不是最后落地的那一条。
+    const settled = await this.waitForViewportSettled(tabId, signal);
+    assertNotAborted(signal);
+    // 到点没清空**不是**失败判据（下面仍然按几何判），所以它可以一路走成功 —— 一个永不落地的
+    // generation 于是只表现为「这个标签的每次 DOM 读取都先慢 20 秒」，日志里一个字都没有。
+    // 走到这里的只可能是到点：abort 那一种在上一句就抛了。
+    if (!settled) {
+      logger.warn('browser.viewport', '读取 DOM 之前等视口下发排空到点', {
+        tabId, phase: 'prepareForDomRead',
+        pending: [...(this.viewportPending.get(tabId) ?? [])],
+      });
+    }
+    const acknowledged = () => {
+      const ack = this.viewportAcknowledged.get(tabId);
+      const want = this.viewportGeometry(tabId, this.stage?.bounds ?? null);
+      return { ack, want, same: !!ack && ack.width === want.width && ack.height === want.height
+        && ack.scale === want.scale && ack.pageScale === want.pageScale };
+    };
+    let state = acknowledged();
+    if (!state.same) {
+      const first = state;
+      // 重下发一次：能被这一步修掉的只有「晚到的旧档位盖住了已确认的那一份」。
+      await this.applyViewport(tabId, this.stage?.bounds ?? null);
+      assertNotAborted(signal);
+      state = acknowledged();
+      if (!state.same) {
+        const geometry = (v: { width: number; height: number; scale: number; pageScale: number }) =>
+          `${v.width}×${v.height}（scale ${v.scale}，pageScale ${v.pageScale}）`;
+        const facts = [
+          settled ? '' : `在途的视口下发在 ${VIEWPORT_SETTLE_TIMEOUT_MS} 毫秒内没有清空`,
+          first.ack ? `确认落地的几何 ${geometry(first.ack)} 与当前舞台算出的 ${geometry(first.want)} 不一致`
+            : '没有任何一份确认落地',
+          state.ack ? `重下发后确认的几何 ${geometry(state.ack)} 仍与当前舞台算出的 ${geometry(state.want)} 不一致`
+            : '重下发之后仍然没有确认落地',
+        ];
+        throw new KydogError('browser.input_not_delivered',
+          `页面准备期间视口映射没有落地：${facts.filter(Boolean).join('；')}`);
+      }
+    }
+    if (this.locationFacts(tabId).navigationSequence !== location.navigationSequence)
+      throw new KydogError('browser.stale_snapshot', '页面准备期间已导航；需要重新观察');
+  }
+
+  /** CopyFromSurface completion is per-target; pixels are neither retained nor logged. */
+  private async awaitNativeFrame(tabId: string, wc: WebContents, signal?: AbortSignal, ceiling=Infinity, issued?:Set<Promise<unknown>>): Promise<void> {
+    assertNotAborted(signal);
+    let timer: NodeJS.Timeout | undefined;
+    let abort!: () => void;
+    let gone!: () => void;
+    const terminal = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(new KydogError('browser.cancelled', '浏览器操作已取消'));
+      gone = () => reject(new KydogError('browser.not_dispatchable', '目标页面或调试通道已退出；没有继续发送输入'));
+      signal?.addEventListener('abort', abort, { once: true });
+      wc.once('destroyed', gone); wc.once('render-process-gone', gone); wc.debugger.once('detach', gone);
+      timer = setTimeout(() => reject(new KydogError('browser.input_not_delivered', '页面绘制帧没有在资源时限内返回；没有发送输入')), Math.max(0,Math.min(PAGE_EVAL_TIMEOUT_MS,ceiling-Date.now())));
+    });
+    try {
+      if (signal?.aborted) abort();
+      const operation=wc.capturePage({ x: 0, y: 0, width: 1, height: 1 }, { stayHidden: true, stayAwake: true });
+      if(issued){issued.add(operation);void operation.then(()=>issued.delete(operation),()=>issued.delete(operation));}
+      const image = await Promise.race([operation, terminal]);
+      assertNotAborted(signal);
+      this.assertDispatchable(tabId, wc);
+      if (image.isEmpty()) throw new KydogError('browser.input_not_delivered', '页面没有返回实际绘制帧；没有发送输入');
+    } catch (cause) {
+      if (cause instanceof KydogError) throw cause;
+      throw new KydogError('browser.input_not_delivered', '原生绘制帧阶段：实际绘制帧读取失败；没有发送输入', cause);
+    } finally {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      wc.off('destroyed', gone); wc.off('render-process-gone', gone); wc.debugger.off('detach', gone);
+    }
   }
 
   /**
@@ -1825,6 +2473,12 @@ export class BrowserService {
             : `${where} 这一步到达页面的时候已经过了这次求值的时限，它按约定什么都没做。`
               + '页面多半正被自己的脚本占着主线程 —— 等一下重试，或者先取一份快照看它现在什么样。',
           undefined, 'none');
+      case 'typing_destination_changed':
+        return new KydogError('browser.target_unusable', '文本插入前目标焦点或全选选区已改变；没有发送文本插入');
+      case 'typing_selection_unproven':
+        return new KydogError('browser.target_unusable', '这个非空控件没有提供可直接验证的全选选区；没有发送文本插入');
+      case 'pointer_target_changed':
+        return new KydogError('browser.target_unusable', '目标的语义、输入许可或表单归属已改变；需要新快照');
       default:
         return new KydogError('browser.target_unusable', `${where} 这一步没能执行：${String(r.reason)}`);
     }
@@ -1841,10 +2495,41 @@ export class BrowserService {
    * 滚进视野 → 在派发那一刻重新量 → 命中检查。`snapshot` 参数只用来解析 `index`
    * （`resolveTarget` 给的 x/y 是**快照当时**的，这里一个字都不用）。
    */
-  async dispatch(tabId: string, action: DispatchAction, snapshot: AxSnapshot | null): Promise<string> {
+  async dispatch(tabId: string, action: DispatchAction, snapshot: AxSnapshot | null, options?: BrowserDispatchOptions): Promise<string> {
+    return this.dispatchOnTab(tabId, action, snapshot, options);
+  }
+
+  /** 输入动作先等目标自己的 focus emulation ACK；不会切换用户正在看的标签。 */
+  private async dispatchOnTab(
+    tabId: string, action: DispatchAction, snapshot: AxSnapshot | null, options?: BrowserDispatchOptions,
+  ): Promise<string> {
+    const check = () => {
+      assertNotAborted(options?.signal);
+      if (options?.location) {
+        const now = this.locationFacts(tabId), expected = options.location;
+        if (now.documentEpoch !== expected.documentEpoch || now.routeRevision !== expected.routeRevision || now.navigationSequence !== expected.navigationSequence || now.currentUrl !== expected.currentUrl)
+          throw new KydogError('browser.stale_snapshot', '页面的文档或路由已改变；需要新快照');
+      }
+    };
+    check();
+    if (options?.collectedPointerEligibility && (action.kind !== 'click' || !('index' in action)
+      || !options.collectedPermission || !options.strictSnapshot || !options.location || !options.signal || !snapshot))
+      throw new KydogError('browser.bad_action', '控件资格检查必须绑定原节点、许可、快照、位置和操作生命周期');
     const wc = this.webContentsOf(tabId);
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
-    this.assertDispatchable(tabId, wc);
+    const checkCollectedSetup = () => {
+      check();
+      if (!options?.collectedPointerEligibility) return;
+      if (this.webContentsOf(tabId) !== wc) throw new KydogError('browser.no_tab', '原标签页已失效');
+      this.assertDispatchable(tabId, wc);
+    };
+    if (action.kind === 'click' || action.kind === 'type'
+      || action.kind === 'hover' || action.kind === 'key') {
+      await this.enableAgentFocus(tabId, wc);
+      checkCollectedSetup();
+    } else {
+      this.assertDispatchable(tabId, wc);
+    }
     // **先把视口坐实再碰页面**，与 `snapshot()` / `navigate()` 那两句是同一件事。
     //
     // 这是唯一一条「碰页面**且吃几何**」的路径：`interact.js` 的 measure 在页面里
@@ -1857,11 +2542,61 @@ export class BrowserService {
     // `markDriving` 只在整批入口恢复一次；人在这一批中途按了 1:1 的话，这一步之前再恢复一次。
     this.restoreFitViewport(tabId);
     await this.applyViewport(tabId, this.stage?.bounds ?? null);
-
-    if (action.kind === 'key') {
-      for (const ev of keyEventsFor(action.key)) {
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', ev);
+    if (options?.collectedPointerEligibility) checkCollectedSetup();
+    const mapping = this.viewportAcknowledged.get(tabId);
+    // **判据是几何，不是代号。** 这里要分出两件被旧判据揉成一件的事：映射**变了**（`measure`
+    // 量到的坐标按旧映射换算会打偏，必须拒）和**另一份不会换出别的坐标的下发还在收尾**（拒掉它
+    // 只是把一次安全的点击说成失败）。
+    //
+    // **两边的字段不一样，因为两者的窗口不一样：**
+    // - 在途的那一份（意图）**四个字段全比**：它会落在 measure 之后、`Input.dispatchMouseEvent`
+    //   之前，那时上一次量到的 x/y 就得在新几何里重新看 —— 纵向重排也算。
+    // - 已确认的那一份（`current`）**不比 height**：已经落地的高度变化有两个落点，**两个都安全**：
+    //   (i) 落在 measure **之前** —— 坐标就是在新布局里量的，不会过期。这是常见的那一种：
+    //       `applyLayout` 的下发在自己的 measure 之前就 ACK 了。
+    //   (ii) 落在 measure **之后**、`Input.dispatchMouseEvent` 之前 —— 这时上一次量到的 x/y
+    //       确实是旧布局里的，但第二道闸兜着：`awaitNativeFrame` 之后 `injected/pointerGuard.js`
+    //       的 `validate` 拿**保留的那个点**再命中测试一次，命中的不是目标（或它的后代）就拒。
+    //       所以一次纵向重排表现出来的是一份 `intercepted` / `pointer_target_changed`
+    //       （`click_intercepted` / `browser.target_unusable`），而不是「打在别人的位置上」。
+    //   这里要守的是指针变换本身：`scale`（emulation scale）与 `pageScale`（1:1 的 pinch），
+    //   加上 `width` 这个重排信号 —— 排版宽被夹在 1280，只有舞台宽过 1280 时它才跟着舞台走，
+    //   而那时正是它决定元素在哪。高度重排整页，但不进指针变换。
+    //   （2026-10-17 实测：侧栏的对话面板在 `browser_act` 跑着的时候改了高度 618→593，于是同一批里
+    //   有一份只差 height 的下发。按它拒的话，`e2e/61` 那条「侧栏开着点链接」每次都是红的 ——
+    //   而那种点击本来就不需要拒：上面两条覆盖了它的两种落点。）
+    const samePointerTransform = (a: ViewportGeometry, b: ViewportGeometry) => a.width === b.width
+      && a.scale === b.scale && a.pageScale === b.pageScale;
+    const sameMapping = (a: ViewportGeometry, b: ViewportGeometry) => samePointerTransform(a, b)
+      && a.height === b.height;
+    const refuseMapping: () => never = () => {
+      throw new KydogError('browser.input_not_delivered',
+        '视口映射没有确认落地、在坐标交接期间改变，或有一次会改变映射的下发在途；没有发送输入');
+    };
+    const assertMapping = () => {
+      const current = this.viewportAcknowledged.get(tabId);
+      if (!mapping || !current || !samePointerTransform(mapping, current)) refuseMapping();
+      const intents = this.viewportIntents.get(tabId);
+      for (const generation of this.viewportPending.get(tabId) ?? []) {
+        const intent = intents?.get(generation);
+        if (!intent || !sameMapping(intent, mapping)) refuseMapping();
       }
+    };
+    assertMapping();
+
+    check();
+    if (action.kind === 'key') {
+      await this.awaitNativeFrame(tabId, wc, options?.signal);
+      check();
+      const [press, release] = keyEventsFor(action.key);
+      try {
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', press);
+        assertNotAborted(options?.signal);
+      } finally {
+        // Key-up releases already-started input; cancellation never leaves a held key.
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', release);
+      }
+      assertNotAborted(options?.signal);
       return `按下 ${action.key}`;
     }
 
@@ -1872,9 +2607,15 @@ export class BrowserService {
       // `Input.synthesizeScrollGesture` 会 ack（约 1030ms）但同样不滚。
       // 隔离世界里的 scrollBy 是同步的、当场量得到，而且不挑可见性 ——
       // 这也正是「侧栏开不开都一样」那条要求的。
-      const r = await this.interact(tabId, wc, {
+      if (options?.scrollAcknowledgement && (!snapshot || !options.location))
+        throw new KydogError('browser.bad_action','滚动确认必须绑定原观察和文档坐标');
+      const request: Extract<InteractRequest,{op:'scroll'}> = {
         op: 'scroll', direction: action.direction, ...(action.amount === undefined ? {} : { amount: action.amount }),
-      });
+      };
+      const r = options?.scrollAcknowledgement
+        ? await this.acknowledgedScroll(tabId,wc,request,snapshot!,options,check)
+        : await this.interact(tabId,wc,request);
+      check();
       if (!r.ok) throw BrowserService.interactError(r, action);
       const dir = action.direction === 'up' ? '上' : '下';
       const where = r.container === 'document' ? '整页' : `内层滚动容器 ${String(r.container)}`;
@@ -1890,122 +2631,283 @@ export class BrowserService {
 
     // 剩下四种都要目标。**密码硬闸第一道排在这里**：快照里 walker 已经判过它是
     // 密码框的，连页面都不许碰（第二道在 interact.js 里，管 selector 定位那条路）。
-    const resolved = resolveTarget(action as TargetSpec, snapshot);
+    const semantic = 'locator' in action;
+    if (semantic && action.kind !== 'click') {
+      throw new KydogError('browser.bad_action', 'locator 只用于 click');
+    }
+    // locator 的意义就是避开「输入之前的快照」。Google 输入后会创建联想层并重排
+    // 提交按钮；因此必须在这个动作真正执行时取新快照，不能使用整批开始时的 before。
+    let targetSnapshot = semantic && !options?.strictSnapshot ? await this.snapshot(tabId, options?.signal) : snapshot;
+    check();
+    let resolved = resolveTarget(action as TargetSpec, targetSnapshot);
     if (action.kind === 'type') assertTypeAllowed(resolved);
-    const target: InteractTarget = resolved.kind === 'selector'
-      ? { selector: resolved.selector } : { nodeId: resolved.nodeId };
+    const document = targetSnapshot && (options?.strictSnapshot || resolved.kind === 'node')
+      ? { generation: targetSnapshot.generation, url: targetSnapshot.url } : undefined;
+    let target: InteractTarget = resolved.kind === 'selector'
+      ? { selector: resolved.selector, ...(document ? { document } : {}) }
+      : { nodeId: resolved.nodeId, ...(document ? { document } : {}) };
+
+    if (options?.collectedPermission) {
+      if (action.kind!=='click' || resolved.kind!=='node') throw new KydogError('browser.bad_action','采集许可只允许原节点的 click');
+      target = {...target,collectedPermission:options.collectedPermission};
+    }
 
     if (action.kind === 'select') {
       // 不派发任何鼠标事件，所以「三件事」不适用：赋值 + 派发 input/change 就是全部。
       const r = await this.interact(tabId, wc, { op: 'select', target, value: action.value });
+      check();
       if (!r.ok) throw BrowserService.interactError(r, action);
       const label = String(r.label ?? '');
       return `已在下拉框里选中 ${label ? `「${label}」` : ''}（value=${JSON.stringify(r.value)}）`
         + (r.changed === false ? '（它本来就是这个值）' : '');
     }
 
+    let eligibility: PointerEligibilitySummary | undefined;
+    let postFrame: PointerPostFrame | null | undefined;
+    const issued=options?.collectedPointerEligibility?new Set<Promise<unknown>>():undefined;
+    const summary:PointerPreflightDiagnostic|undefined=options?.collectedPointerEligibility?{
+      phase:'collected_preflight',tabId,snapshotId:targetSnapshot!.snapshotId,generation:targetSnapshot!.generation,nodeId:'nodeId' in target?target.nodeId:0,
+      initialState:null,finalState:null,noneObserved:false,eligibilityReadsIssued:0,probeReadsIssued:0,finalizationsIssued:0,framesObserved:0,
+      finalHitPerformed:null,outcome:'unknown',unavailableFields:[],
+    }:undefined;
     // spec §4.2 的三件事：滚进视野 → 重新量 → 命中检查。缺一件都是「打偏了还不报错」。
-    const m = await this.interact(tabId, wc, { op: 'measure', target });
-    if (!m.ok) throw BrowserService.interactError(m, action);
-    // 第二道密码闸：selector 定位时快照那层看不出来，这里拿到的是活元素。
-    if (action.kind === 'type' && m.isPassword === true) {
-      throw BrowserService.interactError({ ok: false, reason: 'password' }, action);
-    }
-    // 「能不能打字」也要**在点下去之前**问。放到 focusSelect 之后就晚了：那时
-    // 这一下已经点出去了 —— 而 `type {selector:'#submit'}` 点的是提交按钮，
-    // 一次没人要求过的表单提交，然后才报「这个目标不能打字」。
-    if (action.kind === 'type' && m.editable === false) {
-      throw BrowserService.interactError(
-        { ok: false, reason: 'not_editable', tag: m.tag, type: '' }, action);
-    }
-    // 分段选择器（date / time / month / week / datetime-local）同样要**在点下去
-    // 之前**拒：实测 `Input.insertText` 对它们完全无效，而「先清空再打」会把用户
-    // 原本填好的年份抹掉 —— 网页不可回滚。（详见 interact.js 的 SEGMENTED_TYPES。）
-    if (action.kind === 'type' && m.segmented === true) {
-      throw BrowserService.interactError(
-        { ok: false, reason: 'no_text_input', tag: m.tag, type: m.type }, action);
-    }
-    const x = Number(m.x);
-    const y = Number(m.y);
-    const label = String(m.label ?? '') || String(m.tag ?? '');
-    // 派发用的坐标 = CSS 坐标 × 已落地的 emulation scale（见 `emulationScales`）。
-    // 给模型看的那句话里仍是 CSS 坐标 —— 那才是页面上的位置。
-    const k = this.emulationScales.get(tabId) ?? 1;
-    const at = { x: x * k, y: y * k };
-
-    if (action.kind === 'hover') {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none' });
-      return `已把指针移到「${label}」上（${x},${y}）`;
+    let pointer: PointerBinding | undefined;
+    let preflightDeadline=Infinity;
+    const pointerError = (stage: PointerFailureStage, result: InteractResult, point?: { x: number; y: number }) =>
+      retainPointerFailure(BrowserService.interactError(result, action), {
+        tabId, snapshotId: targetSnapshot?.snapshotId ?? null, generation: targetSnapshot?.generation ?? null,
+        nodeId: 'nodeId' in target ? target.nodeId : null,
+      }, stage, result, point, {...(eligibility?{eligibility}:{}),...(postFrame!==undefined?{postFrame}:{})});
+    try {
+    if (options?.collectedPointerEligibility) {
+      const checkEligibility = () => {
+        checkCollectedSetup();
+        assertMapping();
+      };
+      checkEligibility();
+      eligibility = await this.awaitCollectedPointerEligibility(tabId, wc, target, targetSnapshot!, action, options.signal!, checkEligibility, issued, summary);
+      checkEligibility();
     }
 
-    // disabled 的控件在 Chromium 里**根本收不到 click**。发出去就是「什么都没发生
-    // 但回报成功」—— 最后一页那个 disabled 的「下一页」按钮正是这个形状，
-    // 一个 repeat×3 会把第一页抽三遍而且不报任何错。
-    if (m.disabled === true) {
-      throw new KydogError('browser.target_unusable',
-        `${BrowserService.describeTarget(action)}「${label}」是 disabled 的，点它不会有任何效果。`
-        + '（翻页控件到了最后一页就是这个样子。）');
-    }
+      pointer = action.kind === 'click' || action.kind === 'type'
+        ? { token: randomUUID(), kind: action.kind, expiresAt: Date.now() + PAGE_EVAL_TIMEOUT_MS * 2 } : undefined;
+      let m = await this.interact(tabId, wc, { op: 'measure', target }, pointer, issued);
+      // 新快照与 measure 之间页面仍可能恰好再重建一次。只对页面明确回报的三种
+      // 「目标已变」事实重取一次；网络、超时、密码、不可编辑等错误不在这里猜测重试。
+      if (!options?.strictSnapshot && semantic && !m.ok && ['stale_node', 'not_visible', 'intercepted'].includes(String(m.reason))) {
+        targetSnapshot = await this.snapshot(tabId, options?.signal);
+        check();
+        resolved = resolveTarget(action as TargetSpec, targetSnapshot);
+        target = resolved.kind === 'selector' ? { selector: resolved.selector }
+          : { nodeId: resolved.nodeId, ...(targetSnapshot ? { document: { generation: targetSnapshot.generation, url: targetSnapshot.url } } : {}) };
+        m = await this.interact(tabId, wc, { op: 'measure', target }, pointer);
+      }
+      check();
+      if (!m.ok) throw pointerError('measure', m);
+      // 第二道密码闸：selector 定位时快照那层看不出来，这里拿到的是活元素。
+      if (action.kind === 'type' && m.isPassword === true) {
+        throw BrowserService.interactError({ ok: false, reason: 'password' }, action);
+      }
+      // 「能不能打字」也要**在点下去之前**问。放到 focusSelect 之后就晚了：那时
+      // 这一下已经点出去了 —— 而 `type {selector:'#submit'}` 点的是提交按钮，
+      // 一次没人要求过的表单提交，然后才报「这个目标不能打字」。
+      if (action.kind === 'type' && m.editable === false) {
+        throw BrowserService.interactError(
+          { ok: false, reason: 'not_editable', tag: m.tag, type: '' }, action);
+      }
+      // 分段选择器（date / time / month / week / datetime-local）同样要**在点下去
+      // 之前**拒：实测 `Input.insertText` 对它们完全无效，而「先清空再打」会把用户
+      // 原本填好的年份抹掉 —— 网页不可回滚。（详见 interact.js 的 SEGMENTED_TYPES。）
+      if (action.kind === 'type' && m.segmented === true) {
+        throw BrowserService.interactError(
+          { ok: false, reason: 'no_text_input', tag: m.tag, type: m.type }, action);
+      }
+      const x = Number(m.x);
+      const y = Number(m.y);
+      const label = String(m.label ?? '') || String(m.tag ?? '');
+      // 派发用的坐标 = CSS 坐标 × 已落地的 emulation scale（见 `emulationScales`）。
+      // 给模型看的那句话里仍是 CSS 坐标 —— 那才是页面上的位置。
+      const k = this.emulationScales.get(tabId) ?? 1;
+      const at = { x: x * k, y: y * k };
 
-    // 活目标本身给出的默认导航意图，必须在鼠标派发前记到本次 tracker。Electron 的
-    // will/did-start 与 CDP Page 事件都可能晚于 Input ACK；拿事件到达速度作判据会让
-    // 同一个 recent 链接有时等导航、有时提前返回。链接事实不随调度顺序漂。
-    if (action.kind === 'click' && typeof m.navigationUrl === 'string') {
-      this.navs.get(tabId)?.onInputNavigationCandidate(
-        m.navigationUrl, isFragmentNavigation(wc.getURL(), m.navigationUrl),
-      );
-    }
+      if (action.kind === 'hover') {
+        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none' });
+        return `已把指针移到「${label}」上（${x},${y}）`;
+      }
 
-    const press = { ...at, button: 'left' as const, clickCount: 1 };
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...press });
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
-    if (action.kind === 'click') return `已点击「${label}」（${x},${y}）`;
+      // disabled 的控件在 Chromium 里**根本收不到 click**。发出去就是「什么都没发生
+      // 但回报成功」—— 最后一页那个 disabled 的「下一页」按钮正是这个形状，
+      // 一个 repeat×3 会把第一页抽三遍而且不报任何错。
+      if (m.disabled === true) {
+        throw new KydogError('browser.target_unusable',
+          `${BrowserService.describeTarget(action)}「${label}」是 disabled 的，点它不会有任何效果。`
+          + '（翻页控件到了最后一页就是这个样子。）');
+      }
 
-    // type：点一下是为了聚焦（很多站点的检索框要点开才展开），随后**必须全选** ——
-    // 实测 `Input.insertText` 是在光标处**插入**："旧内容" + "石墨烯" → "旧内容石墨烯"，
-    // 而光标落在哪取决于点到了哪个像素。同一个动作在同一个页面上能产出不同的串，
-    // 还不报错。全选之后 insertText 替换选区（实测 "旧内容" → "量子计算"）。
-    const f = await this.interact(tabId, wc, { op: 'focusSelect', target });
-    // 到这里两条 `Input.dispatchMouseEvent` 已经真的发出去了（见上两行）——
-    // `expired` 那句「什么都没做」对这一次求值不成立，见 `interactError` 的判据。
-    if (!f.ok) throw BrowserService.interactError(f, action, { priorInputDispatched: true });
-    // **`focusSelect` 报回来的事实必须读。** 它在页面里算出「焦点到底在不在目标上」
-    // 与「这一下有没有真的清空」，这里拿到手就丢的话，紧接着的 insertText 是一次
-    // 没有依据的输入 —— 而返回值仍然会说「已在「X」里输入」。
-    if (f.focused !== true) {
-      // 焦点没落在目标上时，insertText 打进的是**当时真正持有焦点的那个元素**
-      // （多半是上一个动作留下的框）。那是往一个谁也没指定的地方写字。
-      throw new KydogError('browser.target_unusable',
-        `${BrowserService.describeTarget(action)}「${label}」点过之后焦点并没有落在它身上，`
-        + '这时候打字会打进当时真正持有焦点的那个元素里。这一步没有发生 —— '
-        + '多半有一个浮层抢走了焦点，或者这个控件根本不接受键盘焦点。');
+      if (pointer) {
+        if (m.pointerGuard?.ok !== true) throw pointerError('pointer_capture', m.pointerGuard ?? { ok: false, reason: 'stale_node' }, { x, y });
+        let valid:InteractResult;
+        if(summary && pointer) {
+          const fixedPointer=pointer,deadline=Math.min(fixedPointer.expiresAt,Date.now()+PAGE_EVAL_TIMEOUT_MS);
+          preflightDeadline=deadline;
+          const boundary=()=>{checkCollectedSetup();assertMapping();if(Date.now()>=deadline)throw new KydogError('browser.wait_timeout','原控件最终命中前资格未在固定资源时限内建立');};
+          const read=async(op:'probe_collected_pointer'|'finalize_collected_pointer'):Promise<InteractResult>=>{
+            boundary();summary.finalState=null;if(op==='probe_collected_pointer')summary.probeReadsIssued++;else{summary.finalizationsIssued++;summary.finalHitPerformed=null;}
+            let raw:InteractResult;
+            try{raw=await this.evalOn(wc,tabId,n=>collectedPointerPreflightExpression(op,fixedPointer,n),deadline,issued) as InteractResult;}catch{boundary();throw new KydogError('browser.page_no_result','原控件 preflight 回执无法读取',undefined,'unknown');}
+            // Copy source facts before checking a cancellation that arrived in flight.
+            const state=raw?.pointerEligibility;summary.finalState=state==='auto'||state==='none'||state==='unknown'?state:null;
+            summary.noneObserved ||= state==='none';
+            if(typeof raw?.hitPerformed==='boolean')summary.finalHitPerformed=raw.hitPerformed;
+            boundary();
+            if(!raw || typeof raw.ok!=='boolean' || typeof raw.hitPerformed!=='boolean')throw new KydogError('browser.page_no_result','原控件 preflight 回执未知',undefined,'unknown');
+            if(raw.ok===false){
+              if(raw.reason==='expired')throw new KydogError('browser.wait_timeout','原控件资格已过期');
+              if(raw.reason==='pointer_eligibility_unknown')throw new KydogError('browser.page_no_result','原控件 pointer eligibility 未知',undefined,'unknown');
+              summary.outcome=raw.hitPerformed?'final_hit_refused':'permission_lost';return raw;
+            }
+            if(!((raw.phase==='pending'&&state==='none'&&raw.hitPerformed===false)
+              ||(op==='probe_collected_pointer'&&raw.phase==='eligible'&&state==='auto'&&raw.hitPerformed===false)
+              ||(op==='finalize_collected_pointer'&&raw.phase==='validated'&&state==='auto'&&raw.hitPerformed===true)))
+              throw new KydogError('browser.page_no_result','原控件 preflight 回执不一致',undefined,'unknown');
+            return raw;
+          };
+          let needsFrame=true;
+          for(;;){
+            if(needsFrame){boundary();try{await this.awaitNativeFrame(tabId,wc,options!.signal,deadline,issued);summary.framesObserved++;}
+              catch(error){boundary();summary.outcome='frame_failed';throw error;}boundary();}
+            valid=await read(needsFrame?'finalize_collected_pointer':'probe_collected_pointer');
+            if(!valid.ok||valid.phase==='validated')break;
+            needsFrame=valid.phase==='eligible';
+            if(!needsFrame && valid.phase==='pending'){
+              await new Promise<void>(resolve=>{const finish=()=>{clearTimeout(timer);options!.signal!.removeEventListener('abort',finish);resolve();};
+                const timer=setTimeout(finish,Math.min(WAIT_POLL_MS,Math.max(0,deadline-Date.now())));options!.signal!.addEventListener('abort',finish,{once:true});if(options!.signal!.aborted)finish();});
+              boundary();
+            }
+          }
+          if(valid.ok)summary.outcome='final_hit_validated';
+        } else {
+          await this.awaitNativeFrame(tabId,wc,options?.signal);check();assertMapping();
+          valid=await this.evalOn(wc,tabId,n=>pointerGuardExpression('validate',pointer!,n)) as InteractResult;
+        }
+        if (options?.collectedPointerEligibility && valid.hitPerformed === true) {
+          // Preserve the source observation even if cancellation arrived during
+          // evaluation. Lifecycle checks below still precede any native input.
+          postFrame = null;
+          try {
+            const value = valid?.postFramePointerEligibility;
+            const state = value === 'auto' || value === 'none' ? value : 'unknown';
+            const sampled = value === 'auto' || value === 'none' || value === 'unknown';
+            const connected = valid?.postFrameHitConnected, containsTarget = valid?.postFrameHitContainsTarget;
+            const hitConnected = typeof connected === 'boolean' ? connected : null;
+            const hitContainsTarget = typeof containsTarget === 'boolean' ? containsTarget : null;
+            postFrame = {phase:'post_frame',state,samplePhase:sampled?'before_first_hit':'not_observed',
+              relationPhase:sampled && (typeof connected==='boolean'||connected===null) && (typeof containsTarget==='boolean'||containsTarget===null)?'first_hit':'not_observed',hitConnected,hitContainsTarget};
+            logger.info('browser.pointer_eligibility', '原采集控件最终命中检查结束', {
+              phase: 'post_frame', tabId, snapshotId: targetSnapshot?.snapshotId ?? null,
+              generation: targetSnapshot?.generation ?? null, nodeId: 'nodeId' in target ? target.nodeId : null,
+              state, samplePhase: sampled ? 'before_first_hit' : 'not_observed',
+              relationPhase: sampled && (typeof connected === 'boolean' || connected === null)
+                && (typeof containsTarget === 'boolean' || containsTarget === null) ? 'first_hit' : 'not_observed',
+              hitConnected, hitContainsTarget,
+              outcome: valid?.ok === true ? 'validated' : 'refused',
+            });
+          } catch { /* Optional diagnostics cannot change the original result. */ }
+        }
+        check();
+        if (!valid?.ok) throw pointerError('pointer_validate', valid ?? { ok: false, reason: 'stale_node' }, { x, y });
+      }
+      // 活目标本身给出的默认导航意图，必须在鼠标派发前记到本次 tracker。Electron 的
+      // will/did-start 与 CDP Page 事件都可能晚于 Input ACK；拿事件到达速度作判据会让
+      // 同一个 recent 链接有时等导航、有时提前返回。链接事实不随调度顺序漂。
+      if (action.kind === 'click' && typeof m.navigationUrl === 'string') {
+        this.navs.get(tabId)?.onInputNavigationCandidate(
+          m.navigationUrl, isFragmentNavigation(wc.getURL(), m.navigationUrl),
+        );
+      }
+
+      const press = { ...at, button: 'left' as const, clickCount: 1 };
+      checkCollectedSetup();
+      assertMapping();
+      if(Date.now()>=preflightDeadline)throw new KydogError('browser.wait_timeout','原控件资格在输入前已过期');
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...press });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
+      assertNotAborted(options?.signal);
+      if (action.kind === 'click') return `已点击「${label}」（${x},${y}）`;
+
+      // type：点一下是为了聚焦（很多站点的检索框要点开才展开），随后**必须全选** ——
+      // 实测 `Input.insertText` 是在光标处**插入**："旧内容" + "石墨烯" → "旧内容石墨烯"，
+      // 而光标落在哪取决于点到了哪个像素。同一个动作在同一个页面上能产出不同的串，
+      // 还不报错。全选之后 insertText 替换选区（实测 "旧内容" → "量子计算"）。
+      check();
+      const f = await this.interact(tabId, wc, { op: 'focusSelect', target });
+      check();
+      // 到这里两条 `Input.dispatchMouseEvent` 已经真的发出去了（见上两行）——
+      // `expired` 那句「什么都没做」对这一次求值不成立，见 `interactError` 的判据。
+      if (!f.ok) throw BrowserService.interactError(f, action, { priorInputDispatched: true });
+      // **`focusSelect` 报回来的事实必须读。** 它在页面里算出「焦点到底在不在目标上」
+      // 与「这一下有没有真的清空」，这里拿到手就丢的话，紧接着的 insertText 是一次
+      // 没有依据的输入 —— 而返回值仍然会说「已在「X」里输入」。
+      if (f.focused !== true) {
+        // 焦点没落在目标上时，insertText 打进的是**当时真正持有焦点的那个元素**
+        // （多半是上一个动作留下的框）。那是往一个谁也没指定的地方写字。
+        throw new KydogError('browser.target_unusable',
+          `${BrowserService.describeTarget(action)}「${label}」点过之后焦点并没有落在它身上，`
+          + '这时候打字会打进当时真正持有焦点的那个元素里。这一步没有发生 —— '
+          + '多半有一个浮层抢走了焦点，或者这个控件根本不接受键盘焦点。');
+      }
+      if (f.selected !== true && f.emptyBefore !== true) {
+        // 「先清空」没有发生：insertText 会**插在光标处**，最终的串取决于点到了哪个
+        // 像素（实测 "旧内容" + "石墨烯" → "旧内容石墨烯"；年份框 2020 + 2024 →
+        // "20202024"）。同一个动作在同一个页面上产出不同的结果，还不报错 ——
+        // 所以这里 fail-closed，一个字都不打。
+        throw new KydogError('browser.target_unusable',
+          `${BrowserService.describeTarget(action)}「${label}」里原有的内容没能清空（既没被全选，框也不是空的）。`
+          + '这时候打字是**追加**不是替换，最终的内容取决于光标落在哪 —— 所以这一步没有发生。');
+      }
+      check();
+      if (pointer) {
+        const valid = await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('validate_typing', pointer!, notAfter)) as InteractResult;
+        check();
+        if (!valid?.ok) throw BrowserService.interactError(valid ?? { ok: false, reason: 'stale_node' }, action, { priorInputDispatched: true });
+      }
+      await wc.debugger.sendCommand('Input.insertText', { text: action.text });
+      check();
+      // 打完把框里**真正**变成什么读回来：`Input.insertText` 在焦点不是可编辑元素时
+      // **ack 0ms 而什么都不做**（实测 body / button / readonly / disabled 四种都是）。
+      // 不读回来的话「打进去了」就是一句没有依据的话。
+      const v = await this.interact(tabId, wc, { op: 'readValue', target });
+      assertNotAborted(options?.signal);
+      // 打完之后框里是空的，而我们打的是非空文本 —— 那这一次 insertText 什么都没做。
+      // （`text: ''` 在 validateBatch 就被拒了，所以「空」只可能是没打进去：站点在
+      // input 事件里把它清了，或者这个控件根本收不了文本插入。）
+      // 不判这一条的话，返回值会变成「已在「起始年」里输入，框里现在是「」」——
+      // 一句读起来像成功的话。
+      if (v.ok && v.value === '' && action.text !== '') {
+        throw new KydogError('browser.target_unusable',
+          `${BrowserService.describeTarget(action)}「${label}」打完之后框里是空的 —— `
+          + '这一次输入没有生效（站点可能在 input 事件里清空了它，或者这个控件收不了文本插入）。');
+      }
+      const now = v.ok && typeof v.value === 'string' ? `，框里现在是「${v.value}」` : '';
+      return `已在「${label}」里输入${now}`;
+    } catch(error) {
+      if(summary && summary.outcome!=='final_hit_refused' && summary.outcome!=='permission_lost' && summary.outcome!=='frame_failed' && summary.outcome!=='final_hit_validated') {
+        const code=error instanceof KydogError?error.code:'';
+        summary.outcome=code==='browser.cancelled'?'cancelled':code==='browser.wait_timeout'?'expired':code==='browser.target_unusable'?'permission_lost':
+          ['browser.stale_snapshot','browser.no_tab','browser.not_dispatchable','browser.input_not_delivered'].includes(code)?'invalidated':'unknown';
+      }
+      throw error;
+    } finally {
+      // The fixed deadline bounds admission, not Electron cancellation. Keep the
+      // queue lease until every issued operation actually settles, even on timeout.
+      if(issued)while(issued.size)await Promise.allSettled([...issued]);
+      if (pointer) await this.evalOn(wc, tabId, notAfter => pointerGuardExpression('dispose', pointer!, notAfter),Infinity,issued).catch(() => {});
+      if(issued)while(issued.size)await Promise.allSettled([...issued]);
+      if(summary)try{
+        summary.unavailableFields=(['initialState','finalState','finalHitPerformed'] as const).filter(k=>summary[k]===null);
+        options?.onPointerPreflight?.(sealPointerPreflight(summary));
+      }catch{/* Optional diagnostics never replace action outcome. */}
     }
-    if (f.selected !== true && f.emptyBefore !== true) {
-      // 「先清空」没有发生：insertText 会**插在光标处**，最终的串取决于点到了哪个
-      // 像素（实测 "旧内容" + "石墨烯" → "旧内容石墨烯"；年份框 2020 + 2024 →
-      // "20202024"）。同一个动作在同一个页面上产出不同的结果，还不报错 ——
-      // 所以这里 fail-closed，一个字都不打。
-      throw new KydogError('browser.target_unusable',
-        `${BrowserService.describeTarget(action)}「${label}」里原有的内容没能清空（既没被全选，框也不是空的）。`
-        + '这时候打字是**追加**不是替换，最终的内容取决于光标落在哪 —— 所以这一步没有发生。');
-    }
-    await wc.debugger.sendCommand('Input.insertText', { text: action.text });
-    // 打完把框里**真正**变成什么读回来：`Input.insertText` 在焦点不是可编辑元素时
-    // **ack 0ms 而什么都不做**（实测 body / button / readonly / disabled 四种都是）。
-    // 不读回来的话「打进去了」就是一句没有依据的话。
-    const v = await this.interact(tabId, wc, { op: 'readValue', target });
-    // 打完之后框里是空的，而我们打的是非空文本 —— 那这一次 insertText 什么都没做。
-    // （`text: ''` 在 validateBatch 就被拒了，所以「空」只可能是没打进去：站点在
-    // input 事件里把它清了，或者这个控件根本收不了文本插入。）
-    // 不判这一条的话，返回值会变成「已在「起始年」里输入，框里现在是「」」——
-    // 一句读起来像成功的话。
-    if (v.ok && v.value === '' && action.text !== '') {
-      throw new KydogError('browser.target_unusable',
-        `${BrowserService.describeTarget(action)}「${label}」打完之后框里是空的 —— `
-        + '这一次输入没有生效（站点可能在 input 事件里清空了它，或者这个控件收不了文本插入）。');
-    }
-    const now = v.ok && typeof v.value === 'string' ? `，框里现在是「${v.value}」` : '';
-    return `已在「${label}」里输入${now}`;
   }
 
   /**
@@ -2019,7 +2921,8 @@ export class BrowserService {
    * 用法就是「等它跳到结果页」，而那一刻页面正在换文档 —— 脚本要么跑在旧文档上、
    * 要么直接 reject。两边是同一个协议层事实，主进程这一份不挑时机。
    */
-  async waitFor(tabId: string, until: WaitUntil, timeoutMs: number): Promise<boolean> {
+  async waitFor(tabId: string, until: WaitUntil, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+    assertNotAborted(signal);
     const wc0 = this.webContentsOf(tabId);
     if (!wc0) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     // selector 那一支要往页面里注脚本，所以先问一次「这个标签问得了吗」：没有渲染
@@ -2031,6 +2934,7 @@ export class BrowserService {
     /** 'yes' / 'no' 是页面给的答案，'unknown' 是**没问出来** —— 三者不许合并。 */
     type Answer = 'yes' | 'no' | 'unknown';
     const probe = async (): Promise<Answer> => {
+      assertNotAborted(signal);
       const wc = this.webContentsOf(tabId);
       // **标签没了当场收场，不折进 'unknown'。**
       //
@@ -2054,6 +2958,7 @@ export class BrowserService {
       const code = `(() => { try { return !!document.querySelector(${JSON.stringify(until.selector)}); }`
         + ' catch { return \'bad_selector\'; } })()';
       const raw = await this.evalOn(wc, tabId, code).then((v) => v, () => 'unknown');
+      assertNotAborted(signal);
       if (raw === 'bad_selector') {
         throw new KydogError('browser.bad_action',
           `wait 的选择器 ${JSON.stringify(until.selector)} 不是合法的 CSS 选择器 —— `

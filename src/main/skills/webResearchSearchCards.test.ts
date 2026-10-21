@@ -1,0 +1,138 @@
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const SKILL_ROOT = path.resolve(__dirname, '..', '..', 'skills', 'web-research');
+const read = (rel: string): string => readFileSync(path.join(SKILL_ROOT, rel), 'utf8');
+
+function firstJsonBlock(rel: string): Record<string, unknown> {
+  const match = read(rel).match(/```json\n([\s\S]*?)\n```/);
+  expect(match, `${rel} 缺少可执行的 JSON 示例`).not.toBeNull();
+  return JSON.parse(match![1]) as Record<string, unknown>;
+}
+
+describe('web-research 搜索卡片的真实操作路径', () => {
+  it.each([
+    ['references/duckduckgo.md', '中文'],
+    ['references/duckduckgo.en.md', '英文'],
+  ])('DuckDuckGo %s 使用已验证的 type → Enter → wait → extract 路径', (rel) => {
+    const example = firstJsonBlock(rel);
+    const actions = example.actions as Array<Record<string, unknown>>;
+
+    expect(actions.map((action) => action.kind)).toEqual(['type', 'key', 'wait', 'extract']);
+    expect(actions[1]).toEqual({ kind: 'key', key: 'Enter' });
+    expect((example.research as Record<string, unknown>).submitActionIndex).toBe(1);
+  });
+
+  it.each([
+    ['SKILL.md', /DuckDuckGo[^\n]*`type → key Enter → wait → extract`/],
+    ['SKILL.en.md', /DuckDuckGo[^\n]*`type → key Enter → wait → extract`/],
+  ])('%s 明确区分 DDG 的 Enter 主路径与 Google／百度的按钮路径', (rel, rule) => {
+    expect(read(rel)).toMatch(rule);
+  });
+
+  it.each([
+    ['SKILL.md', /有结果行的观察不得使用 `observationIds`/, /未确认跳转不得出现在 `resultIndexes`/],
+    ['SKILL.en.md', /Do not use `observationIds` for an observation with result rows/, /An unresolved redirect must not appear in `resultIndexes`/],
+  ])('%s 禁止整份提交结果观察，并在首次提交前排除未确认跳转', (rel, wholeObservationRule, unresolvedRule) => {
+    const text = read(rel);
+    expect(text).toMatch(wholeObservationRule);
+    expect(text).toMatch(unresolvedRule);
+  });
+
+  it.each([
+    ['references/google.md', /Google 自有的 `\/goto`/, /researchResolve/],
+    ['references/google.en.md', /Google-owned `\/goto`/, /researchResolve/],
+  ])('%s 把 Google 跳转结果留在首次提交前确认', (rel, redirectRule, resolverRule) => {
+    const text = read(rel);
+    expect(text).toMatch(redirectRule);
+    expect(text).toMatch(resolverRule);
+  });
+
+  it.each([
+    ['references/google.md', '中文'],
+    ['references/google.en.md', '英文'],
+  ])('Google %s 在输入后先收起联想层，再唯一定位可见提交按钮', (rel) => {
+    const example = firstJsonBlock(rel);
+    const actions = example.actions as Array<Record<string, unknown>>;
+    expect(actions.map((action) => action.kind)).toEqual(['type', 'key', 'click', 'wait', 'extract']);
+    expect(actions[1]).toEqual({ kind: 'key', key: 'Escape' });
+    expect(actions[2]).toEqual({ kind: 'click', locator: {
+      role: 'button', name: ['Google 搜索', 'Google Search'], visible: true,
+    } });
+    expect(actions[2]).not.toHaveProperty('index');
+    expect(actions[2]).not.toHaveProperty('snapshotId');
+    expect((example.research as Record<string, unknown>).submitActionIndex).toBe(2);
+  });
+
+  it.each([
+    ['SKILL.md', /定范围本身不产生任何会话正文/, /完成后的会话回复不得包含“执行说明”/],
+    ['SKILL.en.md', /Scoping itself produces no conversation prose/, /must not contain an “Execution notes” section/],
+  ])('%s 把内部范围和执行过程留在工具参数及报告中', (rel, scopeRule, finalRule) => {
+    const text = read(rel);
+    expect(text).toMatch(scopeRule);
+    expect(text).toMatch(finalRule);
+  });
+
+  it.each([
+    ['references/report-template.md', '> 原始问题：{{用户的原始问题}}\n>\n> 检索日期：{{YYYY-MM-DD}}'],
+    ['references/report-template.en.md', "> Original question: {{the user's original question}}\n>\n> Search date: {{YYYY-MM-DD}}"],
+  ])('%s 让检索日期成为独立引用段落', (rel, header) => {
+    expect(read(rel)).toContain(header);
+  });
+
+  it.each([
+    ['SKILL.md', ['架构', '工作原理', '数据流', '控制流', '状态变化', '角色协作', '跨组件交互'], /每个[^\n]*主题章节[^\n]*至少一幅 Mermaid 图/, /引用[^\n]*相邻正文/],
+    ['SKILL.en.md', ['architecture', 'operating principles', 'data flow', 'control flow', 'state changes', 'role collaboration', 'cross-component interactions'], /Each topical section[^\n]*at least one Mermaid diagram/, /citations[^\n]*adjacent prose/],
+  ] as const)('%s 要求关系解释章节使用 Mermaid，并把引用留在图旁正文', (rel, triggers, diagramRule, citationRule) => {
+    const text = read(rel).split(/## 4\./)[1];
+    expect(text).toBeDefined();
+    for (const trigger of triggers) expect(text).toContain(trigger);
+    expect(text).toMatch(diagramRule);
+    expect(text).toMatch(citationRule);
+  });
+
+  it.each([
+    ['references/report-template.md', /节点和连线[^\n]*证据支持/, /推断[^\n]*图旁正文[^\n]*标明/,
+      [/架构／数据流用 `flowchart`/, /泳道用 `flowchart` \+ `subgraph`/, /协议／调用交互用 `sequenceDiagram`/, /状态生命周期用 `stateDiagram-v2`/],
+      /图紧邻解释/, /引用留在相邻正文中，不写进 Mermaid/, /普通事实不加装饰图/],
+    ['references/report-template.en.md', /Nodes and edges[^\n]*supported by evidence/, /inferences[^\n]*identified in the prose next to the diagram/,
+      [/`flowchart` for architecture or data flow/, /`flowchart` \+ `subgraph` for swimlanes/, /`sequenceDiagram` for protocols or call interactions/, /`stateDiagram-v2` for state lifecycles/],
+      /Place the diagram next to its explanation/, /Keep citations in the adjacent prose, outside Mermaid/, /do not add decorative diagrams for ordinary facts/],
+  ] as const)('%s 给出 Mermaid 图型选择和证据边界', (rel, evidenceRule, inferenceRule, mappings, placementRule, citationRule, ordinaryRule) => {
+    const text = read(rel);
+    for (const kind of ['flowchart', 'subgraph', 'sequenceDiagram', 'stateDiagram-v2']) {
+      expect(text).toContain(`\`${kind}\``);
+    }
+    expect(text).toMatch(evidenceRule);
+    expect(text).toMatch(inferenceRule);
+    for (const mapping of mappings) expect(text).toMatch(mapping);
+    expect(text).toMatch(placementRule);
+    expect(text).toMatch(citationRule);
+    expect(text).toMatch(ordinaryRule);
+  });
+
+  it.each([
+    ['references/baidu.md', /批量确认返回 `timeout`[^\n]*未确认/, /不得提交/],
+    ['references/baidu.en.md', /batch resolver returns `timeout`[^\n]*unresolved/i, /must not be submitted/i],
+  ])('%s 明确批量地址确认超时只淘汰该候选', (rel, timeoutRule, submitRule) => {
+    const text = read(rel);
+    expect(text).toMatch(timeoutRule);
+    expect(text).toMatch(submitRule);
+  });
+
+  it.each([
+    ['SKILL.md', /researchResolveBatch/, /批量/],
+    ['SKILL.en.md', /researchResolveBatch/, /batch/i],
+    ['references/bing.md', /researchResolveBatch/, /批量/],
+    ['references/bing.en.md', /researchResolveBatch/, /batch/i],
+    ['references/google.md', /researchResolveBatch/, /批量/],
+    ['references/google.en.md', /researchResolveBatch/, /batch/i],
+    ['references/baidu.md', /researchResolveBatch/, /批量/],
+    ['references/baidu.en.md', /researchResolveBatch/, /batch/i],
+  ])('%s 要求把短名单交给 IAB 批量地址确认', (rel, call, wording) => {
+    const text = read(rel);
+    expect(text).toMatch(call);
+    expect(text).toMatch(wording);
+  });
+});

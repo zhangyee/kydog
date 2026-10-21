@@ -356,6 +356,50 @@ test('27-composer: 翻上去看历史时，新输出不再把人拽回底部；�
   });
   await expect.poll(away).toBeLessThan(64);
   await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+
+  // Chromium scroll anchoring 回归：研究卡片/过程卡片在视口上方收起，同时底部又长出新内容时，
+  // 浏览器默认会为了保住锚点自行改写 scrollTop。那次 scroll 没有用户输入，却会被贴底状态机
+  // 误认成「用户翻走」，于是出现图 1 那种跑着跑着不再跟随。这里必须用真 Chromium 几何，
+  // 单测里的假 scroller 不会做原生 anchoring。
+  const beforeLayoutShift = await list.evaluate((el) => {
+    const content = el.firstElementChild as HTMLElement;
+    const upper = document.createElement('div');
+    upper.dataset.testid = 'anchor-upper';
+    upper.style.height = '200px';
+    const lower = document.createElement('div');
+    lower.dataset.testid = 'anchor-lower';
+    lower.style.height = '100px';
+    content.prepend(upper);
+    content.append(lower);
+    return {
+      upperHeight: upper.getBoundingClientRect().height,
+      lowerHeight: lower.getBoundingClientRect().height,
+    };
+  });
+  expect(beforeLayoutShift).toEqual({ upperHeight: 200, lowerHeight: 100 });
+  await list.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(away).toBeLessThan(64);
+
+  const afterLayoutShift = await list.evaluate((el) => {
+    const upper = el.querySelector<HTMLElement>('[data-testid="anchor-upper"]')!;
+    const lower = el.querySelector<HTMLElement>('[data-testid="anchor-lower"]')!;
+    // 同一轮布局：上面少 200、下面多 300，净高度只多 100。
+    upper.style.height = '0';
+    lower.style.height = '400px';
+    return {
+      upperHeight: upper.getBoundingClientRect().height,
+      lowerHeight: lower.getBoundingClientRect().height,
+    };
+  });
+  expect(afterLayoutShift).toEqual({ upperHeight: 0, lowerHeight: 400 });
+  await expect.poll(away, {
+    message: '没有用户输入的上下同时变高/变矮不应关闭贴底跟随',
+  }).toBeLessThan(64);
+  await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+  await list.evaluate((el) => {
+    el.querySelector('[data-testid="anchor-upper"]')?.remove();
+    el.querySelector('[data-testid="anchor-lower"]')?.remove();
+  });
 });
 
 test('附件：粘贴截图 → 托盘 → 发送 → agent 收到图片块 → 历史里缩略图真的解码了', async () => {

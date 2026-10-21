@@ -1,5 +1,5 @@
 import { Crepe, type CrepeConfig } from '@milkdown/crepe';
-import { commandsCtx, nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
+import { commandsCtx, editorViewCtx, nodeViewCtx, SchemaReady } from '@milkdown/kit/core';
 import type { MilkdownPlugin } from '@milkdown/kit/ctx';
 import { $prose } from '@milkdown/kit/utils';
 import type { NodeViewConstructor } from '@milkdown/kit/prose/view';
@@ -7,11 +7,13 @@ import { languages } from '@codemirror/language-data';
 import { isMarkSelectedCommand, linkSchema } from '@milkdown/kit/preset/commonmark';
 import katex from 'katex';
 import { highlightSchema, remarkHighlightPlugin, toggleHighlightCommand, highlightInputRule, highlightSourceInputRules } from './highlight';
-import { commentMarksPlugin } from './commentMarks';
+import { commentMarkRanges, commentMarksPlugin } from './commentMarks';
 import { appendToolbarTip, toolbarTipFor } from './toolbarTips';
 import { resolveImageSrc } from './imageSrc';
 import { imageBlockAltSchema } from './imageBlockAlt';
 import { isPrintableHref } from './printReadiness';
+import { mermaidPreview } from './mermaidPreview';
+import { CodeMirrorBlock } from '@milkdown/kit/component/code-block';
 import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 import './markdown-editor.css';
@@ -73,6 +75,42 @@ const mathInlineNodeViewPlugin: MilkdownPlugin = (ctx) => async () => {
   ]);
 };
 
+// Crepe creates a fresh applyPreview callback on every Vue watcher invocation,
+// and its LaTeX wrapper bypasses the Mermaid renderer. Own generations at the
+// actual NodeView, outside that final wrapper, while retaining Crepe's NodeView.
+const codePreviewLifecyclePlugin = (mode: CrepeSetupOptions['mode']): MilkdownPlugin => (ctx) => async () => {
+  await ctx.wait(SchemaReady);
+  ctx.update(nodeViewCtx, (views) => views.map(([name, create]) => {
+    if (name !== 'code_block') return [name, create];
+    const wrapped: NodeViewConstructor = (...args) => {
+      const block = create(...args);
+      if (!(block instanceof CodeMirrorBlock)) throw new Error('Unsupported Crepe code block lifecycle');
+      // The Vue UI initializes lazily after visibility observation. Scope this
+      // default to the initial node; updates must retain the user's toggle choice.
+      if (mode === 'edit' && String(args[0].attrs.language ?? '').trim().toLowerCase() === 'mermaid') {
+        block.config = { ...block.config, previewOnlyByDefault: true };
+      }
+      const render = block.config.renderPreview;
+      let generation = 0;
+      block.config = { ...block.config, renderPreview: (language, content, apply) => {
+        const current = ++generation;
+        return render(language, content, (value) => {
+          if (current === generation) apply(value);
+        });
+      } };
+      const update = block.update.bind(block);
+      block.update = (node) => {
+        if (!node.eq(block.node)) generation++;
+        return update(node);
+      };
+      const destroy = block.destroy.bind(block);
+      block.destroy = () => { generation++; destroy(); };
+      return block;
+    };
+    return [name, wrapped];
+  }));
+};
+
 // 选区工具栏里评论键的图标（与 NavIcon 的 message-square-plus 同一套路径，描边风格）。
 // Crepe 自己那几颗图标（bold/italic/…）是「实心字形」，靠 toolbar.css 的
 // `.toolbar-item svg { fill: var(--crepe-color-outline) }` 上色；这套 Lucide 描边图标
@@ -106,7 +144,7 @@ export function featureConfigsFor(opts: CrepeSetupOptions): CrepeFeatureConfig {
   const configs: CrepeFeatureConfig = {
     // 显式给出 Crepe 默认用的同一份语言表：打印页按它预加载语言（spec §3.4 第 3 条），
     // 两边必须是同一批 LanguageDescription 对象，预加载才命中 Crepe 自己那次 load()。
-    [Crepe.Feature.CodeMirror]: { languages },
+    [Crepe.Feature.CodeMirror]: { languages, renderPreview: mermaidPreview },
     // 相对路径图片按 md 所在目录解析（spec §2.6）。一个 proxyDomURL 同时管块级图与行内图
     // （Crepe 的 image-block 特性把它分别写进两者的配置）。
     [Crepe.Feature.ImageBlock]: { proxyDomURL: (url: string) => resolveImageSrc(url, opts.mdPath) },
@@ -149,7 +187,12 @@ export function featureConfigsFor(opts: CrepeSetupOptions): CrepeFeatureConfig {
 
         builder.addGroup('kydog-comment', '批注').addItem('comment', {
           icon: appendToolbarTip(COMMENT_ICON_SVG, toolbarTipFor('comment', platform) ?? '评论'),
-          active: () => false,
+          active: (ctx) => {
+            const state = ctx.get(editorViewCtx).state;
+            const { from, to, empty } = state.selection;
+            if (empty) return false;
+            return commentMarkRanges(state).some((range) => range.from < to && range.to > from);
+          },
           onRun: () => opts.onCommentClick(),
         });
       },
@@ -183,6 +226,7 @@ export function createCrepe(opts: CrepeSetupOptions): Crepe {
     featureConfigs: featureConfigsFor(opts),
   });
   crepe.editor.use(mathInlineNodeViewPlugin);
+  crepe.editor.use(codePreviewLifecyclePlugin(opts.mode));
   crepe.editor.use(imageBlockAltSchema);
   crepe.editor.use(remarkHighlightPlugin).use(highlightSchema);
   if (opts.mode === 'edit') crepe.editor.use(toggleHighlightCommand).use(highlightInputRule).use(highlightSourceInputRules);

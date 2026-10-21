@@ -10,6 +10,9 @@ import { useThreadsStore } from '../../stores/threadsStore';
 import { useIdentityStore } from '../../stores/identityStore';
 import { groupBlocks } from './groupBlocks';
 import { collectFileCards } from './fileCards';
+import { ResearchTaskCard } from './ResearchTaskCard';
+import { XResearchProgressCard } from './XResearchProgressCard';
+import type { XResearchTaskAnchor } from './xResearchTaskAnchor';
 
 /**
  * `settled`：这条消息**本轮已经结束**了吗。
@@ -29,15 +32,20 @@ type Props = {
   blocks: AssistantBlock[];
   settled: boolean;
   createdAt?: string;
+  researchTaskRunIds?: ReadonlySet<string>;
+  /** 这一条消息上要挂的 X 研究卡（一个回合一张，见 `xResearchTaskAnchor`）。 */
+  xResearchAnchors?: readonly XResearchTaskAnchor[];
 };
 
-export function AssistantMessage({ threadId, messageId, blocks, settled, createdAt }: Props) {
+export function AssistantMessage({ threadId, messageId, blocks, settled, createdAt,
+  researchTaskRunIds, xResearchAnchors }: Props) {
   const projectPath = useThreadsStore((s) => {
     const t = Object.values(s.threadsByProject).flat().find((x) => x.id === threadId);
     return t?.projectPath ?? null;
   });
   const agentName = useIdentityStore((s) => s.agentName);
-  const groups = useMemo(() => groupBlocks(blocks), [blocks]);
+  const groups = useMemo(() => groupBlocks(blocks, researchTaskRunIds, xResearchAnchors),
+    [blocks, researchTaskRunIds, xResearchAnchors]);
   // 卡片延到本轮结束才出。
   //
   // 落盘那一刻就出卡片的话，用户点开的是半成品：learning-deck 的模板是 `cp` 之后
@@ -79,6 +87,17 @@ export function AssistantMessage({ threadId, messageId, blocks, settled, created
           }
           if (g.kind === 'text') {
             return <MarkdownBlock key={`tx-${i}`} content={g.block.text} />;
+          }
+          if (g.kind === 'research_task') {
+            return <ResearchTaskCard key={`research-${g.researchRunId}`} threadId={threadId}
+              researchRunId={g.researchRunId} />;
+          }
+          if (g.kind === 'x_research') {
+            return <XResearchProgressCard key={`x-research-${g.groupKey}`} threadId={threadId}
+              groupKey={g.groupKey} researchRunIds={g.researchRunIds} />;
+          }
+          if (g.kind === 'report_file') {
+            return <FileCard key={`report-${i}`} path={g.path} projectPath={projectPath} size={null} />;
           }
           // 错误是**这一轮自己的块**，只在带着它的这一条里显示。别改回读线程级的
           // runState：那是「这条对话最近一次运行出错了没有」，会把之前每一条正常回复

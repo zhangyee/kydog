@@ -32,25 +32,38 @@ describe('researchService', () => {
     vi.restoreAllMocks();
   });
 
+  it('save returns committed flag facts, failed write preserves flag and env', async () => {
+    const input = { presets: { NCBI_API_KEY: 'saved' }, custom: [], xResearchEnabled: true };
+    expect(await researchService.save(input)).toEqual({ research: input, xResearchEnabledChanged: true });
+    expect(process.env.NCBI_API_KEY).toBe('saved');
+    expect((await researchService.save(input)).xResearchEnabledChanged).toBe(false);
+    const spy = vi.spyOn(settingsService, 'replaceResearch').mockRejectedValueOnce(new Error('disk full'));
+    await expect(researchService.save({ ...input, presets: { NCBI_API_KEY: 'lost' }, xResearchEnabled: false })).rejects.toThrow('disk full');
+    expect(await researchService.get()).toEqual(input);
+    expect(process.env.NCBI_API_KEY).toBe('saved');
+    spy.mockRestore();
+    expect((await researchService.save({ ...input, xResearchEnabled: false })).xResearchEnabledChanged).toBe(true);
+  });
+
   it('save：落盘 + 写 env，返回归一化结果', async () => {
     const out = await researchService.save({
       presets: { NCBI_API_KEY: '  k1  ', UNPAYWALL_EMAIL: 'a@b.com' },
-      custom: [],
+      custom: [], xResearchEnabled: false,
     });
-    expect(out.presets).toEqual({ NCBI_API_KEY: 'k1', UNPAYWALL_EMAIL: 'a@b.com' });
+    expect(out.research.presets).toEqual({ NCBI_API_KEY: 'k1', UNPAYWALL_EMAIL: 'a@b.com' });
     expect(process.env.NCBI_API_KEY).toBe('k1');
     const onDisk = await settingsService.get();
     expect(onDisk.research.presets.NCBI_API_KEY).toBe('k1');
   });
 
   it('get：读回落盘的值', async () => {
-    await researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [] });
+    await researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [], xResearchEnabled: false });
     expect((await researchService.get()).presets).toEqual({ NCBI_API_KEY: 'k1' });
   });
 
   it('校验失败：抛 settings.invalid，且不写盘不写 env', async () => {
     await expect(
-      researchService.save({ presets: { UNPAYWALL_EMAIL: 'not-an-email' }, custom: [] }),
+      researchService.save({ presets: { UNPAYWALL_EMAIL: 'not-an-email' }, custom: [], xResearchEnabled: false }),
     ).rejects.toMatchObject({ code: 'settings.invalid' });
     expect(process.env.UNPAYWALL_EMAIL).toBeUndefined();
     expect((await settingsService.get()).research.presets).toEqual({});
@@ -60,17 +73,17 @@ describe('researchService', () => {
   // 顺序一旦颠倒，env 会先被写上，然后 update 抛错 —— 用户当前会话生效、
   // 重启就没了，是最难排查的一类不一致。
   it('落盘失败时不写 env', async () => {
-    const spy = vi.spyOn(settingsService, 'update').mockRejectedValue(new Error('disk full'));
+    const spy = vi.spyOn(settingsService, 'replaceResearch').mockRejectedValue(new Error('disk full'));
     await expect(
-      researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [] }),
+      researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [], xResearchEnabled: false }),
     ).rejects.toThrow('disk full');
     expect(process.env.NCBI_API_KEY).toBeUndefined();
     spy.mockRestore();
   });
 
   it('清空已存的值：盘上删掉，env 也删掉', async () => {
-    await researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [] });
-    await researchService.save({ presets: { NCBI_API_KEY: '' }, custom: [] });
+    await researchService.save({ presets: { NCBI_API_KEY: 'k1' }, custom: [], xResearchEnabled: false });
+    await researchService.save({ presets: { NCBI_API_KEY: '' }, custom: [], xResearchEnabled: false });
     expect((await settingsService.get()).research.presets).toEqual({});
     expect('NCBI_API_KEY' in process.env).toBe(false);
   });
@@ -78,9 +91,9 @@ describe('researchService', () => {
   it('custom 条目的 save/get 往返，env 也写上', async () => {
     const out = await researchService.save({
       presets: {},
-      custom: [{ name: 'MY_KEY', kind: 'key', value: '  v1  ' }],
+      custom: [{ name: 'MY_KEY', kind: 'key', value: '  v1  ' }], xResearchEnabled: false,
     });
-    expect(out.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
+    expect(out.research.custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
     expect(process.env.MY_KEY).toBe('v1');
     expect((await researchService.get()).custom).toEqual([{ name: 'MY_KEY', kind: 'key', value: 'v1' }]);
   });

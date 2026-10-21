@@ -8,7 +8,7 @@ import { launchKydog, teardown, seedSettings, seedSamplePackage, newThread, type
  * 左栏的 project / thread 操作与它们的落盘，最后一条重启一次验持久化。
  *
  * 串行共用一次启动（外加末尾那一次重启）：每一步都在前一步留下的状态上走 ——
- * A 被改名、B 被置顶、B 被「全部收起」后留着收起、t-x 被删 —— 最后一条重启后逐项核对。
+ * A 被改名、B 被置顶、B 被「全部收起」后留着收起、doomed 被删 —— 最后一条重启后逐项核对。
  * t-arc1..3 被归档（1 先归档再撤销，随后三条一起批量归档）。
  * 顺序不能打乱。
  */
@@ -16,6 +16,8 @@ test.describe.configure({ mode: 'serial' });
 
 const LONG_TITLE = '会议纪要：关于下一阶段科研数据管线与多智能体协作流程的详细讨论与后续待办梳理';
 const RENAMED_PROJECT = '我的研究';
+// Match ThreadService.create: downstream research cleanup requires a UUID.
+const DOOMED_THREAD_ID = '00000000-0000-4000-8000-000000000004';
 const TAB_FILES = Array.from({ length: 7 }, (_, i) => `tab-${String(i + 1).padStart(2, '0')}-long-document-name.md`);
 
 let launched: LaunchedApp;
@@ -25,6 +27,10 @@ let dirB = '';
 let nameB = '';
 /** A 的显示名：改名那一步之后换成 RENAMED_PROJECT（ProjectRow 的 testid 跟着显示名走）。 */
 let nameA = '';
+const rendererErrors: string[] = [];
+function captureRendererErrors(): void {
+  launched.page.on('console', message => { if (message.type() === 'error') rendererErrors.push(message.text()); });
+}
 
 test.beforeAll(async () => {
   dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-proj-A-'));
@@ -50,7 +56,7 @@ test.beforeAll(async () => {
           t('t-a', dirA, 'thread-A', '2026-04-04'),
           t('t-long', dirA, LONG_TITLE, '2026-04-03'),
           t('t-short', dirA, '短', '2026-04-02'),
-          t('t-x', dirA, 'doomed', '2026-04-01'),
+          t(DOOMED_THREAD_ID, dirA, 'doomed', '2026-04-01'),
           t('t-arc1', dirA, 'arc-1', '2026-03-30'),
           t('t-arc2', dirA, 'arc-2', '2026-03-29'),
           t('t-arc3', dirA, 'arc-3', '2026-03-28'),
@@ -59,6 +65,17 @@ test.beforeAll(async () => {
       }, null, 2));
     },
   });
+  captureRendererErrors();
+});
+
+// eslint-disable-next-line no-empty-pattern
+test.afterEach(async ({}, info) => {
+  if (info.status === info.expectedStatus) return;
+  for (const [name, file] of [['index.json', 'index.json'], ['main.log', 'logs/main.log']]) {
+    const body = await fs.readFile(path.join(home, '.kydog', file)).catch(() => Buffer.from('unavailable'));
+    await info.attach(name, {body, contentType: 'text/plain'});
+  }
+  await info.attach('renderer-errors', {body: rendererErrors.join('\n'), contentType: 'text/plain'});
 });
 
 test.afterAll(async () => {
@@ -256,7 +273,7 @@ test('课题预览：隐藏的当前会话在手动收起重开后恢复前五�
   await page.getByTestId(`project-toggle-${nameA}`).click();
   await expect(rows).toHaveCount(5);
   expect(await rows.evaluateAll(els => els.map(el => el.getAttribute('data-testid'))))
-    .toEqual(['thread-t-a', 'thread-t-long', 'thread-t-short', 'thread-t-x', 'thread-t-arc1']);
+    .toEqual(['thread-t-a', 'thread-t-long', 'thread-t-short', `thread-${DOOMED_THREAD_ID}`, 'thread-t-arc1']);
   await expect(more).toBeVisible();
   await expect(page.getByTestId('tab-t-arc2')).toBeVisible();
   await more.click();
@@ -271,17 +288,29 @@ test('35-marquee: 长标题 hover 滚动，短标题不滚，离开复位', asyn
   const shortRow = page.getByTestId('thread-t-short');
   const shortScroll = page.getByTestId('thread-title-scroll-t-short');
 
+  await longRow.evaluate(el => {
+    const row = el as HTMLElement;
+    row.dataset.hoverEnters = '0'; row.dataset.hoverLeaves = '0';
+    row.addEventListener('mouseenter', () => { row.dataset.hoverEnters = String(Number(row.dataset.hoverEnters) + 1); });
+    row.addEventListener('mouseleave', () => { row.dataset.hoverLeaves = String(Number(row.dataset.hoverLeaves) + 1); });
+  });
+
   // hover 长标题 → 内层滚动节点出现、过了起始延迟后位移成负值。失败时把页面态 JSON 落进
   // Received（hover 链是否成立、媒体层有没有残留 reduce）。
+  // 在稳定的行上原子读取短命 span；先 count 再 locator.evaluate 会在 span 消失后
+  // 陷入 locator 的等待，让 poll 无法再次施加 hover（trace 已复现）。
   await expect.poll(async () => {
     await longRow.hover();
-    if (await longScroll.count() === 0) {
-      return longRow.evaluate((el) => JSON.stringify({
+    return longRow.evaluate((el) => {
+      const scroll = el.querySelector('[data-testid="thread-title-scroll-t-long"]') as HTMLElement | null;
+      return JSON.stringify({
         hoverChain: el.matches(':hover'),
         reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
-      }));
-    }
-    return longScroll.evaluate((el) => (el as HTMLElement).style.transform);
+        visibility: document.visibilityState, focus: document.hasFocus(),
+        enters: (el as HTMLElement).dataset.hoverEnters, leaves: (el as HTMLElement).dataset.hoverLeaves,
+        transform: scroll?.style.transform, width: scroll?.parentElement?.clientWidth, overflow: scroll?.parentElement?.scrollWidth,
+      });
+    });
   }).toMatch(/translateX\(-\d/);
 
   // 移到短标题行：先确认它的 hover 态真的生效了（与上面长标题同一个 hover 驱动），
@@ -358,28 +387,26 @@ test('18-projects-sidebar: pin project', async () => {
   await expect(page.getByTestId(`project-toggle-${nameB}`).getByLabel('已置顶')).toBeVisible();
 });
 
-test('34-thread-rename: 删除点取消则会话保留', async () => {
+test('10-delete: cancellation preserves the thread; confirmation deletes only that thread', async () => {
   const { page } = launched;
-  const row = page.getByTestId('thread-t-x');
-  await openRowMenu(page, 't-x');
-  await page.getByTestId('thread-delete-t-x').click();
+  const row = page.getByTestId(`thread-${DOOMED_THREAD_ID}`);
+  await openRowMenu(page, DOOMED_THREAD_ID);
+  await page.getByTestId(`thread-delete-${DOOMED_THREAD_ID}`).click();
   await expect(page.getByTestId('confirm-dialog')).toBeVisible();
   await page.getByTestId('confirm-dialog-cancel').click();
   await expect(page.getByTestId('confirm-dialog')).toBeHidden();
   await expect(row).toBeVisible();
-  expect((await readIndex()).threads.map((t: { id: string }) => t.id)).toContain('t-x');
-});
+  expect((await readIndex()).threads.map((t: { id: string }) => t.id)).toContain(DOOMED_THREAD_ID);
 
-test('10-delete: removes thread from index', async () => {
-  const { page } = launched;
-  const row = page.getByTestId('thread-t-x');
-  await openRowMenu(page, 't-x');
-  await page.getByTestId('thread-delete-t-x').click();
+  // Same-case positive control above proves both the row and persisted ID exist.
+  // Now confirm the same operation and check both disappear.
+  await openRowMenu(page, DOOMED_THREAD_ID);
+  await page.getByTestId(`thread-delete-${DOOMED_THREAD_ID}`).click();
   await expect(page.getByTestId('confirm-dialog')).toBeVisible();
   await page.getByTestId('confirm-dialog-confirm').click();
   await expect(row).toBeHidden();
   await expect.poll(async () => (await readIndex()).threads.map((t: { id: string }) => t.id))
-    .toEqual(expect.not.arrayContaining(['t-x']));
+    .toEqual(expect.not.arrayContaining([DOOMED_THREAD_ID]));
   // 正向：删的只是那一条。
   expect((await readIndex()).threads.map((t: { id: string }) => t.id)).toContain('t-long');
 });
@@ -479,6 +506,7 @@ test('07/50/53c/18-pin: 重启之后主题、置顶、收起、改名都在；�
   expect(Object.keys(persisted.ui)).not.toContain('showAllThreadProjects');
   await teardown(launched);
   launched = await launchKydog({ kydogHome: home });
+  captureRendererErrors();
   const p2 = launched.page;
 
   await expect(p2.getByTestId(`project-${dirA}`).locator('[data-testid^="thread-"][class~="group"]')).toHaveCount(5);

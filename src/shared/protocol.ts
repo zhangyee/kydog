@@ -14,6 +14,9 @@ import type { PdfAnnotationsFile } from './pdfSidecar';
 import type { TranslatedDoc, PageLine, Term, TranslateGroup } from './zhSidecar';
 import type { MdExportOptions } from './mdExport';
 import type { TrashFilesArgs, TrashFilesResult } from './files';
+import type { ResearchBudget, ResearchUsage, ResearchRunIndex, ResearchTaskStatus, ResearchEvidenceExcerpt } from './webResearch';
+import type { WebResearchTaskSnapshot } from './webResearchTask';
+import type { XResearchTaskSnapshot } from './xResearchTask';
 
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
@@ -96,6 +99,27 @@ export type RpcCall =
   | { method: 'thread.loadHistory'; args: { threadId: string }; result: Message[] }
   | { method: 'thread.send'; args: { threadId: string; content: string; images?: MessageImage[] }; result: { runId: string } }
   | { method: 'thread.abort'; args: { threadId: string }; result: void }
+  | { method: 'webResearch.list'; args: { threadId: string }; result: ResearchRunIndex[] }
+  | { method: 'webResearch.get'; args: { threadId: string; researchRunId: string }; result: ResearchRunIndex }
+  | { method: 'webResearch.evidence'; args: { threadId: string; researchRunId: string; evidenceId: string }; result: ResearchEvidenceExcerpt }
+  | { method: 'webResearch.taskList'; args: { threadId: string }; result: WebResearchTaskSnapshot[] }
+  | { method: 'webResearch.taskGet'; args: { threadId: string; researchRunId: string }; result: WebResearchTaskSnapshot }
+  | { method: 'webResearch.taskSiteIcon'; args: { threadId: string; researchRunId: string; domain: string };
+      result: { domain: string; dataUrl?: string } }
+  | { method: 'webResearch.taskInspect'; args: { threadId: string; researchRunId: string;
+      view: 'overview' | 'sources' | 'claims' | 'evidence'; cursor?: string; pageSize?: number;
+      angleId?: string; status?: import('./webResearchTask').WebResearchSourceState;
+      evidenceIds?: string[] }; result: { snapshot: WebResearchTaskSnapshot; items: unknown[]; nextCursor?: string } }
+  // ── x research 任务（spec §4.2、§5.3）──
+  // 与上面 webResearch.task* 同形：卡片的数据源是快照，`inspect` 是它背后那批记录的另一种切法。
+  // 四条都只读协议上写明的字段（`inspect` 显式投影 view/cursor/pageSize，不把 args 整个递下去）。
+  // `taskCancel` 调的就是工具 `cancel` 动作调的那个服务方法 —— 两个表面共用一处实现，不会漂。
+  | { method: 'xResearch.taskList'; args: { threadId: string }; result: XResearchTaskSnapshot[] }
+  | { method: 'xResearch.taskGet'; args: { threadId: string; researchRunId: string }; result: XResearchTaskSnapshot }
+  | { method: 'xResearch.taskInspect'; args: { threadId: string; researchRunId: string;
+      view: 'rows' | 'deliveries' | 'failures'; cursor?: string; pageSize?: number };
+      result: { snapshot: XResearchTaskSnapshot; items: unknown[]; nextCursor?: string } }
+  | { method: 'xResearch.taskCancel'; args: { threadId: string; researchRunId: string }; result: XResearchTaskSnapshot }
   | { method: 'project.openInOS'; args: { projectPath: string }; result: void }
   | { method: 'project.update'; args: { projectPath: string; label?: string; pinned?: boolean }; result: Project }
   | { method: 'thread.update'; args: { threadId: string; title?: string; pinned?: boolean; projectPath?: string; modelOverride?: { providerId: string; modelId: string } | null }; result: Thread }
@@ -266,6 +290,17 @@ export const RPC_METHODS = [
   'thread.loadHistory',
   'thread.send',
   'thread.abort',
+  'webResearch.list',
+  'webResearch.get',
+  'webResearch.evidence',
+  'webResearch.taskList',
+  'webResearch.taskGet',
+  'webResearch.taskSiteIcon',
+  'webResearch.taskInspect',
+  'xResearch.taskList',
+  'xResearch.taskGet',
+  'xResearch.taskInspect',
+  'xResearch.taskCancel',
   'project.openInOS',
   'project.update',
   'thread.update',
@@ -357,6 +392,15 @@ export type RuntimeEvent =
   | { topic: 'run.tool_call_start'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; name: string; command?: string } }
   | { topic: 'run.tool_call_chunk'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; stream: 'stdout' | 'stderr'; chunk: string } }
   | { topic: 'run.tool_call_end'; payload: { threadId: string; runId: string; messageId: string; toolCallId: string; status: 'ok' | 'failed'; exitCode?: number } }
+  | { topic: 'run.research_progress'; payload: { threadId: string; runId: string; messageId: string;
+      toolCallId: string; researchRunId: string; taskId: string;
+      stage: 'collect' | 'fetch' | 'extract' | 'persist'; status: ResearchTaskStatus;
+      budget: ResearchBudget; usage: ResearchUsage } }
+  | { topic: 'webResearch.taskUpdated'; payload: WebResearchTaskSnapshot }
+  // x research 的快照广播。**发送点不在本任务**：Task 9 把任务 service 接进 `createSession`
+  // 时，用它的 `onUpdate` 经 AgentService 广播（与上面 webResearch 那条同一条路）。
+  // 在那之前它登记在 `src/main/ipc/eventLedger.test.ts` 的 `PENDING_EMITTER` 里。
+  | { topic: 'xResearch.taskUpdated'; payload: XResearchTaskSnapshot }
   | { topic: 'run.parallel_group'; payload: { threadId: string; runId: string; messageId: string; toolCallIds: string[]; parallelGroupId: string } }
   // errorMessage：这一轮以错误结束时的原文，**只在真有值时带这个键**。渲染层据此在这一轮里
   // 落一个 error 块 —— 一个字都没输出就失败时，这是这一轮唯一的内容。
@@ -456,6 +500,9 @@ export const EVENT_TOPICS = [
   'run.tool_call_start',
   'run.tool_call_chunk',
   'run.tool_call_end',
+  'run.research_progress',
+  'webResearch.taskUpdated',
+  'xResearch.taskUpdated',
   'run.parallel_group',
   'run.message_end',
   'run.ask_start',
@@ -502,6 +549,7 @@ export const RUN_EVENT_TOPICS = [
   'run.tool_call_start',
   'run.tool_call_chunk',
   'run.tool_call_end',
+  'run.research_progress',
   'run.parallel_group',
   'run.message_end',
   'run.ask_start',

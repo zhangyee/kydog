@@ -5,6 +5,7 @@ import INTERACT_SOURCE from './injected/interact.js?raw';
 import LOGIN_FILL_SOURCE from './injected/loginFill.js?raw';
 import { compileExtractPlan, extractExpression, type ExtractResult } from './extract';
 import type { AxSnapshot } from './snapshot';
+import { BrowserScrollAcknowledgementError } from './actions';
 import { ZERO_CURSOR } from './consoleLog';
 import { MAX_AGENT_TABS } from './tabRegistry';
 
@@ -30,6 +31,9 @@ const H = vi.hoisted(() => {
       return this;
     }
     once(ev: string, fn: Fn): this { return this.on(ev, fn); }
+    off(ev: string, fn: Fn): this {
+      this.handlers.set(ev, (this.handlers.get(ev) ?? []).filter(item => item !== fn)); return this;
+    }
     /** 让用例扮演 Chromium：把一个真实事件打进来。 */
     fire(ev: string, ...args: unknown[]): void {
       for (const fn of [...(this.handlers.get(ev) ?? [])]) (fn as (...a: unknown[]) => void)(...args);
@@ -57,6 +61,7 @@ const H = vi.hoisted(() => {
   }
 
   let nextWcId = 100;
+  let focusedWebContentsId: number | null = null;
   class FakeWebContents extends Emitter {
     readonly debugger = new FakeDebugger();
     /** 真 WebContents 有的那个进程内唯一 id。`webRequest` 的
@@ -66,6 +71,7 @@ const H = vi.hoisted(() => {
     url = '';
     title = '';
     loading = false;
+    focusWorks = true;
     /** 关联的渲染进程 pid。**默认 0** —— 与真实的全新 WebContentsView 一致：
      *  还没 load 过任何页面时它就是 0，那时发 CDP 命令会让主进程 SIGSEGV（实测）。 */
     osPid = 0;
@@ -93,12 +99,22 @@ const H = vi.hoisted(() => {
       getActiveIndex: () => this.historyIndex,
       length: () => this.historyEntries.length,
       getEntryAtIndex: (i: number) => ({ url: this.historyEntries[i], title: '' }),
+      getAllEntries: () => this.historyEntries.map(url => ({ url, title: '' })),
+      removeEntryAtIndex: (i: number) => {
+        if (i === this.historyIndex || i < 0 || i >= this.historyEntries.length) return false;
+        this.historyEntries.splice(i, 1); if (this.historyIndex > i) this.historyIndex--; return true;
+      },
     };
+    pointerImpl: (code: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
+    captureImpl: () => Promise<{ isEmpty(): boolean }> = () => Promise.resolve({ isEmpty: () => false });
+    capturePage(): Promise<{ isEmpty(): boolean }> { return this.captureImpl(); }
     isDestroyed(): boolean { return this.destroyed; }
     getURL(): string { return this.url; }
     getTitle(): string { return this.title; }
     isLoading(): boolean { return this.loading; }
     getOSProcessId(): number { return this.osPid; }
+    focus(): void { if (this.focusWorks) focusedWebContentsId = this.id; }
+    isFocused(): boolean { return focusedWebContentsId === this.id; }
     stop(): void { this.stopCalls += 1; }
     reload(): void { this.reloadCalls += 1; }
     close(): void { this.closeCalls += 1; this.destroyed = true; }
@@ -110,7 +126,14 @@ const H = vi.hoisted(() => {
     loadURL(u: string): Promise<unknown> { this.loadCalls.push(u); this.url = u; return this.loadImpl(); }
     executeJavaScriptInIsolatedWorld(worldId: number, scripts: Array<{ code: string }>): Promise<unknown> {
       this.isolated.push({ worldId, code: scripts[0].code });
-      return this.isolatedImpl(scripts[0].code);
+      const code = scripts[0].code;
+      // These tests substitute Chromium; pointer guard behavior is separately
+      // tested against real retained DOM references in pointerGuard.test.ts.
+      if (code.includes('kydog.pointerGuard') && !code.includes('const measured =')) return this.pointerImpl(code);
+      return this.isolatedImpl(code).then(value => {
+        if (code.includes('const measured =') && value && typeof value === 'object') return { ...value, pointerGuard: { ok: true } };
+        return value;
+      });
     }
   }
 
@@ -122,6 +145,7 @@ const H = vi.hoisted(() => {
     bounds: { x: number; y: number; width: number; height: number } | null = null;
     constructor(readonly options: unknown) { views.push(this); }
     setVisible(v: boolean): void { this.visible = v; }
+    getVisible(): boolean { return this.visible === true; }
     setBounds(b: { x: number; y: number; width: number; height: number }): void { this.bounds = b; }
   }
 
@@ -170,9 +194,15 @@ const H = vi.hoisted(() => {
     views, logs, emitted,
     FakeWebContentsView, FakeBrowserWindow, FakeSession,
     session: { fromPartition: () => sess },
+    webContents: {
+      getFocusedWebContents: () => views
+        .map((view) => view.webContents)
+        .find((wc) => wc.id === focusedWebContentsId) ?? null,
+    },
     getSess: () => sess,
     reset: () => {
       views.length = 0; logs.length = 0; emitted.length = 0;
+      focusedWebContentsId = null;
       sess = new FakeSession();
     },
   };
@@ -182,6 +212,7 @@ vi.mock('electron', () => ({
   BrowserWindow: H.FakeBrowserWindow,
   WebContentsView: H.FakeWebContentsView,
   session: H.session,
+  webContents: H.webContents,
 }));
 
 vi.mock('../log', () => ({
@@ -1356,6 +1387,25 @@ function fireDownload(url: string, wc: ReturnType<typeof wcOf>, chain: string[] 
 }
 
 describe('NavigationTracker 的输入全部接上（§E3）', () => {
+  it('research resolve 忽略引擎落地页，等主 frame 真正离开引擎域', async () => {
+    const { svc } = make();
+    const p = svc.open({ url: 'https://www.bing.com/ck/a?id=1', settleOutsideHost: 'bing.com' });
+    await flush();
+    const wc = wcOf();
+    wc.fire('did-navigate', {}, 'https://www.bing.com/ck/a?id=1', 200);
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    wc.fire('did-start-navigation', {
+      url: 'https://github.com/example/repo', isMainFrame: true, isSameDocument: false,
+    });
+    wc.fire('did-navigate', {}, 'https://github.com/example/repo', 200);
+    const result = await p;
+    expect(result.nav.outcome).toEqual({ kind: 'ok',
+      finalUrl: 'https://github.com/example/repo', httpStatusCode: 200 });
+  });
+
   it('被 URL 闸拦下 → blocked，不必等满时限', async () => {
     const { svc } = make();
     await openTab(svc);
@@ -1404,7 +1454,8 @@ describe('NavigationTracker 的输入全部接上（§E3）', () => {
     let done = false;
     let outcome: unknown;
     void p.then((r) => { outcome = r.nav.outcome; done = true; });
-    await flush();
+    // Lifecycle Promise.race/finally adds microtasks; no fake time advances here.
+    await flush(16);
     expect(done).toBe(true);          // 一秒都没推进就定论了，不必等满时限
     expect(prevented).toBe(1);
     expect(outcome).toMatchObject({ kind: 'blocked' });
@@ -2464,16 +2515,16 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
     expect(pageScales(wc).at(-1)).toBe(2);
 
     // 从这一刻起，视口命令**挂在途中**，由用例决定什么时候落地
-    let release: (() => void) | null = null;
+    const releases: Array<() => void> = [];
     wc.debugger.respond = () => (wc.debugger.sent.at(-1)!.method === 'Emulation.setDeviceMetricsOverride'
-      ? new Promise<unknown>((r) => { release = () => r({}); })
+      ? new Promise<unknown>((r) => { releases.push(() => r({})); })
       : Promise.resolve({}));
     wc.isolatedImpl = () => Promise.resolve(okMeasure());
     wc.isolated.length = 0;
 
     // agent 的下一次动作：markDriving 把档位改回 fit 并 void 一发，随后进 dispatch
     const done: string[] = [];
-    void svc.withAgentDriving(id, 'thread-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
+    const driving = svc.withAgentDriving(id, 'thread-1', () => svc.dispatch(id, { kind: 'click', selector: '#a' }, null))
       .then(() => done.push('ok'), (e: unknown) => done.push(`err:${String(e)}`));
     await flush();
 
@@ -2482,10 +2533,9 @@ describe('dispatch：碰页面之前先把视口坐实（核心面 I-2）', () =
       + 'emulation scale 也还没坐实，点击会静默打偏').toBe(0);
     expect(overrides(wc).at(-1)!.params.width, '恢复的那一档必须是 1280').toBe(1280);
 
-    release!();
-    await flush();
-    expect(wc.isolated.length, '视口落地之后才该去量').toBeGreaterThan(0);
-    await flush();
+    for (const release of releases) release();
+    await driving;
+    expect(wc.isolated.length, '每一发视口落地之后才该去量').toBeGreaterThan(0);
     expect(done).toEqual(['ok']);
   });
 });
@@ -2528,6 +2578,138 @@ describe('dispatch：派发之前的两道闸（实测得来）', () => {
     expect(inputCmds(wc)).toEqual([]);
   });
 
+  it('隐藏标签发 Enter：先得到 focus emulation ACK，再派发按键，不要求页面可见', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    expect(H.views[0].getVisible(), '正向前提：浏览器侧栏从未打开，标签不可见').toBe(false);
+
+    await expect(svc.dispatch(id, { kind: 'key', key: 'Enter' }, null)).resolves.toBe('按下 Enter');
+    const methods = wc.debugger.sent.map((command) => command.method);
+    expect(methods.filter((method) => method === 'Emulation.setFocusEmulationEnabled')).toHaveLength(1);
+    expect(methods.filter((method) => method === 'Input.dispatchKeyEvent')).toHaveLength(2);
+    expect(methods.indexOf('Emulation.setFocusEmulationEnabled'))
+      .toBeLessThan(methods.indexOf('Input.dispatchKeyEvent'));
+    expect(wc.debugger.sent.find((command) => command.method === 'Emulation.setFocusEmulationEnabled')?.params)
+      .toEqual({ enabled: true });
+  });
+
+  it.each(['click', 'type', 'hover'] as const)(
+    '%s：focus emulation ACK 必须发生在定位和任何 Input 命令之前',
+    async (kind) => {
+      const { svc } = make();
+      const { id, wc } = await dispatchableTab(svc);
+      wc.isolatedImpl = (code) => {
+        const op = opOf(code);
+        if (op === 'measure') return Promise.resolve(okMeasure({ tag: kind === 'type' ? 'input' : 'button' }));
+        if (op === 'focusSelect') return Promise.resolve({ ok: true, focused: true, selected: true });
+        return Promise.resolve({ ok: true });
+      };
+      const action = kind === 'type'
+        ? { kind: 'type' as const, selector: '#q', text: '石墨烯' }
+        : kind === 'click'
+          ? { kind: 'click' as const, selector: '#q' }
+          : { kind: 'hover' as const, selector: '#q' };
+
+      await svc.dispatch(id, action, null);
+      const focusIndex = wc.debugger.sent.findIndex(
+        (command) => command.method === 'Emulation.setFocusEmulationEnabled',
+      );
+      const inputIndex = wc.debugger.sent.findIndex((command) => command.method.startsWith('Input.'));
+      expect(focusIndex).toBeGreaterThanOrEqual(0);
+      expect(inputIndex).toBeGreaterThan(focusIndex);
+      expect(wc.isolated[0]?.code, 'focus ACK 后才允许运行页面定位脚本').toContain('"op":"measure"');
+    },
+  );
+
+  it('focus emulation 被 Chromium 拒绝时明确失败，且不发送任何 Input 命令', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    wc.isolatedImpl = () => Promise.resolve(okMeasure());
+    await svc.dispatch(id, { kind: 'click', selector: '#search' }, null);
+    expect(inputCmds(wc).length, '正向前提：同一页面原本确实能派发点击').toBeGreaterThan(0);
+
+    wc.debugger.sent.length = 0;
+    wc.debugger.respond = async (method) => {
+      if (method === 'Emulation.setFocusEmulationEnabled') throw new Error('focus emulation rejected');
+      return {};
+    };
+    await expect(svc.dispatch(id, { kind: 'click', selector: '#search' }, null))
+      .rejects.toMatchObject({
+        code: 'browser.input_not_delivered',
+        cause: expect.objectContaining({ message: 'focus emulation rejected' }),
+      });
+    expect(inputCmds(wc)).toEqual([]);
+  });
+
+  it('操作后台标签时保持用户当前标签的活动、可见与焦点状态', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [a, b] = svc.getState().tabs.map((tab) => tab.id);
+    const [viewA, viewB] = H.views;
+    const wcA = viewA.webContents;
+    const wcB = viewB.webContents;
+    svc.activate(a);
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    wcA.focus();
+    wcB.isolatedImpl = () => Promise.resolve(okMeasure());
+    const during: Array<{ active: string | null; aVisible: boolean; bVisible: boolean; aFocused: boolean }> = [];
+    wcB.debugger.respond = async (method) => {
+      if (method === 'Input.dispatchMouseEvent') {
+        during.push({
+          active: svc.getState().activeTabId,
+          aVisible: viewA.getVisible(),
+          bVisible: viewB.getVisible(),
+          aFocused: wcA.isFocused(),
+        });
+      }
+      return {};
+    };
+
+    await svc.dispatch(b, { kind: 'click', selector: '#search' }, null);
+    expect(during).toEqual([
+      { active: a, aVisible: true, bVisible: false, aFocused: true },
+      { active: a, aVisible: true, bVisible: false, aFocused: true },
+    ]);
+    expect(svc.getState().activeTabId).toBe(a);
+  });
+
+  it('不同标签可并行等待 focus ACK；同一标签仍由既有 enqueue 保序', async () => {
+    const { svc } = make();
+    await openTab(svc, 'https://a.example/');
+    await openTab(svc, 'https://b.example/');
+    const [a, b] = svc.getState().tabs.map((tab) => tab.id);
+    const [wcA, wcB] = H.views.map((view) => view.webContents);
+    wcA.isolatedImpl = () => Promise.resolve(okMeasure());
+    let releaseA!: () => void;
+    let focusAStarted = false;
+    wcA.debugger.respond = (method) => {
+      if (method === 'Emulation.setFocusEmulationEnabled' && !focusAStarted) {
+        focusAStarted = true;
+        return new Promise((resolve) => { releaseA = () => resolve({}); });
+      }
+      return Promise.resolve({});
+    };
+
+    const firstA = svc.enqueue(a, () => svc.dispatch(a, { kind: 'click', selector: '#search' }, null));
+    const secondA = svc.enqueue(a, () => svc.dispatch(a, { kind: 'key', key: 'Enter' }, null));
+    const actionB = svc.enqueue(b, () => svc.dispatch(b, { kind: 'key', key: 'Enter' }, null));
+    await flush(16);
+    expect(focusAStarted, '正向前提：A 已停在自己的 focus ACK').toBe(true);
+    expect(inputCmds(wcA), '同标签第二个动作还不能越过第一个动作').toEqual([]);
+    await actionB;
+    expect(inputCmds(wcB)).toHaveLength(2);
+
+    releaseA();
+    await Promise.all([firstA, secondA]);
+    expect(inputCmds(wcA).map((command) => command.method)).toEqual([
+      'Input.dispatchMouseEvent',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchKeyEvent',
+      'Input.dispatchKeyEvent',
+    ]);
+  });
+
   // **断言要落到「是哪一道闸挡的」**：只断言 not_dispatchable 的话，去掉这道闸
   // 也照样绿 —— 后面 `interact` 的形状校验会用**同一个码**兜住（脚本没回结果）。
   // 那是空绿：闸没了，而我们已经往一个 CDP 断掉的标签里注了一次脚本。
@@ -2550,7 +2732,7 @@ describe('dispatch：派发之前的两道闸（实测得来）', () => {
     const { id, wc } = await dispatchableTab(svc);
     wc.isolatedImpl = () => Promise.resolve(okMeasure());
     await svc.dispatch(id, { kind: 'click', selector: '#a' }, null);
-    expect(wc.isolated.map((r) => r.worldId)).toEqual([WALKER_WORLD_ID]);
+    expect(wc.isolated.map((r) => r.worldId)).toEqual([WALKER_WORLD_ID, WALKER_WORLD_ID, WALKER_WORLD_ID]);
   });
 
   // dispatch **不自己 enqueue**：调用方（browser_act 的整批）已经在队列里了，
@@ -2573,6 +2755,39 @@ describe('dispatch：派发之前的两道闸（实测得来）', () => {
 });
 
 describe('dispatch · click：坐标是这一刻量的，命中检查不放水', () => {
+  it('locator 在动作时取新快照；活节点显式失效时只重新定位一次', async () => {
+    const { svc } = make();
+    const { id, wc } = await dispatchableTab(svc);
+    let walkerRuns = 0;
+    let measureRuns = 0;
+    wc.isolatedImpl = (code) => {
+      if (code === WALKER_SOURCE) {
+        walkerRuns += 1;
+        return Promise.resolve(walkerOut({ nodes: [{
+          index: 1, nodeId: walkerRuns === 1 ? 70 : 71,
+          role: 'button', name: 'Google 搜索', x: 10, y: 10, w: 100, h: 30,
+        }] }));
+      }
+      if (opOf(code) === 'measure') {
+        measureRuns += 1;
+        return Promise.resolve(measureRuns === 1
+          ? { ok: false, reason: 'stale_node' }
+          : okMeasure({ x: 320, y: 180, label: 'Google 搜索' }));
+      }
+      return Promise.resolve(null);
+    };
+    const stale: AxSnapshot = { ...walkerOut(), snapshotId: 'before-type', nodes: [{
+      index: 1, nodeId: 5, role: 'button', name: 'Google 搜索', x: 1, y: 1, w: 20, h: 20,
+    }] };
+
+    await expect(svc.dispatch(id, { kind: 'click', locator: {
+      role: 'button', name: ['Google 搜索', 'Google Search'], visible: true,
+    } }, stale)).resolves.toContain('Google 搜索');
+    expect(walkerRuns).toBe(2);
+    expect(measureRuns).toBe(2);
+    expect(inputCmds(wc).map((command) => command.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+  });
+
   it('坐标用重量到的那份，不是快照里那份', async () => {
     const { svc } = make();
     const { id, wc } = await dispatchableTab(svc);
@@ -2795,7 +3010,7 @@ describe('取快照与页内求值：没有渲染进程时一个字都不注', (
   });
 
   // 这正是 C1 的失败序列：闸把 CDP 那一侧堵死之后，剩下的唯一出口就是这里。
-  // browser_act 是 sequential 工具，挂在这里等于整轮 run 永远不返回。
+  // browser_act 是模型等待结果的工具，挂在这里等于整轮 run 永远不返回。
   it('求值永不 settle 时，dispatch 在时限到点后报错，而不是挂死', async () => {
     vi.useFakeTimers();
     const { svc } = make();
@@ -3838,6 +4053,52 @@ describe('open：默认不抢活动标签，显式 activate: true 才切过去',
 });
 
 /**
+ * `''` 是「这个任务还没有标签页」的写法（`x_research` 的 read 输入把它原样传下来，见
+ * `xResearchRunner`），不是标签 id。就地按 `args.tabId` 分开读会造出一张孤儿页：`''` 是假值，
+ * 于是真的 `createTab` 了；而 `??` 不把空串当空值，导航照旧发给 `''` → `no_tab`，刚建的页
+ * 谁也没引用 —— 泄漏一张 view，且每一行都是「标签页已关闭」。
+ */
+describe('open：空的 tabId 等于没有标签页', () => {
+  async function openAndNavigate(svc: Svc, args: { url: string; tabId?: string }) {
+    const p = svc.open(args);
+    await flush();
+    const wc = H.views[H.views.length - 1].webContents;
+    wc.osPid = 4321;
+    wc.fire('did-navigate', {}, args.url, 200);
+    return { result: await p, wc };
+  }
+
+  it('`tabId: \'\'` 自己开一张页并导航到它，注册表里只有这一张（没有孤儿）', async () => {
+    const { svc } = make();
+    const { result, wc } = await openAndNavigate(svc, { url: 'https://a.example/', tabId: '' });
+    expect(result.tabId).not.toBe('');
+    expect(result.nav.outcome).toMatchObject({ kind: 'ok', finalUrl: 'https://a.example/' });
+    // 刚开的那张页真的被导航了（不是「建了就扔」）。
+    expect(wc.loadCalls).toEqual(['https://a.example/']);
+    // 注册表里只有它这一张：修好之前这里是「建的那张 + 报错的那次调用」，前者是孤儿。
+    expect(svc.getState().tabs.map((tab) => tab.id)).toEqual([result.tabId]);
+  });
+
+  it('不存在的 tabId 仍然当场抛 browser.no_tab，且一手都不建页', async () => {
+    const { svc } = make();
+    await expect(svc.open({ url: 'https://a.example/', tabId: 'tab_nope' }))
+      .rejects.toMatchObject({ code: 'browser.no_tab' });
+    expect(svc.getState().tabs).toHaveLength(0);
+  });
+
+  it('没给 tabId（缺省与显式 undefined）与改造前一样：各开一张新页', async () => {
+    const { svc } = make();
+    const omitted = await openAndNavigate(svc, { url: 'https://a.example/' });
+    const explicit = await openAndNavigate(svc, { url: 'https://b.example/', tabId: undefined });
+    expect(omitted.result.tabId).not.toBe('');
+    expect(explicit.result.tabId).not.toBe('');
+    expect(explicit.result.tabId).not.toBe(omitted.result.tabId);
+    expect(svc.getState().tabs.map((tab) => tab.id).sort())
+      .toEqual([omitted.result.tabId, explicit.result.tabId].sort());
+  });
+});
+
+/**
  * **新标签在第一个文档提交之前，url 不许被冲成空串**（2026-09-14 录屏）。
  *
  * 没有任何标签时在地址栏回车：`createTab` 记下要打开的网址，随后 `did-start-loading` 触发
@@ -3994,5 +4255,1235 @@ describe('按对话回收与可见范围', () => {
 
     expect(svc.stateVisibleTo('thread-A').tabs.map((t) => t.id)).toEqual([a, u]);
     expect(svc.stateVisibleTo('thread-B').tabs.map((t) => t.id)).toEqual([b, u]);
+  });
+});
+
+
+describe('research source location and cancellation', () => {
+  it('routeAndDocumentFactsComeFromEvents: normalization, new post and new document remain independent', async () => {
+    const { svc } = make();
+    const { wc, nav } = await openTab(svc, 'https://x.com/alice/status/123');
+    const initial = svc.locationFacts(nav.tabId);
+    expect(initial).toMatchObject({ currentUrl: 'https://x.com/alice/status/123', documentEpoch: 1, routeRevision: 0, navigationEvent: 'did-navigate' });
+    wc.url = 'https://x.com/i/web/status/123';
+    wc.fire('did-navigate-in-page', {}, wc.url, true);
+    expect(svc.locationFacts(nav.tabId)).toMatchObject({ currentUrl: wc.url, documentEpoch: 1, routeRevision: 1, navigationEvent: 'did-navigate-in-page' });
+    wc.fire('did-navigate-in-page', {}, 'https://iframe.example/', false);
+    expect(svc.locationFacts(nav.tabId).routeRevision).toBe(1);
+    wc.url = 'https://x.com/bob/status/456';
+    wc.fire('did-navigate-in-page', {}, wc.url, true);
+    expect(svc.locationFacts(nav.tabId)).toMatchObject({ documentEpoch: 1, routeRevision: 2 });
+    // Same URL, actual reload: no URL hash or elapsed-time surrogate can stand in for this event.
+    wc.fire('did-navigate', {}, wc.url, 200);
+    expect(svc.locationFacts(nav.tabId)).toMatchObject({ documentEpoch: 2, routeRevision: 2, navigationEvent: 'did-navigate' });
+  });
+  it('cancelled queued open never loads; later operation still executes', async () => {
+    const { svc } = make();
+    const { wc, nav } = await openTab(svc);
+    let release!: () => void;
+    const blocker = svc.enqueue(nav.tabId, () => new Promise<void>(r => { release = r; }));
+    await flush();
+    const abort = new AbortController();
+    const cancelled = svc.open({ url: 'https://b.example/', tabId: nav.tabId, signal: abort.signal });
+    abort.abort();
+    expect((await cancelled).nav.outcome.kind).toBe('cancelled');
+    release(); await blocker;
+    expect(wc.loadCalls).toEqual(['https://a.example/']);
+    const next = svc.open({ url: 'https://c.example/', tabId: nav.tabId });
+    await flush(); wc.fire('did-navigate', {}, 'https://c.example/', 200);
+    expect((await next).nav.outcome.kind).toBe('ok');
+    expect(wc.loadCalls).toEqual(['https://a.example/', 'https://c.example/']);
+  });
+});
+
+
+describe('native delivery barrier', () => {
+  it('allows real command entry after frame, but rejects cancellation during frame before native input', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.dispatch(nav.tabId, action, null);
+    expect(wc.debugger.sent.filter(c => c.method === 'Input.dispatchMouseEvent').map(c => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+    wc.debugger.sent.length = 0;
+    const abort = new AbortController();
+    let frameStarted!: () => void;
+    const started = new Promise<void>(r => { frameStarted = r; });
+    wc.captureImpl = () => { frameStarted(); return new Promise(() => {}); };
+    const attempt = svc.dispatch(nav.tabId, action, null, { signal: abort.signal });
+    const rejected = expect(attempt).rejects.toMatchObject({ code: 'browser.cancelled' });
+    await started; abort.abort(); await rejected;
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+  it('failed compositor copy blocks native input while the next queued operation remains usable', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.enqueue(nav.tabId, () => svc.dispatch(nav.tabId, action, null));
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+    wc.debugger.sent.length = 0;
+    wc.captureImpl = async () => ({ isEmpty: () => true });
+    await expect(svc.enqueue(nav.tabId, () => svc.dispatch(nav.tabId, action, null))).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    wc.captureImpl = async () => ({ isEmpty: () => false });
+    await svc.enqueue(nav.tabId, () => svc.dispatch(nav.tabId, action, null));
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+  });
+});
+
+
+describe('viewport input mapping ACK', () => {
+  it('failed viewport ACK blocks the input after a successful same-case control', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.dispatch(nav.tabId, action, null);
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+    wc.debugger.sent.length = 0;
+    wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride' ? Promise.reject(new Error('ACK lost')) : Promise.resolve({});
+    await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+  it('a different mapping ACK during frame invalidates the original CSS-to-input transform', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    const action = { kind: 'click', selector: '#safe' } as const;
+    await svc.dispatch(nav.tabId, action, null);
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).length).toBe(2);
+    wc.debugger.sent.length = 0;
+    wc.captureImpl = async () => {
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+  // `applyLayout` 对每个标签都 `void applyViewport(...)`：窗口改大小、拖侧栏、确认框弹出、
+  // 横幅展开都会在下一次布局里多发一份。它们算的是**同一份 `stage`** —— 落地的是同一份映射，
+  // 落不落地都换不出别的坐标。旧判据把「在途」本身当成了拒绝理由（`viewportPending.size`），
+  // 于是把一次完全安全的点击说成了「映射变了」。
+  it('a concurrent layout apply with identical geometry lets the click through', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    // 只挂住布局这一发；dispatch 自己那一发照常落地。
+    const held: Array<() => void> = [];
+    wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride' && held.length === 0
+      ? new Promise(resolve => { held.push(() => resolve({})); })
+      : Promise.resolve({});
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    expect(held.length).toBe(1);
+    // 前提：这一发与 dispatch 自己那一发算出来的几何逐字相同 —— 「在途、但换不出别的映射」。
+    await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null);
+    expect(overrides(wc).map(c => c.params)).toHaveLength(2);
+    expect(overrides(wc)[0].params).toEqual(overrides(wc)[1].params);
+    expect(overrides(wc)[0].params).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).map(c => c.params.type))
+      .toEqual(['mousePressed', 'mouseReleased']);
+    expect(held.length, '布局那一发在点击整条路上都还在途').toBe(1);
+    held.forEach(land => land());
+  });
+  // 已落地的**只差高度**的那一份：**高度变化在 measure 之前就落地了**，坐标量的就是新布局 —— 不能拒。
+  // 这条钉的是「`height` 不进指针变换」的第一种落点。形状来自 `e2e/61` 那条「侧栏开着点链接」：
+  // 侧栏的对话面板在批次跑着的时候改了高度（实测 618→593，同一批里又发了一份只差 height 的下发）。
+  // 用 `locator` 是**必要**的：`selector` 那条路在 `mapping` 读完之后、measure 之前一次页面求值
+  // 都没有（快照是调用方给的），改动只可能落在 measure 之后 —— 那是下一条的形状，钉不到这一种。
+  it('a height-only mapping change landed before measure lets the click through', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    // 快照的 walker 是 `mapping` 读完之后、measure 之前唯一一次页面求值：在这里把高度改掉并等它
+    // ACK，落成的就是「`dispatch` 读到的 `mapping` 是 1800，而量坐标时的布局已经是 1760」。
+    wc.isolatedImpl = async (code) => {
+      if (code === WALKER_SOURCE) {
+        svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+        await flush();
+        return walkerOut();
+      }
+      return okMeasure();
+    };
+    await svc.dispatch(nav.tabId, { kind: 'click', locator: { role: 'button', name: '搜索', visible: true } }, null);
+    expect(inputCmds(wc).map(c => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+    // 前提：先落 1800、后落 1760，两者只差 height —— width / scale 逐字相同。
+    const landed = overrides(wc).slice(-2).map(c => c.params);
+    expect(landed[0]).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    expect(landed[1]).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+  });
+  // **落在 measure 之后的那一半也必须放过，但理由不是「坐标还新」**：那时上一次量到的 x/y
+  // 确实是旧布局里的。兜住它的是第二道闸 —— `awaitNativeFrame` 之后 `injected/pointerGuard.js`
+  // 的 `validate` 拿保留的那个点再命中测试一次，命中的不是目标（或它的后代）就拒，所以一次纵向
+  // 重排表现出来是 `intercepted` / `pointer_target_changed`，而不是把点击打在别人的位置上。
+  // 拒它反而会把一次安全的点击说成失败（`e2e/61` 那条「侧栏开着点链接」就是这样常红的）。
+  // 下面 `…is caught by the pointer guard…` 那条钉的就是这道闸真能接住这一种落点。
+  it('a height-only mapping change that lands after measure is still accepted', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    // `captureImpl` 就是 `awaitNativeFrame`：它在 measure 之后、鼠标事件之前。
+    wc.captureImpl = async () => {
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null);
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.')).map(c => c.params.type))
+      .toEqual(['mousePressed', 'mouseReleased']);
+    // 前提：后落地的那一份只差 height —— width / scale 逐字相同。
+    const landed = overrides(wc).slice(-2).map(c => c.params);
+    expect(landed[0]).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    expect(landed[1]).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+  });
+  // 同一个落点，但纵向重排把保留的那个点挪到了别的元素上：这就是上面那份宽容**实际**会遇到的形状，
+  // 接住它的必须是 `pointerGuard.js` 的 `validate`（第二道闸），而且一个鼠标事件都不许发出去。
+  it('a height-only mapping change that lands after measure is caught by the pointer guard hit test', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    wc.captureImpl = async () => {
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    // 重排之后命中测试打到了浮层上：`validate` 的标准拒绝形状。
+    wc.pointerImpl = async (code) => code.includes('"op":"validate"')
+      ? { ok: false, reason: 'intercepted', x: 10, y: 20, by: 'div#overlay' } : { ok: true };
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.click_intercepted' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+  });
+  // 还在途的那一份**只差高度**也必须拒：它会落在 measure 之后、鼠标事件之前，那是一次纵向重排。
+  // 这条钉住「对已落地的宽容」没有滚成「对在途的也宽容」。
+  it('a pending apply that would land a different height still refuses the click', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    let land!: () => void;
+    wc.captureImpl = async () => {
+      wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride'
+        ? new Promise(resolve => { land = () => resolve({}); })
+        : Promise.resolve({});
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: { ...STAGE.bounds, height: 880 } });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    // 前提：在途那一份与已确认的那一份只差 height —— 拒它的只能是意图里的高度那一项。
+    expect(overrides(wc).at(-1)!.params).toMatchObject({ width: 1280, height: 1760, scale: 0.5 });
+    expect(overrides(wc).at(-2)!.params).toMatchObject({ width: 1280, height: 1800, scale: 0.5 });
+    land();
+  });
+  // 反过来：在途的那一份**会落一份不同的映射**时，测量到的那一段坐标就不再作数
+  // （CSS 坐标按 emulation scale 换算，几何一变就按旧的发出去 —— spec §4.2 那个静默打偏）。
+  // 这里它**还没落地**，所以拒它的只能是意图，不可能是「已确认的那一份变了」。
+  it('a concurrent apply that would land a different mapping refuses the click mid-sequence', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const narrow = { x: 0, y: 0, width: 900, height: 700 };
+    let land!: () => void;
+    wc.captureImpl = async () => {
+      wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride'
+        ? new Promise(resolve => { land = () => resolve({}); })
+        : Promise.resolve({});
+      svc.syncView({ ...STAGE, epoch: svc.getState().epoch, bounds: narrow });
+      await flush();
+      return { isEmpty: () => false };
+    };
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    // 前提：在途那一份的几何与已确认的那一份（1280×1800，scale 0.5）确实不同。
+    expect(overrides(wc).at(-1)!.params).toMatchObject({ width: 1280, height: 996, scale: 0.703125 });
+    land();
+  });
+  // 1:1 的移交先在 override 落地时 `settle()`（意图跟着删），再由 `beginPageScale()` 把同一个
+  // generation 放回在途 —— 「在途、却读不到它会落成什么」是真实存在的一段窗口。那段时间里
+  // 不能假定它落成已确认的那一份（fail closed）。
+  it('a pending generation with no recorded intent refuses the click', async () => {
+    const { svc } = make(); const { wc, nav } = await openTab(svc);
+    wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+    svc.syncView({ ...STAGE, epoch: svc.getState().epoch });
+    await flush();
+    const held: Array<() => void> = [];
+    wc.debugger.respond = (method) => method === 'Emulation.setPageScaleFactor' && held.length === 0
+      ? new Promise(resolve => { held.push(() => resolve({})); })
+      : Promise.resolve({});
+    svc.setViewportMode(nav.tabId, 'oneToOne');
+    await flush();
+    // 前提：那一份还挂在 page scale 上，而它那份意图已经随 override 落地删掉了。
+    const internals = svc as unknown as {
+      viewportPending: Map<string, Set<number>>;
+      viewportIntents: Map<string, Map<number, unknown>>;
+    };
+    const pending = [...(internals.viewportPending.get(nav.tabId) ?? [])];
+    expect(pending).toHaveLength(1);
+    expect(internals.viewportIntents.get(nav.tabId)?.get(pending[0])).toBeUndefined();
+    await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null))
+      .rejects.toMatchObject({ code: 'browser.input_not_delivered' });
+    expect(wc.debugger.sent.filter(c => c.method.startsWith('Input.'))).toEqual([]);
+    held.forEach(land => land());
+  });
+});
+
+
+it('a guarded click reports its actual resulting navigation instead of rejecting its own route change', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+  const binding = svc.locationFacts(nav.tabId);
+  wc.debugger.respond = (method, params) => {
+    if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') {
+      wc.url = 'https://b.example/destination';
+      wc.fire('did-navigate', {}, wc.url, 200);
+    }
+    return Promise.resolve({});
+  };
+  const result = await svc.dispatchAndObserveNavigation(nav.tabId, { kind: 'click', selector: '#safe' }, null, { location: binding });
+  expect(result.navigation?.outcome).toEqual({ kind: 'ok', finalUrl: 'https://b.example/destination', httpStatusCode: 200 });
+});
+
+
+it('main-frame navigation starts preserve actual type/target and invalidate same-URL old action bindings', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const initial = svc.locationFacts(nav.tabId);
+  wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+  await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null, { location: initial });
+  wc.debugger.sent.length = 0;
+  wc.fire('did-start-navigation', { url: wc.url, isMainFrame: false, isSameDocument: false });
+  expect(svc.locationFacts(nav.tabId)).toEqual(initial);
+  wc.fire('did-start-navigation', { url: wc.url, isMainFrame: true, isSameDocument: false });
+  expect(svc.locationFacts(nav.tabId)).toMatchObject({ currentUrl: wc.url, navigationUrl: wc.url,
+    navigationType: 'cross_document', navigationEvent: 'did-start-navigation', documentEpoch: 1, routeRevision: 0,
+    navigationSequence: 2 });
+  await expect(svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null, { location: initial })).rejects.toMatchObject({ code: 'browser.stale_snapshot' });
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
+});
+
+
+it('fixed DOM read preparation uses focus/viewport ACKs without requiring a surface or sending native input', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  wc.isolatedImpl = async () => ({ ok: true, x: 10, y: 20, label: 'safe' });
+  let frames = 0;
+  wc.captureImpl = async () => { frames++; return { isEmpty: () => false }; };
+  await svc.dispatch(nav.tabId, { kind: 'click', selector: '#safe' }, null);
+  expect(frames).toBe(1);
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.')).length).toBe(2);
+  const user = await openTab(svc, 'https://user.example/'); svc.activate(user.nav.tabId);
+  wc.debugger.sent.length = 0; frames = 0;
+  wc.captureImpl = async () => { frames++; throw new Error('SurfaceUnavailable'); };
+  await svc.prepareForDomRead(nav.tabId);
+  expect(frames).toBe(0);
+  expect(wc.debugger.sent.find(command => command.method === 'Emulation.setFocusEmulationEnabled')?.params).toEqual({ enabled: true });
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
+  expect(svc.getState().activeTabId).toBe(user.nav.tabId);
+  const abort = new AbortController();
+  let start!: () => void, release!: () => void;
+  const started = new Promise<void>(r => { start = r; });
+  wc.debugger.respond = method => method === 'Emulation.setFocusEmulationEnabled'
+    ? new Promise(resolve => { start(); release = () => resolve({}); }) : Promise.resolve({});
+  const pending = svc.prepareForDomRead(nav.tabId, abort.signal);
+  const rejected = expect(pending).rejects.toMatchObject({ code: 'browser.cancelled' });
+  await started; abort.abort(); release(); await rejected;
+  expect(frames).toBe(0);
+  expect(wc.debugger.sent.filter(command => command.method.startsWith('Input.'))).toEqual([]);
+});
+
+// `applyLayout` 对**每一个**标签都 `void applyViewport(...)`：窗口改大小、拖侧栏、
+// 确认框弹出、横幅展开都会在 `prepareForDomRead` 自己那一份之外再发一份。判据是几何，
+// 不是代号 —— 后发的那份算的是同一份 `stage`、落地的是同一份几何，拿代号比就会把它判成
+// 「映射变了」，而这条路上那等于整次提交失败（x-research 重启后的第一次采集就是这么失败的）。
+it('a concurrent layout apply with identical geometry does not fail the prepared DOM read', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const held: Array<{ params: Record<string, unknown>; land: () => void }> = [];
+  wc.debugger.respond = (method, params) => method === 'Emulation.setDeviceMetricsOverride'
+    ? new Promise(resolve => { held.push({ params: params!, land: () => resolve({}) }); })
+    : Promise.resolve({});
+  svc.syncView({ ...STAGE, epoch });            // ① 布局这一发先挂在途上
+  await flush();
+  expect(held.length).toBe(1);
+  const preparing = svc.prepareForDomRead(nav.tabId);   // ② prepare 自己那一发
+  let settled = false; void preparing.then(() => { settled = true; }, () => { settled = true; });
+  await flush();
+  expect(held.length).toBe(2);
+  svc.syncView({ ...STAGE, epoch });            // ③ 布局又发一份（同一份 stage）
+  await flush();
+  expect(held.length).toBe(3);
+  // 前提：后发的那份与 prepare 自己那份算出来的几何逐字相同 —— 「代号新、几何一样」。
+  expect(held[2].params).toEqual(held[1].params);
+  held[1].land(); await flush();                // 自己那一份落地
+  held[2].land(); await flush();
+  // ① 还在途：这一句是这次缺陷的形状 —— 旧代码在这里已经按「映射变了」拒了。
+  expect(settled).toBe(false);
+  held[0].land();
+  await expect(preparing).resolves.toBeUndefined();
+});
+
+// 反过来也必须守住：几何**真的**不一样时仍然要拒，而且拒得说得出是哪一个事实。
+// 「按几何判」不能变成「谁也不判」。
+it('a superseded viewport landing with different geometry still fails the prepared DOM read', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const narrow = { x: 0, y: 0, width: 900, height: 700 };
+  const held: Array<{ params: Record<string, unknown>; land: () => void }> = [];
+  wc.debugger.respond = (method, params) => {
+    if (method !== 'Emulation.setDeviceMetricsOverride') return Promise.resolve({});
+    // 第四发（重下发）以 ACK 丢失失败：几何就一直停在旧舞台那一份上。
+    if (held.length === 3) return Promise.reject(new Error('ACK lost'));
+    return new Promise(resolve => { held.push({ params: params!, land: () => resolve({}) }); });
+  };
+  svc.syncView({ ...STAGE, epoch });
+  await flush();
+  svc.syncView({ ...STAGE, epoch, bounds: narrow });
+  await flush();
+  expect(held.length).toBe(2);
+  const preparing = svc.prepareForDomRead(nav.tabId);
+  const rejected = preparing.then(() => null, (error: { code: string; message: string }) => error);
+  await flush();
+  expect(held.length).toBe(3);
+  held[2].land(); await flush();                // 自己那一份：ack 是新舞台的几何
+  held[1].land(); await flush();                // 新舞台那一发
+  held[0].land(); await flush();                // 旧舞台那一发晚到，把 ack 盖成旧几何
+  const error = await rejected;
+  expect(error?.code).toBe('browser.input_not_delivered');
+  expect(error?.message).toContain('确认落地的几何 1280×1800（scale 0.5，pageScale 1）');
+  expect(error?.message).toContain('1280×996（scale 0.703125，pageScale 1） 不一致');
+  expect(error?.message).toContain('重下发之后仍然没有确认落地');
+});
+
+// 上一条的两份几何都是 1280 宽（两个舞台都窄于 `LOGICAL_WIDTH`，排版宽一律被抬到 1280），
+// 所以 width、height、scale 一起变 —— 删掉 `ack.width === want.width` 这一项它照样绿。
+// 舞台**宽过 1280** 时排版宽跟着舞台走：这里两份只差 width（scale 恒 1、height 都是 900），
+// width 就成了唯一还对得上的那一项之外的判据。
+it('a superseded wide viewport landing fails on width alone', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const wide = { x: 0, y: 0, width: 1440, height: 900 };
+  const wider = { x: 0, y: 0, width: 1600, height: 900 };
+  const held: Array<{ params: Record<string, unknown>; land: () => void }> = [];
+  wc.debugger.respond = (method, params) => {
+    if (method !== 'Emulation.setDeviceMetricsOverride') return Promise.resolve({});
+    // 第四发（重下发）以 ACK 丢失失败：几何就一直停在旧舞台那一份上。
+    if (held.length === 3) return Promise.reject(new Error('ACK lost'));
+    return new Promise(resolve => { held.push({ params: params!, land: () => resolve({}) }); });
+  };
+  svc.syncView({ ...STAGE, epoch, bounds: wide });
+  await flush();
+  svc.syncView({ ...STAGE, epoch, bounds: wider });
+  await flush();
+  expect(held.length).toBe(2);
+  // 前提：两份几何只差 width —— scale 与 height 逐字相同。
+  expect(held[0].params).toMatchObject({ width: 1440, height: 900, scale: 1 });
+  expect(held[1].params).toMatchObject({ width: 1600, height: 900, scale: 1 });
+  const preparing = svc.prepareForDomRead(nav.tabId);
+  const rejected = preparing.then(() => null, (error: { code: string; message: string }) => error);
+  await flush();
+  expect(held.length).toBe(3);
+  held[2].land(); await flush();                // 自己那一份：ack 是新舞台的几何
+  held[1].land(); await flush();                // 新舞台那一发
+  held[0].land(); await flush();                // 旧舞台那一发晚到，把 ack 盖成旧几何
+  const error = await rejected;
+  expect(error?.code).toBe('browser.input_not_delivered');
+  expect(error?.message).toContain('确认落地的几何 1440×900（scale 1，pageScale 1）');
+  expect(error?.message).toContain('1600×900（scale 1，pageScale 1） 不一致');
+});
+
+// 排空等的是「它落地」，abort 等的是「别等了」—— 后者不许坐满上限。
+// 这一条里 prepare 自己那一发已经落地、别人那一发还挂在途上，所以取消只能从
+// `waitForViewportSettled` 的 abort 出口走；没有它就得等满 20 秒。
+it('cancelling while another override is outstanding rejects the prepared DOM read at once', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const held: Array<{ land: () => void }> = [];
+  wc.debugger.respond = (method) => method === 'Emulation.setDeviceMetricsOverride'
+    ? new Promise(resolve => { held.push({ land: () => resolve({}) }); })
+    : Promise.resolve({});
+  svc.syncView({ ...STAGE, epoch });            // ① 布局这一发留在途上
+  await flush();
+  const abort = new AbortController();
+  const preparing = svc.prepareForDomRead(nav.tabId, abort.signal);   // ② prepare 自己那一发
+  const rejected = preparing.then(() => null, (error: { code?: string }) => error);
+  await flush();
+  expect(held.length).toBe(2);
+  held[1].land(); await flush();                // ② 落地 → 它进了排空，① 还在
+  abort.abort();
+  await flush();
+  // 只看微任务：提前返回就是「取消当场生效」，不是「等 20 秒之后恰好也取消」。
+  expect(await Promise.race([rejected, Promise.resolve('still-waiting')]))
+    .toMatchObject({ code: 'browser.cancelled' });
+  held[0].land(); await flush();                // 收尾
+});
+
+// 到点没清空时可以按几何判成功（见上一条正例），但失败时必须说得出「等满了上限没清空」。
+// 这一条：① 旧几何永不落地（等满上限）；② 新舞台那一发在 prepare 之后落地；③ prepare 自己
+// 那一发先落地、① 晚到把 ack 盖成旧几何；④ 重下发以 ACK 丢失失败 —— 三条事实都在。
+it('a drain that hits the timeout names the timeout in the failure', async () => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const epoch = svc.getState().epoch;
+  const narrow = { x: 0, y: 0, width: 900, height: 700 };
+  const held: Array<{ land: () => void }> = [];
+  wc.debugger.respond = (method) => {
+    if (method !== 'Emulation.setDeviceMetricsOverride') return Promise.resolve({});
+    if (held.length === 3) return Promise.reject(new Error('ACK lost'));
+    return new Promise(resolve => { held.push({ land: () => resolve({}) }); });
+  };
+  svc.syncView({ ...STAGE, epoch });            // ① 旧舞台这一发永不落地
+  await flush();
+  svc.syncView({ ...STAGE, epoch, bounds: narrow });   // ② 新舞台这一发
+  await flush();
+  expect(held.length).toBe(2);
+  vi.useFakeTimers();
+  const preparing = svc.prepareForDomRead(nav.tabId);  // ③
+  const rejected = preparing.then(() => null, (error: { code?: string; message?: string }) => error);
+  await flush();
+  expect(held.length).toBe(3);
+  held[2].land(); await flush();                // ③ 落地：进排空
+  held[0].land(); await flush();                // ① 晚到，把 ack 盖成旧几何；② 仍在途
+  await vi.advanceTimersByTimeAsync(20_000);
+  const error = await rejected;
+  expect(error?.code).toBe('browser.input_not_delivered');
+  expect(error?.message).toContain('在途的视口下发在 20000 毫秒内没有清空');
+  expect(error?.message).toContain('重下发之后仍然没有确认落地');
+  // 同一个事实要在日志里留一条 —— 不抛的那一支（几何对得上、排空到点）只有这处痕迹。
+  expect(H.logs.filter(l => l.msg === '读取 DOM 之前等视口下发排空到点').map(l => l.ctx))
+    .toEqual([{ tabId: nav.tabId, phase: 'prepareForDomRead', pending: [expect.any(Number)] }]);
+  held[1].land(); await flush();                // 收尾
+});
+
+
+it.each(['focus', 'selection'] as const)('last typing permission rejects changed %s before insertText after same-case selected success', async change => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  wc.isolatedImpl = async code => code.includes('"op":"focusSelect"')
+    ? { ok: true, focused: true, selected: true, emptyBefore: false }
+    : code.includes('"op":"readValue"') ? { ok: true, value: 'replacement' }
+    : { ok: true, x: 10, y: 20, editable: true, label: 'query' };
+  const action = { kind: 'type', selector: '#query', text: 'replacement' } as const;
+  await svc.dispatch(nav.tabId, action, null);
+  expect(wc.debugger.sent.filter(command => command.method === 'Input.insertText').map(command => command.params.text)).toEqual(['replacement']);
+  wc.debugger.sent.length = 0;
+  wc.pointerImpl = async code => code.includes('"op":"validate_typing"')
+    ? { ok: false, reason: 'typing_destination_changed', change } : { ok: true };
+  await expect(svc.dispatch(nav.tabId, action, null)).rejects.toMatchObject({ code: 'browser.target_unusable' });
+  expect(wc.debugger.sent.filter(command => command.method === 'Input.insertText')).toEqual([]);
+});
+
+describe('private X scroll delivery boundary',()=>{
+  it('keeps the generic contract and awaits the opt-in frame receipt before returning',async()=>{
+    const {svc}=make();const {id,wc}=await dispatchableTab(svc);
+    const scroll={ok:true,container:'document',before:1,after:801,delta:800,atStart:false,atEnd:false};
+    wc.isolatedImpl=async()=>scroll;
+    expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},null)).toContain('800');
+    const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
+    let frame!:()=>void;const ready=new Promise<void>(r=>{frame=r;});const order:string[]=[];
+    let receipt:Record<string,unknown>={};
+    wc.isolatedImpl=async code=>{
+      if(opOf(code)==='scroll') {receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',before:1,after:801,written:true,eventObserved:false,frameObserved:false,state:'pending'};return {...scroll,acknowledgement:receipt};}
+      if(opOf(code)==='scroll_ack_status'){order.push('waiting');await ready;receipt={...receipt,eventObserved:true,frameObserved:true,state:'frame_observed'};return {ok:true,acknowledgement:receipt};}
+      if(opOf(code)==='scroll_ack_dispose'){order.push('disposed');return {ok:true,acknowledgement:receipt};}
+      throw new Error('Unexpected source operation');
+    };
+    const pending=svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,{location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>order.push('written')}});
+    for(let i=0;i<24;i++)await Promise.resolve();
+    expect(order).toEqual(['written','waiting']);frame();expect(await pending).toContain('800');expect(order).toEqual(['written','waiting','disposed']);
+  });
+  it.each(['expired','no_movement','invalidated','cancel'] as const)('budgets actual write once and disposes on %s',async state=>{
+    const {svc}=make();const {id,wc}=await dispatchableTab(svc);const abort=new AbortController();let written=0,disposed=0;
+    const diagnostics:unknown[]=[];
+    const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
+    let receipt:Record<string,unknown>={};let bad=false;
+    wc.isolatedImpl=async code=>{
+      if(opOf(code)==='scroll'){receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',targetNodeId:7,targetContainsHit:true,conversationRelation:'inside',rootRelation:'unknown',scrollHeight:1000,clientHeight:200,before:1,after:bad&&state==='no_movement'?1:801,written:true,eventObserved:!bad,frameObserved:!bad,state:bad?(state==='cancel'?'pending':state):'frame_observed'};if(bad&&state==='cancel')abort.abort();return {ok:true,container:'document',delta:800,before:1,after:801,acknowledgement:receipt};}
+      if(opOf(code)==='scroll_ack_dispose'){disposed++;return {ok:true,acknowledgement:receipt};}
+      return {ok:true,acknowledgement:receipt};
+    };
+    const opts={signal:abort.signal,location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++,onReceipt:(value:unknown)=>diagnostics.push(value)}};
+    expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).toContain('800');expect(written).toBe(1);expect(disposed).toBe(1);
+    expect(diagnostics[0]).toMatchObject({targetKind:'document',targetNodeId:7,targetContainsHit:true,scrollHeight:1000,clientHeight:200,before:1,after:801,state:'frame_observed'});
+    expect(JSON.stringify(diagnostics)).not.toContain('token');
+    bad=true;const rejected=svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts);
+    await expect(rejected).rejects.toMatchObject({code:state==='cancel'?'browser.cancelled':state==='invalidated'?'browser.stale_snapshot':'browser.wait_timeout',...(state==='expired'?{reason:'scroll_ack_timeout'}:state==='no_movement'?{reason:'scroll_no_movement'}:{})});
+    if(state==='expired'||state==='no_movement') await expect(rejected).rejects.toBeInstanceOf(BrowserScrollAcknowledgementError);
+    expect(written).toBe(2);expect(disposed).toBe(2);
+    if(state!=='cancel') expect(diagnostics.at(-1)).toMatchObject({state,before:1,after:state==='no_movement'?1:801});
+    if(state==='cancel'){await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:'browser.cancelled'});expect(written).toBe(2);}
+  });
+});
+
+it('scroll ACK refuses mismatched receipt and same-URL navigation while disposing its original token',async()=>{
+  for(const change of ['token','navigation'] as const){
+    const {svc}=make();const {id,wc}=await dispatchableTab(svc);const snapshot={generation:'scroll-doc',url:wc.url,nodes:[],snapshotId:'scroll'} as unknown as AxSnapshot;
+    let bad=false,written=0,disposals=0;let receipt:Record<string,unknown>={};
+    wc.isolatedImpl=async code=>{
+      if(opOf(code)==='scroll'){
+        receipt={token:/"token":"([^"]+)"/.exec(code)?.[1],generation:'scroll-doc',url:wc.url,targetKind:'document',before:1,after:801,written:true,eventObserved:true,frameObserved:true,state:'frame_observed'};
+        if(bad&&change==='navigation')wc.fire('did-navigate-in-page',{},wc.url,true);
+        return {ok:true,container:'document',before:1,after:801,delta:800,acknowledgement:bad&&change==='token'?{...receipt,token:'unrelated'}:receipt};
+      }
+      disposals++;return {ok:true,acknowledgement:receipt};
+    };
+    const opts={location:svc.locationFacts(id),scrollAcknowledgement:{onWritten:()=>written++}};
+    expect(await svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).toContain('800');expect(written).toBe(1);expect(disposals).toBe(1);
+    bad=true;await expect(svc.dispatch(id,{kind:'scroll',direction:'down'},snapshot,opts)).rejects.toMatchObject({code:change==='token'?'browser.page_no_result':'browser.stale_snapshot'});
+    // Correct original-token disposal still delivers the actual write receipt.
+    expect(written).toBe(2);expect(disposals).toBe(2);
+  }
+});
+
+it('research recovery reads actual registry presence and ownership without exposing other threads',async()=>{
+ const {svc}=make();
+ const own=await openTab(svc,'https://x.com/home','thread-a');
+ const user=await openTab(svc,'https://x.com/home');
+ expect(svc.researchTabStatus(own.nav.tabId,'thread-a')).toBe('available');
+ expect(svc.researchTabStatus(own.nav.tabId,'thread-b')).toBe('foreign');
+ expect(svc.researchTabStatus(user.nav.tabId,'thread-b')).toBe('available');
+ svc.close(own.nav.tabId);expect(svc.researchTabStatus(own.nav.tabId,'thread-a')).toBe('missing');
+ svc.disposeAll();
+});
+
+
+it.each(['measure', 'pointer_validate'] as const)('retains private %s interception provenance while refusing native input', async stage => {
+  const { svc } = make(); const { wc, nav } = await openTab(svc);
+  const snapshot: AxSnapshot = {
+    snapshotId: 'snapshot-diagnostic', generation: 'generation-diagnostic', url: wc.url, title: 'private title', iframes: 0,
+    collection: { truncated: false, returned: 1, totalKnown: 1 },
+    nodes: [{ index: 4, nodeId: 17, role: 'link', name: 'private label', x: 11, y: 12, w: 71, h: 93 }],
+  };
+  const action = { kind: 'click', index: 4, snapshotId: snapshot.snapshotId } as const;
+  wc.isolatedImpl = async () => ({ ok: true, x: 31, y: 47, label: 'private label' });
+  let frames = 0;
+  wc.captureImpl = async () => { frames++; return { isEmpty: () => false }; };
+  await svc.dispatch(nav.tabId, action, snapshot, { strictSnapshot: true });
+  expect(inputCmds(wc).map(c => c.params.type)).toEqual(['mousePressed', 'mouseReleased']);
+  wc.debugger.sent.length = 0; frames = 0;
+  const pointerFailure = {
+    point: { x: 31, y: 47 }, targetTag: 'DIV', hitTag: 'ASIDE', targetConnected: true,
+    targetContainsHit: false, hitSameAsCaptured: stage === 'measure' ? null : false,
+    rejectGeometry: { ...(stage === 'measure' ? { hitRect: { x: 0, y: 0, width: 1280, height: 800 } } : {}), targetRect: { x: 11, y: 12, width: 71, height: 93 }, scroll: { x: 2, y: 524 }, viewport: { width: 1280, height: 800 } },
+  };
+  if (stage === 'measure') wc.isolatedImpl = async () => ({ ok: false, reason: 'intercepted', x: 31, y: 47, by: 'private-class', pointerFailure });
+  else wc.pointerImpl = async code => code.includes('"op":"validate"')
+    ? { ok: false, reason: 'intercepted', pointerFailure } : { ok: true };
+  const failure = await svc.dispatch(nav.tabId, action, snapshot, { strictSnapshot: true }).catch(error => error);
+  expect(failure).toMatchObject({ code: 'browser.click_intercepted', diagnostic: {
+    stage, reason: 'intercepted', tabId: nav.tabId, snapshotId: 'snapshot-diagnostic', generation: 'generation-diagnostic', nodeId: 17,
+    point: { x: 31, y: 47 }, nativeFrameObserved: stage === 'pointer_validate',
+    rejection: pointerFailure,
+  } });
+  expect(frames).toBe(stage === 'measure' ? 0 : 1);
+  expect(inputCmds(wc)).toEqual([]);
+});
+
+
+it('keeps original measure relation and one auto-aware call before diagnostic style/layout reads', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { measuredPointerExpression } = await import('./measuredPointerSource');
+  for (const mode of ['ancestor', 'competing', 'disconnected', 'false', 'null', 'absent', 'throw', 'throw-read', 'unread', 'style-getter', 'slot', 'shadow']) {
+    const dom = new JSDOM('<main><button>private-text</button></main><aside class="private-class"></aside>', { runScripts: 'outside-only' });
+    try {
+      const w = dom.window, d = w.document, target = d.querySelector('button')!, ancestor = d.querySelector('main')!, competitor = d.querySelector('aside')!;
+      if (mode === 'slot') Object.defineProperty(target, 'assignedSlot', { value: d.createElement('slot') });
+      if (mode === 'shadow') ancestor.attachShadow({ mode: 'open' }).append(target);
+      Object.assign(w, { __kydogWorld: { gen: 'source-gen', ids: new WeakMap([[target, 17]]), pw: new WeakSet() } });
+      let hit: Element | null = target;
+      const events: string[] = [];
+      expect(target.textContent).toBe('private-text');
+      expect(competitor.className).toBe('private-class');
+      Object.assign(d, { elementFromPoint: () => { events.push('hit'); return hit; } });
+      Object.assign(target, { scrollIntoView: () => events.push('scroll'), getBoundingClientRect: () => { events.push('target-rect'); return { x: 11, y: 23, left: 11, top: 23, width: 100, height: 80 }; } });
+      for (const el of [ancestor, competitor]) Object.assign(el, { getBoundingClientRect: () => { events.push(el === hit ? 'original-hit-rect' : 'wrong-hit-rect'); return { x: 1, y: 2, width: 700, height: 900 }; } });
+      Object.assign(w, { getComputedStyle: (el: Element) => { events.push('style'); const result = { display: 'block', visibility: 'visible', pointerEvents: el === target ? 'none' : 'auto', contentVisibility: el === ancestor ? 'auto' : 'visible' }; let reads = 0; Object.defineProperty(result, 'display', { get() { events.push(el === ancestor && el !== hit ? 'ancestor-other-style' : 'allowed-style'); return ++reads === 1 || mode !== 'style-getter' ? 'block' : 'private-css'; } }); return result; } });
+      const expression = measuredPointerExpression({ nodeId: 17 }, { token: 'pointer-token', kind: 'click', expiresAt: Date.now() + 3000 }, Date.now() + 3000);
+      expect(w.eval(expression)).toMatchObject({ ok: true });
+      expect(events.slice(0, 3)).toEqual(['scroll', 'target-rect', 'hit']);
+      events.length = 0;
+      hit = ['ancestor', 'slot', 'shadow'].includes(mode) ? ancestor : mode === 'null' ? null : competitor;
+      if (mode === 'disconnected') competitor.remove();
+      if (mode !== 'absent') Object.assign(w.Element.prototype, { checkVisibility: function (options: { contentVisibilityAuto: boolean }) {
+        expect(this).toBe(target); events.push('visibility');
+        if (mode === 'throw') throw new Error('private API error');
+        if (mode !== 'unread') expect(options.contentVisibilityAuto).toBe(true);
+        if (mode === 'throw-read') throw new Error('private API error after option');
+        return mode !== 'false';
+      } });
+      const raw = w.eval(expression) as { pointerFailure: unknown };
+      expect(raw).toMatchObject({ ok: false, reason: 'intercepted', x: 61, y: 63, pointerFailure: { targetContainsHit: false, rejectGeometry: { targetRect: { x: 11, y: 23, width: 100, height: 80 } }, measureContext: {
+        relation: { hitConnected: hit ? mode !== 'disconnected' : null, hitContainsTarget: hit ? hit === ancestor : null },
+        targetStyle: { display: 'block', visibility: 'visible', pointerEvents: 'none', contentVisibility: 'visible' },
+        targetAutoVisibility: { apiAvailable: mode !== 'absent', optionObserved: mode === 'absent' ? null : !['throw', 'unread'].includes(mode), value: ['absent', 'throw', 'throw-read', 'unread'].includes(mode) ? null : mode !== 'false', readError: mode === 'throw' || mode === 'throw-read' },
+        contentVisibilityAncestors: { chain: 'parentNode-host', complete: !['slot', 'shadow'].includes(mode), entries: [{ depth: mode === 'shadow' ? 2 : 1, contentVisibility: 'auto', isOriginalHit: hit === ancestor }] },
+      } } });
+      expect(events.filter(e => e === 'hit')).toHaveLength(1);
+      expect(events.filter(e => e === 'scroll')).toHaveLength(1);
+      expect(events.filter(e => e === 'target-rect')).toHaveLength(1);
+      if (mode !== 'absent') { expect(events.filter(e => e === 'visibility')).toHaveLength(1); expect(events.indexOf('visibility')).toBeLessThan(events.indexOf('style')); if (hit) expect(events.indexOf('visibility')).toBeLessThan(events.indexOf('original-hit-rect')); }
+      expect(events).toContain('allowed-style');
+      expect(events).not.toContain('ancestor-other-style');
+      expect(JSON.stringify(raw.pointerFailure)).not.toContain('private-');
+    } finally { dom.window.close(); }
+  }
+});
+
+
+it('a failed optional ancestor read retains the original measure rejection and old authentic geometry', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { guardedInteractExpression } = await import('./measuredPointerSource');
+  const { retainPointerFailure, pointerFailureDiagnostic } = await import('./pointerDiagnostic');
+  const { KydogError } = await import('../../shared/errors');
+  const dom = new JSDOM('<button>private-text</button><aside></aside>', { runScripts: 'outside-only' });
+  try {
+    const w = dom.window, target = w.document.querySelector('button')!, hit = w.document.querySelector('aside')!;
+    Object.assign(w.document, { elementFromPoint: () => hit });
+    target.getBoundingClientRect = () => ({ x: 11, y: 23, left: 11, top: 23, width: 100, height: 80 } as DOMRect);
+    hit.getBoundingClientRect = () => ({ x: 1, y: 2, width: 700, height: 900 } as DOMRect);
+    const expression = guardedInteractExpression({ op: 'measure', target: { selector: 'button' } }, Date.now() + 3000);
+    const before = w.eval(expression) as { pointerFailure: { measureContext: unknown } };
+    expect(before.pointerFailure.measureContext).toMatchObject({ relation: { hitConnected: true, hitContainsTarget: false } });
+    Object.defineProperty(target, 'assignedSlot', { get() { throw new Error('private-ancestor-read'); } });
+    const raw = w.eval(expression);
+    const diagnostic = pointerFailureDiagnostic(retainPointerFailure(new KydogError('browser.click_intercepted', 'private'), { tabId: 'tab-source', snapshotId: null, generation: null, nodeId: null }, 'measure', raw));
+    expect(diagnostic).toMatchObject({ stage: 'measure', rejection: { targetTag: 'BUTTON', hitTag: 'ASIDE', measureContext: null, rejectGeometry: { targetRect: { x: 11, y: 23, width: 100, height: 80 }, hitRect: { x: 1, y: 2, width: 700, height: 900 } } } });
+    expect(JSON.stringify(diagnostic)).not.toContain('private');
+  } finally { dom.window.close(); }
+});
+
+
+it('samples original hit containment before the visibility read can change the retained targets parent chain', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { measuredPointerExpression } = await import('./measuredPointerSource');
+  const dom = new JSDOM('<main><button>target</button></main><aside></aside>', { runScripts: 'outside-only' });
+  try {
+    const w = dom.window, target = w.document.querySelector('button')!, originalHit = w.document.querySelector('main')!, other = w.document.querySelector('aside')!;
+    Object.assign(w, { __kydogWorld: { gen: 'original-document', ids: new WeakMap([[target, 17]]), pw: new WeakSet() } });
+    let hit: Element = target, hits = 0, visibilityCalls = 0;
+    Object.assign(w.document, { elementFromPoint: () => { hits++; return hit; } });
+    target.getBoundingClientRect = () => ({ x: 11, y: 23, left: 11, top: 23, width: 100, height: 80 } as DOMRect);
+    originalHit.getBoundingClientRect = () => ({ x: 1, y: 2, width: 700, height: 900 } as DOMRect);
+    const expression = measuredPointerExpression({ nodeId: 17 }, { token: 'pointer-token', kind: 'click', expiresAt: Date.now() + 3000 }, Date.now() + 3000);
+    expect(w.eval(expression)).toMatchObject({ ok: true });
+    hit = originalHit; hits = 0;
+    Object.assign(w.Element.prototype, { checkVisibility: function (options: { contentVisibilityAuto: boolean }) {
+      expect(this).toBe(target); expect(options.contentVisibilityAuto).toBe(true); visibilityCalls++;
+      other.append(target); return false;
+    } });
+    expect(w.eval(expression)).toMatchObject({ ok: false, reason: 'intercepted', x: 61, y: 63, pointerFailure: { measureContext: {
+      relation: { hitConnected: true, hitContainsTarget: true }, targetAutoVisibility: { optionObserved: true, value: false, readError: false },
+    } } });
+    expect(target.parentNode).toBe(other);
+    expect(hits).toBe(1); expect(visibilityCalls).toBe(1);
+  } finally { dom.window.close(); }
+});
+
+
+describe('original collected pointer eligibility',()=>{
+ async function setup(){
+  const {svc}=make();const {wc,nav}=await openTab(svc);
+  const snapshot:AxSnapshot={snapshotId:'eligibility-snapshot',generation:'eligibility-generation',url:wc.url,title:'private',iframes:0,collection:{truncated:false,returned:1,totalKnown:1},nodes:[{index:4,nodeId:17,role:'link',name:'original',x:11,y:12,w:71,h:93}]};
+  const action={kind:'click' as const,index:4,snapshotId:snapshot.snapshotId};
+  const options={strictSnapshot:true,location:svc.locationFacts(nav.tabId),signal:new AbortController().signal,collectedPermission:{owner:'fixed',token:'private-token',purpose:'body'},collectedPointerEligibility:true};
+  const order:string[]=[];wc.isolatedImpl=async()=>{order.push('measure');return {ok:true,x:31,y:47,label:'original'};};
+  wc.pointerImpl=async code=>{if(code.includes('"readPointerEligibility":true')){order.push('auto');return {ok:true,pointerEligibility:'auto'};}if(code.includes('"op":"finalize_collected_pointer"'))return {ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true,postFramePointerEligibility:'auto',postFrameHitConnected:true,postFrameHitContainsTarget:true};return {ok:true};};
+  await svc.dispatch(nav.tabId,action,snapshot,options);expect(inputCmds(wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);expect(order).toEqual(['auto','measure']);
+  expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toEqual([expect.objectContaining({ctx:expect.objectContaining({state:'auto',outcome:'validated',hitConnected:true,hitContainsTarget:true})})]);
+  order.length=0;wc.debugger.sent.length=0;H.logs.length=0;return {svc,wc,id:nav.tabId,snapshot,action,options,order};
+ }
+ it.each((['postFramePointerEligibility','postFrameHitConnected','postFrameHitContainsTarget'] as const).flatMap(property=>[true,false].map(ok=>({property,ok}))))('optional $property getter errors preserve primary ok=$ok after same-case successful input',async({property,ok})=>{
+  const f=await setup();
+   let throwing=false;
+   const reads={postFramePointerEligibility:0,postFrameHitConnected:0,postFrameHitContainsTarget:0};
+   f.wc.pointerImpl=async code=>{
+    if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
+    if(!code.includes('"op":"finalize_collected_pointer"'))return {ok:true};
+    const result={ok:throwing?ok:true,reason:'intercepted',phase:throwing&&!ok?'terminal':'validated',pointerEligibility:'auto',hitPerformed:true};
+    for(const key of Object.keys(reads) as Array<keyof typeof reads>)Object.defineProperty(result,key,{get:()=>{
+     reads[key]++;
+     if(throwing&&key===property)throw Error('private diagnostic getter failure');
+     return key==='postFramePointerEligibility'?'auto':true;
+    }});
+    return result;
+   };
+   // This exact result and getter path first delivers native input and a finite receipt.
+   await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);
+   expect(inputCmds(f.wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);
+   expect(reads).toEqual({postFramePointerEligibility:1,postFrameHitConnected:1,postFrameHitContainsTarget:1});
+   expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(1);
+   f.wc.debugger.sent.length=0;H.logs.length=0;throwing=true;
+   reads.postFramePointerEligibility=reads.postFrameHitConnected=reads.postFrameHitContainsTarget=0;
+   if(ok)await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).resolves.toContain('已点击');
+   else await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:'browser.click_intercepted'});
+   expect(inputCmds(f.wc).map(c=>c.params.type)).toEqual(ok?['mousePressed','mouseReleased']:[]);
+   expect(reads[property]).toBe(1);
+   expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(0);
+   f.wc.debugger.sent.length=0;H.logs.length=0;
+ });
+ it.each(['auto','untrusted','early','cancel'] as const)('retains post-frame %s before lifecycle checks and preserves the original refusal',async mode=>{
+  const f=await setup(),abort=new AbortController();let finalReads=0;
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
+   if(code.includes('"op":"finalize_collected_pointer"')){
+    expect(code).toContain('"op":"finalize_collected_pointer"');finalReads++;
+    if(mode==='cancel')abort.abort();
+    if(mode==='early')return {ok:false,reason:'pointer_target_changed',phase:'terminal',hitPerformed:false};
+    return {ok:false,reason:'intercepted',phase:'terminal',pointerEligibility:'auto',hitPerformed:true,postFramePointerEligibility:mode==='untrusted'?'private raw page text':mode==='auto'?'auto':'none',postFrameHitConnected:mode==='untrusted'?'bad':true,postFrameHitContainsTarget:mode==='untrusted'?1:mode!=='auto',pointerFailure:{point:{x:31,y:47},targetTag:'BUTTON',hitTag:'DIV',targetConnected:true,targetContainsHit:false,hitSameAsCaptured:false,rejectGeometry:{targetRect:{x:3,y:4,width:51,height:61},scroll:{x:0,y:0},viewport:{width:1000,height:800}}}};
+   }
+   return {ok:true};
+  };
+  const failure=await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal}).catch(error=>error);
+  expect(failure).toMatchObject({code:mode==='cancel'?'browser.cancelled':mode==='early'?'browser.target_unusable':'browser.click_intercepted'});
+  if(mode!=='cancel' && mode!=='early') {
+    const {pointerFailureDiagnostic}=await import('./pointerDiagnostic');
+    expect(pointerFailureDiagnostic(failure)).toMatchObject({snapshotId:f.snapshot.snapshotId,generation:f.snapshot.generation,nodeId:17,
+      eligibility:{phase:'collected_eligibility',firstState:'auto',finalState:'auto',noneObserved:false,outcome:'eligible'},
+      postFrame:{phase:'post_frame',state:mode==='untrusted'?'unknown':mode==='auto'?'auto':'none',samplePhase:mode==='untrusted'?'not_observed':'before_first_hit',relationPhase:mode==='untrusted'?'not_observed':'first_hit',hitConnected:mode==='untrusted'?null:true,hitContainsTarget:mode==='untrusted'?null:mode!=='auto'}});
+  }
+  expect(finalReads).toBe(1);expect(inputCmds(f.wc)).toEqual([]);
+  expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility'&&(l.ctx as {phase?:string})?.phase==='post_frame')).toHaveLength(mode==='early'||mode==='cancel'?0:1);
+ });
+ it('observes none then auto before its sole original measure, with generic opt-out unchanged',async()=>{
+  const f=await setup();let probes=0;
+  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return code.includes('"op":"finalize_collected_pointer"')?{ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true}:{ok:true};expect(code).toContain('"nodeId":17');expect(code).toContain('"token":"private-token"');expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);return {ok:true,pointerEligibility:++probes===1?'none':'auto'};};
+  await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);expect(probes).toBe(2);expect(f.order).toEqual(['measure']);expect(inputCmds(f.wc)).toHaveLength(2);
+  probes=0;f.order.length=0;await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,collectedPointerEligibility:false});expect(probes).toBe(0);expect(f.order).toEqual(['measure']);
+ });
+ it.each(['unknown','permission','error','cancel','navigation','mapping','crash','deadline'] as const)('terminates %s before measure after enabled success',async mode=>{
+  const f=await setup(),abort=new AbortController();let probes=0;if(mode==='deadline')vi.useFakeTimers();
+  f.wc.pointerImpl=async code=>{if(!code.includes('"readPointerEligibility":true'))return code.includes('"op":"finalize_collected_pointer"')?{ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true}:{ok:true};probes++;
+   if(mode==='cancel')abort.abort();if(mode==='navigation')f.wc.fire('did-navigate-in-page',{},f.wc.url,true);if(mode==='mapping')f.svc.syncView({...STAGE,epoch:f.svc.getState().epoch});if(mode==='crash')f.wc.osPid=0;if(mode==='error')throw Error('native eval failed');
+   return mode==='permission'?{ok:false,reason:'pointer_target_changed'}:{ok:true,pointerEligibility:mode==='deadline'||mode==='cancel'?'none':mode==='unknown'?'unknown':'auto'};
+  };
+  const pending=f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal});const rejected=expect(pending).rejects.toMatchObject({code:mode==='cancel'?'browser.cancelled':mode==='navigation'?'browser.stale_snapshot':mode==='mapping'?'browser.input_not_delivered':mode==='crash'?'browser.not_dispatchable':mode==='deadline'?'browser.wait_timeout':mode==='permission'?'browser.target_unusable':'browser.page_no_result'});
+  if(mode==='deadline')await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS+1);await rejected;expect(probes).toBeGreaterThan(0);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+  if(mode==='cancel')expect(H.logs.filter(l=>l.scope==='browser.pointer_eligibility')).toEqual([{level:'info',scope:'browser.pointer_eligibility',msg:expect.any(String),ctx:{tabId:f.id,snapshotId:'eligibility-snapshot',generation:'eligibility-generation',nodeId:17,firstState:'none',noneObserved:true,finalState:'none',outcome:'cancelled'}}]);
+ });
+ it('cancellation drains issued read before queued ownership release without late measure',async()=>{
+  const f=await setup(),abort=new AbortController();let release!:(v:unknown)=>void,start!:()=>void;const started=new Promise<void>(r=>{start=r;});
+  f.wc.pointerImpl=code=>code.includes('"readPointerEligibility":true')?new Promise(r=>{release=r;start();}):Promise.resolve({ok:true});
+  const pending=f.svc.enqueue(f.id,()=>f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal}));const rejected=expect(pending).rejects.toMatchObject({code:'browser.cancelled'});
+  await started;abort.abort();let following=false;const next=f.svc.enqueue(f.id,async()=>{following=true;});await flush();expect(following).toBe(false);expect(f.order).toEqual([]);
+  release({ok:true,pointerEligibility:'auto'});await rejected;await next;expect(following).toBe(true);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('a read begun near the total deadline cannot extend it or continue into measure after its late result',async()=>{
+  const f=await setup();vi.useFakeTimers();let reads=0,release!:(v:unknown)=>void;const began=Date.now();let ceiling=0;
+  f.wc.pointerImpl=async code=>{
+   if(!code.includes('"readPointerEligibility":true'))return code.includes('"op":"finalize_collected_pointer"')?{ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true}:{ok:true};
+   reads++;if(reads===1){vi.setSystemTime(began+PAGE_EVAL_TIMEOUT_MS-150);return {ok:true,pointerEligibility:'none'};}
+   ceiling=Number(/"notAfter":(\d+)\}\)$/.exec(code)?.[1]);return new Promise(r=>{release=r;});
+  };
+  const pending=f.svc.dispatch(f.id,f.action,f.snapshot,f.options);const rejected=expect(pending).rejects.toMatchObject({code:'browser.wait_timeout'});
+  await vi.advanceTimersByTimeAsync(100);expect(reads).toBe(2);expect(ceiling).toBe(began+PAGE_EVAL_TIMEOUT_MS);
+  await vi.advanceTimersByTimeAsync(50);release({ok:true,pointerEligibility:'auto'});await rejected;await flush();expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('aborting a scheduled none poll clears scheduling without issuing another read',async()=>{
+  const f=await setup();vi.useFakeTimers();const abort=new AbortController();let reads=0;
+  f.wc.pointerImpl=async()=>{reads++;return {ok:true,pointerEligibility:'none'};};
+  const pending=f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal});const rejected=expect(pending).rejects.toMatchObject({code:'browser.cancelled'});
+  await vi.advanceTimersByTimeAsync(0);expect(reads).toBe(1);abort.abort();await rejected;await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+  expect(reads).toBe(1);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it.each(['identity','dispatchability'] as const)('rejects %s lost during focus ACK before starting viewport setup',async mode=>{
+  const f=await setup();
+  const viewport=vi.spyOn(f.svc as unknown as {applyViewport(...args:unknown[]):Promise<void>},'applyViewport');
+  await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);expect(viewport).toHaveBeenCalled();viewport.mockClear();f.order.length=0;f.wc.debugger.sent.length=0;
+  const original=f.svc.webContentsOf.bind(f.svc);let changed=false;
+  const lookup=vi.spyOn(f.svc,'webContentsOf').mockImplementation(id=>changed&&mode==='identity'?null:original(id));
+  f.wc.debugger.respond=async method=>{if(method==='Emulation.setFocusEmulationEnabled'){changed=true;if(mode==='dispatchability')f.wc.osPid=0;}return {};};
+  try{await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:mode==='identity'?'browser.no_tab':'browser.not_dispatchable'});
+   expect(viewport).toHaveBeenCalledTimes(0);expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+  }finally{lookup.mockRestore();viewport.mockRestore();}
+ });
+ it.each(['permission','strict','location','signal','node','kind'] as const)('rejects incomplete trusted opt-in: %s',async missing=>{
+  const f=await setup();const options={...f.options,...(missing==='permission'?{collectedPermission:undefined}:missing==='strict'?{strictSnapshot:false}:missing==='location'?{location:undefined}:missing==='signal'?{signal:undefined}:{})};
+  const action=missing==='node'?{kind:'click' as const,selector:'#original'}:missing==='kind'?{kind:'scroll' as const,direction:'down' as const}:f.action;
+  await expect(f.svc.dispatch(f.id,action,f.snapshot,options)).rejects.toMatchObject({code:'browser.bad_action'});expect(f.order).toEqual([]);expect(inputCmds(f.wc)).toEqual([]);
+ });
+});
+
+
+describe('collected first-hit preflight recovery',()=>{
+ async function setup(){
+  const {svc}=make();const {wc,nav}=await openTab(svc);
+  const snapshot:AxSnapshot={snapshotId:'preflight-snapshot',generation:'preflight-generation',url:wc.url,title:'private',iframes:0,collection:{truncated:false,returned:1,totalKnown:1},nodes:[{index:4,nodeId:17,role:'button',name:'original',x:11,y:12,w:71,h:93}]};
+  const action={kind:'click' as const,index:4,snapshotId:snapshot.snapshotId};
+  const summaries:any[]=[];
+  const options={strictSnapshot:true,location:svc.locationFacts(nav.tabId),signal:new AbortController().signal,collectedPermission:{owner:'fixed',token:'private-token',purpose:'body'},collectedPointerEligibility:true,onPointerPreflight:(r:unknown)=>summaries.push(r)};
+  let measures=0,frames=0,finals=0,probes=0;
+  wc.isolatedImpl=async()=>{measures++;return {ok:true,x:31,y:47,label:'original'};};
+  wc.captureImpl=async()=>{frames++;return {isEmpty:()=>false};};
+  const valid={ok:true,phase:'validated',pointerEligibility:'auto',hitPerformed:true,postFramePointerEligibility:'auto',postFrameHitConnected:true,postFrameHitContainsTarget:true};
+  const pending={ok:true,phase:'pending',pointerEligibility:'none',hitPerformed:false};
+  const base=async(code:string)=>{
+   if(code.includes('"op":"validate_collected"'))return {ok:true,pointerEligibility:'auto'};
+   if(code.includes('"op":"finalize_collected_pointer"')){finals++;return valid;}
+   if(code.includes('"op":"probe_collected_pointer"')){probes++;return {ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false};}
+   return {ok:true};
+  };wc.pointerImpl=base;
+  await svc.dispatch(nav.tabId,action,snapshot,options);expect(inputCmds(wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);
+  wc.debugger.sent.length=0;measures=frames=finals=probes=0;summaries.length=0;
+  return {svc,wc,id:nav.tabId,snapshot,action,options,summaries,valid,pending,base,counts:()=>({measures,frames,finals,probes})};
+ }
+ it('recurring frame NONE waits for direct original auto and fresh frames before its only final hit/input',async()=>{
+  const f=await setup();let final=0,probe=0;
+  f.wc.pointerImpl=async code=>{
+   const r=await f.base(code);
+   if(code.includes('"op":"finalize_collected_pointer"'))return ++final<=2?f.pending:f.valid;
+   if(code.includes('"op":"probe_collected_pointer"')){probe++;expect(inputCmds(f.wc)).toEqual([]);return r;}
+   return r;
+  };
+  await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);
+  expect({final,probe,...f.counts()}).toEqual({final:3,probe:2,measures:1,frames:3,finals:3,probes:2});
+  expect(inputCmds(f.wc).map(c=>c.params.type)).toEqual(['mousePressed','mouseReleased']);
+  expect(f.summaries).toEqual([expect.objectContaining({snapshotId:f.snapshot.snapshotId,nodeId:17,initialState:'auto',finalState:'auto',noneObserved:true,probeReadsIssued:2,framesObserved:3,finalizationsIssued:3,finalHitPerformed:true,outcome:'final_hit_validated'})]);
+ });
+ it.each(['unknown','permission','cancel','route','mapping','renderer','debugger','tab','empty','frame-error'] as const)('stops %s at resumed preflight after a positive native pair',async mode=>{
+  const f=await setup(),abort=new AbortController();let final=0,probe=0;
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"finalize_collected_pointer"')){final++;return f.pending;}
+   if(code.includes('"op":"probe_collected_pointer"')){
+    probe++;if(mode==='cancel')abort.abort();if(mode==='route')f.wc.fire('did-navigate-in-page',{},f.wc.url,true);
+    if(mode==='mapping')f.svc.syncView({...STAGE,epoch:f.svc.getState().epoch});
+    if(mode==='renderer')f.wc.osPid=0;if(mode==='debugger')f.wc.debugger.attached=false;if(mode==='tab')vi.spyOn(f.svc,'webContentsOf').mockReturnValue(null);
+    if(mode==='empty')f.wc.captureImpl=async()=>({isEmpty:()=>true});if(mode==='frame-error')f.wc.captureImpl=async()=>{throw Error('frame');};
+    return mode==='unknown'||mode==='permission'?{ok:false,phase:'terminal',hitPerformed:false,reason:mode==='unknown'?'pointer_eligibility_unknown':'pointer_target_changed'}:{ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false};
+   }return f.base(code);
+  };
+  const code=mode==='cancel'?'browser.cancelled':mode==='route'?'browser.stale_snapshot':mode==='mapping'||mode==='empty'||mode==='frame-error'?'browser.input_not_delivered':mode==='tab'?'browser.no_tab':mode==='renderer'||mode==='debugger'?'browser.not_dispatchable':mode==='unknown'?'browser.page_no_result':'browser.target_unusable';
+  await expect(f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal})).rejects.toMatchObject({code});
+  expect(final).toBe(1);expect(probe).toBe(1);expect(inputCmds(f.wc)).toEqual([]);expect(f.counts().measures).toBe(1);expect(f.summaries).toHaveLength(1);
+ });
+ it.each(['probe','frame','timeout','measure','finalization'] as const)('drains issued %s and disposal before next queued action after termination',async mode=>{
+  const f=await setup(),abort=new AbortController();if(mode==='timeout')vi.useFakeTimers();
+  let start!:()=>void,release!:(v:any)=>void;const started=new Promise<void>(r=>{start=r;});let disposed=0;
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"dispose"'))disposed++;
+   if(code.includes('"op":"finalize_collected_pointer"'))return mode==='finalization'?new Promise(r=>{release=r;start();}):f.pending;
+   if(code.includes('"op":"probe_collected_pointer"') && mode!=='frame')return new Promise(r=>{release=r;start();});
+   return f.base(code);
+  };
+  if(mode==='frame')f.wc.captureImpl=()=>new Promise(r=>{release=r;start();});
+  if(mode==='measure')f.wc.isolatedImpl=()=>new Promise(r=>{release=r;start();});
+  const work=f.svc.enqueue(f.id,()=>f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,signal:abort.signal}));
+  const rejected=expect(work).rejects.toMatchObject({code:mode==='timeout'?'browser.wait_timeout':'browser.cancelled'});
+  if(mode==='timeout')await vi.advanceTimersByTimeAsync(100);
+  await started;if(mode==='timeout')await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);else abort.abort();
+  let next=false;const following=f.svc.enqueue(f.id,async()=>{next=true;});await flush();expect(next).toBe(false);expect(disposed).toBe(0);
+  release(mode==='frame'?{isEmpty:()=>false}:mode==='measure'?{ok:true,x:31,y:47}:mode==='finalization'?f.valid:{ok:true,phase:'eligible',pointerEligibility:'auto',hitPerformed:false});await rejected;await following;
+  expect(next).toBe(true);expect(disposed).toBe(1);expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('lost finalization result reports unknown hit and observer failure cannot alter successful input',async()=>{
+  const f=await setup();
+  await f.svc.dispatch(f.id,f.action,f.snapshot,{...f.options,onPointerPreflight:()=>{throw Error('observer');}});
+  expect(inputCmds(f.wc)).toHaveLength(2);f.wc.debugger.sent.length=0;
+  f.wc.pointerImpl=async code=>{if(code.includes('"op":"finalize_collected_pointer"'))throw Error('lost source result');return f.base(code);};
+  await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:'browser.page_no_result'});
+  expect(f.summaries[0]).toMatchObject({finalHitPerformed:null,outcome:'unknown',unavailableFields:['finalState','finalHitPerformed']});expect(inputCmds(f.wc)).toEqual([]);
+ });
+ it('permanent pending expires under the unchanged captured point and never grants input',async()=>{
+  const f=await setup();vi.useFakeTimers();const ceilings:number[]=[];
+  f.wc.pointerImpl=async code=>{
+   if(code.includes('"op":"finalize_collected_pointer"')||code.includes('"op":"probe_collected_pointer"')){
+    ceilings.push(Number(/"notAfter":(\d+)\}\)$/.exec(code)?.[1]));return f.pending;
+   }return f.base(code);
+  };
+  const began=Date.now(),work=f.svc.dispatch(f.id,f.action,f.snapshot,f.options);const rejected=expect(work).rejects.toMatchObject({code:'browser.wait_timeout'});
+  await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS+1);await rejected;
+  expect(ceilings.length).toBeGreaterThan(1);expect(new Set(ceilings)).toEqual(new Set([began+PAGE_EVAL_TIMEOUT_MS]));
+  expect(f.counts()).toMatchObject({measures:1,frames:1});expect(inputCmds(f.wc)).toEqual([]);
+  expect(f.summaries[0]).toMatchObject({outcome:'expired',finalHitPerformed:false,finalState:'none',finalizationsIssued:1,framesObserved:1});
+ });
+
+ it('retains an actual zero-read early invalidation receipt after same-case successful preflight',async()=>{
+  const f=await setup();await f.svc.dispatch(f.id,f.action,f.snapshot,f.options);
+  expect(f.summaries).toHaveLength(1);expect(f.summaries[0]).toMatchObject({outcome:'final_hit_validated',eligibilityReadsIssued:1});
+  f.summaries.length=0;f.wc.debugger.sent.length=0;
+  const service=f.svc as any,original=service.awaitCollectedPointerEligibility.bind(service);
+  const boundary=vi.spyOn(service,'awaitCollectedPointerEligibility').mockImplementation((...args:any[])=>{
+   f.wc.debugger.attached=false;return original(...args);
+  });
+  try{
+   await expect(f.svc.dispatch(f.id,f.action,f.snapshot,f.options)).rejects.toMatchObject({code:'browser.not_dispatchable'});
+   expect(f.summaries).toHaveLength(1);expect(f.summaries[0]).toMatchObject({outcome:'invalidated',initialState:null,finalState:null,finalHitPerformed:null,eligibilityReadsIssued:0,probeReadsIssued:0,finalizationsIssued:0,framesObserved:0,unavailableFields:['initialState','finalState','finalHitPerformed']});
+   expect(inputCmds(f.wc)).toEqual([]);
+  }finally{boundary.mockRestore();}
+ });
+
+});
+
+
+describe('source evaluation provenance at raw Electron Promise boundary',()=>{
+ it.each(['resolved','rejected'] as const)('deadline retains wrapper error and later %s native receipt',async settlement=>{
+  vi.useFakeTimers();
+  const {createSourceEvaluation,sourceEvaluationFailure}=await import('./sourceEvaluationDiagnostic');
+  const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+  let resolve!:(v:unknown)=>void,reject!:(e:unknown)=>void;
+  wc.isolatedImpl=()=>new Promise((a,b)=>{resolve=a;reject=b;});
+  const context=createSourceEvaluation('owner',id,'x_collect');
+  const pending=svc.evalInPage(id,'SECRET_EXPRESSION',context).catch(e=>e);
+  await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+  const error=await pending;
+  expect(error).toMatchObject({code:'browser.page_no_result',outcome:'unknown'});
+  expect(sourceEvaluationFailure(context,error)).toEqual({cause:'main_deadline',nativeSettlement:'not_observed',nativeSettlementObserved:false});
+  expect(H.logs.find(l=>l.msg==='source_evaluation_failed')?.ctx).toMatchObject({ownerId:'owner',operationId:context.operationId,purpose:'x_collect',tabId:id,cause:'main_deadline',nativeSettlementObserved:false});
+  if(settlement==='resolved')resolve({secret:'SECRET_NATIVE_VALUE'});else reject(new Error('SECRET_ERROR'));
+  await Promise.resolve();await Promise.resolve();
+  expect(H.logs.find(l=>l.msg==='source_evaluation_native_settled')?.ctx).toMatchObject({ownerId:'owner',operationId:context.operationId,purpose:'x_collect',tabId:id,afterDeadline:true,nativeSettlement:settlement});
+  expect(JSON.stringify(H.logs)).not.toMatch(/SECRET_/);
+ });
+ it('native rejection preserves exact error; normal resolution and logger faults preserve values',async()=>{
+  const {createSourceEvaluation,sourceEvaluationFailure}=await import('./sourceEvaluationDiagnostic');
+  const {logger}=await import('../log');
+  const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+  const error=Object.assign(new Error('PRIVATE'),{cause:'main_deadline',code:'browser.page_no_result'}),context=createSourceEvaluation('owner',id,'x_source_release');
+  wc.isolatedImpl=()=>Promise.reject(error);
+  await expect(svc.evalInPage(id,'PRIVATE',context)).rejects.toBe(error);
+  expect(sourceEvaluationFailure(context,error)).toEqual({cause:'native_rejection',nativeSettlement:'rejected',nativeSettlementObserved:true});
+  expect(sourceEvaluationFailure(context,{...error})).toBeUndefined();
+  expect(H.logs.find(l=>l.msg==='source_evaluation_native_settled')?.ctx).toMatchObject({afterDeadline:false,nativeSettlement:'rejected'});
+  const spy=vi.spyOn(logger,'info').mockImplementation(()=>{throw Error('LOGGER');});
+  try{
+   const value={secret:'PRIVATE'},success=createSourceEvaluation('owner',id,'x_collect');
+   wc.isolatedImpl=()=>Promise.resolve(value);
+   await expect(svc.evalInPage(id,'PRIVATE',success)).resolves.toBe(value);
+   expect(sourceEvaluationFailure(success,error)).toBeUndefined();
+   wc.isolatedImpl=()=>Promise.reject(error);
+   await expect(svc.evalInPage(id,'PRIVATE',createSourceEvaluation('owner',id,'x_collect'))).rejects.toBe(error);
+  }finally{spy.mockRestore();}
+ });
+});
+
+it.each(['resolved','rejected'] as const)('source adapter records real deadline + cleanup native rejection then late %s, with owner identity',async late=>{
+ vi.useFakeTimers();
+ const {createXResearchBrowser}=await import('../x/xResearchBrowser');
+ const {getSourceFailure}=await import('../x/xSourceDiagnostics');
+ const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+ vi.spyOn(svc,'prepareForDomRead').mockResolvedValue(undefined);
+ let resolve!:(value:unknown)=>void,reject!:(error:unknown)=>void;
+ const cleanupError=new Error('SECRET_CLEANUP');
+ vi.spyOn(wc,'executeJavaScriptInIsolatedWorld').mockImplementation((_world,scripts)=>wc.isolatedImpl(scripts[0].code));
+ wc.isolatedImpl=code=>code.startsWith('/* kydog-x-root-release */')?Promise.reject(cleanupError):new Promise((a,b)=>{resolve=a;reject=b;});
+ const port=createXResearchBrowser(svc,'thread');
+ const pending=port.withPage(id,undefined,page=>page.collect({stage:'post',postId:'123',expectedUrl:'https://x.com/a/status/123'})).catch(e=>e);
+ await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+ const error=await pending,receipt=getSourceFailure(error)!;
+ expect(receipt).toMatchObject({purpose:'x_collect',phase:'evaluate',cause:'main_deadline',nativeSettlement:'not_observed',nativeSettlementObserved:false});
+ const cleanup=H.logs.find(l=>l.msg==='source_root_cleanup_failed')?.ctx;
+ expect(cleanup).toMatchObject({ownerId:receipt.ownerId,tabId:id,purpose:'x_source_release',phase:'release',cause:'native_rejection',failureCategory:'evaluation_rejected',nativeSettlement:'rejected',workFailed:true,sourceUsed:true});
+ expect((cleanup as {operationId:string}).operationId).not.toBe(receipt.operationId);
+ if(late==='resolved')resolve('SECRET_VALUE');else reject(Error('SECRET_ERROR'));
+ await Promise.resolve();await Promise.resolve();
+ expect(H.logs.find(l=>l.msg==='source_evaluation_native_settled'&&(l.ctx as {afterDeadline:boolean}).afterDeadline)?.ctx).toMatchObject({ownerId:receipt.ownerId,operationId:receipt.operationId,nativeSettlement:late,afterDeadline:true});
+ expect(getSourceFailure(error)).toBe(receipt);
+ expect(receipt.nativeSettlement).toBe('not_observed');
+ expect(JSON.stringify(H.logs)).not.toContain('SECRET');
+});
+
+it.each(['rejection','deadline'] as const)('successful source work preserves canonical release %s cause through real evalOn',async mode=>{
+ vi.useFakeTimers();
+ const {JSDOM}=await import('jsdom');
+ const {createXResearchBrowser}=await import('../x/xResearchBrowser');
+ const {getSourceFailure}=await import('../x/xSourceDiagnostics');
+ const {svc}=make(),{id,wc}=await dispatchableTab(svc);
+ const url='https://x.com/a/status/123';wc.url=url;
+ const dom=new JSDOM('<main><article data-testid="tweet"><div data-testid="User-Name"><a href="/a">A</a></div><div data-testid="tweetText">Body</div><a href="/a/status/123"><time>today</time></a></article></main>',{url,runScripts:'outside-only'});
+ Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+ vi.spyOn(svc,'prepareForDomRead').mockResolvedValue(undefined);
+ let completeRelease!:(value:unknown)=>void;
+ vi.spyOn(wc,'executeJavaScriptInIsolatedWorld').mockImplementation((_world,scripts)=>{
+  const code=scripts[0].code;
+  if(code.startsWith('/* kydog-x-root-release */'))return mode==='rejection'?Promise.reject(Error('PRIVATE')):new Promise(resolve=>{completeRelease=resolve;});
+  return Promise.resolve(dom.window.eval(code));
+ });
+ try{
+  const port=createXResearchBrowser(svc,'thread');
+  const pending=port.withPage(id,undefined,async page=>{const observation=await page.collect({stage:'post',postId:'123',expectedUrl:url});expect(observation.snapshot).toBeDefined();return 42;}).catch(e=>e);
+  await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS);
+  const error=await pending,receipt=getSourceFailure(error)!;
+  expect(error).toMatchObject({code:'x.invalid_page'});
+  expect(receipt).toMatchObject({purpose:'x_source_release',phase:'release',cause:mode==='rejection'?'native_rejection':'main_deadline',nativeSettlement:mode==='rejection'?'rejected':'not_observed'});
+  expect(H.logs.find(l=>l.msg==='source_root_cleanup_failed')?.ctx).toMatchObject({...receipt,workFailed:false,sourceUsed:true,failureCategory:'evaluation_rejected'});
+  if(mode==='deadline'){completeRelease({released:true});await Promise.resolve();expect(getSourceFailure(error)).toBe(receipt);expect(receipt.nativeSettlement).toBe('not_observed');}
+ }finally{dom.window.close();}
+});
+
+describe('atomic network open', () => {
+  it('enables on existing renderer before target load; new renderer receives no CDP until safe blank resolves', async () => {
+    const { svc } = make(); const { nav, wc } = await openTab(svc);
+    wc.debugger.sent.length = 0;
+    wc.debugger.respond = async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f', loaderId: 'l' } } } : {};
+    wc.loadImpl = async () => { wc.fire('did-navigate', {}, wc.url, 200); };
+    const existing = await svc.open({ tabId: nav.tabId, url: 'https://example.org/next', network: { ownerId: 'n', accepts: () => true } });
+    expect(wc.debugger.sent.some(c => c.method === 'Network.enable')).toBe(true);
+    expect(existing.networkLease).toBeDefined(); await existing.networkLease!.close('done');
+    wc.fire('did-navigate', {}, 'https://example.org/unreported', 200);
+    expect(svc.takeUnreportedNav(nav.tabId)).toEqual({ url: 'https://example.org/unreported', httpStatusCode: 200 });
+    const pending = svc.open({ url: 'https://example.org/new', network: { ownerId: 'n', accepts: () => true } });
+    const fresh = wcOf(1); let ready!: () => void;
+    fresh.historyEntries = []; fresh.historyIndex = 0;
+    // Pinned Electron reports an initial placeholder in length(), but no real entries.
+    fresh.navigationHistory.length = () => Math.max(1, fresh.historyEntries.length);
+    fresh.loadImpl = () => {
+      fresh.historyEntries.push(fresh.url); fresh.historyIndex = fresh.historyEntries.length - 1;
+      return fresh.url === 'about:blank' ? new Promise<void>(r => { ready = r; }) : Promise.resolve().then(() => fresh.fire('did-navigate', {}, fresh.url, 200));
+    };
+    fresh.debugger.respond = wc.debugger.respond;
+    await flush(); expect(fresh.loadCalls).toEqual(['about:blank']); expect(fresh.debugger.sent).toEqual([]);
+    fresh.osPid = 9876; fresh.fire('did-navigate', {}, 'about:blank', 200); ready(); await flush(30);
+    const result = await pending;
+    expect(fresh.loadCalls).toEqual(['about:blank', 'https://example.org/new']);
+    expect(result.nav.outcome).toMatchObject({ kind: 'ok', finalUrl: 'https://example.org/new' });
+    expect(svc.takeUnreportedNav(result.tabId)).toBeNull();
+    expect(wc.historyEntries).toEqual(['https://prev.example/', 'https://cur.example/']);
+    expect(fresh.historyEntries).toEqual(['https://example.org/new']);
+    expect(fresh.navigationHistory.canGoBack()).toBe(false);
+    expect(result.networkLease).toBeDefined(); await result.networkLease!.close('done');
+  });
+
+  it('queues inline request before open returns and closes it on crash/detach/tab close', async () => {
+    for (const end of ['crash', 'detach', 'close', 'destroyed', 'cancel']) {
+      const { svc } = make(); const { nav, wc } = await openTab(svc);
+      wc.debugger.respond = async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f', loaderId: 'l' } } } : { body: 'body', base64Encoded: false };
+      wc.loadImpl = async () => {
+        expect(wc.debugger.sent.some(c => c.method === 'Network.enable')).toBe(true);
+        wc.debugger.fire('message', {}, 'Network.requestWillBeSent', { requestId: 'r', frameId: 'f', loaderId: 'l', request: { url: 'https://example.org/body', method: 'GET' } });
+        wc.debugger.fire('message', {}, 'Network.responseReceived', { requestId: 'r', response: { status: 200 } });
+        wc.debugger.fire('message', {}, 'Network.loadingFinished', { requestId: 'r' });
+        wc.fire('did-navigate', {}, wc.url, 200);
+      };
+      const controller = new AbortController();
+      const result = await svc.open({ tabId: nav.tabId, url: 'https://example.org/new', signal: controller.signal, network: { ownerId: 'n', accepts: () => true } });
+      expect((await result.networkLease!.drain()).map(e => e.kind)).toEqual(['request', 'response']);
+      const waiter = result.networkLease!.take(undefined, 1000);
+      if (end === 'crash') wc.fire('render-process-gone', {}, { reason: 'crashed' });
+      else if (end === 'detach') wc.debugger.fire('detach', {}, 'target_closed');
+      else if (end === 'destroyed') wc.fire('destroyed');
+      else if (end === 'cancel') controller.abort(); else svc.close(nav.tabId);
+      expect(await waiter).toMatchObject({ kind: 'closed' });
+    }
+  });
+  it('rejects a rendererless existing tab with user history without injecting blank or issuing CDP', async () => {
+    const { svc } = make(); const { nav, wc } = await openTab(svc);
+    wc.debugger.respond = async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f', loaderId: 'l' } } } : {};
+    wc.loadImpl = async () => { wc.fire('did-navigate', {}, wc.url, 200); };
+    const positive = await svc.open({ tabId: nav.tabId, url: 'https://example.org/positive', network: { ownerId: 'n', accepts: () => true } });
+    expect(wc.debugger.sent.some(c => c.method === 'Network.enable')).toBe(true); await positive.networkLease!.close('done');
+    expect(wc.loadCalls).toContain('https://example.org/positive');
+    wc.debugger.sent.length = 0; wc.loadCalls.length = 0; wc.osPid = 0;
+    await expect(svc.open({ tabId: nav.tabId, url: 'https://example.org/negative', network: { ownerId: 'n', accepts: () => true } })).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+    expect(wc.loadCalls).toEqual([]); expect(wc.debugger.sent).toEqual([]);
+    expect(wc.historyEntries).toEqual(['https://prev.example/', 'https://cur.example/']);
+  });
+
+});
+
+describe('network native teardown ownership', () => {
+  it.each(['close', 'cancel'] as const)('disables on healthy %s and serializes an immediate remount behind delayed disable', async end => {
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    let finishDisable!:()=>void;
+    wc.debugger.respond=method=>method==='Network.disable'?new Promise<void>(r=>{finishDisable=r;}):Promise.resolve({});
+    wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+    const controller=new AbortController();
+    const first=await svc.open({tabId:nav.tabId,url:'https://example.org/one',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    const waiter=first.networkLease!.take(undefined,1000);
+    const closing=end==='close'?first.networkLease!.close('done'):(controller.abort(),Promise.resolve());
+    await flush(30);
+    expect(await waiter).toMatchObject({kind:'closed'});
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable']);
+    const second=svc.open({tabId:nav.tabId,url:'https://example.org/two',network:{ownerId:'two',accepts:()=>true}});
+    await flush(30);
+    expect(wc.debugger.sent.filter(c=>c.method==='Network.enable')).toHaveLength(1);
+    finishDisable(); await closing; const result=await second;
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
+    wc.debugger.respond=async()=>({});await result.networkLease!.close('done');
+  });
+  it.each(['settle','crash','detach','destroyed'] as const)('cancels during native enable and releases safely on %s',async end=>{
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    let finishEnable!:()=>void;
+    wc.debugger.respond=method=>method==='Network.enable'?new Promise<void>(r=>{finishEnable=r;}):Promise.resolve({});
+    const controller=new AbortController();
+    const first=svc.open({tabId:nav.tabId,url:'https://example.org/one',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    await flush(40);expect(wc.debugger.sent.filter(c=>c.method==='Network.enable')).toHaveLength(1);
+    controller.abort();expect((await first).nav.outcome.kind).toBe('cancelled');await flush(20);
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
+    if(end==='settle'){
+      wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+      const remount=svc.open({tabId:nav.tabId,url:'https://example.org/two',network:{ownerId:'two',accepts:()=>true}});
+      await flush(30);
+      expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
+      wc.debugger.respond=async()=>({});finishEnable();const result=await remount;
+      expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
+      await result.networkLease!.close('done');
+    }else{
+      if(end==='crash')wc.fire('render-process-gone',{}, {reason:'crashed'});
+      else if(end==='detach')wc.debugger.fire('detach',{},'target_closed');else wc.fire('destroyed');
+      await flush(30);
+      // The tab operation queue must be released even if the old native command never settles.
+      wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+      const next=await svc.open({tabId:nav.tabId,url:'https://example.org/after'});
+      expect(next.nav.outcome.kind).toBe('ok');
+      finishEnable();await flush(30);
+      expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
+    }
+  });
+  it('owns a committed bootstrap before load settles, suppresses its receipt on cancellation, and removes only its history later',async()=>{
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    wc.fire('did-navigate',{},'https://example.org/real',200);
+    expect(svc.takeUnreportedNav(nav.tabId)).toMatchObject({url:'https://example.org/real'});
+    const controller=new AbortController();
+    const pending=svc.open({url:'https://example.org/cancelled',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    const fresh=wcOf(1);fresh.historyEntries=[];fresh.historyIndex=0;
+    let finishBlank!:()=>void;
+    fresh.loadImpl=()=>{fresh.historyEntries.push(fresh.url);fresh.historyIndex=fresh.historyEntries.length-1;return new Promise<void>(r=>{finishBlank=r;});};
+    await flush();fresh.osPid=9876;fresh.fire('did-navigate',{},'about:blank',200);
+    controller.abort();const cancelled=await pending;await flush(20);
+    expect(cancelled.nav.outcome.kind).toBe('cancelled');
+    expect(svc.takeUnreportedNav(cancelled.tabId)).toBeNull();
+    expect(fresh.historyEntries).toEqual(['about:blank']);
+    fresh.loadImpl=async()=>{fresh.historyEntries.push(fresh.url);fresh.historyIndex=fresh.historyEntries.length-1;fresh.fire('did-navigate',{},fresh.url,200);};
+    const result=await svc.open({tabId:cancelled.tabId,url:'https://example.org/after'});
+    expect(result.nav.outcome.kind).toBe('ok');expect(fresh.historyEntries).toEqual(['https://example.org/after']);
+    expect(fresh.navigationHistory.canGoBack()).toBe(false);
+    finishBlank();
+  });
+});
+
+describe('failed live network teardown', () => {
+  it.each(['explicit','cancel','take-abort'] as const)('surfaces finite %s cleanup failure and blocks remount until source death',async end=>{
+    const {svc}=make(),{nav,wc}=await openTab(svc);
+    wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
+    const controller=new AbortController();
+    const first=await svc.open({tabId:nav.tabId,url:'https://example.org/one',signal:controller.signal,network:{ownerId:'one',accepts:()=>true}});
+    expect(wc.debugger.sent.filter(c=>c.method==='Network.enable')).toHaveLength(1);
+    wc.debugger.respond=method=>method==='Network.disable'?Promise.reject(Error('PRIVATE_PROTOCOL_BODY_HEADER')):Promise.resolve({});
+    const takeController=new AbortController();
+    const waiting=first.networkLease!.take(takeController.signal,1000);
+    if(end==='cancel')controller.abort();else if(end==='take-abort')takeController.abort();
+    // Let background rejection reach the event loop before an explicit caller
+    // observes the retained failure; no unhandled rejection may escape.
+    if(end!=='explicit')await new Promise<void>(resolve=>setImmediate(resolve));
+    const closing=first.networkLease!.close('done');
+    await expect(closing).rejects.toMatchObject({code:'browser.not_dispatchable',message:'页面网络采集清理失败'});
+    expect(await waiting).toMatchObject({kind:'closed'});
+    expect(wc.getOSProcessId()).toBeGreaterThan(0);expect(wc.debugger.isAttached()).toBe(true);
+    await expect(first.networkLease!.close('again')).rejects.toMatchObject({code:'browser.not_dispatchable'});
+    await expect(svc.open({tabId:nav.tabId,url:'https://example.org/blocked',network:{ownerId:'two',accepts:()=>true}})).rejects.toMatchObject({code:'browser.not_dispatchable',message:'页面网络采集清理失败'});
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable']);
+    expect(wc.loadCalls).toEqual(['https://a.example/', 'https://example.org/one']);
+    expect(H.logs.filter(l=>l.msg==='network_capture_cleanup_failed').map(l=>l.ctx)).toEqual([{tabId:nav.tabId,reason:'network_disable_failed'}]);
+    // Exact debugger detach ends the poisoned generation. Recovery explicitly
+    // restores attachment/renderer facts; command rejection alone never does.
+    wc.debugger.attached=false;wc.debugger.fire('detach',{},'target_closed');
+    wc.debugger.attached=true;wc.debugger.respond=async()=>({});
+    const recovered=await svc.open({tabId:nav.tabId,url:'https://example.org/recovered',network:{ownerId:'three',accepts:()=>true}});
+    expect(recovered.nav.outcome.kind).toBe('ok');
+    expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
+    await recovered.networkLease!.close('done');
   });
 });

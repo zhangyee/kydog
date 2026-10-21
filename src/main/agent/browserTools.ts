@@ -1,6 +1,8 @@
 // src/main/agent/browserTools.ts
 import { Type } from 'typebox';
 import { KydogError } from '../../shared/errors';
+import { SEARCH_ENGINE_IDS } from '../../shared/webResearch';
+import type { SearchExecutionFacts, SearchExecutionPath, SearchObservation } from '../../shared/webResearchTask';
 import { INSTITUTION_CLOSED_NOTE, INSTITUTION_LOGIN_OPEN } from '../../shared/features';
 import type { NavigationObservation } from '../../shared/types';
 import { browserService } from '../browser/browserService';
@@ -19,6 +21,8 @@ import { renderConsole, ZERO_CURSOR, type ConsoleCursor } from '../browser/conso
 import { renderRequests, ZERO_REQUEST_CURSOR, type RequestCursor } from '../browser/requestLog';
 import { createLoginAsk } from './loginConfirm';
 import type { AskSharedState } from './askUserQuestionTool';
+import { makeSearchObservation } from '../webResearch/searchObservation';
+import { webResearchTaskStore } from '../webResearch/taskStore';
 
 type ToolContent = { type: string; [k: string]: unknown };
 type ToolResult = { content: ToolContent[]; details?: unknown };
@@ -74,9 +78,9 @@ export function stripUrlUserinfo(raw: string): string {
  * （比如都在 cnki.net 上）长得一模一样，它没法判断哪个是用户说的那一篇。
  *
  * **`*` 标的是 `s.activeTabId`（侧栏打开时用户会看到的那个），不是这次工具调用
- * 操作的标签。** `browser_act` / `browser_read` / `browser_login` 静默操作用户没在
- * 看的标签是常态（侧栏关着时 agent 照常干活），那时如果把 `*` 标成「被操作的标签」
- * 就是在撒谎。措辞与这里的判据必须是同一件事，见 `TABS_DESC`。
+ * 操作的标签。** 读、抽取与输入都可以在后台标签完成；`click` / `key` 通过 CDP 的
+ * per-target focus emulation 与 Native 输入派发，不切换 KyDog 的活动标签。因此工具结果
+ * 头部看到的一直是真实活动标签。措辞与这里的判据必须是同一件事，见 `TABS_DESC`。
  *
  * **只列这个对话看得见的**（`stateVisibleTo`：用户的 + 本对话开的）—— 别的对话的标签
  * 对这个任务没有意义，却每次工具调用都占上下文（Yee 2026-09-17 拍板）。
@@ -184,13 +188,30 @@ export function landedOnPage(o: NavigationObservation['outcome']): boolean {
 
 // ── browser_open ────────────────────────────────────────────────────────────
 
-const OpenParams = Type.Object({
-  url: Type.String({ description: '要打开的网址，必须是 http/https' }),
+export const OpenParams = Type.Object({
+  url: Type.Optional(Type.String({ description: '普通打开时必给；研究跳转确认时省略，由观察记录提供原始链接' })),
+  researchResolve: Type.Optional(Type.Object({ observationId: Type.String(),
+    resultIndex: Type.Integer({ minimum: 0 }) })),
+  researchResolveBatch: Type.Optional(Type.Object({
+    selections: Type.Array(Type.Object({
+      observationId: Type.String(),
+      resultIndexes: Type.Array(Type.Integer({ minimum: 0 }), { minItems: 1 }),
+    }, { additionalProperties: false }), { minItems: 1 }),
+  }, { additionalProperties: false,
+    description: '批量确认观察中的搜索引擎跳转；工具用少量 IAB 标签并发导航并逐条保存最终地址' })),
+  research: Type.Optional(Type.Object({
+    engineId: Type.Union(SEARCH_ENGINE_IDS.map((id) => Type.Literal(id))),
+    query: Type.String(), angleIds: Type.Array(Type.String(), { minItems: 1 }),
+    executionPath: Type.Literal('search_url'),
+  }, { additionalProperties: false,
+    description: '仅在直接打开拼接好的搜索 URL 时传；下一次同标签、同查询的结果抽取会继承这次导航事实。' })),
   tabId: Type.Optional(Type.String({ description: '给了就在这个标签里导航；不给就新开一个' })),
-});
+}, { additionalProperties: false });
 
 const OPEN_DESC = [
   '在内置浏览器里打开一个网址，返回页面快照。',
+  '普通打开传 url；单条确认搜索跳转传 researchResolve；批量确认传 researchResolveBatch。',
+  '批量确认会在 IAB 中导航全部选择项、逐条保存最终地址，只返回紧凑汇总，不返回每个页面的快照。',
   '',
   '**同一个源的连续页面请复用一个标签**（把上一次返回的 tabId 传回来），',
   '不要每篇论文都新开一个 —— 标签有上限，而且开多了你自己也理不清。',
@@ -209,6 +230,15 @@ const TargetProps = {
   selector: Type.Optional(Type.String({ description: 'CSS 选择器。已探明的剧本用这个' })),
   index: Type.Optional(Type.Number({ description: '快照里的编号。探索时用这个，必须同时给 snapshotId' })),
   snapshotId: Type.Optional(Type.String()),
+  locator: Type.Optional(Type.Object({
+    role: Type.String({ minLength: 1, description: '快照节点的精确 role，例如 button' }),
+    name: Type.Union([
+      Type.String({ minLength: 1 }),
+      Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    ], { description: '一个精确名称，或多语言名称候选；只接受唯一匹配' }),
+    visible: Type.Literal(true),
+  }, { additionalProperties: false,
+    description: '仅用于 click：在动作执行时取新快照，再按 role + name + 可见性唯一定位动态控件' })),
 };
 
 /**
@@ -240,7 +270,12 @@ export const ActionSchema = Type.Object({
     description: 'scroll 滚多少 CSS 像素。不给就滚一屏（按页面自己的视口高度算）',
   })),
   selectors: Type.Optional(Type.Record(Type.String(), Type.String())),
-  until: Type.Optional(Type.Any()),
+  until: Type.Optional(Type.Union([
+    Type.Object({ selector: Type.String(), state: Type.Optional(Type.Union([
+      Type.Literal('present'), Type.Literal('absent'),
+    ])) }, { additionalProperties: false }),
+    Type.Object({ urlMatches: Type.String() }, { additionalProperties: false }),
+  ], { description: 'wait 必须给 until: {selector,state?} 或 {urlMatches}；不能只给 timeoutMs' })),
   // 上下界照 spec §5.5 落在 schema 上。没有上限的话，一个 sequential 工具能把
   // 整轮 run 卡满自定的时限（实测 600000 一路通过），用户只看到「操作网页」转圈。
   timeoutMs: Type.Optional(Type.Number({
@@ -253,10 +288,33 @@ export const ActionSchema = Type.Object({
   actions: Type.Optional(Type.Array(Type.Any())),
 });
 
-const ActParams = Type.Object({
+export const ActParams = Type.Object({
   tabId: Type.String(),
-  actions: Type.Array(ActionSchema, { description: '按顺序执行，出错即停' }),
+  actions: Type.Array(ActionSchema, { description: '按顺序执行，出错即停；仅 research.status 为明确失败/空结果时可传 [] 记录当前页面' }),
+  research: Type.Optional(Type.Object({
+    engineId: Type.Union(SEARCH_ENGINE_IDS.map((id) => Type.Literal(id))),
+    query: Type.String(), angleIds: Type.Array(Type.String(), { minItems: 1 }),
+    executionPath: Type.Union([
+      Type.Literal('homepage_form'), Type.Literal('search_url'),
+      Type.Literal('result_page_form'), Type.Literal('status_only'),
+    ]),
+    submitActionIndex: Type.Optional(Type.Integer({ minimum: 0,
+      description: '本批扁平动作中负责提交搜索的 click/key 的零基序号；只有该动作成功才记 inputSubmitted。' })),
+    status: Type.Optional(Type.Union(['results', 'explicit_empty', 'blocked', 'submission_error', 'navigation_error',
+      'extraction_error'].map((status) => Type.Literal(status)))),
+  }, { description: '保存搜索观察时传。表单路径把实际提交动作、wait 和 extract 放在同一批，并用 submitActionIndex 指明提交动作；search_url 路径继承 browser_open 记录的导航事实。明确失败/空结果用 executionPath:"status_only"、status 与 actions:[]。' })),
 });
+
+type ResearchCapture = { engineId: (typeof SEARCH_ENGINE_IDS)[number]; query: string;
+  angleIds: string[]; executionPath: SearchExecutionPath; submitActionIndex?: number;
+  status?: SearchObservation['status'] };
+
+type PendingSearchExecution = {
+  engineId: ResearchCapture['engineId'];
+  query: string;
+  angleIds: string[];
+  facts: SearchExecutionFacts;
+};
 
 const ACT_DESC = [
   '在一个标签里执行一串动作，自动附带页面变化。',
@@ -267,11 +325,20 @@ const ACT_DESC = [
   '语义是「尽力顺序执行 + 出错即停」：第 k 个动作失败时，前 k-1 个已经生效了，',
   '返回值会说清停在哪、为什么、页面现在什么样。网页本来就不可回滚。',
   '',
-  '定位两种：已探明的剧本用 selector；探索时用 index，且必须带产生它的 snapshotId。',
+  '定位三种：稳定剧本用 selector；探索时用 index + snapshotId；动态按钮的 click 可用 locator，动作时按 role + name + visible 从新快照唯一定位。',
   '',
   '注意 **Enter 不一定能提交表单**，很多站点要点提交按钮。',
+  'wait 必须带 until: {urlMatches:"..."} 或 {selector:"...",state?:"present"|"absent"}；timeoutMs 只是等待上限。',
+  '保存表单检索观察时，把实际提交动作、wait 和 extract 放在同一批，传 research.executionPath，',
+  '并用 submitActionIndex 指明本批负责提交的 click/key；只有该动作成功才记录 inputSubmitted。',
+  '直接搜索 URL 由 browser_open 传 executionPath:"search_url"，随后同标签、同 query 的 extract',
+  '继承该次导航事实。动作失败会按阶段自动保存 submission_error / navigation_error / extraction_error；',
+  '不要再补一次 status_only。只有明确挑战页或零结果用 actions:[]、executionPath:"status_only"',
+  '与 research.status 记录当前页；结果状态仍须 extract。',
   '',
   '几件与你的预期可能不同的事：',
+  '- 不同标签可以并行打开、输入和读取。click / key 走 Electron Native 输入派发，',
+  '  每个动作都核验目标标签收到输入；不会修改用户当前可见标签。',
   '- click 之前会自动把元素滚进视野并做一次命中检查；被 cookie 横幅之类的浮层挡住会明确报出来，',
   '  不会静默点空。disabled 的控件也会明确报 —— 翻页到最后一页就是这个样子。',
   '- type 会**先清空**目标框再输入（点进去 → 全选 → 输入），返回值里会写清框里最后是什么。',
@@ -436,6 +503,11 @@ export type BrowserToolDeps = {
    * （见 `loginDesc` 那段：为什么放、为什么陈旧了也不危险）。没配就是 null。
    */
   institution: { name: string; entityID: string } | null;
+  saveResearchObservation?: (observation: SearchObservation) => Promise<void>;
+  loadResearchTarget?: (threadId: string, observationId: string, resultIndex: number) =>
+    Promise<{ requestedUrl: string; engineHost: string }>;
+  confirmResearchTarget?: (threadId: string, observationId: string, resultIndex: number,
+    requestedUrl: string, finalUrl: string) => Promise<SearchObservation>;
 };
 
 /**
@@ -495,14 +567,122 @@ const DownloadParams = {
 export function createBrowserTools(deps: BrowserToolDeps) {
   /** 头部那几行只列这个对话看得见的标签（见 `tabsLine`）。 */
   const withTabs = (body: string): ToolResult => withTabsFor(deps.threadId, body);
+  const pendingSearchExecutions = new Map<string, PendingSearchExecution>();
   const openTool = {
     name: 'browser_open',
     label: '打开网页',
     description: OPEN_DESC,
     promptSnippet: 'browser_open — 在内置浏览器里打开一个网址并返回页面快照',
     parameters: OpenParams,
-    executionMode: 'sequential' as const,
-    async execute(_id: string, params: { url: string; tabId?: string }): Promise<ToolResult> {
+    async execute(_id: string, params: { url?: string; tabId?: string;
+      research?: Omit<PendingSearchExecution, 'facts'> & { executionPath: 'search_url' };
+      researchResolve?: { observationId: string; resultIndex: number };
+      researchResolveBatch?: { selections: Array<{ observationId: string; resultIndexes: number[] }> } }): Promise<ToolResult> {
+      const targetForms = Number(Boolean(params.url)) + Number(Boolean(params.researchResolve)) +
+        Number(Boolean(params.researchResolveBatch));
+      if (targetForms !== 1) {
+        throw new Error('browser_open needs exactly one of url, researchResolve, or researchResolveBatch');
+      }
+      if ((params.researchResolve || params.researchResolveBatch) && params.research) {
+        throw new Error('browser_open research metadata cannot be combined with researchResolve');
+      }
+      if (params.researchResolveBatch && params.tabId) {
+        throw new Error('browser_open researchResolveBatch manages its own temporary IAB tabs');
+      }
+      if (params.research && !params.url) throw new Error('browser_open research metadata needs url');
+      if (params.research && (!params.research.query.trim() || !params.research.angleIds.length ||
+        params.research.angleIds.some((id) => !id.trim()))) {
+        throw new Error('browser_open research requires a query and at least one non-empty angleId');
+      }
+      if (params.researchResolveBatch) {
+        if (!params.researchResolveBatch.selections.length) {
+          throw new Error('researchResolveBatch selections cannot be empty');
+        }
+        const seenObservations = new Set<string>();
+        const flat: Array<{ observationId: string; resultIndex: number;
+          requestedUrl: string; engineHost: string }> = [];
+        const load = deps.loadResearchTarget ?? ((...args) => webResearchTaskStore.loadObservationTarget(...args));
+        for (const selection of params.researchResolveBatch.selections) {
+          if (!selection.observationId.trim() || seenObservations.has(selection.observationId)) {
+            throw new Error('researchResolveBatch requires each non-empty observationId exactly once');
+          }
+          seenObservations.add(selection.observationId);
+          if (!selection.resultIndexes.length || new Set(selection.resultIndexes).size !== selection.resultIndexes.length ||
+            selection.resultIndexes.some((index) => !Number.isSafeInteger(index) || index < 0)) {
+            throw new Error('researchResolveBatch result indexes must be non-empty, unique, non-negative safe integers');
+          }
+        }
+        // 全部读取成功之后才开始导航。这样第 80 项写错不会留下前 79 项已经改变的半批状态。
+        const loaded = await Promise.all(params.researchResolveBatch.selections.flatMap((selection) =>
+          selection.resultIndexes.map(async (resultIndex) => ({
+            observationId: selection.observationId,
+            resultIndex,
+            ...await load(deps.threadId, selection.observationId, resultIndex),
+          }))));
+        flat.push(...loaded);
+        const confirm = deps.confirmResearchTarget ?? ((...args) =>
+          webResearchTaskStore.confirmObservationTarget(...args));
+        type Resolution = { observationId: string; resultIndex: number; ok: true } |
+          { observationId: string; resultIndex: number; ok: false; reason: string };
+        const resolutions: Resolution[] = new Array(flat.length);
+        const temporaryTabs = new Set<string>();
+        const laneCount = Math.min(4, flat.length);
+        try {
+          await Promise.all(Array.from({ length: laneCount }, async (_, lane) => {
+            let tabId: string | undefined;
+            for (let index = lane; index < flat.length; index += laneCount) {
+              const item = flat[index];
+              try {
+                const opened = await browserService.open({
+                  url: item.requestedUrl, ...(tabId ? { tabId } : {}), ownerThreadId: deps.threadId,
+                  settleOutsideHost: item.engineHost,
+                });
+                tabId = opened.tabId;
+                temporaryTabs.add(tabId);
+                const outcome = opened.nav.outcome;
+                if (outcome.kind !== 'ok' && outcome.kind !== 'ok_same_document') {
+                  resolutions[index] = { observationId: item.observationId, resultIndex: item.resultIndex,
+                    ok: false, reason: outcome.kind };
+                  continue;
+                }
+                await confirm(deps.threadId, item.observationId, item.resultIndex,
+                  item.requestedUrl, outcome.finalUrl);
+                resolutions[index] = { observationId: item.observationId, resultIndex: item.resultIndex, ok: true };
+              } catch (error) {
+                resolutions[index] = { observationId: item.observationId, resultIndex: item.resultIndex,
+                  ok: false, reason: error instanceof Error ? error.message : String(error) };
+              }
+            }
+          }));
+        } finally {
+          for (const tabId of temporaryTabs) browserService.close(tabId);
+        }
+        const confirmed = resolutions.filter((row) => row.ok);
+        const failed = resolutions.filter((row): row is Extract<Resolution, { ok: false }> => !row.ok);
+        const byObservation = new Map<string, number[]>();
+        for (const row of confirmed) {
+          const indexes = byObservation.get(row.observationId) ?? [];
+          indexes.push(row.resultIndex);
+          byObservation.set(row.observationId, indexes);
+        }
+        const lines = [
+          `IAB 批量地址确认：共 ${flat.length} · 已确认 ${confirmed.length} · 失败 ${failed.length}`,
+          ...[...byObservation].map(([observationId, indexes]) =>
+            `${observationId}: 已确认 [${indexes.join(', ')}]`),
+          ...failed.map((row) => `${row.observationId}#${row.resultIndex}: ${row.reason}`),
+        ];
+        return withTabs(lines.join('\n'));
+      }
+      const researchTarget = params.researchResolve
+        ? await (deps.loadResearchTarget ?? ((...args) => webResearchTaskStore.loadObservationTarget(...args)))(
+            deps.threadId, params.researchResolve.observationId, params.researchResolve.resultIndex)
+        : undefined;
+      const requestedUrl = researchTarget?.requestedUrl ?? params.url;
+      if (!requestedUrl) throw new Error('browser_open needs url or researchResolve');
+      const searchStartUrl = params.tabId
+        ? browserService.stateVisibleTo(deps.threadId).tabs.find((tab) => tab.id === params.tabId)?.url
+        : requestedUrl;
+      if (params.research && !searchStartUrl) throw new Error('research start URL unavailable');
       // 复用已有标签时要从**当前**位置起算；新开的标签之前什么都没有，从零起算。
       // （新标签的 id 要等 open() 回来才知道，那时页面加载期间的错误已经发生了。）
       const consoleFrom = params.tabId === undefined
@@ -516,9 +696,37 @@ export function createBrowserTools(deps: BrowserToolDeps) {
         ? ZERO_REQUEST_CURSOR
         : browserService.requestCursor(params.tabId);
       const { tabId, nav, evicted } = await browserService.open({
-        url: params.url, tabId: params.tabId, ownerThreadId: deps.threadId,
+        url: requestedUrl, tabId: params.tabId, ownerThreadId: deps.threadId,
+        settleOutsideHost: researchTarget?.engineHost,
       });
+      if (params.research && (nav.outcome.kind === 'ok' || nav.outcome.kind === 'ok_same_document')) {
+        pendingSearchExecutions.set(tabId, {
+          engineId: params.research.engineId,
+          query: params.research.query,
+          angleIds: [...params.research.angleIds],
+          facts: {
+            startUrl: searchStartUrl!,
+            endUrl: nav.outcome.finalUrl,
+            successfulWaits: [],
+          },
+        });
+      }
       const parts = [describeNav(nav)];
+      if (params.researchResolve) {
+        if (nav.outcome.kind !== 'ok' && nav.outcome.kind !== 'ok_same_document') {
+          parts.push('研究目标地址未确认：本次导航没有到达目标页。');
+        } else {
+          try {
+            const confirmed = await (deps.confirmResearchTarget ?? ((...args) =>
+              webResearchTaskStore.confirmObservationTarget(...args)))(deps.threadId,
+              params.researchResolve.observationId, params.researchResolve.resultIndex,
+              requestedUrl, nav.outcome.finalUrl);
+            parts.push(`研究目标地址已由 IAB 确认：观察 ${confirmed.observationId} 第 ${params.researchResolve.resultIndex} 条 → ${nav.outcome.finalUrl}`);
+          } catch (error) {
+            parts.push(`研究目标地址未确认：${error instanceof Error ? error.message : String(error)}。`);
+          }
+        }
+      }
       // 新开标签挤掉了**本对话**的标签时当场说出来，模型不必等下次撞 no_tab 才知道。
       // 挤掉的是别的对话的就不说 —— 那个标签本来就不在这个对话的清单里（spec 2026-09-17 §3）。
       const mine = evicted.filter((e) => e.ownerThreadId === deps.threadId);
@@ -560,16 +768,47 @@ export function createBrowserTools(deps: BrowserToolDeps) {
     description: ACT_DESC,
     promptSnippet: 'browser_act — 在网页上执行一串动作（点击/输入/翻页/抽取），自动附带页面变化',
     parameters: ActParams,
-    executionMode: 'sequential' as const,
-    async execute(_id: string, params: { tabId: string; actions: Action[] }, signal?: AbortSignal): Promise<ToolResult> {
+    async execute(_id: string, params: { tabId: string; actions: Action[]; research?: ResearchCapture },
+      signal?: AbortSignal): Promise<ToolResult> {
+      if (params.research && (!params.research.query.trim() || !params.research.angleIds.length ||
+        params.research.angleIds.some((id) => !id.trim()))) {
+        throw new Error('browser_act research requires a query and at least one non-empty angleId. 页面尚未操作。');
+      }
       // 标签存不存在也在排队**之前**查：`enqueue` 无条件往 `queues` 里塞一个键，
       // 而清理只在真标签的回收路径上 —— 模型手滑写错一个 tabId 就留一个永不删除的
       // 条目（那行注释立的规矩是「只增不减」不许发生）。顺带把错误提前到一句
       // 「没有这个标签页」，而不是让整批跑到派发时才逐条报错。
       assertTabExists(params.tabId);
-      // 校验在排队**之前**：形状不对的一批不该先去占住这个标签的队列。
-      validateBatch(params.actions);
+      // 明确失败/空结果只记录当前页；没有可执行动作时不必为校验编造一次页面交互。
+      // 其他批次仍由原有校验在排队之前拦下空动作。
+      const statusOnly = params.actions.length === 0 && params.research?.status !== undefined &&
+        params.research.status !== 'results';
+      if (!statusOnly) validateBatch(params.actions);
       const steps = flattenActions(params.actions);
+      // `research` 若无抽取或明确状态，必须在触碰页面前拒绝。否则输入/提交已生效，
+      // 收尾时才报错会诱导模型重试整批，重复提交并把有效导航显示成失败。
+      if (params.research && (!params.research.status || params.research.status === 'results') &&
+        !steps.some((step) => step.action.kind === 'extract')) {
+        throw new Error('本批没有 extract，也没有 research.status。先不带 research 完成搜索；'
+          + '结果出现后，在含 extract 的调用中传 research。页面尚未操作。');
+      }
+      const submitStep = params.research?.submitActionIndex === undefined
+        ? undefined : steps[params.research.submitActionIndex];
+      if (params.research?.submitActionIndex !== undefined &&
+        (!submitStep || (submitStep.action.kind !== 'click' && submitStep.action.kind !== 'key'))) {
+        throw new Error('research.submitActionIndex must identify a click or key action. 页面尚未操作。');
+      }
+      const pending = params.research?.executionPath === 'search_url'
+        ? pendingSearchExecutions.get(params.tabId) : undefined;
+      if (params.research?.executionPath === 'search_url' && (!pending ||
+        pending.engineId !== params.research.engineId || pending.query !== params.research.query ||
+        pending.angleIds.length !== params.research.angleIds.length ||
+        pending.angleIds.some((id, index) => id !== params.research?.angleIds[index]))) {
+        const registeredQuery = pending ? JSON.stringify(pending.query) : '无';
+        const currentQuery = JSON.stringify(params.research.query);
+        throw new Error('本标签没有与 research 完全匹配的 search_url 导航事实'
+          + `（已登记 query：${registeredQuery}；本次 query：${currentQuery}）。页面尚未操作。`);
+      }
 
       // 整批走 `enqueue` + `withAgentDriving`，与 `browser_open` 同一条路
       // （`browserService.ts` 那两处「不要另开一条路」说的就是这里）：
@@ -578,7 +817,7 @@ export function createBrowserTools(deps: BrowserToolDeps) {
       //  · withAgentDriving —— 整批期间 `isAgentActive` 必须为 true，否则动作触发的
       //    `window.open` 新标签会被 `setWindowOpenHandler` 判成用户的，不受 agent 标签上限管，
       //    一轮长检索下来标签只增不减。
-      return browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
+      const result = await browserService.enqueue(params.tabId, () => browserService.withAgentDriving(
         params.tabId, deps.threadId,
         // **`before` 快照取在队列里面**：这一批在队列里等的那段时间，同一个标签上
         // 另一次操作可能产生新快照，拿队列外那一份去 diff 就会把别人的改动算进
@@ -589,10 +828,16 @@ export function createBrowserTools(deps: BrowserToolDeps) {
           browserService.getSnapshot(params.tabId),
           browserService.consoleCursor(params.tabId),
           { from: browserService.requestReportedCursor(params.tabId), start: browserService.requestCursor(params.tabId) },
-          steps, signal,
+          steps, signal, params.research,
+          deps.saveResearchObservation ?? ((observation) => webResearchTaskStore.saveObservation(observation)),
+          pending?.facts,
         ),
         '操作网页',
       ));
+      if (pending && pendingSearchExecutions.get(params.tabId) === pending) {
+        pendingSearchExecutions.delete(params.tabId);
+      }
+      return result;
     },
   };
 
@@ -776,6 +1021,8 @@ export function createBrowserTools(deps: BrowserToolDeps) {
 async function runBatch(
   threadId: string, tabId: string, before: AxSnapshot | null, consoleFrom: ConsoleCursor,
   requests: { from: RequestCursor; start: RequestCursor }, steps: FlatStep[], signal?: AbortSignal,
+  research?: ResearchCapture, saveObservation?: (observation: SearchObservation) => Promise<void>,
+  inheritedExecutionFacts?: SearchExecutionFacts,
 ): Promise<ToolResult> {
   const withTabs = (body: string): ToolResult => withTabsFor(threadId, body);
   // spec §5.1：**这一批里新开的标签必须列出来**。不列的话模型点了一下、返回值说
@@ -784,19 +1031,69 @@ async function runBatch(
   const tabsBefore = new Set(browserService.stateVisibleTo(threadId).tabs.map((t) => t.id));
   const rows: string[] = [];
   const collected: ExtractRow[] = [];
+  const observations: SearchObservation[] = [];
   // 预算跨步骤累计：`collected` 一把 JSON.stringify 进工具结果，而一批允许 60 个
   // 动作 / repeat 10 轮 —— 逐格与逐次的上限都拦不住这一头。
   const budget = createBatchBudget();
-  let stoppedAt: string | null = null;
+  let stoppedAt: { summary: string; actionIndex: number; actionKind: FlatStep['action']['kind'];
+    message: string; selector?: string; locator?: import('../browser/actions').SemanticLocator;
+    key?: string } | null = null;
+  const startUrl = inheritedExecutionFacts?.startUrl ??
+    browserService.stateVisibleTo(threadId).tabs.find((tab) => tab.id === tabId)?.url;
+  if (research && !startUrl) throw new Error('research start URL unavailable');
+  let completedSubmitAction: SearchExecutionFacts['completedSubmitAction'];
+  const successfulWaits: SearchExecutionFacts['successfulWaits'] = [
+    ...(inheritedExecutionFacts?.successfulWaits ?? []),
+  ];
 
-  for (const step of steps) {
-    if (signal?.aborted) { stoppedAt = `${step.label}：用户中止`; break; }
+  for (const [stepIndex, step] of steps.entries()) {
+    if (signal?.aborted) {
+      stoppedAt = { summary: `${step.label}：用户中止`, actionIndex: stepIndex,
+        actionKind: step.action.kind, message: '用户中止',
+        ...('selector' in step.action ? { selector: step.action.selector } : {}),
+        ...('locator' in step.action ? { locator: step.action.locator } : {}),
+        ...(step.action.kind === 'key' ? { key: step.action.key } : {}) };
+      break;
+    }
     try {
-      const line = await runStep(tabId, step.action, collected, budget);
+      const line = await runStep(tabId, step.action, collected, budget, research ? (result) => {
+        const searchPageUrl = browserService.stateVisibleTo(threadId).tabs.find((tab) => tab.id === tabId)?.url;
+        if (!searchPageUrl) throw new Error('research search page URL unavailable');
+        const endUrl = inheritedExecutionFacts?.endUrl ?? searchPageUrl;
+        const executionFacts: SearchExecutionFacts = {
+          startUrl: startUrl!, endUrl,
+          ...(completedSubmitAction ? { completedSubmitAction } : {}),
+          successfulWaits: successfulWaits.map((wait) => ({ ...wait })),
+        };
+        observations.push(makeSearchObservation({ threadId, tabId, ...research,
+          inputSubmitted: inheritedExecutionFacts !== undefined || completedSubmitAction !== undefined,
+          navigationConfirmed: inheritedExecutionFacts !== undefined || startUrl !== endUrl ||
+            successfulWaits.some((wait) => 'urlMatches' in wait),
+          resultsExtracted: true, executionFacts,
+          searchPageUrl, rows: result.rows, rowTruncation: result.rowTruncation }));
+      } : undefined);
       rows.push(`${step.label}：${line}`);
+      if (research?.submitActionIndex === stepIndex &&
+        (step.action.kind === 'click' || step.action.kind === 'key')) {
+        completedSubmitAction = step.action.kind === 'click'
+          ? { kind: 'click',
+            ...('selector' in step.action ? { selector: step.action.selector } : {}),
+            ...('locator' in step.action ? { locator: step.action.locator } : {}) }
+          : { kind: 'key', ...(step.action.key ? { key: step.action.key } : {}) };
+      }
+      if (step.action.kind === 'wait') {
+        const until = parseWaitUntil(step.action.until);
+        successfulWaits.push('urlMatches' in until
+          ? { urlMatches: until.urlMatches }
+          : { selector: until.selector, state: until.state });
+      }
     } catch (err) {
       const msg = err instanceof KydogError ? err.message : String(err);
-      stoppedAt = `${step.label}失败：${msg}`;
+      stoppedAt = { summary: `${step.label}失败：${msg}`, actionIndex: stepIndex,
+        actionKind: step.action.kind, message: msg,
+        ...('selector' in step.action ? { selector: step.action.selector } : {}),
+        ...('locator' in step.action ? { locator: step.action.locator } : {}),
+        ...(step.action.kind === 'key' ? { key: step.action.key } : {}) };
       break;
     }
   }
@@ -814,12 +1111,74 @@ async function runBatch(
   }
 
   const parts = [...rows];
+  if (research) {
+    if (!observations.length && research.status && !stoppedAt) {
+      const searchPageUrl = browserService.stateVisibleTo(threadId).tabs.find((tab) => tab.id === tabId)?.url;
+      if (!searchPageUrl) throw new Error('research search page URL unavailable');
+      const endUrl = inheritedExecutionFacts?.endUrl ?? searchPageUrl;
+      observations.push(makeSearchObservation({ threadId, tabId, ...research, searchPageUrl,
+        inputSubmitted: inheritedExecutionFacts !== undefined || completedSubmitAction !== undefined,
+        navigationConfirmed: inheritedExecutionFacts !== undefined || startUrl !== endUrl ||
+          successfulWaits.some((wait) => 'urlMatches' in wait),
+        resultsExtracted: false,
+        executionFacts: {
+          startUrl: startUrl!, endUrl,
+          ...(completedSubmitAction ? { completedSubmitAction } : {}),
+          successfulWaits: successfulWaits.map((wait) => ({ ...wait })),
+        },
+        rows: [], rowTruncation: { truncated: false, returned: 0, totalKnown: 0 } }));
+    }
+    if (!observations.length && stoppedAt) {
+      if (!saveObservation) throw new Error('research observation store unavailable');
+      const currentUrl = browserService.stateVisibleTo(threadId).tabs.find((tab) => tab.id === tabId)?.url;
+      const searchPageUrl = currentUrl ?? startUrl!;
+      const inheritedSubmit = inheritedExecutionFacts !== undefined;
+      const stage = stoppedAt.actionKind === 'extract' ? 'extraction'
+        : inheritedSubmit || completedSubmitAction !== undefined ? 'navigation' : 'submission';
+      const status: SearchObservation['status'] = stage === 'submission' ? 'submission_error'
+        : stage === 'navigation' ? 'navigation_error' : 'extraction_error';
+      const observation = makeSearchObservation({ threadId, tabId, ...research, status, searchPageUrl,
+        inputSubmitted: inheritedSubmit || completedSubmitAction !== undefined,
+        navigationConfirmed: inheritedSubmit || startUrl !== searchPageUrl ||
+          successfulWaits.some((wait) => 'urlMatches' in wait),
+        resultsExtracted: false,
+        executionFacts: {
+          startUrl: startUrl!, endUrl: inheritedExecutionFacts?.endUrl ?? searchPageUrl,
+          ...(completedSubmitAction ? { completedSubmitAction } : {}),
+          successfulWaits: successfulWaits.map((wait) => ({ ...wait })),
+        },
+        failure: {
+          stage, actionIndex: stoppedAt.actionIndex, actionKind: stoppedAt.actionKind,
+          message: stoppedAt.message,
+          ...(stoppedAt.selector ? { selector: stoppedAt.selector } : {}),
+          ...(stoppedAt.locator ? { locator: stoppedAt.locator } : {}),
+          ...(stoppedAt.key ? { key: stoppedAt.key } : {}),
+        },
+        rows: [], rowTruncation: { truncated: false, returned: 0, totalKnown: 0 } });
+      observations.push(observation);
+    }
+    if (!observations.length) {
+      // 输入或等待在 extract/status 之前失败时，`stoppedAt` 才是本批最具体、最可处置的
+      // 协议事实。用「缺少 observation」覆盖它，会把 focus ACK、导航、定位等真实失败
+      // 全部抹掉，并诱导模型重复整批。预检仍在 execute() 中：本来就没写 extract/status
+      // 的请求会在碰页面前被拒绝，不会走到这里。
+      throw new Error('research capture needs extract or explicit status');
+    } else {
+      if (!saveObservation) throw new Error('research observation store unavailable');
+      await Promise.all(observations.map((observation) => saveObservation(observation)));
+      parts.push('', ...observations.map((observation) =>
+        `研究观察 ${observation.observationId} · ${observation.engineId} · ${observation.query} · `
+        + `${observation.rows.length} 条候选 · 状态 ${observation.status}`
+        + (observation.rowTruncation.truncated ? ` · 页面结果已截断，已取 ${observation.rowTruncation.returned}/${observation.rowTruncation.totalKnown}` : '')
+        + `\n${observation.rows.slice(0, 3).map((row) => `- ${row.title ?? row.rawHref}: ${row.snippet ?? ''}`).join('\n')}`));
+    }
+  }
   // 出错即停，但**已经抽到的数据全部返回** —— 翻到最后一页时 click 找不到「下一页」
   // 是预期行为，前几轮的结果不该跟着一起丢。
   // 「此前的动作已经生效」只在确实有动作先跑完了才说。第一个动作就停下时并没有「此前的动作」，
   // 照说会让模型以为已经有东西落到了页面上（2026-09-14 实测）。rows 是这一批已经跑完的那些步。
   if (stoppedAt) {
-    parts.push('', `⚠ ${stoppedAt}`);
+    parts.push('', `⚠ ${stoppedAt.summary}`);
     if (rows.length > 0) parts.push('（此前的动作已经生效，网页不可回滚）');
   }
   const opened = browserService.stateVisibleTo(threadId).tabs.filter((t) => !tabsBefore.has(t.id));
@@ -830,7 +1189,7 @@ async function runBatch(
   }
   // 预算把后面的行全丢光时（收下 0 条）也要说出口，不然那句话跟着数据块一起没了。
   const batch = budget.report();
-  if (collected.length || batch.truncated) {
+  if (!research && (collected.length || batch.truncated)) {
     parts.push('', describeCollected(batch));
     if (collected.length) parts.push(wrapPageContent(JSON.stringify(collected, null, 1)));
   }
@@ -854,7 +1213,8 @@ async function runBatch(
   }
   return {
     ...withTabs(parts.join('\n')),
-    details: { snapshotId: after?.snapshotId ?? null, stopped: stoppedAt, snapshotFailed },
+    details: { snapshotId: after?.snapshotId ?? null, stopped: stoppedAt, snapshotFailed,
+      observationIds: observations.map((observation) => observation.observationId) },
   };
 }
 
@@ -892,6 +1252,7 @@ function describeWaitUntil(until: WaitUntil): string {
  */
 async function runStep(
   tabId: string, action: FlatStep['action'], collected: ExtractRow[], budget: BatchBudget,
+  onResearchExtract?: (result: ExtractResult) => void,
 ): Promise<string> {
   if (action.kind === 'extract') {
     const plan = compileExtractPlan(action.selectors);
@@ -902,6 +1263,7 @@ async function runStep(
     // 与 `browser_read` 同一个理由走 `evalInPage`：崩过一次的标签上求值永不 settle，
     // 而 extract 是这一批里唯一**不经过 `dispatch`** 的动作 —— 那道 pid 闸够不着它。
     const res = await browserService.evalInPage(tabId, extractExpression(plan)) as ExtractResult;
+    if (onResearchExtract) { onResearchExtract(res); return describeExtractResult(res, 0); }
     // 按整批预算收行。收不下的如实报出来 —— 静默丢行与静默截断是同一个毛病。
     const kept = budget.admit(res.rows, collected);
     return describeExtractResult(res, res.rows.length - kept);

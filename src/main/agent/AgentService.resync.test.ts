@@ -5,6 +5,7 @@ vi.mock('../ipc/broadcaster', () => ({ broadcaster: { emit: vi.fn() } }));
 import { broadcaster } from '../ipc/broadcaster';
 import { agentService } from './AgentService';
 import type { RunEvent } from '../../shared/protocol';
+import { DEFAULT_RESEARCH_BUDGET } from '../../shared/webResearch';
 
 type Listener = (evt: { type: string; [k: string]: unknown }) => void;
 type PiMsg = { role: string; [k: string]: unknown };
@@ -23,6 +24,7 @@ function attach(threadId: string, runId = 'r1') {
     askArgs: new Map<string, { toolName: string; args: unknown }>(),
     runJournal: [] as RunEvent[],
     runStartIndex: null as number | null,
+    runId,
     session: {
       prompt: vi.fn(), abort: vi.fn(), dispose: vi.fn(),
       state: { messages },
@@ -51,6 +53,27 @@ describe('AgentService — 在途 run 的重放', () => {
     (broadcaster.emit as any).mockClear();
   });
   afterEach(() => { vi.restoreAllMocks(); });
+
+  it('journals progress only for the current bound run and active collect tool call', () => {
+    const { bound, fire } = attach('t1');
+    (bound as any).runId = 'r1';
+    (bound as any).researchToolCalls = new Set<string>();
+    fire({ type: 'agent_start' });
+    fire({ type: 'tool_execution_start', toolCallId: 'collect-1', toolName: 'web_research_collect', args: {} });
+    const progress = { researchRunId: 'research-1', taskId: 'source-1', stage: 'fetch' as const,
+      status: 'fetching' as const, budget: { ...DEFAULT_RESEARCH_BUDGET },
+      usage: { candidates: 1, fetchesDispatched: 1, receivedBytes: 0, modelCalls: 0 } };
+    agentService.onResearchProgress('t1', 'r1', 'collect-1', progress);
+    const recorded = bound.runJournal.filter((event) => event.topic === 'run.research_progress');
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].payload).toMatchObject({ threadId: 't1', runId: 'r1',
+      messageId: bound.activeMessageId, toolCallId: 'collect-1', taskId: 'source-1' });
+    agentService.onResearchProgress('t1', 'old-run', 'collect-1', progress);
+    agentService.onResearchProgress('t1', 'r1', 'other-tool', progress);
+    fire({ type: 'tool_execution_end', toolCallId: 'collect-1', toolName: 'web_research_collect', isError: false, result: {} });
+    agentService.onResearchProgress('t1', 'r1', 'collect-1', progress);
+    expect(bound.runJournal.filter((event) => event.topic === 'run.research_progress')).toHaveLength(1);
+  });
 
   it('并行批次里已结束的工具，终态留在 journal 里 —— transcript 上还看不出来', () => {
     const { bound, messages, fire } = attach('t1');

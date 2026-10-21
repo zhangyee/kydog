@@ -23,18 +23,20 @@ vi.mock('react', async (importOriginal) => {
 
 const { mount } = await import('../../test-support/miniReact');
 const { ResearchCredentialsSection } = await import('./ResearchCredentialsSection');
+const { Toggle } = await import('./ui');
+const { useSkillsStore } = await import('../stores/skillsStore');
 const { InstitutionBlock } = await import('./InstitutionBlock');
 
 type Research = SettingsFile['research'];
 
 /** research.get 的回复。默认空；需要已有自定义变量的用例自己换掉。 */
-let stored: Research = { presets: {}, custom: [] };
+let stored: Research = { presets: {}, custom: [], xResearchEnabled: false };
 /** research.save 收到的每一份负载。 */
 let saves: Research[] = [];
 
 beforeEach(() => {
   F.institutionOpen = true;
-  stored = { presets: {}, custom: [] };
+  stored = { presets: {}, custom: [], xResearchEnabled: false };
   saves = [];
   (globalThis as unknown as { window: unknown }).window = {
     kydog: {
@@ -115,7 +117,7 @@ describe('保存前后自定义行的身份不变', () => {
    */
   it('已有的一行与刚加的一行，保存后 key 都与保存前一致，值原样留着', async () => {
     // 两行而不是一行：按位置复用 uid，一行时「位置错一格」看不出来
-    stored = { presets: {}, custom: [{ name: 'OLD_KEY', kind: 'key', value: 'old-secret' }] };
+    stored = { presets: {}, custom: [{ name: 'OLD_KEY', kind: 'key', value: 'old-secret' }], xResearchEnabled: false };
     const m = mount(ResearchCredentialsSection, {});
     await m.settle();
     click(m.find('research-add-var'));
@@ -138,4 +140,92 @@ describe('保存前后自定义行的身份不变', () => {
     expect(after.map((el) => el.key)).toEqual(before);
     expect(after.map((el) => [el.props.name, el.props.value])).toEqual([['OLD_KEY', 'old-secret'], ['AAA_VAR', 'secret-aaa']]);
   });
+});
+
+const experimentalToggle = (tree: unknown) => findOneWhere(tree, (el) => el.type === Toggle);
+
+it('experimentalToggleRequiresSaveAndRestoresSavedValue', async () => {
+  const enabledSkill = { name: 'x-research', origin: 'builtin' as const, description: 'experimental', enabled: true, dirPath: '/builtin' };
+  stored = { presets: { NCBI_API_KEY: 'kept' }, custom: [{ name: 'MY_KEY', kind: 'key', value: 'custom' }], xResearchEnabled: true };
+  let refreshes = 0;
+  let fail = false;
+  let savePending: (() => void) | undefined;
+  window.kydog.invoke = (async (method: string, args?: unknown) => {
+    if (method === 'research.get') return stored;
+    if (method === 'skill.list') { refreshes++; return stored.xResearchEnabled ? [enabledSkill] : []; }
+    if (method === 'research.save') {
+      saves.push(args as Research);
+      await new Promise<void>((resolve) => { savePending = resolve; });
+      if (fail) throw new Error('disk full');
+      stored = args as Research;
+      return stored;
+    }
+    throw new Error(method);
+  }) as typeof window.kydog.invoke;
+  useSkillsStore.getState().setSkills(await window.kydog.invoke('skill.list'));
+  expect(useSkillsStore.getState().skills).toEqual([enabledSkill]);
+  refreshes = 0;
+  const m = mount(ResearchCredentialsSection, {});
+  await m.settle();
+  expect(experimentalToggle(m.tree).props.checked).toBe(true);
+  // Prove the save transport works before asserting a draft edit does not use it.
+  click(m.find('research-save')); savePending!(); await m.settle();
+  expect(saves).toHaveLength(1);
+  expect(saves[0].xResearchEnabled).toBe(true);
+  expect(m.query('research-saved')).not.toBeNull();
+  saves = [];
+  experimentalToggle(m.tree).props.onChange();
+  expect(experimentalToggle(m.tree).props.checked).toBe(false);
+  expect(saves).toEqual([]);
+  expect(stored.xResearchEnabled).toBe(true);
+  fail = true;
+  click(m.find('research-save'));
+  expect(experimentalToggle(m.tree).props.disabled).toBe(true);
+  expect(m.find('research-save').props.disabled).toBe(true);
+  savePending!();
+  await m.settle();
+  expect(m.find('research-error').props.children).toBeTruthy();
+  expect(m.query('research-saved')).toBeNull();
+  expect(experimentalToggle(m.tree).props.disabled).toBe(false);
+  expect(stored.xResearchEnabled).toBe(true);
+  expect(refreshes).toBe(0);
+  expect(useSkillsStore.getState().skills).toEqual([enabledSkill]);
+  fail = false;
+  click(m.find('research-save'));
+  savePending!();
+  await m.settle();
+  expect(stored).toEqual({ presets: { NCBI_API_KEY: 'kept' }, custom: [{ name: 'MY_KEY', kind: 'key', value: 'custom' }], xResearchEnabled: false });
+  expect(m.find('research-saved').props.children).toBe('已保存，下一轮 Agent 运行生效');
+  expect(refreshes).toBe(1);
+  expect(useSkillsStore.getState().skills).toEqual([]);
+  const reopened = mount(ResearchCredentialsSection, {});
+  await reopened.settle();
+  expect(experimentalToggle(reopened.tree).props.checked).toBe(false);
+});
+
+it('skill refresh and displayed saved toggle follow actual returned settings', async () => {
+  stored = { presets: {}, custom: [], xResearchEnabled: false };
+  let returned = false;
+  let refreshes = 0;
+  window.kydog.invoke = (async (method: string, args?: unknown) => {
+    if (method === 'research.get') return stored;
+    if (method === 'research.save') { saves.push(args as Research); return { ...(args as Research), xResearchEnabled: returned }; }
+    if (method === 'skill.list') { refreshes++; return []; }
+    throw new Error(method);
+  }) as typeof window.kydog.invoke;
+  const m = mount(ResearchCredentialsSection, {});
+  await m.settle();
+  // Positive refresh: draft is unchanged false, committed response changed to true.
+  returned = true;
+  click(m.find('research-save')); await m.settle();
+  expect(refreshes).toBe(1);
+  expect(experimentalToggle(m.tree).props.checked).toBe(true);
+  expect(m.find('research-saved').props.children).toBe('已保存，下一轮 Agent 运行生效');
+  // Requested draft changes, but server returns the already-saved true value.
+  experimentalToggle(m.tree).props.onChange();
+  expect(experimentalToggle(m.tree).props.checked).toBe(false);
+  click(m.find('research-save')); await m.settle();
+  expect(experimentalToggle(m.tree).props.checked).toBe(true);
+  expect(refreshes).toBe(1);
+  expect(saves.map(s => s.xResearchEnabled)).toEqual([false, false]);
 });

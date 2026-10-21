@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createOnly } from '../persist/createOnly';
 
 /**
  * 把 pi 的 `write` / `edit` 换成「写完顺手报字数」的版本（同名注册进 customTools，覆盖内置的）。
@@ -89,9 +90,13 @@ export type PiFileToolFactories = {
 
 const lastWrite = new AsyncLocalStorage<{ path?: string; content?: string }>();
 
-/** 与 pi 的默认实现逐字相同（write.js / edit.js 的 default*Operations），只多记一笔。 */
-async function recordingWriteFile(absolutePath: string, content: string): Promise<void> {
-  await fs.writeFile(absolutePath, content, 'utf-8');
+/** The guard sees the SDK-computed complete content before any target-file write. */
+export type FileWriteGuard = (absolutePath: string, finalContent: string) => { createOnly: true } | void | Promise<{ createOnly: true } | void>;
+
+async function recordingWriteFile(absolutePath: string, content: string, guard?: FileWriteGuard, operation: 'write' | 'edit' = 'write'): Promise<void> {
+  const policy = await guard?.(absolutePath, content);
+  if (operation === 'write' && policy?.createOnly) await createOnly(absolutePath, content);
+  else await fs.writeFile(absolutePath, content, 'utf-8');
   const store = lastWrite.getStore();
   if (store) { store.path = absolutePath; store.content = content; }
 }
@@ -109,17 +114,17 @@ function withCount(def: FileToolDefinition): FileToolDefinition {
   };
 }
 
-export function createCharCountFileTools(pi: PiFileToolFactories, cwd: string): [FileToolDefinition, FileToolDefinition] {
+export function createCharCountFileTools(pi: PiFileToolFactories, cwd: string, guard?: FileWriteGuard): [FileToolDefinition, FileToolDefinition] {
   const write = pi.createWriteToolDefinition(cwd, {
     operations: {
-      writeFile: recordingWriteFile,
+      writeFile: (p, content) => recordingWriteFile(p, content, guard, 'write'),
       mkdir: (dir) => fs.mkdir(dir, { recursive: true }).then(() => {}),
     },
   });
   const edit = pi.createEditToolDefinition(cwd, {
     operations: {
       readFile: (p) => fs.readFile(p),
-      writeFile: recordingWriteFile,
+      writeFile: (p, content) => recordingWriteFile(p, content, guard, 'edit'),
       access: (p) => fs.access(p, constants.R_OK | constants.W_OK),
     },
   });

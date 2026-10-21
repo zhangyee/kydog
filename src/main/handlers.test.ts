@@ -31,6 +31,8 @@ const h = vi.hoisted(() => ({
   institution: [] as Array<{ m: string; args: unknown }>,
   windowSender: { id: 'window-sender' } as unknown,
   windowCloseCalls: 0,
+  viewState: null as null | { threadId: string | null; activeTab: 'thread' | 'file' },
+  researchCalls: [] as Array<{ method: string; args: string[] }>,
 }));
 
 vi.mock('electron', () => ({
@@ -98,7 +100,24 @@ vi.mock('./harness/manifest', () => ({
   deleteManifest: async () => {},
   discardCorruptManifest: async () => {},
 }));
-vi.mock('./ui/viewState', () => ({ viewStateStore: { get: () => null, set: () => {} } }));
+vi.mock('./ui/viewState', () => ({ viewStateStore: { get: () => h.viewState, set: () => {} } }));
+vi.mock('./webResearch/runStore', () => ({ researchRunStore: {
+  listRuns: async (threadId: string) => {
+    h.researchCalls.push({ method: 'list', args: [threadId] });
+    return [{ threadId, researchRunId: 'research-a', sources: [] }];
+  },
+  loadRun: async (threadId: string, researchRunId: string) => {
+    h.researchCalls.push({ method: 'get', args: [threadId, researchRunId] });
+    return { threadId, researchRunId, sources: [{ sourceId: 'source-a', evidenceIds: ['evidence-a'] }] };
+  },
+  loadSource: async (_run: unknown, sourceId: string) => {
+    h.researchCalls.push({ method: 'source', args: [sourceId] });
+    return { sourceId, finalUrl: 'https://example.org/final',
+      passages: [{ passageId: 'passage-a', text: 'Grounded source passage' }],
+      extraction: { evidence: [{ evidenceId: 'evidence-a', passageId: 'passage-a',
+        quote: 'Grounded', relation: 'supports', verification: 'grounded' }] } };
+  },
+} }));
 
 /**
  * 浏览器与机构两个服务替身掉：真的那两个 import 的是 electron 的
@@ -145,6 +164,14 @@ vi.mock('./institution/institutionService', () => ({
 // skillsService.listUnlocked() —— 它会 mkdir 真实的 ~/.kydog/skills 并读整棵树。
 vi.mock('./skills/skillsService', () => ({ skillsService: { listUnlocked: async () => [] } }));
 
+vi.mock('./research/researchService', () => ({ researchService: { save: vi.fn(), get: vi.fn() } }));
+vi.mock('./agent/AgentService', async (orig) => {
+  const actual = await orig<typeof import('./agent/AgentService')>();
+  return { ...actual, agentService: Object.assign(actual.agentService, { invalidateAllSessions: vi.fn().mockResolvedValue(undefined) }) };
+});
+import { researchService } from './research/researchService';
+import { agentService } from './agent/AgentService';
+
 import { registerAllHandlers } from './handlers';
 import { defaultSettings } from './persist/settingsFile';
 import type { SettingsFile, TelemetryStatus } from '../shared/types';
@@ -182,7 +209,43 @@ beforeEach(() => {
   h.browser = [];
   h.institution = [];
   h.windowCloseCalls = 0;
+  h.viewState = null;
+  h.researchCalls = [];
   registerAllHandlers();
+});
+
+describe('web research read RPC ownership', () => {
+  it('allows the active main-window thread and rejects another thread or window', async () => {
+    h.viewState = { threadId: 'thread-a', activeTab: 'thread' };
+    const shown = await call('webResearch.list', { threadId: 'thread-a' }, { sender: h.windowSender });
+    expect(shown).toEqual([{ threadId: 'thread-a', researchRunId: 'research-a', sources: [] }]);
+    const record = await call('webResearch.get', { threadId: 'thread-a', researchRunId: 'research-a' },
+      { sender: h.windowSender });
+    expect(record).toMatchObject({ threadId: 'thread-a', researchRunId: 'research-a' });
+    expect(h.researchCalls).toEqual([
+      { method: 'list', args: ['thread-a'] }, { method: 'get', args: ['thread-a', 'research-a'] },
+    ]);
+    await expect(Promise.resolve().then(() => call('webResearch.get',
+      { threadId: 'thread-b', researchRunId: 'research-a' }, { sender: h.windowSender })))
+      .rejects.toMatchObject({ code: 'research.not_found' });
+    await expect(Promise.resolve().then(() => call('webResearch.list',
+      { threadId: 'thread-a' }, { sender: { id: 'hidden' } })))
+      .rejects.toMatchObject({ code: 'research.not_found' });
+    expect(h.researchCalls).toHaveLength(2);
+  });
+
+  it('loads a bounded evidence excerpt for the active thread only', async () => {
+    h.viewState = { threadId: 'thread-a', activeTab: 'thread' };
+    const visible = await call('webResearch.evidence', { threadId: 'thread-a', researchRunId: 'research-a',
+      evidenceId: 'evidence-a' }, { sender: h.windowSender });
+    expect(visible).toMatchObject({ evidenceId: 'evidence-a', finalUrl: 'https://example.org/final',
+      excerpt: 'Grounded source passage' });
+    expect(h.researchCalls.map((entry) => entry.method)).toEqual(['get', 'source']);
+    await expect(Promise.resolve().then(() => call('webResearch.evidence',
+      { threadId: 'thread-b', researchRunId: 'research-a', evidenceId: 'evidence-a' },
+      { sender: h.windowSender }))).rejects.toMatchObject({ code: 'research.not_found' });
+    expect(h.researchCalls.map((entry) => entry.method)).toEqual(['get', 'source']);
+  });
 });
 
 /** 任意一条 RPC，返回值不收窄 —— 上面那个 invoke 的返回类型是给遥测那组用的。 */
@@ -655,4 +718,20 @@ describe('file.trash RPC', () => {
       await fs.rm(temp, { recursive: true, force: true });
     }
   });
+});
+
+it('research.save uses committed changed facts and preserves the RPC research result', async () => {
+  const research = { presets: { NCBI_API_KEY: 'preserved' }, custom: [], xResearchEnabled: true };
+  const save = vi.mocked(researchService.save);
+  const invalidate = vi.mocked(agentService.invalidateAllSessions);
+  invalidate.mockClear();
+  save.mockResolvedValueOnce({ research, xResearchEnabledChanged: true });
+  expect(await call('research.save', research)).toEqual(research);
+  expect(invalidate).toHaveBeenCalledOnce();
+  save.mockResolvedValueOnce({ research: { ...research, xResearchEnabled: false }, xResearchEnabledChanged: false });
+  expect(await call('research.save', research)).toEqual({ ...research, xResearchEnabled: false });
+  expect(invalidate).toHaveBeenCalledOnce();
+  save.mockRejectedValueOnce(new Error('disk full'));
+  await expect(call('research.save', research)).rejects.toThrow('disk full');
+  expect(invalidate).toHaveBeenCalledOnce();
 });

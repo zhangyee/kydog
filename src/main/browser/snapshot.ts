@@ -20,6 +20,8 @@ export type AxNode = {
    * **跨文档的号必然撞车**（新文档从 1 重发），所以配对之前先看 `AxSnapshot.generation`。
    */
   nodeId: number;
+  /** Private fixed-adapter permission; absent from public walker snapshots. */
+  collectedPermission?: { owner: string; token: string; purpose: string };
   role: string;
   name: string;
   /** 视口内的 CSS 像素坐标。CDP 的 Input 事件就吃这个单位，不要按缩放换算 —— 换算过反而打不中。 */
@@ -72,6 +74,9 @@ export type AxNode = {
  * 这里说的是「页面上的元素有没有全采到」，那里说的是「采到的有没有全显示」。
  */
 export type AxCollection = {
+  /** Private fixed-purpose walkers count only their selected candidate set. */
+  scope?: 'filtered';
+  candidateTotalKnown?: number;
   /** 撞上限提前停手了吗 */
   truncated: boolean;
   /** 真正写进 `nodes` 的条数 */
@@ -320,6 +325,10 @@ export function renderDiff(prev: AxSnapshot | null, next: AxSnapshot, limit = DE
   // 这类阈值补救 —— 下游猜正是这条 bug 的成因。
   if (prev.generation !== next.generation) {
     return fullWith('页面已经换成另一个文档，上一份快照里的编号在这里全部失效。下面是新的完整快照：', next, limit);
+  }
+
+  if (prev.collection.scope === 'filtered' || next.collection.scope === 'filtered') {
+    return fullWith('采集范围限定为当前选定控件；不能据此判断整页是否变化。下面是当前范围的快照：', next, limit);
   }
 
   const before = indexById(prev.nodes);

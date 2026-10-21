@@ -12,7 +12,7 @@ function makeFakeBound(threadId: string) {
   const dispose = vi.fn().mockResolvedValue(undefined);
   return {
     threadId, providerId: 'anthropic', modelId: 'm1',
-    cwd: '/x', activeMessageId: null,
+    cwd: '/x', activeMessageId: null, runId: null,
     session: { prompt: vi.fn(), abort: vi.fn(), subscribe: () => () => undefined, dispose },
     _dispose: dispose,
   };

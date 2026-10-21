@@ -7,6 +7,9 @@ import { browserService } from '../browser/browserService';
 import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
 import { turnTitleSource } from '../../shared/userTurn';
+import { researchRunStore } from '../webResearch/runStore';
+import { xResearchTaskStore } from '../x/xResearchTaskStore';
+import { disposeXResearchThread, forgetXResearchThread } from '../x/xResearchTaskService';
 import type { AskAnswer } from '../../shared/askQuestion';
 import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
@@ -90,18 +93,33 @@ export class ThreadService {
     return withIndexLock(async () => {
       const idx = await loadIndex();
       const targets = this.pick(idx, threadIds);
-      for (const t of targets) {
-        await agentService.dispose(t.id);
-        // 对话没了，它名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
-        // **排在 dispose 之后**：先把在飞的那一轮停下，再关它可能正在驱动的标签。
-        // 不挂在 agentService.dispose 里 —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
-        browserService.disposeForThread(t.id);
-      }
-      const gone = new Set(threadIds);
-      idx.threads = idx.threads.filter((t) => !gone.has(t.id));
-      await saveIndex(idx);
-      // 先改 index 再删文件（同改动前）：删文件失败不回滚 index。
-      for (const t of targets) await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
+      const deletion = agentService.beginThreadDeletion(threadIds);
+      try {
+        for (const t of targets) {
+          await agentService.dispose(t.id);
+          // 对话没了，它名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
+          // **排在 dispose 之后**：先把在飞的那一轮停下，再关它可能正在驱动的标签。
+          // 不挂在 agentService.dispose 里 —— 切界面语言、换 provider 也走 dispose，那不是「对话没了」。
+          browserService.disposeForThread(t.id);
+        }
+        const gone = new Set(threadIds);
+        idx.threads = idx.threads.filter((t) => !gone.has(t.id));
+        await saveIndex(idx);
+        deletion.commit();
+        // 先改 index 再删文件（同改动前）：删文件失败不回滚 index。
+        for (const t of targets) {
+          await fs.rm(sessionFileFor(t.projectPath, t.id), { force: true });
+          await researchRunStore.removeRunsForThread(t.id);
+          // 目录删之前先等这条 thread 的队列排空：没建过会话的对话，上面那次 `agentService.dispose`
+          // 一开始就读不到 bound session 而早退，排在这条链上的工作因此没人等 —— 它随后的落盘会把
+          // 刚删掉的目录写回来。不带账本 = 等整条链（同 `AgentService.dispose` 的删对话路径）。
+          await disposeXResearchThread(t.id);
+          // x 研究任务目录跟对话走（同一处置）：本条对话名下所有研究的产物没有别的所有者。
+          // 内存缓存也要淘汰：没有建过会话的对话走不到 `dispose`，缓存却可能还在。
+          await xResearchTaskStore.removeThread(t.id);
+          forgetXResearchThread(t.id);
+        }
+      } finally { deletion.finish(); }
     });
   }
 

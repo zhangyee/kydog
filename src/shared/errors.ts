@@ -4,6 +4,20 @@ export type KydogErrorCode =
   | 'thread.not_found'
   | 'thread.busy'
   | 'thread.has_messages'
+  | 'research.not_found'
+  // **这个进程里还没有 x research 任务服务**（开关默认关闭，关着时整条进程都停在这里）。
+  // 与 not_found 分开：那一条是「这条研究不在」（把 id 找对 / 它真被删了），这一条是
+  // 「现在还答不了，服务接上之后同一个 id 就能取到」。共用一个码时卡片只能把两种情况
+  // 都读成「记录不可用」，于是有内容的卡会一直挂着那句话。
+  | 'research.unavailable'
+  | 'research.observation_already_submitted'
+  // 往一段已经取消的研究里追加工作。与 not_found 分开：这条的下一步是**开一段新研究**
+  // （没有 pause / resume），而 not_found 的下一步是把 id 找对。
+  | 'research.cancelled'
+  // 进程级 x research task service 已经登记过，又被换成一个**另一个实例**。这是接线错误，
+  // 不是用户能触发的事：多实例会让队列与在飞状态各自一份。与 not_found 分开 ——
+  // 那一条的下一步是把 id 找对，这一条的下一步是修 `registerXResearchTaskService` 的调用点。
+  | 'research.conflict'
   | 'project.not_found'
   | 'project.access_denied'
   | 'agent.provider_error'
@@ -33,6 +47,9 @@ export type KydogErrorCode =
   | 'browser.bad_url'
   // 动作批次本身不合法：空列表、repeat 嵌套、times 越界、展开后超步数上限、
   // 不认识的按键名。与 bad_url 分开 —— 那条只管网址。
+  | 'browser.cancelled'
+  | 'browser.stale_snapshot'
+  | 'x.invalid_page'
   | 'browser.bad_action'
   | 'browser.no_tab'
   | 'browser.too_many_tabs'
@@ -67,6 +84,10 @@ export type KydogErrorCode =
   // 内容为「Internal error」的话、`Input.insertText` **永不 settle**（整轮 run 挂死）、
   // `Input.dispatchKeyEvent` 照常 resolve（于是回报「按下 Enter」而它一个字都没发出去）。
   | 'browser.not_dispatchable'
+  // 键盘动作已经选中了目标标签，但它没有同时处于活动、可见、聚焦状态（侧栏已收起、
+  // 被遮挡、还没有上报布局，或操作期间用户切去了别处）。这种 CDP 键会静默失效，所以不发送。
+  // **处置是显示浏览器侧栏后重试，不按成功继续推断。**
+  | 'browser.input_not_delivered'
   // 往页面里注的那段脚本**没有拿回可用的结果**：求值 reject 了、回来的东西不成形状、
   // 撞了单次求值的时限，或者页面自己报「到达时已经过了时限、什么都没做」。
   // **这四种里只有最后一种说得出「没有发生」** —— 撞时限那一条取消不掉已经注进去的

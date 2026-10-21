@@ -4,6 +4,8 @@ import { useThreadsStore } from './stores/threadsStore';
 import { useAskStore } from './stores/askStore';
 import { useUnreadStore } from './panels/workspace/unreadStore';
 import { useUiStore } from './stores/uiStore';
+import { useWebResearchStore } from './stores/webResearchStore';
+import { useXResearchTaskStore } from './stores/xResearchTaskStore';
 
 /**
  * 本轮的 buffer 还不存在就先建出来。
@@ -54,6 +56,11 @@ export function applyRunEvent(e: RunEvent): void {
   switch (e.topic) {
     case 'run.started': {
       useRunsStore.getState().setRun(e.payload.threadId, { status: 'running', runId: e.payload.runId });
+      useWebResearchStore.getState().setCurrentRun(e.payload.threadId, e.payload.runId);
+      return;
+    }
+    case 'run.research_progress': {
+      useWebResearchStore.getState().applyProgress(e.payload);
       return;
     }
     case 'run.thinking_delta': {
@@ -149,6 +156,11 @@ export function applyRunEvent(e: RunEvent): void {
       // 按 thread 整体清，不是按某个 messageId 清：上一轮没能 flush 掉的残留 buffer
       // 也一并扫走，重放之后这条 thread 手上只剩本轮的真实内容。
       useRunsStore.getState().dropBuffersForThread(p.threadId);
+      useWebResearchStore.getState().resync(p.threadId, p.runId);
+      // 研究快照不在这份 journal 里（主进程的 x research 服务另存一份），所以「作废」
+      // 这一半得显式做：留着重载前那几行，卡会拿一份比盘上更旧的状态去渲染。
+      // 只清这条 thread 的 —— 别的 thread 的研究还在主进程里跑。
+      useXResearchTaskStore.getState().reset(p.threadId);
       useRunsStore.getState().setRun(p.threadId, { status: 'running', runId: p.runId });
       return;
     }

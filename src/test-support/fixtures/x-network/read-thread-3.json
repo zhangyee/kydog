@@ -1,0 +1,1299 @@
+{
+  "request": {
+    "focalTweetId": "9100000000001",
+    "rankingMode": "Recency",
+    "cursor": "read-cursor-4"
+  },
+  "body": {
+    "data": {
+      "threaded_conversation_with_injections_v2": {
+        "instructions": [
+          {
+            "type": "TimelineAddEntries",
+            "entries": [
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": []
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": []
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000108",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 112",
+                                "id_str": "910000000000108",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000109",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 113",
+                                "id_str": "910000000000109",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000110",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 114",
+                                "id_str": "910000000000110",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000111",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 115",
+                                "id_str": "910000000000111",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000112",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 116",
+                                "id_str": "910000000000112",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000113",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 117",
+                                "id_str": "910000000000113",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000114",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 118",
+                                "id_str": "910000000000114",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000115",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 119",
+                                "id_str": "910000000000115",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000116",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 120",
+                                "id_str": "910000000000116",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000117",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 121",
+                                "id_str": "910000000000117",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000118",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 122",
+                                "id_str": "910000000000118",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000119",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 123",
+                                "id_str": "910000000000119",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000120",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 124",
+                                "id_str": "910000000000120",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000121",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 125",
+                                "id_str": "910000000000121",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": []
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": []
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": []
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000122",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 126",
+                                "id_str": "910000000000122",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000123",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 127",
+                                "id_str": "910000000000123",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000124",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 128",
+                                "id_str": "910000000000124",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000125",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 129",
+                                "id_str": "910000000000125",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000126",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 130",
+                                "id_str": "910000000000126",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000127",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 131",
+                                "id_str": "910000000000127",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000128",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 132",
+                                "id_str": "910000000000128",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000129",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 133",
+                                "id_str": "910000000000129",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000130",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 134",
+                                "id_str": "910000000000130",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000131",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 135",
+                                "id_str": "910000000000131",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000132",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 136",
+                                "id_str": "910000000000132",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000133",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 137",
+                                "id_str": "910000000000133",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000134",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 138",
+                                "id_str": "910000000000134",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000135",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 139",
+                                "id_str": "910000000000135",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "91000000000065",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 68",
+                                "id_str": "91000000000065",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              },
+                              "quoted_status_result": {
+                                "result": {
+                                  "__typename": "Tweet",
+                                  "rest_id": "910000000000136",
+                                  "legacy": {
+                                    "conversation_id_str": "910000000000137",
+                                    "full_text": "Captured read text 140",
+                                    "id_str": "910000000000136",
+                                    "in_reply_to_status_id_str": "910000000000138"
+                                  },
+                                  "core": {
+                                    "user_results": {
+                                      "result": {
+                                        "__typename": "User",
+                                        "core": {
+                                          "screen_name": "ReadAuthor",
+                                          "name": "Read Author"
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "__typename": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "__typename": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "910000000000139",
+                              "legacy": {
+                                "conversation_id_str": "9100000000001",
+                                "full_text": "Captured read text 141",
+                                "id_str": "910000000000139",
+                                "in_reply_to_status_id_str": "9100000000001"
+                              },
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "__typename": "User",
+                                    "core": {
+                                      "screen_name": "ReadAuthor",
+                                      "name": "Read Author"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineCursor",
+                  "__typename": "TimelineTimelineCursor",
+                  "cursorType": "Top",
+                  "value": "read-cursor-5"
+                }
+              },
+              {
+                "content": {
+                  "entryType": "TimelineTimelineCursor",
+                  "__typename": "TimelineTimelineCursor",
+                  "cursorType": "Bottom",
+                  "value": "read-cursor-6"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

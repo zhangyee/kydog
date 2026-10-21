@@ -33,7 +33,7 @@ vi.mock('@earendil-works/pi-coding-agent', () => ({
   createAgentSession: async () => ({
     session: { prompt: async () => {}, abort: () => {}, subscribe: () => () => {} },
   }),
-  SessionManager: { open: () => ({}) },
+  SessionManager: { open: () => ({getBranch:()=>[]}) },
   createReadToolDefinition: () => ({ name: 'read' }),
   createWriteToolDefinition: () => ({ name: 'write', execute: async () => ({ content: [] }) }),
   createEditToolDefinition: () => ({ name: 'edit', execute: async () => ({ content: [] }) }),

@@ -93,6 +93,11 @@ function toHealth(read: SettingsRead): SettingsHealth {
   return { kind: 'ok' };
 }
 
+export type ResearchSaveFacts = {
+  research: SettingsFile['research'];
+  xResearchEnabledChanged: boolean;
+};
+
 export class SettingsService {
   private cache: SettingsFile | null = null;
   private health: SettingsHealth = { kind: 'ok' };
@@ -112,6 +117,14 @@ export class SettingsService {
    * 「你现在用的这份设置是怎么来的」了。
    */
   settingsHealth(): SettingsHealth { return this.health; }
+
+  /** 保存事实与写盘来自同一把锁内的最新设置。 */
+  async replaceResearch(research: SettingsFile['research']): Promise<ResearchSaveFacts> {
+    return this.withLock(async (cur) => ({
+      next: { ...cur, research },
+      result: { research, xResearchEnabledChanged: cur.research.xResearchEnabled !== research.xResearchEnabled },
+    }));
+  }
 
   /** 兼容旧 callsites（settings.update IPC 等）；内部走 withLock 统一锁。 */
   async update(patch: SettingsPatch): Promise<SettingsFile> {

@@ -36,7 +36,7 @@
   //
   // 这不是「取消」：卡在到点那一刻的窗口里，自检过了之后写照样会落地。
   // 所以主进程那条消息说的是「结果未知」，不是「没有发生」。
-  if (typeof req.notAfter === 'number' && Date.now() > req.notAfter) {
+  if (req.op !== 'scroll_ack_dispose' && typeof req.notAfter === 'number' && Date.now() > req.notAfter) {
     return { ok: false, reason: 'expired' };
   }
 
@@ -284,7 +284,94 @@
     }
     const hit = deepHit(x, y);
     if (!hit || !(hit === el || containsDeep(el, hit))) {
-      return { ok: false, reason: 'intercepted', by: describe(hit), x, y };
+      const refused = { ok: false, reason: 'intercepted', by: describe(hit), x, y };
+      // Preserve the original rejection and identities before ordered diagnostic reads.
+      // These facts never authorize input and are not an atomic rendering snapshot.
+      const relation = { hitConnected: null, hitContainsTarget: null };
+      try { if (hit) { const connected = hit.isConnected; relation.hitConnected = typeof connected === 'boolean' ? connected : null; } } catch { /* unknown */ }
+      try { if (hit) relation.hitContainsTarget = containsDeep(hit, el); } catch { /* unknown */ }
+      const targetAutoVisibility = { apiAvailable: false, optionObserved: null, value: null, readError: false };
+      try {
+        const check = W.Element?.prototype?.checkVisibility;
+        targetAutoVisibility.apiAvailable = typeof check === 'function';
+        if (targetAutoVisibility.apiAvailable) {
+          targetAutoVisibility.optionObserved = false;
+          // Getter access records runtime option recognition, not type-level support.
+          const value = check.call(el, { get contentVisibilityAuto() {
+            targetAutoVisibility.optionObserved = true; return true;
+          } });
+          if (targetAutoVisibility.optionObserved && typeof value === 'boolean') targetAutoVisibility.value = value;
+        }
+      } catch { targetAutoVisibility.readError = true; }
+      // ONE auto-aware call above precedes all new style/layout reads. Chromium main
+      // source suggests forced-update risks; this is not proof of the installed branch.
+      try {
+        const hitRect = hit ? hit.getBoundingClientRect() : null;
+        refused.pointerFailure = {
+          point: { x, y }, targetTag: el.tagName, hitTag: hit ? hit.tagName : null,
+          targetConnected: el.isConnected, targetContainsHit: false, hitSameAsCaptured: null,
+          rejectGeometry: {
+            targetRect: { x: r.x, y: r.y, width: r.width, height: r.height },
+            hitRect: hitRect ? { x: hitRect.x, y: hitRect.y, width: hitRect.width, height: hitRect.height } : null,
+            scroll: { x: W.scrollX, y: W.scrollY },
+            viewport: { width: W.innerWidth, height: W.innerHeight },
+          },
+        };
+      } catch { /* Keep the original refusal when diagnostic geometry is unavailable. */ }
+      if (refused.pointerFailure) {
+        refused.pointerFailure.measureContext = null;
+        try {
+          const enums = {
+            display: ['none','contents','block','inline','run-in','flow-root','list-item','inline-block','flex','inline-flex','grid','inline-grid','table','inline-table','table-row-group','table-header-group','table-footer-group','table-row','table-cell','table-column-group','table-column','table-caption','ruby','ruby-base','ruby-text','ruby-base-container','ruby-text-container','block flow','inline flow','block flow-root','inline flow-root','block flex','inline flex','block grid','inline grid','block table','inline table','block ruby','inline ruby','block flow list-item','inline flow list-item','block flow-root list-item','inline flow-root list-item'],
+            visibility: ['visible','hidden','collapse'],
+            pointerEvents: ['auto','none','visiblePainted','visibleFill','visibleStroke','visible','painted','fill','stroke','all','bounding-box'],
+            contentVisibility: ['visible','auto','hidden'],
+          };
+          const style = node => {
+            if (!node) return null;
+            let computed;
+            try { computed = W.getComputedStyle(node); } catch { return null; }
+            if (!computed) return null;
+            const result = {};
+            for (const key of Object.keys(enums)) {
+              let value = null;
+              try { const observed = computed[key]; if (enums[key].includes(observed)) value = observed; } catch { /* unknown */ }
+              result[key] = value;
+            }
+            return result;
+          };
+          const targetStyle = style(el), hitStyle = style(hit);
+          const ancestors = { chain: 'parentNode-host', complete: true, entries: [] };
+          let current = el, depth = 0;
+          const seen = new Set();
+          while (current && current !== D) {
+            if (seen.has(current)) { ancestors.complete = false; break; }
+            seen.add(current);
+            // parentNode/host is not flat-tree proof around slots or shadow roots.
+            if (current.assignedSlot || current.host || current.tagName === 'SLOT'
+              || current.parentNode?.shadowRoot) ancestors.complete = false;
+            if (depth > 0 && current.nodeType === 1) {
+              let contentVisibility = current === hit ? hitStyle?.contentVisibility ?? null : null;
+              if (current !== hit) {
+                try {
+                  const observed = W.getComputedStyle(current)?.contentVisibility;
+                  if (enums.contentVisibility.includes(observed)) contentVisibility = observed;
+                } catch { /* unknown */ }
+              }
+              if (contentVisibility === null) ancestors.complete = false;
+              else if (contentVisibility !== 'visible') ancestors.entries.push({
+                depth, contentVisibility, isOriginalHit: current === hit,
+              });
+            }
+            current = current.parentNode || current.host || null;
+            depth++;
+          }
+          if (current !== D) ancestors.complete = false;
+          refused.pointerFailure.measureContext = { relation, targetStyle, hitStyle,
+            targetAutoVisibility, contentVisibilityAncestors: ancestors };
+        } catch { /* Optional context must never erase the old authentic rejection. */ }
+      }
+      return refused;
     }
     return {
       ok: true, x, y,
@@ -306,6 +393,17 @@
   // ── 各个 op ───────────────────────────────────────────────────────────────
 
   const op = req && req.op;
+
+  // X-only delivery records retain physical DOM references in this isolated world.
+  // Poll/dispose never repeat a write. Disposal deliberately ignores write expiry.
+  if (op === 'scroll_ack_status' || op === 'scroll_ack_dispose') {
+    const saved = world?.scrollAcknowledgements?.get(req.token);
+    if (!saved) return { ok: false, reason: 'missing_scroll_ack' };
+    saved.check();
+    const acknowledgement = { ...saved.receipt };
+    if (op === 'scroll_ack_dispose') { saved.cleanup(); world.scrollAcknowledgements.delete(req.token); }
+    return { ok: true, acknowledgement };
+  }
 
   if (op === 'scroll') {
     // **不用 CDP 的 `Input.dispatchMouseEvent` mouseWheel。** 2026-09-08 在 Electron
@@ -345,7 +443,8 @@
       if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return false;
       return e.scrollHeight - e.clientHeight > 1;
     };
-    let node = deepHit(cx, cy);
+    const hit = deepHit(cx, cy);
+    let node = hit;
     let box = null;
     while (node) {
       if (scrollable(node)) { box = node; break; }
@@ -357,12 +456,90 @@
     // 不给 amount 就滚一屏 —— 这个数来自页面自己的视口高度，不是拍的阈值。
     const step = typeof req.amount === 'number' ? req.amount : viewport;
     const before = target ? target.scrollTop : 0;
-    if (box) box.scrollTop = before + dir * step;
-    else W.scrollBy(0, dir * step);
+    let delivery = null;
+    if (req.acknowledgement) {
+      const a = req.acknowledgement;
+      if (!world || !target || !a.document || world.gen !== a.document.generation || location.href !== a.document.url)
+        return { ok: false, reason: 'stale_node' };
+      if (typeof a.token !== 'string' || !Number.isFinite(a.expiresAt) || Date.now() >= a.expiresAt)
+        return { ok: false, reason: 'expired' };
+      if (!world.scrollAcknowledgements) world.scrollAcknowledgements = new Map();
+      if (world.scrollAcknowledgements.has(a.token)) return { ok: false, reason: 'duplicate_scroll_ack' };
+      // HTML can be selected as an overflow box; its event still targets Document.
+      const eventTarget = target === D.scrollingElement ? D : target;
+      const relationTo = id => {
+        if (!Number.isSafeInteger(id) || id < 1 || !world.ids) return 'unknown';
+        for (let p=target;p;p=p.parentNode || p.host || null) {
+          if (world.ids.get(p)===id) return p===target?'equal':'inside';
+        }
+        return 'unknown';
+      };
+      const conversationRelation=relationTo(a.relationNodes?.conversationNodeId);
+      const rootRelation=relationTo(a.relationNodes?.rootNodeId);
+      let targetNodeId = world.ids?.get(target) ?? null;
+      if (targetNodeId === null && world.ids && Number.isSafeInteger(world.next)) {
+        targetNodeId = world.next++;
+        world.ids.set(target,targetNodeId);
+      }
+      const receipt = { token:a.token, generation:world.gen, url:location.href,
+        targetKind:eventTarget===D?'document':'element', targetNodeId,
+        targetContainsHit:hit ? target.contains(hit) : null,
+        conversationRelation,rootRelation,
+        scrollHeight:target.scrollHeight,clientHeight:target.clientHeight,before, after:before,
+        written:false, eventObserved:false, frameObserved:false, state:'pending', invalidatedReason:null,
+        // 页面在滚动那一刻的可见性与视口事实：后台/被遮挡的 view 里基于可见性的加载
+        // 逻辑（IntersectionObserver 等）不会跑，没有这两个数就分不清“没滚到”和“页面是 hidden”。
+        viewport:{visibility:typeof D.visibilityState==='string'?D.visibilityState:'unknown', innerHeight:W.innerHeight||0, visualViewportHeight:W.visualViewport?W.visualViewport.height:null} };
+      let frame = null, timer = null;
+      const cleanup = () => {
+        eventTarget.removeEventListener('scroll', onScroll);
+        W.removeEventListener('pagehide', onPageHide);
+        if (frame !== null) W.cancelAnimationFrame(frame);
+        if (timer !== null) W.clearTimeout(timer);
+        frame = null; timer = null;
+      };
+      // `invalidated` alone loses which physical fact changed. Keep the finite
+      // reason so a consumer can tell a recoverable same-URL navigation from a
+      // detached target or a scroll offset the page itself adjusted.
+      const finish = (state, reason) => { receipt.state=state; if (reason) receipt.invalidatedReason=reason; cleanup(); };
+      const check = () => {
+        if (receipt.state !== 'pending') return;
+        if (Date.now() >= a.expiresAt) finish('expired');
+        else if (document !== D) finish('invalidated','document');
+        else if (world.gen !== a.document.generation) finish('invalidated','generation');
+        else if (location.href !== a.document.url) finish('invalidated','url');
+        else if (!target.isConnected) finish('invalidated','detached');
+        else if (eventTarget===D && D.scrollingElement!==target) finish('invalidated','scrolling_element');
+        else if (receipt.written && target.scrollTop!==receipt.after) finish('invalidated','offset');
+      };
+      const onPageHide = () => finish('invalidated','document');
+      const onScroll = event => {
+        if (!event.isTrusted || event.target !== eventTarget || !receipt.written) return;
+        check(); if (receipt.state !== 'pending' || receipt.eventObserved) return;
+        receipt.eventObserved=true;
+        frame=W.requestAnimationFrame(() => {
+          frame=null; check(); if (receipt.state !== 'pending') return;
+          receipt.frameObserved=true; finish('frame_observed');
+        });
+      };
+      delivery={receipt,cleanup,check};
+      world.scrollAcknowledgements.set(a.token,delivery);
+      eventTarget.addEventListener('scroll',onScroll);
+      W.addEventListener('pagehide',onPageHide);
+      timer=W.setTimeout(() => finish('expired'),Math.max(0,a.expiresAt-Date.now()));
+    }
+    try {
+      if (box) box.scrollTop = before + dir * step;
+      else W.scrollBy(0, dir * step);
+    } catch (error) { delivery?.cleanup(); throw error; }
     const after = target ? target.scrollTop : 0;
+    if (delivery) {
+      delivery.receipt.written=true; delivery.receipt.after=after;
+      if (after===before) { delivery.receipt.state='no_movement'; delivery.cleanup(); }
+    }
     const max = target ? target.scrollHeight - target.clientHeight : 0;
     return {
-      ok: true, container: box ? describe(box) : 'document',
+      ok: true, ...(delivery ? { acknowledgement:{...delivery.receipt} } : {}), container: box ? describe(box) : 'document',
       before: Math.round(before), after: Math.round(after),
       delta: Math.round(after - before),
       // ── `max - 1` 里那个 1 的出处（与上面 `> 1` 同源）─────────────────────

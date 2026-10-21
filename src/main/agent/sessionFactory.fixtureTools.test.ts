@@ -32,12 +32,18 @@ const H = vi.hoisted(() => ({
   calls: [] as Array<{ name: string; toolCallId: string; args: unknown; hasSignal: boolean }>,
   /** `createBrowserTools()` 的替身返回值。**每次调用返回同一个数组**，好让下面按引用比。 */
   tools: [] as Array<{ name: string; execute: unknown }>,
+  researchTools: [] as Array<{ name: string; execute: unknown }>,
   builtCount: 0,
   settings: { ui: { locale: 'zh' }, institution: null as unknown },
 }));
 
+vi.mock('../browser/browserService', () => ({browserService:{}}));
+
 vi.mock('./browserTools', () => ({
   createBrowserTools: () => { H.builtCount += 1; return H.tools; },
+}));
+vi.mock('./webResearchTools', () => ({
+  createWebResearchTools: () => H.researchTools,
 }));
 
 vi.mock('../settings/settingsService', () => ({
@@ -74,7 +80,7 @@ async function run(file: FixtureFile): Promise<PiEvent[]> {
   await fsp.writeFile(fixturePath, JSON.stringify(file));
   process.env.KYDOG_AGENT_FIXTURE = fixturePath;
   const session = await createSession({
-    cwd: '/x', sessionId: 't1', sessionsDir: '/x/sessions',
+    cwd: dir, sessionId: 't1', sessionsDir: path.join(dir,'sessions'),
     providerId: 'anthropic', modelId: 'claude',
     askShared: noopAskShared,
     currentRunId: () => 'run-1',
@@ -105,6 +111,7 @@ beforeEach(async () => {
   H.calls = [];
   H.builtCount = 0;
   H.tools = [fakeTool('browser_open'), fakeTool('browser_act'), fakeTool('browser_read'), fakeTool('browser_login')];
+  H.researchTools = [fakeTool('web_research_collect'), fakeTool('web_research_evidence')];
   dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kydog-fixt-'));
 });
 
@@ -114,6 +121,18 @@ afterEach(async () => {
 });
 
 describe('fixture 的 tool 事件真的执行 sessionFactory 交进来的那份工具', () => {
+  it('web-research collector and evidence tools use the same fixture execution path', async () => {
+    const params = { originalQuestion: '新版是否要求 HTTPS？', angles: [], discoveries: [] };
+    const collected = await run(script('web_research_collect', params));
+    expect(H.calls[0]).toMatchObject({ name: 'web_research_collect', toolCallId: 'tc-1', args: params,
+      hasSignal: true });
+    expect(textOf(endOf(collected))).toContain('web_research_collect 真的跑过了');
+    H.calls = [];
+    const evidence = await run(script('web_research_evidence', { researchRunId: 'r1', evidenceIds: ['e1'] }));
+    expect(H.calls[0].name).toBe('web_research_evidence');
+    expect(textOf(endOf(evidence))).toContain('web_research_evidence 真的跑过了');
+  });
+
   it('按名字找到之后**真调** execute，参数原样、AbortSignal 也给了', async () => {
     const events = await run(script('browser_act', { tabId: 'tab_1', actions: [{ kind: 'scroll', direction: 'up' }] }));
     expect(H.calls, 'execute 一次都没被调到 —— 交给 createFixtureSession 的那份工具清单没接上'
@@ -186,4 +205,17 @@ describe('fixture 的 tool 事件真的执行 sessionFactory 交进来的那份�
     await run(script('browser_act', { tabId: 'tab_1' }));
     expect(H.builtCount).toBe(1);
   });
+});
+
+it('fixture executes production SDK write/read/edit and persists the actual result in the current SDK branch',async()=>{
+ const written=await run(script('write',{path:'note.md',content:'initial words'}));
+ expect(endOf(written)?.isError).toBe(false);expect(await fsp.readFile(path.join(dir,'note.md'),'utf8')).toBe('initial words');
+ expect(textOf(endOf(written))).toContain('字数');
+ const read=await run(script('read',{path:'note.md'}));expect(textOf(endOf(read))).toContain('initial words');
+ const edited=await run(script('edit',{path:'note.md',edits:[{oldText:'initial',newText:'revised'}]}));expect(endOf(edited)?.isError).toBe(false);
+ const {SessionManager}=await import('@earendil-works/pi-coding-agent');
+ const sm=SessionManager.open(path.join(dir,'sessions','t1.jsonl'),path.join(dir,'sessions'),dir);
+ const results=sm.getBranch().filter(e=>e.type==='message' && e.message.role==='toolResult');
+ expect(results.map(e=>e.type==='message'&&e.message.role==='toolResult'?e.message.toolName:'')).toEqual(['write','read','edit']);
+ expect(sm.buildSessionContext().messages.some(m=>m.role==='toolResult'&&m.toolName==='read')).toBe(true);
 });

@@ -89,36 +89,44 @@ export async function launchKydog(opts: {
     env,
     timeout: 20_000,
   });
-  const page = await app.firstWindow();
-  // 窗口尺寸也钉死，理由同 --force-device-scale-factor。
-  //
-  // 应用自己按 1280×800 建窗，但**这个尺寸不由应用说了算**：CI 的 macOS runner 屏幕只有
-  // 1024×768，系统会把窗口压到屏幕内。于是同一份代码在开发机上跑的是 1280 宽、CI 上是 1024
-  // 宽，PDF 对照的每一栏差着一百多像素，逐像素与逐几何的判据两边量的根本不是同一个东西
-  // （v0.3.0 的三轮 tag run：本机全绿、CI 上八条红，全部指向这一处）。
-  //
-  // 钉成 1024×720：宽度取 CI 那台的屏宽（再宽在 CI 上钉不住），高度留出菜单栏与窗口边框的
-  // 余量。两边从此量同一个版面。要测别的尺寸的用例自己 setBounds，不要改这里。
-  await app.evaluate(async ({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows()[0];
-    if (w) w.setBounds({ x: 0, y: 0, width: 1024, height: 720 });
-  });
-  // launchKydog 的返回契约：应用已启动完成并渲染出真实 UI（不是还停在 bootstrap 前的
-  // "KYDOG" 占位闪屏）。没有这道锚，每条 spec 的首个断言都在用 5 秒的行为判据替启动方差
-  // 买单——冷 runner 上首帧超 5s 就红（50/00/10/36/18 各中过一次，跨五轮 CI 与本地）。这里
-  // 的 30s 是启动 infra 预算（config 注释：「光 launch 就允许 20s」同类），行为判据的 5s
-  // expect.timeout 一毫米不动。
-  //
-  // Root() 落地后只会二选一：onboarding 未完成 → OnboardingWizard（[data-testid=
-  // "onboarding-root"]，freshHome:true / onboardingCompleted:false 都走这条），否则 →
-  // AppShell/ThreeColumnLayout（[data-pane="workspace"]，包括 providerConfigured:false ——
-  // 那只是强制切到设置 tab，左侧工作区栏照常渲染）。两者互斥，任一时刻只有其中一个存在于
-  // DOM，selector list 里用哪个都不会撞 strict-mode；`.first()` 只是兜个底。
-  await page
-    .locator('[data-pane="workspace"], [data-testid="onboarding-root"]')
-    .first()
-    .waitFor({ timeout: 30_000 });
-  return { app, page, userDataDir, kydogHome };
+  try {
+    const page = await app.firstWindow();
+    // 窗口尺寸也钉死，理由同 --force-device-scale-factor。
+    //
+    // 应用自己按 1280×800 建窗，但**这个尺寸不由应用说了算**：CI 的 macOS runner 屏幕只有
+    // 1024×768，系统会把窗口压到屏幕内。于是同一份代码在开发机上跑的是 1280 宽、CI 上是 1024
+    // 宽，PDF 对照的每一栏差着一百多像素，逐像素与逐几何的判据两边量的根本不是同一个东西
+    // （v0.3.0 的三轮 tag run：本机全绿、CI 上八条红，全部指向这一处）。
+    //
+    // 钉成 1024×720：宽度取 CI 那台的屏宽（再宽在 CI 上钉不住），高度留出菜单栏与窗口边框的
+    // 余量。两边从此量同一个版面。要测别的尺寸的用例自己 setBounds，不要改这里。
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      if (w) w.setBounds({ x: 0, y: 0, width: 1024, height: 720 });
+    });
+    // launchKydog 的返回契约：应用已启动完成并渲染出真实 UI（不是还停在 bootstrap 前的
+    // "KYDOG" 占位闪屏）。没有这道锚，每条 spec 的首个断言都在用 5 秒的行为判据替启动方差
+    // 买单——冷 runner 上首帧超 5s 就红（50/00/10/36/18 各中过一次，跨五轮 CI 与本地）。这里
+    // 的 30s 是启动 infra 预算（config 注释：「光 launch 就允许 20s」同类），行为判据的 5s
+    // expect.timeout 一毫米不动。
+    //
+    // Root() 落地后只会二选一：onboarding 未完成 → OnboardingWizard（[data-testid=
+    // "onboarding-root"]，freshHome:true / onboardingCompleted:false 都走这条），否则 →
+    // AppShell/ThreeColumnLayout（[data-pane="workspace"]，包括 providerConfigured:false ——
+    // 那只是强制切到设置 tab，左侧工作区栏照常渲染）。两者互斥，任一时刻只有其中一个存在于
+    // DOM，selector list 里用哪个都不会撞 strict-mode；`.first()` 只是兜个底。
+    await page
+      .locator('[data-pane="workspace"], [data-testid="onboarding-root"]')
+      .first()
+      .waitFor({ timeout: 30_000 });
+    return { app, page, userDataDir, kydogHome };
+  } catch (error) {
+    // The caller cannot own this handle until initialization returns. Close it
+    // here on every post-launch failure, preserving the original startup error.
+    try { await app.close(); }
+    catch (closeError) { console.warn('[launchKydog cleanup failed]', closeError); }
+    throw error;
+  }
 }
 
 export async function seedSettings(kydogHome: string, opts: { providerConfigured?: boolean; onboardingCompleted?: boolean; locale?: 'zh' | 'en' } = {}) {

@@ -75,7 +75,8 @@ export class NavigationTracker {
    *   知道，点击发起的（browser_act）不知道，给 `null` —— 那种情况下关联靠
    *   `onDidStartNavigation` 补上。
    */
-  constructor(readonly navigationId: string, targetUrl: string | null = null) {
+  constructor(readonly navigationId: string, targetUrl: string | null = null,
+    private readonly acceptDidNavigate: (url: string) => boolean = () => true) {
     if (targetUrl !== null) this.requestedUrls.add(canonical(targetUrl));
   }
 
@@ -139,6 +140,7 @@ export class NavigationTracker {
 
   /** 403 走的就是这条路：它是一次**成功**的导航，did-fail-load 不会触发。 */
   onDidNavigate(finalUrl: string, httpStatusCode: number): void {
+    if (!this.acceptDidNavigate(finalUrl)) return;
     this.set({ kind: 'ok', finalUrl, httpStatusCode });
   }
 

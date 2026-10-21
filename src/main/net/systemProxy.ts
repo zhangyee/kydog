@@ -64,6 +64,78 @@ export function parseProxyRule(rule: string): ProxyRule {
   return { kind: 'direct', fellBack: sawUnusable };
 }
 
+/**
+ * Resolve one system-proxy decision for one URL. Research fetches use strict mode and
+ * bind this exact decision to their request; the global dispatcher preserves its
+ * existing direct fallback for unrelated traffic.
+ */
+export async function resolveSystemProxyRule(
+  url: string, resolver: ProxyResolver, strict = false,
+): Promise<ProxyRule> {
+  let raw: string;
+  try { raw = await resolver(url); }
+  catch (err) {
+    if (strict) throw new Error('proxy_unavailable', { cause: err });
+    logger.warn('net', 'resolveProxy 失败，本次直连', { origin: url, err: String(err) });
+    return { kind: 'direct', fellBack: false };
+  }
+  const rule = parseProxyRule(raw);
+  if (strict && (!raw.trim() || (rule.kind === 'direct' && rule.fellBack))) {
+    throw new Error('proxy_unavailable');
+  }
+  if (strict && rule.kind !== 'direct') {
+    try {
+      const target = new URL(rule.uri);
+      if (!target.hostname) throw new Error('proxy_unavailable');
+    } catch { throw new Error('proxy_unavailable'); }
+  }
+  return rule;
+}
+
+/** Match the NO_PROXY forms used by undici's EnvHttpProxyAgent. */
+function bypassesEnvironmentProxy(url: URL, raw: string): boolean {
+  if (raw === '*') return true;
+  const host = url.hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase().replace(/\.$/, '');
+  const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80);
+  for (const entry of raw.split(/[,\s]+/)) {
+    if (!entry) continue;
+    const ipv6Port = /^\[(.+)\]:(\d+)$/.exec(entry);
+    const bare = entry.replace(/^\[(.*)\]$/, '$1');
+    const hostPort = !ipv6Port && (bare.match(/:/g) ?? []).length === 1
+      ? /^(.+):(\d+)$/.exec(bare) : null;
+    const targetHost = (ipv6Port?.[1] ?? hostPort?.[1] ?? bare)
+      .replace(/^\*?\./, '').replace(/\.$/, '').toLowerCase();
+    const targetPort = Number(ipv6Port?.[2] ?? hostPort?.[2] ?? 0);
+    if (targetPort && targetPort !== port) continue;
+    if (host === targetHost || host.endsWith(`.${targetHost}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Research fetches must know the route before guarding DNS and must dispatch over
+ * that same route. Follow EnvHttpProxyAgent's environment precedence when present;
+ * otherwise use Chromium's system rule without the global dispatcher's fallback.
+ */
+export async function resolveResearchProxyRule(
+  url: string, resolver: ProxyResolver, env: Record<string, string | undefined> = process.env,
+): Promise<ProxyRule> {
+  const explicit = EXPLICIT_PROXY_VARS.some((key) => (env[key] ?? '').trim() !== '');
+  if (!explicit) return resolveSystemProxyRule(url, resolver, true);
+  const parsed = new URL(url);
+  if (bypassesEnvironmentProxy(parsed, env.no_proxy ?? env.NO_PROXY ?? '')) {
+    return { kind: 'direct', fellBack: false };
+  }
+  const http = env.http_proxy ?? env.HTTP_PROXY;
+  const proxy = parsed.protocol === 'https:' ? (env.https_proxy ?? env.HTTPS_PROXY ?? http) : http;
+  if (!proxy) return { kind: 'direct', fellBack: false };
+  let target: URL;
+  try { target = new URL(proxy); }
+  catch { throw new Error('proxy_unavailable'); }
+  if (!['http:', 'https:'].includes(target.protocol)) throw new Error('proxy_unavailable');
+  return { kind: 'http', uri: target.href };
+}
+
 /** 代理 URI 里可能带 user:pass，日志只留 scheme+host+port。 */
 function redactUri(uri: string): string {
   try {
@@ -115,17 +187,9 @@ export class SystemProxyDispatcher extends Dispatcher {
   }
 
   async #pick(origin: string): Promise<Dispatcher> {
-    let raw: string;
-    try {
-      raw = await this.#resolveProxy(origin);
-    } catch (err) {
-      // 解析不出来就直连：这一步失败不该把请求也带走（比如 app 还没 ready）。
-      logger.warn('net', 'resolveProxy 失败，本次直连', { origin, err: String(err) });
-      return this.#direct;
-    }
-    const rule = parseProxyRule(raw);
+    const rule = await resolveSystemProxyRule(origin, this.#resolveProxy);
     if (rule.kind === 'direct') {
-      if (rule.fellBack) logger.warn('net', '系统给了无法使用的代理规则，本次直连', { origin, rule: raw });
+      if (rule.fellBack) logger.warn('net', '系统给了无法使用的代理规则，本次直连', { origin });
       return this.#direct;
     }
     return this.#agentFor(rule);

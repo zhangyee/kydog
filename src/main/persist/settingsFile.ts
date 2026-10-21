@@ -56,7 +56,7 @@ export function defaultSettings(): SettingsFile {
     },
     skills: { disabledBuiltins: [] },
     tools: { externalBins: [] },
-    research: { presets: {}, custom: [] },
+    research: { presets: {}, custom: [], xResearchEnabled: false },
     institution: null,
     updates: { autoCheck: true, dismissedCandidateId: null },
     telemetry: { state: 'undecided', decidedAt: null },
@@ -435,6 +435,7 @@ export function parseAndMigrateSettings(raw: string): ParsedSettings {
       // 的形状与类型标注一致 —— 否则 research.get 会把 SettingsFile 上那句
       // Record<string,string> / ResearchCustomVar[] 的承诺撒谎给渲染层。
       research: {
+        xResearchEnabled: parsed.research?.xResearchEnabled === true,
         presets: isPlainObject(parsed.research?.presets) ? parsed.research.presets : {},
         custom: Array.isArray(parsed.research?.custom)
           ? parsed.research.custom.filter(isPlainObject)

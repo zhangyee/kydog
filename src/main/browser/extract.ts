@@ -10,6 +10,7 @@ import { KydogError } from '../../shared/errors';
  *   "pdf":   "div.paper-source a@href" }
  * ```
  * `item` 是条目容器，其余字段**在条目内部**相对查找。
+ * 字段 `:scope@mu` 等精确 `:scope` 写法读取条目自身属性；普通 CSS 字段仍查子元素。
  *
  * AX 快照是 role/name 的列表，天然表达不了 href —— 而结果页的 PDF 直链与详情页
  * 链接恰恰是 href。所以 `@attr` 这个后缀不是语法糖，它是那些字段唯一的出口。
@@ -239,7 +240,7 @@ export function extractExpression(plan: ExtractPlan): string {
     (f.attr ? `t.getAttribute(${lit(f.attr)})` : "(t.innerText || '').trim()");
 
   const fields = plan.fields.map((f) => `    {
-      const t = el.querySelector(${lit(f.selector)});
+      const t = ${f.selector === ':scope' ? 'el' : `el.querySelector(${lit(f.selector)})`};
       row[${lit(f.name)}] = t && readable(t, ${lit(f.attr)}) ? clip(${read(f)}, ${lit(f.name)}) : null;
     }`).join('\n');
 
