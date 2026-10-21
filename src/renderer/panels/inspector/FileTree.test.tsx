@@ -52,6 +52,7 @@ beforeEach(() => {
   useUiStore.setState(useUiStore.getInitialState());
   (globalThis as unknown as { window: unknown }).window = {
     kydog: {
+      platform: 'darwin',
       invoke: (method: string) => {
         if (method !== 'project.readDir') return Promise.resolve(undefined);
         reads += 1;
@@ -102,6 +103,14 @@ const node = (path: string, mtimeMs: number, kind: 'file' | 'dir' = 'file') => (
 const click = (shiftKey = false, ctrlKey = false, metaKey = false) => ({ shiftKey, ctrlKey, metaKey });
 const rows = (tree: unknown) => findAllWhere(tree, el => el.type === FileTreeRow);
 const toolbar = (tree: unknown) => findAllWhere(tree, el => el.type === FileTreeToolbar)[0];
+const selectedCount = (tree: unknown) => rows(tree).filter(r => r.props.selected).length;
+const rightClick = { preventDefault() {}, stopPropagation() {}, clientX: 2, clientY: 3 };
+function deleteAction(m: ReturnType<typeof mount<{ projectPath: string }>>) {
+  const row = rows(m.tree).find(r => r.props.selected) ?? rows(m.tree)[0];
+  row.props.onContextMenu(rightClick);
+  return m.query('file-ctx-batch-delete') ?? m.find(`file-ctx-delete-${row.props.node.path}`);
+}
+
 it('sorted visible rows select by path; collapse prunes children permanently; outside context deletes only that path', async () => {
   const requests: unknown[] = [];
   Object.assign(window.kydog, { invoke: async (method: string, args: unknown) => {
@@ -113,19 +122,19 @@ it('sorted visible rows select by path; collapse prunes children permanently; ou
   const m = mount(FileTree, { projectPath: '/p' });
   rows(m.tree).find(r => r.props.node.path === '/p/a.md')!.props.onSelect(click());
   rows(m.tree).find(r => r.props.node.path === '/p/z.pdf')!.props.onSelect(click(false, false, true));
-  expect(toolbar(m.tree).props.selectedCount).toBe(2);
+  expect(selectedCount(m.tree)).toBe(2);
   toolbar(m.tree).props.onSort('modified'); m.rerender({ projectPath: '/p' });
   rows(m.tree).find(r => r.props.node.path === '/p/sub/b.md')!.props.onSelect(click(true));
   expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/sub/b.md', '/p/z.pdf']);
   rows(m.tree).find(r => r.props.node.path === '/p/z.pdf')!.props.onContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 2, clientY: 3 });
-  expect(toolbar(m.tree).props.selectedCount).toBe(2);
+  expect(selectedCount(m.tree)).toBe(2);
   useUiStore.getState().toggleDir('/p/sub'); m.rerender({ projectPath: '/p' });
-  expect(toolbar(m.tree).props.selectedCount).toBe(1);
+  expect(selectedCount(m.tree)).toBe(1);
   useUiStore.getState().toggleDir('/p/sub'); m.rerender({ projectPath: '/p' });
   expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/z.pdf']);
   rows(m.tree).find(r => r.props.node.path === '/p/a.md')!.props.onContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 2, clientY: 3 });
   expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/a.md']);
-  toolbar(m.tree).props.onDelete(); useConfirmStore.getState().resolve(true); await m.settle();
+  deleteAction(m).props.onClick(); useConfirmStore.getState().resolve(true); await m.settle();
   expect(requests).toEqual([{ projectPath: '/p', paths: ['/p/a.md'] }]);
 });
 it('locks before confirmation, keeps failed path and error, and catches request errors', async () => {
@@ -139,15 +148,15 @@ it('locks before confirmation, keeps failed path and error, and catches request 
     return { trashed: ['/p/a.md'], failed: [{ path: '/p/b.pdf', error: { code: 'fs.access_denied', message: 'EPERM b' } }] };
   } });
   const m = mount(FileTree, { projectPath: '/p' });
-  rows(m.tree)[0].props.onSelect(click()); rows(m.tree)[1].props.onSelect(click(false, true));
-  const remove = toolbar(m.tree).props.onDelete; remove(); const confirm = useConfirmStore.getState().request; remove();
-  expect(useConfirmStore.getState().request).toBe(confirm); expect(toolbar(m.tree).props.pending).toBe(true);
+  rows(m.tree)[0].props.onSelect(click()); rows(m.tree)[1].props.onSelect(click(false, false, true));
+  const remove = deleteAction(m).props.onClick; remove(); const confirm = useConfirmStore.getState().request; remove();
+  expect(useConfirmStore.getState().request).toBe(confirm); expect(deleteAction(m).props.disabled).toBe(true);
   useConfirmStore.getState().resolve(true); await m.settle(); remove();
   expect(requests).toBe(1); expect(useConfirmStore.getState().request).toBeNull();
   complete(); await m.settle(); m.rerender({ projectPath: '/p' });
-  expect(requests).toBe(1); expect(toolbar(m.tree).props.selectedCount).toBe(1);
+  expect(requests).toBe(1); expect(selectedCount(m.tree)).toBe(1);
   expect(findAllWhere(m.tree, el => el.props.text?.includes('b.pdf') && el.props.text?.includes('EPERM b'))).toHaveLength(1);
-  reject = true; toolbar(m.tree).props.onDelete(); useConfirmStore.getState().resolve(true); await m.settle();
+  reject = true; deleteAction(m).props.onClick(); useConfirmStore.getState().resolve(true); await m.settle();
   expect(findAllWhere(m.tree, el => el.props.text?.includes('request denied'))).toHaveLength(1);
 });
 it('old project response closes deleted tabs but cannot publish selection or errors in new project', async () => {
@@ -156,14 +165,14 @@ it('old project response closes deleted tabs but cannot publish selection or err
   let oldError = true;
   Object.assign(window.kydog, { invoke: (method: string) => method === 'file.trash' ? oldError ? Promise.reject(new Error('old error')) : new Promise(r => { complete = r; }) : Promise.resolve([]) });
   const m = mount(FileTree, { projectPath: '/p' }); rows(m.tree)[0].props.onSelect(click());
-  toolbar(m.tree).props.onDelete(); useConfirmStore.getState().resolve(true); await m.settle();
+  deleteAction(m).props.onClick(); useConfirmStore.getState().resolve(true); await m.settle();
   expect(findAllWhere(m.tree, el => el.props.text?.includes('old error'))).toHaveLength(1); oldError = false;
-  toolbar(m.tree).props.onSort('modified'); toolbar(m.tree).props.onDelete(); useConfirmStore.getState().resolve(true); await m.settle();
+  toolbar(m.tree).props.onSort('modified'); deleteAction(m).props.onClick(); useConfirmStore.getState().resolve(true); await m.settle();
   expect(useUiStore.getState().openFileTabs.map(t => t.path)).toEqual(['/p/a.md']);
-  m.unmount(); const q = mount(FileTree, { projectPath: '/q' }); expect(toolbar(q.tree).props.selectedCount).toBe(0);
+  m.unmount(); const q = mount(FileTree, { projectPath: '/q' }); expect(selectedCount(q.tree)).toBe(0);
   rows(q.tree)[0].props.onSelect(click());
   complete({ trashed: ['/p/a.md'], failed: [{ path: '/p/a.md', error: { code: 'fs.access_denied', message: 'old error' } }] }); await q.settle();
-  expect(useUiStore.getState().openFileTabs).toEqual([]); expect(toolbar(q.tree).props.selectedCount).toBe(1);
+  expect(useUiStore.getState().openFileTabs).toEqual([]); expect(selectedCount(q.tree)).toBe(1);
   expect(toolbar(q.tree).props.sortBy).toBe('modified');
   expect(findAllWhere(m.tree, el => el.props.text?.includes('old error'))).toHaveLength(0);
   expect(findAllWhere(q.tree, el => el.props.text?.includes('old error'))).toHaveLength(0);
@@ -173,12 +182,12 @@ it('Delete and Esc are root-local, ignore input/defaultPrevented, blank click cl
   const m = mount(FileTree, { projectPath: '/p' }); rows(m.tree)[0].props.onSelect(click());
   const key = (tagName = 'DIV', defaultPrevented = false, key = 'Delete') => ({ key, target: { tagName, isContentEditable: false }, defaultPrevented, preventDefault: vi.fn() });
   m.find('file-tree').props.onKeyDown(key()); expect(useConfirmStore.getState().request).not.toBeNull(); useConfirmStore.getState().resolve(false); await m.settle();
-  expect(toolbar(m.tree).props.selectedCount).toBe(1);
+  expect(selectedCount(m.tree)).toBe(1);
   m.find('file-tree').props.onKeyDown(key('INPUT')); expect(useConfirmStore.getState().request).toBeNull();
   m.find('file-tree').props.onKeyDown(key('DIV', true)); expect(useConfirmStore.getState().request).toBeNull();
-  m.find('file-tree').props.onKeyDown(key('DIV', false, 'Escape')); expect(toolbar(m.tree).props.selectedCount).toBe(0);
-  rows(m.tree)[0].props.onSelect(click()); expect(toolbar(m.tree).props.selectedCount).toBe(1);
-  m.find('file-tree').props.onClick(); expect(toolbar(m.tree).props.selectedCount).toBe(0);
+  m.find('file-tree').props.onKeyDown(key('DIV', false, 'Escape')); expect(selectedCount(m.tree)).toBe(0);
+  rows(m.tree)[0].props.onSelect(click()); expect(selectedCount(m.tree)).toBe(1);
+  m.find('file-tree').props.onClick(); expect(selectedCount(m.tree)).toBe(0);
 });
 
 it('Inspector project rerender provides a new FileTree key while retaining window sort', async () => {
@@ -192,4 +201,66 @@ it('Inspector project rerender provides a new FileTree key while retaining windo
   useThreadsStore.getState().selectThread('q'); m.rerender({});
   expect(findAllWhere(m.tree, el => el.type === FileTree)[0].key).toBe('/q');
   expect(useUiStore.getState().fileTreeSortBy).toBe('modified');
+});
+
+it('single and multi context menus execute exact path snapshots; cancellation preserves the checked batch', async () => {
+  const requests: unknown[] = [];
+  useUiStore.getState().setDir('/p', [node('/p/a.md', 100), node('/p/z.pdf', 1), node('/p/other.md', 50)]);
+  useUiStore.getState().openFile('/p/a.md'); useUiStore.getState().setFileTabDirty('/p/a.md', true);
+  Object.assign(window.kydog, { invoke: async (method: string, args: unknown) => {
+    if (method === 'project.readDir') return useUiStore.getState().dirCache['/p'];
+    requests.push(args); return { trashed: [], failed: [] };
+  } });
+  const m = mount(FileTree, { projectPath: '/p' });
+  const row = (path: string) => rows(m.tree).find(r => r.props.node.path === path)!;
+  row('/p/a.md').props.onSelect(click());
+  expect(row('/p/a.md').props.multi).toBe(false);
+  row('/p/a.md').props.onContextMenu(rightClick);
+  expect(m.find('file-ctx-delete-/p/a.md').props.label).toBe('删除…');
+  expect(m.find('file-ctx-delete-/p/a.md').props.icon.props.name).toBe('trash-2');
+  row('/p/z.pdf').props.onSelect(click(false, false, true));
+  expect(row('/p/a.md').props.multi).toBe(true); expect(row('/p/z.pdf').props.multi).toBe(true);
+  row('/p/z.pdf').props.onContextMenu(rightClick);
+  expect(m.find('file-ctx-batch-delete').props.label).toBe('删除 2 个文件…');
+  expect(findAllWhere(m.tree, el => el.props.title === '已选 2 个文件')).toHaveLength(1);
+  m.find('file-ctx-batch-delete').props.onClick();
+  expect(useConfirmStore.getState().request?.message).toContain('未保存修改将丢失');
+  useConfirmStore.getState().resolve(false); await m.settle();
+  expect(requests).toEqual([]); expect(selectedCount(m.tree)).toBe(2);
+  expect(useUiStore.getState().openFileTabs[0].dirty).toBe(true);
+  row('/p/z.pdf').props.onContextMenu(rightClick); m.find('file-ctx-batch-delete').props.onClick();
+  useConfirmStore.getState().resolve(true); await m.settle();
+  expect(requests).toEqual([{ projectPath: '/p', paths: ['/p/a.md', '/p/z.pdf'] }]);
+  // Check's plain-pick callback collapses the batch to this exact identity.
+  row('/p/z.pdf').props.onPick();
+  expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/z.pdf']);
+  row('/p/a.md').props.onContextMenu(rightClick);
+  expect(m.find('file-ctx-delete-/p/a.md').props.label).toBe('删除…');
+  expect(m.query('file-ctx-batch-delete')).toBeNull();
+  m.find('file-ctx-delete-/p/a.md').props.onClick(); useConfirmStore.getState().resolve(true); await m.settle();
+  expect(requests[1]).toEqual({ projectPath: '/p', paths: ['/p/a.md'] });
+});
+it.each(['darwin', 'win32', 'linux'])('real row-selection callbacks honor %s modifier and plain check exits multi', (platform) => {
+  Object.assign(window.kydog, { platform });
+  useUiStore.getState().setDir('/p', [node('/p/a.md', 20), node('/p/b.pdf', 10)]);
+  const m = mount(FileTree, { projectPath: '/p' });
+  rows(m.tree)[0].props.onSelect(click());
+  rows(m.tree)[1].props.onSelect(platform === 'darwin' ? click(false, false, true) : click(false, true));
+  expect(selectedCount(m.tree)).toBe(2); expect(rows(m.tree)[0].props.multi).toBe(true);
+  rows(m.tree)[1].props.onPick(); expect(selectedCount(m.tree)).toBe(1); expect(rows(m.tree)[1].props.selected).toBe(true);
+  rows(m.tree)[0].props.onSelect(platform === 'darwin' ? click(false, true) : click(false, false, true));
+  expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/a.md']);
+});
+it('a context target disappearing during a batch closes its menu rather than retargeting the remaining single file', () => {
+  const a = node('/p/a.md', 20), b = node('/p/b.pdf', 10);
+  useUiStore.getState().setDir('/p', [b, a]);
+  const m = mount(FileTree, { projectPath: '/p' });
+  rows(m.tree)[0].props.onSelect(click()); rows(m.tree)[1].props.onSelect(click(false, false, true));
+  rows(m.tree)[1].props.onContextMenu(rightClick);
+  expect(m.find('file-context-menu')).toBeDefined(); expect(m.find('file-ctx-batch-delete').props.label).toBe('删除 2 个文件…');
+  useUiStore.getState().setDir('/p', [a]); m.rerender({ projectPath: '/p' });
+  expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/a.md']);
+  expect(m.query('file-context-menu')).toBeNull();
+  useUiStore.getState().setDir('/p', [a, b]); m.rerender({ projectPath: '/p' });
+  expect(m.query('file-context-menu')).toBeNull();
 });

@@ -21,3 +21,8 @@ export function selectFile(s: FileSelection, input: { path: string; shift: boole
     anchorPath: input.path,
   };
 }
+
+/** Same platform contract as ThreadRow: macOS Ctrl-click belongs to its context menu. */
+export function isFileSelectionToggle(input: { ctrlKey: boolean; metaKey: boolean }, platform: string): boolean {
+  return platform === 'darwin' ? input.metaKey : input.ctrlKey;
+}

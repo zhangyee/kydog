@@ -22,3 +22,12 @@ describe('visible path selection', () => {
     expect(selectFile(s, { path: '/p/a.md', shift: true, toggle: false }, ['/p/a.md'])).toEqual({ selectedPaths: ['/p/a.md'], anchorPath: '/p/a.md' });
   });
 });
+
+it.each([
+  ['darwin', true, false, false], ['darwin', false, true, true],
+  ['win32', true, false, true], ['win32', false, true, false],
+  ['linux', true, false, true], ['linux', false, true, false],
+] as const)('toggle modifier on %s uses platform facts (ctrl=%s meta=%s)', async (platform, ctrlKey, metaKey, expected) => {
+  const { isFileSelectionToggle } = await import('./fileTreeSelection');
+  expect(isFileSelectionToggle({ ctrlKey, metaKey }, platform)).toBe(expected);
+});

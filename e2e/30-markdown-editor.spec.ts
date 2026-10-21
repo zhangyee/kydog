@@ -13,7 +13,8 @@ import { inspectPdf, type PdfPage, type PdfReport } from './pdfInspect';
  * 顺序约束：原导出之后才跑高亮编辑 / PDF，最后验证逐字输入的源码保留。
  * 原导出替换 dialog.showSaveDialog / shell.showItemInFolder、修改 ui.mdExport 并留下 PDF 标签；
  * 高亮 PDF 用例重新替换存储框，其余用例各用独立文件。
- * 文件排序 / 删除最后运行，各用专属文件；trashItem 在 finally 恢复并清理测试废纸篓。
+ * 文件区焦点 / 多选与菜单验收在高亮之后运行，再验证排序 / 删除；各用专属文件。
+ * 截图沿用该次启动；trashItem 在 finally 恢复并清理测试废纸篓。
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -702,7 +703,10 @@ test('30-markdown-editor: edited highlight whitespace and nested formatting surv
       range.selectNodeContents(p);
       getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
     });
-    await expect(page.locator('.milkdown-toolbar[data-show="true"]')).toHaveCount(1);
+    // Inactive file panes stay mounted and can retain data-show=true. Count all visible toolbars
+    // to still reject two competing visible editors, and require the current file's toolbar.
+    await expect(page.locator('.milkdown-toolbar[data-show="true"]').locator('visible=true')).toHaveCount(1);
+    await expect(page.getByTestId(`file-pane-${file}`).locator('.milkdown-toolbar[data-show="true"]').locator('visible=true')).toHaveCount(1);
     await highlightButton().dispatchEvent('pointerdown');
     await expect(paragraph.locator('mark').first()).toBeVisible();
     await page.keyboard.press(side === 'start' ? 'ArrowLeft' : 'ArrowRight');
@@ -728,6 +732,67 @@ test('30-markdown-editor: edited highlight whitespace and nested formatting surv
   await checkContent();
   expect(await fs.readFile(file, 'utf8')).toContain('&#x3000;');
   expect(await fs.readFile(file, 'utf8')).toContain('&#xa0;');
+});
+
+test('Inspector sidebar parity: local focus, visible multi checks and shared sort menu', async () => {
+  const { page } = launched;
+  const a = at('parity-a.md'), b = at('parity-b.pdf');
+  await fs.writeFile(a, '# parity a\n'); await fs.writeFile(b, MINIMAL_PDF);
+  const tree = page.getByTestId('file-tree');
+  const first = page.getByTestId(`fs-${a}`), second = page.getByTestId(`fs-${b}`);
+  await expect(first).toBeVisible(); await expect(second).toBeVisible();
+  const focusInfo = (element: Locator) => element.evaluate(el => {
+    const css = getComputedStyle(el);
+    return { active: document.activeElement === el, focusVisible: el.matches(':focus-visible'), outlineStyle: css.outlineStyle, outlineWidth: css.outlineWidth, outlineColor: css.outlineColor };
+  });
+  // Same-case positive control: a native keyboard-focused button still paints its UA outline.
+  await page.evaluate(() => {
+    const button = document.createElement('button'); button.id = 'inspector-outline-control'; button.textContent = 'outline control';
+    button.style.cssText = 'all:revert;position:fixed;left:20px;top:300px;z-index:10000'; document.body.append(button);
+  });
+  await page.keyboard.press('Tab'); await page.locator('#inspector-outline-control').focus();
+  const control = await focusInfo(page.locator('#inspector-outline-control'));
+  expect(control.active).toBe(true); expect(control.focusVisible).toBe(true);
+  expect(control.outlineStyle).not.toBe('none'); expect(control.outlineWidth).not.toBe('0px');
+  await first.click(); const afterPlain = await focusInfo(tree);
+  await second.click({ modifiers: ['Shift'] }); const afterShift = await focusInfo(tree);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('DOM.enable'); await cdp.send('CSS.enable');
+  const { root } = await cdp.send('DOM.getDocument');
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '[data-testid="file-tree"]' });
+  const matched = await cdp.send('CSS.getMatchedStylesForNode', { nodeId });
+  const outlineRules = matched.matchedCSSRules?.filter(r => r.rule.style.cssProperties.some(p => p.name.startsWith('outline')))
+    .map(r => ({ origin: r.rule.origin, selector: r.rule.selectorList.text, properties: r.rule.style.cssProperties.filter(p => p.name.startsWith('outline')) }));
+  console.log('INSPECTOR_FOCUS_PROOF', JSON.stringify({ control, afterPlain, afterShift, outlineRules }));
+  await cdp.detach(); await page.locator('#inspector-outline-control').evaluate(el => el.remove());
+  expect(afterShift.active).toBe(true);
+  expect(afterShift.outlineStyle).toBe('none'); expect(afterShift.outlineWidth).toBe('0px');
+  await expect(page.getByTestId(`file-check-${a}`)).toBeVisible(); await expect(page.getByTestId(`file-check-${b}`)).toBeVisible();
+  const shots = path.resolve('.superpowers/inspector-sidebar-parity-2026-10-21');
+  await page.screenshot({ path: path.join(shots, 'multi-selected.png') });
+  await second.click({ button: 'right' });
+  await expect(page.getByTestId('file-context-menu')).toContainText('已选 2 个文件');
+  await expect(page.getByTestId('file-ctx-batch-delete')).toHaveText('删除 2 个文件…');
+  await page.keyboard.press('Escape');
+  await page.getByTestId(`file-check-${a}`).click();
+  await expect(first).toHaveAttribute('aria-selected', 'true'); await expect(second).toHaveAttribute('aria-selected', 'false');
+  await expect(page.getByTestId(`file-check-${a}`)).toHaveCount(0); await expect(page.getByTestId(`file-icon-${a}`)).toBeVisible();
+  await second.click({ button: 'right' });
+  await expect(page.getByTestId(`file-ctx-delete-${b}`)).toHaveText('删除…');
+  await expect(page.getByTestId('file-ctx-batch-delete')).toHaveCount(0);
+  await page.getByTestId(`file-ctx-delete-${b}`).click();
+  await expect(page.getByTestId('confirm-dialog')).toContainText('parity-b.pdf');
+  await page.getByTestId('confirm-dialog-cancel').click();
+  await expect(second).toHaveAttribute('aria-selected', 'true'); await expect(first).toHaveAttribute('aria-selected', 'false');
+  await first.click({ modifiers: ['ControlOrMeta'] });
+  await expect(page.getByTestId(`file-check-${a}`)).toBeVisible();
+  const afterToggle = await focusInfo(tree); expect(afterToggle.active).toBe(true); expect(afterToggle.outlineStyle).toBe('none');
+  await page.keyboard.press('Escape'); await expect(first).toHaveAttribute('aria-selected', 'false'); await expect(second).toHaveAttribute('aria-selected', 'false');
+  await page.getByTestId('file-sort-trigger').click();
+  await expect(page.getByTestId('file-sort-menu')).toContainText('排序条件');
+  await expect(page.getByTestId('file-sort-name')).toContainText('文件名'); await expect(page.getByTestId('file-sort-modified')).toContainText('修改时间');
+  await page.screenshot({ path: path.join(shots, 'sort-menu.png') });
+  await page.getByTestId('file-sort-name').click();
 });
 
 test('Inspector modified order follows actual watcher and Delete keeps selected path across sorting', async () => {
@@ -786,7 +851,9 @@ test('Inspector deletion traverses actual IPC and service; partial failure prese
         await fs.rename(file, path.join(args.trash, path.basename(file)));
       };
     }, { trash, md });
-    await page.getByTestId('file-delete-selected').click();
+    await page.getByTestId(`fs-${pdf}`).click({ button: 'right' });
+    await expect(page.getByTestId('file-context-menu')).toContainText('已选 2 个文件');
+    await page.getByTestId('file-ctx-batch-delete').click();
     await expect(page.getByTestId('confirm-dialog')).toContainText('未保存修改将丢失');
     await expect(page.getByTestId('confirm-dialog')).toContainText('trash-failure.md');
     await page.getByTestId('confirm-dialog-confirm').click();

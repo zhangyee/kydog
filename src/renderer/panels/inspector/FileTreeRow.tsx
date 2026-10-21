@@ -4,8 +4,17 @@ import { MarqueeText, NavIcon, type NavIconName } from '../../shared';
 import type { FsNode } from '../../../shared/types';
 import { isHtmlPath, isMarkdownPath, isPdfPath } from '../main-pane/markdown/fileTabHelpers';
 import { loadDir } from '../../fsWatch';
+import { isFileSelectionToggle } from './fileTreeSelection';
 
-type RowProps = { node: FsNode; depth: number; selected: boolean; onSelect: (e: MouseEvent) => void; onContextMenu: (e: MouseEvent) => void };
+type RowProps = {
+  node: FsNode;
+  depth: number;
+  selected: boolean;
+  multi: boolean;
+  onSelect: (e: MouseEvent) => void;
+  onPick: () => void;
+  onContextMenu: (e: MouseEvent) => void;
+};
 
 const isReadme = (name: string) => /^readme(\..+)?$/i.test(name);
 const CODE_EXTENSIONS = new Set([
@@ -27,7 +36,7 @@ function iconForNode(node: FsNode, expanded: boolean): NavIconName {
   return 'file-text';
 }
 
-export function FileTreeRow({ node, depth, selected, onSelect, onContextMenu }: RowProps) {
+export function FileTreeRow({ node, depth, selected, multi, onSelect, onPick, onContextMenu }: RowProps) {
   const [hover, setHover] = useState(false);
   const expanded = useUiStore((s) => s.expandedDirs.has(node.path));
   const cache = useUiStore((s) => s.dirCache[node.path]);
@@ -54,13 +63,13 @@ export function FileTreeRow({ node, depth, selected, onSelect, onContextMenu }: 
         data-file-path={node.path}
         aria-selected={selected}
         onContextMenu={onContextMenu}
-        onMouseDown={e => { if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault(); }}
+        onMouseDown={e => { if (e.shiftKey || isFileSelectionToggle(e, window.kydog.platform)) e.preventDefault(); }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         onClick={(e) => {
           e.stopPropagation();
           e.currentTarget.closest<HTMLElement>('[data-testid="file-tree"]')?.focus();
-          if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault();
+          if (e.shiftKey || isFileSelectionToggle(e, window.kydog.platform)) e.preventDefault();
           if (isDir) toggleDir(node.path); else onSelect(e);
         }}
         onDoubleClick={() => {
@@ -71,7 +80,7 @@ export function FileTreeRow({ node, depth, selected, onSelect, onContextMenu }: 
         style={{
           padding: '3px 8px 3px 0',
           borderRadius: 3,
-          background: selected ? 'var(--color-hover-bg)' : undefined,
+          background: selected ? multi ? 'var(--color-accent-soft)' : 'var(--color-paper-edge)' : undefined,
           color: isDir ? 'var(--color-ink-soft)' : 'var(--color-ink)',
           fontFamily: 'var(--font-sans)', fontWeight: 400, fontSize: 12,
         }}
@@ -84,12 +93,35 @@ export function FileTreeRow({ node, depth, selected, onSelect, onContextMenu }: 
             <NavIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={11} />
           )}
         </span>
-        <span
-          className="inline-flex items-center justify-center shrink-0"
-          style={{ width: 16, color: readme ? 'var(--color-accent)' : 'var(--color-ink-soft)' }}
-        >
-          <NavIcon name={iconName} size={14} />
-        </span>
+        {multi && selected ? (
+          <button
+            type="button"
+            data-testid={`file-check-${node.path}`}
+            aria-label="仅选择此文件"
+            className="inline-flex items-center justify-center shrink-0"
+            style={{ width: 16, height: 16, cursor: 'pointer' }}
+            onClick={e => {
+              e.stopPropagation();
+              e.currentTarget.closest<HTMLElement>('[data-testid="file-tree"]')?.focus();
+              onPick();
+            }}
+          >
+            <span
+              className="inline-flex items-center justify-center"
+              style={{ width: 14, height: 14, borderRadius: '50%', background: 'var(--color-accent)', color: 'var(--color-paper)' }}
+            >
+              <NavIcon name="check" size={10} />
+            </span>
+          </button>
+        ) : (
+          <span
+            data-testid={`file-icon-${node.path}`}
+            className="inline-flex items-center justify-center shrink-0"
+            style={{ width: 16, color: readme ? 'var(--color-accent)' : 'var(--color-ink-soft)' }}
+          >
+            <NavIcon name={iconName} size={14} />
+          </span>
+        )}
         {/* 与左栏 ThreadRow 同一套：hover 时整名匀速左移，不 hover 时省略号。 */}
         <div
           className="flex-1 min-w-0"
