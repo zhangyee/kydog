@@ -2,19 +2,21 @@ import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { ChildProcess } from 'node:child_process';
 import { launchKydog, teardown, seedSettings, type LaunchedApp } from './helpers';
 import { selectPath } from './fixtures/oauth-mock';
 
 /**
  * 首次真实使用：onboarding 已完成、还没配 provider。一次启动里依次走：外壳与 DevTools 守卫、
- * PATH、OAuth 登录（先选方式 → 授权页 → 取消）、云 provider 写进主进程 env、加 API key provider。
+ * PATH、OAuth 登录（先选方式 → 授权页 → 取消）、云 provider 写进主进程 env、加 API key provider、关闭主窗口退出进程。
  *
  * 串行共用一次启动：后几条会改设置（加 provider），前面的「列表为空」只在开头成立，
- * 顺序不能打乱。每条仍是独立的 test，报告里各自出名字。
+ * 顺序不能打乱；关闭窗口会结束进程，必须放最后。每条仍是独立的 test，报告里各自出名字。
  */
 test.describe.configure({ mode: 'serial' });
 
 let launched: LaunchedApp;
+let child: ChildProcess;
 
 test.beforeAll(async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-oauth-'));
@@ -25,9 +27,14 @@ test.beforeAll(async () => {
     seed: (home) => seedSettings(home, { providerConfigured: false }),
     env: { KYDOG_OAUTH_FIXTURE: oauthFixture },
   });
+  // Playwright 退出后会销毁连接；届时不能再通过 app.process() 取句柄。
+  child = launched.app.process();
 });
 
-test.afterAll(async () => { await teardown(launched); });
+test.afterAll(async () => {
+  if (child.exitCode === null && child.signalCode === null) await teardown(launched);
+  else await fs.rm(launched.userDataDir, { recursive: true, force: true }).catch(() => {});
+});
 
 /** 回到 provider 列表并确认真的在列表上（「+ 添加 provider」只在列表页有）。 */
 async function backToList(): Promise<void> {
@@ -141,4 +148,24 @@ test('22-llm: add Anthropic key shows entry in list', async () => {
 
   await backToList();
   await expect(page.getByText('Anthropic', { exact: true })).toBeVisible();
+});
+
+test('00-shell: closing the last window exits the application process', async () => {
+  const { app, page } = launched;
+  // 同一条用例先证明进程和主窗口确实活着，再触发真实 BrowserWindow.close()。
+  expect(child.pid).toBe(await app.evaluate(() => process.pid));
+  expect(child.exitCode).toBeNull();
+  expect(page.isClosed()).toBe(false);
+  await expect(page.locator('[data-pane="main"]')).toBeVisible();
+  const window = await app.browserWindow(page);
+  const windowId = await window.evaluate((win) => win.id);
+  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((win) => win.id)))
+    .toEqual([windowId]);
+
+  // Playwright 的 close 来自子进程 onExit；先订阅再关窗，不能用 teardown 的 app.close() 代替判据。
+  const exited = app.waitForEvent('close', { timeout: 5_000 });
+  await window.evaluate((win) => { setImmediate(() => win.close()); });
+  await exited;
+  expect(page.isClosed()).toBe(true);
+  expect({ exitCode: child.exitCode, signalCode: child.signalCode }).toEqual({ exitCode: 0, signalCode: null });
 });

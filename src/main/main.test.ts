@@ -267,11 +267,11 @@ describe('main.ts 真的把内置浏览器装配起来了', () => {
 });
 
 describe('最后一个窗口关闭后的应用生命周期', () => {
-  it('darwin 不 quit；win32/linux quit', () => {
+  it('红色关闭按钮关闭最后一个窗口后退出应用', () => {
     const before = H.app.quit.mock.calls.length;
     for (const fn of H.appListeners['window-all-closed'] ?? []) fn();
     const delta = H.app.quit.mock.calls.length - before;
-    expect(delta).toBe(process.platform === 'darwin' ? 0 : 1);
+    expect(delta).toBe(1);
   });
 });
 

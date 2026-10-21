@@ -29,7 +29,6 @@ import { browserService } from './browser/browserService';
 import { installProxyDispatcher } from './net/systemProxy';
 import { installBrowserWindowWiring, installBrowserQuitWiring } from './browser/mainWiring';
 import { decideNavigation } from './navigationGuard';
-import { shouldQuitAfterAllWindowsClosed } from './windowLifecycle';
 import iconDataUrl from '../../assets/icons/icon.png?inline';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -226,7 +225,7 @@ app.on('ready', async () => {
 installBrowserQuitWiring(app, browserService);
 
 app.on('window-all-closed', () => {
-  if (shouldQuitAfterAllWindowsClosed(process.platform)) app.quit();
+  app.quit();
 });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
 app.on('before-quit', () => {
