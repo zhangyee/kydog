@@ -153,7 +153,18 @@ test('22-llm: add Anthropic key shows entry in list', async () => {
 test('00-shell: closing the last window exits the application process', async () => {
   const { app, page } = launched;
   // 同一条用例先证明进程和主窗口确实活着，再触发真实 BrowserWindow.close()。
-  expect(child.pid).toBe(await app.evaluate(() => process.pid));
+  // Windows 的 launcher 是 cmd shell，PID 不等于 Electron 主进程；两者分别证明存活。
+  expect(process.kill(child.pid!, 0)).toBe(true);
+  const mainPid = await app.evaluate(() => process.pid);
+  const mainProcessExists = () => {
+    try {
+      return process.kill(mainPid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+      throw error;
+    }
+  };
+  expect(mainProcessExists()).toBe(true);
   expect(child.exitCode).toBeNull();
   expect(page.isClosed()).toBe(false);
   await expect(page.locator('[data-pane="main"]')).toBeVisible();
@@ -168,4 +179,5 @@ test('00-shell: closing the last window exits the application process', async ()
   await exited;
   expect(page.isClosed()).toBe(true);
   expect({ exitCode: child.exitCode, signalCode: child.signalCode }).toEqual({ exitCode: 0, signalCode: null });
+  expect(mainProcessExists()).toBe(false);
 });
