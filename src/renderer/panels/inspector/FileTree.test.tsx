@@ -225,12 +225,14 @@ it('single and multi context menus execute exact path snapshots; cancellation pr
   expect(findAllWhere(m.tree, el => el.props.title === '已选 2 个文件')).toHaveLength(1);
   m.find('file-ctx-batch-delete').props.onClick();
   expect(useConfirmStore.getState().request?.message).toContain('未保存修改将丢失');
-  useConfirmStore.getState().resolve(false); await m.settle();
-  expect(requests).toEqual([]); expect(selectedCount(m.tree)).toBe(2);
-  expect(useUiStore.getState().openFileTabs[0].dirty).toBe(true);
-  row('/p/z.pdf').props.onContextMenu(rightClick); m.find('file-ctx-batch-delete').props.onClick();
   useConfirmStore.getState().resolve(true); await m.settle();
   expect(requests).toEqual([{ projectPath: '/p', paths: ['/p/a.md', '/p/z.pdf'] }]);
+  row('/p/z.pdf').props.onContextMenu(rightClick); m.find('file-ctx-batch-delete').props.onClick();
+  expect(useConfirmStore.getState().request?.message).toContain('未保存修改将丢失');
+  useConfirmStore.getState().resolve(false); await m.settle();
+  expect(requests).toEqual([{ projectPath: '/p', paths: ['/p/a.md', '/p/z.pdf'] }]);
+  expect(selectedCount(m.tree)).toBe(2);
+  expect(useUiStore.getState().openFileTabs[0].dirty).toBe(true);
   // Check's plain-pick callback collapses the batch to this exact identity.
   row('/p/z.pdf').props.onPick();
   expect(rows(m.tree).filter(r => r.props.selected).map(r => r.props.node.path)).toEqual(['/p/z.pdf']);
