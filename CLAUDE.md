@@ -1,4 +1,4 @@
-# KyDog — Claude Code guidance
+# KyDog — Agent guidance
 
 面向科研工作流的 AI 智能体桌面应用（Electron + pi coding-agent SDK）。
 
@@ -48,10 +48,16 @@ node -e "const f=require('fs'),o=require('os'),p=require('path');const d=f.mkdte
 
 CI 里靠 `KYDOG_REQUIRE_SYMLINK=1` 反过来**禁止跳过**：能力缺失就让它以 EPERM 红出来，免得覆盖在发版流水线上悄悄消失。目前钉在两个 macOS 矩阵项上（见 `.github/workflows/release.yml`）。
 
+## Orca 工作树与本地记录
+
+- **工作树管理**：主要通过 Orca 开发。涉及工作树创建、状态与删除时使用 `orca-cli` skill，通过 Orca 管理；已有工作树直接使用，不再另建嵌套工作树。路径由 Orca 决定，不要求 `.codex/worktrees/<主题>/`，不要绕过 Orca 用裸 Git 创建或删除其管理的工作树。
+- **本地记录位置**：设计 spec 放 `docs/superpowers/specs/`，实施 plan 放 `docs/superpowers/plans/`，不要放 `docs/scratch/` 或其他目录；任务过程、审查、验证报告和证据放 `.superpowers/` 下按任务命名的目录。这两个目录都只在本地保存，不进 Git；创建后用 `git check-ignore -v <路径>` 确认被忽略，不要提交。各工作树独立保存，不依赖 Orca 的工作树共享路径自动同步或归档。
+- **收尾必须归档**：执行 `finishing-a-development-branch` 的本地合并、验证完成后，须将本次工作树的 `docs/superpowers/` 和 `.superpowers/` 归档到主工作区的对应目录，再报告收尾完成；即使按 skill 的宿主环境规则保留 Orca 工作树，也必须归档。以后删除或放弃工作树前须再次核对并归档新增或变更记录，除非用户明确要求丢弃这些记录；丢弃分支或代码不等于丢弃本地记录。
+- **归档方法与判据**：通过 `git worktree list --porcelain` 确认本地 `main` 所在主工作区，不硬编码路径；无法确认时停止清理并说明。复制前解析符号链接，源与目标为同一实际目录时无需复制；否则按相对路径合并：缺失文件复制、内容相同跳过、同名不同内容保留两份并用任务名等标明来源，禁止覆盖已有记录。复制后逐文件校验内容一致（如 SHA-256），确认目标仍被 Git 忽略，并报告归档位置与数量；验证完成前保留源记录。
+- **归档后再清理**：清理前直接检查上述两个目录，`git status` 干净不能证明被忽略的记录已归档。归档完成不等于获准删除工作树；清理仍按用户授权通过 Orca 完成。删除失败时先核对 Orca 记录、Git 工作树注册和磁盘目录，不用强制删除、手工解除注册或清空目录掩盖失败。
+
 ## 约定
 
-- **Superpowers 文档位置**：设计 spec 放 `docs/superpowers/specs/`，实施 plan 放 `docs/superpowers/plans/`，不要放 `docs/scratch/` 或其他目录。两类文档都只在本地保存，不进 Git；创建后用 `git check-ignore -v <路径>` 确认被忽略，不要提交。
-- **隔离 worktree 位置**：建在项目根目录的 `.codex/worktrees/<主题>/`，方便从项目工作区查看；不要建到用户目录下的 `.codex/worktrees/`。项目根目录的 `.codex/` 必须被 Git 忽略。
 - **不要引入危险色**。设计系统里没有红色 token，破坏性操作走统一的 `confirm()` 对话框，不靠颜色警示。
 - **往 `vite.main.config.ts` 的 `external` 加包** → 同步 `forge.config.ts` 的 `EXTERNAL_RUNTIME_MODULES`。external 的包不进 bundle，只以裸名留在产物里，运行时按 Node 规则找 `node_modules`；打包成品里没有它就是 `ERR_MODULE_NOT_FOUND`。**开发机上看不出来**：`out/` 在仓库内，解析会一路上溯摸到 `<repo>/node_modules`，借开发树的货照样跑。守这条的是 `e2e/54-packaged-smoke` 的断言 2b（它把成品复制到仓库外再启动），而 e2e 要先 `npm run package`，只跑 gate 命令发现不了。
 - **改了 `src/shared/zhSidecar.ts` 的 `BLOCK_KINDS` / `PLACEHOLDER_KINDS` / `PLACEHOLDER_SCRIPTS`** → 同步 `src/main/harness/templates/{zh,en}/AGENTS.md` 里那份契约（bullet 列表与「只认这 N 个值」的数目）。模板是 agent 写译文边车时唯一读得到的说明，一个不认识的值会让**整份文件**被拒。守这条的是 `templates.test.ts`（集合相等，两个方向都守）。
