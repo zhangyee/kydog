@@ -1,0 +1,5 @@
+[
+  {"stopReason":"stop","text":"{\"status\":\"claims\",\"claims\":[{\"statement\":\"Dynamic rendering supplies grounded evidence\",\"relevantAngleIds\":[\"a1\"],\"evidence\":[{\"passageId\":\"{{passageId:Dynamic rendering supplies grounded evidence}}\",\"quote\":\"Dynamic rendering supplies grounded evidence\",\"relation\":\"supports\"}]}],\"gaps\":[]}"},
+  {"stopReason":"stop","text":"{\"status\":\"claims\",\"claims\":[{\"statement\":\"Cookie reload supplies grounded evidence\",\"relevantAngleIds\":[\"a1\"],\"evidence\":[{\"passageId\":\"{{passageId:Cookie reload supplies grounded evidence}}\",\"quote\":\"Cookie reload supplies grounded evidence\",\"relation\":\"supports\"}]}],\"gaps\":[]}"},
+  {"stopReason":"stop","text":"{\"status\":\"claims\",\"claims\":[{\"statement\":\"Manual verification preserves the current document\",\"relevantAngleIds\":[\"a1\"],\"evidence\":[{\"passageId\":\"{{passageId:Manual verification preserves the current document}}\",\"quote\":\"Manual verification preserves the current document\",\"relation\":\"supports\"}]}],\"gaps\":[]}"}
+]

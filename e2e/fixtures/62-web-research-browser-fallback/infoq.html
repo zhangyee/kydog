@@ -1,0 +1,3 @@
+<!doctype html><html><head><title>Dynamic InfoQ article</title></head><body><div id="app"></div><script>
+fetch('/article-fragment').then(r => r.text()).then(html => { document.querySelector('#app').innerHTML = html; document.documentElement.dataset.articleReady = 'true'; });
+</script></body></html>
